@@ -25,7 +25,9 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js';
 import { paradisRegisterBrowserLoginImport } from './paradisBrowserLoginImportMain.js';
 import { paradisRegisterBrowserExtensions } from '../../browserExtensions/electron-main/paradisBrowserExtensionsMain.js';
-import { paradisCreateBrowserExtensionActionPopup, paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionTabEnvironment, paradisWorkAreaFor } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
+import { paradisCreateBrowserExtensionActionPopup, paradisCreateBrowserExtensionNotification, paradisCreateBrowserExtensionPermissionPrompt, paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionSavePathChooser, paradisCreateBrowserExtensionTabEnvironment, paradisWorkAreaFor } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
+import { IDialogMainService } from '../../../../platform/dialogs/electron-main/dialogMainService.js';
+import { paradisRenameDownloadInPlace } from '../../browserDownloads/electron-main/paradisBrowserDownloadsCore.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 import {
 	IParadisBrowserProfilesMainService,
@@ -161,11 +163,21 @@ export function paradisRegisterBrowserProfiles(
 	disposables.add(instantiationService.invokeFunction(accessor => {
 		const browserViewMainService = accessor.get(IBrowserViewMainService);
 		const windowsMainService = accessor.get(IWindowsMainService);
+		const dialogMainService = accessor.get(IDialogMainService);
 		return paradisRegisterBrowserExtensions(
 			channelHost,
 			instantiationService,
 			viewId => browserViewMainService.tryGetBrowserView(viewId)?.session.electronSession,
-			() => ({ environment: paradisCreateBrowserExtensionTabEnvironment(browserViewMainService, windowsMainService), createPopout: paradisCreateBrowserExtensionPopout, createActionPopup: paradisCreateBrowserExtensionActionPopup, workAreaFor: paradisWorkAreaFor }),
+			() => ({
+				environment: paradisCreateBrowserExtensionTabEnvironment(browserViewMainService, windowsMainService),
+				createPopout: paradisCreateBrowserExtensionPopout,
+				createActionPopup: paradisCreateBrowserExtensionActionPopup,
+				workAreaFor: paradisWorkAreaFor,
+				askPermissions: paradisCreateBrowserExtensionPermissionPrompt(dialogMainService, () => windowsMainService.getLastActiveWindow()?.win ?? undefined),
+				createNotification: paradisCreateBrowserExtensionNotification,
+				chooseSavePath: paradisCreateBrowserExtensionSavePathChooser(dialogMainService),
+				renameDownload: paradisRenameDownloadInPlace,
+			}),
 		);
 	}));
 	return disposables;

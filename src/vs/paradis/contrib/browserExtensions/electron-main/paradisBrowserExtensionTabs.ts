@@ -25,6 +25,7 @@ import { randomBytes } from 'crypto';
 import type { BrowserWindow, Session, WebContents, WebFrameMain } from 'electron';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 
 /** 内蔵ブラウザのタブ 1 つ（main の BrowserView の、ここで使うところ）。 */
@@ -157,6 +158,9 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	/** 最後に前に出た（表示された）タブ（ウィンドウ → WebContents の id）。 */
 	private readonly _activeByWindow = new Map<number, number>();
 	private _lastFocusedWindowId: number | undefined;
+	private _grantedOrigins: (extension: IParadisApiExtension, session: Session) => readonly string[] = () => [];
+	/** captureVisibleTab の回数の上限（セッション → 拡張機能 → 残り）。 */
+	private readonly _captureQuota = new WeakMap<ParadisApiSession, Map<string, { expiresAt: number; remaining: number }>>();
 	/** ツールバーのボタンのポップアップの窓 → それを出した Para Code のウィンドウ（ポップアップはその窓の一部として扱う）。 */
 	private readonly _windowAliases = new Map<number, number>();
 	/** activeTab: ツールバーのボタンを押したタブ → URL とタイトルを見てよい拡張機能（タブが別の文書へ移る・閉じるまで）。 */
@@ -287,7 +291,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			status: contents.isLoading() ? 'loading' : 'complete',
 			audible: contents.isCurrentlyAudible(),
 			mutedInfo: { muted: contents.isAudioMuted() },
-			...(paradisCanSeeTabUrl(extension, url) || this._activeTabGrants.get(contents.id)?.has(extension.id) ? { url, title: contents.getTitle() } : {}),
+			...(paradisCanSeeTabUrl(extension, url) || this._activeTabGrants.get(contents.id)?.has(extension.id) || this._grantedOrigins(extension, contents.session).some(pattern => paradisMatchesUrlPattern(pattern, url)) ? { url, title: contents.getTitle() } : {}),
 		};
 	}
 
@@ -634,6 +638,91 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		grants.add(extension.id);
 	}
 
+	/** 後から許したサイトの権限の引き方（permissions.request、場所ごと）。 */
+	setGrantedOriginsLookup(lookup: (extension: IParadisApiExtension, session: Session) => readonly string[]): void {
+		this._grantedOrigins = lookup;
+	}
+
+	/** 拡張機能に見せるタブの id（cookies.getAllCookieStores。エージェントのタブは入らない）。 */
+	visibleTabIds(caller: IParadisExtensionApiCaller): number[] {
+		return this._tabsOf(this._electronSession(caller)).map(entry => entry.webContents.id);
+	}
+
+	/** 呼び出し元のセッション（Electron の Session。cookies・downloads が使う）。 */
+	electronSessionOf(caller: IParadisExtensionApiCaller): Session {
+		return this._electronSession(caller);
+	}
+
+	/**
+	 * tabs.captureVisibleTab: そのウィンドウの前のタブを撮る（Chrome と同じく `<all_urls>` か、そのタブの activeTab が要る。
+	 * ほかの拡張機能のページとストアは撮らない）。撮れるのは拡張機能に見せるタブだけ（同じ場所の利用者のタブ。エージェントの
+	 * タブ・ほかのプロファイルのタブは見えない）。エージェントが手にしている（共有中の）タブも撮らない（Q483 の考え方:
+	 * 共有中のタブでは拡張機能の画面を止め、拡張機能のページも開かせない。共有中は、拡張機能がそのタブの上で使える力を
+	 * 足さない）。拡張機能の操作の外では 1 秒に 2 回まで（Chrome の MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND）。
+	 */
+	private async _captureVisibleTab(caller: IParadisExtensionApiCaller, windowIdValue: number | undefined, options: Record<string, unknown>): Promise<string> {
+		const format = options.format === undefined ? 'jpeg' : options.format;
+		const quality = options.quality === undefined ? 90 : options.quality;
+		if ((format !== 'jpeg' && format !== 'png') || typeof quality !== 'number' || !Number.isInteger(quality) || quality < 0 || quality > 100) {
+			throw new ParadisExtensionApiError('Invalid image details');
+		}
+		const session = this._electronSession(caller);
+		const windowId = windowIdValue === undefined || windowIdValue === WINDOW_ID_CURRENT ? this._currentWindowId() : windowIdValue;
+		const entry = this._tabsOf(session).find(candidate => candidate.windowId === windowId && candidate.active);
+		if (windowId === undefined || !entry) {
+			throw new ParadisExtensionApiError(`No window with id: ${windowIdValue ?? WINDOW_ID_CURRENT}.`);
+		}
+		const contents = entry.webContents;
+		const url = contents.getURL();
+		const patterns = [...this._hostPatterns(caller.extension, session)];
+		if (!patterns.includes('<all_urls>') && !this._activeTabGrants.get(contents.id)?.has(caller.extension.id)) {
+			throw new ParadisExtensionApiError('Either the \'<all_urls>\' or \'activeTab\' permission is required.');
+		}
+		if (url.startsWith('chrome-extension://') && !url.startsWith(`chrome-extension://${caller.extension.id}/`)) {
+			throw new ParadisExtensionApiError('Cannot access a chrome-extension:// URL of different extension');
+		}
+		if (/^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)(\/|$)/.test(url)) {
+			throw new ParadisExtensionApiError('The extensions gallery cannot be scripted.');
+		}
+		if (paradisIsExtensionPageHeld(contents)) {
+			throw new ParadisExtensionApiError('Para Code does not let extensions capture a tab that is shared with an agent');
+		}
+		this._consumeCaptureQuota(caller);
+		const image = await contents.capturePage();
+		if (image.isEmpty()) {
+			throw new ParadisExtensionApiError('Internal error while trying to capture visible region of the current tab');
+		}
+		return format === 'png' ? `data:image/png;base64,${image.toPNG().toString('base64')}` : `data:image/jpeg;base64,${image.toJPEG(quality).toString('base64')}`;
+	}
+
+	private _consumeCaptureQuota(caller: IParadisExtensionApiCaller): void {
+		if (caller.userGesture === true) {
+			return;
+		}
+		const key = `${caller.extension.id}`;
+		let bySession = this._captureQuota.get(caller.session);
+		if (!bySession) {
+			bySession = new Map();
+			this._captureQuota.set(caller.session, bySession);
+		}
+		const now = Date.now();
+		let quota = bySession.get(key);
+		if (!quota || now > quota.expiresAt) {
+			quota = { expiresAt: now + 1_000, remaining: 2 };
+			bySession.set(key, quota);
+		}
+		if (quota.remaining === 0) {
+			throw new ParadisExtensionApiError('This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.');
+		}
+		quota.remaining--;
+	}
+
+	/** Para Code が見るサイトの権限（manifest と、後から許したもの）。 */
+	private _hostPatterns(extension: IParadisApiExtension, session: Session): readonly string[] {
+		const list = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+		return [...list(extension.manifest.host_permissions), ...list(extension.manifest.permissions).filter(permission => permission.includes('://') || permission === '<all_urls>'), ...this._grantedOrigins(extension, session)];
+	}
+
 	/** タブの一番外の文書の id（別の文書へ移ると変わる。右クリックの項目を、移った後に押させないのに使う）。 */
 	topDocumentId(contents: WebContents): string | undefined {
 		return contents.isDestroyed() ? undefined : this._documentId(contents.mainFrame);
@@ -780,6 +869,14 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 					const entry = id === undefined ? this._activeTab(caller) : this._requireTab(caller, id);
 					entry.webContents.navigationHistory.goForward();
 				}),
+				// (windowId?, options?) または (options?)
+				captureVisibleTab: paradisDefineExtensionMethod(args => {
+					const [first, second] = args;
+					if (args.length > 2 || (first !== undefined && first !== null && typeof first !== 'number' && !isRecord(first)) || (second !== undefined && second !== null && !isRecord(second))) {
+						return undefined;
+					}
+					return isRecord(first) ? [undefined, first] as [number | undefined, Record<string, unknown>] : [first ?? undefined, (second ?? {}) as Record<string, unknown>] as [number | undefined, Record<string, unknown>];
+				}, (caller, windowId, options) => this._captureVisibleTab(caller, windowId, options)),
 			},
 			events: ['onActivated', 'onCreated', 'onUpdated', 'onRemoved', 'onReplaced'],
 		});

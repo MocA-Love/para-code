@@ -19,6 +19,9 @@ import { paradisRegisterStorageApis, ParadisBrowserExtensionSyncStore } from '..
 import { IParadisTabEnvironment, IParadisTabView, ParadisBrowserExtensionTabs, paradisCanSeeTabUrl, paradisMatchesUrlPattern } from '../../electron-main/paradisBrowserExtensionTabs.js';
 import { IParadisActionsEnvironment, ParadisBrowserExtensionActions } from '../../electron-main/paradisBrowserExtensionActions.js';
 import { ParadisBrowserExtensionMenus } from '../../electron-main/paradisBrowserExtensionMenus.js';
+import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions, paradisOriginPatternCovers, paradisPlanPermissionRequest } from '../../electron-main/paradisBrowserExtensionPermissions.js';
+import { IParadisExtensionNotification, IParadisManagedExtension, IParadisServicesEnvironment, ParadisBrowserExtensionServices, paradisDownloadFilename, paradisNotificationIconPath } from '../../electron-main/paradisBrowserExtensionServices.js';
+import { paradisSetExtensionPageHold } from '../../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 
@@ -121,6 +124,12 @@ function setup(extensionManifest: Record<string, unknown>) {
 		Object.defineProperty(request, 'initiatorOrigin', { value: `chrome-extension://${ID}` });
 		return paradisDecodeExtensionWire(await (await handler!(request)).text());
 	};
+	/** 拡張機能のページから呼ぶ（`userGesture` は詰め物が navigator.userActivation から付けるもの）。 */
+	const callPage = async (namespace: string, method: string, args: unknown[], userGesture = false) => {
+		const request = new Request(paradisExtensionApiUrl(PARADIS_EXTENSION_API_CALL_URL, token, 'page-test'), { method: 'POST', body: paradisEncodeExtensionWire({ request: { type: 'call', namespace, method, args, userGesture } }) });
+		Object.defineProperty(request, 'initiatorOrigin', { value: `chrome-extension://${ID}` });
+		return paradisDecodeExtensionWire(await (await handler!(request)).text());
+	};
 	const openEvents = async () => {
 		const request = new Request(paradisExtensionApiUrl(PARADIS_EXTENSION_API_EVENTS_URL, token, 'worker'), { method: 'POST', body: '{}' });
 		Object.defineProperty(request, 'initiatorOrigin', { value: `chrome-extension://${ID}` });
@@ -147,7 +156,7 @@ function setup(extensionManifest: Record<string, unknown>) {
 		focus.dispose();
 		views.forEach(view => { view.close.dispose(); view.visibility.dispose(); });
 	};
-	return { electronSession, otherSession, views, created, activated, call, openEvents, listen, dispose, host, addTabs, focus, tabs, apiSession, extension };
+	return { electronSession, otherSession, views, created, activated, call, callPage, openEvents, listen, dispose, host, addTabs, focus, tabs, apiSession, extension };
 }
 
 suite('ParadisBrowserExtensionTabs', () => {
@@ -295,6 +304,8 @@ suite('ParadisBrowserExtensionTabs', () => {
 		paradisRegisterStorageApis(host, new ParadisBrowserExtensionSyncStore('/tmp/unused', silentLog));
 		const actions = new ParadisBrowserExtensionActions(host, tabs, unusedActionsEnvironment, silentLog);
 		const menus = new ParadisBrowserExtensionMenus(host, tabs, { findView: () => undefined, sessionOf: () => undefined, allLoaded: () => [], nameOf: extension => extension.name }, '/tmp/unused-menus.json', silentLog);
+		const permissions = new ParadisBrowserExtensionPermissions(host, '/tmp/unused-grants.json', silentLog, async () => false, extension => extension.id);
+		new ParadisBrowserExtensionServices(host, tabs, permissions, unusedServicesEnvironment);
 		try {
 			const registered = (host as unknown as { _namespaces: Map<string, { methods: Record<string, unknown>; events: readonly string[]; permission?: unknown }> })._namespaces;
 			for (const [name, surface] of Object.entries(PARADIS_SHIM_SURFACE)) {
@@ -310,6 +321,15 @@ suite('ParadisBrowserExtensionTabs', () => {
 		}
 	});
 });
+
+const unusedServicesEnvironment: IParadisServicesEnvironment = {
+	createNotification: () => undefined,
+	chooseSavePath: async () => undefined,
+	renameDownload: () => { },
+	listInstalled: () => [],
+	setEnabled: async () => { },
+	loadedIn: () => undefined,
+};
 
 const unusedActionsEnvironment: IParadisActionsEnvironment = {
 	findView: () => undefined,
@@ -598,4 +618,208 @@ suite('ParadisBrowserExtensionMenus', () => {
 			dispose();
 		}
 	}));
+});
+
+suite('ParadisBrowserExtensionServices', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	let nextFile = 0;
+
+	function setupServices(manifest: Record<string, unknown>, options: { readonly answer?: boolean; readonly installed?: IParadisManagedExtension[] } = {}) {
+		const tabsSetup = setup(manifest);
+		const prompts: IParadisPermissionPrompt[] = [];
+		let now = 1_000_000;
+		const permissions = new ParadisBrowserExtensionPermissions(tabsSetup.host, join(tmpdir(), `paradis-grants-test-${process.pid}-${nextFile++}.json`), silentLog, async prompt => {
+			prompts.push(prompt);
+			return options.answer ?? true;
+		}, () => 'Sample', () => now);
+		tabsSetup.tabs.setGrantedOriginsLookup(extension => permissions.granted(extension.id, 'default').origins);
+		const cookieJar: { name: string; value: string; domain: string; path: string; secure: boolean }[] = [
+			{ name: 'sid', value: 'mail-secret', domain: 'mail.example.com', path: '/', secure: true },
+			{ name: 'other', value: 'other-secret', domain: 'other.test', path: '/', secure: true },
+		];
+		Object.assign(tabsSetup.electronSession, {
+			cookies: {
+				get: async (filter: { url?: string; name?: string }) => cookieJar.filter(cookie => (!filter.name || cookie.name === filter.name) && (!filter.url || new URL(filter.url).hostname === cookie.domain)),
+				on: () => undefined,
+			},
+			extensions: { getAllExtensions: () => [tabsSetup.extension] },
+		});
+		const notifications: { title: string; listeners: Map<string, (index?: number) => void> }[] = [];
+		const enabledChanges: [string, string, boolean][] = [];
+		const environment: IParadisServicesEnvironment = {
+			...unusedServicesEnvironment,
+			createNotification: notificationOptions => {
+				const listeners = new Map<string, (index?: number) => void>();
+				notifications.push({ title: notificationOptions.title, listeners });
+				return { on: (event: string, listener: (index?: number) => void) => listeners.set(event, listener), show: () => { }, close: () => { }, removeAllListeners: () => listeners.clear() } as unknown as IParadisExtensionNotification;
+			},
+			listInstalled: () => options.installed ?? [],
+			setEnabled: async (id, place, enabled) => { enabledChanges.push([id, place, enabled]); },
+		};
+		new ParadisBrowserExtensionServices(tabsSetup.host, tabsSetup.tabs, permissions, environment);
+		return { ...tabsSetup, permissions, prompts, notifications, enabledChanges, advance: (ms: number) => now += ms };
+	}
+
+	test('permissions.request needs a user gesture and asks the user; granted APIs and sites then work', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { call, callPage, prompts, dispose } = setupServices({ manifest_version: 3, optional_permissions: ['cookies'], optional_host_permissions: ['https://*.example.com/*'] });
+		try {
+			const wanted = { permissions: ['cookies'], origins: ['https://mail.example.com/*'] };
+			const fromWorker = await call('permissions', 'request', [wanted]);
+			const withoutGesture = await callPage('permissions', 'request', [wanted]);
+			const cookiesBefore = await call('cookies', 'getAll', [{}]);
+			const granted = await callPage('permissions', 'request', [wanted], true);
+			const notInManifest = await callPage('permissions', 'request', [{ permissions: ['history'] }], true);
+			const cookiesAfter = await call('cookies', 'getAll', [{}]) as { value: { name: string }[] };
+			assert.deepStrictEqual({
+				fromWorker, withoutGesture, cookiesBefore, granted, notInManifest,
+				prompts: prompts.map(prompt => [prompt.extensionName, prompt.add]),
+				cookiesAfter: cookiesAfter.value.map(cookie => cookie.name),
+				contains: await call('permissions', 'contains', [wanted]),
+				removeRequired: await call('permissions', 'remove', [{ permissions: ['storage'] }]),
+			}, {
+				fromWorker: { ok: false, error: 'This function must be called during a user gesture' },
+				withoutGesture: { ok: false, error: 'This function must be called during a user gesture' },
+				cookiesBefore: { ok: false, error: 'This API requires the "cookies" permission' },
+				granted: { ok: true, value: true },
+				notInManifest: { ok: false, error: 'Only permissions specified in the manifest may be requested.' },
+				prompts: [['Sample', { permissions: ['cookies'], origins: ['https://mail.example.com/*'] }]],
+				// サイトの権限のある cookie だけ（other.test は渡さない）
+				cookiesAfter: ['sid'],
+				contains: { ok: true, value: true },
+				removeRequired: { ok: true, value: true },
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('a Para Code gesture (button, menu, notification click) counts for five seconds', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { callPage, permissions, apiSession, advance, dispose } = setupServices({ manifest_version: 3, optional_permissions: ['downloads'] });
+		try {
+			permissions.noteUserGesture(apiSession, ID);
+			advance(5_001);
+			const late = await callPage('permissions', 'request', [{ permissions: ['downloads'] }]);
+			permissions.noteUserGesture(apiSession, ID);
+			advance(1_000);
+			const inTime = await callPage('permissions', 'request', [{ permissions: ['downloads'] }]);
+			assert.deepStrictEqual({ late, inTime }, {
+				late: { ok: false, error: 'This function must be called during a user gesture' },
+				inTime: { ok: true, value: true },
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('captureVisibleTab needs <all_urls> or activeTab, and never captures a tab an agent holds', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, tabs, extension, dispose } = setupServices({ manifest_version: 3, permissions: ['activeTab'] });
+		try {
+			const contents = fakeContents(electronSession, 'https://example.com/', 'Example');
+			Object.assign(contents, { capturePage: async () => ({ isEmpty: () => false, toPNG: () => Buffer.from('png'), toJPEG: () => Buffer.from('jpg') }) });
+			const view = fakeView('user', contents, 1);
+			view.visible = true;
+			await addTabs(view);
+			const withoutGrant = await call('tabs', 'captureVisibleTab', []);
+			tabs.grantActiveTab(extension, contents.id);
+			const png = await call('tabs', 'captureVisibleTab', [{ format: 'png' }]);
+			const jpeg = await call('tabs', 'captureVisibleTab', [null, { quality: 50 }]);
+			const overQuota = await call('tabs', 'captureVisibleTab', []);
+			paradisSetExtensionPageHold(contents, true);
+			await new Promise(resolve => setTimeout(resolve, 1_100));
+			const held = await call('tabs', 'captureVisibleTab', []);
+			paradisSetExtensionPageHold(contents, false);
+			assert.deepStrictEqual({ withoutGrant, png, jpeg, overQuota, held, badFormat: await call('tabs', 'captureVisibleTab', [{ format: 'gif' }]) }, {
+				withoutGrant: { ok: false, error: 'Either the \'<all_urls>\' or \'activeTab\' permission is required.' },
+				png: { ok: true, value: `data:image/png;base64,${Buffer.from('png').toString('base64')}` },
+				jpeg: { ok: true, value: `data:image/jpeg;base64,${Buffer.from('jpg').toString('base64')}` },
+				overQuota: { ok: false, error: 'This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.' },
+				held: { ok: false, error: 'Para Code does not let extensions capture a tab that is shared with an agent' },
+				badFormat: { ok: false, error: 'Invalid image details' },
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('management lists the place and toggles other extensions only, enabling only in a gesture', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const other = 'b'.repeat(32);
+		const { call, callPage, enabledChanges, dispose } = setupServices({ manifest_version: 3, permissions: ['management'] }, {
+			installed: [
+				{ id: ID, name: 'Self', version: '1', source: 'unpacked', enabled: true, permissions: ['management'], hostPermissions: [] },
+				{ id: other, name: 'Other', version: '2', source: 'unpacked', enabled: false, permissions: [], hostPermissions: [] },
+			],
+		});
+		try {
+			const list = await call('management', 'getAll', []) as { value: { id: string; enabled: boolean; installType: string }[] };
+			assert.deepStrictEqual({
+				list: list.value.map(entry => [entry.id === ID ? 'self' : 'other', entry.enabled, entry.installType]),
+				self: await call('management', 'setEnabled', [ID, false]),
+				enableWithoutGesture: await call('management', 'setEnabled', [other, true]),
+				enableInGesture: await callPage('management', 'setEnabled', [other, true], true),
+				missing: await call('management', 'get', ['c'.repeat(32)]),
+				enabledChanges,
+			}, {
+				list: [['self', true, 'development'], ['other', false, 'development']],
+				self: { ok: false, error: 'An extension cannot enable or disable itself' },
+				enableWithoutGesture: { ok: false, error: 'This function must be called during a user gesture' },
+				enableInGesture: { ok: true },
+				missing: { ok: false, error: `Failed to find extension with id ${'c'.repeat(32)}.` },
+				enabledChanges: [[other, 'default', true]],
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('notifications show an OS notification and report clicks', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { call, notifications, openEvents, listen, dispose } = setupServices({ manifest_version: 3, permissions: ['notifications'] });
+		try {
+			const created = await call('notifications', 'create', ['n1', { type: 'basic', title: 'Hello', message: 'World', iconUrl: 'icon.png' }]);
+			const missing = await call('notifications', 'create', [{ type: 'basic', title: 'No message' }]);
+			const stream = await openEvents();
+			await listen('notifications', 'onClicked');
+			notifications[0].listeners.get('click')!();
+			const reader = stream.body!.getReader();
+			const { value } = await reader.read();
+			await reader.cancel();
+			const event = paradisDecodeExtensionWire(new TextDecoder().decode(value).trim().split('\n')[0]) as { event: string; args: unknown[] };
+			assert.deepStrictEqual({ created, missing, titles: notifications.map(entry => entry.title), event: [event.event, event.args], all: await call('notifications', 'getAll', []) }, {
+				created: { ok: true, value: 'n1' },
+				missing: { ok: false, error: 'Some of the required properties are missing: type, title and message.' },
+				titles: ['Hello'],
+				event: ['onClicked', ['n1']],
+				all: { ok: true, value: {} },
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('keeps paths, names and patterns inside what an extension may touch', () => {
+		const errorOf = (run: () => unknown) => {
+			try {
+				return run();
+			} catch (error) {
+				return (error as Error).message;
+			}
+		};
+		assert.deepStrictEqual({
+			icon: paradisNotificationIconPath({ id: ID, path: '/ext/copy' }, 'icons/a.png'),
+			iconOutside: paradisNotificationIconPath({ id: ID, path: '/ext/copy' }, '%2E%2E%2Fsecret.png'),
+			iconOther: paradisNotificationIconPath({ id: ID, path: '/ext/copy' }, `chrome-extension://${'b'.repeat(32)}/a.png`),
+			iconWeb: paradisNotificationIconPath({ id: ID, path: '/ext/copy' }, 'https://evil.test/a.png'),
+			names: [paradisDownloadFilename('report.pdf'), paradisDownloadFilename(undefined), errorOf(() => paradisDownloadFilename('../x')), errorOf(() => paradisDownloadFilename('/etc/passwd')), errorOf(() => paradisDownloadFilename('C:\\x'))],
+			covers: [paradisOriginPatternCovers('https://*.example.com/*', 'https://mail.example.com/*'), paradisOriginPatternCovers('https://mail.example.com/*', 'https://*.example.com/*'), paradisOriginPatternCovers('<all_urls>', 'https://x.test/*')],
+			plan: paradisPlanPermissionRequest({ permissions: ['tabs'], optional_permissions: ['cookies'] }, { permissions: [], origins: [] }, { permissions: ['tabs'] }),
+		}, {
+			icon: '/ext/copy/icons/a.png',
+			iconOutside: undefined,
+			iconOther: undefined,
+			iconWeb: undefined,
+			names: ['report.pdf', undefined, 'Invalid filename', 'Invalid filename', 'Invalid filename'],
+			covers: [true, false, true],
+			plan: { kind: 'already-granted' },
+		});
+	});
 });

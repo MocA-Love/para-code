@@ -84,6 +84,17 @@ export function paradisResolveBrowserDownloadsDirectory(configurationService: IC
 		: join(defaultDownloadsPath(), PARADIS_BROWSER_DOWNLOADS_DEFAULT_SUBFOLDER);
 }
 
+/**
+ * 保存先のフォルダの中で、空いている名前に保存先を付け直して予約する（ブラウザ拡張機能の downloads.download の filename。
+ * will-download の中で同期に呼ぶ）。終わったら予約を外す。
+ */
+export function paradisRenameDownloadInPlace(item: DownloadItem, directory: string, filename: string): void {
+	const savePath = paradisResolveUniqueDownloadPath(directory, filename);
+	reservedDownloadPaths.add(savePath);
+	item.once('done', () => reservedDownloadPaths.delete(savePath));
+	item.setSavePath(savePath);
+}
+
 function paradisResolveUniqueDownloadPath(directory: string, filename: string): string {
 	const ext = extname(filename);
 	const base = filename.slice(0, filename.length - ext.length);
