@@ -219,6 +219,51 @@ export function paradisInjectShimIntoHtml(html: string): string {
 	return `${SHIM_SCRIPT_TAG}${html}`;
 }
 
+/** XML の文書（XHTML・SVG）に入れる詰め物の <script>（XML では属性に値が要る）。 */
+const SHIM_XML_SCRIPT_TAG = `<script src="/${PARADIS_EXTENSION_SHIM_FILE}" data-paracode-extension-api="1"></script>`;
+const SHIM_SVG_SCRIPT_TAG = `<script href="/${PARADIS_EXTENSION_SHIM_FILE}" data-paracode-extension-api="1"></script>`;
+
+/** XHTML のページに詰め物を入れる（最初のスクリプトの前か </head> の前。どちらも無ければ入れられない）。 */
+export function paradisInjectShimIntoXhtml(xhtml: string): string | undefined {
+	if (xhtml.includes('data-paracode-extension-api')) {
+		return xhtml;
+	}
+	const position = [searchOutsideComments(xhtml, /<script\b/i), searchOutsideComments(xhtml, /<\/head\s*>/i)].find(index => index >= 0);
+	return position === undefined ? undefined : `${xhtml.slice(0, position)}${SHIM_XML_SCRIPT_TAG}${xhtml.slice(position)}`;
+}
+
+/** SVG の文書に詰め物を入れる（一番外の <svg> の開始タグのすぐ後。中身の無い <svg/> には入れられない）。 */
+export function paradisInjectShimIntoSvg(svg: string): string | undefined {
+	if (svg.includes('data-paracode-extension-api')) {
+		return svg;
+	}
+	const start = searchOutsideComments(svg, /<svg\b/i);
+	if (start < 0) {
+		return undefined;
+	}
+	// 開始タグの終わり（属性の値の中の > は飛ばす）
+	let quote: string | undefined;
+	for (let index = start; index < svg.length; index++) {
+		const char = svg[index];
+		if (quote) {
+			if (char === quote) {
+				quote = undefined;
+			}
+		} else if (char === '"' || char === '\'') {
+			quote = char;
+		} else if (char === '>') {
+			return svg[index - 1] === '/' ? undefined : `${svg.slice(0, index + 1)}${SHIM_SVG_SCRIPT_TAG}${svg.slice(index + 1)}`;
+		}
+	}
+	return undefined;
+}
+
+/** XML の宣言がほかの文字コードを指していないか。 */
+function declaresOtherXmlEncoding(text: string): boolean {
+	const declared = /^\s*<\?xml[^>]*encoding\s*=\s*["'](?<encoding>[\w-]+)["']/i.exec(text)?.groups?.encoding;
+	return declared !== undefined && !/^utf-?8$/i.test(declared);
+}
+
 /** UTF-8 として読めて、ほかの文字コードを宣言していない HTML なら、その文字列（書き換えてよいもの）。 */
 export function paradisReadableHtml(bytes: Uint8Array): string | undefined {
 	let html: string;
@@ -279,18 +324,35 @@ export async function paradisPrepareExtensionCopy(copy: string, token: string, s
 		.map(page => posix.normalize(page.replace(/^\/+/, ''))));
 	const skippedPages: string[] = [];
 	for (const file of files) {
-		if (!/\.html?$/i.test(file) || sandboxPages.has(file)) {
+		const kind = /\.html?$/i.test(file) ? 'html' : /\.(xhtml|xht)$/i.test(file) ? 'xhtml' : /\.svg$/i.test(file) ? 'svg' : /\.xml$/i.test(file) ? 'xml' : undefined;
+		if (kind === undefined || sandboxPages.has(file)) {
 			continue;
 		}
 		const path = join(copy, ...file.split('/'));
-		// UTF-8 でないページは書き換えると壊すので、書き換えずに知らせる（そのページでは詰め物の API が無い）
-		const html = paradisReadableHtml(await fs.readFile(path));
-		if (html === undefined) {
+		// UTF-8 でないページや、詰め物を入れられない形のページは書き換えずに知らせる（そのページでは詰め物の API が
+		// 無く、Electron が元から持つ API がそのまま使われる）
+		const text = paradisReadableHtml(await fs.readFile(path));
+		if (text === undefined || (kind !== 'html' && declaresOtherXmlEncoding(text))) {
 			skippedPages.push(file);
 			continue;
 		}
-		const injected = paradisInjectShimIntoHtml(html);
-		if (injected !== html) {
+		let injected: string | undefined;
+		if (kind === 'html') {
+			injected = paradisInjectShimIntoHtml(text);
+		} else if (kind === 'xhtml') {
+			injected = paradisInjectShimIntoXhtml(text);
+		} else if (kind === 'svg') {
+			// スクリプトの無い画像の SVG は書き換えない（詰め物が要るのはスクリプトを動かすページだけ）
+			injected = /<script\b/i.test(text) ? paradisInjectShimIntoSvg(text) : text;
+		} else {
+			// XML の文書のスクリプト（XSLT や名前空間で入れたもの）には入れられない
+			injected = /<script\b/i.test(text) ? undefined : text;
+		}
+		if (injected === undefined) {
+			skippedPages.push(file);
+			continue;
+		}
+		if (injected !== text) {
 			await fs.mkdir(dirname(path), { recursive: true });
 			await fs.writeFile(path, injected);
 		}
@@ -300,6 +362,6 @@ export async function paradisPrepareExtensionCopy(copy: string, token: string, s
 
 /** 写しの準備の結果。 */
 export interface IParadisPreparedCopy {
-	/** UTF-8 でないため詰め物を入れなかったページ。 */
+	/** UTF-8 でない、または詰め物を入れられない形のため、詰め物を入れなかったページ。 */
 	readonly skippedPages: readonly string[];
 }

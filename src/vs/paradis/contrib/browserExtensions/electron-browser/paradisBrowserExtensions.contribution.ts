@@ -18,8 +18,11 @@ import { BrowserActionCategory } from '../../../../workbench/contrib/browserView
 import { PARADIS_MANAGE_BROWSER_EXTENSIONS_COMMAND_ID } from '../common/paradisBrowserExtensions.js';
 import { paradisShowBrowserExtensionsDialog } from './paradisBrowserExtensionsDialog.js';
 import { IParadisBrowserExtensionsService, ParadisBrowserExtensionsService } from './paradisBrowserExtensionsService.js';
+import { ParadisBrowserExtensionTabActivationContribution } from './paradisBrowserExtensionTabActivation.js';
+import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 
 registerSingleton(IParadisBrowserExtensionsService, ParadisBrowserExtensionsService, InstantiationType.Delayed);
+registerWorkbenchContribution2(ParadisBrowserExtensionTabActivationContribution.ID, ParadisBrowserExtensionTabActivationContribution, WorkbenchPhase.AfterRestored);
 
 registerAction2(class ParadisManageBrowserExtensionsAction extends Action2 {
 	constructor() {
