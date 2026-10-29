@@ -624,6 +624,10 @@ export class ParadisExtensionApiHost implements IDisposable {
 							const [oldest] = contexts.pages.keys();
 							contexts.pages.get(oldest)?.stream?.close();
 							contexts.pages.delete(oldest);
+							// 追い出したページの文脈も終わったものとして知らせる（ネイティブメッセージングのホストを残さない）
+							if (extensionIdOfContexts !== undefined) {
+								this._notifyContextClosed(sessionOfContexts, extensionIdOfContexts, oldest);
+							}
 						}
 						page = { events: new Set(), stream: undefined };
 						contexts.pages.set(connection, page);
