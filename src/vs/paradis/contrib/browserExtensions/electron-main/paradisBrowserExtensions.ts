@@ -18,6 +18,7 @@
 import { FileAccess } from '../../../../base/common/network.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisExtensionSessionOwner, paradisAttachBrowserExtensionSession } from './paradisBrowserExtensionsMain.js';
+import { paradisListenForBrowserExtensionWindowQueries } from './paradisBrowserExtensionWindows.js';
 
 /**
  * ロード試行済みのセッション。`loadExtension` は同一セッションへ同じ拡張を二重ロードすると
@@ -31,6 +32,8 @@ const attemptedSessions = new WeakSet<Electron.Session>();
  * fire-and-forget（ロード失敗してもブラウザ機能自体は損なわれないため、起動をブロックしない）。
  */
 export function paradisInstallBrowserExtensions(session: Electron.Session, owner?: IParadisExtensionSessionOwner): void {
+	// 内蔵ブラウザの preload が「拡張機能の窓か」を同期で尋ねる。受け手が無いと止まるので、どのセッションでも先に立てる
+	paradisListenForBrowserExtensionWindowQueries();
 	// 拡張はpersistentなセッションにしかロードできない（in-memoryセッションではElectronがエラーを投げる）。
 	// 内蔵ブラウザの Ephemeral スコープ（persist: 接頭辞なしの partition）はここで除外される。
 	if (!session.isPersistent() || attemptedSessions.has(session)) {

@@ -357,6 +357,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			findView: viewId => tabsOptions.environment.listViews().find(view => view.id === viewId),
 			sessionOf: contents => this._actionSessionOf(contents.session),
 			allLoaded: () => [...this._sessions].flatMap(entry => this._actionSessionOf(entry.session)?.extensions ?? []),
+			isAgentTab: contents => tabsOptions.environment.listViews().find(view => view.webContents === contents)?.isAgentTab() === true,
 			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
 		}, join(_root, 'context-menus.json'), _logService) : undefined;
 		const menus = this._menus;

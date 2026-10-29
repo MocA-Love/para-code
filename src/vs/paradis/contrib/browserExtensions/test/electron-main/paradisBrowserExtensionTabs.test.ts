@@ -461,6 +461,7 @@ suite('ParadisBrowserExtensionMenus', () => {
 			sessionOf: contents => contents.session === tabsSetup.electronSession ? { session: tabsSetup.apiSession, extensions: [{ ...tabsSetup.extension, name: 'Sample', path: '/nonexistent' }] } : undefined,
 			allLoaded: () => [{ ...tabsSetup.extension, name: 'Sample', path: '/nonexistent' }],
 			nameOf: extension => extension.name,
+			isAgentTab: contents => tabsSetup.views.find(view => view.webContents === contents)?.isAgentTab() === true,
 		}, path, silentLog, platform);
 		/** 次の 1 件のイベント。 */
 		const nextEvent = async (stream: Response) => {
@@ -495,6 +496,11 @@ suite('ParadisBrowserExtensionMenus', () => {
 				event: [event.event, event.args[0], (event.args[1] as { id: number; url: string }).url],
 				checkedAfterClick: after[1].checked,
 				otherTab: menus.buildPageMenu(fakeContents({}, 'https://x.test/', 'X'), pageParams),
+				agentTab: await (async () => {
+					const agentContents = fakeContents(electronSession, 'https://agent.test/', 'Agent');
+					await addTabs(fakeView('agent', agentContents, 1, true));
+					return menus.buildPageMenu(agentContents, pageParams);
+				})(),
 			}, {
 				created: { ok: true, value: 'fill' },
 				menu: ['Sample'],
@@ -502,6 +508,7 @@ suite('ParadisBrowserExtensionMenus', () => {
 				event: ['onClicked', { menuItemId: 'mode', pageUrl: 'https://example.com/', frameId: 0, editable: false, wasChecked: false, checked: true }, 'https://example.com/'],
 				checkedAfterClick: true,
 				otherTab: [],
+				agentTab: [],
 			});
 		} finally {
 			dispose();

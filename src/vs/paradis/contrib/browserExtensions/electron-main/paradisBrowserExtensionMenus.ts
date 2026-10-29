@@ -59,6 +59,8 @@ export interface IParadisMenusEnvironment {
 	/** 拡張機能を読み込んだすべてのセッションの拡張機能（ショートカットの一覧に使う）。 */
 	allLoaded(): readonly IParadisLoadedExtension[];
 	nameOf(extension: IParadisLoadedExtension): string;
+	/** その WebContents がエージェントのタブか（タブでない・分からなければ false）。 */
+	isAgentTab?(contents: WebContents): boolean;
 }
 
 /** 開いた右クリックのメニュー（押すまでの間、main に持つ）。 */
@@ -249,7 +251,9 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 	/** 内蔵ブラウザのページの右クリックに足す項目（paradisBrowserExtensionMenuHook.ts から）。 */
 	buildPageMenu(contents: WebContents, params: ContextMenuParams): MenuItemConstructorOptions[] {
 		const info = this._environment.sessionOf(contents);
-		if (!info || contents.isDestroyed()) {
+		// エージェントのタブには出さない（ボタンのメニューと同じ。エージェントの右クリックはこれより前に止まる）
+		const agentTab = this._environment.isAgentTab?.(contents) === true;
+		if (!info || agentTab || contents.isDestroyed()) {
 			return [];
 		}
 		const frame = params.frame && !params.frame.isDestroyed() ? params.frame : undefined;
