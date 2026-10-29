@@ -1184,7 +1184,7 @@ suite('Paradis CDP screenshot filter', () => {
 			],
 			client: [
 				{ method: 'Target.detachedFromTarget', params: { sessionId: 'popup-session', targetId: 'popup' } },
-				{ method: 'Target.targetInfoChanged', params: { targetInfo: { targetId: 'target-1', type: 'page', url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html' } } },
+				{ method: 'Target.targetInfoChanged', params: { targetInfo: { targetId: 'target-1', type: 'page', url: 'about:blank#para-code-hidden-extension-frame', title: '' } } },
 				{ id: 9, result: { targetInfos: [{ targetId: 'target-1', type: 'page' }] } },
 			],
 			closeCalls: 0,
@@ -1257,6 +1257,24 @@ suite('Paradis CDP screenshot filter', () => {
 		} finally {
 			fixturePageUrl.value = 'https://example.test/';
 		}
+	});
+
+	test('wraps scripts registered for new documents so they never run in an extension page, on both routes', async () => {
+		const browser = await createOpenBrowserProxyFixture();
+		publishAllowedSession(browser, 'session-1');
+		browser.upstream.sent.length = 0;
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 4, sessionId: 'session-1', method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: 'window.mark = 1;', worldName: 'util' } })));
+		const page = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		page.upstream.readyState = TestWebSocket.OPEN;
+		page.upstream.emit('open');
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 5, method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: 'window.mark = 2;' } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const sources = [...parseSent(browser.upstream), ...parseSent(page.upstream)].map(frame => (frame as { params: { source: string; worldName?: string } }).params);
+		assert.deepStrictEqual(sources.map(params => ({ guarded: params.source.startsWith('if (!(function () {') && params.source.includes('chrome-extension:'), keepsSource: params.source.includes('window.mark'), worldName: params.worldName })), [
+			{ guarded: true, keepsSource: true, worldName: 'util' },
+			{ guarded: true, keepsSource: true, worldName: undefined },
+		]);
 	});
 
 	test('hides extension frame URLs from frame events and frame trees of the shared page', async () => {

@@ -6,7 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_EXTENSION_NAVIGATION_DENIED_MESSAGE, PARADIS_EXTENSION_PAGE_DENIED_MESSAGE, PARADIS_HIDDEN_EXTENSION_FRAME_URL, paradisExtensionPageDeniedMessage, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../../common/paradisCdpExtensionScope.js';
+import { PARADIS_EXTENSION_NAVIGATION_DENIED_MESSAGE, PARADIS_EXTENSION_PAGE_DENIED_MESSAGE, PARADIS_HIDDEN_EXTENSION_FRAME_URL, paradisExtensionPageDeniedMessage, paradisGuardNewDocumentScriptParams, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../../common/paradisCdpExtensionScope.js';
 
 const EXTENSION = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa';
 
@@ -55,8 +55,8 @@ suite('paradisCdpExtensionScope', () => {
 			undefined, PARADIS_EXTENSION_NAVIGATION_DENIED_MESSAGE, undefined,
 			undefined, undefined, undefined, PARADIS_EXTENSION_PAGE_DENIED_MESSAGE,
 		]);
-		assert.deepStrictEqual(['Page.frameNavigated', 'Page.lifecycleEvent', 'Runtime.executionContextCreated', 'Target.attachedToTarget', 'Network.requestWillBeSent', 'Runtime.consoleAPICalled', 'DOM.documentUpdated'].map(paradisIsEventAllowedOnExtensionPage),
-			[true, true, true, true, false, false, false]);
+		assert.deepStrictEqual(['Page.frameNavigated', 'Page.lifecycleEvent', 'Runtime.executionContextCreated', 'Target.attachedToTarget', 'Network.requestWillBeSent', 'Runtime.consoleAPICalled', 'DOM.documentUpdated', 'Page.javascriptDialogOpening'].map(paradisIsEventAllowedOnExtensionPage),
+			[true, true, true, true, false, false, false, false]);
 	});
 
 	test('hides extension frame URLs and content-script stacks in page events and frame trees', () => {
@@ -88,6 +88,24 @@ suite('paradisCdpExtensionScope', () => {
 					childFrames: [{ frame: { id: 'F2', parentId: 'F1', ...hidden }, resources: [] }],
 				},
 			},
+			other: undefined,
+		});
+	});
+	test('wraps new-document scripts so they run in web documents but not in extension documents', () => {
+		const params = paradisGuardNewDocumentScriptParams('Page.addScriptToEvaluateOnNewDocument', { source: 'var ran = true; function helper() { return 1; }', worldName: 'util', runImmediately: false });
+		// Run the wrapped source the way a new document would, with its own origin and location.
+		const run = (origin: string, protocol: string) => new Function('globalThis', 'location', `var ran = false; ${(params as { source: string }).source}; return [ran, typeof helper];`)({ origin }, { protocol });
+		assert.deepStrictEqual({
+			rest: { ...params, source: undefined },
+			web: run('https://example.test', 'https:'),
+			extension: run('chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa', 'chrome-extension:'),
+			blankInExtension: run('chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa', 'about:'),
+			other: paradisGuardNewDocumentScriptParams('Runtime.evaluate', { expression: '1' }),
+		}, {
+			rest: { source: undefined, worldName: 'util', runImmediately: false },
+			web: [true, 'function'],
+			extension: [false, 'undefined'],
+			blankInExtension: [false, 'undefined'],
 			other: undefined,
 		});
 	});
