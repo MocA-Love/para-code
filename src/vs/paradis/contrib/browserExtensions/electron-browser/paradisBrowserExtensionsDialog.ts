@@ -73,6 +73,22 @@ export function paradisDescribeAddExtensionFailure(result: Extract<IParadisAddEx
 			return localize('paradis.browserExtensions.error.changed', "写している間にフォルダの中身（「{0}」）が変わりました。もう一度読み込んでください。", result.detail ?? '');
 		case 'tooMany':
 			return localize('paradis.browserExtensions.error.tooMany', "これ以上の拡張機能は足せません。使っていないものを削除してください。");
+		case 'invalidInput':
+			return localize('paradis.browserExtensions.error.invalidInput', "Chrome ウェブストアの拡張機能のページのリンクか、32 文字の拡張機能の ID を貼ってください。");
+		case 'cancelled':
+			return localize('paradis.browserExtensions.error.cancelled', "追加を取り消しました。");
+		case 'busy':
+			return localize('paradis.browserExtensions.error.busy', "この拡張機能は今入れている途中です。");
+		case 'alreadyAdded':
+			return localize('paradis.browserExtensions.error.alreadyAdded', "「{0}」はこの場所に入っています。", result.detail ?? '');
+		case 'sameIdUnpacked':
+			return localize('paradis.browserExtensions.error.sameIdUnpacked', "同じ ID の拡張機能（「{0}」）をフォルダから読み込んであります。ストアから入れるには、先にそれを削除してください。", result.detail ?? '');
+		case 'sameIdWebStore':
+			return localize('paradis.browserExtensions.error.sameIdWebStore', "同じ ID の拡張機能を Chrome ウェブストアから入れてあります。フォルダから読み込むには、先にそれを削除してください。");
+		case 'webStoreFailed':
+			return localize('paradis.browserExtensions.error.webStoreFailed', "Chrome ウェブストアから入れられませんでした（{0}）。", result.detail ?? '');
+		case 'noPrompt':
+			return localize('paradis.browserExtensions.error.noPrompt', "確認の画面を出せないため、ストアから入れられません。Para Code のウィンドウを前に出してからもう一度試してください。");
 		default:
 			return localize('paradis.browserExtensions.error.failed', "拡張機能を足せませんでした（{0}）。", result.detail ?? '');
 	}
@@ -86,6 +102,8 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	private readonly _listElement: HTMLElement;
 	private readonly _messageElement: HTMLElement;
 	private readonly _addButton: HTMLButtonElement;
+	private readonly _storeInput: HTMLInputElement;
+	private readonly _storeButton: HTMLButtonElement;
 	/** 一覧の作り直しごとに捨てるリスナー置き場。 */
 	private readonly _renderStore = this._register(new DisposableStore());
 	private readonly _noticeStore = this._register(new DisposableStore());
@@ -119,6 +137,23 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		this._register(dom.addDisposableListener(this._profileSelect, 'change', () => {
 			this._profile = this._profileSelect.value;
 			this._renderList();
+		}));
+
+		// Chrome ウェブストアのリンクか ID を貼って入れる（外と話すのは「追加」を押したときだけ）
+		const storeRow = dom.append(this.body, $('.pbe-store'));
+		this._storeInput = dom.append(storeRow, $<HTMLInputElement>('input.pbpm-input.pbe-store-input'));
+		this._storeInput.type = 'text';
+		this._storeInput.placeholder = localize('paradis.browserExtensions.store.placeholder', "Chrome ウェブストアのリンクか拡張機能の ID");
+		this._storeInput.setAttribute('aria-label', localize('paradis.browserExtensions.store.label', "Chrome ウェブストアから追加する拡張機能のリンクか ID"));
+		this._storeButton = dom.append(storeRow, $<HTMLButtonElement>('button.pbpm-btn.secondary'));
+		this._storeButton.type = 'button';
+		this._storeButton.textContent = localize('paradis.browserExtensions.store.add', "ストアから追加");
+		this._register(dom.addDisposableListener(this._storeButton, dom.EventType.CLICK, () => void this._addFromWebStore()));
+		this._register(dom.addDisposableListener(this._storeInput, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => {
+			if (event.key === 'Enter') {
+				event.preventDefault();
+				void this._addFromWebStore();
+			}
 		}));
 
 		this._listElement = dom.append(this.body, $('.pbpm-list.pbe-list'));
@@ -204,19 +239,21 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	private _renderList(): void {
 		this._renderStore.clear();
 		this.contentFocusables.length = 0;
-		this.contentFocusables.push(this._profileSelect);
+		this.contentFocusables.push(this._profileSelect, this._storeInput, this._storeButton);
 		if (this._noticeButton) {
 			this.contentFocusables.push(this._noticeButton);
 		}
 		dom.clearNode(this._listElement);
 		const state = this._state;
 		this._addButton.disabled = !state?.active || this._busy;
+		this._storeInput.disabled = !state?.active || this._busy;
+		this._storeButton.disabled = !state?.active || this._busy;
 		if (!state) {
 			this.focusModal();
 			return;
 		}
 		if (state.extensions.length === 0) {
-			dom.append(this._listElement, $('.pbpm-empty')).textContent = localize('paradis.browserExtensions.empty', "まだ拡張機能がありません。展開済みの拡張機能のフォルダ（manifest.json がある階層）を「フォルダから読み込む…」で選んでください。");
+			dom.append(this._listElement, $('.pbpm-empty')).textContent = localize('paradis.browserExtensions.emptyWithStore', "まだ拡張機能がありません。Chrome ウェブストアの拡張機能のリンクを上に貼って「ストアから追加」を押すか、展開済みの拡張機能のフォルダを「フォルダから読み込む…」で選んでください。");
 			this.focusModal();
 			return;
 		}
@@ -255,7 +292,9 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 
 		const info = dom.append(row, $('.pbpm-info'));
 		dom.append(info, $('.pbpm-name')).textContent = extension.name;
-		dom.append(info, $('.pbpm-meta')).textContent = localize('paradis.browserExtensions.meta', "バージョン {0} ・ Manifest V{1} ・ {2}", extension.version, extension.manifestVersion, extension.sourcePath);
+		dom.append(info, $('.pbpm-meta')).textContent = extension.source === 'webstore'
+			? localize('paradis.browserExtensions.metaWebStore', "バージョン {0} ・ Manifest V{1} ・ Chrome ウェブストア", extension.version, extension.manifestVersion)
+			: localize('paradis.browserExtensions.metaUnpacked', "バージョン {0} ・ Manifest V{1} ・ 開発用（フォルダから読み込み）: {2}", extension.version, extension.manifestVersion, extension.sourcePath);
 		if (extension.touchesPages) {
 			// 共有の確認で知らせる対象（入力欄に値を入れられる・ページの中身を読める）
 			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.touchesPages', "ページの中身を読み書きできます。このタブを共有すると、拡張機能が入力した値はエージェントからも読めます");
@@ -268,15 +307,18 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		}
 
 		const actions = dom.append(row, $('.pbpm-row-actions'));
-		this._appendRowAction(actions, Codicon.refresh, localize('paradis.browserExtensions.reload', "フォルダから読み込み直す"), !active, () => void this._run(async () => {
-			const result = await this._mainService.reloadUnpacked(extension.id);
-			if (!result.ok) {
-				this._showMessage(paradisDescribeAddExtensionFailure(result), true);
-				return false;
-			}
-			this._showMessage(localize('paradis.browserExtensions.reloaded', "「{0}」を読み込み直しました。開いているページには、読み込み直すと効きます。", result.extension.name), false);
-			return true;
-		}));
+		// ストアから入れたものは読み込み直すフォルダが無い（更新はストアから）
+		if (extension.source === 'unpacked') {
+			this._appendRowAction(actions, Codicon.refresh, localize('paradis.browserExtensions.reload', "フォルダから読み込み直す"), !active, () => void this._run(async () => {
+				const result = await this._mainService.reloadUnpacked(extension.id);
+				if (!result.ok) {
+					this._showMessage(paradisDescribeAddExtensionFailure(result), true);
+					return false;
+				}
+				this._showMessage(localize('paradis.browserExtensions.reloaded', "「{0}」を読み込み直しました。開いているページには、読み込み直すと効きます。", result.extension.name), false);
+				return true;
+			}));
+		}
 		this._appendRowAction(actions, Codicon.trash, localize('paradis.browserExtensions.remove', "削除"), !active, () => this._confirmRemove(extension));
 	}
 
@@ -327,6 +369,25 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		if (!this._store.isDisposed) {
 			await this._refresh();
 		}
+	}
+
+	private async _addFromWebStore(): Promise<void> {
+		const input = this._storeInput.value.trim();
+		if (!input || this._busy) {
+			return;
+		}
+		const place = this._profile;
+		const label = this._profileSelect.selectedOptions[0]?.textContent ?? place;
+		this._showMessage(localize('paradis.browserExtensions.store.downloading', "Chrome ウェブストアから落として、署名を確かめています…"), false);
+		await this._run(async () => {
+			const result = await this._mainService.addFromWebStore(input, place, label);
+			if (!result.ok) {
+				this._showMessage(paradisDescribeAddExtensionFailure(result), result.reason !== 'cancelled');
+				return;
+			}
+			this._storeInput.value = '';
+			this._showMessage(localize('paradis.browserExtensions.store.added', "「{0}」を Chrome ウェブストアから追加しました。開いているページには、読み込み直すと効きます。", result.extension.name), false);
+		});
 	}
 
 	private async _addFromFolder(): Promise<void> {

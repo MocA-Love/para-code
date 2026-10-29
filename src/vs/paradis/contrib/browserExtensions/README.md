@@ -20,7 +20,7 @@
 
 ## 制約（Electron の拡張サポートは部分実装）
 
-- unpacked のみロード可能。ストアからのインストール・自動更新は無い（更新は上記の手動手順）
+- 同梱の拡張は展開済みのフォルダとして読み込む。自動更新は無い（更新は上記の手動手順）。利用者が入れる拡張機能（試験的）は Chrome ウェブストアからも入れられる（`NOTES.md` の「内蔵ブラウザの Chrome 拡張機能」）
 - browser action（ツールバーアイコン + ポップアップ UI）と Native Messaging は動作しない
 - devtools_page ベースの拡張（React DevTools 等）が主対象。内蔵ブラウザの「Developer Tools」で
   DevTools を開くと React / Profiler タブが現れる

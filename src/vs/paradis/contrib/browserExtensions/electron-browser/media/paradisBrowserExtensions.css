@@ -87,3 +87,16 @@
 	color: var(--vscode-editorWarning-foreground);
 	font-size: 11px;
 }
+
+.paradis-browser-profile-modal .pbe-store {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 10px;
+}
+
+.paradis-browser-profile-modal .pbe-store-input {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+}
