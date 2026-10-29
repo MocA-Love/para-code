@@ -314,7 +314,7 @@ export interface IParadisBrowserExtensionsState {
 /** フォルダから足した結果。 */
 export type IParadisAddExtensionResult =
 	| { readonly ok: true; readonly extension: IParadisInstalledBrowserExtension }
-	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'linkOutside' | 'hardLink' | 'nameClash' | 'changed' | 'tooLarge' | 'restartNeeded' | 'failed'; readonly detail?: string };
+	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'linkOutside' | 'hardLink' | 'nameClash' | 'reservedName' | 'changed' | 'tooLarge' | 'restartNeeded' | 'failed'; readonly detail?: string };
 
 /** main の拡張機能の管理（{@link PARADIS_BROWSER_EXTENSIONS_CHANNEL}）。 */
 export interface IParadisBrowserExtensionsMainService {

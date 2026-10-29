@@ -42,7 +42,21 @@ class FakeSession implements ParadisExtensionSession {
 			throw new Error('clear failed');
 		}
 	};
+	/** 詰め物の受け手（P4）。ここでは立てた・外したことだけを覚える。 */
+	readonly handled: string[] = [];
+	readonly protocol: ParadisExtensionSession['protocol'] = {
+		handle: (scheme: string) => { this.handled.push(scheme); },
+		unhandle: () => { },
+	};
+	readonly serviceWorkers: ParadisExtensionSession['serviceWorkers'] = {
+		startWorkerForScope: async () => { throw new Error('no worker'); },
+		getWorkerFromVersionID: () => undefined,
+		on: () => undefined,
+		removeListener: () => undefined,
+	};
 	extensions: ParadisExtensionSession['extensions'] = {
+		on: () => undefined,
+		removeListener: () => undefined,
 		loadExtension: async (path: string) => {
 			const id = this.idOverride ?? paradisPredictExtensionId(path, undefined);
 			this.loaded.set(id, path);
@@ -173,7 +187,10 @@ suite('ParadisBrowserExtensionsMain', () => {
 
 		remote.isRemote = false;
 		onDidStop.fire();
-		await new Promise(resolve => setTimeout(resolve, 0));
+		// 読み込みは写しへの詰め物の書き込みを挟むので、入るまで待つ
+		for (let attempt = 0; attempt < 100 && session.ids().length === 0; attempt++) {
+			await new Promise(resolve => setTimeout(resolve, 10));
+		}
 		const afterStop = session.ids();
 
 		remote.isRemote = true;
@@ -423,8 +440,10 @@ suite('ParadisBrowserExtensionsMain', () => {
 		// 再起動の後: タブを開いた直後で、読み込みがまだ終わっていない
 		const slow = new FakeSession(join(root, 'default'));
 		let finishLoading: () => void = () => { };
+		let loadStarted: () => void = () => { };
+		const started = new Promise<void>(resolve => loadStarted = resolve);
 		const load = slow.extensions.loadExtension;
-		slow.extensions = { ...slow.extensions, loadExtension: async (path, options) => { await new Promise<void>(resolve => finishLoading = resolve); return load(path, options); } };
+		slow.extensions = { ...slow.extensions, loadExtension: async (path, options) => { loadStarted(); await new Promise<void>(resolve => finishLoading = resolve); return load(path, options); } };
 		const remoteStarted = new Emitter<void>();
 		const remoteStopped = new Emitter<void>();
 		const remote = { isRemote: true, onDidStart: remoteStarted.event, onDidStop: remoteStopped.event };
@@ -432,6 +451,7 @@ suite('ParadisBrowserExtensionsMain', () => {
 		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog, viewId => viewId === 'view-1' ? slow : viewId === 'view-ssh' ? tunneled : undefined);
 		const attaching = manager.attach(slow, owner(BrowserViewStorageScope.Global));
 		await manager.attach(tunneled, owner(BrowserViewStorageScope.Workspace, 'workspace:1', remote));
+		await started;
 		const duringLoad = await manager.getShareExtensions('view-1', PARADIS_DEFAULT_EXTENSION_PROFILE);
 		finishLoading();
 		await attaching;

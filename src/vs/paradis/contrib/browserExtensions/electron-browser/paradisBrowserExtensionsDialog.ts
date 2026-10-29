@@ -67,6 +67,8 @@ export function paradisDescribeAddExtensionFailure(result: Extract<IParadisAddEx
 			return localize('paradis.browserExtensions.error.hardLink', "フォルダの中の「{0}」は、ほかの場所と中身を共有するファイル（ハードリンク）です。外のファイルを読めないようにするため、このフォルダは読み込めません。ふつうのファイルとして写してから選んでください。", result.detail ?? '');
 		case 'nameClash':
 			return localize('paradis.browserExtensions.error.nameClash', "フォルダの中に、大文字と小文字などだけが違う同じ名前（「{0}」）があります。写すと上書きされるため、読み込めません。", result.detail ?? '');
+		case 'reservedName':
+			return localize('paradis.browserExtensions.error.reservedName', "フォルダの中の「{0}」は、Para Code が拡張機能の写しに書くファイルと同じ名前です。名前を変えてから読み込んでください。", result.detail ?? '');
 		case 'changed':
 			return localize('paradis.browserExtensions.error.changed', "写している間にフォルダの中身（「{0}」）が変わりました。もう一度読み込んでください。", result.detail ?? '');
 		case 'tooMany':
