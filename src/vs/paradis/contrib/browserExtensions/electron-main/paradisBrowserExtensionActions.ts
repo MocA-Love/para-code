@@ -61,6 +61,8 @@ export interface IParadisActionsEnvironment {
 	setPinned(place: string, extensionId: string, pinned: boolean): Promise<void>;
 	/** 台帳の名前（無ければ manifest の名前）。 */
 	nameOf(extension: IParadisLoadedExtension): string;
+	/** 利用者の操作をその拡張機能へ渡した（P5c、permissions）。 */
+	noteUserGesture?(session: ParadisApiSession, extensionId: string): void;
 	/** Para Code のウィンドウ（補助ウィンドウを含む。それ以外の id なら undefined）。 */
 	windowById(windowId: number): BrowserWindow | undefined;
 	/** ポップアップの窓を作る（まだ見せない）。 */
@@ -609,6 +611,8 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 			if (!popupOnly) {
 				// activeTab: 利用者が押したので、そのタブの URL とタイトルを見せる
 				this._tabs.grantActiveTab(extension, tabId);
+				// 利用者の操作（permissions.request・management.setEnabled などを、この後の少しの間だけ許す）
+				this._environment.noteUserGesture?.(session, extension.id);
 			}
 			if (details.popup !== '') {
 				this._openPopup(resolved, details.popup, window, anchor);

@@ -6,8 +6,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 import assert from 'assert';
 import { EventEmitter } from 'events';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisInputGuardTab, PARADIS_EXTENSION_FRAME_DENIED_MESSAGE, PARADIS_EXTENSION_INPUT_DENIED_MESSAGE, ParadisFrameTargetTracker, ParadisGuardFrameUnavailableError, ParadisPendingCommands, ParadisInputGuardWebContents, paradisExtensionInputRefusal, paradisGuardExtensionInput, paradisInputGuardTab, paradisInterceptUpstreamCommand } from '../../electron-main/paradisExtensionInputGuard.js';
+import { IParadisInputGuardTab, PARADIS_EXTENSION_FRAME_DENIED_MESSAGE, PARADIS_EXTENSION_INPUT_DENIED_MESSAGE, ParadisFrameTargetTracker, ParadisGuardFrameUnavailableError, ParadisPendingCommands, ParadisInputGuardWebContents, paradisExtensionInputRefusal, paradisGuardExtensionInput, paradisInputGuardTab, paradisInterceptUpstreamCommand, paradisMarkDoneWithDeadline } from '../../electron-main/paradisExtensionInputGuard.js';
 
 const EXTENSION_MENU = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/menu.html';
 
@@ -189,6 +190,19 @@ suite('paradisExtensionInputGuard', () => {
 		]);
 	});
 
+	test('the mark of an upstream key closes by a deadline when the command never answers, and only once', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		let closed = 0;
+		const unanswered = paradisMarkDoneWithDeadline(() => closed++, 10_000);
+		await new Promise(resolve => setTimeout(resolve, 9_999));
+		const beforeDeadline = closed;
+		await new Promise(resolve => setTimeout(resolve, 2));
+		unanswered.done();
+		const answered = paradisMarkDoneWithDeadline(() => closed++, 10_000);
+		answered.done();
+		await new Promise(resolve => setTimeout(resolve, 20_000));
+		assert.deepStrictEqual({ beforeDeadline, closed }, { beforeDeadline: 0, closed: 2 });
+	}));
+
 	test('upstream commands carry the automation input mark: a key that cannot be marked is not sent', async () => {
 		const page: IFakeDocument = { scrollY: 0, elements: [BODY] };
 		const { tab } = fakeTab({ page }, {});
@@ -216,9 +230,17 @@ suite('paradisExtensionInputGuard', () => {
 		];
 		refuseKeys = true;
 		results.push(await run('Input.dispatchKeyEvent', { type: 'keyUp', key: 'L', code: 'KeyL', modifiers: 10 }));
-		assert.deepStrictEqual({ results, events }, {
+		const markedBefore = events.filter(event => event.startsWith('mark')).length;
+		// セッションの無い命令と、iframe のセッションへの命令には印を付けない（Playwright は Input.* をページのセッションへ送る）
+		const sessionless = paradisInterceptUpstreamCommand(tab, tracker, upstreamDebugger, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'L', code: 'KeyL', modifiers: 10 }, undefined, undefined, marker);
+		tracker.onMessage('Target.attachedToTarget', { sessionId: 'S-WEB', targetInfo: { targetId: 'WEB1', type: 'iframe', url: 'https://widget.example/' } });
+		const iframe = paradisInterceptUpstreamCommand(tab, tracker, upstreamDebugger, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'L', code: 'KeyL', modifiers: 10 }, { sessionId: 'S-WEB', targetId: 'WEB1' }, undefined, marker);
+		assert.deepStrictEqual({ results, events, unmarked: [sessionless, iframe], markedAfter: events.filter(event => event.startsWith('mark')).length - markedBefore }, {
 			results: ['sent', 'sent', 'PARA_BROWSER_RETRYABLE: automation key suppression could not be registered'],
 			events: ['mark Input.dispatchKeyEvent rawKeyDown', 'send Input.dispatchKeyEvent', 'done', 'mark Input.dispatchMouseEvent mousePressed', 'send Input.dispatchMouseEvent', 'mark Input.dispatchKeyEvent keyUp'],
+			// どちらも upstream の通常の経路のまま（undefined）
+			unmarked: [undefined, undefined],
+			markedAfter: 0,
 		});
 	});
 

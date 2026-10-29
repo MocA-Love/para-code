@@ -31,7 +31,7 @@ export interface IParadisShimSurfaceNamespace {
 	readonly manifestVersion?: number;
 	readonly methods: readonly string[];
 	readonly events: readonly string[];
-	readonly constants?: Readonly<Record<string, number>>;
+	readonly constants?: Readonly<Record<string, number | Readonly<Record<string, string>>>>;
 }
 
 export type ParadisShimSurface = Readonly<Record<string, IParadisShimSurfaceNamespace>>;
@@ -61,7 +61,7 @@ export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
 	// Electron は onInstalled・onStartup を出さない。Para Code が拡張機能の読み込みの後に出す
 	runtime: { methods: ['openOptionsPage'], events: ['onInstalled', 'onStartup'] },
 	tabs: {
-		methods: ['query', 'get', 'getCurrent', 'create', 'duplicate', 'remove', 'update', 'goBack', 'goForward'],
+		methods: ['query', 'get', 'getCurrent', 'create', 'duplicate', 'remove', 'update', 'goBack', 'goForward', 'captureVisibleTab'],
 		events: ['onActivated', 'onCreated', 'onUpdated', 'onRemoved', 'onReplaced'],
 		constants: { TAB_ID_NONE: -1 },
 	},
@@ -82,6 +82,12 @@ export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
 	// 右クリックの項目とショートカット（P5b）。contextMenus.create は id をその場で返す（下の paradisInstallExtensionApis）
 	contextMenus: { permission: 'contextMenus', methods: ['create', 'update', 'remove', 'removeAll'], events: ['onClicked'], constants: { ACTION_MENU_TOP_LEVEL_LIMIT: 6 } },
 	commands: { methods: ['getAll'], events: ['onCommand'] },
+	// P5c。後から許される権限（optional_permissions）でも足しておく。main は許されるまで断る
+	permissions: { methods: ['contains', 'getAll', 'request', 'remove'], events: ['onAdded', 'onRemoved'] },
+	notifications: { permission: 'notifications', methods: ['create', 'update', 'clear', 'getAll', 'getPermissionLevel'], events: ['onClicked', 'onButtonClicked', 'onClosed', 'onPermissionLevelChanged'], constants: { TemplateType: { BASIC: 'basic', IMAGE: 'image', LIST: 'list', PROGRESS: 'progress' } } },
+	cookies: { permission: 'cookies', methods: ['get', 'getAll', 'set', 'remove', 'getAllCookieStores'], events: ['onChanged'] },
+	downloads: { permission: 'downloads', methods: ['download'], events: ['onCreated', 'onChanged'] },
+	management: { permission: 'management', methods: ['getAll', 'get', 'setEnabled'], events: [] },
 };
 
 type ApiObject = Record<string, unknown>;
