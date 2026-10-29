@@ -1,0 +1,225 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* The integrated browser toolbar's Chrome extension buttons (paradisBrowserExtensionToolbar.ts): pinned
+	extension buttons with their badges, the puzzle button, and the extensions list. Colors come from
+	--vscode-* tokens, except the badge colors an extension sets itself with chrome.action. */
+
+/* ============================================================
+	1. Pinned extension buttons (MenuId.BrowserActionsToolbar, custom view item)
+	============================================================ */
+
+.monaco-workbench .monaco-action-bar .action-item.paradis-browser-extension-button {
+	display: flex;
+	align-items: center;
+	cursor: pointer;
+	border-radius: var(--vscode-cornerRadius-medium);
+}
+
+/* Same footprint as a codicon action label (22px square) so the toolbar measures it like its neighbours. */
+.monaco-workbench .paradis-browser-extension-button .paradis-browser-extension-face {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: var(--vscode-cornerRadius-medium);
+}
+
+.monaco-workbench .paradis-browser-extension-button:hover .paradis-browser-extension-face {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .paradis-browser-extension-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .paradis-browser-extension-button .paradis-browser-extension-icon {
+	width: 16px;
+	height: 16px;
+	object-fit: contain;
+}
+
+.monaco-workbench .paradis-browser-extension-button .paradis-browser-extension-fallback,
+.monaco-workbench .paradis-browser-extensions-popover .pbx-initial {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	box-sizing: border-box;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	font-size: 10px;
+	font-weight: 600;
+	line-height: 1;
+	color: var(--vscode-badge-foreground);
+	background-color: var(--vscode-badge-background);
+}
+
+.monaco-workbench .paradis-browser-extension-button [hidden] {
+	display: none;
+}
+
+/* action.disable(): Chrome greys the icon out; clicking does nothing. */
+.monaco-workbench .paradis-browser-extension-button.is-disabled .paradis-browser-extension-icon,
+.monaco-workbench .paradis-browser-extension-button.is-disabled .paradis-browser-extension-fallback {
+	opacity: 0.4;
+	filter: grayscale(1);
+}
+
+/* The badge sits on the icon's lower right like Chrome's. Theme badge colors unless the extension set its own (inline style). */
+.monaco-workbench .paradis-browser-extension-button .paradis-browser-extension-badge {
+	position: absolute;
+	right: -3px;
+	bottom: -2px;
+	max-width: 26px;
+	height: 12px;
+	padding: 0 3px;
+	box-sizing: border-box;
+	overflow: hidden;
+	border-radius: 6px;
+	font-size: 9px;
+	font-weight: 600;
+	line-height: 12px;
+	white-space: nowrap;
+	pointer-events: none;
+	background-color: var(--vscode-activityBarBadge-background);
+	color: var(--vscode-activityBarBadge-foreground);
+}
+
+.monaco-workbench .paradis-browser-extension-button .paradis-browser-extension-badge:empty {
+	display: none;
+}
+
+/* ============================================================
+	2. Extensions list (marked paradis-overlay-popover so the native view pauses)
+	============================================================ */
+
+/* z-index stays below the workbench modal layer (2575), same tier as the share and downloads lists. */
+.monaco-workbench .paradis-browser-extensions-popover {
+	position: absolute;
+	z-index: 2550;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	box-sizing: border-box;
+	background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+	font-size: 13px;
+	outline: none;
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-header {
+	padding: 8px 12px 6px;
+	font-weight: 600;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-list {
+	overflow-y: auto;
+	padding: 4px 0;
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-row {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	padding: 0 6px 0 4px;
+}
+
+.monaco-workbench .paradis-browser-extensions-popover button {
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+	background: none;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+}
+
+.monaco-workbench .paradis-browser-extensions-popover button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .paradis-browser-extensions-popover button:hover:not([disabled]) {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench .paradis-browser-extensions-popover button[disabled] {
+	cursor: default;
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-open {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px;
+	text-align: left;
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-row.is-disabled .pbx-open {
+	color: var(--vscode-disabledForeground);
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-icon {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	color: var(--vscode-icon-foreground);
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-icon img {
+	width: 16px;
+	height: 16px;
+	object-fit: contain;
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-name {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-icon-button {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	color: var(--vscode-icon-foreground);
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-icon-button.is-pinned {
+	color: var(--vscode-textLink-foreground);
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-footer {
+	padding: 6px 8px;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-link {
+	padding: 2px 4px;
+	font-size: 12px;
+	color: var(--vscode-textLink-foreground);
+}
+
+.monaco-workbench .paradis-browser-extensions-popover .pbx-link:hover {
+	color: var(--vscode-textLink-activeForeground);
+	text-decoration: underline;
+}

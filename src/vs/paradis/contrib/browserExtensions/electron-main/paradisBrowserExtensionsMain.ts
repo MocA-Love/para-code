@@ -20,7 +20,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import type { BrowserWindow, Session } from 'electron';
-import { Emitter, type Event } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { join, sep } from '../../../../base/common/path.js';
 import { hasKey } from '../../../../base/common/types.js';
@@ -53,7 +53,13 @@ import {
 	paradisLedgerWithEnabled,
 	paradisLedgerWithExtension,
 	paradisLedgerWithoutExtension,
+	paradisLedgerWithPinned,
 	paradisNeedsDataClear,
+	paradisPinnedExtensionIds,
+	IParadisActionResult,
+	IParadisBrowserExtensionToolbar,
+	IParadisPopupRequest,
+	IParadisToolbarAnchor,
 	paradisParseExtensionsLedger,
 	paradisReadExtensionManifest,
 } from '../common/paradisBrowserExtensions.js';
@@ -63,11 +69,15 @@ import { ParadisBrowserExtensionRuntimeState, ParadisExtensionLoadKind, paradisD
 import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from './paradisBrowserExtensionStorageApis.js';
 import { paradisBrowserExtensionContentScriptSource, paradisBrowserExtensionShimSource } from '../common/paradisBrowserExtensionShimSource.js';
 import { IParadisTabEnvironment, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
+import { IParadisActionsEnvironment, IParadisLoadedExtension, ParadisBrowserExtensionActions } from './paradisBrowserExtensionActions.js';
 
 /** タブ・ウィンドウの API に要る main のもの（無ければ tabs・windows・webNavigation は使えない）。 */
 export interface IParadisBrowserExtensionTabsOptions {
 	readonly environment: IParadisTabEnvironment;
 	readonly createPopout: (session: Session, url: string, options: { readonly width?: number; readonly height?: number; readonly left?: number; readonly top?: number; readonly focused: boolean }) => BrowserWindow;
+	/** ツールバーのボタンのポップアップの窓（無ければポップアップは出ない）。 */
+	readonly createActionPopup?: IParadisActionsEnvironment['createPopupWindow'];
+	readonly workAreaFor?: IParadisActionsEnvironment['workAreaFor'];
 }
 import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
 
@@ -282,7 +292,7 @@ interface ISessionEntry {
 	readonly isRemote: () => boolean;
 }
 
-export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExtensionsMainService, 'onDidRequestActivateTab'>, IDisposable {
+export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExtensionsMainService, 'onDidRequestActivateTab' | 'onDidChangeToolbar' | 'onDidRequestPopup'>, IDisposable {
 
 	private readonly _disposables = new DisposableStore();
 	private readonly _sessions = new Set<ISessionEntry>();
@@ -297,6 +307,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _apiHost: ParadisExtensionApiHost;
 	/** tabs・windows・webNavigation（P4b）。 */
 	private readonly _tabs: ParadisBrowserExtensionTabs | undefined;
+	/** ツールバーのボタン（P5、chrome.action）。 */
+	private readonly _actions: ParadisBrowserExtensionActions | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
 	private readonly _runtimeState: ParadisBrowserExtensionRuntimeState;
 	/** この起動で詰め物を書き込んだ写し（写しのパス → 失敗の文。成功なら undefined）。 */
@@ -320,11 +332,27 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._tabs = tabsOptions && this.active ? new ParadisBrowserExtensionTabs(this._apiHost, tabsOptions.environment, _logService, tabsOptions.createPopout) : undefined;
 		const tabs = this._tabs;
 		paradisRegisterRuntimeApis(this._apiHost, tabs ? caller => tabs.openOptionsPage(caller) : undefined);
+		this._actions = tabs && tabsOptions ? new ParadisBrowserExtensionActions(this._apiHost, tabs, {
+			findView: viewId => tabsOptions.environment.listViews().find(view => view.id === viewId),
+			sessionOf: contents => this._actionSessionOf(contents.session),
+			pinnedIn: place => paradisPinnedExtensionIds(this._ledger, place),
+			setPinned: (place, id, pinned) => this._setPinned(place, id, pinned),
+			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
+			windowById: windowId => tabsOptions.environment.listWindows().find(window => window.id === windowId && !window.isDestroyed()),
+			createPopupWindow: (parent, bounds, session) => {
+				if (!tabsOptions.createActionPopup) {
+					throw new Error('Popups are not available');
+				}
+				return tabsOptions.createActionPopup(parent, bounds, session);
+			},
+			workAreaFor: rect => tabsOptions.workAreaFor?.(rect) ?? rect,
+		}, _logService) : undefined;
 		this._ready = this.active ? this._loadLedger() : Promise.resolve();
 	}
 
 	dispose(): void {
 		this._disposables.dispose();
+		this._actions?.dispose();
 		this._tabs?.dispose();
 		this._apiHost.dispose();
 		void this._syncStore.flush();
@@ -332,6 +360,54 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 
 	private get _ledgerPath(): string {
 		return join(this._root, 'ledger.json');
+	}
+
+	/** ツールバーに出す、そのセッションに今入っている利用者の拡張機能（同梱の React DevTools は出さない）。 */
+	private _actionSessionOf(session: unknown): { readonly session: ParadisExtensionSession; readonly place: string; readonly extensions: readonly IParadisLoadedExtension[] } | undefined {
+		const entry = [...this._sessions].find(candidate => candidate.session === session);
+		if (!entry || entry.isRemote()) {
+			return undefined;
+		}
+		const extensions: IParadisLoadedExtension[] = [];
+		for (const installed of this._ledger.extensions) {
+			const loaded = entry.session.extensions.getExtension(installed.id);
+			if (loaded) {
+				extensions.push({ id: loaded.id, version: loaded.version, manifest: loaded.manifest as Record<string, unknown>, name: loaded.name, path: loaded.path });
+			}
+		}
+		return { session: entry.session, place: entry.profile, extensions };
+	}
+
+	private async _setPinned(place: string, id: string, pinned: boolean): Promise<void> {
+		this._ledger = paradisLedgerWithPinned(this._ledger, id, place, pinned);
+		await this._save();
+	}
+
+	getToolbar(viewId: string): Promise<IParadisBrowserExtensionToolbar | undefined> {
+		return this._actions ? this._ready.then(() => this._actions?.getToolbar(viewId)) : Promise.resolve(undefined);
+	}
+
+	activateAction(viewId: string, extensionId: string, anchor: IParadisToolbarAnchor, popupOnly: boolean): Promise<IParadisActionResult> {
+		return this._actions ? this._actions.activateAction(viewId, extensionId, anchor, popupOnly) : Promise.resolve({ ok: false, error: 'Browser extensions are off' });
+	}
+
+	async setPinned(viewId: string, extensionId: string, pinned: boolean): Promise<void> {
+		await this._ready;
+		await this._actions?.setPinned(viewId, extensionId, pinned);
+	}
+
+	openOptions(viewId: string, extensionId: string): Promise<IParadisActionResult> {
+		return this._actions ? this._actions.openOptions(viewId, extensionId) : Promise.resolve({ ok: false, error: 'Browser extensions are off' });
+	}
+
+	/** ツールバーが変わった（renderer へ）。 */
+	get onDidChangeToolbar(): Event<void> {
+		return this._actions?.onDidChangeToolbar ?? Event.None;
+	}
+
+	/** action.openPopup（renderer へ）。 */
+	get onDidRequestPopup(): Event<IParadisPopupRequest> {
+		return this._actions?.onDidRequestPopup ?? Event.None;
 	}
 
 	private async _loadLedger(): Promise<void> {
@@ -518,6 +594,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				return;
 			}
 			this._loadErrors.delete(extension.id);
+			this._actions?.notifyChanged();
 			await this._fireRuntimeLifecycle(entry, loaded, kind);
 		} catch (error) {
 			this._loadErrors.set(extension.id, error instanceof Error ? error.message : String(error));
@@ -526,6 +603,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 
 	private _unload(entry: ISessionEntry, id: string): void {
 		this._tabs?.closePopoutsOf(entry.session as unknown as Session, id);
+		this._actions?.forgetExtension(entry.session, id, entry.session.extensions.getExtension(id)?.path);
 		try {
 			if (entry.session.extensions.getExtension(id)) {
 				entry.session.extensions.removeExtension(id);
@@ -697,6 +775,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			...(copied.generatedKey !== undefined ? { generatedKey: copied.generatedKey } : {}),
 		};
 		this._ledger = paradisLedgerWithExtension(this._ledger, extension, profile);
+		if (!existing) {
+			// 初めて足したプロファイルでは、ツールバーに出す（ボタンを探さずに使えるように。外すのはパズルのメニューから）
+			this._ledger = paradisLedgerWithPinned(this._ledger, extension.id, profile, true);
+		}
 		await this._save();
 		// 写しを作り直したので、詰め物も書き直す
 		this._prepared.delete(extension.path);
@@ -816,7 +898,7 @@ export function paradisRegisterBrowserExtensions(
 	 * タブ・ウィンドウの口を作る（試験的な設定がオンのときだけ呼ぶ。オフの人には BrowserView の購読もさせない）。
 	 * タブを前に出すことだけは、ここで workbench への知らせにする。
 	 */
-	createTabs?: () => { readonly environment: Omit<IParadisTabEnvironment, 'activateTab'> & IDisposable; readonly createPopout: IParadisBrowserExtensionTabsOptions['createPopout'] },
+	createTabs?: () => { readonly environment: Omit<IParadisTabEnvironment, 'activateTab'> & IDisposable } & Omit<IParadisBrowserExtensionTabsOptions, 'environment'>,
 ): IDisposable {
 	const disposables = new DisposableStore();
 	const onDidRequestActivateTab = disposables.add(new Emitter<IParadisActivateTabRequest>());
@@ -834,6 +916,8 @@ export function paradisRegisterBrowserExtensions(
 			tabs ? {
 				environment: { ...tabs.environment, activateTab: (windowId, viewId) => onDidRequestActivateTab.fire({ windowId, viewId }) },
 				createPopout: tabs.createPopout,
+				createActionPopup: tabs.createActionPopup,
+				workAreaFor: tabs.workAreaFor,
 			} : undefined,
 		);
 	});
@@ -842,7 +926,7 @@ export function paradisRegisterBrowserExtensions(
 	for (const { session, owner } of pendingSessions.splice(0)) {
 		void created.attach(session, owner);
 	}
-	// renderer に見せるのは管理画面の 5 つだけ（attach・dispose は main の中からだけ呼ぶ）
+	// renderer に見せるのは管理画面とツールバーの口だけ（attach・dispose は main の中からだけ呼ぶ）
 	const exposed: IParadisBrowserExtensionsMainService = {
 		getState: () => created.getState(),
 		addUnpacked: (folder, profile) => created.addUnpacked(folder, profile),
@@ -851,6 +935,12 @@ export function paradisRegisterBrowserExtensions(
 		remove: id => created.remove(id),
 		getShareExtensions: (viewId, fallbackProfile) => created.getShareExtensions(viewId, fallbackProfile),
 		onDidRequestActivateTab: onDidRequestActivateTab.event,
+		getToolbar: viewId => created.getToolbar(viewId),
+		onDidChangeToolbar: created.onDidChangeToolbar,
+		activateAction: (viewId, extensionId, anchor, popupOnly) => created.activateAction(viewId, extensionId, anchor, popupOnly),
+		setPinned: (viewId, extensionId, pinned) => created.setPinned(viewId, extensionId, pinned),
+		openOptions: (viewId, extensionId) => created.openOptions(viewId, extensionId),
+		onDidRequestPopup: created.onDidRequestPopup,
 	};
 	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables));
 	return disposables;

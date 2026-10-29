@@ -16,6 +16,8 @@ import {
 	paradisLedgerWithEnabled,
 	paradisLedgerWithExtension,
 	paradisLedgerWithoutExtension,
+	paradisLedgerWithPinned,
+	paradisPinnedExtensionIds,
 	paradisNeedsDataClear,
 	paradisParseExtensionsLedger,
 	paradisReadExtensionManifest,
@@ -37,12 +39,14 @@ suite('ParadisBrowserExtensions common', () => {
 			extensions: [extension(A), { ...extension(B), source: 'store' }, extension(A), { id: 'not-an-id' }],
 			enabled: { default: [A, B, 'x'], 'profile:0123456789ab': [A], 'profile:bad': [A] },
 			removed: [B, 'x', { id: A, cleared: ['/s1', 3] }],
+			pinned: { default: [A, B, A], 'profile:bad': [A] },
 		});
 		assert.deepStrictEqual(parsed, {
 			version: 1,
 			extensions: [extension(A)],
 			enabled: { default: [A], 'profile:0123456789ab': [A] },
 			removed: [{ id: B, cleared: [] }, { id: A, cleared: ['/s1'] }],
+			pinned: { default: [A] },
 		});
 		assert.deepStrictEqual(paradisParseExtensionsLedger({ version: 2 }), PARADIS_EMPTY_EXTENSIONS_LEDGER);
 	});
@@ -51,11 +55,19 @@ suite('ParadisBrowserExtensions common', () => {
 		let ledger = paradisLedgerWithExtension(PARADIS_EMPTY_EXTENSIONS_LEDGER, extension(A), 'default');
 		ledger = paradisLedgerWithExtension(ledger, extension(B), undefined);
 		ledger = paradisLedgerWithEnabled(ledger, B, 'profile:0123456789ab', true);
+		// ピン留めは場所ごと。足した順に並び、同じものは二度足さない
+		ledger = paradisLedgerWithPinned(ledger, B, 'default', true);
+		ledger = paradisLedgerWithPinned(ledger, A, 'default', true);
+		ledger = paradisLedgerWithPinned(ledger, A, 'default', true);
+		ledger = paradisLedgerWithPinned(ledger, A, 'profile:0123456789ab', true);
+		ledger = paradisLedgerWithPinned(ledger, 'c'.repeat(32), 'default', true);
+		const pins = { default: paradisPinnedExtensionIds(ledger, 'default'), profile: paradisPinnedExtensionIds(ledger, 'profile:0123456789ab') };
 		const before = { default: paradisEnabledExtensions(ledger, 'default').map(e => e.id), profile: paradisEnabledExtensions(ledger, 'profile:0123456789ab').map(e => e.id) };
 		ledger = paradisLedgerWithoutExtension(ledger, A);
-		assert.deepStrictEqual({ before, after: ledger }, {
+		assert.deepStrictEqual({ before, pins, after: ledger }, {
 			before: { default: [A], profile: [B] },
-			after: { version: 1, extensions: [extension(B)], enabled: { default: [], 'profile:0123456789ab': [B] }, removed: [{ id: A, cleared: [] }] },
+			pins: { default: [B, A], profile: [A] },
+			after: { version: 1, extensions: [extension(B)], enabled: { default: [], 'profile:0123456789ab': [B] }, removed: [{ id: A, cleared: [] }], pinned: { default: [B], 'profile:0123456789ab': [] } },
 		});
 	});
 

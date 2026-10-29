@@ -25,7 +25,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js';
 import { paradisRegisterBrowserLoginImport } from './paradisBrowserLoginImportMain.js';
 import { paradisRegisterBrowserExtensions } from '../../browserExtensions/electron-main/paradisBrowserExtensionsMain.js';
-import { paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionTabEnvironment } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
+import { paradisCreateBrowserExtensionActionPopup, paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionTabEnvironment, paradisWorkAreaFor } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 import {
 	IParadisBrowserProfilesMainService,
@@ -165,7 +165,7 @@ export function paradisRegisterBrowserProfiles(
 			channelHost,
 			instantiationService,
 			viewId => browserViewMainService.tryGetBrowserView(viewId)?.session.electronSession,
-			() => ({ environment: paradisCreateBrowserExtensionTabEnvironment(browserViewMainService, windowsMainService), createPopout: paradisCreateBrowserExtensionPopout }),
+			() => ({ environment: paradisCreateBrowserExtensionTabEnvironment(browserViewMainService, windowsMainService), createPopout: paradisCreateBrowserExtensionPopout, createActionPopup: paradisCreateBrowserExtensionActionPopup, workAreaFor: paradisWorkAreaFor }),
 		);
 	}));
 	return disposables;

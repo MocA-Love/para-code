@@ -23,7 +23,7 @@
 
 import { randomBytes } from 'crypto';
 import type { BrowserWindow, Session, WebContents, WebFrameMain } from 'electron';
-import { Event } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 
@@ -157,6 +157,13 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	/** 最後に前に出た（表示された）タブ（ウィンドウ → WebContents の id）。 */
 	private readonly _activeByWindow = new Map<number, number>();
 	private _lastFocusedWindowId: number | undefined;
+	/** ツールバーのボタンのポップアップの窓 → それを出した Para Code のウィンドウ（ポップアップはその窓の一部として扱う）。 */
+	private readonly _windowAliases = new Map<number, number>();
+	/** activeTab: ツールバーのボタンを押したタブ → URL とタイトルを見てよい拡張機能（タブが別の文書へ移る・閉じるまで）。 */
+	private readonly _activeTabGrants = new Map<number, Set<string>>();
+	private readonly _onDidResetTab = this._disposables.add(new Emitter<number>());
+	/** タブが別の文書へ移った・閉じた（WebContents の id）。タブごとのボタンの値を消すのに使う。 */
+	readonly onDidResetTab = this._onDidResetTab.event;
 
 	constructor(
 		private readonly _host: ParadisExtensionApiHost,
@@ -166,6 +173,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	) {
 		this._disposables.add(_environment.onDidCreateView(({ view, existing }) => this._observe(view, existing)));
 		this._disposables.add(_environment.onDidFocusWindow(windowId => this.noteWindowFocus(windowId)));
+		this._disposables.add(this._onDidResetTab.event(tabId => this._activeTabGrants.delete(tabId)));
 		for (const view of _environment.listViews()) {
 			this._observe(view, true, true);
 		}
@@ -279,7 +287,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			status: contents.isLoading() ? 'loading' : 'complete',
 			audible: contents.isCurrentlyAudible(),
 			mutedInfo: { muted: contents.isAudioMuted() },
-			...(paradisCanSeeTabUrl(extension, url) ? { url, title: contents.getTitle() } : {}),
+			...(paradisCanSeeTabUrl(extension, url) || this._activeTabGrants.get(contents.id)?.has(extension.id) ? { url, title: contents.getTitle() } : {}),
 		};
 	}
 
@@ -372,7 +380,10 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		on('did-start-loading', () => updated(() => ({ status: 'loading' })));
 		on('did-stop-loading', () => updated(() => ({ status: 'complete' })));
 		on('page-title-updated', ((_event: unknown, title: string) => updated((_extension, canSee) => canSee ? { title } : undefined)) as never);
-		on('did-navigate', ((_event: unknown, url: string) => updated((_extension, canSee) => canSee ? { url } : undefined)) as never);
+		on('did-navigate', ((_event: unknown, url: string) => {
+			this._onDidResetTab.fire(contents.id);
+			updated((_extension, canSee) => canSee ? { url } : undefined);
+		}) as never);
 		on('page-favicon-updated', ((_event: unknown, favicons: string[]) => updated((_extension, canSee) => canSee && favicons[0] ? { favIconUrl: favicons[0] } : undefined)) as never);
 		on('audio-state-changed', ((event: { audible: boolean }) => updated(() => ({ audible: event.audible }))) as never);
 		this._observeNavigation(view, disposables, userTab);
@@ -387,6 +398,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			this._emitPerExtension(contents.session, 'tabs', 'onActivated', () => [{ tabId: contents.id, windowId: view.windowId }]);
 		}));
 		disposables.add(Event.once(view.onDidClose)(() => {
+			this._onDidResetTab.fire(contents.id);
 			const wasAnnounced = this._announced.delete(view.id);
 			this._observed.delete(view.id);
 			if (this._activeByWindow.get(view.windowId) === contents.id) {
@@ -561,7 +573,10 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	}
 
 	/** ウィンドウにフォーカスが移った（windows.onFocusChanged）。 */
-	noteWindowFocus(windowId: number): void {
+	noteWindowFocus(focusedWindowId: number): void {
+		// ツールバーのボタンのポップアップは、それを出したウィンドウの一部（Chrome と同じ。ポップアップから
+		// tabs.query({ active: true, currentWindow: true }) で、ボタンを押したタブが見つかるように）
+		const windowId = this._windowAliases.get(focusedWindowId) ?? focusedWindowId;
 		if (this._lastFocusedWindowId === windowId) {
 			return;
 		}
@@ -571,6 +586,74 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 				this._emitPerExtension(entry.electronSession, 'windows', 'onFocusChanged', () => [windowId]);
 			}
 		}
+	}
+
+	/** ツールバーのボタンのポップアップの窓を、それを出したウィンドウの一部として扱う（外すときは返り値を dispose する）。 */
+	treatWindowAsPartOf(popupWindowId: number, parentWindowId: number): IDisposable {
+		this._windowAliases.set(popupWindowId, parentWindowId);
+		return toDisposable(() => {
+			if (this._windowAliases.get(popupWindowId) === parentWindowId) {
+				this._windowAliases.delete(popupWindowId);
+			}
+		});
+	}
+
+	/**
+	 * 利用者がそのタブのツールバーのボタンを押した: そのタブを、そのウィンドウの前のタブ・そのウィンドウを今の
+	 * ウィンドウにする（分割で複数のタブが見えていても、押したタブを tabs.query の active にする）。
+	 */
+	noteUserActivatedTab(view: IParadisTabView): void {
+		const contents = view.webContents;
+		if (contents.isDestroyed() || !this._announced.has(view.id) || !this._isUserTab(view)) {
+			return;
+		}
+		if (this._activeByWindow.get(view.windowId) !== contents.id) {
+			this._activeByWindow.set(view.windowId, contents.id);
+			if (this._sessions.has(contents.session)) {
+				this._emitPerExtension(contents.session, 'tabs', 'onActivated', () => [{ tabId: contents.id, windowId: view.windowId }]);
+			}
+		}
+		this.noteWindowFocus(view.windowId);
+	}
+
+	/**
+	 * activeTab: 利用者がそのタブで拡張機能のボタンを押した。manifest に activeTab があれば、そのタブの URL とタイトルを
+	 * 見せる（タブが別の文書へ移る・閉じるまで）。スクリプトを入れる権限は与えられない（Electron の
+	 * scripting.executeScript は manifest のサイトの権限しか見ない。Orca と同じ）。
+	 */
+	grantActiveTab(extension: IParadisApiExtension, tabId: number): void {
+		const permissions = extension.manifest.permissions;
+		if (!Array.isArray(permissions) || !permissions.includes('activeTab')) {
+			return;
+		}
+		let grants = this._activeTabGrants.get(tabId);
+		if (!grants) {
+			grants = new Set();
+			this._activeTabGrants.set(tabId, grants);
+		}
+		grants.add(extension.id);
+	}
+
+	/** そのセッションの、拡張機能に見せるタブか（タブの id を指定した API の呼び出しを確かめる）。 */
+	assertTab(caller: IParadisExtensionApiCaller, tabId: number): void {
+		this._requireTab(caller, tabId);
+	}
+
+	/** Chrome の形のタブ（拡張機能に見せるタブでなければ undefined）。 */
+	describeTab(extension: IParadisApiExtension, session: Session, tabId: number): Tab | undefined {
+		const entry = this._findTab(session, tabId);
+		return entry ? this._describe(extension, entry) : undefined;
+	}
+
+	/** 今のウィンドウの前のタブ（Para Code のエディタのタブだけ。窓のポップアップは除く）。 */
+	activeEditorTab(caller: IParadisExtensionApiCaller): IParadisTabView | undefined {
+		const windowId = this._currentWindowId();
+		return this._tabsOf(this._electronSession(caller)).find(candidate => candidate.active && candidate.windowId === windowId && candidate.view)?.view;
+	}
+
+	/** 拡張機能のページから新しいタブを開く（ポップアップの target=_blank のリンクなど）。 */
+	async openTabFor(caller: IParadisExtensionApiCaller, url: string): Promise<void> {
+		await this._openTab(caller, this._requireOpenableUrl(caller, url), true);
 	}
 
 	/** 拡張機能を外した（削除・無効・SSH 先のためのトンネルが始まった）: その拡張機能のポップアップを閉じる。 */
