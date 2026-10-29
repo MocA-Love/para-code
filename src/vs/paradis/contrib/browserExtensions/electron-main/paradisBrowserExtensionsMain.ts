@@ -22,7 +22,7 @@ import { promises as fs } from 'fs';
 import type { BrowserWindow, Session } from 'electron';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
-import { join, sep } from '../../../../base/common/path.js';
+import { dirname, join, sep } from '../../../../base/common/path.js';
 import { hasKey } from '../../../../base/common/types.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
@@ -75,6 +75,8 @@ import { IParadisActionsEnvironment, IParadisLoadedExtension, ParadisBrowserExte
 import { ParadisBrowserExtensionMenus } from './paradisBrowserExtensionMenus.js';
 import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions } from './paradisBrowserExtensionPermissions.js';
 import { IParadisServicesEnvironment, ParadisBrowserExtensionServices } from './paradisBrowserExtensionServices.js';
+import { ParadisNativeMessaging } from './paradisNativeMessaging.js';
+import { paradisDefaultNativeHostLookup } from './paradisNativeMessagingHosts.js';
 import { paradisSetBrowserExtensionMenuProvider } from './paradisBrowserExtensionMenuRegistry.js';
 import { paradisSetBrowserExtensionInputListener } from './paradisBrowserExtensionWindows.js';
 
@@ -330,6 +332,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _permissions: ParadisBrowserExtensionPermissions | undefined;
 	/** notifications・cookies・downloads・management（P5c）。 */
 	private readonly _services: ParadisBrowserExtensionServices | undefined;
+	/** ネイティブメッセージング（P6）。 */
+	private readonly _nativeMessaging: ParadisNativeMessaging | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
 	private readonly _runtimeState: ParadisBrowserExtensionRuntimeState;
 	/** この起動で詰め物を書き込んだ写し（写しのパス → 失敗の文。成功なら undefined）。 */
@@ -350,6 +354,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._syncStore = new ParadisBrowserExtensionSyncStore(join(_root, 'sync-storage'), _logService);
 		this._runtimeState = new ParadisBrowserExtensionRuntimeState(join(_root, 'runtime-state.json'), _logService);
 		paradisRegisterStorageApis(this._apiHost, this._syncStore);
+		// ホストの manifest は、Para Code の専用のフォルダ（userData の下）を先に、Chrome・ほかのブラウザの登録も読む（D5）
+		this._nativeMessaging = this.active ? new ParadisNativeMessaging(this._apiHost, () => paradisDefaultNativeHostLookup(dirname(_root)), _logService) : undefined;
 		this._tabs = tabsOptions && this.active ? new ParadisBrowserExtensionTabs(this._apiHost, tabsOptions.environment, _logService, tabsOptions.createPopout) : undefined;
 		const tabs = this._tabs;
 		paradisRegisterRuntimeApis(this._apiHost, tabs ? caller => tabs.openOptionsPage(caller) : undefined);
@@ -428,6 +434,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	dispose(): void {
 		this._disposables.dispose();
 		this._actions?.dispose();
+		this._nativeMessaging?.dispose();
 		this._menus?.dispose();
 		this._tabs?.dispose();
 		this._apiHost.dispose();

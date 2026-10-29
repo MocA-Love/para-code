@@ -254,11 +254,12 @@ export class ParadisExtensionApiHost implements IDisposable {
 				}
 			} else if (runningStatus === 'stopped') {
 				// 止まった worker は送ったものを落とす。外しておくと、次のイベントで起こして溜める
-				for (const contexts of state.extensions.values()) {
+				for (const [extensionId, contexts] of state.extensions) {
 					const running = contexts.worker.running;
 					if (running && (running.isDestroyed() || running.versionId === versionId)) {
 						contexts.worker.running = undefined;
 						this._detachStream(contexts.worker);
+						this._notifyContextClosed(session, extensionId, 'worker');
 					}
 				}
 			}
@@ -284,6 +285,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 
 	/** 外した拡張機能の文脈を忘れる（イベントの応答を閉じる）。 */
 	forgetExtension(session: ParadisApiSession, extensionId: string): void {
+		this._notifyContextClosed(session, extensionId, undefined);
 		const contexts = this._states.get(session)?.extensions.get(extensionId);
 		if (!contexts) {
 			return;
@@ -293,6 +295,83 @@ export class ParadisExtensionApiHost implements IDisposable {
 			page.stream?.close();
 		}
 		this._states.get(session)?.extensions.delete(extensionId);
+	}
+
+	private readonly _contextClosedListeners = new Set<(session: ParadisApiSession, extensionId: string, connection: string | undefined) => void>();
+
+	/** 拡張機能の文脈が終わった（ページが閉じた・worker が止まった。`connection` が undefined なら拡張機能を外した）。 */
+	onDidCloseContext(listener: (session: ParadisApiSession, extensionId: string, connection: string | undefined) => void): IDisposable {
+		this._contextClosedListeners.add(listener);
+		return toDisposable(() => this._contextClosedListeners.delete(listener));
+	}
+
+	private _notifyContextClosed(session: ParadisApiSession, extensionId: string, connection: string | undefined): void {
+		for (const listener of [...this._contextClosedListeners]) {
+			try {
+				listener(session, extensionId, connection);
+			} catch (error) {
+				this._logService.warn('[paradis] a browser extension context listener failed', error);
+			}
+		}
+	}
+
+	/**
+	 * イベントを 1 つの文脈（worker か、そのページ）だけへ届ける（ネイティブメッセージングのポートは開いた文脈のもの）。
+	 * worker は止まっていれば起こし、受け手が登録し直されたら出す。
+	 */
+	emitToConnection(session: ParadisApiSession, extensionId: string, connection: string, namespace: string, event: string, args: readonly unknown[]): void {
+		const state = this._states.get(session);
+		const contexts = state?.extensions.get(extensionId);
+		if (!state || !contexts) {
+			return;
+		}
+		const key = eventKey(namespace, event);
+		const payload: IParadisExtensionApiEvent = { namespace, event, args };
+		if (connection === 'worker') {
+			if (contexts.worker.events.has(key)) {
+				this._deliverToWorker(state, contexts.worker, key, payload);
+			} else {
+				this._queue(state, contexts.worker, key, payload);
+			}
+			return;
+		}
+		const page = contexts.pages.get(connection);
+		if (page?.events.has(key)) {
+			try {
+				page.stream?.send(payload);
+			} catch {
+				page.stream = undefined;
+			}
+		}
+	}
+
+	/** worker を生かしておく（ネイティブメッセージングのポートが開いている間。Chrome と同じ）。終わったら end を呼ぶ。 */
+	keepWorkerAlive(session: ParadisApiSession, extensionId: string): { end(): void } | undefined {
+		const running = this._states.get(session)?.extensions.get(extensionId)?.worker.running;
+		let task: { end(): void } | undefined;
+		try {
+			task = running && !running.isDestroyed() ? running.startTask() : undefined;
+		} catch {
+			return undefined;
+		}
+		if (!task) {
+			return undefined;
+		}
+		const started = task;
+		let ended = false;
+		return {
+			end: () => {
+				if (ended) {
+					return;
+				}
+				ended = true;
+				try {
+					started.end();
+				} catch {
+					// worker が先に止まった・入れ替わった（Electron は「Service worker was not found」で投げる）
+				}
+			},
+		};
 	}
 
 	/** イベントを、受け手を登録した文脈へ届ける。止まっている worker は起こして、登録し直されたら出す。 */
@@ -467,7 +546,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 		const fromWorker = connection === 'worker';
 		const endpoint = `${url.protocol}//${url.host}${url.pathname}`.replace(/\/$/, '');
 		if (endpoint === PARADIS_EXTENSION_API_EVENTS_URL) {
-			return this._openEventStream(contexts, connection, headers);
+			return this._openEventStream(contexts, connection, headers, state.session, extensionId);
 		}
 		if (endpoint !== PARADIS_EXTENSION_API_CALL_URL) {
 			return refuse(404);
@@ -484,13 +563,8 @@ export class ParadisExtensionApiHost implements IDisposable {
 			return refuse(400);
 		}
 		const caller: IParadisExtensionApiCaller = { extension, session: state.session, place: state.place, connection, fromWorker };
-		// 呼び出しが開いている間だけ worker を生かしておく
-		let task: { end(): void } | undefined;
-		try {
-			task = fromWorker && contexts.worker.running && !contexts.worker.running.isDestroyed() ? contexts.worker.running.startTask() : undefined;
-		} catch {
-			task = undefined;
-		}
+		// 呼び出しが開いている間だけ worker を生かしておく（呼び出しの間に worker が入れ替わっても、答えは返す）
+		const task = fromWorker ? this.keepWorkerAlive(state.session, extension.id) : undefined;
 		try {
 			const reply = await this._invoke(caller, contexts, rawRequest);
 			return new Response(paradisEncodeExtensionWire(reply), { headers: { ...headers, 'content-type': 'application/json' } });
@@ -520,7 +594,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 		}
 	}
 
-	private _openEventStream(contexts: IExtensionContexts, connection: string, headers: Record<string, string>): Response {
+	private _openEventStream(contexts: IExtensionContexts, connection: string, headers: Record<string, string>, sessionOfContexts: ParadisApiSession, extensionIdOfContexts: string | undefined): Response {
 		const encoder = new TextEncoder();
 		let opened: IEventStream | undefined;
 		const isWorker = connection === 'worker';
@@ -566,6 +640,10 @@ export class ParadisExtensionApiHost implements IDisposable {
 					}
 				} else if (contexts.pages.get(connection)?.stream === opened) {
 					contexts.pages.delete(connection);
+					// ページが閉じた（そのページが開いたネイティブメッセージングのポートを閉じる）
+					if (extensionIdOfContexts !== undefined) {
+						this._notifyContextClosed(sessionOfContexts, extensionIdOfContexts, connection);
+					}
 				}
 			},
 		});
