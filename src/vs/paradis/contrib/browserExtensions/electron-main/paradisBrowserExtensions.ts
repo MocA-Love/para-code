@@ -17,6 +17,7 @@
 
 import { FileAccess } from '../../../../base/common/network.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisExtensionSessionOwner, paradisAttachBrowserExtensionSession } from './paradisBrowserExtensionsMain.js';
 
 /**
  * ロード試行済みのセッション。`loadExtension` は同一セッションへ同じ拡張を二重ロードすると
@@ -29,7 +30,7 @@ const attemptedSessions = new WeakSet<Electron.Session>();
  * 同梱ブラウザ拡張を内蔵ブラウザ用のElectronセッションへロードする。
  * fire-and-forget（ロード失敗してもブラウザ機能自体は損なわれないため、起動をブロックしない）。
  */
-export function paradisInstallBrowserExtensions(session: Electron.Session): void {
+export function paradisInstallBrowserExtensions(session: Electron.Session, owner?: IParadisExtensionSessionOwner): void {
 	// 拡張はpersistentなセッションにしかロードできない（in-memoryセッションではElectronがエラーを投げる）。
 	// 内蔵ブラウザの Ephemeral スコープ（persist: 接頭辞なしの partition）はここで除外される。
 	if (!session.isPersistent() || attemptedSessions.has(session)) {
@@ -44,4 +45,8 @@ export function paradisInstallBrowserExtensions(session: Electron.Session): void
 		console.error('[paradis] Failed to load the bundled React DevTools extension:', error);
 		reportParadisDiagnosticError('owned', 'browser-extensions', 'react-devtools-load-failed', error, undefined, 'warning');
 	});
+	// 利用者が入れた拡張機能（試験的、設定がオンのときだけ）。どのセッションに入れるかは持ち主の種類で決まる
+	if (owner) {
+		paradisAttachBrowserExtensionSession(session, owner);
+	}
 }

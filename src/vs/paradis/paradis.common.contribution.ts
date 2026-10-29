@@ -45,6 +45,7 @@ import './contrib/terminalShiftEnter/browser/paradisTerminalShiftEnter.contribut
 import './contrib/codexTerminalTitle/browser/paradisCodexTerminalTitleSettings.contribution.js';
 import './contrib/browserDownloads/browser/paradisBrowserDownloadsSettings.contribution.js';
 import './contrib/browserUserAgent/browser/paradisBrowserUserAgentSettings.contribution.js';
+import './contrib/browserExtensions/browser/paradisBrowserExtensionsSettings.contribution.js';
 import './contrib/terminalDiagnostics/browser/paradisTerminalCountDiagnostics.contribution.js';
 import './contrib/settingsMenu/browser/paradisSettingsMenu.contribution.js';
 import './contrib/themeColorEditor/browser/paradisThemeColorEditor.contribution.js';

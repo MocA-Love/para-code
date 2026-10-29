@@ -373,7 +373,7 @@ export class BrowserSession {
 	 * Apply permissions, protocols, and preload scripts to the session.
 	 */
 	private configure(): void {
-		paradisInstallBrowserExtensions(this.electronSession); // PARA-PATCH: bundled React DevTools
+		paradisInstallBrowserExtensions(this.electronSession, this); // PARA-PATCH: bundled React DevTools + user-installed extensions (experimental)
 		paradisApplyChromeLikeUserAgent(this.electronSession, this.configurationService); // PARA-PATCH: strip Electron (and by default ParaCode) tokens from UA
 		paradisConfigureBrowserDownloads(this.electronSession, this.configurationService); // PARA-PATCH: auto-save downloads to a fixed folder, no save dialog
 		this._permissions.configure(this.electronSession);
