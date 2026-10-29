@@ -20,6 +20,7 @@ import {
 	ParadisBrowserExtensionsManager,
 	ParadisExtensionSession,
 	paradisExtensionProfileForSession,
+	paradisCopyExtensionFiles,
 	paradisPlanExtensionCopy,
 	paradisPredictExtensionId,
 } from '../../electron-main/paradisBrowserExtensionsMain.js';
@@ -33,8 +34,13 @@ class FakeSession implements ParadisExtensionSession {
 	readonly events: string[] = [];
 	/** 実物の id の代わりに返す id（食い違ったときの確認用）。 */
 	idOverride: string | undefined;
+	/** 立てると clearStorageData が失敗する。 */
+	failClear = false;
 	readonly clearStorageData: ParadisExtensionSession['clearStorageData'] = async options => {
 		this.events.push(`clear:${options?.origin}`);
+		if (this.failClear) {
+			throw new Error('clear failed');
+		}
 	};
 	readonly extensions: ParadisExtensionSession['extensions'] = {
 		loadExtension: async (path: string) => {
@@ -353,6 +359,100 @@ suite('ParadisBrowserExtensionsMain', () => {
 			{ ok: false, reason: 'invalidManifest', detail: 'manifestVersion' },
 			{ ok: false, reason: 'notFolder' },
 		]);
+		manager.dispose();
+	});
+
+	test('records only the storage paths it could clear, and blocks a reinstall from the start of removal', async () => {
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		const failing = new FakeSession(join(root, 'failing'));
+		failing.failClear = true;
+		await manager.attach(failing, owner(BrowserViewStorageScope.Global));
+		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });
+		const added = await manager.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		assert.ok(added.ok);
+		const id = added.extension.id;
+		// 削除を待たずに入れ直そうとしても断る
+		const removing = manager.remove(id);
+		const during = await manager.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		await removing;
+		manager.dispose();
+
+		// 次の起動: 前に消せなかった保存先は、もう一度消す
+		const restarted = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		const next = new FakeSession(join(root, 'failing'));
+		await restarted.attach(next, owner(BrowserViewStorageScope.Global));
+		assert.deepStrictEqual({ during, nextEvents: next.events }, {
+			during: { ok: false, reason: 'restartNeeded' },
+			nextEvents: [`clear:chrome-extension://${id}`],
+		});
+		restarted.dispose();
+	});
+
+	test('lists the extensions loaded in a view for the share confirmation', async () => {
+		const session = new FakeSession(join(root, 'default'));
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog, viewId => viewId === 'view-1' ? session : undefined);
+		await manager.attach(session, owner(BrowserViewStorageScope.Global));
+		await writeExtension(join(root, 'filler'), { manifest_version: 3, name: 'Filler', version: '1.0', content_scripts: [{ matches: ['<all_urls>'], js: ['content.js'] }] });
+		await writeExtension(join(root, 'theme'), { manifest_version: 3, name: 'Theme', version: '1.0' });
+		const filler = await manager.addUnpacked(join(root, 'filler'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		const theme = await manager.addUnpacked(join(root, 'theme'), `profile:${PROFILE_ID}`);
+		assert.ok(filler.ok && theme.ok);
+		assert.deepStrictEqual({
+			view: await manager.getExtensionsInView('view-1'),
+			unknownView: await manager.getExtensionsInView('view-2'),
+		}, {
+			view: [{ id: filler.extension.id, name: 'Filler', touchesPages: true }],
+			unknownView: [],
+		});
+		manager.dispose();
+	});
+
+	test('refuses hard links and names that would collide on a case-insensitive disk', async () => {
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		const hard = join(root, 'hard');
+		await writeExtension(hard, { manifest_version: 3, name: 'Hard', version: '1.0' });
+		await fs.writeFile(join(root, 'outside.txt'), 'outside');
+		await fs.link(join(root, 'outside.txt'), join(hard, 'linked.txt'));
+		const clash = join(root, 'clash');
+		await writeExtension(clash, { manifest_version: 3, name: 'Clash', version: '1.0' });
+		await fs.writeFile(join(clash, 'Readme.txt'), 'a');
+		await fs.writeFile(join(clash, 'README.txt'), 'b');
+		const unicode = join(root, 'unicode');
+		await writeExtension(unicode, { manifest_version: 3, name: 'Unicode', version: '1.0' });
+		await fs.writeFile(join(unicode, 'caf\u00e9.txt'), 'a');
+		await fs.writeFile(join(unicode, 'cafe\u0301.txt'), 'b');
+		const results = [
+			await manager.addUnpacked(hard, PARADIS_DEFAULT_EXTENSION_PROFILE),
+			await manager.addUnpacked(clash, PARADIS_DEFAULT_EXTENSION_PROFILE),
+			await manager.addUnpacked(unicode, PARADIS_DEFAULT_EXTENSION_PROFILE),
+		].map(result => result.ok ? 'ok' : result.reason);
+		assert.deepStrictEqual(results, ['hardLink', 'nameClash', 'nameClash']);
+		manager.dispose();
+	});
+
+	test('refuses a file swapped between checking and copying', async () => {
+		const folder = join(root, 'swap');
+		await writeExtension(folder, { manifest_version: 3, name: 'Swap', version: '1.0' });
+		const real = await fs.realpath(folder);
+		const plan = await paradisPlanExtensionCopy(real);
+		assert.ok(plan.ok);
+		// 調べた後に、同じ名前の別のファイルへ差し替える
+		await fs.writeFile(join(root, 'other.js'), '// other');
+		await fs.rename(join(root, 'other.js'), join(real, 'content.js'));
+		const target = join(root, 'target');
+		await fs.mkdir(target);
+		assert.deepStrictEqual(await paradisCopyExtensionFiles(plan.items, target), { ok: false, reason: 'changed', detail: 'content.js' });
+	});
+
+	test('cleans up copies left half-done by a crash on the next start', async () => {
+		const leftover = join(root, 'unpacked', '0123456789abcdef.tmp-abc');
+		const kept = join(root, 'unpacked', '0123456789abcdef');
+		await fs.mkdir(leftover, { recursive: true });
+		await fs.mkdir(kept, { recursive: true });
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		await manager.getState();
+		const exists = (path: string) => fs.stat(path).then(() => true, () => false);
+		assert.deepStrictEqual({ leftover: await exists(leftover), kept: await exists(kept) }, { leftover: false, kept: true });
 		manager.dispose();
 	});
 });

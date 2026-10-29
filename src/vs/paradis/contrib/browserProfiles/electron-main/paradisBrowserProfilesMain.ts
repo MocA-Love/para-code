@@ -156,6 +156,9 @@ export function paradisRegisterBrowserProfiles(
 		);
 	}));
 	// 内蔵ブラウザの Chrome 拡張機能（試験的）の channel も同じ登録点で立てる（同上）
-	disposables.add(paradisRegisterBrowserExtensions(channelHost, instantiationService));
+	disposables.add(paradisRegisterBrowserExtensions(channelHost, instantiationService, instantiationService.invokeFunction(accessor => {
+		const browserViewMainService = accessor.get(IBrowserViewMainService);
+		return (viewId: string) => browserViewMainService.tryGetBrowserView(viewId)?.session.electronSession;
+	})));
 	return disposables;
 }

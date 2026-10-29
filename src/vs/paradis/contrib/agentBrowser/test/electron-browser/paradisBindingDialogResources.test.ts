@@ -21,6 +21,7 @@ import { IParadisAgentBrowserTabsService } from '../../electron-browser/paradisA
 import { ParadisBindingDialog } from '../../electron-browser/paradisBindingDialog.js';
 import { ParadisBindingDialogDevicePollLease, ParadisBindingDialogPaneListResources, ParadisBindingDialogTabController } from '../../electron-browser/paradisBindingDialogResources.js';
 import { IParadisPaneBinding } from '../../common/paradisAgentBrowser.js';
+import { IParadisBrowserExtensionsService } from '../../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 
 suite('ParadisBindingDialogDevicePollLease', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -145,6 +146,7 @@ suite('ParadisBindingDialogPaneListResources', () => {
 			}),
 			upcastPartial<IParadisTerminalScopeService>({ getStateKeyForInstance: () => undefined }),
 			upcastPartial<IParadisAgentBrowserTabsService>({ revokeApprovedProfileTab: () => { } }),
+			upcastPartial<IParadisBrowserExtensionsService>({ getShareWarning: async () => undefined }),
 		);
 		const hoverEvents: (number | undefined)[] = [];
 		const hoverListener = onDidChangeParadisHoveredPane(instanceId => hoverEvents.push(instanceId));
@@ -246,6 +248,7 @@ suite('ParadisBindingDialog several pages shared with one pane', () => {
 			upcastPartial<IParadisMobileCanvasModel>({ onDidChange: VSCodeEvent.None, snapshot: { devices: [], attachments: [] }, loading: false, beginPolling: () => toDisposable(() => { }) }),
 			upcastPartial<IParadisTerminalScopeService>({ getStateKeyForInstance: () => undefined }),
 			upcastPartial<IParadisAgentBrowserTabsService>({ revokeApprovedProfileTab: () => { } }),
+			upcastPartial<IParadisBrowserExtensionsService>({ getShareWarning: async () => undefined }),
 		);
 		try {
 			const rows = [...root.querySelectorAll<HTMLElement>('.pbd-pane-row')].map(row => ({

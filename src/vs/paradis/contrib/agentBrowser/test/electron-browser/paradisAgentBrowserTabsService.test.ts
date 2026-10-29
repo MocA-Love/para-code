@@ -31,6 +31,7 @@ import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IPara
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisAgentApprovalRequest, ParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../electron-browser/paradisAgentBrowserTabsService.js';
+import { IParadisBrowserExtensionsService } from '../../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 
 interface IShownPrompt {
 	readonly message: string;
@@ -139,6 +140,7 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		{} as ILifecycleService,
 		{} as IWorkbenchLayoutService,
 		new TestNotificationService(),
+		{ getShareWarning: async () => undefined } as unknown as IParadisBrowserExtensionsService,
 	);
 	return { service, shown, binding, attention, onDidFocusWindow, onDidBlurWindow };
 }
@@ -456,6 +458,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			{} as ILifecycleService,
 			{} as IWorkbenchLayoutService,
 			new TestNotificationService(),
+			{ getShareWarning: async () => undefined } as unknown as IParadisBrowserExtensionsService,
 		));
 		// 共有先が変わったと binding model が知らせる（実物は 100ms まとめてから届く）
 		const bind = (pageId: string | undefined) => {

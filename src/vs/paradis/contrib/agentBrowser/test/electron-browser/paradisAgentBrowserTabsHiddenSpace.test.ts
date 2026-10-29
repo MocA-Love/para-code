@@ -29,6 +29,7 @@ import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IPara
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
 import { ParadisAgentBrowserTabsService } from '../../electron-browser/paradisAgentBrowserTabsService.js';
+import { IParadisBrowserExtensionsService } from '../../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 
 const TOKEN = 'pane-token';
 /** ペインのスペース（ユーザーは別のスペース space-a を見ている）。 */
@@ -175,6 +176,7 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 		{ onWillShutdown: onWillShutdown.event } as unknown as ILifecycleService,
 		{ getContainer: () => undefined } as unknown as IWorkbenchLayoutService,
 		notificationService,
+		{ getShareWarning: async () => undefined } as unknown as IParadisBrowserExtensionsService,
 	));
 
 	/** ユーザーがペインのスペースへ戻る（切り替えの完了を通知し、置く処理が走るのを待つ）。 */
