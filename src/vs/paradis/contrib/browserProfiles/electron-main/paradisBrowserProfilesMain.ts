@@ -24,6 +24,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js';
 import { paradisRegisterBrowserLoginImport } from './paradisBrowserLoginImportMain.js';
+import { paradisRegisterBrowserExtensions } from '../../browserExtensions/electron-main/paradisBrowserExtensionsMain.js';
 import {
 	IParadisBrowserProfilesMainService,
 	IParadisBrowserProfileStats,
@@ -154,5 +155,7 @@ export function paradisRegisterBrowserProfiles(
 			applicationStorageMainService,
 		);
 	}));
+	// 内蔵ブラウザの Chrome 拡張機能（試験的）の channel も同じ登録点で立てる（同上）
+	disposables.add(paradisRegisterBrowserExtensions(channelHost, instantiationService));
 	return disposables;
 }
