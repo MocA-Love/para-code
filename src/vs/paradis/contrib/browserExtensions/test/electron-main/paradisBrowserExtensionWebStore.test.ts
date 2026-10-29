@@ -503,15 +503,51 @@ suite('ParadisBrowserExtensionWebStore updates', () => {
 		try {
 			const listed = await manager.addFromWebStore(ID, PARADIS_DEFAULT_EXTENSION_PROFILE, '既定', { name: 'Store Ext', version: '1.0', manifest: manifestOf('1.0', ['storage']) });
 			const left = await fs.readdir(join(root, 'mgr', 'webstore')).catch(() => []);
+			// 権限が同じでも、名前か版が確認で見せたものと違えば入れない
+			const otherName = await manager.addFromWebStore(ID, PARADIS_DEFAULT_EXTENSION_PROFILE, '既定', { name: 'Not The Same', version: '1.0', manifest: manifestOf('1.0', ['tabs', 'storage']) });
+			const otherVersion = await manager.addFromWebStore(ID, PARADIS_DEFAULT_EXTENSION_PROFILE, '既定', { name: 'Store Ext', version: '1.1', manifest: manifestOf('1.1', ['tabs', 'storage']) });
 			const same = await manager.addFromWebStore(ID, PARADIS_DEFAULT_EXTENSION_PROFILE, '既定', { name: 'Store Ext', version: '1.0', manifest: manifestOf('1.0', ['tabs', 'storage']) });
-			assert.deepStrictEqual({ listed, left, same: same.ok && same.extension.version, order }, {
+			const mismatch = { ok: false, reason: 'webStoreFailed', detail: 'the downloaded extension has a different name or version than the store listed' };
+			assert.deepStrictEqual({ listed, left, otherName, otherVersion, same: same.ok && same.extension.version, order: order.length }, {
 				listed: { ok: false, reason: 'webStoreFailed', detail: 'the downloaded extension asks for different permissions than the store listed' },
 				left: [],
+				otherName: mismatch,
+				otherVersion: mismatch,
 				same: '1.0',
-				order: ['ask (downloads 0, verified false)', 'download', 'ask (downloads 1, verified false)', 'download'],
+				order: 8,
 			});
+			assert.deepStrictEqual(order.slice(0, 2), ['ask (downloads 0, verified false)', 'download']);
 		} finally {
 			manager.dispose();
+		}
+	});
+});
+
+suite('ParadisBrowserExtensionWebStore localized names', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('accepts the store listing name in any of the package\'s languages', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-webstore-names-'));
+		const crx = buildCrx({
+			archive: await zipOf([
+				{ name: 'manifest.json', data: JSON.stringify({ manifest_version: 3, name: '__MSG_appName__', version: '3.0', default_locale: 'en' }) },
+				{ name: '_locales/en/messages.json', data: JSON.stringify({ appName: { message: 'Password Manager' } }) },
+				{ name: '_locales/ja/messages.json', data: JSON.stringify({ appName: { message: 'パスワード保管庫' } }) },
+			]), developer, signers: [developer, publisher],
+		});
+		const manager = new ParadisBrowserExtensionsManager(join(root, 'mgr'), () => true, { warn: () => { } }, undefined, undefined, {
+			askInstall: async () => true,
+			fetcher: async () => ({ status: 200, read: async () => crx, cancel: () => { } }),
+			publisherKeyHash: hashOf(publisher),
+		});
+		try {
+			const listing = (name: string) => ({ name, version: '3.0', manifest: { manifest_version: 3, name: '__MSG_appName__', version: '3.0' } });
+			const made = await manager.addFromWebStore(ID, PARADIS_DEFAULT_EXTENSION_PROFILE, '既定', listing('作り話の名前'));
+			const japanese = await manager.addFromWebStore(ID, PARADIS_DEFAULT_EXTENSION_PROFILE, '既定', listing('パスワード保管庫'));
+			assert.deepStrictEqual({ made: made.ok, japanese: japanese.ok && [japanese.extension.name, japanese.extension.version] }, { made: false, japanese: ['Password Manager', '3.0'] });
+		} finally {
+			manager.dispose();
+			await fs.rm(root, { recursive: true, force: true });
 		}
 	});
 });
