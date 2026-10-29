@@ -258,8 +258,8 @@ export class ParadisNativeMessaging implements IDisposable {
 		private readonly _logService: { warn(message: string, ...args: unknown[]): void },
 		private readonly _spawner: ParadisNativeHostSpawner = (program, args, options) => spawn(program, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true }),
 		private readonly _platform: NodeJS.Platform = process.platform,
-		/** main がストアの署名を確かめて入れた拡張機能か（台帳の source。ほかのブラウザに登録されたホストを使えるのはこれだけ）。 */
-		private readonly _fromWebStore: (extensionId: string) => boolean = () => true,
+		/** main がストアの署名を確かめて入れた拡張機能か（台帳の source。ほかのブラウザに登録されたホストを使えるのはこれだけ。渡し忘れたときは使わせない側に倒す）。 */
+		private readonly _fromWebStore: (extensionId: string) => boolean = () => false,
 	) {
 		// 文脈が終わった（ページが閉じた・worker が止まった・拡張機能を外した）: そのポートのホストを終わらせる
 		this._disposable = _host.onDidCloseContext((session, extensionId, connection) => this._closeWhere(port => port.session === session && port.extensionId === extensionId && (connection === undefined || port.connection === connection)));

@@ -67,6 +67,8 @@ import {
 	paradisSerializeExtensionsLedger,
 } from '../common/paradisBrowserExtensions.js';
 import { paradisParseWebStoreInput, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
+import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import { IParadisInstallPrompt, ParadisWebStoreFetcher, paradisCreateWebStoreFetcher, paradisDownloadWebStoreCrx, paradisExtractCrxArchive } from './paradisBrowserExtensionWebStore.js';
 import { paradisIsPrivateExtensionFile, paradisPrepareExtensionCopy } from './paradisBrowserExtensionCopyRewrite.js';
 import { ParadisApiSession, ParadisExtensionApiHost } from './paradisBrowserExtensionApiHost.js';
@@ -100,6 +102,8 @@ export interface IParadisBrowserExtensionTabsOptions {
 	readonly renameDownload?: IParadisServicesEnvironment['renameDownload'];
 	/** ストアから入れる前の確認のダイアログ（無ければストアからは入れない）。 */
 	readonly askInstall?: (prompt: IParadisInstallPrompt) => Promise<boolean>;
+	/** ストアのページから外す前の確認のダイアログ。 */
+	readonly askRemove?: (extensionName: string) => Promise<boolean>;
 }
 
 /** Chrome ウェブストアから入れるのに要るもの（P7）。 */
@@ -110,7 +114,12 @@ export interface IParadisWebStoreOptions {
 	readonly fetcher?: ParadisWebStoreFetcher;
 	/** テスト用: ストアの発行者の鍵の hash（無ければ本物の Chrome ウェブストアの鍵）。 */
 	readonly publisherKeyHash?: string;
+	/** ストアのページから外す前の確認のダイアログ（無ければストアのページからは外せない）。 */
+	readonly askRemove?: (extensionName: string) => Promise<boolean>;
 }
+
+/** ストアのページの preload（束ねずに書き出される。build/next/standalone.ts）。 */
+const WEB_STORE_PRELOAD = 'vs/paradis/contrib/browserExtensions/electron-browser/paradisWebStorePreload.js';
 import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
 
 /** 拡張機能を読み込むセッションの持ち主（BrowserSession の一部）。 */
@@ -125,7 +134,7 @@ export interface IParadisExtensionSessionOwner {
 }
 
 /** 管理に使う Electron の Session の一部（テストでは偽物を渡す）。 */
-export type ParadisExtensionSession = Pick<Session, 'storagePath' | 'clearStorageData'> & ParadisApiSession & {
+export type ParadisExtensionSession = Pick<Session, 'storagePath' | 'clearStorageData'> & Partial<Pick<Session, 'registerPreloadScript'>> & ParadisApiSession & {
 	readonly extensions: Pick<Session['extensions'], 'loadExtension' | 'removeExtension' | 'getExtension' | 'getAllExtensions'>;
 };
 
@@ -360,6 +369,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _askInstall: ((prompt: IParadisInstallPrompt) => Promise<boolean>) | undefined;
 	private readonly _webStoreFetcher: ParadisWebStoreFetcher | undefined;
 	private readonly _webStorePublisherKeyHash: string | undefined;
+	/** ストアのページの「Para Code に追加」（P7b）。タブの口と確認のダイアログがあるときだけ。 */
+	private readonly _webStoreBridge: ParadisWebStoreBridge | undefined;
 
 	constructor(
 		private readonly _root: string,
@@ -382,6 +393,23 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		// 外と話す口は、設定がオンで確認を出せるときだけ作る（作るだけでは話さない）
 		this._webStoreFetcher = this.active && this._askInstall ? webStoreOptions?.fetcher ?? paradisCreateWebStoreFetcher() : undefined;
 		this._webStorePublisherKeyHash = webStoreOptions?.publisherKeyHash;
+		const environment = tabsOptions?.environment;
+		this._webStoreBridge = this._webStoreFetcher && environment ? new ParadisWebStoreBridge({
+			placeOf: contents => {
+				// 利用者の内蔵ブラウザのタブ（エージェントのタブ・拡張機能の窓ではない）で、SSH 先でないセッションのもの
+				const entry = [...this._sessions].find(candidate => candidate.session === (contents.session as unknown) && !candidate.isRemote());
+				const view = environment.listViews().find(candidate => candidate.webContents === contents);
+				return entry && view && !view.isAgentTab() ? entry.profile : undefined;
+			},
+			listEnabled: place => paradisEnabledExtensions(this._ledger, place).map(({ id, name, version, source }) => ({ id, name, version, source })),
+			install: (id, place, label) => this.addFromWebStore(id, place, label),
+			removeFrom: async (id, place) => {
+				const elsewhere = Object.entries(this._ledger.enabled).some(([other, ids]) => other !== place && ids.includes(id));
+				await (elsewhere ? this.setEnabled(id, place, false) : this.remove(id));
+			},
+			confirmRemove: name => webStoreOptions?.askRemove?.(name) ?? Promise.resolve(false),
+		}) : undefined;
+		this._webStoreBridge?.listen();
 		this._tabs = tabsOptions && this.active ? new ParadisBrowserExtensionTabs(this._apiHost, tabsOptions.environment, _logService, tabsOptions.createPopout) : undefined;
 		const tabs = this._tabs;
 		paradisRegisterRuntimeApis(this._apiHost, tabs ? caller => tabs.openOptionsPage(caller) : undefined);
@@ -459,6 +487,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 
 	dispose(): void {
 		this._disposables.dispose();
+		this._webStoreBridge?.dispose();
 		this._actions?.dispose();
 		this._nativeMessaging?.dispose();
 		this._menus?.dispose();
@@ -581,6 +610,14 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		const remote = owner.storageScope === BrowserViewStorageScope.Workspace ? owner.remote : undefined;
 		const entry: ISessionEntry = { session, profile, isRemote: () => remote?.isRemote === true };
 		this._sessions.add(entry);
+		// ストアのページの preload（ストアの一番外の文書でだけ動く）。橋の受け手は先に立ててある
+		if (this._webStoreBridge) {
+			try {
+				session.registerPreloadScript?.({ type: 'frame', id: 'paradis-web-store', filePath: FileAccess.asFileUri(WEB_STORE_PRELOAD).fsPath });
+			} catch (error) {
+				this._logService.warn('[paradis] could not add the Chrome Web Store preload', error);
+			}
+		}
 		// 詰め物の呼び出しの受け手は、拡張機能を読み込む前に立てる（worker は読み込んですぐ動き出す）
 		this._disposables.add(this._apiHost.attachSession(session, profile));
 		if (this._tabs) {
@@ -1170,7 +1207,7 @@ export function paradisRegisterBrowserExtensions(
 				chooseSavePath: tabs.chooseSavePath,
 				renameDownload: tabs.renameDownload,
 			} : undefined,
-			tabs ? { askInstall: tabs.askInstall } : undefined,
+			tabs ? { askInstall: tabs.askInstall, askRemove: tabs.askRemove } : undefined,
 		);
 	});
 	disposables.add(created);

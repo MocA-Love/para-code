@@ -64,9 +64,9 @@ function hashOf(key: ITestKey): string {
 	return createHash('sha256').update(key.publicKeyDer).digest('hex');
 }
 
-function buildCrx(options: { readonly archive: Buffer; readonly developer: ITestKey; readonly signers: readonly ITestKey[]; readonly tagFor?: (key: ITestKey) => number; readonly extraHeader?: Buffer; readonly signedArchive?: Buffer }): Buffer {
-	const crxId = createHash('sha256').update(options.developer.publicKeyDer).digest().subarray(0, 16);
-	const signedHeaderData = field(1, crxId);
+function buildCrx(options: { readonly archive: Buffer; readonly developer: ITestKey; readonly signers: readonly ITestKey[]; readonly tagFor?: (key: ITestKey) => number; readonly extraHeader?: Buffer; readonly signedArchive?: Buffer; readonly crxIdsBefore?: readonly ITestKey[]; readonly crxIdsAfter?: readonly ITestKey[] }): Buffer {
+	const crxIdOf = (key: ITestKey) => field(1, createHash('sha256').update(key.publicKeyDer).digest().subarray(0, 16));
+	const signedHeaderData = Buffer.concat([...(options.crxIdsBefore ?? []).map(crxIdOf), crxIdOf(options.developer), ...(options.crxIdsAfter ?? []).map(crxIdOf)]);
 	const signedData = Buffer.concat([Buffer.from('CRX3 SignedData\x00', 'latin1'), uint32(signedHeaderData.length), signedHeaderData, options.signedArchive ?? options.archive]);
 	const proofs = options.signers.map(key => field(options.tagFor?.(key) ?? (key.algorithm === 'rsa' ? 2 : 3), Buffer.concat([field(1, key.publicKeyDer), field(2, sign('sha256', signedData, key.privateKey))])));
 	const header = Buffer.concat([...proofs, field(10000, signedHeaderData), ...(options.extraHeader ? [options.extraHeader] : [])]);
@@ -146,6 +146,9 @@ suite('ParadisBrowserExtensionWebStore', () => {
 			zipMarkInHeader: check(buildCrx({ archive, developer, signers: [developer, publisher], extraHeader: field(99, Buffer.from('PK\x05\x06', 'latin1')) })),
 			notCrx: check(Buffer.from('PK\x03\x04 not a crx file')),
 			crx2: check(Buffer.concat([Buffer.from('Cr24', 'latin1'), uint32(2), uint32(0), Buffer.from('x')])),
+			// crx_id が 2 回あれば、protobuf と Chromium と同じく最後の値を使う
+			lastCrxIdWins: check(buildCrx({ archive, developer, signers: [developer, publisher], crxIdsBefore: [other] })),
+			earlierCrxIdIgnored: check(buildCrx({ archive, developer, signers: [developer, publisher], crxIdsAfter: [other] })),
 		}, {
 			id: ID, key: true, archive: true,
 			realStoreKey: 'CRX is not signed by the Chrome Web Store',
@@ -159,6 +162,8 @@ suite('ParadisBrowserExtensionWebStore', () => {
 			zipMarkInHeader: 'Malformed CRX header',
 			notCrx: 'Not a CRX file',
 			crx2: 'Only CRX3 packages are supported',
+			lastCrxIdWins: 'ok',
+			earlierCrxIdIgnored: 'CRX belongs to a different extension',
 		});
 	});
 
