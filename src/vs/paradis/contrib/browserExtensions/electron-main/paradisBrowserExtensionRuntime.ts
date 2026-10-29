@@ -16,7 +16,7 @@
 // 起動して初めての読み込みなら onStartup。
 
 import { promises as fs } from 'fs';
-import { ParadisExtensionApiHost } from './paradisBrowserExtensionApiHost.js';
+import { IParadisExtensionApiCaller, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 
 /** 最後に読み込んだ版。 */
 export interface IParadisLoadedVersions {
@@ -112,7 +112,12 @@ export class ParadisBrowserExtensionRuntimeState {
 	}
 }
 
-/** runtime の名前空間（イベントだけ。関数は Electron の本物を使う）。 */
-export function paradisRegisterRuntimeApis(host: ParadisExtensionApiHost): void {
-	host.registerNamespace('runtime', { methods: {}, events: ['onInstalled', 'onStartup'] });
+/** runtime の名前空間（Electron に無いイベントと openOptionsPage。ほかの関数は Electron の本物を使う）。 */
+export function paradisRegisterRuntimeApis(host: ParadisExtensionApiHost, openOptionsPage?: (caller: IParadisExtensionApiCaller) => Promise<void>): void {
+	host.registerNamespace('runtime', {
+		methods: openOptionsPage ? {
+			openOptionsPage: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, caller => openOptionsPage(caller)),
+		} : {},
+		events: ['onInstalled', 'onStartup'],
+	});
 }

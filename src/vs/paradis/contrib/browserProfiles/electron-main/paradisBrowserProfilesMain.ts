@@ -25,6 +25,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js';
 import { paradisRegisterBrowserLoginImport } from './paradisBrowserLoginImportMain.js';
 import { paradisRegisterBrowserExtensions } from '../../browserExtensions/electron-main/paradisBrowserExtensionsMain.js';
+import { paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionTabEnvironment } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
+import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 import {
 	IParadisBrowserProfilesMainService,
 	IParadisBrowserProfileStats,
@@ -156,9 +158,15 @@ export function paradisRegisterBrowserProfiles(
 		);
 	}));
 	// 内蔵ブラウザの Chrome 拡張機能（試験的）の channel も同じ登録点で立てる（同上）
-	disposables.add(paradisRegisterBrowserExtensions(channelHost, instantiationService, instantiationService.invokeFunction(accessor => {
+	disposables.add(instantiationService.invokeFunction(accessor => {
 		const browserViewMainService = accessor.get(IBrowserViewMainService);
-		return (viewId: string) => browserViewMainService.tryGetBrowserView(viewId)?.session.electronSession;
-	})));
+		const windowsMainService = accessor.get(IWindowsMainService);
+		return paradisRegisterBrowserExtensions(
+			channelHost,
+			instantiationService,
+			viewId => browserViewMainService.tryGetBrowserView(viewId)?.session.electronSession,
+			() => ({ environment: paradisCreateBrowserExtensionTabEnvironment(browserViewMainService, windowsMainService), createPopout: paradisCreateBrowserExtensionPopout }),
+		);
+	}));
 	return disposables;
 }
