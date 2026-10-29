@@ -79,6 +79,9 @@ export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
 	// MV2 の名前 browserAction も同じもの
 	action: { manifestVersion: 3, methods: PARADIS_SHIM_ACTION_METHODS, events: ['onClicked', 'onUserSettingsChanged'] },
 	browserAction: { manifestVersion: 2, methods: PARADIS_SHIM_ACTION_METHODS, events: ['onClicked', 'onUserSettingsChanged'] },
+	// 右クリックの項目とショートカット（P5b）。contextMenus.create は id をその場で返す（下の paradisInstallExtensionApis）
+	contextMenus: { permission: 'contextMenus', methods: ['create', 'update', 'remove', 'removeAll'], events: ['onClicked'], constants: { ACTION_MENU_TOP_LEVEL_LIMIT: 6 } },
+	commands: { methods: ['getAll'], events: ['onCommand'] },
 };
 
 type ApiObject = Record<string, unknown>;
@@ -302,6 +305,63 @@ export function paradisInstallExtensionApis(bridge: IParadisShimBridge, surface:
 			hasListeners: () => registered.size > 0,
 		};
 	};
+	// chrome.contextMenus: create は id をその場で返す（Chrome と同じ。無ければここで決める）。onclick（関数）は main へ
+	// 送れないので、この文脈に覚えておき、onClicked で呼ぶ
+	const menuClicks = new Map<string, Callable>();
+	let nextMenuId = 1 + Math.floor(Math.random() * 1_000_000_000);
+	let listeningMenuClicks = false;
+	const keepOnclick = (id: unknown, onclick: unknown): void => {
+		const key = JSON.stringify(id);
+		if (!isCallable(onclick)) {
+			return;
+		}
+		menuClicks.set(key, onclick);
+		const menusApi = chromeApi.contextMenus;
+		const onClicked = isObject(menusApi) && isObject(menusApi.onClicked) ? menusApi.onClicked : undefined;
+		if (!listeningMenuClicks && onClicked && isCallable(onClicked.addListener)) {
+			listeningMenuClicks = true;
+			onClicked.addListener((info: unknown, tab: unknown) => menuClicks.get(JSON.stringify(isObject(info) ? info.menuItemId : undefined))?.(info, tab));
+		}
+	};
+	const makeMenuMethod = (name: string) => {
+		const base = makeMethod('contextMenus', name) as (...args: unknown[]) => unknown;
+		const run = (args: unknown[]): unknown => {
+			const result = base(...args);
+			// コールバックの無い呼び出しの失敗は、Chrome と同じくコンソールに出すだけ
+			if (result instanceof Promise) {
+				result.catch((error: unknown) => console.error(error));
+			}
+			return result;
+		};
+		if (name === 'create') {
+			return function paradisContextMenusCreate(properties?: unknown, callback?: unknown): unknown {
+				const details: ApiObject = isObject(properties) ? { ...properties } : {};
+				if (details.id === undefined) {
+					details.id = nextMenuId++;
+				}
+				keepOnclick(details.id, details.onclick);
+				delete details.onclick;
+				run(isCallable(callback) ? [details, callback] : [details]);
+				return details.id;
+			};
+		}
+		if (name === 'update') {
+			return function paradisContextMenusUpdate(id?: unknown, properties?: unknown, callback?: unknown): unknown {
+				const details: ApiObject = isObject(properties) ? { ...properties } : {};
+				keepOnclick(id, details.onclick);
+				delete details.onclick;
+				return run(isCallable(callback) ? [id, details, callback] : [id, details]);
+			};
+		}
+		return function paradisContextMenusMethod(...args: unknown[]): unknown {
+			if (name === 'removeAll') {
+				menuClicks.clear();
+			} else if (name === 'remove') {
+				menuClicks.delete(JSON.stringify(args[0]));
+			}
+			return run(args);
+		};
+	};
 	const manifest = readManifest();
 	// 後から許可される権限（optional_permissions）でも足しておく。main は許可されるまで断る
 	const permissions = [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []);
@@ -315,7 +375,7 @@ export function paradisInstallExtensionApis(bridge: IParadisShimBridge, surface:
 		const existing = chromeApi[namespace];
 		const target: ApiObject = isObject(existing) ? existing : {};
 		const members: [string, unknown][] = [
-			...spec.methods.map((name): [string, unknown] => [name, makeMethod(namespace, name)]),
+			...spec.methods.map((name): [string, unknown] => [name, namespace === 'contextMenus' ? makeMenuMethod(name) : makeMethod(namespace, name)]),
 			...spec.events.map((name): [string, unknown] => [name, makeEvent(namespace, name)]),
 			...Object.entries(spec.constants ?? {}).filter(([name]) => target[name] === undefined),
 		];

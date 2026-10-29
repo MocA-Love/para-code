@@ -2508,7 +2508,15 @@ class AreaPicker {
 export function paradisIsEmbeddedExtensionFrame(origin: string, isTopFrame: boolean): boolean {
 	return !isTopFrame && origin.startsWith('chrome-extension://');
 }
+// PARA-PATCH: nor in the windows a browser extension opens itself (its toolbar popup, a windows.create popup): they share the
+// extension's session, so the session preload runs there too, but they are not browser views. They are created with
+// this command-line switch (PARADIS_BROWSER_EXTENSION_WINDOW_SWITCH in ../common/paradisBrowserExtensionWindow.ts; this
+// preload is not bundled, so the value is repeated here and a test keeps the two equal).
+export function paradisIsBrowserExtensionWindowArgv(argv: readonly string[] | undefined): boolean {
+	return Array.isArray(argv) && argv.includes('--paradis-browser-extension-window');
+}
 if (typeof process !== 'undefined' && (process.versions?.electron || process.type === 'renderer')
-	&& !paradisIsEmbeddedExtensionFrame(typeof location !== 'undefined' ? location.origin : '', typeof window === 'undefined' || window.top === window)) {
+	&& !paradisIsEmbeddedExtensionFrame(typeof location !== 'undefined' ? location.origin : '', typeof window === 'undefined' || window.top === window)
+	&& !paradisIsBrowserExtensionWindowArgv(process.argv)) {
 	init();
 }

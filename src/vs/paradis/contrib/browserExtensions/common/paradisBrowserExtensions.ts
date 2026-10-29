@@ -387,6 +387,41 @@ export interface IParadisBrowserExtensionsMainService {
 	openOptions(viewId: string, extensionId: string): Promise<IParadisActionResult>;
 	/** action.openPopup: ボタンの位置は workbench しか知らないので、そのタブのボタンから activateAction を呼んでもらう。 */
 	readonly onDidRequestPopup: Event<IParadisPopupRequest>;
+	/** ツールバーのボタンの右クリックに出す、その拡張機能の `action` の項目（chrome.contextMenus）。無ければ undefined。 */
+	getActionMenu(viewId: string, extensionId: string): Promise<IParadisActionMenu | undefined>;
+	/** その項目を押した（`token` は getActionMenu の答えのもの。1 回きり）。 */
+	runActionMenuItem(token: string, extensionId: string, key: string): Promise<boolean>;
+	/** 拡張機能のショートカット（workbench がページから届いたキーと比べる）。 */
+	getCommands(): Promise<readonly IParadisBrowserExtensionCommand[]>;
+	/** 利用者がそのタブでショートカットを押した（_execute_action 以外）。 */
+	runCommand(viewId: string, extensionId: string, name: string): Promise<IParadisActionResult>;
+}
+
+/** ツールバーのボタンの右クリックの、拡張機能の項目。 */
+export interface IParadisActionMenu {
+	readonly token: string;
+	readonly items: readonly IParadisActionMenuItem[];
+}
+
+/** 右クリックの項目 1 つ（common/paradisBrowserExtensionMenus.ts の IParadisVisibleMenuItem と同じ形）。 */
+export interface IParadisActionMenuItem {
+	readonly key: string;
+	readonly title: string;
+	readonly type: 'normal' | 'checkbox' | 'radio' | 'separator';
+	readonly checked: boolean;
+	readonly enabled: boolean;
+	readonly children: readonly IParadisActionMenuItem[];
+}
+
+/** 拡張機能のショートカット 1 つ。 */
+export interface IParadisBrowserExtensionCommand {
+	readonly extensionId: string;
+	readonly extensionName: string;
+	readonly name: string;
+	readonly description: string;
+	/** 見せ方（macOS は「⇧⌘Y」）。 */
+	readonly shortcut: string;
+	readonly binding: { readonly key: string; readonly control: boolean; readonly meta: boolean; readonly alt: boolean; readonly shift: boolean };
 }
 
 /** ボタンの位置（ボタンのあるウィンドウの中、CSS のピクセル）。 */

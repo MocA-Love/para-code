@@ -27,10 +27,11 @@ import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js
 import { BaseActionViewItem, IActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
-import { Action, IAction, Separator } from '../../../../base/common/actions.js';
+import { Action, IAction, Separator, SubmenuAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -49,6 +50,10 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { ResultKind } from '../../../../platform/keybinding/common/keybindingResolver.js';
+import type { IBrowserViewKeyDownEvent } from '../../../../platform/browserView/common/browserView.js';
+import { PARADIS_EXECUTE_ACTION_COMMANDS } from '../common/paradisBrowserExtensionMenus.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -56,6 +61,9 @@ import {
 	IParadisBrowserExtensionToolbar,
 	IParadisToolbarAction,
 	IParadisToolbarAnchor,
+	IParadisActionMenu,
+	IParadisActionMenuItem,
+	IParadisBrowserExtensionCommand,
 	PARADIS_BROWSER_EXTENSIONS_CHANNEL,
 	PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING,
 } from '../common/paradisBrowserExtensions.js';
@@ -93,6 +101,8 @@ export interface IParadisBrowserExtensionToolbarService {
 	readonly main: IParadisBrowserExtensionsMainService;
 	/** main のツールバーが変わった（IPC の購読はこの 1 つにまとめる）。 */
 	readonly onDidChangeToolbar: Event<void>;
+	/** 拡張機能のショートカット（割り当てのあるもの）。 */
+	readonly commands: readonly IParadisBrowserExtensionCommand[];
 	/** 拡張機能ごとのボタンのアクションを用意する（まだなら登録する）。 */
 	ensureButtons(actions: readonly IParadisToolbarAction[]): void;
 }
@@ -116,7 +126,27 @@ export class ParadisBrowserExtensionToolbarService extends Disposable implements
 		this.active = configurationService.getValue<boolean>(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING) === true;
 		this.main = ProxyChannel.toService<IParadisBrowserExtensionsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL));
 		if (this.active) {
-			this._register(this.main.onDidChangeToolbar(() => this._onDidChangeToolbar.fire()));
+			this._register(this.main.onDidChangeToolbar(() => {
+				this._onDidChangeToolbar.fire();
+				this._shortcutsScheduler.schedule();
+			}));
+			this._shortcutsScheduler.schedule(0);
+		}
+	}
+
+	private _commands: readonly IParadisBrowserExtensionCommand[] = [];
+	private readonly _shortcutsScheduler = this._register(new RunOnceScheduler(() => void this._refreshShortcuts(), 200));
+
+	get commands(): readonly IParadisBrowserExtensionCommand[] {
+		return this._commands;
+	}
+
+	/** 拡張機能のショートカット（manifest の commands）を main から取り直す。 */
+	private async _refreshShortcuts(): Promise<void> {
+		try {
+			this._commands = await this.main.getCommands();
+		} catch {
+			// main が落ちている: 前のまま
 		}
 	}
 
@@ -214,6 +244,26 @@ function runExtensionButton(accessor: ServicesAccessor, editorArg: unknown, exte
 	return editor ? activateExtension(accessor, editor, extensionId, undefined, false) : undefined;
 }
 
+/** Chrome の書き方のキー → KeyboardEvent.key（文字と数字は KeyboardEvent.code で比べる）。 */
+const SHORTCUT_EVENT_KEYS: Readonly<Record<string, string>> = {
+	Comma: ',', Period: '.', Space: ' ', Up: 'ArrowUp', Down: 'ArrowDown', Left: 'ArrowLeft', Right: 'ArrowRight',
+	MediaNextTrack: 'MediaTrackNext', MediaPrevTrack: 'MediaTrackPrevious', MediaPlayPause: 'MediaPlayPause', MediaStop: 'MediaStop',
+};
+
+/**
+ * 内蔵ブラウザのページから届いたキーが、拡張機能のショートカットか。文字と数字は押した位置（code）で比べる
+ * （Option・Shift で key が変わっても、押したキーは変わらない）。
+ */
+export function paradisShortcutMatchesKey(binding: IParadisBrowserExtensionCommand['binding'], event: Pick<IBrowserViewKeyDownEvent, 'key' | 'code' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>): boolean {
+	if (binding.control !== event.ctrlKey || binding.meta !== event.metaKey || binding.alt !== event.altKey || binding.shift !== event.shiftKey) {
+		return false;
+	}
+	if (/^[A-Z0-9]$/.test(binding.key)) {
+		return event.code === (/\d/.test(binding.key) ? `Digit${binding.key}` : `Key${binding.key}`);
+	}
+	return event.key === (SHORTCUT_EVENT_KEYS[binding.key] ?? binding.key);
+}
+
 /** 絵の無い拡張機能に出す、名前の頭文字。 */
 export function paradisExtensionInitial(name: string): string {
 	return ([...name.trim()][0] ?? '?').toLocaleUpperCase();
@@ -247,6 +297,9 @@ export class ParadisBrowserExtensionToolbarFeature extends BrowserEditorContribu
 		editor: BrowserEditor,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IParadisBrowserExtensionToolbarService private readonly _toolbarService: IParadisBrowserExtensionToolbarService,
+		@IKeybindingService private readonly _keybindingService: IKeybindingService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@ILogService private readonly _logService: ILogService,
 	) {
 		super(editor);
 		this._available = CONTEXT_PARADIS_EXTENSIONS_AVAILABLE.bindTo(contextKeyService);
@@ -269,6 +322,7 @@ export class ParadisBrowserExtensionToolbarFeature extends BrowserEditorContribu
 		}
 		// 別の文書へ移ってタブごとのボタンの値（バッジなど）が消えたときも、main が知らせる
 		store.add(this._toolbarService.onDidChangeToolbar(() => this._refresh(model)));
+		store.add(model.onDidKeyCommand(event => this._onPageKey(model, event)));
 		this._refresh(model);
 	}
 
@@ -283,6 +337,37 @@ export class ParadisBrowserExtensionToolbarFeature extends BrowserEditorContribu
 		if (model) {
 			this._refresh(model);
 		}
+	}
+
+	/**
+	 * ページから workbench へ届いたキー（ページが使わなかった、修飾キー付きのもの）が拡張機能のショートカットなら走らせる。
+	 * Para Code のショートカットが同じキーなら Para Code に任せる（workbench がそちらを走らせる）。エージェントが打った
+	 * キーは、preload と main が workbench へ送る前に止める（自動入力の印、既存の PARA-PATCH）ので、ここへは来ない。
+	 */
+	private _onPageKey(model: IBrowserViewModel, event: IBrowserViewKeyDownEvent): void {
+		if (event.repeat) {
+			return;
+		}
+		const loaded = new Set(this._toolbar?.actions.map(action => action.extensionId) ?? []);
+		const command = this._toolbarService.commands.find(candidate => loaded.has(candidate.extensionId) && paradisShortcutMatchesKey(candidate.binding, event));
+		const container = this.editor.getContainer();
+		if (!command || !container) {
+			return;
+		}
+		const keyboardEvent = new StandardKeyboardEvent(new KeyboardEvent('keydown', event));
+		if (this._keybindingService.softDispatch(keyboardEvent, container).kind !== ResultKind.NoMatchingKb) {
+			return;
+		}
+		if (PARADIS_EXECUTE_ACTION_COMMANDS.has(command.name)) {
+			// ボタンを押すのと同じ（ポップアップはボタンの下に出す）
+			void this._instantiationService.invokeFunction(activateExtension, this.editor, command.extensionId, undefined, false);
+			return;
+		}
+		void this._toolbarService.main.runCommand(model.id, command.extensionId, command.name).then(result => {
+			if (!result.ok) {
+				this._logService.warn('[paradis] a browser extension shortcut did not run', result.error);
+			}
+		});
 	}
 
 	private _refresh(model: IBrowserViewModel): void {
@@ -353,10 +438,42 @@ function extensionMenuActions(accessor: ServicesAccessor, editor: BrowserEditor,
 	return actions;
 }
 
-function showExtensionMenu(accessor: ServicesAccessor, editor: BrowserEditor, action: IParadisToolbarAction, place: string, anchor: HTMLElement): void {
+/** 拡張機能が chrome.contextMenus で `action` に足した項目（ボタンの右クリックの先頭に出す）。 */
+function extensionActionMenuItems(toolbarService: IParadisBrowserExtensionToolbarService, extensionId: string, menu: IParadisActionMenu, items: readonly IParadisActionMenuItem[], logService: ILogService): IAction[] {
+	return items.map((item, index): IAction => {
+		if (item.type === 'separator') {
+			return new Separator();
+		}
+		if (item.children.length > 0) {
+			return new SubmenuAction(`paradis.browserExtensions.extensionMenu.${index}`, item.title, extensionActionMenuItems(toolbarService, extensionId, menu, item.children, logService));
+		}
+		const run = new Action(`paradis.browserExtensions.extensionMenu.${item.key}`, item.title, undefined, item.enabled, async () => {
+			if (!await toolbarService.main.runActionMenuItem(menu.token, extensionId, item.key)) {
+				logService.warn('[paradis] a browser extension menu item did not run');
+			}
+		});
+		run.checked = item.type === 'checkbox' || item.type === 'radio' ? item.checked : undefined;
+		return run;
+	});
+}
+
+async function showExtensionMenu(accessor: ServicesAccessor, editor: BrowserEditor, action: IParadisToolbarAction, place: string, anchor: HTMLElement): Promise<void> {
 	const contextMenuService = accessor.get(IContextMenuService);
+	const toolbarService = accessor.get(IParadisBrowserExtensionToolbarService);
+	const logService = accessor.get(ILogService);
 	const actions = extensionMenuActions(accessor, editor, action, place, () => isShown(anchor) ? anchor : undefined);
-	contextMenuService.showContextMenu({ getAnchor: () => anchor, getActions: () => actions });
+	const model = editor.model;
+	let menu: IParadisActionMenu | undefined;
+	try {
+		menu = model ? await toolbarService.main.getActionMenu(model.id, action.extensionId) : undefined;
+	} catch {
+		menu = undefined;
+	}
+	const extensionItems = menu ? extensionActionMenuItems(toolbarService, action.extensionId, menu, menu.items, logService) : [];
+	if (!anchor.isConnected) {
+		return;
+	}
+	contextMenuService.showContextMenu({ getAnchor: () => anchor, getActions: () => extensionItems.length > 0 ? [...extensionItems, new Separator(), ...actions] : actions });
 }
 
 /** ピン留めした拡張機能のボタン（絵とバッジ）。 */
@@ -405,7 +522,7 @@ class ParadisBrowserExtensionButtonViewItem extends BaseActionViewItem {
 			const action = featureOf(editor)?.action(this._extensionId);
 			const place = featureOf(editor)?.toolbar?.place;
 			if (editor && action && place !== undefined && this.element) {
-				this._instantiationService.invokeFunction(showExtensionMenu, editor, action, place, this.element);
+				void this._instantiationService.invokeFunction(showExtensionMenu, editor, action, place, this.element);
 			}
 		}));
 		this._watch();
@@ -652,7 +769,7 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 			store.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), more, moreLabel));
 			store.add(dom.addDisposableListener(more, dom.EventType.CLICK, () => {
 				if (toolbar) {
-					this._instantiationService.invokeFunction(showExtensionMenu, this._editor, action, toolbar.place, more);
+					void this._instantiationService.invokeFunction(showExtensionMenu, this._editor, action, toolbar.place, more);
 				}
 			}));
 			this._focusable.push(...[open, pin, more].filter(button => !button.disabled));
