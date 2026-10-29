@@ -5,7 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
-// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/main/browser/extensions/browser-extension-background-wrapper.ts, src/main/browser/extensions/browser-extension-web-accessible-resources.ts
+// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/main/browser/extensions/browser-extension-background-wrapper.ts, src/main/browser/extensions/browser-extension-web-accessible-resources.ts, src/main/browser/extensions/browser-extension-content-script-manifest.ts
 
 // 拡張機能の写しを、Para Code の詰め物が動く形に書き換える（起動ごと、最初に読み込む前に 1 回）。
 //
