@@ -21,14 +21,15 @@
 //   echo "import '$PWD/out/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatProbe.js';" > /tmp/compat-app/main.mjs
 //   HOME=/tmp/compat-home PARADIS_COMPAT_RUN=1 PARADIS_COMPAT_RESULT=/tmp/compat.json \
 //     xvfb-run -a -s "-screen 0 1400x1000x24" .build/electron/<Electron の実行ファイル> --no-sandbox /tmp/compat-app
-//   node --experimental-strip-types src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatReport.ts /tmp/compat.json src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.html
+//   node --experimental-strip-types src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatReport.ts src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.json src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.html
 // HOME は一時のフォルダに替えて動かす（userData は PARADIS_COMPAT_ROOT の下に作る）。PARADIS_COMPAT_IDS=<id>,<id> で一部だけ試せる。
 // PARADIS_COMPAT_RUN=1 のときだけ動く（ほかから読まれても何もしない）。
+// 今の表の元の結果は browser-extensions-compat.json。一部だけ測り直したら、その行を入れ替えてから表を作り直す。
 
 import { app, BrowserWindow, protocol, session, type WebContents } from 'electron';
 import { promises as fs } from 'fs';
 import type { AddressInfo } from 'net';
-import { tmpdir } from 'os';
+import { tmpdir, userInfo } from 'os';
 import { fileURLToPath } from 'url';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { join } from '../../../../../../base/common/path.js';
@@ -36,6 +37,44 @@ import { BrowserViewStorageScope } from '../../../../../../platform/browserView/
 import { IParadisAddExtensionResult } from '../../../common/paradisBrowserExtensions.js';
 import { IParadisBrowserExtensionTabsOptions, ParadisBrowserExtensionsManager, ParadisExtensionSession } from '../../../electron-main/paradisBrowserExtensionsMain.js';
 import { paradisListenForBrowserExtensionWindowQueries } from '../../../electron-main/paradisBrowserExtensionWindows.js';
+
+/**
+ * 結果に手元の絶対パス（ユーザー名を含む）を残さない。リポジトリの直下は `<repo>`、確認用のフォルダは `<compat-root>`、
+ * それ以外のホームの下は `~` にする（結果はリポジトリに入れるため）。
+ */
+function redactLocalPaths(text: string, root: string): string {
+	const repo = fileURLToPath(new URL('../../../../../../../../', import.meta.url)).replace(/[\\/]+$/, '');
+	let home: string | undefined;
+	try {
+		home = userInfo().homedir;
+	} catch {
+		home = undefined;
+	}
+	const literal = (value: string) => new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+	let redacted = text.replace(literal(repo), '<repo>').replace(literal(root), '<compat-root>');
+	if (home && home.length > 1) {
+		redacted = redacted.replace(literal(home), '~');
+	}
+	return redacted.replace(/\/(?:home|Users)\/[^/\s'"]+/g, '~').replace(/[A-Za-z]:\\+Users\\+[^\\\s'"]+/g, '~');
+}
+
+/**
+ * 開発用の out だけで出る、拡張機能と関係の無い console のエラーを外す。ストアのページの preload は、場所のセッションの全部の
+ * 枠に登録される。out では ESM なので読めず「Unable to load preload script」と続く SyntaxError が出る（配布版は CJS で読める）。
+ */
+function withoutDevPreloadNoise(errors: readonly string[]): string[] {
+	const kept: string[] = [];
+	for (let index = 0; index < errors.length; index++) {
+		if (errors[index].startsWith('Unable to load preload script:') && errors[index].includes('paradisWebStorePreload')) {
+			if (errors[index + 1]?.startsWith('SyntaxError: Unexpected token \'export\'')) {
+				index++;
+			}
+			continue;
+		}
+		kept.push(errors[index]);
+	}
+	return kept;
+}
 
 /** 1 つの拡張機能の結果（paradisCompatReport.ts が読む）。 */
 export interface IParadisCompatResult {
@@ -135,7 +174,7 @@ const PERMISSION_NAMESPACES: Record<string, string | undefined> = {
 };
 
 /** Para Code が詰め物（paradisBrowserExtensionShim.ts）で足す名前空間（manifest.json の文書では数えない）。 */
-const SHIM_NAMESPACES = new Set(['storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative']);
+const SHIM_NAMESPACES = new Set(['storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative', 'tts', 'browsingData']);
 
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Para Code extension compatibility page</title></head><body>
 <h1>Sign in</h1><form action="/signin" method="post"><label>Email <input type="email" name="email" autocomplete="username"></label>
@@ -297,10 +336,10 @@ async function run(resultPath: string, root: string): Promise<void> {
 			result[kind] = failed ? `failed (${failed})` : crashed ? 'crashed' : view ? (view.elements > 0 ? 'rendered' : 'empty') : 'unreadable';
 			if (kind === 'popup') {
 				result.popupElements = view?.elements;
-				result.popupErrors = errors.slice(0, 5);
+				result.popupErrors = withoutDevPreloadNoise(errors).slice(0, 5);
 			} else {
 				result.optionsElements = view?.elements;
-				result.optionsErrors = errors.slice(0, 5);
+				result.optionsErrors = withoutDevPreloadNoise(errors).slice(0, 5);
 			}
 			if (view && !result.missingApis) {
 				result.missingApis = view.missing;
@@ -325,10 +364,10 @@ async function run(resultPath: string, root: string): Promise<void> {
 			}
 		}
 		views.splice(1);
-		await fs.writeFile(resultPath, JSON.stringify({ electron: process.versions.electron, chrome: process.versions.chrome, checkedAt: new Date().toISOString(), results }, undefined, '\t'));
+		await fs.writeFile(resultPath, redactLocalPaths(JSON.stringify({ electron: process.versions.electron, chrome: process.versions.chrome, checkedAt: new Date().toISOString(), results }, undefined, '\t'), root));
 		console.log(`[compat] ${label}: install=${result.install} worker=${result.worker} content=${result.contentScript} popup=${result.popup} missing=${(result.missingApis ?? []).join(',')}`);
 	}
-	await fs.writeFile(resultPath, JSON.stringify({ electron: process.versions.electron, chrome: process.versions.chrome, checkedAt: new Date().toISOString(), results }, undefined, '\t'));
+	await fs.writeFile(resultPath, redactLocalPaths(JSON.stringify({ electron: process.versions.electron, chrome: process.versions.chrome, checkedAt: new Date().toISOString(), results }, undefined, '\t'), root));
 	manager.dispose();
 	server.close();
 	app.quit();
