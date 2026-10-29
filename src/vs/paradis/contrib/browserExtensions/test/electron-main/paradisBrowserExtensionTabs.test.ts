@@ -17,15 +17,17 @@ import { IParadisApiExtension, ParadisApiSession, ParadisExtensionApiHost } from
 import { paradisRegisterRuntimeApis } from '../../electron-main/paradisBrowserExtensionRuntime.js';
 import { paradisRegisterStorageApis, ParadisBrowserExtensionSyncStore } from '../../electron-main/paradisBrowserExtensionStorageApis.js';
 import { IParadisTabEnvironment, IParadisTabView, ParadisBrowserExtensionTabs, paradisCanSeeTabUrl, paradisMatchesUrlPattern } from '../../electron-main/paradisBrowserExtensionTabs.js';
+import { IParadisActionsEnvironment, ParadisBrowserExtensionActions } from '../../electron-main/paradisBrowserExtensionActions.js';
 
 const ID = 'abcdefghijklmnopabcdefghijklmnop';
 const silentLog = { warn: () => { } };
 
 let nextContentsId = 100;
 
-/** タブの中身の偽物。 */
-function fakeContents(session: object, url: string, title: string): WebContents {
+/** タブの中身の偽物（`emit` でイベントを出せる）。 */
+function fakeContents(session: object, url: string, title: string): WebContents & { emit(event: string, ...args: unknown[]): void } {
 	const id = nextContentsId++;
+	const listeners = new Map<string, ((...args: unknown[]) => void)[]>();
 	return {
 		id, session,
 		getURL: () => url,
@@ -34,11 +36,12 @@ function fakeContents(session: object, url: string, title: string): WebContents 
 		isCurrentlyAudible: () => false,
 		isAudioMuted: () => false,
 		isDestroyed: () => false,
-		on: () => undefined,
-		off: () => undefined,
+		on: (event: string, listener: (...args: unknown[]) => void) => { listeners.set(event, [...(listeners.get(event) ?? []), listener]); },
+		off: (event: string, listener: (...args: unknown[]) => void) => { listeners.set(event, (listeners.get(event) ?? []).filter(candidate => candidate !== listener)); },
+		emit: (event: string, ...args: unknown[]) => (listeners.get(event) ?? []).forEach(listener => listener(...args)),
 		mainFrame: { framesInSubtree: [] },
 		loadURL: async () => { },
-	} as unknown as WebContents;
+	} as unknown as WebContents & { emit(event: string, ...args: unknown[]): void };
 }
 
 interface IFakeView extends IParadisTabView {
@@ -141,7 +144,7 @@ function setup(extensionManifest: Record<string, unknown>) {
 		focus.dispose();
 		views.forEach(view => { view.close.dispose(); view.visibility.dispose(); });
 	};
-	return { electronSession, otherSession, views, created, activated, call, openEvents, listen, dispose, host, addTabs, focus };
+	return { electronSession, otherSession, views, created, activated, call, openEvents, listen, dispose, host, addTabs, focus, tabs, apiSession, extension };
 }
 
 suite('ParadisBrowserExtensionTabs', () => {
@@ -287,6 +290,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 		const tabs = new ParadisBrowserExtensionTabs(host, environment, silentLog, () => { throw new Error(); });
 		paradisRegisterRuntimeApis(host, async () => { });
 		paradisRegisterStorageApis(host, new ParadisBrowserExtensionSyncStore('/tmp/unused', silentLog));
+		const actions = new ParadisBrowserExtensionActions(host, tabs, unusedActionsEnvironment, silentLog);
 		try {
 			const registered = (host as unknown as { _namespaces: Map<string, { methods: Record<string, unknown>; events: readonly string[]; permission?: unknown }> })._namespaces;
 			for (const [name, surface] of Object.entries(PARADIS_SHIM_SURFACE)) {
@@ -295,8 +299,146 @@ suite('ParadisBrowserExtensionTabs', () => {
 				assert.deepStrictEqual({ methods: [...surface.methods].sort(), events: [...surface.events].sort(), permission: surface.permission }, { methods: Object.keys(namespace.methods).sort(), events: [...namespace.events].sort(), permission: namespace.permission }, name);
 			}
 		} finally {
+			actions.dispose();
 			tabs.dispose();
 			host.dispose();
 		}
 	});
+});
+
+const unusedActionsEnvironment: IParadisActionsEnvironment = {
+	findView: () => undefined,
+	sessionOf: () => undefined,
+	pinnedIn: () => [],
+	setPinned: async () => { },
+	nameOf: extension => extension.name,
+	windowById: () => undefined,
+	createPopupWindow: () => { throw new Error('no popups in this test'); },
+	workAreaFor: rect => rect,
+};
+
+suite('ParadisBrowserExtensionActions', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	function setupActions(manifest: Record<string, unknown>) {
+		const tabsSetup = setup(manifest);
+		const pinned: string[] = [];
+		const environment: IParadisActionsEnvironment = {
+			...unusedActionsEnvironment,
+			findView: viewId => tabsSetup.views.find(view => view.id === viewId),
+			sessionOf: contents => contents.session === tabsSetup.electronSession
+				? { session: tabsSetup.apiSession, place: 'default', extensions: [{ ...tabsSetup.extension, name: 'Sample', path: '/nonexistent' }] }
+				: undefined,
+			pinnedIn: () => pinned,
+			setPinned: async (_place, id, pin) => {
+				pinned.splice(0, pinned.length, ...(pin ? [...pinned.filter(existing => existing !== id), id] : pinned.filter(existing => existing !== id)));
+			},
+			windowById: windowId => windowId === 1 ? fakeWindow(1) : undefined,
+		};
+		const actions = new ParadisBrowserExtensionActions(tabsSetup.host, tabsSetup.tabs, environment, silentLog);
+		return { ...tabsSetup, actions, pinned, dispose: () => { actions.dispose(); tabsSetup.dispose(); } };
+	}
+
+	const anchor = { windowId: 1, x: 10, y: 10, width: 22, height: 22 };
+
+	test('keeps a tab\'s badge over the global one until the tab navigates', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, actions, dispose } = setupActions({ manifest_version: 3, name: 'Sample', action: { default_title: 'Hello' } });
+		try {
+			const contents = fakeContents(electronSession, 'https://example.com/', 'Example');
+			const view = fakeView('user', contents, 1);
+			await addTabs(view);
+			await call('action', 'setBadgeText', [{ text: 'all' }]);
+			await call('action', 'setBadgeText', [{ text: '7', tabId: contents.id }]);
+			const before = (await actions.getToolbar('user'))?.actions[0].badgeText;
+			const tabValue = await call('action', 'getBadgeText', [{ tabId: contents.id }]);
+			contents.emit('did-navigate', {}, 'https://example.com/next');
+			const afterNavigate = (await actions.getToolbar('user'))?.actions[0];
+			await call('action', 'setBadgeText', [{ text: null, tabId: contents.id }]);
+			assert.deepStrictEqual({
+				before, tabValue, afterNavigate: [afterNavigate?.badgeText, afterNavigate?.title],
+				badTab: await call('action', 'setBadgeText', [{ text: 'x', tabId: 9999 }]),
+				badColor: await call('action', 'setBadgeBackgroundColor', [{ color: 'nope' }]),
+			}, {
+				before: '7',
+				tabValue: { ok: true, value: '7' },
+				afterNavigate: ['all', 'Hello'],
+				badTab: { ok: false, error: 'No tab with id: 9999.' },
+				badColor: { ok: false, error: 'The color specification could not be parsed.' },
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('a click without a popup fires onClicked with the tab, and activeTab shows its URL', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, actions, openEvents, listen, dispose } = setupActions({ manifest_version: 3, name: 'Sample', permissions: ['activeTab'], action: {} });
+		try {
+			const contents = fakeContents(electronSession, 'https://example.com/', 'Example');
+			await addTabs(fakeView('user', contents, 1));
+			const hiddenBefore = (await call('tabs', 'get', [contents.id]) as { value: { url?: string } }).value.url;
+			const stream = await openEvents();
+			await listen('action', 'onClicked');
+			const result = await actions.activateAction('user', ID, anchor, false);
+			const reader = stream.body!.getReader();
+			const { value } = await reader.read();
+			await reader.cancel();
+			const event = paradisDecodeExtensionWire(new TextDecoder().decode(value).trim().split('\n')[0]) as { event: string; args: [{ id: number; url?: string }] };
+			contents.emit('did-navigate', {}, 'https://other.example/');
+			assert.deepStrictEqual({
+				hiddenBefore, result, event: [event.event, event.args[0].id, event.args[0].url],
+				shownAfterClick: (await call('tabs', 'get', [contents.id]) as { value: { url?: string } }).value.url,
+				wrongWindow: await actions.activateAction('user', ID, { ...anchor, windowId: 5 }, false),
+				popupOnly: await actions.activateAction('user', ID, anchor, true),
+			}, {
+				hiddenBefore: undefined,
+				result: { ok: true },
+				event: ['onClicked', contents.id, 'https://example.com/'],
+				// 別の文書へ移ると activeTab は切れる
+				shownAfterClick: undefined,
+				wrongWindow: { ok: false, error: 'Para Code has no window to show the popup in' },
+				popupOnly: { ok: false, error: 'This extension has no popup' },
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('openPopup asks the workbench for the active tab\'s button and gives up after a while', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, actions, dispose } = setupActions({ manifest_version: 3, name: 'Sample', action: { default_popup: 'popup.html' } });
+		try {
+			const view = fakeView('user', fakeContents(electronSession, 'https://example.com/', 'Example'), 1);
+			view.visible = true;
+			await addTabs(view);
+			const requests: { viewId: string; extensionId: string }[] = [];
+			const listener = actions.onDidRequestPopup(request => requests.push({ viewId: request.viewId, extensionId: request.extensionId }));
+			const reply = await call('action', 'openPopup', []);
+			listener.dispose();
+			assert.deepStrictEqual({ requests, reply, popup: await call('action', 'getPopup', [{}]) }, {
+				requests: [{ viewId: 'user', extensionId: ID }],
+				reply: { ok: false, error: 'Could not show the popup' },
+				popup: { ok: true, value: `chrome-extension://${ID}/popup.html` },
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('pins per place and tells the extension', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, actions, pinned, dispose } = setupActions({ manifest_version: 3, name: 'Sample', action: {} });
+		try {
+			await addTabs(fakeView('user', fakeContents(electronSession, 'https://example.com/', 'Example'), 1));
+			const before = await call('action', 'getUserSettings', []);
+			await actions.setPinned('user', ID, true);
+			const toolbar = await actions.getToolbar('user');
+			assert.deepStrictEqual({ before, pinned: [...pinned], toolbarPinned: toolbar?.actions[0].pinned, after: await call('action', 'getUserSettings', []), agentlessMissing: await actions.getToolbar('missing') }, {
+				before: { ok: true, value: { isOnToolbar: false } },
+				pinned: [ID],
+				toolbarPinned: true,
+				after: { ok: true, value: { isOnToolbar: true } },
+				agentlessMissing: undefined,
+			});
+		} finally {
+			dispose();
+		}
+	}));
 });

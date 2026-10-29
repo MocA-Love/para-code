@@ -88,6 +88,8 @@ export interface IParadisBrowserExtensionsLedger {
 	 * `cleared` に足していく。入れ直しても印は残し、まだ消していない保存先では読み込む前に消す。
 	 */
 	readonly removed: readonly IParadisRemovedExtensionData[];
+	/** プロファイルのキー → ツールバーに出す（ピン留めした）拡張機能の id（ピン留めした順）。 */
+	readonly pinned: Readonly<Record<string, readonly string[]>>;
 }
 
 /** 削除した拡張機能の保存データを消す印。 */
@@ -101,7 +103,7 @@ export interface IParadisRemovedExtensionData {
 const MAX_CLEARED_PATHS = 1_000;
 
 /** 空の台帳。 */
-export const PARADIS_EMPTY_EXTENSIONS_LEDGER: IParadisBrowserExtensionsLedger = { version: 1, extensions: [], enabled: {}, removed: [] };
+export const PARADIS_EMPTY_EXTENSIONS_LEDGER: IParadisBrowserExtensionsLedger = { version: 1, extensions: [], enabled: {}, removed: [], pinned: {} };
 
 /** 台帳に置ける拡張機能の数の上限。 */
 export const PARADIS_MAX_INSTALLED_EXTENSIONS = 200;
@@ -132,14 +134,20 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 		// touchesPages が無い行（P3 の版で足したもの）は、知らせ損ねないよう読み書きできる側に倒す
 		extensions.push({ id: entry.id, name: entry.name, version: entry.version, manifestVersion: entry.manifestVersion, source: 'unpacked', sourcePath: entry.sourcePath, path: entry.path, installedAt: entry.installedAt, touchesPages: entry.touchesPages !== false, ...(typeof entry.generatedKey === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(entry.generatedKey) ? { generatedKey: entry.generatedKey } : {}) });
 	}
-	const enabled: Record<string, string[]> = {};
-	if (isRecord(raw.enabled)) {
-		for (const [profile, ids] of Object.entries(raw.enabled)) {
-			if (paradisIsExtensionProfileKey(profile) && Array.isArray(ids)) {
-				enabled[profile] = [...new Set(ids.filter((id): id is string => paradisIsExtensionId(id) && extensions.some(extension => extension.id === id)))];
+	const byProfile = (value: unknown): Record<string, string[]> => {
+		const result: Record<string, string[]> = {};
+		if (isRecord(value)) {
+			for (const [profile, ids] of Object.entries(value)) {
+				if (paradisIsExtensionProfileKey(profile) && Array.isArray(ids)) {
+					result[profile] = [...new Set(ids.filter((id): id is string => paradisIsExtensionId(id) && extensions.some(extension => extension.id === id)))];
+				}
 			}
 		}
-	}
+		return result;
+	};
+	const enabled = byProfile(raw.enabled);
+	// pinned が無い台帳（P5 より前の版）は、どれもピン留めしていないとして読む
+	const pinned = byProfile(raw.pinned);
 	const removed: IParadisRemovedExtensionData[] = [];
 	for (const entry of Array.isArray(raw.removed) ? raw.removed : []) {
 		const id = isRecord(entry) ? entry.id : entry;
@@ -149,7 +157,7 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 		const cleared = isRecord(entry) && Array.isArray(entry.cleared) ? [...new Set(entry.cleared.filter((path): path is string => typeof path === 'string'))].slice(-MAX_CLEARED_PATHS) : [];
 		removed.push({ id, cleared });
 	}
-	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS) };
+	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS), pinned };
 }
 
 /**
@@ -172,19 +180,39 @@ export function paradisLedgerWithEnabled(ledger: IParadisBrowserExtensionsLedger
 	return { ...ledger, enabled: { ...ledger.enabled, [profile]: next } };
 }
 
-/** 削除する。全プロファイルで無効にし、保存データを次に消す印を付ける。 */
+/** ツールバーにピン留めする・外す（ピン留めは後ろに足す）。 */
+export function paradisLedgerWithPinned(ledger: IParadisBrowserExtensionsLedger, id: string, profile: string, pinned: boolean): IParadisBrowserExtensionsLedger {
+	if (!ledger.extensions.some(extension => extension.id === id)) {
+		return ledger;
+	}
+	const current = ledger.pinned[profile] ?? [];
+	const next = pinned ? (current.includes(id) ? current : [...current, id]) : current.filter(existing => existing !== id);
+	return { ...ledger, pinned: { ...ledger.pinned, [profile]: next } };
+}
+
+/** プロファイルでピン留めした拡張機能の id（ピン留めした順）。 */
+export function paradisPinnedExtensionIds(ledger: IParadisBrowserExtensionsLedger, profile: string): readonly string[] {
+	return ledger.pinned[profile] ?? [];
+}
+
+/** 削除する。全プロファイルで無効にしてピン留めも外し、保存データを次に消す印を付ける。 */
 export function paradisLedgerWithoutExtension(ledger: IParadisBrowserExtensionsLedger, id: string): IParadisBrowserExtensionsLedger {
 	if (!ledger.extensions.some(extension => extension.id === id)) {
 		return ledger;
 	}
-	const enabled: Record<string, readonly string[]> = {};
-	for (const [profile, ids] of Object.entries(ledger.enabled)) {
-		enabled[profile] = ids.filter(existing => existing !== id);
-	}
+	const without = (map: Readonly<Record<string, readonly string[]>>) => {
+		const result: Record<string, readonly string[]> = {};
+		for (const [profile, ids] of Object.entries(map)) {
+			result[profile] = ids.filter(existing => existing !== id);
+		}
+		return result;
+	};
+	const enabled = without(ledger.enabled);
 	return {
 		version: 1,
 		extensions: ledger.extensions.filter(extension => extension.id !== id),
 		enabled,
+		pinned: without(ledger.pinned),
 		// 消し終えた保存先も数え直す（入れ直した後に溜まったデータがあるかもしれないため）
 		removed: [...ledger.removed.filter(existing => existing.id !== id), { id, cleared: [] }].slice(-PARADIS_MAX_INSTALLED_EXTENSIONS),
 	};
@@ -344,6 +372,66 @@ export interface IParadisBrowserExtensionsMainService {
 	getShareExtensions(viewId: string | undefined, fallbackProfile: string | undefined): Promise<IParadisShareExtensions>;
 	/** 拡張機能が tabs.update({ active: true }) などでタブを前に出したい（そのウィンドウの workbench が開く）。 */
 	readonly onDidRequestActivateTab: Event<IParadisActivateTabRequest>;
+	/** そのタブ（ビュー）のツールバーに出す拡張機能のボタン。拡張機能が入らないタブなら undefined。 */
+	getToolbar(viewId: string): Promise<IParadisBrowserExtensionToolbar | undefined>;
+	/** ツールバーのボタンが変わった（バッジ・絵・ピン留め・読み込み）。renderer は見ているタブの分を取り直す。 */
+	readonly onDidChangeToolbar: Event<void>;
+	/**
+	 * ボタンを押した: ポップアップを出す（もう一度押すと閉じる）か、ポップアップが無ければ action.onClicked を出す。
+	 * `anchor` はボタンのあるウィンドウとその中の位置（CSS のピクセル）。`popupOnly` は action.openPopup の答え。
+	 */
+	activateAction(viewId: string, extensionId: string, anchor: IParadisToolbarAnchor, popupOnly: boolean): Promise<IParadisActionResult>;
+	/** そのタブの場所（プロファイル）でピン留めする・外す。 */
+	setPinned(viewId: string, extensionId: string, pinned: boolean): Promise<void>;
+	/** そのタブの場所で拡張機能のオプションのページを開く。 */
+	openOptions(viewId: string, extensionId: string): Promise<IParadisActionResult>;
+	/** action.openPopup: ボタンの位置は workbench しか知らないので、そのタブのボタンから activateAction を呼んでもらう。 */
+	readonly onDidRequestPopup: Event<IParadisPopupRequest>;
+}
+
+/** ボタンの位置（ボタンのあるウィンドウの中、CSS のピクセル）。 */
+export interface IParadisToolbarAnchor {
+	/** ボタンのあるウィンドウ（BrowserWindow の id。タブは補助ウィンドウへ移ることがあるので、ボタンの側で決める）。 */
+	readonly windowId: number;
+	readonly x: number;
+	readonly y: number;
+	readonly width: number;
+	readonly height: number;
+}
+
+/** ボタンを押した結果。 */
+export type IParadisActionResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
+
+/** ツールバーのボタン 1 つ。 */
+export interface IParadisToolbarAction {
+	readonly extensionId: string;
+	readonly name: string;
+	/** ホバーの文（拡張機能が決める。無ければ名前）。 */
+	readonly title: string;
+	readonly iconDataUrl?: string;
+	readonly badgeText: string;
+	/** 拡張機能が決めた色（無ければテーマの色）。 */
+	readonly badgeBackgroundColor?: string;
+	readonly badgeTextColor?: string;
+	readonly enabled: boolean;
+	readonly hasPopup: boolean;
+	readonly pinned: boolean;
+	readonly hasOptionsPage: boolean;
+}
+
+/** タブのツールバー。 */
+export interface IParadisBrowserExtensionToolbar {
+	/** 場所（`default` / `profile:<id>`）。ピン留めはここごと（D2）。 */
+	readonly place: string;
+	/** ピン留めしたものがピン留めした順に先、残りは名前の順。 */
+	readonly actions: readonly IParadisToolbarAction[];
+}
+
+/** action.openPopup の求め。 */
+export interface IParadisPopupRequest {
+	readonly requestId: number;
+	readonly viewId: string;
+	readonly extensionId: string;
 }
 
 /** タブを前に出す求め。 */
