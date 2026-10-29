@@ -66,10 +66,12 @@ import {
 	paradisReadExtensionManifest,
 	paradisSerializeExtensionsLedger,
 } from '../common/paradisBrowserExtensions.js';
-import { paradisParseWebStoreInput, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
+import { PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE } from '../common/paradisBrowserExtensionApiWire.js';
+import { IParadisExtensionAccess, paradisParseWebStoreInput, paradisSameExtensionAccess, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
 import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.js';
 import { FileAccess } from '../../../../base/common/network.js';
-import { IParadisInstallPrompt, ParadisWebStoreFetcher, paradisCreateWebStoreFetcher, paradisDownloadWebStoreCrx, paradisExtractCrxArchive } from './paradisBrowserExtensionWebStore.js';
+import { IParadisHeldUpdate, IParadisWebStoreUpdate, PARADIS_WEB_STORE_UPDATE_URL, ParadisWebStoreUpdateSchedule, paradisAddedAccess, paradisBuildUpdateRequest, paradisCompareExtensionVersions, paradisHasAddedAccess, paradisParseUpdateResponse } from './paradisBrowserExtensionWebStoreUpdates.js';
+import { IParadisInstallPrompt, ParadisWebStoreFetcher, ParadisWebStoreUpdateRequester, paradisCreateWebStoreUpdateRequester, paradisCreateWebStoreFetcher, paradisDownloadWebStoreCrx, paradisExtractCrxArchive } from './paradisBrowserExtensionWebStore.js';
 import { paradisIsPrivateExtensionFile, paradisPrepareExtensionCopy } from './paradisBrowserExtensionCopyRewrite.js';
 import { ParadisApiSession, ParadisExtensionApiHost } from './paradisBrowserExtensionApiHost.js';
 import { ParadisBrowserExtensionRuntimeState, ParadisExtensionLoadKind, paradisDecideRuntimeLifecycleEvents, paradisRegisterRuntimeApis } from './paradisBrowserExtensionRuntime.js';
@@ -104,6 +106,8 @@ export interface IParadisBrowserExtensionTabsOptions {
 	readonly askInstall?: (prompt: IParadisInstallPrompt) => Promise<boolean>;
 	/** ストアのページから外す前の確認のダイアログ。 */
 	readonly askRemove?: (extensionName: string) => Promise<boolean>;
+	/** 新しく権限を求める更新を入れる前の確認のダイアログ。 */
+	readonly askUpdate?: (prompt: IParadisUpdatePrompt) => Promise<boolean>;
 }
 
 /** Chrome ウェブストアから入れるのに要るもの（P7）。 */
@@ -116,6 +120,25 @@ export interface IParadisWebStoreOptions {
 	readonly publisherKeyHash?: string;
 	/** ストアのページから外す前の確認のダイアログ（無ければストアのページからは外せない）。 */
 	readonly askRemove?: (extensionName: string) => Promise<boolean>;
+	/** 新しく権限を求める更新を入れる前の確認のダイアログ（無ければ保留のまま）。 */
+	readonly askUpdate?: (prompt: IParadisUpdatePrompt) => Promise<boolean>;
+	/** 更新の問い合わせ（無ければ Electron の main から。テストでは偽物）。 */
+	readonly updateRequester?: ParadisWebStoreUpdateRequester;
+}
+
+/** 保留にした更新を入れる前の確認に出すもの。 */
+export interface IParadisUpdatePrompt {
+	readonly extensionName: string;
+	readonly version: string;
+	/** 今の版に無く、新しく求めるもの。 */
+	readonly added: IParadisExtensionAccess;
+}
+
+/** ストアのページの「Para Code に追加」から入れるときの、ストアの情報（確かめる前に見せる。落とした中身と照らし合わせる）。 */
+export interface IParadisStoreListing {
+	readonly name: string;
+	readonly version: string;
+	readonly manifest: unknown;
 }
 
 /** ストアのページの preload（束ねずに書き出される。build/next/standalone.ts）。 */
@@ -369,6 +392,14 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _askInstall: ((prompt: IParadisInstallPrompt) => Promise<boolean>) | undefined;
 	private readonly _webStoreFetcher: ParadisWebStoreFetcher | undefined;
 	private readonly _webStorePublisherKeyHash: string | undefined;
+	private readonly _updateRequester: ParadisWebStoreUpdateRequester | undefined;
+	private readonly _askUpdate: ((prompt: IParadisUpdatePrompt) => Promise<boolean>) | undefined;
+	/** 新しく権限を求めるため保留にした更新（メモリだけ。起動のたびに見つけ直す）。 */
+	private readonly _heldUpdates = new Map<string, IParadisHeldUpdate>();
+	private _checkingUpdates = false;
+	/** 次の起動で使うために置いた新しい版（id → 版）。 */
+	private readonly _stagedNext = new Map<string, string>();
+	private readonly _updateSchedule: ParadisWebStoreUpdateSchedule | undefined;
 	/** ストアのページの「Para Code に追加」（P7b）。タブの口と確認のダイアログがあるときだけ。 */
 	private readonly _webStoreBridge: ParadisWebStoreBridge | undefined;
 
@@ -393,6 +424,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		// 外と話す口は、設定がオンで確認を出せるときだけ作る（作るだけでは話さない）
 		this._webStoreFetcher = this.active && this._askInstall ? webStoreOptions?.fetcher ?? paradisCreateWebStoreFetcher() : undefined;
 		this._webStorePublisherKeyHash = webStoreOptions?.publisherKeyHash;
+		this._askUpdate = webStoreOptions?.askUpdate;
+		this._updateRequester = this._webStoreFetcher ? webStoreOptions?.updateRequester ?? paradisCreateWebStoreUpdateRequester() : undefined;
+		// 起動の 1 分後と、その後 5 時間ごとに確かめる（ストアから入れたものが無ければ外とは話さない）
+		this._updateSchedule = this._updateRequester ? new ParadisWebStoreUpdateSchedule(() => this.checkWebStoreUpdates()) : undefined;
+		this._updateSchedule?.start();
 		const environment = tabsOptions?.environment;
 		this._webStoreBridge = this._webStoreFetcher && environment ? new ParadisWebStoreBridge({
 			placeOf: contents => {
@@ -402,7 +438,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				return entry && view && !view.isAgentTab() ? entry.profile : undefined;
 			},
 			listEnabled: place => paradisEnabledExtensions(this._ledger, place).map(({ id, name, version, source }) => ({ id, name, version, source })),
-			install: (id, place, label) => this.addFromWebStore(id, place, label),
+			install: (id, place, label, listing) => this.addFromWebStore(id, place, label, listing),
 			removeFrom: async (id, place) => {
 				const elsewhere = Object.entries(this._ledger.enabled).some(([other, ids]) => other !== place && ids.includes(id));
 				await (elsewhere ? this.setEnabled(id, place, false) : this.remove(id));
@@ -488,6 +524,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	dispose(): void {
 		this._disposables.dispose();
 		this._webStoreBridge?.dispose();
+		this._updateSchedule?.dispose();
 		this._actions?.dispose();
 		this._nativeMessaging?.dispose();
 		this._menus?.dispose();
@@ -573,6 +610,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			this._ledger = PARADIS_EMPTY_EXTENSIONS_LEDGER;
 		}
 		await fs.mkdir(this._root, { recursive: true }).catch(() => { /* reported when saving */ });
+		// 前の起動で確かめて置いておいた、ストアの拡張機能の新しい版を、読み込む前に使う（設計書の 8 章。使っている最中には替えない）
+		await this._useStagedWebStoreUpdates();
 		await this._runtimeState.load();
 		await this._menus?.load();
 		await this._permissions?.load();
@@ -823,6 +862,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				...(this._notes.has(extension.id) ? { pagesWithoutApis: this._notes.get(extension.id) } : {}),
 				// 作った key は画面に渡さない
 				generatedKey: undefined,
+				...(this._stagedNext.has(extension.id) ? { nextVersion: this._stagedNext.get(extension.id) } : {}),
+				...(this._heldUpdates.has(extension.id) ? { pendingUpdate: { version: this._heldUpdates.get(extension.id)!.version, permissions: this._heldUpdates.get(extension.id)!.added.permissions, hostPermissions: this._heldUpdates.get(extension.id)!.added.hostPermissions } } : {}),
 			})),
 		};
 	}
@@ -963,7 +1004,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		return { ok: true, extension };
 	}
 
-	async addFromWebStore(input: string, profile: string, profileLabel: string): Promise<IParadisAddExtensionResult> {
+	async addFromWebStore(input: string, profile: string, profileLabel: string, storeListing?: IParadisStoreListing): Promise<IParadisAddExtensionResult> {
 		const label = typeof profileLabel === 'string' ? profileLabel.slice(0, 200) : profile;
 		await this._ready;
 		if (!this.active) {
@@ -999,54 +1040,303 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			return { ok: false, reason: 'tooMany' };
 		}
 		this._webStoreBusy.add(id);
-		const staging = join(this._root, 'webstore-staging', randomBytes(8).toString('hex'));
 		try {
-			// 落として署名を確かめる（確かめる前の中身はディスクに書かない）。外と話すのは、利用者が押したこのときだけ
-			let crx;
-			try {
-				crx = await paradisDownloadWebStoreCrx(id, fetcher, { publisherKeyHash: this._webStorePublisherKeyHash });
-			} catch (error) {
-				return { ok: false, reason: 'webStoreFailed', detail: error instanceof Error ? error.message : String(error) };
+			let approved: IParadisExtensionAccess | undefined;
+			if (storeListing) {
+				// ストアのページから: Chrome と同じく、確かめてから落とす。見せるのはストアの情報の権限で、落とした後に、署名を
+				// 確かめた manifest の権限と照らし合わせ、食い違えば入れない
+				approved = paradisSummarizeExtensionAccess(storeListing.manifest);
+				const accepted = await askInstall({ extensionName: storeListing.name, version: storeListing.version, access: approved, profileLabel: label, verified: false }).catch(() => false);
+				if (!accepted) {
+					return { ok: false, reason: 'cancelled' };
+				}
+			}
+			const staged = await this._stageFromWebStore(id, fetcher, {});
+			if (!staged.ok) {
+				return staged;
 			}
 			try {
-				await fs.mkdir(dirname(staging), { recursive: true });
-				await paradisExtractCrxArchive(crx.archive, staging);
-				// Electron は manifest の key から id を決める。拡張機能の鍵を書いて、ストアと同じ id にする
-				const manifestPath = join(staging, 'manifest.json');
-				const manifest = JSON.parse((await fs.readFile(manifestPath, 'utf8')).replace(/^\uFEFF/, '')) as Record<string, unknown>;
-				await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, key: crx.publicKey.toString('base64') }, undefined, '\t'));
-			} catch (error) {
-				return { ok: false, reason: 'webStoreFailed', detail: error instanceof Error ? error.message : String(error) };
+				if (approved && !paradisSameExtensionAccess(approved, staged.access)) {
+					return { ok: false, reason: 'webStoreFailed', detail: 'the downloaded extension asks for different permissions than the store listed' };
+				}
+				if (!approved) {
+					// 管理画面から: 落として確かめた中身の権限を見せる
+					const accepted = await askInstall({ extensionName: staged.name, version: staged.version, access: staged.access, profileLabel: label, verified: true }).catch(() => false);
+					if (!accepted) {
+						return { ok: false, reason: 'cancelled' };
+					}
+				}
+				// 確かめている間に、同じ id がフォルダから足された・削除された（busy の印でフォルダからの追加は断るが、念のため）
+				if (this._ledger.extensions.some(extension => extension.id === id) || this._removedThisRun.has(id)) {
+					return { ok: false, reason: 'sameIdUnpacked' };
+				}
+				return await this._commitWebStore(id, staged.folder, profile);
+			} finally {
+				await fs.rm(staged.folder, { recursive: true, force: true }).catch(() => { /* best effort */ });
 			}
-			// フォルダから入れるときと同じ写しと書き換えに通す（私用のファイル名・名前の重なり・数と大きさの上限）
-			const copied = await this._copyFromFolder(staging, { kind: 'path' }, join(this._root, 'webstore', id));
-			if (!copied.ok) {
-				return copied;
-			}
-			if (copied.id !== id) {
-				await fs.rm(copied.path, { recursive: true, force: true }).catch(() => { /* best effort */ });
-				return { ok: false, reason: 'webStoreFailed', detail: 'id mismatch' };
-			}
-			const manifest = JSON.parse(await fs.readFile(join(copied.path, 'manifest.json'), 'utf8')) as unknown;
-			const accepted = await askInstall({ extensionName: copied.name, version: copied.version, access: paradisSummarizeExtensionAccess(manifest), profileLabel: label }).catch(() => false);
-			// 確認の間に、同じ id がフォルダから足された・削除された（busy の印でフォルダからの追加は断るが、念のため）
-			const current = this._ledger.extensions.find(extension => extension.id === id);
-			if (!accepted || current || this._removedThisRun.has(id)) {
-				await fs.rm(copied.path, { recursive: true, force: true }).catch(() => { /* best effort */ });
-				return { ok: false, reason: accepted ? 'sameIdUnpacked' : 'cancelled' };
-			}
-			const extension: IParadisInstalledBrowserExtension = {
-				id, name: copied.name, version: copied.version, manifestVersion: copied.manifestVersion,
-				source: 'webstore', sourcePath: copied.path, path: copied.path, installedAt: Date.now(), touchesPages: copied.touchesPages,
-			};
-			this._ledger = paradisLedgerWithPinned(paradisLedgerWithExtension(this._ledger, extension, profile), id, profile, true);
-			await this._save();
-			this._prepared.delete(extension.path);
-			await this._applyEnablement(id, 'other');
-			return { ok: true, extension };
 		} finally {
 			this._webStoreBusy.delete(id);
-			await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* best effort */ });
+		}
+	}
+
+	/**
+	 * ストアから落として署名を確かめ（ストアの署名、id の一致）、作業用のフォルダに展開して manifest に拡張機能の鍵を書く。
+	 * 確かめる前の中身はディスクに書かない。呼んだ側が `folder` を消す。
+	 */
+	private async _stageFromWebStore(id: string, fetcher: ParadisWebStoreFetcher, download: { readonly url?: string; readonly sha256?: string; readonly size?: number }): Promise<{ readonly ok: true; readonly folder: string; readonly name: string; readonly version: string; readonly access: IParadisExtensionAccess } | Extract<IParadisAddExtensionResult, { ok: false }>> {
+		const folder = join(this._root, 'webstore-staging', randomBytes(8).toString('hex'));
+		let crx;
+		try {
+			crx = await paradisDownloadWebStoreCrx(id, fetcher, { ...download, publisherKeyHash: this._webStorePublisherKeyHash });
+		} catch (error) {
+			return { ok: false, reason: 'webStoreFailed', detail: error instanceof Error ? error.message : String(error) };
+		}
+		try {
+			await fs.mkdir(dirname(folder), { recursive: true });
+			await paradisExtractCrxArchive(crx.archive, folder);
+			// Electron は manifest の key から id を決める。拡張機能の鍵を書いて、ストアと同じ id にする
+			const manifestPath = join(folder, 'manifest.json');
+			const manifest = JSON.parse((await fs.readFile(manifestPath, 'utf8')).replace(/^﻿/, '')) as Record<string, unknown>;
+			const summary = paradisReadExtensionManifest(manifest);
+			if (hasKey(summary, { error: true })) {
+				throw new Error(`invalid manifest (${summary.error})`);
+			}
+			await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, key: crx.publicKey.toString('base64') }, undefined, '\t'));
+			return { ok: true, folder, name: summary.name, version: summary.version, access: paradisSummarizeExtensionAccess(manifest) };
+		} catch (error) {
+			await fs.rm(folder, { recursive: true, force: true }).catch(() => { /* best effort */ });
+			return { ok: false, reason: 'webStoreFailed', detail: error instanceof Error ? error.message : String(error) };
+		}
+	}
+
+	/**
+	 * 作業用のフォルダの中身を、フォルダから入れるときと同じ写しと書き換え（私用のファイル名・名前の重なり・数と大きさの上限）に
+	 * 通して `webstore/<id>` に置き、台帳に書いて読み込む。`profile` があればそこで有効にしてピン留めする（初めて入れるとき）。
+	 * 更新では、読み込んである版を外してから置き換え、有効にしてある場所で読み込み直す。
+	 */
+	private async _commitWebStore(id: string, folder: string, profile: string | undefined): Promise<IParadisAddExtensionResult> {
+		const previous = this._ledger.extensions.find(extension => extension.id === id);
+		if (previous) {
+			for (const entry of this._sessions) {
+				this._unload(entry, id);
+			}
+		}
+		const copied = await this._copyFromFolder(folder, { kind: 'path' }, join(this._root, 'webstore', id));
+		if (copied.ok && this._removedThisRun.has(id)) {
+			// 写している間に削除された: 書き戻さない
+			await fs.rm(copied.path, { recursive: true, force: true }).catch(() => { /* best effort */ });
+			return { ok: false, reason: 'restartNeeded' };
+		}
+		if (!copied.ok || copied.id !== id) {
+			if (copied.ok) {
+				await fs.rm(copied.path, { recursive: true, force: true }).catch(() => { /* best effort */ });
+			}
+			if (previous) {
+				// 置き換えられなかった（写しは前の版のまま）: 前の版を読み込み直す
+				await this._applyEnablement(id, 'other');
+			}
+			return copied.ok ? { ok: false, reason: 'webStoreFailed', detail: 'id mismatch' } : copied;
+		}
+		// 次の起動のために置いた版より新しいものを入れた: 置いた版は使わない
+		if (this._stagedNext.delete(id)) {
+			await fs.rm(join(this._root, 'webstore-next', id), { recursive: true, force: true }).catch(() => { /* best effort */ });
+		}
+		const extension: IParadisInstalledBrowserExtension = {
+			id, name: copied.name, version: copied.version, manifestVersion: copied.manifestVersion,
+			source: 'webstore', sourcePath: copied.path, path: copied.path, installedAt: previous?.installedAt ?? Date.now(), touchesPages: copied.touchesPages,
+		};
+		this._ledger = paradisLedgerWithExtension(this._ledger, extension, profile);
+		if (profile !== undefined && !previous) {
+			this._ledger = paradisLedgerWithPinned(this._ledger, id, profile, true);
+		}
+		await this._save();
+		this._prepared.delete(extension.path);
+		await this._applyEnablement(id, 'other');
+		return { ok: true, extension };
+	}
+
+	/**
+	 * ストアから入れた拡張機能の更新を確かめる（P7c。決まった時刻に呼ぶ）。問い合わせるのはストアから入れたものの分だけで、
+	 * 無ければ外とは話さない。新しく権限を求めない更新は入れ、求めるものは保留にして管理画面に出す。
+	 */
+	async checkWebStoreUpdates(): Promise<void> {
+		await this._ready;
+		const fetcher = this._webStoreFetcher;
+		const requester = this._updateRequester;
+		const store = this._ledger.extensions.filter(extension => extension.source === 'webstore');
+		if (!this.active || !fetcher || !requester || this._checkingUpdates || store.length === 0) {
+			return;
+		}
+		this._checkingUpdates = true;
+		try {
+			const request = paradisBuildUpdateRequest(store.map(extension => extension.id), { chromeVersion: process.versions.chrome ?? '0', platform: process.platform, arch: process.arch });
+			const response = await requester(PARADIS_WEB_STORE_UPDATE_URL, request.body, request.headers);
+			if (response.status < 200 || response.status >= 300) {
+				this._logService.warn(`[paradis] the browser extension update check failed (${response.status})`);
+				return;
+			}
+			const updates = paradisParseUpdateResponse(response.text, new Map(store.map(extension => [extension.id, extension.version])));
+			// もう出ていない（取り下げられた・入れ替わった）更新の保留は忘れる
+			for (const id of [...this._heldUpdates.keys()]) {
+				if (!updates.some(update => update.extensionId === id)) {
+					this._heldUpdates.delete(id);
+				}
+			}
+			for (const update of updates) {
+				// 同じ版を保留にしてある・次の起動のために置いてあるなら、落とし直すだけなので飛ばす
+				if (this._webStoreBusy.has(update.extensionId) || this._heldUpdates.get(update.extensionId)?.version === update.version || this._stagedNext.get(update.extensionId) === update.version) {
+					continue;
+				}
+				await this._applyWebStoreUpdate(update).catch(error => this._logService.warn(`[paradis] could not update the browser extension ${update.extensionId}`, error));
+			}
+		} catch (error) {
+			this._logService.warn('[paradis] the browser extension update check failed', error);
+		} finally {
+			this._checkingUpdates = false;
+		}
+	}
+
+	private async _applyWebStoreUpdate(update: IParadisWebStoreUpdate): Promise<void> {
+		const fetcher = this._webStoreFetcher;
+		const installed = this._ledger.extensions.find(extension => extension.id === update.extensionId);
+		if (!fetcher || installed?.source !== 'webstore' || this._removedThisRun.has(installed.id)) {
+			return;
+		}
+		this._webStoreBusy.add(installed.id);
+		try {
+			const staged = await this._stageFromWebStore(installed.id, fetcher, { url: update.url, sha256: update.sha256, size: update.size });
+			if (!staged.ok) {
+				this._logService.warn(`[paradis] could not download the update of ${installed.id}: ${staged.reason} ${staged.detail ?? ''}`);
+				return;
+			}
+			try {
+				const current = this._ledger.extensions.find(extension => extension.id === installed.id);
+				// 落とした中身の版も比べる（古い版・同じ版は入れない）。確かめている間に入れ替わった・消されたものも入れない
+				if (!current || current.source !== 'webstore' || current.version !== installed.version || paradisCompareExtensionVersions(staged.version, current.version) <= 0) {
+					return;
+				}
+				const currentAccess = await this._installedAccess(current);
+				const added = paradisAddedAccess(staged.access, currentAccess ?? { permissions: [], hostPermissions: [] });
+				if (currentAccess === undefined || paradisHasAddedAccess(added)) {
+					// 新しく権限を求める（今の権限を読めないときも同じ扱い）: 自動では入れず、管理画面で確かめてもらう
+					this._heldUpdates.set(current.id, { ...update, version: staged.version, access: staged.access, added });
+					return;
+				}
+				this._heldUpdates.delete(current.id);
+				if ([...this._sessions].some(entry => entry.session.extensions.getExtension(current.id))) {
+					// 読み込んであるもの: 使っている最中に替えず（worker やページの中の状態が消えるため）、次の起動で使う
+					await this._stageWebStoreNext(current.id, staged.folder, staged.version);
+					return;
+				}
+				await this._commitWebStore(current.id, staged.folder, undefined);
+			} finally {
+				await fs.rm(staged.folder, { recursive: true, force: true }).catch(() => { /* best effort */ });
+			}
+		} finally {
+			this._webStoreBusy.delete(installed.id);
+		}
+	}
+
+	private async _installedAccess(extension: IParadisInstalledBrowserExtension): Promise<IParadisExtensionAccess | undefined> {
+		// 詰め物の準備は manifest.json を書き換える（content script の js を足すだけで、権限とサイトには触れない）。念のため元の manifest を先に読む
+		for (const file of [PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE, 'manifest.json']) {
+			try {
+				return paradisSummarizeExtensionAccess(JSON.parse(await fs.readFile(join(extension.path, file), 'utf8')) as unknown);
+			} catch {
+				// 次を読む
+			}
+		}
+		return undefined;
+	}
+
+	/** 確かめた新しい版を `webstore-next/<id>` に写して置く（次の起動で、読み込む前に使う）。 */
+	private async _stageWebStoreNext(id: string, folder: string, version: string): Promise<void> {
+		const copied = await this._copyFromFolder(folder, { kind: 'path' }, join(this._root, 'webstore-next', id));
+		if (!copied.ok || copied.id !== id || this._removedThisRun.has(id)) {
+			if (copied.ok) {
+				await fs.rm(copied.path, { recursive: true, force: true }).catch(() => { /* best effort */ });
+			}
+			return;
+		}
+		this._stagedNext.set(id, version);
+	}
+
+	/**
+	 * 起動のとき（読み込む前）: 置いてある新しい版を確かめ直して使う。その版の key から出した id が同じで、台帳の版より新しい
+	 * ストアの拡張機能のものだけ。違えば捨てる。
+	 */
+	private async _useStagedWebStoreUpdates(): Promise<void> {
+		const next = join(this._root, 'webstore-next');
+		let changed = false;
+		for (const name of await fs.readdir(next).catch(() => [])) {
+			const staged = join(next, name);
+			const installed = this._ledger.extensions.find(extension => extension.id === name && extension.source === 'webstore');
+			try {
+				const raw = JSON.parse(await fs.readFile(join(staged, 'manifest.json'), 'utf8')) as { key?: unknown };
+				const summary = paradisReadExtensionManifest(raw);
+				if (!installed || hasKey(summary, { error: true }) || typeof raw.key !== 'string' || paradisPredictExtensionId(staged, raw.key) !== installed.id
+					|| paradisCompareExtensionVersions(summary.version, installed.version) <= 0) {
+					throw new Error('not usable');
+				}
+				await fs.rm(installed.path, { recursive: true, force: true });
+				await fs.rename(staged, installed.path);
+				this._ledger = paradisLedgerWithExtension(this._ledger, { ...installed, name: summary.name.startsWith('__MSG_') ? installed.name : summary.name, version: summary.version, manifestVersion: summary.manifestVersion, touchesPages: summary.touchesPages }, undefined);
+				changed = true;
+			} catch {
+				await fs.rm(staged, { recursive: true, force: true }).catch(() => { /* best effort */ });
+			}
+		}
+		if (changed) {
+			await this._save();
+		}
+	}
+
+	/** 保留にした更新を、新しく求めるものを確かめてから入れる（管理画面から）。落とし直した中身が保留したときと違えば入れない。 */
+	async approveWebStoreUpdate(id: string): Promise<IParadisAddExtensionResult> {
+		await this._ready;
+		const held = paradisIsExtensionId(id) ? this._heldUpdates.get(id) : undefined;
+		const installed = this._ledger.extensions.find(extension => extension.id === id);
+		const fetcher = this._webStoreFetcher;
+		if (!this.active || !held || installed?.source !== 'webstore' || !fetcher) {
+			return { ok: false, reason: 'webStoreFailed', detail: 'no update is waiting for this extension' };
+		}
+		if (!this._askUpdate) {
+			return { ok: false, reason: 'noPrompt' };
+		}
+		if (this._webStoreBusy.has(id)) {
+			return { ok: false, reason: 'busy' };
+		}
+		const accepted = await this._askUpdate({ extensionName: installed.name, version: held.version, added: held.added }).catch(() => false);
+		if (!accepted) {
+			return { ok: false, reason: 'cancelled' };
+		}
+		this._webStoreBusy.add(id);
+		try {
+			const staged = await this._stageFromWebStore(id, fetcher, { url: held.url, sha256: held.sha256, size: held.size });
+			if (!staged.ok) {
+				return staged;
+			}
+			try {
+				const current = this._ledger.extensions.find(extension => extension.id === id);
+				if (!current || current.source !== 'webstore' || paradisCompareExtensionVersions(staged.version, current.version) <= 0) {
+					this._heldUpdates.delete(id);
+					return { ok: false, reason: 'webStoreFailed', detail: 'the update is not newer than the installed version' };
+				}
+				if (staged.version !== held.version || !paradisSameExtensionAccess(staged.access, held.access)) {
+					// 確かめた後に中身が変わった: 入れない（次の確かめでもう一度見つける）
+					this._heldUpdates.delete(id);
+					return { ok: false, reason: 'webStoreFailed', detail: 'the update changed since it was checked' };
+				}
+				const result = await this._commitWebStore(id, staged.folder, undefined);
+				if (result.ok) {
+					this._heldUpdates.delete(id);
+				}
+				return result;
+			} finally {
+				await fs.rm(staged.folder, { recursive: true, force: true }).catch(() => { /* best effort */ });
+			}
+		} finally {
+			this._webStoreBusy.delete(id);
 		}
 	}
 
@@ -1057,7 +1347,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			// 読めないときに空の権限の確認を出さない
 			return { ok: false, reason: 'webStoreFailed', detail: 'the installed manifest cannot be read' };
 		}
-		const accepted = await askInstall({ extensionName: extension.name, version: extension.version, access: paradisSummarizeExtensionAccess(manifest), profileLabel }).catch(() => false);
+		const accepted = await askInstall({ extensionName: extension.name, version: extension.version, access: paradisSummarizeExtensionAccess(manifest), profileLabel, verified: true }).catch(() => false);
 		const current = this._ledger.extensions.find(candidate => candidate.id === extension.id);
 		if (!accepted || current?.source !== 'webstore') {
 			return { ok: false, reason: accepted ? 'webStoreFailed' : 'cancelled' };
@@ -1141,6 +1431,9 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._loadErrors.delete(id);
 		await this._save();
 		await fs.rm(existing.path, { recursive: true, force: true }).catch(() => { /* already gone */ });
+		// 次の起動のために置いた新しい版も消す
+		await fs.rm(join(this._root, 'webstore-next', id), { recursive: true, force: true }).catch(() => { /* already gone */ });
+		this._stagedNext.delete(id);
 		this._prepared.delete(existing.path);
 		// storage.sync（main が持つ）と、最後に読み込んだ版（入れ直したら install から出す）、右クリックの項目も消す
 		await this._syncStore.forgetExtension(id);
@@ -1207,7 +1500,7 @@ export function paradisRegisterBrowserExtensions(
 				chooseSavePath: tabs.chooseSavePath,
 				renameDownload: tabs.renameDownload,
 			} : undefined,
-			tabs ? { askInstall: tabs.askInstall, askRemove: tabs.askRemove } : undefined,
+			tabs ? { askInstall: tabs.askInstall, askRemove: tabs.askRemove, askUpdate: tabs.askUpdate } : undefined,
 		);
 	});
 	disposables.add(created);
@@ -1220,6 +1513,7 @@ export function paradisRegisterBrowserExtensions(
 		getState: () => created.getState(),
 		addUnpacked: (folder, profile) => created.addUnpacked(folder, profile),
 		addFromWebStore: (input, profile, profileLabel) => created.addFromWebStore(input, profile, profileLabel),
+		approveWebStoreUpdate: id => created.approveWebStoreUpdate(id),
 		reloadUnpacked: id => created.reloadUnpacked(id),
 		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
 		remove: id => created.remove(id),

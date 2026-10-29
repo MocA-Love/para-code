@@ -13,8 +13,9 @@
 //  - 呼び出しを受けるのは、送り主のフレームが一番外の文書で、その origin がちょうど https://chromewebstore.google.com で、
 //    利用者の内蔵ブラウザのタブ（エージェントのタブ・拡張機能の窓ではない、拡張機能を入れるセッションの、SSH 先ではない
 //    もの）のときだけ。エージェントと共有中のタブでは受けない（Q483 と同じ考え方）。値は本文ではなく送り主から決める
-//  - ページの JS は webstorePrivate を自由に呼べるので、入れる・外すは、そのタブへの利用者の本物の入力から 5 秒の間だけ受け、
-//    入れる前には main が自分で落として署名を確かめた中身の権限を main のダイアログで見せる（ページの manifest は信じない）
+//  - ページの JS は webstorePrivate を自由に呼べるので、入れる・外すは、そのタブへの利用者の本物の入力から 5 秒の間だけ受ける。
+//    入れるときは Chrome と同じく、先に main のダイアログでストアの情報の権限を見せ、確かめられてから落とす。落とした中身は
+//    署名を確かめ、その manifest の権限が見せたものと違えば入れない（ページの manifest だけでは決めない）
 //  - 外と話すのは beginInstallWithManifest3 で入れるときだけ（getExtensionStatus・getAll は台帳だけで答える）
 
 import * as electron from 'electron';
@@ -45,8 +46,11 @@ export interface IParadisWebStoreBridgeHost {
 	/** そのタブが、拡張機能を入れる利用者の内蔵ブラウザのタブなら、その場所（プロファイルのキー）。 */
 	placeOf(contents: WebContents): string | undefined;
 	listEnabled(place: string): readonly IParadisWebStoreInstalled[];
-	/** ストアから落とし、署名を確かめ、main のダイアログで権限を見せてから入れる（P7a の addFromWebStore）。 */
-	install(id: string, place: string, placeLabel: string): Promise<IParadisAddExtensionResult>;
+	/**
+	 * main のダイアログでストアの情報（`listing`）の権限を見せ、確かめられたら落として署名を確かめ、落とした manifest の権限が
+	 * 見せたものと同じときだけ入れる（Chrome と同じく、確かめてから落とす）。
+	 */
+	install(id: string, place: string, placeLabel: string, listing: { readonly name: string; readonly version: string; readonly manifest: unknown }): Promise<IParadisAddExtensionResult>;
 	/** その場所から外す（ほかの場所でも有効ならこの場所で無効にし、ここだけなら削除する）。 */
 	removeFrom(id: string, place: string): Promise<void>;
 	/** 外す前の確認（main のダイアログ）。 */
@@ -203,7 +207,8 @@ export class ParadisWebStoreBridge {
 				}
 				this._busy.add(busyKey);
 				try {
-					const result = await this._host.install(id, place, placeLabel(place));
+					const localizedName = typeof details?.localizedName === 'string' && details.localizedName.trim() ? details.localizedName.trim().slice(0, 200) : String(manifest.name).slice(0, 200);
+					const result = await this._host.install(id, place, placeLabel(place), { name: localizedName, version: String(manifest.version).slice(0, 50), manifest });
 					if (!result.ok) {
 						return result.reason === 'cancelled' ? USER_CANCELLED
 							: result.reason === 'busy' ? { value: 'install_in_progress', error: 'An installation of the same extension is already in progress' }

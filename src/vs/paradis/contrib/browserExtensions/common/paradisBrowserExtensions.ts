@@ -340,6 +340,10 @@ export interface IParadisBrowserExtensionView extends IParadisInstalledBrowserEx
 	readonly loadError?: string;
 	/** UTF-8 でない、または書き換えられない形式のため、Para Code の足す API（storage.sync など）を入れられなかったページ。 */
 	readonly pagesWithoutApis?: readonly string[];
+	/** 確かめて置いてある、次の起動で使うストアの更新の版（使っている最中には替えない）。 */
+	readonly nextVersion?: string;
+	/** 新しく権限を求めるため、確かめるまで入れずに保留にしているストアの更新。 */
+	readonly pendingUpdate?: { readonly version: string; readonly permissions: readonly string[]; readonly hostPermissions: readonly string[] };
 }
 
 /** あるページのセッションに今入っている、利用者が入れた拡張機能。 */
@@ -388,6 +392,8 @@ export interface IParadisBrowserExtensionsMainService {
 	 * する。`profileLabel` は確認に出す場所の名前（画面に出すだけ）。外と話すのはこの呼び出しのときだけ。
 	 */
 	addFromWebStore(input: string, profile: string, profileLabel: string): Promise<IParadisAddExtensionResult>;
+	/** 保留にしたストアの更新を、新しく求めるものを main のダイアログで確かめてから入れる。 */
+	approveWebStoreUpdate(id: string): Promise<IParadisAddExtensionResult>;
 	/** フォルダから読み込み直す（元のフォルダの今の中身で写しを作り直す）。 */
 	reloadUnpacked(id: string): Promise<IParadisAddExtensionResult>;
 	setEnabled(id: string, profile: string, enabled: boolean): Promise<void>;

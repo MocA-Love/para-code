@@ -18,7 +18,8 @@ import { BrowserViewStorageScope } from '../../../../../platform/browserView/com
 import { PARADIS_DEFAULT_EXTENSION_PROFILE, paradisParseExtensionsLedger, paradisSerializeExtensionsLedger } from '../../common/paradisBrowserExtensions.js';
 import { paradisParseWebStoreInput, paradisSummarizeExtensionAccess } from '../../common/paradisBrowserExtensionWebStore.js';
 import { paradisExtensionIdFromHash, paradisVerifyCrx3 } from '../../electron-main/paradisBrowserExtensionCrx.js';
-import { ParadisBrowserExtensionsManager, ParadisExtensionSession, paradisPredictExtensionId } from '../../electron-main/paradisBrowserExtensionsMain.js';
+import { IParadisUpdatePrompt, ParadisBrowserExtensionsManager, ParadisExtensionSession, paradisPredictExtensionId } from '../../electron-main/paradisBrowserExtensionsMain.js';
+import { paradisAddedAccess, paradisBuildUpdateRequest, paradisCompareExtensionVersions, paradisParseUpdateResponse } from '../../electron-main/paradisBrowserExtensionWebStoreUpdates.js';
 import { IParadisInstallPrompt, IParadisWebStoreResponse, paradisDownloadWebStoreCrx, paradisExtractCrxArchive, paradisIsSafeArchiveEntryName, paradisWebStoreCrxUrl } from '../../electron-main/paradisBrowserExtensionWebStore.js';
 import { IParadisNativeHostLookup, paradisNativeHostSources, paradisOwnFolderNativeHostLookup } from '../../electron-main/paradisNativeMessagingHosts.js';
 
@@ -92,6 +93,7 @@ const developer = generateKey('rsa');
 const publisher = generateKey('rsa');
 const other = generateKey('ecdsa');
 const ID = idOf(developer);
+const OTHER_ID = idOf(other);
 
 function outcome(run: () => unknown): string {
 	try {
@@ -326,7 +328,7 @@ suite('ParadisBrowserExtensionWebStore install', () => {
 				leftAfterDecline: [],
 				added: { id: ID, source: 'webstore', version: '2.1' },
 				again: { ok: false, reason: 'alreadyAdded', detail: 'Store Ext' },
-				prompt: { extensionName: 'Store Ext', version: '2.1', access: { permissions: ['nativeMessaging', 'storage'], hostPermissions: ['https://example.com/*'] }, profileLabel: '既定' },
+				prompt: { extensionName: 'Store Ext', version: '2.1', access: { permissions: ['nativeMessaging', 'storage'], hostPermissions: ['https://example.com/*'] }, profileLabel: '既定', verified: true },
 				key: true,
 				onDisk: ['unpacked', true],
 				listed: [[ID, 'webstore', [PARADIS_DEFAULT_EXTENSION_PROFILE]]],
@@ -361,6 +363,152 @@ suite('ParadisBrowserExtensionWebStore install', () => {
 				overFolder: { ok: false, reason: 'sameIdUnpacked', detail: 'Dev Copy' },
 				badInput: { ok: false, reason: 'invalidInput' },
 				asked: [],
+			});
+		} finally {
+			manager.dispose();
+		}
+	});
+});
+
+suite('ParadisBrowserExtensionWebStore updates', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	let root: string;
+	setup(async () => {
+		root = await fs.mkdtemp(join(tmpdir(), 'paradis-webstore-updates-'));
+	});
+	teardown(async () => {
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	const manifestOf = (version: string, permissions: readonly string[]) => ({ manifest_version: 3, name: 'Store Ext', version, permissions });
+	const crxOf = async (version: string, permissions: readonly string[]) => buildCrx({ archive: await zipOf([{ name: 'manifest.json', data: JSON.stringify(manifestOf(version, permissions)) }]), developer, signers: [developer, publisher] });
+	const answer = (version: string, name: string) => JSON.stringify({ response: { app: [{ appid: ID, updatecheck: { status: 'ok', urls: { url: [{ codebase: 'https://clients2.googleusercontent.com/crx/blobs/' }] }, manifest: { version, packages: { package: [{ name }] } } } }] } });
+
+	test('reads only newer versions from Google hosts, and asks only about store extensions', () => {
+		const installed = new Map([[ID, '2.0']]);
+		const app = (appid: string, version: string, codebase = 'https://clients2.googleusercontent.com/crx/') => ({ appid, updatecheck: { status: 'ok', urls: { url: [{ codebase }] }, manifest: { version, packages: { package: [{ name: 'x.crx', hash_sha256: 'A'.repeat(64), size: 10 }] } } } });
+		const parse = (apps: unknown[]) => paradisParseUpdateResponse(`)]}'${JSON.stringify({ response: { app: apps } })}`, installed).map(update => [update.version, update.url, update.sha256, update.size]);
+		const request = JSON.parse(paradisBuildUpdateRequest([ID], { chromeVersion: '140.0.0.0', platform: 'darwin', arch: 'arm64' }).body) as { request: { app: unknown[]; os: unknown; acceptformat: string } };
+		assert.deepStrictEqual({
+			newer: parse([app(ID, '2.0.1')]),
+			same: parse([app(ID, '2.0')]),
+			older: parse([app(ID, '1.9.9')]),
+			notInstalled: parse([app(OTHER_ID, '9')]),
+			away: parse([app(ID, '3', 'https://evil.example/')]),
+			broken: paradisParseUpdateResponse('not json', installed),
+			versions: [paradisCompareExtensionVersions('1.10', '1.9'), paradisCompareExtensionVersions('1.0', '1'), paradisCompareExtensionVersions('1.0.0.1', '1.0.1')],
+			added: paradisAddedAccess({ permissions: ['storage', 'tabs'], hostPermissions: ['<all_urls>'] }, { permissions: ['storage'], hostPermissions: [] }),
+			request: [request.request.app, request.request.os, request.request.acceptformat],
+		}, {
+			newer: [['2.0.1', 'https://clients2.googleusercontent.com/crx/x.crx', 'A'.repeat(64), 10]],
+			same: [], older: [], notInstalled: [], away: [], broken: [],
+			versions: [1, 0, -1],
+			added: { permissions: ['tabs'], hostPermissions: ['<all_urls>'] },
+			request: [[{ appid: ID, updatecheck: {} }], { platform: 'mac', arch: 'arm64' }, 'crx3'],
+		});
+	});
+
+	test('updates on its own only when nothing new is asked, holds the rest until approved, and never goes back a version', async () => {
+		const packages: Record<string, Buffer> = {
+			'1.0.crx': await crxOf('1.0', ['storage']),
+			'1.1.crx': await crxOf('1.1', ['storage']),
+			'2.0.crx': await crxOf('2.0', ['storage', 'tabs']),
+			'2.0-changed.crx': await crxOf('2.0', ['storage', 'tabs', 'history']),
+			'lies.crx': await crxOf('0.5', ['storage']),
+		};
+		const next = '1.0.crx';
+		let updateAnswer = '';
+		const requests: string[] = [];
+		const asked: IParadisUpdatePrompt[] = [];
+		const options = {
+			askInstall: async () => true,
+			askUpdate: async (prompt: IParadisUpdatePrompt) => { asked.push(prompt); return true; },
+			fetcher: async (url: string) => ({ status: 200, read: async () => packages[url.startsWith('https://clients2.google.com/') ? next : url.split('/').pop()!], cancel: () => { } }),
+			updateRequester: async (_url: string, body: string) => { requests.push(body); return { status: 200, text: updateAnswer }; },
+			publisherKeyHash: hashOf(publisher),
+		};
+		const managers = [new ParadisBrowserExtensionsManager(join(root, 'mgr'), () => true, { warn: () => { } }, undefined, undefined, options)];
+		let manager = managers[0];
+		try {
+			const { session } = fakeSession(join(root, 'storage'));
+			await manager.attach(session, { id: 'global', storageScope: BrowserViewStorageScope.Global });
+			// ストアから入れたものが無いうちは問い合わせない
+			await manager.checkWebStoreUpdates();
+			const requestsWithoutStore = requests.length;
+			await manager.addFromWebStore(ID, PARADIS_DEFAULT_EXTENSION_PROFILE, '既定');
+			const version = async (target = manager) => (await target.getState()).extensions.map(extension => [extension.version, extension.pendingUpdate?.version, extension.nextVersion]);
+			updateAnswer = answer('1.1', '1.1.crx');
+			await manager.checkWebStoreUpdates();
+			const afterQuietUpdate = await version();
+			// 読み込んであるものは使っている最中に替えず、次の起動で使う
+			manager.dispose();
+			manager = new ParadisBrowserExtensionsManager(join(root, 'mgr'), () => true, { warn: () => { } }, undefined, undefined, options);
+			managers.push(manager);
+			await manager.attach(fakeSession(join(root, 'storage')).session, { id: 'global', storageScope: BrowserViewStorageScope.Global });
+			const afterRestart = await version();
+			updateAnswer = answer('2.0', 'lies.crx');
+			await manager.checkWebStoreUpdates();
+			const afterLie = await version();
+			updateAnswer = answer('2.0', '2.0.crx');
+			await manager.checkWebStoreUpdates();
+			const afterHeld = await version();
+			const pending = (await manager.getState()).extensions[0].pendingUpdate;
+			// 確かめた後に中身が変わっていたら入れない
+			packages['2.0.crx'] = packages['2.0-changed.crx'];
+			const changed = await manager.approveWebStoreUpdate(ID);
+			const afterChanged = await version();
+			packages['2.0.crx'] = await crxOf('2.0', ['storage', 'tabs']);
+			await manager.checkWebStoreUpdates();
+			const approved = await manager.approveWebStoreUpdate(ID);
+			assert.deepStrictEqual({
+				requestsWithoutStore,
+				askedApps: JSON.parse(requests[0]).request.app,
+				afterQuietUpdate, afterRestart, afterLie, afterHeld, pending,
+				changed, afterChanged,
+				approved: approved.ok ? approved.extension.version : approved,
+				final: await version(),
+				asked: asked.map(prompt => [prompt.version, prompt.added]),
+			}, {
+				requestsWithoutStore: 0,
+				askedApps: [{ appid: ID, updatecheck: {} }],
+				afterQuietUpdate: [['1.0', undefined, '1.1']],
+				afterRestart: [['1.1', undefined, undefined]],
+				// 答えが 2.0 と言っても、落とした中身が古い版なら入れない
+				afterLie: [['1.1', undefined, undefined]],
+				afterHeld: [['1.1', '2.0', undefined]],
+				pending: { version: '2.0', permissions: ['tabs'], hostPermissions: [] },
+				changed: { ok: false, reason: 'webStoreFailed', detail: 'the update changed since it was checked' },
+				afterChanged: [['1.1', undefined, undefined]],
+				approved: '2.0',
+				final: [['2.0', undefined, undefined]],
+				asked: [['2.0', { permissions: ['tabs'], hostPermissions: [] }], ['2.0', { permissions: ['tabs'], hostPermissions: [] }]],
+			});
+		} finally {
+			for (const entry of managers) {
+				entry.dispose();
+			}
+		}
+	});
+
+	test('asks before downloading when the store page installs, and refuses a package whose permissions differ from the listing', async () => {
+		const packageAsks = await crxOf('1.0', ['storage', 'tabs']);
+		let downloads = 0;
+		const order: string[] = [];
+		const manager = new ParadisBrowserExtensionsManager(join(root, 'mgr'), () => true, { warn: () => { } }, undefined, undefined, {
+			askInstall: async prompt => { order.push(`ask (downloads ${downloads}, verified ${prompt.verified})`); return true; },
+			fetcher: async () => { downloads++; order.push('download'); return { status: 200, read: async () => packageAsks, cancel: () => { } }; },
+			publisherKeyHash: hashOf(publisher),
+		});
+		try {
+			const listed = await manager.addFromWebStore(ID, PARADIS_DEFAULT_EXTENSION_PROFILE, '既定', { name: 'Store Ext', version: '1.0', manifest: manifestOf('1.0', ['storage']) });
+			const left = await fs.readdir(join(root, 'mgr', 'webstore')).catch(() => []);
+			const same = await manager.addFromWebStore(ID, PARADIS_DEFAULT_EXTENSION_PROFILE, '既定', { name: 'Store Ext', version: '1.0', manifest: manifestOf('1.0', ['tabs', 'storage']) });
+			assert.deepStrictEqual({ listed, left, same: same.ok && same.extension.version, order }, {
+				listed: { ok: false, reason: 'webStoreFailed', detail: 'the downloaded extension asks for different permissions than the store listed' },
+				left: [],
+				same: '1.0',
+				order: ['ask (downloads 0, verified false)', 'download', 'ask (downloads 1, verified false)', 'download'],
 			});
 		} finally {
 			manager.dispose();
