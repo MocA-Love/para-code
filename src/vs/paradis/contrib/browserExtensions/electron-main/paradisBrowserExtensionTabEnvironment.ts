@@ -10,7 +10,8 @@
 // プロファイルの main（paradisRegisterBrowserProfiles）から呼ぶ。browserViewMainService などは型だけを読む
 // （値を読むと browserSession.ts → 拡張機能の main → ここ、と読み込みが輪になるため）。
 
-import { app, BrowserWindow, type Session } from 'electron';
+import { app, BrowserWindow, screen, type Session } from 'electron';
+import type { IParadisRect } from '../common/paradisBrowserExtensionAction.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
@@ -117,10 +118,15 @@ export function paradisCreateBrowserExtensionPopout(session: Session, url: strin
 	});
 	window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 	// 拡張機能自身のページだけを出す（アドレスバーの無い窓でウェブのページを開かせない）
-	const origin = new URL(url).origin;
+	// URL の origin は chrome-extension: では "null" になり、どの拡張機能のページも同じに見える。スキームと host で比べる
+	const pageKey = (value: string) => {
+		const parsed = new URL(value);
+		return parsed.protocol === 'chrome-extension:' ? `${parsed.protocol}//${parsed.host}` : parsed.origin;
+	};
+	const own = pageKey(url);
 	const stayOnExtension = (event: { preventDefault(): void }, target: string) => {
 		try {
-			if (new URL(target).origin === origin) {
+			if (pageKey(target) === own) {
 				return;
 			}
 		} catch {
@@ -133,4 +139,27 @@ export function paradisCreateBrowserExtensionPopout(session: Session, url: strin
 	window.once('ready-to-show', () => options.focused ? window.show() : window.showInactive());
 	void window.loadURL(url);
 	return window;
+}
+
+/** ツールバーのボタンのポップアップの窓（枠の無い、Para Code のウィンドウの子。中身に合わせて大きさを変える）。 */
+export function paradisCreateBrowserExtensionActionPopup(parent: BrowserWindow, bounds: IParadisRect, session: Session): BrowserWindow {
+	return new BrowserWindow({
+		...bounds,
+		parent,
+		show: false,
+		frame: false,
+		resizable: false,
+		movable: false,
+		minimizable: false,
+		maximizable: false,
+		fullscreenable: false,
+		skipTaskbar: true,
+		hasShadow: true,
+		webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true },
+	});
+}
+
+/** 画面の座標の四角がある画面の作業領域。 */
+export function paradisWorkAreaFor(rect: IParadisRect): IParadisRect {
+	return screen.getDisplayMatching(rect).workArea;
 }

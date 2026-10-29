@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 内蔵ブラウザの Chrome 拡張機能（試験的）の管理画面を開くコマンドと、共有の確認に使う窓口。
+// 内蔵ブラウザの Chrome 拡張機能（試験的）の管理画面を開くコマンド、共有の確認に使う窓口、ツールバーのボタン。
 // paradis.electron-browser.contribution.ts への import 1 行で有効になる。
 
 import './media/paradisBrowserExtensions.css';
@@ -19,10 +19,13 @@ import { PARADIS_MANAGE_BROWSER_EXTENSIONS_COMMAND_ID } from '../common/paradisB
 import { paradisShowBrowserExtensionsDialog } from './paradisBrowserExtensionsDialog.js';
 import { IParadisBrowserExtensionsService, ParadisBrowserExtensionsService } from './paradisBrowserExtensionsService.js';
 import { ParadisBrowserExtensionTabActivationContribution } from './paradisBrowserExtensionTabActivation.js';
+import { IParadisBrowserExtensionToolbarService, ParadisBrowserExtensionToolbarContribution, ParadisBrowserExtensionToolbarService } from './paradisBrowserExtensionToolbar.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 
 registerSingleton(IParadisBrowserExtensionsService, ParadisBrowserExtensionsService, InstantiationType.Delayed);
 registerWorkbenchContribution2(ParadisBrowserExtensionTabActivationContribution.ID, ParadisBrowserExtensionTabActivationContribution, WorkbenchPhase.AfterRestored);
+registerSingleton(IParadisBrowserExtensionToolbarService, ParadisBrowserExtensionToolbarService, InstantiationType.Delayed);
+registerWorkbenchContribution2(ParadisBrowserExtensionToolbarContribution.ID, ParadisBrowserExtensionToolbarContribution, WorkbenchPhase.AfterRestored);
 
 registerAction2(class ParadisManageBrowserExtensionsAction extends Action2 {
 	constructor() {
