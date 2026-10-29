@@ -15,6 +15,7 @@ import { localize } from '../../../../nls.js';
 import { join } from '../../../../base/common/path.js';
 import type { IDialogMainService } from '../../../../platform/dialogs/electron-main/dialogMainService.js';
 import type { IParadisPermissionPrompt } from './paradisBrowserExtensionPermissions.js';
+import type { IParadisInstallPrompt } from './paradisBrowserExtensionWebStore.js';
 import type { IParadisExtensionNotification, IParadisExtensionNotificationOptions } from './paradisBrowserExtensionServices.js';
 import type { IParadisRect } from '../common/paradisBrowserExtensionAction.js';
 import { paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
@@ -190,6 +191,19 @@ function permissionLabel(permission: string): string {
 		case 'clipboardRead': return localize('paradis.browserExtensions.permission.clipboardRead', "クリップボードの読み取り");
 		case 'clipboardWrite': return localize('paradis.browserExtensions.permission.clipboardWrite', "クリップボードへの書き込み");
 		case 'webNavigation': return localize('paradis.browserExtensions.permission.webNavigation', "ページの移動の読み取り");
+		case 'storage': return localize('paradis.browserExtensions.permission.storage', "拡張機能のデータの保存");
+		case 'unlimitedStorage': return localize('paradis.browserExtensions.permission.unlimitedStorage', "上限の無いデータの保存");
+		case 'activeTab': return localize('paradis.browserExtensions.permission.activeTab', "拡張機能を押したタブの読み取りと変更");
+		case 'alarms': return localize('paradis.browserExtensions.permission.alarms', "決まった時刻の処理");
+		case 'nativeMessaging': return localize('paradis.browserExtensions.permission.nativeMessaging', "パソコンに入っているアプリとのやりとり");
+		case 'history': return localize('paradis.browserExtensions.permission.history', "閲覧の履歴の読み取りと変更");
+		case 'bookmarks': return localize('paradis.browserExtensions.permission.bookmarks', "ブックマークの読み取りと変更");
+		case 'privacy': return localize('paradis.browserExtensions.permission.privacy', "プライバシーの設定の変更");
+		case 'proxy': return localize('paradis.browserExtensions.permission.proxy', "プロキシの設定の変更");
+		case 'webRequest': return localize('paradis.browserExtensions.permission.webRequest', "ページの通信の読み取り");
+		case 'declarativeNetRequest': return localize('paradis.browserExtensions.permission.declarativeNetRequest', "ページの通信の遮断・書き換え");
+		case 'scripting': return localize('paradis.browserExtensions.permission.scripting', "ページへのスクリプトの挿入");
+		case 'debugger': return localize('paradis.browserExtensions.permission.debugger', "ページのデバッガーへの接続");
 		default: return permission;
 	}
 }
@@ -214,6 +228,31 @@ export function paradisCreateBrowserExtensionPermissionPrompt(dialogMainService:
 			message: localize('paradis.browserExtensions.permission.message', "「{0}」に次の権限を許しますか？", prompt.extensionName),
 			detail: `${items.map(item => `・${item}`).join('\n')}\n\n${localize('paradis.browserExtensions.permission.detail', "このプロファイルのタブで使います。管理画面から拡張機能を削除すると、許した権限も消えます。")}`,
 			buttons: [localize('paradis.browserExtensions.permission.allow', "許可"), localize('paradis.browserExtensions.permission.deny', "許可しない")],
+			defaultId: 1,
+			cancelId: 1,
+			noLink: true,
+		}, window);
+		return response === 0;
+	};
+}
+
+/** ストアから入れる前の確認のダイアログ（Para Code の今のウィンドウの上。ウィンドウが無ければ入れない）。 */
+export function paradisCreateBrowserExtensionInstallPrompt(dialogMainService: IDialogMainService, lastActiveWindow: () => BrowserWindow | undefined): (prompt: IParadisInstallPrompt) => Promise<boolean> {
+	return async prompt => {
+		const window = lastActiveWindow();
+		if (!window || window.isDestroyed()) {
+			return false;
+		}
+		const items = [...prompt.access.permissions.map(permissionLabel), ...prompt.access.hostPermissions.map(originLabel)];
+		const shown = items.slice(0, 20);
+		const list = shown.length > 0
+			? `${shown.map(item => `・${item}`).join('\n')}${items.length > shown.length ? `\n${localize('paradis.browserExtensions.install.more', "ほか {0} 件", items.length - shown.length)}` : ''}`
+			: localize('paradis.browserExtensions.install.noPermissions', "特別な権限は求めていません。");
+		const { response } = await dialogMainService.showMessageBox({
+			type: 'question',
+			message: localize('paradis.browserExtensions.install.message', "「{0}」（{1}）を Para Code に追加しますか？", prompt.extensionName, prompt.version),
+			detail: `${localize('paradis.browserExtensions.install.can', "この拡張機能は次のことができます。")}\n${list}\n\n${localize('paradis.browserExtensions.install.detail', "Chrome ウェブストアの署名を確かめました。有効にする場所: {0}", prompt.profileLabel)}`,
+			buttons: [localize('paradis.browserExtensions.install.add', "追加"), localize('paradis.browserExtensions.install.cancel', "キャンセル")],
 			defaultId: 1,
 			cancelId: 1,
 			noLink: true,

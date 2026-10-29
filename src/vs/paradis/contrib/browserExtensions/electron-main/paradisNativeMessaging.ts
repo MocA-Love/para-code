@@ -12,7 +12,9 @@
 //  - シェルを通さず、実行ファイルを直接起動する（引数は Chrome と同じく拡張機能の origin だけ。Windows は親のウィンドウも）。
 //    Windows は Chrome と同じく cmd.exe を通す（.bat・.cmd のホストがあるため）ので、パスに " と % と改行を含むものは起動しない
 //  - 環境変数から Electron・Node の起動の指定と、Para Code の中だけの値を外す
-//  - 標準入力を閉じたら 2 秒待ち、終わらなければ終わらせる（Chrome の EnsureProcessTerminated）。プロセスのまとまりごと終わらせる
+//  - 標準入力を閉じたら 2 秒待ち、終わらなければ SIGKILL で終わらせる（Chrome の EnsureProcessTerminated）。Chrome と同じく、
+//    ホストは別のプロセスのまとまり・セッションにしない（Node の detached は setsid）。Para Code が落ちたときは、標準入力の
+//    パイプが閉じてホストに EOF が届く（Chrome と同じ。EOF で終わらないホストは残る）
 //  - ポートは開いた文脈（worker か、そのページ）のもの。その文脈だけが使え、文脈が終わる・拡張機能を外すとホストを終わらせる。
 //    ポートが開いている間は worker を生かしておく（Chrome と同じ）
 //  - ホストから拡張機能へは 1 MB まで。拡張機能からホストへは、私用スキームの本文の上限（2 MiB）まで。書き込み待ちには上限を付ける
@@ -27,7 +29,7 @@ import { randomUUID } from 'crypto';
 import { posix, win32 } from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
-import { IParadisNativeHostLookup, PARADIS_NATIVE_HOST_ERRORS, paradisCreateNativeMessageReader, paradisEncodeNativeMessage, paradisResolveNativeHost } from './paradisNativeMessagingHosts.js';
+import { IParadisNativeHostLookup, PARADIS_NATIVE_HOST_ERRORS, PARADIS_NATIVE_MESSAGING_HOSTS_FOLDER, paradisCreateNativeMessageReader, paradisEncodeNativeMessage, paradisOwnFolderNativeHostLookup, paradisResolveNativeHost } from './paradisNativeMessagingHosts.js';
 
 /** main だけが使う名前空間（詰め物の connectNative・sendNativeMessage が呼ぶ。chrome には出さない）。 */
 export const PARADIS_NATIVE_MESSAGING_NAMESPACE = 'paradisNativeMessaging';
@@ -43,14 +45,22 @@ const MAX_PORTS_PER_CONTEXT = 32;
 const STDERR_LOG_BUDGET_BYTES = 4 * 1024;
 
 /** 起動するホスト（テストでは偽物の spawn を渡す）。 */
-export type ParadisNativeHostSpawner = (program: string, args: readonly string[], options: { readonly cwd: string; readonly env: NodeJS.ProcessEnv; readonly detached: boolean; readonly windowsVerbatimArguments?: boolean }) => ChildProcess;
+export type ParadisNativeHostSpawner = (program: string, args: readonly string[], options: { readonly cwd: string; readonly env: NodeJS.ProcessEnv; readonly windowsVerbatimArguments?: boolean }) => ChildProcess;
 
-/** ホストに渡す環境変数（Electron・Node の起動の指定と、Para Code の中だけの値を外す）。 */
+/**
+ * ホストに渡さない環境変数の頭。Electron・Node の起動の指定と、Para Code の中だけの値（Para Code のターミナルから起動した
+ * ときに入るペインのトークン・ソケット・MCP の場所など。`PARA_CODE_*`・`PARA_UPDATE_CHANNEL` などの `PARA_*`、
+ * `PARADIS_*`、`PARACODE_*`、upstream の `VSCODE_*`）。
+ */
+const PRIVATE_ENVIRONMENT_PREFIXES = ['ELECTRON_', 'VSCODE_', 'PARA_', 'PARADIS_', 'PARACODE_'];
+const PRIVATE_ENVIRONMENT_NAMES = new Set(['NODE_OPTIONS', 'CHROME_CRASHPAD_PIPE_NAME']);
+
+/** ホストに渡す環境変数（{@link PRIVATE_ENVIRONMENT_PREFIXES} を外す）。 */
 export function paradisNativeHostEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const result: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(environment)) {
 		const upper = key.toUpperCase();
-		if (upper.startsWith('ELECTRON_') || upper === 'NODE_OPTIONS' || upper.startsWith('VSCODE_') || upper.startsWith('PARA_CODE_') || upper === 'CHROME_CRASHPAD_PIPE_NAME') {
+		if (PRIVATE_ENVIRONMENT_NAMES.has(upper) || PRIVATE_ENVIRONMENT_PREFIXES.some(prefix => upper.startsWith(prefix))) {
 			continue;
 		}
 		result[key] = value;
@@ -91,7 +101,7 @@ function startHost(name: string, program: string, args: readonly string[], spawn
 		const path = platform === 'win32' ? win32 : posix;
 		let child: ChildProcess;
 		try {
-			child = spawner(command.file, command.args, { cwd: path.dirname(program), env: paradisNativeHostEnvironment(process.env), detached: platform !== 'win32', ...(command.verbatim ? { windowsVerbatimArguments: true } : {}) });
+			child = spawner(command.file, command.args, { cwd: path.dirname(program), env: paradisNativeHostEnvironment(process.env), ...(command.verbatim ? { windowsVerbatimArguments: true } : {}) });
 		} catch (error) {
 			logService.warn(`[paradis] could not start native host ${name}`, error);
 			reject(new ParadisExtensionApiError(PARADIS_NATIVE_HOST_ERRORS.failedToStart));
@@ -112,8 +122,9 @@ function startHost(name: string, program: string, args: readonly string[], spawn
 				if (platform === 'win32') {
 					// プロセスのまとまりごと（cmd.exe とその子のホスト）
 					spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on('error', () => child.kill('SIGKILL'));
-				} else if (child.pid !== undefined) {
-					process.kill(-child.pid, 'SIGKILL');
+				} else {
+					// Chrome と同じく、ホストのプロセスだけを終わらせる（base::EnsureProcessTerminated。posix は SIGKILL）
+					child.kill('SIGKILL');
 				}
 			} catch {
 				try {
@@ -247,6 +258,8 @@ export class ParadisNativeMessaging implements IDisposable {
 		private readonly _logService: { warn(message: string, ...args: unknown[]): void },
 		private readonly _spawner: ParadisNativeHostSpawner = (program, args, options) => spawn(program, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true }),
 		private readonly _platform: NodeJS.Platform = process.platform,
+		/** main がストアの署名を確かめて入れた拡張機能か（台帳の source。ほかのブラウザに登録されたホストを使えるのはこれだけ）。 */
+		private readonly _fromWebStore: (extensionId: string) => boolean = () => true,
 	) {
 		// 文脈が終わった（ページが閉じた・worker が止まった・拡張機能を外した）: そのポートのホストを終わらせる
 		this._disposable = _host.onDidCloseContext((session, extensionId, connection) => this._closeWhere(port => port.session === session && port.extensionId === extensionId && (connection === undefined || port.connection === connection)));
@@ -261,11 +274,7 @@ export class ParadisNativeMessaging implements IDisposable {
 		this._closeWhere(() => true);
 		for (const child of [...this._live]) {
 			try {
-				if (this._platform !== 'win32' && child.pid !== undefined) {
-					process.kill(-child.pid, 'SIGKILL');
-				} else {
-					child.kill('SIGKILL');
-				}
+				child.kill('SIGKILL');
 			} catch {
 				// 既に終わっている
 			}
@@ -308,7 +317,14 @@ export class ParadisNativeMessaging implements IDisposable {
 		const port: INativePort = { key: `${key}|${randomUUID()}`, session: caller.session, extensionId: caller.extension.id, connection: caller.connection, host: undefined, closed: false, task: caller.fromWorker ? this._host.keepWorkerAlive(caller.session, caller.extension.id) : undefined, onEvent };
 		this._ports.set(port.key, port);
 		try {
-			const resolved = await paradisResolveNativeHost(application, caller.extension.id, this._lookup(), message => this._logService.warn(`[paradis] ${message}`));
+			const lookup = this._lookup();
+			const fromWebStore = this._fromWebStore(caller.extension.id);
+			let resolved = await paradisResolveNativeHost(application, caller.extension.id, fromWebStore ? lookup : paradisOwnFolderNativeHostLookup(lookup), message => this._logService.warn(`[paradis] ${message}`));
+			if (!resolved.ok && !fromWebStore && resolved.error !== PARADIS_NATIVE_HOST_ERRORS.invalidName && (await paradisResolveNativeHost(application, caller.extension.id, lookup)).ok) {
+				// ほかのブラウザに登録されたホストは、フォルダから読み込んだ拡張機能には使わせない（ストアの id へのなりすましになるため）
+				this._logService.warn(`[paradis] refused native host ${String(application)} for ${caller.extension.id}: it is registered for other browsers, and an extension loaded from a folder can only use hosts in Para Code's own ${PARADIS_NATIVE_MESSAGING_HOSTS_FOLDER} folder`);
+				resolved = { ok: false, error: PARADIS_NATIVE_HOST_ERRORS.forbidden };
+			}
 			if (!resolved.ok) {
 				throw new ParadisExtensionApiError(resolved.error);
 			}
