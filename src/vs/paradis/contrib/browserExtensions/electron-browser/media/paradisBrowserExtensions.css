@@ -1,0 +1,83 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* Browser extensions (experimental) dialog. The modal shell and list rows come from paradisBrowserProfiles.css. */
+
+.paradis-browser-profile-modal .pbe-notice {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 0 0 12px;
+	padding: 9px 12px;
+	border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-inputValidation-warningBackground, var(--vscode-editorWidget-background));
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.paradis-browser-profile-modal .pbe-notice > span {
+	flex: 1;
+}
+
+.paradis-browser-profile-modal .pbe-profile {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 10px;
+	font-size: 12px;
+}
+
+.paradis-browser-profile-modal .pbe-select {
+	flex: 1;
+	min-width: 0;
+	padding: 3px 6px;
+	border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-dropdown-background);
+	color: var(--vscode-dropdown-foreground);
+	font-family: inherit;
+	font-size: 12px;
+}
+
+.paradis-browser-profile-modal .pbe-list {
+	max-height: 320px;
+	overflow-y: auto;
+}
+
+.paradis-browser-profile-modal .pbe-toggle {
+	flex-shrink: 0;
+	margin: 0;
+}
+
+.paradis-browser-profile-modal .pbe-list .pbpm-meta {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-browser-profile-modal .pbe-row-error {
+	margin-top: 2px;
+	color: var(--vscode-errorForeground);
+	font-size: 11px;
+}
+
+.paradis-browser-profile-modal .pbe-message {
+	margin-top: 8px;
+	min-height: 1em;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.paradis-browser-profile-modal .pbe-message.is-error {
+	color: var(--vscode-errorForeground);
+}
+
+.paradis-browser-profile-modal .pbe-list .pbpm-row-action:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
