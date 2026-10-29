@@ -286,6 +286,8 @@ export interface IParadisBrowserExtensionView extends IParadisInstalledBrowserEx
 	readonly enabledIn: readonly string[];
 	/** 直近の読み込みの失敗（無ければ undefined）。 */
 	readonly loadError?: string;
+	/** UTF-8 でないため、Para Code の足す API（storage.sync など）を入れられなかったページ。 */
+	readonly pagesWithoutApis?: readonly string[];
 }
 
 /** あるページのセッションに今入っている、利用者が入れた拡張機能。 */
@@ -314,7 +316,7 @@ export interface IParadisBrowserExtensionsState {
 /** フォルダから足した結果。 */
 export type IParadisAddExtensionResult =
 	| { readonly ok: true; readonly extension: IParadisInstalledBrowserExtension }
-	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'linkOutside' | 'hardLink' | 'nameClash' | 'changed' | 'tooLarge' | 'restartNeeded' | 'failed'; readonly detail?: string };
+	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'linkOutside' | 'hardLink' | 'nameClash' | 'reservedName' | 'changed' | 'tooLarge' | 'restartNeeded' | 'failed'; readonly detail?: string };
 
 /** main の拡張機能の管理（{@link PARADIS_BROWSER_EXTENSIONS_CHANNEL}）。 */
 export interface IParadisBrowserExtensionsMainService {

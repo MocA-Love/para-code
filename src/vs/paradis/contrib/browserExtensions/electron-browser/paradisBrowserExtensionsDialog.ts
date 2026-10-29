@@ -24,6 +24,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { ParadisProfileModal } from '../../browserProfiles/electron-browser/paradisBrowserProfileDialogs.js';
+import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisBrowserProfilesService } from '../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
 import {
 	IParadisAddExtensionResult,
@@ -37,6 +38,7 @@ import {
 	PARADIS_MAX_EXTENSION_FILES,
 	paradisNamedExtensionProfile,
 } from '../common/paradisBrowserExtensions.js';
+import { paradisEnabledWhileSharedWarning, paradisSharedPageTitlesInPlace } from './paradisBrowserExtensionsService.js';
 
 const $ = dom.$;
 
@@ -65,6 +67,8 @@ export function paradisDescribeAddExtensionFailure(result: Extract<IParadisAddEx
 			return localize('paradis.browserExtensions.error.hardLink', "フォルダの中の「{0}」は、ほかの場所と中身を共有するファイル（ハードリンク）です。外のファイルを読めないようにするため、このフォルダは読み込めません。ふつうのファイルとして写してから選んでください。", result.detail ?? '');
 		case 'nameClash':
 			return localize('paradis.browserExtensions.error.nameClash', "フォルダの中に、大文字と小文字などだけが違う同じ名前（「{0}」）があります。写すと上書きされるため、読み込めません。", result.detail ?? '');
+		case 'reservedName':
+			return localize('paradis.browserExtensions.error.reservedName', "フォルダの中の「{0}」は、Para Code が拡張機能の写しに書くファイルと同じ名前です。名前を変えてから読み込んでください。", result.detail ?? '');
 		case 'changed':
 			return localize('paradis.browserExtensions.error.changed', "写している間にフォルダの中身（「{0}」）が変わりました。もう一度読み込んでください。", result.detail ?? '');
 		case 'tooMany':
@@ -97,6 +101,7 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@ILayoutService layoutService: ILayoutService,
+		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
 	) {
 		super(localize('paradis.browserExtensions.title', "ブラウザの拡張機能（試験的）"), Codicon.extensions, layoutService);
 		this._mainService = ProxyChannel.toService<IParadisBrowserExtensionsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL));
@@ -229,7 +234,24 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		toggle.disabled = !active || this._busy;
 		toggle.setAttribute('aria-label', localize('paradis.browserExtensions.toggle', "「{0}」をこの場所で有効にする", extension.name));
 		this.contentFocusables.push(toggle);
-		this._renderStore.add(dom.addDisposableListener(toggle, 'change', () => void this._run(() => this._mainService.setEnabled(extension.id, this._profile, toggle.checked))));
+		this._renderStore.add(dom.addDisposableListener(toggle, 'change', () => {
+			const enabling = toggle.checked;
+			const place = this._profile;
+			void this._run(async () => {
+				await this._mainService.setEnabled(extension.id, place, enabling);
+				// 共有した後に有効にしたタブは共有の確認を通らないので、ここで知らせる（D4）
+				if (enabling && extension.touchesPages) {
+					const titles = paradisSharedPageTitlesInPlace(
+						this.bindingModel.bindings.map(binding => ({ pageId: binding.pageId, title: binding.pageInfo.title || binding.pageInfo.url })),
+						place,
+						pageId => this.profilesService.getViewSession(pageId),
+					);
+					if (titles.length > 0) {
+						this._showMessage(paradisEnabledWhileSharedWarning(extension.name, titles), true);
+					}
+				}
+			});
+		}));
 
 		const info = dom.append(row, $('.pbpm-info'));
 		dom.append(info, $('.pbpm-name')).textContent = extension.name;
@@ -237,6 +259,9 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		if (extension.touchesPages) {
 			// 共有の確認で知らせる対象（入力欄に値を入れられる・ページの中身を読める）
 			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.touchesPages', "ページの中身を読み書きできます。このタブを共有すると、拡張機能が入力した値はエージェントからも読めます");
+		}
+		if (extension.pagesWithoutApis?.length) {
+			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.pagesWithoutApis', "UTF-8 でないため、次のページでは Para Code が足す機能（chrome.storage.sync など）が使えません: {0}", extension.pagesWithoutApis.join('、'));
 		}
 		if (extension.loadError) {
 			dom.append(info, $('.pbe-row-error')).textContent = localize('paradis.browserExtensions.loadError', "読み込めませんでした: {0}", extension.loadError);
