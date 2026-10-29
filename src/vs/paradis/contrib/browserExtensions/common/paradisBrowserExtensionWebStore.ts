@@ -11,6 +11,17 @@
 
 import { paradisIsExtensionId } from './paradisBrowserExtensions.js';
 
+/** ストアのページの橋（P7b）の名前（ストアのページの preload は束ねないので書き写してある。テストが一致を確かめる）。 */
+export const PARADIS_WEB_STORE_CHANNEL = 'paradis:webStore';
+export const PARADIS_WEB_STORE_EVENT_CHANNEL = 'paradis:webStoreEvent';
+export const PARADIS_WEB_STORE_QUERY = 'paradis:webStoreAllowed';
+
+/** ストアのページの橋（P7b）の答え。`value` はページの callback へ、`error` は callback の間だけ runtime.lastError になる。 */
+export interface IParadisWebStoreReply {
+	readonly value?: unknown;
+	readonly error?: string;
+}
+
 /** Chrome ウェブストアの origin（前方一致にすると似せた名前の host に入れる力を渡すので、完全一致で比べる）。 */
 export const PARADIS_CHROME_WEB_STORE_ORIGIN = 'https://chromewebstore.google.com';
 

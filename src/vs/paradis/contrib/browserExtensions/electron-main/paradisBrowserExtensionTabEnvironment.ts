@@ -261,6 +261,26 @@ export function paradisCreateBrowserExtensionInstallPrompt(dialogMainService: ID
 	};
 }
 
+/** Chrome ウェブストアのページから外す前の確認のダイアログ（ページから黙って外させない）。 */
+export function paradisCreateBrowserExtensionRemovePrompt(dialogMainService: IDialogMainService, lastActiveWindow: () => BrowserWindow | undefined): (extensionName: string) => Promise<boolean> {
+	return async extensionName => {
+		const window = lastActiveWindow();
+		if (!window || window.isDestroyed()) {
+			return false;
+		}
+		const { response } = await dialogMainService.showMessageBox({
+			type: 'question',
+			message: localize('paradis.browserExtensions.remove.message', "「{0}」を Para Code から削除しますか？", extensionName),
+			detail: localize('paradis.browserExtensions.remove.detail', "Chrome ウェブストアのページから求められました。ほかの場所でも有効なら、このタブの場所でだけ無効にします。"),
+			buttons: [localize('paradis.browserExtensions.remove.ok', "削除"), localize('paradis.browserExtensions.remove.cancel', "キャンセル")],
+			defaultId: 1,
+			cancelId: 1,
+			noLink: true,
+		}, window);
+		return response === 0;
+	};
+}
+
 /** 拡張機能の通知（OS の通知）。通知が使えない環境では undefined。 */
 export function paradisCreateBrowserExtensionNotification(options: IParadisExtensionNotificationOptions): IParadisExtensionNotification | undefined {
 	if (!Notification.isSupported()) {

@@ -216,7 +216,7 @@ process.stdin.on('end', () => process.exit(0));
 suite('ParadisNativeMessaging ports', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	async function setup(permissions: readonly string[], options: { readonly fromWebStore?: boolean; readonly own?: boolean } = {}) {
+	async function setup(permissions: readonly string[], options: { readonly fromWebStore?: boolean; readonly own?: boolean; readonly defaultFromWebStore?: boolean } = {}) {
 		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-native-'));
 		const hostScript = join(root, 'host.js');
 		await fs.writeFile(hostScript, FAKE_HOST);
@@ -259,7 +259,10 @@ suite('ParadisNativeMessaging ports', () => {
 			return spawn(process.execPath, [program, ...args], { cwd: options.cwd, env: { ...options.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
 		};
 		process.env.PARA_CODE_TEST_SECRET = '1';
-		const native = new ParadisNativeMessaging(host, () => lookup, silentLog, spawner, 'linux', () => options.fromWebStore ?? true);
+		// fromWebStore を渡さないときは、渡し忘れと同じく既定（ストアのものとはみなさない）で作る
+		const native = options.fromWebStore === undefined && options.defaultFromWebStore
+			? new ParadisNativeMessaging(host, () => lookup, silentLog, spawner, 'linux')
+			: new ParadisNativeMessaging(host, () => lookup, silentLog, spawner, 'linux', () => options.fromWebStore ?? true);
 		const attached = host.attachSession(session, 'default');
 		const token = host.tokenFor(ID);
 		const post = (endpoint: string, connection: string, request?: unknown) => {
@@ -385,16 +388,20 @@ suite('ParadisNativeMessaging ports', () => {
 	test('lets an extension loaded from a folder use only hosts in Para Code\'s own folder', async () => {
 		const elsewhere = await setup(['nativeMessaging'], { fromWebStore: false });
 		const own = await setup(['nativeMessaging'], { fromWebStore: false, own: true });
+		const notPassed = await setup(['nativeMessaging'], { defaultFromWebStore: true });
 		try {
 			assert.deepStrictEqual({
 				// ほかのブラウザに登録されたホストは、ストアの id へのなりすましになりうるので断る
 				elsewhere: await elsewhere.call('worker', 'sendNativeMessage', ['com.example.echo', JSON.stringify({ once: true })]),
 				elsewhereSpawned: elsewhere.spawned.length,
 				own: ((await own.call('worker', 'sendNativeMessage', ['com.example.echo', JSON.stringify({ once: true })])) as { ok: boolean }).ok,
-			}, { elsewhere: { ok: false, error: PARADIS_NATIVE_HOST_ERRORS.forbidden }, elsewhereSpawned: 0, own: true });
+				// 調べ方を渡し忘れても、危ない側（ほかのブラウザのホストを使わせる）には倒れない
+				notPassed: await notPassed.call('worker', 'sendNativeMessage', ['com.example.echo', JSON.stringify({ once: true })]),
+			}, { elsewhere: { ok: false, error: PARADIS_NATIVE_HOST_ERRORS.forbidden }, elsewhereSpawned: 0, own: true, notPassed: { ok: false, error: PARADIS_NATIVE_HOST_ERRORS.forbidden } });
 		} finally {
 			await elsewhere.dispose();
 			await own.dispose();
+			await notPassed.dispose();
 		}
 	});
 
