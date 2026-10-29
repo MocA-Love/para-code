@@ -185,6 +185,9 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 				},
 				sendCommandRaw: (method: string, params: unknown, sessionId?: string) => {
 					// The hit test of the extension input guard; not an input.
+					if (method === 'Page.getLayoutMetrics') {
+						return Promise.resolve({ cssVisualViewport: { pageX: 0, pageY: 0, scale: 1 } });
+					}
 					if (method === 'DOM.getNodeForLocation') {
 						return Promise.resolve({ backendNodeId: (params as { x: number }).x < 100 ? 7 : 8, frameId: 'F1' });
 					}

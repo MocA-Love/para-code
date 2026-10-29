@@ -55,7 +55,7 @@ import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, p
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import { PARADIS_EXTENSION_PAGE_DENIED_MESSAGE } from '../common/paradisCdpExtensionScope.js';
 import { paradisGuardChildWebContents, paradisSetExtensionNavigationGuard, paradisShowsExtensionPage } from './paradisExtensionNavigationGuard.js';
-import { paradisExtensionInputRefusal, paradisGuardUpstreamAutomationInput } from './paradisExtensionInputGuard.js';
+import { paradisExtensionInputRefusal, paradisInputGuardTab } from './paradisExtensionInputGuard.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
@@ -316,7 +316,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			// 拡張の画面へは届けない（paradisExtensionInputGuard.ts）
 			const created = this.browserViewMainService.tryGetBrowserView(childViewId);
 			if (created && !created.webContents.isDestroyed()) {
-				paradisGuardUpstreamAutomationInput(created);
+				paradisInputGuardTab(created);
 			}
 		} catch {
 			// ビューが既に閉じている。
@@ -1335,8 +1335,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			// ページの上に出ている拡張の画面（パスワード管理のメニューなど）に届く入力は断る（paradisExtensionInputGuard.ts）。
 			// 座標は送るときと同じく、縮小して描いているタブの倍率に合わせる
 			const extensionRefusal = await paradisExtensionInputRefusal(
-				view.webContents,
-				(method, params) => view.debugger.sendCommandRaw(method, params, undefined),
+				paradisInputGuardTab(view),
 				command.method,
 				paradisScaleCdpInputCoordinates(command.params, view.emulator.device ? view.emulator.emulatedScaleFactor : 1),
 			);
