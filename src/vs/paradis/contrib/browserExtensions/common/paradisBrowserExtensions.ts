@@ -60,6 +60,11 @@ export interface IParadisInstalledBrowserExtension {
 	/** Para Code が読み込む写し（Para Code が持つフォルダ）。 */
 	readonly path: string;
 	readonly installedAt: number;
+	/**
+	 * ページの中身を読み書きできるか（content script・nativeMessaging・任意のサイトへの scripting を持つ）。
+	 * 共有の確認で「拡張機能が入力した値はエージェントからも読める」と知らせるのに使う。
+	 */
+	readonly touchesPages: boolean;
 }
 
 /** 台帳（main が JSON で保存する）。 */
@@ -115,7 +120,8 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 			|| extensions.some(existing => existing.id === entry.id) || extensions.length >= PARADIS_MAX_INSTALLED_EXTENSIONS) {
 			continue;
 		}
-		extensions.push({ id: entry.id, name: entry.name, version: entry.version, manifestVersion: entry.manifestVersion, source: 'unpacked', sourcePath: entry.sourcePath, path: entry.path, installedAt: entry.installedAt });
+		// touchesPages が無い行（P3 の版で足したもの）は、知らせ損ねないよう読み書きできる側に倒す
+		extensions.push({ id: entry.id, name: entry.name, version: entry.version, manifestVersion: entry.manifestVersion, source: 'unpacked', sourcePath: entry.sourcePath, path: entry.path, installedAt: entry.installedAt, touchesPages: entry.touchesPages !== false });
 	}
 	const enabled: Record<string, string[]> = {};
 	if (isRecord(raw.enabled)) {
@@ -205,6 +211,31 @@ export interface IParadisExtensionManifestSummary {
 	readonly manifestVersion: number;
 	/** manifest の key（あれば id はこれから決まる）。 */
 	readonly key?: string;
+	/** ページの中身を読み書きできるか（{@link IParadisInstalledBrowserExtension.touchesPages}）。 */
+	readonly touchesPages: boolean;
+}
+
+/**
+ * manifest から、ページの中身を読み書きできる拡張機能かを決める。content script を持つ、nativeMessaging
+ * （パスワード管理のアプリとの連携など）・debugger・userScripts を持つ、scripting などとサイトへの権限を
+ * 併せ持つ、のどれか。後から求める権限（optional_permissions・optional_host_permissions）も数える。
+ */
+function touchesPages(manifest: Record<string, unknown>): boolean {
+	const list = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+	// 後から求める権限（optional_*）も、求められたら持つので数える
+	const permissions = [...list(manifest.permissions), ...list(manifest.optional_permissions)];
+	const hostPermissions = [
+		...list(manifest.host_permissions),
+		...list(manifest.optional_host_permissions),
+		...permissions.filter(permission => permission.includes('://') || permission === '<all_urls>'),
+	];
+	const contentScripts = Array.isArray(manifest.content_scripts) && manifest.content_scripts.length > 0;
+	return contentScripts
+		|| permissions.includes('nativeMessaging')
+		// debugger（CDP でページを操作できる）と userScripts（任意のスクリプトをページへ入れられる）はそれだけで足りる
+		|| permissions.includes('debugger')
+		|| permissions.includes('userScripts')
+		|| ((permissions.includes('scripting') || permissions.includes('tabs') || permissions.includes('activeTab')) && (hostPermissions.length > 0 || permissions.includes('activeTab')));
 }
 
 /** `__MSG_name__` を `_locales/<default_locale>/messages.json` の値で置き換える。 */
@@ -244,6 +275,7 @@ export function paradisReadExtensionManifest(manifest: unknown, messages?: unkno
 		name: localized(manifest.name, messages).slice(0, 200),
 		version: manifest.version,
 		manifestVersion,
+		touchesPages: touchesPages(manifest),
 		...(typeof manifest.key === 'string' && manifest.key.length > 0 ? { key: manifest.key } : {}),
 	};
 }
@@ -254,6 +286,20 @@ export interface IParadisBrowserExtensionView extends IParadisInstalledBrowserEx
 	readonly enabledIn: readonly string[];
 	/** 直近の読み込みの失敗（無ければ undefined）。 */
 	readonly loadError?: string;
+}
+
+/** あるページのセッションに今入っている、利用者が入れた拡張機能。 */
+export interface IParadisViewBrowserExtension {
+	readonly id: string;
+	readonly name: string;
+	readonly touchesPages: boolean;
+}
+
+/** {@link IParadisBrowserExtensionsMainService.getShareExtensions} の答え。 */
+export interface IParadisShareExtensions {
+	/** 試験的な設定が今の起動で効いているか（効いていなければ拡張機能は入らない）。 */
+	readonly active: boolean;
+	readonly extensions: readonly IParadisViewBrowserExtension[];
 }
 
 /** 管理画面に出す状態。 */
@@ -268,7 +314,7 @@ export interface IParadisBrowserExtensionsState {
 /** フォルダから足した結果。 */
 export type IParadisAddExtensionResult =
 	| { readonly ok: true; readonly extension: IParadisInstalledBrowserExtension }
-	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'linkOutside' | 'tooLarge' | 'restartNeeded' | 'failed'; readonly detail?: string };
+	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'linkOutside' | 'hardLink' | 'nameClash' | 'changed' | 'tooLarge' | 'restartNeeded' | 'failed'; readonly detail?: string };
 
 /** main の拡張機能の管理（{@link PARADIS_BROWSER_EXTENSIONS_CHANNEL}）。 */
 export interface IParadisBrowserExtensionsMainService {
@@ -279,4 +325,10 @@ export interface IParadisBrowserExtensionsMainService {
 	reloadUnpacked(id: string): Promise<IParadisAddExtensionResult>;
 	setEnabled(id: string, profile: string, enabled: boolean): Promise<void>;
 	remove(id: string): Promise<void>;
+	/**
+	 * 共有の確認に使う、そのページに入っている（入りうる）拡張機能。`viewId` のビューが main にあれば、その
+	 * セッションに今入っているもの。無い（まだ開いていないタブ・これから開くプロファイル）ときは、
+	 * `fallbackProfile` で有効にしてあるもの。
+	 */
+	getShareExtensions(viewId: string | undefined, fallbackProfile: string | undefined): Promise<IParadisShareExtensions>;
 }

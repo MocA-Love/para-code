@@ -25,7 +25,7 @@ const A = 'a'.repeat(32);
 const B = 'b'.repeat(32);
 
 function extension(id: string): IParadisInstalledBrowserExtension {
-	return { id, name: id.slice(0, 1), version: '1.0', manifestVersion: 3, source: 'unpacked', sourcePath: `/src/${id}`, path: `/copy/${id}`, installedAt: 1 };
+	return { id, name: id.slice(0, 1), version: '1.0', manifestVersion: 3, source: 'unpacked', sourcePath: `/src/${id}`, path: `/copy/${id}`, installedAt: 1, touchesPages: true };
 }
 
 suite('ParadisBrowserExtensions common', () => {
@@ -75,6 +75,27 @@ suite('ParadisBrowserExtensions common', () => {
 		});
 	});
 
+	test('tells which extensions can read and write pages', () => {
+		const touches = (manifest: object) => {
+			const summary = paradisReadExtensionManifest({ manifest_version: 3, name: 'E', version: '1', ...manifest });
+			return (summary as { readonly touchesPages?: boolean }).touchesPages;
+		};
+		assert.deepStrictEqual({
+			contentScripts: touches({ content_scripts: [{ matches: ['<all_urls>'], js: ['c.js'] }] }),
+			nativeMessaging: touches({ permissions: ['nativeMessaging'] }),
+			scriptingWithHosts: touches({ permissions: ['scripting'], host_permissions: ['<all_urls>'] }),
+			activeTab: touches({ permissions: ['activeTab'] }),
+			storageOnly: touches({ permissions: ['storage'] }),
+			hostsOnly: touches({ host_permissions: ['https://example.com/*'] }),
+			debuggerPermission: touches({ permissions: ['debugger'] }),
+			userScripts: touches({ permissions: ['userScripts'] }),
+			optionalScripting: touches({ optional_permissions: ['scripting'], optional_host_permissions: ['<all_urls>'] }),
+			optionalNative: touches({ optional_permissions: ['nativeMessaging'] }),
+			// P3 の版で足した行（touchesPages が無い）は、知らせ損ねないよう読み書きできる側に倒す
+			oldLedgerRow: paradisParseExtensionsLedger({ version: 1, extensions: [{ ...extension(A), touchesPages: undefined }], enabled: {}, removed: [] }).extensions[0].touchesPages,
+		}, { contentScripts: true, nativeMessaging: true, scriptingWithHosts: true, activeTab: true, storageOnly: false, hostsOnly: false, debuggerPermission: true, userScripts: true, optionalScripting: true, optionalNative: true, oldLedgerRow: true });
+	});
+
 	test('reads manifests', () => {
 		assert.deepStrictEqual([
 			paradisReadExtensionManifest({ manifest_version: 3, name: '__MSG_name__', version: '2.0.1', key: 'abc' }, { NAME: { message: 'Localized' } }),
@@ -83,8 +104,8 @@ suite('ParadisBrowserExtensions common', () => {
 			paradisReadExtensionManifest({ manifest_version: 3, version: '1' }),
 			paradisReadExtensionManifest([]),
 		], [
-			{ name: 'Localized', version: '2.0.1', manifestVersion: 3, key: 'abc' },
-			{ name: 'Plain', version: '1', manifestVersion: 2 },
+			{ name: 'Localized', version: '2.0.1', manifestVersion: 3, touchesPages: false, key: 'abc' },
+			{ name: 'Plain', version: '1', manifestVersion: 2, touchesPages: false },
 			{ error: 'version' },
 			{ error: 'name' },
 			{ error: 'notObject' },

@@ -36,6 +36,8 @@ import {
 	IParadisBrowserExtensionsMainService,
 	IParadisBrowserExtensionsState,
 	IParadisInstalledBrowserExtension,
+	IParadisShareExtensions,
+	IParadisViewBrowserExtension,
 	PARADIS_BROWSER_EXTENSIONS_CHANNEL,
 	PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING,
 	PARADIS_DEFAULT_EXTENSION_PROFILE,
@@ -118,28 +120,43 @@ interface ICopiedExtension {
 	readonly name: string;
 	readonly version: string;
 	readonly manifestVersion: number;
+	readonly touchesPages: boolean;
 }
 
-/** 写すもの 1 つ（`relative` は写し先のフォルダからの相対パス）。 */
+/** 写すもの 1 つ（`relative` は写し先のフォルダからの相対パス）。`dev`・`ino` は調べたときの値。 */
 interface ICopyItem {
 	readonly kind: 'folder' | 'file';
 	readonly source: string;
 	readonly relative: string;
+	readonly dev: bigint;
+	readonly ino: bigint;
 }
 
-type CopyPlan = { readonly ok: true; readonly items: readonly ICopyItem[] } | Extract<IParadisAddExtensionResult, { ok: false }>;
+type CopyFailure = Extract<IParadisAddExtensionResult, { ok: false }>;
+type CopyPlan = { readonly ok: true; readonly items: readonly ICopyItem[] } | CopyFailure;
+
+/**
+ * 写し先で同じ名前として扱われうるか比べるためのキー。macOS の APFS（既定）は大文字小文字と Unicode の
+ * 正規化の違いを区別しないので、違う名前が黙って上書きされないよう、揃えた形で重なりを調べる。
+ */
+function collisionKey(relative: string): string {
+	return relative.normalize('NFD').toLowerCase();
+}
 
 /**
  * 拡張機能のフォルダから写すものを決める。シンボリックリンクは実体を写すが、実体が元のフォルダの外にあれば
  * 断る（写しを元のフォルダから切り離し、外のファイルが web_accessible_resources 経由で読めないように）。
- * `.git` は写さない。ファイル数と大きさが上限を超えたら断る。
+ * ハードリンク（リンク数が 2 以上のファイル）は外のファイルと同じ中身でありうるので断る。写し先で名前が
+ * 重なるもの（大文字小文字・Unicode の正規化だけが違う）も断る。`.git` は写さない。ファイル数と大きさが
+ * 上限を超えたら断る。
  */
 export async function paradisPlanExtensionCopy(root: string, limits = { files: PARADIS_MAX_EXTENSION_FILES, bytes: PARADIS_MAX_EXTENSION_BYTES }): Promise<CopyPlan> {
 	const items: ICopyItem[] = [];
+	const names = new Set<string>();
 	let files = 0;
 	let bytes = 0;
 	const inside = (path: string) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
-	const walk = async (folder: string, relative: string, ancestors: ReadonlySet<string>): Promise<Extract<IParadisAddExtensionResult, { ok: false }> | undefined> => {
+	const walk = async (folder: string, relative: string, ancestors: ReadonlySet<string>): Promise<CopyFailure | undefined> => {
 		for (const dirent of await fs.readdir(folder, { withFileTypes: true })) {
 			if (dirent.name === '.git') {
 				continue;
@@ -157,26 +174,37 @@ export async function paradisPlanExtensionCopy(root: string, limits = { files: P
 					return { ok: false, reason: 'linkOutside', detail: childRelative };
 				}
 			}
-			const stat = await fs.stat(source);
+			const stat = await fs.stat(source, { bigint: true });
+			if (!stat.isDirectory() && !stat.isFile()) {
+				continue;
+			}
+			if (stat.isDirectory() && ancestors.has(source)) {
+				continue; // 自分の親を指すリンク（輪）はたどらない
+			}
+			const key = collisionKey(childRelative);
+			if (names.has(key)) {
+				return { ok: false, reason: 'nameClash', detail: childRelative };
+			}
+			names.add(key);
 			if (stat.isDirectory()) {
-				if (ancestors.has(source)) {
-					continue; // 自分の親を指すリンク（輪）はたどらない
-				}
-				items.push({ kind: 'folder', source, relative: childRelative });
+				items.push({ kind: 'folder', source, relative: childRelative, dev: stat.dev, ino: stat.ino });
 				const failure = await walk(source, childRelative, new Set([...ancestors, source]));
 				if (failure) {
 					return failure;
 				}
-			} else if (stat.isFile()) {
+			} else {
+				if (stat.nlink > 1n) {
+					return { ok: false, reason: 'hardLink', detail: childRelative };
+				}
 				files++;
-				bytes += stat.size;
+				bytes += Number(stat.size);
 				if (files > limits.files) {
 					return { ok: false, reason: 'tooLarge', detail: 'files' };
 				}
 				if (bytes > limits.bytes) {
 					return { ok: false, reason: 'tooLarge', detail: 'bytes' };
 				}
-				items.push({ kind: 'file', source, relative: childRelative });
+				items.push({ kind: 'file', source, relative: childRelative, dev: stat.dev, ino: stat.ino });
 			}
 		}
 		return undefined;
@@ -184,6 +212,44 @@ export async function paradisPlanExtensionCopy(root: string, limits = { files: P
 	const failure = await walk(root, '', new Set([root]));
 	return failure ?? { ok: true, items };
 }
+
+/**
+ * 決めたとおりに `target` へ写す。ファイルは開いた fd が調べたときと同じもの（dev・inode）で、リンク数が 1 の
+ * ときだけ読む。写した後にも元の場所を lstat し直し、調べたときと違えば（途中で差し替えられた）断る。
+ * 写し先には新しく作るだけで、既にある名前は上書きしない。
+ */
+export async function paradisCopyExtensionFiles(items: readonly ICopyItem[], target: string): Promise<CopyFailure | undefined> {
+	const same = (stat: { readonly dev: bigint; readonly ino: bigint }, item: ICopyItem) => stat.dev === item.dev && stat.ino === item.ino;
+	for (const item of items) {
+		const destination = join(target, item.relative);
+		if (item.kind === 'folder') {
+			const stat = await fs.stat(item.source, { bigint: true });
+			if (!stat.isDirectory() || !same(stat, item)) {
+				return { ok: false, reason: 'changed', detail: item.relative };
+			}
+			await fs.mkdir(destination);
+			continue;
+		}
+		const handle = await fs.open(item.source, 'r');
+		try {
+			const stat = await handle.stat({ bigint: true });
+			if (!stat.isFile() || !same(stat, item) || stat.nlink > 1n) {
+				return { ok: false, reason: 'changed', detail: item.relative };
+			}
+			await fs.writeFile(destination, await handle.readFile(), { flag: 'wx' });
+		} finally {
+			await handle.close();
+		}
+		const after = await fs.lstat(item.source, { bigint: true });
+		if (!after.isFile() || !same(after, item)) {
+			return { ok: false, reason: 'changed', detail: item.relative };
+		}
+	}
+	return undefined;
+}
+
+/** 写している途中のフォルダの名前に入る印。 */
+const TEMPORARY_COPY_MARK = '.tmp-';
 
 interface ISessionEntry {
 	readonly session: ParadisExtensionSession;
@@ -207,6 +273,8 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		private readonly _root: string,
 		private readonly _readSetting: () => boolean,
 		private readonly _logService: Pick<ILogService, 'warn'>,
+		/** 内蔵ブラウザのビューの id から、そのセッションを引く（共有の確認に使う）。 */
+		private readonly _sessionForView: (viewId: string) => ParadisExtensionSession | undefined = () => undefined,
 	) {
 		this.active = _readSetting();
 		this._ready = this.active ? this._loadLedger() : Promise.resolve();
@@ -225,6 +293,13 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 			this._ledger = paradisParseExtensionsLedger(JSON.parse(await fs.readFile(this._ledgerPath, 'utf8')));
 		} catch {
 			this._ledger = PARADIS_EMPTY_EXTENSIONS_LEDGER;
+		}
+		// 前の起動で写している途中に落ちて残ったフォルダを片付ける
+		const unpacked = join(this._root, 'unpacked');
+		for (const name of await fs.readdir(unpacked).catch(() => [])) {
+			if (name.includes(TEMPORARY_COPY_MARK)) {
+				await fs.rm(join(unpacked, name), { recursive: true, force: true }).catch(() => { /* best effort */ });
+			}
 		}
 	}
 
@@ -283,9 +358,11 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		let clearing = this._clearing.get(key);
 		if (!clearing) {
 			clearing = (async () => {
-				await this._clearData(entry.session, id);
-				this._ledger = paradisLedgerWithDataCleared(this._ledger, id, storagePath);
-				await this._save();
+				// 消せなかった保存先は「消し終えた」にしない（次に読み込む前・次の起動でもう一度消す）
+				if (await this._clearData(entry.session, id)) {
+					this._ledger = paradisLedgerWithDataCleared(this._ledger, id, storagePath);
+					await this._save();
+				}
 			})().finally(() => this._clearing.delete(key));
 			this._clearing.set(key, clearing);
 		}
@@ -296,18 +373,27 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 	 * 拡張機能の保存データを消す。IndexedDB・Local Storage・CacheStorage などは拡張機能の origin ごとに
 	 * Chromium に消させ、chrome.storage（origin に属さないフォルダ）はファイルを消す。
 	 */
-	private async _clearData(session: ParadisExtensionSession, id: string): Promise<void> {
+	private async _clearData(session: ParadisExtensionSession, id: string): Promise<boolean> {
+		let cleared = true;
 		try {
 			await session.clearStorageData({ origin: `chrome-extension://${id}` });
 		} catch (error) {
+			cleared = false;
 			this._logService.warn('[paradis] could not clear the storage of a removed browser extension', error);
 		}
 		const storagePath = session.storagePath;
 		if (storagePath) {
 			for (const folder of ['Local Extension Settings', 'Sync Extension Settings', 'Managed Extension Settings']) {
-				await fs.rm(join(storagePath, folder, id), { recursive: true, force: true }).catch(() => { /* already gone */ });
+				try {
+					// force: 無いフォルダは消し終えたとみなす。それ以外の失敗（権限など）は消せなかったとする
+					await fs.rm(join(storagePath, folder, id), { recursive: true, force: true });
+				} catch (error) {
+					cleared = false;
+					this._logService.warn('[paradis] could not remove the chrome.storage data of a removed browser extension', error);
+				}
 			}
 		}
+		return cleared;
 	}
 
 	private async _loadAll(entry: ISessionEntry): Promise<void> {
@@ -358,6 +444,26 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		}
 	}
 
+	async getShareExtensions(viewId: string | undefined, fallbackProfile: string | undefined): Promise<IParadisShareExtensions> {
+		await this._ready;
+		if (!this.active) {
+			return { active: false, extensions: [] };
+		}
+		const describe = ({ id, name, touchesPages }: IParadisInstalledBrowserExtension): IParadisViewBrowserExtension => ({ id, name, touchesPages });
+		const session = typeof viewId === 'string' ? this._sessionForView(viewId) : undefined;
+		if (session) {
+			// 開いているページ: そのセッションに今入っているものに、そのセッションの場所で有効にしてあるものを足す。
+			// 開いたばかりのタブ（再起動の後の共有の戻しなど）では読み込みが終わる前に聞かれるので、入っている
+			// ものだけでは知らせ損ねる。SSH 先のページのためにトンネルを通している間は入らないので足さない（D8）。
+			// 同梱の React DevTools など、台帳に無いものは数えない
+			const entry = [...this._sessions].find(candidate => candidate.session === session);
+			const enabled = entry && !entry.isRemote() ? new Set(this._ledger.enabled[entry.profile] ?? []) : new Set<string>();
+			return { active: true, extensions: this._ledger.extensions.filter(extension => enabled.has(extension.id) || session.extensions.getExtension(extension.id)).map(describe) };
+		}
+		// まだ開いていないページ・これから開くプロファイル: 有効にしてあるもの
+		return { active: true, extensions: paradisIsExtensionProfileKey(fallbackProfile) ? paradisEnabledExtensions(this._ledger, fallbackProfile).map(describe) : [] };
+	}
+
 	async getState(): Promise<IParadisBrowserExtensionsState> {
 		await this._ready;
 		return {
@@ -403,17 +509,15 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 			if (!plan.ok) {
 				return plan;
 			}
-			// 別の場所に写し終えてから置き換える（途中で失敗しても前の写しは壊さない）
-			const temporary = `${copy}.tmp-${Date.now().toString(36)}`;
+			// 別の場所に写し終えてから置き換える（途中で失敗しても前の写しは壊さない。途中で落ちて残った
+			// `<hash>.tmp-*` は次の起動で片付ける）
+			const temporary = `${copy}${TEMPORARY_COPY_MARK}${Date.now().toString(36)}`;
 			await fs.mkdir(temporary, { recursive: true });
 			try {
-				for (const item of plan.items) {
-					const target = join(temporary, item.relative);
-					if (item.kind === 'folder') {
-						await fs.mkdir(target, { recursive: true });
-					} else {
-						await fs.copyFile(item.source, target);
-					}
+				const failure = await paradisCopyExtensionFiles(plan.items, temporary);
+				if (failure) {
+					await fs.rm(temporary, { recursive: true, force: true }).catch(() => { /* best effort */ });
+					return failure;
 				}
 				await fs.rm(copy, { recursive: true, force: true });
 				await fs.rename(temporary, copy);
@@ -430,7 +534,7 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		} catch (error) {
 			return { ok: false, reason: 'failed', detail: error instanceof Error ? error.message : String(error) };
 		}
-		return { ok: true, path: realCopy, id: paradisPredictExtensionId(realCopy, manifest.key), name: manifest.name, version: manifest.version, manifestVersion: manifest.manifestVersion };
+		return { ok: true, path: realCopy, id: paradisPredictExtensionId(realCopy, manifest.key), name: manifest.name, version: manifest.version, manifestVersion: manifest.manifestVersion, touchesPages: manifest.touchesPages };
 	}
 
 	async addUnpacked(folder: string, profile: string): Promise<IParadisAddExtensionResult> {
@@ -463,7 +567,7 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		}
 		const extension: IParadisInstalledBrowserExtension = {
 			id: copied.id, name: copied.name, version: copied.version, manifestVersion: copied.manifestVersion,
-			source: 'unpacked', sourcePath: folder, path: copied.path, installedAt: existing?.installedAt ?? Date.now(),
+			source: 'unpacked', sourcePath: folder, path: copied.path, installedAt: existing?.installedAt ?? Date.now(), touchesPages: copied.touchesPages,
 		};
 		this._ledger = paradisLedgerWithExtension(this._ledger, extension, profile);
 		await this._save();
@@ -492,7 +596,7 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 			this._loadErrors.set(id, 'id changed');
 			return { ok: false, reason: 'invalidManifest', detail: 'id changed' };
 		}
-		const extension: IParadisInstalledBrowserExtension = { ...existing, name: copied.name, version: copied.version, manifestVersion: copied.manifestVersion, path: copied.path };
+		const extension: IParadisInstalledBrowserExtension = { ...existing, name: copied.name, version: copied.version, manifestVersion: copied.manifestVersion, path: copied.path, touchesPages: copied.touchesPages };
 		this._ledger = paradisLedgerWithExtension(this._ledger, extension, undefined);
 		await this._save();
 		await this._applyEnablement(id);
@@ -523,9 +627,17 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 	}
 
 	async remove(id: string): Promise<void> {
+		// 待つ前に印を付ける（削除の途中に同じ id を足されて、古いデータを渡さないため）
+		const marked = this.active && paradisIsExtensionId(id) && !this._removedThisRun.has(id);
+		if (marked) {
+			this._removedThisRun.add(id);
+		}
 		await this._ready;
 		const existing = this._ledger.extensions.find(extension => extension.id === id);
 		if (!this.active || !existing) {
+			if (marked) {
+				this._removedThisRun.delete(id);
+			}
 			return;
 		}
 		for (const entry of this._sessions) {
@@ -535,7 +647,6 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		this._loadErrors.delete(id);
 		await this._save();
 		await fs.rm(existing.path, { recursive: true, force: true }).catch(() => { /* already gone */ });
-		this._removedThisRun.add(id);
 		// IndexedDB・Local Storage・CacheStorage は今あるセッションからすぐ消す。chrome.storage は Chromium が
 		// 終了まで開いたままで、ファイルを消しても中身が残る（Electron 43 で実測）ので、どのセッションも
 		// 「消し終えた」にはせず、次の起動で読み込む前にもう一度まとめて消す
@@ -562,6 +673,11 @@ export function paradisAttachBrowserExtensionSession(session: ParadisExtensionSe
 export function paradisRegisterBrowserExtensions(
 	channelHost: { registerChannel(channelName: string, channel: IServerChannel<string>): void },
 	instantiationService: IInstantiationService,
+	/**
+	 * ビューの id からそのセッションを引く。browserViewMainService は browserSession.ts を読むので、ここから
+	 * 読むと読み込みが輪になる（browserSession.ts → このファイル）。呼び出し側（プロファイルの main）から渡す。
+	 */
+	sessionForView: (viewId: string) => ParadisExtensionSession | undefined,
 ): IDisposable {
 	const disposables = new DisposableStore();
 	const created = instantiationService.invokeFunction(accessor => {
@@ -570,6 +686,7 @@ export function paradisRegisterBrowserExtensions(
 			join(accessor.get(IEnvironmentMainService).userDataPath, 'paradis-browser-extensions'),
 			() => configurationService.getValue<boolean>(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING) === true,
 			accessor.get(ILogService),
+			sessionForView,
 		);
 	});
 	disposables.add(created);
@@ -584,6 +701,7 @@ export function paradisRegisterBrowserExtensions(
 		reloadUnpacked: id => created.reloadUnpacked(id),
 		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
 		remove: id => created.remove(id),
+		getShareExtensions: (viewId, fallbackProfile) => created.getShareExtensions(viewId, fallbackProfile),
 	};
 	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables));
 	return disposables;

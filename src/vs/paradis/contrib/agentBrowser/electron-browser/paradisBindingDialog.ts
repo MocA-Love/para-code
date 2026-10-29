@@ -28,6 +28,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
+import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 import { IParadisMobileAttachment } from '../../mobileCanvas/common/paradisMobileCanvas.js';
 import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -89,6 +90,8 @@ const STR_SUB_NEEDS_MCP = localize('paradis.bindingDialog.subNeedsMcp', "MCP未�
 const STR_SWITCH_SHARE_ARIA = localize('paradis.bindingDialog.switchShareAria', "このページを共有する");
 // allow-any-unicode-next-line
 const STR_SWITCH_UNSHARE_ARIA = localize('paradis.bindingDialog.switchUnshareAria', "共有を解除する");
+// allow-any-unicode-next-line
+const STR_EXTENSIONS_CHECKING = localize('paradis.bindingDialog.extensionsChecking', "このタブに拡張機能が入っているか確かめています…");
 // allow-any-unicode-next-line
 const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "エージェントは共有したページだけを読み取り・操作できます");
 // allow-any-unicode-next-line
@@ -252,6 +255,11 @@ export class ParadisBindingDialog extends Disposable {
 	/** 「アタッチ」を押して渡し先ペインの一覧を開いている端末（開いていなければ undefined）。 */
 	private _attachTargetDeviceId: string | undefined;
 
+	/** 共有の確認に出す、拡張機能についての知らせ（無ければ undefined）。 */
+	private _extensionWarning: string | undefined;
+	/** 知らせの答えが返ったか（返るまで共有のスイッチを押せない）。 */
+	private _extensionWarningResolved = false;
+	private readonly _extensionWarningReady: Promise<void>;
 	private readonly _onDidDispose = this._register(new Emitter<void>());
 	/** 閉じた（破棄された）ことを、開いた側が参照を手放すために知らせる。 */
 	readonly onDidDispose = this._onDidDispose.event;
@@ -269,8 +277,23 @@ export class ParadisBindingDialog extends Disposable {
 		@IParadisMobileCanvasModel private readonly mobileCanvasModel: IParadisMobileCanvasModel,
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 		@IParadisAgentBrowserTabsService private readonly agentTabsService: IParadisAgentBrowserTabsService,
+		@IParadisBrowserExtensionsService browserExtensionsService: IParadisBrowserExtensionsService,
 	) {
 		super();
+
+		// このページに、ページの中身を読み書きできる拡張機能が入っていれば共有の前に知らせる（D4）
+		// 答えが返るまでは共有のスイッチを押せない（知らせを見ないまま共有させない）。問い合わせは 1 秒で
+		// 諦め、確かめられなければ「確かめられなかった」と知らせる
+		this._extensionWarningResolved = pageModel === undefined;
+		this._extensionWarningReady = pageModel
+			? browserExtensionsService.getShareWarning({ kind: 'view', viewId: pageModel.id }).then(warning => {
+				this._extensionWarning = warning;
+				this._extensionWarningResolved = true;
+				if (!this._store.isDisposed) {
+					this._render();
+				}
+			})
+			: Promise.resolve();
 
 		this._tabController = this._register(new ParadisBindingDialogTabController(
 			() => this.mobileCanvasModel.beginPolling(),
@@ -444,6 +467,7 @@ export class ParadisBindingDialog extends Disposable {
 			this._renderPageBar();
 		}
 		dom.clearNode(this._body);
+		this._body.removeAttribute('aria-busy');
 		if (this._activeTab === 'panes') {
 			this._renderPanesTab();
 		} else if (this._activeTab === 'devices') {
@@ -623,6 +647,19 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _renderPanesTab(): void {
+		this._body.setAttribute('aria-busy', String(!this._extensionWarningResolved));
+		if (!this._extensionWarningResolved) {
+			// 答えが返るまで共有のスイッチは押せない。その理由をここに出す
+			const checking = dom.append(this._body, $('.pbd-extension-checking'));
+			checking.setAttribute('role', 'status');
+			checking.textContent = STR_EXTENSIONS_CHECKING;
+		}
+		if (this._extensionWarning) {
+			const warning = dom.append(this._body, $('.pbd-extension-warning'));
+			warning.setAttribute('role', 'note');
+			warning.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
+			dom.append(warning, $('span')).textContent = this._extensionWarning;
+		}
 		const search = dom.append(this._body, $('.pbd-list-search'));
 		search.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		const input = dom.append(search, $('input')) as HTMLInputElement;
@@ -679,7 +716,8 @@ export class ParadisBindingDialog extends Disposable {
 		switchEl.type = 'checkbox';
 		switchEl.setAttribute('role', 'switch');
 		switchEl.checked = isUnshareVerb;
-		switchEl.disabled = action === 'disabled';
+		// 共有する向きのスイッチは、拡張機能の知らせの答えが返るまで押せない
+		switchEl.disabled = action === 'disabled' || (!isUnshareVerb && !this._extensionWarningResolved);
 		switchEl.setAttribute('aria-label', isUnshareVerb ? STR_SWITCH_UNSHARE_ARIA : STR_SWITCH_SHARE_ARIA);
 		if (action !== 'disabled') {
 			this._paneListResources.add(dom.addDisposableListener(switchEl, 'change', () => {
@@ -1069,6 +1107,17 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private async _bindPane(token: string): Promise<void> {
+		if (!this._extensionWarningResolved) {
+			// 知らせを見る前に押された（キー操作など）。答えを待ち、知らせがあれば今回は共有せず見せるだけにする
+			await this._extensionWarningReady;
+			if (this._store.isDisposed) {
+				return;
+			}
+			if (this._extensionWarning !== undefined) {
+				this._render();
+				return;
+			}
+		}
 		const bound = await paradisRunDialogBind(
 			() => this.bindingModel.bindPageToPane(this._page, token),
 			error => this._bindError = paradisIsSharedPageLimitError(error) ? strSharedPageLimit(PARADIS_USER_SHARED_PAGE_LIMIT) : paradisGetBindingErrorMessage(error, {
