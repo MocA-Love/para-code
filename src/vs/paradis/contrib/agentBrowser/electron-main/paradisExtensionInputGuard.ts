@@ -277,7 +277,17 @@ export async function paradisGuardExtensionInput(tab: IParadisInputGuardTab, met
 	}
 	const points = pointsOf(method, params);
 	let hitsExtension = false;
-	if (points.length > 0 && hasExtensionFrame(tab.webContents)) {
+	// タブの一番外の文書が拡張機能のページなら、どこを押しても拡張機能の画面（エージェントの手にしたタブは拡張機能のページへ
+	// 移れないが、移った直後や、手にする前から開いていた場合に備える）
+	let topUrl: string | undefined;
+	try {
+		topUrl = tab.webContents.mainFrame.url;
+	} catch {
+		topUrl = undefined;
+	}
+	if (points.length > 0 && paradisIsBrowserExtensionUrl(topUrl)) {
+		hitsExtension = true;
+	} else if (points.length > 0 && hasExtensionFrame(tab.webContents)) {
 		for (const point of points) {
 			let hit: boolean;
 			try {
