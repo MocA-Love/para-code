@@ -59,6 +59,8 @@ import { IParadisAgentQuestionKeyCheck, paradisAgentApprovalKeySequence, paradis
 import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIMIT, paradisAgentQuestionClarifyDeny, paradisBuildModQuestionAnswer } from '../common/paradisAgentQuestionModAnswer.js';
 import { IParadisAgentApprovalOption, paradisApprovalScreenPiece, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
 import { IParadisAgentApprovalAgent, IParadisAgentApprovalRequest, PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, PARADIS_APPROVAL_INSTRUCTION_MARKER, ParadisAgentApprovalSuggestionScope, paradisApprovalDenyMessage, paradisSanitizeApprovalInstruction, paradisApprovalSuggestionScope, paradisBuildAgentApprovalRequest } from '../common/paradisAgentApprovalRequest.js';
+import { PARADIS_CODEX_APPROVAL_HOLD_MS } from '../common/paradisCodexApprovalHold.js';
+import { PARADIS_CODEX_OVERLOAD_RETRY_DELAYS_MS, ParadisCodexAutoContinuePhase, ParadisCodexOverloadContinue } from '../common/paradisCodexOverloadContinue.js';
 import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { paradisIsCodexNonUserSource, paradisIsCodexRootSource } from '../../sessionResume/common/paradisSessionTranscript.js';
@@ -1877,6 +1879,11 @@ interface IParadisApprovalEntry {
 	readonly answered?: boolean;
 	/** 許可を求めたサブエージェント・チームメイト（hook の `agent_id`）。本会話の許可は undefined。 */
 	readonly agentId?: string;
+	/**
+	 * まだカードに出していない（Codex の承認。自動の審査が先に決めることが多いので、少し待ってから出す）。
+	 * 待っている承認があることはペインの状態には数えるが、カード・会話・通知には出さない。
+	 */
+	readonly held?: true;
 }
 
 interface ITailerDelegate {
@@ -2295,6 +2302,10 @@ class TranscriptTailer {
 			clearTimeout(timer);
 		}
 		this.modRowTimers.clear();
+		for (const timer of this.approvalHoldTimers) {
+			clearTimeout(timer);
+		}
+		this.approvalHoldTimers.clear();
 		this.monitorWatch.dispose();
 		this.watcher?.close();
 		this.watcher = undefined;
@@ -2547,6 +2558,7 @@ class TranscriptTailer {
 				this.workflows.clear();
 				this.teams.clear();
 				this.sessionStatus.clear();
+				this.noteHeldApprovalsSettled(this.approvalQueue);
 				this.approvalQueue.length = 0;
 				this.approvalDeniedInTurn = false;
 				this.liveQuestions.clear();
@@ -3003,7 +3015,7 @@ class TranscriptTailer {
 
 	/** 答えていない承認（表に出す候補）。 */
 	approvalInteractions(): readonly Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>[] {
-		return this.approvalQueue.filter(entry => !entry.answered).map(entry => entry.interaction);
+		return this.approvalQueue.filter(entry => !entry.answered && entry.held === undefined).map(entry => entry.interaction);
 	}
 
 	/**
@@ -3076,6 +3088,8 @@ class TranscriptTailer {
 	 * 返す）のは最後の1件で、それが解けたら次のものを出す。モバイルへ送る形は1件のまま変えない。
 	 */
 	private readonly approvalQueue: IParadisApprovalEntry[] = [];
+	/** 出すのを待っている承認（{@link IParadisApprovalEntry.held}）の時計。 */
+	private readonly approvalHoldTimers = new Set<ReturnType<typeof setTimeout>>();
 	/** このターンで利用者が承認を拒否した（ターンの終わりで戻す。stoppedOnApproval）。 */
 	private approvalDeniedInTurn = false;
 	private approvalSeq = 0;
@@ -3092,7 +3106,7 @@ class TranscriptTailer {
 	 */
 	private frontApprovalIndex(): number {
 		for (let index = this.approvalQueue.length - 1; index >= 0; index--) {
-			if (!this.approvalQueue[index].answered) {
+			if (!this.approvalQueue[index].answered && this.approvalQueue[index].held === undefined) {
 				return index;
 			}
 		}
@@ -3109,11 +3123,25 @@ class TranscriptTailer {
 		let removed = false;
 		for (let index = this.approvalQueue.length - 1; index >= 0; index--) {
 			if (predicate(this.approvalQueue[index])) {
-				this.approvalQueue.splice(index, 1);
+				this.noteHeldApprovalsSettled(this.approvalQueue.splice(index, 1));
 				removed = true;
 			}
 		}
 		return removed;
+	}
+
+	/** 出すのを待っていた承認が、出す前に列から外れた（決着した）最後の時刻。 */
+	private heldApprovalSettledAt: number | undefined;
+
+	private noteHeldApprovalsSettled(entries: readonly IParadisApprovalEntry[]): void {
+		if (entries.some(entry => entry.held !== undefined)) {
+			this.heldApprovalSettledAt = Date.now();
+		}
+	}
+
+	/** 出すのを待っていた承認が、`since` より後に出す前に決着したか（その承認の通知を捨ててよいか）。 */
+	heldApprovalSettledSince(since: number): boolean {
+		return this.heldApprovalSettledAt !== undefined && this.heldApprovalSettledAt >= since;
 	}
 	/** デスクトップのチャット表示のためだけに入れた質問の合成 id。ペインの状態（質問中）に数えない。 */
 	readonly desktopOnlyQuestionIds = new Set<string>();
@@ -3127,9 +3155,12 @@ class TranscriptTailer {
 	 * `detail`（1 行）は古いアプリの表示と、hook と mod の承認の本文での突き合わせに使うので形を変えない。
 	 * 新しいアプリ向けには、ツールごとに分けた中身（`request`）と、許可を求めたサブエージェント、
 	 * 「以後は確認しない」の残り方を添える（agent.approval.detail.v1）。
+	 *
+	 * `holdMs` を渡すと、その間はカード・会話・通知に出さない（列には入れるのでペインの状態は許可待ちになる）。
+	 * 待つ間にツールの完了・拒否・ターンの終わりで列から外れたら、最後まで出さない。
 	 */
 	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string, sameContentLimit = 1, suggestions?: readonly string[],
-		extra?: { readonly agent?: IParadisAgentApprovalAgent; readonly suggestionScope?: ParadisAgentApprovalSuggestionScope; readonly choices?: readonly IParadisAgentApprovalChoice[] }): void {
+		extra?: { readonly agent?: IParadisAgentApprovalAgent; readonly suggestionScope?: ParadisAgentApprovalSuggestionScope; readonly choices?: readonly IParadisAgentApprovalChoice[]; readonly holdMs?: number }): void {
 		this.enqueue(async () => {
 			// ここで pendingQuestions を見て注入自体を捨ててはいけない。PermissionRequest hook は
 			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
@@ -3161,15 +3192,38 @@ class TranscriptTailer {
 				desktopOnly,
 				...(waitKey !== undefined ? { waitKey } : {}),
 				...(extra?.agent?.id !== undefined ? { agentId: extra.agent.id } : {}),
+				...(extra?.holdMs !== undefined && extra.holdMs > 0 ? { held: true as const } : {}),
 			});
-			const message: IParadisAgentChatMessage = {
-				role: 'assistant', kind: 'tool_use', tool: 'approval_request',
-				text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++, toolUseId: interactionId,
+			const showCard = () => {
+				const message: IParadisAgentChatMessage = {
+					role: 'assistant', kind: 'tool_use', tool: 'approval_request',
+					text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++, toolUseId: interactionId,
+				};
+				this.messages.push(message);
+				this.trimRing();
+				this.delegate.onDelta([message]);
 			};
-			this.messages.push(message);
-			this.trimRing();
-			this.delegate.onDelta([message]);
+			if (extra?.holdMs === undefined || extra.holdMs <= 0) {
+				showCard();
+				this.delegate.onActivity();
+				return;
+			}
+			// 待つ間もペインは許可待ちに数える（hook の許可待ちと食い違わせない。外れたら作業中へ戻る）
 			this.delegate.onActivity();
+			const timer = setTimeout(() => {
+				this.approvalHoldTimers.delete(timer);
+				void this.enqueue(async () => {
+					const index = this.approvalQueue.findIndex(entry => entry.held !== undefined && entry.interaction.id === interactionId);
+					if (index < 0 || this.disposed) {
+						return; // 待つ間に決着した（許可・拒否・ターンの終わり）
+					}
+					const { held: _held, ...shown } = this.approvalQueue[index];
+					this.approvalQueue[index] = shown;
+					showCard();
+					this.delegate.onActivity();
+				});
+			}, extra.holdMs);
+			this.approvalHoldTimers.add(timer);
 		});
 	}
 
@@ -3183,7 +3237,8 @@ class TranscriptTailer {
 				? this.removeApprovals(() => true)
 				: toolUseId !== undefined && this.removeApprovals(entry => entry.interaction.id === toolUseId);
 			if (!removed && force && this.approvalQueue.length > 0) {
-				this.approvalQueue.pop();
+				const popped = this.approvalQueue.pop();
+				this.noteHeldApprovalsSettled(popped !== undefined ? [popped] : []);
 				removed = true;
 			}
 			if (!removed) {
@@ -3939,6 +3994,33 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly pendingHookTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
+	/** 設定 `paradis.agentChat.codexAutoContinueOnOverload`（既定オン）。読み方は {@link setCodexAutoContinueEnabled} で受け取る。 */
+	private codexAutoContinueEnabled: () => boolean = () => true;
+	/** 自動の continue を送れずにやめたことの通知の出し方（{@link setCodexAutoContinueStoppedNotifier}）。 */
+	private codexAutoContinueStopped: ((token: string, terminalId: number, owner: IParadisMobilePaneOwner) => void) | undefined;
+	/** Codex のモデルが混み合って止まったターンを、少し待って自動で続ける（paradisCodexOverloadContinue.ts）。 */
+	/** 自動の continue を送るまで待つ時間（テストは短くする）。 */
+	private codexOverloadRetryDelaysMs: readonly number[] = PARADIS_CODEX_OVERLOAD_RETRY_DELAYS_MS;
+	/** Codex の承認のカードを出すまで待つ時間（テストは短くする）。 */
+	private codexApprovalHoldMs = PARADIS_CODEX_APPROVAL_HOLD_MS;
+	/** Codex の承認のカードを待たせ始めた時刻（ペイン → 時刻。通知も同じだけ待たせる）。 */
+	private readonly codexApprovalHolds = new Map<string, number>();
+	private readonly overloadContinue = new ParadisCodexOverloadContinue({
+		isEnabled: () => this.codexAutoContinueEnabled(),
+		retryDelaysMs: () => this.codexOverloadRetryDelaysMs,
+		notice: (token, text) => this.tailers.get(token)?.injectNotice(text),
+		requestSend: (token, requestId, since) => this.requestCodexAutoContinue(token, requestId, since),
+		notifyStopped: token => {
+			const terminalId = this.terminalIdForToken(token);
+			const owner = terminalId !== undefined ? this.ownerForPane(terminalId, token) : undefined;
+			if (terminalId !== undefined && owner !== undefined) {
+				this.codexAutoContinueStopped?.(token, terminalId, owner);
+			}
+		},
+		setTimeout: (callback, ms) => setTimeout(callback, ms),
+		clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+		now: () => Date.now(),
+	});
 	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly sendKey?: string; readonly claudeSetting?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly sendKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
@@ -4040,6 +4122,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.desktopClaimTimers.clear();
 		}));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
+		this._register(this.overloadContinue);
 		this._register(toDisposable(() => {
 			for (const key of [...this.stashedDrafts.keys()]) {
 				this.forgetStashedDraft(key);
@@ -4152,6 +4235,67 @@ export class ParadisMobileAgentChat extends Disposable {
 			...(hint.elapsedSeconds !== undefined ? { elapsedSeconds: hint.elapsedSeconds } : {}),
 			...(hint.tokenCount !== undefined ? { tokenCount: hint.tokenCount } : {}),
 		});
+	}
+
+	/** 設定 `paradis.agentChat.codexAutoContinueOnOverload` の読み方（shared process の設定）。 */
+	setCodexAutoContinueEnabled(isEnabled: () => boolean): void {
+		this.codexAutoContinueEnabled = isEnabled;
+	}
+
+	/** 自動の continue を送れずにやめたとき、プッシュで知らせる口（{@link ParadisMobileRelayService}）。 */
+	setCodexAutoContinueStoppedNotifier(notify: (token: string, terminalId: number, owner: IParadisMobilePaneOwner) => void): void {
+		this.codexAutoContinueStopped = notify;
+	}
+
+	/**
+	 * Codex の承認の通知を待たせる長さ（ms。待たせないなら undefined）。PermissionRequest の hook でカードを待たせ
+	 * 始めてから {@link codexApprovalHoldMs} の間だけ返す。
+	 */
+	codexApprovalNotifyHold(token: string): { readonly since: number; readonly waitMs: number } | undefined {
+		const since = this.codexApprovalHolds.get(token);
+		const waitMs = since !== undefined ? since + this.codexApprovalHoldMs - Date.now() : 0;
+		if (since === undefined || waitMs <= 0) {
+			this.codexApprovalHolds.delete(token);
+			return undefined;
+		}
+		return { since, waitMs };
+	}
+
+	/** 待たせていた Codex の承認が、`since` より後に出す前に決着したか（通知を捨ててよいか）。 */
+	codexHeldApprovalSettledSince(token: string, since: number): boolean {
+		return this.tailers.get(token)?.heldApprovalSettledSince(since) === true;
+	}
+
+	/** 自動の continue を待っているか（このペインの失敗の通知は、待つ間は出さない）。 */
+	isCodexAutoContinueWaiting(token: string): boolean {
+		return this.overloadContinue.isWaiting(token);
+	}
+
+	/**
+	 * ペインを持つウィンドウからの、自動の continue の知らせ（引き受け・打鍵があった・送れなかった）。持ち主でない
+	 * ウィンドウからのものは受けない。`claim` で送ってよいときだけ true。
+	 */
+	reportCodexAutoContinue(token: string, requestId: string, phase: ParadisCodexAutoContinuePhase, windowId: number, windowSession: string): boolean {
+		const terminalId = this.terminalIdForToken(token);
+		const owner = terminalId !== undefined ? this.ownerForPane(terminalId, token) : undefined;
+		if (owner === undefined || owner.windowId !== windowId || owner.windowSession !== windowSession || this.paneSessions.get(token)?.agent !== 'codex') {
+			return false;
+		}
+		return this.overloadContinue.report(token, requestId, phase);
+	}
+
+	/** 自動の continue をペインを持つウィンドウへ頼む（モバイルを介さない。mobileId は空）。頼めなければ false。 */
+	private requestCodexAutoContinue(token: string, requestId: string, since: number): boolean {
+		const session = this.paneSessions.get(token);
+		const terminalId = this.terminalIdForToken(token);
+		const owner = terminalId !== undefined ? this.ownerForPane(terminalId, token) : undefined;
+		if (session?.agent !== 'codex' || terminalId === undefined || owner === undefined || !this.tailers.has(token)) {
+			return false;
+		}
+		this.requestAction('', owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
+			t: 'action/autoContinue', id: terminalId, token, requestId, since,
+		})));
+		return true;
 	}
 
 	/**
@@ -7687,8 +7831,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (message.role === 'user' && message.kind === 'text') {
 				break; // 今のターンより前の発言は、この通知の話ではない
 			}
-			// 圧縮の区切りと要約はエージェントの発言ではないので、通知の本文にしない
-			if (message.role === 'assistant' && message.kind === 'text' && message.noticeSource !== 'compaction' && message.noticeSource !== 'compact-summary' && message.text.trim().length > 0) {
+			// 圧縮の区切りと要約、Para Code が足した知らせ（injectNotice）はエージェントの発言ではないので、通知の本文にしない
+			if (message.role === 'assistant' && message.kind === 'text' && message.noticeSource !== 'compaction' && message.noticeSource !== 'compact-summary'
+				&& !(message.notice === true && message.noticeSource === undefined) && message.text.trim().length > 0) {
 				lastAssistant = { text: message.text, isError: message.isError === true, ...(message.ts !== undefined ? { at: message.ts } : {}) };
 				break;
 			}
@@ -8890,6 +9035,16 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.logService.trace('[paradisAgentChat] hook received', event.event, Object.keys(event.payload ?? {}).sort().slice(0, 60).join(','));
 		}
 		this.recordDesktopInteraction(event);
+		// Codex の承認は、カードと通知を少し待たせる（自動の審査が先に決めることが多い）。通知は renderer の状態の変化から
+		// すぐ届くので、hook の処理を待たずにここで待たせ始める（paradisCodexApprovalHold.ts）
+		if (event.event === 'PermissionRequest' && event.toolName !== 'AskUserQuestion' && this.codexApprovalHoldMs > 0
+			&& (event.agentKind ?? this.paneSessions.get(event.token)?.agent ?? (event.transcriptPath !== undefined && event.transcriptPath.length > 0 ? agentKindForPath(event.transcriptPath) : undefined)) === 'codex') {
+			this.codexApprovalHolds.delete(event.token);
+			this.codexApprovalHolds.set(event.token, Date.now());
+			if (this.codexApprovalHolds.size > 500) {
+				this.codexApprovalHolds.delete(this.codexApprovalHolds.keys().next().value!);
+			}
+		}
 		// デスクトップのチャット表示が「エージェントはもう終わった」と判断するための印（終わったペインへ
 		// 文を送ると、シェルでコマンドとして実行されるため）。SessionEnd の後に別の hook が来たら消す。
 		if (event.event === 'SessionEnd') {
@@ -9723,6 +9878,8 @@ export class ParadisMobileAgentChat extends Disposable {
 				paradisApprovalSuggestionLabels(event.payload?.permission_suggestions), {
 				agent: this.approvalAgent(event.token, str(event.payload?.agent_id), str(event.payload?.agent_type)),
 				suggestionScope: paradisApprovalSuggestionScope(event.payload?.permission_suggestions),
+				// Codex は自動の審査より先にこの hook を呼ぶ。審査が決めるまでカードと通知を待つ（paradisCodexApprovalHold.ts）
+				...(info.agent === 'codex' ? { holdMs: this.codexApprovalHoldMs } : {}),
 			});
 		}
 		const forceApprovalClear = event.event === 'PermissionDenied';
@@ -9908,6 +10065,8 @@ export class ParadisMobileAgentChat extends Disposable {
 				for (const event of events) {
 					if (event.type === 'turnStart') {
 						this.activeTurnTokens.add(token);
+						// 自動の continue を待つ間に始まったターンは、ユーザーが送ったもの。自動の送信を取りやめる
+						this.overloadContinue.onTurnStarted(token);
 						fireParadisAgentTurnStarted(token, this.tokenToCwd.get(token));
 					} else if (event.type === 'subagent') {
 						changed = tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind, ...(event.detail !== undefined ? { prompt: event.detail } : {}), ...(event.via !== undefined ? { interaction: event.via } : {}), ...(event.callId !== undefined ? { callId: event.callId } : {}) } }, event.at) || changed;
@@ -9934,6 +10093,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
 			// ペイン実行状態（working）側の解除は hook バス経由で ParadisAgentBrowserService に任せる。
 			onTurnEnded: (reason, errorCode) => {
+				// Codex のモデルが混み合って止まったなら、少し待って自動で続ける。待つ間は失敗の通知を出さないので、
+				// ペインの状態を動かす（通知が出る）より先に決める
+				if (session.agent === 'codex') {
+					this.overloadContinue.onTurnEnded(token, reason, errorCode);
+				}
 				// 通知の中身（失敗の理由）のために、ペインの状態を動かす前に覚える（状態が変わると完了の通知が出る）。
 				this.notifyTurnEnds.delete(token);
 				this.notifyTurnEnds.set(token, { reason, ...(errorCode !== undefined ? { errorCode } : {}), at: Date.now() });
@@ -9999,6 +10163,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			clearTimeout(modApprovalTimer);
 			this.modApprovalTimers.delete(token);
 		}
+		// 会話・ペインが終わった。自動の continue は送らない
+		this.overloadContinue.forget(token);
+		this.codexApprovalHolds.delete(token);
 		const tailer = this.tailers.get(token);
 		if (tailer !== undefined) {
 			this.scheduleDesktopInsightCheck();
