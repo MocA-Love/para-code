@@ -44,7 +44,7 @@ export const PARADIS_EXTENSION_PRIVATE_FILES: readonly string[] = [
 
 /** 呼び出しの種類。 */
 export type ParadisExtensionApiRequest =
-	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[]; readonly userGesture?: boolean }
+	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[] }
 	| { readonly type: 'listen'; readonly namespace: string; readonly event: string; readonly active: boolean };
 
 /**

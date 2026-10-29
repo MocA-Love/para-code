@@ -85,10 +85,17 @@ export function paradisResolveBrowserDownloadsDirectory(configurationService: IC
 }
 
 /**
- * 保存先のフォルダの中で、空いている名前に保存先を付け直して予約する（ブラウザ拡張機能の downloads.download の filename。
+ * そのフォルダ（無ければ作る）の中で、空いている名前に保存先を付け直して予約する（ブラウザ拡張機能の downloads.download。
  * will-download の中で同期に呼ぶ）。終わったら予約を外す。
  */
 export function paradisRenameDownloadInPlace(item: DownloadItem, directory: string, filename: string): void {
+	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Electron honors setSavePath only synchronously inside the will-download listener.
+		fs.mkdirSync(directory, { recursive: true });
+	} catch (error) {
+		console.error('[paradis] Failed to create the browser extension downloads directory:', error);
+		return;
+	}
 	const savePath = paradisResolveUniqueDownloadPath(directory, filename);
 	reservedDownloadPaths.add(savePath);
 	item.once('done', () => reservedDownloadPaths.delete(savePath));

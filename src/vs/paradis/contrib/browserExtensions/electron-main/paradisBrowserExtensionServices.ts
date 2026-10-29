@@ -135,6 +135,40 @@ export function paradisDownloadFilename(raw: unknown): string | undefined {
 	return raw;
 }
 
+/** 自動保存のフォルダの隣の、拡張機能のダウンロードのフォルダ（「Paracode」なら「Paracode (extensions)」）。 */
+export function paradisExtensionDownloadsFolder(autoSaveFolder: string): string {
+	return join(dirname(autoSaveFolder), `${basename(autoSaveFolder)} (extensions)`);
+}
+
+/** Chrome の downloads.download が断るヘッダー（Fetch の forbidden request header と同じ）。 */
+const FORBIDDEN_HEADERS: ReadonlySet<string> = new Set([
+	'accept-charset', 'accept-encoding', 'access-control-request-headers', 'access-control-request-method', 'access-control-request-private-network',
+	'connection', 'content-length', 'cookie', 'cookie2', 'date', 'dnt', 'expect', 'host', 'keep-alive', 'origin', 'referer', 'set-cookie', 'te',
+	'trailer', 'transfer-encoding', 'upgrade', 'user-agent', 'via',
+]);
+
+/** downloads.download の headers。送ってはいけないヘッダー（Cookie・Origin・Host・Proxy-*・Sec-* など）は断る。 */
+export function paradisDownloadHeaders(raw: unknown): Record<string, string> {
+	if (raw === undefined) {
+		return {};
+	}
+	if (!Array.isArray(raw) || raw.length > 100) {
+		throw new ParadisExtensionApiError('Invalid headers');
+	}
+	const headers: Record<string, string> = {};
+	for (const header of raw) {
+		if (!isRecord(header) || typeof header.name !== 'string' || typeof header.value !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header.name) || /[\r\n\0]/.test(header.value)) {
+			throw new ParadisExtensionApiError('Invalid headers');
+		}
+		const name = header.name.toLowerCase();
+		if (FORBIDDEN_HEADERS.has(name) || name.startsWith('proxy-') || name.startsWith('sec-')) {
+			throw new ParadisExtensionApiError(`Unsafe request header name: ${header.name}`);
+		}
+		headers[header.name] = header.value;
+	}
+	return headers;
+}
+
 const COOKIE_CAUSES: Readonly<Record<string, string>> = { explicit: 'explicit', overwrite: 'overwrite', expired: 'expired', evicted: 'evicted', 'expired-overwrite': 'expired_overwrite' };
 const WILL_DOWNLOAD_TIMEOUT_MS = 15_000;
 
@@ -323,21 +357,21 @@ export class ParadisBrowserExtensionServices {
 		return best ? paradisChromeCookie(best) : null;
 	}
 
-	/** cookies.onChanged: そのサイトの権限を持つ拡張機能にだけ届ける。 */
-	private _observeCookies(caller: IParadisExtensionApiCaller): void {
-		const session = this._tabs.electronSessionOf(caller);
+	/**
+	 * cookies.onChanged: そのサイトの権限を持つ拡張機能にだけ届ける。見張りは拡張機能を読み込むセッションを付けたときに立てる
+	 * （受け手を付けたときから届くように）。
+	 */
+	observeCookies(session: Session, apiSession: object, place: string): void {
 		if (this._observedCookieSessions.has(session)) {
 			return;
 		}
 		this._observedCookieSessions.add(session);
-		const apiSession = caller.session;
-		const place = caller.place;
 		session.cookies.on('changed', (_event, cookie, cause, removed) => {
 			const url = paradisCookieUrl(cookie);
 			for (const extension of session.extensions.getAllExtensions() as unknown as IParadisApiExtension[]) {
 				const permissions = Array.isArray(extension.manifest.permissions) ? extension.manifest.permissions : [];
 				if ((permissions.includes('cookies') || this._permissions.granted(extension.id, place).permissions.includes('cookies')) && this._permissions.hostPatterns(extension, place).some(pattern => paradisMatchesUrlPattern(pattern, url))) {
-					this._host.emit({ session: apiSession, extensionId: extension.id }, 'cookies', 'onChanged', [{ removed, cookie: paradisChromeCookie(cookie), cause: COOKIE_CAUSES[cause] ?? 'explicit' }]);
+					this._host.emit({ session: apiSession as IParadisExtensionApiCaller['session'], extensionId: extension.id }, 'cookies', 'onChanged', [{ removed, cookie: paradisChromeCookie(cookie), cause: COOKIE_CAUSES[cause] ?? 'explicit' }]);
 				}
 			}
 		});
@@ -354,12 +388,10 @@ export class ParadisBrowserExtensionServices {
 				get: paradisDefineExtensionMethod(details(['url', 'name']), async (caller, value) => {
 					this._checkStore(value.storeId);
 					this._requireHost(caller, value.url as string);
-					this._observeCookies(caller);
 					return this._findCookie(this._tabs.electronSessionOf(caller), value.url as string, value.name as string);
 				}),
 				getAll: paradisDefineExtensionMethod(details([]), async (caller, value) => {
 					this._checkStore(value.storeId);
-					this._observeCookies(caller);
 					const filter: Record<string, unknown> = {};
 					for (const key of ['url', 'name', 'domain', 'path'] as const) {
 						if (typeof value[key] === 'string') {
@@ -456,6 +488,11 @@ export class ParadisBrowserExtensionServices {
 		}
 		const filename = paradisDownloadFilename(options.filename);
 		const url = this._downloadUrl(caller, options.url);
+		const headers = paradisDownloadHeaders(options.headers);
+		// 保存の画面は、利用者の操作の中だけで出す（拡張機能が勝手にダイアログを出し続けないように）
+		if (saveAs && !this._permissions.hasUserGesture(caller)) {
+			throw new ParadisExtensionApiError('saveAs needs a user gesture');
+		}
 		// 始めるのは、その場所の利用者の前のタブ（エージェントのタブは選ばない）
 		const owner = this._tabs.activeEditorTab(caller)?.webContents;
 		if (!owner || owner.isDestroyed()) {
@@ -476,7 +513,6 @@ export class ParadisBrowserExtensionServices {
 		}
 		const session = owner.session;
 		const id = this._nextDownloadId++;
-		const headers = Array.isArray(options.headers) ? Object.fromEntries(options.headers.filter(isRecord).filter(header => typeof header.name === 'string' && typeof header.value === 'string').map(header => [header.name as string, header.value as string])) : {};
 		const started = new Promise<number>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				session.removeListener('will-download', onWillDownload);
@@ -491,11 +527,13 @@ export class ParadisBrowserExtensionServices {
 				session.removeListener('will-download', onWillDownload);
 				if (savePath !== undefined) {
 					item.setSavePath(savePath);
-				} else if (filename !== undefined) {
-					// 自動保存のフォルダの中で、名前だけを替える（Orca と同じく最後の部分だけ使う。同じ名前があれば番号を付ける）
+				} else {
+					// 拡張機能のダウンロードは、自動保存のフォルダの隣の別のフォルダへ置く（エージェントの read_download が読む
+					// 自動保存のフォルダには入れない）。名前は Orca と同じく最後の部分だけ使い、同じ名前があれば番号を付ける
 					const current = item.getSavePath();
 					if (current) {
-						this._environment.renameDownload(item, dirname(current), basename(filename.replace(/\\/g, '/')));
+						const folder = dirname(current);
+						this._environment.renameDownload(item, paradisExtensionDownloadsFolder(folder), basename((filename ?? basename(current)).replace(/\\/g, '/')));
 					}
 				}
 				this._track(caller, id, item);

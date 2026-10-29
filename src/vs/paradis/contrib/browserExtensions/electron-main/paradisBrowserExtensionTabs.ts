@@ -159,6 +159,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	private readonly _activeByWindow = new Map<number, number>();
 	private _lastFocusedWindowId: number | undefined;
 	private _grantedOrigins: (extension: IParadisApiExtension, session: Session) => readonly string[] = () => [];
+	private _hasUserGesture: (caller: IParadisExtensionApiCaller) => boolean = () => false;
 	/** captureVisibleTab の回数の上限（セッション → 拡張機能 → 残り）。 */
 	private readonly _captureQuota = new WeakMap<ParadisApiSession, Map<string, { expiresAt: number; remaining: number }>>();
 	/** ツールバーのボタンのポップアップの窓 → それを出した Para Code のウィンドウ（ポップアップはその窓の一部として扱う）。 */
@@ -643,6 +644,11 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		this._grantedOrigins = lookup;
 	}
 
+	/** 利用者の操作の中かの引き方（permissions が持つ記録。captureVisibleTab の回数の上限に使う）。 */
+	setUserGestureLookup(lookup: (caller: IParadisExtensionApiCaller) => boolean): void {
+		this._hasUserGesture = lookup;
+	}
+
 	/** 拡張機能に見せるタブの id（cookies.getAllCookieStores。エージェントのタブは入らない）。 */
 	visibleTabIds(caller: IParadisExtensionApiCaller): number[] {
 		return this._tabsOf(this._electronSession(caller)).map(entry => entry.webContents.id);
@@ -689,6 +695,10 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		}
 		this._consumeCaptureQuota(caller);
 		const image = await contents.capturePage();
+		// 撮っている間に別のページへ移った・共有された・前のタブでなくなったら捨てる（確かめた後の別のページを渡さない）
+		if (contents.isDestroyed() || contents.getURL() !== url || paradisIsExtensionPageHeld(contents) || !this._tabsOf(session).some(candidate => candidate.webContents === contents && candidate.windowId === windowId && candidate.active)) {
+			throw new ParadisExtensionApiError('The tab changed while it was being captured');
+		}
 		if (image.isEmpty()) {
 			throw new ParadisExtensionApiError('Internal error while trying to capture visible region of the current tab');
 		}
@@ -696,7 +706,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	}
 
 	private _consumeCaptureQuota(caller: IParadisExtensionApiCaller): void {
-		if (caller.userGesture === true) {
+		if (this._hasUserGesture(caller)) {
 			return;
 		}
 		const key = `${caller.extension.id}`;

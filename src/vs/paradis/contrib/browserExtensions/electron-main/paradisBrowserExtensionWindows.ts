@@ -23,9 +23,47 @@ export function paradisMarkBrowserExtensionWindow(contents: WebContents): void {
 	extensionWindows.add(contents);
 }
 
+/** 拡張機能自身のページへの、利用者の本物の入力を受け取るもの（拡張機能の管理が登録する）。 */
+let inputListener: ((contents: WebContents, extensionId: string) => void) | undefined;
+
+/** 拡張機能自身のページへの利用者の入力を受け取るものを登録する（permissions の「利用者の操作」の記録）。 */
+export function paradisSetBrowserExtensionInputListener(listener: ((contents: WebContents, extensionId: string) => void) | undefined): void {
+	inputListener = listener;
+}
+
+/** Chrome が利用者の操作（user activation）とみなす入力。 */
+const ACTIVATING_INPUTS: ReadonlySet<string> = new Set(['mouseDown', 'mouseUp', 'keyDown', 'rawKeyDown', 'touchStart', 'touchEnd', 'gestureTap']);
+
+/**
+ * その入力が、拡張機能自身のページ（一番外の文書が chrome-extension://<id>/）への利用者の操作なら、その拡張機能の id。
+ * ウェブのページの中の拡張機能の iframe への入力は数えない（その WebContents の URL はウェブのページ）。
+ */
+export function paradisGestureExtensionId(topUrl: string, inputType: string): string | undefined {
+	if (!ACTIVATING_INPUTS.has(inputType)) {
+		return undefined;
+	}
+	return /^chrome-extension:\/\/(?<id>[a-p]{32})\//.exec(topUrl)?.groups?.id;
+}
+
 function answer(contents: WebContents): void {
 	contents.ipc.on(PARADIS_BROWSER_EXTENSION_WINDOW_CHANNEL, event => {
 		event.returnValue = extensionWindows.has(contents);
+	});
+	// 拡張機能自身のページへの本物の入力を記録する（エージェントは P1・P2 の守りで拡張機能のページへ入力できない）
+	contents.on('input-event', (_event, input) => {
+		if (!inputListener) {
+			return;
+		}
+		let url = '';
+		try {
+			url = contents.getURL();
+		} catch {
+			return;
+		}
+		const extensionId = paradisGestureExtensionId(url, input.type);
+		if (extensionId !== undefined) {
+			inputListener(contents, extensionId);
+		}
 	});
 }
 

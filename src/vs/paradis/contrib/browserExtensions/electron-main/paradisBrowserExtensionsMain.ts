@@ -76,6 +76,7 @@ import { ParadisBrowserExtensionMenus } from './paradisBrowserExtensionMenus.js'
 import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions } from './paradisBrowserExtensionPermissions.js';
 import { IParadisServicesEnvironment, ParadisBrowserExtensionServices } from './paradisBrowserExtensionServices.js';
 import { paradisSetBrowserExtensionMenuProvider } from './paradisBrowserExtensionMenuRegistry.js';
+import { paradisSetBrowserExtensionInputListener } from './paradisBrowserExtensionWindows.js';
 
 /** タブ・ウィンドウの API に要る main のもの（無ければ tabs・windows・webNavigation は使えない）。 */
 export interface IParadisBrowserExtensionTabsOptions {
@@ -356,6 +357,15 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._permissions = tabs && tabsOptions ? new ParadisBrowserExtensionPermissions(this._apiHost, join(_root, 'permission-grants.json'), _logService, prompt => tabsOptions.askPermissions?.(prompt) ?? Promise.resolve(false), nameOfExtension) : undefined;
 		const permissions = this._permissions;
 		if (tabs && permissions) {
+			tabs.setUserGestureLookup(caller => permissions.hasUserGesture(caller));
+			// 拡張機能自身のページへの利用者の本物の入力（ポップアップ・小さな窓・タブで開いた拡張機能のページ）
+			paradisSetBrowserExtensionInputListener((contents, extensionId) => {
+				const session = contents.session as unknown;
+				if ([...this._sessions].some(entry => entry.session === session && entry.session.extensions.getExtension(extensionId))) {
+					permissions.noteUserGesture(contents.session, extensionId);
+				}
+			});
+			this._disposables.add({ dispose: () => paradisSetBrowserExtensionInputListener(undefined) });
 			tabs.setGrantedOriginsLookup((extension, session) => {
 				const place = [...this._sessions].find(entry => entry.session === (session as unknown))?.profile;
 				return place !== undefined ? permissions.granted(extension.id, place).origins : [];
@@ -540,6 +550,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		if (this._tabs) {
 			this._disposables.add(this._tabs.attachSession({ session, electronSession: session as unknown as Session, browserSessionId: owner.id }));
 		}
+		// cookies.onChanged は、受け手を付けたときから届く（見張りはセッションを付けたときに立てる）
+		this._services?.observeCookies(session as unknown as Session, session, profile);
 		if (remote) {
 			// SSH 先のページのためにトンネルを通している間は、拡張機能を入れない（D8）
 			this._disposables.add(remote.onDidStart(() => this._unloadAll(entry)));

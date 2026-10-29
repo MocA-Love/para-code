@@ -48,11 +48,6 @@ export interface IParadisExtensionApiCaller {
 	/** 文脈の名前（worker は 'worker'）。 */
 	readonly connection: string;
 	readonly fromWorker: boolean;
-	/**
-	 * 拡張機能のページで、利用者の操作の中（transient activation）から呼んだか。詰め物が navigator.userActivation を
-	 * 付けて送る。worker からの呼び出しには付けない（worker には操作が無い）。
-	 */
-	readonly userGesture?: boolean;
 }
 
 /** 関数が投げると、その文が拡張機能へ（失敗・runtime.lastError として）届く。 */
@@ -151,7 +146,7 @@ const QUEUED_EVENT_TTL_MS = 30_000;
 const MAX_PAGE_CONNECTIONS = 200;
 
 type ParsedRequest =
-	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[]; readonly userGesture: boolean }
+	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[] }
 	| { readonly type: 'listen'; readonly namespace: string; readonly event: string; readonly active: boolean };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -164,7 +159,8 @@ function parseRequest(value: unknown): ParsedRequest | undefined {
 		return undefined;
 	}
 	if (value.type === 'call' && typeof value.method === 'string' && Array.isArray(value.args)) {
-		return { type: 'call', namespace: value.namespace, method: value.method, args: value.args, userGesture: value.userGesture === true };
+		// 本文の userGesture などは読まない（利用者の操作かは main が入力の記録で決める。拡張機能は本文を自由に書ける）
+		return { type: 'call', namespace: value.namespace, method: value.method, args: value.args };
 	}
 	if (value.type === 'listen' && typeof value.event === 'string' && typeof value.active === 'boolean') {
 		return { type: 'listen', namespace: value.namespace, event: value.event, active: value.active };
@@ -617,8 +613,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 			if (!method) {
 				throw new ParadisExtensionApiError(`chrome.${request.namespace}.${request.method} is not available`);
 			}
-			// 利用者の操作の印は、拡張機能のページからの呼び出しだけが付けられる
-			return { ok: true, value: await method.invoke(caller.fromWorker || !request.userGesture ? caller : { ...caller, userGesture: true }, request.args) };
+			return { ok: true, value: await method.invoke(caller, request.args) };
 		} catch (error) {
 			if (!(error instanceof ParadisExtensionApiError)) {
 				this._logService.warn('[paradis] a browser extension API call failed', error);
