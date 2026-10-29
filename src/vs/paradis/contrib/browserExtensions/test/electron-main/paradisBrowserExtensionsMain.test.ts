@@ -7,7 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
-import { promises as fs } from 'fs';
+import { createHash } from 'crypto';
+import { promises as fs, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import type { Extension } from 'electron';
 import { Emitter } from '../../../../../base/common/event.js';
@@ -58,7 +59,9 @@ class FakeSession implements ParadisExtensionSession {
 		on: () => undefined,
 		removeListener: () => undefined,
 		loadExtension: async (path: string) => {
-			const id = this.idOverride ?? paradisPredictExtensionId(path, undefined);
+			// 本物と同じく、manifest の key があればそこから、無ければ場所から id を決める
+			const key = (JSON.parse(readFileSync(join(path, 'manifest.json'), 'utf8')) as { key?: string }).key;
+			const id = this.idOverride ?? paradisPredictExtensionId(path, key);
 			this.loaded.set(id, path);
 			this.events.push(`load:${id}`);
 			return { id, manifest: {}, name: id, path, url: `chrome-extension://${id}/`, version: '1' } satisfies Extension;
@@ -248,7 +251,8 @@ suite('ParadisBrowserExtensionsMain', () => {
 
 	test('refuses a reinstall until restart and clears old data before loading it again', async () => {
 		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
-		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });
+		// 同じ id で入れ直せるのは key を持つ拡張機能（key の無いものは足すたびに新しい id になる）
+		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0', key: Buffer.from('restart-key').toString('base64') });
 		const added = await manager.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
 		assert.ok(added.ok);
 		await manager.remove(added.extension.id);
@@ -385,7 +389,7 @@ suite('ParadisBrowserExtensionsMain', () => {
 		const failing = new FakeSession(join(root, 'failing'));
 		failing.failClear = true;
 		await manager.attach(failing, owner(BrowserViewStorageScope.Global));
-		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });
+		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0', key: Buffer.from('clear-key').toString('base64') });
 		const added = await manager.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
 		assert.ok(added.ok);
 		const id = added.extension.id;
@@ -464,6 +468,52 @@ suite('ParadisBrowserExtensionsMain', () => {
 		}, { duringLoad: ['Filler'], afterLoad: ['Filler'], tunneled: [] });
 		remoteStarted.dispose();
 		remoteStopped.dispose();
+		manager.dispose();
+	});
+
+	test('gives a key-less extension an id from a random key, kept across reloads but not across reinstalls', async () => {
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });
+		const first = await manager.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		assert.ok(first.ok);
+		const again = await manager.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		const reloaded = await manager.reloadUnpacked(first.extension.id);
+		assert.ok(again.ok && reloaded.ok);
+		const copiedKey = (JSON.parse(await fs.readFile(join(first.extension.path, 'manifest.json'), 'utf8')) as { key?: string }).key;
+		const state = await manager.getState();
+		await manager.remove(first.extension.id);
+		manager.dispose();
+		// 削除して再起動した後に足し直すと、新しい乱数の key になる
+		const restarted = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		const reinstalled = await restarted.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		assert.ok(reinstalled.ok);
+		assert.deepStrictEqual({
+			// 写しの場所（利用者のホームの場所を含む）から決まる id ではない
+			fromPath: first.extension.id === paradisPredictExtensionId(first.extension.path, undefined),
+			fromKey: first.extension.id === paradisPredictExtensionId(first.extension.path, copiedKey),
+			sameOnReAdd: again.extension.id === first.extension.id,
+			sameOnReload: reloaded.extension.id === first.extension.id,
+			keyNotShown: (state.extensions[0] as { generatedKey?: unknown }).generatedKey,
+			newOnReinstall: reinstalled.extension.id !== first.extension.id,
+		}, { fromPath: false, fromKey: true, sameOnReAdd: true, sameOnReload: true, keyNotShown: undefined, newOnReinstall: true });
+		restarted.dispose();
+	});
+
+	test('keeps the path-based id of an extension added before random keys', async () => {
+		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });
+		const real = await fs.realpath(join(root, 'source'));
+		// 前の版の台帳の行（generatedKey が無い）を作る
+		// 前の版と同じく、写しは元のフォルダの場所のハッシュの名前
+		const copy = join(root, 'unpacked', createHash('sha256').update(real).digest('hex').slice(0, 16));
+		await fs.mkdir(copy, { recursive: true });
+		await fs.cp(real, copy, { recursive: true });
+		const realCopy = await fs.realpath(copy);
+		const id = paradisPredictExtensionId(realCopy, undefined);
+		await fs.writeFile(join(root, 'ledger.json'), JSON.stringify({ version: 1, extensions: [{ id, name: 'Sample', version: '1.0', manifestVersion: 3, source: 'unpacked', sourcePath: real, path: realCopy, installedAt: 1, touchesPages: false }], enabled: {}, removed: [] }));
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		const reloaded = await manager.reloadUnpacked(id);
+		assert.ok(reloaded.ok);
+		assert.deepStrictEqual({ sameId: reloaded.extension.id === id, generatedKey: reloaded.extension.generatedKey }, { sameId: true, generatedKey: undefined });
 		manager.dispose();
 	});
 
