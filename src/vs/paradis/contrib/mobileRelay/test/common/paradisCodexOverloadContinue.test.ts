@@ -151,6 +151,40 @@ suite('ParadisCodexOverloadContinue', () => {
 		}
 	});
 
+	test('cancels when a turn starts after the wait ended but before the window claimed, and reports a draft or an unverifiable screen', () => {
+		const late = createHost();
+		const a = new ParadisCodexOverloadContinue(late.host);
+		a.onTurnEnded('pane', 'failed', 'server_overloaded');
+		late.fireNext(); // 窓へ頼んだ
+		a.onTurnStarted('pane'); // 引き受けの前にユーザーのターンが始まった
+		const claimed = a.report('pane', late.state.lastRequest!.requestId, 'claim');
+
+		const draft = createHost();
+		const b = new ParadisCodexOverloadContinue(draft.host);
+		b.onTurnEnded('pane', 'failed', 'server_overloaded');
+		draft.fireNext();
+		b.report('pane', draft.state.lastRequest!.requestId, 'draft');
+
+		const unverified = createHost();
+		const c = new ParadisCodexOverloadContinue(unverified.host);
+		c.onTurnEnded('pane', 'failed', 'server_overloaded');
+		unverified.fireNext();
+		c.report('pane', unverified.state.lastRequest!.requestId, 'unverified');
+
+		assert.deepStrictEqual({
+			late: [late.log.slice(1), claimed, late.pending()],
+			draft: draft.log.slice(1),
+			unverified: unverified.log.slice(1),
+		}, {
+			late: [['send pane', 'notice pane: ほかの入力があったので、自動で続けるのをやめました'], false, []],
+			draft: ['send pane', 'notice pane: Codex の入力欄に書きかけの文があるので、自動で続けるのをやめました', 'stopped pane'],
+			unverified: ['send pane', 'notice pane: PC のターミナルで Codex の入力欄を確かめられなかったので、自動で続けるのをやめました', 'stopped pane'],
+		});
+		for (const overload of [a, b, c]) {
+			overload.dispose();
+		}
+	});
+
 	test('tells the user when the window cannot send, and refuses a second or stale claim', () => {
 		const failed = createHost({ sendAccepted: false });
 		const a = new ParadisCodexOverloadContinue(failed.host);

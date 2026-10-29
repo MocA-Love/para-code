@@ -13,6 +13,7 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import { paradisHeldApprovalNotifyAction } from '../../common/paradisCodexApprovalHold.js';
 import { ParadisMobileAgentChat } from '../../node/paradisMobileAgentChat.js';
 
 // Codex の承認のカードを待つこと（自動の審査が先に決める）と、モデルが混み合って止まったターンを自動で続けること。
@@ -34,6 +35,7 @@ interface IChatAccess {
 	readonly tailers: Map<string, ITailerAccess>;
 	readonly hookProcessing: Map<string, Promise<void>>;
 	readonly codexRolloutOrigins: Map<string, string>;
+	readonly activeTurnTokens: Set<string>;
 }
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
@@ -145,6 +147,57 @@ suite('ParadisMobileAgentChat with Codex', () => {
 			shown: 'call_2',
 			cards: 1,
 			pending: false,
+		});
+	}));
+
+	test('keeps the notification waiting when a second approval is still held after the first one settled', () => withCodexHarness(async harness => {
+		const first = { toolName: 'mcp__para_browser__get_cookies', toolInput: { name: 'a' } };
+		const second = { toolName: 'mcp__para_browser__click_by', toolInput: { role: 'button', name: '購入' } };
+		await harness.hook('PreToolUse', { ...first, toolUseId: 'call_a' });
+		await harness.hook('PermissionRequest', first);
+		const hold = harness.chat.codexApprovalNotifyHold(harness.token)!;
+		await harness.hook('PreToolUse', { ...second, toolUseId: 'call_b' });
+		await harness.hook('PermissionRequest', second);
+		await harness.hook('PostToolUse', { ...first, toolUseId: 'call_a' }); // 先のものは審査が許可した
+		await sleep(20);
+		const state = (chat: ParadisMobileAgentChat) => paradisHeldApprovalNotifyAction({
+			cardShown: chat.notifyPaneContent(harness.token)?.interaction !== undefined,
+			stillHeld: chat.hasHeldCodexApproval(harness.token),
+			settledWhileHeld: chat.codexHeldApprovalSettledSince(harness.token, hold.since),
+		});
+		const beforeShown = state(harness.chat);
+		await waitFor(() => harness.tailer().currentInteraction()?.id === 'call_b', 'the second approval was not shown');
+		assert.deepStrictEqual({ beforeShown, afterShown: state(harness.chat) }, { beforeShown: 'wait', afterShown: 'send' });
+	}));
+
+	test('does not continue when the failed turn and the next turn arrive in one read, and keeps the pane working', () => withCodexHarness(async harness => {
+		const overloaded = line('event_msg', { type: 'task_complete', turn_id: 'turn-1', last_agent_message: null, error: { message: 'Selected model is at capacity.', codex_error_info: 'server_overloaded' } });
+		await harness.append(line('event_msg', { type: 'task_started', turn_id: 'turn-1' }));
+		await waitFor(() => harness.access.activeTurnTokens.has(harness.token), 'the first turn did not start');
+		// 失敗したターンの終わりと、次のターン（キューの発言・ユーザーの送信）の始まりが 1 回の読み込みに入る
+		await harness.append(overloaded, line('event_msg', { type: 'task_started', turn_id: 'turn-2' }));
+		await waitFor(() => harness.tailer().messages.some(message => message.text === 'Selected model is at capacity.'), 'the failure was not read');
+		await sleep(150);
+		assert.deepStrictEqual({
+			asked: harness.actions.filter(action => action.t === 'action/autoContinue').length,
+			waiting: harness.chat.isCodexAutoContinueWaiting(harness.token),
+			working: harness.access.activeTurnTokens.has(harness.token),
+			notices: harness.tailer().messages.filter(message => message.notice === true).length,
+		}, { asked: 0, waiting: false, working: true, notices: 0 });
+	}));
+
+	test('refuses the claim when a turn is running or the last turn did not end with the capacity error', () => withCodexHarness(async harness => {
+		const overloaded = line('event_msg', { type: 'task_complete', turn_id: 'turn-1', last_agent_message: null, error: { message: 'Selected model is at capacity.', codex_error_info: 'server_overloaded' } });
+		await harness.append(line('event_msg', { type: 'task_started', turn_id: 'turn-1' }), overloaded);
+		await waitFor(() => harness.actions.some(action => action.t === 'action/autoContinue'), 'the window was not asked to send');
+		const request = harness.actions.find(action => action.t === 'action/autoContinue')!;
+		// 窓が引き受ける前に、ユーザーの発言の hook が届いた（rollout にはまだ書かれていない）
+		await harness.hook('UserPromptSubmit', { payload: { prompt: '別の作業をして' } });
+		const claimed = harness.chat.reportCodexAutoContinue(harness.token, request.requestId as string, 'claim', 1, 'window-session');
+		await sleep(50);
+		assert.deepStrictEqual({ claimed, notices: harness.tailer().messages.filter(message => message.notice === true).map(message => message.text).slice(1) }, {
+			claimed: false,
+			notices: ['ほかの入力があったので、自動で続けるのをやめました'],
 		});
 	}));
 

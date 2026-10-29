@@ -12,10 +12,13 @@
  * 画面を読む・撮る・一覧を出すたびに承認（モバイルのカードと通知）が出なくなる。
  *
  * 入れないもの: 押す・入力する・移動する・スクロールする・タブを選ぶ（ペインの全員の今のタブが変わる）・強調する・
- * 待つ（`wait_until`。条件に任意の JavaScript を書け、確認中に出たダイアログを閉じる）・通信の中身を取る
+ * 待つ（`wait_until`。条件に任意の JavaScript を書ける）・通信の中身を取る
  * （`get_network_request`。本文をファイルへ書けるので、内蔵の chrome-devtools-mcp も読むだけにしていない）・
  * メモを書く／チェックを付ける（`check_space_note_task`）・計測を始める・CDP の接続先を渡す（`get_cdp_endpoint`。
  * 受け取った側が何でもできる）・Lighthouse（ページを読み込み直す）・ヒープのスナップショット（大きなファイルを書く）。
+ * 読む道具（`get_text`・`inspect_element`・`capture_screenshot`）は Para Code の決まった読み取りの式だけをページで評価する。
+ * 評価の間に開いたダイアログは閉じる（承認しない）が、すでに開いているダイアログは閉じない（内蔵の chrome-devtools-mcp が
+ * 評価の前に断る。`blockedByDialog`）。
  * 撮る道具（`take_screenshot`・`take_snapshot`・`capture_screenshot`）は、保存先を渡すとファイルを 1 つ書くが、書ける
  * 場所はペインのスペースと Para Code の受け渡しのフォルダの中だけなので入れる（内蔵の chrome-devtools-mcp は
  * `take_screenshot`・`take_snapshot` を `readOnlyHint: false` にしているが、ここで上書きする）。

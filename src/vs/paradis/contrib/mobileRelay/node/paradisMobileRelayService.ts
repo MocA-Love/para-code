@@ -76,7 +76,7 @@ import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, ParadisMobileCapability, paradisE
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyIncludeContent, paradisNotifyPcFocusQuiet, paradisNotifyPrefersDetail, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { PARADIS_NOTIFY_DETAIL_MAX_CHARS, paradisComposeNotifyVariants, paradisFitNotifyBytesForPush, paradisLegacyNotifySubtitle, paradisNotifyTabLabel } from '../common/paradisNotifyCompose.js';
 import { ParadisNotifyHookLedger, paradisResolveNotifyContent } from './paradisNotifyContentSource.js';
-import { PARADIS_CODEX_APPROVAL_NOTIFY_SLACK_MS, paradisShouldSendHeldApprovalNotify } from '../common/paradisCodexApprovalHold.js';
+import { PARADIS_CODEX_APPROVAL_NOTIFY_SLACK_MS, paradisHeldApprovalNotifyAction } from '../common/paradisCodexApprovalHold.js';
 import { PARADIS_CODEX_AUTO_CONTINUE_SETTING, ParadisCodexAutoContinuePhase } from '../common/paradisCodexOverloadContinue.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
 import { IParadisNotifyPromptOrigin, paradisDecodeNotifyDismissSync, paradisEncodeNotifyDismissLog, paradisNotifyDismissOpened, paradisNotifyInteractionId, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
@@ -125,6 +125,9 @@ import { paradisCreateVoiceDelivery } from './paradisVoiceClipDelivery.js';
 import { ParadisMobileVoiceEvent } from '../common/paradisMobileVoiceStream.js';
 import { paradisGetMachineIdHash } from '../../../node/paradisMachineId.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
+
+/** 重なった Codex の承認の通知を待ち直す回数の上限（超えたら出す）。 */
+const HELD_APPROVAL_NOTIFY_MAX_ROUNDS = 5;
 
 /**
  * リレー接続の保活間隔。経路のアイドルタイムアウトより十分短く、かつ常時接続の台数分だけ
@@ -1900,16 +1903,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		const held = afterApprovalHold ? undefined : this.codexApprovalNotifyHold(bytes);
 		if (held !== undefined) {
-			const timer = setTimeout(() => {
-				this.approvalNotifyTimers.delete(timer);
-				if (paradisShouldSendHeldApprovalNotify({
-					cardShown: this.agentChat.notifyPaneContent(held.token)?.interaction !== undefined,
-					settledWhileHeld: this.agentChat.codexHeldApprovalSettledSince(held.token, held.since),
-				})) {
-					this.dispatchNotify(bytes, expectedOwner, true);
-				}
-			}, held.waitMs + PARADIS_CODEX_APPROVAL_NOTIFY_SLACK_MS);
-			this.approvalNotifyTimers.add(timer);
+			this.holdApprovalNotify(bytes, expectedOwner, held.token, held.since, held.waitMs, 0);
 			return;
 		}
 		if (expectedOwner !== undefined) {
@@ -1922,6 +1916,28 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	/** 待っている Codex の承認の通知（{@link dispatchNotify}）。 */
 	private readonly approvalNotifyTimers = new Set<ReturnType<typeof setTimeout>>();
+
+	/**
+	 * Codex の承認の通知を待たせ、待ち終えたら出す・待ち直す・捨てるを決める（paradisHeldApprovalNotifyAction）。
+	 * 承認が重なって後の承認がまだ待たされていれば、その分だけ待ち直す（何度も待ち直さないよう上限を置く）。
+	 */
+	private holdApprovalNotify(bytes: Uint8Array, expectedOwner: IParadisMobileWindowLease | undefined, token: string, since: number, waitMs: number, rounds: number): void {
+		const timer = setTimeout(() => {
+			this.approvalNotifyTimers.delete(timer);
+			const action = paradisHeldApprovalNotifyAction({
+				cardShown: this.agentChat.notifyPaneContent(token)?.interaction !== undefined,
+				stillHeld: this.agentChat.hasHeldCodexApproval(token),
+				settledWhileHeld: this.agentChat.codexHeldApprovalSettledSince(token, since),
+			});
+			if (action === 'send' || (action === 'wait' && rounds >= HELD_APPROVAL_NOTIFY_MAX_ROUNDS)) {
+				this.dispatchNotify(bytes, expectedOwner, true);
+			} else if (action === 'wait') {
+				const next = this.agentChat.codexApprovalNotifyHold(token);
+				this.holdApprovalNotify(bytes, expectedOwner, token, since, next?.waitMs ?? 0, rounds + 1);
+			}
+		}, waitMs + PARADIS_CODEX_APPROVAL_NOTIFY_SLACK_MS);
+		this.approvalNotifyTimers.add(timer);
+	}
 
 	/**
 	 * 待ってから出す通知なら、そのエージェントのトークンと待つ長さ。Codex の承認のカードを待たせている間の、要対応

@@ -41,9 +41,13 @@ const SENT_RESULT_WAIT_MS = 30 * 60_000;
 
 /**
  * ウィンドウから shared process への知らせ: `claim` 送ってよいか（よければ送ったものとして数える）、`typed` 待つ間に
- * ペインへ打鍵があったので送らない、`failed` 貼り付けられなかった。
+ * ペインへ打鍵があったので送らない、`draft` Codex の入力欄に書きかけの文がある、`unverified` 前面が Codex か・入力欄が
+ * 空かを画面から確かめられない、`failed` 貼り付けられなかった。
  */
-export type ParadisCodexAutoContinuePhase = 'claim' | 'typed' | 'failed';
+export type ParadisCodexAutoContinuePhase = 'claim' | 'typed' | 'draft' | 'unverified' | 'failed';
+
+/** ウィンドウから受けてよい {@link ParadisCodexAutoContinuePhase}（IPC の値を確かめる）。 */
+export const PARADIS_CODEX_AUTO_CONTINUE_PHASES: ReadonlySet<string> = new Set<ParadisCodexAutoContinuePhase>(['claim', 'typed', 'draft', 'unverified', 'failed']);
 
 /** `ParadisCodexOverloadContinue` が外へ頼むこと。 */
 export interface IParadisCodexOverloadContinueHost {
@@ -103,6 +107,16 @@ export function paradisCodexOverloadCancelledNotice(): string {
 	return 'ほかの入力があったので、自動で続けるのをやめました';
 }
 
+export function paradisCodexOverloadDraftNotice(): string {
+	// allow-any-unicode-next-line
+	return 'Codex の入力欄に書きかけの文があるので、自動で続けるのをやめました';
+}
+
+export function paradisCodexOverloadUnverifiedNotice(): string {
+	// allow-any-unicode-next-line
+	return 'PC のターミナルで Codex の入力欄を確かめられなかったので、自動で続けるのをやめました';
+}
+
 export function paradisCodexOverloadSendFailedNotice(): string {
 	// allow-any-unicode-next-line
 	return 'PC のターミナルに送れなかったので、自動で続けるのをやめました';
@@ -153,10 +167,13 @@ export class ParadisCodexOverloadContinue {
 		this.host.notice(token, paradisCodexOverloadWaitNotice(delay, sent + 1, limit));
 	}
 
-	/** 本会話のターンが始まった（transcript）。待っている間なら、ユーザーが送ったので取りやめる。 */
+	/**
+	 * 本会話のターンが始まった（transcript）。送る前（待っている間と、ウィンドウの引き受けを待つ間）なら、ユーザーが
+	 * 送ったので取りやめる。
+	 */
 	onTurnStarted(token: string): void {
 		const state = this.panes.get(token);
-		if (state?.timer === undefined) {
+		if (state === undefined || (state.timer === undefined && (state.requestId === undefined || state.sentAt !== undefined))) {
 			return; // 自動で送った continue のターン（またはひと続きの外）
 		}
 		this.panes.delete(token);
@@ -204,19 +221,19 @@ export class ParadisCodexOverloadContinue {
 			}
 			return false;
 		}
-		this.sendFailed(token, requestId);
+		this.sendFailed(token, requestId, phase === 'draft' ? paradisCodexOverloadDraftNotice() : phase === 'unverified' ? paradisCodexOverloadUnverifiedNotice() : paradisCodexOverloadSendFailedNotice());
 		return false;
 	}
 
-	/** ウィンドウが送れなかった（claim の後に貼り付けられなかった）。`requestId` が今のものでなければ何もしない。 */
-	sendFailed(token: string, requestId: string): void {
+	/** ウィンドウが送れなかった。`requestId` が今のものでなければ何もしない。会話とプッシュで知らせる。 */
+	sendFailed(token: string, requestId: string, notice: string = paradisCodexOverloadSendFailedNotice()): void {
 		const state = this.panes.get(token);
 		if (state === undefined || (state.requestId !== requestId && state.sentRequestId !== requestId)) {
 			return;
 		}
 		this.panes.delete(token);
 		this.clearTimer(state);
-		this.host.notice(token, paradisCodexOverloadSendFailedNotice());
+		this.host.notice(token, notice);
 		this.host.notifyStopped(token);
 	}
 
