@@ -15,7 +15,7 @@
 // 台帳（表示名・色・時刻）は renderer 側にあり、ここには一切持ち込まない。
 
 import { session } from 'electron';
-import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { BrowserSession } from '../../../../platform/browserView/electron-main/browserSession.js';
 import { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
@@ -160,17 +160,13 @@ export function paradisRegisterBrowserProfiles(
 	// 内蔵ブラウザの Chrome 拡張機能（試験的）の channel も同じ登録点で立てる（同上）
 	disposables.add(instantiationService.invokeFunction(accessor => {
 		const browserViewMainService = accessor.get(IBrowserViewMainService);
-		const tabEnvironment = paradisCreateBrowserExtensionTabEnvironment(browserViewMainService, accessor.get(IWindowsMainService));
-		const registered = paradisRegisterBrowserExtensions(
+		const windowsMainService = accessor.get(IWindowsMainService);
+		return paradisRegisterBrowserExtensions(
 			channelHost,
 			instantiationService,
 			viewId => browserViewMainService.tryGetBrowserView(viewId)?.session.electronSession,
-			{ environment: tabEnvironment, createPopout: paradisCreateBrowserExtensionPopout },
+			() => ({ environment: paradisCreateBrowserExtensionTabEnvironment(browserViewMainService, windowsMainService), createPopout: paradisCreateBrowserExtensionPopout }),
 		);
-		return toDisposable(() => {
-			registered.dispose();
-			tabEnvironment.dispose();
-		});
 	}));
 	return disposables;
 }

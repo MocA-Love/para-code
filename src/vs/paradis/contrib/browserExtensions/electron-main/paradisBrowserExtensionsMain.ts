@@ -517,6 +517,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	}
 
 	private _unload(entry: ISessionEntry, id: string): void {
+		this._tabs?.closePopoutsOf(entry.session as unknown as Session, id);
 		try {
 			if (entry.session.extensions.getExtension(id)) {
 				entry.session.extensions.removeExtension(id);
@@ -774,13 +775,20 @@ export function paradisRegisterBrowserExtensions(
 	 * 読むと読み込みが輪になる（browserSession.ts → このファイル）。呼び出し側（プロファイルの main）から渡す。
 	 */
 	sessionForView: (viewId: string) => ParadisExtensionSession | undefined,
-	/** タブ・ウィンドウの口（タブを前に出すことだけは、ここで workbench への知らせにする）。 */
-	tabs?: { readonly environment: Omit<IParadisTabEnvironment, 'activateTab'>; readonly createPopout: IParadisBrowserExtensionTabsOptions['createPopout'] },
+	/**
+	 * タブ・ウィンドウの口を作る（試験的な設定がオンのときだけ呼ぶ。オフの人には BrowserView の購読もさせない）。
+	 * タブを前に出すことだけは、ここで workbench への知らせにする。
+	 */
+	createTabs?: () => { readonly environment: Omit<IParadisTabEnvironment, 'activateTab'> & IDisposable; readonly createPopout: IParadisBrowserExtensionTabsOptions['createPopout'] },
 ): IDisposable {
 	const disposables = new DisposableStore();
 	const onDidRequestActivateTab = disposables.add(new Emitter<IParadisActivateTabRequest>());
 	const created = instantiationService.invokeFunction(accessor => {
 		const configurationService = accessor.get(IConfigurationService);
+		const tabs = createTabs && configurationService.getValue<boolean>(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING) === true ? createTabs() : undefined;
+		if (tabs) {
+			disposables.add(tabs.environment);
+		}
 		return new ParadisBrowserExtensionsManager(
 			join(accessor.get(IEnvironmentMainService).userDataPath, 'paradis-browser-extensions'),
 			() => configurationService.getValue<boolean>(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING) === true,
