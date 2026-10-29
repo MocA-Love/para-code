@@ -131,7 +131,7 @@ function setup(extensionManifest: Record<string, unknown>) {
 			views.push(view);
 			created.fire({ view, existing: true });
 		}
-		await new Promise(resolve => setTimeout(resolve, 1_100));
+		await new Promise(resolve => setTimeout(resolve, 3_100));
 	};
 	const dispose = () => {
 		attached.forEach(disposable => disposable.dispose());
@@ -237,12 +237,32 @@ suite('ParadisBrowserExtensionTabs', () => {
 			created.fire({ view: agent, existing: false });
 			// workbench の台帳が少し後に、エージェントのタブだと知らせる
 			agent.agent = true;
-			await new Promise(resolve => setTimeout(resolve, 1_500));
+			await new Promise(resolve => setTimeout(resolve, 3_500));
 			const reader = stream.body!.getReader();
 			const { value } = await reader.read();
 			await reader.cancel();
-			const lines = new TextDecoder().decode(value).trim().split('\n').map(line => paradisDecodeExtensionWire(line) as { args: [{ id: number }] });
-			assert.deepStrictEqual(lines.map(line => line.args[0].id), [user.webContents.id]);
+			const lines = new TextDecoder().decode(value).trim().split('\n').map(line => paradisDecodeExtensionWire(line) as { args: [{ id: number; url?: string }] });
+			// onCreated には URL を入れない（目印が遅れたエージェントのタブの URL を最初の知らせで漏らさない）
+			assert.deepStrictEqual(lines.map(line => [line.args[0].id, line.args[0].url]), [[user.webContents.id, undefined]]);
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('drops a tab from the list once a late agent mark arrives', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, dispose } = setup({ permissions: ['tabs'] });
+		try {
+			const late = fakeView('late', fakeContents(electronSession, 'https://agent.example/', 'Agent'), 1);
+			// 目印が待ち時間（3 秒）より遅れて届いた
+			await addTabs(late);
+			const before = (await call('tabs', 'query', [{}]) as { value: { id: number }[] }).value.map(tab => tab.id);
+			late.agent = true;
+			const after = (await call('tabs', 'query', [{}]) as { value: unknown[] }).value;
+			assert.deepStrictEqual({ before, after, get: await call('tabs', 'get', [late.webContents.id]) }, {
+				before: [late.webContents.id],
+				after: [],
+				get: { ok: false, error: `No tab with id: ${late.webContents.id}.` },
+			});
 		} finally {
 			dispose();
 		}

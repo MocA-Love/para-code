@@ -2988,3 +2988,12 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）
 - ブランディング（`product.json`のnameShort/nameLong/アイコン等、名称は「Para Code」）
 - ~~配布方式（Marketplace代替のOpen VSX方針、CI/署名/配布）~~ → 実装着手済み。詳細は「配布・自動アップデート基盤」セクション参照
+
+## 内蔵ブラウザの Chrome 拡張機能（browserExtensions、試験的、2026-10-30）
+
+実体は `src/vs/paradis/contrib/browserExtensions/`。設計は Q480・Q482 の設計書（D1〜D8）。Orca（commit `4642bc00`）から移したファイルの冒頭に出典を書いている。
+
+- Electron 43 に無い chrome.* は、拡張機能の写しに入れる詰め物（`common/paradisBrowserExtensionShim.ts`）が足し、`paracode-extension-api:` スキームへの fetch で main と話す。詰め物を入れるのは Manifest V3 の背景の処理と、拡張機能の `.html`・`.xhtml`・スクリプトのある `.svg` のページ。UTF-8 でないページや書き換えられない形のページ（スクリプトのある `.xml` など）には入れず、管理画面で知らせる
+- main では npm を静的に import しない（配布版の main の束は npm を外に残し、asar の解決の前に解決して起動前に止まる）。`build/lib/paradisMainBareImports.ts` が para-ci の `test-build-scripts` で確かめる
+- **残り（D3 A のまま受け入れている）: 同じセッションのエージェントのタブは、拡張機能から Electron 元来の API で操作されうる。** Para Code が足した `chrome.tabs`・`chrome.windows`・`chrome.webNavigation` はエージェントのタブ（持ち主がエージェントのビュー、エージェントが開いたタブとその子）を一覧・イベントから外すが、Electron が元から持つ `tabs.sendMessage`・`tabs.reload`・`tabs.connect`・`tabs.setZoom`・`scripting.executeScript`・元来の `tabs.update` と content script は、タブの番号さえ分かれば、エージェントが `open_browser_profile` で開いたプロファイルのタブ（拡張機能を有効にしたプロファイルのもの）も操作できる（レビューで実測）。守る対象は「利用者の秘密をエージェントから守る」ことで、そちらは P1〜P3（CDP から拡張機能を隠す・エージェントの入力の守り・共有の確認の知らせ）で守っている。拡張機能は利用者が入れたもので、そのプロファイルのページはもともと読める
+- エージェントのタブかどうかは、workbench の台帳の知らせ（`paraIsAgentTabOrChild`）を新しいタブで 3 秒待ってから決める。時間の仮定で保証ではない。目印が遅れて届いたタブは、届いた時点で一覧とイベントから外す。`tabs.onCreated` には URL とタイトルを入れない（遅れた目印のタブの URL を最初の知らせで漏らさない）

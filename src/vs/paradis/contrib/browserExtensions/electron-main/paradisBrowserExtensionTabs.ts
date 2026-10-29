@@ -68,8 +68,12 @@ export interface IParadisTabSession {
 }
 
 const WINDOW_ID_CURRENT = -2;
-/** 新しいタブがエージェントのものかは、workbench の台帳が少し後に知らせる。それまで知らせを待つ。 */
-const CREATED_ANNOUNCE_DELAY_MS = 1_000;
+/**
+ * 新しいタブがエージェントのものかは、workbench の台帳が少し後に知らせる。それまで一覧にもイベントにも出さない。
+ * 時間の仮定で、保証ではない（目印がこれより遅れたら、それまでの間はタブとして扱う。目印が届いた時点から
+ * 一覧とイベントから外す）。
+ */
+const CREATED_ANNOUNCE_DELAY_MS = 3_000;
 
 type Tab = Record<string, unknown>;
 
@@ -328,9 +332,15 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			}
 			this._announced.add(view.id);
 			if (!existing) {
+				// 目印が遅れて届くエージェントのタブの URL を、最初の知らせで漏らさないよう、onCreated には URL と
+				// タイトルを入れない（Chrome でも新しいタブの onCreated には読み込み前の URL が無いことがある）
 				this._emitPerExtension(contents.session, 'tabs', 'onCreated', extension => {
 					const tab = describe(extension);
-					return tab ? [tab] : undefined;
+					if (!tab) {
+						return undefined;
+					}
+					const { url: _url, title: _title, ...withoutUrl } = tab;
+					return [withoutUrl];
 				});
 			}
 		};
