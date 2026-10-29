@@ -36,10 +36,23 @@ const watched = new WeakSet<object>();
 const lastNotifiedAt = new WeakMap<object, number>();
 /** 同じタブで知らせを重ねない間隔。 */
 const NOTIFY_INTERVAL_MS = 5_000;
+/** 手にしているタブから開いた子タブに、エージェントへの共有が届くのを待つ時間。届かなければ見張りを外す。 */
+export const PARADIS_CHILD_GUARD_GRACE_MS = 10_000;
+
+/** 子タブの仮の見張り（共有が届くまで）。届いたら（本物の「手にした」の合図が来たら）消す。 */
+interface IProvisionalGuard {
+	readonly opener: object;
+	readonly cancelTimer: () => void;
+}
+/** 仮の見張りを付けた子タブ → その状態。 */
+const provisional = new WeakMap<object, IProvisionalGuard>();
+/** 開いた元のタブ → 仮の見張りを付けた子タブ。 */
+const provisionalChildren = new WeakMap<object, Set<object>>();
 
 /** 取り消せる移動のイベント（`will-frame-navigate`・`will-redirect`）の形。 */
 interface ICancellableNavigation {
 	readonly url: string;
+	readonly isMainFrame?: boolean;
 	preventDefault(): void;
 }
 
@@ -60,6 +73,8 @@ export interface IParadisExtensionNavigationGuardOptions {
 	readonly onBlocked?: () => void;
 	/** 今の時刻（テスト用）。 */
 	readonly now?: () => number;
+	/** 仮の見張りの期限のタイマー（テスト用）。戻り値はタイマーを止める関数。 */
+	readonly startTimer?: (callback: () => void, ms: number) => () => void;
 }
 
 /**
@@ -67,6 +82,16 @@ export interface IParadisExtensionNavigationGuardOptions {
  * 拡張のページへ移るのを取り消す。
  */
 export function paradisSetExtensionNavigationGuard(webContents: ParadisGuardedWebContents, held: boolean, options: IParadisExtensionNavigationGuardOptions = {}): void {
+	// 本物の合図（共有が届いた・手放した）が来たら、仮の見張りは終わり
+	clearProvisional(webContents);
+	if (!held) {
+		releaseProvisionalChildren(webContents);
+	}
+	setGuard(webContents, held, options);
+}
+
+/** 見張りを付ける・外す（仮の見張りの状態には触れない）。 */
+function setGuard(webContents: ParadisGuardedWebContents, held: boolean, options: IParadisExtensionNavigationGuardOptions): void {
 	paradisSetExtensionPageHold(webContents, held);
 	if (options.onBlocked) {
 		const onBlocked = options.onBlocked;
@@ -88,7 +113,10 @@ export function paradisSetExtensionNavigationGuard(webContents: ParadisGuardedWe
 	const cancel = (details: ICancellableNavigation) => {
 		if (paradisIsExtensionPageHeld(webContents) && paradisIsBrowserExtensionUrl(details.url)) {
 			details.preventDefault();
-			paradisNoteExtensionPageBlocked(webContents);
+			// 知らせるのはページ本体の移動を止めたときだけ（拡張が差した iframe を取り消すたびには知らせない）
+			if (details.isMainFrame !== false) {
+				paradisNoteExtensionPageBlocked(webContents);
+			}
 		}
 	};
 	const stop = (details: IStartedNavigation) => {
@@ -114,8 +142,56 @@ export function paradisSetExtensionNavigationGuard(webContents: ParadisGuardedWe
  * 子タブはエージェントへの共有が後から届くので、それを待たずに止める（転送で拡張のページへ移る場合など）。
  */
 export function paradisGuardChildWebContents(child: ParadisGuardedWebContents, opener: object, options: IParadisExtensionNavigationGuardOptions = {}): void {
-	if (paradisIsExtensionPageHeld(opener)) {
-		paradisSetExtensionNavigationGuard(child, true, options);
+	if (!paradisIsExtensionPageHeld(opener) || provisional.has(child)) {
+		return;
+	}
+	// 共有が {@link PARADIS_CHILD_GUARD_GRACE_MS} 届かない、または開いた元のタブが手放されたら外す（仮の見張り）。
+	// 子タブがさらに開いたタブ（孫）も、この子タブを元として同じ扱いになる。
+	const startTimer = options.startTimer ?? ((callback: () => void, ms: number) => {
+		const handle = setTimeout(callback, ms);
+		return () => clearTimeout(handle);
+	});
+	const cancelTimer = startTimer(() => releaseProvisional(child), PARADIS_CHILD_GUARD_GRACE_MS);
+	provisional.set(child, { opener, cancelTimer });
+	let siblings = provisionalChildren.get(opener);
+	if (!siblings) {
+		siblings = new Set();
+		provisionalChildren.set(opener, siblings);
+	}
+	siblings.add(child);
+	setGuard(child, true, options);
+}
+
+/** 仮の見張りを終える（見張り自体はそのまま。本物の合図で決まる）。 */
+function clearProvisional(child: object): void {
+	const state = provisional.get(child);
+	if (!state) {
+		return;
+	}
+	state.cancelTimer();
+	provisional.delete(child);
+	provisionalChildren.get(state.opener)?.delete(child);
+}
+
+/** 仮の見張りを外す（共有が届かないまま期限が来た・開いた元が手放された）。その子タブの仮の見張りも外す。 */
+function releaseProvisional(child: object): void {
+	if (!provisional.has(child)) {
+		return;
+	}
+	clearProvisional(child);
+	paradisSetExtensionPageHold(child, false);
+	releaseProvisionalChildren(child);
+}
+
+/** このタブから開いた子タブの仮の見張りを外す。 */
+function releaseProvisionalChildren(opener: object): void {
+	const children = provisionalChildren.get(opener);
+	if (!children) {
+		return;
+	}
+	provisionalChildren.delete(opener);
+	for (const child of [...children]) {
+		releaseProvisional(child);
 	}
 }
 

@@ -401,6 +401,8 @@ suite('Paradis CDP screenshot filter', () => {
 			fixture.client.sent.length = 0;
 			fixture.upstream.sent.length = 0;
 			commands.forEach((command, index) => fixture.client.emit('message', Buffer.from(JSON.stringify({ id: index + 1, sessionId: 'session-1', ...command }))));
+			// After a navigation the gateway waits for its answer and asks for the page's URL again before the next command.
+			await new Promise(resolve => setTimeout(resolve, 100));
 			const upstream = (parseSent(fixture.upstream) as Array<{ id: number }>).map(frame => frame.id);
 			// Answer what reached the browser so that a local drag is not left waiting behind them.
 			for (const id of upstream) {
@@ -1221,6 +1223,8 @@ suite('Paradis CDP screenshot filter', () => {
 		fixture.client.sent.length = 0;
 		fixture.upstream.sent.length = 0;
 		send(8, 'Runtime.evaluate', { expression: '1' });
+		// The navigation just sent makes the gateway ask for the URL again first.
+		await new Promise(resolve => setTimeout(resolve, 0));
 		const byContext = { forwarded: forwardedIds(), refused: refusedIds() };
 
 		assert.deepStrictEqual({ onExtension, leftPage, byContext, closeCalls: fixture.client.closeCalls }, {
@@ -2129,9 +2133,20 @@ function createProxyFixture(ctx: IParadisBoundContext): {
 			upstream = this;
 			upstreamOptions.push(options);
 		}
-		/** The page route asks once for the page's URL; answer it like Chromium and keep it out of `sent`. */
+		/** Answer the gateway's own URL questions like Chromium (kept out of `sent`), and answer navigations. */
 		override send(data: unknown, options?: { binary?: boolean }): void {
-			const frame = (() => { try { return JSON.parse(String(data)) as { id?: number; method?: string; params?: { targetId?: string } }; } catch { return undefined; } })();
+			const frame = (() => { try { return JSON.parse(String(data)) as { id?: number; method?: string; sessionId?: string; params?: { targetId?: string } }; } catch { return undefined; } })();
+			if (frame?.method === 'Page.navigate' && typeof frame.id === 'number' && frame.id > 0) {
+				// Chromium answers a navigation once it is decided; the gateway holds page reads until then.
+				const answer = { id: frame.id, ...(frame.sessionId !== undefined ? { sessionId: frame.sessionId } : {}), result: { frameId: 'F1', loaderId: 'L1' } };
+				queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify(answer))));
+			}
+			if (frame?.method === 'Runtime.evaluate' && typeof frame.id === 'number' && frame.id < 0) {
+				// The gateway asks the document where it is right after the agent moved it.
+				const answer = { id: frame.id, ...(frame.sessionId !== undefined ? { sessionId: frame.sessionId } : {}), result: { result: { type: 'string', value: fixturePageUrl.value } } };
+				queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify(answer))));
+				return;
+			}
 			if (frame?.method === 'Target.getTargetInfo' && typeof frame.id === 'number' && frame.id < 0) {
 				const targetId = frame.params?.targetId ?? 'target-1';
 				queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify({ id: frame.id, result: { targetInfo: { targetId, type: 'page', url: fixtureTargetUrls.get(targetId) ?? fixturePageUrl.value } } }))));
