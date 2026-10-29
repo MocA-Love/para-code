@@ -27,6 +27,8 @@ export interface IParadisShimBridge {
 export interface IParadisShimSurfaceNamespace {
 	/** manifest の permissions にこのどれかがあるときだけ足す（main も同じ判定で断る）。 */
 	readonly permission?: string | readonly string[];
+	/** manifest_version がこれのときだけ足す（chrome.browserAction があれば MV2 とみなすコードがあるため）。 */
+	readonly manifestVersion?: number;
 	readonly methods: readonly string[];
 	readonly events: readonly string[];
 	readonly constants?: Readonly<Record<string, number>>;
@@ -48,6 +50,12 @@ export const PARADIS_SHIM_STORAGE_SYNC_CONSTANTS: Readonly<Record<string, number
 export const PARADIS_SHIM_STORAGE_RELAY_NAMESPACE = 'paradisStorageRelay';
 export const PARADIS_SHIM_STORAGE_SYNC_NAMESPACE = 'paradisStorageSync';
 
+/** chrome.action の関数（main の登録と同じもの）。 */
+const PARADIS_SHIM_ACTION_METHODS: readonly string[] = [
+	'setTitle', 'getTitle', 'setIcon', 'setPopup', 'getPopup', 'setBadgeText', 'getBadgeText', 'setBadgeBackgroundColor', 'getBadgeBackgroundColor',
+	'setBadgeTextColor', 'getBadgeTextColor', 'enable', 'disable', 'isEnabled', 'getUserSettings', 'openPopup',
+];
+
 /** chrome に足す API（main の登録と同じものを並べる。テストが突き合わせる）。 */
 export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
 	// Electron は onInstalled・onStartup を出さない。Para Code が拡張機能の読み込みの後に出す
@@ -67,6 +75,10 @@ export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
 		methods: ['getFrame', 'getAllFrames'],
 		events: ['onBeforeNavigate', 'onCommitted', 'onDOMContentLoaded', 'onCompleted', 'onErrorOccurred', 'onHistoryStateUpdated', 'onReferenceFragmentUpdated', 'onCreatedNavigationTarget'],
 	},
+	// ツールバーのボタン（P5）。Electron の chrome.action は何も覚えないので、全部を Para Code のものにする。
+	// MV2 の名前 browserAction も同じもの
+	action: { manifestVersion: 3, methods: PARADIS_SHIM_ACTION_METHODS, events: ['onClicked', 'onUserSettingsChanged'] },
+	browserAction: { manifestVersion: 2, methods: PARADIS_SHIM_ACTION_METHODS, events: ['onClicked', 'onUserSettingsChanged'] },
 };
 
 type ApiObject = Record<string, unknown>;
@@ -128,6 +140,37 @@ export function paradisInstallExtensionApis(bridge: IParadisShimBridge, surface:
 			}
 		}
 	};
+	// action.setIcon: ImageData は JSON にすると中身が消えるので、幅・高さ・画素の並びにする。path は呼んだ
+	// スクリプト（worker の入口は元の worker と同じフォルダにある）・ページから見た URL にしてから送る（Chrome と同じ解決）
+	const isImageData = (value: unknown): value is { readonly width: number; readonly height: number; readonly data: ArrayLike<number> } =>
+		isObject(value) && typeof value.width === 'number' && typeof value.height === 'number' && isObject(value.data) && typeof (value.data as { length?: unknown }).length === 'number';
+	const plainImage = (value: { readonly width: number; readonly height: number; readonly data: ArrayLike<number> }) => ({ width: value.width, height: value.height, data: Array.from(value.data) });
+	const resolvePath = (value: unknown): unknown => {
+		if (typeof value !== 'string') {
+			return value;
+		}
+		try {
+			return new URL(value, (globalThis as { location?: { href?: string } }).location?.href).href;
+		} catch {
+			return value;
+		}
+	};
+	const prepareIconDetails = (details: ApiObject): ApiObject => {
+		const next: ApiObject = { ...details };
+		const imageData = details.imageData;
+		if (isImageData(imageData)) {
+			next.imageData = plainImage(imageData);
+		} else if (isObject(imageData)) {
+			next.imageData = Object.fromEntries(Object.entries(imageData).map(([size, image]) => [size, isImageData(image) ? plainImage(image) : image]));
+		}
+		const path = details.path;
+		if (typeof path === 'string') {
+			next.path = resolvePath(path);
+		} else if (isObject(path)) {
+			next.path = Object.fromEntries(Object.entries(path).map(([size, value]) => [size, resolvePath(value)]));
+		}
+		return next;
+	};
 	const makeMethod = (namespace: string, name: string) => function paradisExtensionMethod(...input: unknown[]): unknown {
 		const args = [...input];
 		// Chrome は末尾の undefined を無視する（main のタプルは無視しない）
@@ -138,6 +181,9 @@ export function paradisInstallExtensionApis(bridge: IParadisShimBridge, surface:
 		const callback = isCallable(last) ? last : undefined;
 		if (callback) {
 			args.pop();
+		}
+		if ((namespace === 'action' || namespace === 'browserAction') && name === 'setIcon' && isObject(args[0])) {
+			args[0] = prepareIconDetails(args[0]);
 		}
 		const promise = (async () => {
 			const reply = await bridge.call(namespace, name, args);
@@ -261,6 +307,9 @@ export function paradisInstallExtensionApis(bridge: IParadisShimBridge, surface:
 	const permissions = [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []);
 	for (const [namespace, spec] of Object.entries(surface)) {
 		if (spec.permission !== undefined && ![spec.permission].flat().some(name => permissions.includes(name))) {
+			continue;
+		}
+		if (spec.manifestVersion !== undefined && manifest.manifest_version !== spec.manifestVersion) {
 			continue;
 		}
 		const existing = chromeApi[namespace];
