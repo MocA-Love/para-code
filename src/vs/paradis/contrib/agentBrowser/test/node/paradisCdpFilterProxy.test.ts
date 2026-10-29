@@ -401,6 +401,8 @@ suite('Paradis CDP screenshot filter', () => {
 			fixture.client.sent.length = 0;
 			fixture.upstream.sent.length = 0;
 			commands.forEach((command, index) => fixture.client.emit('message', Buffer.from(JSON.stringify({ id: index + 1, sessionId: 'session-1', ...command }))));
+			// After a navigation the gateway waits for its answer and asks for the page's URL again before the next command.
+			await new Promise(resolve => setTimeout(resolve, 100));
 			const upstream = (parseSent(fixture.upstream) as Array<{ id: number }>).map(frame => frame.id);
 			// Answer what reached the browser so that a local drag is not left waiting behind them.
 			for (const id of upstream) {
@@ -434,20 +436,22 @@ suite('Paradis CDP screenshot filter', () => {
 		}, { refused: [2, 3], upstream: [1] });
 	});
 
-	test('page connections of a remote pane refuse file: navigation (navigate_page then take_snapshot cannot read local files)', () => {
-		const run = (remote: boolean) => {
+	test('page connections of a remote pane refuse file: navigation (navigate_page then take_snapshot cannot read local files)', async () => {
+		const run = async (remote: boolean) => {
 			const fixture = createProxyFixture(context({ isRemotePane: () => remote }));
 			paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), fixture.ws, fixture.wss, 41001, 'target-1', fixture.ctx, fixture.logService);
 			fixture.upstream.readyState = TestWebSocket.OPEN;
 			fixture.upstream.emit('open');
 			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url: ' FILE:///Users/example/.ssh/id_rsa' } })));
 			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, method: 'Page.navigate', params: { url: 'https://example.com/' } })));
+			// The page route checks the page's URL once before its first command.
+			await new Promise(resolve => setTimeout(resolve, 0));
 			return {
 				refused: (parseSent(fixture.client) as Array<{ id: number; error?: unknown }>).filter(frame => frame.error !== undefined).map(frame => frame.id),
 				upstream: (parseSent(fixture.upstream) as Array<{ id: number }>).map(frame => frame.id),
 			};
 		};
-		assert.deepStrictEqual({ remote: run(true), local: run(false) }, {
+		assert.deepStrictEqual({ remote: await run(true), local: await run(false) }, {
 			remote: { refused: [1], upstream: [2] },
 			local: { refused: [], upstream: [1, 2] },
 		});
@@ -602,7 +606,7 @@ suite('Paradis CDP screenshot filter', () => {
 		});
 	});
 
-	test('page proxy forwards every frame as a text WebSocket frame (never binary)', () => {
+	test('page proxy forwards every frame as a text WebSocket frame (never binary)', async () => {
 		const fixture = createProxyFixture(context());
 		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), fixture.ws, fixture.wss, 41001, 'target-1', fixture.ctx, fixture.logService);
 
@@ -612,6 +616,8 @@ suite('Paradis CDP screenshot filter', () => {
 		fixture.upstream.emit('open');
 		// Forwarded directly while OPEN.
 		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, method: 'Runtime.evaluate', params: { expression: '2' } })));
+		// The page route checks the page's URL once before its first command.
+		await new Promise(resolve => setTimeout(resolve, 0));
 		// Upstream response forwarded back to the client.
 		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: 1, result: {} })));
 
@@ -1118,6 +1124,267 @@ suite('Paradis CDP screenshot filter', () => {
 			[['Runtime.executionContextCreated', 5], 0, 0],
 		);
 		assert.match(sent[1].error?.message ?? '', /not available on the Para Code CDP gateway/);
+	});
+
+	test('never shows the agent a browser extension frame inside the shared page, and lets it go upstream', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		publishAllowedSession(fixture, 'session-1');
+		fixture.client.sent.length = 0;
+		const upstreamBefore = fixture.upstream.sent.length;
+		const emit = (payload: unknown) => fixture.upstream.emit('message', Buffer.from(JSON.stringify(payload)));
+		// A password manager's in-field menu: an out-of-process iframe auto-attached through the shared page's session.
+		emit({ sessionId: 'session-1', method: 'Target.attachedToTarget', params: { sessionId: 'ext-session', waitingForDebugger: true, targetInfo: { targetId: 'ext-frame', type: 'iframe', url: 'chrome-extension://nlbcfljciijdbmfmbiaoelpjlhdgfhee/frame.html' } } });
+		emit({ sessionId: 'ext-session', method: 'Runtime.executionContextCreated', params: { context: { id: 1, name: '', origin: 'chrome-extension://nlbcfljciijdbmfmbiaoelpjlhdgfhee', auxData: { isDefault: true, frameId: 'F2' } } } });
+		const resume = parseSent(fixture.upstream).slice(upstreamBefore) as { id: number; method: string; sessionId?: string }[];
+		emit({ id: resume[0].id, sessionId: 'ext-session', result: {} });
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 7, sessionId: 'ext-session', method: 'Runtime.evaluate', params: { expression: 'document.body.innerHTML' } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 8, method: 'Target.attachToTarget', params: { targetId: 'ext-frame', flatten: true } })));
+		const upstream = (parseSent(fixture.upstream).slice(upstreamBefore) as { method?: string; params?: unknown; sessionId?: string }[]).map(frame => ({ method: frame.method, params: frame.params, sessionId: frame.sessionId }));
+		const client = parseSent(fixture.client) as { id?: number; method?: string; error?: { code: number } }[];
+		assert.deepStrictEqual({
+			upstream,
+			client: client.map(frame => ({ id: frame.id, method: frame.method, code: frame.error?.code })),
+			closeCalls: fixture.client.closeCalls,
+		}, {
+			// Resumed on its own session, then detached through the shared page's session; nothing the client sent reached it.
+			upstream: [
+				{ method: 'Runtime.runIfWaitingForDebugger', params: {}, sessionId: 'ext-session' },
+				{ method: 'Target.detachFromTarget', params: { sessionId: 'ext-session' }, sessionId: 'session-1' },
+			],
+			client: [
+				{ id: 7, method: undefined, code: -32001 },
+				{ id: 8, method: undefined, code: -32000 },
+			],
+			closeCalls: 0,
+		});
+	});
+
+	test('never shows the agent a browser extension page the shared page opened, or one a shown page turned into', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		publishAllowedSession(fixture, 'session-1');
+		const root = (method: string, params: object) => fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method, params })));
+		root('Target.targetCreated', { targetInfo: { targetId: 'popup', openerId: 'target-1', type: 'page', url: 'https://example.test/', attached: true } });
+		root('Target.attachedToTarget', { sessionId: 'popup-session', targetInfo: { targetId: 'popup', openerId: 'target-1', type: 'page', url: 'https://example.test/' } });
+		fixture.client.sent.length = 0;
+		const upstreamBefore = fixture.upstream.sent.length;
+		root('Target.targetCreated', { targetInfo: { targetId: 'ext-tab', openerId: 'target-1', type: 'page', url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/popup.html', attached: false } });
+		root('Target.attachedToTarget', { sessionId: 'ext-tab-session', targetInfo: { targetId: 'ext-tab', openerId: 'target-1', type: 'page', url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/popup.html' } });
+		root('Target.targetInfoChanged', { targetInfo: { targetId: 'popup', openerId: 'target-1', type: 'page', url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html' } });
+		// The shared page itself moving to an extension page keeps the connection (its extension worlds are hidden instead).
+		root('Target.targetInfoChanged', { targetInfo: { targetId: 'target-1', type: 'page', url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html' } });
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 9, method: 'Target.getTargets' })));
+		const getTargets = (parseSent(fixture.upstream).slice(upstreamBefore) as { id: number; method?: string }[]).find(frame => frame.method === 'Target.getTargets');
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: getTargets?.id, result: { targetInfos: [{ targetId: 'target-1', type: 'page' }, { targetId: 'popup', type: 'page' }, { targetId: 'ext-tab', type: 'page' }] } })));
+		assert.deepStrictEqual({
+			upstream: (parseSent(fixture.upstream).slice(upstreamBefore) as { method?: string; params?: unknown; sessionId?: string }[]).map(frame => ({ method: frame.method, params: frame.params })),
+			client: parseSent(fixture.client),
+			closeCalls: fixture.client.closeCalls,
+		}, {
+			upstream: [
+				{ method: 'Runtime.runIfWaitingForDebugger', params: {} },
+				{ method: 'Target.getTargets', params: undefined },
+			],
+			client: [
+				{ method: 'Target.detachedFromTarget', params: { sessionId: 'popup-session', targetId: 'popup' } },
+				{ method: 'Target.targetInfoChanged', params: { targetInfo: { targetId: 'target-1', type: 'page', url: 'about:blank#para-code-hidden-extension-frame', title: '' } } },
+				{ id: 9, result: { targetInfos: [{ targetId: 'target-1', type: 'page' }] } },
+			],
+			closeCalls: 0,
+		});
+	});
+
+	test('refuses every command but leaving while the shared page is on an extension page, and extension navigations always', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		const extension = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa';
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId: 'session-1', targetInfo: { targetId: 'target-1', type: 'page', url: `${extension}/options.html` } } })));
+		const send = (id: number, method: string, params: object = {}) => fixture.client.emit('message', Buffer.from(JSON.stringify({ id, sessionId: 'session-1', method, params })));
+		const forwardedIds = () => (parseSent(fixture.upstream) as { id?: number }[]).map(frame => frame.id).filter(id => typeof id === 'number' && id > 0);
+		const refusedIds = () => (parseSent(fixture.client) as { id?: number; error?: unknown }[]).filter(frame => frame.error !== undefined).map(frame => frame.id);
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		send(1, 'Runtime.evaluate', { expression: 'document.body.innerHTML' });
+		send(2, 'DOM.getDocument');
+		send(3, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 10, y: 10, button: 'left', clickCount: 1 });
+		send(4, 'Page.navigate', { url: `CHROME-EXTENSION://aeblfdkhhhdcdjpifhhbdiojplfjncoa/popup.html` });
+		send(5, 'Page.navigate', { url: 'https://example.test/' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const onExtension = { forwarded: forwardedIds(), refused: refusedIds() };
+
+		// The page left (root discovery reports it); ordinary commands go through again, extension navigations never.
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.targetInfoChanged', params: { targetInfo: { targetId: 'target-1', type: 'page', url: 'https://example.test/' } } })));
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		send(6, 'Runtime.evaluate', { expression: '1' });
+		send(7, 'Page.navigate', { url: `blob:${extension}/x` });
+		const leftPage = { forwarded: forwardedIds(), refused: refusedIds() };
+
+		// A client without Target discovery still learns it from the page's own default context.
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ sessionId: 'session-1', method: 'Runtime.executionContextCreated', params: { context: { id: 9, uniqueId: 'm9', name: '', origin: extension, auxData: { isDefault: true, frameId: 'F1' } } } })));
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		send(8, 'Runtime.evaluate', { expression: '1' });
+		// The navigation just sent makes the gateway ask for the URL again first.
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const byContext = { forwarded: forwardedIds(), refused: refusedIds() };
+
+		assert.deepStrictEqual({ onExtension, leftPage, byContext, closeCalls: fixture.client.closeCalls }, {
+			onExtension: { forwarded: [5], refused: [1, 2, 3, 4] },
+			leftPage: { forwarded: [6], refused: [7] },
+			byContext: { forwarded: [], refused: [8] },
+			closeCalls: 0,
+		});
+	});
+
+	test('the page route checks the shared page once and refuses commands while it is on an extension page', async () => {
+		fixturePageUrl.value = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html';
+		try {
+			const page = createProxyFixture(context());
+			paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+			page.upstream.readyState = TestWebSocket.OPEN;
+			page.upstream.emit('open');
+			const send = (id: number, method: string, params: object = {}) => page.client.emit('message', Buffer.from(JSON.stringify({ id, method, params })));
+			send(1, 'Runtime.evaluate', { expression: 'document.body.innerHTML' });
+			send(2, 'Page.navigate', { url: 'https://example.test/' });
+			send(3, 'Page.navigate', { url: 'filesystem:chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/temporary/x' });
+			await new Promise(resolve => setTimeout(resolve, 0));
+			const onExtension = {
+				forwarded: (parseSent(page.upstream) as { id: number }[]).map(frame => frame.id),
+				refused: (parseSent(page.client) as { id: number; error?: unknown }[]).filter(frame => frame.error !== undefined).map(frame => frame.id),
+			};
+			page.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Page.frameNavigated', params: { frame: { id: 'F1', url: 'https://example.test/', securityOrigin: 'https://example.test' }, type: 'Navigation' } })));
+			page.upstream.sent.length = 0;
+			send(4, 'Runtime.evaluate', { expression: '1' });
+			assert.deepStrictEqual({ onExtension, afterLeaving: (parseSent(page.upstream) as { id: number }[]).map(frame => frame.id) }, {
+				onExtension: { forwarded: [2], refused: [1, 3] },
+				afterLeaving: [4],
+			});
+		} finally {
+			fixturePageUrl.value = 'https://example.test/';
+		}
+	});
+
+	test('wraps scripts registered for new documents so they never run in an extension page, on both routes', async () => {
+		const browser = await createOpenBrowserProxyFixture();
+		publishAllowedSession(browser, 'session-1');
+		browser.upstream.sent.length = 0;
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 4, sessionId: 'session-1', method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: 'window.mark = 1;', worldName: 'util' } })));
+		const page = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		page.upstream.readyState = TestWebSocket.OPEN;
+		page.upstream.emit('open');
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 5, method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: 'window.mark = 2;' } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const sources = [...parseSent(browser.upstream), ...parseSent(page.upstream)].map(frame => (frame as { params: { source: string; worldName?: string } }).params);
+		assert.deepStrictEqual(sources.map(params => ({ guarded: params.source.startsWith('if (!(function () {') && params.source.includes('chrome-extension:'), keepsSource: params.source.includes('window.mark'), worldName: params.worldName })), [
+			{ guarded: true, keepsSource: true, worldName: 'util' },
+			{ guarded: true, keepsSource: true, worldName: undefined },
+		]);
+	});
+
+	test('asks for the URL of a new tab the shared page opened before letting a raw client read it, and refuses an extension page', async () => {
+		const extension = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/public.html?gw';
+		fixtureTargetUrls.set('popup', extension);
+		try {
+			const fixture = await createOpenBrowserProxyFixture();
+			publishAllowedSession(fixture, 'session-1');
+			const root = (method: string, params: object) => fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method, params })));
+			// Chromium attaches the new tab while it has no URL yet; a raw client never subscribes to anything.
+			root('Target.attachedToTarget', { sessionId: 'popup-session', waitingForDebugger: true, targetInfo: { targetId: 'popup', openerId: 'target-1', type: 'page', url: '' } });
+			fixture.client.sent.length = 0;
+			fixture.upstream.sent.length = 0;
+			for (let id = 1; id <= 3; id++) {
+				fixture.client.emit('message', Buffer.from(JSON.stringify({ id, sessionId: 'popup-session', method: 'Runtime.evaluate', params: { expression: 'document.body.innerText' } })));
+			}
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 4, sessionId: 'popup-session', method: 'Runtime.runIfWaitingForDebugger' })));
+			await new Promise(resolve => setTimeout(resolve, 10));
+			assert.deepStrictEqual({
+				forwarded: (parseSent(fixture.upstream) as { id?: number; method?: string }[]).map(frame => frame.method),
+				refused: (parseSent(fixture.client) as { id?: number; error?: { message: string } }[]).filter(frame => /browser extension page/.test(frame.error?.message ?? '')).map(frame => frame.id),
+			}, { forwarded: ['Runtime.runIfWaitingForDebugger'], refused: [1, 2, 3] });
+		} finally {
+			fixtureTargetUrls.clear();
+		}
+	});
+
+	test('a command waiting on one tab does not hold back the other tabs, and a blank new tab is asked only once', async () => {
+		fixtureTargetUrls.set('popup', '');
+		fixtureDocumentLocation.value = 'about:blank';
+		fixtureDocumentLocation.delayMs = 300;
+		try {
+			const fixture = await createOpenBrowserProxyFixture();
+			publishAllowedSession(fixture, 'session-1');
+			fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId: 'popup-session', targetInfo: { targetId: 'popup', openerId: 'target-1', type: 'page', url: '' } } })));
+			fixture.upstream.sent.length = 0;
+			const forwardedIds = () => (parseSent(fixture.upstream) as { id?: number }[]).map(frame => frame.id).filter(id => typeof id === 'number' && id > 0);
+			const send = (id: number, sessionId: string) => fixture.client.emit('message', Buffer.from(JSON.stringify({ id, sessionId, method: 'Runtime.evaluate', params: { expression: '1' } })));
+			send(1, 'popup-session');
+			send(2, 'popup-session');
+			send(3, 'session-1');
+			await new Promise(resolve => setTimeout(resolve, 20));
+			const whileAsking = forwardedIds();
+			await new Promise(resolve => setTimeout(resolve, 400));
+			const afterAsking = forwardedIds();
+			// The blank document was remembered: the next read does not ask it again.
+			send(4, 'popup-session');
+			await new Promise(resolve => setTimeout(resolve, 20));
+			assert.deepStrictEqual({ whileAsking, afterAsking, nextRead: forwardedIds() }, {
+				whileAsking: [3],
+				afterAsking: [3, 1, 2],
+				nextRead: [3, 1, 2, 4],
+			});
+		} finally {
+			fixtureTargetUrls.clear();
+			fixtureDocumentLocation.value = 'https://example.test/';
+			fixtureDocumentLocation.delayMs = 0;
+		}
+	});
+
+	test('a raw client is let back in once the page has left the extension page', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId: 'session-1', targetInfo: { targetId: 'target-1', type: 'page', url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html' } } })));
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
+		// The page leaves without any event the client subscribed to; the gateway asks again once its answer is old.
+		await new Promise(resolve => setTimeout(resolve, 600));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
+		await new Promise(resolve => setTimeout(resolve, 10));
+		assert.deepStrictEqual({
+			refused: (parseSent(fixture.client) as { id?: number; error?: unknown }[]).filter(frame => frame.error !== undefined).map(frame => frame.id),
+			forwarded: (parseSent(fixture.upstream) as { id?: number }[]).map(frame => frame.id).filter(id => typeof id === 'number' && id > 0),
+		}, { refused: [1], forwarded: [2] });
+	});
+
+	test('hides extension frame URLs from frame events and frame trees of the shared page', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		publishAllowedSession(fixture, 'session-1');
+		fixture.client.sent.length = 0;
+		const extension = 'chrome-extension://nlbcfljciijdbmfmbiaoelpjlhdgfhee';
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ sessionId: 'session-1', method: 'Page.frameAttached', params: { frameId: 'F2', parentFrameId: 'F1', stack: { callFrames: [{ url: `${extension}/cs.js`, functionName: '', lineNumber: 1, columnNumber: 0, scriptId: '40' }] } } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 3, sessionId: 'session-1', method: 'Page.getFrameTree' })));
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: 3, sessionId: 'session-1', result: { frameTree: { frame: { id: 'F1', url: 'https://example.test/', securityOrigin: 'https://example.test' }, childFrames: [{ frame: { id: 'F2', parentId: 'F1', url: `${extension}/frame.html`, securityOrigin: extension } }] } } })));
+		assert.deepStrictEqual(parseSent(fixture.client), [
+			{ sessionId: 'session-1', method: 'Page.frameAttached', params: { frameId: 'F2', parentFrameId: 'F1' } },
+			{ id: 3, sessionId: 'session-1', result: { frameTree: { frame: { id: 'F1', url: 'https://example.test/', securityOrigin: 'https://example.test' }, childFrames: [{ frame: { id: 'F2', parentId: 'F1', url: 'about:blank#para-code-hidden-extension-frame', securityOrigin: 'null', domainAndRegistry: '' } }] } } },
+		]);
+	});
+
+	test('resumes a waiting child before closing when the routing table is full', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		publishAllowedSession(fixture, 'session-1');
+		// Fill the routing table to its limit with shown children (the bound page already counts).
+		for (let index = 0; fixture.client.closeCalls === 0 && index < 4_095; index++) {
+			fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.targetCreated', params: { targetInfo: { targetId: `child-${index}`, openerId: 'target-1', type: 'page', url: 'https://example.test/', attached: true } } })));
+		}
+		const closedWhileFilling = fixture.client.closeCalls;
+		const before = fixture.upstream.sent.length;
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ sessionId: 'session-1', method: 'Target.attachedToTarget', params: { sessionId: 'late-session', waitingForDebugger: true, targetInfo: { targetId: 'late-frame', type: 'iframe', url: 'https://ads.example/' } } })));
+		const sent = (parseSent(fixture.upstream).slice(before) as { method?: string; sessionId?: string }[]).map(frame => ({ method: frame.method, sessionId: frame.sessionId }));
+		assert.deepStrictEqual({ closedWhileFilling, sent, closed: fixture.client.closeCalls > 0 }, {
+			closedWhileFilling: 0,
+			sent: [{ method: 'Runtime.runIfWaitingForDebugger', sessionId: 'late-session' }],
+			closed: true,
+		});
 	});
 
 	test('forwards valid ordinary upstream frames larger than 1 MiB', async () => {
@@ -1647,7 +1914,7 @@ suite('Paradis CDP screenshot filter', () => {
 		root('Target.targetCreated', { targetInfo: { targetId: 'helper', type: 'page', openerId: 'target-1', attached: true } });
 		root('Target.targetCreated', { targetInfo: { targetId: 'popup', type: 'page', openerId: 'helper', attached: true } });
 		bound.add('popup');
-		root('Target.attachedToTarget', { sessionId: 'popup-session', targetInfo: { targetId: 'popup', type: 'page' } });
+		root('Target.attachedToTarget', { sessionId: 'popup-session', targetInfo: { targetId: 'popup', type: 'page', url: 'https://example.test/popup' } });
 		fixture.upstream.sent.length = 0;
 		fixture.client.sent.length = 0;
 
@@ -1874,6 +2141,13 @@ class TestWebSocket extends EventEmitter {
 	}
 }
 
+/** The URL the fake upstream reports for the shared page when the gateway asks for it. */
+const fixturePageUrl = { value: 'https://example.test/' };
+/** URLs the fake upstream reports for other targets when the gateway asks for them. */
+const fixtureTargetUrls = new Map<string, string>();
+/** What a document answers when the gateway asks it where it is, and how long it takes. */
+const fixtureDocumentLocation = { value: 'https://example.test/', delayMs: 0 };
+
 function createProxyFixture(ctx: IParadisBoundContext): {
 	readonly ctx: IParadisBoundContext;
 	readonly client: TestWebSocket;
@@ -1893,6 +2167,28 @@ function createProxyFixture(ctx: IParadisBoundContext): {
 			super();
 			upstream = this;
 			upstreamOptions.push(options);
+		}
+		/** Answer the gateway's own URL questions like Chromium (kept out of `sent`), and answer navigations. */
+		override send(data: unknown, options?: { binary?: boolean }): void {
+			const frame = (() => { try { return JSON.parse(String(data)) as { id?: number; method?: string; sessionId?: string; params?: { targetId?: string } }; } catch { return undefined; } })();
+			if (frame?.method === 'Page.navigate' && typeof frame.id === 'number' && frame.id > 0) {
+				// Chromium answers a navigation once it is decided; the gateway holds page reads until then.
+				const answer = { id: frame.id, ...(frame.sessionId !== undefined ? { sessionId: frame.sessionId } : {}), result: { frameId: 'F1', loaderId: 'L1' } };
+				queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify(answer))));
+			}
+			if (frame?.method === 'Runtime.evaluate' && typeof frame.id === 'number' && frame.id < 0) {
+				// The gateway asks the document where it is right after the agent moved it.
+				const answer = { id: frame.id, ...(frame.sessionId !== undefined ? { sessionId: frame.sessionId } : {}), result: { result: { type: 'string', value: fixtureDocumentLocation.value } } };
+				const emit = () => this.emit('message', Buffer.from(JSON.stringify(answer)));
+				fixtureDocumentLocation.delayMs > 0 ? setTimeout(emit, fixtureDocumentLocation.delayMs) : queueMicrotask(emit);
+				return;
+			}
+			if (frame?.method === 'Target.getTargetInfo' && typeof frame.id === 'number' && frame.id < 0) {
+				const targetId = frame.params?.targetId ?? 'target-1';
+				queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify({ id: frame.id, result: { targetInfo: { targetId, type: 'page', url: fixtureTargetUrls.get(targetId) ?? fixturePageUrl.value } } }))));
+				return;
+			}
+			super.send(data, options);
 		}
 	}
 	const ws = {
@@ -1942,7 +2238,7 @@ function publishAllowedSession(fixture: ReturnType<typeof createProxyFixture>, s
 		method: 'Target.attachedToTarget',
 		params: {
 			sessionId,
-			targetInfo: { targetId: 'target-1', type: 'page' },
+			targetInfo: { targetId: 'target-1', type: 'page', url: 'https://example.test/' },
 		},
 	})));
 }

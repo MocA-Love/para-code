@@ -36,6 +36,7 @@ import { IContextViewService } from '../../../../platform/contextview/browser/co
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
@@ -101,6 +102,7 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		@IEditorService private readonly editorService: IEditorService,
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super(editor);
 		this.surface = ProxyChannel.toService<IParadisAgentPageScriptsSurface>(mainProcessService.getChannel(PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL));
@@ -130,6 +132,15 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		store.add(this.surface.onDidChangeInitScripts(change => {
 			if (change.viewId === model.id) {
 				void this.refresh(model);
+			}
+		}));
+		// エージェントと共有中のタブで、ブラウザ拡張のページへの移動を止めたことを知らせる
+		store.add(this.surface.onDidBlockExtensionNavigation(viewId => {
+			if (viewId === model.id) {
+				this.notificationService.notify({
+					severity: Severity.Info,
+					message: localize('paradis.agentBrowser.extensionPageBlocked', "エージェントと共有中のタブでは拡張機能のページを開けません。共有を外すと開けます。"),
+				});
 			}
 		}));
 		this.render([]);

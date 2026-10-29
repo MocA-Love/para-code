@@ -22,6 +22,7 @@ import { ParadisCursorOverlayController } from '../../electron-main/paradisCurso
 import { paradisConsumeAgentContextMenuSuppression } from '../../electron-main/paradisAgentContextMenu.js';
 
 interface ITestViewState {
+	url?: string;
 	ownerWindowId: number;
 	targetId: string;
 	destroyed: boolean;
@@ -148,6 +149,7 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 		},
 		focus: () => counters.focus++,
 		isFocused: () => state.focused,
+		getURL: () => state.url ?? 'https://example.test/',
 	};
 	const view = {
 		// PARA-PATCH: upstream 1.137 moved the window id from `owner.mainWindowId` to `host.windowId`.
@@ -854,6 +856,34 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(current.counters.input, 0);
 		assert.strictEqual(current.counters.prepareAutomation, 0);
 		assert.strictEqual(current.counters.focus, 0);
+	});
+
+	test('does not capture, print or check a BrowserView that shows a browser extension page', async () => {
+		const current = createTestView({ url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html' });
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		const pdf = await service.printExactViewToPdf(exact, JSON.stringify({}));
+		assert.deepStrictEqual({
+			screenshot: await service.captureExactViewScreenshot(exact, {}),
+			rect: await service.captureExactViewScreenshot(exact, { pageRect: { x: 0, y: 0, width: 10, height: 10 } }),
+			rawCapture: await service.beginExactViewRawCapture(exact),
+			legacy: await service.captureScreenshot('view-1', { format: 'png' }),
+			pdf: pdf.ok ? 'printed' : /browser extension page/.test(pdf.message ?? '') ? 'refused' : pdf.reason,
+			captures: current.counters.capture,
+		}, { screenshot: null, rect: null, rawCapture: null, legacy: null, pdf: 'refused', captures: 0 });
+	});
+
+	test('refuses agent input while the exact BrowserView shows a browser extension page', async () => {
+		const current = createTestView({ url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/popup.html' });
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		const results = [
+			await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mousePressed', x: 1, y: 2, button: 'left', clickCount: 1 })),
+			await service.dispatchExactViewInput(exact, 'Input.insertText', JSON.stringify({ text: 'secret' })),
+		];
+		assert.deepStrictEqual({ results: results.map(result => result.status === 'retryable' && /browser extension page/.test(result.message)), input: current.counters.input, prepareAutomation: current.counters.prepareAutomation }, { results: [true, true], input: 0, prepareAutomation: 0 });
 	});
 
 	test('requires preload registration ack and revalidates focus and identity before debugger send', async () => {

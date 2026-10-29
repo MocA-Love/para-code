@@ -37,6 +37,7 @@ import { ParaBrowserViewCaptureNudge } from './paraBrowserViewFrameNudge.js';
 import { paraNoteBrowserViewFocusRequest } from './paraBrowserViewFocusRequest.js';
 // PARA-PATCH: import the fork's genuine Chrome identity, which gives every tab the UA and Client Hints of Google Chrome (Para Code)
 import { paradisAttachChromeIdentity } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisChromeIdentity.js';
+import { paradisDeniesExtensionWindowOpen } from '../common/paradisExtensionPageHold.js'; // PARA-PATCH: block window.open of extension pages from agent-held tabs
 
 // PARA-PATCH: bound how long the main process waits for preload acks and track per-sequence automation key acks in flight (Para Browser MCP automation input isolation). The ack is answered on the page's main thread, so a page busy for a moment after a click must not fail the key (1s failed about 8% of agent keystrokes)
 const BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS = 2_500;
@@ -229,6 +230,7 @@ export class BrowserView extends Disposable {
 			if (this.presentation === BrowserViewPresentation.Unlisted) {
 				return { action: 'deny' };
 			}
+			if (paradisDeniesExtensionWindowOpen(this._view.webContents, details.url)) { return { action: 'deny' }; } // PARA-PATCH: a tab an agent holds may not open a browser extension page (vs/paradis/contrib/agentBrowser/electron-main/paradisExtensionNavigationGuard.ts)
 			const location = (() => {
 				switch (details.disposition) {
 					case 'background-tab': return NewPageLocation.Background;
