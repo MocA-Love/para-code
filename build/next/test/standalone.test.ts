@@ -39,6 +39,11 @@ const preloads = [
 		// or restructures, so anchor on the unique `defaultPrevented` check of the same upstream keydown listener.
 		markers: ['defaultPrevented', 'exposeInMainWorld(', 'getBoundingClientRect(', '_onPicked('],
 	},
+	// PARA-PATCH: the fork's Chrome Web Store page bridge preload (Para Code browser extensions, experimental)
+	{
+		file: 'vs/paradis/contrib/browserExtensions/electron-browser/paradisWebStorePreload.ts',
+		markers: ['getFullChromeVersion', 'createTreeWalker(', 'MutationObserver('],
+	},
 ];
 const javascriptFiles = preloads.map(({ file }) => file.replace(/\.ts$/, '.js')).sort();
 

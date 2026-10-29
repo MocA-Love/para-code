@@ -157,7 +157,8 @@ export function paradisVerifyCrx3(buffer: Buffer, options: { readonly expectedEx
 			signedHeaderData = bytes;
 		}
 	}
-	const crxId = signedHeaderData ? readMessageFields(signedHeaderData).find(entry => entry.field === SIGNED_DATA_CRX_ID)?.bytes : undefined;
+	// protobuf（と Chromium）は、同じ欄が 2 回あれば最後の値を使う
+	const crxId = signedHeaderData ? readMessageFields(signedHeaderData).filter(entry => entry.field === SIGNED_DATA_CRX_ID).at(-1)?.bytes : undefined;
 	if (!signedHeaderData || crxId?.length !== 16) {
 		throw new Error('CRX has no signed id');
 	}
