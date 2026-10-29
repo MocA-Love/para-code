@@ -7,7 +7,7 @@
 import assert from 'assert';
 import { EventEmitter } from 'events';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisInputGuardTab, PARADIS_EXTENSION_FRAME_DENIED_MESSAGE, PARADIS_EXTENSION_INPUT_DENIED_MESSAGE, ParadisFrameTargetTracker, ParadisInputGuardWebContents, paradisExtensionInputRefusal, paradisGuardExtensionInput, paradisInputGuardTab, paradisInterceptUpstreamCommand } from '../../electron-main/paradisExtensionInputGuard.js';
+import { IParadisInputGuardTab, PARADIS_EXTENSION_FRAME_DENIED_MESSAGE, PARADIS_EXTENSION_INPUT_DENIED_MESSAGE, ParadisFrameTargetTracker, ParadisGuardFrameUnavailableError, ParadisPendingCommands, ParadisInputGuardWebContents, paradisExtensionInputRefusal, paradisGuardExtensionInput, paradisInputGuardTab, paradisInterceptUpstreamCommand } from '../../electron-main/paradisExtensionInputGuard.js';
 
 const EXTENSION_MENU = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/menu.html';
 
@@ -239,5 +239,62 @@ suite('paradisExtensionInputGuard', () => {
 			listenersAfter: 0,
 			disposed: 1,
 		});
+	});
+	test('a frame that stops answering or is detached mid-check counts as one it cannot look into, and nothing is left waiting', async () => {
+		// The widget frame is on its way to an extension page: its session never answers, then it is detached.
+		const page: IFakeDocument = { scrollY: 0, elements: [{ left: 0, top: 0, width: 500, height: 400, nodeName: 'IFRAME', attributes: ['src', 'https://widget.example/'], frameId: 'WIDGET' }, BODY] };
+		const pending = new ParadisPendingCommands();
+		const base = fakeTab({ page }, { WIDGET: { url: 'https://widget.example/', sessionId: 'S-WIDGET' } });
+		const tab: IParadisInputGuardTab = {
+			...base.tab,
+			send: (method, params, sessionId) => sessionId === 'S-WIDGET' ? pending.track(sessionId, new Promise(() => { /* never answers */ })) : base.tab.send(method, params, sessionId),
+		};
+		const started = Date.now();
+		const detachedVerdict = paradisExtensionInputRefusal(tab, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 50, y: 50, button: 'left', clickCount: 1 });
+		await new Promise(resolve => setTimeout(resolve, 10));
+		const waitingBeforeDetach = pending.size;
+		pending.abandon('S-WIDGET', 'its session was detached');
+		const detached = await detachedVerdict;
+		const timedOut = await paradisExtensionInputRefusal(tab, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 60, y: 60, button: 'left', clickCount: 1 });
+		const elapsed = Date.now() - started;
+		assert.deepStrictEqual({ waitingBeforeDetach, detached, timedOut, waitingAfter: pending.size, withinTimeout: elapsed < 3_000 }, {
+			waitingBeforeDetach: 1,
+			detached: PARADIS_EXTENSION_INPUT_DENIED_MESSAGE,
+			timedOut: PARADIS_EXTENSION_INPUT_DENIED_MESSAGE,
+			waitingAfter: 0,
+			withinTimeout: true,
+		});
+	});
+
+	test('pending upstream commands on a frame session end when the frame turns into an extension page and is detached', async () => {
+		const electronDebugger = new EventEmitter();
+		const webContents = Object.assign(new EventEmitter(), { mainFrame: { url: 'https://example.test/', framesInSubtree: [] }, focusedFrame: null, debugger: electronDebugger });
+		let interceptor: ((method: string, params: unknown, session: unknown) => Promise<unknown> | undefined) | undefined;
+		const sent: string[] = [];
+		paradisInputGuardTab({
+			webContents: webContents as never,
+			debugger: {
+				targetId: 'PAGE',
+				registerCommandInterceptor: (value: typeof interceptor) => { interceptor = value; return { dispose() { } }; },
+				sendCommandRaw: (method: string, params?: { sessionId?: string }, sessionId?: string) => {
+					sent.push(`${method}@${sessionId ?? 'page'}`);
+					// Commands to the frame never answer (as after a detach); the detach itself does.
+					return method === 'Target.detachFromTarget' ? Promise.resolve({}) : new Promise(() => { /* never answers */ });
+				},
+			} as never,
+		});
+		electronDebugger.emit('message', {}, 'Target.attachedToTarget', { sessionId: 'S-FRAME', targetInfo: { targetId: 'FRAME', type: 'iframe', url: '' } }, '');
+		const frame = { sessionId: 'S-FRAME', targetId: 'FRAME' };
+		const inFlight = interceptor!('Runtime.enable', {}, frame)!.then(() => 'answered', (error: Error) => error instanceof ParadisGuardFrameUnavailableError ? 'ended' : 'error');
+		electronDebugger.emit('message', {}, 'Target.targetInfoChanged', { targetInfo: { targetId: 'FRAME', type: 'iframe', url: EXTENSION_MENU } }, '');
+		const runIfWaiting = await interceptor!('Runtime.runIfWaitingForDebugger', {}, frame);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ inFlight: await inFlight, runIfWaiting, sent, deviceMetrics: interceptor!('Emulation.setDeviceMetricsOverride', {}, { sessionId: 'S-OTHER', targetId: 'OTHER' }) }, {
+			inFlight: 'ended',
+			runIfWaiting: {},
+			sent: ['Runtime.enable@S-FRAME', 'Target.detachFromTarget@page'],
+			deviceMetrics: undefined,
+		});
+		webContents.emit('destroyed');
 	});
 });

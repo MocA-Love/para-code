@@ -42,6 +42,26 @@ const FRAME_OWNER_NODE_NAMES: ReadonlySet<string> = new Set(['IFRAME', 'FRAME', 
 /** フォーカスのある文書へ届く入力。 */
 const KEY_METHODS: ReadonlySet<string> = new Set(['Input.dispatchKeyEvent', 'Input.insertText', 'Input.imeSetComposition']);
 
+/** 判定が送る CDP の命令の答えを待つ上限（ミリ秒）。 */
+export const PARADIS_INPUT_GUARD_COMMAND_TIMEOUT_MS = 1_500;
+
+/**
+ * 判定の命令が答えなかった（時間切れ）、または送り先のセッションが切り離された。その iframe の中は見られないものとして
+ * 扱う（タブに拡張の iframe があれば断る）。
+ */
+export class ParadisGuardFrameUnavailableError extends Error {
+	constructor(reason: string) {
+		super(`Para Code input guard could not look into a frame: ${reason}`);
+	}
+}
+
+/** 見られない iframe の知らせなら投げ直す（ほかの失敗は呼び出し側で扱う）。 */
+function rethrowUnavailable(error: unknown): void {
+	if (error instanceof ParadisGuardFrameUnavailableError) {
+		throw error;
+	}
+}
+
 /** 別プロセスの iframe の中へ潜る深さの上限（超えたら、タブに拡張の iframe があれば断る）。 */
 const MAX_FRAME_DEPTH = 4;
 
@@ -113,7 +133,8 @@ async function localFrameUrl(tab: IParadisInputGuardTab, frameId: string, sessio
 	let tree: unknown;
 	try {
 		tree = await tab.send('Page.getFrameTree', {}, sessionId);
-	} catch {
+	} catch (error) {
+		rethrowUnavailable(error);
 		return undefined;
 	}
 	const visit = (node: unknown, depth: number): string | undefined => {
@@ -147,13 +168,15 @@ async function hitsExtensionFrame(tab: IParadisInputGuardTab, x: number, y: numb
 		const visual = isRecord(metrics) && isRecord(metrics.cssVisualViewport) ? metrics.cssVisualViewport : undefined;
 		offsetX = typeof visual?.pageX === 'number' ? visual.pageX : 0;
 		offsetY = typeof visual?.pageY === 'number' ? visual.pageY : 0;
-	} catch {
+	} catch (error) {
+		rethrowUnavailable(error);
 		// 読めなければスクロールしていないとみなす
 	}
 	let hit: unknown;
 	try {
 		hit = await tab.send('DOM.getNodeForLocation', { x: Math.round(x + offsetX), y: Math.round(y + offsetY), includeUserAgentShadowDOM: true, ignorePointerEventsNone: true }, sessionId);
-	} catch {
+	} catch (error) {
+		rethrowUnavailable(error);
 		// その点に要素が無い（画面の外など）。押しても拡張には届かない
 		return false;
 	}
@@ -164,7 +187,8 @@ async function hitsExtensionFrame(tab: IParadisInputGuardTab, x: number, y: numb
 	let described: unknown;
 	try {
 		described = await tab.send('DOM.describeNode', { backendNodeId }, sessionId);
-	} catch {
+	} catch (error) {
+		rethrowUnavailable(error);
 		return false;
 	}
 	const node = isRecord(described) && isRecord(described.node) ? described.node : undefined;
@@ -204,7 +228,15 @@ async function hitsExtensionFrame(tab: IParadisInputGuardTab, x: number, y: numb
 	if (typeof content?.[0] !== 'number' || typeof content[1] !== 'number') {
 		return hasExtensionFrame(tab.webContents);
 	}
-	return hitsExtensionFrame(tab, x - content[0], y - content[1], target.sessionId, depth + 1);
+	try {
+		return await hitsExtensionFrame(tab, x - content[0], y - content[1], target.sessionId, depth + 1);
+	} catch (error) {
+		if (error instanceof ParadisGuardFrameUnavailableError) {
+			// 中の iframe が答えない・切り離された（拡張のページへ移る途中など）
+			return hasExtensionFrame(tab.webContents);
+		}
+		throw error;
+	}
 }
 
 /** 通した「押す」の座標（タブ × ボタン）。離す位置を拡張の画面から外すのに使う。 */
@@ -247,7 +279,17 @@ export async function paradisGuardExtensionInput(tab: IParadisInputGuardTab, met
 	let hitsExtension = false;
 	if (points.length > 0 && hasExtensionFrame(tab.webContents)) {
 		for (const point of points) {
-			if (await hitsExtensionFrame(tab, point.x, point.y, undefined, 0)) {
+			let hit: boolean;
+			try {
+				hit = await hitsExtensionFrame(tab, point.x, point.y, undefined, 0);
+			} catch (error) {
+				if (!(error instanceof ParadisGuardFrameUnavailableError)) {
+					throw error;
+				}
+				// ページそのものが答えない。タブに拡張の iframe があるので断る
+				hit = true;
+			}
+			if (hit) {
 				hitsExtension = true;
 				break;
 			}
@@ -369,6 +411,89 @@ export class ParadisFrameTargetTracker {
 	}
 }
 
+/**
+ * 答えを待っている CDP の命令（セッションごと）。切り離したセッションへの命令は Electron から答えが来ないので、
+ * 切り離すとき・タブを閉じたときに、こちらで失敗として終わらせる。
+ */
+export class ParadisPendingCommands {
+
+	private readonly _bySession = new Map<string, Set<(error: Error) => void>>();
+
+	/**
+	 * 命令の答えを待つ。`withTimeout` なら {@link PARADIS_INPUT_GUARD_COMMAND_TIMEOUT_MS} で打ち切る（判定の命令）。
+	 * 打ち切り・切り離しは {@link ParadisGuardFrameUnavailableError} で終わる。
+	 */
+	track<T>(sessionId: string | undefined, command: Promise<T>, withTimeout = true): Promise<T> {
+		const key = sessionId ?? '';
+		return new Promise<T>((resolve, reject) => {
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const finish = () => {
+				settled = true;
+				if (timer !== undefined) {
+					clearTimeout(timer);
+				}
+				const rejecters = this._bySession.get(key);
+				rejecters?.delete(abandon);
+				if (rejecters?.size === 0) {
+					this._bySession.delete(key);
+				}
+			};
+			const abandon = (error: Error) => {
+				if (!settled) {
+					finish();
+					reject(error);
+				}
+			};
+			let rejecters = this._bySession.get(key);
+			if (!rejecters) {
+				rejecters = new Set();
+				this._bySession.set(key, rejecters);
+			}
+			rejecters.add(abandon);
+			if (withTimeout) {
+				timer = setTimeout(() => abandon(new ParadisGuardFrameUnavailableError('the frame did not answer in time')), PARADIS_INPUT_GUARD_COMMAND_TIMEOUT_MS);
+			}
+			command.then(value => {
+				if (!settled) {
+					finish();
+					resolve(value);
+				}
+			}, error => {
+				if (!settled) {
+					finish();
+					reject(error);
+				}
+			});
+		});
+	}
+
+	/** そのセッションへ送りかけの命令を終わらせる。 */
+	abandon(sessionId: string, reason: string): void {
+		const rejecters = this._bySession.get(sessionId);
+		this._bySession.delete(sessionId);
+		for (const reject of rejecters ?? []) {
+			reject(new ParadisGuardFrameUnavailableError(reason));
+		}
+	}
+
+	/** すべて終わらせる（タブを閉じたとき）。 */
+	abandonAll(reason: string): void {
+		for (const sessionId of [...this._bySession.keys()]) {
+			this.abandon(sessionId, reason);
+		}
+	}
+
+	/** 答えを待っている命令の数（テスト用）。 */
+	get size(): number {
+		let count = 0;
+		for (const rejecters of this._bySession.values()) {
+			count += rejecters.size;
+		}
+		return count;
+	}
+}
+
 /** upstream の CDP の送り口の一部（BrowserViewDebugger）。 */
 interface IParadisUpstreamDebugger {
 	/** タブのページのターゲット。 */
@@ -403,8 +528,13 @@ export function paradisInputGuardTab(view: IParadisInputGuardView): IParadisInpu
 	const tracker = new ParadisFrameTargetTracker();
 	const upstreamDebuggerForDetach = view.debugger;
 	const detaching = new Set<string>();
+	const pending = new ParadisPendingCommands();
 	const listener = (_event: unknown, method: string, params: unknown, eventSessionId?: string) => {
 		tracker.onMessage(method, params, eventSessionId);
+		if (method === 'Target.detachedFromTarget' && isRecord(params) && typeof params.sessionId === 'string') {
+			// 切り離されたセッションへ送りかけの命令は、もう答えが来ない
+			pending.abandon(params.sessionId, 'its session was detached');
+		}
 		if (method !== 'Target.attachedToTarget' && method !== 'Target.targetInfoChanged') {
 			return;
 		}
@@ -415,6 +545,8 @@ export function paradisInputGuardTab(view: IParadisInputGuardView): IParadisInpu
 				continue;
 			}
 			detaching.add(extension.sessionId);
+			// 送りかけの命令（判定や upstream の利用者のもの）は、切り離すと答えが来なくなるので、ここで終わらせる
+			pending.abandon(extension.sessionId, 'it shows a browser extension page');
 			// debugger のイベントの中から命令を送ると Electron が落ちることがある（実測）ので、次の周回で送る
 			setImmediate(() => void upstreamDebuggerForDetach.sendCommandRaw('Target.detachFromTarget', { sessionId: extension.sessionId }, extension.parentSessionId)
 				.catch(() => { /* already gone */ })
@@ -427,7 +559,7 @@ export function paradisInputGuardTab(view: IParadisInputGuardView): IParadisInpu
 	const autoAttached = new Set<string>();
 	const tab: IParadisInputGuardTab = {
 		webContents: view.webContents,
-		send: (method, params, sessionId) => upstreamDebugger.sendCommandRaw(method, params, sessionId),
+		send: (method, params, sessionId) => pending.track(sessionId, upstreamDebugger.sendCommandRaw(method, params, sessionId)),
 		attachChildren: async sessionId => {
 			if (autoAttached.has(sessionId) || autoAttached.size >= 4_096) {
 				return;
@@ -435,8 +567,9 @@ export function paradisInputGuardTab(view: IParadisInputGuardView): IParadisInpu
 			autoAttached.add(sessionId);
 			try {
 				// 既にある子の attach のイベントは、この命令の応答より前に届く
-				await upstreamDebugger.sendCommandRaw('Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: false }, sessionId);
-			} catch {
+				await pending.track(sessionId, upstreamDebugger.sendCommandRaw('Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: false }, sessionId));
+			} catch (error) {
+				rethrowUnavailable(error);
 				// セッションが既に無い
 			}
 		},
@@ -452,11 +585,12 @@ export function paradisInputGuardTab(view: IParadisInputGuardView): IParadisInpu
 	// 登録して座標を倍率に合わせ、undefined を返して次へ渡す。この割り込みはビューが作られた後
 	// （onDidCreateBrowserView）に登録するので、合わせた後の座標で判定できる
 	const interceptor = typeof upstreamDebugger.registerCommandInterceptor === 'function'
-		? upstreamDebugger.registerCommandInterceptor((method, params, session) => paradisInterceptUpstreamCommand(tab, tracker, upstreamDebugger, method, params, session))
+		? upstreamDebugger.registerCommandInterceptor((method, params, session) => paradisInterceptUpstreamCommand(tab, tracker, upstreamDebugger, method, params, session, pending))
 		: undefined;
 	(view.webContents as Partial<IParadisInputGuardView['webContents']>).once?.('destroyed', () => {
 		interceptor?.dispose();
 		electronDebugger?.removeListener('message', listener);
+		pending.abandonAll('the tab was closed');
 	});
 	return tab;
 }
@@ -471,7 +605,7 @@ export function paradisInputGuardTab(view: IParadisInputGuardView): IParadisInpu
  *    イベントを生まない）。そのセッションは見つけ次第切り離す（paradisInputGuardTab）
  * セッションの無い命令は、upstream の通常の経路のまま通す（upstream の Agent ツールは使わない）。
  */
-export function paradisInterceptUpstreamCommand(tab: IParadisInputGuardTab, tracker: ParadisFrameTargetTracker, upstreamDebugger: IParadisUpstreamDebugger, method: string, params: unknown, session: unknown): Promise<unknown> | undefined {
+export function paradisInterceptUpstreamCommand(tab: IParadisInputGuardTab, tracker: ParadisFrameTargetTracker, upstreamDebugger: IParadisUpstreamDebugger, method: string, params: unknown, session: unknown, pending?: ParadisPendingCommands): Promise<unknown> | undefined {
 	const connection = session as { readonly sessionId?: unknown; readonly targetId?: unknown } | undefined;
 	if (connection === undefined) {
 		return undefined;
@@ -480,10 +614,24 @@ export function paradisInterceptUpstreamCommand(tab: IParadisInputGuardTab, trac
 	if (connection.targetId !== upstreamDebugger.targetId) {
 		const frameUrl = sessionId !== undefined ? tracker.urlOfSession(sessionId) : undefined;
 		const knownUrl = typeof connection.targetId === 'string' ? upstreamDebugger.knownTargets?.get(connection.targetId)?.url : undefined;
-		if (paradisIsBrowserExtensionUrl(frameUrl ?? knownUrl) && method !== 'Runtime.runIfWaitingForDebugger' && !/\.disable$/.test(method)) {
-			return Promise.reject(new Error(PARADIS_EXTENSION_FRAME_DENIED_MESSAGE));
+		if (paradisIsBrowserExtensionUrl(frameUrl ?? knownUrl)) {
+			// 拡張のページの iframe のセッションは切り離すので、送らずにここで答える（送ると答えが来ないまま残る）。
+			// 再開と購読の停止は、切り離しで済むので成功として答える
+			return method === 'Runtime.runIfWaitingForDebugger' || /\.disable$/.test(method) ? Promise.resolve({}) : Promise.reject(new Error(PARADIS_EXTENSION_FRAME_DENIED_MESSAGE));
 		}
-		return undefined;
+		// 後で拡張のページへ移って切り離すことがあるので、答えを待っている命令を覚えておく（切り離すときに終わらせる）。
+		// upstream が自分で答える命令（Electron が落ちる Emulation.setDeviceMetricsOverride）は upstream に任せる
+		if (!pending || sessionId === undefined || method === 'Emulation.setDeviceMetricsOverride') {
+			return undefined;
+		}
+		const tracked = pending.track(sessionId, upstreamDebugger.sendCommandRaw(method, params, sessionId), false);
+		// 再開の命令は、切り離しでも再開されるので、切り離しで終わったら成功として答える
+		return method === 'Runtime.runIfWaitingForDebugger' ? tracked.catch(error => {
+			if (error instanceof ParadisGuardFrameUnavailableError) {
+				return {};
+			}
+			throw error;
+		}) : tracked;
 	}
 	if (!method.startsWith('Input.')) {
 		return undefined;
