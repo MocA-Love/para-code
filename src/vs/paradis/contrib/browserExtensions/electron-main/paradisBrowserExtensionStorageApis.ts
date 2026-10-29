@@ -194,8 +194,9 @@ export function paradisRegisterStorageApis(host: ParadisExtensionApiHost, store:
 			return changes;
 		}
 		store.write(caller.place, caller.extension.id, next);
-		// 呼び出し元は自分で出すので、それ以外の文脈へ
-		host.emit({ session: caller.session, extensionId: caller.extension.id, exceptConnection: caller.connection }, PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, 'onChanged', [changes]);
+		// 呼び出し元は自分で出すので、それ以外の文脈へ。同じ場所のほかのセッション（Global と各ワークスペース）も
+		// 同じ中身を見ているので、そちらへも届ける
+		host.emitToPlace(caller.place, caller.extension.id, PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, 'onChanged', [changes], { session: caller.session, connection: caller.connection });
 		return changes;
 	};
 	const quotaError = (name: keyof typeof PARADIS_STORAGE_SYNC_QUOTAS) => new ParadisExtensionApiError(`${name} quota exceeded`);

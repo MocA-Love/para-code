@@ -296,6 +296,18 @@ export class ParadisExtensionApiHost implements IDisposable {
 	}
 
 	/**
+	 * 同じ場所（`default` / `profile:<id>`）を使うすべてのセッションへ届ける（storage.sync は場所ごとに 1 つで、
+	 * Global と各ワークスペースのセッションが同じ中身を見るため）。`except` の文脈には送らない。
+	 */
+	emitToPlace(place: string, extensionId: string, namespace: string, event: string, args: readonly unknown[], except?: { readonly session: ParadisApiSession; readonly connection: string }): void {
+		for (const state of this._states.values()) {
+			if (state.place === place) {
+				this.emit({ session: state.session, extensionId, exceptConnection: except?.session === state.session ? except.connection : undefined }, namespace, event, args);
+			}
+		}
+	}
+
+	/**
 	 * worker が起動するときに出すイベント（runtime.onInstalled など）。worker の最上位の受け手は少し後に
 	 * main へ届くので、まだ登録されていなければ溜めて待つ（届かないものは期限で捨てる）。
 	 */
