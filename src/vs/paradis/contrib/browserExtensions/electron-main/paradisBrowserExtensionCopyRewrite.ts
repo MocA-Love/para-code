@@ -128,8 +128,16 @@ export function paradisWithPrivateFilesHidden(manifest: Manifest, packageFiles: 
 	}
 	const visible = (resources: readonly unknown[]): string[] => {
 		const next = new Set<string>();
-		for (const resource of resources) {
-			if (typeof resource !== 'string') {
+		for (const raw of resources) {
+			if (typeof raw !== 'string') {
+				continue;
+			}
+			// Chromium は宣言の % を解いてからファイルを探す（`%70aracode-…` でも Para Code のファイルを指せる）。
+			// 解いてから比べる。解けない宣言は Chromium でも何も指さないので落とす
+			let resource: string;
+			try {
+				resource = decodeURIComponent(raw);
+			} catch {
 				continue;
 			}
 			const matched = /[*?]/.test(resource) ? packageFiles.filter(file => resourcePatternToRegExp(resource).test(file)) : [resource.replace(/^\/+/, '')];
@@ -153,20 +161,54 @@ export function paradisWithPrivateFilesHidden(manifest: Manifest, packageFiles: 
 /** 詰め物の <script> の印（何度書き換えても 1 つだけ入れる）。 */
 const SHIM_SCRIPT_TAG = `<script src="/${PARADIS_EXTENSION_SHIM_FILE}" data-paracode-extension-api></script>`;
 
+/** HTML のコメント（`<!-- -->`）の外で、最初に `pattern` に当たる位置（無ければ -1）。 */
+function searchOutsideComments(html: string, pattern: RegExp): number {
+	let from = 0;
+	while (from < html.length) {
+		const commentStart = html.indexOf('<!--', from);
+		const end = commentStart < 0 ? html.length : commentStart;
+		const index = html.slice(from, end).search(pattern);
+		if (index >= 0) {
+			return from + index;
+		}
+		if (commentStart < 0) {
+			return -1;
+		}
+		const commentEnd = html.indexOf('-->', commentStart + 4);
+		if (commentEnd < 0) {
+			return -1;
+		}
+		from = commentEnd + 3;
+	}
+	return -1;
+}
+
 /** 拡張機能のページの最初のスクリプトの前（無ければ </head> の前、それも無ければ先頭）に詰め物を入れる。 */
 export function paradisInjectShimIntoHtml(html: string): string {
 	if (html.includes('data-paracode-extension-api')) {
 		return html;
 	}
-	const firstScript = html.search(/<script\b/i);
+	const firstScript = searchOutsideComments(html, /<script\b/i);
 	if (firstScript >= 0) {
 		return `${html.slice(0, firstScript)}${SHIM_SCRIPT_TAG}${html.slice(firstScript)}`;
 	}
-	const headEnd = html.search(/<\/head\s*>/i);
+	const headEnd = searchOutsideComments(html, /<\/head\s*>/i);
 	if (headEnd >= 0) {
 		return `${html.slice(0, headEnd)}${SHIM_SCRIPT_TAG}${html.slice(headEnd)}`;
 	}
 	return `${SHIM_SCRIPT_TAG}${html}`;
+}
+
+/** UTF-8 として読めて、ほかの文字コードを宣言していない HTML なら、その文字列（書き換えてよいもの）。 */
+export function paradisReadableHtml(bytes: Uint8Array): string | undefined {
+	let html: string;
+	try {
+		html = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+	} catch {
+		return undefined;
+	}
+	const declared = /<meta[^>]+charset\s*=\s*["']?\s*(?<charset>[\w-]+)/i.exec(html)?.groups?.charset;
+	return declared === undefined || /^utf-?8$/i.test(declared) ? html : undefined;
 }
 
 /** 写しの中のファイル（フォルダからの相対パス、`/` 区切り）。 */
@@ -190,7 +232,7 @@ async function listFiles(root: string): Promise<string[]> {
  * 写しを詰め物が動く形にする。元の manifest は {@link PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE} に残し、
  * そこから書き換える（P3 の写しには無いので、そのときは今の manifest.json を元として残す）。
  */
-export async function paradisPrepareExtensionCopy(copy: string, token: string, shimSource: string): Promise<void> {
+export async function paradisPrepareExtensionCopy(copy: string, token: string, shimSource: string): Promise<IParadisPreparedCopy> {
 	const originalPath = join(copy, PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE);
 	let originalText: string;
 	try {
@@ -202,7 +244,7 @@ export async function paradisPrepareExtensionCopy(copy: string, token: string, s
 	const original = asRecord(JSON.parse(originalText));
 	if (!original || original.manifest_version !== 3) {
 		// V2（と読めない manifest）は書き換えない
-		return;
+		return { skippedPages: [] };
 	}
 	const rewritten = paradisRewriteManifestForShim(original);
 	if (rewritten.wrapper) {
@@ -215,16 +257,29 @@ export async function paradisPrepareExtensionCopy(copy: string, token: string, s
 	const sandboxPages = new Set((Array.isArray(asRecord(original.sandbox)?.pages) ? asRecord(original.sandbox)!.pages as unknown[] : [])
 		.filter((page): page is string => typeof page === 'string')
 		.map(page => posix.normalize(page.replace(/^\/+/, ''))));
+	const skippedPages: string[] = [];
 	for (const file of files) {
 		if (!/\.html?$/i.test(file) || sandboxPages.has(file)) {
 			continue;
 		}
 		const path = join(copy, ...file.split('/'));
-		const html = await fs.readFile(path, 'utf8');
+		// UTF-8 でないページは書き換えると壊すので、書き換えずに知らせる（そのページでは詰め物の API が無い）
+		const html = paradisReadableHtml(await fs.readFile(path));
+		if (html === undefined) {
+			skippedPages.push(file);
+			continue;
+		}
 		const injected = paradisInjectShimIntoHtml(html);
 		if (injected !== html) {
 			await fs.mkdir(dirname(path), { recursive: true });
 			await fs.writeFile(path, injected);
 		}
 	}
+	return { skippedPages };
+}
+
+/** 写しの準備の結果。 */
+export interface IParadisPreparedCopy {
+	/** UTF-8 でないため詰め物を入れなかったページ。 */
+	readonly skippedPages: readonly string[];
 }

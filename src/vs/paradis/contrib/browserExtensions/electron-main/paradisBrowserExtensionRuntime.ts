@@ -59,6 +59,8 @@ function isVersions(value: unknown): value is IParadisLoadedVersions {
 export class ParadisBrowserExtensionRuntimeState {
 	private _state: State = {};
 	private _saving: Promise<void> = Promise.resolve();
+	/** この起動で削除した拡張機能（同じ起動の中では入れ直せないので、以後は記録しない）。 */
+	private readonly _forgotten = new Set<string>();
 
 	constructor(private readonly _path: string, private readonly _logService: { warn(message: string, ...args: unknown[]): void }) { }
 
@@ -84,12 +86,17 @@ export class ParadisBrowserExtensionRuntimeState {
 	}
 
 	update(storagePath: string, extensionId: string, versions: IParadisLoadedVersions): Promise<void> {
+		// 削除と同時に走った読み込みが、消した記録を書き戻さないように
+		if (this._forgotten.has(extensionId)) {
+			return this._saving;
+		}
 		this._state = { ...this._state, [storagePath]: { ...this._state[storagePath], [extensionId]: versions } };
 		return this._save();
 	}
 
 	/** 削除した拡張機能を忘れる（入れ直したら install から出す）。 */
 	forgetExtension(extensionId: string): Promise<void> {
+		this._forgotten.add(extensionId);
 		this._state = Object.fromEntries(Object.entries(this._state).map(([storagePath, byExtension]) => [storagePath, Object.fromEntries(Object.entries(byExtension).filter(([id]) => id !== extensionId))]));
 		return this._save();
 	}

@@ -283,6 +283,8 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 	private readonly _runtimeState: ParadisBrowserExtensionRuntimeState;
 	/** この起動で詰め物を書き込んだ写し（写しのパス → 失敗の文。成功なら undefined）。 */
 	private readonly _prepared = new Map<string, Promise<string | undefined>>();
+	/** 詰め物を入れられなかったページ（UTF-8 でないもの）。管理画面で知らせる。 */
+	private readonly _notes = new Map<string, readonly string[]>();
 
 	constructor(
 		private readonly _root: string,
@@ -435,7 +437,14 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		let preparing = this._prepared.get(extension.path);
 		if (!preparing) {
 			preparing = paradisPrepareExtensionCopy(extension.path, this._apiHost.tokenFor(extension.id), paradisBrowserExtensionShimSource())
-				.then(() => undefined, (error: unknown) => error instanceof Error ? error.message : String(error));
+				.then(prepared => {
+					if (prepared.skippedPages.length > 0) {
+						this._notes.set(extension.id, prepared.skippedPages);
+					} else {
+						this._notes.delete(extension.id);
+					}
+					return undefined;
+				}, (error: unknown) => error instanceof Error ? error.message : String(error));
 			this._prepared.set(extension.path, preparing);
 		}
 		return preparing;
@@ -535,6 +544,7 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 				...extension,
 				enabledIn: Object.entries(this._ledger.enabled).filter(([, ids]) => ids.includes(extension.id)).map(([profile]) => profile),
 				...(this._loadErrors.has(extension.id) ? { loadError: this._loadErrors.get(extension.id) } : {}),
+				...(this._notes.has(extension.id) ? { pagesWithoutApis: this._notes.get(extension.id) } : {}),
 			})),
 		};
 	}

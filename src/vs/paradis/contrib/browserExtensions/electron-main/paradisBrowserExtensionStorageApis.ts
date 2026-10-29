@@ -18,7 +18,6 @@
 // 知らせ、main が同じセッションの同じ拡張機能の worker へ渡す（worker は自分の書き込みを自分で出す）。
 
 import { promises as fs } from 'fs';
-import { z } from 'zod';
 import { join } from '../../../../base/common/path.js';
 import { PARADIS_SHIM_STORAGE_RELAY_NAMESPACE, PARADIS_SHIM_STORAGE_SYNC_NAMESPACE } from '../common/paradisBrowserExtensionShim.js';
 import { paradisIsExtensionId } from '../common/paradisBrowserExtensions.js';
@@ -37,6 +36,28 @@ function isItems(value: unknown): value is SyncItems {
 }
 
 /**
+ * 鍵がそのまま自分の項目になる入れ物（`__proto__` などの鍵を、プロトタイプの書き換えではなく項目として持つ）。
+ * JSON.parse と Object.assign はどちらも `__proto__` を自分の項目として書き写す。
+ */
+function itemsOf(source?: SyncItems): SyncItems {
+	const items: SyncItems = Object.create(null);
+	if (source) {
+		for (const key of Object.keys(source)) {
+			Object.defineProperty(items, key, { value: source[key], enumerable: true, writable: true, configurable: true });
+		}
+	}
+	return items;
+}
+
+function has(items: SyncItems, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(items, key);
+}
+
+function setItem(items: Record<string, unknown>, key: string, value: unknown): void {
+	Object.defineProperty(items, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
+/**
  * storage.sync の中身（場所 × 拡張機能）。拡張機能は設定を鍵ごとに続けて書くことが多いので、まとめて書く。
  */
 export class ParadisBrowserExtensionSyncStore {
@@ -46,6 +67,8 @@ export class ParadisBrowserExtensionSyncStore {
 	private _writing: Promise<void> = Promise.resolve();
 	/** 場所 × 拡張機能ごとの書き込みの順番（読んでから書くまでの間に、ほかの書き込みを割り込ませない）。 */
 	private readonly _queues = new Map<string, Promise<unknown>>();
+	/** この起動で削除した拡張機能（削除と同時に走った書き込みが、消した後のファイルを書き戻さないように）。 */
+	private readonly _forgotten = new Set<string>();
 
 	constructor(private readonly _root: string, private readonly _logService: { warn(message: string, ...args: unknown[]): void }) { }
 
@@ -67,9 +90,9 @@ export class ParadisBrowserExtensionSyncStore {
 		if (!items) {
 			try {
 				const raw: unknown = JSON.parse(await fs.readFile(this._file(place, extensionId), 'utf8'));
-				items = isItems(raw) ? raw : {};
+				items = itemsOf(isItems(raw) ? raw : undefined);
 			} catch {
-				items = {};
+				items = itemsOf();
 			}
 			// 読んでいる間に書かれていれば、書かれた方を使う
 			items = this._cache.get(key) ?? items;
@@ -93,6 +116,9 @@ export class ParadisBrowserExtensionSyncStore {
 	}
 
 	write(place: string, extensionId: string, items: SyncItems): void {
+		if (this._forgotten.has(extensionId)) {
+			return;
+		}
 		const key = ParadisBrowserExtensionSyncStore._key(place, extensionId);
 		this._cache.set(key, items);
 		this._dirty.add(key);
@@ -114,7 +140,7 @@ export class ParadisBrowserExtensionSyncStore {
 			for (const key of keys) {
 				const [place, extensionId] = key.split('\n');
 				const items = this._cache.get(key);
-				if (!items) {
+				if (!items || this._forgotten.has(extensionId)) {
 					continue;
 				}
 				const target = this._file(place, extensionId);
@@ -129,6 +155,7 @@ export class ParadisBrowserExtensionSyncStore {
 
 	/** 拡張機能を削除した: すべての場所の中身を消す。 */
 	async forgetExtension(extensionId: string): Promise<void> {
+		this._forgotten.add(extensionId);
 		for (const key of [...this._cache.keys()]) {
 			if (key.endsWith(`\n${extensionId}`)) {
 				this._cache.delete(key);
@@ -154,10 +181,29 @@ export class ParadisBrowserExtensionSyncStore {
 	}
 }
 
-const keyListSchema = z.union([z.string(), z.array(z.string())]);
-const itemsSchema = z.record(z.string(), z.unknown());
-const getKeysSchema = z.union([z.null(), keyListSchema, itemsSchema]).optional();
-const changesSchema = z.record(z.string(), z.object({ oldValue: z.unknown().optional(), newValue: z.unknown().optional() }).strict());
+const isKeyList = (value: unknown): value is string | string[] => typeof value === 'string' || (Array.isArray(value) && value.every(key => typeof key === 'string'));
+
+/** 引数の形の確かめ（タプルを返す。違えば undefined）。 */
+const checks = {
+	get: (args: readonly unknown[]): [null | undefined | string | string[] | SyncItems] | undefined => args.length <= 1 && (args[0] === undefined || args[0] === null || isKeyList(args[0]) || isItems(args[0])) ? [args[0] as null | undefined | string | string[] | SyncItems] : undefined,
+	none: (args: readonly unknown[]): [] | undefined => args.length === 0 ? [] : undefined,
+	bytes: (args: readonly unknown[]): [null | undefined | string | string[]] | undefined => args.length <= 1 && (args[0] === undefined || args[0] === null || isKeyList(args[0])) ? [args[0] as null | undefined | string | string[]] : undefined,
+	set: (args: readonly unknown[]): [SyncItems] | undefined => args.length === 1 && isItems(args[0]) ? [args[0]] : undefined,
+	remove: (args: readonly unknown[]): [string | string[]] | undefined => args.length === 1 && isKeyList(args[0]) ? [args[0]] : undefined,
+	report: (args: readonly unknown[]): ['local' | 'session', StorageChanges] | undefined => {
+		const [areaName, changes] = args;
+		if (args.length !== 2 || (areaName !== 'local' && areaName !== 'session') || !isItems(changes)) {
+			return undefined;
+		}
+		for (const key of Object.keys(changes)) {
+			const change = changes[key];
+			if (!isItems(change) || Object.keys(change).some(name => name !== 'oldValue' && name !== 'newValue')) {
+				return undefined;
+			}
+		}
+		return [areaName, changes as StorageChanges];
+	},
+};
 
 /** Chrome は JSON で保存する（関数と undefined の値は落ちる。undefined は書かない）。 */
 function toStoredValue(value: unknown): unknown {
@@ -176,18 +222,18 @@ function itemBytes(key: string, value: unknown): number {
 }
 
 function bytesInUse(items: SyncItems, keys: readonly string[]): number {
-	return keys.reduce((total, key) => Object.prototype.hasOwnProperty.call(items, key) ? total + itemBytes(key, items[key]) : total, 0);
+	return keys.reduce((total, key) => has(items, key) ? total + itemBytes(key, items[key]) : total, 0);
 }
 
 /** storage.sync と中継の名前空間を登録する。 */
 export function paradisRegisterStorageApis(host: ParadisExtensionApiHost, store: ParadisBrowserExtensionSyncStore): void {
 	const commit = (caller: IParadisExtensionApiCaller, current: SyncItems, next: SyncItems, keys: Iterable<string>): StorageChanges => {
-		const changes: StorageChanges = {};
+		const changes: StorageChanges = Object.create(null);
 		for (const key of keys) {
-			const had = Object.prototype.hasOwnProperty.call(current, key);
-			const has = Object.prototype.hasOwnProperty.call(next, key);
-			if ((had || has) && !(had && has && JSON.stringify(current[key]) === JSON.stringify(next[key]))) {
-				changes[key] = { ...(had ? { oldValue: current[key] } : {}), ...(has ? { newValue: next[key] } : {}) };
+			const had = has(current, key);
+			const hasNext = has(next, key);
+			if ((had || hasNext) && !(had && hasNext && JSON.stringify(current[key]) === JSON.stringify(next[key]))) {
+				setItem(changes, key, { ...(had ? { oldValue: current[key] } : {}), ...(hasNext ? { newValue: next[key] } : {}) });
 			}
 		}
 		if (Object.keys(changes).length === 0) {
@@ -204,34 +250,39 @@ export function paradisRegisterStorageApis(host: ParadisExtensionApiHost, store:
 	host.registerNamespace(PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, {
 		permission: 'storage',
 		methods: {
-			get: paradisDefineExtensionMethod(z.tuple([getKeysSchema]), async (caller, keys) => {
+			get: paradisDefineExtensionMethod(checks.get, async (caller, keys) => {
 				const items = await store.read(caller.place, caller.extension.id);
 				if (keys === null || keys === undefined) {
-					return { ...items };
+					return itemsOf(items);
 				}
+				const result = itemsOf();
 				if (typeof keys === 'string' || Array.isArray(keys)) {
-					return Object.fromEntries([keys].flat().flatMap(key => Object.prototype.hasOwnProperty.call(items, key) ? [[key, items[key]]] : []));
+					for (const key of [keys].flat()) {
+						if (has(items, key)) {
+							setItem(result, key, items[key]);
+						}
+					}
+					return result;
 				}
-				const result: SyncItems = {};
-				for (const [key, fallback] of Object.entries(keys)) {
-					const value = Object.prototype.hasOwnProperty.call(items, key) ? items[key] : toStoredValue(fallback);
+				for (const key of Object.keys(keys)) {
+					const value = has(items, key) ? items[key] : toStoredValue(keys[key]);
 					if (value !== undefined) {
-						result[key] = value;
+						setItem(result, key, value);
 					}
 				}
 				return result;
 			}),
-			getKeys: paradisDefineExtensionMethod(z.tuple([]), async caller => Object.keys(await store.read(caller.place, caller.extension.id))),
-			getBytesInUse: paradisDefineExtensionMethod(z.tuple([z.union([z.null(), keyListSchema]).optional()]), async (caller, keys) => {
+			getKeys: paradisDefineExtensionMethod(checks.none, async caller => Object.keys(await store.read(caller.place, caller.extension.id))),
+			getBytesInUse: paradisDefineExtensionMethod(checks.bytes, async (caller, keys) => {
 				const items = await store.read(caller.place, caller.extension.id);
 				return bytesInUse(items, keys === null || keys === undefined ? Object.keys(items) : [keys].flat());
 			}),
-			set: paradisDefineExtensionMethod(z.tuple([itemsSchema]), (caller, input) => store.exclusive(caller.place, caller.extension.id, async () => {
+			set: paradisDefineExtensionMethod(checks.set, (caller, input) => store.exclusive(caller.place, caller.extension.id, async () => {
 				const current = await store.read(caller.place, caller.extension.id);
-				const next = { ...current };
+				const next = itemsOf(current);
 				let total = bytesInUse(current, Object.keys(current));
-				for (const [key, raw] of Object.entries(input)) {
-					const value = toStoredValue(raw);
+				for (const key of Object.keys(input)) {
+					const value = toStoredValue(input[key]);
 					if (value === undefined) {
 						continue;
 					}
@@ -240,7 +291,7 @@ export function paradisRegisterStorageApis(host: ParadisExtensionApiHost, store:
 						throw quotaError('QUOTA_BYTES_PER_ITEM');
 					}
 					total += size - bytesInUse(next, [key]);
-					next[key] = value;
+					setItem(next, key, value);
 				}
 				if (total > PARADIS_STORAGE_SYNC_QUOTAS.QUOTA_BYTES) {
 					throw quotaError('QUOTA_BYTES');
@@ -250,17 +301,17 @@ export function paradisRegisterStorageApis(host: ParadisExtensionApiHost, store:
 				}
 				return commit(caller, current, next, Object.keys(input));
 			})),
-			remove: paradisDefineExtensionMethod(z.tuple([keyListSchema]), (caller, keys) => store.exclusive(caller.place, caller.extension.id, async () => {
+			remove: paradisDefineExtensionMethod(checks.remove, (caller, keys) => store.exclusive(caller.place, caller.extension.id, async () => {
 				const current = await store.read(caller.place, caller.extension.id);
-				const next = { ...current };
+				const next = itemsOf(current);
 				for (const key of [keys].flat()) {
 					delete next[key];
 				}
 				return commit(caller, current, next, [keys].flat());
 			})),
-			clear: paradisDefineExtensionMethod(z.tuple([]), caller => store.exclusive(caller.place, caller.extension.id, async () => {
+			clear: paradisDefineExtensionMethod(checks.none, caller => store.exclusive(caller.place, caller.extension.id, async () => {
 				const current = await store.read(caller.place, caller.extension.id);
-				return commit(caller, current, {}, Object.keys(current));
+				return commit(caller, current, itemsOf(), Object.keys(current));
 			})),
 		},
 		events: ['onChanged'],
@@ -268,7 +319,7 @@ export function paradisRegisterStorageApis(host: ParadisExtensionApiHost, store:
 
 	host.registerNamespace(PARADIS_SHIM_STORAGE_RELAY_NAMESPACE, {
 		methods: {
-			report: paradisDefineExtensionMethod(z.tuple([z.enum(['local', 'session']), changesSchema]), (caller, areaName, changes) => {
+			report: paradisDefineExtensionMethod(checks.report, (caller, areaName, changes) => {
 				if (caller.fromWorker) {
 					throw new ParadisExtensionApiError('The worker delivers its own storage changes');
 				}
