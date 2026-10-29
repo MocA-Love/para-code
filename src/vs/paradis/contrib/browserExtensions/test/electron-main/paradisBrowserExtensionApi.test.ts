@@ -130,10 +130,11 @@ suite('ParadisBrowserExtensionApi', () => {
 		});
 	});
 
-	test('relays a content script\'s storage calls through the worker, and hides the relay from onMessage', async () => {
-		// content script: storage.sync と storage.local の書き込みの知らせは、runtime のメッセージで worker へ
-		const sent: unknown[] = [];
-		const nativeListeners: ((...args: unknown[]) => unknown)[] = [];
+	test('relays a content script\'s storage calls to the worker over a port, leaving onMessage alone', async () => {
+		// content script: storage.sync と storage.local の書き込みの知らせは、ポートで worker へ
+		const posted: unknown[] = [];
+		const portListeners: ((message: unknown) => void)[] = [];
+		const nativeOnMessage: unknown[] = [];
 		const area = () => {
 			const data: Record<string, unknown> = {};
 			return {
@@ -143,15 +144,22 @@ suite('ParadisBrowserExtensionApi', () => {
 				clear: (callback?: () => void) => callback?.(),
 			};
 		};
+		const nativeEvent = { addListener: (listener: unknown) => nativeOnMessage.push(listener), removeListener: () => { } };
 		const chrome = {
 			runtime: {
 				id: 'abcdefghijklmnopabcdefghijklmnop',
 				getManifest: () => ({ background: { service_worker: 'bg.js' }, permissions: ['storage'] }),
-				sendMessage: async (message: Record<string, unknown>) => {
-					sent.push(message);
-					return { ok: true, value: { a: 1 } };
-				},
-				onMessage: { addListener: (listener: (...args: unknown[]) => unknown) => nativeListeners.push(listener), removeListener: () => { } },
+				connect: (info: { name: string }) => ({
+					name: info.name,
+					onMessage: { addListener: (listener: (message: unknown) => void) => portListeners.push(listener) },
+					onDisconnect: { addListener: () => { } },
+					postMessage: (message: { id: number }) => {
+						posted.push(message);
+						// worker の答え
+						void Promise.resolve().then(() => portListeners.forEach(listener => listener({ id: message.id, reply: { ok: true, value: { a: 1 } } })));
+					},
+				}),
+				onMessage: nativeEvent,
 			},
 			storage: { local: area(), session: area(), onChanged: { addListener() { }, removeListener() { } } } as Record<string, unknown>,
 		};
@@ -159,24 +167,24 @@ suite('ParadisBrowserExtensionApi', () => {
 		new Function('globalThis', paradisBrowserExtensionContentScriptSource())(context);
 		const value = await (chrome.storage.sync as { get(key: string): Promise<unknown> }).get('a');
 		await (chrome.storage.local as { set(items: object): Promise<void> }).set({ b: 2 });
-		const seenByExtension: unknown[] = [];
-		(chrome.runtime.onMessage as unknown as { addListener(listener: (message: unknown) => void): void }).addListener(message => seenByExtension.push(message));
-		for (const listener of nativeListeners) {
-			listener({ [PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY]: { changes: {} } }, { id: chrome.runtime.id });
-			listener({ hello: 1 }, { id: chrome.runtime.id });
-		}
 		const strip = (message: unknown) => {
-			const relayed = (message as Record<string, { namespace: string; method: string; args: unknown[] }>)[PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY];
-			return [relayed.namespace, relayed.method, relayed.args];
+			const request = message as { namespace: string; method: string; args: unknown[] };
+			return [request.namespace, request.method, request.args];
 		};
-		assert.deepStrictEqual({ value, sent: sent.map(strip), seenByExtension }, {
+		assert.deepStrictEqual({
+			value,
+			posted: posted.map(strip),
+			// 受け手の無い content script への sendMessage が失敗のまま（undefined を返さない）になるよう、onMessage には何も足さない
+			onMessageUntouched: chrome.runtime.onMessage === nativeEvent && nativeOnMessage.length === 0,
+		}, {
 			value: { a: 1 },
-			sent: [
+			posted: [
 				[PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, 'get', ['a']],
 				[PARADIS_SHIM_STORAGE_RELAY_NAMESPACE, 'report', ['local', { b: { newValue: 2 } }]],
 			],
-			seenByExtension: [{ hello: 1 }],
+			onMessageUntouched: true,
 		});
+		assert.strictEqual(typeof PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY, 'string');
 	});
 
 	test('puts the content-script shim first in isolated-world content scripts and turns off dynamic resource URLs', () => {
