@@ -469,7 +469,9 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			await writeFile(rolloutPath, line({ timestamp: '2026-09-27T10:00:00.000Z', type: 'session_meta', payload: { id: 'thread-deny', cwd: '/repo', originator: 'codex_cli_rs' } })
 				+ line({ timestamp: '2026-09-27T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'テストして' }] } }));
 			const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
-			const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+			const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }>; codexApprovalHoldMs: number };
+			// ここはカードからの拒否を見る。Codex の承認のカードを待つ時間（自動の審査のため）は 0 にする
+			access.codexApprovalHoldMs = 0;
 			const settled = async () => {
 				await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
 				await access.tailers.get(token)?.enqueue(async () => { });
