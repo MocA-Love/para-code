@@ -10,13 +10,31 @@ import type { DownloadItem, Event, Session, WebContents } from 'electron';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IConfigurationOverrides, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
-import { paradisConfigureBrowserDownloadsWithPath } from '../../electron-main/paradisBrowserDownloadsCore.js';
+import { paradisConfigureBrowserDownloadsWithPath, paradisRenameDownloadInPlace } from '../../electron-main/paradisBrowserDownloadsCore.js';
 
 type WillDownloadListener = (event: Event, item: DownloadItem, webContents: WebContents) => void;
 type DownloadItemFake = Pick<DownloadItem, 'getFilename' | 'setSavePath'> & { once(event: 'done', listener: () => void): unknown };
 
 suite('ParadisBrowserDownloads', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('saves a browser extension download in its own folder, numbering a taken name, and cancels it when the folder cannot be made', () => {
+		const temporaryRoot = fs.mkdtempSync(join(os.tmpdir(), 'paradis-extension-downloads-'));
+		try {
+			const folder = join(temporaryRoot, 'Paracode (extensions)');
+			fs.mkdirSync(folder);
+			fs.writeFileSync(join(folder, 'a.txt'), 'taken');
+			const events: string[] = [];
+			const item = { setSavePath: (path: string) => events.push(`save ${path}`), cancel: () => events.push('cancel'), once: () => undefined } as unknown as DownloadItem;
+			paradisRenameDownloadInPlace(item, folder, 'a.txt');
+			// 作れない場所（ファイルの下）: 自動保存のフォルダに残さず取り消す
+			fs.writeFileSync(join(temporaryRoot, 'file'), 'x');
+			paradisRenameDownloadInPlace(item, join(temporaryRoot, 'file', 'sub'), 'b.txt', message => events.push(message));
+			assert.deepStrictEqual(events, [`save ${join(folder, 'a (1).txt')}`, '[paradis] Failed to create the browser extension downloads directory, cancelling the download:', 'cancel']);
+		} finally {
+			fs.rmSync(temporaryRoot, { recursive: true, force: true });
+		}
+	});
 
 	test('creates the configured directory, contains filenames, and avoids existing files', () => {
 		const temporaryRoot = fs.mkdtempSync(join(os.tmpdir(), 'paradis-browser-downloads-'));

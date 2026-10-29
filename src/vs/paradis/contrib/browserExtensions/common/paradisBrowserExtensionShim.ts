@@ -5,7 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
-// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/preload/browser-extension-worker-shim.ts, src/preload/browser-extension-main-world.ts, src/preload/browser-extension-storage-relay.ts, src/preload/browser-extension-storage-sync.ts, src/preload/browser-extension-api-surface.ts, src/preload/browser-extension-inert-apis.ts, src/preload/browser-extension-content-script-relay.ts, src/preload/browser-extension-content-script-api.ts, src/preload/browser-extension-event-filters.ts
+// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/preload/browser-extension-worker-shim.ts, src/preload/browser-extension-main-world.ts, src/preload/browser-extension-storage-relay.ts, src/preload/browser-extension-storage-sync.ts, src/preload/browser-extension-api-surface.ts, src/preload/browser-extension-inert-apis.ts, src/preload/browser-extension-content-script-relay.ts, src/preload/browser-extension-content-script-api.ts, src/preload/browser-extension-event-filters.ts, src/preload/browser-extension-native-messaging.ts
 
 // 拡張機能の中（背景の service worker と拡張機能のページ）で動く Para Code の詰め物。Electron 43 に無い
 // chrome.* を足し、main とは私用スキームへの fetch で話す。
@@ -1155,6 +1155,235 @@ export function paradisContentScriptMain(options: IParadisContentScriptOptions):
 }
 
 /** {@link paradisExtensionShimMain} に渡すもの（main が文字列にして埋め込む）。 */
+/** main だけが使う、ネイティブメッセージングの名前空間（chrome には出さない）。main の登録と同じ名前。 */
+export const PARADIS_SHIM_NATIVE_MESSAGING_NAMESPACE = 'paradisNativeMessaging';
+
+/**
+ * chrome.runtime.connectNative・sendNativeMessage（P6）。manifest に nativeMessaging（後から許されるものも）がある拡張機能だけ。
+ * ポートの id はここで決め、main はそのポートの出来事を、開いた文脈（この worker・このページ）だけへ届ける。メッセージは
+ * JSON の文字のまま運ぶ（ホストには拡張機能が JSON にしたものがそのまま届く）。
+ */
+export function paradisInstallNativeMessaging(bridge: IParadisShimBridge, namespace: string): void {
+	type ApiObject = Record<string, unknown>;
+	type Callable = (...args: unknown[]) => unknown;
+	const portEvent = 'onPortEvent';
+	const disconnectedError = 'Attempting to use a disconnected port object';
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown; browser?: unknown };
+	const chromeApi = root.chrome;
+	const runtime = isObject(chromeApi) && isObject(chromeApi.runtime) ? chromeApi.runtime : undefined;
+	if (!runtime) {
+		return;
+	}
+	let manifest: unknown;
+	try {
+		manifest = isCallable(runtime.getManifest) ? runtime.getManifest.call(runtime) : undefined;
+	} catch {
+		manifest = undefined;
+	}
+	const declared = isObject(manifest) ? [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []) : [];
+	if (!declared.includes('nativeMessaging')) {
+		return;
+	}
+	const callWithLastError = (message: string | undefined, callback: () => void): void => {
+		let defined = false;
+		if (message !== undefined) {
+			try {
+				Object.defineProperty(runtime, 'lastError', { configurable: true, get: () => ({ message }) });
+				defined = true;
+			} catch {
+				// 本物の lastError を差し替えられない。コールバックは呼ぶ
+			}
+		}
+		try {
+			callback();
+		} finally {
+			if (defined) {
+				try {
+					delete runtime.lastError;
+				} catch {
+					// ignore
+				}
+			}
+		}
+	};
+	const serialize = (message: unknown): string => {
+		const json: unknown = JSON.stringify(message);
+		if (typeof json !== 'string') {
+			throw new Error('Could not serialize message.');
+		}
+		return json;
+	};
+	const makeEvent = () => {
+		const listeners = new Set<Callable>();
+		return {
+			listeners,
+			api: {
+				addListener: (callback: unknown) => {
+					if (isCallable(callback)) {
+						listeners.add(callback);
+					}
+				},
+				removeListener: (callback: unknown) => {
+					if (isCallable(callback)) {
+						listeners.delete(callback);
+					}
+				},
+				hasListener: (callback: unknown) => isCallable(callback) && listeners.has(callback),
+				hasListeners: () => listeners.size > 0,
+			},
+		};
+	};
+	const dispatch = (listeners: Set<Callable>, args: unknown[]): void => {
+		for (const listener of listeners) {
+			try {
+				listener(...args);
+			} catch (error) {
+				console.error(error);
+			}
+		}
+	};
+	interface IPortState {
+		state: 'starting' | 'open' | 'closed';
+		readonly queued: string[];
+		readonly onMessage: Set<Callable>;
+		readonly onDisconnect: Set<Callable>;
+		readonly port: ApiObject;
+	}
+	const ports = new Map<string, IPortState>();
+	let counter = 0;
+	const endPort = (id: string, entry: IPortState, error: string | undefined): void => {
+		entry.state = 'closed';
+		entry.queued.length = 0;
+		ports.delete(id);
+		if (error !== undefined && entry.onDisconnect.size === 0) {
+			console.error(`Unchecked runtime.lastError: ${error}`);
+		}
+		callWithLastError(error, () => dispatch(entry.onDisconnect, [entry.port]));
+	};
+	bridge.onEvent((eventNamespace, event, args) => {
+		if (eventNamespace !== namespace || event !== portEvent) {
+			return;
+		}
+		const [id, kind, data] = args;
+		const entry = typeof id === 'string' ? ports.get(id) : undefined;
+		if (!entry || typeof id !== 'string' || typeof data !== 'string') {
+			return;
+		}
+		if (kind === 'message') {
+			let message: unknown;
+			try {
+				message = JSON.parse(data);
+			} catch {
+				return;
+			}
+			dispatch(entry.onMessage, [message, entry.port]);
+		} else if (kind === 'disconnect') {
+			endPort(id, entry, data);
+		}
+	});
+	let listening = false;
+	const connectNative = (application: unknown): ApiObject => {
+		if (typeof application !== 'string') {
+			throw new TypeError('Error in invocation of runtime.connectNative(string application): No matching signature.');
+		}
+		if (!listening) {
+			listening = true;
+			bridge.listen(namespace, portEvent, true);
+		}
+		counter += 1;
+		const id = `${Date.now().toString(36)}-${counter}-${Math.random().toString(36).slice(2)}`;
+		const onMessage = makeEvent();
+		const onDisconnect = makeEvent();
+		const port: ApiObject = {};
+		const entry: IPortState = { state: 'starting', queued: [], onMessage: onMessage.listeners, onDisconnect: onDisconnect.listeners, port };
+		Object.assign(port, {
+			name: '',
+			sender: undefined,
+			onMessage: onMessage.api,
+			onDisconnect: onDisconnect.api,
+			postMessage: (message: unknown) => {
+				if (entry.state === 'closed') {
+					throw new Error(disconnectedError);
+				}
+				const json = serialize(message);
+				if (entry.state === 'starting') {
+					entry.queued.push(json);
+				} else {
+					void bridge.call(namespace, 'postMessage', [id, json]);
+				}
+			},
+			disconnect: () => {
+				const wasOpen = entry.state === 'open';
+				if (entry.state === 'closed') {
+					return;
+				}
+				entry.state = 'closed';
+				entry.queued.length = 0;
+				ports.delete(id);
+				if (wasOpen) {
+					void bridge.call(namespace, 'disconnect', [id]);
+				}
+			},
+		});
+		ports.set(id, entry);
+		void bridge.call(namespace, 'connect', [id, application]).then(reply => {
+			if (!reply.ok) {
+				if (entry.state !== 'closed') {
+					endPort(id, entry, reply.error);
+				}
+				return;
+			}
+			if (entry.state === 'closed') {
+				// 起動している間に切った: main にも手放させる
+				void bridge.call(namespace, 'disconnect', [id]);
+				return;
+			}
+			entry.state = 'open';
+			for (const json of entry.queued.splice(0)) {
+				void bridge.call(namespace, 'postMessage', [id, json]);
+			}
+		});
+		return port;
+	};
+	const sendNativeMessage = (application: unknown, message: unknown, callback?: unknown): unknown => {
+		const done = isCallable(callback) ? callback : undefined;
+		const run = async (): Promise<unknown> => {
+			if (typeof application !== 'string') {
+				throw new Error('Invalid native messaging host name specified.');
+			}
+			const reply = await bridge.call(namespace, 'sendNativeMessage', [application, serialize(message)]);
+			if (!reply.ok) {
+				throw new Error(reply.error);
+			}
+			return typeof reply.value === 'string' ? JSON.parse(reply.value) : undefined;
+		};
+		const promise = run();
+		if (!done) {
+			return promise;
+		}
+		promise.then(value => done(value), (error: unknown) => callWithLastError(error instanceof Error ? error.message : String(error), () => done()));
+		return undefined;
+	};
+	const define = (target: ApiObject, key: string, value: unknown): void => {
+		try {
+			Object.defineProperty(target, key, { value, configurable: true, enumerable: true, writable: true });
+		} catch {
+			// 凍った本物のオブジェクト: そのままにする
+		}
+	};
+	const targets = [runtime];
+	const browserRuntime = isObject(root.browser) ? root.browser.runtime : undefined;
+	if (isObject(browserRuntime) && browserRuntime !== runtime) {
+		targets.push(browserRuntime);
+	}
+	for (const target of targets) {
+		define(target, 'connectNative', connectNative);
+		define(target, 'sendNativeMessage', sendNativeMessage);
+	}
+}
+
 export interface IParadisShimOptions {
 	readonly callUrl: string;
 	readonly eventsUrl: string;
@@ -1169,6 +1398,8 @@ export interface IParadisShimOptions {
 	readonly installStorageSync: typeof paradisInstallStorageSync;
 	readonly installInertApis: typeof paradisInstallInertApis;
 	readonly installContentScriptRelayHub: typeof paradisInstallContentScriptRelayHub;
+	readonly installNativeMessaging: typeof paradisInstallNativeMessaging;
+	readonly nativeMessagingNamespace: string;
 	readonly relayKey: string;
 	/** 再接続までの待ち（ミリ秒）。 */
 	readonly reconnectDelayMs: number;
@@ -1315,6 +1546,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 	void connectEvents();
 	options.installApis(bridge, options.surface);
 	options.installInertApis(isWorker ? 'worker' : 'page');
+	options.installNativeMessaging(bridge, options.nativeMessagingNamespace);
 	const deliverFromContentScript = options.installStorageRelay(bridge, isWorker ? 'worker' : 'page', options.relayNamespace);
 	if (!isWorker) {
 		// ページは中継に答えないが、中継のポートを拡張機能の onConnect に見せない
