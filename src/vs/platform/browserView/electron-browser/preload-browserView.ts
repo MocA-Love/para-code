@@ -2504,7 +2504,11 @@ class AreaPicker {
 // PARA-PATCH: do not run inside browser extension frames embedded in a page (password manager menus etc.), so
 // their contents are not offered to the element picker, the context menu or `__vscode_helpers` (Para Code browser
 // extensions, experimental). A top-level extension page in a tab (options page) keeps the preload for shortcuts.
-const paradisIsEmbeddedExtensionFrame = typeof location !== 'undefined' && location.protocol === 'chrome-extension:' && typeof window !== 'undefined' && window.top !== window;
-if (typeof process !== 'undefined' && (process.versions?.electron || process.type === 'renderer') && !paradisIsEmbeddedExtensionFrame) {
+// Judged by the origin, so blob:/about:blank frames an extension creates inside its own frame are covered too.
+export function paradisIsEmbeddedExtensionFrame(origin: string, isTopFrame: boolean): boolean {
+	return !isTopFrame && origin.startsWith('chrome-extension://');
+}
+if (typeof process !== 'undefined' && (process.versions?.electron || process.type === 'renderer')
+	&& !paradisIsEmbeddedExtensionFrame(typeof location !== 'undefined' ? location.origin : '', typeof window === 'undefined' || window.top === window)) {
 	init();
 }

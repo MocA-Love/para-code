@@ -68,15 +68,35 @@ export interface IParadisBrowserExtensionsLedger {
 	readonly extensions: readonly IParadisInstalledBrowserExtension[];
 	/** プロファイルのキー → 有効にした拡張機能の id。 */
 	readonly enabled: Readonly<Record<string, readonly string[]>>;
-	/** 削除したが、保存データ（chrome.storage など）をまだ消していない id。次に読み込む前に消す。 */
-	readonly removed: readonly string[];
+	/**
+	 * 削除した拡張機能の、保存データ（chrome.storage・IndexedDB・Local Storage・CacheStorage）を消す印。
+	 * セッション（Global・各ワークスペース・各プロファイル）ごとに保存先が違うので、消し終えた保存先を
+	 * `cleared` に足していく。入れ直しても印は残し、まだ消していない保存先では読み込む前に消す。
+	 */
+	readonly removed: readonly IParadisRemovedExtensionData[];
 }
+
+/** 削除した拡張機能の保存データを消す印。 */
+export interface IParadisRemovedExtensionData {
+	readonly id: string;
+	/** 消し終えたセッションの保存先（`Session.storagePath`）。 */
+	readonly cleared: readonly string[];
+}
+
+/** 1 つの印に覚える保存先の数の上限（古いものから忘れる。忘れた保存先はもう一度消すだけ）。 */
+const MAX_CLEARED_PATHS = 1_000;
 
 /** 空の台帳。 */
 export const PARADIS_EMPTY_EXTENSIONS_LEDGER: IParadisBrowserExtensionsLedger = { version: 1, extensions: [], enabled: {}, removed: [] };
 
 /** 台帳に置ける拡張機能の数の上限。 */
 export const PARADIS_MAX_INSTALLED_EXTENSIONS = 200;
+
+/** フォルダから写すときのファイル数の上限（node_modules を含む開発中の拡張機能も入るように多めにとる）。 */
+export const PARADIS_MAX_EXTENSION_FILES = 20_000;
+
+/** フォルダから写すときの大きさの上限（バイト）。 */
+export const PARADIS_MAX_EXTENSION_BYTES = 200 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -105,14 +125,25 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 			}
 		}
 	}
-	const removed = Array.isArray(raw.removed) ? [...new Set(raw.removed.filter(paradisIsExtensionId))].slice(-PARADIS_MAX_INSTALLED_EXTENSIONS) : [];
-	return { version: 1, extensions, enabled, removed };
+	const removed: IParadisRemovedExtensionData[] = [];
+	for (const entry of Array.isArray(raw.removed) ? raw.removed : []) {
+		const id = isRecord(entry) ? entry.id : entry;
+		if (!paradisIsExtensionId(id) || removed.some(existing => existing.id === id)) {
+			continue;
+		}
+		const cleared = isRecord(entry) && Array.isArray(entry.cleared) ? [...new Set(entry.cleared.filter((path): path is string => typeof path === 'string'))].slice(-MAX_CLEARED_PATHS) : [];
+		removed.push({ id, cleared });
+	}
+	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS) };
 }
 
-/** 拡張機能を足す（同じ id なら置き換える）。足したプロファイルでは有効にする。 */
+/**
+ * 拡張機能を足す（同じ id なら置き換える）。足したプロファイルでは有効にする。
+ * 前に削除した id でも、保存データを消す印は外さない（まだ消していない保存先では、読み込む前に消す）。
+ */
 export function paradisLedgerWithExtension(ledger: IParadisBrowserExtensionsLedger, extension: IParadisInstalledBrowserExtension, enableIn: string | undefined): IParadisBrowserExtensionsLedger {
 	const extensions = [...ledger.extensions.filter(existing => existing.id !== extension.id), extension];
-	const ledgerWithExtension = { ...ledger, extensions, removed: ledger.removed.filter(id => id !== extension.id) };
+	const ledgerWithExtension = { ...ledger, extensions };
 	return enableIn !== undefined ? paradisLedgerWithEnabled(ledgerWithExtension, extension.id, enableIn, true) : ledgerWithExtension;
 }
 
@@ -139,7 +170,25 @@ export function paradisLedgerWithoutExtension(ledger: IParadisBrowserExtensionsL
 		version: 1,
 		extensions: ledger.extensions.filter(extension => extension.id !== id),
 		enabled,
-		removed: [...ledger.removed.filter(existing => existing !== id), id].slice(-PARADIS_MAX_INSTALLED_EXTENSIONS),
+		// 消し終えた保存先も数え直す（入れ直した後に溜まったデータがあるかもしれないため）
+		removed: [...ledger.removed.filter(existing => existing.id !== id), { id, cleared: [] }].slice(-PARADIS_MAX_INSTALLED_EXTENSIONS),
+	};
+}
+
+/** その保存先で、読み込む前に保存データを消す必要があるか。 */
+export function paradisNeedsDataClear(ledger: IParadisBrowserExtensionsLedger, id: string, storagePath: string): boolean {
+	const mark = ledger.removed.find(entry => entry.id === id);
+	return mark !== undefined && !mark.cleared.includes(storagePath);
+}
+
+/** その保存先で保存データを消し終えた。 */
+export function paradisLedgerWithDataCleared(ledger: IParadisBrowserExtensionsLedger, id: string, storagePath: string): IParadisBrowserExtensionsLedger {
+	if (!paradisNeedsDataClear(ledger, id, storagePath)) {
+		return ledger;
+	}
+	return {
+		...ledger,
+		removed: ledger.removed.map(entry => entry.id === id ? { id, cleared: [...entry.cleared, storagePath].slice(-MAX_CLEARED_PATHS) } : entry),
 	};
 }
 
@@ -219,7 +268,7 @@ export interface IParadisBrowserExtensionsState {
 /** フォルダから足した結果。 */
 export type IParadisAddExtensionResult =
 	| { readonly ok: true; readonly extension: IParadisInstalledBrowserExtension }
-	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'failed'; readonly detail?: string };
+	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'linkOutside' | 'tooLarge' | 'restartNeeded' | 'failed'; readonly detail?: string };
 
 /** main の拡張機能の管理（{@link PARADIS_BROWSER_EXTENSIONS_CHANNEL}）。 */
 export interface IParadisBrowserExtensionsMainService {

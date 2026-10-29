@@ -33,6 +33,8 @@ import {
 	PARADIS_BROWSER_EXTENSIONS_CHANNEL,
 	PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING,
 	PARADIS_DEFAULT_EXTENSION_PROFILE,
+	PARADIS_MAX_EXTENSION_BYTES,
+	PARADIS_MAX_EXTENSION_FILES,
 	paradisNamedExtensionProfile,
 } from '../common/paradisBrowserExtensions.js';
 
@@ -51,6 +53,14 @@ export function paradisDescribeAddExtensionFailure(result: Extract<IParadisAddEx
 			return result.detail === 'id changed'
 				? localize('paradis.browserExtensions.error.idChanged', "manifest.json の key が変わったため、別の拡張機能になりました。いったん削除してから足し直してください。")
 				: localize('paradis.browserExtensions.error.invalidManifest', "manifest.json を拡張機能として読めません（{0}）。", result.detail ?? '');
+		case 'linkOutside':
+			return localize('paradis.browserExtensions.error.linkOutside', "フォルダの中の「{0}」は、フォルダの外を指すリンクです。外のファイルを読めないようにするため、このフォルダは読み込めません。リンクを実際のファイルに置き換えてください。", result.detail ?? '');
+		case 'tooLarge':
+			return result.detail === 'files'
+				? localize('paradis.browserExtensions.error.tooManyFiles', "フォルダの中のファイルが多すぎます（上限 {0} 個）。ビルドした拡張機能のフォルダ（manifest.json がある階層）を選んでください。", PARADIS_MAX_EXTENSION_FILES)
+				: localize('paradis.browserExtensions.error.tooLarge', "フォルダが大きすぎます（上限 {0} MB）。ビルドした拡張機能のフォルダ（manifest.json がある階層）を選んでください。", PARADIS_MAX_EXTENSION_BYTES / (1024 * 1024));
+		case 'restartNeeded':
+			return localize('paradis.browserExtensions.error.restartNeeded', "この拡張機能は削除したばかりです。前に保存したデータを消しきるため、再起動の後に入れ直してください。");
 		case 'tooMany':
 			return localize('paradis.browserExtensions.error.tooMany', "これ以上の拡張機能は足せません。使っていないものを削除してください。");
 		default:
@@ -251,7 +261,7 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		const title = dom.append(popover, $('.pbpm-confirm-title'));
 		dom.append(title, $(ThemeIcon.asCSSSelector(Codicon.warning)));
 		dom.append(title, $('span')).textContent = localize('paradis.browserExtensions.confirmTitle', "「{0}」を削除しますか？", extension.name);
-		dom.append(popover, $('p')).textContent = localize('paradis.browserExtensions.confirmBody', "すべての場所から外し、この拡張機能が保存したデータも次の起動で消します。元のフォルダは消しません。");
+		dom.append(popover, $('p')).textContent = localize('paradis.browserExtensions.confirmBody', "すべての場所から外し、この拡張機能が保存したデータも消します（消しきるのは次の起動の後です。それまでは入れ直せません）。元のフォルダは消しません。");
 		const buttons = dom.append(popover, $('.pbpm-confirm-actions'));
 		const cancel = dom.append(buttons, $<HTMLButtonElement>('button.pbpm-btn.secondary'));
 		cancel.type = 'button';
