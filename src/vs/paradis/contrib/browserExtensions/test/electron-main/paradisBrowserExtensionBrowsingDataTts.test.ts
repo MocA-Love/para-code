@@ -38,6 +38,9 @@ suite('ParadisBrowserExtensionBrowsingData', () => {
 			extensionType: outcome(() => paradisBrowsingDataRemoval({ originTypes: { extension: true } }, { localStorage: true }, extensions)),
 			history: outcome(() => paradisBrowsingDataRemoval({}, { cookies: true, history: true, passwords: true }, extensions)),
 			both: outcome(() => paradisBrowsingDataRemoval({ origins: ['https://a.example'], excludeOrigins: ['https://b.example'] }, { cookies: true }, extensions)),
+			extensionPage: outcome(() => paradisBrowsingDataRemoval({ origins: [`chrome-extension://${ID}/options.html`, 'https://a.example:8443/x'] }, { cookies: true }, extensions)),
+			opaque: outcome(() => paradisBrowsingDataRemoval({ origins: ['data:text/plain,x'] }, { cookies: true }, extensions)),
+			noWeb: outcome(() => paradisBrowsingDataRemoval({ originTypes: { unprotectedWeb: false, protectedWeb: true } }, { cookies: true }, extensions)),
 		}, {
 			all: { dataTypes: ['cookies', 'localStorage', 'cache'], excludeOrigins: extensions },
 			origins: { dataTypes: ['cookies'], origins: ['https://tracker.example'] },
@@ -47,6 +50,11 @@ suite('ParadisBrowserExtensionBrowsingData', () => {
 			extensionType: 'Para Code does not let browser extensions remove the data of extensions',
 			history: 'Para Code cannot remove this browsing data: history, passwords',
 			both: 'origins and excludeOrigins cannot be used together',
+			// chrome-extension:// は URL の origin が "null" になるので protocol で見分けて外す
+			extensionPage: { dataTypes: ['cookies'], origins: ['https://a.example:8443'] },
+			opaque: 'Invalid origin: data:text/plain,x',
+			// 普通のウェブを外されたら何も消さない
+			noWeb: { dataTypes: [], excludeOrigins: extensions },
 		});
 	});
 

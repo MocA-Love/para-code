@@ -58,12 +58,14 @@ export function paradisBrowsingDataRemoval(options: unknown, dataToRemove: unkno
 	if (originTypes.extension === true) {
 		throw new ParadisExtensionApiError('Para Code does not let browser extensions remove the data of extensions');
 	}
+	// 普通のウェブ（unprotectedWeb）を外されたら、消せるものは無い（Para Code に保護されたウェブアプリは無い）
+	const webIncluded = originTypes.unprotectedWeb !== false;
 	const wanted = isRecord(dataToRemove) ? Object.entries(dataToRemove).filter(([, value]) => value === true).map(([name]) => name) : [];
 	const unsupported = wanted.filter(name => UNSUPPORTED_TYPES.has(name) || (DATA_TYPES[name] === undefined && !UNSUPPORTED_TYPES.has(name)));
 	if (unsupported.length > 0) {
 		throw new ParadisExtensionApiError(`Para Code cannot remove this browsing data: ${unsupported.join(', ')}`);
 	}
-	const dataTypes = wanted.map(name => DATA_TYPES[name]!).filter((name, index, all) => all.indexOf(name) === index);
+	const dataTypes = webIncluded ? wanted.map(name => DATA_TYPES[name]!).filter((name, index, all) => all.indexOf(name) === index) : [];
 	const strings = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : undefined;
 	const origins = strings(removal.origins);
 	const excluded = strings(removal.excludeOrigins);
@@ -71,15 +73,24 @@ export function paradisBrowsingDataRemoval(options: unknown, dataToRemove: unkno
 		throw new ParadisExtensionApiError('origins and excludeOrigins cannot be used together');
 	}
 	if (origins) {
-		const normalized = origins.map(origin => {
+		// 拡張機能の origin を名指ししても消さない。chrome-extension:// の URL は Node の URL では origin が "null" になるので、
+		// protocol で見分ける
+		const web: string[] = [];
+		for (const origin of origins) {
+			let url: URL;
 			try {
-				return new URL(origin).origin;
+				url = new URL(origin);
 			} catch {
 				throw new ParadisExtensionApiError(`Invalid origin: ${origin}`);
 			}
-		});
-		// 拡張機能の origin を名指ししても消さない
-		const web = normalized.filter(origin => !origin.startsWith('chrome-extension:'));
+			if (url.protocol === 'chrome-extension:') {
+				continue;
+			}
+			if (url.origin === 'null') {
+				throw new ParadisExtensionApiError(`Invalid origin: ${origin}`);
+			}
+			web.push(url.origin);
+		}
 		if (web.length === 0) {
 			throw new ParadisExtensionApiError('Para Code does not let browser extensions remove the data of extensions');
 		}
@@ -89,7 +100,7 @@ export function paradisBrowsingDataRemoval(options: unknown, dataToRemove: unkno
 	return { dataTypes, excludeOrigins: [...new Set([...(excluded ?? []), ...extensionOrigins])] };
 }
 
-/** chrome.browsingData を登録する。`extensionOrigins` はそのセッションに入っている拡張機能の origin（消さない）。 */
+/** chrome.browsingData を登録する。`extensionOrigins` はその場所に入れてある拡張機能（無効のものも含む）の origin（消さない）。 */
 export function paradisRegisterBrowsingDataApis(host: ParadisExtensionApiHost, extensionOrigins: (caller: IParadisExtensionApiCaller) => readonly string[]): void {
 	const remove = async (caller: IParadisExtensionApiCaller, options: unknown, dataToRemove: unknown) => {
 		const removal = paradisBrowsingDataRemoval(options, dataToRemove, extensionOrigins(caller));

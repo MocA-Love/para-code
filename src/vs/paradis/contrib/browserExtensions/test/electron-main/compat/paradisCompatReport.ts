@@ -17,7 +17,13 @@ type Status = 'ok' | 'partial' | 'ng';
 const STATUS_LABELS: Record<Status, string> = { ok: '動く', partial: '一部動く', ng: '動かない' };
 
 const [, , input, output, notesPath] = process.argv;
-const data = JSON.parse(await fs.readFile(input, 'utf8')) as { electron: string; chrome: string; checkedAt: string; results: IParadisCompatResult[] };
+const raw = await fs.readFile(input, 'utf8');
+// 結果はリポジトリに入れる。手元の絶対パス（ユーザー名を含む）が残った結果からは表を作らない（測り直すか、パスを消してから）
+const leaked = /\/(?:home|Users)\/[^/\s'"<]+|[A-Za-z]:\\+Users\\+/.exec(raw);
+if (leaked) {
+	throw new Error(`The compatibility results contain a local path (${leaked[0].slice(0, 6)}...). Redact it before making the table.`);
+}
+const data = JSON.parse(raw) as { electron: string; chrome: string; checkedAt: string; results: IParadisCompatResult[] };
 const notes: Record<string, string> = notesPath ? JSON.parse(await fs.readFile(notesPath, 'utf8')) : {};
 
 const escape = (value: unknown): string => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

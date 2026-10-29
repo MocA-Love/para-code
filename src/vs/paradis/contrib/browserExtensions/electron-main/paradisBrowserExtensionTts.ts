@@ -7,8 +7,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // chrome.tts（P9a）。Electron に無いので、OS の読み上げ（Chromium の speechSynthesis）で読む。読み上げは、拡張機能も
-// ウェブのページも入らない、見えない窓（メモリだけのセッション）の中で行い、その出来事（start・word・end など）を、頼んだ文脈へ返す。
-//  - 読み上げの窓は、最初に頼まれたときに作り、Para Code を終えるときに閉じる
+// ウェブのページも入らない、どの窓にも付けない WebContentsView（メモリだけのセッション）の中で行い、その出来事（start・word・end
+// など）を、頼んだ文脈へ返す。
+//  - 窓（BrowserWindow）にしない: 見えない窓が残ると、Windows・Linux で最後の窓を閉じても window-all-closed が来ず、Para Code が終わらない
+//  - 読み上げの面は、最初に頼まれたときに作り、待っている読み上げが無くなって少し経ったら閉じる（次に頼まれたら作り直す）。
+//    Para Code を終えるとき（onWillShutdown）にも閉じる。描く側が落ちたら、待っている読み上げを error で終わらせて作り直す
 //  - 1 つの読み上げの文は 32,768 文字まで（Chrome と同じ）
 //  - 拡張機能を外す・文脈が閉じると、その拡張機能の読み上げを止める
 
@@ -21,7 +24,7 @@ import { IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError
 const MAX_UTTERANCE_CHARS = 32_768;
 const EVENT_PREFIX = '__paradis_tts__';
 
-/** 読み上げの窓の中で動く関数（executeJavaScript で文字にして渡す。本体の外を参照しない）。 */
+/** 読み上げの面の中で動く関数（executeJavaScript で文字にして渡す。本体の外を参照しない）。 */
 function speakInPage(id: string, text: string, options: Record<string, unknown>, prefix: string): void {
 	const synth = globalThis.speechSynthesis;
 	const report = (type: string, extra: Record<string, unknown> = {}) => console.log(prefix + JSON.stringify({ id, type, ...extra }));
@@ -65,20 +68,25 @@ interface IPending {
 	readonly extensionId: string;
 	readonly connection: string;
 	readonly requestId: string;
+	readonly text: string;
+	readonly options: Record<string, unknown>;
 }
+
+/** 待っている読み上げが無くなってから、読み上げの面を閉じるまで。 */
+const IDLE_CLOSE_MS = 30_000;
 
 export class ParadisBrowserExtensionTts implements IDisposable {
 
-	private _window: electron.BrowserWindow | undefined;
-	private _ready: Promise<electron.BrowserWindow> | undefined;
+	private _view: electron.WebContentsView | undefined;
+	private _ready: Promise<electron.WebContents> | undefined;
+	private _idleTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 読み上げの id → 頼んだ文脈（頼んだ順）。 */
 	private readonly _pending = new Map<string, IPending>();
 	private readonly _disposable: IDisposable;
 
 	constructor(private readonly _host: ParadisExtensionApiHost) {
 		this._disposable = _host.onDidCloseContext((session, extensionId, connection) => {
-			if ([...this._pending.values()].some(entry => entry.session === session && entry.extensionId === extensionId && (connection === undefined || entry.connection === connection))) {
-				void this._stop(entry => entry.session === session && entry.extensionId === extensionId && (connection === undefined || entry.connection === connection));
-			}
+			void this._stop(entry => entry.session === session && entry.extensionId === extensionId && (connection === undefined || entry.connection === connection));
 		});
 		const text = (value: unknown): value is string => typeof value === 'string' && value.length <= MAX_UTTERANCE_CHARS;
 		const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -86,38 +94,62 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 			permission: 'tts',
 			methods: {
 				speak: paradisDefineExtensionMethod(args => args.length === 3 && typeof args[0] === 'string' && args[0].length <= 100 && text(args[1]) && isRecord(args[2]) ? [args[0], args[1], args[2]] as [string, string, Record<string, unknown>] : undefined, (caller, requestId, utterance, options) => this._speak(caller, requestId, utterance, options)),
-				stop: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, () => this._stop(() => true)),
-				pause: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, () => this._run('speechSynthesis.pause()')),
-				resume: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, () => this._run('speechSynthesis.resume()')),
-				isSpeaking: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, async () => this._pending.size > 0 && await this._run('speechSynthesis.speaking') === true),
+				// 止めるのは、呼び出した拡張機能の読み上げだけ（ほかの拡張機能の読み上げは続ける）
+				stop: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, caller => this._stop(entry => entry.session === caller.session && entry.extensionId === caller.extension.id)),
+				pause: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, () => this._run('speechSynthesis.pause()', false)),
+				resume: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, () => this._run('speechSynthesis.resume()', false)),
+				isSpeaking: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, async () => this._pending.size > 0 && await this._run('speechSynthesis.speaking', false) === true),
 				getVoices: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, async () => {
-					const voices = await this._run(`speechSynthesis.getVoices().map(voice => ({ voiceName: voice.name, lang: voice.lang, remote: !voice.localService }))`);
+					const voices = await this._run(`speechSynthesis.getVoices().map(voice => ({ voiceName: voice.name, lang: voice.lang, remote: !voice.localService }))`, true);
+					this._scheduleIdleClose();
 					return Array.isArray(voices) ? voices.map(voice => ({ ...voice, eventTypes: ['start', 'end', 'word', 'sentence', 'interrupted', 'cancelled', 'error', 'pause', 'resume'] })) : [];
 				}),
 			},
 			events: ['onUtteranceEvent'],
 		});
-		electron.app?.once?.('will-quit', () => this.dispose());
 	}
 
+	/** Para Code を終えるとき・拡張機能の管理を閉じるとき: 読み上げの面を閉じる。 */
 	dispose(): void {
 		this._disposable.dispose();
 		this._pending.clear();
-		if (this._window && !this._window.isDestroyed()) {
-			this._window.destroy();
-		}
-		this._window = undefined;
-		this._ready = undefined;
+		this._close();
 	}
 
-	/** 読み上げの窓（拡張機能もウェブのページも入らない、メモリだけのセッション）。 */
-	private _page(): Promise<electron.BrowserWindow> {
-		if (this._window && !this._window.isDestroyed() && this._ready) {
+	/** 読み上げの面を閉じる（待っている読み上げは呼び出した側が片付ける）。 */
+	private _close(): void {
+		clearTimeout(this._idleTimer);
+		this._idleTimer = undefined;
+		const view = this._view;
+		this._view = undefined;
+		this._ready = undefined;
+		if (view && !view.webContents.isDestroyed()) {
+			view.webContents.close();
+		}
+	}
+
+	private _scheduleIdleClose(): void {
+		clearTimeout(this._idleTimer);
+		this._idleTimer = undefined;
+		if (this._pending.size === 0 && this._view) {
+			this._idleTimer = setTimeout(() => {
+				if (this._pending.size === 0) {
+					this._close();
+				}
+			}, IDLE_CLOSE_MS);
+			(this._idleTimer as { unref?(): void }).unref?.();
+		}
+	}
+
+	/** 読み上げの面（拡張機能もウェブのページも入らない、メモリだけのセッション。どの窓にも付けない）。 */
+	private _page(): Promise<electron.WebContents> {
+		if (this._view && !this._view.webContents.isDestroyed() && this._ready) {
 			return this._ready;
 		}
-		const window = new electron.BrowserWindow({ show: false, width: 1, height: 1, webPreferences: { session: electron.session.fromPartition('paradis-browser-extension-tts'), sandbox: true, backgroundThrottling: false } });
-		this._window = window;
-		window.webContents.on('console-message', event => {
+		const view = new electron.WebContentsView({ webPreferences: { session: electron.session.fromPartition('paradis-browser-extension-tts'), sandbox: true, backgroundThrottling: false } });
+		this._view = view;
+		const contents = view.webContents;
+		contents.on('console-message', event => {
 			const message = String((event as unknown as { message?: unknown }).message ?? '');
 			if (!message.startsWith(EVENT_PREFIX)) {
 				return;
@@ -129,46 +161,77 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 				// 読めない知らせは捨てる
 			}
 		});
-		this._ready = window.loadURL('data:text/html;charset=utf-8,<!doctype html><title>Para Code text to speech</title>').then(() => window);
+		contents.on('render-process-gone', () => {
+			// 描く側が落ちた: 待っている読み上げを終わらせ、次に頼まれたら作り直す
+			if (this._view === view) {
+				for (const [id, entry] of [...this._pending]) {
+					this._pending.delete(id);
+					this._emit(entry, 'error', { errorMessage: 'The speech engine stopped' });
+				}
+				this._close();
+			}
+		});
+		this._ready = contents.loadURL('data:text/html;charset=utf-8,<!doctype html><title>Para Code text to speech</title>').then(() => contents);
 		return this._ready;
 	}
 
-	private async _run(expression: string): Promise<unknown> {
-		const window = await this._page();
-		return window.isDestroyed() ? undefined : window.webContents.executeJavaScript(expression);
+	/** 面の中で式を動かす。`create` が false なら、面が無いときは作らずに undefined。 */
+	private async _run(expression: string, create: boolean): Promise<unknown> {
+		if (!create && !this._view) {
+			return undefined;
+		}
+		const contents = await this._page();
+		return contents.isDestroyed() ? undefined : contents.executeJavaScript(expression);
+	}
+
+	private async _say(id: string, entry: Pick<IPending, 'text' | 'options'>, enqueue: boolean): Promise<void> {
+		const safe = { enqueue, lang: entry.options.lang, rate: entry.options.rate, pitch: entry.options.pitch, volume: entry.options.volume, voiceName: entry.options.voiceName };
+		await this._run(`(${speakInPage.toString()})(${JSON.stringify(id)}, ${JSON.stringify(entry.text)}, ${JSON.stringify(safe)}, ${JSON.stringify(EVENT_PREFIX)})`, true);
 	}
 
 	private async _speak(caller: IParadisExtensionApiCaller, requestId: string, text: string, options: Record<string, unknown>): Promise<void> {
+		clearTimeout(this._idleTimer);
 		const id = randomUUID();
-		if (options.enqueue !== true) {
+		const enqueue = options.enqueue === true;
+		if (!enqueue) {
 			// Chrome と同じく、前の読み上げを止めて知らせる
-			for (const [key, entry] of this._pending) {
+			for (const [key, entry] of [...this._pending]) {
 				this._pending.delete(key);
 				this._emit(entry, 'interrupted', {});
 			}
 		}
-		this._pending.set(id, { session: caller.session, extensionId: caller.extension.id, connection: caller.connection, requestId });
-		const safe = { enqueue: options.enqueue === true, lang: options.lang, rate: options.rate, pitch: options.pitch, volume: options.volume, voiceName: options.voiceName };
+		this._pending.set(id, { session: caller.session, extensionId: caller.extension.id, connection: caller.connection, requestId, text, options });
 		try {
-			await this._run(`(${speakInPage.toString()})(${JSON.stringify(id)}, ${JSON.stringify(text)}, ${JSON.stringify(safe)}, ${JSON.stringify(EVENT_PREFIX)})`);
+			await this._say(id, { text, options }, enqueue);
 		} catch (error) {
 			this._pending.delete(id);
+			this._scheduleIdleClose();
 			throw new ParadisExtensionApiError(error instanceof Error ? error.message : String(error));
 		}
 	}
 
+	/**
+	 * 当てはまる読み上げを止める。speechSynthesis は待ち行列の一部だけを外せないので、全部を止めてから、
+	 * 当てはまらない残り（ほかの拡張機能の読み上げ）を同じ順で読み直す（今読んでいたものは頭から読み直しになる）。
+	 */
 	private async _stop(matches: (entry: IPending) => boolean): Promise<void> {
-		let any = false;
-		for (const [key, entry] of this._pending) {
-			if (matches(entry)) {
-				any = true;
-				this._pending.delete(key);
-				this._emit(entry, 'interrupted', {});
-			}
+		const stopped = [...this._pending].filter(([, entry]) => matches(entry));
+		if (stopped.length === 0) {
+			return;
 		}
-		if (any || this._pending.size === 0) {
-			await this._run('speechSynthesis.cancel()').catch(() => undefined);
+		for (const [id, entry] of stopped) {
+			this._pending.delete(id);
+			this._emit(entry, 'interrupted', {});
 		}
+		const rest = [...this._pending.values()];
+		this._pending.clear();
+		await this._run('speechSynthesis.cancel()', false).catch(() => undefined);
+		for (const entry of rest) {
+			const id = randomUUID();
+			this._pending.set(id, entry);
+			await this._say(id, entry, true).catch(() => this._pending.delete(id));
+		}
+		this._scheduleIdleClose();
 	}
 
 	private _deliver(id: string, type: string, rest: Record<string, unknown>): void {
@@ -178,6 +241,7 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 		}
 		if (type === 'end' || type === 'interrupted' || type === 'cancelled' || type === 'error') {
 			this._pending.delete(id);
+			this._scheduleIdleClose();
 		}
 		this._emit(entry, type, rest);
 	}

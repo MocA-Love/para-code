@@ -28,6 +28,7 @@ import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
+import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-main/lifecycleMainService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
@@ -462,8 +463,13 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		}) : undefined;
 		this._webStoreBridge?.listen();
 		this._tts = this.active ? new ParadisBrowserExtensionTts(this._apiHost) : undefined;
-		// browsingData: そのセッションに入っている拡張機能の origin は消さない
-		paradisRegisterBrowsingDataApis(this._apiHost, caller => (caller.session as unknown as ParadisExtensionSession).extensions.getAllExtensions().map(extension => `chrome-extension://${extension.id}`));
+		// browsingData で消さない拡張機能の origin: 入れてある拡張機能すべて（今無効のものも、データはセッションに残っている）、
+		// 外してデータの片付けを待っているもの、今読み込まれているもの
+		paradisRegisterBrowsingDataApis(this._apiHost, caller => [...new Set([
+			...this._ledger.extensions.map(extension => extension.id),
+			...this._ledger.removed.map(({ id }) => id),
+			...(caller.session as unknown as ParadisExtensionSession).extensions.getAllExtensions().map(extension => extension.id),
+		])].map(id => `chrome-extension://${id}`));
 		const privacyEnvironment = tabsOptions?.environment;
 		this._privacy = this.active && privacyEnvironment ? new ParadisBrowserExtensionPrivacy(this._apiHost, join(_root, 'privacy-settings.json'), _logService, {
 			// その場所の利用者のタブ（エージェントのタブ・SSH 先のページのためにトンネルを通しているセッションは含めない）
@@ -552,6 +558,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			this._disposables.add(paradisSetBrowserExtensionMenuProvider((contents, params) => menus.buildPageMenu(contents, params)));
 		}
 		this._ready = this.active ? this._loadLedger() : Promise.resolve();
+	}
+
+	/** Para Code を終えるとき: 読み上げの面など、終わるのを妨げうるものを先に閉じる。 */
+	closeForShutdown(): void {
+		this._tts?.dispose();
 	}
 
 	dispose(): void {
@@ -1593,6 +1604,8 @@ export function paradisRegisterBrowserExtensions(
 		);
 	});
 	disposables.add(created);
+	// 読み上げの面は will-quit を待たずに、終わり始めたところで閉じる
+	disposables.add(instantiationService.invokeFunction(accessor => accessor.get(ILifecycleMainService)).onWillShutdown(() => created.closeForShutdown()));
 	manager = created;
 	for (const { session, owner } of pendingSessions.splice(0)) {
 		void created.attach(session, owner);
