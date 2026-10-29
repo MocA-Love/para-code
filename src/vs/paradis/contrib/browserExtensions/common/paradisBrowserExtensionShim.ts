@@ -5,7 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
-// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/preload/browser-extension-worker-shim.ts, src/preload/browser-extension-main-world.ts, src/preload/browser-extension-storage-relay.ts, src/preload/browser-extension-storage-sync.ts, src/preload/browser-extension-api-surface.ts
+// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/preload/browser-extension-worker-shim.ts, src/preload/browser-extension-main-world.ts, src/preload/browser-extension-storage-relay.ts, src/preload/browser-extension-storage-sync.ts, src/preload/browser-extension-api-surface.ts, src/preload/browser-extension-inert-apis.ts, src/preload/browser-extension-content-script-relay.ts, src/preload/browser-extension-content-script-api.ts, src/preload/browser-extension-event-filters.ts
 
 // 拡張機能の中（背景の service worker と拡張機能のページ）で動く Para Code の詰め物。Electron 43 に無い
 // chrome.* を足し、main とは私用スキームへの fetch で話す。
