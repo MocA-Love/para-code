@@ -21,7 +21,7 @@
 //   echo "import '$PWD/out/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatProbe.js';" > /tmp/compat-app/main.mjs
 //   HOME=/tmp/compat-home PARADIS_COMPAT_RUN=1 PARADIS_COMPAT_RESULT=/tmp/compat.json \
 //     xvfb-run -a -s "-screen 0 1400x1000x24" .build/electron/<Electron の実行ファイル> --no-sandbox /tmp/compat-app
-//   node --experimental-strip-types src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatReport.ts /tmp/compat.json browser-extensions-compat.html
+//   node --experimental-strip-types src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatReport.ts /tmp/compat.json src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.html
 // HOME は一時のフォルダに替えて動かす（userData は PARADIS_COMPAT_ROOT の下に作る）。PARADIS_COMPAT_IDS=<id>,<id> で一部だけ試せる。
 // PARADIS_COMPAT_RUN=1 のときだけ動く（ほかから読まれても何もしない）。
 

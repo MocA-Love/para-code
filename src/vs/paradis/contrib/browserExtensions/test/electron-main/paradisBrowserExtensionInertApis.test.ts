@@ -33,10 +33,8 @@ suite('ParadisBrowserExtensionInertApis', () => {
 		const chrome = runShim(['identity', 'debugger', 'privacy']);
 		const identity = chrome.identity as Record<string, (...args: unknown[]) => unknown>;
 		const debuggerApi = chrome.debugger as Record<string, (...args: unknown[]) => unknown>;
-		const services = (chrome.privacy as Record<string, Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>>).services;
 		const extension = chrome.extension as Record<string, (...args: unknown[]) => Promise<unknown>>;
 		const callbackError = await new Promise<unknown>(resolve => identity.getAuthToken({ interactive: true }, () => resolve((chrome.runtime.lastError as { message: string } | undefined)?.message)));
-		await services.passwordSavingEnabled.set({ value: false });
 		assert.deepStrictEqual({
 			without: [typeof without.identity, typeof without.debugger, typeof without.privacy],
 			callbackError,
@@ -47,7 +45,7 @@ suite('ParadisBrowserExtensionInertApis', () => {
 			signInEvent: typeof (identity.onSignInChanged as unknown as { addListener: unknown }).addListener,
 			attach: await (debuggerApi.attach({ tabId: 1 }, '1.3') as Promise<unknown>).then(() => 'attached', (error: Error) => error.message),
 			debuggerEvent: typeof (debuggerApi.onEvent as unknown as { addListener: unknown }).addListener,
-			passwordSaving: await services.passwordSavingEnabled.get({}),
+			passwordSaving: await ((chrome.privacy as Record<string, Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>>).services.passwordSavingEnabled.get({})),
 			fileScheme: await extension.isAllowedFileSchemeAccess(),
 			incognito: await extension.isAllowedIncognitoAccess(),
 		}, {
@@ -60,7 +58,8 @@ suite('ParadisBrowserExtensionInertApis', () => {
 			signInEvent: 'function',
 			attach: 'Para Code does not let browser extensions attach a debugger',
 			debuggerEvent: 'function',
-			passwordSaving: { value: false, levelOfControl: 'controllable_by_this_extension' },
+			// chrome.privacy は main につなぐ形（paradisInstallPrivacy）。Para Code に無い設定は変えられないと答える
+			passwordSaving: { value: false, levelOfControl: 'not_controllable' },
 			fileScheme: false,
 			incognito: false,
 		});

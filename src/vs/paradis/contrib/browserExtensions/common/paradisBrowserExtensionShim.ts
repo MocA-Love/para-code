@@ -941,37 +941,6 @@ export function paradisInstallInertApis(context: 'page' | 'worker' | 'content-sc
 			onDetach: inertEvent(),
 		});
 	}
-	if (permissions.includes('privacy')) {
-		// Chrome の設定（パスワードの保存・自動入力など）。Para Code には同じ設定が無いので、値はこの文脈の中で覚えるだけ
-		const setting = (initial: unknown): ApiObject => {
-			let value = initial;
-			return {
-				get: answer(() => ({ value, levelOfControl: 'controllable_by_this_extension' })),
-				set: (details: unknown, ...rest: unknown[]) => {
-					if (isObject(details) && Object.prototype.hasOwnProperty.call(details, 'value')) {
-						value = details.value;
-					}
-					return answer(() => undefined)(...rest);
-				},
-				clear: answer(() => {
-					value = initial;
-					return undefined;
-				}),
-				onChange: inertEvent(),
-			};
-		};
-		install('privacy.services', {
-			passwordSavingEnabled: setting(false), autofillEnabled: setting(false), autofillAddressEnabled: setting(false), autofillCreditCardEnabled: setting(false),
-			alternateErrorPagesEnabled: setting(false), safeBrowsingEnabled: setting(true), safeBrowsingExtendedReportingEnabled: setting(false),
-			searchSuggestEnabled: setting(false), spellingServiceEnabled: setting(false), translationServiceEnabled: setting(false),
-		});
-		install('privacy.network', { networkPredictionEnabled: setting(false), webRTCIPHandlingPolicy: setting('default') });
-		install('privacy.websites', {
-			hyperlinkAuditingEnabled: setting(true), referrersEnabled: setting(true), doNotTrackEnabled: setting(false), protectedContentEnabled: setting(true),
-			thirdPartyCookiesAllowed: setting(true), topicsEnabled: setting(false), fledgeEnabled: setting(false), adMeasurementEnabled: setting(false), relatedWebsiteSetsEnabled: setting(false),
-		});
-		install('privacy', { IPHandlingPolicy: { DEFAULT: 'default', DEFAULT_PUBLIC_AND_PRIVATE_INTERFACES: 'default_public_and_private_interfaces', DEFAULT_PUBLIC_INTERFACE_ONLY: 'default_public_interface_only', DISABLE_NON_PROXIED_UDP: 'disable_non_proxied_udp' } });
-	}
 	if (permissions.includes('fontSettings')) {
 		const generic = ['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui'];
 		install('fontSettings', {
@@ -1247,6 +1216,143 @@ export function paradisContentScriptMain(options: IParadisContentScriptOptions):
 	}
 }
 
+/** main だけが使う、chrome.privacy の名前空間（chrome には出さない）。main の登録と同じ名前。 */
+export const PARADIS_SHIM_PRIVACY_NAMESPACE = 'paradisPrivacy';
+
+/**
+ * chrome.privacy（P8）。manifest に privacy（後から許されるものも）がある拡張機能だけ。Para Code が本当に効かせられるのは
+ * `network.webRTCIPHandlingPolicy` だけで、main がその場所の利用者のタブへ webContents.setWebRTCIPHandlingPolicy で効かせる。
+ * ほかの設定は Para Code に同じものが無いので、`not_controllable` と答え、set・clear は断る（守れたと思わせない）。
+ */
+export function paradisInstallPrivacy(bridge: IParadisShimBridge, namespace: string): void {
+	type ApiObject = Record<string, unknown>;
+	type Callable = (...args: unknown[]) => unknown;
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown; browser?: unknown };
+	const chromeApi = root.chrome;
+	const runtime = isObject(chromeApi) && isObject(chromeApi.runtime) ? chromeApi.runtime : undefined;
+	if (!isObject(chromeApi) || !runtime) {
+		return;
+	}
+	let manifest: unknown;
+	try {
+		manifest = isCallable(runtime.getManifest) ? runtime.getManifest.call(runtime) : undefined;
+	} catch {
+		manifest = undefined;
+	}
+	const declared = isObject(manifest) ? [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []) : [];
+	if (!declared.includes('privacy')) {
+		return;
+	}
+	// コールバックなら runtime.lastError を立てて呼び、無ければ Promise
+	const settle = (input: unknown[], reply: Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string }>): unknown => {
+		const last = input[input.length - 1];
+		if (isCallable(last)) {
+			void reply.then(result => {
+				let defined = false;
+				if (!result.ok) {
+					try {
+						Object.defineProperty(runtime, 'lastError', { configurable: true, enumerable: true, get: () => ({ message: result.error }) });
+						defined = true;
+					} catch {
+						// 置き換えられない lastError
+					}
+				}
+				try {
+					if (result.ok && result.value !== undefined) {
+						last(result.value);
+					} else {
+						last();
+					}
+				} finally {
+					if (defined) {
+						try {
+							delete runtime.lastError;
+						} catch {
+							// 消せない
+						}
+					}
+				}
+			});
+			return undefined;
+		}
+		return reply.then(result => {
+			if (!result.ok) {
+				throw new Error(result.error);
+			}
+			return result.value;
+		});
+	};
+	const listeners = new Set<Callable>();
+	const event = (shared: boolean): ApiObject => {
+		const own = shared ? listeners : new Set<Callable>();
+		return {
+			addListener: (callback: unknown) => { if (isCallable(callback)) { own.add(callback); } },
+			removeListener: (callback: unknown) => { if (isCallable(callback)) { own.delete(callback); } },
+			hasListener: (callback: unknown) => isCallable(callback) && own.has(callback),
+			hasListeners: () => own.size > 0,
+		};
+	};
+	let listening = false;
+	const controlled = (): ApiObject => ({
+		get: (...input: unknown[]) => settle(input, bridge.call(namespace, 'get', [])),
+		set: (details: unknown, ...rest: unknown[]) => settle(rest, bridge.call(namespace, 'set', [details])),
+		clear: (details: unknown, ...rest: unknown[]) => settle(rest, bridge.call(namespace, 'clear', [details])),
+		onChange: (() => {
+			const api = event(true);
+			const add = api.addListener as Callable;
+			api.addListener = (callback: unknown) => {
+				if (!listening) {
+					listening = true;
+					bridge.listen(namespace, 'onChange', true);
+				}
+				add(callback);
+			};
+			return api;
+		})(),
+	});
+	const refused = 'Para Code does not have this setting, so browser extensions cannot control it';
+	const fixed = (value: unknown): ApiObject => ({
+		get: (...input: unknown[]) => settle(input, Promise.resolve({ ok: true as const, value: { value, levelOfControl: 'not_controllable' } })),
+		set: (_details: unknown, ...rest: unknown[]) => settle(rest, Promise.resolve({ ok: false as const, error: refused })),
+		clear: (_details: unknown, ...rest: unknown[]) => settle(rest, Promise.resolve({ ok: false as const, error: refused })),
+		onChange: event(false),
+	});
+	bridge.onEvent((eventNamespace, name, args) => {
+		if (eventNamespace === namespace && name === 'onChange') {
+			for (const listener of listeners) {
+				try {
+					listener(...args);
+				} catch (error) {
+					console.error(error);
+				}
+			}
+		}
+	});
+	const privacy: ApiObject = {
+		network: { webRTCIPHandlingPolicy: controlled(), networkPredictionEnabled: fixed(false) },
+		// Para Code には Chrome のパスワードの保存・自動入力などが無い（無効のまま変えられない）
+		services: {
+			passwordSavingEnabled: fixed(false), autofillEnabled: fixed(false), autofillAddressEnabled: fixed(false), autofillCreditCardEnabled: fixed(false),
+			alternateErrorPagesEnabled: fixed(false), safeBrowsingEnabled: fixed(false), safeBrowsingExtendedReportingEnabled: fixed(false),
+			searchSuggestEnabled: fixed(false), spellingServiceEnabled: fixed(false), translationServiceEnabled: fixed(false),
+		},
+		websites: {
+			hyperlinkAuditingEnabled: fixed(true), referrersEnabled: fixed(true), doNotTrackEnabled: fixed(false), protectedContentEnabled: fixed(true),
+			thirdPartyCookiesAllowed: fixed(true), topicsEnabled: fixed(false), fledgeEnabled: fixed(false), adMeasurementEnabled: fixed(false), relatedWebsiteSetsEnabled: fixed(false),
+		},
+		IPHandlingPolicy: { DEFAULT: 'default', DEFAULT_PUBLIC_AND_PRIVATE_INTERFACES: 'default_public_and_private_interfaces', DEFAULT_PUBLIC_INTERFACE_ONLY: 'default_public_interface_only', DISABLE_NON_PROXIED_UDP: 'disable_non_proxied_udp' },
+	};
+	for (const target of isObject(root.browser) && root.browser !== chromeApi ? [chromeApi, root.browser] : [chromeApi]) {
+		try {
+			Object.defineProperty(target, 'privacy', { value: privacy, configurable: true, enumerable: true, writable: true });
+		} catch {
+			// 凍った物は触らない
+		}
+	}
+}
+
 /** {@link paradisExtensionShimMain} に渡すもの（main が文字列にして埋め込む）。 */
 /** main だけが使う、ネイティブメッセージングの名前空間（chrome には出さない）。main の登録と同じ名前。 */
 export const PARADIS_SHIM_NATIVE_MESSAGING_NAMESPACE = 'paradisNativeMessaging';
@@ -1493,6 +1599,8 @@ export interface IParadisShimOptions {
 	readonly installContentScriptRelayHub: typeof paradisInstallContentScriptRelayHub;
 	readonly installNativeMessaging: typeof paradisInstallNativeMessaging;
 	readonly nativeMessagingNamespace: string;
+	readonly installPrivacy: typeof paradisInstallPrivacy;
+	readonly privacyNamespace: string;
 	readonly relayKey: string;
 	/** 再接続までの待ち（ミリ秒）。 */
 	readonly reconnectDelayMs: number;
@@ -1640,6 +1748,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 	options.installApis(bridge, options.surface);
 	options.installInertApis(isWorker ? 'worker' : 'page');
 	options.installNativeMessaging(bridge, options.nativeMessagingNamespace);
+	options.installPrivacy(bridge, options.privacyNamespace);
 	const deliverFromContentScript = options.installStorageRelay(bridge, isWorker ? 'worker' : 'page', options.relayNamespace);
 	if (!isWorker) {
 		// ページは中継に答えないが、中継のポートを拡張機能の onConnect に見せない
