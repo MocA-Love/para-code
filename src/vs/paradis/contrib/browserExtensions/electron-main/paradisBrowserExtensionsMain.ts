@@ -629,15 +629,21 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await fs.rm(join(this._root, 'webstore-staging'), { recursive: true, force: true }).catch(() => { /* best effort */ });
 	}
 
-	private _save(): Promise<void> {
+	/** 台帳を保存する（順番に）。保存できたら true。 */
+	private _save(): Promise<boolean> {
 		const ledger = this._ledger;
-		this._saving = this._saving.then(async () => {
+		const saved = this._saving.then(async () => {
 			await fs.mkdir(this._root, { recursive: true });
 			const temporary = `${this._ledgerPath}.tmp`;
 			await fs.writeFile(temporary, JSON.stringify(paradisSerializeExtensionsLedger(ledger), undefined, '\t'));
 			await fs.rename(temporary, this._ledgerPath);
-		}).catch(error => this._logService.warn('[paradis] could not save the browser extensions ledger', error));
-		return this._saving;
+			return true;
+		}).catch(error => {
+			this._logService.warn('[paradis] could not save the browser extensions ledger', error);
+			return false;
+		});
+		this._saving = saved.then(() => undefined);
+		return saved;
 	}
 
 	/** 内蔵ブラウザのセッションができた（BrowserSession.configure から）。 */
@@ -1059,6 +1065,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				if (approved && !paradisSameExtensionAccess(approved, staged.access)) {
 					return { ok: false, reason: 'webStoreFailed', detail: 'the downloaded extension asks for different permissions than the store listed' };
 				}
+				// 確認で見せた名前と版も、落とした中身と照らす（名前はどれかの言語の名前と同じなら同じとみなす）
+				if (storeListing && (staged.version !== storeListing.version || !staged.names.has(storeListing.name))) {
+					return { ok: false, reason: 'webStoreFailed', detail: 'the downloaded extension has a different name or version than the store listed' };
+				}
 				if (!approved) {
 					// 管理画面から: 落として確かめた中身の権限を見せる
 					const accepted = await askInstall({ extensionName: staged.name, version: staged.version, access: staged.access, profileLabel: label, verified: true }).catch(() => false);
@@ -1083,7 +1093,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	 * ストアから落として署名を確かめ（ストアの署名、id の一致）、作業用のフォルダに展開して manifest に拡張機能の鍵を書く。
 	 * 確かめる前の中身はディスクに書かない。呼んだ側が `folder` を消す。
 	 */
-	private async _stageFromWebStore(id: string, fetcher: ParadisWebStoreFetcher, download: { readonly url?: string; readonly sha256?: string; readonly size?: number }): Promise<{ readonly ok: true; readonly folder: string; readonly name: string; readonly version: string; readonly access: IParadisExtensionAccess } | Extract<IParadisAddExtensionResult, { ok: false }>> {
+	private async _stageFromWebStore(id: string, fetcher: ParadisWebStoreFetcher, download: { readonly url?: string; readonly sha256?: string; readonly size?: number }): Promise<{ readonly ok: true; readonly folder: string; readonly name: string; readonly names: ReadonlySet<string>; readonly version: string; readonly access: IParadisExtensionAccess } | Extract<IParadisAddExtensionResult, { ok: false }>> {
 		const folder = join(this._root, 'webstore-staging', randomBytes(8).toString('hex'));
 		let crx;
 		try {
@@ -1101,8 +1111,25 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			if (hasKey(summary, { error: true })) {
 				throw new Error(`invalid manifest (${summary.error})`);
 			}
+			// 名前は既定の言語のもの。ストアのページが見せる名前（利用者の言語）と照らすため、どの言語の名前も集める
+			const names = new Set<string>(typeof manifest.name === 'string' ? [manifest.name] : []);
+			const defaultLocale = typeof manifest.default_locale === 'string' && /^[A-Za-z_-]{1,20}$/.test(manifest.default_locale) ? manifest.default_locale : undefined;
+			let name = summary.name;
+			for (const locale of await fs.readdir(join(folder, '_locales')).catch(() => [] as string[])) {
+				if (!/^[A-Za-z_-]{1,20}$/.test(locale)) {
+					continue;
+				}
+				const messages = await fs.readFile(join(folder, '_locales', locale, 'messages.json'), 'utf8').then(text => JSON.parse(text.replace(/^\uFEFF/, '')) as unknown, () => undefined);
+				const localized = paradisReadExtensionManifest(manifest, messages);
+				if (!hasKey(localized, { error: true })) {
+					names.add(localized.name);
+					if (locale === defaultLocale) {
+						name = localized.name;
+					}
+				}
+			}
 			await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, key: crx.publicKey.toString('base64') }, undefined, '\t'));
-			return { ok: true, folder, name: summary.name, version: summary.version, access: paradisSummarizeExtensionAccess(manifest) };
+			return { ok: true, folder, name, names, version: summary.version, access: paradisSummarizeExtensionAccess(manifest) };
 		} catch (error) {
 			await fs.rm(folder, { recursive: true, force: true }).catch(() => { /* best effort */ });
 			return { ok: false, reason: 'webStoreFailed', detail: error instanceof Error ? error.message : String(error) };
@@ -1267,7 +1294,6 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	 */
 	private async _useStagedWebStoreUpdates(): Promise<void> {
 		const next = join(this._root, 'webstore-next');
-		let changed = false;
 		for (const name of await fs.readdir(next).catch(() => [])) {
 			const staged = join(next, name);
 			const installed = this._ledger.extensions.find(extension => extension.id === name && extension.source === 'webstore');
@@ -1278,16 +1304,25 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 					|| paradisCompareExtensionVersions(summary.version, installed.version) <= 0) {
 					throw new Error('not usable');
 				}
-				await fs.rm(installed.path, { recursive: true, force: true });
-				await fs.rename(staged, installed.path);
-				this._ledger = paradisLedgerWithExtension(this._ledger, { ...installed, name: summary.name.startsWith('__MSG_') ? installed.name : summary.name, version: summary.version, manifestVersion: summary.manifestVersion, touchesPages: summary.touchesPages }, undefined);
-				changed = true;
+				// 途中で落ちても台帳と中身が食い違わない順: 新しい版を別の名前で置き、台帳を書いてから、前の版を消す
+				// （台帳を書く前に落ちたら前の版のまま。書いた後に落ちたら新しい版。残ったフォルダは下で片付ける）
+				const target = join(this._root, 'webstore', `${installed.id}-${randomBytes(4).toString('hex')}`);
+				await fs.rename(staged, target);
+				this._ledger = paradisLedgerWithExtension(this._ledger, { ...installed, path: target, sourcePath: target, name: summary.name.startsWith('__MSG_') ? installed.name : summary.name, version: summary.version, manifestVersion: summary.manifestVersion, touchesPages: summary.touchesPages }, undefined);
+				if (await this._save()) {
+					await fs.rm(installed.path, { recursive: true, force: true }).catch(() => { /* 次の起動で片付ける */ });
+				}
 			} catch {
 				await fs.rm(staged, { recursive: true, force: true }).catch(() => { /* best effort */ });
 			}
 		}
-		if (changed) {
-			await this._save();
+		// 台帳に無いストアの拡張機能のフォルダ（入れ替えの途中に落ちて残ったもの）を片付ける
+		const store = join(this._root, 'webstore');
+		const used = new Set(this._ledger.extensions.map(extension => extension.path));
+		for (const name of await fs.readdir(store).catch(() => [])) {
+			if (!name.includes(TEMPORARY_COPY_MARK) && !used.has(join(store, name))) {
+				await fs.rm(join(store, name), { recursive: true, force: true }).catch(() => { /* best effort */ });
+			}
 		}
 	}
 
