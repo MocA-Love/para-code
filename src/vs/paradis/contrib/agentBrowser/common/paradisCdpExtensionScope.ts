@@ -20,40 +20,12 @@
 // CDP の `Page.navigate` は、ウェブに公開していない拡張のページ（オプションなど）へも移れる（同じく実測。
 // 大文字の `CHROME-EXTENSION://` も通る。`blob:` / `filesystem:` で包んだ形は net::ERR_ABORTED で止まる）。
 
-/** 拡張のページ・拡張の world の URL / origin の接頭辞。 */
-const BROWSER_EXTENSION_SCHEME_PREFIX = 'chrome-extension:';
+import { paradisIsBrowserExtensionUrl } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 
-/** 中の URL の origin を受け継ぐ（または中の URL を表示する）包みのスキーム。 */
-const WRAPPING_SCHEME_PREFIXES = ['blob:', 'filesystem:', 'view-source:'];
-
-/** URL の解析が読み飛ばす文字（WHATWG URL: 前後の C0 制御文字と空白、途中のタブと改行）。 */
-const URL_IGNORED_INNER_CHARACTERS = /[\t\n\r]/g;
-const URL_IGNORED_EDGE_CHARACTERS = /^[\x00-\x20]+|[\x00-\x20]+$/g;
+export { paradisIsBrowserExtensionUrl };
 
 /** 隠した拡張の frame の代わりに見せる URL。 */
 export const PARADIS_HIDDEN_EXTENSION_FRAME_URL = 'about:blank#para-code-hidden-extension-frame';
-
-/**
- * URL か origin がブラウザ拡張のものか。文字列でなければ false。
- * 大文字小文字、前後の空白・制御文字、途中のタブ・改行、`blob:` / `filesystem:` / `view-source:` の包みを
- * ほどいてから見る（Chromium が同じ URL として解釈する書き方をすべて拾う）。
- */
-export function paradisIsBrowserExtensionUrl(value: unknown): boolean {
-	if (typeof value !== 'string') {
-		return false;
-	}
-	let url = value.replace(URL_IGNORED_INNER_CHARACTERS, '').replace(URL_IGNORED_EDGE_CHARACTERS, '').toLowerCase();
-	for (let unwrapped = true; unwrapped;) {
-		unwrapped = false;
-		for (const prefix of WRAPPING_SCHEME_PREFIXES) {
-			if (url.startsWith(prefix)) {
-				url = url.slice(prefix.length).replace(URL_IGNORED_EDGE_CHARACTERS, '');
-				unwrapped = true;
-			}
-		}
-	}
-	return url.startsWith(BROWSER_EXTENSION_SCHEME_PREFIX);
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -177,7 +149,11 @@ export function paradisIsEventAllowedOnExtensionPage(method: string): boolean {
 	return EVENTS_ALLOWED_ON_EXTENSION_PAGE.test(method);
 }
 
-function isAllowedOnExtensionPage(method: string, params: unknown): boolean {
+/**
+ * 拡張のページにいても通す命令か（ページから離れる命令と、つなぐときの購読・準備の命令）。これ以外の命令（ページの中身を
+ * 読む・操作する命令）の前には、ページの URL を確かめる。
+ */
+export function paradisIsAllowedOnExtensionPage(method: string, params: unknown): boolean {
 	if (method === 'Page.addScriptToEvaluateOnNewDocument') {
 		// 次の文書から効くものだけ（今の拡張のページでは走らせない）
 		return !(isRecord(params) && params.runImmediately === true);
@@ -199,7 +175,11 @@ export function paradisExtensionPageDeniedMessage(method: string, params: unknow
 	if (method === 'Page.navigate' && isRecord(params) && paradisIsBrowserExtensionUrl(params.url)) {
 		return PARADIS_EXTENSION_NAVIGATION_DENIED_MESSAGE;
 	}
-	return pageIsExtension && !isAllowedOnExtensionPage(method, params) ? PARADIS_EXTENSION_PAGE_DENIED_MESSAGE : undefined;
+	// `javascript:` の移動は、今の文書（拡張のページ）の中でスクリプトを走らせる
+	if (pageIsExtension && method === 'Page.navigate' && isRecord(params) && typeof params.url === 'string' && /^[\x00-\x20]*javascript:/i.test(params.url.replace(/[\t\n\r]/g, ''))) {
+		return PARADIS_EXTENSION_PAGE_DENIED_MESSAGE;
+	}
+	return pageIsExtension && !paradisIsAllowedOnExtensionPage(method, params) ? PARADIS_EXTENSION_PAGE_DENIED_MESSAGE : undefined;
 }
 
 /**
@@ -220,4 +200,15 @@ export function paradisGuardNewDocumentScriptParams(method: string, params: unkn
 		return undefined;
 	}
 	return { ...params, source: `if (!${NEW_DOCUMENT_EXTENSION_CHECK}) {\n${params.source}\n}` };
+}
+
+/**
+ * ページの URL を確かめ直さずに信じてよい時間（ミリ秒）。中身を読む・操作する命令の前に、これより古ければ
+ * `Target.getTargetInfo` で引き直す（購読しない素の接続でも、移った後のページを見落とさないため）。
+ */
+export const PARADIS_PAGE_URL_FRESH_MS = 500;
+
+/** 読み込み中の新しいタブがまだ行き先を持っていない URL（空と about:blank）。 */
+export function paradisIsUndecidedPageUrl(url: unknown): boolean {
+	return url === undefined || url === '' || url === 'about:blank';
 }

@@ -238,6 +238,11 @@ export interface IParadisAgentPageScriptEntry {
 /** {@link PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL} の公開面。 */
 export interface IParadisAgentPageScriptsSurface {
 	readonly onDidChangeInitScripts: Event<IParadisAgentPageScriptsChange>;
+	/**
+	 * エージェントと共有中のタブ（の viewId）で、ブラウザ拡張のページへの移動を止めた。利用者へ知らせるのに使う
+	 * （paradisExtensionNavigationGuard.ts）。
+	 */
+	readonly onDidBlockExtensionNavigation: Event<string>;
 	/** いまスクリプトが置かれているタブと本数。 */
 	getInitScriptCounts(): Promise<IParadisAgentPageScriptsChange[]>;
 	/** 利用者が外した。そのタブのスクリプトをどのペインのものもすべて外し、外した数を返す。 */

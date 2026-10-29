@@ -49,11 +49,14 @@ suite('paradisCdpExtensionScope', () => {
 			paradisExtensionPageDeniedMessage('Page.getFrameTree', {}, true),
 			paradisExtensionPageDeniedMessage('Page.addScriptToEvaluateOnNewDocument', { source: '', worldName: 'util' }, true),
 			paradisExtensionPageDeniedMessage('Page.addScriptToEvaluateOnNewDocument', { source: '', runImmediately: true }, true),
+			paradisExtensionPageDeniedMessage('Page.navigate', { url: ' JavaScript:alert(1)' }, true),
+			paradisExtensionPageDeniedMessage('Page.navigate', { url: 'javascript:void 0' }, false),
 		], [
 			PARADIS_EXTENSION_NAVIGATION_DENIED_MESSAGE, undefined, undefined,
 			PARADIS_EXTENSION_PAGE_DENIED_MESSAGE, PARADIS_EXTENSION_PAGE_DENIED_MESSAGE, PARADIS_EXTENSION_PAGE_DENIED_MESSAGE,
 			undefined, PARADIS_EXTENSION_NAVIGATION_DENIED_MESSAGE, undefined,
 			undefined, undefined, undefined, PARADIS_EXTENSION_PAGE_DENIED_MESSAGE,
+			PARADIS_EXTENSION_PAGE_DENIED_MESSAGE, undefined,
 		]);
 		assert.deepStrictEqual(['Page.frameNavigated', 'Page.lifecycleEvent', 'Runtime.executionContextCreated', 'Target.attachedToTarget', 'Network.requestWillBeSent', 'Runtime.consoleAPICalled', 'DOM.documentUpdated', 'Page.javascriptDialogOpening'].map(paradisIsEventAllowedOnExtensionPage),
 			[true, true, true, true, false, false, false, false]);

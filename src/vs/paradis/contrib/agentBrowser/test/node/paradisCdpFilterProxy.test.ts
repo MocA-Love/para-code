@@ -1277,6 +1277,47 @@ suite('Paradis CDP screenshot filter', () => {
 		]);
 	});
 
+	test('asks for the URL of a new tab the shared page opened before letting a raw client read it, and refuses an extension page', async () => {
+		const extension = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/public.html?gw';
+		fixtureTargetUrls.set('popup', extension);
+		try {
+			const fixture = await createOpenBrowserProxyFixture();
+			publishAllowedSession(fixture, 'session-1');
+			const root = (method: string, params: object) => fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method, params })));
+			// Chromium attaches the new tab while it has no URL yet; a raw client never subscribes to anything.
+			root('Target.attachedToTarget', { sessionId: 'popup-session', waitingForDebugger: true, targetInfo: { targetId: 'popup', openerId: 'target-1', type: 'page', url: '' } });
+			fixture.client.sent.length = 0;
+			fixture.upstream.sent.length = 0;
+			for (let id = 1; id <= 3; id++) {
+				fixture.client.emit('message', Buffer.from(JSON.stringify({ id, sessionId: 'popup-session', method: 'Runtime.evaluate', params: { expression: 'document.body.innerText' } })));
+			}
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 4, sessionId: 'popup-session', method: 'Runtime.runIfWaitingForDebugger' })));
+			await new Promise(resolve => setTimeout(resolve, 10));
+			assert.deepStrictEqual({
+				forwarded: (parseSent(fixture.upstream) as { id?: number; method?: string }[]).map(frame => frame.method),
+				refused: (parseSent(fixture.client) as { id?: number; error?: { message: string } }[]).filter(frame => /browser extension page/.test(frame.error?.message ?? '')).map(frame => frame.id),
+			}, { forwarded: ['Runtime.runIfWaitingForDebugger'], refused: [1, 2, 3] });
+		} finally {
+			fixtureTargetUrls.clear();
+		}
+	});
+
+	test('a raw client is let back in once the page has left the extension page', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId: 'session-1', targetInfo: { targetId: 'target-1', type: 'page', url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html' } } })));
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
+		// The page leaves without any event the client subscribed to; the gateway asks again once its answer is old.
+		await new Promise(resolve => setTimeout(resolve, 600));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
+		await new Promise(resolve => setTimeout(resolve, 10));
+		assert.deepStrictEqual({
+			refused: (parseSent(fixture.client) as { id?: number; error?: unknown }[]).filter(frame => frame.error !== undefined).map(frame => frame.id),
+			forwarded: (parseSent(fixture.upstream) as { id?: number }[]).map(frame => frame.id).filter(id => typeof id === 'number' && id > 0),
+		}, { refused: [1], forwarded: [2] });
+	});
+
 	test('hides extension frame URLs from frame events and frame trees of the shared page', async () => {
 		const fixture = await createOpenBrowserProxyFixture();
 		publishAllowedSession(fixture, 'session-1');
@@ -1836,7 +1877,7 @@ suite('Paradis CDP screenshot filter', () => {
 		root('Target.targetCreated', { targetInfo: { targetId: 'helper', type: 'page', openerId: 'target-1', attached: true } });
 		root('Target.targetCreated', { targetInfo: { targetId: 'popup', type: 'page', openerId: 'helper', attached: true } });
 		bound.add('popup');
-		root('Target.attachedToTarget', { sessionId: 'popup-session', targetInfo: { targetId: 'popup', type: 'page' } });
+		root('Target.attachedToTarget', { sessionId: 'popup-session', targetInfo: { targetId: 'popup', type: 'page', url: 'https://example.test/popup' } });
 		fixture.upstream.sent.length = 0;
 		fixture.client.sent.length = 0;
 
@@ -2063,8 +2104,10 @@ class TestWebSocket extends EventEmitter {
 	}
 }
 
-/** The URL the fake upstream reports for the shared page when the page route asks for it. */
+/** The URL the fake upstream reports for the shared page when the gateway asks for it. */
 const fixturePageUrl = { value: 'https://example.test/' };
+/** URLs the fake upstream reports for other targets when the gateway asks for them. */
+const fixtureTargetUrls = new Map<string, string>();
 
 function createProxyFixture(ctx: IParadisBoundContext): {
 	readonly ctx: IParadisBoundContext;
@@ -2088,9 +2131,10 @@ function createProxyFixture(ctx: IParadisBoundContext): {
 		}
 		/** The page route asks once for the page's URL; answer it like Chromium and keep it out of `sent`. */
 		override send(data: unknown, options?: { binary?: boolean }): void {
-			const frame = (() => { try { return JSON.parse(String(data)) as { id?: number; method?: string }; } catch { return undefined; } })();
+			const frame = (() => { try { return JSON.parse(String(data)) as { id?: number; method?: string; params?: { targetId?: string } }; } catch { return undefined; } })();
 			if (frame?.method === 'Target.getTargetInfo' && typeof frame.id === 'number' && frame.id < 0) {
-				queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify({ id: frame.id, result: { targetInfo: { targetId: 'target-1', type: 'page', url: fixturePageUrl.value } } }))));
+				const targetId = frame.params?.targetId ?? 'target-1';
+				queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify({ id: frame.id, result: { targetInfo: { targetId, type: 'page', url: fixtureTargetUrls.get(targetId) ?? fixturePageUrl.value } } }))));
 				return;
 			}
 			super.send(data, options);
@@ -2143,7 +2187,7 @@ function publishAllowedSession(fixture: ReturnType<typeof createProxyFixture>, s
 		method: 'Target.attachedToTarget',
 		params: {
 			sessionId,
-			targetInfo: { targetId: 'target-1', type: 'page' },
+			targetInfo: { targetId: 'target-1', type: 'page', url: 'https://example.test/' },
 		},
 	})));
 }
