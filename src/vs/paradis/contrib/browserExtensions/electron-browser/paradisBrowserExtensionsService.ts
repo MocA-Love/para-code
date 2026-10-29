@@ -87,6 +87,32 @@ export function paradisShareFallbackProfile(session: { readonly scope: string; r
 	}
 }
 
+/**
+ * 拡張機能を有効にした場所（`place`）のタブのうち、今エージェントと共有しているもののタイトル。共有した後に
+ * 拡張機能を有効にしたときは共有の確認を通らないので、管理画面で知らせるのに使う。
+ */
+export function paradisSharedPageTitlesInPlace(
+	shared: readonly { readonly pageId: string; readonly title: string }[],
+	place: string,
+	sessionOf: (pageId: string) => { readonly scope: string; readonly profileId?: string } | undefined,
+): string[] {
+	const titles = new Set<string>();
+	for (const page of shared) {
+		if (paradisShareFallbackProfile(sessionOf(page.pageId)) === place) {
+			titles.add(page.title);
+		}
+	}
+	return [...titles];
+}
+
+/** 共有中のタブで拡張機能を有効にしたときの知らせ。 */
+export function paradisEnabledWhileSharedWarning(extensionName: string, titles: readonly string[]): string {
+	const shown = titles.length > MAX_NAMES
+		? localize('paradis.browserExtensions.enabledWhileShared.more', "{0} ほか {1} 個", titles.slice(0, MAX_NAMES).join('、'), titles.length - MAX_NAMES)
+		: titles.join('、');
+	return localize('paradis.browserExtensions.enabledWhileShared', "「{0}」を有効にした場所のタブ（{1}）は、エージェントと共有中です。拡張機能が入力した値（パスワードなど）は、エージェントからも読めます。気になる場合は共有を外してください。", extensionName, shown);
+}
+
 export class ParadisBrowserExtensionsService implements IParadisBrowserExtensionsService {
 	declare readonly _serviceBrand: undefined;
 

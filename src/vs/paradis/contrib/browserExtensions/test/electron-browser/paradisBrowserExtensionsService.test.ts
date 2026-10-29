@@ -16,7 +16,7 @@ import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.j
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
 import { IParadisBrowserProfilesService } from '../../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
 import { IParadisShareExtensions } from '../../common/paradisBrowserExtensions.js';
-import { ParadisBrowserExtensionsService, paradisShareFallbackProfile, paradisShareWarningFor, paradisShareWarningUnknown } from '../../electron-browser/paradisBrowserExtensionsService.js';
+import { ParadisBrowserExtensionsService, paradisEnabledWhileSharedWarning, paradisShareFallbackProfile, paradisSharedPageTitlesInPlace, paradisShareWarningFor, paradisShareWarningUnknown } from '../../electron-browser/paradisBrowserExtensionsService.js';
 
 const extension = (name: string, touchesPages: boolean) => ({ id: 'a'.repeat(32), name, touchesPages });
 
@@ -115,4 +115,24 @@ suite('ParadisBrowserExtensionsService share warning', () => {
 			needsWarning: true,
 		});
 	}));
+
+	test('finds the shared tabs in the place where an extension was just enabled', () => {
+		const sessions: Record<string, { scope: string; profileId?: string }> = {
+			global: { scope: BrowserViewStorageScope.Global },
+			work: { scope: BrowserViewStorageScope.Profile, profileId: '0123456789ab' },
+			agent: { scope: BrowserViewStorageScope.Agent },
+		};
+		const shared = [
+			{ pageId: 'global', title: 'Mail' },
+			{ pageId: 'work', title: 'Work' },
+			{ pageId: 'agent', title: 'Agent tab' },
+			{ pageId: 'unknown', title: 'Not open yet' },
+			{ pageId: 'global', title: 'Mail' },
+		];
+		assert.deepStrictEqual({
+			default: paradisSharedPageTitlesInPlace(shared, 'default', pageId => sessions[pageId]),
+			work: paradisSharedPageTitlesInPlace(shared, 'profile:0123456789ab', pageId => sessions[pageId]),
+			nameShown: paradisEnabledWhileSharedWarning('Bitwarden', ['Mail']).includes('Bitwarden'),
+		}, { default: ['Mail', 'Not open yet'], work: ['Work'], nameShown: true });
+	});
 });
