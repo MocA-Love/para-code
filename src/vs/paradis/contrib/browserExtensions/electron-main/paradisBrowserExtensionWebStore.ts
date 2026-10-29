@@ -28,6 +28,8 @@ const MAX_ENTRIES = 20_000;
 const MAX_UNPACKED_BYTES = 512 * 1024 * 1024;
 const MAX_REDIRECTS = 20;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** 落とし終えるまでの期限（止まった通信で、入れている途中の印と管理画面の表示が残り続けないように）。 */
+const DOWNLOAD_TIMEOUT_MS = 2 * 60_000;
 const CRX_HOST_SUFFIXES = ['google.com', 'googleusercontent.com', 'googleapis.com', 'gvt1.com'];
 
 /** ストアから入れる前の確認（main のダイアログ）に出すもの。 */
@@ -81,13 +83,30 @@ export function paradisWebStoreCrxUrl(extensionId: string, chromeVersion: string
 /**
  * ストアから CRX を落として確かめる（ストアの署名が要る）。`publisherKeyHash` はテストで差し替える。
  */
-export async function paradisDownloadWebStoreCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly publisherKeyHash?: string } = {}): Promise<IParadisVerifiedCrx> {
+export async function paradisDownloadWebStoreCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly publisherKeyHash?: string; readonly timeoutMs?: number } = {}): Promise<IParadisVerifiedCrx> {
+	let current: IParadisWebStoreResponse | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => {
+			current?.cancel();
+			reject(new Error('The Chrome Web Store download timed out'));
+		}, options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS);
+	});
+	try {
+		return await Promise.race([timeout, downloadCrx(extensionId, fetcher, options, response => current = response)]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function downloadCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly publisherKeyHash?: string }, onResponse: (response: IParadisWebStoreResponse) => void): Promise<IParadisVerifiedCrx> {
 	let url = options.url ?? paradisWebStoreCrxUrl(extensionId);
 	if (!paradisIsAllowedCrxUrl(url)) {
 		throw new Error('The extension download address is not a Chrome Web Store address');
 	}
 	for (let redirects = 0; ; redirects++) {
 		const response = await fetcher(url);
+		onResponse(response);
 		if (REDIRECT_STATUSES.has(response.status)) {
 			response.cancel();
 			const next = response.location !== undefined && URL.canParse(response.location, url) ? new URL(response.location, url).href : '';

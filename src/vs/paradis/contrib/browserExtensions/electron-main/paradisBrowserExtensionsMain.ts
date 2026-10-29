@@ -1016,6 +1016,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	/** ストアから入れてある拡張機能を、確かめてからこの場所でも有効にする。 */
 	private async _enableWebStoreExtension(extension: IParadisInstalledBrowserExtension, profile: string, profileLabel: string, askInstall: (prompt: IParadisInstallPrompt) => Promise<boolean>): Promise<IParadisAddExtensionResult> {
 		const manifest = await fs.readFile(join(extension.path, 'manifest.json'), 'utf8').then(text => JSON.parse(text) as unknown, () => undefined);
+		if (manifest === undefined) {
+			// 読めないときに空の権限の確認を出さない
+			return { ok: false, reason: 'webStoreFailed', detail: 'the installed manifest cannot be read' };
+		}
 		const accepted = await askInstall({ extensionName: extension.name, version: extension.version, access: paradisSummarizeExtensionAccess(manifest), profileLabel }).catch(() => false);
 		const current = this._ledger.extensions.find(candidate => candidate.id === extension.id);
 		if (!accepted || current?.source !== 'webstore') {

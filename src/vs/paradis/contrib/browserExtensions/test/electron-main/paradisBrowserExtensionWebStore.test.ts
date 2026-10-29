@@ -178,8 +178,10 @@ suite('ParadisBrowserExtensionWebStore', () => {
 			plainHttp: await download({ 'clients2.google.com': { status: 302, location: 'http://clients2.googleusercontent.com/x' } }),
 			startOutside: await download({}, 'https://evil.example/x.crx'),
 			failed: await download({ 'clients2.google.com': { status: 500 } }),
+			// 本文が届かないまま止まった通信は打ち切る（読むのをやめて閉じる）
+			stalled: await paradisDownloadWebStoreCrx(ID, async () => ({ status: 200, read: () => new Promise<Buffer>(() => { }), cancel: () => visited.push('cancelled') }), { timeoutMs: 20 }).then(() => 'ok', (error: Error) => error.message),
 		};
-		assert.deepStrictEqual({ result, url: new URL(paradisWebStoreCrxUrl(ID, '140.0.0.0')).searchParams.get('x') }, {
+		assert.deepStrictEqual({ result, cancelledStalled: visited.includes('cancelled'), url: new URL(paradisWebStoreCrxUrl(ID, '140.0.0.0')).searchParams.get('x') }, {
 			result: {
 				followed: ID,
 				awayFromGoogle: 'The extension download was redirected away from Google',
@@ -187,7 +189,9 @@ suite('ParadisBrowserExtensionWebStore', () => {
 				plainHttp: 'The extension download was redirected away from Google',
 				startOutside: 'The extension download address is not a Chrome Web Store address',
 				failed: 'The Chrome Web Store download failed (500)',
+				stalled: 'The Chrome Web Store download timed out',
 			},
+			cancelledStalled: true,
 			url: `id=${ID}&installsource=ondemand&uc=`,
 		});
 	});
