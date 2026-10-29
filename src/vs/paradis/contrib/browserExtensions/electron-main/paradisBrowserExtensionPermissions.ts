@@ -13,9 +13,8 @@
 //    downloads・notifications・management・contextMenus・tabs の URL など）はこれを見る。Electron が元から持つ API
 //    （scripting・content script の対象のサイト）は manifest しか見ないので、後から許したサイトでも動かない（残り）
 //  - permissions.request は、利用者の操作の中からだけ（Chrome と同じ）。Para Code の確認のダイアログで聞く
-//  - 利用者の操作: 拡張機能のページの transient activation（詰め物が navigator.userActivation を付けて送る。エージェントは
-//    拡張機能のページに届かない）か、Para Code が渡した操作（ツールバーのボタン・右クリックの項目・ショートカット・通知を
-//    押した）から 5 秒の間
+//  - 利用者の操作: main が記録したものだけ（拡張機能の申告は信じない）。Para Code が渡した操作（ツールバーのボタン・
+//    右クリックの項目・ショートカット・通知を押した）と、拡張機能自身のページへの本物のクリックやキーから 5 秒の間
 
 import { promises as fs } from 'fs';
 import type { Session } from 'electron';
@@ -209,11 +208,13 @@ export class ParadisBrowserExtensionPermissions {
 		byExtension.set(extensionId, this._now());
 	}
 
-	/** 呼び出しが利用者の操作の中か。 */
-	hasUserGesture(caller: IParadisExtensionApiCaller): boolean {
-		if (caller.userGesture === true) {
-			return true;
-		}
+	/**
+	 * 呼び出しが利用者の操作の中か。拡張機能の申告（本文）は見ず、main の記録だけで決める: Para Code が渡した操作と、
+	 * 拡張機能自身のページ（ポップアップ・小さな窓・タブで開いた拡張機能のページ）への本物のクリックやキー
+	 * （paradisBrowserExtensionWindows.ts が input-event で記録する。エージェントは P1・P2 の守りで拡張機能のページへ
+	 * 入力できないので、そこへの入力は利用者のもの）。
+	 */
+	hasUserGesture(caller: Pick<IParadisExtensionApiCaller, 'session' | 'extension'>): boolean {
 		const at = this._gestures.get(caller.session)?.get(caller.extension.id);
 		return at !== undefined && this._now() - at <= USER_GESTURE_WINDOW_MS;
 	}

@@ -1298,9 +1298,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 		markConnected();
 	};
 	const bridge: IParadisShimBridge = {
-		// ページでは、利用者の操作の中（transient activation）かを付ける（permissions.request などが見る。ページのスクリプトは
-		// これを作れない）
-		call: (namespace, method, args) => invoke({ type: 'call', namespace, method, args, ...(isWorker ? {} : { userGesture: (globalThis as { navigator?: { userActivation?: { isActive?: boolean } } }).navigator?.userActivation?.isActive === true }) }),
+		call: (namespace, method, args) => invoke({ type: 'call', namespace, method, args }),
 		listen: (namespace, event, active) => {
 			const key = `${namespace}.${event}`;
 			if (active) {
