@@ -162,4 +162,15 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 		const afterResume = typeof filter.checkClientCommand('', 4, 'Debugger.evaluateOnCallFrame', { callFrameId: '123.3.0', expression: '1' });
 		assert.deepStrictEqual({ paused, whilePaused, afterResume }, { paused: 'forward', whilePaused: [undefined, 'string', 'string'], afterResume: 'string' });
 	});
+	test('answers like Chromium for a context a navigation destroyed, so clients retry, but keeps hidden worlds hidden', () => {
+		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.filterEvent('s1', 'Runtime.executionContextCreated', created(1, 'main', true));
+		filter.filterEvent('s1', 'Runtime.executionContextCreated', created(2, 'design', false));
+		filter.filterEvent('s1', 'Runtime.executionContextDestroyed', { executionContextId: 1, executionContextUniqueId: 'main' });
+		assert.deepStrictEqual([
+			filter.checkClientCommand('s1', 1, 'Runtime.evaluate', { expression: '1', contextId: 1 }),
+			filter.checkClientCommand('s1', 2, 'Runtime.evaluate', { expression: '1', uniqueContextId: 'main' }),
+			/not available on the Para Code CDP gateway/.test(filter.checkClientCommand('s1', 3, 'Runtime.evaluate', { expression: '1', contextId: 2 }) ?? ''),
+		], ['Cannot find context with specified id', 'Cannot find context with specified id', true]);
+	});
 });

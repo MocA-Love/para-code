@@ -42,6 +42,8 @@ const RESERVED_WORLD_NAMES: ReadonlySet<string> = new Set(['', 'Electron Isolate
 const MAX_TRACKED_IDS = 10_000;
 
 const CONTEXT_DENIED_MESSAGE = 'This execution context is not available on the Para Code CDP gateway (Para Code keeps its own isolated worlds hidden from agents). Use the page\'s default context or an isolated world you created with Page.createIsolatedWorld.';
+/** 消えた・知らない文脈への命令に返す答え（Chromium の答えと同じ文。クライアントはやり直せる失敗として扱う）。 */
+const CONTEXT_NOT_FOUND_MESSAGE = 'Cannot find context with specified id';
 const SCRIPT_DENIED_MESSAGE = 'This script belongs to a Para Code isolated world and is not available on the Para Code CDP gateway.';
 
 /** V8 の RemoteObjectId（isolate.context.object）。 */
@@ -137,12 +139,14 @@ export class ParadisCdpIsolatedWorldFilter {
 			for (const key of ['contextId', 'executionContextId'] as const) {
 				const value = record[key];
 				if (value !== undefined && (typeof value !== 'number' || !state.visibleContextIds.has(value))) {
-					return CONTEXT_DENIED_MESSAGE;
+					// 隠したもの以外（ページの移動で消えたもの・知らない番号）は、Chromium と同じ答えにする。クライアントは
+					// これを「文脈が消えた」と見てやり直す
+					return typeof value === 'number' && (state.hiddenContextIds.has(value) || state.extensionContextIds.has(value)) ? CONTEXT_DENIED_MESSAGE : CONTEXT_NOT_FOUND_MESSAGE;
 				}
 			}
 			const uniqueContextId = record.uniqueContextId;
 			if (uniqueContextId !== undefined && (typeof uniqueContextId !== 'string' || !state.visibleUniqueIds.has(uniqueContextId))) {
-				return CONTEXT_DENIED_MESSAGE;
+				return typeof uniqueContextId === 'string' && state.hiddenUniqueIds.has(uniqueContextId) ? CONTEXT_DENIED_MESSAGE : CONTEXT_NOT_FOUND_MESSAGE;
 			}
 			const objectId = record.objectId;
 			if (typeof objectId === 'string') {

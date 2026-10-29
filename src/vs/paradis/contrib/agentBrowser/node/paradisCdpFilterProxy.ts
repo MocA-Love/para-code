@@ -230,8 +230,8 @@ const MAX_CDP_ROUTING_ENTRIES = 4_096;
 const MAX_CDP_PENDING_POLICY_BYTES = 1024 * 1024;
 const PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS = 5_000;
 
-/** エージェントがページを移した後、文書そのものにも場所を聞く間（ミリ秒）。 */
-const PARADIS_RECENT_MOVE_MS = 5_000;
+/** 文書そのものに場所を聞くときの待ちの上限（ミリ秒）。 */
+const PARADIS_LOCATE_DOCUMENT_TIMEOUT_MS = 1_000;
 
 /** クライアントが出したページの移動の応答（移動が決まる）を、次の命令が待つ上限（ミリ秒）。 */
 const PARADIS_PAGE_MOVE_WAIT_MS = 10_000;
@@ -1960,8 +1960,16 @@ export async function paradisProxyBrowserUpgrade(
 		};
 		// 問い合わせ中のもの（同じターゲットへ同時に来た命令で重ねない）
 		const targetUrlChecks = new Map<string, Promise<void>>();
-		// エージェントがページを移した時刻（その後しばらくは文書そのものにも場所を聞く）
+		// エージェントがページを移した時刻（その後、文書そのものに 1 回場所を聞く）
 		const movedAt = new Map<string, number>();
+		// 文書そのものに聞いた場所（移動のイベントか、次の移動の命令で忘れる）
+		const documentLocations = new Map<string, string>();
+		/** ページが移った知らせ（イベント・移動の命令）。文書に聞いた場所を忘れる。 */
+		const forgetDocumentLocation = (targetId: string | undefined) => {
+			if (targetId !== undefined) {
+				documentLocations.delete(targetId);
+			}
+		};
 		// こちらが出した要求のうち、応答を待っているもの
 		const internalWaiters = new Map<number, (response: IJsonRpcMsg | undefined) => void>();
 		// この接続で始まった要求を network idle の台帳から外すための目印
@@ -1976,7 +1984,8 @@ export async function paradisProxyBrowserUpgrade(
 		const connectionClosed = new Promise<void>(resolve => resolveConnectionClosed = resolve);
 		let scheduledClientMessages = 0;
 		let scheduledClientBytes = 0;
-		let clientCommandTail: Promise<void> | undefined;
+		// セッション（ルートは ''）ごとの、処理中の命令の列の最後
+		const clientCommandTails = new Map<string, Promise<void>>();
 
 		/** `onRejected` は接続を閉じる前に呼ぶ（一時停止している子を再開させるため）。 */
 		const addAllowedTarget = (targetId: string, openerId?: string, onRejected?: () => void): boolean => {
@@ -2221,6 +2230,7 @@ export async function paradisProxyBrowserUpgrade(
 			targetUrlCheckedAt.clear();
 			documentTargetIds.clear();
 			movedAt.clear();
+			documentLocations.clear();
 			targetUrlChecks.clear();
 			for (const resolve of internalWaiters.values()) {
 				resolve(undefined);
@@ -2408,6 +2418,12 @@ export async function paradisProxyBrowserUpgrade(
 		 * 行き先が決まるまで（空・about:blank の間）少し待って問い直す（読み込みの途中で拡張のページへ移るものを
 		 * about:blank のつもりで通さないため）。
 		 */
+		/** 文書そのものに今の場所を聞く（返らなければ undefined）。 */
+		const locateDocument = async (targetId: string, sessionId: string): Promise<string | undefined> => {
+			const located = await raceTimeout(requestInternal('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, targetId, sessionId), PARADIS_LOCATE_DOCUMENT_TIMEOUT_MS);
+			const value = isRecord(located?.result) && isRecord(located.result.result) ? located.result.result.value : undefined;
+			return typeof value === 'string' && value.length > 0 ? value : undefined;
+		};
 		const confirmTargetUrl = (targetId: string, sessionId?: string): Promise<void> => {
 			const existing = targetUrlChecks.get(targetId);
 			if (existing) {
@@ -2419,17 +2435,35 @@ export async function paradisProxyBrowserUpgrade(
 					const response = await requestInternal('Target.getTargetInfo', { targetId }, targetId);
 					const info = isRecord(response?.result) && isRecord(response.result.targetInfo) ? response.result.targetInfo : undefined;
 					noteTargetUrl(targetId, info?.url);
-					// エージェントがページを移した直後は、Target の情報がまだ前の URL のことがある（Electron 43.7.7 で、別プロセスの
-					// iframe を転送で拡張のページへ移した直後に実測）。その間は文書そのものに今の場所を聞く
-					const moved = movedAt.get(targetId);
-					if (sessionId !== undefined && moved !== undefined && Date.now() - moved < PARADIS_RECENT_MOVE_MS && !paradisIsBrowserExtensionUrl(targetUrls.get(targetId))) {
-						const located = await raceTimeout(requestInternal('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, targetId, sessionId), PARADIS_UNDECIDED_TAB_WAIT_MS);
-						const value = isRecord(located?.result) && isRecord(located.result.result) ? located.result.result.value : undefined;
-						if (typeof value === 'string' && value.length > 0) {
-							noteTargetUrl(targetId, value);
-						}
+					if (closed || sessionId === undefined || paradisIsBrowserExtensionUrl(targetUrls.get(targetId))) {
+						return;
 					}
-					if (closed || !childToParent.has(targetId) || !paradisIsUndecidedPageUrl(info?.url) || Date.now() >= deadline) {
+					// 次のどちらかのときは、文書そのものに今の場所を 1 回聞いて覚える（移動のイベントか、次の移動の命令で忘れる）:
+					//  - エージェントがページを移した直後。Target の情報がまだ前の URL のことがある（Electron 43.7.7 で、別プロセスの
+					//    iframe を転送で拡張のページへ移した直後に実測）
+					//  - 共有したページが開いた新しいタブの行き先が、まだ空・about:blank のとき（本当に about:blank の文書か、
+					//    読み込みの途中かを見分ける）
+					const moved = movedAt.has(targetId);
+					const undecided = childToParent.has(targetId) && paradisIsUndecidedPageUrl(info?.url);
+					if (!moved && !undecided) {
+						return;
+					}
+					const remembered = documentLocations.get(targetId);
+					if (!moved && remembered !== undefined) {
+						noteTargetUrl(targetId, remembered);
+						return;
+					}
+					const located = await locateDocument(targetId, sessionId);
+					if (located !== undefined) {
+						noteTargetUrl(targetId, located);
+						if (documentLocations.has(targetId) || documentLocations.size < MAX_CDP_ROUTING_ENTRIES) {
+							documentLocations.set(targetId, located);
+						}
+						movedAt.delete(targetId);
+						return;
+					}
+					// 文書がまだ答えられない（読み込みの途中）。少し待って問い直す
+					if (closed || Date.now() >= deadline) {
 						return;
 					}
 					await new Promise(resolve => setTimeout(resolve, 100));
@@ -2507,6 +2541,7 @@ export async function paradisProxyBrowserUpgrade(
 				if (extensionTargetId !== undefined && PARADIS_PAGE_MOVING_METHODS.has(message.method)) {
 					// この命令でページが移るので、次の命令の前に URL を確かめ直す。しばらくは文書そのものにも聞く
 					targetUrlCheckedAt.delete(extensionTargetId);
+					forgetDocumentLocation(extensionTargetId);
 					if (movedAt.has(extensionTargetId) || movedAt.size < MAX_CDP_ROUTING_ENTRIES) {
 						movedAt.set(extensionTargetId, Date.now());
 					}
@@ -2728,16 +2763,19 @@ export async function paradisProxyBrowserUpgrade(
 				closeBoth();
 				return;
 			}
-			const previous = clientCommandTail;
+			// 命令はセッションごとに順に処理する。待つ命令（URL の確かめ・移動の応答待ち・入力の順番待ち）があっても、
+			// ほかのセッション（ほかのタブ・iframe）の命令は待たせない。壊れたフレームはセッション無しの列で扱う
+			const sessionKey = parseClientCommand(data)?.sessionId ?? '';
+			const previous = clientCommandTails.get(sessionKey);
 			if (!previous) {
 				try {
 					const wait = processClientMessage(data);
 					if (wait) {
 						const guarded = wait.catch(closeBoth);
-						clientCommandTail = guarded;
+						clientCommandTails.set(sessionKey, guarded);
 						void guarded.finally(() => {
-							if (clientCommandTail === guarded) {
-								clientCommandTail = undefined;
+							if (clientCommandTails.get(sessionKey) === guarded) {
+								clientCommandTails.delete(sessionKey);
 							}
 						});
 					}
@@ -2755,10 +2793,10 @@ export async function paradisProxyBrowserUpgrade(
 					scheduledClientMessages = Math.max(0, scheduledClientMessages - 1);
 					scheduledClientBytes = Math.max(0, scheduledClientBytes - bytes);
 				});
-			clientCommandTail = next;
+			clientCommandTails.set(sessionKey, next);
 			void next.finally(() => {
-				if (clientCommandTail === next) {
-					clientCommandTail = undefined;
+				if (clientCommandTails.get(sessionKey) === next) {
+					clientCommandTails.delete(sessionKey);
 				}
 			});
 		});
@@ -3013,6 +3051,7 @@ export async function paradisProxyBrowserUpgrade(
 					}
 					const eventTargetId = sessionIdToTargetId.get(message.sessionId);
 					if (message.method === 'Page.frameNavigated' && isRecord(message.params?.frame) && message.params.frame.parentId === undefined) {
+						forgetDocumentLocation(eventTargetId);
 						noteTargetUrl(eventTargetId, message.params.frame.url);
 					}
 					// 拡張のページにいる間は、ページの移動のイベントのほか（通信・コンソール・DOM など）は届けない
@@ -3050,6 +3089,9 @@ export async function paradisProxyBrowserUpgrade(
 					return;
 				}
 				const targetId = info?.targetId ?? params?.targetId;
+				if (message.method === 'Target.targetInfoChanged') {
+					forgetDocumentLocation(targetId);
+				}
 				noteTargetUrl(targetId, info?.url);
 				noteTargetType(targetId, info?.type);
 				const type = info?.type;

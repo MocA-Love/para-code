@@ -1306,6 +1306,39 @@ suite('Paradis CDP screenshot filter', () => {
 		}
 	});
 
+	test('a command waiting on one tab does not hold back the other tabs, and a blank new tab is asked only once', async () => {
+		fixtureTargetUrls.set('popup', '');
+		fixtureDocumentLocation.value = 'about:blank';
+		fixtureDocumentLocation.delayMs = 300;
+		try {
+			const fixture = await createOpenBrowserProxyFixture();
+			publishAllowedSession(fixture, 'session-1');
+			fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId: 'popup-session', targetInfo: { targetId: 'popup', openerId: 'target-1', type: 'page', url: '' } } })));
+			fixture.upstream.sent.length = 0;
+			const forwardedIds = () => (parseSent(fixture.upstream) as { id?: number }[]).map(frame => frame.id).filter(id => typeof id === 'number' && id > 0);
+			const send = (id: number, sessionId: string) => fixture.client.emit('message', Buffer.from(JSON.stringify({ id, sessionId, method: 'Runtime.evaluate', params: { expression: '1' } })));
+			send(1, 'popup-session');
+			send(2, 'popup-session');
+			send(3, 'session-1');
+			await new Promise(resolve => setTimeout(resolve, 20));
+			const whileAsking = forwardedIds();
+			await new Promise(resolve => setTimeout(resolve, 400));
+			const afterAsking = forwardedIds();
+			// The blank document was remembered: the next read does not ask it again.
+			send(4, 'popup-session');
+			await new Promise(resolve => setTimeout(resolve, 20));
+			assert.deepStrictEqual({ whileAsking, afterAsking, nextRead: forwardedIds() }, {
+				whileAsking: [3],
+				afterAsking: [3, 1, 2],
+				nextRead: [3, 1, 2, 4],
+			});
+		} finally {
+			fixtureTargetUrls.clear();
+			fixtureDocumentLocation.value = 'https://example.test/';
+			fixtureDocumentLocation.delayMs = 0;
+		}
+	});
+
 	test('a raw client is let back in once the page has left the extension page', async () => {
 		const fixture = await createOpenBrowserProxyFixture();
 		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId: 'session-1', targetInfo: { targetId: 'target-1', type: 'page', url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html' } } })));
@@ -2112,6 +2145,8 @@ class TestWebSocket extends EventEmitter {
 const fixturePageUrl = { value: 'https://example.test/' };
 /** URLs the fake upstream reports for other targets when the gateway asks for them. */
 const fixtureTargetUrls = new Map<string, string>();
+/** What a document answers when the gateway asks it where it is, and how long it takes. */
+const fixtureDocumentLocation = { value: 'https://example.test/', delayMs: 0 };
 
 function createProxyFixture(ctx: IParadisBoundContext): {
 	readonly ctx: IParadisBoundContext;
@@ -2143,8 +2178,9 @@ function createProxyFixture(ctx: IParadisBoundContext): {
 			}
 			if (frame?.method === 'Runtime.evaluate' && typeof frame.id === 'number' && frame.id < 0) {
 				// The gateway asks the document where it is right after the agent moved it.
-				const answer = { id: frame.id, ...(frame.sessionId !== undefined ? { sessionId: frame.sessionId } : {}), result: { result: { type: 'string', value: fixturePageUrl.value } } };
-				queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify(answer))));
+				const answer = { id: frame.id, ...(frame.sessionId !== undefined ? { sessionId: frame.sessionId } : {}), result: { result: { type: 'string', value: fixtureDocumentLocation.value } } };
+				const emit = () => this.emit('message', Buffer.from(JSON.stringify(answer)));
+				fixtureDocumentLocation.delayMs > 0 ? setTimeout(emit, fixtureDocumentLocation.delayMs) : queueMicrotask(emit);
 				return;
 			}
 			if (frame?.method === 'Target.getTargetInfo' && typeof frame.id === 'number' && frame.id < 0) {
