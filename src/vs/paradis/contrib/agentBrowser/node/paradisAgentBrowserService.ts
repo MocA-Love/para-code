@@ -82,6 +82,7 @@ import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
 import { IParadisDevtoolsPathCaller, paradisDevtoolsCaptureOverwriteRefusal, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
+import { paradisWithReadOnlyToolAnnotation } from '../common/paradisMcpReadOnlyTools.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
 import { paradisAdjustDevtoolsToolResult, paradisStripInternalDevtoolsArguments, paradisWithScriptHints } from './paradisDevtoolsToolAdjustments.js';
@@ -5159,7 +5160,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		const withRecipes = this._siteRecipesEnabled?.() === true ? [...withNotes, ...PARADIS_SITE_RECIPE_TOOLS.map(tool => tool.name === 'run_recipe' ? paradisWithTabIdArgument(tool) : tool)] : withNotes;
 		const remoteAuthority = this._paneRemoteAuthorityOf(ingressLease.token);
 		const folders = remoteAuthority !== undefined && !forArguments ? await this._remoteFileFolders(ingressLease, remoteAuthority, signal) : undefined;
-		const described: readonly IParadisListedTool[] = remoteAuthority !== undefined ? paradisDescribeToolsForRemotePane(withRecipes, folders) : withRecipes;
+		// 読むだけの道具に MCP の注釈 readOnlyHint を付ける（Codex が承認なしで通す。paradisMcpReadOnlyTools.ts）
+		const annotated = withRecipes.map(tool => paradisWithReadOnlyToolAnnotation(tool));
+		const described: readonly IParadisListedTool[] = remoteAuthority !== undefined ? paradisDescribeToolsForRemotePane(annotated, folders) : annotated;
 		// 引数の突き合わせのために作った一覧に内蔵の道具が無かった（子プロセスが起きていない・共有が無い）ときも控えるが、
 		// 少し経ったら作り直す（毎回作り直さず、後から使えるようになった内蔵の道具も見られるように）
 		this._rememberListedToolSchemas(ingressLease.token, described, forArguments && devtoolsTools.length === 0 ? Date.now() + PARTIAL_TOOL_SCHEMAS_TTL_MS : undefined);
