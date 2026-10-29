@@ -55,7 +55,7 @@ import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
 import { ParadisCdpIsolatedWorldFilter } from './paradisCdpIsolatedWorldFilter.js';
 import { paradisCookieAndRewriteDeniedMessage, paradisSanitizeCookieBearingEvent } from './paradisCdpCookieFilter.js';
 import { paradisRemotePaneCdpDeniedMessage } from './paradisCdpRemotePolicy.js';
-import { PARADIS_HIDDEN_EXTENSION_FRAME_URL, paradisExtensionPageDeniedMessage, paradisGuardNewDocumentScriptParams, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../common/paradisCdpExtensionScope.js';
+import { PARADIS_HIDDEN_EXTENSION_FRAME_URL, PARADIS_PAGE_URL_FRESH_MS, paradisExtensionPageDeniedMessage, paradisGuardNewDocumentScriptParams, paradisIsAllowedOnExtensionPage, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisIsUndecidedPageUrl, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../common/paradisCdpExtensionScope.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -228,6 +228,9 @@ const MAX_UPSTREAM_ERROR_DETAIL_LENGTH = 256;
 const MAX_CDP_ROUTING_ENTRIES = 4_096;
 const MAX_CDP_PENDING_POLICY_BYTES = 1024 * 1024;
 const PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS = 5_000;
+
+/** 共有したページが開いたばかりの新しいタブの行き先が決まるまで、命令を待たせる上限（ミリ秒）。 */
+const PARADIS_UNDECIDED_TAB_WAIT_MS = 2_000;
 
 /** 再開の応答が来ないときに、スコープ外のセッションを切り離すまでの時間。 */
 export const PARADIS_OUT_OF_SCOPE_DETACH_FALLBACK_MS = 5_000;
@@ -1438,14 +1441,14 @@ export function paradisProxyPageUpgrade(
 		// Para Code 自身の isolated world（Design Mode の要素選択、preload）をエージェントから隠す。
 		const isolatedWorlds = new ParadisCdpIsolatedWorldFilter();
 		let isolatedWorldRequestSequence = 0;
-		// 共有したページの今の URL（拡張のページにいる間は命令を断る）。接続の最初に 1 回 Target.getTargetInfo で
-		// 確かめ、その後は Page.frameNavigated で追う。エージェントが手にしている間の拡張のページへの移動は main が
-		// 取り消す（paradisExtensionNavigationGuard.ts）ので、ここは手にする前から拡張のページにいた場合の守り
+		// 共有したページの今の URL（拡張のページにいる間は命令を断る）。中身を読む・操作する命令の前に、
+		// PARADIS_PAGE_URL_FRESH_MS より古ければ Target.getTargetInfo で引き直す。Page.frameNavigated でも追う。
+		// エージェントが手にしている間の拡張のページへの移動は main が取り消す（paradisExtensionNavigationGuard.ts）
 		let pageUrl: string | undefined;
-		// 接続の最初の URL の問い合わせ（1 回だけ）
-		let initialPageUrl: Promise<void> | undefined;
-		// 最初の問い合わせの応答が来たら、以降の命令は待たせない
-		let pageUrlKnown = false;
+		// pageUrl を最後に確かめた時刻
+		let pageUrlCheckedAt: number | undefined;
+		// 問い合わせ中のもの（同時に来た命令で重ねない）
+		let pageUrlCheck: Promise<void> | undefined;
 		// こちらが出した要求（負の id）の応答を待つもの
 		const internalWaiters = new Map<number, (response: IJsonRpcMsg | undefined) => void>();
 		// 拡張の frame の URL を伏せる応答（Page.getFrameTree / getResourceTree）の id と method
@@ -1581,20 +1584,20 @@ export function paradisProxyPageUpgrade(
 				return;
 			}
 			// 共有したページが拡張のページにいる間は、離れるための命令のほかは通さない。拡張の URL への移動も断る。
-			// ページの URL は、接続の最初に 1 回だけ Target.getTargetInfo で確かめ（それまで最初の命令を待たせる）、
-			// その後は Page.frameNavigated と、拡張の origin の既定のコンテキスト（Runtime のイベント）で追う。
+			// 中身を読む・操作する命令の前に、URL が古ければ Target.getTargetInfo で引き直す（それまで命令を待たせる）。
 			// クリックとキーは main がタブの今の URL でも断る（dispatchExactViewInput）
 			const navigationDenied = paradisExtensionPageDeniedMessage(msg.method, msg.params, false);
-			if (navigationDenied === undefined && !pageUrlChecked && !pageUrlKnown) {
-				initialPageUrl ??= requestPageInternal('Target.getTargetInfo', {}).then(response => {
+			if (navigationDenied === undefined && !pageUrlChecked && !paradisIsAllowedOnExtensionPage(msg.method, msg.params)
+				&& (pageUrlCheckedAt === undefined || Date.now() - pageUrlCheckedAt >= PARADIS_PAGE_URL_FRESH_MS)) {
+				pageUrlCheck ??= requestPageInternal('Target.getTargetInfo', {}).then(response => {
 					const result = isRecord(response?.result) ? response.result : undefined;
 					const info = isRecord(result?.targetInfo) ? result.targetInfo : undefined;
-					if (pageUrl === undefined && typeof info?.url === 'string') {
+					if (typeof info?.url === 'string') {
 						pageUrl = info.url;
+						pageUrlCheckedAt = Date.now();
 					}
-					pageUrlKnown = true;
-				});
-				return initialPageUrl.then(() => closed ? undefined : processClientMessage(data, remoteResolved, true));
+				}).finally(() => pageUrlCheck = undefined);
+				return pageUrlCheck.then(() => closed ? undefined : processClientMessage(data, remoteResolved, true));
 			}
 			const extensionDenied = navigationDenied ?? paradisExtensionPageDeniedMessage(msg.method, msg.params, paradisIsBrowserExtensionUrl(pageUrl) || isolatedWorlds.isOnExtensionPage(''));
 			if (extensionDenied !== undefined) {
@@ -1814,6 +1817,7 @@ export function paradisProxyPageUpgrade(
 						}
 						if (response.method === 'Page.frameNavigated' && !sessionKey && isRecord(response.params?.frame) && response.params.frame.parentId === undefined && typeof response.params.frame.url === 'string') {
 							pageUrl = response.params.frame.url;
+							pageUrlCheckedAt = Date.now();
 						}
 						// 拡張のページにいる間は、ページの移動のイベントのほか（通信・コンソール・DOM など）は届けない
 						if ((paradisIsBrowserExtensionUrl(pageUrl) || isolatedWorlds.isOnExtensionPage(sessionKey)) && !paradisIsEventAllowedOnExtensionPage(response.method)) {
@@ -1908,6 +1912,20 @@ export async function paradisProxyBrowserUpgrade(
 		const childToParent = new Map<string, string>();
 		// 見せているターゲットの今の URL（拡張のページにいる間は、そのセッションへの命令を断る）
 		const targetUrls = new Map<string, string>();
+		// targetUrls を最後に確かめた時刻（中身を読む・操作する命令の前に、古ければ引き直す）
+		const targetUrlCheckedAt = new Map<string, number>();
+		// 文書を持つターゲット（page・iframe など。worker は文書を持たないので URL を確かめない）
+		const documentTargetIds = new Set<string>();
+		const noteTargetType = (targetId: string | undefined, type: unknown) => {
+			if (targetId !== undefined && typeof type === 'string' && type !== 'worker' && type !== 'shared_worker' && type !== 'service_worker'
+				&& (documentTargetIds.has(targetId) || documentTargetIds.size < MAX_CDP_ROUTING_ENTRIES)) {
+				documentTargetIds.add(targetId);
+			}
+		};
+		// 問い合わせ中のもの（同じターゲットへ同時に来た命令で重ねない）
+		const targetUrlChecks = new Map<string, Promise<void>>();
+		// こちらが出した要求のうち、応答を待っているもの
+		const internalWaiters = new Map<number, (response: IJsonRpcMsg | undefined) => void>();
 		// この接続で始まった要求を network idle の台帳から外すための目印
 		const networkConnection = {};
 		let internalRequestSequence = 0;
@@ -1941,6 +1959,7 @@ export async function paradisProxyBrowserUpgrade(
 		const noteTargetUrl = (targetId: string | undefined, url: unknown) => {
 			if (targetId !== undefined && typeof url === 'string' && allowedTargetIds.has(targetId) && (targetUrls.has(targetId) || targetUrls.size < MAX_CDP_ROUTING_ENTRIES)) {
 				targetUrls.set(targetId, url);
+				targetUrlCheckedAt.set(targetId, Date.now());
 			}
 		};
 		const addAllowedSession = (sessionId: string, targetId: string, onRejected?: () => void): boolean => {
@@ -2008,10 +2027,17 @@ export async function paradisProxyBrowserUpgrade(
 				if (descendantTargetId !== undefined && !bound.has(descendantTargetId) && !targetHasSession(descendantTargetId)) {
 					allowedTargetIds.delete(descendantTargetId);
 					targetUrls.delete(descendantTargetId);
+					targetUrlCheckedAt.delete(descendantTargetId);
+					documentTargetIds.delete(descendantTargetId);
 					childToParent.delete(descendantTargetId);
 				}
 			}
 			forgetSessionOnly(sessionId, synthesizeDetach);
+		};
+		const settleInternalWaiter = (id: number, response: IJsonRpcMsg | undefined) => {
+			const waiter = internalWaiters.get(id);
+			internalWaiters.delete(id);
+			waiter?.(response);
 		};
 		const forgetSessionOnly = (sessionId: string, synthesizeDetach: boolean) => {
 			const targetId = sessionIdToTargetId.get(sessionId);
@@ -2036,6 +2062,7 @@ export async function paradisProxyBrowserUpgrade(
 					internalPending.delete(id);
 					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
 					retireRequestId(id);
+					settleInternalWaiter(id, undefined);
 				}
 			}
 			const known = clientKnownSessions.has(sessionId);
@@ -2094,6 +2121,8 @@ export async function paradisProxyBrowserUpgrade(
 				visited.add(current);
 				allowedTargetIds.delete(current);
 				targetUrls.delete(current);
+				targetUrlCheckedAt.delete(current);
+				documentTargetIds.delete(current);
 				for (const [child, parent] of childToParent) {
 					// A page the user shared is never dropped because its opener went away.
 					if (parent === current && !visited.has(child) && !bound.has(child)) {
@@ -2151,6 +2180,13 @@ export async function paradisProxyBrowserUpgrade(
 			allowedTargetIds.clear();
 			childToParent.clear();
 			targetUrls.clear();
+			targetUrlCheckedAt.clear();
+			documentTargetIds.clear();
+			targetUrlChecks.clear();
+			for (const resolve of internalWaiters.values()) {
+				resolve(undefined);
+			}
+			internalWaiters.clear();
 			clientKnownSessions.clear();
 			retiredRequestIds.clear();
 			rawScreenshots.markClosing(rawScreenshotOwner);
@@ -2317,6 +2353,44 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			return id;
 		};
+		/** sendInternal の応答を待つ。接続が閉じた・セッションが消えた・送れなかったときは undefined。 */
+		const requestInternal = (method: string, params: Record<string, unknown>, targetId?: string): Promise<IJsonRpcMsg | undefined> => {
+			if (closed || internalWaiters.size >= MAX_CDP_PENDING_REQUESTS) {
+				return Promise.resolve(undefined);
+			}
+			const id = sendInternal(method, params, undefined, targetId);
+			if (id === undefined) {
+				return Promise.resolve(undefined);
+			}
+			return new Promise(resolve => internalWaiters.set(id, resolve));
+		};
+		/**
+		 * ターゲットの今の URL を Target.getTargetInfo で引き直す。共有したページが開いたばかりの新しいタブは、
+		 * 行き先が決まるまで（空・about:blank の間）少し待って問い直す（読み込みの途中で拡張のページへ移るものを
+		 * about:blank のつもりで通さないため）。
+		 */
+		const confirmTargetUrl = (targetId: string): Promise<void> => {
+			const existing = targetUrlChecks.get(targetId);
+			if (existing) {
+				return existing;
+			}
+			const check = (async () => {
+				const deadline = Date.now() + PARADIS_UNDECIDED_TAB_WAIT_MS;
+				for (; ;) {
+					const response = await requestInternal('Target.getTargetInfo', { targetId }, targetId);
+					const info = isRecord(response?.result) && isRecord(response.result.targetInfo) ? response.result.targetInfo : undefined;
+					noteTargetUrl(targetId, info?.url);
+					if (closed || !childToParent.has(targetId) || !paradisIsUndecidedPageUrl(info?.url) || Date.now() >= deadline) {
+						return;
+					}
+					await new Promise(resolve => setTimeout(resolve, 100));
+				}
+			})().finally(() => targetUrlChecks.delete(targetId));
+			if (targetUrlChecks.size < MAX_CDP_ROUTING_ENTRIES) {
+				targetUrlChecks.set(targetId, check);
+			}
+			return check;
+		};
 
 		upstream.on('open', () => {
 			if (closed || !ctx.isCurrentLease()) {
@@ -2334,7 +2408,7 @@ export async function paradisProxyBrowserUpgrade(
 			pendingUpstreamBytes = 0;
 		});
 
-		const processClientMessage = (data: wsTypes.RawData, remoteResolved = false): Promise<void> | undefined => {
+		const processClientMessage = (data: wsTypes.RawData, remoteResolved = false, targetUrlConfirmed = false): Promise<void> | undefined => {
 			if (!ctx.isCurrentLease()) {
 				closeBoth();
 				return;
@@ -2373,13 +2447,23 @@ export async function paradisProxyBrowserUpgrade(
 				}
 				const remoteDenied = remotePaneDeniedMessage(ctx, message.method, message.params, remoteResolved);
 				if (remoteDenied instanceof Promise) {
-					return remoteDenied.then(() => processClientMessage(data, true));
+					return remoteDenied.then(() => processClientMessage(data, true, targetUrlConfirmed));
 				}
 				// セッションのページが拡張のページにいる間は、離れるための命令のほかは通さない。拡張の URL への移動も断る。
 				// ページの URL は、attach の targetInfo、targetInfoChanged、Page.frameNavigated と、拡張の origin の既定の
-				// コンテキスト（Runtime のイベント）で追う。命令のたびに問い合わせはしない（遅くなるうえ、問い合わせの後に
-				// 移られれば同じことなので）。クリックとキーは main がタブの今の URL でも断る（dispatchExactViewInput）
+				// コンテキスト（Runtime のイベント）で追い、中身を読む・操作する命令の前に PARADIS_PAGE_URL_FRESH_MS より
+				// 古ければ Target.getTargetInfo で引き直す（購読しない素の接続でも移った後を見落とさない）。
+				// クリックとキーは main がタブの今の URL でも断る（dispatchExactViewInput）
 				const extensionTargetId = sessionIdToTargetId.get(message.sessionId);
+				if (!targetUrlConfirmed && extensionTargetId !== undefined && (documentTargetIds.has(extensionTargetId) || ctx.boundTargetIds().has(extensionTargetId))
+					&& paradisExtensionPageDeniedMessage(message.method, message.params, false) === undefined
+					&& !paradisIsAllowedOnExtensionPage(message.method, message.params)) {
+					const checkedAt = targetUrlCheckedAt.get(extensionTargetId);
+					if (checkedAt === undefined || Date.now() - checkedAt >= PARADIS_PAGE_URL_FRESH_MS
+						|| (childToParent.has(extensionTargetId) && paradisIsUndecidedPageUrl(targetUrls.get(extensionTargetId)))) {
+						return confirmTargetUrl(extensionTargetId).then(() => closed ? undefined : processClientMessage(data, remoteResolved, true));
+					}
+				}
 				const sessionOnExtensionPage = paradisIsBrowserExtensionUrl(extensionTargetId !== undefined ? targetUrls.get(extensionTargetId) : undefined)
 					|| isolatedWorlds.isOnExtensionPage(message.sessionId);
 				const extensionDenied = paradisExtensionPageDeniedMessage(message.method, message.params, sessionOnExtensionPage);
@@ -2631,6 +2715,7 @@ export async function paradisProxyBrowserUpgrade(
 						internalPending.delete(peek.id);
 						pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
 						outOfScopeRelease.onInternalResponse(pending.method, pending.sessionId);
+						settleInternalWaiter(peek.id, undefined);
 					}
 					return;
 				}
@@ -2681,6 +2766,7 @@ export async function paradisProxyBrowserUpgrade(
 					internalPending.delete(message.id);
 					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
 					outOfScopeRelease.onInternalResponse(pending.method, pending.sessionId);
+					settleInternalWaiter(message.id, message);
 					if (pending.method === 'Target.attachToTarget') {
 						const sessionId = boundedIdentifier(message.result?.sessionId);
 						if (sessionId && pending.targetId && allowedTargetIds.has(pending.targetId)) {
@@ -2815,6 +2901,7 @@ export async function paradisProxyBrowserUpgrade(
 							return;
 						}
 						noteTargetUrl(childTargetId, params?.targetInfo?.url);
+						noteTargetType(childTargetId, (params?.targetInfo as { type?: unknown } | undefined)?.type);
 						markClientKnownSession(childSessionId, message.sessionId);
 					}
 				} else if (message.method === 'Target.detachedFromTarget') {
@@ -2897,6 +2984,7 @@ export async function paradisProxyBrowserUpgrade(
 				}
 				const targetId = info?.targetId ?? params?.targetId;
 				noteTargetUrl(targetId, info?.url);
+				noteTargetType(targetId, info?.type);
 				const type = info?.type;
 				if (message.method === 'Target.targetCreated' && targetId && info?.attached !== true
 					&& (type === 'page' || type === 'iframe' || type === 'service_worker' || type === 'shared_worker' || type === 'worker' || type === 'prerender' || type === 'webview')) {
@@ -2938,6 +3026,7 @@ export async function paradisProxyBrowserUpgrade(
 						return;
 					}
 					noteTargetUrl(params.targetInfo.targetId, params.targetInfo.url);
+					noteTargetType(params.targetInfo.targetId, params.targetInfo.type);
 					markClientKnownSession(params.sessionId, undefined);
 				}
 				sendToClient({ ...message, params: { ...(params ?? {}), targetInfo: rewriteTargetInfoType(params?.targetInfo) } });

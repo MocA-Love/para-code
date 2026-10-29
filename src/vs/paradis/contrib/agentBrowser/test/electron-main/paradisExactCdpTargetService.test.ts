@@ -858,6 +858,22 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(current.counters.focus, 0);
 	});
 
+	test('does not capture, print or check a BrowserView that shows a browser extension page', async () => {
+		const current = createTestView({ url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html' });
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		const pdf = await service.printExactViewToPdf(exact, JSON.stringify({}));
+		assert.deepStrictEqual({
+			screenshot: await service.captureExactViewScreenshot(exact, {}),
+			rect: await service.captureExactViewScreenshot(exact, { pageRect: { x: 0, y: 0, width: 10, height: 10 } }),
+			rawCapture: await service.beginExactViewRawCapture(exact),
+			legacy: await service.captureScreenshot('view-1', { format: 'png' }),
+			pdf: pdf.ok ? 'printed' : /browser extension page/.test(pdf.message ?? '') ? 'refused' : pdf.reason,
+			captures: current.counters.capture,
+		}, { screenshot: null, rect: null, rawCapture: null, legacy: null, pdf: 'refused', captures: 0 });
+	});
+
 	test('refuses agent input while the exact BrowserView shows a browser extension page', async () => {
 		const current = createTestView({ url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/popup.html' });
 		const registry = createRegistry({ 'view-1': current.view });
