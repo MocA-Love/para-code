@@ -5,7 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
-// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/main/browser/extensions/browser-extension-background-wrapper.ts, src/main/browser/extensions/browser-extension-web-accessible-resources.ts
+// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/main/browser/extensions/browser-extension-background-wrapper.ts, src/main/browser/extensions/browser-extension-web-accessible-resources.ts, src/main/browser/extensions/browser-extension-content-script-manifest.ts
 
 // 拡張機能の写しを、Para Code の詰め物が動く形に書き換える（起動ごと、最初に読み込む前に 1 回）。
 //
@@ -23,6 +23,7 @@ import { promises as fs } from 'fs';
 import { dirname, join, posix } from '../../../../base/common/path.js';
 import {
 	PARADIS_EXTENSION_API_SCHEME,
+	PARADIS_EXTENSION_CONTENT_SCRIPT_FILE,
 	PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE,
 	PARADIS_EXTENSION_PRIVATE_FILES,
 	PARADIS_EXTENSION_SHIM_FILE,
@@ -69,7 +70,7 @@ export interface IParadisRewrittenManifest {
  * （classic の worker の importScripts の相対パスは worker 自身の URL から解決されるため）。
  */
 export function paradisRewriteManifestForShim(manifest: Manifest): IParadisRewrittenManifest {
-	let next: Manifest = { ...manifest };
+	let next: Manifest = paradisWithStaticWebAccessibleResources(paradisWithContentScriptShim({ ...manifest }));
 	const policy = asRecord(manifest.content_security_policy);
 	if (policy && typeof policy.extension_pages === 'string') {
 		next = { ...next, content_security_policy: { ...policy, extension_pages: paradisWithApiConnectSource(policy.extension_pages) } };
@@ -95,6 +96,45 @@ export function paradisRewriteManifestForShim(manifest: Manifest): IParadisRewri
 	return {
 		manifest: { ...next, background: { ...chromiumBackground, service_worker: wrapperPath } },
 		wrapper: { path: wrapperPath, source: `// Written by Para Code: its chrome.* additions, then this extension's own worker.\n${load}` },
+	};
+}
+
+/** content script（拡張機能の isolated world で動くもの）の先頭に、content script の詰め物を入れる。 */
+export function paradisWithContentScriptShim(manifest: Manifest): Manifest {
+	const entries = manifest.content_scripts;
+	if (!Array.isArray(entries)) {
+		return manifest;
+	}
+	return {
+		...manifest,
+		content_scripts: entries.map((entry: unknown) => {
+			const record = asRecord(entry);
+			// MAIN の world で動くものには拡張機能の API が無いので入れない
+			if (!record || !Array.isArray(record.js) || record.js.length === 0 || record.world === 'MAIN') {
+				return entry;
+			}
+			return { ...record, js: [PARADIS_EXTENSION_CONTENT_SCRIPT_FILE, ...record.js.filter(file => file !== PARADIS_EXTENSION_CONTENT_SCRIPT_FILE)] };
+		}),
+	};
+}
+
+/**
+ * web_accessible_resources の `use_dynamic_url` を切る。Electron は content script に起動ごとの URL
+ * （chrome-extension://<乱数>/…）を渡すが、iframe に読み込むと固定の id の URL のページになり、両者の origin が
+ * 食い違う（Electron 43.7.7 で実測）。Bitwarden のページ内メニューは origin を比べて受け答えするので出なくなる。
+ * 代わりに、ページから固定の URL でこれらのファイルを探れるようになる。
+ */
+export function paradisWithStaticWebAccessibleResources(manifest: Manifest): Manifest {
+	const entries = manifest.web_accessible_resources;
+	if (!Array.isArray(entries)) {
+		return manifest;
+	}
+	return {
+		...manifest,
+		web_accessible_resources: entries.map((entry: unknown) => {
+			const record = asRecord(entry);
+			return record && record.use_dynamic_url !== undefined ? { ...record, use_dynamic_url: false } : entry;
+		}),
 	};
 }
 
@@ -297,7 +337,7 @@ async function listFiles(root: string): Promise<string[]> {
  * 写しを詰め物が動く形にする。元の manifest は {@link PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE} に残し、
  * そこから書き換える（P3 の写しには無いので、そのときは今の manifest.json を元として残す）。
  */
-export async function paradisPrepareExtensionCopy(copy: string, token: string, shimSource: string): Promise<IParadisPreparedCopy> {
+export async function paradisPrepareExtensionCopy(copy: string, token: string, shimSource: string, contentScriptSource = ''): Promise<IParadisPreparedCopy> {
 	const originalPath = join(copy, PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE);
 	let originalText: string;
 	try {
@@ -316,6 +356,7 @@ export async function paradisPrepareExtensionCopy(copy: string, token: string, s
 		await fs.writeFile(join(copy, ...rewritten.wrapper.path.split('/')), rewritten.wrapper.source);
 	}
 	await fs.writeFile(join(copy, PARADIS_EXTENSION_SHIM_FILE), shimSource);
+	await fs.writeFile(join(copy, PARADIS_EXTENSION_CONTENT_SCRIPT_FILE), contentScriptSource);
 	await fs.writeFile(join(copy, PARADIS_EXTENSION_TOKEN_FILE), JSON.stringify({ token }));
 	const files = await listFiles(copy);
 	await fs.writeFile(join(copy, 'manifest.json'), JSON.stringify(paradisWithPrivateFilesHidden(rewritten.manifest, files), undefined, '\t'));

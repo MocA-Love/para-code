@@ -5,7 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
-// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/preload/browser-extension-worker-shim.ts, src/preload/browser-extension-main-world.ts, src/preload/browser-extension-storage-relay.ts, src/preload/browser-extension-storage-sync.ts, src/preload/browser-extension-api-surface.ts
+// Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/preload/browser-extension-worker-shim.ts, src/preload/browser-extension-main-world.ts, src/preload/browser-extension-storage-relay.ts, src/preload/browser-extension-storage-sync.ts, src/preload/browser-extension-api-surface.ts, src/preload/browser-extension-inert-apis.ts, src/preload/browser-extension-content-script-relay.ts, src/preload/browser-extension-content-script-api.ts, src/preload/browser-extension-event-filters.ts
 
 // 拡張機能の中（背景の service worker と拡張機能のページ）で動く Para Code の詰め物。Electron 43 に無い
 // chrome.* を足し、main とは私用スキームへの fetch で話す。
@@ -298,14 +298,14 @@ export function paradisInstallExtensionApis(bridge: IParadisShimBridge, surface:
  * worker 自身の書き込みを届ける。ページの onChanged は本物が動くのでそのまま。
  * 残る穴: content script（ウェブページの中）からの書き込みは worker に届かない。
  */
-export function paradisInstallStorageRelay(bridge: IParadisShimBridge, context: 'page' | 'worker', relayNamespace: string): void {
+export function paradisInstallStorageRelay(bridge: IParadisShimBridge, context: 'page' | 'worker', relayNamespace: string): ((areaName: string, changes: Record<string, unknown>) => void) | undefined {
 	type Changes = Record<string, { oldValue?: unknown; newValue?: unknown }>;
 	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
 	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
 	const root = globalThis as { chrome?: unknown; browser?: unknown };
 	const chromeApi = root.chrome;
 	if (!isObject(chromeApi) || !isObject(chromeApi.storage)) {
-		return;
+		return undefined;
 	}
 	const define = (target: ApiObject, key: string, value: unknown): void => {
 		try {
@@ -472,20 +472,23 @@ export function paradisInstallStorageRelay(bridge: IParadisShimBridge, context: 
 			}
 		});
 	}
+	// worker: content script（ウェブページの中）からの知らせを受けて出す口
+	return events ? (areaName: string, changes: Record<string, unknown>) => deliver(areaName, changes) : undefined;
 }
 
-/**
- * Electron は chrome.storage.sync を使えなくしている（「"sync" is not available in this instance of Chrome」、
- * Electron 43.7.7 で実測）。main が手元に保存する場所に置き換え、chrome.storage.onChanged にも main の 'sync' の
- * 変化を届ける。paradisInstallStorageRelay の後に呼ぶ（その onChanged を包むため）。
- */
-export function paradisInstallStorageSync(bridge: IParadisShimBridge, constants: Readonly<Record<string, number>>, syncNamespace: string): void {
+export function paradisInstallStorageSync(
+	bridge: IParadisShimBridge,
+	constants: Readonly<Record<string, number>>,
+	syncNamespace: string,
+	/** worker だけ: 見えた sync の変化を content script へも渡す（`from` はその変化を起こした content script）。 */
+	forward?: (changes: Record<string, unknown>, from?: string) => void,
+): ((method: string, args: unknown[], from?: string) => Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string }>) | undefined {
 	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
 	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
 	const root = globalThis as { chrome?: unknown; browser?: unknown };
 	const chromeApi = root.chrome;
 	if (!isObject(chromeApi) || !isObject(chromeApi.storage)) {
-		return;
+		return undefined;
 	}
 	const define = (target: ApiObject, key: string, value: unknown): void => {
 		try {
@@ -531,7 +534,8 @@ export function paradisInstallStorageSync(bridge: IParadisShimBridge, constants:
 	const storageListeners: Set<Callable>[] = [];
 	let listening = false;
 	const syncListening = (): void => {
-		const active = [areaListeners, ...storageListeners].some(set => set.size > 0);
+		// content script へ渡すときは、ほかの文脈の変化も受けていなければならない
+		const active = forward !== undefined || [areaListeners, ...storageListeners].some(set => set.size > 0);
 		if (active !== listening) {
 			listening = active;
 			bridge.listen(syncNamespace, 'onChanged', active);
@@ -558,7 +562,7 @@ export function paradisInstallStorageSync(bridge: IParadisShimBridge, constants:
 		hasListener: (callback: unknown) => isCallable(callback) && registered.has(callback),
 		hasListeners: () => registered.size > 0,
 	});
-	const deliver = (changes: ApiObject): void => {
+	const deliver = (changes: ApiObject, from?: string): void => {
 		const calls: [Callable, unknown[]][] = [
 			...[...areaListeners].map((callback): [Callable, unknown[]] => [callback, [changes]]),
 			...storageListeners.flatMap(set => [...set].map((callback): [Callable, unknown[]] => [callback, [changes, 'sync']])),
@@ -570,6 +574,7 @@ export function paradisInstallStorageSync(bridge: IParadisShimBridge, constants:
 				console.error(error);
 			}
 		}
+		forward?.(changes, from);
 	};
 	bridge.onEvent((namespace, event, args) => {
 		const [changes] = args;
@@ -635,6 +640,403 @@ export function paradisInstallStorageSync(bridge: IParadisShimBridge, constants:
 		define(storage, 'onChanged', makeEvent(registered, isObject(storage.onChanged) ? storage.onChanged : undefined));
 	}
 	syncListening();
+	// content script の代わりに呼ぶ口（worker が content script からの中継に答えるのに使う）
+	const relayable = new Set(['get', 'getKeys', 'getBytesInUse', ...writes]);
+	return async (name, args, from) => {
+		if (!relayable.has(name)) {
+			return { ok: false, error: `storage.sync.${name} is not available here` };
+		}
+		const reply = await bridge.call(syncNamespace, name, args.map(toWire));
+		if (reply.ok && writes.has(name) && isObject(reply.value) && Object.keys(reply.value).length > 0) {
+			deliver(reply.value, from);
+		}
+		return reply;
+	};
+}
+
+/** content script と worker の間の中継の印（runtime のメッセージに付ける。拡張機能自身の onMessage には見せない）。 */
+export const PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY = 'paradisContentScriptRelay';
+
+/**
+ * Para Code での答えが決まっている API（企業のポリシー・シークレット・オムニボックス・フォントの設定）を、
+ * Chrome と同じ形の空の答えで足す。拡張機能は起動のときにこれらに触るので、main へ聞かずにここで答える。
+ * すでにあるものはそのまま（storage.managed だけは、Electron が「使えない」と失敗するので置き換える）。
+ */
+export function paradisInstallInertApis(context: 'page' | 'worker' | 'content-script'): void {
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown; browser?: unknown };
+	const chromeApi = root.chrome;
+	if (!isObject(chromeApi)) {
+		return;
+	}
+	const apis = isObject(root.browser) && root.browser !== chromeApi ? [chromeApi, root.browser] : [chromeApi];
+	let manifest: ApiObject = {};
+	try {
+		const runtime = chromeApi.runtime;
+		const getManifest = isObject(runtime) ? runtime.getManifest : undefined;
+		const value: unknown = isCallable(getManifest) ? getManifest.call(runtime) : undefined;
+		manifest = isObject(value) ? value : {};
+	} catch {
+		manifest = {};
+	}
+	const permissions = [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []);
+	const define = (target: ApiObject, key: string, value: unknown): void => {
+		try {
+			Object.defineProperty(target, key, { value, configurable: true, enumerable: true, writable: true });
+		} catch {
+			// 凍った本物のオブジェクト: そのままにする
+		}
+	};
+	// Chrome の形: 最後の引数がコールバックなら後で呼び、無ければ Promise
+	const answer = (result: () => unknown) => (...args: unknown[]): unknown => {
+		const last = [...args].reverse().find(arg => arg !== undefined);
+		if (isCallable(last)) {
+			void Promise.resolve().then(() => last(result()));
+			return undefined;
+		}
+		return Promise.resolve(result());
+	};
+	const inertEvent = (): ApiObject => {
+		const listeners = new Set<unknown>();
+		return {
+			addListener: (callback: unknown) => {
+				listeners.add(callback);
+			},
+			removeListener: (callback: unknown) => {
+				listeners.delete(callback);
+			},
+			hasListener: (callback: unknown) => listeners.has(callback),
+			hasListeners: () => listeners.size > 0,
+		};
+	};
+	const install = (namespace: string, members: ApiObject, options: { readonly replace?: readonly string[]; readonly existingOnly?: boolean } = {}): void => {
+		for (const api of apis) {
+			let target: unknown = api;
+			for (const key of namespace.split('.')) {
+				const parent: ApiObject = isObject(target) ? target : {};
+				let next = parent[key];
+				if (!isObject(next) && !options.existingOnly) {
+					next = {};
+					define(parent, key, next);
+				}
+				target = next;
+			}
+			if (!isObject(target)) {
+				continue;
+			}
+			for (const [key, value] of Object.entries(members)) {
+				if (target[key] === undefined || options.replace?.includes(key)) {
+					define(target, key, value);
+				}
+			}
+		}
+	};
+	// 企業のポリシーが無い Chrome: 空の、読むだけの場所
+	install('storage.managed', {
+		get: answer(() => ({})),
+		getKeys: answer(() => []),
+		getBytesInUse: answer(() => 0),
+		onChanged: inertEvent(),
+	}, { replace: ['get', 'getKeys', 'getBytesInUse'], existingOnly: true });
+	if (context !== 'worker') {
+		// 開いた shadow root だけ（isolated world からは、ページが付けた閉じた root は見えない）
+		install('dom', { openOrClosedShadowRoot: (element: unknown) => isObject(element) && isObject(element.shadowRoot) ? element.shadowRoot : null });
+	}
+	if (context === 'content-script') {
+		install('extension', { inIncognitoContext: false });
+		return;
+	}
+	if (context === 'page') {
+		// ほかの拡張機能のページの window は渡せない
+		install('extension', { getViews: () => [] });
+	}
+	install('runtime', { onPerformanceWarning: inertEvent() });
+	install('permissions', { addHostAccessRequest: answer(() => undefined), removeHostAccessRequest: answer(() => undefined) });
+	if (manifest.omnibox !== undefined) {
+		install('omnibox', {
+			setDefaultSuggestion: answer(() => undefined),
+			onInputStarted: inertEvent(),
+			onInputChanged: inertEvent(),
+			onInputEntered: inertEvent(),
+			onInputCancelled: inertEvent(),
+			onDeleteSuggestion: inertEvent(),
+			OnInputEnteredDisposition: { CURRENT_TAB: 'currentTab', NEW_FOREGROUND_TAB: 'newForegroundTab', NEW_BACKGROUND_TAB: 'newBackgroundTab' },
+		});
+	}
+	if (permissions.includes('fontSettings')) {
+		const generic = ['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui'];
+		install('fontSettings', {
+			getFontList: answer(() => generic.map(fontId => ({ fontId, displayName: fontId }))),
+			getFont: answer(() => ({ fontId: '', levelOfControl: 'not_controllable' })),
+			setFont: answer(() => undefined),
+			clearFont: answer(() => undefined),
+			onFontChanged: inertEvent(),
+		});
+	}
+}
+
+/**
+ * content script との中継の口（runtime.connect のポート、名前は `relayKey`）。拡張機能の runtime.onConnect の
+ * 受け手には、このポートを見せない。`answer` を渡すと（worker）、拡張機能自身の content script（タブの中）からの
+ * 頼みに答え、返り値の関数で sync の変化をつないでいる content script へ送る。ページは答えない（undefined を返す）。
+ *
+ * runtime のメッセージ（onMessage）は使わない。受け手を足すと、受け手の無い文脈への sendMessage が失敗せず
+ * undefined を返すように変わってしまうため。
+ */
+export function paradisInstallContentScriptRelayHub(
+	relayKey: string,
+	answer?: (namespace: string, method: string, args: unknown[], from?: string) => Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string }>,
+): ((changes: Record<string, unknown>, from?: string) => void) | undefined {
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown; browser?: unknown };
+	const chromeApi = root.chrome;
+	const runtime = isObject(chromeApi) ? chromeApi.runtime : undefined;
+	const native = isObject(runtime) ? runtime.onConnect : undefined;
+	if (!isObject(runtime) || !isObject(native) || !isCallable(native.addListener)) {
+		return undefined;
+	}
+	const nativeEvent = native;
+	const call = (name: string, ...args: unknown[]): unknown => {
+		const method = nativeEvent[name];
+		return isCallable(method) ? method.apply(nativeEvent, args) : undefined;
+	};
+	const isRelayPort = (port: unknown): boolean => isObject(port) && port.name === relayKey;
+	const wrapped = new Map<Callable, Callable>();
+	const event: ApiObject = {
+		addListener: (callback: unknown) => {
+			if (!isCallable(callback) || wrapped.has(callback)) {
+				return;
+			}
+			const listener: Callable = (port, ...rest) => isRelayPort(port) ? undefined : callback(port, ...rest);
+			wrapped.set(callback, listener);
+			call('addListener', listener);
+		},
+		removeListener: (callback: unknown) => {
+			const listener = isCallable(callback) ? wrapped.get(callback) : undefined;
+			if (listener && isCallable(callback)) {
+				wrapped.delete(callback);
+				call('removeListener', listener);
+			}
+		},
+		hasListener: (callback: unknown) => isCallable(callback) && wrapped.has(callback),
+		hasListeners: () => wrapped.size > 0,
+	};
+	const installed = new Set<object>();
+	for (const api of [chromeApi, root.browser]) {
+		const target = isObject(api) ? api.runtime : undefined;
+		if (!isObject(target) || installed.has(target)) {
+			continue;
+		}
+		installed.add(target);
+		try {
+			Object.defineProperty(target, 'onConnect', { value: event, configurable: true, enumerable: true, writable: true });
+		} catch {
+			// 凍った本物のオブジェクト: そのままにする
+		}
+	}
+	if (!answer) {
+		return undefined;
+	}
+	const ownId = runtime.id;
+	const ports = new Set<ApiObject>();
+	call('addListener', (port: unknown) => {
+		const sender = isObject(port) ? port.sender : undefined;
+		// つなぐのは、この拡張機能自身の content script（タブの中）だけ
+		if (!isObject(port) || !isRelayPort(port) || !isObject(sender) || sender.id !== ownId || !isObject(sender.tab)) {
+			return;
+		}
+		const onMessage = port.onMessage;
+		const onDisconnect = port.onDisconnect;
+		const post = port.postMessage;
+		if (!isObject(onMessage) || !isCallable(onMessage.addListener) || !isCallable(post)) {
+			return;
+		}
+		ports.add(port);
+		if (isObject(onDisconnect) && isCallable(onDisconnect.addListener)) {
+			onDisconnect.addListener(() => ports.delete(port));
+		}
+		onMessage.addListener((request: unknown) => {
+			if (!isObject(request) || typeof request.id !== 'number' || typeof request.namespace !== 'string' || typeof request.method !== 'string' || !Array.isArray(request.args)) {
+				return;
+			}
+			const id = request.id;
+			const from = typeof request.from === 'string' ? request.from : undefined;
+			const reply = (value: unknown) => {
+				try {
+					post.call(port, { id, reply: value });
+				} catch {
+					// content script のフレームが閉じた
+				}
+			};
+			answer(request.namespace, request.method, request.args, from).then(reply, () => reply({ ok: false, error: 'Para Code could not handle this extension call' }));
+		});
+	});
+	return (changes, from) => {
+		for (const port of ports) {
+			try {
+				(port.postMessage as Callable).call(port, { changes, from });
+			} catch {
+				ports.delete(port);
+			}
+		}
+	};
+}
+
+/**
+ * content script から main への口。content script はウェブページの中で動き、私用スキームに届かない
+ * （呼び出し元の origin がウェブページになる）ので、拡張機能自身の worker へポートでつないで頼み、worker が
+ * main と話す。sync の変化も同じポートで届く（`from` で自分の書き込みを二重に出さない）。worker が止まって
+ * ポートが切れたら、受けている間はつなぎ直す。
+ */
+export function paradisCreateContentScriptRelayBridge(relayKey: string, syncNamespace: string, reconnectDelayMs: number): IParadisShimBridge | undefined {
+	type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown };
+	const chromeApi = isObject(root.chrome) ? root.chrome : undefined;
+	const runtime = chromeApi && isObject(chromeApi.runtime) ? chromeApi.runtime : undefined;
+	const connect = runtime?.connect;
+	if (!runtime || !isCallable(connect)) {
+		return undefined;
+	}
+	// worker が無い拡張機能は、中継に答える相手がいない
+	let hasWorker = false;
+	try {
+		const getManifest = runtime.getManifest;
+		const manifest: unknown = isCallable(getManifest) ? getManifest.call(runtime) : undefined;
+		const background = isObject(manifest) ? manifest.background : undefined;
+		hasWorker = isObject(background) && typeof background.service_worker === 'string';
+	} catch {
+		hasWorker = false;
+	}
+	if (!hasWorker) {
+		return undefined;
+	}
+	const isReply = (value: unknown): value is Reply => isObject(value) && (value.ok === true || (value.ok === false && typeof value.error === 'string'));
+	const from = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+	const handlers: ((namespace: string, event: string, args: unknown[]) => void)[] = [];
+	const pending = new Map<number, (reply: Reply) => void>();
+	let nextId = 1;
+	let listening = false;
+	let port: ApiObject | undefined;
+	const open = (): ApiObject | undefined => {
+		if (port) {
+			return port;
+		}
+		let opened: unknown;
+		try {
+			opened = connect.call(runtime, { name: relayKey });
+		} catch {
+			return undefined;
+		}
+		const messages = isObject(opened) ? opened.onMessage : undefined;
+		if (!isObject(opened) || !isObject(messages) || !isCallable(messages.addListener)) {
+			return undefined;
+		}
+		const current = opened;
+		port = current;
+		messages.addListener((message: unknown) => {
+			if (!isObject(message)) {
+				return;
+			}
+			if (typeof message.id === 'number') {
+				const resolve = pending.get(message.id);
+				pending.delete(message.id);
+				resolve?.(isReply(message.reply) ? message.reply : { ok: false, error: 'Para Code could not reach the extension' });
+			} else if (isObject(message.changes) && message.from !== from) {
+				for (const handler of handlers) {
+					handler(syncNamespace, 'onChanged', [message.changes]);
+				}
+			}
+		});
+		const onDisconnect = current.onDisconnect;
+		if (isObject(onDisconnect) && isCallable(onDisconnect.addListener)) {
+			onDisconnect.addListener(() => {
+				if (port === current) {
+					port = undefined;
+				}
+				for (const resolve of pending.values()) {
+					resolve({ ok: false, error: 'Para Code could not reach the extension' });
+				}
+				pending.clear();
+				// worker が止まった。変化を受けている間は、つなぎ直す
+				if (listening) {
+					setTimeout(() => {
+						if (listening) {
+							open();
+						}
+					}, reconnectDelayMs);
+				}
+			});
+		}
+		return current;
+	};
+	return {
+		call: (namespace, method, args) => new Promise<Reply>(resolve => {
+			const current = open();
+			const post = current?.postMessage;
+			if (!current || !isCallable(post)) {
+				resolve({ ok: false, error: 'Para Code could not reach the extension' });
+				return;
+			}
+			const id = nextId++;
+			pending.set(id, resolve);
+			try {
+				post.call(current, { id, namespace, method, args, from });
+			} catch (error) {
+				pending.delete(id);
+				resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
+			}
+		}),
+		listen: (namespace, _event, active) => {
+			if (namespace !== syncNamespace) {
+				return;
+			}
+			listening = active;
+			if (active) {
+				open();
+			}
+		},
+		onEvent: handler => {
+			handlers.push(handler);
+		},
+	};
+}
+
+/** content script の詰め物に渡すもの（main が文字列にして埋め込む）。 */
+export interface IParadisContentScriptOptions {
+	readonly relayKey: string;
+	readonly syncConstants: Readonly<Record<string, number>>;
+	readonly relayNamespace: string;
+	readonly syncNamespace: string;
+	readonly installInertApis: typeof paradisInstallInertApis;
+	readonly createContentScriptRelayBridge: typeof paradisCreateContentScriptRelayBridge;
+	readonly reconnectDelayMs: number;
+	readonly installStorageRelay: typeof paradisInstallStorageRelay;
+	readonly installStorageSync: typeof paradisInstallStorageSync;
+}
+
+/**
+ * content script の詰め物の入口（manifest の各 content script の先頭に入れる）。Chrome にあって Electron に
+ * 無い content script の API を足し、worker がある拡張機能では chrome.storage.sync と、storage.local・session の
+ * 書き込みの worker への知らせを、worker を通して行う。
+ */
+export function paradisContentScriptMain(options: IParadisContentScriptOptions): void {
+	const root = globalThis as { chrome?: unknown; __paradisContentScriptApi?: true };
+	// 同じフレームの content script は 1 つの world を共有するので、1 回だけ入れる
+	if (root.__paradisContentScriptApi || root.chrome === null || typeof root.chrome !== 'object') {
+		return;
+	}
+	root.__paradisContentScriptApi = true;
+	options.installInertApis('content-script');
+	const bridge = options.createContentScriptRelayBridge(options.relayKey, options.syncNamespace, options.reconnectDelayMs);
+	if (bridge) {
+		// storage.local・session の書き込みは 'page' と同じく知らせ（中継で worker へ届く）、sync は worker を通す
+		options.installStorageRelay(bridge, 'page', options.relayNamespace);
+		options.installStorageSync(bridge, options.syncConstants, options.syncNamespace);
+	}
 }
 
 /** {@link paradisExtensionShimMain} に渡すもの（main が文字列にして埋め込む）。 */
@@ -650,6 +1052,9 @@ export interface IParadisShimOptions {
 	readonly installApis: typeof paradisInstallExtensionApis;
 	readonly installStorageRelay: typeof paradisInstallStorageRelay;
 	readonly installStorageSync: typeof paradisInstallStorageSync;
+	readonly installInertApis: typeof paradisInstallInertApis;
+	readonly installContentScriptRelayHub: typeof paradisInstallContentScriptRelayHub;
+	readonly relayKey: string;
 	/** 再接続までの待ち（ミリ秒）。 */
 	readonly reconnectDelayMs: number;
 }
@@ -794,6 +1199,27 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 	};
 	void connectEvents();
 	options.installApis(bridge, options.surface);
-	options.installStorageRelay(bridge, isWorker ? 'worker' : 'page', options.relayNamespace);
-	options.installStorageSync(bridge, options.syncConstants, options.syncNamespace);
+	options.installInertApis(isWorker ? 'worker' : 'page');
+	const deliverFromContentScript = options.installStorageRelay(bridge, isWorker ? 'worker' : 'page', options.relayNamespace);
+	if (!isWorker) {
+		// ページは中継に答えないが、中継のポートを拡張機能の onConnect に見せない
+		options.installContentScriptRelayHub(options.relayKey);
+		options.installStorageSync(bridge, options.syncConstants, options.syncNamespace);
+		return;
+	}
+	// worker: 拡張機能自身の content script からの中継に答える（sync は main へ、storage の知らせは worker の受け手へ）
+	// sync の口は中継の口を作った後にできる（sync の変化を中継の口から送るため）
+	const relays: { sync?: ReturnType<typeof options.installStorageSync> } = {};
+	const broadcast = options.installContentScriptRelayHub(options.relayKey, async (namespace, method, args, from) => {
+		if (namespace === options.syncNamespace && relays.sync) {
+			return relays.sync(method, args, from);
+		}
+		const [areaName, changes] = args;
+		if (namespace === options.relayNamespace && method === 'report' && deliverFromContentScript && (areaName === 'local' || areaName === 'session') && isRecord(changes)) {
+			deliverFromContentScript(areaName, changes);
+			return { ok: true, value: undefined };
+		}
+		return { ok: false, error: `${namespace}.${method} is not available here` };
+	});
+	relays.sync = options.installStorageSync(bridge, options.syncConstants, options.syncNamespace, broadcast);
 }
