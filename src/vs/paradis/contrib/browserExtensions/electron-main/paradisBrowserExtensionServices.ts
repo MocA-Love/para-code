@@ -54,7 +54,7 @@ export interface IParadisManagedExtension {
 	readonly id: string;
 	readonly name: string;
 	readonly version: string;
-	readonly source: 'unpacked';
+	readonly source: 'unpacked' | 'webstore';
 	readonly enabled: boolean;
 	readonly permissions: readonly string[];
 	readonly hostPermissions: readonly string[];
@@ -591,8 +591,8 @@ export class ParadisBrowserExtensionServices {
 			optionsUrl: options ? `chrome-extension://${installed.id}/${options.replace(/^\/+/, '')}` : '',
 			...(string('homepage_url') ? { homepageUrl: string('homepage_url') } : {}), ...(icons.length > 0 ? { icons } : {}),
 			permissions: [...installed.permissions], hostPermissions: [...installed.hostPermissions],
-			// Chrome はフォルダから入れたものを開発用として出す
-			installType: 'development',
+			// Chrome はフォルダから入れたものを開発用、ストアから入れたものを normal として出す
+			installType: installed.source === 'webstore' ? 'normal' : 'development',
 		};
 	}
 

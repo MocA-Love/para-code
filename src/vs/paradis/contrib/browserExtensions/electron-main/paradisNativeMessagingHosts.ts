@@ -31,7 +31,7 @@ export const PARADIS_NATIVE_HOST_ERRORS = {
 
 /** manifest を探す場所（フォルダ、または Windows のレジストリのキー。キーの既定の値が manifest のパス）。 */
 export type ParadisNativeHostSource =
-	| { readonly kind: 'folder'; readonly folder: string }
+	| { readonly kind: 'folder'; readonly folder: string; /** Para Code の専用のフォルダ。 */ readonly own?: true }
 	| { readonly kind: 'registry'; readonly root: 'HKCU' | 'HKLM'; readonly key: string };
 
 /** Para Code の専用のフォルダの名前（userData の下）。利用者が Para Code のためだけにホストを登録・上書きできる。 */
@@ -44,7 +44,7 @@ const WINDOWS_BROWSERS = ['Google\\Chrome', 'Chromium', 'Microsoft\\Edge', 'Brav
 /** manifest を探す場所（順番どおり）。 */
 export function paradisNativeHostSources(environment: { readonly platform: NodeJS.Platform; readonly homeDir: string; readonly userDataDir: string; readonly xdgConfigHome?: string }): ParadisNativeHostSource[] {
 	const path = environment.platform === 'win32' ? win32 : posix;
-	const own: ParadisNativeHostSource = { kind: 'folder', folder: path.join(environment.userDataDir, PARADIS_NATIVE_MESSAGING_HOSTS_FOLDER) };
+	const own: ParadisNativeHostSource = { kind: 'folder', folder: path.join(environment.userDataDir, PARADIS_NATIVE_MESSAGING_HOSTS_FOLDER), own: true };
 	const folders = (list: readonly string[]): ParadisNativeHostSource[] => list.map(folder => ({ kind: 'folder', folder }));
 	if (environment.platform === 'darwin') {
 		const support = posix.join(environment.homeDir, 'Library/Application Support');
@@ -182,6 +182,15 @@ export async function paradisResolveNativeHost(name: unknown, extensionId: strin
 		}
 	}
 	return { ok: false, error: forbidden ? PARADIS_NATIVE_HOST_ERRORS.forbidden : PARADIS_NATIVE_HOST_ERRORS.notFound };
+}
+
+/**
+ * Para Code の専用のフォルダだけを探す形にする。フォルダから読み込んだ拡張機能（開発用）は、manifest の key を写せば
+ * ストアの拡張機能と同じ id になれる。ほかのブラウザに登録されたホスト（1Password など）の allowed_origins はストアの id を
+ * 書いているので、そのままではなりすませる。専用のフォルダに置くのは利用者が Para Code のために決めたことなので通す。
+ */
+export function paradisOwnFolderNativeHostLookup(lookup: IParadisNativeHostLookup): IParadisNativeHostLookup {
+	return { ...lookup, sources: lookup.sources.filter(source => source.kind === 'folder' && source.own === true) };
 }
 
 /** Windows のレジストリの値の %NAME% を環境変数で置き換える（REG_EXPAND_SZ。無い名前はそのまま）。 */

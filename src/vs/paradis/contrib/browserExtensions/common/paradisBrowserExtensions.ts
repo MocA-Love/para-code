@@ -47,8 +47,12 @@ export function paradisIsExtensionId(value: unknown): value is string {
 	return typeof value === 'string' && /^[a-p]{32}$/.test(value);
 }
 
-/** 入手の経路。P3 はフォルダから読み込むものだけ（ストアは P7）。 */
-export type ParadisBrowserExtensionSource = 'unpacked';
+/**
+ * 入手の経路。`unpacked` はフォルダから読み込んだもの（開発用）、`webstore` は Chrome ウェブストアから落とし、main がストアの
+ * 署名を確かめて入れたもの（P7）。`webstore` を書くのは main がストアの署名を確かめたときだけ（manifest の中身や拡張機能の
+ * 申告では決めない）。ネイティブメッセージングで、ほかのブラウザに登録されたホストを使えるのは `webstore` だけ。
+ */
+export type ParadisBrowserExtensionSource = 'unpacked' | 'webstore';
 
 /** インストールした拡張機能 1 つ（台帳の 1 行）。 */
 export interface IParadisInstalledBrowserExtension {
@@ -57,7 +61,7 @@ export interface IParadisInstalledBrowserExtension {
 	readonly version: string;
 	readonly manifestVersion: number;
 	readonly source: ParadisBrowserExtensionSource;
-	/** 利用者が選んだ元のフォルダ（再読み込みに使う）。 */
+	/** 利用者が選んだ元のフォルダ（再読み込みに使う）。ストアから入れたものは、Para Code が入れたフォルダ（`path` と同じ）。 */
 	readonly sourcePath: string;
 	/** Para Code が読み込む写し（Para Code が持つフォルダ）。 */
 	readonly path: string;
@@ -132,7 +136,9 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 			continue;
 		}
 		// touchesPages が無い行（P3 の版で足したもの）は、知らせ損ねないよう読み書きできる側に倒す
-		extensions.push({ id: entry.id, name: entry.name, version: entry.version, manifestVersion: entry.manifestVersion, source: 'unpacked', sourcePath: entry.sourcePath, path: entry.path, installedAt: entry.installedAt, touchesPages: entry.touchesPages !== false, ...(typeof entry.generatedKey === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(entry.generatedKey) ? { generatedKey: entry.generatedKey } : {}) });
+		// ストアの行は、古い版（P7 より前）が読めるよう `source: 'unpacked'` と `webstore: true` で書く（paradisSerializeExtensionsLedger）
+		const source: ParadisBrowserExtensionSource = entry.webstore === true ? 'webstore' : 'unpacked';
+		extensions.push({ id: entry.id, name: entry.name, version: entry.version, manifestVersion: entry.manifestVersion, source, sourcePath: entry.sourcePath, path: entry.path, installedAt: entry.installedAt, touchesPages: entry.touchesPages !== false, ...(typeof entry.generatedKey === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(entry.generatedKey) ? { generatedKey: entry.generatedKey } : {}) });
 	}
 	const byProfile = (value: unknown): Record<string, string[]> => {
 		const result: Record<string, string[]> = {};
@@ -158,6 +164,15 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 		removed.push({ id, cleared });
 	}
 	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS), pinned };
+}
+
+/**
+ * 台帳を保存する形にする。ストアの行は `source: 'unpacked'` と `webstore: true` で書く。P7 より前の版は `source` が
+ * `unpacked` でない行を捨て、その後に台帳を書くと、有効・ピン留めの記録ごと消える。この形なら古い版でもフォルダから
+ * 読み込んだ拡張機能として動き続ける（古い版が台帳を書き直すと `webstore` の印は消え、開発用の扱いに下がる。安全な側）。
+ */
+export function paradisSerializeExtensionsLedger(ledger: IParadisBrowserExtensionsLedger): unknown {
+	return { ...ledger, extensions: ledger.extensions.map(extension => extension.source === 'webstore' ? { ...extension, source: 'unpacked', webstore: true } : extension) };
 }
 
 /**
@@ -353,13 +368,26 @@ export interface IParadisBrowserExtensionsState {
 /** フォルダから足した結果。 */
 export type IParadisAddExtensionResult =
 	| { readonly ok: true; readonly extension: IParadisInstalledBrowserExtension }
-	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'linkOutside' | 'hardLink' | 'nameClash' | 'reservedName' | 'changed' | 'tooLarge' | 'restartNeeded' | 'failed'; readonly detail?: string };
+	| { readonly ok: false; readonly reason: 'inactive' | 'notFolder' | 'noManifest' | 'invalidManifest' | 'tooMany' | 'linkOutside' | 'hardLink' | 'nameClash' | 'reservedName' | 'changed' | 'tooLarge' | 'restartNeeded' | 'failed' | ParadisWebStoreFailure; readonly detail?: string };
+
+/**
+ * ストアから足せなかった理由。`invalidInput`: リンクか id として読めない。`cancelled`: 確認で取り消した。`busy`: 同じ拡張機能を
+ * 入れている途中。`alreadyAdded`: その場所で入っている。`sameIdUnpacked`: 同じ id をフォルダから読み込んである。
+ * `sameIdWebStore`: 同じ id をストアから入れてある（フォルダからは足せない）。`webStoreFailed`: 落とす・確かめるのに失敗した。
+ * `noPrompt`: 確認を出せない（ウィンドウが無いなど）。
+ */
+export type ParadisWebStoreFailure = 'invalidInput' | 'cancelled' | 'busy' | 'alreadyAdded' | 'sameIdUnpacked' | 'sameIdWebStore' | 'webStoreFailed' | 'noPrompt';
 
 /** main の拡張機能の管理（{@link PARADIS_BROWSER_EXTENSIONS_CHANNEL}）。 */
 export interface IParadisBrowserExtensionsMainService {
 	getState(): Promise<IParadisBrowserExtensionsState>;
 	/** 展開済みのフォルダから足し、`profile` で有効にする。 */
 	addUnpacked(folder: string, profile: string): Promise<IParadisAddExtensionResult>;
+	/**
+	 * Chrome ウェブストアのリンクか id から落とし、ストアの署名を確かめ、確認のダイアログで権限を見せてから足す。`profile` で有効に
+	 * する。`profileLabel` は確認に出す場所の名前（画面に出すだけ）。外と話すのはこの呼び出しのときだけ。
+	 */
+	addFromWebStore(input: string, profile: string, profileLabel: string): Promise<IParadisAddExtensionResult>;
 	/** フォルダから読み込み直す（元のフォルダの今の中身で写しを作り直す）。 */
 	reloadUnpacked(id: string): Promise<IParadisAddExtensionResult>;
 	setEnabled(id: string, profile: string, enabled: boolean): Promise<void>;

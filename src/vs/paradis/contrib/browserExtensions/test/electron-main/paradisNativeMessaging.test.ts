@@ -131,13 +131,17 @@ suite('ParadisNativeMessaging hosts', () => {
 			windows: paradisNativeHostCommand('win32', 'C:\\Program Files\\Host\\host.exe', [`chrome-extension://${ID}/`, '--parent-window=0'], 'C:\\Windows\\System32\\cmd.exe'),
 			percent: paradisNativeHostCommand('win32', 'C:\\%TEMP%\\host.exe', [], 'C:\\Windows\\System32\\cmd.exe'),
 			quote: paradisNativeHostCommand('win32', 'C:\\a"b\\host.exe', [], undefined),
-			environment: paradisNativeHostEnvironment({ PATH: '/bin', ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--inspect', VSCODE_PID: '1', PARA_CODE_TERMINAL_PANE_ID: 'secret', HOME: '/home/me' }),
+			environment: paradisNativeHostEnvironment({
+				PATH: '/bin', HOME: '/home/me', ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--inspect', CHROME_CRASHPAD_PIPE_NAME: 'pipe', VSCODE_PID: '1',
+				PARA_CODE_TERMINAL_PANE_ID: 'pane', PARA_CODE_VOICE_TOKEN: 'secret', PARA_UPDATE_CHANNEL: 'beta', PARADIS_MOBILE_TRAFFIC_DIAGNOSTICS: '1', PARACODE_PROJECT_ROOT_PATH: '/p', paradis_lower: 'x',
+				PARALLEL: 'kept',
+			}),
 		}, {
 			posix: { file: '/opt/host dir/host', args: [`chrome-extension://${ID}/`], verbatim: false },
 			windows: { file: 'C:\\Windows\\System32\\cmd.exe', args: ['/d', '/s', '/c', `""C:\\Program Files\\Host\\host.exe" chrome-extension://${ID}/ --parent-window=0"`], verbatim: true },
 			percent: undefined,
 			quote: undefined,
-			environment: { PATH: '/bin', HOME: '/home/me' },
+			environment: { PATH: '/bin', HOME: '/home/me', PARALLEL: 'kept' },
 		});
 	});
 });
@@ -212,7 +216,7 @@ process.stdin.on('end', () => process.exit(0));
 suite('ParadisNativeMessaging ports', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	async function setup(permissions: readonly string[]) {
+	async function setup(permissions: readonly string[], options: { readonly fromWebStore?: boolean; readonly own?: boolean } = {}) {
 		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-native-'));
 		const hostScript = join(root, 'host.js');
 		await fs.writeFile(hostScript, FAKE_HOST);
@@ -243,7 +247,7 @@ suite('ParadisNativeMessaging ports', () => {
 		const runWorker = () => onStatus?.({ versionId: 1, runningStatus: 'running' });
 		const host = new ParadisExtensionApiHost(silentLog);
 		const lookup: IParadisNativeHostLookup = {
-			platform: 'linux', sources: [{ kind: 'folder', folder: root }],
+			platform: 'linux', sources: [options.own ? { kind: 'folder', folder: root, own: true } : { kind: 'folder', folder: root }],
 			readFile: path => fs.readFile(path, 'utf8').catch(() => undefined),
 			isFile: path => fs.stat(path).then(stat => stat.isFile(), () => false),
 			readRegistryDefault: async () => undefined,
@@ -252,10 +256,10 @@ suite('ParadisNativeMessaging ports', () => {
 		// 偽のホストは JS なので、このテストの Electron を Node として動かす（本物はホストを直接起動する）
 		const spawner: ParadisNativeHostSpawner = (program, args, options) => {
 			spawned.push({ program, args, env: options.env });
-			return spawn(process.execPath, [program, ...args], { cwd: options.cwd, detached: options.detached, env: { ...options.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+			return spawn(process.execPath, [program, ...args], { cwd: options.cwd, env: { ...options.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
 		};
 		process.env.PARA_CODE_TEST_SECRET = '1';
-		const native = new ParadisNativeMessaging(host, () => lookup, silentLog, spawner, 'linux');
+		const native = new ParadisNativeMessaging(host, () => lookup, silentLog, spawner, 'linux', () => options.fromWebStore ?? true);
 		const attached = host.attachSession(session, 'default');
 		const token = host.tokenFor(ID);
 		const post = (endpoint: string, connection: string, request?: unknown) => {
@@ -357,6 +361,40 @@ suite('ParadisNativeMessaging ports', () => {
 			});
 		} finally {
 			await dispose();
+		}
+	});
+
+	test('closes the ports of a page whose context was pushed out by newer pages', async () => {
+		const { call, events, native, dispose } = await setup(['nativeMessaging']);
+		try {
+			const first = await events('page-first');
+			await call('page-first', 'connect', ['p1', 'com.example.echo']);
+			const openBefore = native.openPortCount;
+			// 1 つの拡張機能が持てるページの文脈は 200 まで。それを越えると古いものから追い出す
+			const later: { cancel(): Promise<void> }[] = [];
+			for (let index = 0; index < 200; index++) {
+				later.push(await events(`page-${index}`));
+			}
+			assert.deepStrictEqual({ openBefore, openAfter: native.openPortCount, firstStream: await first.next() }, { openBefore: 1, openAfter: 0, firstStream: undefined });
+			await Promise.all(later.map(page => page.cancel()));
+		} finally {
+			await dispose();
+		}
+	});
+
+	test('lets an extension loaded from a folder use only hosts in Para Code\'s own folder', async () => {
+		const elsewhere = await setup(['nativeMessaging'], { fromWebStore: false });
+		const own = await setup(['nativeMessaging'], { fromWebStore: false, own: true });
+		try {
+			assert.deepStrictEqual({
+				// ほかのブラウザに登録されたホストは、ストアの id へのなりすましになりうるので断る
+				elsewhere: await elsewhere.call('worker', 'sendNativeMessage', ['com.example.echo', JSON.stringify({ once: true })]),
+				elsewhereSpawned: elsewhere.spawned.length,
+				own: ((await own.call('worker', 'sendNativeMessage', ['com.example.echo', JSON.stringify({ once: true })])) as { ok: boolean }).ok,
+			}, { elsewhere: { ok: false, error: PARADIS_NATIVE_HOST_ERRORS.forbidden }, elsewhereSpawned: 0, own: true });
+		} finally {
+			await elsewhere.dispose();
+			await own.dispose();
 		}
 	});
 
