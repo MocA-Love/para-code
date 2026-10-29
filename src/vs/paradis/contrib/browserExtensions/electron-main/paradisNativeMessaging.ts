@@ -29,7 +29,7 @@ import { randomUUID } from 'crypto';
 import { posix, win32 } from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
-import { IParadisNativeHostLookup, PARADIS_NATIVE_HOST_ERRORS, paradisCreateNativeMessageReader, paradisEncodeNativeMessage, paradisResolveNativeHost } from './paradisNativeMessagingHosts.js';
+import { IParadisNativeHostLookup, PARADIS_NATIVE_HOST_ERRORS, PARADIS_NATIVE_MESSAGING_HOSTS_FOLDER, paradisCreateNativeMessageReader, paradisEncodeNativeMessage, paradisOwnFolderNativeHostLookup, paradisResolveNativeHost } from './paradisNativeMessagingHosts.js';
 
 /** main だけが使う名前空間（詰め物の connectNative・sendNativeMessage が呼ぶ。chrome には出さない）。 */
 export const PARADIS_NATIVE_MESSAGING_NAMESPACE = 'paradisNativeMessaging';
@@ -258,6 +258,8 @@ export class ParadisNativeMessaging implements IDisposable {
 		private readonly _logService: { warn(message: string, ...args: unknown[]): void },
 		private readonly _spawner: ParadisNativeHostSpawner = (program, args, options) => spawn(program, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true }),
 		private readonly _platform: NodeJS.Platform = process.platform,
+		/** main がストアの署名を確かめて入れた拡張機能か（台帳の source。ほかのブラウザに登録されたホストを使えるのはこれだけ）。 */
+		private readonly _fromWebStore: (extensionId: string) => boolean = () => true,
 	) {
 		// 文脈が終わった（ページが閉じた・worker が止まった・拡張機能を外した）: そのポートのホストを終わらせる
 		this._disposable = _host.onDidCloseContext((session, extensionId, connection) => this._closeWhere(port => port.session === session && port.extensionId === extensionId && (connection === undefined || port.connection === connection)));
@@ -315,7 +317,14 @@ export class ParadisNativeMessaging implements IDisposable {
 		const port: INativePort = { key: `${key}|${randomUUID()}`, session: caller.session, extensionId: caller.extension.id, connection: caller.connection, host: undefined, closed: false, task: caller.fromWorker ? this._host.keepWorkerAlive(caller.session, caller.extension.id) : undefined, onEvent };
 		this._ports.set(port.key, port);
 		try {
-			const resolved = await paradisResolveNativeHost(application, caller.extension.id, this._lookup(), message => this._logService.warn(`[paradis] ${message}`));
+			const lookup = this._lookup();
+			const fromWebStore = this._fromWebStore(caller.extension.id);
+			let resolved = await paradisResolveNativeHost(application, caller.extension.id, fromWebStore ? lookup : paradisOwnFolderNativeHostLookup(lookup), message => this._logService.warn(`[paradis] ${message}`));
+			if (!resolved.ok && !fromWebStore && resolved.error !== PARADIS_NATIVE_HOST_ERRORS.invalidName && (await paradisResolveNativeHost(application, caller.extension.id, lookup)).ok) {
+				// ほかのブラウザに登録されたホストは、フォルダから読み込んだ拡張機能には使わせない（ストアの id へのなりすましになるため）
+				this._logService.warn(`[paradis] refused native host ${String(application)} for ${caller.extension.id}: it is registered for other browsers, and an extension loaded from a folder can only use hosts in Para Code's own ${PARADIS_NATIVE_MESSAGING_HOSTS_FOLDER} folder`);
+				resolved = { ok: false, error: PARADIS_NATIVE_HOST_ERRORS.forbidden };
+			}
 			if (!resolved.ok) {
 				throw new ParadisExtensionApiError(resolved.error);
 			}
