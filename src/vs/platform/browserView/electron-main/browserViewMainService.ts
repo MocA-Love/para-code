@@ -27,6 +27,7 @@ import { URI } from '../../../base/common/uri.js';
 import { ILogService } from '../../log/common/log.js';
 import { IAgentNetworkFilterService } from '../../networkFilter/common/networkFilterService.js';
 import { paradisConsumeAgentContextMenuSuppression } from '../../../paradis/contrib/agentBrowser/electron-main/paradisAgentContextMenu.js'; // PARA-PATCH: suppress the native context menu for agent right-clicks
+import { paradisAppendBrowserExtensionMenuItems } from '../../../paradis/contrib/browserExtensions/electron-main/paradisBrowserExtensionMenuHook.js'; // PARA-PATCH: Chrome extension context menu items (experimental)
 import { formatBrowserViewAccessibility } from './browserViewAccessibility.js';
 import { ISandboxNetworkRestrictions } from '../../sandbox/common/sandboxSettingsResolutionHelper.js';
 
@@ -735,6 +736,7 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 			menu.on('menu-will-close', () => inspectTarget.dispose());
 		}
 
+		paradisAppendBrowserExtensionMenuItems(menu, webContents, params); // PARA-PATCH: Chrome extension context menu items (experimental); agent right-clicks never get here (suppressed above)
 		menu.append(new MenuItem({ type: 'separator' }));
 		menu.append(new MenuItem({
 			label: localize('browser.contextMenu.inspect', 'Inspect'),

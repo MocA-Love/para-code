@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
-import type { BrowserWindow, Session, WebContents } from 'electron';
+import type { BrowserWindow, ContextMenuParams, MenuItemConstructorOptions, Session, WebContents } from 'electron';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
@@ -18,6 +18,9 @@ import { paradisRegisterRuntimeApis } from '../../electron-main/paradisBrowserEx
 import { paradisRegisterStorageApis, ParadisBrowserExtensionSyncStore } from '../../electron-main/paradisBrowserExtensionStorageApis.js';
 import { IParadisTabEnvironment, IParadisTabView, ParadisBrowserExtensionTabs, paradisCanSeeTabUrl, paradisMatchesUrlPattern } from '../../electron-main/paradisBrowserExtensionTabs.js';
 import { IParadisActionsEnvironment, ParadisBrowserExtensionActions } from '../../electron-main/paradisBrowserExtensionActions.js';
+import { ParadisBrowserExtensionMenus } from '../../electron-main/paradisBrowserExtensionMenus.js';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
 
 const ID = 'abcdefghijklmnopabcdefghijklmnop';
 const silentLog = { warn: () => { } };
@@ -291,6 +294,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 		paradisRegisterRuntimeApis(host, async () => { });
 		paradisRegisterStorageApis(host, new ParadisBrowserExtensionSyncStore('/tmp/unused', silentLog));
 		const actions = new ParadisBrowserExtensionActions(host, tabs, unusedActionsEnvironment, silentLog);
+		const menus = new ParadisBrowserExtensionMenus(host, tabs, { findView: () => undefined, sessionOf: () => undefined, allLoaded: () => [], nameOf: extension => extension.name }, '/tmp/unused-menus.json', silentLog);
 		try {
 			const registered = (host as unknown as { _namespaces: Map<string, { methods: Record<string, unknown>; events: readonly string[]; permission?: unknown }> })._namespaces;
 			for (const [name, surface] of Object.entries(PARADIS_SHIM_SURFACE)) {
@@ -299,6 +303,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 				assert.deepStrictEqual({ methods: [...surface.methods].sort(), events: [...surface.events].sort(), permission: surface.permission }, { methods: Object.keys(namespace.methods).sort(), events: [...namespace.events].sort(), permission: namespace.permission }, name);
 			}
 		} finally {
+			menus.dispose();
 			actions.dispose();
 			tabs.dispose();
 			host.dispose();
@@ -436,6 +441,151 @@ suite('ParadisBrowserExtensionActions', () => {
 				toolbarPinned: true,
 				after: { ok: true, value: { isOnToolbar: true } },
 				agentlessMissing: undefined,
+			});
+		} finally {
+			dispose();
+		}
+	}));
+});
+
+suite('ParadisBrowserExtensionMenus', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	let nextFile = 0;
+
+	function setupMenus(manifest: Record<string, unknown>, platform: NodeJS.Platform = 'linux') {
+		const tabsSetup = setup(manifest);
+		const path = join(tmpdir(), `paradis-menus-test-${process.pid}-${nextFile++}.json`);
+		const menus = new ParadisBrowserExtensionMenus(tabsSetup.host, tabsSetup.tabs, {
+			findView: viewId => tabsSetup.views.find(view => view.id === viewId),
+			sessionOf: contents => contents.session === tabsSetup.electronSession ? { session: tabsSetup.apiSession, extensions: [{ ...tabsSetup.extension, name: 'Sample', path: '/nonexistent' }] } : undefined,
+			allLoaded: () => [{ ...tabsSetup.extension, name: 'Sample', path: '/nonexistent' }],
+			nameOf: extension => extension.name,
+		}, path, silentLog, platform);
+		/** 次の 1 件のイベント。 */
+		const nextEvent = async (stream: Response) => {
+			const reader = stream.body!.getReader();
+			const { value } = await reader.read();
+			await reader.cancel();
+			return paradisDecodeExtensionWire(new TextDecoder().decode(value).trim().split('\n')[0]) as { event: string; args: unknown[] };
+		};
+		return { ...tabsSetup, menus, path, nextEvent, dispose: () => { menus.dispose(); tabsSetup.dispose(); } };
+	}
+
+	const pageParams = { isEditable: false, mediaType: 'none', linkURL: '', srcURL: '', selectionText: '', frameURL: '' } as unknown as ContextMenuParams;
+
+	test('adds the extension items to a page right-click and reports the click with the tab', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, menus, openEvents, listen, nextEvent, dispose } = setupMenus({ manifest_version: 3, permissions: ['contextMenus', 'tabs'] });
+		try {
+			const contents = fakeContents(electronSession, 'https://example.com/', 'Example');
+			await addTabs(fakeView('user', contents, 1));
+			const created = await call('contextMenus', 'create', [{ id: 'fill', title: 'Fill %s', contexts: ['page', 'selection'] }]);
+			await call('contextMenus', 'create', [{ id: 'mode', title: 'Strict', type: 'checkbox', contexts: ['all'] }]);
+			const items = menus.buildPageMenu(contents, pageParams);
+			const submenu = items[0].submenu as MenuItemConstructorOptions[];
+			const stream = await openEvents();
+			await listen('contextMenus', 'onClicked');
+			submenu[1].click!(undefined as never, undefined, undefined as never);
+			const event = await nextEvent(stream);
+			const after = menus.buildPageMenu(contents, pageParams)[0].submenu as MenuItemConstructorOptions[];
+			assert.deepStrictEqual({
+				created,
+				menu: items.map(item => item.label),
+				submenu: submenu.map(item => [item.label, item.type ?? 'normal', item.checked]),
+				event: [event.event, event.args[0], (event.args[1] as { id: number; url: string }).url],
+				checkedAfterClick: after[1].checked,
+				otherTab: menus.buildPageMenu(fakeContents({}, 'https://x.test/', 'X'), pageParams),
+			}, {
+				created: { ok: true, value: 'fill' },
+				menu: ['Sample'],
+				submenu: [['Fill ', 'normal', undefined], ['Strict', 'checkbox', false]],
+				event: ['onClicked', { menuItemId: 'mode', pageUrl: 'https://example.com/', frameId: 0, editable: false, wasChecked: false, checked: true }, 'https://example.com/'],
+				checkedAfterClick: true,
+				otherTab: [],
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('needs the contextMenus permission and keeps the items across a restart', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const without = setupMenus({ manifest_version: 3 });
+		const withPermission = setupMenus({ manifest_version: 3, permissions: ['contextMenus'] });
+		try {
+			const refused = await without.call('contextMenus', 'create', [{ id: 'x', title: 'X' }]);
+			await withPermission.call('contextMenus', 'create', [{ id: 'kept', title: 'Kept' }]);
+			await withPermission.call('contextMenus', 'create', [{ id: 'gone', title: 'Gone' }]);
+			await withPermission.call('contextMenus', 'remove', ['gone']);
+			// 書き終えるのを待つ（別の拡張機能を忘れる書き込みは、前の書き込みの後に並ぶ）
+			await withPermission.menus.forgetExtension('b'.repeat(32));
+			const reloaded = new ParadisBrowserExtensionMenus(withPermission.host, withPermission.tabs, { findView: () => undefined, sessionOf: () => undefined, allLoaded: () => [], nameOf: extension => extension.name }, withPermission.path, silentLog);
+			await reloaded.load();
+			const contents = fakeContents(withPermission.electronSession, 'https://example.com/', 'Example');
+			const restored = (reloaded as unknown as { _items(session: unknown, id: string): { id: string }[] })._items(withPermission.apiSession, ID).map(item => item.id);
+			reloaded.dispose();
+			assert.deepStrictEqual({ refused, restored, removeMissing: await withPermission.call('contextMenus', 'remove', ['gone']), page: withPermission.menus.buildPageMenu(contents, pageParams).map(item => item.label) }, {
+				refused: { ok: false, error: 'This API requires the "contextMenus" permission' },
+				restored: ['kept'],
+				removeMissing: { ok: false, error: 'Cannot find menu item with id gone' },
+				page: ['Kept'],
+			});
+		} finally {
+			without.dispose();
+			withPermission.dispose();
+		}
+	}));
+
+	test('runs a toolbar button menu item once, and not after the tab moved to another document', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, menus, dispose } = setupMenus({ manifest_version: 3, permissions: ['contextMenus'] });
+		try {
+			const contents = fakeContents(electronSession, 'https://example.com/', 'Example');
+			const frame = { frameTreeNodeId: 5, processId: 1, routingId: 2, parent: null, isDestroyed: () => false };
+			Object.assign(contents, { mainFrame: { ...frame, framesInSubtree: [frame] } });
+			Object.assign(contents.mainFrame.framesInSubtree, [contents.mainFrame]);
+			await addTabs(fakeView('user', contents, 1));
+			await call('contextMenus', 'create', [{ id: 'act', title: 'From the button', contexts: ['action'] }]);
+			await call('contextMenus', 'create', [{ id: 'page', title: 'Page only' }]);
+			const first = menus.getActionMenu('user', ID)!;
+			const once = [menus.runActionMenuItem(first.token, ID, '"act"'), menus.runActionMenuItem(first.token, ID, '"act"')];
+			const second = menus.getActionMenu('user', ID)!;
+			contents.emit('did-frame-navigate', {}, 'https://example.com/next', 200, 'OK', true, 1, 2);
+			assert.deepStrictEqual({ items: first.items.map(item => item.title), once, afterNavigate: menus.runActionMenuItem(second.token, ID, '"act"'), noItems: menus.getActionMenu('missing', ID) }, {
+				items: ['From the button'],
+				once: [true, false],
+				afterNavigate: false,
+				noItems: undefined,
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('lists the shortcuts and fires onCommand with the tab, but not _execute_action', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, menus, openEvents, listen, nextEvent, dispose } = setupMenus({
+			manifest_version: 3, name: 'Sample', permissions: ['tabs'],
+			commands: { '_execute_action': { suggested_key: { default: 'Ctrl+Shift+Y' } }, 'fill': { description: 'Fill', suggested_key: { default: 'Ctrl+Shift+L' } }, 'none': { description: 'No key' } },
+		});
+		try {
+			const contents = fakeContents(electronSession, 'https://example.com/', 'Example');
+			await addTabs(fakeView('user', contents, 1));
+			const stream = await openEvents();
+			await listen('commands', 'onCommand');
+			const run = menus.runCommand('user', ID, 'fill');
+			const event = await nextEvent(stream);
+			assert.deepStrictEqual({
+				getAll: await call('commands', 'getAll', []),
+				listed: menus.getCommands().map(command => [command.name, command.shortcut]),
+				run,
+				event: [event.event, event.args[0], (event.args[1] as { url: string }).url],
+				executeAction: menus.runCommand('user', ID, '_execute_action'),
+				unassigned: menus.runCommand('user', ID, 'none'),
+			}, {
+				getAll: { ok: true, value: [{ name: '_execute_action', description: '', shortcut: 'Ctrl+Shift+Y' }, { name: 'fill', description: 'Fill', shortcut: 'Ctrl+Shift+L' }, { name: 'none', description: 'No key', shortcut: '' }] },
+				listed: [['_execute_action', 'Ctrl+Shift+Y'], ['fill', 'Ctrl+Shift+L']],
+				run: { ok: true },
+				event: ['onCommand', 'fill', 'https://example.com/'],
+				executeAction: { ok: false, error: 'This shortcut is not on for this tab' },
+				unassigned: { ok: false, error: 'This shortcut is not on for this tab' },
 			});
 		} finally {
 			dispose();

@@ -12,6 +12,7 @@
 
 import { app, BrowserWindow, screen, type Session } from 'electron';
 import type { IParadisRect } from '../common/paradisBrowserExtensionAction.js';
+import { PARADIS_BROWSER_EXTENSION_WINDOW_SWITCH } from '../../../../platform/browserView/common/paradisBrowserExtensionWindow.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
@@ -24,7 +25,10 @@ function handleOf(view: BrowserView): IParadisTabView {
 	return {
 		id: view.id,
 		webContents: view.webContents,
-		windowId: view.host.windowId,
+		// タブは補助ウィンドウへ移ることがあるので、今そのタブを出しているウィンドウ（まだ出していなければ持ち主のウィンドウ）
+		get windowId() {
+			return view.getElectronWindow()?.id ?? view.host.windowId;
+		},
 		isAgentTab: () => view.owner.type === 'agent' || paraIsAgentTabOrChild(view.id),
 		isVisible: () => view.getState().visible === true,
 		onDidClose: view.onDidClose,
@@ -114,7 +118,8 @@ export function paradisCreateBrowserExtensionPopout(session: Session, url: strin
 		...(options.left !== undefined && options.top !== undefined ? { x: options.left, y: options.top } : {}),
 		show: false,
 		autoHideMenuBar: true,
-		webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false },
+		// 内蔵ブラウザのビューではないので、セッションの preload（preload-browserView.ts）を動かさない印を付ける
+		webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false, additionalArguments: [PARADIS_BROWSER_EXTENSION_WINDOW_SWITCH] },
 	});
 	window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 	// 拡張機能自身のページだけを出す（アドレスバーの無い窓でウェブのページを開かせない）
@@ -155,7 +160,8 @@ export function paradisCreateBrowserExtensionActionPopup(parent: BrowserWindow, 
 		fullscreenable: false,
 		skipTaskbar: true,
 		hasShadow: true,
-		webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true },
+		// 内蔵ブラウザのビューではないので、セッションの preload（preload-browserView.ts）を動かさない印を付ける
+		webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, additionalArguments: [PARADIS_BROWSER_EXTENSION_WINDOW_SWITCH] },
 	});
 }
 

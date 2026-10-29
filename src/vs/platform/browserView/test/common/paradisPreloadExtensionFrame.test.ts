@@ -8,6 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+import { PARADIS_BROWSER_EXTENSION_WINDOW_SWITCH } from '../../common/paradisBrowserExtensionWindow.js';
 
 suite('ParadisPreloadExtensionFrame', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -31,5 +32,18 @@ suite('ParadisPreloadExtensionFrame', () => {
 			paradisIsEmbeddedExtensionFrame('null', false),
 			paradisIsEmbeddedExtensionFrame('', false),
 		], [true, false, false, false, false, false]);
+	});
+
+	test('skips the preload in the windows a browser extension opens, by the switch main gives them', async function () {
+		if (process.versions.electron) {
+			this.skip();
+		}
+		const { paradisIsBrowserExtensionWindowArgv } = await import('../../electron-browser/preload-browserView.js');
+		// preload は束ねないので印の文字を自分でも持つ。main が付ける印（common の定数）と同じであること
+		assert.deepStrictEqual([
+			paradisIsBrowserExtensionWindowArgv(['/app', '--type=renderer', PARADIS_BROWSER_EXTENSION_WINDOW_SWITCH]),
+			paradisIsBrowserExtensionWindowArgv(['/app', '--type=renderer']),
+			paradisIsBrowserExtensionWindowArgv(undefined),
+		], [true, false, false]);
 	});
 });
