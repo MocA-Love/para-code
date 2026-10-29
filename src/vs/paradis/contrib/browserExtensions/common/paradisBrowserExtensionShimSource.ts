@@ -16,12 +16,17 @@ import {
 	PARADIS_EXTENSION_TOKEN_FILE,
 } from './paradisBrowserExtensionApiWire.js';
 import {
+	PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY,
 	PARADIS_SHIM_STORAGE_RELAY_NAMESPACE,
 	PARADIS_SHIM_STORAGE_SYNC_CONSTANTS,
 	PARADIS_SHIM_STORAGE_SYNC_NAMESPACE,
 	PARADIS_SHIM_SURFACE,
+	paradisContentScriptMain,
+	paradisCreateContentScriptRelayBridge,
 	paradisExtensionShimMain,
+	paradisInstallContentScriptRelayHub,
 	paradisInstallExtensionApis,
+	paradisInstallInertApis,
 	paradisInstallStorageRelay,
 	paradisInstallStorageSync,
 } from './paradisBrowserExtensionShim.js';
@@ -40,6 +45,7 @@ export function paradisBrowserExtensionShimSource(): string {
 		relayNamespace: PARADIS_SHIM_STORAGE_RELAY_NAMESPACE,
 		syncNamespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE,
 		reconnectDelayMs: RECONNECT_DELAY_MS,
+		relayKey: PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY,
 	};
 	return [
 		'// Written by Para Code: chrome.* APIs Electron lacks, for this extension\'s worker and pages.',
@@ -48,7 +54,32 @@ export function paradisBrowserExtensionShimSource(): string {
 		`const installApis = ${paradisInstallExtensionApis.toString()};`,
 		`const installStorageRelay = ${paradisInstallStorageRelay.toString()};`,
 		`const installStorageSync = ${paradisInstallStorageSync.toString()};`,
-		`(${paradisExtensionShimMain.toString()})({ ...${JSON.stringify(options)}, installApis, installStorageRelay, installStorageSync });`,
+		`const installInertApis = ${paradisInstallInertApis.toString()};`,
+		`const installContentScriptRelayHub = ${paradisInstallContentScriptRelayHub.toString()};`,
+		`(${paradisExtensionShimMain.toString()})({ ...${JSON.stringify(options)}, installApis, installStorageRelay, installStorageSync, installInertApis, installContentScriptRelayHub });`,
+		'})();',
+		'',
+	].join('\n');
+}
+
+/** content script の詰め物（manifest の各 content script の先頭に入れる）。 */
+export function paradisBrowserExtensionContentScriptSource(): string {
+	const options = {
+		relayKey: PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY,
+		syncConstants: PARADIS_SHIM_STORAGE_SYNC_CONSTANTS,
+		relayNamespace: PARADIS_SHIM_STORAGE_RELAY_NAMESPACE,
+		syncNamespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE,
+		reconnectDelayMs: RECONNECT_DELAY_MS,
+	};
+	return [
+		'// Written by Para Code: content-script APIs Electron lacks, for this extension\'s content scripts.',
+		'(() => {',
+		'\'use strict\';',
+		`const installInertApis = ${paradisInstallInertApis.toString()};`,
+		`const createContentScriptRelayBridge = ${paradisCreateContentScriptRelayBridge.toString()};`,
+		`const installStorageRelay = ${paradisInstallStorageRelay.toString()};`,
+		`const installStorageSync = ${paradisInstallStorageSync.toString()};`,
+		`(${paradisContentScriptMain.toString()})({ ...${JSON.stringify(options)}, installInertApis, createContentScriptRelayBridge, installStorageRelay, installStorageSync });`,
 		'})();',
 		'',
 	].join('\n');

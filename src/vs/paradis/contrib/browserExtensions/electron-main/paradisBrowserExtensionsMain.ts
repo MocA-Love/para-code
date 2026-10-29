@@ -17,7 +17,7 @@
 //  - 削除した拡張機能の保存データ（chrome.storage.local）は、Chromium が終了まで開いたままなので、次に
 //    セッションを読み込むときに消す
 
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import type { BrowserWindow, Session } from 'electron';
 import { Emitter, type Event } from '../../../../base/common/event.js';
@@ -61,7 +61,7 @@ import { paradisIsPrivateExtensionFile, paradisPrepareExtensionCopy } from './pa
 import { ParadisApiSession, ParadisExtensionApiHost } from './paradisBrowserExtensionApiHost.js';
 import { ParadisBrowserExtensionRuntimeState, ParadisExtensionLoadKind, paradisDecideRuntimeLifecycleEvents, paradisRegisterRuntimeApis } from './paradisBrowserExtensionRuntime.js';
 import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from './paradisBrowserExtensionStorageApis.js';
-import { paradisBrowserExtensionShimSource } from '../common/paradisBrowserExtensionShimSource.js';
+import { paradisBrowserExtensionContentScriptSource, paradisBrowserExtensionShimSource } from '../common/paradisBrowserExtensionShimSource.js';
 import { IParadisTabEnvironment, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 
 /** タブ・ウィンドウの API に要る main のもの（無ければ tabs・windows・webNavigation は使えない）。 */
@@ -134,7 +134,15 @@ interface ICopiedExtension {
 	readonly version: string;
 	readonly manifestVersion: number;
 	readonly touchesPages: boolean;
+	/** manifest に key が無く、Para Code が作った（または前に作った）key。 */
+	readonly generatedKey?: string;
 }
+
+/**
+ * key の無い拡張機能の id の決め方。`path`: 前の版で足したもの（写しの場所から決まる。id を変えないため
+ * そのまま）。`generated`: 足したときに作る乱数の key から決める（`key` があればそれを使い続ける）。
+ */
+type ParadisKeyMode = { readonly kind: 'path' } | { readonly kind: 'generated'; readonly key?: string };
 
 /** 写すもの 1 つ（`relative` は写し先のフォルダからの相対パス）。`dev`・`ino` は調べたときの値。 */
 interface ICopyItem {
@@ -453,7 +461,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private _prepare(extension: IParadisInstalledBrowserExtension): Promise<string | undefined> {
 		let preparing = this._prepared.get(extension.path);
 		if (!preparing) {
-			preparing = paradisPrepareExtensionCopy(extension.path, this._apiHost.tokenFor(extension.id), paradisBrowserExtensionShimSource())
+			preparing = paradisPrepareExtensionCopy(extension.path, this._apiHost.tokenFor(extension.id), paradisBrowserExtensionShimSource(), paradisBrowserExtensionContentScriptSource())
 				.then(prepared => {
 					if (prepared.skippedPages.length > 0) {
 						this._notes.set(extension.id, prepared.skippedPages);
@@ -563,12 +571,14 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				enabledIn: Object.entries(this._ledger.enabled).filter(([, ids]) => ids.includes(extension.id)).map(([profile]) => profile),
 				...(this._loadErrors.has(extension.id) ? { loadError: this._loadErrors.get(extension.id) } : {}),
 				...(this._notes.has(extension.id) ? { pagesWithoutApis: this._notes.get(extension.id) } : {}),
+				// 作った key は画面に渡さない
+				generatedKey: undefined,
 			})),
 		};
 	}
 
 	/** 元のフォルダを Para Code の持つフォルダへ写し、manifest を読む。 */
-	private async _copyFromFolder(folder: string): Promise<ICopiedExtension | Extract<IParadisAddExtensionResult, { ok: false }>> {
+	private async _copyFromFolder(folder: string, keyMode: ParadisKeyMode): Promise<ICopiedExtension | Extract<IParadisAddExtensionResult, { ok: false }>> {
 		let real: string;
 		try {
 			real = await fs.realpath(folder);
@@ -624,7 +634,32 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		} catch (error) {
 			return { ok: false, reason: 'failed', detail: error instanceof Error ? error.message : String(error) };
 		}
-		return { ok: true, path: realCopy, id: paradisPredictExtensionId(realCopy, manifest.key), name: manifest.name, version: manifest.version, manifestVersion: manifest.manifestVersion, touchesPages: manifest.touchesPages };
+		// key の無い拡張機能には、乱数の key を写しの manifest に書く（id を利用者のホームの場所に結び付けない）
+		let generatedKey: string | undefined;
+		if (manifest.key === undefined && keyMode.kind === 'generated') {
+			generatedKey = keyMode.key ?? randomBytes(64).toString('base64');
+			try {
+				const copiedManifest = JSON.parse(await fs.readFile(join(realCopy, 'manifest.json'), 'utf8')) as Record<string, unknown>;
+				await fs.writeFile(join(realCopy, 'manifest.json'), JSON.stringify({ ...copiedManifest, key: generatedKey }, undefined, '\t'));
+			} catch (error) {
+				return { ok: false, reason: 'failed', detail: error instanceof Error ? error.message : String(error) };
+			}
+		}
+		return {
+			ok: true, path: realCopy, id: paradisPredictExtensionId(realCopy, manifest.key ?? generatedKey), name: manifest.name, version: manifest.version,
+			manifestVersion: manifest.manifestVersion, touchesPages: manifest.touchesPages, ...(generatedKey !== undefined ? { generatedKey } : {}),
+		};
+	}
+
+	/** 同じフォルダから前に足した拡張機能（足し直し・読み込み直しで id を変えないため）。 */
+	private async _installedFromFolder(folder: string): Promise<IParadisInstalledBrowserExtension | undefined> {
+		const real = await fs.realpath(folder).catch(() => folder);
+		for (const extension of this._ledger.extensions) {
+			if (extension.sourcePath === folder || await fs.realpath(extension.sourcePath).catch(() => extension.sourcePath) === real) {
+				return extension;
+			}
+		}
+		return undefined;
 	}
 
 	async addUnpacked(folder: string, profile: string): Promise<IParadisAddExtensionResult> {
@@ -635,7 +670,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		if (typeof folder !== 'string' || folder.length === 0 || !paradisIsExtensionProfileKey(profile)) {
 			return { ok: false, reason: 'notFolder' };
 		}
-		const copied = await this._copyFromFolder(folder);
+		const sameFolder = await this._installedFromFolder(folder);
+		const copied = await this._copyFromFolder(folder, sameFolder && !sameFolder.generatedKey ? { kind: 'path' } : { kind: 'generated', key: sameFolder?.generatedKey });
 		if (!copied.ok) {
 			return copied;
 		}
@@ -658,6 +694,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		const extension: IParadisInstalledBrowserExtension = {
 			id: copied.id, name: copied.name, version: copied.version, manifestVersion: copied.manifestVersion,
 			source: 'unpacked', sourcePath: folder, path: copied.path, installedAt: existing?.installedAt ?? Date.now(), touchesPages: copied.touchesPages,
+			...(copied.generatedKey !== undefined ? { generatedKey: copied.generatedKey } : {}),
 		};
 		this._ledger = paradisLedgerWithExtension(this._ledger, extension, profile);
 		await this._save();
@@ -676,7 +713,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		if (!existing) {
 			return { ok: false, reason: 'notFolder' };
 		}
-		const copied = await this._copyFromFolder(existing.sourcePath);
+		const copied = await this._copyFromFolder(existing.sourcePath, existing.generatedKey ? { kind: 'generated', key: existing.generatedKey } : { kind: 'path' });
 		if (!copied.ok) {
 			return copied;
 		}

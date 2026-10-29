@@ -67,6 +67,13 @@ export interface IParadisInstalledBrowserExtension {
 	 * 共有の確認で「拡張機能が入力した値はエージェントからも読める」と知らせるのに使う。
 	 */
 	readonly touchesPages: boolean;
+	/**
+	 * manifest に key の無い拡張機能へ、足したときに作った乱数の key（base64）。id はこれで決まる（写しの
+	 * 場所＝利用者のホームの場所からは決めない。場所から決めると、利用者・PC ごとに違いずっと変わらない id に
+	 * なり、サイトをまたいで同じ人を見分ける印になりうるため）。無ければ、前の版で足した拡張機能（id は写しの
+	 * 場所から決まる）。
+	 */
+	readonly generatedKey?: string;
 }
 
 /** 台帳（main が JSON で保存する）。 */
@@ -123,7 +130,7 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 			continue;
 		}
 		// touchesPages が無い行（P3 の版で足したもの）は、知らせ損ねないよう読み書きできる側に倒す
-		extensions.push({ id: entry.id, name: entry.name, version: entry.version, manifestVersion: entry.manifestVersion, source: 'unpacked', sourcePath: entry.sourcePath, path: entry.path, installedAt: entry.installedAt, touchesPages: entry.touchesPages !== false });
+		extensions.push({ id: entry.id, name: entry.name, version: entry.version, manifestVersion: entry.manifestVersion, source: 'unpacked', sourcePath: entry.sourcePath, path: entry.path, installedAt: entry.installedAt, touchesPages: entry.touchesPages !== false, ...(typeof entry.generatedKey === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(entry.generatedKey) ? { generatedKey: entry.generatedKey } : {}) });
 	}
 	const enabled: Record<string, string[]> = {};
 	if (isRecord(raw.enabled)) {
