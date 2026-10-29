@@ -55,6 +55,7 @@ import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, p
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import { PARADIS_EXTENSION_PAGE_DENIED_MESSAGE } from '../common/paradisCdpExtensionScope.js';
 import { paradisGuardChildWebContents, paradisSetExtensionNavigationGuard, paradisShowsExtensionPage } from './paradisExtensionNavigationGuard.js';
+import { paradisExtensionInputRefusal, paradisGuardUpstreamAutomationInput } from './paradisExtensionInputGuard.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
@@ -310,6 +311,16 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 
 	private onViewCreated(childViewId: string, parentViewId: string | undefined): void {
 		this.watchViewForCursor(childViewId);
+		try {
+			// upstream の Agent ツール（CDP の Input.* を BrowserView の debugger の sendCommand で送る）も、ページの上の
+			// 拡張の画面へは届けない（paradisExtensionInputGuard.ts）
+			const created = this.browserViewMainService.tryGetBrowserView(childViewId);
+			if (created && !created.webContents.isDestroyed()) {
+				paradisGuardUpstreamAutomationInput(created);
+			}
+		} catch {
+			// ビューが既に閉じている。
+		}
 		try {
 			// プロファイルのタブへ掛けた上書きは、そのプロファイルに別のタブが開かれたら外す
 			// （利用者や別のペインがプロファイルを使い始めた）。
@@ -1320,6 +1331,27 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 				} catch {
 					return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state became unavailable before input dispatch' };
 				}
+			}
+			// ページの上に出ている拡張の画面（パスワード管理のメニューなど）に届く入力は断る（paradisExtensionInputGuard.ts）。
+			// 座標は送るときと同じく、縮小して描いているタブの倍率に合わせる
+			const extensionRefusal = await paradisExtensionInputRefusal(
+				view.webContents,
+				(method, params) => view.debugger.sendCommandRaw(method, params, undefined),
+				command.method,
+				paradisScaleCdpInputCoordinates(command.params, view.emulator.device ? view.emulator.emulatedScaleFactor : 1),
+			);
+			if (extensionRefusal !== undefined) {
+				return { status: 'retryable', message: extensionRefusal };
+			}
+			if (this.resolveExistingExactView(descriptor) !== view) {
+				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };
+			}
+			try {
+				if (view.webContents.isFocused()) {
+					return { status: 'retryable', message: PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE };
+				}
+			} catch {
+				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state became unavailable before input dispatch' };
 			}
 			// Commit point: all allowlist, focus and exact identity checks are complete immediately before send.
 			if (automationRegistration && !automationRegistration.commit()) {

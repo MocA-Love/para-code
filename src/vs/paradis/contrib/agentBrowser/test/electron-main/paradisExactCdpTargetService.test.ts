@@ -23,6 +23,10 @@ import { paradisConsumeAgentContextMenuSuppression } from '../../electron-main/p
 
 interface ITestViewState {
 	url?: string;
+	/** A browser extension's UI (an iframe of an extension page) drawn over the page at x < 100. */
+	extensionUi?: boolean;
+	/** The frame that has the focus, if not the page. */
+	focusedFrameUrl?: string;
 	ownerWindowId: number;
 	targetId: string;
 	destroyed: boolean;
@@ -150,6 +154,14 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 		focus: () => counters.focus++,
 		isFocused: () => state.focused,
 		getURL: () => state.url ?? 'https://example.test/',
+		get mainFrame() {
+			const main = { url: state.url ?? 'https://example.test/' } as { url: string; framesInSubtree?: unknown[] };
+			main.framesInSubtree = state.extensionUi ? [main, { url: 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/menu.html' }] : [main];
+			return main;
+		},
+		get focusedFrame() {
+			return state.focusedFrameUrl !== undefined ? { url: state.focusedFrameUrl } : null;
+		},
 	};
 	const view = {
 		// PARA-PATCH: upstream 1.137 moved the window id from `owner.mainWindowId` to `host.windowId`.
@@ -172,6 +184,15 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 					return targetId;
 				},
 				sendCommandRaw: (method: string, params: unknown, sessionId?: string) => {
+					// The hit test of the extension input guard; not an input.
+					if (method === 'DOM.getNodeForLocation') {
+						return Promise.resolve({ backendNodeId: (params as { x: number }).x < 100 ? 7 : 8, frameId: 'F1' });
+					}
+					if (method === 'DOM.describeNode') {
+						return Promise.resolve((params as { backendNodeId: number }).backendNodeId === 7
+							? { node: { nodeName: 'IFRAME', attributes: ['src', 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/menu.html'] } }
+							: { node: { nodeName: 'BUTTON', attributes: [] } });
+					}
 					counters.input++;
 					inputCalls.push({ method, params, sessionId });
 					state.onInput?.();
@@ -856,6 +877,29 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(current.counters.input, 0);
 		assert.strictEqual(current.counters.prepareAutomation, 0);
 		assert.strictEqual(current.counters.focus, 0);
+	});
+
+	test('refuses agent clicks and keys that would reach a browser extension\'s UI drawn over the page, and lets the rest through', async () => {
+		const current = createTestView({ extensionUi: true });
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		const mouse = (type: string, x: number) => service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type, x, y: 20, button: 'left', clickCount: 1 }));
+		const outcome = (result: { status: string; message?: string }) => result.status === 'success' ? 'sent' : /browser extension's own UI/.test(result.message ?? '') ? 'refused' : result.status;
+		const results = [
+			outcome(await mouse('mousePressed', 50)),
+			outcome(await mouse('mouseReleased', 50)),
+			outcome(await mouse('mouseMoved', 50)),
+			outcome(await mouse('mousePressed', 300)),
+		];
+		current.state.focusedFrameUrl = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/menu.html';
+		results.push(outcome(await service.dispatchExactViewInput(exact, 'Input.insertText', JSON.stringify({ text: 'secret' }))));
+		current.state.focusedFrameUrl = undefined;
+		results.push(outcome(await service.dispatchExactViewInput(exact, 'Input.insertText', JSON.stringify({ text: 'ok' }))));
+		assert.deepStrictEqual({ results, inputs: current.inputCalls.map(call => call.method) }, {
+			results: ['refused', 'refused', 'sent', 'sent', 'refused', 'sent'],
+			inputs: ['Input.dispatchMouseEvent', 'Input.dispatchMouseEvent', 'Input.insertText'],
+		});
 	});
 
 	test('does not capture, print or check a BrowserView that shows a browser extension page', async () => {
