@@ -116,6 +116,8 @@ const FIXED = [
 	['Dark Reader', 'chrome.extension.isAllowedFileSchemeAccess が無く、エラーが出ていました', 'isAllowedFileSchemeAccess・isAllowedIncognitoAccess を足しました（どちらも false）'],
 	['Keeper', '入れるときに大きすぎると断っていました（フォルダから入れるときの 200 MB の上限）', 'ストアから入れるときは、展開のときと同じ 512 MB までにしました'],
 	['1Password・NordPass', 'ポップアップが <meta> の Content-Security-Policy で接続先を絞っていて、Para Code が足した API の呼び出しが止まっていました', 'ページの <meta> の connect-src にも、Para Code の私用スキームを足すようにしました（manifest の方針には前から足していました）'],
+	['DeepL', 'chrome.tts がありませんでした（P9a）', 'chrome.tts を足しました。OS の読み上げ（Chromium の speechSynthesis）で、拡張機能もウェブのページも入らない見えない窓の中で読みます'],
+	['Keeper・Ghostery', 'chrome.browsingData がありませんでした（P9a）', 'chrome.browsingData を足しました。消すのは呼び出し元のセッションのウェブのデータだけで、拡張機能のデータ・エージェントのセッション・ほかの場所のデータには触れません。期間の指定と、Para Code に無いデータ（履歴など）は断ります'],
 ];
 
 /** 直していないもの（大きいので別にする）。 */
@@ -124,7 +126,6 @@ const NOT_FIXED = [
 	['ユーザースクリプト（chrome.userScripts）', 'Tampermonkey・uBlock Origin Lite・AdGuard・Ghostery', 'Electron 43 にありません。Tampermonkey は主な働きがこれです'],
 	['新しいタブの置き換え（chrome_url_overrides）', 'Momentum', 'Para Code の新しいタブは内蔵ブラウザのページではありません'],
 	['画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）', 'Loom', 'Electron 43 にありません'],
-	['読み上げ（chrome.tts）・閲覧データの消去（chrome.browsingData）', 'DeepL・Keeper・Ghostery', 'Electron 43 にありません。主な働きには関わりません'],
 	['広告のブロック（declarativeNetRequest）', '広告・プライバシーの 4 つ', 'D7 で後回しにしました'],
 ];
 
