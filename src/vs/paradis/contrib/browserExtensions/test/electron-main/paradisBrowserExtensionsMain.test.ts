@@ -66,6 +66,7 @@ class FakeSession implements ParadisExtensionSession {
 		removeExtension: (id: string) => {
 			this.loaded.delete(id);
 		},
+		getAllExtensions: () => this.ids().map(id => ({ id, manifest: {}, name: id, path: this.loaded.get(id)!, url: `chrome-extension://${id}/`, version: '1' })),
 		getExtension: (id: string) => {
 			const path = this.loaded.get(id);
 			return path === undefined ? null : { id, manifest: {}, name: id, path, url: `chrome-extension://${id}/`, version: '1' } satisfies Extension;

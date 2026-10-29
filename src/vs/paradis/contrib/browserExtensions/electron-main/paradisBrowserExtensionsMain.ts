@@ -19,8 +19,8 @@
 
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
-import type { Session } from 'electron';
-import type { Event } from '../../../../base/common/event.js';
+import type { BrowserWindow, Session } from 'electron';
+import { Emitter, type Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { join, sep } from '../../../../base/common/path.js';
 import { hasKey } from '../../../../base/common/types.js';
@@ -33,6 +33,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	IParadisAddExtensionResult,
 	IParadisBrowserExtensionsLedger,
+	IParadisActivateTabRequest,
 	IParadisBrowserExtensionsMainService,
 	IParadisBrowserExtensionsState,
 	IParadisInstalledBrowserExtension,
@@ -61,6 +62,13 @@ import { ParadisApiSession, ParadisExtensionApiHost } from './paradisBrowserExte
 import { ParadisBrowserExtensionRuntimeState, ParadisExtensionLoadKind, paradisDecideRuntimeLifecycleEvents, paradisRegisterRuntimeApis } from './paradisBrowserExtensionRuntime.js';
 import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from './paradisBrowserExtensionStorageApis.js';
 import { paradisBrowserExtensionShimSource } from '../common/paradisBrowserExtensionShimSource.js';
+import { IParadisTabEnvironment, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
+
+/** タブ・ウィンドウの API に要る main のもの（無ければ tabs・windows・webNavigation は使えない）。 */
+export interface IParadisBrowserExtensionTabsOptions {
+	readonly environment: IParadisTabEnvironment;
+	readonly createPopout: (session: Session, url: string, options: { readonly width?: number; readonly height?: number; readonly left?: number; readonly top?: number; readonly focused: boolean }) => BrowserWindow;
+}
 import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
 
 /** 拡張機能を読み込むセッションの持ち主（BrowserSession の一部）。 */
@@ -76,7 +84,7 @@ export interface IParadisExtensionSessionOwner {
 
 /** 管理に使う Electron の Session の一部（テストでは偽物を渡す）。 */
 export type ParadisExtensionSession = Pick<Session, 'storagePath' | 'clearStorageData'> & ParadisApiSession & {
-	readonly extensions: Pick<Session['extensions'], 'loadExtension' | 'removeExtension' | 'getExtension'>;
+	readonly extensions: Pick<Session['extensions'], 'loadExtension' | 'removeExtension' | 'getExtension' | 'getAllExtensions'>;
 };
 
 /** セッションの持ち主から、拡張機能のプロファイルのキーを決める。入れないセッションなら undefined。 */
@@ -266,7 +274,7 @@ interface ISessionEntry {
 	readonly isRemote: () => boolean;
 }
 
-export class ParadisBrowserExtensionsManager implements IParadisBrowserExtensionsMainService, IDisposable {
+export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExtensionsMainService, 'onDidRequestActivateTab'>, IDisposable {
 
 	private readonly _disposables = new DisposableStore();
 	private readonly _sessions = new Set<ISessionEntry>();
@@ -279,6 +287,8 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 	readonly active: boolean;
 	/** 詰め物の呼び出しを受ける main 側（P4）。 */
 	private readonly _apiHost: ParadisExtensionApiHost;
+	/** tabs・windows・webNavigation（P4b）。 */
+	private readonly _tabs: ParadisBrowserExtensionTabs | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
 	private readonly _runtimeState: ParadisBrowserExtensionRuntimeState;
 	/** この起動で詰め物を書き込んだ写し（写しのパス → 失敗の文。成功なら undefined）。 */
@@ -292,18 +302,22 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		private readonly _logService: Pick<ILogService, 'warn'>,
 		/** 内蔵ブラウザのビューの id から、そのセッションを引く（共有の確認に使う）。 */
 		private readonly _sessionForView: (viewId: string) => ParadisExtensionSession | undefined = () => undefined,
+		tabsOptions?: IParadisBrowserExtensionTabsOptions,
 	) {
 		this.active = _readSetting();
 		this._apiHost = new ParadisExtensionApiHost(_logService);
 		this._syncStore = new ParadisBrowserExtensionSyncStore(join(_root, 'sync-storage'), _logService);
 		this._runtimeState = new ParadisBrowserExtensionRuntimeState(join(_root, 'runtime-state.json'), _logService);
 		paradisRegisterStorageApis(this._apiHost, this._syncStore);
-		paradisRegisterRuntimeApis(this._apiHost);
+		this._tabs = tabsOptions && this.active ? new ParadisBrowserExtensionTabs(this._apiHost, tabsOptions.environment, _logService, tabsOptions.createPopout) : undefined;
+		const tabs = this._tabs;
+		paradisRegisterRuntimeApis(this._apiHost, tabs ? caller => tabs.openOptionsPage(caller) : undefined);
 		this._ready = this.active ? this._loadLedger() : Promise.resolve();
 	}
 
 	dispose(): void {
 		this._disposables.dispose();
+		this._tabs?.dispose();
 		this._apiHost.dispose();
 		void this._syncStore.flush();
 	}
@@ -353,6 +367,9 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		this._sessions.add(entry);
 		// 詰め物の呼び出しの受け手は、拡張機能を読み込む前に立てる（worker は読み込んですぐ動き出す）
 		this._disposables.add(this._apiHost.attachSession(session, profile));
+		if (this._tabs) {
+			this._disposables.add(this._tabs.attachSession({ session, electronSession: session as unknown as Session, browserSessionId: owner.id }));
+		}
 		if (remote) {
 			// SSH 先のページのためにトンネルを通している間は、拡張機能を入れない（D8）
 			this._disposables.add(remote.onDidStart(() => this._unloadAll(entry)));
@@ -757,8 +774,11 @@ export function paradisRegisterBrowserExtensions(
 	 * 読むと読み込みが輪になる（browserSession.ts → このファイル）。呼び出し側（プロファイルの main）から渡す。
 	 */
 	sessionForView: (viewId: string) => ParadisExtensionSession | undefined,
+	/** タブ・ウィンドウの口（タブを前に出すことだけは、ここで workbench への知らせにする）。 */
+	tabs?: { readonly environment: Omit<IParadisTabEnvironment, 'activateTab'>; readonly createPopout: IParadisBrowserExtensionTabsOptions['createPopout'] },
 ): IDisposable {
 	const disposables = new DisposableStore();
+	const onDidRequestActivateTab = disposables.add(new Emitter<IParadisActivateTabRequest>());
 	const created = instantiationService.invokeFunction(accessor => {
 		const configurationService = accessor.get(IConfigurationService);
 		return new ParadisBrowserExtensionsManager(
@@ -766,6 +786,10 @@ export function paradisRegisterBrowserExtensions(
 			() => configurationService.getValue<boolean>(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING) === true,
 			accessor.get(ILogService),
 			sessionForView,
+			tabs ? {
+				environment: { ...tabs.environment, activateTab: (windowId, viewId) => onDidRequestActivateTab.fire({ windowId, viewId }) },
+				createPopout: tabs.createPopout,
+			} : undefined,
 		);
 	});
 	disposables.add(created);
@@ -781,6 +805,7 @@ export function paradisRegisterBrowserExtensions(
 		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
 		remove: id => created.remove(id),
 		getShareExtensions: (viewId, fallbackProfile) => created.getShareExtensions(viewId, fallbackProfile),
+		onDidRequestActivateTab: onDidRequestActivateTab.event,
 	};
 	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables));
 	return disposables;

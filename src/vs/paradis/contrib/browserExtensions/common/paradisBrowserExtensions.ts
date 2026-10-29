@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import type { Event } from '../../../../base/common/event.js';
+
 // 内蔵ブラウザの Chrome 拡張機能（試験的）の、設定キー・main との通り道・台帳の形と純粋な操作。
 // 設計: リポジトリ直下の browser-extensions-design.html（Q480、P3 土台）。
 //
@@ -333,4 +335,12 @@ export interface IParadisBrowserExtensionsMainService {
 	 * `fallbackProfile` で有効にしてあるもの。
 	 */
 	getShareExtensions(viewId: string | undefined, fallbackProfile: string | undefined): Promise<IParadisShareExtensions>;
+	/** 拡張機能が tabs.update({ active: true }) などでタブを前に出したい（そのウィンドウの workbench が開く）。 */
+	readonly onDidRequestActivateTab: Event<IParadisActivateTabRequest>;
+}
+
+/** タブを前に出す求め。 */
+export interface IParadisActivateTabRequest {
+	readonly windowId: number;
+	readonly viewId: string;
 }
