@@ -267,6 +267,41 @@ suite('ParadisBrowserExtensionApi', () => {
 		}
 	});
 
+	test('tells the other sessions of the same place about a sync change', async () => {
+		const host = new ParadisExtensionApiHost(silentLog);
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-extension-sync-place-'));
+		const store = new ParadisBrowserExtensionSyncStore(root, silentLog);
+		paradisRegisterStorageApis(host, store);
+		const global = fakeSession([ID]);
+		const workspace = fakeSession([ID]);
+		const profile = fakeSession([ID]);
+		const attached = [host.attachSession(global.session, 'default'), host.attachSession(workspace.session, 'default'), host.attachSession(profile.session, 'profile:0123456789ab')];
+		try {
+			const token = host.tokenFor(ID);
+			const origin = `chrome-extension://${ID}`;
+			const listen = async (target: ReturnType<typeof fakeSession>) => {
+				const stream = await target.send(PARADIS_EXTENSION_API_EVENTS_URL, origin, { token, connection: 'worker' });
+				await target.send(PARADIS_EXTENSION_API_CALL_URL, origin, { token, connection: 'worker', request: { type: 'listen', namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, event: 'onChanged', active: true } });
+				return stream;
+			};
+			const globalStream = await listen(global);
+			const profileStream = await listen(profile);
+			await workspace.send(PARADIS_EXTENSION_API_CALL_URL, origin, { token, connection: 'worker', request: { type: 'call', namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, method: 'set', args: [{ a: 1 }] } });
+			const profileReader = profileStream.body!.getReader();
+			const profileRead = await Promise.race([profileReader.read().then(() => 'event'), new Promise(resolve => setTimeout(() => resolve('nothing'), 50))]);
+			await profileReader.cancel();
+			assert.deepStrictEqual({ global: await readEvents(globalStream, 1), profile: profileRead }, {
+				global: [{ namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, event: 'onChanged', args: [{ a: { newValue: 1 } }] }],
+				profile: 'nothing',
+			});
+		} finally {
+			attached.forEach(disposable => disposable.dispose());
+			host.dispose();
+			await store.flush();
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('keeps a worker start event until the worker listens', async () => {
 		const host = new ParadisExtensionApiHost(silentLog);
 		host.registerNamespace('runtime', { methods: {}, events: ['onInstalled', 'onStartup'] });
