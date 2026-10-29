@@ -89,6 +89,16 @@ const BODY: IFakeElement = { left: 0, top: 0, width: 5000, height: 5000, nodeNam
 suite('paradisExtensionInputGuard', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('refuses every pointer input when the tab itself shows an extension page, without asking the page', async () => {
+		const { tab, asked } = fakeTab({ page: { scrollY: 0, elements: [BODY] } }, {}, { extensionFrameInTab: false });
+		(tab.webContents.mainFrame as { url: string }).url = EXTENSION_MENU;
+		assert.deepStrictEqual({
+			press: (await paradisGuardExtensionInput(tab, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 5, y: 5, button: 'left', clickCount: 1 })).refusal,
+			move: (await paradisGuardExtensionInput(tab, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 })).refusal,
+			asked,
+		}, { press: PARADIS_EXTENSION_INPUT_DENIED_MESSAGE, move: undefined, asked: [] });
+	});
+
 	test('hit-tests in document coordinates on a scrolled page', async () => {
 		// The menu is at document y 750..850; the page is scrolled by 600, so it shows at viewport y 150..250.
 		const { tab } = fakeTab({ page: { scrollY: 600, elements: [{ left: 100, top: 750, width: 200, height: 100, nodeName: 'IFRAME', attributes: ['src', EXTENSION_MENU], frameId: 'EXT1' }, { left: 0, top: 0, width: 50, height: 5000, nodeName: 'INPUT' }, BODY] } }, { EXT1: { url: EXTENSION_MENU } });
