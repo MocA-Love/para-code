@@ -70,4 +70,36 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 			filter.filterEvent('', 'Runtime.executionContextDestroyed', { executionContextId: 1, executionContextUniqueId: 'main' }),
 		], ['drop', 'forward', 'forward', 'string', 'string', undefined, 'resume', 'forward', 'drop', 'drop', 'drop', 'forward']);
 	});
+	test('hides browser extension worlds by origin, even when the client asks for a world with the extension name', () => {
+		// Payloads as Electron 43.7.7 reports them for a page with the bundled React DevTools and an extension iframe.
+		const page = 'http://127.0.0.1:37669';
+		const reactDevtools = 'chrome-extension://adnlghojmjmphkjpkaeikgdocfigikoh';
+		const world = (id: number, name: string, origin: string, isDefault: boolean) => ({ context: { id, uniqueId: `u${id}`, name, origin, auxData: { isDefault, type: isDefault ? 'default' : 'isolated', frameId: 'F1' } } });
+		const filter = new ParadisCdpIsolatedWorldFilter();
+		const asked = filter.checkClientCommand('s1', 1, 'Page.createIsolatedWorld', { frameId: 'F1', worldName: 'React Developer Tools' });
+		const events = [
+			filter.filterEvent('s1', 'Runtime.executionContextCreated', world(1, '', page, true)),
+			filter.filterEvent('s1', 'Runtime.executionContextCreated', world(3, 'React Developer Tools', reactDevtools, false)),
+			filter.filterEvent('s1', 'Runtime.executionContextCreated', world(5, 'React Developer Tools', page, false)),
+			// An extension page in a frame the page shares a process with: its main world is an extension world too.
+			filter.filterEvent('s1', 'Runtime.executionContextCreated', world(6, '', 'chrome-extension://nlbcfljciijdbmfmbiaoelpjlhdgfhee', true)),
+		];
+		filter.observeResponse('s1', 1, { executionContextId: 5 });
+		assert.deepStrictEqual({
+			asked,
+			events,
+			evaluate: [
+				typeof filter.checkClientCommand('s1', 2, 'Runtime.evaluate', { expression: '1', contextId: 3 }),
+				typeof filter.checkClientCommand('s1', 3, 'Runtime.evaluate', { expression: '1', uniqueContextId: 'u3' }),
+				typeof filter.checkClientCommand('s1', 4, 'Runtime.evaluate', { expression: '1', contextId: 6 }),
+				filter.checkClientCommand('s1', 5, 'Runtime.evaluate', { expression: '1', contextId: 5 }),
+			],
+			script: filter.filterEvent('s1', 'Debugger.scriptParsed', { scriptId: '20', url: 'chrome-extension://adnlghojmjmphkjpkaeikgdocfigikoh/build/prepareInjection.js', executionContextId: 3, executionContextAuxData: { isDefault: false } }),
+		}, {
+			asked: undefined,
+			events: ['forward', 'drop', 'forward', 'drop'],
+			evaluate: ['string', 'string', 'string', undefined],
+			script: 'drop',
+		});
+	});
 });

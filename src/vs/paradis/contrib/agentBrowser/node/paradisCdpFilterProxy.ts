@@ -29,6 +29,9 @@
 //     スコープはゲートウェイのtargetIdチェックで担保済み。
 //   - `Target.setAutoAttach` / `Target.setDiscoverTargets` の `filter` は除去する
 //     （puppeteer/cdp-useがElectronの`webview`型ターゲットで固まる問題の回避。Superset知見）。
+//   - ブラウザ拡張のページ（url が chrome-extension://）は、共有したページの子（パスワード管理のページ内
+//     メニューの iframe など）でも見せない・attach させない（paradisCdpExtensionScope.ts）。
+//     共有したページそのものが拡張のページへ移った場合は、拡張の world を隠すだけで接続は保つ。
 //   - `type: "webview"` は `page` に書き換える（puppeteerの browser.pages() は
 //     type==='page' しか数えないため）。
 //   - スコープ外ターゲットへの auto-attach イベントは握りつぶすが、
@@ -52,6 +55,7 @@ import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
 import { ParadisCdpIsolatedWorldFilter } from './paradisCdpIsolatedWorldFilter.js';
 import { paradisCookieAndRewriteDeniedMessage, paradisSanitizeCookieBearingEvent } from './paradisCdpCookieFilter.js';
 import { paradisRemotePaneCdpDeniedMessage } from './paradisCdpRemotePolicy.js';
+import { paradisIsBrowserExtensionUrl } from './paradisCdpExtensionScope.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -242,16 +246,27 @@ export const PARADIS_OUT_OF_SCOPE_DETACH_FALLBACK_MS = 5_000;
 export class ParadisOutOfScopeAttachRelease {
 	/** 再開の応答を待っているセッションと、応答が来なかったときに切り離す保険のタイマー。 */
 	private readonly resuming = new Map<string, ReturnType<typeof setTimeout>>();
+	/**
+	 * 共有したページのセッション越しに attach された子（拡張の iframe など）の、親のセッション。
+	 * フラット化した子は、親のセッションで `Target.detachFromTarget` を送らないと切り離せない。
+	 */
+	private readonly parentSessions = new Map<string, string>();
 
 	constructor(
 		private readonly send: (method: string, params: Record<string, unknown>, sessionId?: string) => void,
 		private readonly fallbackMs = PARADIS_OUT_OF_SCOPE_DETACH_FALLBACK_MS,
 	) { }
 
-	/** 一時停止しているかもしれない対象を再開させる。切り離しは応答が来てから（来なければ期限で）。 */
-	release(sessionId: string): void {
+	/**
+	 * 一時停止しているかもしれない対象を再開させる。切り離しは応答が来てから（来なければ期限で）。
+	 * `parentSessionId` は、その対象が子のセッション（ページのセッション越しの auto-attach）のときの親。
+	 */
+	release(sessionId: string, parentSessionId?: string): void {
 		if (this.resuming.has(sessionId)) {
 			return;
+		}
+		if (parentSessionId !== undefined) {
+			this.parentSessions.set(sessionId, parentSessionId);
 		}
 		this.resuming.set(sessionId, setTimeout(() => this.detach(sessionId), this.fallbackMs));
 		this.send('Runtime.runIfWaitingForDebugger', {}, sessionId);
@@ -270,6 +285,7 @@ export class ParadisOutOfScopeAttachRelease {
 			clearTimeout(timer);
 		}
 		this.resuming.clear();
+		this.parentSessions.clear();
 	}
 
 	private detach(sessionId: string): void {
@@ -279,7 +295,9 @@ export class ParadisOutOfScopeAttachRelease {
 		}
 		clearTimeout(timer);
 		this.resuming.delete(sessionId);
-		this.send('Target.detachFromTarget', { sessionId });
+		const parentSessionId = this.parentSessions.get(sessionId);
+		this.parentSessions.delete(sessionId);
+		this.send('Target.detachFromTarget', { sessionId }, parentSessionId);
 	}
 }
 
@@ -2652,9 +2670,18 @@ export async function paradisProxyBrowserUpgrade(
 					return;
 				}
 				if (message.method === 'Target.attachedToTarget') {
-					const params = message.params as { sessionId?: string; targetInfo?: { targetId?: string; openerId?: string } } | undefined;
+					const params = message.params as { sessionId?: string; targetInfo?: { targetId?: string; openerId?: string; url?: string } } | undefined;
 					const childSessionId = params?.sessionId;
 					const childTargetId = params?.targetInfo?.targetId;
+					if (paradisIsBrowserExtensionUrl(params?.targetInfo?.url)) {
+						// 拡張のページ（パスワード管理のページ内メニューなど）。共有したページの子でもクライアントには知らせず、
+						// 一時停止していれば再開させてから、親のセッションで切り離す。
+						const releasable = boundedIdentifier(childSessionId);
+						if (releasable !== undefined) {
+							outOfScopeRelease.release(releasable, message.sessionId);
+						}
+						return;
+					}
 					if (childSessionId && childTargetId) {
 						if (!addAllowedTarget(childTargetId, params?.targetInfo?.openerId)
 							|| !addAllowedSession(childSessionId, childTargetId)) {
@@ -2714,8 +2741,17 @@ export async function paradisProxyBrowserUpgrade(
 			}
 
 			if (message.method === 'Target.targetCreated' || message.method === 'Target.targetInfoChanged') {
-				const params = message.params as { targetInfo?: { type?: string; targetId?: string; openerId?: string; attached?: boolean }; targetId?: string } | undefined;
+				const params = message.params as { targetInfo?: { type?: string; targetId?: string; openerId?: string; attached?: boolean; url?: string }; targetId?: string } | undefined;
 				const info = params?.targetInfo;
+				const extensionTargetId = paradisIsBrowserExtensionUrl(info?.url) ? boundedIdentifier(info?.targetId ?? params?.targetId) : undefined;
+				if (extensionTargetId !== undefined && !ctx.boundTargetIds().has(extensionTargetId)) {
+					// 拡張のページは、共有したページが開いたものでも見せない。見せていたものが拡張のページへ移ったら、
+					// そのセッションごと閉じたことにする（共有したページそのものは閉じない）。
+					if (allowedTargetIds.has(extensionTargetId) && dropTarget(extensionTargetId)) {
+						closeBoth();
+					}
+					return;
+				}
 				if (!isAllowedTarget(info, params?.targetId)) {
 					return;
 				}
@@ -2747,8 +2783,10 @@ export async function paradisProxyBrowserUpgrade(
 				return;
 			}
 			if (message.method === 'Target.attachedToTarget') {
-				const params = message.params as { sessionId?: string; targetInfo?: { type?: string; targetId?: string; openerId?: string } } | undefined;
-				if (!isAllowedTarget(params?.targetInfo)) {
+				const params = message.params as { sessionId?: string; targetInfo?: { type?: string; targetId?: string; openerId?: string; url?: string } } | undefined;
+				const extensionPage = paradisIsBrowserExtensionUrl(params?.targetInfo?.url)
+					&& !(params?.targetInfo?.targetId !== undefined && ctx.boundTargetIds().has(params.targetInfo.targetId));
+				if (extensionPage || !isAllowedTarget(params?.targetInfo)) {
 					if (params?.sessionId) {
 						outOfScopeRelease.release(params.sessionId);
 					}

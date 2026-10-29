@@ -17,6 +17,10 @@
 //  - isDefault:false のコンテキストは隠す。ただし、このクライアント自身が `Page.createIsolatedWorld` /
 //    `Page.addScriptToEvaluateOnNewDocument` の worldName で作らせた world（puppeteer が使う）は見せる。
 //    名前の無い world と Electron の world の名前は、クライアントが要求しても見せない
+//  - ブラウザ拡張のコンテキスト（origin が chrome-extension://）は、名前を要求されても、isDefault でも隠す。
+//    content script の world には拡張の名前が付くので、名前だけで照合すると、同梱の React DevTools の名前
+//    （"React Developer Tools"）を要求したクライアントが拡張の world に入れた（Electron 43.7.7 で実測）。
+//    クライアントが作らせた world の origin はページの origin なので、origin で見分ける（paradisCdpExtensionScope.ts）
 //  - コンテキストを指す引数（contextId / executionContextId / uniqueContextId）は、見せたコンテキスト
 //    のものだけ通す（番号は連番で推測できるので、隠したものを拒むだけでは足りない）
 //  - objectId は V8 の「isolate.context.object」の形なら、隠したコンテキストのものを拒む
@@ -24,6 +28,8 @@
 //    そこからのコンソール出力・例外は届けない。止まった場合はこちらで再開させる
 //
 // セッション（フラット化した子セッションの sessionId、ページ直結なら ''）ごとに状態を持つ。
+
+import { paradisIsBrowserExtensionUrl } from './paradisCdpExtensionScope.js';
 
 /** クライアントが要求しても見せない world の名前（Electron が自分の world に付ける名前）。 */
 const RESERVED_WORLD_NAMES: ReadonlySet<string> = new Set(['', 'Electron Isolated Context']);
@@ -150,7 +156,14 @@ export class ParadisCdpIsolatedWorldFilter {
 				}
 				const auxData = isRecord(context.auxData) ? context.auxData : undefined;
 				const name = typeof context.name === 'string' ? context.name : '';
-				const hidden = auxData?.isDefault === false && (RESERVED_WORLD_NAMES.has(name) || !state.requestedWorldNames.has(name)) && !state.visibleContextIds.has(context.id);
+				const hidden = paradisIsBrowserExtensionUrl(context.origin)
+					|| (auxData?.isDefault === false && (RESERVED_WORLD_NAMES.has(name) || !state.requestedWorldNames.has(name)) && !state.visibleContextIds.has(context.id));
+				if (hidden) {
+					state.visibleContextIds.delete(context.id);
+					if (typeof context.uniqueId === 'string') {
+						state.visibleUniqueIds.delete(context.uniqueId);
+					}
+				}
 				const uniqueId = typeof context.uniqueId === 'string' ? context.uniqueId : undefined;
 				if (hidden) {
 					boundedAdd(state.hiddenContextIds, context.id);
