@@ -54,6 +54,7 @@ import { ParadisCursorOverlayController } from './paradisCursorOverlayController
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import { PARADIS_EXTENSION_PAGE_DENIED_MESSAGE, paradisIsBrowserExtensionUrl } from '../common/paradisCdpExtensionScope.js';
+import { paradisSetExtensionNavigationGuard } from './paradisExtensionNavigationGuard.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
@@ -1060,6 +1061,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		// 同じ合図が「エージェントがこのタブを手にした・手放した」を意味する。手にしている間のダウンロードは
 		// エージェント由来として扱い、手放したらタブへ掛けた上書き（ヘッダ・認証・ルール）とハイライトを外す。
 		paradisSetWebContentsHeldByAgent(view.webContents, !enabledValue);
+		// 手にしている間は、拡張のページ（chrome-extension://）へ移る移動を取り消す
+		paradisSetExtensionNavigationGuard(view.webContents, !enabledValue);
 		if (enabledValue) {
 			this.pageOps.releaseTarget(view as unknown as IParadisPageOpsTarget);
 		}

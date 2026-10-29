@@ -55,7 +55,7 @@ import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
 import { ParadisCdpIsolatedWorldFilter } from './paradisCdpIsolatedWorldFilter.js';
 import { paradisCookieAndRewriteDeniedMessage, paradisSanitizeCookieBearingEvent } from './paradisCdpCookieFilter.js';
 import { paradisRemotePaneCdpDeniedMessage } from './paradisCdpRemotePolicy.js';
-import { paradisExtensionPageDeniedMessage, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../common/paradisCdpExtensionScope.js';
+import { PARADIS_HIDDEN_EXTENSION_FRAME_URL, paradisExtensionPageDeniedMessage, paradisGuardNewDocumentScriptParams, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../common/paradisCdpExtensionScope.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -1383,10 +1383,19 @@ type ITargetInfoLike = { type?: string } & Record<string, unknown>;
 
 /** Electronの`webview`型ターゲットをpuppeteer互換の`page`に書き換える。 */
 function rewriteTargetInfoType(info: ITargetInfoLike | undefined): ITargetInfoLike | undefined {
-	if (info && info.type === 'webview') {
-		return { ...info, type: 'page' };
+	if (!info) {
+		return info;
 	}
-	return info;
+	// 拡張のページ（共有したページそのものが拡張のページにいるとき）の URL と題名には拡張の ID と名前が入るので伏せる
+	const extension = paradisIsBrowserExtensionUrl(info.url);
+	if (info.type !== 'webview' && !extension) {
+		return info;
+	}
+	return {
+		...info,
+		...(info.type === 'webview' ? { type: 'page' } : {}),
+		...(extension ? { url: PARADIS_HIDDEN_EXTENSION_FRAME_URL, title: '' } : {}),
+	};
 }
 
 /**
@@ -1429,7 +1438,9 @@ export function paradisProxyPageUpgrade(
 		// Para Code 自身の isolated world（Design Mode の要素選択、preload）をエージェントから隠す。
 		const isolatedWorlds = new ParadisCdpIsolatedWorldFilter();
 		let isolatedWorldRequestSequence = 0;
-		// 共有したページの今の URL（拡張のページにいる間は命令を断る）。命令のたびに Target.getTargetInfo で確かめる
+		// 共有したページの今の URL（拡張のページにいる間は命令を断る）。接続の最初に 1 回 Target.getTargetInfo で
+		// 確かめ、その後は Page.frameNavigated で追う。エージェントが手にしている間の拡張のページへの移動は main が
+		// 取り消す（paradisExtensionNavigationGuard.ts）ので、ここは手にする前から拡張のページにいた場合の守り
 		let pageUrl: string | undefined;
 		// 接続の最初の URL の問い合わせ（1 回だけ）
 		let initialPageUrl: Promise<void> | undefined;
@@ -1601,6 +1612,11 @@ export function paradisProxyPageUpgrade(
 			const neutralUserAgentParams = paradisNeutralizeDefaultUserAgentOverride(msg.method, msg.params);
 			if (neutralUserAgentParams) {
 				data = Buffer.from(JSON.stringify({ ...msg, params: neutralUserAgentParams }));
+			}
+			// 登録する文書の始めのスクリプトは、拡張のページの文書では走らないように包む
+			const guardedScriptParams = paradisGuardNewDocumentScriptParams(msg.method, msg.params);
+			if (guardedScriptParams) {
+				data = Buffer.from(JSON.stringify({ ...msg, params: guardedScriptParams }));
 			}
 			if (msg.method === 'Emulation.setFocusEmulationEnabled' && msg.sessionId === undefined) {
 				noteFocusEmulation(ctx, msg.params);
@@ -2488,6 +2504,12 @@ export async function paradisProxyBrowserUpgrade(
 					const rewrittenParams = { ...(message.params ?? {}) };
 					delete rewrittenParams.filter;
 					forwardClientRequest(message, sessionTargetId, { ...message, params: rewrittenParams });
+					return;
+				}
+				// 登録する文書の始めのスクリプトは、拡張のページの文書では走らないように包む
+				const guardedScriptParams = paradisGuardNewDocumentScriptParams(message.method, message.params);
+				if (guardedScriptParams !== undefined) {
+					forwardClientRequest(message, sessionTargetId, { ...message, params: guardedScriptParams });
 					return;
 				}
 				// ページ単位の接続と同じく、Electron の既定の UA の上書きはこの接続の上書きを外す形にする

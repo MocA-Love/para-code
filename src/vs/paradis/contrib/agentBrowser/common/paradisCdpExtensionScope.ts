@@ -166,8 +166,11 @@ const ALLOWED_ON_EXTENSION_PAGE = new Set([
 /** ドメインの購読の開始・終了（`Runtime.enable` など）。 */
 const DOMAIN_SUBSCRIPTION_METHOD = /^[A-Za-z]+\.(?:enable|disable)$/;
 
-/** 拡張のページにいる間も届けるイベント（ページの移動と、隠したうえで届く Runtime のコンテキスト）。 */
-const EVENTS_ALLOWED_ON_EXTENSION_PAGE = /^(?:Page\.(?:frame[A-Za-z]+|lifecycleEvent|loadEventFired|domContentEventFired|navigatedWithinDocument|javascriptDialog[A-Za-z]+)|Target\.[A-Za-z]+|Runtime\.executionContext[A-Za-z]+|Inspector\.[A-Za-z]+)$/;
+/**
+ * 拡張のページにいる間も届けるイベント（ページの移動と、隠したうえで届く Runtime のコンテキスト）。
+ * 拡張のページのダイアログ（Page.javascriptDialog*）は届けない（文面に拡張の中身が入る。応じるのは利用者）。
+ */
+const EVENTS_ALLOWED_ON_EXTENSION_PAGE = /^(?:Page\.(?:frame[A-Za-z]+|lifecycleEvent|loadEventFired|domContentEventFired|navigatedWithinDocument)|Target\.[A-Za-z]+|Runtime\.executionContext[A-Za-z]+|Inspector\.[A-Za-z]+)$/;
 
 /** 拡張のページにいるセッションから、このイベントを届けてよいか。 */
 export function paradisIsEventAllowedOnExtensionPage(method: string): boolean {
@@ -197,4 +200,24 @@ export function paradisExtensionPageDeniedMessage(method: string, params: unknow
 		return PARADIS_EXTENSION_NAVIGATION_DENIED_MESSAGE;
 	}
 	return pageIsExtension && !isAllowedOnExtensionPage(method, params) ? PARADIS_EXTENSION_PAGE_DENIED_MESSAGE : undefined;
+}
+
+/**
+ * 文書の始めのスクリプトを、拡張のページの文書（origin が chrome-extension:）では走らせない判定。
+ * about:blank・srcdoc の iframe は作った文書の origin を受け継ぐので、`location.protocol` だけでなく `origin` も見る。
+ * 文書の始めに走るので、ページのスクリプトが `origin` を書き換える前に判定できる。
+ */
+const NEW_DOCUMENT_EXTENSION_CHECK = '(function () { try { return /^chrome-extension:/i.test(String(globalThis.origin)) || /^chrome-extension:/i.test(location.protocol); } catch (e) { return true; } })()';
+
+/**
+ * `Page.addScriptToEvaluateOnNewDocument` の source を、拡張のページの文書では走らないように包んだ params を返す。
+ * 普通のページで登録したスクリプトが、後で拡張のページへ移ったときに拡張の main world（worldName 付きなら
+ * 拡張の origin の world）で走って中身を持ち出すのを防ぐ。`var` と関数の宣言が今までどおり大域に出るよう、
+ * 関数ではなく if のブロックで包む。対象外なら undefined。
+ */
+export function paradisGuardNewDocumentScriptParams(method: string, params: unknown): Record<string, unknown> | undefined {
+	if (method !== 'Page.addScriptToEvaluateOnNewDocument' || !isRecord(params) || typeof params.source !== 'string') {
+		return undefined;
+	}
+	return { ...params, source: `if (!${NEW_DOCUMENT_EXTENSION_CHECK}) {\n${params.source}\n}` };
 }
