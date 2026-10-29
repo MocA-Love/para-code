@@ -16,6 +16,7 @@
 //  - 署名を確かめる前の中身はディスクに書かない。展開では、フォルダの外へ出る名前・シンボリックリンク・大きすぎるものを断る
 
 import * as electron from 'electron';
+import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from '../../../../base/common/path.js';
 import type { IParadisExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
@@ -40,6 +41,11 @@ export interface IParadisInstallPrompt {
 	readonly access: IParadisExtensionAccess;
 	/** 有効にする場所の名前（管理画面の選択肢の文字。画面に出すだけ）。 */
 	readonly profileLabel: string;
+	/**
+	 * 落として署名を確かめた中身の権限か（管理画面から）。false はストアのページの情報で、確かめられた後に落とし、その manifest の
+	 * 権限が同じときだけ入れる（ストアのページから。Chrome と同じ順）。
+	 */
+	readonly verified: boolean;
 }
 
 /** 1 回の応答（リダイレクトはたどらずに返す）。 */
@@ -83,7 +89,7 @@ export function paradisWebStoreCrxUrl(extensionId: string, chromeVersion: string
 /**
  * ストアから CRX を落として確かめる（ストアの署名が要る）。`publisherKeyHash` はテストで差し替える。
  */
-export async function paradisDownloadWebStoreCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly publisherKeyHash?: string; readonly timeoutMs?: number } = {}): Promise<IParadisVerifiedCrx> {
+export async function paradisDownloadWebStoreCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly sha256?: string; readonly size?: number; readonly publisherKeyHash?: string; readonly timeoutMs?: number } = {}): Promise<IParadisVerifiedCrx> {
 	let current: IParadisWebStoreResponse | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timeout = new Promise<never>((_resolve, reject) => {
@@ -99,7 +105,7 @@ export async function paradisDownloadWebStoreCrx(extensionId: string, fetcher: P
 	}
 }
 
-async function downloadCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly publisherKeyHash?: string }, onResponse: (response: IParadisWebStoreResponse) => void): Promise<IParadisVerifiedCrx> {
+async function downloadCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly sha256?: string; readonly size?: number; readonly publisherKeyHash?: string }, onResponse: (response: IParadisWebStoreResponse) => void): Promise<IParadisVerifiedCrx> {
 	let url = options.url ?? paradisWebStoreCrxUrl(extensionId);
 	if (!paradisIsAllowedCrxUrl(url)) {
 		throw new Error('The extension download address is not a Chrome Web Store address');
@@ -124,16 +130,74 @@ async function downloadCrx(extensionId: string, fetcher: ParadisWebStoreFetcher,
 			throw new Error(`The Chrome Web Store download failed (${response.status})`);
 		}
 		const bytes = await response.read(MAX_CRX_BYTES);
+		// 更新の問い合わせの答えに大きさと hash があれば、それと同じものだけを受ける（署名の確かめはその後も必ず行う）
+		if (options.size !== undefined && bytes.length !== options.size) {
+			throw new Error('The extension download is incomplete');
+		}
+		if (options.sha256 !== undefined && createHash('sha256').update(bytes).digest('hex') !== options.sha256.toLowerCase()) {
+			throw new Error('The extension download does not match its checksum');
+		}
 		return paradisVerifyCrx3(bytes, { expectedExtensionId: extensionId, requirePublisherProof: true, publisherKeyHash: options.publisherKeyHash });
 	}
+}
+
+/** ストアと話すメモリだけのセッション（名前に persist: を付けないのでディスクに残らない。タブのセッションとは別）。 */
+function webStoreSession(): electron.Session {
+	return electron.session.fromPartition('paradis-browser-extension-web-store', { cache: false });
+}
+
+/** 更新の問い合わせ（POST。テストでは偽物）。 */
+export type ParadisWebStoreUpdateRequester = (url: string, body: string, headers: Record<string, string>) => Promise<{ readonly status: number; readonly text: string }>;
+
+/** 更新の問い合わせの答えの上限。 */
+const MAX_UPDATE_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+/** Electron の main から更新を問い合わせる（ストアのダウンロードと同じセッション、cookie なし、リダイレクトはたどらない）。 */
+export function paradisCreateWebStoreUpdateRequester(): ParadisWebStoreUpdateRequester {
+	return (url, body, headers) => new Promise((resolvePromise, reject) => {
+		const request = electron.net.request({ url, method: 'POST', redirect: 'error', session: webStoreSession(), useSessionCookies: false, credentials: 'omit' });
+		for (const [name, value] of Object.entries(headers)) {
+			request.setHeader(name, value);
+		}
+		const timer = setTimeout(() => {
+			request.abort();
+			reject(new Error('The update check timed out'));
+		}, 60_000);
+		request.on('response', response => {
+			const chunks: Buffer[] = [];
+			let total = 0;
+			response.on('data', (chunk: Buffer) => {
+				total += chunk.length;
+				if (total > MAX_UPDATE_RESPONSE_BYTES) {
+					request.abort();
+					clearTimeout(timer);
+					reject(new Error('The update check answer is too large'));
+					return;
+				}
+				chunks.push(chunk);
+			});
+			response.on('end', () => {
+				clearTimeout(timer);
+				resolvePromise({ status: response.statusCode, text: Buffer.concat(chunks).toString('utf8') });
+			});
+			response.on('error', error => {
+				clearTimeout(timer);
+				reject(error);
+			});
+		});
+		request.on('error', error => {
+			clearTimeout(timer);
+			reject(error);
+		});
+		request.end(body);
+	});
 }
 
 /** Electron の main から外へ GET する（メモリだけのセッション、cookie なし、リダイレクトは返す）。 */
 export function paradisCreateWebStoreFetcher(): ParadisWebStoreFetcher {
 	let session: electron.Session | undefined;
 	return url => new Promise<IParadisWebStoreResponse>((resolvePromise, reject) => {
-		// 名前に persist: を付けないのでディスクに残らない。タブのセッション（拡張機能が入る）とは別
-		session ??= electron.session.fromPartition('paradis-browser-extension-web-store', { cache: false });
+		session ??= webStoreSession();
 		const request = electron.net.request({ url, method: 'GET', redirect: 'manual', session, useSessionCookies: false, credentials: 'omit' });
 		let settled = false;
 		const settle = (value: IParadisWebStoreResponse) => {

@@ -302,6 +302,14 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		if (extension.pagesWithoutApis?.length) {
 			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.pagesWithoutApis', "次のページは UTF-8 でないか Para Code が書き換えられない形式のため、Para Code が足す機能（chrome.storage.sync など）が使えません: {0}", extension.pagesWithoutApis.join('、'));
 		}
+		if (extension.nextVersion) {
+			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.nextVersion', "版 {0} に更新しました。次に Para Code を起動したときから使います。", extension.nextVersion);
+		}
+		if (extension.pendingUpdate) {
+			// 新しく権限を求める更新は自動では入れない（確かめてから入れる）
+			const added = [...extension.pendingUpdate.permissions, ...extension.pendingUpdate.hostPermissions].join('、');
+			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.pendingUpdate', "版 {0} への更新が確認待ちです。新しく次を求めています: {1}", extension.pendingUpdate.version, added);
+		}
 		if (extension.loadError) {
 			dom.append(info, $('.pbe-row-error')).textContent = localize('paradis.browserExtensions.loadError', "読み込めませんでした: {0}", extension.loadError);
 		}
@@ -317,6 +325,16 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 				}
 				this._showMessage(localize('paradis.browserExtensions.reloaded', "「{0}」を読み込み直しました。開いているページには、読み込み直すと効きます。", result.extension.name), false);
 				return true;
+			}));
+		}
+		if (extension.source === 'webstore' && extension.pendingUpdate) {
+			this._appendRowAction(actions, Codicon.cloudDownload, localize('paradis.browserExtensions.approveUpdate', "確かめて更新"), !active, () => void this._run(async () => {
+				const result = await this._mainService.approveWebStoreUpdate(extension.id);
+				if (!result.ok) {
+					this._showMessage(paradisDescribeAddExtensionFailure(result), result.reason !== 'cancelled');
+					return;
+				}
+				this._showMessage(localize('paradis.browserExtensions.updated', "「{0}」を版 {1} に更新しました。開いているページには、読み込み直すと効きます。", result.extension.name, result.extension.version), false);
 			}));
 		}
 		this._appendRowAction(actions, Codicon.trash, localize('paradis.browserExtensions.remove', "削除"), !active, () => this._confirmRemove(extension));

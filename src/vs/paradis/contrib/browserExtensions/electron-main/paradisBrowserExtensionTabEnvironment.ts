@@ -16,6 +16,7 @@ import { join } from '../../../../base/common/path.js';
 import type { IDialogMainService } from '../../../../platform/dialogs/electron-main/dialogMainService.js';
 import type { IParadisPermissionPrompt } from './paradisBrowserExtensionPermissions.js';
 import type { IParadisInstallPrompt } from './paradisBrowserExtensionWebStore.js';
+import type { IParadisUpdatePrompt } from './paradisBrowserExtensionsMain.js';
 import type { IParadisExtensionNotification, IParadisExtensionNotificationOptions } from './paradisBrowserExtensionServices.js';
 import type { IParadisRect } from '../common/paradisBrowserExtensionAction.js';
 import { paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
@@ -251,8 +252,33 @@ export function paradisCreateBrowserExtensionInstallPrompt(dialogMainService: ID
 		const { response } = await dialogMainService.showMessageBox({
 			type: 'question',
 			message: localize('paradis.browserExtensions.install.message', "「{0}」（{1}）を Para Code に追加しますか？", prompt.extensionName, prompt.version),
-			detail: `${localize('paradis.browserExtensions.install.can', "この拡張機能は次のことができます。")}\n${list}\n\n${localize('paradis.browserExtensions.install.detail', "Chrome ウェブストアの署名を確かめました。有効にする場所: {0}", prompt.profileLabel)}`,
+			detail: `${localize('paradis.browserExtensions.install.can', "この拡張機能は次のことができます。")}\n${list}\n\n${prompt.verified
+				? localize('paradis.browserExtensions.install.detail', "Chrome ウェブストアの署名を確かめました。有効にする場所: {0}", prompt.profileLabel)
+				: localize('paradis.browserExtensions.install.detailBeforeDownload', "追加を押すと Chrome ウェブストアから落とし、署名と、権限がこの一覧と同じかを確かめてから入れます。有効にする場所: {0}", prompt.profileLabel)}`,
 			buttons: [localize('paradis.browserExtensions.install.add', "追加"), localize('paradis.browserExtensions.install.cancel', "キャンセル")],
+			defaultId: 1,
+			cancelId: 1,
+			noLink: true,
+		}, window);
+		return response === 0;
+	};
+}
+
+/** 新しく権限を求めるストアの更新を入れる前の確認のダイアログ（新しく求めるものだけを見せる）。 */
+export function paradisCreateBrowserExtensionUpdatePrompt(dialogMainService: IDialogMainService, lastActiveWindow: () => BrowserWindow | undefined): (prompt: IParadisUpdatePrompt) => Promise<boolean> {
+	return async prompt => {
+		const window = lastActiveWindow();
+		if (!window || window.isDestroyed()) {
+			return false;
+		}
+		const items = [...prompt.added.permissions.map(permissionLabel), ...prompt.added.hostPermissions.map(originLabel)];
+		const shown = items.slice(0, 20);
+		const list = `${shown.map(item => `・${item}`).join('\n')}${items.length > shown.length ? `\n${localize('paradis.browserExtensions.install.more', "ほか {0} 件", items.length - shown.length)}` : ''}`;
+		const { response } = await dialogMainService.showMessageBox({
+			type: 'question',
+			message: localize('paradis.browserExtensions.update.message', "「{0}」を {1} に更新しますか？", prompt.extensionName, prompt.version),
+			detail: `${localize('paradis.browserExtensions.update.added', "この更新では、新しく次のことを求めています。")}\n${list}\n\n${localize('paradis.browserExtensions.update.detail', "更新しないと、今の版のまま使えます。更新するときは、Chrome ウェブストアの署名を確かめ直します。")}`,
+			buttons: [localize('paradis.browserExtensions.update.ok', "更新"), localize('paradis.browserExtensions.update.cancel', "今の版のまま")],
 			defaultId: 1,
 			cancelId: 1,
 			noLink: true,
