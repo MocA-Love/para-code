@@ -7,7 +7,7 @@
 import assert from 'assert';
 import { EventEmitter } from 'events';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisInputGuardTab, PARADIS_EXTENSION_FRAME_DENIED_MESSAGE, PARADIS_EXTENSION_INPUT_DENIED_MESSAGE, ParadisFrameTargetTracker, ParadisInputGuardWebContents, paradisExtensionInputRefusal, paradisInputGuardTab, paradisInterceptUpstreamCommand } from '../../electron-main/paradisExtensionInputGuard.js';
+import { IParadisInputGuardTab, PARADIS_EXTENSION_FRAME_DENIED_MESSAGE, PARADIS_EXTENSION_INPUT_DENIED_MESSAGE, ParadisFrameTargetTracker, ParadisInputGuardWebContents, paradisExtensionInputRefusal, paradisGuardExtensionInput, paradisInputGuardTab, paradisInterceptUpstreamCommand } from '../../electron-main/paradisExtensionInputGuard.js';
 
 const EXTENSION_MENU = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/menu.html';
 
@@ -22,6 +22,8 @@ interface IFakeElement {
 
 interface IFakeDocument {
 	readonly scrollY: number;
+	/** Same-process frames of this document (frame id -> URL), as Page.getFrameTree lists them. */
+	readonly localFrames?: Record<string, string>;
 	/** Topmost first. */
 	readonly elements: IFakeElement[];
 }
@@ -31,7 +33,7 @@ interface IFakeDocument {
  * returns the frame owner of an out-of-process frame (and the node inside a same-process frame, e.g. BODY of an
  * about:blank iframe); DOM.getBoxModel gives the content quad in viewport coordinates.
  */
-function fakeTab(documents: Record<string, IFakeDocument>, targets: Record<string, { url: string; sessionId?: string }>, options: { extensionFrameInTab?: boolean; focusedFrameUrl?: string } = {}) {
+function fakeTab(documents: Record<string, IFakeDocument>, targets: Record<string, { url: string; sessionId?: string }>, options: { extensionFrameInTab?: boolean; focusedFrameUrl?: string; attachable?: Record<string, Record<string, { url: string; sessionId?: string }>> } = {}) {
 	const asked: string[] = [];
 	const main = { url: 'https://example.test/' } as { url: string; framesInSubtree: unknown[] };
 	main.framesInSubtree = options.extensionFrameInTab === false ? [main] : [main, { url: EXTENSION_MENU }];
@@ -40,6 +42,12 @@ function fakeTab(documents: Record<string, IFakeDocument>, targets: Record<strin
 	const tab: IParadisInputGuardTab = {
 		webContents,
 		frameTarget: frameId => targets[frameId],
+		...(options.attachable ? {
+			attachChildren: async (sessionId: string) => {
+				asked.push(`Target.setAutoAttach@${sessionId}`);
+				Object.assign(targets, options.attachable![sessionId] ?? {});
+			},
+		} : {}),
 		send: async (method, params, sessionId) => {
 			asked.push(`${method}@${sessionId ?? 'page'}`);
 			const doc = documents[sessionId ?? 'page'];
@@ -60,6 +68,8 @@ function fakeTab(documents: Record<string, IFakeDocument>, targets: Record<strin
 					const element = nodes[params.backendNodeId as number];
 					return { node: { nodeName: element.nodeName, attributes: element.attributes ?? [], ...(element.frameId ? { frameId: element.frameId } : {}) } };
 				}
+				case 'Page.getFrameTree':
+					return { frameTree: { frame: { id: 'MAIN', url: 'https://example.test/' }, childFrames: Object.entries(doc.localFrames ?? {}).map(([id, url]) => ({ frame: { id, url } })) } };
 				case 'DOM.getBoxModel': {
 					const element = nodes[params.backendNodeId as number];
 					const left = element.left;
@@ -91,13 +101,15 @@ suite('paradisExtensionInputGuard', () => {
 
 	test('judges a frame by the URL it shows, not its src, and looks into out-of-process web frames', async () => {
 		const page: IFakeDocument = {
-			scrollY: 0, elements: [
+			scrollY: 0, localFrames: { LOCAL: 'about:blank' }, elements: [
 				// src is a web page, but the frame moved itself to an extension page.
 				{ left: 0, top: 0, width: 100, height: 100, nodeName: 'IFRAME', attributes: ['src', 'https://example.test/nav'], frameId: 'MOVED' },
 				// A cross-origin login widget with an extension menu inside it at its own (100..300, 100..200).
 				{ left: 200, top: 0, width: 500, height: 400, nodeName: 'IFRAME', attributes: ['src', 'https://widget.example/'], frameId: 'WIDGET' },
-				// A same-process about:blank frame: Chromium answers with the node inside it.
+				// A same-process about:blank frame: Chromium answers with the node inside it, and with the frame
+				// element itself on its border.
 				{ left: 0, top: 500, width: 100, height: 100, nodeName: 'BODY' },
+				{ left: 0, top: 490, width: 100, height: 10, nodeName: 'IFRAME', attributes: [], frameId: 'LOCAL' },
 				BODY,
 			],
 		};
@@ -109,8 +121,25 @@ suite('paradisExtensionInputGuard', () => {
 			menuInsideWidget: await press(200 + 150, 150),
 			inputInsideWidget: await press(200 + 20, 20),
 			blankFrame: await press(50, 550),
+			blankFrameBorder: await press(50, 495),
 			page: await press(800, 800),
-		}, { movedFrame: true, menuInsideWidget: true, inputInsideWidget: false, blankFrame: false, page: false });
+		}, { movedFrame: true, menuInsideWidget: true, inputInsideWidget: false, blankFrame: false, blankFrameBorder: false, page: false });
+	});
+
+	test('looks past the second level by auto-attaching the frame it is in', async () => {
+		// page -> WIDGET (attached by upstream) -> DEEP (not attached until asked) -> extension menu
+		const page: IFakeDocument = { scrollY: 0, elements: [{ left: 0, top: 0, width: 700, height: 500, nodeName: 'IFRAME', attributes: ['src', 'https://a.example/'], frameId: 'WIDGET' }, BODY] };
+		const widget: IFakeDocument = { scrollY: 0, elements: [{ left: 0, top: 0, width: 700, height: 500, nodeName: 'IFRAME', attributes: ['src', 'https://b.example/'], frameId: 'DEEP' }, BODY] };
+		const deep: IFakeDocument = { scrollY: 0, elements: [{ left: 100, top: 100, width: 200, height: 100, nodeName: 'IFRAME', attributes: [], frameId: 'EXT3' }, BODY] };
+		const { tab, asked } = fakeTab({ page, 'S-WIDGET': widget, 'S-DEEP': deep }, { WIDGET: { url: 'https://a.example/', sessionId: 'S-WIDGET' } }, {
+			attachable: { 'S-WIDGET': { DEEP: { url: 'https://b.example/', sessionId: 'S-DEEP' } }, 'S-DEEP': { EXT3: { url: EXTENSION_MENU } } },
+		});
+		const press = async (x: number, y: number) => await paradisExtensionInputRefusal(tab, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }) !== undefined;
+		assert.deepStrictEqual({
+			outsideTheMenu: await press(400, 400),
+			onTheMenu: await press(150, 150),
+			autoAttached: asked.filter(call => call.startsWith('Target.setAutoAttach')),
+		}, { outsideTheMenu: false, onTheMenu: true, autoAttached: ['Target.setAutoAttach@S-WIDGET', 'Target.setAutoAttach@S-DEEP'] });
 	});
 
 	test('treats an out-of-process frame it cannot look into as the extension only when the tab has one, and asks nothing without one', async () => {
@@ -125,7 +154,7 @@ suite('paradisExtensionInputGuard', () => {
 		}, { withExtension: PARADIS_EXTENSION_INPUT_DENIED_MESSAGE, without: undefined, askedWithout: [] });
 	});
 
-	test('lets the release of a press it let through go, refuses keys into an extension frame, and covers taps and drops', async () => {
+	test('moves the release of a press it let through off the extension UI, refuses keys into an extension frame, and covers taps and drops', async () => {
 		const page: IFakeDocument = { scrollY: 0, elements: [{ left: 0, top: 0, width: 100, height: 100, nodeName: 'IFRAME', attributes: [], frameId: 'EXT1' }, BODY] };
 		const { tab } = fakeTab({ page }, { EXT1: { url: EXTENSION_MENU } });
 		const refused = async (method: string, params: object) => await paradisExtensionInputRefusal(tab, method, params) !== undefined;
@@ -144,6 +173,20 @@ suite('paradisExtensionInputGuard', () => {
 		const focused = fakeTab({ page }, {}, { focusedFrameUrl: EXTENSION_MENU });
 		results.push(await paradisExtensionInputRefusal(focused.tab, 'Input.insertText', { text: 'secret' }) !== undefined);
 		assert.deepStrictEqual(results, [false, false, true, true, false, true, true, false, true]);
+
+		// The release is moved back to where the button went down; a release with no press of its button is judged where it is.
+		const moved = fakeTab({ page }, { EXT1: { url: EXTENSION_MENU } });
+		const verdicts = [
+			await paradisGuardExtensionInput(moved.tab, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 500, y: 500, button: 'left', clickCount: 1 }),
+			await paradisGuardExtensionInput(moved.tab, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: 600, y: 600, button: 'right', clickCount: 1 }),
+			await paradisGuardExtensionInput(moved.tab, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: 50, y: 50, button: 'left', clickCount: 1 }),
+			// The right button was pressed and never released through the guard; a later lone left release on the menu is refused.
+			await paradisGuardExtensionInput(moved.tab, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: 50, y: 50, button: 'left', clickCount: 1 }),
+			await paradisGuardExtensionInput(moved.tab, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: 50, y: 50, button: 'right', clickCount: 1 }),
+		];
+		assert.deepStrictEqual(verdicts.map(verdict => verdict.refusal !== undefined ? 'refused' : verdict.params ? `moved to ${verdict.params.x},${verdict.params.y}` : 'sent'), [
+			'sent', 'sent', 'moved to 500,500', 'refused', 'moved to 600,600',
+		]);
 	});
 
 	test('upstream commands: page input is judged, extension frame sessions are refused, the rest passes through, and the guard is released with the view', async () => {
@@ -172,16 +215,26 @@ suite('paradisExtensionInputGuard', () => {
 		tracker.onMessage('Target.targetInfoChanged', { targetInfo: { targetId: 'WEB1', type: 'iframe', url: EXTENSION_MENU } });
 		results.push(await run('Runtime.evaluate', { expression: '1' }, { sessionId: 'S-WEB', targetId: 'WEB1' }));
 
-		// The interceptor and the event listener go away with the view.
+		// An extension frame session is detached as soon as it is attached (so no events of the extension page reach
+		// upstream's agent tools); the interceptor and the event listener go away with the view.
 		const electronDebugger = new EventEmitter();
 		const webContents = Object.assign(new EventEmitter(), { mainFrame: { url: 'https://example.test/', framesInSubtree: [] }, focusedFrame: null, debugger: electronDebugger });
 		let disposed = 0;
-		paradisInputGuardTab({ webContents: webContents as never, debugger: { ...upstreamDebugger, registerCommandInterceptor: () => ({ dispose() { disposed++; } }) } as never });
+		const detached: string[] = [];
+		paradisInputGuardTab({
+			webContents: webContents as never,
+			debugger: { ...upstreamDebugger, registerCommandInterceptor: () => ({ dispose() { disposed++; } }), sendCommandRaw: async (method: string, params?: { sessionId?: string }, sessionId?: string) => { detached.push(`${method} ${params?.sessionId}@${sessionId}`); return {}; } } as never,
+		});
+		electronDebugger.emit('message', {}, 'Target.attachedToTarget', { sessionId: 'S-WEB2', targetInfo: { targetId: 'WEB2', type: 'iframe', url: 'https://widget.example/' } }, 'S-PAGE');
+		electronDebugger.emit('message', {}, 'Target.attachedToTarget', { sessionId: 'S-EXT2', targetInfo: { targetId: 'EXT2', type: 'iframe', url: EXTENSION_MENU } }, 'S-WEB2');
+		// The detach is sent on the next turn (sending from inside a debugger event can crash Electron).
+		await new Promise(resolve => setTimeout(resolve, 0));
 		const listenersWhileAlive = electronDebugger.listenerCount('message');
 		webContents.emit('destroyed');
-		assert.deepStrictEqual({ results, sent, listenersWhileAlive, listenersAfter: electronDebugger.listenerCount('message'), disposed }, {
-			results: ['refused input', 'sent', 'refused frame', 'passed through', 'passed through', 'passed through', 'refused frame'],
+		assert.deepStrictEqual({ results, sent, detached, listenersWhileAlive, listenersAfter: electronDebugger.listenerCount('message'), disposed }, {
+			results: ['refused input', 'sent', 'refused frame', 'refused frame', 'passed through', 'passed through', 'refused frame'],
 			sent: ['Input.dispatchMouseEvent@S-PAGE'],
+			detached: ['Target.detachFromTarget S-EXT2@S-WEB2'],
 			listenersWhileAlive: 1,
 			listenersAfter: 0,
 			disposed: 1,
