@@ -135,7 +135,9 @@ protocol.registerSchemesAsPrivileged([
 	{
 		scheme: 'vscode-managed-remote-resource',
 		privileges: { secure: true, supportFetchAPI: true, corsEnabled: true }
-	}
+	},
+	// PARA-PATCH: browser extensions' service workers and pages reach Para Code's chrome.* additions over this scheme (allowServiceWorkers: Electron 43 routes a worker's fetch only then)
+	{ scheme: 'paracode-extension-api', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true, allowServiceWorkers: true } }
 ]);
 perf.mark('code/didRegisterSchemesAsPrivileged');
 
