@@ -76,6 +76,8 @@ import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, ParadisMobileCapability, paradisE
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyIncludeContent, paradisNotifyPcFocusQuiet, paradisNotifyPrefersDetail, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { PARADIS_NOTIFY_DETAIL_MAX_CHARS, paradisComposeNotifyVariants, paradisFitNotifyBytesForPush, paradisLegacyNotifySubtitle, paradisNotifyTabLabel } from '../common/paradisNotifyCompose.js';
 import { ParadisNotifyHookLedger, paradisResolveNotifyContent } from './paradisNotifyContentSource.js';
+import { PARADIS_CODEX_APPROVAL_NOTIFY_SLACK_MS, paradisShouldSendHeldApprovalNotify } from '../common/paradisCodexApprovalHold.js';
+import { PARADIS_CODEX_AUTO_CONTINUE_SETTING, ParadisCodexAutoContinuePhase } from '../common/paradisCodexOverloadContinue.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
 import { IParadisNotifyPromptOrigin, paradisDecodeNotifyDismissSync, paradisEncodeNotifyDismissLog, paradisNotifyDismissOpened, paradisNotifyInteractionId, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
 import { ParadisNotifyDismissStore, paradisNotifyDismissFileHost } from './paradisNotifyDismissStore.js';
@@ -1073,7 +1075,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			(mobileId, windowId, windowSession, rendererGeneration, payload) => {
 				const owner = { windowId, windowSession, rendererGeneration };
 				this.withCurrentRegisteredLease(owner, async () => {
-					this._onInboundFrame.fire([Channels.Agent, paradisMobileWindowRoute(windowId, windowSession, rendererGeneration), 0, VSBuffer.wrap(payload), mobileId]);
+					// 空の mobileId は shared process 自身の頼み（Codex の自動の continue）。ウィンドウはモバイルの操作と分けて扱う
+					this._onInboundFrame.fire([Channels.Agent, paradisMobileWindowRoute(windowId, windowSession, rendererGeneration), 0, VSBuffer.wrap(payload), mobileId.length > 0 ? mobileId : undefined]);
 				}, `agent:${windowId}`).catch(error => this.logService.warn('[paradisMobileRelay] agent action routing failed', error));
 			},
 			// transcript に質問(AskUserQuestion等)が現れた → 質問本文入りの通知を全モバイルへ流す。
@@ -1094,12 +1097,16 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			undefined,
 			this.remoteShellOutputs,
 		));
+		// Codex のモデルが混み合って止まったターンを自動で続けるか（既定オン）と、続けられずにやめたときの通知
+		this.agentChat.setCodexAutoContinueEnabled(() => configurationService?.getValue<unknown>(PARADIS_CODEX_AUTO_CONTINUE_SETTING) !== false);
+		this.agentChat.setCodexAutoContinueStoppedNotifier((token, terminalId, owner) => this.notifyAgentAutoContinueStopped(token, terminalId, owner));
 		// Codex の非同期の質問に全部答えた: その質問の通知を片付ける（ほかの端末とロック画面からも消す）
 		this._register(this.agentChat.onDidAnswerAsyncQuestions(({ token, interactionIds }) => this.dismissStore.markAnswered(token, interactionIds)));
 		// PC の入力欄の書きかけ（agent.pc-draft.v1）は、広告したアプリへだけ送る
 		this.agentChat.setMobileCapabilityCheck(async (mobileId, name) => paradisHasMobileCapability(await this.getMobileCapabilities(mobileId), name));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
 		this._register(toDisposable(() => { if (this.revokeTimer !== undefined) { clearTimeout(this.revokeTimer); } }));
+		this._register(toDisposable(() => { for (const timer of this.approvalNotifyTimers) { clearTimeout(timer); } this.approvalNotifyTimers.clear(); }));
 		this._register(toDisposable(() => this.backgroundSessions.dispose()));
 		this._register(this.agentChat.onDidChangeDesktopPaneInsights(() => this._onDidChangeAgentPaneInsights.fire()));
 		this._register(this.agentChat.onDidChangeDesktopChat(tokens => this._onDidChangeAgentChat.fire(tokens)));
@@ -1626,6 +1633,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return await this.withCurrentRegisteredLease(lease, async () => this.agentChat.claimSendMessageAction(mobileId, requestId, token, epoch, lease.windowId, lease.windowSession)) ?? 'stale';
 	}
 
+	async reportCodexAutoContinue(token: string, requestId: string, phase: ParadisCodexAutoContinuePhase, lease: IParadisMobileWindowLease): Promise<boolean> {
+		return await this.withCurrentRegisteredLease(lease, async () => this.agentChat.reportCodexAutoContinue(token, requestId, phase, lease.windowId, lease.windowSession)) ?? false;
+	}
+
 	async continueAgentInteraction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, lease: IParadisMobileWindowLease): Promise<'valid' | 'completed' | 'stale'> {
 		return await this.withCurrentRegisteredLease(lease, async () => this.agentChat.continueInteractionAction(mobileId, requestId, token, epoch, terminalId, lease.windowId, lease.windowSession)) ?? 'stale';
 	}
@@ -1807,6 +1818,31 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.dispatchNotify(encodeNotify(payload), info.owner);
 	}
 
+	/**
+	 * Codex の自動の continue を送れずにやめた（待つ間は失敗の通知を出していないので、ここで出す）。中身（失敗の理由）は
+	 * 出口（composeNotifyVariants）が transcript のターンの終わりから決める。
+	 */
+	private notifyAgentAutoContinueStopped(token: string, terminalId: number, owner: IParadisMobilePaneOwner): void {
+		const desktopState = this.terminalRegistry.desktopState();
+		const terminal = desktopState.terminals.find(candidate => candidate.agentToken === token);
+		const workspace = terminal?.ws !== undefined ? desktopState.workspaces.find(candidate => candidate.id === terminal.ws) : undefined;
+		const payload: NotifyPayload = {
+			kind: 'agent-error',
+			id: `e${generateUuid()}`,
+			title: paradisNotifyTitle(workspace?.name, terminal?.title),
+			subtitle: paradisAgentLabel('codex'),
+			body: '',
+			category: 'error',
+			agent: 'codex',
+			terminalId,
+			...(terminal !== undefined ? { terminalKey: terminal.terminalKey, windowId: terminal.windowId } : {}),
+			agentToken: token,
+			...(terminal?.ws !== undefined ? { ws: terminal.ws } : {}),
+			at: Date.now(),
+		};
+		this.dispatchNotify(encodeNotify(payload), owner);
+	}
+
 	// モバイルID → 通知鍵（PC長期秘密鍵 × モバイル長期公開鍵から導出、プロセス寿命でキャッシュ）。
 	private readonly notifyKeyCache = new Map<string, Promise<Uint8Array>>();
 
@@ -1854,13 +1890,60 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * どちらを送るかの判断は `paradisNotifyDelivery.ts` に切り出してある（そちらのコメントに
 	 * 「ソケットが残っていてもアプリは死んでいることがある」という前提の説明がある）。
 	 */
-	private dispatchNotify(bytes: Uint8Array, expectedOwner?: IParadisMobileWindowLease): void {
+	private dispatchNotify(bytes: Uint8Array, expectedOwner?: IParadisMobileWindowLease, afterApprovalHold = false): void {
+		// Codex の承認の通知は、カードと同じだけ待ってから出す。待つ間に自動の審査などで決着したら出さない
+		// （paradisCodexApprovalHold.ts）。質問の通知は待たない。
+		// 自動の continue を待っている Codex のペインの、終わり・失敗の通知は出さない（送れずにやめたときに改めて出す）
+		const doneMeta = peekNotifyMeta(bytes);
+		if ((doneMeta.kind === 'agent-done' || doneMeta.kind === 'agent-error') && doneMeta.agentToken !== undefined && this.agentChat.isCodexAutoContinueWaiting(doneMeta.agentToken)) {
+			return;
+		}
+		const held = afterApprovalHold ? undefined : this.codexApprovalNotifyHold(bytes);
+		if (held !== undefined) {
+			const timer = setTimeout(() => {
+				this.approvalNotifyTimers.delete(timer);
+				if (paradisShouldSendHeldApprovalNotify({
+					cardShown: this.agentChat.notifyPaneContent(held.token)?.interaction !== undefined,
+					settledWhileHeld: this.agentChat.codexHeldApprovalSettledSince(held.token, held.since),
+				})) {
+					this.dispatchNotify(bytes, expectedOwner, true);
+				}
+			}, held.waitMs + PARADIS_CODEX_APPROVAL_NOTIFY_SLACK_MS);
+			this.approvalNotifyTimers.add(timer);
+			return;
+		}
 		if (expectedOwner !== undefined) {
 			this.withCurrentRegisteredLease(expectedOwner, async () => this.dispatchNotifyNow(bytes, expectedOwner), PARADIS_AUTHORITY_NOTIFY_LANE)
 				.catch(error => this.logService.warn('[paradisMobileRelay] notify owner validation failed', error));
 			return;
 		}
 		this.dispatchNotifyNow(bytes);
+	}
+
+	/** 待っている Codex の承認の通知（{@link dispatchNotify}）。 */
+	private readonly approvalNotifyTimers = new Set<ReturnType<typeof setTimeout>>();
+
+	/**
+	 * 待ってから出す通知なら、そのエージェントのトークンと待つ長さ。Codex の承認のカードを待たせている間の、要対応
+	 * （agent-question）のうち質問と分かっているもの以外が対象（承認の通知は renderer の状態の変化から来るので、種類が
+	 * 付いていない）。
+	 */
+	private codexApprovalNotifyHold(bytes: Uint8Array): { readonly token: string; readonly since: number; readonly waitMs: number } | undefined {
+		let record: { readonly kind?: unknown; readonly agentToken?: unknown; readonly category?: unknown };
+		try {
+			record = JSON.parse(new TextDecoder().decode(bytes)) as typeof record;
+		} catch {
+			return undefined;
+		}
+		if (record === null || typeof record !== 'object' || record.kind !== 'agent-question' || record.category === 'question'
+			|| typeof record.agentToken !== 'string' || record.agentToken.length === 0) {
+			return undefined;
+		}
+		if (this.agentChat.notifyPaneContent(record.agentToken)?.interaction?.kind === 'question') {
+			return undefined;
+		}
+		const hold = this.agentChat.codexApprovalNotifyHold(record.agentToken);
+		return hold !== undefined ? { token: record.agentToken, ...hold } : undefined;
 	}
 
 	private dispatchNotifyNow(inputBytes: Uint8Array, expectedOwner?: IParadisMobileWindowLease): void {
