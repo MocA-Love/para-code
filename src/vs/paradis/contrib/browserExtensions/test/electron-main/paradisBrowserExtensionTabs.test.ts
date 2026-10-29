@@ -85,7 +85,7 @@ function setup(extensionManifest: Record<string, unknown>) {
 		extensions: { getExtension: (id: string) => id === ID ? extension : null, getAllExtensions: () => [extension], on: () => undefined, removeListener: () => undefined },
 		serviceWorkers: { startWorkerForScope: async () => { throw new Error('none'); }, getWorkerFromVersionID: () => undefined, on: () => undefined, removeListener: () => undefined },
 	} as unknown as ParadisApiSession & { readonly extensions: { getAllExtensions(): readonly IParadisApiExtension[] } };
-	const created = new Emitter<IParadisTabView>();
+	const created = new Emitter<{ readonly view: IParadisTabView; readonly existing: boolean }>();
 	const focus = new Emitter<number>();
 	const views: IFakeView[] = [];
 	const activated: string[] = [];
@@ -125,6 +125,14 @@ function setup(extensionManifest: Record<string, unknown>) {
 		Object.defineProperty(request, 'initiatorOrigin', { value: `chrome-extension://${ID}` });
 		await handler!(request);
 	};
+	/** タブを足し、エージェントのタブかが分かるまでの待ちを過ぎさせる（偽の時計の中で使う）。 */
+	const addTabs = async (...added: IFakeView[]) => {
+		for (const view of added) {
+			views.push(view);
+			created.fire({ view, existing: true });
+		}
+		await new Promise(resolve => setTimeout(resolve, 1_100));
+	};
 	const dispose = () => {
 		attached.forEach(disposable => disposable.dispose());
 		tabs.dispose();
@@ -133,19 +141,19 @@ function setup(extensionManifest: Record<string, unknown>) {
 		focus.dispose();
 		views.forEach(view => { view.close.dispose(); view.visibility.dispose(); });
 	};
-	return { electronSession, otherSession, views, created, activated, call, openEvents, listen, dispose, host };
+	return { electronSession, otherSession, views, created, activated, call, openEvents, listen, dispose, host, addTabs, focus };
 }
 
 suite('ParadisBrowserExtensionTabs', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('lists only the tabs of the caller\'s session, never an agent\'s', async () => {
-		const { electronSession, otherSession, views, call, dispose } = setup({ permissions: ['tabs'] });
+	test('lists only the tabs of the caller\'s session, never an agent\'s', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, otherSession, addTabs, call, dispose } = setup({ permissions: ['tabs'] });
 		try {
 			const user = fakeView('user', fakeContents(electronSession, 'https://example.com/', 'Example'), 1);
 			const agent = fakeView('agent', fakeContents(electronSession, 'https://agent.example/', 'Agent'), 1, true);
 			const profile = fakeView('profile', fakeContents(otherSession, 'https://work.example/', 'Work'), 1);
-			views.push(user, agent, profile);
+			await addTabs(user, agent, profile);
 			const query = await call('tabs', 'query', [{}]) as { ok: true; value: { id: number; url?: string }[] };
 			assert.deepStrictEqual({
 				query: query.value.map(tab => [tab.id, tab.url]),
@@ -159,12 +167,12 @@ suite('ParadisBrowserExtensionTabs', () => {
 		} finally {
 			dispose();
 		}
-	});
+	}));
 
-	test('shows the URL and title only with the tabs permission or a matching host permission', async () => {
+	test('shows the URL and title only with the tabs permission or a matching host permission', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const withHost = setup({ host_permissions: ['https://*.example.com/*'] });
 		try {
-			withHost.views.push(
+			await withHost.addTabs(
 				fakeView('a', fakeContents(withHost.electronSession, 'https://mail.example.com/inbox', 'Mail'), 1),
 				fakeView('b', fakeContents(withHost.electronSession, 'https://other.test/', 'Other'), 1),
 			);
@@ -179,20 +187,23 @@ suite('ParadisBrowserExtensionTabs', () => {
 		} finally {
 			withHost.dispose();
 		}
-	});
+	}));
 
-	test('opens, activates and closes tabs, and refuses what an extension must not do', async () => {
-		const { electronSession, views, activated, call, dispose } = setup({ permissions: ['tabs'], options_page: 'options.html' });
+	test('opens, activates and closes tabs, and refuses what an extension must not do', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, views, activated, call, dispose, addTabs, focus } = setup({ permissions: ['tabs'], options_page: 'options.html' });
 		try {
 			const user = fakeView('user', fakeContents(electronSession, 'https://example.com/', 'Example'), 1);
-			views.push(user);
-			const created = await call('tabs', 'create', [{ url: 'https://news.example/' }]) as { ok: true; value: { id: number; url: string } };
+			await addTabs(user);
+			// エディタの無い窓（拡張機能のポップアップ・DevTools）にフォーカスがあっても、新しいタブは Para Code のウィンドウに置く
+			focus.fire(99);
+			const created = await call('tabs', 'create', [{ url: 'https://news.example/' }]) as { ok: true; value: { id: number; url: string; windowId: number } };
 			await call('tabs', 'update', [user.webContents.id, { active: true }]);
 			await call('runtime', 'openOptionsPage', []);
 			const options = views.find(view => view.webContents.getURL() === `chrome-extension://${ID}/options.html`);
 			await call('tabs', 'remove', [user.webContents.id]);
 			assert.deepStrictEqual({
 				createdUrl: created.value.url,
+				createdWindow: created.value.windowId,
 				activated,
 				options: options !== undefined,
 				otherExtension: await call('tabs', 'create', [{ url: `chrome-extension://${'b'.repeat(32)}/page.html` }]),
@@ -201,6 +212,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 				removed: views.some(view => view.id === 'user'),
 			}, {
 				createdUrl: 'https://news.example/',
+				createdWindow: 1,
 				activated: ['new-1', 'user', 'new-2'],
 				options: true,
 				otherExtension: { ok: false, error: `Cannot open URL: chrome-extension://${'b'.repeat(32)}/page.html` },
@@ -211,7 +223,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 		} finally {
 			dispose();
 		}
-	});
+	}));
 
 	test('announces a new tab only once it is known not to be an agent\'s', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const { electronSession, views, created, openEvents, listen, dispose } = setup({ permissions: ['tabs'] });
@@ -221,8 +233,8 @@ suite('ParadisBrowserExtensionTabs', () => {
 			const user = fakeView('user', fakeContents(electronSession, 'https://example.com/', 'Example'), 1);
 			const agent = fakeView('agent', fakeContents(electronSession, 'https://agent.example/', 'Agent'), 1);
 			views.push(user, agent);
-			created.fire(user);
-			created.fire(agent);
+			created.fire({ view: user, existing: false });
+			created.fire({ view: agent, existing: false });
 			// workbench の台帳が少し後に、エージェントのタブだと知らせる
 			agent.agent = true;
 			await new Promise(resolve => setTimeout(resolve, 1_500));
@@ -251,7 +263,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 	test('the shim offers exactly what main registers', () => {
 		// 詰め物が足す関数・イベントと、main が受ける関数・イベントがずれると、呼んでも「無い」と断られる
 		const host = new ParadisExtensionApiHost(silentLog);
-		const environment = { listViews: () => [], onDidCreateView: Event.None, listWindows: () => [], lastActiveWindowId: () => undefined, createTab: async () => { throw new Error(); }, closeTab: async () => { }, activateTab: () => { }, onDidFocusWindow: Event.None };
+		const environment = { listViews: () => [], onDidCreateView: Event.None as Event<{ readonly view: IParadisTabView; readonly existing: boolean }>, listWindows: () => [], lastActiveWindowId: () => undefined, createTab: async () => { throw new Error(); }, closeTab: async () => { }, activateTab: () => { }, onDidFocusWindow: Event.None };
 		const tabs = new ParadisBrowserExtensionTabs(host, environment, silentLog, () => { throw new Error(); });
 		paradisRegisterRuntimeApis(host, async () => { });
 		paradisRegisterStorageApis(host, new ParadisBrowserExtensionSyncStore('/tmp/unused', silentLog));

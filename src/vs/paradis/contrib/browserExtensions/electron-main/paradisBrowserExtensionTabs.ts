@@ -44,7 +44,8 @@ export interface IParadisTabView {
 /** タブとウィンドウを扱うための、main のサービスの口（プロファイルの main から渡す）。 */
 export interface IParadisTabEnvironment {
 	listViews(): readonly IParadisTabView[];
-	readonly onDidCreateView: Event<IParadisTabView>;
+	/** タブができた（`existing`: 拡張機能の管理より前からあったタブを、見つけたときに知らせるもの）。 */
+	readonly onDidCreateView: Event<{ readonly view: IParadisTabView; readonly existing: boolean }>;
 	/** Para Code のウィンドウ（補助ウィンドウを含む）。 */
 	listWindows(): readonly BrowserWindow[];
 	/** 最後に使った Para Code のウィンドウ。 */
@@ -141,6 +142,10 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	private readonly _sessions = new Map<Session, IParadisTabSession>();
 	/** タブとして知らせた（エージェントのタブではないと分かった）ビュー。 */
 	private readonly _announced = new Set<string>();
+	/** イベントを見ているビュー。 */
+	private readonly _observed = new Set<string>();
+	/** ポップアップを開いた拡張機能（ポップアップ → 拡張機能の id）。 */
+	private readonly _popoutOwners = new Map<BrowserWindow, string>();
 	/** windows.create で開いた、拡張機能のページだけを出す窓（セッションごと）。 */
 	private readonly _popouts = new Map<Session, Set<BrowserWindow>>();
 	/** フレームの文書の id（frame tree node id → documentId）。 */
@@ -155,10 +160,10 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		private readonly _logService: { warn(message: string, ...args: unknown[]): void },
 		private readonly _createPopout: (session: Session, url: string, options: { readonly width?: number; readonly height?: number; readonly left?: number; readonly top?: number; readonly focused: boolean }) => BrowserWindow,
 	) {
-		this._disposables.add(_environment.onDidCreateView(view => this._observe(view)));
+		this._disposables.add(_environment.onDidCreateView(({ view, existing }) => this._observe(view, existing)));
 		this._disposables.add(_environment.onDidFocusWindow(windowId => this.noteWindowFocus(windowId)));
 		for (const view of _environment.listViews()) {
-			this._observe(view, true);
+			this._observe(view, true, true);
 		}
 		this._registerNamespaces();
 	}
@@ -195,7 +200,9 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		const indexByWindow = new Map<number, number>();
 		const entries: ITabEntry[] = [];
 		for (const view of this._environment.listViews()) {
-			if (view.webContents.isDestroyed() || view.webContents.session !== session || !this._isUserTab(view)) {
+			// 知らせた（エージェントのタブではないと分かった）タブだけ。workbench の台帳がエージェントのタブだと
+			// 知らせる前に、一覧に出てしまわないように
+			if (view.webContents.isDestroyed() || view.webContents.session !== session || !this._announced.has(view.id) || !this._isUserTab(view)) {
 				continue;
 			}
 			const index = indexByWindow.get(view.windowId) ?? 0;
@@ -272,9 +279,18 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		};
 	}
 
-	/** 背景の処理の「今のウィンドウ」は、最後に使ったウィンドウ。 */
+	/** 背景の処理の「今のウィンドウ」は、最後に使ったウィンドウ（拡張機能のポップアップを含む）。 */
 	private _currentWindowId(): number | undefined {
 		return this._lastFocusedWindowId ?? this._environment.lastActiveWindowId();
+	}
+
+	/**
+	 * 新しいタブを置く Para Code のウィンドウ。ポップアップや DevTools にはエディタが無く、そこへ開いたタブは
+	 * 誰にも見えないので、workbench のウィンドウだけから選ぶ。
+	 */
+	private _workbenchWindowId(): number | undefined {
+		const workbench = new Set(this._environment.listWindows().map(window => window.id));
+		return this._lastFocusedWindowId !== undefined && workbench.has(this._lastFocusedWindowId) ? this._lastFocusedWindowId : this._environment.lastActiveWindowId();
 	}
 
 	// --- イベント ---
@@ -293,11 +309,12 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		}
 	}
 
-	private _observe(view: IParadisTabView, existing = false): void {
+	private _observe(view: IParadisTabView, existing: boolean, alreadyMarked = false): void {
 		const contents = view.webContents;
-		if (contents.isDestroyed()) {
+		if (contents.isDestroyed() || this._observed.has(view.id)) {
 			return;
 		}
+		this._observed.add(view.id);
 		const disposables = new DisposableStore();
 		this._disposables.add(disposables);
 		const userTab = () => this._announced.has(view.id) && this._isUserTab(view) && this._sessions.has(contents.session);
@@ -317,10 +334,10 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 				});
 			}
 		};
-		if (existing) {
+		if (alreadyMarked) {
 			announce();
 		} else {
-			// エージェントが開いたタブかは workbench の台帳が少し後に知らせる。それを待ってから知らせる
+			// エージェントが開いたタブかは workbench の台帳が少し後に知らせる。それを待ってから扱う
 			const timer = setTimeout(announce, CREATED_ANNOUNCE_DELAY_MS);
 			disposables.add(toDisposable(() => clearTimeout(timer)));
 		}
@@ -361,6 +378,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		}));
 		disposables.add(Event.once(view.onDidClose)(() => {
 			const wasAnnounced = this._announced.delete(view.id);
+			this._observed.delete(view.id);
 			if (this._activeByWindow.get(view.windowId) === contents.id) {
 				this._activeByWindow.delete(view.windowId);
 			}
@@ -545,6 +563,15 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		}
 	}
 
+	/** 拡張機能を外した（削除・無効・SSH 先のためのトンネルが始まった）: その拡張機能のポップアップを閉じる。 */
+	closePopoutsOf(session: Session, extensionId: string): void {
+		for (const window of this._popouts.get(session) ?? []) {
+			if (this._popoutOwners.get(window) === extensionId && !window.isDestroyed()) {
+				window.close();
+			}
+		}
+	}
+
 	// --- 開く ---
 
 	/** 拡張機能が開いてよい URL か（http(s)・about:blank・自分のページ。ほかの拡張機能のページや file: は開かせない）。 */
@@ -569,7 +596,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	private async _openTab(caller: IParadisExtensionApiCaller, url: string, active: boolean, windowId?: number): Promise<Tab> {
 		const session = this._tabSession(caller);
 		const existingWindow = this._tabsOf(session.electronSession).find(entry => entry.windowType === 'normal')?.windowId;
-		const target = windowId ?? this._currentWindowId() ?? existingWindow;
+		const target = windowId ?? this._workbenchWindowId() ?? existingWindow;
 		if (target === undefined) {
 			throw new ParadisExtensionApiError('Para Code has no window to open a tab in');
 		}
@@ -593,10 +620,12 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			this._popouts.set(session, popouts);
 		}
 		popouts.add(window);
+		this._popoutOwners.set(window, caller.extension.id);
 		const windowId = window.id;
 		const tabId = window.webContents.id;
 		window.once('closed', () => {
 			popouts.delete(window);
+			this._popoutOwners.delete(window);
 			if (this._sessions.has(session)) {
 				this._emitPerExtension(session, 'tabs', 'onRemoved', () => [tabId, { windowId, isWindowClosing: true }]);
 				this._emitPerExtension(session, 'windows', 'onRemoved', () => [windowId]);
@@ -620,7 +649,9 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 				getCurrent: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, () => undefined),
 				create: paradisDefineExtensionMethod(args => args.length <= 1 && optionalRecord(args[0]) ? [(args[0] ?? {}) as Record<string, unknown>] as [Record<string, unknown>] : undefined, (caller, properties) => {
 					const url = typeof properties.url === 'string' ? properties.url : undefined;
-					const windowId = typeof properties.windowId === 'number' && properties.windowId !== WINDOW_ID_CURRENT ? this._requireWindow(caller, properties.windowId).window.id : undefined;
+					const requested = typeof properties.windowId === 'number' && properties.windowId !== WINDOW_ID_CURRENT ? this._requireWindow(caller, properties.windowId) : undefined;
+					// ポップアップにはタブを置けない（エディタが無い）。そのときは Para Code のウィンドウに置く
+					const windowId = requested?.type === 'normal' ? requested.window.id : undefined;
 					return this._openTab(caller, this._requireOpenableUrl(caller, url), properties.active !== false, windowId);
 				}),
 				duplicate: paradisDefineExtensionMethod(args => args.length === 1 && tabId(args[0]) ? [args[0]] as [number] : undefined, (caller, id) => {
@@ -753,6 +784,10 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		const entry = id === undefined ? this._activeTab(caller) : this._requireTab(caller, id);
 		if (typeof properties.url === 'string') {
 			const url = this._requireOpenableUrl(caller, properties.url);
+			// ポップアップは拡張機能自身のページだけを出す（アドレスバーの無い窓でウェブのページを開かせない）
+			if (entry.popout && !url.startsWith(`chrome-extension://${caller.extension.id}/`)) {
+				throw new ParadisExtensionApiError('A popup window shows only the extension\'s own pages');
+			}
 			entry.webContents.loadURL(url).catch(error => this._logService.warn('[paradis] a browser extension could not navigate a tab', error));
 		}
 		if (typeof properties.muted === 'boolean') {

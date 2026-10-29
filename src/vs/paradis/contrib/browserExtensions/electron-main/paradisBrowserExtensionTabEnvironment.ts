@@ -12,7 +12,7 @@
 
 import { app, BrowserWindow, type Session } from 'electron';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { paraIsAgentTabOrChild } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
@@ -35,7 +35,9 @@ function handleOf(view: BrowserView): IParadisTabView {
 export function paradisCreateBrowserExtensionTabEnvironment(browserViewMainService: IBrowserViewMainService, windowsMainService: IWindowsMainService): Omit<IParadisTabEnvironment, 'activateTab'> & IDisposable {
 	const disposables = new DisposableStore();
 	const views = new Map<string, IParadisTabView>();
-	const onDidCreateView = disposables.add(new Emitter<IParadisTabView>());
+	// ビューごとの購読（閉じたら外す。残すと閉じたビューを覚え続ける）
+	const closeListeners = disposables.add(new DisposableMap<string>());
+	const onDidCreateView = disposables.add(new Emitter<{ readonly view: IParadisTabView; readonly existing: boolean }>());
 	const track = (view: BrowserView | undefined): IParadisTabView | undefined => {
 		if (!view || view.webContents.isDestroyed()) {
 			return undefined;
@@ -46,19 +48,26 @@ export function paradisCreateBrowserExtensionTabEnvironment(browserViewMainServi
 		}
 		const handle = handleOf(view);
 		views.set(view.id, handle);
-		disposables.add(Event.once(view.onDidClose)(() => views.delete(view.id)));
+		closeListeners.set(view.id, Event.once(view.onDidClose)(() => {
+			views.delete(view.id);
+			closeListeners.deleteAndDispose(view.id);
+		}));
 		return handle;
 	};
 	disposables.add(browserViewMainService.onDidCreateBrowserView(created => {
 		const handle = track(browserViewMainService.tryGetBrowserView(created.info.id));
 		if (handle) {
-			onDidCreateView.fire(handle);
+			onDidCreateView.fire({ view: handle, existing: false });
 		}
 	}));
-	// 起動の後、拡張機能の管理ができる前に開いたタブも数える
+	// 拡張機能の管理ができる前に開いていたタブも見つけて知らせる
 	void browserViewMainService.getBrowserViews().then(infos => {
 		for (const info of infos) {
-			track(browserViewMainService.tryGetBrowserView(info.id));
+			const known = views.has(info.id);
+			const handle = track(browserViewMainService.tryGetBrowserView(info.id));
+			if (handle && !known) {
+				onDidCreateView.fire({ view: handle, existing: true });
+			}
 		}
 	});
 	return {
@@ -107,6 +116,20 @@ export function paradisCreateBrowserExtensionPopout(session: Session, url: strin
 		webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false },
 	});
 	window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+	// 拡張機能自身のページだけを出す（アドレスバーの無い窓でウェブのページを開かせない）
+	const origin = new URL(url).origin;
+	const stayOnExtension = (event: { preventDefault(): void }, target: string) => {
+		try {
+			if (new URL(target).origin === origin) {
+				return;
+			}
+		} catch {
+			// 読めない URL は止める
+		}
+		event.preventDefault();
+	};
+	window.webContents.on('will-navigate', (event, target) => stayOnExtension(event, target));
+	window.webContents.on('will-redirect', (event, target) => stayOnExtension(event, target));
 	window.once('ready-to-show', () => options.focused ? window.show() : window.showInactive());
 	void window.loadURL(url);
 	return window;
