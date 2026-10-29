@@ -22,8 +22,7 @@ import { promises as fs } from 'fs';
 import { crc32, deflateSync } from 'zlib';
 import { Emitter, type Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { isEqualOrParent } from '../../../../base/common/extpath.js';
-import { join, normalize } from '../../../../base/common/path.js';
+import { join, normalize, sep } from '../../../../base/common/path.js';
 import {
 	IParadisActionDetails,
 	IParadisRect,
@@ -166,8 +165,11 @@ function insideExtension(folder: string, relative: string): string | undefined {
 	if (decoded.length === 0 || decoded.includes('\0')) {
 		return undefined;
 	}
-	const absolute = normalize(join(folder, decoded));
-	return absolute !== normalize(folder) && isEqualOrParent(absolute, folder) ? absolute : undefined;
+	// 大文字と小文字を区別して比べる（写しのフォルダの中かを見るほかの所と同じ。区別しない比べ方だと、大文字と小文字だけが
+	// 違う別のフォルダを中と取り違えうる）
+	const root = normalize(folder);
+	const absolute = normalize(join(root, decoded));
+	return absolute.startsWith(root.endsWith(sep) ? root : root + sep) ? absolute : undefined;
 }
 
 /** ポップアップのページの大きさを、前に返したものと違うときに返す（ポップアップの world で動く）。 */
@@ -589,7 +591,8 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 				throw new ParadisExtensionApiError('This extension is not on for this tab');
 			}
 			const { view, session, extension } = resolved;
-			const window = typeof anchor.windowId === 'number' ? this._environment.windowById(anchor.windowId) : undefined;
+			// ボタンはそのタブを出しているウィンドウにある。違うウィンドウの位置は受け取らない
+			const window = anchor.windowId === view.windowId ? this._environment.windowById(anchor.windowId) : undefined;
 			if (!window) {
 				throw new ParadisExtensionApiError('Para Code has no window to show the popup in');
 			}

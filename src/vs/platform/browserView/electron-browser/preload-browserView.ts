@@ -2508,7 +2508,25 @@ class AreaPicker {
 export function paradisIsEmbeddedExtensionFrame(origin: string, isTopFrame: boolean): boolean {
 	return !isTopFrame && origin.startsWith('chrome-extension://');
 }
+// PARA-PATCH: nor in the windows a browser extension opens itself (its toolbar popup, a windows.create popup): they share the
+// extension's session, so the session preload runs there too, but they are not browser views. A process can hold both such a
+// window and a tab showing the same extension, so this is asked per window: the top frame of an extension page asks main
+// synchronously (main marks those windows when it creates them; paradisBrowserExtensionWindows.ts). The channel name is
+// PARADIS_BROWSER_EXTENSION_WINDOW_CHANNEL in ../common/paradisBrowserExtensionWindow.ts (this preload is not bundled, so it
+// is repeated here and a test keeps the two equal). Only extension pages ask, so web pages never block on it.
+export const PARADIS_BROWSER_EXTENSION_WINDOW_QUERY = 'paradis:browserExtensionWindow';
+export function paradisIsBrowserExtensionWindow(origin: string, isTopFrame: boolean, sendSync: (channel: string) => unknown): boolean {
+	if (!isTopFrame || !origin.startsWith('chrome-extension://')) {
+		return false;
+	}
+	try {
+		return sendSync(PARADIS_BROWSER_EXTENSION_WINDOW_QUERY) === true;
+	} catch {
+		return false;
+	}
+}
 if (typeof process !== 'undefined' && (process.versions?.electron || process.type === 'renderer')
-	&& !paradisIsEmbeddedExtensionFrame(typeof location !== 'undefined' ? location.origin : '', typeof window === 'undefined' || window.top === window)) {
+	&& !paradisIsEmbeddedExtensionFrame(typeof location !== 'undefined' ? location.origin : '', typeof window === 'undefined' || window.top === window)
+	&& !paradisIsBrowserExtensionWindow(typeof location !== 'undefined' ? location.origin : '', typeof window === 'undefined' || window.top === window, channel => require('electron').ipcRenderer.sendSync(channel))) {
 	init();
 }
