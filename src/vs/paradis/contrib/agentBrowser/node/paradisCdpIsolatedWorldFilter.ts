@@ -26,10 +26,14 @@
 //  - objectId は V8 の「isolate.context.object」の形なら、隠したコンテキストのものを拒む
 //  - 隠したコンテキストのスクリプト（`Debugger.scriptParsed`）と、そこで止まった `Debugger.paused`、
 //    そこからのコンソール出力・例外は届けない。止まった場合はこちらで再開させる
+//  - main world で止まったときも、呼び出し元の段に隠した world の frame が混ざる（content script が
+//    `dispatchEvent` で呼んだページのリスナーで止めると、下の段が content script の frame になる。
+//    Electron 43.7.7 で実測し、その段への `Debugger.evaluateOnCallFrame` で content script の値が読めた）。
+//    そこで `Debugger.paused` の全部の段を見て、隠した world の段の callFrameId を覚え、それを指す命令を断る
 //
 // セッション（フラット化した子セッションの sessionId、ページ直結なら ''）ごとに状態を持つ。
 
-import { paradisIsBrowserExtensionUrl } from './paradisCdpExtensionScope.js';
+import { paradisIsBrowserExtensionUrl } from '../common/paradisCdpExtensionScope.js';
 
 /** クライアントが要求しても見せない world の名前（Electron が自分の world に付ける名前）。 */
 const RESERVED_WORLD_NAMES: ReadonlySet<string> = new Set(['', 'Electron Isolated Context']);
@@ -43,12 +47,27 @@ const SCRIPT_DENIED_MESSAGE = 'This script belongs to a Para Code isolated world
 /** V8 の RemoteObjectId（isolate.context.object）。 */
 const OBJECT_ID_PATTERN = /^-?\d+\.(?<context>\d+)\.\d+$/;
 
+/** V8 の CallFrameId（debugger.context.ordinal。実測では `7791486334757065779.3.1` の形）。 */
+const CALL_FRAME_ID_PATTERN = /^-?\d+\.(?<context>\d+)\.\d+$/;
+
 interface ISessionState {
 	readonly visibleContextIds: Set<number>;
 	readonly visibleUniqueIds: Set<string>;
 	readonly hiddenContextIds: Set<number>;
 	readonly hiddenUniqueIds: Set<string>;
 	readonly hiddenScriptIds: Set<string>;
+	/**
+	 * origin が拡張だったコンテキスト。`Page.createIsolatedWorld` の応答で見える側へ戻さない
+	 * （エージェントが拡張の frame に world を作らせると、その world の origin は拡張になる）。
+	 */
+	readonly extensionContextIds: Set<number>;
+	/**
+	 * origin が拡張の、ページの既定のコンテキスト（isDefault: true）。これが残っている間、このセッションの
+	 * 文書そのものが拡張のページ（別プロセスの拡張の iframe は自分の子のセッションに出るので、ここには来ない）。
+	 */
+	readonly extensionDefaultContextIds: Set<number>;
+	/** 今止まっている段のうち、隠した world の段の callFrameId（`Debugger.resumed` で忘れる）。 */
+	readonly hiddenCallFrameIds: Set<string>;
 	readonly requestedWorldNames: Set<string>;
 	/** Page.createIsolatedWorld の要求 id（応答の executionContextId を見せる）。 */
 	readonly pendingCreateWorld: Set<number>;
@@ -79,12 +98,28 @@ export class ParadisCdpIsolatedWorldFilter {
 				hiddenContextIds: new Set(),
 				hiddenUniqueIds: new Set(),
 				hiddenScriptIds: new Set(),
+				extensionContextIds: new Set(),
+				extensionDefaultContextIds: new Set(),
+				hiddenCallFrameIds: new Set(),
 				requestedWorldNames: new Set(),
 				pendingCreateWorld: new Set(),
 			};
 			this._sessions.set(sessionKey, state);
 		}
 		return state;
+	}
+
+	/** 番号（文字列）が隠したコンテキストを指すか。 */
+	private _isHiddenContextReference(state: ISessionState, context: string | undefined): boolean {
+		return context !== undefined && (state.hiddenContextIds.has(Number(context)) || state.extensionContextIds.has(Number(context)));
+	}
+
+	/**
+	 * このセッションの文書が拡張のページか（Runtime のイベントから分かる範囲で）。Runtime を有効にしていない
+	 * クライアントでは分からないので、呼び出し側は URL の台帳と合わせて使う。
+	 */
+	isOnExtensionPage(sessionKey: string): boolean {
+		return (this._sessions.get(sessionKey)?.extensionDefaultContextIds.size ?? 0) > 0;
 	}
 
 	forgetSession(sessionKey: string): void {
@@ -112,9 +147,13 @@ export class ParadisCdpIsolatedWorldFilter {
 			const objectId = record.objectId;
 			if (typeof objectId === 'string') {
 				const context = OBJECT_ID_PATTERN.exec(objectId)?.groups?.context;
-				if (context !== undefined && state.hiddenContextIds.has(Number(context))) {
+				if (this._isHiddenContextReference(state, context)) {
 					return CONTEXT_DENIED_MESSAGE;
 				}
+			}
+			const callFrameId = record.callFrameId;
+			if (typeof callFrameId === 'string' && (state.hiddenCallFrameIds.has(callFrameId) || this._isHiddenContextReference(state, CALL_FRAME_ID_PATTERN.exec(callFrameId)?.groups?.context))) {
+				return CONTEXT_DENIED_MESSAGE;
 			}
 			const scriptId = typeof record.scriptId === 'string'
 				? record.scriptId
@@ -138,7 +177,7 @@ export class ParadisCdpIsolatedWorldFilter {
 		if (!state || typeof id !== 'number' || !state.pendingCreateWorld.delete(id)) {
 			return;
 		}
-		if (isRecord(result) && typeof result.executionContextId === 'number') {
+		if (isRecord(result) && typeof result.executionContextId === 'number' && !state.extensionContextIds.has(result.executionContextId)) {
 			state.hiddenContextIds.delete(result.executionContextId);
 			boundedAdd(state.visibleContextIds, result.executionContextId);
 		}
@@ -156,7 +195,14 @@ export class ParadisCdpIsolatedWorldFilter {
 				}
 				const auxData = isRecord(context.auxData) ? context.auxData : undefined;
 				const name = typeof context.name === 'string' ? context.name : '';
-				const hidden = paradisIsBrowserExtensionUrl(context.origin)
+				const extension = paradisIsBrowserExtensionUrl(context.origin);
+				if (extension) {
+					boundedAdd(state.extensionContextIds, context.id);
+					if (auxData?.isDefault === true) {
+						boundedAdd(state.extensionDefaultContextIds, context.id);
+					}
+				}
+				const hidden = extension
 					|| (auxData?.isDefault === false && (RESERVED_WORLD_NAMES.has(name) || !state.requestedWorldNames.has(name)) && !state.visibleContextIds.has(context.id));
 				if (hidden) {
 					state.visibleContextIds.delete(context.id);
@@ -181,6 +227,10 @@ export class ParadisCdpIsolatedWorldFilter {
 			case 'Runtime.executionContextDestroyed': {
 				const id = record?.executionContextId;
 				const uniqueId = record?.executionContextUniqueId;
+				if (typeof id === 'number') {
+					state.extensionContextIds.delete(id);
+					state.extensionDefaultContextIds.delete(id);
+				}
 				if (typeof id === 'number' && state.hiddenContextIds.delete(id)) {
 					if (typeof uniqueId === 'string') {
 						state.hiddenUniqueIds.delete(uniqueId);
@@ -196,6 +246,8 @@ export class ParadisCdpIsolatedWorldFilter {
 				return 'forward';
 			}
 			case 'Runtime.executionContextsCleared':
+				state.extensionContextIds.clear();
+				state.extensionDefaultContextIds.clear();
 				state.visibleContextIds.clear();
 				state.visibleUniqueIds.clear();
 				state.hiddenContextIds.clear();
@@ -217,10 +269,28 @@ export class ParadisCdpIsolatedWorldFilter {
 			}
 			case 'Debugger.paused': {
 				const frames = Array.isArray(record?.callFrames) ? record.callFrames : [];
-				const top = isRecord(frames[0]) ? frames[0] : undefined;
-				const location = isRecord(top?.location) ? top.location : undefined;
-				return typeof location?.scriptId === 'string' && state.hiddenScriptIds.has(location.scriptId) ? 'resume' : 'forward';
+				state.hiddenCallFrameIds.clear();
+				let topHidden = false;
+				frames.forEach((frame, index) => {
+					if (!isRecord(frame)) {
+						return;
+					}
+					const location = isRecord(frame.location) ? frame.location : undefined;
+					const callFrameId = typeof frame.callFrameId === 'string' ? frame.callFrameId : undefined;
+					const hidden = (typeof location?.scriptId === 'string' && state.hiddenScriptIds.has(location.scriptId))
+						|| this._isHiddenContextReference(state, callFrameId !== undefined ? CALL_FRAME_ID_PATTERN.exec(callFrameId)?.groups?.context : undefined);
+					if (hidden) {
+						topHidden ||= index === 0;
+						if (callFrameId !== undefined) {
+							boundedAdd(state.hiddenCallFrameIds, callFrameId);
+						}
+					}
+				});
+				return topHidden ? 'resume' : 'forward';
 			}
+			case 'Debugger.resumed':
+				state.hiddenCallFrameIds.clear();
+				return 'forward';
 			case 'Runtime.consoleAPICalled': {
 				const contextId = record?.executionContextId;
 				return typeof contextId === 'number' && state.hiddenContextIds.has(contextId) ? 'drop' : 'forward';

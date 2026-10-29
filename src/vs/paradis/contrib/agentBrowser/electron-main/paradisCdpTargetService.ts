@@ -53,6 +53,7 @@ import { IParadisCursorOwner, paradisCursorCaptureRange, paradisCursorStatusForM
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
+import { PARADIS_EXTENSION_PAGE_DENIED_MESSAGE, paradisIsBrowserExtensionUrl } from '../common/paradisCdpExtensionScope.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
@@ -1193,6 +1194,17 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		const view = this.resolveExistingExactView(descriptor);
 		if (!view) {
 			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };
+		}
+		// ブラウザ拡張のページ（オプション・拡張が開いたタブ）には、エージェントのクリックやキーを届けない。
+		// CDP ゲートウェイもイベントで追った URL で断るが、ここはタブの今の URL で確かめる最後の砦
+		let currentUrl: string | undefined;
+		try {
+			currentUrl = view.webContents.getURL();
+		} catch {
+			currentUrl = undefined;
+		}
+		if (paradisIsBrowserExtensionUrl(currentUrl)) {
+			return { status: 'retryable', message: PARADIS_EXTENSION_PAGE_DENIED_MESSAGE };
 		}
 		try {
 			if (view.webContents.isFocused()) {
