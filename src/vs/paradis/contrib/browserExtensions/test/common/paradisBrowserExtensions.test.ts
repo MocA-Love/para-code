@@ -12,9 +12,11 @@ import {
 	IParadisInstalledBrowserExtension,
 	PARADIS_EMPTY_EXTENSIONS_LEDGER,
 	paradisEnabledExtensions,
+	paradisLedgerWithDataCleared,
 	paradisLedgerWithEnabled,
 	paradisLedgerWithExtension,
 	paradisLedgerWithoutExtension,
+	paradisNeedsDataClear,
 	paradisParseExtensionsLedger,
 	paradisReadExtensionManifest,
 } from '../../common/paradisBrowserExtensions.js';
@@ -34,13 +36,13 @@ suite('ParadisBrowserExtensions common', () => {
 			version: 1,
 			extensions: [extension(A), { ...extension(B), source: 'store' }, extension(A), { id: 'not-an-id' }],
 			enabled: { default: [A, B, 'x'], 'profile:0123456789ab': [A], 'profile:bad': [A] },
-			removed: [B, 'x'],
+			removed: [B, 'x', { id: A, cleared: ['/s1', 3] }],
 		});
 		assert.deepStrictEqual(parsed, {
 			version: 1,
 			extensions: [extension(A)],
 			enabled: { default: [A], 'profile:0123456789ab': [A] },
-			removed: [B],
+			removed: [{ id: B, cleared: [] }, { id: A, cleared: ['/s1'] }],
 		});
 		assert.deepStrictEqual(paradisParseExtensionsLedger({ version: 2 }), PARADIS_EMPTY_EXTENSIONS_LEDGER);
 	});
@@ -53,10 +55,24 @@ suite('ParadisBrowserExtensions common', () => {
 		ledger = paradisLedgerWithoutExtension(ledger, A);
 		assert.deepStrictEqual({ before, after: ledger }, {
 			before: { default: [A], profile: [B] },
-			after: { version: 1, extensions: [extension(B)], enabled: { default: [], 'profile:0123456789ab': [B] }, removed: [A] },
+			after: { version: 1, extensions: [extension(B)], enabled: { default: [], 'profile:0123456789ab': [B] }, removed: [{ id: A, cleared: [] }] },
 		});
-		// 足し直すと「消す印」は外れる
-		assert.deepStrictEqual(paradisLedgerWithExtension(ledger, extension(A), undefined).removed, []);
+	});
+
+	test('keeps the data-clearing mark across a reinstall until each storage path is cleared', () => {
+		let ledger = paradisLedgerWithExtension(PARADIS_EMPTY_EXTENSIONS_LEDGER, extension(A), 'default');
+		ledger = paradisLedgerWithoutExtension(ledger, A);
+		ledger = paradisLedgerWithDataCleared(ledger, A, '/global');
+		// 入れ直しても印は残り、まだ消していない保存先では消す
+		ledger = paradisLedgerWithExtension(ledger, extension(A), 'default');
+		const afterReinstall = [paradisNeedsDataClear(ledger, A, '/global'), paradisNeedsDataClear(ledger, A, '/profile')];
+		// もう一度削除すると、消し終えた保存先も数え直す
+		ledger = paradisLedgerWithoutExtension(ledger, A);
+		assert.deepStrictEqual({ afterReinstall, afterRemoveAgain: paradisNeedsDataClear(ledger, A, '/global'), never: paradisNeedsDataClear(ledger, B, '/global') }, {
+			afterReinstall: [false, true],
+			afterRemoveAgain: true,
+			never: false,
+		});
 	});
 
 	test('reads manifests', () => {
