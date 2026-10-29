@@ -516,11 +516,21 @@ export interface IParadisInputGuardView {
 	readonly debugger: IParadisUpstreamDebugger;
 }
 
+/**
+ * upstream の Agent ツールの入力に、Para Code 自身の入力（paradisCdpTargetService.dispatchExactViewInput）と同じ
+ * 自動入力の印を付けるもの（送る直前に呼ぶ）。キーは preload と main がその印で workbench へ送らなくなるので、Para Code と
+ * 拡張機能のショートカットを発火させない。右クリックは Para Code の OS のメニューを出さない。印を付けられなければ投げる
+ * （印の無いキーは送らない）。返り値の done は送った後（失敗しても）に 1 回呼ぶ。
+ */
+export interface IParadisUpstreamInputMarker {
+	beforeSend(method: string, params: Readonly<Record<string, unknown>>): Promise<{ done(): void } | undefined>;
+}
+
 /** ビューごとの見張り（ビューと同じだけ生きる）。 */
 const guards = new WeakMap<object, IParadisInputGuardTab>();
 
 /** 共有中のタブの拡張の画面への入力を断る見張りを返す（無ければ作る）。 */
-export function paradisInputGuardTab(view: IParadisInputGuardView): IParadisInputGuardTab {
+export function paradisInputGuardTab(view: IParadisInputGuardView, marker?: IParadisUpstreamInputMarker): IParadisInputGuardTab {
 	const existing = guards.get(view.debugger);
 	if (existing) {
 		return existing;
@@ -585,7 +595,7 @@ export function paradisInputGuardTab(view: IParadisInputGuardView): IParadisInpu
 	// 登録して座標を倍率に合わせ、undefined を返して次へ渡す。この割り込みはビューが作られた後
 	// （onDidCreateBrowserView）に登録するので、合わせた後の座標で判定できる
 	const interceptor = typeof upstreamDebugger.registerCommandInterceptor === 'function'
-		? upstreamDebugger.registerCommandInterceptor((method, params, session) => paradisInterceptUpstreamCommand(tab, tracker, upstreamDebugger, method, params, session, pending))
+		? upstreamDebugger.registerCommandInterceptor((method, params, session) => paradisInterceptUpstreamCommand(tab, tracker, upstreamDebugger, method, params, session, pending, marker))
 		: undefined;
 	(view.webContents as Partial<IParadisInputGuardView['webContents']>).once?.('destroyed', () => {
 		interceptor?.dispose();
@@ -605,7 +615,7 @@ export function paradisInputGuardTab(view: IParadisInputGuardView): IParadisInpu
  *    イベントを生まない）。そのセッションは見つけ次第切り離す（paradisInputGuardTab）
  * セッションの無い命令は、upstream の通常の経路のまま通す（upstream の Agent ツールは使わない）。
  */
-export function paradisInterceptUpstreamCommand(tab: IParadisInputGuardTab, tracker: ParadisFrameTargetTracker, upstreamDebugger: IParadisUpstreamDebugger, method: string, params: unknown, session: unknown, pending?: ParadisPendingCommands): Promise<unknown> | undefined {
+export function paradisInterceptUpstreamCommand(tab: IParadisInputGuardTab, tracker: ParadisFrameTargetTracker, upstreamDebugger: IParadisUpstreamDebugger, method: string, params: unknown, session: unknown, pending?: ParadisPendingCommands, marker?: IParadisUpstreamInputMarker): Promise<unknown> | undefined {
 	const connection = session as { readonly sessionId?: unknown; readonly targetId?: unknown } | undefined;
 	if (connection === undefined) {
 		return undefined;
@@ -641,6 +651,14 @@ export function paradisInterceptUpstreamCommand(tab: IParadisInputGuardTab, trac
 		if (verdict.refusal !== undefined) {
 			throw new Error(verdict.refusal);
 		}
-		return upstreamDebugger.sendCommandRaw(method, verdict.params ?? params, sessionId);
+		const sent = verdict.params ?? params;
+		// 自動入力の印（キーは workbench へ送らない、右クリックは OS のメニューを出さない）。付けられなければ送らない
+		const mark = marker && isRecord(sent) ? await marker.beforeSend(method, sent) : undefined;
+		try {
+			return await upstreamDebugger.sendCommandRaw(method, sent, sessionId);
+		} finally {
+			// 送りかけで失敗したキーも届いたかもしれないので、印は送った扱いで閉じる（Para Code 自身の入力と同じ）
+			mark?.done();
+		}
 	})();
 }

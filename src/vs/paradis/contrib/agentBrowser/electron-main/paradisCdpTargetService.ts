@@ -55,7 +55,7 @@ import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, p
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import { PARADIS_EXTENSION_PAGE_DENIED_MESSAGE } from '../common/paradisCdpExtensionScope.js';
 import { paradisGuardChildWebContents, paradisSetExtensionNavigationGuard, paradisShowsExtensionPage } from './paradisExtensionNavigationGuard.js';
-import { paradisGuardExtensionInput, paradisInputGuardTab } from './paradisExtensionInputGuard.js';
+import { IParadisUpstreamInputMarker, paradisGuardExtensionInput, paradisInputGuardTab } from './paradisExtensionInputGuard.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
@@ -309,6 +309,49 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 	}
 
+	/**
+	 * upstream の Agent ツール（BrowserView の debugger の sendCommand で Input.* を送る）の入力に、dispatchExactViewInput と
+	 * 同じ自動入力の印を付ける。キーは準備・有効化・確定の後に送り（preload と main がそのキーを workbench へ送らないので、
+	 * Para Code と拡張機能のショートカットが発火しない）、右クリックは Para Code の OS のメニューを出さない。座標は upstream の
+	 * デバイスのエミュレーションの割り込みが先に倍率へ合わせてある。
+	 */
+	private upstreamInputMarker(view: BrowserView): IParadisUpstreamInputMarker {
+		return {
+			beforeSend: async (method, params) => {
+				let zoomFactor = 1;
+				try {
+					zoomFactor = view.webContents.getZoomFactor();
+				} catch {
+					zoomFactor = 1;
+				}
+				paradisMarkAgentContextMenuInput(view.webContents, method, params, zoomFactor, Date.now(), 1);
+				if (method !== 'Input.dispatchKeyEvent') {
+					return undefined;
+				}
+				const signature = browserViewAutomationKeySignatureFromCdp(params);
+				if (!signature) {
+					throw new Error(`PARA_BROWSER_RETRYABLE: ${method} does not have a suppressible exact key signature`);
+				}
+				let failure: BrowserViewAutomationKeyFailureReason | undefined;
+				let failureDetail: IBrowserViewAutomationKeyFailureDetail | undefined;
+				const onFailure = (reason: BrowserViewAutomationKeyFailureReason, _phase: 'register' | 'activate', detail?: IBrowserViewAutomationKeyFailureDetail) => {
+					failure = reason;
+					failureDetail = detail;
+				};
+				const registration = await view.prepareAutomationKeyInput(signature, onFailure).catch(() => undefined);
+				if (!registration) {
+					throw new Error(`PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (${describeAutomationKeyFailure(failure, failureDetail)})`);
+				}
+				const activated = await registration.activate().catch(() => false);
+				if (!activated || !registration.commit()) {
+					registration.cancel();
+					throw new Error(`PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (${describeAutomationKeyFailure(failure, failureDetail)})`);
+				}
+				return { done: () => registration.complete() };
+			},
+		};
+	}
+
 	private onViewCreated(childViewId: string, parentViewId: string | undefined): void {
 		this.watchViewForCursor(childViewId);
 		try {
@@ -316,7 +359,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			// 拡張の画面へは届けない（paradisExtensionInputGuard.ts）
 			const created = this.browserViewMainService.tryGetBrowserView(childViewId);
 			if (created && !created.webContents.isDestroyed()) {
-				paradisInputGuardTab(created);
+				paradisInputGuardTab(created, this.upstreamInputMarker(created));
 			}
 		} catch {
 			// ビューが既に閉じている。
@@ -1336,7 +1379,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			// 座標は送るときと同じく、縮小して描いているタブの倍率に合わせる
 			// 押してから離すまでに場所を変え、離す位置が拡張の画面に当たるときは、離す位置を押した位置に置き換えて送る
 			const extensionVerdict = await paradisGuardExtensionInput(
-				paradisInputGuardTab(view),
+				paradisInputGuardTab(view, this.upstreamInputMarker(view)),
 				command.method,
 				paradisScaleCdpInputCoordinates(command.params, view.emulator.device ? view.emulator.emulatedScaleFactor : 1),
 			);

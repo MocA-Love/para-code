@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { PARADIS_BROWSER_EXTENSION_WINDOW_SWITCH } from '../../common/paradisBrowserExtensionWindow.js';
+import { PARADIS_BROWSER_EXTENSION_WINDOW_CHANNEL } from '../../common/paradisBrowserExtensionWindow.js';
 
 suite('ParadisPreloadExtensionFrame', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -34,16 +34,33 @@ suite('ParadisPreloadExtensionFrame', () => {
 		], [true, false, false, false, false, false]);
 	});
 
-	test('skips the preload in the windows a browser extension opens, by the switch main gives them', async function () {
+	test('asks main per window whether an extension page is in a window the extension opened', async function () {
 		if (process.versions.electron) {
 			this.skip();
 		}
-		const { paradisIsBrowserExtensionWindowArgv } = await import('../../electron-browser/preload-browserView.js');
-		// preload は束ねないので印の文字を自分でも持つ。main が付ける印（common の定数）と同じであること
-		assert.deepStrictEqual([
-			paradisIsBrowserExtensionWindowArgv(['/app', '--type=renderer', PARADIS_BROWSER_EXTENSION_WINDOW_SWITCH]),
-			paradisIsBrowserExtensionWindowArgv(['/app', '--type=renderer']),
-			paradisIsBrowserExtensionWindowArgv(undefined),
-		], [true, false, false]);
+		const { paradisIsBrowserExtensionWindow, PARADIS_BROWSER_EXTENSION_WINDOW_QUERY } = await import('../../electron-browser/preload-browserView.js');
+		const asked: string[] = [];
+		const answer = (value: unknown) => (channel: string) => {
+			asked.push(channel);
+			return value;
+		};
+		const extension = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
+		const results = [
+			paradisIsBrowserExtensionWindow(extension, true, answer(true)),
+			paradisIsBrowserExtensionWindow(extension, true, answer(false)),
+			// 答えが壊れていても、IPC が投げても、preload は動かす側（今までどおり）
+			paradisIsBrowserExtensionWindow(extension, true, answer('yes')),
+			paradisIsBrowserExtensionWindow(extension, true, () => { throw new Error('no handler'); }),
+		];
+		const askedByExtensionPages = asked.length;
+		// ウェブのページと埋め込みのフレームは尋ねない（同期の IPC で止めない）
+		results.push(paradisIsBrowserExtensionWindow('https://example.com', true, answer(true)), paradisIsBrowserExtensionWindow(extension, false, answer(true)));
+		assert.deepStrictEqual({ results, askedByExtensionPages, askedAfter: asked.length, channel: PARADIS_BROWSER_EXTENSION_WINDOW_QUERY }, {
+			results: [true, false, false, false, false, false],
+			askedByExtensionPages: 3,
+			askedAfter: 3,
+			// preload は束ねないので channel の名前を自分でも持つ。main の受け手（common の定数）と同じであること
+			channel: PARADIS_BROWSER_EXTENSION_WINDOW_CHANNEL,
+		});
 	});
 });
