@@ -136,8 +136,11 @@ export function paraSetBrowserViewOpener(viewId: string, openerViewId: string | 
 	}
 }
 
-/** Whether the view, or a view it was (transitively) opened from, is marked as an agent tab. */
-function paraIsAgentTabOrChild(viewId: string): boolean {
+/**
+ * Whether the view, or a view it was (transitively) opened from, is marked as an agent tab. The
+ * browser extension tab model uses it too, so extensions never see an agent's tabs.
+ */
+export function paraIsAgentTabOrChild(viewId: string): boolean {
 	const visited = new Set<string>();
 	let current: string | undefined = viewId;
 	while (current !== undefined && !visited.has(current)) {

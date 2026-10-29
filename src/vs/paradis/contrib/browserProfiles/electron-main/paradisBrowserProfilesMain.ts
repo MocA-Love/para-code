@@ -15,7 +15,7 @@
 // 台帳（表示名・色・時刻）は renderer 側にあり、ここには一切持ち込まない。
 
 import { session } from 'electron';
-import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { BrowserSession } from '../../../../platform/browserView/electron-main/browserSession.js';
 import { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
@@ -25,6 +25,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js';
 import { paradisRegisterBrowserLoginImport } from './paradisBrowserLoginImportMain.js';
 import { paradisRegisterBrowserExtensions } from '../../browserExtensions/electron-main/paradisBrowserExtensionsMain.js';
+import { paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionTabEnvironment } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
+import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 import {
 	IParadisBrowserProfilesMainService,
 	IParadisBrowserProfileStats,
@@ -156,9 +158,19 @@ export function paradisRegisterBrowserProfiles(
 		);
 	}));
 	// 内蔵ブラウザの Chrome 拡張機能（試験的）の channel も同じ登録点で立てる（同上）
-	disposables.add(paradisRegisterBrowserExtensions(channelHost, instantiationService, instantiationService.invokeFunction(accessor => {
+	disposables.add(instantiationService.invokeFunction(accessor => {
 		const browserViewMainService = accessor.get(IBrowserViewMainService);
-		return (viewId: string) => browserViewMainService.tryGetBrowserView(viewId)?.session.electronSession;
-	})));
+		const tabEnvironment = paradisCreateBrowserExtensionTabEnvironment(browserViewMainService, accessor.get(IWindowsMainService));
+		const registered = paradisRegisterBrowserExtensions(
+			channelHost,
+			instantiationService,
+			viewId => browserViewMainService.tryGetBrowserView(viewId)?.session.electronSession,
+			{ environment: tabEnvironment, createPopout: paradisCreateBrowserExtensionPopout },
+		);
+		return toDisposable(() => {
+			registered.dispose();
+			tabEnvironment.dispose();
+		});
+	}));
 	return disposables;
 }

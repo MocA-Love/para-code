@@ -48,10 +48,25 @@ export const PARADIS_SHIM_STORAGE_SYNC_CONSTANTS: Readonly<Record<string, number
 export const PARADIS_SHIM_STORAGE_RELAY_NAMESPACE = 'paradisStorageRelay';
 export const PARADIS_SHIM_STORAGE_SYNC_NAMESPACE = 'paradisStorageSync';
 
-/** chrome に足す API（P4a: runtime の起動のイベント。tabs・windows などは後の PR で足す）。 */
+/** chrome に足す API（main の登録と同じものを並べる。テストが突き合わせる）。 */
 export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
-	// Electron はこの 2 つを出さない。Para Code が拡張機能の読み込みの後に出す
-	runtime: { methods: [], events: ['onInstalled', 'onStartup'] },
+	// Electron は onInstalled・onStartup を出さない。Para Code が拡張機能の読み込みの後に出す
+	runtime: { methods: ['openOptionsPage'], events: ['onInstalled', 'onStartup'] },
+	tabs: {
+		methods: ['query', 'get', 'getCurrent', 'create', 'duplicate', 'remove', 'update', 'goBack', 'goForward'],
+		events: ['onActivated', 'onCreated', 'onUpdated', 'onRemoved', 'onReplaced'],
+		constants: { TAB_ID_NONE: -1 },
+	},
+	windows: {
+		methods: ['getAll', 'get', 'getCurrent', 'getLastFocused', 'create', 'update', 'remove'],
+		events: ['onCreated', 'onRemoved', 'onFocusChanged', 'onBoundsChanged'],
+		constants: { WINDOW_ID_NONE: -1, WINDOW_ID_CURRENT: -2 },
+	},
+	webNavigation: {
+		permission: 'webNavigation',
+		methods: ['getFrame', 'getAllFrames'],
+		events: ['onBeforeNavigate', 'onCommitted', 'onDOMContentLoaded', 'onCompleted', 'onErrorOccurred', 'onHistoryStateUpdated', 'onReferenceFragmentUpdated', 'onCreatedNavigationTarget'],
+	},
 };
 
 type ApiObject = Record<string, unknown>;
@@ -140,9 +155,77 @@ export function paradisInstallExtensionApis(bridge: IParadisShimBridge, surface:
 		);
 		return undefined;
 	};
-	const listeners = new Map<string, Set<Callable>>();
+	// webNavigation の受け手の絞り込み（events.UrlFilter の並び）。どれかに当たればその受け手に出す
+	const matchesUrlFilter = (rawUrl: string, filter: unknown): boolean => {
+		if (!isObject(filter)) {
+			return true;
+		}
+		let url: URL;
+		try {
+			url = new URL(rawUrl);
+		} catch {
+			return false;
+		}
+		const host = url.hostname;
+		const path = url.pathname;
+		const query = url.search.replace(/^\?/, '');
+		const plain = rawUrl.split('#')[0];
+		const checks: Record<string, (value: string) => boolean> = {
+			hostContains: value => `.${host}`.includes(value),
+			hostEquals: value => host === value,
+			hostPrefix: value => host.startsWith(value),
+			hostSuffix: value => host.endsWith(value),
+			pathContains: value => path.includes(value),
+			pathEquals: value => path === value,
+			pathPrefix: value => path.startsWith(value),
+			pathSuffix: value => path.endsWith(value),
+			queryContains: value => query.includes(value),
+			queryEquals: value => query === value,
+			queryPrefix: value => query.startsWith(value),
+			querySuffix: value => query.endsWith(value),
+			urlContains: value => plain.includes(value),
+			urlEquals: value => plain === value,
+			urlPrefix: value => plain.startsWith(value),
+			urlSuffix: value => plain.endsWith(value),
+			urlMatches: value => {
+				try {
+					return new RegExp(value).test(plain);
+				} catch {
+					return false;
+				}
+			},
+		};
+		for (const [key, value] of Object.entries(filter)) {
+			if (key === 'schemes' && Array.isArray(value) && !value.includes(url.protocol.slice(0, -1))) {
+				return false;
+			}
+			if (key === 'ports' && Array.isArray(value)) {
+				const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+				if (!value.some(entry => Array.isArray(entry) ? port >= entry[0] && port <= entry[1] : entry === port)) {
+					return false;
+				}
+			}
+			if (typeof value === 'string' && checks[key] && !checks[key](value)) {
+				return false;
+			}
+		}
+		return true;
+	};
+	const passesFilter = (args: readonly unknown[], filter: unknown): boolean => {
+		if (!isObject(filter) || !Array.isArray(filter.url)) {
+			return true;
+		}
+		const details = args[0];
+		const url = isObject(details) ? details.url : undefined;
+		return typeof url === 'string' && filter.url.some(entry => matchesUrlFilter(url, entry));
+	};
+	// 受け手 → その絞り込み
+	const listeners = new Map<string, Map<Callable, unknown>>();
 	bridge.onEvent((namespace, event, args) => {
-		for (const callback of listeners.get(`${namespace}.${event}`) ?? []) {
+		for (const [callback, filter] of listeners.get(`${namespace}.${event}`) ?? []) {
+			if (!passesFilter(args, filter)) {
+				continue;
+			}
 			try {
 				callback(...args);
 			} catch (error) {
@@ -152,14 +235,14 @@ export function paradisInstallExtensionApis(bridge: IParadisShimBridge, surface:
 	});
 	const makeEvent = (namespace: string, name: string): ApiObject => {
 		const key = `${namespace}.${name}`;
-		const registered = listeners.get(key) ?? new Set<Callable>();
+		const registered = listeners.get(key) ?? new Map<Callable, unknown>();
 		listeners.set(key, registered);
 		return {
-			addListener: (callback: unknown) => {
+			addListener: (callback: unknown, filter?: unknown) => {
 				if (!isCallable(callback) || registered.has(callback)) {
 					return;
 				}
-				registered.add(callback);
+				registered.set(callback, filter);
 				if (registered.size === 1) {
 					bridge.listen(namespace, name, true);
 				}
