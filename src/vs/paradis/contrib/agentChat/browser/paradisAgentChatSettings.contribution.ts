@@ -13,6 +13,7 @@ import { localize } from '../../../../nls.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
+import { PARADIS_CODEX_AUTO_CONTINUE_SETTING } from '../../mobileRelay/common/paradisCodexOverloadContinue.js';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
@@ -40,6 +41,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: 'enter',
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.agentChat.sendKey', "チャット表示の入力欄で送信に使うキー。日本語入力の変換を確定する Enter では送信しません。"),
+		},
+		[PARADIS_CODEX_AUTO_CONTINUE_SETTING]: {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.agentChat.codexAutoContinueOnOverload', "Codex が「Selected model is at capacity」（モデルが混み合っている）で止まったとき、30 秒・60 秒・120 秒と間を空けて自動で `continue` を送ります。3 回続けても混み合ったままなら止めて知らせます。待つ間にほかの入力があったときは送りません。送ったことはモバイルと PC の会話に出ます。"),
 		},
 	},
 });

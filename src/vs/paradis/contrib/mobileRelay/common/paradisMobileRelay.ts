@@ -27,6 +27,7 @@ import type { IParadisMobileDoNotDisturbState } from './paradisMobileDoNotDistur
 import type { IParadisMobileLinkMetricsRaw, IParadisMobileLinkMetricsSnapshot } from './paradisMobileLinkMetrics.js';
 import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import type { IParadisRemoteShellOutputRequest } from './paradisRemoteShellOutput.js';
+import type { ParadisCodexAutoContinuePhase } from './paradisCodexOverloadContinue.js';
 
 // ---- 設定キー ----
 
@@ -444,6 +445,11 @@ export interface IParadisMobileRelayService {
 	syncAgentPanes(lease: IParadisMobileWindowLease, revision: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
 	/** rendererがAgent Actionを実行する直前に、shared processのsession epochを再検証して一度だけclaimする。 */
 	claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, lease: IParadisMobileWindowLease): Promise<'claimed' | 'stale' | 'expired'>;
+	/**
+	 * Codex の自動の continue（モデルが混み合って止まったターン）について、ペインを持つウィンドウが知らせる。
+	 * `claim` は送る直前の引き受けで、送ってよいときだけ true。
+	 */
+	reportCodexAutoContinue(token: string, requestId: string, phase: ParadisCodexAutoContinuePhase, lease: IParadisMobileWindowLease): Promise<boolean>;
 	/** interactionキー列の待機区間ごとに、sessionとinteractionが継続中か再検証する。 */
 	continueAgentInteraction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, lease: IParadisMobileWindowLease): Promise<'valid' | 'completed' | 'stale'>;
 	/** renderer側のinteractionキー列が成功・失敗・取消のいずれかで終了したことを通知し、排他claimを解放する。 */
