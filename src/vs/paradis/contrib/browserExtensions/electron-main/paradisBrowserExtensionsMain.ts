@@ -141,6 +141,12 @@ export interface IParadisStoreListing {
 	readonly manifest: unknown;
 }
 
+/**
+ * ストアから入れたものを写すときの上限。中身は署名を確かめた CRX で、展開のときに数（20,000）と宣言の合計（512 MB）を見ている。
+ * フォルダから写すときの上限（200 MB）では、大きなストアの拡張機能（Keeper など）が入らない（互換性の確かめで見つけた）。
+ */
+const WEB_STORE_COPY_LIMITS = { files: PARADIS_MAX_EXTENSION_FILES, bytes: 512 * 1024 * 1024 };
+
 /** ストアのページの preload（束ねずに書き出される。build/next/standalone.ts）。 */
 const WEB_STORE_PRELOAD = 'vs/paradis/contrib/browserExtensions/electron-browser/paradisWebStorePreload.js';
 import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
@@ -397,6 +403,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	/** 新しく権限を求めるため保留にした更新（メモリだけ。起動のたびに見つけ直す）。 */
 	private readonly _heldUpdates = new Map<string, IParadisHeldUpdate>();
 	private _checkingUpdates = false;
+	/** この起動で台帳を読めて解釈できたか（読めなければ、台帳に無いフォルダを片付けない）。 */
+	private _ledgerLoaded = false;
 	/** 次の起動で使うために置いた新しい版（id → 版）。 */
 	private readonly _stagedNext = new Map<string, string>();
 	private readonly _updateSchedule: ParadisWebStoreUpdateSchedule | undefined;
@@ -605,7 +613,9 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 
 	private async _loadLedger(): Promise<void> {
 		try {
-			this._ledger = paradisParseExtensionsLedger(JSON.parse(await fs.readFile(this._ledgerPath, 'utf8')));
+			const raw: unknown = JSON.parse(await fs.readFile(this._ledgerPath, 'utf8'));
+			this._ledger = paradisParseExtensionsLedger(raw);
+			this._ledgerLoaded = typeof raw === 'object' && raw !== null && (raw as { version?: unknown }).version === 1;
 		} catch {
 			this._ledger = PARADIS_EMPTY_EXTENSIONS_LEDGER;
 		}
@@ -875,7 +885,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	}
 
 	/** 元のフォルダを Para Code の持つフォルダへ写し、manifest を読む。 */
-	private async _copyFromFolder(folder: string, keyMode: ParadisKeyMode, target?: string): Promise<ICopiedExtension | Extract<IParadisAddExtensionResult, { ok: false }>> {
+	private async _copyFromFolder(folder: string, keyMode: ParadisKeyMode, target?: string, limits?: { readonly files: number; readonly bytes: number }): Promise<ICopiedExtension | Extract<IParadisAddExtensionResult, { ok: false }>> {
 		let real: string;
 		try {
 			real = await fs.realpath(folder);
@@ -902,7 +912,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		}
 		const copy = target ?? join(this._root, 'unpacked', createHash('sha256').update(real).digest('hex').slice(0, 16));
 		try {
-			const plan = await paradisPlanExtensionCopy(real);
+			const plan = await paradisPlanExtensionCopy(real, limits);
 			if (!plan.ok) {
 				return plan;
 			}
@@ -1148,7 +1158,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				this._unload(entry, id);
 			}
 		}
-		const copied = await this._copyFromFolder(folder, { kind: 'path' }, join(this._root, 'webstore', id));
+		const copied = await this._copyFromFolder(folder, { kind: 'path' }, join(this._root, 'webstore', id), WEB_STORE_COPY_LIMITS);
 		if (copied.ok && this._removedThisRun.has(id)) {
 			// 写している間に削除された: 書き戻さない
 			await fs.rm(copied.path, { recursive: true, force: true }).catch(() => { /* best effort */ });
@@ -1278,7 +1288,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 
 	/** 確かめた新しい版を `webstore-next/<id>` に写して置く（次の起動で、読み込む前に使う）。 */
 	private async _stageWebStoreNext(id: string, folder: string, version: string): Promise<void> {
-		const copied = await this._copyFromFolder(folder, { kind: 'path' }, join(this._root, 'webstore-next', id));
+		const copied = await this._copyFromFolder(folder, { kind: 'path' }, join(this._root, 'webstore-next', id), WEB_STORE_COPY_LIMITS);
 		if (!copied.ok || copied.id !== id || this._removedThisRun.has(id)) {
 			if (copied.ok) {
 				await fs.rm(copied.path, { recursive: true, force: true }).catch(() => { /* best effort */ });
@@ -1316,11 +1326,17 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				await fs.rm(staged, { recursive: true, force: true }).catch(() => { /* best effort */ });
 			}
 		}
-		// 台帳に無いストアの拡張機能のフォルダ（入れ替えの途中に落ちて残ったもの）を片付ける
+		// 入れ替えの途中に落ちて残ったフォルダ（`<id>-<hex>` の形で、id が台帳のストアの拡張機能にあり、台帳が指していないもの）を片付ける。
+		// 台帳を読めなかった起動（空の台帳）では片付けない（入れてある拡張機能のフォルダを消さないため）
+		if (!this._ledgerLoaded) {
+			return;
+		}
 		const store = join(this._root, 'webstore');
 		const used = new Set(this._ledger.extensions.map(extension => extension.path));
+		const storeIds = new Set(this._ledger.extensions.filter(extension => extension.source === 'webstore').map(extension => extension.id));
 		for (const name of await fs.readdir(store).catch(() => [])) {
-			if (!name.includes(TEMPORARY_COPY_MARK) && !used.has(join(store, name))) {
+			const match = /^(?<id>[a-p]{32})-[0-9a-f]{8}$/.exec(name);
+			if (match?.groups && storeIds.has(match.groups.id) && !used.has(join(store, name))) {
 				await fs.rm(join(store, name), { recursive: true, force: true }).catch(() => { /* best effort */ });
 			}
 		}

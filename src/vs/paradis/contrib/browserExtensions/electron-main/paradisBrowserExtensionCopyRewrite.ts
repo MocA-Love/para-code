@@ -243,8 +243,41 @@ function searchOutsideComments(html: string, pattern: RegExp): number {
 	return -1;
 }
 
+/** 属性の値でよく使う名前の文字の参照。 */
+const NAMED_REFERENCES: Record<string, string> = { amp: '&', quot: '"', apos: '\'', lt: '<', gt: '>' };
+
+/**
+ * ページの <meta http-equiv="Content-Security-Policy"> の connect-src にも私用スキームを足す（manifest の方針とは別に、ページが
+ * 自分で絞っていると、詰め物の呼び出しが CSP で止まる。1Password・NordPass のポップアップで見つけた）。
+ */
+export function paradisWithApiConnectSourceInHtml(html: string): string {
+	return html.replace(/<meta\b[^>]*>/gi, tag => {
+		if (!/http-equiv\s*=\s*(["'])\s*content-security-policy\s*\1/i.test(tag)) {
+			return tag;
+		}
+		return tag.replace(/(\bcontent\s*=\s*)(["'])([\s\S]*?)\2/i, (_whole, prefix: string, quote: string, raw: string) => {
+			// 属性の値の文字の参照（&#39; など。; を含むので、そのままでは方針を ; で分けられない）を解いてから足し、書き戻すときに付け直す
+			const policy = raw.replace(/&(?:#(?<decimal>\d+)|#x(?<hex>[0-9a-f]+)|(?<name>amp|quot|apos|lt|gt));/gi, (whole, ...args: unknown[]) => {
+				const groups = args[args.length - 1] as { decimal?: string; hex?: string; name?: string };
+				if (groups.decimal !== undefined) {
+					return String.fromCodePoint(Number(groups.decimal));
+				}
+				if (groups.hex !== undefined) {
+					return String.fromCodePoint(Number.parseInt(groups.hex, 16));
+				}
+				return NAMED_REFERENCES[groups.name!.toLowerCase()] ?? whole;
+			});
+			const next = paradisWithApiConnectSource(policy.replace(/;\s*$/, ''));
+			const encoded = next.replace(/&/g, '&amp;').replace(quote === '"' ? /"/g : /'/g, quote === '"' ? '&quot;' : '&#39;');
+			return `${prefix}${quote}${encoded}${quote}`;
+		});
+	});
+}
+
 /** 拡張機能のページの最初のスクリプトの前（無ければ </head> の前、それも無ければ先頭）に詰め物を入れる。 */
 export function paradisInjectShimIntoHtml(html: string): string {
+	// CSP は詰め物を入れてある写し（前の版で入れたもの）でも直す。重ねて足さないので、何度通しても同じ
+	html = paradisWithApiConnectSourceInHtml(html);
 	if (html.includes('data-paracode-extension-api')) {
 		return html;
 	}

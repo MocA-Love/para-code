@@ -551,3 +551,37 @@ suite('ParadisBrowserExtensionWebStore localized names', () => {
 		}
 	});
 });
+
+suite('ParadisBrowserExtensionWebStore cleanup', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('cleans up folders left by an interrupted swap only when the ledger was read, and only of store extensions it names', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-webstore-cleanup-'));
+		try {
+			const store = join(root, 'mgr', 'webstore');
+			const current = join(store, `${ID}-0000aaaa`);
+			for (const name of [`${ID}-0000aaaa`, `${ID}-1111bbbb`, `${OTHER_ID}-2222cccc`, 'unrelated']) {
+				await fs.mkdir(join(store, name), { recursive: true });
+			}
+			const row = { id: ID, name: 'E', version: '1.0', manifestVersion: 3, source: 'webstore' as const, sourcePath: current, path: current, installedAt: 1, touchesPages: false };
+			const listing = async () => (await fs.readdir(store)).sort();
+			// 読めない台帳では消さない
+			await fs.writeFile(join(root, 'mgr', 'ledger.json'), '{ broken');
+			let manager = new ParadisBrowserExtensionsManager(join(root, 'mgr'), () => true, { warn: () => { } });
+			await manager.getState();
+			manager.dispose();
+			const afterBroken = await listing();
+			await fs.writeFile(join(root, 'mgr', 'ledger.json'), JSON.stringify(paradisSerializeExtensionsLedger({ version: 1, extensions: [row], enabled: {}, removed: [], pinned: {} })));
+			manager = new ParadisBrowserExtensionsManager(join(root, 'mgr'), () => true, { warn: () => { } });
+			await manager.getState();
+			manager.dispose();
+			assert.deepStrictEqual({ afterBroken, afterRead: await listing() }, {
+				afterBroken: [`${ID}-0000aaaa`, `${ID}-1111bbbb`, `${OTHER_ID}-2222cccc`, 'unrelated'].sort(),
+				// 台帳のストアの拡張機能の、台帳が指していない入れ替えの残りだけを消す
+				afterRead: [`${ID}-0000aaaa`, `${OTHER_ID}-2222cccc`, 'unrelated'].sort(),
+			});
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+});
