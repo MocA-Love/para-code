@@ -70,6 +70,8 @@ import { PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE } from '../common/paradisBrows
 import { IParadisExtensionAccess, paradisParseWebStoreInput, paradisSameExtensionAccess, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
 import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.js';
 import { ParadisBrowserExtensionPrivacy, paradisPrivacyUserTabs } from './paradisBrowserExtensionPrivacy.js';
+import { paradisRegisterBrowsingDataApis } from './paradisBrowserExtensionBrowsingData.js';
+import { ParadisBrowserExtensionTts } from './paradisBrowserExtensionTts.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IParadisHeldUpdate, IParadisWebStoreUpdate, PARADIS_WEB_STORE_UPDATE_URL, ParadisWebStoreUpdateSchedule, paradisAddedAccess, paradisBuildUpdateRequest, paradisCompareExtensionVersions, paradisHasAddedAccess, paradisParseUpdateResponse } from './paradisBrowserExtensionWebStoreUpdates.js';
 import { IParadisInstallPrompt, ParadisWebStoreFetcher, ParadisWebStoreUpdateRequester, paradisCreateWebStoreUpdateRequester, paradisCreateWebStoreFetcher, paradisDownloadWebStoreCrx, paradisExtractCrxArchive } from './paradisBrowserExtensionWebStore.js';
@@ -388,6 +390,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _services: ParadisBrowserExtensionServices | undefined;
 	/** chrome.privacy の webRTCIPHandlingPolicy（P8）。タブの口があるときだけ（効かせる先のタブを引くため）。 */
 	private readonly _privacy: ParadisBrowserExtensionPrivacy | undefined;
+	/** chrome.tts（P9a）。 */
+	private readonly _tts: ParadisBrowserExtensionTts | undefined;
 	/** ネイティブメッセージング（P6）。 */
 	private readonly _nativeMessaging: ParadisNativeMessaging | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
@@ -457,6 +461,9 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			confirmRemove: name => webStoreOptions?.askRemove?.(name) ?? Promise.resolve(false),
 		}) : undefined;
 		this._webStoreBridge?.listen();
+		this._tts = this.active ? new ParadisBrowserExtensionTts(this._apiHost) : undefined;
+		// browsingData: そのセッションに入っている拡張機能の origin は消さない
+		paradisRegisterBrowsingDataApis(this._apiHost, caller => (caller.session as unknown as ParadisExtensionSession).extensions.getAllExtensions().map(extension => `chrome-extension://${extension.id}`));
 		const privacyEnvironment = tabsOptions?.environment;
 		this._privacy = this.active && privacyEnvironment ? new ParadisBrowserExtensionPrivacy(this._apiHost, join(_root, 'privacy-settings.json'), _logService, {
 			// その場所の利用者のタブ（エージェントのタブ・SSH 先のページのためにトンネルを通しているセッションは含めない）
@@ -553,6 +560,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._updateSchedule?.dispose();
 		this._actions?.dispose();
 		this._nativeMessaging?.dispose();
+		this._tts?.dispose();
 		this._menus?.dispose();
 		this._tabs?.dispose();
 		this._apiHost.dispose();

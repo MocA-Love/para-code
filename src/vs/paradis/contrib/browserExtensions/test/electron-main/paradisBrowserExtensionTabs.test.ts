@@ -16,6 +16,7 @@ import { PARADIS_SHIM_SURFACE } from '../../common/paradisBrowserExtensionShim.j
 import { IParadisApiExtension, ParadisApiSession, ParadisExtensionApiHost } from '../../electron-main/paradisBrowserExtensionApiHost.js';
 import { paradisRegisterRuntimeApis } from '../../electron-main/paradisBrowserExtensionRuntime.js';
 import { paradisRegisterStorageApis, ParadisBrowserExtensionSyncStore } from '../../electron-main/paradisBrowserExtensionStorageApis.js';
+import { paradisRegisterBrowsingDataApis } from '../../electron-main/paradisBrowserExtensionBrowsingData.js';
 import { IParadisTabEnvironment, IParadisTabView, ParadisBrowserExtensionTabs, paradisCanSeeTabUrl, paradisMatchesUrlPattern } from '../../electron-main/paradisBrowserExtensionTabs.js';
 import { IParadisActionsEnvironment, ParadisBrowserExtensionActions } from '../../electron-main/paradisBrowserExtensionActions.js';
 import { ParadisBrowserExtensionMenus } from '../../electron-main/paradisBrowserExtensionMenus.js';
@@ -308,6 +309,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 		const menus = new ParadisBrowserExtensionMenus(host, tabs, { findView: () => undefined, sessionOf: () => undefined, allLoaded: () => [], nameOf: extension => extension.name }, '/tmp/unused-menus.json', silentLog);
 		const permissions = new ParadisBrowserExtensionPermissions(host, '/tmp/unused-grants.json', silentLog, async () => false, extension => extension.id);
 		new ParadisBrowserExtensionServices(host, tabs, permissions, unusedServicesEnvironment);
+		paradisRegisterBrowsingDataApis(host, () => []);
 		try {
 			const registered = (host as unknown as { _namespaces: Map<string, { methods: Record<string, unknown>; events: readonly string[]; permission?: unknown }> })._namespaces;
 			for (const [name, surface] of Object.entries(PARADIS_SHIM_SURFACE)) {
