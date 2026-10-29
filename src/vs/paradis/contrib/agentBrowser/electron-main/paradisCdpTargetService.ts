@@ -55,7 +55,7 @@ import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, p
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import { PARADIS_EXTENSION_PAGE_DENIED_MESSAGE } from '../common/paradisCdpExtensionScope.js';
 import { paradisGuardChildWebContents, paradisSetExtensionNavigationGuard, paradisShowsExtensionPage } from './paradisExtensionNavigationGuard.js';
-import { paradisExtensionInputRefusal, paradisInputGuardTab } from './paradisExtensionInputGuard.js';
+import { paradisGuardExtensionInput, paradisInputGuardTab } from './paradisExtensionInputGuard.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
@@ -1334,13 +1334,14 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			}
 			// ページの上に出ている拡張の画面（パスワード管理のメニューなど）に届く入力は断る（paradisExtensionInputGuard.ts）。
 			// 座標は送るときと同じく、縮小して描いているタブの倍率に合わせる
-			const extensionRefusal = await paradisExtensionInputRefusal(
+			// 押してから離すまでに場所を変え、離す位置が拡張の画面に当たるときは、離す位置を押した位置に置き換えて送る
+			const extensionVerdict = await paradisGuardExtensionInput(
 				paradisInputGuardTab(view),
 				command.method,
 				paradisScaleCdpInputCoordinates(command.params, view.emulator.device ? view.emulator.emulatedScaleFactor : 1),
 			);
-			if (extensionRefusal !== undefined) {
-				return { status: 'retryable', message: extensionRefusal };
+			if (extensionVerdict.refusal !== undefined) {
+				return { status: 'retryable', message: extensionVerdict.refusal };
 			}
 			if (this.resolveExistingExactView(descriptor) !== view) {
 				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };
@@ -1382,7 +1383,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			paradisMarkAgentContextMenuInput(view.webContents, command.method, command.params as Readonly<Record<string, unknown>>, zoomFactor, Date.now(), emulationScale);
 			let result: unknown;
 			try {
-				const params = paradisScaleCdpInputCoordinates(command.params, emulationScale);
+				// 置き換えた params は倍率を合わせた後の座標
+				const params = extensionVerdict.params ?? paradisScaleCdpInputCoordinates(command.params, emulationScale);
 				result = await view.debugger.sendCommandRaw(command.method, params, undefined);
 			} catch {
 				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: BrowserView debugger input dispatch did not complete' };
