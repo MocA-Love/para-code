@@ -12,6 +12,7 @@
 
 import { app, BrowserWindow, screen, type Session } from 'electron';
 import type { IParadisRect } from '../common/paradisBrowserExtensionAction.js';
+import { paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
@@ -24,7 +25,10 @@ function handleOf(view: BrowserView): IParadisTabView {
 	return {
 		id: view.id,
 		webContents: view.webContents,
-		windowId: view.host.windowId,
+		// タブは補助ウィンドウへ移ることがあるので、今そのタブを出しているウィンドウ（まだ出していなければ持ち主のウィンドウ）
+		get windowId() {
+			return view.getElectronWindow()?.id ?? view.host.windowId;
+		},
 		isAgentTab: () => view.owner.type === 'agent' || paraIsAgentTabOrChild(view.id),
 		isVisible: () => view.getState().visible === true,
 		onDidClose: view.onDidClose,
@@ -116,6 +120,8 @@ export function paradisCreateBrowserExtensionPopout(session: Session, url: strin
 		autoHideMenuBar: true,
 		webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false },
 	});
+	// 内蔵ブラウザのビューではないので、セッションの preload（preload-browserView.ts）を動かさない
+	paradisMarkBrowserExtensionWindow(window.webContents);
 	window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 	// 拡張機能自身のページだけを出す（アドレスバーの無い窓でウェブのページを開かせない）
 	// URL の origin は chrome-extension: では "null" になり、どの拡張機能のページも同じに見える。スキームと host で比べる
@@ -143,7 +149,7 @@ export function paradisCreateBrowserExtensionPopout(session: Session, url: strin
 
 /** ツールバーのボタンのポップアップの窓（枠の無い、Para Code のウィンドウの子。中身に合わせて大きさを変える）。 */
 export function paradisCreateBrowserExtensionActionPopup(parent: BrowserWindow, bounds: IParadisRect, session: Session): BrowserWindow {
-	return new BrowserWindow({
+	const window = new BrowserWindow({
 		...bounds,
 		parent,
 		show: false,
@@ -157,6 +163,9 @@ export function paradisCreateBrowserExtensionActionPopup(parent: BrowserWindow, 
 		hasShadow: true,
 		webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true },
 	});
+	// 内蔵ブラウザのビューではないので、セッションの preload（preload-browserView.ts）を動かさない
+	paradisMarkBrowserExtensionWindow(window.webContents);
+	return window;
 }
 
 /** 画面の座標の四角がある画面の作業領域。 */

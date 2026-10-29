@@ -189,6 +189,39 @@ suite('paradisExtensionInputGuard', () => {
 		]);
 	});
 
+	test('upstream commands carry the automation input mark: a key that cannot be marked is not sent', async () => {
+		const page: IFakeDocument = { scrollY: 0, elements: [BODY] };
+		const { tab } = fakeTab({ page }, {});
+		const tracker = new ParadisFrameTargetTracker();
+		const events: string[] = [];
+		const upstreamDebugger = {
+			targetId: 'PAGE',
+			registerCommandInterceptor: () => ({ dispose() { } }),
+			sendCommandRaw: async (method: string) => { events.push(`send ${method}`); return {}; },
+		};
+		let refuseKeys = false;
+		const marker = {
+			beforeSend: async (method: string, params: Readonly<Record<string, unknown>>) => {
+				events.push(`mark ${method} ${params.type}`);
+				if (method === 'Input.dispatchKeyEvent' && refuseKeys) {
+					throw new Error('PARA_BROWSER_RETRYABLE: automation key suppression could not be registered');
+				}
+				return method === 'Input.dispatchKeyEvent' ? { done: () => events.push('done') } : undefined;
+			},
+		};
+		const run = (method: string, params: object) => paradisInterceptUpstreamCommand(tab, tracker, upstreamDebugger, method, params, { sessionId: 'S-PAGE', targetId: 'PAGE' }, undefined, marker)!.then(() => 'sent', (error: Error) => error.message);
+		const results = [
+			await run('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'L', code: 'KeyL', modifiers: 10 }),
+			await run('Input.dispatchMouseEvent', { type: 'mousePressed', x: 50, y: 50, button: 'right', clickCount: 1 }),
+		];
+		refuseKeys = true;
+		results.push(await run('Input.dispatchKeyEvent', { type: 'keyUp', key: 'L', code: 'KeyL', modifiers: 10 }));
+		assert.deepStrictEqual({ results, events }, {
+			results: ['sent', 'sent', 'PARA_BROWSER_RETRYABLE: automation key suppression could not be registered'],
+			events: ['mark Input.dispatchKeyEvent rawKeyDown', 'send Input.dispatchKeyEvent', 'done', 'mark Input.dispatchMouseEvent mousePressed', 'send Input.dispatchMouseEvent', 'mark Input.dispatchKeyEvent keyUp'],
+		});
+	});
+
 	test('upstream commands: page input is judged, extension frame sessions are refused, the rest passes through, and the guard is released with the view', async () => {
 		const page: IFakeDocument = { scrollY: 0, elements: [{ left: 0, top: 0, width: 100, height: 100, nodeName: 'IFRAME', attributes: [], frameId: 'EXT1' }, BODY] };
 		const { tab } = fakeTab({ page }, { EXT1: { url: EXTENSION_MENU } });

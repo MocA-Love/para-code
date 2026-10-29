@@ -60,6 +60,8 @@ import {
 	IParadisBrowserExtensionToolbar,
 	IParadisPopupRequest,
 	IParadisToolbarAnchor,
+	IParadisActionMenu,
+	IParadisBrowserExtensionCommand,
 	paradisParseExtensionsLedger,
 	paradisReadExtensionManifest,
 } from '../common/paradisBrowserExtensions.js';
@@ -70,6 +72,8 @@ import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from './
 import { paradisBrowserExtensionContentScriptSource, paradisBrowserExtensionShimSource } from '../common/paradisBrowserExtensionShimSource.js';
 import { IParadisTabEnvironment, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { IParadisActionsEnvironment, IParadisLoadedExtension, ParadisBrowserExtensionActions } from './paradisBrowserExtensionActions.js';
+import { ParadisBrowserExtensionMenus } from './paradisBrowserExtensionMenus.js';
+import { paradisSetBrowserExtensionMenuProvider } from './paradisBrowserExtensionMenuRegistry.js';
 
 /** タブ・ウィンドウの API に要る main のもの（無ければ tabs・windows・webNavigation は使えない）。 */
 export interface IParadisBrowserExtensionTabsOptions {
@@ -309,6 +313,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _tabs: ParadisBrowserExtensionTabs | undefined;
 	/** ツールバーのボタン（P5、chrome.action）。 */
 	private readonly _actions: ParadisBrowserExtensionActions | undefined;
+	/** 右クリックの項目とショートカット（P5b、chrome.contextMenus・chrome.commands）。 */
+	private readonly _menus: ParadisBrowserExtensionMenus | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
 	private readonly _runtimeState: ParadisBrowserExtensionRuntimeState;
 	/** この起動で詰め物を書き込んだ写し（写しのパス → 失敗の文。成功なら undefined）。 */
@@ -347,12 +353,24 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			},
 			workAreaFor: rect => tabsOptions.workAreaFor?.(rect) ?? rect,
 		}, _logService) : undefined;
+		this._menus = tabs && tabsOptions ? new ParadisBrowserExtensionMenus(this._apiHost, tabs, {
+			findView: viewId => tabsOptions.environment.listViews().find(view => view.id === viewId),
+			sessionOf: contents => this._actionSessionOf(contents.session),
+			allLoaded: () => [...this._sessions].flatMap(entry => this._actionSessionOf(entry.session)?.extensions ?? []),
+			isAgentTab: contents => tabsOptions.environment.listViews().find(view => view.webContents === contents)?.isAgentTab() === true,
+			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
+		}, join(_root, 'context-menus.json'), _logService) : undefined;
+		const menus = this._menus;
+		if (menus) {
+			this._disposables.add(paradisSetBrowserExtensionMenuProvider((contents, params) => menus.buildPageMenu(contents, params)));
+		}
 		this._ready = this.active ? this._loadLedger() : Promise.resolve();
 	}
 
 	dispose(): void {
 		this._disposables.dispose();
 		this._actions?.dispose();
+		this._menus?.dispose();
 		this._tabs?.dispose();
 		this._apiHost.dispose();
 		void this._syncStore.flush();
@@ -400,6 +418,24 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		return this._actions ? this._actions.openOptions(viewId, extensionId) : Promise.resolve({ ok: false, error: 'Browser extensions are off' });
 	}
 
+	async getActionMenu(viewId: string, extensionId: string): Promise<IParadisActionMenu | undefined> {
+		await this._ready;
+		return this._menus?.getActionMenu(viewId, extensionId);
+	}
+
+	async runActionMenuItem(token: string, extensionId: string, key: string): Promise<boolean> {
+		return this._menus?.runActionMenuItem(token, extensionId, key) ?? false;
+	}
+
+	async getCommands(): Promise<readonly IParadisBrowserExtensionCommand[]> {
+		await this._ready;
+		return this._menus?.getCommands() ?? [];
+	}
+
+	async runCommand(viewId: string, extensionId: string, name: string): Promise<IParadisActionResult> {
+		return this._menus?.runCommand(viewId, extensionId, name) ?? { ok: false, error: 'Browser extensions are off' };
+	}
+
 	/** ツールバーが変わった（renderer へ）。 */
 	get onDidChangeToolbar(): Event<void> {
 		return this._actions?.onDidChangeToolbar ?? Event.None;
@@ -418,6 +454,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		}
 		await fs.mkdir(this._root, { recursive: true }).catch(() => { /* reported when saving */ });
 		await this._runtimeState.load();
+		await this._menus?.load();
 		// 削除の途中に落ちて残った storage.sync の中身を片付ける
 		await this._syncStore.forgetExtensionsExcept(new Set(this._ledger.extensions.map(extension => extension.id)));
 		// 前の起動で写している途中に落ちて残ったフォルダを片付ける
@@ -860,8 +897,9 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._save();
 		await fs.rm(existing.path, { recursive: true, force: true }).catch(() => { /* already gone */ });
 		this._prepared.delete(existing.path);
-		// storage.sync（main が持つ）と、最後に読み込んだ版（入れ直したら install から出す）も消す
+		// storage.sync（main が持つ）と、最後に読み込んだ版（入れ直したら install から出す）、右クリックの項目も消す
 		await this._syncStore.forgetExtension(id);
+		await this._menus?.forgetExtension(id);
 		await this._runtimeState.forgetExtension(id);
 		// IndexedDB・Local Storage・CacheStorage は今あるセッションからすぐ消す。chrome.storage は Chromium が
 		// 終了まで開いたままで、ファイルを消しても中身が残る（Electron 43 で実測）ので、どのセッションも
@@ -941,6 +979,10 @@ export function paradisRegisterBrowserExtensions(
 		setPinned: (viewId, extensionId, pinned) => created.setPinned(viewId, extensionId, pinned),
 		openOptions: (viewId, extensionId) => created.openOptions(viewId, extensionId),
 		onDidRequestPopup: created.onDidRequestPopup,
+		getActionMenu: (viewId, extensionId) => created.getActionMenu(viewId, extensionId),
+		runActionMenuItem: (token, extensionId, key) => created.runActionMenuItem(token, extensionId, key),
+		getCommands: () => created.getCommands(),
+		runCommand: (viewId, extensionId, name) => created.runCommand(viewId, extensionId, name),
 	};
 	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables));
 	return disposables;

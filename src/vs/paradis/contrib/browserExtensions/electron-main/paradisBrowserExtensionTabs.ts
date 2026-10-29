@@ -136,7 +136,7 @@ function matchesGlob(pattern: string, value: string): boolean {
 }
 
 /** Chrome の frameId: タブの一番外のフレームは 0、それ以外は frame tree node の id。 */
-function chromeFrameId(frame: WebFrameMain): number {
+export function paradisChromeFrameId(frame: WebFrameMain): number {
 	return frame.parent ? frame.frameTreeNodeId : 0;
 }
 
@@ -423,8 +423,8 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 
 	private _frameFields(frame: WebFrameMain, withDocument: boolean): Record<string, unknown> {
 		return {
-			frameId: chromeFrameId(frame),
-			parentFrameId: frame.parent ? chromeFrameId(frame.parent) : -1,
+			frameId: paradisChromeFrameId(frame),
+			parentFrameId: frame.parent ? paradisChromeFrameId(frame.parent) : -1,
 			...(withDocument ? { documentId: this._documentId(frame) } : {}),
 			...(frame.parent ? { parentDocumentId: this._documentId(frame.parent) } : {}),
 			frameType: frame.parent ? 'sub_frame' : 'outermost_frame',
@@ -632,6 +632,11 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			this._activeTabGrants.set(tabId, grants);
 		}
 		grants.add(extension.id);
+	}
+
+	/** タブの一番外の文書の id（別の文書へ移ると変わる。右クリックの項目を、移った後に押させないのに使う）。 */
+	topDocumentId(contents: WebContents): string | undefined {
+		return contents.isDestroyed() ? undefined : this._documentId(contents.mainFrame);
 	}
 
 	/** そのセッションの、拡張機能に見せるタブか（タブの id を指定した API の呼び出しを確かめる）。 */
@@ -942,7 +947,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		const session = this._electronSession(caller);
 		const tabs = typeof tabId === 'number' ? this._tabsOf(session).filter(entry => entry.webContents.id === tabId) : this._tabsOf(session);
 		const frames = tabs.flatMap(entry => entry.webContents.mainFrame.framesInSubtree);
-		return frames.find(frame => (frameId === undefined || chromeFrameId(frame) === frameId) && (documentId === undefined || this._documentId(frame) === documentId));
+		return frames.find(frame => (frameId === undefined || paradisChromeFrameId(frame) === frameId) && (documentId === undefined || this._documentId(frame) === documentId));
 	}
 }
 
