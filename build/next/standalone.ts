@@ -16,6 +16,7 @@ const desktopStandaloneFiles = [
 	'vs/base/parts/sandbox/electron-browser/preload.ts',
 	'vs/base/parts/sandbox/electron-browser/preload-aux.ts',
 	'vs/platform/browserView/electron-browser/preload-browserView.ts',
+	'vs/paradis/contrib/browserExtensions/electron-browser/paradisWebStorePreload.ts', // PARA-PATCH: Chrome Web Store page bridge preload (Para Code browser extensions, experimental)
 ];
 
 export async function compileStandaloneFiles(srcDir: string, outDir: string, target: BuildTarget, minify: boolean, sourceMapBaseUrl?: string): Promise<void> {

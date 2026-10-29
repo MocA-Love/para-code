@@ -25,7 +25,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js';
 import { paradisRegisterBrowserLoginImport } from './paradisBrowserLoginImportMain.js';
 import { paradisRegisterBrowserExtensions } from '../../browserExtensions/electron-main/paradisBrowserExtensionsMain.js';
-import { paradisCreateBrowserExtensionActionPopup, paradisCreateBrowserExtensionInstallPrompt, paradisCreateBrowserExtensionNotification, paradisCreateBrowserExtensionPermissionPrompt, paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionSavePathChooser, paradisCreateBrowserExtensionTabEnvironment, paradisWorkAreaFor } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
+import { paradisCreateBrowserExtensionActionPopup, paradisCreateBrowserExtensionInstallPrompt, paradisCreateBrowserExtensionNotification, paradisCreateBrowserExtensionPermissionPrompt, paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionRemovePrompt, paradisCreateBrowserExtensionSavePathChooser, paradisCreateBrowserExtensionTabEnvironment, paradisWorkAreaFor } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
 import { IDialogMainService } from '../../../../platform/dialogs/electron-main/dialogMainService.js';
 import { paradisRenameDownloadInPlace } from '../../browserDownloads/electron-main/paradisBrowserDownloadsCore.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
@@ -178,6 +178,7 @@ export function paradisRegisterBrowserProfiles(
 				chooseSavePath: paradisCreateBrowserExtensionSavePathChooser(dialogMainService),
 				renameDownload: paradisRenameDownloadInPlace,
 				askInstall: paradisCreateBrowserExtensionInstallPrompt(dialogMainService, () => windowsMainService.getLastActiveWindow()?.win ?? undefined),
+				askRemove: paradisCreateBrowserExtensionRemovePrompt(dialogMainService, () => windowsMainService.getLastActiveWindow()?.win ?? undefined),
 			}),
 		);
 	}));
