@@ -153,8 +153,9 @@ suite('ParadisBrowserExtensionApi', () => {
 
 	test('hides Para Code files from web pages even behind a catch-all pattern', () => {
 		const files = ['bg.js', 'paracode-extension-api-token.json', 'paracode-extension-api.js', 'js/paracode-background.js', 'page.html'];
-		assert.deepStrictEqual(paradisWithPrivateFilesHidden({ web_accessible_resources: [{ resources: ['*'], matches: ['<all_urls>'] }, { resources: ['/PARACODE-EXTENSION-API-TOKEN.JSON', 'page.html', '%70aracode-extension-api-token.json', 'paracode-extension-api-token%2Ejson', '%E0%A4%A'], matches: ['<all_urls>'] }, 'legacy.js'] }, files), {
-			web_accessible_resources: [{ resources: ['bg.js', 'page.html'], matches: ['<all_urls>'] }, { resources: ['page.html'], matches: ['<all_urls>'] }, 'legacy.js'],
+		assert.deepStrictEqual(paradisWithPrivateFilesHidden({ web_accessible_resources: [{ resources: ['*'], matches: ['<all_urls>'] }, { resources: ['/PARACODE-EXTENSION-API-TOKEN.JSON', 'page.html', '%70aracode-extension-api-token.json', 'paracode-extension-api-token%2Ejson', '%2570aracode-extension-api-token.json', '%252570aracode-extension-api-token.json', '%E0%A4%A', 'p%61ge.html'], matches: ['<all_urls>'] }, 'legacy.js'] }, files), {
+			// 二重・三重の % でも外し、残すものは元の書き方のまま残す
+			web_accessible_resources: [{ resources: ['bg.js', 'page.html'], matches: ['<all_urls>'] }, { resources: ['page.html', 'p%61ge.html'], matches: ['<all_urls>'] }, 'legacy.js'],
 		});
 	});
 

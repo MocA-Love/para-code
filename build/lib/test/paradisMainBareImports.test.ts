@@ -8,10 +8,10 @@
 import assert from 'assert';
 import * as path from 'path';
 import { suite, test } from 'node:test';
-import { findParadisForbiddenMainImports } from '../paradisMainBareImports.ts';
+import { findParadisForbiddenBareImports } from '../paradisMainBareImports.ts';
 
 suite('Para Code main bundle imports', () => {
-	test('the packaged main statically imports no npm package (they would stop the app before it starts)', { timeout: 120_000 }, async () => {
-		assert.deepStrictEqual(await findParadisForbiddenMainImports(path.join(import.meta.dirname, '..', '..', '..')), []);
+	test('main, mainImpl, cli and bootstrap-fork statically import no npm package (they would stop the app before it starts)', { timeout: 300_000 }, async () => {
+		assert.deepStrictEqual(await findParadisForbiddenBareImports(path.join(import.meta.dirname, '..', '..', '..')), {});
 	});
 });

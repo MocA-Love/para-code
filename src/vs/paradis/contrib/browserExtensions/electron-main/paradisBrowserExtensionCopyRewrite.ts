@@ -104,6 +104,24 @@ function resourcePatternToRegExp(pattern: string): RegExp {
 	return new RegExp(`^${body}$`);
 }
 
+/** % を変わらなくなるまで解く（解けない形なら undefined）。 */
+function fullyDecoded(value: string): string | undefined {
+	let current = value;
+	for (let round = 0; round < 16; round++) {
+		let next: string;
+		try {
+			next = decodeURIComponent(current);
+		} catch {
+			return undefined;
+		}
+		if (next === current) {
+			return current;
+		}
+		current = next;
+	}
+	return undefined;
+}
+
 /** 名前の比べ方（大文字小文字と Unicode の正規化の違いを区別しないディスクがあるため）。 */
 function foldName(name: string): string {
 	return name.normalize('NFD').toLowerCase();
@@ -132,19 +150,21 @@ export function paradisWithPrivateFilesHidden(manifest: Manifest, packageFiles: 
 			if (typeof raw !== 'string') {
 				continue;
 			}
-			// Chromium は宣言の % を解いてからファイルを探す（`%70aracode-…` でも Para Code のファイルを指せる）。
-			// 解いてから比べる。解けない宣言は Chromium でも何も指さないので落とす
-			let resource: string;
-			try {
-				resource = decodeURIComponent(raw);
-			} catch {
+			// Chromium は宣言の % を解いてからファイルを探し、解いた結果にまた % があれば、そこでも解かれうる
+			// （`%2570aracode-…` でも Para Code のファイルを指せる）。変わらなくなるまで解いてから比べ、残す
+			// ときは元の書き方のまま残す。解けない宣言は Chromium でも何も指さないので落とす
+			const resource = fullyDecoded(raw);
+			if (resource === undefined) {
 				continue;
 			}
-			const matched = /[*?]/.test(resource) ? packageFiles.filter(file => resourcePatternToRegExp(resource).test(file)) : [resource.replace(/^\/+/, '')];
-			for (const file of matched) {
-				if (!paradisIsPrivateExtensionFile(file)) {
-					next.add(file);
+			if (/[*?]/.test(resource)) {
+				for (const file of packageFiles.filter(candidate => resourcePatternToRegExp(resource).test(candidate))) {
+					if (!paradisIsPrivateExtensionFile(file)) {
+						next.add(file);
+					}
 				}
+			} else if (!paradisIsPrivateExtensionFile(resource.replace(/^\/+/, ''))) {
+				next.add(raw);
 			}
 		}
 		return [...next];
