@@ -51,6 +51,7 @@ import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './par
 import { IParadisDialogPageMiss, ParadisDialogPageResult, paradisGetBindingErrorMessage, paradisGetPaneQuickPickState } from './paradisDialogPageResolver.js';
 import { resolveDialogPageModel, resolveToolbarPageModel } from './paradisDialogPageModelResolver.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 
 const CATEGORY = localize2('paradis.category', "Para Code");
 
@@ -220,6 +221,7 @@ class ParadisShareBrowserPageWithTerminalPaneAction extends Action2 {
 		const quickInputService = accessor.get(IQuickInputService);
 		const notificationService = accessor.get(INotificationService);
 		const bindingModel = accessor.get(IParadisAgentBrowserBindingModel);
+		const browserExtensionsService = accessor.get(IParadisBrowserExtensionsService);
 
 		const model = getActiveBrowserViewModel(accessor.get(IEditorService));
 		if (!model) {
@@ -252,6 +254,11 @@ class ParadisShareBrowserPageWithTerminalPaneAction extends Action2 {
 			placeHolder: localize('paradis.share.pickTerminal', "Select the terminal pane to share \"{0}\" with", model.title || model.url),
 		});
 		if (!pick) {
+			return;
+		}
+
+		// 拡張機能が入ったタブなら、共有する前に知らせて確かめる（D4）
+		if (!await browserExtensionsService.confirmShare({ kind: 'view', viewId: model.id })) {
 			return;
 		}
 

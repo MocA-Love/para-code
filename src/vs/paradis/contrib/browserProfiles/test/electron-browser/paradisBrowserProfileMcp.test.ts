@@ -27,7 +27,7 @@ function profile(id: string, name: string, extra: Partial<IParadisBrowserProfile
 }
 
 /** `onStats` は main へ数を聞いている間に起きることを差し込む口。 */
-function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgentApprovalOutcome, slotAvailable = true, onStats?: () => void) {
+function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgentApprovalOutcome, slotAvailable = true, onStats?: () => void, shareWarning?: string) {
 	const calls: string[] = [];
 	const registrations: string[] = [];
 	const profilesService = {
@@ -46,7 +46,7 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 	} as unknown as IParadisBrowserProfilesService;
 	const agentTabsService = {
 		resolveTarget: () => ({ ok: true, group: {} as IEditorGroup }),
-		askApproval: async () => { calls.push('ask'); return approval; },
+		askApproval: async (_token: string, request: { readonly detail: readonly string[] }) => { calls.push(shareWarning !== undefined && request.detail.includes(shareWarning) ? 'ask-with-warning' : 'ask'); return approval; },
 		reserveSlot: () => slotAvailable ? toDisposable(() => { }) : undefined,
 		registerAgentTab: (token: string, input: BrowserEditorInput, options?: { readonly approvedProfile?: boolean }) => { registrations.push(`${token}:${input.id}:${options?.approvedProfile === true ? 'approved-profile' : 'own'}`); },
 		bindTab: async () => true,
@@ -61,6 +61,7 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 		new NullLogService(),
 		agentTabsService,
 		{ getKnownBrowserViews: () => new Map() } as unknown as IBrowserViewWorkbenchService,
+		{ getShareWarning: async () => shareWarning },
 	);
 	return { channel, calls, profiles, registrations };
 }
@@ -106,6 +107,18 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 		const busy = createChannel([profile('a3f19c2b7e04', 'PRD')], 'busy');
 		store.add(busy.channel);
 		assert.deepStrictEqual(await busy.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None), { ok: false, reason: 'alreadyPending' });
+	});
+
+	test('asks with the browser extension warning when the profile has extensions enabled, even for its own profile', async () => {
+		const warning = 'extension warning';
+		const channel = createChannel([
+			profile('a3f19c2b7e04', 'PRD'),
+			profile('b1c2d3e4f506', 'TEST', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-a') }),
+		], 'denied', true, undefined, warning);
+		store.add(channel.channel);
+		const user = await channel.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+		const own = await channel.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'TEST'], CancellationToken.None);
+		assert.deepStrictEqual([user, own, channel.calls], [{ ok: false, reason: 'denied' }, { ok: false, reason: 'denied' }, ['ask-with-warning', 'ask-with-warning']]);
 	});
 
 	// ユーザーのプロファイルのタブは、ユーザーが共有を止めたら台帳から外れる印付きで載る（M22）。

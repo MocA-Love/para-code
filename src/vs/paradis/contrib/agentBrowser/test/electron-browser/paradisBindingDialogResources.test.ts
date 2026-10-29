@@ -22,6 +22,7 @@ import { ParadisBindingDialog } from '../../electron-browser/paradisBindingDialo
 import { ParadisBindingDialogDevicePollLease, ParadisBindingDialogPaneListResources, ParadisBindingDialogTabController } from '../../electron-browser/paradisBindingDialogResources.js';
 import { IParadisPaneBinding } from '../../common/paradisAgentBrowser.js';
 import { IParadisBrowserExtensionsService } from '../../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
+import { timeout } from '../../../../../base/common/async.js';
 
 suite('ParadisBindingDialogDevicePollLease', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -94,7 +95,7 @@ suite('ParadisBindingDialogPaneListResources', () => {
 		assert.deepStrictEqual(disposed, [1, 1, 1, 1, 1, 1, 1, 1, 1]);
 	});
 
-	test('keeps only the current pane-row wiring across partial, full, and disposed renders', () => {
+	test('keeps only the current pane-row wiring across partial, full, and disposed renders', async () => {
 		setParadisHoveredPaneInstanceId(undefined);
 		const root = document.createElement('div');
 		document.body.appendChild(root);
@@ -148,6 +149,8 @@ suite('ParadisBindingDialogPaneListResources', () => {
 			upcastPartial<IParadisAgentBrowserTabsService>({ revokeApprovedProfileTab: () => { } }),
 			upcastPartial<IParadisBrowserExtensionsService>({ getShareWarning: async () => undefined }),
 		);
+		// 拡張機能の知らせの答えが返るまで共有のスイッチは押せないので、返るのを待つ
+		await timeout(0);
 		const hoverEvents: (number | undefined)[] = [];
 		const hoverListener = onDidChangeParadisHoveredPane(instanceId => hoverEvents.push(instanceId));
 
@@ -208,7 +211,7 @@ suite('ParadisBindingDialog several pages shared with one pane', () => {
 
 	// ページ B のダイアログで、ページ A を共有中のペインの行は「付け替え」ではなく「追加」として出す。
 	// 左の「ページ」一覧の数字は、そのページを共有しているペインの数
-	test('a pane sharing another page offers to add this page, and the page list counts every pane sharing each page', () => {
+	test('a pane sharing another page offers to add this page, and the page list counts every pane sharing each page', async () => {
 		const root = document.createElement('div');
 		document.body.appendChild(root);
 		const binding = (token: string, pageId: string, title: string, additional?: true): IParadisPaneBinding => ({
@@ -250,6 +253,8 @@ suite('ParadisBindingDialog several pages shared with one pane', () => {
 			upcastPartial<IParadisAgentBrowserTabsService>({ revokeApprovedProfileTab: () => { } }),
 			upcastPartial<IParadisBrowserExtensionsService>({ getShareWarning: async () => undefined }),
 		);
+		// 拡張機能の知らせの答えが返るまで共有のスイッチは押せないので、返るのを待つ
+		await timeout(0);
 		try {
 			const rows = [...root.querySelectorAll<HTMLElement>('.pbd-pane-row')].map(row => ({
 				sub: row.querySelector('.pbd-row-sub')?.textContent,
@@ -272,6 +277,61 @@ suite('ParadisBindingDialog several pages shared with one pane', () => {
 				calls: ['bind:pane-one'],
 			});
 			assert.ok(rows[1].sub?.endsWith('ほかに 1 ページを共有中'), rows[1].sub);
+		} finally {
+			dialog.dispose();
+			root.remove();
+		}
+	});
+});
+
+suite('ParadisBindingDialog browser extension warning', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	// 拡張機能の知らせ（D4）の答えが返るまで、共有のスイッチは押せない。押されても答えを待ち、知らせがあれば見せるだけ
+	test('keeps the share switch disabled until the extension warning is known and shows it', async () => {
+		const root = document.createElement('div');
+		document.body.appendChild(root);
+		const pane: IParadisPaneDescriptor = { instanceId: 1, token: 'pane-one', title: 'pane-one', agentKind: 'claude', mcpConnected: true, binding: undefined, bindEligibility: { eligible: true } };
+		const calls: string[] = [];
+		let answer: (warning: string | undefined) => void = () => { };
+		const dialog = new ParadisBindingDialog(
+			upcastPartial<IBrowserViewModel>({ id: 'page-a', title: 'Page A', url: 'https://page-a.test', favicon: undefined, onDidChangeTitle: VSCodeEvent.None, onDidChangeSharingState: VSCodeEvent.None }),
+			undefined,
+			upcastPartial<IParadisAgentBrowserBindingModel>({
+				onDidChange: VSCodeEvent.None,
+				bindings: [],
+				getPanes: () => [pane],
+				getPanesForPage: () => [pane],
+				getBindingsForPage: () => [],
+				getBindingsForToken: () => [],
+				getAgentTabsForToken: () => [],
+				getAgentTabOwnersForPage: () => [],
+				refresh: async () => { },
+				bindPageToPane: async (_model: IBrowserViewModel, token: string) => { calls.push(`bind:${token}`); return true; },
+				getMcpConfigStatus: () => new Promise<never>(() => { }),
+			}),
+			upcastPartial<ILayoutService>({ activeContainer: root }),
+			upcastPartial<IClipboardService>({ writeText: async () => { } }),
+			upcastPartial<IParadisMobileCanvasModel>({ onDidChange: VSCodeEvent.None, snapshot: { devices: [], attachments: [] }, loading: false, beginPolling: () => toDisposable(() => { }) }),
+			upcastPartial<IParadisTerminalScopeService>({ getStateKeyForInstance: () => undefined }),
+			upcastPartial<IParadisAgentBrowserTabsService>({ revokeApprovedProfileTab: () => { } }),
+			upcastPartial<IParadisBrowserExtensionsService>({ getShareWarning: () => new Promise<string | undefined>(resolve => answer = resolve) }),
+		);
+		try {
+			const before = root.querySelector<HTMLInputElement>('.pbd-switch')!;
+			const disabledBefore = before.disabled;
+			// キー操作などで押されたことにする: 答えを待ち、知らせがあるので今回は共有しない
+			before.checked = true;
+			before.dispatchEvent(new Event('change'));
+			answer('extension warning');
+			await timeout(0);
+			const after = root.querySelector<HTMLInputElement>('.pbd-switch')!;
+			assert.deepStrictEqual({
+				disabledBefore,
+				disabledAfter: after.disabled,
+				warning: root.querySelector('.pbd-extension-warning')?.textContent,
+				calls,
+			}, { disabledBefore: true, disabledAfter: false, warning: 'extension warning', calls: [] });
 		} finally {
 			dialog.dispose();
 			root.remove();

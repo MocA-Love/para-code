@@ -1216,9 +1216,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 	/** 選ばれたタブ、または承認されなかった理由を返す。 */
 	private async _askForPage(token: string, reason: string | undefined, primary: BrowserEditorInput, candidates: readonly BrowserEditorInput[], cancellation: CancellationToken): Promise<BrowserEditorInput | Exclude<ParadisAgentApprovalOutcome, ParadisAgentApprovalChoice>> {
-		// ページの中身を読み書きできる拡張機能が入っていれば知らせる（D4）。main への問い合わせが遅くても
-		// 承認を待たせすぎないよう、1 秒で諦める
-		const extensionWarning = await raceTimeout(this._browserExtensionsService.getShareWarning(primary.id), 1_000);
+		// ページの中身を読み書きできる拡張機能が入っていれば知らせる（D4）。確かめられないときも知らせる側に倒す
+		const extensionWarning = await this._browserExtensionsService.getShareWarning({ kind: 'view', viewId: primary.id });
 		const detail = [
 			reason ? localize('paradis.agentTabs.request.reason', "エージェントが書いた理由: {0}", reason) : undefined,
 			localize('paradis.agentTabs.request.page', "共有するページ: {0}", this._pageLabel(primary)),
@@ -1239,7 +1238,12 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		}
 
 		type Item = IQuickPickItem & { readonly input: BrowserEditorInput };
-		const items: Item[] = candidates.map(input => ({ label: this._displayTitle(input), description: input.url, input }));
+		// 別のページを選ぶときも、候補ごとに拡張機能の知らせを出す（D4）
+		const warnings = await Promise.all(candidates.map(input => this._browserExtensionsService.getShareWarning({ kind: 'view', viewId: input.id })));
+		if (cancellation.isCancellationRequested) {
+			return 'cancelled';
+		}
+		const items: Item[] = candidates.map((input, index) => ({ label: this._displayTitle(input), description: input.url, detail: warnings[index], input }));
 		const picked = await this._quickInputService.pick(items, {
 			title: localize('paradis.agentTabs.request.pickTitle', "エージェントに共有するページ"),
 			placeHolder: localize('paradis.agentTabs.request.pickPlaceholder', "共有するページを選んでください（Esc で拒否）"),

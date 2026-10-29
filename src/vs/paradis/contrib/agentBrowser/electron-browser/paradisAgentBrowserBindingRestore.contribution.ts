@@ -40,6 +40,7 @@ import {
 } from '../common/paradisBindingRestoreController.js';
 import { IParadisBrowserScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, paradisEvaluateBindingScopeEligibility } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
+import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 
 const LEDGER_STORAGE_KEY = 'paradis.agentBrowser.restoreBindings';
 
@@ -65,6 +66,7 @@ export class ParadisAgentBrowserBindingRestoreContribution extends Disposable im
 		@IRemoteAgentService remoteAgentService: IRemoteAgentService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisBrowserExtensionsService private readonly browserExtensionsService: IParadisBrowserExtensionsService,
 	) {
 		super();
 		this._controller = this._register(new ParadisBindingRestoreController({
@@ -183,6 +185,12 @@ export class ParadisAgentBrowserBindingRestoreContribution extends Disposable im
 			const eligibility = this.bindingModel.getBindEligibility(model, token);
 			if (!eligibility.eligible) {
 				return eligibility.reason === 'pending' ? 'retry' : 'skipped';
+			}
+			// 拡張機能が入ったタブ（確かめられないときを含む）は、戻すまとめての確認では知らせを見せられないので
+			// 自動では戻さない（D4）。利用者がもう一度共有すれば、共有の画面で知らせを見られる
+			if (await this.browserExtensionsService.getShareWarning({ kind: 'view', viewId: model.id }) !== undefined) {
+				this.notificationService.info(localize('paradis.restoreBindings.extensions', "拡張機能が入ったタブ「{0}」の共有は戻しませんでした。拡張機能が入力した値はエージェントからも読めるため、続けて使う場合は、もう一度共有してください。", this._describe(pageId, token).page));
+				return 'skipped';
 			}
 			const bound = await this.bindingModel.bindPageToPane(model, token);
 			this.logService.info(`[ParadisAgentBrowserBindingRestore] ${bound ? 'restored' : 'did not restore (declined)'} a browser share after restart`);
