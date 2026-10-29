@@ -44,7 +44,18 @@ suite('paradisCodexAutoContinueWindow', () => {
 			historyOnly: paradisCodexComposerState(screen([['› hello there', 'd'], ['$ ']])),
 			// コマンドを打ち始めると印が `/` に変わる（0.164 から）。確かめられないので送らない
 			slash: paradisCodexComposerState(screen([['/ model'], ...footer])),
-		}, { placeholder: 'empty', draft: 'text', multiLineDraft: 'text', historyOnly: 'unknown', slash: 'unknown' });
+			// 書きかけの先頭が空行（`\n\nfoo`。実画面では印の行の後に空行、その下に本文）
+			leadingBlankDraft: paradisCodexComposerState(screen([['›'], [''], ['  foo'], [''], ['  fake-model default · /workspace']])),
+			// 大きな貼り付けと画像の札（実画面では薄くない）。薄く描かれても書きかけとみなす
+			pastedContent: paradisCodexComposerState(screen([['› [Pasted Content 1500 chars]'], [''], ['  fake-model default · /workspace']])),
+			dimPastedContent: paradisCodexComposerState(screen([['› [Pasted Content 1500 chars]', '  ddddddddddddddddddddddddddd'], ...footer])),
+			dimImage: paradisCodexComposerState(screen([['› [Image #1]', '  dddddddddd'], ...footer])),
+			// 案内の行との間に空行が無い（形が違う）ときは、案内の行も入力欄として見る（送らない側へ倒す）
+			footerAdjacent: paradisCodexComposerState(screen([['› Ask Codex to do anything', '  ddd ddddd dd dd dddddddd'], ['  gpt-6 · ~/repo']])),
+		}, {
+			placeholder: 'empty', draft: 'text', multiLineDraft: 'text', historyOnly: 'unknown', slash: 'unknown',
+			leadingBlankDraft: 'text', pastedContent: 'text', dimPastedContent: 'text', dimImage: 'text', footerAdjacent: 'text',
+		});
 	});
 
 	test('counts keystrokes and pastes as input, but not the reports the terminal sends by itself', () => {

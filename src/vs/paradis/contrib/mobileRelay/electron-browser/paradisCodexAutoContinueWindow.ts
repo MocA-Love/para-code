@@ -49,15 +49,23 @@ const COMPOSER_MARKER = '›';
 /** 入力欄を探す、画面の下からの行数。 */
 const COMPOSER_SEARCH_LINES = 40;
 
+/** 入力欄の中の、貼り付け・画像の札（Codex が文の代わりに出す。薄く描かれても書きかけとみなす）。 */
+const COMPOSER_ATTACHMENT = /\[(?:Pasted Content\b|Image #\d)/;
+
 /**
- * Codex の入力欄が空か。下から、印 `›` が薄く（dim）ない行を入力欄とみなし、その行から空行までの文字がすべて薄い
- * （入力欄の案内の文）なら空、薄くない文字があれば書きかけ。入力欄が見つからなければ確かめられない（unknown）。
+ * Codex の入力欄が空か。下から、印 `›` が薄く（dim）ない行を入力欄の始まりとみなす。入力欄の終わりは、画面の下端の
+ * 案内の行のまとまり（空行の後の、下端まで続く文字のある行）の手前。その範囲（書きかけの途中の空行も含む）の文字が
+ * すべて薄い（入力欄の案内の文）なら空、薄くない文字か貼り付け・画像の札があれば書きかけ。入力欄が見つからなければ
+ * 確かめられない（unknown）。
  *
  * Codex 0.165.0 の画面（偽の API サーバーで動かし、xterm で描いて確かめた。2026-10-29）: 空の入力欄は `› Ask Codex to do
- * anything` で、印は薄くなく案内の文は薄い。打った文は薄くない。会話の履歴に残った利用者の発言の行は、印のほうが薄い。
+ * anything` で、印は薄くなく案内の文は薄い。打った文・貼り付けの札（`[Pasted Content 1500 chars]`）・画像の札
+ * （`[Image #1]`）は薄くない。会話の履歴に残った利用者の発言の行は、印のほうが薄い。入力欄の下は空行 1 行と、モデル名・
+ * `? for shortcuts` の案内の行（薄くない）。書きかけの途中の空行は入力欄の中にそのまま出る。
  */
 export function paradisCodexComposerState(buffer: IParadisComposerBuffer): 'empty' | 'text' | 'unknown' {
 	const bottom = buffer.length - 1;
+	const textOf = (y: number) => buffer.getLine(y)?.translateToString(true) ?? '';
 	for (let y = bottom; y >= Math.max(0, bottom - COMPOSER_SEARCH_LINES); y--) {
 		const line = buffer.getLine(y);
 		if (line === undefined) {
@@ -72,10 +80,23 @@ export function paradisCodexComposerState(buffer: IParadisComposerBuffer): 'empt
 		if (marker === undefined || marker.isDim() !== 0) {
 			continue; // 履歴の発言の行
 		}
-		for (let row = y; row <= bottom; row++) {
+		// 入力欄の終わり: 下端の案内の行のまとまりと、その上の空行を除く（無ければ下端まで）
+		let last = bottom;
+		while (last > y && textOf(last).trim().length === 0) {
+			last--;
+		}
+		let footerTop = last;
+		while (footerTop > y && textOf(footerTop - 1).trim().length > 0) {
+			footerTop--;
+		}
+		const end = footerTop > y + 1 && textOf(footerTop - 1).trim().length === 0 ? footerTop - 2 : last;
+		for (let row = y; row <= end; row++) {
 			const current = row === y ? line : buffer.getLine(row);
-			if (current === undefined || (row > y && current.translateToString(true).trim().length === 0)) {
-				break;
+			if (current === undefined) {
+				continue;
+			}
+			if (COMPOSER_ATTACHMENT.test(current.translateToString(true))) {
+				return 'text';
 			}
 			for (let x = row === y ? start + 1 : 0; x < current.length; x++) {
 				const cell = current.getCell(x);
