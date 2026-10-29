@@ -29,9 +29,9 @@ suite('paradisExtensionNavigationGuard', () => {
 		let notified = 0;
 		let now = 0;
 		const guard = (held: boolean) => paradisSetExtensionNavigationGuard(contents as unknown as ParadisGuardedWebContents, held, { schedule: callback => scheduled.push(callback), onBlocked: () => notified++, now: () => now });
-		const cancellable = (event: string, url: string) => {
+		const cancellable = (event: string, url: string, isMainFrame = true) => {
 			let prevented = false;
-			contents.emit(event, { url, preventDefault: () => { prevented = true; } });
+			contents.emit(event, { url, isMainFrame, preventDefault: () => { prevented = true; } });
 			return prevented;
 		};
 		const started = (url: string, isSameDocument = false, isMainFrame = true) => {
@@ -56,6 +56,9 @@ suite('paradisExtensionNavigationGuard', () => {
 		];
 		const notifiedWhileHeld = notified;
 		now = 10_000;
+		// An extension's in-page iframe is cancelled without telling the user.
+		const iframeCancelled = cancellable('will-frame-navigate', EXTENSION_PAGE, false);
+		const notifiedForIframe = notified;
 		cancellable('will-frame-navigate', EXTENSION_PAGE);
 		const notifiedAfterInterval = notified;
 		contents.emit('did-redirect-navigation', { url: EXTENSION_PAGE });
@@ -64,9 +67,10 @@ suite('paradisExtensionNavigationGuard', () => {
 		contents.destroyed = false;
 		guard(false);
 		const afterRelease = [cancellable('will-frame-navigate', EXTENSION_PAGE), started(EXTENSION_PAGE)];
-		assert.deepStrictEqual({ beforeHeld, whileHeld, notified: [notifiedWhileHeld, notifiedAfterInterval], afterRelease, stops: contents.stops, listeners: contents.listenerCount('will-frame-navigate') }, {
+		assert.deepStrictEqual({ beforeHeld, whileHeld, iframe: [iframeCancelled, notifiedForIframe], notified: [notifiedWhileHeld, notifiedAfterInterval], afterRelease, stops: contents.stops, listeners: contents.listenerCount('will-frame-navigate') }, {
 			beforeHeld: [false, 0],
 			whileHeld: [true, false, true, 1, 0, 0, 0],
+			iframe: [true, 1],
 			// Notified once for the burst, and again once the interval has passed.
 			notified: [1, 2],
 			afterRelease: [false, 0],
@@ -102,6 +106,54 @@ suite('paradisExtensionNavigationGuard', () => {
 			childPrevented: true,
 			blocked: ['child', 'opener'],
 			strangerStops: 0,
+		});
+	});
+	test('lets go of a new tab the agent never received, when its opener is released or after the grace period, and of the tabs it opened', () => {
+		const timers: Array<{ callback: () => void; cancelled: boolean }> = [];
+		const startTimer = (callback: () => void) => {
+			const timer = { callback, cancelled: false };
+			timers.push(timer);
+			return () => { timer.cancelled = true; };
+		};
+		const fire = () => timers.splice(0).forEach(timer => { if (!timer.cancelled) { timer.callback(); } });
+		const options = { startTimer, schedule: () => { } };
+		const guarded = (contents: FakeWebContents) => paradisDeniesExtensionWindowOpen(contents, EXTENSION_PAGE);
+
+		// 1. The opener is released before the agent ever received the child (or the grandchild it opened).
+		const opener = new FakeWebContents();
+		const child = new FakeWebContents();
+		const grandchild = new FakeWebContents();
+		paradisSetExtensionNavigationGuard(opener as unknown as ParadisGuardedWebContents, true, options);
+		paradisGuardChildWebContents(child as unknown as ParadisGuardedWebContents, opener, options);
+		paradisGuardChildWebContents(grandchild as unknown as ParadisGuardedWebContents, child, options);
+		const beforeRelease = [guarded(child), guarded(grandchild)];
+		paradisSetExtensionNavigationGuard(opener as unknown as ParadisGuardedWebContents, false, options);
+		const afterOpenerRelease = [guarded(opener), guarded(child), guarded(grandchild)];
+		timers.length = 0;
+
+		// 2. The grace period passes without the agent receiving the child.
+		const opener2 = new FakeWebContents();
+		const late = new FakeWebContents();
+		paradisSetExtensionNavigationGuard(opener2 as unknown as ParadisGuardedWebContents, true, options);
+		paradisGuardChildWebContents(late as unknown as ParadisGuardedWebContents, opener2, options);
+		fire();
+		const afterGrace = [guarded(opener2), guarded(late)];
+
+		// 3. The agent receives the child in time: it stays guarded until the child itself is released.
+		const granted = new FakeWebContents();
+		paradisGuardChildWebContents(granted as unknown as ParadisGuardedWebContents, opener2, options);
+		paradisSetExtensionNavigationGuard(granted as unknown as ParadisGuardedWebContents, true, options);
+		fire();
+		paradisSetExtensionNavigationGuard(opener2 as unknown as ParadisGuardedWebContents, false, options);
+		const grantedAfter = guarded(granted);
+		paradisSetExtensionNavigationGuard(granted as unknown as ParadisGuardedWebContents, false, options);
+
+		assert.deepStrictEqual({ beforeRelease, afterOpenerRelease, afterGrace, grantedAfter, grantedReleased: guarded(granted) }, {
+			beforeRelease: [true, true],
+			afterOpenerRelease: [false, false, false],
+			afterGrace: [true, false],
+			grantedAfter: true,
+			grantedReleased: false,
 		});
 	});
 });
