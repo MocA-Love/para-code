@@ -21,7 +21,6 @@
 
 import { randomBytes } from 'crypto';
 import type { Session, ServiceWorkerMain } from 'electron';
-import { z } from 'zod';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import {
 	IParadisExtensionApiEvent,
@@ -65,17 +64,19 @@ export interface IParadisExtensionApiNamespace {
 	readonly events: readonly string[];
 }
 
-/** 引数のタプルを zod で確かめてから関数へ渡す。 */
-export function paradisDefineExtensionMethod<Params extends z.ZodType<unknown[]>>(params: Params, handle: (caller: IParadisExtensionApiCaller, ...args: z.output<Params>) => unknown): IParadisExtensionApiMethod {
+/**
+ * 引数のタプルを確かめてから関数へ渡す。`check` は形が正しければタプルを、違えば undefined を返す。
+ * main では npm のパッケージ（zod など）を静的に読まない。配布版の main の束は npm を外に残し、ESM が
+ * 本体より先に解決しようとして起動前に止まるため（paracode-68 と同じ事故）。
+ */
+export function paradisDefineExtensionMethod<T extends unknown[]>(check: (args: readonly unknown[]) => T | undefined, handle: (caller: IParadisExtensionApiCaller, ...args: T) => unknown): IParadisExtensionApiMethod {
 	return {
 		invoke: (caller, rawArgs) => {
-			const parsed = params.safeParse(rawArgs);
-			if (!parsed.success) {
-				const issue = parsed.error.issues[0];
-				const where = issue?.path.length ? ` at ${issue.path.join('.')}` : '';
-				throw new ParadisExtensionApiError(`Invalid arguments${where}: ${issue?.message ?? ''}`);
+			const args = check(rawArgs);
+			if (args === undefined) {
+				throw new ParadisExtensionApiError('Invalid arguments');
 			}
-			return handle(caller, ...parsed.data);
+			return handle(caller, ...args);
 		},
 	};
 }
@@ -138,21 +139,35 @@ export interface IParadisExtensionEventTarget {
 	readonly exceptConnection?: string;
 }
 
-const MAX_BODY_BYTES = 64 * 1024 * 1024;
+// 1 回の呼び出しの本文の上限（storage.sync は 100 KB まで。大きな本文を送らせて main に読ませない）
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_QUEUED_EVENTS = 100;
 const QUEUED_EVENT_TTL_MS = 30_000;
 const MAX_PAGE_CONNECTIONS = 200;
 
-const requestSchema = z.discriminatedUnion('type', [
-	z.object({ type: z.literal('call'), namespace: z.string(), method: z.string(), args: z.array(z.unknown()) }),
-	z.object({ type: z.literal('listen'), namespace: z.string(), event: z.string(), active: z.boolean() }),
-]);
+type ParsedRequest =
+	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[] }
+	| { readonly type: 'listen'; readonly namespace: string; readonly event: string; readonly active: boolean };
 
-const bodySchema = z.object({
-	token: z.string(),
-	connection: z.string().regex(/^(worker|page-[A-Za-z0-9-]{1,64})$/),
-	request: z.unknown().optional(),
-});
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** 呼び出しの形を確かめる（違えば undefined）。 */
+function parseRequest(value: unknown): ParsedRequest | undefined {
+	if (!isRecord(value) || typeof value.namespace !== 'string') {
+		return undefined;
+	}
+	if (value.type === 'call' && typeof value.method === 'string' && Array.isArray(value.args)) {
+		return { type: 'call', namespace: value.namespace, method: value.method, args: value.args };
+	}
+	if (value.type === 'listen' && typeof value.event === 'string' && typeof value.active === 'boolean') {
+		return { type: 'listen', namespace: value.namespace, event: value.event, active: value.active };
+	}
+	return undefined;
+}
+
+const CONNECTION_PATTERN = /^(worker|page-[A-Za-z0-9-]{1,64})$/;
 
 function eventKey(namespace: string, event: string): string {
 	return `${namespace}.${event}`;
@@ -424,34 +439,43 @@ export class ParadisExtensionApiHost implements IDisposable {
 		if (!extension || extensionId === undefined) {
 			return refuse(403);
 		}
+		// トークンと文脈の名前は URL にある。本文を読む前に確かめる
+		let url: URL;
+		try {
+			url = new URL(request.url);
+		} catch {
+			return refuse(400);
+		}
+		const token = url.searchParams.get('t');
+		const connection = url.searchParams.get('c');
+		if (token === null || this._tokens.get(extensionId) !== token || this._states.get(state.session) !== state) {
+			return refuse(403);
+		}
+		if (connection === null || !CONNECTION_PATTERN.test(connection)) {
+			return refuse(400);
+		}
+		const headers = { 'access-control-allow-origin': chromeExtensionOrigin(extensionId), 'cache-control': 'no-store' };
+		const contexts = this._contextsFor(state, extensionId);
+		const fromWorker = connection === 'worker';
+		const endpoint = `${url.protocol}//${url.host}${url.pathname}`.replace(/\/$/, '');
+		if (endpoint === PARADIS_EXTENSION_API_EVENTS_URL) {
+			return this._openEventStream(contexts, connection, headers);
+		}
+		if (endpoint !== PARADIS_EXTENSION_API_CALL_URL) {
+			return refuse(404);
+		}
 		const text = await this._readBounded(request);
 		if (text === undefined) {
 			return refuse(413);
 		}
-		let body: z.infer<typeof bodySchema>;
+		let rawRequest: unknown;
 		try {
-			const parsed = bodySchema.safeParse(paradisDecodeExtensionWire(text));
-			if (!parsed.success) {
-				return refuse(400);
-			}
-			body = parsed.data;
+			const body = paradisDecodeExtensionWire(text);
+			rawRequest = isRecord(body) ? body.request : undefined;
 		} catch {
 			return refuse(400);
 		}
-		if (this._tokens.get(extensionId) !== body.token || this._states.get(state.session) !== state) {
-			return refuse(403);
-		}
-		const headers = { 'access-control-allow-origin': chromeExtensionOrigin(extensionId), 'cache-control': 'no-store' };
-		const contexts = this._contextsFor(state, extensionId);
-		const fromWorker = body.connection === 'worker';
-		const url = request.url.replace(/\/$/, '');
-		if (url === PARADIS_EXTENSION_API_EVENTS_URL) {
-			return this._openEventStream(contexts, body.connection, headers);
-		}
-		if (url !== PARADIS_EXTENSION_API_CALL_URL) {
-			return refuse(404);
-		}
-		const caller: IParadisExtensionApiCaller = { extension, session: state.session, place: state.place, connection: body.connection, fromWorker };
+		const caller: IParadisExtensionApiCaller = { extension, session: state.session, place: state.place, connection, fromWorker };
 		// 呼び出しが開いている間だけ worker を生かしておく
 		let task: { end(): void } | undefined;
 		try {
@@ -460,7 +484,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 			task = undefined;
 		}
 		try {
-			const reply = await this._invoke(caller, contexts, body.request);
+			const reply = await this._invoke(caller, contexts, rawRequest);
 			return new Response(paradisEncodeExtensionWire(reply), { headers: { ...headers, 'content-type': 'application/json' } });
 		} finally {
 			task?.end();
@@ -542,11 +566,10 @@ export class ParadisExtensionApiHost implements IDisposable {
 
 	private async _invoke(caller: IParadisExtensionApiCaller, contexts: IExtensionContexts, rawRequest: unknown): Promise<ParadisExtensionApiReply> {
 		try {
-			const parsed = requestSchema.safeParse(rawRequest);
-			if (!parsed.success) {
+			const request = parseRequest(rawRequest);
+			if (!request) {
 				throw new ParadisExtensionApiError('Malformed extension API request');
 			}
-			const request = parsed.data;
 			const namespace = this._namespaces.get(request.namespace);
 			if (!namespace) {
 				throw new ParadisExtensionApiError(`chrome.${request.namespace} is not available`);

@@ -44,11 +44,17 @@ export type ParadisExtensionApiRequest =
 	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[] }
 	| { readonly type: 'listen'; readonly namespace: string; readonly event: string; readonly active: boolean };
 
-/** POST の本文。`connection` は文脈ごとの名前（worker は 'worker'、ページはページごとの乱数）。 */
+/**
+ * POST の本文。トークン（`t`）と文脈の名前（`c`。worker は 'worker'、ページはページごとの乱数）は URL の
+ * 問い合わせに書く（main が本文を読む前に確かめられるように）。
+ */
 export interface IParadisExtensionApiRequestBody {
-	readonly token: string;
-	readonly connection: string;
 	readonly request?: ParadisExtensionApiRequest;
+}
+
+/** 呼び出し先の URL（トークンと文脈の名前を付けたもの）。 */
+export function paradisExtensionApiUrl(endpoint: string, token: string, connection: string): string {
+	return `${endpoint}?t=${encodeURIComponent(token)}&c=${encodeURIComponent(connection)}`;
 }
 
 /** 呼び出しの答え。 */

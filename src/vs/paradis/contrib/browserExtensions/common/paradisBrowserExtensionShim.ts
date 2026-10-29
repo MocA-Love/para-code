@@ -601,8 +601,9 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 		.then(response => response.ok ? response.json() : undefined)
 		.then((value: unknown) => isRecord(value) && typeof value.token === 'string' ? value.token : undefined)
 		.catch(() => undefined);
-	// text/plain: 単純な要求にして、CORS の事前確認の往復を省く
-	const post = (url: string, body: unknown): Promise<Response> => nativeFetch(url, {
+	// text/plain: 単純な要求にして、CORS の事前確認の往復を省く。トークンと文脈の名前は URL に書く（main が
+	// 本文を読む前に確かめる）
+	const post = (endpoint: string, token: string, body: unknown): Promise<Response> => nativeFetch(`${endpoint}?t=${encodeURIComponent(token)}&c=${encodeURIComponent(connection)}`, {
 		method: 'POST',
 		cache: 'no-store',
 		headers: { 'content-type': 'text/plain' },
@@ -614,7 +615,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 			return FAILED;
 		}
 		try {
-			const reply = decode(await (await post(options.callUrl, { token, connection, request })).text());
+			const reply = decode(await (await post(options.callUrl, token, { request })).text());
 			return isReply(reply) ? reply : FAILED;
 		} catch {
 			return FAILED;
@@ -671,7 +672,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 		while (token !== undefined) {
 			let response: Response | undefined;
 			try {
-				response = await post(options.eventsUrl, { token, connection });
+				response = await post(options.eventsUrl, token, {});
 			} catch {
 				response = undefined;
 			}

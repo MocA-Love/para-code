@@ -260,6 +260,9 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 			// 共有の確認で知らせる対象（入力欄に値を入れられる・ページの中身を読める）
 			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.touchesPages', "ページの中身を読み書きできます。このタブを共有すると、拡張機能が入力した値はエージェントからも読めます");
 		}
+		if (extension.pagesWithoutApis?.length) {
+			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.pagesWithoutApis', "UTF-8 でないため、次のページでは Para Code が足す機能（chrome.storage.sync など）が使えません: {0}", extension.pagesWithoutApis.join('、'));
+		}
 		if (extension.loadError) {
 			dom.append(info, $('.pbe-row-error')).textContent = localize('paradis.browserExtensions.loadError', "読み込めませんでした: {0}", extension.loadError);
 		}

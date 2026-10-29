@@ -18,11 +18,12 @@ import {
 	PARADIS_EXTENSION_API_SCHEME,
 	paradisDecodeExtensionWire,
 	paradisEncodeExtensionWire,
+	paradisExtensionApiUrl,
 } from '../../common/paradisBrowserExtensionApiWire.js';
 import { PARADIS_SHIM_STORAGE_SYNC_NAMESPACE } from '../../common/paradisBrowserExtensionShim.js';
 import { paradisBrowserExtensionShimSource } from '../../common/paradisBrowserExtensionShimSource.js';
 import { ParadisApiSession, ParadisExtensionApiHost } from '../../electron-main/paradisBrowserExtensionApiHost.js';
-import { paradisInjectShimIntoHtml, paradisPrepareExtensionCopy, paradisRewriteManifestForShim, paradisWithApiConnectSource, paradisWithPrivateFilesHidden } from '../../electron-main/paradisBrowserExtensionCopyRewrite.js';
+import { paradisInjectShimIntoHtml, paradisPrepareExtensionCopy, paradisReadableHtml, paradisRewriteManifestForShim, paradisWithApiConnectSource, paradisWithPrivateFilesHidden } from '../../electron-main/paradisBrowserExtensionCopyRewrite.js';
 import { paradisDecideRuntimeLifecycleEvents } from '../../electron-main/paradisBrowserExtensionRuntime.js';
 import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from '../../electron-main/paradisBrowserExtensionStorageApis.js';
 import { paradisPlanExtensionCopy } from '../../electron-main/paradisBrowserExtensionsMain.js';
@@ -43,8 +44,9 @@ function fakeSession(extensionIds: readonly string[]) {
 		} as unknown as ParadisApiSession['extensions'],
 		serviceWorkers: { startWorkerForScope: async () => { throw new Error('none'); }, getWorkerFromVersionID: () => undefined, on: () => undefined, removeListener: () => undefined } as unknown as ParadisApiSession['serviceWorkers'],
 	};
-	const send = async (url: string, initiator: string, body: unknown): Promise<Response> => {
-		const request = new Request(url, { method: 'POST', body: paradisEncodeExtensionWire(body) });
+	/** 詰め物と同じ形で送る（トークンと文脈の名前は URL、呼び出しは本文）。 */
+	const send = async (url: string, initiator: string, body: { readonly token: string; readonly connection: string; readonly request?: unknown }, rawBody?: string): Promise<Response> => {
+		const request = new Request(paradisExtensionApiUrl(url, body.token, body.connection), { method: 'POST', body: rawBody ?? paradisEncodeExtensionWire({ request: body.request }) });
 		Object.defineProperty(request, 'initiatorOrigin', { value: initiator });
 		return handler!(request);
 	};
@@ -105,7 +107,7 @@ suite('ParadisBrowserExtensionApi', () => {
 				if (url.endsWith('token.json')) {
 					return { ok: true, json: async () => ({ token: 'secret' }) };
 				}
-				if (url === PARADIS_EXTENSION_API_EVENTS_URL) {
+				if (url.startsWith(PARADIS_EXTENSION_API_EVENTS_URL)) {
 					return { ok: false };
 				}
 				return { ok: true, text: async () => paradisEncodeExtensionWire({ ok: true, value: { a: 1 } }) };
@@ -116,15 +118,15 @@ suite('ParadisBrowserExtensionApi', () => {
 		run(context);
 		const sync = chrome.storage.sync as { get(key: string): Promise<unknown> };
 		const value = await sync.get('a');
-		const call = requests.find(request => request.url === PARADIS_EXTENSION_API_CALL_URL);
+		const call = requests.find(request => request.url.startsWith(PARADIS_EXTENSION_API_CALL_URL));
 		assert.deepStrictEqual({
 			onInstalled: typeof (chrome.runtime.onInstalled as { addListener?: unknown }).addListener,
 			value,
-			call: call?.body,
+			call,
 		}, {
 			onInstalled: 'function',
 			value: { a: 1 },
-			call: { token: 'secret', connection: 'worker', request: { type: 'call', namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, method: 'get', args: ['a'] } },
+			call: { url: paradisExtensionApiUrl(PARADIS_EXTENSION_API_CALL_URL, 'secret', 'worker'), body: { request: { type: 'call', namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, method: 'get', args: ['a'] } } },
 		});
 	});
 
@@ -151,7 +153,7 @@ suite('ParadisBrowserExtensionApi', () => {
 
 	test('hides Para Code files from web pages even behind a catch-all pattern', () => {
 		const files = ['bg.js', 'paracode-extension-api-token.json', 'paracode-extension-api.js', 'js/paracode-background.js', 'page.html'];
-		assert.deepStrictEqual(paradisWithPrivateFilesHidden({ web_accessible_resources: [{ resources: ['*'], matches: ['<all_urls>'] }, { resources: ['/PARACODE-EXTENSION-API-TOKEN.JSON', 'page.html'], matches: ['<all_urls>'] }, 'legacy.js'] }, files), {
+		assert.deepStrictEqual(paradisWithPrivateFilesHidden({ web_accessible_resources: [{ resources: ['*'], matches: ['<all_urls>'] }, { resources: ['/PARACODE-EXTENSION-API-TOKEN.JSON', 'page.html', '%70aracode-extension-api-token.json', 'paracode-extension-api-token%2Ejson', '%E0%A4%A'], matches: ['<all_urls>'] }, 'legacy.js'] }, files), {
 			web_accessible_resources: [{ resources: ['bg.js', 'page.html'], matches: ['<all_urls>'] }, { resources: ['page.html'], matches: ['<all_urls>'] }, 'legacy.js'],
 		});
 	});
@@ -163,12 +165,19 @@ suite('ParadisBrowserExtensionApi', () => {
 			paradisInjectShimIntoHtml('<html><head><title>x</title></head><body></body></html>'),
 			paradisInjectShimIntoHtml('<p>bare</p>'),
 			paradisInjectShimIntoHtml(paradisInjectShimIntoHtml('<script></script>')),
+			paradisInjectShimIntoHtml('<!-- <script src="old.js"></script> --><head></head><script src="a.js"></script>'),
 		], [
 			`<html><head>${tag}<SCRIPT src="a.js"></SCRIPT></head></html>`,
 			`<html><head><title>x</title>${tag}</head><body></body></html>`,
 			`${tag}<p>bare</p>`,
 			`${tag}<script></script>`,
+			`<!-- <script src="old.js"></script> --><head></head>${tag}<script src="a.js"></script>`,
 		]);
+		assert.deepStrictEqual([
+			paradisReadableHtml(new TextEncoder().encode('<meta charset="utf-8"><p>ok</p>')),
+			paradisReadableHtml(new Uint8Array([0x3c, 0x70, 0x3e, 0x82, 0xa0])),
+			paradisReadableHtml(new TextEncoder().encode('<meta charset="Shift_JIS"><p>x</p>')),
+		], ['<meta charset="utf-8"><p>ok</p>', undefined, undefined]);
 	});
 
 	test('prepares a copy from its original manifest every run, and leaves Manifest V2 alone', async () => {
@@ -249,6 +258,16 @@ suite('ParadisBrowserExtensionApi', () => {
 				events,
 				quota: await json(call({ type: 'call', namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, method: 'set', args: [{ big: 'x'.repeat(9000) }] })),
 				unknown: await json(call({ type: 'call', namespace: 'tabs', method: 'query', args: [] })),
+				// トークンが違えば本文を読まずに断る（大きな本文でも 403）。正しいトークンで大きすぎれば 413
+				hugeWithWrongToken: (await send(PARADIS_EXTENSION_API_CALL_URL, origin, { token: 'guess', connection: 'worker' }, 'x'.repeat(3 * 1024 * 1024))).status,
+				hugeWithToken: (await send(PARADIS_EXTENSION_API_CALL_URL, origin, { token, connection: 'worker' }, 'x'.repeat(3 * 1024 * 1024))).status,
+				// __proto__ などの鍵も、ただの項目として持つ
+				proto: [
+					await json(call({ type: 'call', namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, method: 'set', args: [JSON.parse('{"__proto__":{"polluted":1},"constructor":2}')] })),
+					await json(call({ type: 'call', namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, method: 'get', args: [['__proto__', 'constructor']] })),
+					({} as { polluted?: unknown }).polluted,
+				],
+				badArgs: await json(call({ type: 'call', namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, method: 'set', args: ['not items'] })),
 			}, {
 				webPage: 403,
 				otherExtension: 403,
@@ -258,6 +277,14 @@ suite('ParadisBrowserExtensionApi', () => {
 				events: [{ namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, event: 'onChanged', args: [{ theme: { newValue: 'dark' } }] }],
 				quota: { ok: false, error: 'QUOTA_BYTES_PER_ITEM quota exceeded' },
 				unknown: { ok: false, error: 'chrome.tabs is not available' },
+				hugeWithWrongToken: 403,
+				hugeWithToken: 413,
+				proto: [
+					{ ok: true, value: JSON.parse('{"__proto__":{"newValue":{"polluted":1}},"constructor":{"newValue":2}}') },
+					{ ok: true, value: JSON.parse('{"__proto__":{"polluted":1},"constructor":2}') },
+					undefined,
+				],
+				badArgs: { ok: false, error: 'Invalid arguments' },
 			});
 		} finally {
 			attached.dispose();
@@ -298,6 +325,23 @@ suite('ParadisBrowserExtensionApi', () => {
 			attached.forEach(disposable => disposable.dispose());
 			host.dispose();
 			await store.flush();
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('does not write back the sync items of an extension removed while a write was pending', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-extension-sync-forget-'));
+		try {
+			const store = new ParadisBrowserExtensionSyncStore(root, silentLog);
+			store.write('default', ID, { a: 1 });
+			const removing = store.forgetExtension(ID);
+			// 削除と同時に走った書き込み（storage.sync.set の途中など）
+			store.write('default', ID, { a: 2 });
+			await removing;
+			await store.flush();
+			const exists = await fs.stat(join(root, 'default', `${ID}.json`)).then(() => true, () => false);
+			assert.deepStrictEqual({ exists, read: await store.read('default', ID) }, { exists: false, read: Object.create(null) });
+		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}
 	});
