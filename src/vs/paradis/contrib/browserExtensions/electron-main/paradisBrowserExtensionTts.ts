@@ -74,6 +74,9 @@ interface IPending {
 	started?: boolean;
 }
 
+/** 順番待ちの 1 回（speak・stop）の期限。過ぎたら面を閉じて作り直す。 */
+const OPERATION_TIMEOUT_MS = 10_000;
+
 /** 待っている読み上げが無くなってから、読み上げの面を閉じるまで。 */
 const IDLE_CLOSE_MS = 30_000;
 
@@ -200,7 +203,25 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 	}
 
 	private _serialized<T>(run: () => Promise<T>): Promise<T> {
-		const next = this._queue.then(run, run);
+		// 1 回ごとに期限を付ける。面が答えなくなったら（描く側が固まったなど）、閉じて作り直し、後ろの順番待ちを止めない
+		const limited = (): Promise<T> => new Promise<T>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				for (const [id, entry] of [...this._pending]) {
+					this._pending.delete(id);
+					this._emit(entry, 'error', { errorMessage: 'The speech engine did not answer' });
+				}
+				this._close();
+				reject(new ParadisExtensionApiError('The speech engine did not answer'));
+			}, OPERATION_TIMEOUT_MS);
+			run().then(value => {
+				clearTimeout(timer);
+				resolve(value);
+			}, error => {
+				clearTimeout(timer);
+				reject(error);
+			});
+		});
+		const next = this._queue.then(limited, limited);
 		this._queue = next.catch(() => undefined);
 		return next;
 	}

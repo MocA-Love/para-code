@@ -136,6 +136,8 @@ export class ParadisBrowserExtensionUserScripts {
 	private readonly _pending = new Map<string, IPendingMessage>();
 	private readonly _ports = new Map<string, IPort>();
 	private readonly _attached = new WeakSet<object>();
+	/** ユーザースクリプトを入れたことのあるタブ（後からエージェントのタブと分かったら読み込み直す）。 */
+	private readonly _injected = new WeakSet<WebContents>();
 	/** 拡張機能のフォルダ・js の file → 中身（注入の問いは同期で答えるので、先に読んでおく）。 */
 	private readonly _files = new Map<string, string>();
 	private readonly _warming = new Set<string>();
@@ -227,6 +229,19 @@ export class ParadisBrowserExtensionUserScripts {
 		}
 		this._closeFor(port => port.extensionId === extensionId, NO_RECEIVER);
 		await this._save();
+	}
+
+	/**
+	 * タブがエージェントのものだと後から分かった（3 秒の待ちの後に知らせが届いた）: そのタブにユーザースクリプトを入れていたら、
+	 * ポートを切って読み込み直す（入れたスクリプトを残さない。読み込み直した文書には、エージェントのタブなので入れない）。
+	 */
+	noteAgentTab(contents: WebContents): void {
+		if (!this._injected.has(contents) || contents.isDestroyed()) {
+			return;
+		}
+		this._injected.delete(contents);
+		this._closeFor(port => port.contents === contents, NO_RECEIVER);
+		contents.reload();
 	}
 
 	/** これから作られるすべての WebContents に受け手を立てる（同期の問いは受け手が無いと renderer が止まる）。 */
@@ -391,7 +406,11 @@ export class ParadisBrowserExtensionUserScripts {
 				});
 			}
 		}
-		return scripts.length > 0 ? { worlds: [...worlds.values()], scripts } : undefined;
+		if (scripts.length === 0) {
+			return undefined;
+		}
+		this._injected.add(contents);
+		return { worlds: [...worlds.values()], scripts };
 	}
 
 	/**

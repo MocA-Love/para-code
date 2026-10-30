@@ -9,6 +9,8 @@
 // chrome.userScripts（P9b）の、main と詰め物が共に使う決まり（形の確かめ・保存の形・上限）。Electron に無いので Para Code が作る。
 // 形と文は Chromium の user_scripts の API（extensions/browser/api/user_scripts）に合わせる。
 
+import { paradisIsChromeWebStoreUrl } from './paradisBrowserExtensionWebStore.js';
+
 /** preload との約束（../electron-browser/paradisUserScriptsPreload.ts と同じ名前。テストが一致を確かめる）。 */
 export const PARADIS_USER_SCRIPTS_QUERY = 'paradis:userScriptsQuery';
 export const PARADIS_USER_SCRIPTS_RECHECK = 'paradis:userScriptsRecheck';
@@ -401,9 +403,5 @@ export function paradisIsUserScriptTargetUrl(rawUrl: string): boolean {
 	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
 		return false;
 	}
-	const host = url.hostname.toLowerCase();
-	if (host === 'chromewebstore.google.com' || (host === 'chrome.google.com' && (url.pathname === '/webstore' || url.pathname.startsWith('/webstore/')))) {
-		return false;
-	}
-	return url.origin !== 'null';
+	return !paradisIsChromeWebStoreUrl(rawUrl) && url.origin !== 'null';
 }
