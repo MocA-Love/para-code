@@ -13,6 +13,30 @@ import { ParadisCdpUpstreamPortPin, readBoundedText } from '../../electron-main/
 suite('ParadisCdpUpstreamPortPin', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('pins the configured port without a DevToolsActivePort file', async () => {
+		const pin = new ParadisCdpUpstreamPortPin({
+			userDataPath: '/tmp/profile',
+			readConfiguredPort: () => 41_002,
+			readPortFile: async () => { throw new Error('must not read a stale port file'); },
+			fetchTargetIds: async port => port === 41_002 ? ['own-window'] : [],
+			ownsTargetId: targetId => targetId === 'own-window',
+			timeoutMs: 0,
+		});
+		assert.strictEqual(await pin.pin(), 41_002);
+	});
+
+	test('does not pin a foreign configured endpoint or fall back to a stale file', async () => {
+		const pin = new ParadisCdpUpstreamPortPin({
+			userDataPath: '/tmp/profile',
+			readConfiguredPort: () => 41_002,
+			readPortFile: async () => 41_999,
+			fetchTargetIds: async port => port === 41_999 ? ['own-window'] : ['foreign-window'],
+			ownsTargetId: targetId => targetId === 'own-window',
+			timeoutMs: 0,
+		});
+		assert.strictEqual(await pin.pin(), undefined);
+	});
+
 	test('pins the port whose targets belong to this process', async () => {
 		const pin = new ParadisCdpUpstreamPortPin({
 			userDataPath: '/tmp/profile',
