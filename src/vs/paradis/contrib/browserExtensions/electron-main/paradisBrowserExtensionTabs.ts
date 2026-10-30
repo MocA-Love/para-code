@@ -171,6 +171,11 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	private readonly _onDidResetTab = this._disposables.add(new Emitter<number>());
 	/** タブが別の文書へ移った・閉じた（WebContents の id）。タブごとのボタンの値を消すのに使う。 */
 	readonly onDidResetTab = this._onDidResetTab.event;
+	private readonly _onDidChangeActiveTab = this._disposables.add(new Emitter<number>());
+	/** そのウィンドウの前のタブ（拡張機能に見せるもの）が替わった（ウィンドウの id）。 */
+	readonly onDidChangeActiveTab = this._onDidChangeActiveTab.event;
+	/** 一番外のフレームで、文書の替わる移動が始まったことのあるタブ（見始めた時から）。 */
+	private readonly _navigationStarted = new WeakSet<WebContents>();
 	private readonly _onDidBecomeAgentTab = this._disposables.add(new Emitter<WebContents>());
 	/** タブがエージェントのものだと分かった（エージェントが開いた・エージェントのタブから開いた。知らせが遅れて届いたときも）。 */
 	readonly onDidBecomeAgentTab = this._onDidBecomeAgentTab.event;
@@ -403,6 +408,11 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		on('page-favicon-updated', ((_event: unknown, favicons: string[]) => updated((_extension, canSee) => canSee && favicons[0] ? { favIconUrl: favicons[0] } : undefined)) as never);
 		on('audio-state-changed', ((event: { audible: boolean }) => updated(() => ({ audible: event.audible }))) as never);
 		this._observeNavigation(view, disposables, userTab);
+		on('did-start-navigation', ((details: { isMainFrame?: boolean; isSameDocument?: boolean }) => {
+			if (details.isMainFrame !== false && details.isSameDocument !== true) {
+				this._navigationStarted.add(contents);
+			}
+		}) as never);
 		disposables.add(view.onDidChangeVisibility(visible => {
 			if (!visible || !userTab()) {
 				return;
@@ -411,6 +421,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 				return;
 			}
 			this._activeByWindow.set(view.windowId, contents.id);
+			this._onDidChangeActiveTab.fire(view.windowId);
 			this._emitPerExtension(contents.session, 'tabs', 'onActivated', () => [{ tabId: contents.id, windowId: view.windowId }]);
 		}));
 		disposables.add(Event.once(view.onDidClose)(() => {
@@ -419,6 +430,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			this._observed.delete(view.id);
 			if (this._activeByWindow.get(view.windowId) === contents.id) {
 				this._activeByWindow.delete(view.windowId);
+				this._onDidChangeActiveTab.fire(view.windowId);
 			}
 			if (wasAnnounced && !view.isAgentTab() && this._sessions.has(contents.session)) {
 				this._emitPerExtension(contents.session, 'tabs', 'onRemoved', () => [contents.id, { windowId: view.windowId, isWindowClosing: false }]);
@@ -625,6 +637,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		}
 		if (this._activeByWindow.get(view.windowId) !== contents.id) {
 			this._activeByWindow.set(view.windowId, contents.id);
+			this._onDidChangeActiveTab.fire(view.windowId);
 			if (this._sessions.has(contents.session)) {
 				this._emitPerExtension(contents.session, 'tabs', 'onActivated', () => [{ tabId: contents.id, windowId: view.windowId }]);
 			}
@@ -758,6 +771,33 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	 * 拡張機能に見せる利用者のタブ（エディタのタブ）か。エージェントのタブ、エージェントのものかがまだ分からない新しいタブ
 	 * （知らせる前）、拡張機能の窓は含めない（ユーザースクリプトを入れてよいかに使う）。
 	 */
+	/** 見始めてから、一番外のフレームで文書の替わる移動が始まったか（新しいタブの置き換えは、始まっていたらしない）。 */
+	hasStartedNavigation(contents: WebContents): boolean {
+		return this._navigationStarted.has(contents);
+	}
+
+	/** 今のウィンドウ（tabs.query の currentWindow と同じ）。 */
+	currentWindowId(): number | undefined {
+		return this._currentWindowId();
+	}
+
+	/** そのウィンドウで見えているタブ（エージェントのタブ・知らせる前のタブも含む）。 */
+	visibleViewsIn(windowId: number): IParadisTabView[] {
+		return this._environment.listViews().filter(view => view.windowId === windowId && !view.webContents.isDestroyed() && view.isVisible());
+	}
+
+	/** 呼び出し元に見せるタブ（そのセッションの、知らせ済みの利用者のタブ。窓のポップアップは除く）。 */
+	userViewOf(caller: IParadisExtensionApiCaller, tabId: number): IParadisTabView | undefined {
+		return this._findTab(this._electronSession(caller), tabId)?.view;
+	}
+
+	/** そのウィンドウの前のタブ（拡張機能に見せる利用者のタブ。無ければ undefined）。 */
+	activeTabOf(windowId: number): IParadisTabView | undefined {
+		const tabId = this._activeByWindow.get(windowId);
+		const view = tabId !== undefined ? this._environment.listViews().find(candidate => candidate.webContents.id === tabId) : undefined;
+		return view && !view.webContents.isDestroyed() && this._announced.has(view.id) && this._isUserTab(view) ? view : undefined;
+	}
+
 	isAnnouncedUserTab(contents: WebContents): boolean {
 		return !contents.isDestroyed() && this._findTab(contents.session, contents.id)?.view !== undefined;
 	}
