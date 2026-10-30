@@ -19,6 +19,7 @@ import {
 	paradisLedgerWithPinned,
 	paradisPinnedExtensionIds,
 	paradisNeedsDataClear,
+	paradisNewTabOverrideUrl,
 	paradisParseExtensionsLedger,
 	paradisReadExtensionManifest,
 } from '../../common/paradisBrowserExtensions.js';
@@ -106,6 +107,31 @@ suite('ParadisBrowserExtensions common', () => {
 			// P3 の版で足した行（touchesPages が無い）は、知らせ損ねないよう読み書きできる側に倒す
 			oldLedgerRow: paradisParseExtensionsLedger({ version: 1, extensions: [{ ...extension(A), touchesPages: undefined }], enabled: {}, removed: [] }).extensions[0].touchesPages,
 		}, { contentScripts: true, nativeMessaging: true, scriptingWithHosts: true, activeTab: true, storageOnly: false, hostsOnly: false, debuggerPermission: true, userScripts: true, optionalScripting: true, optionalNative: true, oldLedgerRow: true });
+	});
+
+	test('builds the new tab page only inside the extension', () => {
+		const url = (newtab: unknown) => paradisNewTabOverrideUrl(A, { chrome_url_overrides: { newtab } });
+		assert.deepStrictEqual({
+			plain: url('newtab.html'),
+			leadingSlash: url('/pages/tab.html?x=1#y'),
+			escape: url('../../evil.html'),
+			otherExtension: url(`chrome-extension://${B}/tab.html`),
+			web: url('https://example.com/'),
+			protocolRelative: url('//example.com/x'),
+			empty: url(''),
+			notString: url(1),
+			none: paradisNewTabOverrideUrl(A, { chrome_url_overrides: { history: 'h.html' } }),
+		}, {
+			plain: `chrome-extension://${A}/newtab.html`,
+			leadingSlash: `chrome-extension://${A}/pages/tab.html?x=1#y`,
+			escape: `chrome-extension://${A}/evil.html`,
+			otherExtension: undefined,
+			web: undefined,
+			protocolRelative: `chrome-extension://${A}/example.com/x`,
+			empty: undefined,
+			notString: undefined,
+			none: undefined,
+		});
 	});
 
 	test('reads manifests', () => {

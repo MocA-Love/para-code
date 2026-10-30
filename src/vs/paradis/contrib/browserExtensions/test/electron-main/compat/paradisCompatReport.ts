@@ -65,8 +65,16 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 	}
 	reasons.push(...refusedForms);
 	// 主な働きが Para Code（Electron）に無いもの
-	if ((result.urlOverrides ?? []).length > 0) {
-		return { status: 'ng', reasons: [`新しいタブなどの置き換え（chrome_url_overrides: ${(result.urlOverrides ?? []).join('、')}）に対応していません。拡張機能の主な働きがこれです`] };
+	// 新しいタブの置き換え（P9c）: 内蔵ブラウザの新しいタブだけ。履歴・ブックマークのページは Para Code に無い
+	const unsupportedOverrides = (result.urlOverrides ?? []).filter(page => page !== 'newtab');
+	if (unsupportedOverrides.length > 0) {
+		return { status: 'ng', reasons: [`ページの置き換え（chrome_url_overrides: ${unsupportedOverrides.join('、')}）に対応していません。Para Code に置き換える先のページがありません`] };
+	}
+	const newtabBroken = (result.urlOverrides ?? []).includes('newtab') && (result.newtab !== 'rendered' || result.newtabOverride === false);
+	if ((result.urlOverrides ?? []).includes('newtab')) {
+		reasons.push(newtabBroken
+			? (result.newtabOverride === false ? '内蔵ブラウザの新しいタブを、拡張機能の新しいタブのページに置き換えられませんでした' : `新しいタブのページ（chrome_url_overrides.newtab）が ${result.newtab ?? '開けません'} でした`)
+			: '新しいタブのページ（chrome_url_overrides.newtab）は、内蔵ブラウザの新しいタブで開きます（Para Code のエディタの新しいタブは置き換えません）');
 	}
 	if (missing.includes('desktopCapture') && missing.includes('tabCapture')) {
 		return { status: 'ng', reasons: ['画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）がありません。拡張機能の主な働きがこれです'] };
@@ -121,7 +129,7 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 	if (result.devtoolsPage) {
 		reasons.push('DevTools のパネルは自動では見ていません（手で確かめます）');
 	}
-	const partial = missingMajor.length > 0 || refusedForms.length > 0 || ownErrors.length > 0 || (result.contentScript === 'did not run' && result.contentScriptForTestPage !== false) || apiErrors.length > 0 || userScriptsDidNotRun || blockingDeferred || (result.popup !== 'none' && result.popup !== 'rendered');
+	const partial = missingMajor.length > 0 || refusedForms.length > 0 || ownErrors.length > 0 || (result.contentScript === 'did not run' && result.contentScriptForTestPage !== false) || apiErrors.length > 0 || userScriptsDidNotRun || blockingDeferred || newtabBroken || (result.popup !== 'none' && result.popup !== 'rendered');
 	return { status: partial ? 'partial' : 'ok', reasons: reasons.length > 0 ? reasons : ['読み込み・worker・content script・ポップアップのどれも問題ありませんでした'] };
 }
 
@@ -135,13 +143,13 @@ const FIXED = [
 	['1Password・NordPass', 'ポップアップが <meta> の Content-Security-Policy で接続先を絞っていて、Para Code が足した API の呼び出しが止まっていました', 'ページの <meta> の connect-src にも、Para Code の私用スキームを足すようにしました（manifest の方針には前から足していました）'],
 	['DeepL', 'chrome.tts がありませんでした（P9a）', 'chrome.tts を足しました。OS の読み上げ（Chromium の speechSynthesis）で、拡張機能もウェブのページも入らない、どの窓にも付けない面の中で読みます'],
 	['Tampermonkey・uBlock Origin Lite・AdGuard・Ghostery', 'chrome.userScripts がありませんでした（P9b）', 'chrome.userScripts を足しました。拡張機能の管理で拡張機能ごとに「ユーザースクリプトを許可」をオンにしたときだけ使えます（Chrome と同じく既定はオフ）。入れるのはその場所の利用者のタブだけで、エージェントのタブと、エージェントと共有中のタブには入れません'],
+	['Momentum', '新しいタブの置き換え（chrome_url_overrides.newtab）に対応していませんでした（P9c）', '内蔵ブラウザの新しいタブ（URL の無いタブ）を、その場所で有効な拡張機能の新しいタブのページにするようにしました。Para Code のエディタの新しいタブ、エージェントのタブ、エージェントと共有中のタブは置き換えません'],
 	['Keeper・Ghostery', 'chrome.browsingData がありませんでした（P9a）', 'chrome.browsingData を足しました。消すのは呼び出し元のセッションのウェブのデータだけで、拡張機能のデータ・エージェントのセッション・ほかの場所のデータには触れません。期間の指定と、Para Code に無いデータ（履歴など）は断ります'],
 ];
 
 /** 直していないもの（大きいので別にする）。 */
 const NOT_FIXED = [
 	['サイドパネル（chrome.sidePanel）', 'Bitwarden・Stylus・DeepL・Grammarly', 'Para Code にサイドパネルの置き場がありません。ポップアップなどほかの入り口は動きます'],
-	['新しいタブの置き換え（chrome_url_overrides）', 'Momentum', 'Para Code の新しいタブは内蔵ブラウザのページではありません'],
 	['画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）', 'Loom', 'Electron 43 にありません'],
 	['広告のブロック（declarativeNetRequest）', '広告・プライバシーの 4 つ', 'D7 で後回しにしました'],
 ];

@@ -86,7 +86,7 @@ suite('ParadisBrowserExtensionUserScripts rules', () => {
 			excludedGlob: applies('https://www.example.com/docs/a?private=1'),
 			iframe: applies('https://www.example.com/docs/a', false),
 			glob: [paradisMatchesUserScriptGlob('https://a?c/*', 'https://abc/x'), paradisMatchesUserScriptGlob('https://a?c/*', 'https://abbc/x')],
-			targets: ['https://example.com/', 'http://127.0.0.1/', 'chrome-extension://abc/page.html', 'file:///etc/passwd', 'data:text/html,x', 'https://chromewebstore.google.com/detail/x', 'https://chrome.google.com/webstore/detail/x', 'https://chrome.google.com/search'].map(paradisIsUserScriptTargetUrl),
+			targets: ['https://example.com/', 'http://127.0.0.1/', 'chrome-extension://abc/page.html', 'file:///etc/passwd', 'data:text/html,x', 'https://chromewebstore.google.com/detail/x', 'https://chrome.google.com/webstore/detail/x', 'https://chrome.google.com/search', 'https://chromewebstore.google.com./detail/x', 'https://CHROMEWEBSTORE.google.com/', 'https://chrome.google.com../webstore'].map(paradisIsUserScriptTargetUrl),
 			defaultWorld: paradisEffectiveUserScriptWorld(worlds, undefined),
 			namedWorld: paradisEffectiveUserScriptWorld(worlds, 'w1'),
 			unconfiguredNamedWorld: paradisEffectiveUserScriptWorld(worlds, 'w2'),
@@ -99,7 +99,7 @@ suite('ParadisBrowserExtensionUserScripts rules', () => {
 			excludedGlob: false,
 			iframe: false,
 			glob: [true, false],
-			targets: [true, true, false, false, false, false, false, true],
+			targets: [true, true, false, false, false, false, false, true, false, false, false],
 			defaultWorld: { csp: 'script-src \'unsafe-eval\'', messaging: true },
 			namedWorld: { csp: 'script-src \'self\' \'wasm-unsafe-eval\'; object-src \'self\';', messaging: false },
 			unconfiguredNamedWorld: { csp: 'script-src \'unsafe-eval\'', messaging: true },
@@ -200,6 +200,25 @@ suite('ParadisBrowserExtensionUserScripts main', () => {
 				held: undefined, agentOrUnannounced: undefined, disabled: undefined, store: undefined, permission: 'userScripts', afterDisallow: undefined,
 				state: { allowed: false },
 			});
+		} finally {
+			userScripts.dispose();
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('reloads a tab it injected into when the tab turns out to be an agent tab, and leaves other tabs alone', async () => {
+		const { root, userScripts, contents, call, answer } = await setup();
+		try {
+			let reloads = 0;
+			(contents as unknown as { reload(): void }).reload = () => { reloads++; };
+			const other = { session: (contents as unknown as { session: unknown }).session, id: 8, isDestroyed: () => false, reload: () => { reloads += 100; } } as unknown as WebContents;
+			await userScripts.setAllowed('default', ID, true);
+			await call('register', [{ id: 'a', matches: ['https://site.example/*'], js: [{ code: 'x' }] }]);
+			answer();
+			userScripts.noteAgentTab(other);
+			userScripts.noteAgentTab(contents);
+			userScripts.noteAgentTab(contents);
+			assert.strictEqual(reloads, 1);
 		} finally {
 			userScripts.dispose();
 			await fs.rm(root, { recursive: true, force: true });

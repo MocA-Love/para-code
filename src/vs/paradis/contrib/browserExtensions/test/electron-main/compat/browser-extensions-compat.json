@@ -1073,7 +1073,7 @@
 			"label": "Momentum",
 			"id": "laookkfknpbbblfpciffpaejjkokdgca",
 			"install": "ok",
-			"installMs": 1472,
+			"installMs": 1326,
 			"name": "Momentum",
 			"version": "2.27.9",
 			"manifestVersion": 3,
@@ -1102,8 +1102,12 @@
 			"injected": 0,
 			"devtoolsPage": false,
 			"sidePanel": false,
+			"newtabOverride": true,
 			"popup": "none",
 			"options": "none",
+			"newtab": "rendered",
+			"newtabElements": 52,
+			"newtabErrors": [],
 			"missingApis": [
 				"bookmarks",
 				"sessions",
@@ -1113,7 +1117,6 @@
 				"tabGroups",
 				"search"
 			],
-			"missingApisFrom": "manifest.json",
 			"workerErrors": []
 		},
 		{
