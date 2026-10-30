@@ -3101,4 +3101,9 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
   - 通知のトーストはパネルを隠さない（upstream の `overlayManager.ts` がトースト `notification-toast-container` を前面の表示から外しているのに合わせた）。パネルは右端にあるので、右下のトーストの一部を覆う。内蔵ブラウザのページも同じ
   - 互換性の表: Bitwarden の `side_panel.default_path` は中身の無い `sidepanel-disabled.html`。使うときに `chrome.sidePanel.setOptions` でページを替えて開く（bitwarden/clients の `apps/browser/src/platform/browser/browser-api.ts`）。表を作る道具は、既定のページが空でエラーも無いときは壊れていないとみなし、その旨を理由に書く
   - 入口: 拡張機能のメニューの「サイドパネルを開く」、`openPanelOnActionClick` のときのツールバーのボタン、拡張機能の `sidePanel.open()`
+  - パネルを最後に出したタブが閉じたら、main がパネルを隠す（タブの `onDidClose`。renderer から「隠す」が届かない場合に備える）
+- `chrome.desktopCapture`・`chrome.tabCapture`（P9e、Loom）は安全のため未対応。詰め物（`paradisInstallCapture`）が、manifest にある拡張機能に Chrome と同じ形で失敗を返す API だけを足す（`chooseDesktopMedia` は空の stream id と `runtime.lastError`、`tabCapture.capture` は `null`、`getMediaStreamId` は reject）。入れるのは止めない
+  - 理由（Electron 43.7.7 で実測）: getDisplayMedia と、生の画面 id を渡す `getUserMedia({ chromeMediaSource: 'desktop', chromeMediaSourceId: 'screen:<数字>:0' })` は、どちらも機器の種類の無い `media` の求めとして権限の受け手に届き、区別できない。getUserMedia の方は `setDisplayMediaRequestHandler` も通らない。拡張機能のページに getDisplayMedia を許すと、id を当てるだけで画面全体を撮れる
+  - そのため、拡張機能のページ（`chrome-extension://`）からの、機器の種類の無い `media` と `display-capture` の求めは一切許さない（`src/vs/platform/browserView/common/paradisExtensionDisplayMediaGuard.ts`、`browserSessionPermissions.ts` の `_resolveRequest` に PARA-PATCH 1 行）。upstream の判定のままだと、拡張機能の origin にカメラとマイクを許した後に同じ穴が開く。カメラ・マイク（種類のある `media`）は upstream の判定のまま
+  - 撮る処理の作りかけ（印を構えて getDisplayMedia を 1 つの源に当てる、候補の選び方、途中で止める処理、選ぶダイアログ）は、ブランチ `para/browser-extensions-capture-draft` に残してある。権限を渡さずに映像だけを渡す作りにするかは q.html の Q493
 - エージェントのタブかどうかは、workbench の台帳の知らせ（`paraIsAgentTabOrChild`）を新しいタブで 3 秒待ってから決める。時間の仮定で保証ではない。目印が遅れて届いたタブは、届いた時点で一覧とイベントから外す。`tabs.onCreated` には URL とタイトルを入れない（遅れた目印のタブの URL を最初の知らせで漏らさない）
