@@ -492,7 +492,12 @@ jobs:
     # Skipped for beta tags (macOS-only), otherwise the same platform selection as before.
     needs: classify
     if: ${{ needs.classify.outputs.build_linux == 'true' }}
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: native modules (node-pty, sqlite3, @parcel/watcher, ...) and the
+    # tunnel CLI are compiled against the runner's own glibc, so the image sets the minimum glibc
+    # of the .deb (ubuntu-26.04 makes pty.node need GLIBC_2.42, which Ubuntu 24.04 cannot load).
+    # dpkg 1.23 on 26.04 also breaks Chromium's dpkg-shlibdeps.pl (SymbolFile->new(file =>)
+    # became filename =>), failing prepare-deb. Keep in step with para-reh.yml.
+    runs-on: ubuntu-24.04
     env:
       VSCODE_ARCH: x64
       PARA_UPDATE_CHANNEL: ${{ needs.classify.outputs.channel }}
