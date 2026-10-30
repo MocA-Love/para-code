@@ -76,6 +76,7 @@ import { paradisRegisterBrowsingDataApis } from './paradisBrowserExtensionBrowsi
 import { ParadisBrowserExtensionTts } from './paradisBrowserExtensionTts.js';
 import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { ParadisBrowserExtensionUserScripts } from './paradisBrowserExtensionUserScripts.js';
+import { IParadisSidePanelInfo, IParadisSidePanelLayout, ParadisBrowserExtensionSidePanel } from './paradisBrowserExtensionSidePanel.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IParadisHeldUpdate, IParadisWebStoreUpdate, PARADIS_WEB_STORE_UPDATE_URL, ParadisWebStoreUpdateSchedule, paradisAddedAccess, paradisBuildUpdateRequest, paradisCompareExtensionVersions, paradisHasAddedAccess, paradisParseUpdateResponse } from './paradisBrowserExtensionWebStoreUpdates.js';
 import { IParadisInstallPrompt, ParadisWebStoreFetcher, ParadisWebStoreUpdateRequester, paradisCreateWebStoreUpdateRequester, paradisCreateWebStoreFetcher, paradisDownloadWebStoreCrx, paradisExtractCrxArchive } from './paradisBrowserExtensionWebStore.js';
@@ -400,10 +401,12 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _tts: ParadisBrowserExtensionTts | undefined;
 	/** chrome.userScripts（P9b）。タブの口があるときだけ（入れてよい利用者のタブかを決めるため）。 */
 	private readonly _userScripts: ParadisBrowserExtensionUserScripts | undefined;
+	/** chrome.sidePanel（P9d）。タブの口があるときだけ。 */
+	private readonly _sidePanel: ParadisBrowserExtensionSidePanel | undefined;
 	/** 内蔵ブラウザのタブ（新しいタブのページの置き換え、P9c）。 */
 	private readonly _tabEnvironment: IParadisBrowserExtensionTabsOptions['environment'] | undefined;
-	/** 拡張機能の新しいタブのページにしたタブ（後からエージェントのタブと分かったら外す）。 */
-	private readonly _newTabPages = new WeakSet<object>();
+	/** 拡張機能の新しいタブのページにしたタブと、そのとき開いた URL（後からエージェントのタブと分かったら外す）。 */
+	private readonly _newTabPages = new WeakMap<object, { readonly url: string; readonly entry: number }>(); // url: 置き換えた拡張機能のページの始まり
 	/** ネイティブメッセージング（P6）。 */
 	private readonly _nativeMessaging: ParadisNativeMessaging | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
@@ -533,8 +536,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			// 3 秒の待ちの後にエージェントのタブと分かった: 入れたユーザースクリプトを残さず、拡張機能の新しいタブのページも外す
 			this._disposables.add(tabs.onDidBecomeAgentTab(contents => {
 				this._userScripts?.noteAgentTab(contents);
-				if (this._newTabPages.has(contents) && contents.getURL().startsWith('chrome-extension://')) {
-					this._newTabPages.delete(contents);
+				// 置き換えたページのまま（同じ拡張機能のページで、同じ履歴の位置）のときだけ移す（利用者やエージェントがほかのページ・
+				// ほかの拡張機能のページへ移っていたら触らない）
+				const opened = this._newTabPages.get(contents);
+				this._newTabPages.delete(contents);
+				if (opened !== undefined && contents.getURL().startsWith(opened.url) && contents.navigationHistory.getActiveIndex() === opened.entry) {
 					void contents.loadURL('about:blank').catch(() => undefined);
 				}
 			}));
@@ -586,6 +592,21 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
 			noteUserGesture: (session, extensionId) => permissions?.noteUserGesture(session, extensionId),
 		}, join(_root, 'context-menus.json'), _logService) : undefined;
+		this._sidePanel = tabs && tabsOptions && permissions ? new ParadisBrowserExtensionSidePanel(this._apiHost, tabs, {
+			findView: viewId => tabsOptions.environment.listViews().find(view => view.id === viewId),
+			windowById: windowId => tabsOptions.environment.listWindows().find(window => window.id === windowId && !window.isDestroyed()),
+			sessionOf: contents => this._actionSessionOf(contents.session),
+			hasUserGesture: caller => permissions.hasUserGesture(caller),
+			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
+		}, join(_root, 'side-panel.json'), _logService) : undefined;
+		const sidePanel = this._sidePanel;
+		if (sidePanel && this._actions) {
+			this._actions.setSidePanel({
+				toggle: (view, session, place, extension) => sidePanel.toggleFromAction(view, session, place, extension),
+				has: (view, session, extension) => sidePanel.availableFor(view, session, extension),
+			});
+			this._disposables.add(sidePanel.onDidChange(() => this._actions?.notifyChanged()));
+		}
 		const menus = this._menus;
 		if (menus) {
 			this._disposables.add(paradisSetBrowserExtensionMenuProvider((contents, params) => menus.buildPageMenu(contents, params)));
@@ -607,6 +628,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._tts?.dispose();
 		this._menus?.dispose();
 		this._userScripts?.dispose();
+		this._sidePanel?.dispose();
 		this._tabs?.dispose();
 		this._apiHost.dispose();
 		void this._syncStore.flush();
@@ -698,6 +720,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._permissions?.load();
 		await this._privacy?.load();
 		await this._userScripts?.load();
+		await this._sidePanel?.load();
 		// 削除の途中に落ちて残った storage.sync の中身を片付ける
 		await this._syncStore.forgetExtensionsExcept(new Set(this._ledger.extensions.map(extension => extension.id)));
 		// 前の起動で写している途中に落ちて残ったフォルダを片付ける
@@ -1568,8 +1591,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		const contents = view.webContents;
 		const current = contents.getURL();
 		const place = this._placeOfSession(contents.session);
-		// 開くページが決まっているタブ（リンクから開いた子タブなど、読み込みの途中で URL がまだ無いもの）は置き換えない
-		const untouched = !contents.isLoading() && contents.navigationHistory.length() <= 1;
+		// 開くページが決まっているタブ（リンクから開いた子タブ・エージェントが移したタブなど、読み込みの途中で URL がまだ
+		// 無いもの）は置き換えない。見始めてから一度でも一番外のフレームの移動が始まったタブは、先に始まった移動を勝たせる
+		// （置き換えの後に始まった移動は、Chromium が置き換えの読み込みを取り消すので、そちらが勝つ）
+		const untouched = !contents.isLoading() && contents.navigationHistory.length() <= 1 && !this._tabs?.hasStartedNavigation(contents);
 		if (place === undefined || view.isAgentTab() || paradisIsExtensionPageHeld(contents) || (current !== '' && current !== 'about:blank') || !untouched) {
 			return false;
 		}
@@ -1581,9 +1606,45 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		if (!page?.url) {
 			return false;
 		}
-		this._newTabPages.add(contents);
 		await contents.loadURL(page.url).catch(() => undefined);
+		const committed = contents.isDestroyed() ? undefined : contents.getURL();
+		if (committed === undefined || !committed.startsWith(`chrome-extension://${page.installed.id}/`)) {
+			// ほかの移動が勝った（置き換えは取り消された）
+			return false;
+		}
+		this._newTabPages.set(contents, { url: `chrome-extension://${page.installed.id}/`, entry: contents.navigationHistory.getActiveIndex() });
 		return true;
+	}
+
+	/** そのタブの横に出すサイドパネル（P9d）。 */
+	async getSidePanel(viewId: string): Promise<IParadisSidePanelInfo | undefined> {
+		await this._ready;
+		return typeof viewId === 'string' ? this._sidePanel?.panelFor(viewId) : undefined;
+	}
+
+	/** サイドパネルの場所（undefined なら隠す）。 */
+	async layoutSidePanel(viewId: string, layout: IParadisSidePanelLayout | undefined): Promise<void> {
+		await this._ready;
+		if (typeof viewId === 'string') {
+			this._sidePanel?.layout(viewId, layout);
+		}
+	}
+
+	/** サイドパネルを開く（拡張機能のメニューから）・閉じる（パネルの閉じるボタン）。 */
+	async setSidePanelOpen(viewId: string, extensionId: string, open: boolean): Promise<boolean> {
+		await this._ready;
+		if (typeof viewId !== 'string' || typeof extensionId !== 'string' || !this._sidePanel) {
+			return false;
+		}
+		if (!open) {
+			this._sidePanel.closeFromRenderer(viewId);
+			return true;
+		}
+		try {
+			return this._sidePanel.openFromMenu(viewId, extensionId);
+		} catch {
+			return false;
+		}
 	}
 
 	/** 「ユーザースクリプトを許可」を切り替える（Chrome の拡張機能ごとの設定と同じ。場所ごと）。 */
@@ -1648,6 +1709,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._permissions?.forgetExtension(id);
 		await this._privacy?.forgetExtension(id);
 		await this._userScripts?.forgetExtension(id);
+		await this._sidePanel?.forgetExtension(id);
 		await this._runtimeState.forgetExtension(id);
 		// IndexedDB・Local Storage・CacheStorage は今あるセッションからすぐ消す。chrome.storage は Chromium が
 		// 終了まで開いたままで、ファイルを消しても中身が残る（Electron 43 で実測）ので、どのセッションも
@@ -1729,6 +1791,9 @@ export function paradisRegisterBrowserExtensions(
 		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
 		setUserScriptsAllowed: (id, profile, allowed) => created.setUserScriptsAllowed(id, profile, allowed),
 		openNewTabPage: viewId => created.openNewTabPage(viewId),
+		getSidePanel: viewId => created.getSidePanel(viewId),
+		layoutSidePanel: (viewId, layout) => created.layoutSidePanel(viewId, layout),
+		setSidePanelOpen: (viewId, extensionId, open) => created.setSidePanelOpen(viewId, extensionId, open),
 		remove: id => created.remove(id),
 		getShareExtensions: (viewId, fallbackProfile) => created.getShareExtensions(viewId, fallbackProfile),
 		onDidRequestActivateTab: onDidRequestActivateTab.event,

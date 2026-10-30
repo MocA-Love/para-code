@@ -49,7 +49,7 @@
 			"label": "Bitwarden",
 			"id": "nngceckbapebfimnlniiiahkandclblb",
 			"install": "ok",
-			"installMs": 1323,
+			"installMs": 1735,
 			"name": "Bitwarden Password Manager",
 			"version": "2026.10.1",
 			"manifestVersion": 3,
@@ -81,16 +81,17 @@
 			"injected": 0,
 			"devtoolsPage": false,
 			"sidePanel": true,
+			"sidePanelPath": "sidepanel-disabled.html",
 			"popup": "rendered",
 			"popupElements": 121,
 			"popupErrors": [],
-			"missingApis": [
-				"sidePanel"
-			],
+			"missingApis": [],
 			"options": "none",
+			"newtab": "none",
+			"sidePanelPage": "empty",
+			"sidePanelErrors": [],
 			"workerErrors": [
-				"Uncaught (in promise) Error: Could not establish connection. Receiving end does not exist.",
-				"Error while processing message in RuntimeBackground 'triggerAutofillScriptInjection'. Error: No frame with id 12 in tab with id 4"
+				"Uncaught (in promise) Error: Could not establish connection. Receiving end does not exist."
 			]
 		},
 		{
@@ -550,7 +551,7 @@
 			"label": "Stylus",
 			"id": "clngdbkpkpeebahjckkjfobafhncgmne",
 			"install": "ok",
-			"installMs": 288,
+			"installMs": 298,
 			"name": "Stylus",
 			"version": "2.4.17",
 			"manifestVersion": 3,
@@ -581,10 +582,10 @@
 			"popup": "rendered",
 			"popupElements": 55,
 			"popupErrors": [],
-			"missingApis": [
-				"sidePanel"
-			],
+			"missingApis": [],
 			"options": "none",
+			"newtab": "none",
+			"sidePanelPage": "none",
 			"workerErrors": []
 		},
 		{
@@ -697,7 +698,7 @@
 			"label": "DeepL",
 			"id": "cofdbpoegempjloogbagkncekinflcnj",
 			"install": "ok",
-			"installMs": 2008,
+			"installMs": 1634,
 			"name": "DeepL: translate and write with AI",
 			"version": "1.105.1",
 			"manifestVersion": 3,
@@ -723,15 +724,17 @@
 			"injected": 0,
 			"devtoolsPage": false,
 			"sidePanel": true,
+			"sidePanelPath": "side-panel.html",
 			"popup": "rendered",
 			"popupElements": 190,
 			"popupErrors": [],
-			"missingApis": [
-				"sidePanel"
-			],
+			"missingApis": [],
 			"options": "rendered",
 			"optionsElements": 131,
 			"optionsErrors": [],
+			"newtab": "none",
+			"sidePanelPage": "rendered",
+			"sidePanelErrors": [],
 			"workerErrors": [
 				"Error checking feature flag \"pt-1078_brex_native_messaging_translate\": Error: Failed to initialize Statsig client: Unable to determine Statsig userID: organization_id, account_id, and installation_id are all unavailable",
 				"Error: Cannot find menu item with id dlTranslateFullPage",
@@ -745,7 +748,7 @@
 			"label": "Grammarly",
 			"id": "kbfnbcaeplbcioakkpcpgfkobkghlhen",
 			"install": "ok",
-			"installMs": 1867,
+			"installMs": 1473,
 			"name": "Grammarly: AI Writing Assistant and Grammar Checker App",
 			"version": "14.1343.0",
 			"manifestVersion": 3,
@@ -768,13 +771,15 @@
 			"injected": 0,
 			"devtoolsPage": false,
 			"sidePanel": true,
+			"sidePanelPath": "src/sidePanel.html",
 			"popup": "rendered",
 			"popupElements": 53,
 			"popupErrors": [],
-			"missingApis": [
-				"sidePanel"
-			],
+			"missingApis": [],
 			"options": "none",
+			"newtab": "none",
+			"sidePanelPage": "rendered",
+			"sidePanelErrors": [],
 			"workerErrors": [
 				"grm ERROR [universal.bg.mise.service] ░░ Failed to get Iterable client access token 401:{\"reason\":\"authentication_error\"}\n",
 				"grm ERROR [universal.bg.sideEffects.iterable] ░░ SideEffect getting Iterable client access token failed: bgFirstStart 401:{\"reason\":\"authentication_error\"}\n",

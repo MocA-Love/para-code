@@ -426,6 +426,13 @@ function extensionMenuActions(accessor: ServicesAccessor, editor: BrowserEditor,
 			}
 		}));
 	}
+	if (action.hasSidePanel) {
+		actions.push(new Action('paradis.browserExtensions.item.sidePanel', localize('paradis.browserExtensions.item.sidePanel', "サイドパネルを開く"), undefined, true, async () => {
+			if (!await toolbarService.main.setSidePanelOpen(model.id, action.extensionId, true)) {
+				logService.warn('[paradis] could not open the side panel of a browser extension');
+			}
+		}));
+	}
 	actions.push(new Action('paradis.browserExtensions.item.disable', localize('paradis.browserExtensions.item.disable', "このプロファイルで無効にする"), undefined, true,
 		() => toolbarService.main.setEnabled(action.extensionId, place, false).then(refresh)));
 	actions.push(new Separator());

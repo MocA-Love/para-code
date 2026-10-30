@@ -88,6 +88,8 @@ export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
 	cookies: { permission: 'cookies', methods: ['get', 'getAll', 'set', 'remove', 'getAllCookieStores'], events: ['onChanged'] },
 	downloads: { permission: 'downloads', methods: ['download'], events: ['onCreated', 'onChanged'] },
 	management: { permission: 'management', methods: ['getAll', 'get', 'setEnabled'], events: [] },
+	// P9d。パネルは Para Code のウィンドウの中、内蔵ブラウザのタブの右に出す（main の paradisBrowserExtensionSidePanel.ts）
+	sidePanel: { permission: 'sidePanel', methods: ['setOptions', 'getOptions', 'setPanelBehavior', 'getPanelBehavior', 'getLayout', 'open', 'close'], events: ['onOpened', 'onClosed'] },
 	// P9a。呼び出し元のセッションのウェブのデータだけを消す（main の paradisBrowserExtensionBrowsingData.ts）
 	browsingData: {
 		permission: 'browsingData',

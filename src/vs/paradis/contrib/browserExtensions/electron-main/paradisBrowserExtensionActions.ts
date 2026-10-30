@@ -290,6 +290,8 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 	readonly onDidRequestPopup: Event<IParadisPopupRequest> = this._onDidRequestPopup.event;
 	private _changedTimer: ReturnType<typeof setTimeout> | undefined;
 	private _popup: IOpenPopup | undefined;
+	/** サイドパネル（P9d）。ボタンで開く設定ならポップアップより先に開く・閉じる。 */
+	private _sidePanel: { toggle(view: IParadisTabView, session: ParadisApiSession, place: string, extension: IParadisLoadedExtension): boolean; has(view: IParadisTabView, session: ParadisApiSession, extension: IParadisLoadedExtension): boolean } | undefined;
 	private _lastBlurClose: { readonly session: ParadisApiSession; readonly extensionId: string; readonly at: number } | undefined;
 	private readonly _pendingPopups = new Set<IPendingPopup>();
 	private _nextRequestId = 1;
@@ -499,6 +501,11 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 		return view && !view.webContents.isDestroyed() && !view.isAgentTab() ? view : undefined;
 	}
 
+	/** サイドパネルをつなぐ（拡張機能の管理が、サイドパネルを作った後に呼ぶ）。 */
+	setSidePanel(sidePanel: NonNullable<ParadisBrowserExtensionActions['_sidePanel']>): void {
+		this._sidePanel = sidePanel;
+	}
+
 	async getToolbar(viewId: string): Promise<IParadisBrowserExtensionToolbar | undefined> {
 		const view = this._toolbarView(viewId);
 		const info = view ? this._environment.sessionOf(view.webContents) : undefined;
@@ -525,6 +532,7 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 				hasPopup: details.popup !== '',
 				pinned: pinOrder.includes(extension.id),
 				hasOptionsPage: typeof (manifest.options_ui?.page ?? manifest.options_page) === 'string',
+				hasSidePanel: this._sidePanel?.has(view, info.session, extension) === true,
 			};
 		}));
 		const rank = (action: IParadisToolbarAction) => action.pinned ? pinOrder.indexOf(action.extensionId) : Number.MAX_SAFE_INTEGER;
@@ -606,6 +614,11 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 				return { ok: true };
 			}
 			if (!details.enabled && !popupOnly) {
+				return { ok: true };
+			}
+			// ボタンでサイドパネルを開く設定なら、ポップアップ・onClicked より先（Chromium と同じく activeTab は与えない）
+			if (!popupOnly && this._sidePanel?.toggle(view, session, resolved.place, extension)) {
+				this._environment.noteUserGesture?.(session, extension.id);
 				return { ok: true };
 			}
 			if (!popupOnly) {

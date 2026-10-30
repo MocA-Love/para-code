@@ -210,13 +210,18 @@ suite('ParadisBrowserExtensionUserScripts main', () => {
 		const { root, userScripts, contents, call, answer } = await setup();
 		try {
 			let reloads = 0;
-			(contents as unknown as { reload(): void }).reload = () => { reloads++; };
-			const other = { session: (contents as unknown as { session: unknown }).session, id: 8, isDestroyed: () => false, reload: () => { reloads += 100; } } as unknown as WebContents;
+			let loading = false;
+			Object.assign(contents, { reload: () => { reloads++; }, isLoading: () => loading });
+			const other = { session: (contents as unknown as { session: unknown }).session, id: 8, isDestroyed: () => false, isLoading: () => false, reload: () => { reloads += 100; } } as unknown as WebContents;
 			await userScripts.setAllowed('default', ID, true);
 			await call('register', [{ id: 'a', matches: ['https://site.example/*'], js: [{ code: 'x' }] }]);
 			answer();
 			userScripts.noteAgentTab(other);
 			userScripts.noteAgentTab(contents);
+			userScripts.noteAgentTab(contents);
+			// 次の文書を読んでいる途中なら、読み込み直さない（新しい文書には入れない）
+			answer();
+			loading = true;
 			userScripts.noteAgentTab(contents);
 			assert.strictEqual(reloads, 1);
 		} finally {

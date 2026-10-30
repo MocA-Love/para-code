@@ -223,3 +223,53 @@
 	color: var(--vscode-textLink-activeForeground);
 	text-decoration: underline;
 }
+
+/* The extension side panel (chrome.sidePanel, P9d). main lays a WebContentsView over the area below the header. */
+.browser-container-wrapper > .paradis-side-panel {
+	position: absolute;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	flex-direction: column;
+	border-left: 1px solid var(--vscode-editorGroup-border, var(--vscode-panel-border));
+	background-color: var(--vscode-editor-background);
+	box-sizing: border-box;
+}
+
+.paradis-side-panel > .paradis-side-panel-header {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 0 4px 0 10px;
+	flex: none;
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	border-bottom: 1px solid var(--vscode-editorGroup-border, var(--vscode-panel-border));
+}
+
+.paradis-side-panel .paradis-side-panel-title {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.paradis-side-panel .paradis-side-panel-close {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+}
+
+.paradis-side-panel .paradis-side-panel-close:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
