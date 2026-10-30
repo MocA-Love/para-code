@@ -25,6 +25,7 @@ import {
 } from '../common/browserPermissions.js';
 import { IBrowserViewPermissionRequestEvent, IBrowserViewStorageKeys, isInMemoryStorageScope } from '../common/browserView.js';
 import type { BrowserSession } from './browserSession.js';
+import { paradisIsExtensionDisplayMediaRequest } from '../common/paradisExtensionDisplayMediaGuard.js'; // PARA-PATCH: browser extension pages never capture the screen
 import { paradisInstallWebAuthnAccountChooser } from '../../../paradis/contrib/browserWebAuthn/electron-main/paradisBrowserWebAuthn.js'; // PARA-PATCH: passkey account chooser
 
 /** Time the main process waits for a prompt answer before a non-persisted deny. */
@@ -463,6 +464,9 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 	}
 
 	private async _resolveRequest(webContents: Electron.WebContents | null, permission: string, details: PermissionRequestDetails | undefined): Promise<boolean> {
+		if (paradisIsExtensionDisplayMediaRequest(permission, details?.requestingUrl ?? webContents?.getURL(), mediaKindsFromDetails(details))) { // PARA-PATCH: never let a browser extension page capture the screen
+			return false;
+		}
 		if (isAlwaysAllowedPermission(permission)) {
 			return true;
 		}

@@ -1354,6 +1354,101 @@ export function paradisInstallTts(bridge: IParadisShimBridge, namespace: string)
 	}
 }
 
+/**
+ * chrome.desktopCapture・chrome.tabCapture（P9e）。録画は安全のため Para Code では使えない（拡張機能のページに画面の取得の権限を
+ * 渡すと、Electron 43 では生の画面 id の getUserMedia を区別して断れないため）。manifest にある拡張機能には、Chrome と同じ形で
+ * 失敗を返す API を足す（API が無いと、起動のときに落ちる拡張機能がある）。
+ */
+export function paradisInstallCapture(): void {
+	type ApiObject = Record<string, unknown>;
+	type Callable = (...args: unknown[]) => unknown;
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown; browser?: unknown };
+	const chromeApi = root.chrome;
+	const runtime = isObject(chromeApi) && isObject(chromeApi.runtime) ? chromeApi.runtime : undefined;
+	if (!isObject(chromeApi) || !runtime) {
+		return;
+	}
+	let manifest: unknown;
+	try {
+		manifest = isCallable(runtime.getManifest) ? runtime.getManifest.call(runtime) : undefined;
+	} catch {
+		manifest = undefined;
+	}
+	const declared = isObject(manifest) ? [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []) : [];
+	const message = 'Para Code does not support screen and tab capture in browser extensions';
+	const fail = (callback: unknown, ...values: unknown[]): unknown => {
+		if (!isCallable(callback)) {
+			return Promise.reject(new Error(message));
+		}
+		queueMicrotask(() => {
+			let defined = false;
+			try {
+				Object.defineProperty(runtime, 'lastError', { configurable: true, enumerable: true, get: () => ({ message }) });
+				defined = true;
+			} catch {
+				// 置き換えられない lastError
+			}
+			try {
+				callback(...values);
+			} finally {
+				if (defined) {
+					try {
+						delete runtime.lastError;
+					} catch {
+						// 消せない
+					}
+				}
+			}
+		});
+		return undefined;
+	};
+	const last = (input: unknown[]) => input.length > 0 && isCallable(input[input.length - 1]) ? input[input.length - 1] : undefined;
+	const inertEvent = { addListener: () => { }, removeListener: () => { }, hasListener: () => false, hasListeners: () => false };
+	const targets = isObject(root.browser) && root.browser !== chromeApi ? [chromeApi, root.browser] : [chromeApi];
+	const define = (name: string, value: ApiObject) => {
+		for (const target of targets) {
+			try {
+				Object.defineProperty(target, name, { value, configurable: true, enumerable: true, writable: true });
+			} catch {
+				// 凍った物は触らない
+			}
+		}
+	};
+	if (declared.includes('desktopCapture')) {
+		let nextId = 0;
+		define('desktopCapture', {
+			// Chrome は取り消しと同じく、空の stream id で答える
+			chooseDesktopMedia: (...input: unknown[]) => {
+				nextId += 1;
+				fail(last(input), '', { canRequestAudioTrack: false });
+				return nextId;
+			},
+			cancelChooseDesktopMedia: () => { },
+			DesktopCaptureSourceType: { SCREEN: 'screen', WINDOW: 'window', TAB: 'tab', AUDIO: 'audio' },
+		});
+	}
+	if (declared.includes('tabCapture')) {
+		define('tabCapture', {
+			capture: (_options: unknown, callback: unknown) => {
+				fail(isCallable(callback) ? callback : () => { }, null);
+			},
+			getMediaStreamId: (...input: unknown[]) => fail(last(input)),
+			getCapturedTabs: (...input: unknown[]) => {
+				const callback = last(input);
+				if (isCallable(callback)) {
+					queueMicrotask(() => callback([]));
+					return undefined;
+				}
+				return Promise.resolve([]);
+			},
+			onStatusChanged: inertEvent,
+			TabCaptureState: { PENDING: 'pending', ACTIVE: 'active', STOPPED: 'stopped', ERROR: 'error' },
+		});
+	}
+}
+
 /** main だけが使う、chrome.privacy の名前空間（chrome には出さない）。main の登録と同じ名前。 */
 export const PARADIS_SHIM_PRIVACY_NAMESPACE = 'paradisPrivacy';
 
@@ -1991,6 +2086,7 @@ export interface IParadisShimOptions {
 	readonly ttsNamespace: string;
 	readonly installUserScripts: typeof paradisInstallUserScripts;
 	readonly userScriptsNamespace: string;
+	readonly installCapture: typeof paradisInstallCapture;
 	readonly relayKey: string;
 	/** 再接続までの待ち（ミリ秒）。 */
 	readonly reconnectDelayMs: number;
@@ -2141,6 +2237,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 	options.installPrivacy(bridge, options.privacyNamespace);
 	options.installTts(bridge, options.ttsNamespace);
 	options.installUserScripts(bridge, options.userScriptsNamespace);
+	options.installCapture();
 	const deliverFromContentScript = options.installStorageRelay(bridge, isWorker ? 'worker' : 'page', options.relayNamespace);
 	if (!isWorker) {
 		// ページは中継に答えないが、中継のポートを拡張機能の onConnect に見せない
