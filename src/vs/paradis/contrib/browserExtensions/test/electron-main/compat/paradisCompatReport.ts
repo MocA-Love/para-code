@@ -74,6 +74,15 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 	if (result.category === 'Orca で不可だったもの' && missing.includes('userScripts')) {
 		return { status: 'ng', reasons: ['ユーザースクリプトを動かす chrome.userScripts がありません。拡張機能の主な働きがこれです'] };
 	}
+	// ユーザースクリプト（P9b）: 「ユーザースクリプトを許可」をオンにして見た
+	const userScriptsDidNotRun = result.userScripts === 'did not run' && (result.userScriptsRegistered ?? 0) > 0;
+	if (result.userScripts === 'ran') {
+		reasons.push(`ユーザースクリプト（chrome.userScripts）は、拡張機能の管理で「ユーザースクリプトを許可」をオンにすると動きます（登録 ${result.userScriptsRegistered ?? 0} 件、試験用のページで動きました）`);
+	} else if (userScriptsDidNotRun) {
+		reasons.push(`ユーザースクリプトを ${result.userScriptsRegistered} 件登録しましたが、試験用のページでは動きませんでした（登録が試験用のページに当たらないものかもしれません。推測）`);
+	} else if (result.userScripts === 'did not run') {
+		reasons.push('「ユーザースクリプトを許可」をオンにしても、この拡張機能はユーザースクリプトを登録しませんでした（利用者がスクリプトを入れたときに登録するもの。推測）');
+	}
 	const missingRequired = missing.filter(name => [...required].some(permission => permission.startsWith(name.split('.')[0]) || name.startsWith(permission)));
 	const missingMajor = missingRequired.filter(name => MAJOR_APIS.has(name.split('.')[0]));
 	if (missingMajor.length > 0) {
@@ -88,6 +97,8 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 	} else if (result.contentScript === 'did not run') {
 		reasons.push('content script は決まったサイト（GitHub など）だけのものなので、試験用のページでは動かないのが正しいです（そのサイトでは手で確かめます）');
 	}
+	// 広告のブロック（declarativeNetRequest）が主な働きのものは、それを見ていないので「動く」にしない
+	const blockingDeferred = result.category === '広告・プライバシー' && [...required].some(permission => permission.startsWith('declarativeNetRequest'));
 	if (result.category === '広告・プライバシー') {
 		reasons.push('広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません');
 	}
@@ -110,7 +121,7 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 	if (result.devtoolsPage) {
 		reasons.push('DevTools のパネルは自動では見ていません（手で確かめます）');
 	}
-	const partial = missingMajor.length > 0 || refusedForms.length > 0 || ownErrors.length > 0 || (result.contentScript === 'did not run' && result.contentScriptForTestPage !== false) || apiErrors.length > 0 || (result.popup !== 'none' && result.popup !== 'rendered');
+	const partial = missingMajor.length > 0 || refusedForms.length > 0 || ownErrors.length > 0 || (result.contentScript === 'did not run' && result.contentScriptForTestPage !== false) || apiErrors.length > 0 || userScriptsDidNotRun || blockingDeferred || (result.popup !== 'none' && result.popup !== 'rendered');
 	return { status: partial ? 'partial' : 'ok', reasons: reasons.length > 0 ? reasons : ['読み込み・worker・content script・ポップアップのどれも問題ありませんでした'] };
 }
 
@@ -122,14 +133,14 @@ const FIXED = [
 	['Dark Reader', 'chrome.extension.isAllowedFileSchemeAccess が無く、エラーが出ていました', 'isAllowedFileSchemeAccess・isAllowedIncognitoAccess を足しました（どちらも false）'],
 	['Keeper', '入れるときに大きすぎると断っていました（フォルダから入れるときの 200 MB の上限）', 'ストアから入れるときは、展開のときと同じ 512 MB までにしました'],
 	['1Password・NordPass', 'ポップアップが <meta> の Content-Security-Policy で接続先を絞っていて、Para Code が足した API の呼び出しが止まっていました', 'ページの <meta> の connect-src にも、Para Code の私用スキームを足すようにしました（manifest の方針には前から足していました）'],
-	['DeepL', 'chrome.tts がありませんでした（P9a）', 'chrome.tts を足しました。OS の読み上げ（Chromium の speechSynthesis）で、拡張機能もウェブのページも入らない見えない窓の中で読みます'],
+	['DeepL', 'chrome.tts がありませんでした（P9a）', 'chrome.tts を足しました。OS の読み上げ（Chromium の speechSynthesis）で、拡張機能もウェブのページも入らない、どの窓にも付けない面の中で読みます'],
+	['Tampermonkey・uBlock Origin Lite・AdGuard・Ghostery', 'chrome.userScripts がありませんでした（P9b）', 'chrome.userScripts を足しました。拡張機能の管理で拡張機能ごとに「ユーザースクリプトを許可」をオンにしたときだけ使えます（Chrome と同じく既定はオフ）。入れるのはその場所の利用者のタブだけで、エージェントのタブと、エージェントと共有中のタブには入れません'],
 	['Keeper・Ghostery', 'chrome.browsingData がありませんでした（P9a）', 'chrome.browsingData を足しました。消すのは呼び出し元のセッションのウェブのデータだけで、拡張機能のデータ・エージェントのセッション・ほかの場所のデータには触れません。期間の指定と、Para Code に無いデータ（履歴など）は断ります'],
 ];
 
 /** 直していないもの（大きいので別にする）。 */
 const NOT_FIXED = [
 	['サイドパネル（chrome.sidePanel）', 'Bitwarden・Stylus・DeepL・Grammarly', 'Para Code にサイドパネルの置き場がありません。ポップアップなどほかの入り口は動きます'],
-	['ユーザースクリプト（chrome.userScripts）', 'Tampermonkey・uBlock Origin Lite・AdGuard・Ghostery', 'Electron 43 にありません。Tampermonkey は主な働きがこれです'],
 	['新しいタブの置き換え（chrome_url_overrides）', 'Momentum', 'Para Code の新しいタブは内蔵ブラウザのページではありません'],
 	['画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）', 'Loom', 'Electron 43 にありません'],
 	['広告のブロック（declarativeNetRequest）', '広告・プライバシーの 4 つ', 'D7 で後回しにしました'],

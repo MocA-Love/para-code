@@ -1719,6 +1719,254 @@ export function paradisInstallNativeMessaging(bridge: IParadisShimBridge, namesp
 	}
 }
 
+export const PARADIS_SHIM_USER_SCRIPTS_NAMESPACE = 'paradisUserScripts';
+
+/**
+ * chrome.userScripts と runtime.onUserScriptMessage・onUserScriptConnect（P9b）。manifest に userScripts（後から許されるものも）が
+ * ある拡張機能だけ。chrome.userScripts は、利用者が Para Code の拡張機能の管理で「ユーザースクリプトを許可」した間だけ出す
+ * （Chrome 138 以降と同じく、オフなら undefined。切り替えは main が知らせ、読み込み直さずに変わる）。登録と注入は main が行う。
+ */
+export function paradisInstallUserScripts(bridge: IParadisShimBridge, namespace: string): void {
+	type ApiObject = Record<string, unknown>;
+	type Callable = (...args: unknown[]) => unknown;
+	const noReceiver = 'Could not establish connection. Receiving end does not exist.';
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown };
+	const chromeApi = root.chrome;
+	const runtime = isObject(chromeApi) && isObject(chromeApi.runtime) ? chromeApi.runtime : undefined;
+	if (!isObject(chromeApi) || !runtime) {
+		return;
+	}
+	let manifest: unknown;
+	try {
+		manifest = isCallable(runtime.getManifest) ? runtime.getManifest.call(runtime) : undefined;
+	} catch {
+		manifest = undefined;
+	}
+	const declared = isObject(manifest) ? [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []) : [];
+	if (!declared.includes('userScripts')) {
+		return;
+	}
+	const callWithLastError = (message: string | undefined, callback: () => void): void => {
+		let defined = false;
+		if (message !== undefined) {
+			try {
+				Object.defineProperty(runtime, 'lastError', { configurable: true, get: () => ({ message }) });
+				defined = true;
+			} catch {
+				// 本物の lastError を差し替えられない。コールバックは呼ぶ
+			}
+		}
+		try {
+			callback();
+		} finally {
+			if (defined) {
+				try {
+					delete runtime.lastError;
+				} catch {
+					// ignore
+				}
+			}
+		}
+	};
+	const copy = (value: unknown): unknown => {
+		const json: unknown = JSON.stringify(value ?? null);
+		if (typeof json !== 'string') {
+			throw new Error('Could not serialize message.');
+		}
+		return JSON.parse(json);
+	};
+	// 最後の引数が関数なら callback、無ければ Promise（Chrome と同じ）
+	const method = (name: string) => (...input: unknown[]): unknown => {
+		const done = isCallable(input[input.length - 1]) ? input.pop() as Callable : undefined;
+		const promise = bridge.call(namespace, name, input).then(reply => {
+			if (!reply.ok) {
+				throw new Error(reply.error);
+			}
+			return reply.value;
+		});
+		if (!done) {
+			return promise;
+		}
+		promise.then(value => value === undefined ? done() : done(value), (error: unknown) => callWithLastError(error instanceof Error ? error.message : String(error), () => done()));
+		return undefined;
+	};
+	const api: ApiObject = {
+		ExecutionWorld: { MAIN: 'MAIN', USER_SCRIPT: 'USER_SCRIPT' },
+		register: method('register'),
+		update: method('update'),
+		unregister: method('unregister'),
+		getScripts: method('getScripts'),
+		configureWorld: method('configureWorld'),
+		getWorldConfigurations: method('getWorldConfigurations'),
+		resetWorldConfiguration: method('resetWorldConfiguration'),
+	};
+	let allowed = false;
+	try {
+		Object.defineProperty(chromeApi, 'userScripts', { configurable: true, enumerable: true, get: () => allowed ? api : undefined });
+	} catch {
+		return;
+	}
+	const makeEvent = () => {
+		const listeners = new Set<Callable>();
+		return {
+			listeners,
+			api: {
+				addListener: (callback: unknown) => { if (isCallable(callback)) { listeners.add(callback); } },
+				removeListener: (callback: unknown) => { if (isCallable(callback)) { listeners.delete(callback); } },
+				hasListener: (callback: unknown) => isCallable(callback) && listeners.has(callback),
+				hasListeners: () => listeners.size > 0,
+			},
+		};
+	};
+	const dispatch = (listeners: Set<Callable>, args: unknown[]): unknown[] => {
+		const results: unknown[] = [];
+		for (const listener of [...listeners]) {
+			try {
+				results.push(listener(...args));
+			} catch (error) {
+				console.error(error);
+			}
+		}
+		return results;
+	};
+	const onMessage = makeEvent();
+	const onConnect = makeEvent();
+	for (const [key, event] of [['onUserScriptMessage', onMessage], ['onUserScriptConnect', onConnect]] as const) {
+		try {
+			Object.defineProperty(runtime, key, { value: event.api, configurable: true, enumerable: true, writable: true });
+		} catch {
+			// 凍った本物のオブジェクト
+		}
+	}
+	interface IWorkerPort {
+		closed: boolean;
+		readonly port: ApiObject;
+		readonly onMessage: Set<Callable>;
+		readonly onDisconnect: Set<Callable>;
+	}
+	const ports = new Map<string, IWorkerPort>();
+	const respond = (requestId: string, reply: Record<string, unknown>): void => {
+		void bridge.call(namespace, 'respond', [requestId, reply]);
+	};
+	const onUserScriptEvent = (args: unknown[]): void => {
+		const [kind] = args;
+		if (kind === 'message') {
+			const [, requestId, message, sender] = args;
+			if (typeof requestId !== 'string') {
+				return;
+			}
+			if (onMessage.listeners.size === 0) {
+				respond(requestId, { error: noReceiver });
+				return;
+			}
+			let responded = false;
+			let keep = false;
+			const sendResponse = (value?: unknown): void => {
+				if (responded) {
+					return;
+				}
+				responded = true;
+				let safe: unknown;
+				try {
+					safe = copy(value);
+				} catch (error) {
+					respond(requestId, { error: error instanceof Error ? error.message : String(error) });
+					return;
+				}
+				respond(requestId, { value: value === undefined ? undefined : safe });
+			};
+			for (const result of dispatch(onMessage.listeners, [message, sender, sendResponse])) {
+				if (result === true) {
+					keep = true;
+				} else if (isObject(result) && isCallable((result as { then?: unknown }).then)) {
+					// Promise を返す受け手（Chrome は解決した値を返事にする）
+					keep = true;
+					(result as unknown as Promise<unknown>).then(value => sendResponse(value), (error: unknown) => {
+						if (!responded) {
+							responded = true;
+							respond(requestId, { error: error instanceof Error ? error.message : String(error) });
+						}
+					});
+				}
+			}
+			if (!keep && !responded) {
+				responded = true;
+				respond(requestId, { closed: true });
+			}
+			return;
+		}
+		if (kind === 'connect') {
+			const [, portId, name, sender] = args;
+			if (typeof portId !== 'string') {
+				return;
+			}
+			if (onConnect.listeners.size === 0) {
+				void bridge.call(namespace, 'portDisconnect', [portId, noReceiver]);
+				return;
+			}
+			const portOnMessage = makeEvent();
+			const portOnDisconnect = makeEvent();
+			const port: ApiObject = {};
+			const entry: IWorkerPort = { closed: false, port, onMessage: portOnMessage.listeners, onDisconnect: portOnDisconnect.listeners };
+			Object.assign(port, {
+				name: typeof name === 'string' ? name : '',
+				sender,
+				onMessage: portOnMessage.api,
+				onDisconnect: portOnDisconnect.api,
+				postMessage: (message: unknown) => {
+					if (entry.closed) {
+						throw new Error('Attempting to use a disconnected port object');
+					}
+					void bridge.call(namespace, 'portPost', [portId, copy(message)]);
+				},
+				disconnect: () => {
+					if (entry.closed) {
+						return;
+					}
+					entry.closed = true;
+					ports.delete(portId);
+					void bridge.call(namespace, 'portDisconnect', [portId]);
+				},
+			});
+			ports.set(portId, entry);
+			dispatch(onConnect.listeners, [port]);
+			return;
+		}
+		const [, portId, message] = args;
+		const entry = typeof portId === 'string' ? ports.get(portId) : undefined;
+		if (!entry || entry.closed) {
+			return;
+		}
+		if (kind === 'portMessage') {
+			dispatch(entry.onMessage, [message, entry.port]);
+		} else if (kind === 'portDisconnect') {
+			entry.closed = true;
+			ports.delete(portId as string);
+			dispatch(entry.onDisconnect, [entry.port]);
+		}
+	};
+	bridge.onEvent((eventNamespace, event, args) => {
+		if (eventNamespace !== namespace) {
+			return;
+		}
+		if (event === 'onAllowedChanged') {
+			allowed = args[0] === true;
+		} else if (event === 'onUserScriptEvent') {
+			onUserScriptEvent(args);
+		}
+	});
+	// worker は起こされたときに届くよう、最初から受ける（受け手が無ければ「受け手が無い」と答える）
+	bridge.listen(namespace, 'onAllowedChanged', true);
+	bridge.listen(namespace, 'onUserScriptEvent', true);
+	void bridge.call(namespace, 'state', []).then(reply => {
+		if (reply.ok && isObject(reply.value)) {
+			allowed = reply.value.allowed === true;
+		}
+	});
+}
+
 export interface IParadisShimOptions {
 	readonly callUrl: string;
 	readonly eventsUrl: string;
@@ -1739,6 +1987,8 @@ export interface IParadisShimOptions {
 	readonly privacyNamespace: string;
 	readonly installTts: typeof paradisInstallTts;
 	readonly ttsNamespace: string;
+	readonly installUserScripts: typeof paradisInstallUserScripts;
+	readonly userScriptsNamespace: string;
 	readonly relayKey: string;
 	/** 再接続までの待ち（ミリ秒）。 */
 	readonly reconnectDelayMs: number;
@@ -1888,6 +2138,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 	options.installNativeMessaging(bridge, options.nativeMessagingNamespace);
 	options.installPrivacy(bridge, options.privacyNamespace);
 	options.installTts(bridge, options.ttsNamespace);
+	options.installUserScripts(bridge, options.userScriptsNamespace);
 	const deliverFromContentScript = options.installStorageRelay(bridge, isWorker ? 'worker' : 'page', options.relayNamespace);
 	if (!isWorker) {
 		// ページは中継に答えないが、中継のポートを拡張機能の onConnect に見せない

@@ -299,6 +299,22 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 			// 共有の確認で知らせる対象（入力欄に値を入れられる・ページの中身を読める）
 			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.touchesPages', "ページの中身を読み書きできます。このタブを共有すると、拡張機能が入力した値はエージェントからも読めます");
 		}
+		if (extension.userScripts) {
+			// Chrome の「ユーザースクリプトを許可」と同じ（拡張機能ごと・この場所で。既定はオフ）
+			const option = dom.append(info, $<HTMLLabelElement>('label.pbe-row-option'));
+			const allow = dom.append(option, $<HTMLInputElement>('input'));
+			allow.type = 'checkbox';
+			allow.checked = extension.userScripts.allowedIn.includes(this._profile);
+			allow.disabled = !active || this._busy;
+			dom.append(option, $('span')).textContent = localize('paradis.browserExtensions.allowUserScripts', "ユーザースクリプトを許可");
+			this.contentFocusables.push(allow);
+			this._renderStore.add(dom.addDisposableListener(allow, 'change', () => {
+				const allowing = allow.checked;
+				const place = this._profile;
+				void this._run(() => this._mainService.setUserScriptsAllowed(extension.id, place, allowing));
+			}));
+			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.userScriptsNote', "許可すると、この拡張機能が登録したスクリプト（ユーザースクリプト）が、この場所のタブのページで動きます。エージェントのタブと、エージェントと共有中のタブでは動きません。");
+		}
 		if (extension.pagesWithoutApis?.length) {
 			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.pagesWithoutApis', "次のページは UTF-8 でないか Para Code が書き換えられない形式のため、Para Code が足す機能（chrome.storage.sync など）が使えません: {0}", extension.pagesWithoutApis.join('、'));
 		}
