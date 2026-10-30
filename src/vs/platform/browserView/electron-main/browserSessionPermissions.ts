@@ -188,6 +188,7 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 			this._resolveRequest(webContents, permission, details).then(callback, () => callback(false));
 		});
 		electronSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
+			if (paradisIsDisplayMediaRequest(permission, mediaKindsFromDetails(details))) { return false; } // PARA-PATCH: answer screen capture checks the way the request handler decides them
 			if (isAlwaysAllowedPermission(permission)) {
 				return true;
 			}

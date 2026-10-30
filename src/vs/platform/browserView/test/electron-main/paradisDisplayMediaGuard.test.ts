@@ -15,17 +15,21 @@ import type { BrowserSession } from '../../electron-main/browserSession.js';
 import { BrowserSessionPermissions } from '../../electron-main/browserSessionPermissions.js';
 
 type PermissionRequestHandler = NonNullable<Parameters<Electron.Session['setPermissionRequestHandler']>[0]>;
+type PermissionCheckHandler = NonNullable<Parameters<Electron.Session['setPermissionCheckHandler']>[0]>;
 
 suite('ParadisDisplayMediaGuard', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function createPermissions() {
 		let requestHandler: PermissionRequestHandler | null = null;
+		let checkHandler: PermissionCheckHandler | null = null;
 		const electronSession = new class extends mock<Electron.Session>() {
 			override setPermissionRequestHandler(handler: PermissionRequestHandler | null): void {
 				requestHandler = handler;
 			}
-			override setPermissionCheckHandler(): void { }
+			override setPermissionCheckHandler(handler: PermissionCheckHandler | null): void {
+				checkHandler = handler;
+			}
 			override on(): this {
 				return this;
 			}
@@ -43,11 +47,15 @@ suite('ParadisDisplayMediaGuard', () => {
 			assert.ok(requestHandler);
 			requestHandler(webContents, permission, resolve, { isMainFrame: true, mediaTypes: [], ...details } as Electron.MediaAccessPermissionRequest);
 		});
-		return { permissions, request };
+		const check = (details: Partial<Electron.PermissionCheckHandlerHandlerDetails>, permission: Parameters<PermissionCheckHandler>[1] = 'media') => {
+			assert.ok(checkHandler);
+			return checkHandler(webContents, permission, 'https://site.example', { isMainFrame: true, ...details } as Electron.PermissionCheckHandlerHandlerDetails);
+		};
+		return { permissions, request, check };
 	}
 
 	test('refuses screen capture from every page and frame, even where the camera and microphone are allowed', async () => {
-		const { permissions, request } = createPermissions();
+		const { permissions, request, check } = createPermissions();
 		const site = 'https://site.example';
 		const extension = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
 		permissions.set(site, [{ category: PermissionCategory.Camera, state: 'allow' }, { category: PermissionCategory.Microphone, state: 'allow' }]);
@@ -62,11 +70,17 @@ suite('ParadisDisplayMediaGuard', () => {
 			extensionAboutBlankChild: await request({ requestingUrl: 'about:blank', securityOrigin: `${extension}/`, isMainFrame: false }),
 			extensionBlobChild: await request({ requestingUrl: `blob:${extension}/0a1b2c3d`, securityOrigin: `${extension}/`, isMainFrame: false }),
 			displayCapture: await request({ requestingUrl: `${site}/page`, securityOrigin: `${site}/` }, 'display-capture'),
+			// permissions.query などの確認も、取る求めと同じ答えにする
+			checkCamera: check({ requestingUrl: `${site}/page`, securityOrigin: `${site}/`, mediaType: 'video' }),
+			checkMicrophone: check({ requestingUrl: `${site}/page`, securityOrigin: `${site}/`, mediaType: 'audio' }),
+			checkScreen: check({ requestingUrl: `${site}/page`, embeddingOrigin: `${site}/` }),
+			checkScreenChild: check({ requestingUrl: 'about:blank', securityOrigin: `${site}/`, isMainFrame: false }),
 		}, {
 			cameraAndMicrophone: true,
 			siteScreen: false, siteAboutBlankChild: false, siteBlobChild: false,
 			extensionPage: false, extensionAboutBlankChild: false, extensionBlobChild: false,
 			displayCapture: false,
+			checkCamera: true, checkMicrophone: true, checkScreen: false, checkScreenChild: false,
 		});
 	});
 
