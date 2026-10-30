@@ -53,7 +53,10 @@ on:
 
 jobs:
   build-reh-linux-x64:
-    runs-on: ubuntu-latest
+    # ubuntu-latest に戻さない。node-pty などのネイティブ依存はランナーの glibc に対してビルドされ、
+    # 接続先に要る glibc の下限がランナーの画像で決まる（ubuntu-26.04 だと pty.node が GLIBC_2.42 を要求し、
+    # Ubuntu 24.04 の接続先でターミナルが読み込めない）。para-release.yml の build-linux と揃える。
+    runs-on: ubuntu-24.04
     permissions:
       contents: write # gh release upload（固定タグ reh への添付）
     env:
