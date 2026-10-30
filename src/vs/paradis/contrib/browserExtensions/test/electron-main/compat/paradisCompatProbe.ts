@@ -117,6 +117,11 @@ export interface IParadisCompatResult {
 	newtabErrors?: string[];
 	/** 内蔵ブラウザの新しいタブ（URL の無いタブ）を、拡張機能の新しいタブのページに置き換えたか。 */
 	newtabOverride?: boolean;
+	/** side_panel.default_path のページ（P9d）。 */
+	sidePanelPage?: string;
+	/** side_panel.default_path（中身の無いページを既定に置く拡張機能を見分けるため）。 */
+	sidePanelPath?: string;
+	sidePanelErrors?: string[];
 	missingApis?: string[];
 	missingApisFrom?: string;
 	workerErrors?: string[];
@@ -188,7 +193,7 @@ const PERMISSION_NAMESPACES: Record<string, string | undefined> = {
 };
 
 /** Para Code が詰め物（paradisBrowserExtensionShim.ts）で足す名前空間（manifest.json の文書では数えない）。 */
-const SHIM_NAMESPACES = new Set(['storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative', 'tts', 'browsingData', 'userScripts']);
+const SHIM_NAMESPACES = new Set(['storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative', 'tts', 'browsingData', 'userScripts', 'sidePanel']);
 
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Para Code extension compatibility page</title></head><body>
 <h1>Sign in</h1><form action="/signin" method="post"><label>Email <input type="email" name="email" autocomplete="username"></label>
@@ -343,7 +348,11 @@ async function run(resultPath: string, root: string): Promise<void> {
 			blank.destroy();
 			views.splice(views.indexOf(view), 1);
 		}
-		for (const [kind, path] of [['popup', popupPath], ['options', optionsPath], ['newtab', newtabPath]] as const) {
+		const sidePanelPath = manifest.side_panel?.default_path;
+		if (typeof sidePanelPath === 'string') {
+			result.sidePanelPath = sidePanelPath;
+		}
+		for (const [kind, path] of [['popup', popupPath], ['options', optionsPath], ['newtab', newtabPath], ['sidePanelPage', sidePanelPath]] as const) {
 			if (typeof path !== 'string') {
 				result[kind] = 'none';
 				continue;
@@ -362,7 +371,8 @@ async function run(resultPath: string, root: string): Promise<void> {
 			let crashed = false;
 			page.webContents.on('render-process-gone', () => { crashed = true; });
 			await page.loadURL(`chrome-extension://${id}/${path.replace(/^\/+/, '')}`).catch(error => { failed ??= String(error); });
-			await wait(3000);
+			// サイドパネルのページは長めに待つ（Bitwarden は 3 秒では中身が空だった。読み込みの後に画面を組み立てるため。推測）
+			await wait(kind === 'sidePanelPage' ? 8000 : 3000);
 			const view: { elements: number; text: number; missing: string[] } | undefined = crashed || page.isDestroyed() ? undefined : await page.webContents.executeJavaScript(`(() => {
 				const missing = ${JSON.stringify(permissions.map(permission => permission.replace(/\?$/, '')).map(permission => PERMISSION_NAMESPACES[permission]).filter(Boolean))}
 					.filter((name, index, all) => all.indexOf(name) === index)
@@ -376,9 +386,11 @@ async function run(resultPath: string, root: string): Promise<void> {
 			} else if (kind === 'options') {
 				result.optionsElements = view?.elements;
 				result.optionsErrors = withoutDevPreloadNoise(errors).slice(0, 5);
-			} else {
+			} else if (kind === 'newtab') {
 				result.newtabElements = view?.elements;
 				result.newtabErrors = withoutDevPreloadNoise(errors).slice(0, 5);
+			} else {
+				result.sidePanelErrors = withoutDevPreloadNoise(errors).slice(0, 5);
 			}
 			if (view && !result.missingApis) {
 				result.missingApis = view.missing;

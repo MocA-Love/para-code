@@ -17,6 +17,7 @@ import { IParadisApiExtension, ParadisApiSession, ParadisExtensionApiHost } from
 import { paradisRegisterRuntimeApis } from '../../electron-main/paradisBrowserExtensionRuntime.js';
 import { paradisRegisterStorageApis, ParadisBrowserExtensionSyncStore } from '../../electron-main/paradisBrowserExtensionStorageApis.js';
 import { paradisRegisterBrowsingDataApis } from '../../electron-main/paradisBrowserExtensionBrowsingData.js';
+import { ParadisBrowserExtensionSidePanel } from '../../electron-main/paradisBrowserExtensionSidePanel.js';
 import { IParadisTabEnvironment, IParadisTabView, ParadisBrowserExtensionTabs, paradisCanSeeTabUrl, paradisMatchesUrlPattern } from '../../electron-main/paradisBrowserExtensionTabs.js';
 import { IParadisActionsEnvironment, ParadisBrowserExtensionActions } from '../../electron-main/paradisBrowserExtensionActions.js';
 import { ParadisBrowserExtensionMenus } from '../../electron-main/paradisBrowserExtensionMenus.js';
@@ -310,6 +311,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 		const permissions = new ParadisBrowserExtensionPermissions(host, '/tmp/unused-grants.json', silentLog, async () => false, extension => extension.id);
 		new ParadisBrowserExtensionServices(host, tabs, permissions, unusedServicesEnvironment);
 		paradisRegisterBrowsingDataApis(host, () => []);
+		const sidePanel = new ParadisBrowserExtensionSidePanel(host, tabs, { findView: () => undefined, windowById: () => undefined, sessionOf: () => undefined, hasUserGesture: () => false, nameOf: extension => extension.name }, '/tmp/unused-side-panel.json', silentLog);
 		try {
 			const registered = (host as unknown as { _namespaces: Map<string, { methods: Record<string, unknown>; events: readonly string[]; permission?: unknown }> })._namespaces;
 			for (const [name, surface] of Object.entries(PARADIS_SHIM_SURFACE)) {
@@ -318,6 +320,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 				assert.deepStrictEqual({ methods: [...surface.methods].sort(), events: [...surface.events].sort(), permission: surface.permission }, { methods: Object.keys(namespace.methods).sort(), events: [...namespace.events].sort(), permission: namespace.permission }, name);
 			}
 		} finally {
+			sidePanel.dispose();
 			menus.dispose();
 			actions.dispose();
 			tabs.dispose();

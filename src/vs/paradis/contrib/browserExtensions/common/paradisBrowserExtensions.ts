@@ -386,6 +386,23 @@ export interface IParadisShareExtensions {
 	readonly extensions: readonly IParadisViewBrowserExtension[];
 }
 
+/** タブの横に出すサイドパネル（chrome.sidePanel）。 */
+export interface IParadisSidePanelView {
+	readonly extensionId: string;
+	readonly name: string;
+	/** 幅（CSS のピクセル）。 */
+	readonly width: number;
+}
+
+/** サイドパネルの場所（ウィンドウの中の CSS のピクセルと、ウィンドウの倍率）。 */
+export interface IParadisSidePanelRect {
+	readonly x: number;
+	readonly y: number;
+	readonly width: number;
+	readonly height: number;
+	readonly zoomFactor: number;
+}
+
 /** 管理画面に出す状態。 */
 export interface IParadisBrowserExtensionsState {
 	/** 試験的な設定が今の起動で効いているか（切り替えは再起動で効く）。 */
@@ -430,6 +447,12 @@ export interface IParadisBrowserExtensionsMainService {
 	 * 置き換えたら true（置き換える拡張機能が無い・エージェントのタブなどでは false）。
 	 */
 	openNewTabPage(viewId: string): Promise<boolean>;
+	/** そのタブの横に出すサイドパネル（chrome.sidePanel、P9d）。そのタブがウィンドウの前のタブで、出してよいときだけ。 */
+	getSidePanel(viewId: string): Promise<IParadisSidePanelView | undefined>;
+	/** サイドパネルの場所（ウィンドウの中の CSS のピクセル）。undefined なら隠す（エディタが見えない・前面の表示が重なった）。 */
+	layoutSidePanel(viewId: string, layout: IParadisSidePanelRect | undefined): Promise<void>;
+	/** サイドパネルを開く（拡張機能のメニュー）・閉じる（パネルの閉じるボタン）。 */
+	setSidePanelOpen(viewId: string, extensionId: string, open: boolean): Promise<boolean>;
 	remove(id: string): Promise<void>;
 	/**
 	 * 共有の確認に使う、そのページに入っている（入りうる）拡張機能。`viewId` のビューが main にあれば、その
@@ -519,6 +542,8 @@ export interface IParadisToolbarAction {
 	readonly hasPopup: boolean;
 	readonly pinned: boolean;
 	readonly hasOptionsPage: boolean;
+	/** このタブでサイドパネル（chrome.sidePanel）を開けるか。 */
+	readonly hasSidePanel?: boolean;
 }
 
 /** タブのツールバー。 */
