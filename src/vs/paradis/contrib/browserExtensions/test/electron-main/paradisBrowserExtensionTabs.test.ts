@@ -188,6 +188,28 @@ suite('ParadisBrowserExtensionTabs', () => {
 		}
 	}));
 
+	test('offers for capture only the caller\'s user tabs, never an agent\'s, a shared one, another extension\'s page or the store, and grants tabCapture with the button', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, tabs, apiSession, extension, dispose } = setup({ permissions: ['tabCapture'] });
+		try {
+			const user = fakeView('user', fakeContents(electronSession, 'https://example.com/', 'Example'), 1);
+			const agent = fakeView('agent', fakeContents(electronSession, 'https://agent.example/', 'Agent'), 1, true);
+			const shared = fakeView('shared', fakeContents(electronSession, 'https://shared.example/', 'Shared'), 1);
+			const own = fakeView('own', fakeContents(electronSession, `chrome-extension://${ID}/rec.html`, 'Own'), 1);
+			const other = fakeView('other', fakeContents(electronSession, 'chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba/page.html', 'Other'), 1);
+			const store = fakeView('store', fakeContents(electronSession, 'https://chromewebstore.google.com/detail/x', 'Store'), 1);
+			await addTabs(user, agent, shared, own, other, store);
+			paradisSetExtensionPageHold(shared.webContents, true);
+			const caller = { extension, session: apiSession, place: 'default', connection: 'worker', fromWorker: true };
+			const offered = tabs.captureTabsFor(caller).map(tab => tab.title);
+			paradisSetExtensionPageHold(shared.webContents, false);
+			const before = tabs.hasTabCaptureGrant(ID, user.webContents.id);
+			tabs.grantActiveTab(extension, user.webContents.id);
+			assert.deepStrictEqual({ offered, before, after: tabs.hasTabCaptureGrant(ID, user.webContents.id) }, { offered: ['Example', 'Own'], before: false, after: true });
+		} finally {
+			dispose();
+		}
+	}));
+
 	test('shows the URL and title only with the tabs permission or a matching host permission', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const withHost = setup({ host_permissions: ['https://*.example.com/*'] });
 		try {
