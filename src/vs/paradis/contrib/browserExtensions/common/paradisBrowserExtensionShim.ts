@@ -1354,6 +1354,281 @@ export function paradisInstallTts(bridge: IParadisShimBridge, namespace: string)
 	}
 }
 
+/** main だけが使う、chrome.desktopCapture の名前空間（chrome には出さない）。main の登録と同じ名前。 */
+export const PARADIS_SHIM_DESKTOP_CAPTURE_NAMESPACE = 'paradisDesktopCapture';
+/** main だけが使う、chrome.tabCapture の名前空間（chrome には出さない）。main の登録と同じ名前。 */
+export const PARADIS_SHIM_TAB_CAPTURE_NAMESPACE = 'paradisTabCapture';
+/** main が作る撮る印（stream id）の頭。詰め物はこれで自分の印を見分ける。 */
+export const PARADIS_CAPTURE_STREAM_ID_PREFIX = 'paradis-capture:';
+
+/**
+ * chrome.desktopCapture・chrome.tabCapture（P9e）。manifest にあるものだけ。main が作った印（stream id）を返し、この文脈の
+ * getUserMedia（chromeMediaSource が 'desktop'・'tab' で、印の付いたもの）を「main で印を構える → getDisplayMedia」に置き換える。
+ * main は構えた印の源（タブ・ほかのアプリの窓）だけを getDisplayMedia に当てる。印の付かない getUserMedia はそのまま通す。
+ */
+export function paradisInstallCapture(bridge: IParadisShimBridge, desktopNamespace: string, tabNamespace: string, prefix: string): void {
+	type ApiObject = Record<string, unknown>;
+	type Callable = (...args: unknown[]) => unknown;
+	type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
+	// common の層では DOM の型を使えないので、使うところだけを書く
+	type Track = { readonly kind: string; readonly readyState: string; stop(): void; addEventListener(type: string, listener: () => void): void; dispatchEvent(event: Event): boolean };
+	type Stream = { getTracks(): Track[]; getVideoTracks(): Track[]; removeTrack(track: Track): void };
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown; browser?: unknown; navigator?: unknown };
+	const chromeApi = root.chrome;
+	const runtime = isObject(chromeApi) && isObject(chromeApi.runtime) ? chromeApi.runtime : undefined;
+	if (!isObject(chromeApi) || !runtime) {
+		return;
+	}
+	let manifest: unknown;
+	try {
+		manifest = isCallable(runtime.getManifest) ? runtime.getManifest.call(runtime) : undefined;
+	} catch {
+		manifest = undefined;
+	}
+	const declared = isObject(manifest) ? [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []) : [];
+	const hasDesktop = declared.includes('desktopCapture');
+	const hasTab = declared.includes('tabCapture');
+	if (!hasDesktop && !hasTab) {
+		return;
+	}
+	const withLastError = (message: string | undefined, run: () => void): void => {
+		let defined = false;
+		if (message !== undefined) {
+			try {
+				Object.defineProperty(runtime, 'lastError', { configurable: true, enumerable: true, get: () => ({ message }) });
+				defined = true;
+			} catch {
+				// 置き換えられない lastError
+			}
+		}
+		try {
+			run();
+		} finally {
+			if (defined) {
+				try {
+					delete runtime.lastError;
+				} catch {
+					// 消せない
+				}
+			}
+		}
+	};
+	const settle = (callback: unknown, reply: Promise<Reply>): unknown => {
+		if (isCallable(callback)) {
+			void reply.then(result => withLastError(result.ok ? undefined : result.error, () => {
+				if (result.ok && result.value !== undefined) {
+					callback(result.value);
+				} else {
+					callback();
+				}
+			}));
+			return undefined;
+		}
+		return reply.then(result => {
+			if (!result.ok) {
+				throw new Error(result.error);
+			}
+			return result.value;
+		});
+	};
+	const last = (input: unknown[]) => input.length > 0 && isCallable(input[input.length - 1]) ? input[input.length - 1] : undefined;
+
+	// --- getUserMedia の置き換え（ページだけ。worker には navigator.mediaDevices が無い） ---
+	const navigatorObject = isObject(root.navigator) ? root.navigator : undefined;
+	const mediaDevices = navigatorObject && isObject(navigatorObject.mediaDevices) ? navigatorObject.mediaDevices : undefined;
+	const originalDisplay = mediaDevices && isCallable(mediaDevices.getDisplayMedia) ? mediaDevices.getDisplayMedia.bind(mediaDevices) as (constraints: unknown) => Promise<Stream> : undefined;
+	const streams = new Map<string, Stream>();
+	const tokenOf = (constraints: unknown): { readonly token: string; readonly namespace: string } | undefined => {
+		if (!isObject(constraints)) {
+			return undefined;
+		}
+		for (const part of [constraints.video, constraints.audio]) {
+			const mandatory = isObject(part) && isObject(part.mandatory) ? part.mandatory : isObject(part) ? part : undefined;
+			const source = mandatory?.chromeMediaSource;
+			const id = mandatory?.chromeMediaSourceId;
+			if ((source === 'desktop' || source === 'tab') && typeof id === 'string' && id.startsWith(prefix)) {
+				return { token: id, namespace: source === 'tab' ? tabNamespace : desktopNamespace };
+			}
+		}
+		return undefined;
+	};
+	const denied = () => new DOMException('Permission denied', 'NotAllowedError');
+	const openStream = async (constraints: ApiObject, token: string, namespace: string): Promise<Stream> => {
+		if (!originalDisplay) {
+			throw denied();
+		}
+		const armed = await bridge.call(namespace, 'arm', [token]);
+		if (!armed.ok || armed.value !== true) {
+			throw denied();
+		}
+		const wantVideo = !!constraints.video;
+		const wantAudio = !!constraints.audio;
+		// getDisplayMedia は映像を要る。音だけを頼まれたら、映像は止めて外す
+		const stream = await originalDisplay({ video: true, audio: wantAudio });
+		if (!wantVideo) {
+			for (const track of stream.getVideoTracks()) {
+				track.stop();
+				stream.removeTrack(track);
+			}
+		}
+		streams.set(token, stream);
+		let remaining = stream.getTracks().length;
+		for (const track of stream.getTracks()) {
+			track.addEventListener('ended', () => {
+				remaining -= 1;
+				if (remaining <= 0 && streams.get(token) === stream) {
+					streams.delete(token);
+					void bridge.call(namespace, 'release', [token]);
+				}
+			});
+			const stop = track.stop.bind(track);
+			track.stop = () => {
+				const live = track.readyState === 'live';
+				stop();
+				if (live) {
+					track.dispatchEvent(new Event('ended'));
+				}
+			};
+		}
+		return stream;
+	};
+	if (mediaDevices && isCallable(mediaDevices.getUserMedia)) {
+		const originalUser = mediaDevices.getUserMedia.bind(mediaDevices) as (constraints: unknown) => Promise<Stream>;
+		const replaced = (constraints: unknown) => {
+			const found = tokenOf(constraints);
+			return found && isObject(constraints) ? openStream(constraints, found.token, found.namespace) : originalUser(constraints);
+		};
+		try {
+			Object.defineProperty(mediaDevices, 'getUserMedia', { value: replaced, configurable: true, writable: true });
+		} catch {
+			// 置き換えられない
+		}
+		for (const name of ['getUserMedia', 'webkitGetUserMedia']) {
+			const legacy = navigatorObject?.[name];
+			if (!isCallable(legacy)) {
+				continue;
+			}
+			const legacyReplaced = (constraints: unknown, success: unknown, failure: unknown) => {
+				const found = tokenOf(constraints);
+				if (!found || !isObject(constraints)) {
+					return legacy.call(navigatorObject, constraints, success, failure);
+				}
+				openStream(constraints, found.token, found.namespace).then(stream => {
+					if (isCallable(success)) {
+						success(stream);
+					}
+				}, error => {
+					if (isCallable(failure)) {
+						failure(error);
+					}
+				});
+				return undefined;
+			};
+			try {
+				Object.defineProperty(navigatorObject, name, { value: legacyReplaced, configurable: true, writable: true });
+			} catch {
+				// 置き換えられない
+			}
+		}
+	}
+	const stopToken = (token: unknown) => {
+		const stream = typeof token === 'string' ? streams.get(token) : undefined;
+		if (stream) {
+			streams.delete(token as string);
+			for (const track of stream.getTracks()) {
+				track.stop();
+			}
+		}
+	};
+	const statusListeners = new Set<unknown>();
+	bridge.onEvent((eventNamespace, name, args) => {
+		if ((eventNamespace === desktopNamespace || eventNamespace === tabNamespace) && name === 'onStop') {
+			stopToken(args[0]);
+		} else if (eventNamespace === tabNamespace && name === 'onStatusChanged') {
+			for (const listener of [...statusListeners]) {
+				try {
+					(listener as Callable)(args[0]);
+				} catch (error) {
+					console.error(error);
+				}
+			}
+		}
+	});
+	const targets = isObject(root.browser) && root.browser !== chromeApi ? [chromeApi, root.browser] : [chromeApi];
+	const define = (name: string, value: ApiObject) => {
+		for (const target of targets) {
+			try {
+				Object.defineProperty(target, name, { value, configurable: true, enumerable: true, writable: true });
+			} catch {
+				// 凍った物は触らない
+			}
+		}
+	};
+	if (hasDesktop) {
+		bridge.listen(desktopNamespace, 'onStop', true);
+		let nextId = 0;
+		define('desktopCapture', {
+			chooseDesktopMedia: (sources: unknown, ...rest: unknown[]) => {
+				const callback = last(rest);
+				const targetTab = rest.length > 1 && isObject(rest[0]) ? rest[0] : undefined;
+				nextId += 1;
+				const requestId = nextId;
+				void bridge.call(desktopNamespace, 'choose', [requestId, Array.isArray(sources) ? sources.map(String) : [], targetTab ? { id: targetTab.id, url: targetTab.url } : undefined]).then(result => {
+					if (!isCallable(callback)) {
+						return;
+					}
+					withLastError(result.ok ? undefined : result.error, () => {
+						const value = result.ok && isObject(result.value) ? result.value : undefined;
+						callback(typeof value?.streamId === 'string' ? value.streamId : '', isObject(value?.options) ? value.options : { canRequestAudioTrack: false });
+					});
+				});
+				return requestId;
+			},
+			cancelChooseDesktopMedia: (requestId: unknown) => {
+				void bridge.call(desktopNamespace, 'cancel', [typeof requestId === 'number' ? requestId : -1]);
+			},
+			DesktopCaptureSourceType: { SCREEN: 'screen', WINDOW: 'window', TAB: 'tab', AUDIO: 'audio' },
+			SystemAudioPreferenceEnum: { INCLUDE: 'include', EXCLUDE: 'exclude' },
+			SelfCapturePreferenceEnum: { INCLUDE: 'include', EXCLUDE: 'exclude' },
+			WindowAudioPreferenceEnum: { SYSTEM: 'system', WINDOW: 'window', EXCLUDE: 'exclude' },
+		});
+	}
+	if (hasTab) {
+		bridge.listen(tabNamespace, 'onStop', true);
+		bridge.listen(tabNamespace, 'onStatusChanged', true);
+		define('tabCapture', {
+			getStreamId: (...input: unknown[]) => {
+				const options = isObject(input[0]) ? input[0] : undefined;
+				return settle(last(input), bridge.call(tabNamespace, 'getStreamId', [options ? { targetTabId: options.targetTabId, consumerTabId: options.consumerTabId } : undefined]));
+			},
+			capture: (options: unknown, callback: unknown) => {
+				const plain = isObject(options) ? { audio: options.audio === true, video: options.video === true } : {};
+				void bridge.call(tabNamespace, 'capture', [plain]).then(async result => {
+					const value = result.ok && isObject(result.value) ? result.value : undefined;
+					let stream: Stream | null = null;
+					let error = result.ok ? undefined : result.error;
+					if (value && typeof value.streamId === 'string') {
+						const constraint = { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: value.streamId } };
+						try {
+							stream = await openStream({ audio: value.audio === true ? constraint : false, video: value.video === true ? constraint : false }, value.streamId, tabNamespace);
+						} catch {
+							error = 'Error starting tab capture';
+						}
+					}
+					if (isCallable(callback)) {
+						withLastError(error, () => callback(stream));
+					}
+				});
+			},
+			getCapturedTabs: (...input: unknown[]) => settle(last(input), bridge.call(tabNamespace, 'getCapturedTabs', [])),
+			onStatusChanged: { addListener: (listener: unknown) => { statusListeners.add(listener); }, removeListener: (listener: unknown) => { statusListeners.delete(listener); }, hasListener: (listener: unknown) => statusListeners.has(listener), hasListeners: () => statusListeners.size > 0 },
+			TabCaptureState: { PENDING: 'pending', ACTIVE: 'active', STOPPED: 'stopped', ERROR: 'error' },
+		});
+	}
+}
+
 /** main だけが使う、chrome.privacy の名前空間（chrome には出さない）。main の登録と同じ名前。 */
 export const PARADIS_SHIM_PRIVACY_NAMESPACE = 'paradisPrivacy';
 
@@ -1991,6 +2266,10 @@ export interface IParadisShimOptions {
 	readonly ttsNamespace: string;
 	readonly installUserScripts: typeof paradisInstallUserScripts;
 	readonly userScriptsNamespace: string;
+	readonly installCapture: typeof paradisInstallCapture;
+	readonly desktopCaptureNamespace: string;
+	readonly tabCaptureNamespace: string;
+	readonly captureStreamIdPrefix: string;
 	readonly relayKey: string;
 	/** 再接続までの待ち（ミリ秒）。 */
 	readonly reconnectDelayMs: number;
@@ -2141,6 +2420,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 	options.installPrivacy(bridge, options.privacyNamespace);
 	options.installTts(bridge, options.ttsNamespace);
 	options.installUserScripts(bridge, options.userScriptsNamespace);
+	options.installCapture(bridge, options.desktopCaptureNamespace, options.tabCaptureNamespace, options.captureStreamIdPrefix);
 	const deliverFromContentScript = options.installStorageRelay(bridge, isWorker ? 'worker' : 'page', options.relayNamespace);
 	if (!isWorker) {
 		// ページは中継に答えないが、中継のポートを拡張機能の onConnect に見せない

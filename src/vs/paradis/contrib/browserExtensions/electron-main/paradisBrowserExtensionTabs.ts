@@ -94,6 +94,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * 拡張機能がそのタブの上・横で力を使ってよいか（サイドパネルを出す・タブを撮る）。エージェントのタブと、エージェントと
+ * 共有中のタブでは使わせない（Q483 の考え方）。判定はここ 1 か所。
+ */
+export function paradisExtensionMayUseTab(view: Pick<IParadisTabView, 'isAgentTab'> & { readonly webContents: object }): boolean {
+	return !view.isAgentTab() && !paradisIsExtensionPageHeld(view.webContents);
+}
+
+/** tabCapture・desktopCapture で撮ってよいタブ（拡張機能に見せる利用者のタブ。共有中のタブは入らない）。 */
+export interface IParadisCaptureTab {
+	readonly tabId: number;
+	readonly windowId: number;
+	readonly active: boolean;
+	readonly title: string;
+	readonly view: IParadisTabView;
+}
+
 /** Chrome の match pattern に URL が当たるか（`<all_urls>`・`*://*.example.com/*` など）。 */
 export function paradisMatchesUrlPattern(pattern: string, rawUrl: string): boolean {
 	let url: URL;
@@ -168,6 +185,8 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	private readonly _windowAliases = new Map<number, number>();
 	/** activeTab: ツールバーのボタンを押したタブ → URL とタイトルを見てよい拡張機能（タブが別の文書へ移る・閉じるまで）。 */
 	private readonly _activeTabGrants = new Map<number, Set<string>>();
+	/** tabCapture: ツールバーのボタンを押したタブ → 撮ってよい拡張機能（Chromium の kTabCaptureForTab。activeTab と同じく、タブが別の文書へ移る・閉じるまで）。 */
+	private readonly _tabCaptureGrants = new Map<number, Set<string>>();
 	private readonly _onDidResetTab = this._disposables.add(new Emitter<number>());
 	/** タブが別の文書へ移った・閉じた（WebContents の id）。タブごとのボタンの値を消すのに使う。 */
 	readonly onDidResetTab = this._onDidResetTab.event;
@@ -188,7 +207,10 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	) {
 		this._disposables.add(_environment.onDidCreateView(({ view, existing }) => this._observe(view, existing)));
 		this._disposables.add(_environment.onDidFocusWindow(windowId => this.noteWindowFocus(windowId)));
-		this._disposables.add(this._onDidResetTab.event(tabId => this._activeTabGrants.delete(tabId)));
+		this._disposables.add(this._onDidResetTab.event(tabId => {
+			this._activeTabGrants.delete(tabId);
+			this._tabCaptureGrants.delete(tabId);
+		}));
 		this._disposables.add(paraOnDidMarkBrowserViewAgentTab(viewId => {
 			const view = this._environment.listViews().find(candidate => candidate.id === viewId);
 			if (view && !view.webContents.isDestroyed()) {
@@ -652,15 +674,53 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	 */
 	grantActiveTab(extension: IParadisApiExtension, tabId: number): void {
 		const permissions = extension.manifest.permissions;
-		if (!Array.isArray(permissions) || !permissions.includes('activeTab')) {
+		if (!Array.isArray(permissions)) {
 			return;
 		}
-		let grants = this._activeTabGrants.get(tabId);
-		if (!grants) {
-			grants = new Set();
-			this._activeTabGrants.set(tabId, grants);
+		// Chromium の ActiveTabPermissionGranter は、tabCapture のある拡張機能に、そのタブを撮る許し（kTabCaptureForTab）も与える
+		for (const [permission, map] of [['activeTab', this._activeTabGrants], ['tabCapture', this._tabCaptureGrants]] as const) {
+			if (!permissions.includes(permission)) {
+				continue;
+			}
+			let grants = map.get(tabId);
+			if (!grants) {
+				grants = new Set();
+				map.set(tabId, grants);
+			}
+			grants.add(extension.id);
 		}
-		grants.add(extension.id);
+	}
+
+	/** tabCapture: 利用者がそのタブで拡張機能のボタンを押したか（タブが別の文書へ移る・閉じるまで）。 */
+	hasTabCaptureGrant(extensionId: string, tabId: number): boolean {
+		return this._tabCaptureGrants.get(tabId)?.has(extensionId) === true;
+	}
+
+	/**
+	 * 撮ってよいタブ（呼び出し元のセッションの利用者のタブ。エージェントのタブ・共有中のタブ・ポップアップの窓・ほかの拡張機能の
+	 * ページ・Chrome ウェブストアは入らない）。
+	 * 前のタブが先。
+	 */
+	captureTabsFor(caller: IParadisExtensionApiCaller): IParadisCaptureTab[] {
+		return this._tabsOf(this._electronSession(caller))
+			.filter(entry => entry.view !== undefined && paradisExtensionMayUseTab(entry.view))
+			// captureVisibleTab と同じく、ほかの拡張機能のページとストアは撮らない
+			.filter(entry => {
+				const url = entry.webContents.getURL();
+				return !(url.startsWith('chrome-extension://') && !url.startsWith(`chrome-extension://${caller.extension.id}/`)) && !paradisIsChromeWebStoreUrl(url);
+			})
+			.map(entry => ({ tabId: entry.webContents.id, windowId: entry.windowId, active: entry.active, title: entry.webContents.getTitle(), view: entry.view! }))
+			.sort((a, b) => Number(b.active) - Number(a.active));
+	}
+
+	/** その WebContents を出している内蔵ブラウザのタブ（無ければ undefined）。 */
+	viewOfContents(contents: WebContents): IParadisTabView | undefined {
+		return this._environment.listViews().find(view => view.webContents === contents);
+	}
+
+	/** 最後に前に出たウィンドウ（拡張機能に見せる id）。 */
+	currentWindowIdFor(): number | undefined {
+		return this._currentWindowId();
 	}
 
 	/** 後から許したサイトの権限の引き方（permissions.request、場所ごと）。 */

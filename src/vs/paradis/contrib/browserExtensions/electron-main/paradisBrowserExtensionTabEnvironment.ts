@@ -10,7 +10,7 @@
 // プロファイルの main（paradisRegisterBrowserProfiles）から呼ぶ。browserViewMainService などは型だけを読む
 // （値を読むと browserSession.ts → 拡張機能の main → ここ、と読み込みが輪になるため）。
 
-import { app, BrowserWindow, Notification, nativeImage, screen, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, desktopCapturer, Notification, nativeImage, screen, systemPreferences, type Session, type WebContents } from 'electron';
 import { localize } from '../../../../nls.js';
 import { join } from '../../../../base/common/path.js';
 import type { IDialogMainService } from '../../../../platform/dialogs/electron-main/dialogMainService.js';
@@ -205,6 +205,8 @@ function permissionLabel(permission: string): string {
 		case 'declarativeNetRequest': return localize('paradis.browserExtensions.permission.declarativeNetRequest', "ページの通信の遮断・書き換え");
 		case 'scripting': return localize('paradis.browserExtensions.permission.scripting', "ページへのスクリプトの挿入");
 		case 'debugger': return localize('paradis.browserExtensions.permission.debugger', "ページのデバッガーへの接続");
+		case 'desktopCapture': return localize('paradis.browserExtensions.permission.desktopCapture', "選んだタブ・ほかのアプリの窓の録画");
+		case 'tabCapture': return localize('paradis.browserExtensions.permission.tabCapture', "拡張機能を押したタブの録画");
 		default: return permission;
 	}
 }
@@ -306,6 +308,39 @@ export function paradisCreateBrowserExtensionRemovePrompt(dialogMainService: IDi
 		return response === 0;
 	};
 }
+
+/** desktopCapture.chooseDesktopMedia で撮るものを選ぶダイアログ（Para Code の今のウィンドウの上。ウィンドウが無ければ取り消し）。 */
+export function paradisCreateBrowserExtensionCapturePicker(dialogMainService: IDialogMainService, lastActiveWindow: () => BrowserWindow | undefined): (prompt: { readonly extensionName: string; readonly choices: readonly { readonly label: string }[]; readonly note?: string }) => Promise<number | undefined> {
+	return async prompt => {
+		const window = lastActiveWindow();
+		if (!window || window.isDestroyed()) {
+			return undefined;
+		}
+		const cancel = localize('paradis.browserExtensions.capture.cancel', "キャンセル");
+		const { response } = await dialogMainService.showMessageBox({
+			type: 'question',
+			message: prompt.choices.length > 0
+				? localize('paradis.browserExtensions.capture.message', "「{0}」が録画を求めています。録画するものを選んでください。", prompt.extensionName)
+				: localize('paradis.browserExtensions.capture.messageNothing', "「{0}」が録画を求めていますが、録画できるものがありません。", prompt.extensionName),
+			detail: [localize('paradis.browserExtensions.capture.detail', "選んだものだけを、拡張機能が止めるまで録画します。エージェントのタブと、エージェントと共有中のタブは録画できません。"), prompt.note].filter(Boolean).join('\n\n'),
+			buttons: [...prompt.choices.map(choice => choice.label), cancel],
+			defaultId: prompt.choices.length,
+			cancelId: prompt.choices.length,
+			noLink: true,
+		}, window);
+		return response < prompt.choices.length ? response : undefined;
+	};
+}
+
+/** desktopCapture の窓の候補と、OS の画面収録の許し（P9e）。 */
+export const paradisBrowserExtensionCaptureSources = {
+	platform: process.platform,
+	/** ほかのアプリの窓。macOS では、OS が Para Code の画面収録の許しを確かめる（初めてなら OS の確認が出る）。 */
+	getWindowSources: async () => (await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false })).map(source => ({ id: source.id, name: source.name })),
+	/** Para Code の窓（workbench・ポップアップ・拡張機能の窓）。候補から外す。 */
+	ownWindowSourceIds: () => BrowserWindow.getAllWindows().filter(window => !window.isDestroyed()).map(window => window.getMediaSourceId()),
+	screenAccess: () => process.platform === 'darwin' ? systemPreferences.getMediaAccessStatus('screen') : 'granted',
+};
 
 /** 拡張機能の通知（OS の通知）。通知が使えない環境では undefined。 */
 export function paradisCreateBrowserExtensionNotification(options: IParadisExtensionNotificationOptions): IParadisExtensionNotification | undefined {

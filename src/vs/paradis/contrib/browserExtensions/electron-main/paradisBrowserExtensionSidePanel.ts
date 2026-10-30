@@ -27,9 +27,9 @@ import { promises as fs } from 'fs';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname } from '../../../../base/common/path.js';
-import { paradisIsExtensionPageHeld, paradisOnDidChangeExtensionPageHold } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { paradisOnDidChangeExtensionPageHold } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
-import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
+import { paradisExtensionMayUseTab, type IParadisTabView, type ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
 
 const DEFAULT_TAB = -1;
@@ -108,10 +108,10 @@ function isPageOf(rawUrl: string, extensionId: string): boolean {
 
 /**
  * そのタブの横に拡張機能のサイドパネルを出してよいか。エージェントのタブ（エージェントが開いたタブとその子）と、エージェントと
- * 共有中のタブの横には出さない（Q483 の考え方。決まりが変わったらここだけを直す）。
+ * 共有中のタブの横には出さない（Q483 の考え方。判定は paradisExtensionMayUseTab）。
  */
 export function paradisSidePanelAllowedFor(view: Pick<IParadisTabView, 'isAgentTab'> & { readonly webContents: object }): boolean {
-	return !view.isAgentTab() && !paradisIsExtensionPageHeld(view.webContents);
+	return paradisExtensionMayUseTab(view);
 }
 
 /** manifest の side_panel.default_path から作った設定（Chromium の GetPanelOptionsFromManifest）。 */

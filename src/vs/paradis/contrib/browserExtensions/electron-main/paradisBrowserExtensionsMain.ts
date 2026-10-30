@@ -74,6 +74,7 @@ import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.j
 import { ParadisBrowserExtensionPrivacy, paradisPrivacyUserTabs } from './paradisBrowserExtensionPrivacy.js';
 import { paradisRegisterBrowsingDataApis } from './paradisBrowserExtensionBrowsingData.js';
 import { ParadisBrowserExtensionTts } from './paradisBrowserExtensionTts.js';
+import { IParadisCaptureEnvironment, ParadisBrowserExtensionCapture } from './paradisBrowserExtensionCapture.js';
 import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { ParadisBrowserExtensionUserScripts } from './paradisBrowserExtensionUserScripts.js';
 import { IParadisSidePanelInfo, IParadisSidePanelLayout, ParadisBrowserExtensionSidePanel } from './paradisBrowserExtensionSidePanel.js';
@@ -116,6 +117,8 @@ export interface IParadisBrowserExtensionTabsOptions {
 	readonly askRemove?: (extensionName: string) => Promise<boolean>;
 	/** 新しく権限を求める更新を入れる前の確認のダイアログ。 */
 	readonly askUpdate?: (prompt: IParadisUpdatePrompt) => Promise<boolean>;
+	/** desktopCapture・tabCapture（P9e）の窓の候補と、撮るものを選ぶダイアログ（無ければ desktopCapture は何も選べない）。 */
+	readonly capture?: Omit<IParadisCaptureEnvironment, 'nameOf'>;
 }
 
 /** Chrome ウェブストアから入れるのに要るもの（P7）。 */
@@ -399,6 +402,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _privacy: ParadisBrowserExtensionPrivacy | undefined;
 	/** chrome.tts（P9a）。 */
 	private readonly _tts: ParadisBrowserExtensionTts | undefined;
+	private readonly _capture: ParadisBrowserExtensionCapture | undefined;
 	/** chrome.userScripts（P9b）。タブの口があるときだけ（入れてよい利用者のタブかを決めるため）。 */
 	private readonly _userScripts: ParadisBrowserExtensionUserScripts | undefined;
 	/** chrome.sidePanel（P9d）。タブの口があるときだけ。 */
@@ -599,6 +603,14 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			hasUserGesture: caller => permissions.hasUserGesture(caller),
 			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
 		}, join(_root, 'side-panel.json'), _logService) : undefined;
+		this._capture = tabs && tabsOptions ? new ParadisBrowserExtensionCapture(this._apiHost, tabs, {
+			platform: tabsOptions.capture?.platform ?? 'unknown',
+			getWindowSources: () => tabsOptions.capture?.getWindowSources() ?? Promise.resolve([]),
+			ownWindowSourceIds: () => tabsOptions.capture?.ownWindowSourceIds() ?? [],
+			screenAccess: () => tabsOptions.capture?.screenAccess() ?? 'denied',
+			pick: prompt => tabsOptions.capture?.pick(prompt) ?? Promise.resolve(undefined),
+			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? String(extension.manifest.name ?? extension.id),
+		}) : undefined;
 		const sidePanel = this._sidePanel;
 		if (sidePanel && this._actions) {
 			this._actions.setSidePanel({
@@ -629,6 +641,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._menus?.dispose();
 		this._userScripts?.dispose();
 		this._sidePanel?.dispose();
+		this._capture?.dispose();
 		this._tabs?.dispose();
 		this._apiHost.dispose();
 		void this._syncStore.flush();
@@ -781,6 +794,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._disposables.add(this._apiHost.attachSession(session, profile));
 		if (this._tabs) {
 			this._disposables.add(this._tabs.attachSession({ session, electronSession: session as unknown as Session, browserSessionId: owner.id }));
+		}
+		// 拡張機能のページの getDisplayMedia（desktopCapture・tabCapture の印）を受ける
+		if (this._capture) {
+			this._disposables.add(this._capture.attachSession(session, session as unknown as Session));
 		}
 		// cookies.onChanged は、受け手を付けたときから届く（見張りはセッションを付けたときに立てる）
 		this._services?.observeCookies(session as unknown as Session, session, profile);
@@ -1770,6 +1787,7 @@ export function paradisRegisterBrowserExtensions(
 				createNotification: tabs.createNotification,
 				chooseSavePath: tabs.chooseSavePath,
 				renameDownload: tabs.renameDownload,
+				capture: tabs.capture,
 			} : undefined,
 			tabs ? { askInstall: tabs.askInstall, askRemove: tabs.askRemove, askUpdate: tabs.askUpdate } : undefined,
 		);

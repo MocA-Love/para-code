@@ -64,6 +64,10 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 		refusedForms.push('ページへのデバッガーの接続（chrome.debugger.attach）は断る形で足したので、それを使う働きは動きません');
 	}
 	reasons.push(...refusedForms);
+	// 録画（P9e）
+	if (required.has('desktopCapture') || required.has('tabCapture')) {
+		reasons.push('録画（chrome.desktopCapture・chrome.tabCapture）は、ダイアログで選んだタブ・ほかのアプリの窓（macOS だけ）か、拡張機能のボタンを押したタブだけを撮ります。画面全体は撮れません');
+	}
 	// 主な働きが Para Code（Electron）に無いもの
 	// 新しいタブの置き換え（P9c）: 内蔵ブラウザの新しいタブだけ。履歴・ブックマークのページは Para Code に無い
 	const unsupportedOverrides = (result.urlOverrides ?? []).filter(page => page !== 'newtab');
@@ -158,12 +162,12 @@ const FIXED = [
 	['Tampermonkey・uBlock Origin Lite・AdGuard・Ghostery', 'chrome.userScripts がありませんでした（P9b）', 'chrome.userScripts を足しました。拡張機能の管理で拡張機能ごとに「ユーザースクリプトを許可」をオンにしたときだけ使えます（Chrome と同じく既定はオフ）。入れるのはその場所の利用者のタブだけで、エージェントのタブと、エージェントと共有中のタブには入れません'],
 	['Bitwarden・Stylus・DeepL・Grammarly', 'chrome.sidePanel がありませんでした（P9d）', 'chrome.sidePanel を足しました。パネルは Para Code のウィンドウの中、内蔵ブラウザのタブの右に出します（タブにはしません）。エージェントのタブと、エージェントと共有中のタブの横には出しません'],
 	['Momentum', '新しいタブの置き換え（chrome_url_overrides.newtab）に対応していませんでした（P9c）', '内蔵ブラウザの新しいタブ（URL の無いタブ）を、その場所で有効な拡張機能の新しいタブのページにするようにしました。Para Code のエディタの新しいタブ、エージェントのタブ、エージェントと共有中のタブは置き換えません'],
+	['Loom', 'chrome.desktopCapture・chrome.tabCapture がありませんでした（P9e）', '両方を足しました。撮るのは、ダイアログで選んだタブ・ほかのアプリの窓（macOS だけ）か、拡張機能のボタンを押したタブだけです。Para Code の画面・画面全体・エージェントのタブ・共有中のタブは撮りません'],
 	['Keeper・Ghostery', 'chrome.browsingData がありませんでした（P9a）', 'chrome.browsingData を足しました。消すのは呼び出し元のセッションのウェブのデータだけで、拡張機能のデータ・エージェントのセッション・ほかの場所のデータには触れません。期間の指定と、Para Code に無いデータ（履歴など）は断ります'],
 ];
 
 /** 直していないもの（大きいので別にする）。 */
 const NOT_FIXED = [
-	['画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）', 'Loom', 'Electron 43 にありません'],
 	['広告のブロック（declarativeNetRequest）', '広告・プライバシーの 4 つ', 'D7 で後回しにしました'],
 ];
 

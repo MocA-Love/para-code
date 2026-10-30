@@ -25,6 +25,7 @@ import {
 } from '../common/browserPermissions.js';
 import { IBrowserViewPermissionRequestEvent, IBrowserViewStorageKeys, isInMemoryStorageScope } from '../common/browserView.js';
 import type { BrowserSession } from './browserSession.js';
+import { paradisAllowsDisplayCapture } from '../common/paradisDisplayCaptureGate.js'; // PARA-PATCH: browser extension desktopCapture / tabCapture
 import { paradisInstallWebAuthnAccountChooser } from '../../../paradis/contrib/browserWebAuthn/electron-main/paradisBrowserWebAuthn.js'; // PARA-PATCH: passkey account chooser
 
 /** Time the main process waits for a prompt answer before a non-persisted deny. */
@@ -187,7 +188,7 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 			this._resolveRequest(webContents, permission, details).then(callback, () => callback(false));
 		});
 		electronSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
-			if (isAlwaysAllowedPermission(permission)) {
+			if (isAlwaysAllowedPermission(permission) || paradisAllowsDisplayCapture(permission, details.requestingUrl, details.mediaType ? [details.mediaType] : [])) { // PARA-PATCH: browser extension desktopCapture / tabCapture pages that armed a stream id
 				return true;
 			}
 			const origin = getPermissionOrigin(details.requestingUrl, details.securityOrigin ?? requestingOrigin);
@@ -463,7 +464,7 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 	}
 
 	private async _resolveRequest(webContents: Electron.WebContents | null, permission: string, details: PermissionRequestDetails | undefined): Promise<boolean> {
-		if (isAlwaysAllowedPermission(permission)) {
+		if (isAlwaysAllowedPermission(permission) || paradisAllowsDisplayCapture(permission, details?.requestingUrl ?? webContents?.getURL(), mediaKindsFromDetails(details))) { // PARA-PATCH: browser extension desktopCapture / tabCapture pages that armed a stream id
 			return true;
 		}
 		// eslint-disable-next-line local/code-no-in-operator

@@ -193,7 +193,7 @@ const PERMISSION_NAMESPACES: Record<string, string | undefined> = {
 };
 
 /** Para Code が詰め物（paradisBrowserExtensionShim.ts）で足す名前空間（manifest.json の文書では数えない）。 */
-const SHIM_NAMESPACES = new Set(['storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative', 'tts', 'browsingData', 'userScripts', 'sidePanel']);
+const SHIM_NAMESPACES = new Set(['desktopCapture', 'tabCapture', 'storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative', 'tts', 'browsingData', 'userScripts', 'sidePanel']);
 
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Para Code extension compatibility page</title></head><body>
 <h1>Sign in</h1><form action="/signin" method="post"><label>Email <input type="email" name="email" autocomplete="username"></label>
