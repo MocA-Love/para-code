@@ -1036,7 +1036,7 @@
 			"label": "Loom",
 			"id": "liecbddmkiiihnedobmlmillhodjkdmb",
 			"install": "ok",
-			"installMs": 1018,
+			"installMs": 1204,
 			"name": "Loom – Screen Recorder & Screen Capture",
 			"version": "5.5.214",
 			"manifestVersion": 3,
@@ -1066,10 +1066,9 @@
 			"popup": "unreadable",
 			"popupErrors": [],
 			"options": "none",
-			"missingApis": [
-				"desktopCapture",
-				"tabCapture"
-			],
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"missingApis": [],
 			"missingApisFrom": "manifest.json",
 			"workerErrors": []
 		},

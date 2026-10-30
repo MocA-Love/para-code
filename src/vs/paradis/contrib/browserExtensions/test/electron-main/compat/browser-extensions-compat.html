@@ -21,11 +21,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 </style>
 </head>
 <body>
-<h1>31 個中、動く 18・一部動く 11・動かない 2</h1>
+<h1>31 個中、動く 18・一部動く 12・動かない 1</h1>
 <p class="muted">Electron 43.7.7（Chromium 150.0.7871.250）、Linux の Xvfb で 2026-10-29T23:05:17.040Z に自動で確かめた結果です。拡張機能は Chrome ウェブストアから、Para Code と同じ道（署名の確かめを含む）で入れました。</p>
 
 <table class="summary"><tr><th>動く</th><th>一部動く</th><th>動かない</th></tr>
-<tr><td class="ok">18</td><td class="partial">11</td><td class="ng">2</td></tr></table>
+<tr><td class="ok">18</td><td class="partial">12</td><td class="ng">1</td></tr></table>
 
 <h2>自動で見たことと、見ていないこと</h2>
 <div class="panel">
@@ -71,7 +71,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <tr><td>広告・プライバシー</td><td>Privacy Badger<br><span class="muted"><code>pkehgijcmpdhfbdbbnkijodmdjhbjlgp</code></span></td><td class="partial">一部動く</td><td>広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません</td><td>2026.9.15.2</td><td>running</td><td>ran</td><td>rendered</td></tr>
 <tr><td>広告・プライバシー</td><td>Ghostery AdBlocker for Privacy<br><span class="muted"><code>mlomiejdfkolichcflejclcbmpeaniij</code></span></td><td class="partial">一部動く</td><td>「ユーザースクリプトを許可」をオンにしても、この拡張機能はユーザースクリプトを登録しませんでした（利用者がスクリプトを入れたときに登録するもの。推測）<br>広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません</td><td>10.6.10</td><td>running</td><td>ran</td><td>rendered</td></tr>
 <tr><td>Orca で不可だったもの</td><td>Tampermonkey<br><span class="muted"><code>dhdgffkkebhmkfjojejmpbldmpobfkfo</code></span></td><td class="ok">動く</td><td>ユーザースクリプト（chrome.userScripts）は、拡張機能の管理で「ユーザースクリプトを許可」をオンにすると動きます（登録 2 件、試験用のページで動きました）</td><td>5.5.1</td><td>running</td><td>none</td><td>rendered</td></tr>
-<tr><td>Orca で不可だったもの</td><td>Loom – Screen Recorder &amp; Screen Capture<br><span class="muted"><code>liecbddmkiiihnedobmlmillhodjkdmb</code></span></td><td class="ng">動かない</td><td>画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）がありません。拡張機能の主な働きがこれです</td><td>5.5.214</td><td>running</td><td>ran</td><td>unreadable</td></tr>
+<tr><td>Orca で不可だったもの</td><td>Loom – Screen Recorder &amp; Screen Capture<br><span class="muted"><code>liecbddmkiiihnedobmlmillhodjkdmb</code></span></td><td class="partial">一部動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>録画（chrome.desktopCapture・chrome.tabCapture）は、ダイアログで選んだタブ・ほかのアプリの窓（macOS だけ）か、拡張機能のボタンを押したタブだけを撮ります。画面全体は撮れません<br>【要確認】ポップアップは開きましたが、自動の確かめの前に閉じたか、読めませんでした（手で確かめます）</td><td>5.5.214</td><td>running</td><td>ran</td><td>unreadable</td></tr>
 <tr><td>Orca で不可だったもの</td><td>Momentum<br><span class="muted"><code>laookkfknpbbblfpciffpaejjkokdgca</code></span></td><td class="ok">動く</td><td>新しいタブのページ（chrome_url_overrides.newtab）は、内蔵ブラウザの新しいタブで開きます（Para Code のエディタの新しいタブは置き換えません）<br>無い API（任意の権限など。主な働きには関わらない見込みです）: bookmarks、sessions、topSites、scripting、alarms、tabGroups、search<br>content script は決まったサイト（GitHub など）だけのものなので、試験用のページでは動かないのが正しいです（そのサイトでは手で確かめます）</td><td>2.27.9</td><td>running</td><td>did not run</td><td>none</td></tr>
 <tr><td>その他</td><td>Google Keep Chrome Extension<br><span class="muted"><code>lpcaedmchfhocbbapmcbpinfpgnhiddi</code></span></td><td class="partial">一部動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません</td><td>4.26431.540.1</td><td>running</td><td>none</td><td>none</td></tr>
 </table>
@@ -89,13 +89,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <tr><td>Tampermonkey・uBlock Origin Lite・AdGuard・Ghostery</td><td>chrome.userScripts がありませんでした（P9b）</td><td>chrome.userScripts を足しました。拡張機能の管理で拡張機能ごとに「ユーザースクリプトを許可」をオンにしたときだけ使えます（Chrome と同じく既定はオフ）。入れるのはその場所の利用者のタブだけで、エージェントのタブと、エージェントと共有中のタブには入れません</td></tr>
 <tr><td>Bitwarden・Stylus・DeepL・Grammarly</td><td>chrome.sidePanel がありませんでした（P9d）</td><td>chrome.sidePanel を足しました。パネルは Para Code のウィンドウの中、内蔵ブラウザのタブの右に出します（タブにはしません）。エージェントのタブと、エージェントと共有中のタブの横には出しません</td></tr>
 <tr><td>Momentum</td><td>新しいタブの置き換え（chrome_url_overrides.newtab）に対応していませんでした（P9c）</td><td>内蔵ブラウザの新しいタブ（URL の無いタブ）を、その場所で有効な拡張機能の新しいタブのページにするようにしました。Para Code のエディタの新しいタブ、エージェントのタブ、エージェントと共有中のタブは置き換えません</td></tr>
+<tr><td>Loom</td><td>chrome.desktopCapture・chrome.tabCapture がありませんでした（P9e）</td><td>両方を足しました。撮るのは、ダイアログで選んだタブ・ほかのアプリの窓（macOS だけ）か、拡張機能のボタンを押したタブだけです。Para Code の画面・画面全体・エージェントのタブ・共有中のタブは撮りません</td></tr>
 <tr><td>Keeper・Ghostery</td><td>chrome.browsingData がありませんでした（P9a）</td><td>chrome.browsingData を足しました。消すのは呼び出し元のセッションのウェブのデータだけで、拡張機能のデータ・エージェントのセッション・ほかの場所のデータには触れません。期間の指定と、Para Code に無いデータ（履歴など）は断ります</td></tr>
 </table>
 
 <h2>直していないもの（大きいので別にします）</h2>
 <table>
 <tr><th>足りないもの</th><th>当たる拡張機能</th><th>理由</th></tr>
-<tr><td>画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）</td><td>Loom</td><td>Electron 43 にありません</td></tr>
 <tr><td>広告のブロック（declarativeNetRequest）</td><td>広告・プライバシーの 4 つ</td><td>D7 で後回しにしました</td></tr>
 </table>
 
