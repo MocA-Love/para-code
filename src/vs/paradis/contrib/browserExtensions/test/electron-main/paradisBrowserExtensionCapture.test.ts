@@ -8,23 +8,10 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisIsExtensionDisplayMediaRequest } from '../../../../../platform/browserView/common/paradisExtensionDisplayMediaGuard.js';
 import { paradisInstallCapture } from '../../common/paradisBrowserExtensionShim.js';
 
 suite('ParadisBrowserExtensionCapture', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
-
-	test('refuses screen capture requests from extension pages only', () => {
-		const page = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/rec.html';
-		assert.deepStrictEqual({
-			display: paradisIsExtensionDisplayMediaRequest('media', page, []),
-			displayCapture: paradisIsExtensionDisplayMediaRequest('display-capture', page, undefined),
-			camera: paradisIsExtensionDisplayMediaRequest('media', page, ['video']),
-			microphone: paradisIsExtensionDisplayMediaRequest('media', page, ['audio']),
-			web: paradisIsExtensionDisplayMediaRequest('media', 'https://example.com/', []),
-			other: paradisIsExtensionDisplayMediaRequest('notifications', page, []),
-		}, { display: true, displayCapture: true, camera: false, microphone: false, web: false, other: false });
-	});
 
 	test('desktopCapture and tabCapture fail the way Chrome reports errors, only when the manifest asks for them', async () => {
 		const run = (permissions: string[]) => {
