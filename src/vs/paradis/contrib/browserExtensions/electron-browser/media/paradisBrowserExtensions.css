@@ -88,6 +88,15 @@
 	font-size: 11px;
 }
 
+.paradis-browser-profile-modal .pbe-row-option {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 4px;
+	font-size: 12px;
+	cursor: pointer;
+}
+
 .paradis-browser-profile-modal .pbe-store {
 	display: flex;
 	align-items: center;

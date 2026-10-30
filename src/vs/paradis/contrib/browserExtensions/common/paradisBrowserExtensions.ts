@@ -342,6 +342,11 @@ export interface IParadisBrowserExtensionView extends IParadisInstalledBrowserEx
 	readonly pagesWithoutApis?: readonly string[];
 	/** 確かめて置いてある、次の起動で使うストアの更新の版（使っている最中には替えない）。 */
 	readonly nextVersion?: string;
+	/**
+	 * userScripts を求める拡張機能だけ: 「ユーザースクリプトを許可」した場所のキー（Chrome の拡張機能ごとの設定と同じ。
+	 * 既定はどこでもオフ）。
+	 */
+	readonly userScripts?: { readonly allowedIn: readonly string[] };
 	/** 新しく権限を求めるため、確かめるまで入れずに保留にしているストアの更新。 */
 	readonly pendingUpdate?: { readonly version: string; readonly permissions: readonly string[]; readonly hostPermissions: readonly string[] };
 }
@@ -397,6 +402,8 @@ export interface IParadisBrowserExtensionsMainService {
 	/** フォルダから読み込み直す（元のフォルダの今の中身で写しを作り直す）。 */
 	reloadUnpacked(id: string): Promise<IParadisAddExtensionResult>;
 	setEnabled(id: string, profile: string, enabled: boolean): Promise<void>;
+	/** 「ユーザースクリプトを許可」を切り替える（userScripts を求める拡張機能だけ。`profile` の場所で）。 */
+	setUserScriptsAllowed(id: string, profile: string, allowed: boolean): Promise<void>;
 	remove(id: string): Promise<void>;
 	/**
 	 * 共有の確認に使う、そのページに入っている（入りうる）拡張機能。`viewId` のビューが main にあれば、その
