@@ -10,7 +10,7 @@ import { timeout } from '../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../log/common/log.js';
 import { IBrowserViewLoadError } from '../../common/browserView.js';
-import { IParaBrowserViewLoadStallReport, PARA_BROWSER_VIEW_LOAD_MAX_WAITS, ParaBrowserViewLoadWatchdogWebContents, paraGetBrowserViewLoadStall, paraInstallBrowserViewLoadWatchdog, paraOnDidChangeBrowserViewLoadStall, paraRespondToBrowserViewLoadStall, paraSetBrowserViewAgentTab, paraSetBrowserViewLoadStallReporter, paraSetBrowserViewOpener } from '../../electron-main/paraBrowserViewLoadWatchdog.js';
+import { IParaBrowserViewLoadStallReport, PARA_BROWSER_VIEW_LOAD_MAX_WAITS, ParaBrowserViewLoadWatchdogWebContents, paraGetBrowserViewLoadStall, paraInstallBrowserViewLoadWatchdog, paraOnDidChangeBrowserViewLoadStall, paraRespondToBrowserViewLoadStall, paraOnDidMarkBrowserViewAgentTab, paraSetBrowserViewAgentTab, paraSetBrowserViewLoadStallReporter, paraSetBrowserViewOpener } from '../../electron-main/paraBrowserViewLoadWatchdog.js';
 
 const TIMEOUT_MS = 20;
 
@@ -302,5 +302,23 @@ suite('paraBrowserViewLoadWatchdog', () => {
 			reports: [`wait-limit:${PARA_BROWSER_VIEW_LOAD_MAX_WAITS}`],
 			asking: undefined,
 		});
+	});
+	test('tells when a view becomes an agent tab, itself or through its opener, once', () => {
+		const marked: string[] = [];
+		const listener = paraOnDidMarkBrowserViewAgentTab(viewId => marked.push(viewId));
+		try {
+			paraSetBrowserViewOpener('mark-child', 'mark-parent');
+			paraSetBrowserViewAgentTab('mark-parent', true);
+			paraSetBrowserViewAgentTab('mark-parent', true);
+			paraSetBrowserViewOpener('mark-late', 'mark-child');
+			paraSetBrowserViewOpener('mark-human', 'mark-nobody');
+			assert.deepStrictEqual(marked, ['mark-parent', 'mark-child', 'mark-late']);
+		} finally {
+			listener.dispose();
+			paraSetBrowserViewAgentTab('mark-parent', false);
+			for (const viewId of ['mark-child', 'mark-late', 'mark-human']) {
+				paraSetBrowserViewOpener(viewId, undefined);
+			}
+		}
 	});
 });

@@ -316,9 +316,15 @@ export class ParadisBrowserExtensionToolbarFeature extends BrowserEditorContribu
 		return this._toolbar?.actions.find(action => action.extensionId === extensionId);
 	}
 
-	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
+	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore, isNew: boolean): void {
 		if (!this._toolbarService.active) {
 			return;
+		}
+		// 内蔵ブラウザの新しいタブ（URL の無いタブ）: 拡張機能の新しいタブのページがあれば、それにする（P9c、chrome_url_overrides.newtab）。
+		// 決めるのは main（その場所で有効な拡張機能・エージェントのタブや共有中のタブでないか）。エディタの新しいタブは BrowserEditor
+		// ではないので、ここへは来ない
+		if (isNew && !model.url && !this.editor.input?.url) {
+			void this._toolbarService.main.openNewTabPage(model.id).catch(() => false);
 		}
 		// 別の文書へ移ってタブごとのボタンの値（バッジなど）が消えたときも、main が知らせる
 		store.add(this._toolbarService.onDidChangeToolbar(() => this._refresh(model)));

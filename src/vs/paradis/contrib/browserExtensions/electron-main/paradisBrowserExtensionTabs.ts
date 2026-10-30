@@ -26,6 +26,8 @@ import type { BrowserWindow, Session, WebContents, WebFrameMain } from 'electron
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { paradisIsChromeWebStoreUrl } from '../common/paradisBrowserExtensionWebStore.js';
+import { paraOnDidMarkBrowserViewAgentTab } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 
 /** 内蔵ブラウザのタブ 1 つ（main の BrowserView の、ここで使うところ）。 */
@@ -169,6 +171,9 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	private readonly _onDidResetTab = this._disposables.add(new Emitter<number>());
 	/** タブが別の文書へ移った・閉じた（WebContents の id）。タブごとのボタンの値を消すのに使う。 */
 	readonly onDidResetTab = this._onDidResetTab.event;
+	private readonly _onDidBecomeAgentTab = this._disposables.add(new Emitter<WebContents>());
+	/** タブがエージェントのものだと分かった（エージェントが開いた・エージェントのタブから開いた。知らせが遅れて届いたときも）。 */
+	readonly onDidBecomeAgentTab = this._onDidBecomeAgentTab.event;
 
 	constructor(
 		private readonly _host: ParadisExtensionApiHost,
@@ -179,6 +184,12 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		this._disposables.add(_environment.onDidCreateView(({ view, existing }) => this._observe(view, existing)));
 		this._disposables.add(_environment.onDidFocusWindow(windowId => this.noteWindowFocus(windowId)));
 		this._disposables.add(this._onDidResetTab.event(tabId => this._activeTabGrants.delete(tabId)));
+		this._disposables.add(paraOnDidMarkBrowserViewAgentTab(viewId => {
+			const view = this._environment.listViews().find(candidate => candidate.id === viewId);
+			if (view && !view.webContents.isDestroyed()) {
+				this._onDidBecomeAgentTab.fire(view.webContents);
+			}
+		}));
 		for (const view of _environment.listViews()) {
 			this._observe(view, true, true);
 		}
@@ -687,7 +698,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		if (url.startsWith('chrome-extension://') && !url.startsWith(`chrome-extension://${caller.extension.id}/`)) {
 			throw new ParadisExtensionApiError('Cannot access a chrome-extension:// URL of different extension');
 		}
-		if (/^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)(\/|$)/.test(url)) {
+		if (paradisIsChromeWebStoreUrl(url)) {
 			throw new ParadisExtensionApiError('The extensions gallery cannot be scripted.');
 		}
 		if (paradisIsExtensionPageHeld(contents)) {

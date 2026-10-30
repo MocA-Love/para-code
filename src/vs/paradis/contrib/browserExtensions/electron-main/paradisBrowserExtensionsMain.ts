@@ -48,6 +48,7 @@ import {
 	PARADIS_MAX_EXTENSION_FILES,
 	PARADIS_MAX_INSTALLED_EXTENSIONS,
 	paradisEnabledExtensions,
+	paradisNewTabOverrideUrl,
 	paradisIsExtensionId,
 	paradisIsExtensionProfileKey,
 	paradisLedgerWithDataCleared,
@@ -73,6 +74,7 @@ import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.j
 import { ParadisBrowserExtensionPrivacy, paradisPrivacyUserTabs } from './paradisBrowserExtensionPrivacy.js';
 import { paradisRegisterBrowsingDataApis } from './paradisBrowserExtensionBrowsingData.js';
 import { ParadisBrowserExtensionTts } from './paradisBrowserExtensionTts.js';
+import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { ParadisBrowserExtensionUserScripts } from './paradisBrowserExtensionUserScripts.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IParadisHeldUpdate, IParadisWebStoreUpdate, PARADIS_WEB_STORE_UPDATE_URL, ParadisWebStoreUpdateSchedule, paradisAddedAccess, paradisBuildUpdateRequest, paradisCompareExtensionVersions, paradisHasAddedAccess, paradisParseUpdateResponse } from './paradisBrowserExtensionWebStoreUpdates.js';
@@ -398,6 +400,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _tts: ParadisBrowserExtensionTts | undefined;
 	/** chrome.userScripts（P9b）。タブの口があるときだけ（入れてよい利用者のタブかを決めるため）。 */
 	private readonly _userScripts: ParadisBrowserExtensionUserScripts | undefined;
+	/** 内蔵ブラウザのタブ（新しいタブのページの置き換え、P9c）。 */
+	private readonly _tabEnvironment: IParadisBrowserExtensionTabsOptions['environment'] | undefined;
+	/** 拡張機能の新しいタブのページにしたタブ（後からエージェントのタブと分かったら外す）。 */
+	private readonly _newTabPages = new WeakSet<object>();
 	/** ネイティブメッセージング（P6）。 */
 	private readonly _nativeMessaging: ParadisNativeMessaging | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
@@ -522,6 +528,17 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			describeTab: (extension, contents) => tabs.describeTab(extension, contents.session, contents.id),
 		}) : undefined;
 		this._userScripts?.listen();
+		this._tabEnvironment = tabs ? tabsOptions?.environment : undefined;
+		if (tabs) {
+			// 3 秒の待ちの後にエージェントのタブと分かった: 入れたユーザースクリプトを残さず、拡張機能の新しいタブのページも外す
+			this._disposables.add(tabs.onDidBecomeAgentTab(contents => {
+				this._userScripts?.noteAgentTab(contents);
+				if (this._newTabPages.has(contents) && contents.getURL().startsWith('chrome-extension://')) {
+					this._newTabPages.delete(contents);
+					void contents.loadURL('about:blank').catch(() => undefined);
+				}
+			}));
+		}
 		this._services = tabs && tabsOptions && permissions ? new ParadisBrowserExtensionServices(this._apiHost, tabs, permissions, {
 			createNotification: options => tabsOptions.createNotification?.(options),
 			chooseSavePath: (owner, name) => tabsOptions.chooseSavePath?.(owner, name) ?? Promise.resolve(undefined),
@@ -1537,6 +1554,38 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		}
 	}
 
+	/**
+	 * 内蔵ブラウザの新しいタブ（URL の無いタブ）を、その場所で有効な拡張機能の新しいタブのページ（chrome_url_overrides.newtab）に
+	 * する（P9c）。いくつもあれば、最後に入れたもの（Chrome と同じ）。エージェントのタブ・エージェントと共有中のタブ・SSH 先の
+	 * トンネルのセッションでは置き換えない。置き換えたら true。
+	 */
+	async openNewTabPage(viewId: string): Promise<boolean> {
+		await this._ready;
+		const view = typeof viewId === 'string' ? this._tabEnvironment?.listViews().find(candidate => candidate.id === viewId) : undefined;
+		if (!this.active || !view || view.webContents.isDestroyed()) {
+			return false;
+		}
+		const contents = view.webContents;
+		const current = contents.getURL();
+		const place = this._placeOfSession(contents.session);
+		// 開くページが決まっているタブ（リンクから開いた子タブなど、読み込みの途中で URL がまだ無いもの）は置き換えない
+		const untouched = !contents.isLoading() && contents.navigationHistory.length() <= 1;
+		if (place === undefined || view.isAgentTab() || paradisIsExtensionPageHeld(contents) || (current !== '' && current !== 'about:blank') || !untouched) {
+			return false;
+		}
+		const session = contents.session as unknown as ParadisExtensionSession;
+		const page = paradisEnabledExtensions(this._ledger, place)
+			.map(installed => ({ installed, url: paradisNewTabOverrideUrl(installed.id, session.extensions.getExtension(installed.id)?.manifest) }))
+			.filter(candidate => candidate.url !== undefined)
+			.sort((a, b) => b.installed.installedAt - a.installed.installedAt)[0];
+		if (!page?.url) {
+			return false;
+		}
+		this._newTabPages.add(contents);
+		await contents.loadURL(page.url).catch(() => undefined);
+		return true;
+	}
+
 	/** 「ユーザースクリプトを許可」を切り替える（Chrome の拡張機能ごとの設定と同じ。場所ごと）。 */
 	async setUserScriptsAllowed(id: string, profile: string, allowed: boolean): Promise<void> {
 		await this._ready;
@@ -1679,6 +1728,7 @@ export function paradisRegisterBrowserExtensions(
 		reloadUnpacked: id => created.reloadUnpacked(id),
 		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
 		setUserScriptsAllowed: (id, profile, allowed) => created.setUserScriptsAllowed(id, profile, allowed),
+		openNewTabPage: viewId => created.openNewTabPage(viewId),
 		remove: id => created.remove(id),
 		getShareExtensions: (viewId, fallbackProfile) => created.getShareExtensions(viewId, fallbackProfile),
 		onDidRequestActivateTab: onDidRequestActivateTab.event,

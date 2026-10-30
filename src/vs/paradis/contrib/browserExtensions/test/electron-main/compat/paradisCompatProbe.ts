@@ -111,6 +111,12 @@ export interface IParadisCompatResult {
 	optionsElements?: number;
 	popupErrors?: string[];
 	optionsErrors?: string[];
+	/** chrome_url_overrides.newtab のページ（P9c。内蔵ブラウザの新しいタブを置き換える）。 */
+	newtab?: string;
+	newtabElements?: number;
+	newtabErrors?: string[];
+	/** 内蔵ブラウザの新しいタブ（URL の無いタブ）を、拡張機能の新しいタブのページに置き換えたか。 */
+	newtabOverride?: boolean;
 	missingApis?: string[];
 	missingApisFrom?: string;
 	workerErrors?: string[];
@@ -326,7 +332,18 @@ async function run(resultPath: string, root: string): Promise<void> {
 		const optionsPath = manifest.options_ui?.page ?? manifest.options_page;
 		result.devtoolsPage = typeof manifest.devtools_page === 'string';
 		result.sidePanel = typeof manifest.side_panel?.default_path === 'string';
-		for (const [kind, path] of [['popup', popupPath], ['options', optionsPath]] as const) {
+		const newtabPath = manifest.chrome_url_overrides?.newtab;
+		if (typeof newtabPath === 'string') {
+			// 利用者が内蔵ブラウザで新しいタブを開いたときと同じ（URL の無いタブを main に置き換えさせる）
+			const blank = new BrowserWindow({ show: false, width: 800, height: 600, webPreferences: { session: ses, sandbox: true } });
+			const view: IView = { id: `compat-newtab-${id}`, webContents: blank.webContents, windowId: tab.id, isAgentTab: () => false, isVisible: () => true, onDidClose: Event.None, onDidChangeVisibility: Event.None };
+			views.push(view);
+			created.fire({ view, existing: false });
+			result.newtabOverride = await manager.openNewTabPage(view.id) && blank.webContents.getURL().startsWith(`chrome-extension://${id}/`);
+			blank.destroy();
+			views.splice(views.indexOf(view), 1);
+		}
+		for (const [kind, path] of [['popup', popupPath], ['options', optionsPath], ['newtab', newtabPath]] as const) {
 			if (typeof path !== 'string') {
 				result[kind] = 'none';
 				continue;
@@ -356,9 +373,12 @@ async function run(resultPath: string, root: string): Promise<void> {
 			if (kind === 'popup') {
 				result.popupElements = view?.elements;
 				result.popupErrors = withoutDevPreloadNoise(errors).slice(0, 5);
-			} else {
+			} else if (kind === 'options') {
 				result.optionsElements = view?.elements;
 				result.optionsErrors = withoutDevPreloadNoise(errors).slice(0, 5);
+			} else {
+				result.newtabElements = view?.elements;
+				result.newtabErrors = withoutDevPreloadNoise(errors).slice(0, 5);
 			}
 			if (view && !result.missingApis) {
 				result.missingApis = view.missing;
