@@ -87,6 +87,8 @@ interface IPanel {
 	view: WebContentsView | undefined;
 	/** 最後に renderer が「出す」を送ってきたタブ（view の id）。「隠す」はこのタブからのものだけ受ける。 */
 	shownFor: string | undefined;
+	/** shownFor のタブが閉じたら隠す見張り（renderer から「隠す」が届かないときに備える）。 */
+	shownForWatch: IDisposable | undefined;
 	readonly disposables: DisposableStore;
 }
 
@@ -349,10 +351,7 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 			// 隠すのは、そのタブの横に出してよいかに関わらず受ける（出してよくなくなった後に届く「隠す」を捨てると、パネルが残る）。
 			// ただし最後に出したタブからのものだけ（前のタブのエディタから遅れて届く「隠す」で、今のタブの横のパネルを消さない）
 			if (panel.shownFor === viewId) {
-				panel.shownFor = undefined;
-				if (panel.view && !panel.view.webContents.isDestroyed()) {
-					panel.view.setVisible(false);
-				}
+				this._hideShown(panel);
 			}
 			return;
 		}
@@ -369,8 +368,26 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 			width: Math.round(layout.width * layout.zoomFactor),
 			height: Math.round(layout.height * layout.zoomFactor),
 		});
-		panel.shownFor = viewId;
+		if (panel.shownFor !== viewId) {
+			panel.shownForWatch?.dispose();
+			panel.shownFor = viewId;
+			panel.shownForWatch = view.onDidClose(() => {
+				if (panel.shownFor === viewId && this._panels.get(panel.windowId) === panel) {
+					this._hideShown(panel);
+				}
+			});
+		}
 		contentsView.setVisible(true);
+	}
+
+	/** 最後に出したタブの横のパネルを隠す。 */
+	private _hideShown(panel: IPanel): void {
+		panel.shownFor = undefined;
+		panel.shownForWatch?.dispose();
+		panel.shownForWatch = undefined;
+		if (panel.view && !panel.view.webContents.isDestroyed()) {
+			panel.view.setVisible(false);
+		}
 	}
 
 	/** パネルの閉じるボタン。 */
@@ -429,7 +446,7 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 		if (existing) {
 			this._close(view.windowId);
 		}
-		const panel: IPanel = { windowId: view.windowId, session, place, extension, tabId, path: url, view: undefined, shownFor: undefined, disposables: new DisposableStore() };
+		const panel: IPanel = { windowId: view.windowId, session, place, extension, tabId, path: url, view: undefined, shownFor: undefined, shownForWatch: undefined, disposables: new DisposableStore() };
 		this._panels.set(view.windowId, panel);
 		this._emitPanel(panel, 'onOpened');
 		this._onDidChange.fire();
@@ -489,6 +506,8 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 			return;
 		}
 		this._panels.delete(windowId);
+		panel.shownForWatch?.dispose();
+		panel.shownForWatch = undefined;
 		panel.disposables.dispose();
 		const view = panel.view;
 		panel.view = undefined;

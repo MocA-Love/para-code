@@ -89,8 +89,9 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 			? (result.newtabOverride === false ? '内蔵ブラウザの新しいタブを、拡張機能の新しいタブのページに置き換えられませんでした' : `新しいタブのページ（chrome_url_overrides.newtab）が ${result.newtab ?? '開けません'} でした`)
 			: '新しいタブのページ（chrome_url_overrides.newtab）は、内蔵ブラウザの新しいタブで開きます（Para Code のエディタの新しいタブは置き換えません）');
 	}
-	if (missing.includes('desktopCapture') && missing.includes('tabCapture')) {
-		return { status: 'ng', reasons: ['画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）がありません。拡張機能の主な働きがこれです'] };
+	// 録画（P9e）: API は失敗を返す形で足した（安全のため撮らせない）。録画が主な働きの拡張機能は動かない
+	if (required.has('desktopCapture') && required.has('tabCapture')) {
+		return { status: 'ng', reasons: ['録画の API（chrome.desktopCapture・chrome.tabCapture）は安全のため未対応です。呼ぶと失敗を返します。拡張機能の主な働きがこれです'] };
 	}
 	if (result.category === 'Orca で不可だったもの' && missing.includes('userScripts')) {
 		return { status: 'ng', reasons: ['ユーザースクリプトを動かす chrome.userScripts がありません。拡張機能の主な働きがこれです'] };
@@ -163,7 +164,7 @@ const FIXED = [
 
 /** 直していないもの（大きいので別にする）。 */
 const NOT_FIXED = [
-	['画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）', 'Loom', 'Electron 43 にありません'],
+	['画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）', 'Loom', '安全のため未対応です。拡張機能のページに画面の取得を許すと、Electron 43 では生の画面 id での取得を区別して断れません（P9e）'],
 	['広告のブロック（declarativeNetRequest）', '広告・プライバシーの 4 つ', 'D7 で後回しにしました'],
 ];
 

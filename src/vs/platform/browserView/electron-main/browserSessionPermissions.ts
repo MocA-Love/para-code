@@ -25,6 +25,7 @@ import {
 } from '../common/browserPermissions.js';
 import { IBrowserViewPermissionRequestEvent, IBrowserViewStorageKeys, isInMemoryStorageScope } from '../common/browserView.js';
 import type { BrowserSession } from './browserSession.js';
+import { paradisIsDisplayMediaRequest } from '../common/paradisExtensionDisplayMediaGuard.js'; // PARA-PATCH: no built-in browser page captures the screen
 import { paradisInstallWebAuthnAccountChooser } from '../../../paradis/contrib/browserWebAuthn/electron-main/paradisBrowserWebAuthn.js'; // PARA-PATCH: passkey account chooser
 
 /** Time the main process waits for a prompt answer before a non-persisted deny. */
@@ -187,6 +188,7 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 			this._resolveRequest(webContents, permission, details).then(callback, () => callback(false));
 		});
 		electronSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
+			if (paradisIsDisplayMediaRequest(permission, mediaKindsFromDetails(details))) { return false; } // PARA-PATCH: answer screen capture checks the way the request handler decides them
 			if (isAlwaysAllowedPermission(permission)) {
 				return true;
 			}
@@ -463,6 +465,9 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 	}
 
 	private async _resolveRequest(webContents: Electron.WebContents | null, permission: string, details: PermissionRequestDetails | undefined): Promise<boolean> {
+		if (paradisIsDisplayMediaRequest(permission, mediaKindsFromDetails(details))) { // PARA-PATCH: no built-in browser page or frame captures the screen (Electron cannot tell getDisplayMedia from a raw screen id)
+			return false;
+		}
 		if (isAlwaysAllowedPermission(permission)) {
 			return true;
 		}

@@ -42,11 +42,15 @@ suite('ParadisBrowserExtensionSidePanel', () => {
 		} as unknown as ParadisExtensionApiHost;
 		const session = { storagePath: '/tmp/profile' } as unknown as ParadisApiSession;
 		const extension: IParadisSidePanelExtension = { id: ID, version: '1', name: 'Panel', manifest: { manifest_version: 3, permissions: ['sidePanel'], side_panel: { default_path: 'panel.html' } } };
-		const makeView = (id: number, windowId = 1): IParadisTabView & { agent: boolean } => {
+		const closeEmitters: Emitter<void>[] = [];
+		const makeView = (id: number, windowId = 1): IParadisTabView & { agent: boolean; close(): void } => {
+			const onDidClose = new Emitter<void>();
+			closeEmitters.push(onDidClose);
 			const view = {
 				id: `view-${id}`, windowId, agent: false,
 				webContents: { id, isDestroyed: () => false, session } as unknown as IParadisTabView['webContents'],
-				isAgentTab: () => view.agent, isVisible: () => true, onDidClose: Event.None, onDidChangeVisibility: Event.None,
+				isAgentTab: () => view.agent, isVisible: () => true, onDidClose: onDidClose.event, onDidChangeVisibility: Event.None,
+				close: () => onDidClose.fire(),
 			};
 			return view;
 		};
@@ -88,7 +92,7 @@ suite('ParadisBrowserExtensionSidePanel', () => {
 		}, join(root, 'side-panel.json'), { warn: () => { } });
 		const caller: IParadisExtensionApiCaller = { extension, session, place: 'default', connection: 'worker', fromWorker: true };
 		const call = (method: string, ...args: unknown[]) => namespaces.get('sidePanel')!.methods[method].invoke(caller, args);
-		return { root, panel, call, emitted, created, tab1, tab2, active, onDidChangeActiveTab, onDidBecomeAgentTab, setGesture: (value: boolean) => { gesture = value; }, dispose: () => { panel.dispose(); onDidChangeActiveTab.dispose(); onDidBecomeAgentTab.dispose(); } };
+		return { root, panel, call, emitted, created, tab1, tab2, active, onDidChangeActiveTab, onDidBecomeAgentTab, setGesture: (value: boolean) => { gesture = value; }, dispose: () => { panel.dispose(); onDidChangeActiveTab.dispose(); onDidBecomeAgentTab.dispose(); closeEmitters.forEach(emitter => emitter.dispose()); } };
 	}
 
 	test('keeps options like Chromium: the manifest first, then the default, then per tab', async () => {
@@ -176,6 +180,22 @@ suite('ParadisBrowserExtensionSidePanel', () => {
 			// 二度目の「隠す」は何もしない
 			panel.layout(tab1.id, undefined);
 			assert.deepStrictEqual({ afterOtherHide, visible: created.visible }, { afterOtherHide: [false, true], visible: [false, true, false] });
+		} finally {
+			dispose();
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('hides the panel when the tab it was shown for closes without the renderer asking', async () => {
+		const { root, panel, call, created, tab1, setGesture, dispose } = await setup();
+		try {
+			setGesture(true);
+			call('open', { windowId: -2 });
+			panel.layout(tab1.id, { x: 0, y: 0, width: 300, height: 400, zoomFactor: 1 });
+			tab1.close();
+			// 閉じた後に遅れて届く「隠す」は何もしない
+			panel.layout(tab1.id, undefined);
+			assert.deepStrictEqual(created.visible, [false, true, false]);
 		} finally {
 			dispose();
 			await fs.rm(root, { recursive: true, force: true });
