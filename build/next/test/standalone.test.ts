@@ -44,6 +44,11 @@ const preloads = [
 		file: 'vs/paradis/contrib/browserExtensions/electron-browser/paradisWebStorePreload.ts',
 		markers: ['getFullChromeVersion', 'createTreeWalker(', 'MutationObserver('],
 	},
+	// PARA-PATCH: the fork's chrome.userScripts injection preload (Para Code browser extensions, experimental)
+	{
+		file: 'vs/paradis/contrib/browserExtensions/electron-browser/paradisUserScriptsPreload.ts',
+		markers: ['documentElement', 'MutationObserver(', 'readyState'],
+	},
 ];
 const javascriptFiles = preloads.map(({ file }) => file.replace(/\.ts$/, '.js')).sort();
 

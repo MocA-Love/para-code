@@ -73,6 +73,7 @@ import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.j
 import { ParadisBrowserExtensionPrivacy, paradisPrivacyUserTabs } from './paradisBrowserExtensionPrivacy.js';
 import { paradisRegisterBrowsingDataApis } from './paradisBrowserExtensionBrowsingData.js';
 import { ParadisBrowserExtensionTts } from './paradisBrowserExtensionTts.js';
+import { ParadisBrowserExtensionUserScripts } from './paradisBrowserExtensionUserScripts.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IParadisHeldUpdate, IParadisWebStoreUpdate, PARADIS_WEB_STORE_UPDATE_URL, ParadisWebStoreUpdateSchedule, paradisAddedAccess, paradisBuildUpdateRequest, paradisCompareExtensionVersions, paradisHasAddedAccess, paradisParseUpdateResponse } from './paradisBrowserExtensionWebStoreUpdates.js';
 import { IParadisInstallPrompt, ParadisWebStoreFetcher, ParadisWebStoreUpdateRequester, paradisCreateWebStoreUpdateRequester, paradisCreateWebStoreFetcher, paradisDownloadWebStoreCrx, paradisExtractCrxArchive } from './paradisBrowserExtensionWebStore.js';
@@ -153,6 +154,8 @@ const WEB_STORE_COPY_LIMITS = { files: PARADIS_MAX_EXTENSION_FILES, bytes: 512 *
 
 /** ストアのページの preload（束ねずに書き出される。build/next/standalone.ts）。 */
 const WEB_STORE_PRELOAD = 'vs/paradis/contrib/browserExtensions/electron-browser/paradisWebStorePreload.js';
+/** chrome.userScripts の注入の preload（P9b）。 */
+const USER_SCRIPTS_PRELOAD = 'vs/paradis/contrib/browserExtensions/electron-browser/paradisUserScriptsPreload.js';
 import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
 
 /** 拡張機能を読み込むセッションの持ち主（BrowserSession の一部）。 */
@@ -393,6 +396,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _privacy: ParadisBrowserExtensionPrivacy | undefined;
 	/** chrome.tts（P9a）。 */
 	private readonly _tts: ParadisBrowserExtensionTts | undefined;
+	/** chrome.userScripts（P9b）。タブの口があるときだけ（入れてよい利用者のタブかを決めるため）。 */
+	private readonly _userScripts: ParadisBrowserExtensionUserScripts | undefined;
 	/** ネイティブメッセージング（P6）。 */
 	private readonly _nativeMessaging: ParadisNativeMessaging | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
@@ -506,6 +511,17 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				return place !== undefined ? permissions.granted(extension.id, place).origins : [];
 			});
 		}
+		this._userScripts = tabs && permissions ? new ParadisBrowserExtensionUserScripts(this._apiHost, join(_root, 'user-scripts.json'), _logService, {
+			placeOfSession: session => this._placeOfSession(session),
+			isUserTab: contents => tabs.isAnnouncedUserTab(contents),
+			isEnabledIn: (place, id) => (this._ledger.enabled[place] ?? []).includes(id),
+			hasPermission: (place, extension) => {
+				const declared = extension.manifest.permissions;
+				return (Array.isArray(declared) && declared.includes('userScripts')) || permissions.granted(extension.id, place).permissions.includes('userScripts');
+			},
+			describeTab: (extension, contents) => tabs.describeTab(extension, contents.session, contents.id),
+		}) : undefined;
+		this._userScripts?.listen();
 		this._services = tabs && tabsOptions && permissions ? new ParadisBrowserExtensionServices(this._apiHost, tabs, permissions, {
 			createNotification: options => tabsOptions.createNotification?.(options),
 			chooseSavePath: (owner, name) => tabsOptions.chooseSavePath?.(owner, name) ?? Promise.resolve(undefined),
@@ -573,6 +589,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._nativeMessaging?.dispose();
 		this._tts?.dispose();
 		this._menus?.dispose();
+		this._userScripts?.dispose();
 		this._tabs?.dispose();
 		this._apiHost.dispose();
 		void this._syncStore.flush();
@@ -663,6 +680,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._menus?.load();
 		await this._permissions?.load();
 		await this._privacy?.load();
+		await this._userScripts?.load();
 		// 削除の途中に落ちて残った storage.sync の中身を片付ける
 		await this._syncStore.forgetExtensionsExcept(new Set(this._ledger.extensions.map(extension => extension.id)));
 		// 前の起動で写している途中に落ちて残ったフォルダを片付ける
@@ -709,6 +727,14 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				session.registerPreloadScript?.({ type: 'frame', id: 'paradis-web-store', filePath: FileAccess.asFileUri(WEB_STORE_PRELOAD).fsPath });
 			} catch (error) {
 				this._logService.warn('[paradis] could not add the Chrome Web Store preload', error);
+			}
+		}
+		// ユーザースクリプトの preload（http・https の文書でだけ main に聞く。受け手は先に立ててある）
+		if (this._userScripts) {
+			try {
+				session.registerPreloadScript?.({ type: 'frame', id: 'paradis-user-scripts', filePath: FileAccess.asFileUri(USER_SCRIPTS_PRELOAD).fsPath });
+			} catch (error) {
+				this._logService.warn('[paradis] could not add the user scripts preload', error);
 			}
 		}
 		// 詰め物の呼び出しの受け手は、拡張機能を読み込む前に立てる（worker は読み込んですぐ動き出す）
@@ -859,6 +885,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			}
 			this._loadErrors.delete(extension.id);
 			this._actions?.notifyChanged();
+			// ユーザースクリプトの js の file を先に読んでおく（注入の問いは同期で答えるため）
+			await this._userScripts?.warm(extension.id, extension.path);
 			await this._fireRuntimeLifecycle(entry, loaded, kind);
 		} catch (error) {
 			this._loadErrors.set(extension.id, error instanceof Error ? error.message : String(error));
@@ -906,6 +934,15 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 
 	async getState(): Promise<IParadisBrowserExtensionsState> {
 		await this._ready;
+		// 「ユーザースクリプトを許可」を出す拡張機能（manifest に userScripts を求めるもの。タブの口があるときだけ）
+		const userScriptsRequested = new Set<string>();
+		if (this._userScripts) {
+			for (const extension of this._ledger.extensions) {
+				if ((await this._declaredPermissions(extension.path)).includes('userScripts')) {
+					userScriptsRequested.add(extension.id);
+				}
+			}
+		}
 		return {
 			active: this.active,
 			setting: this._readSetting(),
@@ -917,6 +954,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				// 作った key は画面に渡さない
 				generatedKey: undefined,
 				...(this._stagedNext.has(extension.id) ? { nextVersion: this._stagedNext.get(extension.id) } : {}),
+				...(userScriptsRequested.has(extension.id) ? { userScripts: { allowedIn: this._userScripts?.allowedPlaces(extension.id) ?? [] } } : {}),
 				...(this._heldUpdates.has(extension.id) ? { pendingUpdate: { version: this._heldUpdates.get(extension.id)!.version, permissions: this._heldUpdates.get(extension.id)!.added.permissions, hostPermissions: this._heldUpdates.get(extension.id)!.added.hostPermissions } } : {}),
 			})),
 		};
@@ -1499,6 +1537,27 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		}
 	}
 
+	/** 「ユーザースクリプトを許可」を切り替える（Chrome の拡張機能ごとの設定と同じ。場所ごと）。 */
+	async setUserScriptsAllowed(id: string, profile: string, allowed: boolean): Promise<void> {
+		await this._ready;
+		const installed = this._ledger.extensions.find(extension => extension.id === id);
+		if (!this.active || !this._userScripts || !installed || !paradisIsExtensionProfileKey(profile) || typeof allowed !== 'boolean' || !(await this._declaredPermissions(installed.path)).includes('userScripts')) {
+			return;
+		}
+		await this._userScripts.setAllowed(profile, id, allowed);
+	}
+
+	/** 写しの manifest が求める権限（permissions と optional_permissions）。読めなければ空。 */
+	private async _declaredPermissions(path: string): Promise<readonly string[]> {
+		try {
+			const manifest: unknown = JSON.parse(await fs.readFile(join(path, 'manifest.json'), 'utf8'));
+			const record = manifest !== null && typeof manifest === 'object' ? manifest as Record<string, unknown> : {};
+			return [record.permissions, record.optional_permissions].flatMap(list => Array.isArray(list) ? list.filter((entry): entry is string => typeof entry === 'string') : []);
+		} catch {
+			return [];
+		}
+	}
+
 	async setEnabled(id: string, profile: string, enabled: boolean): Promise<void> {
 		await this._ready;
 		if (!this.active || !paradisIsExtensionId(id) || !paradisIsExtensionProfileKey(profile) || typeof enabled !== 'boolean') {
@@ -1539,6 +1598,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._menus?.forgetExtension(id);
 		await this._permissions?.forgetExtension(id);
 		await this._privacy?.forgetExtension(id);
+		await this._userScripts?.forgetExtension(id);
 		await this._runtimeState.forgetExtension(id);
 		// IndexedDB・Local Storage・CacheStorage は今あるセッションからすぐ消す。chrome.storage は Chromium が
 		// 終了まで開いたままで、ファイルを消しても中身が残る（Electron 43 で実測）ので、どのセッションも
@@ -1618,6 +1678,7 @@ export function paradisRegisterBrowserExtensions(
 		approveWebStoreUpdate: id => created.approveWebStoreUpdate(id),
 		reloadUnpacked: id => created.reloadUnpacked(id),
 		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
+		setUserScriptsAllowed: (id, profile, allowed) => created.setUserScriptsAllowed(id, profile, allowed),
 		remove: id => created.remove(id),
 		getShareExtensions: (viewId, fallbackProfile) => created.getShareExtensions(viewId, fallbackProfile),
 		onDidRequestActivateTab: onDidRequestActivateTab.event,

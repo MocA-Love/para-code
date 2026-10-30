@@ -743,6 +743,14 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		this._requireTab(caller, tabId);
 	}
 
+	/**
+	 * 拡張機能に見せる利用者のタブ（エディタのタブ）か。エージェントのタブ、エージェントのものかがまだ分からない新しいタブ
+	 * （知らせる前）、拡張機能の窓は含めない（ユーザースクリプトを入れてよいかに使う）。
+	 */
+	isAnnouncedUserTab(contents: WebContents): boolean {
+		return !contents.isDestroyed() && this._findTab(contents.session, contents.id)?.view !== undefined;
+	}
+
 	/** Chrome の形のタブ（拡張機能に見せるタブでなければ undefined）。 */
 	describeTab(extension: IParadisApiExtension, session: Session, tabId: number): Tab | undefined {
 		const entry = this._findTab(session, tabId);
