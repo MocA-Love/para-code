@@ -20,6 +20,8 @@ import { paradisShowBrowserExtensionsDialog } from './paradisBrowserExtensionsDi
 import { IParadisBrowserExtensionsService, ParadisBrowserExtensionsService } from './paradisBrowserExtensionsService.js';
 import { ParadisBrowserExtensionTabActivationContribution } from './paradisBrowserExtensionTabActivation.js';
 import { IParadisBrowserExtensionToolbarService, ParadisBrowserExtensionToolbarContribution, ParadisBrowserExtensionToolbarService } from './paradisBrowserExtensionToolbar.js';
+// 拡張機能のサイドパネルの置き場所（BrowserEditor の contribution。読み込むだけで登録される）
+import './paradisBrowserExtensionSidePanel.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 
 registerSingleton(IParadisBrowserExtensionsService, ParadisBrowserExtensionsService, InstantiationType.Delayed);

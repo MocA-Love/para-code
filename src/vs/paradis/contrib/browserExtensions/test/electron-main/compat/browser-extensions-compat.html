@@ -21,11 +21,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 </style>
 </head>
 <body>
-<h1>31 個中、動く 17・一部動く 12・動かない 2</h1>
+<h1>31 個中、動く 18・一部動く 11・動かない 2</h1>
 <p class="muted">Electron 43.7.7（Chromium 150.0.7871.250）、Linux の Xvfb で 2026-10-29T23:05:17.040Z に自動で確かめた結果です。拡張機能は Chrome ウェブストアから、Para Code と同じ道（署名の確かめを含む）で入れました。</p>
 
 <table class="summary"><tr><th>動く</th><th>一部動く</th><th>動かない</th></tr>
-<tr><td class="ok">17</td><td class="partial">12</td><td class="ng">2</td></tr></table>
+<tr><td class="ok">18</td><td class="partial">11</td><td class="ng">2</td></tr></table>
 
 <h2>自動で見たことと、見ていないこと</h2>
 <div class="panel">
@@ -44,7 +44,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <table>
 <tr><th>区分</th><th>拡張機能</th><th>結果</th><th>理由</th><th>版</th><th>worker</th><th>content script</th><th>ポップアップ</th></tr>
 <tr><td>パスワード管理</td><td>1Password – Password Manager<br><span class="muted"><code>aeblfdkhhhdcdjpifhhbdiojplfjncoa</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>8.12.42.36</td><td>running</td><td>ran</td><td>rendered</td></tr>
-<tr><td>パスワード管理</td><td>Bitwarden Password Manager<br><span class="muted"><code>nngceckbapebfimnlniiiahkandclblb</code></span></td><td class="partial">一部動く</td><td>使えない API: sidePanel</td><td>2026.10.1</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>パスワード管理</td><td>Bitwarden Password Manager<br><span class="muted"><code>nngceckbapebfimnlniiiahkandclblb</code></span></td><td class="ok">動く</td><td>サイドパネル（chrome.sidePanel）は、内蔵ブラウザのタブの右に出ます（拡張機能のメニューの「サイドパネルを開く」か、拡張機能が決めたボタンの動き）<br>既定のサイドパネルのページ（sidepanel-disabled.html）は、拡張機能が置いた中身の無いページでした（エラーは無し）。拡張機能が chrome.sidePanel.setOptions でページを替えてから開くもの、とみなしました</td><td>2026.10.1</td><td>running</td><td>ran</td><td>rendered</td></tr>
 <tr><td>パスワード管理</td><td>Dashlane — Password Manager<br><span class="muted"><code>fdjamakpfbbddfjaooikfcpapjohcfmg</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>6.2644.0</td><td>running</td><td>ran</td><td>rendered</td></tr>
 <tr><td>パスワード管理</td><td>Keeper® Password Manager &amp; Digital Vault<br><span class="muted"><code>bfogiafebfohielmmehodmfbbebbbpei</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>18.2.0</td><td>running</td><td>ran</td><td>rendered</td></tr>
 <tr><td>パスワード管理</td><td>NordPass® Password Manager &amp; Digital Vault<br><span class="muted"><code>eiaeiblijfjekdanodkjadfinkhbfgcd</code></span></td><td class="partial">一部動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>【要確認】ポップアップは開きましたが、自動の確かめの前に閉じたか、読めませんでした（手で確かめます）</td><td>7.12.15</td><td>running</td><td>ran</td><td>unreadable</td></tr>
@@ -58,13 +58,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <tr><td>開発</td><td>Wappalyzer - Technology profiler<br><span class="muted"><code>gppongmhjkpfnbhagpmjfkannfbllamg</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>6.12.8</td><td>running</td><td>ran</td><td>rendered</td></tr>
 <tr><td>開発</td><td>JSON Formatter<br><span class="muted"><code>bcjindcccaagfpapjjmafapmmgkkhgoa</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>0.10.2</td><td>none</td><td>ran</td><td>none</td></tr>
 <tr><td>見た目・読みやすさ</td><td>Dark Reader<br><span class="muted"><code>eimadpbcbfnmbkopoojfekhnkhdbieeh</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>4.9.134</td><td>running</td><td>ran</td><td>rendered</td></tr>
-<tr><td>見た目・読みやすさ</td><td>Stylus<br><span class="muted"><code>clngdbkpkpeebahjckkjfobafhncgmne</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>使えない API: sidePanel</td><td>2.4.17</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>見た目・読みやすさ</td><td>Stylus<br><span class="muted"><code>clngdbkpkpeebahjckkjfobafhncgmne</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません</td><td>2.4.17</td><td>running</td><td>ran</td><td>rendered</td></tr>
 <tr><td>見た目・読みやすさ</td><td>Refined GitHub<br><span class="muted"><code>hlepfoohegkhhmjieoechaddaejaokhf</code></span></td><td class="ok">動く</td><td>content script は決まったサイト（GitHub など）だけのものなので、試験用のページでは動かないのが正しいです（そのサイトでは手で確かめます）</td><td>26.10.26</td><td>running</td><td>did not run</td><td>none</td></tr>
 <tr><td>見た目・読みやすさ</td><td>Octotree - GitHub code tree<br><span class="muted"><code>bkhaagjahfmjljalopjnoealnfndnagc</code></span></td><td class="ok">動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>content script は決まったサイト（GitHub など）だけのものなので、試験用のページでは動かないのが正しいです（そのサイトでは手で確かめます）</td><td>9.3.2</td><td>running</td><td>did not run</td><td>none</td></tr>
 <tr><td>見た目・読みやすさ</td><td>Mercury Reader<br><span class="muted"><code>oknpjjbmpnndlpmnhmekjpocelpnlfdi</code></span></td><td class="ng">動かない</td><td>Chrome ウェブストアにありません（公開が終わっています）</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
 <tr><td>翻訳・文章</td><td>Google Translate<br><span class="muted"><code>aapbdbdomjkkjkaonfhkkikfgjllcleb</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>2.0.18</td><td>running</td><td>ran</td><td>rendered</td></tr>
-<tr><td>翻訳・文章</td><td>DeepL: translate and write with AI<br><span class="muted"><code>cofdbpoegempjloogbagkncekinflcnj</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>使えない API: sidePanel</td><td>1.105.1</td><td>running</td><td>ran</td><td>rendered</td></tr>
-<tr><td>翻訳・文章</td><td>Grammarly: AI Writing Assistant and Grammar Checker App<br><span class="muted"><code>kbfnbcaeplbcioakkpcpgfkobkghlhen</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>使えない API: sidePanel</td><td>14.1343.0</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>翻訳・文章</td><td>DeepL: translate and write with AI<br><span class="muted"><code>cofdbpoegempjloogbagkncekinflcnj</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>サイドパネル（chrome.sidePanel）は、内蔵ブラウザのタブの右に出ます（拡張機能のメニューの「サイドパネルを開く」か、拡張機能が決めたボタンの動き）</td><td>1.105.1</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>翻訳・文章</td><td>Grammarly: AI Writing Assistant and Grammar Checker App<br><span class="muted"><code>kbfnbcaeplbcioakkpcpgfkobkghlhen</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>サイドパネル（chrome.sidePanel）は、内蔵ブラウザのタブの右に出ます（拡張機能のメニューの「サイドパネルを開く」か、拡張機能が決めたボタンの動き）</td><td>14.1343.0</td><td>running</td><td>ran</td><td>rendered</td></tr>
 <tr><td>翻訳・文章</td><td>AI Grammar Checker &amp; Paraphraser – LanguageTool<br><span class="muted"><code>oldceeleldhonbafppcapldpdifcinji</code></span></td><td class="partial">一部動く</td><td>【要確認】ポップアップは開きましたが、自動の確かめの前に閉じたか、読めませんでした（手で確かめます）</td><td>11.5.0</td><td>running</td><td>ran</td><td>unreadable</td></tr>
 <tr><td>広告・プライバシー</td><td>uBlock Origin Lite<br><span class="muted"><code>ddkjiahejlhfcafbddmgiahcphecmpfh</code></span></td><td class="partial">一部動く</td><td>「ユーザースクリプトを許可」をオンにしても、この拡張機能はユーザースクリプトを登録しませんでした（利用者がスクリプトを入れたときに登録するもの。推測）<br>広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません</td><td>2026.1026.1812</td><td>running</td><td>none</td><td>rendered</td></tr>
 <tr><td>広告・プライバシー</td><td>AdGuard AdBlocker<br><span class="muted"><code>bgnkhhnnamicmpeenaelnjfhikgbkllg</code></span></td><td class="partial">一部動く</td><td>「ユーザースクリプトを許可」をオンにしても、この拡張機能はユーザースクリプトを登録しませんでした（利用者がスクリプトを入れたときに登録するもの。推測）<br>広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません<br>DevTools のパネルは自動では見ていません（手で確かめます）</td><td>5.5.3.28</td><td>running</td><td>ran</td><td>rendered</td></tr>
@@ -87,6 +87,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <tr><td>1Password・NordPass</td><td>ポップアップが &lt;meta&gt; の Content-Security-Policy で接続先を絞っていて、Para Code が足した API の呼び出しが止まっていました</td><td>ページの &lt;meta&gt; の connect-src にも、Para Code の私用スキームを足すようにしました（manifest の方針には前から足していました）</td></tr>
 <tr><td>DeepL</td><td>chrome.tts がありませんでした（P9a）</td><td>chrome.tts を足しました。OS の読み上げ（Chromium の speechSynthesis）で、拡張機能もウェブのページも入らない、どの窓にも付けない面の中で読みます</td></tr>
 <tr><td>Tampermonkey・uBlock Origin Lite・AdGuard・Ghostery</td><td>chrome.userScripts がありませんでした（P9b）</td><td>chrome.userScripts を足しました。拡張機能の管理で拡張機能ごとに「ユーザースクリプトを許可」をオンにしたときだけ使えます（Chrome と同じく既定はオフ）。入れるのはその場所の利用者のタブだけで、エージェントのタブと、エージェントと共有中のタブには入れません</td></tr>
+<tr><td>Bitwarden・Stylus・DeepL・Grammarly</td><td>chrome.sidePanel がありませんでした（P9d）</td><td>chrome.sidePanel を足しました。パネルは Para Code のウィンドウの中、内蔵ブラウザのタブの右に出します（タブにはしません）。エージェントのタブと、エージェントと共有中のタブの横には出しません</td></tr>
 <tr><td>Momentum</td><td>新しいタブの置き換え（chrome_url_overrides.newtab）に対応していませんでした（P9c）</td><td>内蔵ブラウザの新しいタブ（URL の無いタブ）を、その場所で有効な拡張機能の新しいタブのページにするようにしました。Para Code のエディタの新しいタブ、エージェントのタブ、エージェントと共有中のタブは置き換えません</td></tr>
 <tr><td>Keeper・Ghostery</td><td>chrome.browsingData がありませんでした（P9a）</td><td>chrome.browsingData を足しました。消すのは呼び出し元のセッションのウェブのデータだけで、拡張機能のデータ・エージェントのセッション・ほかの場所のデータには触れません。期間の指定と、Para Code に無いデータ（履歴など）は断ります</td></tr>
 </table>
@@ -94,7 +95,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <h2>直していないもの（大きいので別にします）</h2>
 <table>
 <tr><th>足りないもの</th><th>当たる拡張機能</th><th>理由</th></tr>
-<tr><td>サイドパネル（chrome.sidePanel）</td><td>Bitwarden・Stylus・DeepL・Grammarly</td><td>Para Code にサイドパネルの置き場がありません。ポップアップなどほかの入り口は動きます</td></tr>
 <tr><td>画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）</td><td>Loom</td><td>Electron 43 にありません</td></tr>
 <tr><td>広告のブロック（declarativeNetRequest）</td><td>広告・プライバシーの 4 つ</td><td>D7 で後回しにしました</td></tr>
 </table>

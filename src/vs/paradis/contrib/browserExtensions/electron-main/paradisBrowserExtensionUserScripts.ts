@@ -136,8 +136,10 @@ export class ParadisBrowserExtensionUserScripts {
 	private readonly _pending = new Map<string, IPendingMessage>();
 	private readonly _ports = new Map<string, IPort>();
 	private readonly _attached = new WeakSet<object>();
-	/** ユーザースクリプトを入れたことのあるタブ（後からエージェントのタブと分かったら読み込み直す）。 */
-	private readonly _injected = new WeakSet<WebContents>();
+	/** ユーザースクリプトを入れたタブと、そのときの一番外の文書の番号（後からエージェントのタブと分かったら読み込み直す）。 */
+	private readonly _injected = new WeakMap<WebContents, number>();
+	/** タブの一番外の文書の番号（文書が替わるたびに増える）。 */
+	private readonly _documentSerials = new WeakMap<WebContents, number>();
 	/** 拡張機能のフォルダ・js の file → 中身（注入の問いは同期で答えるので、先に読んでおく）。 */
 	private readonly _files = new Map<string, string>();
 	private readonly _warming = new Set<string>();
@@ -236,11 +238,17 @@ export class ParadisBrowserExtensionUserScripts {
 	 * ポートを切って読み込み直す（入れたスクリプトを残さない。読み込み直した文書には、エージェントのタブなので入れない）。
 	 */
 	noteAgentTab(contents: WebContents): void {
-		if (!this._injected.has(contents) || contents.isDestroyed()) {
+		const injectedIn = this._injected.get(contents);
+		if (injectedIn === undefined || contents.isDestroyed()) {
 			return;
 		}
 		this._injected.delete(contents);
 		this._closeFor(port => port.contents === contents, NO_RECEIVER);
+		// 入れた文書から既に替わっている・次の文書を読んでいる途中なら、読み込み直さない（新しい文書には preload が聞き直して入れない）
+		if (contents.isLoading() || (this._documentSerials.get(contents) ?? 0) !== injectedIn) {
+			return;
+		}
+		// エージェントの CDP の操作が走っているかは main から分からないので待たない（重なりうる。NOTES の残り）
 		contents.reload();
 	}
 
@@ -271,6 +279,9 @@ export class ParadisBrowserExtensionUserScripts {
 		contents.ipc.handle(PARADIS_USER_SCRIPTS_CALL, (event, request: unknown) => this.handleCall(contents, event.senderFrame, request));
 		// 文書が替わったフレーム・閉じたタブのポートは切る
 		contents.on('did-frame-navigate', (_event, _url, _code, _status, isMainFrame, processId, routingId) => {
+			if (isMainFrame) {
+				this._documentSerials.set(contents, (this._documentSerials.get(contents) ?? 0) + 1);
+			}
 			this._closeFor(port => port.contents === contents && (isMainFrame || (port.processId === processId && port.routingId === routingId)), undefined, false);
 		});
 		contents.once('destroyed', () => this._closeFor(port => port.contents === contents, undefined, false));
@@ -409,7 +420,7 @@ export class ParadisBrowserExtensionUserScripts {
 		if (scripts.length === 0) {
 			return undefined;
 		}
-		this._injected.add(contents);
+		this._injected.set(contents, this._documentSerials.get(contents) ?? 0);
 		return { worlds: [...worlds.values()], scripts };
 	}
 

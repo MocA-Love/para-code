@@ -45,13 +45,32 @@ const held = new WeakSet<object>();
 /** 拡張のページへの移動を止めたときに、利用者へ知らせる先（タブごと）。 */
 const blockedListeners = new WeakMap<object, () => void>();
 
+/** 手にした・手放したを知らせる先（拡張機能のサイドパネルが、共有の始まったタブの横で閉じるのに使う）。 */
+const holdListeners = new Set<(webContents: object, isHeld: boolean) => void>();
+
 /** エージェントがタブを手にした（true）・手放した（false）。 */
 export function paradisSetExtensionPageHold(webContents: object, isHeld: boolean): void {
+	const was = held.has(webContents);
 	if (isHeld) {
 		held.add(webContents);
 	} else {
 		held.delete(webContents);
 	}
+	if (was !== isHeld) {
+		for (const listener of [...holdListeners]) {
+			try {
+				listener(webContents, isHeld);
+			} catch {
+				// 知らせる先の失敗で、台帳の更新を止めない
+			}
+		}
+	}
+}
+
+/** エージェントがタブを手にした・手放したときに呼ぶ。返り値を呼ぶと外れる。 */
+export function paradisOnDidChangeExtensionPageHold(listener: (webContents: object, isHeld: boolean) => void): { dispose(): void } {
+	holdListeners.add(listener);
+	return { dispose: () => holdListeners.delete(listener) };
 }
 
 /** エージェントが手にしているタブか。 */
