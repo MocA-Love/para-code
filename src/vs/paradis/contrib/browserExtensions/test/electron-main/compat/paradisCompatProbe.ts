@@ -19,7 +19,11 @@
 // 一時のフォルダに package.json（{"type":"module","main":"main.mjs"}）と、out のこのファイルを import する main.mjs を置く:
 //   echo '{"type":"module","main":"main.mjs"}' > /tmp/compat-app/package.json
 //   echo "import '$PWD/out/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatProbe.js';" > /tmp/compat-app/main.mjs
-//   HOME=/tmp/compat-home PARADIS_COMPAT_RUN=1 PARADIS_COMPAT_RESULT=/tmp/compat.json \
+// 開発用の out の preload（ストアの橋・ユーザースクリプト）は ESM で、Electron の preload として読めない。ユーザースクリプトまで
+// 測るときは、配布版と同じ形（CJS）に作った preload を置いたフォルダを PARADIS_COMPAT_FILE_ROOT に渡す（out には置かない）:
+//   for f in paradisWebStorePreload paradisUserScriptsPreload; do npx esbuild src/vs/paradis/contrib/browserExtensions/electron-browser/$f.ts \
+//     --format=cjs --platform=node --target=es2024 --outfile=/tmp/compat-files/vs/paradis/contrib/browserExtensions/electron-browser/$f.js; done
+//   HOME=/tmp/compat-home PARADIS_COMPAT_RUN=1 PARADIS_COMPAT_RESULT=/tmp/compat.json PARADIS_COMPAT_FILE_ROOT=/tmp/compat-files/ \
 //     xvfb-run -a -s "-screen 0 1400x1000x24" .build/electron/<Electron の実行ファイル> --no-sandbox /tmp/compat-app
 //   node --experimental-strip-types src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatReport.ts src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.json src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.html
 // HOME は一時のフォルダに替えて動かす（userData は PARADIS_COMPAT_ROOT の下に作る）。PARADIS_COMPAT_IDS=<id>,<id> で一部だけ試せる。
@@ -96,6 +100,10 @@ export interface IParadisCompatResult {
 	urlOverrides?: string[];
 	injected?: number;
 	devtoolsPage?: boolean;
+	/** userScripts を求めるものだけ: 「ユーザースクリプトを許可」をオンにして、試験用のページに USER_SCRIPT の world ができたか。 */
+	userScripts?: string;
+	/** そのとき拡張機能が登録したユーザースクリプトの数。 */
+	userScriptsRegistered?: number;
 	sidePanel?: boolean;
 	popup?: string;
 	options?: string;
@@ -174,7 +182,7 @@ const PERMISSION_NAMESPACES: Record<string, string | undefined> = {
 };
 
 /** Para Code が詰め物（paradisBrowserExtensionShim.ts）で足す名前空間（manifest.json の文書では数えない）。 */
-const SHIM_NAMESPACES = new Set(['storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative', 'tts', 'browsingData']);
+const SHIM_NAMESPACES = new Set(['storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative', 'tts', 'browsingData', 'userScripts']);
 
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Para Code extension compatibility page</title></head><body>
 <h1>Sign in</h1><form action="/signin" method="post"><label>Email <input type="email" name="email" autocomplete="username"></label>
@@ -296,9 +304,20 @@ async function run(resultPath: string, root: string): Promise<void> {
 		const matches = (manifest.content_scripts ?? []).flatMap(entry => Array.isArray(entry?.matches) ? entry.matches as unknown[] : []);
 		result.contentScriptForTestPage = matches.some(pattern => typeof pattern === 'string' && ['<all_urls>', '*://*/*', 'http://*/*', 'http://127.0.0.1/*', '*://127.0.0.1/*'].includes(pattern));
 		result.urlOverrides = Object.keys(manifest.chrome_url_overrides ?? {});
+		// ユーザースクリプト: 利用者が「ユーザースクリプトを許可」をオンにした形で見る（拡張機能は数秒ごとに見直して登録する）
+		if (state?.userScripts) {
+			await manager.setUserScriptsAllowed(id, 'default', true);
+			await wait(5000);
+			const saved: unknown = JSON.parse(await fs.readFile(join(root, 'manager', 'user-scripts.json'), 'utf8').catch(() => '{}'));
+			const registrations = (saved as { registrations?: Record<string, Record<string, { scripts?: unknown[] }>> }).registrations?.default?.[id];
+			result.userScriptsRegistered = registrations?.scripts?.length ?? 0;
+		}
 		contexts = [];
 		await tab.loadURL(pageUrl).catch(() => { });
 		await wait(4000);
+		if (state?.userScripts) {
+			result.userScripts = contexts.some(context => context.name.endsWith('(user scripts)')) ? 'ran' : 'did not run';
+		}
 		const ownContexts = contexts.filter(context => context.origin === `chrome-extension://${id}`);
 		result.contentScript = declaresContentScripts ? (ownContexts.length > 0 ? 'ran' : 'did not run') : 'none';
 		result.injected = await tab.webContents.executeJavaScript(`[...document.querySelectorAll('body > *:not(h1):not(form):not(article):not(a)'), ...document.querySelectorAll('[class*="${label.split(' ')[0].toLowerCase()}" i]')].length`).catch(() => undefined);
@@ -379,6 +398,6 @@ if (process.env.PARADIS_COMPAT_RUN === '1') {
 	protocol.registerSchemesAsPrivileged([{ scheme: 'paracode-extension-api', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true, allowServiceWorkers: true } }]);
 	app.setPath('userData', join(root, 'user-data'));
 	// FileAccess が out の中のファイル（ストアのページの preload）を探す根（このファイルは out/vs/paradis/contrib/browserExtensions/test/electron-main/compat）
-	(globalThis as { _VSCODE_FILE_ROOT?: string })._VSCODE_FILE_ROOT = fileURLToPath(new URL('../../../../../../../', import.meta.url));
+	(globalThis as { _VSCODE_FILE_ROOT?: string })._VSCODE_FILE_ROOT = process.env.PARADIS_COMPAT_FILE_ROOT ?? fileURLToPath(new URL('../../../../../../../', import.meta.url));
 	void app.whenReady().then(() => run(process.env.PARADIS_COMPAT_RESULT ?? join(tmpdir(), 'paradis-browser-extensions-compat.json'), root));
 }

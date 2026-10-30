@@ -70,6 +70,8 @@ interface IPending {
 	readonly requestId: string;
 	readonly text: string;
 	readonly options: Record<string, unknown>;
+	/** 拡張機能へ start を送った（読み直したときに、2 回目の start を送らない）。 */
+	started?: boolean;
 }
 
 /** 待っている読み上げが無くなってから、読み上げの面を閉じるまで。 */
@@ -83,6 +85,10 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 	/** 読み上げの id → 頼んだ文脈（頼んだ順）。 */
 	private readonly _pending = new Map<string, IPending>();
 	private readonly _disposable: IDisposable;
+	/** 読み上げの待ち行列を変える処理（speak・stop）を 1 つずつ順に走らせる（読み直しの途中に割り込ませない）。 */
+	private _queue: Promise<unknown> = Promise.resolve();
+	/** 閉じた後（Para Code を終えるところ）は、順番待ちの読み上げが面を作り直さない。 */
+	private _disposed = false;
 
 	constructor(private readonly _host: ParadisExtensionApiHost) {
 		this._disposable = _host.onDidCloseContext((session, extensionId, connection) => {
@@ -111,6 +117,7 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 
 	/** Para Code を終えるとき・拡張機能の管理を閉じるとき: 読み上げの面を閉じる。 */
 	dispose(): void {
+		this._disposed = true;
 		this._disposable.dispose();
 		this._pending.clear();
 		this._close();
@@ -143,6 +150,9 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 
 	/** 読み上げの面（拡張機能もウェブのページも入らない、メモリだけのセッション。どの窓にも付けない）。 */
 	private _page(): Promise<electron.WebContents> {
+		if (this._disposed) {
+			return Promise.reject(new Error('Para Code is quitting'));
+		}
 		if (this._view && !this._view.webContents.isDestroyed() && this._ready) {
 			return this._ready;
 		}
@@ -189,7 +199,21 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 		await this._run(`(${speakInPage.toString()})(${JSON.stringify(id)}, ${JSON.stringify(entry.text)}, ${JSON.stringify(safe)}, ${JSON.stringify(EVENT_PREFIX)})`, true);
 	}
 
-	private async _speak(caller: IParadisExtensionApiCaller, requestId: string, text: string, options: Record<string, unknown>): Promise<void> {
+	private _serialized<T>(run: () => Promise<T>): Promise<T> {
+		const next = this._queue.then(run, run);
+		this._queue = next.catch(() => undefined);
+		return next;
+	}
+
+	private _speak(caller: IParadisExtensionApiCaller, requestId: string, text: string, options: Record<string, unknown>): Promise<void> {
+		return this._serialized(() => this._doSpeak(caller, requestId, text, options));
+	}
+
+	private _stop(matches: (entry: IPending) => boolean): Promise<void> {
+		return this._serialized(() => this._doStop(matches));
+	}
+
+	private async _doSpeak(caller: IParadisExtensionApiCaller, requestId: string, text: string, options: Record<string, unknown>): Promise<void> {
 		clearTimeout(this._idleTimer);
 		const id = randomUUID();
 		const enqueue = options.enqueue === true;
@@ -214,7 +238,7 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 	 * 当てはまる読み上げを止める。speechSynthesis は待ち行列の一部だけを外せないので、全部を止めてから、
 	 * 当てはまらない残り（ほかの拡張機能の読み上げ）を同じ順で読み直す（今読んでいたものは頭から読み直しになる）。
 	 */
-	private async _stop(matches: (entry: IPending) => boolean): Promise<void> {
+	private async _doStop(matches: (entry: IPending) => boolean): Promise<void> {
 		const stopped = [...this._pending].filter(([, entry]) => matches(entry));
 		if (stopped.length === 0) {
 			return;
@@ -238,6 +262,13 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 		const entry = this._pending.get(id);
 		if (!entry) {
 			return;
+		}
+		if (type === 'start') {
+			if (entry.started) {
+				// 読み直した読み上げ: 拡張機能には最初の読み上げのときに start を送ってある
+				return;
+			}
+			entry.started = true;
 		}
 		if (type === 'end' || type === 'interrupted' || type === 'cancelled' || type === 'error') {
 			this._pending.delete(id);
