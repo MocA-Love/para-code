@@ -27,6 +27,21 @@ export const PARADIS_CHROME_WEB_STORE_ORIGIN = 'https://chromewebstore.google.co
 
 const STORE_HOSTS = new Set(['chromewebstore.google.com', 'chrome.google.com']);
 
+/**
+ * Chrome ウェブストアのページか（今の host と、前の host の /webstore）。拡張機能に触らせないページの判定に使う。host の末尾の
+ * ドット（`chromewebstore.google.com.`。同じサイトとして開ける）と大文字は外してから比べる。scheme は問わない。
+ */
+export function paradisIsChromeWebStoreUrl(rawUrl: string): boolean {
+	let url: URL;
+	try {
+		url = new URL(rawUrl);
+	} catch {
+		return false;
+	}
+	const host = url.hostname.toLowerCase().replace(/\.+$/, '');
+	return host === 'chromewebstore.google.com' || (host === 'chrome.google.com' && (url.pathname === '/webstore' || url.pathname.startsWith('/webstore/')));
+}
+
 /** ストアの詳しいページのリンク（今の host と前の host）か、32 文字の id から id を読む。読めなければ undefined。 */
 export function paradisParseWebStoreInput(input: string): string | undefined {
 	const trimmed = input.trim();

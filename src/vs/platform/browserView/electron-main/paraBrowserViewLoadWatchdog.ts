@@ -113,9 +113,39 @@ const agentTabs = new Set<string>();
  */
 export function paraSetBrowserViewAgentTab(viewId: string, agentTab: boolean): void {
 	if (agentTab) {
+		const before = agentTabViewIds();
 		agentTabs.add(viewId);
+		fireNewAgentTabs(before);
 	} else {
 		agentTabs.delete(viewId);
+	}
+}
+
+const onDidMarkAgentTabEmitter = new Emitter<string>();
+
+/**
+ * Fires with the id of a view that has just become an agent tab (marked itself, or its opener chain
+ * now reaches one). The browser extension layer uses it to undo what it did to a tab it took for a
+ * person's, when the mark arrives late.
+ */
+export const paraOnDidMarkBrowserViewAgentTab: Event<string> = onDidMarkAgentTabEmitter.event;
+
+/** Views known to the ledger that are agent tabs or their children right now. */
+function agentTabViewIds(): Set<string> {
+	const ids = new Set<string>();
+	for (const viewId of [...agentTabs, ...openerViewIds.keys()]) {
+		if (paraIsAgentTabOrChild(viewId)) {
+			ids.add(viewId);
+		}
+	}
+	return ids;
+}
+
+function fireNewAgentTabs(before: ReadonlySet<string>): void {
+	for (const viewId of agentTabViewIds()) {
+		if (!before.has(viewId)) {
+			onDidMarkAgentTabEmitter.fire(viewId);
+		}
 	}
 }
 
@@ -132,7 +162,9 @@ export function paraSetBrowserViewOpener(viewId: string, openerViewId: string | 
 	if (openerViewId === undefined || openerViewId === viewId) {
 		openerViewIds.delete(viewId);
 	} else {
+		const before = agentTabViewIds();
 		openerViewIds.set(viewId, openerViewId);
+		fireNewAgentTabs(before);
 	}
 }
 

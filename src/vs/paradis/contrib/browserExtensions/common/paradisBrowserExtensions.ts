@@ -256,6 +256,27 @@ export function paradisEnabledExtensions(ledger: IParadisBrowserExtensionsLedger
 	return ledger.extensions.filter(extension => ids.has(extension.id));
 }
 
+/**
+ * 拡張機能の新しいタブのページ（manifest の chrome_url_overrides.newtab、P9c）の URL。拡張機能の中のページでなければ undefined。
+ * 置き換えるのは内蔵ブラウザの新しいタブだけ（Para Code のエディタの新しいタブには使わない）。
+ */
+export function paradisNewTabOverrideUrl(extensionId: string, manifest: unknown): string | undefined {
+	const overrides = manifest !== null && typeof manifest === 'object' ? (manifest as { chrome_url_overrides?: unknown }).chrome_url_overrides : undefined;
+	const page = overrides !== null && typeof overrides === 'object' ? (overrides as { newtab?: unknown }).newtab : undefined;
+	if (typeof page !== 'string' || page.trim().length === 0 || page.length > 2_048) {
+		return undefined;
+	}
+	const base = `chrome-extension://${extensionId}/`;
+	let url: URL;
+	try {
+		url = new URL(page.trim().replace(/^\/+/, ''), base);
+	} catch {
+		return undefined;
+	}
+	// 拡張機能の外（ほかの拡張機能・ウェブのページ）を指すものは使わない
+	return url.protocol === 'chrome-extension:' && url.host === extensionId ? url.href : undefined;
+}
+
 /** manifest.json から読んだ、一覧に出す情報。 */
 export interface IParadisExtensionManifestSummary {
 	readonly name: string;
@@ -404,6 +425,11 @@ export interface IParadisBrowserExtensionsMainService {
 	setEnabled(id: string, profile: string, enabled: boolean): Promise<void>;
 	/** 「ユーザースクリプトを許可」を切り替える（userScripts を求める拡張機能だけ。`profile` の場所で）。 */
 	setUserScriptsAllowed(id: string, profile: string, allowed: boolean): Promise<void>;
+	/**
+	 * 内蔵ブラウザの新しいタブ（URL の無いタブ）を、拡張機能の新しいタブのページ（chrome_url_overrides.newtab）にする。
+	 * 置き換えたら true（置き換える拡張機能が無い・エージェントのタブなどでは false）。
+	 */
+	openNewTabPage(viewId: string): Promise<boolean>;
 	remove(id: string): Promise<void>;
 	/**
 	 * 共有の確認に使う、そのページに入っている（入りうる）拡張機能。`viewId` のビューが main にあれば、その
