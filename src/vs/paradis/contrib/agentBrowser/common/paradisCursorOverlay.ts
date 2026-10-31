@@ -91,6 +91,18 @@ export interface IParadisCursorOverlayTuning {
 	 * ページ自身のクリックへ寄せない。
 	 */
 	readonly watchMs: number;
+	/**
+	 * evaluate_script の中のスクロールを、要素ごとに「止まった」とみなすまでの静かな時間（ms、q.html Q301 の C）。
+	 * スムーズスクロールの途中で何度も出さず、止まってから 1 回だけ合計の量を出す。
+	 */
+	readonly scrollSettleMs: number;
+	/** 利用者がホイール・キー・ポインタで操作してから、この時間（ms）の間のスクロールはスクリプトのものとみなさない。 */
+	readonly scrollUserMs: number;
+	/**
+	 * スクリプトが終わった後、この時間（ms）の間に届いたスクロールも、そのスクリプトのものとみなす。`scrollTop` への
+	 * 代入の scroll は次の描画で届くので、代入してすぐ返すスクリプトでは終わりの知らせの方が先に着くことがある。
+	 */
+	readonly scrollLateMs: number;
 }
 
 export const PARADIS_CURSOR_OVERLAY_TUNING: IParadisCursorOverlayTuning = Object.freeze({
@@ -115,6 +127,9 @@ export const PARADIS_CURSOR_OVERLAY_TUNING: IParadisCursorOverlayTuning = Object
 	lookGlideMs: 260,
 	scriptClickGapMs: 450,
 	watchMs: 30_000,
+	scrollSettleMs: 220,
+	scrollUserMs: 800,
+	scrollLateMs: 150,
 });
 
 /**
@@ -234,11 +249,13 @@ export type ParadisCursorOverlayCommand =
 	 * - `box`: 読み取り系の道具が見ている要素。薄い枠を少し出し、カーソルをそこへ寄せる（Q297 の 3）
 	 * - `transient`: 長く続く状態でも少し出して消す（ページ移動の後に出し直したときの「読み込み中」）
 	 * - `clickText`: evaluate_script の中のクリックへ寄せたときの名札（`script` のときだけ。Q297 の 4）
+	 * - `scrollText`: evaluate_script の中のスクロールの名札（`script` のときだけ。`{0}` に量が入る。Q301 の C）
+	 * - `direction`: scroll_to が探す向き（`scroll` のときだけ。向きの矢印を出す）
 	 * - `since`: スクリプトを始めた時刻（ms、`Date.now()`）。これより前のクリックへは寄せない
 	 * - `settle`: 片付けだけ（見えていないタブへの終わりの idle）。既にあるカーソルの状態・見張り・待機の輪を
 	 *   落とすだけで、カーソルを付け直したり見せたりせず、無ければ何も作らない
 	 */
-	| { readonly kind: 'status'; readonly label: string; readonly status: ParadisCursorStatus; readonly text: string; readonly frames?: readonly IParadisCursorKeyframe[]; readonly durationMs?: number; readonly park?: boolean; readonly box?: IParadisCursorRect; readonly transient?: boolean; readonly clickText?: string; readonly since?: number; readonly settle?: boolean }
+	| { readonly kind: 'status'; readonly label: string; readonly status: ParadisCursorStatus; readonly text: string; readonly frames?: readonly IParadisCursorKeyframe[]; readonly durationMs?: number; readonly park?: boolean; readonly box?: IParadisCursorRect; readonly transient?: boolean; readonly clickText?: string; readonly scrollText?: string; readonly direction?: ParadisCursorScrollDirection; readonly since?: number; readonly settle?: boolean }
 	/** 読み取り系の道具が見ている要素に枠を出し、カーソルを寄せるだけ（名札の状態とスクリプトの見張りは変えない）。 */
 	| { readonly kind: 'look'; readonly label: string; readonly box: IParadisCursorRect }
 	/** 撮影のため即座に隠す（進行中のフラッシュも消す）。描画が反映されるまで待ってから解決する。 */
@@ -251,6 +268,14 @@ export type ParadisCursorOverlayCommand =
 	| { readonly kind: 'flash'; readonly toast: string; readonly rect?: IParadisCursorCaptureRange }
 	/** オーバーレイもフラッシュも完全に取り除く。 */
 	| { readonly kind: 'remove' };
+
+/** スクロールの向き（scroll_to の `direction` と同じ値）。 */
+export type ParadisCursorScrollDirection = 'down' | 'up' | 'right' | 'left';
+
+/** IPC で受けた向きを確かめる。 */
+export function paradisParseCursorScrollDirection(value: unknown): ParadisCursorScrollDirection | undefined {
+	return value === 'down' || value === 'up' || value === 'right' || value === 'left' ? value : undefined;
+}
 
 /** ページのコマンドに付ける持ち主（`owner` はカーソルを分ける鍵、`color`・`mark` は見た目）。 */
 export interface IParadisCursorOwnerTag {
@@ -345,11 +370,13 @@ export function paradisParseOwnerLabel(value: unknown): Pick<IParadisCursorOwner
  * - `rect`: 読み取り系の道具が見ている要素（ビューポートの CSS ピクセル）。枠を出してカーソルを寄せる
  * - `flash`: 撮影を伴わない読み取り（take_snapshot）が済んだ。`rect`（無ければ全体）を光らせる
  * - `since`: 道具を始めた時刻（ms）。evaluate_script の中のクリックを、これより後のものに限る
+ * - `direction`: scroll_to が探す向き（`scroll` のとき。名札の横に向きの矢印を出す）
  */
 export interface IParadisCursorStatusNote {
 	readonly owner?: IParadisCursorOwner;
 	readonly status?: ParadisCursorStatus;
 	readonly since?: number;
+	readonly direction?: ParadisCursorScrollDirection;
 	readonly detail?: string;
 	readonly point?: { readonly x: number; readonly y: number };
 	readonly rect?: IParadisCursorRect;
@@ -373,12 +400,12 @@ export function paradisParseCursorStatusNote(value: unknown): IParadisCursorStat
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		return undefined;
 	}
-	const { status, detail, point, owner, rect, flash, since } = value as { status?: unknown; detail?: unknown; point?: unknown; owner?: unknown; rect?: unknown; flash?: unknown; since?: unknown };
+	const { status, detail, point, owner, rect, flash, since, direction } = value as { status?: unknown; detail?: unknown; point?: unknown; owner?: unknown; rect?: unknown; flash?: unknown; since?: unknown; direction?: unknown };
 	const parsedRect = paradisParseCursorRect(rect);
 	if (status === undefined ? !parsedRect && flash !== true : typeof status !== 'string' || !PARADIS_CURSOR_STATUSES.has(status)) {
 		return undefined;
 	}
-	const result: { owner?: IParadisCursorOwner; status?: ParadisCursorStatus; since?: number; detail?: string; point?: { x: number; y: number }; rect?: IParadisCursorRect; flash?: boolean } = status === undefined ? {} : { status: status as ParadisCursorStatus };
+	const result: { owner?: IParadisCursorOwner; status?: ParadisCursorStatus; since?: number; direction?: ParadisCursorScrollDirection; detail?: string; point?: { x: number; y: number }; rect?: IParadisCursorRect; flash?: boolean } = status === undefined ? {} : { status: status as ParadisCursorStatus };
 	if (parsedRect) {
 		result.rect = parsedRect;
 	}
@@ -387,6 +414,10 @@ export function paradisParseCursorStatusNote(value: unknown): IParadisCursorStat
 	}
 	if (typeof since === 'number' && Number.isFinite(since) && since > 0) {
 		result.since = since;
+	}
+	const parsedDirection = paradisParseCursorScrollDirection(direction);
+	if (parsedDirection && status === 'scroll') {
+		result.direction = parsedDirection;
 	}
 	const parsedOwner = paradisParseCursorOwner(owner);
 	if (parsedOwner) {
@@ -432,6 +463,9 @@ const STATE_KEY = '__paraCodeAgentCursorOverlay';
 
 /** evaluate_script の中のクリックの受け口を置いたかの印（isolated world の `window` に置く）。 */
 const CLICKS_KEY = '__paraCodeAgentCursorClicks';
+
+/** evaluate_script の中のスクロールの受け口を置いたかの印（isolated world の `window` に置く）。 */
+const SCROLLS_KEY = '__paraCodeAgentCursorScrolls';
 
 /** カーソルとラベルのアクセントカラー（ワークベンチのアクセントに合わせた固定値）。 */
 const ACCENT_COLOR = '#5b8cff';
@@ -551,6 +585,9 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 	try {
 		var K = ${JSON.stringify(STATE_KEY)};
 		var K2 = ${JSON.stringify(CLICKS_KEY)};
+		var K3 = ${JSON.stringify(SCROLLS_KEY)};
+		/** スクロールの向きの矢印（scroll_to の 'direction' と同じ名前）。 */
+		var ARROWS = { down: '\\u2193', up: '\\u2191', right: '\\u2192', left: '\\u2190' };
 		/** 道具が終わるか次の状態が来るまで名札に残す状態。 */
 		var STICKY = { script: 1, waiting: 1, loading: 1, reading: 1 };
 		// 色は持ち主ごと（main が決める）。形の違う値は使わずアクセントに戻す
@@ -570,7 +607,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 		/** ページに 1 つの状態（撮影の隠し・フラッシュ・知らせ）と、持ち主ごとのカーソル（'cs'）。 */
 		function G(create) {
 			var g = window[K];
-			if (!g && create) { g = window[K] = { cs: {}, f: null, ts: null, tst: 0, hid: false, fh: null, fs: null }; watchClicks(); }
+			if (!g && create) { g = window[K] = { cs: {}, f: null, ts: null, tst: 0, hid: false, fh: null, fs: null }; watchClicks(); watchScrolls(); }
 			return g || null;
 		}
 		/** 全部のカーソルに。 */
@@ -587,7 +624,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 			var id = typeof c.owner === 'string' && c.owner.length > 0 ? c.owner : '_';
 			var s = g.cs[id];
 			if (!s && create) {
-				s = g.cs[id] = { g: g, id: id, color: A, h: null, lf: null, lft: 0, alf: null, watch: false, wat: 0, since: 0, ct: '', cq: null, cqt: 0, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lm: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', mark: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, awo: null, atr: null, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
+				s = g.cs[id] = { g: g, id: id, color: A, h: null, lf: null, lft: 0, alf: null, watch: false, wat: 0, since: 0, wend: 0, ct: '', sxt: '', cq: null, cqt: 0, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lm: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', mark: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, awo: null, atr: null, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
 			}
 			return s || null;
 		}
@@ -638,17 +675,121 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 						var item = { r: new WeakRef(el), at: Date.now(), done: false };
 						rec.q.push(item);
 						if (rec.q.length > 8) { rec.q.shift(); }
-						var g = window[K];
-						if (!g) { return; }
 						// 誰のスクリプトのクリックかはイベントから分からない。見張っているカーソルが 1 つのときだけ寄せる
-						var ids = Object.keys(g.cs), only = null, count = 0;
-						for (var i = 0; i < ids.length; i++) {
-							if (watching(g.cs[ids[i]])) { only = g.cs[ids[i]]; count++; }
-						}
-						if (count === 1 && item.at >= only.since) { item.done = true; follow(only, el); }
+						var only = watcher();
+						if (only && item.at >= only.since) { item.done = true; follow(only, { el: el }); }
 					} catch (err) { }
 				}, true);
 			} catch (e) { }
+		}
+		/** いまスクリプトを見張っているカーソル（1 つのときだけ。誰のスクリプトかはイベントから分からない）。 */
+		function watcher() {
+			var g = window[K];
+			if (!g) { return null; }
+			var ids = Object.keys(g.cs), only = null, count = 0;
+			for (var i = 0; i < ids.length; i++) {
+				if (watching(g.cs[ids[i]])) { only = g.cs[ids[i]]; count++; }
+			}
+			return count === 1 ? only : null;
+		}
+		/**
+		 * 'at' に動き始めたスクロールを、どのカーソルのスクリプトのものとするか。スクリプトを始めた後から終わるまでに
+		 * 動き始めたものだけで、当てはまるカーソルが 1 つのときだけ。止まるのを待つ間にスクリプトが終わっても
+		 * （'scrollTop' へ代入してすぐ返すスクリプト）、終わった時刻（'wend'）で見分ける。代入の scroll は次の描画で
+		 * 届くので、終わりから 'scrollLateMs' の間に動き始めたものまで含める。
+		 */
+		function scrollOwner(at) {
+			var g = window[K];
+			if (!g) { return null; }
+			var ids = Object.keys(g.cs), only = null, count = 0;
+			for (var i = 0; i < ids.length; i++) {
+				var s = g.cs[ids[i]];
+				if (!s || !s.h || !(s.since > 0) || at < s.since) { continue; }
+				if (watching(s) || (s.wend > 0 && at <= s.wend + c.scrollLateMs)) { only = s; count++; }
+			}
+			return count === 1 ? only : null;
+		}
+		/**
+		 * evaluate_script の中のスクロール（'scrollTo'・'scrollBy'・'scrollTop' への代入 など）を受ける口を、この文書に
+		 * 1 度だけ置く（q.html Q301 の C）。scroll のイベントは人の操作でも isTrusted なので見分けられない。要素ごとに
+		 * 位置を覚え、動き始めから止まるまで（'scrollSettleMs' の間動かない）を 1 回にまとめる。スクリプトの実行中に
+		 * 動き始めたものだけを、止まったときに 1 回、進んだ向きの端へ寄せて矢印と合計の量を出す。見張りの前から
+		 * 動いていたもの・利用者の操作の直後のものは除く。止めたり書き換えたりはしない（ページの挙動を変えない）。
+		 */
+		function watchScrolls() {
+			if (window[K3] || typeof WeakMap !== 'function') { return; }
+			var rec = window[K3] = { pos: new WeakMap(), runs: [], user: 0 };
+			var top = function () { return doc.scrollingElement || doc.documentElement; };
+			var where = function (el) { return { x: el.scrollLeft || 0, y: el.scrollTop || 0 }; };
+			// 受け口を置く前に動いていた位置を覚える（文書と、上限までの要素）。覚えていない要素は 0 から動いたとみなす
+			try {
+				var se = top();
+				if (se) { rec.pos.set(se, where(se)); }
+				var all = doc.getElementsByTagName('*');
+				for (var i = 0; i < all.length && i < 5000; i++) {
+					if (all[i].scrollTop || all[i].scrollLeft) { rec.pos.set(all[i], where(all[i])); }
+				}
+			} catch (e) { }
+			var user = function (e) { if (e.isTrusted) { rec.user = Date.now(); } };
+			var kinds = ['wheel', 'keydown', 'pointerdown', 'mousedown', 'touchstart'];
+			try {
+				for (var k = 0; k < kinds.length; k++) { window.addEventListener(kinds[k], user, { capture: true, passive: true }); }
+				// scroll は泡立たないので、捕獲の段で要素のスクロールも拾う
+				window.addEventListener('scroll', function (e) {
+					try {
+						var t = e.target;
+						var el = t === doc || t === window ? top() : t;
+						if (!el || el.nodeType !== 1) { return; }
+						var now = Date.now();
+						var from = rec.pos.get(el) || { x: 0, y: 0 };
+						var p = where(el);
+						rec.pos.set(el, p);
+						var run = null;
+						for (var j = 0; j < rec.runs.length; j++) { if (rec.runs[j].el === el) { run = rec.runs[j]; break; } }
+						if (!run) {
+							run = { el: el, at: now, x0: from.x, y0: from.y, x1: p.x, y1: p.y, ignore: false, t: 0 };
+							rec.runs.push(run);
+							if (rec.runs.length > 16) { var old = rec.runs.shift(); if (old.t) { clearTimeout(old.t); } }
+						}
+						run.x1 = p.x; run.y1 = p.y;
+						if (now - rec.user < c.scrollUserMs) { run.ignore = true; }
+						if (run.t) { clearTimeout(run.t); }
+						run.t = setTimeout(function () { settleScroll(rec, run); }, c.scrollSettleMs);
+					} catch (err) { }
+				}, true);
+			} catch (e) { }
+		}
+		/** 1 つの要素のスクロールが止まった。スクリプトのものなら、そのカーソルを寄せる。 */
+		function settleScroll(rec, run) {
+			var i = rec.runs.indexOf(run);
+			if (i >= 0) { rec.runs.splice(i, 1); }
+			var dx = run.x1 - run.x0, dy = run.y1 - run.y0;
+			if (run.ignore || (Math.abs(dx) < 1 && Math.abs(dy) < 1) || !run.el.isConnected) { return; }
+			var s = scrollOwner(run.at);
+			if (s && s.g.cs[s.id] === s) { follow(s, { el: run.el, dx: dx, dy: dy }); }
+		}
+		/** 量の大きい方の向き。 */
+		function arrowOf(dx, dy) {
+			return Math.abs(dy) >= Math.abs(dx) ? (dy > 0 ? ARROWS.down : ARROWS.up) : (dx > 0 ? ARROWS.right : ARROWS.left);
+		}
+		/**
+		 * スクロールした要素の、進んだ向きの端（の内側）。文書なら画面の端。画面に見えていなければ置かない。
+		 */
+		function edgeOf(el, dx, dy) {
+			var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+			var l = 0, t = 0, r = vw, b = vh;
+			if (el !== doc.scrollingElement && el !== doc.documentElement && el !== doc.body) {
+				var rr;
+				try { rr = el.getBoundingClientRect(); } catch (e) { return null; }
+				if (!rr) { return null; }
+				l = Math.max(0, rr.left); t = Math.max(0, rr.top); r = Math.min(vw, rr.right); b = Math.min(vh, rr.bottom);
+			}
+			var w = r - l, h = b - t;
+			if (!(w > 0 && h > 0)) { return null; }
+			var cx = Math.round(l + w / 2), cy = Math.round(t + h / 2);
+			var ix = Math.min(18, w / 2), iy = Math.min(18, h / 2);
+			if (Math.abs(dy) >= Math.abs(dx)) { return { x: cx, y: Math.round(dy > 0 ? b - iy : t + iy) }; }
+			return { x: Math.round(dx > 0 ? r - ix : l + ix), y: cy };
 		}
 		/**
 		 * スクリプトを始めた後、状態の知らせより先に来たクリックへも寄せる（'s.since' はスクリプトを始めた時刻。
@@ -662,26 +803,37 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 				if (it.done || it.at < s.since) { continue; }
 				it.done = true;
 				var el = it.r.deref();
-				if (el && el.isConnected) { follow(s, el); }
+				if (el && el.isConnected) { follow(s, { el: el }); }
 			}
 		}
-		/** 押された要素へ順に寄せる（多すぎるときは捨てる）。 */
-		function follow(s, el) {
+		/**
+		 * 押された要素・止まったスクロールへ順に寄せる（多すぎるときは捨てる）。'it' は '{ el }'（クリック）か
+		 * '{ el, dx, dy }'（スクロールした要素と、動いた量）。
+		 */
+		function follow(s, it) {
 			if (!s.cq) { s.cq = []; }
 			if (s.cq.length >= 4) { return; }
-			s.cq.push(el);
+			s.cq.push(it);
 			if (!s.cqt) { followNext(s); }
 		}
 		function followNext(s) {
 			s.cqt = 0;
 			while (s.cq && s.cq.length) {
-				var el = s.cq.shift();
-				var p = pointOf(el);
+				var it = s.cq.shift();
+				var sc = typeof it.dx === 'number';
+				var p = sc ? edgeOf(it.el, it.dx, it.dy) : pointOf(it.el);
 				if (!p || !s.h || !s.h.isConnected || s.g.cs[s.id] !== s) { continue; }
 				var d = calm ? 0 : c.lookGlideMs;
 				slide(s, p.x, p.y, d);
 				reveal(s);
 				arm(s, c.idleMs);
+				if (sc) {
+					mark(s, arrowOf(it.dx, it.dy), s.color);
+					var amount = Math.round(Math.abs(it.dy) >= Math.abs(it.dx) ? Math.abs(it.dy) : Math.abs(it.dx));
+					if (s.sxt) { setStatus(s, s.sxt.replace('{0}', amount + 'px'), c.markMs); }
+					s.cqt = setTimeout(function () { followNext(s); }, c.scriptClickGapMs);
+					return;
+				}
 				if (s.ct) { setStatus(s, s.ct, c.markMs); }
 				if (!calm) {
 					anim(s.rp, [{ transform: 'scale(0.35)', opacity: 0.75 }, { transform: 'scale(1.6)', opacity: 0 }], { duration: c.rippleMs, delay: d, easing: 'cubic-bezier(0.2,0.7,0.3,1)' });
@@ -1083,7 +1235,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 			var gs = G(false);
 			var ss = gs ? gs.cs[typeof c.owner === 'string' && c.owner.length > 0 ? c.owner : '_'] : null;
 			if (!ss) { return 0; }
-			ss.sticky = ''; ss.watch = false;
+			ss.sticky = ''; if (ss.watch) { ss.wend = Date.now(); } ss.watch = false;
 			if (ss.h) { setWaiting(ss, false); setStatus(ss, '', 0); }
 			return 0;
 		}
@@ -1139,8 +1291,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 				return traits(false);
 			}
 			if (c.kind === 'wheel') {
-				var ax = Math.abs(c.dx), ay = Math.abs(c.dy);
-				mark(sm, ay >= ax ? (c.dy > 0 ? '\\u2193' : '\\u2191') : (c.dx > 0 ? '\\u2192' : '\\u2190'), A);
+				mark(sm, arrowOf(c.dx, c.dy), A);
 				setStatus(sm, c.text, c.markMs);
 				reveal(sm); arm(sm, c.idleMs);
 				return traits(false);
@@ -1155,15 +1306,16 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 				// スクリプトの実行中だけ、その中のクリックへ寄せる
 				if (c.status === 'script') {
 					sm.ct = typeof c.clickText === 'string' ? c.clickText : '';
+					sm.sxt = typeof c.scrollText === 'string' ? c.scrollText : '';
 					sm.wat = Date.now();
 					var was = sm.watch;
 					sm.watch = true;
-					if (!was) { sm.since = c.since > 0 ? c.since : sm.wat; replay(sm); }
-				} else { sm.watch = false; }
+					if (!was) { sm.since = c.since > 0 ? c.since : sm.wat; sm.wend = 0; replay(sm); }
+				} else { if (sm.watch) { sm.wend = Date.now(); } sm.watch = false; }
 				if (c.status === 'idle') { sm.sticky = ''; setStatus(sm, '', 0); return traits(false); }
 				if (STICKY[c.status] && !c.transient) { sm.sticky = c.text; setStatus(sm, c.text, 0); return traits(false); }
 				if (c.status === 'failed') { mark(sm, '\\u2715', ${JSON.stringify(DANGER_COLOR)}); }
-				if (c.status === 'scroll') { mark(sm, '\\u2195', A); }
+				if (c.status === 'scroll') { mark(sm, typeof c.direction === 'string' && Object.prototype.hasOwnProperty.call(ARROWS, c.direction) ? ARROWS[c.direction] : '\\u2195', A); }
 				setStatus(sm, c.text, c.markMs);
 				return traits(false);
 			}

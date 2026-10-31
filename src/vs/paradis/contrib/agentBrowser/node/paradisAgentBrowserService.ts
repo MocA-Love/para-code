@@ -73,7 +73,7 @@ import { paradisClassifyPeer, paradisPeerIsOneOf, ParadisPeerUnknownReason } fro
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, ParadisProgramState, paradisCodexProgramStatusTransition, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
-import { ParadisCursorPacingLedger, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
+import { ParadisCursorPacingLedger, paradisCursorScrollDirectionForTool, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
 import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
@@ -5298,12 +5298,14 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 入力を伴わない道具の間、カーソルの名札に状態を出す（`paradisWithToolCursorStatus`）。知らせは道具の始まりの
 	 * ページへ送る（途中で利用者が別のページを共有して今のタブが替わっても、終わりの idle が元のページへ届く）。
 	 */
-	private _withToolCursorStatus<T>(ingressLease: IParadisAgentBrowserIngressLease, name: string, run: () => Promise<T>, binding?: IBindingEntry): Promise<T> {
+	private _withToolCursorStatus<T>(ingressLease: IParadisAgentBrowserIngressLease, name: string, run: () => Promise<T>, binding?: IBindingEntry, args?: unknown): Promise<T> {
 		const key = this._pageKeyOf(ingressLease);
 		const target = binding ?? this._bindingForKey(key);
+		// scroll_to は探す向きの矢印を出す（q.html Q301）
+		const direction = paradisCursorScrollDirectionForTool(name, args);
 		return paradisWithToolCursorStatus(name, this._cursorStatusRuns, target ? paradisToolCursorRunKey(key, target.exactView.viewId) : key, note => {
 			if (target) {
-				this._noteCursorStatus(ingressLease, note, target);
+				this._noteCursorStatus(ingressLease, direction && note.status === 'scroll' ? { ...note, direction } : note, target);
 			}
 		}, run);
 	}
@@ -6369,7 +6371,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					return this._toolError(`${name} could not run because the embedded DevTools bridge is unavailable right now. Call get_session_health to check its status, then retry.`);
 				}
 			},
-		}, name, args), binding);
+		}, name, args), binding, args);
 	}
 
 	/**
