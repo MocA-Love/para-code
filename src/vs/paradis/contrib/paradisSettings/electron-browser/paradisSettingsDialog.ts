@@ -1525,7 +1525,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.typescriptIdleStop', "使っていない TypeScript の言語サーバーを止める"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.typescriptIdleStopDesc', "TypeScript・JavaScript のファイルを 1 つも開いていない時間がこれだけ続いたら止めて、メモリを空けます。ファイルを開けば自動で起動し直します。"),
+		description: localize('paradis.settings.typescriptIdleStopDesc', "TypeScript・JavaScript のファイルを 1 つも開いていない時間がこれだけ続いたら止めて、メモリを空けます。ファイルを開けば自動で起動し直します。止まっている間は、TypeScript・JavaScript のファイルを 1 つ開くまで、ワークスペースの記号の検索が空になります。"),
 		keywords: 'typescript javascript tsserver language server memory idle stop',
 		choices: [
 			// allow-any-unicode-next-line
