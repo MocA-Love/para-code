@@ -126,7 +126,7 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 
 		dom.append(this.body, $('p.pbpm-description')).textContent = localize(
 			'paradis.browserExtensions.description',
-			"拡張機能は、入れたタブで開いたページの中身を読み書きできます。信頼できるものだけ入れてください。エージェントのタブ・使い捨てのタブ・SSH 先のページには入りません。",
+			"拡張機能は、入れたタブで開いたページの中身を読み書きできます。信頼できるものだけ入れてください。エージェントのタブ・使い捨てのタブには入りません。SSH 先のページには、「SSH 先のページでも使う」をオンにした拡張機能だけが入ります。",
 		);
 		this._noticeElement = dom.append(this.body, $('.pbe-notice'));
 
@@ -314,6 +314,21 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 				void this._run(() => this._mainService.setUserScriptsAllowed(extension.id, place, allowing));
 			}));
 			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.userScriptsNote', "許可すると、この拡張機能が登録したスクリプト（ユーザースクリプト）が、この場所のタブのページで動きます。エージェントのタブと、エージェントと共有中のタブでは動きません。");
+		}
+		if (this._profile === PARADIS_DEFAULT_EXTENSION_PROFILE) {
+			// SSH の窓で SSH 先へトンネルを通すのはワークスペースのタブ（「既定」の場所）だけなので、既定の場所でだけ出す（Q519。既定はオフ）
+			const option = dom.append(info, $<HTMLLabelElement>('label.pbe-row-option'));
+			const allow = dom.append(option, $<HTMLInputElement>('input'));
+			allow.type = 'checkbox';
+			allow.checked = extension.allowedOnRemote;
+			allow.disabled = !active || this._busy;
+			dom.append(option, $('span')).textContent = localize('paradis.browserExtensions.allowOnRemote', "SSH 先のページでも使う");
+			this.contentFocusables.push(allow);
+			this._renderStore.add(dom.addDisposableListener(allow, 'change', () => {
+				const allowing = allow.checked;
+				void this._run(() => this._mainService.setAllowedOnRemote(extension.id, allowing));
+			}));
+			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.allowOnRemoteNote', "オンにすると、SSH の窓で SSH 先のページを開くタブにもこの拡張機能が入ります。オンにすると、この拡張機能の通信（保管庫の同期など）も SSH 先から出ます。手元のアプリと localhost で話す拡張機能は、手元のアプリに届きません。");
 		}
 		if (extension.pagesWithoutApis?.length) {
 			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.pagesWithoutApis', "次のページは UTF-8 でないか Para Code が書き換えられない形式のため、Para Code が足す機能（chrome.storage.sync など）が使えません: {0}", extension.pagesWithoutApis.join('、'));

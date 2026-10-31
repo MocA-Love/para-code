@@ -11,7 +11,7 @@ import { createHash } from 'crypto';
 import { promises as fs, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import type { Extension } from 'electron';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { BrowserViewStorageScope } from '../../../../../platform/browserView/common/browserView.js';
@@ -202,6 +202,66 @@ suite('ParadisBrowserExtensionsMain', () => {
 		assert.deepStrictEqual({ whileRemote, afterStop, afterStart: session.ids() }, { whileRemote: [], afterStop: [added.extension.id], afterStart: [] });
 		onDidStart.dispose();
 		onDidStop.dispose();
+		manager.dispose();
+	});
+
+	test('loads only the extensions allowed on SSH hosts into a tunneled workspace session, and reloads them when the network changes', async () => {
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog, viewId => viewId === 'view-ssh' ? session : undefined);
+		await writeExtension(join(root, 'vault'), { manifest_version: 3, name: 'Vault', version: '1.0' });
+		await writeExtension(join(root, 'theme'), { manifest_version: 3, name: 'Theme', version: '1.0' });
+		const vault = await manager.addUnpacked(join(root, 'vault'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		const theme = await manager.addUnpacked(join(root, 'theme'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		assert.ok(vault.ok && theme.ok);
+		await manager.setAllowedOnRemote(vault.extension.id, true);
+
+		const onDidStart = new Emitter<void>();
+		const onDidStop = new Emitter<void>();
+		const remote = { isRemote: true, onDidStart: onDidStart.event, onDidStop: onDidStop.event };
+		const session = new FakeSession(join(root, 'workspace'));
+		// 回線の付け替えの後の読み込みは待てない（知らせの受け手が始めるだけ）ので、読み込むたびに知らせて待つ
+		const loads = new Emitter<void>();
+		const load = session.extensions.loadExtension;
+		session.extensions = { ...session.extensions, loadExtension: async (path, options) => { const loaded = await load(path, options); loads.fire(); return loaded; } };
+		const waitFor = async (expected: readonly string[]) => {
+			const sorted = [...expected].sort();
+			while (JSON.stringify([...session.ids()].sort()) !== JSON.stringify(sorted)) {
+				await Event.toPromise(loads.event);
+			}
+			return [...session.ids()].sort();
+		};
+		await manager.attach(session, owner(BrowserViewStorageScope.Workspace, 'workspace:1', remote));
+		const whileRemote = session.ids();
+		const shared = (await manager.getShareExtensions('view-ssh', PARADIS_DEFAULT_EXTENSION_PROFILE)).extensions.map(extension => extension.name);
+
+		remote.isRemote = false;
+		onDidStop.fire();
+		const afterStop = await waitFor([vault.extension.id, theme.extension.id]);
+
+		remote.isRemote = true;
+		onDidStart.fire();
+		const afterStart = await waitFor([vault.extension.id]);
+
+		await manager.setAllowedOnRemote(vault.extension.id, false);
+		const afterTurningOff = session.ids();
+		await manager.setAllowedOnRemote(theme.extension.id, true);
+		const afterAllowingTheme = session.ids();
+		const state = await manager.getState();
+
+		assert.deepStrictEqual({
+			whileRemote, shared, afterStop, afterStart, afterTurningOff, afterAllowingTheme,
+			allowedOnRemote: state.extensions.map(extension => [extension.name, extension.allowedOnRemote]),
+		}, {
+			whileRemote: [vault.extension.id],
+			shared: ['Vault'],
+			afterStop: [vault.extension.id, theme.extension.id].sort(),
+			afterStart: [vault.extension.id],
+			afterTurningOff: [],
+			afterAllowingTheme: [theme.extension.id],
+			allowedOnRemote: [['Vault', false], ['Theme', true]],
+		});
+		onDidStart.dispose();
+		onDidStop.dispose();
+		loads.dispose();
 		manager.dispose();
 	});
 
