@@ -9,6 +9,7 @@
 import { getWindow } from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 
 // 見えていないターミナルの GPU レンダラ(WebGL)を外して、GPU のメモリを返す(既定オフ)。
 //
@@ -23,6 +24,12 @@ import { Disposable, MutableDisposable, toDisposable } from '../../../../base/co
 //
 // 外している間は DOM レンダラが代わりに入るが、裏では描画が止まっているので何も描かない。
 // バッファ・スクロール位置・選択は描画方式と無関係に xterm の中に残る。
+//
+// 外している間は、外す直前に GPU レンダラで測ったフォントの寸法を端末に使わせる(`releasedFont`)。
+// DOM レンダラはセル幅を GPU レンダラのように丸めないので、DOM の寸法で layout されると、裏の端末や
+// 戻した直後の端末(見せる操作の中の layout は、付け直しより先に走る)の pty に、別の幅への resize と
+// 元の幅への resize が続けて届く。寸法を持つのは外している間だけなので、付け直しに失敗した端末は
+// そのまま DOM の寸法に移る。
 
 /** 見えなくなってから GPU レンダラを外すまでの猶予(ミリ秒)。タブをさっと切り替えただけなら外さない。 */
 export const PARADIS_HIDDEN_GPU_RELEASE_DELAY = 5000;
@@ -31,14 +38,14 @@ export const PARADIS_HIDDEN_GPU_RELEASE_DELAY = 5000;
 export const PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING = 'paradis.terminal.releaseHiddenGpu';
 
 /** {@link ParadisHiddenGpuRelease} が端末に頼む操作。 */
-export interface IParadisHiddenGpuReleaseHost {
-	/** 設定がオンか。 */
-	isEnabled(): boolean;
+export interface IParadisHiddenGpuReleaseHost<TFont> {
 	/** いま GPU レンダラで描いているか。 */
 	hasGpuRenderer(): boolean;
-	/** GPU レンダラを外す。寸法の計算し直しと画像の破棄はしないこと(戻ったときに pty の大きさが変わらないように)。 */
+	/** いまのフォントの寸法(外す直前に GPU レンダラで測る)。 */
+	measureFont(): TFont;
+	/** GPU レンダラを外す。 */
 	release(): void;
-	/** GPU レンダラを付け直す。 */
+	/** GPU レンダラを付け直す。付け直さないときは、DOM レンダラの寸法で測り直させること。 */
 	reacquire(): void;
 }
 
@@ -47,15 +54,17 @@ export interface IParadisHiddenGpuReleaseHost {
  *
  * 付け直すのは自分が外した端末だけ。DOM レンダラで動いている端末に GPU レンダラを足すことはない。
  */
-export class ParadisHiddenGpuRelease extends Disposable {
+export class ParadisHiddenGpuRelease<TFont> extends Disposable {
 	private _visible = true;
 	private _released = false;
+	private _releasedFont: TFont | undefined;
 	private readonly _releaseScheduler: RunOnceScheduler;
 	private readonly _observer = this._register(new MutableDisposable());
 	private _observedWindow: Window | undefined;
 
 	constructor(
-		private readonly _host: IParadisHiddenGpuReleaseHost,
+		private readonly _configurationService: Pick<IConfigurationService, 'getValue'>,
+		private readonly _host: IParadisHiddenGpuReleaseHost<TFont>,
 		delay: number = PARADIS_HIDDEN_GPU_RELEASE_DELAY,
 	) {
 		super();
@@ -65,6 +74,11 @@ export class ParadisHiddenGpuRelease extends Disposable {
 	/** 自分が外したまま、まだ付け直していないか。外している間は、ほかの経路から GPU レンダラを付けない。 */
 	get isReleased(): boolean {
 		return this._released;
+	}
+
+	/** 外している間、端末が使うフォントの寸法。外していなければ undefined。 */
+	get releasedFont(): TFont | undefined {
+		return this._releasedFont;
 	}
 
 	/**
@@ -95,20 +109,27 @@ export class ParadisHiddenGpuRelease extends Disposable {
 			this._releaseScheduler.cancel();
 			if (this._released) {
 				this._released = false;
+				this._releasedFont = undefined;
 				this._host.reacquire();
 			}
 			return;
 		}
-		if (this._host.isEnabled() && this._host.hasGpuRenderer()) {
+		if (this._isEnabled() && this._host.hasGpuRenderer()) {
 			this._releaseScheduler.schedule();
 		}
 	}
 
 	private _releaseIfStillHidden(): void {
-		if (this._visible || this._released || !this._host.isEnabled() || !this._host.hasGpuRenderer()) {
+		if (this._visible || this._released || !this._isEnabled() || !this._host.hasGpuRenderer()) {
 			return;
 		}
+		// 寸法は外す前に測る。外すと端末は寸法を測り直すが、そのときにはもうこの寸法を使う。
+		this._releasedFont = this._host.measureFont();
 		this._released = true;
 		this._host.release();
+	}
+
+	private _isEnabled(): boolean {
+		return this._configurationService.getValue<boolean>(PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING) === true;
 	}
 }

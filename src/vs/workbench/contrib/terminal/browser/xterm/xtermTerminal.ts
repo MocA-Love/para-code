@@ -52,8 +52,8 @@ import { clamp } from '../../../../../base/common/numbers.js';
 import { installParadisWebglBackgroundAlphaPatch, isParadisTransparentActive, paradisXtermBackground } from '../../../../../paradis/contrib/windowTransparency/browser/paradisTerminalTransparency.js';
 // PARA-PATCH: tell a terminal that lost its GPU context apart from a machine that cannot render at all (fork-owned, see vs/paradis)
 import { ParadisWebglRecovery, paradisWebglSupport } from '../../../../../paradis/contrib/terminalRenderer/browser/paradisWebglRecovery.js';
-// PARA-PATCH: drop the GPU renderer of a terminal that is off screen (opt-in, fork-owned, see vs/paradis)
-import { PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING, ParadisHiddenGpuRelease } from '../../../../../paradis/contrib/terminalRenderer/browser/paradisHiddenGpuRelease.js';
+// PARA-PATCH: release the GPU renderer of an off-screen terminal (opt-in, fork-owned, see vs/paradis)
+import { ParadisHiddenGpuRelease } from '../../../../../paradis/contrib/terminalRenderer/browser/paradisHiddenGpuRelease.js';
 // PARA-PATCH: per-terminal font size (Para Code TM21), applied on top of terminal.integrated.fontSize in getFont()
 import { paradisZoomTerminalFont } from '../../../../../paradis/contrib/terminalRenderer/browser/paradisTerminalFontZoom.js';
 // PARA-PATCH: report webgl fallback / global-disable diagnostics to Sentry (see vs/paradis)
@@ -166,30 +166,13 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	// context back, so hold this listener in one slot instead of letting a new one pile up on the
 	// terminal's own store on each acquisition
 	private readonly _paradisWebglContextLoss = this._register(new MutableDisposable());
-	// PARA-PATCH: give the GPU memory of an off-screen terminal back after a grace period, and take
-	// it again once the terminal is on screen (opt-in, see vs/paradis/contrib/terminalRenderer)
-	private readonly _paradisHiddenGpu = this._register(new ParadisHiddenGpuRelease({
-		isEnabled: () => this._configurationService.getValue<boolean>(PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING) === true,
-		hasGpuRenderer: () => this._webglAddon !== undefined,
-		release: () => {
-			this._paradisReleasedFont = this.getFont();
-			this._disposeOfWebglRenderer(true);
-		},
-		reacquire: () => {
-			if (this._attached?.options.enableGpu && this._shouldLoadWebgl()) {
-				void this._enableWebglRenderer();
-			} else {
-				// Not taking the GPU renderer back: move over to the DOM renderer's cell size now
-				this._paradisReleasedFont = undefined;
-				this._onDidRequestRefreshDimensions.fire();
-			}
-		},
+	// PARA-PATCH: release the GPU renderer of an off-screen terminal and take it back when shown (opt-in, see vs/paradis)
+	private readonly _paradisHiddenGpu = this._register(new ParadisHiddenGpuRelease(this._configurationService, {
+		hasGpuRenderer: () => !!this._webglAddon,
+		measureFont: () => this.getFont(),
+		release: () => this._disposeOfWebglRenderer(),
+		reacquire: () => this._attached?.options.enableGpu && this._shouldLoadWebgl() ? this._enableWebglRenderer() : this._onDidRequestRefreshDimensions.fire(),
 	}));
-	// PARA-PATCH: the font measured with the GPU renderer, kept while it is released for being off screen.
-	// The DOM renderer does not round the cell width like the GPU renderer does, so without this a terminal
-	// being shown again is laid out with the DOM cell size (before the GPU renderer is back) and its pty gets
-	// a resize to a different width and then back
-	private _paradisReleasedFont: ITerminalFont | undefined;
 	private _webglAddonLoading = false;
 	private _webglAddonLoadId = 0;
 	private _serializeAddon?: SerializeAddonType;
@@ -596,9 +579,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		if (recreateWebgl) {
 			this._disposeOfWebglRenderer();
 		}
-		if (this.raw.element) {
-			this._paradisHiddenGpu.observe(this.raw.element); // PARA-PATCH: watch on-screen state in the new window
-		}
+		this._paradisHiddenGpu.observe(this.raw.element!); // PARA-PATCH: watch on-screen state in the new window
 		this.raw.refresh(0, this.raw.rows - 1);
 		if (recreateWebgl && this._shouldLoadWebgl()) {
 			void this._enableWebglRenderer().then(() => this.raw.refresh(0, this.raw.rows - 1));
@@ -797,12 +778,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	}
 
 	getFont(): ITerminalFont {
-		// PARA-PATCH: keep the GPU renderer's cell size while it is released for being off screen (see _paradisReleasedFont)
-		if (this._paradisReleasedFont && !this._webglAddon) {
-			return this._paradisReleasedFont;
-		}
-		// PARA-PATCH: add this terminal's own font size delta (Para Code TM21)
-		return paradisZoomTerminalFont(this, this._terminalConfigurationService.getFont(dom.getWindow(this.raw.element), this._core), this._core);
+		// PARA-PATCH: add this terminal's own font size delta (Para Code TM21); keep the GPU renderer's size while it is released (see _paradisHiddenGpu)
+		return this._paradisHiddenGpu.releasedFont ?? paradisZoomTerminalFont(this, this._terminalConfigurationService.getFont(dom.getWindow(this.raw.element), this._core), this._core);
 	}
 
 	getLongestViewportWrappedLineLength(): number {
@@ -984,8 +961,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 
 	private async _enableWebglRenderer(): Promise<void> {
 		// Currently webgl options can only be specified on addon creation
-		// PARA-PATCH: stay without the GPU renderer while it is released for being off screen; it is taken back when shown
-		if (!this.raw.element || this._paradisHiddenGpu.isReleased) {
+		if (!this.raw.element || this._paradisHiddenGpu.isReleased) { // PARA-PATCH: not while released for being off screen
 			return;
 		}
 		const customGlyphs = this._terminalConfigurationService.config.customGlyphs;
@@ -1052,7 +1028,6 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 				this._paradisWebglRecovery.noteLost();
 			});
 			this._refreshImageAddon();
-			this._paradisReleasedFont = undefined; // PARA-PATCH: the GPU renderer is back (see _paradisReleasedFont)
 			// WebGL renderer cell dimensions differ from the DOM renderer, make sure the terminal
 			// gets resized after the webgl addon is loaded
 			this._onDidRequestRefreshDimensions.fire();
@@ -1159,9 +1134,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		}
 	}
 
-	// PARA-PATCH: `paradisKeepDimensions` keeps the cols/rows when the GPU renderer is released for being off
-	// screen, so a background terminal does not get a resize (the DOM renderer's cell size can differ)
-	private _disposeOfWebglRenderer(paradisKeepDimensions?: boolean): void {
+	private _disposeOfWebglRenderer(): void {
 		this._webglAddonLoadId++;
 		this._webglAddonLoading = false;
 		this._webglAddonCustomGlyphs = undefined;
@@ -1178,10 +1151,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		this._refreshImageAddon();
 		// WebGL renderer cell dimensions differ from the DOM renderer, make sure the terminal
 		// gets resized after the webgl addon is disposed
-		if (!paradisKeepDimensions) { // PARA-PATCH: see paradisKeepDimensions
-			this._paradisReleasedFont = undefined; // PARA-PATCH: really switching to the DOM renderer (see _paradisReleasedFont)
-			this._onDidRequestRefreshDimensions.fire();
-		}
+		this._onDidRequestRefreshDimensions.fire();
 	}
 
 	async getRangeAsVT(startMarker?: IXtermMarker, endMarker?: IXtermMarker, skipLastLine?: boolean): Promise<string> {

@@ -10,14 +10,16 @@ import assert from 'assert';
 import { timeout } from '../../../../../base/common/async.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisHiddenGpuReleaseHost, PARADIS_HIDDEN_GPU_RELEASE_DELAY, ParadisHiddenGpuRelease } from '../../browser/paradisHiddenGpuRelease.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { IParadisHiddenGpuReleaseHost, PARADIS_HIDDEN_GPU_RELEASE_DELAY, PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING, ParadisHiddenGpuRelease } from '../../browser/paradisHiddenGpuRelease.js';
 
-class TestHost implements IParadisHiddenGpuReleaseHost {
-	enabled = true;
+class TestHost implements IParadisHiddenGpuReleaseHost<string> {
+	readonly configuration = new TestConfigurationService({ [PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING]: true });
 	gpu = true;
 	readonly calls: string[] = [];
-	isEnabled(): boolean { return this.enabled; }
+	set enabled(value: boolean) { this.configuration.setUserConfiguration(PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING, value); }
 	hasGpuRenderer(): boolean { return this.gpu; }
+	measureFont(): string { return this.gpu ? 'gpu-font' : 'dom-font'; }
 	release(): void {
 		this.calls.push('release');
 		this.gpu = false;
@@ -31,25 +33,25 @@ class TestHost implements IParadisHiddenGpuReleaseHost {
 suite('ParadisHiddenGpuRelease', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function create(host: TestHost): ParadisHiddenGpuRelease {
-		return store.add(new ParadisHiddenGpuRelease(host));
+	function create(host: TestHost): ParadisHiddenGpuRelease<string> {
+		return store.add(new ParadisHiddenGpuRelease(host.configuration, host));
 	}
 
-	test('releases after the grace period and takes the renderer back when shown', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+	test('releases after the grace period and takes the renderer back when shown, keeping the GPU font size only while released', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const host = new TestHost();
 		const release = create(host);
 		release.setVisible(false);
 		await timeout(PARADIS_HIDDEN_GPU_RELEASE_DELAY - 1);
-		const beforeDelay = [...host.calls];
+		const beforeDelay = { calls: [...host.calls], font: release.releasedFont };
 		await timeout(1);
-		const afterDelay = { calls: [...host.calls], released: release.isReleased };
+		const afterDelay = { calls: [...host.calls], released: release.isReleased, font: release.releasedFont };
 		release.setVisible(true);
 		assert.deepStrictEqual(
-			{ beforeDelay, afterDelay, afterShown: { calls: host.calls, released: release.isReleased } },
+			{ beforeDelay, afterDelay, afterShown: { calls: host.calls, released: release.isReleased, font: release.releasedFont } },
 			{
-				beforeDelay: [],
-				afterDelay: { calls: ['release'], released: true },
-				afterShown: { calls: ['release', 'reacquire'], released: false },
+				beforeDelay: { calls: [], font: undefined },
+				afterDelay: { calls: ['release'], released: true, font: 'gpu-font' },
+				afterShown: { calls: ['release', 'reacquire'], released: false, font: undefined },
 			},
 		);
 	}));
