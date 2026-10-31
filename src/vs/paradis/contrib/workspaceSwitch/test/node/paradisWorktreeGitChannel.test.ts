@@ -23,7 +23,7 @@ import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { IPCServer } from '../../../../../base/parts/ipc/common/ipc.js';
 import { NativeParsedArgs } from '../../../../../platform/environment/common/argv.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { ParadisWorktreeGitChannel, ParadisWorktreeGitService, registerParadisWorktreeGit, registerParadisWorktreeGitForServer } from '../../node/paradisWorktreeGitChannel.js';
+import { paradisClassifyDiffStatFailure, ParadisWorktreeGitChannel, ParadisWorktreeGitService, registerParadisWorktreeGit, registerParadisWorktreeGitForServer } from '../../node/paradisWorktreeGitChannel.js';
 import { ParadisGithubCallLog, paradisClearGithubCallSink, paradisSetGithubCallSink } from '../../../githubMetrics/common/paradisGithubMetrics.js';
 import { ParadisGithubRateLimitPause } from '../../../githubMetrics/common/paradisGithubRateLimitPause.js';
 
@@ -335,7 +335,37 @@ suite('ParadisWorktreeGitService', () => {
 			callback(Object.assign(new Error('exit 128'), { code: 128 }), '', 'fatal: not a git repository');
 		});
 
-		assert.deepStrictEqual(await service.getDiffStat('/gone'), { insertions: 0, deletions: 0, failed: true });
+		assert.deepStrictEqual(await service.getDiffStat('/gone'), { insertions: 0, deletions: 0, failed: true, failure: 'missing' });
+	});
+
+	test('tells a folder outside git (usage exit 129) from a path that exists and fails for another reason', async () => {
+		let exitCode = 129;
+		const service = createLifecycleService((_command, _args, _options, callback) => {
+			callback(Object.assign(new Error(`exit ${exitCode}`), { code: exitCode }), '', 'usage: git diff --no-index [<options>] <path> <path>');
+		});
+		const notRepository = await service.getDiffStat(tmpdir());
+		exitCode = 128;
+
+		assert.deepStrictEqual({ notRepository, noHead: await service.getDiffStat(tmpdir()) }, {
+			notRepository: { insertions: 0, deletions: 0, failed: true, failure: 'notRepository' },
+			noHead: { insertions: 0, deletions: 0, failed: true, failure: 'other' },
+		});
+	});
+
+	test('classifies diff failures without reading the git message', () => {
+		assert.deepStrictEqual({
+			missing: paradisClassifyDiffStatFailure({ exitCode: 128, killed: false, pathExists: false }),
+			notRepository: paradisClassifyDiffStatFailure({ exitCode: 129, killed: false, pathExists: true }),
+			noHead: paradisClassifyDiffStatFailure({ exitCode: 128, killed: false, pathExists: true }),
+			timeout: paradisClassifyDiffStatFailure({ exitCode: undefined, killed: true, pathExists: false }),
+			notStarted: paradisClassifyDiffStatFailure({ exitCode: undefined, killed: false, pathExists: true }),
+		}, {
+			missing: 'missing',
+			notRepository: 'notRepository',
+			noHead: 'other',
+			timeout: 'other',
+			notStarted: 'other',
+		});
 	});
 
 	test('runs lifecycle script in worktree with project root environment and a hang-protection timeout', async () => {
