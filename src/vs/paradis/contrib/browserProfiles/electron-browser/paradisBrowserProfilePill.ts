@@ -37,12 +37,14 @@ import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/co
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserTabsService } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisSpaceDefaultTarget, paradisSpaceDefaultTargetsEqual } from '../common/paradisBrowserSpaceDefaults.js';
 import { ParadisBrowserProfileDropdown } from './paradisBrowserProfileDropdown.js';
 import { paradisShowCreateProfileDialog, paradisShowManageProfilesDialog } from './paradisBrowserProfileDialogs.js';
 import { paradisShowLoginImportDialog } from './paradisBrowserLoginImportDialog.js';
 import { IParadisBrowserProfilesService, ParadisProfileTarget } from './paradisBrowserProfilesService.js';
 import { IParadisBrowserSpaceDefaultsService } from './paradisBrowserSpaceDefaultsService.js';
+import { paradisSwitchKeepingShares } from './paradisBrowserProfileShareCarry.js';
 
 const $ = dom.$;
 
@@ -75,6 +77,7 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IParadisBrowserSpaceDefaultsService private readonly spaceDefaultsService: IParadisBrowserSpaceDefaultsService,
 		@IHoverService hoverService: IHoverService,
+		@IParadisAgentBrowserTabsService private readonly agentTabsService: IParadisAgentBrowserTabsService,
 	) {
 		super(editor);
 
@@ -306,7 +309,8 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 		if (target.kind === 'scope' && current?.profileId === undefined && current?.scope === target.scope) {
 			return;
 		}
-		const replacement = await this.profilesService.switchView(input, target);
+		// 作り直すと tabId が変わって共有が外れるので、共有していたペインへ作り直したタブを共有し直す。
+		const { replacement, carriedPanes } = await paradisSwitchKeepingShares(input, () => this.profilesService.switchView(input, target), this.bindingModel, this.agentTabsService);
 		if (replacement && target.kind === 'profile') {
 			// ユーザーが自分で使ったので、エージェントが作った印を外す。
 			this.profilesService.claimForUser(target.profileId);
@@ -319,11 +323,14 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 			return;
 		}
 		const name = this._targetLabel(target);
-		const base = localize(
+		const reopened = localize(
 			'paradis.browserProfiles.switched',
 			"「{0}」で開き直しました。ログイン状態が切り替え前とは違うため、同じページが表示されるとは限りません。",
 			name,
 		);
+		const base = carriedPanes > 0
+			? localize('paradis.browserProfiles.switchedKeptShare', "{0} エージェントとの共有は続いています。", reopened)
+			: reopened;
 		// リモート接続中は名前付きプロファイルがウィンドウ毎の転送プロキシを使わない
 		// （グローバルと同じ扱い。他のウィンドウへ転送を漏らさないため）。その結果 localhost:3000 の
 		// ような転送ポートへ届かなくなるので、黙って繋がらなくなる前に伝える。
