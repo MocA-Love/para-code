@@ -32,14 +32,14 @@ const OPTIONS_WITH_VALUE = new Set([
 // `--no-daemon` is a TUI option, so only an invocation that opens the TUI gets it: no
 // subcommand at all (a bare prompt), `resume`, or `fork`. Every other subcommand is delegated
 // unchanged. This is Codex 0.146's full set (aliases and the internal subcommands `codex --help`
-// hides included) minus the TUI commands, plus `agents` and the 0.158 additions. A subcommand
+// hides included) minus the TUI commands, plus `agents` and the 0.158 and 0.166 additions. A subcommand
 // missing here gets `--no-daemon` and may refuse it; the POSIX launcher and the mobile relay's
 // command parser carry the same list.
 const TUI_COMMANDS = new Set(['resume', 'fork']);
 const NON_INTERACTIVE_COMMANDS = new Set([
 	'exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server', 'remote-control',
 	'app', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'archive', 'delete', 'unarchive',
-	'cloud', 'exec-server', 'execpolicy', 'responses-api-proxy', 'stdio-to-uds', 'features', 'help', 'agents', 'queue', 'migrate-rollouts', 'tcp-tunnel',
+	'cloud', 'exec-server', 'execpolicy', 'responses-api-proxy', 'stdio-to-uds', 'features', 'help', 'agents', 'queue', 'migrate-rollouts', 'migrate-nfs-db', 'tcp-tunnel',
 ]);
 
 const DAEMON_PROBE_TIMEOUT_MS = 5_000;

@@ -7,8 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 /**
- * Codex のモデルが混み合って（`codex_error_info = "server_overloaded"`、「Selected model is at capacity」）ターンが
- * 終わったとき、少し待ってから自動で `continue` を送る。
+ * Codex のモデルが混み合って（`codex_error_info = "server_overloaded"`、「Selected model is at capacity」。0.166.0 からは
+ * 方針で絞った経路の空き不足 `"policy_capacity_unavailable"` も）ターンが終わったとき、少し待ってから自動で `continue` を送る。
  *
  * Codex 自身はこのエラーを、サーバーが Retry-After を付けたときしか再試行しない（WebSocket と SSE では付かないと 1 回で
  * 終わる。codex-rs `protocol/src/error.rs` の `retry_delay`）。ユーザーは毎回手で continue を送っていた。
@@ -24,8 +24,8 @@
 /** 設定: Codex のモデルが混み合って止まったとき、自動で続けるか（既定オン）。 */
 export const PARADIS_CODEX_AUTO_CONTINUE_SETTING = 'paradis.agentChat.codexAutoContinueOnOverload';
 
-/** 自動で続ける対象のエラーのコード。 */
-export const PARADIS_CODEX_OVERLOAD_ERROR_CODE = 'server_overloaded';
+/** 自動で続ける対象のエラーのコード（Codex 本家も同じ再試行の扱いにしている、待てば直る種類）。 */
+export const PARADIS_CODEX_OVERLOAD_ERROR_CODES: ReadonlySet<string> = new Set(['server_overloaded', 'policy_capacity_unavailable']);
 
 /** 自動で送る文（言い換えない）。 */
 export const PARADIS_CODEX_OVERLOAD_CONTINUE_TEXT = 'continue';
@@ -144,7 +144,7 @@ export class ParadisCodexOverloadContinue {
 			return;
 		}
 		const state = this.panes.get(token);
-		if (reason !== 'failed' || errorCode !== PARADIS_CODEX_OVERLOAD_ERROR_CODE || !this.host.isEnabled()) {
+		if (reason !== 'failed' || errorCode === undefined || !PARADIS_CODEX_OVERLOAD_ERROR_CODES.has(errorCode) || !this.host.isEnabled()) {
 			this.forget(token);
 			return;
 		}
