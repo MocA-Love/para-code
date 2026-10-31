@@ -44,6 +44,7 @@ import { TestTerminalProfileResolverService, TestViewsService, workbenchInstanti
 import { TestContextService } from '../../../../test/common/workbenchTestServices.js';
 import { writeP } from '../../browser/terminalTestHelpers.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
+import { mainWindow } from '../../../../../base/browser/window.js'; // PARA-PATCH: wait for xterm's first refresh in the reattach test
 
 const root1 = '/foo/root1';
 const ROOT_1 = fixPath(root1);
@@ -792,6 +793,9 @@ suite('Workbench - TerminalInstance', () => {
 
 				instance.attachToElement(firstContainer);
 				instance.setVisible(true);
+				// Let the refresh xterm schedules on open run in this window. Left pending, it fires after the
+				// move and the dispose (its cancel targets the new window) and throws in a later test.
+				await new Promise<void>(resolve => mainWindow.requestAnimationFrame(() => resolve()));
 				let recreations = 0;
 				(instance.xterm as unknown as { recreateRendererAfterWindowChange: () => void }).recreateRendererAfterWindowChange = () => recreations++;
 				instance.detachFromElement();
