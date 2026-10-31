@@ -30,6 +30,7 @@ import {
 	IParadisCursorTypingTexts,
 	PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS,
 	PARADIS_CURSOR_OVERLAY_TUNING,
+	ParadisCursorScrollDirection,
 	ParadisCursorStatus,
 	paradisCursorKeyLabel,
 	ParadisCursorOverlayOwnedCommand,
@@ -121,6 +122,8 @@ interface IParadisCursorSlot {
 export interface IParadisCursorStatusExtras {
 	/** 道具を始めた時刻（ms）。evaluate_script の中のクリックを、これより後のものに限る。 */
 	readonly since?: number;
+	/** scroll_to が探す向き（`scroll` のとき。↕ の代わりに向きの矢印を出す）。 */
+	readonly direction?: ParadisCursorScrollDirection;
 }
 
 /** ページ移動の後に出し直すとき、名札に残していた状態を使う上限（ms）。これより古い状態は終わりの知らせを取りこぼしたものとみなす。 */
@@ -358,7 +361,8 @@ export class ParadisCursorOverlayController {
 			kind: 'status', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), status, text: statusText(status, detail),
 			...(frames ? { frames, durationMs } : {}),
 			...(status !== 'idle' ? { park: true } : {}),
-			...(status === 'script' ? { clickText: scriptClickLabel(), since: extras?.since ?? at } : {}),
+			...(status === 'script' ? { clickText: scriptClickLabel(), scrollText: scriptScrollLabel(), since: extras?.since ?? at } : {}),
+			...(status === 'scroll' && extras?.direction ? { direction: extras.direction } : {}),
 		});
 	}
 
@@ -460,7 +464,7 @@ export class ParadisCursorOverlayController {
 				park: true,
 				...(sticky === undefined ? { transient: true } : {}),
 				...(pose ? { frames: [{ x: pose.x, y: pose.y, r: 0, o: 1 }], durationMs: 0 } : {}),
-				...(status === 'script' ? { clickText: scriptClickLabel() } : {}),
+				...(status === 'script' ? { clickText: scriptClickLabel(), scrollText: scriptScrollLabel() } : {}),
 			});
 		}
 	}
@@ -746,6 +750,15 @@ function scriptClickLabel(): string {
 		return localize('paradis.agentBrowser.cursorScriptClick', "スクリプトでクリック");
 	} catch {
 		return 'Clicked by script';
+	}
+}
+
+/** evaluate_script の中のスクロールへ寄せたときの名札。`{0}` にはページが量（`1200px` など）を入れる。 */
+function scriptScrollLabel(): string {
+	try {
+		return localize('paradis.agentBrowser.cursorScriptScroll', "スクリプトでスクロール {0}");
+	} catch {
+		return 'Scrolled by script {0}';
 	}
 }
 

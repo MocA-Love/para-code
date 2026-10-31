@@ -193,6 +193,17 @@ suite('Paradis Cursor Overlay', () => {
 		);
 	});
 
+	test('a scroll direction rides only on the scroll state, and only when it is a known one', () => {
+		assert.deepStrictEqual(
+			[
+				paradisParseCursorStatusNote({ status: 'scroll', direction: 'up' }),
+				paradisParseCursorStatusNote({ status: 'scroll', direction: 'sideways' }),
+				paradisParseCursorStatusNote({ status: 'script', direction: 'left' }),
+			],
+			[{ status: 'scroll', direction: 'up' }, { status: 'scroll' }, { status: 'script' }],
+		);
+	});
+
 	test('the reading frame skips the same element and anything within a second, and the states map for the mirror and the name tag', () => {
 		const rect = { x: 10, y: 20, width: 100, height: 30 };
 		const other = { x: 10, y: 80, width: 100, height: 30 };
