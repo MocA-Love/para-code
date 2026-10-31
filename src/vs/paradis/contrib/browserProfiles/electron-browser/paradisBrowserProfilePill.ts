@@ -34,7 +34,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
-import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
@@ -78,6 +78,7 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 		@IParadisBrowserSpaceDefaultsService private readonly spaceDefaultsService: IParadisBrowserSpaceDefaultsService,
 		@IHoverService hoverService: IHoverService,
 		@IParadisAgentBrowserTabsService private readonly agentTabsService: IParadisAgentBrowserTabsService,
+		@IBrowserViewWorkbenchService private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
 	) {
 		super(editor);
 
@@ -310,7 +311,7 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 			return;
 		}
 		// 作り直すと tabId が変わって共有が外れるので、共有していたペインへ作り直したタブを共有し直す。
-		const { replacement, carriedPanes } = await paradisSwitchKeepingShares(input, () => this.profilesService.switchView(input, target), this.bindingModel, this.agentTabsService);
+		const { replacement, carriedPanes } = await paradisSwitchKeepingShares(input, () => this.profilesService.switchView(input, target), this.bindingModel, this.agentTabsService, viewId => this.browserViewWorkbenchService.getKnownBrowserViews().get(viewId));
 		if (replacement && target.kind === 'profile') {
 			// ユーザーが自分で使ったので、エージェントが作った印を外す。
 			this.profilesService.claimForUser(target.profileId);

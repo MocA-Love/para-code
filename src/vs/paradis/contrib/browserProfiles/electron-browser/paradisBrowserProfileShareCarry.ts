@@ -25,17 +25,27 @@ export interface IParadisShareCarryResult<T> {
  * タブのプロファイルを利用者が切り替える（ピル・「今のタブも切り替える」）ときに、共有（bind）を引き継ぐ。
  *
  * 切り替えはタブの作り直しで tabId が変わり、古いタブの共有は台帳がタブの消えたのを見て外す。そのため共有先の
- * ペインは切り替える前に控え、作り直したタブを各ペインへ共有し直す（そのペインの current になる）。共有して
- * いなかったタブは何もしない。利用者が自分で切り替えたので確認は挟まない: 直接共有できないタブ（ネットワークの
+ * ペインは切り替える前に控え、作り直したタブを各ペインへ共有し直す。共有し直すとそのペインの current
+ * （tab_id を省いたときのタブ）が作り直したタブへ移るので、切り替えたタブが current でなかったペインでは、
+ * 元の current をもう一度共有して current へ戻す（もう無ければ戻さない）。共有していなかったタブは何もしない。利用者が自分で切り替えたので確認は挟まない: 直接共有できないタブ（ネットワークの
  * 制限）は upstream が確認やダイアログを出すので、付け直さない。
  */
 export async function paradisSwitchKeepingShares<T extends BrowserEditorInput>(
 	input: T,
 	switchView: () => Promise<T | undefined>,
-	bindingModel: Pick<IParadisAgentBrowserBindingModel, 'getBindingsForPage'>,
+	bindingModel: Pick<IParadisAgentBrowserBindingModel, 'getBindingsForPage' | 'getBindingForToken'>,
 	agentTabsService: Pick<IParadisAgentBrowserTabsService, 'bindTab'>,
+	findInput: (viewId: string) => BrowserEditorInput | undefined,
 ): Promise<IParadisShareCarryResult<T>> {
 	const tokens = [...new Set(bindingModel.getBindingsForPage(input.id).map(binding => binding.token))];
+	// 切り替えたタブではない current（切り替えの後に戻す先）。
+	const previousCurrent = new Map<string, string>();
+	for (const token of tokens) {
+		const current = bindingModel.getBindingForToken(token)?.pageId;
+		if (current !== undefined && current !== input.id) {
+			previousCurrent.set(token, current);
+		}
+	}
 	const replacement = await switchView();
 	if (!replacement || tokens.length === 0) {
 		return { replacement, sharedPanes: tokens.length, carriedPanes: 0 };
@@ -45,8 +55,15 @@ export async function paradisSwitchKeepingShares<T extends BrowserEditorInput>(
 		const model = await replacement.resolve();
 		if (model.isDirectlyShareable && model.sharingState !== BrowserViewSharingState.BlockedByNetworkPolicy) {
 			for (const token of tokens) {
-				if (await agentTabsService.bindTab(token, replacement)) {
-					carriedPanes++;
+				if (!await agentTabsService.bindTab(token, replacement)) {
+					continue;
+				}
+				carriedPanes++;
+				const restore = previousCurrent.get(token);
+				const restoreInput = restore !== undefined ? findInput(restore) : undefined;
+				if (restoreInput && !restoreInput.isDisposed()) {
+					// 既に共有しているページを共有し直すと、2 枚目以降から current へ戻る（tab_id の接続は保たれる）。
+					await agentTabsService.bindTab(token, restoreInput);
 				}
 			}
 		}
