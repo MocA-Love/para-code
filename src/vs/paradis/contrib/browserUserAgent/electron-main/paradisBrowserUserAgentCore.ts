@@ -13,7 +13,7 @@ import type { Session } from 'electron';
 import { markAsSingleton } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY, paradisBuildBrowserUserAgent } from '../common/paradisBrowserUserAgent.js';
+import { PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_DEFAULT, PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY, paradisBuildBrowserUserAgent } from '../common/paradisBrowserUserAgent.js';
 
 interface IConfiguredSession {
 	readonly session: WeakRef<Session>;
@@ -28,7 +28,7 @@ const liveSessions = new Set<IConfiguredSession>();
 const listeningServices = new WeakSet<IConfigurationService>();
 
 function apply(entry: IConfiguredSession, session: Session, configurationService: IConfigurationService): void {
-	const includeAppToken = configurationService.getValue<boolean>(PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY) === true;
+	const includeAppToken = configurationService.getValue<boolean>(PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY) ?? PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_DEFAULT;
 	session.setUserAgent(paradisBuildBrowserUserAgent(entry.originalUA, entry.appName, includeAppToken));
 }
 
