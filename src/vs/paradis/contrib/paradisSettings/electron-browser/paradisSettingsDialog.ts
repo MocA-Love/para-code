@@ -1396,6 +1396,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-remote',
+		key: 'paradis.remote.copilotAgentHost',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.remoteCopilotAgentHost', "SSH の窓で本家の Copilot のエージェントを動かす"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.remoteCopilotAgentHostDesc', "本家の AI 機能を止めているときはこの設定に関係なく動かず、本家の AI 機能を使っていても SSH の窓ではこの設定がオンのときだけ動きます。変更は窓を再読み込みすると反映されます。"),
+		keywords: 'remote ssh copilot agent host cli runtime memory',
+	},
+	{
+		sectionId: 'psd-sec-remote',
 		key: 'paradis.remote.keepTerminalsAliveOnClose',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.remoteKeepTerminals', "接続先でウィンドウを閉じるときの動き"),
