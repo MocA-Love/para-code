@@ -27,7 +27,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			// allow-any-unicode-next-line
-			description: localize('paradis.remote.copilotAgentHost', "SSH で接続した窓で、本家の Copilot のエージェント（接続先で動くエージェントホストと Copilot CLI の実行部品）を起動します。本家の AI 機能を止めているときはこの設定に関係なく動かず、本家の AI 機能を使っていても SSH の窓ではこの設定がオンのときだけ動きます。変更は窓を再読み込みすると反映されます。")
+			description: localize('paradis.remote.copilotAgentHost', "SSH で接続した窓で、本家の Copilot のエージェント（接続先で動くエージェントホストと Copilot CLI の実行部品）を起動します。「本家の AI 機能を使う」（chat.disableAIFeatures が false）もオンのときだけ動きます。変更は窓を再読み込みすると反映されます。")
 		}
 	}
 });
