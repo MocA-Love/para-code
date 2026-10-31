@@ -336,6 +336,23 @@ export default class TypeScriptServiceClient extends Disposable implements IType
 		this.serverState = this.startService(true);
 	}
 
+	// PARA-PATCH: Para Code stops an idle TS Server (see paradis/paradisTsServerIdleStop.ts) and starts it again on the next request.
+	private paradisStopped = false;
+	public paradisStopTsServer(): boolean {
+		if (this.serverState.type !== ServerState.Type.Running) {
+			return false;
+		}
+		this.logger.info('Stopping idle TS Server');
+		const server = this.serverState.server;
+		++this.token; // The exit of this process is not a crash: handlers guarded by the token ignore it.
+		this.serverState = ServerState.None;
+		this.paradisStopped = true;
+		server.kill();
+		this.resetWatchers();
+		this.loadingIndicator.reset();
+		return true;
+	}
+
 	private readonly _onTsServerStarted = this._register(new vscode.EventEmitter<{ version: TypeScriptVersion; usedApiVersion: API }>());
 	public readonly onTsServerStarted = this._onTsServerStarted.event;
 
@@ -945,6 +962,13 @@ export default class TypeScriptServiceClient extends Disposable implements IType
 	}
 
 	private executeImpl(command: keyof TypeScriptRequests, args: unknown, executeInfo: { isAsync: boolean; token?: vscode.CancellationToken; expectsResult: boolean; lowPriority?: boolean; requireSemantic?: boolean }): Array<Promise<ServerResponse.Response<Proto.Response>> | undefined> {
+		// PARA-PATCH: start the TS Server stopped by paradisStopTsServer again (plugin configuration alone does not wake it).
+		if (this.paradisStopped && command !== 'configurePlugin') {
+			this.paradisStopped = false;
+			if (this.serverState.type === ServerState.Type.None) {
+				this.serverState = this.startService(true);
+			}
+		}
 		const serverState = this.serverState;
 		if (serverState.type === ServerState.Type.Running) {
 			this.bufferSyncSupport.beforeCommand(command);

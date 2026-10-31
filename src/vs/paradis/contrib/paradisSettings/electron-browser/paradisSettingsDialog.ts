@@ -1519,6 +1519,27 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		label: localize('paradis.settings.serviceStatus', "サービスの稼働状況を表示する"),
 		keywords: 'service status incident chip',
 	},
+	{
+		sectionId: 'psd-sec-window',
+		key: 'paradis.typescript.idleStopMinutes',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.typescriptIdleStop', "使っていない TypeScript の言語サーバーを止める"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.typescriptIdleStopDesc', "TypeScript・JavaScript のファイルを 1 つも開いていない時間がこれだけ続いたら止めて、メモリを空けます。ファイルを開けば自動で起動し直します。止まっている間は、TypeScript・JavaScript のファイルを 1 つ開くまで、ワークスペースの記号の検索が空になります。"),
+		keywords: 'typescript javascript tsserver language server memory idle stop',
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 0, label: localize('paradis.settings.typescriptIdleStop0', "止めない") },
+			// allow-any-unicode-next-line
+			{ value: 5, label: localize('paradis.settings.typescriptIdleStop5', "5分（既定）") },
+			// allow-any-unicode-next-line
+			{ value: 15, label: localize('paradis.settings.typescriptIdleStop15', "15分") },
+			// allow-any-unicode-next-line
+			{ value: 30, label: localize('paradis.settings.typescriptIdleStop30', "30分") },
+			// allow-any-unicode-next-line
+			{ value: 60, label: localize('paradis.settings.typescriptIdleStop60', "60分") },
+		],
+	},
 ];
 
 /** paradis.* の外にある設定キー。変更の通知を拾うときに paradis 以外も見る必要がある。 */
