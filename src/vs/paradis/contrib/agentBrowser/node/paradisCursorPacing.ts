@@ -18,7 +18,7 @@
 // get_cdp_endpoint で自分の CDP クライアントを繋いでいるとき）の入力は、今までどおり待つ。
 
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { IParadisCursorPacing, IParadisCursorStatusNote, ParadisCursorStatus, paradisIsStickyCursorStatus } from '../common/paradisCursorOverlay.js';
+import { IParadisCursorPacing, IParadisCursorStatusNote, ParadisCursorScrollDirection, ParadisCursorStatus, paradisIsStickyCursorStatus, paradisParseCursorScrollDirection } from '../common/paradisCursorOverlay.js';
 import { paradisSnapshotRootRectOf } from './paradisDevtoolsToolAdjustments.js';
 
 /** 1 回のツール呼び出し（run_steps なら手順の全部）で、カーソルの演出のために待ってよい合計（ms）。 */
@@ -74,6 +74,18 @@ export function paradisCursorStatusForTool(tool: string): ParadisCursorStatus | 
 		case 'upload_file': return 'upload';
 		default: return undefined;
 	}
+}
+
+/**
+ * scroll_to が探す向き（名札の横に向きの矢印を出す。q.html Q301）。省いたときは道具と同じく下。scroll_to 以外・
+ * 形の違う値は undefined（向きの無い ↕ のまま）。
+ */
+export function paradisCursorScrollDirectionForTool(tool: string, args: unknown): ParadisCursorScrollDirection | undefined {
+	if (tool !== 'scroll_to') {
+		return undefined;
+	}
+	const direction = typeof args === 'object' && args !== null ? (args as { direction?: unknown }).direction : undefined;
+	return direction === undefined ? 'down' : paradisParseCursorScrollDirection(direction);
 }
 
 /**

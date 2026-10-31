@@ -486,6 +486,20 @@ suite('Paradis Cursor Overlay Controller', () => {
 		]);
 	});
 
+	test('scroll_to sends the direction it searches, and a script carries the name tag for its scrolls', () => {
+		const target = new TestTarget();
+		const controller = new ParadisCursorOverlayController(() => true, () => 1_000);
+		const seen = recordPayloads(target, ['kind', 'status', 'direction', 'scrollText']);
+		controller.noteStatus(target, 'scroll', undefined, undefined, undefined, { direction: 'up' });
+		controller.noteStatus(target, 'scroll', undefined, undefined);
+		controller.noteStatus(target, 'script', undefined, undefined);
+		assert.deepStrictEqual(seen, [
+			{ kind: 'status', status: 'scroll', direction: 'up' },
+			{ kind: 'status', status: 'scroll' },
+			{ kind: 'status', status: 'script', scrollText: 'スクリプトでスクロール {0}' },
+		]);
+	});
+
 	test('a snapshot flash does not use up the screenshot flash right after it', async () => {
 		const target = new TestTarget();
 		let clock = 0;

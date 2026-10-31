@@ -2046,6 +2046,9 @@ export default defineConfig(
 						// PARA-PATCH: terminalInstance.ts が座標 NaN のマウス報告を捨てるヘルパー
 						// (paradisSanitizeTerminalInput) を呼ぶための逆方向 import（common層のみ）
 						'vs/paradis/contrib/terminalMouseReport/common/**',
+						// PARA-PATCH: scmHistoryViewPane.ts がグラフのホバーで 1 件だけ変更量を数える部品
+						// (paradisSetupScmGraphLazyStats) を呼ぶための逆方向 import
+						'vs/paradis/contrib/scmGraphLazyStats/~',
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
 						'vscode-notebook-renderer', // Type only import
