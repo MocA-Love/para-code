@@ -88,7 +88,7 @@ import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOw
 import { paradisAdjustDevtoolsToolResult, paradisStripInternalDevtoolsArguments, paradisWithScriptHints } from './paradisDevtoolsToolAdjustments.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
-import { IParadisObserveHost, IParadisObserveOptions, ParadisBrowserObserver, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
+import { IParadisObserveHost, IParadisObserveOptions, PARADIS_FAILED_STATE_DEADLINE_MS, ParadisBrowserObserver, paradisFailureWasUnanswered, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
 import { ParadisSnapshotDiffMode, paradisTakeSnapshotDiffMode, paradisWithSnapshotDiffArgument } from './paradisBrowserSnapshotDiff.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
@@ -5907,12 +5907,30 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 		const observeAfter = async (before: Awaited<ReturnType<typeof observeBefore>>, result: unknown): Promise<unknown> => {
 			this._requireIngressLease(ingressLease);
-			if (before === undefined || this._bindingForKey(tabKey) !== binding || typeof result !== 'object' || result === null || (result as { isError?: unknown }).isError === true || !Array.isArray((result as { content?: unknown }).content)) {
+			if (before === undefined || this._bindingForKey(tabKey) !== binding || typeof result !== 'object' || result === null || !Array.isArray((result as { content?: unknown }).content)) {
+				return result;
+			}
+			// 失敗した結果には、ページの変化（E1）は添えず、ブラウザの状態（I1）だけを成功時と同じ形で添える
+			// （押したらダウンロードではなくページが開いた、に失敗の結果でも気づけるように。q.html Q515 の A）
+			// ページか子プロセスが答えなかった失敗・取り消された呼び出しでは取りに行かない。それ以外の失敗でも
+			// {@link PARADIS_FAILED_STATE_DEADLINE_MS} で打ち切り、元の失敗を返す（列を持ったまま待たない）
+			const failed = (result as { isError?: unknown }).isError === true;
+			if (failed && (!options.state || signal?.aborted === true || paradisFailureWasUnanswered(result))) {
 				return result;
 			}
 			let note: string | undefined;
 			try {
-				note = await this._browserObserver.after(host, tabKey, options, before, taken.observe, taken.settleMs, ownTabId);
+				if (failed) {
+					let expired = false;
+					const failureHost: IParadisObserveHost = { ...host, isCurrent: () => !expired && host.isCurrent() };
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					const deadline = new Promise<undefined>(resolve => timer = setTimeout(() => { expired = true; resolve(undefined); }, PARADIS_FAILED_STATE_DEADLINE_MS));
+					const observed = this._browserObserver.after(failureHost, tabKey, { settle: false, state: true }, before, taken.observe, taken.settleMs, ownTabId);
+					observed.catch(() => undefined);
+					note = await Promise.race([observed, deadline]).finally(() => clearTimeout(timer));
+				} else {
+					note = await this._browserObserver.after(host, tabKey, options, before, taken.observe, taken.settleMs, ownTabId);
+				}
 			} catch {
 				note = undefined;
 			}
