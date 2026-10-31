@@ -9,7 +9,7 @@
 		CSP, and every webview then stays blank without throwing. Kept honest by
 		src/vs/paradis/contrib/fileViewers/test/node/paradisWebviewServiceWorkerControl.test.ts. -->
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-OWI6CercO3cAuAls7OCT1P4J6TjgqORLZrUZC4lDjHA=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'sha256-9RGNGk0uEljGn4xbfJ/JtpgvcKp+InISiMcF27j6e4o=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -1043,6 +1043,40 @@
 			return e.keyCode === 116;
 		}
 
+		// #region Mouse activity forwarding
+		const handleMouseMove = (() => {
+			/** @type {{ x: number; y: number } | undefined} */
+			let lastPosition;
+			/** @type {import('../webviewMessages').FromWebviewMessage['did-mouse-move'] | undefined} */
+			let pendingEvent;
+			let scheduled = false;
+
+			return (/** @type {MouseEvent} */ event) => {
+				if (!event.isTrusted || (lastPosition?.x === event.screenX && lastPosition.y === event.screenY)) {
+					return;
+				}
+				lastPosition = { x: event.screenX, y: event.screenY };
+				pendingEvent = { screenX: event.screenX, screenY: event.screenY };
+				if (scheduled) {
+					return;
+				}
+				scheduled = true;
+				window.requestAnimationFrame(() => {
+					scheduled = false;
+					const event = pendingEvent;
+					pendingEvent = undefined;
+					if (!event) {
+						return;
+					}
+					hostMessaging.postMessage('did-mouse-move', {
+						screenX: event.screenX,
+						screenY: event.screenY,
+					});
+				});
+			};
+		})();
+		// #endregion Mouse activity forwarding
+
 		let isHandlingScroll = false;
 
 		/**
@@ -1224,6 +1258,7 @@
 		// Also forward events before the contents of the webview have loaded
 		window.addEventListener('keydown', handleInnerKeydown);
 		window.addEventListener('keyup', handleInnerKeyup);
+		window.addEventListener('mousemove', handleMouseMove, true);
 		window.addEventListener('dragenter', handleInnerDragStartEvent);
 		window.addEventListener('dragover', handleInnerDragEvent);
 		window.addEventListener('drag', handleInnerDragEvent);
@@ -1510,6 +1545,7 @@
 					contentWindow.addEventListener('auxclick', handleAuxClick);
 					contentWindow.addEventListener('keydown', handleInnerKeydown);
 					contentWindow.addEventListener('keyup', handleInnerKeyup);
+					contentWindow.addEventListener('mousemove', handleMouseMove, true);
 					contentWindow.addEventListener('contextmenu', e => {
 						if (e.defaultPrevented) {
 							// Extension code has already handled this event
@@ -1599,7 +1635,10 @@
 				}
 				const contentDocument = assertIsDefined(target.contentDocument);
 				const lastFocused = lastFocusedElements.get(contentDocument);
-				if ((contentDocument.activeElement === contentDocument.body || contentDocument.activeElement === contentDocument.documentElement)
+				const selection = contentDocument.getSelection();
+				// Restoring focus to an input would discard a selection in non-focusable content.
+				if ((!selection || selection.isCollapsed)
+					&& (contentDocument.activeElement === contentDocument.body || contentDocument.activeElement === contentDocument.documentElement)
 					&& lastFocused?.isConnected && lastFocused.ownerDocument === contentDocument) {
 					lastFocused.focus({ preventScroll: true });
 				}

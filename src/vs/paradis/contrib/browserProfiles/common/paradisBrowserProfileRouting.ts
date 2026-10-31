@@ -19,7 +19,7 @@
 // 未登録のとき（Agent Sessions ウィンドウ、Web ビルド、テスト）は fallback をそのまま返す。
 // つまりこの機能を読み込んでいない環境では upstream と完全に同じ挙動になる。
 
-import { BrowserViewStorageScope, type IBrowserViewSessionOptions } from '../../../../platform/browserView/common/browserView.js';
+import { BrowserViewStorageScope, getBrowserViewSessionNetwork, toBrowserViewSessionOptions, type BrowserViewSessionSelector, type IBrowserViewSessionOptions } from '../../../../platform/browserView/common/browserView.js';
 
 /** ビューIDごとにセッションの決め方を差し替える口。 */
 export interface IParadisBrowserProfileRouter {
@@ -61,6 +61,32 @@ export function paradisResolveBrowserSessionOptions(viewId: string, fallbackScop
 		return router.resolveSessionOptions(viewId, fallback) ?? fallback;
 	} catch {
 		return fallback;
+	}
+}
+
+/**
+ * 1.144.0 以降の差し替え点。upstream が信頼・ネットワーク・アフィニティを解決した後のセッションを受け取り、
+ * ルーターの上書きを当てる。名前付きプロファイルはそのまま使う（ネットワークを持たない）。それ以外の上書き
+ * （scope だけの形）は、upstream が解決した affinity と network を引き継いで作り直す。捨てると、SSH の窓で
+ * Workspace に切り替えたタブがトンネルを通らずに手元へ繋がる。文字列のセレクタ（既存のセッション ID）、
+ * 作り直せない場合、ルーターの失敗では、解決済みのものをそのまま返す。
+ */
+export function paradisResolveBrowserSessionSelector(viewId: string, resolved: BrowserViewSessionSelector): BrowserViewSessionSelector {
+	if (!router || typeof resolved === 'string') {
+		return resolved;
+	}
+	try {
+		const result = router.resolveSessionOptions(viewId, resolved) ?? resolved;
+		if (result === resolved || result.scope === BrowserViewStorageScope.Profile) {
+			return result;
+		}
+		if (result.scope === resolved.scope) {
+			return resolved;
+		}
+		const affinity = resolved.scope === BrowserViewStorageScope.Workspace || resolved.scope === BrowserViewStorageScope.Agent ? resolved.affinity : undefined;
+		return toBrowserViewSessionOptions(result.scope, affinity, getBrowserViewSessionNetwork(resolved)) ?? resolved;
+	} catch {
+		return resolved;
 	}
 }
 

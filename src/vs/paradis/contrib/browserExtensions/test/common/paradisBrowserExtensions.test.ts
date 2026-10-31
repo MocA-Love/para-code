@@ -12,6 +12,8 @@ import {
 	IParadisInstalledBrowserExtension,
 	PARADIS_EMPTY_EXTENSIONS_LEDGER,
 	paradisEnabledExtensions,
+	paradisIsAllowedOnRemote,
+	paradisLedgerWithAllowedOnRemote,
 	paradisLedgerWithDataCleared,
 	paradisLedgerWithEnabled,
 	paradisLedgerWithExtension,
@@ -22,6 +24,7 @@ import {
 	paradisNewTabOverrideUrl,
 	paradisParseExtensionsLedger,
 	paradisReadExtensionManifest,
+	paradisSerializeExtensionsLedger,
 } from '../../common/paradisBrowserExtensions.js';
 
 const A = 'a'.repeat(32);
@@ -70,6 +73,29 @@ suite('ParadisBrowserExtensions common', () => {
 			pins: { default: [B, A], profile: [A] },
 			after: { version: 1, extensions: [extension(B)], enabled: { default: [], 'profile:0123456789ab': [B] }, removed: [{ id: A, cleared: [] }], pinned: { default: [B], 'profile:0123456789ab': [] } },
 		});
+	});
+
+	test('keeps "use on SSH hosts" per extension, off by default, and drops it with the extension', () => {
+		let ledger = paradisLedgerWithExtension(PARADIS_EMPTY_EXTENSIONS_LEDGER, extension(A), 'default');
+		ledger = paradisLedgerWithExtension(ledger, extension(B), 'default');
+		const byDefault = [paradisIsAllowedOnRemote(ledger, A), paradisIsAllowedOnRemote(ledger, B)];
+		ledger = paradisLedgerWithAllowedOnRemote(ledger, A, true);
+		ledger = paradisLedgerWithAllowedOnRemote(ledger, A, true);
+		ledger = paradisLedgerWithAllowedOnRemote(ledger, 'c'.repeat(32), true);
+		// 保存して読み直しても残る。台帳に無い id と壊れた値は捨てる
+		const reparsed = paradisParseExtensionsLedger({ ...(paradisSerializeExtensionsLedger(ledger) as object), allowedOnRemote: [A, A, 'c'.repeat(32), 'x'] });
+		// 印の無い台帳（Q519 より前の版）はどれもオフ
+		const older = paradisParseExtensionsLedger({ version: 1, extensions: [extension(A)], enabled: {}, removed: [], pinned: {} });
+		const turnedOff = paradisLedgerWithAllowedOnRemote(ledger, A, false);
+		const removed = paradisLedgerWithoutExtension(ledger, A);
+		assert.deepStrictEqual({
+			byDefault,
+			allowed: ledger.allowedOnRemote,
+			reparsed: reparsed.allowedOnRemote,
+			older: paradisIsAllowedOnRemote(older, A),
+			turnedOff: turnedOff.allowedOnRemote,
+			removed: removed.allowedOnRemote,
+		}, { byDefault: [false, false], allowed: [A], reparsed: [A], older: false, turnedOff: undefined, removed: undefined });
 	});
 
 	test('keeps the data-clearing mark across a reinstall until each storage path is cleared', () => {
