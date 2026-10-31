@@ -171,13 +171,25 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	private readonly _paradisHiddenGpu = this._register(new ParadisHiddenGpuRelease({
 		isEnabled: () => this._configurationService.getValue<boolean>(PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING) === true,
 		hasGpuRenderer: () => this._webglAddon !== undefined,
-		release: () => this._disposeOfWebglRenderer(true),
+		release: () => {
+			this._paradisReleasedFont = this.getFont();
+			this._disposeOfWebglRenderer(true);
+		},
 		reacquire: () => {
 			if (this._attached?.options.enableGpu && this._shouldLoadWebgl()) {
 				void this._enableWebglRenderer();
+			} else {
+				// Not taking the GPU renderer back: move over to the DOM renderer's cell size now
+				this._paradisReleasedFont = undefined;
+				this._onDidRequestRefreshDimensions.fire();
 			}
 		},
 	}));
+	// PARA-PATCH: the font measured with the GPU renderer, kept while it is released for being off screen.
+	// The DOM renderer does not round the cell width like the GPU renderer does, so without this a terminal
+	// being shown again is laid out with the DOM cell size (before the GPU renderer is back) and its pty gets
+	// a resize to a different width and then back
+	private _paradisReleasedFont: ITerminalFont | undefined;
 	private _webglAddonLoading = false;
 	private _webglAddonLoadId = 0;
 	private _serializeAddon?: SerializeAddonType;
@@ -785,6 +797,10 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	}
 
 	getFont(): ITerminalFont {
+		// PARA-PATCH: keep the GPU renderer's cell size while it is released for being off screen (see _paradisReleasedFont)
+		if (this._paradisReleasedFont && !this._webglAddon) {
+			return this._paradisReleasedFont;
+		}
 		// PARA-PATCH: add this terminal's own font size delta (Para Code TM21)
 		return paradisZoomTerminalFont(this, this._terminalConfigurationService.getFont(dom.getWindow(this.raw.element), this._core), this._core);
 	}
@@ -1036,6 +1052,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 				this._paradisWebglRecovery.noteLost();
 			});
 			this._refreshImageAddon();
+			this._paradisReleasedFont = undefined; // PARA-PATCH: the GPU renderer is back (see _paradisReleasedFont)
 			// WebGL renderer cell dimensions differ from the DOM renderer, make sure the terminal
 			// gets resized after the webgl addon is loaded
 			this._onDidRequestRefreshDimensions.fire();
@@ -1162,6 +1179,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		// WebGL renderer cell dimensions differ from the DOM renderer, make sure the terminal
 		// gets resized after the webgl addon is disposed
 		if (!paradisKeepDimensions) { // PARA-PATCH: see paradisKeepDimensions
+			this._paradisReleasedFont = undefined; // PARA-PATCH: really switching to the DOM renderer (see _paradisReleasedFont)
 			this._onDidRequestRefreshDimensions.fire();
 		}
 	}
