@@ -8,10 +8,13 @@
 import * as assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_CURSOR_OVERLAY_TUNING, ParadisCursorOverlayOwnedCommand, paradisBuildCursorOverlayScript } from '../../common/paradisCursorOverlay.js';
+import { IParadisCursorOverlayTuning, PARADIS_CURSOR_OVERLAY_TUNING, ParadisCursorOverlayOwnedCommand, paradisBuildCursorOverlayScript } from '../../common/paradisCursorOverlay.js';
 
 /** The generated script keeps its state on the window under this key (the isolated world in the app). */
 const STATE_KEY = '__paraCodeAgentCursorOverlay';
+
+/** The scroll listener keeps its state under this key. */
+const SCROLLS_KEY = '__paraCodeAgentCursorScrolls';
 
 interface IPageState {
 	readonly h: HTMLElement | null;
@@ -28,15 +31,15 @@ interface IPageState {
 }
 
 /** Runs the page-side script against this test document, the way the isolated world would. */
-function run(command: ParadisCursorOverlayOwnedCommand): unknown {
-	return new Function(`return ${paradisBuildCursorOverlayScript(command)};`)();
+function run(command: ParadisCursorOverlayOwnedCommand, tuning?: IParadisCursorOverlayTuning): unknown {
+	return new Function(`return ${paradisBuildCursorOverlayScript(command, tuning)};`)();
 }
 
-/**
- * Long enough for a scroll to count as stopped. The listener is placed once per document and keeps the tuning of
- * the command that placed it, so the tests wait for the real value.
- */
-const SETTLED_MS = PARADIS_CURSOR_OVERLAY_TUNING.scrollSettleMs + 80;
+/** Scrolls count as stopped after 5 ms, and a script's late scroll after its end is 5 ms at most. */
+const QUICK: IParadisCursorOverlayTuning = { ...PARADIS_CURSOR_OVERLAY_TUNING, scrollSettleMs: 5, scrollLateMs: 5 };
+
+/** Waits well past the quick settle time (the scroll timers are real timers on the page). */
+const SETTLED_MS = 60;
 
 function sleep(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -68,6 +71,11 @@ interface IPageGlobal {
 /** The cursor of commands without an owner. */
 function pageState(): IPageState | undefined {
 	return (mainWindow as unknown as Record<string, IPageGlobal | undefined>)[STATE_KEY]?.cs._;
+}
+
+/** The scroll listener's state (placed once per document). */
+function pageScrolls(): { readonly runs: readonly unknown[] } | undefined {
+	return (mainWindow as unknown as Record<string, { readonly runs: readonly unknown[] } | undefined>)[SCROLLS_KEY];
 }
 
 function pageGlobal(): IPageGlobal | undefined {
@@ -222,13 +230,13 @@ suite('Paradis Cursor Overlay page script', () => {
 	test('a script scroll shows one arrow at the edge it moved toward with the total, once it stops, even after the script returned', async () => {
 		const box = scrollBox();
 		try {
-			run({ kind: 'status', label: 'Claude', status: 'script', text: 'Running', park: true, scrollText: 'Scrolled {0}' });
+			run({ kind: 'status', label: 'Claude', status: 'script', text: 'Running', park: true, scrollText: 'Scrolled {0}' }, QUICK);
 			const parked = [pageState()!.x, pageState()!.y];
 			// A smooth scroll arrives as several events: one arrow for the whole run.
 			scrollBoxBy(box, 300);
 			scrollBoxBy(box, 200);
 			const whileMoving = [pageState()!.x, pageState()!.y];
-			run({ kind: 'status', label: 'Claude', status: 'idle', text: '' });
+			run({ kind: 'status', label: 'Claude', status: 'idle', text: '' }, QUICK);
 			await sleep(SETTLED_MS);
 			const s = pageState()!;
 			assert.deepStrictEqual(
@@ -240,29 +248,30 @@ suite('Paradis Cursor Overlay page script', () => {
 		}
 	});
 
-	test('scrolls that started before the script, after it ended, or with two cursors watching are not followed', async () => {
+	test('scrolls before the script, after it ended, or with two cursors watching are not followed, and none is even read while nobody watches', async () => {
 		const box = scrollBox();
 		const owner = (id: string) => ({ owner: id, color: '#d97757' });
 		const at = (id: string) => { const c = pageGlobal()!.cs[id]; return [c.x, c.y]; };
 		try {
-			run({ kind: 'move', x: 10, y: 10, label: 'A', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }], ...owner('aaaaaaaa') });
+			run({ kind: 'move', x: 10, y: 10, label: 'A', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }], ...owner('aaaaaaaa') }, QUICK);
 			// The page scrolls on its own before the script starts.
 			scrollBoxBy(box, 100);
-			run({ kind: 'status', label: 'A', status: 'script', text: 'Running', park: true, since: Date.now() + 1, scrollText: 'Scrolled {0}', ...owner('aaaaaaaa') });
+			run({ kind: 'status', label: 'A', status: 'script', text: 'Running', park: true, since: Date.now() + 1, scrollText: 'Scrolled {0}', ...owner('aaaaaaaa') }, QUICK);
 			await sleep(SETTLED_MS);
 			const before = at('aaaaaaaa');
 			// Two cursors watching: whose scroll it is cannot be told.
-			run({ kind: 'status', label: 'B', status: 'script', text: 'Running', park: true, scrollText: 'Scrolled {0}', ...owner('bbbbbbbb') });
+			run({ kind: 'status', label: 'B', status: 'script', text: 'Running', park: true, scrollText: 'Scrolled {0}', ...owner('bbbbbbbb') }, QUICK);
 			scrollBoxBy(box, 100);
 			await sleep(SETTLED_MS);
 			const two = at('aaaaaaaa');
-			run({ kind: 'status', label: 'B', status: 'idle', text: '', ...owner('bbbbbbbb') });
-			run({ kind: 'status', label: 'A', status: 'idle', text: '', ...owner('aaaaaaaa') });
-			// After the script ended (later than a scroll of its own could still arrive).
-			await sleep(PARADIS_CURSOR_OVERLAY_TUNING.scrollLateMs + 50);
-			scrollBoxBy(box, 100);
+			run({ kind: 'status', label: 'B', status: 'idle', text: '', ...owner('bbbbbbbb') }, QUICK);
+			run({ kind: 'status', label: 'A', status: 'idle', text: '', ...owner('aaaaaaaa') }, QUICK);
+			// After the script ended (later than a scroll of its own could still arrive): the listener does nothing.
 			await sleep(SETTLED_MS);
-			assert.deepStrictEqual({ before, two, after: at('aaaaaaaa') }, { before: [10, 10], two: [10, 10], after: [10, 10] });
+			scrollBoxBy(box, 100);
+			const pending = pageScrolls()?.runs.length;
+			await sleep(SETTLED_MS);
+			assert.deepStrictEqual({ before, two, pending, after: at('aaaaaaaa') }, { before: [10, 10], two: [10, 10], pending: 0, after: [10, 10] });
 		} finally {
 			box.remove();
 		}
