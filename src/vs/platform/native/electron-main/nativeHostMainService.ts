@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import { exec } from 'child_process';
-import { app, BrowserWindow, clipboard, contentTracing, Display, Menu, MessageBoxOptions, MessageBoxReturnValue, Notification, OpenDevToolsOptions, OpenDialogOptions, OpenDialogReturnValue, powerMonitor, powerSaveBlocker, SaveDialogOptions, SaveDialogReturnValue, screen, shell, systemPreferences, webContents } from 'electron';
+import { app, BrowserWindow, clipboard, contentTracing, desktopCapturer, Display, Menu, MessageBoxOptions, MessageBoxReturnValue, nativeImage, Notification, OpenDevToolsOptions, OpenDialogOptions, OpenDialogReturnValue, powerMonitor, powerSaveBlocker, SaveDialogOptions, SaveDialogReturnValue, screen, shell, systemPreferences, webContents } from 'electron';
 import { arch, cpus, freemem, loadavg, platform, release, totalmem, type } from 'os';
 import { promisify } from 'util';
 import { memoize } from '../../../base/common/decorators.js';
@@ -14,7 +14,7 @@ import { Emitter, Event } from '../../../base/common/event.js';
 import { clamp } from '../../../base/common/numbers.js'; // PARA-PATCH: setWindowOpacity のクランプ用（ウィンドウ透明度設定、下記参照）
 import { Disposable, DisposableMap, DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
 import { matchesSomeScheme, Schemas } from '../../../base/common/network.js';
-import { dirname, join, posix, resolve, win32 } from '../../../base/common/path.js';
+import { dirname, isAbsolute, join, posix, resolve, win32 } from '../../../base/common/path.js';
 import { isLinux, isMacintosh, isWindows } from '../../../base/common/platform.js';
 import { AddFirstParameterToFunctions, hasKey } from '../../../base/common/types.js';
 import { URI, UriComponents } from '../../../base/common/uri.js';
@@ -29,7 +29,7 @@ import { IEnvironmentMainService } from '../../environment/electron-main/environ
 import { createDecorator, IInstantiationService } from '../../instantiation/common/instantiation.js';
 import { ILifecycleMainService, IRelaunchOptions } from '../../lifecycle/electron-main/lifecycleMainService.js';
 import { ILogService } from '../../log/common/log.js';
-import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, IOpenAgentsWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState } from '../common/native.js';
+import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, INativeZipResult, IOpenAgentsWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState } from '../common/native.js';
 import { IGlobalKeybindingsMainService } from '../../globalKeybindings/electron-main/globalKeybindingsMainService.js';
 import { IGPUProcessMainService } from '../../gpu/electron-main/gpuProcessMainService.js';
 import { IProductService } from '../../product/common/productService.js';
@@ -46,7 +46,7 @@ import { WindowProfiler } from '../../profiling/electron-main/windowProfiling.js
 import { IV8Profile } from '../../profiling/common/profiling.js';
 import { IAuxiliaryWindowsMainService } from '../../auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { IAuxiliaryWindow } from '../../auxiliaryWindow/electron-main/auxiliaryWindow.js';
-import { CancellationError } from '../../../base/common/errors.js';
+import { CancellationError, getErrorMessage } from '../../../base/common/errors.js';
 import { extract, validateZip, zip, type IFile } from '../../../base/node/zip.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IProxyAuthService } from './auth.js';
@@ -716,6 +716,16 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		shell.showItemInFolder(path);
 	}
 
+	async startFileDrag(windowId: number | undefined, path: string, options?: INativeHostOptions): Promise<void> {
+		const window = this.windowById(options?.targetWindowId, windowId);
+		if (!window?.win || !isAbsolute(path) || !await Promises.exists(path)) {
+			return;
+		}
+		// macOS requires an image under the cursor; the file's own icon shows what the drop adds.
+		const icon = await app.getFileIcon(path, { size: 'normal' });
+		window.win.webContents.startDrag({ file: path, icon });
+	}
+
 	async setRepresentedFilename(windowId: number | undefined, path: string, options?: INativeHostOptions): Promise<void> {
 		const window = this.windowById(options?.targetWindowId, windowId);
 		window?.setRepresentedFilename(path);
@@ -778,7 +788,7 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 				// to stderr so we cannot use it there
 				// (see also https://github.com/microsoft/vscode/issues/230636)
 				res.stderr?.once('data', (data: Buffer) => {
-					this.logService.error(`Error openening external URL '${url}' using browser '${configuredBrowser}': ${data.toString()}`);
+					this.logService.error(`Error opening external URL '${url}' using browser '${configuredBrowser}': ${data.toString()}`);
 					return this.doOpenShellExternal(windowId, url);
 				});
 			}
@@ -835,6 +845,20 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 			return systemPreferences.getMediaAccessStatus(mediaType);
 		}
 		return 'granted';
+	}
+
+	async requestScreenCaptureAccess(): Promise<boolean> {
+		if (!isMacintosh) {
+			return true;
+		}
+		const status = systemPreferences.getMediaAccessStatus('screen');
+		if (status === 'granted' || status === 'restricted') {
+			return status === 'granted';
+		}
+
+		// Electron has no screen-permission request API; enumerate screens in the application process to request access.
+		await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+		return systemPreferences.getMediaAccessStatus('screen') === 'granted';
 	}
 
 	async isAdmin(): Promise<boolean> {
@@ -934,6 +958,10 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 			freemem: freemem(),
 			loadavg: loadavg()
 		};
+	}
+
+	async getFreeDiskSpace(_windowId: number | undefined, path: string): Promise<number> {
+		return Promises.getFreeDiskSpace(path);
 	}
 
 	async getOSProperties(): Promise<IOSProperties> {
@@ -1086,6 +1114,10 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 
 	async readImage(): Promise<Uint8Array> {
 		return clipboard.readImage().toPNG();
+	}
+
+	async writeImage(windowId: number | undefined, data: VSBuffer): Promise<void> {
+		clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(data.buffer)));
 	}
 
 	async writeClipboardText(windowId: number | undefined, text: string, type?: 'selection' | 'clipboard'): Promise<void> {
@@ -1520,8 +1552,13 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		this.zipOperations.get(`${windowId}:${operationId}`)?.cancel();
 	}
 
-	async createZipFile(windowId: number | undefined, zipPath: URI, files: INativeZipFile[], options?: INativeZipOptions): Promise<void> {
+	async createZipFile(windowId: number | undefined, zipPath: URI, files: INativeZipFile[], options?: INativeZipOptions): Promise<INativeZipResult> {
 		const zipFiles: IFile[] = [];
+		const skippedFiles: INativeZipResult['skippedFiles'][number][] = [];
+		const onSourceError = (path: string, error: Error) => {
+			skippedFiles.push({ path, error: getErrorMessage(error) });
+			this.logService.warn(`[NativeHostMainService] Skipping ZIP entry '${path}' because its source could not be read`, error);
+		};
 		const temporaryDirectories: string[] = [];
 		const maxSize = options?.maxSize;
 		const operationId = options?.operationId;
@@ -1587,7 +1624,7 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 						fileSize = file.localPathSize === undefined ? size : Math.min(size, file.localPathSize);
 					} catch (error) {
 						if (file.skipSourceErrors) {
-							this.logService.warn(`[NativeHostMainService] Skipping ZIP entry '${file.path}' because its source could not be read: ${error instanceof Error ? error.message : String(error)}`);
+							onSourceError(file.path, error instanceof Error ? error : new Error(String(error)));
 							continue;
 						}
 						throw error;
@@ -1609,6 +1646,7 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 			let lastReport = 0;
 			await zip(zipPath.fsPath, availableZipFiles, {
 				token: operationId ? cancellation.token : undefined,
+				onSourceError,
 				onProgress: operationId ? (bytes, path) => {
 					const now = Date.now();
 					if (bytes === uncompressedSize || now - lastReport >= 100) {
@@ -1624,6 +1662,7 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 					throw new Error(`ZIP is too large (${zipSize} bytes; limit ${maxSize} bytes)`);
 				}
 			}
+			return { skippedFiles };
 		} finally {
 			if (operationKey) {
 				this.zipOperations.deleteAndDispose(operationKey);

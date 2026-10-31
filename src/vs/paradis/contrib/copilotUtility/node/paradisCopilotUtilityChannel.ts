@@ -20,6 +20,7 @@ import { CopilotApiService, ICopilotApiService } from '../../../../platform/agen
 import { ProtectedResourceMetadata } from '../../../../platform/agentHost/common/state/protocol/state.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
+import { NullTelemetryService } from '../../../../platform/telemetry/common/telemetryUtils.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisCopilotUtilityRequest,
@@ -65,7 +66,7 @@ export class ParadisCopilotUtilityService {
 		copilotApiService?: ICopilotApiService,
 	) {
 		this.copilotApiService = copilotApiService
-			?? new CopilotApiService(undefined, logService, productService, new ParadisGitHubComEndpointService());
+			?? new CopilotApiService(undefined, logService, productService, new ParadisGitHubComEndpointService(), NullTelemetryService);
 	}
 
 	async complete(request: IParadisCopilotUtilityRequest): Promise<IParadisCopilotUtilityResult> {
