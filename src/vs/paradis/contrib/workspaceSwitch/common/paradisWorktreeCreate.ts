@@ -58,7 +58,16 @@ export interface IParadisDiffStat {
 	 * 前の値を残し、次の機会に取り直す。
 	 */
 	readonly failed?: true;
+	/**
+	 * 失敗の種類（`failed` のときだけ）。`missing` はパスが無い、`notRepository` は git 管理外のフォルダー、`other` はそれ以外
+	 * （タイムアウト・HEAD の無いリポジトリなど）。Workspaces ビューは `missing` と `notRepository` をしばらく見回りから外す。
+	 * 古い接続先は種類を返さないので、無いときは `other` と同じに扱う。
+	 */
+	readonly failure?: ParadisDiffStatFailure;
 }
+
+/** {@link IParadisDiffStat.failure} の値。 */
+export type ParadisDiffStatFailure = 'missing' | 'notRepository' | 'other';
 
 /** 許可リストに載ったサブコマンドの、任意 git 実行の生の結果。呼び出し側が exit code で成否を判定する。 */
 export interface IParadisWorktreeGitCommandResult {
