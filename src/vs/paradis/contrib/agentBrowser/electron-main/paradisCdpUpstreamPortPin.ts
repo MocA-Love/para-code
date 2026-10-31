@@ -9,10 +9,6 @@
 // アプリ本体の remote-debugging ポートを electron-main 側で1度だけ確定させ、以降ずっと同じ値を
 // 返す小さな部品。shared process の CDP ゲートウェイはここに聞く。
 //
-// 通常起動では main の commandLine に設定した非ゼロポートを読む。これは Chromium が
-// DevToolsActivePort を書かない起動方式でも使え、別インスタンスに上書きされない。
-// 明示的にポート0が指定された場合は、従来のファイル探索にフォールバックする。
-//
 // なぜ main が持つのか:
 // `<userDataDir>/DevToolsActivePort` は Chromium が書くが、**2つ目の Para Code プロセス**
 // （macOS の `open -n`、Dock からの二重起動、自動アップデートの適用時など）が起動すると、
@@ -73,8 +69,6 @@ const MAX_LIST_TARGETS = 256;
 export interface IParadisCdpUpstreamPortPinOptions {
 	/** `DevToolsActivePort` を置いているディレクトリ。既定は Electron の userData。 */
 	readonly userDataPath?: string;
-	/** This process's explicit nonzero CDP port, before any port-file fallback. */
-	readonly readConfiguredPort?: () => number | undefined;
 	readonly readPortFile?: (userDataPath: string) => Promise<number | undefined>;
 	/** 候補ポートの `/json/list` から targetId を取り出す。 */
 	readonly fetchTargetIds?: (port: number) => Promise<readonly string[]>;
@@ -85,16 +79,6 @@ export interface IParadisCdpUpstreamPortPinOptions {
 	readonly retryCooldownMs?: number;
 	readonly delay?: (ms: number) => Promise<void>;
 	readonly now?: () => number;
-}
-
-/** Explicit nonzero ports do not produce a DevToolsActivePort file. */
-function defaultReadConfiguredPort(): number | undefined {
-	try {
-		const port = Number(electron.app.commandLine.getSwitchValue('remote-debugging-port'));
-		return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 function defaultDelay(ms: number): Promise<void> {
@@ -177,7 +161,6 @@ export class ParadisCdpUpstreamPortPin {
 	private _pinning: Promise<number | undefined> | undefined;
 
 	private readonly userDataPath: string | undefined;
-	private readonly readConfiguredPort: () => number | undefined;
 	private readonly readPortFile: (userDataPath: string) => Promise<number | undefined>;
 	private readonly fetchTargetIds: (port: number) => Promise<readonly string[]>;
 	private readonly ownsTargetId: (targetId: string) => boolean;
@@ -192,7 +175,6 @@ export class ParadisCdpUpstreamPortPin {
 	constructor(options: IParadisCdpUpstreamPortPinOptions = {}) {
 		// 既定値をここで解決せず遅延させるのは、テストが素の Node で走り electron を持たないため。
 		this.userDataPath = options.userDataPath;
-		this.readConfiguredPort = options.readConfiguredPort ?? defaultReadConfiguredPort;
 		this.readPortFile = options.readPortFile ?? paradisReadDevToolsActivePort;
 		this.fetchTargetIds = options.fetchTargetIds ?? defaultFetchTargetIds;
 		this.ownsTargetId = options.ownsTargetId ?? defaultOwnsTargetId;
@@ -265,8 +247,7 @@ export class ParadisCdpUpstreamPortPin {
 		}
 		const deadline = this.now() + this.timeoutMs;
 		for (; ;) {
-			// Prefer this process's configured port; a stale file may describe another instance.
-			const candidate = this.readConfiguredPort() ?? await this.readPortFile(userDataPath).catch(() => undefined);
+			const candidate = await this.readPortFile(userDataPath).catch(() => undefined);
 			if (candidate !== undefined && await this.isOwnEndpoint(candidate)) {
 				this._pinnedPort = candidate;
 				return candidate;

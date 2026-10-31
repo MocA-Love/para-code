@@ -19,7 +19,6 @@ import { resolveNLSConfiguration } from './vs/base/node/nls.js';
 import { getUNCHost, addUNCHostToAllowlist } from './vs/base/node/unc.js';
 import { INLSConfiguration } from './vs/nls.js';
 import { NativeParsedArgs } from './vs/platform/environment/common/argv.js';
-import { paradisConfigureCdpPort } from './vs/paradis/contrib/agentBrowser/node/paradisCdpStartup.js'; // PARA-PATCH: normal browser startup with a nonzero CDP port
 // PARA-PATCH: Initialize Para Code Sentry before Electron's crash reporter is configured. Keep this
 // import ahead of the protocol.registerSchemesAsPrivileged() call below: evaluating the module wraps
 // that API so privileged schemes registered here survive Sentry's own later registration.
@@ -42,8 +41,6 @@ const args = parseCLIArgs();
 // Configure static command line arguments
 perf.mark('code/willConfigureCommandlineSwitches');
 const argvConfig = configureCommandlineSwitchesSync(args);
-// PARA-PATCH: ESM evaluation delays app readiness until CDP has an explicit nonzero port.
-await paradisConfigureCdpPort(app.commandLine).catch(error => console.error('[ParaBrowser] Could not configure CDP:', error));
 perf.mark('code/didConfigureCommandlineSwitches');
 // Enable sandbox globally unless
 // 1) disabled via command line using either
@@ -399,6 +396,18 @@ function configureCommandlineSwitchesSync(cliArgs: NativeParsedArgs) {
 	const jsFlags = getJSFlags(cliArgs, argvConfig);
 	if (jsFlags) {
 		app.commandLine.appendSwitch('js-flags', jsFlags);
+	}
+
+	// PARA-PATCH: always enable Chromium remote debugging on a dynamic loopback-only port for the
+	// agentBrowser CDP gateway (shared process reads <userDataDir>/DevToolsActivePort; see NOTES.md).
+	// An explicit `remote-debugging-port` from argv.json / CLI takes precedence.
+	if (!app.commandLine.hasSwitch('remote-debugging-port') && !app.commandLine.hasSwitch('remote-debugging-pipe')) {
+		app.commandLine.appendSwitch('remote-debugging-port', '0');
+		app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+		// PARA-PATCH: Chromium treats `--remote-debugging-port=0` as "launched by ChromeDriver" and sets
+		// navigator.webdriver = true in every page. The port is only for the agentBrowser gateway, so keep pages
+		// looking like a browser a person uses. Appended to the existing value (a second switch would replace it).
+		app.commandLine.appendSwitch('disable-blink-features', `${app.commandLine.getSwitchValue('disable-blink-features')},AutomationControlled`);
 	}
 
 	// Use portal version 4 that supports current_folder option
