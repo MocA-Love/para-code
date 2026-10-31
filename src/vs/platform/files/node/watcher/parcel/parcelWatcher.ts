@@ -21,6 +21,7 @@ import { isLinux, isMacintosh, isWindows } from '../../../../../base/common/plat
 import { Promises, realcase } from '../../../../../base/node/pfs.js';
 import { FileChangeType, IFileChange } from '../../../common/files.js';
 import { coalesceEvents, IRecursiveWatchRequest, parseWatcherPatterns, IRecursiveWatcherWithSubscribe, isFiltered, IWatcherErrorEvent } from '../../../common/watcher.js';
+import { paradisRewriteParcelExcludes } from '../../../common/paradisWatcherExcludes.js'; // PARA-PATCH: rewrite Para Code default excludes for parcel (see addPredefinedExcludes)
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 
 export class ParcelWatcherInstance extends Disposable {
@@ -395,7 +396,7 @@ export class ParcelWatcher extends BaseWatcher implements IRecursiveWatcherWithS
 	}
 
 	private addPredefinedExcludes(initialExcludes: string[]): string[] {
-		const excludes = [...initialExcludes];
+		const excludes = paradisRewriteParcelExcludes(initialExcludes); // PARA-PATCH: hand parcel root-relative forms of the Para Code `**/` default excludes; `**/` regexes are slow in std::regex (upstream 33741c2647, #305923)
 
 		const predefinedExcludes = ParcelWatcher.PREDEFINED_EXCLUDES[process.platform];
 		if (Array.isArray(predefinedExcludes)) {
