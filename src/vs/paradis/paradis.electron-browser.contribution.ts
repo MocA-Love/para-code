@@ -94,6 +94,8 @@ import './contrib/heapSnapshot/electron-browser/paradisHeapSnapshot.contribution
 import './contrib/resourceMonitor/electron-browser/paradisSystemUsage.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisRemoteDefaultWorkspace.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentTunnel.contribution.js';
+// SSH の窓で本家の Copilot のエージェントホストを既定で起動しない（IAgentHostEnablementService の差し替え）
+import './contrib/remoteCopilot/electron-browser/paradisRemoteCopilot.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentHooks.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentHooksSettings.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentHookReplay.contribution.js';
