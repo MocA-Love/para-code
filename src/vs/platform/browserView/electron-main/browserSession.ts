@@ -9,9 +9,10 @@ import { normalize } from '../../../base/common/path.js';
 import { isLinux } from '../../../base/common/platform.js';
 import { joinPath } from '../../../base/common/resources.js';
 import { TernarySearchTree } from '../../../base/common/ternarySearchTree.js';
+import { Promises } from '../../../base/node/pfs.js';
 import { URI } from '../../../base/common/uri.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
-import { BrowserViewStorageScope, IBrowserViewSessionOptions } from '../common/browserView.js';
+import { BrowserViewStorageScope, IBrowserViewNetwork, IBrowserViewSessionOptions, toBrowserViewSessionOptions } from '../common/browserView.js';
 import { BrowserSessionTrust, IBrowserSessionTrust } from './browserSessionTrust.js';
 import { BrowserSessionHistory, IBrowserSessionHistory } from './browserSessionHistory.js';
 import { BrowserSessionPermissions, IBrowserSessionPermissions } from './browserSessionPermissions.js';
@@ -28,7 +29,9 @@ import { paradisApplyChromeLikeUserAgent } from '../../../paradis/contrib/browse
 // PARA-PATCH: auto-save browser downloads to a fixed folder instead of showing a native save dialog
 import { paradisConfigureBrowserDownloads } from '../../../paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloads.js';
 // PARA-PATCH: named persistent browser profiles get their own persist: partition
-import { paradisBrowserProfilePartition } from '../../../paradis/contrib/browserProfiles/common/paradisBrowserProfileId.js';
+import { paradisBrowserProfilePartition, paradisProfileIdFromSessionId } from '../../../paradis/contrib/browserProfiles/common/paradisBrowserProfileId.js';
+// PARA-PATCH: remote start/stop events for the browser extensions owner adapter in configure()
+import { Emitter } from '../../../base/common/event.js';
 import { ISandboxNetworkRestrictions } from '../../sandbox/common/sandboxSettingsResolutionHelper.js';
 
 /**
@@ -66,7 +69,7 @@ export class BrowserSession {
 	 *
 	 * ID derivation rules (one-to-one with Electron sessions):
 	 *  - Global scope         -> `"global"`
-	 *  - Workspace scope      -> `"workspace:${workspaceId}"`
+	 *  - Workspace scope      -> `"workspace:${workspaceId}[:${partition}]"`
 	 *  - Ephemeral per-view   -> `"ephemeral:${viewId}"`
 	 *  - Agent scope          -> `"agent:${identityHash}"`
 	 *  - Custom type          -> `"${type}:${viewId}"`
@@ -146,23 +149,56 @@ export class BrowserSession {
 	static getOrCreateGlobal(instantiationService: IInstantiationService): BrowserSession {
 		const electronSession = session.fromPartition('persist:vscode-browser');
 		return BrowserSession._bySession.get(electronSession)
-			?? instantiationService.createInstance(BrowserSession, 'global', electronSession, BrowserViewStorageScope.Global);
+			?? instantiationService.createInstance(BrowserSession, 'global', electronSession, BrowserViewStorageScope.Global, undefined, undefined);
 	}
 
 	/**
-	 * Get or create a workspace-scope session for the given workspace.
+	 * Get workspace storage, optionally partitioned by a hashed affinity.
+	 * Partitions share the workspace's storage lifetime.
 	 */
-	static getOrCreateWorkspace(instantiationService: IInstantiationService, workspaceId: string, workspaceStorageHome: URI): BrowserSession {
-		const storage = joinPath(workspaceStorageHome, workspaceId, 'browserStorage');
+	static getOrCreateWorkspace(instantiationService: IInstantiationService, workspaceId: string, workspaceStorageHome: URI, network?: IBrowserViewNetwork, affinity?: string): BrowserSession {
+		const partition = affinity === undefined ? undefined : createHash('sha256').update(affinity).digest('hex');
+		const storage = partition
+			? joinPath(BrowserSession.getWorkspaceAffinityStorageHome(workspaceStorageHome, workspaceId), partition)
+			: joinPath(workspaceStorageHome, workspaceId, 'browserStorage');
+		const id = partition ? `workspace:${workspaceId}:${partition}` : `workspace:${workspaceId}`;
 		const electronSession = session.fromPath(storage.fsPath);
 		return BrowserSession._bySession.get(electronSession)
-			?? instantiationService.createInstance(BrowserSession, `workspace:${workspaceId}`, electronSession, BrowserViewStorageScope.Workspace);
+			?? instantiationService.createInstance(BrowserSession, id, electronSession, BrowserViewStorageScope.Workspace, network, affinity);
+	}
+
+	private static getWorkspaceAffinityStorageHome(workspaceStorageHome: URI, workspaceId: string): URI {
+		return joinPath(workspaceStorageHome, workspaceId, 'browserStorageAffinities');
+	}
+
+	/**
+	 * Clear workspace storage and all affinity partitions, including unused ones.
+	 */
+	static async clearWorkspace(instantiationService: IInstantiationService, workspaceId: string, workspaceStorageHome: URI, storage: IApplicationStorageMainService): Promise<void> {
+		const sessions = [BrowserSession.getOrCreateWorkspace(instantiationService, workspaceId, workspaceStorageHome).electronSession];
+		const affinityHome = BrowserSession.getWorkspaceAffinityStorageHome(workspaceStorageHome, workspaceId);
+		let partitions: string[] = [];
+		try {
+			partitions = await Promises.readdir(affinityHome.fsPath);
+		} catch (error) {
+			if (error.code !== 'ENOENT') {
+				throw error;
+			}
+		}
+		for (const partition of partitions) {
+			sessions.push(session.fromPath(joinPath(affinityHome, partition).fsPath));
+		}
+		await Promise.all(sessions.map(electronSession => {
+			const browserSession = BrowserSession._bySession.get(electronSession);
+			browserSession?.connectStorage(storage);
+			return (browserSession ?? electronSession).clearData();
+		}));
 	}
 
 	/**
 	 * Get or create an ephemeral session for the given view or target ID.
 	 */
-	static getOrCreateEphemeral(instantiationService: IInstantiationService, viewId: string, type?: string): BrowserSession {
+	static getOrCreateEphemeral(instantiationService: IInstantiationService, viewId: string, type?: string, network?: IBrowserViewNetwork): BrowserSession {
 		if (type === 'workspace' || type === 'ephemeral' || type === 'agent') {
 			throw new Error(`Cannot create session with reserved type '${type}'`);
 		}
@@ -170,11 +206,11 @@ export class BrowserSession {
 		const sessionId = `${type ?? 'ephemeral'}:${viewId}`;
 		const electronSession = session.fromPartition(`vscode-browser-${type}${viewId}`);
 		return BrowserSession._bySession.get(electronSession)
-			?? instantiationService.createInstance(BrowserSession, sessionId, electronSession, BrowserViewStorageScope.Ephemeral);
+			?? instantiationService.createInstance(BrowserSession, sessionId, electronSession, BrowserViewStorageScope.Ephemeral, network, undefined);
 	}
 
-	/** Get or create an in-memory agent session by affinity, workspace, or window. */
-	static getOrCreateAgent(instantiationService: IInstantiationService, workspaceId: string | undefined, affinity?: string, windowId?: number): BrowserSession {
+	/** Get or create an in-memory agent session by affinity, workspace, or window, and network. */
+	static getOrCreateAgent(instantiationService: IInstantiationService, workspaceId: string | undefined, affinity?: string, windowId?: number, network?: IBrowserViewNetwork): BrowserSession {
 		let identity: string;
 		if (affinity !== undefined) {
 			identity = `affinity:${affinity}`;
@@ -185,10 +221,13 @@ export class BrowserSession {
 		} else {
 			throw new Error('Agent browser sessions require an affinity, workspace, or window');
 		}
+		if (network) {
+			identity += `\nnetwork:${network.authority}`;
+		}
 		const identityHash = createHash('sha256').update(identity).digest('hex');
 		const electronSession = session.fromPartition(`vscode-browser-agent-${identityHash}`);
 		return BrowserSession._bySession.get(electronSession)
-			?? instantiationService.createInstance(BrowserSession, `agent:${identityHash}`, electronSession, BrowserViewStorageScope.Agent);
+			?? instantiationService.createInstance(BrowserSession, `agent:${identityHash}`, electronSession, BrowserViewStorageScope.Agent, network, affinity);
 	}
 
 	/**
@@ -218,6 +257,8 @@ export class BrowserSession {
 		switch (options.scope) {
 			// PARA-PATCH: named persistent browser profiles get their own persist: partition. The id is
 			// opaque and never derived from the display name, so renaming a profile keeps its logins.
+			// The session is created without a network, so it never takes a remote tunnel proxy (1.144.0 only
+			// acquires one for sessions with a network); a profile is shared across windows like global storage.
 			case BrowserViewStorageScope.Profile: {
 				const profile = paradisBrowserProfilePartition(options);
 				if (!profile) {
@@ -226,19 +267,19 @@ export class BrowserSession {
 				}
 				const electronSession = session.fromPartition(profile.partition);
 				return BrowserSession._bySession.get(electronSession)
-					?? instantiationService.createInstance(BrowserSession, profile.sessionId, electronSession, BrowserViewStorageScope.Profile);
+					?? instantiationService.createInstance(BrowserSession, profile.sessionId, electronSession, BrowserViewStorageScope.Profile, undefined, undefined);
 			}
 			case BrowserViewStorageScope.Global:
 				return BrowserSession.getOrCreateGlobal(instantiationService);
 			case BrowserViewStorageScope.Workspace:
 				if (workspaceId) {
-					return BrowserSession.getOrCreateWorkspace(instantiationService, workspaceId, workspaceStorageHome);
+					return BrowserSession.getOrCreateWorkspace(instantiationService, workspaceId, workspaceStorageHome, options.network, options.affinity);
 				}
-				return BrowserSession.getOrCreateEphemeral(instantiationService, viewId);
+				return BrowserSession.getOrCreateEphemeral(instantiationService, viewId, undefined, options.network);
 			case BrowserViewStorageScope.Ephemeral:
-				return BrowserSession.getOrCreateEphemeral(instantiationService, viewId);
+				return BrowserSession.getOrCreateEphemeral(instantiationService, viewId, undefined, options.network);
 			case BrowserViewStorageScope.Agent:
-				return BrowserSession.getOrCreateAgent(instantiationService, workspaceId, options.affinity, windowId);
+				return BrowserSession.getOrCreateAgent(instantiationService, workspaceId, options.affinity, windowId, options.network);
 		}
 	}
 
@@ -265,6 +306,9 @@ export class BrowserSession {
 	private readonly _trust: BrowserSessionTrust;
 	private readonly _history: BrowserSessionHistory;
 	private readonly _remote: BrowserSessionRemote;
+	// PARA-PATCH: fired by setNetwork() when the session starts or stops using a remote network (browser extensions, D8)
+	private readonly _paradisOnDidStartRemote = new Emitter<void>();
+	private readonly _paradisOnDidStopRemote = new Emitter<void>();
 	private readonly _permissions: BrowserSessionPermissions;
 	private _networkFilterEnabled = false;
 	private _sandboxNetworkRestrictions?: ISandboxNetworkRestrictions;
@@ -296,6 +340,8 @@ export class BrowserSession {
 		readonly electronSession: Electron.Session,
 		/** Resolved storage scope. */
 		readonly storageScope: BrowserViewStorageScope,
+		private _network: IBrowserViewNetwork | undefined,
+		private readonly affinity: string | undefined,
 		@IAgentNetworkFilterService private readonly agentNetworkFilterService: IAgentNetworkFilterService,
 		// PARA-PATCH: read paradis.browser.downloads.* / paradis.browser.userAgent.* in configure()
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -310,6 +356,35 @@ export class BrowserSession {
 		BrowserSession._bySession.set(electronSession, this);
 		BrowserSession._byId.set(id, new WeakRef(this));
 		BrowserSession._finalizer.register(electronSession, id);
+	}
+
+	/** The remote network this session's traffic is bound to, if any. */
+	get network(): IBrowserViewNetwork | undefined {
+		return this._network;
+	}
+
+	/** The options that select this session. */
+	get options(): IBrowserViewSessionOptions {
+		// PARA-PATCH: a named browser profile session is selected by its profile id, which the scope alone cannot carry
+		const paradisProfileId = this.storageScope === BrowserViewStorageScope.Profile ? paradisProfileIdFromSessionId(this.id) : undefined;
+		if (paradisProfileId !== undefined) {
+			return { scope: BrowserViewStorageScope.Profile, profileId: paradisProfileId };
+		}
+		return toBrowserViewSessionOptions(this.storageScope, this.affinity, this._network);
+	}
+
+	/**
+	 * Bind the session to another network. Only valid while no view uses the
+	 * session; otherwise views would share storage across networks.
+	 */
+	setNetwork(network: IBrowserViewNetwork | undefined): void {
+		// PARA-PATCH: tell the browser extensions host when the session starts or stops using a remote network,
+		// so extensions are unloaded while the session's pages come from the remote (NOTES.md D8)
+		const paradisWasRemote = this._network !== undefined;
+		this._network = network;
+		if (paradisWasRemote !== (network !== undefined)) {
+			(network !== undefined ? this._paradisOnDidStartRemote : this._paradisOnDidStopRemote).fire();
+		}
 	}
 
 	/** Public trust interface for consumers that need cert operations. */
@@ -373,7 +448,17 @@ export class BrowserSession {
 	 * Apply permissions, protocols, and preload scripts to the session.
 	 */
 	private configure(): void {
-		paradisInstallBrowserExtensions(this.electronSession, this); // PARA-PATCH: bundled React DevTools + user-installed extensions (experimental)
+		// PARA-PATCH: bundled React DevTools + user-installed extensions (experimental). 1.144.0 removed
+		// IBrowserSessionRemote.isRemote/onDidStart/onDidStop; whether the session goes through a remote network
+		// now follows its network, which setNetwork() can still change (see the events fired there).
+		const paradisSession = this;
+		paradisInstallBrowserExtensions(this.electronSession, {
+			id: this.id, storageScope: this.storageScope, remote: {
+				get isRemote() { return paradisSession._network !== undefined; },
+				onDidStart: this._paradisOnDidStartRemote.event,
+				onDidStop: this._paradisOnDidStopRemote.event,
+			}
+		});
 		paradisApplyChromeLikeUserAgent(this.electronSession, this.configurationService); // PARA-PATCH: strip Electron (and by default ParaCode) tokens from UA
 		paradisConfigureBrowserDownloads(this.electronSession, this.configurationService); // PARA-PATCH: auto-save downloads to a fixed folder, no save dialog
 		this._permissions.configure(this.electronSession);
