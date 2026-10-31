@@ -1277,7 +1277,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.codexAutoContinue', "Codex がモデルの混み合いで止まったら自動で続ける"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.codexAutoContinueDesc', "「Selected model is at capacity」で止まったとき、少し待ってから自動で continue を送ります。3 回続けても止まるときはやめて知らせます。"),
+		description: localize('paradis.settings.codexAutoContinueDesc', "Codex がサーバーの混み合いで止まったとき（「Selected model is at capacity」など）、少し待ってから自動で continue を送ります。3 回続けても止まるときはやめて知らせます。"),
 		keywords: 'codex capacity overloaded continue retry auto',
 	},
 
