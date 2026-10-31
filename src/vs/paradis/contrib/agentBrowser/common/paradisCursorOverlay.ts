@@ -588,6 +588,8 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 		var K3 = ${JSON.stringify(SCROLLS_KEY)};
 		/** スクロールの向きの矢印（scroll_to の 'direction' と同じ名前）。 */
 		var ARROWS = { down: '\\u2193', up: '\\u2191', right: '\\u2192', left: '\\u2190' };
+		// スクロールの受け口は文書に 1 度だけ置くので、調整値はいちばん新しいコマンドのものを渡しておく
+		if (window[K3]) { window[K3].c = c; }
 		/** 道具が終わるか次の状態が来るまで名札に残す状態。 */
 		var STICKY = { script: 1, waiting: 1, loading: 1, reading: 1 };
 		// 色は持ち主ごと（main が決める）。形の違う値は使わずアクセントに戻す
@@ -705,31 +707,57 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 			for (var i = 0; i < ids.length; i++) {
 				var s = g.cs[ids[i]];
 				if (!s || !s.h || !(s.since > 0) || at < s.since) { continue; }
-				if (watching(s) || (s.wend > 0 && at <= s.wend + c.scrollLateMs)) { only = s; count++; }
+				if (scrollWatching(s, at)) { only = s; count++; }
 			}
 			return count === 1 ? only : null;
 		}
+		/** 'at' に動き始めたスクロールを、このカーソルのスクリプトのものとみなせるか（実行中か、終わってすぐ）。 */
+		function scrollWatching(s, at) {
+			var late = window[K3] ? window[K3].c.scrollLateMs : c.scrollLateMs;
+			return watching(s) || (s.wend > 0 && at <= s.wend + late);
+		}
+		/** どれかのカーソルが、いまのスクロールをスクリプトのものとみなせるか。無ければ受け口は何もしない。 */
+		function scrollListening(at) {
+			var g = window[K];
+			if (!g) { return false; }
+			var ids = Object.keys(g.cs);
+			for (var i = 0; i < ids.length; i++) {
+				var s = g.cs[ids[i]];
+				if (s && s.h && scrollWatching(s, at)) { return true; }
+			}
+			return false;
+		}
+		/**
+		 * スクリプトを始めたときの位置を覚え直す（文書と、上限までの要素のうち動かしてあるもの）。覚えていない要素は
+		 * 0 から動いたとみなす。見張っていない間の利用者のスクロールでは何もしないので、ここで測る。
+		 */
+		function scrollBaseline() {
+			var rec = window[K3];
+			if (!rec) { return; }
+			rec.pos = new WeakMap();
+			try {
+				var se = doc.scrollingElement || doc.documentElement;
+				if (se) { rec.pos.set(se, { x: se.scrollLeft || 0, y: se.scrollTop || 0 }); }
+				var all = doc.getElementsByTagName('*');
+				for (var i = 0; i < all.length && i < 5000; i++) {
+					var el = all[i];
+					if (el.scrollTop || el.scrollLeft) { rec.pos.set(el, { x: el.scrollLeft || 0, y: el.scrollTop || 0 }); }
+				}
+			} catch (e) { }
+		}
 		/**
 		 * evaluate_script の中のスクロール（'scrollTo'・'scrollBy'・'scrollTop' への代入 など）を受ける口を、この文書に
-		 * 1 度だけ置く（q.html Q301 の C）。scroll のイベントは人の操作でも isTrusted なので見分けられない。要素ごとに
-		 * 位置を覚え、動き始めから止まるまで（'scrollSettleMs' の間動かない）を 1 回にまとめる。スクリプトの実行中に
-		 * 動き始めたものだけを、止まったときに 1 回、進んだ向きの端へ寄せて矢印と合計の量を出す。見張りの前から
-		 * 動いていたもの・利用者の操作の直後のものは除く。止めたり書き換えたりはしない（ページの挙動を変えない）。
+		 * 1 度だけ置く（q.html Q301 の C）。scroll のイベントは人の操作でも isTrusted なので見分けられない。スクリプトを
+		 * 始めたときの位置（'scrollBaseline'）からの動きを、要素ごとに止まるまで（'scrollSettleMs' の間動かない）
+		 * 1 回にまとめ、止まったときに 1 回、進んだ向きの端へ寄せて矢印と合計の量を出す。利用者の操作の直後のものは除く。
+		 * 見張っているカーソルが無い間は、まとめている途中の要素のほかは何もしない（位置も読まない）。
+		 * 止めたり書き換えたりはしない（ページの挙動を変えない）。
 		 */
 		function watchScrolls() {
 			if (window[K3] || typeof WeakMap !== 'function') { return; }
-			var rec = window[K3] = { pos: new WeakMap(), runs: [], user: 0 };
+			var rec = window[K3] = { pos: new WeakMap(), runs: [], user: 0, c: c };
 			var top = function () { return doc.scrollingElement || doc.documentElement; };
 			var where = function (el) { return { x: el.scrollLeft || 0, y: el.scrollTop || 0 }; };
-			// 受け口を置く前に動いていた位置を覚える（文書と、上限までの要素）。覚えていない要素は 0 から動いたとみなす
-			try {
-				var se = top();
-				if (se) { rec.pos.set(se, where(se)); }
-				var all = doc.getElementsByTagName('*');
-				for (var i = 0; i < all.length && i < 5000; i++) {
-					if (all[i].scrollTop || all[i].scrollLeft) { rec.pos.set(all[i], where(all[i])); }
-				}
-			} catch (e) { }
 			var user = function (e) { if (e.isTrusted) { rec.user = Date.now(); } };
 			var kinds = ['wheel', 'keydown', 'pointerdown', 'mousedown', 'touchstart'];
 			try {
@@ -741,20 +769,22 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 						var el = t === doc || t === window ? top() : t;
 						if (!el || el.nodeType !== 1) { return; }
 						var now = Date.now();
+						var run = null;
+						for (var j = 0; j < rec.runs.length; j++) { if (rec.runs[j].el === el) { run = rec.runs[j]; break; } }
+						// 見張っているカーソルが無ければ何もしない（利用者がスクロールするたびに位置を読まない）
+						if (!run && !scrollListening(now)) { return; }
 						var from = rec.pos.get(el) || { x: 0, y: 0 };
 						var p = where(el);
 						rec.pos.set(el, p);
-						var run = null;
-						for (var j = 0; j < rec.runs.length; j++) { if (rec.runs[j].el === el) { run = rec.runs[j]; break; } }
 						if (!run) {
 							run = { el: el, at: now, x0: from.x, y0: from.y, x1: p.x, y1: p.y, ignore: false, t: 0 };
 							rec.runs.push(run);
 							if (rec.runs.length > 16) { var old = rec.runs.shift(); if (old.t) { clearTimeout(old.t); } }
 						}
 						run.x1 = p.x; run.y1 = p.y;
-						if (now - rec.user < c.scrollUserMs) { run.ignore = true; }
+						if (now - rec.user < rec.c.scrollUserMs) { run.ignore = true; }
 						if (run.t) { clearTimeout(run.t); }
-						run.t = setTimeout(function () { settleScroll(rec, run); }, c.scrollSettleMs);
+						run.t = setTimeout(function () { settleScroll(rec, run); }, rec.c.scrollSettleMs);
 					} catch (err) { }
 				}, true);
 			} catch (e) { }
@@ -1310,7 +1340,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 					sm.wat = Date.now();
 					var was = sm.watch;
 					sm.watch = true;
-					if (!was) { sm.since = c.since > 0 ? c.since : sm.wat; sm.wend = 0; replay(sm); }
+					if (!was) { sm.since = c.since > 0 ? c.since : sm.wat; sm.wend = 0; scrollBaseline(); replay(sm); }
 				} else { if (sm.watch) { sm.wend = Date.now(); } sm.watch = false; }
 				if (c.status === 'idle') { sm.sticky = ''; setStatus(sm, '', 0); return traits(false); }
 				if (STICKY[c.status] && !c.transient) { sm.sticky = c.text; setStatus(sm, c.text, 0); return traits(false); }
