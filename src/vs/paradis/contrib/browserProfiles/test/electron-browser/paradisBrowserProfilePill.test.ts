@@ -17,6 +17,7 @@ import { INotificationService } from '../../../../../platform/notification/commo
 import { BrowserEditor } from '../../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
 import { IParadisAgentBrowserBindingModel } from '../../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserTabsService } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisBrowserProfilePill } from '../../electron-browser/paradisBrowserProfilePill.js';
 import { IParadisBrowserProfilesService } from '../../electron-browser/paradisBrowserProfilesService.js';
 import { IParadisBrowserSpaceDefaultsService } from '../../electron-browser/paradisBrowserSpaceDefaultsService.js';
@@ -45,6 +46,7 @@ suite('ParadisBrowserProfilePill', () => {
 			{} as IWorkbenchEnvironmentService,
 			{} as IParadisBrowserSpaceDefaultsService,
 			{ setupManagedHover: () => ({ update: (content: string) => hovers.push(content), show: () => { }, hide: () => { }, dispose: () => { } }) } as unknown as IHoverService,
+			{} as IParadisAgentBrowserTabsService,
 		));
 		const element = pill.widgets[0].element;
 		const result = {
