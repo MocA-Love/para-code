@@ -29,7 +29,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			minimum: 0,
 			maximum: 1440,
 			scope: ConfigurationScope.WINDOW,
-			markdownDescription: localize('paradis.typescript.idleStopMinutes', "TypeScript・JavaScript のファイルを 1 つも開いていない状態がこの分数続いたら、TypeScript の言語サーバー (tsserver) を止めてメモリを空けます。ファイルを開くと自動で起動し直します。`0` で止めません。")
+			markdownDescription: localize('paradis.typescript.idleStopMinutes', "TypeScript・JavaScript のファイルを 1 つも開いていない状態がこの分数続いたら、TypeScript の言語サーバー (tsserver) を止めてメモリを空けます。ファイルを開くと自動で起動し直します。止まっている間は、TypeScript・JavaScript のファイルを 1 つ開くまで、ワークスペースの記号の検索が空になります。`0` で止めません。")
 		}
 	}
 });
