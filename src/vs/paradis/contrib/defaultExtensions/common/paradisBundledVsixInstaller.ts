@@ -19,11 +19,8 @@ export const BUNDLED_VSIX_FILES: readonly string[] = [
 	'mosapride.zenkaku-0.0.3.vsix',
 	'AntiAntiSepticeye.vscode-color-picker-0.0.4.vsix',
 	'netcorext.uuid-generator-0.0.5.vsix',
-	'ms-vsliveshare.vsliveshare-1.1.122.vsix',
 	'jeff-hykin.polacode-2019-0.6.2.vsix',
 	'yudai1204.polacode-button-0.0.1.vsix',
-	'VisualStudioExptTeam.vscodeintellicode-1.3.2.vsix',
-	'VisualStudioExptTeam.intellicode-api-usage-examples-0.2.9.vsix',
 	'evondev.indent-rainbow-palettes-0.0.20.vsix',
 	// Para Codeパッチ版 (upstream v2.4.5ベース、composeプロジェクトで現在のワークスペース外の
 	// コンテナ/イメージ/ボリューム/ネットワークをContainers系ビューから隠す)。installGivenVersion:true

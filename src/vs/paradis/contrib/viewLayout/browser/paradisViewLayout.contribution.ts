@@ -37,12 +37,8 @@ interface IParadisContainerPlacement {
  * mock で決定した配置指定に対応。存在しないコンテナ/ビューは黙ってスキップする。
  */
 const DEFAULT_PLACEMENTS: readonly IParadisContainerPlacement[] = [
-	// GitLens: すべて非表示
-	{ containerId: 'gitlens', placement: 'hidden', viewIds: ['gitlens.views.welcome', 'gitlens.views.home', 'gitlens.views.launchpad', 'gitlens.views.drafts', 'gitlens.views.workspaces'] },
-	{ containerId: 'gitlensInspect', placement: 'hidden', viewIds: ['gitlens.views.commitDetails', 'gitlens.views.pullRequest', 'gitlens.views.lineHistory', 'gitlens.views.fileHistory', 'gitlens.views.timeline', 'gitlens.views.searchAndCompare'] },
-	{ containerId: 'gitlensPatch', placement: 'hidden', viewIds: ['gitlens.views.patchDetails'] },
-	{ containerId: 'gitlensPanel', placement: 'hidden', viewIds: ['gitlens.views.graph'] },
-	{ containerId: 'workbench.view.scm', placement: 'hidden', viewIds: ['gitlens.views.repositories', 'gitlens.views.commits', 'gitlens.views.branches', 'gitlens.views.remotes', 'gitlens.views.stashes', 'gitlens.views.tags', 'gitlens.views.worktrees', 'gitlens.views.contributors', 'gitlens.views.scm.grouped'] },
+	// GitLens は既定で入れなくなった（2026-11-01）ので、後から自分で入れた人のビューを隠さないよう指定を外した。
+	// 既に隠したビューは台帳に残り、そのまま隠れている。
 	// GitHub PR / Actions: 右へ
 	{ containerId: 'github-pull-requests', placement: 'right' },
 	{ containerId: 'github-pull-request', placement: 'right' },
@@ -75,7 +71,7 @@ const APPLIED_INITIAL_COMPOSITES_KEY = 'paradis.viewLayout.appliedInitialComposi
 const INITIAL_SIDEBAR_COMPOSITE_ID = 'workbench.view.paradisWorkspaces';
 const INITIAL_AUXILIARYBAR_COMPOSITE_ID = 'workbench.view.explorer';
 // この起動で遅れて登録されるコンテナ/ビューを拾うための購読時間。ここで拾えなかった分は次回起動で再試行される。
-// 初回起動ではデフォルト拡張の一括インストール完了(数分)後にGitLens等がビューを登録して
+// 初回起動ではデフォルト拡張の一括インストール完了(数分)後にGitHub PR等がビューを登録して
 // サイドバーを奪うため、それを同一セッション内で確実に拾えるよう10分に設定している。
 const WATCH_DURATION_MS = 600_000;
 
