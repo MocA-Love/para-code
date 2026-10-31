@@ -255,7 +255,8 @@ export class GitHistoryProvider implements SourceControlHistoryProvider, FileDec
 		// Deduplicate refNames
 		const refNames = Array.from(new Set<string>(options.historyItemRefs));
 
-		let logOptions: LogOptions = { refNames, shortStats: true };
+		// PARA-PATCH: no --shortstat for the page; the graph hover counts one commit on demand (src/vs/paradis/contrib/scmGraphLazyStats)
+		let logOptions: LogOptions = { refNames, shortStats: false };
 
 		try {
 			if (options.limit === undefined || typeof options.limit === 'number') {
@@ -323,7 +324,7 @@ export class GitHistoryProvider implements SourceControlHistoryProvider, FileDec
 					authorIcon: avatarUrl ? Uri.parse(avatarUrl) : Icons.account,
 					displayId: truncate(commit.hash, this.commitShortHashLength, false),
 					timestamp: commit.authorDate?.getTime(),
-					statistics: commit.shortStat ?? { files: 0, insertions: 0, deletions: 0 },
+					statistics: commit.shortStat, // PARA-PATCH: leave unset without --shortstat so pickers do not show "0 files"
 					references: references.length !== 0 ? references : undefined,
 					tooltip
 				} satisfies SourceControlHistoryItem);

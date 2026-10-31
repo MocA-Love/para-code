@@ -28,22 +28,22 @@ import { BUNDLED_VSIX_FILES, INSTALLED_VSIX_STORAGE_KEY, ParadisBundledVsixInsta
 /**
  * Para Code が全ユーザーへデフォルト導入する拡張機能のID一覧（ギャラリー = Open VSX）。
  * ここに列挙するIDは Open VSX 上に実在することを確認済みのもののみとする。
- * （Open VSX 未公開のため見送り: VisualStudioExptTeam.vscodeintellicode / intellicode-api-usage-examples /
- * mosapride.zenkaku / AntiAntiSepticeye.vscode-color-picker / netcorext.uuid-generator /
- * ms-vsliveshare.vsliveshare / evondev.indent-rainbow-palettes / jeff-hykin.polacode-2019 /
- * yudai1204.polacode-button。cweijan.vscode-postgresql-client2 は同作者の上位版
- * cweijan.vscode-database-client2 で代替。）
+ * （Open VSX 未公開のため見送り: mosapride.zenkaku / AntiAntiSepticeye.vscode-color-picker /
+ * netcorext.uuid-generator / evondev.indent-rainbow-palettes / jeff-hykin.polacode-2019 /
+ * yudai1204.polacode-button。これらは VSIX 同梱で入れる（BUNDLED_VSIX_FILES）。
+ * cweijan.vscode-postgresql-client2 は同作者の上位版 cweijan.vscode-database-client2 で代替。）
+ *
+ * 起動時の重さと配布物の大きさを減らすため、新しく入れる人の一覧から外したもの（2026-11-01）:
+ * eamodio.gitlens / bradlc.vscode-tailwindcss / Anthropic.claude-code / openai.chatgpt。
+ * VSIX 同梱だった VisualStudioExptTeam.vscodeintellicode / intellicode-api-usage-examples /
+ * ms-vsliveshare.vsliveshare も同時に外した。既に入れた人からはアンインストールしない。
  */
 const DEFAULT_EXTENSION_IDS: readonly string[] = [
 	// Git / GitHub
-	'eamodio.gitlens',
 	'mhutchie.git-graph',
 	'GitHub.vscode-pull-request-github',
 	'github.vscode-github-actions',
 	'wdhongtw.gpg-indicator',
-	// AI
-	'Anthropic.claude-code',
-	'openai.chatgpt',
 	// 汎用生産性
 	'mechatroner.rainbow-csv',
 	'PKief.material-icon-theme',
@@ -62,7 +62,6 @@ const DEFAULT_EXTENSION_IDS: readonly string[] = [
 	'docker.docker',
 	'ms-azuretools.vscode-docker',
 	// Web / フロントエンド
-	'bradlc.vscode-tailwindcss',
 	'denoland.vscode-deno',
 	'astro-build.houston',
 	'Vue.volar',

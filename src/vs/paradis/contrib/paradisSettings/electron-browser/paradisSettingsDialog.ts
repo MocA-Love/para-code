@@ -1194,6 +1194,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.releaseHiddenGpu',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.releaseHiddenGpu', "見えていないターミナルの GPU のメモリを手放す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.releaseHiddenGpuDesc', "裏のタブや待避中のスペースのターミナルは、数秒たつと描画用の GPU のメモリを返します。見えるようになったときに描き直すので、文字が出るまで一瞬だけ空白になることがあります。"),
+		keywords: 'terminal gpu webgl memory hidden background release renderer',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
 		key: 'paradis.terminal.shiftEnterNewline',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.shiftEnter', "Shift+Enter で改行を入力する"),

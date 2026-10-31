@@ -7,7 +7,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_CURSOR_WAIT_BUDGET_MS, ParadisCursorPacingLedger, paradisCursorStatusForTool, paradisToolCursorRunKey, paradisWithToolCursorStatus } from '../../node/paradisCursorPacing.js';
+import { PARADIS_CURSOR_WAIT_BUDGET_MS, ParadisCursorPacingLedger, paradisCursorScrollDirectionForTool, paradisCursorStatusForTool, paradisToolCursorRunKey, paradisWithToolCursorStatus } from '../../node/paradisCursorPacing.js';
 import { paradisAttachSnapshotRootRect } from '../../node/paradisDevtoolsToolAdjustments.js';
 
 const MOVE = JSON.stringify({ type: 'mouseMoved', x: 1, y: 2 });
@@ -57,6 +57,19 @@ suite('Paradis cursor pacing', () => {
 			evaluate_script: 'script', navigate_page: 'loading', wait_until: 'waiting', take_snapshot: 'reading', get_text: 'reading', inspect_element: 'reading',
 			list_console_messages: 'reading', list_network_requests: 'reading', scroll_to: 'scroll', take_screenshot: undefined, list_pages: undefined, click: undefined,
 		});
+	});
+
+	test('scroll_to names the direction it searches, down when left out', () => {
+		assert.deepStrictEqual(
+			[
+				paradisCursorScrollDirectionForTool('scroll_to', { text: 'Row 40' }),
+				paradisCursorScrollDirectionForTool('scroll_to', { text: 'Row 40', direction: 'left' }),
+				paradisCursorScrollDirectionForTool('scroll_to', { direction: 'back' }),
+				paradisCursorScrollDirectionForTool('scroll_to', undefined),
+				paradisCursorScrollDirectionForTool('evaluate_script', { direction: 'up' }),
+			],
+			['down', 'left', undefined, 'down', undefined],
+		);
 	});
 
 	test('a tool states its work at the start and clears it at the end, once the last one on the page ends', async () => {

@@ -34,6 +34,7 @@ import { HISTORY_VIEW_PANE_ID, ISCMProvider, ISCMRepository, ISCMService, ISCMVi
 import { IListAccessibilityProvider } from '../../../../base/browser/ui/list/listWidget.js';
 import { stripIcons } from '../../../../base/common/iconLabels.js';
 import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
+import { paradisSetupScmGraphLazyStats } from '../../../../paradis/contrib/scmGraphLazyStats/browser/paradisScmGraphLazyStats.js'; // PARA-PATCH: hover change counts on demand
 import { Action2, IMenuService, isIMenuItem, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { Sequencer, Throttler } from '../../../../base/common/async.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -480,7 +481,8 @@ class HistoryItemRenderer implements ICompressibleTreeRenderer<SCMHistoryItemVie
 
 		const { content, disposables } = toHistoryItemHoverContent(this._markdownRendererService, historyItem, true);
 		const { hoverOptions, hoverLifecycleOptions } = this._getHoverOptions();
-		const historyItemHover = this._hoverService.setupDelayedHover(templateData.element, { ...hoverOptions, content }, hoverLifecycleOptions);
+		const paradisLazyStats = templateData.elementDisposables.add(paradisSetupScmGraphLazyStats(content, provider, historyItemViewModel)); // PARA-PATCH: count this commit's changes when its hover is shown
+		const historyItemHover = this._hoverService.setupDelayedHover(templateData.element, { ...hoverOptions, content, ...paradisLazyStats.hoverOptions }, hoverLifecycleOptions); // PARA-PATCH: onDidShow/onDidHide from paradisLazyStats
 		templateData.elementDisposables.add(historyItemHover);
 		templateData.elementDisposables.add(disposables);
 
