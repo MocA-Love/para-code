@@ -62,23 +62,23 @@ suite('Paradis SCM graph lazy stats hover', () => {
 		});
 	});
 
-	test('drops the query when the hover hides, and reuses a finished count without asking again', async () => {
+	test('clears the counting line when the hover hides, joins the same query when it comes back, and reuses the count', async () => {
 		const { pending, lazyStats, sections } = createFixture();
 
 		lazyStats.hoverOptions.onDidShow?.();
 		lazyStats.hoverOptions.onDidHide?.();
-		const afterHide = { sections: sections(), cancelled: pending[0].token.isCancellationRequested };
+		const afterHide = { sections: sections(), queryCancelled: pending[0].token.isCancellationRequested };
 
 		lazyStats.hoverOptions.onDidShow?.();
-		pending[1].result.complete(stats);
+		pending[0].result.complete(stats);
 		await timeout(0);
 		lazyStats.hoverOptions.onDidHide?.();
 		lazyStats.hoverOptions.onDidShow?.();
 
 		assert.deepStrictEqual({ afterHide, queries: pending.length, shown: sections() }, {
-			afterHide: { sections: ['author', 'refs', 'commands'], cancelled: true },
-			queries: 2,
-			shown: ['author', 'stats: 21 個のファイルが変更済み, 1359 個の挿入(+), 44 個の削除(-)', 'refs', 'commands'],
+			afterHide: { sections: ['author', 'refs', 'commands'], queryCancelled: false },
+			queries: 1,
+			shown: ['author', 'stats: 21 個のファイルが変更済み,\u00a01359 個の挿入(+),\u00a044 個の削除(-)', 'refs', 'commands'],
 		});
 	});
 
