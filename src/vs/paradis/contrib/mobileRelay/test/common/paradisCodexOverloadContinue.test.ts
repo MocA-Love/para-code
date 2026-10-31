@@ -96,6 +96,18 @@ suite('ParadisCodexOverloadContinue', () => {
 		overload.dispose();
 	});
 
+	test('also continues after a policy-restricted capacity error and counts it with the overloads', () => {
+		const { host, state, fireNext } = createHost();
+		const overload = new ParadisCodexOverloadContinue(host);
+		overload.onTurnEnded('pane', 'failed', 'policy_capacity_unavailable');
+		const first = fireNext();
+		overload.report('pane', state.lastRequest!.requestId, 'claim');
+		overload.onTurnStarted('pane');
+		overload.onTurnEnded('pane', 'failed', 'server_overloaded');
+		assert.deepStrictEqual([first, fireNext()], [30_000, 60_000]);
+		overload.dispose();
+	});
+
 	test('does nothing for other errors, interruptions, or when the setting is off', () => {
 		const other = createHost();
 		const overload = new ParadisCodexOverloadContinue(other.host);

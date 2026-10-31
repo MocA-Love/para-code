@@ -60,7 +60,7 @@ import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIM
 import { IParadisAgentApprovalOption, paradisApprovalScreenPiece, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
 import { IParadisAgentApprovalAgent, IParadisAgentApprovalRequest, PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, PARADIS_APPROVAL_INSTRUCTION_MARKER, ParadisAgentApprovalSuggestionScope, paradisApprovalDenyMessage, paradisSanitizeApprovalInstruction, paradisApprovalSuggestionScope, paradisBuildAgentApprovalRequest } from '../common/paradisAgentApprovalRequest.js';
 import { PARADIS_CODEX_APPROVAL_HOLD_MS } from '../common/paradisCodexApprovalHold.js';
-import { PARADIS_CODEX_AUTO_CONTINUE_PHASES, PARADIS_CODEX_OVERLOAD_ERROR_CODE, PARADIS_CODEX_OVERLOAD_RETRY_DELAYS_MS, ParadisCodexAutoContinuePhase, ParadisCodexOverloadContinue } from '../common/paradisCodexOverloadContinue.js';
+import { PARADIS_CODEX_AUTO_CONTINUE_PHASES, PARADIS_CODEX_OVERLOAD_ERROR_CODES, PARADIS_CODEX_OVERLOAD_RETRY_DELAYS_MS, ParadisCodexAutoContinuePhase, ParadisCodexOverloadContinue } from '../common/paradisCodexOverloadContinue.js';
 import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { paradisIsCodexNonUserSource, paradisIsCodexRootSource } from '../../sessionResume/common/paradisSessionTranscript.js';
@@ -4308,7 +4308,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// 送る直前に、記録でも確かめる: ターンが動いていない、最後のターンの終わりが混み合いの失敗。違えば取りやめる
 		const lastEnd = this.notifyTurnEnds.get(token);
-		if (phase === 'claim' && (this.activeTurnTokens.has(token) || lastEnd?.reason !== 'failed' || lastEnd.errorCode !== PARADIS_CODEX_OVERLOAD_ERROR_CODE)) {
+		if (phase === 'claim' && (this.activeTurnTokens.has(token) || lastEnd?.reason !== 'failed' || lastEnd.errorCode === undefined || !PARADIS_CODEX_OVERLOAD_ERROR_CODES.has(lastEnd.errorCode))) {
 			this.overloadContinue.report(token, requestId, 'typed');
 			return false;
 		}
