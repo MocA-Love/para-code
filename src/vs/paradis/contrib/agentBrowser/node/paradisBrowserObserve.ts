@@ -14,7 +14,8 @@
 // どちらも既定は無効。待ちと変化の取り方はページの中の関数（paradisBrowserObservePageScript.ts）で行う。
 //
 // 決め事:
-// - 操作が失敗したときは何も添えない（記録は 60 秒でページの中で止まる）
+// - 操作が失敗したときは、ページの変化は添えず、ブラウザの状態（I1）だけを成功時と同じ形で添える
+//   （記録は 60 秒でページの中で止まる。状態を取れなければ元の失敗をそのまま返す。q.html Q515 の A）
 // - JavaScript のダイアログが開いているときは evaluate_script を呼ばない（呼ぶと止まる）。ダイアログだけを伝える
 // - ダイアログを伝えるのは、vendored の記録（list_pages の `# Open dialog`）で開いていると確かめられたときだけ。
 //   ページが 3 秒答えなかっただけなら「ページが応答していない」と伝える（実利用で 211 回、重いページを取り違えていた）
@@ -23,7 +24,8 @@
 
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { paradisPaneTokenOfScopeKey } from '../common/paradisAgentTabScope.js';
-import { paradisIsTransientEvaluateFailure, paradisParseEvaluateValue } from './paradisBrowserQuery.js';
+import { PARADIS_PAGE_UNRESPONSIVE, paradisIsTransientEvaluateFailure, paradisParseEvaluateValue } from './paradisBrowserQuery.js';
+import { TERMINATED_ERROR_MESSAGE } from './paradisDevtoolsMcpProxy.js';
 import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveReadFunction } from './paradisBrowserObservePageScript.js';
 
 /** 変化を添える道具（E1）。 */
@@ -48,6 +50,23 @@ const MAX_STATE_TABS = 10;
 const MAX_STATE_URL_LENGTH = 200;
 /** 待たない評価の答えをこれだけ待つ（vendored の `paraCodeObserve`、script.js の PARA-PATCH と同じ値）。 */
 const UNRESPONSIVE_MS = 3000;
+
+/**
+ * 失敗した結果に状態を添えるとき、状態を取る処理（list_pages・タブ・ダウンロード）をこれだけ待つ。過ぎたら状態は
+ * 付けず、元の失敗を返す（成功時の待ちの上限の既定 {@link PARADIS_SETTLE_DEFAULT_MS} と同じ）。
+ */
+export const PARADIS_FAILED_STATE_DEADLINE_MS = PARADIS_SETTLE_DEFAULT_MS;
+
+/**
+ * 失敗が「ページか子プロセスが答えなかった」ものか。Para Code が付ける印で見分ける: 締め切りで諦めた評価・
+ * スナップショット（{@link PARADIS_PAGE_UNRESPONSIVE}）と、時間切れや落ちたことで子プロセスを止めた呼び出し
+ * （{@link TERMINATED_ERROR_MESSAGE}）。このときは状態を取りに行かない（list_pages が前の処理の後ろに並び、
+ * タブの列を持ったまま待つため）。
+ */
+export function paradisFailureWasUnanswered(result: unknown): boolean {
+	const content = isRecord(result) && result.isError === true && Array.isArray(result.content) ? result.content : [];
+	return content.some(item => isRecord(item) && typeof item.text === 'string' && (item.text.includes(PARADIS_PAGE_UNRESPONSIVE) || item.text.includes(TERMINATED_ERROR_MESSAGE)));
+}
 
 export interface IParadisObserveOptions {
 	readonly settle: boolean;
@@ -218,7 +237,7 @@ export class ParadisBrowserObserver {
 	}
 
 	/**
-	 * 操作が成功した後に呼ぶ。添える文（無ければ undefined）。
+	 * 操作の後に呼ぶ。添える文（無ければ undefined）。失敗した操作の後は、呼び出し側が `settle: false` で呼ぶ。
 	 * @param ownTabId 呼び出しが tab_id を渡したときのそのタブ。タブの一覧はそのタブと、前回から変わったタブだけにする
 	 * （並列のサブエージェントに、ほかのタブを毎回並べない。q.html Q461 の 4）。
 	 */
@@ -334,15 +353,16 @@ export class ParadisBrowserObserver {
 
 
 	private async _state(host: IParadisObserveHost, stateKey: string, before: IBefore, pages: IPagesState | undefined, ownTabId: string | undefined): Promise<string | undefined> {
+		// 打ち切られた（取り消された・失敗の後の締め切りを過ぎた）観測は、状態を取らず、報告したことにもしない
+		if (!host.isCurrent()) {
+			return undefined;
+		}
 		const tabs = await host.tabs().catch(() => undefined);
 		const downloadsAfter = await host.downloads().catch(() => undefined);
 		const lines: string[] = [];
 		const tabLine = (tab: NonNullable<typeof tabs>[number]) => `${tab.tabId}${tab.current ? ' (current)' : ''}${tab.shared ? ' (shared by the user)' : ''} ${JSON.stringify(tab.title.slice(0, 80))} ${tab.url.length > MAX_STATE_URL_LENGTH ? `${tab.url.slice(0, MAX_STATE_URL_LENGTH)}...` : tab.url}`;
 		const tabKey = (tab: NonNullable<typeof tabs>[number]) => JSON.stringify([tab.url, tab.title, tab.current, tab.shared]);
 		const previousTabs = this._lastTabs.get(stateKey);
-		if (tabs !== undefined) {
-			this._lastTabs.set(stateKey, new Map(tabs.map(tab => [tab.tabId, tabKey(tab)])));
-		}
 		// tab_id を渡した呼び出しでは、自分のタブと、前回から変わった（新しく現れた）タブだけを出す
 		const ownTab = ownTabId !== undefined ? tabs?.find(tab => tab.tabId === ownTabId) : undefined;
 		const shownTabs = ownTab === undefined || tabs === undefined ? tabs : tabs.filter(tab => tab === ownTab || (previousTabs !== undefined && previousTabs.get(tab.tabId) !== tabKey(tab)));
@@ -392,6 +412,12 @@ export class ParadisBrowserObserver {
 		const changedOthers = ownTab !== undefined && ((shownTabs?.length ?? 0) > 1 || closedTabIds.length > 0);
 		const key = JSON.stringify([(ownTab !== undefined ? [ownTab] : tabs)?.map(tab => [tab.tabId, tab.url, tab.title, tab.current]), pages?.pages.map(page => [page.index, page.url, page.selected])]);
 		const unchanged = this._lastState.get(stateKey) === key && !changedOthers && opened.length === 0 && newDownloads.length === 0 && pages?.dialog === undefined;
+		if (!host.isCurrent()) {
+			return undefined;
+		}
+		if (tabs !== undefined) {
+			this._lastTabs.set(stateKey, new Map(tabs.map(tab => [tab.tabId, tabKey(tab)])));
+		}
 		this._lastState.set(stateKey, key);
 		if (unchanged || lines.length === 0) {
 			return undefined;

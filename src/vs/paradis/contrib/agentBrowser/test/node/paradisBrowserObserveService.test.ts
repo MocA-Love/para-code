@@ -7,9 +7,13 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ParadisToolCallLanes } from '../../common/paradisToolCallLanes.js';
 import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
+import { PARADIS_FAILED_STATE_DEADLINE_MS } from '../../node/paradisBrowserObserve.js';
+import { PARADIS_PAGE_UNRESPONSIVE } from '../../node/paradisBrowserQuery.js';
+import { TERMINATED_ERROR_MESSAGE } from '../../node/paradisDevtoolsMcpProxy.js';
 
 const TOKEN = 'pane-token';
 const TAB_KEY = paradisAgentTabScopeKey(TOKEN, 'tab-1');
@@ -91,6 +95,82 @@ suite('Paradis browser observe in the service', () => {
 		const result = await service(log, { _bindingForKey: () => ({ pageId: `page-${++calls < 2 ? 1 : 2}` }) })._callToolObserved({ token: TOKEN }, 'click', { name: 'click', arguments: { uid: '1_2' } }, { settle: true, state: false });
 		assert.deepStrictEqual({ after: log.some(line => line.startsWith('after')), result }, { after: false, result: { content: [{ type: 'text', text: 'done' }] } });
 	});
+
+	test('a failed action gets only the browser state, in the same form as a successful one', async () => {
+		const log: string[] = [];
+		const failure = { isError: true, content: [{ type: 'text', text: 'no download started' }] };
+		const svc = service(log, {
+			_browserObserver: {
+				before: async () => ({ name: 'n', installed: true }),
+				after: async (_host: object, _stateKey: string, options: object) => {
+					log.push(`after ${JSON.stringify(options)}`);
+					return '[Browser state]\nYour tabs: t1 (current) "Report" http://127.0.0.1/report';
+				},
+			},
+			_callToolInner: async () => failure,
+		});
+		const withState = await svc._callToolObserved({ token: TOKEN }, 'download_by_click', { name: 'download_by_click', arguments: { selector: 'a' } }, { settle: true, state: true });
+		const settleOnly = await svc._callToolObserved({ token: TOKEN }, 'click', { name: 'click', arguments: { uid: '1_2' } }, { settle: true, state: false });
+		assert.deepStrictEqual({ log, withState, settleOnly }, {
+			log: ['after {"settle":false,"state":true}'],
+			withState: { isError: true, content: [...failure.content, { type: 'text', text: '[Browser state]\nYour tabs: t1 (current) "Report" http://127.0.0.1/report' }] },
+			settleOnly: failure,
+		});
+	});
+
+	test('a failed action keeps its own error when the browser state cannot be read', async () => {
+		const failure = { isError: true, content: [{ type: 'text', text: 'no download started' }] };
+		const svc = service([], {
+			_browserObserver: {
+				before: async () => ({ name: 'n', installed: true }),
+				after: async () => { throw new Error('list_pages failed'); },
+			},
+			_callToolInner: async () => failure,
+		});
+		const result = await svc._callToolObserved({ token: TOKEN }, 'download_by_click', { name: 'download_by_click', arguments: { selector: 'a' } }, { settle: false, state: true });
+		assert.strictEqual(result, failure);
+	});
+
+	test('a failure where the page or the DevTools child did not answer gets no browser state, and the state is not read', async () => {
+		const log: string[] = [];
+		const failures = [
+			{ isError: true, content: [{ type: 'text', text: `Error: ${PARADIS_PAGE_UNRESPONSIVE}: the script did not finish within 30 s.` }] },
+			{ isError: true, content: [{ type: 'text', text: `chrome-devtools tool "click" failed: ${TERMINATED_ERROR_MESSAGE}` }] },
+		];
+		let next = 0;
+		const svc = service(log, {
+			_browserObserver: {
+				before: async () => ({ name: 'n', installed: true }),
+				after: async () => { log.push('after'); return '[Browser state]\nYour tabs: t1'; },
+			},
+			_callToolInner: async () => failures[next++],
+		});
+		const results = [
+			await svc._callToolObserved({ token: TOKEN }, 'click', { name: 'click', arguments: { uid: '1_2' } }, { settle: false, state: true }),
+			await svc._callToolObserved({ token: TOKEN }, 'click', { name: 'click', arguments: { uid: '1_2' } }, { settle: false, state: true }),
+		];
+		assert.deepStrictEqual({ log, results }, { log: [], results: failures });
+	});
+
+	test('a failed action returns its own error once reading the browser state passes the deadline', () => runWithFakedTimers({}, async () => {
+		const log: string[] = [];
+		const failure = { isError: true, content: [{ type: 'text', text: 'no download started' }] };
+		const svc = service(log, {
+			_browserObserver: {
+				before: async () => ({ name: 'n', installed: true }),
+				after: async (host: { isCurrent(): boolean }) => {
+					await new Promise(resolve => setTimeout(resolve, PARADIS_FAILED_STATE_DEADLINE_MS + 1000));
+					log.push(`after current=${host.isCurrent()}`);
+					return '[Browser state]\nYour tabs: t1';
+				},
+			},
+			_callToolInner: async () => failure,
+		});
+		const result = await svc._callToolObserved({ token: TOKEN }, 'download_by_click', { name: 'download_by_click', arguments: { selector: 'a' } }, { settle: false, state: true });
+		log.push('returned');
+		await new Promise(resolve => setTimeout(resolve, 2000));
+		assert.deepStrictEqual({ log, result }, { log: ['returned', 'after current=false'], result: failure });
+	}));
 
 	test('the network wait looks at the tab, not the whole pane', () => {
 		const log: string[] = [];
