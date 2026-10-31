@@ -13,7 +13,9 @@
 // - 数え終わった結果はコミットごとに持つ (コミットの中身は変わらないので消さなくてよい)。件数に上限を付け、
 //   古いものから捨てる。
 // - 同じコミットへの問い合わせが同時に来たら、git への問い合わせを 1 本にまとめる。
-// - 待っている人が全員いなくなったら (ホバーが消えたら) 問い合わせを取り消し、遅れて届いた結果は捨てる。
+// - ホバーが消えたら、その呼び出しはすぐ undefined を返す (表示には使わない)。走り始めた git は本家の
+//   getCommit が取り消しを渡さないので止まらず、最後まで走って届いた結果はキャッシュに入れる。待っている人が
+//   いなくなっても問い合わせは台帳に残すので、届く前にまたホバーしたら同じ問い合わせに相乗りする。
 // - 失敗・タイムアウトは undefined を返し、キャッシュしない (次にホバーしたときにまた数える)。
 
 import { raceCancellation, raceTimeout } from '../../../../base/common/async.js';
@@ -32,7 +34,6 @@ export type ParadisScmGraphStatsResolver = (token: CancellationToken) => Promise
 interface IInflightRequest {
 	readonly promise: Promise<IParadisScmGraphStats | undefined>;
 	readonly source: CancellationTokenSource;
-	waiters: number;
 }
 
 export const PARADIS_SCM_GRAPH_STATS_MAX_ENTRIES = 500;
@@ -63,8 +64,8 @@ export class ParadisScmGraphStatsCache {
 
 	/**
 	 * 結果を返す。キャッシュに無ければ数える。同じ key の問い合わせが走っていれば相乗りする。
-	 * `token` が取り消されたら、この呼び出しはすぐ undefined を返す。待っている呼び出しが 0 になったら
-	 * 問い合わせ自体を取り消し、その結果はキャッシュしない。
+	 * `token` が取り消されたら、この呼び出しはすぐ undefined を返す。問い合わせ自体は取り消さず、
+	 * 届いた結果はキャッシュする (タイムアウトしたときだけ数える関数を取り消す)。
 	 */
 	async request(key: string, resolve: ParadisScmGraphStatsResolver, token: CancellationToken): Promise<IParadisScmGraphStats | undefined> {
 		const cached = this.get(key);
@@ -75,22 +76,8 @@ export class ParadisScmGraphStatsCache {
 			return undefined;
 		}
 
-		let request = this.inflight.get(key);
-		if (request === undefined) {
-			request = this.start(key, resolve);
-		}
-		request.waiters++;
-
-		const current = request;
-		const listener = token.onCancellationRequested(() => this.leave(key, current));
-		try {
-			return await raceCancellation(current.promise, token);
-		} finally {
-			listener.dispose();
-			if (!token.isCancellationRequested) {
-				this.leave(key, current);
-			}
-		}
+		const request = this.inflight.get(key) ?? this.start(key, resolve);
+		return raceCancellation(request.promise, token);
 	}
 
 	private start(key: string, resolve: ParadisScmGraphStatsResolver): IInflightRequest {
@@ -98,7 +85,7 @@ export class ParadisScmGraphStatsCache {
 		const promise = (async () => {
 			try {
 				const stats = await raceTimeout(resolve(source.token), this.timeoutMs, () => source.cancel());
-				if (stats === undefined || source.token.isCancellationRequested) {
+				if (stats === undefined) {
 					return undefined;
 				}
 				this.remember(key, stats);
@@ -112,17 +99,9 @@ export class ParadisScmGraphStatsCache {
 				source.dispose();
 			}
 		})();
-		const request: IInflightRequest = { promise, source, waiters: 0 };
+		const request: IInflightRequest = { promise, source };
 		this.inflight.set(key, request);
 		return request;
-	}
-
-	private leave(key: string, request: IInflightRequest): void {
-		request.waiters--;
-		if (request.waiters <= 0 && this.inflight.get(key) === request) {
-			this.inflight.delete(key);
-			request.source.cancel();
-		}
 	}
 
 	private remember(key: string, stats: IParadisScmGraphStats): void {

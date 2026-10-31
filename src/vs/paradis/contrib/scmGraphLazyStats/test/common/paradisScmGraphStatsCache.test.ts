@@ -6,7 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { DeferredPromise } from '../../../../../base/common/async.js';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisScmGraphStats, ParadisScmGraphStatsCache, paradisHasScmGraphStats } from '../../common/paradisScmGraphStatsCache.js';
@@ -42,7 +42,7 @@ suite('Paradis SCM graph stats cache', () => {
 		assert.deepStrictEqual({ results, calls: resolver.calls.length, cached: cache.get('a') }, { results: [stats, stats, stats], calls: 1, cached: stats });
 	});
 
-	test('cancels the query and drops its late result once every waiter is gone', async () => {
+	test('returns nothing to waiters that left, but still caches the result git finished with', async () => {
 		const cache = new ParadisScmGraphStatsCache();
 		const resolver = createResolver();
 		const sourceA = new CancellationTokenSource();
@@ -51,16 +51,29 @@ suite('Paradis SCM graph stats cache', () => {
 		const first = cache.request('a', resolver.resolve, sourceA.token);
 		const second = cache.request('a', resolver.resolve, sourceB.token);
 		sourceA.cancel();
-		const stillRunning = !resolver.calls[0].isCancellationRequested;
 		sourceB.cancel();
-		const cancelledAfterLast = resolver.calls[0].isCancellationRequested;
-		resolver.deferred[0].complete(stats);
 		const results = [await first, await second];
-		await Promise.resolve();
+		const queryCancelled = resolver.calls[0].isCancellationRequested;
+		resolver.deferred[0].complete(stats);
+		await timeout(0);
 
-		assert.deepStrictEqual({ results, stillRunning, cancelledAfterLast, cached: cache.get('a') }, { results: [undefined, undefined], stillRunning: true, cancelledAfterLast: true, cached: undefined });
+		assert.deepStrictEqual({ results, queryCancelled, cached: cache.get('a') }, { results: [undefined, undefined], queryCancelled: false, cached: stats });
 		sourceA.dispose();
 		sourceB.dispose();
+	});
+
+	test('a hover that comes back before the left query finishes joins it instead of asking git again', async () => {
+		const cache = new ParadisScmGraphStatsCache();
+		const resolver = createResolver();
+		const source = new CancellationTokenSource();
+
+		const left = cache.request('a', resolver.resolve, source.token);
+		source.cancel();
+		const back = cache.request('a', resolver.resolve, CancellationToken.None);
+		resolver.deferred[0].complete(stats);
+
+		assert.deepStrictEqual({ left: await left, back: await back, calls: resolver.calls.length }, { left: undefined, back: stats, calls: 1 });
+		source.dispose();
 	});
 
 	test('a waiter that stays still gets the result after another one leaves', async () => {
