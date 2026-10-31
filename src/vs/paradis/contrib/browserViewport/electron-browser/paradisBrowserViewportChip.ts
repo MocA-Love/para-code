@@ -15,7 +15,8 @@
 // upstream の Device Emulation の帯（幅・高さ・DPR・倍率・UA の入力欄）は、device を立てた瞬間に出る。chip で
 // 選ぶたびに帯が出ると、同じ大きさが二重に見えるので、CSS で隠しておき、一覧の「細かい設定の帯を表示」か
 // upstream のコマンド「Device Emulation」を実行したときだけ出す（media/paradisBrowserViewport.css）。
-// 帯を隠しても、端の大きさを変えるつまみ（sash）とその分の右と下の余白は upstream のまま残る。
+// 帯を隠しても、端の大きさを変えるつまみ（sash）とその分の右と下の余白は upstream のまま残る。つまみは普段は透明にし、
+// 表示域の外の余白を一段暗く塗る（media/paradisBrowserViewport.css）。帯に出ていた縮小の倍率は chip に出す。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { getZoomFactor } from '../../../../base/browser/browser.js';
@@ -33,7 +34,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
-import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget, IContainerLayout, IContainerLayoutOverride } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
@@ -58,6 +59,9 @@ const $ = dom.$;
  */
 const WIDGET_ORDER = 80;
 
+/** 大きさの計算の最後に回り、upstream が決めた縮小の倍率を読むだけにする（配置は変えない）。 */
+const SCALE_OBSERVER_PRIORITY = Number.MAX_SAFE_INTEGER;
+
 /** エージェントが変えた直後に chip を強調する時間。 */
 const AGENT_HIGHLIGHT_MS = 4000;
 
@@ -72,6 +76,9 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 	private readonly _element: HTMLButtonElement;
 	private readonly _nameElement: HTMLElement;
 	private readonly _dimensionsElement: HTMLElement;
+	private readonly _scaleElement: HTMLElement;
+	/** upstream の Device Emulation がページを縮小（拡大）している倍率。大きさを決めていない間は undefined。 */
+	private _emulationScale: number | undefined;
 	private readonly _hover: IManagedHover;
 	private readonly _dropdown = this._register(new MutableDisposable<ParadisBrowserViewportDropdown>());
 	private readonly _highlight = this._register(new MutableDisposable());
@@ -94,6 +101,7 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 		this._element.setAttribute('aria-expanded', 'false');
 		this._nameElement = dom.append(this._element, $('span.pbv-chip-name'));
 		this._dimensionsElement = dom.append(this._element, $('span.pbv-chip-dimensions'));
+		this._scaleElement = dom.append(this._element, $('span.pbv-chip-scale'));
 		dom.append(this._element, $(`span.pbv-chip-chevron${ThemeIcon.asCSSSelector(Codicon.chevronDown)}`));
 		this._hover = this._register(hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this._element, ''));
 		this._register(dom.addDisposableListener(this._element, dom.EventType.CLICK, () => this._toggleDropdown()));
@@ -148,8 +156,27 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 		this._render();
 	}
 
+	override beforeContainerLayout(): IContainerLayoutOverride {
+		return {
+			compute: current => {
+				this._noteEmulationScale(current);
+				return undefined;
+			},
+			priority: SCALE_OBSERVER_PRIORITY,
+		};
+	}
+
 	override afterContainerLayout(): void {
 		this._measure();
+	}
+
+	/** upstream が当てた倍率を覚える。自動で縮めているときも、帯で倍率を決めたときも、ここに実際の値が来る。 */
+	private _noteEmulationScale(layout: IContainerLayout): void {
+		const scale = this.editor.model?.device ? layout.emulation?.scale : undefined;
+		if (scale !== this._emulationScale) {
+			this._emulationScale = scale;
+			this._render();
+		}
 	}
 
 	// #region 大きさ
@@ -225,6 +252,9 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 		this._nameElement.textContent = name ?? '';
 		this._nameElement.style.display = name ? '' : 'none';
 		this._dimensionsElement.textContent = dimensions;
+		const scalePercent = this._scalePercent();
+		this._scaleElement.textContent = scalePercent !== undefined ? localize('paradis.browserViewport.chip.scale', "· {0}%", scalePercent) : '';
+		this._scaleElement.style.display = scalePercent !== undefined ? '' : 'none';
 		this._element.classList.toggle('is-fit', state.fit);
 
 		const lines: string[] = [state.fit
@@ -232,6 +262,9 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 			: name
 				? localize('paradis.browserViewport.chip.hoverNamed', "ページの大きさ: {0}（{1}）", name, dimensions)
 				: localize('paradis.browserViewport.chip.hoverCustom', "ページの大きさ: {0}", dimensions)];
+		if (scalePercent !== undefined) {
+			lines.push(localize('paradis.browserViewport.chip.hoverScale', "エディタの中では {0}% の大きさで表示しています（ページのズームとは別です）。", scalePercent));
+		}
 		if (state.mobile) {
 			lines.push(localize('paradis.browserViewport.chip.hoverMobile', "タッチ操作とスマホの見た目も当てています。"));
 		}
@@ -249,6 +282,15 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 		lines.push(localize('paradis.browserViewport.chip.hoverAction', "押すと大きさを選べます。"));
 		this._hover.update(lines.join('\n'));
 		this._element.setAttribute('aria-label', lines.join(' '));
+	}
+
+	/** chip に出す倍率（%）。縮小も拡大もしていない（100%）ときと、大きさを決めていないときは undefined。 */
+	private _scalePercent(): number | undefined {
+		if (!this.editor.model?.device || this._emulationScale === undefined) {
+			return undefined;
+		}
+		const percent = Math.round(this._emulationScale * 100);
+		return percent === 100 ? undefined : percent;
 	}
 
 	private _stateLabel(state: IParadisViewportState): string {

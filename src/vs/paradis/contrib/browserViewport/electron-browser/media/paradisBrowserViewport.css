@@ -13,6 +13,39 @@
 	display: none !important;
 }
 
+/* 大きさを決めている間の表示域のまわり（Q494〜Q496）。
+	upstream は右と下のつまみ（sash）を editorWidget.resizeBorder で常に塗る（browser.css）。Houston ではこれが紫で、
+	右と下にだけ線が出る。つまみは消さず（ドラッグで大きさを変える・ダブルクリックで戻すは残す）普段は透明にし、
+	カーソルを乗せたときとドラッグ中だけ、細い線を sash.hoverBorder で出す。
+	upstream 取り込み時は `.browser-container > .monaco-sash` の形が残っているかを確認する。 */
+.monaco-workbench .browser-root .browser-container > .monaco-sash {
+	--vscode-sash-hover-size: 2px;
+}
+
+.monaco-workbench .browser-root .browser-container > .monaco-sash:not(.disabled)::before {
+	background: transparent;
+}
+
+.monaco-workbench .browser-root .browser-container > .monaco-sash:is(.hover, .active)::before {
+	background: var(--vscode-sash-hoverBorder);
+}
+
+/* 右下の角の縞の印も、同じく乗せたときだけ */
+.monaco-workbench .browser-root .browser-container > .monaco-sash.horizontal > .orthogonal-drag-handle.end::before {
+	color: transparent;
+}
+
+.monaco-workbench .browser-root .browser-container > .monaco-sash.horizontal:is(.hover, .active) > .orthogonal-drag-handle.end::before,
+.monaco-workbench .browser-root .browser-container > .monaco-sash.vertical:is(.hover, .active) + .monaco-sash.horizontal > .orthogonal-drag-handle.end::before {
+	color: var(--vscode-sash-hoverBorder);
+}
+
+/* 表示域の外の余白は、エディタの背景より一段暗く塗る。wrapper には背景が無く、ウィンドウ透過中は後ろが透けて
+	表示域の境目が分からなくなるので、透過中も塗る。つまみが有効（= 大きさを決めている）間だけ。 */
+.monaco-workbench .browser-root .browser-container-wrapper:has(> .browser-container > .monaco-sash:not(.disabled)) {
+	background-color: color-mix(in srgb, var(--vscode-editor-background) 82%, #000000);
+}
+
 /* 1. アドレスバーの中の chip。形はプロファイルの chip・倍率と同じ（高さ 20px、角 small、11px）。
 	詰まったら縮む（入れ物は右端から刈られる）。 */
 .monaco-workbench .browser-root .paradis-browser-viewport-chip {
@@ -75,6 +108,13 @@
 
 .monaco-workbench .browser-root .paradis-browser-viewport-chip .pbv-chip-dimensions {
 	flex-shrink: 0;
+	font-variant-numeric: tabular-nums;
+}
+
+/* 縮小の倍率（· 66%）。寸法と同じ大きさで、補助の色 */
+.monaco-workbench .browser-root .paradis-browser-viewport-chip .pbv-chip-scale {
+	flex-shrink: 0;
+	color: var(--vscode-descriptionForeground);
 	font-variant-numeric: tabular-nums;
 }
 
