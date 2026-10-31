@@ -328,7 +328,7 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 				const allowing = allow.checked;
 				void this._run(() => this._mainService.setAllowedOnRemote(extension.id, allowing));
 			}));
-			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.allowOnRemoteNote', "オンにすると、SSH の窓で SSH 先のページを開くタブにもこの拡張機能が入ります。オンにすると、この拡張機能の通信（保管庫の同期など）も SSH 先から出ます。");
+			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.allowOnRemoteNote', "オンにすると、SSH の窓で SSH 先のページを開くタブにもこの拡張機能が入ります。オンにすると、この拡張機能の通信（保管庫の同期など）も SSH 先から出ます。手元のアプリと localhost で話す拡張機能は、手元のアプリに届きません。");
 		}
 		if (extension.pagesWithoutApis?.length) {
 			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.pagesWithoutApis', "次のページは UTF-8 でないか Para Code が書き換えられない形式のため、Para Code が足す機能（chrome.storage.sync など）が使えません: {0}", extension.pagesWithoutApis.join('、'));
