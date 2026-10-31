@@ -46,7 +46,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentChat.codexAutoContinueOnOverload', "Codex が「Selected model is at capacity」（モデルが混み合っている）で止まったとき、30 秒・60 秒・120 秒と間を空けて自動で `continue` を送ります。3 回続けても混み合ったままなら止めて知らせます。待つ間にほかの入力があったときは送りません。送ったことはモバイルと PC の会話に出ます。"),
+			markdownDescription: localize('paradis.agentChat.codexAutoContinueOnOverload', "Codex がサーバーの混み合いで止まったとき（「Selected model is at capacity」など）、30 秒・60 秒・120 秒と間を空けて自動で `continue` を送ります。3 回続けても混み合ったままなら止めて知らせます。待つ間にほかの入力があったときは送りません。送ったことはモバイルと PC の会話に出ます。"),
 		},
 	},
 });

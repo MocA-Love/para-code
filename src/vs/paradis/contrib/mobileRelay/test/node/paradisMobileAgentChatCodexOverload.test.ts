@@ -201,6 +201,14 @@ suite('ParadisMobileAgentChat with Codex', () => {
 		});
 	}));
 
+	test('accepts the claim after a policy-restricted capacity error', () => withCodexHarness(async harness => {
+		const policy = line('event_msg', { type: 'task_complete', turn_id: 'turn-1', last_agent_message: null, error: { message: 'Policy-restricted capacity is unavailable. Please try again later.', codex_error_info: 'policy_capacity_unavailable' } });
+		await harness.append(line('event_msg', { type: 'task_started', turn_id: 'turn-1' }), policy);
+		await waitFor(() => harness.actions.some(action => action.t === 'action/autoContinue'), 'the window was not asked to send');
+		const request = harness.actions.find(action => action.t === 'action/autoContinue')!;
+		assert.strictEqual(harness.chat.reportCodexAutoContinue(harness.token, request.requestId as string, 'claim', 1, 'window-session'), true);
+	}));
+
 	test('sends continue to the owning window after a capacity error and says so in the conversation', () => withCodexHarness(async harness => {
 		const overloaded = line('event_msg', { type: 'task_complete', turn_id: 'turn-1', last_agent_message: null, error: { message: 'Selected model is at capacity. Please try a different model.', codex_error_info: 'server_overloaded' } });
 		await harness.append(line('event_msg', { type: 'task_started', turn_id: 'turn-1' }), overloaded);
