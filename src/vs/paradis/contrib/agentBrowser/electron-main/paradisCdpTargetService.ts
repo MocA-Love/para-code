@@ -956,7 +956,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (note.status === undefined) {
 			return;
 		}
-		this.cursorOverlay.noteStatus(view, note.status, note.detail, note.point, note.owner, { since: note.since });
+		this.cursorOverlay.noteStatus(view, note.status, note.detail, note.point, note.owner, { since: note.since, direction: note.direction });
 		// 写し（モバイル）へも状態を流す。消す方（idle）は設定に関わらず流す。アプリが知らない状態は流さない
 		const mirrored = paradisCursorStatusForMirror(note.status);
 		if (mirrored !== undefined && (mirrored === 'idle' || this.cursorOverlay.isOverlayEnabled())) {
