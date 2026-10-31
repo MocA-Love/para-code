@@ -12,16 +12,6 @@
 	background-image: url('./paradisWatermark.png') !important;
 }
 
-/* Watermark shortcut entries are clickable in Para Code (see the PARA-PATCH in
-	editorGroupWatermark.ts). */
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .shortcuts .watermark-box dl.para-watermark-entry {
-	cursor: pointer;
-}
-
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .shortcuts .watermark-box dl.para-watermark-entry:hover dt {
-	color: var(--vscode-textLink-foreground);
-}
-
 /* allow-any-unicode-next-line */
 /* Split先(他グループにエディタがある状態)でも watermark のショートカット一覧を表示する。 */
 /* allow-any-unicode-next-line */
@@ -33,11 +23,11 @@
 }
 
 /* allow-any-unicode-next-line */
-/* 同条件で watermark が 200px に絞られるのを、単一空グループ時と同じ基底幅 (272px) に戻す */
+/* 同条件で watermark が 200px に絞られるのを、単一空グループ時と同じ基底幅 (320px、1.144.0 で変わった) に戻す */
 /* allow-any-unicode-next-line */
 /* (こちらも upstream と同じ詳細度になるため、クラスを重ねて読み込み順に依存させない) */
 .monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty > .editor-group-watermark-wrapper > .editor-group-watermark.editor-group-watermark {
-	max-width: 272px;
+	max-width: 320px;
 }
 
 /* allow-any-unicode-next-line */
@@ -58,4 +48,21 @@
 /* 一覧だけでも入らないほど低い場合に、グループの外へはみ出させない。 */
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper > .editor-group-watermark {
 	overflow: hidden;
+}
+
+/* allow-any-unicode-next-line */
+/* 分割して空のグループが狭い (一覧の幅が 260px 未満) ときは、キーの列を隠して項目名を最後まで出す。 */
+/* allow-any-unicode-next-line */
+/* 1.144.0 の行はアイコン・名前・キーを横に並べるため、約 280px のグループでは日本語の名前の末尾が切れる。 */
+/* allow-any-unicode-next-line */
+/* キーは読み上げ用の名前 (aria-label) には残る。 */
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .shortcuts {
+	container-type: inline-size;
+	container-name: paradis-watermark-shortcuts;
+}
+
+@container paradis-watermark-shortcuts (max-width: 259px) {
+	.monaco-workbench .editor-group-watermark .watermark-entry > .watermark-keybinding {
+		display: none;
+	}
 }
