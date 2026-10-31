@@ -124,7 +124,8 @@ export function runParadisMcpSetupCommand(
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_OUTPUT_LIMIT_BYTES;
 	const terminationGraceMs = options.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
-	const killProcessTree = options.killProcessTree ?? killTree;
+	// killTree's diagnostics for an already exited root are not needed here
+	const killProcessTree = options.killProcessTree ?? ((pid: number, forceful: boolean) => killTree(pid, forceful, () => { }));
 	return new Promise(resolve => {
 		let settled = false;
 		let timeoutTimer: ReturnType<typeof setTimeout> | undefined;

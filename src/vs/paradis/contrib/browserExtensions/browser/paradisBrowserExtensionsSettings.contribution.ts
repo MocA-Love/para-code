@@ -24,7 +24,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			tags: ['experimental'],
-			markdownDescription: localize('paradis.browser.extensions.enabled', "（試験的）内蔵ブラウザで Chrome 拡張機能を使えるようにします。拡張機能は通常のタブ・ワークスペースのタブ・名前付きプロファイルのタブに入り、エージェントのタブ・使い捨てのタブ・SSH 先のページには入りません。変更は再起動の後に効きます。"),
+			markdownDescription: localize('paradis.browser.extensions.enabled', "（試験的）内蔵ブラウザで Chrome 拡張機能を使えるようにします。拡張機能は通常のタブ・ワークスペースのタブ・名前付きプロファイルのタブに入り、エージェントのタブ・使い捨てのタブには入りません。SSH 先のページには、拡張機能の管理で「SSH 先のページでも使う」をオンにした拡張機能だけが入ります。変更は再起動の後に効きます。"),
 		}
 	}
 });

@@ -94,6 +94,12 @@ export interface IParadisBrowserExtensionsLedger {
 	readonly removed: readonly IParadisRemovedExtensionData[];
 	/** プロファイルのキー → ツールバーに出す（ピン留めした）拡張機能の id（ピン留めした順）。 */
 	readonly pinned: Readonly<Record<string, readonly string[]>>;
+	/**
+	 * 「SSH 先のページでも使う」をオンにした拡張機能の id（Q519）。SSH の窓で SSH 先へトンネルを通している Workspace の
+	 * セッションには、ここにある拡張機能だけを入れる（D8 を拡張機能ごとに外す）。無い台帳（Q519 より前の版）は、どれも
+	 * オフとして読む。古い版が台帳を書き直すとこの印は消え、オフに戻る（安全な側）。
+	 */
+	readonly allowedOnRemote?: readonly string[];
 }
 
 /** 削除した拡張機能の保存データを消す印。 */
@@ -163,7 +169,10 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 		const cleared = isRecord(entry) && Array.isArray(entry.cleared) ? [...new Set(entry.cleared.filter((path): path is string => typeof path === 'string'))].slice(-MAX_CLEARED_PATHS) : [];
 		removed.push({ id, cleared });
 	}
-	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS), pinned };
+	const allowedOnRemote = Array.isArray(raw.allowedOnRemote)
+		? [...new Set(raw.allowedOnRemote.filter((id): id is string => paradisIsExtensionId(id) && extensions.some(extension => extension.id === id)))]
+		: [];
+	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS), pinned, ...(allowedOnRemote.length > 0 ? { allowedOnRemote } : {}) };
 }
 
 /**
@@ -205,6 +214,22 @@ export function paradisLedgerWithPinned(ledger: IParadisBrowserExtensionsLedger,
 	return { ...ledger, pinned: { ...ledger.pinned, [profile]: next } };
 }
 
+/** 「SSH 先のページでも使う」をオン・オフにする（Q519）。 */
+export function paradisLedgerWithAllowedOnRemote(ledger: IParadisBrowserExtensionsLedger, id: string, allowed: boolean): IParadisBrowserExtensionsLedger {
+	if (!ledger.extensions.some(extension => extension.id === id)) {
+		return ledger;
+	}
+	const current = ledger.allowedOnRemote ?? [];
+	const next = allowed ? (current.includes(id) ? current : [...current, id]) : current.filter(existing => existing !== id);
+	const { allowedOnRemote: _previous, ...rest } = ledger;
+	return next.length > 0 ? { ...rest, allowedOnRemote: next } : rest;
+}
+
+/** 「SSH 先のページでも使う」がオンか（Q519。既定はオフ）。 */
+export function paradisIsAllowedOnRemote(ledger: IParadisBrowserExtensionsLedger, id: string): boolean {
+	return ledger.allowedOnRemote?.includes(id) === true;
+}
+
 /** プロファイルでピン留めした拡張機能の id（ピン留めした順）。 */
 export function paradisPinnedExtensionIds(ledger: IParadisBrowserExtensionsLedger, profile: string): readonly string[] {
 	return ledger.pinned[profile] ?? [];
@@ -223,11 +248,13 @@ export function paradisLedgerWithoutExtension(ledger: IParadisBrowserExtensionsL
 		return result;
 	};
 	const enabled = without(ledger.enabled);
+	const allowedOnRemote = (ledger.allowedOnRemote ?? []).filter(existing => existing !== id);
 	return {
 		version: 1,
 		extensions: ledger.extensions.filter(extension => extension.id !== id),
 		enabled,
 		pinned: without(ledger.pinned),
+		...(allowedOnRemote.length > 0 ? { allowedOnRemote } : {}),
 		// 消し終えた保存先も数え直す（入れ直した後に溜まったデータがあるかもしれないため）
 		removed: [...ledger.removed.filter(existing => existing.id !== id), { id, cleared: [] }].slice(-PARADIS_MAX_INSTALLED_EXTENSIONS),
 	};
@@ -368,6 +395,8 @@ export interface IParadisBrowserExtensionView extends IParadisInstalledBrowserEx
 	 * 既定はどこでもオフ）。
 	 */
 	readonly userScripts?: { readonly allowedIn: readonly string[] };
+	/** 「SSH 先のページでも使う」がオンか（Q519。既定はオフ）。 */
+	readonly allowedOnRemote: boolean;
 	/** 新しく権限を求めるため、確かめるまで入れずに保留にしているストアの更新。 */
 	readonly pendingUpdate?: { readonly version: string; readonly permissions: readonly string[]; readonly hostPermissions: readonly string[] };
 }
@@ -442,6 +471,8 @@ export interface IParadisBrowserExtensionsMainService {
 	setEnabled(id: string, profile: string, enabled: boolean): Promise<void>;
 	/** 「ユーザースクリプトを許可」を切り替える（userScripts を求める拡張機能だけ。`profile` の場所で）。 */
 	setUserScriptsAllowed(id: string, profile: string, allowed: boolean): Promise<void>;
+	/** 「SSH 先のページでも使う」を切り替える（Q519）。SSH 先へトンネルを通しているセッションへ、すぐ入れる・外す。 */
+	setAllowedOnRemote(id: string, allowed: boolean): Promise<void>;
 	/**
 	 * 内蔵ブラウザの新しいタブ（URL の無いタブ）を、拡張機能の新しいタブのページ（chrome_url_overrides.newtab）にする。
 	 * 置き換えたら true（置き換える拡張機能が無い・エージェントのタブなどでは false）。

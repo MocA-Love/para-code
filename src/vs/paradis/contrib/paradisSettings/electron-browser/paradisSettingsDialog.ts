@@ -998,7 +998,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.browserExtensions', "（試験的）内蔵ブラウザで Chrome 拡張機能を使う"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.browserExtensionsDesc', "展開済みの拡張機能のフォルダを読み込めるようにします。エージェントのタブ・使い捨てのタブ・SSH 先のページには入りません。変更は再起動の後に効きます。"),
+		description: localize('paradis.settings.browserExtensionsDesc', "展開済みの拡張機能のフォルダを読み込めるようにします。エージェントのタブ・使い捨てのタブには入りません。SSH 先のページには、「SSH 先のページでも使う」をオンにした拡張機能だけが入ります。変更は再起動の後に効きます。"),
 		keywords: 'browser chrome extensions experimental 1password unpacked',
 	},
 	{

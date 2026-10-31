@@ -8,7 +8,7 @@ import { Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { browserZoomDefaultIndex, BrowserViewStorageScope, IBrowserViewAudience, IBrowserViewService, IBrowserViewState } from '../../../../../platform/browserView/common/browserView.js';
+import { browserZoomDefaultIndex, BrowserViewStorageScope, IBrowserViewAudience, IBrowserViewService, IBrowserViewState, toBrowserViewSessionOptions } from '../../../../../platform/browserView/common/browserView.js'; // PARA-PATCH: +toBrowserViewSessionOptions
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IAgentNetworkFilterService } from '../../../../../platform/networkFilter/common/networkFilterService.js';
@@ -125,12 +125,11 @@ function createInitialState(storageScope: BrowserViewStorageScope, audiences: IB
 		lastFavicon: undefined,
 		lastError: undefined,
 		certificateError: undefined,
-		storageScope,
+		session: toBrowserViewSessionOptions(storageScope, undefined, undefined), // PARA-PATCH: the Profile variant needs a profile id, so a bare scope no longer type-checks
 		storageKeys: {},
 		permissions: { origins: {} },
 		browserZoomIndex: browserZoomDefaultIndex,
 		elementSelectionState: { active: false, options: {} },
-		isRemoteSession: false,
 		isAreaSelectionActive: false,
 		device: undefined,
 		audiences,

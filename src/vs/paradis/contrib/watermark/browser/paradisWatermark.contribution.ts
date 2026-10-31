@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 空のエディタグループのwatermark(トップページ)のスタイル上書きを読み込むだけのエントリ。
-// 画像差し替え(letterpress → paradisWatermark.png)とクリック可能なエントリのスタイルを含む。
-// エントリのクリック実行ロジック本体は editorGroupWatermark.ts 側のPARA-PATCH参照。
+// 画像差し替え(letterpress → paradisWatermark.png)と、ショートカット一覧の表示条件・幅の上書きを含む。
+// エントリのクリック実行は 1.144.0 から upstream の editorGroupWatermark.ts が持つ。
 
 import './media/paradisWatermark.css';
