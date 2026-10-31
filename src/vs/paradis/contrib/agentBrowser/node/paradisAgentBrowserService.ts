@@ -5907,12 +5907,18 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 		const observeAfter = async (before: Awaited<ReturnType<typeof observeBefore>>, result: unknown): Promise<unknown> => {
 			this._requireIngressLease(ingressLease);
-			if (before === undefined || this._bindingForKey(tabKey) !== binding || typeof result !== 'object' || result === null || (result as { isError?: unknown }).isError === true || !Array.isArray((result as { content?: unknown }).content)) {
+			if (before === undefined || this._bindingForKey(tabKey) !== binding || typeof result !== 'object' || result === null || !Array.isArray((result as { content?: unknown }).content)) {
+				return result;
+			}
+			// 失敗した結果には、ページの変化（E1）は添えず、ブラウザの状態（I1）だけを成功時と同じ形で添える
+			// （押したらダウンロードではなくページが開いた、に失敗の結果でも気づけるように。q.html Q515 の A）
+			const failed = (result as { isError?: unknown }).isError === true;
+			if (failed && !options.state) {
 				return result;
 			}
 			let note: string | undefined;
 			try {
-				note = await this._browserObserver.after(host, tabKey, options, before, taken.observe, taken.settleMs, ownTabId);
+				note = await this._browserObserver.after(host, tabKey, failed ? { settle: false, state: true } : options, before, taken.observe, taken.settleMs, ownTabId);
 			} catch {
 				note = undefined;
 			}

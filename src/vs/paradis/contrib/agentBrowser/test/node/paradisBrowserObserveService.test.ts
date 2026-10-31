@@ -92,6 +92,41 @@ suite('Paradis browser observe in the service', () => {
 		assert.deepStrictEqual({ after: log.some(line => line.startsWith('after')), result }, { after: false, result: { content: [{ type: 'text', text: 'done' }] } });
 	});
 
+	test('a failed action gets only the browser state, in the same form as a successful one', async () => {
+		const log: string[] = [];
+		const failure = { isError: true, content: [{ type: 'text', text: 'no download started' }] };
+		const svc = service(log, {
+			_browserObserver: {
+				before: async () => ({ name: 'n', installed: true }),
+				after: async (_host: object, _stateKey: string, options: object) => {
+					log.push(`after ${JSON.stringify(options)}`);
+					return '[Browser state]\nYour tabs: t1 (current) "Report" http://127.0.0.1/report';
+				},
+			},
+			_callToolInner: async () => failure,
+		});
+		const withState = await svc._callToolObserved({ token: TOKEN }, 'download_by_click', { name: 'download_by_click', arguments: { selector: 'a' } }, { settle: true, state: true });
+		const settleOnly = await svc._callToolObserved({ token: TOKEN }, 'click', { name: 'click', arguments: { uid: '1_2' } }, { settle: true, state: false });
+		assert.deepStrictEqual({ log, withState, settleOnly }, {
+			log: ['after {"settle":false,"state":true}'],
+			withState: { isError: true, content: [...failure.content, { type: 'text', text: '[Browser state]\nYour tabs: t1 (current) "Report" http://127.0.0.1/report' }] },
+			settleOnly: failure,
+		});
+	});
+
+	test('a failed action keeps its own error when the browser state cannot be read', async () => {
+		const failure = { isError: true, content: [{ type: 'text', text: 'no download started' }] };
+		const svc = service([], {
+			_browserObserver: {
+				before: async () => ({ name: 'n', installed: true }),
+				after: async () => { throw new Error('list_pages failed'); },
+			},
+			_callToolInner: async () => failure,
+		});
+		const result = await svc._callToolObserved({ token: TOKEN }, 'download_by_click', { name: 'download_by_click', arguments: { selector: 'a' } }, { settle: false, state: true });
+		assert.strictEqual(result, failure);
+	});
+
 	test('the network wait looks at the tab, not the whole pane', () => {
 		const log: string[] = [];
 		service(log)._observeHost({ token: TOKEN }, { token: TOKEN, pageKey: TAB_KEY }).network();
