@@ -28,6 +28,7 @@ import { getPackageInfo } from './utils/packageInfo';
 import * as temp from './utils/temp.electron';
 import { conditionalRegistration, requireGlobalUnifiedConfig, requireHasVsCodeExtension } from './languageFeatures/util/dependentRegistration';
 import { DisposableStore } from './utils/dispose';
+import { registerParadisTsServerIdleStop } from './paradis/paradisTsServerIdleStopRegistration'; // PARA-PATCH: idle stop (Para Code)
 
 export function activate(
 	context: vscode.ExtensionContext
@@ -102,6 +103,7 @@ export function activate(
 		});
 
 		disposables.add(lazilyActivateClient(lazyClientHost, pluginManager, activeJsTsEditorTracker));
+		disposables.add(registerParadisTsServerIdleStop(lazyClientHost, pluginManager)); // PARA-PATCH: stop an idle TS Server (Para Code)
 
 		return disposables;
 	},));
