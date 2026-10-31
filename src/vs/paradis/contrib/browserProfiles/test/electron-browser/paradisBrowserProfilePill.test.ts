@@ -14,9 +14,11 @@ import { BrowserViewStorageScope } from '../../../../../platform/browserView/com
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor } from '../../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
 import { IParadisAgentBrowserBindingModel } from '../../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserTabsService } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisBrowserProfilePill } from '../../electron-browser/paradisBrowserProfilePill.js';
 import { IParadisBrowserProfilesService } from '../../electron-browser/paradisBrowserProfilesService.js';
 import { IParadisBrowserSpaceDefaultsService } from '../../electron-browser/paradisBrowserSpaceDefaultsService.js';
@@ -45,6 +47,8 @@ suite('ParadisBrowserProfilePill', () => {
 			{} as IWorkbenchEnvironmentService,
 			{} as IParadisBrowserSpaceDefaultsService,
 			{ setupManagedHover: () => ({ update: (content: string) => hovers.push(content), show: () => { }, hide: () => { }, dispose: () => { } }) } as unknown as IHoverService,
+			{} as IParadisAgentBrowserTabsService,
+			{} as IBrowserViewWorkbenchService,
 		));
 		const element = pill.widgets[0].element;
 		const result = {
