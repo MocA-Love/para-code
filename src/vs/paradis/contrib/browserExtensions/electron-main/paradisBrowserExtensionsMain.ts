@@ -13,7 +13,8 @@
 //    動き、後の P4 で写しに詰め物を足せるように）。写しの場所は元のフォルダごとに決まる
 //  - どのセッションへ入れるか（paradisBrowserExtensions.ts の paradisInstallBrowserExtensions から渡る）:
 //    Global・Workspace は「既定」、名前付きプロファイルはそのプロファイル。Agent・Ephemeral には入れない。
-//    Workspace のセッションが SSH 先のページのためにトンネルを通している間は外す（D8）
+//    Workspace のセッションが SSH 先のページのためにトンネルを通している間は、「SSH 先のページでも使う」をオンにした
+//    ものだけ入れる（D8・Q519）
 //  - 削除した拡張機能の保存データ（chrome.storage.local）は、Chromium が終了まで開いたままなので、次に
 //    セッションを読み込むときに消す
 
@@ -67,6 +68,8 @@ import {
 	paradisParseExtensionsLedger,
 	paradisReadExtensionManifest,
 	paradisSerializeExtensionsLedger,
+	paradisIsAllowedOnRemote,
+	paradisLedgerWithAllowedOnRemote,
 } from '../common/paradisBrowserExtensions.js';
 import { PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE } from '../common/paradisBrowserExtensionApiWire.js';
 import { IParadisExtensionAccess, paradisParseWebStoreInput, paradisSameExtensionAccess, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
@@ -641,7 +644,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	/** ツールバーに出す、そのセッションに今入っている利用者の拡張機能（同梱の React DevTools は出さない）。 */
 	private _actionSessionOf(session: unknown): { readonly session: ParadisExtensionSession; readonly place: string; readonly extensions: readonly IParadisLoadedExtension[] } | undefined {
 		const entry = [...this._sessions].find(candidate => candidate.session === session);
-		if (!entry || entry.isRemote()) {
+		// SSH 先へトンネルを通しているセッションでも出す: そこに入っているのは「SSH 先のページでも使う」をオンにしたものだけ（Q519）
+		if (!entry) {
 			return undefined;
 		}
 		const extensions: IParadisLoadedExtension[] = [];
@@ -785,8 +789,12 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		// cookies.onChanged は、受け手を付けたときから届く（見張りはセッションを付けたときに立てる）
 		this._services?.observeCookies(session as unknown as Session, session, profile);
 		if (remote) {
-			// SSH 先のページのためにトンネルを通している間は、拡張機能を入れない（D8）
-			this._disposables.add(remote.onDidStart(() => this._unloadAll(entry)));
+			// SSH 先のページのためにトンネルを通している間は、「SSH 先のページでも使う」をオンにした拡張機能だけを入れる（D8・Q519）。
+			// 回線が付け替わったら全部外し、オンのものだけ入れ直す（手元の回線で動いていた worker の状態を持ち越さない）
+			this._disposables.add(remote.onDidStart(() => {
+				this._unloadAll(entry);
+				void this._loadAll(entry, 'other');
+			}));
 			this._disposables.add(remote.onDidStop(() => void this._loadAll(entry, 'other')));
 		}
 		return this._ready.then(async () => {
@@ -794,9 +802,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			for (const { id } of this._ledger.removed) {
 				await this._ensureDataCleared(entry, id);
 			}
-			if (!entry.isRemote()) {
-				await this._loadAll(entry, 'startup');
-			}
+			// トンネルを通しているセッションでは、_load が「SSH 先のページでも使う」をオンにしたものだけを入れる
+			await this._loadAll(entry, 'startup');
 		});
 	}
 
@@ -898,12 +905,22 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._runtimeState.update(storagePath, loaded.id, current);
 	}
 
+	/** そのセッションの今の回線で入れてよいか（SSH 先へトンネルを通している間は「SSH 先のページでも使う」がオンのものだけ。Q519）。 */
+	private _allowedOnNetworkOf(entry: ISessionEntry, id: string): boolean {
+		return !entry.isRemote() || paradisIsAllowedOnRemote(this._ledger, id);
+	}
+
+	/** そのセッションに入れるべきか（その場所で有効で、今の回線で入れてよい）。 */
+	private _wantedIn(entry: ISessionEntry, id: string): boolean {
+		return (this._ledger.enabled[entry.profile] ?? []).includes(id) && this._allowedOnNetworkOf(entry, id);
+	}
+
 	private async _load(entry: ISessionEntry, extension: IParadisInstalledBrowserExtension, kind: ParadisExtensionLoadKind): Promise<void> {
-		if (entry.isRemote() || entry.session.extensions.getExtension(extension.id)) {
+		if (!this._allowedOnNetworkOf(entry, extension.id) || entry.session.extensions.getExtension(extension.id)) {
 			return;
 		}
 		await this._ensureDataCleared(entry, extension.id);
-		if (entry.isRemote() || entry.session.extensions.getExtension(extension.id)) {
+		if (!this._allowedOnNetworkOf(entry, extension.id) || entry.session.extensions.getExtension(extension.id)) {
 			return;
 		}
 		const prepareError = await this._prepare(extension);
@@ -918,8 +935,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				this._loadErrors.set(extension.id, `unexpected extension id ${loaded.id}`);
 				return;
 			}
-			// 読み込みの途中でトンネルが始まった・無効にされた・削除されたときは外す
-			if (entry.isRemote() || !(this._ledger.enabled[entry.profile] ?? []).includes(extension.id)) {
+			// 読み込みの途中でトンネルが始まった（「SSH 先のページでも使う」がオフ）・無効にされた・削除されたときは外す
+			if (!this._wantedIn(entry, extension.id)) {
 				entry.session.extensions.removeExtension(loaded.id);
 				return;
 			}
@@ -962,10 +979,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		if (session) {
 			// 開いているページ: そのセッションに今入っているものに、そのセッションの場所で有効にしてあるものを足す。
 			// 開いたばかりのタブ（再起動の後の共有の戻しなど）では読み込みが終わる前に聞かれるので、入っている
-			// ものだけでは知らせ損ねる。SSH 先のページのためにトンネルを通している間は入らないので足さない（D8）。
+			// ものだけでは知らせ損ねる。SSH 先のページのためにトンネルを通している間は、「SSH 先のページでも使う」がオンの
+			// ものだけ足す（D8・Q519）。
 			// 同梱の React DevTools など、台帳に無いものは数えない
 			const entry = [...this._sessions].find(candidate => candidate.session === session);
-			const enabled = entry && !entry.isRemote() ? new Set(this._ledger.enabled[entry.profile] ?? []) : new Set<string>();
+			const enabled = new Set(entry ? (this._ledger.enabled[entry.profile] ?? []).filter(id => this._allowedOnNetworkOf(entry, id)) : []);
 			return { active: true, extensions: this._ledger.extensions.filter(extension => enabled.has(extension.id) || session.extensions.getExtension(extension.id)).map(describe) };
 		}
 		// まだ開いていないページ・これから開くプロファイル: 有効にしてあるもの
@@ -995,6 +1013,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				generatedKey: undefined,
 				...(this._stagedNext.has(extension.id) ? { nextVersion: this._stagedNext.get(extension.id) } : {}),
 				...(userScriptsRequested.has(extension.id) ? { userScripts: { allowedIn: this._userScripts?.allowedPlaces(extension.id) ?? [] } } : {}),
+				allowedOnRemote: paradisIsAllowedOnRemote(this._ledger, extension.id),
 				...(this._heldUpdates.has(extension.id) ? { pendingUpdate: { version: this._heldUpdates.get(extension.id)!.version, permissions: this._heldUpdates.get(extension.id)!.added.permissions, hostPermissions: this._heldUpdates.get(extension.id)!.added.hostPermissions } } : {}),
 			})),
 		};
@@ -1564,7 +1583,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private async _applyEnablement(id: string, kind: ParadisExtensionLoadKind): Promise<void> {
 		const extension = this._ledger.extensions.find(candidate => candidate.id === id);
 		for (const entry of this._sessions) {
-			const wanted = extension !== undefined && (this._ledger.enabled[entry.profile] ?? []).includes(id);
+			const wanted = extension !== undefined && this._wantedIn(entry, id);
 			if (wanted) {
 				await this._load(entry, extension, kind);
 			} else {
@@ -1666,6 +1685,16 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		} catch {
 			return [];
 		}
+	}
+
+	async setAllowedOnRemote(id: string, allowed: boolean): Promise<void> {
+		await this._ready;
+		if (!this.active || !paradisIsExtensionId(id) || typeof allowed !== 'boolean') {
+			return;
+		}
+		this._ledger = paradisLedgerWithAllowedOnRemote(this._ledger, id, allowed);
+		await this._save();
+		await this._applyEnablement(id, 'other');
 	}
 
 	async setEnabled(id: string, profile: string, enabled: boolean): Promise<void> {
@@ -1790,6 +1819,7 @@ export function paradisRegisterBrowserExtensions(
 		reloadUnpacked: id => created.reloadUnpacked(id),
 		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
 		setUserScriptsAllowed: (id, profile, allowed) => created.setUserScriptsAllowed(id, profile, allowed),
+		setAllowedOnRemote: (id, allowed) => created.setAllowedOnRemote(id, allowed),
 		openNewTabPage: viewId => created.openNewTabPage(viewId),
 		getSidePanel: viewId => created.getSidePanel(viewId),
 		layoutSidePanel: (viewId, layout) => created.layoutSidePanel(viewId, layout),
