@@ -90,7 +90,7 @@ export function paradisKillChildProcessTree(child: cp.ChildProcess, onError?: (e
 	}
 
 	try {
-		(options?.treeKill ?? killTree)(pid, true).catch(error => {
+		(options?.treeKill ?? killTree)(pid, true, () => { }).catch(error => {
 			reportError(error);
 			killDirectly();
 		});
