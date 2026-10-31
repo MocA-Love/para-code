@@ -63,7 +63,8 @@ export class ParadisHiddenGpuRelease<TFont> extends Disposable {
 	private _observedWindow: Window | undefined;
 
 	constructor(
-		private readonly _configurationService: Pick<IConfigurationService, 'getValue'>,
+		// 関数で受け取る(端末のフィールドの初期化の時点では、注入されたサービスをまだ読めないため)
+		private readonly _getConfigurationService: () => Pick<IConfigurationService, 'getValue'>,
 		private readonly _host: IParadisHiddenGpuReleaseHost<TFont>,
 		delay: number = PARADIS_HIDDEN_GPU_RELEASE_DELAY,
 	) {
@@ -130,6 +131,6 @@ export class ParadisHiddenGpuRelease<TFont> extends Disposable {
 	}
 
 	private _isEnabled(): boolean {
-		return this._configurationService.getValue<boolean>(PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING) === true;
+		return this._getConfigurationService().getValue<boolean>(PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING) === true;
 	}
 }

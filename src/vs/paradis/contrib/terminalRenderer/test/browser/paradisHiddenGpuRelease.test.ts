@@ -34,7 +34,7 @@ suite('ParadisHiddenGpuRelease', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function create(host: TestHost): ParadisHiddenGpuRelease<string> {
-		return store.add(new ParadisHiddenGpuRelease(host.configuration, host));
+		return store.add(new ParadisHiddenGpuRelease(() => host.configuration, host));
 	}
 
 	test('releases after the grace period and takes the renderer back when shown, keeping the GPU font size only while released', () => runWithFakedTimers({ useFakeTimers: true }, async () => {

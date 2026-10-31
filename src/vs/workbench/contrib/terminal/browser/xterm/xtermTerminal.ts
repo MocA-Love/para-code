@@ -167,7 +167,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	// terminal's own store on each acquisition
 	private readonly _paradisWebglContextLoss = this._register(new MutableDisposable());
 	// PARA-PATCH: release the GPU renderer of an off-screen terminal and take it back when shown (opt-in, see vs/paradis)
-	private readonly _paradisHiddenGpu = this._register(new ParadisHiddenGpuRelease(this._configurationService, {
+	private readonly _paradisHiddenGpu = this._register(new ParadisHiddenGpuRelease(() => this._configurationService, {
 		hasGpuRenderer: () => !!this._webglAddon,
 		measureFont: () => this.getFont(),
 		release: () => this._disposeOfWebglRenderer(),
@@ -579,7 +579,9 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		if (recreateWebgl) {
 			this._disposeOfWebglRenderer();
 		}
-		this._paradisHiddenGpu.observe(this.raw.element!); // PARA-PATCH: watch on-screen state in the new window
+		if (this.raw.element) {
+			this._paradisHiddenGpu.observe(this.raw.element); // PARA-PATCH: watch on-screen state in the new window
+		}
 		this.raw.refresh(0, this.raw.rows - 1);
 		if (recreateWebgl && this._shouldLoadWebgl()) {
 			void this._enableWebglRenderer().then(() => this.raw.refresh(0, this.raw.rows - 1));
