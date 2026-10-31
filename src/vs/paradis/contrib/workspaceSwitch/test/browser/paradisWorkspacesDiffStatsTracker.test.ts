@@ -14,7 +14,7 @@ import { joinPath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { FileChangesEvent, FileChangeType, IFileSystemWatcher } from '../../../../../platform/files/common/files.js';
-import { PARADIS_DIFF_STATS_FALLBACK_MS, ParadisWorkspacesDiffStatsTracker } from '../../browser/paradisWorkspacesDiffStatsTracker.js';
+import { PARADIS_DIFF_STATS_EXCLUDE_MS, PARADIS_DIFF_STATS_FALLBACK_MS, ParadisWorkspacesDiffStatsTracker } from '../../browser/paradisWorkspacesDiffStatsTracker.js';
 import { IParadisDiffStat } from '../../common/paradisWorktreeCreate.js';
 
 const REPO = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/work/repo' });
@@ -144,6 +144,72 @@ suite('ParadisWorkspacesDiffStatsTracker', () => {
 			dueAfterFailures: [[REPO.path], [REPO.path], []],
 			atFallback: [REPO.path],
 			afterSuccessThenFailure: [REPO.path],
+		});
+	});
+
+	// 消えた worktree や git 管理外のフォルダーは、変更の知らせがあってもしばらく git を投げない
+	test('a missing or non-repository target leaves the polling for a while, even when it is marked dirty', () => {
+		const harness = store.add(new TrackerHarness());
+		harness.setDefaultTargets();
+		const stats = new Map<string, IParadisDiffStat>([[REPO.fsPath, { insertions: 2, deletions: 1 }], [WORKTREE.fsPath, { insertions: 5, deletions: 0 }]]);
+		harness.tracker.applyRefreshResult(harness.tracker.takeDueTargets(), {
+			[REPO.fsPath]: { insertions: 0, deletions: 0, failed: true, failure: 'notRepository' },
+			[WORKTREE.fsPath]: { insertions: 0, deletions: 0, failed: true, failure: 'missing' },
+		}, stats);
+		const dirtyNotificationsBefore = harness.dirtyNotifications;
+		harness.tracker.markDirty(REPO);
+		harness.tracker.markDirtyWhenChanged(WORKTREE, 'idle');
+		harness.tracker.markDirtyWhenChanged(WORKTREE, 'busy');
+		harness.workspaceChanges.fire(new FileChangesEvent([{ resource: joinPath(REPO, 'a.txt'), type: FileChangeType.UPDATED }], false));
+		harness.watcher(WORKTREE_GIT_DIR).fire(new FileChangesEvent([{ resource: joinPath(WORKTREE_GIT_DIR, 'index'), type: FileChangeType.UPDATED }], false));
+		const whileExcluded = harness.takeDue();
+		harness.time = PARADIS_DIFF_STATS_EXCLUDE_MS - 1;
+		const beforeExpiry = harness.takeDue();
+		harness.time = PARADIS_DIFF_STATS_EXCLUDE_MS;
+
+		assert.deepStrictEqual({ stats: Object.fromEntries(stats), whileExcluded, beforeExpiry, afterExpiry: harness.takeDue(), notificationsWhileExcluded: harness.dirtyNotifications - dirtyNotificationsBefore }, {
+			stats: {},
+			whileExcluded: [],
+			beforeExpiry: [],
+			afterExpiry: [REPO.path, WORKTREE.path],
+			notificationsWhileExcluded: 0,
+		});
+	});
+
+	// 一覧の通知は中身が変わらなくても来る。同じ一覧では外したままにし、増減があったら外すのをやめてすぐ取り直す
+	test('the same target list keeps the exclusion, a changed list ends it and makes the target due', () => {
+		const harness = store.add(new TrackerHarness());
+		harness.setDefaultTargets();
+		harness.tracker.applyRefreshResult(harness.tracker.takeDueTargets(), {
+			[REPO.fsPath]: { insertions: 1, deletions: 0 },
+			[WORKTREE.fsPath]: { insertions: 0, deletions: 0, failed: true, failure: 'missing' },
+		}, new Map());
+		harness.setDefaultTargets();
+		harness.tracker.markDirty(WORKTREE);
+		const sameList = harness.takeDue();
+		const other = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/work/other' });
+		harness.tracker.setTargets([
+			{ uri: REPO, gitDir: joinPath(REPO, '.git') },
+			{ uri: WORKTREE, gitDir: WORKTREE_GIT_DIR },
+			{ uri: other, gitDir: joinPath(other, '.git') },
+		]);
+
+		assert.deepStrictEqual({ sameList, changedList: harness.takeDue() }, {
+			sameList: [],
+			changedList: [WORKTREE.path, other.path],
+		});
+	});
+
+	// HEAD の無いリポジトリ（128）やタイムアウトは外さず、これまでどおり前の値を残して取り直す
+	test('a failure of another kind keeps the previous numbers and stays due', () => {
+		const harness = store.add(new TrackerHarness());
+		harness.tracker.setTargets([{ uri: REPO, gitDir: joinPath(REPO, '.git') }]);
+		const stats = new Map<string, IParadisDiffStat>([[REPO.fsPath, { insertions: 2, deletions: 1 }]]);
+		harness.tracker.applyRefreshResult(harness.tracker.takeDueTargets(), { [REPO.fsPath]: { insertions: 0, deletions: 0, failed: true, failure: 'other' } }, stats);
+
+		assert.deepStrictEqual({ stats: Object.fromEntries(stats), due: harness.takeDue() }, {
+			stats: { [REPO.fsPath]: { insertions: 2, deletions: 1 } },
+			due: [REPO.path],
 		});
 	});
 
