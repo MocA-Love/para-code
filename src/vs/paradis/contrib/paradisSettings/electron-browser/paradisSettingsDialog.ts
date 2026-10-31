@@ -28,6 +28,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
+import { paradisToggleChecked, paradisToggleValue } from '../common/paradisSettingsToggle.js';
 import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
@@ -146,6 +147,13 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		description: localize('paradis.settings.descAgentIde', "エージェントが Para Code の MCP ツールで、ほかのターミナルの画面を読んだり入力を送ったりできます。自分のスペースのターミナルの一覧・画面の読み取り・待機はいつでも使えます。"),
 	},
 	{
+		id: 'psd-sec-upstreamai',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navUpstreamAI', "本家の AI 機能"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headUpstreamAI', "本家の AI 機能"),
+	},
+	{
 		id: 'psd-sec-terminal',
 		// allow-any-unicode-next-line
 		navLabel: localize('paradis.settings.navTerminal', "ターミナル"),
@@ -228,6 +236,11 @@ interface IParadisSettingRowSpec {
 	 * 表示はフォルダごとに実際に効いている値から作り、上書きされているときは説明にその旨を出す。
 	 */
 	readonly resourceScoped?: boolean;
+	/**
+	 * オン/オフの設定を裏返して見せる（本家の `chat.disableAIFeatures` のように true で止まる設定を「使う」の行にする）。
+	 * チェックを外すと true、付けると false を明示して書く。offWarning・resourceScoped とは組み合わせない。
+	 */
+	readonly inverted?: boolean;
 	/** オン/オフの設定をチェックの並びで 1 行にまとめる（メニューに出す項目など）。`key` は持たない。 */
 	readonly checks?: readonly { readonly key: string; readonly label: string }[];
 }
@@ -1384,6 +1397,20 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		keywords: 'mobile relay url server',
 	},
 
+	// --- 本家の AI 機能 ---
+	{
+		sectionId: 'psd-sec-upstreamai',
+		// 本家の設定をそのまま唯一のスイッチにする（同じ意味の fork の設定は作らない）。true で止まる設定なので裏返して見せる
+		key: 'chat.disableAIFeatures',
+		inverted: true,
+		valueType: 'boolean',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.upstreamAIEnabled', "本家の AI 機能（チャット・エージェント・コミットメッセージの生成）を使う"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.upstreamAIEnabledDesc', "オフにすると、チャット欄・Copilot Chat・インラインチャット・エージェントの実行部品（Agent Host）・Agents ウィンドウ・コミットメッセージの生成が止まります。ターミナルで動かす Claude Code や Codex には影響しません。オンでも、SSH の窓の Copilot のエージェントは「SSH の窓で本家の Copilot のエージェントを動かす」もオンのときだけ動きます。"),
+		keywords: 'upstream ai copilot chat agent host sessions agents window commit message inline chat disableAIFeatures',
+	},
+
 	// --- リモート (SSH) ---
 	{
 		sectionId: 'psd-sec-remote',
@@ -1409,7 +1436,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.remoteCopilotAgentHost', "SSH の窓で本家の Copilot のエージェントを動かす"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.remoteCopilotAgentHostDesc', "本家の AI 機能を止めているときはこの設定に関係なく動かず、本家の AI 機能を使っていても SSH の窓ではこの設定がオンのときだけ動きます。変更は窓を再読み込みすると反映されます。"),
+		description: localize('paradis.settings.remoteCopilotAgentHostDesc', "「本家の AI 機能を使う」もオンのときだけ動きます。変更は窓を再読み込みすると反映されます。"),
 		keywords: 'remote ssh copilot agent host cli runtime memory',
 	},
 	{
@@ -1763,12 +1790,12 @@ export class ParadisSettingsDialog extends Disposable {
 				toggle.checked = spec.resourceScoped
 					// Git 拡張機能と同じく、どれか 1 つのフォルダでオンなら表示される (paraBranchDiffView.ts)
 					? this._effectiveResourceValues(key).some(effective => effective === true)
-					: this.configurationService.getValue<boolean>(key) === true;
+					: paradisToggleChecked(this.configurationService.getValue(key), spec.inverted === true);
 				toggle.disabled = !this._isRegistered(key);
 			};
 			sync();
 			this._refreshers.push(sync);
-			this._register(dom.addDisposableListener(toggle, 'change', () => void this._write(key, toggle.checked)));
+			this._register(dom.addDisposableListener(toggle, 'change', () => void this._write(key, paradisToggleValue(toggle.checked, spec.inverted === true))));
 			return;
 		}
 
