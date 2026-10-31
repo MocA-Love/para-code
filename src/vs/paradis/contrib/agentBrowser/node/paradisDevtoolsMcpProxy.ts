@@ -86,7 +86,7 @@ const ROOTS_RESOLVE_TIMEOUT_MS = 5_000;
 const ROOTS_RETRY_DELAY_MS = 2_000;
 const MAX_ROOTS_RETRIES = 5;
 const RESOURCE_LIMIT_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: embedded DevTools bridge resource limit reached; retry';
-const TERMINATED_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: embedded DevTools bridge terminated; retry';
+export const TERMINATED_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: embedded DevTools bridge terminated; retry';
 /** 落ちた子プロセスの標準エラーの残りを待つ時間の上限。 */
 const STDERR_SETTLE_MS = 1_000;
 /** 答えの uid に印を付けないツール（vendored の uid を出さず、ページの中身をそのまま返すもの）。 */

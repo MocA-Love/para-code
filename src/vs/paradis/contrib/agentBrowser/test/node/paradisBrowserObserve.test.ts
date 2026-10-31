@@ -141,6 +141,20 @@ suite('Paradis browser observe', () => {
 		});
 	});
 
+	test('an observation that was cut off reports no browser state and does not count it as reported', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: false, state: true };
+		const report = async (current: boolean) => {
+			const { host } = fakeHost({ pages: [PAGES_ONE] });
+			const withCurrent: IParadisObserveHost = { ...host, isCurrent: () => current };
+			const before = await observer.before(withCurrent, options, 'changes', 2000);
+			return observer.after(withCurrent, 'pane', options, before, 'changes', 2000);
+		};
+		const cutOff = await report(false);
+		const next = await report(true);
+		assert.deepStrictEqual({ cutOff, next }, { cutOff: undefined, next: '[Browser state]\nYour tabs: t1 (current) "Orders" http://127.0.0.1/orders' });
+	});
+
 	test('with tab_id, the browser state lists only that tab and the tabs that changed since the last report', async () => {
 		const observer = new ParadisBrowserObserver();
 		const options = { settle: false, state: true };
