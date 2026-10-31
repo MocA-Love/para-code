@@ -32,7 +32,7 @@ import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradi
 import { IParadisGithubCallResource, paradisGithubCallSiteFromArgs, paradisGithubResourceFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
 import { PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_CLOSED_ISSUE_MAX_AGE_MS, paradisCoerceGithubStatusMaxAge, ParadisGithubLookupCache } from '../common/paradisGithubLookupCache.js';
-import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, ParadisDiffStatFailure, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine, paradisRedactCloneLogText } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
@@ -179,6 +179,37 @@ function paradisReadableChildError(stderr: string | undefined, error: Error, via
 	return cleaned?.trim() || error.message;
 }
 
+/** git が使い方の誤りで終わるときの終了コード。git 管理外のフォルダーで `git diff HEAD` を打つと `--no-index` の扱いになり、これで終わる。 */
+const PARADIS_GIT_USAGE_EXIT_CODE = 129;
+
+/** `exec` が失敗したときに投げるエラー。差分の失敗の種類を見分けるため、終了コードとタイムアウトの別を持つ。 */
+class ParadisGitExecError extends Error {
+	constructor(
+		message: string,
+		/** git の終了コード。起動できなかったとき（ENOENT など）は undefined。 */
+		readonly exitCode: number | undefined,
+		/** タイムアウトで止めたか。 */
+		readonly killed: boolean,
+	) {
+		super(message);
+	}
+}
+
+/**
+ * `git diff HEAD` の失敗の種類を決める。git のメッセージは利用者の言語で変わるので、文字列では見ない。
+ * タイムアウトは一時的な失敗。終了コード 129 は git 管理外のフォルダー。それ以外はパスが無ければ `missing`、
+ * あれば `other`（HEAD の無いリポジトリの 128 など）。
+ */
+export function paradisClassifyDiffStatFailure(failure: { readonly exitCode: number | undefined; readonly killed: boolean; readonly pathExists: boolean }): ParadisDiffStatFailure {
+	if (failure.killed) {
+		return 'other';
+	}
+	if (failure.exitCode === PARADIS_GIT_USAGE_EXIT_CODE) {
+		return 'notRepository';
+	}
+	return failure.pathExists ? 'other' : 'missing';
+}
+
 export class ParadisWorktreeGitService {
 
 	private readonly cachedShellEnv: ParadisCachedShellEnv;
@@ -275,7 +306,11 @@ export class ParadisWorktreeGitService {
 		return location === undefined ? '' : `wsl:${location.distro.toLowerCase()}`;
 	}
 
-	private async exec(args: ParadisCommandArgument[], cwd?: string): Promise<string> {
+	/**
+	 * git を実行する。`quiet` は定期の見回り（差分・PR のチップのブランチの取得）向けで、失敗を warn ではなく trace に出す。
+	 * 消えた worktree や git 管理外のフォルダーは見回りのたびに失敗し、ログを埋めるため。利用者の操作の失敗は warn のまま残す。
+	 */
+	private async exec(args: ParadisCommandArgument[], cwd?: string, options?: { readonly quiet?: boolean }): Promise<string> {
 		const env = await this.cachedShellEnv.getEnv();
 		const invocation = await this.resolveInvocation('git', args, cwd, ['GIT_TERMINAL_PROMPT'], { ...env, GIT_TERMINAL_PROMPT: '0' });
 		const label = invocation.viaWsl ? `git (in WSL) ${invocation.args.join(' ')}` : `git ${invocation.args.join(' ')}`;
@@ -286,8 +321,12 @@ export class ParadisWorktreeGitService {
 			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: PARADIS_WSL_COMMAND_TIMEOUT_MS, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env }, (err, stdout, stderr) => {
 				if (err) {
 					const detail = paradisReadableChildError(stderr, err, invocation.viaWsl);
-					this.logService.warn(`[ParadisWorktreeGit] ${label} failed: ${detail}`);
-					reject(new Error(detail));
+					if (options?.quiet) {
+						this.logService.trace(`[ParadisWorktreeGit] ${label} failed: ${detail}`);
+					} else {
+						this.logService.warn(`[ParadisWorktreeGit] ${label} failed: ${detail}`);
+					}
+					reject(new ParadisGitExecError(detail, typeof err.code === 'number' ? err.code : undefined, err.killed === true));
 				} else {
 					resolve(stdout);
 				}
@@ -670,7 +709,8 @@ export class ParadisWorktreeGitService {
 		}
 		let branch: string;
 		try {
-			branch = (await this.exec(['-C', paradisWslPathArg(worktreePath), 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+			// 定期の見回りなので、消えた worktree などの失敗は trace に出す
+			branch = (await this.exec(['-C', paradisWslPathArg(worktreePath), 'rev-parse', '--abbrev-ref', 'HEAD'], undefined, { quiet: true })).trim();
 		} catch {
 			return undefined;
 		}
@@ -881,8 +921,9 @@ export class ParadisWorktreeGitService {
 	/**
 	 * 作業ツリーの未コミット差分 (staged + unstaged) の追加/削除行数を返す。
 	 * git diff HEAD ベースのため、未追跡 (untracked) の新規ファイルは集計に含まれない (意図的な仕様)。
-	 * git 管理外・HEAD 未作成・コマンド失敗時は { insertions: 0, deletions: 0, failed: true } を返す
-	 * (Workspaces ビューのポーリング表示なので、個別の失敗で例外を伝播させない。`failed` を見て前の値を残す)。
+	 * git 管理外・HEAD 未作成・コマンド失敗時は { insertions: 0, deletions: 0, failed: true, failure } を返す
+	 * (Workspaces ビューのポーリング表示なので、個別の失敗で例外を伝播させない。`failed` を見て前の値を残し、
+	 * `failure` が `missing`・`notRepository` ならしばらく見回りから外す)。失敗は trace にだけ出す。
 	 */
 	async getDiffStat(worktreePath: string): Promise<IParadisDiffStat> {
 		// IPC 境界の防御: 呼び出し元のバグ (undefined の文字列化等) を早期に無害化する
@@ -890,7 +931,7 @@ export class ParadisWorktreeGitService {
 			return { insertions: 0, deletions: 0 };
 		}
 		try {
-			const raw = await this.exec(['-C', paradisWslPathArg(worktreePath), 'diff', 'HEAD', '--numstat']);
+			const raw = await this.exec(['-C', paradisWslPathArg(worktreePath), 'diff', 'HEAD', '--numstat'], undefined, { quiet: true });
 			let insertions = 0;
 			let deletions = 0;
 			for (const line of raw.split('\n')) {
@@ -904,8 +945,11 @@ export class ParadisWorktreeGitService {
 				deletions += Number.parseInt(deleted, 10) || 0;
 			}
 			return { insertions, deletions };
-		} catch {
-			return { insertions: 0, deletions: 0, failed: true };
+		} catch (error) {
+			const failure = error instanceof ParadisGitExecError
+				? paradisClassifyDiffStatFailure({ exitCode: error.exitCode, killed: error.killed, pathExists: error.killed || await Promises.exists(worktreePath) })
+				: 'other';
+			return { insertions: 0, deletions: 0, failed: true, failure };
 		}
 	}
 
