@@ -20,16 +20,38 @@ const ELECTRON_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit
 suite('ParadisBrowserUserAgent', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('removes Electron and app tokens by default, keeps the app token when asked', () => {
+	test('keeps the app identity by default for Google sign-in', () => {
+		assert.strictEqual(
+			paradisBuildBrowserUserAgent(ELECTRON_UA, 'Para Code'),
+			'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ParaCode/1.139.1 Chrome/142.0.0.0 Safari/537.36',
+		);
+	});
+
+	test('keeps the app identity when main has no registered setting default', () => {
+		let current = ELECTRON_UA;
+		const session = {
+			getUserAgent: () => current,
+			setUserAgent: (userAgent: string) => { current = userAgent; },
+		} satisfies Pick<Session, 'getUserAgent' | 'setUserAgent'>;
+		const configurationService = {
+			getValue: () => undefined,
+			onDidChangeConfiguration: Event.None,
+		} as unknown as IConfigurationService;
+
+		paradisConfigureBrowserUserAgentWithAppName(session as unknown as Session, configurationService, 'Para Code');
+		assert.strictEqual(current, 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ParaCode/1.139.1 Chrome/142.0.0.0 Safari/537.36');
+	});
+
+	test('removes Electron and honors the explicit app-token setting', () => {
 		assert.deepStrictEqual({
-			default: paradisBuildBrowserUserAgent(ELECTRON_UA, 'Para Code', false),
+			withoutAppToken: paradisBuildBrowserUserAgent(ELECTRON_UA, 'Para Code', false),
 			includeAppToken: paradisBuildBrowserUserAgent(ELECTRON_UA, 'Para Code', true),
 			multipleElectronTokens: paradisBuildBrowserUserAgent('Mozilla/5.0 Chrome/128.0 Electron/32.1.2 Safari/537.36 Electron/custom', 'Para Code', false),
 			regexCharsInName: paradisBuildBrowserUserAgent('Mozilla/5.0 Code-OSS+Dev/1.0 Chrome/1 Safari/1', 'Code-OSS+Dev', false),
 			reducedVersion: paradisBuildBrowserUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ParaCode/1.142.0 Chrome/150.0.7871.250 Electron/43.7.7 Safari/537.36', 'Para Code', false),
 			fullVersionWithAppToken: paradisBuildBrowserUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ParaCode/1.142.0 Chrome/150.0.7871.250 Electron/43.7.7 Safari/537.36', 'Para Code', true),
 		}, {
-			default: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+			withoutAppToken: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
 			includeAppToken: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ParaCode/1.139.1 Chrome/142.0.0.0 Safari/537.36',
 			multipleElectronTokens: 'Mozilla/5.0 Chrome/128.0 Safari/537.36',
 			regexCharsInName: 'Mozilla/5.0 Chrome/1 Safari/1',
