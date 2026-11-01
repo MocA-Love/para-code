@@ -31,7 +31,7 @@ import { paradisIsExtensionPageHeld, paradisIsExtensionUiAllowedWhileHeld, parad
 import type { IParadisSidePanelRefusal } from '../common/paradisBrowserExtensions.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
-import { paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
+import { paradisKeepOnExtensionPages, paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
 
 const DEFAULT_TAB = -1;
 const WINDOW_ID_CURRENT = -2;
@@ -104,6 +104,16 @@ function isPageOf(rawUrl: string, extensionId: string): boolean {
 		return url.protocol === 'chrome-extension:' && url.host === extensionId;
 	} catch {
 		return false;
+	}
+}
+
+/** 記録に残す、URL のホスト名（読めなければスキームだけ）。 */
+function hostOf(rawUrl: string): string {
+	try {
+		const url = new URL(rawUrl);
+		return url.host || url.protocol;
+	} catch {
+		return '(unreadable)';
 	}
 }
 
@@ -484,18 +494,21 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 				.catch(error => this._logService.warn('[paradis] a browser extension side panel could not open a tab', error));
 			return { action: 'deny' };
 		});
-		const stayOnExtension = (event: { preventDefault(): void }, target: string) => {
-			if (!isPageOf(target, panel.extension.id)) {
-				event.preventDefault();
-			}
-		};
-		contents.on('will-navigate', (event, target) => stayOnExtension(event, target));
-		contents.on('will-redirect', (event, target) => stayOnExtension(event, target));
-		contents.on('render-process-gone', () => {
+		paradisKeepOnExtensionPages(contents, target => isPageOf(target, panel.extension.id));
+		contents.on('render-process-gone', (_event, details) => {
+			this._logService.warn(`[paradis] a browser extension side panel's renderer is gone (extension: ${panel.extension.id}, reason: ${details.reason}, exitCode: ${details.exitCode})`);
 			if (this._panels.get(panel.windowId) === panel) {
 				this._close(panel.windowId);
 			}
 		});
+		// パネルが埋めたウェブのページ（iframe）が読み込めなかったときの記録。URL はホスト名まで（パスや問い合わせに個人の情報が入りうる）
+		const onFrameFailed = (errorCode: number, errorDescription: string, url: string, isMainFrame: boolean) => {
+			if (!isMainFrame) {
+				this._logService.warn(`[paradis] a frame in a browser extension side panel failed to load (extension: ${panel.extension.id}, host: ${hostOf(url)}, error: ${errorCode} ${errorDescription})`);
+			}
+		};
+		contents.on('did-fail-load', (_event, errorCode, errorDescription, url, isMainFrame) => onFrameFailed(errorCode, errorDescription, url, isMainFrame));
+		contents.on('did-fail-provisional-load', (_event, errorCode, errorDescription, url, isMainFrame) => onFrameFailed(errorCode, errorDescription, url, isMainFrame));
 		const onClosed = () => {
 			if (this._panels.get(panel.windowId) === panel) {
 				this._close(panel.windowId, false);

@@ -42,6 +42,7 @@ import {
 import { IParadisActionResult, IParadisBrowserExtensionToolbar, IParadisPopupRequest, IParadisToolbarAction, IParadisToolbarAnchor } from '../common/paradisBrowserExtensions.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, IParadisExtensionApiMethod, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
+import { paradisKeepOnExtensionPages } from './paradisBrowserExtensionWindows.js';
 
 /** 読み込んだ拡張機能（Electron の Extension の、ここで使うところ）。 */
 export interface IParadisLoadedExtension extends IParadisApiExtension {
@@ -739,13 +740,7 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 			return { action: 'deny' };
 		});
 		// 拡張機能自身のページの間だけ移れる（アドレスバーの無い窓でウェブのページを開かせない）
-		const stayOnExtension = (event: { preventDefault(): void }, target: string) => {
-			if (!isPageOf(target, resolved.extension.id)) {
-				event.preventDefault();
-			}
-		};
-		contents.on('will-navigate', (event, target) => stayOnExtension(event, target));
-		contents.on('will-redirect', (event, target) => stayOnExtension(event, target));
+		paradisKeepOnExtensionPages(contents, target => isPageOf(target, resolved.extension.id));
 		window.on('blur', () => {
 			if (this._popup === popup) {
 				this._lastBlurClose = { session: popup.session, extensionId: popup.extensionId, at: Date.now() };

@@ -25,7 +25,7 @@ import { IParadisActionsEnvironment, ParadisBrowserExtensionActions } from '../.
 import { ParadisBrowserExtensionMenus } from '../../electron-main/paradisBrowserExtensionMenus.js';
 import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions, paradisOriginPatternCovers, paradisPlanPermissionRequest } from '../../electron-main/paradisBrowserExtensionPermissions.js';
 import { IParadisExtensionNotification, IParadisManagedExtension, IParadisServicesEnvironment, ParadisBrowserExtensionServices, paradisDownloadFilename, paradisDownloadHeaders, paradisExtensionDownloadsFolder, paradisNotificationIconPath } from '../../electron-main/paradisBrowserExtensionServices.js';
-import { paradisGestureExtensionId } from '../../electron-main/paradisBrowserExtensionWindows.js';
+import { paradisGestureExtensionId, paradisStopLeavingExtensionPage } from '../../electron-main/paradisBrowserExtensionWindows.js';
 import { EventEmitter } from 'events';
 import { paradisSetExtensionPageHold } from '../../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { tmpdir } from 'os';
@@ -1099,6 +1099,20 @@ suite('ParadisBrowserExtensionServices', () => {
 			paradisGestureExtensionId(`chrome-extension://${ID}/popup.html`, 'mouseMove'),
 			paradisGestureExtensionId('https://example.com/', 'mouseDown'),
 		], [ID, ID, undefined, undefined]);
+	});
+
+	test('keeps an extension window on its own pages without stopping redirects inside its iframes', () => {
+		const allowed = (url: string) => url.startsWith(`chrome-extension://${ID}/`);
+		const stopped = (url: string, isMainFrame: boolean) => {
+			let prevented = false;
+			paradisStopLeavingExtensionPage({ url, isMainFrame, preventDefault: () => { prevented = true; } }, allowed);
+			return prevented;
+		};
+		assert.deepStrictEqual({
+			mainFrameToWeb: stopped('https://chatgpt.com/auth/login', true),
+			mainFrameToOwnPage: stopped(`chrome-extension://${ID}/panel.html`, true),
+			subFrameRedirect: stopped('https://chatgpt.com/auth/login', false),
+		}, { mainFrameToWeb: true, mainFrameToOwnPage: false, subFrameRedirect: false });
 	});
 
 	test('cookies.onChanged reaches a listener without a get or set first', () => runWithFakedTimers({ useFakeTimers: true }, async () => {

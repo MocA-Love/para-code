@@ -69,7 +69,7 @@ suite('ParadisBrowserExtensionSidePanel', () => {
 			currentWindowId: () => 1,
 			openTabFor: async () => { },
 		} as unknown as ParadisBrowserExtensionTabs;
-		const created: { bounds: unknown[]; visible: boolean[]; loaded: string[]; closed: boolean; navigate?: (event: { preventDefault(): void }, url: string) => void; open?: (details: { url: string }) => unknown } = { bounds: [], visible: [], loaded: [], closed: false };
+		const created: { bounds: unknown[]; visible: boolean[]; loaded: string[]; closed: boolean; navigate?: (event: { url: string; isMainFrame: boolean; preventDefault(): void }, url: string) => void; open?: (details: { url: string }) => unknown } = { bounds: [], visible: [], loaded: [], closed: false };
 		let gesture = false;
 		const window = { isDestroyed: () => false, contentView: { addChildView: () => { }, removeChildView: () => { } }, once: () => { }, removeListener: () => { } } as unknown as BrowserWindow;
 		const panel = new ParadisBrowserExtensionSidePanel(host, tabs, {
@@ -82,7 +82,7 @@ suite('ParadisBrowserExtensionSidePanel', () => {
 				webContents: {
 					isDestroyed: () => created.closed,
 					close: () => { created.closed = true; },
-					on: (event: string, listener: (event: { preventDefault(): void }, url: string) => void) => { if (event === 'will-navigate') { created.navigate = listener; } },
+					on: (event: string, listener: (event: { url: string; isMainFrame: boolean; preventDefault(): void }, url: string) => void) => { if (event === 'will-navigate') { created.navigate = listener; } },
 					setWindowOpenHandler: (handler: (details: { url: string }) => unknown) => { created.open = handler; },
 					loadURL: async (url: string) => { created.loaded.push(url); },
 				},
@@ -131,7 +131,7 @@ suite('ParadisBrowserExtensionSidePanel', () => {
 			panel.layout(tab1.id, { x: 100, y: 50, width: 300, height: 400, zoomFactor: 1.5 });
 			// target=_blank はタブで開き、拡張機能の外へは移らない
 			let prevented = false;
-			created.navigate?.({ preventDefault: () => { prevented = true; } }, 'https://example.com/');
+			created.navigate?.({ url: 'https://example.com/', isMainFrame: true, preventDefault: () => { prevented = true; } }, 'https://example.com/');
 			const openResult = created.open?.({ url: 'https://example.com/' });
 			// 前のタブが共有中のタブになった: 閉じる
 			active.set(1, tab2);
