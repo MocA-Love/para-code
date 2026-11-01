@@ -373,6 +373,10 @@ suite('ParadisBrowserExtensionTabs', () => {
 			const evaluated = await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Runtime.evaluate', { expression: '1 + 1' }]);
 			const target = await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Target.attachToTarget', { targetId: 'other' }]);
 			const file = await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Page.navigate', { url: 'file:///etc/passwd' }]);
+			const cookies = await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Network.getAllCookies', {}]);
+			// preload・ほかの拡張機能の world は見せない・使わせない
+			onEvent.fire({ method: 'Runtime.executionContextCreated', params: { context: { id: 4, name: 'Electron Isolated Context', auxData: { isDefault: false } } } });
+			const otherWorld = await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Runtime.evaluate', { expression: '1', contextId: 4 }]);
 			onEvent.fire({ method: 'Page.frameNavigated', params: { frame: {} } });
 			// 共有が始まったら外す。共有中のタブにはつなぎ直せない
 			paradisSetExtensionPageHold(contents, true);
@@ -389,7 +393,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 			}
 			await reader.cancel();
 			assert.deepStrictEqual({
-				notAllowed, attached, evaluated, target, file, whileShared, sent,
+				notAllowed, attached, evaluated, target, file, cookies, otherWorld, whileShared, sent,
 				events: text.split('\n').filter(Boolean).map(line => paradisDecodeExtensionWire(line)),
 			}, {
 				notAllowed: { ok: false, error: 'Para Code lets this extension attach a debugger only after "Allow Debugger Access" is turned on in the extension manager' },
@@ -397,6 +401,8 @@ suite('ParadisBrowserExtensionTabs', () => {
 				evaluated: { ok: true, value: { result: { value: 2 } } },
 				target: { ok: false, error: 'Para Code does not let extensions use Target.attachToTarget' },
 				file: { ok: false, error: 'Cannot navigate to file:///etc/passwd' },
+				cookies: { ok: false, error: 'Para Code does not let extensions use Network.getAllCookies' },
+				otherWorld: { ok: false, error: 'Para Code lets extensions use only the page\'s own execution context' },
 				whileShared: { ok: false, error: 'Para Code does not let extensions attach a debugger to a tab that is shared with an agent' },
 				sent: ['Runtime.evaluate', 'disposed'],
 				events: [

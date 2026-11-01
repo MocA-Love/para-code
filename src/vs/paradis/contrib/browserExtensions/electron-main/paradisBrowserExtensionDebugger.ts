@@ -10,6 +10,9 @@
 // 利用者のタブへ CDP でつなげる。
 //  - つなぐのはタブの BrowserView の debugger の、そのタブのページだけの CDP セッション（Target.attachToTarget）。
 //    ほかのタブ・Para Code の中身には届かない。Target・Browser など、ページの外へ届く domain の命令は断る
+//  - 同じタブのレンダラーには、ページ本体の world のほかに Para Code の preload の world と、ほかの拡張機能の content script の
+//    world がある（Linux の Electron 43 で、拡張機能のセッションから見えて evaluate できることを確かめた）。拡張機能に見せる・
+//    使わせるのはページ本体の world（auxData.isDefault）だけにし、Debugger・HeapProfiler（閉じた変数に届く）も断る
 //  - エージェントのタブと、エージェントと共有中のタブには、設定（allowWhileShared）がオンでもつながせない（Q530）。
 //    つないでいる途中で共有が始まった・エージェントのタブだと分かったら外す
 //  - そのタブの URL へのサイトの権限（または activeTab）が要る。ストアと、ほかの拡張機能のページにはつながせない
@@ -38,12 +41,44 @@ interface IAttachment {
 	readonly contents: WebContents;
 	readonly connection: ICDPConnection;
 	readonly disposables: DisposableStore;
+	/** ページ本体の world の id と uniqueId（Runtime.executionContextCreated の auxData.isDefault のもの）。 */
+	readonly pageContexts: Set<number | string>;
+}
+
+/** ページ本体の world の外（preload・ほかの拡張機能の content script）のイベントか。ページ本体の world は覚える。 */
+function isOtherWorldEvent(method: string, params: unknown, pageContexts: Set<number | string>): boolean {
+	if (!isRecord(params)) {
+		return false;
+	}
+	if (method === 'Runtime.executionContextCreated') {
+		const context = isRecord(params.context) ? params.context : {};
+		if (isRecord(context.auxData) && context.auxData.isDefault === true) {
+			pageContexts.add(context.id as number);
+			if (typeof context.uniqueId === 'string') {
+				pageContexts.add(context.uniqueId);
+			}
+			return false;
+		}
+		return true;
+	}
+	if (method === 'Runtime.executionContextsCleared') {
+		pageContexts.clear();
+		return false;
+	}
+	const contextId = method === 'Runtime.executionContextDestroyed' ? params.executionContextId
+		: params.executionContextId ?? (isRecord(params.exceptionDetails) ? params.exceptionDetails.executionContextId : undefined);
+	return contextId !== undefined && !pageContexts.has(contextId as number);
 }
 
 /** ページの外（ほかのタブ・ブラウザ全体・パソコン）へ届く domain。拡張機能には送らせない。 */
-const BLOCKED_DOMAINS = new Set(['Target', 'Browser', 'SystemInfo', 'Tethering', 'Storage', 'ServiceWorker', 'BackgroundService', 'Cast']);
-/** ファイルを読み書きする命令（Chrome もファイルへの許可の無い拡張機能には断る）。 */
-const BLOCKED_METHODS = new Set(['Page.setDownloadBehavior', 'DOM.setFileInputFiles', 'Page.addCompilationCache']);
+const BLOCKED_DOMAINS = new Set(['Target', 'Browser', 'SystemInfo', 'Tethering', 'Storage', 'ServiceWorker', 'BackgroundService', 'Cast', 'Debugger', 'HeapProfiler']);
+/**
+ * ファイルを読み書きする命令（Chrome もファイルへの許可の無い拡張機能には断る）と、ページのセッションからでもその場所の
+ * セッション全体（同じセッションのエージェントのタブを含む）に効く命令。
+ */
+const BLOCKED_METHODS = new Set(['Page.setDownloadBehavior', 'DOM.setFileInputFiles', 'Page.addCompilationCache', 'Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Network.getAllCookies', 'Security.setIgnoreCertificateErrors']);
+/** 実行の文脈（world）を指す引数。ページ本体の world でなければ断る。 */
+const CONTEXT_PARAMS = ['contextId', 'executionContextId', 'uniqueContextId'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -154,10 +189,14 @@ export class ParadisBrowserExtensionDebugger implements IDisposable {
 		}
 		const contents = view.webContents;
 		const disposables = new DisposableStore();
-		const attachment: IAttachment = { tabId, extensionId: caller.extension.id, session: caller.session, place: caller.place, contents, connection, disposables };
+		const attachment: IAttachment = { tabId, extensionId: caller.extension.id, session: caller.session, place: caller.place, contents, connection, disposables, pageContexts: new Set() };
 		this._attachments.set(tabId, attachment);
 		const target = { session: caller.session, extensionId: caller.extension.id };
-		disposables.add(connection.onEvent(event => this._host.emit(target, 'debugger', 'onEvent', [{ tabId }, event.method, event.params])));
+		disposables.add(connection.onEvent(event => {
+			if (!isOtherWorldEvent(event.method, event.params, attachment.pageContexts)) {
+				this._host.emit(target, 'debugger', 'onEvent', [{ tabId }, event.method, event.params]);
+			}
+		}));
 		disposables.add(connection.onClose(() => this._detach(attachment, 'target_closed')));
 		disposables.add(view.onDidClose(() => this._detach(attachment, 'target_closed')));
 		// 別のページへ移って、そのページにつなげなくなったら外す（ストア・ほかの拡張機能のページ・サイトの権限の外）
@@ -189,6 +228,10 @@ export class ParadisBrowserExtensionDebugger implements IDisposable {
 		const domain = method.split('.')[0];
 		if (BLOCKED_DOMAINS.has(domain) || BLOCKED_METHODS.has(method)) {
 			throw new ParadisExtensionApiError(`Para Code does not let extensions use ${method}`);
+		}
+		// ページ本体の world だけ（指さなければページ本体の world になる）。名前で world を指す引数も受けない
+		if (params && (CONTEXT_PARAMS.some(name => params[name] !== undefined && !attachment.pageContexts.has(params[name] as number)) || params.executionContextName !== undefined)) {
+			throw new ParadisExtensionApiError('Para Code lets extensions use only the page\'s own execution context');
 		}
 		if (method === 'Page.navigate') {
 			const url = typeof params?.url === 'string' ? params.url : '';
