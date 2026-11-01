@@ -19,7 +19,7 @@ import { GitHubSync, parseRemote, type IRepoSlug } from './githubSync.js';
 import { addClaudeApprovals, claudeApprovalStates, ClaudeConfigError } from './claudeApproval.js';
 import { addCodexApprovals, codexApprovalStates, CodexConfigError } from './codexApproval.js';
 import { ParaCodeAgents, ParaCodeBridgeClient } from './paraCode.js';
-import { RELAY_UNSUPPORTED, RelayClient, RelayUnsupportedRunner, RemoteWorkspaces, relayFlowIo, type IRelaySessionInfo } from './relay.js';
+import { RELAY_UNSUPPORTED, RelayClient, RemoteCommandRunner, RemoteWorkspaces, relayFlowIo, type IRelaySessionInfo } from './relay.js';
 import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
@@ -399,6 +399,7 @@ async function main(restart?: IRestart): Promise<void> {
 		boardKey: embeddedBoardKey,
 		relaySessionId: remoteTarget ? () => currentRelaySessionId : undefined,
 		readArtifact: relay ? (place, relativePath, maxBytes) => relay!.readFile(place, relativePath, maxBytes) : undefined,
+		onRelayEvent: event => remoteRunner?.onEvent(event),
 		onConnection: (connected, detail) => {
 			bridgeState = { connected, detail };
 			log(connected ? 'Para Code につながりました' : `Para Code: ${detail ?? '切断'}`);
@@ -407,7 +408,8 @@ async function main(restart?: IRestart): Promise<void> {
 	}) : undefined;
 	const useGitHub = !demo && !args['no-github'];
 	const client = useGitHub ? new GitHubClient({ token: ghTokenProvider() }) : undefined;
-	const commandRunner = relay ? new RelayUnsupportedRunner(() => engine) : paraCodeMode ? new CommandRunner({ engine: () => engine, placePath, repoPath: repoPath!, repo: remote, github: client }) : undefined;
+	const remoteRunner = relay ? new RemoteCommandRunner(() => engine, relay, placePath) : undefined;
+	const commandRunner = remoteRunner ?? (paraCodeMode ? new CommandRunner({ engine: () => engine, placePath, repoPath: repoPath!, repo: remote, github: client }) : undefined);
 	const gitWorkspaces = relay && relayInfo ? new RemoteWorkspaces(relay, relayInfo) : realWorkspaces ? new GitWorkspaces(repoPath!, worktreeRoot) : undefined;
 	/** 止めるときに解除するタイマー（開き直した後も古いエンジンが動き出さないように）。 */
 	const timers: NodeJS.Timeout[] = [];

@@ -35,7 +35,7 @@ import {
 } from '../common/paradisTaskBoardBridge.js';
 import { PARADIS_TASK_BOARD_BOARD_KEY_HEADER } from '../common/paradisTaskBoardRelay.js';
 import { ParadisTaskBoardBoardAuth } from './paradisTaskBoardBoardAuth.js';
-import { IParadisTaskBoardHttpResponse, ParadisTaskBoardBridgeService } from './paradisTaskBoardBridgeService.js';
+import { IParadisTaskBoardEventViewer, IParadisTaskBoardHttpResponse, ParadisTaskBoardBridgeService } from './paradisTaskBoardBridgeService.js';
 import { ParadisTaskBoardRelayRouter } from './paradisTaskBoardRelayRouter.js';
 
 class BodyTooLargeError extends Error { }
@@ -221,7 +221,7 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 			if (method !== 'GET') {
 				return this.respond(response, { status: 405, body: { error: 'method-not-allowed' } });
 			}
-			return this.openEvents(request, response);
+			return this.openEvents(request, response, { keyHash: verdict.keyHash, remote: verdict.remote });
 		}
 		let body: unknown;
 		if (method === 'POST') {
@@ -288,7 +288,7 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 		});
 	}
 
-	private openEvents(request: http.IncomingMessage, response: http.ServerResponse): void {
+	private openEvents(request: http.IncomingMessage, response: http.ServerResponse, viewer: IParadisTaskBoardEventViewer): void {
 		response.writeHead(200, {
 			'Content-Type': 'text/event-stream; charset=utf-8',
 			'Cache-Control': 'no-store',
@@ -301,7 +301,7 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 			if (!response.writableEnded) {
 				response.write(chunk);
 			}
-		});
+		}, viewer);
 		if (!client) {
 			response.end(': too many event clients\n\n');
 			return;

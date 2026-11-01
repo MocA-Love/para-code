@@ -36,6 +36,11 @@ interface IBridgeQuestion {
 	readonly allowText: boolean;
 }
 
+/** SSH の中継の工程のコマンドの出力と終わり（そのボードにだけ届く）。 */
+export type ParaCodeRelayEvent =
+	| { type: 'relay-output'; runId: string; lines: readonly string[] }
+	| { type: 'relay-exit'; runId: string; code: number | null; signal: string | null; cancelled: boolean; timedOut: boolean; reason?: string };
+
 export type ParaCodeBridgeEvent =
 	| { type: 'status'; terminal: string; launchId?: string; status: ParaCodeTerminalStatus; question?: IBridgeQuestion }
 	| { type: 'tool'; terminal: string; name: string; detail?: string }
@@ -351,6 +356,8 @@ export interface IParaCodeAgentsOptions {
 	readonly relaySessionId?: () => string | undefined;
 	/** SSH の窓のボードで、成果物のファイルを中継で読む（`.para/` の中だけ）。無ければ手元の fs で読む。 */
 	readonly readArtifact?: (place: string, relativePath: string, maxBytes: number) => Promise<Buffer | undefined>;
+	/** SSH の中継の工程のコマンドの出力と終わり（relay.ts の RemoteCommandRunner へ渡す）。 */
+	readonly onRelayEvent?: (event: ParaCodeRelayEvent) => void;
 	readonly onConnection?: (connected: boolean, detail?: string) => void;
 	readonly fetchImpl?: typeof fetch;
 	readonly timeouts?: { readonly connect?: number; readonly idle?: number; readonly retry?: number; readonly reconcile?: number; readonly stall?: number };
@@ -385,7 +392,14 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 			boardKey: options.boardKey,
 			fetchImpl: options.fetchImpl,
 			timeouts: options.timeouts,
-			onEvent: event => this.onEvent(event),
+			onEvent: event => {
+				const relayEvent = event as unknown as ParaCodeRelayEvent;
+				if (relayEvent.type === 'relay-output' || relayEvent.type === 'relay-exit') {
+					options.onRelayEvent?.(relayEvent);
+					return;
+				}
+				this.onEvent(event);
+			},
 			onConnection: (connected, detail) => {
 				if (connected) {
 					void this.relink();

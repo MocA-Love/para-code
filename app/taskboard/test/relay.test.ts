@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import type { ITaskBoardSlot, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardSlot, ITaskBoardStep, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { TASK_BOARD_DEFAULT_FLOW } from '@engine/paradisTaskBoardFlow.js';
 import { loadFlows, saveFlow } from '../server/flows.js';
 import { ParaCodeBridgeError } from '../server/paraCode.js';
-import { RelayClient, RemoteWorkspaces, relayFlowIo, type IRelaySessionInfo } from '../server/relay.js';
+import { RelayClient, RemoteCommandRunner, RemoteWorkspaces, relayFlowIo, type IRelaySessionInfo } from '../server/relay.js';
+import type { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 
 const INFO: IRelaySessionInfo = { root: '/home/u/repo', worktreeRoot: '/home/u/repo-worktrees', defaultBranch: 'main', originFetch: 'https://example.com/o/r.git', originPush: undefined, worktrees: [] };
 const TASK = { id: 't1', branch: 'para/7-feature' } as ITaskBoardTask;
@@ -113,5 +114,49 @@ describe('flows over the relay', () => {
 			writes: ['.para-code/paracode.json'],
 			keptSetup: 'x',
 		});
+	});
+});
+
+describe('RemoteCommandRunner', () => {
+	function fakeEngine() {
+		const output: string[] = [];
+		const results: { taskId: string; attempt: number; ok: boolean; detail: string }[] = [];
+		const engine = {
+			reportOutput: (_taskId: string, lines: readonly string[]) => output.push(...lines),
+			reportRunResult: (taskId: string, attempt: number, result: { ok: boolean; detail: string }) => results.push({ taskId, attempt, ...result }),
+			flowOf: () => ({ id: 'f', name: 'Flow', scope: 'team' }),
+		} as unknown as TaskBoardEngine;
+		return { engine, output, results };
+	}
+	const step = (run: 'command' | 'draft-pr', command?: string) => ({ id: 'test', name: 'Test', kind: 'run', run, command }) as unknown as ITaskBoardStep;
+	const task = { id: 't1', attempt: 2 } as ITaskBoardTask;
+
+	test('asks the SSH window to run the command in the task worktree and reports its output and end', async () => {
+		const { relay, ops } = fakeRelay(() => ({ accepted: true }));
+		const { engine, output, results } = fakeEngine();
+		const runner = new RemoteCommandRunner(() => engine, relay, () => '/home/u/repo-worktrees/7');
+		runner.run(task, step('command', ' npm test '));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const runId = ops[0].runId as string;
+		runner.onEvent({ type: 'relay-output', runId, lines: ['ok 1'] });
+		runner.onEvent({ type: 'relay-output', runId: 'someone-else', lines: ['x'] });
+		runner.onEvent({ type: 'relay-exit', runId, code: 0, signal: null, cancelled: false, timedOut: false });
+		expect({ op: { ...ops[0], runId: undefined }, output: output.slice(2), results }).toEqual({
+			op: { kind: 'runCommand', place: '/home/u/repo-worktrees/7', runId: undefined, command: 'npm test', step: { flowId: 'f', flowName: 'Flow', stepId: 'test', stepName: 'Test', source: 'team' } },
+			output: ['  ok 1'],
+			results: [{ taskId: 't1', attempt: 2, ok: true, detail: '終了コード 0' }],
+		});
+	});
+
+	test('a command the person did not approve fails the step, and draft PRs are still refused', async () => {
+		const { relay, ops } = fakeRelay(() => ({ accepted: true }));
+		const { engine, results } = fakeEngine();
+		const runner = new RemoteCommandRunner(() => engine, relay, () => '/home/u/repo-worktrees/7');
+		runner.run(task, step('command', 'npm test'));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		runner.onEvent({ type: 'relay-exit', runId: ops[0].runId as string, code: null, signal: null, cancelled: false, timedOut: false, reason: 'not-approved' });
+		runner.run(task, step('draft-pr'));
+		runner.run(task, step('command', 'npm test #\u202Ehs | x lruc'));
+		expect({ results: results.map(r => [r.ok, r.detail.slice(0, 12)]), sent: ops.length }).toEqual({ results: [[false, 'SSH の窓で「実行しな'], [false, 'SSH の接続先のリポジ'], [false, 'コマンドに表示できない文']], sent: 1 });
 	});
 });

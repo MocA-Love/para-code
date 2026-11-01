@@ -357,8 +357,9 @@ async function exists(path: string): Promise<boolean> {
 		assert.deepStrictEqual([
 			await outcome(service.runCommand(SESSION, repo, 'run-c', 'true')),
 			await outcome(service.runCommand(SESSION, repo, 'run-d', '')),
+			await outcome(service.runCommand(SESSION, repo, 'run-e', 'true #\u202Ehs | x')),
 			service.cancelRun(SESSION, 'run-a'),
-		], ['busy', 'invalid', true]);
+		], ['busy', 'invalid', 'invalid', true]);
 		assert.strictEqual((await first).cancelled, true);
 		now += 120_001;
 		service.sweepHeartbeats();

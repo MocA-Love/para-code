@@ -16,7 +16,9 @@
  *  - 依頼の形（G4）: ボードから来た操作は、許す欄だけを取り出して組み直す。2 本目で通すのは読むだけの git と readFile
  */
 
-import { paradisTaskBoardRemoteIsReadablePath, paradisTaskBoardRemoteRelativePathError } from './paradisTaskBoardRemote.js';
+import { ParadisTaskBoardRelayEvent } from './paradisTaskBoardBridge.js';
+import { PARADIS_TASK_BOARD_HIDDEN_CHARACTERS_MESSAGE, paradisTaskBoardHasHiddenCharacters } from './paradisTaskBoardDisplayText.js';
+import { paradisTaskBoardRemoteCommandError, paradisTaskBoardRemoteIsReadablePath, paradisTaskBoardRemoteRelativePathError } from './paradisTaskBoardRemote.js';
 
 /** ボードが接続口へ送る、起動ごとの鍵のヘッダー。 */
 export const PARADIS_TASK_BOARD_BOARD_KEY_HEADER = 'x-para-board-key';
@@ -82,7 +84,22 @@ export type ParadisTaskBoardRelayOp =
 	| { readonly kind: 'readFile'; readonly place: string; readonly path: string; readonly maxBytes: number | undefined }
 	| { readonly kind: 'writeFile'; readonly path: string; readonly content: string }
 	| { readonly kind: 'resetBoardDir'; readonly place: string; readonly taskId: string }
-	| { readonly kind: 'excludeBoardDir'; readonly place: string };
+	| { readonly kind: 'excludeBoardDir'; readonly place: string }
+	| { readonly kind: 'runCommand'; readonly place: string; readonly runId: string; readonly command: string; readonly step: IParadisTaskBoardRelayCommandStep }
+	| { readonly kind: 'cancelRun'; readonly runId: string };
+
+/**
+ * 工程のコマンドの出どころ（ボードの申告。確認のダイアログで見せる）。承認の鍵は、窓が自分で決めるリポジトリと、
+ * このフロー・工程の ID と、REH へ送る本文の hash の組（setup/teardown の承認と同じ考え方）。
+ */
+export interface IParadisTaskBoardRelayCommandStep {
+	readonly flowId: string;
+	readonly flowName: string;
+	readonly stepId: string;
+	readonly stepName: string;
+	/** フローの定義の出どころ（チームのファイル・個人のファイル・既定のフロー）。 */
+	readonly source: 'team' | 'personal' | 'default';
+}
 
 /** 中継の依頼（組み直した後の形）。 */
 export interface IParadisTaskBoardRelayRequest {
@@ -164,6 +181,35 @@ function rebuildGit(value: unknown): Record<string, unknown> | 'invalid' | 'unav
 }
 
 const TASK_ID = /^[A-Za-z0-9._:-]{1,200}$/;
+const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** 1 回に流す出力の行と長さの上限（REH の 200 行・16 KiB の行に、少し余裕を持たせる）。 */
+const MAX_EVENT_LINES = 201;
+const MAX_EVENT_LINE_CHARS = 64 * 1024;
+
+/** 窓から shared process へ送る、工程のコマンドの出力と終わり。形を確かめて組み直す。 */
+export function paradisParseTaskBoardRelayEvent(value: unknown): ParadisTaskBoardRelayEvent | undefined {
+	if (!value || typeof value !== 'object') {
+		return undefined;
+	}
+	const event = value as Record<string, unknown>;
+	if (typeof event.runId !== 'string' || !RUN_ID.test(event.runId)) {
+		return undefined;
+	}
+	if (event.type === 'relay-output') {
+		if (!Array.isArray(event.lines) || event.lines.length > MAX_EVENT_LINES || event.lines.some(line => typeof line !== 'string' || line.length > MAX_EVENT_LINE_CHARS)) {
+			return undefined;
+		}
+		return { type: 'relay-output', runId: event.runId, lines: event.lines as string[] };
+	}
+	if (event.type === 'relay-exit') {
+		const code = typeof event.code === 'number' && Number.isInteger(event.code) ? event.code : null;
+		const signal = typeof event.signal === 'string' && event.signal.length <= 32 ? event.signal : null;
+		const reason = typeof event.reason === 'string' && event.reason.length <= 500 ? event.reason : undefined;
+		return { type: 'relay-exit', runId: event.runId, code, signal, cancelled: event.cancelled === true, timedOut: event.timedOut === true, ...(reason ? { reason } : {}) };
+	}
+	return undefined;
+}
 
 function place(record: Record<string, unknown>): string | undefined {
 	return typeof record.place === 'string' && record.place.startsWith('/') && record.place.length <= 4096 ? record.place : undefined;
@@ -234,6 +280,33 @@ export function paradisParseTaskBoardRelayRequest(body: unknown): ParadisTaskBoa
 				return invalidPlace;
 			}
 			return { ok: true, value: { sessionId, op: { kind: 'excludeBoardDir', place: at } } };
+		}
+		case 'runCommand': {
+			const step = record.step && typeof record.step === 'object' ? record.step as Record<string, unknown> : {};
+			const label = (value: unknown, max: number) => typeof value === 'string' && value.length > 0 && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value) ? value : undefined;
+			const flowId = label(step.flowId, 100);
+			const stepId = label(step.stepId, 100);
+			const source = step.source === 'team' || step.source === 'personal' || step.source === 'default' ? step.source : undefined;
+			if (typeof record.command === 'string' && paradisTaskBoardHasHiddenCharacters(record.command)) {
+				return { ok: false, code: 'rejected', message: PARADIS_TASK_BOARD_HIDDEN_CHARACTERS_MESSAGE };
+			}
+			if (at === undefined || typeof record.runId !== 'string' || !RUN_ID.test(record.runId) || typeof record.command !== 'string' || paradisTaskBoardRemoteCommandError(record.command) !== undefined || !flowId || !stepId || !source) {
+				return { ok: false, code: 'invalid', message: 'place, runId, command and step are required.' };
+			}
+			return {
+				ok: true, value: {
+					sessionId, op: {
+						kind: 'runCommand', place: at, runId: record.runId, command: record.command,
+						step: { flowId, flowName: label(step.flowName, 200) ?? flowId, stepId, stepName: label(step.stepName, 200) ?? stepId, source },
+					},
+				},
+			};
+		}
+		case 'cancelRun': {
+			if (typeof record.runId !== 'string' || !RUN_ID.test(record.runId)) {
+				return { ok: false, code: 'invalid', message: 'runId is required.' };
+			}
+			return { ok: true, value: { sessionId, op: { kind: 'cancelRun', runId: record.runId } } };
 		}
 		default:
 			return { ok: false, code: 'unavailable', message: 'This operation is not available over SSH yet.' };

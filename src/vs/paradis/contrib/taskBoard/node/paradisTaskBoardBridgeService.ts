@@ -39,6 +39,7 @@ import {
 	ParadisTaskBoardAgent,
 	ParadisTaskBoardErrorCode,
 	ParadisTaskBoardEvent,
+	ParadisTaskBoardRelayEvent,
 	ParadisTaskBoardResult,
 	ParadisTaskBoardTerminalStatus,
 	ParadisTaskBoardWindowMethod,
@@ -82,6 +83,12 @@ export interface IParadisTaskBoardBridgeOptions {
 	readonly replyTimeoutMs?: number;
 	/** ウィンドウとの接続が切れてから、そのウィンドウのターミナルを終わったとみなすまで（再読み込みを待つ）。 */
 	readonly disconnectGraceMs?: number;
+}
+
+/** SSE の受け手のボード。 */
+export interface IParadisTaskBoardEventViewer {
+	readonly keyHash?: string;
+	readonly remote?: boolean;
 }
 
 export interface IParadisTaskBoardHttpResponse {
@@ -148,7 +155,8 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 	private readonly terminals = new Map<string, ITerminalEntry>();
 	/** 起動中の要求（同じ launchId が重ねて来ても 1 回だけ起動する）。 */
 	private readonly launching = new Map<string, Promise<IParadisTaskBoardHttpResponse>>();
-	private readonly clients = new Set<(chunk: string) => void>();
+	/** SSE の受け手と、そのボード（鍵の hash と、SSH の窓のボードか）。 */
+	private readonly clients = new Map<(chunk: string) => void, IParadisTaskBoardEventViewer>();
 	private readonly queuedReports: ParadisTaskBoardEvent[] = [];
 	private readonly replies = new Map<string, IPendingReply>();
 	private readonly disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -427,23 +435,52 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 	 * SSE の受け手を足す。つないだ直後に、生きているターミナルの今の状態と、届け先の無かった報告を流す。
 	 * 上限を超えたら undefined。
 	 */
-	addEventClient(write: (chunk: string) => void): IDisposable | undefined {
+	addEventClient(write: (chunk: string) => void, viewer: IParadisTaskBoardEventViewer = {}): IDisposable | undefined {
 		if (this.clients.size >= MAX_EVENT_CLIENTS) {
 			return undefined;
 		}
 		for (const entry of this.terminals.values()) {
-			write(paradisTaskBoardSseData({ type: 'status', terminal: entry.terminal, launchId: entry.launchId, status: entry.status, ...(entry.question ? { question: entry.question } : {}) }));
+			if (!viewer.remote || entry.relaySessionId !== undefined) {
+				write(paradisTaskBoardSseData({ type: 'status', terminal: entry.terminal, launchId: entry.launchId, status: entry.status, ...(entry.question ? { question: entry.question } : {}) }));
+			}
 		}
-		for (const report of this.queuedReports.splice(0)) {
-			write(paradisTaskBoardSseData(report));
+		// 溜めていた報告は、見てよいボードにだけ流す（ほかは次につながる相手のために残す）
+		const queued = this.queuedReports.splice(0);
+		for (const report of queued) {
+			if (this.visibleTo(viewer, report)) {
+				write(paradisTaskBoardSseData(report));
+			} else {
+				this.queuedReports.push(report);
+			}
 		}
-		this.clients.add(write);
+		this.clients.set(write, viewer);
 		return toDisposable(() => this.clients.delete(write));
+	}
+
+	/**
+	 * そのボードに流してよいイベントか。SSH の窓のボードには、中継で起動したターミナルのものだけ（設計書 T2）。中継の
+	 * 工程のコマンドの出力と終わりは、そのセッションを使うボード（鍵の hash）にだけ。
+	 */
+	private visibleTo(viewer: IParadisTaskBoardEventViewer, event: ParadisTaskBoardEvent, targetKeyHash?: string): boolean {
+		if (event.type === 'relay-output' || event.type === 'relay-exit') {
+			return targetKeyHash !== undefined && viewer.keyHash === targetKeyHash;
+		}
+		return !viewer.remote || this.terminals.get(event.terminal)?.relaySessionId !== undefined;
+	}
+
+	/** SSH の中継のイベントを、そのボードにだけ流す（窓 → 振り分け → ここ）。 */
+	emitRelay(keyHash: string, event: ParadisTaskBoardRelayEvent): void {
+		const chunk = paradisTaskBoardSseData(event);
+		for (const [write, viewer] of [...this.clients]) {
+			if (this.visibleTo(viewer, event, keyHash)) {
+				this.write(write, chunk);
+			}
+		}
 	}
 
 	/** 15 秒ごとに呼ぶ（つながりが生きているかを保つ）。 */
 	ping(): void {
-		for (const write of [...this.clients]) {
+		for (const write of [...this.clients.keys()]) {
 			this.write(write, PARADIS_TASK_BOARD_SSE_PING);
 		}
 	}
@@ -458,7 +495,7 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 	}
 
 	private emit(event: ParadisTaskBoardEvent): void {
-		if (event.type === 'report' && this.clients.size === 0) {
+		if (event.type === 'report' && ![...this.clients.values()].some(viewer => this.visibleTo(viewer, event))) {
 			// 報告は落とさない。次につながったときに流す
 			this.queuedReports.push(event);
 			if (this.queuedReports.length > MAX_QUEUED_REPORTS) {
@@ -467,8 +504,10 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			return;
 		}
 		const chunk = paradisTaskBoardSseData(event);
-		for (const write of [...this.clients]) {
-			this.write(write, chunk);
+		for (const [write, viewer] of [...this.clients]) {
+			if (this.visibleTo(viewer, event)) {
+				this.write(write, chunk);
+			}
 		}
 	}
 
