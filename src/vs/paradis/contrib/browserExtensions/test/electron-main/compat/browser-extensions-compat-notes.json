@@ -1,0 +1,3 @@
+{
+	"fcoeoabgfenejglbffodgkkbkcdhcgfn": "2026-11-02 に拡張機能のページから確かめた: タブのグループ（tabs.group・tabGroups.update・tabs.query の groupId）は動く（グループは拡張機能ごとのメモリ上の台帳で、画面には出ない）。chrome.offscreen と chrome.alarms は Electron が元から持ち、worker が offscreen の文書と alarm を作った。chrome.debugger.attach は断る形なので、Claude にタブを読ませる・操作させる働き（ページの操作のツール）は動かない見込み。chrome.identity.launchWebAuthFlow も断る形だが、Claude が使うのは保存したサインインの静かな更新だけで、最初のサインインは claude.ai のタブから拡張機能の oauth_callback.html へ戻る道（推測。Mac で確かめる）。ボタンを押してサイドパネルが出るかは Mac で確かめる"
+}
