@@ -36,6 +36,8 @@ import rceditCallback from 'rcedit';
 import { spawnTsgo } from './lib/tsgo.ts';
 import { runEsbuildTranspile, runEsbuildBundle, getBootstrapEntryPointsForTarget } from './lib/esbuild.ts';
 import { generateNodeCompileCache, shouldGenerateNodeCompileCache } from './lib/nodeCompileCache.ts';
+// PARA-PATCH: skip the packaged Node.js compile cache step on Para Code's runners (see build/lib/paradisNodeCompileCache.ts).
+import { shouldGenerateParadisNodeCompileCache } from './lib/paradisNodeCompileCache.ts';
 // PARA-PATCH: Computer Use helper app, embedded into Contents/Helpers of local macOS packages (see build/paradis/computerUse/embedHelper.ts).
 import { paradisComputerUseHelperPackageTask } from './paradis/computerUse/embedHelper.ts';
 // PARA-PATCH: Sentry release name stamped into product.json (see build/lib/paradisReleaseChannel.ts).
@@ -725,7 +727,8 @@ BUILD_TARGETS.forEach(buildTarget => {
 		if (platform === 'win32') {
 			packageTasks.push(patchWin32DependenciesTask(destinationFolderName));
 		}
-		if (shouldGenerateNodeCompileCache(platform, arch, product)) {
+		// PARA-PATCH: the step failed on linux x64 and darwin arm64 runners for paracode-178; it only speeds up startup, so it is off for every platform.
+		if (shouldGenerateParadisNodeCompileCache() && shouldGenerateNodeCompileCache(platform, arch, product)) {
 			packageTasks.push(generateNodeCompileCacheTask(platform, destinationFolderName));
 		}
 
