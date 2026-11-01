@@ -387,7 +387,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 			// preload・ほかの拡張機能の world は見せない・使わせない
 			onEvent.fire({ method: 'Runtime.executionContextCreated', params: { context: { id: 4, name: 'Electron Isolated Context', auxData: { isDefault: false } } } });
 			const otherWorld = await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Runtime.evaluate', { expression: '1', contextId: 4 }]);
-			onEvent.fire({ method: 'Page.frameNavigated', params: { frame: { id: 't' } } });
+			onEvent.fire({ method: 'Page.frameNavigated', params: { frame: { id: 't', url: 'https://example.com/' } } });
 			// 共有が始まったら外す。共有中のタブにはつなぎ直せない
 			paradisSetExtensionPageHold(contents, true);
 			const whileShared = await call('debugger', 'attach', [{ tabId: contents.id }, '1.3']);
@@ -427,7 +427,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 				heldAt: { attached: 1, shared: 0, reattached: 1, removed: 0 },
 				sent: ['Runtime.evaluate', 'disposed', 'disposed'],
 				events: [
-					{ namespace: 'debugger', event: 'onEvent', args: [{ tabId: contents.id }, 'Page.frameNavigated', { frame: { id: 't' } }] },
+					{ namespace: 'debugger', event: 'onEvent', args: [{ tabId: contents.id }, 'Page.frameNavigated', { frame: { id: 't', url: 'https://example.com/' } }] },
 					{ namespace: 'debugger', event: 'onDetach', args: [{ tabId: contents.id }, 'canceled_by_user'] },
 				],
 			});
@@ -466,6 +466,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 			const hiddenWorld = await Promise.all([{ contextId: 4 }, { uniqueContextId: 'u' }, { includeCommandLineAPI: true }].map(async extra => (await call('debugger', 'sendCommand', [tab, 'Runtime.evaluate', { expression: '1', ...extra }]) as { error?: string }).error));
 			const frameTree = await call('debugger', 'sendCommand', [tab, 'Page.getFrameTree', {}]);
 			await call('debugger', 'sendCommand', [tab, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'v', commands: ['paste'] }]);
+			await call('debugger', 'sendCommand', [tab, 'Page.captureScreenshot', { format: 'png', fromSurface: false, optimizeForSpeed: true }]);
 			// イベント: ページ本体の world・frame の分で、許可リストにあるものだけ
 			onEvent.fire({ method: 'Runtime.executionContextCreated', params: { context: { id: 1, auxData: { isDefault: true, frameId: 'main' } } } });
 			onEvent.fire({ method: 'Runtime.executionContextCreated', params: { context: { id: 2, auxData: { isDefault: false, frameId: 'main' } } } });
@@ -478,6 +479,12 @@ suite('ParadisBrowserExtensionTabs', () => {
 			onEvent.fire({ method: 'Runtime.consoleAPICalled', params: { executionContextId: 1, type: 'log' } });
 			onEvent.fire({ method: 'Network.requestWillBeSent', params: { requestId: 'r3', frameId: 'main', request: { url: 'https://example.com/b' } } });
 			onEvent.fire({ method: 'Network.responseReceived', params: { requestId: 'r3' } });
+			// リダイレクトで権限の外（http）へ移ったリクエスト・文書・world は見せない
+			onEvent.fire({ method: 'Network.requestWillBeSent', params: { requestId: 'r3', frameId: 'main', request: { url: 'http://plain.example/' } } });
+			onEvent.fire({ method: 'Network.responseReceived', params: { requestId: 'r3', response: { url: 'http://plain.example/' } } });
+			onEvent.fire({ method: 'Page.frameNavigated', params: { frame: { id: 'main', url: 'http://plain.example/' } } });
+			onEvent.fire({ method: 'Runtime.executionContextCreated', params: { context: { id: 5, origin: 'http://plain.example', auxData: { isDefault: true, frameId: 'main' } } } });
+			onEvent.fire({ method: 'Runtime.consoleAPICalled', params: { executionContextId: 5, type: 'log' } });
 			const reader = stream.body!.getReader();
 			let text = '';
 			for (let chunk = 0; chunk < 5 && text.split('\n').filter(Boolean).length < 3; chunk++) {
@@ -497,13 +504,34 @@ suite('ParadisBrowserExtensionTabs', () => {
 				refused: Object.fromEntries(Object.keys(refused).map(method => [method, `${denied}${method}`])),
 				hiddenWorld: Array(3).fill('Para Code lets extensions use only the page\'s own execution context'),
 				frameTree: { ok: true, value: { frameTree: { frame: { id: 'main' } } } },
-				sent: [['Input.dispatchKeyEvent', { type: 'keyDown', key: 'v' }]],
+				sent: [['Input.dispatchKeyEvent', { type: 'keyDown', key: 'v' }], ['Page.captureScreenshot', { format: 'png', quality: undefined, clip: undefined, captureBeyondViewport: undefined, fromSurface: true }]],
 				events: ['Runtime.consoleAPICalled', 'Network.requestWillBeSent', 'Network.responseReceived'],
 			});
 		} finally {
 			debuggerApi.dispose();
 			onEvent.dispose();
 			onClose.dispose();
+			dispose();
+		}
+	}));
+
+	test('chrome.debugger lets go before a redirect leaves the site permissions', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, host, tabs, dispose } = setup({ permissions: ['debugger'], host_permissions: ['https://*/*'] });
+		let closed = 0;
+		const connection: ICDPConnection = { sessionId: 's', targetId: 'main', onEvent: Event.None, onClose: Event.None, sendCommand: async () => ({}), dispose: () => closed++ };
+		const debuggerApi = new ParadisBrowserExtensionDebugger(host, tabs, { isAllowed: () => true, attach: async () => connection });
+		const contents = fakeContents(electronSession, 'https://example.com/', 'Example');
+		try {
+			await addTabs(fakeView('user', contents, 1));
+			await call('debugger', 'attach', [{ tabId: contents.id }]);
+			contents.emit('did-redirect-navigation', { url: 'https://example.com/next', isMainFrame: true });
+			const stillAttached = closed;
+			contents.emit('did-redirect-navigation', { url: 'http://plain.example/', isMainFrame: true });
+			assert.deepStrictEqual({ stillAttached, closed, after: await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Page.enable', {}]) }, {
+				stillAttached: 0, closed: 1, after: { ok: false, error: `Debugger is not attached to the tab with id: ${contents.id}.` },
+			});
+		} finally {
+			debuggerApi.dispose();
 			dispose();
 		}
 	}));
