@@ -175,6 +175,25 @@ export function paradisTaskBoardRemoteIsWritablePath(relativePath: string): bool
 	return relativePath.startsWith(`${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR}/`);
 }
 
+/**
+ * ボードへ渡してよい（読んでよい）相対パスか。`.para/` の中と、フローの定義の 3 ファイルだけ。どの段にも `.git` を含むものは断る。
+ * 作業場所のほかのファイル（`.env`、`.git/config` のトークン、鍵など）は、信用しない側のボードへ渡さない（設計書 I2）。
+ */
+export function paradisTaskBoardRemoteIsReadablePath(relativePath: string): boolean {
+	if (relativePath.split('/').some(segment => segment.toLowerCase() === '.git')) {
+		return false;
+	}
+	return paradisTaskBoardRemoteIsWritablePath(relativePath);
+}
+
+/**
+ * `git remote get-url` の出力から、URL の利用者の部分（`https://user:token@host/...` の `user:token@`）を取り除く。
+ * scp の形（`git@host:owner/repo`）は認証情報を含まないので、そのまま返す。
+ */
+export function paradisTaskBoardRemoteStripUrlCredentials(output: string): string {
+	return output.split('\n').map(line => line.replace(/^(?<scheme>[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@]*@/, '$<scheme>')).join('\n');
+}
+
 /** 履歴の位置。文字列で受けず、形を決めて ref の完全な名前に直す（オプションや範囲の式に読ませない）。 */
 export type ParadisTaskBoardRemoteRev =
 	| { readonly kind: 'head' }

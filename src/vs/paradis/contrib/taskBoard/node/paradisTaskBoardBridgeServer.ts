@@ -211,12 +211,15 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 		}
 		const url = new URL(request.url ?? '/', `http://127.0.0.1:${port}`);
 		const method = request.method ?? 'GET';
+		// 鍵と接続元は、本文を読む前に確かめる（確かめられない相手の本文は受け取らない）
+		const verdict = await this.verifyBoard(request, port, url.pathname);
+		if (!verdict.ok) {
+			request.resume();
+			return this.respond(response, { status: 403, body: { error: 'unverified-caller' } });
+		}
 		if (url.pathname === '/v1/events') {
 			if (method !== 'GET') {
 				return this.respond(response, { status: 405, body: { error: 'method-not-allowed' } });
-			}
-			if (!(await this.verifyBoard(request, port, url.pathname, undefined)).ok) {
-				return this.respond(response, { status: 403, body: { error: 'unverified-caller' } });
 			}
 			return this.openEvents(request, response);
 		}
@@ -230,10 +233,6 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 					: { status: 400, body: { error: 'invalid', message: 'The body must be JSON.' } });
 			}
 		}
-		const verdict = await this.verifyBoard(request, port, url.pathname, body);
-		if (!verdict.ok) {
-			return this.respond(response, { status: 403, body: { error: 'unverified-caller' } });
-		}
 		if (url.pathname === '/v1/relay') {
 			return this.respond(response, method === 'POST' ? await this.relay.handle(body, verdict.keyHash) : { status: 405, body: { error: 'method-not-allowed' } });
 		}
@@ -241,13 +240,13 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 	}
 
 	/** ボードの鍵と接続元の pid を確かめる。中継の依頼を断ったときは監査ログに残す。 */
-	private async verifyBoard(request: http.IncomingMessage, port: number, pathname: string, body: unknown): Promise<{ readonly ok: true; readonly keyHash: string } | { readonly ok: false }> {
+	private async verifyBoard(request: http.IncomingMessage, port: number, pathname: string): Promise<{ readonly ok: true; readonly keyHash: string } | { readonly ok: false }> {
 		const verdict = await this.auth.verify(firstHeader(request.headers[PARADIS_TASK_BOARD_BOARD_KEY_HEADER]), request.socket, port);
 		if (verdict.ok) {
 			return verdict;
 		}
 		if (pathname === '/v1/relay') {
-			this.relay.denied(body, verdict.reason);
+			this.relay.denied(verdict.reason);
 		}
 		if (this.lastDeniedReason !== verdict.reason) {
 			this.lastDeniedReason = verdict.reason;

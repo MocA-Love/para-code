@@ -79,11 +79,16 @@ suite('Paradis task board relay - window side', () => {
 			parse({ kind: 'runCommand', command: 'rm -rf /' }),
 			parse({ kind: 'writeFile', path: '.para/x', content: 'x' }),
 			parse({ kind: 'git', git: { kind: 'aheadCount', base: 'HEAD~1', head: { kind: 'head' } } }),
+			parse({ kind: 'readFile', path: '.env' }),
+			parse({ kind: 'readFile', path: '.git/config' }),
+			parse({ kind: 'readFile', path: 'src/a.ts' }),
+			parse({ kind: 'readFile', path: '.para/../.env' }),
 		], [
 			{ sessionId: SESSION, op: { kind: 'git', git: { kind: 'status' } } },
 			{ sessionId: SESSION, op: { kind: 'git', git: { kind: 'aheadCount', base: { kind: 'remote', branch: 'main' }, head: { kind: 'head' } } } },
 			{ sessionId: SESSION, op: { kind: 'readFile', path: '.para/plan.html', maxBytes: 100 } },
 			'unavailable', 'unavailable', 'unavailable', 'unavailable', 'invalid',
+			'rejected', 'rejected', 'rejected', 'invalid',
 		]);
 	});
 
@@ -128,10 +133,17 @@ suite('Paradis task board relay - window side', () => {
 		});
 	});
 
+	test('the remote URL reaches the board without the user name and token', async () => {
+		const { sessions } = create({ reh: command => command === 'openSession' ? { toplevel: '/home/u/repo' } : { code: 0, stdout: 'https://user:token@example.com/o/r.git\n', stderr: '', timedOut: false } });
+		await sessions.open(REPO, KEY);
+		const result = await sessions.handle({ sessionId: SESSION, op: { kind: 'git', git: { kind: 'remoteUrl' } } });
+		assert.deepStrictEqual(result.ok ? (result.value as { stdout: string }).stdout : result.code, 'https://example.com/o/r.git\n');
+	});
+
 	test('errors from the SSH host keep their meaning', async () => {
 		const { sessions } = create({ reh: command => command === 'openSession' ? { toplevel: '/home/u/repo' } : new Error('[denied] the path goes through a symbolic link: x') });
 		await sessions.open(REPO, KEY);
-		const result = await sessions.handle({ sessionId: SESSION, op: { kind: 'readFile', path: 'x' } });
+		const result = await sessions.handle({ sessionId: SESSION, op: { kind: 'readFile', path: '.para/x' } });
 		assert.deepStrictEqual(result.ok ? 'ok' : result.code, 'rejected');
 	});
 });

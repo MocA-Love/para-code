@@ -119,22 +119,38 @@ async function exists(path: string): Promise<boolean> {
 	});
 
 	test('reading stays inside the workspace: dot-dot, absolute, symbolic links (last and middle), size', async () => {
-		await fsp.mkdir(join(repo, 'shots'));
-		await fsp.writeFile(join(repo, 'shots', 'ok.png'), 'png');
-		await fsp.symlink(join(outside, 'secret.txt'), join(repo, 'shots', 'leak.png'));
-		await fsp.symlink(outside, join(repo, 'linkdir'));
-		await fsp.writeFile(join(repo, 'big.bin'), Buffer.alloc(2048));
+		await fsp.mkdir(join(repo, '.para', 'shots'), { recursive: true });
+		await fsp.writeFile(join(repo, '.para', 'shots', 'ok.png'), 'png');
+		await fsp.symlink(join(outside, 'secret.txt'), join(repo, '.para', 'shots', 'leak.png'));
+		await fsp.symlink(outside, join(repo, '.para', 'linkdir'));
+		await fsp.writeFile(join(repo, '.para', 'big.bin'), Buffer.alloc(2048));
 		const read = (path: unknown, max?: number) => service.readFile(SESSION, repo, path, max);
-		assert.strictEqual((await read('shots/ok.png'))!.toString(), 'png');
+		assert.strictEqual((await read('.para/shots/ok.png'))!.toString(), 'png');
 		assert.deepStrictEqual([
 			await outcome(read('../outside/secret.txt')),
 			await outcome(read(join(outside, 'secret.txt'))),
-			await outcome(read('shots/leak.png')),
-			await outcome(read('linkdir/secret.txt')),
-			await outcome(read('big.bin', 1024)),
-			await outcome(read('shots')),
-			await read('missing.png'),
+			await outcome(read('.para/shots/leak.png')),
+			await outcome(read('.para/linkdir/secret.txt')),
+			await outcome(read('.para/big.bin', 1024)),
+			await outcome(read('.para/shots')),
+			await read('.para/missing.png'),
 		], ['invalid', 'invalid', 'denied', 'denied', 'denied', 'denied', undefined]);
+	});
+
+	test('only the board folder and the flow files are read, never the rest of the workspace or .git', async () => {
+		await fsp.writeFile(join(repo, '.env'), 'TOKEN=secret');
+		await fsp.mkdir(join(repo, '.para-code'));
+		await fsp.writeFile(join(repo, '.para-code', 'paracode.json'), '{}');
+		const read = (path: string) => outcome(service.readFile(SESSION, repo, path, 1024));
+		assert.deepStrictEqual([await read('.env'), await read('a.txt'), await read('.git/config'), await read('.para/.git/config'), await read('.para-code/paracode.json')], ['denied', 'denied', 'denied', 'denied', 'ok']);
+	});
+
+	test('the remote URL is returned without the user name and token', async () => {
+		git(repo, 'remote', 'set-url', 'origin', 'https://user:token@example.com/owner/repo.git');
+		const https = (await service.git(SESSION, repo, { kind: 'remoteUrl', push: false })).stdout.trim();
+		git(repo, 'remote', 'set-url', 'origin', 'git@example.com:owner/repo.git');
+		const scp = (await service.git(SESSION, repo, { kind: 'remoteUrl', push: false })).stdout.trim();
+		assert.deepStrictEqual([https, scp], ['https://example.com/owner/repo.git', 'git@example.com:owner/repo.git']);
 	});
 
 	test('a hard link to a file outside is not read or appended to', async () => {

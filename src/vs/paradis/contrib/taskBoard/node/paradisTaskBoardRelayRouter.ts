@@ -33,6 +33,9 @@ interface IRelaySession {
 	readonly repository: string | undefined;
 }
 
+/** 断った依頼を監査ログに残す、1 分あたりの行数（鍵の無い相手が叩き続けてもログを膨らませない）。超えた分は数だけ残す。 */
+const MAX_DENIED_LINES_PER_MINUTE = 60;
+
 /** 1 つのウィンドウが持てるセッションの数（ボードのホストは 1 つのボードしか持たない。開き直しの重なりの分）。 */
 const MAX_SESSIONS_PER_WINDOW = 4;
 
@@ -47,6 +50,9 @@ function shortText(value: unknown, max: number): string | undefined {
 export class ParadisTaskBoardRelayRouter {
 
 	private readonly sessions = new Map<string, IRelaySession>();
+	private deniedMinute = -1;
+	private deniedLines = 0;
+	private deniedSuppressed = 0;
 
 	constructor(
 		private readonly router: IParadisTaskBoardWindowRouter,
@@ -100,7 +106,7 @@ export class ParadisTaskBoardRelayRouter {
 		const session = paradisTaskBoardIsRelaySessionId(sessionId) ? this.sessions.get(sessionId) : undefined;
 		const base = { operation, initiator: 'board' as const, ...(session && paradisTaskBoardIsRelaySessionId(sessionId) ? { sessionId, authority: session.authority, repository: session.repository } : {}) };
 		if (!session || session.keyHash !== keyHash) {
-			this.audit.append({ ...base, outcome: 'denied', reason: session ? 'session-of-another-board' : 'unknown-session' });
+			this.appendDenied({ ...base, outcome: 'denied', reason: session ? 'session-of-another-board' : 'unknown-session' });
 			return { status: 404, body: { error: 'not-found', message: 'The relay session is not open.' } };
 		}
 		let result: ParadisTaskBoardResult<unknown>;
@@ -116,7 +122,12 @@ export class ParadisTaskBoardRelayRouter {
 			return { status: 500, body: { error: 'failed' } };
 		}
 		if (!result.ok) {
-			this.audit.append({ ...base, outcome: result.code === 'failed' || result.code === 'unavailable' ? 'failed' : 'denied', reason: result.code, durationMs: this.now() - started });
+			const entry = { ...base, outcome: result.code === 'failed' || result.code === 'unavailable' ? 'failed' as const : 'denied' as const, reason: result.code, durationMs: this.now() - started };
+			if (entry.outcome === 'denied') {
+				this.appendDenied(entry);
+			} else {
+				this.audit.append(entry);
+			}
 			return { status: paradisTaskBoardHttpStatus(result.code), body: { error: result.code, message: result.message } };
 		}
 		const value = result.value as { code?: unknown; detail?: unknown } | undefined;
@@ -128,8 +139,27 @@ export class ParadisTaskBoardRelayRouter {
 		return { status: 200, body: { ok: true, value: result.value } };
 	}
 
-	/** 接続口が鍵と pid で断った `/v1/relay` を残す。 */
-	denied(body: unknown, reason: string): void {
-		this.audit.append({ operation: paradisTaskBoardRelayOperationName(body), initiator: 'board', outcome: 'denied', reason });
+	/** 接続口が鍵と pid で断った `/v1/relay` を残す（本文は読まずに断るので、操作の名前は分からない）。 */
+	denied(reason: string): void {
+		this.appendDenied({ operation: 'relay', initiator: 'board', outcome: 'denied', reason });
+	}
+
+	/** 断った依頼を、1 分あたり {@link MAX_DENIED_LINES_PER_MINUTE} 行まで残す。超えた分は次の分の初めに数だけ残す。 */
+	private appendDenied(entry: Omit<IParadisTaskBoardAuditEntry, 'time'>): void {
+		const minute = Math.floor(this.now() / 60_000);
+		if (minute !== this.deniedMinute) {
+			if (this.deniedSuppressed > 0) {
+				this.audit.append({ operation: 'relay', initiator: 'board', outcome: 'denied', reason: 'suppressed', detail: `${this.deniedSuppressed} more denied requests were not logged` });
+			}
+			this.deniedMinute = minute;
+			this.deniedLines = 0;
+			this.deniedSuppressed = 0;
+		}
+		if (this.deniedLines >= MAX_DENIED_LINES_PER_MINUTE) {
+			this.deniedSuppressed++;
+			return;
+		}
+		this.deniedLines++;
+		this.audit.append(entry);
 	}
 }
