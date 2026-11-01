@@ -35,7 +35,6 @@ import { TerminalExitReason } from '../../../../platform/terminal/common/termina
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
-import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -91,8 +90,7 @@ import {
 	paradisTaskBoardStatusFrom,
 	paradisTaskBoardTerminalId,
 } from '../common/paradisTaskBoardBridge.js';
-import { PARADIS_TASK_BOARD_REMOTE_CHANNEL } from '../common/paradisTaskBoardRemote.js';
-import { ParadisTaskBoardRelaySessions } from '../common/paradisTaskBoardRelaySessions.js';
+import { IParadisTaskBoardRelaySessionsService } from './paradisTaskBoardRelaySessionsService.js';
 
 /** 状態を見直す間隔（Codex の選択画面は hook の後に描かれ、状態の変化の知らせが無い）。 */
 const POLL_INTERVAL_MS = 2_000;
@@ -227,7 +225,6 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 	private polling = false;
 	private pollAgain = false;
 	private readonly ready: Promise<void>;
-	private readonly relay: ParadisTaskBoardRelaySessions;
 
 	constructor(
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
@@ -244,7 +241,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
-		@IRemoteAgentService remoteAgentService: IRemoteAgentService,
+		@IParadisTaskBoardRelaySessionsService private readonly relay: IParadisTaskBoardRelaySessionsService,
 	) {
 		super();
 		this.bridge = sharedProcessService.getChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL);
@@ -257,16 +254,6 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 			},
 			session: token => this.session(token),
 		});
-		// SSH の中継のセッション（設計書 G3・G4・G9）。作る入口は設計書の PR 3 で足す
-		this.relay = this._register(new ParadisTaskBoardRelaySessions({
-			remoteAuthority: environmentService.remoteAuthority,
-			remoteChannel: () => remoteAgentService.getConnection()?.getChannel(PARADIS_TASK_BOARD_REMOTE_CHANNEL),
-			bridge: this.bridge,
-			isWindowFolder: uri => this.switchService.repositories.some(repository => isEqual(repository.uri, uri))
-				|| paradisListSpaces(this.switchService.repositories, this.worktreeService).some(space => isEqual(space.uri, uri)),
-			newSessionId: () => generateUuid().replace(/-/g, ''),
-			warn: (message, error) => this.logService.warn(message, error),
-		}));
 		sharedProcessService.registerChannel(PARADIS_TASK_BOARD_WINDOW_CHANNEL, this);
 
 		this._register(this.statusStore.onDidChangeAgentStatuses(() => this.poll()));
@@ -617,9 +604,13 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 
 	private async launch(request: IParadisTaskBoardLaunchRequest, token: CancellationToken): Promise<Result<{ readonly terminal: string }>> {
 		await this.ready;
-		// SSH のウィンドウでは起動しない（IParadisTaskBoardWindowDescription.remote。接続口も選ばないが、念のため）
-		if (this.environmentService.remoteAuthority !== undefined) {
-			return paradisTaskBoardFail('unavailable', 'This Para Code window is connected to a remote host.');
+		// SSH の窓で起動するのは、この窓の中継のセッションの作業場所だけ（URI はセッションの authority とパスから組み立てる）。
+		// 手元のフォルダは起動しない（接続先用のランチャーとポートファイルが付き、MCP と hook が別のペインへ流れたため。PR #425）
+		const remoteTarget = request.relaySessionId !== undefined ? this.relay.launchTarget(request.relaySessionId, request.repoPath) : undefined;
+		if (this.environmentService.remoteAuthority !== undefined ? remoteTarget === undefined : request.relaySessionId !== undefined) {
+			return paradisTaskBoardFail('unavailable', this.environmentService.remoteAuthority !== undefined
+				? 'The folder is not a workspace of a task board session in this SSH window.'
+				: 'This Para Code window is not connected to the SSH host of the task board.');
 		}
 		const agent = this.modelCatalogService.getAgentTemplates().find(candidate => candidate.id === request.agent);
 		if (!agent) {
@@ -644,13 +635,15 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		let rootUri: URI;
 		let stateKey: string;
 		const space = paradisListSpaces(this.switchService.repositories, this.worktreeService)
-			.find(candidate => candidate.uri.scheme === Schemas.file && paradisTaskBoardSamePath(candidate.uri.fsPath, request.repoPath, ignoreCase));
+			.find(candidate => remoteTarget !== undefined
+				? isEqual(candidate.uri, remoteTarget)
+				: candidate.uri.scheme === Schemas.file && paradisTaskBoardSamePath(candidate.uri.fsPath, request.repoPath, ignoreCase));
 		if (space) {
 			rootUri = space.uri;
 			stateKey = space.space;
 		} else {
 			try {
-				const repository = await this.switchService.addRepository(URI.file(request.repoPath));
+				const repository = await this.switchService.addRepository(remoteTarget ?? URI.file(request.repoPath));
 				rootUri = repository.uri;
 				stateKey = repository.id;
 			} catch (error) {

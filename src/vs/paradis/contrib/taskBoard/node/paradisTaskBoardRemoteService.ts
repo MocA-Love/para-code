@@ -323,6 +323,23 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 		session.places.add(dir);
 	}
 
+	/**
+	 * 前のセッションで作ったワークツリーを、このセッションのものとして引き取る（Para Code を開き直した後に返却できるように）。
+	 * 引き取れるのは、ワークツリーの置き場の直下にあり、持ち主が自分で、同じリポジトリ（common dir が同じ）の作業ツリーの
+	 * 一番上だけ。呼ぶのは、ワークツリーを作ったと記録している手元の窓だけ。
+	 */
+	async adoptWorktree(sessionId: unknown, place: unknown): Promise<void> {
+		const session = this.session(sessionId);
+		const dir = checkAbsolute(place);
+		if (session.worktreeRoot === undefined || dirname(dir) !== session.worktreeRoot) {
+			throw new ParadisTaskBoardRemoteError('denied', 'only worktrees directly under the worktree folder can be adopted');
+		}
+		await this.checkOwnedDirectory(dir);
+		await this.checkSameRepository(session, dir);
+		session.places.add(dir);
+		session.createdWorktrees.add(dir);
+	}
+
 	private session(sessionId: unknown): ISession {
 		const session = this.sessions.get(checkId(sessionId, SESSION_ID, 'session id'));
 		if (!session || session.closed) {
@@ -422,8 +439,9 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 			await this.checkHostDefaultBranch(session, dir, (op as { branch: string }).branch);
 		}
 		const result = await this.enqueueGit(session, () => this.execGit(plan.args, plan.network || plan.hooks ? this.timeouts.gitLongMs : this.timeouts.gitShortMs));
+		// URL の利用者の部分（トークン）を、ボードへ渡る出力から外す
 		if (kind === 'remoteUrl') {
-			return { ...result, stdout: paradisTaskBoardRemoteStripUrlCredentials(result.stdout) };
+			return { ...result, stdout: paradisTaskBoardRemoteStripUrlCredentials(result.stdout), stderr: paradisTaskBoardRemoteStripUrlCredentials(result.stderr) };
 		}
 		if (worktreeDir !== undefined && result.code === 0 && !session.closed) {
 			if (kind === 'worktreeAdd') {
@@ -435,7 +453,7 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 				session.places.delete(worktreeDir);
 			}
 		}
-		return result;
+		return { ...result, stderr: paradisTaskBoardRemoteStripUrlCredentials(result.stderr) };
 	}
 
 	/**
@@ -962,6 +980,7 @@ export class ParadisTaskBoardRemoteChannel<TContext> implements IServerChannel<T
 			case 'closeSession': return this.service.closeSession(args[0]) as T;
 			case 'heartbeat': return this.service.heartbeat(args[0]) as T;
 			case 'registerPlace': return this.service.registerPlace(args[0], args[1]) as Promise<T>;
+			case 'adoptWorktree': return this.service.adoptWorktree(args[0], args[1]) as Promise<T>;
 			case 'git': return this.service.git(args[0], args[1], args[2]) as Promise<T>;
 			case 'readFile': return this.service.readFile(args[0], args[1], args[2], args[3]) as Promise<T>;
 			case 'writeFile': return this.service.writeFile(args[0], args[1], args[2], args[3]) as Promise<T>;
