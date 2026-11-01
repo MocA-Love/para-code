@@ -78,6 +78,40 @@ export function paradisIsExtensionPageHeld(webContents: object): boolean {
 	return held.has(webContents);
 }
 
+/**
+ * 利用者が設定でオンにした「共有中のタブでも拡張機能の画面を出す」（既定はオフ）。オンの間は、手にしているタブの横の
+ * サイドパネルと、手にしているタブの中に拡張機能が差す枠（iframe）を止めない。ページ本体を拡張のページへ移すこと・
+ * 拡張のページを新しいタブで開くことは、オンでも止める。
+ */
+let extensionUiAllowedWhileHeld = false;
+const extensionUiAllowedListeners = new Set<() => void>();
+
+/** 設定の値を入れる（electron-main の拡張機能の管理が、起動時と設定が変わったときに呼ぶ）。 */
+export function paradisSetExtensionUiAllowedWhileHeld(allowed: boolean): void {
+	if (extensionUiAllowedWhileHeld === allowed) {
+		return;
+	}
+	extensionUiAllowedWhileHeld = allowed;
+	for (const listener of [...extensionUiAllowedListeners]) {
+		try {
+			listener();
+		} catch {
+			// 知らせる先の失敗で、値の更新を止めない
+		}
+	}
+}
+
+/** 共有中のタブでも拡張機能のサイドパネルと枠を出してよいか。 */
+export function paradisIsExtensionUiAllowedWhileHeld(): boolean {
+	return extensionUiAllowedWhileHeld;
+}
+
+/** 上の値が変わったときに呼ぶ。返り値を呼ぶと外れる。 */
+export function paradisOnDidChangeExtensionUiAllowedWhileHeld(listener: () => void): { dispose(): void } {
+	extensionUiAllowedListeners.add(listener);
+	return { dispose: () => extensionUiAllowedListeners.delete(listener) };
+}
+
 /** 止めたことを利用者へ知らせる先を置く（無ければ知らせない）。 */
 export function paradisSetExtensionPageBlockedListener(webContents: object, listener: (() => void) | undefined): void {
 	if (listener) {

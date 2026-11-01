@@ -1003,6 +1003,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.browser.extensions.allowWhileShared',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserExtensionsAllowWhileShared', "（試験的）エージェントと共有中のタブでも拡張機能の画面を出す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserExtensionsAllowWhileSharedDesc', "共有中のタブでも、拡張機能のサイドパネルや、パスワード管理の候補などの小さな画面を出します。オンにすると、エージェントが撮るスクリーンショットに候補（アカウント名など）が写ることがあり、エージェントが画面の位置を指定してクリックすると候補を選べてしまいます。"),
+		keywords: 'browser chrome extensions experimental side panel iframe shared agent 1password',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.browserExtensionsManage', "ブラウザの拡張機能"),
 		// allow-any-unicode-next-line
