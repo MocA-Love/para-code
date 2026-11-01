@@ -65,20 +65,39 @@ export function paradisParseTaskBoardRelaySessionRegistration(value: unknown): I
 }
 
 /**
- * 2 本目で通す、読むだけの git の操作（common/paradisTaskBoardRemote.ts の ParadisTaskBoardRemoteGitOp の一部）。
- * 書き換える操作・コマンド・push は、窓の確認が入る後の PR まで「まだ使えません」で断る。
+ * 窓が通す git の操作（common/paradisTaskBoardRemote.ts の ParadisTaskBoardRemoteGitOp の一部）。読むだけの操作と、
+ * ワークツリー・ブランチの用意（3 本目）。コミット・push は、窓の確認が入る後の PR まで「まだ使えません」で断る。
  */
-const READ_ONLY_GIT_KINDS: ReadonlySet<string> = new Set(['toplevel', 'commonDir', 'remoteUrl', 'defaultBranch', 'status', 'currentBranch', 'refExists', 'aheadCount', 'boardDirTracked', 'worktreeList']);
+const RELAYED_GIT_KINDS: ReadonlySet<string> = new Set([
+	'toplevel', 'commonDir', 'remoteUrl', 'defaultBranch', 'status', 'currentBranch', 'refExists', 'aheadCount', 'boardDirTracked', 'worktreeList',
+	'fetch', 'worktreeAdd', 'worktreeRemove', 'switch', 'mergeFfOnly', 'detach',
+]);
 
-/** 中継で受ける操作（組み直した後の形）。 */
+/** 中継で受ける操作（組み直した後の形）。`place` は作業場所の root（窓が自分の記録と照らす）。 */
 export type ParadisTaskBoardRelayOp =
-	| { readonly kind: 'git'; readonly git: Readonly<Record<string, unknown>> }
-	| { readonly kind: 'readFile'; readonly path: string; readonly maxBytes: number | undefined };
+	| { readonly kind: 'sessionInfo' }
+	| { readonly kind: 'git'; readonly place: string; readonly git: Readonly<Record<string, unknown>> }
+	| { readonly kind: 'readFile'; readonly place: string; readonly path: string; readonly maxBytes: number | undefined }
+	| { readonly kind: 'writeFile'; readonly path: string; readonly content: string }
+	| { readonly kind: 'resetBoardDir'; readonly place: string; readonly taskId: string }
+	| { readonly kind: 'excludeBoardDir'; readonly place: string };
 
 /** 中継の依頼（組み直した後の形）。 */
 export interface IParadisTaskBoardRelayRequest {
 	readonly sessionId: string;
 	readonly op: ParadisTaskBoardRelayOp;
+}
+
+/** `sessionInfo` の答え。ボードはワークツリーの置き場や origin を自分で計算せず、これを使う（ずれないように）。 */
+export interface IParadisTaskBoardRelaySessionInfo {
+	readonly root: string;
+	readonly worktreeRoot: string;
+	readonly defaultBranch: string | undefined;
+	/** 認証情報を外した origin の URL（fetch と push）。 */
+	readonly originFetch: string | undefined;
+	readonly originPush: string | undefined;
+	/** 前のセッションで作って、引き取ったワークツリー。 */
+	readonly worktrees: readonly string[];
 }
 
 export type ParadisTaskBoardRelayParse =
@@ -96,7 +115,7 @@ function rev(value: unknown): Record<string, unknown> | undefined {
 	return (kind === 'local' || kind === 'remote') && typeof branch === 'string' ? { kind, branch } : undefined;
 }
 
-/** 読むだけの git の操作を、種類ごとに決まった欄だけで組み直す。値の形は REH が確かめる。 */
+/** git の操作を、種類ごとに決まった欄だけで組み直す。値の形（ブランチ名・パス）は REH が確かめる。 */
 function rebuildGit(value: unknown): Record<string, unknown> | 'invalid' | 'unavailable' {
 	if (!value || typeof value !== 'object') {
 		return 'invalid';
@@ -105,11 +124,13 @@ function rebuildGit(value: unknown): Record<string, unknown> | 'invalid' | 'unav
 	if (typeof op.kind !== 'string') {
 		return 'invalid';
 	}
-	if (!READ_ONLY_GIT_KINDS.has(op.kind)) {
+	if (!RELAYED_GIT_KINDS.has(op.kind)) {
 		return 'unavailable';
 	}
+	const mode = op.mode === 'existing' || op.mode === 'track' || op.mode === 'new' ? op.mode : undefined;
 	switch (op.kind) {
 		case 'remoteUrl': return { kind: op.kind, push: op.push === true };
+		case 'fetch': return { kind: op.kind, prune: op.prune === true };
 		case 'refExists': {
 			const r = rev(op.rev);
 			return r ? { kind: op.kind, rev: r } : 'invalid';
@@ -119,13 +140,36 @@ function rebuildGit(value: unknown): Record<string, unknown> | 'invalid' | 'unav
 			const head = rev(op.head);
 			return base && head ? { kind: op.kind, base, head } : 'invalid';
 		}
+		case 'detach': {
+			const base = rev(op.base);
+			return base ? { kind: op.kind, base } : 'invalid';
+		}
+		case 'mergeFfOnly': return typeof op.branch === 'string' ? { kind: op.kind, branch: op.branch } : 'invalid';
+		case 'worktreeRemove': return typeof op.dir === 'string' ? { kind: op.kind, dir: op.dir } : 'invalid';
+		case 'worktreeAdd':
+		case 'switch': {
+			if (typeof op.branch !== 'string' || mode === undefined || (op.kind === 'worktreeAdd' && typeof op.dir !== 'string')) {
+				return 'invalid';
+			}
+			const base = mode === 'new' ? rev(op.base) : undefined;
+			if (mode === 'new' && !base) {
+				return 'invalid';
+			}
+			return { kind: op.kind, ...(op.kind === 'worktreeAdd' ? { dir: op.dir } : {}), branch: op.branch, mode, ...(base ? { base } : {}) };
+		}
 		default: return { kind: op.kind };
 	}
 }
 
+const TASK_ID = /^[A-Za-z0-9._:-]{1,200}$/;
+
+function place(record: Record<string, unknown>): string | undefined {
+	return typeof record.place === 'string' && record.place.startsWith('/') && record.place.length <= 4096 ? record.place : undefined;
+}
+
 /**
  * ボードから来た中継の依頼を解く。許す欄だけを取り出して新しいオブジェクトに組み直す（余分な欄は REH まで届かない）。
- * 読むだけの git と readFile 以外は `unavailable`。
+ * 通さない操作（コミット・push・コマンド）は `unavailable`。
  */
 export function paradisParseTaskBoardRelayRequest(body: unknown): ParadisTaskBoardRelayParse {
 	if (!body || typeof body !== 'object') {
@@ -139,8 +183,14 @@ export function paradisParseTaskBoardRelayRequest(body: unknown): ParadisTaskBoa
 		return { ok: false, code: 'invalid', message: 'op must be an object.' };
 	}
 	const record = op as Record<string, unknown>;
+	const at = place(record);
+	const invalidPlace = { ok: false, code: 'invalid', message: 'place must be an absolute path.' } as const;
 	switch (record.kind) {
+		case 'sessionInfo': return { ok: true, value: { sessionId, op: { kind: 'sessionInfo' } } };
 		case 'git': {
+			if (at === undefined) {
+				return invalidPlace;
+			}
 			const git = rebuildGit(record.git);
 			if (git === 'invalid') {
 				return { ok: false, code: 'invalid', message: 'The git operation is not valid.' };
@@ -148,9 +198,12 @@ export function paradisParseTaskBoardRelayRequest(body: unknown): ParadisTaskBoa
 			if (git === 'unavailable') {
 				return { ok: false, code: 'unavailable', message: 'This git operation is not available over SSH yet.' };
 			}
-			return { ok: true, value: { sessionId, op: { kind: 'git', git } } };
+			return { ok: true, value: { sessionId, op: { kind: 'git', place: at, git } } };
 		}
 		case 'readFile': {
+			if (at === undefined) {
+				return invalidPlace;
+			}
 			if (typeof record.path !== 'string' || paradisTaskBoardRemoteRelativePathError(record.path) !== undefined) {
 				return { ok: false, code: 'invalid', message: 'path must be a relative path inside the workspace.' };
 			}
@@ -159,7 +212,26 @@ export function paradisParseTaskBoardRelayRequest(body: unknown): ParadisTaskBoa
 				return { ok: false, code: 'rejected', message: 'The task board may read only files in .para/ and the flow files.' };
 			}
 			const maxBytes = typeof record.maxBytes === 'number' && Number.isSafeInteger(record.maxBytes) && record.maxBytes > 0 ? record.maxBytes : undefined;
-			return { ok: true, value: { sessionId, op: { kind: 'readFile', path: record.path, maxBytes } } };
+			return { ok: true, value: { sessionId, op: { kind: 'readFile', place: at, path: record.path, maxBytes } } };
+		}
+		case 'writeFile': {
+			// 書けるのはリポジトリのフローの定義だけ（`.para/` への書き込みは resetBoardDir が行う）
+			if (typeof record.path !== 'string' || typeof record.content !== 'string' || record.content.length > 1024 * 1024 || !/^(\.para-code\/paracode\.json|\.para-code\/[A-Za-z0-9-]{1,39}\/workflows\.json)$/.test(record.path)) {
+				return { ok: false, code: 'rejected', message: 'The task board may write only the flow files.' };
+			}
+			return { ok: true, value: { sessionId, op: { kind: 'writeFile', path: record.path, content: record.content } } };
+		}
+		case 'resetBoardDir': {
+			if (at === undefined || typeof record.taskId !== 'string' || !TASK_ID.test(record.taskId)) {
+				return { ok: false, code: 'invalid', message: 'place and taskId are required.' };
+			}
+			return { ok: true, value: { sessionId, op: { kind: 'resetBoardDir', place: at, taskId: record.taskId } } };
+		}
+		case 'excludeBoardDir': {
+			if (at === undefined) {
+				return invalidPlace;
+			}
+			return { ok: true, value: { sessionId, op: { kind: 'excludeBoardDir', place: at } } };
 		}
 		default:
 			return { ok: false, code: 'unavailable', message: 'This operation is not available over SSH yet.' };

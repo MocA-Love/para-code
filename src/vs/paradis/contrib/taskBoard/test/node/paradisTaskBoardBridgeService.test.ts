@@ -58,6 +58,8 @@ function parseEvents(chunks: readonly string[]): unknown[] {
 suite('ParadisTaskBoardBridgeService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
+	let relayLaunches: string[] = [];
+
 	function create(router: FakeRouter): ParadisTaskBoardBridgeService {
 		return disposables.add(new ParadisTaskBoardBridgeService(router, {
 			directoryExists: async path => path === '/repo' || path === '/other',
@@ -65,6 +67,8 @@ suite('ParadisTaskBoardBridgeService', () => {
 			newId: () => 'reply-1',
 			replyTimeoutMs: 50,
 			disconnectGraceMs: 10,
+			relaySessionWindow: (sessionId, keyHash) => sessionId === 'session-0123456789abcdef' && keyHash === 'board-a' ? 'window:2' : undefined,
+			onRelayLaunch: (request, outcome, reason) => relayLaunches.push(`${request.launchId} ${outcome} ${reason ?? ''}`),
 		}, undefined));
 	}
 
@@ -125,6 +129,22 @@ suite('ParadisTaskBoardBridgeService', () => {
 		const service = create(router);
 		await launch(service, '/other');
 		assert.deepStrictEqual(router.calls.filter(call => call.method === 'launch').map(call => call.ctx), ['window:2']);
+	});
+
+	test('a relay launch goes only to the window of the session for the board that owns it, without looking at local folders', async () => {
+		const router = new FakeRouter();
+		relayLaunches = [];
+		const service = create(router);
+		const body = (launchId: string) => ({ launchId, repoPath: '/home/u/remote-only', agent: 'claude', prompt: 'work', relaySessionId: 'session-0123456789abcdef' });
+		const own = await service.handle('POST', '/v1/launch', new URLSearchParams(), body('R1'), 'board-a');
+		const other = await service.handle('POST', '/v1/launch', new URLSearchParams(), body('R2'), 'board-b');
+		const noKey = await service.handle('POST', '/v1/launch', new URLSearchParams(), body('R3'));
+		assert.deepStrictEqual({
+			statuses: [own.status, other.status, noKey.status],
+			launched: router.calls.filter(call => call.method === 'launch').map(call => call.ctx),
+			describedFirst: router.calls.some(call => call.method === 'describe'),
+			audited: relayLaunches,
+		}, { statuses: [200, 404, 404], launched: ['window:2'], describedFirst: false, audited: ['R1 allowed ', 'R2 denied unknown-session', 'R3 denied unknown-session'] });
 	});
 
 	test('launch never picks a remote (SSH) window, and refuses when only remote windows are open', async () => {

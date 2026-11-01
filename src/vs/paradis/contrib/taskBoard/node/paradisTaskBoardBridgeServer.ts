@@ -236,7 +236,7 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 		if (url.pathname === '/v1/relay') {
 			return this.respond(response, method === 'POST' ? await this.relay.handle(body, verdict.keyHash) : { status: 405, body: { error: 'method-not-allowed' } });
 		}
-		this.respond(response, await this.service.handle(method, url.pathname, url.searchParams, body));
+		this.respond(response, await this.service.handle(method, url.pathname, url.searchParams, body, verdict.keyHash));
 	}
 
 	/** ボードの鍵と接続元の pid を確かめる。中継の依頼を断ったときは監査ログに残す。 */

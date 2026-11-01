@@ -170,7 +170,7 @@ afterEach(() => {
 	}
 });
 
-async function setup(useRunner = false, hangEvents = 0, boardKey?: string) {
+async function setup(useRunner = false, hangEvents = 0, boardKey?: string, relay?: { relaySessionId: () => string | undefined; readArtifact: (place: string, relativePath: string, maxBytes: number) => Promise<Buffer | undefined> }) {
 	const dir = mkdtempSync(path.join(os.tmpdir(), 'tb-bridge-'));
 	const place = path.join(dir, 'clone');
 	mkdirSync(place);
@@ -180,7 +180,7 @@ async function setup(useRunner = false, hangEvents = 0, boardKey?: string) {
 	bridge.hangEvents = hangEvents;
 	let engine!: TaskBoardEngine;
 	const placePath = (task: ITaskBoardTask) => engine.getSlots().find(s => s.id === task.place)?.path;
-	const agents = new ParaCodeAgents({ engine: () => engine, placePath, bridgeFile: bridge.file, boardKey, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100, stall: 50 } });
+	const agents = new ParaCodeAgents({ engine: () => engine, placePath, bridgeFile: bridge.file, boardKey, ...relay, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100, stall: 50 } });
 	const noop = new NoopPorts();
 	const runner = useRunner ? new CommandRunner({ engine: () => engine, placePath, repoPath: place, repo: undefined }) : noop;
 	let seq = 0;
@@ -349,6 +349,29 @@ describe('ParaCodeBridgeClient', () => {
 		const { bridge, agents } = await setup(false, 0, 'k'.repeat(43));
 		await agents.client.request('GET', '/v1/terminals');
 		expect({ count: bridge.boardKeys.length >= 2, keys: [...new Set(bridge.boardKeys)] }).toEqual({ count: true, keys: ['k'.repeat(43)] });
+	});
+});
+
+describe('ParaCodeAgents on an SSH host', () => {
+	test('launches with the relay session and reads screenshots through the relay only when they are images', async () => {
+		const reads: string[] = [];
+		const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('rest')]);
+		const { engine, bridge, id, place } = await setup(false, 0, undefined, {
+			relaySessionId: () => 'session-0123456789abcdef',
+			readArtifact: async (at, relativePath) => {
+				reads.push(`${at === place ? 'place' : at}:${relativePath}`);
+				return relativePath.endsWith('fake.png') ? Buffer.from('-----BEGIN OPENSSH PRIVATE KEY-----') : png;
+			},
+		});
+		engine.start(id, { agent: 'claude' });
+		await until(() => bridge.routes().includes('/v1/launch'));
+		expect(bridge.requests.find(r => r.route === '/v1/launch')!.body.relaySessionId).toBe('session-0123456789abcdef');
+		bridge.emit({ type: 'report', terminal: 't_1', replyId: 'r1', tool: 'complete_step', args: { summary: 's', artifacts: [{ kind: 'screenshot', title: 'x', path: '.para/fake.png' }] } });
+		await until(() => bridge.replies.length === 1);
+		bridge.emit({ type: 'report', terminal: 't_1', replyId: 'r2', tool: 'complete_step', args: { summary: 's', artifacts: [{ kind: 'screenshot', title: 'x', path: '.para/shot.png' }] } });
+		await until(() => bridge.replies.length === 2);
+		expect({ replies: bridge.replies.map(r => r.ok), reads, artifact: engine.getTask(id)!.artifacts[0]?.content?.slice(0, 22) })
+			.toEqual({ replies: [false, true], reads: ['place:.para/fake.png', 'place:.para/shot.png'], artifact: 'data:image/png;base64,' });
 	});
 });
 

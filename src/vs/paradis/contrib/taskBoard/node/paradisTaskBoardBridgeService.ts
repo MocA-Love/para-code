@@ -74,6 +74,10 @@ export interface IParadisTaskBoardBridgeOptions {
 	readonly ignorePathCase: boolean;
 	/** 報告の返事の ID を作る。 */
 	newId(): string;
+	/** SSH の中継のセッションを作った窓（ctx）。セッションが無いか、鍵の違うボードなら undefined。 */
+	relaySessionWindow?(sessionId: string, keyHash: string): string | undefined;
+	/** SSH の中継の起動を監査ログに残す（設計書 3 節: スペースとエージェントの種類）。 */
+	onRelayLaunch?(request: IParadisTaskBoardLaunchRequest, outcome: 'allowed' | 'denied' | 'failed', reason: string | undefined): void;
 	/** 報告の返事を待つ上限（テストで短くする）。 */
 	readonly replyTimeoutMs?: number;
 	/** ウィンドウとの接続が切れてから、そのウィンドウのターミナルを終わったとみなすまで（再読み込みを待つ）。 */
@@ -171,13 +175,14 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 	// --- HTTP ----------------------------------------------------------------------------------
 
 	/** 解析済みの要求に答える（`/v1/events` は {@link addEventClient}）。 */
-	async handle(method: string, pathname: string, query: URLSearchParams, body: unknown): Promise<IParadisTaskBoardHttpResponse> {
+	/** `keyHash` は接続口が確かめたボードの鍵（SSH の中継の起動で、セッションの持ち主か確かめる）。 */
+	async handle(method: string, pathname: string, query: URLSearchParams, body: unknown, keyHash?: string): Promise<IParadisTaskBoardHttpResponse> {
 		const route = `${method} ${pathname}`;
 		switch (route) {
 			case 'GET /v1/health': return this.health();
 			case 'GET /v1/terminals': return ok({ terminals: this.liveTerminals() });
 			case 'GET /v1/screen': return this.screen(query.get('terminal'));
-			case 'POST /v1/launch': return this.launch(body);
+			case 'POST /v1/launch': return this.launch(body, keyHash);
 			case 'POST /v1/send': {
 				const parsed = paradisParseTaskBoardSend(body);
 				if (!parsed.ok) {
@@ -232,7 +237,7 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		return [...this.terminals.values()].map(entry => ({ terminal: entry.terminal, launchId: entry.launchId, tag: entry.tag ?? entry.launchId, repoPath: entry.repoPath, agent: entry.agent, status: entry.status }));
 	}
 
-	private launch(body: unknown): Promise<IParadisTaskBoardHttpResponse> {
+	private launch(body: unknown, keyHash: string | undefined): Promise<IParadisTaskBoardHttpResponse> {
 		const parsed = paradisParseTaskBoardLaunch(body);
 		if (!parsed.ok) {
 			return Promise.resolve(error('invalid', parsed.message));
@@ -247,14 +252,26 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		if (running) {
 			return running;
 		}
-		const launching = this.doLaunch(request).finally(() => this.launching.delete(request.launchId));
+		const launching = this.doLaunch(request, keyHash).finally(() => this.launching.delete(request.launchId));
 		this.launching.set(request.launchId, launching);
 		return launching;
 	}
 
-	private async doLaunch(request: IParadisTaskBoardLaunchRequest): Promise<IParadisTaskBoardHttpResponse> {
+	private async doLaunch(request: IParadisTaskBoardLaunchRequest, keyHash: string | undefined): Promise<IParadisTaskBoardHttpResponse> {
 		if (this.terminals.size >= MAX_TERMINALS) {
 			return error('rejected', 'Too many terminals started by the task board are still open. Close some first.');
+		}
+		if (request.relaySessionId !== undefined) {
+			// SSH の中継: 宛先はセッションを作った窓だけ（依頼に書かれた authority やパスでは選ばない）。パスは窓が確かめる
+			const ctx = keyHash !== undefined ? this.options.relaySessionWindow?.(request.relaySessionId, keyHash) : undefined;
+			if (ctx === undefined) {
+				this.options.onRelayLaunch?.(request, 'denied', 'unknown-session');
+				return error('not-found', 'The relay session is not open.');
+			}
+			const response = await this.launchIn(ctx, request);
+			const failure = response.status === 200 ? undefined : String((response.body as { error?: unknown }).error ?? response.status);
+			this.options.onRelayLaunch?.(request, failure === undefined ? 'allowed' : failure === 'unavailable' || failure === 'failed' ? 'failed' : 'denied', failure);
+			return response;
 		}
 		if (!(await this.options.directoryExists(request.repoPath))) {
 			return error('invalid', 'repoPath is not an existing folder.');
@@ -276,6 +293,11 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		if (!target) {
 			return error('unavailable', 'No Para Code window is open.');
 		}
+		return this.launchIn(target.ctx, request);
+	}
+
+	private async launchIn(ctx: string, request: IParadisTaskBoardLaunchRequest): Promise<IParadisTaskBoardHttpResponse> {
+		const target = { ctx };
 		let result: ParadisTaskBoardResult<{ readonly terminal: string }>;
 		try {
 			result = await this.router.call<ParadisTaskBoardResult<{ readonly terminal: string }>>(target.ctx, 'launch', request, LAUNCH_TIMEOUT_MS);

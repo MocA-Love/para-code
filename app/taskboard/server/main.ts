@@ -18,7 +18,8 @@ import { GitHubClient, GitHubError, ghTokenProvider, redactGitHubSecrets } from 
 import { GitHubSync, parseRemote, type IRepoSlug } from './githubSync.js';
 import { addClaudeApprovals, claudeApprovalStates, ClaudeConfigError } from './claudeApproval.js';
 import { addCodexApprovals, codexApprovalStates, CodexConfigError } from './codexApproval.js';
-import { ParaCodeAgents } from './paraCode.js';
+import { ParaCodeAgents, ParaCodeBridgeClient } from './paraCode.js';
+import { RELAY_UNSUPPORTED, RelayClient, RelayUnsupportedRunner, RemoteWorkspaces, relayFlowIo, type IRelaySessionInfo } from './relay.js';
 import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
@@ -135,6 +136,8 @@ const { values: args } = parseArgs({
 		// Para Code が起動したボード。鍵は IPC で受け取り、起動の合図も IPC で返す（鍵付きの URL を出力しない）。
 		// 親（Para Code）との IPC が切れたら止まる
 		embedded: { type: 'boolean', default: false },
+		// SSH の窓のボード（--embedded と一緒に使う）。リポジトリは接続先にあり、IPC で受け取った中継のセッションで扱う
+		remote: { type: 'boolean', default: false },
 	},
 	allowPositionals: false,
 });
@@ -165,16 +168,31 @@ let stopCurrent: (() => void) | undefined;
  * Para Code から鍵を受け取る（最初の IPC のメッセージ）。コマンドラインや環境変数に載せると、`ps` や
  * エージェントが走らせるコマンド（`process.env` を受け継ぐ）から読めてしまう。
  */
-function receiveEmbeddedToken(): Promise<{ readonly token: string; readonly boardKey: string | undefined }> {
+/** SSH の窓のボードの対象（Para Code が IPC で渡す）。 */
+interface IEmbeddedRemote {
+	readonly sessionId: string;
+	readonly authority: string;
+	readonly root: string;
+}
+
+function parseEmbeddedRemote(value: unknown): IEmbeddedRemote | undefined {
+	if (!value || typeof value !== 'object') {
+		return undefined;
+	}
+	const { sessionId, authority, root } = value as Record<string, unknown>;
+	return typeof sessionId === 'string' && typeof authority === 'string' && typeof root === 'string' && root.startsWith('/') ? { sessionId, authority, root } : undefined;
+}
+
+function receiveEmbeddedToken(): Promise<{ readonly token: string; readonly boardKey: string | undefined; readonly remote: IEmbeddedRemote | undefined }> {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error('Para Code did not send the key')), 30_000);
 		process.once('message', (message: unknown) => {
 			clearTimeout(timer);
-			const init = (message as { type?: unknown } | undefined)?.type === 'init' ? message as { token?: unknown; boardKey?: unknown } : undefined;
+			const init = (message as { type?: unknown } | undefined)?.type === 'init' ? message as { token?: unknown; boardKey?: unknown; remote?: unknown } : undefined;
 			const token = init?.token;
 			if (typeof token === 'string' && token.length >= 16) {
 				// boardKey: Para Code の接続口へ送る、起動ごとの鍵（無ければ接続口は断る）
-				resolve({ token, boardKey: typeof init?.boardKey === 'string' ? init.boardKey : undefined });
+				resolve({ token, boardKey: typeof init?.boardKey === 'string' ? init.boardKey : undefined, remote: parseEmbeddedRemote(init?.remote) });
 			} else {
 				reject(new Error('Para Code sent an invalid key'));
 			}
@@ -274,6 +292,12 @@ interface IRestart {
 let embeddedToken: string | undefined;
 /** `--embedded` のとき、Para Code の接続口へ送る鍵（ボードを起動するたびに Para Code が作る）。 */
 let embeddedBoardKey: string | undefined;
+/** `--embedded --remote` のとき、SSH の窓の中継のセッション。 */
+let embeddedRemote: IEmbeddedRemote | undefined;
+/** 今の中継のセッション（SSH の窓を再読み込みすると、Para Code が ipc で新しいものを知らせる）。 */
+let currentRelaySessionId: string | undefined;
+/** 今の中継の口（セッションを差し替えるため）。 */
+let currentRelay: RelayClient | undefined;
 
 /** 起動したときのリポジトリ。切り替えてから戻ってきたときは、起動時の引数（台帳・クローン・ワークツリーの置き場）を使う。 */
 let startupRepo: string | undefined;
@@ -286,8 +310,20 @@ async function main(restart?: IRestart): Promise<void> {
 	const demo = !restart && args.demo;
 	// <img> とモックの <iframe> の URL に付ける、読むだけの鍵（スナップショットで画面へ渡す。早く作っておく）
 	const assetKey = randomBytes(24).toString('base64url');
-	let repoPath = demo ? undefined : await resolveRepo(restart?.repo);
-	if (args.embedded && !restart && repoPath) {
+	// SSH の窓のボード: リポジトリは接続先にあり、git もファイルも中継で扱う（relay.ts）。リポジトリの切り替えはしない
+	const remoteTarget = args.remote && !restart ? embeddedRemote : undefined;
+	let relay: RelayClient | undefined;
+	let relayInfo: IRelaySessionInfo | undefined;
+	if (remoteTarget) {
+		// 接続口へは窓が鍵を登録してから入れるので、それまでの 403・404 はやり直す（SSE は使わない口）
+		const relayBridge = new ParaCodeBridgeClient({ bridgeFile: args.bridge, boardKey: embeddedBoardKey, onEvent: () => undefined, onConnection: () => undefined });
+		relay = RelayClient.of(relayBridge, currentRelaySessionId ?? remoteTarget.sessionId);
+		currentRelay = relay;
+		relayInfo = await relay.waitForSession();
+	}
+	const remoteIo = relay && relayInfo ? relayFlowIo(relay, relayInfo.root) : undefined;
+	let repoPath = demo ? undefined : relayInfo ? relayInfo.root : await resolveRepo(restart?.repo);
+	if (args.embedded && !restart && repoPath && !remoteTarget) {
 		// Para Code の今のスペースから開く。ワークツリー（Para Code の新しいスペースやボードの作業場所）なら本体のリポジトリで
 		// 開き、ボードのクローンなら断る（別の空の台帳と、ワークツリーのさらにワークツリーができてしまう）
 		repoPath = await mainRepository(repoPath);
@@ -302,15 +338,19 @@ async function main(restart?: IRestart): Promise<void> {
 	}
 	// 起動したリポジトリへ戻ってきたら、起動時の引数をそのまま使う（別の台帳を開いて元のタスクが見えなくならないように）
 	const fresh = !restart || (repoPath !== undefined && repoPath === startupRepo);
-	const remote: IRepoSlug | undefined = repoPath ? parseRemote(await remoteUrl(repoPath)) : undefined;
-	const store = new Store(dataDir(repoPath ?? (demo ? 'demo' : undefined), fresh ? args.data : undefined));
+	// G0: SSH のボードの owner/repo は、起動時に窓が返した origin から決めて固定する（後から作業場所の origin を読み直さない）
+	const remote: IRepoSlug | undefined = relayInfo ? parseRemote(relayInfo.originFetch) : repoPath ? parseRemote(await remoteUrl(repoPath)) : undefined;
+	// 台帳の鍵: 手元と接続先の同じパスが同じ台帳にならないように、SSH のボードは接続先の URI で分ける
+	const ledgerKey = remoteTarget && repoPath ? `vscode-remote://${remoteTarget.authority}${repoPath}` : repoPath;
+	const store = new Store(dataDir(ledgerKey ?? (demo ? 'demo' : undefined), fresh ? args.data : undefined));
 	// 同じリポジトリを開いているボードがほかにあれば断る（両方のエンジンが同じ台帳と作業場所を使ってしまう）
 	if (!demo) {
 		await store.lock(args.embedded ? 'embedded' : 'standalone');
 	}
 	const settings: ILocalSettings = (await store.loadSettings()) ?? {};
-	const clones = args.clones && fresh ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
-	const worktreeRoot = (fresh ? args['worktree-root'] : undefined) ?? settings.worktreeRoot ?? (repoPath ? path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`) : '');
+	// SSH のボードは clone を使わず、ワークツリーの置き場は窓が決めたもの
+	const clones = relayInfo ? undefined : args.clones && fresh ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
+	const worktreeRoot = relayInfo ? relayInfo.worktreeRoot : (fresh ? args['worktree-root'] : undefined) ?? settings.worktreeRoot ?? (repoPath ? path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`) : '');
 	if (args.agents !== 'simulated' && args.agents !== 'para-code') {
 		throw new Error('--agents は simulated か para-code');
 	}
@@ -323,7 +363,7 @@ async function main(restart?: IRestart): Promise<void> {
 	if (args['real-workspaces'] && !repoPath) {
 		throw new Error('--real-workspaces needs --repo');
 	}
-	if (args.clones && !args.demo && fresh) {
+	if (args.clones && !args.demo && fresh && !relayInfo) {
 		await store.saveSettings({ ...settings, clones });
 	}
 
@@ -357,6 +397,8 @@ async function main(restart?: IRestart): Promise<void> {
 		placePath,
 		bridgeFile: args.bridge,
 		boardKey: embeddedBoardKey,
+		relaySessionId: remoteTarget ? () => currentRelaySessionId : undefined,
+		readArtifact: relay ? (place, relativePath, maxBytes) => relay!.readFile(place, relativePath, maxBytes) : undefined,
 		onConnection: (connected, detail) => {
 			bridgeState = { connected, detail };
 			log(connected ? 'Para Code につながりました' : `Para Code: ${detail ?? '切断'}`);
@@ -365,8 +407,8 @@ async function main(restart?: IRestart): Promise<void> {
 	}) : undefined;
 	const useGitHub = !demo && !args['no-github'];
 	const client = useGitHub ? new GitHubClient({ token: ghTokenProvider() }) : undefined;
-	const commandRunner = paraCodeMode ? new CommandRunner({ engine: () => engine, placePath, repoPath: repoPath!, repo: remote, github: client }) : undefined;
-	const gitWorkspaces = realWorkspaces ? new GitWorkspaces(repoPath!, worktreeRoot) : undefined;
+	const commandRunner = relay ? new RelayUnsupportedRunner(() => engine) : paraCodeMode ? new CommandRunner({ engine: () => engine, placePath, repoPath: repoPath!, repo: remote, github: client }) : undefined;
+	const gitWorkspaces = relay && relayInfo ? new RemoteWorkspaces(relay, relayInfo) : realWorkspaces ? new GitWorkspaces(repoPath!, worktreeRoot) : undefined;
 	/** 止めるときに解除するタイマー（開き直した後も古いエンジンが動き出さないように）。 */
 	const timers: NodeJS.Timeout[] = [];
 	engine = new TaskBoardEngine({
@@ -404,7 +446,8 @@ async function main(restart?: IRestart): Promise<void> {
 			broadcastSoon();
 		}
 	};
-	if (paraCodeMode) {
+	// 「常に許可」は手元の設定を読み書きするので、SSH のボードでは出さない（接続先の担当は接続先の設定を読む）
+	if (paraCodeMode && !relay) {
 		void refreshCodexApproval();
 		void refreshClaudeApproval();
 		timers.push(setInterval(() => void refreshCodexApproval(), 60000).unref());
@@ -445,7 +488,7 @@ async function main(restart?: IRestart): Promise<void> {
 	// 認証は時間がかかることがあるので、フロー（個人のフォルダにログイン名が要る）の読み込みと並べて待つ
 	const loginPromise = client ? client.init().catch(err => { log('GitHub:', redactGitHubSecrets(err.message)); return undefined; }) : Promise.resolve(args.login ?? (demo ? 'you' : undefined));
 	const login = await loginPromise;
-	const loaded = await loadFlows(repoPath, login);
+	const loaded = await loadFlows(repoPath, login, remoteIo);
 	for (const problem of loaded.problems) {
 		log(`flow: ${problem.path}: ${problem.message}`);
 	}
@@ -525,8 +568,8 @@ async function main(restart?: IRestart): Promise<void> {
 			const next: ITaskBoardFlow[] = before.some(f => f.id === parsed.id) ? before.map(f => f.id === parsed.id ? parsed : f) : [...before, parsed];
 			engine.setFlows(next, engine.getActiveFlowId());
 			try {
-				const file = await saveFlow(repoPath, login, parsed, p.scope, engine.getActiveFlowId());
-				return { path: path.relative(repoPath, file) };
+				const file = await saveFlow(repoPath, login, parsed, p.scope, engine.getActiveFlowId(), remoteIo);
+				return { path: remoteIo ? path.posix.relative(repoPath, file) : path.relative(repoPath, file) };
 			} catch (err) {
 				engine.setFlows(before, engine.getActiveFlowId(), true);
 				throw new TaskBoardError('io', (err as Error).message);
@@ -535,7 +578,7 @@ async function main(restart?: IRestart): Promise<void> {
 		setActiveFlow: async p => {
 			engine.setActiveFlow(p.flowId);
 			if (repoPath) {
-				await saveActiveFlow(repoPath, login, p.flowId).catch(err => log('save active flow:', err.message));
+				await saveActiveFlow(repoPath, login, p.flowId, remoteIo).catch(err => log('save active flow:', err.message));
 			}
 			void sync?.syncNow();
 		},
@@ -610,6 +653,9 @@ async function main(restart?: IRestart): Promise<void> {
 				throw new TaskBoardError('invalid-state', 'このタスクはコミットを待っていません');
 			}
 			// 待つ間にタスクが進んでも、別の工程をやり直さないように、今の工程と試行を固定する
+			if (relay) {
+				throw new TaskBoardError('invalid-state', `${RELAY_UNSUPPORTED}（ボードからのコミット）`);
+			}
 			const { step: fromStep, attempt: fromAttempt } = task;
 			const cwd = placePath(task);
 			const message = p.message.trim();
@@ -654,6 +700,9 @@ async function main(restart?: IRestart): Promise<void> {
 			engine.reportPullRequest(task.id, { ...task.pr, state: 'open' });
 		},
 		repositories: async () => {
+			if (relay) {
+				return { current: repoPath, items: [] };
+			}
 			let fromParaCode: { path: string; name: string }[] = [];
 			if (paraAgents && bridgeState.connected) {
 				const health = await paraAgents.client.request<{ windows?: { repositories?: { path: string; name: string }[] }[] }>('GET', '/v1/health', undefined, 5000).catch(() => undefined);
@@ -669,8 +718,8 @@ async function main(restart?: IRestart): Promise<void> {
 			return { current: repoPath, items: items.filter((_, i) => !others[i]) };
 		},
 		switchRepository: async p => {
-			if (demo) {
-				throw new TaskBoardError('invalid-state', '見本のボードではリポジトリを切り替えられません');
+			if (demo || relay) {
+				throw new TaskBoardError('invalid-state', relay ? `${RELAY_UNSUPPORTED}（リポジトリの切り替え）` : '見本のボードではリポジトリを切り替えられません');
 			}
 			const target = await git(path.resolve(p.path), ['rev-parse', '--show-toplevel'], 5000).catch(() => undefined);
 			if (!target) {
@@ -698,6 +747,9 @@ async function main(restart?: IRestart): Promise<void> {
 			setTimeout(() => void shutdown(target), 100);
 		},
 		approveCodexTools: async () => {
+			if (relay) {
+				throw new TaskBoardError('invalid-state', `${RELAY_UNSUPPORTED}（常に許可）`);
+			}
 			if (!paraCodeMode) {
 				throw new TaskBoardError('invalid-state', 'Para Code につないで起動したときだけ使えます');
 			}
@@ -728,6 +780,9 @@ async function main(restart?: IRestart): Promise<void> {
 			return { path: written.join(', ') };
 		},
 		approveClaudeTools: async () => {
+			if (relay) {
+				throw new TaskBoardError('invalid-state', `${RELAY_UNSUPPORTED}（常に許可）`);
+			}
 			if (!paraCodeMode) {
 				throw new TaskBoardError('invalid-state', 'Para Code につないで起動したときだけ使えます');
 			}
@@ -984,7 +1039,8 @@ async function main(restart?: IRestart): Promise<void> {
 		void sync.start();
 	}
 	paraAgents?.start();
-	if (repoPath) {
+	// SSH のボードは、手元のリポジトリの切り替えの一覧に入れない
+	if (repoPath && !relay) {
 		void rememberRepository(repoPath, remote ? `${remote.owner}/${remote.repo}` : path.basename(repoPath)).catch(() => undefined);
 	}
 
@@ -1041,7 +1097,18 @@ async function start(): Promise<void> {
 		}
 		// Para Code が落ちた・閉じた（IPC が切れた）ら止まる。リポジトリを切り替えている途中でも効くよう、ここで一度だけ付ける
 		process.once('disconnect', () => stopCurrent ? stopCurrent() : process.exit(0));
-		({ token: embeddedToken, boardKey: embeddedBoardKey } = await receiveEmbeddedToken());
+		({ token: embeddedToken, boardKey: embeddedBoardKey, remote: embeddedRemote } = await receiveEmbeddedToken());
+		if (args.remote && !embeddedRemote) {
+			throw new Error('--remote needs the relay session from Para Code');
+		}
+		currentRelaySessionId = embeddedRemote?.sessionId;
+		process.on('message', (message: unknown) => {
+			const { type, sessionId } = (message ?? {}) as { type?: unknown; sessionId?: unknown };
+			if (type === 'relay-session' && typeof sessionId === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(sessionId)) {
+				currentRelaySessionId = sessionId;
+				currentRelay?.setSession(sessionId);
+			}
+		});
 	}
 	await main();
 }

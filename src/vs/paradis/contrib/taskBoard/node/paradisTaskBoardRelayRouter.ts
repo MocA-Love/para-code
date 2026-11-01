@@ -90,6 +90,12 @@ export class ParadisTaskBoardRelayRouter {
 		}
 	}
 
+	/** セッションを作った窓（ctx）。セッションが無いか、鍵の違うボードなら undefined。 */
+	windowOf(sessionId: string, keyHash: string): string | undefined {
+		const session = this.sessions.get(sessionId);
+		return session && session.keyHash === keyHash ? session.ctx : undefined;
+	}
+
 	onWindowDisconnected(ctx: string): void {
 		for (const [sessionId, session] of this.sessions) {
 			if (session.ctx === ctx) {
@@ -137,6 +143,17 @@ export class ParadisTaskBoardRelayRouter {
 			...(typeof value?.detail === 'string' ? { detail: value.detail.slice(0, 512) } : {}),
 		});
 		return { status: 200, body: { ok: true, value: result.value } };
+	}
+
+	/** SSH の中継の担当の起動を残す（どの作業場所に、どのエージェントを起こしたか）。 */
+	auditLaunch(sessionId: string, agent: string, place: string, outcome: 'allowed' | 'denied' | 'failed', reason: string | undefined): void {
+		const session = this.sessions.get(sessionId);
+		const entry = { operation: 'launch', initiator: 'board' as const, outcome, sessionId, authority: session?.authority, repository: session?.repository, detail: `${agent} ${place}`.slice(0, 512), ...(reason !== undefined ? { reason } : {}) };
+		if (outcome === 'denied') {
+			this.appendDenied(entry);
+		} else {
+			this.audit.append(entry);
+		}
 	}
 
 	/** 接続口が鍵と pid で断った `/v1/relay` を残す（本文は読まずに断るので、操作の名前は分からない）。 */
