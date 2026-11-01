@@ -19,7 +19,7 @@ import type { IParadisInstallPrompt } from './paradisBrowserExtensionWebStore.js
 import type { IParadisUpdatePrompt } from './paradisBrowserExtensionsMain.js';
 import type { IParadisExtensionNotification, IParadisExtensionNotificationOptions } from './paradisBrowserExtensionServices.js';
 import type { IParadisRect } from '../common/paradisBrowserExtensionAction.js';
-import { paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
+import { paradisKeepOnExtensionPages, paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
@@ -145,18 +145,14 @@ export function paradisCreateBrowserExtensionPopout(session: Session, url: strin
 		return parsed.protocol === 'chrome-extension:' ? `${parsed.protocol}//${parsed.host}` : parsed.origin;
 	};
 	const own = pageKey(url);
-	const stayOnExtension = (event: { preventDefault(): void }, target: string) => {
+	paradisKeepOnExtensionPages(window.webContents, target => {
 		try {
-			if (pageKey(target) === own) {
-				return;
-			}
+			return pageKey(target) === own;
 		} catch {
 			// 読めない URL は止める
+			return false;
 		}
-		event.preventDefault();
-	};
-	window.webContents.on('will-navigate', (event, target) => stayOnExtension(event, target));
-	window.webContents.on('will-redirect', (event, target) => stayOnExtension(event, target));
+	});
 	window.once('ready-to-show', () => options.focused ? window.show() : window.showInactive());
 	void window.loadURL(url);
 	return window;
