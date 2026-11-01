@@ -15,11 +15,12 @@
 //  - 通した依頼も断った依頼も、監査ログに 1 行ずつ残す（出力・中身は残さない）
 
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { ParadisTaskBoardResult, paradisTaskBoardHttpStatus } from '../common/paradisTaskBoardBridge.js';
+import { ParadisTaskBoardRelayEvent, ParadisTaskBoardResult, paradisTaskBoardHttpStatus } from '../common/paradisTaskBoardBridge.js';
 import {
 	IParadisTaskBoardAuditEntry,
 	PARADIS_TASK_BOARD_RELAY_TIMEOUT_MS,
 	paradisParseTaskBoardRelaySessionRegistration,
+	paradisParseTaskBoardRelayEvent,
 	paradisTaskBoardIsRelaySessionId,
 	paradisTaskBoardRelayOperationName,
 } from '../common/paradisTaskBoardRelay.js';
@@ -59,7 +60,32 @@ export class ParadisTaskBoardRelayRouter {
 		private readonly audit: IParadisTaskBoardAuditSink,
 		private readonly logService: ILogService,
 		private readonly now: () => number = Date.now,
+		/** そのボード（鍵の hash）にだけイベントを流す（接続口の SSE）。 */
+		private readonly emitToBoard: (keyHash: string, event: ParadisTaskBoardRelayEvent) => void = () => undefined,
 	) { }
+
+	/**
+	 * 窓からの、工程のコマンドの出力と終わり。そのセッションを作った窓からのものだけを、そのセッションのボードにだけ流す。
+	 * 終わりは監査ログにも残す。
+	 */
+	relayEvent(ctx: string, arg: unknown): boolean {
+		const { sessionId, event } = (arg && typeof arg === 'object' ? arg : {}) as { sessionId?: unknown; event?: unknown };
+		const session = paradisTaskBoardIsRelaySessionId(sessionId) ? this.sessions.get(sessionId) : undefined;
+		const parsed = paradisParseTaskBoardRelayEvent(event);
+		if (!session || session.ctx !== ctx || !parsed) {
+			return false;
+		}
+		this.emitToBoard(session.keyHash, parsed);
+		if (parsed.type === 'relay-exit') {
+			this.audit.append({
+				operation: 'runCommand.exit', initiator: 'board', outcome: parsed.reason ? 'denied' : parsed.code === 0 ? 'allowed' : 'failed',
+				sessionId: sessionId as string, authority: session.authority, repository: session.repository,
+				...(parsed.code !== null ? { code: parsed.code } : {}), ...(parsed.reason ? { reason: parsed.reason } : {}),
+				detail: `run ${parsed.runId}${parsed.cancelled ? ' cancelled' : ''}${parsed.timedOut ? ' timed out' : ''}`,
+			});
+		}
+		return true;
+	}
 
 	/** 窓（ctx）からセッションを登録する。ほかの窓のセッションの ID は上書きさせない。 */
 	register(ctx: string, arg: unknown): boolean {

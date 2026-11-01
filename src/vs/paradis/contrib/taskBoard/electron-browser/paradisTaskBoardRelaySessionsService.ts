@@ -11,7 +11,10 @@
 // （拡張機能の executeCommand から呼べないように）。
 
 import { isEqual } from '../../../../base/common/resources.js';
+import Severity from '../../../../base/common/severity.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { localize } from '../../../../nls.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -22,12 +25,67 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL } from '../common/paradisTaskBoardBridge.js';
 import { PARADIS_TASK_BOARD_REMOTE_CHANNEL } from '../common/paradisTaskBoardRemote.js';
-import { IParadisTaskBoardRelayRecord, ParadisTaskBoardRelaySessions } from '../common/paradisTaskBoardRelaySessions.js';
+import { IParadisTaskBoardRelayApproval, IParadisTaskBoardRelayCommandConfirmation, IParadisTaskBoardRelayRecord, PARADIS_TASK_BOARD_RELAY_CONFIRM_TIMEOUT_MS, ParadisTaskBoardRelaySessions } from '../common/paradisTaskBoardRelaySessions.js';
 
 export const IParadisTaskBoardRelaySessionsService = createDecorator<IParadisTaskBoardRelaySessionsService>('paradisTaskBoardRelaySessionsService');
 
 export interface IParadisTaskBoardRelaySessionsService extends Pick<ParadisTaskBoardRelaySessions, 'prepare' | 'bind' | 'close' | 'handle' | 'launchTarget'> {
 	readonly _serviceBrand: undefined;
+}
+
+/** 工程のコマンドの承認（リポジトリ・フロー・工程ごと）。接続先のリポジトリには書かない。 */
+const APPROVAL_STORAGE_KEY = 'paradis.taskBoard.relayCommandApprovals';
+const MAX_APPROVALS = 500;
+
+/**
+ * 工程のコマンドを、この窓のダイアログで確かめる（設計書 G5・G7）。全文と出どころを見せ、既定のボタンは「実行しない」。
+ * 10 分答えが無ければ「実行しない」にする。
+ */
+async function confirmCommand(dialogService: IDialogService, request: IParadisTaskBoardRelayCommandConfirmation): Promise<'once' | 'remember' | 'deny'> {
+	const source = request.step.source === 'team'
+		// allow-any-unicode-next-line
+		? localize('paradis.taskBoard.relay.sourceTeam', "チームのフロー（.para-code/paracode.json）")
+		: request.step.source === 'personal'
+			// allow-any-unicode-next-line
+			? localize('paradis.taskBoard.relay.sourcePersonal', "個人のフロー（.para-code/<login>/workflows.json）")
+			// allow-any-unicode-next-line
+			: localize('paradis.taskBoard.relay.sourceDefault', "既定のフロー（実行するのはリポジトリの中のファイルです）");
+	const detail = [
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.confirmWhere', "接続先: {0}\nリポジトリ: {1}\n作業場所: {2}", request.authority, request.repository, request.place),
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.confirmStep', "フロー: {0}（{1}）\n工程: {2}", request.step.flowName, source, request.step.stepName),
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.confirmCommand', "コマンド:\n{0}", request.command),
+		...(request.previous !== undefined
+			// allow-any-unicode-next-line
+			? [localize('paradis.taskBoard.relay.confirmPrevious', "前に承認した本文:\n{0}", request.previous)]
+			: []),
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.confirmNote', "コマンドはこの利用者の権限で接続先で動きます。承認しても、コマンドが読むファイル（テストのスクリプトなど）は担当が書き換えられます。"),
+	].join('\n\n');
+	const answer = dialogService.prompt<'once' | 'remember' | 'deny'>({
+		type: Severity.Warning,
+		// allow-any-unicode-next-line
+		message: request.previous !== undefined ? localize('paradis.taskBoard.relay.confirmChanged', "タスクボードの工程のコマンドが変わりました。実行しますか？") : localize('paradis.taskBoard.relay.confirmNew', "タスクボードの工程のコマンドを、SSH の接続先で実行しますか？"),
+		detail,
+		buttons: [
+			// allow-any-unicode-next-line
+			{ label: localize('paradis.taskBoard.relay.deny', "実行しない"), run: () => 'deny' },
+			// allow-any-unicode-next-line
+			{ label: localize('paradis.taskBoard.relay.once', "今回だけ実行"), run: () => 'once' },
+			// allow-any-unicode-next-line
+			{ label: localize('paradis.taskBoard.relay.remember', "実行して覚える"), run: () => 'remember' },
+		],
+		cancelButton: { run: () => 'deny' },
+	}).then(result => result.result ?? 'deny');
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<'deny'>(resolve => timer = setTimeout(() => resolve('deny'), PARADIS_TASK_BOARD_RELAY_CONFIRM_TIMEOUT_MS));
+	try {
+		return await Promise.race([answer, timeout]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /** リポジトリ（uri.toString()）ごとの記録。 */
@@ -46,7 +104,16 @@ class ParadisTaskBoardRelaySessionsService extends ParadisTaskBoardRelaySessions
 		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
 		@IStorageService storageService: IStorageService,
 		@ILogService logService: ILogService,
+		@IDialogService dialogService: IDialogService,
 	) {
+		const approvals = (): Record<string, IParadisTaskBoardRelayApproval> => {
+			try {
+				const value: unknown = JSON.parse(storageService.get(APPROVAL_STORAGE_KEY, StorageScope.APPLICATION, '{}'));
+				return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, IParadisTaskBoardRelayApproval> : {};
+			} catch {
+				return {};
+			}
+		};
 		const readAll = (): Record<string, IParadisTaskBoardRelayRecord> => {
 			try {
 				const value: unknown = JSON.parse(storageService.get(RECORD_STORAGE_KEY, StorageScope.APPLICATION, '{}'));
@@ -74,6 +141,21 @@ class ParadisTaskBoardRelaySessionsService extends ParadisTaskBoardRelaySessions
 				all[repository] = record;
 				const kept = Object.entries(all).slice(-MAX_REPOSITORIES);
 				storageService.store(RECORD_STORAGE_KEY, JSON.stringify(Object.fromEntries(kept)), StorageScope.APPLICATION, StorageTarget.MACHINE);
+			},
+			readApproval: key => {
+				const approval = approvals()[key];
+				return approval && typeof approval.hash === 'string' && typeof approval.command === 'string' ? approval : undefined;
+			},
+			writeApproval: (key, approval) => {
+				const all = approvals();
+				delete all[key];
+				all[key] = approval;
+				storageService.store(APPROVAL_STORAGE_KEY, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-MAX_APPROVALS))), StorageScope.APPLICATION, StorageTarget.MACHINE);
+			},
+			confirmCommand: request => confirmCommand(dialogService, request),
+			sha256: async text => {
+				const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+				return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 			},
 			warn: (message, error) => logService.warn(message, error),
 		});

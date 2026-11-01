@@ -477,7 +477,28 @@ export interface IParadisTaskBoardReportEvent {
 	readonly args: object;
 }
 
-export type ParadisTaskBoardEvent = IParadisTaskBoardStatusEvent | IParadisTaskBoardToolEvent | IParadisTaskBoardReportEvent;
+/** SSH の中継の工程のコマンドの出力（そのボードにだけ流す）。 */
+export interface IParadisTaskBoardRelayOutputEvent {
+	readonly type: 'relay-output';
+	readonly runId: string;
+	readonly lines: readonly string[];
+}
+
+/** SSH の中継の工程のコマンドの終わり（そのボードにだけ流す）。 */
+export interface IParadisTaskBoardRelayExitEvent {
+	readonly type: 'relay-exit';
+	readonly runId: string;
+	readonly code: number | null;
+	readonly signal: string | null;
+	readonly cancelled: boolean;
+	readonly timedOut: boolean;
+	/** 走らせなかった・途中で止まった理由（確認で断った、接続が切れた等）。 */
+	readonly reason?: string;
+}
+
+export type ParadisTaskBoardRelayEvent = IParadisTaskBoardRelayOutputEvent | IParadisTaskBoardRelayExitEvent;
+
+export type ParadisTaskBoardEvent = IParadisTaskBoardStatusEvent | IParadisTaskBoardToolEvent | IParadisTaskBoardReportEvent | ParadisTaskBoardRelayEvent;
 
 /** SSE の 1 件（`data: <JSON>\n\n`）。JSON は改行を含まない。 */
 export function paradisTaskBoardSseData(event: ParadisTaskBoardEvent): string {
