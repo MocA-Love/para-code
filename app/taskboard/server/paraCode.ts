@@ -113,6 +113,8 @@ export class ParaCodeBridgeClient {
 	constructor(
 		private readonly options: {
 			readonly bridgeFile?: string;
+			/** 接続口へ `x-para-board-key` で送る鍵（Para Code が起動したボードだけが持つ）。 */
+			readonly boardKey?: string;
 			readonly onEvent: (event: ParaCodeBridgeEvent) => void;
 			readonly onConnection: (connected: boolean, detail?: string) => void;
 			readonly fetchImpl?: typeof fetch;
@@ -137,6 +139,11 @@ export class ParaCodeBridgeClient {
 		return this.info;
 	}
 
+	/** 発見ファイルの Bearer と、起動ごとの鍵（あれば）。接続口は両方を確かめる。 */
+	private authHeaders(info: IBridgeInfo): Record<string, string> {
+		return { authorization: `Bearer ${info.token}`, ...(this.options.boardKey !== undefined ? { 'x-para-board-key': this.options.boardKey } : {}) };
+	}
+
 	async request<T>(method: 'GET' | 'POST', route: string, body?: unknown, timeoutMs = 30000): Promise<T> {
 		if (this.disposed) {
 			throw new ParaCodeBridgeError(0, 'disposed', 'タスクボードは止まっています');
@@ -146,7 +153,7 @@ export class ParaCodeBridgeClient {
 		try {
 			res = await this.fetch(`http://127.0.0.1:${info.port}${route}`, {
 				method,
-				headers: { authorization: `Bearer ${info.token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+				headers: { ...this.authHeaders(info), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
 				body: body !== undefined ? JSON.stringify(body) : undefined,
 				signal: AbortSignal.timeout(timeoutMs),
 			});
@@ -218,7 +225,7 @@ export class ParaCodeBridgeClient {
 		arm(this.options.timeouts?.connect ?? SSE_CONNECT_TIMEOUT_MS);
 		try {
 			const res = await this.fetch(`http://127.0.0.1:${info.port}/v1/events`, {
-				headers: { authorization: `Bearer ${info.token}`, accept: 'text/event-stream' },
+				headers: { ...this.authHeaders(info), accept: 'text/event-stream' },
 				signal: abort.signal,
 			});
 			if (!res.ok || !res.body) {
@@ -338,6 +345,8 @@ export interface IParaCodeAgentsOptions {
 	/** 作業場所のディレクトリ（エンジンが貸した作業場所のパス）。 */
 	readonly placePath: (task: ITaskBoardTask) => string | undefined;
 	readonly bridgeFile?: string;
+	/** 接続口へ送る、起動ごとの鍵。 */
+	readonly boardKey?: string;
 	readonly onConnection?: (connected: boolean, detail?: string) => void;
 	readonly fetchImpl?: typeof fetch;
 	readonly timeouts?: { readonly connect?: number; readonly idle?: number; readonly retry?: number; readonly reconcile?: number; readonly stall?: number };
@@ -369,6 +378,7 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 	constructor(private readonly options: IParaCodeAgentsOptions) {
 		this.client = new ParaCodeBridgeClient({
 			bridgeFile: options.bridgeFile,
+			boardKey: options.boardKey,
 			fetchImpl: options.fetchImpl,
 			timeouts: options.timeouts,
 			onEvent: event => this.onEvent(event),

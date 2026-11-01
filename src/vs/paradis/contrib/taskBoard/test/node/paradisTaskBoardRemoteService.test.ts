@@ -125,7 +125,7 @@ async function exists(path: string): Promise<boolean> {
 		await fsp.symlink(outside, join(repo, 'linkdir'));
 		await fsp.writeFile(join(repo, 'big.bin'), Buffer.alloc(2048));
 		const read = (path: unknown, max?: number) => service.readFile(SESSION, repo, path, max);
-		assert.strictEqual(Buffer.from((await read('shots/ok.png'))!).toString(), 'png');
+		assert.strictEqual((await read('shots/ok.png'))!.toString(), 'png');
 		assert.deepStrictEqual([
 			await outcome(read('../outside/secret.txt')),
 			await outcome(read(join(outside, 'secret.txt'))),
