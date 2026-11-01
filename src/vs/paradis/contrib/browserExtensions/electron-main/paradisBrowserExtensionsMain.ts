@@ -62,6 +62,7 @@ import {
 	IParadisActionResult,
 	IParadisBrowserExtensionToolbar,
 	IParadisPopupRequest,
+	IParadisSidePanelRefusal,
 	IParadisToolbarAnchor,
 	IParadisActionMenu,
 	IParadisBrowserExtensionCommand,
@@ -701,6 +702,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	/** ツールバーが変わった（renderer へ）。 */
 	get onDidChangeToolbar(): Event<void> {
 		return this._actions?.onDidChangeToolbar ?? Event.None;
+	}
+
+	/** 開こうとしたサイドパネルを出さなかった（renderer へ）。 */
+	get onDidRefuseSidePanel(): Event<IParadisSidePanelRefusal> {
+		return this._sidePanel?.onDidRefuse ?? Event.None;
 	}
 
 	/** action.openPopup（renderer へ）。 */
@@ -1825,6 +1831,7 @@ export function paradisRegisterBrowserExtensions(
 		getSidePanel: viewId => created.getSidePanel(viewId),
 		layoutSidePanel: (viewId, layout) => created.layoutSidePanel(viewId, layout),
 		setSidePanelOpen: (viewId, extensionId, open) => created.setSidePanelOpen(viewId, extensionId, open),
+		onDidRefuseSidePanel: created.onDidRefuseSidePanel,
 		remove: id => created.remove(id),
 		getShareExtensions: (viewId, fallbackProfile) => created.getShareExtensions(viewId, fallbackProfile),
 		onDidRequestActivateTab: onDidRequestActivateTab.event,
