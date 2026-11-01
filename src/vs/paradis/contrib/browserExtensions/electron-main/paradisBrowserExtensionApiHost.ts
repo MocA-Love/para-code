@@ -584,6 +584,8 @@ export class ParadisExtensionApiHost implements IDisposable {
 			return;
 		}
 		context.starting = true;
+		// 起動の失敗の理由は、この起動から後に出たエラーだけから選ぶ（前に動いていたときのエラーを理由にしない）
+		context.consoleErrors = [];
 		state.session.serviceWorkers.startWorkerForScope(context.scope)
 			.then(worker => {
 				context.running = worker;
