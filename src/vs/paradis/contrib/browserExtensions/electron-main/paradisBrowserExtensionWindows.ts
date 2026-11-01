@@ -23,6 +23,33 @@ export function paradisMarkBrowserExtensionWindow(contents: WebContents): void {
 	extensionWindows.add(contents);
 }
 
+/** 拡張機能の窓・パネルのナビゲーション（will-navigate・will-redirect の event のうち、判定に使うもの）。 */
+export interface IParadisExtensionPageNavigation {
+	readonly url: string;
+	readonly isMainFrame: boolean;
+	preventDefault(): void;
+}
+
+/**
+ * 拡張機能の窓・パネルの一番外の文書が、許したページの外へ移るのを止める。子フレームのナビゲーションは止めない
+ * （ChatGPT のサイドパネルのように、拡張機能のページが iframe で埋めたウェブのページは、サーバーのリダイレクトで
+ * 進む。Electron の will-redirect は子フレームでも出るので、止めると iframe の中が途中で止まる）。
+ */
+export function paradisStopLeavingExtensionPage(event: IParadisExtensionPageNavigation, allowed: (url: string) => boolean): void {
+	if (!event.isMainFrame) {
+		return;
+	}
+	if (!allowed(event.url)) {
+		event.preventDefault();
+	}
+}
+
+/** 拡張機能の窓・パネルを、許したページ（拡張機能自身のページ）の間だけ移れるようにする。 */
+export function paradisKeepOnExtensionPages(contents: WebContents, allowed: (url: string) => boolean): void {
+	contents.on('will-navigate', event => paradisStopLeavingExtensionPage(event, allowed));
+	contents.on('will-redirect', event => paradisStopLeavingExtensionPage(event, allowed));
+}
+
 /** 拡張機能自身のページへの、利用者の本物の入力を受け取るもの（拡張機能の管理が登録する）。 */
 let inputListener: ((contents: WebContents, extensionId: string) => void) | undefined;
 
