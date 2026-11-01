@@ -277,7 +277,9 @@ async function exists(path: string): Promise<boolean> {
 
 	test('a later session adopts worktrees made earlier only under the worktree folder of the same repository', async () => {
 		const dir = join(worktrees, '3-later');
+		const stray = join(worktrees, '4-stray');
 		assert.strictEqual((await service.git(SESSION, repo, { kind: 'worktreeAdd', dir, branch: 'para/3-later', mode: 'new', base: { kind: 'local', branch: 'main' } })).code, 0);
+		git(repo, 'worktree', 'add', '--quiet', '-b', 'para/4-stray', stray);
 		const otherRepo = join(worktrees, 'other');
 		await fsp.mkdir(otherRepo);
 		git(otherRepo, 'init', '--quiet');
@@ -286,11 +288,13 @@ async function exists(path: string): Promise<boolean> {
 			await later.openSession('session-later-0123456789', repo, worktrees);
 			assert.deepStrictEqual([
 				await outcome(later.git('session-later-0123456789', repo, { kind: 'worktreeRemove', dir })),
-				await outcome(later.adoptWorktree('session-later-0123456789', otherRepo)),
-				await outcome(later.adoptWorktree('session-later-0123456789', join(base, 'repo'))),
-				await outcome(later.adoptWorktree('session-later-0123456789', dir)),
+				await outcome(later.adoptWorktree('session-later-0123456789', otherRepo, 'main')),
+				await outcome(later.adoptWorktree('session-later-0123456789', join(base, 'repo'), 'main')),
+				// 置き場にあっても、記録のブランチと違うものは引き取らない
+				await outcome(later.adoptWorktree('session-later-0123456789', stray, 'para/3-later')),
+				await outcome(later.adoptWorktree('session-later-0123456789', dir, 'para/3-later')),
 				(await later.git('session-later-0123456789', repo, { kind: 'worktreeRemove', dir })).code,
-			], ['denied', 'denied', 'denied', 'ok', 0]);
+			], ['denied', 'denied', 'denied', 'denied', 'ok', 0]);
 		} finally {
 			later.dispose();
 		}

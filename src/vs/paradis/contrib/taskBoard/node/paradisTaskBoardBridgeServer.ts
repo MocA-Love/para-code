@@ -236,11 +236,11 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 		if (url.pathname === '/v1/relay') {
 			return this.respond(response, method === 'POST' ? await this.relay.handle(body, verdict.keyHash) : { status: 405, body: { error: 'method-not-allowed' } });
 		}
-		this.respond(response, await this.service.handle(method, url.pathname, url.searchParams, body, verdict.keyHash));
+		this.respond(response, await this.service.handle(method, url.pathname, url.searchParams, body, verdict.keyHash, verdict.remote));
 	}
 
 	/** ボードの鍵と接続元の pid を確かめる。中継の依頼を断ったときは監査ログに残す。 */
-	private async verifyBoard(request: http.IncomingMessage, port: number, pathname: string): Promise<{ readonly ok: true; readonly keyHash: string } | { readonly ok: false }> {
+	private async verifyBoard(request: http.IncomingMessage, port: number, pathname: string): Promise<{ readonly ok: true; readonly keyHash: string; readonly remote: boolean } | { readonly ok: false }> {
 		const verdict = await this.auth.verify(firstHeader(request.headers[PARADIS_TASK_BOARD_BOARD_KEY_HEADER]), request.socket, port);
 		if (verdict.ok) {
 			return verdict;

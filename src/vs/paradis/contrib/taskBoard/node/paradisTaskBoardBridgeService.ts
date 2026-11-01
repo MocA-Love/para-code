@@ -95,6 +95,8 @@ interface ITerminalEntry {
 	readonly repoPath: string;
 	readonly agent: ParadisTaskBoardAgent;
 	readonly ctx: string;
+	/** SSH の中継で起動したターミナルなら、そのセッション。SSH のボードが触れるのはこれだけ。 */
+	readonly relaySessionId?: string;
 	/** ボードが最後の送信に付けた印（無ければ launchId）。 */
 	tag?: string;
 	status: ParadisTaskBoardTerminalStatus;
@@ -175,12 +177,22 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 	// --- HTTP ----------------------------------------------------------------------------------
 
 	/** 解析済みの要求に答える（`/v1/events` は {@link addEventClient}）。 */
-	/** `keyHash` は接続口が確かめたボードの鍵（SSH の中継の起動で、セッションの持ち主か確かめる）。 */
-	async handle(method: string, pathname: string, query: URLSearchParams, body: unknown, keyHash?: string): Promise<IParadisTaskBoardHttpResponse> {
+	/**
+	 * `keyHash` は接続口が確かめたボードの鍵（SSH の中継の起動で、セッションの持ち主か確かめる）。`remoteBoard` は、そのボードが
+	 * SSH の窓のボードか（main が登録の印を付ける）。SSH のボードには、手元で担当を起こす口・手元のフォルダを見る口・
+	 * 手元のターミナルに触る口を使わせない（接続先から手元へ届く道にしない。設計書 T2）。
+	 */
+	async handle(method: string, pathname: string, query: URLSearchParams, body: unknown, keyHash?: string, remoteBoard = false): Promise<IParadisTaskBoardHttpResponse> {
 		const route = `${method} ${pathname}`;
+		if (remoteBoard) {
+			const refused = this.refuseForRemoteBoard(route, query, body);
+			if (refused) {
+				return refused;
+			}
+		}
 		switch (route) {
-			case 'GET /v1/health': return this.health();
-			case 'GET /v1/terminals': return ok({ terminals: this.liveTerminals() });
+			case 'GET /v1/health': return this.health(remoteBoard);
+			case 'GET /v1/terminals': return ok({ terminals: this.liveTerminals(remoteBoard) });
 			case 'GET /v1/screen': return this.screen(query.get('terminal'));
 			case 'POST /v1/launch': return this.launch(body, keyHash);
 			case 'POST /v1/send': {
@@ -224,8 +236,30 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		return results.filter((value): value is { ctx: string; description: IParadisTaskBoardWindowDescription } => value !== undefined);
 	}
 
-	private async health(): Promise<IParadisTaskBoardHttpResponse> {
-		const windows = await this.describeWindows();
+	/** SSH のボードに使わせない要求なら 403。手元への起動と、中継で起動していないターミナルへの操作。 */
+	private refuseForRemoteBoard(route: string, query: URLSearchParams, body: unknown): IParadisTaskBoardHttpResponse | undefined {
+		const forbidden = (message: string): IParadisTaskBoardHttpResponse => ({ status: 403, body: { error: 'forbidden', message } });
+		const record = body && typeof body === 'object' ? body as Record<string, unknown> : {};
+		if (route === 'POST /v1/launch') {
+			return record.relaySessionId === undefined ? forbidden('A task board for an SSH window can start agents only on the SSH host.') : undefined;
+		}
+		let terminal: unknown;
+		if (route === 'GET /v1/screen') {
+			terminal = query.get('terminal');
+		} else if (route === 'POST /v1/reply') {
+			terminal = typeof record.replyId === 'string' ? this.replies.get(record.replyId)?.terminal : undefined;
+		} else if (['POST /v1/send', 'POST /v1/key', 'POST /v1/answer', 'POST /v1/close'].includes(route)) {
+			terminal = record.terminal;
+		} else {
+			return undefined;
+		}
+		const entry = typeof terminal === 'string' ? this.terminals.get(terminal) : undefined;
+		return entry && entry.relaySessionId === undefined ? forbidden('A task board for an SSH window can use only the terminals it started on the SSH host.') : undefined;
+	}
+
+	private async health(remoteBoard = false): Promise<IParadisTaskBoardHttpResponse> {
+		// SSH のボードには、手元の窓のリポジトリ（手元のパス）を見せない
+		const windows = remoteBoard ? [] : await this.describeWindows();
 		return ok({
 			ok: true,
 			version: PARADIS_TASK_BOARD_BRIDGE_VERSION,
@@ -233,8 +267,8 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		});
 	}
 
-	private liveTerminals(): object[] {
-		return [...this.terminals.values()].map(entry => ({ terminal: entry.terminal, launchId: entry.launchId, tag: entry.tag ?? entry.launchId, repoPath: entry.repoPath, agent: entry.agent, status: entry.status }));
+	private liveTerminals(remoteBoard = false): object[] {
+		return [...this.terminals.values()].filter(entry => !remoteBoard || entry.relaySessionId !== undefined).map(entry => ({ terminal: entry.terminal, launchId: entry.launchId, tag: entry.tag ?? entry.launchId, repoPath: entry.repoPath, agent: entry.agent, status: entry.status }));
 	}
 
 	private launch(body: unknown, keyHash: string | undefined): Promise<IParadisTaskBoardHttpResponse> {
@@ -318,6 +352,7 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			repoPath: request.repoPath,
 			agent: request.agent,
 			ctx: target.ctx,
+			...(request.relaySessionId !== undefined ? { relaySessionId: request.relaySessionId } : {}),
 			// 指示を渡して起動したので、最初の報告までは作業中とみなす
 			status: request.prompt.trim().length > 0 ? 'working' : 'idle',
 		};

@@ -65,7 +65,8 @@ class ParadisTaskBoardRelaySessionsService extends ParadisTaskBoardRelaySessions
 			newSessionId: () => generateUuid().replace(/-/g, ''),
 			readRecord: repository => {
 				const record = readAll()[repository];
-				return { worktrees: strings(record?.worktrees), branches: strings(record?.branches) };
+				const worktrees = Array.isArray(record?.worktrees) ? record.worktrees.filter((item): item is { dir: string; branch: string } => !!item && typeof item === 'object' && typeof item.dir === 'string' && typeof item.branch === 'string') : [];
+				return { worktrees, branches: strings(record?.branches) };
 			},
 			writeRecord: (repository, record) => {
 				const all = readAll();

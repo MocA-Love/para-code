@@ -140,7 +140,7 @@ class ParadisOpenTaskBoardAction extends Action2 {
 			await configurationService.updateValue(PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING, true, ConfigurationTarget.USER);
 		}
 		const bridge = sharedProcessService.getChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL);
-		const register = async (board: { readonly pid: number; readonly key: string } | undefined) => {
+		const register = async (board: { readonly pid: number; readonly key: string; readonly remote?: boolean } | undefined) => {
 			// 接続口は、ここで登録した鍵と pid のボードからの要求だけを通す（paradisTaskBoardRelay.ts の G1・G2）
 			if (board) {
 				await bridge.call('registerBoard', board).catch(error => logService.warn('[ParadisTaskBoard] could not register the board with the bridge', error));
@@ -188,7 +188,7 @@ async function openRemoteBoard(
 	relayService: IParadisTaskBoardRelaySessionsService,
 	repository: URI,
 	authority: string,
-	register: (board: { readonly pid: number; readonly key: string } | undefined) => Promise<void>,
+	register: (board: { readonly pid: number; readonly key: string; readonly remote?: boolean } | undefined) => Promise<void>,
 ): Promise<ParadisTaskBoardOpenResult> {
 	const prepared = await relayService.prepare(repository);
 	if (!prepared.ok) {
