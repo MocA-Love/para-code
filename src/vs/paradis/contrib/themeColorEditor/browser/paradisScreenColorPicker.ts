@@ -158,9 +158,11 @@ export class ParadisScreenColorPicker extends Disposable {
 
 		const store = this._register(new DisposableStore());
 		const stylesheet = createStyleSheet(this.targetDocument.head, undefined, store);
-		stylesheet.textContent = '* { cursor: crosshair !important; } .paradis-tce-screen-panel, .paradis-tce-screen-panel * { cursor: default !important; }';
+		// webview は iframe なので、そのままではポインタの動きもクリックも iframe の中の文書へ行き、ここに届かない。
+		// 選んでいる間だけ iframe をポインタの判定から外し、下にある webview の器で受ける。
+		stylesheet.textContent = '* { cursor: crosshair !important; } .paradis-tce-screen-panel, .paradis-tce-screen-panel * { cursor: default !important; } iframe { pointer-events: none !important; }';
 
-		this.banner = dom.append(container, $('.paradis-tce-screen-banner', { role: 'status' }, localize('paradis.themeColors.screen.banner', "画面の色を変えたい場所をクリックしてください（Esc でやめる）")));
+		this.banner = dom.append(container, $('.paradis-tce-screen-banner', { role: 'status' }, localize('paradis.themeColors.screen.banner', "画面の色を変えたい場所でクリックか Enter で確定、Esc でやめる")));
 		this.highlight = dom.append(container, $('.paradis-tce-screen-highlight'));
 		this.panel = dom.append(container, $('.paradis-tce-screen-panel', { role: 'listbox' }));
 		this.panel.style.display = 'none';
@@ -180,17 +182,15 @@ export class ParadisScreenColorPicker extends Disposable {
 		for (const type of [dom.EventType.MOUSE_DOWN, dom.EventType.POINTER_DOWN, dom.EventType.POINTER_UP, dom.EventType.DBLCLICK, dom.EventType.CONTEXT_MENU, 'auxclick']) {
 			this._register(dom.addDisposableListener(this.targetDocument, type, swallow, true));
 		}
-		this._register(dom.addDisposableListener(this.targetDocument, dom.EventType.MOUSE_UP, (e: MouseEvent) => {
-			if (this.isInPanel(e.target)) {
+		this._register(dom.addDisposableListener(this.targetDocument, dom.EventType.MOUSE_UP, swallow, true));
+		// 場所を決めるのは pointerup で受ける。上で pointerdown を preventDefault しているので、Chromium は
+		// その押下の mousedown / mouseup を出さない（Pointer Events の互換マウスイベントの抑止）。mouseup で受けると決して届かない。
+		this._register(dom.addDisposableListener(this.targetDocument, dom.EventType.POINTER_UP, (e: PointerEvent) => {
+			if (this.isInPanel(e.target) || e.button !== 0 || !dom.isHTMLElement(e.target)) {
 				return;
 			}
-			swallow(e);
-			if (e.button === 0 && dom.isHTMLElement(e.target)) {
-				this.lastPointer = { x: e.clientX, y: e.clientY };
-				this.inspect(e.target);
-				this.pinned = true;
-				this.renderPanel();
-			}
+			this.lastPointer = { x: e.clientX, y: e.clientY };
+			this.pinAt(e.target);
 		}, true));
 		this._register(dom.addDisposableListener(this.targetDocument, dom.EventType.CLICK, swallow, true));
 		this._register(dom.addDisposableListener(this.targetDocument, dom.EventType.MOUSE_MOVE, (e: MouseEvent) => {
@@ -215,7 +215,16 @@ export class ParadisScreenColorPicker extends Disposable {
 				this.end();
 				return;
 			}
-			if (!this.pinned || !this.rows.length) {
+			// Enter はクリックと同じく、いまポインタの下にある場所で決める。
+			if (!this.pinned) {
+				if (e.key === 'Enter' && this.current) {
+					e.preventDefault();
+					e.stopPropagation();
+					this.pinAt(this.current);
+				}
+				return;
+			}
+			if (!this.rows.length) {
 				return;
 			}
 			if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -233,6 +242,12 @@ export class ParadisScreenColorPicker extends Disposable {
 
 	private isInPanel(target: EventTarget | null): boolean {
 		return dom.isHTMLElement(target) && this.panel.contains(target);
+	}
+
+	private pinAt(element: HTMLElement): void {
+		this.inspect(element);
+		this.pinned = true;
+		this.renderPanel();
 	}
 
 	private end(): void {
@@ -369,7 +384,7 @@ export class ParadisScreenColorPicker extends Disposable {
 		this.panel.classList.toggle('pinned', this.pinned);
 		dom.append(this.panel, $('.paradis-tce-screen-title', undefined, this.pinned
 			? localize('paradis.themeColors.screen.pinnedTitle', "この場所の色（選ぶと編集）")
-			: localize('paradis.themeColors.screen.title', "この場所の色（クリックで編集）")));
+			: localize('paradis.themeColors.screen.title', "この場所の色（クリックか Enter で確定、Esc でやめる）")));
 		if (!this.rows.length) {
 			dom.append(this.panel, $('.paradis-tce-screen-empty', undefined, localize('paradis.themeColors.screen.empty', "この場所に効いているテーマの色は見つかりませんでした。親の要素か、一覧から選んでください")));
 		}
