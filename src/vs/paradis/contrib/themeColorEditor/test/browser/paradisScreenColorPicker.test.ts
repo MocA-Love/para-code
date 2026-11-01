@@ -57,7 +57,19 @@ suite('ParadisScreenColorPicker', () => {
 	}
 
 	function mouse(type: string, element: HTMLElement): void {
-		element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 15, clientY: 25 }));
+		const init = { bubbles: true, cancelable: true, button: 0, clientX: 15, clientY: 25 };
+		element.dispatchEvent(type.startsWith('pointer') ? new PointerEvent(type, init) : new MouseEvent(type, init));
+	}
+
+	/** 本物のクリックの並び。pointerdown を取り消すと Chromium は mousedown / mouseup を出さず、click だけが来る。 */
+	function click(element: HTMLElement): void {
+		mouse('pointerdown', element);
+		mouse('pointerup', element);
+		mouse('click', element);
+	}
+
+	function key(key: string): void {
+		mainWindow.document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
 	}
 
 	function overlay(): { parentIsWorkbench: boolean[]; highlight: string; pinned: boolean; firstRow: string | undefined } {
@@ -75,8 +87,7 @@ suite('ParadisScreenColorPicker', () => {
 	test('覆いをワークベンチの器に置き、クリックした要素を枠で囲んで色のキーを出す', () => {
 		const store = disposables.add(new DisposableStore());
 		createPicker(store);
-		mouse('mousedown', target);
-		mouse('mouseup', target);
+		click(target);
 
 		assert.deepStrictEqual(overlay(), {
 			parentIsWorkbench: [true, true, true],
@@ -89,7 +100,7 @@ suite('ParadisScreenColorPicker', () => {
 	test('候補をクリックすると色のキーを返して終わり、Esc でも終わる。終わると覆いが外れる', () => {
 		const store = disposables.add(new DisposableStore());
 		createPicker(store);
-		mouse('mouseup', target);
+		click(target);
 		const row = container.querySelector<HTMLElement>('.paradis-tce-screen-row');
 		assert.ok(row);
 		row.click();
@@ -97,7 +108,7 @@ suite('ParadisScreenColorPicker', () => {
 
 		const second = disposables.add(new DisposableStore());
 		createPicker(second);
-		mainWindow.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+		key('Escape');
 
 		second.dispose();
 		assert.deepStrictEqual({ picks, ends, left: container.querySelectorAll('[class^="paradis-tce-screen-"]').length }, {
@@ -105,5 +116,23 @@ suite('ParadisScreenColorPicker', () => {
 			ends: 2,
 			left: 0,
 		});
+	});
+
+	test('Enter でポインタの下の場所を決め、もう一度 Enter で選んでいる色のキーを返す', async () => {
+		const store = disposables.add(new DisposableStore());
+		createPicker(store);
+		mouse('mousemove', target);
+		// mousemove の調べはアニメーションフレームで行う
+		await new Promise<void>(resolve => mainWindow.requestAnimationFrame(() => resolve()));
+		key('Enter');
+		const pinned = overlay().pinned;
+		key('Enter');
+
+		assert.deepStrictEqual({ pinned, picks, ends }, {
+			pinned: true,
+			picks: [{ kind: 'color', colorId: 'editor.background' }],
+			ends: 1,
+		});
+		store.dispose();
 	});
 });
