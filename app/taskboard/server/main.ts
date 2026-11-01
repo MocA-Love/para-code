@@ -398,6 +398,7 @@ async function main(restart?: IRestart): Promise<void> {
 		bridgeFile: args.bridge,
 		boardKey: embeddedBoardKey,
 		relaySessionId: remoteTarget ? () => currentRelaySessionId : undefined,
+		launchApprovals: () => launchApprovals,
 		readArtifact: relay ? (place, relativePath, maxBytes) => relay!.readFile(place, relativePath, maxBytes) : undefined,
 		onRelayEvent: event => remoteRunner?.onEvent(event),
 		onConnection: (connected, detail) => {
@@ -408,9 +409,9 @@ async function main(restart?: IRestart): Promise<void> {
 	}) : undefined;
 	const useGitHub = !demo && !args['no-github'];
 	const client = useGitHub ? new GitHubClient({ token: ghTokenProvider() }) : undefined;
-	const remoteRunner = relay ? new RemoteCommandRunner(() => engine, relay, placePath) : undefined;
+	const remoteRunner = relay ? new RemoteCommandRunner(() => engine, relay, placePath, client, remote, relayInfo?.defaultBranch) : undefined;
 	const commandRunner = remoteRunner ?? (paraCodeMode ? new CommandRunner({ engine: () => engine, placePath, repoPath: repoPath!, repo: remote, github: client }) : undefined);
-	const gitWorkspaces = relay && relayInfo ? new RemoteWorkspaces(relay, relayInfo) : realWorkspaces ? new GitWorkspaces(repoPath!, worktreeRoot) : undefined;
+	const gitWorkspaces = relay && relayInfo ? new RemoteWorkspaces(relay, relayInfo, (place, branch) => remoteRunner!.push(place, branch, false, false, 'release').then(failure => { if (failure) { log(`push before release: ${failure}`); } })) : realWorkspaces ? new GitWorkspaces(repoPath!, worktreeRoot) : undefined;
 	/** 止めるときに解除するタイマー（開き直した後も古いエンジンが動き出さないように）。 */
 	const timers: NodeJS.Timeout[] = [];
 	engine = new TaskBoardEngine({
@@ -448,7 +449,9 @@ async function main(restart?: IRestart): Promise<void> {
 			broadcastSoon();
 		}
 	};
-	// 「常に許可」は手元の設定を読み書きするので、SSH のボードでは出さない（接続先の担当は接続先の設定を読む）
+	// SSH のボードの「常に許可」は、設定ファイルに書かず、担当を起動するときだけ許可を渡す（Q525 の d = B）
+	let launchApprovals = relay ? settings.launchApprovals === true : false;
+	// 「常に許可」は手元の設定を読み書きするので、SSH のボードでは手元の設定を読まない（接続先の担当は接続先の設定を読む）
 	if (paraCodeMode && !relay) {
 		void refreshCodexApproval();
 		void refreshClaudeApproval();
@@ -462,7 +465,9 @@ async function main(restart?: IRestart): Promise<void> {
 		agents: paraCodeMode ? 'para-code' as const : 'simulated' as const,
 		agentsConnected: paraCodeMode ? bridgeState.connected : undefined,
 		agentsDetail: paraCodeMode && !bridgeState.connected ? bridgeState.detail : undefined,
-		codexApprovalMissing: paraCodeMode ? [...new Set(codexPending.flatMap(p => p.missing))] : undefined,
+		codexApprovalMissing: paraCodeMode && !relay ? [...new Set(codexPending.flatMap(p => p.missing))] : undefined,
+		// SSH のボード: 起動のときだけ許可を渡すか（ボードの帯で頼み、SSH の窓でもリポジトリごとに 1 回確かめる）
+		launchApprovals: relay ? launchApprovals : undefined,
 		codexConfigPaths: paraCodeMode ? codexPending.filter(p => p.manual === undefined).map(p => p.path) : undefined,
 		codexManualConfigs: paraCodeMode ? codexPending.filter(p => p.manual !== undefined).map(p => ({ path: p.path, reason: p.manual! })) : undefined,
 		// Claude Code の帯は、ボードが Claude Code の担当を使うときだけ出す（~/.claude は Para Code の hook の設置でも作られるので、有無では決めない）
@@ -655,10 +660,28 @@ async function main(restart?: IRestart): Promise<void> {
 				throw new TaskBoardError('invalid-state', 'このタスクはコミットを待っていません');
 			}
 			// 待つ間にタスクが進んでも、別の工程をやり直さないように、今の工程と試行を固定する
-			if (relay) {
-				throw new TaskBoardError('invalid-state', `${RELAY_UNSUPPORTED}（ボードからのコミット）`);
-			}
 			const { step: fromStep, attempt: fromAttempt } = task;
+			if (relay) {
+				// SSH では追跡しているファイルだけをコミットする（新しいファイルは担当に任せる）。push はドラフト PR の工程で、窓の確認の後
+				const place = placePath(task);
+				const message = p.message.trim();
+				if (!p.trackedOnly) {
+					throw new TaskBoardError('invalid-state', 'SSH の接続先では、追跡しているファイルだけをコミットできます');
+				}
+				if (!place || !message) {
+					throw new TaskBoardError('invalid-params', !place ? '作業場所が分かりません' : 'コミットのメッセージが空です');
+				}
+				await relay.excludeBoardDir(place);
+				const porcelain = (await relay.gitOk(place, { kind: 'status' })).split('\n').filter(line => line && !line.startsWith('??'));
+				if (!porcelain.length) {
+					throw new TaskBoardError('invalid-state', '変更したファイルがありません（新しいファイルだけです）。すべてコミットするか、差し戻してください');
+				}
+				await relay.gitOk(place, { kind: 'addTracked' });
+				await relay.gitOk(place, { kind: 'commit', message });
+				engine.reportOutput(task.id, [`${place} $ git commit -m ${JSON.stringify(message)}`]);
+				engine.retry(task.id, fromStep, fromAttempt);
+				return { sha: '' };
+			}
 			const cwd = placePath(task);
 			const message = p.message.trim();
 			if (!cwd || !message) {
@@ -747,6 +770,14 @@ async function main(restart?: IRestart): Promise<void> {
 			}
 			// 返事を返してから、同じポートと鍵で起動し直す
 			setTimeout(() => void shutdown(target), 100);
+		},
+		approveLaunchTools: async () => {
+			if (!relay) {
+				throw new TaskBoardError('invalid-state', 'SSH の窓のボードだけで使えます');
+			}
+			launchApprovals = true;
+			await store.saveSettings({ ...((await store.loadSettings()) ?? {}), launchApprovals: true });
+			broadcastSoon();
 		},
 		approveCodexTools: async () => {
 			if (relay) {

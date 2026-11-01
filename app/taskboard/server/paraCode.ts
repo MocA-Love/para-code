@@ -354,6 +354,8 @@ export interface IParaCodeAgentsOptions {
 	readonly boardKey?: string;
 	/** SSH の窓のボードの中継のセッション（窓の再読み込みで変わる）。起動の依頼に添え、その窓で接続先の作業場所に担当を起こす。 */
 	readonly relaySessionId?: () => string | undefined;
+	/** SSH の担当に、起動のときだけ許可を渡すよう頼むか（Q525 の d = B。渡すツールと引数は SSH の窓が決める）。 */
+	readonly launchApprovals?: () => boolean;
 	/** SSH の窓のボードで、成果物のファイルを中継で読む（`.para/` の中だけ）。無ければ手元の fs で読む。 */
 	readonly readArtifact?: (place: string, relativePath: string, maxBytes: number) => Promise<Buffer | undefined>;
 	/** SSH の中継の工程のコマンドの出力と終わり（relay.ts の RemoteCommandRunner へ渡す）。 */
@@ -514,7 +516,7 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 		let terminal: string | undefined;
 		let failure: Error | undefined;
 		try {
-			terminal = (await this.client.request<{ terminal: string }>('POST', '/v1/launch', { launchId, repoPath, agent, prompt, ...(this.options.relaySessionId?.() ? { relaySessionId: this.options.relaySessionId() } : {}) }, LAUNCH_TIMEOUT_MS)).terminal;
+			terminal = (await this.client.request<{ terminal: string }>('POST', '/v1/launch', { launchId, repoPath, agent, prompt, ...(this.options.relaySessionId?.() ? { relaySessionId: this.options.relaySessionId(), ...(this.options.launchApprovals?.() ? { toolApprovals: true } : {}) } : {}) }, LAUNCH_TIMEOUT_MS)).terminal;
 		} catch (err) {
 			failure = err as Error;
 			// 返事が途切れても、Para Code 側では起動していることがある。起動 id で探して、あれば結び付ける

@@ -382,9 +382,45 @@ function Shell({ snapshot, theme, setTheme }: { snapshot: ITaskBoardSnapshot; th
 function ConnectionBanner() {
 	const { connection } = useBoard();
 	if (connection === 'open' || connection === 'connecting') {
-		return <div><ApprovalBanner agent="codex" /><ApprovalBanner agent="claude" /></div>;
+		return <div><ApprovalBanner agent="codex" /><ApprovalBanner agent="claude" /><LaunchApprovalBanner /></div>;
 	}
 	return <div className="banner warn"><Spinner small t="amber" />サーバーとの接続が切れました。再接続しています…<span className="grow" /><button className="btn sm" onClick={reconnectNow}>今すぐ再接続</button></div>;
+}
+
+/**
+ * SSH の窓のボードで、担当がボードへの報告やスクショの工程の読むだけ・撮るだけのツールのたびに許可を求めるのを、起動のときだけ
+ * 許可を渡して止めるかを聞く（Q525 の d = B）。設定ファイルには書かない。渡すかは SSH の窓でもリポジトリごとに 1 回確かめる。
+ */
+function LaunchApprovalBanner() {
+	const app = useApp();
+	const [hidden, setHidden] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const runtime = app.snapshot.runtime;
+	if (hidden || runtime.agents !== 'para-code' || runtime.launchApprovals !== false) {
+		return <div />;
+	}
+	const tools = ['board_complete_step', 'board_ask_human', ...PARADIS_TASK_BOARD_SCREENSHOT_TOOLS];
+	const approve = async () => {
+		setBusy(true);
+		const result = await app.call('approveLaunchTools', {});
+		setBusy(false);
+		if (result !== undefined) {
+			app.toast({ title: 'これから起動する担当に、起動のときだけ許可を渡します', body: '渡すかは SSH の窓でも 1 回確かめます', tone: 'green' });
+		}
+	};
+	return (
+		<div className="banner warn">
+			<Icon name="info" size={14} />
+			<span>
+				SSH の担当は、ボードへの報告とスクショの工程で画面を読む・撮るだけのツール（{toolList(tools)}）を使うたびに許可を求めます。
+				これから起動する担当に、起動のときだけ許可を渡しますか。接続先の設定ファイルには書かず、このボードが起動する担当にだけ効きます。
+				クリック・入力・スクリプトの実行・ページの移動をするツールは、今までどおり毎回聞きます。
+			</span>
+			<span className="grow" />
+			<button className="btn sm" onClick={() => setHidden(true)}>あとで</button>
+			<button className="btn sm primary" disabled={busy} onClick={() => void approve()}>起動のときに渡す</button>
+		</div>
+	);
 }
 
 function toolList(tools: readonly string[]): ReactNode {

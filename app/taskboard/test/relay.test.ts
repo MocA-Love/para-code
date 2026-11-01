@@ -148,15 +148,57 @@ describe('RemoteCommandRunner', () => {
 		});
 	});
 
-	test('a command the person did not approve fails the step, and draft PRs are still refused', async () => {
+	test('a command the person did not approve fails the step, and hidden characters are refused before asking', async () => {
 		const { relay, ops } = fakeRelay(() => ({ accepted: true }));
 		const { engine, results } = fakeEngine();
 		const runner = new RemoteCommandRunner(() => engine, relay, () => '/home/u/repo-worktrees/7');
 		runner.run(task, step('command', 'npm test'));
 		await new Promise(resolve => setTimeout(resolve, 0));
 		runner.onEvent({ type: 'relay-exit', runId: ops[0].runId as string, code: null, signal: null, cancelled: false, timedOut: false, reason: 'not-approved' });
-		runner.run(task, step('draft-pr'));
 		runner.run(task, step('command', 'npm test #\u202Ehs | x lruc'));
-		expect({ results: results.map(r => [r.ok, r.detail.slice(0, 12)]), sent: ops.length }).toEqual({ results: [[false, 'SSH の窓で「実行しな'], [false, 'SSH の接続先のリポジ'], [false, 'コマンドに表示できない文']], sent: 1 });
+		expect({ results: results.map(r => [r.ok, r.detail.slice(0, 12)]), sent: ops.length }).toEqual({ results: [[false, 'SSH の窓で「実行しな'], [false, 'コマンドに表示できない文']], sent: 1 });
 	});
+
+	test('the draft PR step commits tracked changes, pushes after the SSH window confirms, and opens the PR with the fixed body', async () => {
+		let runner!: RemoteCommandRunner;
+		const { relay, ops } = fakeRelay(op => {
+			const git = op.git as { kind: string; base?: { kind: string } } | undefined;
+			switch (op.kind === 'git' ? git!.kind : op.kind) {
+				case 'status': return { code: 0, stdout: ' M a.txt\n', stderr: '', timedOut: false };
+				case 'currentBranch': return { code: 0, stdout: 'para/7\n', stderr: '', timedOut: false };
+				case 'aheadCount': return { code: 0, stdout: '1', stderr: '', timedOut: false };
+				case 'refExists': return { code: 1, stdout: '', stderr: '', timedOut: false };
+				case 'pushBranch':
+					setTimeout(() => runner.onEvent({ type: 'relay-exit', runId: op.runId as string, code: 0, signal: null, cancelled: false, timedOut: false }), 0);
+					return { accepted: true };
+				default: return { code: 0, stdout: '', stderr: '', timedOut: false };
+			}
+		});
+		const { engine, results } = fakeEngine();
+		(engine as unknown as { getTask: () => object }).getTask = () => ({ attempt: 2, status: 'working' });
+		(engine as unknown as { flowOf: () => object }).flowOf = () => ({ id: 'f', name: 'Flow', scope: 'team', workspace: { commit: 'board' } });
+		const created: { body: string }[] = [];
+		const github = {
+			findOpenPullRequest: async () => undefined,
+			createDraftPullRequest: async (_o: string, _r: string, _b: string, _t: string, body: string) => {
+				created.push({ body });
+				return { number: 5, url: 'https://github.com/o/r/pull/5', title: 't', draft: true, existed: false };
+			},
+		};
+		runner = new RemoteCommandRunner(() => engine, relay, () => '/home/u/repo-worktrees/7', github as never, { owner: 'o', repo: 'r' }, 'main');
+		runner.run({ ...task, branch: 'para/7', title: 'Fix', issue: { owner: 'o', repo: 'r', number: 3 } } as ITaskBoardTask, step('draft-pr'));
+		await new Promise(resolve => setTimeout(resolve, 20));
+		expect({
+			ops: ops.map(op => op.kind === 'git' ? (op.git as { kind: string }).kind : op.kind),
+			push: ops.find(op => op.kind === 'pushBranch'),
+			body: created.map(c => c.body),
+			results: results.map(r => [r.ok, r.detail]),
+		}).toEqual({
+			ops: ['excludeBoardDir', 'status', 'currentBranch', 'addTracked', 'commit', 'aheadCount', 'fetch', 'refExists', 'pushBranch'],
+			push: { kind: 'pushBranch', place: '/home/u/repo-worktrees/7', runId: expect.any(String), branch: 'para/7', setUpstream: true, interactive: true },
+			body: ['Closes #3\n\nタスクボードが作ったドラフト PR です。'],
+			results: [[true, '#5']],
+		});
+	});
+
 });
