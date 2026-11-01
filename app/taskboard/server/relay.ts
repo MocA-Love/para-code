@@ -3,7 +3,7 @@
 import * as path from 'node:path';
 import type { ITaskBoardSlot, ITaskBoardStep, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardWorkspaceError, type ITaskBoardRunPort, type ITaskBoardWorkspacePort, type TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
-import { ParaCodeBridgeError, type ParaCodeBridgeClient } from './paraCode.js';
+import { ParaCodeBridgeError, type ParaCodeBridgeClient, type ParaCodeRelayEvent } from './paraCode.js';
 
 /*
  * SSH の窓のボード（q.html Q472 = A）。リポジトリは SSH の接続先にあり、git・ファイルの読み書きは Para Code の
@@ -109,6 +109,15 @@ export class RelayClient {
 	async excludeBoardDir(place: string): Promise<void> {
 		await this.call({ kind: 'excludeBoardDir', place });
 	}
+
+	/** 工程のコマンドを頼む（SSH の窓が確かめてから走らせる）。終わりは relay-exit のイベントで届く。 */
+	async runCommand(place: string, runId: string, command: string, step: { flowId: string; flowName: string; stepId: string; stepName: string; source: 'team' | 'personal' | 'default' }): Promise<void> {
+		await this.call({ kind: 'runCommand', place, runId, command, step });
+	}
+
+	async cancelRun(runId: string): Promise<void> {
+		await this.call({ kind: 'cancelRun', runId });
+	}
 }
 
 /** フローの定義の読み書きの口（flows.ts）。中継では共通・個人のファイルだけで、旧 `.paracode.json` は読むだけ。 */
@@ -209,15 +218,93 @@ export class RemoteWorkspaces implements ITaskBoardWorkspacePort {
 	}
 }
 
-/** SSH のボードの run 工程（コマンド・ドラフト PR）。まだ出さないので、はっきり失敗させる。 */
-export class RelayUnsupportedRunner implements ITaskBoardRunPort {
-	constructor(private readonly engine: () => TaskBoardEngine) { }
+/**
+ * SSH のボードの run 工程。工程のコマンドは、SSH の窓が確かめて（初めてと中身が変わったとき）、接続先で走らせる。出力は
+ * 順に届き、終わりはイベントで届く（環境変数は接続先で組み立てる。このボードの env は送らない）。ドラフト PR はまだ出さない。
+ */
+export class RemoteCommandRunner implements ITaskBoardRunPort {
+	private readonly runs = new Map<string, { readonly taskId: string; readonly attempt: number }>();
+	private readonly byTask = new Map<string, string>();
+	private seq = 0;
 
-	run(task: ITaskBoardTask, _step: ITaskBoardStep): void {
-		this.engine().reportRunResult(task.id, task.attempt, { ok: false, detail: `${RELAY_UNSUPPORTED}（工程のコマンドとドラフト PR）` });
+	constructor(
+		private readonly engine: () => TaskBoardEngine,
+		private readonly relay: RelayClient,
+		private readonly placePath: (task: ITaskBoardTask) => string | undefined,
+	) { }
+
+	run(task: ITaskBoardTask, step: ITaskBoardStep): void {
+		const engine = this.engine();
+		const attempt = task.attempt;
+		if (step.run === 'draft-pr') {
+			engine.reportRunResult(task.id, attempt, { ok: false, detail: `${RELAY_UNSUPPORTED}（ドラフト PR と push）` });
+			return;
+		}
+		const place = this.placePath(task);
+		const command = step.command?.trim();
+		if (!place || !command) {
+			engine.reportRunResult(task.id, attempt, { ok: false, detail: !place ? '作業場所のディレクトリが分かりません' : 'コマンドが設定されていません' });
+			return;
+		}
+		this.cancel(task);
+		const runId = `${task.id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80)}-${attempt}-${++this.seq}`;
+		this.runs.set(runId, { taskId: task.id, attempt });
+		this.byTask.set(task.id, runId);
+		const flow = engine.flowOf(task);
+		engine.reportOutput(task.id, [`${place} $ ${command}`, '  （SSH の窓で確かめてから、接続先で実行します）']);
+		void this.relay.runCommand(place, runId, command, {
+			flowId: flow.id, flowName: flow.name, stepId: step.id, stepName: step.name,
+			source: flow.scope === 'team' ? 'team' : flow.scope === 'personal' ? 'personal' : 'default',
+		}).catch((err: Error) => this.finish(runId, { ok: false, detail: `実行を頼めませんでした: ${err.message}` }));
 	}
 
-	cancel(): void { }
+	cancel(task: ITaskBoardTask): void {
+		const runId = this.byTask.get(task.id);
+		if (runId !== undefined) {
+			this.byTask.delete(task.id);
+			this.runs.delete(runId);
+			this.engine().reportOutput(task.id, ['^C　コマンドを止めました']);
+			void this.relay.cancelRun(runId).catch(() => undefined);
+		}
+	}
 
-	dispose(): void { }
+	dispose(): void {
+		for (const runId of [...this.runs.keys()]) {
+			void this.relay.cancelRun(runId).catch(() => undefined);
+		}
+		this.runs.clear();
+		this.byTask.clear();
+	}
+
+	/** 接続口から届いた、このボードの工程のコマンドの出力と終わり。 */
+	onEvent(event: ParaCodeRelayEvent): void {
+		const run = this.runs.get(event.runId);
+		if (!run) {
+			return;
+		}
+		if (event.type === 'relay-output') {
+			const lines = event.lines.map(line => `  ${line}`);
+			this.engine().reportOutput(run.taskId, lines.length > 200 ? [`  …（${lines.length - 200} 行を省略）`, ...lines.slice(-200)] : lines);
+			return;
+		}
+		const detail = event.reason === 'not-approved' ? 'SSH の窓で「実行しない」を選んだか、確認に答えが無いまま 10 分たちました'
+			: event.reason === 'disconnected' ? 'SSH の窓との接続が切れたので止めました'
+				: event.reason ? `実行できませんでした: ${event.reason}`
+					: event.timedOut ? '60 分を超えたので止めました'
+						: event.cancelled ? '止めました（SSH の窓が閉じた・接続が切れたときも止まります）'
+							: event.code === 0 ? '終了コード 0' : `終了コード ${event.code ?? event.signal}`;
+		this.finish(event.runId, { ok: event.code === 0 && !event.reason && !event.cancelled && !event.timedOut, detail });
+	}
+
+	private finish(runId: string, result: { readonly ok: boolean; readonly detail: string }): void {
+		const run = this.runs.get(runId);
+		if (!run) {
+			return;
+		}
+		this.runs.delete(runId);
+		if (this.byTask.get(run.taskId) === runId) {
+			this.byTask.delete(run.taskId);
+		}
+		this.engine().reportRunResult(run.taskId, run.attempt, result);
+	}
 }

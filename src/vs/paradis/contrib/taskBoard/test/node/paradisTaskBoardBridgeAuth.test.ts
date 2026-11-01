@@ -116,6 +116,20 @@ suite('Paradis task board bridge - board key and caller', function () {
 		assert.strictEqual(await request('/v1/launch', 'POST', undefined, { prompt: 'x'.repeat(2 * 1024 * 1024) }), 403);
 	});
 
+	test('command output and ends from a window reach only the board of that window\'s session', () => {
+		const sent: string[] = [];
+		const routed = new ParadisTaskBoardRelayRouter(router, { append: entry => audit.push(entry) }, new NullLogService(), Date.now, (keyHash, event) => sent.push(`${keyHash} ${event.type} ${event.runId}`));
+		routed.register('window:2', { sessionId: SESSION, boardKey: KEY_A });
+		assert.deepStrictEqual([
+			routed.relayEvent('window:1', { sessionId: SESSION, event: { type: 'relay-output', runId: 'r1', lines: ['x'] } }),
+			routed.relayEvent('window:2', { sessionId: SESSION, event: { type: 'relay-output', runId: 'r1', lines: [42] } }),
+			routed.relayEvent('window:2', { sessionId: SESSION, event: { type: 'relay-output', runId: 'r1', lines: ['x'] } }),
+			routed.relayEvent('window:2', { sessionId: SESSION, event: { type: 'relay-exit', runId: 'r1', code: null, reason: 'not-approved' } }),
+			sent.map(line => line.replace(/^[0-9a-f]{64}/, 'hash(A)')),
+			audit.map(entry => `${entry.operation} ${entry.outcome} ${entry.reason}`),
+		], [false, false, true, true, ['hash(A) relay-output r1', 'hash(A) relay-exit r1'], ['runCommand.exit denied not-approved']]);
+	});
+
 	test('denied relay requests are logged up to 60 lines a minute, then only counted', () => {
 		let now = 0;
 		const lines: Omit<IParadisTaskBoardAuditEntry, 'time'>[] = [];

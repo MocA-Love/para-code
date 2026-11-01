@@ -69,6 +69,7 @@ class ParadisTaskBoardBridgeChannel implements IServerChannel<string> {
 			}
 			case 'registerRelaySession': return this.relay.register(ctx, arg) as T;
 			case 'closeRelaySession': return this.relay.close(ctx, arg) as T;
+			case 'relayEvent': return this.relay.relayEvent(ctx, arg) as T;
 		}
 		throw new Error(`Call not found: ${command}`);
 	}
@@ -120,7 +121,7 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 	const store = new DisposableStore();
 
 	const audit = new ParadisTaskBoardAuditLog(join(environmentService.userDataPath, 'paradis', 'taskBoardRelay'), logService);
-	const relay = new ParadisTaskBoardRelayRouter(createWindowRouter(server), audit, logService);
+	const relay = new ParadisTaskBoardRelayRouter(createWindowRouter(server), audit, logService, Date.now, (keyHash, event) => service.emitRelay(keyHash, event));
 	const service = store.add(new ParadisTaskBoardBridgeService(createWindowRouter(server), {
 		directoryExists,
 		ignorePathCase: isMacintosh || isWindows,

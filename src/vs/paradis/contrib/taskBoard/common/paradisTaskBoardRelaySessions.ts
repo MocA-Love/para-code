@@ -25,14 +25,34 @@ import { Schemas } from '../../../../base/common/network.js';
 import { posix } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { ParadisTaskBoardErrorCode, ParadisTaskBoardResult, paradisTaskBoardFail } from './paradisTaskBoardBridge.js';
-import { IParadisTaskBoardRelaySessionInfo, PARADIS_TASK_BOARD_RELAY_HEARTBEAT_MS, paradisParseTaskBoardRelayRequest, paradisTaskBoardIsBoardKey } from './paradisTaskBoardRelay.js';
+import { ParadisTaskBoardErrorCode, ParadisTaskBoardRelayEvent, ParadisTaskBoardResult, paradisTaskBoardFail } from './paradisTaskBoardBridge.js';
+import { IParadisTaskBoardRelayCommandStep, IParadisTaskBoardRelaySessionInfo, PARADIS_TASK_BOARD_RELAY_HEARTBEAT_MS, paradisParseTaskBoardRelayRequest, paradisTaskBoardIsBoardKey } from './paradisTaskBoardRelay.js';
 import { paradisTaskBoardRemoteStripUrlCredentials } from './paradisTaskBoardRemote.js';
 
 export interface IParadisTaskBoardRelayWorktree {
 	readonly dir: string;
 	readonly branch: string;
 }
+
+/** 承認した工程のコマンド。 */
+export interface IParadisTaskBoardRelayApproval {
+	readonly hash: string;
+	readonly command: string;
+}
+
+/** 確認のダイアログに出すもの。 */
+export interface IParadisTaskBoardRelayCommandConfirmation {
+	readonly authority: string;
+	readonly repository: string;
+	readonly place: string;
+	readonly command: string;
+	readonly step: IParadisTaskBoardRelayCommandStep;
+	/** 前に承認した本文（中身が変わったとき）。 */
+	readonly previous: string | undefined;
+}
+
+/** 確認に答えが無いまま、この時間が過ぎたら「実行しない」にする。 */
+export const PARADIS_TASK_BOARD_RELAY_CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** 手元に残す、リポジトリごとの記録。 */
 export interface IParadisTaskBoardRelayRecord {
@@ -55,6 +75,12 @@ export interface IParadisTaskBoardRelaySessionsHost {
 	newSessionId(): string;
 	readRecord(repository: string): IParadisTaskBoardRelayRecord;
 	writeRecord(repository: string, record: IParadisTaskBoardRelayRecord): void;
+	/** 工程のコマンドの承認（リポジトリ・フロー・工程ごとに、承認した本文と hash）。 */
+	readApproval(key: string): IParadisTaskBoardRelayApproval | undefined;
+	writeApproval(key: string, approval: IParadisTaskBoardRelayApproval): void;
+	/** 初めての、または本文が変わった工程のコマンドを、この窓のダイアログで確かめる。 */
+	confirmCommand(request: IParadisTaskBoardRelayCommandConfirmation): Promise<'once' | 'remember' | 'deny'>;
+	sha256(text: string): Promise<string>;
 	warn(message: string, error?: unknown): void;
 }
 
@@ -68,6 +94,8 @@ interface IRelaySession {
 	readonly places: Set<string>;
 	/** ボードの鍵を結んだか（結ぶまでは依頼を受けない）。 */
 	bound: boolean;
+	/** 走っている（確認待ちを含む）工程のコマンド。 */
+	readonly runs: Set<string>;
 }
 
 /** 記録に残すワークツリー・ブランチの数（古いものから落とす）。 */
@@ -156,13 +184,22 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 			void channel.call('closeSession', [sessionId]).catch(() => undefined);
 			return paradisTaskBoardFail('unavailable', 'The window is closing.');
 		}
-		const session: IRelaySession = { sessionId, repository: mainUri, root, worktreeRoot, places: new Set([root]), bound: false };
+		const session: IRelaySession = { sessionId, repository: mainUri, root, worktreeRoot, places: new Set([root]), bound: false, runs: new Set() };
 		this.sessions.set(sessionId, session);
 		const timer = new IntervalTimer();
 		timer.cancelAndSet(() => {
 			this.host.remoteChannel()?.call('heartbeat', [sessionId]).catch(error => this.host.warn('[ParadisTaskBoardRelay] heartbeat failed', error));
 		}, PARADIS_TASK_BOARD_RELAY_HEARTBEAT_MS);
-		this.heartbeats.set(sessionId, toDisposable(() => timer.dispose()));
+		// 工程のコマンドの出力（REH が 250 ms ごとにまとめて流す）を、そのボードへ渡す
+		const output = channel.listen<{ readonly runId: string; readonly lines: readonly string[] }>('onOutput', sessionId)(chunk => {
+			if (session.runs.has(chunk.runId)) {
+				this.sendEvent(sessionId, { type: 'relay-output', runId: chunk.runId, lines: chunk.lines });
+			}
+		});
+		this.heartbeats.set(sessionId, toDisposable(() => {
+			timer.dispose();
+			output.dispose();
+		}));
 		// 前に作ったワークツリー（Para Code を開き直した後でも返却できるように）。引き取れないものは記録から外す
 		const record = this.host.readRecord(mainUri.toString());
 		const adopted: IParadisTaskBoardRelayWorktree[] = [];
@@ -233,12 +270,12 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 		if (!channel) {
 			return paradisTaskBoardFail('unavailable', 'This window is not connected to the SSH host.');
 		}
-		const opPlace = op.kind === 'sessionInfo' || op.kind === 'writeFile' ? undefined : op.place;
+		const opPlace = op.kind === 'sessionInfo' || op.kind === 'writeFile' || op.kind === 'cancelRun' ? undefined : op.place;
 		if (opPlace !== undefined && !session.places.has(opPlace)) {
 			return paradisTaskBoardFail('rejected', 'The folder is not a workspace of this task board session.');
 		}
 		// ブランチを切り替える操作と `.para/` の作り直しは、ボードのワークツリーだけ（本体の作業ツリーは利用者のもの）
-		const onWorktreeOnly = op.kind === 'resetBoardDir' || (op.kind === 'git' && (op.git.kind === 'switch' || op.git.kind === 'detach' || op.git.kind === 'mergeFfOnly'));
+		const onWorktreeOnly = op.kind === 'resetBoardDir' || op.kind === 'runCommand' || (op.kind === 'git' && (op.git.kind === 'switch' || op.git.kind === 'detach' || op.git.kind === 'mergeFfOnly'));
 		if (onWorktreeOnly && opPlace === session.root) {
 			return paradisTaskBoardFail('rejected', 'The task board does not switch branches or reset files in the main working tree of the repository.');
 		}
@@ -268,10 +305,64 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 				case 'excludeBoardDir':
 					await channel.call('excludeBoardDir', [sessionId, op.place]);
 					return { ok: true, value: {} };
+				case 'runCommand':
+					if (session.runs.has(op.runId)) {
+						return paradisTaskBoardFail('invalid', 'The run id is already used.');
+					}
+					// 確認はボードの依頼を待たせずに進める（ダイアログは何分も開いていることがある）。結果は終わりのイベントで返す
+					session.runs.add(op.runId);
+					void this.startCommand(session, op.place, op.runId, op.command, op.step);
+					return { ok: true, value: { accepted: true, detail: `run ${op.runId}` } };
+				case 'cancelRun':
+					return { ok: true, value: { cancelled: await channel.call<boolean>('cancelRun', [sessionId, op.runId]).catch(() => false) } };
 			}
 		} catch (error) {
 			return relayFailure(error);
 		}
+	}
+
+	/**
+	 * 工程のコマンドを走らせる。承認（リポジトリ・フロー・工程ごとの本文の hash）と違えば、この窓のダイアログで確かめる
+	 * （初めてのときと、中身が変わったとき。Q525 の b = A）。照合するのは REH へ送るこの文字列そのもの。
+	 */
+	private async startCommand(session: IRelaySession, place: string, runId: string, command: string, step: IParadisTaskBoardRelayCommandStep): Promise<void> {
+		const exit = (event: Omit<Extract<ParadisTaskBoardRelayEvent, { type: 'relay-exit' }>, 'type' | 'runId'>) => {
+			session.runs.delete(runId);
+			this.sendEvent(session.sessionId, { type: 'relay-exit', runId, ...event });
+		};
+		const key = `${session.repository.toString()}|${step.flowId}|${step.stepId}`;
+		const hash = await this.host.sha256(command);
+		const approved = this.host.readApproval(key);
+		if (approved?.hash !== hash) {
+			const answer = await this.host.confirmCommand({
+				authority: session.repository.authority, repository: session.root, place, command, step,
+				previous: approved?.command,
+			}).catch(() => 'deny' as const);
+			if (answer === 'deny') {
+				exit({ code: null, signal: null, cancelled: false, timedOut: false, reason: 'not-approved' });
+				return;
+			}
+			if (answer === 'remember') {
+				this.host.writeApproval(key, { hash, command });
+			}
+		}
+		const channel = this.host.remoteChannel();
+		if (!channel || !this.sessions.has(session.sessionId)) {
+			exit({ code: null, signal: null, cancelled: true, timedOut: false, reason: 'disconnected' });
+			return;
+		}
+		try {
+			const result = await channel.call<{ readonly code: number | null; readonly signal: string | null; readonly cancelled: boolean; readonly timedOut: boolean }>('runCommand', [session.sessionId, place, runId, command]);
+			// 心拍が切れて REH が止めたときは cancelled で返る
+			exit({ code: result.code, signal: result.signal, cancelled: result.cancelled, timedOut: result.timedOut });
+		} catch (error) {
+			const failure = relayFailure(error);
+			exit({ code: null, signal: null, cancelled: false, timedOut: false, reason: `${failure.code}: ${failure.message}`.slice(0, 500) });
+		}
+	}
+
+	private sendEvent(sessionId: string, event: ParadisTaskBoardRelayEvent): void {
+		this.host.bridge.call('relayEvent', { sessionId, event }).catch(error => this.host.warn('[ParadisTaskBoardRelay] could not pass the command output to the board', error));
 	}
 
 	private async sessionInfo(session: IRelaySession, channel: IChannel): Promise<IParadisTaskBoardRelaySessionInfo> {

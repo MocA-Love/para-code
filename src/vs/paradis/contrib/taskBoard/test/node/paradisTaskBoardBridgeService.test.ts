@@ -141,6 +141,21 @@ suite('ParadisTaskBoardBridgeService', () => {
 		assert.deepStrictEqual([send.status, screen.status, terminals.body], [403, 403, { terminals: [] }]);
 	});
 
+	test('the event stream of a task board for an SSH window carries only its own terminals and its own command output', async () => {
+		const router = new FakeRouter();
+		const service = create(router);
+		const local: string[] = [];
+		const remote: string[] = [];
+		const other: string[] = [];
+		disposables.add(service.addEventClient(chunk => local.push(chunk), { keyHash: 'board-l' })!);
+		disposables.add(service.addEventClient(chunk => remote.push(chunk), { keyHash: 'board-a', remote: true })!);
+		disposables.add(service.addEventClient(chunk => other.push(chunk), { keyHash: 'board-b', remote: true })!);
+		await launch(service);
+		service.emitRelay('board-a', { type: 'relay-output', runId: 'r1', lines: ['ok'] });
+		const types = (chunks: string[]) => parseEvents(chunks).map(event => (event as { type: string }).type);
+		assert.deepStrictEqual([types(local), types(remote), types(other)], [['status'], ['relay-output'], []]);
+	});
+
 	test('a relay launch goes only to the window of the session for the board that owns it, without looking at local folders', async () => {
 		const router = new FakeRouter();
 		relayLaunches = [];

