@@ -18,6 +18,8 @@ import { paradisRegisterRuntimeApis } from '../../electron-main/paradisBrowserEx
 import { paradisRegisterStorageApis, ParadisBrowserExtensionSyncStore } from '../../electron-main/paradisBrowserExtensionStorageApis.js';
 import { paradisRegisterBrowsingDataApis } from '../../electron-main/paradisBrowserExtensionBrowsingData.js';
 import { ParadisBrowserExtensionSidePanel } from '../../electron-main/paradisBrowserExtensionSidePanel.js';
+import { ParadisBrowserExtensionDebugger } from '../../electron-main/paradisBrowserExtensionDebugger.js';
+import type { CDPEvent, ICDPConnection } from '../../../../../platform/browserView/common/cdp/types.js';
 import { IParadisTabEnvironment, IParadisTabView, ParadisBrowserExtensionTabs, paradisCanSeeTabUrl, paradisMatchesUrlPattern } from '../../electron-main/paradisBrowserExtensionTabs.js';
 import { IParadisActionsEnvironment, ParadisBrowserExtensionActions } from '../../electron-main/paradisBrowserExtensionActions.js';
 import { ParadisBrowserExtensionMenus } from '../../electron-main/paradisBrowserExtensionMenus.js';
@@ -347,6 +349,81 @@ suite('ParadisBrowserExtensionTabs', () => {
 		}
 	}));
 
+	test('chrome.debugger attaches only when allowed, never to a shared tab, and forwards events', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, openEvents, listen, host, tabs, dispose } = setup({ permissions: ['debugger'], host_permissions: ['<all_urls>'] });
+		let allowed = false;
+		const sent: string[] = [];
+		const onEvent = new Emitter<CDPEvent>();
+		const onClose = new Emitter<void>();
+		const connection: ICDPConnection = {
+			sessionId: 's', targetId: 't', onEvent: onEvent.event, onClose: onClose.event,
+			sendCommand: async method => { sent.push(method); return { result: { value: 2 } }; },
+			dispose: () => sent.push('disposed'),
+		};
+		const debuggerApi = new ParadisBrowserExtensionDebugger(host, tabs, { isAllowed: () => allowed, attach: async () => connection });
+		const contents = fakeContents(electronSession, 'https://example.com/', 'Example');
+		try {
+			await addTabs(fakeView('user', contents, 1));
+			const stream = await openEvents();
+			await listen('debugger', 'onEvent');
+			await listen('debugger', 'onDetach');
+			const notAllowed = await call('debugger', 'attach', [{ tabId: contents.id }, '1.3']);
+			allowed = true;
+			const attached = await call('debugger', 'attach', [{ tabId: contents.id }, '1.3']);
+			const evaluated = await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Runtime.evaluate', { expression: '1 + 1' }]);
+			const target = await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Target.attachToTarget', { targetId: 'other' }]);
+			const file = await call('debugger', 'sendCommand', [{ tabId: contents.id }, 'Page.navigate', { url: 'file:///etc/passwd' }]);
+			onEvent.fire({ method: 'Page.frameNavigated', params: { frame: {} } });
+			// 共有が始まったら外す。共有中のタブにはつなぎ直せない
+			paradisSetExtensionPageHold(contents, true);
+			const whileShared = await call('debugger', 'attach', [{ tabId: contents.id }, '1.3']);
+			const reader = stream.body!.getReader();
+			let text = '';
+			// 届かなければ待ち続けない（1 秒で読むのをやめる）
+			for (let chunk = 0; chunk < 5 && text.split('\n').filter(Boolean).length < 2; chunk++) {
+				const read = await Promise.race([reader.read(), new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 1000))]);
+				if (!read?.value) {
+					break;
+				}
+				text += new TextDecoder().decode(read.value);
+			}
+			await reader.cancel();
+			assert.deepStrictEqual({
+				notAllowed, attached, evaluated, target, file, whileShared, sent,
+				events: text.split('\n').filter(Boolean).map(line => paradisDecodeExtensionWire(line)),
+			}, {
+				notAllowed: { ok: false, error: 'Para Code lets this extension attach a debugger only after "Allow Debugger Access" is turned on in the extension manager' },
+				attached: { ok: true },
+				evaluated: { ok: true, value: { result: { value: 2 } } },
+				target: { ok: false, error: 'Para Code does not let extensions use Target.attachToTarget' },
+				file: { ok: false, error: 'Cannot navigate to file:///etc/passwd' },
+				whileShared: { ok: false, error: 'Para Code does not let extensions attach a debugger to a tab that is shared with an agent' },
+				sent: ['Runtime.evaluate', 'disposed'],
+				events: [
+					{ namespace: 'debugger', event: 'onEvent', args: [{ tabId: contents.id }, 'Page.frameNavigated', { frame: {} }] },
+					{ namespace: 'debugger', event: 'onDetach', args: [{ tabId: contents.id }, 'canceled_by_user'] },
+				],
+			});
+		} finally {
+			paradisSetExtensionPageHold(contents, false);
+			debuggerApi.dispose();
+			onEvent.dispose();
+			onClose.dispose();
+			dispose();
+		}
+	}));
+
+	test('tabs.create opens chrome://newtab as an empty Para Code tab', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, call, dispose } = setup({ permissions: ['tabs'] });
+		try {
+			await addTabs(fakeView('user', fakeContents(electronSession, 'https://example.com/', 'Example'), 1));
+			const created = await call('tabs', 'create', [{ url: 'chrome://newtab', active: false }]) as { ok: true; value: { url: string } };
+			assert.deepStrictEqual({ url: created.value.url, other: await call('tabs', 'create', [{ url: 'chrome://settings' }]) }, { url: 'about:blank', other: { ok: false, error: 'Cannot open URL: chrome://settings' } });
+		} finally {
+			dispose();
+		}
+	}));
+
 	test('matches Chrome URL patterns', () => {
 		assert.deepStrictEqual([
 			paradisMatchesUrlPattern('<all_urls>', 'https://a.test/x'),
@@ -372,6 +449,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 		new ParadisBrowserExtensionServices(host, tabs, permissions, unusedServicesEnvironment);
 		paradisRegisterBrowsingDataApis(host, () => []);
 		const sidePanel = new ParadisBrowserExtensionSidePanel(host, tabs, { findView: () => undefined, windowById: () => undefined, sessionOf: () => undefined, hasUserGesture: () => false, nameOf: extension => extension.name }, '/tmp/unused-side-panel.json', silentLog);
+		const debuggerApi = new ParadisBrowserExtensionDebugger(host, tabs, { isAllowed: () => false, attach: async () => { throw new Error(); } });
 		try {
 			const registered = (host as unknown as { _namespaces: Map<string, { methods: Record<string, unknown>; events: readonly string[]; permission?: unknown }> })._namespaces;
 			for (const [name, surface] of Object.entries(PARADIS_SHIM_SURFACE)) {
@@ -380,6 +458,7 @@ suite('ParadisBrowserExtensionTabs', () => {
 				assert.deepStrictEqual({ methods: [...surface.methods].sort(), events: [...surface.events].sort(), permission: surface.permission }, { methods: Object.keys(namespace.methods).sort(), events: [...namespace.events].sort(), permission: namespace.permission }, name);
 			}
 		} finally {
+			debuggerApi.dispose();
 			sidePanel.dispose();
 			menus.dispose();
 			actions.dispose();

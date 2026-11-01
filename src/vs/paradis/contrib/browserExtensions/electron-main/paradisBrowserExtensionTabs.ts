@@ -25,6 +25,7 @@ import { randomBytes } from 'crypto';
 import type { BrowserWindow, Session, WebContents, WebFrameMain } from 'electron';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import type { ICDPConnection } from '../../../../platform/browserView/common/cdp/types.js';
 import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { paradisIsChromeWebStoreUrl } from '../common/paradisBrowserExtensionWebStore.js';
 import { paraOnDidMarkBrowserViewAgentTab } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
@@ -61,6 +62,8 @@ export interface IParadisTabEnvironment {
 	activateTab(windowId: number, viewId: string): void;
 	/** Para Code のウィンドウにフォーカスが移った（ウィンドウの id）。 */
 	readonly onDidFocusWindow: Event<number>;
+	/** タブのページへの CDP セッションを開く（chrome.debugger。無ければ chrome.debugger は使えない）。 */
+	attachDebugger?(viewId: string): Promise<ICDPConnection>;
 }
 
 /** 拡張機能を読み込んだセッション（タブの API に要るところ）。 */
@@ -769,6 +772,12 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		return [...list(extension.manifest.host_permissions), ...list(extension.manifest.permissions).filter(permission => permission.includes('://') || permission === '<all_urls>'), ...this._grantedOrigins(extension, session)];
 	}
 
+	/** そのタブの今の URL へのサイトの権限（manifest・後から許したもの・そのタブの activeTab）があるか（chrome.debugger が使う）。 */
+	hasHostAccess(caller: IParadisExtensionApiCaller, contents: WebContents): boolean {
+		const url = contents.getURL();
+		return this._activeTabGrants.get(contents.id)?.has(caller.extension.id) === true || this._hostPatterns(caller.extension, contents.session).some(pattern => paradisMatchesUrlPattern(pattern, url));
+	}
+
 	/** タブの一番外の文書の id（別の文書へ移ると変わる。右クリックの項目を、移った後に押させないのに使う）。 */
 	topDocumentId(contents: WebContents): string | undefined {
 		return contents.isDestroyed() ? undefined : this._documentId(contents.mainFrame);
@@ -844,7 +853,8 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 
 	/** 拡張機能が開いてよい URL か（http(s)・about:blank・自分のページ。ほかの拡張機能のページや file: は開かせない）。 */
 	private _requireOpenableUrl(caller: IParadisExtensionApiCaller, rawUrl: string | undefined): string {
-		if (rawUrl === undefined || rawUrl === '') {
+		// chrome://newtab は Para Code の新しいタブ（空のタブ）として開く（Claude がタブを作るときに使う）
+		if (rawUrl === undefined || rawUrl === '' || /^chrome:\/\/newtab\/?$/i.test(rawUrl)) {
 			return 'about:blank';
 		}
 		let url: URL;

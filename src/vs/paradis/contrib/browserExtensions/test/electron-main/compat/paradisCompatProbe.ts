@@ -39,6 +39,7 @@ import { fileURLToPath } from 'url';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { join } from '../../../../../../base/common/path.js';
 import { BrowserViewStorageScope } from '../../../../../../platform/browserView/common/browserView.js';
+import type { CDPEvent, ICDPConnection } from '../../../../../../platform/browserView/common/cdp/types.js';
 import { IParadisAddExtensionResult } from '../../../common/paradisBrowserExtensions.js';
 import { IParadisBrowserExtensionTabsOptions, ParadisBrowserExtensionsManager, ParadisExtensionSession } from '../../../electron-main/paradisBrowserExtensionsMain.js';
 import { paradisListenForBrowserExtensionWindowQueries } from '../../../electron-main/paradisBrowserExtensionWindows.js';
@@ -204,6 +205,38 @@ const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>
 <article><h2>Article</h2><p>${'Para Code checks browser extensions on this page. '.repeat(40)}</p><textarea name="note">This is a sentence to check.</textarea></article>
 <a href="/data.json">data</a></body></html>`;
 
+/**
+ * chrome.debugger の試験用の口: タブのページへの CDP セッション（Target.attachToTarget の flatten）を、Electron の debugger の上に
+ * 開く（製品では BrowserView の debugger が同じことをする）。
+ */
+async function attachCompatDebugger(contents: WebContents): Promise<ICDPConnection> {
+	const electronDebugger = contents.debugger;
+	if (!electronDebugger.isAttached()) {
+		electronDebugger.attach('1.3');
+	}
+	const { sessionId } = await electronDebugger.sendCommand('Target.attachToTarget', { targetId: contents.getOrCreateDevToolsTargetId(), flatten: true }) as { sessionId: string };
+	const onEvent = new Emitter<CDPEvent>();
+	const onClose = new Emitter<void>();
+	const onMessage = (_event: unknown, method: string, params: unknown, from?: string) => {
+		if (from === sessionId) {
+			onEvent.fire({ method, params, sessionId });
+		} else if (method === 'Target.detachedFromTarget' && (params as { sessionId?: string }).sessionId === sessionId) {
+			onClose.fire();
+		}
+	};
+	electronDebugger.on('message', onMessage);
+	return {
+		sessionId, targetId: '', onEvent: onEvent.event, onClose: onClose.event,
+		sendCommand: (method: string, params?: unknown) => electronDebugger.sendCommand(method, params as object, sessionId),
+		dispose: () => {
+			electronDebugger.removeListener('message', onMessage);
+			void electronDebugger.sendCommand('Target.detachFromTarget', { sessionId }).catch(() => { });
+			onEvent.dispose();
+			onClose.dispose();
+		},
+	};
+}
+
 function wait(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -241,6 +274,13 @@ async function run(resultPath: string, root: string): Promise<void> {
 			void extra.loadURL(url ?? 'about:blank').catch(() => { });
 			return view;
 		}, closeTab: async () => { }, activateTab: () => { },
+		attachDebugger: async (viewId: string) => {
+			const view = views.find(candidate => candidate.id === viewId);
+			if (!view) {
+				throw new Error('The tab is closed');
+			}
+			return attachCompatDebugger(view.webContents);
+		},
 		onDidFocusWindow: Event.fromNodeEventEmitter(app, 'browser-window-focus', (_event: unknown, window: BrowserWindow) => window.id),
 	};
 	const environment = environmentObject as unknown as IParadisBrowserExtensionTabsOptions['environment'];
@@ -264,8 +304,9 @@ async function run(resultPath: string, root: string): Promise<void> {
 	const dbg = tab.webContents.debugger;
 	dbg.attach('1.3');
 	let contexts: { origin: string; name: string; type?: string }[] = [];
-	dbg.on('message', (_event, method, params) => {
-		if (method === 'Runtime.executionContextCreated') {
+	dbg.on('message', (_event, method, params, sessionId) => {
+		// 拡張機能が chrome.debugger で開いたセッションのもの（sessionId 付き。一番外のセッションは空の文字列）は数えない
+		if (method === 'Runtime.executionContextCreated' && !sessionId) {
 			contexts.push({ origin: params.context.origin, name: params.context.name, type: params.context.auxData?.type });
 		}
 	});
@@ -318,6 +359,10 @@ async function run(resultPath: string, root: string): Promise<void> {
 		const matches = (manifest.content_scripts ?? []).flatMap(entry => Array.isArray(entry?.matches) ? entry.matches as unknown[] : []);
 		result.contentScriptForTestPage = matches.some(pattern => typeof pattern === 'string' && ['<all_urls>', '*://*/*', 'http://*/*', 'http://127.0.0.1/*', '*://127.0.0.1/*'].includes(pattern));
 		result.urlOverrides = Object.keys(manifest.chrome_url_overrides ?? {});
+		// chrome.debugger: 利用者が「デバッガーの接続を許可」をオンにした形で見る（Q529）
+		if (state?.debuggerAccess) {
+			await manager.setDebuggerAllowed(id, 'default', true);
+		}
 		// ユーザースクリプト: 利用者が「ユーザースクリプトを許可」をオンにした形で見る（拡張機能は数秒ごとに見直して登録する）
 		if (state?.userScripts) {
 			await manager.setUserScriptsAllowed(id, 'default', true);
