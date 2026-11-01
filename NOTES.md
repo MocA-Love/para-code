@@ -3118,3 +3118,8 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
   - マイクと画面（video に `chromeMediaSource: 'desktop'`）、システムの音（audio に desktop）とカメラを 1 回の getUserMedia で頼むと、Chromium がそのページの描く側を「bad IPC message, reason 263」で止める（2026-10-30、Electron 43.7.7 で実測。サイト・拡張機能のページ・about:blank の子とも同じ）。権限の受け手にも setDisplayMediaRequestHandler にも届かず、何も撮れない。audio だけに desktop を頼んだ場合も同じ
   - 撮る処理の作りかけ（印を構えて getDisplayMedia を 1 つの源に当てる、候補の選び方、途中で止める処理、選ぶダイアログ）は、ブランチ `para/browser-extensions-capture-draft` に残してある。権限を渡さずに映像だけを渡す作りにするかは q.html の Q493
 - エージェントのタブかどうかは、workbench の台帳の知らせ（`paraIsAgentTabOrChild`）を新しいタブで 3 秒待ってから決める。時間の仮定で保証ではない。目印が遅れて届いたタブは、届いた時点で一覧とイベントから外す。`tabs.onCreated` には URL とタイトルを入れない（遅れた目印のタブの URL を最初の知らせで漏らさない）
+
+## タスクボードの SSH 中継（taskBoard、2026-11-01、Q472 A・Q525）
+
+- SSH の窓のボードの git・ファイル・工程のコマンド・push は、ボード → 接続口 → SSH の窓（許すかの判定）→ REH の `paradisTaskBoardRemote`（引数・パス・env の検査と実行）で中継する。設計は PR #572〜#576 の本文を見る
+- 既知の限界（設計の T2 の範囲）: push の送り先の照合は、`remote get-url --push --all origin` の URL の文字列と mirror の設定だけで行う。担当は作業場所のリポジトリの設定（`core.sshCommand`・`http.proxy`・`url.<base>.insteadOf` の書き換え先の接続のしかた）や pre-push フックを書き換えられるので、URL が同じでも別の所へ送らせることはできる。担当はもともと接続先で自分の通信を使えるため、ボードが防ぐのは「手元の確認を通らずに、知らない URL へ送る」ことまでとしている
