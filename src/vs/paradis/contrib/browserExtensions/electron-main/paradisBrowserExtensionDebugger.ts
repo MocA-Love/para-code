@@ -63,7 +63,8 @@ interface IAttachment {
 const ALLOWED_METHODS: Readonly<Record<string, (params: Record<string, unknown>, attachment: IAttachment) => Record<string, unknown>>> = {
 	'Page.enable': () => ({}),
 	'Page.getFrameTree': () => ({}),
-	'Page.captureScreenshot': params => params,
+	// 撮るのは画面に出ているもの（fromSurface は true に固定）
+	'Page.captureScreenshot': ({ format, quality, clip, captureBeyondViewport }) => ({ format, quality, clip, captureBeyondViewport, fromSurface: true }),
 	'Page.handleJavaScriptDialog': params => params,
 	'Runtime.enable': () => ({}),
 	// ページ本体の world だけ（world を指す引数は受けない）。コンソールの道具（copy() はクリップボードへ書く）も渡さない
@@ -84,7 +85,7 @@ const ALLOWED_METHODS: Readonly<Record<string, (params: Record<string, unknown>,
 
 /** 届けてよいイベント。値は、ページ本体の world・frame の分か（届けないなら false）。 */
 const ALLOWED_EVENTS: Readonly<Record<string, (params: Record<string, unknown>, attachment: IAttachment) => boolean>> = {
-	'Page.frameNavigated': (params, attachment) => isRecord(params.frame) && params.frame.id === attachment.mainFrameId && params.frame.parentId === undefined,
+	'Page.frameNavigated': (params, attachment) => isRecord(params.frame) && params.frame.id === attachment.mainFrameId && params.frame.parentId === undefined && typeof params.frame.url === 'string' && attachment.canUseUrl(params.frame.url),
 	'Page.javascriptDialogOpening': (params, attachment) => params.frameId === undefined || params.frameId === attachment.mainFrameId,
 	'Page.javascriptDialogClosed': (params, attachment) => params.frameId === undefined || params.frameId === attachment.mainFrameId,
 	'Runtime.consoleAPICalled': (params, attachment) => attachment.pageContexts.has(params.executionContextId as number),
@@ -93,15 +94,20 @@ const ALLOWED_EVENTS: Readonly<Record<string, (params: Record<string, unknown>, 
 	'Network.requestWillBeSent': (params, attachment) => {
 		const url = isRecord(params.request) ? params.request.url : undefined;
 		const shown = params.frameId === attachment.mainFrameId && typeof url === 'string' && attachment.canUseUrl(url);
+		// リダイレクトは同じ requestId で届く。権限の外へ移ったら、それより後の応答も届けない
 		if (shown) {
 			attachment.requests.add(params.requestId as string);
+		} else {
+			attachment.requests.delete(params.requestId as string);
 		}
 		return shown;
 	},
-	'Network.responseReceived': (params, attachment) => attachment.requests.has(params.requestId as string),
-	'Network.loadingFailed': (params, attachment) => {
-		const shown = attachment.requests.delete(params.requestId as string);
-		return shown;
+	'Network.responseReceived': (params, attachment) => attachment.requests.has(params.requestId as string) && (!isRecord(params.response) || typeof params.response.url !== 'string' || attachment.canUseUrl(params.response.url)),
+	'Network.loadingFailed': (params, attachment) => attachment.requests.delete(params.requestId as string),
+	// Claude は使わない。覚えたリクエストを消すだけ（長くつないでも増え続けないように）
+	'Network.loadingFinished': (params, attachment) => {
+		attachment.requests.delete(params.requestId as string);
+		return false;
 	},
 };
 
@@ -115,8 +121,11 @@ function answerFor(method: string, result: unknown): unknown {
 
 /** ページ本体の world を覚える（Runtime.executionContextCreated の auxData.isDefault のもの）。イベントは届けない。 */
 function notePageContexts(method: string, params: Record<string, unknown>, attachment: IAttachment): void {
-	if (method === 'Runtime.executionContextCreated' && isRecord(params.context) && isRecord(params.context.auxData) && params.context.auxData.isDefault === true && params.context.auxData.frameId === attachment.mainFrameId) {
-		attachment.pageContexts.add(params.context.id as number);
+	const context = isRecord(params.context) ? params.context : undefined;
+	// ウェブの origin の world は、サイトの権限の内側のものだけ（リダイレクトで権限の外の文書になったときに覚えない）
+	const origin = typeof context?.origin === 'string' ? context.origin : '';
+	if (method === 'Runtime.executionContextCreated' && context && isRecord(context.auxData) && context.auxData.isDefault === true && context.auxData.frameId === attachment.mainFrameId && (!/^https?:/i.test(origin) || attachment.canUseUrl(`${origin}/`))) {
+		attachment.pageContexts.add(context.id as number);
 	} else if (method === 'Runtime.executionContextDestroyed') {
 		attachment.pageContexts.delete(params.executionContextId as number);
 	} else if (method === 'Runtime.executionContextsCleared') {
@@ -279,11 +288,14 @@ export class ParadisBrowserExtensionDebugger implements IDisposable {
 				this._detach(attachment, 'target_closed');
 			}
 		};
+		// サーバーのリダイレクトで権限の外へ移るときも、確定する前に外す
 		contents.on('did-start-navigation', onStartNavigation as never);
+		contents.on('did-redirect-navigation', onStartNavigation as never);
 		contents.on('did-navigate', onNavigate);
 		disposables.add(toDisposable(() => {
 			if (!contents.isDestroyed()) {
 				contents.off('did-start-navigation', onStartNavigation as never);
+				contents.off('did-redirect-navigation', onStartNavigation as never);
 				contents.off('did-navigate', onNavigate);
 			}
 		}));
