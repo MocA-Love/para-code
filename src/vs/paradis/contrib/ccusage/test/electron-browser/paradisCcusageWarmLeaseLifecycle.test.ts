@@ -104,10 +104,10 @@ class TestCcusageChannel {
 				return Promise.reject(new Error(`Method not found: ${command}`));
 			}
 			const kind = (args as readonly [{ readonly kind: string }])[0].kind;
-			if (kind === 'daily' && this.dailyFailure) {
+			if ((kind === 'daily' || kind === 'today') && this.dailyFailure) {
 				return Promise.reject(this.dailyFailure);
 			}
-			const values: Record<string, unknown> = { daily: TEST_DAILY_ROWS, blocks: undefined, session: [], projects: {} };
+			const values: Record<string, unknown> = { daily: TEST_DAILY_ROWS, today: TEST_DAILY_ROWS, blocks: undefined, session: [], projects: {} };
 			return Promise.resolve({ value: values[kind], fetchedAt: Date.now(), stale: false } as T);
 		}
 		if (command === 'fetchDaily') {
@@ -128,10 +128,10 @@ class TestCcusageChannel {
 		throw new Error(`Unexpected ccusage command: ${command}`);
 	}
 
-	/** daily の取得の回数（fetchReport の daily と、古い接続先の fetchDaily）。 */
+	/** daily の取得の回数（fetchReport の daily・today と、古い接続先の fetchDaily）。 */
 	dailyCalls(): number {
 		return this.calls.filter(call => call.command === 'fetchDaily'
-			|| (call.command === 'fetchReport' && (call.args as readonly [{ readonly kind: string }])[0].kind === 'daily')).length;
+			|| (call.command === 'fetchReport' && ['daily', 'today'].includes((call.args as readonly [{ readonly kind: string }])[0].kind))).length;
 	}
 
 	callsFor(command: string): readonly IChannelCall[] {
@@ -256,7 +256,7 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		const status = disposables.add(createStatusContribution(harness));
 
 		await settle();
-		assert.deepStrictEqual(singleActiveLease(harness.channel), [{ kind: 'daily', options: { since: '20260519' } }]);
+		assert.deepStrictEqual(singleActiveLease(harness.channel), [{ kind: 'today', options: { since: '20260816' } }]);
 		assert.strictEqual(harness.channel.dailyCalls(), 0);
 		await clock.tickAsync(15_000);
 		await settle();
@@ -274,7 +274,7 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 
 		harness.configuration.setValue(STATUS_BAR_ENABLED_SETTING, true);
 		await settle();
-		assert.deepStrictEqual(singleActiveLease(harness.channel), [{ kind: 'daily', options: { since: '20260519' } }]);
+		assert.deepStrictEqual(singleActiveLease(harness.channel), [{ kind: 'today', options: { since: '20260816' } }]);
 		status.dispose();
 		await settle();
 		assert.strictEqual(harness.channel.activeLeases.size, 0);
@@ -411,21 +411,21 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		await settle();
 		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
 		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.targets), [
-			[{ kind: 'daily', options: { since: '20260519' } }],
-			[{ kind: 'daily', options: { since: '20260519' } }],
+			[{ kind: 'today', options: { since: '20260816' } }],
+			[{ kind: 'today', options: { since: '20260816' } }],
 		]);
 
 		harness.channel.resolveNextWarmLease();
 		await settle();
 		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
 		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.targets), [
-			[{ kind: 'daily', options: { since: '20260519' } }],
-			[{ kind: 'daily', options: { since: '20260519' } }],
-			[{ kind: 'daily', options: { executablePath: '/custom/ccusage', since: '20260519' } }],
+			[{ kind: 'today', options: { since: '20260816' } }],
+			[{ kind: 'today', options: { since: '20260816' } }],
+			[{ kind: 'today', options: { executablePath: '/custom/ccusage', since: '20260816' } }],
 		]);
 		harness.channel.resolveNextWarmLease();
 		await settle();
-		assert.deepStrictEqual(singleActiveLease(harness.channel), [{ kind: 'daily', options: { executablePath: '/custom/ccusage', since: '20260519' } }]);
+		assert.deepStrictEqual(singleActiveLease(harness.channel), [{ kind: 'today', options: { executablePath: '/custom/ccusage', since: '20260816' } }]);
 
 		status.dispose();
 		await settle();
@@ -458,14 +458,14 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		await settle();
 		assert.strictEqual(harness.channel.activeLeases.size, 2);
 		assert.deepStrictEqual([...harness.channel.activeLeases.values()].map(targetOptions).sort((left, right) => left.length - right.length), [
-			[{ since: '20260519' }],
+			[{ since: '20260816' }],
 			[{ since: '20260519' }, {}, { since: '20260519' }, { since: '20260519' }],
 		]);
 
 		harness.configuration.setValue(PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH, ' /custom/ccusage ');
 		await settle();
 		assert.deepStrictEqual([...harness.channel.activeLeases.values()].map(targetOptions).sort((left, right) => left.length - right.length), [
-			[{ executablePath: '/custom/ccusage', since: '20260519' }],
+			[{ executablePath: '/custom/ccusage', since: '20260816' }],
 			[
 				{ executablePath: '/custom/ccusage', since: '20260519' },
 				{ executablePath: '/custom/ccusage' },
@@ -477,7 +477,7 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		await clock.tickAsync(5 * 60 * 1000);
 		await settle();
 		assert.deepStrictEqual([...harness.channel.activeLeases.values()].map(targetOptions).sort((left, right) => left.length - right.length), [
-			[{ executablePath: '/custom/ccusage', since: '20260520' }],
+			[{ executablePath: '/custom/ccusage', since: '20260817' }],
 			[
 				{ executablePath: '/custom/ccusage', since: '20260520' },
 				{ executablePath: '/custom/ccusage' },
