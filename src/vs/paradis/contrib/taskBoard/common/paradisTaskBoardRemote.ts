@@ -188,10 +188,11 @@ export function paradisTaskBoardRemoteIsReadablePath(relativePath: string): bool
 
 /**
  * `git remote get-url` の出力から、URL の利用者の部分（`https://user:token@host/...` の `user:token@`）を取り除く。
+ * パスワードに `@` を含む形（`user:p@ss@host`）も外せるよう、authority の中の最後の `@` までを外す。
  * scp の形（`git@host:owner/repo`）は認証情報を含まないので、そのまま返す。
  */
 export function paradisTaskBoardRemoteStripUrlCredentials(output: string): string {
-	return output.split('\n').map(line => line.replace(/^(?<scheme>[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@]*@/, '$<scheme>')).join('\n');
+	return output.split('\n').map(line => line.replace(/^(?<scheme>[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/]*@/, '$<scheme>')).join('\n');
 }
 
 /** 履歴の位置。文字列で受けず、形を決めて ref の完全な名前に直す（オプションや範囲の式に読ませない）。 */
