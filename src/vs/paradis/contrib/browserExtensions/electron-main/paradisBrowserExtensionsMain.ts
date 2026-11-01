@@ -81,7 +81,7 @@ import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.j
 import { ParadisBrowserExtensionPrivacy, paradisPrivacyUserTabs } from './paradisBrowserExtensionPrivacy.js';
 import { paradisRegisterBrowsingDataApis } from './paradisBrowserExtensionBrowsingData.js';
 import { ParadisBrowserExtensionTts } from './paradisBrowserExtensionTts.js';
-import { paradisIsExtensionPageHeld, paradisSetExtensionUiAllowedWhileHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { paradisIsExtensionPageHeld, paradisSetExtensionUiAgentTabCheck, paradisSetExtensionUiAllowedWhileHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { ParadisBrowserExtensionUserScripts } from './paradisBrowserExtensionUserScripts.js';
 import { IParadisSidePanelInfo, IParadisSidePanelLayout, ParadisBrowserExtensionSidePanel } from './paradisBrowserExtensionSidePanel.js';
 import { ParadisBrowserExtensionWorkerDevTools } from './paradisBrowserExtensionWorkerDevTools.js';
@@ -620,6 +620,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			workAreaFor: rect => tabsOptions.workAreaFor?.(rect) ?? rect,
 			noteUserGesture: (session, extensionId) => permissions?.noteUserGesture(session, extensionId),
 		}, _logService) : undefined;
+		// 設定「共有中のタブでも拡張機能の画面を出す」でも、エージェントのタブ（とその子）の中の枠は止める。一覧に無いタブも止める
+		if (tabsOptions) {
+			paradisSetExtensionUiAgentTabCheck(contents => tabsOptions.environment.listViews().find(view => view.webContents === contents)?.isAgentTab() !== false);
+		}
 		this._menus = tabs && tabsOptions ? new ParadisBrowserExtensionMenus(this._apiHost, tabs, {
 			findView: viewId => tabsOptions.environment.listViews().find(view => view.id === viewId),
 			sessionOf: contents => this._actionSessionOf(contents.session),
@@ -666,6 +670,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._userScripts?.dispose();
 		this._sidePanel?.dispose();
 		this._workerDevTools?.dispose();
+		paradisSetExtensionUiAgentTabCheck(undefined);
 		this._tabs?.dispose();
 		this._apiHost.dispose();
 		void this._syncStore.flush();
@@ -743,8 +748,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	}
 
 	/** 背景の処理の console の直近の行。 */
-	async getWorkerLog(id: string): Promise<readonly IParadisWorkerLogLine[]> {
-		return paradisIsExtensionId(id) ? this._apiHost.workerLog(id) : [];
+	async getWorkerLog(id: string, afterSeq?: number): Promise<readonly IParadisWorkerLogLine[]> {
+		return paradisIsExtensionId(id) ? this._apiHost.workerLog(id, typeof afterSeq === 'number' && Number.isFinite(afterSeq) ? afterSeq : 0) : [];
 	}
 
 	/** 背景の処理の DevTools を別のウィンドウで開く。 */
@@ -1906,7 +1911,7 @@ export function paradisRegisterBrowserExtensions(
 	const exposed: IParadisBrowserExtensionsMainService = {
 		getState: () => created.getState(),
 		onDidChangeWorkers: created.onDidChangeWorkers,
-		getWorkerLog: id => created.getWorkerLog(id),
+		getWorkerLog: (id, afterSeq) => created.getWorkerLog(id, afterSeq),
 		openWorkerDevTools: id => created.openWorkerDevTools(id),
 		addUnpacked: (folder, profile) => created.addUnpacked(folder, profile),
 		addFromWebStore: (input, profile, profileLabel) => created.addFromWebStore(input, profile, profileLabel),

@@ -106,6 +106,26 @@ export function paradisIsExtensionUiAllowedWhileHeld(): boolean {
 	return extensionUiAllowedWhileHeld;
 }
 
+/** エージェントのタブ（エージェントが開いたタブとその子）か。分からなければエージェントのタブとして扱う。 */
+let agentTabCheck: (webContents: object) => boolean = () => true;
+
+/** エージェントのタブの見分け方を入れる（electron-main の拡張機能の管理が入れる。undefined で外す）。 */
+export function paradisSetExtensionUiAgentTabCheck(check: ((webContents: object) => boolean) | undefined): void {
+	agentTabCheck = check ?? (() => true);
+}
+
+/** そのタブの中に、拡張機能が差す枠を出してよいか（設定がオンで、エージェントのタブでない）。 */
+export function paradisIsExtensionUiAllowedIn(webContents: object): boolean {
+	if (!extensionUiAllowedWhileHeld) {
+		return false;
+	}
+	try {
+		return !agentTabCheck(webContents);
+	} catch {
+		return false;
+	}
+}
+
 /** 上の値が変わったときに呼ぶ。返り値を呼ぶと外れる。 */
 export function paradisOnDidChangeExtensionUiAllowedWhileHeld(listener: () => void): { dispose(): void } {
 	extensionUiAllowedListeners.add(listener);

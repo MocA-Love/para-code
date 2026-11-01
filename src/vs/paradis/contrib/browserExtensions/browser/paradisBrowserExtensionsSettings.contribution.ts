@@ -32,7 +32,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			tags: ['experimental'],
-			markdownDescription: localize('paradis.browser.extensions.allowWhileShared', "（試験的）エージェントと共有中のタブでも、拡張機能のサイドパネルと、拡張機能がページの中に出す小さな画面（パスワード管理の候補など）を出します。オンにすると、エージェントが撮るページのスクリーンショットに拡張機能の候補（アカウント名など）が写ることがあり、エージェントが画面の位置を指定してクリックすると候補を選べてしまいます。"),
+			markdownDescription: localize('paradis.browser.extensions.allowWhileShared', "（試験的）エージェントと共有中のタブでも、拡張機能のサイドパネルと、拡張機能がページの中に出す小さな画面（パスワード管理の候補など）を出します。オンにすると、エージェントが撮るページのスクリーンショットに拡張機能の候補（アカウント名など）が写ることがあり、エージェントが画面の位置を指定してクリックすると候補を選べてしまいます。オフに戻した後、ページの中に出ている小さな画面は、ページを読み込み直すと消えます。"),
 		}
 	}
 });
