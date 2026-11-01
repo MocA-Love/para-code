@@ -772,10 +772,12 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		return [...list(extension.manifest.host_permissions), ...list(extension.manifest.permissions).filter(permission => permission.includes('://') || permission === '<all_urls>'), ...this._grantedOrigins(extension, session)];
 	}
 
-	/** そのタブの今の URL へのサイトの権限（manifest・後から許したもの・そのタブの activeTab）があるか（chrome.debugger が使う）。 */
-	hasHostAccess(caller: IParadisExtensionApiCaller, contents: WebContents): boolean {
-		const url = contents.getURL();
-		return this._activeTabGrants.get(contents.id)?.has(caller.extension.id) === true || this._hostPatterns(caller.extension, contents.session).some(pattern => paradisMatchesUrlPattern(pattern, url));
+	/**
+	 * そのタブの URL（`url` を渡せば、これから移る先）へのサイトの権限（manifest・後から許したもの）があるか。今の URL なら、そのタブの
+	 * activeTab でもよい（chrome.debugger が使う）。
+	 */
+	hasHostAccess(caller: IParadisExtensionApiCaller, contents: WebContents, url = contents.getURL()): boolean {
+		return (url === contents.getURL() && this._activeTabGrants.get(contents.id)?.has(caller.extension.id) === true) || this._hostPatterns(caller.extension, contents.session).some(pattern => paradisMatchesUrlPattern(pattern, url));
 	}
 
 	/** タブの一番外の文書の id（別の文書へ移ると変わる。右クリックの項目を、移った後に押させないのに使う）。 */

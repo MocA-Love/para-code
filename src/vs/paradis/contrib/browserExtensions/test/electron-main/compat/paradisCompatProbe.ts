@@ -214,7 +214,8 @@ async function attachCompatDebugger(contents: WebContents): Promise<ICDPConnecti
 	if (!electronDebugger.isAttached()) {
 		electronDebugger.attach('1.3');
 	}
-	const { sessionId } = await electronDebugger.sendCommand('Target.attachToTarget', { targetId: contents.getOrCreateDevToolsTargetId(), flatten: true }) as { sessionId: string };
+	const targetId = contents.getOrCreateDevToolsTargetId();
+	const { sessionId } = await electronDebugger.sendCommand('Target.attachToTarget', { targetId, flatten: true }) as { sessionId: string };
 	const onEvent = new Emitter<CDPEvent>();
 	const onClose = new Emitter<void>();
 	const onMessage = (_event: unknown, method: string, params: unknown, from?: string) => {
@@ -226,7 +227,7 @@ async function attachCompatDebugger(contents: WebContents): Promise<ICDPConnecti
 	};
 	electronDebugger.on('message', onMessage);
 	return {
-		sessionId, targetId: '', onEvent: onEvent.event, onClose: onClose.event,
+		sessionId, targetId, onEvent: onEvent.event, onClose: onClose.event,
 		sendCommand: (method: string, params?: unknown) => electronDebugger.sendCommand(method, params as object, sessionId),
 		dispose: () => {
 			electronDebugger.removeListener('message', onMessage);
