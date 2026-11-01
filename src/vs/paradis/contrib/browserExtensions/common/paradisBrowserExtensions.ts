@@ -386,6 +386,8 @@ export interface IParadisBrowserExtensionView extends IParadisInstalledBrowserEx
 	readonly enabledIn: readonly string[];
 	/** 直近の読み込みの失敗（無ければ undefined）。 */
 	readonly loadError?: string;
+	/** 直近に背景の処理（service worker）を起動できなかった理由（worker の評価で投げた例外など。無ければ undefined）。 */
+	readonly workerError?: string;
 	/** UTF-8 でない、または書き換えられない形式のため、Para Code の足す API（storage.sync など）を入れられなかったページ。 */
 	readonly pagesWithoutApis?: readonly string[];
 	/** 確かめて置いてある、次の起動で使うストアの更新の版（使っている最中には替えない）。 */

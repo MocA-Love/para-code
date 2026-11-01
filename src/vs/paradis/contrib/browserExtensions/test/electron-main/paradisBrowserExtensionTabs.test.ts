@@ -287,6 +287,66 @@ suite('ParadisBrowserExtensionTabs', () => {
 		}
 	}));
 
+	test('keeps tab groups per extension in memory, like Claude uses them', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, views, addTabs, call, dispose } = setup({ permissions: ['tabs', 'tabGroups'] });
+		try {
+			const first = fakeView('first', fakeContents(electronSession, 'https://example.com/', 'Example'), 1);
+			const second = fakeView('second', fakeContents(electronSession, 'https://other.example/', 'Other'), 1);
+			await addTabs(first, second);
+			const created = await call('tabs', 'group', [{ tabIds: [first.webContents.id], createProperties: { windowId: 1 } }]) as { ok: true; value: number };
+			const groupId = created.value;
+			await call('tabGroups', 'update', [groupId, { title: 'Claude', color: 'orange', collapsed: false }]);
+			await call('tabs', 'group', [{ tabIds: second.webContents.id, groupId }]);
+			const inGroup = (await call('tabs', 'query', [{ groupId }]) as { value: { id: number }[] }).value.map(tab => tab.id);
+			await call('tabs', 'ungroup', [[second.webContents.id]]);
+			const afterUngroup = (await call('tabs', 'get', [second.webContents.id]) as { value: { groupId: number } }).value.groupId;
+			// グループの最後のタブが閉じると、グループも消える
+			views.splice(views.indexOf(first), 1);
+			first.close.fire();
+			assert.deepStrictEqual({
+				groupId: groupId > 0,
+				inGroup,
+				afterUngroup,
+				query: (await call('tabGroups', 'query', [{}]) as { value: unknown[] }).value,
+				gone: await call('tabGroups', 'get', [groupId]),
+				both: await call('tabs', 'group', [{ tabIds: [second.webContents.id], groupId, createProperties: {} }]),
+			}, {
+				groupId: true,
+				inGroup: [first.webContents.id, second.webContents.id],
+				afterUngroup: -1,
+				query: [],
+				gone: { ok: false, error: `No group with id: ${groupId}.` },
+				both: { ok: false, error: 'Cannot specify \'createProperties\' along with a \'groupId\'.' },
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('describes a tab group like Chrome and needs the tabGroups permission', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const withGroups = setup({ permissions: ['tabGroups'] });
+		const without = setup({});
+		try {
+			const tab = fakeView('tab', fakeContents(withGroups.electronSession, 'https://example.com/', 'Example'), 1);
+			await withGroups.addTabs(tab);
+			const groupId = (await withGroups.call('tabs', 'group', [{ tabIds: [tab.webContents.id] }]) as { value: number }).value;
+			assert.deepStrictEqual({
+				get: await withGroups.call('tabGroups', 'get', [groupId]),
+				update: await withGroups.call('tabGroups', 'update', [groupId, { color: 'magenta' }]),
+				move: await withGroups.call('tabGroups', 'move', [groupId, { index: 0, windowId: 2 }]),
+				without: await without.call('tabGroups', 'query', [{}]),
+			}, {
+				get: { ok: true, value: { id: groupId, windowId: 1, title: '', color: 'grey', collapsed: false, shared: false } },
+				update: { ok: false, error: 'Invalid update properties' },
+				move: { ok: false, error: 'Para Code cannot move a tab group to another window' },
+				without: { ok: false, error: 'This API requires the "tabGroups" permission' },
+			});
+		} finally {
+			withGroups.dispose();
+			without.dispose();
+		}
+	}));
+
 	test('matches Chrome URL patterns', () => {
 		assert.deepStrictEqual([
 			paradisMatchesUrlPattern('<all_urls>', 'https://a.test/x'),
