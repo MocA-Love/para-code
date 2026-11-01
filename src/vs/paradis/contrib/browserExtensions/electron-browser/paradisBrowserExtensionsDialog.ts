@@ -131,6 +131,8 @@ interface IExtensionOption {
 
 /** 背景の処理のログを読み直す間隔。 */
 const WORKER_LOG_POLL_MS = 1_500;
+/** 画面に残すログの行（main が覚えている数と同じ）。 */
+const MAX_SHOWN_LOG_LINES = 200;
 
 class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 
@@ -645,34 +647,47 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		this.contentFocusables.push(log);
 		this._logElement = log;
 		const id = extension.id;
+		const empty = dom.append(log, $('.pbe-log-empty'));
+		empty.textContent = localize('paradis.browserExtensions.worker.noLog', "まだ出力はありません。");
+		// 読み直すのは前に読んだ行より後だけ（全行を作り直すと、選んでいる文字が消える）
+		let lastSeq = 0;
+		let loading = false;
 		const load = async () => {
-			let lines: readonly IParadisWorkerLogLine[];
-			try {
-				lines = await this._mainService.getWorkerLog(id);
-			} catch {
+			if (loading) {
 				return;
 			}
-			if (this._logElement === log && this._selectedId === id) {
-				this._fillLog(log, lines);
+			loading = true;
+			let lines: readonly IParadisWorkerLogLine[];
+			try {
+				lines = await this._mainService.getWorkerLog(id, lastSeq);
+			} catch {
+				return;
+			} finally {
+				loading = false;
 			}
+			if (this._logElement !== log || this._selectedId !== id || lines.length === 0) {
+				return;
+			}
+			lastSeq = lines[lines.length - 1].seq;
+			empty.remove();
+			this._appendLog(log, lines);
 		};
 		void load();
 		this._logTimer.cancelAndSet(() => void load(), WORKER_LOG_POLL_MS, dom.getWindow(log));
 	}
 
-	private _fillLog(log: HTMLElement, lines: readonly IParadisWorkerLogLine[]): void {
+	/** ログに行を足す（古い行は {@link MAX_SHOWN_LOG_LINES} を超えた分だけ消す）。 */
+	private _appendLog(log: HTMLElement, lines: readonly IParadisWorkerLogLine[]): void {
 		const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
-		dom.clearNode(log);
-		if (lines.length === 0) {
-			dom.append(log, $('.pbe-log-empty')).textContent = localize('paradis.browserExtensions.worker.noLog', "まだ出力はありません。");
-			return;
-		}
 		for (const line of lines) {
 			const row = dom.append(log, $(`.pbe-log-line.is-${line.level}`));
 			row.textContent = `[${formatLogTime(line.at)}] ${line.message}`;
 			if (line.source) {
 				row.title = line.source;
 			}
+		}
+		while (log.childElementCount > MAX_SHOWN_LOG_LINES) {
+			log.firstElementChild?.remove();
 		}
 		if (atBottom) {
 			log.scrollTop = log.scrollHeight;

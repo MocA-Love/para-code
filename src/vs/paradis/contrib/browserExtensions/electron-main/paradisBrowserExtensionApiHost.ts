@@ -239,6 +239,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 	private _grantedPermissions: (extensionId: string, place: string) => readonly string[] = () => [];
 	/** 拡張機能の id → worker の console の直近の行（どのセッションのものも 1 つにまとめる）。 */
 	private readonly _workerLogs = new Map<string, IParadisWorkerLogLine[]>();
+	private _workerLogSeq = 0;
 	private readonly _onDidChangeWorkers = new Emitter<void>();
 	/** worker が動き出した・止まった・起動に失敗した・失敗の理由が分かった（管理画面が状態を読み直す）。 */
 	readonly onDidChangeWorkers: Event<void> = this._onDidChangeWorkers.event;
@@ -478,9 +479,9 @@ export class ParadisExtensionApiHost implements IDisposable {
 		return undefined;
 	}
 
-	/** 管理画面に出す、その拡張機能の worker の console の直近の行（古いものが先）。 */
-	workerLog(extensionId: string): readonly IParadisWorkerLogLine[] {
-		return [...(this._workerLogs.get(extensionId) ?? [])];
+	/** 管理画面に出す、その拡張機能の worker の console の直近の行（古いものが先）。`afterSeq` より後の行だけ。 */
+	workerLog(extensionId: string, afterSeq = 0): readonly IParadisWorkerLogLine[] {
+		return (this._workerLogs.get(extensionId) ?? []).filter(line => line.seq > afterSeq);
 	}
 
 	/** その拡張機能の worker が、どこかのセッションで今動いているか。 */
@@ -514,7 +515,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 			lines = [];
 			this._workerLogs.set(id, lines);
 		}
-		lines.push({ at: Date.now(), level, message: String(details.message).slice(0, MAX_WORKER_LOG_MESSAGE), ...(typeof details.sourceUrl === 'string' ? { source: details.sourceUrl } : {}) });
+		lines.push({ seq: ++this._workerLogSeq, at: Date.now(), level, message: String(details.message).slice(0, MAX_WORKER_LOG_MESSAGE), ...(typeof details.sourceUrl === 'string' ? { source: details.sourceUrl } : {}) });
 		if (lines.length > MAX_WORKER_LOG_LINES) {
 			lines.splice(0, lines.length - MAX_WORKER_LOG_LINES);
 		}

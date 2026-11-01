@@ -477,9 +477,10 @@ export type IParadisAddExtensionResult =
  */
 export type ParadisWebStoreFailure = 'invalidInput' | 'cancelled' | 'busy' | 'alreadyAdded' | 'sameIdUnpacked' | 'sameIdWebStore' | 'webStoreFailed' | 'noPrompt';
 
-/** main の拡張機能の管理（{@link PARADIS_BROWSER_EXTENSIONS_CHANNEL}）。 */
 /** 背景の処理（service worker）の console の 1 行。 */
 export interface IParadisWorkerLogLine {
+	/** 受け取った順の番号（起動の間で増える一方。続きだけを読むのに使う）。 */
+	readonly seq: number;
 	/** 受け取った時刻（ミリ秒）。 */
 	readonly at: number;
 	readonly level: 'debug' | 'info' | 'warning' | 'error';
@@ -493,12 +494,13 @@ export type ParadisOpenWorkerDevToolsResult =
 	| { readonly ok: true }
 	| { readonly ok: false; readonly reason: 'inactive' | 'noWorker' | 'notRunning' | 'noDebugPort' | 'failed'; readonly detail?: string };
 
+/** main の拡張機能の管理（{@link PARADIS_BROWSER_EXTENSIONS_CHANNEL}）。 */
 export interface IParadisBrowserExtensionsMainService {
 	getState(): Promise<IParadisBrowserExtensionsState>;
 	/** 背景の処理が動き出した・止まった・起動に失敗した（開いている管理画面が状態を読み直す）。 */
 	readonly onDidChangeWorkers: Event<void>;
-	/** 背景の処理の console の直近の行（古いものが先）。 */
-	getWorkerLog(id: string): Promise<readonly IParadisWorkerLogLine[]>;
+	/** 背景の処理の console の直近の行（古いものが先）。`afterSeq` を渡すと、その番号より後の行だけ。 */
+	getWorkerLog(id: string, afterSeq?: number): Promise<readonly IParadisWorkerLogLine[]>;
 	/** 背景の処理の DevTools を別のウィンドウで開く（止まっていれば起こしてから）。 */
 	openWorkerDevTools(id: string): Promise<ParadisOpenWorkerDevToolsResult>;
 	/** 展開済みのフォルダから足し、`profile` で有効にする。 */
