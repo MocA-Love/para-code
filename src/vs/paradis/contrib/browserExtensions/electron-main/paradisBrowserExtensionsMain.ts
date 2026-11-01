@@ -1014,6 +1014,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				...extension,
 				enabledIn: Object.entries(this._ledger.enabled).filter(([, ids]) => ids.includes(extension.id)).map(([profile]) => profile),
 				...(this._loadErrors.has(extension.id) ? { loadError: this._loadErrors.get(extension.id) } : {}),
+				...(this._apiHost.workerStartError(extension.id) !== undefined ? { workerError: this._apiHost.workerStartError(extension.id) } : {}),
 				...(this._notes.has(extension.id) ? { pagesWithoutApis: this._notes.get(extension.id) } : {}),
 				// 作った key は画面に渡さない
 				generatedKey: undefined,

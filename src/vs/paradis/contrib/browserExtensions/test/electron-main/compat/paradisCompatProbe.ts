@@ -25,7 +25,8 @@
 //     --format=cjs --platform=node --target=es2024 --outfile=/tmp/compat-files/vs/paradis/contrib/browserExtensions/electron-browser/$f.js; done
 //   HOME=/tmp/compat-home PARADIS_COMPAT_RUN=1 PARADIS_COMPAT_RESULT=/tmp/compat.json PARADIS_COMPAT_FILE_ROOT=/tmp/compat-files/ \
 //     xvfb-run -a -s "-screen 0 1400x1000x24" .build/electron/<Electron の実行ファイル> --no-sandbox /tmp/compat-app
-//   node --experimental-strip-types src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatReport.ts src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.json src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.html
+//   node --experimental-strip-types src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatReport.ts src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.json src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.html src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat-notes.json
+// 手で確かめたこと（自動では見られないこと）は browser-extensions-compat-notes.json に書く（表を作り直すときも渡す）。
 // HOME は一時のフォルダに替えて動かす（userData は PARADIS_COMPAT_ROOT の下に作る）。PARADIS_COMPAT_IDS=<id>,<id> で一部だけ試せる。
 // PARADIS_COMPAT_RUN=1 のときだけ動く（ほかから読まれても何もしない）。
 // 今の表の元の結果は browser-extensions-compat.json。一部だけ測り直したら、その行を入れ替えてから表を作り直す。
@@ -142,7 +143,7 @@ type Manifest = Record<string, unknown> & {
 	side_panel?: { default_path?: unknown };
 };
 
-/** 設計書の 10-1 の 31 個（区分、名前、ストアの id、自動で見ること）。 */
+/** 設計書の 10-1 の 31 個と、後から足したもの（区分、名前、ストアの id、自動で見ること）。 */
 export const PARADIS_COMPAT_EXTENSIONS: readonly (readonly [string, string, string])[] = [
 	['パスワード管理', '1Password', 'aeblfdkhhhdcdjpifhhbdiojplfjncoa'],
 	['パスワード管理', 'Bitwarden', 'nngceckbapebfimnlniiiahkandclblb'],
@@ -177,6 +178,8 @@ export const PARADIS_COMPAT_EXTENSIONS: readonly (readonly [string, string, stri
 	['Orca で不可だったもの', 'Loom', 'liecbddmkiiihnedobmlmillhodjkdmb'],
 	['Orca で不可だったもの', 'Momentum', 'laookkfknpbbblfpciffpaejjkokdgca'],
 	['その他', 'Google Keep', 'lpcaedmchfhocbbapmcbpinfpgnhiddi'],
+	// 設計書の 31 個の後に足したもの（2026-11-02。ボタンを押しても何も起きないと報告があった）
+	['AI', 'Claude', 'fcoeoabgfenejglbffodgkkbkcdhcgfn'],
 ];
 
 /** 権限 → それで使えるはずの chrome の名前空間（権限だけのもの・名前空間の無いものは書かない）。 */
@@ -193,7 +196,7 @@ const PERMISSION_NAMESPACES: Record<string, string | undefined> = {
 };
 
 /** Para Code が詰め物（paradisBrowserExtensionShim.ts）で足す名前空間（manifest.json の文書では数えない）。 */
-const SHIM_NAMESPACES = new Set(['desktopCapture', 'tabCapture', 'storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative', 'tts', 'browsingData', 'userScripts', 'sidePanel']);
+const SHIM_NAMESPACES = new Set(['desktopCapture', 'tabCapture', 'storage', 'tabs', 'windows', 'webNavigation', 'contextMenus', 'commands', 'notifications', 'permissions', 'downloads', 'cookies', 'management', 'identity', 'debugger', 'privacy', 'fontSettings', 'runtime.connectNative', 'tts', 'browsingData', 'userScripts', 'sidePanel', 'tabGroups']);
 
 const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Para Code extension compatibility page</title></head><body>
 <h1>Sign in</h1><form action="/signin" method="post"><label>Email <input type="email" name="email" autocomplete="username"></label>

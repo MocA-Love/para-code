@@ -344,6 +344,9 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		if (extension.loadError) {
 			dom.append(info, $('.pbe-row-error')).textContent = localize('paradis.browserExtensions.loadError', "読み込めませんでした: {0}", extension.loadError);
 		}
+		if (extension.workerError) {
+			dom.append(info, $('.pbe-row-error')).textContent = localize('paradis.browserExtensions.workerError', "背景の処理を起動できませんでした: {0}", extension.workerError);
+		}
 
 		const actions = dom.append(row, $('.pbpm-row-actions'));
 		// ストアから入れたものは読み込み直すフォルダが無い（更新はストアから）

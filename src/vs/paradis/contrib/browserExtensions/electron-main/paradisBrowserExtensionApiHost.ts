@@ -87,9 +87,18 @@ export type ParadisApiSession = Pick<Session, 'storagePath'> & {
 	readonly extensions: Pick<Session['extensions'], 'getExtension'> & { on(event: 'extension-unloaded', listener: (event: unknown, extension: { readonly id: string }) => void): unknown; removeListener(event: 'extension-unloaded', listener: (event: unknown, extension: { readonly id: string }) => void): unknown };
 	readonly serviceWorkers: Pick<Session['serviceWorkers'], 'startWorkerForScope' | 'getWorkerFromVersionID'> & {
 		on(event: 'running-status-changed', listener: (details: { readonly versionId: number; readonly runningStatus: string }) => void): unknown;
+		on(event: 'console-message', listener: (event: unknown, details: IParadisWorkerConsoleMessage) => void): unknown;
 		removeListener(event: 'running-status-changed', listener: (details: { readonly versionId: number; readonly runningStatus: string }) => void): unknown;
+		removeListener(event: 'console-message', listener: (event: unknown, details: IParadisWorkerConsoleMessage) => void): unknown;
 	};
 };
+
+/** service worker の console の 1 行（Electron の serviceWorkers の console-message の、ここで使うところ）。 */
+export interface IParadisWorkerConsoleMessage {
+	readonly message?: unknown;
+	readonly level?: unknown;
+	readonly sourceUrl?: unknown;
+}
 
 type RunningWorker = Pick<ServiceWorkerMain, 'scope' | 'versionId' | 'isDestroyed' | 'startTask'>;
 
@@ -113,6 +122,10 @@ interface IWorkerContext {
 	stream: IEventStream | undefined;
 	queue: IQueuedEvent[];
 	starting: boolean;
+	/** 最後に動き出してから worker の console に出たエラー（新しいものが後ろ。起動の失敗の理由を探すのに使う）。 */
+	consoleErrors: string[];
+	/** 直近の起動の失敗の理由の文言。動き出したら消す。 */
+	startFailure: { detail: string; fromConsole: boolean } | undefined;
 }
 
 /** ページの文脈（ページが閉じればイベントの応答も閉じる）。 */
@@ -144,6 +157,7 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_QUEUED_EVENTS = 100;
 const QUEUED_EVENT_TTL_MS = 30_000;
 const MAX_PAGE_CONNECTIONS = 200;
+const MAX_CONSOLE_ERRORS = 5;
 
 type ParsedRequest =
 	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[] }
@@ -250,7 +264,12 @@ export class ParadisExtensionApiHost implements IDisposable {
 				const worker = session.serviceWorkers.getWorkerFromVersionID(versionId);
 				const id = worker ? extensionIdOfOrigin(worker.scope.replace(/\/$/, '')) : undefined;
 				if (worker && id !== undefined && session.extensions.getExtension(id)) {
-					this._contextsFor(state, id).worker.running = worker;
+					const context = this._contextsFor(state, id).worker;
+					context.running = worker;
+					if (runningStatus === 'running') {
+						context.startFailure = undefined;
+						context.consoleErrors = [];
+					}
 				}
 			} else if (runningStatus === 'stopped') {
 				// 止まった worker は送ったものを落とす。外しておくと、次のイベントで起こして溜める
@@ -265,10 +284,13 @@ export class ParadisExtensionApiHost implements IDisposable {
 			}
 		};
 		session.serviceWorkers.on('running-status-changed', onStatus);
+		const onConsole = (_event: unknown, details: IParadisWorkerConsoleMessage) => this._noteWorkerConsole(state, details);
+		session.serviceWorkers.on('console-message', onConsole);
 		const onUnloaded = (_event: unknown, extension: { readonly id: string }) => this.forgetExtension(session, extension.id);
 		session.extensions.on('extension-unloaded', onUnloaded);
 		disposables.add(toDisposable(() => {
 			session.serviceWorkers.removeListener('running-status-changed', onStatus);
+			session.serviceWorkers.removeListener('console-message', onConsole);
 			session.extensions.removeListener('extension-unloaded', onUnloaded);
 			if (this._states.get(session) === state) {
 				this._forgetSession(state);
@@ -398,6 +420,59 @@ export class ParadisExtensionApiHost implements IDisposable {
 	}
 
 	/**
+	 * 利用者の操作のイベント（action.onClicked など）。`emit` と同じく届けるが、worker がまだ受け手を登録していない
+	 * （止まっている・一度も評価に成功していない）ときも捨てずに溜めて worker を起こし、受け手が登録されたら出す。
+	 * service worker の無い拡張機能では溜めない。
+	 */
+	emitWakingWorker(target: IParadisExtensionEventTarget, namespace: string, event: string, args: readonly unknown[]): void {
+		const state = this._states.get(target.session);
+		const extension = state?.session.extensions.getExtension(target.extensionId) as IParadisApiExtension | null | undefined;
+		const background = extension?.manifest.background;
+		const key = eventKey(namespace, event);
+		const contexts = state?.extensions.get(target.extensionId);
+		if (!state || target.exceptConnection === 'worker' || !isRecord(background) || typeof background.service_worker !== 'string' || contexts?.worker.events.has(key)) {
+			this.emit(target, namespace, event, args);
+			return;
+		}
+		this.emit({ ...target, exceptConnection: target.exceptConnection ?? 'worker' }, namespace, event, args);
+		this._queue(state, this._contextsFor(state, target.extensionId).worker, key, { namespace, event, args });
+	}
+
+	/** 直近に worker を起動できなかった理由（無ければ undefined）。どのセッションでもよい（管理画面に出す）。 */
+	workerStartError(extensionId: string): string | undefined {
+		for (const state of this._states.values()) {
+			const failure = state.extensions.get(extensionId)?.worker.startFailure;
+			if (failure) {
+				return failure.detail;
+			}
+		}
+		return undefined;
+	}
+
+	/** worker の console のエラーを覚える。起動に失敗した後に届いた理由は、そこで記録する。 */
+	private _noteWorkerConsole(state: ISessionState, details: IParadisWorkerConsoleMessage): void {
+		if (this._states.get(state.session) !== state || (details.level !== 3 && details.level !== 'error')) {
+			return;
+		}
+		const id = typeof details.sourceUrl === 'string' ? /^chrome-extension:\/\/(?<id>[a-p]{32})\//.exec(details.sourceUrl)?.groups?.id : undefined;
+		if (id === undefined || !state.session.extensions.getExtension(id)) {
+			return;
+		}
+		const context = this._contextsFor(state, id).worker;
+		const message = String(details.message).slice(0, 500);
+		context.consoleErrors.push(message);
+		if (context.consoleErrors.length > MAX_CONSOLE_ERRORS) {
+			context.consoleErrors.shift();
+		}
+		const failure = context.startFailure;
+		if (failure && !failure.fromConsole) {
+			failure.detail = message;
+			failure.fromConsole = true;
+			this._logService.warn(`[paradis] could not start a browser extension worker (${id}): ${message}`);
+		}
+	}
+
+	/**
 	 * 同じ場所（`default` / `profile:<id>`）を使うすべてのセッションへ届ける（storage.sync は場所ごとに 1 つで、
 	 * Global と各ワークスペースのセッションが同じ中身を見るため）。`except` の文脈には送らない。
 	 */
@@ -432,7 +507,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 		let contexts = state.extensions.get(extensionId);
 		if (!contexts) {
 			contexts = {
-				worker: { scope: `${chromeExtensionOrigin(extensionId)}/`, events: new Set(), running: undefined, stream: undefined, queue: [], starting: false },
+				worker: { scope: `${chromeExtensionOrigin(extensionId)}/`, events: new Set(), running: undefined, stream: undefined, queue: [], starting: false, consoleErrors: [], startFailure: undefined },
 				pages: new Map(),
 			};
 			state.extensions.set(extensionId, contexts);
@@ -509,10 +584,20 @@ export class ParadisExtensionApiHost implements IDisposable {
 			return;
 		}
 		context.starting = true;
+		// 起動の失敗の理由は、この起動から後に出たエラーだけから選ぶ（前に動いていたときのエラーを理由にしない）
+		context.consoleErrors = [];
 		state.session.serviceWorkers.startWorkerForScope(context.scope)
 			.then(worker => {
 				context.running = worker;
-			}, error => this._logService.warn('[paradis] could not start a browser extension worker', error))
+				context.startFailure = undefined;
+			}, error => {
+				// Electron の答えは「Failed to start service worker.」だけ。worker の評価で投げた例外は console に出るので、
+				// 最後に動き出してから出たエラーがあればそれを理由にする（後から届いたら _noteWorkerConsole が記録する）
+				const fromConsole = context.consoleErrors.at(-1);
+				const detail = fromConsole ?? (error instanceof Error ? error.message : String(error));
+				context.startFailure = { detail, fromConsole: fromConsole !== undefined };
+				this._logService.warn(`[paradis] could not start a browser extension worker (${context.scope.slice('chrome-extension://'.length, -1)}): ${detail}`);
+			})
 			.finally(() => context.starting = false);
 	}
 

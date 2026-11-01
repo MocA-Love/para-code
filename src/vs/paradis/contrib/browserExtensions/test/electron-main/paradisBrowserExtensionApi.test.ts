@@ -32,13 +32,13 @@ const ID = 'abcdefghijklmnopabcdefghijklmnop';
 const silentLog = { warn: () => { } };
 
 /** 受け手を覚えておく偽のセッション。 */
-function fakeSession(extensionIds: readonly string[]) {
+function fakeSession(extensionIds: readonly string[], manifest: Record<string, unknown> = {}) {
 	let handler: ((request: Request) => Promise<Response>) | undefined;
 	const session: ParadisApiSession = {
 		storagePath: '/tmp/session',
 		protocol: { handle: (_scheme: string, next: (request: Request) => Promise<Response>) => { handler = next; }, unhandle: () => { handler = undefined; } } as unknown as ParadisApiSession['protocol'],
 		extensions: {
-			getExtension: (id: string) => extensionIds.includes(id) ? { id, version: '1.0', manifest: { permissions: ['storage'] }, name: 'E', path: '/x', url: `chrome-extension://${id}/` } : null,
+			getExtension: (id: string) => extensionIds.includes(id) ? { id, version: '1.0', manifest: { permissions: ['storage'], ...manifest }, name: 'E', path: '/x', url: `chrome-extension://${id}/` } : null,
 			on: () => undefined,
 			removeListener: () => undefined,
 		} as unknown as ParadisApiSession['extensions'],
@@ -476,6 +476,56 @@ suite('ParadisBrowserExtensionApi', () => {
 			const stream = await send(PARADIS_EXTENSION_API_EVENTS_URL, origin, { token, connection: 'worker' });
 			await send(PARADIS_EXTENSION_API_CALL_URL, origin, { token, connection: 'worker', request: { type: 'listen', namespace: 'runtime', event: 'onInstalled', active: true } });
 			assert.deepStrictEqual(await readEvents(stream, 1), [{ namespace: 'runtime', event: 'onInstalled', args: [{ reason: 'install' }] }]);
+		} finally {
+			attached.dispose();
+			host.dispose();
+		}
+	});
+
+	test('wakes a worker that has not listened yet for a click, and keeps the click until it listens', async () => {
+		const host = new ParadisExtensionApiHost(silentLog);
+		host.registerNamespace('action', { methods: {}, events: ['onClicked'] });
+		const { session, send } = fakeSession([ID], { background: { service_worker: 'worker.js' } });
+		const started: string[] = [];
+		Object.assign(session.serviceWorkers, { startWorkerForScope: async (scope: string) => { started.push(scope); throw new Error('Failed to start service worker.'); } });
+		const attached = host.attachSession(session, 'default');
+		try {
+			const token = host.tokenFor(ID);
+			const origin = `chrome-extension://${ID}`;
+			// 受け手の無い worker へのクリック（以前は捨てていた）
+			host.emitWakingWorker({ session, extensionId: ID }, 'action', 'onClicked', [{ id: 7 }]);
+			await Promise.resolve();
+			const stream = await send(PARADIS_EXTENSION_API_EVENTS_URL, origin, { token, connection: 'worker' });
+			await send(PARADIS_EXTENSION_API_CALL_URL, origin, { token, connection: 'worker', request: { type: 'listen', namespace: 'action', event: 'onClicked', active: true } });
+			assert.deepStrictEqual({ started, events: await readEvents(stream, 1) }, { started: [`${origin}/`], events: [{ namespace: 'action', event: 'onClicked', args: [{ id: 7 }] }] });
+		} finally {
+			attached.dispose();
+			host.dispose();
+		}
+	});
+
+	test('records why a worker could not start from the error its console reports afterwards', async () => {
+		const warnings: string[] = [];
+		const host = new ParadisExtensionApiHost({ warn: message => warnings.push(message) });
+		host.registerNamespace('runtime', { methods: {}, events: ['onInstalled', 'onStartup'] });
+		const { session } = fakeSession([ID], { background: { service_worker: 'worker.js' } });
+		let onConsole: ((event: unknown, details: { message: string; level: number; sourceUrl: string }) => void) | undefined;
+		let fail: (() => void) | undefined;
+		Object.assign(session.serviceWorkers, {
+			on: (event: string, listener: typeof onConsole) => { if (event === 'console-message') { onConsole = listener; } },
+			startWorkerForScope: () => new Promise((_resolve, reject) => { fail = () => reject(new Error('Failed to start service worker.')); }),
+		});
+		const attached = host.attachSession(session, 'default');
+		try {
+			host.emitToWorkerWhenListening(session, ID, 'runtime', 'onInstalled', [{ reason: 'install' }]);
+			// Electron 43 では、起動の失敗が先に返り、評価で投げた例外は後から console に届く（Claude で確かめた順）
+			fail?.();
+			await new Promise(resolve => setTimeout(resolve, 0));
+			onConsole?.({}, { message: 'Uncaught TypeError: Cannot read properties of undefined (reading \'Color\')', level: 3, sourceUrl: `chrome-extension://${ID}/assets/a.js` });
+			assert.deepStrictEqual({ error: host.workerStartError(ID), warnings }, {
+				error: 'Uncaught TypeError: Cannot read properties of undefined (reading \'Color\')',
+				warnings: [`[paradis] could not start a browser extension worker (${ID}): Failed to start service worker.`, `[paradis] could not start a browser extension worker (${ID}): Uncaught TypeError: Cannot read properties of undefined (reading 'Color')`],
+			});
 		} finally {
 			attached.dispose();
 			host.dispose();

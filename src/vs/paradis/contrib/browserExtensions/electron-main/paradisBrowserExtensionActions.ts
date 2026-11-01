@@ -636,7 +636,9 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 				throw new ParadisExtensionApiError('This extension has no popup');
 			}
 			const tab = this._tabs.describeTab(extension, view.webContents.session, tabId);
-			this._emitAction(session, extensionId, 'onClicked', tab ? [tab] : []);
+			// worker が受け手をまだ登録していない（止まっている・一度も評価に成功していない）ときも、起こして溜めて届ける
+			const clickedNamespace = extension.manifest.manifest_version === 2 ? 'browserAction' : 'action';
+			this._host.emitWakingWorker({ session, extensionId }, clickedNamespace, 'onClicked', tab ? [tab] : []);
 			return { ok: true };
 		} catch (error) {
 			return { ok: false, error: error instanceof Error ? error.message : String(error) };

@@ -29,6 +29,7 @@ import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/com
 import { paradisIsChromeWebStoreUrl } from '../common/paradisBrowserExtensionWebStore.js';
 import { paraOnDidMarkBrowserViewAgentTab } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
+import { IParadisTabGroupChanges, PARADIS_TAB_GROUP_COLORS, ParadisTabGroupLedger } from './paradisBrowserExtensionTabGroups.js';
 
 /** 内蔵ブラウザのタブ 1 つ（main の BrowserView の、ここで使うところ）。 */
 export interface IParadisTabView {
@@ -176,6 +177,8 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 	readonly onDidChangeActiveTab = this._onDidChangeActiveTab.event;
 	/** 一番外のフレームで、文書の替わる移動が始まったことのあるタブ（見始めた時から）。 */
 	private readonly _navigationStarted = new WeakSet<WebContents>();
+	/** タブのグループ（拡張機能ごと・セッションごとのメモリ上の台帳。画面には出さない）。 */
+	private readonly _groups = new ParadisTabGroupLedger();
 	private readonly _onDidBecomeAgentTab = this._disposables.add(new Emitter<WebContents>());
 	/** タブがエージェントのものだと分かった（エージェントが開いた・エージェントのタブから開いた。知らせが遅れて届いたときも）。 */
 	readonly onDidBecomeAgentTab = this._onDidBecomeAgentTab.event;
@@ -198,6 +201,14 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		for (const view of _environment.listViews()) {
 			this._observe(view, true, true);
 		}
+		// 外した拡張機能のグループを忘れる
+		this._disposables.add(_host.onDidCloseContext((session, extensionId, connection) => {
+			for (const [electronSession, entry] of this._sessions) {
+				if (connection === undefined && entry.session === session) {
+					this._groups.forgetExtension(electronSession, extensionId);
+				}
+			}
+		}));
 		this._registerNamespaces();
 	}
 
@@ -304,7 +315,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			frozen: false,
 			autoDiscardable: true,
 			incognito: false,
-			groupId: -1,
+			groupId: this._groups.groupOf(contents.session, extension.id, contents.id),
 			status: contents.isLoading() ? 'loading' : 'complete',
 			audible: contents.isCurrentlyAudible(),
 			mutedInfo: { muted: contents.isAudioMuted() },
@@ -435,6 +446,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			if (wasAnnounced && !view.isAgentTab() && this._sessions.has(contents.session)) {
 				this._emitPerExtension(contents.session, 'tabs', 'onRemoved', () => [contents.id, { windowId: view.windowId, isWindowClosing: false }]);
 			}
+			this._forgetGroupedTab(contents.session, contents.id);
 			this._disposables.delete(disposables);
 		}));
 	}
@@ -882,6 +894,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		window.once('closed', () => {
 			popouts.delete(window);
 			this._popoutOwners.delete(window);
+			this._forgetGroupedTab(session, tabId);
 			if (this._sessions.has(session)) {
 				this._emitPerExtension(session, 'tabs', 'onRemoved', () => [tabId, { windowId, isWindowClosing: true }]);
 				this._emitPerExtension(session, 'windows', 'onRemoved', () => [windowId]);
@@ -889,6 +902,74 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		});
 		this._emitPerExtension(session, 'windows', 'onCreated', extension => [this._describeWindow({ ...caller, extension }, { window, type: 'popup' }, false)]);
 		return this._describeWindow(caller, { window, type: 'popup' }, true);
+	}
+
+	// --- タブのグループ ---
+
+	/** 閉じたタブをグループから抜き、空になったグループを tabGroups.onRemoved で知らせる。 */
+	private _forgetGroupedTab(session: Session, tabId: number): void {
+		const apiSession = this._sessions.get(session)?.session;
+		for (const { extensionId, removed } of this._groups.forgetTab(session, tabId)) {
+			if (apiSession) {
+				for (const group of removed) {
+					this._host.emit({ session: apiSession, extensionId }, 'tabGroups', 'onRemoved', [group]);
+				}
+			}
+		}
+	}
+
+	/** グループの変化を、その拡張機能だけへ知らせる（グループはほかの拡張機能から見えない）。 */
+	private _emitGroupChanges(caller: IParadisExtensionApiCaller, changes: IParadisTabGroupChanges): void {
+		const target = { session: caller.session, extensionId: caller.extension.id };
+		for (const group of changes.created) {
+			this._host.emit(target, 'tabGroups', 'onCreated', [group]);
+		}
+		for (const { tabId, groupId } of changes.tabs) {
+			const entry = this._findTab(this._electronSession(caller), tabId);
+			if (entry) {
+				this._host.emit(target, 'tabs', 'onUpdated', [tabId, { groupId }, this._describe(caller.extension, entry)]);
+			}
+		}
+		for (const group of changes.removed) {
+			this._host.emit(target, 'tabGroups', 'onRemoved', [group]);
+		}
+	}
+
+	/** tabs.group（Chrome と違い、タブを別のウィンドウへ移さない）。 */
+	private _group(caller: IParadisExtensionApiCaller, options: Record<string, unknown>): number {
+		const ids = [options.tabIds].flat();
+		if (ids.length === 0 || !ids.every(id => typeof id === 'number' && Number.isInteger(id) && id >= 0)) {
+			throw new ParadisExtensionApiError('You must specify at least one tab.');
+		}
+		const groupId = options.groupId;
+		const createProperties = options.createProperties;
+		if (groupId !== undefined && createProperties !== undefined) {
+			throw new ParadisExtensionApiError('Cannot specify \'createProperties\' along with a \'groupId\'.');
+		}
+		if (groupId !== undefined && typeof groupId !== 'number') {
+			throw new ParadisExtensionApiError('Invalid groupId');
+		}
+		if (createProperties !== undefined && !isRecord(createProperties)) {
+			throw new ParadisExtensionApiError('Invalid createProperties');
+		}
+		const entries = (ids as number[]).map(id => this._requireTab(caller, id));
+		const requestedWindow = createProperties?.windowId;
+		const windowId = typeof requestedWindow === 'number' ? this._requireWindow(caller, requestedWindow).window.id : entries[0].windowId;
+		try {
+			const result = this._groups.group(this._electronSession(caller), caller.extension.id, entries.map(entry => entry.webContents.id), groupId, windowId);
+			this._emitGroupChanges(caller, result.changes);
+			return result.groupId;
+		} catch (error) {
+			throw new ParadisExtensionApiError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private _requireGroup(caller: IParadisExtensionApiCaller, groupId: number) {
+		const group = this._groups.get(this._electronSession(caller), caller.extension.id, groupId);
+		if (!group) {
+			throw new ParadisExtensionApiError(`No group with id: ${groupId}.`);
+		}
+		return group;
 	}
 
 	// --- 名前空間 ---
@@ -946,8 +1027,54 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 					}
 					return isRecord(first) ? [undefined, first] as [number | undefined, Record<string, unknown>] : [first ?? undefined, (second ?? {}) as Record<string, unknown>] as [number | undefined, Record<string, unknown>];
 				}, (caller, windowId, options) => this._captureVisibleTab(caller, windowId, options)),
+				group: paradisDefineExtensionMethod(args => args.length === 1 && isRecord(args[0]) ? [args[0]] as [Record<string, unknown>] : undefined, (caller, options) => this._group(caller, options)),
+				ungroup: paradisDefineExtensionMethod(args => args.length === 1 && (tabId(args[0]) || (Array.isArray(args[0]) && args[0].every(tabId))) ? [args[0]] as [number | number[]] : undefined, (caller, ids) => {
+					const entries = [ids].flat().map(id => this._requireTab(caller, id));
+					this._emitGroupChanges(caller, this._groups.ungroup(this._electronSession(caller), caller.extension.id, entries.map(entry => entry.webContents.id)));
+				}),
 			},
 			events: ['onActivated', 'onCreated', 'onUpdated', 'onRemoved', 'onReplaced'],
+		});
+
+		// 拡張機能ごとのグループ（paradisBrowserExtensionTabGroups.ts）。グループは画面に出さない
+		const groupId = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+		this._host.registerNamespace('tabGroups', {
+			permission: 'tabGroups',
+			methods: {
+				get: paradisDefineExtensionMethod(args => args.length === 1 && groupId(args[0]) ? [args[0]] as [number] : undefined, (caller, id) => this._requireGroup(caller, id)),
+				query: paradisDefineExtensionMethod(args => args.length <= 1 && optionalRecord(args[0]) ? [(args[0] ?? {}) as Record<string, unknown>] as [Record<string, unknown>] : undefined, (caller, query) => {
+					const current = this._currentWindowId();
+					return this._groups.list(this._electronSession(caller), caller.extension.id).filter(group =>
+						(query.collapsed === undefined || group.collapsed === query.collapsed)
+						&& (query.color === undefined || group.color === query.color)
+						&& (query.title === undefined || (typeof query.title === 'string' && matchesGlob(query.title, group.title)))
+						&& (query.windowId === undefined || group.windowId === (query.windowId === WINDOW_ID_CURRENT ? current : query.windowId))
+						&& (query.shared === undefined || query.shared === false));
+				}),
+				update: paradisDefineExtensionMethod(args => args.length === 2 && groupId(args[0]) && isRecord(args[1]) ? [args[0], args[1]] as [number, Record<string, unknown>] : undefined, (caller, id, properties) => {
+					this._requireGroup(caller, id);
+					const { title, color, collapsed } = properties;
+					if ((title !== undefined && typeof title !== 'string') || (color !== undefined && (typeof color !== 'string' || !PARADIS_TAB_GROUP_COLORS.includes(color))) || (collapsed !== undefined && typeof collapsed !== 'boolean')) {
+						throw new ParadisExtensionApiError('Invalid update properties');
+					}
+					const group = this._groups.update(this._electronSession(caller), caller.extension.id, id, { title: typeof title === 'string' ? title : undefined, color: typeof color === 'string' ? color : undefined, collapsed: typeof collapsed === 'boolean' ? collapsed : undefined });
+					this._host.emit({ session: caller.session, extensionId: caller.extension.id }, 'tabGroups', 'onUpdated', [group]);
+					return group;
+				}),
+				// Para Code はタブを並べ替えない・別のウィンドウへ移さない。同じウィンドウなら何もせずに答える
+				move: paradisDefineExtensionMethod(args => args.length === 2 && groupId(args[0]) && isRecord(args[1]) ? [args[0], args[1]] as [number, Record<string, unknown>] : undefined, (caller, id, properties) => {
+					const group = this._requireGroup(caller, id);
+					if (typeof properties.index !== 'number') {
+						throw new ParadisExtensionApiError('Invalid move properties');
+					}
+					const windowId = properties.windowId === WINDOW_ID_CURRENT ? this._currentWindowId() : properties.windowId;
+					if (windowId !== undefined && windowId !== group.windowId) {
+						throw new ParadisExtensionApiError('Para Code cannot move a tab group to another window');
+					}
+					return group;
+				}),
+			},
+			events: ['onCreated', 'onUpdated', 'onRemoved', 'onMoved'],
 		});
 
 		this._host.registerNamespace('windows', {
@@ -1089,7 +1216,7 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 					['frozen', value => value === false],
 					['audible', value => tab.audible === value],
 					['muted', value => (tab.mutedInfo as { muted: boolean }).muted === value],
-					['groupId', value => value === -1],
+					['groupId', value => tab.groupId === value],
 					['title', value => typeof value === 'string' && typeof tab.title === 'string' && matchesGlob(value, tab.title)],
 				];
 				for (const [key, check] of checks) {

@@ -21,11 +21,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 </style>
 </head>
 <body>
-<h1>31 個中、動く 18・一部動く 11・動かない 2</h1>
+<h1>32 個中、動く 18・一部動く 12・動かない 2</h1>
 <p class="muted">Electron 43.7.7（Chromium 150.0.7871.250）、Linux の Xvfb で 2026-10-29T23:05:17.040Z に自動で確かめた結果です。拡張機能は Chrome ウェブストアから、Para Code と同じ道（署名の確かめを含む）で入れました。</p>
 
 <table class="summary"><tr><th>動く</th><th>一部動く</th><th>動かない</th></tr>
-<tr><td class="ok">18</td><td class="partial">11</td><td class="ng">2</td></tr></table>
+<tr><td class="ok">18</td><td class="partial">12</td><td class="ng">2</td></tr></table>
 
 <h2>自動で見たことと、見ていないこと</h2>
 <div class="panel">
@@ -74,6 +74,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <tr><td>Orca で不可だったもの</td><td>Loom – Screen Recorder &amp; Screen Capture<br><span class="muted"><code>liecbddmkiiihnedobmlmillhodjkdmb</code></span></td><td class="ng">動かない</td><td>録画の API（chrome.desktopCapture・chrome.tabCapture）は安全のため未対応です。呼ぶと失敗を返します。拡張機能の主な働きがこれです</td><td>5.5.214</td><td>running</td><td>ran</td><td>unreadable</td></tr>
 <tr><td>Orca で不可だったもの</td><td>Momentum<br><span class="muted"><code>laookkfknpbbblfpciffpaejjkokdgca</code></span></td><td class="ok">動く</td><td>新しいタブのページ（chrome_url_overrides.newtab）は、内蔵ブラウザの新しいタブで開きます（Para Code のエディタの新しいタブは置き換えません）<br>無い API（任意の権限など。主な働きには関わらない見込みです）: bookmarks、sessions、topSites、scripting、alarms、tabGroups、search<br>content script は決まったサイト（GitHub など）だけのものなので、試験用のページでは動かないのが正しいです（そのサイトでは手で確かめます）</td><td>2.27.9</td><td>running</td><td>did not run</td><td>none</td></tr>
 <tr><td>その他</td><td>Google Keep Chrome Extension<br><span class="muted"><code>lpcaedmchfhocbbapmcbpinfpgnhiddi</code></span></td><td class="partial">一部動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません</td><td>4.26431.540.1</td><td>running</td><td>none</td><td>none</td></tr>
+<tr><td>AI</td><td>Claude<br><span class="muted"><code>fcoeoabgfenejglbffodgkkbkcdhcgfn</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>ページへのデバッガーの接続（chrome.debugger.attach）は断る形で足したので、それを使う働きは動きません<br><span class="muted">2026-11-02 に拡張機能のページから確かめた: タブのグループ（tabs.group・tabGroups.update・tabs.query の groupId）は動く（グループは拡張機能ごとのメモリ上の台帳で、画面には出ない）。chrome.offscreen と chrome.alarms は Electron が元から持ち、worker が offscreen の文書と alarm を作った。chrome.debugger.attach は断る形なので、Claude にタブを読ませる・操作させる働き（ページの操作のツール）は動かない見込み。chrome.identity.launchWebAuthFlow も断る形だが、Claude が使うのは保存したサインインの静かな更新だけで、最初のサインインは claude.ai のタブから拡張機能の oauth_callback.html へ戻る道（推測。Mac で確かめる）。ボタンを押してサイドパネルが出るかは Mac で確かめる</span></td><td>1.0.104</td><td>running</td><td>ran</td><td>none</td></tr>
 </table>
 
 <h2>この確かめで見つけて直したもの</h2>
