@@ -51,16 +51,16 @@ async function exists(path: string): Promise<boolean> {
 	let now: number;
 	/** 立てると、次の git だけ終わらないプロセスに差し替える（待ち行列の上限を試す）。 */
 	let hangGit: boolean;
-	const baseEnv = { ...process.env, VSCODE_IPC_HOOK_CLI: '/tmp/cli.sock', PARA_CODE_PANE_TOKEN: 'pane-secret', PARADIS_PTY_DAEMON_BUILD_KEY: 'daemon-secret', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+	const baseEnv = { ...process.env, VSCODE_IPC_HOOK_CLI: '/tmp/cli.sock', PARA_CODE_PANE_TOKEN: 'pane-secret', PARADIS_PTY_DAEMON_BUILD_KEY: 'daemon-secret', GIT_DIR: '/nonexistent/.git', NODE_OPTIONS: '--require /nonexistent.js', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
 
-	function createService(timeouts?: Partial<ConstructorParameters<typeof ParadisTaskBoardRemoteService>[2]>): ParadisTaskBoardRemoteService {
+	function createService(timeouts?: Partial<ConstructorParameters<typeof ParadisTaskBoardRemoteService>[2]>, afterCheck?: (stage: 'write' | 'reset') => Promise<void>): ParadisTaskBoardRemoteService {
 		const spawn = ((file: string, args: readonly string[], options: cp.SpawnOptions) => hangGit && file === 'git'
 			? cp.spawn('/bin/sh', ['-c', 'sleep 30'], options)
 			: cp.spawn(file, [...args], options)) as typeof cp.spawn;
 		return new ParadisTaskBoardRemoteService(new NullLogService(), async () => baseEnv, {
 			gitShortMs: 10_000, gitLongMs: 10_000, commandMs: 10_000, killGraceMs: 500, closeGraceMs: 200, heartbeatExpiryMs: 120_000,
 			...timeouts,
-		}, () => now, spawn, process.getuid?.(), false);
+		}, () => now, spawn, process.getuid?.(), false, afterCheck);
 	}
 
 	setup(async () => {
@@ -135,6 +135,56 @@ async function exists(path: string): Promise<boolean> {
 			await outcome(read('shots')),
 			await read('missing.png'),
 		], ['invalid', 'invalid', 'denied', 'denied', 'denied', 'denied', undefined]);
+	});
+
+	test('a hard link to a file outside is not read or appended to', async () => {
+		await fsp.mkdir(join(repo, '.para'));
+		await fsp.link(join(outside, 'secret.txt'), join(repo, '.para', 'out.txt'));
+		await fsp.unlink(join(repo, '.git', 'info', 'exclude')).catch(() => undefined);
+		await fsp.link(join(outside, 'secret.txt'), join(repo, '.git', 'info', 'exclude'));
+		assert.deepStrictEqual([
+			await outcome(service.readFile(SESSION, repo, '.para/out.txt', 1024)),
+			await outcome(service.excludeBoardDir(SESSION, repo)),
+			await fsp.readFile(join(outside, 'secret.txt'), 'utf8'),
+		], ['denied', 'denied', 'secret']);
+	});
+
+	test('swapping the board folder for a link after the checks does not write or delete outside', async () => {
+		const swap = async () => {
+			await fsp.rename(join(repo, '.para'), join(repo, '.para-moved'));
+			await fsp.symlink(outside, join(repo, '.para'));
+		};
+		let armed = false;
+		const swapping = createService(undefined, async () => {
+			if (armed) {
+				armed = false;
+				await swap();
+			}
+		});
+		try {
+			await swapping.openSession(SESSION, repo, worktrees);
+			await fsp.mkdir(join(repo, '.para'));
+			armed = true;
+			await swapping.writeFile(SESSION, repo, '.para/plan.html', 'plan');
+			const afterWrite = [await exists(join(outside, 'plan.html')), await fsp.readFile(join(repo, '.para-moved', 'plan.html'), 'utf8')];
+			await fsp.unlink(join(repo, '.para'));
+			await fsp.rm(join(repo, '.para-moved'), { recursive: true });
+			await fsp.mkdir(join(repo, '.para'));
+			await fsp.writeFile(join(repo, '.para', 'old.html'), 'old');
+			await fsp.writeFile(join(outside, 'keep.txt'), 'keep');
+			armed = true;
+			const reset = await outcome(swapping.resetBoardDir(SESSION, repo, 'task-2'));
+			assert.deepStrictEqual([afterWrite, reset, (await fsp.readdir(outside)).sort(), await fsp.readdir(join(repo, '.para-moved'))], [[false, 'plan'], 'denied', ['keep.txt', 'secret.txt'], []]);
+		} finally {
+			swapping.dispose();
+		}
+	});
+
+	test('push also refuses the default branch that origin/HEAD names on the host', async () => {
+		git(repo, 'push', '--quiet', 'origin', 'main:develop');
+		git(repo, 'fetch', '--quiet', 'origin');
+		git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop');
+		assert.strictEqual(await outcome(service.git(SESSION, repo, { kind: 'push', branch: 'develop', setUpstream: false, defaultBranch: undefined })), 'denied');
 	});
 
 	test('only registered places of the same repository are used', async () => {
@@ -232,7 +282,7 @@ async function exists(path: string): Promise<boolean> {
 			const result = await service.runCommand(SESSION, repo, 'run-1', 'env; echo done');
 			assert.strictEqual(result.code, 0);
 			const names = result.stdout.split('\n').map(line => line.split('=')[0]);
-			assert.deepStrictEqual([names.includes('VSCODE_IPC_HOOK_CLI'), names.includes('PARA_CODE_PANE_TOKEN'), names.includes('PARADIS_PTY_DAEMON_BUILD_KEY'), result.stdout.includes('GIT_TERMINAL_PROMPT=0'), lines.includes('done')], [false, false, false, true, true]);
+			assert.deepStrictEqual([names.includes('VSCODE_IPC_HOOK_CLI'), names.includes('PARA_CODE_PANE_TOKEN'), names.includes('PARADIS_PTY_DAEMON_BUILD_KEY'), names.includes('GIT_DIR'), names.includes('NODE_OPTIONS'), result.stdout.includes('GIT_TERMINAL_PROMPT=0'), lines.includes('done')], [false, false, false, false, false, true, true]);
 		} finally {
 			listener.dispose();
 		}

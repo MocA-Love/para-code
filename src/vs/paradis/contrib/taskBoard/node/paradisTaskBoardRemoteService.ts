@@ -27,7 +27,7 @@ import { constants as fsConstants, promises as fs } from 'fs';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, join } from '../../../../base/common/path.js';
-import { isWindows } from '../../../../base/common/platform.js';
+import { isLinux } from '../../../../base/common/platform.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
@@ -38,6 +38,7 @@ import {
 	paradisTaskBoardRemoteCommandError,
 	paradisTaskBoardRemoteEnv,
 	paradisTaskBoardRemoteGitPlan,
+	paradisTaskBoardRemoteIsProtectedBranch,
 	paradisTaskBoardRemoteIsWritablePath,
 	paradisTaskBoardRemoteSegments,
 } from '../common/paradisTaskBoardRemote.js';
@@ -146,6 +147,78 @@ function appendCapped(current: string, chunk: string, max: number): string {
 	return current.length >= max ? current : current + chunk.slice(0, max - current.length);
 }
 
+/** `.para/` を空にするときに辿る深さと件数の上限。 */
+const CLEAR_MAX_DEPTH = 32;
+const CLEAR_MAX_ENTRIES = 10_000;
+
+/**
+ * 開いたフォルダ。中の名前は `/proc/self/fd/<fd>/<名前>` で指す（開いた inode を起点に解決される）。
+ */
+class ParadisDirectoryHandle {
+
+	private constructor(private readonly handle: fs.FileHandle) { }
+
+	/** 開いたフォルダそのものを指すパス。 */
+	get self(): string {
+		return `/proc/self/fd/${this.handle.fd}`;
+	}
+
+	/** フォルダの中の 1 つの名前（`/` を含まない、形を確かめた段）。 */
+	entry(name: string): string {
+		return `${this.self}/${name}`;
+	}
+
+	/** root を開く。symlink（最後の段）・フォルダでないもの・持ち主が違うものは断る。 */
+	static async openRoot(path: string, uid: number): Promise<ParadisDirectoryHandle> {
+		const handle = await ParadisDirectoryHandle.openDirectory(path, path);
+		if (handle === undefined) {
+			throw new ParadisTaskBoardRemoteError('denied', `the folder does not exist: ${path}`);
+		}
+		const info = await handle.handle.stat();
+		if (info.uid !== uid) {
+			await handle.close();
+			throw new ParadisTaskBoardRemoteError('denied', `the folder is not owned by this user: ${path}`);
+		}
+		return handle;
+	}
+
+	/** 中のフォルダを開く。無ければ `mode` があれば作り、無ければ undefined。 */
+	async child(name: string, mode: number | undefined): Promise<ParadisDirectoryHandle | undefined> {
+		const opened = await ParadisDirectoryHandle.openDirectory(this.entry(name), name);
+		if (opened !== undefined || mode === undefined) {
+			return opened;
+		}
+		await fs.mkdir(this.entry(name), { mode }).catch(error => {
+			if (!isErrno(error, 'EEXIST')) {
+				throw error;
+			}
+		});
+		const created = await ParadisDirectoryHandle.openDirectory(this.entry(name), name);
+		if (created === undefined) {
+			throw new ParadisTaskBoardRemoteError('denied', `the folder could not be created: ${name}`);
+		}
+		return created;
+	}
+
+	close(): Promise<void> {
+		return this.handle.close();
+	}
+
+	private static async openDirectory(path: string, label: string): Promise<ParadisDirectoryHandle | undefined> {
+		try {
+			return new ParadisDirectoryHandle(await fs.open(path, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW));
+		} catch (error) {
+			if (isErrno(error, 'ENOENT')) {
+				return undefined;
+			}
+			if (isErrno(error, 'ELOOP') || isErrno(error, 'ENOTDIR')) {
+				throw new ParadisTaskBoardRemoteError('denied', `the path goes through a symbolic link or a file: ${label}`);
+			}
+			throw error;
+		}
+	}
+}
+
 export class ParadisTaskBoardRemoteService extends Disposable {
 
 	private readonly sessions = new Map<string, ISession>();
@@ -163,6 +236,8 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 		/** 自分の uid。作業場所の持ち主の照合に使う。テストからのみ差し替える。 */
 		private readonly uid: number | undefined = process.getuid?.(),
 		sweep = true,
+		/** ファイルを確かめた後、書き換え・削除の直前に呼ぶ。すり替えを試すテストからのみ差し替える。 */
+		private readonly afterCheck: (stage: 'write' | 'reset') => Promise<void> = async () => { },
 	) {
 		super();
 		if (sweep) {
@@ -263,8 +338,9 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 
 	private ensureSupported(): void {
 		// 接続先の REH は Linux だけを配っている（.github/workflows/para-reh.yml）。Windows のパスと持ち主の規則はここに無い
-		if (isWindows || this.uid === undefined) {
-			throw new ParadisTaskBoardRemoteError('unsupported', 'the task board relay runs only on POSIX hosts');
+		// ファイルの読み書きは /proc/self/fd を使って fd を起点に辿る（Linux だけ）
+		if (!isLinux || this.uid === undefined) {
+			throw new ParadisTaskBoardRemoteError('unsupported', 'the task board relay runs only on Linux hosts');
 		}
 	}
 
@@ -339,6 +415,9 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 			}
 		}
 		const plan = paradisTaskBoardRemoteGitPlan(dir, op);
+		if (kind === 'push') {
+			await this.checkHostDefaultBranch(session, dir, (op as { branch: string }).branch);
+		}
 		const result = await this.enqueueGit(session, () => this.execGit(plan.args, plan.network || plan.hooks ? this.timeouts.gitLongMs : this.timeouts.gitShortMs));
 		if (worktreeDir !== undefined && result.code === 0 && !session.closed) {
 			if (kind === 'worktreeAdd') {
@@ -351,6 +430,20 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 			}
 		}
 		return result;
+	}
+
+	/**
+	 * 既定のブランチへの push を、ボードが渡した `defaultBranch` だけに頼らず、接続先の `refs/remotes/origin/HEAD` を
+	 * 自分で読んで断る（`main`・`master` は common 側で常に断る）。限界: `origin/HEAD` は作業場所の利用者（担当の
+	 * エージェントを含む）が `git remote set-head` で書き換えられるので、これだけでは守れない。手元のウィンドウが
+	 * セッションの開始で固定した既定のブランチ（設計書 PR 3）と合わせて使う。
+	 */
+	private async checkHostDefaultBranch(session: ISession, dir: string, branch: string): Promise<void> {
+		const head = await this.enqueueGit(session, () => this.execGit(paradisTaskBoardRemoteGitPlan(dir, { kind: 'defaultBranch' }).args, this.timeouts.gitShortMs));
+		const hostDefault = head.code === 0 ? /^refs\/remotes\/origin\/(?<branch>.+)$/.exec(head.stdout.trim())?.groups?.branch : undefined;
+		if (paradisTaskBoardRemoteIsProtectedBranch(branch, hostDefault)) {
+			throw new ParadisTaskBoardRemoteError('denied', `push to the default branch is not allowed: ${branch}`);
+		}
 	}
 
 	private async checkNewWorktreeDir(session: ISession, dir: string): Promise<void> {
@@ -415,43 +508,58 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 	}
 
 	// --- ファイル -----------------------------------------------------------------------------
+	//
+	// 読み書きは、作業場所の root を O_DIRECTORY | O_NOFOLLOW で開いた fd を起点に、1 段ずつ `/proc/self/fd/<fd>/<名前>`
+	// で開き直して辿る（Linux の openat 相当。Node に openat が無いため）。各段は O_NOFOLLOW なので symlink なら ELOOP で
+	// 止まり、確かめた後にパスの途中を symlink へすり替えられても、開いたフォルダ（inode）の外へは届かない。
 
 	/**
-	 * 作業場所の中のファイルを読む（成果物、フローの定義）。途中の段にも最後にも symlink があれば断る。
-	 * O_NOFOLLOW で開き、fd の dev/ino が直前の lstat と同じことを確かめてから、その fd から読む。
-	 * 無ければ undefined。
+	 * 作業場所の中のファイルを読む（成果物、フローの定義）。途中の段にも最後にも symlink があれば断る。ハードリンク
+	 * （nlink が 2 以上）も断る（`.para/out.txt` を `~/.ssh/id_ed25519` へのハードリンクにすると、パスの検査を
+	 * すべて通って中身を運べてしまうため）。無ければ undefined。
 	 */
 	async readFile(sessionId: unknown, place: unknown, relativePath: unknown, maxBytes: unknown): Promise<Uint8Array | undefined> {
 		const session = this.session(sessionId);
 		const dir = await this.place(session, place);
 		const segments = paradisTaskBoardRemoteSegments(relativePath);
 		const limit = typeof maxBytes === 'number' && Number.isInteger(maxBytes) && maxBytes > 0 ? Math.min(maxBytes, PARADIS_TASK_BOARD_REMOTE_LIMITS.maxReadBytes) : PARADIS_TASK_BOARD_REMOTE_LIMITS.maxReadBytes;
-		const target = await this.walk(dir, segments);
-		if (target === undefined) {
-			return undefined;
-		}
-		const handle = await fs.open(target.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK).catch(error => {
-			throw isErrno(error, 'ELOOP') ? new ParadisTaskBoardRemoteError('denied', `the file is a symbolic link: ${relativePath}`) : error;
+		return this.withDirectory(dir, segments.slice(0, -1), undefined, async parent => {
+			if (parent === undefined) {
+				return undefined;
+			}
+			const handle = await fs.open(parent.entry(segments[segments.length - 1]), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK).catch(error => {
+				if (isErrno(error, 'ENOENT')) {
+					return undefined;
+				}
+				throw isErrno(error, 'ELOOP') ? new ParadisTaskBoardRemoteError('denied', `the file is a symbolic link: ${relativePath}`) : error;
+			});
+			if (handle === undefined) {
+				return undefined;
+			}
+			try {
+				const info = await handle.stat();
+				if (!info.isFile()) {
+					throw new ParadisTaskBoardRemoteError('denied', `the path is not a regular file: ${relativePath}`);
+				}
+				if (info.nlink !== 1) {
+					throw new ParadisTaskBoardRemoteError('denied', `the file has other hard links: ${relativePath}`);
+				}
+				if (info.size > limit) {
+					throw new ParadisTaskBoardRemoteError('denied', `the file is larger than ${limit} bytes: ${relativePath}`);
+				}
+				const buffer = Buffer.alloc(info.size);
+				const { bytesRead } = await handle.read(buffer, 0, info.size, 0);
+				return new Uint8Array(buffer.buffer, buffer.byteOffset, bytesRead);
+			} finally {
+				await handle.close();
+			}
 		});
-		try {
-			const info = await handle.stat();
-			if (!info.isFile() || info.dev !== target.dev || info.ino !== target.ino) {
-				throw new ParadisTaskBoardRemoteError('denied', `the file changed while it was checked: ${relativePath}`);
-			}
-			if (info.size > limit) {
-				throw new ParadisTaskBoardRemoteError('denied', `the file is larger than ${limit} bytes: ${relativePath}`);
-			}
-			const buffer = Buffer.alloc(info.size);
-			const { bytesRead } = await handle.read(buffer, 0, info.size, 0);
-			return new Uint8Array(buffer.buffer, buffer.byteOffset, bytesRead);
-		} finally {
-			await handle.close();
-		}
 	}
 
 	/**
 	 * 作業場所の中へ書く。書けるのはフローの定義の 3 ファイルと `.para/` の中だけ。足りない途中のフォルダは作り
-	 * （`.para` は 0700）、既にある段が symlink なら断る。同じフォルダの一時ファイルを O_EXCL で作ってから rename する。
+	 * （`.para` は 0700）、既にある段が symlink なら断る。親のフォルダの fd を起点に、一時ファイルを O_EXCL で作ってから
+	 * 同じフォルダの中で rename する。
 	 */
 	async writeFile(sessionId: unknown, place: unknown, relativePath: unknown, content: unknown): Promise<void> {
 		const session = this.session(sessionId);
@@ -464,31 +572,34 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 		if (bytes === undefined || bytes.length > PARADIS_TASK_BOARD_REMOTE_LIMITS.maxWriteBytes) {
 			throw new ParadisTaskBoardRemoteError('invalid', 'content must be a string or bytes up to 1 MiB');
 		}
-		const parent = await this.ensureDirectories(dir, segments.slice(0, -1));
-		const target = join(parent, segments[segments.length - 1]);
-		const existing = await fs.lstat(target).catch(() => undefined);
-		if (existing && !existing.isFile()) {
-			throw new ParadisTaskBoardRemoteError('denied', `the target is not a regular file: ${relativePath}`);
-		}
-		const temp = join(parent, `.${segments[segments.length - 1]}.${randomBytes(6).toString('hex')}.tmp`);
-		const handle = await fs.open(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, existing ? existing.mode & 0o777 : 0o644);
-		try {
-			await handle.writeFile(bytes);
-		} finally {
-			await handle.close();
-		}
-		try {
-			await fs.rename(temp, target);
-		} catch (error) {
-			await fs.unlink(temp).catch(() => undefined);
-			throw error;
-		}
+		const name = segments[segments.length - 1];
+		await this.withDirectory(dir, segments.slice(0, -1), segment => segment === PARADIS_TASK_BOARD_REMOTE_BOARD_DIR ? 0o700 : 0o755, async parent => {
+			const target = parent!.entry(name);
+			const existing = await fs.lstat(target).catch(() => undefined);
+			if (existing && !existing.isFile()) {
+				throw new ParadisTaskBoardRemoteError('denied', `the target is not a regular file: ${relativePath}`);
+			}
+			const temp = parent!.entry(`.${name}.${randomBytes(6).toString('hex')}.tmp`);
+			const handle = await fs.open(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, existing ? existing.mode & 0o777 : 0o644);
+			try {
+				await handle.writeFile(bytes);
+			} finally {
+				await handle.close();
+			}
+			try {
+				await this.afterCheck('write');
+				await fs.rename(temp, target);
+			} catch (error) {
+				await fs.unlink(temp).catch(() => undefined);
+				throw error;
+			}
+		});
 	}
 
 	/**
 	 * `.para/` を次のタスクのために空にし、持ち主の印（`.para/.task`）を書く（workspaces.ts の resetBoardFiles と同じ意味）。
-	 * 同じタスクの印があれば何もしない。`.para` が symlink やファイルなら断る（リンクの先を消さない）。
-	 * リポジトリが `.para/` を追跡していれば触らない（false を返す）。
+	 * 同じタスクの印があれば何もしない。`.para` が symlink やファイルなら断る（リンクの先を消さない）。中身は開いた
+	 * `.para` の fd を起点に 1 件ずつ、symlink を辿らずに消す。リポジトリが `.para/` を追跡していれば触らない（false を返す）。
 	 */
 	async resetBoardDir(sessionId: unknown, place: unknown, taskId: unknown): Promise<boolean> {
 		const session = this.session(sessionId);
@@ -498,112 +609,95 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 		if (tracked.code !== 0 || tracked.stdout.trim().length > 0) {
 			return false;
 		}
-		const boardDir = join(dir, PARADIS_TASK_BOARD_REMOTE_BOARD_DIR);
-		const info = await fs.lstat(boardDir).catch(() => undefined);
-		if (info && !info.isDirectory()) {
-			throw new ParadisTaskBoardRemoteError('denied', `${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR} is not a directory`);
+		const owner = await this.readFile(session.id, dir, `${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR}/.task`, 1024).catch(() => undefined);
+		if (owner !== undefined && Buffer.from(owner).toString('utf8').trim() === task) {
+			return true;
 		}
-		if (info) {
-			const owner = await this.readFile(session.id, dir, `${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR}/.task`, 1024).catch(() => undefined);
-			if (owner !== undefined && Buffer.from(owner).toString('utf8').trim() === task) {
-				return true;
+		await this.withDirectory(dir, [PARADIS_TASK_BOARD_REMOTE_BOARD_DIR], undefined, async boardDir => {
+			if (boardDir !== undefined) {
+				await this.afterCheck('reset');
+				await this.clearDirectory(boardDir, { remaining: CLEAR_MAX_ENTRIES }, 0);
 			}
-			// 中身だけを消す。fs.rm は中の symlink を辿らずにリンクそのものを消す
-			for (const entry of await fs.readdir(boardDir)) {
-				await fs.rm(join(boardDir, entry), { recursive: true, force: true });
-			}
-		}
+		});
 		await this.writeFile(session.id, dir, `${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR}/.task`, `${task}\n`);
 		return true;
 	}
 
 	/**
-	 * `.git/info/exclude` に `/.para/` を足す（無ければ）。場所は git に聞き、セッションのリポジトリの common dir の中で、
-	 * symlink でないときだけ書く。
+	 * `.git/info/exclude` に `/.para/` を足す（無ければ）。場所はセッションのリポジトリの common dir の `info/exclude`
+	 * に決め打ちし、common dir の fd を起点に開く。symlink とハードリンクには書かない。
 	 */
 	async excludeBoardDir(sessionId: unknown, place: unknown): Promise<void> {
 		const session = this.session(sessionId);
-		const dir = await this.place(session, place);
-		const result = await this.git(session.id, dir, { kind: 'excludePath' });
-		const file = result.stdout.trim();
-		if (result.code !== 0 || paradisTaskBoardRemoteAbsolutePathError(file) !== undefined) {
-			throw new ParadisTaskBoardRemoteError('denied', 'git did not report the exclude file');
-		}
-		const infoDir = dirname(file);
-		if (dirname(infoDir) !== session.commonDir || basename(infoDir) !== 'info' || basename(file) !== 'exclude') {
-			throw new ParadisTaskBoardRemoteError('denied', 'the exclude file is outside the repository');
-		}
-		await this.ensureDirectories(session.commonDir, ['info']);
-		const existing = await fs.lstat(file).catch(() => undefined);
-		if (existing && !existing.isFile()) {
-			throw new ParadisTaskBoardRemoteError('denied', 'the exclude file is not a regular file');
-		}
-		const handle = await fs.open(file, fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_NOFOLLOW, 0o644);
-		try {
-			const text = (await handle.readFile()).toString('utf8');
-			if (text.split('\n').some(line => line.trim() === `/${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR}/`)) {
-				return;
-			}
-			await handle.write(`${text && !text.endsWith('\n') ? '\n' : ''}# Para Code task board\n/${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR}/\n`);
-		} finally {
-			await handle.close();
-		}
-	}
-
-	/** root から 1 段ずつ lstat する。symlink があれば断る。最後の段が無ければ undefined。 */
-	private async walk(root: string, segments: readonly string[]): Promise<{ readonly path: string; readonly dev: number; readonly ino: number } | undefined> {
-		let current = root;
-		for (let index = 0; index < segments.length; index++) {
-			current = join(current, segments[index]);
-			const info = await fs.lstat(current).catch(error => {
-				if (isErrno(error, 'ENOENT') || isErrno(error, 'ENOTDIR')) {
-					return undefined;
-				}
-				throw error;
+		await this.place(session, place);
+		await this.withDirectory(session.commonDir, ['info'], () => 0o755, async infoDir => {
+			const handle = await fs.open(infoDir!.entry('exclude'), fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_NOFOLLOW, 0o644).catch(error => {
+				throw isErrno(error, 'ELOOP') ? new ParadisTaskBoardRemoteError('denied', 'the exclude file is a symbolic link') : error;
 			});
-			if (!info) {
-				return undefined;
-			}
-			if (info.isSymbolicLink()) {
-				throw new ParadisTaskBoardRemoteError('denied', `the path goes through a symbolic link: ${segments.slice(0, index + 1).join('/')}`);
-			}
-			const last = index === segments.length - 1;
-			if (!last && !info.isDirectory()) {
-				return undefined;
-			}
-			if (last) {
-				if (!info.isFile()) {
-					throw new ParadisTaskBoardRemoteError('denied', `the path is not a regular file: ${segments.join('/')}`);
+			try {
+				const info = await handle.stat();
+				if (!info.isFile() || info.nlink !== 1) {
+					throw new ParadisTaskBoardRemoteError('denied', 'the exclude file is not a regular file with a single link');
 				}
-				return { path: current, dev: info.dev, ino: info.ino };
+				const text = (await handle.readFile()).toString('utf8');
+				if (text.split('\n').some(line => line.trim() === `/${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR}/`)) {
+					return;
+				}
+				await handle.write(`${text && !text.endsWith('\n') ? '\n' : ''}# Para Code task board\n/${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR}/\n`);
+			} finally {
+				await handle.close();
 			}
-		}
-		return undefined;
+		});
 	}
 
-	/** root の下のフォルダを 1 段ずつ確かめ、無ければ作る。symlink・ファイルがあれば断る。 */
-	private async ensureDirectories(root: string, segments: readonly string[]): Promise<string> {
-		let current = root;
-		for (const segment of segments) {
-			current = join(current, segment);
-			const info = await fs.lstat(current).catch(() => undefined);
-			if (!info) {
-				await fs.mkdir(current, { mode: segment === PARADIS_TASK_BOARD_REMOTE_BOARD_DIR ? 0o700 : 0o755 }).catch(error => {
-					if (!isErrno(error, 'EEXIST')) {
-						throw error;
-					}
-				});
-				const created = await fs.lstat(current);
-				if (!created.isDirectory()) {
-					throw new ParadisTaskBoardRemoteError('denied', `the folder could not be created: ${segment}`);
+	/**
+	 * root を開き、`segments` のフォルダを 1 段ずつ fd で辿って `task` に渡す。`create` があれば無い段を作り、
+	 * 無ければ足りない段で undefined を渡す。symlink・ファイルの段は断る。開いた fd は最後にすべて閉じる。
+	 */
+	private async withDirectory<T>(root: string, segments: readonly string[], create: ((segment: string) => number) | undefined, task: (dir: ParadisDirectoryHandle | undefined) => Promise<T>): Promise<T> {
+		const opened: ParadisDirectoryHandle[] = [];
+		try {
+			let current: ParadisDirectoryHandle | undefined = await ParadisDirectoryHandle.openRoot(root, this.uid!);
+			opened.push(current);
+			for (const segment of segments) {
+				current = await current.child(segment, create?.(segment));
+				if (current === undefined) {
+					break;
 				}
-				continue;
+				opened.push(current);
 			}
-			if (info.isSymbolicLink() || !info.isDirectory()) {
-				throw new ParadisTaskBoardRemoteError('denied', `the path goes through a symbolic link or a file: ${segment}`);
+			return await task(current);
+		} finally {
+			for (const handle of opened.reverse()) {
+				await handle.close();
 			}
 		}
-		return current;
+	}
+
+	/** 開いたフォルダの中身を 1 件ずつ消す。中のフォルダは O_NOFOLLOW で開き直して潜る（symlink はリンクそのものを消す）。 */
+	private async clearDirectory(dir: ParadisDirectoryHandle, budget: { remaining: number }, depth: number): Promise<void> {
+		if (depth > CLEAR_MAX_DEPTH) {
+			throw new ParadisTaskBoardRemoteError('denied', 'the board folder is nested too deeply');
+		}
+		for (const name of await fs.readdir(dir.self)) {
+			if (--budget.remaining < 0) {
+				throw new ParadisTaskBoardRemoteError('denied', 'the board folder has too many files');
+			}
+			const info = await fs.lstat(dir.entry(name));
+			if (info.isDirectory()) {
+				const child = await dir.child(name, undefined);
+				if (child !== undefined) {
+					try {
+						await this.clearDirectory(child, budget, depth + 1);
+					} finally {
+						await child.close();
+					}
+				}
+				await fs.rmdir(dir.entry(name));
+			} else {
+				await fs.unlink(dir.entry(name));
+			}
+		}
 	}
 
 	// --- 工程のコマンド ---------------------------------------------------------------------
@@ -676,13 +770,30 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 				// 既に終わっている
 			}
 		};
+		// グループがまだあるか。グループの番号を使っているプロセスが残っている間は、その番号は別のプロセスに振られない
+		const groupAlive = () => {
+			const pid = child?.pid;
+			if (pid === undefined) {
+				return false;
+			}
+			try {
+				process.kill(-pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
 		const stop = () => {
 			if (stopping) {
 				return;
 			}
 			stopping = true;
 			signal('SIGTERM');
-			killTimer = setTimeout(() => signal('SIGKILL'), this.timeouts.killGraceMs);
+			killTimer = setTimeout(() => {
+				if (groupAlive()) {
+					signal('SIGKILL');
+				}
+			}, this.timeouts.killGraceMs);
 		};
 		const promise = new Promise<{ code: number | null; signal: string | null; stdout: string; stderr: string; timedOut: boolean; cancelled: boolean }>(resolve => {
 			let stdout = '';
@@ -696,8 +807,14 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 				finished = true;
 				clearTimeout(timer);
 				// 猶予の SIGKILL は、時間切れ・cancel の後に残った孫を止めるため、終わってからも撃つ
+				// グループが消えていれば撃たない（番号が別のプロセスへ振り直されうるため）
 				if (killTimer !== undefined) {
-					unref(killTimer);
+					if (groupAlive()) {
+						unref(killTimer);
+					} else {
+						clearTimeout(killTimer);
+						killTimer = undefined;
+					}
 				}
 				resolve({ code, signal: sig, stdout, stderr, timedOut, cancelled });
 			};
