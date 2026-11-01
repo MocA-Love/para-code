@@ -114,7 +114,8 @@ suite('Paradis task board remote - checks', () => {
 			paradisTaskBoardRemoteStripUrlCredentials('ssh://git@github.com/o/r.git'),
 			paradisTaskBoardRemoteStripUrlCredentials('git@github.com:o/r.git'),
 			paradisTaskBoardRemoteStripUrlCredentials('https://github.com/o/r.git'),
-		], ['https://github.com/o/r.git\n', 'ssh://github.com/o/r.git', 'git@github.com:o/r.git', 'https://github.com/o/r.git']);
+			paradisTaskBoardRemoteStripUrlCredentials('https://user:p@ss@github.com/o/r@x.git'),
+		], ['https://github.com/o/r.git\n', 'ssh://github.com/o/r.git', 'git@github.com:o/r.git', 'https://github.com/o/r.git', 'https://github.com/o/r@x.git']);
 	});
 
 	test('command text', () => {
