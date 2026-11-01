@@ -316,6 +316,28 @@ async function exists(path: string): Promise<boolean> {
 		], [true, 'denied', 'denied', true]);
 	});
 
+	test('push can send a given commit, so commits added after the confirmation are not sent', async () => {
+		const dir = join(worktrees, '9-shown');
+		await service.git(SESSION, repo, { kind: 'worktreeAdd', dir, branch: 'para/9-shown', mode: 'new', base: { kind: 'local', branch: 'main' } });
+		await fsp.writeFile(join(dir, 'a.txt'), 'shown');
+		await service.git(SESSION, dir, { kind: 'addTracked' });
+		await service.git(SESSION, dir, { kind: 'commit', message: 'shown' });
+		const shown = (await service.git(SESSION, dir, { kind: 'headSha' })).stdout.trim();
+		await fsp.writeFile(join(dir, 'a.txt'), 'added later');
+		await service.git(SESSION, dir, { kind: 'addTracked' });
+		await service.git(SESSION, dir, { kind: 'commit', message: 'added later' });
+		const files = (await service.git(SESSION, dir, { kind: 'changedFiles', base: { kind: 'local', branch: 'main' }, head: { kind: 'sha', sha: shown } })).stdout;
+		const subjects = (await service.git(SESSION, dir, { kind: 'commitSubjects', base: { kind: 'local', branch: 'main' }, head: { kind: 'sha', sha: shown } })).stdout.trim();
+		const pushed = await service.git(SESSION, dir, { kind: 'push', branch: 'para/9-shown', setUpstream: false, defaultBranch: 'main', source: shown });
+		assert.deepStrictEqual([
+			pushed.code,
+			git(join(base, 'origin.git'), 'rev-parse', 'refs/heads/para/9-shown') === shown,
+			files,
+			subjects === `${shown} shown`,
+			await outcome(service.git(SESSION, dir, { kind: 'push', branch: 'para/9-shown', setUpstream: false, defaultBranch: 'main', source: 'HEAD~1' })),
+		], [0, true, 'a.txt\0', true, 'invalid']);
+	});
+
 	test('commands do not see Para Code or VS Code secrets', async () => {
 		const lines: string[] = [];
 		const listener = service.onOutput(output => lines.push(...output.lines));

@@ -230,6 +230,11 @@ export interface IParadisTaskBoardLaunchRequest {
 	 * （`repoPath` は接続先のパス）に起動する。宛先の窓は接続口がセッションの登録から決める。
 	 */
 	readonly relaySessionId?: string;
+	/**
+	 * SSH の担当に、起動のときだけ許可を渡すか（Q525 の d = B）。渡すツールと引数は窓が固定の一覧から決め、渡すかどうかは
+	 * 窓がリポジトリごとに 1 回確かめる。ボードから受けるのはこの真偽だけ。
+	 */
+	readonly toolApprovals?: boolean;
 }
 
 export interface IParadisTaskBoardSendRequest {
@@ -332,6 +337,7 @@ export function paradisParseTaskBoardLaunch(body: unknown): Parsed<IParadisTaskB
 			...(effortId.value !== undefined ? { effortId: effortId.value } : {}),
 			...(permissionId.value !== undefined ? { permissionId: permissionId.value } : {}),
 			...(relaySessionId !== undefined ? { relaySessionId } : {}),
+			...(relaySessionId !== undefined && body.toolApprovals === true ? { toolApprovals: true } : {}),
 		},
 	};
 }

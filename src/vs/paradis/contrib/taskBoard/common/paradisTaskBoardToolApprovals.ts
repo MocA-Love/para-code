@@ -32,3 +32,26 @@ export const PARADIS_TASK_BOARD_SCREENSHOT_TOOLS = [
 	'get_text',
 	'inspect_element',
 ] as const;
+
+/** ボードへ報告する para-browser のツール（担当がどの工程でも使う）。 */
+export const PARADIS_TASK_BOARD_BOARD_TOOLS = ['board_complete_step', 'board_ask_human'] as const;
+
+/**
+ * SSH の担当を起動するときだけ許可を渡すツール（q.html Q525 の d = B）。設定ファイルには書かず、その起動の引数にだけ載せる。
+ */
+export const PARADIS_TASK_BOARD_LAUNCH_APPROVAL_TOOLS: readonly string[] = [...PARADIS_TASK_BOARD_BOARD_TOOLS, ...PARADIS_TASK_BOARD_SCREENSHOT_TOOLS];
+
+/**
+ * 起動の引数（{@link PARADIS_TASK_BOARD_LAUNCH_APPROVAL_TOOLS} だけ。窓が固定の一覧から組み立て、ボードから受けるのは渡すかどうか
+ * だけ）。どれも英数字と `_.,=-` だけの固定の文字列を単一引用符で囲むので、POSIX・fish・PowerShell のどれでも 1 つの引数になる。
+ * - Claude Code: `--allowedTools` は値を可変長で取るので、必ず `=` の形にする（空白で区切ると後ろの指示までツールの名前として
+ *   飲み込む。2.1.316 で `claude --allowedTools a doctor --help` が本体の help になることを確かめた）
+ * - Codex: `-c <key>=approve`。値は TOML として読めなければ文字列になり、`approval_mode` の値として確かめられる
+ *   （0.1xx で `mcp get` が通り、違う値は `unknown variant` で落ちることを確かめた）
+ */
+export function paradisTaskBoardLaunchApprovalFlags(agent: 'claude' | 'codex'): string {
+	if (agent === 'claude') {
+		return `'--allowedTools=${PARADIS_TASK_BOARD_LAUNCH_APPROVAL_TOOLS.map(tool => `mcp__para-browser__${tool}`).join(',')}'`;
+	}
+	return PARADIS_TASK_BOARD_LAUNCH_APPROVAL_TOOLS.map(tool => `-c 'mcp_servers.para-browser.tools.${tool}.approval_mode=approve'`).join(' ');
+}

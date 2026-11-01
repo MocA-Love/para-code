@@ -4,7 +4,9 @@ import * as path from 'node:path';
 import type { ITaskBoardSlot, ITaskBoardStep, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { paradisTaskBoardHasHiddenCharacters } from '@engine/paradisTaskBoardDisplayText.js';
 import { TaskBoardWorkspaceError, type ITaskBoardRunPort, type ITaskBoardWorkspacePort, type TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
+import type { GitHubClient } from './github.js';
 import { ParaCodeBridgeError, type ParaCodeBridgeClient, type ParaCodeRelayEvent } from './paraCode.js';
+import { githubReason, prRef } from './runner.js';
 
 /*
  * SSH の窓のボード（q.html Q472 = A）。リポジトリは SSH の接続先にあり、git・ファイルの読み書きは Para Code の
@@ -116,6 +118,14 @@ export class RelayClient {
 		await this.call({ kind: 'runCommand', place, runId, command, step });
 	}
 
+	/**
+	 * ボードのブランチを push する（SSH の窓が、送るコミット・ファイル・リモートを見せて確かめてから送る）。終わりは relay-exit で届く。
+	 * `interactive` が false なら窓は確認を出さず、確認が要れば送らない（返却のとき）。
+	 */
+	async pushBranch(place: string, runId: string, branch: string, setUpstream: boolean, interactive: boolean): Promise<void> {
+		await this.call({ kind: 'pushBranch', place, runId, branch, setUpstream, interactive });
+	}
+
 	async cancelRun(runId: string): Promise<void> {
 		await this.call({ kind: 'cancelRun', runId });
 	}
@@ -139,7 +149,12 @@ export class RemoteWorkspaces implements ITaskBoardWorkspacePort {
 	/** 窓の作業場所にあるワークツリー（起動時に窓が引き取ったものと、このボードが作ったもの）。 */
 	private readonly known: Set<string>;
 
-	constructor(private readonly relay: RelayClient, private readonly info: IRelaySessionInfo) {
+	constructor(
+		private readonly relay: RelayClient,
+		private readonly info: IRelaySessionInfo,
+		/** 返す前に、PR のブランチへ送る（承認済みのブランチだけ。確認は出さない）。 */
+		private readonly pushBeforeRelease?: (place: string, branch: string) => Promise<void>,
+	) {
 		this.known = new Set(info.worktrees);
 	}
 
@@ -209,6 +224,11 @@ export class RemoteWorkspaces implements ITaskBoardWorkspacePort {
 		if (!dir || dir === this.info.root) {
 			return;
 		}
+		// PR ができた後の工程で担当がコミットしたものは、返す前に PR のブランチへ送る（GitWorkspaces と同じ）。返却では確認を
+		// 出さないので、窓が承認済みのブランチだけが送られ、ほかは送らずに残る
+		if (task.pr && task.branch && this.pushBeforeRelease) {
+			await this.pushBeforeRelease(dir, task.branch).catch(() => undefined);
+		}
 		// 消すのはボードが作ったワークツリーだけ（窓と REH も確かめる）。未コミットの変更があれば残す（--force は使わない）
 		const status = await this.relay.git(dir, { kind: 'status' }).catch(() => undefined);
 		if (!status || status.code !== 0 || status.stdout.trim().length > 0) {
@@ -226,19 +246,50 @@ export class RemoteWorkspaces implements ITaskBoardWorkspacePort {
 export class RemoteCommandRunner implements ITaskBoardRunPort {
 	private readonly runs = new Map<string, { readonly taskId: string; readonly attempt: number }>();
 	private readonly byTask = new Map<string, string>();
+	/** push の終わりを待っている呼び出し（runId → 受け取り）。 */
+	private readonly waiters = new Map<string, (event: Extract<ParaCodeRelayEvent, { type: 'relay-exit' }>) => void>();
 	private seq = 0;
 
 	constructor(
 		private readonly engine: () => TaskBoardEngine,
 		private readonly relay: RelayClient,
 		private readonly placePath: (task: ITaskBoardTask) => string | undefined,
+		/** PR を作る口と、PR を作るリポジトリ（起動時に固定した origin。G0）。 */
+		private readonly github?: Pick<GitHubClient, 'findOpenPullRequest' | 'createDraftPullRequest'>,
+		private readonly repo?: { readonly owner: string; readonly repo: string },
+		private readonly defaultBranch?: string,
 	) { }
+
+	/**
+	 * ブランチを push し、終わりを待つ。成功なら undefined、失敗なら理由（画面に出す文）。返却のとき（interactive が false）は、
+	 * 窓が承認済みのブランチだけを送る。
+	 */
+	async push(place: string, branch: string, setUpstream: boolean, interactive: boolean, taskId: string): Promise<string | undefined> {
+		const runId = `push-${taskId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80)}-${++this.seq}`;
+		const done = new Promise<Extract<ParaCodeRelayEvent, { type: 'relay-exit' }>>(resolve => this.waiters.set(runId, resolve));
+		try {
+			await this.relay.pushBranch(place, runId, branch, setUpstream, interactive);
+		} catch (err) {
+			this.waiters.delete(runId);
+			return `push を頼めませんでした: ${(err as Error).message}`;
+		}
+		const event = await done;
+		if (event.code === 0 && !event.reason) {
+			return undefined;
+		}
+		return pushFailureText(event.reason);
+	}
 
 	run(task: ITaskBoardTask, step: ITaskBoardStep): void {
 		const engine = this.engine();
 		const attempt = task.attempt;
 		if (step.run === 'draft-pr') {
-			engine.reportRunResult(task.id, attempt, { ok: false, detail: `${RELAY_UNSUPPORTED}（ドラフト PR と push）` });
+			void this.draftPr(task).catch((err: Error) => {
+				const current = engine.getTask(task.id);
+				if (current?.attempt === attempt) {
+					engine.reportRunResult(task.id, attempt, { ok: false, detail: err.message });
+				}
+			});
 			return;
 		}
 		const place = this.placePath(task);
@@ -283,8 +334,121 @@ export class RemoteCommandRunner implements ITaskBoardRunPort {
 		this.byTask.clear();
 	}
 
+	/**
+	 * ドラフト PR の工程（runner.ts の draftPr と同じ手順を、中継で行う）。未追跡のファイルがあれば止め、タスクのブランチに
+	 * いることを確かめ、手元だけが進んでいれば SSH の窓の確認の後に push し、手元の GitHub の API で PR を作る。PR の本文は
+	 * 固定の文と Issue の番号だけで、成果物もターミナルの出力も添えない。
+	 */
+	private async draftPr(task: ITaskBoardTask): Promise<void> {
+		const engine = this.engine();
+		const attempt = task.attempt;
+		const fail = (detail: string) => engine.reportRunResult(task.id, attempt, { ok: false, detail });
+		const alive = () => {
+			const current = engine.getTask(task.id);
+			return current?.attempt === attempt && current.status === 'working';
+		};
+		const place = this.placePath(task);
+		const repo = this.repo;
+		const github = this.github;
+		const branch = task.branch ?? (place ? await this.relay.gitOk(place, { kind: 'currentBranch' }).then(b => b === 'HEAD' ? undefined : b, () => undefined) : undefined);
+		if (!repo || !branch || !github || !place) {
+			fail(!repo ? 'PR を作るリポジトリ（origin）が分かりません' : !branch ? 'ブランチがありません' : !github ? 'GitHub につないでいないので PR を作れません' : '作業場所が分かりません');
+			return;
+		}
+		let found: Awaited<ReturnType<GitHubClient['findOpenPullRequest']>>;
+		try {
+			found = await github.findOpenPullRequest(repo.owner, repo.repo, branch);
+		} catch (err) {
+			if (alive()) {
+				fail(`PR を探せませんでした: ${githubReason(err)}`);
+			}
+			return;
+		}
+		if (!alive()) {
+			return;
+		}
+		await this.relay.excludeBoardDir(place).catch(() => undefined);
+		const porcelain = (await this.relay.gitOk(place, { kind: 'status' }).catch(() => '')).split('\n').filter(Boolean);
+		const changed = porcelain.map(l => l.replace(/^[ MTADRCU?!]{1,2} /, '').trim()).filter(Boolean);
+		const newFiles = porcelain.filter(l => l.startsWith('??')).map(l => l.slice(2).trim());
+		const current = await this.relay.gitOk(place, { kind: 'currentBranch' }).catch(() => '');
+		if (current !== branch) {
+			fail(`作業場所が ${current || '（ブランチ無し）'} にいます。タスクのブランチ ${branch} に戻してからやり直してください`);
+			return;
+		}
+		if (changed.length && engine.flowOf(task).workspace.commit === 'board' && newFiles.length === 0) {
+			const message = task.issue ? `${task.title} (#${task.issue.number})` : task.title;
+			try {
+				await this.relay.gitOk(place, { kind: 'addTracked' });
+				await this.relay.gitOk(place, { kind: 'commit', message });
+			} catch {
+				fail('git commit が失敗しました');
+				return;
+			}
+			engine.reportOutput(task.id, changed.map(f => `  コミットしました: ${f}`));
+		} else if (changed.length) {
+			engine.reportRunResult(task.id, attempt, { ok: false, detail: `作業場所に未コミットの変更が ${changed.length} 件あります。コミットするか決めてください`, uncommitted: changed, untracked: newFiles });
+			return;
+		}
+		const base = this.defaultBranch ?? 'main';
+		const count = async (baseRev: Record<string, unknown>, headRev: Record<string, unknown>) => Number(await this.relay.gitOk(place, { kind: 'aheadCount', base: baseRev, head: headRev }).catch(() => '0'));
+		const ahead = await count({ kind: 'remote', branch: base }, { kind: 'head' });
+		if (!ahead && !found) {
+			fail(`origin/${base} より先のコミットがありません`);
+			return;
+		}
+		await this.relay.gitOk(place, { kind: 'fetch', prune: true }).catch(() => undefined);
+		const remote = (await this.relay.git(place, { kind: 'refExists', rev: { kind: 'remote', branch } }).catch(() => undefined))?.code === 0;
+		const localAhead = remote ? await count({ kind: 'remote', branch }, { kind: 'head' }) : ahead;
+		const remoteAhead = remote ? await count({ kind: 'head' }, { kind: 'remote', branch }) : 0;
+		if (localAhead > 0 && remoteAhead > 0) {
+			fail(`リモートの ${branch} に、手元に無いコミットが ${remoteAhead} 件あります。取り込んでからやり直してください`);
+			return;
+		}
+		if (localAhead > 0) {
+			engine.reportOutput(task.id, [`${place} $ git push origin ${branch}`, '  （SSH の窓で、送るコミットとファイルを確かめてから送ります）']);
+			const failure = await this.push(place, branch, true, true, task.id);
+			if (!alive()) {
+				return;
+			}
+			if (failure !== undefined) {
+				fail(failure);
+				return;
+			}
+		}
+		if (found) {
+			engine.reportRunResult(task.id, attempt, { ok: true, detail: `#${found.number}（既存）`, pr: prRef(repo, found.number, found.url, found.title, found.draft) });
+			return;
+		}
+		const issue = task.issue;
+		const closes = issue ? (issue.owner === repo.owner && issue.repo === repo.repo ? `Closes #${issue.number}` : `Closes ${issue.owner}/${issue.repo}#${issue.number}`) : '';
+		const body = [closes, 'タスクボードが作ったドラフト PR です。'].filter(Boolean).join('\n\n');
+		let created: Awaited<ReturnType<GitHubClient['createDraftPullRequest']>>;
+		try {
+			created = await github.createDraftPullRequest(repo.owner, repo.repo, branch, task.title, body);
+		} catch (err) {
+			if (alive()) {
+				fail(`PR を作れませんでした: ${githubReason(err)}`);
+			}
+			return;
+		}
+		if (!alive()) {
+			return;
+		}
+		engine.reportOutput(task.id, [`  ${created.existed ? '既存の PR を使います' : 'ドラフト PR を作りました'}: ${created.url}`]);
+		engine.reportRunResult(task.id, attempt, { ok: true, detail: created.existed ? `#${created.number}（既存）` : `#${created.number}`, pr: prRef(repo, created.number, created.url, created.title, created.draft) });
+	}
+
 	/** 接続口から届いた、このボードの工程のコマンドの出力と終わり。 */
 	onEvent(event: ParaCodeRelayEvent): void {
+		if (event.type === 'relay-exit') {
+			const waiter = this.waiters.get(event.runId);
+			if (waiter) {
+				this.waiters.delete(event.runId);
+				waiter(event);
+				return;
+			}
+		}
 		const run = this.runs.get(event.runId);
 		if (!run) {
 			return;
@@ -315,5 +479,19 @@ export class RemoteCommandRunner implements ITaskBoardRunPort {
 			this.byTask.delete(run.taskId);
 		}
 		this.engine().reportRunResult(run.taskId, run.attempt, result);
+	}
+}
+
+/** push を送らなかった・失敗した理由を、画面の文にする。 */
+function pushFailureText(reason: string | undefined): string {
+	switch (reason) {
+		case 'not-approved': return 'SSH の窓で push を「送らない」にしたか、確認に答えが無いまま 10 分たちました';
+		case 'needs-confirmation': return 'このブランチの push はまだ確かめていないので、返却のときには送りませんでした';
+		case 'confirm-pending': return 'SSH の窓で確認を待っている別の依頼があります。そちらに答えてからやり直してください';
+		case 'push-url-changed': return 'push の送り先（origin）が、ボードを開いたときから変わっています。送りませんでした';
+		case 'board-files-in-commits': return '送るコミットに .para/ の中のファイルが入っています。コミットから外してからやり直してください';
+		case 'hidden-characters': return '送るコミットの件名・ファイル名・送り先に、表示できない文字があります。送りませんでした';
+		case 'disconnected': return 'SSH の窓との接続が切れたので送りませんでした';
+		default: return `push が失敗しました${reason ? `: ${reason}` : ''}`;
 	}
 }
