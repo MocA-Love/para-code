@@ -44,9 +44,205 @@
 	font-size: 12px;
 }
 
+/* Two columns (Q527): the list on the left, the selected extension on the right. */
+.paradis-browser-profile-modal.pbe-wide {
+	width: 940px;
+}
+
+.paradis-browser-profile-modal .pbe-columns {
+	display: flex;
+	gap: 14px;
+	min-height: 0;
+}
+
+.paradis-browser-profile-modal .pbe-side {
+	display: flex;
+	flex-direction: column;
+	width: 320px;
+	flex-shrink: 0;
+	min-width: 0;
+}
+
+.paradis-browser-profile-modal .pbe-detail {
+	flex: 1;
+	min-width: 0;
+	padding-left: 14px;
+	border-left: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
 .paradis-browser-profile-modal .pbe-list {
-	max-height: 320px;
+	max-height: 420px;
 	overflow-y: auto;
+}
+
+.paradis-browser-profile-modal .pbe-list-row {
+	cursor: pointer;
+}
+
+.paradis-browser-profile-modal .pbe-list-row.is-selected,
+.paradis-browser-profile-modal .pbe-list-row.is-selected:hover {
+	background-color: var(--vscode-list-inactiveSelectionBackground);
+	color: var(--vscode-list-inactiveSelectionForeground, inherit);
+}
+
+.paradis-browser-profile-modal .pbe-list-row:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-browser-profile-modal .pbpm-meta.is-error {
+	color: var(--vscode-errorForeground);
+}
+
+.paradis-browser-profile-modal .pbe-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	flex-shrink: 0;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-browser-profile-modal .pbe-icon.is-large {
+	width: 40px;
+	height: 40px;
+	font-size: 28px;
+}
+
+.paradis-browser-profile-modal .pbe-icon img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+.paradis-browser-profile-modal .pbe-detail-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 10px;
+}
+
+.paradis-browser-profile-modal .pbe-detail-titles {
+	min-width: 0;
+}
+
+.paradis-browser-profile-modal .pbe-detail-name {
+	font-size: 14px;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+.paradis-browser-profile-modal .pbe-detail-titles .pbpm-meta {
+	overflow-wrap: anywhere;
+}
+
+.paradis-browser-profile-modal .pbe-detail-id {
+	user-select: text;
+}
+
+.paradis-browser-profile-modal .pbe-detail-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-bottom: 8px;
+}
+
+.paradis-browser-profile-modal .pbe-detail-actions .pbpm-btn.is-danger {
+	color: var(--vscode-errorForeground);
+}
+
+.paradis-browser-profile-modal .pbe-confirm-host .pbpm-confirm {
+	margin: 0 0 8px;
+}
+
+.paradis-browser-profile-modal .pbe-callout {
+	margin: 0 0 8px;
+	padding: 6px 10px;
+	border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	font-size: 12px;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+
+.paradis-browser-profile-modal .pbe-callout.is-error {
+	color: var(--vscode-errorForeground);
+}
+
+.paradis-browser-profile-modal .pbe-section {
+	margin-top: 12px;
+}
+
+.paradis-browser-profile-modal .pbe-section-title {
+	margin-bottom: 4px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.paradis-browser-profile-modal .pbe-option-note {
+	margin: 2px 0 0 20px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	line-height: 1.5;
+}
+
+.paradis-browser-profile-modal .pbe-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.paradis-browser-profile-modal .pbe-chip {
+	padding: 0 6px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	font-size: 11px;
+	line-height: 18px;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-browser-profile-modal .pbe-chip.is-host {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.paradis-browser-profile-modal .pbe-log {
+	margin-top: 4px;
+	height: 150px;
+	padding: 6px 8px;
+	overflow: auto;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+	line-height: 1.5;
+	user-select: text;
+}
+
+.paradis-browser-profile-modal .pbe-log:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+}
+
+.paradis-browser-profile-modal .pbe-log-line {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.paradis-browser-profile-modal .pbe-log-line.is-error {
+	color: var(--vscode-errorForeground);
+}
+
+.paradis-browser-profile-modal .pbe-log-line.is-warning {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.paradis-browser-profile-modal .pbe-log-line.is-debug,
+.paradis-browser-profile-modal .pbe-log-empty {
+	color: var(--vscode-descriptionForeground);
 }
 
 .paradis-browser-profile-modal .pbe-toggle {

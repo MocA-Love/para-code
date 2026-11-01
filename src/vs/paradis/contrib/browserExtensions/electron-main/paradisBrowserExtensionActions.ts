@@ -461,6 +461,13 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 
 	// --- ツールバー ---
 
+	/** 管理画面に出すアイコン（manifest の icons、無ければ action の default_icon）を data URL で読む。 */
+	manifestIconDataUrl(folder: string, manifest: Record<string, unknown> | undefined): Promise<string | undefined> {
+		const action = manifest?.action ?? manifest?.browser_action;
+		const actionIcon = action !== null && typeof action === 'object' ? (action as Record<string, unknown>).default_icon : undefined;
+		return this._iconDataUrl(folder, paradisActionIconFromPathSpec(manifest?.icons) ?? paradisActionIconFromPathSpec(actionIcon));
+	}
+
 	private _iconDataUrl(folder: string, icon: ParadisActionIcon | null): Promise<string | undefined> {
 		if (!icon) {
 			return Promise.resolve(undefined);
