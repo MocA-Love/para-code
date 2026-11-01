@@ -2,6 +2,7 @@
 
 import * as path from 'node:path';
 import type { ITaskBoardSlot, ITaskBoardStep, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
+import { paradisTaskBoardHasHiddenCharacters } from '@engine/paradisTaskBoardDisplayText.js';
 import { TaskBoardWorkspaceError, type ITaskBoardRunPort, type ITaskBoardWorkspacePort, type TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { ParaCodeBridgeError, type ParaCodeBridgeClient, type ParaCodeRelayEvent } from './paraCode.js';
 
@@ -246,6 +247,12 @@ export class RemoteCommandRunner implements ITaskBoardRunPort {
 			engine.reportRunResult(task.id, attempt, { ok: false, detail: !place ? '作業場所のディレクトリが分かりません' : 'コマンドが設定されていません' });
 			return;
 		}
+		// 確認のダイアログで正しく見せられない文字（向きを変える文字・幅の無い文字・改行以外の制御文字）を含む本文は
+		// 頼まない（SSH の窓と接続先でも断る）
+		if (paradisTaskBoardHasHiddenCharacters(command)) {
+			engine.reportRunResult(task.id, attempt, { ok: false, detail: 'コマンドに表示できない文字を含むため実行しません（フローの定義を確かめてください）' });
+			return;
+		}
 		this.cancel(task);
 		const runId = `${task.id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80)}-${attempt}-${++this.seq}`;
 		this.runs.set(runId, { taskId: task.id, attempt });
@@ -288,6 +295,8 @@ export class RemoteCommandRunner implements ITaskBoardRunPort {
 			return;
 		}
 		const detail = event.reason === 'not-approved' ? 'SSH の窓で「実行しない」を選んだか、確認に答えが無いまま 10 分たちました'
+			: event.reason === 'confirm-pending' ? 'SSH の窓で確認を待っている別のコマンドがあります。そちらに答えてからやり直してください'
+			: event.reason?.includes('cannot be displayed') ? 'コマンドに表示できない文字を含むため実行しません'
 			: event.reason === 'disconnected' ? 'SSH の窓との接続が切れたので止めました'
 				: event.reason ? `実行できませんでした: ${event.reason}`
 					: event.timedOut ? '60 分を超えたので止めました'

@@ -17,6 +17,7 @@
  */
 
 import { ParadisTaskBoardRelayEvent } from './paradisTaskBoardBridge.js';
+import { PARADIS_TASK_BOARD_HIDDEN_CHARACTERS_MESSAGE, paradisTaskBoardHasHiddenCharacters } from './paradisTaskBoardDisplayText.js';
 import { paradisTaskBoardRemoteCommandError, paradisTaskBoardRemoteIsReadablePath, paradisTaskBoardRemoteRelativePathError } from './paradisTaskBoardRemote.js';
 
 /** ボードが接続口へ送る、起動ごとの鍵のヘッダー。 */
@@ -286,6 +287,9 @@ export function paradisParseTaskBoardRelayRequest(body: unknown): ParadisTaskBoa
 			const flowId = label(step.flowId, 100);
 			const stepId = label(step.stepId, 100);
 			const source = step.source === 'team' || step.source === 'personal' || step.source === 'default' ? step.source : undefined;
+			if (typeof record.command === 'string' && paradisTaskBoardHasHiddenCharacters(record.command)) {
+				return { ok: false, code: 'rejected', message: PARADIS_TASK_BOARD_HIDDEN_CHARACTERS_MESSAGE };
+			}
 			if (at === undefined || typeof record.runId !== 'string' || !RUN_ID.test(record.runId) || typeof record.command !== 'string' || paradisTaskBoardRemoteCommandError(record.command) !== undefined || !flowId || !stepId || !source) {
 				return { ok: false, code: 'invalid', message: 'place, runId, command and step are required.' };
 			}
