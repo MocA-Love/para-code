@@ -136,6 +136,7 @@ type ParadisCcusageRouteId = 'local' | `remote:${number}`;
 /** `fetchReport` を持たない古い接続先で代わりに呼ぶコマンド。 */
 const LEGACY_REPORT_COMMANDS: Readonly<Record<ParadisCcusageWarmTargetKind, string>> = {
 	daily: 'fetchDaily',
+	today: 'fetchDaily',
 	blocks: 'fetchActiveBlock',
 	session: 'fetchRecentSessions',
 	projects: 'fetchProjects',
@@ -233,7 +234,7 @@ export class ParadisCcusageClient {
 	}
 
 	private statusWarmTargets(): readonly ParadisCcusageWarmTarget[] {
-		return [{ kind: 'daily', options: this.warmOptions(FETCH_WINDOW_DAYS) }];
+		return [{ kind: 'today', options: this.warmOptions(1) }];
 	}
 
 	private dashboardWarmTargets(): readonly ParadisCcusageWarmTarget[] {
@@ -280,14 +281,23 @@ export class ParadisCcusageClient {
 	}
 
 	/**
-	 * 今日1日分の合計コスト(USD)。ステータスバー表示用。
-	 * ダッシュボードと同じ「90日分の daily」を呼ぶことで shared process のキャッシュを共有する
-	 * (ccusage の走査コストは since に依らずほぼ一定なので、絞っても速くならない)。
+	 * 今日1日分の合計コスト(USD)。ステータスバー・メニューバー表示用。
+	 * `--since` に今日を渡す `today` で取る。ccusage 20.0.26 以降は期間より前に書かれたファイルを開かないので、
+	 * ダッシュボードの「90日分の daily」より読む量がずっと少ない（90日分はダッシュボードが見えている間だけ取る）。
+	 * `today` を知らない接続先（この版より古い REH）では、前と同じ90日分の daily から今日の行を拾う。
 	 */
 	async fetchTodayCost(): Promise<number | undefined> {
-		const report = await this.fetchReport('daily', this.execOptions(FETCH_WINDOW_DAYS));
+		let report: IParadisCcusageReportResult<IParadisCcusageDailyRow[]>;
+		try {
+			report = await this.fetchReport('today', this.execOptions(1));
+		} catch (error) {
+			if (!String((error as Error | undefined)?.message ?? '').includes('Invalid fetchReport kind')) {
+				throw error;
+			}
+			report = await this.fetchReport('daily', this.execOptions(FETCH_WINDOW_DAYS));
+		}
 		const rows = report.value;
-		if (!Array.isArray(rows) || rows.length === 0) {
+		if (!Array.isArray(rows)) {
 			return undefined;
 		}
 		const now = new Date();

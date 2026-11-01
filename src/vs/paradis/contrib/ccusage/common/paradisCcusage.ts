@@ -41,8 +41,20 @@ export interface IParadisCcusageExecOptions {
 	readonly bypassCache?: boolean;
 }
 
-/** leaseで温められる固定report種別。 */
-export type ParadisCcusageWarmTargetKind = 'daily' | 'blocks' | 'session' | 'projects';
+/**
+ * leaseで温められる固定report種別。`today` はステータスバー・メニューバーの今日の利用額だけに使う `daily` で、
+ * `--since` に今日を渡す。ccusage 20.0.26 以降は期間より前に書かれたファイルを開かないので、90 日の `daily` より
+ * ずっと軽い。90 日の `daily` とはキャッシュを分ける（同じ鍵だと互いの値を古い値として返し合う）。
+ */
+export type ParadisCcusageWarmTargetKind = 'daily' | 'today' | 'blocks' | 'session' | 'projects';
+
+/** {@link ParadisCcusageWarmTargetKind} の全部（IPC で受け取った値の確認に使う）。 */
+export const PARADIS_CCUSAGE_REPORT_KINDS: readonly ParadisCcusageWarmTargetKind[] = ['daily', 'today', 'blocks', 'session', 'projects'];
+
+/** IPC で受け取った値が {@link ParadisCcusageWarmTargetKind} か。 */
+export function isParadisCcusageReportKind(value: unknown): value is ParadisCcusageWarmTargetKind {
+	return typeof value === 'string' && (PARADIS_CCUSAGE_REPORT_KINDS as readonly string[]).includes(value);
+}
 
 /** warm CLIへ渡せる正規化済みoption。 */
 export type ParadisCcusageWarmTargetOptions = Readonly<{
@@ -165,6 +177,7 @@ export interface IParadisCcusageReportResult<T> {
 /** `fetchReport` の種類ごとの値。 */
 export interface IParadisCcusageReportValues {
 	readonly daily: IParadisCcusageDailyRow[];
+	readonly today: IParadisCcusageDailyRow[];
 	readonly blocks: IParadisCcusageBlock | undefined;
 	readonly session: IParadisCcusageSessionRow[];
 	readonly projects: ParadisCcusageProjects;
