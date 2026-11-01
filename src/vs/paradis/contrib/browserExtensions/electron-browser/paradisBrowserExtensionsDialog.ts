@@ -589,6 +589,16 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 				run: allowing => this._mainService.setUserScriptsAllowed(extension.id, place, allowing),
 			});
 		}
+		if (extension.debuggerAccess) {
+			// Q529: chrome.debugger（拡張機能ごと・この場所で。既定はオフ）。共有中のタブには設定に関わらずつながせない（Q530）
+			const place = this._profile;
+			options.push({
+				label: localize('paradis.browserExtensions.allowDebugger', "デバッガーの接続を許可"),
+				note: localize('paradis.browserExtensions.debuggerNote', "許可すると、この拡張機能がこの場所のタブにデバッガーでつなぎ、つないだタブのページの中身をすべて読み書きできます（表示している内容、入力欄の値、クリックやキー入力の操作を含みます）。エージェントのタブと、エージェントと共有中のタブには、共有中のタブでも拡張機能の画面を出す設定をオンにしていても、つながりません。"),
+				checked: extension.debuggerAccess.allowedIn.includes(place),
+				run: allowing => this._mainService.setDebuggerAllowed(extension.id, place, allowing),
+			});
+		}
 		if (this._profile === PARADIS_DEFAULT_EXTENSION_PROFILE) {
 			// SSH の窓で SSH 先へトンネルを通すのはワークスペースのタブ（「既定」の場所）だけなので、既定の場所でだけ出す（Q519。既定はオフ）
 			options.push({

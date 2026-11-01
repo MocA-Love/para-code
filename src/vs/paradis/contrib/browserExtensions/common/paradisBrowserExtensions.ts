@@ -107,6 +107,11 @@ export interface IParadisBrowserExtensionsLedger {
 	 * オフとして読む。古い版が台帳を書き直すとこの印は消え、オフに戻る（安全な側）。
 	 */
 	readonly allowedOnRemote?: readonly string[];
+	/**
+	 * プロファイルのキー → 「デバッガーの接続を許可」をオンにした拡張機能の id（Q529。chrome.debugger）。無い台帳（Q529 より
+	 * 前の版）は、どれもオフとして読む。古い版が台帳を書き直すとこの印は消え、オフに戻る（安全な側）。
+	 */
+	readonly debuggerAllowed?: Readonly<Record<string, readonly string[]>>;
 }
 
 /** 削除した拡張機能の保存データを消す印。 */
@@ -179,7 +184,8 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 	const allowedOnRemote = Array.isArray(raw.allowedOnRemote)
 		? [...new Set(raw.allowedOnRemote.filter((id): id is string => paradisIsExtensionId(id) && extensions.some(extension => extension.id === id)))]
 		: [];
-	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS), pinned, ...(allowedOnRemote.length > 0 ? { allowedOnRemote } : {}) };
+	const debuggerAllowed = byProfile(raw.debuggerAllowed);
+	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS), pinned, ...(allowedOnRemote.length > 0 ? { allowedOnRemote } : {}), ...(Object.keys(debuggerAllowed).length > 0 ? { debuggerAllowed } : {}) };
 }
 
 /**
@@ -237,6 +243,21 @@ export function paradisIsAllowedOnRemote(ledger: IParadisBrowserExtensionsLedger
 	return ledger.allowedOnRemote?.includes(id) === true;
 }
 
+/** その場所で「デバッガーの接続を許可」をオン・オフにする（Q529）。 */
+export function paradisLedgerWithDebuggerAllowed(ledger: IParadisBrowserExtensionsLedger, id: string, profile: string, allowed: boolean): IParadisBrowserExtensionsLedger {
+	if (!ledger.extensions.some(extension => extension.id === id)) {
+		return ledger;
+	}
+	const current = ledger.debuggerAllowed?.[profile] ?? [];
+	const next = allowed ? (current.includes(id) ? current : [...current, id]) : current.filter(existing => existing !== id);
+	return { ...ledger, debuggerAllowed: { ...ledger.debuggerAllowed, [profile]: next } };
+}
+
+/** その場所で「デバッガーの接続を許可」がオンか（Q529。既定はオフ）。 */
+export function paradisIsDebuggerAllowed(ledger: IParadisBrowserExtensionsLedger, id: string, profile: string): boolean {
+	return ledger.debuggerAllowed?.[profile]?.includes(id) === true;
+}
+
 /** プロファイルでピン留めした拡張機能の id（ピン留めした順）。 */
 export function paradisPinnedExtensionIds(ledger: IParadisBrowserExtensionsLedger, profile: string): readonly string[] {
 	return ledger.pinned[profile] ?? [];
@@ -262,6 +283,7 @@ export function paradisLedgerWithoutExtension(ledger: IParadisBrowserExtensionsL
 		enabled,
 		pinned: without(ledger.pinned),
 		...(allowedOnRemote.length > 0 ? { allowedOnRemote } : {}),
+		...(ledger.debuggerAllowed ? { debuggerAllowed: without(ledger.debuggerAllowed) } : {}),
 		// 消し終えた保存先も数え直す（入れ直した後に溜まったデータがあるかもしれないため）
 		removed: [...ledger.removed.filter(existing => existing.id !== id), { id, cleared: [] }].slice(-PARADIS_MAX_INSTALLED_EXTENSIONS),
 	};
@@ -412,6 +434,8 @@ export interface IParadisBrowserExtensionView extends IParadisInstalledBrowserEx
 	 * 既定はどこでもオフ）。
 	 */
 	readonly userScripts?: { readonly allowedIn: readonly string[] };
+	/** debugger を求める拡張機能だけ: 「デバッガーの接続を許可」した場所のキー（Q529。既定はどこでもオフ）。 */
+	readonly debuggerAccess?: { readonly allowedIn: readonly string[] };
 	/** 「SSH 先のページでも使う」がオンか（Q519。既定はオフ）。 */
 	readonly allowedOnRemote: boolean;
 	/** 新しく権限を求めるため、確かめるまで入れずに保留にしているストアの更新。 */
@@ -517,6 +541,8 @@ export interface IParadisBrowserExtensionsMainService {
 	setEnabled(id: string, profile: string, enabled: boolean): Promise<void>;
 	/** 「ユーザースクリプトを許可」を切り替える（userScripts を求める拡張機能だけ。`profile` の場所で）。 */
 	setUserScriptsAllowed(id: string, profile: string, allowed: boolean): Promise<void>;
+	/** 「デバッガーの接続を許可」を切り替える（debugger を求める拡張機能だけ。`profile` の場所で。オフにするとつないだものを外す）。 */
+	setDebuggerAllowed(id: string, profile: string, allowed: boolean): Promise<void>;
 	/** 「SSH 先のページでも使う」を切り替える（Q519）。SSH 先へトンネルを通しているセッションへ、すぐ入れる・外す。 */
 	setAllowedOnRemote(id: string, allowed: boolean): Promise<void>;
 	/**

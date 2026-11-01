@@ -112,6 +112,14 @@ export function paradisCreateBrowserExtensionTabEnvironment(browserViewMainServi
 			return handle;
 		},
 		closeTab: viewId => browserViewMainService.destroyBrowserView(viewId),
+		// そのタブのページだけの CDP セッション（ほかのタブ・Para Code の中身には届かない）
+		attachDebugger: async viewId => {
+			const view = browserViewMainService.tryGetBrowserView(viewId);
+			if (!view || view.webContents.isDestroyed()) {
+				throw new Error('The tab is closed');
+			}
+			return view.debugger.attach();
+		},
 		onDidFocusWindow: Event.fromNodeEventEmitter<number>(app, 'browser-window-focus', (_event: unknown, window: BrowserWindow) => window.id),
 		dispose: () => disposables.dispose(),
 	};

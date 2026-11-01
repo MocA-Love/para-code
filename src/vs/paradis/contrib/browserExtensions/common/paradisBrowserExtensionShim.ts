@@ -65,6 +65,8 @@ export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
 		events: ['onActivated', 'onCreated', 'onUpdated', 'onRemoved', 'onReplaced'],
 		constants: { TAB_ID_NONE: -1 },
 	},
+	// Q529。利用者が管理画面で「デバッガーの接続を許可」をオンにするまで、main が attach を断る（main の paradisBrowserExtensionDebugger.ts）
+	debugger: { permission: 'debugger', methods: ['attach', 'detach', 'sendCommand', 'getTargets'], events: ['onEvent', 'onDetach'] },
 	// グループは拡張機能ごとのメモリ上の台帳で、画面には出さない（main の paradisBrowserExtensionTabGroups.ts）
 	tabGroups: {
 		permission: 'tabGroups',
@@ -946,17 +948,6 @@ export function paradisInstallInertApis(context: 'page' | 'worker' | 'content-sc
 			getRedirectURL: (path?: unknown) => `https://${runtimeId}.chromiumapp.org/${typeof path === 'string' ? path.replace(/^\/+/, '') : ''}`,
 			onSignInChanged: inertEvent(),
 			AccountStatus: { SYNC: 'SYNC', ANY: 'ANY' },
-		});
-	}
-	if (permissions.includes('debugger')) {
-		// ページへのデバッガーの接続は渡さない（CDP の力はエージェントと拡張機能を分ける守りに関わる）
-		install('debugger', {
-			attach: refuse('Para Code does not let browser extensions attach a debugger'),
-			detach: refuse('Debugger is not attached'),
-			sendCommand: refuse('Debugger is not attached'),
-			getTargets: answer(() => []),
-			onEvent: inertEvent(),
-			onDetach: inertEvent(),
 		});
 	}
 	if (permissions.includes('fontSettings')) {

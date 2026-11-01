@@ -56,7 +56,8 @@ suite('ParadisBrowserExtensionInertApis', () => {
 			redirect: 'https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/done',
 			profile: { email: '', id: '' },
 			signInEvent: 'function',
-			attach: 'Para Code does not let browser extensions attach a debugger',
+			// chrome.debugger は main につなぐ形（Q529。断るかは main が「デバッガーの接続を許可」で決める。ここの偽の main は受ける）
+			attach: 'attached',
 			debuggerEvent: 'function',
 			// chrome.privacy は main につなぐ形（paradisInstallPrivacy）。Para Code に無い設定は変えられないと答える
 			passwordSaving: { value: false, levelOfControl: 'not_controllable' },
