@@ -22,7 +22,8 @@ import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextke
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { registerMainProcessRemoteService } from '../../../../platform/ipc/electron-browser/services.js';
+import { ISharedProcessService, registerMainProcessRemoteService } from '../../../../platform/ipc/electron-browser/services.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -30,7 +31,7 @@ import { ToggleTitleBarConfigAction } from '../../../../workbench/browser/parts/
 import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING } from '../common/paradisTaskBoardBridge.js';
+import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL, PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING } from '../common/paradisTaskBoardBridge.js';
 import { IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL } from '../common/paradisTaskBoardHost.js';
 
 registerMainProcessRemoteService(IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL);
@@ -95,6 +96,8 @@ class ParadisOpenTaskBoardAction extends Action2 {
 		const dialogService = accessor.get(IDialogService);
 		const notificationService = accessor.get(INotificationService);
 		const hostService = accessor.get(IParadisTaskBoardHostService);
+		const sharedProcessService = accessor.get(ISharedProcessService);
+		const logService = accessor.get(ILogService);
 		const folder = localSpaceFolder(accessor.get(IParadisWorkspaceSwitchService), accessor.get(IWorkspaceContextService));
 		if (!folder) {
 			// allow-any-unicode-next-line
@@ -117,6 +120,11 @@ class ParadisOpenTaskBoardAction extends Action2 {
 		}
 		const result = await hostService.open(folder);
 		if (result.ok) {
+			// 接続口は、ここで登録した鍵と pid のボードからの要求だけを通す（paradisTaskBoardRelay.ts の G1・G2）
+			if (result.board) {
+				await sharedProcessService.getChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL).call('registerBoard', result.board)
+					.catch(error => logService.warn('[ParadisTaskBoard] could not register the board with the bridge', error));
+			}
 			return;
 		}
 		switch (result.reason) {

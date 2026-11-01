@@ -13,6 +13,9 @@
 //    止めるときに消す（中身が自分のものなら）。ボードサーバーはこれを読んでつなぐ
 //  - すべての要求で `Authorization: Bearer <token>`（乱数 32 バイト）と Host（127.0.0.1 / localhost と自分のポート）を
 //    確かめる。違えば 401 / 403。CORS のヘッダーは出さない（ブラウザのページからは読めない）
+//  - 加えて、すべての要求でボードの鍵（`x-para-board-key`）と接続元の pid を確かめる（paradisTaskBoardBoardAuth.ts）。
+//    発見ファイルの Bearer だけでは通さない。違えば 403
+//  - `/v1/relay` は SSH の中継（paradisTaskBoardRelayRouter.ts）
 //  - 本文は JSON で 1MB まで
 //
 // 中身（振り分け・台帳・イベント）は ParadisTaskBoardBridgeService が持つ。
@@ -30,7 +33,10 @@ import {
 	paradisTaskBoardBearerToken,
 	paradisTaskBoardIsAllowedHost,
 } from '../common/paradisTaskBoardBridge.js';
+import { PARADIS_TASK_BOARD_BOARD_KEY_HEADER } from '../common/paradisTaskBoardRelay.js';
+import { ParadisTaskBoardBoardAuth } from './paradisTaskBoardBoardAuth.js';
 import { IParadisTaskBoardHttpResponse, ParadisTaskBoardBridgeService } from './paradisTaskBoardBridgeService.js';
+import { ParadisTaskBoardRelayRouter } from './paradisTaskBoardRelayRouter.js';
 
 class BodyTooLargeError extends Error { }
 
@@ -55,11 +61,15 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 	private pingTimer: ReturnType<typeof setInterval> | undefined;
 	private readonly openResponses = new Set<http.ServerResponse>();
 	private readonly onProcessExit = () => this.removeDiscoveryFileSync();
+	/** 同じ理由で断り続けるとき（起動直後のつなぎ直しなど）に、ログを 1 回だけ出すため。 */
+	private lastDeniedReason: string | undefined;
 
 	constructor(
 		private readonly service: ParadisTaskBoardBridgeService,
 		private readonly discoveryPath: string,
 		private readonly logService: ILogService,
+		private readonly auth: ParadisTaskBoardBoardAuth,
+		private readonly relay: ParadisTaskBoardRelayRouter,
 	) {
 		super();
 	}
@@ -201,6 +211,12 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 		}
 		const url = new URL(request.url ?? '/', `http://127.0.0.1:${port}`);
 		const method = request.method ?? 'GET';
+		// 鍵と接続元は、本文を読む前に確かめる（確かめられない相手の本文は受け取らない）
+		const verdict = await this.verifyBoard(request, port, url.pathname);
+		if (!verdict.ok) {
+			request.resume();
+			return this.respond(response, { status: 403, body: { error: 'unverified-caller' } });
+		}
 		if (url.pathname === '/v1/events') {
 			if (method !== 'GET') {
 				return this.respond(response, { status: 405, body: { error: 'method-not-allowed' } });
@@ -217,7 +233,26 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 					: { status: 400, body: { error: 'invalid', message: 'The body must be JSON.' } });
 			}
 		}
+		if (url.pathname === '/v1/relay') {
+			return this.respond(response, method === 'POST' ? await this.relay.handle(body, verdict.keyHash) : { status: 405, body: { error: 'method-not-allowed' } });
+		}
 		this.respond(response, await this.service.handle(method, url.pathname, url.searchParams, body));
+	}
+
+	/** ボードの鍵と接続元の pid を確かめる。中継の依頼を断ったときは監査ログに残す。 */
+	private async verifyBoard(request: http.IncomingMessage, port: number, pathname: string): Promise<{ readonly ok: true; readonly keyHash: string } | { readonly ok: false }> {
+		const verdict = await this.auth.verify(firstHeader(request.headers[PARADIS_TASK_BOARD_BOARD_KEY_HEADER]), request.socket, port);
+		if (verdict.ok) {
+			return verdict;
+		}
+		if (pathname === '/v1/relay') {
+			this.relay.denied(verdict.reason);
+		}
+		if (this.lastDeniedReason !== verdict.reason) {
+			this.lastDeniedReason = verdict.reason;
+			this.logService.info(`[ParadisTaskBoardBridge] refused a request that does not come from the task board Para Code started: ${verdict.reason}`);
+		}
+		return { ok: false };
 	}
 
 	private readJson(request: http.IncomingMessage): Promise<unknown> {

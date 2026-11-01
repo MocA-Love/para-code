@@ -15,7 +15,9 @@ import {
 	paradisTaskBoardRemoteEnv,
 	paradisTaskBoardRemoteFlowFile,
 	paradisTaskBoardRemoteGitPlan,
+	paradisTaskBoardRemoteIsReadablePath,
 	paradisTaskBoardRemoteIsWritablePath,
+	paradisTaskBoardRemoteStripUrlCredentials,
 	paradisTaskBoardRemoteRelativePathError,
 } from '../../common/paradisTaskBoardRemote.js';
 
@@ -102,6 +104,18 @@ suite('Paradis task board remote - checks', () => {
 
 	test('fetch has only origin and --prune', () => {
 		assert.deepStrictEqual(paradisTaskBoardRemoteGitPlan('/r', { kind: 'fetch', prune: true, remote: 'ext::sh -c x' }).args.slice(4), ['fetch', '--quiet', '--prune', 'origin']);
+	});
+
+	test('readable paths and remote URLs without credentials', () => {
+		const paths = ['.para/plan.html', '.para-code/paracode.json', '.para-code/octocat/workflows.json', '.env', 'src/a.ts', '.git/config', '.para/.git/config', '.para/.GIT/x'];
+		assert.deepStrictEqual(paths.map(paradisTaskBoardRemoteIsReadablePath), [true, true, true, false, false, false, false, false]);
+		assert.deepStrictEqual([
+			paradisTaskBoardRemoteStripUrlCredentials('https://user:token@github.com/o/r.git\n'),
+			paradisTaskBoardRemoteStripUrlCredentials('ssh://git@github.com/o/r.git'),
+			paradisTaskBoardRemoteStripUrlCredentials('git@github.com:o/r.git'),
+			paradisTaskBoardRemoteStripUrlCredentials('https://github.com/o/r.git'),
+			paradisTaskBoardRemoteStripUrlCredentials('https://user:p@ss@github.com/o/r@x.git'),
+		], ['https://github.com/o/r.git\n', 'ssh://github.com/o/r.git', 'git@github.com:o/r.git', 'https://github.com/o/r.git', 'https://github.com/o/r@x.git']);
 	});
 
 	test('command text', () => {

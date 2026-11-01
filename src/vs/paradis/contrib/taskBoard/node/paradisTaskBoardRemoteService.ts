@@ -24,6 +24,7 @@
 import * as cp from 'child_process';
 import { randomBytes } from 'crypto';
 import { constants as fsConstants, promises as fs } from 'fs';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, join } from '../../../../base/common/path.js';
@@ -39,6 +40,8 @@ import {
 	paradisTaskBoardRemoteEnv,
 	paradisTaskBoardRemoteGitPlan,
 	paradisTaskBoardRemoteIsProtectedBranch,
+	paradisTaskBoardRemoteIsReadablePath,
+	paradisTaskBoardRemoteStripUrlCredentials,
 	paradisTaskBoardRemoteIsWritablePath,
 	paradisTaskBoardRemoteSegments,
 } from '../common/paradisTaskBoardRemote.js';
@@ -419,6 +422,9 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 			await this.checkHostDefaultBranch(session, dir, (op as { branch: string }).branch);
 		}
 		const result = await this.enqueueGit(session, () => this.execGit(plan.args, plan.network || plan.hooks ? this.timeouts.gitLongMs : this.timeouts.gitShortMs));
+		if (kind === 'remoteUrl') {
+			return { ...result, stdout: paradisTaskBoardRemoteStripUrlCredentials(result.stdout) };
+		}
 		if (worktreeDir !== undefined && result.code === 0 && !session.closed) {
 			if (kind === 'worktreeAdd') {
 				const created = await this.checkOwnedDirectory(worktreeDir);
@@ -518,10 +524,13 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 	 * （nlink が 2 以上）も断る（`.para/out.txt` を `~/.ssh/id_ed25519` へのハードリンクにすると、パスの検査を
 	 * すべて通って中身を運べてしまうため）。無ければ undefined。
 	 */
-	async readFile(sessionId: unknown, place: unknown, relativePath: unknown, maxBytes: unknown): Promise<Uint8Array | undefined> {
+	async readFile(sessionId: unknown, place: unknown, relativePath: unknown, maxBytes: unknown): Promise<VSBuffer | undefined> {
 		const session = this.session(sessionId);
 		const dir = await this.place(session, place);
 		const segments = paradisTaskBoardRemoteSegments(relativePath);
+		if (!paradisTaskBoardRemoteIsReadablePath(segments.join('/'))) {
+			throw new ParadisTaskBoardRemoteError('denied', `the task board may not read this file: ${relativePath}`);
+		}
 		const limit = typeof maxBytes === 'number' && Number.isInteger(maxBytes) && maxBytes > 0 ? Math.min(maxBytes, PARADIS_TASK_BOARD_REMOTE_LIMITS.maxReadBytes) : PARADIS_TASK_BOARD_REMOTE_LIMITS.maxReadBytes;
 		return this.withDirectory(dir, segments.slice(0, -1), undefined, async parent => {
 			if (parent === undefined) {
@@ -549,7 +558,8 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 				}
 				const buffer = Buffer.alloc(info.size);
 				const { bytesRead } = await handle.read(buffer, 0, info.size, 0);
-				return new Uint8Array(buffer.buffer, buffer.byteOffset, bytesRead);
+				// IPC で運べる形（Uint8Array のままだと JSON の数の並びになる）
+				return VSBuffer.wrap(buffer.subarray(0, bytesRead));
 			} finally {
 				await handle.close();
 			}
@@ -568,7 +578,7 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 		if (!paradisTaskBoardRemoteIsWritablePath(segments.join('/'))) {
 			throw new ParadisTaskBoardRemoteError('denied', `the task board may not write this file: ${relativePath}`);
 		}
-		const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : content instanceof Uint8Array ? Buffer.from(content) : undefined;
+		const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : content instanceof VSBuffer ? Buffer.from(content.buffer) : content instanceof Uint8Array ? Buffer.from(content) : undefined;
 		if (bytes === undefined || bytes.length > PARADIS_TASK_BOARD_REMOTE_LIMITS.maxWriteBytes) {
 			throw new ParadisTaskBoardRemoteError('invalid', 'content must be a string or bytes up to 1 MiB');
 		}
@@ -610,7 +620,7 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 			return false;
 		}
 		const owner = await this.readFile(session.id, dir, `${PARADIS_TASK_BOARD_REMOTE_BOARD_DIR}/.task`, 1024).catch(() => undefined);
-		if (owner !== undefined && Buffer.from(owner).toString('utf8').trim() === task) {
+		if (owner !== undefined && owner.toString().trim() === task) {
 			return true;
 		}
 		await this.withDirectory(dir, [PARADIS_TASK_BOARD_REMOTE_BOARD_DIR], undefined, async boardDir => {
