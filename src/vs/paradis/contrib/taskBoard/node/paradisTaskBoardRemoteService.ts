@@ -40,6 +40,8 @@ import {
 	paradisTaskBoardRemoteEnv,
 	paradisTaskBoardRemoteGitPlan,
 	paradisTaskBoardRemoteIsProtectedBranch,
+	paradisTaskBoardRemoteIsReadablePath,
+	paradisTaskBoardRemoteStripUrlCredentials,
 	paradisTaskBoardRemoteIsWritablePath,
 	paradisTaskBoardRemoteSegments,
 } from '../common/paradisTaskBoardRemote.js';
@@ -420,6 +422,9 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 			await this.checkHostDefaultBranch(session, dir, (op as { branch: string }).branch);
 		}
 		const result = await this.enqueueGit(session, () => this.execGit(plan.args, plan.network || plan.hooks ? this.timeouts.gitLongMs : this.timeouts.gitShortMs));
+		if (kind === 'remoteUrl') {
+			return { ...result, stdout: paradisTaskBoardRemoteStripUrlCredentials(result.stdout) };
+		}
 		if (worktreeDir !== undefined && result.code === 0 && !session.closed) {
 			if (kind === 'worktreeAdd') {
 				const created = await this.checkOwnedDirectory(worktreeDir);
@@ -523,6 +528,9 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 		const session = this.session(sessionId);
 		const dir = await this.place(session, place);
 		const segments = paradisTaskBoardRemoteSegments(relativePath);
+		if (!paradisTaskBoardRemoteIsReadablePath(segments.join('/'))) {
+			throw new ParadisTaskBoardRemoteError('denied', `the task board may not read this file: ${relativePath}`);
+		}
 		const limit = typeof maxBytes === 'number' && Number.isInteger(maxBytes) && maxBytes > 0 ? Math.min(maxBytes, PARADIS_TASK_BOARD_REMOTE_LIMITS.maxReadBytes) : PARADIS_TASK_BOARD_REMOTE_LIMITS.maxReadBytes;
 		return this.withDirectory(dir, segments.slice(0, -1), undefined, async parent => {
 			if (parent === undefined) {

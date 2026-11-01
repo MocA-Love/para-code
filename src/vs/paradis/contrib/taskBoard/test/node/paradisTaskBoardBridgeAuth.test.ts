@@ -107,8 +107,25 @@ suite('Paradis task board bridge - board key and caller', function () {
 		}
 		assert.deepStrictEqual(results, ROUTES.map(([route]) => `${route} 403 403 403`));
 		// 断った中継の依頼は監査ログに残る
-		assert.deepStrictEqual(audit.map(entry => `${entry.operation} ${entry.outcome} ${entry.reason}`), ['git.status denied key-missing', 'git.status denied key-mismatch', 'git.status denied peer-mismatch']);
+		assert.deepStrictEqual(audit.map(entry => `${entry.operation} ${entry.outcome} ${entry.reason}`), ['relay denied key-missing', 'relay denied key-mismatch', 'relay denied peer-mismatch']);
 		assert.strictEqual(router.calls.length, 0);
+	});
+
+	test('the body of a request is not read before the board is verified', async () => {
+		// 1 MiB を超える本文でも、鍵が無ければ本文を読まずに 403（読んでいれば 413）
+		assert.strictEqual(await request('/v1/launch', 'POST', undefined, { prompt: 'x'.repeat(2 * 1024 * 1024) }), 403);
+	});
+
+	test('denied relay requests are logged up to 60 lines a minute, then only counted', () => {
+		let now = 0;
+		const lines: Omit<IParadisTaskBoardAuditEntry, 'time'>[] = [];
+		const limited = new ParadisTaskBoardRelayRouter(router, { append: entry => lines.push(entry) }, new NullLogService(), () => now);
+		for (let i = 0; i < 70; i++) {
+			limited.denied('key-missing');
+		}
+		now = 60_000;
+		limited.denied('key-missing');
+		assert.deepStrictEqual([lines.length, lines[60].reason, lines[60].detail, lines[61].reason], [62, 'suppressed', '10 more denied requests were not logged', 'key-missing']);
 	});
 
 	test('the board that Para Code started is let through, and an exited board is not', async () => {

@@ -16,6 +16,8 @@
  *  - 依頼の形（G4）: ボードから来た操作は、許す欄だけを取り出して組み直す。2 本目で通すのは読むだけの git と readFile
  */
 
+import { paradisTaskBoardRemoteIsReadablePath, paradisTaskBoardRemoteRelativePathError } from './paradisTaskBoardRemote.js';
+
 /** ボードが接続口へ送る、起動ごとの鍵のヘッダー。 */
 export const PARADIS_TASK_BOARD_BOARD_KEY_HEADER = 'x-para-board-key';
 
@@ -81,7 +83,7 @@ export interface IParadisTaskBoardRelayRequest {
 
 export type ParadisTaskBoardRelayParse =
 	| { readonly ok: true; readonly value: IParadisTaskBoardRelayRequest }
-	| { readonly ok: false; readonly code: 'invalid' | 'unavailable'; readonly message: string };
+	| { readonly ok: false; readonly code: 'invalid' | 'unavailable' | 'rejected'; readonly message: string };
 
 function rev(value: unknown): Record<string, unknown> | undefined {
 	if (!value || typeof value !== 'object') {
@@ -149,8 +151,12 @@ export function paradisParseTaskBoardRelayRequest(body: unknown): ParadisTaskBoa
 			return { ok: true, value: { sessionId, op: { kind: 'git', git } } };
 		}
 		case 'readFile': {
-			if (typeof record.path !== 'string') {
-				return { ok: false, code: 'invalid', message: 'path must be a string.' };
+			if (typeof record.path !== 'string' || paradisTaskBoardRemoteRelativePathError(record.path) !== undefined) {
+				return { ok: false, code: 'invalid', message: 'path must be a relative path inside the workspace.' };
+			}
+			// 読めるのは `.para/` の中とフローの定義だけ（REH でも同じ検査を重ねる）
+			if (!paradisTaskBoardRemoteIsReadablePath(record.path)) {
+				return { ok: false, code: 'rejected', message: 'The task board may read only files in .para/ and the flow files.' };
 			}
 			const maxBytes = typeof record.maxBytes === 'number' && Number.isSafeInteger(record.maxBytes) && record.maxBytes > 0 ? record.maxBytes : undefined;
 			return { ok: true, value: { sessionId, op: { kind: 'readFile', path: record.path, maxBytes } } };

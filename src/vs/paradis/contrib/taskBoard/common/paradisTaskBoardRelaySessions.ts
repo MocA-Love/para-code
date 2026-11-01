@@ -26,6 +26,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ParadisTaskBoardErrorCode, ParadisTaskBoardResult, paradisTaskBoardFail } from './paradisTaskBoardBridge.js';
 import { PARADIS_TASK_BOARD_RELAY_HEARTBEAT_MS, paradisParseTaskBoardRelayRequest, paradisTaskBoardIsBoardKey } from './paradisTaskBoardRelay.js';
+import { paradisTaskBoardRemoteStripUrlCredentials } from './paradisTaskBoardRemote.js';
 
 /** 窓のサービスを包んだもの（テストでは差し替える）。 */
 export interface IParadisTaskBoardRelaySessionsHost {
@@ -153,7 +154,9 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 		try {
 			if (op.kind === 'git') {
 				const result = await channel.call<{ readonly code: number; readonly stdout: string; readonly stderr: string; readonly timedOut: boolean }>('git', [sessionId, session.root, op.git]);
-				return { ok: true, value: { code: result.code, stdout: result.stdout, stderr: result.stderr, timedOut: result.timedOut } };
+				// URL の利用者の部分は REH でも外しているが、古い REH や取りこぼしに備えて窓でも外す
+				const stdout = op.git.kind === 'remoteUrl' ? paradisTaskBoardRemoteStripUrlCredentials(result.stdout) : result.stdout;
+				return { ok: true, value: { code: result.code, stdout, stderr: result.stderr, timedOut: result.timedOut } };
 			}
 			const bytes = await channel.call<VSBuffer | undefined>('readFile', [sessionId, session.root, op.path, op.maxBytes]);
 			return bytes === undefined
