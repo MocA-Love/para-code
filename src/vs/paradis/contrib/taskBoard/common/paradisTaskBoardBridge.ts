@@ -674,7 +674,7 @@ export interface IParadisTaskBoardScreen {
 }
 
 /** ウィンドウのチャネルのメソッド。引数は 1 つ（要求のオブジェクト）。 */
-export type ParadisTaskBoardWindowMethod = 'describe' | 'launch' | 'send' | 'key' | 'answer' | 'screen' | 'close';
+export type ParadisTaskBoardWindowMethod = 'describe' | 'launch' | 'send' | 'key' | 'answer' | 'screen' | 'close' | 'relay';
 
 /**
  * shared process のチャネルのメソッド。
