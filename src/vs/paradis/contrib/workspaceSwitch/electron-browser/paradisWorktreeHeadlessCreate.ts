@@ -388,6 +388,8 @@ export interface IParadisAgentLaunchInWorkspaceRequest {
 	readonly modelId?: string;
 	readonly effortId?: string;
 	readonly permissionId?: string;
+	/** 固定の一覧から組み立てた、引用済みの追加の引数（IParadisAgentLaunchOptions.extraFlags）。 */
+	readonly extraFlags?: string;
 	/**
 	 * true なら新しいターミナルが利用者のフォーカスを奪わない（今のスペースへ起動しても前に出さない）。
 	 * エージェントや定期実行のように、利用者の入力の最中に起動しうる呼び出し元が使う。既定は従来どおり。
@@ -522,6 +524,7 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 			modelId: request.modelId,
 			effortId: request.effortId,
 			permissionId: request.permissionId,
+			extraFlags: request.extraFlags,
 		}));
 		await background.sendText(backgroundCommand, true);
 		return paradisDescribeLaunchedAgent(paneTokenService, background);
@@ -546,6 +549,7 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		modelId: request.modelId,
 		effortId: request.effortId,
 		permissionId: request.permissionId,
+		extraFlags: request.extraFlags,
 	}));
 	await instance.sendText(command, true);
 	return paradisDescribeLaunchedAgent(paneTokenService, instance);

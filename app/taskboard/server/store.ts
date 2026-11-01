@@ -17,6 +17,8 @@ export interface ILocalSettings {
 	readonly clones?: readonly string[];
 	readonly worktreeRoot?: string;
 	readonly speed?: number;
+	/** SSH のボードで、担当を起動するときだけ許可を渡すか（利用者がボードで頼んだとき。渡すかは SSH の窓でも確かめる）。 */
+	readonly launchApprovals?: boolean;
 }
 
 export function dataDir(repoPath: string | undefined, override?: string): string {

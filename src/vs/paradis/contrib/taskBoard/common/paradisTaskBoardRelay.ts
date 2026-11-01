@@ -75,6 +75,8 @@ export function paradisParseTaskBoardRelaySessionRegistration(value: unknown): I
 const RELAYED_GIT_KINDS: ReadonlySet<string> = new Set([
 	'toplevel', 'commonDir', 'remoteUrl', 'defaultBranch', 'status', 'currentBranch', 'refExists', 'aheadCount', 'boardDirTracked', 'worktreeList',
 	'fetch', 'worktreeAdd', 'worktreeRemove', 'switch', 'mergeFfOnly', 'detach',
+	// 追跡しているファイルのコミット（ボードのワークツリーだけ）。push は pushBranch で、窓が確かめてから送る
+	'addTracked', 'commit',
 ]);
 
 /** 中継で受ける操作（組み直した後の形）。`place` は作業場所の root（窓が自分の記録と照らす）。 */
@@ -86,7 +88,12 @@ export type ParadisTaskBoardRelayOp =
 	| { readonly kind: 'resetBoardDir'; readonly place: string; readonly taskId: string }
 	| { readonly kind: 'excludeBoardDir'; readonly place: string }
 	| { readonly kind: 'runCommand'; readonly place: string; readonly runId: string; readonly command: string; readonly step: IParadisTaskBoardRelayCommandStep }
-	| { readonly kind: 'cancelRun'; readonly runId: string };
+	| { readonly kind: 'cancelRun'; readonly runId: string }
+	/**
+	 * ボードのブランチを push する（窓が送るコミット・ファイル・リモートを見せて確かめてから。Q525 の c = B）。結果は
+	 * relay-exit のイベントで返す。`interactive` が false（返却のとき）なら確認を出さず、確認が要れば送らない。
+	 */
+	| { readonly kind: 'pushBranch'; readonly place: string; readonly runId: string; readonly branch: string; readonly setUpstream: boolean; readonly interactive: boolean };
 
 /**
  * 工程のコマンドの出どころ（ボードの申告。確認のダイアログで見せる）。承認の鍵は、窓が自分で決めるリポジトリと、
@@ -164,6 +171,7 @@ function rebuildGit(value: unknown): Record<string, unknown> | 'invalid' | 'unav
 			return base ? { kind: op.kind, base } : 'invalid';
 		}
 		case 'mergeFfOnly': return typeof op.branch === 'string' ? { kind: op.kind, branch: op.branch } : 'invalid';
+		case 'commit': return typeof op.message === 'string' ? { kind: op.kind, message: op.message } : 'invalid';
 		case 'worktreeRemove': return typeof op.dir === 'string' ? { kind: op.kind, dir: op.dir } : 'invalid';
 		case 'worktreeAdd':
 		case 'switch': {
@@ -206,7 +214,12 @@ export function paradisParseTaskBoardRelayEvent(value: unknown): ParadisTaskBoar
 		const code = typeof event.code === 'number' && Number.isInteger(event.code) ? event.code : null;
 		const signal = typeof event.signal === 'string' && event.signal.length <= 32 ? event.signal : null;
 		const reason = typeof event.reason === 'string' && event.reason.length <= 500 ? event.reason : undefined;
-		return { type: 'relay-exit', runId: event.runId, code, signal, cancelled: event.cancelled === true, timedOut: event.timedOut === true, ...(reason ? { reason } : {}) };
+		const pushedSha = typeof event.pushedSha === 'string' && /^[0-9a-f]{40}$/.test(event.pushedSha) ? event.pushedSha : undefined;
+		const pushedCommits = typeof event.pushedCommits === 'number' && Number.isSafeInteger(event.pushedCommits) && event.pushedCommits >= 0 ? event.pushedCommits : undefined;
+		return {
+			type: 'relay-exit', runId: event.runId, code, signal, cancelled: event.cancelled === true, timedOut: event.timedOut === true,
+			...(reason ? { reason } : {}), ...(pushedSha ? { pushedSha } : {}), ...(pushedCommits !== undefined ? { pushedCommits } : {}),
+		};
 	}
 	return undefined;
 }
@@ -301,6 +314,12 @@ export function paradisParseTaskBoardRelayRequest(body: unknown): ParadisTaskBoa
 					},
 				},
 			};
+		}
+		case 'pushBranch': {
+			if (at === undefined || typeof record.runId !== 'string' || !RUN_ID.test(record.runId) || typeof record.branch !== 'string' || record.branch.length > 200) {
+				return { ok: false, code: 'invalid', message: 'place, runId and branch are required.' };
+			}
+			return { ok: true, value: { sessionId, op: { kind: 'pushBranch', place: at, runId: record.runId, branch: record.branch, setUpstream: record.setUpstream === true, interactive: record.interactive !== false } } };
 		}
 		case 'cancelRun': {
 			if (typeof record.runId !== 'string' || !RUN_ID.test(record.runId)) {
