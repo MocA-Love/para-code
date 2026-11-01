@@ -27,7 +27,9 @@ import { URI } from '../../../../base/common/uri.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ParadisTaskBoardErrorCode, ParadisTaskBoardRelayEvent, ParadisTaskBoardResult, paradisTaskBoardFail } from './paradisTaskBoardBridge.js';
 import { IParadisTaskBoardRelayCommandStep, IParadisTaskBoardRelaySessionInfo, PARADIS_TASK_BOARD_RELAY_HEARTBEAT_MS, paradisParseTaskBoardRelayRequest, paradisTaskBoardIsBoardKey } from './paradisTaskBoardRelay.js';
+import { paradisTaskBoardHasHiddenCharacters } from './paradisTaskBoardDisplayText.js';
 import { paradisTaskBoardRemoteStripUrlCredentials } from './paradisTaskBoardRemote.js';
+import { PARADIS_TASK_BOARD_LAUNCH_APPROVAL_TOOLS, paradisTaskBoardLaunchApprovalFlags } from './paradisTaskBoardToolApprovals.js';
 
 export interface IParadisTaskBoardRelayWorktree {
 	readonly dir: string;
@@ -62,6 +64,47 @@ export interface IParadisTaskBoardRelayRecord {
 	readonly worktrees: readonly IParadisTaskBoardRelayWorktree[];
 	/** 作ったときに origin に無かった、ボードのブランチ（`para/…`）。 */
 	readonly branches: readonly string[];
+	/** push を確かめて「覚える」にしたブランチ（Q525 の c = B: ブランチごとに初回だけ確かめる）。 */
+	readonly pushApproved?: readonly string[];
+}
+
+/** push の確認に出すもの。 */
+export interface IParadisTaskBoardRelayPushConfirmation {
+	readonly authority: string;
+	readonly repository: string;
+	readonly place: string;
+	readonly branch: string;
+	/** 送るコミット（完全な SHA）。 */
+	readonly sha: string;
+	readonly pushUrl: string;
+	/** PR を作るリポジトリ（fetch の URL）。push の URL と違えば、ダイアログで分かるように出す。 */
+	readonly fetchUrl: string | undefined;
+	readonly commits: readonly string[];
+	/** 件名を出し切れなかったコミットがあるか（200 件より多い）。 */
+	readonly moreCommits: boolean;
+	readonly files: readonly string[];
+	/** 秘密らしい名前のファイル（`.env`、鍵の形）。ダイアログで目立たせる。 */
+	readonly suspicious: readonly string[];
+	/** 「覚える」を出してよいか（ボードが作ったと記録したブランチだけ）。 */
+	readonly canRemember: boolean;
+}
+
+/** 担当を起動するときだけ許可を渡すかの確認に出すもの。 */
+export interface IParadisTaskBoardRelayLaunchToolsConfirmation {
+	readonly authority: string;
+	readonly repository: string;
+	readonly agent: 'claude' | 'codex';
+	readonly tools: readonly string[];
+}
+
+/** 秘密らしいファイルの名前（承認済みのブランチでも、これが足されたら聞き直す）。 */
+const SUSPICIOUS_FILE = /(^|\/)(\.env(\..*)?|\.npmrc|\.netrc|\.pgpass|\.git-credentials|credentials\.json|kubeconfig|service-account[^/]*\.json|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|[^/]*\.(pem|key|p12|pfx|keystore|jks|tfstate))$/i;
+/** 見本として置く `.env` の雛形（秘密を含まない決まりの名前）は外す。 */
+const ENV_TEMPLATE = /(^|\/)\.env\.(example|sample|template)$/i;
+
+/** 秘密らしい名前か（網羅的ではない。ダイアログでもそう伝える）。 */
+export function paradisTaskBoardRelayIsSuspiciousFile(file: string): boolean {
+	return SUSPICIOUS_FILE.test(file) && !ENV_TEMPLATE.test(file);
 }
 
 /** 窓のサービスを包んだもの（テストでは差し替える）。 */
@@ -82,6 +125,10 @@ export interface IParadisTaskBoardRelaySessionsHost {
 	writeApproval(key: string, approval: IParadisTaskBoardRelayApproval): void;
 	/** 初めての、または本文が変わった工程のコマンドを、この窓のダイアログで確かめる。 */
 	confirmCommand(request: IParadisTaskBoardRelayCommandConfirmation): Promise<'once' | 'remember' | 'deny'>;
+	/** push を、この窓のダイアログで確かめる（コマンドと同じ見せ方）。 */
+	confirmPush(request: IParadisTaskBoardRelayPushConfirmation): Promise<'once' | 'remember' | 'deny'>;
+	/** 担当を起動するときだけ許可を渡すかを確かめる（リポジトリごとに 1 回。起動の待ちより短く打ち切る）。 */
+	confirmLaunchTools(request: IParadisTaskBoardRelayLaunchToolsConfirmation): Promise<'remember' | 'deny'>;
 	sha256(text: string): Promise<string>;
 	warn(message: string, error?: unknown): void;
 }
@@ -98,8 +145,12 @@ interface IRelaySession {
 	bound: boolean;
 	/** 走っている（確認待ちを含む）工程のコマンド。 */
 	readonly runs: Set<string>;
-	/** 確認のダイアログを出している最中か（セッションごとに 1 件まで）。 */
+	/** 確認のダイアログを出している最中か（セッションごとに 1 件まで。コマンドと push で共有）。 */
 	confirming: boolean;
+	/** セッションを開いたときの origin の URL（認証情報を外したもの）と既定のブランチ。push のたびに照らす（G0）。 */
+	pinnedPush: string | undefined;
+	pinnedFetch: string | undefined;
+	defaultBranch: string | undefined;
 }
 
 /** 記録に残すワークツリー・ブランチの数（古いものから落とす）。 */
@@ -188,7 +239,7 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 			void channel.call('closeSession', [sessionId]).catch(() => undefined);
 			return paradisTaskBoardFail('unavailable', 'The window is closing.');
 		}
-		const session: IRelaySession = { sessionId, repository: mainUri, root, worktreeRoot, places: new Set([root]), bound: false, runs: new Set(), confirming: false };
+		const session: IRelaySession = { sessionId, repository: mainUri, root, worktreeRoot, places: new Set([root]), bound: false, runs: new Set(), confirming: false, pinnedPush: undefined, pinnedFetch: undefined, defaultBranch: undefined };
 		this.sessions.set(sessionId, session);
 		const timer = new IntervalTimer();
 		timer.cancelAndSet(() => {
@@ -216,6 +267,11 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 				// 消えた・別のものに変わったワークツリー
 			}
 		}
+		// push の宛先と PR のリポジトリを、ここで固定する（後から担当が origin を書き換えても、push で気づく）
+		const pinned = await this.sessionInfo(session, channel).catch(() => undefined);
+		session.pinnedPush = pinned?.originPush;
+		session.pinnedFetch = pinned?.originFetch;
+		session.defaultBranch = pinned?.defaultBranch;
 		if (adopted.length !== record.worktrees.length) {
 			this.host.writeRecord(mainUri.toString(), { ...record, worktrees: adopted });
 		}
@@ -279,7 +335,8 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 			return paradisTaskBoardFail('rejected', 'The folder is not a workspace of this task board session.');
 		}
 		// ブランチを切り替える操作と `.para/` の作り直しは、ボードのワークツリーだけ（本体の作業ツリーは利用者のもの）
-		const onWorktreeOnly = op.kind === 'resetBoardDir' || op.kind === 'runCommand' || (op.kind === 'git' && (op.git.kind === 'switch' || op.git.kind === 'detach' || op.git.kind === 'mergeFfOnly'));
+		const onWorktreeOnly = op.kind === 'resetBoardDir' || op.kind === 'runCommand' || op.kind === 'pushBranch'
+			|| (op.kind === 'git' && (op.git.kind === 'switch' || op.git.kind === 'detach' || op.git.kind === 'mergeFfOnly' || op.git.kind === 'addTracked' || op.git.kind === 'commit'));
 		if (onWorktreeOnly && opPlace === session.root) {
 			return paradisTaskBoardFail('rejected', 'The task board does not switch branches or reset files in the main working tree of the repository.');
 		}
@@ -317,6 +374,13 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 					session.runs.add(op.runId);
 					void this.startCommand(session, op.place, op.runId, op.command, op.step);
 					return { ok: true, value: { accepted: true, detail: `run ${op.runId}` } };
+				case 'pushBranch':
+					if (session.runs.has(op.runId)) {
+						return paradisTaskBoardFail('invalid', 'The run id is already used.');
+					}
+					session.runs.add(op.runId);
+					void this.startPush(session, op.place, op.runId, op.branch, op.setUpstream, op.interactive);
+					return { ok: true, value: { accepted: true, detail: `push ${op.branch}` } };
 				case 'cancelRun':
 					return { ok: true, value: { cancelled: await channel.call<boolean>('cancelRun', [sessionId, op.runId]).catch(() => false) } };
 			}
@@ -369,6 +433,126 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 			const failure = relayFailure(error);
 			exit({ code: null, signal: null, cancelled: false, timedOut: false, reason: `${failure.code}: ${failure.message}`.slice(0, 500) });
 		}
+	}
+
+	/**
+	 * ボードのブランチを push する（Q525 の c = B、設計書 G6）。送るのは確認で見せた SHA のコミットそのもの。push のたびに、
+	 * push の URL が固定した値と同じか、`.para/` の中のファイルや表示できない文字が入っていないかを確かめる。確認は、
+	 * ボードが作ったと記録したブランチなら初回だけ（秘密らしい名前のファイルが足されたら聞き直す）、記録に無いブランチは毎回。
+	 * 既定のブランチへは REH が送らない。返却のとき（interactive が false）は確認を出さず、確認が要れば送らない。
+	 */
+	private async startPush(session: IRelaySession, place: string, runId: string, branch: string, setUpstream: boolean, interactive: boolean): Promise<void> {
+		const exit = (event: Omit<Extract<ParadisTaskBoardRelayEvent, { type: 'relay-exit' }>, 'type' | 'runId'>) => {
+			session.runs.delete(runId);
+			this.sendEvent(session.sessionId, { type: 'relay-exit', runId, ...event });
+		};
+		const refuse = (reason: string) => exit({ code: null, signal: null, cancelled: false, timedOut: false, reason });
+		const channel = this.host.remoteChannel();
+		if (!channel) {
+			refuse('disconnected');
+			return;
+		}
+		const git = async (op: Record<string, unknown>) => channel.call<{ readonly code: number; readonly stdout: string; readonly stderr: string }>('git', [session.sessionId, place, op]);
+		try {
+			const head = await git({ kind: 'headSha' });
+			const sha = head.stdout.trim();
+			if (head.code !== 0 || !/^[0-9a-f]{40}$/.test(sha)) {
+				refuse('no-commit');
+				return;
+			}
+			// 送り先は、ちょうど 1 本で、セッションを開いたときに固定したものだけ（pushurl を足すと送り先が増える）
+			const pushUrls = paradisTaskBoardRemoteStripUrlCredentials((await git({ kind: 'remoteUrl', push: true, all: true })).stdout).split('\n').map(url => url.trim()).filter(url => url.length > 0);
+			const pushUrl = pushUrls[0] ?? '';
+			if (session.pinnedPush === undefined || pushUrls.length !== 1 || pushUrl !== session.pinnedPush) {
+				refuse('push-url-changed');
+				return;
+			}
+			// mirror の設定があると、push がすべての参照を送る
+			const mirror = await git({ kind: 'remoteMirror' });
+			if (mirror.code === 0 && mirror.stdout.trim().toLowerCase() !== 'false') {
+				refuse('push-mirror');
+				return;
+			}
+			const remoteBranch = (await git({ kind: 'refExists', rev: { kind: 'remote', branch } })).code === 0;
+			const base = remoteBranch ? { kind: 'remote', branch } : { kind: 'remote', branch: session.defaultBranch ?? 'main' };
+			const subjects = await git({ kind: 'commitSubjects', base, head: { kind: 'sha', sha } });
+			const changed = await git({ kind: 'changedFiles', base, head: { kind: 'sha', sha } });
+			if (subjects.code !== 0 || changed.code !== 0) {
+				refuse('cannot-read-commits');
+				return;
+			}
+			const commits = subjects.stdout.split('\n').filter(line => line.length > 0);
+			const files = changed.stdout.split('\0').filter(name => name.length > 0);
+			// GitHub へ出る前に断るもの: ボードの作業フォルダの中身と、確認で正しく見せられない文字
+			if (files.some(file => file === '.para' || file.startsWith('.para/'))) {
+				refuse('board-files-in-commits');
+				return;
+			}
+			if ([branch, pushUrl, ...commits, ...files].some(text => text.includes('\n') || paradisTaskBoardHasHiddenCharacters(text))) {
+				refuse('hidden-characters');
+				return;
+			}
+			const key = session.repository.toString();
+			const record = this.host.readRecord(key);
+			const recorded = branch.startsWith('para/') && record.branches.includes(branch);
+			const approved = recorded && (record.pushApproved ?? []).includes(branch);
+			const suspicious = files.filter(paradisTaskBoardRelayIsSuspiciousFile);
+			// 記録に無いブランチは、送るコミットが 0 件でも確かめる（確認なしに新しいブランチを作らせない）
+			if ((commits.length > 0 && (!approved || suspicious.length > 0)) || (!recorded && !approved)) {
+				if (!interactive) {
+					refuse('needs-confirmation');
+					return;
+				}
+				if (session.confirming) {
+					refuse('confirm-pending');
+					return;
+				}
+				session.confirming = true;
+				const answer = await this.host.confirmPush({
+					authority: session.repository.authority, repository: session.root, place, branch, sha, pushUrl,
+					fetchUrl: session.pinnedFetch, commits: commits.slice(0, 200), moreCommits: commits.length >= 200,
+					files, suspicious, canRemember: recorded,
+				}).catch(() => 'deny' as const).finally(() => session.confirming = false);
+				if (answer === 'deny') {
+					refuse('not-approved');
+					return;
+				}
+				if (answer === 'remember' && recorded) {
+					const latest = this.host.readRecord(key);
+					this.host.writeRecord(key, { ...latest, pushApproved: [...(latest.pushApproved ?? []).filter(name => name !== branch), branch].slice(-MAX_RECORDED) });
+				}
+			}
+			if (!this.sessions.has(session.sessionId)) {
+				refuse('disconnected');
+				return;
+			}
+			const result = await git({ kind: 'push', branch, setUpstream, defaultBranch: session.defaultBranch, source: sha });
+			// 承認済みのブランチは、後から足したコミットも確かめずに送る（Q525 の c = B）。そのかわり、送った SHA と件数を必ず残す
+			exit({ code: result.code, signal: null, cancelled: false, timedOut: false, ...(result.code === 0 ? { pushedSha: sha, pushedCommits: commits.length } : {}), ...(result.code !== 0 ? { reason: paradisTaskBoardRemoteStripUrlCredentials(result.stderr.trim().split('\n').slice(-3).join(' ')).slice(0, 400) || 'push-failed' } : {}) });
+		} catch (error) {
+			const failure = relayFailure(error);
+			refuse(`${failure.code}: ${failure.message}`.slice(0, 500));
+		}
+	}
+
+	/**
+	 * 担当を起動するときだけ許可を渡す引数（Q525 の d = B）。渡すかどうかはリポジトリごとに 1 回この窓で確かめ、覚える。
+	 * 断られた・答えが無いときは undefined（許可を渡さずに起動する）。
+	 */
+	async launchApprovalFlags(sessionId: string, agent: 'claude' | 'codex'): Promise<string | undefined> {
+		const session = this.sessions.get(sessionId);
+		if (!session?.bound) {
+			return undefined;
+		}
+		const key = `launch-tools|${session.repository.toString()}`;
+		if (this.host.readApproval(key)?.hash !== 'yes') {
+			const answer = await this.host.confirmLaunchTools({ authority: session.repository.authority, repository: session.root, agent, tools: PARADIS_TASK_BOARD_LAUNCH_APPROVAL_TOOLS }).catch(() => 'deny' as const);
+			if (answer !== 'remember') {
+				return undefined;
+			}
+			this.host.writeApproval(key, { hash: 'yes', command: PARADIS_TASK_BOARD_LAUNCH_APPROVAL_TOOLS.join(',') });
+		}
+		return paradisTaskBoardLaunchApprovalFlags(agent);
 	}
 
 	private sendEvent(sessionId: string, event: ParadisTaskBoardRelayEvent): void {

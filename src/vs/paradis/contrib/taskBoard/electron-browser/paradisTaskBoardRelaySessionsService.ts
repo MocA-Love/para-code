@@ -29,11 +29,11 @@ import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpa
 import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL } from '../common/paradisTaskBoardBridge.js';
 import { paradisTaskBoardCommandPreview } from '../common/paradisTaskBoardDisplayText.js';
 import { PARADIS_TASK_BOARD_REMOTE_CHANNEL } from '../common/paradisTaskBoardRemote.js';
-import { IParadisTaskBoardRelayApproval, IParadisTaskBoardRelayCommandConfirmation, IParadisTaskBoardRelayRecord, PARADIS_TASK_BOARD_RELAY_CONFIRM_TIMEOUT_MS, ParadisTaskBoardRelaySessions } from '../common/paradisTaskBoardRelaySessions.js';
+import { IParadisTaskBoardRelayApproval, IParadisTaskBoardRelayCommandConfirmation, IParadisTaskBoardRelayLaunchToolsConfirmation, IParadisTaskBoardRelayPushConfirmation, IParadisTaskBoardRelayRecord, PARADIS_TASK_BOARD_RELAY_CONFIRM_TIMEOUT_MS, ParadisTaskBoardRelaySessions } from '../common/paradisTaskBoardRelaySessions.js';
 
 export const IParadisTaskBoardRelaySessionsService = createDecorator<IParadisTaskBoardRelaySessionsService>('paradisTaskBoardRelaySessionsService');
 
-export interface IParadisTaskBoardRelaySessionsService extends Pick<ParadisTaskBoardRelaySessions, 'prepare' | 'bind' | 'close' | 'handle' | 'launchTarget'> {
+export interface IParadisTaskBoardRelaySessionsService extends Pick<ParadisTaskBoardRelaySessions, 'prepare' | 'bind' | 'close' | 'handle' | 'launchTarget' | 'launchApprovalFlags'> {
 	readonly _serviceBrand: undefined;
 }
 
@@ -79,30 +79,39 @@ async function confirmCommand(dialogService: IDialogService, notificationService
 		// allow-any-unicode-next-line
 		markdown.appendMarkdown(localize('paradis.taskBoard.relay.confirmPreviousHeading', "**前に承認した本文**（{0} 行）", previous.lines)).appendCodeblock('text', previous.numbered);
 	}
+	// allow-any-unicode-next-line
+	const message = request.previous !== undefined ? localize('paradis.taskBoard.relay.confirmChanged', "タスクボードの工程のコマンドが変わりました。実行しますか？") : localize('paradis.taskBoard.relay.confirmNew', "タスクボードの工程のコマンドを、SSH の接続先で実行しますか？");
+	return showRelayConfirm(dialogService, notificationService, message, detail, markdown, true, PARADIS_TASK_BOARD_RELAY_CONFIRM_TIMEOUT_MS);
+}
+
+/**
+ * Para Code のダイアログ（custom。中はスクロールできる）で確かめる。既定のボタンは「実行しない」。打ち切りの時間が過ぎたら
+ * 閉じて「実行しない」にし、閉じきれずに後から押されても実行せず、通知で知らせる。
+ */
+async function showRelayConfirm(dialogService: IDialogService, notificationService: INotificationService, message: string, detail: string, markdown: MarkdownString, canRemember: boolean, timeoutMs: number, labels?: { readonly deny: string; readonly once: string; readonly remember: string }): Promise<'once' | 'remember' | 'deny'> {
 	let timedOut = false;
-	// 10 分たったらダイアログを閉じる（閉じきれずに後から押されても実行せず、通知で知らせる）
 	const closing = new CancellationTokenSource();
+	const buttons: { label: string; run: () => 'once' | 'remember' | 'deny' }[] = [
+		// allow-any-unicode-next-line
+		{ label: labels?.deny ?? localize('paradis.taskBoard.relay.deny', "実行しない"), run: () => 'deny' },
+		// allow-any-unicode-next-line
+		...(labels?.once !== '' ? [{ label: labels?.once ?? localize('paradis.taskBoard.relay.once', "今回だけ実行"), run: () => 'once' as const }] : []),
+		// allow-any-unicode-next-line
+		...(canRemember ? [{ label: labels?.remember ?? localize('paradis.taskBoard.relay.remember', "実行して覚える"), run: () => 'remember' as const }] : []),
+	];
 	const answer = dialogService.prompt<'once' | 'remember' | 'deny'>({
 		type: Severity.Warning,
-		// allow-any-unicode-next-line
-		message: request.previous !== undefined ? localize('paradis.taskBoard.relay.confirmChanged', "タスクボードの工程のコマンドが変わりました。実行しますか？") : localize('paradis.taskBoard.relay.confirmNew', "タスクボードの工程のコマンドを、SSH の接続先で実行しますか？"),
+		message,
 		detail,
 		custom: { markdownDetails: [{ markdown }] },
-		buttons: [
-			// allow-any-unicode-next-line
-			{ label: localize('paradis.taskBoard.relay.deny', "実行しない"), run: () => 'deny' },
-			// allow-any-unicode-next-line
-			{ label: localize('paradis.taskBoard.relay.once', "今回だけ実行"), run: () => 'once' },
-			// allow-any-unicode-next-line
-			{ label: localize('paradis.taskBoard.relay.remember', "実行して覚える"), run: () => 'remember' },
-		],
+		buttons,
 		cancelButton: { run: () => 'deny' },
 		token: closing.token,
 	}).then(result => {
 		const value = result.result ?? 'deny';
 		if (timedOut && value !== 'deny') {
 			// allow-any-unicode-next-line
-			notificationService.info(localize('paradis.taskBoard.relay.confirmExpired', "確認の時間（10 分）が過ぎていたので、タスクボードの工程のコマンドは実行しませんでした。ボードからやり直してください。"));
+			notificationService.info(localize('paradis.taskBoard.relay.confirmExpired', "確認の時間が過ぎていたので、タスクボードの依頼は実行しませんでした。ボードからやり直してください。"));
 		}
 		return value;
 	});
@@ -111,13 +120,76 @@ async function confirmCommand(dialogService: IDialogService, notificationService
 		timedOut = true;
 		closing.cancel();
 		resolve('deny');
-	}, PARADIS_TASK_BOARD_RELAY_CONFIRM_TIMEOUT_MS));
+	}, timeoutMs));
 	try {
 		return await Promise.race([answer, timeout]);
 	} finally {
 		clearTimeout(timer);
 		closing.dispose();
 	}
+}
+
+/** push を確かめる（Q525 の c = B）。送るコミット・ファイル・リモートを、行番号付きで全部見せる。 */
+async function confirmPush(dialogService: IDialogService, notificationService: INotificationService, request: IParadisTaskBoardRelayPushConfirmation): Promise<'once' | 'remember' | 'deny'> {
+	const detail = [
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.pushWhere', "接続先: {0}\nリポジトリ: {1}\n作業場所: {2}", request.authority, request.repository, request.place),
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.pushTarget', "送り先: {0}\nブランチ: {1}\n送るコミット: {2}（{3} 件{4}）", request.pushUrl, request.branch, request.sha, request.commits.length, request.moreCommits ? localize('paradis.taskBoard.relay.pushMore', "以上") : ''),
+		...(request.fetchUrl !== undefined && request.fetchUrl !== request.pushUrl
+			// allow-any-unicode-next-line
+			? [localize('paradis.taskBoard.relay.pushDifferentFetch', "注意: push の送り先が、PR を作るリポジトリ（{0}）と違います。", request.fetchUrl)]
+			: []),
+		...(request.suspicious.length > 0
+			// allow-any-unicode-next-line
+			? [localize('paradis.taskBoard.relay.pushSuspicious', "注意: 秘密を含みそうな名前のファイルがあります: {0}", request.suspicious.join(', '))]
+			: []),
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.pushNote', "送ったコミットは GitHub に残ります。ファイルの中身は下の一覧で確かめられないので、気になるものがあれば送らずに作業場所で確かめてください。秘密らしいファイルの判定は名前だけで、網羅的ではありません。「今後聞かずに送る」にしたブランチは、後から足したコミットも確かめずに送ります（送った SHA と件数はボードと記録に残ります）。"),
+	].join('\n\n');
+	const commits = paradisTaskBoardCommandPreview(request.commits.join('\n'), '');
+	const files = paradisTaskBoardCommandPreview(request.files.join('\n'), '');
+	const markdown = new MarkdownString(undefined, { supportThemeIcons: false, supportHtml: false })
+		// allow-any-unicode-next-line
+		.appendMarkdown(localize('paradis.taskBoard.relay.pushCommitsHeading', "**送るコミット**（{0} 件）", request.commits.length)).appendCodeblock('text', commits.numbered)
+		// allow-any-unicode-next-line
+		.appendMarkdown(localize('paradis.taskBoard.relay.pushFilesHeading', "**変わったファイル**（{0} 件）", request.files.length)).appendCodeblock('text', files.numbered);
+	return showRelayConfirm(dialogService, notificationService,
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.pushMessage', "タスクボードのブランチ {0} を push しますか？", request.branch),
+		detail, markdown, request.canRemember, PARADIS_TASK_BOARD_RELAY_CONFIRM_TIMEOUT_MS, {
+			// allow-any-unicode-next-line
+			deny: localize('paradis.taskBoard.relay.pushDeny', "送らない"),
+			// allow-any-unicode-next-line
+			once: localize('paradis.taskBoard.relay.pushOnce', "今回だけ送る"),
+			// allow-any-unicode-next-line
+			remember: localize('paradis.taskBoard.relay.pushRemember', "このブランチは今後聞かずに送る"),
+		});
+}
+
+/** 担当を起動するときだけ許可を渡すかを確かめる（Q525 の d = B）。起動の待ち（150 秒）より短い 120 秒で打ち切る。 */
+async function confirmLaunchTools(dialogService: IDialogService, notificationService: INotificationService, request: IParadisTaskBoardRelayLaunchToolsConfirmation): Promise<'remember' | 'deny'> {
+	const name = request.agent === 'codex' ? 'Codex' : 'Claude Code';
+	const detail = [
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.toolsWhere', "接続先: {0}\nリポジトリ: {1}", request.authority, request.repository),
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.toolsNote', "このリポジトリでタスクボードが起動する {0} に、ボードへの報告と、スクショの工程で画面を読む・撮るだけのツールを、毎回聞かずに使わせます。許可は起動のときの引数で渡し、接続先の設定ファイルには書きません。クリック・入力・スクリプトの実行・ページの移動をするツールは、今までどおり毎回聞きます。", name),
+	].join('\n\n');
+	const markdown = new MarkdownString(undefined, { supportThemeIcons: false, supportHtml: false })
+		// allow-any-unicode-next-line
+		.appendMarkdown(localize('paradis.taskBoard.relay.toolsHeading', "**許可するツール**")).appendCodeblock('text', request.tools.join('\n'));
+	const answer = await showRelayConfirm(dialogService, notificationService,
+		// allow-any-unicode-next-line
+		localize('paradis.taskBoard.relay.toolsMessage', "SSH の {0} に、起動のときだけ許可を渡しますか？", name),
+		detail, markdown, true, 120_000, {
+			// allow-any-unicode-next-line
+			deny: localize('paradis.taskBoard.relay.toolsDeny', "渡さない"),
+			once: '',
+			// allow-any-unicode-next-line
+			remember: localize('paradis.taskBoard.relay.toolsRemember', "このリポジトリでは渡す"),
+		});
+	return answer === 'remember' ? 'remember' : 'deny';
 }
 
 /** リポジトリ（uri.toString()）ごとの記録。 */
@@ -166,7 +238,7 @@ class ParadisTaskBoardRelaySessionsService extends ParadisTaskBoardRelaySessions
 			readRecord: repository => {
 				const record = readAll()[repository];
 				const worktrees = Array.isArray(record?.worktrees) ? record.worktrees.filter((item): item is { dir: string; branch: string } => !!item && typeof item === 'object' && typeof item.dir === 'string' && typeof item.branch === 'string') : [];
-				return { worktrees, branches: strings(record?.branches) };
+				return { worktrees, branches: strings(record?.branches), pushApproved: strings(record?.pushApproved) };
 			},
 			writeRecord: (repository, record) => {
 				const all = readAll();
@@ -186,6 +258,8 @@ class ParadisTaskBoardRelaySessionsService extends ParadisTaskBoardRelaySessions
 				storageService.store(APPROVAL_STORAGE_KEY, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-MAX_APPROVALS))), StorageScope.APPLICATION, StorageTarget.MACHINE);
 			},
 			confirmCommand: request => confirmCommand(dialogService, notificationService, request),
+			confirmPush: request => confirmPush(dialogService, notificationService, request),
+			confirmLaunchTools: request => confirmLaunchTools(dialogService, notificationService, request),
 			sha256: async text => {
 				const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
 				return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');

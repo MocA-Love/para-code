@@ -13,7 +13,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisParseTaskBoardBoardRegistration, paradisParseTaskBoardRelayRequest, paradisTaskBoardRelayOperationName } from '../../common/paradisTaskBoardRelay.js';
-import { IParadisTaskBoardRelayApproval, IParadisTaskBoardRelayCommandConfirmation, IParadisTaskBoardRelayRecord, ParadisTaskBoardRelaySessions } from '../../common/paradisTaskBoardRelaySessions.js';
+import { IParadisTaskBoardRelayApproval, IParadisTaskBoardRelayCommandConfirmation, IParadisTaskBoardRelayPushConfirmation, IParadisTaskBoardRelayRecord, ParadisTaskBoardRelaySessions, paradisTaskBoardRelayIsSuspiciousFile } from '../../common/paradisTaskBoardRelaySessions.js';
 
 const KEY = 'k'.repeat(43);
 const SESSION = 'session-0123456789abcdef';
@@ -66,13 +66,15 @@ suite('Paradis task board relay - window side', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function create(options?: { remoteAuthority?: string | null; registered?: boolean; reh?: (command: string, arg: unknown) => unknown; record?: IParadisTaskBoardRelayRecord; confirm?: 'once' | 'remember' | 'deny' }) {
+	function create(options?: { remoteAuthority?: string | null; registered?: boolean; reh?: (command: string, arg: unknown) => unknown; record?: IParadisTaskBoardRelayRecord; confirm?: 'once' | 'remember' | 'deny'; confirmPush?: (request: IParadisTaskBoardRelayPushConfirmation) => Promise<'once' | 'remember' | 'deny'>; tools?: 'remember' | 'deny' }) {
 		const reh = new FakeChannel(options?.reh ?? defaultReh);
 		const bridge = new FakeChannel(() => true);
 		store.add(reh.output);
 		const records = new Map<string, IParadisTaskBoardRelayRecord>(options?.record ? [[REPO.toString(), options.record]] : []);
 		const approvals = new Map<string, IParadisTaskBoardRelayApproval>();
 		const confirmations: IParadisTaskBoardRelayCommandConfirmation[] = [];
+		const pushConfirmations: IParadisTaskBoardRelayPushConfirmation[] = [];
+		const toolConfirmations: string[] = [];
 		const sessions = store.add(new ParadisTaskBoardRelaySessions({
 			remoteAuthority: options?.remoteAuthority === null ? undefined : options?.remoteAuthority ?? AUTHORITY,
 			remoteChannel: () => reh,
@@ -88,9 +90,17 @@ suite('Paradis task board relay - window side', () => {
 				return options?.confirm ?? 'remember';
 			},
 			sha256: async text => `h:${text}`,
+			confirmPush: async request => {
+				pushConfirmations.push(request);
+				return options?.confirmPush ? options.confirmPush(request) : 'remember';
+			},
+			confirmLaunchTools: async request => {
+				toolConfirmations.push(request.agent);
+				return options?.tools ?? 'remember';
+			},
 			warn: () => { },
 		}));
-		return { sessions, reh, bridge, records, confirmations };
+		return { sessions, reh, bridge, records, confirmations, pushConfirmations, toolConfirmations };
 	}
 
 	async function opened(options?: Parameters<typeof create>[0]) {
@@ -112,7 +122,7 @@ suite('Paradis task board relay - window side', () => {
 		], [{ pid: 1234, key: KEY }, undefined, undefined, 'git.status', 'git.unknown']);
 	});
 
-	test('requests are rebuilt from the allowed fields only; commits and pushes are not available yet', () => {
+	test('requests are rebuilt from the allowed fields only; pushes go only through pushBranch', () => {
 		const parse = (op: unknown) => {
 			const result = paradisParseTaskBoardRelayRequest({ sessionId: SESSION, op, extra: 'x' });
 			return result.ok ? result.value.op : result.code;
@@ -135,7 +145,10 @@ suite('Paradis task board relay - window side', () => {
 			{ kind: 'git', place: ROOT, git: { kind: 'worktreeAdd', dir: `${WORKTREES}/a`, branch: 'para/a', mode: 'new', base: { kind: 'remote', branch: 'main' } } },
 			{ kind: 'git', place: ROOT, git: { kind: 'switch', branch: 'para/a', mode: 'existing' } },
 			// 工程のコマンドは、欄が揃わない（place・runId・step が無い）ので断る
-			'invalid', 'unavailable', 'unavailable', 'unavailable', 'invalid', 'rejected',
+			'invalid', 'unavailable',
+			{ kind: 'git', place: ROOT, git: { kind: 'commit', message: 'x' } },
+			{ kind: 'git', place: ROOT, git: { kind: 'addTracked' } },
+			'invalid', 'rejected',
 			{ kind: 'writeFile', path: '.para-code/paracode.json', content: '{}' },
 			'rejected', 'invalid',
 		]);
@@ -156,7 +169,8 @@ suite('Paradis task board relay - window side', () => {
 		assert.strictEqual(code(await sessions.handle({ sessionId: SESSION, op: { kind: 'sessionInfo' } })), 'not-found');
 		assert.strictEqual(code(await sessions.bind(SESSION, 'short')), 'invalid');
 		await sessions.bind(SESSION, KEY);
-		assert.deepStrictEqual([reh.calls, bridge.calls], [
+		// git の呼び出しは、セッションを開いたときに origin と既定のブランチを固定する分（ここでは見ない）
+		assert.deepStrictEqual([reh.calls.filter(call => call.command !== 'git'), bridge.calls], [
 			[{ command: 'openSession', arg: [SESSION, ROOT] }, { command: 'closeSession', arg: [SESSION] }, { command: 'openSession', arg: [SESSION, ROOT, WORKTREES] }],
 			[{ command: 'registerRelaySession', arg: { sessionId: SESSION, boardKey: KEY, authority: AUTHORITY, repository: ROOT } }],
 		]);
@@ -173,6 +187,7 @@ suite('Paradis task board relay - window side', () => {
 			isWindowFolder: uri => uri.path !== ROOT, newSessionId: () => SESSION,
 			readRecord: () => ({ worktrees: [], branches: [] }), writeRecord: () => { }, warn: () => { },
 			readApproval: () => undefined, writeApproval: () => { }, confirmCommand: async () => 'deny', sha256: async text => text,
+			confirmPush: async () => 'deny', confirmLaunchTools: async () => 'deny',
 		});
 		store.add(onlyWorktree);
 		assert.deepStrictEqual([
@@ -201,6 +216,7 @@ suite('Paradis task board relay - window side', () => {
 
 	test('workspaces are the session root and the worktrees this window made, recorded across restarts', async () => {
 		const { sessions, reh, records } = await opened();
+		const before = reh.calls.filter(call => call.command === 'git').length;
 		const git = (place: string, op: unknown) => sessions.handle({ sessionId: SESSION, op: { kind: 'git', place, git: op } });
 		const dir = `${WORKTREES}/7-feature`;
 		const results = [
@@ -214,7 +230,7 @@ suite('Paradis task board relay - window side', () => {
 			sessions.launchTarget(SESSION, dir.toUpperCase()),
 			code(await git(ROOT, { kind: 'worktreeRemove', dir: ROOT })),
 		];
-		assert.deepStrictEqual({ results, record: records.get(REPO.toString()), sentToReh: reh.calls.filter(call => call.command === 'git').length }, {
+		assert.deepStrictEqual({ results, record: records.get(REPO.toString()), sentToReh: reh.calls.filter(call => call.command === 'git').length - before }, {
 			results: ['rejected', 'rejected', 'rejected', undefined, 'ok', 'ok', `vscode-remote://ssh-remote%2Bhost${dir}`, undefined, 'rejected'],
 			record: { worktrees: [{ dir, branch: 'para/7-feature' }], branches: ['para/7-feature'] },
 			sentToReh: 2,
@@ -242,7 +258,7 @@ suite('Paradis task board relay - window side', () => {
 		];
 		assert.deepStrictEqual({
 			results: results.map(result => result.ok ? result.value : result.code),
-			sent: reh.calls.filter(call => call.command === 'git' || call.command === 'readFile'),
+			sent: reh.calls.filter(call => call.command === 'readFile' || (call.command === 'git' && ((call.arg as unknown[])[2] as { kind: string }).kind === 'status')),
 		}, {
 			results: [{ code: 0, stdout: 'x', stderr: '', timedOut: false }, { base64: 'cGxhbg==', size: 4, detail: '.para/plan.html 4' }, 'not-found'],
 			sent: [
@@ -330,6 +346,143 @@ suite('Paradis task board relay - window side', () => {
 			runs: reh.calls.filter(call => call.command === 'runCommand').length,
 			exit: bridge.calls.filter(call => call.command === 'relayEvent').map(call => (call.arg as { event: object }).event),
 		}, { runs: 0, exit: [{ type: 'relay-exit', runId: 'r1', code: null, signal: null, cancelled: false, timedOut: false, reason: 'not-approved' }] });
+	});
+
+	suite('push', () => {
+		const kept = `${WORKTREES}/kept`;
+		const SHA1 = 'a'.repeat(40);
+		const SHA2 = 'b'.repeat(40);
+
+		/** push の確かめに使う REH の答え。`state` を書き換えて、確認の間の変化を再現する。 */
+		function pushReh(state: { head: string; pushUrl: string; subjects: string; files: string; mirror?: string }) {
+			return (command: string, arg: unknown) => {
+				if (command !== 'git') {
+					return defaultReh(command, arg);
+				}
+				const op = (arg as unknown[])[2] as { kind: string; push?: boolean };
+				const out = (stdout: string, code = 0) => ({ code, stdout, stderr: '', timedOut: false });
+				switch (op.kind) {
+					case 'headSha': return out(`${state.head}\n`);
+					case 'remoteUrl': return out(op.push ? `${state.pushUrl}\n` : 'https://example.com/o/r.git\n');
+					case 'remoteMirror': return state.mirror === undefined ? out('', 1) : out(`${state.mirror}\n`);
+					case 'defaultBranch': return out('refs/remotes/origin/main\n');
+					case 'refExists': return out('', 1);
+					case 'commitSubjects': return out(state.subjects);
+					case 'changedFiles': return out(state.files);
+					case 'push': return out('');
+					default: return out('');
+				}
+			};
+		}
+
+		async function setup(branch: string, extra?: Parameters<typeof create>[0]) {
+			const state: { head: string; pushUrl: string; subjects: string; files: string; mirror?: string } = { head: SHA1, pushUrl: 'git@example.com:o/r.git', subjects: `${SHA1} change a\n`, files: 'a.txt\0' };
+			const created = await opened({ record: { worktrees: [{ dir: kept, branch: 'para/kept' }], branches: ['para/kept'] }, reh: pushReh(state), ...extra });
+			let n = 0;
+			const push = async (interactive = true) => {
+				const runId = `p${++n}`;
+				await created.sessions.handle({ sessionId: SESSION, op: { kind: 'pushBranch', place: kept, runId, branch, setUpstream: true, interactive } });
+				await new Promise(resolve => setTimeout(resolve, 0));
+				const exit = created.bridge.calls.map(call => (call.arg as { event?: { runId: string; reason?: string; code: number | null } }).event).find(event => event?.runId === runId);
+				return exit?.reason ?? (exit?.code === 0 ? 'pushed' : String(exit?.code));
+			};
+			const pushes = () => created.reh.calls.filter(call => call.command === 'git' && ((call.arg as unknown[])[2] as { kind: string }).kind === 'push').map(call => (call.arg as unknown[])[2]);
+			return { ...created, state, push, pushes };
+		}
+
+		test('sends the commit that was shown, even when HEAD moves while the dialog is open', async () => {
+			const holder: { state?: { head: string } } = {};
+			const { push, pushes, pushConfirmations, state } = await setup('para/kept', {
+				confirmPush: async () => {
+					holder.state!.head = SHA2;
+					return 'remember';
+				},
+			});
+			holder.state = state;
+			assert.deepStrictEqual([await push(), pushes(), pushConfirmations.map(request => [request.sha, request.commits, request.files, request.canRemember])], [
+				'pushed',
+				[{ kind: 'push', branch: 'para/kept', setUpstream: true, defaultBranch: 'main', source: SHA1 }],
+				[[SHA1, [`${SHA1} change a`], ['a.txt'], true]],
+			]);
+		});
+
+		test('an approved board branch is not asked again, but board files and hidden characters are always refused', async () => {
+			const { push, pushes, pushConfirmations, state } = await setup('para/kept');
+			const first = await push();
+			state.head = SHA2;
+			const second = await push();
+			state.files = 'a.txt\0.para/plan.html\0';
+			const withBoardFiles = await push();
+			state.files = 'a.txt\0';
+			state.subjects = `${SHA2} fix \u202Ehs.x\n`;
+			const hidden = await push();
+			assert.deepStrictEqual([first, second, withBoardFiles, hidden, pushConfirmations.length, pushes().length], ['pushed', 'pushed', 'board-files-in-commits', 'hidden-characters', 1, 2]);
+		});
+
+		test('a changed push URL is refused, and a branch the board did not make is asked every time without remember', async () => {
+			const own = await setup('para/kept');
+			own.state.pushUrl = 'git@evil.example:o/r.git';
+			const other = await setup('feature/x');
+			assert.deepStrictEqual([
+				await own.push(),
+				await other.push(),
+				await other.push(),
+				other.pushConfirmations.map(request => request.canRemember),
+			], ['push-url-changed', 'pushed', 'pushed', [false, false]]);
+		});
+
+		test('a second push URL or a mirror setting is refused, and a branch the board did not make is asked even with no commits', async () => {
+			const twoUrls = await setup('para/kept');
+			// 担当が pushurl を足した（get-url --push --all が 2 本を返す）
+			twoUrls.state.pushUrl = 'git@example.com:o/r.git\ngit@evil.example:o/r.git';
+			const mirror = await setup('para/kept');
+			mirror.state.mirror = 'true';
+			const empty = await setup('feature/new');
+			empty.state.subjects = '';
+			empty.state.files = '';
+			assert.deepStrictEqual([
+				await twoUrls.push(), await mirror.push(), await empty.push(),
+				empty.pushConfirmations.map(request => [request.commits.length, request.canRemember]),
+				twoUrls.pushes().length + mirror.pushes().length,
+			], ['push-url-changed', 'push-mirror', 'pushed', [[0, false]], 0]);
+		});
+
+		test('every push leaves the sent SHA and count in the end event', async () => {
+			const { push, bridge } = await setup('para/kept');
+			await push();
+			const exit = bridge.calls.map(call => (call.arg as { event?: { type: string; pushedSha?: string; pushedCommits?: number } }).event).find(event => event?.type === 'relay-exit');
+			assert.deepStrictEqual([exit?.pushedSha, exit?.pushedCommits], [SHA1, 1]);
+		});
+
+		test('secret-looking names, but not the env templates', () => {
+			const names = ['.env', 'config/.env.local', '.env.example', 'app/.env.sample', '.env.template', '.git-credentials', 'gcp/credentials.json', 'infra/terraform.tfstate', 'kubeconfig', 'keys/service-account-prod.json', 'id_ed25519', 'certs/server.pem', 'src/app.ts', 'README.md'];
+			assert.deepStrictEqual(names.filter(paradisTaskBoardRelayIsSuspiciousFile), ['.env', 'config/.env.local', '.git-credentials', 'gcp/credentials.json', 'infra/terraform.tfstate', 'kubeconfig', 'keys/service-account-prod.json', 'id_ed25519', 'certs/server.pem']);
+		});
+
+		test('a push on release never asks, and secret-looking files make an approved branch ask again', async () => {
+			const { push, pushConfirmations, state } = await setup('para/kept');
+			const onRelease = await push(false);
+			await push();
+			state.files = 'a.txt\0config/.env\0';
+			await push();
+			assert.deepStrictEqual([onRelease, pushConfirmations.map(request => request.suspicious)], ['needs-confirmation', [[], ['config/.env']]]);
+		});
+	});
+
+	test('tool approvals at launch are asked once per repository and built by the window', async () => {
+		const { sessions, toolConfirmations } = await opened();
+		const denied = await opened({ tools: 'deny' });
+		assert.deepStrictEqual({
+			first: await sessions.launchApprovalFlags(SESSION, 'claude'),
+			second: (await sessions.launchApprovalFlags(SESSION, 'codex'))?.split(' -c ').length,
+			asked: toolConfirmations,
+			denied: await denied.sessions.launchApprovalFlags(SESSION, 'claude'),
+		}, {
+			first: `'--allowedTools=mcp__para-browser__board_complete_step,mcp__para-browser__board_ask_human,mcp__para-browser__list_browser_tabs,mcp__para-browser__get_shared_page,mcp__para-browser__take_screenshot,mcp__para-browser__capture_screenshot,mcp__para-browser__take_snapshot,mcp__para-browser__get_text,mcp__para-browser__inspect_element'`,
+			second: 9,
+			asked: ['claude'],
+			denied: undefined,
+		});
 	});
 
 	test('errors from the SSH host keep their meaning', async () => {

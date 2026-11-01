@@ -150,7 +150,12 @@ async function exists(path: string): Promise<boolean> {
 		const https = (await service.git(SESSION, repo, { kind: 'remoteUrl', push: false })).stdout.trim();
 		git(repo, 'remote', 'set-url', 'origin', 'git@example.com:owner/repo.git');
 		const scp = (await service.git(SESSION, repo, { kind: 'remoteUrl', push: false })).stdout.trim();
-		assert.deepStrictEqual([https, scp], ['https://example.com/owner/repo.git', 'git@example.com:owner/repo.git']);
+		// pushurl を 2 本足すと、--all で両方が見える（1 本目だけを返す get-url --push では見落とす）
+		git(repo, 'config', '--add', 'remote.origin.pushurl', 'git@example.com:owner/repo.git');
+		git(repo, 'config', '--add', 'remote.origin.pushurl', 'https://user:tok@evil.example/x.git');
+		const all = (await service.git(SESSION, repo, { kind: 'remoteUrl', push: true, all: true })).stdout.trim().split('\n');
+		const mirror = await service.git(SESSION, repo, { kind: 'remoteMirror' });
+		assert.deepStrictEqual([https, scp, all, mirror.code], ['https://example.com/owner/repo.git', 'git@example.com:owner/repo.git', ['git@example.com:owner/repo.git', 'https://evil.example/x.git'], 1]);
 	});
 
 	test('a hard link to a file outside is not read or appended to', async () => {
@@ -314,6 +319,28 @@ async function exists(path: string): Promise<boolean> {
 			await outcome(service.git(SESSION, dir, { kind: 'push', branch: 'release', setUpstream: false, defaultBranch: 'release' })),
 			git(join(base, 'origin.git'), 'rev-parse', 'refs/heads/main') === git(repo, 'rev-parse', 'main'),
 		], [true, 'denied', 'denied', true]);
+	});
+
+	test('push can send a given commit, so commits added after the confirmation are not sent', async () => {
+		const dir = join(worktrees, '9-shown');
+		await service.git(SESSION, repo, { kind: 'worktreeAdd', dir, branch: 'para/9-shown', mode: 'new', base: { kind: 'local', branch: 'main' } });
+		await fsp.writeFile(join(dir, 'a.txt'), 'shown');
+		await service.git(SESSION, dir, { kind: 'addTracked' });
+		await service.git(SESSION, dir, { kind: 'commit', message: 'shown' });
+		const shown = (await service.git(SESSION, dir, { kind: 'headSha' })).stdout.trim();
+		await fsp.writeFile(join(dir, 'a.txt'), 'added later');
+		await service.git(SESSION, dir, { kind: 'addTracked' });
+		await service.git(SESSION, dir, { kind: 'commit', message: 'added later' });
+		const files = (await service.git(SESSION, dir, { kind: 'changedFiles', base: { kind: 'local', branch: 'main' }, head: { kind: 'sha', sha: shown } })).stdout;
+		const subjects = (await service.git(SESSION, dir, { kind: 'commitSubjects', base: { kind: 'local', branch: 'main' }, head: { kind: 'sha', sha: shown } })).stdout.trim();
+		const pushed = await service.git(SESSION, dir, { kind: 'push', branch: 'para/9-shown', setUpstream: false, defaultBranch: 'main', source: shown });
+		assert.deepStrictEqual([
+			pushed.code,
+			git(join(base, 'origin.git'), 'rev-parse', 'refs/heads/para/9-shown') === shown,
+			files,
+			subjects === `${shown} shown`,
+			await outcome(service.git(SESSION, dir, { kind: 'push', branch: 'para/9-shown', setUpstream: false, defaultBranch: 'main', source: 'HEAD~1' })),
+		], [0, true, 'a.txt\0', true, 'invalid']);
 	});
 
 	test('commands do not see Para Code or VS Code secrets', async () => {

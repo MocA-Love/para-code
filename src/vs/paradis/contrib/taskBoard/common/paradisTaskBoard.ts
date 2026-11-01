@@ -338,6 +338,8 @@ export interface ITaskBoardRuntime {
 	readonly agentsDetail?: string;
 	/** Codex の設定で、まだ常に許可になっていない帯のツール（ボードへの報告と、スクショの工程の読むだけ・撮るだけのツール。agents が para-code のとき）。 */
 	readonly codexApprovalMissing?: readonly string[];
+	/** SSH の窓のボードで、担当を起動するときだけ許可を渡すか（Q525 の d = B）。手元のボードでは undefined。 */
+	readonly launchApprovals?: boolean;
 	/** 画像とモックの URL に付ける、読むだけの鍵（RPC には使えない）。 */
 	readonly assetKey?: string;
 	/** まだ常に許可になっていない Codex の設定ファイルのうち、ボードが書き足せるもの（CODEX_HOME ごと）。 */
@@ -537,6 +539,7 @@ export interface ITaskBoardRpc {
 	switchRepository: { params: { path: string }; result: void };
 	/** Codex の設定に、ボードへの報告のツールを常に許可する設定を書き足す。 */
 	approveCodexTools: { params: Record<string, never>; result: { path: string } };
+	approveLaunchTools: { params: Record<string, never>; result: void };
 	approveClaudeTools: { params: Record<string, never>; result: { path: string } };
 }
 

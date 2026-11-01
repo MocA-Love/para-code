@@ -652,6 +652,11 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		}
 		// 指示は打鍵されるコマンドの一部になるので、制御文字を落として 1 行にする（定期実行と同じ）
 		const prompt = paradisScheduledRunLaunchPrompt(request.prompt);
+		// SSH の担当に、起動のときだけ許可を渡す（Q525 の d = B）。引数は窓が固定の一覧から組み立て、渡すかどうかは
+		// リポジトリごとに 1 回この窓で確かめる。断られた・答えが無いときは、許可を渡さずに起動する
+		const extraFlags = request.toolApprovals && remoteTarget !== undefined && request.relaySessionId !== undefined
+			? await this.relay.launchApprovalFlags(request.relaySessionId, request.agent)
+			: undefined;
 		let launched;
 		try {
 			launched = await this.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, {
@@ -662,6 +667,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 				...(request.modelId !== undefined ? { modelId: request.modelId } : {}),
 				...(request.effortId !== undefined ? { effortId: request.effortId } : {}),
 				...(request.permissionId !== undefined ? { permissionId: request.permissionId } : {}),
+				...(extraFlags !== undefined ? { extraFlags } : {}),
 				// 利用者の作業中に起動するので、入力を新しいターミナルへ横取りしない
 				preserveFocus: true,
 			});

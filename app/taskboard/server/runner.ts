@@ -325,7 +325,7 @@ export class CommandRunner implements ITaskBoardRunPort {
 }
 
 /** GitHub の失敗の理由。上限で止めているときは、そうと分かる文にする。 */
-function githubReason(err: unknown): string {
+export function githubReason(err: unknown): string {
 	if (err instanceof GitHubError && err.kind === 'budget') {
 		const at = err.until ? new Date(err.until).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : undefined;
 		return `GitHub の利用上限に当たったので呼び出しを止めています${at ? `（${at} ごろ再開）` : ''}。再開した後にやり直してください`;
@@ -333,6 +333,6 @@ function githubReason(err: unknown): string {
 	return (err as Error).message;
 }
 
-function prRef(repo: { owner: string; repo: string }, number: number, url: string, title: string, draft: boolean): ITaskBoardPrRef {
+export function prRef(repo: { owner: string; repo: string }, number: number, url: string, title: string, draft: boolean): ITaskBoardPrRef {
 	return { owner: repo.owner, repo: repo.repo, number, url, title, state: draft ? 'draft' : 'open', checks: 'pending', review: 'none' };
 }

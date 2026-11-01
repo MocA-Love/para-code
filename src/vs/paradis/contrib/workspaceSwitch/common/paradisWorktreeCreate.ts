@@ -370,6 +370,11 @@ export interface IParadisAgentLaunchOptions {
 	readonly modelId?: string;
 	readonly effortId?: string;
 	readonly permissionId?: string;
+	/**
+	 * 呼び出し元が固定の一覧から組み立てた、引用済みの追加の引数（タスクボードの SSH の担当に、起動のときだけ許可を渡す。
+	 * paradisTaskBoardLaunchApprovalFlags）。利用者や担当の入力から作らないこと。
+	 */
+	readonly extraFlags?: string;
 }
 
 /** Claude Code のエフォート語彙（2026-07時点の公式ドキュメント準拠）。 */
@@ -535,6 +540,9 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 		} else if (flag.length > 0) {
 			leftoverFlags.push(flag);
 		}
+	}
+	if (options?.extraFlags) {
+		leftoverFlags.push(options.extraFlags);
 	}
 	if (leftoverFlags.length > 0) {
 		const combined = leftoverFlags.join(' ');

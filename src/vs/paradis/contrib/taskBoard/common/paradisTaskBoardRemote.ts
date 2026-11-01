@@ -200,8 +200,17 @@ export function paradisTaskBoardRemoteStripUrlCredentials(output: string): strin
 /** 履歴の位置。文字列で受けず、形を決めて ref の完全な名前に直す（オプションや範囲の式に読ませない）。 */
 export type ParadisTaskBoardRemoteRev =
 	| { readonly kind: 'head' }
+	| { readonly kind: 'sha'; readonly sha: string }
 	| { readonly kind: 'local'; readonly branch: string }
 	| { readonly kind: 'remote'; readonly branch: string };
+
+/** コミットの完全な SHA（40 桁の 16 進）。確認で見せたコミットそのものを送るために使う。 */
+function checkSha(sha: unknown): string {
+	if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha)) {
+		return invalid('sha must be a full 40-character commit id');
+	}
+	return sha;
+}
 
 function revArg(rev: unknown): string {
 	if (!rev || typeof rev !== 'object') {
@@ -210,6 +219,7 @@ function revArg(rev: unknown): string {
 	const value = rev as { kind?: unknown; branch?: unknown };
 	switch (value.kind) {
 		case 'head': return 'HEAD';
+		case 'sha': return checkSha((rev as { sha?: unknown }).sha);
 		case 'local': return `refs/heads/${checkBranch(value.branch)}`;
 		case 'remote': return `refs/remotes/origin/${checkBranch(value.branch)}`;
 		default: return invalid('unknown rev kind');
@@ -227,7 +237,10 @@ export type ParadisTaskBoardRemoteGitOp =
 	| { readonly kind: 'toplevel' }
 	| { readonly kind: 'commonDir' }
 	| { readonly kind: 'excludePath' }
-	| { readonly kind: 'remoteUrl'; readonly push: boolean }
+	/** `all`: push の送り先をすべて（pushurl を足すと送り先が増えるので、push の前に 1 本だけかを確かめる）。 */
+	| { readonly kind: 'remoteUrl'; readonly push: boolean; readonly all?: boolean }
+	/** `remote.origin.mirror`（あれば push がすべての参照を送る）。 */
+	| { readonly kind: 'remoteMirror' }
 	| { readonly kind: 'defaultBranch' }
 	| { readonly kind: 'status' }
 	| { readonly kind: 'currentBranch' }
@@ -243,7 +256,11 @@ export type ParadisTaskBoardRemoteGitOp =
 	| { readonly kind: 'detach'; readonly base: ParadisTaskBoardRemoteRev }
 	| { readonly kind: 'addTracked' }
 	| { readonly kind: 'commit'; readonly message: string }
-	| { readonly kind: 'push'; readonly branch: string; readonly setUpstream: boolean; readonly defaultBranch: string | undefined };
+	| { readonly kind: 'headSha' }
+	| { readonly kind: 'changedFiles'; readonly base: ParadisTaskBoardRemoteRev; readonly head: ParadisTaskBoardRemoteRev }
+	| { readonly kind: 'commitSubjects'; readonly base: ParadisTaskBoardRemoteRev; readonly head: ParadisTaskBoardRemoteRev }
+	/** `source` は送るコミットの SHA（無ければ HEAD）。確認で見せた後にコミットが足されても、見せたものだけを送る。 */
+	| { readonly kind: 'push'; readonly branch: string; readonly setUpstream: boolean; readonly defaultBranch: string | undefined; readonly source?: string };
 
 export type ParadisTaskBoardRemoteGitOpKind = ParadisTaskBoardRemoteGitOp['kind'];
 
@@ -259,7 +276,7 @@ export interface IParadisTaskBoardRemoteGitPlan {
 	readonly hooks: boolean;
 }
 
-const READ_ONLY_KINDS: ReadonlySet<string> = new Set(['toplevel', 'commonDir', 'excludePath', 'remoteUrl', 'defaultBranch', 'status', 'currentBranch', 'refExists', 'aheadCount', 'boardDirTracked', 'worktreeList']);
+const READ_ONLY_KINDS: ReadonlySet<string> = new Set(['toplevel', 'commonDir', 'excludePath', 'remoteUrl', 'defaultBranch', 'status', 'currentBranch', 'refExists', 'aheadCount', 'boardDirTracked', 'worktreeList', 'headSha', 'changedFiles', 'commitSubjects', 'remoteMirror']);
 
 /** ここで組み立てた argv にも重ねて掛ける、外部コマンドの実行やリポジトリの差し替えにつながるオプション（runGit と同じ）。 */
 const FORBIDDEN_ARGUMENT = /^--(upload-pack|receive-pack|exec|git-dir|work-tree|config-env|output|force|mirror|delete|all|tags)\b|^-[A-Za-z]*f[A-Za-z]*$/;
@@ -321,13 +338,22 @@ function operationArgs(op: { readonly kind?: unknown } & Record<string, unknown>
 		case 'toplevel': return { args: ['rev-parse', '--show-toplevel'] };
 		case 'commonDir': return { args: ['rev-parse', '--path-format=absolute', '--git-common-dir'] };
 		case 'excludePath': return { args: ['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'] };
-		case 'remoteUrl': return { args: ['remote', 'get-url', ...(op.push === true ? ['--push'] : []), 'origin'] };
+		case 'remoteUrl': {
+			// `--all` は get-url では送り先を全部出すだけ（重ねがけの検査が止める push・fetch の `--all` とは別）
+			const args = ['remote', 'get-url', ...(op.push === true ? ['--push'] : []), ...(op.all === true ? ['--all'] : []), 'origin'];
+			return { args, valueIndex: op.all === true ? args.indexOf('--all') : undefined };
+		}
+		case 'remoteMirror': return { args: ['config', '--get', 'remote.origin.mirror'] };
 		case 'defaultBranch': return { args: ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'] };
 		case 'status': return { args: ['--no-optional-locks', 'status', '--porcelain'] };
 		case 'currentBranch': return { args: ['rev-parse', '--abbrev-ref', 'HEAD'] };
 		case 'refExists': return { args: ['rev-parse', '--verify', '--quiet', revArg(op.rev)] };
 		case 'aheadCount': return { args: ['rev-list', '--count', `${revArg(op.base)}..${revArg(op.head)}`] };
 		case 'boardDirTracked': return { args: ['ls-files', '--', PARADIS_TASK_BOARD_REMOTE_BOARD_DIR] };
+		case 'headSha': return { args: ['rev-parse', '--verify', 'HEAD^{commit}'] };
+		// 確認のダイアログに出す: 送るファイルの名前（NUL 区切り。改行を含む名前も見分ける）とコミットの件名（多すぎる分は数だけ）
+		case 'changedFiles': return { args: ['diff', '--name-only', '-z', '--no-renames', `${revArg(op.base)}..${revArg(op.head)}`] };
+		case 'commitSubjects': return { args: ['log', '--no-decorate', '--format=%H %s', '-n', '200', `${revArg(op.base)}..${revArg(op.head)}`] };
 		case 'fetch': return { args: ['fetch', '--quiet', ...(op.prune === true ? ['--prune'] : []), 'origin'] };
 		case 'worktreeList': return { args: ['worktree', 'list', '--porcelain'] };
 		case 'worktreeAdd': return { args: ['worktree', 'add', ...branchArgs(op, absoluteDir(op.dir))] };
@@ -343,7 +369,8 @@ function operationArgs(op: { readonly kind?: unknown } & Record<string, unknown>
 			if (paradisTaskBoardRemoteIsProtectedBranch(branch, defaultBranch)) {
 				denied(`push to the default branch is not allowed: ${branch}`);
 			}
-			return { args: ['push', ...(op.setUpstream === true ? ['--set-upstream'] : []), 'origin', `HEAD:refs/heads/${branch}`] };
+			const source = op.source === undefined || op.source === null ? 'HEAD' : checkSha(op.source);
+			return { args: ['push', '--no-follow-tags', ...(op.setUpstream === true ? ['--set-upstream'] : []), 'origin', `${source}:refs/heads/${branch}`] };
 		}
 		default:
 			return invalid('unknown git operation');
