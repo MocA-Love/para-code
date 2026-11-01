@@ -10,6 +10,8 @@
 // padding）空けた所に、パネルの見出し（拡張機能の名前と閉じるボタン）を出し、その下の四角を main へ送る。パネルの中身は main が
 // ウィンドウに置く WebContentsView（../electron-main/paradisBrowserExtensionSidePanel.ts）。
 //  - どのタブの横に出すか・出してよいかは main が決める（そのウィンドウの前のタブで、エージェントのタブでも共有中でもないとき）
+//  - 利用者が開こうとしたパネルを main が断った（エージェントのタブ・共有中のタブ）ときは、その理由を通知で見せる。断りは拡張機能に
+//    返るだけで画面には何も出ないので、さっきは開いたのに今は開かない、と見えてしまうため。同じタブで何度押しても通知は 1 つ
 //  - エディタが見えないとき・前面の表示（quick pick・ダイアログ・メニュー）がパネルに重なるときは隠す（WebContentsView は
 //    workbench の HTML より前に描かれるので、隠さないと前面の表示を覆う）
 // upstream のファイルには触らず、BrowserEditor.registerContribution() の拡張点だけで足している。
@@ -17,9 +19,11 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { getZoomFactor } from '../../../../base/browser/browser.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Event } from '../../../../base/common/event.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { INotificationHandle, INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, IContainerLayoutOverride } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { BrowserOverlayManager } from '../../../../workbench/contrib/browserView/electron-browser/overlayManager.js';
@@ -47,10 +51,13 @@ export class ParadisBrowserExtensionSidePanelFeature extends BrowserEditorContri
 	 */
 	private _shownFor: string | undefined;
 	private _generation = 0;
+	/** 出している「パネルを出さなかった」通知（閉じるまで同じ通知を重ねて出さない）。 */
+	private _refusalNotice: INotificationHandle | undefined;
 
 	constructor(
 		editor: BrowserEditor,
 		@IParadisBrowserExtensionToolbarService private readonly _toolbarService: IParadisBrowserExtensionToolbarService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super(editor);
 		const header = dom.append(this._element, $('.paradis-side-panel-header'));
@@ -83,7 +90,29 @@ export class ParadisBrowserExtensionSidePanelFeature extends BrowserEditorContri
 			return;
 		}
 		store.add(this._toolbarService.onDidChangeToolbar(() => this._refresh(model)));
+		// main の知らせは全部のウィンドウに届く。このエディタのタブの分だけを見せる
+		store.add(this._toolbarService.main.onDidRefuseSidePanel(refusal => {
+			if (refusal.viewId === model.id && this.editor.model === model) {
+				this._showRefusal(refusal.name);
+			}
+		}));
 		this._refresh(model);
+	}
+
+	private _showRefusal(name: string): void {
+		if (this._refusalNotice) {
+			return;
+		}
+		const notice = this._notificationService.notify({
+			severity: Severity.Info,
+			message: localize('paradis.browserExtensions.sidePanel.refusedNextToAgent', "このタブはエージェントが使っている（共有中の）タブなので、「{0}」のサイドパネルは表示しません。エージェントと共有していないタブで開いてください。", name),
+		});
+		this._refusalNotice = notice;
+		Event.once(notice.onDidClose)(() => {
+			if (this._refusalNotice === notice) {
+				this._refusalNotice = undefined;
+			}
+		});
 	}
 
 	override onModelDetached(): void {
