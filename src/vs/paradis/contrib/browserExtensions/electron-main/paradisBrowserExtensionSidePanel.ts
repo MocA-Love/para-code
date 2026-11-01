@@ -28,6 +28,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname } from '../../../../base/common/path.js';
 import { paradisIsExtensionPageHeld, paradisOnDidChangeExtensionPageHold } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import type { IParadisSidePanelRefusal } from '../common/paradisBrowserExtensions.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
@@ -134,6 +135,9 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 	private readonly _onDidChange = this._disposables.add(new Emitter<void>());
 	/** パネルが開いた・閉じた・出す先のタブが替わった（renderer は見ているタブの分を取り直す）。 */
 	readonly onDidChange: Event<void> = this._onDidChange.event;
+	private readonly _onDidRefuse = this._disposables.add(new Emitter<IParadisSidePanelRefusal>());
+	/** エージェントのタブ・共有中のタブなので、利用者が開こうとしたパネルを出さなかった（renderer がその理由を見せる）。 */
+	readonly onDidRefuse: Event<IParadisSidePanelRefusal> = this._onDidRefuse.event;
 
 	constructor(
 		private readonly _host: ParadisExtensionApiHost,
@@ -428,6 +432,8 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 
 	private _open(view: IParadisTabView, session: ParadisApiSession, place: string, extension: IParadisSidePanelExtension, tabId: number | undefined): void {
 		if (!paradisSidePanelAllowedFor(view)) {
+			// 拡張機能への答えは Chromium に無い断りなので、利用者には何も見えない。理由を renderer に見せてもらう
+			this._onDidRefuse.fire({ viewId: view.id, name: this._environment.nameOf(extension) });
 			throw new ParadisExtensionApiError('Para Code does not show extension panels next to a tab that an agent is using');
 		}
 		const options = this.getOptions(session, extension, tabId ?? view.webContents.id);
