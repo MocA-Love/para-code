@@ -147,11 +147,16 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	private readonly _renderStore = this._register(new DisposableStore());
 	private readonly _noticeStore = this._register(new DisposableStore());
 	private readonly _logTimer = this._register(new IntervalTimer());
-	private readonly _workersChanged = this._register(new RunOnceScheduler(() => void this._refresh(), 300));
+	private readonly _workersChanged = this._register(new RunOnceScheduler(() => void this._refreshWorkers(), 300));
 	private _noticeButton: HTMLButtonElement | undefined;
 	private _logElement: HTMLElement | undefined;
 	/** 一覧の行（拡張機能の id → 行）。選び直した行へフォーカスを戻すのに使う。 */
 	private readonly _rowElements = new Map<string, HTMLElement>();
+	/** 一覧の行の状態の印（拡張機能の id → 要素）。背景の処理が変わったときは、ここだけを書き換える。 */
+	private readonly _rowStatusElements = new Map<string, HTMLElement>();
+	/** 詳細の列の、背景の処理を起動できなかった理由と、背景の処理の状態（書き換えるだけの要素）。 */
+	private _workerErrorElement: HTMLElement | undefined;
+	private _workerStatusElement: HTMLElement | undefined;
 	private _state: IParadisBrowserExtensionsState | undefined;
 	private _profile = PARADIS_DEFAULT_EXTENSION_PROFILE;
 	/** 詳細の列に出している拡張機能。 */
@@ -296,6 +301,9 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		this._logTimer.cancel();
 		this._logElement = undefined;
 		this._rowElements.clear();
+		this._rowStatusElements.clear();
+		this._workerErrorElement = undefined;
+		this._workerStatusElement = undefined;
 		this.contentFocusables.length = 0;
 		this.contentFocusables.push(this._profileSelect, this._storeInput, this._storeButton);
 		if (this._noticeButton) {
@@ -354,20 +362,8 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		const info = dom.append(row, $('.pbpm-info'));
 		dom.append(info, $('.pbpm-name')).textContent = extension.name;
 		const status = dom.append(info, $('.pbpm-meta'));
-		if (extension.loadError || extension.workerError) {
-			status.classList.add('is-error');
-			status.textContent = extension.loadError
-				? localize('paradis.browserExtensions.status.loadError', "読み込めませんでした")
-				: localize('paradis.browserExtensions.status.workerError', "背景の処理を起動できませんでした");
-		} else if (!extension.enabledIn.includes(this._profile)) {
-			status.textContent = localize('paradis.browserExtensions.status.disabled', "この場所では無効");
-		} else if (extension.worker) {
-			status.textContent = extension.worker.running
-				? localize('paradis.browserExtensions.status.running', "背景の処理: 動作中")
-				: localize('paradis.browserExtensions.status.idle', "背景の処理: 待機中");
-		} else {
-			status.textContent = localize('paradis.browserExtensions.status.version', "バージョン {0}", extension.version);
-		}
+		this._rowStatusElements.set(extension.id, status);
+		this._fillRowStatus(status, extension);
 		const toggle = dom.append(row, $<HTMLInputElement>('input.pbe-toggle'));
 		toggle.type = 'checkbox';
 		toggle.checked = extension.enabledIn.includes(this._profile);
@@ -390,6 +386,81 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 				select();
 			}
 		}));
+	}
+
+	/** 一覧の行の状態の印。 */
+	private _fillRowStatus(status: HTMLElement, extension: IParadisBrowserExtensionView): void {
+		const failed = !!(extension.loadError || extension.workerError);
+		status.classList.toggle('is-error', failed);
+		if (failed) {
+			status.textContent = extension.loadError
+				? localize('paradis.browserExtensions.status.loadError', "読み込めませんでした")
+				: localize('paradis.browserExtensions.status.workerError', "背景の処理を起動できませんでした");
+		} else if (!extension.enabledIn.includes(this._profile)) {
+			status.textContent = localize('paradis.browserExtensions.status.disabled', "この場所では無効");
+		} else if (extension.worker) {
+			status.textContent = extension.worker.running
+				? localize('paradis.browserExtensions.status.running', "背景の処理: 動作中")
+				: localize('paradis.browserExtensions.status.idle', "背景の処理: 待機中");
+		} else {
+			status.textContent = localize('paradis.browserExtensions.status.version', "バージョン {0}", extension.version);
+		}
+	}
+
+	/** 詳細の列の、背景の処理を起動できなかった理由（無ければ隠す）。 */
+	private _fillWorkerError(element: HTMLElement, extension: IParadisBrowserExtensionView): void {
+		element.style.display = extension.workerError ? '' : 'none';
+		element.textContent = extension.workerError ? localize('paradis.browserExtensions.workerError', "背景の処理を起動できませんでした: {0}", extension.workerError) : '';
+	}
+
+	/** 詳細の列の、背景の処理の状態。 */
+	private _fillWorkerStatus(element: HTMLElement, extension: IParadisBrowserExtensionView): void {
+		element.textContent = extension.workerError
+			? localize('paradis.browserExtensions.worker.failed', "状態: 起動できませんでした")
+			: extension.worker?.running
+				? localize('paradis.browserExtensions.worker.running', "状態: 動作中")
+				: localize('paradis.browserExtensions.worker.idle', "状態: 待機中（使われると起動します）");
+	}
+
+	/**
+	 * 背景の処理が動き出した・止まった・起動に失敗した: 一覧の行の状態の印と、詳細の列の背景の処理の欄だけを書き換える
+	 * （約 30 秒で止まる worker のたびに画面を作り直すと、フォーカスと開いている削除の確認が消えるため）。拡張機能の顔ぶれが
+	 * 変わっていたら作り直す。
+	 */
+	private async _refreshWorkers(): Promise<void> {
+		if (this._busy) {
+			return;
+		}
+		let state: IParadisBrowserExtensionsState;
+		try {
+			state = await this._mainService.getState();
+		} catch {
+			return;
+		}
+		if (this._store.isDisposed || this._busy) {
+			return;
+		}
+		const previous = this._state;
+		this._state = state;
+		if (!previous || previous.active !== state.active || previous.extensions.map(extension => extension.id).join() !== state.extensions.map(extension => extension.id).join()) {
+			this._renderNotice();
+			this._render();
+			return;
+		}
+		for (const extension of state.extensions) {
+			const status = this._rowStatusElements.get(extension.id);
+			if (status) {
+				this._fillRowStatus(status, extension);
+			}
+			if (extension.id === this._selectedId) {
+				if (this._workerErrorElement) {
+					this._fillWorkerError(this._workerErrorElement, extension);
+				}
+				if (this._workerStatusElement) {
+					this._fillWorkerStatus(this._workerStatusElement, extension);
+				}
+			}
+		}
 	}
 
 	private _focusSelectedRow(): void {
@@ -465,9 +536,9 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		if (extension.loadError) {
 			dom.append(detail, $('.pbe-callout.is-error')).textContent = localize('paradis.browserExtensions.loadError', "読み込めませんでした: {0}", extension.loadError);
 		}
-		if (extension.workerError) {
-			dom.append(detail, $('.pbe-callout.is-error')).textContent = localize('paradis.browserExtensions.workerError', "背景の処理を起動できませんでした: {0}", extension.workerError);
-		}
+		// 背景の処理の欄は、状態が変わったときに書き換えるので、理由が無くても置いておく（隠す）
+		this._workerErrorElement = dom.append(detail, $('.pbe-callout.is-error'));
+		this._fillWorkerError(this._workerErrorElement, extension);
 		if (extension.pagesWithoutApis?.length) {
 			dom.append(detail, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.pagesWithoutApis', "次のページは UTF-8 でないか Para Code が書き換えられない形式のため、Para Code が足す機能（chrome.storage.sync など）が使えません: {0}", extension.pagesWithoutApis.join('、'));
 		}
@@ -565,11 +636,8 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	/** 「背景の処理」（状態と console のログ）。開いている間だけログを読み直す。 */
 	private _renderWorker(parent: HTMLElement, extension: IParadisBrowserExtensionView): void {
 		const section = this._appendSection(parent, localize('paradis.browserExtensions.section.worker', "背景の処理（service worker）"));
-		dom.append(section, $('.pbpm-meta')).textContent = extension.workerError
-			? localize('paradis.browserExtensions.worker.failed', "状態: 起動できませんでした")
-			: extension.worker?.running
-				? localize('paradis.browserExtensions.worker.running', "状態: 動作中")
-				: localize('paradis.browserExtensions.worker.idle', "状態: 待機中（使われると起動します）");
+		this._workerStatusElement = dom.append(section, $('.pbpm-meta'));
+		this._fillWorkerStatus(this._workerStatusElement, extension);
 		const log = dom.append(section, $('.pbe-log'));
 		log.setAttribute('role', 'log');
 		log.setAttribute('aria-label', localize('paradis.browserExtensions.worker.logLabel', "背景の処理のログ"));
