@@ -150,7 +150,12 @@ async function exists(path: string): Promise<boolean> {
 		const https = (await service.git(SESSION, repo, { kind: 'remoteUrl', push: false })).stdout.trim();
 		git(repo, 'remote', 'set-url', 'origin', 'git@example.com:owner/repo.git');
 		const scp = (await service.git(SESSION, repo, { kind: 'remoteUrl', push: false })).stdout.trim();
-		assert.deepStrictEqual([https, scp], ['https://example.com/owner/repo.git', 'git@example.com:owner/repo.git']);
+		// pushurl を 2 本足すと、--all で両方が見える（1 本目だけを返す get-url --push では見落とす）
+		git(repo, 'config', '--add', 'remote.origin.pushurl', 'git@example.com:owner/repo.git');
+		git(repo, 'config', '--add', 'remote.origin.pushurl', 'https://user:tok@evil.example/x.git');
+		const all = (await service.git(SESSION, repo, { kind: 'remoteUrl', push: true, all: true })).stdout.trim().split('\n');
+		const mirror = await service.git(SESSION, repo, { kind: 'remoteMirror' });
+		assert.deepStrictEqual([https, scp, all, mirror.code], ['https://example.com/owner/repo.git', 'git@example.com:owner/repo.git', ['git@example.com:owner/repo.git', 'https://evil.example/x.git'], 1]);
 	});
 
 	test('a hard link to a file outside is not read or appended to', async () => {

@@ -98,10 +98,13 @@ export interface IParadisTaskBoardRelayLaunchToolsConfirmation {
 }
 
 /** 秘密らしいファイルの名前（承認済みのブランチでも、これが足されたら聞き直す）。 */
-const SUSPICIOUS_FILE = /(^|\/)(\.env(\..*)?|\.npmrc|\.netrc|\.pgpass|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|.*\.(pem|key|p12|pfx|keystore|jks))$/i;
+const SUSPICIOUS_FILE = /(^|\/)(\.env(\..*)?|\.npmrc|\.netrc|\.pgpass|\.git-credentials|credentials\.json|kubeconfig|service-account[^/]*\.json|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|[^/]*\.(pem|key|p12|pfx|keystore|jks|tfstate))$/i;
+/** 見本として置く `.env` の雛形（秘密を含まない決まりの名前）は外す。 */
+const ENV_TEMPLATE = /(^|\/)\.env\.(example|sample|template)$/i;
 
+/** 秘密らしい名前か（網羅的ではない。ダイアログでもそう伝える）。 */
 export function paradisTaskBoardRelayIsSuspiciousFile(file: string): boolean {
-	return SUSPICIOUS_FILE.test(file);
+	return SUSPICIOUS_FILE.test(file) && !ENV_TEMPLATE.test(file);
 }
 
 /** 窓のサービスを包んだもの（テストでは差し替える）。 */
@@ -457,9 +460,17 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 				refuse('no-commit');
 				return;
 			}
-			const pushUrl = paradisTaskBoardRemoteStripUrlCredentials((await git({ kind: 'remoteUrl', push: true })).stdout.trim());
-			if (session.pinnedPush === undefined || pushUrl !== session.pinnedPush) {
+			// 送り先は、ちょうど 1 本で、セッションを開いたときに固定したものだけ（pushurl を足すと送り先が増える）
+			const pushUrls = paradisTaskBoardRemoteStripUrlCredentials((await git({ kind: 'remoteUrl', push: true, all: true })).stdout).split('\n').map(url => url.trim()).filter(url => url.length > 0);
+			const pushUrl = pushUrls[0] ?? '';
+			if (session.pinnedPush === undefined || pushUrls.length !== 1 || pushUrl !== session.pinnedPush) {
 				refuse('push-url-changed');
+				return;
+			}
+			// mirror の設定があると、push がすべての参照を送る
+			const mirror = await git({ kind: 'remoteMirror' });
+			if (mirror.code === 0 && mirror.stdout.trim().toLowerCase() !== 'false') {
+				refuse('push-mirror');
 				return;
 			}
 			const remoteBranch = (await git({ kind: 'refExists', rev: { kind: 'remote', branch } })).code === 0;
@@ -486,7 +497,8 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 			const recorded = branch.startsWith('para/') && record.branches.includes(branch);
 			const approved = recorded && (record.pushApproved ?? []).includes(branch);
 			const suspicious = files.filter(paradisTaskBoardRelayIsSuspiciousFile);
-			if (commits.length > 0 && (!approved || suspicious.length > 0)) {
+			// 記録に無いブランチは、送るコミットが 0 件でも確かめる（確認なしに新しいブランチを作らせない）
+			if ((commits.length > 0 && (!approved || suspicious.length > 0)) || (!recorded && !approved)) {
 				if (!interactive) {
 					refuse('needs-confirmation');
 					return;
@@ -515,7 +527,8 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 				return;
 			}
 			const result = await git({ kind: 'push', branch, setUpstream, defaultBranch: session.defaultBranch, source: sha });
-			exit({ code: result.code, signal: null, cancelled: false, timedOut: false, ...(result.code !== 0 ? { reason: paradisTaskBoardRemoteStripUrlCredentials(result.stderr.trim().split('\n').slice(-3).join(' ')).slice(0, 400) || 'push-failed' } : {}) });
+			// 承認済みのブランチは、後から足したコミットも確かめずに送る（Q525 の c = B）。そのかわり、送った SHA と件数を必ず残す
+			exit({ code: result.code, signal: null, cancelled: false, timedOut: false, ...(result.code === 0 ? { pushedSha: sha, pushedCommits: commits.length } : {}), ...(result.code !== 0 ? { reason: paradisTaskBoardRemoteStripUrlCredentials(result.stderr.trim().split('\n').slice(-3).join(' ')).slice(0, 400) || 'push-failed' } : {}) });
 		} catch (error) {
 			const failure = relayFailure(error);
 			refuse(`${failure.code}: ${failure.message}`.slice(0, 500));

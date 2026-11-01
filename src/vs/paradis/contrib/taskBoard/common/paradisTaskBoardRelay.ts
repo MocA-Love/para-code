@@ -214,7 +214,12 @@ export function paradisParseTaskBoardRelayEvent(value: unknown): ParadisTaskBoar
 		const code = typeof event.code === 'number' && Number.isInteger(event.code) ? event.code : null;
 		const signal = typeof event.signal === 'string' && event.signal.length <= 32 ? event.signal : null;
 		const reason = typeof event.reason === 'string' && event.reason.length <= 500 ? event.reason : undefined;
-		return { type: 'relay-exit', runId: event.runId, code, signal, cancelled: event.cancelled === true, timedOut: event.timedOut === true, ...(reason ? { reason } : {}) };
+		const pushedSha = typeof event.pushedSha === 'string' && /^[0-9a-f]{40}$/.test(event.pushedSha) ? event.pushedSha : undefined;
+		const pushedCommits = typeof event.pushedCommits === 'number' && Number.isSafeInteger(event.pushedCommits) && event.pushedCommits >= 0 ? event.pushedCommits : undefined;
+		return {
+			type: 'relay-exit', runId: event.runId, code, signal, cancelled: event.cancelled === true, timedOut: event.timedOut === true,
+			...(reason ? { reason } : {}), ...(pushedSha ? { pushedSha } : {}), ...(pushedCommits !== undefined ? { pushedCommits } : {}),
+		};
 	}
 	return undefined;
 }

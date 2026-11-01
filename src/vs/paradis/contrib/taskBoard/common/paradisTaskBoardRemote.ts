@@ -237,7 +237,10 @@ export type ParadisTaskBoardRemoteGitOp =
 	| { readonly kind: 'toplevel' }
 	| { readonly kind: 'commonDir' }
 	| { readonly kind: 'excludePath' }
-	| { readonly kind: 'remoteUrl'; readonly push: boolean }
+	/** `all`: push の送り先をすべて（pushurl を足すと送り先が増えるので、push の前に 1 本だけかを確かめる）。 */
+	| { readonly kind: 'remoteUrl'; readonly push: boolean; readonly all?: boolean }
+	/** `remote.origin.mirror`（あれば push がすべての参照を送る）。 */
+	| { readonly kind: 'remoteMirror' }
 	| { readonly kind: 'defaultBranch' }
 	| { readonly kind: 'status' }
 	| { readonly kind: 'currentBranch' }
@@ -273,7 +276,7 @@ export interface IParadisTaskBoardRemoteGitPlan {
 	readonly hooks: boolean;
 }
 
-const READ_ONLY_KINDS: ReadonlySet<string> = new Set(['toplevel', 'commonDir', 'excludePath', 'remoteUrl', 'defaultBranch', 'status', 'currentBranch', 'refExists', 'aheadCount', 'boardDirTracked', 'worktreeList', 'headSha', 'changedFiles', 'commitSubjects']);
+const READ_ONLY_KINDS: ReadonlySet<string> = new Set(['toplevel', 'commonDir', 'excludePath', 'remoteUrl', 'defaultBranch', 'status', 'currentBranch', 'refExists', 'aheadCount', 'boardDirTracked', 'worktreeList', 'headSha', 'changedFiles', 'commitSubjects', 'remoteMirror']);
 
 /** ここで組み立てた argv にも重ねて掛ける、外部コマンドの実行やリポジトリの差し替えにつながるオプション（runGit と同じ）。 */
 const FORBIDDEN_ARGUMENT = /^--(upload-pack|receive-pack|exec|git-dir|work-tree|config-env|output|force|mirror|delete|all|tags)\b|^-[A-Za-z]*f[A-Za-z]*$/;
@@ -335,7 +338,12 @@ function operationArgs(op: { readonly kind?: unknown } & Record<string, unknown>
 		case 'toplevel': return { args: ['rev-parse', '--show-toplevel'] };
 		case 'commonDir': return { args: ['rev-parse', '--path-format=absolute', '--git-common-dir'] };
 		case 'excludePath': return { args: ['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'] };
-		case 'remoteUrl': return { args: ['remote', 'get-url', ...(op.push === true ? ['--push'] : []), 'origin'] };
+		case 'remoteUrl': {
+			// `--all` は get-url では送り先を全部出すだけ（重ねがけの検査が止める push・fetch の `--all` とは別）
+			const args = ['remote', 'get-url', ...(op.push === true ? ['--push'] : []), ...(op.all === true ? ['--all'] : []), 'origin'];
+			return { args, valueIndex: op.all === true ? args.indexOf('--all') : undefined };
+		}
+		case 'remoteMirror': return { args: ['config', '--get', 'remote.origin.mirror'] };
 		case 'defaultBranch': return { args: ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'] };
 		case 'status': return { args: ['--no-optional-locks', 'status', '--porcelain'] };
 		case 'currentBranch': return { args: ['rev-parse', '--abbrev-ref', 'HEAD'] };
@@ -362,7 +370,7 @@ function operationArgs(op: { readonly kind?: unknown } & Record<string, unknown>
 				denied(`push to the default branch is not allowed: ${branch}`);
 			}
 			const source = op.source === undefined || op.source === null ? 'HEAD' : checkSha(op.source);
-			return { args: ['push', ...(op.setUpstream === true ? ['--set-upstream'] : []), 'origin', `${source}:refs/heads/${branch}`] };
+			return { args: ['push', '--no-follow-tags', ...(op.setUpstream === true ? ['--set-upstream'] : []), 'origin', `${source}:refs/heads/${branch}`] };
 		}
 		default:
 			return invalid('unknown git operation');

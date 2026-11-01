@@ -20,7 +20,8 @@
  */
 
 const ALLOWED_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
-	push: new Set(['--porcelain', '--set-upstream', '-u', '--quiet', '-q']),
+	// `--no-follow-tags`: タスクボードの SSH 中継の push が、設定（push.followTags）で注釈付きのタグまで送らないように
+	push: new Set(['--porcelain', '--set-upstream', '-u', '--quiet', '-q', '--no-follow-tags']),
 	fetch: new Set(['--quiet', '-q', '--prune']),
 	pull: new Set(['--ff-only', '--no-rebase', '--quiet', '-q']),
 };

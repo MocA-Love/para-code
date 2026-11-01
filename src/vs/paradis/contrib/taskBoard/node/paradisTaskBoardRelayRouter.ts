@@ -81,7 +81,7 @@ export class ParadisTaskBoardRelayRouter {
 				operation: 'runCommand.exit', initiator: 'board', outcome: parsed.reason ? 'denied' : parsed.code === 0 ? 'allowed' : 'failed',
 				sessionId: sessionId as string, authority: session.authority, repository: session.repository,
 				...(parsed.code !== null ? { code: parsed.code } : {}), ...(parsed.reason ? { reason: parsed.reason } : {}),
-				detail: `run ${parsed.runId}${parsed.cancelled ? ' cancelled' : ''}${parsed.timedOut ? ' timed out' : ''}`,
+				detail: `run ${parsed.runId}${parsed.cancelled ? ' cancelled' : ''}${parsed.timedOut ? ' timed out' : ''}${parsed.pushedSha ? ` pushed ${parsed.pushedSha} (${parsed.pushedCommits ?? 0} commits)` : ''}`,
 			});
 		}
 		return true;

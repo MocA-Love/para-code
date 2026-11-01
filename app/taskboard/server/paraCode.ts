@@ -39,7 +39,7 @@ interface IBridgeQuestion {
 /** SSH の中継の工程のコマンドの出力と終わり（そのボードにだけ届く）。 */
 export type ParaCodeRelayEvent =
 	| { type: 'relay-output'; runId: string; lines: readonly string[] }
-	| { type: 'relay-exit'; runId: string; code: number | null; signal: string | null; cancelled: boolean; timedOut: boolean; reason?: string };
+	| { type: 'relay-exit'; runId: string; code: number | null; signal: string | null; cancelled: boolean; timedOut: boolean; reason?: string; pushedSha?: string; pushedCommits?: number };
 
 export type ParaCodeBridgeEvent =
 	| { type: 'status'; terminal: string; launchId?: string; status: ParaCodeTerminalStatus; question?: IBridgeQuestion }
