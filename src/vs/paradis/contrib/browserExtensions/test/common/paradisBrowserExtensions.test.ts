@@ -14,6 +14,8 @@ import {
 	paradisEnabledExtensions,
 	paradisIsAllowedOnRemote,
 	paradisLedgerWithAllowedOnRemote,
+	paradisLedgerWithDebuggerAllowed,
+	paradisIsDebuggerAllowed,
 	paradisLedgerWithDataCleared,
 	paradisLedgerWithEnabled,
 	paradisLedgerWithExtension,
@@ -96,6 +98,20 @@ suite('ParadisBrowserExtensions common', () => {
 			turnedOff: turnedOff.allowedOnRemote,
 			removed: removed.allowedOnRemote,
 		}, { byDefault: [false, false], allowed: [A], reparsed: [A], older: false, turnedOff: undefined, removed: undefined });
+	});
+
+	test('keeps "allow debugger access" per extension and place, off by default, and drops it with the extension', () => {
+		let ledger = paradisLedgerWithExtension(PARADIS_EMPTY_EXTENSIONS_LEDGER, extension(A), 'default');
+		ledger = paradisLedgerWithDebuggerAllowed(ledger, A, 'default', true);
+		ledger = paradisLedgerWithDebuggerAllowed(ledger, 'c'.repeat(32), 'default', true);
+		const reparsed = paradisParseExtensionsLedger(paradisSerializeExtensionsLedger(ledger));
+		const older = paradisParseExtensionsLedger({ version: 1, extensions: [extension(A)], enabled: {}, removed: [], pinned: {} });
+		assert.deepStrictEqual({
+			allowed: [paradisIsDebuggerAllowed(reparsed, A, 'default'), paradisIsDebuggerAllowed(reparsed, A, 'profile:0123456789ab')],
+			older: paradisIsDebuggerAllowed(older, A, 'default'),
+			turnedOff: paradisLedgerWithDebuggerAllowed(ledger, A, 'default', false).debuggerAllowed,
+			removed: paradisLedgerWithoutExtension(ledger, A).debuggerAllowed,
+		}, { allowed: [true, false], older: false, turnedOff: { default: [] }, removed: { default: [] } });
 	});
 
 	test('keeps the data-clearing mark across a reinstall until each storage path is cleared', () => {
