@@ -375,7 +375,21 @@ export function paradisTaskBoardRemoteCommandError(command: unknown): string | u
  * 2026-11-01 の実測では REH のサーバーのプロセス自身には `SSH_*` しか無く、`VSCODE_AGENT_HOST_CONNECTION_TOKEN` などは
  * 子のプロセスにだけ入っていた。親のシェルの環境（ログインシェルで解決したもの）から紛れ込む場合に備えて外す。
  */
-const STRIPPED_ENV_PREFIXES = ['VSCODE_', 'ELECTRON_', 'PARA_CODE_', 'PARADIS_'];
+const STRIPPED_ENV_PREFIXES = ['VSCODE_', 'ELECTRON_', 'PARA_CODE_', 'PARADIS_', 'GIT_CONFIG'];
+
+/**
+ * git の操作先や設定を差し替える変数（`GIT_CONFIG*` は上の接頭辞）と、node の起動に口を挟む `NODE_OPTIONS`。
+ * `-C` で決めた作業場所の外のリポジトリを触らせない・`core.sshCommand` などを env から足させないため、git の操作と
+ * 工程のコマンドの両方で外す。
+ *
+ * `GIT_SSH_COMMAND`・`GIT_SSH` は残す。ここに来る env は REH 自身の環境とログインシェルの環境だけで、ボードからは
+ * 送れない（依頼に env の欄が無い）。値を置けるのは接続先の利用者だけで、外すと、鍵をホストごとに env で選んでいる
+ * 人の push とテストの clone が通らなくなる（`core.sshCommand` を git の設定に書いている人は、どちらでも変わらない）。
+ */
+const STRIPPED_ENV_NAMES: ReadonlySet<string> = new Set([
+	'GIT_DIR', 'GIT_WORK_TREE', 'GIT_EXEC_PATH', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE',
+	'NODE_OPTIONS',
+]);
 
 /** ボードのプロセスと同じく、端末の問い合わせや認証のウィンドウで待たせないための固定の値。 */
 const FIXED_ENV: Readonly<Record<string, string>> = {
@@ -396,7 +410,7 @@ export function paradisTaskBoardRemoteEnv(base: Readonly<Record<string, string |
 			continue;
 		}
 		const upper = name.toUpperCase();
-		if (STRIPPED_ENV_PREFIXES.some(prefix => upper.startsWith(prefix))) {
+		if (STRIPPED_ENV_NAMES.has(upper) || STRIPPED_ENV_PREFIXES.some(prefix => upper.startsWith(prefix))) {
 			continue;
 		}
 		result[name] = value;
