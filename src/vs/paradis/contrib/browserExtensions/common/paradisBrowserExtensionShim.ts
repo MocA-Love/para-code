@@ -61,9 +61,19 @@ export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
 	// Electron は onInstalled・onStartup を出さない。Para Code が拡張機能の読み込みの後に出す
 	runtime: { methods: ['openOptionsPage'], events: ['onInstalled', 'onStartup'] },
 	tabs: {
-		methods: ['query', 'get', 'getCurrent', 'create', 'duplicate', 'remove', 'update', 'goBack', 'goForward', 'captureVisibleTab'],
+		methods: ['query', 'get', 'getCurrent', 'create', 'duplicate', 'remove', 'update', 'goBack', 'goForward', 'captureVisibleTab', 'group', 'ungroup'],
 		events: ['onActivated', 'onCreated', 'onUpdated', 'onRemoved', 'onReplaced'],
 		constants: { TAB_ID_NONE: -1 },
+	},
+	// グループは拡張機能ごとのメモリ上の台帳で、画面には出さない（main の paradisBrowserExtensionTabGroups.ts）
+	tabGroups: {
+		permission: 'tabGroups',
+		methods: ['get', 'query', 'update', 'move'],
+		events: ['onCreated', 'onUpdated', 'onRemoved', 'onMoved'],
+		constants: {
+			TAB_GROUP_ID_NONE: -1,
+			Color: { GREY: 'grey', BLUE: 'blue', RED: 'red', YELLOW: 'yellow', GREEN: 'green', PINK: 'pink', PURPLE: 'purple', CYAN: 'cyan', ORANGE: 'orange' },
+		},
 	},
 	windows: {
 		methods: ['getAll', 'get', 'getCurrent', 'getLastFocused', 'create', 'update', 'remove'],
