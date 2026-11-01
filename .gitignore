@@ -63,3 +63,5 @@ screenshots/
 .v[0-9]*/
 # Local agent validation evidence
 .agent-validation/
+# PARA-PATCH: local design mocks and investigation reports (not part of the product)
+/mock/
