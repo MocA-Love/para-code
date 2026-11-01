@@ -225,6 +225,11 @@ export interface IParadisTaskBoardLaunchRequest {
 	readonly modelId?: string;
 	readonly effortId?: string;
 	readonly permissionId?: string;
+	/**
+	 * SSH の中継のセッション（paradisTaskBoardRelay.ts）。あれば、そのセッションを作った SSH の窓で、接続先の作業場所
+	 * （`repoPath` は接続先のパス）に起動する。宛先の窓は接続口がセッションの登録から決める。
+	 */
+	readonly relaySessionId?: string;
 }
 
 export interface IParadisTaskBoardSendRequest {
@@ -312,6 +317,10 @@ export function paradisParseTaskBoardLaunch(body: unknown): Parsed<IParadisTaskB
 	if (!modelId.ok || !effortId.ok || !permissionId.ok) {
 		return invalid('modelId, effortId and permissionId must be short strings.');
 	}
+	const relaySessionId = body.relaySessionId;
+	if (relaySessionId !== undefined && (typeof relaySessionId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(relaySessionId) || !repoPath.startsWith('/'))) {
+		return invalid('relaySessionId must be a relay session id, with a POSIX repoPath.');
+	}
 	return {
 		ok: true,
 		value: {
@@ -322,6 +331,7 @@ export function paradisParseTaskBoardLaunch(body: unknown): Parsed<IParadisTaskB
 			...(modelId.value !== undefined ? { modelId: modelId.value } : {}),
 			...(effortId.value !== undefined ? { effortId: effortId.value } : {}),
 			...(permissionId.value !== undefined ? { permissionId: permissionId.value } : {}),
+			...(relaySessionId !== undefined ? { relaySessionId } : {}),
 		},
 	};
 }

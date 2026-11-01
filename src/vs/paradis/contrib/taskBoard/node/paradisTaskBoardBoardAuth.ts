@@ -25,12 +25,14 @@ export type ParadisTaskBoardPeerCheck = (clientPort: number, serverPort: number,
 
 /** 確かめた結果。断るときは理由（監査ログ用）。 */
 export type ParadisTaskBoardBoardVerdict =
-	| { readonly ok: true; readonly keyHash: string }
+	| { readonly ok: true; readonly keyHash: string; readonly remote: boolean }
 	| { readonly ok: false; readonly reason: 'no-board' | 'key-missing' | 'key-mismatch' | 'board-exited' | 'peer-mismatch' | 'peer-unknown' };
 
 interface IRegisteredBoard {
 	readonly pid: number;
 	readonly keyHash: Buffer;
+	/** SSH の窓のボード（main が付けた印）。 */
+	readonly remote: boolean;
 }
 
 /** 覚えておくボードの数（ボードのホストは 1 つのボードしか持たない。開き直しの重なりの分だけ余裕を持つ）。 */
@@ -55,7 +57,7 @@ export class ParadisTaskBoardBoardAuth {
 	/** 窓から、main の open() が返したボードを登録する。同じ pid の古い登録は置き換える。 */
 	register(board: IParadisTaskBoardBoardRegistration): void {
 		const keyHash = Buffer.from(paradisTaskBoardKeyHash(board.key), 'hex');
-		this.boards = [{ pid: board.pid, keyHash }, ...this.boards.filter(entry => entry.pid !== board.pid)].slice(0, MAX_BOARDS);
+		this.boards = [{ pid: board.pid, keyHash, remote: board.remote === true }, ...this.boards.filter(entry => entry.pid !== board.pid)].slice(0, MAX_BOARDS);
 	}
 
 	/** 要求を確かめる。`key` は鍵のヘッダーの値。 */
@@ -75,7 +77,7 @@ export class ParadisTaskBoardBoardAuth {
 		const keyHash = given.toString('hex');
 		const cached = this.verified.get(socket);
 		if (cached && cached.keyHash === keyHash && cached.pid === board.pid) {
-			return { ok: true, keyHash };
+			return { ok: true, keyHash, remote: board.remote };
 		}
 		const clientPort = socket.remotePort;
 		if (typeof clientPort !== 'number' || socket.localPort !== serverPort) {
@@ -89,7 +91,7 @@ export class ParadisTaskBoardBoardAuth {
 			return { ok: false, reason: 'peer-mismatch' };
 		}
 		this.verified.set(socket, { keyHash, pid: board.pid });
-		return { ok: true, keyHash };
+		return { ok: true, keyHash, remote: board.remote };
 	}
 }
 

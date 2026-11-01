@@ -119,10 +119,14 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 	const environmentService = accessor.get(INativeEnvironmentService);
 	const store = new DisposableStore();
 
+	const audit = new ParadisTaskBoardAuditLog(join(environmentService.userDataPath, 'paradis', 'taskBoardRelay'), logService);
+	const relay = new ParadisTaskBoardRelayRouter(createWindowRouter(server), audit, logService);
 	const service = store.add(new ParadisTaskBoardBridgeService(createWindowRouter(server), {
 		directoryExists,
 		ignorePathCase: isMacintosh || isWindows,
 		newId: generateUuid,
+		relaySessionWindow: (sessionId, keyHash) => relay.windowOf(sessionId, keyHash),
+		onRelayLaunch: (request, outcome, reason) => relay.auditLaunch(request.relaySessionId ?? '', request.agent, request.repoPath, outcome, reason),
 	}, logService));
 	// ボード用のツールは、設定がオンのときだけ para-browser に出す（使わない人のエージェントに説明を載せない）
 	const toolProvider = store.add(new MutableDisposable());
@@ -130,8 +134,6 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 	store.add(server.onDidAddConnection(connection => service.onWindowConnected(connection.ctx)));
 	store.add(server.onDidRemoveConnection(connection => service.onWindowDisconnected(connection.ctx)));
 	const auth = new ParadisTaskBoardBoardAuth((clientPort, serverPort, pids) => paradisPeerIsOneOf(clientPort, serverPort, process.pid, pids));
-	const audit = new ParadisTaskBoardAuditLog(join(environmentService.userDataPath, 'paradis', 'taskBoardRelay'), logService);
-	const relay = new ParadisTaskBoardRelayRouter(createWindowRouter(server), audit, logService);
 	store.add(server.onDidRemoveConnection(connection => relay.onWindowDisconnected(connection.ctx)));
 	server.registerChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL, new ParadisTaskBoardBridgeChannel(service, auth, relay));
 

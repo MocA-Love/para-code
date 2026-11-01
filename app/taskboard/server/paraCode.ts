@@ -347,6 +347,10 @@ export interface IParaCodeAgentsOptions {
 	readonly bridgeFile?: string;
 	/** 接続口へ送る、起動ごとの鍵。 */
 	readonly boardKey?: string;
+	/** SSH の窓のボードの中継のセッション（窓の再読み込みで変わる）。起動の依頼に添え、その窓で接続先の作業場所に担当を起こす。 */
+	readonly relaySessionId?: () => string | undefined;
+	/** SSH の窓のボードで、成果物のファイルを中継で読む（`.para/` の中だけ）。無ければ手元の fs で読む。 */
+	readonly readArtifact?: (place: string, relativePath: string, maxBytes: number) => Promise<Buffer | undefined>;
 	readonly onConnection?: (connected: boolean, detail?: string) => void;
 	readonly fetchImpl?: typeof fetch;
 	readonly timeouts?: { readonly connect?: number; readonly idle?: number; readonly retry?: number; readonly reconcile?: number; readonly stall?: number };
@@ -496,7 +500,7 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 		let terminal: string | undefined;
 		let failure: Error | undefined;
 		try {
-			terminal = (await this.client.request<{ terminal: string }>('POST', '/v1/launch', { launchId, repoPath, agent, prompt }, LAUNCH_TIMEOUT_MS)).terminal;
+			terminal = (await this.client.request<{ terminal: string }>('POST', '/v1/launch', { launchId, repoPath, agent, prompt, ...(this.options.relaySessionId?.() ? { relaySessionId: this.options.relaySessionId() } : {}) }, LAUNCH_TIMEOUT_MS)).terminal;
 		} catch (err) {
 			failure = err as Error;
 			// 返事が途切れても、Para Code 側では起動していることがある。起動 id で探して、あれば結び付ける
@@ -973,13 +977,18 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 		await this.reply(replyId, true, message);
 	}
 
-	/** 成果物の path は作業場所の中のファイルだけ読む（外を指すもの・大きすぎるものは断る）。 */
+	/**
+	 * 成果物の path は作業場所の中のファイルだけ読む（外を指すもの・大きすぎるものは断る）。SSH の窓のボードは中継で読み、
+	 * 読めるのは `.para/` の中だけ（窓と接続先が確かめる）。スクショは、先頭のバイトで画像の形式を確かめてから出す
+	 * （担当が秘密のファイルを `.para/x.png` に写しても、画像として手元に運ばない）。中身の検査はしない。
+	 */
 	private async readArtifacts(task: ITaskBoardTask, raw: unknown): Promise<ITaskBoardArtifactInput[]> {
 		if (!Array.isArray(raw)) {
 			return [];
 		}
 		const root = this.options.placePath(task);
-		const realRoot = root ? await realpath(root).catch(() => undefined) : undefined;
+		const remote = this.options.readArtifact;
+		const realRoot = root && !remote ? await realpath(root).catch(() => undefined) : root;
 		const result: ITaskBoardArtifactInput[] = [];
 		for (const item of raw.slice(0, 20)) {
 			if (!item || typeof item !== 'object') {
@@ -991,17 +1000,43 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 			let content = typeof a.content === 'string' ? a.content : undefined;
 			let relPath = typeof a.path === 'string' && a.path.trim() ? a.path.trim() : undefined;
 			if (relPath && content === undefined && realRoot) {
-				const target = await realpath(path.resolve(realRoot, relPath)).catch(() => undefined);
-				if (!target || (target !== realRoot && !target.startsWith(realRoot + path.sep))) {
-					throw new Error(`${relPath} は作業場所の外か、存在しません`);
+				let bytes: Buffer;
+				if (remote) {
+					// 接続先のパスは POSIX。作業場所の中の相対パスに直してから頼む（外を指すものはここでも断る）
+					const rel = path.posix.isAbsolute(relPath) ? path.posix.relative(realRoot, relPath) : path.posix.normalize(relPath);
+					if (!rel || rel.startsWith('..') || path.posix.isAbsolute(rel)) {
+						throw new Error(`${relPath} は作業場所の外です`);
+					}
+					const read = await remote(realRoot, rel, kind === 'screenshot' ? Math.floor(MAX_ARTIFACT_BYTES * 3 / 4) : MAX_ARTIFACT_BYTES).catch((err: Error) => {
+						throw new Error(`${relPath} を読めませんでした（SSH の接続先では .para/ の中のファイルだけを読めます）: ${err.message}`);
+					});
+					if (!read) {
+						throw new Error(`${relPath} は存在しません`);
+					}
+					bytes = read;
+					relPath = rel;
+				} else {
+					const target = await realpath(path.resolve(realRoot, relPath)).catch(() => undefined);
+					if (!target || (target !== realRoot && !target.startsWith(realRoot + path.sep))) {
+						throw new Error(`${relPath} は作業場所の外か、存在しません`);
+					}
+					const info = await stat(target);
+					const encoded = kind === 'screenshot' ? Math.ceil(info.size / 3) * 4 + 40 : info.size;
+					if (!info.isFile() || encoded > MAX_ARTIFACT_BYTES) {
+						throw new Error(`${relPath} はファイルでないか、大きすぎます（上限 4 MiB、画像は約 3 MiB）`);
+					}
+					bytes = await readFile(target);
+					relPath = path.relative(realRoot, target);
 				}
-				const info = await stat(target);
-				const encoded = kind === 'screenshot' ? Math.ceil(info.size / 3) * 4 + 40 : info.size;
-				if (!info.isFile() || encoded > MAX_ARTIFACT_BYTES) {
-					throw new Error(`${relPath} はファイルでないか、大きすぎます（上限 4 MiB、画像は約 3 MiB）`);
+				if (kind === 'screenshot') {
+					const mime = imageMimeOf(bytes);
+					if (!mime) {
+						throw new Error(`${relPath} は PNG・JPEG・GIF・WebP の画像ではありません`);
+					}
+					content = `data:${mime};base64,${bytes.toString('base64')}`;
+				} else {
+					content = bytes.toString('utf8');
 				}
-				content = kind === 'screenshot' ? `data:${imageMime(target)};base64,${(await readFile(target)).toString('base64')}` : await readFile(target, 'utf8');
-				relPath = path.relative(realRoot, target);
 			}
 			if (content !== undefined && content.length > MAX_ARTIFACT_BYTES) {
 				throw new Error(`「${title}」の本文が 4 MiB を超えています`);
@@ -1059,12 +1094,19 @@ export function launchErrorText(message: string | undefined): string {
 	return message;
 }
 
-function imageMime(file: string): string {
-	switch (path.extname(file).toLowerCase()) {
-		case '.png': return 'image/png';
-		case '.jpg': case '.jpeg': return 'image/jpeg';
-		case '.gif': return 'image/gif';
-		case '.webp': return 'image/webp';
-		default: return 'application/octet-stream';
+/** 先頭のバイトで見分けた画像の形式（PNG・JPEG・GIF・WebP）。どれでもなければ undefined。 */
+export function imageMimeOf(bytes: Buffer): string | undefined {
+	if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+		return 'image/png';
 	}
+	if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+		return 'image/jpeg';
+	}
+	if (bytes.length >= 6 && /^GIF8[79]a$/.test(bytes.subarray(0, 6).toString('latin1'))) {
+		return 'image/gif';
+	}
+	if (bytes.length >= 12 && bytes.subarray(0, 4).toString('latin1') === 'RIFF' && bytes.subarray(8, 12).toString('latin1') === 'WEBP') {
+		return 'image/webp';
+	}
+	return undefined;
 }
