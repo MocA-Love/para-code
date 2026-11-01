@@ -13,7 +13,7 @@ import { tmpdir } from 'os';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisSetExtensionPageHold } from '../../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { paradisSetExtensionPageHold, paradisSetExtensionUiAllowedWhileHeld } from '../../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { IParadisExtensionApiCaller, IParadisExtensionApiNamespace, ParadisApiSession, ParadisExtensionApiHost } from '../../electron-main/paradisBrowserExtensionApiHost.js';
 import { IParadisSidePanelExtension, ParadisBrowserExtensionSidePanel } from '../../electron-main/paradisBrowserExtensionSidePanel.js';
 import type { IParadisTabView, ParadisBrowserExtensionTabs } from '../../electron-main/paradisBrowserExtensionTabs.js';
@@ -162,6 +162,31 @@ suite('ParadisBrowserExtensionSidePanel', () => {
 				emitted: [['onOpened', { windowId: 1, path: 'panel.html' }], ['onClosed', { windowId: 1, path: 'panel.html' }]],
 			});
 		} finally {
+			dispose();
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('opens next to a shared tab while the setting allows it, and closes it when the setting is turned off', async () => {
+		const { root, panel, call, tab1, setGesture, dispose } = await setup();
+		const refusals: unknown[] = [];
+		const listener = panel.onDidRefuse(refusal => refusals.push(refusal));
+		try {
+			setGesture(true);
+			paradisSetExtensionPageHold(tab1.webContents, true);
+			paradisSetExtensionUiAllowedWhileHeld(true);
+			call('open', { tabId: 11 });
+			const whileAllowed = panel.panelFor(tab1.id);
+			paradisSetExtensionUiAllowedWhileHeld(false);
+			assert.deepStrictEqual({ whileAllowed, afterOff: panel.panelFor(tab1.id), refusals }, {
+				whileAllowed: { extensionId: ID, name: 'Panel', width: 360 },
+				afterOff: undefined,
+				refusals: [],
+			});
+		} finally {
+			paradisSetExtensionUiAllowedWhileHeld(false);
+			paradisSetExtensionPageHold(tab1.webContents, false);
+			listener.dispose();
 			dispose();
 			await fs.rm(root, { recursive: true, force: true });
 		}

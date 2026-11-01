@@ -7,7 +7,7 @@
 import assert from 'assert';
 import { EventEmitter } from 'events';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisDeniesExtensionWindowOpen } from '../../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { paradisDeniesExtensionWindowOpen, paradisSetExtensionUiAgentTabCheck, paradisSetExtensionUiAllowedWhileHeld } from '../../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { ParadisGuardedWebContents, paradisGuardChildWebContents, paradisSetExtensionNavigationGuard } from '../../electron-main/paradisExtensionNavigationGuard.js';
 
 const EXTENSION_PAGE = 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/options.html';
@@ -79,6 +79,33 @@ suite('paradisExtensionNavigationGuard', () => {
 			listeners: 1,
 		});
 	});
+	test('lets an extension\'s in-page frame load in a held tab while the setting allows it, but still cancels the page itself', () => {
+		const contents = new FakeWebContents();
+		const cancellable = (event: string, url: string, isMainFrame: boolean) => {
+			let prevented = false;
+			contents.emit(event, { url, isMainFrame, preventDefault: () => { prevented = true; } });
+			return prevented;
+		};
+		paradisSetExtensionNavigationGuard(contents as unknown as ParadisGuardedWebContents, true, { schedule: () => { } });
+		let agentTab = false;
+		paradisSetExtensionUiAgentTabCheck(candidate => candidate !== contents || agentTab);
+		try {
+			paradisSetExtensionUiAllowedWhileHeld(true);
+			const allowed = [cancellable('will-frame-navigate', EXTENSION_PAGE, false), cancellable('will-redirect', EXTENSION_PAGE, false), cancellable('will-frame-navigate', EXTENSION_PAGE, true)];
+			// エージェントのタブ（とその子）の中の枠は、設定がオンでも止める
+			agentTab = true;
+			const inAgentTab = cancellable('will-frame-navigate', EXTENSION_PAGE, false);
+			agentTab = false;
+			paradisSetExtensionUiAllowedWhileHeld(false);
+			const off = cancellable('will-frame-navigate', EXTENSION_PAGE, false);
+			assert.deepStrictEqual({ allowed, inAgentTab, off }, { allowed: [false, false, true], inAgentTab: true, off: true });
+		} finally {
+			paradisSetExtensionUiAgentTabCheck(undefined);
+			paradisSetExtensionUiAllowedWhileHeld(false);
+			paradisSetExtensionNavigationGuard(contents as unknown as ParadisGuardedWebContents, false);
+		}
+	});
+
 	test('guards a tab opened by a held tab from the moment it exists, and refuses window.open of extension pages', () => {
 		const opener = new FakeWebContents();
 		const child = new FakeWebContents();
