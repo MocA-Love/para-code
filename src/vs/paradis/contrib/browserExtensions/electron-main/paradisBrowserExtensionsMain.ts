@@ -74,6 +74,8 @@ import {
 	paradisSerializeExtensionsLedger,
 	paradisIsAllowedOnRemote,
 	paradisLedgerWithAllowedOnRemote,
+	paradisLedgerWithDebuggerAllowed,
+	paradisIsDebuggerAllowed,
 } from '../common/paradisBrowserExtensions.js';
 import { PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE } from '../common/paradisBrowserExtensionApiWire.js';
 import { IParadisExtensionAccess, paradisParseWebStoreInput, paradisSameExtensionAccess, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
@@ -83,6 +85,7 @@ import { paradisRegisterBrowsingDataApis } from './paradisBrowserExtensionBrowsi
 import { ParadisBrowserExtensionTts } from './paradisBrowserExtensionTts.js';
 import { paradisIsExtensionPageHeld, paradisSetExtensionUiAgentTabCheck, paradisSetExtensionUiAllowedWhileHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { ParadisBrowserExtensionUserScripts } from './paradisBrowserExtensionUserScripts.js';
+import { ParadisBrowserExtensionDebugger } from './paradisBrowserExtensionDebugger.js';
 import { IParadisSidePanelInfo, IParadisSidePanelLayout, ParadisBrowserExtensionSidePanel } from './paradisBrowserExtensionSidePanel.js';
 import { ParadisBrowserExtensionWorkerDevTools } from './paradisBrowserExtensionWorkerDevTools.js';
 import { FileAccess } from '../../../../base/common/network.js';
@@ -434,6 +437,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _tts: ParadisBrowserExtensionTts | undefined;
 	/** chrome.userScripts（P9b）。タブの口があるときだけ（入れてよい利用者のタブかを決めるため）。 */
 	private readonly _userScripts: ParadisBrowserExtensionUserScripts | undefined;
+	/** chrome.debugger（Q529）。タブの口と、タブへの CDP セッションを開く口があるときだけ。 */
+	private readonly _debugger: ParadisBrowserExtensionDebugger | undefined;
 	/** chrome.sidePanel（P9d）。タブの口があるときだけ。 */
 	private readonly _sidePanel: ParadisBrowserExtensionSidePanel | undefined;
 	/** 内蔵ブラウザのタブ（新しいタブのページの置き換え、P9c）。 */
@@ -567,6 +572,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			describeTab: (extension, contents) => tabs.describeTab(extension, contents.session, contents.id),
 		}) : undefined;
 		this._userScripts?.listen();
+		const attachDebugger = tabsOptions?.environment.attachDebugger;
+		this._debugger = tabs && attachDebugger ? new ParadisBrowserExtensionDebugger(this._apiHost, tabs, {
+			isAllowed: (id, place) => paradisIsDebuggerAllowed(this._ledger, id, place),
+			attach: viewId => attachDebugger(viewId),
+		}) : undefined;
 		this._tabEnvironment = tabs ? tabsOptions?.environment : undefined;
 		if (tabs) {
 			// 3 秒の待ちの後にエージェントのタブと分かった: 入れたユーザースクリプトを残さず、拡張機能の新しいタブのページも外す
@@ -668,6 +678,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._tts?.dispose();
 		this._menus?.dispose();
 		this._userScripts?.dispose();
+		this._debugger?.dispose();
 		this._sidePanel?.dispose();
 		this._workerDevTools?.dispose();
 		paradisSetExtensionUiAgentTabCheck(undefined);
@@ -1061,11 +1072,15 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._ready;
 		// 「ユーザースクリプトを許可」を出す拡張機能（manifest に userScripts を求めるもの。タブの口があるときだけ）
 		const userScriptsRequested = new Set<string>();
-		if (this._userScripts) {
-			for (const extension of this._ledger.extensions) {
-				if ((await this._declaredPermissions(extension.path)).includes('userScripts')) {
-					userScriptsRequested.add(extension.id);
-				}
+		// 「デバッガーの接続を許可」を出す拡張機能（manifest に debugger を求めるもの。chrome.debugger の口があるときだけ）
+		const debuggerRequested = new Set<string>();
+		for (const extension of this._ledger.extensions) {
+			const declared = this._userScripts || this._debugger ? await this._declaredPermissions(extension.path) : [];
+			if (this._userScripts && declared.includes('userScripts')) {
+				userScriptsRequested.add(extension.id);
+			}
+			if (this._debugger && declared.includes('debugger')) {
+				debuggerRequested.add(extension.id);
 			}
 		}
 		// 管理画面に出すアイコン・権限・背景の処理（manifest から）
@@ -1097,6 +1112,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				generatedKey: undefined,
 				...(this._stagedNext.has(extension.id) ? { nextVersion: this._stagedNext.get(extension.id) } : {}),
 				...(userScriptsRequested.has(extension.id) ? { userScripts: { allowedIn: this._userScripts?.allowedPlaces(extension.id) ?? [] } } : {}),
+				...(debuggerRequested.has(extension.id) ? { debuggerAccess: { allowedIn: Object.entries(this._ledger.debuggerAllowed ?? {}).filter(([, ids]) => ids.includes(extension.id)).map(([profile]) => profile) } } : {}),
 				allowedOnRemote: paradisIsAllowedOnRemote(this._ledger, extension.id),
 				...(this._heldUpdates.has(extension.id) ? { pendingUpdate: { version: this._heldUpdates.get(extension.id)!.version, permissions: this._heldUpdates.get(extension.id)!.added.permissions, hostPermissions: this._heldUpdates.get(extension.id)!.added.hostPermissions } } : {}),
 			})),
@@ -1760,6 +1776,20 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._userScripts.setAllowed(profile, id, allowed);
 	}
 
+	/** 「デバッガーの接続を許可」を切り替える（Q529。場所ごと）。オフにすると、その場所でつないでいるものを外す。 */
+	async setDebuggerAllowed(id: string, profile: string, allowed: boolean): Promise<void> {
+		await this._ready;
+		const installed = this._ledger.extensions.find(extension => extension.id === id);
+		if (!this.active || !this._debugger || !installed || !paradisIsExtensionProfileKey(profile) || typeof allowed !== 'boolean' || !(await this._declaredPermissions(installed.path)).includes('debugger')) {
+			return;
+		}
+		this._ledger = paradisLedgerWithDebuggerAllowed(this._ledger, id, profile, allowed);
+		if (!allowed) {
+			this._debugger.revoke(id, profile);
+		}
+		await this._save();
+	}
+
 	/** 写しの manifest が求める権限（permissions と optional_permissions）。読めなければ空。 */
 	private async _declaredPermissions(path: string): Promise<readonly string[]> {
 		return (await this._readManifest(path)).permissions;
@@ -1919,6 +1949,7 @@ export function paradisRegisterBrowserExtensions(
 		reloadUnpacked: id => created.reloadUnpacked(id),
 		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
 		setUserScriptsAllowed: (id, profile, allowed) => created.setUserScriptsAllowed(id, profile, allowed),
+		setDebuggerAllowed: (id, profile, allowed) => created.setDebuggerAllowed(id, profile, allowed),
 		setAllowedOnRemote: (id, allowed) => created.setAllowedOnRemote(id, allowed),
 		openNewTabPage: viewId => created.openNewTabPage(viewId),
 		getSidePanel: viewId => created.getSidePanel(viewId),

@@ -61,7 +61,7 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 		refusedForms.push('Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません');
 	}
 	if (required.has('debugger')) {
-		refusedForms.push('ページへのデバッガーの接続（chrome.debugger.attach）は断る形で足したので、それを使う働きは動きません');
+		refusedForms.push('ページへのデバッガーの接続（chrome.debugger）は、拡張機能の管理で「デバッガーの接続を許可」をオンにすると使えます（既定はオフ。エージェントのタブと共有中のタブにはつながりません）');
 	}
 	reasons.push(...refusedForms);
 	// 主な働きが Para Code（Electron）に無いもの
