@@ -17,7 +17,8 @@
 // Origin: devtools://devtools を付ける）。起動時の引数（upstream の mainImpl.ts）は変えず、ここで localhost に小さな
 // 中継を立てる。中継は、開いたウィンドウごとの乱数の token が URL にあり、Origin が devtools://devtools のものだけを
 // 受け、Origin を外して上流へ渡す（ウェブのページからの WebSocket は Origin が違うので通らない）。
-// Electron 43.7.7 の Linux で、この経路で worker の console と評価が使えることを確かめた（2026-11-02）。
+// Electron 43.7.7 と 43.8.3 の Linux で、この経路（43.8.3 ではこのファイルそのもの）で worker の console と評価が使えることを
+// 確かめた（2026-11-02）。
 
 import * as electron from 'electron';
 import type { BrowserWindow } from 'electron';
