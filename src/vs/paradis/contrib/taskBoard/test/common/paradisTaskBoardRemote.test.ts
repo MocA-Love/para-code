@@ -86,7 +86,7 @@ suite('Paradis task board remote - checks', () => {
 
 	test('push goes only to a non-default branch, never forced', () => {
 		assert.deepStrictEqual(paradisTaskBoardRemoteGitPlan('/r', { kind: 'push', branch: 'para/12-fix', setUpstream: true, defaultBranch: 'develop', force: true }), {
-			args: ['-C', '/r', '-c', 'core.quotepath=false', 'push', '--set-upstream', 'origin', 'HEAD:refs/heads/para/12-fix'],
+			args: ['-C', '/r', '-c', 'core.quotepath=false', 'push', '--no-follow-tags', '--set-upstream', 'origin', 'HEAD:refs/heads/para/12-fix'],
 			readOnly: false, network: true, hooks: true,
 		});
 		const pushes: unknown[] = [

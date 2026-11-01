@@ -500,6 +500,9 @@ export interface IParadisTaskBoardRelayExitEvent {
 	readonly timedOut: boolean;
 	/** 走らせなかった・途中で止まった理由（確認で断った、接続が切れた等）。 */
 	readonly reason?: string;
+	/** push で送ったコミット（完全な SHA）と、その件数。監査ログとボードの表示に使う。 */
+	readonly pushedSha?: string;
+	readonly pushedCommits?: number;
 }
 
 export type ParadisTaskBoardRelayEvent = IParadisTaskBoardRelayOutputEvent | IParadisTaskBoardRelayExitEvent;

@@ -411,7 +411,7 @@ async function main(restart?: IRestart): Promise<void> {
 	const client = useGitHub ? new GitHubClient({ token: ghTokenProvider() }) : undefined;
 	const remoteRunner = relay ? new RemoteCommandRunner(() => engine, relay, placePath, client, remote, relayInfo?.defaultBranch) : undefined;
 	const commandRunner = remoteRunner ?? (paraCodeMode ? new CommandRunner({ engine: () => engine, placePath, repoPath: repoPath!, repo: remote, github: client }) : undefined);
-	const gitWorkspaces = relay && relayInfo ? new RemoteWorkspaces(relay, relayInfo, (place, branch) => remoteRunner!.push(place, branch, false, false, 'release').then(failure => { if (failure) { log(`push before release: ${failure}`); } })) : realWorkspaces ? new GitWorkspaces(repoPath!, worktreeRoot) : undefined;
+	const gitWorkspaces = relay && relayInfo ? new RemoteWorkspaces(relay, relayInfo, (place, branch) => remoteRunner!.push(place, branch, false, false, 'release').then(result => log(`push before release: ${result.error ?? result.sent}`))) : realWorkspaces ? new GitWorkspaces(repoPath!, worktreeRoot) : undefined;
 	/** 止めるときに解除するタイマー（開き直した後も古いエンジンが動き出さないように）。 */
 	const timers: NodeJS.Timeout[] = [];
 	engine = new TaskBoardEngine({

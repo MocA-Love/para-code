@@ -145,7 +145,7 @@ async function confirmPush(dialogService: IDialogService, notificationService: I
 			? [localize('paradis.taskBoard.relay.pushSuspicious', "注意: 秘密を含みそうな名前のファイルがあります: {0}", request.suspicious.join(', '))]
 			: []),
 		// allow-any-unicode-next-line
-		localize('paradis.taskBoard.relay.pushNote', "送ったコミットは GitHub に残ります。ファイルの中身は下の一覧で確かめられないので、気になるものがあれば送らずに作業場所で確かめてください。"),
+		localize('paradis.taskBoard.relay.pushNote', "送ったコミットは GitHub に残ります。ファイルの中身は下の一覧で確かめられないので、気になるものがあれば送らずに作業場所で確かめてください。秘密らしいファイルの判定は名前だけで、網羅的ではありません。「今後聞かずに送る」にしたブランチは、後から足したコミットも確かめずに送ります（送った SHA と件数はボードと記録に残ります）。"),
 	].join('\n\n');
 	const commits = paradisTaskBoardCommandPreview(request.commits.join('\n'), '');
 	const files = paradisTaskBoardCommandPreview(request.files.join('\n'), '');

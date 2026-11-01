@@ -13,7 +13,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisParseTaskBoardBoardRegistration, paradisParseTaskBoardRelayRequest, paradisTaskBoardRelayOperationName } from '../../common/paradisTaskBoardRelay.js';
-import { IParadisTaskBoardRelayApproval, IParadisTaskBoardRelayCommandConfirmation, IParadisTaskBoardRelayPushConfirmation, IParadisTaskBoardRelayRecord, ParadisTaskBoardRelaySessions } from '../../common/paradisTaskBoardRelaySessions.js';
+import { IParadisTaskBoardRelayApproval, IParadisTaskBoardRelayCommandConfirmation, IParadisTaskBoardRelayPushConfirmation, IParadisTaskBoardRelayRecord, ParadisTaskBoardRelaySessions, paradisTaskBoardRelayIsSuspiciousFile } from '../../common/paradisTaskBoardRelaySessions.js';
 
 const KEY = 'k'.repeat(43);
 const SESSION = 'session-0123456789abcdef';
@@ -354,7 +354,7 @@ suite('Paradis task board relay - window side', () => {
 		const SHA2 = 'b'.repeat(40);
 
 		/** push の確かめに使う REH の答え。`state` を書き換えて、確認の間の変化を再現する。 */
-		function pushReh(state: { head: string; pushUrl: string; subjects: string; files: string }) {
+		function pushReh(state: { head: string; pushUrl: string; subjects: string; files: string; mirror?: string }) {
 			return (command: string, arg: unknown) => {
 				if (command !== 'git') {
 					return defaultReh(command, arg);
@@ -364,6 +364,7 @@ suite('Paradis task board relay - window side', () => {
 				switch (op.kind) {
 					case 'headSha': return out(`${state.head}\n`);
 					case 'remoteUrl': return out(op.push ? `${state.pushUrl}\n` : 'https://example.com/o/r.git\n');
+					case 'remoteMirror': return state.mirror === undefined ? out('', 1) : out(`${state.mirror}\n`);
 					case 'defaultBranch': return out('refs/remotes/origin/main\n');
 					case 'refExists': return out('', 1);
 					case 'commitSubjects': return out(state.subjects);
@@ -375,7 +376,7 @@ suite('Paradis task board relay - window side', () => {
 		}
 
 		async function setup(branch: string, extra?: Parameters<typeof create>[0]) {
-			const state = { head: SHA1, pushUrl: 'git@example.com:o/r.git', subjects: `${SHA1} change a\n`, files: 'a.txt\0' };
+			const state: { head: string; pushUrl: string; subjects: string; files: string; mirror?: string } = { head: SHA1, pushUrl: 'git@example.com:o/r.git', subjects: `${SHA1} change a\n`, files: 'a.txt\0' };
 			const created = await opened({ record: { worktrees: [{ dir: kept, branch: 'para/kept' }], branches: ['para/kept'] }, reh: pushReh(state), ...extra });
 			let n = 0;
 			const push = async (interactive = true) => {
@@ -428,6 +429,34 @@ suite('Paradis task board relay - window side', () => {
 				await other.push(),
 				other.pushConfirmations.map(request => request.canRemember),
 			], ['push-url-changed', 'pushed', 'pushed', [false, false]]);
+		});
+
+		test('a second push URL or a mirror setting is refused, and a branch the board did not make is asked even with no commits', async () => {
+			const twoUrls = await setup('para/kept');
+			// 担当が pushurl を足した（get-url --push --all が 2 本を返す）
+			twoUrls.state.pushUrl = 'git@example.com:o/r.git\ngit@evil.example:o/r.git';
+			const mirror = await setup('para/kept');
+			mirror.state.mirror = 'true';
+			const empty = await setup('feature/new');
+			empty.state.subjects = '';
+			empty.state.files = '';
+			assert.deepStrictEqual([
+				await twoUrls.push(), await mirror.push(), await empty.push(),
+				empty.pushConfirmations.map(request => [request.commits.length, request.canRemember]),
+				twoUrls.pushes().length + mirror.pushes().length,
+			], ['push-url-changed', 'push-mirror', 'pushed', [[0, false]], 0]);
+		});
+
+		test('every push leaves the sent SHA and count in the end event', async () => {
+			const { push, bridge } = await setup('para/kept');
+			await push();
+			const exit = bridge.calls.map(call => (call.arg as { event?: { type: string; pushedSha?: string; pushedCommits?: number } }).event).find(event => event?.type === 'relay-exit');
+			assert.deepStrictEqual([exit?.pushedSha, exit?.pushedCommits], [SHA1, 1]);
+		});
+
+		test('secret-looking names, but not the env templates', () => {
+			const names = ['.env', 'config/.env.local', '.env.example', 'app/.env.sample', '.env.template', '.git-credentials', 'gcp/credentials.json', 'infra/terraform.tfstate', 'kubeconfig', 'keys/service-account-prod.json', 'id_ed25519', 'certs/server.pem', 'src/app.ts', 'README.md'];
+			assert.deepStrictEqual(names.filter(paradisTaskBoardRelayIsSuspiciousFile), ['.env', 'config/.env.local', '.git-credentials', 'gcp/credentials.json', 'infra/terraform.tfstate', 'kubeconfig', 'keys/service-account-prod.json', 'id_ed25519', 'certs/server.pem']);
 		});
 
 		test('a push on release never asks, and secret-looking files make an approved branch ask again', async () => {

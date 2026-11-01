@@ -169,12 +169,12 @@ describe('RemoteCommandRunner', () => {
 				case 'aheadCount': return { code: 0, stdout: '1', stderr: '', timedOut: false };
 				case 'refExists': return { code: 1, stdout: '', stderr: '', timedOut: false };
 				case 'pushBranch':
-					setTimeout(() => runner.onEvent({ type: 'relay-exit', runId: op.runId as string, code: 0, signal: null, cancelled: false, timedOut: false }), 0);
+					setTimeout(() => runner.onEvent({ type: 'relay-exit', runId: op.runId as string, code: 0, signal: null, cancelled: false, timedOut: false, pushedSha: 'c'.repeat(40), pushedCommits: 2 }), 0);
 					return { accepted: true };
 				default: return { code: 0, stdout: '', stderr: '', timedOut: false };
 			}
 		});
-		const { engine, results } = fakeEngine();
+		const { engine, results, output } = fakeEngine();
 		(engine as unknown as { getTask: () => object }).getTask = () => ({ attempt: 2, status: 'working' });
 		(engine as unknown as { flowOf: () => object }).flowOf = () => ({ id: 'f', name: 'Flow', scope: 'team', workspace: { commit: 'board' } });
 		const created: { body: string }[] = [];
@@ -193,11 +193,13 @@ describe('RemoteCommandRunner', () => {
 			push: ops.find(op => op.kind === 'pushBranch'),
 			body: created.map(c => c.body),
 			results: results.map(r => [r.ok, r.detail]),
+			sent: output.filter(line => line.includes('件のコミットを送りました')),
 		}).toEqual({
 			ops: ['excludeBoardDir', 'status', 'currentBranch', 'addTracked', 'commit', 'aheadCount', 'fetch', 'refExists', 'pushBranch'],
 			push: { kind: 'pushBranch', place: '/home/u/repo-worktrees/7', runId: expect.any(String), branch: 'para/7', setUpstream: true, interactive: true },
 			body: ['Closes #3\n\nタスクボードが作ったドラフト PR です。'],
 			results: [[true, '#5']],
+			sent: ['  2 件のコミットを送りました（cccccccccccc）'],
 		});
 	});
 

@@ -261,23 +261,24 @@ export class RemoteCommandRunner implements ITaskBoardRunPort {
 	) { }
 
 	/**
-	 * ブランチを push し、終わりを待つ。成功なら undefined、失敗なら理由（画面に出す文）。返却のとき（interactive が false）は、
-	 * 窓が承認済みのブランチだけを送る。
+	 * ブランチを push し、終わりを待つ。成功なら送ったコミットの件数と SHA、失敗なら理由（画面に出す文）。返却のとき
+	 * （interactive が false）は、窓が承認済みのブランチだけを送る。
 	 */
-	async push(place: string, branch: string, setUpstream: boolean, interactive: boolean, taskId: string): Promise<string | undefined> {
+	async push(place: string, branch: string, setUpstream: boolean, interactive: boolean, taskId: string): Promise<{ readonly error?: string; readonly sent?: string }> {
 		const runId = `push-${taskId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80)}-${++this.seq}`;
 		const done = new Promise<Extract<ParaCodeRelayEvent, { type: 'relay-exit' }>>(resolve => this.waiters.set(runId, resolve));
 		try {
 			await this.relay.pushBranch(place, runId, branch, setUpstream, interactive);
 		} catch (err) {
 			this.waiters.delete(runId);
-			return `push を頼めませんでした: ${(err as Error).message}`;
+			return { error: `push を頼めませんでした: ${(err as Error).message}` };
 		}
 		const event = await done;
 		if (event.code === 0 && !event.reason) {
-			return undefined;
+			// 承認済みのブランチは後から足したコミットも確かめずに送るので、何を送ったかを必ず見せる
+			return { sent: `${event.pushedCommits ?? 0} 件のコミットを送りました（${(event.pushedSha ?? '').slice(0, 12)}）` };
 		}
-		return pushFailureText(event.reason);
+		return { error: pushFailureText(event.reason) };
 	}
 
 	run(task: ITaskBoardTask, step: ITaskBoardStep): void {
@@ -407,14 +408,15 @@ export class RemoteCommandRunner implements ITaskBoardRunPort {
 		}
 		if (localAhead > 0) {
 			engine.reportOutput(task.id, [`${place} $ git push origin ${branch}`, '  （SSH の窓で、送るコミットとファイルを確かめてから送ります）']);
-			const failure = await this.push(place, branch, true, true, task.id);
+			const pushed = await this.push(place, branch, true, true, task.id);
 			if (!alive()) {
 				return;
 			}
-			if (failure !== undefined) {
-				fail(failure);
+			if (pushed.error !== undefined) {
+				fail(pushed.error);
 				return;
 			}
+			engine.reportOutput(task.id, [`  ${pushed.sent}`]);
 		}
 		if (found) {
 			engine.reportRunResult(task.id, attempt, { ok: true, detail: `#${found.number}（既存）`, pr: prRef(repo, found.number, found.url, found.title, found.draft) });
@@ -488,7 +490,8 @@ function pushFailureText(reason: string | undefined): string {
 		case 'not-approved': return 'SSH の窓で push を「送らない」にしたか、確認に答えが無いまま 10 分たちました';
 		case 'needs-confirmation': return 'このブランチの push はまだ確かめていないので、返却のときには送りませんでした';
 		case 'confirm-pending': return 'SSH の窓で確認を待っている別の依頼があります。そちらに答えてからやり直してください';
-		case 'push-url-changed': return 'push の送り先（origin）が、ボードを開いたときから変わっています。送りませんでした';
+		case 'push-url-changed': return 'push の送り先（origin）が、ボードを開いたときから変わったか、1 つではありません。送りませんでした';
+		case 'push-mirror': return 'origin に mirror の設定があり、すべての参照を送ってしまうので送りませんでした';
 		case 'board-files-in-commits': return '送るコミットに .para/ の中のファイルが入っています。コミットから外してからやり直してください';
 		case 'hidden-characters': return '送るコミットの件名・ファイル名・送り先に、表示できない文字があります。送りませんでした';
 		case 'disconnected': return 'SSH の窓との接続が切れたので送りませんでした';
