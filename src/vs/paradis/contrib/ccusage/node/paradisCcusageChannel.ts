@@ -44,6 +44,7 @@ import {
 	PARADIS_CCUSAGE_SETTING_ARCHIVE_DIRS,
 	PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS,
 	PARADIS_CCUSAGE_TIMEZONE_PATTERN,
+	isParadisCcusageReportKind,
 	ParadisCcusageProjects,
 	ParadisCcusageWarmLeasePayload,
 	ParadisCcusageWarmTarget,
@@ -70,7 +71,14 @@ const MAX_EXEC_TIMEOUT_MS = 10 * 60_000;
  * 実機検証済みのバージョンへ固定する(更新したい場合はローカルインストールか
  * 設定 paradis.ccusage.executablePath を使ってもらう)。
  */
-const NPX_PINNED_VERSION = 'ccusage@20.0.14';
+const NPX_PINNED_VERSION = 'ccusage@20.0.46';
+/**
+ * PATH 上やよくあるインストール先で見つけた ccusage を使ってよい最低の版。20.0.26 から Claude の記録のうち
+ * 期間より前に書かれたファイルを開かなくなり（Codex は 20.0.21 から）、ステータスバーの「今日だけ」の集計が
+ * 全部の記録を読まずに済む。これより古い版を見つけたら、使わずに {@link NPX_PINNED_VERSION} を使う。
+ * 設定 `paradis.ccusage.executablePath` で明示されたものは確かめない（利用者が選んだ版を使う）。
+ */
+const MIN_LOCAL_VERSION: readonly [number, number, number] = [20, 0, 26];
 /** JSON 出力の最大サイズ(セッションが多いと数MBになる)。 */
 const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
 /** バックグラウンドで取り直す周期。 */
@@ -213,6 +221,7 @@ type WarmLeaseSchedulerFactory = (runner: () => void) => IParadisWarmLeaseSchedu
 
 const warmReportArgs: Readonly<Record<ParadisCcusageWarmTargetKind, readonly string[]>> = {
 	daily: ['daily'],
+	today: ['daily'],
 	blocks: ['blocks', '--active'],
 	session: ['claude', 'session', '--order', 'desc'],
 	projects: ['claude', 'daily', '--instances'],
@@ -416,7 +425,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 
 	async fetchReport<K extends ParadisCcusageWarmTargetKind>(kind: K, options: IParadisCcusageExecOptions): Promise<IParadisCcusageReportResult<IParadisCcusageReportValues[K]>> {
 		const ttl = kind === 'blocks' ? BLOCK_CACHE_TTL_MS : CACHE_TTL_MS;
-		const result = await this.execJson<unknown>([...warmReportArgs[kind]], options, ttl);
+		const result = await this.execJson<unknown>(kind, options, ttl);
 		return { ...result, value: paradisCcusageReportValue(kind, result.value) };
 	}
 
@@ -442,8 +451,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 
 	/** foreground の要求。warm ownership は setWarmLease だけが変更する。 */
-	private async execJson<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<IParadisCcusageReportResult<T>> {
-		return this.execJsonInternal<T>(reportArgs, options, ttl);
+	private async execJson<T>(kind: ParadisCcusageWarmTargetKind, options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<IParadisCcusageReportResult<T>> {
+		return this.execJsonInternal<T>(kind, options, ttl);
 	}
 
 	/**
@@ -474,19 +483,18 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			// 経過時間はループの都度見る(1本に数十秒かかるので、入口の1回では古くなる)。
 			const now = this.now();
 			// 直前に手動更新された等で十分新しいものは飛ばす(同じ走査を続けて2回しない)。
-			const reportArgs = [...warmReportArgs[target.kind]];
 			const archives = this.currentArchives();
-			const cached = this.cache.get(this.cacheFamilyKeyFor(reportArgs, target.options, archives));
+			const cached = this.cache.get(this.cacheFamilyKeyFor(target.kind, target.options, archives));
 			if (cached && cached.since === sinceArg(target.options) && now - cached.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
 				continue;
 			}
-			if (this.inflight.has(this.runKeyFor(reportArgs, target.options, archives))) {
+			if (this.inflight.has(this.runKeyFor(target.kind, target.options, archives))) {
 				continue;
 			}
 			try {
 				// 鮮度判定はここで済ませているので、キャッシュを見に行かせず必ず実行させる。
 				const ttl = target.kind === 'blocks' ? BLOCK_CACHE_TTL_MS : CACHE_TTL_MS;
-				await this.execJsonInternal(reportArgs, { ...target.options, bypassCache: true }, ttl, () => this.warmLeaseTracker.isCurrent(key, generation), false, true);
+				await this.execJsonInternal(target.kind, { ...target.options, bypassCache: true }, ttl, () => this.warmLeaseTracker.isCurrent(key, generation), false, true);
 				if (this.warmLeaseTracker.isCurrent(key, generation)) {
 					this.warmFailures.delete(key);
 				}
@@ -556,7 +564,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 
 	private warmTargetKey(target: ParadisCcusageWarmTarget): string {
-		return this.cacheKeyFor([...warmReportArgs[target.kind]], target.options);
+		return this.cacheKeyFor(target.kind, target.options);
 	}
 
 	private purgeExpiredWarmLeaseOwners(): void {
@@ -595,23 +603,23 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 
 	/** warm の対象の鍵。since/until/timezone を含む実行引数と実行ファイルパスで決まる（アーカイブの有無では変えない）。 */
-	private cacheKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions): string {
-		return JSON.stringify([this.buildArgs(reportArgs, options), options.executablePath ?? '']);
+	private cacheKeyFor(kind: ParadisCcusageWarmTargetKind, options: IParadisCcusageExecOptions): string {
+		return JSON.stringify([kind, this.buildArgs([...warmReportArgs[kind]], options), options.executablePath ?? '']);
 	}
 
 	/** 実行の鍵（同時実行の束ね）。{@link cacheKeyFor} に、読ませたアーカイブを足したもの。 */
-	private runKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions, archives: IParadisCcusageArchives): string {
-		return JSON.stringify([this.buildArgs(reportArgs, options), options.executablePath ?? '', archives]);
+	private runKeyFor(kind: ParadisCcusageWarmTargetKind, options: IParadisCcusageExecOptions, archives: IParadisCcusageArchives): string {
+		return JSON.stringify([kind, this.buildArgs([...warmReportArgs[kind]], options), options.executablePath ?? '', archives]);
 	}
 
 	/**
 	 * キャッシュの鍵。{@link runKeyFor} から `--since` だけを除いたもの。`--since` は「今日から 90 日前」で
 	 * 毎日1日ずつ進むので、鍵に含めると日付が変わるたびに前日の値が引けなくなる。until・timezone・
 	 * 実行ファイルは値の意味を変えるので鍵に残す。読ませたアーカイブも残す（外付けのディスクを抜き差ししたときに、
-	 * 前の状態で数えた値を出し続けないため）。
+	 * 前の状態で数えた値を出し続けないため）。レポートの種類も残す（`today` と `daily` は引数が同じで `--since` だけが違う）。
 	 */
-	private cacheFamilyKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions, archives: IParadisCcusageArchives): string {
-		return JSON.stringify([this.buildArgs(reportArgs, { ...options, since: undefined }), options.executablePath ?? '', archives]);
+	private cacheFamilyKeyFor(kind: ParadisCcusageWarmTargetKind, options: IParadisCcusageExecOptions, archives: IParadisCcusageArchives): string {
+		return JSON.stringify([kind, this.buildArgs([...warmReportArgs[kind]], { ...options, since: undefined }), options.executablePath ?? '', archives]);
 	}
 
 	private buildArgs(reportArgs: string[], options: IParadisCcusageExecOptions): string[] {
@@ -653,7 +661,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	 * - 値が無い・bypassCache: 実行の完了を待つ
 	 */
 	private async execJsonInternal<T>(
-		reportArgs: string[],
+		kind: ParadisCcusageWarmTargetKind,
 		options: IParadisCcusageExecOptions,
 		ttl: number = CACHE_TTL_MS,
 		shouldCache: () => boolean = () => true,
@@ -665,7 +673,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			await ready;
 		}
 		const archives = this.currentArchives();
-		const familyKey = this.cacheFamilyKeyFor(reportArgs, options, archives);
+		const familyKey = this.cacheFamilyKeyFor(kind, options, archives);
 		if (!options.bypassCache) {
 			const cached = this.cache.get(familyKey);
 			if (cached) {
@@ -674,7 +682,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 					return { value: cached.value as T, fetchedAt: cached.at, stale: false };
 				}
 				if (age < STALE_MAX_AGE_MS) {
-					this.revalidate(reportArgs, options, ttl, archives);
+					this.revalidate(kind, options, ttl, archives);
 					return { value: cached.value as T, fetchedAt: cached.at, stale: true };
 				}
 			}
@@ -692,7 +700,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			}
 		}
 		try {
-			const running = this.run(reportArgs, options, archives, ttl, shouldCache, foregroundCacheInterest);
+			const running = this.run(kind, options, archives, ttl, shouldCache, foregroundCacheInterest);
 			const completed = background ? await running : await this.waitWithinForegroundLimit(running);
 			return { value: completed.value as T, fetchedAt: completed.at, stale: false };
 		} catch (error) {
@@ -732,8 +740,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 
 	/** 古い値を返した後の裏の取り直し。失敗はログだけにして、次に試してよい時刻を遅らせる。 */
-	private revalidate(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number, archives: IParadisCcusageArchives): void {
-		const familyKey = this.cacheFamilyKeyFor(reportArgs, options, archives);
+	private revalidate(kind: ParadisCcusageWarmTargetKind, options: IParadisCcusageExecOptions, ttl: number, archives: IParadisCcusageArchives): void {
+		const familyKey = this.cacheFamilyKeyFor(kind, options, archives);
 		// 同じキャッシュの鍵で走っているものがあれば（`--since` だけ違う実行を含む）、それが終われば値が入るので起こさない。
 		if (this.disposed || this.inflightForFamily(familyKey)) {
 			return;
@@ -742,7 +750,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		if (failure && this.now() < failure.retryAt) {
 			return;
 		}
-		this.run(reportArgs, { ...options, bypassCache: true }, archives, ttl, () => true, true).then(() => {
+		this.run(kind, { ...options, bypassCache: true }, archives, ttl, () => true, true).then(() => {
 			this.revalidateFailures.delete(familyKey);
 		}, error => {
 			const count = (this.revalidateFailures.get(familyKey)?.count ?? 0) + 1;
@@ -750,22 +758,23 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			if (!this.disposed) {
 				this.revalidateFailures.set(familyKey, { count, retryAt: this.now() + delay });
 			}
-			this.logService.trace(`[ParadisCcusage] background revalidation failed for 'ccusage ${reportArgs.join(' ')}' (${count} in a row): ${error}`);
+			this.logService.trace(`[ParadisCcusage] background revalidation failed for 'ccusage ${warmReportArgs[kind].join(' ')}' (${count} in a row): ${error}`);
 		});
 	}
 
 	/** ccusage を実行してキャッシュへ入れる。同じ鍵の実行中のものがあれば相乗りする。 */
 	private run(
-		reportArgs: string[],
+		kind: ParadisCcusageWarmTargetKind,
 		options: IParadisCcusageExecOptions,
 		archives: IParadisCcusageArchives,
 		ttl: number,
 		shouldCache: () => boolean,
 		foregroundCacheInterest: boolean,
 	): Promise<ICompletedReport> {
+		const reportArgs = [...warmReportArgs[kind]];
 		const args = this.buildArgs(reportArgs, options);
-		const cacheKey = this.runKeyFor(reportArgs, options, archives);
-		const familyKey = this.cacheFamilyKeyFor(reportArgs, options, archives);
+		const cacheKey = this.runKeyFor(kind, options, archives);
+		const familyKey = this.cacheFamilyKeyFor(kind, options, archives);
 		// bypassCache でも実行中の同一リクエストには相乗りする(結果はどのみち今まさに取り直したもの)
 		const inflight = this.inflight.get(cacheKey);
 		if (inflight) {
@@ -906,12 +915,17 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		// 確かめ、そのときはコマンド名のまま execFile に渡す。
 		const found = await paradisResolveAgentCli('ccusage', {}, { isOnPath: name => this.canExecute(name), fileExists: candidate => this.fileExists(candidate) });
 		if (found !== undefined) {
-			this.resolved = { command: found, prefixArgs: [] };
-			return this.resolved;
+			const version = paradisParseCcusageVersion(await this.readVersion(found));
+			if (version === undefined || paradisIsCcusageVersionAtLeast(version, MIN_LOCAL_VERSION)) {
+				this.resolved = { command: found, prefixArgs: [] };
+				return this.resolved;
+			}
+			this.logService.info(`[ParadisCcusage] ccusage ${version.join('.')} at '${found}' is older than ${MIN_LOCAL_VERSION.join('.')}, using 'npx -y ${NPX_PINNED_VERSION}' instead`);
+		} else {
+			this.logService.warn(`[ParadisCcusage] ccusage binary not found, falling back to 'npx -y ${NPX_PINNED_VERSION}' (fetches from the npm registry on first run)`);
 		}
 		const candidateDirs = paradisAgentCliFallbackDirs('ccusage');
 
-		this.logService.warn(`[ParadisCcusage] ccusage binary not found, falling back to 'npx -y ${NPX_PINNED_VERSION}' (fetches from the npm registry on first run)`);
 		// GUI 起動でシェル環境解決に失敗すると PATH に npx が居ないことがあるため、
 		// PATH 上で見つからない場合は候補ディレクトリから絶対パスで解決する
 		const npxNames = isWindows ? ['npx.cmd'] : ['npx'];
@@ -936,15 +950,20 @@ export class ParadisCcusageService implements IParadisCcusageService {
 
 	/** コマンド名が PATH 上で実行可能か(`<cmd> --version` の成否)を確認する。 */
 	private async canExecute(command: string): Promise<boolean> {
+		return (await this.readVersion(command)) !== undefined;
+	}
+
+	/** `<cmd> --version` の出力。起動できない・失敗したら undefined。 */
+	private async readVersion(command: string): Promise<string | undefined> {
 		const env = await this.getExecEnv();
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['--version']) : undefined;
-		return new Promise<boolean>(resolve => {
+		return new Promise<string | undefined>(resolve => {
 			const execution: { child?: cp.ChildProcess; tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
-			execution.child = this.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, ...paradisCcusageProcessGroupOptions(), env }, err => {
+			execution.child = this.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, ...paradisCcusageProcessGroupOptions(), env }, (err, stdout) => {
 				execution.completed = true;
 				const timedOut = execution.tracked?.timedOut === true;
 				execution.tracked?.dispose();
-				resolve(!err && !timedOut);
+				resolve(!err && !timedOut ? String(stdout ?? '') : undefined);
 			});
 			watchProcessGroupExit(execution.child);
 			if (!execution.completed && execution.child) {
@@ -960,6 +979,25 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 }
 
+/** `ccusage --version` の出力（例: `ccusage 20.0.46`）から版を取り出す。読めなければ undefined。 */
+export function paradisParseCcusageVersion(output: string | undefined): [number, number, number] | undefined {
+	const match = output?.match(/(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)/);
+	if (!match?.groups) {
+		return undefined;
+	}
+	return [Number(match.groups.major), Number(match.groups.minor), Number(match.groups.patch)];
+}
+
+/** 版 `version` が `minimum` 以上か。 */
+export function paradisIsCcusageVersionAtLeast(version: readonly [number, number, number], minimum: readonly [number, number, number]): boolean {
+	for (let index = 0; index < 3; index++) {
+		if (version[index] !== minimum[index]) {
+			return version[index] > minimum[index];
+		}
+	}
+	return true;
+}
+
 /** 値を取ったときの `--since`（buildArgs と同じ条件。渡されないものは undefined）。 */
 function sinceArg(options: IParadisCcusageExecOptions): string | undefined {
 	return options.since && /^\d{8}$/.test(options.since) ? options.since : undefined;
@@ -970,6 +1008,7 @@ function paradisCcusageReportValue<K extends ParadisCcusageWarmTargetKind>(kind:
 	const record = (output !== null && typeof output === 'object' ? output : {}) as { daily?: unknown; blocks?: unknown; sessions?: unknown; projects?: unknown };
 	switch (kind) {
 		case 'daily':
+		case 'today':
 			return (Array.isArray(record.daily) ? record.daily : []) as IParadisCcusageReportValues[K];
 		case 'blocks': {
 			const blocks = (Array.isArray(record.blocks) ? record.blocks : []) as IParadisCcusageBlock[];
@@ -1127,7 +1166,7 @@ export class ParadisCcusageChannel<TContext = string> implements IServerChannel<
 		const args = Array.isArray(arg) ? arg : [];
 		if (command === PARADIS_CCUSAGE_FETCH_REPORT_COMMAND) {
 			const request = (args[0] ?? {}) as { readonly kind?: unknown; readonly options?: IParadisCcusageExecOptions };
-			if (request.kind !== 'daily' && request.kind !== 'blocks' && request.kind !== 'session' && request.kind !== 'projects') {
+			if (!isParadisCcusageReportKind(request.kind)) {
 				throw new Error('Invalid fetchReport kind');
 			}
 			return this.service.fetchReport(request.kind, request.options ?? {}) as Promise<T>;
@@ -1178,7 +1217,7 @@ function parseWarmLeasePayload(arg: unknown): ParadisCcusageWarmLeasePayload {
 
 function parseWarmTarget(value: unknown): ParadisCcusageWarmTarget {
 	if (!isExactPlainRecord(value, ['kind', 'options'])
-		|| (value.kind !== 'daily' && value.kind !== 'blocks' && value.kind !== 'session' && value.kind !== 'projects')
+		|| !isParadisCcusageReportKind(value.kind)
 		|| !isPlainRecord(value.options)) {
 		throw new Error('Invalid warm lease target');
 	}
