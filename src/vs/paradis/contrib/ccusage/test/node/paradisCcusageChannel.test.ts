@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisWarmLeaseScheduler } from '../../../../common/paradisWarmLease.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { IParadisCcusageArchives, ParadisCcusageChannel, ParadisCcusageService, paradisCcusageCodexHomeEnv, ParadisCcusageArchiveProber, paradisCcusageDataEnv, paradisCcusageProcessGroupOptions } from '../../node/paradisCcusageChannel.js';
+import { IParadisCcusageArchives, ParadisCcusageChannel, ParadisCcusageService, paradisCcusageCodexHomeEnv, ParadisCcusageArchiveProber, paradisCcusageDataEnv, paradisCcusageProcessGroupOptions, paradisIsCcusageVersionAtLeast, paradisParseCcusageVersion } from '../../node/paradisCcusageChannel.js';
 
 interface IExecResult {
 	readonly stdout?: string;
@@ -148,6 +148,69 @@ suite('ParadisCcusageService', () => {
 			args: [['daily', '--json', '--since', '20260519'], ['daily', '--json', '--since', '20260520']],
 			nextDay: ['day-1', true],
 			refetched: ['day-2', false],
+		});
+	});
+
+	// ステータスバーの「今日だけ」(today) と 90 日の daily は引数が同じで --since だけが違う。キャッシュを分けないと、
+	// 互いの値を「別の --since で取った古い値」として返し合い、ステータスバーの集計がダッシュボードの値を上書きする。
+	test('keeps the today report and the 90-day daily report in separate caches', async () => {
+		const { invocations, service } = createService(invocation => ({ stdout: dailyOutput(`day-${invocation}`) }));
+
+		const daily = await service.fetchReport('daily', { executablePath: '/test/ccusage', since: '20260519' });
+		const today = await service.fetchReport('today', { executablePath: '/test/ccusage', since: '20260816' });
+		const dailyAgain = await service.fetchReport('daily', { executablePath: '/test/ccusage', since: '20260519' });
+		const todayAgain = await service.fetchReport('today', { executablePath: '/test/ccusage', since: '20260816' });
+		service.dispose();
+
+		assert.deepStrictEqual({
+			args: invocations.map(invocation => invocation.args),
+			values: [daily, today, dailyAgain, todayAgain].map(result => [result.value[0]?.period, result.stale]),
+		}, {
+			args: [['daily', '--json', '--since', '20260519'], ['daily', '--json', '--since', '20260816']],
+			values: [['day-1', false], ['day-2', false], ['day-1', false], ['day-2', false]],
+		});
+	});
+
+	// PATH 上の ccusage が 20.0.26 より古いと、期間の外のファイルも全部読む。その版は使わず、固定版を npx で使う。
+	test('uses the pinned npx version instead of a ccusage on PATH older than 20.0.26', async () => {
+		const versions: Record<string, string> = { ccusage: 'ccusage 20.0.20\n', npx: '11.0.0\n' };
+		const { invocations, service } = createService(invocation => invocation <= 3
+			? { stdout: versions[invocations[invocation - 1].file] }
+			: { stdout: dailyOutput('day') });
+
+		await service.fetchReport('today', { since: '20260816' });
+		service.dispose();
+
+		assert.deepStrictEqual(invocations.map(invocation => [invocation.file, ...invocation.args]), [
+			['ccusage', '--version'],
+			['ccusage', '--version'],
+			['npx', '--version'],
+			['npx', '-y', 'ccusage@20.0.46', 'daily', '--json', '--since', '20260816'],
+		]);
+	});
+
+	test('uses a ccusage on PATH that is 20.0.26 or newer', async () => {
+		const { invocations, service } = createService(invocation => invocation <= 2
+			? { stdout: 'ccusage 20.0.26\n' }
+			: { stdout: dailyOutput('day') });
+
+		await service.fetchReport('today', { since: '20260816' });
+		service.dispose();
+
+		assert.deepStrictEqual(invocations.map(invocation => [invocation.file, ...invocation.args]), [
+			['ccusage', '--version'],
+			['ccusage', '--version'],
+			['ccusage', 'daily', '--json', '--since', '20260816'],
+		]);
+	});
+
+	test('reads the ccusage version and compares it with the minimum', () => {
+		assert.deepStrictEqual({
+			parsed: ['ccusage 20.0.46\n', 'v19.1.0', 'unknown', undefined].map(paradisParseCcusageVersion),
+			atLeast: [[20, 0, 25], [20, 0, 26], [20, 1, 0], [21, 0, 0], [19, 9, 99]].map(version => paradisIsCcusageVersionAtLeast(version as [number, number, number], [20, 0, 26])),
+		}, {
+			parsed: [[20, 0, 46], [19, 1, 0], undefined, undefined],
+			atLeast: [false, true, true, true, false],
 		});
 	});
 

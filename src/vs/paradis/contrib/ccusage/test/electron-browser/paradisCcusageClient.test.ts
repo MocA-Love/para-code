@@ -36,7 +36,7 @@ function configurationChange(affectedKey: string): IConfigurationChangeEvent {
 
 /** SSH 先へ頼むときは、日付の区切りを手元に合わせるためタイムゾーンを添える。 */
 const remoteTimeZone = paradisCcusageLocalTimeZone();
-const remoteDailyOptions = { since: '20260519', ...(remoteTimeZone === undefined ? {} : { timezone: remoteTimeZone }) };
+const remoteTodayOptions = { since: '20260816', ...(remoteTimeZone === undefined ? {} : { timezone: remoteTimeZone }) };
 
 suite('ParadisCcusageClient', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -94,7 +94,7 @@ suite('ParadisCcusageClient', () => {
 				args: [{
 					ownerId: statusPayload.ownerId,
 					active: true,
-					targets: [{ kind: 'daily', options: { executablePath: '/custom/ccusage', since: '20260519' } }],
+					targets: [{ kind: 'today', options: { executablePath: '/custom/ccusage', since: '20260816' } }],
 				}],
 			},
 			{
@@ -120,7 +120,7 @@ suite('ParadisCcusageClient', () => {
 		configurationChanges.dispose();
 
 		assert.deepStrictEqual(calls.slice(2).map(call => ({ command: call.command, args: call.args })), [
-			{ command: 'setWarmLease', args: [{ ownerId: statusPayload.ownerId, active: true, targets: [{ kind: 'daily', options: { executablePath: '/custom/ccusage', since: '20260519' } }] }] },
+			{ command: 'setWarmLease', args: [{ ownerId: statusPayload.ownerId, active: true, targets: [{ kind: 'today', options: { executablePath: '/custom/ccusage', since: '20260816' } }] }] },
 			{
 				command: 'setWarmLease', args: [{
 					ownerId: dashboardPayload.ownerId, active: true, targets: [
@@ -166,8 +166,8 @@ suite('ParadisCcusageClient', () => {
 		configurationChanges.dispose();
 
 		assert.deepStrictEqual(calls.map(call => call.args), [
-			[{ ownerId, active: true, targets: [{ kind: 'daily', options: { executablePath: '/custom/ccusage', since: '20260519' } }] }],
-			[{ ownerId, active: true, targets: [{ kind: 'daily', options: { executablePath: '/custom/ccusage', since: '20260520' } }] }],
+			[{ ownerId, active: true, targets: [{ kind: 'today', options: { executablePath: '/custom/ccusage', since: '20260816' } }] }],
+			[{ ownerId, active: true, targets: [{ kind: 'today', options: { executablePath: '/custom/ccusage', since: '20260817' } }] }],
 			[{ ownerId, active: false, targets: [] }],
 		]);
 	});
@@ -210,12 +210,12 @@ suite('ParadisCcusageClient', () => {
 		configurationChanges.dispose();
 
 		assert.deepStrictEqual(calls.map(call => ({ channel: call.channel, args: call.args })), [
-			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: remoteDailyOptions }] }] },
-			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: remoteDailyOptions }] }] },
+			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'today', options: remoteTodayOptions }] }] },
+			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'today', options: remoteTodayOptions }] }] },
 			{ channel: 'remote-a', args: [{ ownerId, active: false, targets: [] }] },
-			{ channel: 'remote-c', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: remoteDailyOptions }] }] },
+			{ channel: 'remote-c', args: [{ ownerId, active: true, targets: [{ kind: 'today', options: remoteTodayOptions }] }] },
 			{ channel: 'remote-c', args: [{ ownerId, active: false, targets: [] }] },
-			{ channel: 'local', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: { since: '20260519' } }] }] },
+			{ channel: 'local', args: [{ ownerId, active: true, targets: [{ kind: 'today', options: { since: '20260816' } }] }] },
 			{ channel: 'local', args: [{ ownerId, active: false, targets: [] }] },
 		]);
 	});
@@ -255,7 +255,7 @@ suite('ParadisCcusageClient', () => {
 		configurationChanges.dispose();
 
 		assert.deepStrictEqual(calls.map(call => ({ channel: call.channel, args: call.args })), [
-			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: remoteDailyOptions }] }] },
+			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'today', options: remoteTodayOptions }] }] },
 			{ channel: 'remote-a', args: [{ ownerId, active: false, targets: [] }] },
 		]);
 	});
@@ -289,8 +289,8 @@ suite('ParadisCcusageClient', () => {
 		configurationChanges.dispose();
 
 		assert.deepStrictEqual(calls.map(call => ({ channel: call.channel, args: call.args })), [
-			{ channel: 'local-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: { since: '20260519' } }] }] },
-			{ channel: 'local-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: { since: '20260519' } }] }] },
+			{ channel: 'local-a', args: [{ ownerId, active: true, targets: [{ kind: 'today', options: { since: '20260816' } }] }] },
+			{ channel: 'local-a', args: [{ ownerId, active: true, targets: [{ kind: 'today', options: { since: '20260816' } }] }] },
 			{ channel: 'local-a', args: [{ ownerId, active: false, targets: [] }] },
 		]);
 	});
@@ -513,12 +513,14 @@ suite('ParadisCcusageClient', () => {
 				const kind = (args as readonly [{ readonly kind: string }])[0].kind;
 				const values: Record<string, unknown> = {
 					daily: [{ period: '2026-08-15', totalCost: 3 }],
+					today: [{ period: '2026-08-15', totalCost: 3 }],
 					blocks: undefined,
 					session: [],
 					projects: {},
 				};
-				const fetchedAt = kind === 'daily' ? dailyFetchedAt : earlierToday;
-				return { value: values[kind], fetchedAt, stale: kind === 'daily' } as T;
+				const daily = kind === 'daily' || kind === 'today';
+				const fetchedAt = daily ? dailyFetchedAt : earlierToday;
+				return { value: values[kind], fetchedAt, stale: daily } as T;
 			},
 		};
 		const client = new ParadisCcusageClient(
@@ -545,6 +547,40 @@ suite('ParadisCcusageClient', () => {
 			staleFromYesterday: undefined,
 			staleFromToday: 0,
 			commands: ['fetchReport'],
+		});
+	});
+
+	// ステータスバーの今日の利用額は `--since 今日` の today で取る。today を知らない古い接続先では、前と同じ 90 日の daily から拾う。
+	test('takes the today cost from the today report and falls back to the 90-day daily on a host without it', async () => {
+		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
+		const requests: unknown[] = [];
+		let knowsToday = true;
+		const channel = {
+			call: async <T>(_command: string, args?: unknown): Promise<T> => {
+				const request = (args as readonly [{ readonly kind: string; readonly options: { readonly since?: string } }])[0];
+				requests.push([request.kind, request.options.since]);
+				if (request.kind === 'today' && !knowsToday) {
+					throw new Error('Invalid fetchReport kind');
+				}
+				const value = request.kind === 'today' ? [] : [{ period: '2026-08-16', totalCost: 4 }];
+				return { value, fetchedAt: Date.now(), stale: false } as T;
+			},
+		};
+		const client = new ParadisCcusageClient(
+			{ getChannel: () => channel } as unknown as ISharedProcessService,
+			{ getValue: () => '' } as unknown as IConfigurationService,
+			{ getConnection: () => null } as unknown as IRemoteAgentService,
+		);
+
+		const nothingYetToday = await client.fetchTodayCost();
+		knowsToday = false;
+		const fromDaily = await client.fetchTodayCost();
+		clock.restore();
+
+		assert.deepStrictEqual({ nothingYetToday, fromDaily, requests }, {
+			nothingYetToday: 0,
+			fromDaily: 4,
+			requests: [['today', '20260816'], ['today', '20260816'], ['daily', '20260519']],
 		});
 	});
 });
