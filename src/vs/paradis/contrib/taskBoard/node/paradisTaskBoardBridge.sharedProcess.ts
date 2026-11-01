@@ -34,13 +34,22 @@ import {
 	PARADIS_TASK_BOARD_WINDOW_CHANNEL,
 	ParadisTaskBoardWindowMethod,
 } from '../common/paradisTaskBoardBridge.js';
+import { paradisPeerIsOneOf } from '../../agentBrowser/node/paradisCdpPeerResolver.js';
+import { paradisParseTaskBoardBoardRegistration } from '../common/paradisTaskBoardRelay.js';
+import { ParadisTaskBoardAuditLog } from './paradisTaskBoardAuditLog.js';
+import { ParadisTaskBoardBoardAuth } from './paradisTaskBoardBoardAuth.js';
 import { ParadisTaskBoardBridgeServer } from './paradisTaskBoardBridgeServer.js';
+import { ParadisTaskBoardRelayRouter } from './paradisTaskBoardRelayRouter.js';
 import { IParadisTaskBoardWindowRouter, ParadisTaskBoardBridgeService } from './paradisTaskBoardBridgeService.js';
 
 /** ウィンドウが呼ぶチャネル。ctx（`window:N`）で受け持ちを確かめる。 */
 class ParadisTaskBoardBridgeChannel implements IServerChannel<string> {
 
-	constructor(private readonly service: ParadisTaskBoardBridgeService) { }
+	constructor(
+		private readonly service: ParadisTaskBoardBridgeService,
+		private readonly auth: ParadisTaskBoardBoardAuth,
+		private readonly relay: ParadisTaskBoardRelayRouter,
+	) { }
 
 	listen<T>(_ctx: string, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
@@ -50,6 +59,16 @@ class ParadisTaskBoardBridgeChannel implements IServerChannel<string> {
 		switch (command) {
 			case 'listWindowTerminals': return this.service.listWindowTerminals(ctx) as T;
 			case 'reportStatus': return this.service.reportStatus(ctx, arg) as T;
+			// main の open() が返したボードの pid と鍵（窓が登録する。設計書 G1）
+			case 'registerBoard': {
+				const board = paradisParseTaskBoardBoardRegistration(arg);
+				if (board) {
+					this.auth.register(board);
+				}
+				return (board !== undefined) as T;
+			}
+			case 'registerRelaySession': return this.relay.register(ctx, arg) as T;
+			case 'closeRelaySession': return this.relay.close(ctx, arg) as T;
 		}
 		throw new Error(`Call not found: ${command}`);
 	}
@@ -110,9 +129,13 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 	store.add(onParadisAgentHookEvent(event => service.onHookEvent(event)));
 	store.add(server.onDidAddConnection(connection => service.onWindowConnected(connection.ctx)));
 	store.add(server.onDidRemoveConnection(connection => service.onWindowDisconnected(connection.ctx)));
-	server.registerChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL, new ParadisTaskBoardBridgeChannel(service));
+	const auth = new ParadisTaskBoardBoardAuth((clientPort, serverPort, pids) => paradisPeerIsOneOf(clientPort, serverPort, process.pid, pids));
+	const audit = new ParadisTaskBoardAuditLog(join(environmentService.userDataPath, 'paradis', 'taskBoardRelay'), logService);
+	const relay = new ParadisTaskBoardRelayRouter(createWindowRouter(server), audit, logService);
+	store.add(server.onDidRemoveConnection(connection => relay.onWindowDisconnected(connection.ctx)));
+	server.registerChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL, new ParadisTaskBoardBridgeChannel(service, auth, relay));
 
-	const httpServer = store.add(new ParadisTaskBoardBridgeServer(service, join(environmentService.userDataPath, PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE), logService));
+	const httpServer = store.add(new ParadisTaskBoardBridgeServer(service, join(environmentService.userDataPath, PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE), logService, auth, relay));
 	// 設定のスキーマは画面側でしか登録されないので、生の値を読む。既定はオフ（使う人だけが有効にする）なので、true のときだけ立てる
 	const enabled = () => configurationService.getValue(PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING) === true;
 	let applying = Promise.resolve();

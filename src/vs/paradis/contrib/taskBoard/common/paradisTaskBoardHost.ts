@@ -26,7 +26,11 @@ export type ParadisTaskBoardOpenFailure =
 	| 'start-failed';
 
 export type ParadisTaskBoardOpenResult =
-	| { readonly ok: true }
+	/**
+	 * `board`: 動いているボードの pid と、接続口へ送る起動ごとの鍵。開いた窓が shared process の接続口へ登録する
+	 * （main から shared process へ直接登録する fork の口が無いため。画面は判定の側なので、鍵を渡してよい）。
+	 */
+	| { readonly ok: true; readonly board?: { readonly pid: number; readonly key: string } }
 	| { readonly ok: false; readonly reason: ParadisTaskBoardOpenFailure; readonly message?: string };
 
 export interface IParadisTaskBoardHost {

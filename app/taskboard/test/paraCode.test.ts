@@ -29,9 +29,12 @@ class FakeBridge {
 	queuedOnConnect: ParaCodeBridgeEvent[] = [];
 	private seq = 0;
 	file!: string;
+	/** 届いた要求ごとの `x-para-board-key`。 */
+	readonly boardKeys: (string | undefined)[] = [];
 
 	async start(dir: string): Promise<void> {
 		this.server = http.createServer((req, res) => {
+			this.boardKeys.push(req.headers['x-para-board-key'] as string | undefined);
 			if (req.headers.authorization !== 'Bearer secret') {
 				res.writeHead(401).end('{}');
 				return;
@@ -167,7 +170,7 @@ afterEach(() => {
 	}
 });
 
-async function setup(useRunner = false, hangEvents = 0) {
+async function setup(useRunner = false, hangEvents = 0, boardKey?: string) {
 	const dir = mkdtempSync(path.join(os.tmpdir(), 'tb-bridge-'));
 	const place = path.join(dir, 'clone');
 	mkdirSync(place);
@@ -177,7 +180,7 @@ async function setup(useRunner = false, hangEvents = 0) {
 	bridge.hangEvents = hangEvents;
 	let engine!: TaskBoardEngine;
 	const placePath = (task: ITaskBoardTask) => engine.getSlots().find(s => s.id === task.place)?.path;
-	const agents = new ParaCodeAgents({ engine: () => engine, placePath, bridgeFile: bridge.file, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100, stall: 50 } });
+	const agents = new ParaCodeAgents({ engine: () => engine, placePath, bridgeFile: bridge.file, boardKey, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100, stall: 50 } });
 	const noop = new NoopPorts();
 	const runner = useRunner ? new CommandRunner({ engine: () => engine, placePath, repoPath: place, repo: undefined }) : noop;
 	let seq = 0;
@@ -340,6 +343,12 @@ describe('ParaCodeBridgeClient', () => {
 	test('reconnects when Para Code accepts the event stream but never answers (for example while it is starting)', async () => {
 		const { bridge } = await setup(false, 2);
 		expect(bridge.connected).toBe(1);
+	});
+
+	test('sends the per-launch board key on every request, including the event stream', async () => {
+		const { bridge, agents } = await setup(false, 0, 'k'.repeat(43));
+		await agents.client.request('GET', '/v1/terminals');
+		expect({ count: bridge.boardKeys.length >= 2, keys: [...new Set(bridge.boardKeys)] }).toEqual({ count: true, keys: ['k'.repeat(43)] });
 	});
 });
 

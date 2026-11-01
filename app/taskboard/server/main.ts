@@ -165,14 +165,16 @@ let stopCurrent: (() => void) | undefined;
  * Para Code から鍵を受け取る（最初の IPC のメッセージ）。コマンドラインや環境変数に載せると、`ps` や
  * エージェントが走らせるコマンド（`process.env` を受け継ぐ）から読めてしまう。
  */
-function receiveEmbeddedToken(): Promise<string> {
+function receiveEmbeddedToken(): Promise<{ readonly token: string; readonly boardKey: string | undefined }> {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error('Para Code did not send the key')), 30_000);
 		process.once('message', (message: unknown) => {
 			clearTimeout(timer);
-			const token = (message as { type?: unknown; token?: unknown } | undefined)?.type === 'init' ? (message as { token?: unknown }).token : undefined;
+			const init = (message as { type?: unknown } | undefined)?.type === 'init' ? message as { token?: unknown; boardKey?: unknown } : undefined;
+			const token = init?.token;
 			if (typeof token === 'string' && token.length >= 16) {
-				resolve(token);
+				// boardKey: Para Code の接続口へ送る、起動ごとの鍵（無ければ接続口は断る）
+				resolve({ token, boardKey: typeof init?.boardKey === 'string' ? init.boardKey : undefined });
 			} else {
 				reject(new Error('Para Code sent an invalid key'));
 			}
@@ -270,6 +272,8 @@ interface IRestart {
 
 /** `--embedded` のとき、Para Code から受け取った鍵。 */
 let embeddedToken: string | undefined;
+/** `--embedded` のとき、Para Code の接続口へ送る鍵（ボードを起動するたびに Para Code が作る）。 */
+let embeddedBoardKey: string | undefined;
 
 /** 起動したときのリポジトリ。切り替えてから戻ってきたときは、起動時の引数（台帳・クローン・ワークツリーの置き場）を使う。 */
 let startupRepo: string | undefined;
@@ -352,6 +356,7 @@ async function main(restart?: IRestart): Promise<void> {
 		engine: () => engine,
 		placePath,
 		bridgeFile: args.bridge,
+		boardKey: embeddedBoardKey,
 		onConnection: (connected, detail) => {
 			bridgeState = { connected, detail };
 			log(connected ? 'Para Code につながりました' : `Para Code: ${detail ?? '切断'}`);
@@ -1036,7 +1041,7 @@ async function start(): Promise<void> {
 		}
 		// Para Code が落ちた・閉じた（IPC が切れた）ら止まる。リポジトリを切り替えている途中でも効くよう、ここで一度だけ付ける
 		process.once('disconnect', () => stopCurrent ? stopCurrent() : process.exit(0));
-		embeddedToken = await receiveEmbeddedToken();
+		({ token: embeddedToken, boardKey: embeddedBoardKey } = await receiveEmbeddedToken());
 	}
 	await main();
 }

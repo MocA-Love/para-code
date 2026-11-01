@@ -22,6 +22,7 @@ import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
+import { isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IChannel, IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -34,6 +35,7 @@ import { TerminalExitReason } from '../../../../platform/terminal/common/termina
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -89,6 +91,8 @@ import {
 	paradisTaskBoardStatusFrom,
 	paradisTaskBoardTerminalId,
 } from '../common/paradisTaskBoardBridge.js';
+import { PARADIS_TASK_BOARD_REMOTE_CHANNEL } from '../common/paradisTaskBoardRemote.js';
+import { ParadisTaskBoardRelaySessions } from '../common/paradisTaskBoardRelaySessions.js';
 
 /** 状態を見直す間隔（Codex の選択画面は hook の後に描かれ、状態の変化の知らせが無い）。 */
 const POLL_INTERVAL_MS = 2_000;
@@ -223,6 +227,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 	private polling = false;
 	private pollAgain = false;
 	private readonly ready: Promise<void>;
+	private readonly relay: ParadisTaskBoardRelaySessions;
 
 	constructor(
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
@@ -239,6 +244,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IRemoteAgentService remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 		this.bridge = sharedProcessService.getChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL);
@@ -251,6 +257,16 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 			},
 			session: token => this.session(token),
 		});
+		// SSH の中継のセッション（設計書 G3・G4・G9）。作る入口は設計書の PR 3 で足す
+		this.relay = this._register(new ParadisTaskBoardRelaySessions({
+			remoteAuthority: environmentService.remoteAuthority,
+			remoteChannel: () => remoteAgentService.getConnection()?.getChannel(PARADIS_TASK_BOARD_REMOTE_CHANNEL),
+			bridge: this.bridge,
+			isWindowFolder: uri => this.switchService.repositories.some(repository => isEqual(repository.uri, uri))
+				|| paradisListSpaces(this.switchService.repositories, this.worktreeService).some(space => isEqual(space.uri, uri)),
+			newSessionId: () => generateUuid().replace(/-/g, ''),
+			warn: (message, error) => this.logService.warn(message, error),
+		}));
 		sharedProcessService.registerChannel(PARADIS_TASK_BOARD_WINDOW_CHANNEL, this);
 
 		this._register(this.statusStore.onDidChangeAgentStatuses(() => this.poll()));
@@ -326,6 +342,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 				const parsed = paradisParseTaskBoardTerminalOnly(arg);
 				return (parsed.ok ? this.close(parsed.value.terminal) : parsed) as T;
 			}
+			case 'relay': return await this.relay.handle(arg) as T;
 		}
 		throw new Error(`Call not found: ${command}`);
 	}

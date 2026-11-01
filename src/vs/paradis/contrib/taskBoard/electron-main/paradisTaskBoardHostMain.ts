@@ -33,6 +33,8 @@ interface IRunningBoard {
 	readonly child: ChildProcess;
 	readonly token: string;
 	readonly port: number;
+	/** 接続口へ送る、起動ごとの鍵（paradisTaskBoardRelay.ts の G1）。子へは ipc で渡し、開いた窓へは open() で返す。 */
+	readonly boardKey: string;
 }
 
 /** 子へ渡さない環境変数（Electron の Node として動かすための指定や、Para Code の画面の中だけの値）。 */
@@ -98,7 +100,8 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			return { ok: false, reason: 'start-failed' };
 		}
 		this.showWindow(running);
-		return { ok: true };
+		// 既に動いているボードを開き直したときも、同じ pid と鍵を返す（窓が shared process へ登録し直す）
+		return running.child.pid !== undefined ? { ok: true, board: { pid: running.child.pid, key: running.boardKey } } : { ok: true };
 	}
 
 	private async start(repoPath: string): Promise<ParadisTaskBoardOpenResult> {
@@ -112,6 +115,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			return { ok: false, reason: 'start-failed', message: 'no free port' };
 		}
 		const token = randomBytes(24).toString('base64url');
+		const boardKey = randomBytes(32).toString('base64url');
 		const bridgeFile = join(this.environmentMainService.userDataPath, PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE);
 		const env = boardEnvironment(await this.shellEnv.getEnv());
 		const child = spawn(process.execPath, [entry, '--prod', '--embedded', '--agents', 'para-code', '--repo', repoPath, '--port', String(port), '--bridge', bridgeFile], {
@@ -164,7 +168,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			child.on('message', onMessage);
 			child.once('exit', onExit);
 			child.on('error', onError);
-			child.send({ type: 'init', token }, error => error && onError(error));
+			child.send({ type: 'init', token, boardKey }, error => error && onError(error));
 		});
 		// 起動の後も、子の error（IPC の切断の後の送信など）で main が落ちないようにする
 		child.on('error', error => this.logService.warn(`[ParadisTaskBoardHost] ${error.message}`));
@@ -175,7 +179,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			await this.stopChild(child);
 			return result.ok ? { ok: false, reason: 'start-failed', message: 'Para Code is quitting' } : result;
 		}
-		const running: IRunningBoard = { child, token, port: readyPort };
+		const running: IRunningBoard = { child, token, port: readyPort, boardKey };
 		this.running = running;
 		child.once('exit', code => {
 			if (this.running === running) {
