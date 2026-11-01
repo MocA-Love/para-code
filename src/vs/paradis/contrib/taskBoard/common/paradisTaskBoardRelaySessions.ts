@@ -29,10 +29,15 @@ import { ParadisTaskBoardErrorCode, ParadisTaskBoardResult, paradisTaskBoardFail
 import { IParadisTaskBoardRelaySessionInfo, PARADIS_TASK_BOARD_RELAY_HEARTBEAT_MS, paradisParseTaskBoardRelayRequest, paradisTaskBoardIsBoardKey } from './paradisTaskBoardRelay.js';
 import { paradisTaskBoardRemoteStripUrlCredentials } from './paradisTaskBoardRemote.js';
 
+export interface IParadisTaskBoardRelayWorktree {
+	readonly dir: string;
+	readonly branch: string;
+}
+
 /** 手元に残す、リポジトリごとの記録。 */
 export interface IParadisTaskBoardRelayRecord {
-	/** この窓（Para Code）が作ったワークツリー。 */
-	readonly worktrees: readonly string[];
+	/** この窓（Para Code）が作ったワークツリーと、そのブランチ。 */
+	readonly worktrees: readonly IParadisTaskBoardRelayWorktree[];
 	/** 作ったときに origin に無かった、ボードのブランチ（`para/…`）。 */
 	readonly branches: readonly string[];
 }
@@ -160,12 +165,12 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 		this.heartbeats.set(sessionId, toDisposable(() => timer.dispose()));
 		// 前に作ったワークツリー（Para Code を開き直した後でも返却できるように）。引き取れないものは記録から外す
 		const record = this.host.readRecord(mainUri.toString());
-		const adopted: string[] = [];
-		for (const dir of record.worktrees) {
+		const adopted: IParadisTaskBoardRelayWorktree[] = [];
+		for (const worktree of record.worktrees) {
 			try {
-				await channel.call('adoptWorktree', [sessionId, dir]);
-				session.places.add(dir);
-				adopted.push(dir);
+				await channel.call('adoptWorktree', [sessionId, worktree.dir, worktree.branch]);
+				session.places.add(worktree.dir);
+				adopted.push(worktree);
 			} catch {
 				// 消えた・別のものに変わったワークツリー
 			}
@@ -231,6 +236,11 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 		const opPlace = op.kind === 'sessionInfo' || op.kind === 'writeFile' ? undefined : op.place;
 		if (opPlace !== undefined && !session.places.has(opPlace)) {
 			return paradisTaskBoardFail('rejected', 'The folder is not a workspace of this task board session.');
+		}
+		// ブランチを切り替える操作と `.para/` の作り直しは、ボードのワークツリーだけ（本体の作業ツリーは利用者のもの）
+		const onWorktreeOnly = op.kind === 'resetBoardDir' || (op.kind === 'git' && (op.git.kind === 'switch' || op.git.kind === 'detach' || op.git.kind === 'mergeFfOnly'));
+		if (onWorktreeOnly && opPlace === session.root) {
+			return paradisTaskBoardFail('rejected', 'The task board does not switch branches or reset files in the main working tree of the repository.');
 		}
 		if (op.kind === 'git' && (op.git.kind === 'worktreeAdd' || op.git.kind === 'worktreeRemove')) {
 			const dir = op.git.dir as string;
@@ -298,7 +308,7 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 			return;
 		}
 		const record = this.host.readRecord(key);
-		const worktrees = git.kind === 'worktreeAdd' ? [...record.worktrees.filter(dir => dir !== git.dir), git.dir as string] : git.kind === 'worktreeRemove' ? record.worktrees.filter(dir => dir !== git.dir) : record.worktrees;
+		const worktrees = git.kind === 'worktreeAdd' ? [...record.worktrees.filter(worktree => worktree.dir !== git.dir), { dir: git.dir as string, branch: git.branch as string }] : git.kind === 'worktreeRemove' ? record.worktrees.filter(worktree => worktree.dir !== git.dir) : record.worktrees;
 		const createdBranch = git.mode === 'new' && typeof git.branch === 'string' && git.branch.startsWith('para/') ? git.branch : undefined;
 		const branches = createdBranch !== undefined ? [...record.branches.filter(branch => branch !== createdBranch), createdBranch] : record.branches;
 		this.host.writeRecord(key, { worktrees: worktrees.slice(-MAX_RECORDED), branches: branches.slice(-MAX_RECORDED) });

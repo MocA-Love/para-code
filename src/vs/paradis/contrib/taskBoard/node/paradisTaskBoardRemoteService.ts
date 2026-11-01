@@ -36,6 +36,7 @@ import {
 	PARADIS_TASK_BOARD_REMOTE_LIMITS,
 	ParadisTaskBoardRemoteError,
 	paradisTaskBoardRemoteAbsolutePathError,
+	paradisTaskBoardRemoteBranchError,
 	paradisTaskBoardRemoteCommandError,
 	paradisTaskBoardRemoteEnv,
 	paradisTaskBoardRemoteGitPlan,
@@ -328,14 +329,23 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 	 * 引き取れるのは、ワークツリーの置き場の直下にあり、持ち主が自分で、同じリポジトリ（common dir が同じ）の作業ツリーの
 	 * 一番上だけ。呼ぶのは、ワークツリーを作ったと記録している手元の窓だけ。
 	 */
-	async adoptWorktree(sessionId: unknown, place: unknown): Promise<void> {
+	async adoptWorktree(sessionId: unknown, place: unknown, branch: unknown): Promise<void> {
 		const session = this.session(sessionId);
 		const dir = checkAbsolute(place);
+		const branchError = paradisTaskBoardRemoteBranchError(branch);
+		if (branchError !== undefined) {
+			throw new ParadisTaskBoardRemoteError('invalid', branchError);
+		}
 		if (session.worktreeRoot === undefined || dirname(dir) !== session.worktreeRoot) {
 			throw new ParadisTaskBoardRemoteError('denied', 'only worktrees directly under the worktree folder can be adopted');
 		}
 		await this.checkOwnedDirectory(dir);
 		await this.checkSameRepository(session, dir);
+		// 窓の記録（パスとブランチ）と同じものだけを引き取る（置き場にあるほかのワークツリーは引き取らない）
+		const head = await this.execGit(paradisTaskBoardRemoteGitPlan(dir, { kind: 'currentBranch' }).args, this.timeouts.gitShortMs);
+		if (head.code !== 0 || head.stdout.trim() !== branch) {
+			throw new ParadisTaskBoardRemoteError('denied', 'the worktree is not on the recorded branch');
+		}
 		session.places.add(dir);
 		session.createdWorktrees.add(dir);
 	}
@@ -980,7 +990,7 @@ export class ParadisTaskBoardRemoteChannel<TContext> implements IServerChannel<T
 			case 'closeSession': return this.service.closeSession(args[0]) as T;
 			case 'heartbeat': return this.service.heartbeat(args[0]) as T;
 			case 'registerPlace': return this.service.registerPlace(args[0], args[1]) as Promise<T>;
-			case 'adoptWorktree': return this.service.adoptWorktree(args[0], args[1]) as Promise<T>;
+			case 'adoptWorktree': return this.service.adoptWorktree(args[0], args[1], args[2]) as Promise<T>;
 			case 'git': return this.service.git(args[0], args[1], args[2]) as Promise<T>;
 			case 'readFile': return this.service.readFile(args[0], args[1], args[2], args[3]) as Promise<T>;
 			case 'writeFile': return this.service.writeFile(args[0], args[1], args[2], args[3]) as Promise<T>;

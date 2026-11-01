@@ -130,7 +130,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		}
 		this.showWindow(running);
 		// 既に動いているボードを開き直したときも、同じ pid と鍵を返す（窓が shared process へ登録し直す）
-		return running.child.pid !== undefined ? { ok: true, board: { pid: running.child.pid, key: running.boardKey } } : { ok: true };
+		return running.child.pid !== undefined ? { ok: true, board: { pid: running.child.pid, key: running.boardKey, ...(running.remote ? { remote: true } : {}) } } : { ok: true };
 	}
 
 	/**
@@ -149,7 +149,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 				same.remote.sessionId = target.sessionId;
 				same.child.send({ type: 'relay-session', sessionId: target.sessionId }, error => error && this.logService.warn(`[ParadisTaskBoardHost] ${error.message}`));
 			}
-			return same.child.pid !== undefined ? { ok: true, board: { pid: same.child.pid, key: same.boardKey } } : { ok: false, reason: 'start-failed' };
+			return same.child.pid !== undefined ? { ok: true, board: { pid: same.child.pid, key: same.boardKey, remote: true } } : { ok: false, reason: 'start-failed' };
 		}
 		if (this.running || this.pendingRemote || this.starting) {
 			return { ok: false, reason: 'other-board' };
@@ -170,7 +170,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 				this.pendingRemote = undefined;
 			}
 		});
-		return { ok: true, board: { pid: spawned.child.pid, key: spawned.boardKey } };
+		return { ok: true, board: { pid: spawned.child.pid, key: spawned.boardKey, remote: true } };
 	}
 
 	/** {@link startRemote} で起こしたボードの起動の合図を待ち、窓を出す。 */

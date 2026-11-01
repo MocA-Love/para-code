@@ -32,14 +32,16 @@ export function paradisTaskBoardIsBoardKey(value: unknown): value is string {
 export interface IParadisTaskBoardBoardRegistration {
 	readonly pid: number;
 	readonly key: string;
+	/** SSH の窓のボードか（main が付ける。接続口は SSH のボードに手元の口を使わせない）。 */
+	readonly remote?: boolean;
 }
 
 export function paradisParseTaskBoardBoardRegistration(value: unknown): IParadisTaskBoardBoardRegistration | undefined {
 	if (!value || typeof value !== 'object') {
 		return undefined;
 	}
-	const { pid, key } = value as { pid?: unknown; key?: unknown };
-	return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 1 && paradisTaskBoardIsBoardKey(key) ? { pid, key } : undefined;
+	const { pid, key, remote } = value as { pid?: unknown; key?: unknown; remote?: unknown };
+	return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 1 && paradisTaskBoardIsBoardKey(key) ? { pid, key, ...(remote === true ? { remote: true } : {}) } : undefined;
 }
 
 /** 中継のセッションの ID（REH の SESSION_ID と同じ形）。 */

@@ -131,6 +131,16 @@ suite('ParadisTaskBoardBridgeService', () => {
 		assert.deepStrictEqual(router.calls.filter(call => call.method === 'launch').map(call => call.ctx), ['window:2']);
 	});
 
+	test('a task board for an SSH window sees and touches only the terminals started over SSH', async () => {
+		const router = new FakeRouter();
+		const service = create(router);
+		await launch(service);
+		const send = await service.handle('POST', '/v1/send', new URLSearchParams(), { terminal: TERMINAL, text: 'x' }, 'board-a', true);
+		const screen = await service.handle('GET', '/v1/screen', new URLSearchParams({ terminal: TERMINAL }), undefined, 'board-a', true);
+		const terminals = await service.handle('GET', '/v1/terminals', new URLSearchParams(), undefined, 'board-a', true);
+		assert.deepStrictEqual([send.status, screen.status, terminals.body], [403, 403, { terminals: [] }]);
+	});
+
 	test('a relay launch goes only to the window of the session for the board that owns it, without looking at local folders', async () => {
 		const router = new FakeRouter();
 		relayLaunches = [];

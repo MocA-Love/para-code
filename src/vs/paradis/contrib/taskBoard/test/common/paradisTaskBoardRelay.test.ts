@@ -177,7 +177,7 @@ suite('Paradis task board relay - window side', () => {
 	});
 
 	test('session info comes from the window, with the credentials removed from the origin URL', async () => {
-		const { sessions } = await opened({ record: { worktrees: [`${WORKTREES}/kept`, `${WORKTREES}/gone`], branches: [] } });
+		const { sessions } = await opened({ record: { worktrees: [{ dir: `${WORKTREES}/kept`, branch: 'para/kept' }, { dir: `${WORKTREES}/gone`, branch: 'para/gone' }], branches: [] } });
 		const info = await sessions.handle({ sessionId: SESSION, op: { kind: 'sessionInfo' } });
 		assert.deepStrictEqual(info.ok ? info.value : info.code, {
 			root: ROOT, worktreeRoot: WORKTREES, defaultBranch: 'main',
@@ -203,9 +203,21 @@ suite('Paradis task board relay - window side', () => {
 		];
 		assert.deepStrictEqual({ results, record: records.get(REPO.toString()), sentToReh: reh.calls.filter(call => call.command === 'git').length }, {
 			results: ['rejected', 'rejected', 'rejected', undefined, 'ok', 'ok', `vscode-remote://ssh-remote%2Bhost${dir}`, undefined, 'rejected'],
-			record: { worktrees: [dir], branches: ['para/7-feature'] },
+			record: { worktrees: [{ dir, branch: 'para/7-feature' }], branches: ['para/7-feature'] },
 			sentToReh: 2,
 		});
+	});
+
+	test('branch switches and board folder resets happen only in board worktrees, not in the main working tree', async () => {
+		const { sessions } = await opened({ record: { worktrees: [{ dir: `${WORKTREES}/kept`, branch: 'para/kept' }], branches: [] } });
+		const run = (place: string, op: unknown) => sessions.handle({ sessionId: SESSION, op });
+		assert.deepStrictEqual([
+			code(await run(ROOT, { kind: 'git', place: ROOT, git: { kind: 'switch', branch: 'para/x', mode: 'existing' } })),
+			code(await run(ROOT, { kind: 'git', place: ROOT, git: { kind: 'detach', base: { kind: 'remote', branch: 'main' } } })),
+			code(await run(ROOT, { kind: 'git', place: ROOT, git: { kind: 'mergeFfOnly', branch: 'para/x' } })),
+			code(await run(ROOT, { kind: 'resetBoardDir', place: ROOT, taskId: 't1' })),
+			code(await run(ROOT, { kind: 'git', place: `${WORKTREES}/kept`, git: { kind: 'switch', branch: 'para/kept', mode: 'existing' } })),
+		], ['rejected', 'rejected', 'rejected', 'rejected', 'ok']);
 	});
 
 	test('the window sends only the rebuilt operation to the SSH host', async () => {
