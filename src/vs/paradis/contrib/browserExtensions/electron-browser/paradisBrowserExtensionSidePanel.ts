@@ -10,6 +10,8 @@
 // padding）空けた所に、パネルの見出し（拡張機能の名前と閉じるボタン）を出し、その下の四角を main へ送る。パネルの中身は main が
 // ウィンドウに置く WebContentsView（../electron-main/paradisBrowserExtensionSidePanel.ts）。
 //  - どのタブの横に出すか・出してよいかは main が決める（そのウィンドウの前のタブで、エージェントのタブでも共有中でもないとき）
+//  - 利用者が開こうとしたパネルを main が断った（エージェントのタブ・共有中のタブ）ときは、その理由を通知で見せる
+//    （./paradisSidePanelRefusalNotice.ts）
 //  - エディタが見えないとき・前面の表示（quick pick・ダイアログ・メニュー）がパネルに重なるときは隠す（WebContentsView は
 //    workbench の HTML より前に描かれるので、隠さないと前面の表示を覆う）
 // upstream のファイルには触らず、BrowserEditor.registerContribution() の拡張点だけで足している。
@@ -22,9 +24,11 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, IContainerLayoutOverride } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { BrowserOverlayManager } from '../../../../workbench/contrib/browserView/electron-browser/overlayManager.js';
 import { IParadisSidePanelView } from '../common/paradisBrowserExtensions.js';
 import { IParadisBrowserExtensionToolbarService } from './paradisBrowserExtensionToolbar.js';
+import { ParadisSidePanelRefusalNotice } from './paradisSidePanelRefusalNotice.js';
 
 const $ = dom.$;
 /** パネルの見出しの高さ（CSS のピクセル）。 */
@@ -47,12 +51,15 @@ export class ParadisBrowserExtensionSidePanelFeature extends BrowserEditorContri
 	 */
 	private _shownFor: string | undefined;
 	private _generation = 0;
+	private readonly _refusalNotice: ParadisSidePanelRefusalNotice;
 
 	constructor(
 		editor: BrowserEditor,
 		@IParadisBrowserExtensionToolbarService private readonly _toolbarService: IParadisBrowserExtensionToolbarService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super(editor);
+		this._refusalNotice = this._register(instantiationService.createInstance(ParadisSidePanelRefusalNotice));
 		const header = dom.append(this._element, $('.paradis-side-panel-header'));
 		header.style.height = `${HEADER_HEIGHT}px`;
 		dom.append(header, this._title);
@@ -83,11 +90,13 @@ export class ParadisBrowserExtensionSidePanelFeature extends BrowserEditorContri
 			return;
 		}
 		store.add(this._toolbarService.onDidChangeToolbar(() => this._refresh(model)));
+		store.add(this._toolbarService.main.onDidRefuseSidePanel(refusal => this._refusalNotice.onRefusal(refusal, this.editor.model?.id)));
 		this._refresh(model);
 	}
 
 	override onModelDetached(): void {
 		this._generation++;
+		this._refusalNotice.reset();
 		this._set(undefined);
 	}
 

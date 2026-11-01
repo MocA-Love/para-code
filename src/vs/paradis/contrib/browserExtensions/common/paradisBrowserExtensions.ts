@@ -423,6 +423,12 @@ export interface IParadisSidePanelView {
 	readonly width: number;
 }
 
+/** エージェントのタブ・共有中のタブなので出さなかったサイドパネル（`viewId` のタブで、`name` の拡張機能のもの）。 */
+export interface IParadisSidePanelRefusal {
+	readonly viewId: string;
+	readonly name: string;
+}
+
 /** サイドパネルの場所（ウィンドウの中の CSS のピクセルと、ウィンドウの倍率）。 */
 export interface IParadisSidePanelRect {
 	readonly x: number;
@@ -484,6 +490,8 @@ export interface IParadisBrowserExtensionsMainService {
 	layoutSidePanel(viewId: string, layout: IParadisSidePanelRect | undefined): Promise<void>;
 	/** サイドパネルを開く（拡張機能のメニュー）・閉じる（パネルの閉じるボタン）。 */
 	setSidePanelOpen(viewId: string, extensionId: string, open: boolean): Promise<boolean>;
+	/** 利用者が開こうとしたサイドパネルを、エージェントのタブ・共有中のタブなので出さなかった（renderer が理由を見せる）。 */
+	readonly onDidRefuseSidePanel: Event<IParadisSidePanelRefusal>;
 	remove(id: string): Promise<void>;
 	/**
 	 * 共有の確認に使う、そのページに入っている（入りうる）拡張機能。`viewId` のビューが main にあれば、その
