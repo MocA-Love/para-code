@@ -153,6 +153,15 @@ function indexSources(files: readonly { path: string; source: string }[]): ISour
 	return { constants, objects };
 }
 
+/** リポジトリ全体の索引に、`source` の中の定義を上書きした索引を返す。 */
+function withLocalDefinitions(index: ISourceIndex, source: string): ISourceIndex {
+	const local = indexSources([{ path: '', source }]);
+	return {
+		constants: new Map([...index.constants, ...local.constants]),
+		objects: new Map([...index.objects, ...local.objects]),
+	};
+}
+
 function resolveKeys(references: readonly KeyReference[], index: ISourceIndex, where: string): string[] {
 	const keys: string[] = [];
 	for (const reference of references) {
@@ -181,12 +190,14 @@ function registeredParadisSettings(root: string): Set<string> {
 			continue;
 		}
 		const where = path.slice(root.length + 1);
+		// 同じ名前の定数 (TITLE_BAR_SETTING_ID など) が別のファイルにもあるので、このファイルの定義を先に使う
+		const fileIndex = withLocalDefinitions(index, source);
 		const keys: string[] = [];
 		for (const match of source.matchAll(/\bproperties\s*:\s*(?:(?<object>\{)|(?<name>[A-Z][A-Z0-9_]*)\b)/g)) {
 			const references = match.groups!.object
 				? objectKeys(source, match.index + match[0].length - 1)
 				: [{ kind: 'spread', name: match.groups!.name! } satisfies KeyReference];
-			keys.push(...resolveKeys(references, index, where));
+			keys.push(...resolveKeys(references, fileIndex, where));
 		}
 		// 1 件も拾えないときは書き方が読み取れていない (取りこぼし) ので、黙って通さない
 		assert.ok(keys.length > 0, `${where}: calls registerConfiguration but no setting keys were found`);
@@ -227,7 +238,7 @@ function registeredExtensionForkSettings(root: string): Set<string> {
 function dialogSettings(root: string): Set<string> {
 	const dialogPath = join(root, 'src', 'vs', 'paradis', 'contrib', 'paradisSettings', 'electron-browser', 'paradisSettingsDialog.ts');
 	const source = readFileSync(dialogPath, 'utf8');
-	const index = indexSources(listSourceFiles(join(root, 'src', 'vs', 'paradis')).map(path => ({ path, source: readFileSync(path, 'utf8') })));
+	const index = withLocalDefinitions(indexSources(listSourceFiles(join(root, 'src', 'vs', 'paradis')).map(path => ({ path, source: readFileSync(path, 'utf8') }))), source);
 	const settings = new Set<string>();
 	for (const match of source.matchAll(/^\s*key:\s*(?:'(?<literal>[^'\n]+)'|(?<constant>[A-Za-z_]\w*))\s*,/gm)) {
 		if (match.groups!.literal) {

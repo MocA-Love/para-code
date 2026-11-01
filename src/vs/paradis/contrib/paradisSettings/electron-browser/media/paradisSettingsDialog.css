@@ -195,6 +195,25 @@
 	margin: 2px 0;
 }
 
+.paradis-settings-dialog .psd-group-head {
+	font-size: 11.5px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+	margin: 16px 0 2px;
+	padding-bottom: 4px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-settings-dialog .psd-row-badge {
+	font-size: 10.5px;
+	font-weight: 400;
+	line-height: 16px;
+	padding: 0 6px;
+	border-radius: 8px;
+	border: 1px solid var(--vscode-descriptionForeground);
+	color: var(--vscode-descriptionForeground);
+}
+
 .paradis-settings-dialog .psd-section-desc {
 	font-size: 12px;
 	color: var(--vscode-descriptionForeground);
@@ -215,6 +234,8 @@
 }
 
 .paradis-settings-dialog .psd-section.hidden,
+.paradis-settings-dialog .psd-group-head.hidden,
+.paradis-settings-dialog .psd-nav-caption.hidden,
 .paradis-settings-dialog .psd-row.hidden,
 .paradis-settings-dialog .psd-row-desc.hidden,
 .paradis-settings-dialog .psd-nav-item.hidden,
