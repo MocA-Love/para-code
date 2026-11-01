@@ -167,6 +167,28 @@ suite('ParadisBrowserExtensionSidePanel', () => {
 		}
 	});
 
+	test('tells the renderer when it refuses to open a panel next to a shared tab, and still refuses the extension', async () => {
+		const { root, panel, call, tab1, setGesture, dispose } = await setup();
+		const refusals: unknown[] = [];
+		const listener = panel.onDidRefuse(refusal => refusals.push(refusal));
+		try {
+			setGesture(true);
+			paradisSetExtensionPageHold(tab1.webContents, true);
+			const refused = outcome(() => call('open', { tabId: 11 }));
+			paradisSetExtensionPageHold(tab1.webContents, false);
+			assert.deepStrictEqual({ refused, refusals, shown: panel.panelFor(tab1.id) }, {
+				refused: 'Para Code does not show extension panels next to a tab that an agent is using',
+				refusals: [{ viewId: 'view-11', name: 'Panel' }],
+				shown: undefined,
+			});
+		} finally {
+			paradisSetExtensionPageHold(tab1.webContents, false);
+			listener.dispose();
+			dispose();
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('hides the panel when the tab it was shown for asks, even after that tab left the editor, and ignores hides from other tabs', async () => {
 		const { root, panel, call, created, tab1, tab2, setGesture, dispose } = await setup();
 		try {
