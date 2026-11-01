@@ -22,7 +22,7 @@ import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-m
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE } from '../common/paradisTaskBoardBridge.js';
-import { IParadisTaskBoardHost, PARADIS_TASK_BOARD_EMBEDDED_PORT, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult, ParadisTaskBoardServerMessage } from '../common/paradisTaskBoardHost.js';
+import { IParadisTaskBoardHost, IParadisTaskBoardRemoteTarget, PARADIS_TASK_BOARD_EMBEDDED_PORT, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult, ParadisTaskBoardServerMessage, paradisTaskBoardIsRemoteTarget } from '../common/paradisTaskBoardHost.js';
 
 /** サーバーが起動の合図を返すまで待つ時間（GitHub の認証と台帳の読み込みが先に走る）。 */
 const READY_TIMEOUT_MS = 60_000;
@@ -35,6 +35,29 @@ interface IRunningBoard {
 	readonly port: number;
 	/** 接続口へ送る、起動ごとの鍵（paradisTaskBoardRelay.ts の G1）。子へは ipc で渡し、開いた窓へは open() で返す。 */
 	readonly boardKey: string;
+	/** SSH の中継のボードなら、その対象（窓を再読み込みすると sessionId だけが新しくなる）。手元のボードは undefined。 */
+	readonly remote: IRemoteBoardTarget | undefined;
+}
+
+/** SSH の中継のボードの対象。sessionId は窓の再読み込みで組み直す。 */
+interface IRemoteBoardTarget {
+	sessionId: string;
+	readonly authority: string;
+	readonly root: string;
+}
+
+/** 起こしたが、まだ起動の合図を待っているボード。 */
+interface ISpawnedBoard {
+	readonly child: ChildProcess;
+	readonly token: string;
+	readonly boardKey: string;
+	readonly remote: IRemoteBoardTarget | undefined;
+	/** 起動の合図（ready の port）か失敗。 */
+	readonly ready: Promise<{ readonly result: ParadisTaskBoardOpenResult; readonly port: number }>;
+}
+
+function isSpawned(value: ISpawnedBoard | ParadisTaskBoardOpenResult): value is ISpawnedBoard {
+	return (value as Partial<ISpawnedBoard>).child !== undefined;
 }
 
 /** 子へ渡さない環境変数（Electron の Node として動かすための指定や、Para Code の画面の中だけの値）。 */
@@ -61,6 +84,8 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 	private window: electron.BrowserWindow | undefined;
 	private readonly shellEnv: ParadisCachedShellEnv;
 	private quitting = false;
+	/** SSH の窓が起こし、起動の合図を待っているボード（`finished` は起動しきったか。失敗なら止めてある）。 */
+	private pendingRemote: (ISpawnedBoard & { readonly finished: Promise<ParadisTaskBoardOpenResult> }) | undefined;
 
 	constructor(
 		configurationService: IConfigurationService,
@@ -88,6 +113,10 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		if (this.quitting) {
 			return { ok: false, reason: 'start-failed', message: 'Para Code is quitting' };
 		}
+		// ボードは 1 つしか動かせない。SSH のボードが動いている（起動中を含む）なら、黙って前に出さずに断る
+		if (this.pendingRemote || this.running?.remote !== undefined) {
+			return { ok: false, reason: 'other-board' };
+		}
 		if (!this.running) {
 			this.starting ??= this.start(repoPath).finally(() => this.starting = undefined);
 			const result = await this.starting;
@@ -101,10 +130,73 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		}
 		this.showWindow(running);
 		// 既に動いているボードを開き直したときも、同じ pid と鍵を返す（窓が shared process へ登録し直す）
-		return running.child.pid !== undefined ? { ok: true, board: { pid: running.child.pid, key: running.boardKey } } : { ok: true };
+		return running.child.pid !== undefined ? { ok: true, board: { pid: running.child.pid, key: running.boardKey, ...(running.remote ? { remote: true } : {}) } } : { ok: true };
+	}
+
+	/**
+	 * SSH の窓のボードを起こす。起動の合図を待たずに pid と鍵を返す（ボードはリポジトリの解決から中継を使うので、窓が
+	 * 鍵を接続口へ登録してからでないと起動しきれない）。窓は登録の後に {@link openRemote} を呼ぶ。
+	 */
+	async startRemote(target: IParadisTaskBoardRemoteTarget): Promise<ParadisTaskBoardOpenResult> {
+		if (this.quitting) {
+			return { ok: false, reason: 'start-failed', message: 'Para Code is quitting' };
+		}
+		// 同じ接続先・同じリポジトリのボードが動いていれば、断らずに組み直す（SSH の窓を再読み込みすると、窓のセッションが
+		// 新しくなる）。ボードには新しいセッションを ipc で知らせ、窓は今までどおり鍵を登録してセッションに結ぶ
+		const same = [this.running, this.pendingRemote].find(board => board?.remote !== undefined && board.remote.authority === target.authority && board.remote.root === target.root);
+		if (same?.remote) {
+			if (same.remote.sessionId !== target.sessionId) {
+				same.remote.sessionId = target.sessionId;
+				same.child.send({ type: 'relay-session', sessionId: target.sessionId }, error => error && this.logService.warn(`[ParadisTaskBoardHost] ${error.message}`));
+			}
+			return same.child.pid !== undefined ? { ok: true, board: { pid: same.child.pid, key: same.boardKey, remote: true } } : { ok: false, reason: 'start-failed' };
+		}
+		if (this.running || this.pendingRemote || this.starting) {
+			return { ok: false, reason: 'other-board' };
+		}
+		const spawned = await this.spawnBoard(['--remote'], { remote: { sessionId: target.sessionId, authority: target.authority, root: target.root } }, { sessionId: target.sessionId, authority: target.authority, root: target.root });
+		if (!isSpawned(spawned)) {
+			return spawned;
+		}
+		if (spawned.child.pid === undefined) {
+			await this.stopChild(spawned.child);
+			return { ok: false, reason: 'start-failed', message: 'the task board did not start' };
+		}
+		// 合図の待ちは、窓が openRemote() を呼ぶかどうかに関わらず進める（失敗・時間切れなら止める）
+		const pending = { ...spawned, finished: this.finishStart(spawned) };
+		this.pendingRemote = pending;
+		void pending.finished.finally(() => {
+			if (this.pendingRemote === pending) {
+				this.pendingRemote = undefined;
+			}
+		});
+		return { ok: true, board: { pid: spawned.child.pid, key: spawned.boardKey, remote: true } };
+	}
+
+	/** {@link startRemote} で起こしたボードの起動の合図を待ち、窓を出す。 */
+	async openRemote(sessionId: string): Promise<ParadisTaskBoardOpenResult> {
+		if (this.running?.remote?.sessionId === sessionId) {
+			this.showWindow(this.running);
+			return { ok: true };
+		}
+		const pending = this.pendingRemote;
+		if (pending?.remote?.sessionId !== sessionId) {
+			return { ok: false, reason: 'start-failed', message: 'the task board for this window is not starting' };
+		}
+		const result = await pending.finished;
+		if (result.ok && this.running) {
+			this.showWindow(this.running);
+		}
+		return result;
 	}
 
 	private async start(repoPath: string): Promise<ParadisTaskBoardOpenResult> {
+		const spawned = await this.spawnBoard(['--repo', repoPath], {}, undefined);
+		return isSpawned(spawned) ? this.finishStart(spawned) : spawned;
+	}
+
+	/** ボードのサーバーを起こし、鍵を ipc で渡す。起動の合図は待たない。 */
+	private async spawnBoard(targetArgs: readonly string[], init: Record<string, unknown>, remote: IRemoteBoardTarget | undefined): Promise<ISpawnedBoard | ParadisTaskBoardOpenResult> {
 		const root = this.boardRoot();
 		const entry = join(root, 'server', 'main.mjs');
 		if (!(await fs.access(entry).then(() => true, () => false))) {
@@ -118,7 +210,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		const boardKey = randomBytes(32).toString('base64url');
 		const bridgeFile = join(this.environmentMainService.userDataPath, PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE);
 		const env = boardEnvironment(await this.shellEnv.getEnv());
-		const child = spawn(process.execPath, [entry, '--prod', '--embedded', '--agents', 'para-code', '--repo', repoPath, '--port', String(port), '--bridge', bridgeFile], {
+		const child = spawn(process.execPath, [entry, '--prod', '--embedded', '--agents', 'para-code', ...targetArgs, '--port', String(port), '--bridge', bridgeFile], {
 			// 作業フォルダはリポジトリにしない。Windows は名前だけで起動したコマンドを作業フォルダから先に探すので、
 			// リポジトリに置かれた git.exe などが動いてしまう（ボードの側でも、Windows では絶対パスで起動している）
 			cwd: this.environmentMainService.userDataPath,
@@ -145,7 +237,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		forward(child.stderr, true);
 		this.startingChild = child;
 		let readyPort = port;
-		const result = await new Promise<ParadisTaskBoardOpenResult>(resolve => {
+		const ready = new Promise<ParadisTaskBoardOpenResult>(resolve => {
 			const timer = setTimeout(() => finish({ ok: false, reason: 'start-failed', message: 'the task board did not start in time' }), READY_TIMEOUT_MS);
 			const onMessage = (message: ParadisTaskBoardServerMessage) => {
 				if (message?.type === 'ready') {
@@ -168,8 +260,15 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			child.on('message', onMessage);
 			child.once('exit', onExit);
 			child.on('error', onError);
-			child.send({ type: 'init', token, boardKey }, error => error && onError(error));
-		});
+			child.send({ type: 'init', token, boardKey, ...init }, error => error && onError(error));
+		}).then(result => ({ result, port: readyPort }));
+		return { child, token, boardKey, remote, ready };
+	}
+
+	/** 起動の合図を待ち、動いているボードとして覚える。失敗したら止める。 */
+	private async finishStart(spawned: ISpawnedBoard): Promise<ParadisTaskBoardOpenResult> {
+		const { child, token, boardKey, remote } = spawned;
+		const { result, port: readyPort } = await spawned.ready;
 		// 起動の後も、子の error（IPC の切断の後の送信など）で main が落ちないようにする
 		child.on('error', error => this.logService.warn(`[ParadisTaskBoardHost] ${error.message}`));
 		if (this.startingChild === child) {
@@ -179,7 +278,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			await this.stopChild(child);
 			return result.ok ? { ok: false, reason: 'start-failed', message: 'Para Code is quitting' } : result;
 		}
-		const running: IRunningBoard = { child, token, port: readyPort, boardKey };
+		const running: IRunningBoard = { child, token, port: readyPort, boardKey, remote };
 		this.running = running;
 		child.once('exit', code => {
 			if (this.running === running) {
@@ -305,6 +404,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		this.running = undefined;
 		const starting = this.startingChild;
 		this.startingChild = undefined;
+		this.pendingRemote = undefined;
 		if (this.window && !this.window.isDestroyed()) {
 			this.window.close();
 		}
@@ -348,6 +448,8 @@ export function paradisRegisterTaskBoardHost(channelHost: IParadisTaskBoardHostC
 	// 画面から呼べるのは open と stop だけにする（ProxyChannel はクラスのほかのメソッドも呼べてしまう）
 	const surface: IParadisTaskBoardHost = {
 		open: repoPath => typeof repoPath === 'string' && repoPath.length > 0 ? host.open(repoPath) : Promise.resolve({ ok: false, reason: 'start-failed', message: 'invalid repository path' }),
+		startRemote: target => paradisTaskBoardIsRemoteTarget(target) ? host.startRemote(target) : Promise.resolve({ ok: false, reason: 'start-failed', message: 'invalid remote target' }),
+		openRemote: sessionId => typeof sessionId === 'string' ? host.openRemote(sessionId) : Promise.resolve({ ok: false, reason: 'start-failed', message: 'invalid session' }),
 		stop: () => host.stop(),
 	};
 	channelHost.registerChannel(PARADIS_TASK_BOARD_HOST_CHANNEL, ProxyChannel.fromService(surface, store));

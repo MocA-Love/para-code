@@ -13,12 +13,14 @@ import { URI } from '../../../../../base/common/uri.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisParseTaskBoardBoardRegistration, paradisParseTaskBoardRelayRequest, paradisTaskBoardRelayOperationName } from '../../common/paradisTaskBoardRelay.js';
-import { ParadisTaskBoardRelaySessions } from '../../common/paradisTaskBoardRelaySessions.js';
+import { IParadisTaskBoardRelayRecord, ParadisTaskBoardRelaySessions } from '../../common/paradisTaskBoardRelaySessions.js';
 
 const KEY = 'k'.repeat(43);
 const SESSION = 'session-0123456789abcdef';
 const AUTHORITY = 'ssh-remote+host';
-const REPO = URI.from({ scheme: 'vscode-remote', authority: AUTHORITY, path: '/home/u/repo' });
+const ROOT = '/home/u/repo';
+const WORKTREES = '/home/u/repo-worktrees';
+const REPO = URI.from({ scheme: 'vscode-remote', authority: AUTHORITY, path: ROOT });
 
 /** REH や接続口の代わり。届いた呼び出しを記録し、決めた答えを返す。 */
 class FakeChannel implements IChannel {
@@ -37,23 +39,57 @@ class FakeChannel implements IChannel {
 	}
 }
 
+function defaultReh(command: string, arg: unknown): unknown {
+	switch (command) {
+		case 'openSession': {
+			const path = (arg as string[])[1];
+			return { toplevel: path, commonDir: `${ROOT}/.git` };
+		}
+		case 'readFile': return VSBuffer.fromString('plan');
+		case 'adoptWorktree': return (arg as string[])[1].endsWith('/gone') ? new Error('[denied] gone') : undefined;
+		case 'git': {
+			const op = (arg as unknown[])[2] as { kind: string; push?: boolean };
+			if (op.kind === 'remoteUrl') {
+				return { code: 0, stdout: op.push ? 'git@example.com:o/r.git\n' : 'https://user:token@example.com/o/r.git\n', stderr: '', timedOut: false };
+			}
+			if (op.kind === 'defaultBranch') {
+				return { code: 0, stdout: 'refs/remotes/origin/main\n', stderr: '', timedOut: false };
+			}
+			return { code: 0, stdout: 'x', stderr: '', timedOut: false };
+		}
+		default: return undefined;
+	}
+}
+
 suite('Paradis task board relay - window side', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function create(options?: { remoteAuthority?: string | null; registered?: boolean; reh?: (command: string, arg: unknown) => unknown }) {
-		const reh = new FakeChannel(options?.reh ?? (command => command === 'openSession' ? { toplevel: '/home/u/repo', commonDir: '/home/u/repo/.git' } : command === 'readFile' ? VSBuffer.fromString('plan') : { code: 0, stdout: 'x', stderr: '', timedOut: false }));
+	function create(options?: { remoteAuthority?: string | null; registered?: boolean; reh?: (command: string, arg: unknown) => unknown; record?: IParadisTaskBoardRelayRecord }) {
+		const reh = new FakeChannel(options?.reh ?? defaultReh);
 		const bridge = new FakeChannel(() => true);
+		const records = new Map<string, IParadisTaskBoardRelayRecord>(options?.record ? [[REPO.toString(), options.record]] : []);
 		const sessions = store.add(new ParadisTaskBoardRelaySessions({
 			remoteAuthority: options?.remoteAuthority === null ? undefined : options?.remoteAuthority ?? AUTHORITY,
 			remoteChannel: () => reh,
 			bridge,
 			isWindowFolder: () => options?.registered ?? true,
 			newSessionId: () => SESSION,
+			readRecord: repository => records.get(repository) ?? { worktrees: [], branches: [] },
+			writeRecord: (repository, record) => records.set(repository, record),
 			warn: () => { },
 		}));
-		return { sessions, reh, bridge };
+		return { sessions, reh, bridge, records };
 	}
+
+	async function opened(options?: Parameters<typeof create>[0]) {
+		const created = create(options);
+		assert.deepStrictEqual(await created.sessions.prepare(REPO), { ok: true, value: { sessionId: SESSION, root: ROOT } });
+		assert.deepStrictEqual(await created.sessions.bind(SESSION, KEY), { ok: true, value: true });
+		return created;
+	}
+
+	const code = (result: { ok: boolean; code?: string }) => result.ok ? 'ok' : result.code;
 
 	test('board registration and request shapes', () => {
 		assert.deepStrictEqual([
@@ -65,85 +101,147 @@ suite('Paradis task board relay - window side', () => {
 		], [{ pid: 1234, key: KEY }, undefined, undefined, 'git.status', 'git.unknown']);
 	});
 
-	test('requests are rebuilt from the allowed fields only, and anything but read-only git and readFile is not available yet', () => {
+	test('requests are rebuilt from the allowed fields only; commits, pushes and commands are not available yet', () => {
 		const parse = (op: unknown) => {
 			const result = paradisParseTaskBoardRelayRequest({ sessionId: SESSION, op, extra: 'x' });
-			return result.ok ? result.value : result.code;
+			return result.ok ? result.value.op : result.code;
 		};
 		assert.deepStrictEqual([
-			parse({ kind: 'git', git: { kind: 'status', args: ['--output=/tmp/x'], cwd: '/etc' }, cwd: '/etc' }),
-			parse({ kind: 'git', git: { kind: 'aheadCount', base: { kind: 'remote', branch: 'main', x: 1 }, head: { kind: 'head', branch: 'y' } } }),
-			parse({ kind: 'readFile', path: '.para/plan.html', maxBytes: 100, root: '/' }),
-			parse({ kind: 'git', git: { kind: 'push', branch: 'para/x' } }),
-			parse({ kind: 'git', git: { kind: 'commit', message: 'x' } }),
+			parse({ kind: 'git', place: ROOT, git: { kind: 'status', args: ['--output=/tmp/x'], cwd: '/etc' }, cwd: '/etc' }),
+			parse({ kind: 'git', place: ROOT, git: { kind: 'worktreeAdd', dir: `${WORKTREES}/a`, branch: 'para/a', mode: 'new', base: { kind: 'remote', branch: 'main', x: 1 }, force: true } }),
+			parse({ kind: 'git', place: ROOT, git: { kind: 'switch', branch: 'para/a', mode: 'existing', base: { kind: 'head' } } }),
+			parse({ kind: 'git', git: { kind: 'status' } }),
+			parse({ kind: 'git', place: ROOT, git: { kind: 'push', branch: 'para/x' } }),
+			parse({ kind: 'git', place: ROOT, git: { kind: 'commit', message: 'x' } }),
+			parse({ kind: 'git', place: ROOT, git: { kind: 'addTracked' } }),
 			parse({ kind: 'runCommand', command: 'rm -rf /' }),
-			parse({ kind: 'writeFile', path: '.para/x', content: 'x' }),
-			parse({ kind: 'git', git: { kind: 'aheadCount', base: 'HEAD~1', head: { kind: 'head' } } }),
-			parse({ kind: 'readFile', path: '.env' }),
-			parse({ kind: 'readFile', path: '.git/config' }),
-			parse({ kind: 'readFile', path: 'src/a.ts' }),
-			parse({ kind: 'readFile', path: '.para/../.env' }),
+			parse({ kind: 'readFile', place: ROOT, path: '.env' }),
+			parse({ kind: 'writeFile', path: '.para-code/paracode.json', content: '{}', place: '/etc' }),
+			parse({ kind: 'writeFile', path: 'package.json', content: '{}' }),
+			parse({ kind: 'resetBoardDir', place: ROOT, taskId: '../x' }),
 		], [
-			{ sessionId: SESSION, op: { kind: 'git', git: { kind: 'status' } } },
-			{ sessionId: SESSION, op: { kind: 'git', git: { kind: 'aheadCount', base: { kind: 'remote', branch: 'main' }, head: { kind: 'head' } } } },
-			{ sessionId: SESSION, op: { kind: 'readFile', path: '.para/plan.html', maxBytes: 100 } },
-			'unavailable', 'unavailable', 'unavailable', 'unavailable', 'invalid',
-			'rejected', 'rejected', 'rejected', 'invalid',
+			{ kind: 'git', place: ROOT, git: { kind: 'status' } },
+			{ kind: 'git', place: ROOT, git: { kind: 'worktreeAdd', dir: `${WORKTREES}/a`, branch: 'para/a', mode: 'new', base: { kind: 'remote', branch: 'main' } } },
+			{ kind: 'git', place: ROOT, git: { kind: 'switch', branch: 'para/a', mode: 'existing' } },
+			'invalid', 'unavailable', 'unavailable', 'unavailable', 'unavailable', 'rejected',
+			{ kind: 'writeFile', path: '.para-code/paracode.json', content: '{}' },
+			'rejected', 'invalid',
 		]);
 	});
 
 	test('a session opens only for a registered repository on the SSH host of this window', async () => {
-		const other = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+other', path: '/home/u/repo' });
-		const local = URI.file('/home/u/repo');
-		const code = (result: { ok: boolean; code?: string }) => result.ok ? 'ok' : result.code;
+		const other = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+other', path: ROOT });
 		assert.deepStrictEqual([
-			code(await create({ remoteAuthority: null }).sessions.open(REPO, KEY)),
-			code(await create().sessions.open(other, KEY)),
-			code(await create().sessions.open(local, KEY)),
-			code(await create({ registered: false }).sessions.open(REPO, KEY)),
-			code(await create().sessions.open(REPO, 'short')),
-			code(await create({ reh: () => new Error('Unknown channel: paradisTaskBoardRemote') }).sessions.open(REPO, KEY)),
-		], ['invalid', 'invalid', 'invalid', 'invalid', 'invalid', 'unavailable']);
+			code(await create({ remoteAuthority: null }).sessions.prepare(REPO)),
+			code(await create().sessions.prepare(other)),
+			code(await create().sessions.prepare(URI.file(ROOT))),
+			code(await create({ registered: false }).sessions.prepare(REPO)),
+			code(await create({ reh: () => new Error('Unknown channel: paradisTaskBoardRemote') }).sessions.prepare(REPO)),
+		], ['invalid', 'invalid', 'invalid', 'invalid', 'unavailable']);
 		const { sessions, reh, bridge } = create();
-		assert.deepStrictEqual(await sessions.open(REPO, KEY), { ok: true, value: { sessionId: SESSION } });
+		await sessions.prepare(REPO);
+		// 鍵を結ぶまでは依頼を受けない
+		assert.strictEqual(code(await sessions.handle({ sessionId: SESSION, op: { kind: 'sessionInfo' } })), 'not-found');
+		assert.strictEqual(code(await sessions.bind(SESSION, 'short')), 'invalid');
+		await sessions.bind(SESSION, KEY);
 		assert.deepStrictEqual([reh.calls, bridge.calls], [
-			[{ command: 'openSession', arg: [SESSION, '/home/u/repo'] }],
-			[{ command: 'registerRelaySession', arg: { sessionId: SESSION, boardKey: KEY, authority: AUTHORITY, repository: '/home/u/repo' } }],
+			[{ command: 'openSession', arg: [SESSION, ROOT] }, { command: 'closeSession', arg: [SESSION] }, { command: 'openSession', arg: [SESSION, ROOT, WORKTREES] }],
+			[{ command: 'registerRelaySession', arg: { sessionId: SESSION, boardKey: KEY, authority: AUTHORITY, repository: ROOT } }],
 		]);
 	});
 
-	test('the window sends only the rebuilt operation to the SSH host, for its own sessions', async () => {
-		const { sessions, reh } = create();
-		await sessions.open(REPO, KEY);
+	test('a session opened from a worktree folder moves to the main repository, if the window has it', async () => {
+		const worktree = REPO.with({ path: `${WORKTREES}/x` });
+		const registered = create();
+		const result = await registered.sessions.prepare(worktree);
+		const missing = create({ registered: false });
+		// 窓に本体が無ければ断る（最初の確かめは通すため、isWindowFolder は本体のときだけ false にする）
+		const onlyWorktree = new ParadisTaskBoardRelaySessions({
+			remoteAuthority: AUTHORITY, remoteChannel: () => new FakeChannel(defaultReh), bridge: new FakeChannel(() => true),
+			isWindowFolder: uri => uri.path !== ROOT, newSessionId: () => SESSION,
+			readRecord: () => ({ worktrees: [], branches: [] }), writeRecord: () => { }, warn: () => { },
+		});
+		store.add(onlyWorktree);
+		assert.deepStrictEqual([
+			result.ok ? result.value.root : result.code,
+			registered.reh.calls.filter(call => call.command === 'openSession').map(call => call.arg),
+			code(await missing.sessions.prepare(worktree)),
+			code(await onlyWorktree.prepare(worktree)),
+		], [ROOT, [[SESSION, `${WORKTREES}/x`], [SESSION, ROOT, WORKTREES]], 'invalid', 'invalid']);
+	});
+
+	test('tokens in git output are removed anywhere in the text', async () => {
+		const { sessions } = await opened({ reh: (command, arg) => command === 'git' ? { code: 128, stdout: '', stderr: `fatal: unable to access 'https://user:p@ss@example.com/o/r.git/': 403\n`, timedOut: false } : defaultReh(command, arg) });
+		const result = await sessions.handle({ sessionId: SESSION, op: { kind: 'git', place: ROOT, git: { kind: 'fetch' } } });
+		assert.deepStrictEqual(result.ok ? (result.value as { stderr: string }).stderr : result.code, `fatal: unable to access 'https://example.com/o/r.git/': 403\n`);
+	});
+
+	test('session info comes from the window, with the credentials removed from the origin URL', async () => {
+		const { sessions } = await opened({ record: { worktrees: [{ dir: `${WORKTREES}/kept`, branch: 'para/kept' }, { dir: `${WORKTREES}/gone`, branch: 'para/gone' }], branches: [] } });
+		const info = await sessions.handle({ sessionId: SESSION, op: { kind: 'sessionInfo' } });
+		assert.deepStrictEqual(info.ok ? info.value : info.code, {
+			root: ROOT, worktreeRoot: WORKTREES, defaultBranch: 'main',
+			originFetch: 'https://example.com/o/r.git', originPush: 'git@example.com:o/r.git',
+			worktrees: [`${WORKTREES}/kept`],
+		});
+	});
+
+	test('workspaces are the session root and the worktrees this window made, recorded across restarts', async () => {
+		const { sessions, reh, records } = await opened();
+		const git = (place: string, op: unknown) => sessions.handle({ sessionId: SESSION, op: { kind: 'git', place, git: op } });
+		const dir = `${WORKTREES}/7-feature`;
 		const results = [
-			await sessions.handle({ sessionId: SESSION, op: { kind: 'git', git: { kind: 'status', args: ['--exec=sh'] }, place: '/etc' } }),
-			await sessions.handle({ sessionId: SESSION, op: { kind: 'readFile', path: '.para/plan.html' } }),
-			await sessions.handle({ sessionId: SESSION, op: { kind: 'git', git: { kind: 'push', branch: 'para/x' } } }),
-			await sessions.handle({ sessionId: 'session-ffffffffffffffff', op: { kind: 'git', git: { kind: 'status' } } }),
+			code(await git('/etc', { kind: 'status' })),
+			code(await git(ROOT, { kind: 'worktreeAdd', dir: '/tmp/7-feature', branch: 'para/7', mode: 'new', base: { kind: 'head' } })),
+			code(await git(dir, { kind: 'status' })),
+			sessions.launchTarget(SESSION, dir)?.toString(),
+			code(await git(ROOT, { kind: 'worktreeAdd', dir, branch: 'para/7-feature', mode: 'new', base: { kind: 'remote', branch: 'main' } })),
+			code(await git(dir, { kind: 'status' })),
+			sessions.launchTarget(SESSION, dir)?.toString(),
+			sessions.launchTarget(SESSION, dir.toUpperCase()),
+			code(await git(ROOT, { kind: 'worktreeRemove', dir: ROOT })),
+		];
+		assert.deepStrictEqual({ results, record: records.get(REPO.toString()), sentToReh: reh.calls.filter(call => call.command === 'git').length }, {
+			results: ['rejected', 'rejected', 'rejected', undefined, 'ok', 'ok', `vscode-remote://ssh-remote%2Bhost${dir}`, undefined, 'rejected'],
+			record: { worktrees: [{ dir, branch: 'para/7-feature' }], branches: ['para/7-feature'] },
+			sentToReh: 2,
+		});
+	});
+
+	test('branch switches and board folder resets happen only in board worktrees, not in the main working tree', async () => {
+		const { sessions } = await opened({ record: { worktrees: [{ dir: `${WORKTREES}/kept`, branch: 'para/kept' }], branches: [] } });
+		const run = (place: string, op: unknown) => sessions.handle({ sessionId: SESSION, op });
+		assert.deepStrictEqual([
+			code(await run(ROOT, { kind: 'git', place: ROOT, git: { kind: 'switch', branch: 'para/x', mode: 'existing' } })),
+			code(await run(ROOT, { kind: 'git', place: ROOT, git: { kind: 'detach', base: { kind: 'remote', branch: 'main' } } })),
+			code(await run(ROOT, { kind: 'git', place: ROOT, git: { kind: 'mergeFfOnly', branch: 'para/x' } })),
+			code(await run(ROOT, { kind: 'resetBoardDir', place: ROOT, taskId: 't1' })),
+			code(await run(ROOT, { kind: 'git', place: `${WORKTREES}/kept`, git: { kind: 'switch', branch: 'para/kept', mode: 'existing' } })),
+		], ['rejected', 'rejected', 'rejected', 'rejected', 'ok']);
+	});
+
+	test('the window sends only the rebuilt operation to the SSH host', async () => {
+		const { sessions, reh } = await opened();
+		const results = [
+			await sessions.handle({ sessionId: SESSION, op: { kind: 'git', place: ROOT, git: { kind: 'status', args: ['--exec=sh'] } } }),
+			await sessions.handle({ sessionId: SESSION, op: { kind: 'readFile', place: ROOT, path: '.para/plan.html' } }),
+			await sessions.handle({ sessionId: 'session-ffffffffffffffff', op: { kind: 'git', place: ROOT, git: { kind: 'status' } } }),
 		];
 		assert.deepStrictEqual({
 			results: results.map(result => result.ok ? result.value : result.code),
-			sent: reh.calls.slice(1),
+			sent: reh.calls.filter(call => call.command === 'git' || call.command === 'readFile'),
 		}, {
-			results: [{ code: 0, stdout: 'x', stderr: '', timedOut: false }, { base64: 'cGxhbg==', size: 4, detail: '.para/plan.html 4' }, 'unavailable', 'not-found'],
+			results: [{ code: 0, stdout: 'x', stderr: '', timedOut: false }, { base64: 'cGxhbg==', size: 4, detail: '.para/plan.html 4' }, 'not-found'],
 			sent: [
-				{ command: 'git', arg: [SESSION, '/home/u/repo', { kind: 'status' }] },
-				{ command: 'readFile', arg: [SESSION, '/home/u/repo', '.para/plan.html', undefined] },
+				{ command: 'git', arg: [SESSION, ROOT, { kind: 'status' }] },
+				{ command: 'readFile', arg: [SESSION, ROOT, '.para/plan.html', undefined] },
 			],
 		});
 	});
 
-	test('the remote URL reaches the board without the user name and token', async () => {
-		const { sessions } = create({ reh: command => command === 'openSession' ? { toplevel: '/home/u/repo' } : { code: 0, stdout: 'https://user:token@example.com/o/r.git\n', stderr: '', timedOut: false } });
-		await sessions.open(REPO, KEY);
-		const result = await sessions.handle({ sessionId: SESSION, op: { kind: 'git', git: { kind: 'remoteUrl' } } });
-		assert.deepStrictEqual(result.ok ? (result.value as { stdout: string }).stdout : result.code, 'https://example.com/o/r.git\n');
-	});
-
 	test('errors from the SSH host keep their meaning', async () => {
-		const { sessions } = create({ reh: command => command === 'openSession' ? { toplevel: '/home/u/repo' } : new Error('[denied] the path goes through a symbolic link: x') });
-		await sessions.open(REPO, KEY);
-		const result = await sessions.handle({ sessionId: SESSION, op: { kind: 'readFile', path: '.para/x' } });
-		assert.deepStrictEqual(result.ok ? 'ok' : result.code, 'rejected');
+		const { sessions } = await opened({ reh: (command, arg) => command === 'readFile' ? new Error('[denied] the path goes through a symbolic link: x') : defaultReh(command, arg) });
+		const result = await sessions.handle({ sessionId: SESSION, op: { kind: 'readFile', place: ROOT, path: '.para/x' } });
+		assert.strictEqual(code(result), 'rejected');
 	});
 });

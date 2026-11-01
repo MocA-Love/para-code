@@ -128,6 +128,13 @@ suite('Paradis task board bridge - board key and caller', function () {
 		assert.deepStrictEqual([lines.length, lines[60].reason, lines[60].detail, lines[61].reason], [62, 'suppressed', '10 more denied requests were not logged', 'key-missing']);
 	});
 
+	test('a task board for an SSH window cannot start agents on this PC or touch terminals it did not start over SSH', async () => {
+		auth.register({ pid: 4242, key: KEY_A, remote: true });
+		const local = await request('/v1/launch', 'POST', KEY_A, { launchId: 'L1', repoPath: '/home/u/local', agent: 'claude', prompt: 'x' });
+		const health = await fetch(`http://127.0.0.1:${port}/v1/health`, { headers: { authorization: `Bearer ${token}`, 'x-para-board-key': KEY_A } }).then(res => res.json()) as { windows: unknown[] };
+		assert.deepStrictEqual([local, health.windows, router.calls.filter(call => call.method === 'launch' || call.method === 'describe').length], [403, [], 0]);
+	});
+
 	test('the board that Para Code started is let through, and an exited board is not', async () => {
 		assert.strictEqual(await request('/v1/health', 'GET', KEY_A), 200);
 		auth.register({ pid: 9999, key: KEY_B });

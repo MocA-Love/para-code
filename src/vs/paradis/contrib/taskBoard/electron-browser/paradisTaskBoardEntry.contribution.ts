@@ -13,6 +13,7 @@ import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hover
 import { IAction } from '../../../../base/common/actions.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -29,10 +30,12 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ToggleTitleBarConfigAction } from '../../../../workbench/browser/parts/titlebar/titlebarActions.js';
 import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL, PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING } from '../common/paradisTaskBoardBridge.js';
-import { IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL } from '../common/paradisTaskBoardHost.js';
+import { IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult } from '../common/paradisTaskBoardHost.js';
+import { IParadisTaskBoardRelaySessionsService } from './paradisTaskBoardRelaySessionsService.js';
 
 registerMainProcessRemoteService(IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL);
 
@@ -62,6 +65,16 @@ function localSpaceFolder(switchService: IParadisWorkspaceSwitchService, context
 		return active.fsPath;
 	}
 	return contextService.getWorkspace().folders.find(folder => folder.uri.scheme === Schemas.file)?.uri.fsPath;
+}
+
+/** 今のスペースの、この窓の SSH の接続先のフォルダ（`vscode-remote`、authority が同じもの）。 */
+function remoteSpaceFolder(switchService: IParadisWorkspaceSwitchService, contextService: IWorkspaceContextService, authority: string): URI | undefined {
+	const matches = (uri: URI | undefined) => uri?.scheme === Schemas.vscodeRemote && uri.authority === authority;
+	const active = switchService.activeRepository?.uri;
+	if (matches(active)) {
+		return active;
+	}
+	return contextService.getWorkspace().folders.find(folder => matches(folder.uri))?.uri;
 }
 
 /**
@@ -98,18 +111,26 @@ class ParadisOpenTaskBoardAction extends Action2 {
 		const hostService = accessor.get(IParadisTaskBoardHostService);
 		const sharedProcessService = accessor.get(ISharedProcessService);
 		const logService = accessor.get(ILogService);
-		const folder = localSpaceFolder(accessor.get(IParadisWorkspaceSwitchService), accessor.get(IWorkspaceContextService));
-		if (!folder) {
+		const relayService = accessor.get(IParadisTaskBoardRelaySessionsService);
+		const remoteAuthority = accessor.get(IWorkbenchEnvironmentService).remoteAuthority;
+		const switchService = accessor.get(IParadisWorkspaceSwitchService);
+		const contextService = accessor.get(IWorkspaceContextService);
+		const folder = remoteAuthority === undefined ? localSpaceFolder(switchService, contextService) : undefined;
+		const remoteFolder = remoteAuthority !== undefined ? remoteSpaceFolder(switchService, contextService, remoteAuthority) : undefined;
+		if (!folder && !remoteFolder) {
 			// allow-any-unicode-next-line
-			notificationService.info(localize('paradis.taskBoard.noFolder', "タスクボードは、この PC のフォルダ（リポジトリ）を開いたウィンドウから開いてください。エージェントはこの PC で動きます。"));
+			notificationService.info(localize('paradis.taskBoard.noFolder', "タスクボードは、フォルダ（リポジトリ）を開いたウィンドウから開いてください。"));
 			return;
 		}
 		if (configurationService.getValue<boolean>(PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING) !== true) {
 			const { confirmed } = await dialogService.confirm({
 				// allow-any-unicode-next-line
 				message: localize('paradis.taskBoard.enableBridge', "タスクボードの接続口をオンにしますか？"),
-				// allow-any-unicode-next-line
-				detail: localize('paradis.taskBoard.enableBridgeDetail', "タスクボードは、この PC の Para Code でエージェントを起動し、質問や許可に答えるために接続口を使います。オンの間は、同じ PC で動くプログラムも接続口の鍵を読めば答えを送れます。設定の「paradis.taskBoard.bridge.enabled」でいつでもオフにできます。"),
+				detail: remoteFolder
+					// allow-any-unicode-next-line
+					? localize('paradis.taskBoard.enableBridgeDetailRemote', "タスクボードは、この PC の Para Code の接続口を使って、SSH の接続先でエージェントを起動し、質問や許可に答えます。ボードのワークツリーの作成と、ファイルの読み書きは、このウィンドウの接続を通して接続先で行います。設定の「paradis.taskBoard.bridge.enabled」でいつでもオフにできます。")
+					// allow-any-unicode-next-line
+					: localize('paradis.taskBoard.enableBridgeDetail', "タスクボードは、この PC の Para Code でエージェントを起動し、質問や許可に答えるために接続口を使います。つなげるのは、Para Code が起動したタスクボードだけです。設定の「paradis.taskBoard.bridge.enabled」でいつでもオフにできます。"),
 				// allow-any-unicode-next-line
 				primaryButton: localize('paradis.taskBoard.enableBridgeOk', "オンにして開く"),
 			});
@@ -118,13 +139,23 @@ class ParadisOpenTaskBoardAction extends Action2 {
 			}
 			await configurationService.updateValue(PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING, true, ConfigurationTarget.USER);
 		}
-		const result = await hostService.open(folder);
-		if (result.ok) {
+		const bridge = sharedProcessService.getChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL);
+		const register = async (board: { readonly pid: number; readonly key: string; readonly remote?: boolean } | undefined) => {
 			// 接続口は、ここで登録した鍵と pid のボードからの要求だけを通す（paradisTaskBoardRelay.ts の G1・G2）
-			if (result.board) {
-				await sharedProcessService.getChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL).call('registerBoard', result.board)
-					.catch(error => logService.warn('[ParadisTaskBoard] could not register the board with the bridge', error));
+			if (board) {
+				await bridge.call('registerBoard', board).catch(error => logService.warn('[ParadisTaskBoard] could not register the board with the bridge', error));
 			}
+		};
+		let result: ParadisTaskBoardOpenResult;
+		if (remoteFolder && remoteAuthority !== undefined) {
+			result = await openRemoteBoard(hostService, relayService, remoteFolder, remoteAuthority, register);
+		} else {
+			result = await hostService.open(folder!);
+			if (result.ok) {
+				await register(result.board);
+			}
+		}
+		if (result.ok) {
 			return;
 		}
 		switch (result.reason) {
@@ -136,11 +167,51 @@ class ParadisOpenTaskBoardAction extends Action2 {
 				// allow-any-unicode-next-line
 				notificationService.warn(localize('paradis.taskBoard.repoBusy', "このリポジトリは、ほかに起動したタスクボードで開かれています。そちらを閉じてから開いてください。"));
 				return;
+			case 'other-board':
+				// allow-any-unicode-next-line
+				notificationService.warn(localize('paradis.taskBoard.otherBoard', "タスクボードは、別のウィンドウ（この PC のフォルダか、別の SSH の接続先）で開いています。同時に開けるのは 1 つだけです。コマンド「タスクボードを止める」で止めてから開き直してください。"));
+				return;
 			default:
 				// allow-any-unicode-next-line
 				notificationService.error(localize('paradis.taskBoard.startFailed', "タスクボードを起動できませんでした: {0}", result.message ?? ''));
 		}
 	}
+}
+
+/**
+ * SSH の窓のボードを開く。順番は「REH にセッションを開く → ボードを起こす（pid と鍵を受け取る）→ 鍵を接続口へ登録 →
+ * セッションに鍵を結ぶ → 起動の合図を待って窓を出す」。ボードはリポジトリの解決から中継を使うので、登録が済むまで
+ * 接続口に断られるが、やり直して起動しきる。途中で失敗したらセッションを閉じる。
+ */
+async function openRemoteBoard(
+	hostService: IParadisTaskBoardHostService,
+	relayService: IParadisTaskBoardRelaySessionsService,
+	repository: URI,
+	authority: string,
+	register: (board: { readonly pid: number; readonly key: string; readonly remote?: boolean } | undefined) => Promise<void>,
+): Promise<ParadisTaskBoardOpenResult> {
+	const prepared = await relayService.prepare(repository);
+	if (!prepared.ok) {
+		return { ok: false, reason: 'start-failed', message: prepared.message };
+	}
+	const { sessionId, root } = prepared.value;
+	const started = await hostService.startRemote({ sessionId, authority, root });
+	if (!started.ok || !started.board) {
+		await relayService.close(sessionId);
+		return started.ok ? { ok: false, reason: 'start-failed' } : started;
+	}
+	await register(started.board);
+	const bound = await relayService.bind(sessionId, started.board.key);
+	if (!bound.ok) {
+		await relayService.close(sessionId);
+		await hostService.stop();
+		return { ok: false, reason: 'start-failed', message: bound.message };
+	}
+	const opened = await hostService.openRemote(sessionId);
+	if (!opened.ok) {
+		await relayService.close(sessionId);
+	}
+	return opened;
 }
 
 class ParadisStopTaskBoardAction extends Action2 {

@@ -115,7 +115,8 @@ suite('Paradis task board remote - checks', () => {
 			paradisTaskBoardRemoteStripUrlCredentials('git@github.com:o/r.git'),
 			paradisTaskBoardRemoteStripUrlCredentials('https://github.com/o/r.git'),
 			paradisTaskBoardRemoteStripUrlCredentials('https://user:p@ss@github.com/o/r@x.git'),
-		], ['https://github.com/o/r.git\n', 'ssh://github.com/o/r.git', 'git@github.com:o/r.git', 'https://github.com/o/r.git', 'https://github.com/o/r@x.git']);
+			paradisTaskBoardRemoteStripUrlCredentials(`fatal: unable to access 'https://u:t@h.example/o.git/' and ssh://git@h.example/x`),
+		], ['https://github.com/o/r.git\n', 'ssh://github.com/o/r.git', 'git@github.com:o/r.git', 'https://github.com/o/r.git', 'https://github.com/o/r@x.git', `fatal: unable to access 'https://h.example/o.git/' and ssh://h.example/x`]);
 	});
 
 	test('command text', () => {
