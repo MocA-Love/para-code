@@ -16,6 +16,7 @@
  */
 
 import { paradisRestrictedGitArgsError } from '../../workspaceSwitch/common/paradisGitRestrictedArgs.js';
+import { PARADIS_TASK_BOARD_HIDDEN_CHARACTERS_MESSAGE, paradisTaskBoardHasHiddenCharacters } from './paradisTaskBoardDisplayText.js';
 
 /** REH のチャネル名。 */
 export const PARADIS_TASK_BOARD_REMOTE_CHANNEL = 'paradisTaskBoardRemote';
@@ -386,6 +387,10 @@ export function paradisTaskBoardRemoteCommandError(command: unknown): string | u
 	}
 	if (command.length > PARADIS_TASK_BOARD_REMOTE_LIMITS.maxCommandChars || command.includes('\0')) {
 		return 'command is too long or contains NUL';
+	}
+	// 確認のダイアログで見えない・別の文字に見える文字（向きを変える文字、幅の無い文字、改行以外の制御文字）
+	if (paradisTaskBoardHasHiddenCharacters(command)) {
+		return PARADIS_TASK_BOARD_HIDDEN_CHARACTERS_MESSAGE;
 	}
 	return undefined;
 }

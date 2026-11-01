@@ -289,6 +289,38 @@ suite('Paradis task board relay - window side', () => {
 		});
 	});
 
+	test('only one confirmation waits at a time, and a command with hidden characters is refused before asking', async () => {
+		const kept = `${WORKTREES}/kept`;
+		let answer: (value: 'deny') => void = () => { };
+		const { sessions, reh, bridge, confirmations } = await opened({ record: { worktrees: [{ dir: kept, branch: 'para/kept' }], branches: [] } });
+		// 1 件目の確認を開いたままにする
+		const host = (sessions as unknown as { host: { confirmCommand: (request: IParadisTaskBoardRelayCommandConfirmation) => Promise<string> } }).host;
+		host.confirmCommand = request => {
+			confirmations.push(request);
+			return new Promise(resolve => answer = resolve);
+		};
+		const step = { flowId: 'f', stepId: 's', source: 'team' };
+		const run = (runId: string, command: string) => sessions.handle({ sessionId: SESSION, op: { kind: 'runCommand', place: kept, runId, command, step } });
+		const hidden = await run('r0', 'npm test #\u202Ehs | x lruc');
+		await run('r1', 'npm test');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		await run('r2', 'npm run lint');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		answer('deny');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({
+			hidden: hidden.ok ? 'ok' : [hidden.code, hidden.message],
+			asked: confirmations.map(request => [request.command, request.hash]),
+			exits: bridge.calls.filter(call => call.command === 'relayEvent').map(call => (call.arg as { event: { runId: string; reason?: string } }).event).map(event => `${event.runId} ${event.reason}`),
+			runs: reh.calls.filter(call => call.command === 'runCommand').length,
+		}, {
+			hidden: ['rejected', 'The command contains characters that cannot be displayed, so it is not run.'],
+			asked: [['npm test', 'h:npm test']],
+			exits: ['r2 confirm-pending', 'r1 not-approved'],
+			runs: 0,
+		});
+	});
+
 	test('a step command that the person does not approve never reaches the SSH host', async () => {
 		const kept = `${WORKTREES}/kept`;
 		const { sessions, reh, bridge } = await opened({ record: { worktrees: [{ dir: kept, branch: 'para/kept' }], branches: [] }, confirm: 'deny' });

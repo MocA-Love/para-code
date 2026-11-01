@@ -49,6 +49,8 @@ export interface IParadisTaskBoardRelayCommandConfirmation {
 	readonly step: IParadisTaskBoardRelayCommandStep;
 	/** 前に承認した本文（中身が変わったとき）。 */
 	readonly previous: string | undefined;
+	/** 本文の SHA-256（先頭を表示に添える）。 */
+	readonly hash: string;
 }
 
 /** 確認に答えが無いまま、この時間が過ぎたら「実行しない」にする。 */
@@ -96,6 +98,8 @@ interface IRelaySession {
 	bound: boolean;
 	/** 走っている（確認待ちを含む）工程のコマンド。 */
 	readonly runs: Set<string>;
+	/** 確認のダイアログを出している最中か（セッションごとに 1 件まで）。 */
+	confirming: boolean;
 }
 
 /** 記録に残すワークツリー・ブランチの数（古いものから落とす）。 */
@@ -184,7 +188,7 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 			void channel.call('closeSession', [sessionId]).catch(() => undefined);
 			return paradisTaskBoardFail('unavailable', 'The window is closing.');
 		}
-		const session: IRelaySession = { sessionId, repository: mainUri, root, worktreeRoot, places: new Set([root]), bound: false, runs: new Set() };
+		const session: IRelaySession = { sessionId, repository: mainUri, root, worktreeRoot, places: new Set([root]), bound: false, runs: new Set(), confirming: false };
 		this.sessions.set(sessionId, session);
 		const timer = new IntervalTimer();
 		timer.cancelAndSet(() => {
@@ -334,10 +338,16 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 		const hash = await this.host.sha256(command);
 		const approved = this.host.readApproval(key);
 		if (approved?.hash !== hash) {
+			// 確認は 1 件ずつ（ダイアログを積み上げて、押し間違いを誘わない）
+			if (session.confirming) {
+				exit({ code: null, signal: null, cancelled: false, timedOut: false, reason: 'confirm-pending' });
+				return;
+			}
+			session.confirming = true;
 			const answer = await this.host.confirmCommand({
 				authority: session.repository.authority, repository: session.root, place, command, step,
-				previous: approved?.command,
-			}).catch(() => 'deny' as const);
+				previous: approved?.command, hash,
+			}).catch(() => 'deny' as const).finally(() => session.confirming = false);
 			if (answer === 'deny') {
 				exit({ code: null, signal: null, cancelled: false, timedOut: false, reason: 'not-approved' });
 				return;

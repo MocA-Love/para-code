@@ -156,6 +156,7 @@ describe('RemoteCommandRunner', () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 		runner.onEvent({ type: 'relay-exit', runId: ops[0].runId as string, code: null, signal: null, cancelled: false, timedOut: false, reason: 'not-approved' });
 		runner.run(task, step('draft-pr'));
-		expect(results.map(r => [r.ok, r.detail.slice(0, 12)])).toEqual([[false, 'SSH の窓で「実行しな'], [false, 'SSH の接続先のリポジ']]);
+		runner.run(task, step('command', 'npm test #\u202Ehs | x lruc'));
+		expect({ results: results.map(r => [r.ok, r.detail.slice(0, 12)]), sent: ops.length }).toEqual({ results: [[false, 'SSH の窓で「実行しな'], [false, 'SSH の接続先のリポジ'], [false, 'コマンドに表示できない文']], sent: 1 });
 	});
 });
