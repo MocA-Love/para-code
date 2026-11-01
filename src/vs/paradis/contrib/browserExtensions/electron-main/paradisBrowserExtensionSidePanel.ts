@@ -27,7 +27,7 @@ import { promises as fs } from 'fs';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname } from '../../../../base/common/path.js';
-import { paradisIsExtensionPageHeld, paradisOnDidChangeExtensionPageHold } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { paradisIsExtensionPageHeld, paradisIsExtensionUiAllowedWhileHeld, paradisOnDidChangeExtensionPageHold, paradisOnDidChangeExtensionUiAllowedWhileHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import type { IParadisSidePanelRefusal } from '../common/paradisBrowserExtensions.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
@@ -109,10 +109,11 @@ function isPageOf(rawUrl: string, extensionId: string): boolean {
 
 /**
  * そのタブの横に拡張機能のサイドパネルを出してよいか。エージェントのタブ（エージェントが開いたタブとその子）と、エージェントと
- * 共有中のタブの横には出さない（Q483 の考え方。決まりが変わったらここだけを直す）。
+ * 共有中のタブの横には出さない（Q483 の考え方。決まりが変わったらここだけを直す）。共有中のタブは、設定「共有中のタブでも
+ * 拡張機能の画面を出す」（Q527、既定はオフ）がオンなら出す。
  */
 export function paradisSidePanelAllowedFor(view: Pick<IParadisTabView, 'isAgentTab'> & { readonly webContents: object }): boolean {
-	return !view.isAgentTab() && !paradisIsExtensionPageHeld(view.webContents);
+	return !view.isAgentTab() && (paradisIsExtensionUiAllowedWhileHeld() || !paradisIsExtensionPageHeld(view.webContents));
 }
 
 /** manifest の side_panel.default_path から作った設定（Chromium の GetPanelOptionsFromManifest）。 */
@@ -155,6 +156,8 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 				this._recheckAll();
 			}
 		}));
+		// 設定をオフに戻した: 共有中のタブの横のパネルを閉じる
+		this._disposables.add(paradisOnDidChangeExtensionUiAllowedWhileHeld(() => this._recheckAll()));
 		this._disposables.add(this._host.onDidCloseContext((session, extensionId, connection) => {
 			// 拡張機能を外した・無効にした: そのパネルを閉じる
 			if (connection === undefined) {

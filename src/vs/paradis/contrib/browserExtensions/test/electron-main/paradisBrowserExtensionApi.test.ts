@@ -532,6 +532,72 @@ suite('ParadisBrowserExtensionApi', () => {
 		}
 	});
 
+	test('tells the manager screen when a worker start fails or its reason arrives, and keeps the worker console', async () => {
+		const host = new ParadisExtensionApiHost(silentLog);
+		host.registerNamespace('runtime', { methods: {}, events: ['onInstalled'] });
+		const { session } = fakeSession([ID], { background: { service_worker: 'worker.js' } });
+		let onConsole: ((event: unknown, details: { message: string; level: number; sourceUrl: string }) => void) | undefined;
+		Object.assign(session.serviceWorkers, {
+			on: (event: string, listener: typeof onConsole) => { if (event === 'console-message') { onConsole = listener; } },
+			startWorkerForScope: async () => { throw new Error('Failed to start service worker.'); },
+		});
+		const attached = host.attachSession(session, 'default');
+		let changes = 0;
+		const listener = host.onDidChangeWorkers(() => changes++);
+		try {
+			onConsole?.({}, { message: 'booting', level: 1, sourceUrl: `chrome-extension://${ID}/worker.js` });
+			host.emitToWorkerWhenListening(session, ID, 'runtime', 'onInstalled', [{ reason: 'install' }]);
+			await new Promise(resolve => setTimeout(resolve, 0));
+			const afterFailure = changes;
+			onConsole?.({}, { message: 'Uncaught Error: boom', level: 3, sourceUrl: `chrome-extension://${ID}/worker.js` });
+			assert.deepStrictEqual({
+				afterFailure,
+				afterReason: changes,
+				log: host.workerLog(ID).map(line => [line.level, line.message]),
+				running: host.isWorkerRunning(ID),
+			}, {
+				afterFailure: 1,
+				afterReason: 2,
+				log: [['info', 'booting'], ['error', 'Uncaught Error: boom']],
+				running: false,
+			});
+		} finally {
+			listener.dispose();
+			attached.dispose();
+			host.dispose();
+		}
+	});
+
+	test('keeps only a few clicks for a worker without a listener, so they do not push out runtime.onInstalled', async () => {
+		const host = new ParadisExtensionApiHost(silentLog);
+		host.registerNamespace('action', { methods: {}, events: ['onClicked'] });
+		host.registerNamespace('runtime', { methods: {}, events: ['onInstalled'] });
+		const { session, send } = fakeSession([ID], { background: { service_worker: 'worker.js' } });
+		Object.assign(session.serviceWorkers, { startWorkerForScope: async () => { throw new Error('Failed to start service worker.'); } });
+		const attached = host.attachSession(session, 'default');
+		try {
+			const token = host.tokenFor(ID);
+			const origin = `chrome-extension://${ID}`;
+			host.emitToWorkerWhenListening(session, ID, 'runtime', 'onInstalled', [{ reason: 'install' }]);
+			for (let click = 0; click < 150; click++) {
+				host.emitWakingWorker({ session, extensionId: ID }, 'action', 'onClicked', [{ id: click }]);
+			}
+			await Promise.resolve();
+			const stream = await send(PARADIS_EXTENSION_API_EVENTS_URL, origin, { token, connection: 'worker' });
+			await send(PARADIS_EXTENSION_API_CALL_URL, origin, { token, connection: 'worker', request: { type: 'listen', namespace: 'runtime', event: 'onInstalled', active: true } });
+			await send(PARADIS_EXTENSION_API_CALL_URL, origin, { token, connection: 'worker', request: { type: 'listen', namespace: 'action', event: 'onClicked', active: true } });
+			assert.deepStrictEqual(await readEvents(stream, 4), [
+				{ namespace: 'runtime', event: 'onInstalled', args: [{ reason: 'install' }] },
+				{ namespace: 'action', event: 'onClicked', args: [{ id: 147 }] },
+				{ namespace: 'action', event: 'onClicked', args: [{ id: 148 }] },
+				{ namespace: 'action', event: 'onClicked', args: [{ id: 149 }] },
+			]);
+		} finally {
+			attached.dispose();
+			host.dispose();
+		}
+	});
+
 	test('decides runtime.onInstalled and onStartup like Chrome', () => {
 		const v1 = { extensionVersion: '1.0', chromiumVersion: '140' };
 		assert.deepStrictEqual([

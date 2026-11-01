@@ -28,7 +28,7 @@
 // タブの上で知らせる。
 
 import type { WebContents } from 'electron';
-import { paradisIsBrowserExtensionUrl, paradisIsExtensionPageHeld, paradisNoteExtensionPageBlocked, paradisSetExtensionPageBlockedListener, paradisSetExtensionPageHold } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { paradisIsBrowserExtensionUrl, paradisIsExtensionPageHeld, paradisIsExtensionUiAllowedWhileHeld, paradisNoteExtensionPageBlocked, paradisSetExtensionPageBlockedListener, paradisSetExtensionPageHold } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 
 /** 見張りを付けた webContents（付けるのは 1 回だけ）。 */
 const watched = new WeakSet<object>();
@@ -111,6 +111,10 @@ function setGuard(webContents: ParadisGuardedWebContents, held: boolean, options
 	watched.add(webContents);
 	const schedule = options.schedule ?? (callback => setImmediate(callback));
 	const cancel = (details: ICancellableNavigation) => {
+		// 設定「共有中のタブでも拡張機能の画面を出す」がオンなら、拡張機能が差す枠（iframe）は止めない（ページ本体は止める）
+		if (details.isMainFrame === false && paradisIsExtensionUiAllowedWhileHeld()) {
+			return;
+		}
 		if (paradisIsExtensionPageHeld(webContents) && paradisIsBrowserExtensionUrl(details.url)) {
 			details.preventDefault();
 			// 知らせるのはページ本体の移動を止めたときだけ（拡張が差した iframe を取り消すたびには知らせない）

@@ -42,6 +42,7 @@ import {
 	IParadisShareExtensions,
 	IParadisViewBrowserExtension,
 	PARADIS_BROWSER_EXTENSIONS_CHANNEL,
+	PARADIS_BROWSER_EXTENSIONS_ALLOW_WHILE_SHARED_SETTING,
 	PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING,
 	PARADIS_DEFAULT_EXTENSION_PROFILE,
 	PARADIS_EMPTY_EXTENSIONS_LEDGER,
@@ -63,6 +64,8 @@ import {
 	IParadisBrowserExtensionToolbar,
 	IParadisPopupRequest,
 	IParadisSidePanelRefusal,
+	IParadisWorkerLogLine,
+	ParadisOpenWorkerDevToolsResult,
 	IParadisToolbarAnchor,
 	IParadisActionMenu,
 	IParadisBrowserExtensionCommand,
@@ -78,9 +81,10 @@ import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.j
 import { ParadisBrowserExtensionPrivacy, paradisPrivacyUserTabs } from './paradisBrowserExtensionPrivacy.js';
 import { paradisRegisterBrowsingDataApis } from './paradisBrowserExtensionBrowsingData.js';
 import { ParadisBrowserExtensionTts } from './paradisBrowserExtensionTts.js';
-import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { paradisIsExtensionPageHeld, paradisSetExtensionUiAllowedWhileHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { ParadisBrowserExtensionUserScripts } from './paradisBrowserExtensionUserScripts.js';
 import { IParadisSidePanelInfo, IParadisSidePanelLayout, ParadisBrowserExtensionSidePanel } from './paradisBrowserExtensionSidePanel.js';
+import { ParadisBrowserExtensionWorkerDevTools } from './paradisBrowserExtensionWorkerDevTools.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IParadisHeldUpdate, IParadisWebStoreUpdate, PARADIS_WEB_STORE_UPDATE_URL, ParadisWebStoreUpdateSchedule, paradisAddedAccess, paradisBuildUpdateRequest, paradisCompareExtensionVersions, paradisHasAddedAccess, paradisParseUpdateResponse } from './paradisBrowserExtensionWebStoreUpdates.js';
 import { IParadisInstallPrompt, ParadisWebStoreFetcher, ParadisWebStoreUpdateRequester, paradisCreateWebStoreUpdateRequester, paradisCreateWebStoreFetcher, paradisDownloadWebStoreCrx, paradisExtractCrxArchive } from './paradisBrowserExtensionWebStore.js';
@@ -370,6 +374,31 @@ export async function paradisCopyExtensionFiles(items: readonly ICopyItem[], tar
 /** 写している途中のフォルダの名前に入る印。 */
 const TEMPORARY_COPY_MARK = '.tmp-';
 
+/** manifest のうち、管理画面に出すもの。 */
+interface IManifestSummary {
+	readonly manifest: Record<string, unknown> | undefined;
+	readonly permissions: readonly string[];
+	readonly hostPermissions: readonly string[];
+	readonly hasWorker: boolean;
+}
+
+/** manifest から、管理画面に出す権限・サイトと、背景の処理（service worker）を持つかを取り出す。 */
+export function paradisSummarizeManifest(manifest: Record<string, unknown>): IManifestSummary {
+	const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+	const contentScripts = Array.isArray(manifest.content_scripts) ? manifest.content_scripts : [];
+	const matches = contentScripts.flatMap(script => script !== null && typeof script === 'object' ? strings((script as Record<string, unknown>).matches) : []);
+	// MV2 は permissions にサイトも書く
+	const declared = [...strings(manifest.permissions), ...strings(manifest.optional_permissions)];
+	const isHost = (entry: string) => entry === '<all_urls>' || entry.includes('://');
+	const background = manifest.background;
+	return {
+		manifest,
+		permissions: [...new Set(declared.filter(entry => !isHost(entry)))],
+		hostPermissions: [...new Set([...declared.filter(isHost), ...strings(manifest.host_permissions), ...strings(manifest.optional_host_permissions), ...matches])],
+		hasWorker: background !== null && typeof background === 'object' && typeof (background as Record<string, unknown>).service_worker === 'string',
+	};
+}
+
 interface ISessionEntry {
 	readonly session: ParadisExtensionSession;
 	readonly profile: string;
@@ -436,6 +465,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _updateSchedule: ParadisWebStoreUpdateSchedule | undefined;
 	/** ストアのページの「Para Code に追加」（P7b）。タブの口と確認のダイアログがあるときだけ。 */
 	private readonly _webStoreBridge: ParadisWebStoreBridge | undefined;
+	/** 管理画面から背景の処理の DevTools を開く（Q527）。設定がオンのときだけ。 */
+	private readonly _workerDevTools: ParadisBrowserExtensionWorkerDevTools | undefined;
 
 	constructor(
 		private readonly _root: string,
@@ -448,6 +479,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	) {
 		this.active = _readSetting();
 		this._apiHost = new ParadisExtensionApiHost(_logService);
+		this._workerDevTools = this.active && tabsOptions ? new ParadisBrowserExtensionWorkerDevTools(_logService) : undefined;
 		this._syncStore = new ParadisBrowserExtensionSyncStore(join(_root, 'sync-storage'), _logService);
 		this._runtimeState = new ParadisBrowserExtensionRuntimeState(join(_root, 'runtime-state.json'), _logService);
 		paradisRegisterStorageApis(this._apiHost, this._syncStore);
@@ -633,6 +665,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._menus?.dispose();
 		this._userScripts?.dispose();
 		this._sidePanel?.dispose();
+		this._workerDevTools?.dispose();
 		this._tabs?.dispose();
 		this._apiHost.dispose();
 		void this._syncStore.flush();
@@ -702,6 +735,29 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	/** ツールバーが変わった（renderer へ）。 */
 	get onDidChangeToolbar(): Event<void> {
 		return this._actions?.onDidChangeToolbar ?? Event.None;
+	}
+
+	/** 背景の処理が動き出した・止まった・起動に失敗した（管理画面へ）。 */
+	get onDidChangeWorkers(): Event<void> {
+		return this._apiHost.onDidChangeWorkers;
+	}
+
+	/** 背景の処理の console の直近の行。 */
+	async getWorkerLog(id: string): Promise<readonly IParadisWorkerLogLine[]> {
+		return paradisIsExtensionId(id) ? this._apiHost.workerLog(id) : [];
+	}
+
+	/** 背景の処理の DevTools を別のウィンドウで開く。 */
+	async openWorkerDevTools(id: string): Promise<ParadisOpenWorkerDevToolsResult> {
+		await this._ready;
+		const extension = this._ledger.extensions.find(candidate => candidate.id === id);
+		if (!this.active || !this._workerDevTools) {
+			return { ok: false, reason: 'inactive' };
+		}
+		if (!extension || !(await this._readManifest(extension.path)).hasWorker) {
+			return { ok: false, reason: 'noWorker' };
+		}
+		return this._workerDevTools.open(id, extension.name, () => this._apiHost.wakeWorker(id));
 	}
 
 	/** 開こうとしたサイドパネルを出さなかった（renderer へ）。 */
@@ -1007,6 +1063,18 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				}
 			}
 		}
+		// 管理画面に出すアイコン・権限・背景の処理（manifest から）
+		const summaries = new Map<string, IManifestSummary>();
+		for (const extension of this._ledger.extensions) {
+			summaries.set(extension.id, await this._readManifest(extension.path));
+		}
+		const icons = new Map<string, string>();
+		for (const extension of this._ledger.extensions) {
+			const icon = await this._actions?.manifestIconDataUrl(extension.path, summaries.get(extension.id)?.manifest);
+			if (icon !== undefined) {
+				icons.set(extension.id, icon);
+			}
+		}
 		return {
 			active: this.active,
 			setting: this._readSetting(),
@@ -1015,6 +1083,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				enabledIn: Object.entries(this._ledger.enabled).filter(([, ids]) => ids.includes(extension.id)).map(([profile]) => profile),
 				...(this._loadErrors.has(extension.id) ? { loadError: this._loadErrors.get(extension.id) } : {}),
 				...(this._apiHost.workerStartError(extension.id) !== undefined ? { workerError: this._apiHost.workerStartError(extension.id) } : {}),
+				...(icons.has(extension.id) ? { iconDataUrl: icons.get(extension.id) } : {}),
+				permissions: summaries.get(extension.id)?.permissions ?? [],
+				hostPermissions: summaries.get(extension.id)?.hostPermissions ?? [],
+				...(summaries.get(extension.id)?.hasWorker ? { worker: { running: this._apiHost.isWorkerRunning(extension.id) } } : {}),
 				...(this._notes.has(extension.id) ? { pagesWithoutApis: this._notes.get(extension.id) } : {}),
 				// 作った key は画面に渡さない
 				generatedKey: undefined,
@@ -1685,12 +1757,16 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 
 	/** 写しの manifest が求める権限（permissions と optional_permissions）。読めなければ空。 */
 	private async _declaredPermissions(path: string): Promise<readonly string[]> {
+		return (await this._readManifest(path)).permissions;
+	}
+
+	/** 写しの manifest.json から、管理画面に出すもの（読めなければ空）。 */
+	private async _readManifest(path: string): Promise<IManifestSummary> {
 		try {
 			const manifest: unknown = JSON.parse(await fs.readFile(join(path, 'manifest.json'), 'utf8'));
-			const record = manifest !== null && typeof manifest === 'object' ? manifest as Record<string, unknown> : {};
-			return [record.permissions, record.optional_permissions].flatMap(list => Array.isArray(list) ? list.filter((entry): entry is string => typeof entry === 'string') : []);
+			return paradisSummarizeManifest(manifest !== null && typeof manifest === 'object' && !Array.isArray(manifest) ? manifest as Record<string, unknown> : {});
 		} catch {
-			return [];
+			return { manifest: undefined, permissions: [], hostPermissions: [], hasWorker: false };
 		}
 	}
 
@@ -1733,6 +1809,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		}
 		this._ledger = paradisLedgerWithoutExtension(this._ledger, id);
 		this._loadErrors.delete(id);
+		this._apiHost.forgetWorkerLog(id);
 		await this._save();
 		await fs.rm(existing.path, { recursive: true, force: true }).catch(() => { /* already gone */ });
 		// 次の起動のために置いた新しい版も消す
@@ -1788,6 +1865,14 @@ export function paradisRegisterBrowserExtensions(
 	const onDidRequestActivateTab = disposables.add(new Emitter<IParadisActivateTabRequest>());
 	const created = instantiationService.invokeFunction(accessor => {
 		const configurationService = accessor.get(IConfigurationService);
+		// 「共有中のタブでも拡張機能の画面を出す」（Q527）。サイドパネルと枠の止め方が読む値を、起動時と変わったときに入れる
+		const readAllowWhileShared = () => paradisSetExtensionUiAllowedWhileHeld(configurationService.getValue<boolean>(PARADIS_BROWSER_EXTENSIONS_ALLOW_WHILE_SHARED_SETTING) === true);
+		readAllowWhileShared();
+		disposables.add(configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(PARADIS_BROWSER_EXTENSIONS_ALLOW_WHILE_SHARED_SETTING)) {
+				readAllowWhileShared();
+			}
+		}));
 		const tabs = createTabs && configurationService.getValue<boolean>(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING) === true ? createTabs() : undefined;
 		if (tabs) {
 			disposables.add(tabs.environment);
@@ -1820,6 +1905,9 @@ export function paradisRegisterBrowserExtensions(
 	// renderer に見せるのは管理画面とツールバーの口だけ（attach・dispose は main の中からだけ呼ぶ）
 	const exposed: IParadisBrowserExtensionsMainService = {
 		getState: () => created.getState(),
+		onDidChangeWorkers: created.onDidChangeWorkers,
+		getWorkerLog: id => created.getWorkerLog(id),
+		openWorkerDevTools: id => created.openWorkerDevTools(id),
 		addUnpacked: (folder, profile) => created.addUnpacked(folder, profile),
 		addFromWebStore: (input, profile, profileLabel) => created.addFromWebStore(input, profile, profileLabel),
 		approveWebStoreUpdate: id => created.approveWebStoreUpdate(id),

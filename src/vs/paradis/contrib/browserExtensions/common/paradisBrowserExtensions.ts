@@ -20,6 +20,13 @@ import type { Event } from '../../../../base/common/event.js';
 /** 試験的な設定のキー（既定 false、再起動で効く）。 */
 export const PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING = 'paradis.browser.extensions.enabled';
 
+/**
+ * 「共有中のタブでも拡張機能の画面を出す」（既定 false、Q527）。オンにすると、エージェントと共有中のタブの横にも拡張機能の
+ * サイドパネルを出し、共有中のタブの中に拡張機能が差す枠（iframe。パスワード管理の候補など）も止めない。electron-main が読み、
+ * 変わったらすぐ効く。
+ */
+export const PARADIS_BROWSER_EXTENSIONS_ALLOW_WHILE_SHARED_SETTING = 'paradis.browser.extensions.allowWhileShared';
+
 /** main の拡張機能の管理の channel。 */
 export const PARADIS_BROWSER_EXTENSIONS_CHANNEL = 'paradisBrowserExtensions';
 
@@ -388,6 +395,14 @@ export interface IParadisBrowserExtensionView extends IParadisInstalledBrowserEx
 	readonly loadError?: string;
 	/** 直近に背景の処理（service worker）を起動できなかった理由（worker の評価で投げた例外など。無ければ undefined）。 */
 	readonly workerError?: string;
+	/** 管理画面に出すアイコン（manifest の icons などを main が読んだ data URL。読めなければ undefined）。 */
+	readonly iconDataUrl?: string;
+	/** manifest の permissions と optional_permissions（管理画面に出す）。 */
+	readonly permissions?: readonly string[];
+	/** manifest の host_permissions・optional_host_permissions と、content_scripts の matches（管理画面に出す）。 */
+	readonly hostPermissions?: readonly string[];
+	/** 背景の処理（service worker）を持つ拡張機能だけ: 今どこかのセッションで動いているか。 */
+	readonly worker?: { readonly running: boolean };
 	/** UTF-8 でない、または書き換えられない形式のため、Para Code の足す API（storage.sync など）を入れられなかったページ。 */
 	readonly pagesWithoutApis?: readonly string[];
 	/** 確かめて置いてある、次の起動で使うストアの更新の版（使っている最中には替えない）。 */
@@ -463,8 +478,29 @@ export type IParadisAddExtensionResult =
 export type ParadisWebStoreFailure = 'invalidInput' | 'cancelled' | 'busy' | 'alreadyAdded' | 'sameIdUnpacked' | 'sameIdWebStore' | 'webStoreFailed' | 'noPrompt';
 
 /** main の拡張機能の管理（{@link PARADIS_BROWSER_EXTENSIONS_CHANNEL}）。 */
+/** 背景の処理（service worker）の console の 1 行。 */
+export interface IParadisWorkerLogLine {
+	/** 受け取った時刻（ミリ秒）。 */
+	readonly at: number;
+	readonly level: 'debug' | 'info' | 'warning' | 'error';
+	readonly message: string;
+	/** 出したスクリプトの URL（読めなければ undefined）。 */
+	readonly source?: string;
+}
+
+/** 背景の処理の DevTools を開いた結果。 */
+export type ParadisOpenWorkerDevToolsResult =
+	| { readonly ok: true }
+	| { readonly ok: false; readonly reason: 'inactive' | 'noWorker' | 'notRunning' | 'noDebugPort' | 'failed'; readonly detail?: string };
+
 export interface IParadisBrowserExtensionsMainService {
 	getState(): Promise<IParadisBrowserExtensionsState>;
+	/** 背景の処理が動き出した・止まった・起動に失敗した（開いている管理画面が状態を読み直す）。 */
+	readonly onDidChangeWorkers: Event<void>;
+	/** 背景の処理の console の直近の行（古いものが先）。 */
+	getWorkerLog(id: string): Promise<readonly IParadisWorkerLogLine[]>;
+	/** 背景の処理の DevTools を別のウィンドウで開く（止まっていれば起こしてから）。 */
+	openWorkerDevTools(id: string): Promise<ParadisOpenWorkerDevToolsResult>;
 	/** 展開済みのフォルダから足し、`profile` で有効にする。 */
 	addUnpacked(folder: string, profile: string): Promise<IParadisAddExtensionResult>;
 	/**
