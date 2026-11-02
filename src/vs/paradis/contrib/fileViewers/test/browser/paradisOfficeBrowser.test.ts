@@ -303,20 +303,21 @@ suite('ParadisOfficeBrowser', () => {
 		const container = mainWindow.document.createElement('div');
 		const diagnostic = createParadisOfficeDiagnostic(URI.file('/workspace/legacy.xls'));
 		let opened: URI | undefined;
-		renderParadisOfficeDiagnostic(container, diagnostic, resource => { opened = resource; });
+		const rendered = renderParadisOfficeDiagnostic(container, diagnostic, resource => { opened = resource; });
 
 		strictEqual(diagnostic.format, 'xls');
 		strictEqual(diagnostic.reason, 'legacyBinaryUnsupported');
 		strictEqual(container.textContent?.includes('xls'), true);
 		strictEqual(container.textContent?.includes('\u0000PK\u0003\u0004'), false);
-		const button = container.querySelector('button') as HTMLButtonElement;
-		strictEqual(button.disabled, false);
+		const button = container.querySelector<HTMLElement>('.monaco-button')!;
 		button.click();
 		strictEqual(opened?.toString(), 'file:///workspace/legacy.xls');
+		rendered.dispose();
 
 		const unsafe = createParadisOfficeDiagnostic(URI.parse('data:application/octet-stream,secret'));
-		renderParadisOfficeDiagnostic(container, unsafe, () => { throw new Error('must not open'); });
-		strictEqual((container.querySelector('button') as HTMLButtonElement).disabled, true);
+		const renderedUnsafe = renderParadisOfficeDiagnostic(container, unsafe, () => { throw new Error('must not open'); });
+		strictEqual(container.querySelector('.monaco-button'), null);
+		renderedUnsafe.dispose();
 	});
 
 	test('surfaces every summary incompleteness signal in the diagnostic DOM', () => {

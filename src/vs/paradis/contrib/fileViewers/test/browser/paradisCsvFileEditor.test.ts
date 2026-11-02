@@ -165,13 +165,24 @@ function footer(harness: Harness): string {
 	return harness.root.querySelector('.paradis-csv-footer')?.textContent ?? '';
 }
 
-async function until(condition: () => boolean, label: string): Promise<void> {
-	for (let i = 0; i < 300 && !condition(); i++) {
-		await timeout(10);
-	}
-	if (!condition()) {
-		throw new Error(`timed out waiting for ${label}`);
-	}
+/**
+ * 条件が成り立つまで待つ。表の読み込みは非同期の処理の後に描かれ、知らせる event が無い（読み込みの
+ * 回数のように DOM に出ない条件もある）ので、描画の機会ごとに条件を見直す。3 秒で諦めて失敗にする。
+ */
+function until(condition: () => boolean, label: string): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		const deadline = Date.now() + 3_000;
+		const check = () => {
+			if (condition()) {
+				resolve();
+			} else if (Date.now() > deadline) {
+				reject(new Error(`timed out waiting for ${label}`));
+			} else {
+				mainWindow.requestAnimationFrame(check);
+			}
+		};
+		check();
+	});
 }
 
 suite('ParadisCsvFileEditor', () => {
@@ -213,9 +224,9 @@ suite('ParadisCsvFileEditor', () => {
 		await harness.editor.setInput(harness.input, undefined, Object.create(null), CancellationToken.None);
 		harness.stat = { size: 2 * 1024 * 1024 * 1024, mtime: 1 };
 		harness.editor.setViewMode('text');
-		await until(() => !!harness.root.querySelector('.paradis-csv-text-message.visible .paradis-csv-link-button'), 'confirmation');
+		await until(() => !!harness.root.querySelector('.paradis-csv-text-message.visible .monaco-button'), 'confirmation');
 		const before = harness.modelReferences.length;
-		const openAnyway = [...harness.root.querySelectorAll<HTMLButtonElement>('.paradis-csv-text-message.visible .paradis-csv-link-button')][0];
+		const openAnyway = [...harness.root.querySelectorAll<HTMLButtonElement>('.paradis-csv-text-message.visible .monaco-button')][0];
 		openAnyway.click();
 		await until(() => harness.modelReferences.length > before, 'model reference after confirming');
 		deepStrictEqual({ before, after: harness.modelReferences.length, control: !!harness.editor.getControl() }, { before: 0, after: 1, control: true });
