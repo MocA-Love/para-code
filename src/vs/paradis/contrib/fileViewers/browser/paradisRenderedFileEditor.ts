@@ -31,6 +31,7 @@ import { isCancellationError, onUnexpectedError } from '../../../../base/common/
 import { DisposableStore, IDisposable, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { FIND_IDS } from '../../../../editor/contrib/find/browser/findModel.js';
@@ -61,6 +62,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalizeScrollProgress, paradisReadViewerScrollState, paradisScrollRestoreScript } from '../common/paradisViewerScroll.js';
 import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
+import { paradisCanSwapViewerBody, paradisViewerBodyMessage, type IParadisRenderedDocument, type IParadisSwappableBody } from '../common/paradisViewerBodySwap.js';
 import { appendParadisViewerToolbarChoice, appendParadisViewerToolbarChoiceGroup, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from './paradisViewerToolbar.js';
 
 import './media/paradisFileViewer.css';
@@ -167,6 +169,13 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	 */
 	private _renderedSource: { readonly resource: URI; readonly text: string } | undefined;
 	/**
+	 * いま webview に出ている、本文だけを差し替えられる HTML 全体（{@link IParadisRenderedDocument.swap}）。
+	 * 同じファイルの描き直しで外側が同じなら、HTML 全体ではなく本文だけを送る。
+	 */
+	private _swappableBody: IParadisSwappableBody<IOverlayWebview, URI> | undefined;
+	/** いまの webview に書く文書の nonce。webview を作るたびに作り直す（同じ webview の描き直しでは変えない）。 */
+	private _documentNonce: string | undefined;
+	/**
 	 * いま webview に書き込んである文書のリソース。
 	 *
 	 * {@link _renderedSource} は「同じ内容なら送り直さない」ための目印で、テーマや透過の変更で
@@ -228,6 +237,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _rerenderIfShowingRendered(): void {
 		// 配色は HTML へ焼き込んでいるので、テキストが同じでも作り直す必要がある。
 		this._renderedSource = undefined;
+		this._swappableBody = undefined;
 		const resource = this._currentResource;
 		if (resource && this._webviewClaimed && this._mode === 'rendered') {
 			this._renderResourceInBackground(resource);
@@ -267,8 +277,21 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._openTiming.clear();
 	}
 
-	/** 読み込んだテキストから webview に表示する完全な HTML ドキュメント文字列を生成する。 */
-	protected abstract renderDocument(text: string, resource: URI, webview: IOverlayWebview, token: CancellationToken): Promise<string> | string;
+	/**
+	 * 読み込んだテキストから webview に表示する完全な HTML ドキュメント文字列を生成する。
+	 * 本文の入れ物と差し替えの鍵（{@link IParadisRenderedDocument}）を返せば、同じファイルの 2 回目以降の描き直しは
+	 * 本文だけを送る。
+	 */
+	protected abstract renderDocument(text: string, resource: URI, webview: IOverlayWebview, token: CancellationToken): Promise<string | IParadisRenderedDocument> | string | IParadisRenderedDocument;
+
+	/**
+	 * いまの webview に書く文書の nonce。同じ webview の描き直しでは同じ値を返す（本文だけを差し替えるとき、
+	 * 外側の CSP の nonce が変わらないように）。webview を作り直すと新しい値になる。
+	 */
+	protected get documentNonce(): string {
+		this._documentNonce ??= generateUuid();
+		return this._documentNonce;
+	}
 
 	/**
 	 * webview 要素の生成直後に呼ばれるフック（サブクラスがメッセージ購読等を行う）。
@@ -308,6 +331,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _forgetUnconfirmedRender(): void {
 		if (this._contentWatchdog.value) {
 			this._renderedSource = undefined;
+			this._swappableBody = undefined;
 		}
 	}
 
@@ -315,6 +339,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _clearDisplayedContent(): void {
 		this._webview?.setHtml('');
 		this._renderedSource = undefined;
+		this._swappableBody = undefined;
 		this._displayedResource = undefined;
 	}
 
@@ -496,14 +521,27 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			localResourceRoots: [dirname(resource)]
 		};
 
-		const html = await this.renderDocument(text, resource, webview, token);
+		const rendered = await this.renderDocument(text, resource, webview, token);
 		if (!this._isRenderCurrent(generation, resource, token)) {
 			return;
 		}
+		const document: IParadisRenderedDocument = typeof rendered === 'string' ? { html: rendered } : rendered;
+		// 同じファイルの描き直しで外側が同じなら、本文だけを送る（iframe を作り直さないので、スタイルやスクリプトを
+		// 読み直さず、スクロール位置もそのまま残る）。
+		if (document.swap && paradisCanSwapViewerBody(this._swappableBody, webview, resource, document.swap.key, isEqual)) {
+			void webview.postMessage(paradisViewerBodyMessage(document.swap.body));
+			this._swappableBody!.swapped = true;
+			this._renderedSource = { resource, text };
+			this._displayedResource = resource;
+			this._openTiming.clear();
+			return;
+		}
+		const html = document.html;
 		// webview を作り直した直後の初回表示では、webview 自身がこの位置へ戻す（スクリプト不要）。
 		webview.initialScrollProgress = this._scrollProgressFor(resource);
 		webview.setHtml(html);
 		this._renderedSource = { resource, text };
+		this._swappableBody = document.swap ? { webview, resource, key: document.swap.key, confirmed: false, swapped: false } : undefined;
 		this._displayedResource = resource;
 		// setHtml は「送った」だけで「表示された」ことは保証しない。webview 側が内容を書き終えたら
 		// content-applied シグナルが返るので、それが来なければ白紙とみなして立て直す。
@@ -610,6 +648,9 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	/** webview 側から内容の反映を知らせるシグナルが来た。 */
 	private _onContentApplied(): void {
+		if (this._swappableBody) {
+			this._swappableBody.confirmed = true;
+		}
 		const rescued = this._recoveryPolicy.recordSuccess();
 		if (rescued) {
 			extensionTallyFor(this.getId()).rescued++;
@@ -631,6 +672,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._webviewClaimed = false;
 		this._webview = undefined;
 		this._renderedSource = undefined;
+		this._swappableBody = undefined;
+		this._documentNonce = undefined;
 		this._displayedResource = undefined;
 		this._contentWatchdog.clear();
 		this._webviewStore.clear();
@@ -648,8 +691,9 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	 * 白紙検知は鳴らないため。
 	 */
 	protected requestRerender(): void {
-		// いまの内容は当てにならないので、同一内容の抑止を外してから描き直す。
+		// いまの内容は当てにならないので、同一内容の抑止を外してから描き直す（本文の差し替えではなく HTML 全体を送る）。
 		this._renderedSource = undefined;
+		this._swappableBody = undefined;
 		const resource = this._currentResource;
 		if (resource && this._webviewClaimed && this._mode === 'rendered') {
 			this._renderResourceInBackground(resource);
@@ -773,6 +817,12 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		if (justClaimed) {
 			webview.claim(this, this.window, undefined);
 			this._webviewClaimed = true;
+			// 本文を差し替えた後は、webview が覚えている HTML 全体が差し替える前の本文のまま。claim で webview が
+			// 作り直されるとそれが貼り直されるので、同じ内容でも HTML 全体を送り直す。
+			if (this._swappableBody?.swapped) {
+				this._renderedSource = undefined;
+				this._swappableBody = undefined;
+			}
 		}
 		dom.setParentFlowTo(webview.container, this._webviewContainer!);
 		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));

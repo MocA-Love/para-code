@@ -43,15 +43,18 @@ export function containsParadisMermaidBlock(html: string): boolean {
 	return html.includes('class="paradis-mermaid mermaid"');
 }
 
+/** 本文を差し替えた後に、新しい本文の Mermaid の図を描く（ページの mermaid は初回の読み込みで初期化済み）。 */
+export const PARADIS_MERMAID_RERUN_SCRIPT = `try{if(window.mermaid){var run=mermaid.run({querySelector:'.paradis-mermaid'});if(run&&run.catch){run.catch(function(err){console.error('[paradis] mermaid render failed',err);});}}}catch(err){console.error('[paradis] mermaid render failed',err);}`;
+
 let cachedMermaidScript: Promise<string | undefined> | undefined;
 
 /**
  * vendored mermaid.js 本体のソースを読む。webview は Markdown ビューアの方針上ネットワーク／
  * service worker を使わないため、`<script>` タグの内容として直接埋め込む（`src` 参照にしない）。
- * サイズが大きい（約3.5MB）ので、プロセス内で一度読めたら使い回す。
+ * サイズが大きい（約3.5MB）ので、プロセス内で一度読めたら使い回す。読めなかったことは覚えない（次の描画で読み直す）。
  */
 export async function loadParadisMermaidScriptSource(fileService: IFileService): Promise<string | undefined> {
-	cachedMermaidScript ??= (async () => {
+	const loading = cachedMermaidScript ??= (async () => {
 		try {
 			const uri: URI = FileAccess.asFileUri(`${MERMAID_MEDIA_ROOT}/mermaid.min.js`);
 			const content = await fileService.readFile(uri);
@@ -64,5 +67,9 @@ export async function loadParadisMermaidScriptSource(fileService: IFileService):
 			return undefined;
 		}
 	})();
-	return cachedMermaidScript;
+	const source = await loading;
+	if (source === undefined && cachedMermaidScript === loading) {
+		cachedMermaidScript = undefined;
+	}
+	return source;
 }
