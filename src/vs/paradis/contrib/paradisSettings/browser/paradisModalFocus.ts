@@ -29,6 +29,11 @@ export interface IParadisModalFocusOptions {
 	readonly onEscape: () => void;
 	/** 別のモーダルが開いたときに、このモーダルを閉じる。 */
 	readonly close: () => void;
+	/**
+	 * 開いているモーダルの中から開く入れ子の箱（Hub の中の辞書の編集など）。開いても、下のモーダルを閉じない。
+	 * 別のモーダルが開いたときは、下のモーダルと一緒に閉じられる。
+	 */
+	readonly nested?: boolean;
 }
 
 /** 開いているモーダル（開いた順）。 */
@@ -70,8 +75,8 @@ export class ParadisModalFocus extends Disposable {
 
 	constructor(private readonly options: IParadisModalFocusOptions) {
 		super();
-		// 前に開いていたモーダルを閉じる（前のモーダルは自分の開く前の場所へフォーカスを戻す）
-		for (const other of [...openModals]) {
+		// 前に開いていたモーダルを閉じる（前のモーダルは自分の開く前の場所へフォーカスを戻す）。入れ子の箱は下を閉じない
+		for (const other of options.nested ? [] : [...openModals]) {
 			if (other.targetWindow === this.targetWindow) {
 				other.options.close();
 			}
