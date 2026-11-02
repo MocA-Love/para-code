@@ -6,7 +6,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisApplySameUriScopeCorrection, paradisCancelRetirementAfterScopeRollback, paradisCommitPreparedScopeRetirement, paradisRunBestEffortPhases } from '../../browser/paradisWorkspaceSwitchService.js';
-import { paradisDiscardScopeBeforeRemovingKnownWorktree, paradisIsPresentWorktree, paradisShouldAutoRetireMissingWorktree } from '../../browser/paradisWorktreeService.js';
+import { paradisDiscardScopeBeforeRemovingKnownWorktree, paradisIsPresentWorktree, paradisLeftoverWorktreeEntry, paradisShouldAutoRetireMissingWorktree } from '../../browser/paradisWorktreeService.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IParadisWorktree } from '../../common/paradisWorkspaceSwitch.js';
 
@@ -134,6 +134,31 @@ suite('ParadisWorkspaceSwitchService', () => {
 		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, false, true), false);
 		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, false, false), true);
 		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, true, false), false);
+	});
+
+	test('only a folder without .git that matches no listed worktree becomes a leftover folder row', () => {
+		const known = { path: 'file:///repo-worktrees/feature', name: 'feature' };
+		const entry = (folderExists: boolean | undefined, gitEntryExists: boolean | undefined, matchesListedWorktree = false) => {
+			const leftover = paradisLeftoverWorktreeEntry('repo', known, { folderExists, gitEntryExists, matchesListedWorktree });
+			return leftover && { ...leftover, uri: leftover.uri.toString() };
+		};
+		assert.deepStrictEqual({
+			leftover: entry(true, false),
+			// 生きているワークツリー（作成の途中で gitdir がまだ無い間も含む）は .git を持つ
+			hasGit: entry(true, true),
+			gitUnknown: entry(true, undefined),
+			// 記録した綴りが違うだけ（シンボリックリンク・大文字小文字）で、実体は一覧にあるワークツリー
+			sameAsListed: entry(true, false, true),
+			gone: entry(false, undefined),
+			unknown: entry(undefined, undefined),
+		}, {
+			leftover: { repositoryId: 'repo', name: 'feature', uri: 'file:///repo-worktrees/feature', missing: true, leftoverFolder: true },
+			hasGit: undefined,
+			gitUnknown: undefined,
+			sameAsListed: undefined,
+			gone: undefined,
+			unknown: undefined,
+		});
 	});
 
 	test('keeps a missing worktree known when scope retirement is vetoed', async () => {
