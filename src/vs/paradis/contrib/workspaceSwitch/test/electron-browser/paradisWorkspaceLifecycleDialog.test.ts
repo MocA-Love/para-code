@@ -17,6 +17,8 @@ import { openParadisWorkspaceLifecycleDialog, paradisSaveWorkspaceLifecycleConfi
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
+import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { IParadisWorkspaceRepository } from '../../common/paradisWorkspaceSwitch.js';
@@ -86,21 +88,30 @@ suite('workspace lifecycle dialog', () => {
 		const container = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(container);
 		const accessor = {
-			get: (id: unknown) => id === IFileService ? fileService : id === ILayoutService ? { activeContainer: container } : undefined,
+			get: (id: unknown) => id === IFileService ? fileService : id === ILayoutService ? { activeContainer: container } : id === IHoverService ? NullHoverService : undefined,
 		} as unknown as ServicesAccessor;
 		try {
 			openParadisWorkspaceLifecycleDialog(accessor, { id: 'repo', name: 'repo', uri: URI.file('/repo') } satisfies IParadisWorkspaceRepository);
-			const save = () => container.querySelector<HTMLButtonElement>('.pcw-btn-primary')!;
+			const save = () => container.querySelector<HTMLElement>('.plc-footer > .monaco-text-button:not(.secondary)')!;
 			const setup = () => container.querySelector<HTMLTextAreaElement>('#paradis-lifecycle-setup-input')!;
-			const before = { saveDisabled: save().disabled, setupReadOnly: setup().readOnly };
+			const before = { saveDisabled: save().classList.contains('disabled'), setupReadOnly: setup().readOnly };
 			reading.complete();
 			await new Promise(resolve => setTimeout(resolve, 0));
 			await new Promise(resolve => setTimeout(resolve, 0));
-			const after = { saveDisabled: save().disabled, setupReadOnly: setup().readOnly, setup: setup().value };
-			container.querySelector<HTMLButtonElement>('.pcw-btn:not(.pcw-btn-primary)')!.click();
-			assert.deepStrictEqual({ before, after }, {
+			const after = { saveDisabled: save().classList.contains('disabled'), setupReadOnly: setup().readOnly, setup: setup().value };
+			const dialog = container.querySelector<HTMLElement>('.paradis-workspace-lifecycle-dialog')!;
+			const shape = {
+				size: dialog.classList.contains('paradis-modal-s'),
+				title: dialog.querySelector('.plc-title')?.textContent,
+				labels: [...dialog.querySelectorAll('.plc-label')].map(label => label.textContent),
+				buttons: [...dialog.querySelectorAll('.plc-footer > .monaco-text-button')].map(button => button.textContent),
+			};
+			container.querySelector<HTMLElement>('.plc-footer > .monaco-text-button.secondary')!.click();
+			assert.deepStrictEqual({ before, after, shape, closed: container.querySelector('.paradis-workspace-lifecycle-dialog') === null }, {
 				before: { saveDisabled: true, setupReadOnly: true },
 				after: { saveDisabled: false, setupReadOnly: false, setup: 'bun install' },
+				shape: { size: true, title: 'Setup / Teardown スクリプト', labels: ['Setup（作成の直後）', 'Teardown（削除の前）'], buttons: ['キャンセル', '保存'] },
+				closed: true,
 			});
 		} finally {
 			container.remove();
