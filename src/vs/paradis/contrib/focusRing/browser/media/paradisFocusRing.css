@@ -1,0 +1,37 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The workbench draws the focusBorder outline on `button:focus`, `[tabindex]:focus`, `select:focus` and
+	`input[type="checkbox"]:focus` (src/vs/workbench/browser/media/style.css "Keyboard Focus Indication
+	Styles"). Because those selectors use `:focus`, the outline also stays after a mouse click, which leaves a
+	cyan frame on the fork's own buttons. Inside Para Code's own UI, show it only for keyboard focus
+	(`:focus-visible`), like the upstream Agents window does with `:focus:not(:focus-visible)`.
+
+	Scope: only elements that are, or sit inside, an element whose class starts with `paradis-` or `para-`.
+	Upstream UI never uses those prefixes, so upstream screens keep their behavior.
+
+	Specificity: these selectors beat the workbench ones (0,3,1 or more against 0,2,1 / 0,3,0). The fork root
+	and the `:focus-visible` test sit in `:where()` so they add nothing. Text inputs are not listed: they
+	match `:focus-visible` even after a click, so the focus frames the fork draws on its own text inputs stay.
+	Fork rules that draw a border (not an outline) on their selects are not touched either.
+*/
+
+html .monaco-workbench :where([class^="paradis-"], [class*=" paradis-"], [class^="para-"], [class*=" para-"]) :is(button, select, input[type="checkbox"]):focus:not(:where(:focus-visible)),
+html .monaco-workbench :is(button, select, input[type="checkbox"]):where([class^="paradis-"], [class*=" paradis-"], [class^="para-"], [class*=" para-"]):focus:not(:where(:focus-visible)),
+html .monaco-workbench :where([class^="paradis-"], [class*=" paradis-"], [class^="para-"], [class*=" para-"]) [tabindex]:focus:not(:where(:focus-visible)),
+html .monaco-workbench [tabindex]:where([class^="paradis-"], [class*=" paradis-"], [class^="para-"], [class*=" para-"]):focus:not(:where(:focus-visible)) {
+	outline: none;
+}
+
+/*
+	A fork panel or dialog that takes focus itself (tabindex="-1", to receive Escape) never shows the frame,
+	even after keyboard use: the controls inside show it instead.
+*/
+html .monaco-workbench [tabindex="-1"]:where([class^="paradis-"], [class*=" paradis-"], [class^="para-"], [class*=" para-"]):focus {
+	outline: none;
+}
