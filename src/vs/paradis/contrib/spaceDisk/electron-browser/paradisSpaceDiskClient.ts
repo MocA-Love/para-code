@@ -9,14 +9,10 @@
 // スペース(リポジトリ/worktree)の容量を shared process / REH サーバーへ問い合わせる renderer 側の窓口。
 // 「どのスペースがあるか」を知っているのは renderer だけなので、パスの解決はここで行う。
 
-import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { generateUuid } from '../../../../base/common/uuid.js';
 import { IChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
-import { ParadisWarmLeaseController, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS } from '../../../common/paradisWarmLease.js';
 import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -126,29 +122,6 @@ export class ParadisSpaceDiskClient {
 	setWarmLease(ownerId: string, active: boolean, cancellation?: AbortSignal): Promise<void> {
 		const state = this.updateWarmLeaseGeneration(ownerId, active, true, cancellation);
 		return state ? this.startWarmLeaseReconcile(ownerId, state) : Promise.resolve();
-	}
-
-	/** desktop consumer が生存する間、5分ごとに current target snapshot を renew する。 */
-	createWarmLease(): IDisposable {
-		const ownerId = `space-disk:${generateUuid()}`;
-		const controller = new ParadisWarmLeaseController(
-			() => this.setWarmLease(ownerId, true),
-			() => this.setWarmLease(ownerId, true),
-			() => this.setWarmLease(ownerId, false),
-			runner => new RunOnceScheduler(runner, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS),
-			() => ownerId,
-		);
-		controller.setEnabled(true);
-		let disposed = false;
-		return toDisposable(() => {
-			if (disposed) {
-				return;
-			}
-			disposed = true;
-			// barrier 待機中の acquire を無効化してから controller の補償 release へ渡す。
-			this.updateWarmLeaseGeneration(ownerId, false, false);
-			controller.dispose();
-		});
 	}
 
 	private async sendWarmLease(ownerId: string, active: boolean): Promise<void> {

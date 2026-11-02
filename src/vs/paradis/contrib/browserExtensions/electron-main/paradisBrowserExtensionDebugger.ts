@@ -29,6 +29,7 @@ import { paradisIsExtensionPageHeld, paradisOnDidChangeExtensionPageHold } from 
 import { paradisIsChromeWebStoreUrl } from '../common/paradisBrowserExtensionWebStore.js';
 import { IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** chrome.debugger に要る main の口。 */
 export interface IParadisDebuggerEnvironment {
@@ -136,10 +137,6 @@ function notePageContexts(method: string, params: Record<string, unknown>, attac
 /** 拡張機能に開いてよい URL か（http(s) と about:blank で、サイトの権限の内側）。 */
 function isPageUrl(url: string): boolean {
 	return /^https?:/i.test(url) || url === 'about:blank' || url === '';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 export class ParadisBrowserExtensionDebugger implements IDisposable {

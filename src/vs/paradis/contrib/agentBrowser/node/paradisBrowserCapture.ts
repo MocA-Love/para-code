@@ -17,6 +17,7 @@ import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
 import { paradisPathHasVersionControlSegment } from '../common/paradisRemoteFileBridge.js';
 import { paradisCaptureExistsReason } from './paradisDevtoolsPathPolicy.js';
 import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 1 回で撮れる要素の数。 */
 export const PARADIS_CAPTURE_MAX_ELEMENTS = 10;
@@ -39,10 +40,6 @@ function error(message: string): ToolResult {
 }
 
 const BINDING_CHANGED = 'PARA_BROWSER_RETRYABLE: the page shared with this terminal pane changed while the tool was running; check get_shared_page and retry.';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isFiniteNumber(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value);

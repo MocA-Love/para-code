@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { Event } from '../../../../base/common/event.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 // 内蔵ブラウザの Chrome 拡張機能（試験的）の、設定キー・main との通り道・台帳の形と純粋な操作。
 // 設計: リポジトリ直下の browser-extensions-design.html（Q480、P3 土台）。
@@ -135,10 +136,6 @@ export const PARADIS_MAX_EXTENSION_FILES = 20_000;
 
 /** フォルダから写すときの大きさの上限（バイト）。 */
 export const PARADIS_MAX_EXTENSION_BYTES = 200 * 1024 * 1024;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /** 保存してあった JSON を台帳として読む。壊れた行は捨てる。 */
 export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExtensionsLedger {

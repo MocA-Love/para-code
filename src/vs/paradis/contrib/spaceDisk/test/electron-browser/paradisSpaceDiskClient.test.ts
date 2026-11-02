@@ -8,7 +8,6 @@
 
 import assert from 'assert';
 import * as sinon from 'sinon';
-import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
@@ -24,7 +23,6 @@ import { ParadisMobileWarmLeaseProvider } from '../../../mobileRelay/electron-br
 import { IParadisSpaceDiskTarget, PARADIS_SPACE_DISK_CHANNEL } from '../../common/paradisSpaceDisk.js';
 import { ParadisSpaceDiskClient } from '../../electron-browser/paradisSpaceDiskClient.js';
 
-const WARM_LEASE_RENEW_INTERVAL_MS = 5 * 60 * 1000;
 
 interface IChannelCall {
 	readonly command: string;
@@ -39,7 +37,6 @@ interface IDeferred<T> {
 
 type TestSpaceDiskClient = ParadisSpaceDiskClient & {
 	setWarmLease(ownerId: string, active: boolean, cancellation?: AbortSignal): Promise<void>;
-	createWarmLease(): IDisposable;
 };
 
 function deferred<T>(): IDeferred<T> {
@@ -260,40 +257,6 @@ suite('ParadisSpaceDiskClient', () => {
 		]);
 	});
 
-	test('awaits initialization and recollects targets on every five-minute heartbeat', async () => {
-		const clock = sinon.useFakeTimers({ now: 1_000_000 });
-		const harness = createClient();
-		const lease = harness.client.createWarmLease();
-		await flushMicrotasks();
-		const firstPayload = warmPayload(harness.calls[0]!);
-
-		harness.setRepositories([repository('two', 'Repository Two')]);
-		harness.setWorktrees(new Map([
-			['two', [worktree('two', 'Updated', '/worktrees/two-updated')]],
-		]));
-		await clock.tickAsync(WARM_LEASE_RENEW_INTERVAL_MS);
-		const secondPayload = warmPayload(harness.calls[1]!);
-		lease.dispose();
-		await flushMicrotasks();
-
-		assert.deepStrictEqual({
-			barrierReads: harness.barrierReads,
-			ownerStable: firstPayload.ownerId === secondPayload.ownerId,
-			ownerValid: /^space-disk:[A-Za-z0-9._:-]+$/.test(firstPayload.ownerId),
-			targets: [firstPayload.targets, secondPayload.targets],
-			release: warmPayload(harness.calls[2]!),
-		}, {
-			barrierReads: 2,
-			ownerStable: true,
-			ownerValid: true,
-			targets: [
-				[{ stateKey: 'one', name: 'Repository one', path: '/repositories/one', worktrees: [{ stateKey: 'worktree:file:///worktrees/one-feature', name: 'Feature', path: '/worktrees/one-feature' }] }],
-				[{ stateKey: 'two', name: 'Repository Two', path: '/repositories/two', worktrees: [{ stateKey: 'worktree:file:///worktrees/two-updated', name: 'Updated', path: '/worktrees/two-updated' }] }],
-			],
-			release: { ownerId: firstPayload.ownerId, active: false, targets: [] },
-		});
-	});
-
 	test('does not send a late acquire when a one-shot owner is released at the initialization barrier', async () => {
 		const harness = createClient();
 		const barrier = deferred<void>();
@@ -454,67 +417,5 @@ suite('ParadisSpaceDiskClient', () => {
 			barrierReads: 129,
 			releases: [{ ownerId: 'owner-0', active: false, targets: [] }],
 		});
-	});
-
-	test('does not send a late acquire when a desktop lease is disposed at the initialization barrier', async () => {
-		const clock = sinon.useFakeTimers({ now: 1_000_000 });
-		const harness = createClient();
-		const barrier = deferred<void>();
-		harness.setBarrierFactory(() => barrier.promise);
-
-		const lease = harness.client.createWarmLease();
-		await flushMicrotasks();
-		lease.dispose();
-		barrier.resolve(undefined);
-		for (let index = 0; index < 50 && harness.calls.length === 0; index++) {
-			await Promise.resolve();
-		}
-
-		assert.deepStrictEqual(harness.calls.map(call => ({ command: call.command, payload: warmPayload(call) })), [{
-			command: 'setWarmLease',
-			payload: { ownerId: warmPayload(harness.calls[0]!).ownerId, active: false, targets: [] },
-		}]);
-		assert.strictEqual(clock.countTimers(), 0);
-	});
-
-	test('compensates a slow completed acquire with release after disposal', async () => {
-		const clock = sinon.useFakeTimers({ now: 1_000_000 });
-		const harness = createClient();
-		const acquireCompletion = deferred<unknown>();
-		harness.setCallBehaviour(call => warmPayload(call).active ? acquireCompletion.promise : Promise.resolve(undefined));
-
-		const lease = harness.client.createWarmLease();
-		await flushMicrotasks();
-		assert.strictEqual(harness.calls.length, 1);
-		lease.dispose();
-		await flushMicrotasks();
-		assert.strictEqual(harness.calls.length, 1);
-
-		acquireCompletion.resolve(undefined);
-		await flushMicrotasks();
-		const ownerId = warmPayload(harness.calls[0]!).ownerId;
-
-		assert.deepStrictEqual(harness.calls.map(call => warmPayload(call)), [
-			{ ownerId, active: true, targets: [{ stateKey: 'one', name: 'Repository one', path: '/repositories/one', worktrees: [{ stateKey: 'worktree:file:///worktrees/one-feature', name: 'Feature', path: '/worktrees/one-feature' }] }] },
-			{ ownerId, active: false, targets: [] },
-		]);
-		assert.strictEqual(clock.countTimers(), 0);
-	});
-
-	test('cleans up a disposed desktop owner when acquire and trailing release both reject', async () => {
-		const clock = sinon.useFakeTimers({ now: 1_000_000 });
-		const harness = createClient();
-		const acquireCompletion = deferred<unknown>();
-		let callCount = 0;
-		harness.setCallBehaviour(() => ++callCount === 1 ? acquireCompletion.promise : Promise.reject(new Error('release failed')));
-
-		const lease = harness.client.createWarmLease();
-		await flushMicrotasks();
-		lease.dispose();
-		acquireCompletion.reject(new Error('acquire response lost'));
-		await flushMicrotasks();
-
-		assert.deepStrictEqual(harness.calls.map(call => warmPayload(call).active), [true, false]);
-		assert.strictEqual(clock.countTimers(), 0);
 	});
 });

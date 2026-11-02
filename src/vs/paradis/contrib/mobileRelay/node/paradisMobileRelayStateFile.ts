@@ -15,6 +15,7 @@
 import { promises as fs } from 'fs';
 import { basename, dirname, join } from '../../../../base/common/path.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 export interface IParadisRelayPairedMobile {
 	readonly mobileId: string;
@@ -61,10 +62,6 @@ export type ParadisRelayStateReadResult =
 
 function isString(value: unknown): value is string {
 	return typeof value === 'string';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**

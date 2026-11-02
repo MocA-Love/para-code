@@ -23,6 +23,7 @@ import { IParadisCdpInputDispatchResult } from '../common/paradisAgentBrowser.js
 import type { IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisLookedAtRect, paradisNearMissHints, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAMES } from './paradisBrowserQueryTools.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 「探して操作する」ツールの名前。 */
 export const PARADIS_BROWSER_ACT_TOOL_NAME_SET: ReadonlySet<string> = new Set(PARADIS_BROWSER_ACT_TOOL_NAMES);
@@ -82,10 +83,6 @@ interface ILocated {
 	readonly noIndex?: boolean;
 	/** 何も当たらなかったときに、ページが 1 回読んだ近い候補（{@link paradisNearMissHints} が文にする）。 */
 	readonly near?: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function describeLocator(args: Record<string, unknown>): string {

@@ -97,3 +97,16 @@ export function unpackParadisWorkbookStyles(workbook: IParadisWorkbookData | IPa
 	}
 	return unpacked as unknown as IParadisWorkbookData;
 }
+
+/**
+ * 書式を表にまとめたブックを JSON のバイト列にする（解析の worker の中で使う）。shared process はこれを開かずに
+ * renderer へ中継するので、大きなブックの写しと文字列化が shared process 本体で走らない。
+ */
+export function encodeParadisWorkbookJson(workbook: IParadisPackedWorkbookData): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify(workbook));
+}
+
+/** {@link encodeParadisWorkbookJson} で作ったバイト列を戻す。 */
+export function decodeParadisWorkbookJson(json: Uint8Array): IParadisPackedWorkbookData {
+	return JSON.parse(new TextDecoder().decode(json)) as IParadisPackedWorkbookData;
+}

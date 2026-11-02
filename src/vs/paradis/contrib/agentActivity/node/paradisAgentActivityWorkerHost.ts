@@ -11,8 +11,8 @@
 // 使用量ダイアログやセッション履歴を開いている間だけ仕事があるので、しばらく依頼が無ければ終了させて
 // メモリを返す。worker が落ちたら、待っている依頼をすべて失敗させ、次の依頼で起動し直す。
 
-import { Worker } from 'worker_threads';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { createParadisWorker } from '../../../node/paradisWorker.js';
 import { IParadisActivityWorkerEnvelope, ParadisActivityWorkerReply, ParadisActivityWorkerRequest } from '../common/paradisAgentActivityWorkerProtocol.js';
 
 /** 依頼が途絶えてから worker を終了させるまでの時間。 */
@@ -49,9 +49,12 @@ export class ParadisAgentActivityWorkerHost extends Disposable {
 		super();
 	}
 
-	/** 本物の worker_threads の Worker を作る関数。`workerPath` は worker 入口の .js の絶対パス。 */
+	/**
+	 * 本物の worker_threads の Worker を作る関数。`workerPath` は worker 入口の .js の絶対パス。
+	 * ほかの fork の worker と同じく共通の入口から起こす（npm パッケージを足しても配布版で解決できるように）。
+	 */
 	static workerFactory(workerPath: string): () => IParadisActivityWorker {
-		return () => new Worker(workerPath) as unknown as IParadisActivityWorker;
+		return () => createParadisWorker(workerPath) as unknown as IParadisActivityWorker;
 	}
 
 	get running(): boolean {
