@@ -41,6 +41,7 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor, ParadisPageShareKind, ParadisPaneAgentKind } from './paradisAgentBrowserBindingModel.js';
@@ -505,21 +506,7 @@ class ParadisBrowserSharePopover extends Disposable {
 				keyboardEvent.preventDefault();
 			}
 		}));
-		this._register(dom.addDisposableListener(this._element, dom.EventType.FOCUS_OUT, event => {
-			const next = event.relatedTarget as Node | null;
-			if (next && !this._element.contains(next) && !this._anchor.contains(next)) {
-				this.close();
-			}
-		}));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.MOUSE_DOWN, event => {
-			const target = event.target as Node | null;
-			if (target && (this._element.contains(target) || this._anchor.contains(target))) {
-				return;
-			}
-			this.close();
-		}, true));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.RESIZE, () => this.close()));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.BLUR, () => this.close()));
+		this._register(paradisWatchPopoverDismiss(targetWindow, { element: this._element, anchor: this._anchor, close: () => this.close(), closeOnFocusOut: true, closeOnResize: true, closeOnBlur: true }));
 	}
 
 	private _moveFocus(backwards: boolean): void {

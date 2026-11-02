@@ -52,14 +52,8 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	// PARA-PATCH: the fork's browser profile management / creation dialogs
 	// (vs/paradis/contrib/browserProfiles).
 	{ className: 'paradis-browser-profile-backdrop', type: BrowserOverlayType.Dialog },
-	// PARA-PATCH: the fork's browser profile switcher dropdown. It is anchored to the navbar pill
-	// rather than being a modal, so it is tracked as a QuickInput-like overlay (same shape as the
-	// built-in 'quick-input-widget' entry above): a transient, user-invoked list that must paint
-	// above the native WebContentsView.
-	{ className: 'paradis-browser-profile-dropdown', type: BrowserOverlayType.QuickInput },
 	// PARA-PATCH: the fork's notification inbox popover under the title bar bell (vs/paradis/contrib/notificationInbox).
 	{ className: 'paradis-notification-inbox-popover', type: BrowserOverlayType.QuickInput },
-	{ className: 'paradis-browser-downloads-popover', type: BrowserOverlayType.QuickInput }, // PARA-PATCH: the fork's browser downloads list (vs/paradis/contrib/browserDownloads)
 	{ className: 'paradis-overlay-popover', type: BrowserOverlayType.QuickInput }, // PARA-PATCH: shared marker class for the fork's anchored title bar / status bar panels
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
