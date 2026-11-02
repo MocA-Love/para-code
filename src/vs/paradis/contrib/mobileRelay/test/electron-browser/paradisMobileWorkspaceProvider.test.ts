@@ -128,7 +128,7 @@ function createStatePushMetricsProviderFixture(): { provider: IStatePushMetricsP
 }
 
 suite('ParadisMobileWorkspaceProvider', () => {
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('uses shell-integration cwd when available', async () => {
 		assert.strictEqual(await paradisResolveLocalAgentPaneCwd({
@@ -219,32 +219,40 @@ suite('ParadisMobileWorkspaceProvider', () => {
 	suite('モバイル連携が無効・オフラインの間の state 送信', () => {
 		interface IStateSyncFixture {
 			pushState(force?: boolean): void;
+			pushStateSoon(): void;
 			setStateSyncEnabled(enabled: boolean): void;
 			setMobileOnline(online: boolean): void;
-			offlineStatePushScheduler: RunOnceScheduler;
-			prStatusScheduler: RunOnceScheduler;
+			setConfirmedAgentPaneTokens(tokens: readonly string[]): void;
+			setProvisionalAgentPaneToken(token: string, active: boolean): void;
+			stateUrgentPending: boolean;
 		}
 
-		function createStateSyncFixture(): { fixture: IStateSyncFixture; sends: boolean[]; soon: { count: number }; branches: { count: number } } {
+		/** `pushStateNow`（組み立てと送信）だけを差し替え、集約と 5 秒のまとめは本物を使う。 */
+		function createStateSyncFixture(): { fixture: IStateSyncFixture; sends: boolean[]; branches: { count: number } } {
 			const sends: boolean[] = [];
-			const soon = { count: 0 };
 			const branches = { count: 0 };
 			const fixture = Object.assign(Object.create(ParadisMobileWorkspaceProvider.prototype) as object, {
 				stateSyncEnabled: false,
 				statePendingWhileDisabled: false,
+				stateUrgentPending: false,
 				branchesStale: false,
 				mobileOnline: false,
-				pushStateNow: (force: boolean) => { sends.push(force); },
-				pushStateSoon: () => { soon.count++; },
+				confirmedAgentPaneTokens: new Set<string>(),
+				provisionalAgentPaneTokens: new Set<string>(),
+				pushStateNow: (force: boolean) => { fixture.stateUrgentPending = false; sends.push(force); },
 				refreshBranches: () => { branches.count++; },
 			}) as unknown as IStateSyncFixture;
-			fixture.offlineStatePushScheduler = new RunOnceScheduler(() => sends.push(false), 5_000);
-			fixture.prStatusScheduler = new RunOnceScheduler(() => { }, 60_000);
-			return { fixture, sends, soon, branches };
+			Object.assign(fixture, {
+				pushStateScheduler: store.add(new RunOnceScheduler(() => fixture.pushState(), 100)),
+				pushStateCosmeticScheduler: store.add(new RunOnceScheduler(() => fixture.pushState(), 500)),
+				offlineStatePushScheduler: store.add(new RunOnceScheduler(() => (fixture as unknown as { pushStateNow(force: boolean): void }).pushStateNow(false), 5_000)),
+				prStatusScheduler: store.add(new RunOnceScheduler(() => { }, 60_000)),
+			});
+			return { fixture, sends, branches };
 		}
 
 		test('無効の間はイベント起点の送信をせず、有効へ転じたら 1 回だけまとめて送る', () => runWithFakedTimers({}, async () => {
-			const { fixture, sends, soon } = createStateSyncFixture();
+			const { fixture, sends } = createStateSyncFixture();
 			fixture.pushState();
 			fixture.pushState();
 			await timeout(5_001);
@@ -253,12 +261,25 @@ suite('ParadisMobileWorkspaceProvider', () => {
 			const forced = [...sends];
 			fixture.pushState();
 			fixture.setStateSyncEnabled(true);
-			assert.deepStrictEqual({ whileDisabled, forced, soon: soon.count }, { whileDisabled: [], forced: [true], soon: 1 });
-			fixture.offlineStatePushScheduler.dispose();
-			fixture.prStatusScheduler.dispose();
+			// オフラインなので、有効へ戻した後の送信も 5 秒のまとめに乗る
+			await timeout(5_101);
+			assert.deepStrictEqual({ whileDisabled, forced, sends }, { whileDisabled: [], forced: [true], sends: [true, false] });
 		}));
 
-		test('オフラインの間は 5 秒に 1 回へまとめ、オンラインならすぐ送る', () => runWithFakedTimers({}, async () => {
+		test('オフラインの 5 秒の予約を残したまま無効にしても、有効へ戻したときに送る', () => runWithFakedTimers({}, async () => {
+			const { fixture, sends } = createStateSyncFixture();
+			fixture.setStateSyncEnabled(true);
+			fixture.pushState();
+			fixture.setStateSyncEnabled(false);
+			await timeout(5_001);
+			const whileDisabled = [...sends];
+			fixture.setStateSyncEnabled(true);
+			// オフラインなので、有効へ戻した後の送信も 5 秒のまとめに乗る
+			await timeout(5_101);
+			assert.deepStrictEqual({ whileDisabled, sends }, { whileDisabled: [], sends: [false] });
+		}));
+
+		test('オフラインの間は 5 秒に 1 回へまとめ、オンラインへ転じたら待たせていた分をすぐ送る', () => runWithFakedTimers({}, async () => {
 			const { fixture, sends } = createStateSyncFixture();
 			fixture.setStateSyncEnabled(true);
 			for (let index = 0; index < 5; index++) {
@@ -269,12 +290,35 @@ suite('ParadisMobileWorkspaceProvider', () => {
 			const afterInterval = sends.length;
 			fixture.pushState();
 			fixture.setMobileOnline(true);
-			await timeout(5_001);
+			await timeout(101);
 			const afterOnline = sends.length;
 			fixture.pushState();
-			assert.deepStrictEqual({ beforeInterval, afterInterval, afterOnline, sends }, { beforeInterval: 0, afterInterval: 1, afterOnline: 1, sends: [false, false] });
-			fixture.offlineStatePushScheduler.dispose();
-			fixture.prStatusScheduler.dispose();
+			assert.deepStrictEqual({ beforeInterval, afterInterval, afterOnline, sends }, { beforeInterval: 0, afterInterval: 1, afterOnline: 2, sends: [false, false, false] });
+		}));
+
+		test('初期化の順（pushState(true) → getStatus の待ち → setMobileOnline）でも、待ちの間の変化を捨てない', () => runWithFakedTimers({}, async () => {
+			const { fixture, sends } = createStateSyncFixture();
+			fixture.setStateSyncEnabled(true);
+			fixture.pushState(true);
+			fixture.pushStateSoon();
+			await timeout(101);
+			fixture.setMobileOnline(true);
+			await timeout(5_001);
+			assert.deepStrictEqual(sends, [true, false]);
+		}));
+
+		test('オフラインでも、通知の材料（エージェント端末のトークン）の変化は 5 秒待たずに送る', () => runWithFakedTimers({}, async () => {
+			const { fixture, sends } = createStateSyncFixture();
+			fixture.setStateSyncEnabled(true);
+			fixture.setConfirmedAgentPaneTokens(['token-a']);
+			await timeout(101);
+			const afterConfirmed = [...sends];
+			fixture.setProvisionalAgentPaneToken('token-b', true);
+			await timeout(101);
+			const afterProvisional = [...sends];
+			fixture.pushStateSoon();
+			await timeout(101);
+			assert.deepStrictEqual({ afterConfirmed, afterProvisional, sends, urgent: fixture.stateUrgentPending }, { afterConfirmed: [false], afterProvisional: [false, false], sends: [false, false], urgent: false });
 		}));
 	});
 
