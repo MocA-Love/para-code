@@ -16,6 +16,7 @@
 import './media/paradisBindingDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { Button } from '../../../../base/browser/ui/button/button.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { BugIndicatingError } from '../../../../base/common/errors.js';
@@ -26,6 +27,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
@@ -40,6 +42,8 @@ import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './para
 import { ParadisBindingDialogPaneListResources, ParadisBindingDialogTab, ParadisBindingDialogTabController } from './paradisBindingDialogResources.js';
 import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisRunDialogBind } from './paradisDialogPageResolver.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 
 const $ = dom.$;
 
@@ -86,10 +90,17 @@ const strSharedPageLimit = (limit: number) => localize('paradis.bindingDialog.sh
 const STR_SUB_READY = localize('paradis.bindingDialog.subReady', "接続済み・空き");
 // allow-any-unicode-next-line
 const STR_SUB_NEEDS_MCP = localize('paradis.bindingDialog.subNeedsMcp', "MCP未接続 — 共有は可能。接続はMCP接続設定タブから");
+/** ペインの行の補足（MCP 未接続）。理由と行き先は一覧の下に 1 回だけ出す（Q537 の 7 章、案 B）。 */
 // allow-any-unicode-next-line
-const STR_SWITCH_SHARE_ARIA = localize('paradis.bindingDialog.switchShareAria', "このページを共有する");
+const STR_SUB_NEEDS_MCP_SHORT = localize('paradis.bindingDialog.subNeedsMcpShort', "MCP 未接続");
 // allow-any-unicode-next-line
-const STR_SWITCH_UNSHARE_ARIA = localize('paradis.bindingDialog.switchUnshareAria', "共有を解除する");
+const strMcpNote = (count: number) => localize('paradis.bindingDialog.mcpNote', "MCP 未接続のペインが {0} 個あります。共有はできます。", count);
+// allow-any-unicode-next-line
+const STR_MCP_NOTE_LINK = localize('paradis.bindingDialog.mcpNoteLink', "MCP接続設定を開く");
+// allow-any-unicode-next-line
+const STR_EXTENSION_WARNING_MORE = localize('paradis.bindingDialog.extensionWarningMore', "詳しく");
+// allow-any-unicode-next-line
+const STR_EXTENSION_WARNING_LESS = localize('paradis.bindingDialog.extensionWarningLess', "たたむ");
 // allow-any-unicode-next-line
 const STR_EXTENSIONS_CHECKING = localize('paradis.bindingDialog.extensionsChecking', "このタブに拡張機能が入っているか確かめています…");
 // allow-any-unicode-next-line
@@ -259,6 +270,8 @@ export class ParadisBindingDialog extends Disposable {
 	private _extensionWarning: string | undefined;
 	/** 知らせの答えが返ったか（返るまで共有のスイッチを押せない）。 */
 	private _extensionWarningResolved = false;
+	/** 拡張機能の知らせを全文で出しているか（既定は 1 行に縮める）。 */
+	private _extensionWarningExpanded = false;
 	private readonly _extensionWarningReady: Promise<void>;
 	private readonly _onDidDispose = this._register(new Emitter<void>());
 	/** 閉じた（破棄された）ことを、開いた側が参照を手放すために知らせる。 */
@@ -302,6 +315,7 @@ export class ParadisBindingDialog extends Disposable {
 
 		this._backdrop = $('.paradis-binding-dialog-backdrop');
 		const modal = $('.paradis-binding-dialog');
+		modal.classList.add(...paradisModalClasses(ParadisModalSize.Medium));
 		this._backdrop.appendChild(modal);
 
 		// --- header（タイトル + サマリpill + 閉じる） ---
@@ -315,9 +329,8 @@ export class ParadisBindingDialog extends Disposable {
 		closeBtn.setAttribute('aria-label', STR_CLOSE_ARIA);
 		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.close()));
 
-		// --- toolbar（ページバー） ---
-		const toolbar = dom.append(modal, $('.pbd-toolbar'));
-		this._pageBar = dom.append(toolbar, $('.pbd-pagebar'));
+		// --- ページの行（「ターミナルペイン」の本文の先頭に置く） ---
+		this._pageBar = $('.pbd-pagebar');
 
 		// --- nav + body ---
 		const navwrap = dom.append(modal, $('.pbd-navwrap'));
@@ -462,7 +475,6 @@ export class ParadisBindingDialog extends Disposable {
 		this._renderNav();
 		// 共有先のページを表す帯は「ターミナルペイン」ビューの文脈でしか意味を持たない。
 		// モバイル端末/MCPビューは端末や設定が主語なので、出したままだと無関係な情報になる。
-		this._pageBar.style.display = this._activeTab === 'panes' ? '' : 'none';
 		if (this._activeTab === 'panes') {
 			this._renderPageBar();
 		}
@@ -545,7 +557,8 @@ export class ParadisBindingDialog extends Disposable {
 		const snapshot = this.mobileCanvasModel.snapshot;
 		const attachedCount = snapshot.attachments.length;
 		this._createNavItem(STR_TAB_DEVICES, 'devices', {
-			text: this.mobileCanvasModel.loading ? '…' : String(attachedCount),
+			// 0 件のときは数を出さない（ほかのナビの数と同じ扱い）
+			text: this.mobileCanvasModel.loading ? '…' : attachedCount > 0 ? String(attachedCount) : '',
 			className: 'gray',
 			title: undefined,
 		});
@@ -647,6 +660,7 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _renderPanesTab(): void {
+		this._body.appendChild(this._pageBar);
 		this._body.setAttribute('aria-busy', String(!this._extensionWarningResolved));
 		if (!this._extensionWarningResolved) {
 			// 答えが返るまで共有のスイッチは押せない。その理由をここに出す
@@ -658,7 +672,20 @@ export class ParadisBindingDialog extends Disposable {
 			const warning = dom.append(this._body, $('.pbd-extension-warning'));
 			warning.setAttribute('role', 'note');
 			warning.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
-			dom.append(warning, $('span')).textContent = this._extensionWarning;
+			dom.append(warning, $('span.pbd-extension-warning-text')).textContent = this._extensionWarning;
+			const more = this._renderDisposables.add(new Button(warning, { ...defaultButtonStyles, secondary: true }));
+			more.element.classList.add('pbd-small');
+			const syncMore = () => {
+				warning.classList.toggle('expanded', this._extensionWarningExpanded);
+				more.label = this._extensionWarningExpanded ? STR_EXTENSION_WARNING_LESS : STR_EXTENSION_WARNING_MORE;
+				more.element.setAttribute('aria-expanded', String(this._extensionWarningExpanded));
+			};
+			syncMore();
+			// 描き直さずにその場で開閉する（押したボタンにフォーカスを残す）
+			this._renderDisposables.add(more.onDidClick(() => {
+				this._extensionWarningExpanded = !this._extensionWarningExpanded;
+				syncMore();
+			}));
 		}
 		const search = dom.append(this._body, $('.pbd-list-search'));
 		search.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
@@ -669,12 +696,27 @@ export class ParadisBindingDialog extends Disposable {
 
 		const list = dom.append(this._body, $('.pbd-pane-list'));
 		this._renderPaneList(list);
+		this._renderMcpNote();
 		this._renderDisposables.add(dom.addDisposableListener(input, 'input', () => {
 			this._filterText = input.value;
 			this._renderPaneList(list);
 		}));
 
 		dom.append(this._body, $('.pbd-scope-note')).textContent = STR_SCOPE_NOTE;
+	}
+
+	/** MCP 未接続のペインがあるときだけ、一覧の下に理由と行き先を 1 回出す。 */
+	private _renderMcpNote(): void {
+		const count = this._visiblePanes().filter(pane => !this._paneMcpConnected(pane) && !this._isSharedHere(pane)).length;
+		if (count === 0) {
+			return;
+		}
+		const note = dom.append(this._body, $('.pbd-mcp-note'));
+		dom.append(note, $('span')).textContent = strMcpNote(count);
+		const link = dom.append(note, $<HTMLButtonElement>('button.pbd-link'));
+		link.type = 'button';
+		link.textContent = STR_MCP_NOTE_LINK;
+		this._renderDisposables.add(dom.addDisposableListener(link, 'click', () => this._tabController.setActiveTab('mcp')));
 	}
 
 	private _renderPaneList(container: HTMLElement): void {
@@ -704,7 +746,10 @@ export class ParadisBindingDialog extends Disposable {
 		dom.append(row, $(`.pbd-dot.${dotClass}`));
 
 		const main = dom.append(row, $('.pbd-row-main'));
-		dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
+		const title = dom.append(main, $('.pbd-row-title'));
+		title.textContent = this._paneDisplayName(pane);
+		// スイッチの読み上げ名は行の題（どのペインのスイッチか分かるように）
+		title.id = `paradis-binding-pane-title-${pane.instanceId}`;
 		dom.append(main, $('.pbd-row-sub')).textContent = this._paneSubText(pane, boundHere);
 
 		// 行内アクションは、このページの共有/解除を表す switch（ページごとに独立。ほかのページの共有は
@@ -712,17 +757,15 @@ export class ParadisBindingDialog extends Disposable {
 		// ON 表示にし、OFF への切替でこのページの共有だけが外れる。
 		const action = paradisGetPaneBindingAction(boundHere ? this._page.id : undefined, this._page.id, pane.bindEligibility);
 		const isUnshareVerb = action === 'unbind';
-		const switchEl = dom.append(row, $('input.pbd-switch')) as HTMLInputElement;
-		switchEl.type = 'checkbox';
-		switchEl.setAttribute('role', 'switch');
-		switchEl.checked = isUnshareVerb;
-		// 共有する向きのスイッチは、拡張機能の知らせの答えが返るまで押せない
-		switchEl.disabled = action === 'disabled' || (!isUnshareVerb && !this._extensionWarningResolved);
-		switchEl.setAttribute('aria-label', isUnshareVerb ? STR_SWITCH_UNSHARE_ARIA : STR_SWITCH_SHARE_ARIA);
+		const switchEl = this._paneListResources.add(new ParadisSwitch(row, {
+			checked: isUnshareVerb,
+			ariaLabelledBy: title.id,
+			// 拡張機能の知らせの答えが返るまで押せない（返ったら描き直す）
+			disabled: action === 'disabled' || (!isUnshareVerb && !this._extensionWarningResolved),
+		}));
+		switchEl.element.classList.add('pbd-switch');
 		if (action !== 'disabled') {
-			this._paneListResources.add(dom.addDisposableListener(switchEl, 'change', () => {
-				void this._runRowToggle(pane, switchEl.checked);
-			}));
+			this._paneListResources.add(switchEl.onDidChange(checked => void this._runRowToggle(pane, checked)));
 		}
 		this._wireRowHighlight(row, pane.instanceId);
 		return row;
@@ -778,7 +821,7 @@ export class ParadisBindingDialog extends Disposable {
 		if (pane.mcpConnected) {
 			return STR_SUB_READY;
 		}
-		return STR_SUB_NEEDS_MCP;
+		return STR_SUB_NEEDS_MCP_SHORT;
 	}
 
 	// --- MCP接続設定 tab ---
@@ -849,18 +892,17 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _renderMcpAction(card: HTMLElement, cli: ParadisMcpCli, state: string, busy: boolean): void {
 		const actions = dom.append(card, $('.pbd-mc-actions'));
-		const button = dom.append(actions, $('button.pbd-mc-btn')) as HTMLButtonElement;
-		const icon = button.appendChild($(`span${ThemeIcon.asCSSSelector(busy ? Codicon.loading : (state === 'needsFix' ? Codicon.wrench : Codicon.zap))}`));
-		if (busy) {
-			icon.classList.add('codicon-modifier-spin');
-		}
-		dom.append(button, $('span')).textContent = busy
+		const button = this._renderDisposables.add(new Button(actions, { ...defaultButtonStyles, secondary: state === 'configured', supportIcons: true }));
+		button.element.classList.add('pbd-small');
+		const icon = busy ? `${Codicon.loading.id}~spin` : (state === 'needsFix' ? Codicon.wrench.id : Codicon.zap.id);
+		const text = busy
 			? STR_SETUP_RUNNING
 			: state === 'needsFix' ? STR_BTN_FIX
 				: state === 'configured' ? STR_BTN_REAPPLY : STR_BTN_AUTO_SETUP;
-		button.disabled = busy;
+		button.label = `$(${icon}) ${text}`;
+		button.enabled = !busy;
 		const kind = state === 'needsFix' ? 'fix' : 'setup';
-		this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => void this._runCliAction(cli, kind)));
+		this._renderDisposables.add(button.onDidClick(() => void this._runCliAction(cli, kind)));
 	}
 
 	private _renderMcpManual(container: HTMLElement): void {
@@ -1015,9 +1057,10 @@ export class ParadisBindingDialog extends Disposable {
 			dom.append(main, $('.pbd-row-sub')).textContent = device.runtime ? `${device.runtime} · ${status}` : status;
 
 			// アタッチも解除も渡し先ペインごとの操作なので、行のボタンはペイン一覧の開閉に徹する。
-			const button = dom.append(row, $('button.pbd-row-btn.share')) as HTMLButtonElement;
-			button.textContent = this._attachTargetDeviceId === device.id ? STR_BTN_CLOSE_PANES : STR_BTN_CHOOSE_PANES;
-			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+			const button = this._renderDisposables.add(new Button(row, { ...defaultButtonStyles, secondary: true }));
+			button.element.classList.add('pbd-small', 'pbd-row-btn');
+			button.label = this._attachTargetDeviceId === device.id ? STR_BTN_CLOSE_PANES : STR_BTN_CHOOSE_PANES;
+			this._renderDisposables.add(button.onDidClick(() => {
 				this._attachTargetDeviceId = this._attachTargetDeviceId === device.id ? undefined : device.id;
 				this._render();
 			}));
@@ -1062,17 +1105,16 @@ export class ParadisBindingDialog extends Disposable {
 				: (this._paneMcpConnected(pane) ? STR_SUB_READY : STR_SUB_NEEDS_MCP);
 			dom.append(main, $('.pbd-row-sub')).textContent = sub;
 
-			const button = dom.append(row, $('button.pbd-row-btn')) as HTMLButtonElement;
+			const button = this._renderDisposables.add(new Button(row, { ...defaultButtonStyles, secondary: holdsThisDevice }));
+			button.element.classList.add('pbd-small', 'pbd-row-btn');
 			if (holdsThisDevice) {
-				button.classList.add('unshare');
-				button.textContent = STR_BTN_DETACH;
-				this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+				button.label = STR_BTN_DETACH;
+				this._renderDisposables.add(button.onDidClick(() => {
 					void this._runDeviceAction(() => this.mobileCanvasModel.detach(pane.token));
 				}));
 			} else {
-				button.classList.add('share');
-				button.textContent = STR_BTN_ATTACH;
-				this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+				button.label = STR_BTN_ATTACH;
+				this._renderDisposables.add(button.onDidClick(() => {
 					// どのスペースのペインへ渡したかを残しておく（表示と将来の後始末のため）。
 					const stateKey = this.terminalScopeService.getStateKeyForInstance(pane.instanceId);
 					void this._runDeviceAction(() => this.mobileCanvasModel.attach(pane.token, deviceId, stateKey));
@@ -1101,9 +1143,10 @@ export class ParadisBindingDialog extends Disposable {
 		const defaultHint = this._activeTab === 'devices' ? STR_DEVICES_FOOTER_HINT : STR_FOOTER_HINT;
 		dom.append(hint, $('span')).textContent = this._bindError ?? defaultHint;
 
-		const closeButton = dom.append(this._footer, $('button.pbd-btn')) as HTMLButtonElement;
-		closeButton.textContent = STR_BTN_CLOSE;
-		this._renderDisposables.add(dom.addDisposableListener(closeButton, 'click', () => this.close()));
+		const closeButton = this._renderDisposables.add(new Button(this._footer, { ...defaultButtonStyles, secondary: true }));
+		closeButton.element.classList.add('pbd-btn');
+		closeButton.label = STR_BTN_CLOSE;
+		this._renderDisposables.add(closeButton.onDidClick(() => this.close()));
 	}
 
 	private async _bindPane(token: string): Promise<void> {

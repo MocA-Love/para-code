@@ -157,24 +157,22 @@ suite('ParadisBindingDialogPaneListResources', () => {
 		try {
 			const search = root.querySelector<HTMLInputElement>('.pbd-list-search input')!;
 			const firstRow = root.querySelector<HTMLElement>('.pbd-pane-row')!;
-			const firstSwitch = firstRow.querySelector<HTMLInputElement>('.pbd-switch')!;
+			const firstSwitch = firstRow.querySelector<HTMLButtonElement>('.pbd-switch')!;
 
 			search.value = 'missing';
 			search.dispatchEvent(new Event('input'));
 			hoverEvents.length = 0;
 			fireRowHighlightEvents(firstRow);
-			firstSwitch.checked = true;
-			firstSwitch.dispatchEvent(new Event('change'));
+			firstSwitch.click();
 			assert.deepStrictEqual({ hoverEvents, bindCalls }, { hoverEvents: [], bindCalls: 0 });
 
 			search.value = '';
 			search.dispatchEvent(new Event('input'));
 			const secondRow = root.querySelector<HTMLElement>('.pbd-pane-row')!;
-			const secondSwitch = secondRow.querySelector<HTMLInputElement>('.pbd-switch')!;
+			const secondSwitch = secondRow.querySelector<HTMLButtonElement>('.pbd-switch')!;
 			hoverEvents.length = 0;
 			fireRowHighlightEvents(secondRow);
-			secondSwitch.checked = true;
-			secondSwitch.dispatchEvent(new Event('change'));
+			secondSwitch.click();
 			assert.deepStrictEqual({ hoverEvents, bindCalls }, {
 				hoverEvents: [17, undefined, 17, undefined],
 				bindCalls: 1,
@@ -183,18 +181,16 @@ suite('ParadisBindingDialogPaneListResources', () => {
 			bindingChanges.fire();
 			hoverEvents.length = 0;
 			fireRowHighlightEvents(secondRow);
-			secondSwitch.checked = true;
-			secondSwitch.dispatchEvent(new Event('change'));
+			secondSwitch.click();
 			assert.deepStrictEqual({ hoverEvents, bindCalls }, { hoverEvents: [], bindCalls: 1 });
 
 			const finalRow = root.querySelector<HTMLElement>('.pbd-pane-row')!;
-			const finalSwitch = finalRow.querySelector<HTMLInputElement>('.pbd-switch')!;
+			const finalSwitch = finalRow.querySelector<HTMLButtonElement>('.pbd-switch')!;
 			fireRowHighlightEvents(finalRow);
 			assert.deepStrictEqual(hoverEvents, [17, undefined, 17, undefined]);
 
 			dialog.dispose();
-			finalSwitch.checked = true;
-			finalSwitch.dispatchEvent(new Event('change'));
+			finalSwitch.click();
 			assert.strictEqual(bindCalls, 1);
 		} finally {
 			hoverListener.dispose();
@@ -258,15 +254,14 @@ suite('ParadisBindingDialog several pages shared with one pane', () => {
 		try {
 			const rows = [...root.querySelectorAll<HTMLElement>('.pbd-pane-row')].map(row => ({
 				sub: row.querySelector('.pbd-row-sub')?.textContent,
-				checked: row.querySelector<HTMLInputElement>('.pbd-switch')!.checked,
-				disabled: row.querySelector<HTMLInputElement>('.pbd-switch')!.disabled,
+				checked: row.querySelector<HTMLButtonElement>('.pbd-switch')!.getAttribute('aria-checked') === 'true',
+				disabled: row.querySelector<HTMLButtonElement>('.pbd-switch')!.disabled,
 			}));
 			const pages = [...root.querySelectorAll<HTMLElement>('.pbd-nav-item')]
 				.filter(item => item.querySelector('.pbd-nav-label')?.textContent?.startsWith('Page'))
 				.map(item => `${item.querySelector('.pbd-nav-label')?.textContent}:${item.querySelector('.pbd-nav-count')?.textContent ?? '0'}`);
-			const firstSwitch = root.querySelector<HTMLInputElement>('.pbd-pane-row .pbd-switch')!;
-			firstSwitch.checked = true;
-			firstSwitch.dispatchEvent(new Event('change'));
+			const firstSwitch = root.querySelector<HTMLButtonElement>('.pbd-pane-row .pbd-switch')!;
+			firstSwitch.click();
 			assert.deepStrictEqual({ rows, pages: pages.sort(), calls }, {
 				rows: [
 					{ sub: 'ほかに 2 ページを共有中: Page A ほか', checked: false, disabled: false },
@@ -318,21 +313,20 @@ suite('ParadisBindingDialog browser extension warning', () => {
 			upcastPartial<IParadisBrowserExtensionsService>({ getShareWarning: () => new Promise<string | undefined>(resolve => answer = resolve) }),
 		);
 		try {
-			const before = root.querySelector<HTMLInputElement>('.pbd-switch')!;
+			const before = root.querySelector<HTMLButtonElement>('.pbd-switch')!;
 			const disabledBefore = before.disabled;
 			const checkingBefore = { shown: root.querySelector('.pbd-extension-checking') !== null, busy: root.querySelector('.pbd-body')?.getAttribute('aria-busy') };
 			// キー操作などで押されたことにする: 答えを待ち、知らせがあるので今回は共有しない
-			before.checked = true;
-			before.dispatchEvent(new Event('change'));
+			before.click();
 			answer('extension warning');
 			await timeout(0);
-			const after = root.querySelector<HTMLInputElement>('.pbd-switch')!;
+			const after = root.querySelector<HTMLButtonElement>('.pbd-switch')!;
 			assert.deepStrictEqual({
 				disabledBefore,
 				checkingBefore,
 				checkingAfter: { shown: root.querySelector('.pbd-extension-checking') !== null, busy: root.querySelector('.pbd-body')?.getAttribute('aria-busy') },
 				disabledAfter: after.disabled,
-				warning: root.querySelector('.pbd-extension-warning')?.textContent,
+				warning: root.querySelector('.pbd-extension-warning-text')?.textContent,
 				calls,
 			}, { disabledBefore: true, checkingBefore: { shown: true, busy: 'true' }, checkingAfter: { shown: false, busy: 'false' }, disabledAfter: false, warning: 'extension warning', calls: [] });
 		} finally {
