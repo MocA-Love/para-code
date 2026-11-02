@@ -58,6 +58,7 @@ import {
 } from '../common/paradisScheduledRuns.js';
 import { IParadisScheduledRunsClient } from './paradisScheduledRunsClient.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
+import { PARADIS_MODAL_DRAFT_RESTORED, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
 import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
@@ -180,6 +181,18 @@ export function paradisFormScheduleToCron(values: Pick<IFormValues, 'scheduleKin
 	}
 }
 
+/**
+ * 保存せずに閉じた編集のフォーム（`edit:<定期実行の id>` または新規の `new` → 値）。別のモーダルを開いたときや
+ * 閉じるボタン・外側の押下で閉じたときに打ちかけの入力を覚えておき、次に同じ定期実行の編集（新規なら新規作成）を
+ * 始めたときに戻す。「キャンセル」（Esc を含む）と保存で捨てる。
+ */
+const formDrafts = new ParadisModalDrafts<IFormValues>();
+const NEW_FORM_DRAFT_KEY = 'new';
+
+function formDraftKey(id: string | undefined): string {
+	return id === undefined ? NEW_FORM_DRAFT_KEY : `edit:${id}`;
+}
+
 function draftFromForm(values: IFormValues): IParadisScheduledRunDraft {
 	return {
 		...(values.id ? { id: values.id } : {}),
@@ -214,6 +227,10 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	private selectedId: string | undefined;
 	/** 編集中（新規は id なし）。編集中は記録が変わっても本文を作り直さない。 */
 	private editing: IFormValues | undefined;
+	/** 編集のフォームで何か入力したか（開いた直後の選択肢の補正は数えない）。下書きを戻したときは最初から true。 */
+	private editingDirty = false;
+	/** 編集のフォームに下書きを戻したか（描き直しても注記を出し続ける）。 */
+	private editingRestored = false;
 	private usage: Map<string, IRunUsage> | undefined;
 	private usageRequested = false;
 
@@ -292,6 +309,13 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	}
 
 	override dispose(): void {
+		if (this._store.isDisposed) {
+			return;
+		}
+		// 編集の途中で閉じられたら（別のモーダル・閉じるボタン・外側の押下）、入力を下書きとして残す
+		if (this.editing && this.editingDirty) {
+			formDrafts.keep(formDraftKey(this.editing.id), this.editing);
+		}
 		this.backdrop.remove();
 		super.dispose();
 	}
@@ -596,7 +620,9 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const result = await this.client.delete(definition.id);
 		if (!result.ok) {
 			this.showMessage(result.error ?? '', 'error');
+			return;
 		}
+		formDrafts.discard(formDraftKey(definition.id));
 	}
 
 	private findWorktree(stateKey: string): IParadisWorktree | undefined {
@@ -669,8 +695,10 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	}
 
 	private startEdit(definition: IParadisScheduledRunDefinition | undefined): void {
-		const values = definition ? formValuesFromDefinition(definition) : emptyFormValues();
-		if (!definition) {
+		const draft = formDrafts.take(formDraftKey(definition?.id));
+		this.editingDirty = this.editingRestored = draft !== undefined;
+		const values = draft ?? (definition ? formValuesFromDefinition(definition) : emptyFormValues());
+		if (!definition && !draft) {
 			const repository = this.switchService.repositories[0];
 			if (repository) {
 				values.repositoryUri = repository.uri.toString();
@@ -685,6 +713,9 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	}
 
 	private cancelEdit(): void {
+		if (this.editing) {
+			formDrafts.discard(formDraftKey(this.editing.id));
+		}
 		this.editing = undefined;
 		this.clearMessage();
 		this.renderNav();
@@ -699,8 +730,15 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		if (!values.id) {
 			dom.append(form, $('.psr-note')).textContent = localize('paradis.scheduledRuns.createNote', "作成直後は無効です。中身を確かめてから一覧の右上で有効にしてください。");
 		}
+		if (this.editingRestored) {
+			dom.append(form, $('.psr-note')).textContent = PARADIS_MODAL_DRAFT_RESTORED;
+		}
 		const error = dom.append(form, $('.psr-form-error'));
 		error.setAttribute('role', 'alert');
+		// 入力欄・選択肢のどれかを触ったら、閉じられたときに下書きとして残す
+		const markDirty = () => { this.editingDirty = true; };
+		this.contentDisposables.add(dom.addDisposableListener(form, 'input', markDirty));
+		this.contentDisposables.add(dom.addDisposableListener(form, 'change', markDirty));
 
 		// 名前
 		const name = this.input(this.formRow(form, localize('paradis.scheduledRuns.field.name', "名前")), values.name);
@@ -880,6 +918,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				save.disabled = false;
 				return;
 			}
+			formDrafts.discard(formDraftKey(values.id));
 			this.editing = undefined;
 			this.selectedId = result.definition?.id ?? this.selectedId;
 			this.showMessage(values.id

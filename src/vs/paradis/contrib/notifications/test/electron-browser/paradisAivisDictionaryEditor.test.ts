@@ -13,7 +13,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IParadisAivisDictionaryDetail } from '../../common/paradisNotifications.js';
-import { ParadisDictionaryEditorDialog } from '../../electron-browser/paradisAivisDictionarySection.js';
+import { ParadisCreateDictionaryDialog, ParadisDictionaryEditorDialog } from '../../electron-browser/paradisAivisDictionarySection.js';
+import { paradisOpenAnotherModal } from '../../../paradisSettings/test/browser/paradisModalTestUtils.js';
 
 suite('ParadisAivisDictionaryEditor', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -55,6 +56,41 @@ suite('ParadisAivisDictionaryEditor', () => {
 			assert.deepStrictEqual({ afterReopen, afterCancel, leftOpen: root.children.length }, {
 				afterReopen: { name: 'Typed but not saved', note: true },
 				afterCancel: 'Saved name',
+				leftOpen: 0,
+			});
+		} finally {
+			root.remove();
+		}
+	});
+
+	test('the new dictionary box keeps typed text when another modal closes it, restores it on the next open, and drops it on Cancel', () => {
+		const root = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(root);
+		const sharedProcessService = upcastPartial<ISharedProcessService>({});
+		const layoutService = upcastPartial<ILayoutService>({ activeContainer: root });
+		const open = () => new ParadisCreateDictionaryDialog(layoutService, sharedProcessService, 'key', () => { });
+		const inputs = () => [...root.querySelectorAll<HTMLInputElement>('.pns-field input')];
+		try {
+			const first = open();
+			inputs()[0].value = 'New words';
+			inputs()[1].value = 'Typed but not created';
+			// Another modal opened from the command palette closes the box
+			const other = paradisOpenAnotherModal();
+			const closedByOther = root.children.length === 0;
+			other.dispose();
+			const second = open();
+			const afterReopen = { values: inputs().map(input => input.value), note: (root.textContent ?? '').includes('保存する前に閉じた編集を戻しました') };
+			const cancel = [...root.querySelectorAll<HTMLButtonElement>('.pns-nested-footer button')].find(button => !button.classList.contains('pns-btn-primary'))!;
+			cancel.click();
+			const third = open();
+			const afterCancel = inputs().map(input => input.value);
+			third.dispose();
+			second.dispose();
+			first.dispose();
+			assert.deepStrictEqual({ closedByOther, afterReopen, afterCancel, leftOpen: root.children.length }, {
+				closedByOther: true,
+				afterReopen: { values: ['New words', 'Typed but not created'], note: true },
+				afterCancel: ['', ''],
 				leftOpen: 0,
 			});
 		} finally {
