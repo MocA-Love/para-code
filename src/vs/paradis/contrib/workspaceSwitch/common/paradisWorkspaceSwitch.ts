@@ -12,6 +12,7 @@ import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { ParadisScopeRetirementPreparation } from './paradisEditorScope.js';
 import { IAuxiliaryEditorPart, IEditorGroup, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
 export const IParadisWorkspaceSwitchService = createDecorator<IParadisWorkspaceSwitchService>('paradisWorkspaceSwitchService');
@@ -809,6 +810,8 @@ export interface IParadisWorkspaceSwitchService {
 	 */
 	hasScopeRetirementData(stateKey: string): Promise<boolean>;
 	prepareScopeRetirement(stateKey: string): Promise<boolean>;
+	/** {@link prepareScopeRetirement} と同じ準備をし、止まったときは利用者が断ったのか失敗したのかを返す。 */
+	prepareScopeRetirementResult(stateKey: string): Promise<ParadisScopeRetirementPreparation>;
 	cancelScopeRetirement(stateKey: string): Promise<void>;
 	discardScopeState(stateKey: string): Promise<boolean>;
 	acknowledgeScopeRetirement(stateKey: string): void;
