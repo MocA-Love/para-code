@@ -17,7 +17,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
-import { IParadisSpaceUsageRequest, IParadisWorkStatsRequest, PARADIS_AGENT_ACTIVITY_CHANNEL } from '../common/paradisAgentActivity.js';
+import { IParadisRepoUsageRequest, IParadisSpaceUsageRequest, IParadisWorkStatsRequest, PARADIS_AGENT_ACTIVITY_CHANNEL } from '../common/paradisAgentActivity.js';
 import {
 	PARADIS_SESSION_INDEX_RELATIVE_PATH,
 	PARADIS_SESSION_INDEX_SETTING_ENABLED,
@@ -39,6 +39,7 @@ export class ParadisAgentActivityChannel<TContext = string> implements IServerCh
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'spaceUsage': return this.service.spaceUsage(args[0] as IParadisSpaceUsageRequest) as Promise<T>;
+			case 'repoUsage': return this.service.repoUsage(args[0] as IParadisRepoUsageRequest) as Promise<T>;
 			case 'workStats': return this.service.workStats(args[0] as IParadisWorkStatsRequest) as Promise<T>;
 			case 'indexUpdate': return this.service.indexUpdate() as Promise<T>;
 			case 'indexSearch': return this.service.indexSearch(typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1] : []) as Promise<T>;

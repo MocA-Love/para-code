@@ -104,6 +104,34 @@ export interface IParadisSpaceUsageResult {
 	readonly computedAt: number;
 }
 
+export interface IParadisRepoUsageRequest {
+	/** YYYY-MM-DD（含む）。 */
+	readonly since: string;
+	/** YYYY-MM-DD（含む）。 */
+	readonly until: string;
+	/** true なら手元のキャッシュを使わず、変わっていないファイルも読み直す。 */
+	readonly bypassCache?: boolean;
+}
+
+/** 作業フォルダを束ねたリポジトリ（AI コストの「リポジトリ別」。Q537 の 13 A）。 */
+export interface IParadisRepoUsageRepo {
+	/** 束ねる鍵（paradisRepoIdentity.ts）。 */
+	readonly key: string;
+	readonly name: string;
+	/** このリポジトリに束ねた作業フォルダ（クローン・ワークツリー）。{@link IParadisRepoUsageResult.buckets} の鍵。 */
+	readonly folders: readonly string[];
+}
+
+export interface IParadisRepoUsageResult {
+	/**
+	 * 作業フォルダごとのトークン数（鍵は作業フォルダの絶対パス）。git の外の作業フォルダと作業フォルダの無い会話は、
+	 * まとめて `PARADIS_REPO_OUTSIDE_KEY`（paradisRepoIdentity.ts）の入れ物に入る。
+	 */
+	readonly buckets: readonly IParadisSpaceUsageBucket[];
+	readonly repos: readonly IParadisRepoUsageRepo[];
+	readonly computedAt: number;
+}
+
 export interface IParadisWorkStatsRequest {
 	readonly since: string;
 	readonly until: string;

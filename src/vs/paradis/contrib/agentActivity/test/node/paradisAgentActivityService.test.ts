@@ -107,6 +107,36 @@ suite('ParadisAgentActivityService', function () {
 		});
 	});
 
+	// AI コストの「リポジトリ別」（Q537 の 13 A）: 同じ remote のクローンとワークツリーを 1 つに束ね、git の外はまとめる
+	test('groups the working folders of the conversations by repository', async () => {
+		const today = new Date();
+		const day = paradisActivityDayKey(today);
+		const main = join(root, 'repos', 'main');
+		const clone = join(root, 'repos', 'clone');
+		const outside = join(root, 'plain');
+		await fs.mkdir(join(main, '.git'), { recursive: true });
+		await fs.writeFile(join(main, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/owner/repo.git\n');
+		await fs.mkdir(join(clone, '.git'), { recursive: true });
+		await fs.writeFile(join(clone, '.git', 'config'), '[remote "origin"]\n\turl = git@github.com:owner/repo.git\n');
+		await fs.mkdir(outside, { recursive: true });
+		await fs.writeFile(join(claudeHome, 'projects', '-work-repo', 'a1.jsonl'), claudeLines(main, 'first', 'one', today));
+		await fs.writeFile(join(claudeHome, 'projects', '-work-repo', 'a2.jsonl'), claudeLines(join(clone, 'src'), 'second', 'two!', today));
+		await fs.writeFile(join(claudeHome, 'projects', '-work-repo', 'a3.jsonl'), claudeLines(outside, 'third', 'three', today));
+
+		const result = await service.repoUsage({ since: day, until: day });
+		const tokens = Object.fromEntries(result.buckets.map(bucket => [bucket.key, Object.values(bucket.days[day] ?? {}).reduce((sum, value) => sum + value.input + value.output, 0)]));
+		// 一時フォルダが git の中にあると、git の外の会話もそのリポジトリに入るので、外の分は鍵だけ比べない
+		assert.deepStrictEqual({
+			repos: result.repos.filter(repo => repo.key === 'remote:github.com/owner/repo').map(repo => ({ name: repo.name, folders: [...repo.folders].sort() })),
+			main: tokens[main],
+			clone: tokens[join(clone, 'src')],
+		}, {
+			repos: [{ name: 'repo', folders: [join(clone, 'src'), main].sort() }],
+			main: 15,
+			clone: 15,
+		});
+	});
+
 	// Codex のアカウントごとのホーム（~/.codex-2 等）と、WSL のスペースのディストロ側のホームも読む。
 	// 切り替えた2つのホームの間でハードリンクした会話は1回だけ数える。
 	test('reads every Codex home and WSL homes of the spaces, counting hard-linked conversations once', async () => {
