@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { isLinux } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IWorkspaceFolder, IWorkspaceFoldersChangeEvent } from '../../../../../platform/workspace/common/workspace.js';
@@ -25,8 +26,11 @@ suite('paradisHistoryScope', () => {
 			// キーの形は固定する。変わると全ユーザーの履歴が無言で孤児になる
 			shape: /^history\.entries\.[0-9a-f]{1,8}$/.test(backendKey),
 			stable: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/sample-app/backend')]) === backendKey,
-			// 大文字小文字と末尾スラッシュの違いで別バケットにしない
-			normalized: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/Sample-App/backend/')]) === backendKey,
+			// 末尾スラッシュの違いで別バケットにしない（どの OS でも）
+			trailingSlash: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/sample-app/backend/')]) === backendKey,
+			// 大文字小文字の違いは、パスが大文字小文字を区別しない OS でだけ同じバケットにする
+			// （extUriBiasedIgnorePathCase は Linux の file: では区別する）
+			caseInsensitive: paradisHistoryStorageKey(BASE_KEY, [folder('/develop/paradis/Sample-App/backend/')]) === backendKey,
 			perSpace: paradisHistoryStorageKey(BASE_KEY, [worktree]) !== backendKey,
 			noFolder: paradisHistoryStorageKey(BASE_KEY, []),
 			multiRoot: paradisHistoryStorageKey(BASE_KEY, [backend, worktree]),
@@ -34,7 +38,8 @@ suite('paradisHistoryScope', () => {
 		}, {
 			shape: true,
 			stable: true,
-			normalized: true,
+			trailingSlash: true,
+			caseInsensitive: !isLinux,
 			perSpace: true,
 			noFolder: BASE_KEY,
 			multiRoot: BASE_KEY,
