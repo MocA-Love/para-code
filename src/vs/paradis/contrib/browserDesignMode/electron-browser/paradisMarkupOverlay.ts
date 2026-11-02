@@ -155,7 +155,8 @@ export class ParadisMarkupOverlay extends Disposable {
 		PARADIS_MARKUP_COLORS.forEach((color, index) => {
 			const button = append(colorGroup, $<HTMLButtonElement>('button.paradis-markup-swatch'));
 			button.type = 'button';
-			button.style.backgroundColor = color;
+			// 色は 22px のボタンの中の 12px の丸で見せる
+			append(button, $('span.paradis-markup-swatch-dot')).style.backgroundColor = color;
 			const label = localize('paradis.markup.color', "色 {0}", index + 1);
 			button.setAttribute('aria-label', label);
 			this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), button, label));
