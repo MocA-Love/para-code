@@ -20,7 +20,7 @@ import {
 	browserViewAutomationAwaitedFrames,
 	browserViewAutomationFrameKind,
 	browserViewAutomationFormatFrameKinds,
-} from '../../common/browserViewAutomationInput.js';
+} from '../../common/paraBrowserViewAutomationInput.js';
 
 type TestAutomationListener = (_event: unknown, payload: unknown) => void;
 

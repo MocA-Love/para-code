@@ -14,7 +14,7 @@ suite('ParadisPreloadExtensionFrame', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('skips the preload only in extension frames embedded in another frame', async function () {
-		// browserViewAutomationInput.test.ts と同じく、Electron の中では読んだだけで init() が走るので node でだけ確かめる
+		// paraBrowserViewAutomationInput.test.ts と同じく、Electron の中では読んだだけで init() が走るので node でだけ確かめる
 		if (process.versions.electron) {
 			this.skip();
 		}
