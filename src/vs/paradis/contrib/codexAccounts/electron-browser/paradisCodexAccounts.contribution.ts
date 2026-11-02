@@ -20,7 +20,8 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -88,6 +89,7 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IDialogService private readonly dialogService: IDialogService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisLimitsEmailMaskService private readonly emailMaskService: IParadisLimitsEmailMaskService,
 	) {
@@ -163,9 +165,15 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 		const state = await this.readState();
 		const nextName = state ? accountName(state, next, this.emailMaskService) : next ?? localize('paradis.codexAccounts.defaultHome', "既定のアカウント");
 		const previousName = state && previousHomes.size === 1 ? accountName(state, [...previousHomes][0], this.emailMaskService) : undefined;
-		this.notificationService.info(previousName !== undefined
-			? localize('paradis.codexAccounts.switchedWithRunning', "Codex のアカウントを {0} に切り替えました。開いている Codex {1} 個は前のアカウント（{2}）のまま動いています。新しく開いたターミナルから切り替わります。", nextName, count, previousName)
-			: localize('paradis.codexAccounts.switchedWithRunningMixed', "Codex のアカウントを {0} に切り替えました。開いている Codex {1} 個は前のアカウントのまま動いています。新しく開いたターミナルから切り替わります。", nextName, count));
+		// 通知は 1 文にし、動いている Codex が前のアカウントのままである説明は「詳細」で開く。
+		const message = localize('paradis.codexAccounts.switchedKeepRunning', "Codex のアカウントを {0} に切り替えました（開いている Codex は前のアカウントのまま）。", nextName);
+		const detail = previousName !== undefined
+			? localize('paradis.codexAccounts.switchedRunningDetail', "開いている Codex {0} 個は前のアカウント（{1}）のまま動いています。新しく開いたターミナルから切り替わります。", count, previousName)
+			: localize('paradis.codexAccounts.switchedRunningDetailMixed', "開いている Codex {0} 個は前のアカウントのまま動いています。新しく開いたターミナルから切り替わります。", count);
+		this.notificationService.prompt(Severity.Info, message, [{
+			label: localize('paradis.codexAccounts.switchedDetails', "詳細"),
+			run: () => void this.dialogService.info(message, detail),
+		}]);
 	}
 
 	/**
