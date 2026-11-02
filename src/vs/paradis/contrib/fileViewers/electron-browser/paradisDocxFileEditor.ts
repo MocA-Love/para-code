@@ -325,15 +325,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _renderSnapshot: { readonly resource: URI; readonly inlineData: string | undefined; readonly assetPlaceholderCount: number; readonly viewState: ParadisWordViewState } | undefined;
 	/**
 	 * webview に残っている文書と、そこから作った状態。タブを離れると clearInput を通るので、入力ではなくペインに持つ。
-	 * 同じ消毒結果（キャッシュの同じ値）・同じ表示の設定へ戻ったときは描き直さない。
+	 * 同じ消毒結果（キャッシュの同じ etag）・同じ倍率と表示モードへ戻ったときは描き直さない。
 	 * `confirmed` は描き終わりの応答（rendered）と図形の送り終わりの両方が揃ってから立てる。
+	 * **文書の中身（元の docx・消毒結果・base64）は持たない。** 使い回すときはキャッシュから引く
+	 * （キャッシュが捨てたら使い回さない）。タブを閉じたら記録も消す。
 	 */
 	private _shownDocument: (IParadisShownDocument<IOverlayWebview> & {
 		readonly recoveryGeneration: number;
 		readonly rendered: boolean;
 		readonly objectsSettled: boolean;
-		readonly snapshot: NonNullable<ParadisDocxFileEditor['_renderSnapshot']>;
-		readonly source: Uint8Array;
+		readonly assetPlaceholderCount: number;
 		readonly bytes: number;
 		readonly placeholders: readonly ParadisOfficePlaceholder[];
 		readonly exclusions: ParadisWordPackageExclusions;
@@ -368,6 +369,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
+		// タブを閉じたら、戻るための記録も捨てる。
+		this._register(this.group.onDidCloseEditor(e => {
+			if (e.editor instanceof ParadisDocxInput && this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
+				this._shownDocument = undefined;
+			}
+		}));
 		this._rootElement = dom.append(parent, dom.$('.paradis-docx-viewer'));
 		this._rootElement.style.position = 'relative';
 		this._rootElement.style.overflow = 'hidden';
@@ -617,9 +624,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._applyRecoveryEffects(transition.effects, resource);
 	}
 
-	/** 残っている表示を使い回せるかを決める値。消毒結果は同じ参照か（キャッシュは変わったファイルの値を捨てる）、表示の設定は同じ中身か。 */
-	private _shownKeys(document: IParadisDocxOpenCacheValue, viewState: ParadisWordViewState): readonly unknown[] {
-		return [document, JSON.stringify(viewState)];
+	/**
+	 * 残っている表示を使い回せるかを決める値。消毒結果はキャッシュの etag（変わったファイルの値は watcher が捨てる）、
+	 * 表示は HTML に焼き込む倍率と表示モードだけ（変更点の選択などでは描き直さない。倍率と表示モードを変えたときも描き直している）。
+	 */
+	private _shownKeys(etag: string, viewState: ParadisWordViewState): readonly unknown[] {
+		return [etag, viewState.zoom, viewState.displayMode];
 	}
 
 	private _noteShownRendered(recoveryGeneration: number): void {
@@ -642,7 +652,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 */
 	private _reuseShownDocument(resource: URI, webview: IOverlayWebview, document: IParadisDocxOpenCacheValue, inputEpoch: number, recoveryGeneration: number): boolean {
 		const shown = this._shownDocument;
-		if (!shown || webview !== this._webview || !canReuseParadisShownDocument(shown, resource, this._webview, this._shownKeys(document, this._currentWordViewState()))) {
+		const etag = DOCX_OPEN_CACHE.get(resource)?.etag;
+		const viewState = this._currentWordViewState();
+		if (!shown || !etag || webview !== this._webview || !canReuseParadisShownDocument(shown, resource, this._webview, this._shownKeys(etag, viewState))) {
 			return false;
 		}
 		this._assetPlaceholders = shown.placeholders;
@@ -650,14 +662,14 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._renderedParagraphs = shown.paragraphs;
 		this._openBytes = shown.bytes;
 		this._probe.setBytes(shown.bytes);
-		this._renderSnapshot = shown.snapshot;
+		this._renderSnapshot = { resource, inlineData: document.inlineData, assetPlaceholderCount: shown.assetPlaceholderCount, viewState };
 		this._openCacheLease.value ??= DOCX_OPEN_CACHE.acquire();
 		this._shownDocument = { ...shown, recoveryGeneration };
 		// 前の表示がそのまま見えている。描くのにかかった時間ではないので、開くまでの計測も使わない。
 		this._openTiming.clear();
 		// 回復の状態は clearInput で初めに戻っているので、描けた表示として確定させる（読めなくなったときに前の表示を残す分岐が効く）。
 		this._finishRecoveryWithoutProbe(recoveryGeneration);
-		this._requestSemanticAnalysis(resource, shown.source, inputEpoch);
+		this._requestSemanticAnalysis(resource, document.source, inputEpoch);
 		this._renderSemanticUi();
 		this._publishAnnotations();
 		return true;
@@ -968,6 +980,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 				return;
 			}
 		}
+		// 覚えられなかった（大きすぎる・etag が無い）文書は使い回さない（戻ったときに引ける中身が無い）。
+		const cached = openedDocument && DOCX_OPEN_CACHE.get(resource);
+		const cachedEtag = cached && cached.value === openedDocument ? cached.etag : undefined;
 		switch (decision) {
 			case 'rejected':
 				this._shownDocument = undefined;
@@ -986,10 +1001,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 					resource, inlineData, assetPlaceholderCount: this._assetPlaceholders.length,
 					viewState: this._currentWordViewState(),
 				};
-				this._shownDocument = semanticSource && openedDocument ? {
-					resource, webview, keys: this._shownKeys(openedDocument, this._renderSnapshot.viewState),
+				this._shownDocument = cachedEtag ? {
+					resource, webview, keys: this._shownKeys(cachedEtag, this._renderSnapshot.viewState),
 					confirmed: false, rendered: false, objectsSettled: !overlaySource, recoveryGeneration,
-					snapshot: this._renderSnapshot, source: semanticSource, bytes: this._openBytes,
+					assetPlaceholderCount: this._assetPlaceholders.length, bytes: this._openBytes,
 					placeholders: this._assetPlaceholders, exclusions: this._packageExclusions, paragraphs: undefined,
 				} : undefined;
 				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._renderSnapshot.viewState, recoveryGeneration)));
@@ -1350,8 +1365,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 * 本文の表示より後に走らせる。zip の再展開と XML 走査はレンダラのメインスレッドで動くので、
 	 * 表示の前に待つと、悪意あるファイル1つでウィンドウ全体が固まる。
 	 * 送る直前に世代を確認し、別の文書へ切り替わっていたら捨てる。
+	 * 送り終えた（送るものが無かった・作れなかったも含む）なら `true`。途中で別の表示へ移ったら `false`。
 	 */
-	/** 図形を送り終えた（送るものが無かった・作れなかったも含む）なら `true`。途中で別の表示へ移ったら `false`。 */
 	private async _deliverWordObjects(webview: IOverlayWebview, bytes: Uint8Array, generation: number, inputEpoch: number, token: CancellationToken): Promise<boolean> {
 		const isCurrent = () => generation === this._renderGeneration && inputEpoch === this._inputEpoch
 			&& this._webviewClaimed && !token.isCancellationRequested;
