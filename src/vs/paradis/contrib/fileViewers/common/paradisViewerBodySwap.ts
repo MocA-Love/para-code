@@ -13,6 +13,8 @@
 /** 差し替える本文の入れ物の id。 */
 export const PARADIS_VIEWER_BODY_ROOT_ID = 'paradis-viewer-body';
 
+import { PARADIS_WEBVIEW_HOST_MESSAGE_CHECK } from './paradisWebviewHostMessage.js';
+
 const BODY_MESSAGE_KEY = 'paradisViewerBody';
 
 /** 描画の結果。`swap` があれば、2 回目以降は条件が合えば本文だけを送る。 */
@@ -68,8 +70,9 @@ export function paradisViewerBodyMessage(body: string): { readonly [BODY_MESSAGE
 /**
  * 本文を差し替えるメッセージを受けるスクリプト（文書の末尾に入れる）。`afterSwap` は差し替えた後に動かす
  * JavaScript（Mermaid の図を描き直すなど）。差し替える本文はビューアが消毒したもので、入れ物へ `innerHTML`
- * で入れた `<script>` は動かない（CSP の nonce も付かない）。webview の基盤（親のフレーム）から届いたメッセージだけを受ける。
+ * で入れた `<script>` は動かない（CSP の nonce も付かない）。webview の基盤（親のフレーム）から届いたメッセージだけを受ける
+ * （{@link PARADIS_WEBVIEW_HOST_MESSAGE_CHECK}。ページでは `window.parent` が置き換えられているので、それとは比べない）。
  */
 export function paradisViewerBodySwapScript(nonce: string, afterSwap = ''): string {
-	return `<script nonce="${nonce}">(function(){try{window.addEventListener('message',function(e){if(e.source!==window.parent){return;}var d=e.data;if(!d||typeof d.${BODY_MESSAGE_KEY}!=='string'){return;}var root=document.getElementById('${PARADIS_VIEWER_BODY_ROOT_ID}');if(!root){return;}root.innerHTML=d.${BODY_MESSAGE_KEY};${afterSwap}});}catch(err){}})();</script>`;
+	return `<script nonce="${nonce}">(function(){try{var fromHost=${PARADIS_WEBVIEW_HOST_MESSAGE_CHECK};window.addEventListener('message',function(e){if(!fromHost(e)){return;}var d=e.data;if(!d||typeof d.${BODY_MESSAGE_KEY}!=='string'){return;}var root=document.getElementById('${PARADIS_VIEWER_BODY_ROOT_ID}');if(!root){return;}root.innerHTML=d.${BODY_MESSAGE_KEY};${afterSwap}});}catch(err){}})();</script>`;
 }

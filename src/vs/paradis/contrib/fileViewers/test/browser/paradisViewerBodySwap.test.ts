@@ -13,6 +13,49 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import type { IFileService } from '../../../../../platform/files/common/files.js';
 import { loadParadisMermaidScriptSource } from '../../browser/paradisMarkdownMermaid.js';
 import { PARADIS_VIEWER_BODY_ROOT_ID, paradisCanSwapViewerBody, paradisMustResendViewerHtmlOnClaim, paradisViewerBodyMessage, paradisViewerBodySwapScript, type IParadisSwappableBody } from '../../common/paradisViewerBodySwap.js';
+import { PARADIS_WEBVIEW_HOST_MESSAGE_CHECK } from '../../common/paradisWebviewHostMessage.js';
+
+/**
+ * webview のページを iframe で再現する。webview の基盤（`_vscodeApiScript`）と同じく、ページのスクリプトより先に
+ * `window.parent`・`window.top`・`window.frameElement` を置き換える。ページの中には子の iframe を 1 つ置く。
+ */
+function loadWebviewPage(pageScript: string, bodyHtml: string): {
+	readonly window: Window;
+	postFromPage(data: unknown): void;
+	postFromChild(data: unknown): void;
+	settle(): Promise<void>;
+	dispose(): void;
+} {
+	const iframe = mainWindow.document.createElement('iframe');
+	mainWindow.document.body.appendChild(iframe);
+	const frameWindow = iframe.contentWindow!;
+	const frameDocument = frameWindow.document;
+	frameDocument.body.innerHTML = bodyHtml;
+	const child = frameDocument.createElement('iframe');
+	frameDocument.body.appendChild(child);
+	const run = (target: Window, code: string) => new (target as unknown as { Function: FunctionConstructor }).Function(code)();
+	run(frameWindow, 'window.parent = window; window.top = window; window.frameElement = null;');
+	// テストのページには CSP の nonce が無いので、<script> の中身だけを動かす。
+	run(frameWindow, pageScript.replace(/^<script[^>]*>|<\/script>$/g, ''));
+	const settleMarker = '__paradisSettled';
+	return {
+		window: frameWindow,
+		postFromPage: data => run(frameWindow, `window.postMessage(${JSON.stringify(data)}, '*');`),
+		postFromChild: data => run(child.contentWindow!, `window.parent.postMessage(${JSON.stringify(data)}, '*');`),
+		// 投げたメッセージは順に届くので、最後に投げた印が届いたら、それより前のものは処理済み。
+		settle: () => new Promise<void>(resolve => {
+			const listener = (event: MessageEvent) => {
+				if (event.data === settleMarker) {
+					frameWindow.removeEventListener('message', listener);
+					resolve();
+				}
+			};
+			frameWindow.addEventListener('message', listener);
+			frameWindow.postMessage(settleMarker, '*');
+		}),
+		dispose: () => iframe.remove(),
+	};
+}
 
 suite('ParadisViewerBodySwap', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -33,28 +76,36 @@ suite('ParadisViewerBodySwap', () => {
 		deepStrictEqual([undefined, shown(), shown({ swapped: true })].map(paradisMustResendViewerHtmlOnClaim), [false, false, true]);
 	});
 
-	test('the page script replaces the body container and runs the after-swap code', () => {
-		const doc = mainWindow.document;
-		const root = doc.createElement('div');
-		root.id = PARADIS_VIEWER_BODY_ROOT_ID;
-		root.innerHTML = '<p>old</p>';
-		doc.body.appendChild(root);
-		const script = doc.createElement('script');
-		// テストのページには CSP の nonce が無いので、中身だけを動かす。
-		script.textContent = paradisViewerBodySwapScript('n', 'window.__paradisSwapped=(window.__paradisSwapped||0)+1;').replace(/^<script[^>]*>|<\/script>$/g, '');
-		doc.body.appendChild(script);
+	test('the page script replaces the body container and runs the after-swap code for messages from the real parent frame', async () => {
+		const frame = loadWebviewPage(paradisViewerBodySwapScript('n', 'window.__paradisSwapped=(window.__paradisSwapped||0)+1;'), `<div id="${PARADIS_VIEWER_BODY_ROOT_ID}"><p>old</p></div>`);
 		try {
-			// 親のフレーム（webview の基盤）以外から届いたものは受けない。
-			const channel = new MessageChannel();
-			mainWindow.dispatchEvent(new MessageEvent('message', { data: paradisViewerBodyMessage('<p>forged</p>'), source: channel.port1 }));
-			channel.port1.close();
-			channel.port2.close();
-			mainWindow.dispatchEvent(new MessageEvent('message', { data: paradisViewerBodyMessage('<h1>new</h1>'), source: mainWindow.parent }));
-			mainWindow.dispatchEvent(new MessageEvent('message', { data: { other: 1 }, source: mainWindow.parent }));
-			deepStrictEqual({ html: root.innerHTML, ran: (mainWindow as unknown as { __paradisSwapped?: number }).__paradisSwapped }, { html: '<h1>new</h1>', ran: 1 });
+			// ページ自身・ページの中の iframe から届いたものは受けない。
+			frame.postFromPage(paradisViewerBodyMessage('<p>forged by the page</p>'));
+			frame.postFromChild(paradisViewerBodyMessage('<p>forged by a child frame</p>'));
+			// webview の基盤（本物の親のフレーム）から届いたものだけを受ける。
+			frame.window.postMessage(paradisViewerBodyMessage('<h1>new</h1>'), '*');
+			frame.window.postMessage({ other: 1 }, '*');
+			await frame.settle();
+			deepStrictEqual({
+				parentReplaced: frame.window.parent === frame.window,
+				html: frame.window.document.getElementById(PARADIS_VIEWER_BODY_ROOT_ID)?.innerHTML,
+				ran: (frame.window as unknown as { __paradisSwapped?: number }).__paradisSwapped,
+			}, { parentReplaced: true, html: '<h1>new</h1>', ran: 1 });
 		} finally {
-			root.remove();
-			script.remove();
+			frame.dispose();
+		}
+	});
+
+	test('the host check accepts only the real parent frame of a page whose window.parent was replaced', async () => {
+		const frame = loadWebviewPage(`<script>window.__paradisHost=[];var fromHost=${PARADIS_WEBVIEW_HOST_MESSAGE_CHECK};window.addEventListener('message',function(e){if(e.data&&e.data.from){window.__paradisHost.push(e.data.from+':'+fromHost(e));}});</script>`, '');
+		try {
+			frame.postFromPage({ from: 'page' });
+			frame.postFromChild({ from: 'child' });
+			frame.window.postMessage({ from: 'parent' }, '*');
+			await frame.settle();
+			deepStrictEqual([...(frame.window as unknown as { __paradisHost: string[] }).__paradisHost], ['page:false', 'child:false', 'parent:true']);
+		} finally {
+			frame.dispose();
 		}
 	});
 
