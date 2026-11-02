@@ -8,40 +8,12 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import type { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
+import { paradisCollectAllTerminalInstances, paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import type { IParadisPaneTokenService } from './paradisPaneTokenService.js';
 
 export interface IParadisLivePaneInstance {
 	readonly instance: ITerminalInstance;
 	readonly token: string;
-}
-
-/** Lists visible and parked terminal instances without depending on a concrete group service implementation. */
-export function paradisCollectAllTerminalInstances(
-	terminalService: Pick<ITerminalService, 'instances'>,
-	terminalGroupService: Pick<ITerminalGroupService, 'paradisParkedGroups'>,
-	parkedEditorInstances: readonly ITerminalInstance[] = paradisListParkedTerminalEditorInstances(),
-): ITerminalInstance[] {
-	const result: ITerminalInstance[] = [];
-	const seenInstanceIds = new Set<number>();
-	const add = (instance: ITerminalInstance): void => {
-		if (!instance.isDisposed && !seenInstanceIds.has(instance.instanceId)) {
-			seenInstanceIds.add(instance.instanceId);
-			result.push(instance);
-		}
-	};
-	for (const instance of terminalService.instances) {
-		add(instance);
-	}
-	for (const group of terminalGroupService.paradisParkedGroups ?? []) {
-		for (const instance of group.terminalInstances) {
-			add(instance);
-		}
-	}
-	for (const instance of parkedEditorInstances) {
-		add(instance);
-	}
-	return result;
 }
 
 export function paradisCollectLivePaneInstances(

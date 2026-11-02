@@ -26,12 +26,12 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisShutdownTerminal, paradisRegisterTerminalShutdownPolicy } from '../../../../workbench/contrib/terminal/browser/paradisTerminalShutdownPolicy.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { paradisTimeTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
-import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { paradisDaemonHandlesTerminal, paradisParseKeepTerminalsChoice, paradisPlanTerminalKeep, paradisRememberedKeepChoice } from '../../../common/paradisTerminalKeepPlan.js';
 import { IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
@@ -223,24 +223,7 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 		if (this.environmentService.remoteAuthority !== undefined) {
 			return 0;
 		}
-		const counted = new Set<number>();
-		const add = (instance: ITerminalInstance): void => {
-			if (!instance.isDisposed && paradisDaemonHandlesTerminal(false, instance)) {
-				counted.add(instance.instanceId);
-			}
-		};
-		for (const instance of this.terminalService.instances) {
-			add(instance);
-		}
-		for (const group of this.terminalGroupService.paradisParkedGroups ?? []) {
-			for (const instance of group.terminalInstances) {
-				add(instance);
-			}
-		}
-		for (const instance of paradisListParkedTerminalEditorInstances()) {
-			add(instance);
-		}
-		return counted.size;
+		return paradisCollectAllTerminalInstances(this.terminalService, this.terminalGroupService).filter(instance => paradisDaemonHandlesTerminal(false, instance)).length;
 	}
 
 	/** 尋ねる。答えが来ないまま上限に達したら残す側へ倒す (終わらせた作業は戻らない)。 */
