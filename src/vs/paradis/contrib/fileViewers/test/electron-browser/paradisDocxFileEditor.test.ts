@@ -661,10 +661,11 @@ suite('ParadisDocxFileEditor', () => {
 			deepStrictEqual({
 				documentReads: fixture.documentReads(),
 				html: fixture.snapshot().htmlDocuments,
-				sameDocument: urls.length === 3 && urls.every(url => url?.startsWith('data:') && url === urls[0]),
+				sameDocument: urls.length === 2 && urls.every(url => url?.startsWith('data:') && url === urls[0]),
 			}, {
+				// 戻ったとき（2 回目）は webview に残っている表示を使い、送り直さない。変わった後は描き直す。
 				documentReads: ['read', 'not modified', 'read'],
-				html: ['viewer', 'viewer', 'viewer'],
+				html: ['viewer', 'viewer'],
 				sameDocument: true,
 			});
 		});

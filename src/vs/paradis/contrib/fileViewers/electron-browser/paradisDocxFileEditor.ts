@@ -54,6 +54,7 @@ import { buildParadisOfficeWordCsp, paradisOfficeBrokenImagePlaceholderSvg, para
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
+import { canReuseParadisShownDocument, IParadisShownDocument } from '../common/paradisViewerShownDocument.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
@@ -323,6 +324,22 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
 	private _renderSnapshot: { readonly resource: URI; readonly inlineData: string | undefined; readonly assetPlaceholderCount: number; readonly viewState: ParadisWordViewState } | undefined;
 	/**
+	 * webview に残っている文書と、そこから作った状態。タブを離れると clearInput を通るので、入力ではなくペインに持つ。
+	 * 同じ消毒結果（キャッシュの同じ値）・同じ表示の設定へ戻ったときは描き直さない。
+	 * `confirmed` は描き終わりの応答（rendered）と図形の送り終わりの両方が揃ってから立てる。
+	 */
+	private _shownDocument: (IParadisShownDocument<IOverlayWebview> & {
+		readonly recoveryGeneration: number;
+		readonly rendered: boolean;
+		readonly objectsSettled: boolean;
+		readonly snapshot: NonNullable<ParadisDocxFileEditor['_renderSnapshot']>;
+		readonly source: Uint8Array;
+		readonly bytes: number;
+		readonly placeholders: readonly ParadisOfficePlaceholder[];
+		readonly exclusions: ParadisWordPackageExclusions;
+		readonly paragraphs: Record<string, string[]> | undefined;
+	}) | undefined;
+	/**
 	 * 表示の見張りと観測。
 	 * 状態機械は `rendered` を受けて初めて動くので、一度も答えが来ない経路はこれでしか拾えない。
 	 */
@@ -566,6 +583,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._webviewClaimed = false;
 		this._webview = undefined;
 		this._webviewSupportsRecoveryMessages = false;
+		this._shownDocument = undefined;
 		this._webviewStore.clear();
 	}
 
@@ -599,6 +617,52 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._applyRecoveryEffects(transition.effects, resource);
 	}
 
+	/** 残っている表示を使い回せるかを決める値。消毒結果は同じ参照か（キャッシュは変わったファイルの値を捨てる）、表示の設定は同じ中身か。 */
+	private _shownKeys(document: IParadisDocxOpenCacheValue, viewState: ParadisWordViewState): readonly unknown[] {
+		return [document, JSON.stringify(viewState)];
+	}
+
+	private _noteShownRendered(recoveryGeneration: number): void {
+		const shown = this._shownDocument;
+		if (shown && shown.recoveryGeneration === recoveryGeneration && !shown.rendered) {
+			this._shownDocument = { ...shown, rendered: true, confirmed: shown.objectsSettled };
+		}
+	}
+
+	private _noteShownObjectsSettled(webview: IOverlayWebview, recoveryGeneration: number): void {
+		const shown = this._shownDocument;
+		if (shown && shown.webview === webview && shown.recoveryGeneration === recoveryGeneration && !shown.objectsSettled) {
+			this._shownDocument = { ...shown, objectsSettled: true, confirmed: shown.rendered };
+		}
+	}
+
+	/**
+	 * タブへ戻ったとき、同じ文書が webview に残っていれば送り直さずに、clearInput で捨てた側の状態だけを戻す。
+	 * 使い回したら `true`。図形・段落の報告は webview に残っているので、覚えておいた値を使う。
+	 */
+	private _reuseShownDocument(resource: URI, webview: IOverlayWebview, document: IParadisDocxOpenCacheValue, inputEpoch: number, recoveryGeneration: number): boolean {
+		const shown = this._shownDocument;
+		if (!shown || webview !== this._webview || !canReuseParadisShownDocument(shown, resource, this._webview, this._shownKeys(document, this._currentWordViewState()))) {
+			return false;
+		}
+		this._assetPlaceholders = shown.placeholders;
+		this._packageExclusions = shown.exclusions;
+		this._renderedParagraphs = shown.paragraphs;
+		this._openBytes = shown.bytes;
+		this._probe.setBytes(shown.bytes);
+		this._renderSnapshot = shown.snapshot;
+		this._openCacheLease.value ??= DOCX_OPEN_CACHE.acquire();
+		this._shownDocument = { ...shown, recoveryGeneration };
+		// 前の表示がそのまま見えている。描くのにかかった時間ではないので、開くまでの計測も使わない。
+		this._openTiming.clear();
+		// 回復の状態は clearInput で初めに戻っているので、描けた表示として確定させる（読めなくなったときに前の表示を残す分岐が効く）。
+		this._finishRecoveryWithoutProbe(recoveryGeneration);
+		this._requestSemanticAnalysis(resource, shown.source, inputEpoch);
+		this._renderSemanticUi();
+		this._publishAnnotations();
+		return true;
+	}
+
 	private _finishRecoveryWithoutProbe(recoveryGeneration: number): void {
 		this._probe.disarmFor(recoveryGeneration);
 		const transition = reduceParadisOfficeRecovery(this._recoveryState, {
@@ -606,6 +670,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		});
 		if (transition.state.phase === 'ready') {
 			this._probe.noteSuccess();
+			this._noteShownRendered(recoveryGeneration);
 		}
 		this._recoveryState = transition.state;
 		if (this._currentResource) {
@@ -625,6 +690,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 			nodeId: `broken_image_${index}`, feature: 'unsafeMedia', reason: 'unsafe', title: 'Office asset unavailable', detail: 'decode-failed',
 		}));
 		this._assetPlaceholders = [...this._assetPlaceholders.filter(placeholder => !placeholder.nodeId.startsWith('broken_image_')), ...broken];
+		if (this._shownDocument?.recoveryGeneration === generation) {
+			this._shownDocument = { ...this._shownDocument, placeholders: this._assetPlaceholders };
+		}
 		this._renderSemanticUi();
 	}
 
@@ -641,6 +709,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 			// いま表示している世代の報告だけを使う（作り直しをまたいで届いた古い報告は、目印の番号が違いうる）。
 			if (candidate.generation === this._recoveryState.generation) {
 				this._renderedParagraphs = acceptRenderedParagraphs(candidate.stories);
+				if (this._shownDocument?.recoveryGeneration === candidate.generation) {
+					this._shownDocument = { ...this._shownDocument, paragraphs: this._renderedParagraphs };
+				}
 				this._publishAnnotations();
 			}
 			return;
@@ -659,6 +730,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			});
 			if (transition.state.phase === 'ready') {
 				this._probe.noteSuccess();
+				this._noteShownRendered(candidate.generation);
 				// 開いてから最初に描けたところ（2 回目以降の描き直しでは何もしない）。
 				this._openTiming.value?.painted({ safe_size_kb: Math.round(this._openBytes / 1024) });
 				this._openTiming.clear();
@@ -713,6 +785,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 					// 梯子を使い切った終端。ここが利用者の見る失敗なので、溜めた観測を1件だけ送る。
 					// 原因は既に記録済み（白紙も時間切れも観測した場所で1件ずつ積んである）。
 					this._probe.reportFailure();
+					this._shownDocument = undefined;
 					this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildBlankFileHtml()));
 					break;
 			}
@@ -733,6 +806,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		this._renderedParagraphs = undefined;
 		this._markerByLocator = undefined;
+		// 載せ直した表示は、描き終わりを確かめるまで使い回さない。
+		this._shownDocument = undefined;
 		this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(
 			snapshot.resource,
 			snapshot.inlineData,
@@ -805,7 +880,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 		return [dirname(resource), FileAccess.asFileUri(DOCX_MEDIA_ROOT)];
 	}
 
-	protected _renderResource(resource: URI, recoveryGeneration = this._recoveryState.generation): void {
+	/**
+	 * @param reuseShown タブへ戻ったときの描画。同じ文書がまだ webview に残っていれば送り直さない。
+	 * ファイルの変更・回復の読み直し・新しい入力では `false`（必ず描き直す）。
+	 */
+	protected _renderResource(resource: URI, recoveryGeneration = this._recoveryState.generation, reuseShown = false): void {
 		this._assetPlaceholders = [];
 		this._packageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
 		this._renderedParagraphs = undefined;
@@ -816,10 +895,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const source = new CancellationTokenSource(); this._assetSanitization.value = source;
 		// ヘッダーの下読み・本体の読み出し・消毒も返ってこないことがある区間なので、ここから見張る。
 		this._probe.armSource(recoveryGeneration);
-		void this._renderResourceAfterPreflight(resource, generation, inputEpoch, recoveryGeneration, source.token);
+		void this._renderResourceAfterPreflight(resource, generation, inputEpoch, recoveryGeneration, source.token, reuseShown);
 	}
 
-	private async _renderResourceAfterPreflight(resource: URI, generation: number, inputEpoch: number, recoveryGeneration: number, token: CancellationToken): Promise<void> {
+	private async _renderResourceAfterPreflight(resource: URI, generation: number, inputEpoch: number, recoveryGeneration: number, token: CancellationToken, reuseShown: boolean): Promise<void> {
 		const webview = this._ensureWebview(resource);
 		// `_ensureWebview` は要否が変わると webview を捨てるので、claim を取り戻しておく
 		// （PDF と同じ。setInput の呼び出し順に頼らない）。
@@ -840,11 +919,17 @@ export class ParadisDocxFileEditor extends EditorPane {
 		// 図形の取り出しは本文表示より後にやる(表示を待たせない)。
 		let overlaySource: Uint8Array | undefined;
 		let semanticSource: Uint8Array | undefined;
+		/** 描いた消毒結果（キャッシュの値）。戻ったときに同じ値かで、残っている表示を使えるか決める。 */
+		let openedDocument: IParadisDocxOpenCacheValue | undefined;
 		if (decision === 'viewer') {
 			try {
 				// 同じ文書を前に消毒していて、ファイルが変わっていなければ、覚えた結果を使う。
 				const read = await readParadisOfficeFile(this._fileService, resource, DOCX_OPEN_CACHE, PARADIS_DOCX_MAX_BYTES);
 				let document: IParadisDocxOpenCacheValue;
+				if (reuseShown && read.kind === 'cached' && generation === this._renderGeneration && inputEpoch === this._inputEpoch && this._webviewClaimed
+					&& this._reuseShownDocument(resource, webview, read.value, inputEpoch, recoveryGeneration)) {
+					return;
+				}
 				if (read.kind === 'cached') {
 					document = read.value;
 					this._probe.setBytes(document.source.byteLength);
@@ -859,6 +944,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 					DOCX_OPEN_CACHE.set(resource, read.content.etag, document, source.byteLength + sanitized.bytes.byteLength + inline.length);
 				}
 				semanticSource = document.source;
+				openedDocument = document;
 				inlineData = document.inlineData;
 				this._assetPlaceholders = document.placeholders;
 				this._packageExclusions = document.exclusions;
@@ -884,6 +970,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		switch (decision) {
 			case 'rejected':
+				this._shownDocument = undefined;
 				// **記録があるときだけ送る。** ここへ来る経路は意味が正反対の2つがあり、
 				// 「ヘッダーが .docx ではなかった」は拡張子だけ .docx の別形式を開いただけの
 				// 通常操作。これを失敗として送ると、正常系でレート枠を食い潰し、以後10分間
@@ -899,6 +986,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 					resource, inlineData, assetPlaceholderCount: this._assetPlaceholders.length,
 					viewState: this._currentWordViewState(),
 				};
+				this._shownDocument = semanticSource && openedDocument ? {
+					resource, webview, keys: this._shownKeys(openedDocument, this._renderSnapshot.viewState),
+					confirmed: false, rendered: false, objectsSettled: !overlaySource, recoveryGeneration,
+					snapshot: this._renderSnapshot, source: semanticSource, bytes: this._openBytes,
+					placeholders: this._assetPlaceholders, exclusions: this._packageExclusions, paragraphs: undefined,
+				} : undefined;
 				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._renderSnapshot.viewState, recoveryGeneration)));
 				// 詳しい解析は表示を出した後に頼む（表示を待たせない）。同じ中身なら頼み直さない。
 				if (semanticSource) {
@@ -908,7 +1001,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 				// 表示を出したあとで図形を作り、出来たものだけ webview へ送る。
 				// 途中で別の文書へ切り替わったら送らない(古い文書の図が残らないようにする)。
 				if (overlaySource) {
-					this._deliverWordObjects(webview, overlaySource, generation, inputEpoch, token);
+					void this._deliverWordObjects(webview, overlaySource, generation, inputEpoch, token).then(settled => {
+						if (settled) {
+							this._noteShownObjectsSettled(webview, recoveryGeneration);
+						}
+					});
 				}
 				// Older/fake overlay implementations do not expose messages. Preserve their
 				// established watcher lifecycle while modern overlays report the real probe.
@@ -1254,27 +1351,30 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 * 表示の前に待つと、悪意あるファイル1つでウィンドウ全体が固まる。
 	 * 送る直前に世代を確認し、別の文書へ切り替わっていたら捨てる。
 	 */
-	private async _deliverWordObjects(webview: IOverlayWebview, bytes: Uint8Array, generation: number, inputEpoch: number, token: CancellationToken): Promise<void> {
+	/** 図形を送り終えた（送るものが無かった・作れなかったも含む）なら `true`。途中で別の表示へ移ったら `false`。 */
+	private async _deliverWordObjects(webview: IOverlayWebview, bytes: Uint8Array, generation: number, inputEpoch: number, token: CancellationToken): Promise<boolean> {
 		const isCurrent = () => generation === this._renderGeneration && inputEpoch === this._inputEpoch
 			&& this._webviewClaimed && !token.isCancellationRequested;
 		try {
 			const parts = await readWordRenderablePackageParts(bytes, token);
 			if (parts.size === 0 || !isCurrent()) {
-				return;
+				return isCurrent();
 			}
 			const objects = extractParadisWordRenderableObjects({ parts, token });
 			if (objects.length === 0 || !isCurrent()) {
-				return;
+				return isCurrent();
 			}
 			// 表示中の文書とは別の切り離した Document 上で組み立て、本文の DOM に触れないようにする。
 			const scratch = dom.getWindow(this._webviewContainer).document.implementation.createHTMLDocument('');
 			const items = buildParadisWordOverlayItems(objects, scratch);
 			if (items.length === 0 || !isCurrent()) {
-				return;
+				return isCurrent();
 			}
 			webview.postMessage({ type: 'paradisWordObjects', items });
+			return true;
 		} catch {
 			// 図形が出ないだけで本文の表示には影響しないので、黙って諦める。
+			return isCurrent();
 		}
 	}
 
@@ -1662,7 +1762,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		dom.setParentFlowTo(webview.container, this._webviewContainer!);
 		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
 		if (justClaimed && !this._recreatingForRecovery) {
-			this._renderResource(resource);
+			this._renderResource(resource, undefined, true);
 		}
 	}
 
@@ -1679,6 +1779,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._runtimeConfiguration = undefined;
 		this._renderSnapshot = undefined;
 		this._recoveryState = createParadisOfficeRecoveryState();
+		if (this._shownDocument && !this._shownDocument.confirmed) {
+			// 描き終わったか分からない表示は、戻ったときに描き直す（白紙や図形の抜けを残さない）。
+			this._shownDocument = undefined;
+		}
 		if (this._webview && this._webviewClaimed) {
 			this._webview.release(this);
 			this._webviewClaimed = false;
