@@ -14,7 +14,7 @@ import type { CancellationToken } from '../../../../../base/common/cancellation.
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import type { IParadisSpreadsheetMetafileImages } from '../../common/paradisSpreadsheet.js';
 import { ownedParadisOfficeBytes, ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorker, type IParadisOfficeSemanticWorkerTimers } from '../office/paradisOfficeSemanticWorkerQueue.js';
-import { createParadisOfficeWorker } from '../office/paradisOfficeWorkerDiagnostics.js';
+import { createParadisOfficeSemanticWorker } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { PARADIS_SPREADSHEET_METAFILE_MILLISECONDS } from './paradisSpreadsheetMetafiles.js';
 
 /** worker へ送る依頼の中身。 */
@@ -66,7 +66,7 @@ export class ParadisSpreadsheetMetafileWorkerBackend extends Disposable {
 	 * 共通の入口から起こす（パッケージ版で jszip を node_modules.asar から読めるように）。起動・読み込みの失敗は Sentry へ送る。
 	 */
 	static workerFactory(workerPath: string): () => IParadisSpreadsheetMetafileWorker {
-		return () => createParadisOfficeWorker('spreadsheet-metafile', workerPath, { resourceLimits: PARADIS_SPREADSHEET_METAFILE_WORKER_RESOURCE_LIMITS }) as unknown as IParadisSpreadsheetMetafileWorker;
+		return () => createParadisOfficeSemanticWorker('spreadsheet-metafile', workerPath, PARADIS_SPREADSHEET_METAFILE_WORKER_RESOURCE_LIMITS);
 	}
 
 	convert(bytes: Uint8Array, token: CancellationToken): Promise<IParadisSpreadsheetMetafileImages> {

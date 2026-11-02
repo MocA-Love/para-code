@@ -16,7 +16,7 @@ import { equals as objectsEqual } from '../../../../base/common/objects.js';
 import { localize } from '../../../../nls.js';
 import type { ParadisOfficeChange } from '../common/paradisOfficeProtocol.js';
 import { IParadisCellData, IParadisDataValidationEntry, IParadisRenderShape, IParadisSheetData, canonicalizeDataValidationEntries, dataValidationEntriesCoverSame } from '../common/paradisSpreadsheet.js';
-import { computeLcsRowPairs, rowFingerprint } from '../common/paradisSpreadsheetRowAlign.js';
+import { computeLcsRowPairs, paradisCharacterLcsPairs, rowFingerprint } from '../common/paradisSpreadsheetRowAlign.js';
 import { IParadisPageBreakLine, IParadisPageLabelBox, IParadisPageLayout, IParadisPageRectangle, ParadisPageBreakStatus, pageLabelText, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import { selectSpreadsheetSheetAlignment, type ParadisSpreadsheetSemanticDiffPage, type ParadisSpreadsheetSheetAlignment } from '../common/spreadsheet/paradisSpreadsheetSemanticDiff.js';
 import { paradisPresetShapeAdjustDefaults } from '../common/spreadsheet/paradisPresetShapeGeometry.js';
@@ -462,50 +462,30 @@ function computeCharDiff(a: string, b: string): CharRun[] {
 		return out;
 	}
 
-	// dp[i][j] = LCS 長 of a[i..] と b[j..]
-	const dp: Uint32Array[] = [];
-	for (let i = 0; i <= n; i++) {
-		dp.push(new Uint32Array(m + 1));
-	}
-	for (let i = n - 1; i >= 0; i--) {
-		for (let j = m - 1; j >= 0; j--) {
-			dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-		}
-	}
-
 	const runs: CharRun[] = [];
-	const push = (ch: string, type: CharRun['type']) => {
+	const push = (text: string, type: CharRun['type']) => {
+		if (!text) {
+			return;
+		}
 		const last = runs[runs.length - 1];
 		if (last && last.type === type) {
-			last.value += ch;
+			last.value += text;
 		} else {
-			runs.push({ value: ch, type });
+			runs.push({ value: text, type });
 		}
 	};
-
+	// 対応した文字の間は、元の側の文字を削除、変更後の側の文字を追加として並べる（削除を先に）。
 	let i = 0;
 	let j = 0;
-	while (i < n && j < m) {
-		if (a[i] === b[j]) {
-			push(a[i], 'unchanged');
-			i++;
-			j++;
-		} else if (dp[i + 1][j] >= dp[i][j + 1]) {
-			push(a[i], 'removed');
-			i++;
-		} else {
-			push(b[j], 'added');
-			j++;
-		}
+	for (const pair of paradisCharacterLcsPairs(a, b)) {
+		push(a.slice(i, pair.o), 'removed');
+		push(b.slice(j, pair.m), 'added');
+		push(a[pair.o], 'unchanged');
+		i = pair.o + 1;
+		j = pair.m + 1;
 	}
-	while (i < n) {
-		push(a[i], 'removed');
-		i++;
-	}
-	while (j < m) {
-		push(b[j], 'added');
-		j++;
-	}
+	push(a.slice(i), 'removed');
+	push(b.slice(j), 'added');
 	return runs;
 }
 

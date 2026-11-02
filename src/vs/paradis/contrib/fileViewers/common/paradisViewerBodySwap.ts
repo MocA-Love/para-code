@@ -52,6 +52,14 @@ export function paradisCanSwapViewerBody<TWebview, TResource>(
 	return !!shown && shown.confirmed && shown.webview === webview && sameResource(shown.resource, resource) && shown.key === key;
 }
 
+/**
+ * webview を claim し直したとき、同じ内容でも HTML 全体を送り直すか。本文を差し替えた後は、webview が覚えている
+ * HTML 全体が差し替える前の本文のままで、claim で webview が作り直されるとそれが貼り直されるため。
+ */
+export function paradisMustResendViewerHtmlOnClaim<TWebview, TResource>(shown: IParadisSwappableBody<TWebview, TResource> | undefined): boolean {
+	return !!shown?.swapped;
+}
+
 /** ページへ送る、本文を差し替えるメッセージ。 */
 export function paradisViewerBodyMessage(body: string): { readonly [BODY_MESSAGE_KEY]: string } {
 	return { [BODY_MESSAGE_KEY]: body };
@@ -60,8 +68,8 @@ export function paradisViewerBodyMessage(body: string): { readonly [BODY_MESSAGE
 /**
  * 本文を差し替えるメッセージを受けるスクリプト（文書の末尾に入れる）。`afterSwap` は差し替えた後に動かす
  * JavaScript（Mermaid の図を描き直すなど）。差し替える本文はビューアが消毒したもので、入れ物へ `innerHTML`
- * で入れた `<script>` は動かない（CSP の nonce も付かない）。
+ * で入れた `<script>` は動かない（CSP の nonce も付かない）。webview の基盤（親のフレーム）から届いたメッセージだけを受ける。
  */
 export function paradisViewerBodySwapScript(nonce: string, afterSwap = ''): string {
-	return `<script nonce="${nonce}">(function(){try{window.addEventListener('message',function(e){var d=e.data;if(!d||typeof d.${BODY_MESSAGE_KEY}!=='string'){return;}var root=document.getElementById('${PARADIS_VIEWER_BODY_ROOT_ID}');if(!root){return;}root.innerHTML=d.${BODY_MESSAGE_KEY};${afterSwap}});}catch(err){}})();</script>`;
+	return `<script nonce="${nonce}">(function(){try{window.addEventListener('message',function(e){if(e.source!==window.parent){return;}var d=e.data;if(!d||typeof d.${BODY_MESSAGE_KEY}!=='string'){return;}var root=document.getElementById('${PARADIS_VIEWER_BODY_ROOT_ID}');if(!root){return;}root.innerHTML=d.${BODY_MESSAGE_KEY};${afterSwap}});}catch(err){}})();</script>`;
 }

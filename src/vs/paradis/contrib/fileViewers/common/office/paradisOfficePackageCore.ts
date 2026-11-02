@@ -20,6 +20,7 @@ import {
 import { isParadisOfficePartBudgetError, ParadisOfficeBudget } from './paradisOfficeBudget.js';
 import { canonicalizeOfficeXml } from './paradisOfficeCanonicalXml.js';
 import {
+	joinParadisOfficeChunks,
 	canonicalizeParadisOfficeArchiveName,
 	type IParadisOfficeArchive,
 	type ParadisOfficeXmlDocument,
@@ -120,7 +121,7 @@ export async function inspectOfficePackage(
 				}
 				complete = false;
 			}
-			const bytes = joinChunks(chunks, entryBytes);
+			const bytes = joinParadisOfficeChunks(chunks, entryBytes);
 			if (complete && (entryBytes !== entry.declaredExpandedBytes || (entry.crc32 !== undefined && ((crc ^ 0xffffffff) >>> 0) !== entry.crc32))) {
 				throw new ParadisOfficePackageError('invalid');
 			}
@@ -643,16 +644,6 @@ function asText(bytes: Uint8Array): string {
 }
 function asTextIfXml(part: ReadPart): string {
 	return part.name.endsWith('.xml') || part.name.endsWith('.rels') ? asText(part.bytes) : '';
-}
-
-function joinChunks(chunks: readonly Uint8Array[], length: number): Uint8Array {
-	const result = new Uint8Array(length);
-	let offset = 0;
-	for (const chunk of chunks) {
-		result.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return result;
 }
 
 const crc32Table = (() => {
