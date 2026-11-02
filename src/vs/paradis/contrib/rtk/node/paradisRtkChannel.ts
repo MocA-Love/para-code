@@ -610,7 +610,28 @@ export function registerParadisRtk(server: IPCServer<string>, logService: ILogSe
 	return { dispose: () => service.dispose() };
 }
 
-/** `rtk discover -f json` の supported を読む。形が違う行は飛ばす。 */
+const RTK_COMMAND_WORD = /^[a-z][a-z0-9_-]*$/;
+const RTK_THREE_WORD_TOOLS = new Set(['git', 'gh', 'cargo', 'npm', 'pnpm', 'yarn', 'docker', 'kubectl', 'go']);
+
+/**
+ * コマンドの先頭の語（2 語、git・gh などは 3 語）だけを返す。語は `^[a-z][a-z0-9_-]*$` に当たるものだけ残し、
+ * 引数（URL・パス・`TOKEN=...` など）は画面に出さない。先頭の語が当たらなければ空文字。履歴の DB の側は
+ * paradisRtkHistoryDb.ts の SQL が同じ規則でまとめる。
+ */
+export function paradisRtkCommandHead(command: string): string {
+	const words = command.trim().split(/\s+/);
+	const head: string[] = [];
+	const max = RTK_THREE_WORD_TOOLS.has(words[1] ?? '') ? 3 : 2;
+	for (const word of words) {
+		if (head.length >= max || !RTK_COMMAND_WORD.test(word)) {
+			break;
+		}
+		head.push(word);
+	}
+	return head.join(' ');
+}
+
+/** `rtk discover -f json` の supported を読む。形が違う行・コマンドの名前が読めない行は飛ばす。 */
 export function parseParadisRtkDiscover(stdout: string): IParadisRtkMissedCommand[] {
 	let parsed: unknown;
 	try {
@@ -624,11 +645,12 @@ export function parseParadisRtkDiscover(stdout: string): IParadisRtkMissedComman
 	}
 	const result: IParadisRtkMissedCommand[] = [];
 	for (const row of supported) {
-		if (typeof row?.command !== 'string') {
+		const command = typeof row?.command === 'string' ? paradisRtkCommandHead(row.command) : '';
+		if (!command) {
 			continue;
 		}
 		result.push({
-			command: row.command,
+			command,
 			rtkEquivalent: typeof row.rtk_equivalent === 'string' ? row.rtk_equivalent : '',
 			count: typeof row.count === 'number' ? row.count : 0,
 			estimatedSavedTokens: typeof row.estimated_savings_tokens === 'number' ? row.estimated_savings_tokens : 0,
