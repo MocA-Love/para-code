@@ -44,7 +44,8 @@ const $ = dom.$;
 const CONFIG_KEY_ENABLED = 'paradis.resourceMonitor.enabled';
 /** 「設定 (Para Code)」の開き方（コマンドと節）。paradisSettings 側を import すると層が逆になるので文字で持つ。 */
 const OPEN_PARA_SETTINGS_COMMAND_ID = 'paradis.openSettingsDialog';
-const PARA_SETTINGS_USAGE_SECTION_ID = 'psd-sec-usage';
+/** タイトルバーとステータスバーの節（paradisSettingsDialog.ts の PARADIS_SETTINGS_TITLEBAR_SECTION_ID）。項目のチェックはここにある。 */
+const PARA_SETTINGS_TITLEBAR_SECTION_ID = 'psd-sec-titlebar';
 
 /** パネル表示中のポーリング間隔。 */
 const PANEL_OPEN_POLL_INTERVAL_MS = 2000;
@@ -177,7 +178,7 @@ export class ParadisResourceMonitorWidget extends Disposable {
 				toAction({
 					id: 'paradis.resourceMonitor.openSettings',
 					label: localize('paradis.resourceMonitor.openSettings', "設定を開く…"),
-					run: () => this.commandService.executeCommand(OPEN_PARA_SETTINGS_COMMAND_ID, PARA_SETTINGS_USAGE_SECTION_ID),
+					run: () => this.commandService.executeCommand(OPEN_PARA_SETTINGS_COMMAND_ID, PARA_SETTINGS_TITLEBAR_SECTION_ID),
 				}),
 			],
 		});

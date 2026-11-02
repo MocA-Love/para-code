@@ -29,6 +29,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 const NOT_IN_DIALOG = new Map<string, string>([
 	// 設定エディタに通知設定ダイアログへのリンクを出すためだけの項目。ダイアログでは「通知設定を開く…」の行が同じ役割
 	['paradis.notifications.openSettings', 'link-only entry for the settings editor; the dialog has its own button row'],
+	// 通知の領域のデスクトップ通知の節が、ほかの通知の項目と並べて自前のスイッチで描いている（paradisNotificationSettingsArea.ts）
+	['paradis.notifications.osIncludeMessage', 'drawn by the desktop notification section of the notification area'],
 	// 設定エディタにも出さない (included: false) 内部向けの切り替え
 	['paradis.officeViewer.engine', 'internal (included: false)'],
 	['paradis.officeViewer.kernelShadow', 'internal diagnostics (included: false)'],
@@ -234,19 +236,31 @@ function registeredExtensionForkSettings(root: string): Set<string> {
 	return settings;
 }
 
-/** ダイアログの行に書いた `key:`。 */
+/**
+ * 統合のモーダルの行に書いた `key:`。設定の領域（paradisSettingsDialog.ts）と、使用量・通知の行を移した先
+ * （使用量の「表示と取得元」、通知の領域の「設定から移した行」。Q537 の 35 A）を合わせて見る。
+ */
+const DIALOG_FILES: readonly (readonly string[])[] = [
+	['paradisSettings', 'electron-browser', 'paradisSettingsDialog.ts'],
+	['usageDashboard', 'electron-browser', 'paradisUsageArea.ts'],
+	['notifications', 'electron-browser', 'paradisNotificationSettingsArea.ts'],
+];
+
 function dialogSettings(root: string): Set<string> {
-	const dialogPath = join(root, 'src', 'vs', 'paradis', 'contrib', 'paradisSettings', 'electron-browser', 'paradisSettingsDialog.ts');
-	const source = readFileSync(dialogPath, 'utf8');
-	const index = withLocalDefinitions(indexSources(listSourceFiles(join(root, 'src', 'vs', 'paradis')).map(path => ({ path, source: readFileSync(path, 'utf8') }))), source);
+	const sources = listSourceFiles(join(root, 'src', 'vs', 'paradis')).map(path => ({ path, source: readFileSync(path, 'utf8') }));
 	const settings = new Set<string>();
-	for (const match of source.matchAll(/^\s*key:\s*(?:'(?<literal>[^'\n]+)'|(?<constant>[A-Za-z_]\w*))\s*,/gm)) {
-		if (match.groups!.literal) {
-			settings.add(match.groups!.literal);
-		} else {
-			const value = index.constants.get(match.groups!.constant!);
-			assert.ok(value !== undefined, `paradisSettingsDialog.ts: could not resolve the setting key constant ${match.groups!.constant}`);
-			settings.add(value);
+	for (const segments of DIALOG_FILES) {
+		const dialogPath = join(root, 'src', 'vs', 'paradis', 'contrib', ...segments);
+		const source = readFileSync(dialogPath, 'utf8');
+		const index = withLocalDefinitions(indexSources(sources), source);
+		for (const match of source.matchAll(/^\s*key:\s*(?:'(?<literal>[^'\n]+)'|(?<constant>[A-Za-z_]\w*))\s*,/gm)) {
+			if (match.groups!.literal) {
+				settings.add(match.groups!.literal);
+			} else {
+				const value = index.constants.get(match.groups!.constant!);
+				assert.ok(value !== undefined, `${segments[segments.length - 1]}: could not resolve the setting key constant ${match.groups!.constant}`);
+				settings.add(value);
+			}
 		}
 	}
 	return settings;
