@@ -13,10 +13,10 @@
 // パッケージ版でもこの場所へ出力されるよう、`build/next/index.ts` の入口一覧に載せてある。
 
 import { parentPort } from 'worker_threads';
-import type { IParadisSemanticDiagnosticsSummary } from '../../common/paradisSpreadsheet.js';
+import { unavailableParadisSpreadsheetSemanticDiagnostics, type IParadisSemanticDiagnosticsSummary } from '../../common/paradisSpreadsheet.js';
 import { runParadisWorkerLoop } from '../../../../node/paradisWorkerLoop.js';
 import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
-import { collectParadisSpreadsheetSemanticDiagnostics, unavailableParadisSpreadsheetSemanticDiagnostics } from './paradisSpreadsheetSemanticDiagnostics.js';
+import { collectParadisSpreadsheetSemanticDiagnostics } from './paradisSpreadsheetSemanticDiagnostics.js';
 import type { IParadisSpreadsheetSemanticWorkerRun } from './paradisSpreadsheetSemanticWorkerBackend.js';
 
 runParadisWorkerLoop<IParadisSpreadsheetSemanticWorkerRun, IParadisSemanticDiagnosticsSummary>(parentPort, {

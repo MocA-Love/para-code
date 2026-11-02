@@ -16,7 +16,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService, type IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import { isParadisSpreadsheetCompoundFile, PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_MAX_BYTES, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME, unavailableParadisSpreadsheetSemanticDiagnostics, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService, type IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import type { ParadisSpreadsheetParseWorkerResult } from './spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
 /** 詳しい解析を受け持つ口（テストで差し替えられるように）。 */
@@ -35,15 +35,6 @@ export interface IParadisSpreadsheetParseBackend {
 	warm(token: CancellationToken): Promise<ParadisSpreadsheetParseWorkerResult>;
 }
 
-/** ビューアが読む上限（PARADIS_SPREADSHEET_MAX_BYTES）と同じ。これより大きいものは worker へ送らない。 */
-const MAX_DIAGNOSTICS_BYTES = 20 * 1024 * 1024;
-
-function unavailable(reason: string): IParadisSemanticDiagnosticsSummary {
-	return {
-		available: false, terminal: false, expectedParts: 0, parsedParts: 0, expectedSheets: 0, parsedSheets: 0,
-		expectedCells: 0, parsedCells: 0, unknownElements: 0, unresolvedReferences: 0, mismatchCount: 0, unavailableReason: reason,
-	};
-}
 
 /**
  * 詳しい解析は worker（別スレッド・ヒープの上限つき）で行う。shared process 本体を止めず、壊れたブックで
@@ -73,9 +64,9 @@ async function createParadisSpreadsheetParseWorkerBackend(): Promise<(IParadisSp
 	return factory ? new ParadisSpreadsheetParseWorkerBackend(factory) : undefined;
 }
 
-/** 暗号化されたブック（CFB の入れ物）か。断る文言の翻訳は本体にしか無いので、worker へ送らず本体で解析する。 */
-function isCompoundFile(bytes: Uint8Array): boolean {
-	return bytes.length >= 4 && bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
+/** IPC で受けたバイト列（VSBuffer か Uint8Array）。それ以外は `undefined`。 */
+function bytesArgument(value: unknown): Uint8Array | undefined {
+	return value instanceof VSBuffer ? value.buffer : value instanceof Uint8Array ? value : undefined;
 }
 
 export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDisposable {
@@ -135,11 +126,10 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 	 * ブックが大きすぎて worker で解析できなかったとき（ヒープの上限・締め切り）は、本体で上限なしに解析し直さずに断る。
 	 */
 	private async parseWorkbook(input: unknown, imagePixelBudget: number | undefined, token: CancellationToken): Promise<IParadisWorkbookData | VSBuffer> {
-		const bytes = input instanceof VSBuffer ? Buffer.from(input.buffer.buffer, input.buffer.byteOffset, input.buffer.byteLength)
-			: input instanceof Uint8Array ? Buffer.from(input.buffer, input.byteOffset, input.byteLength)
-				: Buffer.from(typeof input === 'string' ? input : String(input), 'base64');
+		const view = bytesArgument(input);
+		const bytes = view ? Buffer.from(view.buffer, view.byteOffset, view.byteLength) : Buffer.from(typeof input === 'string' ? input : String(input), 'base64');
 		const backend = await this.getParseBackend();
-		if (backend && !isCompoundFile(bytes)) {
+		if (backend && !isParadisSpreadsheetCompoundFile(bytes)) {
 			const result = await backend.parse(bytes, imagePixelBudget, token);
 			switch (result.kind) {
 				case 'workbookJson':
@@ -180,32 +170,32 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 	}
 
 	private async collectSemanticDiagnostics(value: unknown, token: CancellationToken): Promise<IParadisSemanticDiagnosticsSummary> {
-		const bytes = value instanceof VSBuffer ? value.buffer : value instanceof Uint8Array ? value : undefined;
+		const bytes = bytesArgument(value);
 		if (!bytes) {
-			return unavailable('invalid');
+			return unavailableParadisSpreadsheetSemanticDiagnostics('invalid');
 		}
-		if (bytes.byteLength > MAX_DIAGNOSTICS_BYTES) {
-			return unavailable('tooLarge');
+		if (bytes.byteLength > PARADIS_SPREADSHEET_MAX_BYTES) {
+			return unavailableParadisSpreadsheetSemanticDiagnostics('tooLarge');
 		}
 		if (this.disposed) {
-			return unavailable('cancelled');
+			return unavailableParadisSpreadsheetSemanticDiagnostics('cancelled');
 		}
 		let backend: IParadisSpreadsheetDiagnosticsBackend;
 		try {
 			backend = await (this.diagnosticsPromise ??= this.diagnosticsFactory());
 		} catch {
 			this.diagnosticsPromise = undefined;
-			return unavailable('failed');
+			return unavailableParadisSpreadsheetSemanticDiagnostics('failed');
 		}
 		return backend.collect(bytes, token);
 	}
 
 	private async convertMetafiles(value: unknown, token: CancellationToken): Promise<IParadisSpreadsheetMetafileImages> {
-		const bytes = value instanceof VSBuffer ? value.buffer : value instanceof Uint8Array ? value : undefined;
+		const bytes = bytesArgument(value);
 		if (!bytes) {
 			return { images: {}, unavailableReason: 'invalid' };
 		}
-		if (bytes.byteLength > MAX_DIAGNOSTICS_BYTES) {
+		if (bytes.byteLength > PARADIS_SPREADSHEET_MAX_BYTES) {
 			return { images: {}, unavailableReason: 'tooLarge' };
 		}
 		if (this.disposed) {

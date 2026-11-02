@@ -18,6 +18,14 @@ import type { ParadisSemanticBorder, ParadisSemanticCell, ParadisSpreadsheetColo
 /** workbench(renderer) ⇔ shared process 間の Excel パース用IPCチャネル名。 */
 export const PARADIS_SPREADSHEET_CHANNEL = 'paradisSpreadsheet';
 
+/** ビューアが読むブックの大きさの上限。shared process もこれより大きいものは worker へ送らない。 */
+export const PARADIS_SPREADSHEET_MAX_BYTES = 20 * 1024 * 1024;
+
+/** パスワード付きのブックなど、CFB（OLE2、先頭が D0 CF 11 E0）の入れ物か。 */
+export function isParadisSpreadsheetCompoundFile(bytes: Uint8Array): boolean {
+	return bytes.byteLength >= 4 && bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
+}
+
 /**
  * 表示用の解析が、ブックが大きすぎて（worker のヒープの上限・締め切り）できなかったときの、IPC で渡すエラーの名前。
  * renderer はこの名前を見て利用者向けの文に置き換え、失敗の報告（Sentry）には送らない。
@@ -797,6 +805,16 @@ function parseSemanticCellAddress(address: string): { readonly row: number; read
 		column = column * 26 + character.charCodeAt(0) - 64;
 	}
 	return { row: Number.parseInt(match[2], 10), column };
+}
+
+/** 詳しい解析を回せなかったときの要約。理由は IPC を越えても読めるコード（`busy`・`unsafe` など）。 */
+export function unavailableParadisSpreadsheetSemanticDiagnostics(reason: string, elapsedMilliseconds?: number): IParadisSemanticDiagnosticsSummary {
+	return {
+		available: false, terminal: false,
+		expectedParts: 0, parsedParts: 0, expectedSheets: 0, parsedSheets: 0, expectedCells: 0, parsedCells: 0,
+		unknownElements: 0, unresolvedReferences: 0, mismatchCount: 0, unavailableReason: reason,
+		...(elapsedMilliseconds !== undefined ? { elapsedMilliseconds } : {}),
+	};
 }
 
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */

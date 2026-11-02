@@ -109,3 +109,49 @@ export function resolveParadisOfficeRelationshipTarget(source: string | undefine
 	}
 	return `/${segments.join('/')}`;
 }
+
+/** 読んだチャンクを 1 つのバイト列につなぐ（`length` はチャンクの長さの合計）。 */
+export function joinParadisOfficeChunks(chunks: readonly Uint8Array[], length: number): Uint8Array {
+	const result = new Uint8Array(length);
+	let offset = 0;
+	for (const chunk of chunks) {
+		result.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return result;
+}
+
+/** {@link readParadisOfficePart} の上限。 */
+export interface IParadisOfficePartLimits {
+	/** 1 つの部品の展開後の大きさの上限。 */
+	readonly maxBytes: number;
+	/** 展開後の大きさ ÷ 圧縮後の大きさの上限（zip bomb を断る）。 */
+	readonly compressionRatio: number;
+}
+
+/**
+ * zip の部品 1 つを読む。暗号化・symlink の項目と、圧縮率の上限を超える部品は `ParadisOfficePackageError` で断り、
+ * 大きさの上限を超える部品は `undefined` を返す（呼び出し側が飛ばす）。重複した名前は呼び出し側が見る（名前の正規化が
+ * 呼び出し側ごとに違うため）。
+ */
+export async function readParadisOfficePart(archive: IParadisOfficeArchive, entry: ParadisOfficeArchiveEntry, limits: IParadisOfficePartLimits, token?: CancellationToken): Promise<Uint8Array | undefined> {
+	if (entry.encrypted) {
+		throw new ParadisOfficePackageError('encrypted');
+	}
+	if (entry.symlink) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	const chunks: Uint8Array[] = [];
+	let length = 0;
+	for await (const chunk of archive.read(entry, token)) {
+		length += chunk.byteLength;
+		if (length > limits.maxBytes) {
+			return undefined;
+		}
+		if (entry.compressedBytes <= 0 ? length > 0 : length > entry.compressedBytes * limits.compressionRatio) {
+			throw new ParadisOfficePackageError('zipBomb');
+		}
+		chunks.push(chunk);
+	}
+	return joinParadisOfficeChunks(chunks, length);
+}
