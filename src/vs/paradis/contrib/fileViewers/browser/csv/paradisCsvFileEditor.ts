@@ -62,6 +62,7 @@ import { ParadisCsvFileInput, PARADIS_CSV_EDITOR_ID, rememberParadisCsvViewMode,
 import { ParadisCsvTableView } from './paradisCsvTableView.js';
 
 import '../media/paradisFileViewer.css';
+import { PARADIS_VIEWER_LOADING_LABEL, ParadisViewerStateKind, renderParadisViewerState } from '../paradisViewerState.js';
 import { appendParadisViewerToolbarChoice, appendParadisViewerToolbarChoiceGroup, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../paradisViewerToolbar.js';
 
 const TEXT_EDITOR_OPTIONS: IEditorConstructionOptions = {
@@ -417,7 +418,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 								}
 							},
 							{ label: localize('paradis.csv.showTable', "表で表示"), run: () => this.setViewMode('table') },
-						]);
+						], 'warning');
 						return false;
 					}
 				}
@@ -447,7 +448,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 				this._editorContainer?.classList.remove('active');
 				this._showTextMessage(localize('paradis.csv.textFailed', "テキストで開けませんでした: {0}", toErrorMessage(error)), [
 					{ label: localize('paradis.csv.showTable', "表で表示"), run: () => this.setViewMode('table') },
-				]);
+				], 'error');
 			}
 			return false;
 		}
@@ -514,7 +515,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 		this._tableStale = false;
 		this._loading = true;
 		if (!this._tableView?.document) {
-			this._showMessage(localize('paradis.csv.loading', "読み込み中…"));
+			this._showMessage(PARADIS_VIEWER_LOADING_LABEL, [], 'loading');
 		}
 		this._updateFooter();
 		try {
@@ -539,7 +540,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 			this._lastLoadLimited = !!loaded.limitedByConfirmation;
 			if (document.recordCount === 0) {
 				this._tableView?.setDocument(undefined, false);
-				this._showMessage(localize('paradis.csv.empty', "空のファイルです。"));
+				this._showMessage(localize('paradis.csv.empty', "空のファイルです。"), [], 'empty');
 			} else {
 				this._hideMessage();
 				this._tableView?.setDocument(document, preserveView);
@@ -559,14 +560,14 @@ export class ParadisCsvFileEditor extends EditorPane {
 			this._updateFooter();
 			if (toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND) {
 				this._missingResource = resource;
-				this._showMessage(localize('paradis.csv.notFound', "ファイルが見つかりません。"));
+				this._showMessage(localize('paradis.csv.notFound', "ファイルが見つかりません。"), [], 'warning');
 			} else if (error instanceof TextFileOperationError && error.textFileOperationResult === TextFileOperationResult.FILE_IS_BINARY) {
 				// バイナリを文字として読み込ませないよう、テキストで開く案内は出さない。
-				this._showMessage(localize('paradis.csv.binary', "バイナリファイルのため表として表示できません。"));
+				this._showMessage(localize('paradis.csv.binary', "バイナリファイルのため表として表示できません。"), [], 'warning');
 			} else {
 				this._showMessage(localize('paradis.csv.loadFailed', "表として表示できませんでした: {0}", toErrorMessage(error)), [
 					{ label: localize('paradis.csv.openAsText', "テキストで開く"), run: () => this.setViewMode('text') },
-				]);
+				], 'error');
 			}
 		} finally {
 			if (this._loadRequest.value === request) {
@@ -600,8 +601,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 		};
 	}
 
-	private _showMessage(message: string, actions: readonly MessageAction[] = []): void {
-		this._renderMessage(this._messageElement, this._messageListeners, message, actions);
+	private _showMessage(message: string, actions: readonly MessageAction[] = [], kind: ParadisViewerStateKind = 'info'): void {
+		this._renderMessage(this._messageElement, this._messageListeners, message, actions, kind);
 	}
 
 	private _hideMessage(): void {
@@ -609,8 +610,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 		this._messageElement?.classList.remove('visible');
 	}
 
-	private _showTextMessage(message: string, actions: readonly MessageAction[]): void {
-		this._renderMessage(this._textMessageElement, this._textMessageListeners, message, actions);
+	private _showTextMessage(message: string, actions: readonly MessageAction[], kind: ParadisViewerStateKind): void {
+		this._renderMessage(this._textMessageElement, this._textMessageListeners, message, actions, kind);
 	}
 
 	private _hideTextMessage(): void {
@@ -618,22 +619,14 @@ export class ParadisCsvFileEditor extends EditorPane {
 		this._textMessageElement?.classList.remove('visible');
 	}
 
-	private _renderMessage(element: HTMLElement | undefined, listeners: MutableDisposable<DisposableStore>, message: string, actions: readonly MessageAction[]): void {
+	private _renderMessage(element: HTMLElement | undefined, listeners: MutableDisposable<DisposableStore>, message: string, actions: readonly MessageAction[], kind: ParadisViewerStateKind): void {
 		if (!element) {
 			return;
 		}
 		const store = new DisposableStore();
 		listeners.value = store;
 		dom.clearNode(element);
-		dom.append(element, dom.$('span')).textContent = message;
-		if (actions.length > 0) {
-			const row = dom.append(element, dom.$('.paradis-csv-message-actions'));
-			for (const action of actions) {
-				const button = dom.append(row, dom.$('button.paradis-csv-link-button')) as HTMLButtonElement;
-				button.textContent = action.label;
-				store.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => action.run()));
-			}
-		}
+		store.add(renderParadisViewerState(element, kind, message, actions));
 		element.classList.add('visible');
 	}
 
