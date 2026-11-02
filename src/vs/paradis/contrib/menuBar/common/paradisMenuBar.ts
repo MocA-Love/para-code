@@ -14,6 +14,7 @@
 // main は受け取った使用量を出どころごとに覚え、ウィンドウを閉じた後も古さを添えて出す。
 
 import { IParadisInboxSnapshot, paradisInboxAttentionEntries, paradisInboxEntryLocation, ParadisInboxKind } from '../../notificationInbox/common/paradisNotificationInbox.js';
+import { asFiniteNumber } from '../../../common/paradisGuards.js';
 
 export const PARADIS_MENU_BAR_CHANNEL = 'paradisMenuBar';
 /** 「設定 (Para Code)」ダイアログの「メニューバー」の節。 */
@@ -250,21 +251,17 @@ function record(value: unknown): Record<string, unknown> {
 	return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
 
-function finite(value: unknown): number | undefined {
-	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
 function text(value: unknown): string | undefined {
 	return typeof value === 'string' && value.length > 0 ? value.slice(0, MAX_TEXT) : undefined;
 }
 
 function sanitizeWindow(value: unknown): IParadisMenuBarWindowUsage | undefined {
 	const input = record(value);
-	const percent = finite(input.percent);
+	const percent = asFiniteNumber(input.percent);
 	if (percent === undefined) {
 		return undefined;
 	}
-	const resetsAt = finite(input.resetsAt);
+	const resetsAt = asFiniteNumber(input.resetsAt);
 	const clamped = Math.max(0, Math.min(100, percent));
 	return resetsAt !== undefined ? { percent: clamped, resetsAt } : { percent: clamped };
 }
@@ -280,7 +277,7 @@ function sanitizeAccount(value: unknown): IParadisMenuBarAccount | undefined {
 	const domain = text(input.domain);
 	const fiveHour = sanitizeWindow(input.fiveHour);
 	const sevenDay = sanitizeWindow(input.sevenDay);
-	const fetchedAt = finite(input.fetchedAt);
+	const fetchedAt = asFiniteNumber(input.fetchedAt);
 	return {
 		provider, key, name,
 		...(domain ? { domain } : {}),
@@ -294,7 +291,7 @@ function sanitizeAccount(value: unknown): IParadisMenuBarAccount | undefined {
 function sanitizeUsage(value: unknown): IParadisMenuBarUsageSource | undefined {
 	const input = record(value);
 	const key = text(input.key);
-	const fetchedAt = finite(input.fetchedAt);
+	const fetchedAt = asFiniteNumber(input.fetchedAt);
 	if (!key || fetchedAt === undefined || !Array.isArray(input.accounts)) {
 		return undefined;
 	}
@@ -306,8 +303,8 @@ function sanitizeUsage(value: unknown): IParadisMenuBarUsageSource | undefined {
 function sanitizeCost(value: unknown): IParadisMenuBarCost | undefined {
 	const input = record(value);
 	const sourceKey = text(input.sourceKey);
-	const usd = finite(input.usd);
-	const fetchedAt = finite(input.fetchedAt);
+	const usd = asFiniteNumber(input.usd);
+	const fetchedAt = asFiniteNumber(input.fetchedAt);
 	if (!sourceKey || usd === undefined || usd < 0 || fetchedAt === undefined) {
 		return undefined;
 	}
@@ -328,15 +325,15 @@ function sanitizeInbox(value: unknown): IParadisMenuBarInbox {
 		}
 	}
 	const count = (raw: unknown) => {
-		const number = finite(raw);
+		const number = asFiniteNumber(raw);
 		return number !== undefined && number > 0 ? Math.floor(number) : 0;
 	};
-	return { attentionCount: count(input.attentionCount), blockingCount: count(input.blockingCount), items, revision: finite(input.revision) ?? 0 };
+	return { attentionCount: count(input.attentionCount), blockingCount: count(input.blockingCount), items, revision: asFiniteNumber(input.revision) ?? 0 };
 }
 
 export function paradisSanitizeMenuBarReport(value: unknown): IParadisMenuBarReport {
 	const input = record(value);
-	const working = finite(input.working);
+	const working = asFiniteNumber(input.working);
 	const usage = sanitizeUsage(input.usage);
 	const cost = sanitizeCost(input.cost);
 	return {

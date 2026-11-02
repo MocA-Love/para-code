@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { PARADIS_CODEX_ASYNC_NOTIFY_PREFIX } from './paradisCodexAsyncQuestions.js';
+import { asFiniteNumber } from '../../../common/paradisGuards.js';
 
 // 片付いた通知を、次に届くプッシュでロック画面から消してもらう（W2-27、Q119 A）。
 //
@@ -309,10 +310,6 @@ function sameConversation(entry: IParadisNotifyPromptOrigin | undefined, scope: 
 	return sameSession && (wholeSession || entry?.agentId === scope?.agentId);
 }
 
-function finiteNumber(value: unknown): number | undefined {
-	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
 /** 台帳のファイルを読む。形が違えば undefined（作り直す）。 */
 function parseLedgerFile(raw: string | undefined): { readonly ledger: string; readonly seq: number; readonly entries: IEmitted[] } | undefined {
 	if (raw === undefined) {
@@ -341,11 +338,11 @@ function parseLedgerFile(raw: string | undefined): { readonly ledger: string; re
 		}
 		const entry = item as Record<string, unknown>;
 		const id = optionalText(entry.id);
-		const at = finiteNumber(entry.at);
+		const at = asFiniteNumber(entry.at);
 		if (id === undefined || at === undefined || seen.has(id)) {
 			continue;
 		}
-		const handledAt = finiteNumber(entry.h);
+		const handledAt = asFiniteNumber(entry.h);
 		const entrySeq = typeof entry.s === 'number' && Number.isInteger(entry.s) && entry.s > 0 && entry.s <= seq ? entry.s : undefined;
 		seen.add(id);
 		entries.push({
@@ -362,7 +359,6 @@ function parseLedgerFile(raw: string | undefined): { readonly ledger: string; re
 	}
 	return { ledger: record.ledger, seq, entries };
 }
-
 
 /** スマホの `dismiss` が、その通知を ID で指定して開いた・消したものか（`opened: true`。旧アプリは付けない）。 */
 export function paradisNotifyDismissOpened(bytes: Uint8Array): boolean {

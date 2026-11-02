@@ -10,6 +10,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisSpreadsheetChannel } from '../../node/paradisSpreadsheetChannel.js';
+import { encodeParadisWorkbookJson } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import type { IParadisSpreadsheetService, IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
 import type { ParadisSpreadsheetParseWorkerResult } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
@@ -150,8 +151,9 @@ suite('ParadisSpreadsheetChannel', () => {
 
 	test('parses in the worker when there is one, and in the shared process when the worker cannot', async () => {
 		const packed = { sheets: [], cellStyles: [] };
+		const json = encodeParadisWorkbookJson(packed);
 		const replies: ParadisSpreadsheetParseWorkerResult[] = [
-			{ kind: 'workbook', workbook: packed },
+			{ kind: 'workbookJson', json },
 			{ kind: 'error', message: 'Cannot merge already merged cells' },
 			{ kind: 'unavailable', reason: 'failed' },
 			{ kind: 'unavailable', reason: 'busy' },
@@ -172,16 +174,20 @@ suite('ParadisSpreadsheetChannel', () => {
 		const outcomes: unknown[] = [];
 		for (const input of ['PK-1', 'PK-2', 'PK-3', 'PK-4', 'PK-5', '\xD0\xCF\x11\xE0-encrypted']) {
 			try {
-				outcomes.push(await channel.call('window:1', 'parseWorkbook', [base64(input), 9], CancellationToken.None));
+				// 今の renderer はバイト列（VSBuffer）で送る。古い呼び出し側の base64 も受ける。
+				const sentInput = input === 'PK-2' ? base64(input) : input.startsWith('PK') ? VSBuffer.fromString(input) : Buffer.from(input, 'latin1');
+				const outcome = await channel.call('window:1', 'parseWorkbook', [sentInput, 9], CancellationToken.None);
+				outcomes.push(outcome instanceof VSBuffer ? { relayed: outcome.buffer.buffer === json.buffer } : outcome);
 			} catch (error) {
-				outcomes.push((error as Error).message);
+				outcomes.push({ name: (error as Error).name, message: (error as Error).message });
 			}
 		}
 		channel.dispose();
 		deepStrictEqual({ outcomes, sent, parsedInProcess }, {
-			outcomes: [packed, 'Cannot merge already merged cells', workbook, workbook, workbook, workbook],
+			// 大きすぎるブック（limitExceeded）は本体で解析し直さずに断る。起動できない（failed）・混んでいる（busy）ときは本体で解析する。
+			outcomes: [{ relayed: true }, { name: 'Error', message: 'Cannot merge already merged cells' }, workbook, workbook, { name: 'ParadisSpreadsheetTooLarge', message: 'The workbook is too large to parse.' }, workbook],
 			sent: [['PK-1', 9], ['PK-2', 9], ['PK-3', 9], ['PK-4', 9], ['PK-5', 9]],
-			parsedInProcess: [base64('PK-3'), base64('PK-4'), base64('PK-5'), base64('\xD0\xCF\x11\xE0-encrypted')],
+			parsedInProcess: [base64('PK-3'), base64('PK-4'), base64('\xD0\xCF\x11\xE0-encrypted')],
 		});
 	});
 
