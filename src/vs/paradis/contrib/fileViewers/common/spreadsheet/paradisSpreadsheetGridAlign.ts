@@ -5,7 +5,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
+import type { ISequence } from '../../../../../base/common/diff/diff.js';
 import { StopWatch } from '../../../../../base/common/stopwatch.js';
+import { paradisLcsPairs } from '../paradisSpreadsheetRowAlign.js';
 import { ParadisOfficePackageError, throwIfParadisOfficeCancelled } from '../office/paradisOfficeArchive.js';
 import type { ParadisSemanticCell, ParadisSemanticSheet } from './paradisSpreadsheetSemantic.js';
 
@@ -369,29 +371,30 @@ function alignGap(
 	if (originalLength === 0 || modifiedLength === 0 || originalLength * modifiedLength > runtime.limits.lcsCells) { return; }
 	const originalCounts = counts(original.slice(originalStart, originalEnd));
 	const modifiedCounts = counts(modified.slice(modifiedStart, modifiedEnd));
-	const width = modifiedLength + 1;
-	const dp = new Uint32Array((originalLength + 1) * width);
-	for (let i = originalLength - 1; i >= 0; i--) {
-		checkpoint(runtime);
-		for (let j = modifiedLength - 1; j >= 0; j--) {
-			const fingerprint = original[originalStart + i].fingerprint;
-			const equalUnique = fingerprint === modified[modifiedStart + j].fingerprint
-				&& originalCounts.get(fingerprint) === 1 && modifiedCounts.get(fingerprint) === 1;
-			dp[i * width + j] = equalUnique ? dp[(i + 1) * width + j + 1] + 1 : Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1]);
+	// 両側で 1 回ずつしか出ない指紋だけを一致とみなす。そうでない項目は、ほかのどれとも一致しない印に置き換える
+	// （印は指紋に出ない NUL で始め、側と位置を入れて互いに違う値にする）。
+	const keys = (items: readonly AxisItem[], start: number, end: number, side: string) => {
+		const result: string[] = [];
+		for (let index = start; index < end; index++) {
+			const fingerprint = items[index].fingerprint;
+			result.push(originalCounts.get(fingerprint) === 1 && modifiedCounts.get(fingerprint) === 1 ? `=${fingerprint}` : `\0${side}${index}`);
 		}
+		return result;
+	};
+	const lcs = paradisLcsPairs(
+		new ParadisKeySequence(keys(original, originalStart, originalEnd, 'o')),
+		new ParadisKeySequence(keys(modified, modifiedStart, modifiedEnd, 'm')),
+		originalLength, modifiedLength, () => checkpoint(runtime));
+	for (const pair of lcs) {
+		pairs.push({ original: originalStart + pair.o, modified: modifiedStart + pair.m, certainty: 'exact' });
 	}
-	let i = 0;
-	let j = 0;
-	while (i < originalLength && j < modifiedLength) {
-		const fingerprint = original[originalStart + i].fingerprint;
-		if (fingerprint === modified[modifiedStart + j].fingerprint && originalCounts.get(fingerprint) === 1 && modifiedCounts.get(fingerprint) === 1) {
-			pairs.push({ original: originalStart + i, modified: modifiedStart + j, certainty: 'exact' });
-			i++; j++;
-		} else if (dp[(i + 1) * width + j] >= dp[i * width + j + 1]) {
-			i++;
-		} else {
-			j++;
-		}
+}
+
+/** 文字列の並び（LcsDiff は文字列のハッシュが一致した後に文字列そのものも比べる）。 */
+class ParadisKeySequence implements ISequence {
+	constructor(private readonly keys: string[]) { }
+	getElements(): string[] {
+		return this.keys;
 	}
 }
 

@@ -10,9 +10,10 @@
 // 挿入/削除された行を独立した差分行として切り出すための純関数群。
 // 依存を持たない(common 層)。diff 本体(electron-browser)から使い、単体テストは node で走る。
 
+import { LcsDiff, StringDiffSequence, type IContinueProcessingPredicate, type ISequence } from '../../../../base/common/diff/diff.js';
 import { IParadisRowData } from './paradisSpreadsheet.js';
 
-/** LCS DP テーブルのセル数((行数+1)×(行数+1))上限。超過時は呼び出し側がインデックス対比へフォールバックする(1999×1999行までは許容、2000×2000行は超過)。 */
+/** LCS を求める行数の組((行数+1)×(行数+1))の上限。超過時は呼び出し側がインデックス対比へフォールバックする(1999×1999行までは許容、2000×2000行は超過)。 */
 const MAX_LCS_CELLS = 4_000_000;
 
 /** フィンガープリントの打ち切り前の最大長。極端に長い行でメモリ・比較コストが爆発しないよう打ち切る。 */
@@ -56,41 +57,56 @@ export interface ILcsPair {
 	readonly m: number;
 }
 
+/** 文字列の並び（同じ文字列どうしを等しいとみなす。LcsDiff はハッシュが一致した後に文字列そのものも比べる）。 */
+class ParadisStringListSequence implements ISequence {
+	constructor(private readonly items: readonly string[]) { }
+	getElements(): string[] {
+		return this.items as string[];
+	}
+}
+
+/**
+ * 2 つの並びの最長共通部分列（LCS）で対応する位置の組を、前から順に返す。`vs/base` の LcsDiff で求めるので、
+ * (n+1)×(m+1) の表を持たない。LCS が何通りもあるときにどれを選ぶかは LcsDiff に従う（長さは同じ）。
+ * `continueProcessing` が投げると、その例外がそのまま出る（取り消し・締め切りに使う）。
+ */
+export function paradisLcsPairs(original: ISequence, modified: ISequence, originalLength: number, modifiedLength: number, continueProcessing?: () => void): readonly ILcsPair[] {
+	const predicate: IContinueProcessingPredicate | null = continueProcessing ? () => { continueProcessing(); return true; } : null;
+	const changes = new LcsDiff(original, modified, predicate).ComputeDiff(false).changes;
+	const pairs: ILcsPair[] = [];
+	let o = 0;
+	let m = 0;
+	const matchUntil = (originalEnd: number) => {
+		while (o < originalEnd) {
+			pairs.push({ o: o++, m: m++ });
+		}
+	};
+	for (const change of changes) {
+		matchUntil(change.originalStart);
+		o = change.originalStart + change.originalLength;
+		m = change.modifiedStart + change.modifiedLength;
+	}
+	matchUntil(originalLength);
+	if (m !== modifiedLength) {
+		// 末尾の一致は両側で同じ長さになる。ずれたら LcsDiff の結果を読み違えている。
+		throw new Error('Unexpected LCS result');
+	}
+	return pairs;
+}
+
+/** 2 つの文字列の、文字単位の LCS の対応。 */
+export function paradisCharacterLcsPairs(original: string, modified: string): readonly ILcsPair[] {
+	return paradisLcsPairs(new StringDiffSequence(original), new StringDiffSequence(modified), original.length, modified.length);
+}
+
 /**
  * フィンガープリント配列同士の LCS マッチング。ペア配列を返す。
- * 行列積が上限を超える場合は undefined を返す(計算量・メモリ保護。呼び出し側は
+ * 行列積が上限を超える場合は undefined を返す(計算量の保護。呼び出し側は
  * 従来のインデックスペアリングへフォールバックする)。
  */
 export function computeLcsRowPairs(a: readonly string[], b: readonly string[]): readonly ILcsPair[] | undefined {
-	const n = a.length;
-	const m = b.length;
-	if ((n + 1) * (m + 1) > MAX_LCS_CELLS) {
+	if ((a.length + 1) * (b.length + 1) > MAX_LCS_CELLS) {
 		return undefined;
 	}
-	const width = m + 1;
-	const dp = new Uint32Array((n + 1) * width);
-	for (let i = n - 1; i >= 0; i--) {
-		const current = i * width;
-		const next = current + width;
-		for (let j = m - 1; j >= 0; j--) {
-			dp[current + j] = a[i] === b[j]
-				? dp[next + j + 1] + 1
-				: Math.max(dp[next + j], dp[current + j + 1]);
-		}
-	}
-	const pairs: ILcsPair[] = [];
-	let i = 0;
-	let j = 0;
-	while (i < n && j < m) {
-		if (a[i] === b[j]) {
-			pairs.push({ o: i, m: j });
-			i++;
-			j++;
-		} else if (dp[(i + 1) * width + j] >= dp[i * width + j + 1]) {
-			i++;
-		} else {
-			j++;
-		}
-	}
-	return pairs;
+	return paradisLcsPairs(new ParadisStringListSequence(a), new ParadisStringListSequence(b), a.length, b.length);
 }

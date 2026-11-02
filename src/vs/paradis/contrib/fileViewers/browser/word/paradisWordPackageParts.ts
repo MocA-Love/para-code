@@ -10,7 +10,8 @@
 // shared process との往復が要らない。バイナリ(media/embeddings)は読まない。
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { ParadisOfficePackageError } from '../../common/office/paradisOfficeArchive.js';
+import { ParadisOfficePackageError, readParadisOfficePart, type IParadisOfficePartLimits } from '../../common/office/paradisOfficeArchive.js';
+import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { createParadisOfficeWebArchive } from '../office/paradisOfficeWebArchive.js';
 
 /** 1 パートあたりの上限。これを超えるパートは読まずに捨てる。 */
@@ -19,6 +20,8 @@ const MAX_PART_BYTES = 8 * 1024 * 1024;
 const MAX_PARTS = 512;
 /** 全パート合計の上限。 */
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+/** 1 パートの読み取りの上限。圧縮率は renderer の詳しい解析（browser の予算）と同じ。 */
+const PART_LIMITS: IParadisOfficePartLimits = { maxBytes: MAX_PART_BYTES, compressionRatio: PARADIS_OFFICE_BUDGET_PROFILES.browser.compressionRatio };
 
 /** 抽出に要るのは document/header/footer と chart/diagram、そしてそれらの rels だけ。 */
 function isWantedPart(name: string): boolean {
@@ -45,6 +48,7 @@ export async function readWordRenderablePackageParts(bytes: Uint8Array, token?: 
 	const parts = new Map<string, string>();
 	const decoder = new TextDecoder('utf-8', { fatal: false });
 	let totalBytes = 0;
+	const seen = new Set<string>();
 	try {
 		for await (const entry of archive.entries(token)) {
 			if (parts.size >= MAX_PARTS || totalBytes >= MAX_TOTAL_BYTES) {
@@ -54,26 +58,16 @@ export async function readWordRenderablePackageParts(bytes: Uint8Array, token?: 
 			if (!isWantedPart(name)) {
 				continue;
 			}
-			const chunks: Uint8Array[] = [];
-			let size = 0;
-			let oversized = false;
-			for await (const chunk of archive.read(entry, token)) {
-				size += chunk.byteLength;
-				if (size > MAX_PART_BYTES) {
-					oversized = true;
-					break;
-				}
-				chunks.push(chunk);
+			// 重複した名前・暗号化・symlink・圧縮率の上限は、詳しい解析と同じく包み全体を断る（下の catch で「描ける対象なし」）。
+			if (seen.has(name)) {
+				throw new ParadisOfficePackageError('invalid');
 			}
-			if (oversized) {
+			seen.add(name);
+			const joined = await readParadisOfficePart(archive, entry, PART_LIMITS, token);
+			if (!joined) {
 				continue;
 			}
-			const joined = new Uint8Array(size);
-			let offset = 0;
-			for (const chunk of chunks) {
-				joined.set(chunk, offset);
-				offset += chunk.byteLength;
-			}
+			const size = joined.byteLength;
 			totalBytes += size;
 			parts.set(canonicalWordPartUri(name), decoder.decode(joined));
 		}

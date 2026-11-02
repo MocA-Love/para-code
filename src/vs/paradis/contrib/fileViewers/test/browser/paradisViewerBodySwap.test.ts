@@ -12,7 +12,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IFileService } from '../../../../../platform/files/common/files.js';
 import { loadParadisMermaidScriptSource } from '../../browser/paradisMarkdownMermaid.js';
-import { PARADIS_VIEWER_BODY_ROOT_ID, paradisCanSwapViewerBody, paradisViewerBodyMessage, paradisViewerBodySwapScript, type IParadisSwappableBody } from '../../common/paradisViewerBodySwap.js';
+import { PARADIS_VIEWER_BODY_ROOT_ID, paradisCanSwapViewerBody, paradisMustResendViewerHtmlOnClaim, paradisViewerBodyMessage, paradisViewerBodySwapScript, type IParadisSwappableBody } from '../../common/paradisViewerBodySwap.js';
 
 suite('ParadisViewerBodySwap', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -29,6 +29,8 @@ suite('ParadisViewerBodySwap', () => {
 			paradisCanSwapViewerBody(shown(), webview, 'b.md', 'k', same),
 			paradisCanSwapViewerBody(shown(), webview, 'a.md', 'other', same),
 		], [true, false, false, false, false, false]);
+		// 本文を差し替えた後に claim し直したら、webview が貼り直す古い HTML ではなく、HTML 全体を送り直す。
+		deepStrictEqual([undefined, shown(), shown({ swapped: true })].map(paradisMustResendViewerHtmlOnClaim), [false, false, true]);
 	});
 
 	test('the page script replaces the body container and runs the after-swap code', () => {
@@ -42,8 +44,13 @@ suite('ParadisViewerBodySwap', () => {
 		script.textContent = paradisViewerBodySwapScript('n', 'window.__paradisSwapped=(window.__paradisSwapped||0)+1;').replace(/^<script[^>]*>|<\/script>$/g, '');
 		doc.body.appendChild(script);
 		try {
-			mainWindow.dispatchEvent(new MessageEvent('message', { data: paradisViewerBodyMessage('<h1>new</h1>') }));
-			mainWindow.dispatchEvent(new MessageEvent('message', { data: { other: 1 } }));
+			// 親のフレーム（webview の基盤）以外から届いたものは受けない。
+			const channel = new MessageChannel();
+			mainWindow.dispatchEvent(new MessageEvent('message', { data: paradisViewerBodyMessage('<p>forged</p>'), source: channel.port1 }));
+			channel.port1.close();
+			channel.port2.close();
+			mainWindow.dispatchEvent(new MessageEvent('message', { data: paradisViewerBodyMessage('<h1>new</h1>'), source: mainWindow.parent }));
+			mainWindow.dispatchEvent(new MessageEvent('message', { data: { other: 1 }, source: mainWindow.parent }));
 			deepStrictEqual({ html: root.innerHTML, ran: (mainWindow as unknown as { __paradisSwapped?: number }).__paradisSwapped }, { html: '<h1>new</h1>', ran: 1 });
 		} finally {
 			root.remove();
