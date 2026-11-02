@@ -101,7 +101,7 @@
 	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	border-radius: var(--vscode-cornerRadius-medium, 6px);
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
-	font-size: 13px;
+	font-size: var(--vscode-fontSize-body1);
 	outline: none;
 }
 
@@ -112,28 +112,30 @@
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-message {
-	padding: 6px 12px;
-	font-size: 12px;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size100);
+	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.5;
 	color: var(--vscode-errorForeground);
-	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-message[hidden] {
 	display: none;
 }
 
+/* The shared popover shape: header 30px with icon buttons, two-line rows 36px. */
 .monaco-workbench .paradis-browser-downloads-popover .pbd-header {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	padding: 8px 8px 6px 12px;
-	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	gap: var(--vscode-spacing-size40);
+	height: 30px;
+	padding: 0 var(--vscode-spacing-size40) 0 var(--vscode-spacing-size100);
+	flex: none;
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-title {
 	flex: 1;
-	font-weight: 600;
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover button {
@@ -144,8 +146,10 @@
 	cursor: pointer;
 }
 
-/* The reset above (font: inherit) outranks the generic .codicon rule, so the icon buttons would
-	render their glyph in the UI font (a tofu box). Put the codicon font back, more specifically. */
+/*
+	The icon buttons carry the codicon classes on the <button> itself; the font shorthand above would
+	override the codicon font, so restore it here.
+*/
 .monaco-workbench .paradis-browser-downloads-popover button.pbd-icon-button.codicon,
 .monaco-workbench .paradis-browser-downloads-popover button.pbd-icon-button.codicon::before {
 	font: normal normal normal 16px/1 codicon;
@@ -156,18 +160,6 @@
 	outline-offset: -1px;
 }
 
-.monaco-workbench .paradis-browser-downloads-popover .pbd-link {
-	padding: 2px 4px;
-	color: var(--vscode-textLink-foreground);
-	border-radius: var(--vscode-cornerRadius-small, 4px);
-	font-size: 12px;
-}
-
-.monaco-workbench .paradis-browser-downloads-popover .pbd-link:hover {
-	color: var(--vscode-textLink-activeForeground);
-	text-decoration: underline;
-}
-
 .monaco-workbench .paradis-browser-downloads-popover .pbd-icon-button {
 	display: flex;
 	align-items: center;
@@ -176,7 +168,7 @@
 	height: 22px;
 	padding: 0;
 	flex: none;
-	border-radius: var(--vscode-cornerRadius-small, 4px);
+	border-radius: var(--vscode-cornerRadius-small);
 	color: var(--vscode-icon-foreground, inherit);
 }
 
@@ -193,34 +185,34 @@
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
-	padding: 4px 0;
+	padding: 0 var(--vscode-spacing-size40) var(--vscode-spacing-size40);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-empty {
-	padding: 12px;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size60);
 	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.5;
 }
 
-/* Day heading inside the list ("今日", "昨日", "10月14日"). Not a row: no hover, no focus. */
+/* Day headings. */
 .monaco-workbench .paradis-browser-downloads-popover .pbd-group {
-	padding: 8px 12px 2px;
-	font-size: 11px;
-	font-weight: 600;
-	letter-spacing: 0.02em;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size60) var(--vscode-spacing-size20);
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-group:first-child {
-	padding-top: 4px;
+	padding-top: 0;
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-row {
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	padding: 6px 8px 6px 12px;
+	gap: var(--vscode-spacing-size80);
+	min-height: 36px;
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size60);
+	border-radius: var(--vscode-cornerRadius-small);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-row:hover {
@@ -229,7 +221,7 @@
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-icon {
 	flex: none;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-icon-foreground);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-row.is-interrupted .pbd-icon {
@@ -241,7 +233,7 @@
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
-	gap: 3px;
+	gap: var(--vscode-spacing-size20);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-name {
@@ -256,7 +248,7 @@
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-status {
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 	white-space: nowrap;
 	overflow: hidden;
@@ -267,11 +259,11 @@
 	color: var(--vscode-errorForeground);
 }
 
+/* Progress: a 2px line (like the upstream progress bar). */
 .monaco-workbench .paradis-browser-downloads-popover .pbd-bar {
 	position: relative;
-	height: 3px;
+	height: 2px;
 	overflow: hidden;
-	border-radius: 2px;
 	background-color: var(--vscode-widget-border, var(--vscode-editorWidget-border));
 }
 
@@ -303,21 +295,30 @@
 	}
 }
 
+/* The row's actions show on the row under the pointer or with focus; a running download keeps its cancel button. */
 .monaco-workbench .paradis-browser-downloads-popover .pbd-actions {
 	display: flex;
 	align-items: center;
-	gap: 2px;
+	gap: var(--vscode-spacing-size20);
 	flex: none;
+	opacity: 0;
 }
 
+.monaco-workbench .paradis-browser-downloads-popover .pbd-row:hover .pbd-actions,
+.monaco-workbench .paradis-browser-downloads-popover .pbd-row:focus-within .pbd-actions,
+.monaco-workbench .paradis-browser-downloads-popover .pbd-row.is-progressing .pbd-actions {
+	opacity: 1;
+}
+
+/* "Open": the small upstream button step (22px, 11px). */
 .monaco-workbench .paradis-browser-downloads-popover .pbd-open {
-	padding: 2px 8px;
-	margin: 0 2px;
-	font-size: 12px;
-	border-radius: var(--vscode-cornerRadius-small, 4px);
+	height: 22px;
+	padding: 3px var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 14px;
+	border-radius: var(--vscode-cornerRadius-small);
 	color: var(--vscode-button-secondaryForeground);
 	background-color: var(--vscode-button-secondaryBackground);
-	/* High contrast themes have no secondary button background; the border keeps it a button. */
 	border: 1px solid var(--vscode-button-border, transparent);
 }
 
