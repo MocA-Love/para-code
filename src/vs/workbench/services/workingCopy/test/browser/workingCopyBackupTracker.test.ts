@@ -30,7 +30,7 @@ import { bufferToReadable, VSBuffer } from '../../../../../base/common/buffer.js
 import { isWindows } from '../../../../../base/common/platform.js';
 import { Schemas } from '../../../../../base/common/network.js';
 // PARA-PATCH: import the backup restore router to exercise deferred backup restoration
-import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision, WorkingCopyBackupRestoreRouter } from '../../common/workingCopyBackupRestoreRouter.js';
+import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision, WorkingCopyBackupRestoreRouter } from '../../../../../paradis/contrib/workspaceSwitch/common/paradisWorkingCopyBackupRestoreRouter.js';
 
 suite('WorkingCopyBackupTracker (browser)', function () {
 	let accessor: TestServiceAccessor;

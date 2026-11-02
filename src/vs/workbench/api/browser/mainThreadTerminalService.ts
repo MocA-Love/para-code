@@ -28,7 +28,7 @@ import { ITerminalCompletionService } from '../../contrib/terminalContrib/sugges
 import { IWorkbenchEnvironmentService } from '../../services/environment/common/environmentService.js';
 import { hasKey } from '../../../base/common/types.js';
 // PARA-PATCH: preserve workspace ownership — import the terminal creation scope lease helper
-import { paradisCaptureTerminalCreationScopeLease } from '../../contrib/terminal/browser/paradisTerminalCreationScope.js';
+import { paradisCaptureTerminalCreationScopeLease } from '../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalCreationScope.js';
 
 interface TerminalProcessProxyEntry extends IDisposable {
 	readonly proxy: ITerminalProcessExtHostProxy;

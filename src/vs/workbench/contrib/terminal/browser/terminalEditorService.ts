@@ -23,7 +23,7 @@ import { IEditorGroupsService } from '../../../services/editor/common/editorGrou
 import { IEditorService, ACTIVE_GROUP, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
 import { ILifecycleService } from '../../../services/lifecycle/common/lifecycle.js';
 // PARA-PATCH: exact destination editor group guard for the terminal-on-split flow
-import { assertParadisExactEditorGroup } from './paradisExactEditorGroup.js';
+import { assertParadisExactEditorGroup } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisExactEditorGroup.js';
 
 export class TerminalEditorService extends Disposable implements ITerminalEditorService {
 	declare _serviceBrand: undefined;

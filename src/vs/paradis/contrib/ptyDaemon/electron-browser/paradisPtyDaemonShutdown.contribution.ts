@@ -27,7 +27,7 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IParadisShutdownTerminal, paradisRegisterTerminalShutdownPolicy } from '../../../../workbench/contrib/terminal/browser/paradisTerminalShutdownPolicy.js';
+import { IParadisShutdownTerminal, paradisRegisterTerminalShutdownPolicy } from '../browser/paradisTerminalShutdownPolicy.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { paradisTimeTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';

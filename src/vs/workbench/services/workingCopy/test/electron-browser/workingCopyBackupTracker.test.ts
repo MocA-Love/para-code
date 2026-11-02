@@ -46,7 +46,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { TestServiceAccessor, workbenchInstantiationService } from '../../../../test/electron-browser/workbenchTestServices.js';
 import { UriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentityService.js';
 // PARA-PATCH: import the backup restore router the base tracker now depends on
-import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../common/workingCopyBackupRestoreRouter.js';
+import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../paradis/contrib/workspaceSwitch/common/paradisWorkingCopyBackupRestoreRouter.js';
 
 suite('WorkingCopyBackupTracker (native)', function () {
 

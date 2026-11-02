@@ -33,7 +33,7 @@ import { GroupDirection, IEditorGroup, IEditorGroupsService } from '../../../../
 import { IWorkbenchLayoutService, Parts } from '../../../../../workbench/services/layout/browser/layoutService.js';
 import { FileOperationError, FileOperationResult, IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
 import { paradisIsTerminalInputBlocked, paradisResetTerminalInputGateForTest } from '../../browser/paradisTerminalInputGate.js';
-import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
+import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../common/paradisWorkingCopyBackupRestoreRouter.js';
 import { IWorkspaceEditingService } from '../../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
@@ -3589,6 +3589,7 @@ interface IParadisTerminalScopeHarnessOptions {
 /** マイクロタスクとタイマーを数回まわして、非同期の解決を落ち着かせる。 */
 async function settle(): Promise<void> {
 	for (let i = 0; i < 5; i++) {
+		// eslint-disable-next-line local/code-no-timeout-polling-loop -- existing helper of this suite, flagged by a rule added after it; reworking it is out of the scope of moving the router file
 		await new Promise<void>(resolve => setTimeout(resolve, 0));
 	}
 }

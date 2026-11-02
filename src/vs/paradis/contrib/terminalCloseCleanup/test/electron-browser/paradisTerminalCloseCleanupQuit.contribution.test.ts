@@ -14,7 +14,7 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../../platform/native/common/native.js';
 import { ILocalPtyService } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisPrepareTerminalShutdown } from '../../../../../workbench/contrib/terminal/browser/paradisTerminalShutdownPolicy.js';
+import { paradisPrepareTerminalShutdown } from '../../../ptyDaemon/browser/paradisTerminalShutdownPolicy.js';
 import { ILifecycleService, ShutdownReason } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ParadisTerminalCloseCleanupQuit } from '../../electron-browser/paradisTerminalCloseCleanupQuit.contribution.js';
 
