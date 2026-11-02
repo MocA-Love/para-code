@@ -218,3 +218,26 @@
 @container paradis-ccusage-panel (max-width: 900px) {
 	.paradis-ccusage.paradis-activity-panel .paradis-activity-kpis { grid-template-columns: 1fr 1fr; }
 }
+
+/* ---- 集計し直している間の印（paradisActivityBusy.ts） ---- */
+
+.paradis-ccusage.paradis-activity-panel {
+	position: relative;
+}
+
+/* 進捗線はパネルの上端に重ねる（場所を取らないので、出し入れで中身が動かない） */
+.paradis-ccusage.paradis-activity-panel > .paradis-activity-progress {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 1;
+}
+
+.paradis-ccusage.paradis-activity-panel .paradis-activity-busy {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
