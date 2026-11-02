@@ -26,7 +26,7 @@ import { IParadisPresetService, IParadisResolvedPreset } from '../../common/para
 suite('preset editor dialog: row actions', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('rows show only Run and ..., the default user source has no chip, and the hints are gone', () => {
+	test('rows show only Run and ..., the default user source has no chip, the hints are gone, and unavailable moves say why', () => {
 		const presets: IParadisResolvedPreset[] = [
 			{ name: 'C', commands: ['claude'], source: 'user', sourceIndex: 0, key: 'user:0' } as unknown as IParadisResolvedPreset,
 			{ name: 'X', commands: ['codex'], source: 'workspace', sourceUri: URI.file('/repo/.paracode.json'), sourceIndex: 0, key: 'workspace:0' } as unknown as IParadisResolvedPreset,
@@ -63,7 +63,7 @@ suite('preset editor dialog: row actions', () => {
 					{ name: 'C', chips: [], buttons: ['実行', 'C のその他の操作'] },
 					{ name: 'X', chips: ['リポジトリ'], buttons: ['実行', 'X のその他の操作'] },
 				],
-				menuItems: ['編集', '複製', '-', '上へ移動', '下へ移動', '-', '削除...'],
+				menuItems: ['編集', '複製', '-', '上へ移動（一番上です）', '下へ移動（保存先（ユーザー設定 / .paracode.json）を跨いでは移せません）', '-', '削除...'],
 				hints: true,
 			});
 		} finally {
