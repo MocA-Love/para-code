@@ -214,6 +214,30 @@ export function paradisPageUpgradeTargetIsCurrent(
 /** 対象が無いときの {@link IParadisCdpFilterContext.boundTargetIds}（読むだけなので 1 つを使い回す）。 */
 const EMPTY_BOUND_TARGET_IDS: ReadonlySet<string> = new Set<string>();
 
+/**
+ * 接続ローカルに「最後に確認できたバインド済み targetId」を覚える。captureIngressLease 側の一時変動で getBoundTargetId が
+ * 瞬間的に undefined を返す窓があり、その空集合がブラウザプロキシの force-detach 誤爆を引き起こすため、リースが生存している
+ * 間は直近の値で埋める（_makeContext のコメント）。フレームごとに呼ばれるので、同じ対象の間は同じ集合を返す。
+ */
+class ParadisBoundTargetSnapshot {
+	private lastKnown: string | undefined;
+	private set: { readonly targetId: string; readonly ids: ReadonlySet<string> } | undefined;
+
+	/** 今の targetId（引けなければ undefined）を受け、直近の targetId の集合を返す。一度も引けていなければ空。 */
+	ids(current: string | undefined): ReadonlySet<string> {
+		if (current) {
+			this.lastKnown = current;
+		}
+		if (this.lastKnown === undefined) {
+			return EMPTY_BOUND_TARGET_IDS;
+		}
+		if (this.set?.targetId !== this.lastKnown) {
+			this.set = { targetId: this.lastKnown, ids: new Set([this.lastKnown]) };
+		}
+		return this.set.ids;
+	}
+}
+
 export class ParadisCdpGateway extends Disposable {
 
 	/** TCPソケット単位のトークン解決キャッシュ（正の解決のみメモ化）。 */
@@ -622,8 +646,7 @@ export class ParadisCdpGateway extends Disposable {
 		// force-detach誤爆（健全な共有セッションの恒久切断）を引き起こすため、リースが生存している間は
 		// 直近の値で埋める。恒久失効時はcloseConnectionsForTokenが世代をbumpしてisCurrentLeaseを偽にし、
 		// 接続ごと殺すのでスナップショットが古い値を返し続ける心配はない。
-		let lastKnownBoundTargetId: string | undefined;
-		let boundTargetIdsSet: { readonly targetId: string; readonly ids: ReadonlySet<string> } | undefined;
+		const boundTargets = new ParadisBoundTargetSnapshot();
 		// 戻り経路から来た接続か（接続ごとに1回だけ、手元のファイルに触れるコマンドが初めて来たときに調べる）
 		let viaTunnel: boolean | undefined = peer === undefined ? false : undefined;
 		let viaTunnelLookup: Promise<boolean> | undefined;
@@ -645,22 +668,7 @@ export class ParadisCdpGateway extends Disposable {
 			networkActivity: this._networkActivity.forAuthority(token),
 			isCurrentLease,
 			// フレームごとに呼ばれるので、同じ対象の間は同じ集合を返す（読むだけの ReadonlySet。毎回作り直さない）
-			boundTargetIds: () => {
-				if (!isCurrentLease()) {
-					return EMPTY_BOUND_TARGET_IDS;
-				}
-				const tid = this.delegate.getBoundTargetId(token);
-				if (tid) {
-					lastKnownBoundTargetId = tid;
-				}
-				if (lastKnownBoundTargetId === undefined) {
-					return EMPTY_BOUND_TARGET_IDS;
-				}
-				if (boundTargetIdsSet?.targetId !== lastKnownBoundTargetId) {
-					boundTargetIdsSet = { targetId: lastKnownBoundTargetId, ids: new Set([lastKnownBoundTargetId]) };
-				}
-				return boundTargetIdsSet.ids;
-			},
+			boundTargetIds: () => isCurrentLease() ? boundTargets.ids(this.delegate.getBoundTargetId(token)) : EMPTY_BOUND_TARGET_IDS,
 			captureBoundPageScreenshot: async options => {
 				if (!isCurrentLease()) {
 					return undefined;
@@ -721,39 +729,45 @@ export class ParadisCdpGateway extends Disposable {
 			closeInputConnection,
 			isRemotePane,
 			permitsRemoteFileInput: files => this.delegate.permitsRemoteFileInput?.(token, files) === true,
-			onOpen: ws => {
-				if (!isCurrentLease()) {
-					reservation?.releaseIfUnattached();
-					try { ws.close(1000, 'para-code: browser binding changed, reconnect'); } catch { /* ignore */ }
-					return;
-				}
-				if (reservation && !reservation.attach(ws)) {
-					transportRegistrationFailed = true;
-					try { ws.close(1013, 'para-code: CDP connection capacity unavailable'); } catch { /* ignore */ }
-					return;
-				}
-				let set = this._connectionsByToken.get(token);
-				if (!set) {
-					set = new Set();
-					this._connectionsByToken.set(token, set);
-				}
-				set.add(ws);
-				const openCount = set.size;
-				this._noteDiagnostic(() => this.delegate.noteAgentCdpConnections?.(token, openCount));
-				ws.on('close', () => {
-					this._closingWebSockets.delete(ws);
-					this._clearWebSocketCloseTimer(ws);
-					closeInputConnection();
-					const current = this._connectionsByToken.get(token);
-					current?.delete(ws);
-					if (current && current.size === 0) {
-						this._connectionsByToken.delete(token);
-					}
-					const remaining = current?.size ?? 0;
-					this._noteDiagnostic(() => this.delegate.noteAgentCdpConnections?.(token, remaining));
-				});
-			},
+			onOpen: ws => this._onContextOpen(token, ws, reservation, isCurrentLease, () => transportRegistrationFailed = true, closeInputConnection),
 		};
+	}
+
+	/**
+	 * 接続の WebSocket が開いたとき。リースが古ければ閉じ、席を取れなければ閉じる。取れたらペインの接続の一覧に載せ、
+	 * 閉じたときに外す（数は診断へ渡す）。
+	 */
+	private _onContextOpen(token: string, ws: wsTypes.WebSocket, reservation: IParadisCdpWebSocketReservation | undefined, isCurrentLease: () => boolean, onRegistrationFailed: () => void, closeInputConnection: () => void): void {
+		if (!isCurrentLease()) {
+			reservation?.releaseIfUnattached();
+			try { ws.close(1000, 'para-code: browser binding changed, reconnect'); } catch { /* ignore */ }
+			return;
+		}
+		if (reservation && !reservation.attach(ws)) {
+			onRegistrationFailed();
+			try { ws.close(1013, 'para-code: CDP connection capacity unavailable'); } catch { /* ignore */ }
+			return;
+		}
+		let set = this._connectionsByToken.get(token);
+		if (!set) {
+			set = new Set();
+			this._connectionsByToken.set(token, set);
+		}
+		set.add(ws);
+		const openCount = set.size;
+		this._noteDiagnostic(() => this.delegate.noteAgentCdpConnections?.(token, openCount));
+		ws.on('close', () => {
+			this._closingWebSockets.delete(ws);
+			this._clearWebSocketCloseTimer(ws);
+			closeInputConnection();
+			const current = this._connectionsByToken.get(token);
+			current?.delete(ws);
+			if (current && current.size === 0) {
+				this._connectionsByToken.delete(token);
+			}
+			const remaining = current?.size ?? 0;
+			this._noteDiagnostic(() => this.delegate.noteAgentCdpConnections?.(token, remaining));
+		});
 	}
 
 	/** 診断の印を渡す。失敗しても接続には何も起こさない。 */
