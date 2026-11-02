@@ -27,7 +27,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { editorBackground, editorForeground } from '../../../../platform/theme/common/colorRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
+import { TerminalExitReason, TerminalLocation, TitleEventSource } from '../../../../platform/terminal/common/terminal.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { XtermAddonImporter } from '../../../../workbench/contrib/terminal/browser/xterm/xtermAddonImporter.js';
@@ -843,16 +843,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// そのまま送るとリレー帯域を浪費する）。
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.refreshBranches(); this.kickPrStatusRefresh(); this.pushStateSoon(); }));
 		// 切替はエディタターミナルのpark/unpark（allInstances の増減）を伴うため、agentペイン対応表も同期し直す
-		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
-		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateSoon(); }));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.pushStateSoon(); this.pushAgentPanesSoon(); }));
+		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateUrgentSoon(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => this.pushStateSoon()));
 		this._register(this.terminalService.onDidDisposeInstance(instance => this.codexComposerResidue.delete(instance)));
 		this.codexAutoContinue = this._register(new ParadisCodexAutoContinueWindow(this.terminalService, (instanceId, token) => this.findAuthoritativePaneInstance(instanceId, token),
 			(token, requestId, phase) => this.codexAutoContinueReport?.(token, requestId, phase) ?? Promise.resolve(false)));
 		this._register(this.terminalIdentityService.onDidChange(() => this.pushStateSoon()));
 		// タイトル変更（F2手動リネーム、モバイルからのrename、プロセス由来の自動タイトルなど）を
-		// 他のペアリング端末・他ウィンドウへも伝播する。
-		this._register(this.terminalService.onAnyInstanceTitleChange(() => this.pushStateCosmeticSoon()));
+		// 他のペアリング端末・他ウィンドウへも伝播する。名前の変更（F2・モバイルからの rename）は
+		// 通知の見出しに使われるので、オフラインでも 5 秒のまとめを通さずに送る。
+		this._register(this.terminalService.onAnyInstanceTitleChange(instance => instance.titleSource === TitleEventSource.Api ? this.pushStateUrgentSoon() : this.pushStateCosmeticSoon()));
 		// park/unpark（ワークスペース切り替えでの退避/復帰）は instances イベントに乗らないため groups 変化でも再送する
 		this._register(this.terminalGroupService.onDidChangeGroups(() => this.pushStateSoon()));
 		// PC側のリサイズで cols/rows が変わったら再送（モバイルのxtermが同寸法に追従する）
@@ -867,14 +868,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.spaceNotesService.onDidChangeNotes(() => this.pushStateSoon()));
 		// agentチャネル用: terminalId ⇔ ペイントークンの対応を shared process へ同期する
 		// （チャットミラーが attach(id) を transcript へ解決するのに使う）。
-		this._register(this.paneTokenService.onDidChange(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
+		this._register(this.paneTokenService.onDidChange(() => { this.pushStateSoon(); this.pushAgentPanesSoon(); }));
 		// 起動時の孤児エディタターミナル復活（reviveOrphanedScopedEditorTerminals）等、
 		// park台帳への登録はterminalServiceのイベントに乗らない。スコープ確定の変化を
 		// 再送のトリガーにして、復活したペインが state / agentペイン対応表へ確実に載るようにする。
-		this._register(this.terminalScopeService.onDidChangeStableScope(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
-		this._register(this.terminalService.onDidChangeInstances(() => { void this.pushAgentPanes(); }));
-		this._register(this.terminalService.onAnyInstanceProcessIdReady(() => { void this.pushAgentPanes(); }));
-		this._register(this.terminalService.onDidChangeInstanceCapability(() => { void this.pushAgentPanes(); }));
+		this._register(this.terminalScopeService.onDidChangeStableScope(() => { this.pushStateSoon(); this.pushAgentPanesSoon(); }));
+		// イベント起点の対応表の同期は 500ms に 1 回へまとめる（同期は全ペインの cwd を調べ直すので、起動時の
+		// 復元のように 1 ペインで何度も発火する間に毎回走らせない）。すぐ要る同期（shared process からの要求・
+		// coordinator）は syncAgentPaneRegistry() を直接呼ぶ。
+		this._register(this.terminalService.onDidChangeInstances(() => this.pushAgentPanesSoon()));
+		this._register(this.terminalService.onAnyInstanceProcessIdReady(() => this.pushAgentPanesSoon()));
+		this._register(this.terminalService.onDidChangeInstanceCapability(() => this.pushAgentPanesSoon()));
 		void this.pushAgentPanes();
 		this.refreshBranches();
 		void this.trackBattery();
@@ -903,6 +907,32 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				this.reportStatePushMetrics();
 			}
 		}, 60_000);
+	}
+
+	/**
+	 * モバイル連携の設定の有効・無効を受ける（`ParadisMobileRelayRendererLifecycle` が構築直後と設定変更で呼ぶ）。
+	 * 無効の間に溜めた変化は、有効へ転じたときに 1 回だけ送る。
+	 */
+	setStateSyncEnabled(enabled: boolean): void {
+		if (this.stateSyncEnabled === enabled) {
+			return;
+		}
+		this.stateSyncEnabled = enabled;
+		if (!enabled) {
+			if (this.offlineStatePushScheduler.isScheduled()) {
+				// 送り損ねた変化は、有効へ戻したときに送る
+				this.offlineStatePushScheduler.cancel();
+				this.statePendingWhileDisabled = true;
+			}
+			return;
+		}
+		if (this.branchesStale) {
+			this.refreshBranches();
+		}
+		if (this.statePendingWhileDisabled) {
+			this.statePendingWhileDisabled = false;
+			this.pushStateSoon();
+		}
 	}
 
 	private reportStatePushMetrics(): void {
@@ -982,6 +1012,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return this.syncAgentPaneRegistry();
 	}
 
+	/** イベント起点の対応表の同期。cwd の変化と同じ 500ms の間引き（`agentPaneCwdSyncScheduler`）に乗せる。 */
+	private pushAgentPanesSoon(): void {
+		if (!this.agentPaneCwdSyncScheduler.isScheduled()) {
+			this.agentPaneCwdSyncScheduler.schedule();
+		}
+	}
+
 	private readonly agentPaneCwdListeners = this._register(new DisposableMap<number>());
 	/**
 	 * 作業フォルダの変化による同期は 500ms に 1 回へまとめる（同期は全ペインを調べ直すので、cd が続く
@@ -1008,15 +1045,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const capability = instance.capabilities.get(TerminalCapability.CwdDetection)
 					?? instance.capabilities.get(TerminalCapability.NaiveCwdDetection);
 				cwdListener.value = capability?.onDidChangeCwd(() => {
-					if (!this.agentPaneCwdSyncScheduler.isScheduled()) {
-						this.agentPaneCwdSyncScheduler.schedule();
-					}
+					this.pushAgentPanesSoon();
 				});
 			};
 			bindCwdListener();
 			listeners.add(instance.capabilities.onDidAddCapability(() => {
 				bindCwdListener();
-				void this.pushAgentPanes();
+				this.pushAgentPanesSoon();
 			}));
 			listeners.add(instance.capabilities.onDidRemoveCapability(() => bindCwdListener()));
 			listeners.add(instance.onDisposed(() => this.agentPaneCwdListeners.deleteAndDispose(instance.instanceId)));
@@ -1025,6 +1060,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	}
 
 	private readonly pushStateScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 100));
+	/** オンラインのモバイルが居ない間の再送（5 秒に 1 回。`pushState` の説明を参照）。 */
+	private readonly offlineStatePushScheduler = this._register(new RunOnceScheduler(() => this.pushStateNow(false), 5_000));
+	/**
+	 * モバイル連携の設定が有効か。無効（既定）の間は、イベント起点のスナップショットの組み立てと
+	 * shared process への送信、ブランチ名の取得をしない。`force` の送信（起動時の初回同期など）は止めない。
+	 */
+	private stateSyncEnabled = false;
+	private statePendingWhileDisabled = false;
+	/**
+	 * 通知の材料（エージェントの状態・エージェント端末のトークン・名前の変更）が変わったか。
+	 * shared process は通知の見出しと飛び先を state から引くので、オフラインでも 5 秒のまとめを通さずに送る。
+	 */
+	private stateUrgentPending = false;
+	private branchesStale = false;
 	/**
 	 * 見た目だけの変化（タイトル・cols/rows・バッテリー）専用の遅いスケジューラ。
 	 * これらは表示が少し遅れても実害がない一方、TUIはタイトルを連射するため、構造変化と
@@ -1044,6 +1093,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (!this.pushStateScheduler.isScheduled()) {
 			this.pushStateScheduler.schedule();
 		}
+	}
+
+	/** 通知の材料が変わったときの再送。100ms の集約には乗せ、オフラインの 5 秒のまとめは通さない。 */
+	private pushStateUrgentSoon(): void {
+		this.stateUrgentPending = true;
+		this.pushStateSoon();
 	}
 
 	/**
@@ -1115,6 +1170,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		this.mobileOnline = online;
 		if (online) {
+			// 待たせていたオフラインの再送は、100ms の集約へ移して送る。contribution の pushState(true) は
+			// getStatus() を待つ前に送られるので、その間の変化はこの再送でしか運ばれない。
+			if (this.offlineStatePushScheduler.isScheduled()) {
+				this.offlineStatePushScheduler.cancel();
+				this.pushStateSoon();
+			}
 			// オンラインへ転じた瞬間に1回即時取得し、以後は間隔ポーリング
 			this.prStatusScheduler.schedule(0);
 		} else {
@@ -1219,6 +1280,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	/** 各リポジトリのブランチ名を非同期に更新し、変化があれば state を再送する。 */
 	private refreshBranches(): void {
+		if (!this.stateSyncEnabled) {
+			// 無効の間はブランチ名を誰にも送らないので git を動かさない。有効へ転じたときに取り直す。
+			this.branchesStale = true;
+			return;
+		}
+		this.branchesStale = false;
 		for (const repo of this.workspaceSwitchService.repositories) {
 			if (!this.isReachableWorkspaceUri(repo.uri)) {
 				continue;
@@ -1227,7 +1294,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const branch = result.stdout.trim();
 				if (branch && this.branchCache.get(repo.id) !== branch) {
 					this.branchCache.set(repo.id, branch);
-					this.pushState();
+					// リポジトリの数だけ結果が届くので、ほかのイベントと同じ 100ms の集約に乗せる
+					this.pushStateSoon();
 				}
 			}).catch(() => { /* gitが無い等は無視 */ });
 		}
@@ -1356,6 +1424,28 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * 内容が同一でも lease メタデータの更新と応答そのものが要る。
 	 */
 	pushState(force = false): void {
+		if (force) {
+			this.statePendingWhileDisabled = false;
+		} else if (!this.stateSyncEnabled) {
+			// モバイル連携が無効の間は送り先が無い。最新の状態は有効へ転じたときにまとめて送る。
+			this.statePendingWhileDisabled = true;
+			return;
+		} else if (!this.mobileOnline && !this.stateUrgentPending) {
+			// オンラインのモバイルが居ない間も、プッシュ通知の見出し（スペース名・ターミナル名）のために
+			// shared process の状態は追わせる。ただしイベントのたびには組み立てず、5 秒に 1 回へまとめる。
+			// モバイルが繋がった瞬間には contribution が pushState(true) で最新を送る。
+			if (!this.offlineStatePushScheduler.isScheduled()) {
+				this.offlineStatePushScheduler.schedule();
+			}
+			return;
+		}
+		// 待たせていたオフラインの再送は、この送信が運ぶ
+		this.offlineStatePushScheduler.cancel();
+		this.pushStateNow(force);
+	}
+
+	private pushStateNow(force: boolean): void {
+		this.stateUrgentPending = false;
 		const snapshot = this.buildSnapshot();
 		const json = JSON.stringify(snapshot);
 		this.pushStateCalls++;
@@ -1445,7 +1535,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		this.confirmedAgentPaneTokens = next;
-		this.pushStateSoon();
+		this.pushStateUrgentSoon();
 	}
 
 	/** shell integrationが検知した対話型Agent CLIを、session確定前からホームへ反映する。 */
@@ -1453,7 +1543,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const changed = active ? !this.provisionalAgentPaneTokens.has(token) : this.provisionalAgentPaneTokens.has(token);
 		if (!changed) { return; }
 		if (active) { this.provisionalAgentPaneTokens.add(token); } else { this.provisionalAgentPaneTokens.delete(token); }
-		this.pushStateSoon();
+		this.pushStateUrgentSoon();
 	}
 
 	/** Terminal Hintの高頻度出力経路を、実行中世代またはworking状態のexact ownerへ限定する。 */

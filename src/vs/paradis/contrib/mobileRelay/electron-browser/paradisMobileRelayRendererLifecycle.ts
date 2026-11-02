@@ -12,9 +12,10 @@ export interface IParadisMobileRelayFocusLifecycle {
 	setEnabledAndSynchronize(enabled: boolean): void;
 }
 
-/** rendererのstate push metrics lifecycleに必要な最小契約。 */
+/** rendererのstate push（計測と、イベント起点の送信の有効・無効）のlifecycleに必要な最小契約。 */
 export interface IParadisMobileRelayStatePushMetricsLifecycle {
 	setStatePushMetricsEnabled(enabled: boolean): void;
+	setStateSyncEnabled(enabled: boolean): void;
 }
 
 /**
@@ -31,10 +32,12 @@ export class ParadisMobileRelayRendererLifecycle<TProvider extends IParadisMobil
 		this.provider = createProvider();
 		this.focusHeartbeat.setEnabled(initialEnabled);
 		this.provider.setStatePushMetricsEnabled(initialEnabled);
+		this.provider.setStateSyncEnabled(initialEnabled);
 	}
 
 	setEnabled(enabled: boolean): void {
 		this.focusHeartbeat.setEnabledAndSynchronize(enabled);
 		this.provider.setStatePushMetricsEnabled(enabled);
+		this.provider.setStateSyncEnabled(enabled);
 	}
 }
