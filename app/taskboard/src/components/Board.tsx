@@ -8,7 +8,7 @@ import { KIND, needs, stageMismatch, STATUS, taskActivity } from '../format.js';
 import { usePhone, useStored } from '../hooks.js';
 import { Icon } from '../icons.js';
 import { AgentTag, DueChip, Elapsed, LabelChip, Menu, PrChip, Status, tone } from './atoms.js';
-import { AdoptDialog } from './dialogs.js';
+import { AdoptDialog, ArchivedTasksDialog } from './dialogs.js';
 
 interface IColumn {
 	readonly id: string;
@@ -99,7 +99,7 @@ export const Card = memo(function Card({ task, flow, selected }: { task: ITaskBo
 	);
 });
 
-function Column({ column, tasks, flow, selectedId, onDropTask, doneLimit, onMore }: { column: IColumn; tasks: ITaskBoardTask[]; flow: ITaskBoardFlow; selectedId?: string; onDropTask: (taskId: string, to: string) => void; doneLimit?: number; onMore?: () => void }) {
+function Column({ column, tasks, flow, selectedId, onDropTask, doneLimit, onMore, archivedCount, onArchived }: { column: IColumn; tasks: ITaskBoardTask[]; flow: ITaskBoardFlow; selectedId?: string; onDropTask: (taskId: string, to: string) => void; doneLimit?: number; onMore?: () => void; archivedCount?: number; onArchived?: () => void }) {
 	const [over, setOver] = useState(false);
 	const shown = doneLimit !== undefined ? tasks.slice(0, doneLimit) : tasks;
 	const attention = tasks.filter(needs).length;
@@ -127,6 +127,7 @@ function Column({ column, tasks, flow, selectedId, onDropTask, doneLimit, onMore
 					<div className="col-empty">{column.id === 'todo' ? 'アサインされた未着手はありません' : column.id === 'done' ? 'まだありません' : 'ここへドラッグ'}</div>
 				)}
 				{doneLimit !== undefined && tasks.length > doneLimit && <button className="col-more" onClick={onMore}>さらに {tasks.length - doneLimit} 件を表示</button>}
+				{archivedCount ? <button className="col-more" onClick={onArchived} title="完了から 14 日経って記録のファイルへ移したタスク">移したタスク（{archivedCount} 件）</button> : null}
 			</div>
 		</section>
 	);
@@ -221,6 +222,8 @@ export function Board() {
 						onDropTask={onDropTask}
 						doneLimit={c.id === 'done' ? doneLimit : undefined}
 						onMore={() => setDoneLimit(n => n + 50)}
+						archivedCount={c.id === 'done' ? snapshot.archivedCount : undefined}
+						onArchived={() => app.showDialog(<ArchivedTasksDialog />)}
 					/>
 				))}
 			</div>
