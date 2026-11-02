@@ -194,6 +194,15 @@ const PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS = 500;
 /** upstream の Agent ツールのキーの印を、送った命令の答えを待たずに閉じるまでの期限（ミリ秒）。 */
 export const PARADIS_UPSTREAM_KEY_MARK_DEADLINE_MS = 10_000;
 
+
+/**
+ * page ops（印刷・認証・保存領域の上書き）の相手を BrowserView に戻す。BrowserView は IParadisPageOpsTarget の構造を持つ
+ * （webContents と debugger.attach）のでそのまま渡せ、page ops の相手はどれも BrowserView。戻す向きの型の強制はここだけ。
+ */
+function paradisViewOfPageOpsTarget(target: IParadisPageOpsTarget): BrowserView {
+	return target as unknown as BrowserView;
+}
+
 export class ParadisCdpTargetService implements IParadisCdpExactViewService, IParadisCdpPageOpsService {
 	/** エージェントが CDP の命令で付けた大きさ（切断時に戻すため）。 */
 	private readonly agentEmulation = new ParadisAgentEmulationLedger();
@@ -371,7 +380,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			// （利用者や別のペインがプロファイルを使い始めた）。
 			const created = this.browserViewMainService.tryGetBrowserView(childViewId);
 			if (created && !created.webContents.isDestroyed()) {
-				this.pageOps.onTabOpenedInStorage(created.webContents.session, created as unknown as IParadisPageOpsTarget);
+				this.pageOps.onTabOpenedInStorage(created.webContents.session, created);
 			}
 		} catch {
 			// ビューが既に閉じている。
@@ -1128,7 +1137,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		// 手にしている間は、拡張のページ（chrome-extension://）へ移る移動を取り消す
 		paradisSetExtensionNavigationGuard(view.webContents, !enabledValue, { onBlocked: () => this._onDidBlockExtensionNavigation.fire(descriptor.viewId) });
 		if (enabledValue) {
-			this.pageOps.releaseTarget(view as unknown as IParadisPageOpsTarget);
+			this.pageOps.releaseTarget(view);
 		}
 		// Throttling is disabled exactly while an agent holds this view, which is also exactly when
 		// the view needs the periodic nudge. Ride that signal instead of adding a second lifecycle.
@@ -1600,7 +1609,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		let sourceUrl: string;
 		try {
 			sourceUrl = view.webContents.getURL();
-			data = await this.pageOps.printToPdf(view as unknown as IParadisPageOpsTarget, options.value);
+			data = await this.pageOps.printToPdf(view, options.value);
 		} catch (error) {
 			return { ok: false, reason: 'failed', message: error instanceof Error ? error.message.slice(0, 300) : undefined };
 		}
@@ -1685,7 +1694,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	 * - `user`: それ以外（利用者のタブ、ワークスペースで共有するエージェントの保存領域、エフェメラル）
 	 */
 	private describeStorage(target: IParadisPageOpsTarget, ownerKey: string): IParadisPageStorageDescription {
-		const view = target as unknown as BrowserView;
+		const view = paradisViewOfPageOpsTarget(target);
 		try {
 			const session = view.session;
 			if (session.storageScope === BrowserViewStorageScope.Agent && session.id === paradisPaneStorageSessionId(ownerKey)) {
@@ -1704,8 +1713,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	private resolvePageOpsTarget(descriptorValue: unknown): IParadisPageOpsTarget | undefined {
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
 		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
-		// BrowserView は IParadisPageOpsTarget の構造を持つ（webContents と debugger.attach）。
-		const target = view ? view as unknown as IParadisPageOpsTarget : undefined;
+		const target = view ? view : undefined;
 		if (target && descriptor) {
 			this.pageOpsViewIds.set(target, descriptor.viewId);
 		}
