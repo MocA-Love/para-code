@@ -22,8 +22,10 @@ import { Disposable } from '../../base/common/lifecycle.js';
 export interface IParadisSwitchOptions {
 	/** 最初の状態。 */
 	readonly checked: boolean;
-	/** 読み上げの名前。見えるラベルが別にある（`<label>` で包む、aria-labelledby を付ける）ときは省く。 */
+	/** 読み上げの名前。見えるラベルが別にある（`<label>` で包む、{@link ariaLabelledBy} を渡す）ときは省く。 */
 	readonly ariaLabel?: string;
+	/** 読み上げの名前にする要素の id（空白区切りで複数可）。行の見出しなど、包めない所にラベルがあるときに使う。 */
+	readonly ariaLabelledBy?: string;
 	/** 押せない状態で作る。 */
 	readonly disabled?: boolean;
 }
@@ -46,6 +48,9 @@ export class ParadisSwitch extends Disposable {
 		this.element.setAttribute('role', 'switch');
 		if (options.ariaLabel) {
 			this.element.setAttribute('aria-label', options.ariaLabel);
+		}
+		if (options.ariaLabelledBy) {
+			this.element.setAttribute('aria-labelledby', options.ariaLabelledBy);
 		}
 		this._checked = options.checked;
 		this.render();

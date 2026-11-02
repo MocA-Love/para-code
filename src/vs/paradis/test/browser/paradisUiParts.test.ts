@@ -101,6 +101,25 @@ suite('Paradis UI parts', () => {
 		});
 	});
 
+	test('switch: aria-labelledby points at a visible label', () => {
+		const toggle = store.add(new ParadisSwitch(workbench, { checked: false, ariaLabelledBy: 'row-title row-desc' }));
+		assert.deepStrictEqual({ labelledBy: toggle.element.getAttribute('aria-labelledby'), label: toggle.element.getAttribute('aria-label') }, { labelledBy: 'row-title row-desc', label: null });
+	});
+
+	test('switch: in high contrast themes on and off differ by the frame and knob colors, not only by the knob position', () => {
+		workbench.classList.add('hc-black');
+		workbench.style.setProperty('--vscode-contrastBorder', 'rgb(111, 195, 223)');
+		workbench.style.setProperty('--vscode-contrastActiveBorder', 'rgb(243, 133, 24)');
+		workbench.style.setProperty('--vscode-foreground', 'rgb(255, 255, 255)');
+		const off = store.add(new ParadisSwitch(workbench, { checked: false }));
+		const on = store.add(new ParadisSwitch(workbench, { checked: true }));
+		const colors = (toggle: ParadisSwitch) => ({ frame: mainWindow.getComputedStyle(toggle.element).borderTopColor, knob: mainWindow.getComputedStyle(toggle.element, '::after').backgroundColor });
+		assert.deepStrictEqual({ off: colors(off), on: colors(on) }, {
+			off: { frame: 'rgb(111, 195, 223)', knob: 'rgb(255, 255, 255)' },
+			on: { frame: 'rgb(243, 133, 24)', knob: 'rgb(243, 133, 24)' },
+		});
+	});
+
 	test('modal size tiers: S follows the content, M has a fixed height, L uses the usage dashboard size', () => {
 		const make = (size: ParadisModalSize) => {
 			const box = mainWindow.document.createElement('div');
