@@ -35,7 +35,7 @@ const LOCATOR_PROPERTIES = {
 export const PARADIS_MCP_BROWSER_QUERY_TOOLS = [
 	{
 		name: 'wait_until',
-		description: 'Wait in one call until an element appears, becomes visible, is hidden or is removed, or until a JavaScript condition becomes true, on the page shared with this terminal pane. Use this instead of setTimeout loops in evaluate_script or sleep in the shell. The page is checked in short slices (each at most about one second), so other tools are not held up; a check the page does not answer within about 10 seconds counts as not yet met. It keeps waiting across navigations and reloads. Returns as soon as the condition holds, with the matching element, or an error when timeout_seconds passes (with what was last seen and, when nothing matched, similar text or elements on the page). A JavaScript dialog (alert / confirm) that opens while checking is dismissed. Iframes are not searched unless within_uid points inside one. With network_idle_ms it also waits until the shared tab (with its iframes and workers) has had no request start or finish for that long, like "network idle" in test runners; requests open for more than 30 seconds (streaming, long polling, server-sent events) are not counted, and WebSockets never are. network_idle_ms alone waits only for the network.',
+		description: 'Wait in one call until an element appears, becomes visible, is hidden or is removed, or until a JavaScript condition becomes true, on this pane\'s current tab (or tab_id). Use this instead of setTimeout loops in evaluate_script or sleep in the shell. The page is checked in short slices (each at most about one second), so other tools are not held up; a check the page does not answer within about 10 seconds counts as not yet met. It keeps waiting across navigations and reloads. Returns as soon as the condition holds, with the matching element, or an error when timeout_seconds passes (with what was last seen and, when nothing matched, similar text or elements on the page). A JavaScript dialog (alert / confirm) that opens while checking is dismissed. Iframes are not searched unless within_uid points inside one. With network_idle_seconds it also waits until the tab (with its iframes and workers) has had no request start or finish for that long, like "network idle" in test runners; requests open for more than 30 seconds (streaming, long polling, server-sent events) are not counted, and WebSockets never are. network_idle_seconds alone waits only for the network.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -44,23 +44,23 @@ export const PARADIS_MCP_BROWSER_QUERY_TOOLS = [
 				count: { type: 'number', description: 'visible / attached only: wait until at least this many elements match (default 1).' },
 				predicate: { type: 'string', description: 'JavaScript function run in the page, for example "() => document.querySelectorAll(\'.row\').length >= 20" or "() => window.appReady === true". Waits until it returns a truthy value (it may be async; keep it quick). Can be combined with a locator: then both must hold. Exceptions count as "not yet".' },
 				// 100 and 250 are PARADIS_MAIN_WAIT_MAX_SECONDS and PARADIS_SUBAGENT_WAIT_MAX_SECONDS in common/paradisSubagentToolCalls.ts (this module has no imports).
-				timeout_seconds: { type: 'number', description: 'How long to wait (0.5-100, default 10). Claude Code moves a main-conversation tool call that runs longer than 120 seconds to the background, so to wait longer there, call wait_until again with 100 or less. A call from a Claude Code subagent (started with the Agent tool) is not moved, and Para Code allows up to 250 for it.' },
-				interval_ms: { type: 'number', description: 'How often the condition is checked inside the page (50-2000, default 200).' },
-				network_idle_ms: { type: 'number', description: 'Also wait until no request of the shared tab has started or finished for this many milliseconds (100-30000; 500 is typical after a click that loads data).' },
-				network_idle_max_inflight: { type: 'number', description: 'With network_idle_ms: how many requests may still be open and count as idle (0-10, default 0; 2 is like "networkidle2").' },
+				timeout_seconds: { type: 'number', minimum: 0.5, maximum: 250, description: 'Seconds to wait (default 10, at most 100). Claude Code moves a main-conversation tool call that runs longer than 120 seconds to the background, so to wait longer there, call wait_until again with 100 or less. A call from a Claude Code subagent (started with the Agent tool) is not moved, and Para Code allows up to 250 for it.' },
+				interval_seconds: { type: 'number', minimum: 0.05, maximum: 2, description: 'How often the condition is checked inside the page, in seconds (default 0.2).' },
+				network_idle_seconds: { type: 'number', minimum: 0.1, maximum: 30, description: 'Also wait until no request of the tab has started or finished for this many seconds (0.5 is typical after a click that loads data).' },
+				network_idle_max_inflight: { type: 'number', minimum: 0, maximum: 10, description: 'With network_idle_seconds: how many requests may still be open and count as idle (default 0; 2 is like "networkidle2").' },
 			},
 			additionalProperties: false,
 		},
 	},
 	{
 		name: 'get_text',
-		description: 'Read the visible text (innerText) of an element of the page shared with this terminal pane, or of the whole page when no locator is given. Cheaper than take_snapshot when you only need the words. With all: true, returns the text of every match (lists, table rows). Long text is cut at max_chars; pass offset for the next part. When nothing matches, close matches on the page are listed.',
+		description: 'Read the visible text (innerText) of an element of this pane\'s current tab (or tab_id), or of the whole page when no locator is given. Cheaper than take_snapshot when you only need the words. With all: true, returns the text of every match (lists, table rows). Long text is cut at max_chars; pass offset for the next part. When nothing matches, close matches on the page are listed.',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				...LOCATOR_PROPERTIES,
 				all: { type: 'boolean', description: 'Return every match (up to 50) instead of the first.' },
-				max_chars: { type: 'number', description: 'Maximum characters returned (100-50000, default 4000).' },
+				max_chars: { type: 'number', minimum: 100, maximum: 50000, description: 'Maximum characters returned (default 4000).' },
 				offset: { type: 'number', description: 'Character offset into the text, to read the next part of a long text.' },
 			},
 			additionalProperties: false,
@@ -68,7 +68,7 @@ export const PARADIS_MCP_BROWSER_QUERY_TOOLS = [
 	},
 	{
 		name: 'inspect_element',
-		description: 'Describe why an element of the page shared with this terminal pane looks or behaves the way it does, without changing the page: its box (viewport rectangle, in or out of the viewport), whether it is visible and enabled, the element covering its center or corners (sticky headers, overlays), its scrolling ancestors and their scroll positions, whether its content overflows, its ARIA role, name and aria-* attributes, and selected computed styles. Use it instead of getBoundingClientRect / getComputedStyle in evaluate_script, for example when a click lands on the wrong element or nothing seems to happen.',
+		description: 'Describe why an element of this pane\'s current tab (or tab_id) looks or behaves the way it does, without changing the page: its box (viewport rectangle, in or out of the viewport), whether it is visible and enabled, the element covering its center or corners (sticky headers, overlays), its scrolling ancestors and their scroll positions, whether its content overflows, its ARIA role, name and aria-* attributes, and selected computed styles. Use it instead of getBoundingClientRect / getComputedStyle in evaluate_script, for example when a click lands on the wrong element or nothing seems to happen.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -81,7 +81,7 @@ export const PARADIS_MCP_BROWSER_QUERY_TOOLS = [
 	},
 	{
 		name: 'scroll_to',
-		description: 'Scroll the page shared with this terminal pane until an element is found, then bring it into view. Works with virtualized (lazy-rendered) lists that only create rows near the visible area: the scroll container is moved step by step and searched again after each step, until the element appears or the end is reached. If it started partway and reaches the end, it searches once more from the start; when the element is not found it scrolls back to where it was and says what may keep it out of reach (a form field holding the text, collapsed sections, an open dialog, other scroll areas), and when the whole scrollable range was searched, that the element is not in that area of the screen. Scrolls with scripts (scrollIntoView / scrollBy), not with the mouse wheel, so it works while the user is using the page. Give "container" for the list to scroll; by default the largest scrollable area of the page is used.',
+		description: 'Scroll this pane\'s current tab (or tab_id) until an element is found, then bring it into view. Works with virtualized (lazy-rendered) lists that only create rows near the visible area: the scroll container is moved step by step and searched again after each step, until the element appears or the end is reached. If it started partway and reaches the end, it searches once more from the start; when the element is not found it scrolls back to where it was and says what may keep it out of reach (a form field holding the text, collapsed sections, an open dialog, other scroll areas), and when the whole scrollable range was searched, that the element is not in that area of the screen. Scrolls with scripts (scrollIntoView / scrollBy), not with the mouse wheel, so it works while the user is using the page. Give "container" for the list to scroll; by default the largest scrollable area of the page is used.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -90,8 +90,8 @@ export const PARADIS_MCP_BROWSER_QUERY_TOOLS = [
 				direction: { type: 'string', enum: ['down', 'up', 'right', 'left'], description: 'Which way to scroll while searching (default down).' },
 				from_start: { type: 'boolean', description: 'Scroll the container back to its start before searching (default false).' },
 				step_px: { type: 'number', description: 'Pixels per step (default 80% of the container\'s visible size).' },
-				max_steps: { type: 'number', description: 'Maximum number of steps (1-200, default 40).' },
-				settle_ms: { type: 'number', description: 'Wait after each step for the list to render new rows (0-3000, default 250).' },
+				max_steps: { type: 'number', minimum: 1, maximum: 200, description: 'Maximum number of steps (default 40).' },
+				step_wait_seconds: { type: 'number', minimum: 0, maximum: 3, description: 'Seconds to wait after each step for the list to render new rows (default 0.25).' },
 			},
 			additionalProperties: false,
 		},
@@ -116,7 +116,7 @@ const ACT_TARGET_PROPERTIES = {
 export const PARADIS_MCP_BROWSER_ACT_TOOLS = [
 	{
 		name: 'click_by',
-		description: 'Find an element of the page shared with this terminal pane by role + name, visible text, CSS selector or uid (optionally inside "within"), scroll it into view and click its center with trusted mouse input (the same input as click). Use this instead of take_snapshot followed by click, or instead of element.click() in evaluate_script. When the element cannot be clicked, nothing is sent and the reason is returned the way inspect_element describes it: not found (with how many matched, and close matches on the page to try instead), hidden or zero size, disabled, inside an iframe, or covered by another element (with the covering element). Input is refused while the user is using that page.',
+		description: 'Find an element of this pane\'s current tab (or tab_id) by role + name, visible text, CSS selector or uid (optionally inside "within"), scroll it into view and click its center with trusted mouse input (the same input as click). Use this instead of take_snapshot followed by click, or instead of element.click() in evaluate_script. When the element cannot be clicked, nothing is sent and the reason is returned the way inspect_element describes it: not found (with how many matched, and close matches on the page to try instead), hidden or zero size, disabled, inside an iframe, or covered by another element (with the covering element). Input is refused while the user is using that page.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -130,7 +130,7 @@ export const PARADIS_MCP_BROWSER_ACT_TOOLS = [
 	},
 	{
 		name: 'fill_by',
-		description: 'Find a form field of the page shared with this terminal pane by role + name (for example role "textbox" with its label), visible text, CSS selector or uid (optionally inside "within") and set its value. Text fields, text areas and contenteditable elements are focused, their content is selected and the value is inserted as trusted text input, so frameworks with controlled inputs (React, MUI, Vue) see a real input event; given a wrapper such as an MUI TextField, the field inside it is used. Selects pick the option by value or label. Date, time, month, week, color and range inputs take the HTML value format (for example "2026-10-06" or "09:30") and get it with input and change events. Checkboxes and radios take "true" / "false" and are clicked only when the state has to change. Returns the value the field has afterwards (only the length for password fields); when nothing matches, close matches on the page are listed. Use this instead of setting .value with a native setter in evaluate_script. Input is refused while the user is using that page.',
+		description: 'Find a form field of this pane\'s current tab (or tab_id) by role + name (for example role "textbox" with its label), visible text, CSS selector or uid (optionally inside "within") and set its value. Text fields, text areas and contenteditable elements are focused, their content is selected and the value is inserted as trusted text input, so frameworks with controlled inputs (React, MUI, Vue) see a real input event; given a wrapper such as an MUI TextField, the field inside it is used. Selects pick the option by value or label. Date, time, month, week, color and range inputs take the HTML value format (for example "2026-10-06" or "09:30") and get it with input and change events. Checkboxes and radios take "true" / "false" and are clicked only when the state has to change. Returns the value the field has afterwards (only the length for password fields); when nothing matches, close matches on the page are listed. Use this instead of setting .value with a native setter in evaluate_script. Input is refused while the user is using that page.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -148,7 +148,7 @@ export const PARADIS_MCP_BROWSER_ACT_TOOLS = [
 export const PARADIS_MCP_BROWSER_RUN_STEPS_TOOLS = [
 	{
 		name: 'run_steps',
-		description: 'Run several tools on the page shared with this terminal pane in one call, in order: act, wait, check and capture, for example [fill_by, fill_by, click_by, wait_until, get_text, take_screenshot]. Each step is checked and run exactly as if it had been called alone, and its result is included. Stops at the first step that fails (unless continue_on_error is true) and says which one. Use it for a known sequence; call tools one by one when the next step depends on reading a result first. Allowed tools: navigate_page, click, click_at, fill, fill_form, hover, press_key, type_text, drag, handle_dialog, wait_for, take_screenshot, take_snapshot, evaluate_script, list_console_messages, list_network_requests, click_by, fill_by, wait_until, get_text, inspect_element, scroll_to, capture_screenshot, mouse_action, highlight_element. Keep the total time below your MCP client\'s tool timeout.',
+		description: 'Run several tools on this pane\'s current tab (or tab_id) in one call, in order: act, wait, check and capture, for example [fill_by, fill_by, click_by, wait_until, get_text, take_screenshot]. Each step is checked and run exactly as if it had been called alone, and its result is included. Stops at the first step that fails (unless continue_on_error is true) and says which one. Use it for a known sequence; call tools one by one when the next step depends on reading a result first. Allowed tools: navigate_page, click, click_at, fill, fill_form, hover, press_key, type_text, drag, handle_dialog, wait_for, take_screenshot, take_snapshot, evaluate_script, list_console_messages, list_network_requests, click_by, fill_by, wait_until, get_text, inspect_element, scroll_to, capture_screenshot, mouse_action, highlight_element. Keep the total time below your MCP client\'s tool timeout.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -183,7 +183,7 @@ export const PARADIS_BROWSER_FILE_TOOL_NAMES = [
 export const PARADIS_MCP_BROWSER_FILE_TOOLS = [
 	{
 		name: 'capture_screenshot',
-		description: 'Capture part of the page shared with this terminal pane: a rectangle of the viewport ("rect"), one element (uid, selector, role + name or text) or several elements in one call ("elements", one image each, up to 10), cropped to the element with optional "padding". Elements outside the viewport are captured without scrolling. With "saveTo" the images are written straight to a file on the machine this agent runs on instead of being returned (several images get -1, -2, ... before the extension), so you do not need to crop or fetch them with other tools. For the whole viewport or page use take_screenshot.',
+		description: 'Capture part of this pane\'s current tab (or tab_id): a rectangle of the viewport ("rect"), one element (uid, selector, role + name or text) or several elements in one call ("elements", one image each, up to 10), cropped to the element with optional "padding". Elements outside the viewport are captured without scrolling. With "saveTo" the images are written straight to a file on the machine this agent runs on instead of being returned (several images get -1, -2, ... before the extension), so you do not need to crop or fetch them with other tools. For the whole viewport or page use take_screenshot.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -201,9 +201,9 @@ export const PARADIS_MCP_BROWSER_FILE_TOOLS = [
 					items: { type: 'object', properties: { ...LOCATOR_PROPERTIES, index: { type: 'number' } }, additionalProperties: false },
 					description: 'Several elements, each found like the top-level locator, for example [{"uid": "3_4"}, {"role": "dialog"}].',
 				},
-				padding: { type: 'number', description: 'CSS pixels of margin around each element (0-200, default 0).' },
+				padding: { type: 'number', minimum: 0, maximum: 200, description: 'CSS pixels of margin around each element (default 0).' },
 				format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format (default png).' },
-				quality: { type: 'number', description: 'jpeg only: quality 0-100.' },
+				quality: { type: 'number', minimum: 0, maximum: 100, description: 'jpeg only: quality.' },
 				saveTo: { type: 'string', description: 'Absolute path of the image file to write, inside the folder of this terminal pane\'s space or the temporary folder. The images are then not returned inline. An existing file is never overwritten: choose a new file name for each capture, for example by adding -2.' },
 			},
 			additionalProperties: false,
@@ -219,7 +219,7 @@ export const PARADIS_MCP_BROWSER_FILE_TOOLS = [
 				sheet: { type: 'string', description: 'xlsx: sheet name. Default: the first sheet.' },
 				sheet_number: { type: 'number', description: 'xlsx: sheet by position instead of name (1 for the first).' },
 				range: { type: 'string', description: 'Cells to read, for example "A1:H50" (also for csv: rows 1-50, columns A-H). Default: the first 100 rows and 30 columns.' },
-				max_cells: { type: 'number', description: 'Maximum number of cells returned (1-20000, default 2000).' },
+				max_cells: { type: 'number', minimum: 1, maximum: 20000, description: 'Maximum number of cells returned (default 2000).' },
 				pages: { type: 'string', description: 'pdf: pages to read, for example "3", "1-5" or "10-" (page 10 to the end). Default: from the first page up to the limit.' },
 			},
 			required: ['path'],

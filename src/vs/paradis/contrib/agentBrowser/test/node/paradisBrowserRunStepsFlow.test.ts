@@ -259,7 +259,7 @@ suite('Paradis run_steps flow (E6)', () => {
 	test('waits inside a step are cut to the time left in the run', async () => {
 		const fake = fakeCall(() => text('ok'));
 		await paradisRunStepsFlow(fake.call, { max_seconds: 5, steps: [{ sleep_ms: 3000 }, { tool: 'wait_until', args: { text: 'Done', timeout_seconds: 60 } }, { tool: 'wait_for', args: { text: ['Done'], timeout: 60000 } }] });
-		assert.deepStrictEqual(fake.calls, ['wait_until {"text":"Done","timeout_seconds":2}', 'wait_for {"text":["Done"],"timeout":2000}']);
+		assert.deepStrictEqual(fake.calls, ['wait_until {"text":"Done","timeout_seconds":2}', 'wait_for {"text":["Done"],"timeout_seconds":2}']);
 	});
 
 });

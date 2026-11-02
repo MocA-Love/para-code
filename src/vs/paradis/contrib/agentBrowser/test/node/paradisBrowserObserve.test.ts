@@ -76,8 +76,8 @@ suite('Paradis browser observe', () => {
 			snapshot: paradisObserveOptionsFor('take_snapshot', both),
 			off: paradisObserveOptionsFor('click_by', { settle: false, state: false }),
 			plain: paradisTakeObserveArguments({ uid: '1_2' }),
-			taken: paradisTakeObserveArguments({ uid: '1_2', settle_ms: 99999, observe: 'none' }),
-			zero: paradisTakeObserveArguments({ settle_ms: 0 }),
+			taken: paradisTakeObserveArguments({ uid: '1_2', settle_seconds: 99999, observe: 'none' }),
+			zero: paradisTakeObserveArguments({ settle_seconds: 0 }),
 		}, {
 			clickBy: { settle: true, state: true },
 			download: { settle: false, state: true },
@@ -97,7 +97,7 @@ suite('Paradis browser observe', () => {
 			other: paradisWithObserveArguments({ ...tool, name: 'take_snapshot' }, { settle: true, state: true }).name,
 			properties: Object.keys(on.inputSchema.properties),
 			describes: on.description.includes('waits for the page to settle'),
-		}, { off: true, other: 'take_snapshot', properties: ['uid', 'settle_ms', 'observe'], describes: true });
+		}, { off: true, other: 'take_snapshot', properties: ['uid', 'settle_seconds', 'observe'], describes: true });
 	});
 
 	test('list_pages gives the pages and an open dialog', () => {

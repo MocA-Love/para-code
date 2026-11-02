@@ -82,20 +82,22 @@ suite('Paradis devtools tool adjustments', () => {
 			inputSchema: { type: 'object', properties: { text: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'old' }, timeout: { type: 'integer' } }, required: ['text'], additionalProperties: false },
 		});
 		const snapshot = paradisAdjustDevtoolsToolDescriptor({ name: 'take_snapshot', inputSchema: { type: 'object', properties: { verbose: { type: 'boolean' } } } });
-		const click = { name: 'click', inputSchema: { type: 'object', properties: {} } };
+		const click: { name: string; description?: string; inputSchema: unknown } = { name: 'click', inputSchema: { type: 'object', properties: {} } };
 		const waitForProperties = (waitFor.inputSchema as { properties: Record<string, { anyOf?: unknown[] }> }).properties;
 		assert.deepStrictEqual({
 			textAnyOf: waitForProperties.text.anyOf,
 			hasIncludeSnapshot: waitForProperties.includeSnapshot !== undefined,
 			hasOffset: (snapshot.inputSchema as { properties: Record<string, unknown> }).properties.offset !== undefined,
 			hasRoot: (snapshot.inputSchema as { properties: Record<string, unknown> }).properties.root !== undefined,
-			clickUnchanged: paradisAdjustDevtoolsToolDescriptor(click) === click,
+			clickDescription: paradisAdjustDevtoolsToolDescriptor(click).description,
+			waitForTimeout: Object.keys(waitForProperties).filter(key => key.startsWith('timeout')),
 		}, {
 			textAnyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
 			hasIncludeSnapshot: true,
 			hasOffset: true,
 			hasRoot: true,
-			clickUnchanged: true,
+			clickDescription: 'Click an element by its uid from a snapshot. If you can describe the element (role + name, text, CSS), click_by needs no snapshot.',
+			waitForTimeout: ['timeout_seconds'],
 		});
 	});
 
@@ -232,7 +234,7 @@ suite('Paradis devtools tool adjustments', () => {
 		}, {
 			endsOnWholeCharacter: true,
 			waitForLimited: true,
-			description: 'Wait. By default the response does not include a page snapshot; pass includeSnapshot: true or call take_snapshot when you need element uids.',
+			description: 'Wait until the given text appears on this pane\'s current tab (or tab_id). For elements, JavaScript conditions or network idle, use wait_until. By default the response does not include a page snapshot; pass includeSnapshot: true or call take_snapshot when you need element uids.',
 			recalled: true,
 			short: undefined,
 			expired: undefined,
@@ -343,7 +345,7 @@ suite('Paradis devtools tool adjustments', () => {
 			stripped: [paradisStripInternalDevtoolsArguments('evaluate_script', { function: 'f', paraCodeTimeoutMs: 1, timeout: 5000 }), paradisStripInternalDevtoolsArguments('take_snapshot', { paraCodeTimeoutMs: 1 })],
 		}, {
 			knows: ['evaluate_script', 'take_snapshot'],
-			published: { evaluate: ['function', 'timeout'], snapshot: ['verbose', 'offset', 'root'] },
+			published: { evaluate: ['function', 'timeout_seconds'], snapshot: ['verbose', 'offset', 'root'] },
 			evaluate: {
 				byDefault: { function: 'f', paraCodeTimeoutMs: PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS },
 				longer: { function: 'f', paraCodeTimeoutMs: 90_000 },
@@ -362,7 +364,7 @@ suite('Paradis devtools tool adjustments', () => {
 		const evaluate = textOf(paradisAdjustDevtoolsToolResult('evaluate_script', { args: {} }, text('Error: PARA_BROWSER_PAGE_UNRESPONSIVE: evaluate_script did not finish within 60000 ms.', true)));
 		const snapshot = textOf(paradisAdjustDevtoolsToolResult('take_snapshot', { args: {} }, timedOut('take_snapshot', 65_000)));
 		assert.deepStrictEqual({
-			evaluate: [evaluate.startsWith('PARA_BROWSER_PAGE_UNRESPONSIVE: the script did not finish within 60 s'), evaluate.includes('larger "timeout"')],
+			evaluate: [evaluate.startsWith('PARA_BROWSER_PAGE_UNRESPONSIVE: the script did not finish within 60 s'), evaluate.includes('larger "timeout_seconds"')],
 			snapshot: snapshot.startsWith('PARA_BROWSER_PAGE_UNRESPONSIVE: the page did not return its accessibility tree within 65 s'),
 			other: textOf(paradisAdjustDevtoolsToolResult('evaluate_script', { args: {} }, text('Error: boom', true))),
 		}, { evaluate: [true, true], snapshot: true, other: 'Error: boom' });

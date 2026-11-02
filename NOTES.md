@@ -464,6 +464,8 @@ vendored の中身は原則そのまま同梱するが、次の表の所だけ�
 | `build/src/tools/pages.js` の `handle_dialog`（2026-10-26） | `dialog.accept()` / `dismiss()` を 5 秒との race に入れる（`paraCodeAnswerDialog`）。間に合わない・断られたときは「成功」と書かず、ダイアログの記録を消したことと、beforeunload なら遷移はそのまま進むので wait_until で待つことを返す | Para Code の beforeunload のダイアログはブラウザが自分で閉じる（`will-prevent-unload` を常に通す）ので、vendored の記録だけが残ることがある。描画が止まったページでその記録に答えると、puppeteer の 180 秒の protocol timeout まで返らず、例外は握りつぶされて「成功」になっていた（q.html Q461 の 2、1 回 184 秒） |
 | `build/src/McpContext.js` の `detectOpenDevToolsWindows`（2026-10-26） | `page.hasDevTools()` を 3 秒との race に入れ、答えなければ DevTools は開いていないとみなす | どの道具の呼び出しの前にも（`ToolHandler.js` から）呼ばれ、上限が無かった。描画が止まったページでは 180 秒の protocol timeout まで待ちうる（q.html Q461 の 2 のレビュー） |
 
+道具の説明と引数の説明は vendored を書き換えず、`paradisDevtoolsToolAdjustments.ts` の `PARADIS_DEVTOOLS_TOOL_DESCRIPTIONS`・`PARADIS_DEVTOOLS_PROPERTY_DESCRIPTIONS` で tools/list の時に差し替える（2026-11-02、q.html Q535。上流を更新しても当て直しは要らないが、上流で道具の働きが変わったら説明の文を見直す）。同じ所で `evaluate_script`・`navigate_page`・`wait_for` のミリ秒の `timeout` を秒の `timeout_seconds` として見せ、子へ渡す前に `paradisToolArgumentAliases.ts` がミリ秒へ戻す。
+
 上流で `waitForTextOnPage` が signal を渡すようになったら、この変更は外してよい。ツールの入口と出口の調整（`wait_for` の `text` を文字列でも受ける、スナップショットを既定で返さない、`take_snapshot` の文字数の上限と `offset`、not interactive への拒否理由の追記、Target closed の 1 回の再試行）は vendored を触らず `node/paradisDevtoolsToolAdjustments.ts` で行っている。
 
 ### chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る（2026-09-29、q.html Q132 案A）
