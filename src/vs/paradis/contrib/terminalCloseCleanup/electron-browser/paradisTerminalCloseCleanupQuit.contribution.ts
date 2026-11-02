@@ -37,7 +37,7 @@ import { INativeHostService } from '../../../../platform/native/common/native.js
 import { ILocalPtyService } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisRegisterTerminalShutdownPolicy } from '../../../../workbench/contrib/terminal/browser/paradisTerminalShutdownPolicy.js';
+import { paradisRegisterTerminalShutdownPolicy } from '../../ptyDaemon/browser/paradisTerminalShutdownPolicy.js';
 import { ILifecycleService, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { paradisShutdownQuitsApp } from '../common/paradisTerminalCloseCleanupQuit.js';
 

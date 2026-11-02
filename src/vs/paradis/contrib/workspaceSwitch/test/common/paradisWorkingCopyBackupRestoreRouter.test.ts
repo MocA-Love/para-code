@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { WorkingCopyBackupRestoreDecision, WorkingCopyBackupRestoreRouter } from '../../common/workingCopyBackupRestoreRouter.js';
+import { WorkingCopyBackupRestoreDecision, WorkingCopyBackupRestoreRouter } from '../../common/paradisWorkingCopyBackupRestoreRouter.js';
 
 suite('WorkingCopyBackupRestoreRouter', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
