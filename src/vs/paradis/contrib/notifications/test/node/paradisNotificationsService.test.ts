@@ -30,8 +30,8 @@ suite('ParadisNotificationsService boundaries', () => {
 		const fetchStub = sinon.stub(globalThis, 'fetch').resolves(new Response(Uint8Array.of(1)));
 		const service = createService();
 
-		assert.strictEqual(await service.fetchAudio('http://example.test/sample.mp3'), null);
-		assert.strictEqual(await service.fetchAudio('not a URL'), null);
+		assert.strictEqual(await service.ringtones.fetchAudio('http://example.test/sample.mp3'), null);
+		assert.strictEqual(await service.ringtones.fetchAudio('not a URL'), null);
 		assert.strictEqual(fetchStub.called, false);
 	});
 
@@ -39,7 +39,7 @@ suite('ParadisNotificationsService boundaries', () => {
 		sinon.stub(globalThis, 'fetch').resolves(new Response('not found', { status: 404 }));
 		const service = createService();
 
-		assert.strictEqual(await service.fetchAudio('https://example.test/missing.mp3'), null);
+		assert.strictEqual(await service.ringtones.fetchAudio('https://example.test/missing.mp3'), null);
 	});
 
 	test('rejects an audio response whose declared size exceeds the boundary', async () => {
@@ -51,7 +51,7 @@ suite('ParadisNotificationsService boundaries', () => {
 		}));
 		const service = createService();
 
-		assert.strictEqual(await service.fetchAudio('https://example.test/oversized.mp3'), null);
+		assert.strictEqual(await service.ringtones.fetchAudio('https://example.test/oversized.mp3'), null);
 	});
 
 	test('rejects an oversized audio body when content-length is absent', async () => {
@@ -61,7 +61,7 @@ suite('ParadisNotificationsService boundaries', () => {
 		));
 		const service = createService();
 
-		assert.strictEqual(await service.fetchAudio('https://example.test/undeclared-size.mp3'), null);
+		assert.strictEqual(await service.ringtones.fetchAudio('https://example.test/undeclared-size.mp3'), null);
 	});
 
 	test('accepts the declared size boundary and preserves an audio MIME type', async () => {
@@ -76,7 +76,7 @@ suite('ParadisNotificationsService boundaries', () => {
 		}));
 		const service = createService();
 
-		const result = await service.fetchAudio('https://example.test/sample.ogg');
+		const result = await service.ringtones.fetchAudio('https://example.test/sample.ogg');
 		assert.ok(result);
 		assert.strictEqual(result.mimeType, 'audio/ogg');
 		const decoded = Buffer.from(result.base64, 'base64');
@@ -91,7 +91,7 @@ suite('ParadisNotificationsService boundaries', () => {
 		}));
 		const service = createService();
 
-		assert.deepStrictEqual(await service.fetchAudio('https://example.test/sample.wav'), {
+		assert.deepStrictEqual(await service.ringtones.fetchAudio('https://example.test/sample.wav'), {
 			base64: 'BAU=',
 			mimeType: 'audio/wav',
 		});
@@ -154,15 +154,15 @@ suite('ParadisNotificationsService boundaries', () => {
 				: mp3Response());
 			const service = createService();
 
-			const result = await service.downloadMyinstantsAudio(MP3_URL);
+			const result = await service.ringtones.downloadMyinstantsAudio(MP3_URL);
 			assert.ok(result.ok);
 			const { tempId, ...rest } = result;
 			assert.deepStrictEqual(rest, { ok: true, sourceUrl: redirected, fileName: 'fahhh_KcgAXfs.mp3', sizeBytes: MP3_BYTES.byteLength, suggestedName: 'Fahhh' });
 			assert.deepStrictEqual(fetchStub.getCalls().map(call => [String(call.args[0]), call.args[1]?.redirect]), [[MP3_URL, 'manual'], [redirected, 'manual']]);
-			assert.deepStrictEqual(await service.readTempAudioFile(tempId), { base64: Buffer.from(MP3_BYTES).toString('base64'), mimeType: 'audio/mpeg' });
+			assert.deepStrictEqual(await service.ringtones.readTempAudioFile(tempId), { base64: Buffer.from(MP3_BYTES).toString('base64'), mimeType: 'audio/mpeg' });
 
-			await service.cleanupTempAudio(tempId);
-			assert.strictEqual(await service.readTempAudioFile(tempId), null);
+			await service.ringtones.cleanupTempAudio(tempId);
+			assert.strictEqual(await service.ringtones.readTempAudioFile(tempId), null);
 		});
 
 		test('refuses URLs outside the allowed shape before issuing a request', async () => {
@@ -170,9 +170,9 @@ suite('ParadisNotificationsService boundaries', () => {
 			const service = createService();
 
 			assert.deepStrictEqual([
-				await service.downloadMyinstantsAudio('https://www.myinstants.com/en/instant/fahhh-42300/'),
-				await service.downloadMyinstantsAudio('https://example.test/media/sounds/a.mp3'),
-				await service.downloadMyinstantsAudio(`${MP3_URL}?download=1`),
+				await service.ringtones.downloadMyinstantsAudio('https://www.myinstants.com/en/instant/fahhh-42300/'),
+				await service.ringtones.downloadMyinstantsAudio('https://example.test/media/sounds/a.mp3'),
+				await service.ringtones.downloadMyinstantsAudio(`${MP3_URL}?download=1`),
 			], [
 				{ ok: false, reason: 'pageUrl' },
 				{ ok: false, reason: 'invalidUrl' },
@@ -185,7 +185,7 @@ suite('ParadisNotificationsService boundaries', () => {
 			const fetchStub = sinon.stub(globalThis, 'fetch').resolves(new Response(null, { status: 302, headers: { location: 'https://evil.example/media/sounds/a.mp3' } }));
 			const service = createService();
 
-			assert.deepStrictEqual(await service.downloadMyinstantsAudio(MP3_URL), { ok: false, reason: 'redirect' });
+			assert.deepStrictEqual(await service.ringtones.downloadMyinstantsAudio(MP3_URL), { ok: false, reason: 'redirect' });
 			assert.strictEqual(fetchStub.callCount, 1);
 		});
 
@@ -193,7 +193,7 @@ suite('ParadisNotificationsService boundaries', () => {
 			const fetchStub = sinon.stub(globalThis, 'fetch').callsFake(async () => new Response(null, { status: 302, headers: { location: '/media/sounds/again_KcgAXfs.mp3' } }));
 			const service = createService();
 
-			assert.deepStrictEqual(await service.downloadMyinstantsAudio(MP3_URL), { ok: false, reason: 'redirect' });
+			assert.deepStrictEqual(await service.ringtones.downloadMyinstantsAudio(MP3_URL), { ok: false, reason: 'redirect' });
 			assert.strictEqual(fetchStub.callCount, 4);
 		});
 
@@ -214,7 +214,7 @@ suite('ParadisNotificationsService boundaries', () => {
 			const results = [];
 			for (const next of responses) {
 				response = next;
-				results.push(await service.downloadMyinstantsAudio(MP3_URL));
+				results.push(await service.ringtones.downloadMyinstantsAudio(MP3_URL));
 			}
 			assert.deepStrictEqual(results, [
 				{ ok: false, reason: 'notFound', status: 404 },
@@ -231,13 +231,13 @@ suite('ParadisNotificationsService boundaries', () => {
 			sinon.stub(globalThis, 'fetch').rejects(new TypeError('fetch failed'));
 			const service = createService();
 
-			assert.deepStrictEqual(await service.downloadMyinstantsAudio(MP3_URL), { ok: false, reason: 'network' });
+			assert.deepStrictEqual(await service.ringtones.downloadMyinstantsAudio(MP3_URL), { ok: false, reason: 'network' });
 		});
 
 		test('refuses to import a temp audio that did not come from Myinstants', async () => {
 			const service = createService();
 
-			await assert.rejects(service.importMyinstantsAudio('unknown-temp-id', 'Name'));
+			await assert.rejects(service.ringtones.importMyinstantsAudio('unknown-temp-id', 'Name'));
 		});
 
 		test('stops a request that has not answered after 15 seconds', async () => {
@@ -248,7 +248,7 @@ suite('ParadisNotificationsService boundaries', () => {
 			const service = createService();
 
 			let settled = false;
-			const pending = service.downloadMyinstantsAudio(MP3_URL).finally(() => { settled = true; });
+			const pending = service.ringtones.downloadMyinstantsAudio(MP3_URL).finally(() => { settled = true; });
 			await clock.tickAsync(14_999);
 			assert.strictEqual(settled, false);
 			await clock.tickAsync(1);
@@ -279,20 +279,20 @@ suite('ParadisNotificationsService boundaries', () => {
 				sinon.stub(globalThis, 'fetch').resolves(mp3Response());
 				const service = createServiceWithAssets();
 
-				const downloaded = await service.downloadMyinstantsAudio(MP3_URL);
+				const downloaded = await service.ringtones.downloadMyinstantsAudio(MP3_URL);
 				assert.ok(downloaded.ok);
-				const info = await service.importMyinstantsAudio(downloaded.tempId, '  Fahhh  ');
+				const info = await service.ringtones.importMyinstantsAudio(downloaded.tempId, '  Fahhh  ');
 				const afterImport = readMetadata();
-				await service.renameCustomAudio('Renamed');
+				await service.ringtones.renameCustomAudio('Renamed');
 
 				assert.deepStrictEqual({
 					info,
 					afterImport: { name: afterImport.name, sourceUrl: afterImport.sourceUrl, hasEditState: afterImport.editState !== undefined, hasThumbnail: afterImport.thumbnailUrl !== undefined },
 					afterRename: (({ importedAt: _importedAt, ...rest }) => rest)(readMetadata()),
-					editState: await service.getCustomEditState(),
+					editState: await service.ringtones.getCustomEditState(),
 					files: readdirSync(assetsDir).sort(),
 					audio: readFileSync(join(assetsDir, 'notification-custom.mp3')).equals(Buffer.from(MP3_BYTES)),
-					tempGone: await service.readTempAudioFile(downloaded.tempId),
+					tempGone: await service.ringtones.readTempAudioFile(downloaded.tempId),
 				}, {
 					info: { id: 'custom', name: 'Fahhh', description: 'Imported from your local machine', emoji: '\u{1F50A}' },
 					afterImport: { name: 'Fahhh', sourceUrl: MP3_URL, hasEditState: false, hasThumbnail: false },
@@ -313,14 +313,14 @@ suite('ParadisNotificationsService boundaries', () => {
 				for (let turns = 0; turns < 120; turns++) {
 					writeFileSync(join(assetsDir, 'notification-custom.mp3'), 'old clip');
 					writeFileSync(join(assetsDir, 'notification-custom.json'), JSON.stringify({ name: 'Old', importedAt: 1 }));
-					const downloaded = await service.downloadMyinstantsAudio(MP3_URL);
+					const downloaded = await service.ringtones.downloadMyinstantsAudio(MP3_URL);
 					assert.ok(downloaded.ok);
-					const imported = service.importMyinstantsAudio(downloaded.tempId, 'Fahhh');
+					const imported = service.ringtones.importMyinstantsAudio(downloaded.tempId, 'Fahhh');
 					for (let turn = 0; turn < turns; turn++) {
 						await new Promise<void>(resolve => setImmediate(resolve));
 					}
 					// While the import swaps the audio file there is briefly no custom audio, and the rename refuses.
-					const didRename = await service.renameCustomAudio('Renamed').then(() => true, () => false);
+					const didRename = await service.ringtones.renameCustomAudio('Renamed').then(() => true, () => false);
 					await imported;
 					if (didRename) {
 						renamed++;
@@ -337,9 +337,9 @@ suite('ParadisNotificationsService boundaries', () => {
 				writeFileSync(join(assetsDir, 'notification-custom.json'), JSON.stringify({ name: 'Legacy', importedAt: 1 }));
 				const service = createServiceWithAssets();
 
-				const info = await service.getCustomRingtoneInfo();
-				await service.renameCustomAudio('Legacy 2');
-				assert.deepStrictEqual({ info, editState: await service.getCustomEditState(), metadata: readMetadata() }, {
+				const info = await service.ringtones.getCustomRingtoneInfo();
+				await service.ringtones.renameCustomAudio('Legacy 2');
+				assert.deepStrictEqual({ info, editState: await service.ringtones.getCustomEditState(), metadata: readMetadata() }, {
 					info: { id: 'custom', name: 'Legacy', description: 'Imported from your local machine', emoji: '\u{1F50A}' },
 					editState: null,
 					metadata: { name: 'Legacy 2', importedAt: 1 },
@@ -436,13 +436,13 @@ suite('ParadisNotificationsService boundaries', () => {
 		test('evicts the oldest install state once more than the cap have been started', async () => {
 			const service = createService();
 			for (const id of ['a', 'b', 'c', 'd', 'e']) {
-				await service.installYtDlp(id);
+				await service.ringtones.installYtDlp(id);
 			}
 
-			const evicted = await service.getInstallLog('a', 0);
+			const evicted = await service.ringtones.getInstallLog('a', 0);
 			assert.deepStrictEqual(evicted, { lines: [], done: true, error: 'unknown installId' });
 
-			const kept = await service.getInstallLog('e', 0);
+			const kept = await service.ringtones.getInstallLog('e', 0);
 			assert.strictEqual(kept.done, true);
 			assert.strictEqual(kept.error, UNAVAILABLE_MESSAGE);
 		});
@@ -450,10 +450,10 @@ suite('ParadisNotificationsService boundaries', () => {
 		test('does not evict anything while at or under the cap', async () => {
 			const service = createService();
 			for (const id of ['w', 'x', 'y', 'z']) {
-				await service.installYtDlp(id);
+				await service.ringtones.installYtDlp(id);
 			}
 
-			const oldest = await service.getInstallLog('w', 0);
+			const oldest = await service.ringtones.getInstallLog('w', 0);
 			assert.strictEqual(oldest.error, UNAVAILABLE_MESSAGE);
 			assert.notDeepStrictEqual(oldest, { lines: [], done: true, error: 'unknown installId' });
 		});
