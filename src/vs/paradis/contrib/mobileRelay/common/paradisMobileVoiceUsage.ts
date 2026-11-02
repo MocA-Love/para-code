@@ -9,6 +9,7 @@
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { IParadisElevenLabsUsageBreakdownEntry, IParadisElevenLabsUsageResult, ParadisElevenLabsSubscriptionResult } from '../../notifications/common/paradisElevenLabs.js';
 import { IParadisAivisMeResult, IParadisAivisUsageDayEntry, IParadisAivisUsageResult } from '../../notifications/common/paradisNotifications.js';
+import { paradisFillAivisUsageDays, paradisVoiceUsageRange } from '../../notifications/common/paradisVoiceUsage.js';
 
 /**
  * モバイルの「読み上げの使用量」（fs の `voiceUsage`、capability `usage.voice.v1`）の形と、組み立ての純関数。
@@ -122,30 +123,9 @@ export function paradisRedactVoiceUsageError(error: unknown, apiKeys: readonly s
 	return message.length > 300 ? `${message.slice(0, 300)}…` : message;
 }
 
-function toIsoDate(date: Date): string {
-	const y = date.getFullYear();
-	const m = String(date.getMonth() + 1).padStart(2, '0');
-	const d = String(date.getDate()).padStart(2, '0');
-	return `${y}-${m}-${d}`;
-}
-
 /** Aivis に頼む範囲（PC の日付で今日を含む 30 日）。PC の画面（`paradisAivisUsageSection.ts`）と同じ数え方。 */
 export function paradisMobileAivisUsageRange(now: number): { readonly start: string; readonly end: string } {
-	const end = new Date(now);
-	const start = new Date(now);
-	start.setDate(end.getDate() - (PARADIS_MOBILE_VOICE_USAGE_DAYS - 1));
-	return { start: toIsoDate(start), end: toIsoDate(end) };
-}
-
-function fillAivisDays(days: readonly IParadisAivisUsageDayEntry[], start: string, end: string): IParadisAivisUsageDayEntry[] {
-	const result: IParadisAivisUsageDayEntry[] = [];
-	const byDate = new Map(days.map(day => [day.date, day]));
-	const last = new Date(`${end}T00:00:00`);
-	for (let date = new Date(`${start}T00:00:00`); date <= last; date.setDate(date.getDate() + 1)) {
-		const key = toIsoDate(date);
-		result.push(byDate.get(key) ?? { date: key, requestCount: 0, characterCount: 0, creditConsumed: 0, byApiKey: {} });
-	}
-	return result;
+	return paradisVoiceUsageRange(now, PARADIS_MOBILE_VOICE_USAGE_DAYS);
 }
 
 function finite(value: unknown): number {
@@ -169,7 +149,7 @@ function aivisKeyRows(days: readonly IParadisAivisUsageDayEntry[]): IParadisMobi
 
 /** Aivis の結果をモバイルへ送る形にする。 */
 export function paradisBuildMobileAivisUsage(keyId: string, usage: IParadisAivisUsageResult, me: IParadisAivisMeResult | null, range: { readonly start: string; readonly end: string }, fetchedAt: number): IParadisMobileAivisUsage {
-	const filled = fillAivisDays(usage.days, range.start, range.end);
+	const filled = paradisFillAivisUsageDays(usage.days, range.start, range.end);
 	return {
 		keyId,
 		fetchedAt,
