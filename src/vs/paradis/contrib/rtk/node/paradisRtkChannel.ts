@@ -61,8 +61,16 @@ const WARM_INTERVAL_MS = 10 * 60 * 1000;
 const WARM_SKIP_IF_FRESHER_THAN_MS = 2 * 60 * 1000;
 /** 結果キャッシュのTTL。ダッシュボードとステータスバーで同じ実行結果を共有する。 */
 const CACHE_TTL_MS = WARM_INTERVAL_MS + WARM_SKIP_IF_FRESHER_THAN_MS + 2 * 60 * 1000;
-/** 最後に要求されてからこの時間を過ぎたエントリは温めるのをやめる。 */
+/**
+ * 最後に要求されてからこの時間を過ぎたエントリは温めるのをやめる。ステータスバー・メニューバーが 10 分ごとに
+ * 要求する今日の分（`gain -f json`）の上限。
+ */
 const WARM_IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+/**
+ * 使用量の画面だけが要求する分（`gain`・`gain -H`）の上限。画面を閉じた後まで、誰も見ていないのに 10 分ごとに
+ * rtk を起こし続けない（開き直したときは、切れていれば取り直す）。
+ */
+const DASHBOARD_WARM_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 /** 連続で失敗し続ける対象を諦める回数(rtk が入っていない環境で永久に走らせない)。 */
 const WARM_MAX_CONSECUTIVE_FAILURES = 3;
 
@@ -89,6 +97,8 @@ interface IWarmTarget {
 	readonly args: string[];
 	readonly options: IParadisRtkExecOptions;
 	readonly parse: (stdout: string) => unknown;
+	/** 最後の要求からこの時間で温めるのをやめる。 */
+	readonly idleTimeoutMs: number;
 	lastRequestedAt: number;
 	/** 連続失敗回数。上限に達した対象は温めをやめる(次に要求されたら0に戻る)。 */
 	failures: number;
@@ -161,11 +171,11 @@ export class ParadisRtkService implements IParadisRtkService {
 	}
 
 	fetchByCommand(options: IParadisRtkExecOptions): Promise<IParadisRtkCommandRow[]> {
-		return this.execCached(GAIN_TEXT_ARGS, options, parseParadisRtkByCommand);
+		return this.execCached(GAIN_TEXT_ARGS, options, parseParadisRtkByCommand, DASHBOARD_WARM_IDLE_TIMEOUT_MS);
 	}
 
 	fetchRecentHistory(options: IParadisRtkExecOptions): Promise<IParadisRtkHistoryEntry[]> {
-		return this.execCached(GAIN_HISTORY_ARGS, options, parseParadisRtkHistory);
+		return this.execCached(GAIN_HISTORY_ARGS, options, parseParadisRtkHistory, DASHBOARD_WARM_IDLE_TIMEOUT_MS);
 	}
 
 	/**
@@ -250,12 +260,12 @@ export class ParadisRtkService implements IParadisRtkService {
 	 * 呼び出し側からの要求。ここを通ったものだけを「温め続ける対象」として覚える
 	 * (バックグラウンドの取り直しはこの経路を通さないので、自分で自分を延命しない)。
 	 */
-	private execCached<T>(args: string[], options: IParadisRtkExecOptions, parse: (stdout: string) => T): Promise<T> {
-		this.rememberWarmTarget(args, options, parse);
+	private execCached<T>(args: string[], options: IParadisRtkExecOptions, parse: (stdout: string) => T, idleTimeoutMs = WARM_IDLE_TIMEOUT_MS): Promise<T> {
+		this.rememberWarmTarget(args, options, parse, idleTimeoutMs);
 		return this.execCachedInternal(args, options, parse);
 	}
 
-	private rememberWarmTarget(args: string[], options: IParadisRtkExecOptions, parse: (stdout: string) => unknown): void {
+	private rememberWarmTarget(args: string[], options: IParadisRtkExecOptions, parse: (stdout: string) => unknown, idleTimeoutMs: number): void {
 		if (this.disposed || !this.backgroundWarm) {
 			return;
 		}
@@ -268,7 +278,7 @@ export class ParadisRtkService implements IParadisRtkService {
 		} else {
 			// bypassCache は要求ごとの都合なので覚えない(温め直しは常に実行する)。
 			const { bypassCache: _ignored, ...rest } = options;
-			this.warmTargets.set(key, { args, options: rest, parse, lastRequestedAt: this.now(), failures: 0 });
+			this.warmTargets.set(key, { args, options: rest, parse, idleTimeoutMs, lastRequestedAt: this.now(), failures: 0 });
 		}
 		if (this.warmTimer === undefined) {
 			const timer = setInterval(() => { void this.runWarmPass(); }, WARM_INTERVAL_MS);
@@ -288,7 +298,7 @@ export class ParadisRtkService implements IParadisRtkService {
 				return;
 			}
 			const now = this.now();
-			if (now - target.lastRequestedAt >= WARM_IDLE_TIMEOUT_MS || target.failures >= WARM_MAX_CONSECUTIVE_FAILURES) {
+			if (now - target.lastRequestedAt >= target.idleTimeoutMs || target.failures >= WARM_MAX_CONSECUTIVE_FAILURES) {
 				this.warmTargets.delete(key);
 				continue;
 			}
