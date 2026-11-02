@@ -102,10 +102,6 @@ const STR_EXTENSION_WARNING_MORE = localize('paradis.bindingDialog.extensionWarn
 // allow-any-unicode-next-line
 const STR_EXTENSION_WARNING_LESS = localize('paradis.bindingDialog.extensionWarningLess', "たたむ");
 // allow-any-unicode-next-line
-const STR_SWITCH_SHARE_ARIA = localize('paradis.bindingDialog.switchShareAria', "このページを共有する");
-// allow-any-unicode-next-line
-const STR_SWITCH_UNSHARE_ARIA = localize('paradis.bindingDialog.switchUnshareAria', "共有を解除する");
-// allow-any-unicode-next-line
 const STR_EXTENSIONS_CHECKING = localize('paradis.bindingDialog.extensionsChecking', "このタブに拡張機能が入っているか確かめています…");
 // allow-any-unicode-next-line
 const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "エージェントは共有したページだけを読み取り・操作できます");
@@ -675,15 +671,20 @@ export class ParadisBindingDialog extends Disposable {
 		if (this._extensionWarning) {
 			const warning = dom.append(this._body, $('.pbd-extension-warning'));
 			warning.setAttribute('role', 'note');
-			warning.classList.toggle('expanded', this._extensionWarningExpanded);
 			warning.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
 			dom.append(warning, $('span.pbd-extension-warning-text')).textContent = this._extensionWarning;
 			const more = this._renderDisposables.add(new Button(warning, { ...defaultButtonStyles, secondary: true }));
 			more.element.classList.add('pbd-small');
-			more.label = this._extensionWarningExpanded ? STR_EXTENSION_WARNING_LESS : STR_EXTENSION_WARNING_MORE;
+			const syncMore = () => {
+				warning.classList.toggle('expanded', this._extensionWarningExpanded);
+				more.label = this._extensionWarningExpanded ? STR_EXTENSION_WARNING_LESS : STR_EXTENSION_WARNING_MORE;
+				more.element.setAttribute('aria-expanded', String(this._extensionWarningExpanded));
+			};
+			syncMore();
+			// 描き直さずにその場で開閉する（押したボタンにフォーカスを残す）
 			this._renderDisposables.add(more.onDidClick(() => {
 				this._extensionWarningExpanded = !this._extensionWarningExpanded;
-				this._render();
+				syncMore();
 			}));
 		}
 		const search = dom.append(this._body, $('.pbd-list-search'));
@@ -745,7 +746,10 @@ export class ParadisBindingDialog extends Disposable {
 		dom.append(row, $(`.pbd-dot.${dotClass}`));
 
 		const main = dom.append(row, $('.pbd-row-main'));
-		dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
+		const title = dom.append(main, $('.pbd-row-title'));
+		title.textContent = this._paneDisplayName(pane);
+		// スイッチの読み上げ名は行の題（どのペインのスイッチか分かるように）
+		title.id = `paradis-binding-pane-title-${pane.instanceId}`;
 		dom.append(main, $('.pbd-row-sub')).textContent = this._paneSubText(pane, boundHere);
 
 		// 行内アクションは、このページの共有/解除を表す switch（ページごとに独立。ほかのページの共有は
@@ -755,7 +759,7 @@ export class ParadisBindingDialog extends Disposable {
 		const isUnshareVerb = action === 'unbind';
 		const switchEl = this._paneListResources.add(new ParadisSwitch(row, {
 			checked: isUnshareVerb,
-			ariaLabel: isUnshareVerb ? STR_SWITCH_UNSHARE_ARIA : STR_SWITCH_SHARE_ARIA,
+			ariaLabelledBy: title.id,
 			// 拡張機能の知らせの答えが返るまで押せない（返ったら描き直す）
 			disabled: action === 'disabled' || (!isUnshareVerb && !this._extensionWarningResolved),
 		}));
