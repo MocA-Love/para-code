@@ -32,7 +32,7 @@ import { TerminalExitReason } from '../../../../platform/terminal/common/termina
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
-import { paradisCollectAllTerminalInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisLaunchedAgentTerminal, paradisLaunchAgentInWorkspace, paradisRunWorktreeCreateFlow } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import {

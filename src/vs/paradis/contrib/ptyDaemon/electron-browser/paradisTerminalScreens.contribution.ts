@@ -43,7 +43,7 @@ import { ILifecycleService } from '../../../../workbench/services/lifecycle/comm
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisTimeBoundedTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
 import { IParadisTerminalPrivateFiles, PARADIS_TERMINAL_PRIVATE_FILES_CHANNEL } from '../../terminalPrivateFiles/common/paradisTerminalPrivateFiles.js';
-import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisPtyDaemonStatus, IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_SAVE_SCREENS, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 import {
@@ -323,12 +323,7 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 
 	/** 保存の対象。upstream が閉じるときに畳む範囲（`terminalService.ts` の onWillShutdown）と揃える。 */
 	private _instances(): ITerminalInstance[] {
-		const all = new Set<ITerminalInstance>([
-			...this._terminalService.instances,
-			...(this._terminalGroupService.paradisParkedGroups ?? []).flatMap(group => group.terminalInstances),
-			...paradisListParkedTerminalEditorInstances(),
-		]);
-		return [...all].filter(instance => !instance.isDisposed && instance.remoteAuthority === undefined && instance.shouldPersist && instance.persistentProcessId !== undefined);
+		return paradisCollectAllTerminalInstances(this._terminalService, this._terminalGroupService).filter(instance => instance.remoteAuthority === undefined && instance.shouldPersist && instance.persistentProcessId !== undefined);
 	}
 
 	private _save(): Promise<void> {

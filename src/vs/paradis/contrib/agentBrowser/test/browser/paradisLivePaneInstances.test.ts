@@ -11,7 +11,8 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import type { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
-import { ParadisPaneProcessReadyTracker, paradisCollectAllTerminalInstances, paradisCollectLivePaneInstances, paradisCreatePaneShellManifestEntries, paradisListCurrentPaneTokens } from '../../browser/paradisLivePaneInstances.js';
+import { ParadisPaneProcessReadyTracker, paradisCollectLivePaneInstances, paradisCreatePaneShellManifestEntries, paradisListCurrentPaneTokens } from '../../browser/paradisLivePaneInstances.js';
+import { paradisCollectAllTerminalInstances } from '../../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 function terminal(instanceId: number, title: string, processId?: number): ITerminalInstance {
