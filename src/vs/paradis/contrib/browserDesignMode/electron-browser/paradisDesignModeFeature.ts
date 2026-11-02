@@ -20,18 +20,24 @@
 // ページ（ネイティブのビュー）を止めない設定なので、トーストはページの裏に隠れて見えない。
 // エラーはトレイに出したうえで、後から見返せるようベル（通知センター）にも残す。
 
-import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, clearNode, EventType } from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { Checkbox } from '../../../../base/browser/ui/toggle/toggle.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { defaultCheckboxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisDesignPin, IParadisPickedElement, PARADIS_DESIGN_BUDGET, paradisClipRectToViewport, paradisDesignSanitizeUrl } from '../common/paradisDesignMode.js';
@@ -73,14 +79,14 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 	private readonly hint: HTMLElement;
 	private readonly message: HTMLElement;
 	private readonly htmlLabel: HTMLLabelElement;
-	private readonly htmlCheckbox: HTMLInputElement;
+	private readonly htmlCheckbox: Checkbox;
 	private readonly messageClear = this._register(new RunOnceScheduler(() => this.showMessage(undefined), MESSAGE_DURATION_MS));
 	private messageText: string | undefined;
 	/** 送信中の取り消し（エディタのページが替わる・閉じるとき）。 */
 	private readonly sendCancellation = this._register(new MutableDisposable<CancellationTokenSource>());
 	private readonly countButton: HTMLButtonElement;
 	private readonly attachLabel: HTMLLabelElement;
-	private readonly attachCheckbox: HTMLInputElement;
+	private readonly attachCheckbox: Checkbox;
 	private readonly attachText: HTMLElement;
 	private readonly clearButton: HTMLButtonElement;
 	private readonly sendButton: HTMLButtonElement;
@@ -106,6 +112,7 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super(editor);
 		this.designModeActive = CONTEXT_PARADIS_DESIGN_MODE_ACTIVE.bindTo(contextKeyService);
@@ -126,26 +133,41 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.message.setAttribute('role', 'status');
 		this.message.setAttribute('aria-live', 'polite');
 
+		// チェックは本家の Checkbox（Q537 の 7 章「Design Mode」、案 A）。文字を押しても切り替わる
 		this.attachLabel = append(this.tray, $<HTMLLabelElement>('label.paradis-design-tray-attach'));
-		this.attachCheckbox = append(this.attachLabel, $<HTMLInputElement>('input'));
-		this.attachCheckbox.type = 'checkbox';
-		this.attachText = append(this.attachLabel, $('span'));
-		this._register(addDisposableListener(this.attachCheckbox, EventType.CHANGE, () => {
+		this.attachText = $('span');
+		this.attachCheckbox = this._register(new Checkbox(localize('paradis.designMode.attachImagesTitle', "書き込んだ画像を添える"), false, defaultCheckboxStyles));
+		append(this.attachLabel, this.attachCheckbox.domNode, this.attachText);
+		this._register(this.attachCheckbox.onChange(() => {
+			this.designModeService.attachImages = this.attachCheckbox.checked;
+		}));
+		this._register(addDisposableListener(this.attachText, EventType.CLICK, () => {
+			this.attachCheckbox.checked = !this.attachCheckbox.checked;
 			this.designModeService.attachImages = this.attachCheckbox.checked;
 		}));
 
 		this.htmlLabel = append(this.tray, $<HTMLLabelElement>('label.paradis-design-tray-attach'));
-		this.htmlCheckbox = append(this.htmlLabel, $<HTMLInputElement>('input'));
-		this.htmlCheckbox.type = 'checkbox';
-		append(this.htmlLabel, $('span')).textContent = localize('paradis.designMode.includeHtml', "HTML も送る");
-		this._register(addDisposableListener(this.htmlCheckbox, EventType.CHANGE, () => {
+		const htmlText = $('span');
+		htmlText.textContent = localize('paradis.designMode.includeHtml', "HTML も送る");
+		this.htmlCheckbox = this._register(new Checkbox(htmlText.textContent, false, defaultCheckboxStyles));
+		append(this.htmlLabel, this.htmlCheckbox.domNode, htmlText);
+		this._register(this.htmlCheckbox.onChange(() => {
+			this.designModeService.includeHtml = this.htmlCheckbox.checked;
+		}));
+		this._register(addDisposableListener(htmlText, EventType.CLICK, () => {
+			this.htmlCheckbox.checked = !this.htmlCheckbox.checked;
 			this.designModeService.includeHtml = this.htmlCheckbox.checked;
 		}));
 
 		append(this.tray, $('span.paradis-design-tray-spacer'));
 
 		this.stopButton = this.trayButton(localize('paradis.designMode.stop', "選択をやめる"), false, () => this.stopDesignMode());
-		this.clearButton = this.trayButton(localize('paradis.designMode.clearAll', "すべて消す"), false, () => this.clearAnnotations());
+		this.clearButton = append(this.tray, $<HTMLButtonElement>(`button.paradis-design-tray-icon${ThemeIcon.asCSSSelector(Codicon.clearAll)}`));
+		this.clearButton.type = 'button';
+		const clearLabel = localize('paradis.designMode.clearAll', "すべて消す");
+		this.clearButton.setAttribute('aria-label', clearLabel);
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.clearButton, clearLabel));
+		this._register(addDisposableListener(this.clearButton, EventType.CLICK, () => this.clearAnnotations()));
 		this.sendButton = this.trayButton(localize('paradis.designMode.send', "送る"), true, () => void this.sendAnnotations());
 	}
 
@@ -430,7 +452,11 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		const picking = !!model && this.designPage === model;
 		const visible = !!model && (annotations.length > 0 || picking || !!this.messageText);
 
-		this.countButton.textContent = localize('paradis.designMode.count', "注釈 {0} 件", annotations.length);
+		// 印と数（本家のバッジ）。読み上げは「注釈 N 件」
+		clearNode(this.countButton);
+		append(this.countButton, $(`span${ThemeIcon.asCSSSelector(Codicon.commentDiscussion)}`));
+		append(this.countButton, $('span.paradis-design-tray-badge')).textContent = String(annotations.length);
+		this.countButton.setAttribute('aria-label', localize('paradis.designMode.count', "注釈 {0} 件", annotations.length));
 		this.countButton.disabled = annotations.length === 0;
 		this.hint.textContent = picking
 			? localize('paradis.designMode.hint', "ページの要素をクリックしてコメントを付けます（Esc で終了）")
