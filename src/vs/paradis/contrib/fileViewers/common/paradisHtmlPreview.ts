@@ -13,6 +13,18 @@
 export const PARADIS_HTML_PREVIEW_CHANNEL = 'paradisHtmlPreview';
 
 /**
+ * プレビューの配信サーバの相手として受け付ける、この機械の中の名前か（`127.0.0.1`・`localhost`・`::1`）。
+ * `host` は `Host` ヘッダーや転送先の `127.0.0.1:1234` のような形で、ポートと IPv6 の角括弧は外して見る。
+ */
+export function isParadisPreviewLoopbackHost(host: string | undefined): boolean {
+	if (!host) {
+		return false;
+	}
+	const name = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+	return name === '127.0.0.1' || name === 'localhost' || name === '::1';
+}
+
+/**
  * 載せたフォルダーの居場所。
  *
  * **URL ではなく port と token を返す。** リモートに載せた場合、webview から見える host は
