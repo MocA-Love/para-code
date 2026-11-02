@@ -124,13 +124,13 @@ suite('ParadisAgentChatView', () => {
 			reply: text('.paradis-agent-chat-question-reply'),
 			card: text('.paradis-agent-chat-card.async .paradis-agent-chat-card-title'),
 			question: text('.paradis-agent-chat-card.async .paradis-agent-chat-question-text'),
-			submit: container.querySelector<HTMLButtonElement>('.paradis-agent-chat-card.async .paradis-agent-chat-primary')?.textContent,
+			submit: container.querySelector<HTMLElement>('.paradis-agent-chat-card.async .paradis-agent-chat-primary')?.textContent,
 		};
 		container.querySelectorAll<HTMLButtonElement>('.paradis-agent-chat-card.async .paradis-agent-chat-option')[1].click();
 		await new Promise(resolve => setTimeout(resolve, 0));
 		// 1 問目を選ぶと 2 問目へ進む。2 問目は答えずに送る
 		const afterPick = text('.paradis-agent-chat-card.async .paradis-agent-chat-question-text');
-		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-card.async .paradis-agent-chat-primary')!.click();
+		container.querySelector<HTMLElement>('.paradis-agent-chat-card.async .paradis-agent-chat-primary')!.click();
 		await new Promise(resolve => setTimeout(resolve, 0));
 		assert.deepStrictEqual({ before, afterPick, sent: host.sent.map(sent => paradisParseCodexAsyncReply(sent)?.map(reply => [reply.itemId, reply.answer])) }, {
 			before: {
@@ -166,7 +166,7 @@ suite('ParadisAgentChatView', () => {
 			toolLabel: text('.paradis-agent-chat-step.tool .paradis-agent-chat-step-label'),
 			diffRows: text('.paradis-agent-chat-diff-row'),
 			options: text('.paradis-agent-chat-option'),
-			sendDisabled: container.querySelector<HTMLButtonElement>('.paradis-agent-chat-send')?.disabled,
+			sendDisabled: container.querySelector<HTMLElement>('.paradis-agent-chat-send')?.classList.contains('disabled'),
 			notice: text('.paradis-agent-chat-composer-notice.visible'),
 		};
 		container.querySelectorAll<HTMLButtonElement>('.paradis-agent-chat-option')[1].click();
@@ -197,10 +197,10 @@ suite('ParadisAgentChatView', () => {
 		const snapshot = {
 			title: text('.paradis-agent-chat-card.approval .paradis-agent-chat-card-title'),
 			detail: text('.paradis-agent-chat-card.approval .paradis-agent-chat-card-detail'),
-			buttons: text('.paradis-agent-chat-card.approval button'),
+			buttons: text('.paradis-agent-chat-card.approval .monaco-button'),
 			live: text('.paradis-agent-chat-live-label'),
 		};
-		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-card.approval .paradis-agent-chat-primary')!.click();
+		container.querySelector<HTMLElement>('.paradis-agent-chat-card.approval .paradis-agent-chat-primary')!.click();
 		await new Promise(resolve => setTimeout(resolve, 0));
 		assert.deepStrictEqual({ snapshot, approvals: host.approvals }, {
 			snapshot: {
@@ -291,7 +291,7 @@ suite('ParadisAgentChatView', () => {
 		const list = container.querySelector<HTMLElement>('.paradis-agent-chat-list')!;
 		assert.deepStrictEqual([...list.children].filter(child => !child.classList.contains('paradis-agent-chat-notice')).map(child => child.classList.contains('paradis-agent-chat-group')
 			? `group:${child.textContent}`
-			: `card:${[...child.querySelectorAll('button')].map(button => button.textContent).join('/')}`), [
+			: `card:${[...child.querySelectorAll('.monaco-button')].map(button => button.textContent).join('/')}`), [
 			'group:2×Bash',
 			'card:許可/拒否',
 			'group:2×Bash',
@@ -305,7 +305,7 @@ suite('ParadisAgentChatView', () => {
 		const input = container.querySelector<HTMLTextAreaElement>('textarea.paradis-agent-chat-input')!;
 		input.value = 'run the tests';
 		input.dispatchEvent(new InputEvent('input'));
-		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-send')!.click();
+		container.querySelector<HTMLElement>('.paradis-agent-chat-send')!.click();
 		// 送っている間に別のペインへ切り替える（入力欄の文は下書きへ移る）
 		view.setTarget(2, 'other');
 		const draftWhileSending = host.getDraft('pane');
