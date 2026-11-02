@@ -1944,6 +1944,9 @@ export default defineConfig(
 						// PARA-PATCH: globalCompositeBar.ts がアクティビティバー左下の fork のボタン（ファイル転送）の
 						// 差し込み口を読むための逆方向 import。機能に依存しない 1 ファイルだけを許可する
 						'vs/paradis/browser/paradisGlobalActivitySlot.js',
+						// PARA-PATCH: editorParts.ts がスペース切り替えで外したエディタを握る参照カウント
+						// (ParadisRetainedEditors) を使うための逆方向 import。この 1 ファイルだけを許可する
+						'vs/paradis/contrib/workspaceSwitch/browser/paradisRetainedEditors.js',
 						'assert',
 						{
 							'when': 'test',

@@ -8,10 +8,10 @@ import { localize } from '../../../../nls.js';
 import { EditorGroupLayout, GroupActivationReason, GroupDirection, GroupLocation, GroupOrientation, GroupsArrangement, GroupsOrder, IAuxiliaryEditorPart, IEditorGroupContextKeyProvider, IEditorDropTargetDelegate, IEditorGroupsService, IEditorSideGroup, IEditorWorkingSet, IFindGroupScope, IMergeGroupOptions, IEditorWorkingSetOptions, IEditorPart, IModalEditorPart, IEditorGroupActivationEvent, IEditorWorkingSetSaveOptions } from '../../../services/editor/common/editorGroupsService.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-// PARA-PATCH: scope unsaved editors to spaces — import editor-input types used for retained-editor tracking
-import { GroupIdentifier, IEditorPartOptions, SideBySideEditor } from '../../../common/editor.js';
+import { GroupIdentifier, IEditorPartOptions } from '../../../common/editor.js';
+// PARA-PATCH: scope unsaved editors to spaces — retained-editor reference counting lives in a fork file
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
+import { ParadisRetainedEditors } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisRetainedEditors.js';
 import { EditorPart, IEditorPartUIState, MainEditorPart } from './editorPart.js';
 import { IEditorGroupView, IEditorPartsView } from './editor.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -75,8 +75,8 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	// the main window) so this list also acts as a per-window MRU when
 	// filtered by document. See `getMostRecentlyActivePartByDocument`.
 	private mostRecentActiveParts: EditorPart[];
-	// PARA-PATCH: scope unsaved editors to spaces — track retained live inputs and working-set exclusions plus their serialize/retain helpers
-	private readonly retainedEditors = new Map<EditorInput, number>();
+	// PARA-PATCH: scope unsaved editors to spaces — retained live inputs (paradisRetainedEditors.ts) and working-set exclusions
+	private readonly retainedEditors = new ParadisRetainedEditors(() => this.groups);
 	private excludedWorkingSetEditors: ReadonlySet<EditorInput> | undefined;
 
 	shouldSerializeEditor(editor: EditorInput): boolean {
@@ -84,47 +84,11 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	}
 
 	isEditorInputRetained(editor: EditorInput): boolean {
-		return this.retainedEditors.has(editor);
+		return this.retainedEditors.isRetained(editor);
 	}
 
 	retainEditor(editor: EditorInput): IDisposable {
-		const retained = this.collectEditorInputs(editor);
-		for (const input of retained) {
-			this.retainedEditors.set(input, (this.retainedEditors.get(input) ?? 0) + 1);
-		}
-
-		return toDisposable(() => {
-			for (const input of [...retained].reverse()) {
-				const count = this.retainedEditors.get(input);
-				if (count === undefined) {
-					continue;
-				}
-
-				if (count > 1) {
-					this.retainedEditors.set(input, count - 1);
-					continue;
-				}
-
-				this.retainedEditors.delete(input);
-				if (!this.groups.some(group => group.contains(input, { strictEquals: true, supportSideBySide: SideBySideEditor.ANY }))) {
-					input.dispose();
-				}
-			}
-		});
-	}
-
-	private collectEditorInputs(editor: EditorInput, result = new Set<EditorInput>()): ReadonlySet<EditorInput> {
-		if (result.has(editor)) {
-			return result;
-		}
-
-		result.add(editor);
-		if (editor instanceof SideBySideEditorInput) {
-			this.collectEditorInputs(editor.primary, result);
-			this.collectEditorInputs(editor.secondary, result);
-		}
-
-		return result;
+		return this.retainedEditors.retain(editor);
 	}
 
 	constructor(

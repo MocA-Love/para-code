@@ -4,9 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { hash } from '../../../../base/common/hash.js';
 import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceFolder, IWorkspaceFoldersChangeEvent } from '../../../../platform/workspace/common/workspace.js';
 
 /**
@@ -107,4 +109,51 @@ export function paradisTrackHistorySpaces(known: readonly string[], key: string,
 	const evicted = keys.splice(max);
 
 	return { keys, evicted };
+}
+
+/**
+ * スペースの切り替えで、切り替え元へ書き戻す前に履歴から外すものを返す。
+ *
+ * エディタの入れ替えは folders の更新より先に走るため、この時点の履歴には切り替え先の
+ * エディタが紛れ込んでいる（`IParadisHistorySwitchPlan.isForeign` 参照）。
+ */
+export function paradisForeignHistoryEntries<T extends { readonly resource?: URI }>(event: IWorkspaceFoldersChangeEvent, currentFolders: readonly IWorkspaceFolder[], history: readonly T[] | undefined): T[] {
+	const plan = paradisHistorySwitchPlan(event, currentFolders);
+	if (!plan || !history) {
+		return [];
+	}
+
+	return history.filter(entry => {
+		const resource = entry.resource;
+		return !!resource && plan.isForeign(resource);
+	});
+}
+
+/**
+ * スペース別キーが際限なく増えないよう、使ったスペースを記録し、使っていないスペースの履歴を落とす。
+ * `baseKey` は upstream の履歴のキー（`history.entries`）。
+ */
+export function paradisTrackHistorySpace(storageService: IStorageService, baseKey: string, storageKey: string): void {
+	if (storageKey === baseKey) {
+		return; // スペース運用外 (フォルダ無し / マルチルート) は upstream と同じキーなので追跡しない
+	}
+
+	const spacesKey = paradisHistorySpacesKey(baseKey);
+
+	let known: string[] = [];
+	try {
+		const parsed = JSON.parse(storageService.get(spacesKey, StorageScope.WORKSPACE, '[]'));
+		if (Array.isArray(parsed)) {
+			known = parsed.filter(entry => typeof entry === 'string');
+		}
+	} catch (error) {
+		onUnexpectedError(error); // 壊れていても履歴の保存自体は続ける
+	}
+
+	const { keys, evicted } = paradisTrackHistorySpaces(known, storageKey);
+	for (const evictedKey of evicted) {
+		storageService.remove(evictedKey, StorageScope.WORKSPACE);
+	}
+
+	storageService.store(spacesKey, JSON.stringify(keys), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 }
