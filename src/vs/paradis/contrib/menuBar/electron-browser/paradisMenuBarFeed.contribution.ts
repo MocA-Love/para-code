@@ -21,7 +21,7 @@ import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle
 import { Schemas } from '../../../../base/common/network.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
@@ -44,6 +44,7 @@ import {
 	IParadisMenuBarUsageSource,
 	PARADIS_MENU_BAR_CHANNEL,
 	PARADIS_MENU_BAR_ICON_SETTING,
+	PARADIS_MENU_BAR_MENU_SETTINGS,
 	PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
 	ParadisMenuBarRequest,
 	paradisMenuBarInboxFromSnapshot,
@@ -229,7 +230,7 @@ class ParadisMenuBarFeed extends Disposable implements IWorkbenchContribution {
 			return;
 		}
 		this.lastSignature = signature;
-		this.channel.call<{ readonly request?: Exclude<ParadisMenuBarRequest['type'], 'reveal'> } | undefined>('update', [report]).then(result => {
+		this.channel.call<{ readonly request?: Exclude<ParadisMenuBarRequest['type'], 'reveal' | 'setSetting'> } | undefined>('update', [report]).then(result => {
 			// ウィンドウが無い間にメニューで押された操作
 			if (result?.request) {
 				this.handleRequest({ type: result.request, windowId: this.nativeHostService.windowId });
@@ -257,6 +258,12 @@ class ParadisMenuBarFeed extends Disposable implements IWorkbenchContribution {
 				break;
 			case 'openSettings':
 				void this.commandService.executeCommand(PARADIS_OPEN_SETTINGS_DIALOG_COMMAND_ID, PARADIS_MENU_BAR_SETTINGS_SECTION_ID);
+				break;
+			case 'setSetting':
+				// メニューのチェックの項目。書いてよい設定だけ受ける（main も同じ一覧で絞っている）
+				if (PARADIS_MENU_BAR_MENU_SETTINGS.includes(request.key)) {
+					void this.configurationService.updateValue(request.key, request.value, ConfigurationTarget.USER);
+				}
 				break;
 		}
 	}
