@@ -331,6 +331,8 @@ suite('ParadisGithubMetrics', () => {
 			series: core.series,
 			// 4880 / 40 = 122分 > リセットまでの60分なので「枯渇しない」
 			exhaustionEtaMs: core.exhaustionEtaMs,
+			// 残量の推移は直近1時間のサンプルの残量（時刻つき）
+			history: core.history?.map(point => [point.at - now, point.remaining]),
 		}, {
 			resource: 'core',
 			rolling5m: 120,
@@ -338,6 +340,7 @@ suite('ParadisGithubMetrics', () => {
 			perMinute: 40,
 			series: [60, 40, 20],
 			exhaustionEtaMs: undefined,
+			history: [[-180_000, 5000], [-120_000, 4940], [-60_000, 4900], [0, 4880]],
 		});
 	});
 
