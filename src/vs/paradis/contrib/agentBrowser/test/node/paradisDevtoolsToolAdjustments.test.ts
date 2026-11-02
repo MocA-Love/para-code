@@ -241,6 +241,21 @@ suite('Paradis devtools tool adjustments', () => {
 		});
 	});
 
+	test('keeping a snapshot drops the kept snapshots of other panes that have expired', () => {
+		const response = text(`## Latest page snapshot\n${'uid=1_1 button "x"\n'.repeat(2000)}`);
+		let now = 0;
+		const cache = new ParadisSnapshotCache(() => now);
+		const child = {};
+		const kept = () => [...(cache as unknown as { readonly entries: ReadonlyMap<string, unknown> }).entries.keys()];
+		cache.remember('old', response, child, 1, cache.epoch('old'));
+		now = 30_000;
+		cache.remember('recent', response, child, 1, cache.epoch('recent'));
+		const before = kept();
+		now = 70_000;
+		cache.remember('new', response, child, 1, cache.epoch('new'));
+		assert.deepStrictEqual({ before, after: kept() }, { before: ['old', 'recent'], after: ['recent', 'new'] });
+	});
+
 	test('a kept snapshot is returned only to the same child process and generation, and a call that outlived a forget keeps nothing', () => {
 		const response = text(`## Latest page snapshot\n${'uid=1_1 button "x"\n'.repeat(2000)}`);
 		const cache = new ParadisSnapshotCache(() => 0);

@@ -331,6 +331,22 @@ suite('paradisExtensionInputGuard', () => {
 		});
 	});
 
+	test('a detached session is forgotten, so auto-attach is asked again for a later session with the same id', async () => {
+		const electronDebugger = new EventEmitter();
+		const webContents = Object.assign(new EventEmitter(), { mainFrame: { url: 'https://example.test/', framesInSubtree: [] }, focusedFrame: null, debugger: electronDebugger });
+		const sent: string[] = [];
+		const tab = paradisInputGuardTab({
+			webContents: webContents as never,
+			debugger: { registerCommandInterceptor: () => ({ dispose() { } }), sendCommandRaw: async (method: string, _params?: unknown, sessionId?: string) => { sent.push(`${method}@${sessionId}`); return {}; } } as never,
+		});
+		await tab.attachChildren?.('S-1');
+		await tab.attachChildren?.('S-1');
+		electronDebugger.emit('message', {}, 'Target.detachedFromTarget', { sessionId: 'S-1' });
+		await tab.attachChildren?.('S-1');
+		webContents.emit('destroyed');
+		assert.deepStrictEqual(sent, ['Target.setAutoAttach@S-1', 'Target.setAutoAttach@S-1']);
+	});
+
 	test('pending upstream commands on a frame session end when the frame turns into an extension page and is detached', async () => {
 		const electronDebugger = new EventEmitter();
 		const webContents = Object.assign(new EventEmitter(), { mainFrame: { url: 'https://example.test/', framesInSubtree: [] }, focusedFrame: null, debugger: electronDebugger });

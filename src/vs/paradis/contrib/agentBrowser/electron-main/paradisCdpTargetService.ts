@@ -45,7 +45,6 @@ import {
 } from '../common/paradisAgentBrowser.js';
 import {
 	PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_INTERVAL_MS,
-	PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_MAX_VIEWS,
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
@@ -1190,7 +1189,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	}
 
 	/** When each view was last nudged ahead of input, so a burst of mouse and key events nudges it once. */
-	private readonly inputFrameNudges = new Map<string, number>();
+	private readonly inputFrameNudges = new WeakMap<BrowserView, number>();
 
 	/**
 	 * Let the page draw a frame right before agent input reaches it. The periodic keepalive only
@@ -1198,16 +1197,14 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	 * other apps, sits at about 1fps in between, so locators waiting on requestAnimationFrame or an
 	 * IntersectionObserver time out and the click reports "not interactive".
 	 */
-	private nudgeFrameBeforeInput(viewId: string, view: BrowserView): void {
+	private nudgeFrameBeforeInput(view: BrowserView): void {
 		const now = Date.now();
-		const last = this.inputFrameNudges.get(viewId);
+		// ビューを鍵にするので、閉じたビューの分は台帳に残らない
+		const last = this.inputFrameNudges.get(view);
 		if (last !== undefined && now - last < PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS) {
 			return;
 		}
-		if (this.inputFrameNudges.size >= PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_MAX_VIEWS) {
-			this.inputFrameNudges.clear();
-		}
-		this.inputFrameNudges.set(viewId, now);
+		this.inputFrameNudges.set(view, now);
 		try {
 			view.nudgeHiddenFrame();
 		} catch {
@@ -1278,7 +1275,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		} catch {
 			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state is unavailable' };
 		}
-		this.nudgeFrameBeforeInput(descriptor.viewId, view);
+		this.nudgeFrameBeforeInput(view);
 
 		// エージェントが操作していることを見せる合成カーソル。実際の配送より先にカーソルを
 		// 目標座標へ滑らせ、着いてから配送することで、ホバーが「カーソルが着いた瞬間」に

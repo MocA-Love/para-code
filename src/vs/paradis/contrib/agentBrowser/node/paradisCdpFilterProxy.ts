@@ -1838,6 +1838,8 @@ export function paradisProxyPageUpgrade(
 							const detachedSessionId = boundedIdentifier(response.params?.sessionId);
 							if (detachedSessionId !== undefined) {
 								completeForwardedRequestBarriersOfSession(forwardedRequestBarriers, detachedSessionId);
+								// ブラウザの経路（forgetSessionOnly）と同じく、切り離された子セッションの台帳を忘れる
+								isolatedWorlds.forgetSession(detachedSessionId);
 								if (detachedSessions.size >= MAX_CDP_ROUTING_ENTRIES) {
 									detachedSessions.clear();
 								}
@@ -2170,6 +2172,9 @@ export async function paradisProxyBrowserUpgrade(
 				targetUrls.delete(current);
 				targetUrlCheckedAt.delete(current);
 				documentTargetIds.delete(current);
+				// 消えたターゲットの移動の時刻と文書の場所も忘れる（残すと上限に達して、新しいターゲットの移動の確かめが抜ける）
+				movedAt.delete(current);
+				documentLocations.delete(current);
 				for (const [child, parent] of childToParent) {
 					// A page the user shared is never dropped because its opener went away.
 					if (parent === current && !visited.has(child) && !bound.has(child)) {
