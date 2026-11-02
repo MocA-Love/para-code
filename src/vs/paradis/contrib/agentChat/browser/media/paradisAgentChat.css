@@ -892,8 +892,14 @@
 	gap: var(--vscode-spacing-size80);
 }
 
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-spacer {
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-busy {
 	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-menu {
