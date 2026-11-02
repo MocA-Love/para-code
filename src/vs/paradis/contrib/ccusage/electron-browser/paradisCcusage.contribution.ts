@@ -7,7 +7,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ccusage ダッシュボードの登録入り口。paradis.electron-browser.contribution.ts から import される。
-// - ダッシュボード EditorPane / EditorInput シリアライザの登録
 // - コマンド `paradis.ccusage.showDashboard`(コマンドパレット対応)
 // - ステータスバー右端(通知ベルの左)の ccusage ボタン(今日のコストを定期表示、クリックでダッシュボード)
 // - 設定 `paradis.ccusage.*` のスキーマ登録
@@ -20,17 +19,12 @@ import { Categories } from '../../../../platform/action/common/actionCommonCateg
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
-import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { PARADIS_CCUSAGE_SETTING_ARCHIVE_DIRS, PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS } from '../common/paradisCcusage.js';
 import { ParadisCcusageClient, PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH } from './paradisCcusageClient.js';
-import { ParadisCcusageEditor } from './paradisCcusageEditor.js';
-import { ParadisCcusageInput, ParadisCcusageInputSerializer, PARADIS_CCUSAGE_EDITOR_ID, PARADIS_CCUSAGE_INPUT_TYPE_ID } from './paradisCcusageInput.js';
 import { paradisOpenUsageDashboard } from '../../usageDashboard/electron-browser/paradisUsageDashboard.contribution.js';
 
 const SETTING_STATUS_BAR_ENABLED = 'paradis.ccusage.statusBar.enabled';
@@ -51,24 +45,6 @@ export function paradisCcusageStatusPollDelay(consecutiveFailures: number): numb
 	return STATUS_POLL_INTERVAL_MS * Math.pow(2, Math.min(Math.max(consecutiveFailures, 0), STATUS_MAX_BACKOFF_STEPS));
 }
 
-// ---------- editor pane / serializer ----------
-
-Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(
-		ParadisCcusageEditor,
-		PARADIS_CCUSAGE_EDITOR_ID,
-		localize('paradis.ccusage.editorName', "ccusage ダッシュボード")
-	),
-	[
-		new SyncDescriptor(ParadisCcusageInput)
-	]
-);
-
-Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
-	PARADIS_CCUSAGE_INPUT_TYPE_ID,
-	ParadisCcusageInputSerializer
-);
-
 // ---------- command ----------
 
 registerAction2(class ShowCcusageDashboardAction extends Action2 {
@@ -82,9 +58,7 @@ registerAction2(class ShowCcusageDashboardAction extends Action2 {
 	}
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
-		// 3ダッシュボードは統合ダイアログの1タブになったので、こちらの入口からも
-		// 同じダイアログを ccusage タブで開く（エディタタブとしての実装も残っているが、
-		// 既定の導線はダイアログ側に一本化する）
+		// 統合のモーダルの使用量を ccusage のタブで開く
 		paradisOpenUsageDashboard(accessor, 'ccusage');
 	}
 });
