@@ -72,13 +72,14 @@ suite('ParadisPresetService space switch', () => {
 			upcastPartial<IParadisAgentStatusStore>({}),
 			upcastPartial<IParadisAuxiliaryWindowScopeService>({ resolveGroup: () => ({ kind: 'managed', stateKey: pinnedTo ?? state.activeStateKey }) }),
 			upcastPartial<IParadisWorkspaceSwitchService>({
+				onDidChangeRepositories: Event.None,
 				get activeStateKey() { return state.activeStateKey; },
 				repositories: [
 					upcastPartial<IParadisWorkspaceRepository>({ id: 'space-a', name: 'a', uri: URI.file('/repos/a') }),
 					upcastPartial<IParadisWorkspaceRepository>({ id: 'space-c', name: 'c', uri: URI.file('/repos/c') }),
 				],
 			}),
-			upcastPartial<IParadisWorktreeService>({ getWorktrees: () => [] }),
+			upcastPartial<IParadisWorktreeService>({ onDidChangeWorktrees: Event.None, getWorktrees: () => [] }),
 		));
 		// フォルダの監視を張らせないよう、サービスを作った後でスペース A のフォルダを開いた状態にする。
 		state.folders = [URI.file('/repos/a')];
