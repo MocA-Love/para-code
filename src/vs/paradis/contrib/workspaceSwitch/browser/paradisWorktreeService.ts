@@ -57,6 +57,17 @@ export function paradisIsPresentWorktree(stateKey: string, repositoryIds: readon
 	return false;
 }
 
+/**
+ * git の一覧から消えた既知のワークツリーのうち、フォルダーがまだ残っている（`folderExists` が true）ものを、
+ * 自動で外さずに一覧へ残す行にする。途中で止まった削除の残骸で、Workspaces ビューが「残ったフォルダーを削除」を
+ * 出す。フォルダーが無い、または有無を確かめられなかったときは undefined（従来どおり missing の扱い）。
+ */
+export function paradisLeftoverWorktreeEntry(repositoryId: string, known: { readonly path: string; readonly name: string }, folderExists: boolean | undefined): IParadisWorktree | undefined {
+	return folderExists === true
+		? { repositoryId, name: known.name, uri: URI.parse(known.path), missing: true, leftoverFolder: true }
+		: undefined;
+}
+
 /** Auto-removal is safe only for an inactive missing worktree with no retained scope data. */
 export function paradisShouldAutoRetireMissingWorktree(autoRemove: boolean, hasRetirementData: boolean, isActive: boolean): boolean {
 	return autoRemove && !hasRetirementData && !isActive;
@@ -373,6 +384,13 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 						continue;
 					}
 					const missingStateKey = paradisWorktreeStateKey(URI.parse(known.path));
+					// git の登録は無いのにフォルダーが残っている（途中で止まった削除の残骸）。自動で外すと
+					// 消す入口が無くなるので、一覧に残して「フォルダーを削除」を出せるようにする。
+					const leftover = paradisLeftoverWorktreeEntry(repository.id, known, await this.probeExists(URI.parse(known.path)));
+					if (leftover) {
+						list.push(leftover);
+						continue;
+					}
 					const hasRetirementData = autoRemove ? await this.workspaceSwitchService.hasScopeRetirementData(missingStateKey) : false;
 					if (canAutoRetire && paradisShouldAutoRetireMissingWorktree(autoRemove, hasRetirementData, this.workspaceSwitchService.activeStateKey === missingStateKey)) {
 						const removed = await paradisDiscardScopeBeforeRemovingKnownWorktree(

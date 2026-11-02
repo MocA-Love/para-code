@@ -318,6 +318,12 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		if (!repository) {
 			return;
 		}
+		// 残骸のフォルダーを直接消してよいのは、この画面が一覧に持っているワークツリーだけ（コマンドへ任意の
+		// URI を渡されても、一覧に無いフォルダーを消す経路に入らないように）。フラグも渡された引数ではなく一覧の値を見る。
+		const listedWorktree = worktreeService.getWorktrees(repository.id).find(candidate => isEqual(candidate.uri, uri));
+		// git の登録が消えてフォルダーだけ残った行（途中で止まった削除の残骸）。git には頼めないので、
+		// 強制削除の同意を最初の確認で取り、残骸の削除の経路で消す。後片付けのスクリプトは走らせない。
+		const leftoverFolder = listedWorktree?.missing === true && listedWorktree.leftoverFolder === true;
 
 		// teardown スクリプトがあれば、削除の確認の 1 枚で「実行するか」も選ばせる。以前は削除の確認の後に
 		// 別の承認ダイアログを出しており、そこの［キャンセル］が「削除をやめる」ではなく「teardown を飛ばして
@@ -325,11 +331,13 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		// 設定を読めないとき（.paracode.json が壊れている等）はチェックを出さず、従来どおり削除の途中で
 		// teardown を試みて失敗の確認に回す（読めないことを黙って「teardown 無し」と扱わない）。
 		let teardown: { readonly script: string; readonly timeoutMinutes: number | undefined } | undefined;
-		try {
-			const config = await paradisReadWorkspaceLifecycleConfig(fileService, repository.uri);
-			teardown = config.teardownScript ? { script: config.teardownScript, timeoutMinutes: config.teardownTimeoutMinutes } : undefined;
-		} catch (error) {
-			logService.warn('[ParadisRemoveWorktree] could not read the teardown script before confirming', error);
+		if (!leftoverFolder) {
+			try {
+				const config = await paradisReadWorkspaceLifecycleConfig(fileService, repository.uri);
+				teardown = config.teardownScript ? { script: config.teardownScript, timeoutMinutes: config.teardownTimeoutMinutes } : undefined;
+			} catch (error) {
+				logService.warn('[ParadisRemoveWorktree] could not read the teardown script before confirming', error);
+			}
 		}
 		const teardownDetail = teardown === undefined
 			? ''
@@ -347,7 +355,11 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				? localize('paradis.workspaceSwitch.removeWorktreeAgentRequest', "この削除は、あなたではなくターミナル「{0}」のエージェントからの依頼です。\n\n", options.requestedByAgent)
 				: '')
 				// allow-any-unicode-next-line
-				+ localize('paradis.workspaceSwitch.removeWorktreeDetail', "パス: {0}\n\nディスク上の作業ツリーを削除します。未コミットの変更は失われます。", uri.fsPath)
+				+ (leftoverFolder
+					// allow-any-unicode-next-line
+					? localize('paradis.workspaceSwitch.removeLeftoverFolderDetail', "パス: {0}\n\n途中で止まった削除で残ったフォルダーを、中身ごと削除します。git はこのフォルダーをもうワークツリーとして扱っていません。", uri.fsPath)
+					// allow-any-unicode-next-line
+					: localize('paradis.workspaceSwitch.removeWorktreeDetail', "パス: {0}\n\nディスク上の作業ツリーを削除します。未コミットの変更は失われます。", uri.fsPath))
 				+ teardownDetail,
 			// allow-any-unicode-next-line
 			primaryButton: localize('paradis.workspaceSwitch.removeWorktreeConfirmAction', "削除"),
@@ -453,7 +465,8 @@ class ParadisRemoveWorktreeAction extends Action2 {
 					const removeRequest: IParadisRemoveWorktreeRequest = {
 						repoPath: path(repository.uri),
 						worktreePath: path(uri),
-						force: false
+						force: leftoverFolder,
+						allowLeftoverCleanup: leftoverFolder
 					};
 
 					// 削除は大きな作業ツリーで数分かかるので、実行中であることを見せる
@@ -462,9 +475,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 						// allow-any-unicode-next-line
 						title: localize('paradis.workspaceSwitch.removeWorktreeProgress', "ワークツリー「{0}」を削除しています…", worktree.name),
 					}, task);
-					// 残骸のフォルダーを直接消してよいのは、この画面が知っているワークツリーだけ（コマンドへ任意の
-					// URI を渡されても、一覧に無いフォルダーを消す経路に入らないように）。
-					const knownWorktree = worktreeService.getWorktrees(repository.id).some(candidate => isEqual(candidate.uri, uri));
+					const knownWorktree = listedWorktree !== undefined;
 
 					let removedFromDisk = false;
 					try {

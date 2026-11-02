@@ -76,6 +76,11 @@ export interface IParadisWorktree {
 	/** 作業ツリーのディレクトリが見つからない (自動削除OFFで残っている) */
 	readonly missing?: boolean;
 	/**
+	 * git の登録（`.git/worktrees/<name>`）は無いのに、フォルダーはディスクに残っている。途中で止まった
+	 * 削除の残骸で、`missing` と一緒に立つ。Workspaces ビューは「フォルダーを削除」を出す。
+	 */
+	readonly leftoverFolder?: boolean;
+	/**
 	 * git のメタデータのディレクトリ (`<repo>/.git/worktrees/<name>`)。ディスクから検出できたときだけ入る。
 	 * Workspaces ビューが stage・commit・checkout を知るための非再帰の監視に使う。
 	 */
