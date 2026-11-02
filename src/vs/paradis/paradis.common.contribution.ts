@@ -22,6 +22,7 @@ import './contrib/terminalHistorySuggest/browser/paradisTerminalSuggestDownKey.c
 import './contrib/terminalHistoryPanel/browser/paradisTerminalCommandRecordService.js';
 import './contrib/terminalHistoryPanel/browser/paradisTerminalHistoryPanel.contribution.js';
 import './contrib/watermark/browser/paradisWatermark.contribution.js';
+import './contrib/focusRing/browser/paradisFocusRing.contribution.js';
 import './contrib/notifications/browser/paradisNotificationsSettings.js';
 import './contrib/resourceMonitor/browser/paradisResourceMonitorSettings.contribution.js';
 import './contrib/limitsMonitor/browser/paradisLimitsMonitorSettings.contribution.js';
