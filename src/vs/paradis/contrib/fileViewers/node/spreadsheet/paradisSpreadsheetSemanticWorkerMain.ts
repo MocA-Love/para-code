@@ -13,41 +13,21 @@
 // パッケージ版でもこの場所へ出力されるよう、`build/next/index.ts` の入口一覧に載せてある。
 
 import { parentPort } from 'worker_threads';
-import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import type { IParadisSemanticDiagnosticsSummary } from '../../common/paradisSpreadsheet.js';
-import type { IParadisOfficeSemanticWorkerReply, ParadisOfficeSemanticWorkerMessage } from '../office/paradisOfficeSemanticWorkerQueue.js';
+import { runParadisWorkerLoop } from '../../../../node/paradisWorkerLoop.js';
 import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { collectParadisSpreadsheetSemanticDiagnostics, unavailableParadisSpreadsheetSemanticDiagnostics } from './paradisSpreadsheetSemanticDiagnostics.js';
 import type { IParadisSpreadsheetSemanticWorkerRun } from './paradisSpreadsheetSemanticWorkerBackend.js';
 
-const active = new Map<number, CancellationTokenSource>();
-
-async function handle(id: number, request: IParadisSpreadsheetSemanticWorkerRun): Promise<void> {
-	const cancellation = new CancellationTokenSource();
-	active.set(id, cancellation);
-	let reply: IParadisOfficeSemanticWorkerReply<IParadisSemanticDiagnosticsSummary>;
-	// 解析の中で握られた想定外の例外の種類。返事に載せて、shared process が Sentry へ送る。
-	let cause: string | undefined;
-	try {
-		const result = await collectParadisSpreadsheetSemanticDiagnostics(request.bytes, cancellation.token, error => { cause = paradisOfficeWorkerFailureKind(error); });
-		reply = { kind: 'result', id, result, ...(cause ? { cause } : {}) };
-	} catch (error) {
-		reply = { kind: 'result', id, result: unavailableParadisSpreadsheetSemanticDiagnostics('failed'), cause: paradisOfficeWorkerFailureKind(error) };
-	} finally {
-		active.delete(id);
-		cancellation.dispose();
-	}
-	parentPort?.postMessage(reply);
-}
-
-parentPort?.on('message', (message: ParadisOfficeSemanticWorkerMessage<IParadisSpreadsheetSemanticWorkerRun>) => {
-	if (message.op === 'cancel') {
-		active.get(message.id)?.cancel();
-		return;
-	}
-	if (message.request?.bytes instanceof Uint8Array) {
-		void handle(message.id, message.request);
-	} else {
-		parentPort?.postMessage({ kind: 'result', id: message.id, result: unavailableParadisSpreadsheetSemanticDiagnostics('invalid') });
-	}
+runParadisWorkerLoop<IParadisSpreadsheetSemanticWorkerRun, IParadisSemanticDiagnosticsSummary>(parentPort, {
+	accepts: (request): request is IParadisSpreadsheetSemanticWorkerRun => !!request && typeof request === 'object' && (request as { readonly bytes?: unknown }).bytes instanceof Uint8Array,
+	invalid: unavailableParadisSpreadsheetSemanticDiagnostics('invalid'),
+	failed: unavailableParadisSpreadsheetSemanticDiagnostics('failed'),
+	failureKind: paradisOfficeWorkerFailureKind,
+	run: async (request, token) => {
+		// 解析の中で握られた想定外の例外の種類。返事に載せて、shared process が Sentry へ送る。
+		let cause: string | undefined;
+		const result = await collectParadisSpreadsheetSemanticDiagnostics(request.bytes, token, error => { cause = paradisOfficeWorkerFailureKind(error); });
+		return { result, ...(cause ? { cause } : {}) };
+	},
 });

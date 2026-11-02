@@ -16,8 +16,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { PARADIS_SPREADSHEET_CHANNEL, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService, type IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
-import type { IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
+import { PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService, type IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import type { ParadisSpreadsheetParseWorkerResult } from './spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
 /** 詳しい解析を受け持つ口（テストで差し替えられるように）。 */
@@ -112,8 +111,9 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 	call<T>(_ctx: string, command: string, arg?: unknown, cancellationToken: CancellationToken = CancellationToken.None): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			// 表示の投影だけを返す。第 2 引数は画像の画素の上限（数でなければ既定値）。診断の指定は通さない。
-			case 'parseWorkbook': return this.parseWorkbook(String(args[0]), typeof args[1] === 'number' ? args[1] : undefined, cancellationToken) as Promise<T>;
+			// 表示の投影だけを返す。第 1 引数はブックのバイト列（VSBuffer。古い呼び出し側の base64 の文字列も受ける）、
+			// 第 2 引数は画像の画素の上限（数でなければ既定値）。診断の指定は通さない。
+			case 'parseWorkbook': return this.parseWorkbook(args[0], typeof args[1] === 'number' ? args[1] : undefined, cancellationToken) as Promise<T>;
 			case 'collectSemanticDiagnostics': return this.collectSemanticDiagnostics(args[0], cancellationToken) as Promise<T>;
 			// 表示を返した後で、同じバイト列の EMF・WMF を worker で SVG にする。
 			case 'convertMetafiles': return this.convertMetafiles(args[0], cancellationToken) as Promise<T>;
@@ -130,30 +130,45 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 	}
 
 	/**
-	 * worker が使えれば worker で解析し、セルの書式を表にまとめた形で返す（renderer が元の形に戻す）。
-	 * worker を起動できない・落ちた・混んでいるときは、今までどおり本体で解析する。
+	 * worker が使えれば worker で解析し、セルの書式を表にまとめた形の JSON のバイト列を開かずにそのまま返す
+	 * （renderer が戻す）。worker を起動できない・落ちた・混んでいるときは、今までどおり本体で解析する。
+	 * ブックが大きすぎて worker で解析できなかったとき（ヒープの上限・締め切り）は、本体で上限なしに解析し直さずに断る。
 	 */
-	private async parseWorkbook(base64: string, imagePixelBudget: number | undefined, token: CancellationToken): Promise<IParadisWorkbookData | IParadisPackedWorkbookData> {
+	private async parseWorkbook(input: unknown, imagePixelBudget: number | undefined, token: CancellationToken): Promise<IParadisWorkbookData | VSBuffer> {
+		const bytes = input instanceof VSBuffer ? Buffer.from(input.buffer.buffer, input.buffer.byteOffset, input.buffer.byteLength)
+			: input instanceof Uint8Array ? Buffer.from(input.buffer, input.byteOffset, input.byteLength)
+				: Buffer.from(typeof input === 'string' ? input : String(input), 'base64');
 		const backend = await this.getParseBackend();
-		const bytes = backend ? Buffer.from(base64, 'base64') : undefined;
-		if (backend && bytes && !isCompoundFile(bytes)) {
+		if (backend && !isCompoundFile(bytes)) {
 			const result = await backend.parse(bytes, imagePixelBudget, token);
 			switch (result.kind) {
-				case 'workbook':
-					return result.workbook;
+				case 'workbookJson':
+					return VSBuffer.wrap(result.json);
 				case 'error':
 					throw new Error(result.message);
 				case 'unavailable':
 					if (result.reason === 'cancelled') {
 						throw new CancellationError();
 					}
-					// `failed`・`busy`・`limitExceeded`（締め切り・worker のヒープの上限）は、今までどおり本体で解析する。
-					// worker を入れる前は本体の解析に締め切りも上限も無く、開けていたブックを断らないため。
+					if (result.reason === 'limitExceeded') {
+						const error = new Error('The workbook is too large to parse.');
+						error.name = PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME;
+						throw error;
+					}
+					// `failed`（worker を起動できない・落ちた）と `busy`（混んでいる）は、今までどおり本体で解析する。
+					// worker を起動できない配布版でも Excel を開けるように（起動の失敗は worker の見張りが Sentry へ送る）。
 					break;
 			}
 		}
+		if (token.isCancellationRequested) {
+			throw new CancellationError();
+		}
 		const service = await this.getService();
-		return service.parseWorkbook(base64, imagePixelBudget);
+		// 古い呼び出し側の base64 はそのまま渡す。バイト列で受けたものは、base64 に戻さずにバイト列のまま解析する。
+		if (typeof input === 'string' || !service.parseWorkbookBytes) {
+			return service.parseWorkbook(typeof input === 'string' ? input : bytes.toString('base64'), imagePixelBudget);
+		}
+		return service.parseWorkbookBytes(bytes, imagePixelBudget);
 	}
 
 	private getParseBackend(): Promise<(IParadisSpreadsheetParseBackend & Partial<IDisposable>) | undefined> {
