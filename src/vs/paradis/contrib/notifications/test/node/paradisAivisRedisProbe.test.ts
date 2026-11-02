@@ -41,13 +41,13 @@ function fakeRedis(values: ReadonlyMap<string, string>): { readonly server: Serv
 suite('ParadisAivisRedisKeyProbe', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('asks every GET over one connection and sends AUTH and SELECT only once', async () => {
+	test('asks every GET over one connection, even when called at the same time, and sends AUTH and SELECT only once', async () => {
 		const redis = fakeRedis(new Map([['lock', '1']]));
 		await new Promise<void>(resolve => redis.server.listen(0, '127.0.0.1', resolve));
 		try {
 			const port = (redis.server.address() as AddressInfo).port;
 			const probe = await ParadisAivisRedisKeyProbe.create({ REDIS_URL: `redis://user:secret@127.0.0.1:${port}/2` });
-			const answers = [await probe?.has('lock'), await probe?.has('other'), await probe?.has('lock')];
+			const answers = [await probe?.has('lock'), ...await Promise.all([probe?.has('other'), probe?.has('lock')])];
 			probe?.dispose();
 			assert.deepStrictEqual({ answers, connections: redis.connections.length, commands: redis.commands }, {
 				answers: [true, false, true],
