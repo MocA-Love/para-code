@@ -79,8 +79,10 @@
 	outline-offset: -2px;
 }
 
+/* allow-any-unicode-next-line */
+/* 行は文字に合わせて伸ばしてある。それでも収まらないときは切る（下寄せのまま見せると上の行に重なる）。 */
 .paradis-spreadsheet-virtual-cell-wrap {
-	overflow: visible;
+	overflow: hidden;
 	white-space: pre-wrap;
 	overflow-wrap: break-word;
 }
@@ -119,7 +121,9 @@
 
 /* allow-any-unicode-next-line */
 /* 縦位置。div では vertical-align が効かないので、縦に並べて寄せる（既定は Excel と同じ下寄せ）。 */
-.paradis-spreadsheet-virtual-cell:not(.paradis-spreadsheet-virtual-cell-vertical):not(.paradis-spreadsheet-virtual-colhead):not(.paradis-spreadsheet-virtual-rowhead):not(.paradis-spreadsheet-virtual-corner) {
+/* allow-any-unicode-next-line */
+/* :where で除外の条件の優先度を 0 にする（そうしないと下の上寄せ・中央寄せのクラスに勝ってしまう）。 */
+.paradis-spreadsheet-virtual-cell:where(:not(.paradis-spreadsheet-virtual-cell-vertical):not(.paradis-spreadsheet-virtual-colhead):not(.paradis-spreadsheet-virtual-rowhead):not(.paradis-spreadsheet-virtual-corner)) {
 	display: flex;
 	flex-direction: column;
 	justify-content: flex-end;

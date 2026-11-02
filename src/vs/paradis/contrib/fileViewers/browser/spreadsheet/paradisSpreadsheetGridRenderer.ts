@@ -49,6 +49,8 @@ export interface ParadisSpreadsheetGridCell {
 	readonly baseDiagonal?: ParadisSpreadsheetGridDiagonal;
 	readonly conditionalDiagonal?: ParadisSpreadsheetGridDiagonal;
 	readonly media?: ParadisSpreadsheetGridMedia;
+	/** 行番号・列記号の見出しのセル。コピーの対象にせず、aria では見出しとして読ませる。 */
+	readonly header?: 'row' | 'column';
 	/** 空いた隣のセルへ文字をはみ出させる（DOM の表の `applyOverflow` と同じ決まり）。幅は倍率を掛ける前の寸法。 */
 	readonly overflow?: ParadisSpreadsheetGridOverflow;
 }
@@ -113,6 +115,9 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	private readonly scrollListener: () => void;
 	private readonly keyListener: (event: KeyboardEvent) => void;
 	private readonly copyListener: (event: ClipboardEvent) => void;
+	private readonly pointerListener: (event: MouseEvent) => void;
+	/** 描くときに切った（とても長い）セルの元の文字。コピーでは切らずに渡す。 */
+	private readonly fullTexts = new Map<string, string>();
 	private resizeObserver: IDisposable | undefined;
 	private disposed = false;
 	private rendering = false;
@@ -156,9 +161,11 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		};
 		this.keyListener = event => this.onKeyDown(event);
 		this.copyListener = event => this.onCopy(event);
+		this.pointerListener = event => this.onPointerDown(event);
 		container.addEventListener('scroll', this.scrollListener, { passive: true });
 		container.addEventListener('keydown', this.keyListener);
 		container.addEventListener('copy', this.copyListener);
+		container.addEventListener('mousedown', this.pointerListener);
 		this.attachRemeasureTriggers();
 	}
 
@@ -235,6 +242,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.container.removeEventListener('scroll', this.scrollListener);
 		this.container.removeEventListener('keydown', this.keyListener);
 		this.container.removeEventListener('copy', this.copyListener);
+		this.container.removeEventListener('mousedown', this.pointerListener);
 		this.resizeObserver?.dispose();
 		for (const schedule of this.mediaSchedules.values()) {
 			schedule.dispose();
@@ -311,7 +319,6 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		let rendered = this.cells.get(key);
 		if (!rendered) {
 			const element = this.cellPool.pop() ?? this.document.createElement('div');
-			element.setAttribute('role', 'gridcell');
 			rendered = { element, pane: paneKind, extent: cellExtent(cell) };
 			this.cells.set(key, rendered);
 			pane.appendChild(element);
@@ -350,7 +357,18 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		}
 		element.dataset.row = String(cell.row);
 		element.dataset.column = String(cell.column);
+		element.setAttribute('role', cell.header === 'column' ? 'columnheader' : cell.header === 'row' ? 'rowheader' : 'gridcell');
+		if (cell.header) {
+			element.dataset.header = cell.header;
+		} else {
+			delete element.dataset.header;
+		}
 		element.textContent = boundedText(cell.text);
+		if (typeof cell.text === 'string' && cell.text.length > MAXIMUM_CELL_TEXT) {
+			this.fullTexts.set(key, cell.text);
+		} else {
+			this.fullTexts.delete(key);
+		}
 		if (cell.overflow && (cell.overflow.leftRoom > 0 || cell.overflow.rightRoom > 0)) {
 			// 文字を span に包んでおき、全部の描画の後でまとめて測る（DOM の表の `createOverflowSpan` と同じ形）
 			const span = this.document.createElement('span');
@@ -502,6 +520,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			rendered.element.remove();
 			rendered.element.removeAttribute('id');
 			this.cells.delete(key);
+			this.fullTexts.delete(key);
 			if (this.cellPool.length < MAXIMUM_CELL_POOL_SIZE) {
 				this.cellPool.push(rendered.element);
 			}
@@ -564,12 +583,32 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		if (selection && !selection.isCollapsed && selection.toString().length > 0) {
 			return;
 		}
-		const focused = [...this.cells.values()].find(rendered => Number(rendered.element.dataset.row) === this.focused.row && Number(rendered.element.dataset.column) === this.focused.column);
-		if (!focused || !event.clipboardData) {
+		const entry = [...this.cells].find(([, rendered]) => Number(rendered.element.dataset.row) === this.focused.row && Number(rendered.element.dataset.column) === this.focused.column);
+		// 見出し・空のセルではコピーを横取りしない（手元のクリップボードを空で上書きしない）
+		if (!entry || entry[1].element.dataset.header || !event.clipboardData) {
 			return;
 		}
-		event.clipboardData.setData('text/plain', focused.element.textContent ?? '');
+		const value = this.fullTexts.get(entry[0]) ?? entry[1].element.textContent ?? '';
+		if (!value) {
+			return;
+		}
+		event.clipboardData.setData('text/plain', value);
 		event.preventDefault();
+	}
+
+	/** クリックしたセルにフォーカスを移す（キーの移動とコピーの起点になる）。 */
+	private onPointerDown(event: MouseEvent): void {
+		const target = event.target as Element | null;
+		const element = target?.closest?.('.paradis-spreadsheet-virtual-cell') as HTMLElement | null | undefined;
+		if (!element || !this.container.contains(element)) {
+			return;
+		}
+		const row = Number(element.dataset.row);
+		const column = Number(element.dataset.column);
+		if (Number.isSafeInteger(row) && Number.isSafeInteger(column)) {
+			this.focused = { row, column };
+			this.updateFocusedCell();
+		}
 	}
 
 	private scrollFocusedCellIntoView(): void {
@@ -642,8 +681,10 @@ function isSafeGradient(value: string): boolean {
 	return value.length <= 1_024 && /^linear-gradient\([#%(),.\s\w-]*\)$/i.test(value) && !/url\s*\(|expression\s*\(|javascript:|image|element\s*\(/i.test(value);
 }
 
+const MAXIMUM_CELL_TEXT = 32_768;
+
 function boundedText(value: string): string {
-	return typeof value === 'string' ? value.slice(0, 32_768) : '';
+	return typeof value === 'string' ? value.slice(0, MAXIMUM_CELL_TEXT) : '';
 }
 
 function applySafeStyle(element: HTMLElement, style: Readonly<Record<string, string>> | undefined): void {

@@ -11,7 +11,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisCellData, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
 import { ParadisSpreadsheetGridRenderer } from '../../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
-import { createVirtualGridIndex, createVirtualGridViewport, legacyGridTile, measureVirtualGridContentRows, relayoutVirtualGrid, virtualGridLayoutFrame, virtualGridRowTops } from '../../electron-browser/paradisSpreadsheetEditor.js';
+import { collapseBorders, createVirtualGridIndex, createVirtualGridViewport, legacyGridTile, measureVirtualGridContentRows, relayoutVirtualGrid, virtualGridLayoutFrame, virtualGridRowTops } from '../../electron-browser/paradisSpreadsheetEditor.js';
 import { applyOverflow, buildPageBreakOverlay, buildSheetTableDom, describeSheetPageBreaks } from '../../electron-browser/paradisSpreadsheetRender.js';
 
 const empty: IParadisCellData = { value: '', style: {} };
@@ -385,6 +385,73 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 		}, {
 			sameRowTops: [[1, true], [2, true], [3, true], [5, true], [6, true]],
 			placed: { linesInZoomedGrid: true, linesInFront: '3' },
+		});
+	});
+
+	test('aligns cells by computed style, resolves conflicting borders like border-collapse, and copies the clicked cell', async () => {
+		const thin = '1px solid rgb(0, 0, 0)';
+		const thick = '3px solid rgb(255, 0, 0)';
+		const dashed = '1px dashed rgb(0, 0, 255)';
+		const merged: IParadisCellData = { value: 'M', style: {}, rowSpan: 1, colSpan: 2 };
+		const covered: IParadisCellData = { value: '', style: {}, hidden: true };
+		const data: IParadisSheetData = {
+			name: 'Borders', minCol: 1, columnCount: 5, columnWidths: [80, 0, 80, 80, 80], truncated: false,
+			rows: [
+				// A の右は細線、隣（幅 0 の隠れた列を挟んだ C）の左は太線 → 太線が勝つ。D と E は種類だけ違う → 実線が勝つ
+				{ excelRow: 1, height: 20, cells: [text('top', { verticalAlign: 'top', borderRight: thin }), empty, text('', { borderLeft: thick }), text('', { borderRight: dashed }), text('', { borderLeft: thin })] },
+				{ excelRow: 2, height: 20, cells: [text('middle', { verticalAlign: 'middle' }), empty, merged, covered, text('bottom')] },
+				// 結合（C〜D）の下: D の上にだけ罫線がある → 結合の下の辺に出る
+				{ excelRow: 3, height: 20, cells: [empty, empty, empty, text('', { borderTop: thick }), empty] },
+			],
+		};
+		const doc = mainWindow.document;
+		const host = doc.body.appendChild(doc.createElement('div'));
+		host.style.width = '600px';
+		host.style.height = '200px';
+		host.style.overflow = 'auto';
+		host.style.position = 'relative';
+		const index = createVirtualGridIndex(data);
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(host, createVirtualGridViewport(data, 17, 'borders'), { getViewport: async request => legacyGridTile(data, request, index) }));
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 600, height: 200 });
+		const cell = (row: number, column: number) => host.querySelector<HTMLElement>(`.paradis-spreadsheet-virtual-cell[data-row="${row + 1}"][data-column="${column + 1}"]`)!;
+		const justify = (row: number, column: number) => mainWindow.getComputedStyle(cell(row, column)).justifyContent;
+		const copyAfterClicking = (element: HTMLElement) => {
+			element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+			const event = new ClipboardEvent('copy', { clipboardData: new DataTransfer(), cancelable: true, bubbles: true });
+			element.dispatchEvent(event);
+			return [event.defaultPrevented, event.clipboardData?.getData('text/plain') ?? ''];
+		};
+		const result = {
+			valign: [justify(0, 0), justify(1, 0), justify(1, 4)],
+			borders: {
+				aRight: cell(0, 0).style.borderRight,
+				cLeft: cell(0, 2).style.borderLeft,
+				dRight: cell(0, 3).style.borderRight,
+				mergedBottom: cell(1, 2).style.borderBottom,
+			},
+			copy: {
+				clickedCell: copyAfterClicking(cell(1, 0)),
+				header: copyAfterClicking(host.querySelector<HTMLElement>('.paradis-spreadsheet-virtual-colhead')!),
+				emptyCell: copyAfterClicking(cell(2, 0)),
+			},
+		};
+		host.remove();
+		deepStrictEqual({
+			...result,
+			collapse: [
+				collapseBorders([thin, thick]),
+				collapseBorders([thick, thin]),
+				collapseBorders([dashed, thin]),
+				collapseBorders([thin, '1px solid rgb(0, 128, 0)']),
+				collapseBorders(['none', thin]),
+				collapseBorders([thick, '1px hidden rgb(0, 0, 0)']),
+				collapseBorders([undefined, undefined]),
+			],
+		}, {
+			valign: ['flex-start', 'center', 'flex-end'],
+			borders: { aRight: thick, cLeft: '', dRight: thin, mergedBottom: thick },
+			copy: { clickedCell: [true, 'middle'], header: [false, ''], emptyCell: [false, ''] },
+			collapse: [thick, thick, thin, thin, thin, '1px hidden rgb(0, 0, 0)', undefined],
 		});
 	});
 });
