@@ -17,7 +17,7 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { parse as parseJsonc } from '../../../../base/common/jsonc.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
-import { basename, joinPath } from '../../../../base/common/resources.js';
+import { basename, dirname, isEqual, joinPath } from '../../../../base/common/resources.js';
 import { isAbsolute } from '../../../../base/common/path.js';
 import { isWindows, OperatingSystem } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -39,6 +39,7 @@ import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadis
 import { paradisSpaceFolderForBackend } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisLocallyHiddenKeys, paradisIsLocallyHidden, paradisLocallyHiddenKeys, paradisSharedPresetNames } from '../common/paradisPresetLocalLedger.js';
 import {
 	IParadisPresetDefinition,
 	IParadisPresetService,
@@ -50,7 +51,6 @@ import {
 	paradisAllFolderNames,
 	paradisDistinctFolderNames,
 	paradisGetPresetTasks,
-	paradisPresetFingerprint,
 	paradisPresetHostsMatch,
 	paradisPresetKey,
 	paradisPresetScopeKey,
@@ -121,7 +121,7 @@ const MAX_REMEMBERED_PRESET_TITLES = 200;
 
 /**
  * workspace ソースのプリセットを「このマシンでだけ非表示にする」台帳のキー。値は
- * `${定義元ファイルのURI}::${指紋}` の配列（.paracode.json には一切書き込まない、
+ * {@link paradisLocallyHiddenKeys} の作るキーの配列（.paracode.json には一切書き込まない、
  * このマシンだけの表示設定）。StorageTarget.MACHINE なので Settings Sync でも同期されない。
  */
 const LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY = 'paradis.terminal.presets.locallyHiddenWorkspace';
@@ -151,7 +151,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	 * （同じファイルを2回読まないため）。
 	 */
 	private readonly _workspacePresetFolders = new Map<string, IParadisResolvedPresetFolder[]>();
-	/** `${定義元ファイルのURI}::${指紋}` の集合。LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY 参照。 */
+	/** {@link paradisLocallyHiddenKeys} のキーの集合。LOCALLY_HIDDEN_WORKSPACE_PRESETS_STORAGE_KEY 参照。 */
 	private readonly _locallyHiddenWorkspacePresets = new Set<string>();
 	/** フォルダ名をボタンに出すフォルダのキー集合。FOLDER_LABEL_SHOWN_STORAGE_KEY 参照。 */
 	private readonly _folderLabelShown = new Set<string>();
@@ -225,6 +225,13 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			}
 		}));
 		this._register(this.contextService.onDidChangeWorkspaceFolders(() => this._refreshFolders()));
+		// 台帳のキーはワークツリーを親リポジトリへ寄せて作る。ワークツリーの一覧はこのサービスより後に
+		// 揃うことがあるので、揃ったら（変わったら）キーを作り直して焼き直す。
+		this._register(Event.any(this.worktreeService.onDidChangeWorktrees, this.workspaceSwitchService.onDidChangeRepositories)(() => {
+			if (this._reapplyLocallyHidden()) {
+				this._onDidChangePresets.fire();
+			}
+		}));
 		// 信頼状態が変わったら workspace 由来プリセットの表示可否が変わる
 		this._register(this.workspaceTrustService.onDidChangeTrust(() => this._onDidChangePresets.fire()));
 		this._refreshFolders();
@@ -429,9 +436,12 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			return [];
 		}
 		const takenIds = new Set<string>();
-		return rawPresets
+		const valid = rawPresets
 			.map((definition, index) => ({ definition, index }))
-			.filter((entry): entry is { definition: IParadisPresetDefinition; index: number } => isValidPresetDefinition(entry.definition))
+			.filter((entry): entry is { definition: IParadisPresetDefinition; index: number } => isValidPresetDefinition(entry.definition));
+		const sharedNames = paradisSharedPresetNames(valid.map(entry => entry.definition));
+		const repositoryPresetFile = this._repositoryPresetFile(presetFile);
+		return valid
 			.map(({ definition, index }) => {
 				const entry: IParadisPresetDefinition = { ...definition, id: paradisUsablePresetId(definition, takenIds) };
 				return {
@@ -441,7 +451,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 					sourceUri: presetFile,
 					sourceIndex: index,
 					key: paradisPresetKey('workspace', presetFile, entry, index),
-					locallyHidden: this._locallyHiddenWorkspacePresets.has(this._locallyHiddenKey(presetFile, entry)),
+					locallyHidden: paradisIsLocallyHidden(this._locallyHiddenWorkspacePresets, paradisLocallyHiddenKeys(repositoryPresetFile, presetFile, entry, sharedNames.has(entry.name.trim()))),
 					envInactive: !paradisPresetHostsMatch(entry.hosts, this._currentRemoteAuthority),
 				};
 			});
@@ -693,14 +703,27 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	}
 
 	/**
-	 * {@link _locallyHiddenWorkspacePresets} のキー。指紋は appliesTo を持たない workspace 定義向け。
-	 * 位置（sourceIndex）を含まない——並び替えで別のプリセットを誤って隠す事故を避けるため、
-	 * `paradisResolvePresetIndex` と同じく中身で同一性を判定する。裏返しに、同じファイル内に
-	 * **中身まで完全一致する定義が複数ある**場合（コピペ運用等）は、1件を隠すと同じ指紋を持つ
-	 * 全件が一緒に隠れる。
+	 * {@link _locallyHiddenWorkspacePresets} で照合するキー（{@link paradisLocallyHiddenKeys}）。
+	 * `siblings` は同じ .paracode.json から読んだプリセット。名前が重なるかの判定に使う。
 	 */
-	private _locallyHiddenKey(sourceUri: URI, definition: IParadisPresetDefinition): string {
-		return `${sourceUri.toString()}::${paradisPresetFingerprint(definition, { ignoreAppliesTo: true })}`;
+	private _locallyHiddenKeys(sourceUri: URI, definition: IParadisPresetDefinition, siblings: readonly { readonly name: string }[]): IParadisLocallyHiddenKeys {
+		const nameIsShared = paradisSharedPresetNames(siblings).has(definition.name.trim());
+		return paradisLocallyHiddenKeys(this._repositoryPresetFile(sourceUri), sourceUri, definition, nameIsShared);
+	}
+
+	/**
+	 * 「自分だけ非表示」のキーに使う .paracode.json。ワークツリーの中の .paracode.json は親リポジトリの
+	 * .paracode.json に寄せる（ワークツリーは親の写しを持つので、ワークツリーを作るたびに隠したものが
+	 * 戻らないように）。ワークツリーでなければ、または一覧がまだ揃っていなければ、そのまま返す。
+	 */
+	private _repositoryPresetFile(presetFile: URI): URI {
+		const folder = dirname(presetFile);
+		for (const repository of this.workspaceSwitchService.repositories) {
+			if (this.worktreeService.getWorktrees(repository.id).some(worktree => isEqual(worktree.uri, folder))) {
+				return joinPath(repository.uri, PARADIS_WORKSPACE_PRESET_FILE);
+			}
+		}
+		return presetFile;
 	}
 
 	private _readLocallyHiddenWorkspacePresets(): string[] {
@@ -729,14 +752,21 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	 * 台帳を変えたのにここを呼ばないと、`onDidChangePresets` を発火しても `presets` getter が
 	 * 返す配列（キャッシュそのもの）は古い `locallyHidden` のままで、表示が一切変わらない。
 	 * ファイルの再読み込み（fileService 経由）は不要——計算値を1フィールド差し替えるだけ。
+	 * どれかの表示が変わったら true を返す。
 	 */
-	private _reapplyLocallyHidden(): void {
+	private _reapplyLocallyHidden(): boolean {
+		let changed = false;
 		for (const [folderKey, presets] of this._workspacePresets) {
 			this._workspacePresets.set(folderKey, presets.map(preset => {
-				const hidden = preset.sourceUri ? this._locallyHiddenWorkspacePresets.has(this._locallyHiddenKey(preset.sourceUri, preset)) : false;
-				return preset.locallyHidden === hidden ? preset : { ...preset, locallyHidden: hidden };
+				const hidden = preset.sourceUri ? paradisIsLocallyHidden(this._locallyHiddenWorkspacePresets, this._locallyHiddenKeys(preset.sourceUri, preset, presets)) : false;
+				if (preset.locallyHidden === hidden) {
+					return preset;
+				}
+				changed = true;
+				return { ...preset, locallyHidden: hidden };
 			}));
 		}
+		return changed;
 	}
 
 	/**
@@ -755,15 +785,21 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		for (const key of this._readLocallyHiddenWorkspacePresets()) {
 			this._locallyHiddenWorkspacePresets.add(key);
 		}
-		const key = this._locallyHiddenKey(preset.sourceUri, preset);
-		const wasHidden = this._locallyHiddenWorkspacePresets.has(key);
+		const sourceUri = preset.sourceUri;
+		const siblings = [...this._workspacePresets.values()].flat().filter(candidate => candidate.sourceUri && isEqual(candidate.sourceUri, sourceUri));
+		const keys = this._locallyHiddenKeys(sourceUri, preset, siblings.length > 0 ? siblings : [preset]);
+		const wasHidden = paradisIsLocallyHidden(this._locallyHiddenWorkspacePresets, keys);
 		if (hidden === wasHidden) {
 			return;
 		}
 		if (hidden) {
-			this._locallyHiddenWorkspacePresets.add(key);
+			this._locallyHiddenWorkspacePresets.add(keys.primary);
 		} else {
-			this._locallyHiddenWorkspacePresets.delete(key);
+			// 旧形式のキーで隠していたものも戻す（新形式だけ消すと、旧形式のキーで隠れたまま残る）。
+			this._locallyHiddenWorkspacePresets.delete(keys.primary);
+			for (const legacy of keys.legacy) {
+				this._locallyHiddenWorkspacePresets.delete(legacy);
+			}
 		}
 		this._writeLocallyHiddenWorkspacePresets();
 		this._reapplyLocallyHidden();
