@@ -18,14 +18,15 @@ suite('paradisPresetLocalLedger', () => {
 	const worktreeFile = URI.file('/worktrees/app-feature/.paracode.json');
 
 	test('the hidden key follows the repository and the name, not the worktree or the commands', () => {
-		const inRepository = paradisLocallyHiddenKeys(repositoryFile, repositoryFile, { name: ' SETUP ', commands: ['bun i'] }, false);
-		const inWorktree = paradisLocallyHiddenKeys(repositoryFile, worktreeFile, { name: 'SETUP', commands: ['make'], folder: 'tools' }, false);
-		const shared = paradisLocallyHiddenKeys(repositoryFile, repositoryFile, { name: 'SETUP', commands: ['bun i'] }, true);
+		const inRepository = paradisLocallyHiddenKeys(repositoryFile, [repositoryFile], { name: ' SETUP ', commands: ['bun i'] }, false);
+		const inWorktree = paradisLocallyHiddenKeys(repositoryFile, [worktreeFile], { name: 'SETUP', commands: ['make'], folder: 'tools' }, false);
+		const shared = paradisLocallyHiddenKeys(repositoryFile, [repositoryFile], { name: 'SETUP', commands: ['bun i'] }, true);
 		assert.deepStrictEqual({
 			sameKey: inRepository.primary === inWorktree.primary,
 			sharedNameAddsFingerprint: shared.primary !== inRepository.primary,
-			legacyCount: [inRepository.legacy.length, inWorktree.legacy.length],
-		}, { sameKey: true, sharedNameAddsFingerprint: true, legacyCount: [1, 2] });
+			// 親だけ: 旧形式 1。ワークツリーも: ワークツリーの新形式 1 ＋ 旧形式 2。
+			aliasCount: [inRepository.aliases.length, inWorktree.aliases.length],
+		}, { sameKey: true, sharedNameAddsFingerprint: true, aliasCount: [1, 3] });
 	});
 
 	test('shared names ignore surrounding whitespace', () => {
