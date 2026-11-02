@@ -27,6 +27,8 @@
 
 import * as electron from 'electron';
 import { paradisReadDevToolsActivePort } from '../node/paradisCdpUpstream.js';
+import { timeout } from '../../../../base/common/async.js';
+import { paradisReadBoundedBody } from '../common/paradisBoundedResponse.js';
 
 /** `/json/list` の取得に許す時間。ローカルの HTTP なので短くてよい。 */
 const FETCH_TIMEOUT_MS = 2_000;
@@ -81,10 +83,6 @@ export interface IParadisCdpUpstreamPortPinOptions {
 	readonly now?: () => number;
 }
 
-function defaultDelay(ms: number): Promise<void> {
-	return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 /** `/json/list` を読み、要素の `id` だけを取り出す。応答は読みながら上限で切る。 */
 async function defaultFetchTargetIds(port: number): Promise<readonly string[]> {
 	const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -107,31 +105,7 @@ export async function readBoundedText(response: Response): Promise<string> {
 	if (!response.body) {
 		throw new Error('Upstream CDP /json/list response has no readable body');
 	}
-	const reader = response.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	try {
-		for (; ;) {
-			const { done, value } = await reader.read();
-			if (done) {
-				break;
-			}
-			total += value.byteLength;
-			if (total > MAX_LIST_BYTES) {
-				await reader.cancel();
-				throw new Error('Upstream CDP /json/list response exceeds the byte limit');
-			}
-			chunks.push(value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	const combined = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		combined.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
+	const combined = await paradisReadBoundedBody(response.body, MAX_LIST_BYTES, 'Upstream CDP /json/list response exceeds the byte limit');
 	return new TextDecoder('utf-8', { fatal: true }).decode(combined);
 }
 
@@ -181,7 +155,7 @@ export class ParadisCdpUpstreamPortPin {
 		this.timeoutMs = options.timeoutMs ?? PIN_TIMEOUT_MS;
 		this.retryIntervalMs = options.retryIntervalMs ?? PIN_RETRY_INTERVAL_MS;
 		this.retryCooldownMs = options.retryCooldownMs ?? PIN_RETRY_COOLDOWN_MS;
-		this.delay = options.delay ?? defaultDelay;
+		this.delay = options.delay ?? (ms => timeout(ms));
 		this.now = options.now ?? Date.now;
 	}
 
