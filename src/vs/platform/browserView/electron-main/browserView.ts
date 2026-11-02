@@ -3,8 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// PARA-PATCH: import nativeImage/NativeImage for screenshot encoding (Para Browser MCP screenshot hardening)
-import { nativeImage, screen, WebContentsView, webContents, type NativeImage } from 'electron';
+import { screen, WebContentsView, webContents } from 'electron';
 // PARA-PATCH: MutableDisposable/toDisposable for the deferred focus hand-back below
 import { Disposable, MutableDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../base/common/event.js';
@@ -27,9 +26,11 @@ import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { logBrowserOpen } from '../common/browserViewTelemetry.js';
 import { URI } from '../../../base/common/uri.js';
 // PARA-PATCH: import the fork's screenshot policy helpers (route selection, pixel-budget guard, bounded scale, retry/restore) for the hardened capture pipeline (Para Browser MCP screenshot hardening)
-import { BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/paraBrowserViewScreenshot.js';
+import { BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute } from '../common/paraBrowserViewScreenshot.js';
 // PARA-PATCH: import the fork's automation key isolation, which keeps injected keystrokes apart from user input (Para Browser MCP automation input isolation)
 import { ParaBrowserViewAutomationKeys } from './paraBrowserViewAutomationKeys.js';
+// PARA-PATCH: import the fork's screenshot capture helpers (Para Browser MCP screenshot hardening)
+import { ParaBrowserViewScreenshotCapture } from './paraBrowserViewScreenshotCapture.js';
 // PARA-PATCH: import the fork's load watchdog, which fails loads that stall before the response ever begins instead of spinning forever (Para Code)
 import { paraInstallBrowserViewLoadWatchdog } from './paraBrowserViewLoadWatchdog.js';
 // PARA-PATCH: import the fork's capture nudge for shown views in undrawn windows (Para Browser MCP frame keepalive)
@@ -88,6 +89,14 @@ export class BrowserView extends Disposable {
 	private readonly _consoleLogs: string[] = [];
 	// PARA-PATCH: state for the hardened screenshot pipeline and automation-key isolation - serialize captures, and the per-view automation key state in paraBrowserViewAutomationKeys.ts (Para Browser MCP screenshot + automation input hardening)
 	private readonly _screenshotCoordinator = new BrowserViewScreenshotCoordinator();
+	// PARA-PATCH: the capture helpers of the hardened screenshot pipeline (paraBrowserViewScreenshotCapture.ts)
+	private readonly _paraScreenshot = new ParaBrowserViewScreenshotCapture({
+		webContents: () => this._view.webContents,
+		hostWindow: () => this._hostWindow,
+		emulatedDeviceScaleFactor: () => this.emulator.device?.deviceScaleFactor,
+		sendCommand: (method, params) => this.debugger.sendCommand(method, params),
+		waitForNextPaint: () => this._waitForNextPaint(),
+	}, this.logService);
 	private readonly _paraAutomationKeys = this._register(new ParaBrowserViewAutomationKeys(() => this.webContents, () => this._isDisposed, this.logService));
 
 	/**
@@ -968,12 +977,12 @@ export class BrowserView extends Disposable {
 			browserViewAssertScreenshotPixelBudget({
 				width: options.pageRect.width,
 				height: options.pageRect.height,
-				devicePixelRatio: this._captureBeyondViewportDevicePixelRatio(),
+				devicePixelRatio: this._paraScreenshot.captureBeyondViewportDevicePixelRatio(),
 				zoomFactor,
 				visualViewportScale,
 				emulationScale,
 			});
-			return this._captureDocumentRectScreenshot(options.pageRect, format, quality, signal, route);
+			return this._paraScreenshot.captureDocumentRectScreenshot(options.pageRect, format, quality, signal, route);
 		}
 
 		let screenRect = options?.screenRect;
@@ -996,13 +1005,13 @@ export class BrowserView extends Disposable {
 		browserViewAssertScreenshotPixelBudget({
 			width: surfaceRect.width,
 			height: surfaceRect.height,
-			devicePixelRatio: this._devicePixelRatio(),
+			devicePixelRatio: this._paraScreenshot.devicePixelRatio(),
 		});
 		const candidate = await captureBrowserViewWithRetry(
 			async (captureSignal, attempt) => {
 				const image = await this._view.webContents.capturePage(screenRect, { stayHidden: true });
 				browserViewThrowIfScreenshotAborted(captureSignal);
-				return this._validateAndEncodeScreenshot(image, format, quality, route, attempt);
+				return this._paraScreenshot.validateAndEncodeScreenshot(image, format, quality, route, attempt);
 			},
 			current => current.valid,
 			() => this._waitForNextPaint(),
@@ -1018,36 +1027,6 @@ export class BrowserView extends Disposable {
 			this._lastScreenshot = screenshot;
 		}
 		return screenshot;
-	}
-
-	// PARA-PATCH: capture a document-coordinate pageRect beyond the viewport via CDP with validated retry (Para Browser MCP screenshot hardening)
-	private async _captureDocumentRectScreenshot(
-		pageRect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
-		format: 'jpeg' | 'png',
-		quality: number,
-		signal: AbortSignal,
-		route: BrowserViewScreenshotRoute,
-	): Promise<VSBuffer> {
-		const candidate = await captureBrowserViewWithRetry(
-			async (captureSignal, attempt) => {
-				const image = await this._captureBeyondViewportImage({
-					format,
-					...(format === 'jpeg' ? { quality } : {}),
-					captureBeyondViewport: true,
-					clip: { ...pageRect, scale: 1 },
-				}, captureSignal);
-				browserViewThrowIfScreenshotAborted(captureSignal);
-				return this._validateAndEncodeScreenshot(image, format, quality, route, attempt);
-			},
-			current => current.valid,
-			() => this._waitForNextPaint(),
-			5,
-			{ signal, onRetry: event => this.logService.trace(`[BrowserView] screenshot retry route=${route} attempt=${event.attempt} reason=${event.reason}`) },
-		);
-		if (!candidate.valid) {
-			throw new Error('BrowserView screenshot validation exhausted without a valid image.');
-		}
-		return VSBuffer.wrap(candidate.encoded);
 	}
 
 	// Capture a screenshot of the full scrollable document (beyond the viewport) via CDP.
@@ -1097,7 +1076,7 @@ export class BrowserView extends Disposable {
 		const route: BrowserViewScreenshotRoute = 'full-page';
 		const candidate = await captureBrowserViewWithRetry(
 			async (captureSignal, attempt) => {
-				const image = await this._captureBeyondViewportImage({
+				const image = await this._paraScreenshot.captureBeyondViewportImage({
 					format,
 					...(format === 'jpeg' ? { quality } : {}),
 					captureBeyondViewport: true,
@@ -1113,7 +1092,7 @@ export class BrowserView extends Disposable {
 					clip: { x: 0, y: 0, width: clipWidth, height: clipHeight, scale }
 				}, captureSignal);
 				browserViewThrowIfScreenshotAborted(captureSignal);
-				return this._validateAndEncodeScreenshot(image, format, quality, route, attempt);
+				return this._paraScreenshot.validateAndEncodeScreenshot(image, format, quality, route, attempt);
 			},
 			current => current.valid,
 			() => this._waitForNextPaint(),
@@ -1124,46 +1103,6 @@ export class BrowserView extends Disposable {
 			throw new Error('BrowserView screenshot validation exhausted without a valid image.');
 		}
 		return VSBuffer.wrap(candidate.encoded);
-	}
-
-	// PARA-PATCH: run Page.captureScreenshot and always restore pinch-to-zoom limits afterwards, returning a NativeImage for validation (Para Browser MCP screenshot hardening)
-	private async _captureBeyondViewportImage(params: Record<string, unknown>, signal: AbortSignal): Promise<NativeImage> {
-		return captureBrowserViewWithRestore(async () => {
-			const result = await this.debugger.sendCommand('Page.captureScreenshot', params) as { data?: unknown };
-			browserViewThrowIfScreenshotAborted(signal);
-			const encoded = typeof result.data === 'string' ? Buffer.from(result.data, 'base64') : Buffer.alloc(0);
-			return nativeImage.createFromBuffer(encoded);
-		}, () => this._view.webContents.setVisualZoomLevelLimits(1, 3), () => {
-			this.logService.warn('[BrowserView] screenshot zoom restore failed route=capture-beyond-viewport');
-		});
-	}
-
-	// PARA-PATCH: reject empty/oversized images with lazy bitmap extraction before encoding, tracing the validation outcome (Para Browser MCP screenshot hardening)
-	private _validateAndEncodeScreenshot(image: NativeImage, format: 'jpeg' | 'png', quality: number, route: BrowserViewScreenshotRoute, attempt: number): IBrowserViewScreenshotValidation<Buffer> {
-		const size = image.getSize();
-		const result = browserViewValidateAndEncodeScreenshot({
-			empty: image.isEmpty(),
-			width: size.width,
-			height: size.height,
-			// Keep bitmap extraction lazy so an unexpectedly oversized decoded image is rejected
-			// before Electron copies its full pixel buffer into JavaScript memory.
-			bitmap: () => image.toBitmap(),
-			encode: () => format === 'png' ? image.toPNG() : image.toJPEG(quality),
-		});
-		const status = result.valid ? 'valid' : result.reason;
-		this.logService.trace(`[BrowserView] screenshot validation route=${route} attempt=${attempt} width=${size.width} height=${size.height} status=${status}`);
-		return result;
-	}
-
-	// PARA-PATCH: host-display and emulation-adjusted device pixel ratios used by the screenshot pixel-budget guards (Para Browser MCP screenshot hardening)
-	private _devicePixelRatio(): number {
-		const hostWindow = this._hostWindow;
-		return (hostWindow ? screen.getDisplayMatching(hostWindow.getBounds()) : screen.getPrimaryDisplay()).scaleFactor;
-	}
-
-	private _captureBeyondViewportDevicePixelRatio(): number {
-		// PARA-PATCH: a page shrunk by zoom keeps its full devicePixelRatio, so it captures at 1 / shrink more pixels than the zoom suggests (paraBrowserViewZoom.ts)
-		return browserViewEffectiveCaptureBeyondDevicePixelRatio(this._devicePixelRatio(), this.emulator.device?.deviceScaleFactor) / paraBrowserViewZoomShrink(this._view.webContents);
 	}
 
 	private async _waitForNextPaint(): Promise<void> {
