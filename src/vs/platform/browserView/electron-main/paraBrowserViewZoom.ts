@@ -41,6 +41,9 @@ export interface IParaBrowserZoomIsolator {
 	isolate(webContents: WebContents): Promise<boolean>;
 }
 
+/** 切り離しの結果。`stale` は、試している間に文書が替わって結果が今の文書に当てはまらないもの（失敗ではない）。 */
+type ParaIsolation = 'isolated' | 'failed' | 'stale';
+
 interface IZoomState {
 	/** 利用者の拡大率（Ctrl+±、browserZoom）。 */
 	user: number;
@@ -49,9 +52,13 @@ interface IZoomState {
 	/** 今の文書で切り離し済みか。 */
 	isolated: boolean;
 	/** 切り離している最中。 */
-	isolating: Promise<boolean> | undefined;
-	/** 切り離せたら呼ぶ（エミュレーションを拡大率の形で当て直す）。 */
+	isolating: Promise<ParaIsolation> | undefined;
+	/** 切り離せたとき・画面の倍率が替わったときに呼ぶ（エミュレーションを当て直す）。 */
 	onIsolated: (() => void) | undefined;
+	/** devicePixelRatio を補うのに使った画面の倍率。 */
+	displayScaleFactor: number | undefined;
+	/** 画面の移動を見張っているウィンドウ。 */
+	watchedWindow: Electron.BaseWindow | undefined;
 }
 
 const states = new WeakMap<WebContents, IZoomState>();
@@ -74,13 +81,27 @@ function isolatorFor(webContents: WebContents): IParaBrowserZoomIsolator {
 function stateOf(webContents: WebContents): IZoomState {
 	let state = states.get(webContents);
 	if (!state) {
-		state = { user: 1, emulation: 1, isolated: false, isolating: undefined, onIsolated: undefined };
+		state = { user: 1, emulation: 1, isolated: false, isolating: undefined, onIsolated: undefined, displayScaleFactor: undefined, watchedWindow: undefined };
 		states.set(webContents, state);
 		const created = state;
-		// 文書が替わると切り離しが外れる。ほかの受け手（拡大率を当て直す処理）より先に知る
-		webContents.prependListener('did-navigate', () => {
+		// 文書が替わると切り離しが外れる（エラーのページへの移動は did-navigate を出さず did-fail-load だけ）。ほかの受け手
+		// （拡大率を当て直す処理）より先に知り、途中の切り離しは古いものとして捨てる
+		const forget = () => {
 			created.isolated = false;
 			created.isolating = undefined;
+		};
+		webContents.prependListener('did-start-navigation', (details: { isMainFrame?: boolean; isSameDocument?: boolean }) => {
+			if (details?.isMainFrame !== false && details?.isSameDocument !== true) {
+				forget();
+			}
+		});
+		webContents.prependListener('did-navigate', forget);
+		webContents.prependListener('did-fail-load', (_event: unknown, _code: number, _description: string, _url: string, isMainFrame: boolean) => {
+			if (isMainFrame) {
+				forget();
+				// エラーのページでは、拡大率を当て直す処理（did-navigate の受け手）が走らないので、ここで当て直す
+				apply(webContents, created);
+			}
 		});
 	}
 	return state;
@@ -97,33 +118,38 @@ function apply(webContents: WebContents, state: IZoomState): void {
 		webContents.setZoomFactor(factor);
 		return;
 	}
-	void isolate(webContents, state).then(isolated => {
-		if (webContents.isDestroyed()) {
+	void isolate(webContents, state).then(isolation => {
+		if (webContents.isDestroyed() || isolation === 'stale') {
+			// 古くなった（試している間に文書が替わった）ときは何も当てない。サイトの値として当てると同じサイトのタブへ
+			// 広がる。新しい文書の分は、移動の後の当て直しが改めて切り離してから当てる
 			return;
 		}
-		if (isolated) {
+		if (isolation === 'isolated') {
 			webContents.setZoomFactor(state.user * state.emulation);
 		} else if (nearlyOne(state.emulation)) {
-			// 切り離せないときは、利用者の拡大率だけを今までどおり（サイトごとに）当てる
+			// 切り離せないとき（拡張機能を読み込めないメモリだけのセッションなど）は、利用者の拡大率だけを今までどおり
+			// （サイトごとに）当てる
 			webContents.setZoomFactor(state.user);
 		}
 	});
 }
 
-function isolate(webContents: WebContents, state: IZoomState): Promise<boolean> {
+function isolate(webContents: WebContents, state: IZoomState): Promise<ParaIsolation> {
 	if (state.isolated) {
-		return Promise.resolve(true);
+		return Promise.resolve('isolated');
 	}
 	if (!state.isolating) {
-		const attempt = isolatorFor(webContents).isolate(webContents).catch(() => false).then(isolated => {
-			if (state.isolating === attempt) {
-				state.isolating = undefined;
-				state.isolated = isolated;
-				if (isolated) {
-					state.onIsolated?.();
-				}
+		const attempt: Promise<ParaIsolation> = isolatorFor(webContents).isolate(webContents).catch(() => false).then(isolated => {
+			if (state.isolating !== attempt) {
+				// 試している間に文書が替わった
+				return 'stale';
 			}
-			return isolated && state.isolated;
+			state.isolating = undefined;
+			state.isolated = isolated;
+			if (isolated) {
+				state.onIsolated?.();
+			}
+			return isolated ? 'isolated' : 'failed';
 		});
 		state.isolating = attempt;
 	}
@@ -194,7 +220,7 @@ export function paraBrowserViewEmulationParams(webContents: WebContents, request
 		return scaleByEmulation();
 	}
 	paraSetBrowserViewEmulationZoom(webContents, request.pageScale);
-	const targetPixelRatio = request.deviceScaleFactor ?? displayScaleFactor();
+	const targetPixelRatio = request.deviceScaleFactor ?? watchDisplayScaleFactor(webContents, state);
 	return {
 		screenPosition,
 		screenSize: size,
@@ -206,17 +232,46 @@ export function paraBrowserViewEmulationParams(webContents: WebContents, request
 	};
 }
 
-/**
- * 画面の倍率（Retina なら 2）。表示サイズを替えるのは利用者かエージェントの操作の直後なので、ポインタのある画面の値を使う。
- * 分からなければ 1。
- */
-function displayScaleFactor(): number {
+/** そのタブ（WebContentsView）を持つウィンドウ。見つからなければ undefined。 */
+function windowOf(webContents: WebContents): Electron.BaseWindow | undefined {
+	const contains = (view: Electron.View): boolean => (view as Partial<Electron.WebContentsView>).webContents === webContents || view.children.some(contains);
 	try {
-		const display = electron.screen.getDisplayNearestPoint(electron.screen.getCursorScreenPoint());
-		return display.scaleFactor > 0 ? display.scaleFactor : 1;
+		return electron.BaseWindow.getAllWindows().find(window => !window.isDestroyed() && contains(window.contentView));
 	} catch {
-		return 1;
+		return undefined;
 	}
+}
+
+/**
+ * タブのウィンドウがある画面の倍率（Retina なら 2）。ウィンドウが別の画面へ移って倍率が替わったら、エミュレーションを
+ * 当て直す（devicePixelRatio を補う値が替わる）。分からなければ 1。
+ */
+function watchDisplayScaleFactor(webContents: WebContents, state: IZoomState): number {
+	const window = windowOf(webContents);
+	const read = (): number => {
+		try {
+			const display = window && !window.isDestroyed() ? electron.screen.getDisplayMatching(window.getBounds()) : electron.screen.getPrimaryDisplay();
+			return display.scaleFactor > 0 ? display.scaleFactor : 1;
+		} catch {
+			return 1;
+		}
+	};
+	if (window && state.watchedWindow !== window) {
+		const onMoved = () => {
+			if (webContents.isDestroyed() || state.watchedWindow !== window) {
+				window.removeListener('move', onMoved);
+				return;
+			}
+			if (paraBrowserViewScalesByZoom(webContents) && read() !== state.displayScaleFactor) {
+				state.onIsolated?.();
+			}
+		};
+		state.watchedWindow = window;
+		window.on('move', onMoved);
+		webContents.once('destroyed', () => window.removeListener('move', onMoved));
+	}
+	state.displayScaleFactor = read();
+	return state.displayScaleFactor;
 }
 
 /** 縮める分の拡大率を替える（表示サイズを「エディタに合わせる」へ戻したときは 1）。 */
@@ -232,6 +287,14 @@ export function paraSetBrowserViewEmulationZoom(webContents: WebContents, factor
 /**
  * セッションごとに 1 つ読み込む、タブを切り離すための拡張機能。ページ（zoom.html）を見えない WebContents で開き、
  * そこから `chrome.tabs.setZoomSettings` を呼ぶ。中身は manifest と空のページだけで、ページにも通信にも触れない。
+ *
+ * - 利用者の拡張機能の設定（`paradis.browser.extensions.*`）がオフのセッションでも読み込む。これは Para Code の内部用で、
+ *   利用者の拡張機能の台帳には載らず、content script も権限も持たない（拡張機能の仕組みを、タブの拡大率を切り離す口として
+ *   使うだけ）
+ * - メモリだけのセッション（使い捨て・エージェントのタブ）には Electron が拡張機能を読み込ませず（"Extensions cannot be
+ *   loaded in a temporary session"）、別のセッションの拡張機能からはそのタブを操作できない（"No such tab"）。そこでは
+ *   切り離せないので、今までどおりエミュレーションの `scale` で縮める
+ * - 見えない WebContents は、切り離したタブがそのセッションに 1 つも無くなったら閉じる（次に要るときに開き直す）
  */
 class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 
@@ -247,10 +310,19 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 	}
 
 	private page: Promise<WebContents | undefined> | undefined;
+	/** 切り離したタブ（閉じたら外す。空になったらページを閉じる）。 */
+	private readonly tabs = new Set<WebContents>();
+	/** 拡張機能を読み込めないセッション（メモリだけのセッション）。 */
+	private unsupported = false;
+	/** 読み込んだ拡張機能の id（ページを閉じても拡張機能は読み込んだまま）。 */
+	private extensionId: string | undefined;
 
 	private constructor(private readonly session: Electron.Session) { }
 
 	async isolate(webContents: WebContents): Promise<boolean> {
+		if (this.unsupported) {
+			return false;
+		}
 		this.page ??= this.open();
 		const page = await this.page;
 		if (!page || page.isDestroyed() || webContents.isDestroyed()) {
@@ -260,18 +332,45 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 			return false;
 		}
 		const settled = await page.executeJavaScript(`chrome.tabs.setZoomSettings(${webContents.id}, { mode: 'automatic', scope: 'per-tab' }).then(() => true, () => false)`);
+		if (settled === true && !this.tabs.has(webContents)) {
+			this.tabs.add(webContents);
+			webContents.once('destroyed', () => {
+				this.tabs.delete(webContents);
+				if (this.tabs.size === 0) {
+					this.close();
+				}
+			});
+		}
 		return settled === true;
 	}
 
+	private close(): void {
+		const page = this.page;
+		this.page = undefined;
+		void page?.then(contents => {
+			if (contents && !contents.isDestroyed()) {
+				contents.close();
+			}
+		});
+	}
+
 	private async open(): Promise<WebContents | undefined> {
+		if (this.extensionId === undefined) {
+			try {
+				const folder = join(electron.app.getPath('userData'), 'paradis-browser-zoom-helper');
+				await fs.mkdir(folder, { recursive: true });
+				await fs.writeFile(join(folder, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: PARA_BROWSER_ZOOM_HELPER_EXTENSION_NAME, version: '1.0', description: 'Keeps the zoom of each Para Code browser tab to that tab.' }));
+				await fs.writeFile(join(folder, 'zoom.html'), '<!doctype html><title>zoom</title>');
+				this.extensionId = (await this.session.extensions.loadExtension(folder)).id;
+			} catch {
+				// メモリだけのセッションは拡張機能を読み込めない。このセッションでは二度と試さない
+				this.unsupported = true;
+				return undefined;
+			}
+		}
 		try {
-			const folder = join(electron.app.getPath('userData'), 'paradis-browser-zoom-helper');
-			await fs.mkdir(folder, { recursive: true });
-			await fs.writeFile(join(folder, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: PARA_BROWSER_ZOOM_HELPER_EXTENSION_NAME, version: '1.0', description: 'Keeps the zoom of each Para Code browser tab to that tab.' }));
-			await fs.writeFile(join(folder, 'zoom.html'), '<!doctype html><title>zoom</title>');
-			const extension = await this.session.extensions.loadExtension(folder);
 			const view = new electron.WebContentsView({ webPreferences: { session: this.session, sandbox: true } });
-			await view.webContents.loadURL(`chrome-extension://${extension.id}/zoom.html`);
+			await view.webContents.loadURL(`chrome-extension://${this.extensionId}/zoom.html`);
 			return view.webContents;
 		} catch {
 			return undefined;

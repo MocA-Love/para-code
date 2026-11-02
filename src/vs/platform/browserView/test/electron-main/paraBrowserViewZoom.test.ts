@@ -21,7 +21,13 @@ class FakeTab extends EventEmitter {
 	setZoomFactor(factor: number): void { this.zoomCalls.push({ factor, isolated: this.isolated }); }
 	navigate(): void {
 		this.isolated = false;
+		this.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
 		this.emit('did-navigate');
+	}
+	failLoad(): void {
+		this.isolated = false;
+		this.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+		this.emit('did-fail-load', {}, -102, 'ERR_CONNECTION_REFUSED', 'http://127.0.0.1:1/', true);
 	}
 }
 
@@ -30,14 +36,14 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 suite('paraBrowserViewZoom', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	let isolations = 0;
 	let isolationWorks = true;
+	let hold: Promise<void> | undefined;
 	setup(() => {
-		isolations = 0;
 		isolationWorks = true;
+		hold = undefined;
 		paraSetBrowserZoomIsolatorForTest({
 			isolate: async webContents => {
-				isolations++;
+				await hold;
 				(webContents as unknown as FakeTab).isolated = isolationWorks;
 				return isolationWorks;
 			},
@@ -126,6 +132,36 @@ suite('paraBrowserViewZoom', () => {
 			again: 0.5,
 			zoom: [{ factor: 1.25, isolated: false }],
 			scalesByZoom: false,
+		});
+	});
+	test('an isolation that a navigation overtook sets nothing, so a user zoom never lands on the whole site', async () => {
+		const tab = new FakeTab();
+		let release: () => void = () => { };
+		hold = new Promise(resolve => release = resolve);
+		paraSetBrowserViewUserZoom(tab as unknown as WebContents, 1.25);
+		tab.navigate();
+		release();
+		await flush();
+		// the re-apply after the navigation isolates the new document first
+		hold = undefined;
+		paraSetBrowserViewUserZoom(tab as unknown as WebContents, 1.25);
+		await flush();
+		assert.deepStrictEqual(tab.zoomCalls, [{ factor: 1.25, isolated: true }]);
+	});
+
+	test('a navigation that ends on an error page drops the isolation and isolates the tab again before re-applying', async () => {
+		const tab = new FakeTab();
+		request(tab, 0.5);
+		await flush();
+		request(tab, 0.5);
+		await flush();
+		tab.failLoad();
+		const scalesWhileReisolating = paraBrowserViewScalesByZoom(tab as unknown as WebContents);
+		await flush();
+		assert.deepStrictEqual({ scalesWhileReisolating, last: tab.zoomCalls.at(-1), scalesAfter: paraBrowserViewScalesByZoom(tab as unknown as WebContents) }, {
+			scalesWhileReisolating: false,
+			last: { factor: 0.5, isolated: true },
+			scalesAfter: true,
 		});
 	});
 });

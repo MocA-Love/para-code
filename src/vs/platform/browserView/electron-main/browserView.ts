@@ -1589,7 +1589,7 @@ export class BrowserView extends Disposable {
 	}
 
 	private _captureBeyondViewportDevicePixelRatio(): number {
-		// A page shrunk by zoom keeps its full devicePixelRatio, so it captures at 1 / shrink more pixels than the zoom suggests (paraBrowserViewZoom.ts)
+		// PARA-PATCH: a page shrunk by zoom keeps its full devicePixelRatio, so it captures at 1 / shrink more pixels than the zoom suggests (paraBrowserViewZoom.ts)
 		return browserViewEffectiveCaptureBeyondDevicePixelRatio(this._devicePixelRatio(), this.emulator.device?.deviceScaleFactor) / paraBrowserViewZoomShrink(this._view.webContents);
 	}
 
