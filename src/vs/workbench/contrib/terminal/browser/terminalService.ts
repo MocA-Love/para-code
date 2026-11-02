@@ -66,7 +66,7 @@ import { paradisRestoreTerminalGroupActiveInstance } from '../../../../paradis/c
 // PARA-PATCH: keep terminal processes alive across window shutdown (remote terminals / pty daemon)
 import { paradisJoinKeptDetaches, paradisPrepareTerminalShutdown, paradisShouldKeepTerminalProcessAlive, paradisShouldKeepTerminalProcessesAlive } from './paradisTerminalShutdownPolicy.js';
 // PARA-PATCH: Para Code parks editor terminals of other spaces outside any editor input
-import { paradisListParkedTerminalEditorInstances } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalEditorPark.js';
+import { paradisCollectAllTerminalInstances, paradisListParkedTerminalEditorInstances } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalEditorPark.js';
 
 interface IBackgroundTerminal {
 	instance: ITerminalInstance;
@@ -647,7 +647,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		// windows can keep them on the server). Must run before the early return below.
 		await paradisPrepareTerminalShutdown(reason);
 		// PARA-PATCH: terminals parked by Para Code (other spaces) still need their buffers persisted
-		if (this.instances.length === 0 && !(this._terminalGroupService.paradisParkedGroups ?? []).some(g => g.terminalInstances.length > 0) && paradisListParkedTerminalEditorInstances().length === 0) {
+		if (paradisCollectAllTerminalInstances(this, this._terminalGroupService).length === 0) {
 			// No terminal instances, don't veto
 			return false;
 		}
