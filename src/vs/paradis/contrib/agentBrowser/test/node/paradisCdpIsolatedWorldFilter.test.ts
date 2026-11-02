@@ -18,6 +18,8 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 
 	test('hides Para Code isolated worlds and refuses any context the client was not shown', () => {
 		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.noteSession('s1');
+		filter.noteSession('s2');
 		assert.deepStrictEqual([
 			filter.filterEvent('', 'Runtime.executionContextCreated', created(1, 'main', true)),
 			filter.filterEvent('', 'Runtime.executionContextCreated', created(2, 'design', false)),
@@ -37,6 +39,8 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 
 	test('keeps showing isolated worlds the client itself asked for (puppeteer utility worlds), but never reserved names', () => {
 		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.noteSession('s1');
+		filter.noteSession('s2');
 		assert.strictEqual(filter.checkClientCommand('s1', 1, 'Page.addScriptToEvaluateOnNewDocument', { source: '', worldName: '__puppeteer_utility_world__' }), undefined);
 		assert.strictEqual(filter.checkClientCommand('s1', 2, 'Page.createIsolatedWorld', { frameId: 'F1', worldName: 'Electron Isolated Context' }), undefined);
 		filter.observeResponse('s1', 2, { executionContextId: 12 });
@@ -53,6 +57,8 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 
 	test('hides scripts, console output and pauses that belong to a hidden world', () => {
 		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.noteSession('s1');
+		filter.noteSession('s2');
 		filter.filterEvent('', 'Runtime.executionContextCreated', created(1, 'main', true));
 		filter.filterEvent('', 'Runtime.executionContextCreated', created(2, 'design', false));
 		assert.deepStrictEqual([
@@ -76,6 +82,8 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 		const reactDevtools = 'chrome-extension://adnlghojmjmphkjpkaeikgdocfigikoh';
 		const world = (id: number, name: string, origin: string, isDefault: boolean) => ({ context: { id, uniqueId: `u${id}`, name, origin, auxData: { isDefault, type: isDefault ? 'default' : 'isolated', frameId: 'F1' } } });
 		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.noteSession('s1');
+		filter.noteSession('s2');
 		const asked = filter.checkClientCommand('s1', 1, 'Page.createIsolatedWorld', { frameId: 'F1', worldName: 'React Developer Tools' });
 		const events = [
 			filter.filterEvent('s1', 'Runtime.executionContextCreated', world(1, '', page, true)),
@@ -106,6 +114,8 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 		const extension = 'chrome-extension://nlbcfljciijdbmfmbiaoelpjlhdgfhee';
 		const world = (id: number) => ({ context: { id, uniqueId: `u${id}`, name: 'mine', origin: extension, auxData: { isDefault: false, type: 'isolated', frameId: 'EXT' } } });
 		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.noteSession('s1');
+		filter.noteSession('s2');
 		filter.checkClientCommand('s1', 1, 'Page.createIsolatedWorld', { frameId: 'EXT', worldName: 'mine' });
 		const eventFirst = filter.filterEvent('s1', 'Runtime.executionContextCreated', world(7));
 		filter.observeResponse('s1', 1, { executionContextId: 7 });
@@ -124,6 +134,8 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 
 	test('knows a session whose own document is an extension page, until that document goes away', () => {
 		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.noteSession('s1');
+		filter.noteSession('s2');
 		const main = (id: number, origin: string) => ({ context: { id, uniqueId: `m${id}`, name: '', origin, auxData: { isDefault: true, type: 'default', frameId: 'F1' } } });
 		const states: boolean[] = [filter.isOnExtensionPage('s1')];
 		filter.filterEvent('s1', 'Runtime.executionContextCreated', main(1, 'https://example.test'));
@@ -141,6 +153,8 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 	test('refuses to evaluate on any paused call frame that belongs to a hidden world, not only the top one', () => {
 		// As Electron 43.7.7 reports it: a page listener called synchronously by a content script's dispatchEvent.
 		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.noteSession('s1');
+		filter.noteSession('s2');
 		filter.filterEvent('', 'Runtime.executionContextCreated', { context: { id: 1, uniqueId: 'main', name: '', origin: 'http://127.0.0.1:45843', auxData: { isDefault: true, frameId: 'F1' } } });
 		filter.filterEvent('', 'Runtime.executionContextCreated', { context: { id: 3, uniqueId: 'cs', name: 'Probe Two', origin: 'chrome-extension://peccpbngleohlifalhmmbmopmkilinpj', auxData: { isDefault: false, frameId: 'F1' } } });
 		filter.filterEvent('', 'Debugger.scriptParsed', { scriptId: '40', url: 'chrome-extension://peccpbngleohlifalhmmbmopmkilinpj/cs.js', executionContextId: 3, executionContextAuxData: { isDefault: false } });
@@ -164,6 +178,8 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 	});
 	test('answers like Chromium for a context a navigation destroyed, so clients retry, but keeps hidden worlds hidden', () => {
 		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.noteSession('s1');
+		filter.noteSession('s2');
 		filter.filterEvent('s1', 'Runtime.executionContextCreated', created(1, 'main', true));
 		filter.filterEvent('s1', 'Runtime.executionContextCreated', created(2, 'design', false));
 		filter.filterEvent('s1', 'Runtime.executionContextDestroyed', { executionContextId: 1, executionContextUniqueId: 'main' });
@@ -172,5 +188,65 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 			filter.checkClientCommand('s1', 2, 'Runtime.evaluate', { expression: '1', uniqueContextId: 'main' }),
 			/not available on the Para Code CDP gateway/.test(filter.checkClientCommand('s1', 3, 'Runtime.evaluate', { expression: '1', contextId: 2 }) ?? ''),
 		], ['Cannot find context with specified id', 'Cannot find context with specified id', true]);
+	});
+	test('a frame that hides more than the ledger holds is refused until it navigates, instead of forgetting what it hid', () => {
+		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.filterEvent('', 'Runtime.executionContextCreated', created(1, 'main', true));
+		filter.filterEvent('', 'Runtime.executionContextCreated', created(2, 'design', false));
+		const hiddenScript = (scriptId: string) => filter.filterEvent('', 'Debugger.scriptParsed', { scriptId, url: '', executionContextId: 2, executionContextAuxData: { isDefault: false } });
+		for (let index = 0; index < 10_000; index++) {
+			hiddenScript(`old-${index}`);
+		}
+		const beforeOverflow = filter.checkClientCommand('', 1, 'Runtime.evaluate', { expression: '1', contextId: 1 });
+		hiddenScript('latest');
+		const afterOverflow = [
+			/too many hidden contexts or scripts/.test(filter.checkClientCommand('', 2, 'Debugger.getScriptSource', { scriptId: 'latest' }) ?? ''),
+			/too many hidden contexts or scripts/.test(filter.checkClientCommand('', 3, 'Debugger.getScriptSource', { scriptId: 'old-0' }) ?? ''),
+			/too many hidden contexts or scripts/.test(filter.checkClientCommand('', 4, 'Runtime.evaluate', { expression: '1', contextId: 1 }) ?? ''),
+		];
+		// While it overflows, only events of contexts the client was shown get through, a pause is resumed by Para Code
+		// (the client's Debugger.resume is refused), and the agent can still navigate away.
+		const whileOverflowed = {
+			consoleShown: filter.filterEvent('', 'Runtime.consoleAPICalled', { type: 'log', args: [], executionContextId: 1 }),
+			consoleUnknown: filter.filterEvent('', 'Runtime.consoleAPICalled', { type: 'log', args: [], executionContextId: 77 }),
+			exceptionUnknown: filter.filterEvent('', 'Runtime.exceptionThrown', { exceptionDetails: { executionContextId: 78 } }),
+			scriptUnknown: filter.filterEvent('', 'Debugger.scriptParsed', { scriptId: 'new', url: '', executionContextId: 79, executionContextAuxData: { isDefault: true } }),
+			paused: filter.filterEvent('', 'Debugger.paused', { callFrames: [{ callFrameId: '1:1:1', location: { scriptId: 'page' } }] }),
+			navigate: filter.checkClientCommand('', 6, 'Page.navigate', { url: 'https://example.test/' }),
+			reload: filter.checkClientCommand('', 7, 'Page.reload', {}),
+		};
+		filter.filterEvent('', 'Runtime.executionContextsCleared', {});
+		filter.filterEvent('', 'Runtime.executionContextCreated', created(3, 'next', true));
+		assert.deepStrictEqual({ beforeOverflow, afterOverflow, whileOverflowed, afterNavigation: filter.checkClientCommand('', 5, 'Runtime.evaluate', { expression: '1', contextId: 3 }) }, {
+			beforeOverflow: undefined,
+			afterOverflow: [true, true, true],
+			whileOverflowed: { consoleShown: 'forward', consoleUnknown: 'drop', exceptionUnknown: 'drop', scriptUnknown: 'drop', paused: 'resume', navigate: undefined, reload: undefined },
+			afterNavigation: undefined,
+		});
+	});
+
+	test('session ids the browser never attached are refused and do not push out what the page itself hides', () => {
+		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.filterEvent('', 'Runtime.executionContextCreated', created(1, 'main', true));
+		filter.filterEvent('', 'Runtime.executionContextCreated', created(2, 'design', false));
+		filter.filterEvent('', 'Debugger.scriptParsed', { scriptId: 'hidden', url: '', executionContextId: 2, executionContextAuxData: { isDefault: false } });
+		const fake = new Set<string | undefined>();
+		for (let index = 0; index < 5_000; index++) {
+			fake.add(filter.checkClientCommand(`fake-${index}`, index, 'Runtime.evaluate', { expression: '1' }));
+		}
+		// An attached child session (an iframe the browser told about) is accepted.
+		filter.filterEvent('', 'Target.attachedToTarget', { sessionId: 'child', targetInfo: { targetId: 'IFRAME', type: 'iframe' } });
+		filter.forgetSession('');
+		assert.deepStrictEqual({
+			fake: [...fake],
+			child: filter.checkClientCommand('child', 1, 'Runtime.evaluate', { expression: '1' }),
+			hiddenContext: /not available on the Para Code CDP gateway/.test(filter.checkClientCommand('', 2, 'Runtime.evaluate', { expression: '1', contextId: 2 }) ?? ''),
+			hiddenScript: /isolated world/.test(filter.checkClientCommand('', 3, 'Debugger.getScriptSource', { scriptId: 'hidden' }) ?? ''),
+		}, {
+			fake: ['Session with given id not found.'],
+			child: undefined,
+			hiddenContext: true,
+			hiddenScript: true,
+		});
 	});
 });

@@ -567,11 +567,14 @@ export function paradisInputGuardTab(view: IParadisInputGuardView, marker?: IPar
 	const upstreamDebuggerForDetach = view.debugger;
 	const detaching = new Set<string>();
 	const pending = new ParadisPendingCommands();
+	/** auto-attach を頼んだセッション。切り離されたら忘れる（残すと上限に達して、新しい子セッションに頼めなくなる）。 */
+	const autoAttached = new Set<string>();
 	const listener = (_event: unknown, method: string, params: unknown, eventSessionId?: string) => {
 		tracker.onMessage(method, params, eventSessionId);
 		if (method === 'Target.detachedFromTarget' && isRecord(params) && typeof params.sessionId === 'string') {
 			// 切り離されたセッションへ送りかけの命令は、もう答えが来ない
 			pending.abandon(params.sessionId, 'its session was detached');
+			autoAttached.delete(params.sessionId);
 		}
 		if (method !== 'Target.attachedToTarget' && method !== 'Target.targetInfoChanged') {
 			return;
@@ -594,7 +597,6 @@ export function paradisInputGuardTab(view: IParadisInputGuardView, marker?: IPar
 	const electronDebugger = (view.webContents as Partial<IParadisInputGuardView['webContents']>).debugger;
 	electronDebugger?.on('message', listener);
 	const upstreamDebugger = view.debugger;
-	const autoAttached = new Set<string>();
 	const tab: IParadisInputGuardTab = {
 		webContents: view.webContents,
 		send: (method, params, sessionId) => pending.track(sessionId, upstreamDebugger.sendCommandRaw(method, params, sessionId)),

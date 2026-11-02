@@ -19,7 +19,7 @@
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { raceTimeout } from '../../../../base/common/async.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IBrowserDeviceProfile } from '../../../../platform/browserView/common/browserView.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -145,6 +145,8 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 	private readonly _defaultClaimed = new Set<string>();
 	/** タブごとに最後に当てた大きさの控え（paradisBrowserViewport.ts）。 */
 	private _viewSpecs: Map<string, string>;
+	/** 上の 3 つの台帳に載せたタブの、閉じたときに忘れる受け手（閉じたタブの分を残さない）。 */
+	private readonly _trackedViews = this._register(new DisposableMap<string>());
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
@@ -291,7 +293,21 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 		return paradisResolveViewportDefault(this._spaceDefaults, stateKey, stateKey !== undefined ? this._parentStateKey(stateKey) : undefined, this.getGlobalDefault());
 	}
 
+	/** タブを閉じたら、そのタブの大きさ・エージェントの変更・初めての処理の印を忘れる。 */
+	private _track(model: IBrowserViewModel): void {
+		if (this._trackedViews.has(model.id)) {
+			return;
+		}
+		this._trackedViews.set(model.id, model.onWillDispose(() => {
+			this._paneSizes.delete(model.id);
+			this._agentChanges.delete(model.id);
+			this._defaultClaimed.delete(model.id);
+			this._trackedViews.deleteAndDispose(model.id);
+		}));
+	}
+
 	takeInitialViewport(model: IBrowserViewModel): ParadisViewportTarget | undefined {
+		this._track(model);
 		if (this._defaultClaimed.has(model.id)) {
 			return undefined;
 		}
@@ -346,6 +362,7 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 
 	async apply(model: IBrowserViewModel, target: ParadisViewportTarget, origin: ParadisViewportOrigin): Promise<void> {
 		const previous = this.describe(model);
+		this._track(model);
 		this._defaultClaimed.add(model.id);
 		this._rememberViewSpec(model.id, paradisViewportTargetSpec(target));
 		await model.setDevice(target.kind === 'fit' ? undefined : paradisViewportDevice(target.size));
@@ -384,6 +401,7 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 			}
 		}
 		const previous = paradisDescribeViewport(previousDevice, this._sizes, this._paneSizes.get(model.id));
+		this._track(model);
 		this._agentChanges.set(model.id, { agentLabel, previous, next: this.describe(model), at: Date.now() });
 		this._onDidAgentChange.fire(model.id);
 	}
