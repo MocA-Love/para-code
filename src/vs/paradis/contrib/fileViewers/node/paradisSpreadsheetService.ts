@@ -1336,6 +1336,13 @@ export function paradisSheetXmlWithoutSheetData(sheetXml: string): string {
 	if (close < 0 || sheetXml.indexOf('<sheetData', startEnd) >= 0 && sheetXml.indexOf('<sheetData', startEnd) < close) {
 		return sheetXml;
 	}
+	// 閉じタグまでにコメントや CDATA があると（手で書いた XML など）、その中の `<sheetData>` や `</sheetData>` を
+	// 境界と取り違えるおそれがあるので外さない。
+	const comment = sheetXml.indexOf('<!--');
+	const cdata = sheetXml.indexOf('<![CDATA[');
+	if (comment >= 0 && comment < close || cdata >= 0 && cdata < close) {
+		return sheetXml;
+	}
 	return sheetXml.slice(0, start) + sheetXml.slice(close + closing.length);
 }
 
