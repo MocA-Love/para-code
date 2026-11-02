@@ -279,6 +279,62 @@ suite('ParadisBindingDialog several pages shared with one pane', () => {
 	});
 });
 
+suite('ParadisBindingDialog focus', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('a re-render keeps the focus in the search box, and Esc closes the dialog from there', async () => {
+		const root = document.createElement('div');
+		document.body.appendChild(root);
+		const bindingChanges = new Emitter<void>();
+		const pane: IParadisPaneDescriptor = { instanceId: 17, token: 'pane-one', title: 'Pane One', agentKind: 'codex', mcpConnected: true, binding: undefined, bindEligibility: { eligible: true } };
+		const dialog = new ParadisBindingDialog(
+			upcastPartial<IBrowserViewModel>({ id: 'page-one', title: 'Page One', url: 'https://example.test', favicon: undefined, onDidChangeTitle: VSCodeEvent.None, onDidChangeSharingState: VSCodeEvent.None }),
+			undefined,
+			upcastPartial<IParadisAgentBrowserBindingModel>({
+				onDidChange: bindingChanges.event,
+				bindings: [],
+				getPanes: () => [pane],
+				getPanesForPage: () => [pane],
+				getBindingsForPage: () => [],
+				getBindingsForToken: () => [],
+				getAgentTabsForToken: () => [],
+				getAgentTabOwnersForPage: () => [],
+				refresh: async () => { },
+				getMcpConfigStatus: () => new Promise<never>(() => { }),
+			}),
+			upcastPartial<ILayoutService>({ activeContainer: root }),
+			upcastPartial<IClipboardService>({ writeText: async () => { } }),
+			upcastPartial<IParadisMobileCanvasModel>({ onDidChange: VSCodeEvent.None, snapshot: { devices: [], attachments: [] }, loading: false, beginPolling: () => toDisposable(() => { }) }),
+			upcastPartial<IParadisTerminalScopeService>({ getStateKeyForInstance: () => undefined }),
+			upcastPartial<IParadisAgentBrowserTabsService>({ revokeApprovedProfileTab: () => { } }),
+			upcastPartial<IParadisBrowserExtensionsService>({ getShareWarning: async () => undefined }),
+		);
+		let closed = false;
+		const closeListener = dialog.onDidDispose(() => closed = true);
+		await timeout(0);
+		try {
+			const search = root.querySelector<HTMLInputElement>('.pbd-list-search input')!;
+			search.focus();
+			// The test window does not have the OS focus, so Chromium sends no focus events for focus(); send the one a focused window would
+			search.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+			search.value = 'Pane';
+			search.dispatchEvent(new Event('input'));
+			// Something above changes while the user types: the dialog draws its body again
+			bindingChanges.fire();
+			await timeout(0);
+			const after = root.querySelector<HTMLInputElement>('.pbd-list-search input')!;
+			const state = { replaced: after !== search, focused: document.activeElement === after, value: after.value, caret: after.selectionStart };
+			after.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+			assert.deepStrictEqual({ ...state, closed }, { replaced: true, focused: true, value: 'Pane', caret: 4, closed: true });
+		} finally {
+			closeListener.dispose();
+			dialog.dispose();
+			bindingChanges.dispose();
+			root.remove();
+		}
+	});
+});
+
 suite('ParadisBindingDialog browser extension warning', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 

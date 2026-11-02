@@ -44,6 +44,7 @@ import { IParadisIngestOpenOptions, IParadisIngestStream, IParadisLocalVoiceOutp
 import { ParadisVoiceRetentionBudget } from '../common/paradisVoiceRetention.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IParadisAivisIngest, ParadisAivisIngestClient } from './paradisAivisIngestClient.js';
+import { AIVIS_BASE_URL, ParadisAivisClient } from './paradisAivisClient.js';
 import { ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES, ParadisElevenLabsClient } from './paradisElevenLabsClient.js';
 import { PARADIS_AIVIS_FIRST_BYTE_TIMEOUT_MS, paradisBufferBody, paradisCollectBody, paradisReadSynthesisBody, ParadisMobileVoiceTaskGate, ParadisSynthesisTimeouts, paradisTeeBody } from './paradisStreamingBody.js';
@@ -60,7 +61,6 @@ import {
 	IParadisAivisDictionaryWord,
 	IParadisAivisMeResult,
 	IParadisAivisModelSummary,
-	IParadisAivisUsageDayEntry,
 	IParadisAivisUsageResult,
 	IParadisCustomRingtoneInfo,
 	IParadisInstallLogLine,
@@ -77,7 +77,6 @@ import {
 import { IParadisYtDlpCheckResult, IParadisYtDlpStatus, paradisAssessYtDlpVersion, paradisClassifyYtDlpError, paradisDetectYtDlpInstallMethod, paradisExtractYtDlpWarnings, paradisParseYtDlpVersion, paradisYtDlpUpdatePlan, ParadisYtDlpFailure } from '../common/paradisYtDlp.js';
 import { IParadisMyinstantsDownloadResult, paradisCheckMyinstantsUrl, paradisIsMp3ContentType, paradisLooksLikeMp3, paradisMyinstantsDisplayName } from '../common/paradisMyinstants.js';
 
-const AIVIS_BASE_URL = 'https://api.aivis-project.com';
 /**
  * 音声入力中に `--ingest` へ掛ける hold の持ち主の頭。shared process ごとの UUID を足す（Para Code を 2 つ動かして
  * いても、片方が外したときにもう片方の hold まで外さない）。
@@ -143,13 +142,6 @@ interface IInstallState {
 class ParadisProcessError extends Error {
 	constructor(message: string, readonly stderr: string, readonly exitCode?: number) {
 		super(message);
-	}
-}
-
-class AivisApiError extends Error {
-	constructor(readonly status: number, bodyText: string) {
-		// allow-any-unicode-next-line
-		super(`Aivis API エラー (HTTP ${status})${bodyText ? `: ${bodyText.slice(0, 200)}` : ''}`);
 	}
 }
 
@@ -271,6 +263,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 
 	/** ElevenLabs API クライアント。読み上げエンジンが ElevenLabs のときの合成と、設定画面の各 API を受け持つ。 */
 	readonly elevenLabs: ParadisElevenLabsClient;
+	private readonly _aivisClient = new ParadisAivisClient();
 
 	/** ElevenLabs で合成した音声の置き場所（`~/.para-code/cache/voice/`）。同じ文の通知を毎回合成させない。 */
 	private readonly _voiceCache: ParadisVoiceSynthesisCache;
@@ -1650,11 +1643,17 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 				this.logService.warn(`[ParadisNotifications] fetchAudio: レスポンスが大きすぎます (${contentLength} bytes)`);
 				return null;
 			}
-			const buffer = Buffer.from(await response.arrayBuffer());
-			if (buffer.byteLength > PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES) {
-				// allow-any-unicode-next-line
-				this.logService.warn(`[ParadisNotifications] fetchAudio: レスポンスが大きすぎます (${buffer.byteLength} bytes)`);
-				return null;
+			// content-length の無い応答も、上限を越えたところで読むのをやめる（全部読んでから確かめない）
+			let buffer: Buffer;
+			try {
+				buffer = response.body ? await paradisCollectBody(response.body, PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES) : Buffer.alloc(0);
+			} catch (error) {
+				if (error instanceof AivisError) {
+					// allow-any-unicode-next-line
+					this.logService.warn(`[ParadisNotifications] fetchAudio: レスポンスが大きすぎます (over ${PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES} bytes)`);
+					return null;
+				}
+				throw error;
 			}
 			const contentType = response.headers.get('content-type');
 			const mimeType = contentType?.startsWith('audio/') ? contentType.split(';')[0].trim() : mimeTypeFor(parsed.pathname);
@@ -1884,161 +1883,46 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 	}
 
-	// === Aivis Cloud API =========================================================================
+	// === Aivis Cloud API（管理系。paradisAivisClient.ts） ==========================================
 
-	private async _aivisFetch(path: string, apiKey: string, init: { method?: string; query?: Record<string, string | number | boolean | undefined>; json?: unknown; accept?: string } = {}): Promise<Response> {
-		const url = new URL(path, AIVIS_BASE_URL);
-		for (const [key, value] of Object.entries(init.query ?? {})) {
-			if (value !== undefined) {
-				url.searchParams.set(key, String(value));
-			}
-		}
-		const headers: Record<string, string> = { Accept: init.accept ?? 'application/json' };
-		if (apiKey) {
-			headers.Authorization = `Bearer ${apiKey}`;
-		}
-		let body: string | undefined;
-		if (init.json !== undefined) {
-			headers['Content-Type'] = 'application/json';
-			body = JSON.stringify(init.json);
-		}
-		const response = await fetch(url, { method: init.method ?? 'GET', headers, body });
-		if (!response.ok) {
-			const text = await response.text().catch(() => '');
-			throw new AivisApiError(response.status, text);
-		}
-		return response;
+	getAivisModel(apiKey: string, uuid: string): Promise<IParadisAivisModelSummary | null> {
+		return this._aivisClient.getModel(apiKey, uuid);
 	}
 
-	private async _aivisJson<T>(path: string, apiKey: string, init?: Parameters<ParadisNotificationsService['_aivisFetch']>[2]): Promise<T> {
-		const response = await this._aivisFetch(path, apiKey, init);
-		return response.json() as Promise<T>;
+	listAivisDictionaries(apiKey: string): Promise<IParadisAivisDictionaryListItem[]> {
+		return this._aivisClient.listDictionaries(apiKey);
 	}
 
-	async getAivisModel(apiKey: string, uuid: string): Promise<IParadisAivisModelSummary | null> {
-		interface AivmStyle { voice_samples?: { audio_url?: string | null }[] }
-		interface AivmSpeaker { icon_url?: string | null; styles?: AivmStyle[] }
-		interface AivmResponse { aivm_model_uuid: string; name: string; description?: string; user?: { name?: string; handle?: string; icon_url?: string | null }; speakers?: AivmSpeaker[] }
-		try {
-			const model = await this._aivisJson<AivmResponse>(`/v1/aivm-models/${uuid}`, apiKey);
-			const speakerIcon = model.speakers?.[0]?.icon_url ?? null;
-			const sampleUrl = model.speakers?.[0]?.styles?.[0]?.voice_samples?.[0]?.audio_url ?? null;
-			return {
-				uuid: model.aivm_model_uuid, name: model.name, description: model.description ?? '',
-				iconUrl: speakerIcon ?? model.user?.icon_url ?? null, sampleUrl,
-				authorName: model.user?.name ?? null, authorHandle: model.user?.handle ?? null,
-			};
-		} catch (error) {
-			if (error instanceof AivisApiError && error.status === 404) {
-				return null;
-			}
-			throw this._wrapAivisError(error);
-		}
+	getAivisDictionary(apiKey: string, uuid: string): Promise<IParadisAivisDictionaryDetail> {
+		return this._aivisClient.getDictionary(apiKey, uuid);
 	}
 
-	private _wrapAivisError(error: unknown): Error {
-		if (error instanceof AivisApiError) {
-			return new Error(error.message);
-		}
-		return error instanceof Error ? error : new Error(String(error));
+	createAivisDictionary(apiKey: string, name: string, description: string): Promise<{ uuid: string }> {
+		return this._aivisClient.createDictionary(apiKey, name, description);
 	}
 
-	async listAivisDictionaries(apiKey: string): Promise<IParadisAivisDictionaryListItem[]> {
-		try {
-			const json = await this._aivisJson<{ user_dictionaries: IParadisAivisDictionaryListItem[] }>('/v1/user-dictionaries', apiKey);
-			return json.user_dictionaries;
-		} catch (error) {
-			throw this._wrapAivisError(error);
-		}
+	updateAivisDictionary(apiKey: string, uuid: string, name: string, description: string, words: readonly IParadisAivisDictionaryWord[]): Promise<void> {
+		return this._aivisClient.updateDictionary(apiKey, uuid, name, description, words);
 	}
 
-	async getAivisDictionary(apiKey: string, uuid: string): Promise<IParadisAivisDictionaryDetail> {
-		try {
-			return await this._aivisJson<IParadisAivisDictionaryDetail>(`/v1/user-dictionaries/${uuid}`, apiKey);
-		} catch (error) {
-			throw this._wrapAivisError(error);
-		}
+	deleteAivisDictionary(apiKey: string, uuid: string): Promise<void> {
+		return this._aivisClient.deleteDictionary(apiKey, uuid);
 	}
 
-	async createAivisDictionary(apiKey: string, name: string, description: string): Promise<{ uuid: string }> {
-		const uuid = randomUUID();
-		try {
-			await this._aivisFetch(`/v1/user-dictionaries/${uuid}`, apiKey, { method: 'PUT', json: { name, description, word_properties: [] } });
-			return { uuid };
-		} catch (error) {
-			throw this._wrapAivisError(error);
-		}
+	exportAivisDictionary(apiKey: string, uuid: string): Promise<Record<string, unknown>> {
+		return this._aivisClient.exportDictionary(apiKey, uuid);
 	}
 
-	async updateAivisDictionary(apiKey: string, uuid: string, name: string, description: string, words: readonly IParadisAivisDictionaryWord[]): Promise<void> {
-		try {
-			await this._aivisFetch(`/v1/user-dictionaries/${uuid}`, apiKey, { method: 'PUT', json: { name, description, word_properties: words } });
-		} catch (error) {
-			throw this._wrapAivisError(error);
-		}
+	importAivisDictionary(apiKey: string, uuid: string, data: Record<string, unknown>, override: boolean): Promise<void> {
+		return this._aivisClient.importDictionary(apiKey, uuid, data, override);
 	}
 
-	async deleteAivisDictionary(apiKey: string, uuid: string): Promise<void> {
-		try {
-			await this._aivisFetch(`/v1/user-dictionaries/${uuid}`, apiKey, { method: 'DELETE' });
-		} catch (error) {
-			throw this._wrapAivisError(error);
-		}
+	getAivisUsageDaily(apiKey: string, startDate: string, endDate: string): Promise<IParadisAivisUsageResult> {
+		return this._aivisClient.getUsageDaily(apiKey, startDate, endDate);
 	}
 
-	async exportAivisDictionary(apiKey: string, uuid: string): Promise<Record<string, unknown>> {
-		try {
-			return await this._aivisJson<Record<string, unknown>>(`/v1/user-dictionaries/${uuid}/export`, apiKey);
-		} catch (error) {
-			throw this._wrapAivisError(error);
-		}
-	}
-
-	async importAivisDictionary(apiKey: string, uuid: string, data: Record<string, unknown>, override: boolean): Promise<void> {
-		try {
-			await this._aivisFetch(`/v1/user-dictionaries/${uuid}/import`, apiKey, { method: 'POST', query: { override }, json: data });
-		} catch (error) {
-			throw this._wrapAivisError(error);
-		}
-	}
-
-	async getAivisUsageDaily(apiKey: string, startDate: string, endDate: string): Promise<IParadisAivisUsageResult> {
-		interface UsageSummary { api_key_id: string; api_key_name: string; summary_date: string; request_count: number; character_count: number; credit_consumed: number }
-		try {
-			const json = await this._aivisJson<{ summaries: UsageSummary[] }>('/v1/payment/usage-summaries', apiKey, { query: { start_date: startDate, end_date: endDate } });
-			const byDate = new Map<string, { date: string; requestCount: number; characterCount: number; creditConsumed: number; byApiKey: Record<string, { name: string; requestCount: number; characterCount: number; creditConsumed: number }> }>();
-			for (const s of json.summaries) {
-				const entry = byDate.get(s.summary_date) ?? { date: s.summary_date, requestCount: 0, characterCount: 0, creditConsumed: 0, byApiKey: {} };
-				entry.requestCount += s.request_count;
-				entry.characterCount += s.character_count;
-				entry.creditConsumed += s.credit_consumed;
-				const bucket = entry.byApiKey[s.api_key_id] ?? { name: s.api_key_name, requestCount: 0, characterCount: 0, creditConsumed: 0 };
-				bucket.requestCount += s.request_count;
-				bucket.characterCount += s.character_count;
-				bucket.creditConsumed += s.credit_consumed;
-				entry.byApiKey[s.api_key_id] = bucket;
-				byDate.set(s.summary_date, entry);
-			}
-			const days: IParadisAivisUsageDayEntry[] = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
-			const total = days.reduce((acc, d) => ({
-				requestCount: acc.requestCount + d.requestCount,
-				characterCount: acc.characterCount + d.characterCount,
-				creditConsumed: acc.creditConsumed + d.creditConsumed,
-			}), { requestCount: 0, characterCount: 0, creditConsumed: 0 });
-			return { days, total };
-		} catch (error) {
-			throw this._wrapAivisError(error);
-		}
-	}
-
-	async getAivisMe(apiKey: string): Promise<IParadisAivisMeResult> {
-		interface UserMeResponse { handle?: string; name?: string; credit_balance?: number }
-		try {
-			const me = await this._aivisJson<UserMeResponse>('/v1/users/me', apiKey);
-			return { handle: me.handle ?? null, name: me.name ?? null, creditBalance: typeof me.credit_balance === 'number' ? me.credit_balance : null };
-		} catch (error) {
-			throw this._wrapAivisError(error);
-		}
+	getAivisMe(apiKey: string): Promise<IParadisAivisMeResult> {
+		return this._aivisClient.getMe(apiKey);
 	}
 
 	// --- TTS再生 -----------------------------------------------------------------------------

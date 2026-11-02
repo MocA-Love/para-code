@@ -33,14 +33,12 @@
 // - worker の `failed` が 3 回続いたら、しばらく afplay に任せる（手放した件は鳴らし直さない）
 
 import { execFile, spawn } from 'child_process';
-import { promises as fs } from 'fs';
-import { connect } from 'net';
 import { homedir } from 'os';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { join } from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { ParadisAivisRedisKeyProbe, paradisProbeAivisRedisKey } from './paradisAivisRedisProbe.js';
 import {
 	IParadisIngestOpenOptions,
 	IParadisIngestStream,
@@ -441,7 +439,7 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		this.probeVersion = options.probeVersion ?? probeAivisVersion;
 		this.probeWorkerLock = options.probeWorkerLock ?? probeAivisWorkerLock;
 		this.probeMute = options.probeMute ?? probeAivisMute;
-		this.probePlayLock = options.probePlayLock ?? (env => probeAivisRedisKey(env, PLAY_LOCK_KEY));
+		this.probePlayLock = options.probePlayLock ?? (env => paradisProbeAivisRedisKey(env, PLAY_LOCK_KEY));
 		this.now = options.now ?? Date.now;
 		const versionTimer = setInterval(() => void this.checkVersion(), VERSION_CHECK_INTERVAL_MS);
 		this._register(toDisposable(() => {
@@ -519,8 +517,16 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			return;
 		}
 		const deadline = this.now() + timeoutMs;
-		while (!this.isDisposed() && (await this.probePlayLock(this.env ?? process.env).catch(() => undefined)) === true && this.now() < deadline) {
-			await new Promise<void>(resolve => setTimeout(resolve, PLAY_LOCK_POLL_MS));
+		// 差し替えが無ければ、待つ間は 1 本の接続で GET を繰り返す（毎回 config.json を読んで張り直さない）。
+		// 切れたら確かめられない（undefined）ので待たない
+		const session = this.options.probePlayLock === undefined ? await ParadisAivisRedisKeyProbe.create(this.env ?? process.env) : undefined;
+		const probe = session !== undefined ? () => session.has(PLAY_LOCK_KEY) : () => this.probePlayLock(this.env ?? process.env);
+		try {
+			while (!this.isDisposed() && (await probe().catch(() => undefined)) === true && this.now() < deadline) {
+				await new Promise<void>(resolve => setTimeout(resolve, PLAY_LOCK_POLL_MS));
+			}
+		} finally {
+			session?.dispose();
 		}
 	}
 
@@ -1576,132 +1582,16 @@ export function paradisAivisVersionProbeResult(error: { readonly killed?: boolea
 	return error.killed === true || error.signal === 'SIGTERM' ? undefined : null;
 }
 
-/** aivis-mcp と同じ順（REDIS_URL → ~/.config/aivis-mcp/config.json → 既定）で Redis の URL を決める。 */
-async function resolveRedisUrl(env: NodeJS.ProcessEnv): Promise<string> {
-	if (env.REDIS_URL) {
-		return env.REDIS_URL;
-	}
-	try {
-		const settings = JSON.parse(await fs.readFile(join(homedir(), '.config', 'aivis-mcp', 'config.json'), 'utf8')) as { redisUrl?: unknown };
-		if (typeof settings.redisUrl === 'string' && settings.redisUrl) {
-			return settings.redisUrl;
-		}
-	} catch {
-		// 無い・読めない
-	}
-	return 'redis://127.0.0.1:6379';
-}
-
-function respCommand(parts: readonly string[]): string {
-	return `*${parts.length}\r\n${parts.map(part => `$${Buffer.byteLength(part)}\r\n${part}\r\n`).join('')}`;
-}
-
 /**
  * worker の lock（`aivis-mcp:worker-lock`）が Redis にあるかを、GET 1 回だけで確かめる。読むだけで書かない。
  * つながらない（Redis が無い）ときは false（worker も Redis が無ければ動けない）。rediss・認証の失敗・壊れた URL など
  * 確かめられないときは undefined（「分からない」として afplay へ切り替えない）。
  */
 export function probeAivisWorkerLock(env: NodeJS.ProcessEnv): Promise<boolean | undefined> {
-	return probeAivisRedisKey(env, WORKER_LOCK_KEY);
+	return paradisProbeAivisRedisKey(env, WORKER_LOCK_KEY);
 }
 
 /** `aivis --mute` のキーがあるか（読むだけ）。確かめられなければ undefined。 */
 export function probeAivisMute(env: NodeJS.ProcessEnv): Promise<boolean | undefined> {
-	return probeAivisRedisKey(env, MUTE_KEY);
-}
-
-async function probeAivisRedisKey(env: NodeJS.ProcessEnv, key: string): Promise<boolean | undefined> {
-	const commands: string[][] = [];
-	let host: string;
-	let port: number;
-	try {
-		const url = new URL(await resolveRedisUrl(env));
-		if (url.protocol !== 'redis:') {
-			return undefined;
-		}
-		if (url.password) {
-			commands.push(url.username ? ['AUTH', decodeURIComponent(url.username), decodeURIComponent(url.password)] : ['AUTH', decodeURIComponent(url.password)]);
-		}
-		const db = url.pathname.replace(/^\//, '');
-		if (/^\d+$/.test(db) && db !== '0') {
-			commands.push(['SELECT', db]);
-		}
-		host = (url.hostname || '127.0.0.1').replace(/^\[(?<address>.*)\]$/, '$<address>');
-		port = Number(url.port) || 6379;
-	} catch {
-		return undefined;
-	}
-	commands.push(['GET', key]);
-	return new Promise<boolean | undefined>(resolve => {
-		let settled = false;
-		let buffer = '';
-		const finish = (value: boolean | undefined) => {
-			if (!settled) {
-				settled = true;
-				socket.destroy();
-				resolve(value);
-			}
-		};
-		const socket = connect({ host, port });
-		socket.setTimeout(1_000, () => finish(undefined));
-		socket.once('error', (error: NodeJS.ErrnoException) => finish(error.code === 'ECONNREFUSED' ? false : undefined));
-		socket.once('connect', () => socket.write(commands.map(respCommand).join('')));
-		socket.on('data', (chunk: Buffer) => {
-			buffer += chunk.toString('utf8');
-			if (buffer.length > 64 * 1024) {
-				finish(undefined);
-				return;
-			}
-			const replies = parseRespReplies(buffer);
-			if (replies === undefined || replies.length < commands.length) {
-				return;
-			}
-			if (replies.some(reply => reply === RESP_ERROR)) {
-				// NOAUTH など。確かめられない
-				finish(undefined);
-				return;
-			}
-			const last = replies[commands.length - 1];
-			finish(typeof last === 'string' && last.length > 0);
-		});
-	});
-}
-
-/** RESP の返事を並べて読む（単純な型だけ）。読み切れていなければ undefined。 */
-const RESP_ERROR = Symbol('resp-error');
-
-function parseRespReplies(text: string): Array<string | null | typeof RESP_ERROR> | undefined {
-	const replies: Array<string | null | typeof RESP_ERROR> = [];
-	let index = 0;
-	while (index < text.length) {
-		const lineEnd = text.indexOf('\r\n', index);
-		if (lineEnd < 0) {
-			return replies.length > 0 ? replies : undefined;
-		}
-		const kind = text[index];
-		const line = text.slice(index + 1, lineEnd);
-		if (kind === '+' || kind === ':') {
-			replies.push(line);
-			index = lineEnd + 2;
-		} else if (kind === '-') {
-			replies.push(RESP_ERROR);
-			index = lineEnd + 2;
-		} else if (kind === '$') {
-			const length = Number(line);
-			if (length < 0) {
-				replies.push(null);
-				index = lineEnd + 2;
-				continue;
-			}
-			if (text.length < lineEnd + 2 + length + 2) {
-				return replies.length > 0 ? replies : undefined;
-			}
-			replies.push(text.slice(lineEnd + 2, lineEnd + 2 + length));
-			index = lineEnd + 2 + length + 2;
-		} else {
-			replies.push(null);
-			index = lineEnd + 2;
-		}
-	}
-	return replies;
+	return paradisProbeAivisRedisKey(env, MUTE_KEY);
 }
