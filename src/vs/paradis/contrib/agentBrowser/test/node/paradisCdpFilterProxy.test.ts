@@ -12,7 +12,7 @@ import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.j
 import { PARADIS_PAGE_URL_FRESH_MS } from '../../common/paradisCdpExtensionScope.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
 import { paradisCdpErrorFrame, paradisForwardableCdpFrame, paradisReadCdpFrame } from '../../node/paradisCdpFrames.js';
-import { IParadisBoundContext, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
+import { IParadisBoundContext, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisTargetUrlCheckAnswered, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpGatewayDelegate, ParadisCdpGateway, paradisPageUpgradeTargetIsCurrent } from '../../node/paradisCdpGateway.js';
 import { ParadisCdpUpstream } from '../../node/paradisCdpUpstream.js';
@@ -1310,6 +1310,12 @@ suite('Paradis CDP screenshot filter', () => {
 			fixtureTargetInfoSilent.value = false;
 			clock.restore();
 		}
+	});
+
+	test('a URL check counts as confirmed only with an answer: a timeout or a request that could not be sent refuses the command, on both routes', () => {
+		// Both routes refuse when this is false. On the page route an unsent request (undefined) cannot be produced from outside:
+		// one check is shared by all waiting commands and a timed-out one leaves the waiter, so the cap is never reached.
+		assert.deepStrictEqual([paradisTargetUrlCheckAnswered({ id: -1, result: {} }), paradisTargetUrlCheckAnswered('timeout'), paradisTargetUrlCheckAnswered(undefined)], [true, false, false]);
 	});
 
 	test('a URL check that timed out leaves nothing behind: a late answer is dropped quietly, and a thousand more timeouts are still refused', async () => {
