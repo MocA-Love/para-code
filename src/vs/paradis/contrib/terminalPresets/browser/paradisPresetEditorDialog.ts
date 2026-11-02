@@ -188,6 +188,8 @@ const strDuplicateSkipped = (name: string) => localize('paradis.presetEditor.dup
 // allow-any-unicode-next-line
 const STR_DELETE = localize('paradis.presetEditor.delete', "削除");
 // allow-any-unicode-next-line
+const STR_DELETE_MENU = localize('paradis.presetEditor.deleteMenu', "削除...");
+// allow-any-unicode-next-line
 const STR_NAME = localize('paradis.presetEditor.name', "名前");
 // allow-any-unicode-next-line
 const STR_DESCRIPTION = localize('paradis.presetEditor.description', "説明（任意）");
@@ -326,7 +328,6 @@ const STR_OPERATION_FAILED = localize('paradis.presetEditor.operationFailed', "�
 // allow-any-unicode-next-line
 const STR_REORDER_FAILED = localize('paradis.presetEditor.reorderFailed', "並べ替えられませんでした");
 // allow-any-unicode-next-line
-const STR_SOURCE_USER = localize('paradis.presetEditor.sourceUser', "ユーザー");
 // allow-any-unicode-next-line
 const STR_SOURCE_WORKSPACE = localize('paradis.presetEditor.sourceWorkspace', "リポジトリ");
 // allow-any-unicode-next-line
@@ -413,8 +414,6 @@ const STR_NAV_SOURCE_USER = localize('paradis.presetEditor.navSourceUser', "ユ�
 // allow-any-unicode-next-line
 const STR_NAV_SOURCE_WORKSPACE = localize('paradis.presetEditor.navSourceWorkspace', "リポジトリ（.paracode.json）");
 // allow-any-unicode-next-line
-const STR_NAV_CAPTION_HINTS = localize('paradis.presetEditor.navCaptionHints', "操作のヒント");
-// allow-any-unicode-next-line
 const strGripTitle = (name: string) => localize('paradis.presetEditor.gripTitle', "{0}: 左端をつかんでドラッグ、Alt+↑ / Alt+↓ で並び替え、Alt+→ / Alt+← でフォルダへ入れる・出す。Enter で移動のメニュー", name);
 // allow-any-unicode-next-line
 const strFolderGripTitle = (name: string) => localize('paradis.presetEditor.folderGripTitle', "{0}: 左端をつかんでドラッグ、または Alt+↑ / Alt+↓ でフォルダごと並び替え。Enter で移動のメニュー", name);
@@ -424,13 +423,9 @@ const strMovedTo = (name: string, index: number, count: number) => localize('par
 // allow-any-unicode-next-line
 const strMovedToInFolder = (name: string, folder: string, index: number, count: number) => localize('paradis.presetEditor.movedToInFolder', "{0} を {1} フォルダの中の {2} / {3} 番目へ移しました", name, folder, index, count);
 // allow-any-unicode-next-line
-const STR_HINT_REORDER = localize('paradis.presetEditor.hintReorder', "行の左端 ⋮⋮ をドラッグすると、行の間に線が出てそこへ入ります。フォルダの行の中ほどに重ねるとフォルダに入ります。");
-// allow-any-unicode-next-line
-const STR_HINT_KEYS = localize('paradis.presetEditor.hintKeys', "Alt+↑ / Alt+↓ で 1 つずつ（フォルダはひとまとまり）、Alt+→ でフォルダへ入れる、Alt+← でフォルダから出す。右クリックでも移せます。");
-// allow-any-unicode-next-line
-const STR_HINT_NO_CROSS = localize('paradis.presetEditor.hintNoCross', "※ 保存先（ユーザー設定 / .paracode.json）を跨ぐ移動はできません。");
-// allow-any-unicode-next-line
 const STR_MOVE_UP = localize('paradis.presetEditor.moveUp', "上へ移動");
+// allow-any-unicode-next-line
+const strMoreActions = (name: string) => localize('paradis.presetEditor.moreActions', "{0} のその他の操作", name);
 // allow-any-unicode-next-line
 const STR_MOVE_DOWN = localize('paradis.presetEditor.moveDown', "下へ移動");
 // allow-any-unicode-next-line
@@ -739,11 +734,8 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 			this._renderList();
 		}));
-		dom.append(navScroll, $('.ppe-nav-caption')).textContent = STR_NAV_CAPTION_HINTS;
-		const navHint = dom.append(navScroll, $('.ppe-nav-hint'));
-		dom.append(navHint, $('div')).textContent = STR_HINT_REORDER;
-		dom.append(navHint, $('div')).textContent = STR_HINT_KEYS;
-		dom.append(navHint, $('div')).textContent = STR_HINT_NO_CROSS;
+		// 並び替えの操作の説明は常設しない。掴み（⋮⋮）のツールチップに書き、保存先を跨げないなどの理由は、
+		// 操作したときにトーストで出す（Q537 の 9 A）
 		this._contentEl = dom.append(body, $('.ppe-content'));
 
 		// Alt+↑ / Alt+↓（1 つずつ、フォルダはひとまとまり）と Alt+→ / Alt+←（フォルダへ入れる・
@@ -1017,14 +1009,27 @@ class ParadisPresetEditorDialog extends Disposable {
 
 	/** 右クリック（キーボードのメニューキーを含む）の並び替えメニュー。 */
 	private _showMoveMenu(anchor: HTMLElement | { readonly x: number; readonly y: number }, item: ParadisPresetMoveItem): void {
+		const actions = this._moveActions(item, undefined);
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => anchor,
+			getActions: () => actions,
+		});
+	}
+
+	/**
+	 * 並び替えの項目（上へ・下へ・フォルダへ入れる・出す）。右クリックのメニューと行の「…」のメニューで使う。
+	 * 並び替えられない間（`reorderBlocked`・選択モード）は、上へ・下へを押せない形で出す。
+	 */
+	private _moveActions(item: ParadisPresetMoveItem, reorderBlocked: string | undefined): IAction[] {
 		const presets = this._listPresets;
+		const blocked = !!reorderBlocked || this._selecting;
 		const up = paradisPlanPresetStep(presets, item, -1);
 		const down = paradisPlanPresetStep(presets, item, 1);
 		const actions: IAction[] = [
-			toAction({ id: 'paradis.presetEditor.moveUp', label: STR_MOVE_UP, enabled: !isParadisPresetMoveRefusal(up), run: () => void this._applyMove(up, item, true) }),
-			toAction({ id: 'paradis.presetEditor.moveDown', label: STR_MOVE_DOWN, enabled: !isParadisPresetMoveRefusal(down), run: () => void this._applyMove(down, item, true) }),
+			toAction({ id: 'paradis.presetEditor.moveUp', label: STR_MOVE_UP, tooltip: reorderBlocked, enabled: !blocked && !isParadisPresetMoveRefusal(up), run: () => void this._applyMove(up, item, true) }),
+			toAction({ id: 'paradis.presetEditor.moveDown', label: STR_MOVE_DOWN, tooltip: reorderBlocked, enabled: !blocked && !isParadisPresetMoveRefusal(down), run: () => void this._applyMove(down, item, true) }),
 		];
-		if (item.kind === 'preset') {
+		if (item.kind === 'preset' && !blocked) {
 			const folders = paradisPresetMoveFolderChoices(presets, item.preset);
 			const inFolder = !!item.preset.folder?.trim();
 			if (folders.length > 0 || inFolder) {
@@ -1046,10 +1051,27 @@ class ParadisPresetEditorDialog extends Disposable {
 				}));
 			}
 		}
-		this.contextMenuService.showContextMenu({
-			getAnchor: () => anchor,
-			getActions: () => actions,
-		});
+		return actions;
+	}
+
+	/**
+	 * 行の右端の「…」。押すと、行の操作（編集・複製など）と並び替えをまとめたメニューを出す（Q537 の 7 A。
+	 * 行に常に見せるボタンは「実行」とこれだけ）。
+	 */
+	private _appendMoreButton(actions: HTMLElement, label: string, buildActions: () => IAction[]): void {
+		const more = dom.append(actions, $('button.ppe-icon-btn')) as HTMLButtonElement;
+		more.type = 'button';
+		more.setAttribute('aria-haspopup', 'true');
+		const ariaLabel = strMoreActions(label);
+		more.setAttribute('aria-label', ariaLabel);
+		dom.append(more, $(ThemeIcon.asCSSSelector(Codicon.ellipsis)));
+		this._viewStore.add(this.hoverService.setupDelayedHover(more, { content: ariaLabel, container: this._backdrop }));
+		this._viewStore.add(dom.addDisposableListener(more, 'click', () => {
+			this.contextMenuService.showContextMenu({
+				getAnchor: () => more,
+				getActions: buildActions,
+			});
+		}));
 	}
 
 	/** ダイアログ内トースト。フォーカスを奪わない軽い通知（並び替え拒否・複製完了など）。 */
@@ -1262,10 +1284,12 @@ class ParadisPresetEditorDialog extends Disposable {
 		iconEl.classList.add(...ThemeIcon.asClassNameArray(preset.icon ? ThemeIcon.fromId(preset.icon) : ThemeIcon.fromId('play')));
 		const main = dom.append(row, $('.ppe-row-main'));
 		const nameLine = dom.append(main, $('.ppe-row-name'));
-		nameLine.textContent = preset.name;
-		const badge = dom.append(nameLine, $('span.ppe-badge'));
-		badge.textContent = preset.source === 'workspace' ? STR_SOURCE_WORKSPACE : STR_SOURCE_USER;
-		badge.classList.toggle('workspace', preset.source === 'workspace');
+		dom.append(nameLine, $('span.ppe-row-name-text')).textContent = preset.name;
+		// 印は名前の右端へ寄せる。保存先は既定の「ユーザー」を出さず、例外の「リポジトリ」だけ出す（Q537 の 8 A）
+		dom.append(nameLine, $('span.ppe-name-spacer'));
+		if (preset.source === 'workspace') {
+			dom.append(nameLine, $('span.ppe-badge.workspace')).textContent = STR_SOURCE_WORKSPACE;
+		}
 		const qualifier = options.qualifiers.get(preset.key);
 		if (qualifier) {
 			dom.append(nameLine, $('span.ppe-badge.qualifier')).textContent = qualifier;
@@ -1279,16 +1303,6 @@ class ParadisPresetEditorDialog extends Disposable {
 		dom.append(main, $('.ppe-row-detail')).textContent = preset.description || paradisPresetCommandSignature(preset, ' && ');
 
 		const actions = dom.append(row, $('.ppe-row-actions'));
-		this._appendMoveButtons(actions, item, options.reorderBlocked);
-		if (preset.locallyHidden) {
-			// タブバーの右クリック「非表示にする」で workspace ソースへ立てたフラグを戻す唯一の入口。
-			// 定義元の .paracode.json には触れない（setWorkspacePresetLocallyHidden 参照）。
-			const unhideBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
-			unhideBtn.textContent = STR_UNHIDE;
-			this._viewStore.add(dom.addDisposableListener(unhideBtn, 'click', () => {
-				this.presetService.setWorkspacePresetLocallyHidden(preset, false);
-			}));
-		}
 		const runBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
 		runBtn.textContent = STR_RUN;
 		runBtn.disabled = !!preset.envInactive;
@@ -1307,13 +1321,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				await this.dialogService.error(STR_OPERATION_FAILED, error instanceof Error ? error.message : String(error));
 			}
 		}));
-		const editBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
-		editBtn.textContent = STR_EDIT;
-		this._viewStore.add(dom.addDisposableListener(editBtn, 'click', () => this._renderEdit(preset)));
-		const duplicateBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
-		duplicateBtn.textContent = STR_DUPLICATE;
-		duplicateBtn.title = strDuplicateName(preset.name);
-		this._viewStore.add(dom.addDisposableListener(duplicateBtn, 'click', async () => {
+		const duplicate = async (): Promise<void> => {
 			// 解決済みフィールド（source/sourceUri/sourceIndex/key/locallyHidden/envInactive）は
 			// 定義ではないので写さない。id も新しく採番させたいので写さない。
 			const tasks = paradisGetPresetTasks(preset);
@@ -1349,10 +1357,8 @@ class ParadisPresetEditorDialog extends Disposable {
 			} catch (error) {
 				await this.dialogService.error(STR_OPERATION_FAILED, error instanceof Error ? error.message : String(error));
 			}
-		}));
-		const deleteBtn = dom.append(actions, $('button.ppe-btn.ppe-btn-danger')) as HTMLButtonElement;
-		deleteBtn.textContent = STR_DELETE;
-		this._viewStore.add(dom.addDisposableListener(deleteBtn, 'click', async () => {
+		};
+		const remove = async (): Promise<void> => {
 			// 同名が並んでいると「どれを消すのか」が名前だけでは分からないので、
 			// 消える1件の中身と、残る同名の件数まで書いてから確認する。
 			const currentPresets = this.presetService.presets;
@@ -1374,7 +1380,18 @@ class ParadisPresetEditorDialog extends Disposable {
 				await this.dialogService.error(STR_DELETE_FAILED, error instanceof Error ? error.message : String(error));
 				this._renderList();
 			}
-		}));
+		};
+		this._appendMoreButton(actions, preset.name, () => [
+			toAction({ id: 'paradis.presetEditor.edit', label: STR_EDIT, run: () => this._renderEdit(preset) }),
+			toAction({ id: 'paradis.presetEditor.duplicate', label: STR_DUPLICATE, tooltip: strDuplicateName(preset.name), run: duplicate }),
+			// タブバーの右クリック「非表示にする」で workspace ソースへ立てたフラグを戻す唯一の入口。
+			// 定義元の .paracode.json には触れない（setWorkspacePresetLocallyHidden 参照）。
+			...(preset.locallyHidden ? [toAction({ id: 'paradis.presetEditor.unhide', label: STR_UNHIDE, run: () => this.presetService.setWorkspacePresetLocallyHidden(preset, false) })] : []),
+			new Separator(),
+			...this._moveActions(item, options.reorderBlocked),
+			new Separator(),
+			toAction({ id: 'paradis.presetEditor.delete', label: STR_DELETE_MENU, run: remove }),
+		]);
 	}
 
 	/**
@@ -1612,34 +1629,6 @@ class ParadisPresetEditorDialog extends Disposable {
 		}
 	}
 
-	/** ↑↓ ボタン。押せないときはホバーで理由を出す。 */
-	private _appendMoveButtons(actions: HTMLElement, item: ParadisPresetMoveItem, reorderBlocked: string | undefined): void {
-		const moveBtn = (label: string, ariaLabel: string, direction: -1 | 1): void => {
-			const btn = dom.append(actions, $('button.ppe-btn.ppe-task-btn')) as HTMLButtonElement;
-			btn.type = 'button';
-			btn.textContent = label;
-			btn.setAttribute('aria-label', ariaLabel);
-			const plan = reorderBlocked || this._selecting ? undefined : paradisPlanPresetStep(this._listPresets, item, direction);
-			// disabled にするとホバーのイベントが来なくなり理由を見せられないので、aria-disabled で表す。
-			const disabled = !plan || isParadisPresetMoveRefusal(plan);
-			btn.setAttribute('aria-disabled', String(disabled));
-			btn.classList.toggle('disabled', disabled);
-			const reason = reorderBlocked ?? (plan && isParadisPresetMoveRefusal(plan) ? this._refusalMessage(plan, item) : undefined);
-			this._viewStore.add(this.hoverService.setupDelayedHover(btn, { content: reason ? `${ariaLabel}: ${reason}` : ariaLabel, container: this._backdrop }));
-			this._viewStore.add(dom.addDisposableListener(btn, 'click', e => {
-				if (plan && !isParadisPresetMoveRefusal(plan)) {
-					// Enter / Space で押したとき（detail が 0）は、描き直しで押したボタンごと消えて
-					// フォーカスが失われるので、動かした行の grip へ戻す。
-					void this._applyMove(plan, item, e.detail === 0);
-				}
-			}));
-		};
-		// allow-any-unicode-next-line
-		moveBtn('↑', STR_MOVE_UP, -1);
-		// allow-any-unicode-next-line
-		moveBtn('↓', STR_MOVE_DOWN, 1);
-	}
-
 	/** フォルダ1件（ヘッダー行＋展開時は中身の行）。 */
 	private _renderFolderGroup(container: HTMLElement, group: IParadisFolderGroup, qualifiers: Map<string, string>, reorderBlocked: string | undefined): void {
 		const folderKey = paradisListFolderKey(paradisPresetScopeKey(group.presets[0]), group.folder);
@@ -1686,21 +1675,20 @@ class ParadisPresetEditorDialog extends Disposable {
 		const main = dom.append(row, $('.ppe-row-main'));
 		const nameLine = dom.append(main, $('.ppe-folder-name-line'));
 		dom.append(nameLine, $('span.ppe-folder-name')).textContent = group.folder;
-		const scopeBadge = dom.append(nameLine, $('span.ppe-badge'));
-		scopeBadge.textContent = group.presets[0].source === 'workspace' ? STR_SOURCE_WORKSPACE : STR_SOURCE_USER;
-		scopeBadge.classList.toggle('workspace', group.presets[0].source === 'workspace');
+		dom.append(nameLine, $('span.ppe-name-spacer'));
+		if (group.presets[0].source === 'workspace') {
+			dom.append(nameLine, $('span.ppe-badge.workspace')).textContent = STR_SOURCE_WORKSPACE;
+		}
 		dom.append(nameLine, $('span.ppe-badge')).textContent = strFolderCount(group.presets.length);
 
 		const actions = dom.append(row, $('.ppe-row-actions'));
-		this._appendMoveButtons(actions, item, reorderBlocked);
-		const editBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
-		editBtn.type = 'button';
-		editBtn.textContent = STR_EDIT;
-		this._viewStore.add(dom.addDisposableListener(editBtn, 'click', () => this._renderFolderRename(group)));
-		const deleteBtn = dom.append(actions, $('button.ppe-btn.ppe-btn-danger')) as HTMLButtonElement;
-		deleteBtn.type = 'button';
-		deleteBtn.textContent = STR_DELETE;
-		this._viewStore.add(dom.addDisposableListener(deleteBtn, 'click', () => this._confirmDeleteFolder(group)));
+		this._appendMoreButton(actions, group.folder, () => [
+			toAction({ id: 'paradis.presetEditor.renameFolder', label: STR_EDIT, run: () => this._renderFolderRename(group) }),
+			new Separator(),
+			...this._moveActions(item, reorderBlocked),
+			new Separator(),
+			toAction({ id: 'paradis.presetEditor.deleteFolder', label: STR_DELETE_MENU, run: () => this._confirmDeleteFolder(group) }),
+		]);
 
 		if (collapsed) {
 			return;
