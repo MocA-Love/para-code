@@ -7,7 +7,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // RTK 節約ダッシュボードの登録入り口。paradis.electron-browser.contribution.ts から import される。
-// - ダッシュボード EditorPane / EditorInput シリアライザの登録
 // - コマンド `paradis.rtk.showDashboard`(コマンドパレット対応)
 // - ステータスバー右側(ccusage ボタンの左)の rtk ボタン(今日の節約量を定期表示、クリックでダッシュボード)
 // - 設定 `paradis.rtk.*` のスキーマ登録
@@ -20,17 +19,12 @@ import { Categories } from '../../../../platform/action/common/actionCommonCateg
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
-import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { isParadisRtkNotFoundError, paradisRtkFormatTokens } from '../common/paradisRtk.js';
 import { ParadisRtkClient, PARADIS_RTK_SETTING_EXECUTABLE_PATH } from './paradisRtkClient.js';
-import { ParadisRtkEditor } from './paradisRtkEditor.js';
-import { ParadisRtkInput, ParadisRtkInputSerializer, PARADIS_RTK_EDITOR_ID, PARADIS_RTK_INPUT_TYPE_ID } from './paradisRtkInput.js';
 import { paradisOpenUsageDashboard } from '../../usageDashboard/electron-browser/paradisUsageDashboard.contribution.js';
 
 const SETTING_STATUS_BAR_ENABLED = 'paradis.rtk.statusBar.enabled';
@@ -40,24 +34,6 @@ const SHOW_DASHBOARD_COMMAND_ID = 'paradis.rtk.showDashboard';
 const STATUS_POLL_INTERVAL_MS = 10 * 60 * 1000;
 /** 起動直後の負荷を避けるための初回取得ディレイ。 */
 const STATUS_INITIAL_DELAY_MS = 15 * 1000;
-
-// ---------- editor pane / serializer ----------
-
-Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(
-		ParadisRtkEditor,
-		PARADIS_RTK_EDITOR_ID,
-		localize('paradis.rtk.editorName', "RTK 節約ダッシュボード")
-	),
-	[
-		new SyncDescriptor(ParadisRtkInput)
-	]
-);
-
-Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
-	PARADIS_RTK_INPUT_TYPE_ID,
-	ParadisRtkInputSerializer
-);
 
 // ---------- command ----------
 
@@ -72,9 +48,7 @@ registerAction2(class ShowRtkDashboardAction extends Action2 {
 	}
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
-		// 3ダッシュボードは統合ダイアログの1タブになったので、こちらの入口からも
-		// 同じダイアログを rtk タブで開く（エディタタブとしての実装も残っているが、
-		// 既定の導線はダイアログ側に一本化する）
+		// 統合のモーダルの使用量を rtk のタブで開く
 		paradisOpenUsageDashboard(accessor, 'rtk');
 	}
 });
