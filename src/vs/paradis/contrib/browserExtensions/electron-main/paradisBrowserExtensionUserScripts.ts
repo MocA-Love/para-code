@@ -23,7 +23,7 @@ import * as electron from 'electron';
 import type { WebContents, WebFrameMain } from 'electron';
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
-import { dirname, isAbsolute, join, normalize, sep } from '../../../../base/common/path.js';
+import { isAbsolute, join, normalize, sep } from '../../../../base/common/path.js';
 import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { PARADIS_SHIM_USER_SCRIPTS_NAMESPACE } from '../common/paradisBrowserExtensionShim.js';
 import {
@@ -48,6 +48,7 @@ import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, Pa
 import { paradisChromeFrameId, paradisMatchesUrlPattern } from './paradisBrowserExtensionTabs.js';
 import { paradisAttachToEveryWebContents } from './paradisBrowserExtensionContentsHooks.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 
 /**
  * USER_SCRIPT の world の番号の始め。0（ページ）・999（Electron の preload）・Chromium の拡張機能の content script の world
@@ -129,6 +130,7 @@ export class ParadisBrowserExtensionUserScripts {
 
 	private _state: IState = { allowed: {}, registrations: {} };
 	private _saving: Promise<void> = Promise.resolve();
+	private _writer: ParadisJsonStateWriter | undefined;
 	private readonly _worldNumbers = new Map<string, number>();
 	private _nextWorldNumber = FIRST_WORLD_NUMBER;
 	private readonly _pending = new Map<string, IPendingMessage>();
@@ -672,12 +674,8 @@ export class ParadisBrowserExtensionUserScripts {
 	}
 
 	private _save(): Promise<void> {
-		const state = JSON.stringify(this._state);
-		this._saving = this._saving.then(async () => {
-			await fs.mkdir(dirname(this._path), { recursive: true });
-			await fs.writeFile(`${this._path}.tmp`, state);
-			await fs.rename(`${this._path}.tmp`, this._path);
-		}).catch(error => this._logService.warn('[paradis] could not save the browser extension user scripts', error));
+		this._writer ??= new ParadisJsonStateWriter(this._path, true);
+		this._saving = this._writer.write(JSON.stringify(this._state)).catch(error => this._logService.warn('[paradis] could not save the browser extension user scripts', error));
 		return this._saving;
 	}
 }
