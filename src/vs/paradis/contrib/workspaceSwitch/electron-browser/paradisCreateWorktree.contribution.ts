@@ -280,6 +280,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		// 一致する無関係な手元のディレクトリを削除してしまう）。
 		const resolveGitHost = paradisWorktreeGitWriteHostResolver(accessor);
 		const logService = accessor.get(ILogService);
+		const notificationService = accessor.get(INotificationService);
 		// アクセサは同期実行中しか有効でないため、await をまたぐ teardown 実行用に
 		// instantiationService だけ取り出しておき、実行時は invokeFunction で新しいアクセサを作る
 		const instantiationService = accessor.get(IInstantiationService);
@@ -346,7 +347,27 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			paradisRememberTeardownChoice(storageService, repository.uri, runTeardownScript);
 		}
 		const stateKey = paradisWorktreeStateKey(uri);
-		if (!await switchService.prepareScopeRetirement(stateKey)) {
+		// このスペースのエディタとバックアップを片付けられないと削除は進まない。以前は理由を出さずに
+		// 終わっていたので、［削除］を押しても何も起きないように見えた。
+		let prepared: boolean;
+		try {
+			prepared = await switchService.prepareScopeRetirement(stateKey);
+		} catch (error) {
+			logService.error('[ParadisRemoveWorktree] preparing the space for removal failed', error);
+			await dialogService.error(
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.removeWorktreePrepareFailed', "このスペースのエディタを片付けられなかったため、ワークツリーの削除を中止しました。"),
+				error instanceof Error ? error.message : String(error)
+			);
+			return;
+		}
+		if (!prepared) {
+			// 保存の確認で［キャンセル］を押したときもここへ来るので、止めた理由を通知で知らせるだけにする。
+			notificationService.notify({
+				severity: Severity.Info,
+				// allow-any-unicode-next-line
+				message: localize('paradis.workspaceSwitch.removeWorktreePrepareDeclined', "ワークツリー「{0}」の削除を中止しました。このスペースの未保存のエディタかバックアップが片付いていません（保存をキャンセルした、または保存に失敗した）。保存するか変更を破棄してから、もう一度削除してください。", worktree.name)
+			});
 			return;
 		}
 

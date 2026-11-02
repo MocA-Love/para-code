@@ -249,6 +249,15 @@ export function paradisFindWorktreeLock(
 	return { locked, reason };
 }
 
+/** `git worktree list` のエントリにこのパスがあるか。比べ方は {@link paradisFindWorktreeLock} と同じ。 */
+export function paradisWorktreeListIncludes(
+	entries: readonly { readonly path: string }[],
+	worktreePath: string,
+	options: IParadisWorktreePathComparison,
+): boolean {
+	return entries.some(entry => paradisSameWorktreePath(entry.path, worktreePath, options));
+}
+
 /** 区切りと末尾スラッシュ、必要なら大文字小文字を無視してパスを比べる。 */
 function paradisSameWorktreePath(a: string, b: string, options: IParadisWorktreePathComparison): boolean {
 	const normalize = (value: string) => {
