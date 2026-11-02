@@ -11,27 +11,7 @@
 // API を叩き直さないようにする。ダイアログを開くたびに clearElevenLabsApiCaches() で捨てる。
 
 import { IParadisElevenLabsDictionaryListItem, IParadisElevenLabsModel, IParadisElevenLabsVoice } from '../common/paradisElevenLabs.js';
-
-/** API キーごとに1つの値を覚える小さな表。 */
-class ParadisPerKeyCache<T> {
-	private entries = new Map<string, T>();
-
-	get(apiKey: string): T | undefined {
-		return this.entries.get(apiKey);
-	}
-
-	set(apiKey: string, value: T): void {
-		this.entries.set(apiKey, value);
-	}
-
-	delete(apiKey: string): void {
-		this.entries.delete(apiKey);
-	}
-
-	clear(): void {
-		this.entries = new Map();
-	}
-}
+import { ParadisPerKeyCache } from '../common/paradisVoiceUsage.js';
 
 export const paradisElevenLabsVoiceCache = new ParadisPerKeyCache<readonly IParadisElevenLabsVoice[]>();
 export const paradisElevenLabsModelCache = new ParadisPerKeyCache<readonly IParadisElevenLabsModel[]>();
