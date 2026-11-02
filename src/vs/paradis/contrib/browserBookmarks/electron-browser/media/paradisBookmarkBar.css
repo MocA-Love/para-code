@@ -214,6 +214,10 @@
 .paradis-bookmark-dialog .pbm-color-swatch {
 	width: 22px;
 	height: 22px;
+	padding: 0;
+	border: none;
+	background: none;
+	font: inherit;
 	border-radius: var(--vscode-cornerRadius-small);
 	display: flex;
 	align-items: center;
@@ -230,6 +234,12 @@
 .paradis-bookmark-dialog .pbm-icon-option.selected,
 .paradis-bookmark-dialog .pbm-color-swatch.selected {
 	background: var(--vscode-actionBar-toggledBackground, var(--vscode-toolbar-activeBackground));
+}
+
+.paradis-bookmark-dialog .pbm-icon-option:focus-visible,
+.paradis-bookmark-dialog .pbm-color-swatch:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
 }
 
 .paradis-bookmark-dialog .pbm-color-dot {
