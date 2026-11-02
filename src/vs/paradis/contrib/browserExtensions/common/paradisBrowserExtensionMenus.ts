@@ -5,6 +5,8 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { isRecord } from '../../../common/paradisGuards.js';
 // Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/main/browser/extensions/browser-extension-context-menu-model.ts, src/main/browser/extensions/browser-extension-context-menu-target.ts, src/main/browser/extensions/browser-extension-commands.ts
 
 // chrome.contextMenus の項目の台帳と、右クリックでどれを出すかの判定、manifest の commands（ショートカット）の
@@ -41,10 +43,6 @@ export class ParadisMenuError extends Error { }
 
 const MENU_TYPES = new Set(['normal', 'checkbox', 'radio', 'separator']);
 export const PARADIS_MENU_CONTEXTS = ['all', 'page', 'frame', 'selection', 'link', 'editable', 'image', 'video', 'audio', 'launcher', 'browser_action', 'page_action', 'action'];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 /** 項目の id として正しいか。 */
 export function paradisIsMenuItemId(value: unknown): value is ParadisMenuItemId {

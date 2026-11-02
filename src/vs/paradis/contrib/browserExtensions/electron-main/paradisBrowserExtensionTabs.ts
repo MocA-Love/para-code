@@ -31,6 +31,7 @@ import { paradisIsChromeWebStoreUrl } from '../common/paradisBrowserExtensionWeb
 import { paraOnDidMarkBrowserViewAgentTab } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import { IParadisTabGroupChanges, PARADIS_TAB_GROUP_COLORS, ParadisTabGroupLedger } from './paradisBrowserExtensionTabGroups.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 内蔵ブラウザのタブ 1 つ（main の BrowserView の、ここで使うところ）。 */
 export interface IParadisTabView {
@@ -92,10 +93,6 @@ interface ITabEntry {
 	readonly active: boolean;
 	readonly view?: IParadisTabView;
 	readonly popout?: BrowserWindow;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** Chrome の match pattern に URL が当たるか（`<all_urls>`・`*://*.example.com/*` など）。 */

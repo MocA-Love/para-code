@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { isRecord } from '../../../common/paradisGuards.js';
+
 // para-browser MCP の run_steps（操作・待機・検証・撮影を 1 回の呼び出しで順に行う）。
 // 各手順はサービス本体の通常のツール呼び出し（_callTool）へそのまま渡すので、接続元の確認・パスの
 // 確認・入力の通り道はどれも単体で呼んだときと同じ。ここでは並べて呼ぶ・止める・結果をまとめるだけ。
@@ -34,10 +36,6 @@ interface IContentItem {
 	readonly type: string;
 	readonly text?: string;
 	readonly [key: string]: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function error(message: string): unknown {

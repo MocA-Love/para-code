@@ -59,6 +59,7 @@ import { createParadisComputerUseCallDiagnostics, IParadisComputerUseCallDiagnos
 import { ParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisComputerUseGrantLedger } from './paradisComputerUseGrantLedger.js';
 import { IParadisComputerUseHelper, ParadisComputerUseHelperError, paradisParseHelperPermissions } from './paradisComputerUseHelperClient.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 const APP_ARGUMENT = {
 	type: 'string',
@@ -1107,7 +1108,7 @@ function operateParams(name: string, args: Record<string, unknown>): Record<stri
 			}
 			return pick(['elementIndex', 'x', 'y', 'button', 'clickCount', 'modifiers', 'realPointer']);
 		case 'computer_drag':
-			if (!isObject(args.from) || !isObject(args.to)) {
+			if (!isRecord(args.from) || !isRecord(args.to)) {
 				throw new ParadisComputerUseHelperError('invalid_argument', '"from" and "to" must each have "elementIndex", or "x" and "y".');
 			}
 			return pick(['from', 'to']);
@@ -1217,8 +1218,8 @@ function snapshotKey(paneToken: string, pid: number, windowId: number): string {
 /** 番号（elementIndex）で的を指しているか。 */
 function usesElementNumbers(args: Record<string, unknown>): boolean {
 	return args.elementIndex !== undefined
-		|| (isObject(args.from) && args.from.elementIndex !== undefined)
-		|| (isObject(args.to) && args.to.elementIndex !== undefined);
+		|| (isRecord(args.from) && args.from.elementIndex !== undefined)
+		|| (isRecord(args.to) && args.to.elementIndex !== undefined);
 }
 
 /**
@@ -1271,10 +1272,6 @@ function pasteNote(record: Record<string, unknown>): string | undefined {
 			break;
 	}
 	return notes.length > 0 ? notes.join(' ') : undefined;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function readOnlyMessage(app: IBundledApp): string {

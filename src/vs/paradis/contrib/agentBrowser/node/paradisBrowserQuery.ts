@@ -25,6 +25,7 @@ import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../common/paradisBrowserQuery
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 import { PARADIS_MAIN_WAIT_MAX_SECONDS, PARADIS_SUBAGENT_WAIT_MAX_SECONDS } from '../common/paradisSubagentToolCalls.js';
 import type { IParadisNetworkActivitySnapshot } from './paradisCdpNetworkActivity.js';
+import { asFiniteNumber, isRecord } from '../../../common/paradisGuards.js';
 
 /** 「読む・待つ」ツールの名前。 */
 export const PARADIS_BROWSER_QUERY_TOOL_NAME_SET: ReadonlySet<string> = new Set(PARADIS_BROWSER_QUERY_TOOL_NAMES);
@@ -193,10 +194,6 @@ export function paradisIsPageUnresponsive(result: unknown): boolean {
 /** ページが答えなかったときにエージェントへ返す文。 */
 export function paradisPageUnresponsiveMessage(deadlineMs: number): string {
 	return `${PARADIS_PAGE_UNRESPONSIVE}: the page did not answer within ${deadlineMs / 1000} s (it may be busy running scripts or loading, or frozen), so Para Code stopped waiting. Other tools on this tab are not held up and take_screenshot still works; retry when the page responds.`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function optionalString(args: Record<string, unknown>, key: string, max = MAX_STRING): string | undefined | { error: string } {
@@ -622,8 +619,8 @@ export class ParadisBrowserQuery {
 			if (reset.value.containerMissing === true) {
 				return error(`No element matches "container" ${JSON.stringify(container)}.`);
 			}
-			startPosition = finiteNumber(reset.value.before);
-			const resetPosition = finiteNumber(reset.value.position);
+			startPosition = asFiniteNumber(reset.value.before);
+			const resetPosition = asFiniteNumber(reset.value.position);
 			lastWritten = resetPosition !== undefined ? { position: resetPosition, container: reset.value.container } : undefined;
 			await this.delay(settleMs as number, call.signal);
 			if (!call.isCurrent()) {
@@ -686,8 +683,8 @@ export class ParadisBrowserQuery {
 				return error(`Nothing matches the container (${describeLocator({ within: args.within, within_uid: args.within_uid })}).`);
 			}
 			lastContainer = value.container;
-			startPosition ??= finiteNumber(value.before);
-			const extent = finiteNumber(value.extent);
+			startPosition ??= asFiniteNumber(value.before);
+			const extent = asFiniteNumber(value.extent);
 			firstExtent ??= extent;
 			lastExtent = extent ?? lastExtent;
 			if (value.found === true) {
@@ -710,7 +707,7 @@ export class ParadisBrowserQuery {
 				if (final.ok && final.value.found === true) {
 					return found(final.value, `Found at the end of ${String(final.value.container)} after ${steps} scroll step(s) (${scrolled}px)`);
 				}
-				const finalExtent = final.ok ? finiteNumber(final.value.extent) : undefined;
+				const finalExtent = final.ok ? asFiniteNumber(final.value.extent) : undefined;
 				lastExtent = finalExtent ?? lastExtent;
 				// 待つ間に中身が伸びた（遅れて読み込む一覧）なら、端とせずに送り続ける
 				if (extent !== undefined && finalExtent !== undefined && finalExtent > extent + 1 && growthRetries < MAX_SCROLL_GROWTH_RETRIES) {
@@ -718,7 +715,7 @@ export class ParadisBrowserQuery {
 					continue;
 				}
 				// 探し始めの端から始めていなければ、そこへ移ってもう 1 回だけ探す（目的が始めの位置より手前にあった）
-				const max = finiteNumber(value.max);
+				const max = asFiniteNumber(value.max);
 				const atOrigin = startPosition === undefined || (origin === 'start' ? startPosition <= 1 : max !== undefined && startPosition >= max - 1);
 				if (!restarted && args.from_start !== true && !atOrigin) {
 					restarted = true;
@@ -726,7 +723,7 @@ export class ParadisBrowserQuery {
 					if (!reset.ok) {
 						return reset.result;
 					}
-					const resetPosition = finiteNumber(reset.value.position);
+					const resetPosition = asFiniteNumber(reset.value.position);
 					lastWritten = resetPosition !== undefined ? { position: resetPosition, container: reset.value.container } : undefined;
 					await this.delay(settleMs as number, call.signal);
 					if (!call.isCurrent()) {
@@ -739,7 +736,7 @@ export class ParadisBrowserQuery {
 			steps++;
 			scrolled += Math.abs(moved);
 			// 探し直して始めの位置まで来たら、その先は 1 回目に探してある
-			const position = finiteNumber(value.position);
+			const position = asFiniteNumber(value.position);
 			lastWritten = position !== undefined ? { position, container: value.container } : undefined;
 			if (restarted && startPosition !== undefined && position !== undefined && (backwards ? position <= startPosition : position >= startPosition)) {
 				finishing = true;
@@ -750,10 +747,6 @@ export class ParadisBrowserQuery {
 			}
 		}
 	}
-}
-
-function finiteNumber(value: unknown): number | undefined {
-	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 /** scroll_to が見つけられなかったときに、ページを 1 回調べた結果（ページの関数の `scrollMiss`）を文にする。 */
