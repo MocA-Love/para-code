@@ -449,6 +449,35 @@ async function waitForPriorForwardedRequests(
 const SAFE_CDP_METHOD = /^[A-Z][A-Za-z]{0,40}\.[a-z][A-Za-z]{0,63}$/;
 
 /** A session id cut down to its head: enough to tell sessions apart in a log, not a capability. */
+/**
+ * 入力（`Input.*`）を配る前に、同じセッションへ先に送った命令の答えを待つ（両方の経路が使う）。配ってよければ true。
+ * 待ちが上限を過ぎたら、その入力を断って（`reject`）false。接続が閉じた・共有が変わった（`isUsable` が false）ときは黙って false。
+ */
+async function paradisAwaitPriorRequestsForInput(options: {
+	readonly transport: 'page' | 'browser';
+	readonly barriers: Map<number, IParadisForwardedRequestBarrier>;
+	readonly sessionId: string | undefined;
+	readonly connectionClosed: Promise<void>;
+	/** 接続が開いていて、リースと共有の先が今のものか。 */
+	readonly isUsable: () => boolean;
+	/** 待ちの理由の報告で、そのセッションがまだあるか。 */
+	readonly sessionStillKnown: (sessionId: string | undefined) => boolean;
+	readonly logService: ILogService;
+	readonly noteInputRejection: (reason: string) => void;
+	readonly reject: (reason: string) => void;
+}): Promise<boolean> {
+	const barrier = await waitForPriorForwardedRequests(priorBarriersForInput(options.barriers, options.sessionId), options.connectionClosed);
+	if (barrier.kind !== 'ready' || !options.isUsable()) {
+		if (barrier.kind === 'timeout' && options.isUsable()) {
+			const reason = describeInputBarrierTimeout(options.transport, barrier.remaining, options.sessionStillKnown, options.logService);
+			options.noteInputRejection(reason);
+			options.reject(reason);
+		}
+		return false;
+	}
+	return true;
+}
+
 function shortSessionId(sessionId: string | undefined): string {
 	return sessionId === undefined ? 'root' : sessionId.slice(0, 8);
 }
@@ -1495,16 +1524,18 @@ export function paradisProxyPageUpgrade(
 			}
 		};
 		const dispatchInputAfterPriorRequests = async (msg: IParadisClientCommand, paramsJson: string): Promise<void> => {
-			const barrier = await waitForPriorForwardedRequests(
-				priorBarriersForInput(forwardedRequestBarriers, msg.sessionId),
+			const ready = await paradisAwaitPriorRequestsForInput({
+				transport: 'page',
+				barriers: forwardedRequestBarriers,
+				sessionId: msg.sessionId,
 				connectionClosed,
-			);
-			if (barrier.kind !== 'ready' || closed || !ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
-				if (barrier.kind === 'timeout' && !closed && ctx.isCurrentLease() && ctx.boundTargetIds().has(targetId)) {
-					const reason = describeInputBarrierTimeout('page', barrier.remaining, sessionId => sessionId === undefined || !detachedSessions.has(sessionId), logService);
-					ctx.noteInputRejection?.(reason);
-					sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, reason));
-				}
+				isUsable: () => !closed && ctx.isCurrentLease() && ctx.boundTargetIds().has(targetId),
+				sessionStillKnown: sessionId => sessionId === undefined || !detachedSessions.has(sessionId),
+				logService,
+				noteInputRejection: reason => ctx.noteInputRejection?.(reason),
+				reject: reason => sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, reason)),
+			});
+			if (!ready) {
 				return;
 			}
 			const operation = ctx.dispatchBoundPageInput(
@@ -2307,16 +2338,18 @@ export async function paradisProxyBrowserUpgrade(
 			paramsJson: string,
 			isRouteCurrent: () => boolean,
 		): Promise<void> => {
-			const barrier = await waitForPriorForwardedRequests(
-				priorBarriersForInput(forwardedRequestBarriers, message.sessionId),
+			const ready = await paradisAwaitPriorRequestsForInput({
+				transport: 'browser',
+				barriers: forwardedRequestBarriers,
+				sessionId: message.sessionId,
 				connectionClosed,
-			);
-			if (barrier.kind !== 'ready' || closed || !ctx.isCurrentLease() || !isRouteCurrent()) {
-				if (barrier.kind === 'timeout' && !closed && ctx.isCurrentLease() && isRouteCurrent()) {
-					const reason = describeInputBarrierTimeout('browser', barrier.remaining, sessionId => sessionId === undefined || allowedSessionIds.has(sessionId), logService);
-					ctx.noteInputRejection?.(reason);
-					rejectRequest(message, reason);
-				}
+				isUsable: () => !closed && ctx.isCurrentLease() && isRouteCurrent(),
+				sessionStillKnown: sessionId => sessionId === undefined || allowedSessionIds.has(sessionId),
+				logService,
+				noteInputRejection: reason => ctx.noteInputRejection?.(reason),
+				reject: reason => rejectRequest(message, reason),
+			});
+			if (!ready) {
 				return;
 			}
 			if (!registerClientRequest(message, sessionTargetId)) {
