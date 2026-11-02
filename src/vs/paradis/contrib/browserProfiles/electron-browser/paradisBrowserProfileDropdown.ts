@@ -10,9 +10,9 @@
 //
 // QuickPick ではなく自前の DOM ウィジェットにしている（ユーザー判断）。その代わり、QuickPick が
 // 無償で持っていたものを全部こちらで持つ必要がある:
-//  - **overlayManager への登録**（`paradis-browser-profile-dropdown`）。これが無いと内蔵ブラウザの
+//  - **overlayManager に登録された共通の印**（`paradis-overlay-popover`）。これが無いと内蔵ブラウザの
 //    ネイティブ WebContentsView の裏に隠れて何も見えない。既知の落とし穴なので必須。
-//  - キーボード操作（↑↓/Home/End/Enter/Space/Esc）と Tab のフォーカストラップ
+//  - キーボード操作（↑↓/Home/End/Enter/Space/Esc）と Tab のフォーカストラップ（共通の部品 paradisAnchoredPopover.ts）
 //  - 開いたら選択中の行へフォーカス、閉じたらピルへフォーカスを戻す
 //  - 外側クリック・スクロール・ウィンドウリサイズで閉じる
 //  - role="listbox" / role="option" / aria-selected / (ピル側の) aria-expanded
