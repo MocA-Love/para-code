@@ -1,0 +1,164 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * The one toolbar shared by every file viewer (Markdown, HTML, CSV, PDF, Excel, Word and their diffs).
+ * 28px tall on the editor background with a 1px line below. Icon buttons match the upstream ActionBar
+ * items (22px), view toggles match the upstream Toggle (inputOption), and the zoom percentage is 44px wide.
+ */
+
+.paradis-viewer-toolbar {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--vscode-spacing-size80);
+	height: 28px;
+	box-sizing: border-box;
+	padding: 0 var(--vscode-spacing-size80);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorGroup-border, var(--vscode-widget-border, transparent));
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	font-size: var(--vscode-fontSize-label1);
+	overflow: hidden;
+}
+
+.paradis-viewer-toolbar-start,
+.paradis-viewer-toolbar-end,
+.paradis-viewer-toolbar-group {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+}
+
+.paradis-viewer-toolbar-start {
+	flex: 1 1 auto;
+	gap: var(--vscode-spacing-size120);
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.paradis-viewer-toolbar-end {
+	flex: 0 0 auto;
+	gap: var(--vscode-spacing-size80);
+}
+
+.paradis-viewer-toolbar-group {
+	gap: var(--vscode-spacing-size20);
+}
+
+.paradis-viewer-toolbar-separator {
+	flex: 0 0 auto;
+	width: var(--vscode-strokeThickness);
+	height: var(--vscode-spacing-size160);
+	background-color: var(--vscode-editorGroup-border, var(--vscode-widget-border, transparent));
+}
+
+.paradis-viewer-toolbar-button,
+.paradis-viewer-toolbar-percent,
+.paradis-viewer-toolbar-option {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	height: 22px;
+	box-sizing: border-box;
+	margin: 0;
+	border: var(--vscode-strokeThickness) solid transparent;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: transparent;
+	color: var(--vscode-icon-foreground, var(--vscode-foreground));
+	font: inherit;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.paradis-viewer-toolbar-button {
+	width: 22px;
+	padding: 0;
+}
+
+.paradis-viewer-toolbar-percent {
+	min-width: 44px;
+	padding: 0 var(--vscode-spacing-size40);
+	color: var(--vscode-foreground);
+	font-size: var(--vscode-fontSize-label2);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-viewer-toolbar-option {
+	gap: var(--vscode-spacing-size40);
+	padding: 0 var(--vscode-spacing-size60);
+	color: var(--vscode-foreground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.paradis-viewer-toolbar-option .codicon {
+	font-size: var(--vscode-codiconFontSize-compact, 12px);
+}
+
+.paradis-viewer-toolbar-button:hover:not(:disabled),
+.paradis-viewer-toolbar-percent:hover:not(:disabled),
+.paradis-viewer-toolbar-option:hover:not(:disabled):not(.checked):not([aria-expanded="true"]) {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-viewer-toolbar-option.checked,
+.paradis-viewer-toolbar-option[aria-expanded="true"] {
+	border-color: var(--vscode-inputOption-activeBorder);
+	background-color: var(--vscode-inputOption-activeBackground);
+	color: var(--vscode-inputOption-activeForeground);
+}
+
+.paradis-viewer-toolbar-button:disabled,
+.paradis-viewer-toolbar-percent:disabled,
+.paradis-viewer-toolbar-option:disabled {
+	color: var(--vscode-disabledForeground);
+	cursor: default;
+}
+
+/* Bars whose start area can wrap (the Word analysis ribbon) grow with their content. */
+.paradis-viewer-toolbar.paradis-viewer-toolbar-wrap {
+	height: auto;
+	min-height: 28px;
+	padding-top: var(--vscode-spacing-size20);
+	padding-bottom: var(--vscode-spacing-size20);
+}
+
+.paradis-viewer-toolbar-wrap .paradis-viewer-toolbar-start {
+	flex-wrap: wrap;
+	white-space: normal;
+}
+
+/* A group filled per input (e.g. "Open in default app" only for local files) may stay empty. */
+.paradis-viewer-toolbar-group:empty,
+.paradis-viewer-toolbar-separator:has(+ .paradis-viewer-toolbar-group:empty) {
+	display: none;
+}
+
+/* Counts, legends and analysis chips placed in the start area. */
+.paradis-viewer-toolbar-text {
+	flex: 0 0 auto;
+	white-space: nowrap;
+}
+
+.paradis-viewer-toolbar-legend {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-viewer-toolbar-position {
+	min-width: 40px;
+	text-align: center;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
+}

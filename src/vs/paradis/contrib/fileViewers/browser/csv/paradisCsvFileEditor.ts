@@ -62,6 +62,7 @@ import { ParadisCsvFileInput, PARADIS_CSV_EDITOR_ID, rememberParadisCsvViewMode,
 import { ParadisCsvTableView } from './paradisCsvTableView.js';
 
 import '../media/paradisFileViewer.css';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarOption, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../paradisViewerToolbar.js';
 
 const TEXT_EDITOR_OPTIONS: IEditorConstructionOptions = {
 	automaticLayout: true,
@@ -173,15 +174,12 @@ export class ParadisCsvFileEditor extends EditorPane {
 		this._rootElement = dom.append(parent, dom.$('.paradis-file-viewer.paradis-csv-viewer'));
 
 		// Markdown ビューアの「プレビュー | ソース」と同じ部品・同じ位置に「表 | テキスト」を置く。
-		const toolbar = dom.append(this._rootElement, dom.$('.paradis-file-viewer-toolbar'));
-		const toggle = dom.append(toolbar, dom.$('.paradis-file-viewer-toggle'));
-		this._tableButton = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
-		this._tableButton.textContent = localize('paradis.csv.table', "表");
+		const toolbar = createParadisViewerToolbar(this._rootElement, 'paradis-file-viewer-toolbar');
+		const toggle = appendParadisViewerToolbarGroup(toolbar.start, 'paradis-file-viewer-toggle');
+		this._tableButton = appendParadisViewerToolbarOption(toggle, localize('paradis.csv.table', "表"));
 		this._register(dom.addDisposableListener(this._tableButton, dom.EventType.CLICK, () => this.setViewMode('table')));
-		this._textButton = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
-		this._textButton.textContent = localize('paradis.csv.text', "テキスト");
+		this._textButton = appendParadisViewerToolbarOption(toggle, localize('paradis.csv.text', "テキスト"));
 		this._register(dom.addDisposableListener(this._textButton, dom.EventType.CLICK, () => this.setViewMode('text')));
-		dom.append(toolbar, dom.$('.paradis-file-viewer-toolbar-right'));
 
 		this._noticeElement = dom.append(this._rootElement, dom.$('.paradis-csv-notice'));
 		this._noticeText = dom.append(this._noticeElement, dom.$('span'));
@@ -346,8 +344,10 @@ export class ParadisCsvFileEditor extends EditorPane {
 	/** 表示を切り替える。`focus` はユーザーが切り替えたときだけ true（開いただけでフォーカスを奪わない）。 */
 	private async _applyViewMode(mode: ParadisCsvViewMode, resource: URI, focus: boolean): Promise<void> {
 		this._mode = mode;
-		this._tableButton?.classList.toggle('active', mode === 'table');
-		this._textButton?.classList.toggle('active', mode === 'text');
+		if (this._tableButton && this._textButton) {
+			setParadisViewerToolbarOptionChecked(this._tableButton, mode === 'table');
+			setParadisViewerToolbarOptionChecked(this._textButton, mode === 'text');
+		}
 		// ウィンドウ透過では、表の表示中だけ Excel ビューアと同じく不透明な下地にする。
 		this._rootElement?.classList.toggle('paradis-csv-table-mode', mode === 'table');
 		this._tableArea?.classList.toggle('hidden', mode !== 'table');
