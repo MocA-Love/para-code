@@ -1313,6 +1313,32 @@ class WorkbookImages {
 	}
 }
 
+/**
+ * シートの XML から `<sheetData>…</sheetData>`（セルの中身。ふつうは XML のほとんどを占める）を外した文字列。
+ * 改ページ・入力規則・用紙設定（`sheetPr` の `pageSetUpPr` を含む）はどれも `sheetData` の外にある要素なので、
+ * それらを探すのにセルの中身まで走査しない。境界を確かに見つけられないときは元の文字列をそのまま返す。
+ */
+export function paradisSheetXmlWithoutSheetData(sheetXml: string): string {
+	const start = sheetXml.search(/<sheetData[\s/>]/);
+	if (start < 0) {
+		return sheetXml;
+	}
+	const startEnd = sheetXml.indexOf('>', start);
+	if (startEnd < 0) {
+		return sheetXml;
+	}
+	if (sheetXml[startEnd - 1] === '/') {
+		return sheetXml.slice(0, start) + sheetXml.slice(startEnd + 1);
+	}
+	const closing = '</sheetData>';
+	const close = sheetXml.indexOf(closing, startEnd);
+	// 閉じタグが無い・空白の入った閉じタグ（`</sheetData >`）などは、外さずに全文を走査する。
+	if (close < 0 || sheetXml.indexOf('<sheetData', startEnd) >= 0 && sheetXml.indexOf('<sheetData', startEnd) < close) {
+		return sheetXml;
+	}
+	return sheetXml.slice(0, start) + sheetXml.slice(close + closing.length);
+}
+
 function extractBrkIds(sheetXml: string, tag: 'rowBreaks' | 'colBreaks'): number[] {
 	const block = sheetXml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`));
 	if (!block) {
@@ -1429,7 +1455,8 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 				continue;
 			}
 			const fileNum = Number.parseInt(m[1], 10);
-			const sheetXml = await files[name].async('text');
+			// 改ページ・入力規則・用紙設定は sheetData の外にしかないので、セルの中身を外してから探す（全文を何度も走査しない）。
+			const sheetXml = paradisSheetXmlWithoutSheetData(await files[name].async('text'));
 			const key = keyForFile(fileNum);
 			const rb = extractBrkIds(sheetXml, 'rowBreaks');
 			const cb = extractBrkIds(sheetXml, 'colBreaks');

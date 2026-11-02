@@ -23,9 +23,10 @@ export type ParadisOfficeWorkerName = 'word-semantic' | 'spreadsheet-semantic' |
 /**
  * 失敗した段階。`create` は Worker を作れなかった、`load` は何も返さないうちに落ちた（入口や npm
  * パッケージを読めない）、`run` は返し始めた後で落ちた、`exit` はこちらが止めていないのに 0 以外で終わった、
- * `analysis` は worker の中で解析が例外で止まった（呼び出し側には `failed` だけが返る）。
+ * `analysis` は worker の中で解析が例外で止まった（呼び出し側には `failed` だけが返る）、`deadline` は実行の締め切りまでに
+ * 返事が無く、こちらが worker を止めた（呼び出し側には大きすぎるブックと同じ `limitExceeded` が返る）。
  */
-export type ParadisOfficeWorkerFailureStage = 'create' | 'load' | 'run' | 'exit' | 'analysis';
+export type ParadisOfficeWorkerFailureStage = 'create' | 'load' | 'run' | 'exit' | 'analysis' | 'deadline';
 
 const safeKind = /^[A-Za-z][\w.-]{0,49}$/;
 

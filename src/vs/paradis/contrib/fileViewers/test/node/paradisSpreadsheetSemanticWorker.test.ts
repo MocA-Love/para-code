@@ -185,6 +185,44 @@ suite('ParadisSpreadsheetSemanticWorker', () => {
 		}
 	});
 
+	test('tells the caller when the run deadline stopped the worker, but not when it ran out of memory', async () => {
+		const listeners = new Map<string, ((value: never) => void)[]>();
+		const scheduled: { readonly handler: () => void; readonly delay: number }[] = [];
+		let deadlines = 0;
+		const queue = new ParadisOfficeSemanticWorkerQueue<{ readonly bytes: Uint8Array }, string>({
+			createWorker: () => {
+				listeners.clear();
+				return {
+					postMessage: () => undefined,
+					on: (event: string, listener: (value: never) => void) => { listeners.set(event, [...(listeners.get(event) ?? []), listener]); return undefined; },
+					terminate: async () => 0,
+				};
+			},
+			failure: code => code,
+			runDeadlineMs: 1_000,
+			queueDeadlineMs: 2_000,
+			queueLimit: 4,
+			queueByteLimit: 1_000,
+			idleMs: 3_000,
+			timers: {
+				setTimeout: (handler: () => void, delay: number) => { const entry = { handler, delay }; scheduled.push(entry); return entry; },
+				clearTimeout: () => undefined,
+			},
+			onRunDeadline: () => { deadlines++; },
+		});
+		const emit = (event: string, value: unknown) => { for (const listener of listeners.get(event) ?? []) { listener(value as never); } };
+		try {
+			const outOfMemory = queue.run(1, () => ({ request: { bytes: new Uint8Array(1) }, transfer: [] }), CancellationToken.None);
+			emit('error', Object.assign(new Error('heap'), { code: 'ERR_WORKER_OUT_OF_MEMORY' }));
+			const afterOutOfMemory = { result: await outOfMemory, deadlines };
+			const hung = queue.run(1, () => ({ request: { bytes: new Uint8Array(1) }, transfer: [] }), CancellationToken.None);
+			scheduled.filter(entry => entry.delay === 1_000).at(-1)!.handler();
+			deepStrictEqual({ afterOutOfMemory, hung: await hung, deadlines }, { afterOutOfMemory: { result: 'limitExceeded', deadlines: 0 }, hung: 'limitExceeded', deadlines: 1 });
+		} finally {
+			queue.dispose();
+		}
+	});
+
 	test('answers busy when the waiting bytes would pass the byte limit', async () => {
 		const backend = new ParadisSpreadsheetSemanticWorkerBackend(() => ({
 			postMessage: () => undefined,
