@@ -27,9 +27,6 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'suggest-details-container', type: BrowserOverlayType.Hover },
 	{ className: 'monaco-dialog-modal-block', type: BrowserOverlayType.Dialog },
 	{ className: 'monaco-modal-editor-block', type: BrowserOverlayType.Dialog },
-	// PARA-PATCH: the fork's agent-browser binding dialog (paradisBindingDialog.ts) must also pause
-	// the native WebContentsView, otherwise the DOM modal renders behind the browser page.
-	{ className: 'paradis-binding-dialog-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: same for the fork's bookmark edit/folder dialogs (vs/paradis/contrib/browserBookmarks).
 	{ className: 'paradis-bookmark-dialog-backdrop', type: BrowserOverlayType.Dialog },
 	{ className: 'paradis-markup-overlay', type: BrowserOverlayType.Dialog }, // PARA-PATCH: the fork's screenshot markup overlay (vs/paradis/contrib/browserDesignMode) paints over the page
