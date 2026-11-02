@@ -432,13 +432,24 @@ export class ParadisBrowserQuery {
 						const network = networkIdleMs !== undefined ? { network: { inflight: lastNetwork?.inflight ?? 0, quietMs: lastNetwork?.quietMs, ...(lastNetwork?.longLived ? { longLivedIgnored: lastNetwork.longLived } : {}), ...(lastNetwork?.quietMs === undefined ? { observed: false, note: 'Para Code has not seen any request of this tab yet (requests are counted only while the browser tools are connected), so the quiet time was measured from the start of wait_until.' } : {}) } } : {};
 						return text(`Condition met after ${elapsed}s.\n${JSON.stringify({ ...outcome.value, ...network }, null, 2)}`);
 					}
-					if (this.now() >= deadline) {
-						break;
+					// 要素・述語は満たしたが通信がまだ。静かになるまでは通信だけを見て（ページの関数を毎回送らない）、
+					// 静かになってから要素・述語をもう一度確かめる（満たしたままなら返す）
+					let quiet = false;
+					while (this.now() < deadline) {
+						await this.delay(Math.min(intervalMs as number, Math.max(0, deadline - this.now())), call.signal);
+						if (!call.isCurrent()) {
+							return error(BINDING_CHANGED);
+						}
+						if (call.signal?.aborted) {
+							return error('wait_until was cancelled.');
+						}
+						if (networkIdle()) {
+							quiet = true;
+							break;
+						}
 					}
-					// 要素・述語は満たしたが通信がまだ。ページの関数はすぐ返るので、ここで間を空ける
-					await this.delay(Math.min(intervalMs as number, Math.max(0, deadline - this.now())), call.signal);
-					if (!call.isCurrent()) {
-						return error(BINDING_CHANGED);
+					if (!quiet) {
+						break;
 					}
 					continue;
 				}

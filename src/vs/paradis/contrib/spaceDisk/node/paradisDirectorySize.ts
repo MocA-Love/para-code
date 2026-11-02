@@ -14,6 +14,7 @@
 
 import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
+import { paradisNormalizeSpaceDiskPath } from '../common/paradisSpaceDisk.js';
 
 /**
  * 同時に開くディレクトリの数。
@@ -39,10 +40,6 @@ export interface IDirectorySizeResult {
 	readonly files: number;
 	/** 上限に達して打ち切った場合 true(数字は「少なくともこれだけ」になる)。 */
 	readonly truncated: boolean;
-}
-
-function normalize(p: string): string {
-	return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
 /**
@@ -71,10 +68,10 @@ export async function measureDirectorySize(root: string, options: IDirectorySize
 		throw new Error(`cannot read ${root}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 
-	const excluded = new Set((options.exclude ?? []).map(normalize));
-	// 除外が無いスペースが大多数。全エントリで正規表現2回と toLowerCase を回すのは
+	const excluded = new Set((options.exclude ?? []).map(paradisNormalizeSpaceDiskPath));
+	// 除外が無いスペースが大多数。フォルダごとに正規表現2回と toLowerCase を回すのは
 	// ホットパスなので、そのときは判定ごと飛ばす。
-	const isExcluded = excluded.size === 0 ? () => false : (full: string) => excluded.has(normalize(full));
+	const isExcluded = excluded.size === 0 ? () => false : (full: string) => excluded.has(paradisNormalizeSpaceDiskPath(full));
 	// 見たハードリンクの inode。`dev:ino` の**文字列**にすると、pnpm のストアのように
 	// 実体を共有する構成で最大 MAX_FILES 件ぶんの文字列が shared process に居座る。
 	// device ごとに数値の Set を持てば、要素は数値のまま済む。
@@ -101,11 +98,14 @@ export async function measureDirectorySize(root: string, options: IDirectorySize
 				break;
 			}
 			const full = path.join(dir, entry.name);
-			if (entry.isSymbolicLink() || isExcluded(full)) {
+			if (entry.isSymbolicLink()) {
 				continue;
 			}
 			if (entry.isDirectory()) {
-				subdirs.push(full);
+				// 除外の対象はフォルダ（親の中の worktree）だけなので、ファイルには判定をかけない
+				if (!isExcluded(full)) {
+					subdirs.push(full);
+				}
 				continue;
 			}
 			if (!entry.isFile()) {

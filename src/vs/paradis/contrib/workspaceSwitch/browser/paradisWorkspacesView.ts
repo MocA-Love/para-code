@@ -49,7 +49,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisSortAgentStatuses, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_GET_DIFF_STATS_COMMAND_ID, PARADIS_WORKSPACE_COLORS, paradisSortAgentStatuses, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
@@ -67,7 +67,6 @@ import { IParadisWorktreeMetaEntry, IParadisWorktreeMetaPresence, PARADIS_DEFAUL
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
  * createWorktree/removeWorktree コマンドと同様に ID 文字列を直書きする (web ビルドでは
  * 未登録 = executeCommand が undefined を返すだけで安全に無効化される)。 */
-const GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
 const GET_PR_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getPrStatuses';
 const GET_ISSUE_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getIssueStatuses';
 /**
@@ -1461,7 +1460,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		}
 		let result: Record<string, IParadisDiffStat> | undefined;
 		try {
-			result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, targets);
+			result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(PARADIS_GET_DIFF_STATS_COMMAND_ID, targets);
 		} catch (error) {
 			this._diffStatsTracker.restoreDirty(targets);
 			throw error;

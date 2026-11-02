@@ -9,6 +9,7 @@
 // スペース(リポジトリ/worktree)がディスクをどれだけ使っているかの型と契約。
 // 計測の実体は node/paradisSpaceDiskChannel.ts、呼ぶ側は electron-browser/ の client。
 
+import { isLinux } from '../../../../base/common/platform.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 
 export const PARADIS_SPACE_DISK_CHANNEL = 'paradisSpaceDisk';
@@ -95,16 +96,26 @@ export interface IParadisSpaceDiskService {
 }
 
 /**
+ * パスを比べるための形にする。区切りを `/` に寄せて末尾の区切りを落とし、大文字小文字を区別しない
+ * OS（Windows と macOS の既定）では小文字にする。区別するかは upstream の
+ * `extUriBiasedIgnorePathCase` と同じく、動いている OS が Linux かで決める（Linux の `/repo/Foo` と
+ * `/repo/foo` は別のフォルダ）。呼ぶのは測る側（node）だけなので、パスはその OS のもの。
+ */
+export function paradisNormalizeSpaceDiskPath(p: string): string {
+	const normalized = p.replace(/\\/g, '/').replace(/\/+$/, '');
+	return isLinux ? normalized : normalized.toLowerCase();
+}
+
+/**
  * 親のパスの中に子のパスがあるか。
  *
  * 単純な `startsWith` だと `/a/foo` と `/a/foobar` を親子と誤判定するので、
  * 区切り文字までを見る。Windows のドライブレターと `\` 区切り、WSL の UNC
  * (`\\wsl.localhost\...`) も同じ規則で比べられるよう、区切りを `/` に寄せてから判定する。
- * 大文字小文字は Windows と macOS の既定では区別されないため、比較時に落とす。
+ * 大文字小文字の扱いは {@link paradisNormalizeSpaceDiskPath} のとおり。
  */
 export function isPathInside(child: string, parent: string): boolean {
-	const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-	const c = norm(child);
-	const p = norm(parent);
+	const c = paradisNormalizeSpaceDiskPath(child);
+	const p = paradisNormalizeSpaceDiskPath(parent);
 	return c !== p && c.startsWith(`${p}/`);
 }
