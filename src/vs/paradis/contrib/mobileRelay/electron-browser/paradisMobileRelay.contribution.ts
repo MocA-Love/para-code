@@ -31,9 +31,7 @@ import { IExtensionService } from '../../../../workbench/services/extensions/com
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { IWebviewWorkbenchService } from '../../../../workbench/contrib/webviewPanel/browser/webviewWorkbenchService.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
-import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
@@ -41,6 +39,7 @@ import { encodeQrCode, qrToSvg } from '../common/paradisQrCode.js';
 import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisConfirmedAgentPanes, IParadisGitResult, IParadisMobileRelayService, IParadisMobileStatus, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_CHANNEL, PARADIS_MOBILE_RELAY_URL_KEY, paradisMobileWindowRoute } from '../common/paradisMobileRelay.js';
+import { ParadisMobilePairingDialog } from './paradisMobilePairingDialog.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
 import { ParadisMobileBrowserScopeSync } from './paradisMobileBrowserScopeSync.js';
@@ -142,7 +141,6 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
 		@IParadisSpaceNotesService spaceNotesService: IParadisSpaceNotesService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
-		@IWebviewWorkbenchService private readonly webviewWorkbenchService: IWebviewWorkbenchService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IFileService fileService: IFileService,
 		@IEnvironmentService environmentService: IEnvironmentService,
@@ -151,7 +149,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IThemeService themeService: IThemeService,
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@IParadisTerminalIdentityService terminalIdentityService: IParadisTerminalIdentityService,
-		@IInstantiationService instantiationService: IInstantiationService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IHostService private readonly hostService: IHostService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@ICommandService commandService: ICommandService,
@@ -1029,9 +1027,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			return;
 		}
 
-		// QR + URI をwebviewパネルで表示（QR生成は自前の paradisQrCode.ts、依存ゼロ）。
-		// ペアリング成立/失敗でパネルは自動で閉じる。
-		const pairingPanel = this.openPairingPanel(session.deviceId, session.pairingUri);
+		// QR を小さいモーダルで表示（QR生成は自前の paradisQrCode.ts、依存ゼロ）。
+		// ペアリング成立/失敗でモーダルは自動で閉じる。
+		const pairingPanel = this.openPairingPanel(session.deviceId, session.pairingUri, session.expiresAt);
 
 		// SAS確認を待つ。onPairingEvent の 'awaiting-approval' で確認ダイアログを出す。
 		// awaiting-approval を受けてもリスナーは維持する（confirm dialog 表示中に届く
@@ -1066,59 +1064,20 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		});
 	}
 
-	/** ペアリングQRパネル（webviewエディタ）を開く。失敗時はダイアログにフォールバック。 */
-	private openPairingPanel(deviceId: string, pairingUri: string): { dispose(): void } | undefined {
-		const title = localize('paradis.mobile.pairingTitle', "モバイルデバイスを接続");
+	/** ペアリングの QR を小さいモーダルで開く。失敗時はダイアログにフォールバック。 */
+	private openPairingPanel(deviceId: string, pairingUri: string, expiresAt: number): { dispose(): void } | undefined {
 		try {
 			const svg = qrToSvg(encodeQrCode(pairingUri), 6);
-			const html = this.buildPairingHtml(title, deviceId, pairingUri, svg);
-			const input = this.webviewWorkbenchService.openWebview(
-				{
-					providedViewType: 'paradis.mobilePairing',
-					title,
-					options: {},
-					contentOptions: { allowScripts: false },
-					extension: undefined,
-				},
-				'paradis.mobilePairing',
-				title,
-				undefined,
-				{ group: ACTIVE_GROUP },
-			);
-			input.webview.setHtml(html);
-			return input;
+			return this.instantiationService.createInstance(ParadisMobilePairingDialog, svg, pairingUri, expiresAt);
 		} catch (err) {
 			// QR生成/表示に失敗した場合はURIテキストのダイアログにフォールバック
-			this.logService.warn('[paradisMobileRelay] failed to open pairing QR panel', err);
+			this.logService.warn('[paradisMobileRelay] failed to open pairing QR dialog', err);
 			this.dialogService.info(
-				title,
+				localize('paradis.mobile.pairingTitle', "モバイルデバイスを接続"),
 				localize('paradis.mobile.pairingDetail', "Para Code Mobile アプリを開き、次のリンクを読み取るか貼り付けてください。5分間有効です。\n\nデバイスID: {0}\n\n{1}", deviceId, pairingUri),
 			);
 			return undefined;
 		}
-	}
-
-	private buildPairingHtml(title: string, deviceId: string, pairingUri: string, qrSvg: string): string {
-		const svgDataUri = `data:image/svg+xml;base64,${btoa(qrSvg)}`;
-		const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-		return `<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-	body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); display: flex; flex-direction: column; align-items: center; padding: 24px; }
-	h2 { font-weight: 600; }
-	.qr { background: #fff; padding: 8px; border-radius: 8px; margin: 16px 0; }
-	.hint { color: var(--vscode-descriptionForeground); max-width: 560px; text-align: center; line-height: 1.7; }
-	.uri { font-family: var(--vscode-editor-font-family); font-size: 11px; word-break: break-all; max-width: 640px; margin-top: 20px; padding: 10px 12px; background: var(--vscode-textCodeBlock-background); border-radius: 6px; user-select: all; }
-	.device { color: var(--vscode-descriptionForeground); font-size: 12px; margin-top: 10px; }
-</style></head>
-<body>
-	<h2>${esc(title)}</h2>
-	<div class="hint">${esc(localize('paradis.mobile.pairingHint', "Para Code Mobile アプリで「QR を読み取る」を開き、このQRコードをスキャンしてください。読み取れない場合は下のリンクをコピーして貼り付けても接続できます。5分間有効です。"))}</div>
-	<img class="qr" src="${svgDataUri}" alt="QR" />
-	<div class="hint">${esc(localize('paradis.mobile.pairingSasHint', "読み取り後、モバイルに表示される6桁の確認コードとPC側ダイアログのコードが一致することを確認して承認してください。"))}</div>
-	<div class="uri">${esc(pairingUri)}</div>
-	<div class="device">${esc(localize('paradis.mobile.deviceIdLabel', "デバイスID: {0}", deviceId))}</div>
-</body></html>`;
 	}
 
 	/** ペアリング済みデバイスの一覧・失効（コマンドから呼ばれる）。 */
