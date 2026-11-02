@@ -51,6 +51,7 @@ import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
 import { mapSpreadsheetLogicalAnchor } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
@@ -490,14 +491,12 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			onNavigate: result => this._navigateToLogicalLocator(result.locator, result.navigableAnchor),
 		});
 
-		const toolbar = dom.append(this._root, $('.paradis-spreadsheet-diff-toolbar'));
-		toolbar.setAttribute('role', 'toolbar');
-		toolbar.setAttribute('aria-label', localize('paradis.spreadsheet.diffToolbar', "スプレッドシート比較のツールバー"));
-		const left = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-left'));
-		this._countEl = dom.append(left, $('span.paradis-spreadsheet-diff-count'));
+		const toolbar = createParadisViewerToolbar(this._root, 'paradis-spreadsheet-diff-toolbar', localize('paradis.spreadsheet.diffToolbar', "スプレッドシート比較のツールバー"));
+		const left = toolbar.start;
+		this._countEl = dom.append(left, $('span.paradis-spreadsheet-diff-count.paradis-viewer-toolbar-text'));
 		this._diagnosticsEl = dom.append(left, $('.paradis-spreadsheet-diagnostics-host'));
 		// 色の意味(緑=追加/赤=削除/青=変更)をツールバーに常時表示する。Word 差分と同じ語彙・配色。
-		const legend = dom.append(left, $('.paradis-spreadsheet-diff-legend'));
+		const legend = dom.append(left, $('.paradis-spreadsheet-diff-legend.paradis-viewer-toolbar-legend'));
 		const legendEntries = [
 			{ category: 'added', marker: '+', color: '#22c55e', label: localize('paradis.spreadsheet.legendAdded', "追加") },
 			{ category: 'removed', marker: '−', color: '#ef4444', label: localize('paradis.spreadsheet.legendRemoved', "削除") },
@@ -510,12 +509,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			dom.append(item, $('span')).textContent = entry.label;
 			applyParadisOfficeChangeLegendSemantics(item, swatch, entry);
 		}
-		const right = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-right'));
-		this._inspectorToggle = dom.append(right, $('button.paradis-spreadsheet-validation-filter')) as HTMLButtonElement;
-		this._inspectorToggle.type = 'button';
-		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "変更点");
+		const right = toolbar.end;
+		const views = appendParadisViewerToolbarGroup(right);
+		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(views, localize('paradis.spreadsheet.inspector', "変更点"));
 		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "変更点"));
-		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._inspectorToggle.style.display = 'none';
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
 			if (!this._inspectorPanel || !this._inspectorToggle) {
@@ -527,41 +524,38 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}));
 
 		// 入力規則だけに絞り込み、セルマーカーと詳細ペインを表示する。
-		this._validationFilterBtn = dom.append(right, $('button.paradis-spreadsheet-validation-filter')) as HTMLButtonElement;
+		this._validationFilterBtn = appendParadisViewerToolbarOption(views, localize('paradis.spreadsheet.validation', "入力規則"), Codicon.checklist);
 		this._validationFilterBtn.title = localize('paradis.spreadsheet.validationFilter', "データの入力規則の変更を表示");
 		this._accessibility.labelButton(this._validationFilterBtn, localize('paradis.spreadsheet.validationFilter', "データの入力規則の変更を表示"));
-		this._validationFilterBtn.setAttribute('aria-pressed', 'false');
-		dom.append(this._validationFilterBtn, $(`span${ThemeIcon.asCSSSelector(Codicon.checklist)}`));
-		const validationFilterLabel = dom.append(this._validationFilterBtn, $('span'));
-		validationFilterLabel.textContent = localize('paradis.spreadsheet.validation', "入力規則");
 		this._headerDisposables.add(dom.addDisposableListener(this._validationFilterBtn, dom.EventType.CLICK, () => this._setValidationFilter(!this._validationFilter)));
 
 		// ズーム −/%/＋（通常ビューアと同じ。左右ペインに同倍率を適用する）。
-		const zoom = dom.append(right, $('.paradis-spreadsheet-diff-zoom'));
+		appendParadisViewerToolbarSeparator(right);
+		const zoom = appendParadisViewerToolbarGroup(right, 'paradis-spreadsheet-diff-zoom');
 		const zoomOutLabel = localize('paradis.spreadsheet.zoomOut', "ズームアウト");
 		this._accessibility.labelButton(appendIconButton(zoom, Codicon.zoomOut, zoomOutLabel, this._headerDisposables, () => this._zoom(1 / 1.2)), zoomOutLabel);
-		this._percentBtn = dom.append(zoom, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
-		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "ズームをリセット");
+		this._percentBtn = appendParadisViewerToolbarPercent(zoom, localize('paradis.spreadsheet.resetZoom', "ズームをリセット"));
 		this._accessibility.labelButton(this._percentBtn, localize('paradis.spreadsheet.resetZoom', "ズームをリセット"));
 		this._register(dom.addDisposableListener(this._percentBtn, dom.EventType.CLICK, () => this._resetZoom()));
 		const zoomInLabel = localize('paradis.spreadsheet.zoomIn', "ズームイン");
 		this._accessibility.labelButton(appendIconButton(zoom, Codicon.zoomIn, zoomInLabel, this._headerDisposables, () => this._zoom(1.2)), zoomInLabel);
 
-		const nav = dom.append(right, $('.paradis-spreadsheet-diff-nav'));
-		const prevBtn = dom.append(nav, $('button.paradis-spreadsheet-diff-navbtn')) as HTMLButtonElement;
-		prevBtn.textContent = localize('paradis.spreadsheet.prev', "前へ");
+		// 前後の変更へ移る（本家の差分エディタと同じ ↑↓ のアイコン）。
+		appendParadisViewerToolbarSeparator(right);
+		const nav = appendParadisViewerToolbarGroup(right, 'paradis-spreadsheet-diff-nav');
+		const prevBtn = appendParadisViewerToolbarIconButton(nav, Codicon.arrowUp, localize('paradis.spreadsheet.previousChange', "前の変更"));
 		this._accessibility.labelButton(prevBtn, localize('paradis.spreadsheet.previousChange', "前の変更"));
-		this._navPositionEl = dom.append(nav, $('span.paradis-spreadsheet-diff-navpos'));
-		const nextBtn = dom.append(nav, $('button.paradis-spreadsheet-diff-navbtn')) as HTMLButtonElement;
-		nextBtn.textContent = localize('paradis.spreadsheet.next', "次へ");
+		this._navPositionEl = dom.append(nav, $('span.paradis-spreadsheet-diff-navpos.paradis-viewer-toolbar-position'));
+		const nextBtn = appendParadisViewerToolbarIconButton(nav, Codicon.arrowDown, localize('paradis.spreadsheet.nextChange', "次の変更"));
 		this._accessibility.labelButton(nextBtn, localize('paradis.spreadsheet.nextChange', "次の変更"));
 		this._register(dom.addDisposableListener(prevBtn, dom.EventType.CLICK, () => this._navigate(-1)));
 		this._register(dom.addDisposableListener(nextBtn, dom.EventType.CLICK, () => this._navigate(1)));
-		this._openAppEl = dom.append(nav, $('.paradis-spreadsheet-openapp'));
+		appendParadisViewerToolbarSeparator(right);
+		this._openAppEl = appendParadisViewerToolbarGroup(right, 'paradis-spreadsheet-openapp');
 
 		this._inspectorPanel = dom.append(this._root, $('.paradis-spreadsheet-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
-		this._inspectorPanel.style.top = '38px';
+		this._inspectorPanel.style.top = '32px';
 		this._inspectorPanel.style.right = '8px';
 		this._inspectorPanel.style.zIndex = '20';
 		this._inspectorPanel.style.width = '380px';
@@ -1198,8 +1192,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (!this._validationFilterBtn) {
 			return;
 		}
-		this._validationFilterBtn.classList.toggle('active', this._validationFilter);
-		this._validationFilterBtn.setAttribute('aria-pressed', String(this._validationFilter));
+		setParadisViewerToolbarOptionChecked(this._validationFilterBtn, this._validationFilter);
 		this._validationFilterBtn.disabled = this._validationLocations.length === 0;
 	}
 

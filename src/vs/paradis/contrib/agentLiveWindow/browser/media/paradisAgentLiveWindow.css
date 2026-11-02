@@ -15,11 +15,13 @@
 .monaco-workbench .paradis-agent-live-titlebar-widget {
 	display: inline-flex;
 	align-items: center;
+	/* Same steps as the upstream title bar actions and the other Para Code title bar items:
+		22px tall, 16px icon, small corner radius, the title bar's own (active / inactive) foreground. */
 	height: 22px;
-	padding: 0 4px;
-	border-radius: 5px;
+	padding: 0 3px;
+	border-radius: var(--vscode-cornerRadius-small);
 	cursor: pointer;
-	color: var(--vscode-titleBar-activeForeground);
+	color: inherit;
 	-webkit-app-region: no-drag;
 	white-space: nowrap;
 }
@@ -49,26 +51,28 @@
 
 .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label {
 	display: inline-block;
-	margin-left: 6px;
-	color: var(--vscode-foreground);
+	margin-left: var(--vscode-spacing-size40);
+	color: inherit;
 	font: inherit;
 	overflow: hidden;
 	white-space: nowrap;
 }
 
 .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-badge {
+	/* One count badge for every title bar item (same as the notification inbox bell). */
 	min-width: 16px;
-	height: 15px;
-	margin-left: 4px;
-	padding: 0 4px;
-	border-radius: 999px;
-	font-size: 10px;
-	font-weight: 600;
+	box-sizing: border-box;
+	height: 16px;
+	margin-left: var(--vscode-spacing-size40);
+	padding: 0 var(--vscode-spacing-size40);
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--vscode-fontSize-label3);
+	font-weight: var(--vscode-fontWeight-semiBold);
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background-color: var(--vscode-badge-background);
-	color: var(--vscode-badge-foreground);
+	background-color: var(--vscode-activityBarBadge-background);
+	color: var(--vscode-activityBarBadge-foreground);
 }
 
 .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-badge.hidden {

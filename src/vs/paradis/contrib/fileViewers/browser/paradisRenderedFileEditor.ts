@@ -28,7 +28,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { isCancellationError, onUnexpectedError } from '../../../../base/common/errors.js';
-import { DisposableStore, IDisposable, IReference, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -58,10 +58,10 @@ import { PARADIS_VIEWER_CONTENT_TIMEOUT_MS, PARADIS_VIEWER_SERVICE_WORKER_GRACE_
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
-import { clampParadisTransparencyOpacity, PARADIS_TRANSPARENCY_ENABLED_KEY, PARADIS_TRANSPARENCY_OPACITY_KEY, PARADIS_TRANSPARENT_CLASS } from '../../windowTransparency/common/paradisTransparency.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalizeScrollProgress, paradisReadViewerScrollState, paradisScrollRestoreScript } from '../common/paradisViewerScroll.js';
 import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
+import { appendParadisViewerToolbarChoice, appendParadisViewerToolbarChoiceGroup, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from './paradisViewerToolbar.js';
 
 import './media/paradisFileViewer.css';
 
@@ -202,28 +202,6 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		super(id, group, `${id}.viewState`, telemetryService, instantiationService, storageService, textResourceConfigurationService, themeService, editorService, editorGroupService);
 		this._originPool = ParadisWebviewOriginPool.getShared(storageService);
 
-		// ウィンドウ透過（paradis.window.transparency.*）の状態変化に追従して Rendered を描き直す。
-		// 透過背景は renderDocument が HTML へ焼き込む（webview 内からは --paradis-* カスタムプロパティを
-		// 参照できないため）ので、設定変更時は再レンダリングが必要。
-		this._register(this._configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(PARADIS_TRANSPARENCY_ENABLED_KEY) || e.affectsConfiguration(PARADIS_TRANSPARENCY_OPACITY_KEY)) {
-				this._rerenderIfShowingRendered();
-			}
-		}));
-
-		// セッション復元時はエディタのレンダリングが透過contribution（AfterRestored）による
-		// `paradis-transparent` クラス付与より先に走ることがあるため、クラスの後付けも監視して描き直す。
-		let lastTransparent = this._layoutService.mainContainer.classList.contains(PARADIS_TRANSPARENT_CLASS);
-		const classObserver = new MutationObserver(() => {
-			const transparent = this._layoutService.mainContainer.classList.contains(PARADIS_TRANSPARENT_CLASS);
-			if (transparent !== lastTransparent) {
-				lastTransparent = transparent;
-				this._rerenderIfShowingRendered();
-			}
-		});
-		classObserver.observe(this._layoutService.mainContainer, { attributes: true, attributeFilter: ['class'] });
-		this._register(toDisposable(() => classObserver.disconnect()));
-
 		// タブを閉じたら、そのファイルのために残していた中身を捨てる。残すのは戻ってくるためなので、
 		// 閉じた後まで隠れたページ（動画や音、タイマー）を動かし続けない。閉じる通知はペインが次の
 		// エディタへ切り替わる前に来るので、いま表示中のタブでも捨てる（どうせ閉じる）。
@@ -246,28 +224,14 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._rerenderIfShowingRendered();
 	}
 
-	/** 透過状態の変化時、Rendered 表示中なら現在のリソースを描き直す。 */
+	/** テーマの変化時、Rendered 表示中なら現在のリソースを描き直す。 */
 	private _rerenderIfShowingRendered(): void {
-		// 透過は HTML へ焼き込んでいるので、テキストが同じでも作り直す必要がある。
+		// 配色は HTML へ焼き込んでいるので、テキストが同じでも作り直す必要がある。
 		this._renderedSource = undefined;
 		const resource = this._currentResource;
 		if (resource && this._webviewClaimed && this._mode === 'rendered') {
 			this._renderResourceInBackground(resource);
 		}
-	}
-
-	/**
-	 * ウィンドウ透過が実際に有効なとき（設定ON かつ ネイティブウィンドウが透過生成済み＝workbenchルートに
-	 * `paradis-transparent` クラスが付いているとき）、webview 内の HTML へ焼き込む半透明背景CSSルールを返す。
-	 * 無効時は空文字。`--vscode-editor-background` は webview 内へエクスポートされるテーマ変数なのでそのまま
-	 * 参照でき、opacity（パーセント値）だけを焼き込めばワークベンチ側の color-mix と同じ見た目になる。
-	 */
-	protected getTransparencyBackgroundCssRule(bodySelector: string): string {
-		if (!this._layoutService.mainContainer.classList.contains(PARADIS_TRANSPARENT_CLASS)) {
-			return '';
-		}
-		const percentage = Math.round(clampParadisTransparencyOpacity(this._configurationService.getValue<number>(PARADIS_TRANSPARENCY_OPACITY_KEY)) * 100);
-		return `${bodySelector} { background-color: color-mix(in srgb, var(--vscode-editor-background) ${percentage}%, transparent); }`;
 	}
 
 	/** webview 内でスクリプト実行を許可するか（HTML=true / Markdown=false）。 */
@@ -374,17 +338,15 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	protected override createEditor(parent: HTMLElement): void {
 		this._rootElement = dom.append(parent, dom.$('.paradis-file-viewer'));
 
-		// ペイン内ツールバー（常時表示・両モード共通位置）。左=Rendered/Raw セグメントトグル、右=サブクラス固有（HTMLズーム等）。
-		const toolbar = dom.append(this._rootElement, dom.$('.paradis-file-viewer-toolbar'));
-		const toggle = dom.append(toolbar, dom.$('.paradis-file-viewer-toggle'));
-		this._renderedBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
-		this._renderedBtn.textContent = localize('paradis.fileViewer.rendered', "プレビュー");
+		// ペイン内ツールバー（全ビューア共通のバー）。左=プレビュー/ソースの切り替え、右=サブクラス固有（拡大縮小・再読み込み）。
+		const toolbar = createParadisViewerToolbar(this._rootElement, 'paradis-file-viewer-toolbar');
+		const toggle = appendParadisViewerToolbarChoiceGroup(toolbar.start, 'paradis-file-viewer-toggle', localize('paradis.fileViewer.viewMode', "表示"));
+		this._renderedBtn = appendParadisViewerToolbarChoice(toggle, localize('paradis.fileViewer.rendered', "プレビュー"));
 		this._register(dom.addDisposableListener(this._renderedBtn, dom.EventType.CLICK, () => this.setViewMode('rendered')));
-		this._rawBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
-		this._rawBtn.textContent = localize('paradis.fileViewer.raw', "ソース");
+		this._rawBtn = appendParadisViewerToolbarChoice(toggle, localize('paradis.fileViewer.raw', "ソース"));
 		this._register(dom.addDisposableListener(this._rawBtn, dom.EventType.CLICK, () => this.setViewMode('raw')));
 
-		this._toolbarRightElement = dom.append(toolbar, dom.$('.paradis-file-viewer-toolbar-right'));
+		this._toolbarRightElement = toolbar.end;
 		this.onCreateToolbar(this._toolbarRightElement);
 
 		const content = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
@@ -841,8 +803,10 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI, token: CancellationToken = CancellationToken.None): Promise<void> {
 		this._mode = mode;
-		this._renderedBtn?.classList.toggle('active', mode === 'rendered');
-		this._rawBtn?.classList.toggle('active', mode === 'raw');
+		if (this._renderedBtn && this._rawBtn) {
+			setParadisViewerToolbarOptionChecked(this._renderedBtn, mode === 'rendered');
+			setParadisViewerToolbarOptionChecked(this._rawBtn, mode === 'raw');
+		}
 
 		if (mode === 'raw') {
 			await this._ensureRawEditor(resource);
