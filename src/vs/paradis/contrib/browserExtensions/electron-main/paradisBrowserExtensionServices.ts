@@ -28,6 +28,7 @@ import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisExtensionApiEr
 import type { IParadisLoadedExtension } from './paradisBrowserExtensionActions.js';
 import { paradisMatchesUrlPattern, type ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import type { ParadisBrowserExtensionPermissions } from './paradisBrowserExtensionPermissions.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** OS の通知（テストでは偽物）。 */
 export interface IParadisExtensionNotification {
@@ -74,10 +75,6 @@ export interface IParadisServicesEnvironment {
 	renameDownload(item: DownloadItem, directory: string, filename: string): void;
 	/** そのセッションに今読み込んでいる拡張機能（manifest の description・icons に使う）。 */
 	loadedIn(session: Session, id: string): IParadisLoadedExtension | undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** 拡張機能自身のページか（URL の origin は chrome-extension: では "null" になるので、スキームと host で比べる）。 */

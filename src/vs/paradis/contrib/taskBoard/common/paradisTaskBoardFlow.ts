@@ -18,6 +18,7 @@ import {
 	TaskBoardStepAgent,
 	TaskBoardStepKind,
 } from './paradisTaskBoard.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /*
  * フロー定義の既定値・検証・保存形式。
@@ -64,10 +65,6 @@ export interface ITaskBoardFlowProblem {
 export interface ITaskBoardFlowParseResult {
 	readonly flows: ITaskBoardFlow[];
 	readonly problems: ITaskBoardFlowProblem[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function str(value: unknown): string | undefined {

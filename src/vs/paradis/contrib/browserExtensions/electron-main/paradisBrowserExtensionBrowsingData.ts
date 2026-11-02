@@ -16,6 +16,7 @@
 //  - Para Code に無いデータ（履歴・フォームの自動入力・パスワード・ダウンロードの一覧など）は、消したことにせず断る
 
 import { IParadisExtensionApiCaller, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** Chrome の DataTypeSet の名前 → Electron の clearData の dataTypes。 */
 const DATA_TYPES: Readonly<Record<string, string | undefined>> = {
@@ -41,10 +42,6 @@ const SINGLE_METHODS: Readonly<Record<string, string>> = {
 /** 消すために要るセッションの一部（テストでは偽物）。 */
 export interface IParadisBrowsingDataSession {
 	clearData(options: { dataTypes?: string[]; origins?: string[]; excludeOrigins?: string[] }): Promise<void>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** 拡張機能の求め（RemovalOptions と DataTypeSet）から、Electron の clearData に渡すものを作る。断るときは投げる。 */

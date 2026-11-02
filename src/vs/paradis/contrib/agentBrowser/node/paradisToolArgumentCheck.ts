@@ -13,6 +13,7 @@
 // null は「渡さなかった」として通す（任意の引数に null を渡す呼び方は今も動いている）。
 
 import { PARADIS_TAB_ID_ARGUMENT } from '../common/paradisAgentTabScope.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** `tabId` を受け、`tab_id` も別名として受ける道具（サービスが両方を読む。説明に「tab_id also works」）。 */
 const TAB_ID_ALIAS_TOOLS: ReadonlySet<string> = new Set(['switch_browser_profile']);
@@ -28,10 +29,6 @@ type JsonType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
 interface IPropertySchema {
 	readonly type?: unknown;
 	readonly description?: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** 値の JSON の型。 */

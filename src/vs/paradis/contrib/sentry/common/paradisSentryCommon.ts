@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { paradisRedactSecretsWithMarker } from '../../../common/paradisSecretRedaction.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 export type ParadisSentryScope = 'owned' | 'patched' | 'unknown';
 
@@ -633,6 +634,3 @@ function paradisSanitizeValue(value: unknown, keep: (key: string) => boolean, de
 	return value;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}

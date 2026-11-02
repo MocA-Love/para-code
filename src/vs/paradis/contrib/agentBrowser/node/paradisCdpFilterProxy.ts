@@ -57,6 +57,7 @@ import { ParadisCdpIsolatedWorldFilter } from './paradisCdpIsolatedWorldFilter.j
 import { paradisCookieAndRewriteDeniedMessage, paradisSanitizeCookieBearingEvent } from './paradisCdpCookieFilter.js';
 import { paradisRemotePaneCdpDeniedMessage } from './paradisCdpRemotePolicy.js';
 import { PARADIS_HIDDEN_EXTENSION_FRAME_URL, PARADIS_PAGE_URL_FRESH_MS, paradisExtensionPageDeniedMessage, paradisGuardNewDocumentScriptParams, paradisIsAllowedOnExtensionPage, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisIsUndecidedPageUrl, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../common/paradisCdpExtensionScope.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -760,10 +761,6 @@ function logNonThrowing(logService: ILogService, level: 'trace' | 'debug' | 'war
 
 function isolatedWorldDeniedFrame(message: IParadisClientCommand, reason: string): string {
 	return JSON.stringify({ id: message.id, ...(message.sessionId !== undefined ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: reason } });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseClientCommand(data: wsTypes.RawData): IParadisClientCommand | undefined {
