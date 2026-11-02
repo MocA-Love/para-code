@@ -378,7 +378,8 @@ const SPACE_ARGUMENT = {
 	description: 'Space key from list_spaces (a repository id or "worktree:<uri>"). Omit to use the space this terminal pane belongs to.',
 } as const;
 
-const ACTIONS_OFF_NOTE = `Only works when the user has allowed it: ${ALLOW_ACTIONS_LABEL}, off by default.`;
+/** 7 つの道具に付くので短くする。設定の場所（画面の文言）は、断るときのエラー（{@link PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE}）が伝える。 */
+const ACTIONS_OFF_NOTE = `Needs the user's setting ${PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING} (off by default; when it is off, the error says where the user turns it on).`;
 
 /** MCP のツール注釈。読み取り系は確認なしで使ってよいこと、操作系は外へ影響することをクライアントへ伝える。 */
 const READ_ONLY_ANNOTATIONS = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;

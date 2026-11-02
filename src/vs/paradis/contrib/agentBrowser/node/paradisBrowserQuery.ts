@@ -359,7 +359,8 @@ export class ParadisBrowserQuery {
 		if (isError(predicate)) {
 			return error(predicate.error);
 		}
-		const networkIdleMs = args.network_idle_ms === undefined ? undefined : numberIn(args, 'network_idle_ms', 100, 30_000, 500);
+		const networkIdleSeconds = args.network_idle_seconds === undefined ? undefined : numberIn(args, 'network_idle_seconds', 0.1, 30, 0.5);
+		const networkIdleMs = typeof networkIdleSeconds === 'number' ? Math.round(networkIdleSeconds * 1000) : networkIdleSeconds;
 		const maxInflight = numberIn(args, 'network_idle_max_inflight', 0, 10, 0);
 		for (const value of [networkIdleMs, maxInflight]) {
 			if (isError(value)) {
@@ -367,10 +368,10 @@ export class ParadisBrowserQuery {
 			}
 		}
 		if (args.network_idle_max_inflight !== undefined && networkIdleMs === undefined) {
-			return error('"network_idle_max_inflight" needs "network_idle_ms".');
+			return error('"network_idle_max_inflight" needs "network_idle_seconds".');
 		}
 		if (!locator.given && predicate === undefined && networkIdleMs === undefined) {
-			return error('wait_until needs something to wait for: a locator (selector, role + name, text or uid), a "predicate", "network_idle_ms", or a combination.');
+			return error('wait_until needs something to wait for: a locator (selector, role + name, text or uid), a "predicate", "network_idle_seconds", or a combination.');
 		}
 		const state = args.state ?? 'visible';
 		if (state !== 'visible' && state !== 'attached' && state !== 'hidden' && state !== 'detached') {
@@ -387,12 +388,13 @@ export class ParadisBrowserQuery {
 		if (isError(timeoutSeconds) && call.fromSubagent !== true && typeof args.timeout_seconds === 'number' && args.timeout_seconds > PARADIS_MAIN_WAIT_MAX_SECONDS && args.timeout_seconds <= PARADIS_SUBAGENT_WAIT_MAX_SECONDS) {
 			return error(`"timeout_seconds" must be a number from 0.5 to ${PARADIS_MAIN_WAIT_MAX_SECONDS} here. Up to ${PARADIS_SUBAGENT_WAIT_MAX_SECONDS} is allowed only for calls from a Claude Code subagent. Call wait_until again with ${PARADIS_MAIN_WAIT_MAX_SECONDS} or less.`);
 		}
-		const intervalMs = numberIn(args, 'interval_ms', 50, 2000, 200);
-		for (const value of [count, timeoutSeconds, intervalMs]) {
+		const intervalSeconds = numberIn(args, 'interval_seconds', 0.05, 2, 0.2);
+		for (const value of [count, timeoutSeconds, intervalSeconds]) {
 			if (isError(value)) {
 				return error(value.error);
 			}
 		}
+		const intervalMs = Math.round((intervalSeconds as number) * 1000);
 		const startedAt = this.now();
 		const deadline = startedAt + (timeoutSeconds as number) * 1000;
 		let last: Record<string, unknown> | undefined;
@@ -597,7 +599,8 @@ export class ParadisBrowserQuery {
 		}
 		const stepPx = numberIn(args, 'step_px', 1, 100_000, 0);
 		const maxSteps = numberIn(args, 'max_steps', 1, 200, 40);
-		const settleMs = numberIn(args, 'settle_ms', 0, 3000, 250);
+		const stepWaitSeconds = numberIn(args, 'step_wait_seconds', 0, 3, 0.25);
+		const settleMs = typeof stepWaitSeconds === 'number' ? Math.round(stepWaitSeconds * 1000) : stepWaitSeconds;
 		for (const value of [stepPx, maxSteps, settleMs]) {
 			if (isError(value)) {
 				return error(value.error);

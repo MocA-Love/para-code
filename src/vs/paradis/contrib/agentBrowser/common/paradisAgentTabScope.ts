@@ -20,8 +20,11 @@ export const PARADIS_AGENT_TAB_ID_MAX_LENGTH = 128;
 /** ツールの引数の名前。 */
 export const PARADIS_TAB_ID_ARGUMENT = 'tab_id';
 
-/** ツールの入力スキーマに足す `tab_id` の説明（LLM 向け・英語）。 */
-export const PARADIS_TAB_ID_ARGUMENT_DESCRIPTION = 'Optional. The tab to act on: a tabId from list_browser_tabs / open_browser_tab (the same value as get_shared_page\'s pageId). Omit it to use this pane\'s current tab (the one you last opened or selected, otherwise the page the user shared most recently). When you split browser work across subagents, give each subagent its own tab_id and have it pass that tab_id on every browser tool call; calls on different tabs run in parallel.';
+/**
+ * ツールの入力スキーマに足す `tab_id` の説明（LLM 向け・英語）。約 50 の道具に同じ文が付くので短くする。サブエージェントごとに
+ * タブを分ける使い方は instructions に 1 回だけ書く（q.html Q535）。
+ */
+export const PARADIS_TAB_ID_ARGUMENT_DESCRIPTION = 'Optional tabId from list_browser_tabs or open_browser_tab. Omit it to use this pane\'s current tab.';
 
 /** 入力スキーマの `properties` に足す 1 項目。 */
 export const PARADIS_TAB_ID_PROPERTY_SCHEMA: Readonly<{ type: 'string'; description: string }> = Object.freeze({

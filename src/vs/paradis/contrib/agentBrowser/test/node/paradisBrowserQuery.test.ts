@@ -114,7 +114,7 @@ suite('paradisBrowserQuery (shared process)', () => {
 			failed('Execution context was destroyed, most likely because of a navigation.'),
 			returned({ met: true, matched: 1, visible: 1, element }),
 		]);
-		const result = await page.query().call(page.call(), 'wait_until', { text: 'Saved', timeout_seconds: 30, interval_ms: 100 });
+		const result = await page.query().call(page.call(), 'wait_until', { text: 'Saved', timeout_seconds: 30, interval_seconds: 0.1 });
 		assert.deepStrictEqual({
 			error: isError(result),
 			met: textOf(result).startsWith('Condition met after'),
@@ -324,7 +324,7 @@ suite('paradisBrowserQuery (shared process)', () => {
 		}, { text: [rect], whole: [], inspect: [rect], empty: [], inspectInFrame: undefined, elementInFrame: undefined, locatedInFrame: undefined });
 	});
 
-	test('wait_until with network_idle_ms waits until the shared tab has been quiet for long enough', async () => {
+	test('wait_until with network_idle_seconds waits until the shared tab has been quiet for long enough', async () => {
 		const page = new FakePage([returned({ met: true })], 100);
 		const snapshots = [
 			{ inflight: 2, quietMs: 0, pendingUrls: ['https://example.com/api'], longLived: 0 },
@@ -332,9 +332,9 @@ suite('paradisBrowserQuery (shared process)', () => {
 			{ inflight: 0, quietMs: 600, pendingUrls: [], longLived: 1 },
 		];
 		const call = { ...page.call(), networkActivity: () => snapshots.length > 1 ? snapshots.shift() : snapshots[0] };
-		const result = await page.query().call(call, 'wait_until', { network_idle_ms: 500 });
+		const result = await page.query().call(call, 'wait_until', { network_idle_seconds: 0.5 });
 		const quiet = new FakePage([returned({ met: true })], 100);
-		const never = await quiet.query().call({ ...quiet.call(), networkActivity: () => ({ inflight: 1, quietMs: 0, pendingUrls: ['https://example.com/slow'], longLived: 0 }) }, 'wait_until', { network_idle_ms: 500, timeout_seconds: 1 });
+		const never = await quiet.query().call({ ...quiet.call(), networkActivity: () => ({ inflight: 1, quietMs: 0, pendingUrls: ['https://example.com/slow'], longLived: 0 }) }, 'wait_until', { network_idle_seconds: 0.5, timeout_seconds: 1 });
 		assert.deepStrictEqual({
 			error: isError(result),
 			checks: page.calls.length,

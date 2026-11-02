@@ -97,7 +97,7 @@ suite('Paradis site recipes (E3)', () => {
 			expectPredicate: 'save_recipe: "predicate" in expect (or done_when) cannot be saved in a recipe (a later agent runs the recipe without reading it). Use text, text_gone, visible, gone, disabled, enabled, url_includes, value_not_empty or value_equals.',
 			repeatPredicate: true,
 			doneWhenPredicate: true,
-			waitPredicate: 'save_recipe: wait_until with "predicate" cannot be saved in a recipe (a later agent runs the recipe without reading it). Wait for text, a locator or network_idle_ms instead, or use expect with value_not_empty / value_equals for the value of an input.',
+			waitPredicate: 'save_recipe: wait_until with "predicate" cannot be saved in a recipe (a later agent runs the recipe without reading it). Wait for text, a locator or network_idle_seconds instead, or use expect with value_not_empty / value_equals for the value of an input.',
 			snapshotFile: 'save_recipe: take_snapshot with "filePath" cannot be saved in a recipe (a later agent runs the recipe without reading it): it reads or writes files on this computer.',
 			captureSaveTo: 'save_recipe: capture_screenshot with "saveTo" cannot be saved in a recipe (a later agent runs the recipe without reading it): it reads or writes files on this computer.',
 			nestedScript: true,
@@ -272,6 +272,39 @@ suite('Paradis site recipes (E3)', () => {
 			stoppedEnd: true,
 			ownPaneHint: 'page',
 			nextPaneHint: 'page\n[Saved recipes for https://shop.example] export (params: month). Run one with run_recipe instead of repeating its steps; list_recipes shows what each does.',
+		});
+	});
+
+	test('run_recipe runs a recipe saved with the old millisecond names (sleep_ms, expect timeout_ms, a tool\'s timeout) the same as one with seconds', async () => {
+		const calls: string[] = [];
+		const store = new ParadisSiteRecipesStore(join(folder, 'recipes.json'));
+		await store.save('/repo', 'https://shop.example', {
+			name: 'old', params: [], date: '2026-10-10',
+			steps: [{ sleep_ms: 10 }, { tool: 'wait_for', args: { text: ['Ready'], timeout: 4000 } }, { expect: { text: 'Ready', timeout_ms: 3000 } }],
+		});
+		const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
+			_siteRecipes: store,
+			_siteNotesShown: new Map<string, Set<string>>(),
+			_siteNoteSpaces: new Map(),
+			_paneSessions: new Map([[TOKEN, { agent: 'codex' }]]),
+			_requireIngressLease: () => { },
+			_classifyCaller: async () => 'pane',
+			_siteNoteSpace: async () => ({ key: '/repo' }),
+			_defaultTabId: () => 'tab-1',
+			_callOwningWindow: async () => ({ ok: true, value: { ok: true, openedCount: 0, tabs: [{ tabId: 'tab-1', url: 'https://shop.example/home', title: '', openedByAgent: true }] } }),
+			_scopeBinding: () => ({}),
+			_callTool: async (_lease: object, params: { name: string; arguments: Record<string, unknown> }) => {
+				calls.push(`${params.name} ${JSON.stringify(params.arguments)}`);
+				return { content: [{ type: 'text', text: 'ok' }] };
+			},
+		}) as unknown as IRecipeInternals;
+		const ran = textOf(await service._siteRecipeTool({ token: TOKEN }, 'run_recipe', { name: 'old' }));
+		assert.deepStrictEqual({ calls, finished: ran.endsWith('Recipe "old" finished.') }, {
+			calls: [
+				'wait_for {"text":["Ready"],"timeout_seconds":4,"tab_id":"tab-1"}',
+				'wait_until {"timeout_seconds":3,"text":"Ready","state":"visible","tab_id":"tab-1"}',
+			],
+			finished: true,
 		});
 	});
 });
