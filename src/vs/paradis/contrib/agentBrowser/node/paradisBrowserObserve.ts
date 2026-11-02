@@ -28,12 +28,12 @@ import { PARADIS_PAGE_UNRESPONSIVE, paradisIsTransientEvaluateFailure, paradisPa
 import { TERMINATED_ERROR_MESSAGE } from './paradisDevtoolsMcpProxy.js';
 import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveReadFunction } from './paradisBrowserObservePageScript.js';
 
-/** 変化を添える道具（E1）。 */
-const SETTLE_TOOLS: ReadonlySet<string> = new Set([
+/** 変化を添える道具（E1）。前の名前の `settle_ms` を読み替える道具も同じ（paradisToolArgumentAliases.ts）。 */
+export const PARADIS_SETTLE_TOOLS: ReadonlySet<string> = new Set([
 	'click_by', 'fill_by', 'click', 'click_at', 'mouse_action', 'fill', 'fill_form', 'type_text', 'press_key', 'navigate_page', 'handle_dialog', 'run_steps',
 ]);
 /** 状態を添える道具（I1）。 */
-const STATE_TOOLS: ReadonlySet<string> = new Set([...SETTLE_TOOLS, 'download_by_click', 'drag', 'hover']);
+const STATE_TOOLS: ReadonlySet<string> = new Set([...PARADIS_SETTLE_TOOLS, 'download_by_click', 'drag', 'hover']);
 
 /** DOM の変化がこれだけ止まったら落ち着いたとみなす。 */
 const QUIET_MS = 150;
@@ -75,7 +75,7 @@ export interface IParadisObserveOptions {
 
 /** この道具の呼び出しで、何を添えるか。添えないなら undefined。 */
 export function paradisObserveOptionsFor(name: string, settings: IParadisObserveOptions): IParadisObserveOptions | undefined {
-	const settle = settings.settle && SETTLE_TOOLS.has(name);
+	const settle = settings.settle && PARADIS_SETTLE_TOOLS.has(name);
 	const state = settings.state && STATE_TOOLS.has(name);
 	return settle || state ? { settle, state } : undefined;
 }

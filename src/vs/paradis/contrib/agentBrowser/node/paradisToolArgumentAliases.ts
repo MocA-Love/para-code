@@ -12,10 +12,7 @@
 // 黙って受けて新しい名前と単位へ読み替える。読み替えは引数の突き合わせ（paradisToolArgumentCheck.ts）より前に行う。
 // 両方を渡されたら新しい名前を使う。数でない値は読み替えない（前の名前のまま残し、突き合わせが正しい名前を案内する）。
 
-/** 操作の後に落ち着くまで待つ `settle_ms` を受けていた道具（paradisBrowserObserve.ts の SETTLE_TOOLS と同じ）。 */
-const SETTLE_TOOLS: ReadonlySet<string> = new Set([
-	'click_by', 'fill_by', 'click', 'click_at', 'mouse_action', 'fill', 'fill_form', 'type_text', 'press_key', 'navigate_page', 'handle_dialog', 'run_steps',
-]);
+import { PARADIS_SETTLE_TOOLS } from './paradisBrowserObserve.js';
 
 /** 内蔵 chrome-devtools-mcp の、ミリ秒の `timeout` を秒の `timeout_seconds` として見せる道具。 */
 export const PARADIS_DEVTOOLS_SECONDS_TIMEOUT_TOOLS: ReadonlySet<string> = new Set(['evaluate_script', 'navigate_page', 'wait_for']);
@@ -108,7 +105,7 @@ export function paradisNormalizeLegacyToolArguments(toolName: string, args: unkn
 		return args;
 	}
 	let result = args;
-	if (SETTLE_TOOLS.has(toolName)) {
+	if (PARADIS_SETTLE_TOOLS.has(toolName)) {
 		result = renamed(result, [['settle_ms', 'settle_seconds']]);
 	}
 	const renames = MILLISECOND_RENAMES.get(toolName);
@@ -131,13 +128,47 @@ export function paradisNormalizeLegacyToolArguments(toolName: string, args: unkn
 }
 
 /**
- * 内蔵 chrome-devtools-mcp へ渡す前に、秒の `timeout_seconds` を子が受けるミリ秒の `timeout` に戻す
- * （子のスキーマは上流のまま。0 は上流と同じく「既定の待ち時間」）。
+ * 内蔵 chrome-devtools-mcp へ渡す前に、秒の `timeout_seconds` を子が受けるミリ秒の `timeout` に戻す（子のスキーマは上流のまま）。
+ * 0 と、丸めて 0 以下になる値は渡さない（既定の待ち時間にする）。上流の `timeoutSchema` は 0 を素通しし、navigate_page の
+ * `goto` / `reload` が `{ timeout: 0 }` で上限なしに待ってタブを止めるため。前の名前の `timeout`（ミリ秒）の 0 も同じ。
  */
 export function paradisDevtoolsArgumentsForChild(toolName: string, args: unknown): unknown {
-	if (!PARADIS_DEVTOOLS_SECONDS_TIMEOUT_TOOLS.has(toolName) || !isRecord(args) || !Object.hasOwn(args, 'timeout_seconds')) {
+	if (!PARADIS_DEVTOOLS_SECONDS_TIMEOUT_TOOLS.has(toolName) || !isRecord(args) || (!Object.hasOwn(args, 'timeout_seconds') && !Object.hasOwn(args, 'timeout'))) {
 		return args;
 	}
-	const { timeout_seconds: seconds, ...rest } = args;
-	return typeof seconds === 'number' && Number.isFinite(seconds) ? { ...rest, timeout: Math.round(seconds * 1000) } : rest;
+	const { timeout_seconds: seconds, timeout: legacyMs, ...rest } = args;
+	const ms = typeof seconds === 'number' && Number.isFinite(seconds) ? Math.round(seconds * 1000) : typeof legacyMs === 'number' && Number.isFinite(legacyMs) ? Math.round(legacyMs) : undefined;
+	return ms !== undefined && ms > 0 ? { ...rest, timeout: ms } : rest;
+}
+
+/**
+ * {@link paradisNormalizeLegacyToolArguments} が一番上の引数で読み替えた名前（前の名前 → 今の名前）。範囲のエラーは今の名前で
+ * 出るので、エージェントが自分の送った名前と結び付けられるよう、エラー文に元の名前を添えるのに使う。
+ */
+export function paradisRenamedLegacyArguments(toolName: string, sent: unknown, normalized: unknown): readonly (readonly [string, string])[] {
+	if (!isRecord(sent) || !isRecord(normalized) || sent === normalized) {
+		return [];
+	}
+	const renames = [...(PARADIS_SETTLE_TOOLS.has(toolName) ? [['settle_ms', 'settle_seconds'] as const] : []), ...(MILLISECOND_RENAMES.get(toolName) ?? [])];
+	return renames.filter(([legacy, current]) => Object.hasOwn(sent, legacy) && !Object.hasOwn(sent, current) && !Object.hasOwn(normalized, legacy) && Object.hasOwn(normalized, current));
+}
+
+/** 失敗した結果の文の `"今の名前"` に `(sent as 前の名前, in milliseconds)` を添える。読み替えが無い・失敗でなければそのまま。 */
+export function paradisMentionLegacyArgumentNames(result: unknown, renames: readonly (readonly [string, string])[]): unknown {
+	if (renames.length === 0 || !isRecord(result) || result.isError !== true || !Array.isArray(result.content)) {
+		return result;
+	}
+	let changed = false;
+	const content = result.content.map(item => {
+		if (!isRecord(item) || typeof item.text !== 'string') {
+			return item;
+		}
+		let text = item.text;
+		for (const [legacy, current] of renames) {
+			text = text.split(`"${current}"`).join(`"${current}" (sent as "${legacy}" in milliseconds)`);
+		}
+		changed ||= text !== item.text;
+		return text !== item.text ? { ...item, text } : item;
+	});
+	return changed ? { ...result, content } : result;
 }
