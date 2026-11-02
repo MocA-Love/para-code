@@ -202,6 +202,8 @@ function sameStepShape(a: ITaskBoardStep, b: ITaskBoardStep): boolean {
 export class TaskBoardEngine {
 
 	private readonly tasks = new Map<string, ITaskRecord>();
+	/** タスクごとの、活動かターミナルの出力を足した回数（保存しない）。上限で古いものを捨てても増え続けるので、変わったかの目印に使える。 */
+	private readonly detailRevisions = new Map<string, number>();
 	private flows: ITaskBoardFlow[] = [TASK_BOARD_DEFAULT_FLOW];
 	private activeFlowId = TASK_BOARD_DEFAULT_FLOW.id;
 	private poolSlots: ITaskBoardSlot[] = [];
@@ -259,6 +261,23 @@ export class TaskBoardEngine {
 
 	getTask(taskId: string): ITaskBoardTask | undefined {
 		return this.tasks.get(taskId);
+	}
+
+	/**
+	 * 写さずに全タスクを返す（送る直前に形を作る一覧用）。`getTasks` は活動と出力の配列まで写すので、
+	 * 変更のたびに呼ぶと、使わない分の写しが毎回できる。**返した値を持ち続けたり書き換えたりしない。**
+	 */
+	listTasks(): readonly ITaskBoardTask[] {
+		return [...this.tasks.values()];
+	}
+
+	/** 活動かターミナルの出力が足された回数。開いているタスクの分を送り直すかの判定に使う。 */
+	getTaskDetailRevision(taskId: string): number {
+		return this.detailRevisions.get(taskId) ?? 0;
+	}
+
+	private bumpDetailRevision(task: ITaskRecord): void {
+		this.detailRevisions.set(task.id, (this.detailRevisions.get(task.id) ?? 0) + 1);
 	}
 
 	getFlows(): readonly ITaskBoardFlow[] {
@@ -1295,6 +1314,7 @@ export class TaskBoardEngine {
 		if (task.activities.length > MAX_ACTIVITIES) {
 			task.activities.splice(0, task.activities.length - MAX_ACTIVITIES);
 		}
+		this.bumpDetailRevision(task);
 	}
 
 	private pushLog(task: ITaskRecord, lines: readonly string[]): void {
@@ -1304,6 +1324,7 @@ export class TaskBoardEngine {
 		if (task.log.length > MAX_LOG_LINES) {
 			task.log.splice(0, task.log.length - MAX_LOG_LINES);
 		}
+		this.bumpDetailRevision(task);
 	}
 
 	private touch(task: ITaskRecord): void {

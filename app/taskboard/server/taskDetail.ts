@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { ITaskBoardArtifact, ITaskBoardTask, ITaskBoardTaskDetail, TaskBoardClientMessage } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardArtifact, ITaskBoardTask, ITaskBoardTaskDetail, TaskBoardClientMessage, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
 
 /*
  * 一覧のスナップショットと、開いているタスクの詳しい分（活動とターミナルの出力）を分ける。
@@ -22,14 +22,6 @@ export function taskDetail(task: ITaskBoardTask): ITaskBoardTaskDetail {
 	return { taskId: task.id, activities: task.activities, log: task.log };
 }
 
-/**
- * 詳しい分が前に送ったものから変わったかを見る目印。どちらも後ろに足すだけで、上限に達すると先頭から捨てるので、
- * 件数と最後の 1 件で足りる。
- */
-export function taskDetailSignature(task: ITaskBoardTask): string {
-	return JSON.stringify([task.activities.length, task.activities.at(-1), task.log.length, task.log.at(-1)]);
-}
-
 const MAX_TASK_ID = 200;
 
 /** 画面から届いたメッセージを読む。知らない形は `undefined`（無視する）。 */
@@ -48,4 +40,64 @@ export function parseClientMessage(data: string): TaskBoardClientMessage | undef
 		return { type: 'focus' };
 	}
 	return typeof taskId === 'string' && taskId.length > 0 && taskId.length <= MAX_TASK_ID ? { type: 'focus', taskId } : undefined;
+}
+
+/** 開いているタスクの詳しい分を引く先（エンジン）。 */
+export interface ITaskDetailSource {
+	getTask(taskId: string): ITaskBoardTask | undefined;
+	/** 活動か出力が足された回数。上限で古いものを捨てても増え続ける。 */
+	getTaskDetailRevision(taskId: string): number;
+}
+
+/**
+ * 画面ごとの開いているタスクを覚え、そのタスクの活動と出力をその画面にだけ送る。
+ * 開いた直後と、足された回数が前に送ったときから変わったときだけ送る。つなぎ直した画面は新しい接続として知らせ直してくる。
+ */
+export class TaskDetailFeed<TSocket> {
+	private readonly focused = new Map<TSocket, { readonly taskId: string; revision?: number }>();
+
+	constructor(
+		private readonly source: ITaskDetailSource,
+		/** 送れない（閉じかけの）接続には何もしない。 */
+		private readonly send: (socket: TSocket, text: string) => void,
+	) { }
+
+	/** 画面から届いたメッセージ。 */
+	receive(socket: TSocket, data: string): void {
+		const message = parseClientMessage(data);
+		if (message?.type !== 'focus') {
+			return;
+		}
+		if (message.taskId === undefined) {
+			this.focused.delete(socket);
+			return;
+		}
+		this.focused.set(socket, { taskId: message.taskId });
+		this.sendDetail(socket);
+	}
+
+	closed(socket: TSocket): void {
+		this.focused.delete(socket);
+	}
+
+	/** 台帳が変わった（一覧を送った）ときに呼ぶ。 */
+	changed(): void {
+		for (const socket of this.focused.keys()) {
+			this.sendDetail(socket);
+		}
+	}
+
+	private sendDetail(socket: TSocket): void {
+		const focus = this.focused.get(socket);
+		const task = focus && this.source.getTask(focus.taskId);
+		if (!focus || !task) {
+			return;
+		}
+		const revision = this.source.getTaskDetailRevision(task.id);
+		if (revision === focus.revision) {
+			return;
+		}
+		focus.revision = revision;
+		this.send(socket, JSON.stringify({ type: 'taskDetail', detail: taskDetail(task) } satisfies TaskBoardServerMessage));
+	}
 }
