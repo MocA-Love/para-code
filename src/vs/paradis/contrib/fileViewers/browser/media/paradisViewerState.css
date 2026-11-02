@@ -1,0 +1,98 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Loading and "cannot show" states shared by the file viewers. Loading is the 2px progress line at the
+ * top; the other states copy the editor placeholder (src/vs/workbench/browser/parts/editor/media/editorplaceholder.css):
+ * a 48px icon, a 14px label up to 450px wide and the buttons below it.
+ */
+
+.paradis-viewer-state {
+	position: absolute;
+	inset: 0;
+	z-index: 30;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	padding: 0 var(--vscode-spacing-size160);
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	container-type: size;
+}
+
+.paradis-viewer-state.loading {
+	justify-content: flex-start;
+}
+
+.paradis-viewer-state .paradis-viewer-state-progress {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+}
+
+.paradis-viewer-state .paradis-viewer-state-status {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.paradis-viewer-state .paradis-viewer-state-icon .codicon {
+	font-size: 48px !important;
+}
+
+.paradis-viewer-state.error .paradis-viewer-state-icon .codicon {
+	color: var(--vscode-editorError-foreground);
+}
+
+.paradis-viewer-state.warning .paradis-viewer-state-icon .codicon {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.paradis-viewer-state:is(.info, .empty, .done) .paradis-viewer-state-icon .codicon {
+	color: var(--vscode-editorInfo-foreground);
+}
+
+/* Like the editor placeholder, drop the icon when the pane is short. */
+@container (max-height: 199px) {
+	.paradis-viewer-state .paradis-viewer-state-icon {
+		display: none;
+	}
+}
+
+.paradis-viewer-state .paradis-viewer-state-label {
+	font-size: 14px;
+	max-width: 450px;
+	text-align: center;
+	word-break: break-word;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.paradis-viewer-state .paradis-viewer-state-detail {
+	max-width: 450px;
+	margin-top: -6px;
+	text-align: center;
+	word-break: break-word;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.paradis-viewer-state .paradis-viewer-state-buttons {
+	display: flex;
+}
+
+.paradis-viewer-state .paradis-viewer-state-buttons > .monaco-button {
+	width: fit-content;
+	margin: 4px 5px;
+}

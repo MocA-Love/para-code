@@ -93,7 +93,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 
 	private readonly element: HTMLElement;
 	private readonly bodyElement: HTMLElement;
-	private readonly refreshButton: HTMLElement;
+	private readonly refreshButton: HTMLButtonElement;
 	private readonly updatedElement: HTMLElement;
 	private readonly maskButton: HTMLButtonElement;
 	/** 「…」のメニューを出している間は、パネルの外を押しても閉じない（メニューはパネルの外に描かれる）。 */
@@ -144,19 +144,23 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		this.element = $('.paradis-limits-panel.paradis-overlay-popover');
 		this.element.tabIndex = -1;
 
-		this.bodyElement = dom.append(this.element, $('.plm-body'));
-
-		const footer = dom.append(this.element, $('.plm-footer'));
-		this.refreshButton = dom.append(footer, $('.plm-icon-btn'));
-		this.refreshButton.setAttribute('role', 'button');
-		this.refreshButton.setAttribute('aria-label', localize('paradis.limitsMonitor.refreshAria', "更新"));
+		// 上端の見出しの行（本家のホバーの見出しと同じ並び）: 題・最後に取った時刻・更新・メールを番号に。
+		const header = dom.append(this.element, $('.plm-header'));
+		dom.append(header, $('span.plm-title')).textContent = localize('paradis.limitsMonitor.panelTitle', "AI 利用リミット");
+		this.updatedElement = dom.append(header, $('.plm-updated'));
+		this.refreshButton = dom.append(header, $('button.plm-icon-btn')) as HTMLButtonElement;
+		this.refreshButton.type = 'button';
+		const refreshLabel = localize('paradis.limitsMonitor.refreshAria', "更新");
+		this.refreshButton.setAttribute('aria-label', refreshLabel);
+		this.refreshButton.title = refreshLabel;
 		this.refreshButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		this._register(dom.addDisposableListener(this.refreshButton, 'click', () => this.options.onManualRefresh()));
-		this.updatedElement = dom.append(footer, $('.plm-updated'));
-		this.maskButton = dom.append(footer, $('button.plm-mask-btn')) as HTMLButtonElement;
+		this.maskButton = dom.append(header, $('button.plm-icon-btn.plm-mask-btn')) as HTMLButtonElement;
 		this.maskButton.type = 'button';
 		this._register(dom.addDisposableListener(this.maskButton, 'click', () => this.options.onToggleEmailMask()));
 		this.renderMaskButton();
+
+		this.bodyElement = dom.append(this.element, $('.plm-body'));
 
 		layoutService.activeContainer.appendChild(this.element);
 		this.reposition();
@@ -202,11 +206,13 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		const masked = this.options.isEmailMasked();
 		dom.clearNode(this.maskButton);
 		this.maskButton.appendChild($(`span${ThemeIcon.asCSSSelector(masked ? Codicon.eye : Codicon.eyeClosed)}`));
-		dom.append(this.maskButton, $('span')).textContent = masked
+		const label = masked
 			? localize('paradis.limitsMonitor.showEmails', "メールを表示")
 			: localize('paradis.limitsMonitor.maskEmails', "メールを番号に");
+		this.maskButton.setAttribute('aria-label', label);
+		this.maskButton.setAttribute('aria-pressed', String(masked));
 		this.maskButton.classList.toggle('on', masked);
-		this.maskButton.title = localize('paradis.limitsMonitor.maskEmailsHint', "スクリーンショット用に、メールアドレスを「Claude 1」のような番号に置き換えます。Para Code を起動し直すと表示に戻ります");
+		this.maskButton.title = localize('paradis.limitsMonitor.maskEmailsHintWithLabel', "{0}: スクリーンショット用に、メールアドレスを「Claude 1」のような番号に置き換えます。Para Code を起動し直すと表示に戻ります", label);
 	}
 
 	setFetching(isFetching: boolean): void {
@@ -278,9 +284,12 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			? localize('paradis.limitsMonitor.accountCountWithHidden', "{0} / {1} アカウント", visible, total)
 			: localize('paradis.limitsMonitor.accountCount', "{0} アカウント", total);
 		dom.append(header, $('.plm-provider-count')).textContent = countLabel;
-		const addButton = dom.append(header, $('.plm-add-btn'));
-		addButton.textContent = localize('paradis.limitsMonitor.addAccount', "＋ アカウントを追加");
-		addButton.setAttribute('role', 'button');
+		const addButton = dom.append(header, $('button.plm-icon-btn.plm-add-btn')) as HTMLButtonElement;
+		addButton.type = 'button';
+		addButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.add)}`));
+		const addLabel = localize('paradis.limitsMonitor.addAccountAria', "{0} のアカウントを追加", title);
+		addButton.setAttribute('aria-label', addLabel);
+		addButton.title = addLabel;
 		this._bodyListeners.add(dom.addDisposableListener(addButton, 'click', () => this.options.onAddAccount(provider)));
 
 		this.renderProviderAccounts(parent, provider, providerSnapshot);
@@ -447,8 +456,6 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 				: this.statusBadgeLabel(account.status);
 		}
 
-		this.renderAccountMenu(badgeGroup, account, others, remoteHost);
-
 		// Codex のホームはメールの下の副題に出す（まとめた同じアカウントのホームも並べる。隠したものは出さない）。
 		if (account.provider === 'codex' && account.homeLabel) {
 			const labels = [account.homeLabel, ...others.map(other => other.homeLabel ?? other.id)];
@@ -472,6 +479,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 
 		if (compact && !expanded) {
+			this.renderAccountMenu(card, account, others, remoteHost);
 			return;
 		}
 		if (previous) {
@@ -511,6 +519,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		if (!remoteHost) {
 			this.renderAccountActions(card, account);
 		}
+		// 「…」は右上に重ねて描くが、DOM ではカードのボタンの後ろに置く（Tab でカードのボタンの次に届く）。
+		this.renderAccountMenu(card, account, others, remoteHost);
 	}
 
 	private isAccountSelected(account: IParadisLimitsAccount): boolean {
@@ -518,7 +528,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	}
 
 	/** 右上の「…」。一覧から隠す・削除（まとめたカードはホームごと）を出す。 */
-	private renderAccountMenu(badgeGroup: HTMLElement, account: IParadisLimitsAccount, others: readonly IParadisLimitsAccount[], remoteHost: boolean): void {
+	private renderAccountMenu(card: HTMLElement, account: IParadisLimitsAccount, others: readonly IParadisLimitsAccount[], remoteHost: boolean): void {
 		const members = [account, ...others];
 		const name = this.options.displayName(account);
 		// メニューの項目（文言と実行する処理）。Action はメニューを出すたびに作る。
@@ -544,7 +554,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			return;
 		}
 		const label = localize('paradis.limitsMonitor.accountMenu', "{0} のほかの操作", name);
-		const button = dom.append(badgeGroup, $('button.plm-account-icon-btn.plm-account-menu')) as HTMLButtonElement;
+		card.classList.add('has-menu');
+		const button = dom.append(card, $('button.plm-account-icon-btn.plm-account-menu')) as HTMLButtonElement;
 		button.type = 'button';
 		button.setAttribute('aria-label', label);
 		button.setAttribute('aria-haspopup', 'menu');

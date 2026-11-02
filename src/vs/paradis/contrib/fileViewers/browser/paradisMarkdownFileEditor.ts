@@ -217,7 +217,6 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 			${PARADIS_FRONTMATTER_STYLES}
 			${PARADIS_INLINE_MEDIA_STYLES}
 			${tokenCss}
-			${this.getTransparencyBackgroundCssRule('body.paradis-markdown-body')}
 			.paradis-mermaid.mermaid { display: flex; justify-content: center; background: none; }
 		</style>
 	</head>
