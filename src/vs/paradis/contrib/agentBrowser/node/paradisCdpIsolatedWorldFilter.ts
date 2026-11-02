@@ -81,11 +81,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * 上限まで覚える。上限に達したら一番古いものを忘れて足す（以前は黙って足さなかったので、上限の後に隠した
+ * scriptId などが覚えられず、クライアントに見えていた）。見せてよい側の台帳から古いものが消えても、
+ * その番号は「知らない番号」として断られるだけ（安全な側に倒れる）。
+ */
 function boundedAdd<T>(set: Set<T>, value: T): void {
-	if (set.size < MAX_TRACKED_IDS) {
-		set.add(value);
+	if (set.has(value)) {
+		return;
 	}
+	if (set.size >= MAX_TRACKED_IDS) {
+		const oldest = set.values().next();
+		if (!oldest.done) {
+			set.delete(oldest.value);
+		}
+	}
+	set.add(value);
 }
+
+/** 覚えておくセッションの数の上限。超えたら一番古いセッションの台帳を忘れる（クライアントが送った sessionId でも台帳ができるため）。 */
+const MAX_TRACKED_SESSIONS = 1_024;
 
 export class ParadisCdpIsolatedWorldFilter {
 
@@ -106,6 +121,12 @@ export class ParadisCdpIsolatedWorldFilter {
 				requestedWorldNames: new Set(),
 				pendingCreateWorld: new Set(),
 			};
+			if (this._sessions.size >= MAX_TRACKED_SESSIONS) {
+				const oldest = this._sessions.keys().next();
+				if (!oldest.done) {
+					this._sessions.delete(oldest.value);
+				}
+			}
 			this._sessions.set(sessionKey, state);
 		}
 		return state;
@@ -256,6 +277,9 @@ export class ParadisCdpIsolatedWorldFilter {
 				state.visibleUniqueIds.clear();
 				state.hiddenContextIds.clear();
 				state.hiddenUniqueIds.clear();
+				// 文書が替わると前の文書のスクリプトと止まった場所も無くなる（溜め続けない）
+				state.hiddenScriptIds.clear();
+				state.hiddenCallFrameIds.clear();
 				return 'forward';
 			case 'Debugger.scriptParsed':
 			case 'Debugger.scriptFailedToParse': {

@@ -173,4 +173,28 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 			/not available on the Para Code CDP gateway/.test(filter.checkClientCommand('s1', 3, 'Runtime.evaluate', { expression: '1', contextId: 2 }) ?? ''),
 		], ['Cannot find context with specified id', 'Cannot find context with specified id', true]);
 	});
+	test('keeps recording hidden scripts past the limit, forgets them with the document, and caps the number of sessions', () => {
+		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.filterEvent('', 'Runtime.executionContextCreated', created(1, 'main', true));
+		filter.filterEvent('', 'Runtime.executionContextCreated', created(2, 'design', false));
+		const hiddenScript = (scriptId: string) => filter.filterEvent('', 'Debugger.scriptParsed', { scriptId, url: '', executionContextId: 2, executionContextAuxData: { isDefault: false } });
+		for (let index = 0; index < 10_000; index++) {
+			hiddenScript(`old-${index}`);
+		}
+		hiddenScript('latest');
+		const latestDenied = typeof filter.checkClientCommand('', 1, 'Debugger.getScriptSource', { scriptId: 'latest' });
+		filter.filterEvent('', 'Runtime.executionContextsCleared', {});
+		const afterNavigation = filter.checkClientCommand('', 2, 'Debugger.getScriptSource', { scriptId: 'latest' });
+		filter.filterEvent('first', 'Runtime.executionContextCreated', { context: { id: 5, uniqueId: 'ext', name: '', origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop', auxData: { isDefault: true, type: 'default', frameId: 'F' } } });
+		const firstKnown = filter.isOnExtensionPage('first');
+		for (let index = 0; index < 1_024; index++) {
+			filter.checkClientCommand(`client-${index}`, 1, 'Runtime.evaluate', { expression: '1' });
+		}
+		assert.deepStrictEqual({ latestDenied, afterNavigation, firstKnown, firstAfterCap: filter.isOnExtensionPage('first') }, {
+			latestDenied: 'string',
+			afterNavigation: undefined,
+			firstKnown: true,
+			firstAfterCap: false,
+		});
+	});
 });
