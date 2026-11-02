@@ -24,6 +24,9 @@
  * これ以上の大きさの文書だけ区間読みにする。実測（2026-10-09）で、5 MB では区間読みが遅く、
  * 10 MB では測るたびに勝ち負けが入れ替わり、20 MB 以上では区間読みが速かったので、その間に置いた。
  */
+import { localize } from '../../../../nls.js';
+import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from './paradisViewerWebviewState.js';
+
 export const PARADIS_PDF_RANGE_THRESHOLD_BYTES = 16 * 1024 * 1024;
 
 /** 区間読みの 1 回の大きさ。pdf.js の既定（64 KiB）だと往復が多すぎる。 */
@@ -373,12 +376,12 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 		#pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px 16px 24px; }
 		.pm-page { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
 		.pm-page canvas { display: block; width: 100%; height: 100%; }
-		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; }
+		${PARADIS_VIEWER_WEBVIEW_STATE_STYLE}
 	</style>
 </head>
 <body>
 	<div id="scroller"><div id="pages"></div></div>
-	<div id="status">読み込み中…</div>
+	${paradisViewerWebviewStatusHtml()}
 	<script type="module" nonce="${nonce}">
 		const PDF_URL = ${JSON.stringify(pdfUrl)};
 		const LIB = ${JSON.stringify(libBase)};
@@ -621,7 +624,7 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 				})().catch(() => { /* 大きさを揃えられなくても、近づいたときに取り直す */ });
 			}
 		} catch (err) {
-			statusEl.textContent = 'PDF を表示できませんでした: ' + (err && err.message ? err.message : err);
+			${paradisViewerWebviewFailureScript(localize('paradis.pdf.failed', "PDF を表示できませんでした: {0}"))}
 		}
 	</script>
 </body>
