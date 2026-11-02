@@ -34,7 +34,10 @@ import {
 	ParadisCursorStatus,
 	paradisCursorKeyLabel,
 	ParadisCursorOverlayOwnedCommand,
+	PARADIS_CURSOR_OVERLAY_MISSING,
+	paradisBuildCursorOverlayCall,
 	paradisBuildCursorOverlayScript,
+	paradisCursorOverlayCommandNeedsNoBody,
 	paradisClampCursorWaitMs,
 	paradisCursorGlideMs,
 	paradisCursorLookKey,
@@ -678,14 +681,25 @@ export class ParadisCursorOverlayController {
 		await raceTimeout(this.execute(view, command), timeoutMs);
 	}
 
-	/** 実行本体。例外は全てここで吸収し、呼び出し元へは絶対に投げない。 */
+	/**
+	 * 実行本体。例外は全てここで吸収し、呼び出し元へは絶対に投げない。
+	 *
+	 * まず文書に置いてある本体を呼ぶ短いスクリプトを送り、本体がまだ無い文書（初回・遷移の後）でだけ
+	 * 本体ごと送り直す（文書ごとに 1 度だけ往復が 1 回増える）。
+	 */
 	private async execute(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayOwnedCommand): Promise<void> {
 		try {
-			const code = paradisBuildCursorOverlayScript(command);
+			const code = paradisBuildCursorOverlayCall(command);
 			if (command.kind === 'move' || command.kind === 'press' || command.kind === 'focus' || command.kind === 'status' || command.kind === 'wheel' || command.kind === 'look') {
 				this.injected.add(view);
 			}
-			const result = await view.webContents.executeJavaScriptInIsolatedWorld(browserViewIsolatedWorldId, [{ code }]);
+			let result = await view.webContents.executeJavaScriptInIsolatedWorld(browserViewIsolatedWorldId, [{ code }]);
+			if (result === PARADIS_CURSOR_OVERLAY_MISSING) {
+				// 既にある演出にしか作用しない命令は、本体の無い文書では何もすることが無い（撮影前の退避で往復を増やさない）
+				result = paradisCursorOverlayCommandNeedsNoBody(command)
+					? 0
+					: await view.webContents.executeJavaScriptInIsolatedWorld(browserViewIsolatedWorldId, [{ code: paradisBuildCursorOverlayScript(command) }]);
+			}
 			this.failureStreak.delete(view);
 			const traits = paradisParseCursorOverlayPageTraits(result);
 			if (traits) {

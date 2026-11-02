@@ -8,6 +8,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS,
 	PARADIS_CURSOR_OVERLAY_TUNING,
+	paradisBuildCursorOverlayCall,
 	paradisBuildCursorOverlayScript,
 	paradisClampCursorWaitMs,
 	paradisCursorCaptureRange,
@@ -107,7 +108,7 @@ suite('Paradis Cursor Overlay', () => {
 		const script = paradisBuildCursorOverlayScript({ kind: 'move', x: 5, y: 6, label: 'エージェント', durationMs: 200, frames: [{ x: 5, y: 6, r: 0, o: 1 }] });
 		assert.deepStrictEqual(
 			{
-				startsAsExpression: script.startsWith('(function (c) {'),
+				startsAsExpression: script.startsWith('(function (f) {'),
 				endsWithPayloadCall: script.trimEnd().endsWith('})'),
 				usesInnerHtml: script.includes('innerHTML'),
 				usesOuterHtml: script.includes('outerHTML'),
@@ -126,6 +127,22 @@ suite('Paradis Cursor Overlay', () => {
 				usesEval: false,
 				carriesCoordinates: true,
 			},
+		);
+	});
+
+	test('the short call carries only the command, and the body is the same for every command', () => {
+		const move = { kind: 'move', x: 5, y: 6, label: 'a\u2028b', durationMs: 200, frames: [] } as const;
+		const call = paradisBuildCursorOverlayCall(move);
+		const full = paradisBuildCursorOverlayScript(move);
+		const bodyOf = (script: string) => script.slice(script.indexOf('})(function (c) {'));
+		assert.deepStrictEqual(
+			{
+				callIsShort: call.length < 2_000,
+				callCarriesPayload: call.includes('"x":5') && call.includes('"y":6'),
+				callEscapesSeparators: !call.includes('\u2028') && call.includes('\\u2028'),
+				sameBody: bodyOf(full) === bodyOf(paradisBuildCursorOverlayScript({ kind: 'remove' })),
+			},
+			{ callIsShort: true, callCarriesPayload: true, callEscapesSeparators: true, sameBody: true },
 		);
 	});
 
@@ -149,16 +166,18 @@ suite('Paradis Cursor Overlay', () => {
 		] as const;
 		assert.deepStrictEqual(
 			kinds.map(command => {
-				const script = paradisBuildCursorOverlayScript(command);
-				try {
-					// Parsing without running proves the generated text is a valid expression.
-					new Function(`return ${script};`);
-					return { kind: command.kind, valid: true };
-				} catch {
-					return { kind: command.kind, valid: false };
-				}
+				const valid = (script: string) => {
+					try {
+						// Parsing without running proves the generated text is a valid expression.
+						new Function(`return ${script};`);
+						return true;
+					} catch {
+						return false;
+					}
+				};
+				return { kind: command.kind, valid: valid(paradisBuildCursorOverlayScript(command)), validCall: valid(paradisBuildCursorOverlayCall(command)) };
 			}),
-			kinds.map(command => ({ kind: command.kind, valid: true })),
+			kinds.map(command => ({ kind: command.kind, valid: true, validCall: true })),
 		);
 	});
 
