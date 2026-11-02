@@ -212,14 +212,6 @@
 	gap: 1px;
 }
 
-.paradis-preset-editor-dialog .ppe-nav-hint {
-	padding: 6px 8px 0;
-	font-size: 11px;
-	line-height: 1.7;
-	color: var(--vscode-descriptionForeground);
-	word-break: break-word;
-}
-
 /* ---------- list ---------- */
 
 .paradis-preset-editor-dialog .ppe-list {
@@ -383,35 +375,44 @@
 	gap: 6px;
 }
 
+.paradis-preset-editor-dialog .ppe-row-name-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* 名前と印の間を空け、印を行の右端へ寄せる（Q537 の 8 A） */
+.paradis-preset-editor-dialog .ppe-name-spacer {
+	flex: 1;
+}
+
+/* 印は枠だけのチップ 1 種類（18px、角丸は円）。既定の「ユーザー」は出さず、例外だけを出す */
 .paradis-preset-editor-dialog .ppe-badge {
-	font-size: 10px;
-	font-weight: 400;
-	padding: 1px 6px;
-	border-radius: 8px;
-	background: var(--vscode-badge-background);
-	color: var(--vscode-badge-foreground);
+	flex-shrink: 0;
+	box-sizing: border-box;
+	height: 18px;
+	padding: 0 var(--vscode-spacing-size60);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--vscode-fontSize-label3);
+	font-weight: var(--vscode-fontWeight-regular);
+	line-height: 16px;
+	white-space: nowrap;
+	color: var(--vscode-descriptionForeground);
 }
 
 /* 同名のプリセットを見分けるための区別語（対象リポジトリ・作業ディレクトリ等）。保存元バッジより弱く、名前の補足として読ませる。 */
 .paradis-preset-editor-dialog .ppe-badge.qualifier {
-	background: transparent;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	color: var(--vscode-descriptionForeground);
 	max-width: 180px;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.paradis-preset-editor-dialog .ppe-badge.workspace {
-	background: var(--vscode-statusBarItem-remoteBackground, var(--vscode-badge-background));
-	color: var(--vscode-statusBarItem-remoteForeground, var(--vscode-badge-foreground));
-}
-
 /* このマシンだけの非表示（.paracode.json は変更していない）を、注意喚起の色で目立たせる。 */
 .paradis-preset-editor-dialog .ppe-badge.locally-hidden {
-	background: transparent;
-	border: 1px solid var(--vscode-editorWarning-foreground, var(--vscode-widget-border));
+	border-color: var(--vscode-editorWarning-foreground, var(--vscode-widget-border));
 	color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
 }
 
@@ -423,8 +424,8 @@
 
 /* 「このウィンドウでは非表示」バッジ。点線で「一時的な状態」であることを示す。 */
 .paradis-preset-editor-dialog .ppe-badge.inactive-warn {
-	background: transparent;
-	border: 1px dashed var(--vscode-editorWarning-foreground, var(--vscode-widget-border));
+	border-style: dashed;
+	border-color: var(--vscode-editorWarning-foreground, var(--vscode-widget-border));
 	color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
 }
 
@@ -438,8 +439,28 @@
 
 .paradis-preset-editor-dialog .ppe-row-actions {
 	display: flex;
-	gap: 4px;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
 	flex-shrink: 0;
+}
+
+/* 行の「…」。本家の ActionBar のアイコンのボタンと同じ 22px（Q537 の 7 A） */
+.paradis-preset-editor-dialog .ppe-icon-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: transparent;
+	color: var(--vscode-icon-foreground);
+	cursor: pointer;
+}
+
+.paradis-preset-editor-dialog .ppe-icon-btn:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
 /* ダイアログ内トースト（並び替え拒否・複製完了などの軽い通知）。フォーカスは奪わない。 */
