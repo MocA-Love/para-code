@@ -896,6 +896,102 @@ interface IParadisMcpHealthProbeOptions {
 }
 
 /** Verify the unauthenticated instance identity and return the exact TCP socket that proved it. */
+/**
+ * shim の 1 回の HTTP のやり取り（health の問い合わせと、確かめたソケットでの POST）が共に使う、要求と応答の後始末。
+ *
+ * 終わらせた後も Node は要求と応答の error・aborted を非同期で出すことがある（aborted の後に error が来ることもある）。
+ * 受け手が無い error はプロセスを落とすので、close までは黙って受ける受け手を付けておく。要求を作る前に作り、
+ * 要求ができたら {@link attach} する。
+ */
+class ParadisMcpHttpExchangeGuards {
+
+	requestClosed = false;
+	responseClosed = false;
+	response: http.IncomingMessage | undefined;
+	private request: http.ClientRequest | undefined;
+
+	attach(request: http.ClientRequest): void {
+		this.request = request;
+	}
+
+	/** 要求に close まで黙って受ける受け手を付ける。外す関数を返す（既に閉じていれば何もしない）。 */
+	guardRequestUntilClose(): () => void {
+		const request = this.request;
+		if (this.requestClosed || request === undefined) {
+			return () => undefined;
+		}
+		const onDestroyedRequestError = () => {
+			// The destroy error is the expected terminal signal; keep guarding until close.
+		};
+		const clearGuard = () => {
+			request.removeListener('error', onDestroyedRequestError);
+			request.removeListener('close', onDestroyedRequestClose);
+		};
+		const onDestroyedRequestClose = () => {
+			this.requestClosed = true;
+			clearGuard();
+		};
+		request.on('error', onDestroyedRequestError);
+		request.once('close', onDestroyedRequestClose);
+		return clearGuard;
+	}
+
+	/** 応答に close まで黙って受ける受け手を付ける。外す関数を返す（今の応答が既に閉じていれば何もしない）。 */
+	guardResponseUntilClose(guardedResponse: http.IncomingMessage | undefined = this.response): () => void {
+		if (guardedResponse === undefined || (guardedResponse === this.response && this.responseClosed)) {
+			return () => undefined;
+		}
+		const onDestroyedResponseError = () => {
+			// A destroyed IncomingMessage can report error after aborted; guard through close.
+		};
+		const onDestroyedResponseAborted = () => {
+			// Close is the terminal cleanup boundary because an error may still follow aborted.
+		};
+		const clearGuard = () => {
+			guardedResponse.removeListener('error', onDestroyedResponseError);
+			guardedResponse.removeListener('aborted', onDestroyedResponseAborted);
+			guardedResponse.removeListener('close', onDestroyedResponseClose);
+		};
+		const onDestroyedResponseClose = () => {
+			this.responseClosed = true;
+			clearGuard();
+		};
+		guardedResponse.on('error', onDestroyedResponseError);
+		guardedResponse.on('aborted', onDestroyedResponseAborted);
+		guardedResponse.once('close', onDestroyedResponseClose);
+		return clearGuard;
+	}
+
+	/** 終わらせた後に届いた応答は読み捨てる（読めなければ壊す）。 */
+	discardLateResponse(incoming: http.IncomingMessage): void {
+		const clearLateResponseGuard = this.guardResponseUntilClose(incoming);
+		try {
+			incoming.resume();
+		} catch {
+			try {
+				incoming.destroy();
+			} catch {
+				clearLateResponseGuard();
+			}
+		}
+	}
+
+	/**
+	 * 要求を `error` で壊す。ClientRequest.destroy(error) と生きている IncomingMessage は終わりの error を非同期で出すので、
+	 * 両方に close まで受け手を付けてから壊す。
+	 */
+	destroy(error: Error): void {
+		const clearRequestGuard = this.guardRequestUntilClose();
+		const clearResponseGuard = this.guardResponseUntilClose();
+		try {
+			this.request?.destroy(error);
+		} catch {
+			clearRequestGuard();
+			clearResponseGuard();
+		}
+	}
+}
+
 export async function probeParadisMcpInstance(
 	record: IParadisMcpPortFileRecord,
 	options: IParadisMcpHealthProbeOptions = {},
@@ -906,10 +1002,8 @@ export async function probeParadisMcpInstance(
 	const cancel = options.clearTimeout ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
 	return new Promise<import('net').Socket>((resolve, reject) => {
 		let settled = false;
-		let response: http.IncomingMessage | undefined;
+		const guards = new ParadisMcpHttpExchangeGuards();
 		let responseSocket: import('net').Socket | undefined;
-		let requestClosed = false;
-		let responseClosed = false;
 		let timer: unknown;
 		let bodyLength = 0;
 		const chunks: Buffer[] = [];
@@ -920,48 +1014,11 @@ export async function probeParadisMcpInstance(
 			}
 			request.removeListener('error', onRequestError);
 			request.removeListener('close', onRequestClose);
-			response?.removeListener('data', onData);
-			response?.removeListener('end', onResponseEnd);
-			response?.removeListener('error', onResponseError);
-			response?.removeListener('aborted', onResponseAborted);
-			response?.removeListener('close', onResponseClose);
-		};
-		const installRequestDestroyGuard = () => {
-			if (requestClosed) {
-				return () => undefined;
-			}
-			const onDestroyedRequestError = () => undefined;
-			const clearGuard = () => {
-				request.removeListener('error', onDestroyedRequestError);
-				request.removeListener('close', onDestroyedRequestClose);
-			};
-			const onDestroyedRequestClose = () => {
-				requestClosed = true;
-				clearGuard();
-			};
-			request.on('error', onDestroyedRequestError);
-			request.once('close', onDestroyedRequestClose);
-			return clearGuard;
-		};
-		const installResponseDestroyGuard = (guardedResponse: http.IncomingMessage | undefined = response) => {
-			if (guardedResponse === undefined || (guardedResponse === response && responseClosed)) {
-				return () => undefined;
-			}
-			const onDestroyedResponseError = () => undefined;
-			const onDestroyedResponseAborted = () => undefined;
-			const clearGuard = () => {
-				guardedResponse.removeListener('error', onDestroyedResponseError);
-				guardedResponse.removeListener('aborted', onDestroyedResponseAborted);
-				guardedResponse.removeListener('close', onDestroyedResponseClose);
-			};
-			const onDestroyedResponseClose = () => {
-				responseClosed = true;
-				clearGuard();
-			};
-			guardedResponse.on('error', onDestroyedResponseError);
-			guardedResponse.on('aborted', onDestroyedResponseAborted);
-			guardedResponse.once('close', onDestroyedResponseClose);
-			return clearGuard;
+			guards.response?.removeListener('data', onData);
+			guards.response?.removeListener('end', onResponseEnd);
+			guards.response?.removeListener('error', onResponseError);
+			guards.response?.removeListener('aborted', onResponseAborted);
+			guards.response?.removeListener('close', onResponseClose);
 		};
 		const settle = (error: Error | undefined, socket?: import('net').Socket) => {
 			if (settled) {
@@ -981,14 +1038,7 @@ export async function probeParadisMcpInstance(
 			}
 			settled = true;
 			cleanup();
-			const clearRequestGuard = installRequestDestroyGuard();
-			const clearResponseGuard = installResponseDestroyGuard();
-			try {
-				request.destroy(error);
-			} catch {
-				clearRequestGuard();
-				clearResponseGuard();
-			}
+			guards.destroy(error);
 			reject(error);
 		};
 		const onData = (chunk: Buffer | string) => {
@@ -1000,8 +1050,8 @@ export async function probeParadisMcpInstance(
 			}
 		};
 		const onResponseEnd = () => {
-			if (response?.statusCode !== 200) {
-				settle(new Error(`Para Code MCP health probe returned HTTP ${response?.statusCode ?? 0}`));
+			if (guards.response?.statusCode !== 200) {
+				settle(new Error(`Para Code MCP health probe returned HTTP ${guards.response?.statusCode ?? 0}`));
 				return;
 			}
 			let health: unknown;
@@ -1026,12 +1076,12 @@ export async function probeParadisMcpInstance(
 			settle(undefined, responseSocket);
 		};
 		const onRequestError = (error: Error) => terminate(error);
-		const onRequestClose = () => requestClosed = true;
+		const onRequestClose = () => guards.requestClosed = true;
 		const onResponseError = (error: Error) => terminate(error);
 		const onResponseAborted = () => terminate(new Error('Para Code MCP health response aborted'));
 		const onResponseClose = () => {
-			responseClosed = true;
-			if (!settled && response?.complete !== true) {
+			guards.responseClosed = true;
+			if (!settled && guards.response?.complete !== true) {
 				settle(new Error('Para Code MCP health response closed before completion'));
 			}
 		};
@@ -1047,19 +1097,10 @@ export async function probeParadisMcpInstance(
 			},
 		}, incoming => {
 			if (settled) {
-				const clearLateResponseGuard = installResponseDestroyGuard(incoming);
-				try {
-					incoming.resume();
-				} catch {
-					try {
-						incoming.destroy();
-					} catch {
-						clearLateResponseGuard();
-					}
-				}
+				guards.discardLateResponse(incoming);
 				return;
 			}
-			response = incoming;
+			guards.response = incoming;
 			// Node clears IncomingMessage.socket before `end`; retain the exact object at callback time.
 			responseSocket = incoming.socket;
 			incoming.on('data', onData);
@@ -1068,6 +1109,7 @@ export async function probeParadisMcpInstance(
 			incoming.once('aborted', onResponseAborted);
 			incoming.once('close', onResponseClose);
 		});
+		guards.attach(request);
 		request.once('error', onRequestError);
 		request.once('close', onRequestClose);
 		timer = schedule(() => {
@@ -1209,10 +1251,8 @@ export async function postParadisMcpRequestOnVerifiedSocket(options: IParadisMcp
 		let settled = false;
 		let connectTimer: unknown;
 		let overallTimer: unknown;
-		let response: http.IncomingMessage | undefined;
+		const guards = new ParadisMcpHttpExchangeGuards();
 		let socket: import('net').Socket | undefined;
-		let requestClosed = false;
-		let responseClosed = false;
 		let bodySent = false;
 		let responseBodyBytes = 0;
 		const chunks: Buffer[] = [];
@@ -1259,13 +1299,13 @@ export async function postParadisMcpRequestOnVerifiedSocket(options: IParadisMcp
 			}
 			chunks.push(buffer);
 		};
-		const onRequestObservedClose = () => requestClosed = true;
+		const onRequestObservedClose = () => guards.requestClosed = true;
 		const onResponseObservedClose = () => {
-			responseClosed = true;
+			guards.responseClosed = true;
 			if (settled) {
 				return;
 			}
-			if (response?.complete === true) {
+			if (guards.response?.complete === true) {
 				onResponseEnd();
 			} else {
 				settleTransportError(new Error('Para Code MCP response closed before completion'));
@@ -1277,54 +1317,11 @@ export async function postParadisMcpRequestOnVerifiedSocket(options: IParadisMcp
 			request.removeListener('socket', onSocket);
 			request.removeListener('close', onRequestObservedClose);
 			socket?.removeListener('connect', onSocketConnect);
-			response?.removeListener('data', onData);
-			response?.removeListener('end', onResponseEnd);
-			response?.removeListener('error', onResponseError);
-			response?.removeListener('aborted', onResponseAborted);
-			response?.removeListener('close', onResponseObservedClose);
-		};
-		const installRequestDestroyGuard = () => {
-			if (requestClosed) {
-				return () => undefined;
-			}
-			const onDestroyedRequestError = () => {
-				// The destroy error is the expected terminal signal; keep guarding until close.
-			};
-			const clearDestroyedRequestGuard = () => {
-				request.removeListener('error', onDestroyedRequestError);
-				request.removeListener('close', onDestroyedRequestClose);
-			};
-			const onDestroyedRequestClose = () => {
-				requestClosed = true;
-				clearDestroyedRequestGuard();
-			};
-			request.on('error', onDestroyedRequestError);
-			request.once('close', onDestroyedRequestClose);
-			return clearDestroyedRequestGuard;
-		};
-		const installResponseDestroyGuard = (guardedResponse: http.IncomingMessage | undefined = response) => {
-			if (guardedResponse === undefined || (guardedResponse === response && responseClosed)) {
-				return () => undefined;
-			}
-			const onDestroyedResponseError = () => {
-				// A destroyed IncomingMessage can report error after aborted; guard through close.
-			};
-			const onDestroyedResponseAborted = () => {
-				// Close is the terminal cleanup boundary because an error may still follow aborted.
-			};
-			const clearDestroyedResponseGuard = () => {
-				guardedResponse.removeListener('error', onDestroyedResponseError);
-				guardedResponse.removeListener('aborted', onDestroyedResponseAborted);
-				guardedResponse.removeListener('close', onDestroyedResponseClose);
-			};
-			const onDestroyedResponseClose = () => {
-				responseClosed = true;
-				clearDestroyedResponseGuard();
-			};
-			guardedResponse.on('error', onDestroyedResponseError);
-			guardedResponse.on('aborted', onDestroyedResponseAborted);
-			guardedResponse.once('close', onDestroyedResponseClose);
-			return clearDestroyedResponseGuard;
+			guards.response?.removeListener('data', onData);
+			guards.response?.removeListener('end', onResponseEnd);
+			guards.response?.removeListener('error', onResponseError);
+			guards.response?.removeListener('aborted', onResponseAborted);
+			guards.response?.removeListener('close', onResponseObservedClose);
 		};
 		const settle = (error: unknown, result?: IParadisMcpHttpResponse) => {
 			if (settled) {
@@ -1344,8 +1341,8 @@ export async function postParadisMcpRequestOnVerifiedSocket(options: IParadisMcp
 			}
 			settled = true;
 			cleanup();
-			installRequestDestroyGuard();
-			installResponseDestroyGuard();
+			guards.guardRequestUntilClose();
+			guards.guardResponseUntilClose();
 			reject(error);
 		};
 		const terminateWithError = (error: Error) => {
@@ -1354,24 +1351,14 @@ export async function postParadisMcpRequestOnVerifiedSocket(options: IParadisMcp
 			}
 			settled = true;
 			cleanup();
-
-			// ClientRequest.destroy(error) and an active IncomingMessage both report terminal errors
-			// asynchronously. Guard each emitter through close to cover error-after-aborted ordering.
-			const clearDestroyedRequestGuard = installRequestDestroyGuard();
-			const clearDestroyedResponseGuard = installResponseDestroyGuard();
-			try {
-				request.destroy(error);
-			} catch {
-				clearDestroyedRequestGuard();
-				clearDestroyedResponseGuard();
-			}
+			guards.destroy(error);
 			reject(error);
 		};
 		const onRequestError = (error: Error) => settleTransportError(error);
 		const onResponseError = (error: Error) => settleTransportError(error);
 		const onResponseAborted = () => settleTransportError(new Error('Para Code MCP response aborted before completion'));
 		const onResponseEnd = () => settle(undefined, {
-			status: response?.statusCode ?? 0,
+			status: guards.response?.statusCode ?? 0,
 			body: Buffer.concat(chunks).toString('utf8'),
 		});
 		const authorizeAndSend = () => {
@@ -1400,20 +1387,11 @@ export async function postParadisMcpRequestOnVerifiedSocket(options: IParadisMcp
 			},
 			incoming => {
 				if (settled) {
-					const clearLateResponseGuard = installResponseDestroyGuard(incoming);
-					try {
-						incoming.resume();
-					} catch {
-						try {
-							incoming.destroy();
-						} catch {
-							clearLateResponseGuard();
-						}
-					}
+					guards.discardLateResponse(incoming);
 					return;
 				}
 				clearConnectTimer();
-				response = incoming;
+				guards.response = incoming;
 				const contentLength = incoming.headers?.['content-length'];
 				if (typeof contentLength === 'string'
 					&& /^\d+$/.test(contentLength)
@@ -1428,6 +1406,7 @@ export async function postParadisMcpRequestOnVerifiedSocket(options: IParadisMcp
 				incoming.once('close', onResponseObservedClose);
 			},
 		);
+		guards.attach(request);
 		request.once('error', onRequestError);
 		request.once('socket', onSocket);
 		request.once('close', onRequestObservedClose);
