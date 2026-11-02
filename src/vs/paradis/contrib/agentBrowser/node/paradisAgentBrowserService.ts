@@ -102,7 +102,7 @@ import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteR
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisWriteCaptureFile } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
 import { paradisToolArgumentProblem } from './paradisToolArgumentCheck.js';
-import { paradisDevtoolsArgumentsForChild, paradisNormalizeLegacyToolArguments } from './paradisToolArgumentAliases.js';
+import { paradisDevtoolsArgumentsForChild, paradisMentionLegacyArgumentNames, paradisNormalizeLegacyToolArguments, paradisRenamedLegacyArguments } from './paradisToolArgumentAliases.js';
 import { IParadisRemoteFileFolders, PARADIS_REMOTE_FILE_FOLDERS_METHOD } from '../common/paradisRemoteFileBridge.js';
 import { PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS, ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from './paradisRemoteFileTransfer.js';
 import { paradisPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
@@ -5328,6 +5328,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 前の名前・単位（ミリ秒の settle_ms・timeout など）は、突き合わせの前に今の名前（秒）へ読み替える（paradisToolArgumentAliases.ts）
 		const normalizedArguments = paradisNormalizeLegacyToolArguments(name, requestParams?.arguments);
 		let params = normalizedArguments !== requestParams?.arguments ? { ...requestParams, arguments: normalizedArguments } : requestParams;
+		// 範囲のエラーは今の名前で出るので、前の名前で送られたときはエラー文に元の名前を添える
+		const legacyRenames = paradisRenamedLegacyArguments(name, requestParams?.arguments, normalizedArguments);
 		if (!nested) {
 			// 中で使う内蔵の道具の失敗の報告に、エージェントが呼んだ道具の名前を載せる（paradisDevtoolsCallOrigin.ts、q.html Q462 の D2）。
 			// lease は呼び出しごとに作られ、タブのスコープの lease へも引き継ぐ（_scopeToolCall）
@@ -5353,7 +5355,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			// 注記を付けるタブは呼び出しの前に決める（open_browser_tab などで current が動いても、呼んだタブに付ける）
 			const evictionNoteKey = nested ? undefined : this._evictionNoteKey(ingressLease, params?.arguments);
-			const result = await this._callToolRouted(ingressLease, name, params, signal, socket, nested);
+			const result = paradisMentionLegacyArgumentNames(await this._callToolRouted(ingressLease, name, params, signal, socket, nested), legacyRenames);
 			// run_steps の中の手順では見ない（run_steps 全体の後に 1 回だけ）
 			return nested ? result : this._withEvictionNote(evictionNoteKey, await this._withHumanCheck(ingressLease, name, params?.arguments, result, signal, this._isSubagentCall(ingressLease, params)));
 		} finally {
