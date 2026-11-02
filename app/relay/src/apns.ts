@@ -1,5 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { toBase64Url } from '@para/protocol';
+
 /**
  * APNs (Apple Push Notification service) クライアント。token-based認証 (ES256 JWT)。
  *
@@ -24,7 +26,8 @@ export interface ApnsEnv {
 
 /**
  * ES256 JWTのメモリキャッシュ。APNsは20〜60分の有効期間を要求するため、45分間再利用する。
- * DOインスタンスのメモリに保持する（hibernationで消えても再生成されるだけで問題ない）。
+ * isolate のメモリ（deviceDO.ts のモジュール直下）に保持し、同じ isolate の DO で共有する
+ * （DO ごとに持つと、PC の台数分・起きるたびに署名し直す。消えても再生成されるだけで問題ない）。
  */
 export interface ApnsJwtCache {
 	token?: string;
@@ -179,7 +182,7 @@ async function getJwt(env: ApnsEnv, cache: ApnsJwtCache): Promise<string> {
 	const claims = { iss: env.APNS_TEAM_ID!, iat: nowSeconds };
 	const signingInput = `${base64UrlJson(header)}.${base64UrlJson(claims)}`;
 	const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(signingInput));
-	const jwt = `${signingInput}.${base64UrlBytes(new Uint8Array(signature))}`;
+	const jwt = `${signingInput}.${toBase64Url(new Uint8Array(signature))}`;
 	cache.token = jwt;
 	cache.iat = nowSeconds;
 	return jwt;
@@ -200,13 +203,5 @@ function pemToDer(pem: string): ArrayBuffer {
 }
 
 function base64UrlJson(obj: unknown): string {
-	return base64UrlBytes(new TextEncoder().encode(JSON.stringify(obj)));
-}
-
-function base64UrlBytes(bytes: Uint8Array): string {
-	let binary = '';
-	for (const b of bytes) {
-		binary += String.fromCharCode(b);
-	}
-	return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+	return toBase64Url(new TextEncoder().encode(JSON.stringify(obj)));
 }
