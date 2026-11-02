@@ -39,6 +39,7 @@ import { IParadisElevenLabsSampleHost, ParadisElevenLabsVoiceFields } from './pa
 import { getCachedAivisDictionaryList, getCachedAivisModelInfo, setCachedAivisDictionaryList, setCachedAivisModelInfo } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { base64ToBlobUrl } from './paradisNotificationSoundPlayer.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
 const $ = dom.$;
 
@@ -234,11 +235,9 @@ export class ParadisAivisVoiceSection extends Disposable {
 		const toggleLabels = dom.append(toggleRow, $('.sr-main'));
 		dom.append(toggleLabels, $('.sr-label')).textContent = STR_ENABLE_LABEL;
 		dom.append(toggleLabels, $('.sr-desc')).textContent = STR_ENABLE_HINT;
-		const toggle = dom.append(toggleRow, $('input.pns-toggle')) as HTMLInputElement;
-		toggle.type = 'checkbox';
-		toggle.checked = settings.enabled;
-		this._renderDisposables.add(dom.addDisposableListener(toggle, 'change', () => {
-			this.settingsService.setAivisSettings({ enabled: toggle.checked });
+		const toggle = this._renderDisposables.add(new ParadisSwitch(toggleRow, { checked: settings.enabled, ariaLabel: STR_ENABLE_LABEL }));
+		this._renderDisposables.add(toggle.onDidChange(checked => {
+			this.settingsService.setAivisSettings({ enabled: checked });
 		}));
 
 		// --- フィールド群（無効のときは非表示ではなく opacity+pointer-events で無効化） ---

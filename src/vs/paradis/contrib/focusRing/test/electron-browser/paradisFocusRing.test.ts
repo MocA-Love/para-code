@@ -26,6 +26,8 @@ const STYLESHEETS: AppResourcePath[] = [
 	'vs/paradis/contrib/paradisSettings/electron-browser/media/paradisSettingsDialog.css',
 	'vs/paradis/contrib/resourceMonitor/electron-browser/media/paradisResourceMonitor.css',
 	'vs/paradis/contrib/usageDashboard/electron-browser/media/paradisUsageDashboard.css',
+	'vs/paradis/contrib/paradisHub/electron-browser/media/paradisHub.css',
+	'vs/paradis/browser/media/paradisSwitch.css',
 	'vs/paradis/contrib/ccusage/electron-browser/media/paradisCcusage.css',
 ];
 
@@ -161,13 +163,13 @@ suite('Paradis focus ring', () => {
 			'<div class="paradis-preset-editor-dialog" id="presets"><div class="ppe-row"><span class="ppe-grip" tabindex="0" id="ppeGrip">::</span>',
 			'<div class="ppe-row-actions"><button class="ppe-btn" type="button" id="ppeRun">run</button><button class="ppe-btn ppe-btn-danger" type="button" id="ppeDelete">delete</button></div></div>',
 			'<input class="ppe-input" type="text" id="ppeInput"></div>',
-			// 設定 (Para Code)（paradisSettingsDialog.ts のスイッチとボタン）
-			'<div class="paradis-settings-dialog" tabindex="-1" id="settings"><input class="psd-toggle" type="checkbox" id="psdToggle"><button class="psd-btn" type="button" id="psdButton">open</button>',
-			'<select class="psd-select" id="psdSelect"><option>a</option></select></div>',
+			// 統合のモーダルの設定の領域（paradisSettingsDialog.ts のスイッチとボタン）
+			'<div class="paradis-hub" tabindex="-1" id="settings"><div class="paradis-settings-area"><button class="paradis-switch" type="button" role="switch" aria-checked="false" id="psdToggle"></button><button class="psd-btn" type="button" id="psdButton">open</button>',
+			'<select class="psd-select" id="psdSelect"><option>a</option></select></div></div>',
 			// タイトルバーの資源表示（paradisResourceMonitorWidget.ts。本家のタイトルバーの中に置かれる）
 			'<div class="part titlebar"><div class="titlebar-container"><button class="paradis-resource-monitor-trigger" type="button" id="rmTrigger">CPU 97%</button></div></div>',
-			// 使用量・コスト（paradisUsageDashboardDialog.ts と paradisCcusageSection.ts の期間の切り替え）
-			'<div class="paradis-usage-dashboard" tabindex="-1" id="usage"><div class="pud-nav-item" role="button" tabindex="0" id="pudNav">cost</div>',
+			// 統合のモーダルの使用量の領域（器の左のナビと、paradisCcusageSection.ts の期間の切り替え）
+			'<div class="paradis-hub" tabindex="-1" id="usage"><div class="phub-nav-item" role="button" tabindex="0" id="pudNav">cost</div>',
 			'<div class="paradis-ccusage-seg"><button type="button" id="ccSeg">90d</button></div></div>',
 		].join(''));
 

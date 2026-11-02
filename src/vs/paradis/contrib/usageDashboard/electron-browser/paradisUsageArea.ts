@@ -19,7 +19,6 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisSpaceUsageSection } from '../../agentActivity/electron-browser/paradisSpaceUsageSection.js';
@@ -28,7 +27,8 @@ import { ParadisCcusageSection } from '../../ccusage/electron-browser/paradisCcu
 import { ParadisGithubMetricsSection } from '../../githubMetrics/electron-browser/paradisGithubMetricsSection.js';
 import { ParadisRtkSection } from '../../rtk/electron-browser/paradisRtkSection.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
-import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost } from '../../paradisHub/electron-browser/paradisHub.js';
+import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
+import { PARADIS_SETTINGS_TITLEBAR_SECTION_ID } from '../../paradisSettings/electron-browser/paradisSettingsDialog.js';
 import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
 import { IParadisUsageSection } from './paradisUsageSection.js';
 
@@ -58,7 +58,7 @@ const STR_NAV_SETTINGS = localize('paradis.usage.navSettings', "表示と取得�
 // allow-any-unicode-next-line
 const STR_SETTINGS_HEAD = localize('paradis.usage.settingsHead', "表示と取得元");
 // allow-any-unicode-next-line
-const STR_SETTINGS_DESC = localize('paradis.usage.settingsDesc', "使用量の各画面に共通する設定です。");
+const STR_SETTINGS_DESC = localize('paradis.usage.settingsDesc', "使用量の各画面が読む場所と取り方の設定です。タイトルバーとステータスバーに出すかどうかは、設定の「タイトルバーとステータスバー」にあります。");
 // allow-any-unicode-next-line
 const STR_UNSET = localize('paradis.usage.unset', "(未設定)");
 // allow-any-unicode-next-line
@@ -111,11 +111,6 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 		list: true,
 	},
 	{
-		key: 'paradis.ccusage.statusBar.enabled',
-		// allow-any-unicode-next-line
-		label: localize('paradis.usage.ccusageStatusBar', "今日の AI コストをステータスバーに表示"),
-	},
-	{
 		key: 'paradis.ccusage.execTimeoutSeconds',
 		// allow-any-unicode-next-line
 		label: localize('paradis.usage.ccusageExecTimeout', "ccusage の実行タイムアウト"),
@@ -135,22 +130,12 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 		],
 	},
 	{
-		key: 'paradis.githubMetrics.statusBar.enabled',
-		// allow-any-unicode-next-line
-		label: localize('paradis.usage.ghStatusBar', "GitHub API の残量をステータスバーに表示"),
-	},
-	{
 		key: 'paradis.rtk.executablePath',
 		// allow-any-unicode-next-line
 		label: localize('paradis.usage.rtkPath', "rtk のパス"),
 		// allow-any-unicode-next-line
 		description: localize('paradis.usage.rtkPathDesc', "空欄なら自動で探します。SSH 中は接続先の rtk を使うので、リモート側の設定に書いてください。"),
 		placeholder: STR_RTK_PATH_PLACEHOLDER,
-	},
-	{
-		key: 'paradis.rtk.statusBar.enabled',
-		// allow-any-unicode-next-line
-		label: localize('paradis.usage.rtkStatusBar', "今日 rtk が減らしたトークン数をステータスバーに表示"),
 	},
 	{
 		key: 'paradis.githubMetrics.refreshIntervalSeconds',
@@ -169,6 +154,21 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 			{ value: 900, label: localize('paradis.usage.refresh900', "15 分ごと") },
 		],
 	},
+	{
+		key: 'paradis.limitsMonitor.codexHomes',
+		// allow-any-unicode-next-line
+		label: localize('paradis.usage.codexHomes', "追加で見る Codex のフォルダ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.usage.codexHomesDesc', "利用上限の残りを読む Codex のフォルダです。既定では ~/.codex とその派生を自動で探します。別の場所にもあるときだけ指定します。複数あるときはカンマで区切ります。"),
+		list: true,
+	},
+	{
+		key: 'paradis.codexAccounts.shareConversations',
+		// allow-any-unicode-next-line
+		label: localize('paradis.usage.codexShareConversations', "Codex のアカウントを切り替えたとき会話を共有する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.usage.codexShareConversationsDesc', "切り替えた2つのアカウントの間だけで会話の履歴を共有し、どちらのアカウントでも過去の会話を再開できるようにします。仕事用と個人用など、会話の中身を別のアカウントに見せたくないときはオフにします。"),
+	},
 ];
 
 export class ParadisUsageArea extends Disposable implements IParadisHubAreaView {
@@ -186,7 +186,6 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 		private readonly host: IParadisHubHost,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super();
 
@@ -351,13 +350,10 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 		}
 
 		const footer = dom.append(pane, $('.pud-settings-footer'));
-		const allSettingsBtn = dom.append(footer, $('button.pud-btn')) as HTMLButtonElement;
+		const displayBtn = dom.append(footer, $('button.pud-btn')) as HTMLButtonElement;
 		// allow-any-unicode-next-line
-		allSettingsBtn.textContent = localize('paradis.usage.openAllSettings', "Para Code の設定をすべて開く…");
-		store.add(dom.addDisposableListener(allSettingsBtn, 'click', () => {
-			this.host.close();
-			void this.commandService.executeCommand('paradis.openSettingsDialog');
-		}));
+		displayBtn.textContent = localize('paradis.usage.openDisplaySettings', "タイトルバーとステータスバーの表示を開く");
+		store.add(dom.addDisposableListener(displayBtn, 'click', () => this.host.open(ParadisHubAreaId.Settings, PARADIS_SETTINGS_TITLEBAR_SECTION_ID)));
 
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('paradis')) {

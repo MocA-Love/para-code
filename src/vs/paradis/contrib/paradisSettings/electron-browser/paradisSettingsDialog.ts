@@ -6,13 +6,14 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 「設定 (Para Code)」ダイアログ。fork が足した設定 (paradis.*) だけを、機能ごとの
+// 統合のモーダルの「設定」の領域（以前の「設定 (Para Code)」ダイアログ）。fork が足した設定 (paradis.*) だけを、機能ごとの
 // セクションへまとめて出す。標準の設定エディタで `@id:paradis.*` を検索しても同じ項目には
 // 辿り着けるが、そちらは「どの機能の設定か」「どのダイアログから細かく設定するのか」が
 // 並び順からは読み取れない。ここでは機能単位のセクション + 専用ダイアログへの導線を持たせる。
 //
 // 値の読み書きは IConfigurationService へ直接行い、変更は即保存する (フッターの保存ボタンなし)。
-// 通知設定ダイアログ (paradisNotificationSettingsDialog.ts) と同じシェル構造・CSS 命名に揃えてある。
+// 器（上段の切り替え・左のナビ・見出しの行）は統合のモーダル（paradisHub）が持ち、ここは左のナビの項目と本文を描く。
+// 使用量と通知の行は、それぞれ統合のモーダルの「使用量」「通知」の領域へ移し、ここには入口（ほかの領域）だけを置く（Q537 の 35 A）。
 
 import './media/paradisSettingsDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -24,7 +25,6 @@ import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { paradisCanUseWindowTransparency } from '../../../../platform/window/common/paradisWindowTransparency.js';
@@ -32,7 +32,9 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 import { paradisToggleChecked, paradisToggleValue } from '../common/paradisSettingsToggle.js';
-import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
+import { paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
@@ -54,26 +56,34 @@ import {
 
 const $ = dom.$;
 
-// allow-any-unicode-next-line
-const STR_TITLE = localize('paradis.settings.title', "設定 (Para Code)");
+/** 表示のオン/オフをまとめた節（Q537 の 35 A）。 */
+export const PARADIS_SETTINGS_TITLEBAR_SECTION_ID = 'psd-sec-titlebar';
+/** 以前の「使用量」「通知」の節。いまは統合のモーダルの「使用量」「通知」の領域を開く。 */
+export const PARADIS_SETTINGS_LEGACY_USAGE_SECTION_ID = 'psd-sec-usage';
+export const PARADIS_SETTINGS_LEGACY_NOTIFICATIONS_SECTION_ID = 'psd-sec-notif';
+
 // allow-any-unicode-next-line
 const STR_SEARCH_PLACEHOLDER = localize('paradis.settings.searchPlaceholder', "設定を検索");
 // allow-any-unicode-next-line
 const STR_AUTOSAVE = localize('paradis.settings.autosave', "変更は即保存されます");
 // allow-any-unicode-next-line
-const STR_CLOSE_ARIA = localize('paradis.settings.closeAria', "閉じる");
-// allow-any-unicode-next-line
 const STR_SEARCH_EMPTY = localize('paradis.settings.searchEmpty', "一致する設定はありません");
 // allow-any-unicode-next-line
-const STR_NAV_CAPTION_SPACES = localize('paradis.settings.navCaptionSpaces', "スペースとエージェント");
+const STR_NAV_CAPTION_AGENTS = localize('paradis.settings.navCaptionAgents', "エージェント");
 // allow-any-unicode-next-line
-const STR_NAV_CAPTION_TOOLS = localize('paradis.settings.navCaptionTools', "ツール");
+const STR_NAV_CAPTION_SPACES = localize('paradis.settings.navCaptionSpacesTerminal', "スペースとターミナル");
 // allow-any-unicode-next-line
-const STR_NAV_CAPTION_DISPLAY = localize('paradis.settings.navCaptionDisplay', "表示と通知");
+const STR_NAV_CAPTION_BROWSER = localize('paradis.settings.navCaptionBrowserFiles', "ブラウザとファイル");
+// allow-any-unicode-next-line
+const STR_NAV_CAPTION_SCREEN = localize('paradis.settings.navCaptionScreen', "画面");
 // allow-any-unicode-next-line
 const STR_NAV_CAPTION_CONNECTIONS = localize('paradis.settings.navCaptionConnections', "接続");
 // allow-any-unicode-next-line
-const STR_NAV_CAPTION_WINDOW = localize('paradis.settings.navCaptionWindow', "ウィンドウ");
+const STR_NAV_CAPTION_OTHER_AREAS = localize('paradis.settings.navCaptionOtherAreas', "ほかの領域");
+// allow-any-unicode-next-line
+const STR_NAV_USAGE_SETTINGS = localize('paradis.settings.navUsageSettings', "使用量の表示と取得元");
+// allow-any-unicode-next-line
+const STR_NAV_NOTIFICATIONS = localize('paradis.settings.navNotifications', "通知");
 // allow-any-unicode-next-line
 const STR_EXPERIMENTAL = localize('paradis.settings.experimentalBadge', "試験中");
 // allow-any-unicode-next-line
@@ -92,15 +102,8 @@ interface IParadisSettingsSectionSpec {
 
 const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 	{
-		id: 'psd-sec-space',
-		caption: STR_NAV_CAPTION_SPACES,
-		// allow-any-unicode-next-line
-		navLabel: localize('paradis.settings.navSpace', "スペース"),
-		// allow-any-unicode-next-line
-		heading: localize('paradis.settings.headSpace', "スペース"),
-	},
-	{
 		id: 'psd-sec-agent',
+		caption: STR_NAV_CAPTION_AGENTS,
 		// allow-any-unicode-next-line
 		navLabel: localize('paradis.settings.navAgent', "エージェント"),
 		// allow-any-unicode-next-line
@@ -130,8 +133,15 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		heading: localize('paradis.settings.headHistory', "会話の履歴の検索"),
 	},
 	{
+		id: 'psd-sec-space',
+		caption: STR_NAV_CAPTION_SPACES,
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navSpace', "スペース"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headSpace', "スペース"),
+	},
+	{
 		id: 'psd-sec-terminal',
-		caption: STR_NAV_CAPTION_TOOLS,
 		// allow-any-unicode-next-line
 		navLabel: localize('paradis.settings.navTerminal', "ターミナル"),
 		// allow-any-unicode-next-line
@@ -146,6 +156,7 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 	},
 	{
 		id: 'psd-sec-browser',
+		caption: STR_NAV_CAPTION_BROWSER,
 		// allow-any-unicode-next-line
 		navLabel: localize('paradis.settings.navBrowser', "内蔵ブラウザ・拡張機能"),
 		// allow-any-unicode-next-line
@@ -159,19 +170,14 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		heading: localize('paradis.settings.headOffice', "ファイルビューア"),
 	},
 	{
-		id: 'psd-sec-usage',
-		caption: STR_NAV_CAPTION_DISPLAY,
+		id: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		caption: STR_NAV_CAPTION_SCREEN,
 		// allow-any-unicode-next-line
-		navLabel: localize('paradis.settings.navUsage', "使用量"),
+		navLabel: localize('paradis.settings.navTitleBar', "タイトルバーとステータスバー"),
 		// allow-any-unicode-next-line
-		heading: localize('paradis.settings.headUsage', "使用量"),
-	},
-	{
-		id: 'psd-sec-notif',
+		heading: localize('paradis.settings.headTitleBar', "タイトルバーとステータスバー"),
 		// allow-any-unicode-next-line
-		navLabel: localize('paradis.settings.navNotif', "通知"),
-		// allow-any-unicode-next-line
-		heading: localize('paradis.settings.headNotif', "通知"),
+		description: localize('paradis.settings.descTitleBar', "タイトルバーとステータスバーに出す項目のオン/オフをまとめています。"),
 	},
 	{
 		id: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
@@ -181,6 +187,13 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		heading: localize('paradis.settings.headMenuBar', "メニューバー"),
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.descMenuBar', "画面の上端のメニューバーに Para Code のマークを出し、確認が必要なペインや使用量をウィンドウを開かずに見られるようにします。Windows では通知領域に出ます。タイトルバーの使用量を非表示にしていても、メニューバーに使用量を出している間は数分ごとに使用量を取りに行きます。"),
+	},
+	{
+		id: 'psd-sec-window',
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navWindow', "ウィンドウ・動作"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headWindow', "ウィンドウ・動作"),
 	},
 	{
 		id: 'psd-sec-mobile',
@@ -203,14 +216,6 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		navLabel: localize('paradis.settings.navUpstreamAI', "本家の AI 機能"),
 		// allow-any-unicode-next-line
 		heading: localize('paradis.settings.headUpstreamAI', "本家の AI 機能"),
-	},
-	{
-		id: 'psd-sec-window',
-		caption: STR_NAV_CAPTION_WINDOW,
-		// allow-any-unicode-next-line
-		navLabel: localize('paradis.settings.navWindow', "ウィンドウ・動作"),
-		// allow-any-unicode-next-line
-		heading: localize('paradis.settings.headWindow', "ウィンドウ・動作"),
 	},
 ];
 
@@ -279,6 +284,10 @@ interface IParadisSettingRowSpec {
 
 /** 節の中の小見出し（行の group）。 */
 // allow-any-unicode-next-line
+// allow-any-unicode-next-line
+const GROUP_TITLEBAR = localize('paradis.settings.groupTitleBar', "タイトルバー");
+// allow-any-unicode-next-line
+const GROUP_STATUSBAR = localize('paradis.settings.groupStatusBar', "ステータスバー");
 const GROUP_SPACE_LOCATION = localize('paradis.settings.groupSpaceLocation', "作る場所");
 // allow-any-unicode-next-line
 const GROUP_SPACE_LIST = localize('paradis.settings.groupSpaceList', "スペースの一覧");
@@ -316,14 +325,6 @@ const GROUP_BROWSER_EXPERIMENTAL = localize('paradis.settings.groupBrowserExperi
 const GROUP_OFFICE_WORD_EXCEL = localize('paradis.settings.groupOfficeWordExcel', "Word・Excel");
 // allow-any-unicode-next-line
 const GROUP_OFFICE_OTHER = localize('paradis.settings.groupOfficeOther', "CSV・画像");
-// allow-any-unicode-next-line
-const GROUP_USAGE_OVERVIEW = localize('paradis.settings.groupUsageOverview', "まとめて見る");
-// allow-any-unicode-next-line
-const GROUP_USAGE_COST = localize('paradis.settings.groupUsageCost', "AI のコスト");
-// allow-any-unicode-next-line
-const GROUP_USAGE_LIMITS = localize('paradis.settings.groupUsageLimits', "利用上限と負荷");
-// allow-any-unicode-next-line
-const GROUP_USAGE_GITHUB_RTK = localize('paradis.settings.groupUsageGithubRtk', "GitHub と rtk");
 // allow-any-unicode-next-line
 const GROUP_WINDOW_LOOK = localize('paradis.settings.groupWindowLook', "見た目");
 // allow-any-unicode-next-line
@@ -430,7 +431,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		valueType: 'boolean',
 		resourceScoped: true,
 	},
-
 	// --- エージェント ---
 	{
 		sectionId: 'psd-sec-agent',
@@ -507,16 +507,16 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		keywords: 'codex capacity overloaded continue retry auto',
 	},
 	{
-		sectionId: 'psd-sec-agent',
-		group: GROUP_AGENT_VIEW,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
 		key: 'paradis.agentLiveWindow.titleBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.agentLiveTitleBar', "タイトルバーに「エージェント一覧」ボタンを表示"),
 		keywords: 'agent live window titlebar list',
 	},
 	{
-		sectionId: 'psd-sec-agent',
-		group: GROUP_AGENT_VIEW,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
 		key: 'paradis.taskBoard.titleBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.taskBoardTitleBar', "タイトルバーに「タスクボード」ボタンを表示"),
@@ -602,7 +602,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			{ value: 60, label: localize('paradis.settings.claudeModApprovalWait60', "60分") },
 		],
 	},
-
 	// --- エージェントに許すこと ---
 	{
 		sectionId: 'psd-sec-agentide',
@@ -666,7 +665,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.taskBoardBridgeDesc', "（開発中の機能）タスクボードが、この PC の Para Code でエージェントを起動し、その様子を見て、質問や許可に答えられるようになります。オンの間は、同じ PC で動くエージェントもその鍵を読めば答えを送れるので、タスクボードを使うときだけオンにしてください。"),
 		keywords: 'task board taskboard bridge agent launch kanban',
 	},
-
 	// --- Computer Use ---
 	{
 		sectionId: 'psd-sec-computeruse',
@@ -727,7 +725,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			: localize('paradis.settings.computerUseBlockedDesc', "パスワードマネージャー、2 段階認証のアプリ、キーチェーンアクセス、Para Code 自身（変更できません）。"),
 		keywords: 'computer use blocked password manager keychain authenticator two-factor 2fa otp',
 	},
-
 	// --- 会話の履歴の検索 ---
 	{
 		sectionId: 'psd-sec-history',
@@ -777,7 +774,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			commandId: 'paradis.sessionIndex.delete',
 		},
 	},
-
 	// --- ターミナル ---
 	{
 		sectionId: 'psd-sec-terminal',
@@ -917,7 +913,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.releaseHiddenGpuDesc', "裏のタブや待避中のスペースのターミナルは、数秒たつと描画用の GPU のメモリを返します。見えるようになったときに描き直すので、文字が出るまで一瞬だけ空白になることがあります。"),
 		keywords: 'terminal gpu webgl memory hidden background release renderer',
 	},
-
 	// --- プリセット ---
 	{
 		sectionId: 'psd-sec-preset',
@@ -961,7 +956,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			primary: true,
 		},
 	},
-
 	// --- 内蔵ブラウザ・拡張機能 ---
 	{
 		sectionId: 'psd-sec-browser',
@@ -972,8 +966,8 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		keywords: 'browser bookmark bar visible',
 	},
 	{
-		sectionId: 'psd-sec-browser',
-		group: GROUP_BROWSER_VIEW,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
 		key: 'paradis.browserLiveWindow.titleBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.browserLiveTitleBar', "タイトルバーに「ブラウザ一覧」ボタンを表示"),
@@ -1182,7 +1176,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.snapshotDiffDesc', "エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。"),
 		keywords: 'agent browser experimental snapshot diff changes',
 	},
-
 	// --- ファイルビューア ---
 	{
 		sectionId: 'psd-sec-office',
@@ -1254,115 +1247,34 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.imageViewerEnabledDesc', "PNG・JPEG・GIF・WebP・SVG などの画像を Para Code の画像ビューアで開き、オフのときは従来の画像プレビューで開きます。"),
 		keywords: 'image viewer png jpeg gif webp svg preview',
 	},
-
 	// --- 使用量 ---
 	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_OVERVIEW,
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.usageDashboard', "使用量ダッシュボード"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.usageDashboardDesc', "AI コスト・スペース別の使用量・GitHub API の残量・rtk の節約量・作業実績をまとめて見ます。"),
-		keywords: 'usage dashboard ccusage github rtk unified',
-		action: {
-			// allow-any-unicode-next-line
-			label: localize('paradis.settings.usageDashboardAction', "開く…"),
-			commandId: 'paradis.usage.showDashboard',
-			primary: true,
-		},
-	},
-	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_COST,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_STATUSBAR,
 		key: 'paradis.ccusage.statusBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.ccusageStatusBar', "今日の AI コストをステータスバーに表示"),
 		keywords: 'ccusage status bar today cost',
 	},
 	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_COST,
-		key: 'paradis.ccusage.executablePath',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.ccusagePath', "ccusage のパス"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.ccusagePathDesc', "空欄なら自動で探します。見つからないときだけ指定してください。"),
-		placeholder: '/usr/local/bin/ccusage',
-		keywords: 'ccusage executable path cost',
-	},
-	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_COST,
-		key: 'paradis.ccusage.archiveDirs',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.ccusageArchiveDirs', "古い会話の記録の置き場"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.ccusageArchiveDirsDesc', "外付けやネットワークのディスクへ移した記録も AI コストに含めます。中の claude と codex を読みます。複数あるときはカンマで区切ります。つながっていない場所や、2 秒以内に確かめられない場所は飛ばします。応答しない場所が 2 つあると、ほかの場所も読めないことがあります。ccusage 20.0.14 以上が必要です。"),
-		placeholder: '/Volumes/External/agent-archive',
-		keywords: 'ccusage archive external network disk nas ssd history claude codex',
-		valueType: 'stringList',
-	},
-	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_COST,
-		key: 'paradis.ccusage.execTimeoutSeconds',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.ccusageExecTimeout', "ccusage の実行タイムアウト"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.ccusageExecTimeoutDesc', "ログの量が多いと集計に時間がかかります。取得できない場合は延ばしてください。"),
-		keywords: 'ccusage timeout seconds exec collecting slow',
-		choiceLabels: {
-			// allow-any-unicode-next-line
-			'60': localize('paradis.settings.ccusageExecTimeout60', "60秒"),
-			// allow-any-unicode-next-line
-			'120': localize('paradis.settings.ccusageExecTimeout120', "2分"),
-			// allow-any-unicode-next-line
-			'180': localize('paradis.settings.ccusageExecTimeout180', "3分（既定）"),
-			// allow-any-unicode-next-line
-			'300': localize('paradis.settings.ccusageExecTimeout300', "5分"),
-			// allow-any-unicode-next-line
-			'600': localize('paradis.settings.ccusageExecTimeout600', "10分"),
-		},
-	},
-	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_LIMITS,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
 		key: 'paradis.limitsMonitor.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.limitsMonitor', "利用上限の残りをタイトルバーに表示"),
 		keywords: 'limits monitor claude codex usage titlebar',
 	},
 	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_LIMITS,
-		key: 'paradis.limitsMonitor.codexHomes',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.codexHomes', "追加で見る Codex のフォルダ"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.codexHomesDesc', "既定では ~/.codex とその派生を自動で探します。別の場所にもあるときだけ指定します。"),
-		keywords: 'codex home directory limits monitor scan',
-	},
-	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_LIMITS,
-		key: 'paradis.codexAccounts.shareConversations',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.codexShareConversations', "Codex のアカウントを切り替えたとき会話を共有する"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.codexShareConversationsDesc', "切り替えた2つのアカウントの間だけで会話の履歴を共有し、どちらのアカウントでも過去の会話を再開できるようにします。仕事用と個人用など、会話の中身を別のアカウントに見せたくないときはオフにします。"),
-		keywords: 'codex account switch share conversations sessions link',
-	},
-	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_LIMITS,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
 		key: 'paradis.resourceMonitor.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.resourceMonitor', "CPU・メモリをタイトルバーに表示"),
 		keywords: 'resource monitor cpu memory titlebar',
 	},
 	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_LIMITS,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.resourceMonitorItems', "タイトルバーに出す項目"),
 		// allow-any-unicode-next-line
@@ -1400,68 +1312,25 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		],
 	},
 	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_GITHUB_RTK,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_STATUSBAR,
 		key: 'paradis.githubMetrics.statusBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.ghStatusBar', "GitHub API の残量をステータスバーに表示"),
 		keywords: 'github metrics rate limit status bar remaining',
 	},
 	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_GITHUB_RTK,
-		key: 'paradis.githubMetrics.refreshIntervalSeconds',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.ghRefreshInterval', "GitHub API の自動更新の間隔"),
-		keywords: 'github metrics refresh interval dashboard',
-	},
-	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_GITHUB_RTK,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_STATUSBAR,
 		key: 'paradis.rtk.statusBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.rtkStatusBar', "今日 rtk が減らしたトークン数をステータスバーに表示"),
 		keywords: 'rtk status bar saved tokens today',
 	},
-	{
-		sectionId: 'psd-sec-usage',
-		group: GROUP_USAGE_GITHUB_RTK,
-		key: 'paradis.rtk.executablePath',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.rtkPath', "rtk のパス"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.rtkPathDesc', "空欄なら自動で探します。SSH 中は接続先の rtk を使うので、リモート側の設定に書いてください。"),
-		// allow-any-unicode-next-line
-		placeholder: localize('paradis.settings.rtkPathPlaceholder', "(自動で探す)"),
-		keywords: 'rtk executable path token killer',
-	},
-
 	// --- 通知 ---
 	{
-		sectionId: 'psd-sec-notif',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.notifications', "通知と音声報告"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.notificationsDesc', "着信音、デスクトップ通知、おやすみモード、音声報告をまとめて設定します。"),
-		keywords: 'notification sound desktop aivis voice do not disturb',
-		action: {
-			// allow-any-unicode-next-line
-			label: localize('paradis.settings.notificationsAction', "通知設定を開く…"),
-			commandId: 'paradis.notifications.openSettings',
-			primary: true,
-		},
-	},
-	{
-		sectionId: 'psd-sec-notif',
-		key: 'paradis.notifications.osIncludeMessage',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.osIncludeMessage', "デスクトップ通知にエージェントの最後の発言を載せる"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.osIncludeMessageDesc', "オンの間は、エージェントの発言の冒頭（許可待ちではツール名とコマンドの要約）が OS の通知に出ます。トークンなど秘密らしい値は伏せますが、すべては見分けられません。ロック画面や画面共有中に見えるのを避けたい場合はオフにします。"),
-		keywords: 'notification message preview body lock screen privacy',
-	},
-	{
-		sectionId: 'psd-sec-notif',
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
 		key: 'paradis.notifications.inbox.titleBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.inboxTitleBar', "タイトルバーに通知の受信箱（ベル）を表示"),
@@ -1469,25 +1338,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.inboxTitleBarDesc', "全スペースの完了・許可待ち・質問をまとめて見られます。数字はまだ確認していないペインの数です。"),
 		keywords: 'notification inbox bell title bar unread',
 	},
-	{
-		sectionId: 'psd-sec-notif',
-		key: 'paradis.notifications.dockBadge.enabled',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.dockBadge', "Dock のアイコンに確認が必要なペインの数を表示"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.dockBadgeDesc', "Windows ではウィンドウごとに、そのウィンドウのペインの数をタスクバーに表示します。おやすみモードの間は表示しません。"),
-		keywords: 'dock badge taskbar count unread',
-	},
-	{
-		sectionId: 'psd-sec-notif',
-		key: 'paradis.voice.playRemoteLocally',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.remoteVoiceLocal', "SSH の接続先の読み上げをこの PC で鳴らす"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.remoteVoiceLocalDesc', "接続先とこの PC の両方に aivis-mcp 2.4.0 以上が必要です。この PC の読み上げと同じ順番待ちに入り、ミュートも効きます。"),
-		keywords: 'aivis voice ssh remote speech local playback',
-	},
-
 	// --- メニューバー ---
 	{
 		sectionId: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
@@ -1572,7 +1422,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.menuBarPlainDesc', "行の 2 行目・小さなバー・数字の色を使いません。メニューの表示が崩れるときにオンにします。"),
 		keywords: 'menu bar plain simple fallback sublabel icon color',
 	},
-
 	// --- モバイル連携 ---
 	{
 		sectionId: 'psd-sec-mobile',
@@ -1601,7 +1450,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		placeholder: localize('paradis.settings.mobileRelayUrlPlaceholder', "(既定のリレー)"),
 		keywords: 'mobile relay url server',
 	},
-
 	// --- リモート (SSH) ---
 	{
 		sectionId: 'psd-sec-remote',
@@ -1670,7 +1518,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			{ value: 3600, label: localize('paradis.settings.fileTransferDirectIdle3600', "1時間") },
 		],
 	},
-
 	// --- 本家の AI 機能 ---
 	{
 		sectionId: 'psd-sec-upstreamai',
@@ -1684,7 +1531,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.upstreamAIEnabledDesc', "オフにすると、チャット欄・Copilot Chat・インラインチャット・エージェントの実行部品（Agent Host）・Agents ウィンドウ・コミットメッセージの生成が止まります。ターミナルで動かす Claude Code や Codex には影響しません。オンでも、SSH の窓の Copilot のエージェントは「SSH の窓で本家の Copilot のエージェントを動かす」もオンのときだけ動きます。"),
 		keywords: 'upstream ai copilot chat agent host sessions agents window commit message inline chat disableAIFeatures',
 	},
-
 	// --- ウィンドウ・動作 ---
 	{
 		sectionId: 'psd-sec-window',
@@ -1807,8 +1653,8 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		keywords: 'release notes changelog update',
 	},
 	{
-		sectionId: 'psd-sec-window',
-		group: GROUP_WINDOW_UPDATES,
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
 		key: 'paradis.serviceStatus.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.serviceStatus', "サービスの稼働状況を表示する"),
@@ -1821,12 +1667,31 @@ const ROW_KEYS_OUTSIDE_PARADIS: readonly string[] = ROWS
 	.map(row => row.key)
 	.filter((key): key is string => key !== undefined && !key.startsWith('paradis.'));
 
-export class ParadisSettingsDialog extends Disposable {
+/** 行のボタンのコマンドのうち、統合のモーダルの中の領域を開くもの（器を閉じずに移る）。 */
+const HUB_TARGETS = new Map<string, { readonly area: ParadisHubAreaId; readonly section?: string }>([
+	['paradis.usage.showDashboard', { area: ParadisHubAreaId.Usage }],
+	['paradis.notifications.openSettings', { area: ParadisHubAreaId.Notifications }],
+]);
 
-	private readonly _backdrop: HTMLElement;
+/**
+ * 節の行を、小見出しごとにまとめて並べる（小見出しの順は最初に出てきた順、同じ小見出しの中は元の順）。
+ * ほかの節から集めた行（タイトルバーとステータスバー）が、小見出しの間で入り混じらないようにする。
+ */
+export function paradisRowsGroupedInOrder<T extends { readonly group?: string }>(rows: readonly T[]): T[] {
+	const order: (string | undefined)[] = [];
+	for (const row of rows) {
+		if (!order.includes(row.group)) {
+			order.push(row.group);
+		}
+	}
+	return order.flatMap(group => rows.filter(row => row.group === group));
+}
+
+export class ParadisSettingsArea extends Disposable implements IParadisHubAreaView {
+
 	private readonly _searchInput: HTMLInputElement;
 	private readonly _contentEl: HTMLElement;
-	private readonly _navItems = new Map<string, { item: HTMLElement; chip: HTMLElement }>();
+	private readonly _navItems = new Map<string, { item: HTMLElement; chip: HTMLElement; setActive(active: boolean): void }>();
 	private readonly _sections = new Map<string, HTMLElement>();
 	/** 節の ID → その節が属するナビの見出し。検索で中の節が全部消えたら見出しも隠す。 */
 	private readonly _navCaptions = new Map<string, HTMLElement>();
@@ -1834,11 +1699,12 @@ export class ParadisSettingsDialog extends Disposable {
 	private readonly _searchEmptyEl: HTMLElement;
 	/** 設定キーごとのコントロール更新関数 (外部変更を画面へ反映するため)。 */
 	private readonly _refreshers: (() => void)[] = [];
+	/** 最後に開いた節。領域を開き直したときはここへ戻る。 */
+	private _activeSectionId = SECTIONS[0].id;
 
-	/** @param initialSectionId 開いたときに出す節（メニューバーのアイコンから開くときなど）。 */
 	constructor(
-		initialSectionId: string | undefined,
-		@ILayoutService layoutService: ILayoutService,
+		containers: IParadisHubAreaContainers,
+		private readonly host: IParadisHubHost,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -1848,44 +1714,24 @@ export class ParadisSettingsDialog extends Disposable {
 		super();
 		this._register(paradisMarkSettingsDialogOpen());
 
-		this._backdrop = $('.paradis-settings-dialog-backdrop');
-		const modal = $('.paradis-settings-dialog');
-		this._backdrop.appendChild(modal);
-
-		// ---------- header ----------
-		const header = dom.append(modal, $('.psd-header'));
-		dom.append(header, $('h2')).textContent = STR_TITLE;
-
-		const searchBox = dom.append(header, $('.psd-search'));
+		// ---------- 見出しの行（検索欄と「変更は即保存されます」） ----------
+		const searchBox = dom.append(containers.header, $('.psd-search'));
 		searchBox.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		this._searchInput = dom.append(searchBox, $('input')) as HTMLInputElement;
 		this._searchInput.type = 'text';
 		this._searchInput.placeholder = STR_SEARCH_PLACEHOLDER;
+		this._searchInput.setAttribute('aria-label', STR_SEARCH_PLACEHOLDER);
 		this._register(dom.addDisposableListener(this._searchInput, 'input', () => this._applySearchFilter()));
+		dom.append(containers.header, $('.psd-autosave')).textContent = STR_AUTOSAVE;
 
-		dom.append(header, $('.psd-autosave')).textContent = STR_AUTOSAVE;
-
-		const closeBtn = dom.append(header, $('.psd-close'));
-		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
-		closeBtn.setAttribute('role', 'button');
-		closeBtn.setAttribute('aria-label', STR_CLOSE_ARIA);
-		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.dispose()));
-
-		// ---------- body（左ナビ + 右コンテンツ） ----------
-		const body = dom.append(modal, $('.psd-body'));
-		const nav = dom.append(body, $('nav.psd-nav'));
-		this._contentEl = dom.append(body, $('.psd-content'));
-		this._buildSections(nav);
+		// ---------- 左ナビ + 右コンテンツ ----------
+		containers.content.classList.add('paradis-settings-area');
+		this._contentEl = dom.append(containers.content, $('.psd-content'));
+		this._buildSections(containers.nav);
+		this._buildOtherAreaLinks(containers.nav);
 		this._searchEmptyEl = dom.append(this._contentEl, $('.psd-search-empty'));
 		this._searchEmptyEl.textContent = STR_SEARCH_EMPTY;
 		this._searchEmptyEl.classList.add('hidden');
-
-		modal.tabIndex = -1;
-		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
-			if (e.target === this._backdrop) {
-				this.dispose();
-			}
-		}));
 
 		// 別ウィンドウ・設定エディタ側からの変更にも追従させる。paradis.* の外の設定
 		// (git.* や accessibility.* など) も載せているので、それらのキーも見る
@@ -1908,34 +1754,59 @@ export class ParadisSettingsDialog extends Disposable {
 		}));
 		// resource スコープの設定は、フォルダが増減すると実際に効いている値も変わる
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => refreshAll()));
-
-		layoutService.activeContainer.appendChild(this._backdrop);
-		// 開く前のフォーカスを覚えて閉じたら戻す・Esc・描き直しの後のフォーカス・後から開いたモーダルを前に出す
-		this._register(new ParadisModalFocus({
-			backdrop: this._backdrop,
-			modal,
-			// 検索欄に文字があれば Esc は「検索語のクリア」、空なら閉じる
-			onEscape: () => {
-				if (this._searchInput.value.length > 0 && this._searchInput.ownerDocument.activeElement === this._searchInput) {
-					this._searchInput.value = '';
-					this._applySearchFilter();
-				} else {
-					this.dispose();
-				}
-			},
-			close: () => this.dispose(),
-		}));
-		const initialSection = SECTIONS.find(spec => spec.id === initialSectionId);
-		this._activateNavItem(initialSection?.id ?? SECTIONS[0].id);
-		if (initialSection) {
-			this._sections.get(initialSection.id)?.scrollIntoView({ block: 'start' });
-		}
-		modal.focus();
+		this._activateNavItem(this._activeSectionId);
 	}
 
-	override dispose(): void {
-		this._backdrop.remove();
-		super.dispose();
+	reveal(sectionId: string | undefined): void {
+		const section = SECTIONS.find(spec => spec.id === sectionId);
+		if (!section) {
+			this._activateNavItem(this._activeSectionId);
+			return;
+		}
+		this._activateNavItem(section.id);
+		this._sections.get(section.id)?.scrollIntoView({ block: 'start' });
+	}
+
+	setVisible(_visible: boolean): void {
+		// 取りに行くものは無い（値は開いている間ずっと設定に追従している）
+	}
+
+	layout(_width: number): void {
+		// 幅は CSS に任せる
+	}
+
+	/** 検索欄に文字があれば Esc は「検索語のクリア」、空なら器を閉じる。 */
+	handleEscape(): boolean {
+		if (this._searchInput.value.length > 0 && this._searchInput.ownerDocument.activeElement === this._searchInput) {
+			this._searchInput.value = '';
+			this._applySearchFilter();
+			return true;
+		}
+		return false;
+	}
+
+	/** 行のボタンが開く先。統合のモーダルの中にあるものは、閉じずにその領域へ移る。 */
+	private _runAction(commandId: string): void {
+		const target = HUB_TARGETS.get(commandId);
+		if (target) {
+			this.host.open(target.area, target.section);
+			return;
+		}
+		// 遷移先も同じ層のモーダルなので、重ならないようこちらを閉じてから開く
+		this.host.close();
+		void this.commandService.executeCommand(commandId);
+	}
+
+	/** ナビの「ほかの領域」。使用量と通知の行は、統合のモーダルのそれぞれの領域にある。 */
+	private _buildOtherAreaLinks(nav: HTMLElement): void {
+		paradisHubNavCaption(nav, STR_NAV_CAPTION_OTHER_AREAS);
+		for (const [label, area, section] of [
+			[STR_NAV_USAGE_SETTINGS, ParadisHubAreaId.Usage, 'settings'],
+			[STR_NAV_NOTIFICATIONS, ParadisHubAreaId.Notifications, undefined],
+		] as const) {
+			const link = paradisHubNavItem(nav, label, { external: true });
+			this._register(dom.addDisposableListener(link.element, 'click', () => this.host.open(area, section)));
+		}
 	}
 
 	// ==========================================================================================
@@ -1944,18 +1815,14 @@ export class ParadisSettingsDialog extends Disposable {
 		let captionEl: HTMLElement | undefined;
 		for (const spec of SECTIONS) {
 			if (spec.caption) {
-				captionEl = dom.append(nav, $('.psd-nav-caption'));
-				captionEl.textContent = spec.caption;
+				captionEl = paradisHubNavCaption(nav, spec.caption);
 			}
 			if (captionEl) {
 				this._navCaptions.set(spec.id, captionEl);
 			}
-			const item = dom.append(nav, $('.psd-nav-item'));
-			item.setAttribute('role', 'button');
-			dom.append(item, $('span.psd-nav-label')).textContent = spec.navLabel;
-			const chip = dom.append(item, $('span.psd-nav-chip'));
-			this._navItems.set(spec.id, { item, chip });
-			this._register(dom.addDisposableListener(item, 'click', () => this._navigateTo(spec.id)));
+			const navItem = paradisHubNavItem(nav, spec.navLabel);
+			this._navItems.set(spec.id, { item: navItem.element, chip: navItem.chip, setActive: navItem.setActive });
+			this._register(dom.addDisposableListener(navItem.element, 'click', () => this._navigateTo(spec.id)));
 
 			const section = dom.append(this._contentEl, $('section.psd-section'));
 			section.id = spec.id;
@@ -1967,7 +1834,7 @@ export class ParadisSettingsDialog extends Disposable {
 
 			let group: string | undefined;
 			let groupHead: HTMLElement | undefined;
-			for (const row of ROWS.filter(candidate => candidate.sectionId === spec.id)) {
+			for (const row of paradisRowsGroupedInOrder(ROWS.filter(candidate => candidate.sectionId === spec.id))) {
 				if (row.group !== group) {
 					group = row.group;
 					groupHead = undefined;
@@ -2008,11 +1875,7 @@ export class ParadisSettingsDialog extends Disposable {
 			const button = dom.append(row, $(`button.psd-btn${spec.action.primary ? '.psd-btn-primary' : ''}`)) as HTMLButtonElement;
 			button.textContent = spec.action.label;
 			const commandId = spec.action.commandId;
-			this._register(dom.addDisposableListener(button, 'click', () => {
-				// 遷移先も同じ層のダイアログなので、重ならないようこちらを閉じてから開く
-				this.dispose();
-				void this.commandService.executeCommand(commandId);
-			}));
+			this._register(dom.addDisposableListener(button, 'click', () => this._runAction(commandId)));
 		} else if (spec.key) {
 			this._buildControl(row, spec.key, spec);
 			if (spec.offWarning) {
@@ -2106,18 +1969,17 @@ export class ParadisSettingsDialog extends Disposable {
 		}
 
 		if (spec.valueType === 'boolean' || typeof value === 'boolean') {
-			const toggle = dom.append(row, $('input.psd-toggle')) as HTMLInputElement;
-			toggle.type = 'checkbox';
+			const toggle = this._register(new ParadisSwitch(row, { checked: false, ariaLabel: spec.label }));
 			const sync = () => {
 				toggle.checked = spec.resourceScoped
 					// Git 拡張機能と同じく、どれか 1 つのフォルダでオンなら表示される (paraBranchDiffView.ts)
 					? this._effectiveResourceValues(key).some(effective => effective === true)
 					: paradisToggleChecked(this.configurationService.getValue(key), spec.inverted === true);
-				toggle.disabled = !this._isRegistered(key);
+				toggle.enabled = this._isRegistered(key);
 			};
 			sync();
 			this._refreshers.push(sync);
-			this._register(dom.addDisposableListener(toggle, 'change', () => void this._write(key, paradisToggleValue(toggle.checked, spec.inverted === true))));
+			this._register(toggle.onDidChange(checked => void this._write(key, paradisToggleValue(checked, spec.inverted === true))));
 			return;
 		}
 
@@ -2163,7 +2025,7 @@ export class ParadisSettingsDialog extends Disposable {
 		const button = dom.append(row, $('button.psd-btn')) as HTMLButtonElement;
 		button.textContent = STR_OPEN_SETTINGS_EDITOR;
 		this._register(dom.addDisposableListener(button, 'click', () => {
-			this.dispose();
+			this.host.close();
 			void this.commandService.executeCommand('workbench.action.openSettings', `@id:${key}`);
 		}));
 	}
@@ -2269,10 +2131,10 @@ export class ParadisSettingsDialog extends Disposable {
 	}
 
 	private _activateNavItem(sectionId: string): void {
-		for (const entry of this._navItems.values()) {
-			entry.item.classList.remove('active');
+		this._activeSectionId = sectionId;
+		for (const [id, entry] of this._navItems) {
+			entry.setActive(id === sectionId);
 		}
-		this._navItems.get(sectionId)?.item.classList.add('active');
 	}
 
 	/** 検索語で行を絞り、ヒットが 0 のセクションは丸ごと隠す。 */

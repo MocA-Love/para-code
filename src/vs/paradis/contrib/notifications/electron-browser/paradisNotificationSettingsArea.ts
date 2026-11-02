@@ -6,8 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 通知設定ダイアログのシェル（自前backdrop+モーダル。paradisBindingDialog.ts と同じ方式）。
-// Settings Editor 風のレイアウト: ヘッダー（検索ボックス + 自動保存フラッシュ）、左ナビ、
+// 統合のモーダルの「通知」の領域（以前の通知設定ダイアログ）。器（上段の切り替え・左のナビ・見出しの行）は
+// paradisHub が持ち、ここは見出しの行の検索ボックスと自動保存フラッシュ、左ナビの項目、
 // 右コンテンツ（おやすみモード / デスクトップ通知 / 通知サウンド / 音声報告 /
 // ユーザー辞書 / 使用量）。検索は全セクションの setting-row / 着信音カード / 辞書カード /
 // 使用量カード / プリセットタイルを横断フィルタする（FILTERABLE_SELECTOR）。
@@ -16,9 +16,7 @@
 
 import './media/paradisNotificationSettings.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -26,7 +24,6 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { CUSTOM_RINGTONE_ID, DEFAULT_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisRingtoneData, PARADIS_AIVIS_DEFAULT_FORMAT, PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION, PARADIS_NOTIFICATIONS_CHANNEL, PARADIS_RINGTONES, getRingtoneById } from '../common/paradisNotifications.js';
@@ -48,13 +45,12 @@ import { ParadisNotificationSoundPlayer } from './paradisNotificationSoundPlayer
 import { openParadisYouTubeImportDialog } from './paradisYouTubeImportDialog.js';
 import { openParadisMyinstantsImportDialog } from './paradisMyinstantsImportDialog.js';
 import { PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING } from '../../notificationInbox/common/paradisNotificationInbox.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost } from '../../paradisHub/electron-browser/paradisHub.js';
+import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
 
 const $ = dom.$;
 
-// allow-any-unicode-next-line
-const STR_TITLE = localize('paradis.notif.title', "通知設定");
-// allow-any-unicode-next-line
-const STR_CLOSE_ARIA = localize('paradis.notif.closeAria', "閉じる");
 // allow-any-unicode-next-line
 const STR_SEARCH_PLACEHOLDER = localize('paradis.notif.searchPlaceholder', "設定を検索");
 // allow-any-unicode-next-line
@@ -63,8 +59,6 @@ const STR_SAVED = localize('paradis.notif.saved', "✓ 自動保存");
 // --- フッター ---
 // allow-any-unicode-next-line
 const STR_RESET_DEFAULTS = localize('paradis.notif.resetDefaults', "すべて既定へ戻す");
-// allow-any-unicode-next-line
-const STR_FOOTER_CLOSE = localize('paradis.notif.footerClose', "閉じる");
 
 // --- 左ナビ ---
 // allow-any-unicode-next-line
@@ -157,10 +151,52 @@ const DND_SEAL_SECTION_IDS = ['pns-sec-desktop', 'pns-sec-sound', 'pns-sec-aivis
 /** 検索フィルタで行単位の表示切替を行う要素。ヒット0のセクションは丸ごと非表示になる。 */
 const FILTERABLE_SELECTOR = '.setting-row, .pns-ringtone-card, .pns-dict-card, .pns-stat-card, .pns-preset-tile';
 
+/** 「設定 (Para Code)」から移した行（Q537 の 35 A）。settings.json の設定をそのまま読み書きする。 */
+interface IParadisMovedSettingRow {
+	readonly key: string;
+	readonly label: string;
+	readonly description: string;
+}
+
+// allow-any-unicode-next-line
+const STR_MOVED_BADGE = localize('paradis.notif.movedBadge', "設定 (Para Code) から移動");
+// allow-any-unicode-next-line
+const STR_INBOX_GROUP = localize('paradis.notif.inboxGroup', "受信箱とバッジ");
+
+const INBOX_ROWS: readonly IParadisMovedSettingRow[] = [
+	{
+		key: 'paradis.notifications.inbox.titleBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.notif.inboxTitleBar', "タイトルバーに通知の受信箱（ベル）を表示"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.notif.inboxTitleBarDesc', "全スペースの完了・許可待ち・質問をまとめて見られます。数字はまだ確認していないペインの数です。"),
+	},
+	{
+		key: 'paradis.notifications.dockBadge.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.notif.dockBadge', "Dock のアイコンに確認が必要なペインの数を表示"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.notif.dockBadgeDesc', "Windows ではウィンドウごとに、そのウィンドウのペインの数をタスクバーに表示します。おやすみモードの間は表示しません。"),
+	},
+];
+
+const VOICE_ROWS: readonly IParadisMovedSettingRow[] = [
+	{
+		key: 'paradis.voice.playRemoteLocally',
+		// allow-any-unicode-next-line
+		label: localize('paradis.notif.remoteVoiceLocal', "SSH の接続先の読み上げをこの PC で鳴らす"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.notif.remoteVoiceLocalDesc', "接続先とこの PC の両方に aivis-mcp 2.4.0 以上が必要です。この PC の読み上げと同じ順番待ちに入り、ミュートも効きます。"),
+	},
+];
+
+const MOVED_ROW_KEYS = [...INBOX_ROWS, ...VOICE_ROWS].map(row => row.key);
+
 interface INavItemEntry {
 	readonly item: HTMLElement;
 	readonly chip: HTMLElement;
 	readonly status?: HTMLElement;
+	readonly navItem: IParadisHubNavItem;
 }
 
 const VOLUME_LEVELS: readonly { readonly value: number; readonly label: string }[] = [
@@ -179,9 +215,8 @@ const VOLUME_LEVELS: readonly { readonly value: number; readonly label: string }
 /**
  * 通知設定ダイアログ本体。1回のopenごとに生成し、閉じるとdisposeされる。
  */
-export class ParadisNotificationSettingsDialog extends Disposable {
+export class ParadisNotificationSettingsArea extends Disposable implements IParadisHubAreaView {
 
-	private readonly _backdrop: HTMLElement;
 	private readonly _contentEl: HTMLElement;
 	private readonly _searchInput: HTMLInputElement;
 	private readonly _savedFlashEl: HTMLElement;
@@ -194,6 +229,8 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	private _soundSectionEl!: HTMLElement;
 	private _aivisSectionEl!: HTMLElement;
 	private _aivisSection: ParadisAivisVoiceSection | undefined;
+	/** 音声報告の節の末尾の、設定から移した行の入れ物。 */
+	private _voiceMovedRowsEl!: HTMLElement;
 	private _searchEmptyEl!: HTMLElement;
 	/**
 	 * 封印オーバーレイとナビのバッジを、おやすみモードの解除予定時刻に合わせて更新するコントローラ。
@@ -221,8 +258,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	private readonly _playingProgressTimer = this._register(new MutableDisposable());
 
 	constructor(
+		containers: IParadisHubAreaContainers,
+		_host: IParadisHubHost,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@ILayoutService layoutService: ILayoutService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
@@ -239,68 +277,26 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 		this._player = this._register(this.instantiationService.createInstance(ParadisNotificationSoundPlayer));
 
-		this._backdrop = $('.paradis-notif-settings-backdrop');
-		const modal = $('.paradis-notif-settings');
-		this._backdrop.appendChild(modal);
-
-		// ---------- header ----------
-		const header = dom.append(modal, $('.pns-header'));
-		dom.append(header, $('h2')).textContent = STR_TITLE;
-
-		const searchBox = dom.append(header, $('.pns-search'));
+		// ---------- 見出しの行（検索ボックス + 自動保存フラッシュ） ----------
+		const searchBox = dom.append(containers.header, $('.pns-search'));
 		searchBox.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		this._searchInput = dom.append(searchBox, $('input')) as HTMLInputElement;
 		this._searchInput.type = 'text';
 		this._searchInput.placeholder = STR_SEARCH_PLACEHOLDER;
+		this._searchInput.setAttribute('aria-label', STR_SEARCH_PLACEHOLDER);
 		this._register(dom.addDisposableListener(this._searchInput, 'input', () => this._applySearchFilter()));
-		// 検索欄内の Escape は「検索語クリア」として扱い、ダイアログは閉じない
-		// （空のときはそのまま背景側の Escape ハンドラへ渡して閉じる）。
-		this._register(dom.addDisposableListener(this._searchInput, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape && this._searchInput.value.length > 0) {
-				event.preventDefault();
-				event.stopPropagation();
-				this._searchInput.value = '';
-				this._applySearchFilter();
-			}
-		}));
 
-		this._savedFlashEl = dom.append(header, $('.pns-saved-flash'));
+		this._savedFlashEl = dom.append(containers.header, $('.pns-saved-flash'));
 		this._savedFlashEl.textContent = STR_SAVED;
 
-		const closeBtn = dom.append(header, $('.pns-close'));
-		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
-		closeBtn.setAttribute('role', 'button');
-		closeBtn.setAttribute('aria-label', STR_CLOSE_ARIA);
-		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.close()));
-
-		// ---------- body（左ナビ + 右コンテンツ） ----------
-		const body = dom.append(modal, $('.pns-body'));
-		this._buildNav(dom.append(body, $('nav.pns-nav')));
-		this._contentEl = dom.append(body, $('.pns-content'));
-
-		// ---------- footer ----------
-		const footer = dom.append(modal, $('.pns-footer'));
+		// ---------- 左ナビ + 右コンテンツ（下に「すべて既定へ戻す」） ----------
+		containers.content.classList.add('paradis-notif-area');
+		this._buildNav(containers.nav);
+		this._contentEl = dom.append(containers.content, $('.pns-content'));
+		const footer = dom.append(containers.content, $('.pns-footer'));
 		const resetBtn = dom.append(footer, $('button.pns-btn.pns-btn-danger.pns-reset-defaults')) as HTMLButtonElement;
 		resetBtn.textContent = STR_RESET_DEFAULTS;
 		this._register(dom.addDisposableListener(resetBtn, 'click', () => this._resetAllToDefaults()));
-		const footerCloseBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary.pns-footer-close')) as HTMLButtonElement;
-		footerCloseBtn.textContent = STR_FOOTER_CLOSE;
-		this._register(dom.addDisposableListener(footerCloseBtn, 'click', () => this.close()));
-
-		modal.tabIndex = -1;
-		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
-			if (e.target === this._backdrop) {
-				this.close();
-			}
-		}));
-		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape) {
-				event.preventDefault();
-				this.close();
-			}
-		}));
 
 		// 設定変更 → 自動保存フラッシュ。セクションクラスは同じイベントで自身を再描画するため、
 		// 検索フィルタの再適用は全リスナーの処理が終わった後（setTimeout 0）に行う。
@@ -316,16 +312,46 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			}
 			this._scheduleApplySearchFilter();
 		}));
+		// 設定から移した行は settings.json の設定なので、設定エディタなどで変わったときも描き直す
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (MOVED_ROW_KEYS.some(key => e.affectsConfiguration(key))) {
+				this._renderNotificationsSections();
+			}
+		}));
 		// 別ウィンドウ等からの外部変更（onDidChange が発火しない経路）でも封印・バッジを追従させる。
 		this._register(this.settingsService.onDidChangeDoNotDisturb(() => this._dndRefreshController?.refresh()));
 
-		layoutService.activeContainer.appendChild(this._backdrop);
 		this._render();
-		modal.focus();
 	}
 
-	close(): void {
-		this.dispose();
+	reveal(sectionId: string | undefined): void {
+		const target = this._sectionEls.find(section => section.id === sectionId);
+		if (target) {
+			this._activateNavItem(target.id);
+			target.el.scrollIntoView({ block: 'start' });
+		}
+	}
+
+	setVisible(visible: boolean): void {
+		if (!visible) {
+			// 見えないところで試聴が鳴り続けないように止める
+			this._stopPreview();
+			this._aivisSection?.stopSamplePlayback();
+		}
+	}
+
+	layout(_width: number): void {
+		// 幅は CSS に任せる
+	}
+
+	/** 検索欄に文字があれば Esc は「検索語のクリア」、空なら器を閉じる。 */
+	handleEscape(): boolean {
+		if (this._searchInput.value.length > 0) {
+			this._searchInput.value = '';
+			this._applySearchFilter();
+			return true;
+		}
+		return false;
 	}
 
 	override dispose(): void {
@@ -335,7 +361,6 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			this._savedFlashTimer = undefined;
 		}
 		this._player.stop();
-		this._backdrop.remove();
 		super.dispose();
 	}
 
@@ -359,16 +384,18 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	}
 
 	private _addNavCaption(nav: HTMLElement, label: string): void {
-		dom.append(nav, $('.pns-nav-caption')).textContent = label;
+		paradisHubNavCaption(nav, label);
 	}
 
 	private _addNavItem(nav: HTMLElement, label: string, targetId: string, opts: { status?: boolean }): void {
-		const item = dom.append(nav, $('.pns-nav-item'));
-		item.setAttribute('role', 'button');
-		dom.append(item, $('span.pns-nav-label')).textContent = label;
-		const status = opts.status ? dom.append(item, $('span.pns-nav-status')) : undefined;
-		const chip = dom.append(item, $('span.pns-nav-chip'));
-		this._navItems.set(targetId, { item, chip, status });
+		const navItem = paradisHubNavItem(nav, label);
+		const item = navItem.element;
+		const status = opts.status ? $('span.pns-nav-status') : undefined;
+		if (status) {
+			item.insertBefore(status, navItem.chip);
+		}
+		const chip = navItem.chip;
+		this._navItems.set(targetId, { item, chip, status, navItem });
 		// ナビはシェルの一部のため _renderDisposables（通知セクション再描画ごとに clear される）ではなく
 		// ダイアログ自身の store へ登録する。
 		this._register(dom.addDisposableListener(item, 'click', () => this._navigateTo(targetId)));
@@ -381,10 +408,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 	/** ナビ項目の active 表示だけを切り替える（初回オープン時の初期選択でも使う）。 */
 	private _activateNavItem(targetId: string): void {
-		for (const entry of this._navItems.values()) {
-			entry.item.classList.remove('active');
+		for (const [id, entry] of this._navItems) {
+			entry.navItem.setActive(id === targetId);
 		}
-		this._navItems.get(targetId)?.item.classList.add('active');
 	}
 
 	private _createSection(id: string, keywords: string): HTMLElement {
@@ -420,7 +446,8 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			// allow-any-unicode-next-line
 			'aivis elevenlabs 音声 読み上げ エンジン voice api key model uuid voice_id モデル 辞書 テスト再生 プリセット 声 調整 安定度 stability similarity',
 		);
-		this._aivisSection = this._register(this.instantiationService.createInstance(ParadisAivisVoiceSection, this._aivisSectionEl));
+		this._aivisSection = this._register(this.instantiationService.createInstance(ParadisAivisVoiceSection, dom.append(this._aivisSectionEl, $('div'))));
+		this._voiceMovedRowsEl = dom.append(this._aivisSectionEl, $('div'));
 
 		const gainSection = this._createSection(
 			'pns-sec-gain',
@@ -636,6 +663,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 		this._renderDisposables.clear();
 		this._renderDesktopSectionBody();
+		this._renderMovedRows(this._desktopSectionEl, STR_INBOX_GROUP, INBOX_ROWS);
+		dom.clearNode(this._voiceMovedRowsEl);
+		this._renderMovedRows(this._voiceMovedRowsEl, undefined, VOICE_ROWS);
 		this._renderSoundSectionBody(token, onListPopulated);
 		this._contentEl.scrollTop = scrollTop;
 		this._applySearchFilter();
@@ -654,11 +684,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		const osLabels = dom.append(osRow, $('.sr-main'));
 		dom.append(osLabels, $('.sr-label')).textContent = STR_OS_TOGGLE_LABEL;
 		dom.append(osLabels, $('.sr-desc')).textContent = STR_OS_TOGGLE_HINT;
-		const osToggle = dom.append(osRow, $('input.pns-toggle')) as HTMLInputElement;
-		osToggle.type = 'checkbox';
-		osToggle.checked = osEnabled;
-		this._renderDisposables.add(dom.addDisposableListener(osToggle, 'change', () => {
-			this.settingsService.setOsNotificationsEnabled(osToggle.checked);
+		const osToggle = this._renderDisposables.add(new ParadisSwitch(osRow, { checked: osEnabled, ariaLabel: STR_OS_TOGGLE_LABEL }));
+		this._renderDisposables.add(osToggle.onDidChange(checked => {
+			this.settingsService.setOsNotificationsEnabled(checked);
 		}));
 
 		// --- 通知するイベント (デスクトップ通知が有効なときのみ) ---
@@ -683,11 +711,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			const messageLabels = dom.append(messageRow, $('.sr-main'));
 			dom.append(messageLabels, $('.sr-label')).textContent = STR_OS_MESSAGE_LABEL;
 			dom.append(messageLabels, $('.sr-desc')).textContent = STR_OS_MESSAGE_HINT;
-			const messageToggle = dom.append(messageRow, $('input.pns-toggle')) as HTMLInputElement;
-			messageToggle.type = 'checkbox';
-			messageToggle.checked = this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING) !== false;
-			this._renderDisposables.add(dom.addDisposableListener(messageToggle, 'change', () => {
-				void this.configurationService.updateValue(PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING, messageToggle.checked);
+			const messageToggle = this._renderDisposables.add(new ParadisSwitch(messageRow, { checked: this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING) !== false, ariaLabel: STR_OS_MESSAGE_LABEL }));
+			this._renderDisposables.add(messageToggle.onDidChange(checked => {
+				void this.configurationService.updateValue(PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING, checked);
 			}));
 		}
 
@@ -696,12 +722,30 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		const focusedLabels = dom.append(focusedRow, $('.sr-main'));
 		dom.append(focusedLabels, $('.sr-label')).textContent = STR_FOCUSED_TOGGLE_LABEL;
 		dom.append(focusedLabels, $('.sr-desc')).textContent = STR_FOCUSED_TOGGLE_HINT;
-		const focusedToggle = dom.append(focusedRow, $('input.pns-toggle')) as HTMLInputElement;
-		focusedToggle.type = 'checkbox';
-		focusedToggle.checked = this.settingsService.getNotifyWhileFocused();
-		this._renderDisposables.add(dom.addDisposableListener(focusedToggle, 'change', () => {
-			this.settingsService.setNotifyWhileFocused(focusedToggle.checked);
+		const focusedToggle = this._renderDisposables.add(new ParadisSwitch(focusedRow, { checked: this.settingsService.getNotifyWhileFocused(), ariaLabel: STR_FOCUSED_TOGGLE_LABEL }));
+		this._renderDisposables.add(focusedToggle.onDidChange(checked => {
+			this.settingsService.setNotifyWhileFocused(checked);
 		}));
+	}
+
+	/** 設定から移した行。値は settings.json の設定で、ほかの行と同じく変えたらすぐ保存する。 */
+	private _renderMovedRows(container: HTMLElement, group: string | undefined, rows: readonly IParadisMovedSettingRow[]): void {
+		if (group) {
+			dom.append(container, $('.pns-group-title')).textContent = group;
+		}
+		for (const spec of rows) {
+			const row = dom.append(container, $('.setting-row'));
+			row.title = spec.key;
+			const labels = dom.append(row, $('.sr-main'));
+			const label = dom.append(labels, $('.sr-label'));
+			dom.append(label, $('span')).textContent = spec.label;
+			dom.append(label, $('span.pns-moved-badge')).textContent = STR_MOVED_BADGE;
+			dom.append(labels, $('.sr-desc')).textContent = spec.description;
+			const toggle = this._renderDisposables.add(new ParadisSwitch(row, { checked: this.configurationService.getValue<boolean>(spec.key) === true, ariaLabel: spec.label }));
+			this._renderDisposables.add(toggle.onDidChange(checked => {
+				void this.configurationService.updateValue(spec.key, checked);
+			}));
+		}
 	}
 
 	private _renderSoundSectionBody(token: number, onListPopulated: () => void): void {
@@ -720,11 +764,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		const toggleLabels = dom.append(toggleRow, $('.sr-main'));
 		dom.append(toggleLabels, $('.sr-label')).textContent = STR_TOGGLE_LABEL;
 		dom.append(toggleLabels, $('.sr-desc')).textContent = STR_TOGGLE_HINT;
-		const toggle = dom.append(toggleRow, $('input.pns-toggle')) as HTMLInputElement;
-		toggle.type = 'checkbox';
-		toggle.checked = !muted;
-		this._renderDisposables.add(dom.addDisposableListener(toggle, 'change', () => {
-			this.settingsService.setSoundsMuted(!toggle.checked);
+		const toggle = this._renderDisposables.add(new ParadisSwitch(toggleRow, { checked: !muted, ariaLabel: STR_TOGGLE_LABEL }));
+		this._renderDisposables.add(toggle.onDidChange(checked => {
+			this.settingsService.setSoundsMuted(!checked);
 		}));
 
 		if (muted) {
@@ -942,7 +984,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		};
 		update();
 		// 補助ウィンドウでも動くよう、ダイアログが載っているウィンドウのタイマーを使う。
-		this._playingProgressTimer.value = dom.disposableWindowInterval(dom.getWindow(this._backdrop), update, 60);
+		this._playingProgressTimer.value = dom.disposableWindowInterval(dom.getWindow(this._contentEl), update, 60);
 	}
 
 	private _stopProgressBar(): void {
