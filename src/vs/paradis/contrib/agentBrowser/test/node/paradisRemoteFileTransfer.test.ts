@@ -14,6 +14,7 @@ import { BufferReader, BufferWriter, deserialize, serialize } from '../../../../
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisMcpOwningWindowResult } from '../../common/paradisMcpToolProvider.js';
 import { paradisDecodeRemoteFileReadResult, paradisEncodeRemoteFileReadResult, PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD, PARADIS_REMOTE_FILE_READ_METHOD, PARADIS_REMOTE_FILE_WRITE_METHOD, PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD } from '../../common/paradisRemoteFileBridge.js';
+import { PARADIS_MCP_BROWSER_FILE_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 import { ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from '../../node/paradisRemoteFileTransfer.js';
 
 interface IResult {
@@ -278,6 +279,7 @@ suite('ParadisRemoteFileTransfer', () => {
 			{ name: 'evaluate_script', inputSchema: { type: 'object', properties: { filePath: { type: 'string', description: 'relative to cwd' } } } },
 			{ name: 'save_page_as_pdf', description: 'Print the page.', inputSchema: { type: 'object', properties: {} } },
 			{ name: 'click', description: 'Click.', inputSchema: { type: 'object', properties: { uid: { type: 'string', description: 'uid' } } } },
+			PARADIS_MCP_BROWSER_FILE_TOOLS.find(tool => tool.name === 'read_download')!,
 		]);
 		const description = (index: number, key: string) => ((tools[index].inputSchema as { properties: Record<string, { description: string }> }).properties[key]).description;
 		assert.deepStrictEqual({
@@ -286,12 +288,14 @@ suite('ParadisRemoteFileTransfer', () => {
 			evaluate: description(1, 'filePath').startsWith('Not available to agents in a remote window'),
 			pdf: tools[2].description?.includes('also copied to ~/.para-code/browser-files on your machine'),
 			click: tools[3],
+			readDownload: [tools[4].description?.endsWith('they can read only the copy in ~/.para-code/browser-files that download_by_click and save_page_as_pdf report (up to 64 MiB; downloads started by other clicks are not copied).'), description(4, 'path').startsWith('The path that download_by_click or save_page_as_pdf returned for the machine running Para Code')],
 		}, {
 			screenshot: true,
 			uidKept: 'uid',
 			evaluate: true,
 			pdf: true,
 			click: { name: 'click', description: 'Click.', inputSchema: { type: 'object', properties: { uid: { type: 'string', description: 'uid' } } } },
+			readDownload: [true, true],
 		});
 	});
 });

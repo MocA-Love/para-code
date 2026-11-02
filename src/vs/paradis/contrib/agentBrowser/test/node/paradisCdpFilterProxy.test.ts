@@ -10,7 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../../platform/browserView/common/browserViewScreenshot.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
-import { IParadisBoundContext, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
+import { IParadisBoundContext, paradisForwardableCdpFrame, paradisReadCdpFrame, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpGatewayDelegate, ParadisCdpGateway, paradisPageUpgradeTargetIsCurrent } from '../../node/paradisCdpGateway.js';
 import { ParadisCdpUpstream } from '../../node/paradisCdpUpstream.js';
@@ -2390,5 +2390,22 @@ suite('Paradis CDP out-of-scope attach release', () => {
 		} finally {
 			clock.restore();
 		}
+	});
+	test('a frame is read into text once, and valid UTF-8 is forwarded as the same bytes without decoding it again', () => {
+		const valid = Buffer.from(JSON.stringify({ id: 1, result: { data: 'abc' } }), 'utf8');
+		const realReplacement = Buffer.from(JSON.stringify({ id: 2, result: { text: '\uFFFD' } }), 'utf8');
+		const broken = Buffer.concat([Buffer.from('{"id":3,"result":{"text":"'), Buffer.from([0xC3, 0x28]), Buffer.from('"}}')]);
+		const chunks = [Buffer.from('{"id":4,'), Buffer.from('"result":{}}')];
+		assert.deepStrictEqual({
+			valid: paradisForwardableCdpFrame(paradisReadCdpFrame(valid)) === valid,
+			realReplacement: paradisForwardableCdpFrame(paradisReadCdpFrame(realReplacement)) === realReplacement,
+			broken: paradisForwardableCdpFrame(paradisReadCdpFrame(broken)),
+			chunks: [paradisReadCdpFrame(chunks).text, paradisReadCdpFrame(chunks).bytes, paradisForwardableCdpFrame(paradisReadCdpFrame(chunks)) === chunks],
+		}, {
+			valid: true,
+			realReplacement: true,
+			broken: '{"id":3,"result":{"text":"\uFFFD("}}',
+			chunks: ['{"id":4,"result":{}}', 20, true],
+		});
 	});
 });

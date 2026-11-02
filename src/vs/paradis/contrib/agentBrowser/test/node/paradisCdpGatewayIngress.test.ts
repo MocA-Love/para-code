@@ -582,6 +582,8 @@ suite('Paradis CDP gateway ingress authority', () => {
 		try {
 			const ctx = state._makeContext({ token: 'pane-token', lease });
 			assert.deepStrictEqual(ctx.boundTargetIds(), new Set(['target-1']));
+			// Called for every CDP frame: the same target gives back the same set instead of a new one.
+			assert.strictEqual(ctx.boundTargetIds(), ctx.boundTargetIds());
 			// A transient undefined from the delegate (lease bookkeeping race) must not empty the set.
 			boundTarget = undefined;
 			assert.deepStrictEqual(ctx.boundTargetIds(), new Set(['target-1']));
