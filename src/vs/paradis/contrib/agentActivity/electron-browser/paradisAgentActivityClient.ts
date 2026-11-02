@@ -10,7 +10,7 @@
 
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisSpaceUsageRequest, IParadisSpaceUsageResult, IParadisWorkStatsRequest, IParadisWorkStatsResult, PARADIS_AGENT_ACTIVITY_CHANNEL } from '../common/paradisAgentActivity.js';
+import { IParadisRepoUsageRequest, IParadisRepoUsageResult, IParadisSpaceUsageRequest, IParadisSpaceUsageResult, IParadisWorkStatsRequest, IParadisWorkStatsResult, PARADIS_AGENT_ACTIVITY_CHANNEL } from '../common/paradisAgentActivity.js';
 import { IParadisSessionIndexSearchResult, IParadisSessionIndexStatus } from '../common/paradisSessionIndex.js';
 
 export class ParadisAgentActivityClient {
@@ -25,6 +25,11 @@ export class ParadisAgentActivityClient {
 
 	spaceUsage(request: IParadisSpaceUsageRequest): Promise<IParadisSpaceUsageResult> {
 		return this.channel.call('spaceUsage', [request]);
+	}
+
+	/** 作業フォルダをリポジトリへ束ねた使用量（AI コストの「リポジトリ別」）。 */
+	repoUsage(request: IParadisRepoUsageRequest): Promise<IParadisRepoUsageResult> {
+		return this.channel.call('repoUsage', [request]);
 	}
 
 	workStats(request: IParadisWorkStatsRequest): Promise<IParadisWorkStatsResult> {

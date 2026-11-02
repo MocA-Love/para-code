@@ -13,6 +13,8 @@
 // は読み直さない。
 
 import { promises as fs, type Dirent } from 'fs';
+import { PARADIS_REPO_OUTSIDE_KEY } from '../common/paradisRepoIdentity.js';
+import { ParadisRepoIdentityResolver } from './paradisRepoIdentityResolver.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Event } from '../../../../base/common/event.js';
 import { dirname, join, resolve } from '../../../../base/common/path.js';
@@ -23,6 +25,9 @@ import { paradisSessionCatalogId } from '../../sessionResume/node/paradisSession
 import { paradisIsClaudeAgentTranscriptName, paradisListClaudeWorkflowRunDirs } from '../../mobileRelay/node/paradisClaudeSubagentFiles.js';
 import {
 	IParadisActivityFileSummary,
+	IParadisRepoUsageRepo,
+	IParadisRepoUsageRequest,
+	IParadisRepoUsageResult,
 	IParadisSpaceUsageRequest,
 	IParadisSpaceUsageResult,
 	IParadisSpaceUsageSpace,
@@ -103,6 +108,8 @@ export interface IParadisAgentActivityServiceOptions {
 	/** スペースの作業フォルダから、そこで動くエージェントのホームを解決する（WSL の判定。既定は `paradisResolveAgentHomes`）。 */
 	readonly resolveAgentHomes?: (cwd: string) => IParadisAgentHomes;
 	readonly now?: () => number;
+	/** 作業フォルダのリポジトリの鍵を決めるもの（テスト用。既定は .git を読むもの）。 */
+	readonly repoResolver?: ParadisRepoIdentityResolver;
 	/** 会話ログの集計を待つ上限（テスト用。既定は {@link paradisActivityParseTimeoutMs}）。 */
 	readonly parseTimeoutMs?: (bytes: number) => number;
 }
@@ -134,6 +141,7 @@ export class ParadisAgentActivityService extends Disposable {
 	 */
 	private readonly wslHomes = new Map<string, { readonly claude: string; readonly codex: string }>();
 	private readonly now: () => number;
+	private readonly repoResolver: ParadisRepoIdentityResolver;
 
 	constructor(
 		private readonly options: IParadisAgentActivityServiceOptions,
@@ -145,6 +153,7 @@ export class ParadisAgentActivityService extends Disposable {
 		this.codexHomes = options.codexHomes ?? (() => paradisCodexHomes());
 		this.resolveAgentHomes = options.resolveAgentHomes ?? paradisResolveAgentHomes;
 		this.now = options.now ?? Date.now;
+		this.repoResolver = options.repoResolver ?? new ParadisRepoIdentityResolver();
 		if (options.onDidChangeIndexSettings) {
 			this._register(options.onDidChangeIndexSettings(() => void this.reconcileIndex(false)));
 		}
@@ -162,6 +171,36 @@ export class ParadisAgentActivityService extends Disposable {
 		const aliases = await this.withRealPaths(spaces);
 		const buckets = paradisAggregateSpaceUsage(summaries, range, paradisCreateSpaceMatcher(aliases, !isLinux));
 		return { buckets, scannedFiles, failedFiles, computedAt: this.now() };
+	}
+
+	/**
+	 * 作業フォルダごとのトークン数と、それをリポジトリへ束ねた一覧（AI コストの「リポジトリ別」。Q537 の 13 A）。
+	 * 金額は renderer が ccusage の金額をこのトークン数の比で分ける（スペース別と同じ）。
+	 */
+	async repoUsage(request: IParadisRepoUsageRequest): Promise<IParadisRepoUsageResult> {
+		const range = this.normalizeRange(request);
+		const { summaries } = await this.collect(range.sinceMs);
+		const cwds = [...new Set(summaries.map(summary => summary.cwd).filter((cwd): cwd is string => typeof cwd === 'string' && cwd.length > 0))];
+		const identities = new Map(await Promise.all(cwds.map(async cwd => [cwd, await this.repoResolver.resolve(cwd)] as const)));
+		const folderKey = (cwd: string | undefined) => {
+			const identity = cwd !== undefined ? identities.get(cwd) : undefined;
+			return identity && identity.key !== PARADIS_REPO_OUTSIDE_KEY ? cwd : PARADIS_REPO_OUTSIDE_KEY;
+		};
+		const buckets = paradisAggregateSpaceUsage(summaries, range, folderKey);
+		const repos = new Map<string, { readonly key: string; readonly name: string; readonly folders: string[] }>();
+		for (const bucket of buckets) {
+			const identity = identities.get(bucket.key);
+			if (!identity || identity.key === PARADIS_REPO_OUTSIDE_KEY) {
+				continue;
+			}
+			let repo = repos.get(identity.key);
+			if (!repo) {
+				repo = { key: identity.key, name: identity.name, folders: [] };
+				repos.set(identity.key, repo);
+			}
+			repo.folders.push(bucket.key);
+		}
+		return { buckets, repos: [...repos.values()] satisfies IParadisRepoUsageRepo[], computedAt: this.now() };
 	}
 
 	async workStats(request: IParadisWorkStatsRequest): Promise<IParadisWorkStatsResult> {
