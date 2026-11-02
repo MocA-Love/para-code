@@ -204,11 +204,23 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 			/too many hidden contexts or scripts/.test(filter.checkClientCommand('', 3, 'Debugger.getScriptSource', { scriptId: 'old-0' }) ?? ''),
 			/too many hidden contexts or scripts/.test(filter.checkClientCommand('', 4, 'Runtime.evaluate', { expression: '1', contextId: 1 }) ?? ''),
 		];
+		// While it overflows, only events of contexts the client was shown get through, a pause is resumed by Para Code
+		// (the client's Debugger.resume is refused), and the agent can still navigate away.
+		const whileOverflowed = {
+			consoleShown: filter.filterEvent('', 'Runtime.consoleAPICalled', { type: 'log', args: [], executionContextId: 1 }),
+			consoleUnknown: filter.filterEvent('', 'Runtime.consoleAPICalled', { type: 'log', args: [], executionContextId: 77 }),
+			exceptionUnknown: filter.filterEvent('', 'Runtime.exceptionThrown', { exceptionDetails: { executionContextId: 78 } }),
+			scriptUnknown: filter.filterEvent('', 'Debugger.scriptParsed', { scriptId: 'new', url: '', executionContextId: 79, executionContextAuxData: { isDefault: true } }),
+			paused: filter.filterEvent('', 'Debugger.paused', { callFrames: [{ callFrameId: '1:1:1', location: { scriptId: 'page' } }] }),
+			navigate: filter.checkClientCommand('', 6, 'Page.navigate', { url: 'https://example.test/' }),
+			reload: filter.checkClientCommand('', 7, 'Page.reload', {}),
+		};
 		filter.filterEvent('', 'Runtime.executionContextsCleared', {});
 		filter.filterEvent('', 'Runtime.executionContextCreated', created(3, 'next', true));
-		assert.deepStrictEqual({ beforeOverflow, afterOverflow, afterNavigation: filter.checkClientCommand('', 5, 'Runtime.evaluate', { expression: '1', contextId: 3 }) }, {
+		assert.deepStrictEqual({ beforeOverflow, afterOverflow, whileOverflowed, afterNavigation: filter.checkClientCommand('', 5, 'Runtime.evaluate', { expression: '1', contextId: 3 }) }, {
 			beforeOverflow: undefined,
 			afterOverflow: [true, true, true],
+			whileOverflowed: { consoleShown: 'forward', consoleUnknown: 'drop', exceptionUnknown: 'drop', scriptUnknown: 'drop', paused: 'resume', navigate: undefined, reload: undefined },
 			afterNavigation: undefined,
 		});
 	});
