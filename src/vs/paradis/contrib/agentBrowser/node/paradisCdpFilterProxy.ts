@@ -237,6 +237,14 @@ const PARADIS_TARGET_URL_CHECK_TIMEOUT_MS = 5_000;
 /** {@link PARADIS_TARGET_URL_CHECK_TIMEOUT_MS} を過ぎて URL を確かめられなかった命令への答え。 */
 const PARADIS_TARGET_URL_CHECK_TIMEOUT_MESSAGE = 'PARA_BROWSER_RETRYABLE: Para Code could not confirm which page this tab shows in time (the browser did not answer). Retry once.';
 
+/**
+ * 命令の前の URL の確かめの答えが、確かめられたことになるか。打ち切った（'timeout'）・送れなかった（undefined。待ち受けの上限
+ * など）ときは確かめられなかったので、その命令は断る（通さない）。両方の経路が使う。
+ */
+export function paradisTargetUrlCheckAnswered<T>(response: T | 'timeout' | undefined): response is T {
+	return response !== 'timeout' && response !== undefined;
+}
+
 /** 文書そのものに場所を聞くときの待ちの上限（ミリ秒）。 */
 const PARADIS_LOCATE_DOCUMENT_TIMEOUT_MS = 1_000;
 
@@ -1562,7 +1570,7 @@ export function paradisProxyPageUpgrade(
 				&& (pageUrlCheckedAt === undefined || Date.now() - pageUrlCheckedAt >= PARADIS_PAGE_URL_FRESH_MS)) {
 				pageUrlCheck ??= requestPageInternal('Target.getTargetInfo', {}, PARADIS_TARGET_URL_CHECK_TIMEOUT_MS).then(response => {
 					// 答えが来ない・送れなかった（上限など）ときは確かめられなかったものとして断る（通さない）
-					if (response === 'timeout' || response === undefined) {
+					if (!paradisTargetUrlCheckAnswered(response)) {
 						return false;
 					}
 					const result = isRecord(response?.result) ? response.result : undefined;
@@ -2420,7 +2428,9 @@ export async function paradisProxyBrowserUpgrade(
 		 */
 		/** 文書そのものに今の場所を聞く（返らなければ undefined）。 */
 		const locateDocument = async (targetId: string, sessionId: string): Promise<string | undefined> => {
-			const located = await raceTimeout(requestInternal('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, targetId, sessionId), PARADIS_LOCATE_DOCUMENT_TIMEOUT_MS);
+			// 打ち切った分は待ち受けと台帳から外す（URL の確かめと同じ。残すと溜まって、上限で以後の確かめが全部断られる）
+			const answer = await requestInternalWithin(PARADIS_LOCATE_DOCUMENT_TIMEOUT_MS, 'Runtime.evaluate', { expression: 'location.href', returnByValue: true }, targetId, sessionId);
+			const located = answer === 'timeout' ? undefined : answer;
 			const value = isRecord(located?.result) && isRecord(located.result.result) ? located.result.result.value : undefined;
 			return typeof value === 'string' && value.length > 0 ? value : undefined;
 		};
@@ -2435,10 +2445,10 @@ export async function paradisProxyBrowserUpgrade(
 				for (; ;) {
 					const response = await requestInternalWithin(PARADIS_TARGET_URL_CHECK_TIMEOUT_MS, 'Target.getTargetInfo', { targetId }, targetId);
 					// 答えが来ない・送れなかった（上限など）ときは確かめられなかったものとして断る（通さない）
-					if (response === 'timeout' || (response === undefined && !closed)) {
+					if (!paradisTargetUrlCheckAnswered(response) && !closed) {
 						return false;
 					}
-					const info = isRecord(response?.result) && isRecord(response.result.targetInfo) ? response.result.targetInfo : undefined;
+					const info = paradisTargetUrlCheckAnswered(response) && isRecord(response.result) && isRecord(response.result.targetInfo) ? response.result.targetInfo : undefined;
 					noteTargetUrl(targetId, info?.url);
 					if (closed || sessionId === undefined || paradisIsBrowserExtensionUrl(targetUrls.get(targetId))) {
 						return true;
