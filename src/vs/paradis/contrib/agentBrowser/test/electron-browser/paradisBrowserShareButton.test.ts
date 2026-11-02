@@ -13,6 +13,7 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { BrowserViewSharingState, IBrowserViewModel } from '../../../../../workbench/contrib/browserView/common/browserView.js';
@@ -46,6 +47,7 @@ suite('ParadisBrowserShareActionViewItem', () => {
 		instantiationService.stub(IParadisAgentBrowserBindingModel, bindingModel);
 		instantiationService.stub(IParadisAgentBrowserTabsService, {});
 		instantiationService.stub(ILayoutService, { getContainer: () => container });
+		instantiationService.stub(IHoverService, NullHoverService);
 
 		const model = upcastPartial<IBrowserViewModel>({
 			id: 'page',

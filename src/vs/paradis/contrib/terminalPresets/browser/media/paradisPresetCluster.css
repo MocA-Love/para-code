@@ -42,9 +42,9 @@
 	align-items: center;
 	gap: 4px;
 	height: 22px;
-	padding: 3px 6px;
+	padding: 0 var(--vscode-spacing-size40);
 	margin-right: 4px;
-	border-radius: var(--vscode-cornerRadius-medium, 4px);
+	border-radius: var(--vscode-cornerRadius-small);
 	background: transparent;
 	border: none;
 	color: var(--vscode-foreground);
@@ -60,16 +60,18 @@
 }
 
 .monaco-workbench .paradis-preset-cluster-icon.codicon-layers {
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .monaco-workbench .paradis-preset-cluster-badge {
-	min-width: 14px;
-	height: 14px;
-	padding: 0 4px;
-	border-radius: 999px;
-	font-size: 10px;
-	font-weight: 600;
+	/* 本家の数のバッジと同じ 18px・11px */
+	box-sizing: border-box;
+	min-width: 18px;
+	height: 18px;
+	padding: 0 var(--vscode-spacing-size40);
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--vscode-fontSize-label2);
+	font-weight: var(--vscode-fontWeight-regular);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -151,9 +153,9 @@
 	align-items: center;
 	gap: 4px;
 	height: 22px;
-	padding: 3px;
+	padding: 0 var(--vscode-spacing-size40);
 	margin-right: 4px;
-	border-radius: var(--vscode-cornerRadius-medium, 4px);
+	border-radius: var(--vscode-cornerRadius-small);
 	background: transparent;
 	border: none;
 	color: var(--vscode-foreground);
@@ -202,7 +204,7 @@
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;
-	gap: 1px;
+	gap: 0;
 	min-width: 160px;
 	max-width: 320px;
 	/* 画面下端に近いターミナルタブバーから開いても、項目数が多いフォルダで画面外にはみ出して
@@ -221,12 +223,12 @@
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	height: 24px;
+	height: 22px;
 	/* flex-shrink の既定値(1)のままだと、項目数が多く overflow-y: auto が効く前に各行が
 		min-content まで潰れてしまう。潰さずスクロールへ回す。 */
 	flex: 0 0 auto;
 	padding: 0 6px;
-	border-radius: var(--vscode-cornerRadius-medium, 4px);
+	border-radius: var(--vscode-cornerRadius-small);
 	background: transparent;
 	border: none;
 	color: var(--vscode-foreground);
@@ -236,12 +238,9 @@
 }
 
 .monaco-workbench .paradis-preset-cluster-popup-item:hover,
-.monaco-workbench .paradis-preset-cluster-popup-item:focus,
 .monaco-workbench .paradis-preset-cluster-popup-item:focus-visible {
-	/* :focus も含める（:focus-visible だけでなく）。開いた瞬間にプログラム的に先頭項目へ
-		focus() するが、直前の操作がクリックだと :focus-visible にはマッチしないブラウザがあり、
-		それだと「どの項目が選ばれているか」が一切見えないまま Enter で誤実行しうる。
-		メニューという文脈ではフォーカス＝選択中の項目なので、常時ハイライトしてよい。 */
+	/* 面を塗るのはホバーとキーボードで移ったときだけ（Q537 の決定 6・プリセットのまとめ A）。マウスで開いたときに
+		先頭の行が選ばれて見えないようにする。キーボード（Enter・Space）で開いたときは先頭の行が :focus-visible になる。 */
 	background-color: var(--vscode-toolbar-hoverBackground);
 	outline: none;
 }
