@@ -58,7 +58,7 @@ import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, conve
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridCell, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
-import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest, type ParadisSpreadsheetViewportFrame } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
+import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest, type ParadisSpreadsheetViewportFrame, type ParadisSpreadsheetVirtualRange } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
 import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
@@ -563,6 +563,40 @@ export function virtualGridRowTops(sheet: IParadisSheetData, viewport: ParadisSp
 		tops.set(last.excelRow + 1, bounds.top + bounds.height);
 	}
 	return tops;
+}
+
+/**
+ * 選んだ範囲（仮想グリッドの番号）をコピーする文字。DOM の表で範囲を選んでコピーしたときのブラウザの形に合わせ、
+ * 行の中のセルはタブ、行の終わりは改行でつなぐ。結合は起点のセルに値があり、覆われたセルは表に td が無いので飛ばす。
+ * 幅 0 の隠れた列は空の欄（表と同じ）。見出しの行・列は含めない。画面の外の行も含める（元のデータから作るので、固定枠の複製も混ざらない）。
+ */
+export function virtualGridCopyText(sheet: IParadisSheetData, range: ParadisSpreadsheetVirtualRange): string {
+	const [rowStart, columnStart, rowEnd, columnEnd] = range;
+	const dataRowStart = Math.max(rowStart, VIRTUAL_GRID_HEADER_ROWS) - VIRTUAL_GRID_HEADER_ROWS;
+	const dataRowEnd = Math.min(sheet.rows.length, rowEnd - VIRTUAL_GRID_HEADER_ROWS);
+	const dataColumnStart = Math.max(columnStart, VIRTUAL_GRID_HEADER_COLUMNS) - VIRTUAL_GRID_HEADER_COLUMNS;
+	const dataColumnEnd = Math.min(sheet.columnCount, columnEnd - VIRTUAL_GRID_HEADER_COLUMNS);
+	// 見出しのセルだけを選んでいるとき（見出しをクリックした後）は何もコピーしない
+	if (rowStart < VIRTUAL_GRID_HEADER_ROWS && rowEnd <= VIRTUAL_GRID_HEADER_ROWS || columnStart < VIRTUAL_GRID_HEADER_COLUMNS && columnEnd <= VIRTUAL_GRID_HEADER_COLUMNS) {
+		return '';
+	}
+	if (dataRowStart >= dataRowEnd || dataColumnStart >= dataColumnEnd) {
+		return '';
+	}
+	const lines: string[] = [];
+	for (let rowIndex = dataRowStart; rowIndex < dataRowEnd; rowIndex++) {
+		const values: string[] = [];
+		for (let columnIndex = dataColumnStart; columnIndex < dataColumnEnd; columnIndex++) {
+			const cell = sheet.rows[rowIndex].cells[columnIndex];
+			if (cell?.hidden) {
+				continue;
+			}
+			// 幅 0 の隠れた列は、表でも文字が描かれないので空の欄になる
+			values.push((sheet.columnWidths[columnIndex] ?? 0) > 0 ? cell?.value ?? '' : '');
+		}
+		lines.push(values.join('\t'));
+	}
+	return lines.join('\n');
 }
 
 /** エディタの大きさが変わったときに仮想グリッドを描き直す（`layout()` の本体）。入れ物が無ければエディタの大きさを使う。 */
@@ -1750,7 +1784,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const scheduledNavigation = dom.scheduleAtNextAnimationFrame(dom.getWindow(body), () => {
 			const virtualHost = this._virtualHostEl;
 			if (virtualHost && this._virtualRenderer.value) {
-				void this._virtualRenderer.value.revealCell(rowIndex + VIRTUAL_GRID_HEADER_ROWS, columnIndex + VIRTUAL_GRID_HEADER_COLUMNS);
+				// DOM の表と同じく、検索で移ったセルは画面の中央に出す
+				void this._virtualRenderer.value.revealCell(rowIndex + VIRTUAL_GRID_HEADER_ROWS, columnIndex + VIRTUAL_GRID_HEADER_COLUMNS, true);
 				return;
 			}
 			const rowElement = this._dataRowEls.find(item => item.excelRow === navigation.cell!.row)?.tr as HTMLTableRowElement | undefined;
@@ -1932,6 +1967,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			fontsReady: dom.getWindow(host).document.fonts.ready,
 			zoom: target,
 			copyFocusedCell: true,
+			copyRange: range => virtualGridCopyText(sheet, range),
 		});
 		// 行・列の数は、セルの aria の番号と同じく見出しの 1 行・1 列を含める
 		applyParadisOfficeGridMetadata(host, localize('paradis.spreadsheet.sheetGrid', "シート「{0}」", sheet.name), Math.max(1, sheet.rows.length) + VIRTUAL_GRID_HEADER_ROWS, Math.max(1, sheet.columnCount) + VIRTUAL_GRID_HEADER_COLUMNS);
