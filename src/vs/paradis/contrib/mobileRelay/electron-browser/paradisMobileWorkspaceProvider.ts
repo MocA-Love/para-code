@@ -80,7 +80,8 @@ import { ParadisMobileFileTiming } from '../common/paradisMobileFileTiming.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import type { ParadisCodexAutoContinuePhase } from '../common/paradisCodexOverloadContinue.js';
 import { ParadisCodexAutoContinueWindow, paradisReadCodexAutoContinueRequest } from './paradisCodexAutoContinueWindow.js';
-import { PARADIS_CLAUDE_SETTING_VALUE_PATTERN, PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeConfigModelCommand, paradisClaudeModelAlias, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
+import { PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeConfigModelCommand, paradisClaudeModelAlias, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
+import { paradisDecodeMobileAgentAction } from '../common/paradisMobileAgentAction.js';
 
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
@@ -1665,35 +1666,29 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown; approvalPiece?: unknown; slashCheck?: unknown; questionChecks?: unknown };
+		let raw: unknown;
 		let interactionAccepted = false;
 		// 発言の Enter を打ち終えた（この後の例外は「送れなかった」と返さない。送信 ID を忘れさせて二重に送らせないため）
 		let messageTyped = false;
 		try {
-			msg = JSON.parse(payload.toString());
+			raw = JSON.parse(payload.toString());
 		} catch {
 			return;
 		}
-		if (msg.t === 'action/approvalOptions') {
-			await this.replyApprovalOptions(msg, mobileId);
+		if (typeof raw === 'object' && raw !== null && (raw as { t?: unknown }).t === 'action/approvalOptions') {
+			await this.replyApprovalOptions(raw, mobileId);
 			return;
 		}
-		const sendMessage = msg.t === 'action/sendMessage' && typeof msg.text === 'string'
-			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
-		const claudeSetting = msg.t === 'action/claudeSetting' && (msg.setting === 'model' || msg.setting === 'effort')
-			&& typeof msg.value === 'string' && PARADIS_CLAUDE_SETTING_VALUE_PATTERN.test(msg.value)
-			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
-		// PC で開いている画面（/config など）を Esc で閉じる。開いているかは shared process が mod に聞いてから回してくる
-		const closePanel = msg.t === 'action/closePanel' && typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
-		const interaction = msg.t === 'action/interaction' && Array.isArray(msg.parts) && msg.parts.length > 0 && msg.parts.length <= 500
-			&& msg.parts.every(part => typeof part === 'string' && part.length <= 10_000)
-			&& typeof msg.delayMs === 'number' && Number.isInteger(msg.delayMs) && msg.delayMs >= 0 && msg.delayMs <= 1_000
-			&& (msg.readyMarker === undefined || (typeof msg.readyMarker === 'string' && msg.readyMarker.length > 0 && msg.readyMarker.length <= 64))
-			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
-		if ((!sendMessage && !interaction && !claudeSetting && !closePanel) || typeof msg.id !== 'number' || typeof msg.token !== 'string'
-			|| typeof msg.requestId !== 'string' || typeof msg.epoch !== 'string') {
+		// 種類ごとの形に読む（形が合わなければ捨てる）。closePanel は PC で開いている画面（/config など）を Esc で閉じる。
+		// 開いているかは shared process が mod に聞いてから回してくる
+		const msg = paradisDecodeMobileAgentAction(raw);
+		if (msg === undefined) {
 			return;
 		}
+		const sendMessage = msg.kind === 'sendMessage';
+		const claudeSetting = msg.kind === 'claudeSetting';
+		const closePanel = msg.kind === 'closePanel';
+		const interaction = msg.kind === 'interaction';
 		const instance = this.findAuthoritativePaneInstance(msg.id, msg.token);
 		if (instance === undefined) {
 			// shared processのイベントは全windowへ届く。対象ペインを所有しないwindowは
@@ -1729,11 +1724,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}
 				const screenBefore = slashCheck !== undefined ? paradisVisibleTerminalText(instance) : '';
 				const outcome = await paradisSendAgentMessageToTui(
-					msg.text as string,
+					msg.text,
 					(text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode),
 					async () => {
-						const currentInstance = this.findAuthoritativePaneInstance(msg.id as number, msg.token as string);
-						return currentInstance === instance && this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
+						const currentInstance = this.findAuthoritativePaneInstance(msg.id, msg.token);
+						return currentInstance === instance && this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId);
 					},
 				);
 				messageTyped = outcome.executed;
@@ -1761,9 +1756,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}
 				await instance.sendText('\x1b', false);
 			} else if (claudeSetting) {
-				// クロージャ内では typeof ガードによる絞り込みが効かないため as で明示する（ガード済み）
-				const validate = () => this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
-				const modelAlias = msg.setting === 'model' ? paradisClaudeModelAlias(msg.value as string) : undefined;
+				const validate = () => this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId);
+				const modelAlias = msg.setting === 'model' ? paradisClaudeModelAlias(msg.value) : undefined;
 				if (modelAlias !== undefined) {
 					// モデルは確認（Switch model?）を出さない `/config model=<別名>` で切り替える（Claude Code 2.1.289 で実測）。
 					// 確認が出ないので Enter を送るガードは使わない。結果は transcript の出力から会話の知らせの行になる
@@ -1774,14 +1768,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				} else {
 					// effort（`/effort <段階>` は会話の途中だと「Change effort level?」を出すことがある）と、別名でないモデルの ID
 					// （`/config` は別名しか受け付けない）は、今までどおり確認に Enter を送るガードで切り替える
-					await this.modelSwitchGuard.execute(instance, `/${msg.setting as 'model' | 'effort'} ${msg.value as string}`, validate);
+					await this.modelSwitchGuard.execute(instance, `/${msg.setting} ${msg.value}`, validate);
 				}
-				if (!(await this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId as number))) {
+				if (!(await this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId))) {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '設定変更中にClaude Codeセッションが変わりました');
 					return;
 				}
 			} else {
-				let parts = msg.parts as string[];
+				let parts = [...msg.parts];
 				// Codex の承認の「拒否」は版でキーが違う（0.155.1 は Esc、それより前は `d`）。中継は画面を
 				// 見られないので `d` を送ってくる。画面の選択肢の表記に合わせて差し替える（`d` の版はそのまま）。
 				// MCP のツールの許可のフォームには近道が無いので、カードの承認の確認だと確かめられたら `y` も `1` に差し替える
@@ -1830,7 +1824,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					// 送る直前に確かめたキー（Codex は行末の近道・フォームの番号）へ差し替えて送る。
 					sendText: (_text: string, shouldExecute: boolean) => instance.sendText(parts[0], shouldExecute),
 				};
-				const sent = await paradisSendAgentInteractionKeys(sendTarget, parts, msg.delayMs as number, {
+				const sent = await paradisSendAgentInteractionKeys(sendTarget, parts, msg.delayMs, {
 					// 番号の選択肢で答えるときは、折り返しをつないだ画面で見る（選択肢の読み取りと同じ画面）
 					readScreen: () => expectOption !== undefined ? paradisVisibleTerminalLogicalText(instance) : paradisVisibleTerminalText(instance),
 					// 選択肢が画面に出るまで待つ（出なければ待ちの上限の後、直前の確かめで断る）。
@@ -1842,17 +1836,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						: codexApprovalKey !== undefined && approvalPiece !== undefined
 							// どの承認の確認かを確かめる一片が見えるまで待つ（出なければ待ちの上限の後、そのときの画面でキーを決める）
 							? (screen: string) => paradisScreenShowsPermissionPrompt(screen) && paradisPromptRegionShows(screen, approvalPiece)
-							: msg.readyMarker as string | undefined,
+							: msg.readyMarker,
 					strict: false,
 					source: 'mobile',
 				}, async () => {
 					keyIndex++;
-					const currentInstance = this.findAuthoritativePaneInstance(msg.id as number, msg.token as string);
+					const currentInstance = this.findAuthoritativePaneInstance(msg.id, msg.token);
 					if (currentInstance !== instance) {
 						stopped.reason = { code: 'stale-session', message: '操作対象のターミナルが変わりました' };
 						return false;
 					}
-					const continuation = await this.continueAgentInteraction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
+					const continuation = await this.continueAgentInteraction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId);
 					if (continuation === 'completed') {
 						stopped.reason = { code: 'interaction-completed', message: '回答対象は別の操作で完了しました' };
 						return false;
@@ -1877,9 +1871,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					// 答える相手がまだこの質問だと確かめてから、画面のチェックを見る（打ち直しが別の画面へ落ちないように）
 					const check = questionChecks.find(candidate => candidate.beforePart === keyIndex);
 					if (check !== undefined) {
-						const stillCurrent = async () => this.findAuthoritativePaneInstance(msg.id as number, msg.token as string) === instance
-							&& await this.continueAgentInteraction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number) === 'valid';
-						const confirmed = await this.confirmQuestionChecks(instance, check, msg.delayMs as number, stillCurrent);
+						const stillCurrent = async () => this.findAuthoritativePaneInstance(msg.id, msg.token) === instance
+							&& await this.continueAgentInteraction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId) === 'valid';
+						const confirmed = await this.confirmQuestionChecks(instance, check, msg.delayMs, stillCurrent);
 						if (confirmed === 'stale') {
 							stopped.reason = { code: 'stale-interaction', message: '回答対象の質問または承認要求が変わりました' };
 							return false;

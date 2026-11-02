@@ -32,7 +32,7 @@ import {
 	paradisSummarizeMobileCommitFailure,
 } from '../common/paradisMobileScmSync.js';
 import { ParadisMobileSendGate, paradisAgentPromptServices, paradisDeliverAgentPrompt, paradisParseAgentPromptTarget } from './paradisMobileAgentPromptDelivery.js';
-import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
+import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMobileRequestHandler, paradisRequireMobileWorkspace } from './paradisMobileRequestHandlers.js';
 
 /**
  * スマホからの git の同期・コミットの失敗からの立て直し・ファイルごとのステージ（Orca W2-15、Q114 A）。
@@ -78,14 +78,6 @@ const PROMPT_FILES = 50;
 /** コミットメッセージの上限（文字）。 */
 const MAX_COMMIT_MESSAGE = 20_000;
 
-function requireWorkspace(request: IParadisMobileRequest, context: IParadisMobileRequestContext): string | undefined {
-	if (typeof request.ws !== 'string' || request.ws.length === 0 || context.root === undefined) {
-		context.reply({ error: `unknown workspace: ${request.ws ?? ''}` });
-		return undefined;
-	}
-	return request.ws;
-}
-
 /** 同期の状態を読み直す（読めなければ空。任意項目なので操作の応答は返す）。 */
 async function readBranchSync(context: IParadisMobileRequestContext): Promise<IParadisMobileBranchSync> {
 	const result = await context.runGit(['status', '--porcelain=v2', '--branch', '--untracked-files=no']).catch(() => undefined);
@@ -119,7 +111,7 @@ function registerGitOperation(kind: string, run: (request: IParadisMobileRequest
 		async handle(accessor, request, context) {
 			// インデックスを控えるのは `git add -A` をするときだけ（ステージ済みだけのコミットは触らない）
 			const index = usesIndexBackup && request.all === true ? indexBackupHost(accessor, context.root) : undefined;
-			const ws = requireWorkspace(request, context);
+			const ws = paradisRequireMobileWorkspace(request, context);
 			if (ws === undefined) {
 				return;
 			}
@@ -365,7 +357,7 @@ const MAX_PROMPT_LENGTH = 40_000;
 registerParadisMobileRequestHandler('scm', 'commitFix', {
 	async handle(accessor, request, context) {
 		const services = paradisAgentPromptServices(accessor);
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		const root = context.root;
 		if (ws === undefined || root === undefined) {
 			return;
