@@ -21,8 +21,8 @@
 import { Promises } from '../../../../base/common/async.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { ShutdownReason } from '../../../services/lifecycle/common/lifecycle.js';
-import { IParadisTeardownLog, paradisTimeBoundedTeardownStep, paradisTimeTeardownStep } from '../../../../paradis/contrib/sentry/common/paradisTeardownTiming.js';
+import { ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IParadisTeardownLog, paradisTimeBoundedTeardownStep, paradisTimeTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
 
 /**
  * 端末のうち、残せるかどうかの判断に要る部分だけ。`ITerminalInstance` を持ち込まないのは、

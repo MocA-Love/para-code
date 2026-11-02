@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { assertParadisExactEditorGroup } from '../../browser/paradisExactEditorGroup.js';
-import { IEditorGroup, IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 
 suite('Paradis exact terminal editor group', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();

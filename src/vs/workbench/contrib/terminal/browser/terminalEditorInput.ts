@@ -14,7 +14,7 @@ import { EditorInput, IEditorCloseHandler } from '../../../common/editor/editorI
 import { ITerminalInstance, ITerminalInstanceService, terminalEditorId } from './terminal.js';
 import { getColorClass, getUriClasses } from './terminalIcon.js';
 // PARA-PATCH: editor terminals need the same 'keep it running on the remote' decision
-import { paradisJoinKeptDetaches, paradisShouldKeepTerminalProcessAlive } from './paradisTerminalShutdownPolicy.js';
+import { paradisJoinKeptDetaches, paradisShouldKeepTerminalProcessAlive } from '../../../../paradis/contrib/ptyDaemon/browser/paradisTerminalShutdownPolicy.js';
 import { paradisGetTerminalTabIcon, paradisOnDidChangeTerminalTabIcon } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalTabIconRegistry.js'; // PARA-PATCH: agent state icons on editor terminal tabs
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig, TerminalExitReason, TerminalLocation, TerminalSettingId } from '../../../../platform/terminal/common/terminal.js';

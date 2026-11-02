@@ -23,7 +23,7 @@ import { IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../wor
 import { paradisRegisterEditorOpenFenceHandler } from '../../../../workbench/services/editor/common/paradisEditorRetirementFence.js';
 import { IWorkingCopy, IWorkingCopyIdentifier } from '../../../../workbench/services/workingCopy/common/workingCopy.js';
 import { IWorkingCopyBackupService } from '../../../../workbench/services/workingCopy/common/workingCopyBackup.js';
-import { WorkingCopyBackupRestoreDecision, IWorkingCopyBackupRestoreRouter } from '../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
+import { WorkingCopyBackupRestoreDecision, IWorkingCopyBackupRestoreRouter } from '../common/paradisWorkingCopyBackupRestoreRouter.js';
 import { IWorkingCopyEditorService } from '../../../../workbench/services/workingCopy/common/workingCopyEditorService.js';
 import { IWorkingCopyService } from '../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { IParadisEditorScopeService, ParadisScopeRetirementPreparation, ParadisWorkingCopyOwnerLedger, ParadisWorkingCopyOwnerLedgerLoadState } from '../common/paradisEditorScope.js';

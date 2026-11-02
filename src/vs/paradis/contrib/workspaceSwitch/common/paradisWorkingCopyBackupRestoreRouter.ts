@@ -10,7 +10,7 @@ import { Sequencer } from '../../../../base/common/async.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { IWorkingCopyIdentifier } from './workingCopy.js';
+import { IWorkingCopyIdentifier } from '../../../../workbench/services/workingCopy/common/workingCopy.js';
 
 export const IWorkingCopyBackupRestoreRouter = createDecorator<IWorkingCopyBackupRestoreRouter>('workingCopyBackupRestoreRouter');
 
