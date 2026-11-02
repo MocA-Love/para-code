@@ -328,7 +328,6 @@ const STR_OPERATION_FAILED = localize('paradis.presetEditor.operationFailed', "�
 // allow-any-unicode-next-line
 const STR_REORDER_FAILED = localize('paradis.presetEditor.reorderFailed', "並べ替えられませんでした");
 // allow-any-unicode-next-line
-// allow-any-unicode-next-line
 const STR_SOURCE_WORKSPACE = localize('paradis.presetEditor.sourceWorkspace', "リポジトリ");
 // allow-any-unicode-next-line
 const STR_LOCALLY_HIDDEN_BADGE = localize('paradis.presetEditor.locallyHiddenBadge', "自分だけ非表示中");
@@ -424,6 +423,8 @@ const strMovedTo = (name: string, index: number, count: number) => localize('par
 const strMovedToInFolder = (name: string, folder: string, index: number, count: number) => localize('paradis.presetEditor.movedToInFolder', "{0} を {1} フォルダの中の {2} / {3} 番目へ移しました", name, folder, index, count);
 // allow-any-unicode-next-line
 const STR_MOVE_UP = localize('paradis.presetEditor.moveUp', "上へ移動");
+// allow-any-unicode-next-line
+const strMoveUnavailable = (label: string, reason: string) => localize('paradis.presetEditor.moveUnavailable', "{0}（{1}）", label, reason);
 // allow-any-unicode-next-line
 const strMoreActions = (name: string) => localize('paradis.presetEditor.moreActions', "{0} のその他の操作", name);
 // allow-any-unicode-next-line
@@ -1025,9 +1026,20 @@ class ParadisPresetEditorDialog extends Disposable {
 		const blocked = !!reorderBlocked || this._selecting;
 		const up = paradisPlanPresetStep(presets, item, -1);
 		const down = paradisPlanPresetStep(presets, item, 1);
+		// 押せない理由（保存先を跨ぐ等）はネイティブのメニューではツールチップが出ないので、項目の名前に添える
+		const moveAction = (id: string, label: string, plan: typeof up): IAction => {
+			const refused = isParadisPresetMoveRefusal(plan);
+			const reason = reorderBlocked ?? (refused && !this._selecting ? this._refusalMessage(plan, item) : undefined);
+			return toAction({
+				id,
+				label: reason ? strMoveUnavailable(label, reason) : label,
+				enabled: !blocked && !refused,
+				run: () => void this._applyMove(plan, item, true),
+			});
+		};
 		const actions: IAction[] = [
-			toAction({ id: 'paradis.presetEditor.moveUp', label: STR_MOVE_UP, tooltip: reorderBlocked, enabled: !blocked && !isParadisPresetMoveRefusal(up), run: () => void this._applyMove(up, item, true) }),
-			toAction({ id: 'paradis.presetEditor.moveDown', label: STR_MOVE_DOWN, tooltip: reorderBlocked, enabled: !blocked && !isParadisPresetMoveRefusal(down), run: () => void this._applyMove(down, item, true) }),
+			moveAction('paradis.presetEditor.moveUp', STR_MOVE_UP, up),
+			moveAction('paradis.presetEditor.moveDown', STR_MOVE_DOWN, down),
 		];
 		if (item.kind === 'preset' && !blocked) {
 			const folders = paradisPresetMoveFolderChoices(presets, item.preset);
