@@ -547,6 +547,8 @@ export function buildPageBreakOverlay(
 	columnWidths: readonly number[],
 	minCol: number,
 	doc: Document,
+	/** 1 列目の左端の X。通常の表は行番号の列の右、仮想グリッドは 0。 */
+	originX: number = PARADIS_ROW_NUM_COL_WIDTH,
 ): IParadisPageBreakOverlay {
 	if (rowLines.length === 0 && colLines.length === 0 && !printArea && pageLabels.length === 0) {
 		return {};
@@ -558,9 +560,9 @@ export function buildPageBreakOverlay(
 	// Excelの1始まり列 -> その列の左端X。範囲外は端にクランプ。
 	const colLeftX = (excelCol: number): number => {
 		const idx = Math.max(0, Math.min(excelCol - minCol, cumCol.length - 1));
-		return PARADIS_ROW_NUM_COL_WIDTH + cumCol[idx];
+		return originX + cumCol[idx];
 	};
-	const rightEdgeX = PARADIS_ROW_NUM_COL_WIDTH + cumCol[cumCol.length - 1];
+	const rightEdgeX = originX + cumCol[cumCol.length - 1];
 	const bottomEdgeY = Math.max(...Array.from(rowYByExcelRow.values()), 0);
 	// Excelの1始まり行 -> その行の上端Y。
 	const sortedRows = Array.from(rowYByExcelRow.keys()).sort((a, b) => a - b);
@@ -601,7 +603,7 @@ export function buildPageBreakOverlay(
 	for (const line of rowLines) {
 		const y = rowTopY(line.index + 1);
 		if (y > 0) {
-			addLine(PARADIS_ROW_NUM_COL_WIDTH, y, rightEdgeX, y, pageBreakLineClass(line), line.title);
+			addLine(originX, y, rightEdgeX, y, pageBreakLineClass(line), line.title);
 		}
 	}
 	// 改ページ(列): index 列の右端 = 次の列の左端 に縦線。

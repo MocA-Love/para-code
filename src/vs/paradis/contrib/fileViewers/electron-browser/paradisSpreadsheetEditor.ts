@@ -333,11 +333,9 @@ export function shouldVirtualizeSpreadsheetSheet(sheet: IParadisSheetData): bool
 	if (sheet.rows.length * sheet.columnCount <= VIRTUAL_GRID_CELL_THRESHOLD
 		|| sheet.showGridLines === false
 		|| (sheet.shapes?.length ?? 0) > 0
-		|| sheet.comments?.some(comment => comment.shown)
-		|| (sheet.rowBreaks?.length ?? 0) > 0
-		|| (sheet.colBreaks?.length ?? 0) > 0
-		|| sheet.printArea !== undefined
-		|| sheet.pageLayout !== undefined) {
+		|| sheet.comments?.some(comment => comment.shown)) {
+		// 改ページ線・印刷範囲・ページ番号は、仮想グリッドの上にも重ねて描く（_renderVirtualPageBreaks）。
+		// 用紙設定は xlsx のほぼ全シートに付くので、ここで弾くと大きなシートが全部 DOM の表になる。
 		return false;
 	}
 	for (const row of sheet.rows) {
@@ -348,6 +346,23 @@ export function shouldVirtualizeSpreadsheetSheet(sheet: IParadisSheetData): bool
 		}
 	}
 	return true;
+}
+
+/** Excel の行番号 → 仮想グリッド上の上端（最後の行の次の番号には下端を入れる）。 */
+export function virtualGridRowTops(sheet: IParadisSheetData, viewport: ParadisSpreadsheetViewport): Map<number, number> {
+	const tops = new Map<number, number>();
+	sheet.rows.forEach((row, index) => tops.set(row.excelRow, viewport.cellBounds(index, 0).top));
+	const last = sheet.rows.at(-1);
+	if (last) {
+		const bounds = viewport.cellBounds(sheet.rows.length - 1, 0);
+		tops.set(last.excelRow + 1, bounds.top + bounds.height);
+	}
+	return tops;
+}
+
+/** 仮想グリッド上の列幅（倍率込み、非表示は 0）。 */
+export function virtualGridColumnWidths(sheet: IParadisSheetData, viewport: ParadisSpreadsheetViewport): number[] {
+	return sheet.columnWidths.map((_width, column) => viewport.cellBounds(0, column).width);
 }
 
 function legacyGridTile(sheet: IParadisSheetData, request: ParadisSpreadsheetTileRequest): ParadisSpreadsheetGridTile {
@@ -1458,6 +1473,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		});
 		applyParadisOfficeGridMetadata(host, localize('paradis.spreadsheet.sheetGrid', "シート「{0}」", sheet.name), Math.max(1, sheet.rows.length), Math.max(1, sheet.columnCount));
 		this._virtualRenderer.value = renderer;
+		this._renderVirtualPageBreaks(sheet, viewport, renderer, host.ownerDocument);
 		void renderer.render({
 			scrollTop: 0,
 			scrollLeft: 0,
@@ -1471,6 +1487,19 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (this._percentBtn) {
 			this._percentBtn.textContent = `${Math.round(target * 100)}%`;
 		}
+	}
+
+	/**
+	 * 改ページ線・印刷範囲・ページ番号の透かしを仮想グリッドに重ねる。行と列の位置は viewport の座標
+	 * （倍率込み）から取るので、DOM を測らない。描いた要素はグリッドと一緒に消える。
+	 */
+	private _renderVirtualPageBreaks(sheet: IParadisSheetData, viewport: ParadisSpreadsheetViewport, renderer: ParadisSpreadsheetGridRenderer, doc: Document): void {
+		const { rowLines, colLines, labels } = describeSheetPageBreaks(sheet);
+		if (rowLines.length === 0 && colLines.length === 0 && !sheet.printArea && labels.length === 0) {
+			return;
+		}
+		const breaks = buildPageBreakOverlay(rowLines, colLines, sheet.printArea, labels, virtualGridRowTops(sheet, viewport), virtualGridColumnWidths(sheet, viewport), sheet.minCol, doc, 0);
+		renderer.addDecorations(breaks.labels, breaks.lines);
 	}
 
 	// 図形/改ページ/shrinkToFit は行の実描画位置が要るため、レイアウト確定後(rAF)にまとめて処理する。

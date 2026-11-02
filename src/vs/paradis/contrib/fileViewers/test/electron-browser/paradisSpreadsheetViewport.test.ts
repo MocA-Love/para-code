@@ -20,7 +20,9 @@ import {
 	type ParadisSpreadsheetGridTile,
 } from '../../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
 import { scaleSpreadsheetLogicalOffset } from '../../electron-browser/paradisSpreadsheetDiffEditor.js';
-import { shouldVirtualizeSpreadsheetSheet } from '../../electron-browser/paradisSpreadsheetEditor.js';
+import { shouldVirtualizeSpreadsheetSheet, virtualGridColumnWidths, virtualGridRowTops } from '../../electron-browser/paradisSpreadsheetEditor.js';
+import { buildPageBreakOverlay, describeSheetPageBreaks } from '../../electron-browser/paradisSpreadsheetRender.js';
+import type { IParadisPageLayout } from '../../common/paradisSpreadsheetPageLayout.js';
 
 function cellsForRequest(request: ParadisSpreadsheetTileRequest, cellFor: (row: number, column: number) => ParadisSpreadsheetGridCell = (row, column) => ({ row, column, text: `${row}:${column}` })): ParadisSpreadsheetGridCell[] {
 	const cells: ParadisSpreadsheetGridCell[] = [];
@@ -177,7 +179,7 @@ suite('paradisSpreadsheetViewport', () => {
 				outlineColor: '#000000', outlineWidth: 1, dash: 'solid',
 			}],
 		})), false);
-		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { rowBreaks: [10] })), false);
+		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { rowBreaks: [10] })), true);
 		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { comments: [{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [] }] })), true);
 		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, {
 			comments: [{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [], shown: { from: { c: 1, co: 0, r: 0, ro: 0 }, to: { c: 3, co: 0, r: 4, ro: 0 } } }],
@@ -187,6 +189,63 @@ suite('paradisSpreadsheetViewport', () => {
 
 suite('paradisSpreadsheetGridRenderer', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('virtualizes large sheets that carry page setup, print area and page breaks', () => {
+		// xlsx のほぼ全シートに用紙設定が付く。これで仮想化を止めると大きなシートが全部 DOM の表になる。
+		const pageLayout: IParadisPageLayout = {
+			rowBands: [{ from: 1, to: 50, manual: false, size: 750 }, { from: 51, to: 101, manual: false, size: 765 }],
+			colBands: [{ from: 1, to: 100, manual: false, size: 4800 }],
+			autoRowBreaks: [50],
+			autoColBreaks: [],
+			pageNumbers: [[1], [2]],
+			pageCount: 2,
+			effectiveScale: 1,
+			usableWidth: 500,
+			usableHeight: 700,
+		};
+		deepStrictEqual([
+			shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { pageLayout })),
+			shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { printArea: { minR: 1, minC: 1, maxR: 80, maxC: 20 } })),
+			shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { colBreaks: [5] })),
+		], [true, true, true]);
+	});
+
+	test('draws page breaks over the virtual grid in viewport coordinates', async () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet virtual page breaks');
+		const container = document.createElement('div');
+		const sheet = largeProjection(undefined, {
+			rowBreaks: [10],
+			printArea: { minR: 1, minC: 1, maxR: 20, maxC: 3 },
+		});
+		const viewport = new ParadisSpreadsheetViewport({
+			rowCount: sheet.rows.length,
+			columnCount: sheet.columnCount,
+			defaultRowHeight: 20,
+			defaultColumnWidth: 80,
+			rowMetrics: sheet.rows.map((row, index) => ({ index, size: row.height * 0.5 })),
+			columnMetrics: sheet.columnWidths.map((width, index) => ({ index, size: width * 0.5 })),
+			revision: 'revision-1',
+		});
+		const renderer = new ParadisSpreadsheetGridRenderer(container, viewport, { getViewport: async request => tileForRequest(request) });
+		const { rowLines, colLines, labels } = describeSheetPageBreaks(sheet);
+		const breaks = buildPageBreakOverlay(rowLines, colLines, sheet.printArea, labels, virtualGridRowTops(sheet, viewport), virtualGridColumnWidths(sheet, viewport), sheet.minCol, document, 0);
+		renderer.addDecorations(breaks.labels, breaks.lines);
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 300, height: 200 });
+
+		const body = container.querySelector('[data-pane="body"]')!;
+		const line = body.querySelector('.paradis-spreadsheet-pagebreaks line')!;
+		const rect = body.querySelector('.paradis-spreadsheet-pagebreaks rect')!;
+		deepStrictEqual({
+			line: [line.getAttribute('x1'), line.getAttribute('y1'), line.getAttribute('x2')],
+			rect: [rect.getAttribute('x'), rect.getAttribute('y'), rect.getAttribute('width'), rect.getAttribute('height')],
+		}, {
+			// 10 行目の下端 = 10 行 × 20 × 0.5。左端は行番号の列が無いので 0。
+			line: ['0', '100', String(viewport.totalWidth)],
+			rect: ['0', '0', '120', '200'],
+		});
+		renderer.dispose();
+		strictEqual(container.childElementCount, 0);
+	});
 
 	test('reveals a logical cell through measured viewport geometry', async () => {
 		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet logical reveal');

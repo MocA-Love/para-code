@@ -172,6 +172,20 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		await this.render({ ...this._frame, scrollTop: reveal.scrollTop, scrollLeft: reveal.scrollLeft });
 	}
 
+	/**
+	 * 本体の枠（スクロールする側）に、セルと同じ座標の飾りを重ねる。`background` はセルの背面、
+	 * `foreground` は前面に置く（前後は CSS の z-index で決める）。グリッドを捨てるときに一緒に外れる。
+	 */
+	addDecorations(background: Element | undefined, foreground: Element | undefined): void {
+		const body = this.panes.get('body')!;
+		if (background) {
+			body.insertBefore(background, body.firstChild);
+		}
+		if (foreground) {
+			body.appendChild(foreground);
+		}
+	}
+
 	whenIdle(): Promise<void> {
 		return this.idle;
 	}
