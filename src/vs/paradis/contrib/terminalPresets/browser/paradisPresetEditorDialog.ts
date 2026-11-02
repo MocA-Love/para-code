@@ -79,6 +79,7 @@ import {
 	PARADIS_PROJECT_ROOT_ENV_VAR,
 	PARADIS_WORKSPACE_PRESET_FILE,
 } from '../common/paradisTerminalPresets.js';
+import { paradisFolderLabelMoves } from '../common/paradisPresetLocalLedger.js';
 import {
 	IParadisPresetMovePlan,
 	isParadisPresetMoveRefusal,
@@ -1920,6 +1921,14 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 			try {
 				await this.presetService.setPresetsFolder(group.presets, name);
+				// 「フォルダ名も表示する」の印はフォルダ名をキーに持つので、新しい名前へ移す
+				// （移さないと古い名前に残り、改名したフォルダのボタンがアイコンだけになる）。
+				for (const move of paradisFolderLabelMoves(group.presets, group.folder, name)) {
+					if (this.presetService.isFolderLabelShown(move.from)) {
+						this.presetService.setFolderLabelShown(move.from, false);
+						this.presetService.setFolderLabelShown(move.to, true);
+					}
+				}
 				this._renderList();
 			} catch (error) {
 				errorEl.textContent = error instanceof Error ? error.message : String(error);
