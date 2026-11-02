@@ -26,7 +26,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js';
+import { ParadisOverlayWebviewPane, watchParadisViewerResource } from '../browser/paradisOverlayWebviewPane.js';
 import { paradisPreviewOrigins, resolveParadisViewerDocumentUrl, resolveParadisViewerLibBase } from './paradisViewerAssets.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -35,9 +35,9 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
-import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisPdfInput } from './paradisPdfInput.js';
 import { PARADIS_PDF_EDITOR_ID } from '../browser/paradisFileViewers.js';
@@ -91,12 +91,11 @@ export class ParadisPdfFileEditor extends EditorPane {
 
 	private _rootElement: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
-	private _webview: IOverlayWebview | undefined;
+	/** overlay webview（作り方・配置・同梱ライブラリの置き場は部品が持つ）。 */
+	private readonly _pane: ParadisOverlayWebviewPane;
 	private _pageLabel: HTMLElement | undefined;
 	private _percentButton: HTMLButtonElement | undefined;
 	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
-	private readonly _originPool: ParadisWebviewOriginPool;
-	private _webviewClaimed = false;
 	private _editorVisible = false;
 	private _currentResource: URI | undefined;
 	private _renderGeneration = 0;
@@ -117,23 +116,37 @@ export class ParadisPdfFileEditor extends EditorPane {
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
-		@IWebviewService private readonly _webviewService: IWebviewService,
+		@IWebviewService webviewService: IWebviewService,
 		@IFileService private readonly _fileService: IFileService,
-		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
+		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 	) {
 		super(PARADIS_PDF_EDITOR_ID, group, telemetryService, themeService, storageService);
+		this._pane = this._register(new ParadisOverlayWebviewPane(this, {
+			originKey: PARADIS_PDF_EDITOR_ID,
+			enableFindWidget: false,
+			allowScripts: true,
+			resolveLibBase: () => resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(PDFJS_MEDIA_ROOT)),
+			onDidCreate: (webview, store) => this._onWebviewCreated(webview, store),
+			onDidDispose: () => { this._shownDocument = undefined; },
+			// PDF には Raw が無いので白紙の検知（作り直して最後は Raw へ倒す）は入れず、基盤の致命エラーを送るだけにする。
+			reportFatalErrorAs: PARADIS_PDF_EDITOR_ID,
+		}, webviewService, layoutService, storageService));
 		// ライブラリの置き場は入力に依らないので、ここで先に決めておく。開く操作が
 		// 共有プロセスの応答を待たされる最悪値が、そのぶん短くなる。
-		void this._resolveLibBase();
-		this._originPool = ParadisWebviewOriginPool.getShared(storageService);
+		void this._pane.resolveLibBase();
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
-		// タブを閉じたら、戻るための記録も捨てる。
+		// タブを閉じたら、戻るための記録と描画を捨てる。
 		this._register(this.group.onDidCloseEditor(e => {
-			if (e.editor instanceof ParadisPdfInput && this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
+			if (!(e.editor instanceof ParadisPdfInput)) {
+				return;
+			}
+			if (this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
 				this._shownDocument = undefined;
 			}
+			// 戻るために残していた描画（pdf.js の canvas）も捨てる。閉じた後まで抱えない。
+			this._pane.clearContentFor(e.editor.resource);
 		}));
 		this._rootElement = dom.append(parent, dom.$('.paradis-pdf-viewer'));
 		this._rootElement.style.position = 'relative';
@@ -163,107 +176,30 @@ export class ParadisPdfFileEditor extends EditorPane {
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
 
-		// ディスク上の PDF が差し替わったら表示中なら再レンダリングする。
-		try {
-			const watcher = this._fileService.createWatcher(resource, { recursive: false, excludes: [] });
-			store.add(watcher);
-			store.add(watcher.onDidChange(e => {
-				if (e.contains(resource) && isEqual(this._currentResource, resource) && this._webviewClaimed) {
-					this._renderResource(resource);
-				}
-			}));
-		} catch {
-			// watcher が作れなくても表示は継続できる。
-		}
+		// ディスク上の PDF が差し替わったら表示中なら再レンダリングする（通知が続いても 50ms に 1 回）。
+		store.add(watchParadisViewerResource(this._fileService, resource, () => {
+			if (isEqual(this._currentResource, resource) && this._pane.claimed) {
+				this._renderResource(resource);
+			}
+		}));
 
-		if (this._webviewClaimed) {
+		if (this._pane.claimed) {
 			this._renderResource(resource);
 		}
 		this._updateWebviewPlacement();
 	}
 
-	/**
-	 * 同梱ライブラリの置き場。**ペインにつき一度だけ**決める（アプリの中にあるので入力に依らない）。
-	 * 文書の URL はこれとは別に、入力ごとに解決する（使い回されるペインで焼き付けないため）。
-	 */
-	private _libBase: Promise<string | undefined> | undefined;
-	/** 上の答えが出たか。webview の生成は答えが出るまで待つ（生成時にしか渡せないため）。 */
-	private _libBaseResolved = false;
-	private _resolvedLibBase: string | undefined;
-	/** いまの webview を作ったときに service worker を切ったか。要否が変わったら作り直す。 */
-	private _webviewServiceWorkerDisabled = false;
-	/** webview とその貸し出し origin。作り直せるようにまとめて捨てられる形で持つ。 */
-	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
-
-	private async _resolveLibBase(): Promise<string | undefined> {
-		this._libBase ??= resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(PDFJS_MEDIA_ROOT));
-		const libBase = await this._libBase;
-		this._resolvedLibBase = libBase;
-		this._libBaseResolved = true;
-		return libBase;
-	}
-
-	/**
-	 * 文書だけ載せられなかったことがあるか。
-	 *
-	 * ライブラリは載ったが文書の mount だけ失敗すると、「service worker を切った webview に、
-	 * service worker でしか解決できない URL を渡す」状態になり、ライブラリすら読めなくなる。
-	 * **真偽値を毎回計算し直すと placement 側（文書 URL を知らない）と食い違って作り直しが
-	 * 往復する**ので、一度失敗したらラッチして以後はサーバを使わない。
-	 */
-	private _documentServeFailed = false;
-
 	/** このリソースを配信サーバから出せるか（ライブラリを載せられて、文書が手元にある）。 */
 	private _canServe(resource: URI): boolean {
-		return !!this._resolvedLibBase && !this._documentServeFailed && resource.scheme === Schemas.file;
+		return !!this._pane.libBase && !this._pane.documentServeFailed && resource.scheme === Schemas.file;
 	}
 
-	private _disposeWebview(): void {
-		if (this._webview && this._webviewClaimed) {
-			this._webview.release(this);
-		}
-		this._webviewClaimed = false;
-		this._webview = undefined;
-		this._shownDocument = undefined;
-		this._webviewStore.clear();
-	}
-
+	/** webview を返す（ローカルサーバから配れるなら service worker を切った webview。要否が変わったら作り直す）。 */
 	private _ensureWebview(resource: URI): IOverlayWebview {
-		const wantsServiceWorkerDisabled = this._canServe(resource);
-		if (this._webview && this._webviewServiceWorkerDisabled !== wantsServiceWorkerDisabled) {
-			// 生成時オプションなので、要否が変わったら作り直すしかない（別のファイルを開いたとき等）。
-			this._disposeWebview();
-		}
-		if (this._webview) {
-			return this._webview;
-		}
-		const store = new DisposableStore();
-		this._webviewStore.value = store;
-		this._webviewServiceWorkerDisabled = wantsServiceWorkerDisabled;
-		// origin を渡さないと webview ごとに新しい service worker 登録が増え、二度と消えない。
-		const originLease = store.add(this._originPool.acquire(PARADIS_PDF_EDITOR_ID));
-		const webview = this._webviewService.createWebviewOverlay({
-			origin: originLease.origin,
-			title: undefined,
-			options: {
-				purpose: WebviewContentPurpose.CustomEditor,
-				enableFindWidget: false,
-				tryRestoreScrollPosition: true,
-				// 非表示になるたびに service worker 登録からやり直すと、白紙で止まる窓が毎回でき直す
-				// （paradisRenderedFileEditor.ts と同じ「間欠的に白紙になる」フィールド報告の主因）。
-				// 生かしたまま隠すことでその窓を無くす。
-				retainContextWhenHidden: true,
-				// ローカルサーバから配れるなら service worker は要らない（60秒待ちの経路に入らない）。
-				disableServiceWorker: wantsServiceWorkerDisabled
-			},
-			contentOptions: {
-				allowScripts: true,
-				localResourceRoots: this._localResourceRoots(resource)
-			},
-			extension: undefined
-		});
-		this._webview = webview;
-		store.add(webview);
+		return this._pane.ensure(this._canServe(resource), this._localResourceRoots(resource));
+	}
+
+	private _onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
 		store.add(webview.onMessage(({ message }) => {
 			if (typeof message === 'object' && message !== null && (message as { type?: unknown }).type === PARADIS_PDF_VIEW_STATE_MESSAGE
 				&& this._renderedDocument !== undefined && (message as { render?: unknown }).render === this._renderedDocument.render) {
@@ -286,7 +222,6 @@ export class ParadisPdfFileEditor extends EditorPane {
 				this._openTiming.clear();
 			}
 		}));
-		return webview;
 	}
 
 	private _appendZoomButton(parent: HTMLElement, icon: ThemeIcon, title: string, command: ParadisPdfZoomCommand): void {
@@ -295,7 +230,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 	}
 
 	private _postZoom(command: ParadisPdfZoomCommand): void {
-		void this._webview?.postMessage({ type: PARADIS_PDF_ZOOM_MESSAGE, command });
+		void this._pane.webview?.postMessage({ type: PARADIS_PDF_ZOOM_MESSAGE, command });
 	}
 
 	/** ページの中から届いた拡大率とページ番号をバーに出す。値が無いとき（描く前）は空にする。 */
@@ -327,8 +262,8 @@ export class ParadisPdfFileEditor extends EditorPane {
 	}
 
 	private async _renderResourceAfterPreflight(resource: URI, generation: number, reuseShown: boolean): Promise<void> {
-		await this._resolveLibBase();
-		if (reuseShown && this._shownDocument && this._webview && this._webviewServiceWorkerDisabled === this._canServe(resource)) {
+		await this._pane.resolveLibBase();
+		if (reuseShown && this._shownDocument && this._pane.webview && this._pane.serviceWorkerDisabled === this._canServe(resource)) {
 			// 配信サーバから読んでいる文書は、登録を取り直してから使い回す。取り直さないと、裏にいる間に
 			// 古い順に外され（上限 64 件）、区間読みの大きな PDF で、まだ読んでいないページが読めなくなる。
 			// 外れていたら新しい URL になるので、鍵が合わずに描き直す。
@@ -339,7 +274,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 			if (generation !== this._renderGeneration || !isEqual(this._currentResource, resource)) {
 				return;
 			}
-			if (stat?.etag && canReuseParadisShownDocument(this._shownDocument, resource, this._webview, this._shownKeys(stat, documentUrl))) {
+			if (stat?.etag && canReuseParadisShownDocument(this._shownDocument, resource, this._pane.webview, this._shownKeys(stat, documentUrl))) {
 				// 前の表示がそのまま見えている。描くのにかかった時間ではないので、開くまでの計測も使わない。
 				this._openTiming.clear();
 				return;
@@ -348,7 +283,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 		const documentUrl = this._canServe(resource) ? await resolveParadisViewerDocumentUrl(this._sharedProcessService, resource) : undefined;
 		if (this._canServe(resource) && documentUrl === undefined) {
 			// 文書だけ載らなかった。この webview の作り方では読めないので、以後サーバを使わない。
-			this._documentServeFailed = true;
+			this._pane.markDocumentServeFailed();
 		}
 		// `_ensureWebview` は要否が変わると webview を捨てる破壊的な操作になったので、
 		// 追い越された描画がここへ来て新しい webview を捨てないよう先に落とす。
@@ -366,12 +301,12 @@ export class ParadisPdfFileEditor extends EditorPane {
 		switch (getParadisPdfRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration)) {
 			case 'rejected':
 				this._shownDocument = undefined;
-				webview.setHtml(this._buildRejectedFileHtml());
+				this._pane.setDocumentHtml(webview, resource, this._buildRejectedFileHtml());
 				return;
 			case 'viewer':
 				// 描き終わりの知らせ（first paint）が届くまでは使い回さない。
 				this._shownDocument = stat?.etag ? { resource, webview, keys: this._shownKeys(stat, documentUrl), confirmed: false } : undefined;
-				webview.setHtml(this._buildHtml(resource, documentUrl, stat?.size));
+				this._pane.setDocumentHtml(webview, resource, this._buildHtml(resource, documentUrl, stat?.size));
 				return;
 			case 'stale':
 				return;
@@ -386,9 +321,9 @@ export class ParadisPdfFileEditor extends EditorPane {
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
 		// 配信サーバを使うかどうかは webview の作り方と揃える。片方だけサーバにすると、
 		// service worker を切った webview に解決できない URL を渡すことになる。
-		const served = this._webviewServiceWorkerDisabled && documentUrl !== undefined;
+		const served = this._pane.serviceWorkerDisabled && documentUrl !== undefined;
 		const pdfUrl = served ? documentUrl : asWebviewUri(resource, remoteInfo).toString(true);
-		const libBase = served && this._resolvedLibBase ? this._resolvedLibBase : asWebviewUri(FileAccess.asFileUri(PDFJS_MEDIA_ROOT)).toString(true);
+		const libBase = served && this._pane.libBase ? this._pane.libBase : asWebviewUri(FileAccess.asFileUri(PDFJS_MEDIA_ROOT)).toString(true);
 		const useRangeRequests = shouldParadisPdfUseRangeRequests(size, served);
 		const nonce = generateUuid();
 		this._showViewState(undefined, undefined, undefined);
@@ -407,29 +342,10 @@ export class ParadisPdfFileEditor extends EditorPane {
 
 	private _updateWebviewPlacement(): void {
 		const resource = this._currentResource;
-		const shouldShow = this._editorVisible && !!resource;
-		if (!shouldShow) {
-			if (this._webview && this._webviewClaimed) {
-				this._webview.release(this);
-				this._webviewClaimed = false;
-			}
-			return;
-		}
-		if (!this._webview && !this._libBaseResolved) {
-			// 配信先が決まる前に作ると service worker の要否を間違える。**ここで自分で解決を蹴ること。**
-			// 描画側に任せると、描画は claim 済みでないと走らないので、初回は誰も蹴らずに白紙のまま止まる。
-			void this._resolveLibBase().then(() => this._updateWebviewPlacement());
-			return;
-		}
-		const webview = this._ensureWebview(resource);
-		const justClaimed = !this._webviewClaimed;
-		if (justClaimed) {
-			webview.claim(this, this.window, undefined);
-			this._webviewClaimed = true;
-		}
-		dom.setParentFlowTo(webview.container, this._webviewContainer!);
-		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
-		if (justClaimed) {
+		const justClaimed = this._pane.place(this._editorVisible && !!resource, this.window, this._webviewContainer!,
+			() => ({ disableServiceWorker: this._canServe(resource!), localResourceRoots: this._localResourceRoots(resource!) }),
+			() => this._updateWebviewPlacement());
+		if (justClaimed && resource) {
 			this._renderResource(resource, true);
 		}
 	}
@@ -443,10 +359,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 			// 描き終わったか分からない表示は、戻ったときに描き直す（白紙のまま残さない）。
 			this._shownDocument = undefined;
 		}
-		if (this._webview && this._webviewClaimed) {
-			this._webview.release(this);
-			this._webviewClaimed = false;
-		}
+		this._pane.release();
 		super.clearInput();
 	}
 
@@ -460,7 +373,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 
 	override focus(): void {
 		super.focus();
-		this._webview?.focus();
+		this._pane.webview?.focus();
 	}
 
 	override layout(dimension: dom.Dimension): void {
