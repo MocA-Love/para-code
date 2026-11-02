@@ -49,6 +49,7 @@ import {
 	paradisCodexHookTrustMode,
 	paradisSelectManagedCodexHooks,
 } from '../common/paradisCodexHookTrust.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 // ---------- 1つの CODEX_HOME に対する調査と付与 ----------
 
@@ -122,10 +123,6 @@ export async function paradisInspectCodexHookTrust(target: IParadisCodexHookTrus
 interface IUserHooksState {
 	readonly version: string | undefined;
 	readonly state: Record<string, unknown>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 async function readUserHooksState(rpc: IParadisCodexAppServerRpc): Promise<IUserHooksState> {

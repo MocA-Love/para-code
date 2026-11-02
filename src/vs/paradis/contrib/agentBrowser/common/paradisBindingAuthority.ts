@@ -5,6 +5,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { isRecord } from '../../../common/paradisGuards.js';
+
 const MAX_PANE_ENTRIES = 4096;
 const MAX_BROWSER_VIEW_ENTRIES = 4096;
 const MAX_TOKEN_LENGTH = 200;
@@ -161,10 +163,6 @@ interface IParadisBindingTicketRecord<TWindow, TConnection extends object, TDesc
 	readonly descriptor: TDescriptor;
 	readonly scope: ParadisBindingAuthorityStableScope;
 	status: 'live' | 'tombstone';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function hasExactKeys(record: Readonly<Record<string, unknown>>, required: readonly string[], optional: readonly string[] = []): boolean {

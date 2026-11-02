@@ -29,6 +29,7 @@ import {
 } from '../common/paradisScheduledRuns.js';
 import { paradisSanitizeScheduledRunDraft } from '../common/paradisScheduledRunsSanitize.js';
 import { IParadisScheduledRunsStore, IParadisScheduledRunsStoredState, ParadisScheduledRunsService } from './paradisScheduledRunsService.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 export class ParadisScheduledRunsChannel implements IServerChannel<string> {
 
@@ -79,10 +80,6 @@ export class ParadisScheduledRunsChannel implements IServerChannel<string> {
 }
 
 // ---------- 保存先 ----------
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isStoredDefinition(value: unknown): value is IParadisScheduledRunDefinition {
 	return isRecord(value)

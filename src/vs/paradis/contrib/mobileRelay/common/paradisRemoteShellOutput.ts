@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { asRecord } from '../../../common/paradisGuards.js';
+
 // SSH の接続先で動く Claude Code のバックグラウンドのシェルの出力を、モバイルへ届けるときの取り決め（agent.shells.v1）。
 //
 // 出力ファイルは接続先のディスクにあり、shared process には手が届かない。そこで:
@@ -57,14 +59,10 @@ const LINE_LENGTH = 1_001;
 /** 1 シェルあたりの行の上限（手元の読み取りと同じ）。 */
 const LINES_MAX = 50;
 
-function record(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
 /** 頼みの中身の検査（REH が受け取るときに使う。接続先にとって手元は信じてよい相手だが、形は確かめる）。 */
 export function paradisIsValidRemoteShellOutputItems(value: unknown): value is readonly IParadisRemoteShellOutputItemRequest[] {
 	return Array.isArray(value) && value.length > 0 && value.length <= PARADIS_REMOTE_SHELL_OUTPUT_ITEMS_MAX && value.every(item => {
-		const entry = record(item);
+		const entry = asRecord(item);
 		return entry !== undefined && typeof entry.id === 'string' && SHELL_ID.test(entry.id)
 			&& typeof entry.outputFile === 'string' && entry.outputFile.length > 0 && entry.outputFile.length <= 4096;
 	});
@@ -81,7 +79,7 @@ export function paradisDecodeRemoteShellOutputItems(value: unknown, requested: r
 		return result;
 	}
 	for (const candidate of value.slice(0, PARADIS_REMOTE_SHELL_OUTPUT_ITEMS_MAX)) {
-		const item = record(candidate);
+		const item = asRecord(candidate);
 		const id = item?.id;
 		if (item === undefined || typeof id !== 'string' || !wanted.has(id) || result.has(id)) {
 			continue;
@@ -94,7 +92,7 @@ export function paradisDecodeRemoteShellOutputItems(value: unknown, requested: r
 			continue;
 		}
 		const lines = item.lines.slice(-LINES_MAX).filter((line): line is string => typeof line === 'string').map(line => line.slice(0, LINE_LENGTH));
-		const ended = record(item.ended);
+		const ended = asRecord(item.ended);
 		const status = ended?.status;
 		const exitCode = ended?.exitCode;
 		result.set(id, {

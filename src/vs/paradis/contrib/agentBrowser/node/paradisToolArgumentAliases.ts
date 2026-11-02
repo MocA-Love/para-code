@@ -13,6 +13,7 @@
 // 両方を渡されたら新しい名前を使う。数でない値は読み替えない（前の名前のまま残し、突き合わせが正しい名前を案内する）。
 
 import { PARADIS_SETTLE_TOOLS } from './paradisBrowserObserve.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 内蔵 chrome-devtools-mcp の、ミリ秒の `timeout` を秒の `timeout_seconds` として見せる道具。 */
 export const PARADIS_DEVTOOLS_SECONDS_TIMEOUT_TOOLS: ReadonlySet<string> = new Set(['evaluate_script', 'navigate_page', 'wait_for']);
@@ -31,10 +32,6 @@ const CONDITION_RENAMES: readonly (readonly [string, string])[] = [['timeout_ms'
 
 /** 手順の入れ子の深さの上限（run_steps は 2 段までだが、壊れた入力で深く潜らない）。 */
 const MAX_STEP_DEPTH = 4;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /** 前の名前をミリ秒から秒に読み替える。変えたら新しいオブジェクトを、変えなければ元を返す。 */
 function renamed(args: Record<string, unknown>, renames: readonly (readonly [string, string])[]): Record<string, unknown> {

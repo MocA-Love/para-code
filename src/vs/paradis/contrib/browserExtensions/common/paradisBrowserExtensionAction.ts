@@ -5,6 +5,8 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { asRecord } from '../../../common/paradisGuards.js';
 // Portions adapted from stablyai/orca (MIT, commit 4642bc00): src/main/browser/extensions/browser-extension-action-state.ts, src/main/browser/extensions/browser-extension-popup-geometry.ts, src/shared/browser-extension-toolbar-types.ts
 
 // chrome.action（ツールバーのボタン）の状態と、ポップアップを置く位置の計算（P5）。main と renderer の両方から
@@ -74,10 +76,6 @@ export class ParadisBrowserExtensionActionState {
 		}
 		return overrides;
 	}
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 /** manifest の書き方の絵（1 つのパスか、大きさ → パス）。 */
