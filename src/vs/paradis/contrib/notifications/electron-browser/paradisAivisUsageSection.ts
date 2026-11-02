@@ -17,6 +17,7 @@ import { IParadisAivisMeResult, IParadisAivisUsageDayEntry, IParadisAivisUsageRe
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { ParadisAivisRenderGeneration, ParadisAivisUsageRequestCache } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
+import { paradisFillAivisUsageDays, paradisVoiceUsageRange } from '../common/paradisVoiceUsage.js';
 
 const $ = dom.$;
 
@@ -70,31 +71,9 @@ const CHART_METRICS: readonly IChartMetricDef[] = [
 	{ id: 'credits', label: 'Credits', value: day => day.creditConsumed, format: day => `${day.creditConsumed.toFixed(2)} credits` },
 ];
 
-function toIsoDate(d: Date): string {
-	const y = d.getFullYear();
-	const m = String(d.getMonth() + 1).padStart(2, '0');
-	const day = String(d.getDate()).padStart(2, '0');
-	return `${y}-${m}-${day}`;
-}
-
 function rangeFor(period: Period): { start: string; end: string; days: number } {
-	const end = new Date();
-	const start = new Date();
 	const days = period === '7' ? 7 : 30;
-	start.setDate(end.getDate() - (days - 1));
-	return { start: toIsoDate(start), end: toIsoDate(end), days };
-}
-
-function fillMissingDates(days: readonly IParadisAivisUsageDayEntry[], start: string, end: string): IParadisAivisUsageDayEntry[] {
-	const result: IParadisAivisUsageDayEntry[] = [];
-	const map = new Map(days.map(d => [d.date, d]));
-	const s = new Date(`${start}T00:00:00`);
-	const e = new Date(`${end}T00:00:00`);
-	for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
-		const key = toIsoDate(d);
-		result.push(map.get(key) ?? { date: key, requestCount: 0, characterCount: 0, creditConsumed: 0, byApiKey: {} });
-	}
-	return result;
+	return { ...paradisVoiceUsageRange(Date.now(), days), days };
 }
 
 export class ParadisAivisUsageSection extends Disposable {
@@ -191,7 +170,7 @@ export class ParadisAivisUsageSection extends Disposable {
 	}
 
 	private _renderUsage(container: HTMLElement, usage: IParadisAivisUsageResult, me: IParadisAivisMeResult | null, range: { start: string; end: string; days: number }): void {
-		const filled = fillMissingDates(usage.days, range.start, range.end);
+		const filled = paradisFillAivisUsageDays(usage.days, range.start, range.end);
 		const total = usage.total;
 
 		const statGrid = dom.append(container, $('.pns-stat-grid'));

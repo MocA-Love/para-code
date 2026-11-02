@@ -19,6 +19,7 @@ import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradi
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 import { paradisNormalizeElevenLabsRules } from '../common/paradisElevenLabs.js';
 import { ParadisNotificationsService } from './paradisNotificationsService.js';
+import { ParadisRingtoneIngestService } from './paradisRingtoneIngestService.js';
 
 export class ParadisNotificationsChannel implements IServerChannel<string> {
 
@@ -37,24 +38,24 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 	call<T>(ctx: string, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			case 'getCustomRingtoneInfo': return this.service.getCustomRingtoneInfo() as Promise<T>;
-			case 'getCustomEditState': return this.service.getCustomEditState() as Promise<T>;
-			case 'importCustomAudio': return this.service.importCustomAudio(String(args[0])) as Promise<T>;
-			case 'deleteCustomAudio': return this.service.deleteCustomAudio() as Promise<T>;
-			case 'renameCustomAudio': return this.service.renameCustomAudio(String(args[0])) as Promise<T>;
-			case 'readCustomAudioFile': return this.service.readCustomAudioFile() as Promise<T>;
+			case 'getCustomRingtoneInfo': return this.service.ringtones.getCustomRingtoneInfo() as Promise<T>;
+			case 'getCustomEditState': return this.service.ringtones.getCustomEditState() as Promise<T>;
+			case 'importCustomAudio': return this.service.ringtones.importCustomAudio(String(args[0])) as Promise<T>;
+			case 'deleteCustomAudio': return this.service.ringtones.deleteCustomAudio() as Promise<T>;
+			case 'renameCustomAudio': return this.service.ringtones.renameCustomAudio(String(args[0])) as Promise<T>;
+			case 'readCustomAudioFile': return this.service.ringtones.readCustomAudioFile() as Promise<T>;
 
-			case 'checkYtDlp': return this.service.checkYtDlp() as Promise<T>;
-			case 'installYtDlp': return this.service.installYtDlp(String(args[0])) as Promise<T>;
-			case 'updateYtDlp': return this.service.updateYtDlp(String(args[0])) as Promise<T>;
-			case 'getInstallLog': return this.service.getInstallLog(String(args[0]), Number(args[1]) || 0) as Promise<T>;
-			case 'downloadYouTubeAudio': return this.service.downloadYouTubeAudio(String(args[0])) as Promise<T>;
-			case 'readTempAudioFile': return this.service.readTempAudioFile(String(args[0])) as Promise<T>;
-			case 'cleanupTempAudio': return this.service.cleanupTempAudio(String(args[0])) as Promise<T>;
-			case 'fetchAudio': return this.service.fetchAudio(String(args[0])) as Promise<T>;
-			case 'downloadMyinstantsAudio': return this.service.downloadMyinstantsAudio(String(args[0])) as Promise<T>;
-			case 'importMyinstantsAudio': return this.service.importMyinstantsAudio(String(args[0]), String(args[1] ?? '')) as Promise<T>;
-			case 'renderClip': return this.service.renderClip(args[0] as Parameters<ParadisNotificationsService['renderClip']>[0]) as Promise<T>;
+			case 'checkYtDlp': return this.service.ringtones.checkYtDlp() as Promise<T>;
+			case 'installYtDlp': return this.service.ringtones.installYtDlp(String(args[0])) as Promise<T>;
+			case 'updateYtDlp': return this.service.ringtones.updateYtDlp(String(args[0])) as Promise<T>;
+			case 'getInstallLog': return this.service.ringtones.getInstallLog(String(args[0]), Number(args[1]) || 0) as Promise<T>;
+			case 'downloadYouTubeAudio': return this.service.ringtones.downloadYouTubeAudio(String(args[0])) as Promise<T>;
+			case 'readTempAudioFile': return this.service.ringtones.readTempAudioFile(String(args[0])) as Promise<T>;
+			case 'cleanupTempAudio': return this.service.ringtones.cleanupTempAudio(String(args[0])) as Promise<T>;
+			case 'fetchAudio': return this.service.ringtones.fetchAudio(String(args[0])) as Promise<T>;
+			case 'downloadMyinstantsAudio': return this.service.ringtones.downloadMyinstantsAudio(String(args[0])) as Promise<T>;
+			case 'importMyinstantsAudio': return this.service.ringtones.importMyinstantsAudio(String(args[0]), String(args[1] ?? '')) as Promise<T>;
+			case 'renderClip': return this.service.ringtones.renderClip(args[0] as Parameters<ParadisRingtoneIngestService['renderClip']>[0]) as Promise<T>;
 
 			case 'getAivisModel': return this.service.getAivisModel(String(args[0]), String(args[1])) as Promise<T>;
 			case 'listAivisDictionaries': return this.service.listAivisDictionaries(String(args[0])) as Promise<T>;

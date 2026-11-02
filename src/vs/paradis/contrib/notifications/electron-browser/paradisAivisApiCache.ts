@@ -16,6 +16,7 @@
 // あるため、ダイアログを開き直すたびに `clearAivisApiCaches()` でキャッシュを破棄する。
 
 import { IParadisAivisDictionaryListItem, IParadisAivisMeResult, IParadisAivisModelSummary, IParadisAivisUsageResult } from '../common/paradisNotifications.js';
+import { ParadisPerKeyCache, ParadisRequestCache } from '../common/paradisVoiceUsage.js';
 
 export interface IParadisAivisUsageBundle {
 	readonly usage: IParadisAivisUsageResult;
@@ -23,27 +24,14 @@ export interface IParadisAivisUsageBundle {
 }
 
 export class ParadisAivisUsageRequestCache {
-	private readonly entries = new Map<string, Promise<IParadisAivisUsageBundle>>();
+	private readonly requests = new ParadisRequestCache<IParadisAivisUsageBundle>();
 
 	getOrCreate(apiKey: string, start: string, end: string, factory: () => Promise<IParadisAivisUsageBundle>): Promise<IParadisAivisUsageBundle> {
-		const key = JSON.stringify([apiKey, start, end]);
-		const existing = this.entries.get(key);
-		if (existing) {
-			return existing;
-		}
-
-		const created = factory().catch(error => {
-			if (this.entries.get(key) === created) {
-				this.entries.delete(key);
-			}
-			throw error;
-		});
-		this.entries.set(key, created);
-		return created;
+		return this.requests.getOrCreate(JSON.stringify([apiKey, start, end]), factory);
 	}
 
 	clear(): void {
-		this.entries.clear();
+		this.requests.clear();
 	}
 }
 
@@ -59,7 +47,7 @@ export class ParadisAivisRenderGeneration {
 	}
 }
 
-let dictionaryListCache = new Map<string, IParadisAivisDictionaryListItem[]>();
+const dictionaryListCache = new ParadisPerKeyCache<IParadisAivisDictionaryListItem[]>();
 
 export function getCachedAivisDictionaryList(apiKey: string): IParadisAivisDictionaryListItem[] | undefined {
 	return dictionaryListCache.get(apiKey);
@@ -74,7 +62,7 @@ export function invalidateAivisDictionaryListCache(apiKey: string): void {
 	dictionaryListCache.delete(apiKey);
 }
 
-let modelInfoCache = new Map<string, IParadisAivisModelSummary>();
+const modelInfoCache = new ParadisPerKeyCache<IParadisAivisModelSummary>();
 
 export function getCachedAivisModelInfo(apiKey: string, uuid: string): IParadisAivisModelSummary | undefined {
 	return modelInfoCache.get(`${apiKey} ${uuid}`);
@@ -94,6 +82,6 @@ export function setCachedAivisModelInfo(apiKey: string, uuid: string, info: IPar
 
 /** 通知設定ダイアログを開くたびに呼ぶ。閉じている間の外部変更を次回描画で必ず拾えるようにする。 */
 export function clearAivisApiCaches(): void {
-	dictionaryListCache = new Map();
-	modelInfoCache = new Map();
+	dictionaryListCache.clear();
+	modelInfoCache.clear();
 }

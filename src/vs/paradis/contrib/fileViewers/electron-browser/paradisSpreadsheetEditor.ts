@@ -36,7 +36,7 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IParadisCellComment, IParadisCellData, IParadisRenderShape, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import { IParadisCellComment, IParadisCellData, IParadisRenderShape, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, unavailableParadisSpreadsheetSemanticDiagnostics } from '../common/paradisSpreadsheet.js';
 import { pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell, type ParadisOfficeSpreadsheetPrintSheet } from '../common/paradisOfficePrint.js';
@@ -1585,11 +1585,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				return;
 			}
 			// IPC を越えた例外は名前も種類も失っている（常に "Error"）。サーバー側と同じく理由のコードにする。
-			semanticDiagnostics = {
-				available: false, terminal: false, expectedParts: 0, parsedParts: 0, expectedSheets: 0, parsedSheets: 0,
-				expectedCells: 0, parsedCells: 0, unknownElements: 0, unresolvedReferences: 0, mismatchCount: 0,
-				unavailableReason: 'failed',
-			};
+			semanticDiagnostics = unavailableParadisSpreadsheetSemanticDiagnostics('failed');
 		}
 		// EMF・WMF の差し替えでブックの入れ物は作り直されるので、入れ物ではなく世代で見分け、今のブックに足す。
 		const current = this._workbook;

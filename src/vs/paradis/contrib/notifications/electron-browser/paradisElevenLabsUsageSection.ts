@@ -26,6 +26,7 @@ import { IParadisNotificationsSettingsService } from '../browser/paradisNotifica
 import { ParadisAivisRenderGeneration } from './paradisAivisApiCache.js';
 import { paradisElevenLabsModelCache } from './paradisElevenLabsApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
+import { ParadisRequestCache } from '../common/paradisVoiceUsage.js';
 
 const $ = dom.$;
 
@@ -80,7 +81,7 @@ export class ParadisElevenLabsUsageSection extends Disposable {
 	private readonly _renderDisposables = this._register(new DisposableStore());
 	private readonly _renderGeneration = new ParadisAivisRenderGeneration();
 	/** 同じキー・期間の取得を、描き直しのたびにやり直さない。失敗した取得は覚えない。 */
-	private readonly _requests = new Map<string, Promise<IUsageBundle>>();
+	private readonly _requests = new ParadisRequestCache<IUsageBundle>();
 	private _period: Period = '30';
 
 	constructor(
@@ -153,13 +154,8 @@ export class ParadisElevenLabsUsageSection extends Disposable {
 	}
 
 	private _load(apiKey: string, days: number): Promise<IUsageBundle> {
-		const key = JSON.stringify([apiKey, days]);
-		const existing = this._requests.get(key);
-		if (existing) {
-			return existing;
-		}
 		const channel = this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL);
-		const created = (async (): Promise<IUsageBundle> => {
+		return this._requests.getOrCreate(JSON.stringify([apiKey, days]), async (): Promise<IUsageBundle> => {
 			const [usage, subscription, models] = await Promise.all([
 				channel.call<IParadisElevenLabsUsageResult>('getElevenLabsUsage', [apiKey, days]),
 				channel.call<ParadisElevenLabsSubscriptionResult>('getElevenLabsSubscription', [apiKey]).catch(error => ({ kind: 'error' as const, message: error instanceof Error ? error.message : String(error) })),
@@ -170,14 +166,7 @@ export class ParadisElevenLabsUsageSection extends Disposable {
 				subscription,
 				modelNames: new Map(models.map(model => [model.modelId, model.name])),
 			};
-		})();
-		this._requests.set(key, created);
-		created.catch(() => {
-			if (this._requests.get(key) === created) {
-				this._requests.delete(key);
-			}
 		});
-		return created;
 	}
 
 	private _renderUsage(container: HTMLElement, bundle: IUsageBundle, days: number): void {
