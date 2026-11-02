@@ -2021,6 +2021,8 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			allowedSessionIds.add(sessionId);
 			sessionIdToTargetId.set(sessionId, targetId);
+			// isolated world の台帳は、許可したセッションにだけ作る（クライアントが送った sessionId では作らない）
+			isolatedWorlds.noteSession(sessionId);
 			return true;
 		};
 		// Sessions the client has been told about (an attachedToTarget event or an attachToTarget
