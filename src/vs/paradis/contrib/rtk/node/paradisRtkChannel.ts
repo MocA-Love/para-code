@@ -18,6 +18,9 @@
 // その行を飛ばすだけで、セクション全体が壊れていれば空配列を返す)。
 
 import * as cp from 'child_process';
+import { PARADIS_REPO_OUTSIDE_KEY } from '../../agentActivity/common/paradisRepoIdentity.js';
+import { ParadisRepoIdentityResolver } from '../../agentActivity/node/paradisRepoIdentityResolver.js';
+import { paradisFindRtkHistoryDb, paradisReadRtkHistoryStats } from './paradisRtkHistoryDb.js';
 import { Event } from '../../../../base/common/event.js';
 import * as path from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
@@ -34,6 +37,10 @@ import {
 	IParadisRtkDailyRow,
 	IParadisRtkExecOptions,
 	IParadisRtkHistoryEntry,
+	IParadisRtkHistoryStats,
+	IParadisRtkHistoryStatsOptions,
+	IParadisRtkMissedCommand,
+	IParadisRtkMissedOptions,
 	IParadisRtkService,
 	IParadisRtkSummary,
 	paradisRtkLocalDateString,
@@ -65,6 +72,12 @@ const GAIN_JSON_ARGS = ['gain', '-f', 'json', '-d'];
 const GAIN_TEXT_ARGS = ['gain'];
 /** "Recent Commands" の一覧。同じくテキストのみ。 */
 const GAIN_HISTORY_ARGS = ['gain', '-H'];
+/** rtk を通さずに打ったコマンド。会話ログを全部読むので重い（手元で数千の会話・数十秒）。 */
+const DISCOVER_LIMIT = '10';
+/** `rtk discover` の結果を覚えておく時間。重いので開くたびには走らせない。 */
+const MISSED_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+/** `rtk discover` の待ち時間の上限。 */
+const DISCOVER_TIMEOUT_MS = 120_000;
 
 interface IParadisRtkGainJson {
 	readonly summary?: IParadisRtkSummary;
@@ -87,6 +100,11 @@ export class ParadisRtkService implements IParadisRtkService {
 	private readonly cache = new Map<string, { at: number; value: unknown }>();
 	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる)。 */
 	private readonly inflight = new Map<string, Promise<unknown>>();
+	/** `rtk discover` の結果（温め直しの対象にしない別の入れ物）。 */
+	private readonly missedCache = new Map<string, { at: number; value: readonly IParadisRtkMissedCommand[] }>();
+	private readonly missedInflight = new Map<string, Promise<readonly IParadisRtkMissedCommand[]>>();
+	/** 作業フォルダのリポジトリの鍵（AI コストのリポジトリ別と同じ）。 */
+	private readonly repoResolver = new ParadisRepoIdentityResolver();
 	/** 実行のdeadlineと子プロセスツリーの停止を所有する。 */
 	private readonly childProcesses: ParadisChildProcessTreeTracker;
 	/** バックグラウンドで温め続ける対象(キーは cache と同じ)。 */
@@ -148,6 +166,73 @@ export class ParadisRtkService implements IParadisRtkService {
 
 	fetchRecentHistory(options: IParadisRtkExecOptions): Promise<IParadisRtkHistoryEntry[]> {
 		return this.execCached(GAIN_HISTORY_ARGS, options, parseParadisRtkHistory);
+	}
+
+	/**
+	 * 期間のコマンド別・リポジトリ別の集計（Q537 の 15 B）。rtk の履歴の DB を読み取り専用で読む。
+	 * DB が無い・読めない・形が違うときは undefined（renderer は従来の `rtk gain` の表に戻す）。
+	 */
+	async fetchHistoryStats(options: IParadisRtkHistoryStatsOptions): Promise<IParadisRtkHistoryStats | undefined> {
+		const since = typeof options?.since === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(options.since) ? options.since : undefined;
+		const until = typeof options?.until === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(options.until) ? options.until : undefined;
+		if (!since || !until || since > until) {
+			return undefined;
+		}
+		const dbPath = await paradisFindRtkHistoryDb();
+		const raw = dbPath ? await paradisReadRtkHistoryStats(dbPath, since, until) : undefined;
+		if (!raw) {
+			return undefined;
+		}
+		// 作業フォルダを、AI コストのリポジトリ別と同じ束ね方でリポジトリへまとめる
+		const repos = new Map<string, { name: string; folders: Set<string>; count: number; savedTokens: number }>();
+		const outside = { count: 0, savedTokens: 0 };
+		for (const project of raw.projects) {
+			const identity = project.path ? await this.repoResolver.resolve(project.path) : undefined;
+			if (!identity || identity.key === PARADIS_REPO_OUTSIDE_KEY) {
+				outside.count += project.count;
+				outside.savedTokens += project.savedTokens;
+				continue;
+			}
+			let repo = repos.get(identity.key);
+			if (!repo) {
+				repo = { name: identity.name, folders: new Set(), count: 0, savedTokens: 0 };
+				repos.set(identity.key, repo);
+			}
+			repo.folders.add(project.path);
+			repo.count += project.count;
+			repo.savedTokens += project.savedTokens;
+		}
+		return {
+			totals: raw.totals,
+			commands: raw.commands,
+			repos: [...repos.values()]
+				.map(repo => ({ name: repo.name, folders: repo.folders.size, count: repo.count, savedTokens: repo.savedTokens }))
+				.sort((a, b) => b.savedTokens - a.savedTokens),
+			outside,
+		};
+	}
+
+	/** rtk を通さずに打ったコマンド（`rtk discover -a -s <日数> -f json`）。重いので 6 時間覚えておき、温め直しもしない。 */
+	async fetchMissed(options: IParadisRtkMissedOptions): Promise<readonly IParadisRtkMissedCommand[]> {
+		const days = Math.max(1, Math.min(90, Math.round(Number(options?.days) || 7)));
+		const args = ['discover', '-a', '-s', String(days), '-l', DISCOVER_LIMIT, '-f', 'json'];
+		const key = this.cacheKeyFor(args, options);
+		const cached = this.missedCache.get(key);
+		if (!options.bypassCache && cached && this.now() - cached.at < MISSED_CACHE_TTL_MS) {
+			return cached.value;
+		}
+		let running = this.missedInflight.get(key);
+		if (!running) {
+			running = this.exec(options.executablePath, args, DISCOVER_TIMEOUT_MS)
+				.then(stdout => parseParadisRtkDiscover(stdout))
+				.then(value => {
+					this.missedCache.set(key, { at: this.now(), value });
+					return value;
+				})
+				.finally(() => this.missedInflight.delete(key));
+			this.missedInflight.set(key, running);
+		}
+		return running;
 	}
 
 	private fetchGainJson(options: IParadisRtkExecOptions): Promise<IParadisRtkGainJson> {
@@ -293,7 +378,7 @@ export class ParadisRtkService implements IParadisRtkService {
 		return 'rtk';
 	}
 
-	private async exec(explicitPath: string | undefined, args: string[]): Promise<string> {
+	private async exec(explicitPath: string | undefined, args: string[], timeoutMs: number = EXEC_TIMEOUT_MS): Promise<string> {
 		const command = this.resolveCommand(explicitPath);
 		const env = await this.cachedShellEnv.getEnv();
 		// 明示パスが Windows の .cmd/.bat シムを指す場合は cmd.exe 経由にラップする
@@ -320,7 +405,7 @@ export class ParadisRtkService implements IParadisRtkService {
 						reject(new Error(`${PARADIS_RTK_NOT_FOUND_MARKER}: ${command} was not found on PATH`));
 						return;
 					}
-					const message = stderr?.trim() || (timedOut ? `command timed out after ${EXEC_TIMEOUT_MS}ms` : err!.message);
+					const message = stderr?.trim() || (timedOut ? `command timed out after ${timeoutMs}ms` : err!.message);
 					this.logService.warn(`[ParadisRtk] ${command} ${args.join(' ')} failed: ${message}`);
 					reject(new Error(message));
 				} else {
@@ -328,7 +413,7 @@ export class ParadisRtkService implements IParadisRtkService {
 				}
 			});
 			if (!execution.completed && execution.child) {
-				execution.tracked = this.childProcesses.track(execution.child, EXEC_TIMEOUT_MS);
+				execution.tracked = this.childProcesses.track(execution.child, timeoutMs);
 			}
 		});
 	}
@@ -493,6 +578,8 @@ export class ParadisRtkChannel<TContext = string> implements IServerChannel<TCon
 			case 'fetchDaily': return this.service.fetchDaily(options) as Promise<T>;
 			case 'fetchByCommand': return this.service.fetchByCommand(options) as Promise<T>;
 			case 'fetchRecentHistory': return this.service.fetchRecentHistory(options) as Promise<T>;
+			case 'fetchHistoryStats': return this.service.fetchHistoryStats(args[0] as IParadisRtkHistoryStatsOptions) as Promise<T>;
+			case 'fetchMissed': return this.service.fetchMissed(args[0] as IParadisRtkMissedOptions) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
@@ -521,4 +608,31 @@ export function registerParadisRtk(server: IPCServer<string>, logService: ILogSe
 	server.registerChannel(PARADIS_RTK_CHANNEL, new ParadisRtkChannel<string>(service));
 	// バックグラウンド更新のタイマーを止める(unref 済みだが、明示的に畳んでおく)。
 	return { dispose: () => service.dispose() };
+}
+
+/** `rtk discover -f json` の supported を読む。形が違う行は飛ばす。 */
+export function parseParadisRtkDiscover(stdout: string): IParadisRtkMissedCommand[] {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stdout);
+	} catch {
+		throw new Error('rtk returned invalid JSON output');
+	}
+	const supported = (parsed as { supported?: unknown } | undefined)?.supported;
+	if (!Array.isArray(supported)) {
+		return [];
+	}
+	const result: IParadisRtkMissedCommand[] = [];
+	for (const row of supported) {
+		if (typeof row?.command !== 'string') {
+			continue;
+		}
+		result.push({
+			command: row.command,
+			rtkEquivalent: typeof row.rtk_equivalent === 'string' ? row.rtk_equivalent : '',
+			count: typeof row.count === 'number' ? row.count : 0,
+			estimatedSavedTokens: typeof row.estimated_savings_tokens === 'number' ? row.estimated_savings_tokens : 0,
+		});
+	}
+	return result.sort((a, b) => b.estimatedSavedTokens - a.estimatedSavedTokens);
 }
