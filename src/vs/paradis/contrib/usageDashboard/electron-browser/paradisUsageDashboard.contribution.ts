@@ -6,34 +6,37 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 統合使用量ダッシュボードのコマンド登録。
+// 使用量の登録。統合のモーダルに「使用量」の領域を登録し、コマンドからその領域を開く。
 //
 // 引数でタブを指定して開けるので、ccusage / GitHub / rtk それぞれのステータスバーからは
-// 対応するタブを指定して同じダイアログを開く（3機能の contribution 側が
-// `paradis.usage.showDashboard` を該当タブ付きで呼ぶ）。
+// 対応するタブを指定して開く（3機能の contribution 側が `paradis.usage.showDashboard` を該当タブ付きで呼ぶ）。
+//
+// 3 つはもともとエディタのタブ (EditorPane) でも開けた。そのタブを開いたまま終えた窓では、復元のときに
+// 古いタブの代わりに統合のモーダルの使用量を開く（Q537 の 36 A）。
 
-import { Event } from '../../../../base/common/event.js';
-import { localize2 } from '../../../../nls.js';
+import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { ParadisUsageDashboardDialog, ParadisUsageDashboardTab } from './paradisUsageDashboardDialog.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
+import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
+import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { ParadisHubAreaId, paradisRegisterHubArea } from '../../paradisHub/electron-browser/paradisHub.js';
+import { paradisOpenHub } from '../../paradisHub/electron-browser/paradisHubOpen.js';
+import { ParadisUsageArea, ParadisUsageDashboardTab } from './paradisUsageArea.js';
 
 export const PARADIS_USAGE_DASHBOARD_COMMAND_ID = 'paradis.usage.showDashboard';
 
-/** 同時に1つだけ開く（通知設定ダイアログ等と同じ方式）。 */
-let activeDialog: ParadisUsageDashboardDialog | undefined;
+paradisRegisterHubArea({
+	id: ParadisHubAreaId.Usage,
+	// allow-any-unicode-next-line
+	label: localize('paradis.usage.areaLabel', "使用量"),
+	order: 10,
+	create: (instantiationService, containers, host) => instantiationService.createInstance(ParadisUsageArea, containers, host),
+});
 
 /** 別 contribution（各ステータスバー）からタブ指定で開くための入口。 */
 export function paradisOpenUsageDashboard(accessor: ServicesAccessor, tab?: ParadisUsageDashboardTab): void {
-	activeDialog?.dispose();
-	const dialog = accessor.get(IInstantiationService).createInstance(ParadisUsageDashboardDialog, tab);
-	activeDialog = dialog;
-	// 閉じた後も参照を持ち続けると、DOM ごと次に開くまで残る。
-	Event.once(dialog.onDidDispose)(() => {
-		if (activeDialog === dialog) {
-			activeDialog = undefined;
-		}
-	});
+	paradisOpenHub(accessor, ParadisHubAreaId.Usage, tab);
 }
 
 class ParadisShowUsageDashboardAction extends Action2 {
@@ -54,3 +57,49 @@ class ParadisShowUsageDashboardAction extends Action2 {
 }
 
 registerAction2(ParadisShowUsageDashboardAction);
+
+// ---------- 以前のエディタのタブの復元 ----------
+
+/** 以前のエディタのタブの種類（EditorInput の typeId）と、代わりに開くタブ。 */
+const LEGACY_EDITOR_TABS: readonly (readonly [typeId: string, tab: ParadisUsageDashboardTab])[] = [
+	['paradis.input.ccusageDashboard', 'ccusage'],
+	['paradis.input.githubMetricsDashboard', 'github'],
+	['paradis.input.rtkDashboard', 'rtk'],
+];
+
+/** 同じ窓で古いタブが複数あっても、モーダルは 1 回だけ開く。 */
+let legacyOpenScheduled = false;
+
+/**
+ * 古いタブを復元しない（`undefined` を返すとそのタブは捨てられる）代わりに、統合のモーダルの使用量を開く。
+ * 復元の途中で開くと窓の組み立てと重なるので、復元が終わった後に開く。
+ */
+class ParadisLegacyUsageEditorSerializer implements IEditorSerializer {
+
+	constructor(private readonly tab: ParadisUsageDashboardTab) { }
+
+	canSerialize(): boolean {
+		return false;
+	}
+
+	serialize(): string | undefined {
+		return undefined;
+	}
+
+	deserialize(instantiationService: IInstantiationService): EditorInput | undefined {
+		if (!legacyOpenScheduled) {
+			legacyOpenScheduled = true;
+			const tab = this.tab;
+			setTimeout(() => instantiationService.invokeFunction(accessor => paradisOpenUsageDashboard(accessor, tab)), 0);
+		}
+		return undefined;
+	}
+}
+
+for (const [typeId, tab] of LEGACY_EDITOR_TABS) {
+	Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(typeId, class extends ParadisLegacyUsageEditorSerializer {
+		constructor() {
+			super(tab);
+		}
+	});
+}

@@ -6,35 +6,30 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 使用量ダッシュボード (ccusage · GitHub API · rtk) を1つにまとめたダイアログ。
+// 統合のモーダルの「使用量」の領域（AI コスト · スペース別 · GitHub API · rtk · 作業実績 · 表示と取得元）。
 //
-// もともと3つは別々のタブ (EditorPane) で、ステータスバーの各項目から個別に開いていた。
-// 「今どれだけ使ったか」は3つを見比べて初めて分かることが多いのに、タブが3枚に散ると
-// 並べて見るのにレイアウトを組み替える必要があった。ここでは左ナビで切り替える1枚に
-// まとめ、どこから開いても同じ場所に出るようにする。
-//
-// 各パネルの中身は元のタブと同じコード (ParadisCcusageSection / ParadisGithubMetricsSection /
-// ParadisRtkSection) をそのまま使う。タブ実装も同じセクションを内包しているので、
-// 入口が2つあっても描画は1か所にある。
+// もとは ccusage · GitHub API · rtk が別々のタブ (EditorPane) で、次に左ナビで切り替える 1 枚のダイアログにまとめた。
+// いまはその左ナビと本文を、統合のモーダルの器（paradisHub）の 1 つの領域として描く。
+// 各パネルの中身は各ダッシュボードのセクション (ParadisCcusageSection / ParadisGithubMetricsSection /
+// ParadisRtkSection ほか) をそのまま使う。
 
 import './media/paradisUsageDashboard.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Emitter } from '../../../../base/common/event.js';
-import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ParadisSpaceUsageSection } from '../../agentActivity/electron-browser/paradisSpaceUsageSection.js';
 import { ParadisWorkStatsSection } from '../../agentActivity/electron-browser/paradisWorkStatsSection.js';
 import { ParadisCcusageSection } from '../../ccusage/electron-browser/paradisCcusageSection.js';
 import { ParadisGithubMetricsSection } from '../../githubMetrics/electron-browser/paradisGithubMetricsSection.js';
 import { ParadisRtkSection } from '../../rtk/electron-browser/paradisRtkSection.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost } from '../../paradisHub/electron-browser/paradisHub.js';
+import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
 import { IParadisUsageSection } from './paradisUsageSection.js';
 
 const $ = dom.$;
@@ -42,10 +37,6 @@ const $ = dom.$;
 /** 開いた直後に見せるタブ。コマンド引数で指定できる。 */
 export type ParadisUsageDashboardTab = 'ccusage' | 'spaces' | 'github' | 'rtk' | 'workStats' | 'settings';
 
-// allow-any-unicode-next-line
-const STR_TITLE = localize('paradis.usage.title', "使用量・コスト");
-// allow-any-unicode-next-line
-const STR_CLOSE_ARIA = localize('paradis.usage.closeAria', "閉じる");
 // allow-any-unicode-next-line
 const STR_REFRESH = localize('paradis.usage.refresh', "更新");
 // allow-any-unicode-next-line
@@ -67,7 +58,7 @@ const STR_NAV_SETTINGS = localize('paradis.usage.navSettings', "表示と取得�
 // allow-any-unicode-next-line
 const STR_SETTINGS_HEAD = localize('paradis.usage.settingsHead', "表示と取得元");
 // allow-any-unicode-next-line
-const STR_SETTINGS_DESC = localize('paradis.usage.settingsDesc', "このダイアログで扱う3つのダッシュボードに共通する設定です。");
+const STR_SETTINGS_DESC = localize('paradis.usage.settingsDesc', "使用量の各画面に共通する設定です。");
 // allow-any-unicode-next-line
 const STR_UNSET = localize('paradis.usage.unset', "(未設定)");
 // allow-any-unicode-next-line
@@ -180,114 +171,75 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 	},
 ];
 
-export class ParadisUsageDashboardDialog extends Disposable {
+export class ParadisUsageArea extends Disposable implements IParadisHubAreaView {
 
-	private readonly _backdrop: HTMLElement;
 	private readonly _contentEl: HTMLElement;
-	private readonly _navItems = new Map<ParadisUsageDashboardTab, HTMLElement>();
+	private readonly _navItems = new Map<ParadisUsageDashboardTab, IParadisHubNavItem>();
 	private readonly _panes = new Map<ParadisUsageDashboardTab, HTMLElement>();
 	private readonly _sections = new Map<ParadisUsageDashboardTab, IParadisUsageSection>();
 	private readonly _settingRefreshers: (() => void)[] = [];
 	private _activeTab: ParadisUsageDashboardTab = 'ccusage';
-
-	private readonly _onDidDispose = this._register(new Emitter<void>());
-	/** 閉じた（破棄された）ことを、開いた側が参照を手放すために知らせる。 */
-	readonly onDidDispose = this._onDidDispose.event;
+	private _visible = false;
 
 	constructor(
-		initialTab: ParadisUsageDashboardTab | undefined,
-		@ILayoutService layoutService: ILayoutService,
+		containers: IParadisHubAreaContainers,
+		private readonly host: IParadisHubHost,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super();
 
-		this._backdrop = $('.paradis-usage-dashboard-backdrop');
-		const modal = $('.paradis-usage-dashboard');
-		this._backdrop.appendChild(modal);
-
-		// ---------- header ----------
-		const header = dom.append(modal, $('.pud-header'));
-		dom.append(header, $('h2')).textContent = STR_TITLE;
-
-		const refreshBtn = dom.append(header, $('button.pud-refresh')) as HTMLButtonElement;
+		// ---------- 見出しの行の「更新」 ----------
+		const refreshBtn = dom.append(containers.header, $('button.pud-refresh')) as HTMLButtonElement;
 		refreshBtn.type = 'button';
 		refreshBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		dom.append(refreshBtn, $('span')).textContent = STR_REFRESH;
 		this._register(dom.addDisposableListener(refreshBtn, 'click', () => this._refreshActive()));
 
-		const closeBtn = dom.append(header, $('.pud-close'));
-		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
-		closeBtn.setAttribute('role', 'button');
-		closeBtn.setAttribute('aria-label', STR_CLOSE_ARIA);
-		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.dispose()));
-
-		// ---------- body（左ナビ + 右コンテンツ） ----------
-		const body = dom.append(modal, $('.pud-body'));
-		const nav = dom.append(body, $('nav.pud-nav'));
-		this._contentEl = dom.append(body, $('.pud-content'));
-
+		// ---------- 左のナビと本文 ----------
+		this._contentEl = containers.content;
+		this._contentEl.classList.add('paradis-usage-area');
 		for (const spec of TABS) {
 			if (spec.caption) {
-				dom.append(nav, $('.pud-nav-caption')).textContent = spec.caption;
+				paradisHubNavCaption(containers.nav, spec.caption);
 			}
-			const item = dom.append(nav, $('.pud-nav-item'));
-			item.setAttribute('role', 'button');
-			item.appendChild($(`span.pud-nav-icon${ThemeIcon.asCSSSelector(spec.icon)}`));
-			dom.append(item, $('span.pud-nav-label')).textContent = spec.navLabel;
+			const item = paradisHubNavItem(containers.nav, spec.navLabel, { icon: spec.icon });
 			this._navItems.set(spec.id, item);
-			this._register(dom.addDisposableListener(item, 'click', () => this._selectTab(spec.id)));
+			this._register(dom.addDisposableListener(item.element, 'click', () => this._selectTab(spec.id)));
 
 			const pane = dom.append(this._contentEl, $('.pud-pane'));
 			pane.classList.add('hidden');
 			this._panes.set(spec.id, pane);
 		}
 
-		// パネル本体はタブ実装と同じセクションクラスをそのまま使う
+		// パネル本体は各ダッシュボードのセクションクラスをそのまま使う
 		this._addSection('ccusage', this._register(instantiationService.createInstance(ParadisCcusageSection)));
 		this._addSection('github', this._register(instantiationService.createInstance(ParadisGithubMetricsSection)));
 		this._addSection('rtk', this._register(instantiationService.createInstance(ParadisRtkSection)));
 		this._addSection('spaces', this._register(instantiationService.createInstance(ParadisSpaceUsageSection)));
 		this._addSection('workStats', this._register(instantiationService.createInstance(ParadisWorkStatsSection)));
 		this._buildSettingsPane(this._panes.get('settings')!);
-
-		modal.tabIndex = -1;
-		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
-			if (e.target === this._backdrop) {
-				this.dispose();
-			}
-		}));
-		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape) {
-				event.preventDefault();
-				this.dispose();
-			}
-		}));
-
-		// 幅はダイアログ側でしか分からない (セクションは自分の親を測らない設計) ので、
-		// ここで実測して流し込む。ウィンドウリサイズにも追従させる。
-		const observer = new ResizeObserver(entries => {
-			const width = entries[0]?.contentRect.width;
-			if (width && width > 0) {
-				for (const section of this._sections.values()) {
-					section.layout(width);
-				}
-			}
-		});
-		observer.observe(this._contentEl);
-		this._register({ dispose: () => observer.disconnect() });
-
-		layoutService.activeContainer.appendChild(this._backdrop);
-		this._selectTab(initialTab ?? 'ccusage');
-		modal.focus();
 	}
 
-	override dispose(): void {
-		this._backdrop.remove();
-		this._onDidDispose.fire();
-		super.dispose();
+	reveal(section: string | undefined): void {
+		const tab = TABS.find(spec => spec.id === section)?.id ?? this._activeTab;
+		this._selectTab(tab);
+	}
+
+	setVisible(visible: boolean): void {
+		this._visible = visible;
+		// 見えていないパネルはポーリング・warm lease を止める（見ていないもののために CLI を回し続けない）
+		for (const [id, section] of this._sections) {
+			section.setVisible(visible && id === this._activeTab);
+		}
+	}
+
+	layout(width: number): void {
+		// 幅は器でしか分からない（セクションは自分の親を測らない設計）ので、器が実測した値を流し込む
+		for (const section of this._sections.values()) {
+			section.layout(width);
+		}
 	}
 
 	// ==========================================================================================
@@ -300,16 +252,12 @@ export class ParadisUsageDashboardDialog extends Disposable {
 	private _selectTab(tab: ParadisUsageDashboardTab): void {
 		this._activeTab = tab;
 		for (const [id, item] of this._navItems) {
-			item.classList.toggle('active', id === tab);
+			item.setActive(id === tab);
 		}
 		for (const [id, pane] of this._panes) {
 			pane.classList.toggle('hidden', id !== tab);
 		}
-		// 見えていないパネルはポーリング・warm lease を止める（見ていないもののために
-		// CLI を回し続けない）
-		for (const [id, section] of this._sections) {
-			section.setVisible(id === tab);
-		}
+		this.setVisible(this._visible);
 		const active = this._sections.get(tab);
 		if (active) {
 			const width = this._contentEl.clientWidth;
@@ -381,13 +329,11 @@ export class ParadisUsageDashboardDialog extends Disposable {
 					void this.configurationService.updateValue(spec.key, items, ConfigurationTarget.USER);
 				}));
 			} else if (typeof this.configurationService.getValue(spec.key) === 'boolean') {
-				const toggle = dom.append(row, $('input.pud-toggle')) as HTMLInputElement;
-				toggle.type = 'checkbox';
+				const toggle = store.add(new ParadisSwitch(row, { checked: this.configurationService.getValue<boolean>(spec.key) === true, ariaLabel: spec.label }));
 				const sync = () => { toggle.checked = this.configurationService.getValue<boolean>(spec.key) === true; };
-				sync();
 				this._settingRefreshers.push(sync);
-				store.add(dom.addDisposableListener(toggle, 'change', () => {
-					void this.configurationService.updateValue(spec.key, toggle.checked, ConfigurationTarget.USER);
+				store.add(toggle.onDidChange(checked => {
+					void this.configurationService.updateValue(spec.key, checked, ConfigurationTarget.USER);
 				}));
 			} else {
 				const input = dom.append(row, $('input.pud-input')) as HTMLInputElement;
@@ -409,7 +355,7 @@ export class ParadisUsageDashboardDialog extends Disposable {
 		// allow-any-unicode-next-line
 		allSettingsBtn.textContent = localize('paradis.usage.openAllSettings', "Para Code の設定をすべて開く…");
 		store.add(dom.addDisposableListener(allSettingsBtn, 'click', () => {
-			this.dispose();
+			this.host.close();
 			void this.commandService.executeCommand('paradis.openSettingsDialog');
 		}));
 

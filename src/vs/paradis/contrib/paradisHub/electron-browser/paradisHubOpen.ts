@@ -1,0 +1,36 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// 統合のモーダルを開く入口。各領域のコマンド（`paradis.usage.showDashboard` など）はここを通して開く。
+
+import { Event } from '../../../../base/common/event.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { ParadisHubAreaId } from './paradisHub.js';
+import { ParadisHubDialog } from './paradisHubDialog.js';
+
+/** 同時に 1 つだけ開く。同じ窓で開いているときは、その器のまま領域と節を切り替える。 */
+let activeDialog: ParadisHubDialog | undefined;
+
+/** 統合のモーダルを、領域（と節）を指定して開く。 */
+export function paradisOpenHub(accessor: ServicesAccessor, area: ParadisHubAreaId, section?: string): void {
+	if (activeDialog?.isShownIn(accessor.get(ILayoutService).activeContainer)) {
+		activeDialog.open(area, section);
+		return;
+	}
+	// 別の窓で開いていたものは閉じて、いま操作している窓で開き直す
+	activeDialog?.dispose();
+	const dialog = accessor.get(IInstantiationService).createInstance(ParadisHubDialog, area, section);
+	activeDialog = dialog;
+	// 閉じた後も参照を持ち続けると、DOM ごと次に開くまで残る
+	Event.once(dialog.onDidDispose)(() => {
+		if (activeDialog === dialog) {
+			activeDialog = undefined;
+		}
+	});
+}
