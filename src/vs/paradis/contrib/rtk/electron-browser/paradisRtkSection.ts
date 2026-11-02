@@ -25,7 +25,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
-import { isParadisRtkNotFoundError, paradisRtkFormatTokens, paradisRtkLocalDateString } from '../common/paradisRtk.js';
+import { IParadisRtkHistoryStats, IParadisRtkMissedCommand, isParadisRtkNotFoundError, paradisRtkFormatTokens, paradisRtkLocalDateString } from '../common/paradisRtk.js';
 import {
 	IParadisRtkDashboardData,
 	IParadisRtkDayData,
@@ -41,7 +41,11 @@ const ACCENT_DARK = '#c98500';
 const ACCENT_LIGHT = '#eda100';
 
 /** 直近のコマンド表に出す行数の上限。 */
-const MAX_HISTORY_ROWS = 12;
+const MAX_HISTORY_ROWS = 8;
+/** リポジトリ別・取りこぼしに出す行数の上限。 */
+const MAX_SIDE_ROWS = 5;
+/** 取りこぼし（`rtk discover`）で見る日数。会話ログを全部読むので、期間に関係なく直近 7 日だけにする。 */
+const MISSED_DAYS = 7;
 
 /** body の左右パディング(CSS の .paradis-rtk-body と合わせる)。幅を実測できない時の逆算に使う。 */
 const BODY_HORIZONTAL_PADDING = 40;
@@ -94,6 +98,14 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 	private lastRenderedWidth = 0;
 	private lastTooltipSignature: string | undefined;
 	private hostWidth = DEFAULT_HOST_WIDTH;
+	/**
+	 * 期間ごとの履歴の DB の集計（Q537 の 15 B。鍵は `from..to`）。null は「DB を読めなかった」（従来の表に戻す）。
+	 * 更新ボタンで捨てる。
+	 */
+	private readonly historyStats = new Map<string, IParadisRtkHistoryStats | null>();
+	private readonly historyStatsLoading = new Set<string>();
+	private missed: readonly IParadisRtkMissedCommand[] | undefined;
+	private missedError: string | undefined;
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
@@ -273,6 +285,8 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 			message.appendChild(this.body.ownerDocument.createTextNode(
 				localize('paradis.rtk.loading', "rtk の集計を取得しています…")));
 		}
+		this.historyStats.clear();
+		void this.refreshMissed(bypassCache);
 		try {
 			this.data = await this.client.fetchDashboard(bypassCache);
 		} catch (error) {
@@ -291,6 +305,42 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 			this.loading = false;
 			this.refreshIcon.classList.remove('spin');
 			this.body.classList.remove('stale');
+			this.renderBody();
+		}
+	}
+
+	/** 今の期間の履歴の DB の集計を、まだ無ければ取りに行く（取れたら描き直す）。 */
+	private ensureHistoryStats(range: IDateRange, bypassCache = false): IParadisRtkHistoryStats | null | undefined {
+		const key = `${range.from}..${range.to}`;
+		if (this.historyStats.has(key)) {
+			return this.historyStats.get(key);
+		}
+		if (!this.historyStatsLoading.has(key)) {
+			this.historyStatsLoading.add(key);
+			void this.client.fetchHistoryStats(range.from, range.to, bypassCache).then(stats => {
+				this.historyStatsLoading.delete(key);
+				if (this._store.isDisposed) {
+					return;
+				}
+				this.historyStats.set(key, stats ?? null);
+				const current = this.currentRange();
+				if (`${current.from}..${current.to}` === key) {
+					this.renderBody();
+				}
+			});
+		}
+		return undefined;
+	}
+
+	/** 取りこぼし（`rtk discover`）。失敗しても画面のほかの部分には響かせない。 */
+	private async refreshMissed(bypassCache: boolean): Promise<void> {
+		try {
+			this.missed = await this.client.fetchMissed(MISSED_DAYS, bypassCache);
+			this.missedError = undefined;
+		} catch (error) {
+			this.missedError = error instanceof Error ? error.message : String(error);
+		}
+		if (!this._store.isDisposed && this.data && !this.loading) {
 			this.renderBody();
 		}
 	}
@@ -334,45 +384,150 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 		const range = this.currentRange();
 		const days = this.data.days.filter(day => day.date >= range.from && day.date <= range.to);
 
+		const stats = this.ensureHistoryStats(range);
 		if (days.length === 0) {
 			dom.append(this.body, $('.paradis-rtk-message')).textContent =
 				localize('paradis.rtk.noData', "選択した期間には rtk の記録がありません。");
 		} else {
 			this.renderKpis(this.body, days);
-			const granularity = this.effectiveGranularity(spanDaysInclusive(range.from, range.to));
-			const chartCard = dom.append(this.body, $('.paradis-rtk-card'));
-			this.renderSavedChart(chartCard, computeBuckets(days, granularity), granularity);
 		}
 
-		const grid = dom.append(this.body, $('.paradis-rtk-grid2'));
-		this.renderCommandBreakdown(dom.append(grid, $('.paradis-rtk-card')));
-		this.renderHistory(dom.append(grid, $('.paradis-rtk-card')));
+		// 左の列は期間の流れ（日別の推移 → コマンド別）、右の列は内訳（リポジトリ別 → 取りこぼし → 直近のコマンド）。
+		// 列ごとに縦に積む（AI コストと同じ段組み。Q537 の 15 B）
+		const columns = dom.append(this.body, $('.paradis-rtk-columns'));
+		const left = dom.append(columns, $('.paradis-rtk-col'));
+		const right = dom.append(columns, $('.paradis-rtk-col'));
+		if (days.length > 0) {
+			const granularity = this.effectiveGranularity(spanDaysInclusive(range.from, range.to));
+			this.renderSavedChart(dom.append(left, $('.paradis-rtk-card')), computeBuckets(days, granularity), granularity);
+		}
+		if (stats) {
+			this.renderPeriodCommands(dom.append(left, $('.paradis-rtk-card')), stats);
+		} else {
+			// DB を読めない（古い rtk・接続先の Node）か、まだ読んでいる間は、従来の全期間の表
+			this.renderCommandBreakdown(dom.append(left, $('.paradis-rtk-card')));
+		}
+		this.renderRepos(dom.append(right, $('.paradis-rtk-card')), stats);
+		this.renderMissed(dom.append(right, $('.paradis-rtk-card')));
+		this.renderHistory(dom.append(right, $('.paradis-rtk-card')));
+	}
+
+	/** コマンド別（期間。履歴の DB から）: 回数・節約・節約率・平均時間。 */
+	private renderPeriodCommands(card: HTMLElement, stats: IParadisRtkHistoryStats): void {
+		dom.append(card, $('h3')).textContent = localize('paradis.rtk.periodCommands.title', "コマンド別内訳（{0}）", this.periodLabel());
+		dom.append(card, $('.desc')).textContent = localize('paradis.rtk.periodCommands.desc', "節約量の多い順 · rtk の履歴の記録から期間で集計");
+		if (stats.commands.length === 0) {
+			dom.append(card, $('.paradis-rtk-note')).textContent = localize('paradis.rtk.periodCommands.none', "この期間の記録はありません。");
+			return;
+		}
+		const table = dom.append(card, $('table.paradis-rtk-history.paradis-rtk-commands'));
+		const head = dom.append(dom.append(table, $('thead')), $('tr'));
+		dom.append(head, $('th')).textContent = localize('paradis.rtk.periodCommands.command', "コマンド");
+		dom.append(head, $('th.num')).textContent = localize('paradis.rtk.periodCommands.count', "回数");
+		dom.append(head, $('th.num')).textContent = localize('paradis.rtk.periodCommands.saved', "節約");
+		dom.append(head, $('th.num')).textContent = localize('paradis.rtk.periodCommands.rate', "節約率");
+		dom.append(head, $('th.num')).textContent = localize('paradis.rtk.periodCommands.avgTime', "平均時間");
+		const body = dom.append(table, $('tbody'));
+		for (const row of stats.commands) {
+			const tr = dom.append(body, $('tr'));
+			const command = dom.append(tr, $('td'));
+			command.textContent = row.command;
+			command.title = row.command;
+			dom.append(tr, $('td.num')).textContent = row.count.toLocaleString();
+			dom.append(tr, $('td.num')).textContent = paradisRtkFormatTokens(row.savedTokens);
+			dom.append(tr, $('td.num')).textContent = `${paradisRtkSavingsPercent(row.savedTokens, row.inputTokens).toFixed(0)}%`;
+			dom.append(tr, $('td.num')).textContent = formatDuration(row.count > 0 ? row.execMs / row.count : 0);
+		}
+	}
+
+	/** リポジトリ別（期間。作業フォルダを AI コストのリポジトリ別と同じ束ね方でまとめる）。 */
+	private renderRepos(card: HTMLElement, stats: IParadisRtkHistoryStats | null | undefined): void {
+		dom.append(card, $('h3')).textContent = localize('paradis.rtk.repos.title', "リポジトリ別");
+		dom.append(card, $('.desc')).textContent = localize('paradis.rtk.repos.desc', "節約量 · クローンとワークツリーをまとめる");
+		if (stats === undefined) {
+			dom.append(card, $('.paradis-rtk-note')).textContent = localize('paradis.rtk.repos.loading', "rtk の履歴の記録を読んでいます…");
+			return;
+		}
+		if (stats === null) {
+			dom.append(card, $('.paradis-rtk-note')).textContent = localize('paradis.rtk.repos.unavailable', "rtk の履歴の記録を読めないため、リポジトリ別は出せません。");
+			return;
+		}
+		const rows = stats.repos.filter(repo => repo.savedTokens > 0).slice(0, MAX_SIDE_ROWS);
+		const rest = stats.repos.slice(MAX_SIDE_ROWS).reduce((sum, repo) => sum + repo.savedTokens, 0);
+		if (rows.length === 0 && stats.outside.savedTokens <= 0) {
+			dom.append(card, $('.paradis-rtk-note')).textContent = localize('paradis.rtk.repos.none', "この期間の記録はありません。");
+			return;
+		}
+		const max = Math.max(1, ...rows.map(repo => repo.savedTokens), rest, stats.outside.savedTokens);
+		for (const repo of rows) {
+			this.appendBar(card, repo.folders > 1 ? localize('paradis.rtk.repos.count', "{0} ×{1}", repo.name, repo.folders) : repo.name, repo.savedTokens, max);
+		}
+		if (rest > 0) {
+			this.appendBar(card, localize('paradis.rtk.repos.rest', "その他（{0}）", stats.repos.length - MAX_SIDE_ROWS), rest, max);
+		}
+		if (stats.outside.savedTokens > 0) {
+			this.appendBar(card, localize('paradis.rtk.repos.outside', "リポジトリ外"), stats.outside.savedTokens, max);
+		}
+	}
+
+	/** 取りこぼし: rtk を通さずに打ったコマンドと、通していれば減らせた見込み（`rtk discover`）。 */
+	private renderMissed(card: HTMLElement): void {
+		dom.append(card, $('h3')).textContent = localize('paradis.rtk.missed.title', "取りこぼし");
+		dom.append(card, $('.desc')).textContent = localize('paradis.rtk.missed.desc', "rtk を通せば減らせたコマンド（推定・直近{0}日）", MISSED_DAYS);
+		if (this.missed === undefined) {
+			dom.append(card, $('.paradis-rtk-note')).textContent = this.missedError !== undefined
+				? localize('paradis.rtk.missed.error', "調べられませんでした: {0}", this.missedError)
+				: localize('paradis.rtk.missed.loading', "会話の記録を調べています…（数十秒かかることがあります）");
+			return;
+		}
+		const rows = this.missed.filter(row => row.estimatedSavedTokens > 0).slice(0, MAX_SIDE_ROWS);
+		if (rows.length === 0) {
+			dom.append(card, $('.paradis-rtk-note')).textContent = localize('paradis.rtk.missed.none', "取りこぼしは見つかりませんでした。");
+			return;
+		}
+		const max = Math.max(1, ...rows.map(row => row.estimatedSavedTokens));
+		for (const row of rows) {
+			const bar = this.appendBar(card, row.rtkEquivalent ? `${row.command} → ${row.rtkEquivalent}` : row.command, row.estimatedSavedTokens, max);
+			bar.title = localize('paradis.rtk.missed.rowTooltip', "{0} 回", row.count.toLocaleString());
+		}
+	}
+
+	private appendBar(card: HTMLElement, label: string, value: number, max: number): HTMLElement {
+		const item = dom.append(card, $('.paradis-rtk-hbar-row'));
+		const name = dom.append(item, $('span.name'));
+		name.textContent = label;
+		name.title = label;
+		const track = dom.append(item, $('.track'));
+		const bar = dom.append(track, $('.bar'));
+		bar.style.width = `${Math.min(100, Math.max(1, (value / max) * 100)).toFixed(1)}%`;
+		bar.style.background = this.accent;
+		dom.append(item, $('span.val')).textContent = paradisRtkFormatTokens(value);
+		return item;
 	}
 
 	private renderKpis(container: HTMLElement, days: IParadisRtkDayData[]): void {
 		const kpis = dom.append(container, $('.paradis-rtk-kpis'));
 		const accent = this.accent;
 
-		// 1枚目: 今日の節約量。期間フィルターに関わらず常に今日を出す(ステータスバーと同じ値)。
-		const today = this.data?.days.find(day => day.date === this.data?.today);
-		const todaySaved = today?.savedTokens ?? 0;
-		const todayPercent = paradisRtkSavingsPercent(todaySaved, today?.inputTokens ?? 0);
-		const todayTile = dom.append(kpis, $('.paradis-rtk-card'));
-		dom.append(todayTile, $('.paradis-rtk-stat-label')).textContent = localize('paradis.rtk.kpi.today', "今日の節約トークン数");
-		const todayValue = dom.append(todayTile, $('.paradis-rtk-stat-value.hero'));
-		todayValue.textContent = paradisRtkFormatTokens(todaySaved);
-		todayValue.style.color = accent;
-		const track = dom.append(todayTile, $('.paradis-rtk-meter-track'));
-		track.style.background = `color-mix(in srgb, ${accent} 22%, transparent)`;
-		const fill = dom.append(track, $('.paradis-rtk-meter-fill'));
-		fill.style.width = `${Math.max(0, Math.min(100, todayPercent)).toFixed(1)}%`;
-		fill.style.background = accent;
-		dom.append(todayTile, $('.paradis-rtk-stat-sub')).textContent =
-			localize('paradis.rtk.kpi.todaySub', "節約率 {0}%", todayPercent.toFixed(1));
-
 		const periodCommands = days.reduce((sum, day) => sum + day.commands, 0);
 		const periodSaved = days.reduce((sum, day) => sum + day.savedTokens, 0);
 		const periodInput = days.reduce((sum, day) => sum + day.inputTokens, 0);
+		const periodTime = days.reduce((sum, day) => sum + day.totalTimeMs, 0);
+		const periodPercent = paradisRtkSavingsPercent(periodSaved, periodInput);
+
+		// 1枚目: 期間の節約量と節約率（Q537 の 15 B。今日の値はステータスバーにある）
+		const savedTile = dom.append(kpis, $('.paradis-rtk-card'));
+		dom.append(savedTile, $('.paradis-rtk-stat-label')).textContent = localize('paradis.rtk.kpi.saved', "節約トークン数（{0}）", this.periodLabel());
+		const savedValue = dom.append(savedTile, $('.paradis-rtk-stat-value.hero'));
+		savedValue.textContent = paradisRtkFormatTokens(periodSaved);
+		savedValue.style.color = accent;
+		const track = dom.append(savedTile, $('.paradis-rtk-meter-track'));
+		track.style.background = `color-mix(in srgb, ${accent} 22%, transparent)`;
+		const fill = dom.append(track, $('.paradis-rtk-meter-fill'));
+		fill.style.width = `${Math.max(0, Math.min(100, periodPercent)).toFixed(1)}%`;
+		fill.style.background = accent;
+		dom.append(savedTile, $('.paradis-rtk-stat-sub')).textContent =
+			localize('paradis.rtk.kpi.savedSub', "節約率 {0}% · 入力 {1}", periodPercent.toFixed(1), paradisRtkFormatTokens(periodInput));
 
 		const commandsTile = dom.append(kpis, $('.paradis-rtk-card'));
 		dom.append(commandsTile, $('.paradis-rtk-stat-label')).textContent =
@@ -381,19 +536,19 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 		dom.append(commandsTile, $('.paradis-rtk-stat-sub')).textContent =
 			localize('paradis.rtk.kpi.commandsSub', "1日あたり {0}", Math.round(periodCommands / days.length).toLocaleString());
 
-		const rateTile = dom.append(kpis, $('.paradis-rtk-card'));
-		dom.append(rateTile, $('.paradis-rtk-stat-label')).textContent =
-			localize('paradis.rtk.kpi.rate', "平均節約率（{0}）", this.periodLabel());
-		dom.append(rateTile, $('.paradis-rtk-stat-value')).textContent = `${paradisRtkSavingsPercent(periodSaved, periodInput).toFixed(1)}%`;
-		dom.append(rateTile, $('.paradis-rtk-stat-sub')).textContent =
-			localize('paradis.rtk.kpi.rateSub', "節約 {0} / 入力 {1}", paradisRtkFormatTokens(periodSaved), paradisRtkFormatTokens(periodInput));
+		// 3枚目: rtk にかかった時間（速さの代償。コマンド別の平均は下の表）
+		const timeTile = dom.append(kpis, $('.paradis-rtk-card'));
+		dom.append(timeTile, $('.paradis-rtk-stat-label')).textContent = localize('paradis.rtk.kpi.time', "rtk にかかった時間（{0}）", this.periodLabel());
+		dom.append(timeTile, $('.paradis-rtk-stat-value')).textContent = formatTotalDuration(periodTime);
+		dom.append(timeTile, $('.paradis-rtk-stat-sub')).textContent =
+			localize('paradis.rtk.kpi.timeSub', "平均 {0}", formatDuration(periodCommands > 0 ? periodTime / periodCommands : 0));
 
-		const totals = this.data?.totals;
-		const totalTile = dom.append(kpis, $('.paradis-rtk-card'));
-		dom.append(totalTile, $('.paradis-rtk-stat-label')).textContent = localize('paradis.rtk.kpi.total', "累計節約トークン数");
-		dom.append(totalTile, $('.paradis-rtk-stat-value')).textContent = paradisRtkFormatTokens(totals?.savedTokens ?? 0);
-		dom.append(totalTile, $('.paradis-rtk-stat-sub')).textContent =
-			localize('paradis.rtk.kpi.totalSub', "全期間 · {0} コマンド", (totals?.commands ?? 0).toLocaleString());
+		// 4枚目: 取りこぼし（rtk を通さなかったコマンドで減らせた見込み）
+		const missedTile = dom.append(kpis, $('.paradis-rtk-card'));
+		dom.append(missedTile, $('.paradis-rtk-stat-label')).textContent = localize('paradis.rtk.kpi.missed', "取りこぼし（推定・直近{0}日）", MISSED_DAYS);
+		const missedTotal = this.missed?.reduce((sum, row) => sum + row.estimatedSavedTokens, 0);
+		dom.append(missedTile, $('.paradis-rtk-stat-value')).textContent = missedTotal !== undefined ? paradisRtkFormatTokens(missedTotal) : '—';
+		dom.append(missedTile, $('.paradis-rtk-stat-sub')).textContent = localize('paradis.rtk.kpi.missedSub', "rtk を通さなかったコマンド");
 	}
 
 	// ---------- daily bar chart ----------
@@ -690,6 +845,19 @@ function shortDate(isoDate: string): string {
 }
 
 /** 平均実行時間の表示(ツールチップ用)。 */
+/** 合計時間（「5分 15秒」「2時間 3分」）。 */
+function formatTotalDuration(milliseconds: number): string {
+	const seconds = Math.round(milliseconds / 1000);
+	if (seconds < 60) {
+		return localize('paradis.rtk.duration.seconds', "{0}秒", seconds);
+	}
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) {
+		return localize('paradis.rtk.duration.minutesSeconds', "{0}分 {1}秒", minutes, seconds % 60);
+	}
+	return localize('paradis.rtk.duration.hoursMinutes', "{0}時間 {1}分", Math.floor(minutes / 60), minutes % 60);
+}
+
 function formatDuration(milliseconds: number): string {
 	if (milliseconds >= 1000) {
 		return `${(milliseconds / 1000).toFixed(1)}s`;
