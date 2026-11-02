@@ -13,7 +13,8 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisCaptureSavePath, paradisWriteCaptureFile } from '../../node/paradisBrowserCapture.js';
-import { ParadisBrowserDownloadReader, paradisDecodeText, paradisParseA1Range, paradisParseDelimited, paradisZipUncompressedSize } from '../../node/paradisBrowserDownloadReader.js';
+import { paradisReadDownloadWorkbookInWorker } from '../../node/paradisBrowserDownloadWorkbookWorker.js';
+import { ParadisBrowserDownloadReader, paradisRenderDownloadWorkbook, paradisDecodeText, paradisParseA1Range, paradisParseDelimited, paradisZipUncompressedSize } from '../../node/paradisBrowserDownloadReader.js';
 import { paradisParsePdfPageRange } from '../../node/paradisBrowserPdfText.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_FILE_TOOL_NAMES, PARADIS_MCP_BROWSER_FILE_TOOLS } from '../../node/paradisBrowserQueryTools.js';
@@ -210,7 +211,8 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 			workbook.addWorksheet('Summary').addRows([['Item', 'Price'], ['Apple', 120], ['Pear', 200]]);
 			workbook.addWorksheet('Raw').addRow(['x']);
 			await fs.writeFile(join(downloads, 'book.xlsx'), Buffer.from(await workbook.xlsx.writeBuffer()));
-			const reader = new ParadisBrowserDownloadReader({ downloadsDirectory: async () => downloads });
+			// exceljs をこの場で読む（worker で読む経路は下の 'reads an xlsx in the worker' が node の単体テストで確かめる）
+			const reader = new ParadisBrowserDownloadReader({ downloadsDirectory: async () => downloads, loadExcel: async () => ExcelJS });
 			const csv = await reader.call({ path: join(downloads, 'list.csv') });
 			const xlsx = await reader.call({ path: join(downloads, 'book.xlsx'), range: 'A2:B3' });
 			const outside = await reader.call({ path: join(folder, 'secret.csv') });
@@ -283,6 +285,57 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 			}, {
 				ranges: [{ start: 3, end: 3 }, { start: 1, end: 5 }, { start: 10 }, { start: 2, end: 4 }, undefined, undefined, undefined, undefined],
 				more: 'Stopped at 100000 characters (page 5 is cut); pass "pages": "5-" to continue from that page.',
+			});
+		} finally {
+			await fs.rm(folder, { recursive: true, force: true });
+		}
+	});
+
+	test('read_download reads an xlsx in the worker started through the common worker entry', async function () {
+		// The Electron renderer test host cannot launch worker_threads. The node unit runner is the
+		// production execution boundary (the shared process) and runs this test.
+		if (process.type === 'renderer') {
+			this.skip();
+		}
+		const ExcelJS = (await import('exceljs')).default;
+		const workbook = new ExcelJS.Workbook();
+		workbook.addWorksheet('Summary').addRows([['Item', 'Price'], ['Apple', 120]]);
+		const data = Buffer.from(await workbook.xlsx.writeBuffer());
+		const inWorker = await paradisReadDownloadWorkbookInWorker({ name: 'book.xlsx', data, maxCells: 100 });
+		const inProcess = await paradisRenderDownloadWorkbook(ExcelJS, { name: 'book.xlsx', data, maxCells: 100 });
+		const broken = await paradisReadDownloadWorkbookInWorker({ name: 'broken.xlsx', data: Buffer.from('not a zip'), maxCells: 100 });
+		assert.deepStrictEqual({ same: inWorker, broken: [isError(broken), textOf(broken)] }, { same: inProcess, broken: [true, 'broken.xlsx could not be read as an Excel workbook.'] });
+	});
+
+	test('read_download hands an xlsx to the workbook reader one at a time, and the main thread does not parse it', async () => {
+		const folder = await fs.mkdtemp(join(tmpdir(), 'paradis-read-download-'));
+		try {
+			const ExcelJS = (await import('exceljs')).default;
+			const workbook = new ExcelJS.Workbook();
+			workbook.addWorksheet('Summary').addRow(['x']);
+			await fs.writeFile(join(folder, 'book.xlsx'), Buffer.from(await workbook.xlsx.writeBuffer()));
+			const order: string[] = [];
+			let release: () => void = () => { };
+			const firstHeld = new Promise<void>(resolve => release = resolve);
+			const reader = new ParadisBrowserDownloadReader({
+				downloadsDirectory: async () => folder,
+				readWorkbook: async request => {
+					order.push(`start ${request.sheet ?? 'first'} ${request.data.byteLength > 0}`);
+					if (request.sheet === undefined) {
+						await firstHeld;
+					}
+					order.push(`end ${request.sheet ?? 'first'}`);
+					return { content: [{ type: 'text', text: `read ${request.name}` }] };
+				},
+			});
+			const first = reader.call({ path: join(folder, 'book.xlsx') });
+			const second = reader.call({ path: join(folder, 'book.xlsx'), sheet: 'Summary' });
+			await new Promise(resolve => setTimeout(resolve, 0));
+			release();
+			assert.deepStrictEqual({ first: textOf(await first), second: textOf(await second), order }, {
+				first: 'read book.xlsx',
+				second: 'read book.xlsx',
+				order: ['start first true', 'end first', 'start Summary true', 'end Summary'],
 			});
 		} finally {
 			await fs.rm(folder, { recursive: true, force: true });

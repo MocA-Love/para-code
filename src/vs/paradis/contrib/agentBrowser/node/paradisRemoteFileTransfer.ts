@@ -38,6 +38,7 @@ import {
 	paradisIsAcceptableRemoteFilePath,
 	paradisReplaceRemoteFileExtension,
 } from '../common/paradisRemoteFileBridge.js';
+import { PARADIS_READ_DOWNLOAD_OWN_TOOLS_NOTE } from './paradisBrowserQueryTools.js';
 import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS, paradisCaptureExistsReason } from './paradisDevtoolsPathPolicy.js';
 import { ParadisFileDropStaging, paradisSanitizeFileDropName } from './paradisFileDropUpload.js';
 
@@ -81,6 +82,8 @@ function remoteTemporaryFolderLabel(temporaryFolder: string | undefined): string
 }
 const REMOTE_UNAVAILABLE_PATH_DESCRIPTION = 'Not available to agents in a remote window (SSH, WSL, container): this path would be on the machine running Para Code. Omit it; where the tool supports it the result is returned inline.';
 const REMOTE_PREVIEW_PATH_DESCRIPTION = 'Absolute path of the file on the machine this agent runs on (relative paths are rejected because this server does not share your working directory).';
+/** 接続先のペインの read_download の説明の最後の文（{@link PARADIS_READ_DOWNLOAD_OWN_TOOLS_NOTE} の代わり）。 */
+const REMOTE_READ_DOWNLOAD_OWN_TOOLS_NOTE = `The saved file is on the machine running Para Code, so your own tools cannot open that path; they can read only the copy in ~/${PARADIS_REMOTE_FILE_USER_FOLDER} that download_by_click and save_page_as_pdf report (up to ${PARADIS_REMOTE_FILE_MAX_BYTES_LABEL}; downloads started by other clicks are not copied).`;
 const REMOTE_SAVED_FILE_NOTE = ` From this terminal pane (a remote machine) the file is also copied to ~/${PARADIS_REMOTE_FILE_USER_FOLDER} on your machine (up to ${PARADIS_REMOTE_FILE_MAX_BYTES_LABEL}), and the response gives that path.`;
 
 interface IParadisDescribedTool {
@@ -128,7 +131,9 @@ export function paradisDescribeToolsForRemotePane<T extends IParadisDescribedToo
 			return withPropertyDescriptions(tool, new Map([['saveTo', REMOTE_OUTPUT_PATH_DESCRIPTION]]));
 		}
 		if (tool.name === 'read_download') {
-			return withPropertyDescriptions(tool, new Map([['path', 'The path that download_by_click or save_page_as_pdf returned for the machine running Para Code (not the copy on your machine). Para Code reads it there.']]));
+			const described = withPropertyDescriptions(tool, new Map([['path', 'The path that download_by_click or save_page_as_pdf returned for the machine running Para Code (not the copy on your machine). Para Code reads it there.']]));
+			// 保存先は手元の機械なので、接続先のエージェントの道具では読めない（読めるのは接続先へ写した分だけ）
+			return typeof described.description === 'string' ? { ...described, description: described.description.replace(PARADIS_READ_DOWNLOAD_OWN_TOOLS_NOTE, REMOTE_READ_DOWNLOAD_OWN_TOOLS_NOTE) } : described;
 		}
 		if (tool.name === 'preview_file') {
 			return withPropertyDescriptions(tool, new Map([['path', REMOTE_PREVIEW_PATH_DESCRIPTION]]));
