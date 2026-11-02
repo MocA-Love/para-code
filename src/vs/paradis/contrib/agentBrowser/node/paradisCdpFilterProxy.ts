@@ -41,7 +41,7 @@
 //     2 つを続けて送ると再開が効かず、webview の service worker が起動途中のまま固まり、
 //     画像プレビューが 60 秒止まった末に表示されなくなる（{@link ParadisOutOfScopeAttachRelease}）。
 
-import { raceTimeout } from '../../../../base/common/async.js';
+import { raceTimeout, timeout } from '../../../../base/common/async.js';
 import { paradisIsCdpEmulationMethod, paradisIsCdpViewportMethod } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import { paradisNeutralizeDefaultUserAgentOverride } from '../../browserUserAgent/common/paradisChromeClientHints.js';
 import { ParadisNetworkActivity, paradisRootTargetOfSession } from './paradisCdpNetworkActivity.js';
@@ -247,7 +247,7 @@ const PARADIS_PAGE_MOVE_WAIT_MS = 10_000;
 async function paradisWaitWhile(predicate: () => boolean, timeoutMs: number): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (predicate() && Date.now() < deadline) {
-		await new Promise(resolve => setTimeout(resolve, 20));
+		await timeout(20);
 	}
 }
 
