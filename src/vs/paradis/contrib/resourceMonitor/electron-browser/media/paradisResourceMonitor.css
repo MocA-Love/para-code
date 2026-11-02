@@ -22,14 +22,17 @@
 	-webkit-app-region: no-drag;
 	display: flex;
 	align-items: center;
-	gap: 6px;
+	gap: var(--vscode-spacing-size40);
+	/* Same steps as the upstream title bar actions (ActionBar): 22px tall, 16px icon, small corner
+		radius, 2px between items. The title bar sets its own active / inactive foreground on the
+		part, so inherit it instead of always using the inactive color. */
 	height: 22px;
-	padding: 0 6px;
-	margin: 0 2px;
+	padding: 0 3px;
+	margin: 0 1px;
 	border: none;
-	border-radius: 4px;
+	border-radius: var(--vscode-cornerRadius-small);
 	background: transparent;
-	color: var(--vscode-titleBar-inactiveForeground, var(--vscode-foreground));
+	color: inherit;
 	font-size: 12px;
 	cursor: pointer;
 }
@@ -37,11 +40,10 @@
 .paradis-resource-monitor-trigger:hover,
 .paradis-resource-monitor-trigger.active {
 	background: var(--vscode-toolbar-hoverBackground);
-	color: var(--vscode-titleBar-activeForeground, var(--vscode-foreground));
 }
 
 .paradis-resource-monitor-trigger .codicon {
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .paradis-resource-monitor-trigger-icon {
@@ -52,16 +54,16 @@
 
 .paradis-resource-monitor-trigger-dot {
 	position: absolute;
-	top: -2px;
 	right: -2px;
+	bottom: -1px;
 	width: 6px;
 	height: 6px;
 	border-radius: 50%;
-	box-shadow: 0 0 0 2px var(--vscode-titleBar-activeBackground, var(--vscode-editor-background));
+	box-shadow: 0 0 0 1px var(--vscode-titleBar-activeBackground, var(--vscode-editor-background));
 }
 
-.paradis-resource-monitor-trigger-dot.elevated { background: #f59e0b; }
-.paradis-resource-monitor-trigger-dot.high { background: #ef4444; }
+.paradis-resource-monitor-trigger-dot.elevated { background: var(--vscode-charts-yellow); }
+.paradis-resource-monitor-trigger-dot.high { background: var(--vscode-charts-red); }
 
 .paradis-resource-monitor-trigger-text {
 	font-variant-numeric: tabular-nums;

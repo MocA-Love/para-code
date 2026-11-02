@@ -16,6 +16,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator } from './paradisViewerToolbar.js';
 
 const ZOOM_MIN = -3;
 const ZOOM_MAX = 5;
@@ -62,12 +63,12 @@ export class ParadisViewerZoomControls extends Disposable {
 	}
 
 	/** ツールバーに［−］［100%］［＋］を足す。 */
-	createButtons(toolbar: HTMLElement): void {
+	createButtons(parent: HTMLElement): void {
+		const toolbar = appendParadisViewerToolbarGroup(parent, 'paradis-viewer-zoom');
 		this._zoomOutButton = createParadisViewerIconButton(toolbar, Codicon.zoomOut, localize('paradis.viewer.zoomOut', "ズームアウト"));
 		this._register(dom.addDisposableListener(this._zoomOutButton, dom.EventType.CLICK, () => this.setLevel(this._level - 1)));
 
-		this._percentButton = dom.append(toolbar, dom.$('button.paradis-html-zoom-percent')) as HTMLButtonElement;
-		this._percentButton.title = localize('paradis.viewer.resetZoom', "ズームをリセット");
+		this._percentButton = appendParadisViewerToolbarPercent(toolbar, localize('paradis.viewer.resetZoom', "ズームをリセット"));
 		this._register(dom.addDisposableListener(this._percentButton, dom.EventType.CLICK, () => this.setLevel(0)));
 
 		this._zoomInButton = createParadisViewerIconButton(toolbar, Codicon.zoomIn, localize('paradis.viewer.zoomIn', "ズームイン"));
@@ -101,10 +102,7 @@ export class ParadisViewerZoomControls extends Disposable {
 
 /** ビューアのツールバーに置くアイコンだけのボタン。 */
 export function createParadisViewerIconButton(parent: HTMLElement, icon: ThemeIcon, title: string): HTMLButtonElement {
-	const button = dom.append(parent, dom.$('button.paradis-html-zoom-button')) as HTMLButtonElement;
-	button.title = title;
-	dom.append(button, dom.$(`span${ThemeIcon.asCSSSelector(icon)}`));
-	return button;
+	return appendParadisViewerToolbarIconButton(parent, icon, title);
 }
 
 /**
@@ -112,6 +110,9 @@ export function createParadisViewerIconButton(parent: HTMLElement, icon: ThemeIc
  * 何を読み直すかはビューアごとに違うので、押したときの動きは呼ぶ側が渡す。返す値でクリックの購読を外す。
  */
 export function createParadisViewerReloadButton(parent: HTMLElement, onReload: () => void): IDisposable {
-	const button = createParadisViewerIconButton(parent, Codicon.refresh, localize('paradis.viewer.reload', "再読み込み"));
+	if (parent.childElementCount > 0) {
+		appendParadisViewerToolbarSeparator(parent);
+	}
+	const button = createParadisViewerIconButton(appendParadisViewerToolbarGroup(parent), Codicon.refresh, localize('paradis.viewer.reload', "再読み込み"));
 	return dom.addDisposableListener(button, dom.EventType.CLICK, () => onReload());
 }

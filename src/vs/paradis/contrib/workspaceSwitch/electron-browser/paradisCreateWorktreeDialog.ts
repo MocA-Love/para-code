@@ -44,6 +44,7 @@ import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycle
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
 const $ = dom.$;
 
@@ -188,7 +189,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private _permissionHint!: HTMLElement;
 	private _cmdPreview!: HTMLElement;
 	private _setupRow!: HTMLElement;
-	private _setupCheckbox!: HTMLInputElement;
+	private _setupCheckbox!: ParadisSwitch;
 	private _setupScriptEl!: HTMLElement;
 	private _repoSelect!: HTMLSelectElement;
 	private _branchSelect!: HTMLSelectElement;
@@ -432,8 +433,8 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		this._setupRow.classList.add('hidden');
 		dom.append(this._setupRow, $('span.pcw-d-adv-label')).textContent = STR_SETUP_LABEL;
 		const setupLabel = dom.append(this._setupRow, $('label.pcw-setup-label'));
-		this._setupCheckbox = dom.append(setupLabel, $('input.pcw-setup-checkbox')) as HTMLInputElement;
-		this._setupCheckbox.type = 'checkbox';
+		// オン/オフは共通のスイッチ（paradisSwitch.ts）。<label> で包むので、文言を押しても切り替わる
+		this._setupCheckbox = this._register(new ParadisSwitch(setupLabel, { checked: true }));
 		dom.append(setupLabel, $('span')).textContent = STR_RUN_SETUP;
 		this._setupScriptEl = dom.append(this._setupRow, $('span.pcw-setup-script'));
 
@@ -456,7 +457,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		this._register(dom.addDisposableListener(this._modelSelect, 'change', () => this._onModelChanged()));
 		this._register(dom.addDisposableListener(this._effortSelect, 'change', () => this._updateCommandPreview()));
 		this._register(dom.addDisposableListener(this._promptInput, 'input', () => this._updateCommandPreview()));
-		this._register(dom.addDisposableListener(this._setupCheckbox, 'change', () => {
+		this._register(this._setupCheckbox.onDidChange(() => {
 			this._setupRow.classList.toggle('off', !this._setupCheckbox.checked);
 		}));
 
