@@ -1365,6 +1365,64 @@ export async function paradisDispatchCaptureScreenshotRequest(
 	}
 }
 
+/**
+ * 2 つの経路の `Page.captureScreenshot`。main の撮影で答えるか、見えているページの WebP をそのまま上流へ流すかを
+ * {@link paradisDispatchCaptureScreenshotRequest} で決め、流すときは撮影の順番を取ってから入力の前の待ちに登録して送る。
+ * 経路ごとに違うのは、今も使えるかの確かめ（`isActive`）、答え方（`respond`）と上流への送り方（`sendUpstream`）だけ。
+ */
+function paradisForwardCaptureScreenshot(options: {
+	readonly transport: 'page' | 'browser';
+	readonly request: IParadisCaptureScreenshotRequest;
+	readonly params: Record<string, unknown> | undefined;
+	readonly ctx: IParadisBoundContext;
+	readonly rawScreenshots: ParadisRawScreenshotCoordinator;
+	readonly rawScreenshotOwner: object;
+	readonly forwardedRequestBarriers: Map<number, IParadisForwardedRequestBarrier>;
+	readonly logService: ILogService;
+	readonly isActive: () => boolean;
+	readonly respond: (response: unknown) => void;
+	readonly closeTransport: () => void;
+	/** 撮影の順番を取れたら、上流へ送る（`request` は撮影の形に直した命令）。 */
+	readonly sendUpstream: (request: IParadisCaptureScreenshotRequest) => void;
+}): void {
+	const { transport, logService } = options;
+	void paradisDispatchCaptureScreenshotRequest(options.request, options.ctx, {
+		isActive: options.isActive,
+		forward: (request, settle) => {
+			if (!paradisStartVisibleWebPCapture(options.rawScreenshots, options.rawScreenshotOwner, request, {
+				respond: options.respond,
+				closeTransport: options.closeTransport,
+				onStart: () => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('start', transport)),
+				onEnd: settle,
+				onComplete: durationMs => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('complete', transport, durationMs)),
+				onTimeout: () => {
+					logNonThrowing(logService, 'warn', `[ParadisCdpGateway] ${transport} visible WebP capture timed out; closing CDP connection`);
+				},
+			})) {
+				settle(false);
+				return;
+			}
+			if (!registerForwardedRequestBarrier(options.forwardedRequestBarriers, options.request.id, options.request.sessionId, 'Page.captureScreenshot', options.params)) {
+				settle(false);
+				options.closeTransport();
+				return;
+			}
+			options.sendUpstream(request);
+		},
+		respond: options.respond,
+	});
+}
+
+/**
+ * クライアントの命令の params を上流へ流す前に書き換える（両方の経路）。書き換えなければ undefined。
+ * - 登録する文書の始めのスクリプトは、拡張のページの文書では走らないように包む
+ * - LLM の接続が送る Electron の既定の UA は、Para Code が付けた Chrome の UA と Client Hints を消すので、この接続の上書きを外す形にする
+ * 2 つは別の命令なので重ならない（重なったら、以前のページの経路と同じくスクリプトの包みを使う）。
+ */
+function paradisRewriteForwardedParams(method: string, params: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+	return paradisGuardNewDocumentScriptParams(method, params) ?? paradisNeutralizeDefaultUserAgentOverride(method, params);
+}
+
 function targetIdOf(obj: unknown): string | undefined {
 	if (typeof obj !== 'object' || obj === null) {
 		return undefined;
@@ -1636,15 +1694,10 @@ export function paradisProxyPageUpgrade(
 				}
 				return;
 			}
-			// LLM の接続が送る Electron の既定の UA は、Para Code が付けた Chrome の UA と Client Hints を消すので、この接続の上書きを外す形にする
-			const neutralUserAgentParams = paradisNeutralizeDefaultUserAgentOverride(msg.method, msg.params);
-			if (neutralUserAgentParams) {
-				data = Buffer.from(JSON.stringify({ ...msg, params: neutralUserAgentParams }));
-			}
-			// 登録する文書の始めのスクリプトは、拡張のページの文書では走らないように包む
-			const guardedScriptParams = paradisGuardNewDocumentScriptParams(msg.method, msg.params);
-			if (guardedScriptParams) {
-				data = Buffer.from(JSON.stringify({ ...msg, params: guardedScriptParams }));
+			// 文書の始めのスクリプトを包み、Electron の既定の UA の上書きを外す（paradisRewriteForwardedParams）
+			const rewrittenParams = paradisRewriteForwardedParams(msg.method, msg.params);
+			if (rewrittenParams) {
+				data = Buffer.from(JSON.stringify({ ...msg, params: rewrittenParams }));
 			}
 			if (msg.method === 'Emulation.setFocusEmulationEnabled' && msg.sessionId === undefined) {
 				noteFocusEmulation(ctx, msg.params);
@@ -1674,35 +1727,17 @@ export function paradisProxyPageUpgrade(
 				return dispatchInputAfterPriorRequests(msg, paramsJson);
 			}
 			if (msg.method === 'Page.captureScreenshot') {
-				void paradisDispatchCaptureScreenshotRequest(
-					{ id: msg.id, sessionId: msg.sessionId, params: msg.params },
-					ctx,
-					{
-						isActive: () => !closed && ctx.isCurrentLease() && clientWs.readyState === ws.WebSocket.OPEN && ctx.boundTargetIds().has(targetId),
-						forward: (request, settle) => {
-							if (!paradisStartVisibleWebPCapture(rawScreenshots, rawScreenshotOwner, request, {
-								respond: sendToClient,
-								closeTransport: closeBoth,
-								onStart: () => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('start', 'page')),
-								onEnd: settle,
-								onComplete: durationMs => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('complete', 'page', durationMs)),
-								onTimeout: () => {
-									logNonThrowing(logService, 'warn', '[ParadisCdpGateway] page visible WebP capture timed out; closing CDP connection');
-								},
-							})) {
-								settle(false);
-								return;
-							}
-							if (!registerForwardedRequestBarrier(forwardedRequestBarriers, request.id, request.sessionId, msg.method, msg.params)) {
-								settle(false);
-								closeBoth();
-								return;
-							}
-							sendToUpstream(data);
-						},
-						respond: sendToClient,
-					},
-				);
+				paradisForwardCaptureScreenshot({
+					transport: 'page',
+					request: { id: msg.id, sessionId: msg.sessionId, params: msg.params },
+					params: msg.params,
+					ctx, rawScreenshots, rawScreenshotOwner, forwardedRequestBarriers, logService,
+					isActive: () => !closed && ctx.isCurrentLease() && clientWs.readyState === ws.WebSocket.OPEN && ctx.boundTargetIds().has(targetId),
+					respond: sendToClient,
+					closeTransport: closeBoth,
+					// ページの経路は届いたフレームをそのまま送る
+					sendUpstream: () => sendToUpstream(data),
+				});
 				return;
 			}
 			if (!registerForwardedRequestBarrier(forwardedRequestBarriers, msg.id, msg.sessionId, msg.method, msg.params)) {
@@ -2674,40 +2709,21 @@ export async function paradisProxyBrowserUpgrade(
 					}
 					const requestSessionId = message.sessionId;
 					const requestTargetId = sessionTargetId;
-					void paradisDispatchCaptureScreenshotRequest(
-						{ id: message.id, sessionId: requestSessionId, params: message.params },
-						ctx,
-						{
-							isActive: () => !closed
-								&& pendingRequests.get(message.id)?.sessionId === requestSessionId
-								&& ctx.isCurrentLease()
-								&& clientWs.readyState === ws.WebSocket.OPEN
-								&& sessionIdToTargetId.get(requestSessionId) === requestTargetId
-								&& ctx.boundTargetIds().has(requestTargetId),
-							forward: (request, settle) => {
-								if (!paradisStartVisibleWebPCapture(rawScreenshots, rawScreenshotOwner, request, {
-									respond: response => completeLocalRequest(message.id, requestSessionId, response),
-									closeTransport: closeBoth,
-									onStart: () => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('start', 'browser')),
-									onEnd: settle,
-									onComplete: durationMs => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('complete', 'browser', durationMs)),
-									onTimeout: () => {
-										logNonThrowing(logService, 'warn', '[ParadisCdpGateway] browser visible WebP capture timed out; closing CDP connection');
-									},
-								})) {
-									settle(false);
-									return;
-								}
-								if (!registerForwardedRequestBarrier(forwardedRequestBarriers, message.id, requestSessionId, message.method, message.params)) {
-									settle(false);
-									closeBoth();
-									return;
-								}
-								sendToUpstream({ ...message, ...request });
-							},
-							respond: response => completeLocalRequest(message.id, requestSessionId, response),
-						},
-					);
+					paradisForwardCaptureScreenshot({
+						transport: 'browser',
+						request: { id: message.id, sessionId: requestSessionId, params: message.params },
+						params: message.params,
+						ctx, rawScreenshots, rawScreenshotOwner, forwardedRequestBarriers, logService,
+						isActive: () => !closed
+							&& pendingRequests.get(message.id)?.sessionId === requestSessionId
+							&& ctx.isCurrentLease()
+							&& clientWs.readyState === ws.WebSocket.OPEN
+							&& sessionIdToTargetId.get(requestSessionId) === requestTargetId
+							&& ctx.boundTargetIds().has(requestTargetId),
+						respond: response => completeLocalRequest(message.id, requestSessionId, response),
+						closeTransport: closeBoth,
+						sendUpstream: request => sendToUpstream({ ...message, ...request }),
+					});
 					return;
 				}
 				if (message.method === 'Target.setAutoAttach') {
@@ -2716,15 +2732,8 @@ export async function paradisProxyBrowserUpgrade(
 					forwardClientRequest(message, sessionTargetId, { ...message, params: rewrittenParams });
 					return;
 				}
-				// 登録する文書の始めのスクリプトは、拡張のページの文書では走らないように包む
-				const guardedScriptParams = paradisGuardNewDocumentScriptParams(message.method, message.params);
-				if (guardedScriptParams !== undefined) {
-					forwardClientRequest(message, sessionTargetId, { ...message, params: guardedScriptParams });
-					return;
-				}
-				// ページ単位の接続と同じく、Electron の既定の UA の上書きはこの接続の上書きを外す形にする
-				const neutralUserAgentParams = paradisNeutralizeDefaultUserAgentOverride(message.method, message.params);
-				forwardClientRequest(message, sessionTargetId, neutralUserAgentParams ? { ...message, params: neutralUserAgentParams } : undefined);
+				const rewrittenParams = paradisRewriteForwardedParams(message.method, message.params);
+				forwardClientRequest(message, sessionTargetId, rewrittenParams ? { ...message, params: rewrittenParams } : undefined);
 				return;
 			}
 
