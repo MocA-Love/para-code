@@ -52,7 +52,7 @@ import {
 	paradisSerializeMobileReviewStore,
 } from '../common/paradisMobileReviewStore.js';
 import { IParadisAgentPromptServices, ParadisAgentPromptTarget, ParadisMobileSendGate, paradisAgentPromptServices, paradisDeliverAgentPrompt, paradisParseAgentPromptTarget } from './paradisMobileAgentPromptDelivery.js';
-import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
+import { IParadisMobileRequestContext, registerParadisMobileRequestHandler, paradisRequireMobileWorkspace } from './paradisMobileRequestHandlers.js';
 
 /**
  * モバイルの差分レビューの記録を PC に保存し、行へのメモをエージェントへ送り、確認済みだけをステージする
@@ -92,15 +92,6 @@ function saveSpace(storage: IStorageService, store: Map<string, IParadisMobileRe
 	store.set(ws, saved);
 	paradisWriteMobileReviewStore(storage, store);
 	return saved;
-}
-
-/** `ws` が解決できるスペースか確かめる。できなければ応答して undefined。 */
-function requireWorkspace(request: IParadisMobileRequest, context: IParadisMobileRequestContext): string | undefined {
-	if (typeof request.ws !== 'string' || request.ws.length === 0 || context.root === undefined) {
-		context.reply({ error: `unknown workspace: ${request.ws ?? ''}` });
-		return undefined;
-	}
-	return request.ws;
 }
 
 /** そのスペースの記録を変えて保存し、応答する（同期で読んでから書く）。`update` が undefined を返したら `error` で応答。 */
@@ -175,7 +166,7 @@ const MAX_PROMPT_LENGTH = 16_000;
 registerParadisMobileRequestHandler('scm', 'reviewGet', {
 	async handle(accessor, request, context) {
 		const storage = accessor.get(IStorageService);
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		if (ws === undefined) {
 			return;
 		}
@@ -195,7 +186,7 @@ registerParadisMobileRequestHandler('scm', 'reviewGet', {
 registerParadisMobileRequestHandler('scm', 'reviewSet', {
 	handle(accessor, request, context) {
 		const storage = accessor.get(IStorageService);
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		if (ws === undefined) {
 			return;
 		}
@@ -211,7 +202,7 @@ registerParadisMobileRequestHandler('scm', 'reviewSet', {
 registerParadisMobileRequestHandler('scm', 'reviewNoteAdd', {
 	handle(accessor, request, context) {
 		const storage = accessor.get(IStorageService);
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		if (ws === undefined) {
 			return;
 		}
@@ -244,7 +235,7 @@ registerParadisMobileRequestHandler('scm', 'reviewNoteAdd', {
 registerParadisMobileRequestHandler('scm', 'reviewNoteEdit', {
 	handle(accessor, request, context) {
 		const storage = accessor.get(IStorageService);
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		if (ws === undefined) {
 			return;
 		}
@@ -261,7 +252,7 @@ registerParadisMobileRequestHandler('scm', 'reviewNoteEdit', {
 registerParadisMobileRequestHandler('scm', 'reviewNoteDelete', {
 	handle(accessor, request, context) {
 		const storage = accessor.get(IStorageService);
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		if (ws === undefined) {
 			return;
 		}
@@ -278,7 +269,7 @@ registerParadisMobileRequestHandler('scm', 'reviewNotesClear', {
 	async handle(accessor, request, context) {
 		const storage = accessor.get(IStorageService);
 		const fileService = accessor.get(IFileService);
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		if (ws === undefined) {
 			return;
 		}
@@ -345,7 +336,7 @@ registerParadisMobileRequestHandler('scm', 'reviewNotesSend', {
 			storage: accessor.get(IStorageService),
 			fileService: accessor.get(IFileService),
 		};
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		if (ws === undefined || context.root === undefined) {
 			return;
 		}
@@ -374,7 +365,7 @@ type ReviewStageSkip = 'gone' | 'changed' | 'not-reviewed' | 'staged' | 'conflic
 registerParadisMobileRequestHandler('scm', 'reviewStage', {
 	async handle(accessor, request, context) {
 		const storage = accessor.get(IStorageService);
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		const root = context.root;
 		if (ws === undefined || root === undefined) {
 			return;

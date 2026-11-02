@@ -10,9 +10,6 @@
 
 import assert from 'assert';
 import { EventEmitter } from 'events';
-import { FileAccess, type AppResourcePath } from '../../../../../base/common/network.js';
-import { createParadisWorker } from '../../../../node/paradisWorker.js';
-import { unavailableParadisSpreadsheetSemanticDiagnostics } from '../../node/spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { isParadisSentryScrubbedWord, type ParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisOfficeWorkerFailureKind, resetParadisOfficeWorkerFailureReportsForTest, watchParadisOfficeWorker, type IParadisWatchedOfficeWorker, type ParadisOfficeWorkerName } from '../../node/office/paradisOfficeWorkerDiagnostics.js';
@@ -103,38 +100,5 @@ suite('Paradis Office worker diagnostics', () => {
 			paradisOfficeWorkerFailureKind(new RangeError('secret text')),
 			paradisOfficeWorkerFailureKind(errorWithCode('x', 'not a code /Users/example')),
 		], ['missing-module', 'missing-module', 'ENOENT', 'RangeError', 'Error']);
-	});
-
-	test('starts each Office worker entry through the common bootstrap and answers a malformed request without reporting', async function () {
-		this.timeout(60_000);
-		const entries: readonly (readonly [ParadisOfficeWorkerName, AppResourcePath])[] = [
-			['spreadsheet-parse', 'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain.js'],
-			['spreadsheet-semantic', 'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetSemanticWorkerMain.js'],
-			['spreadsheet-metafile', 'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetMetafileWorkerMain.js'],
-			['word-semantic', 'vs/paradis/contrib/fileViewers/node/word/paradisWordSemanticWorkerMain.js'],
-		];
-		const replies: unknown[] = [];
-		for (const [name, entry] of entries) {
-			const worker = createParadisWorker(FileAccess.asFileUri(entry).fsPath);
-			watchParadisOfficeWorker(name, worker, reporter);
-			try {
-				replies.push(await new Promise(resolve => {
-					worker.once('message', resolve);
-					worker.once('error', error => resolve({ error: (error as NodeJS.ErrnoException).code ?? error.name }));
-					worker.postMessage({ id: 7, op: 'run', request: { bytes: 'not bytes' } });
-				}));
-			} finally {
-				await worker.terminate();
-			}
-		}
-		assert.deepStrictEqual({ replies, sent }, {
-			replies: [
-				{ kind: 'result', id: 7, result: { kind: 'unavailable', reason: 'failed' } },
-				{ kind: 'result', id: 7, result: unavailableParadisSpreadsheetSemanticDiagnostics('invalid') },
-				{ kind: 'result', id: 7, result: { images: {}, unavailableReason: 'invalid' } },
-				{ kind: 'result', id: 7, result: { ok: false, code: 'invalid' } },
-			],
-			sent: [],
-		});
 	});
 });

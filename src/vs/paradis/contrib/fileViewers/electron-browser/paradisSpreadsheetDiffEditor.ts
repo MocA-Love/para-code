@@ -46,7 +46,7 @@ import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagn
 import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
-import { isParadisSpreadsheetUnreportedError, loadParadisSpreadsheetDiffSide, resolveParadisSpreadsheetDiffSides } from './paradisSpreadsheetClient.js';
+import { loadParadisSpreadsheetDiffSide, ParadisSpreadsheetNotWorkbookError, resolveParadisSpreadsheetDiffSides } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
@@ -993,7 +993,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				if (!preserveCommitted || transition.effects.length === 0) {
 					// 両側失敗でも1件にまとめる。側ごとに送ると1回の失敗でレート枠を2つ食う。
 					// Excel の一時ファイルなど xlsx でないものだけが理由なら、壊れたブックではないので送らない。
-					const reportable = [origResult.error, modResult.error].some(error => error !== undefined && !isParadisSpreadsheetUnreportedError(error));
+					const reportable = [origResult.error, modResult.error].some(error => error !== undefined && !(error instanceof ParadisSpreadsheetNotWorkbookError));
 					if (reportable) {
 						this._probe.noteAndReport({
 							cause: 'source', stage: 'source',

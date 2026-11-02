@@ -27,7 +27,7 @@ export interface ParadisOfficeServerChannelOptions<TContext> {
 class ParadisOfficeLegacyServerChannel<TContext> implements IServerChannel<TContext> {
 	constructor(private readonly channel = new ParadisSpreadsheetChannel()) { }
 	listen<T>(_ctx: TContext, event: string): Event<T> { return this.channel.listen(this.owner(_ctx), event); }
-	call<T>(_ctx: TContext, command: string, arg?: unknown, token: CancellationToken = CancellationToken.None): Promise<T> { return this.channel.call(this.owner(_ctx), command, arg, token); }
+	call<T>(_ctx: TContext, command: string, arg?: unknown, _token: CancellationToken = CancellationToken.None): Promise<T> { return this.channel.call(this.owner(_ctx), command, arg); }
 	private owner(_ctx: TContext): string { return 'remote-office-legacy'; }
 }
 

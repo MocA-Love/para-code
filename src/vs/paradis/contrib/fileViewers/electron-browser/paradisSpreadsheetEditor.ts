@@ -54,7 +54,7 @@ import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applySh
 import { ParadisSpreadsheetBrokenImages } from './paradisSpreadsheetBrokenImages.js';
 import { spreadsheetBrokenImagePlaceholders, spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { createParadisSpreadsheetPrintDrawingBudget, paradisSpreadsheetPrintLayout, type IParadisSpreadsheetPrintLayout } from './paradisSpreadsheetPrintLayout.js';
-import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, convertSpreadsheetMetafiles, estimateParadisWorkbookBytes, hasPendingSpreadsheetMetafiles, isParadisSpreadsheetUnreportedError, openSpreadsheetResource, warmSpreadsheetParser, type IParadisSpreadsheetOpenCacheValue } from './paradisSpreadsheetClient.js';
+import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, convertSpreadsheetMetafiles, estimateParadisWorkbookBytes, hasPendingSpreadsheetMetafiles, openSpreadsheetResource, ParadisSpreadsheetNotWorkbookError, warmSpreadsheetParser, type IParadisSpreadsheetOpenCacheValue } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar } from '../browser/paradisViewerToolbar.js';
@@ -1168,8 +1168,6 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}));
 	/** 走っている詳しい解析の取り消し。読み直し・閉じる・破棄で取り消す（shared process の待ち行列と worker から外れる）。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<IDisposable>());
-	/** 表示用の解析の依頼。次の読み込みと、エディタを閉じたときに取り消す。 */
-	private readonly _parseRequest = this._register(new MutableDisposable<IDisposable>());
 	private readonly _metafileRequest = this._register(new MutableDisposable<IDisposable>());
 	/** ブックを表示しているあいだ、覚えておいた解析結果を手放させない。 */
 	private readonly _openCacheLease = this._register(new MutableDisposable());
@@ -1489,9 +1487,6 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const generation = ++this._loadGeneration;
 		this._semanticRequest.clear();
 		this._metafileRequest.clear();
-		// 前の読み込みの解析は取り消す（時間切れのやり直しやファイルの変更で、前の解析の後ろにもう 1 件積まない）。
-		const parseRequest = new CancellationTokenSource(token);
-		this._parseRequest.value = toDisposable(() => parseRequest.dispose(true));
 		// 解析は共有プロセス側で走る。あちらが黙ると renderer では何も起きないので、ここから見張る。
 		this._probe.armSource(recoveryGeneration);
 		if (!preserveCommitted) {
@@ -1507,7 +1502,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				this._probe.setBytes(totalBytes);
 				this._openBytes = totalBytes;
 				content = value;
-			}, parseRequest.token)).workbook;
+			})).workbook;
 		} catch (err) {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
 				this._probe.disarm();
@@ -1515,8 +1510,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				this._recoveryState = transition.state;
 				if (!preserveCommitted || transition.effects.length === 0) {
 					// 理由をその場で画面に出す＝利用者はここで失敗を目にする。1件だけ送る。
-					// Excel の一時ファイルなど xlsx でないもの・大きすぎるブックは、壊れたブックではないので送らない。
-					if (!isParadisSpreadsheetUnreportedError(err)) {
+					// Excel の一時ファイルなど xlsx でないものは、壊れたブックではないので送らない。
+					if (!(err instanceof ParadisSpreadsheetNotWorkbookError)) {
 						this._probe.noteAndReport({ cause: 'source', stage: 'source', error: err });
 					}
 					this._renderMessage(localize('paradis.spreadsheet.error', "スプレッドシートを開けませんでした: {0}", err instanceof Error ? err.message : String(err)), 'error', this._openInAppActions(resource));
@@ -2522,7 +2517,6 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	override clearInput(): void {
 		this._brokenImages.clear();
-		this._parseRequest.clear();
 		this._semanticRequest.clear();
 		this._metafileRequest.clear();
 		this._openCacheLease.clear();

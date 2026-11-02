@@ -12,7 +12,7 @@
 // パッケージ版でもこの場所へ出力されるよう、`build/next/index.ts` の入口一覧に載せてある。
 
 import { parentPort } from 'worker_threads';
-import { runParadisWorkerLoop } from '../../../../node/paradisWorkerLoop.js';
+import type { IParadisOfficeSemanticWorkerReply, ParadisOfficeSemanticWorkerMessage } from '../office/paradisOfficeSemanticWorkerQueue.js';
 import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
 import type { IParadisSpreadsheetMetafileImages } from '../../common/paradisSpreadsheet.js';
 import { convertParadisSpreadsheetMetafiles } from './paradisSpreadsheetMetafiles.js';
@@ -20,29 +20,46 @@ import type { IParadisSpreadsheetMetafileWorkerRun } from './paradisSpreadsheetM
 
 class MetafileCancelled extends Error { }
 
-runParadisWorkerLoop<IParadisSpreadsheetMetafileWorkerRun, IParadisSpreadsheetMetafileImages>(parentPort, {
-	accepts: (request): request is IParadisSpreadsheetMetafileWorkerRun => !!request && typeof request === 'object' && (request as { readonly bytes?: unknown }).bytes instanceof Uint8Array,
-	invalid: { images: {}, unavailableReason: 'invalid' },
-	// 握った例外の種類は共通の受け口が返事に載せ、shared process が Sentry へ送る。
-	failed: { images: {}, unavailableReason: 'failed' },
-	failureKind: paradisOfficeWorkerFailureKind,
-	run: async (request, token) => {
-		try {
-			const images = await convertParadisSpreadsheetMetafiles(request.bytes, {
-				checkpoint: async () => {
-					// 取り消しの知らせを受け取れるよう、区切りごとに順番を譲る。
-					await new Promise(resolve => setImmediate(resolve));
-					if (token.isCancellationRequested) {
-						throw new MetafileCancelled();
-					}
-				},
-			});
-			return { result: { images } };
-		} catch (error) {
-			if (error instanceof MetafileCancelled) {
-				return { result: { images: {}, unavailableReason: 'cancelled' } };
-			}
-			throw error;
+/** 走っている依頼。取り消しは、この中の依頼についてだけ覚える（終わった依頼の取り消しを溜めないため）。 */
+const running = new Set<number>();
+const cancelled = new Set<number>();
+
+async function handle(id: number, request: IParadisSpreadsheetMetafileWorkerRun): Promise<void> {
+	running.add(id);
+	let reply: IParadisOfficeSemanticWorkerReply<IParadisSpreadsheetMetafileImages>;
+	try {
+		const images = await convertParadisSpreadsheetMetafiles(request.bytes, {
+			checkpoint: async () => {
+				// 取り消しの知らせを受け取れるよう、区切りごとに順番を譲る。
+				await new Promise(resolve => setImmediate(resolve));
+				if (cancelled.has(id)) {
+					throw new MetafileCancelled();
+				}
+			},
+		});
+		reply = { kind: 'result', id, result: { images } };
+	} catch (error) {
+		reply = error instanceof MetafileCancelled
+			? { kind: 'result', id, result: { images: {}, unavailableReason: 'cancelled' } }
+			// 握った例外の種類を返事に載せて、shared process が Sentry へ送る。
+			: { kind: 'result', id, result: { images: {}, unavailableReason: 'failed' }, cause: paradisOfficeWorkerFailureKind(error) };
+	} finally {
+		running.delete(id);
+		cancelled.delete(id);
+	}
+	parentPort?.postMessage(reply);
+}
+
+parentPort?.on('message', (message: ParadisOfficeSemanticWorkerMessage<IParadisSpreadsheetMetafileWorkerRun>) => {
+	if (message.op === 'cancel') {
+		if (running.has(message.id)) {
+			cancelled.add(message.id);
 		}
-	},
+		return;
+	}
+	if (message.request?.bytes instanceof Uint8Array) {
+		void handle(message.id, message.request);
+	} else {
+		parentPort?.postMessage({ kind: 'result', id: message.id, result: { images: {}, unavailableReason: 'invalid' } });
+	}
 });

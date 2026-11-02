@@ -25,16 +25,23 @@
 import { createHash } from 'crypto';
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import type { IParadisWorkerLoopReply, ParadisWorkerLoopMessage } from '../../../../node/paradisWorkerLoop.js';
 
 /** 失敗の種類。`busy` は混み合っていて走らせなかった（頼み直せる）。 */
 export type ParadisOfficeSemanticWorkerFailure = 'cancelled' | 'busy' | 'failed' | 'limitExceeded';
 
-/** shared process → worker。`run` の中身は解析ごとに決める。worker の側は共通の受け口（paradisWorkerLoop.ts）が受ける。 */
-export type ParadisOfficeSemanticWorkerMessage<TRun> = ParadisWorkerLoopMessage<TRun>;
+/** shared process → worker。`run` の中身は解析ごとに決める。 */
+export type ParadisOfficeSemanticWorkerMessage<TRun> =
+	| { readonly id: number; readonly op: 'run'; readonly request: TRun }
+	| { readonly id: number; readonly op: 'cancel' };
 
-/** worker → shared process。`cause` は中で例外が出たときの種類（paradisOfficeWorkerFailureKind）で、Sentry へ送るためだけに使う。 */
-export type IParadisOfficeSemanticWorkerReply<TResult> = IParadisWorkerLoopReply<TResult>;
+/** worker → shared process。 */
+export interface IParadisOfficeSemanticWorkerReply<TResult> {
+	readonly kind: 'result';
+	readonly id: number;
+	readonly result: TResult;
+	/** 中で例外が出て `failed` を返したときの、その種類（paradisOfficeWorkerFailureKind）。Sentry へ送るためだけに使う。 */
+	readonly cause?: string;
+}
 
 /** worker_threads の Worker のうち、ここで使う部分。テストでは偽物を渡す。 */
 export interface IParadisOfficeSemanticWorker<TRun, TResult> {

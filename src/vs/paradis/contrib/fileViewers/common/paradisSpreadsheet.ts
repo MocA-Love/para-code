@@ -18,12 +18,6 @@ import type { ParadisSemanticBorder, ParadisSemanticCell, ParadisSpreadsheetColo
 /** workbench(renderer) ⇔ shared process 間の Excel パース用IPCチャネル名。 */
 export const PARADIS_SPREADSHEET_CHANNEL = 'paradisSpreadsheet';
 
-/**
- * 表示用の解析が、ブックが大きすぎて（worker のヒープの上限・締め切り）できなかったときの、IPC で渡すエラーの名前。
- * renderer はこの名前を見て利用者向けの文に置き換え、失敗の報告（Sentry）には送らない。
- */
-export const PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME = 'ParadisSpreadsheetTooLarge';
-
 /** CSSプロパティ(camelCase)→値。renderer で Object.assign(el.style, ...) して適用する。 */
 export interface IParadisCellStyle {
 	readonly [cssProperty: string]: string;
@@ -804,6 +798,4 @@ export interface IParadisSpreadsheetService {
 	/** base64エンコードされた xlsx バイト列をパースして構造化データを返す。 */
 	/** `imagePixelBudget` はブックで描く画像の画素の合計の上限（既定は 1 億。比較では左右で半分ずつ）。 */
 	parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData>;
-	/** {@link parseWorkbook} と同じ。base64 にせずバイト列で受け取る。 */
-	parseWorkbookBytes?(source: Buffer, imagePixelBudget?: number): Promise<IParadisWorkbookData>;
 }

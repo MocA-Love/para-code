@@ -19,6 +19,7 @@ import { PARADIS_AGENT_BROWSER_TABS_CHANNEL, ParadisAgentTabMethod } from '../co
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { paradisIsPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
 import { paradisParseHumanCheckKind } from '../common/paradisBrowserHumanCheck.js';
+import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 
 /** shared process から届く呼び出しを {@link IParadisAgentBrowserTabsService} へ流すだけのチャネル。 */
 export class ParadisAgentBrowserTabsChannel implements IServerChannel {
@@ -30,22 +31,23 @@ export class ParadisAgentBrowserTabsChannel implements IServerChannel {
 	}
 
 	async call<T>(_ctx: unknown, command: string, arg?: unknown, cancellationToken?: CancellationToken): Promise<T> {
-		const args = Array.isArray(arg) ? arg : [];
-		const token = typeof args[0] === 'string' ? args[0] : undefined;
-		const text = (index: number) => typeof args[index] === 'string' ? args[index] as string : undefined;
+		const args = ParadisChannelArgs.from(arg);
+		const token = args.string(0);
 		switch (command) {
-			case ParadisAgentTabMethod.Open:
-				return this._tabs.openTab(token, text(1), args[2] === true, paradisIsPaneStorageAffinity(args[3]) ? args[3] : undefined) as Promise<T>;
+			case ParadisAgentTabMethod.Open: {
+				const affinity = args.at(3);
+				return this._tabs.openTab(token, args.string(1), args.at(2) === true, paradisIsPaneStorageAffinity(affinity) ? affinity : undefined) as Promise<T>;
+			}
 			case ParadisAgentTabMethod.List:
 				return this._tabs.listTabs(token) as T;
 			case ParadisAgentTabMethod.Select:
-				return this._tabs.selectTab(token, text(1) ?? '') as Promise<T>;
+				return this._tabs.selectTab(token, args.string(1) ?? '') as Promise<T>;
 			case ParadisAgentTabMethod.Close:
-				return this._tabs.closeTab(token, text(1) ?? '') as Promise<T>;
+				return this._tabs.closeTab(token, args.string(1) ?? '') as Promise<T>;
 			case ParadisAgentTabMethod.RequestPage:
-				return this._tabs.requestPage(token, text(1), text(2), cancellationToken) as Promise<T>;
+				return this._tabs.requestPage(token, args.string(1), args.string(2), cancellationToken) as Promise<T>;
 			case ParadisAgentTabMethod.NoteHumanCheck:
-				this._tabs.noteHumanCheck(token, text(1) ?? '', paradisParseHumanCheckKind(args[2]));
+				this._tabs.noteHumanCheck(token, args.string(1) ?? '', paradisParseHumanCheckKind(args.at(2)));
 				return undefined as T;
 		}
 		throw new Error(`Method not found: ${command}`);

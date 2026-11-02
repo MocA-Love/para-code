@@ -9,7 +9,7 @@ import ExcelJS from 'exceljs';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { decodeParadisWorkbookJson, unpackParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
+import { unpackParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ParadisSpreadsheetService } from '../../node/paradisSpreadsheetService.js';
 import type { ParadisOfficeSemanticWorkerMessage } from '../../node/office/paradisOfficeSemanticWorkerQueue.js';
 import { ParadisSpreadsheetParseWorkerBackend, type IParadisSpreadsheetParseWorker, type IParadisSpreadsheetParseWorkerRun } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
@@ -72,8 +72,8 @@ suite('ParadisSpreadsheetParseWorker', () => {
 		deepStrictEqual({
 			missingWorker: await ParadisSpreadsheetParseWorkerBackend.workerFactory(`${WORKER_PATH}.missing`),
 			warm,
-			same: parsed.kind === 'workbookJson' && JSON.stringify(unpackParadisWorkbookStyles(decodeParadisWorkbookJson(parsed.json))) === JSON.stringify(inProcess),
-			styles: parsed.kind === 'workbookJson' ? decodeParadisWorkbookJson(parsed.json).cellStyles.length < 10 : undefined,
+			same: parsed.kind === 'workbook' && JSON.stringify(unpackParadisWorkbookStyles(parsed.workbook)) === JSON.stringify(inProcess),
+			styles: parsed.kind === 'workbook' ? parsed.workbook.cellStyles.length < 10 : undefined,
 			broken: broken.kind,
 		}, { missingWorker: undefined, warm: { kind: 'warm' }, same: true, styles: true, broken: 'error' });
 	});

@@ -13,36 +13,39 @@
 // パッケージ版でもこの場所へ出力されるよう、`build/next/index.ts` の入口一覧に載せてある。
 
 import { parentPort } from 'worker_threads';
-import { runParadisWorkerLoop } from '../../../../node/paradisWorkerLoop.js';
-import type { ParadisWordSemanticWorkerResult, ParadisWordSemanticWorkerRun } from './paradisWordSemanticWorkerProtocol.js';
+import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerRequest, ParadisWordSemanticWorkerRun } from './paradisWordSemanticWorkerProtocol.js';
 import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { ParadisWordSemanticService } from './paradisWordSemanticService.js';
 
 const service = new ParadisWordSemanticService();
+const active = new Map<number, CancellationTokenSource>();
 
-/** 依頼の形を確かめる（shared process の待ち行列から来るが、形の違う依頼を解析へ渡さない）。 */
-function isWordRun(request: unknown): request is ParadisWordSemanticWorkerRun {
-	if (!request || typeof request !== 'object') {
-		return false;
+async function handle(id: number, request: ParadisWordSemanticWorkerRun): Promise<void> {
+	const cancellation = new CancellationTokenSource();
+	active.set(id, cancellation);
+	let reply: ParadisWordSemanticWorkerMessage;
+	// 解析の中で握られた想定外の例外の種類。返事に載せて、shared process が Sentry へ送る。
+	let cause: string | undefined;
+	const onUnexpectedError = (error: unknown) => { cause = paradisOfficeWorkerFailureKind(error); };
+	try {
+		const result = request.op === 'analyze'
+			? await service.analyze(request.bytes, cancellation.token, onUnexpectedError)
+			: await service.compare(request.original, request.modified, cancellation.token, onUnexpectedError);
+		reply = { kind: 'result', id, result, ...(cause ? { cause } : {}) };
+	} catch (error) {
+		reply = { kind: 'result', id, result: { ok: false, code: 'failed' }, cause: paradisOfficeWorkerFailureKind(error) };
+	} finally {
+		active.delete(id);
+		cancellation.dispose();
 	}
-	const value = request as { readonly op?: unknown; readonly bytes?: unknown; readonly original?: unknown; readonly modified?: unknown };
-	return value.op === 'analyze' ? value.bytes instanceof Uint8Array
-		: value.op === 'compare' ? value.original instanceof Uint8Array && value.modified instanceof Uint8Array
-			: false;
+	parentPort?.postMessage(reply);
 }
 
-runParadisWorkerLoop<ParadisWordSemanticWorkerRun, ParadisWordSemanticWorkerResult>(parentPort, {
-	accepts: isWordRun,
-	invalid: { ok: false, code: 'invalid' },
-	failed: { ok: false, code: 'failed' },
-	failureKind: paradisOfficeWorkerFailureKind,
-	run: async (request, token) => {
-		// 解析の中で握られた想定外の例外の種類。返事に載せて、shared process が Sentry へ送る。
-		let cause: string | undefined;
-		const onUnexpectedError = (error: unknown) => { cause = paradisOfficeWorkerFailureKind(error); };
-		const result = request.op === 'analyze'
-			? await service.analyze(request.bytes, token, onUnexpectedError)
-			: await service.compare(request.original, request.modified, token, onUnexpectedError);
-		return { result, ...(cause ? { cause } : {}) };
-	},
+parentPort?.on('message', (message: ParadisWordSemanticWorkerRequest) => {
+	if (message.op === 'cancel') {
+		active.get(message.id)?.cancel();
+		return;
+	}
+	void handle(message.id, message.request);
 });

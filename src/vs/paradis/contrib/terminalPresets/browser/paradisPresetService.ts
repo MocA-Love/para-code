@@ -16,7 +16,7 @@
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { parse as parseJsonc } from '../../../../base/common/jsonc.js';
-import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, isEqual, joinPath } from '../../../../base/common/resources.js';
 import { isAbsolute } from '../../../../base/common/path.js';
 import { isWindows, OperatingSystem } from '../../../../base/common/platform.js';
@@ -142,8 +142,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	private readonly _onDidChangePresets = this._register(new Emitter<void>());
 	readonly onDidChangePresets: Event<void> = this._onDidChangePresets.event;
 
-	/** フォルダURI(string) → そのフォルダの .paracode.json の watcher。変わったフォルダだけ作り直す。 */
-	private readonly _folderStores = this._register(new DisposableMap<string, DisposableStore>());
+	private readonly _folderStores = this._register(new DisposableStore());
 	/** フォルダURI(string) → .paracode.json 由来のプリセット */
 	private readonly _workspacePresets = new Map<string, IParadisResolvedPreset[]>();
 	/**
@@ -372,63 +371,35 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		return result;
 	}
 
-	/**
-	 * フォルダが増減したときに、変わったフォルダの watcher だけを作り直す。残ったフォルダは
-	 * watcher と読み込み済みの内容をそのまま使う（スペースの切り替えのたびに全部読み直さない）。
-	 * 変更の知らせは 1 回だけ出す。増えたフォルダがあれば、その読み込みが全部済んでから出す。
-	 */
 	private _refreshFolders(): void {
-		const current = new Map(this.contextService.getWorkspace().folders.map(folder => [folder.uri.toString(), folder]));
-		let removed = false;
-		for (const key of [...this._folderStores.keys()]) {
-			if (!current.has(key)) {
-				this._folderStores.deleteAndDispose(key);
-				this._workspacePresets.delete(key);
-				this._workspacePresetFolders.delete(key);
-				removed = true;
-			}
+		this._folderStores.clear();
+		this._workspacePresets.clear();
+		this._workspacePresetFolders.clear();
+		for (const folder of this.contextService.getWorkspace().folders) {
+			this._watchFolder(folder);
 		}
-		const loads: Promise<boolean>[] = [];
-		for (const [key, folder] of current) {
-			if (!this._folderStores.has(key)) {
-				loads.push(this._watchFolder(folder));
-			}
-		}
-		if (loads.length > 0) {
-			void Promise.all(loads).then(results => {
-				if (results.some(loaded => loaded)) {
-					this._onDidChangePresets.fire();
-				}
-			});
-		} else if (removed) {
-			this._onDidChangePresets.fire();
-		}
+		this._onDidChangePresets.fire();
 	}
 
-	/** watcher を張り、最初の読み込みを返す（知らせは出さない。読み込めたかを返す）。 */
-	private _watchFolder(folder: IWorkspaceFolder): Promise<boolean> {
+	private _watchFolder(folder: IWorkspaceFolder): void {
 		const store = new DisposableStore();
-		const key = folder.uri.toString();
-		this._folderStores.set(key, store);
+		this._folderStores.add(store);
 		const presetFile = joinPath(folder.uri, PARADIS_WORKSPACE_PRESET_FILE);
 
-		const update = async (notify: boolean): Promise<boolean> => {
+		const update = async () => {
 			const { presets, folders } = await this._loadWorkspacePresetFileFull(presetFile);
 			if (store.isDisposed) {
-				return false;
+				return;
 			}
-			this._workspacePresets.set(key, presets);
-			this._workspacePresetFolders.set(key, folders);
-			if (notify) {
-				this._onDidChangePresets.fire();
-			}
-			return true;
+			this._workspacePresets.set(folder.uri.toString(), presets);
+			this._workspacePresetFolders.set(folder.uri.toString(), folders);
+			this._onDidChangePresets.fire();
 		};
 
-		const throttler = store.add(new RunOnceScheduler(() => update(true), 300));
+		const throttler = store.add(new RunOnceScheduler(update, 300));
 		const watcher = store.add(this.fileService.createWatcher(presetFile, { recursive: false, excludes: [] }));
 		store.add(watcher.onDidChange(() => throttler.schedule()));
-		return update(false);
+		void update();
 	}
 
 	private async _loadWorkspacePresetFile(presetFile: URI): Promise<IParadisResolvedPreset[]> {

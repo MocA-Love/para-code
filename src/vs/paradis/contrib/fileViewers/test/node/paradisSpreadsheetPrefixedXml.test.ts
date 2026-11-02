@@ -12,7 +12,7 @@ import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ParadisOfficeXmlNode } from '../../common/office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
-import { decodeParadisWorkbookJson, unpackParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
+import { unpackParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ParadisSpreadsheetService } from '../../node/paradisSpreadsheetService.js';
 import { ParadisSpreadsheetParseWorkerBackend } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 import { rootBindsSpreadsheetMlPrefix, unprefixSpreadsheetMlXml, unprefixWorkbookSpreadsheetMl } from '../../node/spreadsheet/paradisSpreadsheetPrefixedXml.js';
@@ -206,8 +206,8 @@ suite('ParadisSpreadsheetPrefixedXml', () => {
 		}
 		const backend = disposables.add(new ParadisSpreadsheetParseWorkerBackend((await ParadisSpreadsheetParseWorkerBackend.workerFactory(WORKER_PATH))!));
 		const parsed = await backend.parse(new Uint8Array(bytes), undefined, CancellationToken.None);
-		ok(parsed.kind === 'workbookJson');
-		deepStrictEqual(unpackParadisWorkbookStyles(decodeParadisWorkbookJson(parsed.json)), JSON.parse(JSON.stringify(await new ParadisSpreadsheetService().parseWorkbookBytes(original))));
+		ok(parsed.kind === 'workbook');
+		deepStrictEqual(unpackParadisWorkbookStyles(parsed.workbook), await new ParadisSpreadsheetService().parseWorkbookBytes(original));
 	});
 
 	test('reads a prefixed workbook in the semantic diagnostics as it reads the one without', async () => {
