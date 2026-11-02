@@ -98,7 +98,7 @@
 
 /* ---------- bookmark / folder dialogs (DOM modal) ---------- */
 
-/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, editor-background panel (translucent when window transparency is on), radius 8px, shadow-xl. */
+/* Backdrop follows the upstream modal editor part (modalEditorPart.css); the box is the shared S tier (paradisModal.ts). */
 .paradis-bookmark-dialog-backdrop {
 	position: absolute;
 	inset: 0;
@@ -110,92 +110,85 @@
 }
 
 .paradis-bookmark-dialog {
-	width: 420px;
-	max-width: 92vw;
-	max-height: 92vh;
-	background: var(--vscode-editor-background);
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 8px;
-	display: flex;
-	flex-direction: column;
-	box-shadow: var(--vscode-shadow-xl);
-	overflow: hidden;
-	font-size: 13px;
 	outline: none;
 }
 
-/* The dialog takes focus (tabindex="-1") for Escape handling and when its background is clicked. Keep the workbench's focus outline
-	(`.monaco-workbench [tabindex="-1"]:focus`) off its frame; the controls inside still show it. */
+/* Programmatic focus on the dialog root must not paint a frame. */
 .monaco-workbench .paradis-bookmark-dialog[tabindex="-1"]:focus {
 	outline: none;
 }
 
+/* The box is the shared S tier (paradisModal.ts). Header 35px, the upstream input, select and button steps. */
 .paradis-bookmark-dialog .pbm-header {
-	padding: 14px 16px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: var(--vscode-spacing-size80);
+	height: 35px;
+	padding: 0 var(--vscode-spacing-size80) 0 var(--vscode-spacing-size160);
+	flex: none;
 }
 
 .paradis-bookmark-dialog .pbm-header h2 {
 	margin: 0;
 	flex: 1;
-	font-size: 14px;
-	font-weight: 600;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
 	color: var(--vscode-foreground);
 }
 
 .paradis-bookmark-dialog .pbm-close {
-	width: 24px;
-	height: 24px;
-	border-radius: 6px;
+	width: 22px;
+	height: 22px;
+	border-radius: var(--vscode-cornerRadius-small);
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-icon-foreground);
 	cursor: pointer;
 	flex-shrink: 0;
 }
 
 .paradis-bookmark-dialog .pbm-close:hover {
 	background: var(--vscode-toolbar-hoverBackground);
-	color: var(--vscode-foreground);
 }
 
 .paradis-bookmark-dialog .pbm-body {
-	padding: 14px 16px;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160) var(--vscode-spacing-size160);
 	display: flex;
 	flex-direction: column;
-	gap: 12px;
+	gap: var(--vscode-spacing-size120);
 	overflow-y: auto;
 }
 
 .paradis-bookmark-dialog .pbm-field {
 	display: flex;
 	flex-direction: column;
-	gap: 5px;
+	gap: var(--vscode-spacing-size40);
 }
 
 .paradis-bookmark-dialog .pbm-label {
-	font-size: 11.5px;
-	font-weight: 600;
-	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-foreground);
 }
 
 .paradis-bookmark-dialog .pbm-input,
 .paradis-bookmark-dialog .pbm-select {
 	box-sizing: border-box;
 	width: 100%;
-	padding: 5px 8px;
+	height: 26px;
+	padding: 0 var(--vscode-spacing-size60);
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
-	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: var(--vscode-cornerRadius-small, 4px);
-	font-size: 13px;
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	font-size: var(--vscode-fontSize-body1);
 	font-family: inherit;
 	outline: none;
+}
+
+.paradis-bookmark-dialog .pbm-select {
+	background: var(--vscode-dropdown-background, var(--vscode-input-background));
+	color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
 }
 
 .paradis-bookmark-dialog .pbm-input:focus,
@@ -204,76 +197,63 @@
 }
 
 .paradis-bookmark-dialog .pbm-error {
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-errorForeground);
 }
 
-.paradis-bookmark-dialog .pbm-icon-grid {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-}
-
-.paradis-bookmark-dialog .pbm-icon-option {
-	width: 32px;
-	height: 32px;
-	border-radius: var(--vscode-cornerRadius-small, 4px);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	cursor: pointer;
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-bookmark-dialog .pbm-icon-option .codicon {
-	font-size: 16px;
-	color: inherit;
-}
-
-.paradis-bookmark-dialog .pbm-icon-option:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-bookmark-dialog .pbm-icon-option.selected {
-	border-color: var(--vscode-focusBorder);
-	background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent);
-	color: var(--vscode-foreground);
-}
-
+/* Icons and colours are 22px push buttons; the chosen one is filled with the toggled colour. */
+.paradis-bookmark-dialog .pbm-icon-grid,
 .paradis-bookmark-dialog .pbm-color-row {
 	display: flex;
 	align-items: center;
 	flex-wrap: wrap;
-	gap: 6px;
+	gap: var(--vscode-spacing-size20);
 }
 
+.paradis-bookmark-dialog .pbm-icon-option,
 .paradis-bookmark-dialog .pbm-color-swatch {
 	width: 22px;
 	height: 22px;
-	border-radius: 50%;
-	border: 2px solid transparent;
+	border-radius: var(--vscode-cornerRadius-small);
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	cursor: pointer;
-	box-sizing: border-box;
+	color: var(--vscode-icon-foreground);
 }
 
+.paradis-bookmark-dialog .pbm-icon-option:hover,
+.paradis-bookmark-dialog .pbm-color-swatch:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-bookmark-dialog .pbm-icon-option.selected,
 .paradis-bookmark-dialog .pbm-color-swatch.selected {
-	border-color: var(--vscode-focusBorder);
+	background: var(--vscode-actionBar-toggledBackground, var(--vscode-toolbar-activeBackground));
+}
+
+.paradis-bookmark-dialog .pbm-color-dot {
+	width: 12px;
+	height: 12px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	box-shadow: inset 0 0 0 1px var(--vscode-widget-border, var(--vscode-editorWidget-border));
 }
 
 .paradis-bookmark-dialog .pbm-color-custom {
-	width: 26px;
-	height: 26px;
+	width: 22px;
+	height: 22px;
+	margin-left: var(--vscode-spacing-size40);
 	padding: 0;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: var(--vscode-cornerRadius-small, 4px);
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-small);
 	background: transparent;
 	cursor: pointer;
 }
 
 .paradis-bookmark-dialog .pbm-color-reset {
-	padding: 3px 8px;
-	font-size: 11.5px;
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
 	background: transparent;
 	color: var(--vscode-textLink-foreground);
 	border: none;
@@ -282,33 +262,14 @@
 }
 
 .paradis-bookmark-dialog .pbm-footer {
-	padding: 12px 16px;
-	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160);
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	display: flex;
 	justify-content: flex-end;
-	gap: 8px;
+	gap: var(--vscode-spacing-size80);
+	flex: none;
 }
 
-.paradis-bookmark-dialog .pbm-btn {
-	padding: 5px 14px;
-	border-radius: var(--vscode-cornerRadius-small, 4px);
-	border: 1px solid var(--vscode-button-border, transparent);
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	font-size: 12.5px;
-	font-family: inherit;
-	cursor: pointer;
-}
-
-.paradis-bookmark-dialog .pbm-btn:hover {
-	background: var(--vscode-button-secondaryHoverBackground);
-}
-
-.paradis-bookmark-dialog .pbm-btn.primary {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-}
-
-.paradis-bookmark-dialog .pbm-btn.primary:hover {
-	background: var(--vscode-button-hoverBackground);
+.paradis-bookmark-dialog .pbm-footer .monaco-button {
+	width: auto;
 }
