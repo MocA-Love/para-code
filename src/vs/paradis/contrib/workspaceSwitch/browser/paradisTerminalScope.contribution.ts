@@ -33,6 +33,7 @@ import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisC
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisRegisterTerminalEditorOwnerProbe, paradisUnparkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { IParadisTerminalOrphanPty, paradisDuplicatedNonces, paradisOrphanAttachTarget, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
+import { ParadisTerminalInstanceRecords } from './paradisTerminalInstanceRecords.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisParseTerminalActiveGroups, paradisTerminalGroupIdentity, paradisUpdateTerminalActiveGroup } from '../common/paradisTerminalActiveGroup.js';
@@ -145,11 +146,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 跨いで引けることがこのマップの存在意義）。スコープ退役時に retireScope でまとめて掃除する。
 	 */
 	private readonly _instanceScopes = new Map<number, string>();
-	private readonly _persistentProcessIdByInstance = new Map<number, number>();
+	/** instanceId ごとの台帳をまとめたもの。下の `map` / `flag` の見え方を通して使い、端末が閉じたら `retire` 1 回で消す。 */
+	private readonly _instanceRecords = new ParadisTerminalInstanceRecords();
+	private readonly _persistentProcessIdByInstance = this._instanceRecords.map('persistentProcessId');
 	private readonly _instanceIdByPersistentProcessId = new Map<number, number>();
 	private readonly _stableScopeTracker = this._register(new ParadisTerminalStableScopeTracker());
 	private readonly _instanceRetirementTracker = this._register(new ParadisTerminalInstanceRetirementTracker());
-	private readonly _activeScopeCandidates = new Map<number, string | undefined>();
+	private readonly _activeScopeCandidates = this._instanceRecords.map('activeScopeCandidate');
 	/**
 	 * 端末を初めて見た時点で working set の復元中だったスペース。
 	 *
@@ -158,7 +161,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * ため、同じことが言えない）。切り替え以外の経路では未設定で、その場合は起動時のアクティブ
 	 * スペース（= 復元される working set の持ち主）を根拠にする。
 	 */
-	private readonly _restoreScopeCandidates = new Map<number, string>();
+	private readonly _restoreScopeCandidates = this._instanceRecords.map('restoreScopeCandidate');
 	/**
 	 * 初めて見た時点で「前セッションから復元された端末」だったもの。
 	 *
@@ -166,19 +169,19 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * terminalProcessManager がその場で undefined に書き換えるので、復元端末が新規端末に化け、
 	 * しかも書き換えが非同期なため判定を引く時刻次第で答えが変わる。
 	 */
-	private readonly _restoredInstances = new Set<number>();
+	private readonly _restoredInstances = this._instanceRecords.flag('restored');
 	/**
 	 * 繋ぎ直しに失敗してシェルを起こし直した端末 → そのとき根拠から引けた持ち主。
 	 * 起こし直したシェルはこのスペースのフォルダで起きている（`paradisTerminalSpaceCwd.contribution.ts`）。
 	 */
-	private readonly _restartedShellScopes = new Map<number, string>();
+	private readonly _restartedShellScopes = this._instanceRecords.map('restartedShellScope');
 	/** 孤児 PTY（nonce、無ければ ID）ごとの、繋ぎ直しに失敗した回数。 */
 	private readonly _orphanReattachFailures = new Map<string, number>();
 	/** 切り替えの最中に届いたため、park の判定を見送ったエディタターミナル。 */
 	private readonly _editorAssignmentsDuringSwitch = new Set<ITerminalInstance>();
-	private readonly _candidateCapturedInstances = new Set<number>();
-	private readonly _initialCwds = new Map<number, string>();
-	private readonly _initialCwdResolvedInstances = new Set<number>();
+	private readonly _candidateCapturedInstances = this._instanceRecords.flag('candidateCaptured');
+	private readonly _initialCwds = this._instanceRecords.map('initialCwd');
+	private readonly _initialCwdResolvedInstances = this._instanceRecords.flag('initialCwdResolved');
 	/**
 	 * 作られた時のスペースを根拠にしただけの端末。cwd が判明したら訂正する前提で、nonce 台帳
 	 * （revive をまたいで不変＝訂正の機会が二度と来ない）には書かない。
@@ -189,7 +192,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * （`recordRecoveredScopeIfUnassigned`）＝**推測は1度のリロードで確定に昇格する**。
 	 * 昇格するのは「ユーザーがそのスペースで作った端末」に限られるので許容している。
 	 */
-	private readonly _activeFallbackInstances = new Set<number>();
+	private readonly _activeFallbackInstances = this._instanceRecords.flag('activeFallback');
 	/**
 	 * 同居しているグループから所属を借りているだけで、自分の根拠は無い端末。
 	 *
@@ -198,7 +201,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 戻って隠れてしまう。こちらは自前の根拠がゼロなので、**どの台帳にも書かない**。書くと1度の
 	 * リロードで pid 台帳から確定値として読み戻され、cwd による訂正の機会が永久に来なくなる。
 	 */
-	private readonly _inheritedGroupScopes = new Set<number>();
+	private readonly _inheritedGroupScopes = this._instanceRecords.flag('inheritedGroupScope');
 	/** nonce 台帳と ID 台帳が食い違った回数。0 のままなら nonce を信頼してよい。 */
 	private _nonceScopeDisagreements = 0;
 	/** グループの所属と構成員の自前の根拠が食い違った回数。 */
@@ -273,16 +276,16 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 */
 	private readonly _sharedPanel: boolean;
 	/** 共通ターミナルとして一度でも見たインスタンス。エディタへ移されたことを見分けるために持つ。 */
-	private readonly _sharedPanelInstanceIds = new Set<number>();
+	private readonly _sharedPanelInstanceIds = this._instanceRecords.flag('sharedPanel');
 	/**
 	 * 共通ターミナル以外（エディタのタブ等）として見たことのあるインスタンス。エディタのタブから
 	 * パネルへ移しただけの端末を、更新による移行として数えないために持つ。
 	 */
-	private readonly _seenOutsideSharedPanel = new Set<number>();
+	private readonly _seenOutsideSharedPanel = this._instanceRecords.flag('seenOutsideSharedPanel');
 	/** このウィンドウで共通ターミナルへ移した（元の所属を消した）ターミナルの数。1度だけ知らせる。 */
 	private _sharedPanelMigratedCount = 0;
 	/** 共通ターミナルへ移したターミナル。知らせから空のシェルを片付けるときの対象（これ以外は閉じない）。 */
-	private readonly _sharedPanelMigratedInstanceIds = new Set<number>();
+	private readonly _sharedPanelMigratedInstanceIds = this._instanceRecords.flag('sharedPanelMigrated');
 	private readonly _sharedPanelMigrationNotice = this._register(new RunOnceScheduler(() => this.notifySharedPanelMigration(), 3_000));
 	/** 共通ターミナルへ移す前の所属（nonce → stateKey）。設定をオフに戻したときに戻す。 */
 	private static readonly SHARED_PANEL_FORMER_SCOPES_STORAGE_KEY = 'paradis.workspaceSwitch.sharedPanelFormerScopes';
@@ -1161,20 +1164,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			if (persistentProcessId !== undefined && this._instanceIdByPersistentProcessId.get(persistentProcessId) === instanceId) {
 				this._instanceIdByPersistentProcessId.delete(persistentProcessId);
 			}
-			this._persistentProcessIdByInstance.delete(instanceId);
-			this._activeScopeCandidates.delete(instanceId);
-			this._restoreScopeCandidates.delete(instanceId);
-			this._candidateCapturedInstances.delete(instanceId);
-			this._initialCwds.delete(instanceId);
-			this._initialCwdResolvedInstances.delete(instanceId);
-			this._activeFallbackInstances.delete(instanceId);
-			this._inheritedGroupScopes.delete(instanceId);
-			this._restoredInstances.delete(instanceId);
-			this._restartedShellScopes.delete(instanceId);
+			this._instanceRecords.retire(instanceId);
 			paradisForgetRestartedTerminal(instanceId);
-			this._sharedPanelInstanceIds.delete(instanceId);
-			this._sharedPanelMigratedInstanceIds.delete(instanceId);
-			this._seenOutsideSharedPanel.delete(instanceId);
 			this._stableScopeTracker.retire(instanceId);
 			this.persistMapping();
 		});
