@@ -269,6 +269,8 @@ export function ArchivedTasksDialog() {
 	const app = useApp();
 	const list = useAsync<readonly ITaskBoardArchivedTask[]>(() => rpc('archivedTasks', {}), []);
 	const [busy, setBusy] = useState<string | undefined>();
+	// 全件は描かない。新しい順に 100 件ずつ
+	const [limit, setLimit] = useState(100);
 	const now = Date.now();
 	return (
 		<Modal title="移したタスク" icon="issueClosed" size="lg" footer={<button className="btn" onClick={app.closeDialog}>閉じる</button>}>
@@ -278,7 +280,7 @@ export function ArchivedTasksDialog() {
 					: !list.data?.length ? <p className="faint">移したタスクはありません。</p>
 						: (
 							<div className="archived-list">
-								{list.data.map(t => (
+								{list.data.slice(0, limit).map(t => (
 									<div key={t.id} className="archived-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
 										<div style={{ flex: 1, minWidth: 0 }}>
 											<div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
@@ -293,6 +295,7 @@ export function ArchivedTasksDialog() {
 										}}>ボードに戻す</button>
 									</div>
 								))}
+								{list.data.length > limit && <button className="col-more" onClick={() => setLimit(n => n + 100)}>さらに {Math.min(100, list.data.length - limit)} 件を表示（残り {list.data.length - limit} 件）</button>}
 							</div>
 						)}
 		</Modal>
