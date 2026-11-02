@@ -28,7 +28,8 @@ import { IWorkingCopyService } from '../../../../../workbench/services/workingCo
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
-import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/paradisDocxDiffWebview.js';
+import { buildParadisDocxDiffHtml } from '../../electron-browser/paradisDocxDiffWebview.js';
+import { sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/word/paradisDocxSanitize.js';
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
 import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { paradisEmptyDocxBytes } from '../../common/paradisOfficeDiffSide.js';
