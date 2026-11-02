@@ -163,6 +163,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	}
 
 	get liveCellCount(): number { return this.cells.size; }
+	/** 表示の倍率。`render` に渡す frame は倍率を掛ける前の寸法（入れ物の clientWidth などは倍率で割って渡す）。 */
+	get zoomFactor(): number { return this.zoom; }
 	get frame(): ParadisSpreadsheetViewportFrame { return { ...this._frame }; }
 
 	async render(frame: ParadisSpreadsheetViewportFrame): Promise<ParadisSpreadsheetViewportPlan> {
@@ -172,9 +174,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this._frame = normalizeRendererFrame(frame);
 		this.rendering = true;
 		try {
-			this.container.scrollTop = this._frame.scrollTop * this.zoom;
-			this.container.scrollLeft = this._frame.scrollLeft * this.zoom;
-			return await this.renderCurrent();
+			// スクロール位置は入れ物に大きさを付けてから書く（先に書くと、前の大きさで切り詰められる）
+			return await this.renderCurrent(true);
 		} finally {
 			this.rendering = false;
 		}
@@ -189,9 +190,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this._frame = { ...this._frame, ...restored };
 		this.rendering = true;
 		try {
-			this.container.scrollTop = restored.scrollTop * this.zoom;
-			this.container.scrollLeft = restored.scrollLeft * this.zoom;
-			await this.renderCurrent();
+			await this.renderCurrent(true);
 		} finally {
 			this.rendering = false;
 		}
@@ -229,10 +228,14 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		super.dispose();
 	}
 
-	private async renderCurrent(): Promise<ParadisSpreadsheetViewportPlan> {
+	private async renderCurrent(applyScroll = false): Promise<ParadisSpreadsheetViewportPlan> {
 		const plan = this.viewport.plan(this._frame);
 		this.sizer.style.width = `${plan.totalWidth}px`;
 		this.sizer.style.height = `${plan.totalHeight}px`;
+		if (applyScroll) {
+			this.container.scrollTop = this._frame.scrollTop * this.zoom;
+			this.container.scrollLeft = this._frame.scrollLeft * this.zoom;
+		}
 		this.updatePaneTransforms(plan);
 		const plannedCells = new Set<string>();
 		for (const pane of plan.panes) {
@@ -418,8 +421,9 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		if (this.options.measureCell) {
 			return sanitizeBounds(this.options.measureCell(element));
 		}
+		// 画面上の寸法は zoom を掛けた後なので、中の座標（斜線の svg）に使うときは倍率で割る
 		const bounds = element.getBoundingClientRect();
-		return sanitizeBounds(bounds);
+		return sanitizeBounds({ width: bounds.width / this.zoom, height: bounds.height / this.zoom });
 	}
 
 	private appendDiagonal(element: HTMLElement, diagonal: ParadisSpreadsheetGridDiagonal, bounds: ParadisSpreadsheetCellBounds, layer: 'base' | 'conditional'): void {

@@ -368,6 +368,8 @@ export interface ITaskBoardSnapshot {
 	 * `taskDetail` のメッセージで別に届く。成果物の本文も外してある（`hasContent` だけ）。
 	 */
 	readonly tasks: readonly ITaskBoardTask[];
+	/** 完了から日が経ってファイルへ移したタスクの数（ボードに戻したものは除く。数え終わるまでは無い）。 */
+	readonly archivedCount?: number;
 	readonly flows: readonly ITaskBoardFlow[];
 	readonly activeFlowId: string;
 	readonly slots: readonly ITaskBoardSlot[];
@@ -514,6 +516,10 @@ export interface ITaskBoardRpc {
 	sendInput: { params: { taskId: string; text: string }; result: void };
 	sendKey: { params: { taskId: string; key: string }; result: void };
 	removeTask: { params: { taskId: string }; result: void };
+	/** 完了から日が経ってファイルへ移したタスク（ボードに戻したものは除く。新しく移したものが先）。 */
+	archivedTasks: { params: Record<string, never>; result: readonly ITaskBoardArchivedTask[] };
+	/** ファイルへ移したタスクをボードの「完了」に戻す。 */
+	restoreArchivedTask: { params: { taskId: string }; result: void };
 	answerManual: { params: { sessionId: string; allow: boolean }; result: void };
 	adoptManual: { params: { sessionId: string; title: string }; result: { id: string } };
 	saveFlow: { params: { flow: ITaskBoardFlow; scope: 'team' | 'personal' }; result: { path: string } };
@@ -576,6 +582,17 @@ export interface ITaskBoardProjectOptionInput {
 	readonly name: string;
 	readonly color: TaskBoardProjectColor;
 	readonly description: string;
+}
+
+/** ファイルへ移したタスクの一覧の 1 行。 */
+export interface ITaskBoardArchivedTask {
+	readonly id: string;
+	readonly title: string;
+	readonly issue?: ITaskBoardIssueRef;
+	/** 完了した時刻（ms）。 */
+	readonly finishedAt: number;
+	/** ファイルへ移した時刻（ms）。 */
+	readonly archivedAt: number;
 }
 
 /** 開いているタスクの、一覧のスナップショットから外した分。 */
