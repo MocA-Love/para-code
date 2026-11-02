@@ -43,7 +43,7 @@ import { FileOperationResult, IFileService, toFileOperationResult } from '../../
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { ParadisWebviewOriginPool } from './paradisWebviewOriginPool.js';
+import { ParadisOverlayWebviewPane } from './paradisOverlayWebviewPane.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
@@ -52,11 +52,11 @@ import { AbstractEditorWithViewState } from '../../../../workbench/browser/parts
 import { ITextResourceConfigurationService } from '../../../../editor/common/services/textResourceConfiguration.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { onParadisWebviewSignal, ParadisWebviewSignalCode } from '../../sentry/common/paradisWebviewSignals.js';
 import { PARADIS_VIEWER_CONTENT_TIMEOUT_MS, PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS, paradisViewerContentTimeout, ParadisViewerRecoveryPolicy } from '../common/paradisViewerRecovery.js';
-import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
@@ -115,12 +115,11 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _renderedBtn: HTMLButtonElement | undefined;
 	private _rawBtn: HTMLButtonElement | undefined;
 
-	private _webview: IOverlayWebview | undefined;
-	// webview 本体とその購読をまとめて捨てられるようにする（白紙からの復帰で作り直すため）。
-	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
-	private _webviewClaimed = false;
-	/** いまの webview を作ったときの {@link disableServiceWorkerFor} の答え。 */
-	private _webviewServiceWorkerDisabled = false;
+	/**
+	 * overlay webview（作り方・origin・claim と配置は部品が持つ）。白紙の検知とシグナル・本文の差し替えはこの基底が持つ
+	 * （Raw へ倒せるのは Markdown/HTML だけなので）。
+	 */
+	private readonly _pane: ParadisOverlayWebviewPane;
 	private _editorVisible = false;
 	// setHtml しても内容が届かない（白紙）ことを検知するウォッチドッグ。
 	private readonly _contentWatchdog = this._register(new MutableDisposable<IDisposable>());
@@ -188,7 +187,6 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	// watcher・claim・モード切替から始まった描画が逆順で完了しても、最後に開始した結果だけを反映する。
 	private _renderGeneration = 0;
 	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
-	private readonly _originPool: ParadisWebviewOriginPool;
 
 	constructor(
 		id: string,
@@ -196,12 +194,12 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
-		@IWebviewService private readonly _webviewService: IWebviewService,
+		@IWebviewService webviewService: IWebviewService,
 		@ITextFileService private readonly _textFileService: ITextFileService,
 		@IFileService protected readonly _fileService: IFileService,
 		@ITextModelService private readonly _textModelService: ITextModelService,
 		@IInstantiationService instantiationService: IInstantiationService,
-		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
+		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IConfigurationService protected readonly _configurationService: IConfigurationService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@ITextResourceConfigurationService textResourceConfigurationService: ITextResourceConfigurationService,
@@ -209,7 +207,21 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		@IEditorGroupsService editorGroupService: IEditorGroupsService,
 	) {
 		super(id, group, `${id}.viewState`, telemetryService, instantiationService, storageService, textResourceConfigurationService, themeService, editorService, editorGroupService);
-		this._originPool = ParadisWebviewOriginPool.getShared(storageService);
+		// origin を渡さないと webview ごとに新しい service worker 登録が増え、二度と消えない。スロットを借りるので、
+		// 同時に開いている他のビューアとは必ず別の origin になる（シグナルの照合が origin の一意性に依存している）。
+		this._pane = this._register(new ParadisOverlayWebviewPane(this, {
+			originKey: id,
+			enableFindWidget: true,
+			allowScripts: () => this.allowScripts,
+			onDidCreate: (webview, store) => this._onWebviewCreated(webview, store),
+			onDidDispose: () => {
+				this._renderedSource = undefined;
+				this._swappableBody = undefined;
+				this._documentNonce = undefined;
+				this._displayedResource = undefined;
+				this._contentWatchdog.clear();
+			},
+		}, webviewService, layoutService, storageService));
 
 		// タブを閉じたら、そのファイルのために残していた中身を捨てる。残すのは戻ってくるためなので、
 		// 閉じた後まで隠れたページ（動画や音、タイマー）を動かし続けない。閉じる通知はペインが次の
@@ -239,7 +251,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._renderedSource = undefined;
 		this._swappableBody = undefined;
 		const resource = this._currentResource;
-		if (resource && this._webviewClaimed && this._mode === 'rendered') {
+		if (resource && this._pane.claimed && this._mode === 'rendered') {
 			this._renderResourceInBackground(resource);
 		}
 	}
@@ -306,7 +318,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	/** 現在アクティブな webview（存在すれば）。 */
 	protected get webview(): IOverlayWebview | undefined {
-		return this._webview;
+		return this._pane.webview;
 	}
 
 	/**
@@ -337,7 +349,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	/** webview の中身を空にする（別のファイルを描く前と、閉じたタブの中身を捨てるとき）。 */
 	private _clearDisplayedContent(): void {
-		this._webview?.setHtml('');
+		this._pane.webview?.setHtml('');
 		this._renderedSource = undefined;
 		this._swappableBody = undefined;
 		this._displayedResource = undefined;
@@ -413,7 +425,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		let initialViewApplied = false;
 		let rerenderAfterInitial = false;
 		const rerender = () => {
-			if (isEqual(this._currentResource, resource) && this._webviewClaimed && this._mode === 'rendered') {
+			if (isEqual(this._currentResource, resource) && this._pane.claimed && this._mode === 'rendered') {
 				this._renderResourceInBackground(resource);
 			}
 		};
@@ -502,13 +514,13 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		}
 
 		// service worker の要否が前回と変わっていたら、生成時オプションなので作り直すしかない。
-		if (this._webview && this._webviewServiceWorkerDisabled !== this.disableServiceWorkerFor(resource)) {
+		if (this._pane.webview && this._pane.serviceWorkerDisabled !== this.disableServiceWorkerFor(resource)) {
 			this._disposeWebview();
 			this._updateWebviewPlacement();
 		}
 
 		// 既に同じ内容を表示している（可視化のたびの claim など）なら送り直さない。
-		if (this._webview && this._renderedSource && isEqual(this._renderedSource.resource, resource) && this._renderedSource.text === text) {
+		if (this._pane.webview && this._renderedSource && isEqual(this._renderedSource.resource, resource) && this._renderedSource.text === text) {
 			// 同じファイルへ戻ってきた。残してある中身がそのまま見えているので、描くのにかかった時間ではない。
 			// 送らず、1 回目・2 回目の枠も使わない（使うと、本当の 2 回目がほぼ 0 ms で埋まる）。
 			this._openTiming.clear();
@@ -666,17 +678,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	 * 経路なので、何も見えないままにするより読める状態に戻すことを優先する。
 	 */
 	private _disposeWebview(): void {
-		if (this._webview && this._webviewClaimed) {
-			this._webview.release(this);
-		}
-		this._webviewClaimed = false;
-		this._webview = undefined;
-		this._renderedSource = undefined;
-		this._swappableBody = undefined;
-		this._documentNonce = undefined;
-		this._displayedResource = undefined;
-		this._contentWatchdog.clear();
-		this._webviewStore.clear();
+		this._pane.disposeWebview();
 	}
 
 	private _isRenderCurrent(generation: number, resource: URI, token: CancellationToken): boolean {
@@ -695,7 +697,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._renderedSource = undefined;
 		this._swappableBody = undefined;
 		const resource = this._currentResource;
-		if (resource && this._webviewClaimed && this._mode === 'rendered') {
+		if (resource && this._pane.claimed && this._mode === 'rendered') {
 			this._renderResourceInBackground(resource);
 		}
 	}
@@ -715,36 +717,11 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	}
 
 	private ensureWebview(resource: URI): IOverlayWebview {
-		if (this._webview) {
-			return this._webview;
-		}
-		const store = new DisposableStore();
-		this._webviewStore.value = store;
-		// origin を渡さないと webview ごとに新しい service worker 登録が増え、二度と消えない。
-		// スロットを借りるので、同時に開いている他のビューアとは必ず別の origin になる
-		// （下のシグナル照合が origin の一意性に依存している）。
-		const originLease = store.add(this._originPool.acquire(this.getId()));
-		this._webviewServiceWorkerDisabled = this.disableServiceWorkerFor(resource);
-		const webview = store.add(this._webviewService.createWebviewOverlay({
-			origin: originLease.origin,
-			title: undefined,
-			options: {
-				purpose: WebviewContentPurpose.CustomEditor,
-				enableFindWidget: true,
-				tryRestoreScrollPosition: true,
-				// 非表示になるたびに service worker 登録からやり直すと、白紙で止まる窓が毎回でき直す
-				// （「Rendered だけ間欠的に白紙になる」フィールド報告の主因、下の onFatalError 参照）。
-				// 生かしたまま隠すことでその窓を無くす。
-				retainContextWhenHidden: true,
-				disableServiceWorker: this._webviewServiceWorkerDisabled
-			},
-			contentOptions: {
-				allowScripts: this.allowScripts,
-				localResourceRoots: [dirname(resource)]
-			},
-			extension: undefined
-		}));
-		this._webview = webview;
+		return this._pane.ensure(this.disableServiceWorkerFor(resource), [dirname(resource)]);
+	}
+
+	/** webview を作った直後。基盤の致命エラー・健全性シグナル・スクロールを受ける（作り直すたびに `store` ごと捨てる）。 */
+	private _onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
 		// 「Rendered だけ間欠的に白紙になる」フィールド報告の調査用: webview 基盤の致命
 		// エラー(service worker 登録失敗等)を Sentry へ送る。リソースのパスは含めない
 		// (エディタ種別 ID だけで Markdown/HTML ビューアのどちらかは判別できる)。
@@ -790,7 +767,6 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			}
 		}));
 		this.onWebviewCreated(webview, store);
-		return webview;
 	}
 
 	/**
@@ -801,10 +777,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		const resource = this._currentResource;
 		const shouldShow = this._editorVisible && this._mode === 'rendered' && !!resource;
 		if (!shouldShow) {
-			if (this._webview && this._webviewClaimed) {
-				this._webview.release(this);
-				this._webviewClaimed = false;
-			}
+			this._pane.release();
 			// 描画を見せていない間は白紙の監視も止める（復帰させる相手がいない）。
 			// 世代も外しておかないと、遅れて届いたシグナルが監視を張り直してしまう。
 			this._forgetUnconfirmedRender();
@@ -812,11 +785,10 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			this._contentWatchdog.clear();
 			return false;
 		}
-		const webview = this.ensureWebview(resource);
-		const justClaimed = !this._webviewClaimed;
+		const justClaimed = this._pane.place(true, this.window, this._webviewContainer!,
+			() => ({ disableServiceWorker: this.disableServiceWorkerFor(resource), localResourceRoots: [dirname(resource)] }),
+			() => this._updateWebviewPlacement()) === true;
 		if (justClaimed) {
-			webview.claim(this, this.window, undefined);
-			this._webviewClaimed = true;
 			// 本文を差し替えた後は、webview が覚えている HTML 全体が差し替える前の本文のまま。claim で webview が
 			// 作り直されるとそれが貼り直されるので、同じ内容でも HTML 全体を送り直す。
 			if (paradisMustResendViewerHtmlOnClaim(this._swappableBody)) {
@@ -824,8 +796,6 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 				this._swappableBody = undefined;
 			}
 		}
-		dom.setParentFlowTo(webview.container, this._webviewContainer!);
-		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
 		return justClaimed;
 	}
 
@@ -880,7 +850,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		if (mode === 'raw') {
 			this._codeEditor?.focus();
 		} else {
-			this._webview?.focus();
+			this._pane.webview?.focus();
 		}
 	}
 
@@ -914,10 +884,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._codeEditor?.setModel(null);
 		this._modelRef.clear();
 		// overlay の所有権を手放す（内容プロセスは webview レイヤー側で管理される）。
-		if (this._webview && this._webviewClaimed) {
-			this._webview.release(this);
-			this._webviewClaimed = false;
-		}
+		this._pane.release();
 		// 中身は消さない。同じファイルへ戻ってきたらそのまま見せる（スクロールとページの状態を残す）。
 		// 別のファイルが来たら setInput が先に空にし、タブを閉じたら onDidCloseEditor で空にする。
 		super.clearInput();
@@ -948,7 +915,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	 */
 	showFind(): void {
 		if (this._mode === 'rendered') {
-			this._webview?.showFind();
+			this._pane.webview?.showFind();
 		} else if (this._codeEditor) {
 			this._codeEditor.focus();
 			void this._codeEditor.getAction(FIND_IDS.StartFindAction)?.run();
@@ -958,14 +925,14 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	/** Rendered 表示中のみ有効。表示中の find widget を閉じる。 */
 	hideFind(): void {
 		if (this._mode === 'rendered') {
-			this._webview?.hideFind();
+			this._pane.webview?.hideFind();
 		}
 	}
 
 	/** Rendered 表示中のみ有効。次/前のマッチへ移動する。 */
 	runFindAction(previous: boolean): void {
 		if (this._mode === 'rendered') {
-			this._webview?.runFindAction(previous);
+			this._pane.webview?.runFindAction(previous);
 		}
 	}
 
@@ -974,7 +941,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		if (this._mode === 'raw') {
 			this._codeEditor?.focus();
 		} else {
-			this._webview?.focus();
+			this._pane.webview?.focus();
 		}
 	}
 

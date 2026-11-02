@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import type { INativeHostService } from '../../../../../platform/native/common/native.js';
 import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { importAMDNodeModule } from '../../../../../amdX.js';
 import { Dimension } from '../../../../../base/browser/dom.js';
@@ -336,6 +338,7 @@ suite('ParadisDocxFileEditor', () => {
 		const webview = {
 			container: document.createElement('div'),
 			contentOptions: {},
+			onFatalError: Event.None,
 			claim: () => {
 				recordOverlayCall();
 				claims++;
@@ -405,6 +408,8 @@ suite('ParadisDocxFileEditor', () => {
 			webviewService,
 			fileService,
 			new TestLayoutService(),
+			new TestConfigurationService(),
+			{ openExternal: async () => true } as unknown as INativeHostService,
 		));
 		const parent = document.createElement('div');
 		editor.create(parent);
