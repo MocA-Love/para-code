@@ -563,7 +563,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 				this._showMessage(localize('paradis.csv.notFound', "ファイルが見つかりません。"), [], 'warning');
 			} else if (error instanceof TextFileOperationError && error.textFileOperationResult === TextFileOperationResult.FILE_IS_BINARY) {
 				// バイナリを文字として読み込ませないよう、テキストで開く案内は出さない。
-				this._showMessage(localize('paradis.csv.binary', "バイナリファイルのため表として表示できません。"));
+				this._showMessage(localize('paradis.csv.binary', "バイナリファイルのため表として表示できません。"), [], 'warning');
 			} else {
 				this._showMessage(localize('paradis.csv.loadFailed', "表として表示できませんでした: {0}", toErrorMessage(error)), [
 					{ label: localize('paradis.csv.openAsText', "テキストで開く"), run: () => this.setViewMode('text') },

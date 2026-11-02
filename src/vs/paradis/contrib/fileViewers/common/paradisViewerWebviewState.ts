@@ -38,7 +38,10 @@ export function paradisViewerWebviewStatusHtml(): string {
  * `failedTemplate` は `{0}` に理由が入る文（localize したもの）。
  */
 export function paradisViewerWebviewFailureScript(failedTemplate: string): string {
-	return `statusEl.className = 'failed'; statusEl.setAttribute('role', 'alert'); { const s = document.createElement('span'); s.textContent = ${JSON.stringify(failedTemplate)}.replace('{0}', String(err && err.message ? err.message : err)); statusEl.replaceChildren(s); }`;
+	// 理由に `$&` などが入っても置き換えの記法として読まれないよう、関数で差し込む。script の中に置く文字列は
+	// `</script>` で閉じられないよう `<` もエスケープする。
+	const template = JSON.stringify(failedTemplate).replace(/</g, '\\u003c');
+	return `statusEl.className = 'failed'; statusEl.setAttribute('role', 'alert'); { const reason = String(err && err.message ? err.message : err); const s = document.createElement('span'); s.textContent = ${template}.replace('{0}', () => reason); statusEl.replaceChildren(s); }`;
 }
 
 /** 中身を読めなかった（空・壊れている）ときに webview へ渡す HTML。 */

@@ -101,7 +101,7 @@ export function renderParadisOfficeDiagnostic(
 		'info',
 		localize('paradis.office.unsupported.title', "この形式の Office ファイルはプレビューできません"),
 		diagnostic.canOpenExternal ? [{ label: PARADIS_VIEWER_OPEN_IN_APP_LABEL, run: () => onOpenExternal(diagnostic.resource) }] : [],
-		`${diagnosticText(diagnostic.reason)} ${localize('paradis.office.unsupported.format', "検出した形式: {0}", diagnostic.format)}`,
+		localize('paradis.office.unsupported.detail', "{0} 検出した形式: {1}", diagnosticText(diagnostic.reason), diagnostic.format),
 	);
 }
 
@@ -231,7 +231,6 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 			localize('paradis.office.workerUnavailable.detail', "この内容を安全にプレビューできませんでした（{0}）。", reason),
 		);
 	}
-
 
 	private renderSummary(summary: ParadisOfficeBrowserSemanticSummary): void {
 		this.stateView.clear();

@@ -73,7 +73,15 @@ suite('ParadisViewerState', () => {
 		deepStrictEqual({
 			escaped: html.includes('&lt;b&gt;broken&lt;/b&gt;') && !html.includes('<b>broken'),
 			loading: paradisViewerWebviewStatusHtml().startsWith('<div id="status" class="loading" role="status">'),
-			template: script.includes('"Cannot show: {0}"') && script.includes(`replace('{0}'`),
-		}, { escaped: true, loading: true, template: true });
+			template: script.includes('"Cannot show: {0}"') && script.includes(`replace('{0}', () => reason)`),
+			scriptEscaped: !paradisViewerWebviewFailureScript('</script><b>{0}').includes('</script>'),
+			doneRole: (() => {
+				const container = mainWindow.document.createElement('div');
+				const state = renderParadisViewerState(container, 'done', 'No changes');
+				const role = container.querySelector('.paradis-viewer-state')?.getAttribute('role');
+				state.dispose();
+				return role;
+			})(),
+		}, { escaped: true, loading: true, template: true, scriptEscaped: true, doneRole: 'status' });
 	});
 });
