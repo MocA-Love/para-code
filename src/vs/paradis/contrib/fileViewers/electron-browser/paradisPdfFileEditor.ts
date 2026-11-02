@@ -42,6 +42,7 @@ import { ParadisPdfInput } from './paradisPdfInput.js';
 import { PARADIS_PDF_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { buildParadisPdfViewerHtml, PARADIS_PDF_FIRST_PAINT_MESSAGE, shouldParadisPdfUseRangeRequests } from '../common/paradisPdfViewerHtml.js';
 import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
+import { canReuseParadisShownDocument, IParadisShownDocument } from '../common/paradisViewerShownDocument.js';
 
 /** vendored pdf.js 成果物の配置ディレクトリ（AppResourcePath）。 */
 const PDFJS_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs' as const;
@@ -60,10 +61,11 @@ export async function readParadisPdfHeader(fileService: IFileService, resource: 
 	}
 }
 
-/** 文書の大きさ（バイト）。分からなければ `undefined`（区間読みにしない）。 */
-async function readParadisPdfSize(fileService: IFileService, resource: URI): Promise<number | undefined> {
+/** 文書の大きさ（バイト）と etag。分からなければ `undefined`（区間読みにせず、描いた記録も残さない）。 */
+async function readParadisPdfStat(fileService: IFileService, resource: URI): Promise<{ readonly size: number; readonly mtime: number; readonly etag: string } | undefined> {
 	try {
-		return (await fileService.stat(resource)).size;
+		const stat = await fileService.stat(resource);
+		return { size: stat.size, mtime: stat.mtime, etag: stat.etag };
 	} catch {
 		return undefined;
 	}
@@ -96,6 +98,11 @@ export class ParadisPdfFileEditor extends EditorPane {
 	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
 	/** いま描いている文書の、計測に添える値（大きさと区間読みか）。 */
 	private _renderedDocument: { readonly sizeKb: number | undefined; readonly rangeRequests: boolean; readonly render: string } | undefined;
+	/**
+	 * webview に残っている文書。タブを離れると clearInput を通るので、入力ではなくペインに持つ。
+	 * 同じ文書・同じ etag へ戻ったときは描き直さない（retainContextWhenHidden で中身もスクロール位置も残っている）。
+	 */
+	private _shownDocument: IParadisShownDocument<IOverlayWebview> | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -115,6 +122,12 @@ export class ParadisPdfFileEditor extends EditorPane {
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
+		// タブを閉じたら、戻るための記録も捨てる。
+		this._register(this.group.onDidCloseEditor(e => {
+			if (e.editor instanceof ParadisPdfInput && this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
+				this._shownDocument = undefined;
+			}
+		}));
 		this._rootElement = dom.append(parent, dom.$('.paradis-pdf-viewer'));
 		this._rootElement.style.position = 'relative';
 		this._rootElement.style.overflow = 'hidden';
@@ -195,6 +208,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 		}
 		this._webviewClaimed = false;
 		this._webview = undefined;
+		this._shownDocument = undefined;
 		this._webviewStore.clear();
 	}
 
@@ -238,6 +252,9 @@ export class ParadisPdfFileEditor extends EditorPane {
 			// 使い回した webview では、前の文書の知らせが遅れて届くことがある。いま描いている HTML の知らせだけを使う。
 			if (typeof message === 'object' && message !== null && (message as { type?: unknown }).type === PARADIS_PDF_FIRST_PAINT_MESSAGE
 				&& this._renderedDocument !== undefined && (message as { render?: unknown }).render === this._renderedDocument.render) {
+				if (this._shownDocument && this._shownDocument.webview === webview) {
+					this._shownDocument = { ...this._shownDocument, confirmed: true };
+				}
 				const pages = (message as { pages?: unknown }).pages;
 				this._openTiming.value?.painted({
 					...(typeof pages === 'number' ? { safe_pages: pages } : {}),
@@ -254,13 +271,39 @@ export class ParadisPdfFileEditor extends EditorPane {
 		return [dirname(resource), FileAccess.asFileUri(PDFJS_MEDIA_ROOT)];
 	}
 
-	protected _renderResource(resource: URI): void {
-		const generation = ++this._renderGeneration;
-		void this._renderResourceAfterPreflight(resource, generation);
+	/**
+	 * @param reuseShown タブへ戻ったときの描画。同じ文書がまだ webview に残っていれば送り直さない。
+	 * ファイルの変更や新しい入力では `false`（必ず描き直す）。
+	 */
+	/** 残っている表示を使い回せるかを決める値。中身は etag・大きさ・更新時刻で見る（中身のハッシュは取らない）。 */
+	private _shownKeys(stat: { readonly size: number; readonly mtime: number; readonly etag: string }, documentUrl: string | undefined): readonly unknown[] {
+		return [stat.etag, stat.size, stat.mtime, documentUrl ?? ''];
 	}
 
-	private async _renderResourceAfterPreflight(resource: URI, generation: number): Promise<void> {
+	protected _renderResource(resource: URI, reuseShown = false): void {
+		const generation = ++this._renderGeneration;
+		void this._renderResourceAfterPreflight(resource, generation, reuseShown);
+	}
+
+	private async _renderResourceAfterPreflight(resource: URI, generation: number, reuseShown: boolean): Promise<void> {
 		await this._resolveLibBase();
+		if (reuseShown && this._shownDocument && this._webview && this._webviewServiceWorkerDisabled === this._canServe(resource)) {
+			// 配信サーバから読んでいる文書は、登録を取り直してから使い回す。取り直さないと、裏にいる間に
+			// 古い順に外され（上限 64 件）、区間読みの大きな PDF で、まだ読んでいないページが読めなくなる。
+			// 外れていたら新しい URL になるので、鍵が合わずに描き直す。
+			const [stat, documentUrl] = await Promise.all([
+				readParadisPdfStat(this._fileService, resource),
+				this._canServe(resource) ? resolveParadisViewerDocumentUrl(this._sharedProcessService, resource) : Promise.resolve(undefined),
+			]);
+			if (generation !== this._renderGeneration || !isEqual(this._currentResource, resource)) {
+				return;
+			}
+			if (stat?.etag && canReuseParadisShownDocument(this._shownDocument, resource, this._webview, this._shownKeys(stat, documentUrl))) {
+				// 前の表示がそのまま見えている。描くのにかかった時間ではないので、開くまでの計測も使わない。
+				this._openTiming.clear();
+				return;
+			}
+		}
 		const documentUrl = this._canServe(resource) ? await resolveParadisViewerDocumentUrl(this._sharedProcessService, resource) : undefined;
 		if (this._canServe(resource) && documentUrl === undefined) {
 			// 文書だけ載らなかった。この webview の作り方では読めないので、以後サーバを使わない。
@@ -278,13 +321,16 @@ export class ParadisPdfFileEditor extends EditorPane {
 			allowScripts: true,
 			localResourceRoots: this._localResourceRoots(resource)
 		};
-		const [isValid, size] = await Promise.all([readParadisPdfHeader(this._fileService, resource), readParadisPdfSize(this._fileService, resource)]);
+		const [isValid, stat] = await Promise.all([readParadisPdfHeader(this._fileService, resource), readParadisPdfStat(this._fileService, resource)]);
 		switch (getParadisPdfRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration)) {
 			case 'rejected':
+				this._shownDocument = undefined;
 				webview.setHtml(this._buildRejectedFileHtml());
 				return;
 			case 'viewer':
-				webview.setHtml(this._buildHtml(resource, documentUrl, size));
+				// 描き終わりの知らせ（first paint）が届くまでは使い回さない。
+				this._shownDocument = stat?.etag ? { resource, webview, keys: this._shownKeys(stat, documentUrl), confirmed: false } : undefined;
+				webview.setHtml(this._buildHtml(resource, documentUrl, stat?.size));
 				return;
 			case 'stale':
 				return;
@@ -342,7 +388,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 		dom.setParentFlowTo(webview.container, this._webviewContainer!);
 		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
 		if (justClaimed) {
-			this._renderResource(resource);
+			this._renderResource(resource, true);
 		}
 	}
 
@@ -351,6 +397,10 @@ export class ParadisPdfFileEditor extends EditorPane {
 		// 描く前に閉じた・別のファイルへ移ったものは送らない。
 		this._openTiming.clear();
 		this._currentResource = undefined;
+		if (this._shownDocument && !this._shownDocument.confirmed) {
+			// 描き終わったか分からない表示は、戻ったときに描き直す（白紙のまま残さない）。
+			this._shownDocument = undefined;
+		}
 		if (this._webview && this._webviewClaimed) {
 			this._webview.release(this);
 			this._webviewClaimed = false;
