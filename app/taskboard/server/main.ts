@@ -23,6 +23,7 @@ import { RELAY_UNSUPPORTED, RelayClient, RemoteCommandRunner, RemoteWorkspaces, 
 import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
+import { listTask, TaskDetailFeed } from './taskDetail.js';
 import { dataDir, Store, StoreBusyError, storeOwner, type ILocalSettings } from './store.js';
 import { excludeBoardFiles, git, GitWorkspaces, inspectClones, remoteUrl } from './workspaces.js';
 
@@ -255,10 +256,6 @@ function isHtmlArtifact(artifact: ITaskBoardArtifact): boolean {
 	return /\.html?$/i.test(artifact.path ?? '') || /^\s*(<!doctype html|<html)/i.test(artifact.content ?? '');
 }
 
-function stripContent(task: ITaskBoardTask): ITaskBoardTask {
-	return { ...task, artifacts: task.artifacts.map((a): ITaskBoardArtifact => ({ ...a, content: undefined, hasContent: Boolean(a.content) })) };
-}
-
 function prFromDetail(base: ITaskBoardPrRef, d: ITaskBoardPullDetail): ITaskBoardPrRef {
 	const failing = d.checks.some(c => c.state === 'failure' || c.state === 'cancelled');
 	const pending = d.checks.some(c => c.state === 'pending' || c.state === 'queued');
@@ -370,6 +367,15 @@ async function main(restart?: IRestart): Promise<void> {
 	let engine!: TaskBoardEngine;
 	let broadcastTimer: NodeJS.Timeout | undefined;
 	const sockets = new Set<WebSocket>();
+	/** 開いているタスクの活動と出力を、その画面にだけ送る。 */
+	const details = new TaskDetailFeed<WebSocket>({
+		getTask: taskId => engine.getTask(taskId),
+		getTaskDetailRevision: taskId => engine.getTaskDetailRevision(taskId),
+	}, (socket, text) => {
+		if (socket.readyState === WebSocket.OPEN) {
+			socket.send(text);
+		}
+	});
 	const send = (message: TaskBoardServerMessage) => {
 		const text = JSON.stringify(message);
 		for (const socket of sockets) {
@@ -385,6 +391,7 @@ async function main(restart?: IRestart): Promise<void> {
 		broadcastTimer = setTimeout(() => {
 			broadcastTimer = undefined;
 			send({ type: 'snapshot', snapshot: snapshot() });
+			details.changed();
 		}, 60);
 	};
 
@@ -483,7 +490,7 @@ async function main(restart?: IRestart): Promise<void> {
 	const snapshot = (): ITaskBoardSnapshot => ({
 		version: engine.getVersion(),
 		now: Date.now(),
-		tasks: engine.getTasks().map(stripContent),
+		tasks: engine.listTasks().map(listTask),
 		flows: [...engine.getFlows()],
 		activeFlowId: engine.getActiveFlowId(),
 		slots: engine.getSlots(),
@@ -1046,7 +1053,11 @@ async function main(restart?: IRestart): Promise<void> {
 		}
 		wss.handleUpgrade(req, socket, head, ws => {
 			sockets.add(ws);
-			ws.on('close', () => sockets.delete(ws));
+			ws.on('close', () => {
+				sockets.delete(ws);
+				details.closed(ws);
+			});
+			ws.on('message', data => details.receive(ws, String(data)));
 			ws.send(JSON.stringify({ type: 'snapshot', snapshot: snapshot() } satisfies TaskBoardServerMessage));
 		});
 	});
