@@ -24,7 +24,7 @@ import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoice
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
 import { listTask, TaskDetailFeed } from './taskDetail.js';
-import { archiveDoneTasks, archiveFile, listArchived, readArchive, restoreFromArchive, TASK_BOARD_ARCHIVE_INTERVAL_MS } from './archive.js';
+import { archiveDoneTasks, archiveFile, listArchived, readIndex, restoreFromArchive, TASK_BOARD_ARCHIVE_INTERVAL_MS } from './archive.js';
 import { dataDir, Store, StoreBusyError, storeOwner, type ILocalSettings } from './store.js';
 import { excludeBoardFiles, git, GitWorkspaces, inspectClones, remoteUrl } from './workspaces.js';
 
@@ -546,7 +546,7 @@ async function main(restart?: IRestart): Promise<void> {
 	sim.onEngineChange();
 
 	// 完了から 14 日経ったタスクを台帳から archive.jsonl へ移す（起動直後と 1 時間ごと。変更のたびには調べない）
-	const archivedTasks = async () => listArchived(await readArchive(archiveFile(store.directory)), taskId => engine.getTask(taskId) !== undefined);
+	const archivedTasks = async () => listArchived(await readIndex(archiveFile(store.directory)), taskId => engine.getTask(taskId) !== undefined);
 	/** 「完了」の列に出す、移したタスクの数を数え直して画面へ送る。 */
 	const recountArchived = async () => {
 		const count = (await archivedTasks()).length;
