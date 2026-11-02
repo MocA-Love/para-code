@@ -207,10 +207,6 @@
 	cursor: pointer;
 }
 
-.paradis-create-worktree-dialog .pcw-setup-checkbox {
-	margin: 0;
-}
-
 .paradis-create-worktree-dialog .pcw-setup-script {
 	font-family: var(--monaco-monospace-font);
 	font-size: 11px;
@@ -640,47 +636,4 @@
 	margin-left: 6px;
 	font-size: 10px;
 	opacity: 0.85;
-}
-
-/* allow-any-unicode-next-line */
-/* setup の ON/OFF は、他ダイアログと同じトグルスイッチの見た目にする
-（素のチェックボックスはここだけ浮いていた）。 */
-.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox {
-	appearance: none;
-	flex: none;
-	width: 34px;
-	height: 18px;
-	margin: 0;
-	border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border));
-	border-radius: 10px;
-	background: var(--vscode-checkbox-background, var(--vscode-input-background));
-	position: relative;
-	cursor: pointer;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox::after {
-	content: '';
-	position: absolute;
-	left: 1px;
-	top: 1px;
-	width: 14px;
-	height: 14px;
-	border-radius: 50%;
-	background: var(--vscode-descriptionForeground);
-	transition: transform 0.15s;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox:checked {
-	background: var(--vscode-button-background);
-	border-color: var(--vscode-button-background);
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox:checked::after {
-	transform: translateX(16px);
-	background: var(--vscode-button-foreground);
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-setup-checkbox:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 2px;
 }
