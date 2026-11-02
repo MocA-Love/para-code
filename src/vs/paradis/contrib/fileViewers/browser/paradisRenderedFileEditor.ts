@@ -33,6 +33,7 @@ import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
+import { FIND_IDS } from '../../../../editor/contrib/find/browser/findModel.js';
 import { CodeEditorWidget } from '../../../../editor/browser/widget/codeEditor/codeEditorWidget.js';
 import { IEditorConstructionOptions } from '../../../../editor/browser/config/editorConfiguration.js';
 import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/common/services/resolverService.js';
@@ -63,6 +64,7 @@ import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalize
 import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 
 import './media/paradisFileViewer.css';
+
 
 /**
  * ビューアの種類ごとの、このウィンドウでの延長の回数（延長した回数と、延長の間に描けた回数）。
@@ -925,10 +927,17 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		return this._mode === 'raw' ? this._codeEditor : undefined;
 	}
 
-	/** Rendered 表示中のみ有効。webview 標準の find widget（トグル/件数表示なし）を出す。 */
+	/**
+	 * Rendered 表示中は webview 標準の find widget（トグル/件数表示なし）を出す。
+	 * Raw 表示中は埋め込みのコードエディタの検索を出す。Cmd+F はフォーカスがコードエディタの外
+	 * （ツールバー等）にあるときもこのペインの検索として届くので、ここで何もしないと検索が出ない。
+	 */
 	showFind(): void {
 		if (this._mode === 'rendered') {
 			this._webview?.showFind();
+		} else if (this._codeEditor) {
+			this._codeEditor.focus();
+			void this._codeEditor.getAction(FIND_IDS.StartFindAction)?.run();
 		}
 	}
 
