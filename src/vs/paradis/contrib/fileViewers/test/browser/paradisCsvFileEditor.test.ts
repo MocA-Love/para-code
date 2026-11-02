@@ -155,6 +155,8 @@ function createHarness(store: Pick<DisposableStore, 'add'>, configuration: Recor
 		filesConfigurationService,
 	));
 	editor.create(parent);
+	// ワークベンチはエディタを開くと見える状態にする（隠れている間の変更は見えたときにまとめて読み直す）
+	editor.setVisible(true);
 	editor.layout(new Dimension(640, 320));
 	const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
 	const input = store.add(new ParadisCsvFileInput(resource, textFileService, workingCopyService));
@@ -217,6 +219,20 @@ suite('ParadisCsvFileEditor', () => {
 		harness.fileModel.edit('id,name\n1,a\n2,b\n3,c\n');
 		await until(() => footer(harness).startsWith('3 '), 'table to pick up the edit');
 		deepStrictEqual(harness.reads.length, 1);
+	});
+
+	test('reads unsaved edits made while the tab is hidden once it is shown again', async () => {
+		const harness = createHarness(store);
+		harness.fileModel = store.add(new FakeFileModel());
+		await harness.editor.setInput(harness.input, undefined, Object.create(null), CancellationToken.None);
+		await until(() => footer(harness).startsWith('2 '), 'initial table');
+		harness.editor.setVisible(false);
+		harness.fileModel.edit('id,name\n1,a\n2,b\n3,c\n');
+		await new Promise(resolve => setTimeout(resolve, 600));
+		const whileHidden = footer(harness).startsWith('2 ');
+		harness.editor.setVisible(true);
+		await until(() => footer(harness).startsWith('3 '), 'table to pick up the edit after it is shown');
+		deepStrictEqual(whileHidden, true);
 	});
 
 	test('asks before opening a file larger than the confirmation limit as text', async () => {

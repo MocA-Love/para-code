@@ -384,6 +384,58 @@ suite('paradisSpreadsheetGridRenderer', () => {
 		renderer.dispose();
 	});
 
+	test('draws once per frame however many scroll events arrive', async () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet coalesced scroll');
+		const container = document.createElement('div');
+		const viewport = new ParadisSpreadsheetViewport({ rowCount: 100, columnCount: 100, defaultRowHeight: 20, defaultColumnWidth: 80, revision: 'revision-1' });
+		const frames: (() => void)[] = [];
+		let tiles = 0;
+		const renderer = new ParadisSpreadsheetGridRenderer(container, viewport, {
+			getViewport: async request => {
+				tiles++;
+				return tileForRequest(request);
+			},
+			scheduleFrame: callback => {
+				frames.push(callback);
+				return { dispose() { /* fired by the test */ } };
+			},
+		});
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 200, height: 100 });
+		const tilesPerRender = tiles;
+		for (let index = 0; index < 5; index++) {
+			container.dispatchEvent(new mainWindow.Event('scroll'));
+		}
+		const queuedFrames = frames.length;
+		frames.shift()!();
+		await renderer.whenIdle();
+
+		deepStrictEqual({ queuedFrames, renders: tiles / tilesPerRender }, { queuedFrames: 1, renders: 2 });
+		renderer.dispose();
+	});
+
+	test('leaves cells whose content and place are unchanged alone and rewrites the ones that changed', async () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet unchanged cells');
+		const container = document.createElement('div');
+		const viewport = new ParadisSpreadsheetViewport({ rowCount: 4, columnCount: 4, defaultRowHeight: 20, defaultColumnWidth: 80, revision: 'revision-1' });
+		let changed = '';
+		const renderer = new ParadisSpreadsheetGridRenderer(container, viewport, {
+			getViewport: async request => tileForRequest(request, (row, column) => ({ row, column, text: row === 1 && column === 1 ? `1:1${changed}` : `${row}:${column}`, classNames: ['probe'] })),
+		});
+		const frame = { scrollTop: 0, scrollLeft: 0, width: 400, height: 100 };
+		await renderer.render(frame);
+		const cell = (row: number, column: number) => container.querySelector<HTMLElement>(`[data-row="${row}"][data-column="${column}"]`)!;
+		cell(0, 0).style.opacity = '0.5';
+		cell(1, 1).style.opacity = '0.5';
+		changed = '!';
+		await renderer.render(frame);
+
+		deepStrictEqual(
+			{ unchanged: cell(0, 0).style.opacity, changed: cell(1, 1).style.opacity, text: cell(1, 1).textContent },
+			{ unchanged: '0.5', changed: '', text: '1:1!' },
+		);
+		renderer.dispose();
+	});
+
 	test('recovers queued rendering after a viewport tile is rejected', async () => {
 		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet rejected tile');
 		const container = document.createElement('div');
