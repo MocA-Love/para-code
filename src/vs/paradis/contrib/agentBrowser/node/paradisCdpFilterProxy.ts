@@ -1388,6 +1388,8 @@ export function paradisProxyPageUpgrade(
 		// PARADIS_PAGE_URL_FRESH_MS より古ければ Target.getTargetInfo で引き直す。Page.frameNavigated でも追う。
 		// エージェントが手にしている間の拡張のページへの移動は main が取り消す（paradisExtensionNavigationGuard.ts）
 		let pageUrl: string | undefined;
+		// pageUrl が拡張のページか（pageUrl を変えるときに一緒に判定し直す。イベントごとに判定しない）
+		let pageOnExtension = false;
 		// pageUrl を最後に確かめた時刻
 		let pageUrlCheckedAt: number | undefined;
 		// 問い合わせ中のもの（同時に来た命令で重ねない）
@@ -1545,12 +1547,13 @@ export function paradisProxyPageUpgrade(
 					const info = isRecord(result?.targetInfo) ? result.targetInfo : undefined;
 					if (typeof info?.url === 'string') {
 						pageUrl = info.url;
+						pageOnExtension = paradisIsBrowserExtensionUrl(pageUrl);
 						pageUrlCheckedAt = Date.now();
 					}
 				}).finally(() => pageUrlCheck = undefined);
 				return pageUrlCheck.then(() => closed ? undefined : processClientMessage(data, remoteResolved, true));
 			}
-			const extensionDenied = navigationDenied ?? paradisExtensionPageDeniedMessage(msg.method, msg.params, paradisIsBrowserExtensionUrl(pageUrl) || isolatedWorlds.isOnExtensionPage(''));
+			const extensionDenied = navigationDenied ?? paradisExtensionPageDeniedMessage(msg.method, msg.params, pageOnExtension || isolatedWorlds.isOnExtensionPage(''));
 			if (extensionDenied !== undefined) {
 				sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, extensionDenied));
 				return;
@@ -1778,10 +1781,11 @@ export function paradisProxyPageUpgrade(
 						}
 						if (response.method === 'Page.frameNavigated' && !sessionKey && isRecord(response.params?.frame) && response.params.frame.parentId === undefined && typeof response.params.frame.url === 'string') {
 							pageUrl = response.params.frame.url;
+							pageOnExtension = paradisIsBrowserExtensionUrl(pageUrl);
 							pageUrlCheckedAt = Date.now();
 						}
 						// 拡張のページにいる間は、ページの移動のイベントのほか（通信・コンソール・DOM など）は届けない
-						if ((paradisIsBrowserExtensionUrl(pageUrl) || isolatedWorlds.isOnExtensionPage(sessionKey)) && !paradisIsEventAllowedOnExtensionPage(response.method)) {
+						if ((pageOnExtension || isolatedWorlds.isOnExtensionPage(sessionKey)) && !paradisIsEventAllowedOnExtensionPage(response.method)) {
 							return;
 						}
 						// 拡張の frame の URL（拡張の ID）と、拡張の content script の位置を伏せる
