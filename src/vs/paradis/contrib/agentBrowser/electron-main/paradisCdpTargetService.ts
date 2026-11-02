@@ -194,7 +194,6 @@ const PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS = 500;
 /** upstream の Agent ツールのキーの印を、送った命令の答えを待たずに閉じるまでの期限（ミリ秒）。 */
 export const PARADIS_UPSTREAM_KEY_MARK_DEADLINE_MS = 10_000;
 
-
 /**
  * page ops（印刷・認証・保存領域の上書き）の相手を BrowserView に戻す。BrowserView は IParadisPageOpsTarget の構造を持つ
  * （webContents と debugger.attach）のでそのまま渡せ、page ops の相手はどれも BrowserView。戻す向きの型の強制はここだけ。

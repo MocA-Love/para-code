@@ -1312,6 +1312,39 @@ suite('Paradis CDP screenshot filter', () => {
 		}
 	});
 
+	test('a URL check that timed out leaves nothing behind: a late answer is dropped quietly, and a thousand more timeouts are still refused', async () => {
+		const clock = sinon.useFakeTimers();
+		fixtureTargetInfoSilent.value = true;
+		fixtureUnansweredTargetInfo.length = 0;
+		try {
+			const browser = await createOpenBrowserProxyFixture();
+			publishAllowedSession(browser, 'session-1');
+			browser.upstream.sent.length = 0;
+			const ask = async (id: number) => {
+				// Each read of the bound page checks its URL again once the last answer is no longer fresh
+				await clock.tickAsync(PARADIS_PAGE_URL_FRESH_MS + 1);
+				browser.client.emit('message', Buffer.from(JSON.stringify({ id, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
+				await clock.tickAsync(5_001);
+			};
+			await ask(1);
+			// The browser answers the first check long after it timed out
+			const late = fixtureUnansweredTargetInfo[0];
+			late.upstream.emit('message', Buffer.from(JSON.stringify({ id: late.id, result: { targetInfo: { targetId: 'target-1', type: 'page', url: 'https://example.test/' } } })));
+			const closedByLateAnswer = browser.client.readyState !== TestWebSocket.OPEN;
+			// More than the 1024 pending internal requests: none of them is left waiting, so every command is still refused
+			for (let id = 2; id <= 1_030; id++) {
+				await ask(id);
+			}
+			const refused = parseSent(browser.client).filter(frame => /^PARA_BROWSER_RETRYABLE: Para Code could not confirm which page/.test((frame as { error?: { message?: string } }).error?.message ?? '')).length;
+			const forwarded = parseSent(browser.upstream).map(frame => (frame as { id: number }).id).filter(id => id > 0);
+			assert.deepStrictEqual({ closedByLateAnswer, refused, forwarded, open: browser.client.readyState === TestWebSocket.OPEN }, { closedByLateAnswer: false, refused: 1_030, forwarded: [], open: true });
+		} finally {
+			fixtureTargetInfoSilent.value = false;
+			fixtureUnansweredTargetInfo.length = 0;
+			clock.restore();
+		}
+	});
+
 	test('wraps scripts registered for new documents so they never run in an extension page, on both routes', async () => {
 		const browser = await createOpenBrowserProxyFixture();
 		publishAllowedSession(browser, 'session-1');
@@ -2198,6 +2231,8 @@ const fixtureTargetUrls = new Map<string, string>();
 const fixtureDocumentLocation = { value: 'https://example.test/', delayMs: 0 };
 /** When true, the fake upstream never answers the gateway's own Target.getTargetInfo (a wedged browser). */
 const fixtureTargetInfoSilent = { value: false };
+/** The ids of the gateway's Target.getTargetInfo the fake upstream left unanswered (to answer them late). */
+const fixtureUnansweredTargetInfo: { readonly id: number; readonly upstream: { emit(event: string, data: unknown): void } }[] = [];
 
 function createProxyFixture(ctx: IParadisBoundContext): {
 	readonly ctx: IParadisBoundContext;
@@ -2236,6 +2271,7 @@ function createProxyFixture(ctx: IParadisBoundContext): {
 			}
 			if (frame?.method === 'Target.getTargetInfo' && typeof frame.id === 'number' && frame.id < 0) {
 				if (fixtureTargetInfoSilent.value) {
+					fixtureUnansweredTargetInfo.push({ id: frame.id, upstream: this });
 					return;
 				}
 				const targetId = frame.params?.targetId ?? 'target-1';
