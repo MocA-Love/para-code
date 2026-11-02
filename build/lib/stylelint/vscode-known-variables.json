@@ -1387,6 +1387,7 @@
 		"--paradis-tce-swatch",
 		"--paradis-titlebar-bg",
 		"--paradis-transparency-opacity",
+		"--paradis-viewer-toolbar-height",
 		"--paradis-workspace-color"
 	],
 	"sizes": [

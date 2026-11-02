@@ -109,11 +109,12 @@ suite('ParadisPdfFileEditor', () => {
 		disposables.add({ dispose: () => configureParadisSpanRunner((_feature, _operation, _attributes, callback) => callback()) });
 		const messages = disposables.add(new Emitter<{ message: unknown }>());
 		const html: string[] = [];
+		const htmlSet = disposables.add(new Emitter<void>());
 		const webview = {
 			contentOptions: {},
 			onFatalError: Event.None,
 			onMessage: messages.event,
-			setHtml: (value: string) => { html.push(value); },
+			setHtml: (value: string) => { html.push(value); htmlSet.fire(); },
 			claim: () => { },
 			release: () => { },
 			focus: () => { },
@@ -133,12 +134,11 @@ suite('ParadisPdfFileEditor', () => {
 		} as unknown as ISharedProcessService;
 		const editor = disposables.add(new ParadisPdfFileEditor(new TestEditorGroupView(1), sharedProcessService, NullTelemetryService, new TestThemeService(), disposables.add(new TestStorageService()), webviewService, fileService, new TestLayoutService()));
 		editor.create(document.createElement('div'));
+		const firstHtml = Event.toPromise(htmlSet.event, disposables);
 		const input = disposables.add(new ParadisPdfInput(URI.file('/workspace/document.pdf'), { isDirty: () => false } as unknown as ITextFileService, { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService));
 		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
 		editor.layout(new Dimension(800, 600));
-		for (let attempt = 0; attempt < 50 && html.length === 0; attempt++) {
-			await new Promise(resolve => setTimeout(resolve, 0));
-		}
+		await firstHtml;
 		const render = /render: "(?<render>[^"]+)"/.exec(html[html.length - 1] ?? '')?.groups?.render;
 		ok(render);
 
@@ -152,12 +152,13 @@ suite('ParadisPdfFileEditor', () => {
 		const disposables = store.add(new DisposableStore());
 		const messages = disposables.add(new Emitter<{ message: unknown }>());
 		const html: string[] = [];
+		const htmlSet = disposables.add(new Emitter<void>());
 		const posted: unknown[] = [];
 		const webview = {
 			contentOptions: {},
 			onFatalError: Event.None,
 			onMessage: messages.event,
-			setHtml: (value: string) => { html.push(value); },
+			setHtml: (value: string) => { html.push(value); htmlSet.fire(); },
 			postMessage: async (message: unknown) => { posted.push(message); return true; },
 			claim: () => { },
 			release: () => { },
@@ -179,12 +180,11 @@ suite('ParadisPdfFileEditor', () => {
 		const editor = disposables.add(new ParadisPdfFileEditor(new TestEditorGroupView(1), sharedProcessService, NullTelemetryService, new TestThemeService(), disposables.add(new TestStorageService()), webviewService, fileService, new TestLayoutService()));
 		const parent = document.createElement('div');
 		editor.create(parent);
+		const firstHtml = Event.toPromise(htmlSet.event, disposables);
 		const input = disposables.add(new ParadisPdfInput(URI.file('/workspace/document.pdf'), { isDirty: () => false } as unknown as ITextFileService, { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService));
 		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
 		editor.layout(new Dimension(800, 600));
-		for (let attempt = 0; attempt < 50 && html.length === 0; attempt++) {
-			await new Promise(resolve => setTimeout(resolve, 0));
-		}
+		await firstHtml;
 		const render = /render: "(?<render>[^"]+)"/.exec(html[html.length - 1] ?? '')?.groups?.render;
 		ok(render);
 		const bar = () => [parent.querySelector('.paradis-pdf-toolbar .paradis-viewer-toolbar-position')?.textContent, parent.querySelector('.paradis-pdf-toolbar .paradis-viewer-toolbar-percent')?.textContent];
