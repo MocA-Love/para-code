@@ -154,6 +154,13 @@ export interface ITaskBoardPersisted {
 	readonly archivedIds?: readonly string[];
 }
 
+/** 移すタスクを書いたときの目印。 */
+export interface ITaskBoardArchiveStamp {
+	readonly id: string;
+	readonly updatedAt: number;
+	readonly revision: number;
+}
+
 interface IStepInput {
 	readonly prompt?: string;
 	readonly feedback?: string;
@@ -572,13 +579,14 @@ export class TaskBoardEngine {
 
 	/**
 	 * ファイルへ移し終えたタスクを台帳から外す（書き終える前に外すと、失敗したときに消える）。
-	 * 外す間に完了から動いたタスクは外さない。外した数を返す。
+	 * 書いている間に変わったタスク（完了から動いた・活動や出力が足された・中身が更新された）は、書いた内容と
+	 * 食い違うので外さない（次の回に書き直す）。外した数を返す。
 	 */
-	archiveTasks(taskIds: readonly string[]): number {
+	archiveTasks(stamps: readonly ITaskBoardArchiveStamp[]): number {
 		let archived = 0;
-		for (const taskId of taskIds) {
+		for (const { id: taskId, updatedAt, revision } of stamps) {
 			const task = this.tasks.get(taskId);
-			if (!task || task.step !== TASK_BOARD_DONE) {
+			if (!task || task.step !== TASK_BOARD_DONE || task.updatedAt !== updatedAt || this.getTaskDetailRevision(taskId) !== revision) {
 				continue;
 			}
 			if (task.source === 'github') {
@@ -591,6 +599,41 @@ export class TaskBoardEngine {
 			this.changed();
 		}
 		return archived;
+	}
+
+	/** 移す前に、書く内容と一緒に覚えておく目印（外す直前に変わっていないかを見る）。 */
+	archiveStamp(task: ITaskBoardTask): ITaskBoardArchiveStamp {
+		return { id: task.id, updatedAt: task.updatedAt, revision: this.getTaskDetailRevision(task.id) };
+	}
+
+	/**
+	 * ファイルへ移したタスクを「完了」に戻す。完了からの日数は戻した時から数え直す（数え直さないと次の回にまた移る）。
+	 * GitHub のタスクは、取り込みで作り直さない一覧からも外す。
+	 */
+	restoreArchivedTask(saved: ITaskBoardTask): void {
+		if (this.tasks.has(saved.id)) {
+			throw new TaskBoardError('invalid-state', 'the task is already on the board');
+		}
+		const now = this.now();
+		const task: ITaskRecord = {
+			...saved,
+			attempt: saved.attempt ?? 0,
+			step: TASK_BOARD_DONE,
+			status: 'done',
+			place: undefined,
+			stepSince: now,
+			updatedAt: now,
+			activities: [...(saved.activities ?? [])],
+			history: [...(saved.history ?? [])],
+			artifacts: [...(saved.artifacts ?? [])],
+			log: [...(saved.log ?? [])],
+			labels: [...(saved.labels ?? [])],
+			assignees: [...(saved.assignees ?? [])],
+		};
+		this.tasks.set(task.id, task);
+		this.archivedIds.delete(task.id);
+		this.activity(task, 'system', 'restored');
+		this.changed();
 	}
 
 	/** タスクを台帳から外し、タスクごとに持っている記録も消す。 */

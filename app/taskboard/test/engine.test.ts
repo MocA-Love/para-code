@@ -68,6 +68,35 @@ function intake(n: number, extra: object = {}) {
 }
 
 describe('TaskBoardEngine', () => {
+	test('keeps a task that changed while it was being written, and brings an archived task back to done', () => {
+		const day = 24 * 60 * 60 * 1000;
+		const { engine, tick } = setup();
+		engine.syncIntake([intake(1), intake(2)]);
+		engine.markDone('gh:o/r#1');
+		engine.markDone('gh:o/r#2');
+		tick(15 * day);
+		const [first, second] = engine.archivableTasks(14 * day).map(t => ({ task: t, stamp: engine.archiveStamp(t) }));
+		// 書いている間に活動が足された
+		engine.reportOutput('gh:o/r#2', ['late line']);
+		const archived = engine.archiveTasks([first.stamp, second.stamp]);
+		engine.restoreArchivedTask(first.task);
+		engine.syncIntake([intake(1), intake(2)]);
+		const back = engine.getTask('gh:o/r#1')!;
+		expect({
+			archived,
+			left: engine.listTasks(t => t.id).sort(),
+			back: { step: back.step, status: back.status, restarted: back.stepSince === engine.archivableTasks(0).find(t => t.id === 'gh:o/r#1')?.stepSince, notArchivable: engine.archivableTasks(14 * day).map(t => t.id) },
+			archivedIds: engine.serialize().archivedIds,
+			again: (() => { try { engine.restoreArchivedTask(first.task); return 'restored'; } catch { return 'refused'; } })(),
+		}).toEqual({
+			archived: 1,
+			left: ['gh:o/r#1', 'gh:o/r#2'],
+			back: { step: 'done', status: 'done', restarted: true, notArchivable: ['gh:o/r#2'] },
+			archivedIds: undefined,
+			again: 'refused',
+		});
+	});
+
 	test('moves only tasks finished 14 days ago out of the ledger, and does not take their issues in again', () => {
 		const day = 24 * 60 * 60 * 1000;
 		const { engine, tick } = setup();
@@ -81,8 +110,10 @@ describe('TaskBoardEngine', () => {
 		engine.reportOutput('gh:o/r#1', ['line']);
 		tick(13 * day);
 
-		const picked = engine.archivableTasks(14 * day).map(t => t.id).sort();
-		const archived = engine.archiveTasks([...picked, 'gh:o/r#3', 'missing']);
+		const candidates = engine.archivableTasks(14 * day);
+		const picked = candidates.map(t => t.id).sort();
+		const stamps = candidates.map(t => engine.archiveStamp(t));
+		const archived = engine.archiveTasks([...stamps, { id: 'gh:o/r#3', updatedAt: 0, revision: 0 }, { id: 'missing', updatedAt: 0, revision: 0 }]);
 		engine.syncIntake([intake(1), intake(2), intake(3), intake(4)]);
 		const saved = engine.serialize();
 		const { engine: reloaded } = setup();
