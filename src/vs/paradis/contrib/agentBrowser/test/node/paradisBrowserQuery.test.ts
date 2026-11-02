@@ -84,6 +84,15 @@ suite('paradisBrowserQuery (shared process)', () => {
 		], ['ok', 'ok']);
 	});
 
+	test('every check sends the whole page function and never reads a function from the page global', async () => {
+		// A page can find and pre-place anything kept on its own global, so the page function is never kept there (PR #643 review)
+		const sources: string[] = [];
+		const page = new FakePage([returned({ met: false }), returned({ met: false }), returned({ met: true })]);
+		const call = page.call();
+		await page.query().call({ ...call, evaluate: (source, uids, deadlineMs) => { sources.push(source); return call.evaluate(source, uids, deadlineMs); } }, 'wait_until', { selector: '.a', timeout_seconds: 10 });
+		assert.deepStrictEqual(sources.map(source => [source.includes(PARADIS_BROWSER_QUERY_PAGE_SCRIPT), source.includes('globalThis[')]), [[true, false], [true, false], [true, false]]);
+	});
+
 	test('a predicate that never settles ends the check at the end of its slice', async () => {
 		const source = paradisBuildQueryFunction({ mode: 'wait', sliceMs: 100, intervalMs: 50 }, 0, '() => new Promise(() => { })');
 		const run = new Function('location', `return (${source});`)({ href: 'about:blank' }) as () => Promise<Record<string, unknown>>;
@@ -343,7 +352,8 @@ suite('paradisBrowserQuery (shared process)', () => {
 			needsIdle: isError(await page.query().call(page.call(), 'wait_until', { network_idle_max_inflight: 2 })),
 		}, {
 			error: false,
-			checks: 3,
+			// The page function runs once, then only the network is watched until it is quiet, then once more to confirm
+			checks: 2,
 			network: { inflight: 0, quietMs: 600, longLivedIgnored: 1 },
 			timedOut: [true, true],
 			needsIdle: true,

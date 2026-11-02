@@ -8,7 +8,7 @@
 import * as assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisCursorOverlayTuning, PARADIS_CURSOR_OVERLAY_TUNING, ParadisCursorOverlayOwnedCommand, paradisBuildCursorOverlayScript } from '../../common/paradisCursorOverlay.js';
+import { IParadisCursorOverlayTuning, PARADIS_CURSOR_OVERLAY_MISSING, PARADIS_CURSOR_OVERLAY_TUNING, ParadisCursorOverlayOwnedCommand, paradisBuildCursorOverlayCall, paradisBuildCursorOverlayScript } from '../../common/paradisCursorOverlay.js';
 
 /** The generated script keeps its state on the window under this key (the isolated world in the app). */
 const STATE_KEY = '__paraCodeAgentCursorOverlay';
@@ -30,9 +30,13 @@ interface IPageState {
 	wat: number;
 }
 
-/** Runs the page-side script against this test document, the way the isolated world would. */
+/** The body is kept on the window under this key once it has been sent. */
+const RUNNER_KEY = '__paraCodeAgentCursorOverlayRun';
+
+/** Runs the page-side script against this test document, the way the isolated world would (the short call, and the full script where the body is missing). */
 function run(command: ParadisCursorOverlayOwnedCommand, tuning?: IParadisCursorOverlayTuning): unknown {
-	return new Function(`return ${paradisBuildCursorOverlayScript(command, tuning)};`)();
+	const result = new Function(`return ${paradisBuildCursorOverlayCall(command, tuning)};`)();
+	return result === PARADIS_CURSOR_OVERLAY_MISSING ? new Function(`return ${paradisBuildCursorOverlayScript(command, tuning)};`)() : result;
 }
 
 /** Scrolls count as stopped after 5 ms, and a script's late scroll after its end is 5 ms at most. */
@@ -89,6 +93,7 @@ suite('Paradis Cursor Overlay page script', () => {
 	teardown(() => {
 		run({ kind: 'remove' });
 		mainWindow.document.documentElement.style.removeProperty('transform');
+		delete (mainWindow as unknown as Record<string, unknown>)[RUNNER_KEY];
 	});
 
 	test('the cursor joins the top layer above a modal dialog, and stays off a page whose <html> shifts fixed positions', () => {

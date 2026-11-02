@@ -157,12 +157,15 @@ function signatureOf(targets: readonly IParadisSpaceDiskTarget<string>[]): strin
 		// キャッシュがそのまま使われ、一覧に古い名前が最大でTTLぶん残る。
 		name: target.name,
 		path: target.path,
-		worktrees: target.worktrees
-			.map(worktree => [worktree.stateKey, worktree.name, worktree.path] as const)
-			.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+		worktrees: sortedByJson(target.worktrees.map(worktree => [worktree.stateKey, worktree.name, worktree.path] as const)).map(entry => entry.value),
 	}));
-	normalizedTargets.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-	return JSON.stringify(normalizedTargets);
+	// 並べた各要素の JSON をつなげたものは、配列全体の JSON.stringify と同じ文字列になる
+	return `[${sortedByJson(normalizedTargets).map(entry => entry.json).join(',')}]`;
+}
+
+/** 要素の JSON 文字列の順に並べる。比較のたびに JSON にしないよう、先に 1 回ずつ作る。 */
+function sortedByJson<T>(values: readonly T[]): { readonly value: T; readonly json: string }[] {
+	return values.map(value => ({ value, json: JSON.stringify(value) })).sort((left, right) => left.json.localeCompare(right.json));
 }
 
 function payloadCost(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget<string>[]): number {
