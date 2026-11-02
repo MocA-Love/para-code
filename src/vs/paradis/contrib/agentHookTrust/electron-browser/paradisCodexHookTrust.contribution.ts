@@ -22,9 +22,11 @@
 // 信頼の状態と、接続先からの戻り経路（hook が届く道）の状態を出す。
 
 import { timeout } from '../../../../base/common/async.js';
+import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -48,6 +50,7 @@ import {
 	PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID,
 	paradisCodexHookTrustMode,
 } from '../common/paradisCodexHookTrust.js';
+import { IParadisCodexHookStatusRow, paradisCodexHookStateText, paradisCodexHookStatusMarkdown } from '../browser/paradisCodexHookStatusTable.js';
 
 /** SSH の接続先か（接続先の hook は SSH の接続先にしか置かない）。 */
 function isSshWindow(remoteAuthority: string | undefined): remoteAuthority is string {
@@ -116,6 +119,7 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IDialogService private readonly dialogService: IDialogService,
 		@ILogService private readonly logService: ILogService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
@@ -168,14 +172,18 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 		const listings = statuses.flatMap(status => status.pending);
 		const events = [...new Set(listings.map(listing => listing.eventName).filter(name => name.length > 0))];
 		const eventText = events.length > MAX_EVENTS_IN_MESSAGE ? `${events.slice(0, MAX_EVENTS_IN_MESSAGE).join(', ')}, …` : events.join(', ');
+		// 通知は 1 文にし、対象のパス・イベントと、信頼の意味は「詳細」で開く。
+		// allow-any-unicode-next-line
+		const message = localize('paradis.codexHookTrust.askShort', "Codex の状態表示に使う hook（{0} 件）を信頼済みにしますか？", listings.length);
+		// allow-any-unicode-next-line
+		const detail = localize('paradis.codexHookTrust.askDetail', "対象: {0} の {1} 件（{2}）\n\n信頼が無いと、Codex の状態表示と通知が働きません。信頼するのは Para Code が設置した hook だけで、以後 Para Code が設置し直したときも自動で信頼します（設定で変えられます）。", statuses.map(status => status.hooksPath).join(', '), listings.length, eventText);
 		this.notificationService.prompt(
 			Severity.Info,
-			// allow-any-unicode-next-line
-			localize('paradis.codexHookTrust.ask', "Para Code が状態通知のために設置した Codex の hook（{0} の {1} 件: {2}）を、信頼済みにしますか？ 信頼が無いと、Codex の状態表示と通知が働きません。信頼するのは Para Code が設置した hook だけで、以後 Para Code が設置し直したときも自動で信頼します（設定で変えられます）。", statuses.map(status => status.hooksPath).join(', '), listings.length, eventText),
+			message,
 			[
 				{
 					// allow-any-unicode-next-line
-					label: localize('paradis.codexHookTrust.trust', "信頼する"),
+					label: localize('paradis.codexHookTrust.trustAuto', "信頼する（以後も自動で信頼）"),
 					run: () => this.trust(),
 				},
 				{
@@ -183,63 +191,53 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 					label: localize('paradis.codexHookTrust.decline', "信頼しない"),
 					run: () => this.configurationService.updateValue(PARADIS_CODEX_HOOK_TRUST_SETTING, 'off', ConfigurationTarget.USER),
 				},
+				{
+					// allow-any-unicode-next-line
+					label: localize('paradis.codexHookTrust.details', "詳細"),
+					run: () => void this.dialogService.info(message, detail),
+					keepOpen: true,
+				},
 			],
 			{ sticky: true },
 		);
 	}
 
-	private async trust(): Promise<void> {
-		await this.configurationService.updateValue(PARADIS_CODEX_HOOK_TRUST_SETTING, 'auto', ConfigurationTarget.USER);
-		let results: IParadisCodexHookTrustGrantResult[];
-		try {
-			results = await this.sharedProcessService.getChannel(PARADIS_CODEX_HOOK_TRUST_CHANNEL).call<IParadisCodexHookTrustGrantResult[]>('grantAll');
-		} catch (error) {
-			this.logService.warn('[ParadisCodexHookTrust] grant failed', error);
-			this.showFailed();
-			return;
-		}
-		const failed = results.filter(result => result.outcome !== 'granted' && result.outcome !== 'already-trusted' && result.outcome !== 'nothing-installed' && result.outcome !== 'skipped');
-		for (const result of failed) {
-			this.logService.warn(`[ParadisCodexHookTrust] grant for ${result.codexHome} ended with ${result.outcome}: ${result.detail ?? ''}`);
-		}
-		if (failed.length > 0) {
-			this.showFailed();
-			return;
-		}
-		const granted = results.reduce((total, result) => total + (result.outcome === 'granted' ? result.grantedEvents.length : 0), 0);
-		if (granted > 0) {
-			// allow-any-unicode-next-line
-			this.notificationService.info(localize('paradis.codexHookTrust.granted', "Para Code が設置した Codex の hook（{0} 件）を信頼済みにしました。", granted));
-		}
+	private trust(): Promise<void> {
+		return grantCodexHookTrust(this.configurationService, this.sharedProcessService, this.logService, this.notificationService);
 	}
+}
 
-	private showFailed(): void {
+/** 信頼の付け方を「自動」にして、Para Code が置いた hook に信頼を付ける（通知と状態のダイアログの「信頼する」）。 */
+async function grantCodexHookTrust(configurationService: IConfigurationService, sharedProcessService: ISharedProcessService, logService: ILogService, notificationService: INotificationService): Promise<void> {
+	const showFailed = () => {
 		// allow-any-unicode-next-line
-		this.notificationService.warn(localize('paradis.codexHookTrust.failed', "Codex の hook を信頼済みにできませんでした。Codex の画面（/hooks）から信頼してください。"));
+		notificationService.warn(localize('paradis.codexHookTrust.failed', "Codex の hook を信頼済みにできませんでした。Codex の画面（/hooks）から信頼してください。"));
+	};
+	await configurationService.updateValue(PARADIS_CODEX_HOOK_TRUST_SETTING, 'auto', ConfigurationTarget.USER);
+	let results: IParadisCodexHookTrustGrantResult[];
+	try {
+		results = await sharedProcessService.getChannel(PARADIS_CODEX_HOOK_TRUST_CHANNEL).call<IParadisCodexHookTrustGrantResult[]>('grantAll');
+	} catch (error) {
+		logService.warn('[ParadisCodexHookTrust] grant failed', error);
+		showFailed();
+		return;
+	}
+	const failed = results.filter(result => result.outcome !== 'granted' && result.outcome !== 'already-trusted' && result.outcome !== 'nothing-installed' && result.outcome !== 'skipped');
+	for (const result of failed) {
+		logService.warn(`[ParadisCodexHookTrust] grant for ${result.codexHome} ended with ${result.outcome}: ${result.detail ?? ''}`);
+	}
+	if (failed.length > 0) {
+		showFailed();
+		return;
+	}
+	const granted = results.reduce((total, result) => total + (result.outcome === 'granted' ? result.grantedEvents.length : 0), 0);
+	if (granted > 0) {
+		// allow-any-unicode-next-line
+		notificationService.info(localize('paradis.codexHookTrust.granted', "Para Code が設置した Codex の hook（{0} 件）を信頼済みにしました。", granted));
 	}
 }
 
 registerWorkbenchContribution2(ParadisCodexHookTrustPrompt.ID, ParadisCodexHookTrustPrompt, WorkbenchPhase.AfterRestored);
-
-/** 1 つのホームの状態を 1 行にする。 */
-function describeTrustStatus(status: IParadisCodexHookTrustStatus): string {
-	if (!status.supported) {
-		// 生のエラーはログにだけ出す（利用者向けには、何をすればよいかだけを書く）
-		// allow-any-unicode-next-line
-		return localize('paradis.codexHookStatus.unknown', "{0}: 信頼の状態を読めませんでした。hooks.json と config.toml の書き方を確かめるか、Codex の /hooks から信頼してください", status.hooksPath);
-	}
-	if (status.managedCount === 0) {
-		// allow-any-unicode-next-line
-		return localize('paradis.codexHookStatus.none', "{0}: Para Code の hook はありません", status.hooksPath);
-	}
-	if (status.pending.length === 0) {
-		// allow-any-unicode-next-line
-		return localize('paradis.codexHookStatus.trusted', "{0}: {1} 件すべて信頼済み", status.hooksPath, status.managedCount);
-	}
-	const events = [...new Set(status.pending.map(listing => listing.eventName).filter(name => name.length > 0))].join(', ');
-	// allow-any-unicode-next-line
-	return localize('paradis.codexHookStatus.pending', "{0}: {1} 件中 {2} 件が未信頼（{3}）", status.hooksPath, status.managedCount, status.pending.length, events);
-}
 
 function describeTrustMode(mode: ReturnType<typeof paradisCodexHookTrustMode>): string {
 	switch (mode) {
@@ -252,31 +250,34 @@ function describeTrustMode(mode: ReturnType<typeof paradisCodexHookTrustMode>): 
 	}
 }
 
-function describeTrustStatuses(statuses: readonly IParadisCodexHookTrustStatus[] | undefined, remote: boolean): string[] {
+/** 1 つの場所（この PC か接続先）の行。読めなかったとき・ホームが無いときも 1 行にする。 */
+function trustStatusRows(place: string, statuses: readonly IParadisCodexHookTrustStatus[] | undefined, remote: boolean): IParadisCodexHookStatusRow[] {
 	if (statuses === undefined) {
-		return [remote
-			// allow-any-unicode-next-line
-			? localize('paradis.codexHookStatus.remoteUnknown', "調べられませんでした（接続先の Para Code のサーバーが古い可能性があります）")
-			// allow-any-unicode-next-line
-			: localize('paradis.codexHookStatus.localUnknown', "調べられませんでした")];
+		return [{
+			place, path: '', state: remote
+				// allow-any-unicode-next-line
+				? localize('paradis.codexHookStatus.remoteUnknown', "調べられませんでした（接続先の Para Code のサーバーが古い可能性があります）")
+				// allow-any-unicode-next-line
+				: localize('paradis.codexHookStatus.localUnknown', "調べられませんでした"),
+		}];
 	}
 	if (statuses.length === 0) {
 		// allow-any-unicode-next-line
-		return [localize('paradis.codexHookStatus.noHome', "Codex のホームがありません")];
+		return [{ place, path: '', state: localize('paradis.codexHookStatus.noHome', "Codex のホームがありません") }];
 	}
-	return statuses.map(describeTrustStatus);
+	return statuses.map(status => ({ place, path: status.hooksPath, state: paradisCodexHookStateText(status) }));
 }
 
 function describeTunnel(enabled: boolean, port: number | undefined): string {
 	if (!enabled) {
 		// allow-any-unicode-next-line
-		return localize('paradis.codexHookStatus.tunnelOff', "接続先から hook が届く経路: 設定でオフになっています");
+		return localize('paradis.codexHookStatus.tunnelOffState', "設定でオフになっています");
 	}
 	return port !== undefined
 		// allow-any-unicode-next-line
-		? localize('paradis.codexHookStatus.tunnelUp', "接続先から hook が届く経路: 張れています（接続先のポート {0}）", port)
+		? localize('paradis.codexHookStatus.tunnelUpState', "張れています（接続先のポート {0}）", port)
 		// allow-any-unicode-next-line
-		: localize('paradis.codexHookStatus.tunnelDown', "接続先から hook が届く経路: 張れていません（設定「リモート (SSH)」の戻り経路を確かめてください）");
+		: localize('paradis.codexHookStatus.tunnelDownState', "張れていません（設定「リモート (SSH)」の戻り経路を確かめてください）");
 }
 
 class ParadisShowCodexHookStatusAction extends Action2 {
@@ -296,6 +297,9 @@ class ParadisShowCodexHookStatusAction extends Action2 {
 		const environmentService = accessor.get(IWorkbenchEnvironmentService);
 		const configurationService = accessor.get(IConfigurationService);
 		const dialogService = accessor.get(IDialogService);
+		const commandService = accessor.get(ICommandService);
+		const logService = accessor.get(ILogService);
+		const notificationService = accessor.get(INotificationService);
 		const remoteAuthority = environmentService.remoteAuthority;
 		const tunnelEnabled = configurationService.getValue<boolean>(PARADIS_REMOTE_AGENT_TUNNEL_SETTING) === true;
 
@@ -308,24 +312,42 @@ class ParadisShowCodexHookStatusAction extends Action2 {
 				: Promise.resolve(undefined),
 		]);
 
-		const lines: string[] = [
-			describeTrustMode(paradisCodexHookTrustMode(configurationService.getValue(PARADIS_CODEX_HOOK_TRUST_SETTING))),
-			'',
+		// 場所 × hooks.json × 状態の表にする（行を改行で並べた文字列にしない）。
+		const rows: IParadisCodexHookStatusRow[] = [
 			// allow-any-unicode-next-line
-			localize('paradis.codexHookStatus.local', "この PC:"),
-			...describeTrustStatuses(local, false),
+			...trustStatusRows(localize('paradis.codexHookStatus.localPlace', "この PC"), local, false),
 		];
 		if (isSshWindow(remoteAuthority)) {
-			lines.push(
-				'',
+			rows.push(
 				// allow-any-unicode-next-line
-				localize('paradis.codexHookStatus.remote', "接続先:"),
-				...describeTrustStatuses(remote, true),
-				describeTunnel(tunnelEnabled, tunnelPort),
+				...trustStatusRows(localize('paradis.codexHookStatus.remotePlace', "接続先"), remote, true),
+				// allow-any-unicode-next-line
+				{ place: localize('paradis.codexHookStatus.tunnelPlace', "接続先から hook が届く経路"), path: '', state: describeTunnel(tunnelEnabled, tunnelPort) },
 			);
 		}
-		// allow-any-unicode-next-line
-		await dialogService.info(localize('paradis.codexHookStatus.title', "Codex の hook の状態"), lines.join('\n'));
+		const localPending = (local ?? []).some(status => status.supported && status.pending.length > 0);
+		const { result } = await dialogService.prompt<'settings' | 'trust' | undefined>({
+			type: 'info',
+			// allow-any-unicode-next-line
+			message: localize('paradis.codexHookStatus.title', "Codex の hook の状態"),
+			detail: describeTrustMode(paradisCodexHookTrustMode(configurationService.getValue(PARADIS_CODEX_HOOK_TRUST_SETTING))),
+			buttons: [
+				// allow-any-unicode-next-line
+				{ label: localize({ key: 'paradis.codexHookStatus.openSettings', comment: ['&& denotes a mnemonic'] }, "設定を開く(&&S)"), run: () => 'settings' as const },
+				// この PC に未信頼の hook があるときだけ、ここから信頼を付けられる
+				...(localPending ? [{
+					// allow-any-unicode-next-line
+					label: localize({ key: 'paradis.codexHookStatus.trustLocal', comment: ['&& denotes a mnemonic'] }, "この PC の hook を信頼する（以後も自動で信頼）(&&T)"), run: () => 'trust' as const,
+				}] : []),
+			],
+			cancelButton: localize('paradis.codexHookStatus.close', "OK"),
+			custom: { markdownDetails: [{ markdown: new MarkdownString(paradisCodexHookStatusMarkdown(rows)) }] },
+		});
+		if (result === 'trust') {
+			await grantCodexHookTrust(configurationService, sharedProcessService, logService, notificationService);
+		} else if (result === 'settings') {
+			await commandService.executeCommand('workbench.action.openSettings', PARADIS_CODEX_HOOK_TRUST_SETTING);
+		}
 	}
 }
 
