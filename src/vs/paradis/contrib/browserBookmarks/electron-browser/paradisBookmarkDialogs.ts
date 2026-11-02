@@ -14,12 +14,15 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { Button } from '../../../../base/browser/ui/button/button.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 import {
 	IParadisFolderOption,
 	PARADIS_FOLDER_COLOR_PRESETS,
@@ -68,7 +71,6 @@ abstract class ParadisBookmarkModal extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	protected readonly body: HTMLElement;
-	private readonly _submitButton: HTMLButtonElement;
 
 	constructor(
 		dialogTitle: string,
@@ -79,6 +81,8 @@ abstract class ParadisBookmarkModal extends Disposable {
 
 		this._backdrop = $('.paradis-bookmark-dialog-backdrop');
 		const modal = $('.paradis-bookmark-dialog');
+		// 箱は共通の S 段（Q537 の 7 章「ブックマーク」、案 A）
+		modal.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		this._backdrop.appendChild(modal);
 
 		const header = dom.append(modal, $('.pbm-header'));
@@ -92,14 +96,12 @@ abstract class ParadisBookmarkModal extends Disposable {
 		this.body = dom.append(modal, $('.pbm-body'));
 
 		const footer = dom.append(modal, $('.pbm-footer'));
-		const cancelButton = dom.append(footer, $('button.pbm-btn')) as HTMLButtonElement;
-		cancelButton.type = 'button';
-		cancelButton.textContent = localize('paradis.bookmarks.dialog.cancel', "キャンセル");
-		this._register(dom.addDisposableListener(cancelButton, 'click', () => this.close()));
-		this._submitButton = dom.append(footer, $('button.pbm-btn.primary')) as HTMLButtonElement;
-		this._submitButton.type = 'button';
-		this._submitButton.textContent = submitLabel;
-		this._register(dom.addDisposableListener(this._submitButton, 'click', () => this.submit()));
+		const cancelButton = this._register(new Button(footer, { ...defaultButtonStyles, secondary: true }));
+		cancelButton.label = localize('paradis.bookmarks.dialog.cancel', "キャンセル");
+		this._register(cancelButton.onDidClick(() => this.close()));
+		const submitButton = this._register(new Button(footer, { ...defaultButtonStyles }));
+		submitButton.label = submitLabel;
+		this._register(submitButton.onDidClick(() => this.submit()));
 
 		modal.tabIndex = -1;
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
@@ -112,7 +114,8 @@ abstract class ParadisBookmarkModal extends Disposable {
 			if (event.keyCode === KeyCode.Escape) {
 				event.preventDefault();
 				this.close();
-			} else if (event.keyCode === KeyCode.Enter && !dom.isHTMLButtonElement(e.target)) {
+			} else if (event.keyCode === KeyCode.Enter && !dom.isHTMLButtonElement(e.target) && !(dom.isHTMLElement(e.target) && e.target.classList.contains('monaco-button'))) {
+				// ボタン（本家の Button を含む）の上の Enter はそのボタンに任せる
 				event.preventDefault();
 				this.submit();
 			}
@@ -271,7 +274,8 @@ export class ParadisFolderDialog extends ParadisBookmarkModal {
 		const colorRow = dom.append(colorField, $('.pbm-color-row'));
 		for (const color of PARADIS_FOLDER_COLOR_PRESETS) {
 			const swatch = dom.append(colorRow, $('.pbm-color-swatch'));
-			swatch.style.backgroundColor = color;
+			// 色は 22px の押しボタンの中の 12px の丸で見せる
+			dom.append(swatch, $('span.pbm-color-dot')).style.backgroundColor = color;
 			swatch.setAttribute('role', 'button');
 			swatch.setAttribute('aria-label', color);
 			this._register(dom.addDisposableListener(swatch, 'click', () => {

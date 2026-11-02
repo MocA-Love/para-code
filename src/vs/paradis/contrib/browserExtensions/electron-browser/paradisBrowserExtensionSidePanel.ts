@@ -32,7 +32,7 @@ import { ParadisSidePanelRefusalNotice } from './paradisSidePanelRefusalNotice.j
 
 const $ = dom.$;
 /** パネルの見出しの高さ（CSS のピクセル）。 */
-const HEADER_HEIGHT = 30;
+const HEADER_HEIGHT = 35;
 /** パネルの幅の上限（タブの中身の幅に対する割合）。 */
 const MAX_WIDTH_RATIO = 0.5;
 
