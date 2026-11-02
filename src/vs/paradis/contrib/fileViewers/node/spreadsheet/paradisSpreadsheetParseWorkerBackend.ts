@@ -18,7 +18,7 @@ import { promises as fs } from 'fs';
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ownedParadisOfficeBytes, ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorker, type IParadisOfficeSemanticWorkerTimers, type ParadisOfficeSemanticWorkerFailure } from '../office/paradisOfficeSemanticWorkerQueue.js';
-import { createParadisOfficeWorker } from '../office/paradisOfficeWorkerDiagnostics.js';
+import { createParadisOfficeWorker, reportParadisOfficeWorkerFailure } from '../office/paradisOfficeWorkerDiagnostics.js';
 
 /** worker へ送る依頼。`bytes` が無ければ、読み込みだけをする（温める）。 */
 export interface IParadisSpreadsheetParseWorkerRun {
@@ -70,6 +70,8 @@ export class ParadisSpreadsheetParseWorkerBackend extends Disposable {
 	constructor(
 		createWorker: () => IParadisSpreadsheetParseWorker,
 		timers?: IParadisOfficeSemanticWorkerTimers,
+		/** 失敗の報告の送り先（テストで差し替える）。 */
+		reportFailure: typeof reportParadisOfficeWorkerFailure = reportParadisOfficeWorkerFailure,
 	) {
 		super();
 		this.queue = this._register(new ParadisOfficeSemanticWorkerQueue({
@@ -81,6 +83,9 @@ export class ParadisSpreadsheetParseWorkerBackend extends Disposable {
 			queueByteLimit: PARADIS_SPREADSHEET_PARSE_QUEUE_BYTES,
 			idleMs: PARADIS_SPREADSHEET_PARSE_WORKER_IDLE_MS,
 			timers,
+			// 締め切りで切れたのは、ヒープの上限で落ちた（大きいだけのブック）のと違って worker が返ってこなかったので、
+			// こちらの不具合の疑いとして送る。利用者には同じく大きすぎるブックとして断る。
+			onRunDeadline: () => reportFailure('spreadsheet-parse', 'deadline', 'run-deadline'),
 		}));
 	}
 
