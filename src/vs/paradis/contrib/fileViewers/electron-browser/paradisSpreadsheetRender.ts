@@ -764,19 +764,19 @@ export interface IParadisSheetTableDom {
  * 別々の範囲をまたいで判定すると、範囲Aの内側の行と範囲Bの開始行が一致しただけで
  * 記号が出てしまうため、1 つの範囲の中で完結させる。
  */
-function isFilterHeaderCell(ranges: readonly IParadisCellRange[] | undefined, row: number, col: number): boolean {
+export function isFilterHeaderCell(ranges: readonly IParadisCellRange[] | undefined, row: number, col: number): boolean {
 	return !!ranges?.some(range => row === range.minR && col >= range.minC && col <= range.maxC);
 }
 
 /** テーブルの中でそのセルが担う役割。縞模様や集計行の描き分けに使う。 */
-interface IParadisTableCellRole {
+export interface IParadisTableCellRole {
 	readonly header: boolean;
 	readonly totals: boolean;
 	readonly stripe: boolean;
 	readonly emphasizedColumn: boolean;
 }
 
-function tableCellRole(sheet: IParadisSheetData, row: number, col: number): IParadisTableCellRole | undefined {
+export function tableCellRole(sheet: IParadisSheetData, row: number, col: number): IParadisTableCellRole | undefined {
 	for (const table of sheet.tables ?? []) {
 		const { range } = table;
 		if (row < range.minR || row > range.maxR || col < range.minC || col > range.maxC) {
