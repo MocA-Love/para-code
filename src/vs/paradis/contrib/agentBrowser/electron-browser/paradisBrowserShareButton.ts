@@ -53,7 +53,7 @@ const $ = dom.$;
 const COPILOT_ROW_KEY = 'copilot';
 
 /** 一覧の幅。狭いウィンドウでは左右をクランプして内側に収める。 */
-const POPOVER_WIDTH = 340;
+const POPOVER_WIDTH = 320;
 const ANCHOR_GAP = 4;
 const EDGE_MARGIN = 8;
 
@@ -360,6 +360,7 @@ class ParadisBrowserSharePopover extends Disposable {
 		@IParadisAgentBrowserBindingModel private readonly _bindingModel: IParadisAgentBrowserBindingModel,
 		@IParadisAgentBrowserTabsService private readonly _tabsService: IParadisAgentBrowserTabsService,
 		@ILayoutService layoutService: ILayoutService,
+		@IHoverService private readonly _popoverHoverService: IHoverService,
 	) {
 		super();
 		this._container = layoutService.getContainer(dom.getWindow(_anchor));
@@ -424,8 +425,8 @@ class ParadisBrowserSharePopover extends Disposable {
 			const name = localize('paradis.shareButton.copilotName', "Copilot");
 			dom.append(text, $('.pbs-name')).textContent = name;
 			dom.append(text, $('.pbs-kind')).textContent = localize('paradis.shareButton.kindCopilot', "Copilot のチャットと共有");
-			const button = dom.append(row, $<HTMLButtonElement>('button.pbs-unshare'));
-			button.textContent = localize('paradis.shareButton.unshare', "共有を解く");
+			const button = dom.append(row, $<HTMLButtonElement>(`button.pbs-unshare${ThemeIcon.asCSSSelector(Codicon.close)}`));
+			store.add(this._popoverHoverService.setupManagedHover(getDefaultHoverDelegate('element'), button, localize('paradis.shareButton.unshare', "共有を解く")));
 			button.dataset.token = COPILOT_ROW_KEY;
 			button.setAttribute('aria-label', localize('paradis.shareButton.unshareAria', "{0} との共有を解く", name));
 			store.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this._run(button, () => this._model.setSharedWithAgent(false))));
@@ -442,8 +443,8 @@ class ParadisBrowserSharePopover extends Disposable {
 				: localize('paradis.shareButton.paneMissing', "このウィンドウに無いペイン");
 			dom.append(text, $('.pbs-name')).textContent = name;
 			dom.append(text, $('.pbs-kind')).textContent = paradisPageShareKindLabel(share.kind);
-			const button = dom.append(row, $<HTMLButtonElement>('button.pbs-unshare'));
-			button.textContent = localize('paradis.shareButton.unshare', "共有を解く");
+			const button = dom.append(row, $<HTMLButtonElement>(`button.pbs-unshare${ThemeIcon.asCSSSelector(Codicon.close)}`));
+			store.add(this._popoverHoverService.setupManagedHover(getDefaultHoverDelegate('element'), button, localize('paradis.shareButton.unshare', "共有を解く")));
 			button.dataset.token = share.token;
 			button.setAttribute('aria-label', localize('paradis.shareButton.unshareAria', "{0} との共有を解く", name));
 			// そのペインがこのページを使う経路（共有・自分で開いたタブの許可・そこから開いたタブ）を一度に外す
