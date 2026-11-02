@@ -162,3 +162,8 @@
 	color: var(--vscode-descriptionForeground);
 	font-variant-numeric: tabular-nums;
 }
+
+/* The Office find widget sits just below the toolbar instead of covering its buttons. */
+:has(> .paradis-viewer-toolbar) > .paradis-office-find-widget {
+	top: calc(28px + 4px);
+}
