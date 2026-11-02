@@ -506,7 +506,7 @@ export function ProgressTab({ task, flow }: { task: ITaskBoardTask; flow: ITaskB
 								<li key={i}>
 									<span className="faint num">{timeOfDay(a.at)}</span>
 									<span className={`k ${a.kind}`}>{a.kind === 'tool' ? a.label : { message: '発言', answer: '回答', input: '送信', system: 'ボード', error: 'エラー' }[a.kind] ?? a.kind}</span>
-									<span className="d">{a.kind === 'tool' ? a.detail : a.kind === 'system' ? ({ started: `着手（${a.detail ?? ''}）`, adopted: `取り込み（${a.detail ?? ''}）`, merged: `マージ ${a.detail ?? ''}`, 'flow-changed': 'フローの変更で未着手に戻しました' }[a.label] ?? a.label) : a.label === 'nudge' ? '報告を促しました' : <b>{a.label}</b>}</span>
+									<span className="d">{a.kind === 'tool' ? a.detail : a.kind === 'system' ? ({ started: `着手（${a.detail ?? ''}）`, adopted: `取り込み（${a.detail ?? ''}）`, merged: `マージ ${a.detail ?? ''}`, 'flow-changed': 'フローの変更で未着手に戻しました', restored: '記録のファイルからボードに戻しました' }[a.label] ?? a.label) : a.label === 'nudge' ? '報告を促しました' : <b>{a.label}</b>}</span>
 								</li>
 							))}
 						</ul>
