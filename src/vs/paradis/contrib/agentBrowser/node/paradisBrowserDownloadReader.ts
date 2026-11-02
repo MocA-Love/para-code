@@ -9,12 +9,14 @@
 // para-browser MCP の read_download（ダウンロードしたファイルの中身を返す）。
 // 読めるのは Para Code のダウンロードの保存先（download_by_click・save_page_as_pdf が書く場所）の中だけ。
 // xlsx はシートの一覧とセルの範囲、csv / tsv は行の範囲を、上限付きで文字にして返す。
-// xlsx は Excel ビューアと同じ exceljs を、使うときにだけ読み込む（shared process の起動を重くしない）。
+// xlsx は Excel ビューアと同じ exceljs で、worker の中で読む（大きなブックの解析の間、shared process を止めない。
+// paradisBrowserDownloadWorkbookWorker.ts）。
 // PDF はページごとのテキストを返す。PDF ビューアと同じ pdf.js を、使うときにだけ Worker の中で読み込む（paradisBrowserPdfText.ts）。
 
 import type ExcelJS from 'exceljs';
 import { promises as fs } from 'fs';
 import { basename, extname, isAbsolute, relative, sep } from '../../../../base/common/path.js';
+import { paradisReadDownloadWorkbookInWorker } from './paradisBrowserDownloadWorkbookWorker.js';
 import { IParadisPdfPageRange, IParadisPdfTextOptions, PARADIS_PDF_MAX_CHARS, PARADIS_PDF_MAX_PAGES, PARADIS_PDF_SOFT_TIMEOUT_MS, ParadisPdfTextResult, paradisExtractPdfText, paradisParsePdfPageRange } from './paradisBrowserPdfText.js';
 
 export const PARADIS_READ_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024;
@@ -33,7 +35,10 @@ export interface IParadisDownloadReaderHost {
 	downloadsDirectory(): Promise<string | undefined>;
 	realpath?(path: string): Promise<string>;
 	readFile?(path: string): Promise<Buffer>;
+	/** テストで exceljs を差し込むと、worker を使わずにこの場で解析する。 */
 	loadExcel?(): Promise<typeof ExcelJS>;
+	/** xlsx を読む（テストで差し替える）。既定は worker で読む。 */
+	readWorkbook?(request: IParadisDownloadWorkbookRequest): Promise<unknown>;
 	/** PDF のテキストを取り出す（テストで差し替える）。既定は pdf.js を Worker で動かす。 */
 	extractPdfText?(data: Uint8Array, options: IParadisPdfTextOptions): Promise<ParadisPdfTextResult>;
 }
@@ -48,7 +53,7 @@ function error(message: string): ToolResult {
 	return { content: [{ type: 'text', text: message }], isError: true };
 }
 
-interface IRange {
+export interface IParadisCellRange {
 	readonly startRow: number;
 	readonly startColumn: number;
 	readonly endRow: number;
@@ -65,7 +70,7 @@ export function paradisColumnName(column: number): string {
 }
 
 /** "B2:F40" や "A1" を読む。読めなければ undefined。 */
-export function paradisParseA1Range(value: string): IRange | undefined {
+export function paradisParseA1Range(value: string): IParadisCellRange | undefined {
 	const match = /^\s*(?<c1>[A-Za-z]{1,3})(?<r1>\d{1,7})\s*(?::\s*(?<c2>[A-Za-z]{1,3})(?<r2>\d{1,7}))?\s*$/.exec(value);
 	if (!match?.groups) {
 		return undefined;
@@ -149,7 +154,7 @@ function cellText(value: string): string {
 }
 
 /** 範囲を「行番号: 値<TAB>値」の行にする。セルの上限で切る。 */
-function renderRange(range: IRange, valueAt: (row: number, column: number) => string, maxCells: number): { lines: string[]; endRow: number; cut: boolean } {
+function renderRange(range: IParadisCellRange, valueAt: (row: number, column: number) => string, maxCells: number): { lines: string[]; endRow: number; cut: boolean } {
 	const width = range.endColumn - range.startColumn + 1;
 	const lines: string[] = [`Columns: ${Array.from({ length: width }, (_, i) => paradisColumnName(range.startColumn + i)).join('\t')}`];
 	let cells = 0;
@@ -213,6 +218,8 @@ export class ParadisBrowserDownloadReader {
 
 	/** PDF は 1 つずつ読む（Worker が同時に何本も立って shared process のメモリを食わないように）。 */
 	private pdfQueue: Promise<unknown> = Promise.resolve();
+	/** xlsx の解析を 1 つずつにする（大きなブックの worker を同時に何本も立てない）。 */
+	private workbookQueue: Promise<unknown> = Promise.resolve();
 
 	constructor(private readonly host: IParadisDownloadReaderHost) { }
 
@@ -226,7 +233,7 @@ export class ParadisBrowserDownloadReader {
 		if (typeof maxCells !== 'number' || !Number.isInteger(maxCells) || maxCells < 1 || maxCells > MAX_MAX_CELLS) {
 			return error(`"max_cells" must be an integer from 1 to ${MAX_MAX_CELLS}.`);
 		}
-		let range: IRange | undefined;
+		let range: IParadisCellRange | undefined;
 		if (args.range !== undefined) {
 			range = typeof args.range === 'string' ? paradisParseA1Range(args.range) : undefined;
 			if (!range) {
@@ -292,7 +299,7 @@ export class ParadisBrowserDownloadReader {
 		}
 	}
 
-	private async readWorkbook(name: string, data: Buffer, sheet: string | number | undefined, range: IRange | undefined, maxCells: number): Promise<ToolResult> {
+	private async readWorkbook(name: string, data: Buffer, sheet: string | number | undefined, range: IParadisCellRange | undefined, maxCells: number): Promise<ToolResult> {
 		if (data.length >= 4 && data[0] === 0xD0 && data[1] === 0xCF && data[2] === 0x11 && data[3] === 0xE0) {
 			return error(`${name} is password-protected (encrypted) or an old binary workbook, so it cannot be read.`);
 		}
@@ -303,39 +310,20 @@ export class ParadisBrowserDownloadReader {
 		if (unzipped > PARADIS_READ_DOWNLOAD_MAX_UNZIPPED_BYTES) {
 			return error(`${name} expands to more than ${PARADIS_READ_DOWNLOAD_MAX_UNZIPPED_BYTES / 1024 / 1024} MB, so it is not read.`);
 		}
-		let workbook: ExcelJS.Workbook;
+		const request: IParadisDownloadWorkbookRequest = { name, data, ...(sheet !== undefined ? { sheet } : {}), ...(range !== undefined ? { range } : {}), maxCells };
+		// 解析は exceljs を読み込む worker で行う（大きなブックの解析の間、shared process の本線を止めない。
+		// paradisBrowserDownloadWorkbookWorker.ts）。テストが exceljs を差し込んだときだけ、この場で解析する
+		const loadExcel = this.host.loadExcel;
+		const parse = loadExcel !== undefined
+			? async () => paradisRenderDownloadWorkbook(await loadExcel(), request)
+			: () => (this.host.readWorkbook ?? paradisReadDownloadWorkbookInWorker)(request);
+		const run = this.workbookQueue.then(parse);
+		this.workbookQueue = run.catch(() => undefined);
 		try {
-			const Excel = await (this.host.loadExcel ?? (async () => (await import('exceljs')).default))();
-			workbook = new Excel.Workbook();
-			await workbook.xlsx.load(data as unknown as ArrayBuffer);
+			return await run;
 		} catch {
 			return error(`${name} could not be read as an Excel workbook.`);
 		}
-		const sheets = workbook.worksheets.map((worksheet, index) => ({ number: index + 1, name: worksheet.name, rows: worksheet.rowCount, columns: worksheet.columnCount, ...(worksheet.state !== 'visible' ? { hidden: true } : {}) }));
-		if (sheets.length === 0) {
-			return text(`${name} has no sheets.`);
-		}
-		const worksheet = sheet === undefined ? workbook.worksheets[0]
-			: typeof sheet === 'number' ? workbook.worksheets[sheet - 1]
-				: workbook.worksheets.find(candidate => candidate.name === sheet) ?? workbook.worksheets.find(candidate => candidate.name.toLowerCase() === sheet.toLowerCase());
-		if (!worksheet) {
-			return error(`${name} has no sheet ${JSON.stringify(sheet)}. Sheets: ${JSON.stringify(sheets)}`);
-		}
-		const used: IRange = { startRow: 1, startColumn: 1, endRow: Math.max(1, worksheet.rowCount), endColumn: Math.max(1, worksheet.columnCount) };
-		const wanted = range ?? { ...used, endRow: Math.min(used.endRow, DEFAULT_ROWS), endColumn: Math.min(used.endColumn, DEFAULT_COLUMNS) };
-		const rendered = renderRange(wanted, (row, column) => {
-			const cell = worksheet.getCell(row, column);
-			try {
-				return cell.text ?? '';
-			} catch {
-				return String(cell.value ?? '');
-			}
-		}, maxCells);
-		const shown = `${paradisColumnName(wanted.startColumn)}${wanted.startRow}:${paradisColumnName(wanted.endColumn)}${rendered.endRow}`;
-		const more = rendered.cut || (range === undefined && (used.endRow > wanted.endRow || used.endColumn > wanted.endColumn))
-			? `\nThe sheet has more (used area A1:${paradisColumnName(used.endColumn)}${used.endRow}); pass "range" for another part, or raise "max_cells".`
-			: '';
-		return text(`${name}: ${sheets.length} sheet(s): ${JSON.stringify(sheets)}\nSheet "${worksheet.name}", cells ${shown} (values as displayed; formulas show their last calculated result):${more}\n${rendered.lines.join('\n')}`);
 	}
 
 	private async readPdf(name: string, data: Buffer, pages: IParadisPdfPageRange | undefined): Promise<ToolResult> {
@@ -374,7 +362,7 @@ export class ParadisBrowserDownloadReader {
 		return text(`${name}: PDF, ${result.numPages} page(s); text of pages ${first}-${last} (layout, tables and images are not kept):${more}${noText}\n${body}`);
 	}
 
-	private readDelimited(name: string, data: Buffer, delimiter: string | undefined, range: IRange | undefined, maxCells: number): ToolResult {
+	private readDelimited(name: string, data: Buffer, delimiter: string | undefined, range: IParadisCellRange | undefined, maxCells: number): ToolResult {
 		const decoded = paradisDecodeText(data);
 		const firstLine = decoded.text.slice(0, decoded.text.search(/\r?\n|$/));
 		const separator = delimiter ?? (firstLine.includes('\t') ? '\t' : ',');
@@ -392,4 +380,53 @@ export class ParadisBrowserDownloadReader {
 			: '';
 		return text(`${name} (${decoded.encoding}, ${separator === '\t' ? 'tab' : 'comma'}-separated), rows ${bounded.startRow}-${rendered.endRow}, columns ${paradisColumnName(bounded.startColumn)}-${paradisColumnName(bounded.endColumn)}:${more}\n${rendered.lines.join('\n')}`);
 	}
+}
+
+/** xlsx を読む依頼（worker へ送る）。 */
+export interface IParadisDownloadWorkbookRequest {
+	readonly name: string;
+	readonly data: Uint8Array;
+	readonly sheet?: string | number;
+	readonly range?: IParadisCellRange;
+	readonly maxCells: number;
+}
+
+/**
+ * xlsx を exceljs で読み、シートの一覧とセルの範囲を read_download の結果にする。worker
+ * （paradisBrowserDownloadWorkbookWorkerMain.ts）の中で呼ぶ。読めなければ失敗の結果を返す。
+ */
+export async function paradisRenderDownloadWorkbook(Excel: typeof ExcelJS, request: IParadisDownloadWorkbookRequest): Promise<ToolResult> {
+	const { name, data, sheet, range, maxCells } = request;
+	let workbook: ExcelJS.Workbook;
+	try {
+		workbook = new Excel.Workbook();
+		await workbook.xlsx.load(data as unknown as ArrayBuffer);
+	} catch {
+		return error(`${name} could not be read as an Excel workbook.`);
+	}
+	const sheets = workbook.worksheets.map((worksheet, index) => ({ number: index + 1, name: worksheet.name, rows: worksheet.rowCount, columns: worksheet.columnCount, ...(worksheet.state !== 'visible' ? { hidden: true } : {}) }));
+	if (sheets.length === 0) {
+		return text(`${name} has no sheets.`);
+	}
+	const worksheet = sheet === undefined ? workbook.worksheets[0]
+		: typeof sheet === 'number' ? workbook.worksheets[sheet - 1]
+			: workbook.worksheets.find(candidate => candidate.name === sheet) ?? workbook.worksheets.find(candidate => candidate.name.toLowerCase() === sheet.toLowerCase());
+	if (!worksheet) {
+		return error(`${name} has no sheet ${JSON.stringify(sheet)}. Sheets: ${JSON.stringify(sheets)}`);
+	}
+	const used: IParadisCellRange = { startRow: 1, startColumn: 1, endRow: Math.max(1, worksheet.rowCount), endColumn: Math.max(1, worksheet.columnCount) };
+	const wanted = range ?? { ...used, endRow: Math.min(used.endRow, DEFAULT_ROWS), endColumn: Math.min(used.endColumn, DEFAULT_COLUMNS) };
+	const rendered = renderRange(wanted, (row, column) => {
+		const cell = worksheet.getCell(row, column);
+		try {
+			return cell.text ?? '';
+		} catch {
+			return String(cell.value ?? '');
+		}
+	}, maxCells);
+	const shown = `${paradisColumnName(wanted.startColumn)}${wanted.startRow}:${paradisColumnName(wanted.endColumn)}${rendered.endRow}`;
+	const more = rendered.cut || (range === undefined && (used.endRow > wanted.endRow || used.endColumn > wanted.endColumn))
+		? `\nThe sheet has more (used area A1:${paradisColumnName(used.endColumn)}${used.endRow}); pass "range" for another part, or raise "max_cells".`
+		: '';
+	return text(`${name}: ${sheets.length} sheet(s): ${JSON.stringify(sheets)}\nSheet "${worksheet.name}", cells ${shown} (values as displayed; formulas show their last calculated result):${more}\n${rendered.lines.join('\n')}`);
 }
