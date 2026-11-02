@@ -11,8 +11,18 @@
 // paradis.common.contribution.ts 経由でここだけ先に登録する(windowTransparency と同じ分離)。
 
 import { localize } from '../../../../nls.js';
-import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationPropertySchema, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { ParadisResourceTitleBarItem, paradisResourceTitleBarDefault, paradisResourceTitleBarItemLabel } from '../common/paradisResourceTitleBar.js';
+
+function titleBarItemSchema(item: ParadisResourceTitleBarItem): IConfigurationPropertySchema {
+	return {
+		type: 'boolean',
+		default: paradisResourceTitleBarDefault(item),
+		scope: ConfigurationScope.APPLICATION,
+		description: localize('paradis.resourceMonitor.titleBarItem', "タイトルバーの資源表示に「{0}」を出します。押して開く一覧には、選ばなかった項目も出ます。", paradisResourceTitleBarItemLabel(item)),
+	};
+}
 
 // セクションは windowTransparency 側と同じ 'paradis' に相乗り(集約セクション)。
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
@@ -26,6 +36,15 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.WINDOW,
 			description: localize('paradis.resourceMonitor.enabled', "タイトルバーに CPU / メモリ使用率のインジケーターを表示するかどうかを制御します。")
-		}
+		},
+		// タイトルバーの資源表示に出す項目。「設定 (Para Code)」のチェックとタイトルバーの右クリックでも選べる。
+		// キーは設定の見張りのテスト（paradisSettingsDialogCoverage.test.ts）が読めるよう、文字で書く。
+		'paradis.resourceMonitor.titleBar.cpu': titleBarItemSchema('cpu'),
+		'paradis.resourceMonitor.titleBar.memory': titleBarItemSchema('memory'),
+		'paradis.resourceMonitor.titleBar.disk': titleBarItemSchema('disk'),
+		'paradis.resourceMonitor.titleBar.swap': titleBarItemSchema('swap'),
+		'paradis.resourceMonitor.titleBar.diskIo': titleBarItemSchema('diskIo'),
+		'paradis.resourceMonitor.titleBar.network': titleBarItemSchema('network'),
+		'paradis.resourceMonitor.titleBar.machineName': titleBarItemSchema('machineName'),
 	}
 });

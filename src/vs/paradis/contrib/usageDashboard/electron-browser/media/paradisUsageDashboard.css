@@ -5,66 +5,11 @@
 
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
-/* allow-any-unicode-next-line */
-/* 使用量ダッシュボード（ccusage · GitHub API · rtk）の統合ダイアログ。 */
-/* allow-any-unicode-next-line */
-/* シェルだけをここで定義し、各パネルの中身は元のダッシュボード用CSSがそのまま効く。 */
+/* The usage area of the unified modal (paradisUsageArea.ts). The box, header, area switch and left nav come from
+	paradisHub.css; this file only styles the area's refresh button, its panes and the shared-settings pane. Each
+	dashboard pane keeps its own CSS. */
 
-/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, editor-background panel (translucent when window transparency is on), radius 8px, shadow-xl. */
-.paradis-usage-dashboard-backdrop {
-	position: absolute;
-	inset: 0;
-	background: rgba(0, 0, 0, 0.5);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	z-index: 2700;
-}
-
-.paradis-usage-dashboard {
-	/* allow-any-unicode-next-line */
-	/* ここはタイル・グラフ・表なので、広げた幅がそのまま日数・列数・行数になる。
-	幅も高さも伸ばす（設定系ダイアログと違って幅を足す先がある）。 */
-	width: clamp(1040px, 78vw, 2000px);
-	max-width: 95vw;
-	height: clamp(726px, 88vh, 1400px);
-	max-height: 92vh;
-	background: var(--vscode-editor-background);
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 8px;
-	display: flex;
-	flex-direction: column;
-	box-shadow: var(--vscode-shadow-xl);
-	overflow: hidden;
-	font-size: 13px;
-	outline: none;
-}
-
-/* The modal receives focus (tabindex=-1) for Escape handling; the workbench-wide keyboard-focus rule ([tabindex="-1"]:focus in workbench media/style.css) would otherwise draw a focusBorder frame around the whole dialog. */
-.monaco-workbench .paradis-usage-dashboard:focus {
-	outline: none !important;
-}
-
-/* ---------- header ---------- */
-
-.paradis-usage-dashboard .pud-header {
-	padding: 12px 18px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	flex-shrink: 0;
-}
-
-.paradis-usage-dashboard .pud-header h2 {
-	margin: 0;
-	font-size: 14.5px;
-	font-weight: 600;
-	flex: none;
-}
-
-.paradis-usage-dashboard .pud-refresh {
+.paradis-hub .pud-refresh {
 	margin-left: auto;
 	flex: none;
 	display: flex;
@@ -81,95 +26,17 @@
 	cursor: pointer;
 }
 
-.paradis-usage-dashboard .pud-refresh:hover {
+.paradis-hub .pud-refresh:hover {
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-.paradis-usage-dashboard .pud-refresh .codicon {
+.paradis-hub .pud-refresh .codicon {
 	font-size: 13px;
-}
-
-.paradis-usage-dashboard .pud-close {
-	flex: none;
-	cursor: pointer;
-	color: var(--vscode-icon-foreground);
-	border-radius: 4px;
-	padding: 4px;
-	display: flex;
-}
-
-.paradis-usage-dashboard .pud-close:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-/* ---------- body ---------- */
-
-.paradis-usage-dashboard .pud-body {
-	flex: 1;
-	display: flex;
-	min-height: 0;
-}
-
-.paradis-usage-dashboard .pud-nav {
-	width: 212px;
-	flex: none;
-	background: var(--vscode-sideBar-background);
-	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	padding: 8px 6px;
-	overflow-y: auto;
-}
-
-.paradis-usage-dashboard .pud-nav-caption {
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: 0.06em;
-	color: var(--vscode-descriptionForeground);
-	padding: 9px 10px 3px;
-}
-
-.paradis-usage-dashboard .pud-nav-item {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 6px 10px;
-	border-radius: 6px;
-	cursor: pointer;
-	font-size: 12.5px;
-}
-
-.paradis-usage-dashboard .pud-nav-item:hover {
-	background: var(--vscode-list-hoverBackground);
-}
-
-.paradis-usage-dashboard .pud-nav-item.active {
-	background: var(--vscode-list-activeSelectionBackground);
-	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
-}
-
-.paradis-usage-dashboard .pud-nav-icon {
-	flex: none;
-	font-size: 14px;
-}
-
-.paradis-usage-dashboard .pud-nav-label {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.paradis-usage-dashboard .pud-content {
-	flex: 1;
-	min-width: 0;
-	display: flex;
-	flex-direction: column;
-	overflow: hidden;
 }
 
 /* パネルは1枚だけ見せる。中身（各ダッシュボード）は自前でスクロールを持つので、
  * ここは高さを渡すだけにして二重スクロールを作らない。 */
-.paradis-usage-dashboard .pud-pane {
+.paradis-usage-area .pud-pane {
 	flex: 1;
 	min-height: 0;
 	display: flex;
@@ -177,42 +44,42 @@
 	overflow: auto;
 }
 
-.paradis-usage-dashboard .pud-pane.hidden {
+.paradis-usage-area .pud-pane.hidden {
 	display: none;
 }
 
-.paradis-usage-dashboard .pud-pane > * {
+.paradis-usage-area .pud-pane > * {
 	flex: 1;
 	min-height: 0;
 }
 
 /* ---------- 設定パネル ---------- */
 
-.paradis-usage-dashboard .pud-pane:has(.pud-settings-head) {
+.paradis-usage-area .pud-pane:has(.pud-settings-head) {
 	padding: 16px 24px 32px;
 }
 
-.paradis-usage-dashboard .pud-pane > .pud-settings-head,
-.paradis-usage-dashboard .pud-pane > .pud-settings-desc,
-.paradis-usage-dashboard .pud-pane > .pud-setting-row,
-.paradis-usage-dashboard .pud-pane > .pud-settings-footer {
+.paradis-usage-area .pud-pane > .pud-settings-head,
+.paradis-usage-area .pud-pane > .pud-settings-desc,
+.paradis-usage-area .pud-pane > .pud-setting-row,
+.paradis-usage-area .pud-pane > .pud-settings-footer {
 	flex: none;
 }
 
-.paradis-usage-dashboard .pud-settings-head {
+.paradis-usage-area .pud-settings-head {
 	font-size: 15px;
 	font-weight: 700;
 	margin-bottom: 4px;
 }
 
-.paradis-usage-dashboard .pud-settings-desc {
+.paradis-usage-area .pud-settings-desc {
 	font-size: 12px;
 	color: var(--vscode-descriptionForeground);
 	margin-bottom: 12px;
 	line-height: 1.6;
 }
 
-.paradis-usage-dashboard .pud-setting-row {
+.paradis-usage-area .pud-setting-row {
 	display: flex;
 	align-items: center;
 	gap: 16px;
@@ -220,12 +87,12 @@
 	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 }
 
-.paradis-usage-dashboard .pud-setting-main {
+.paradis-usage-area .pud-setting-main {
 	flex: 1;
 	min-width: 0;
 }
 
-.paradis-usage-dashboard .pud-setting-label {
+.paradis-usage-area .pud-setting-label {
 	font-size: 13px;
 	font-weight: 600;
 	display: flex;
@@ -235,7 +102,7 @@
 }
 
 
-.paradis-usage-dashboard .pud-setting-desc {
+.paradis-usage-area .pud-setting-desc {
 	font-size: 11.5px;
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
@@ -243,48 +110,7 @@
 	max-width: 520px;
 }
 
-.paradis-usage-dashboard .pud-toggle {
-	appearance: none;
-	width: 38px;
-	height: 20px;
-	border-radius: 11px;
-	position: relative;
-	cursor: pointer;
-	flex: none;
-	margin: 0;
-	background: var(--vscode-checkbox-background, var(--vscode-input-background));
-	border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border, transparent));
-	transition: background 0.15s;
-}
-
-.paradis-usage-dashboard .pud-toggle:checked {
-	background: var(--vscode-button-background);
-	border-color: var(--vscode-button-background);
-}
-
-.paradis-usage-dashboard .pud-toggle::after {
-	content: '';
-	position: absolute;
-	left: 2px;
-	top: 2px;
-	width: 14px;
-	height: 14px;
-	border-radius: 50%;
-	background: var(--vscode-foreground);
-	transition: left 0.15s;
-}
-
-.paradis-usage-dashboard .pud-toggle:checked::after {
-	left: 20px;
-	background: var(--vscode-button-foreground);
-}
-
-.paradis-usage-dashboard .pud-toggle:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}
-
-.paradis-usage-dashboard .pud-input {
+.paradis-usage-area .pud-input {
 	flex: none;
 	width: 260px;
 	background: var(--vscode-input-background);
@@ -297,15 +123,15 @@
 	outline: none;
 }
 
-.paradis-usage-dashboard .pud-input:focus {
+.paradis-usage-area .pud-input:focus {
 	border-color: var(--vscode-focusBorder);
 }
 
-.paradis-usage-dashboard .pud-settings-footer {
+.paradis-usage-area .pud-settings-footer {
 	margin-top: 16px;
 }
 
-.paradis-usage-dashboard .pud-btn {
+.paradis-usage-area .pud-btn {
 	appearance: none;
 	border: none;
 	border-radius: 5px;
@@ -317,11 +143,11 @@
 	color: var(--vscode-button-secondaryForeground);
 }
 
-.paradis-usage-dashboard .pud-btn:hover {
+.paradis-usage-area .pud-btn:hover {
 	background: var(--vscode-button-secondaryHoverBackground);
 }
 
-.paradis-usage-dashboard .pud-select {
+.paradis-usage-area .pud-select {
 	flex: none;
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
@@ -333,6 +159,6 @@
 	outline: none;
 }
 
-.paradis-usage-dashboard .pud-select:focus {
+.paradis-usage-area .pud-select:focus {
 	border-color: var(--vscode-focusBorder);
 }

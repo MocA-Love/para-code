@@ -16,6 +16,9 @@ import { IParadisResourceMonitorPanelOptions, ParadisResourceMonitorPanel } from
 import { createParadisResourceMonitorWidget, IParadisResourceMonitorPollTimer, ParadisResourceMonitorWidget, paradisResourceMonitorPollingPolicy } from '../../electron-browser/paradisResourceMonitorWidget.js';
 import { IParadisSystemUsageModel, IParadisSystemUsageView, ParadisSystemUsageMachineId } from '../../electron-browser/paradisSystemUsageModel.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
+import { IAction } from '../../../../../base/common/actions.js';
+import { IContextMenuDelegate } from '../../../../../base/browser/contextmenu.js';
+import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 
 function createSystemUsageView(machineId: ParadisSystemUsageMachineId, label: string, cpu: number, mem: number): IParadisSystemUsageView {
 	return {
@@ -64,6 +67,7 @@ class TestSystemUsageModel implements IParadisSystemUsageModel {
 }
 
 const testCommandService = { executeCommand: async () => undefined } as unknown as ICommandService;
+const testContextMenuService = { showContextMenu: () => { } } as unknown as IContextMenuService;
 
 class TestDocument extends EventTarget {
 
@@ -216,7 +220,7 @@ function createWidgetHarness(deferInitialSnapshot = false): ITestWidgetHarness {
 	} as unknown as IInstantiationService;
 	const container = document.createElement('div');
 	document.body.append(container);
-	const widget = new ParadisResourceMonitorWidget(container, { document: testDocument, pollTimer: timer }, instantiationService, configuration as unknown as IConfigurationService, new TestSystemUsageModel(), testCommandService);
+	const widget = new ParadisResourceMonitorWidget(container, { document: testDocument, pollTimer: timer }, instantiationService, configuration as unknown as IConfigurationService, new TestSystemUsageModel(), testCommandService, testContextMenuService);
 	return {
 		container,
 		document: testDocument,
@@ -305,7 +309,7 @@ suite('ParadisResourceMonitorWidget', () => {
 		} as unknown as IConfigurationService;
 		const container = document.createElement('div');
 		document.body.append(container);
-		const widget = new ParadisResourceMonitorWidget(container, { document: testDocument, pollTimer }, instantiationService, configurationService, new TestSystemUsageModel(), testCommandService);
+		const widget = new ParadisResourceMonitorWidget(container, { document: testDocument, pollTimer }, instantiationService, configurationService, new TestSystemUsageModel(), testCommandService, testContextMenuService);
 
 		try {
 			await flushMicrotasks();
@@ -496,7 +500,7 @@ suite('ParadisResourceMonitorWidget', () => {
 				onDidChangeConfiguration: () => ({ dispose() { } } satisfies IDisposable),
 			} as unknown as IConfigurationService;
 			const container = document.createElement('div');
-			const widget = new ParadisResourceMonitorWidget(container, { document: new TestDocument(), pollTimer: new TestIntervalTimer() }, instantiationService, configurationService, model, testCommandService);
+			const widget = new ParadisResourceMonitorWidget(container, { document: new TestDocument(), pollTimer: new TestIntervalTimer() }, instantiationService, configurationService, model, testCommandService, testContextMenuService);
 			try {
 				await flushMicrotasks();
 				await flushMicrotasks();
@@ -518,5 +522,55 @@ suite('ParadisResourceMonitorWidget', () => {
 			{ title: 'CPU 34% · RAM 71%', panelMachines: ['local'], panelSelected: 'local', panelViews: ['local'] },
 			{ title: 'dev-server · CPU 82% · RAM 87%', panelMachines: ['local', 'remote'], panelSelected: 'remote', panelViews: ['remote'] },
 		]);
+	});
+
+	test('shows the chosen title bar items and lets the right-click menu toggle them', async () => {
+		const settings = new Map<string, unknown>([
+			['paradis.resourceMonitor.enabled', true],
+			['paradis.resourceMonitor.titleBar.cpu', true],
+			['paradis.resourceMonitor.titleBar.memory', false],
+			['paradis.resourceMonitor.titleBar.disk', true],
+			['paradis.resourceMonitor.titleBar.swap', true],
+			['paradis.resourceMonitor.titleBar.network', true],
+			['paradis.resourceMonitor.titleBar.machineName', true],
+		]);
+		const updates: [string, unknown][] = [];
+		const configurationService = {
+			getValue: (key: string) => settings.get(key),
+			updateValue: async (key: string, value: unknown) => { updates.push([key, value]); },
+			onDidChangeConfiguration: () => ({ dispose() { } } satisfies IDisposable),
+		} as unknown as IConfigurationService;
+		const model = new class extends TestSystemUsageModel {
+			override async refresh(machineId: ParadisSystemUsageMachineId): Promise<IParadisSystemUsageView> {
+				const view = await super.refresh(machineId);
+				return { ...view, machine: { os: 'linux', hostname: 'dev-server', cores: 8, memTotal: 1, swapTotal: 1000 }, latest: { t: 1, cpu: 12, mem: 36, disk: 71, swapUsed: 120, netRx: 1.2 * 1024 * 1024, netTx: 80 * 1024 } };
+			}
+		}('remote');
+		let menuActions: readonly IAction[] = [];
+		const contextMenuService = { showContextMenu: (delegate: IContextMenuDelegate) => { menuActions = delegate.getActions(); } } as unknown as IContextMenuService;
+		const client = { getSnapshot: async () => createSnapshot(), switchToScope() { } } as unknown as ParadisResourceMonitorClient;
+		const instantiationService = { createInstance: () => client } as unknown as IInstantiationService;
+		const container = document.createElement('div');
+		const widget = new ParadisResourceMonitorWidget(container, { document: new TestDocument(), pollTimer: new TestIntervalTimer() }, instantiationService, configurationService, model, testCommandService, contextMenuService);
+		try {
+			await flushMicrotasks();
+			await flushMicrotasks();
+			const button = container.querySelector('button')!;
+			button.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+			menuActions.find(action => action.id === 'paradis.resourceMonitor.toggle.disk')?.run();
+			assert.deepStrictEqual({
+				title: container.querySelector('.paradis-resource-monitor-trigger-text')?.textContent,
+				aria: button.getAttribute('aria-label'),
+				menu: menuActions.map(action => action.id === 'vs.actions.separator' ? '---' : `${action.checked ? '[x]' : '[ ]'} ${action.label}`),
+				updates,
+			}, {
+				title: 'dev-server · CPU 12% · DISK 71% · SWAP 12% · ↓1.2MB ↑80KB',
+				aria: 'dev-server の使用率: CPU 12% · DISK 71% · SWAP 12% · ↓1.2MB ↑80KB',
+				menu: ['[x] CPU', '[ ] メモリ', '[x] ディスク', '[x] スワップ', '[ ] ディスクの読み書き', '[x] ネットワーク', '[x] 接続先の名前（SSH）', '---', '[ ] 設定を開く…'],
+				updates: [['paradis.resourceMonitor.titleBar.disk', false]],
+			});
+		} finally {
+			widget.dispose();
+		}
 	});
 });
