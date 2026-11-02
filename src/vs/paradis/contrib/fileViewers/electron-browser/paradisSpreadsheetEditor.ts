@@ -1110,13 +1110,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _virtualRevision: string | undefined;
 	/** 仮想グリッドを画面に出ていないときに作り、行の高さを測れていない。 */
 	private _virtualRowsUnmeasured = false;
-	private _previousVirtualPosition: { readonly revision: string; readonly anchor: ReturnType<ParadisSpreadsheetViewport['logicalAnchor']>; readonly focused?: { readonly row: number; readonly column: number } } | undefined;
+	private _previousVirtualPosition: { readonly revision: string; readonly anchor: ReturnType<ParadisSpreadsheetViewport['logicalAnchor']>; readonly selection?: ParadisSpreadsheetGridRenderer['selection'] } | undefined;
 
 	/** 仮想グリッドで見ていた位置。同じシートの描き直しでだけ使う。 */
-	private get _virtualPosition(): { readonly revision: string; readonly anchor: ReturnType<ParadisSpreadsheetViewport['logicalAnchor']>; readonly focused?: { readonly row: number; readonly column: number } } | undefined {
+	private get _virtualPosition(): { readonly revision: string; readonly anchor: ReturnType<ParadisSpreadsheetViewport['logicalAnchor']>; readonly selection?: ParadisSpreadsheetGridRenderer['selection'] } | undefined {
 		const renderer = this._virtualRenderer.value;
 		const viewport = this._virtualViewport;
-		return renderer && viewport && this._virtualRevision ? { revision: this._virtualRevision, anchor: viewport.logicalAnchor(renderer.frame), focused: renderer.focusedCell } : undefined;
+		return renderer && viewport && this._virtualRevision ? { revision: this._virtualRevision, anchor: viewport.logicalAnchor(renderer.frame), selection: renderer.selection } : undefined;
 	}
 	private readonly _gridAccessibility = this._register(new MutableDisposable<IDisposable>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisSpreadsheetChangeInspector>());
@@ -1987,9 +1987,9 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const previous = this._previousVirtualPosition;
 		this._previousVirtualPosition = undefined;
 		const start = previous?.revision === revision ? viewport.remeasure({}, previous.anchor) : { scrollTop: 0, scrollLeft: 0 };
-		if (previous?.revision === revision && previous.focused) {
-			// フォーカスしていたセルも保つ
-			renderer.setFocusedCell(previous.focused.row, previous.focused.column);
+		if (previous?.revision === revision && previous.selection) {
+			// 選んでいた範囲とフォーカスしていたセルも保つ
+			renderer.setSelection(previous.selection.anchor, previous.selection.focused);
 		}
 		this._virtualRenderer.value = renderer;
 		this._renderVirtualOverlays(sheet, viewport, renderer, host.ownerDocument);

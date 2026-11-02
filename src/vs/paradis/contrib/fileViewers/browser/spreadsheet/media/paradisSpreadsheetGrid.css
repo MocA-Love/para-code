@@ -160,10 +160,10 @@
 }
 
 /* allow-any-unicode-next-line */
-/* Excel のビューアの範囲の選択。文字の選択（ブラウザ）の代わりにセルの範囲で選ぶので、文字の選択は止め、 */
+/* Excel のビューアの範囲の選択。1 つのセルの中では文字を選べる（表と同じ）。ほかのセルへドラッグしてセルの範囲を */
 /* allow-any-unicode-next-line */
-/* 選んだセルには DOM の表で範囲を選んだときと同じ選択の色を重ねる（セルの塗りは消さない）。 */
-.paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell {
+/* 選んでいる間だけ文字の選択を止め、選んだセルには選択の色を重ねる（セルの塗りは消さない）。 */
+.paradis-spreadsheet-virtual-range-selecting .paradis-spreadsheet-virtual-cell {
 	user-select: none;
 }
 

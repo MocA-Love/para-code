@@ -130,7 +130,15 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	private readonly pointerUpListener: () => void;
 	/** 範囲の選択の起点（フォーカスのセルとの間が選んだ範囲）と、ドラッグ中か。 */
 	private selectionAnchor = { row: 0, column: 0 };
-	private dragging = false;
+	/**
+	 * ドラッグの状態。始めたセルの中に留まっている間は 'text'（ブラウザの文字の選択のまま）、
+	 * ほかのセルへ出たら 'range'（セルの範囲の選択）。
+	 */
+	private dragging: 'none' | 'text' | 'range' = 'none';
+	private dragStart = { row: 0, column: 0 };
+	/** 範囲を選んでいる間の、最後のポインタの位置（端に近づいたら自動でスクロールするため）。 */
+	private lastPointer: { readonly x: number; readonly y: number } | undefined;
+	private autoScrollTimer: number | undefined;
 	/** 描くときに切った（とても長い）セルの元の文字。コピーでは切らずに渡す。 */
 	private readonly fullTexts = new Map<string, string>();
 	private resizeObserver: IDisposable | undefined;
@@ -178,14 +186,16 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.copyListener = event => this.onCopy(event);
 		this.pointerListener = event => this.onPointerDown(event);
 		this.pointerMoveListener = event => this.onPointerMove(event);
-		this.pointerUpListener = () => { this.dragging = false; };
+		this.pointerUpListener = () => this.endDrag();
 		container.addEventListener('scroll', this.scrollListener, { passive: true });
 		container.addEventListener('keydown', this.keyListener);
 		if (options.copyFocusedCell) {
 			container.addEventListener('copy', this.copyListener);
 			container.addEventListener('mousedown', this.pointerListener);
-			container.addEventListener('mousemove', this.pointerMoveListener);
+			// 枠の外へ出ても範囲を広げられるよう、動きと離したことは document で受ける
+			this.document.addEventListener('mousemove', this.pointerMoveListener);
 			this.document.addEventListener('mouseup', this.pointerUpListener);
+			container.setAttribute('aria-multiselectable', 'true');
 		}
 		this.attachRemeasureTriggers();
 	}
@@ -283,8 +293,9 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.container.removeEventListener('keydown', this.keyListener);
 		this.container.removeEventListener('copy', this.copyListener);
 		this.container.removeEventListener('mousedown', this.pointerListener);
-		this.container.removeEventListener('mousemove', this.pointerMoveListener);
+		this.document.removeEventListener('mousemove', this.pointerMoveListener);
 		this.document.removeEventListener('mouseup', this.pointerUpListener);
+		this.stopAutoScroll();
 		this.resizeObserver?.dispose();
 		for (const schedule of this.mediaSchedules.values()) {
 			schedule.dispose();
@@ -678,24 +689,119 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		if (!cell) {
 			return;
 		}
+		this.endDrag();
 		const header = !!(event.target as Element).closest?.('.paradis-spreadsheet-virtual-cell')?.getAttribute('data-header');
 		this.focused = cell;
 		if (!event.shiftKey || header) {
 			this.selectionAnchor = cell;
 		}
-		this.dragging = !header;
+		// 押した直後はブラウザの文字の選択のまま（セルの中の一部を選べる・ダブルクリックで語を選べる）。
+		// Shift+クリックは範囲を広げる操作なので、はじめから範囲の選択にする
+		this.dragging = header ? 'none' : event.shiftKey ? 'range' : 'text';
+		this.dragStart = cell;
+		if (this.dragging === 'range') {
+			this.beginRangeSelection();
+		}
 		this.updateFocusedCell();
 	}
 
 	private onPointerMove(event: MouseEvent): void {
-		if (!this.dragging || (event.buttons & 1) === 0) {
-			this.dragging = false;
+		if (this.dragging === 'none') {
 			return;
 		}
-		const cell = this.cellAt(event);
+		if ((event.buttons & 1) === 0) {
+			this.endDrag();
+			return;
+		}
+		this.lastPointer = { x: event.clientX, y: event.clientY };
+		const cell = this.cellAt(event) ?? this.cellNearPointer();
+		if (this.dragging === 'text') {
+			// 始めたセルの中ならブラウザの文字の選択に任せる。ほかのセルへ出たら範囲の選択に切り替える
+			if (!cell || (cell.row === this.dragStart.row && cell.column === this.dragStart.column)) {
+				return;
+			}
+			this.beginRangeSelection();
+		}
 		if (cell && (cell.row !== this.focused.row || cell.column !== this.focused.column)) {
 			this.focused = cell;
 			this.updateFocusedCell();
+		}
+	}
+
+	private beginRangeSelection(): void {
+		this.dragging = 'range';
+		// 文字の選択は外し、範囲の選択の間だけ文字を選べないようにする（セルの間をなぞって文字が選ばれないように）
+		this.document.getSelection()?.removeAllRanges();
+		this.container.classList.add('paradis-spreadsheet-virtual-range-selecting');
+		this.stopAutoScroll();
+		this.autoScrollTimer = this.document.defaultView?.setInterval(() => this.autoScroll(), AUTO_SCROLL_INTERVAL_MS);
+	}
+
+	private endDrag(): void {
+		this.dragging = 'none';
+		this.lastPointer = undefined;
+		this.container.classList.remove('paradis-spreadsheet-virtual-range-selecting');
+		this.stopAutoScroll();
+	}
+
+	private stopAutoScroll(): void {
+		if (this.autoScrollTimer !== undefined) {
+			this.document.defaultView?.clearInterval(this.autoScrollTimer);
+			this.autoScrollTimer = undefined;
+		}
+	}
+
+	/** 範囲を選んでいる間、ポインタが本体の端に近い・外にあるときは、その向きへスクロールして範囲を広げる。 */
+	private autoScroll(): void {
+		const pointer = this.lastPointer;
+		if (this.dragging !== 'range' || !pointer || this.disposed) {
+			return;
+		}
+		const rect = this.container.getBoundingClientRect();
+		const step = (position: number, start: number, end: number) => position < start + AUTO_SCROLL_EDGE ? -Math.min(AUTO_SCROLL_MAX_STEP, start + AUTO_SCROLL_EDGE - position)
+			: position > end - AUTO_SCROLL_EDGE ? Math.min(AUTO_SCROLL_MAX_STEP, position - (end - AUTO_SCROLL_EDGE)) : 0;
+		const dy = step(pointer.y, rect.top, rect.bottom);
+		const dx = step(pointer.x, rect.left, rect.right);
+		if (!dx && !dy) {
+			return;
+		}
+		this.container.scrollTop += dy;
+		this.container.scrollLeft += dx;
+		const cell = this.cellNearPointer();
+		if (cell && (cell.row !== this.focused.row || cell.column !== this.focused.column)) {
+			this.focused = cell;
+		}
+		this.queueRender();
+	}
+
+	/** ポインタの位置を本体の枠の中に収めたところにあるセル（枠の外へ出たときに、端のセルまで範囲を広げるため）。 */
+	private cellNearPointer(): { readonly row: number; readonly column: number } | undefined {
+		const pointer = this.lastPointer;
+		if (!pointer) {
+			return undefined;
+		}
+		// スクロールバーの上ではセルが見つからないので、中身の見えている部分（client の大きさ）に収める
+		const rect = this.container.getBoundingClientRect();
+		const x = Math.min(Math.max(pointer.x, rect.left + this.container.clientLeft + 1), rect.left + this.container.clientLeft + this.container.clientWidth - 2);
+		const y = Math.min(Math.max(pointer.y, rect.top + this.container.clientTop + 1), rect.top + this.container.clientTop + this.container.clientHeight - 2);
+		const element = this.document.elementFromPoint(x, y)?.closest('.paradis-spreadsheet-virtual-cell') as HTMLElement | null | undefined;
+		if (!element || !this.container.contains(element) || element.dataset.header) {
+			return undefined;
+		}
+		const row = Number(element.dataset.row);
+		const column = Number(element.dataset.column);
+		return Number.isSafeInteger(row) && Number.isSafeInteger(column) ? { row, column } : undefined;
+	}
+
+	/** 選んでいる範囲（起点とフォーカス）。作り直したグリッドで戻すため。 */
+	get selection(): { readonly anchor: { readonly row: number; readonly column: number }; readonly focused: { readonly row: number; readonly column: number } } {
+		return { anchor: { ...this.selectionAnchor }, focused: { ...this.focused } };
+	}
+
+	setSelection(anchor: { readonly row: number; readonly column: number }, focused: { readonly row: number; readonly column: number }): void {
+		if ([anchor.row, anchor.column, focused.row, focused.column].every(Number.isSafeInteger)) {
+			this.selectionAnchor = { row: anchor.row, column: anchor.column };
+			this.focused = { row: focused.row, column: focused.column };
 		}
 	}
 
@@ -724,8 +830,12 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		for (const rendered of this.cells.values()) {
 			const cellRow = Number(rendered.element.dataset.row);
 			const cellColumn = Number(rendered.element.dataset.column);
-			rendered.element.classList.toggle('paradis-spreadsheet-virtual-selected', multiple && !rendered.element.dataset.header
-				&& cellRow >= rowStart && cellRow < rowEnd && cellColumn >= columnStart && cellColumn < columnEnd);
+			const inRange = multiple && !rendered.element.dataset.header
+				&& cellRow >= rowStart && cellRow < rowEnd && cellColumn >= columnStart && cellColumn < columnEnd;
+			rendered.element.classList.toggle('paradis-spreadsheet-virtual-selected', inRange);
+			if (this.options.copyFocusedCell && !rendered.element.dataset.header) {
+				rendered.element.setAttribute('aria-selected', String(inRange || (cellRow === this.focused.row && cellColumn === this.focused.column)));
+			}
 			const selected = cellRow === this.focused.row && cellColumn === this.focused.column;
 			rendered.element.tabIndex = selected ? 0 : -1;
 			if (selected) {
@@ -777,6 +887,10 @@ function isSafeGradient(value: string): boolean {
 }
 
 const MAXIMUM_CELL_TEXT = 32_768;
+/** 範囲を選んでいる間の自動スクロール: 端からこの距離に入ったら、この間隔で最大この量ずつ動かす。 */
+const AUTO_SCROLL_EDGE = 24;
+const AUTO_SCROLL_INTERVAL_MS = 50;
+const AUTO_SCROLL_MAX_STEP = 40;
 
 function boundedText(value: string): string {
 	return typeof value === 'string' ? value.slice(0, MAXIMUM_CELL_TEXT) : '';

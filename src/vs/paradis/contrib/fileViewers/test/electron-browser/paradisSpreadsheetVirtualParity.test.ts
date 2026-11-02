@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { deepStrictEqual } from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisCellData, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
@@ -729,6 +730,70 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 			movedWithContent: [50, 40],
 			centeredRow: true,
 			mergeGrowsTheSame: true,
+		});
+	});
+
+	test('keeps selecting text inside one cell, scrolls while dragging a range past the edge, and marks the selection for assistive tools', async () => {
+		const doc = mainWindow.document;
+		const base = sheet();
+		const data: IParadisSheetData = { ...base, freezePane: undefined, rows: Array.from({ length: 60 }, (_unused, index) => ({ excelRow: index + 1, height: 20, cells: [text(`value ${index}`), text(`b${index}`), empty, empty, empty] })) };
+		const host = doc.body.appendChild(doc.createElement('div'));
+		host.style.width = '300px';
+		host.style.height = '120px';
+		host.style.overflow = 'auto';
+		// 端の外の位置からセルを探すので、窓の中に見えている位置に置く
+		host.style.position = 'fixed';
+		host.style.left = '0';
+		host.style.top = '0';
+		host.style.zIndex = '1000';
+		// テストのページは文字を選べない設定なので、エディタと同じく選べるようにする
+		host.style.userSelect = 'text';
+		host.classList.add('paradis-spreadsheet-virtual-excel');
+		const index = createVirtualGridIndex(data);
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(host, createVirtualGridViewport(data, 17, 'drag'), {
+			getViewport: async request => legacyGridTile(data, request, index), copyFocusedCell: true, copyRange: range => virtualGridCopyText(data, range),
+		}));
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 300, height: 120 });
+		const cell = (row: number, column: number) => host.querySelector<HTMLElement>(`.paradis-spreadsheet-virtual-cell[data-row="${row + 1}"][data-column="${column + 1}"]`)!;
+
+		// 1 つのセルの中の一部の文字を選んでコピーすると、その文字だけが入る（ブラウザに任せ、横取りしない）
+		const first = cell(0, 0);
+		first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1 }));
+		first.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1 }));
+		doc.dispatchEvent(new MouseEvent('mouseup'));
+		const textNode = first.firstChild!;
+		const range = doc.createRange();
+		range.setStart(textNode, 0);
+		range.setEnd(textNode, 5);
+		const selection = mainWindow.getSelection()!;
+		selection.removeAllRanges();
+		selection.addRange(range);
+		const partialCopy = new ClipboardEvent('copy', { clipboardData: new DataTransfer(), cancelable: true, bubbles: true });
+		first.dispatchEvent(partialCopy);
+		const partial = { selected: selection.toString(), intercepted: partialCopy.defaultPrevented, rangeHighlighted: host.querySelectorAll('.paradis-spreadsheet-virtual-selected').length };
+		selection.removeAllRanges();
+
+		// ほかのセルへドラッグすると範囲の選択に切り替わり、下の端より外へ出ると自動でスクロールして範囲が広がる
+		cell(0, 0).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1 }));
+		cell(1, 0).dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1 }));
+		const rect = host.getBoundingClientRect();
+		doc.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: rect.left + 50, clientY: rect.bottom + 30 }));
+		await timeout(400);
+		const scrolled = host.scrollTop > 0;
+		const extended = renderer.selection.focused.row > 2;
+		doc.dispatchEvent(new MouseEvent('mouseup'));
+		const aria = {
+			multiselectable: host.getAttribute('aria-multiselectable'),
+			selectedCells: host.querySelectorAll('[aria-selected="true"]').length > 1,
+			rangeSelectingCleared: !host.classList.contains('paradis-spreadsheet-virtual-range-selecting'),
+		};
+		host.remove();
+
+		deepStrictEqual({ partial, scrolled, extended, aria }, {
+			partial: { selected: 'value', intercepted: false, rangeHighlighted: 0 },
+			scrolled: true,
+			extended: true,
+			aria: { multiselectable: 'true', selectedCells: true, rangeSelectingCleared: true },
 		});
 	});
 });
