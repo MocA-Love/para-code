@@ -10,7 +10,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisSheetData } from '../../common/paradisSpreadsheet.js';
 import { PARADIS_ROW_NUM_COL_WIDTH } from '../../electron-browser/paradisSpreadsheetRender.js';
-import { computeFrozenPaneBoxes, resolveFrozenPaneExtent, trimFrozenPaneClone } from '../../electron-browser/paradisSpreadsheetEditor.js';
+import { computeFrozenPaneBoxes, resolveFrozenPaneExtent, buildFrozenPaneClone } from '../../electron-browser/paradisSpreadsheetEditor.js';
 
 function sheet(overrides: Partial<IParadisSheetData>): IParadisSheetData {
 	return {
@@ -99,26 +99,35 @@ suite('ParadisSpreadsheetFrozenPane', () => {
 	});
 
 	test('trims cloned rows beyond the frozen row count', () => {
-		const table = tableWith([[1], [1], [1]]);
-		trimFrozenPaneClone(table, 2, undefined);
+		const table = buildFrozenPaneClone(tableWith([[1], [1], [1]]), 2, undefined);
 		strictEqual(table.querySelectorAll('tbody > tr').length, 2);
 	});
 
 	test('trims cloned columns while honouring colspan and keeping the row head', () => {
-		const table = tableWith([[1, 1, 1, 1]]);
-		trimFrozenPaneClone(table, undefined, 2);
+		const table = buildFrozenPaneClone(tableWith([[1, 1, 1, 1]]), undefined, 2);
 		// 行番号セル + 固定 2 列。
 		strictEqual(table.querySelectorAll('tbody > tr > td').length, 3);
 
-		const merged = tableWith([[3, 1, 1]]);
-		trimFrozenPaneClone(merged, undefined, 2);
+		const merged = buildFrozenPaneClone(tableWith([[3, 1, 1]]), undefined, 2);
 		// 先頭セルが 3 列分を占めるので、それだけで固定幅を満たし後続は落ちる。
 		strictEqual(merged.querySelectorAll('tbody > tr > td').length, 2);
 	});
 
+	test('copies the header and leaves the original table untouched', () => {
+		const original = tableWith([[1, 1, 1], [1, 1, 1], [1, 1, 1]]);
+		original.insertBefore(mainWindow.document.createElement('thead'), original.firstChild);
+		const before = original.outerHTML;
+		const corner = buildFrozenPaneClone(original, 2, 1);
+		deepStrictEqual({
+			original: original.outerHTML === before,
+			thead: corner.querySelectorAll('thead').length,
+			rows: corner.querySelectorAll('tbody > tr').length,
+			cells: corner.querySelectorAll('tbody > tr > td').length,
+		}, { original: true, thead: 1, rows: 2, cells: 4 });
+	});
+
 	test('keeps every row and column when no limit is given', () => {
-		const table = tableWith([[1, 1], [1, 1]]);
-		trimFrozenPaneClone(table, undefined, undefined);
+		const table = buildFrozenPaneClone(tableWith([[1, 1], [1, 1]]), undefined, undefined);
 		strictEqual(table.querySelectorAll('tbody > tr').length, 2);
 		strictEqual(table.querySelectorAll('tbody > tr > td').length, 6);
 	});
