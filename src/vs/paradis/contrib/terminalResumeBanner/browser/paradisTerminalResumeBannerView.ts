@@ -14,8 +14,8 @@
 import './media/paradisTerminalResumeBanner.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { IContextMenuProvider } from '../../../../base/browser/contextmenu.js';
-import { Button, ButtonWithDropdown } from '../../../../base/browser/ui/button/button.js';
-import { toAction } from '../../../../base/common/actions.js';
+import { Button } from '../../../../base/browser/ui/button/button.js';
+import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { Event } from '../../../../base/common/event.js';
@@ -24,7 +24,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IParadisEditorTerminalOverlay } from '../../agentBrowser/browser/paradisPaneIndicator.js';
-import { IParadisResumeLedgerEntry } from '../common/paradisTerminalResumeBanner.js';
+import { IParadisResumeLedgerEntry, ParadisResumeBannerChoice, paradisResumeBannerChoiceCommand, paradisResumeBannerLayout, paradisResumeBypassFlag } from '../common/paradisTerminalResumeBanner.js';
 
 /** バナーのホスト。対象ペイン（instanceId）ごとに、出すかどうかと操作を受け持つ。 */
 export interface IParadisResumeBannerHost {
@@ -43,7 +43,7 @@ const $ = dom.$;
 
 /**
  * エディタタブのターミナル1つ分のバナー。タブを切り替えるたびに対象が差し替わる。
- * 「このタブで再開」の ▾ から、権限の確認を省いて再開・分岐できる（選んだものは覚えない）。
+ * 帯に「再開」と「確認なしで再開」を並べ、複製して再開（分岐）と ID のコピーは「…」のメニューから選ぶ（選んだものは覚えない）。
  */
 export function createParadisTerminalResumeBanner(container: HTMLElement, host: IParadisResumeBannerHost, contextMenuProvider: IContextMenuProvider): IParadisEditorTerminalOverlay {
 	const view = new MutableDisposable<DisposableStore>();
@@ -79,42 +79,65 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 		detail.title = offer.title ?? '';
 
 		const actions = dom.append(element, $('.paradis-terminal-resume-banner-actions'));
-		const dangerousFlag = offer.agent === 'claude' ? '--dangerously-skip-permissions' : '--dangerously-bypass-approvals-and-sandbox';
-		// 確認を省く項目は、HTML のメニュー（window.menuStyle: custom）では赤字にする。ネイティブのメニューでは色が付かないので、文言だけで分かるようにする
+		const layout = paradisResumeBannerLayout(offer.agent);
+		const bypassFlag = paradisResumeBypassFlag(offer.agent) ?? '';
+		const resumeLabel = localize('paradis.resumeBanner.resume', "再開");
+		const resumeBypassLabel = localize('paradis.resumeBanner.resumeBypass', "確認なしで再開");
+		const run = (choice: ParadisResumeBannerChoice): void => {
+			const command = paradisResumeBannerChoiceCommand(choice);
+			if (command === undefined) {
+				host.copySessionId(target);
+			} else if (command.mode === 'fork') {
+				host.fork(target, command.dangerouslyBypassPermissions);
+			} else {
+				host.resume(target, command.dangerouslyBypassPermissions);
+			}
+		};
+		// 帯のボタン。確認を省く方は本家の secondary のボタンで、文言とツールチップに「確認なし」とフラグを出す
+		for (const choice of layout.buttons) {
+			const bypass = choice === 'resumeBypass';
+			const button = store.add(new Button(actions, {
+				...defaultButtonStyles,
+				secondary: bypass,
+				title: bypass
+					? localize('paradis.resumeBanner.resumeBypassTitle', "権限の確認を省いて、このタブで前回の会話を続けます（{0}）", bypassFlag)
+					: localize('paradis.resumeBanner.resumeTitle', "このタブで前回の会話を続けます"),
+			}));
+			button.label = bypass ? resumeBypassLabel : resumeLabel;
+			store.add(button.onDidClick(() => run(choice)));
+		}
+		// 「…」のメニュー。確認を省く項目は、HTML のメニュー（window.menuStyle: custom）では赤字にする。ネイティブのメニューでは色が付かないので、文言だけで分かるようにする
 		const dangerClass = 'paradis-menu-icon paradis-terminal-resume-banner-menu-danger';
-		const resume = store.add(new ButtonWithDropdown(actions, {
-			...defaultButtonStyles,
-			title: localize('paradis.resumeBanner.resumeTitle', "このタブで前回の会話を続けます"),
-			contextMenuProvider,
-			addPrimaryActionToDropdown: false,
-			actions: [
-				toAction({
-					id: 'paradis.resumeBanner.resumeDangerously',
-					label: localize('paradis.resumeBanner.resumeDangerously', "権限確認なしで再開（{0}）", dangerousFlag),
-					class: dangerClass,
-					run: () => host.resume(target, true),
-				}),
-				toAction({
-					id: 'paradis.resumeBanner.forkDangerously',
-					label: localize('paradis.resumeBanner.forkDangerously', "権限確認なしで分岐（{0}）", dangerousFlag),
-					class: dangerClass,
-					run: () => host.fork(target, true),
-				}),
-			],
+		const forkTooltip = offer.agent === 'claude'
+			? localize('paradis.resumeBanner.forkTooltipClaude', "Claude Code の --fork-session で前回の会話を複製し、新しいタブで別の会話として続けます。元の会話はそのまま残ります")
+			: offer.agent === 'codex'
+				? localize('paradis.resumeBanner.forkTooltipCodex', "codex fork で前回の会話を複製し、新しいタブで別の会話として続けます。元の会話はそのまま残ります")
+				: localize('paradis.resumeBanner.forkTooltipOpenCode', "OpenCode の --fork で前回の会話を複製し、新しいタブで別の会話として続けます。元の会話はそのまま残ります");
+		const choiceLabel = (choice: ParadisResumeBannerChoice): string => {
+			switch (choice) {
+				case 'resume': return resumeLabel;
+				case 'resumeBypass': return resumeBypassLabel;
+				case 'fork': return localize('paradis.resumeBanner.fork', "複製して新しい会話で再開（元の会話は残す）");
+				case 'forkBypass': return localize('paradis.resumeBanner.forkBypass', "複製して新しい会話で再開・確認なし（{0}）", bypassFlag);
+				case 'copyId': return localize('paradis.resumeBanner.copyId', "ID をコピー");
+			}
+		};
+		const menuActions: IAction[] = layout.menu.map(item => item === 'separator' ? new Separator() : toAction({
+			id: `paradis.resumeBanner.${item}`,
+			label: choiceLabel(item),
+			tooltip: item === 'copyId' ? offer.sessionId : forkTooltip,
+			class: paradisResumeBannerChoiceCommand(item)?.dangerouslyBypassPermissions ? dangerClass : undefined,
+			run: () => run(item),
 		}));
-		resume.label = localize('paradis.resumeBanner.resume', "このタブで再開");
-		// setTitle はホバーだけを変え、読み上げ名は upstream の "More Actions..." のまま残るので、両方に入れる
-		const moreResume = localize('paradis.resumeBanner.moreResume', "権限確認なしで再開・分岐する");
-		resume.dropdownButton.element.hidden = offer.agent === 'opencode';
-		resume.dropdownButton.setTitle(moreResume);
-		resume.dropdownButton.setAriaLabel(moreResume);
-		store.add(resume.onDidClick(() => host.resume(target)));
-		const fork = store.add(new Button(actions, { ...defaultButtonStyles, secondary: true, title: localize('paradis.resumeBanner.forkTitle', "前回の会話を複製して、新しいタブで別の会話として続けます") }));
-		fork.label = localize('paradis.resumeBanner.fork', "分岐");
-		store.add(fork.onDidClick(() => host.fork(target)));
-		const copy = store.add(new Button(actions, { ...defaultButtonStyles, secondary: true, title: offer.sessionId }));
-		copy.label = localize('paradis.resumeBanner.copyId', "ID をコピー");
-		store.add(copy.onDidClick(() => host.copySessionId(target)));
+		const moreLabel = localize('paradis.resumeBanner.more', "複製して再開・ID のコピー");
+		const more = store.add(new Button(actions, { ...defaultButtonStyles, secondary: true, supportIcons: true, title: moreLabel, ariaLabel: moreLabel }));
+		more.label = '$(ellipsis)';
+		more.element.classList.add('paradis-terminal-resume-banner-more');
+		more.element.setAttribute('aria-haspopup', 'true');
+		store.add(more.onDidClick(() => contextMenuProvider.showContextMenu({
+			getAnchor: () => more.element,
+			getActions: () => menuActions,
+		})));
 
 		// ターミナルへ届くとキー入力やフォーカスの移動として扱われるので、バナーの中で止める。
 		store.add(dom.addDisposableListener(element, dom.EventType.MOUSE_DOWN, event => event.stopPropagation()));

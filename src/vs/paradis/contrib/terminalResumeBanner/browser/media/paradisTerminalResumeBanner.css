@@ -87,22 +87,25 @@
 
 /*
  * ボタンは upstream の monaco-text-button。横幅いっぱいに伸びる既定を打ち消して内容の幅にする。
- * 「このタブで再開」は upstream の分割ボタン（monaco-button-dropdown）の中に入るので、そちらも同じにする。
  */
-.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-text-button,
-.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-button-dropdown > .monaco-text-button {
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-text-button {
 	width: auto;
 	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
 	font-size: var(--vscode-fontSize-label1);
 }
 
-/* 分割ボタンの ▾。upstream の既定（左右 4px）のまま、高さだけ隣のボタンに揃える。 */
-.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-button-dropdown > .monaco-dropdown-button {
-	font-size: var(--vscode-fontSize-label1);
+/* 「…」はアイコンだけなので、左右を詰めて隣のボタンと高さだけ揃える。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-text-button.paradis-terminal-resume-banner-more {
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size40);
+}
+
+/* 「…」の codicon は upstream の左右 0.2em の余白を落として、ボタンの中央に置く。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-more .codicon {
+	margin: 0;
 }
 
 /*
- * ▾ のメニューの「権限確認なしで再開／分岐」。HTML のメニュー（window.menuStyle: custom）でだけ効き、
+ * 「…」のメニューの「複製して新しい会話で再開・確認なし」。HTML のメニュー（window.menuStyle: custom）でだけ効き、
  * ネイティブのメニューでは文言だけで危険と分かるようにしてある。
  */
 .monaco-menu .paradis-terminal-resume-banner-menu-danger {
