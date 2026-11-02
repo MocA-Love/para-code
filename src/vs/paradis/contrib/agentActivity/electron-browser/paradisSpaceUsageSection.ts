@@ -35,6 +35,7 @@ import {
 	paradisAllocateSpaceCosts,
 } from '../common/paradisAgentActivity.js';
 import { ParadisAgentActivityClient } from './paradisAgentActivityClient.js';
+import { ParadisActivityBusyIndicator } from './paradisActivityBusy.js';
 import { IParadisActivityRange, ParadisActivityRangeDays, paradisActivityRange, paradisAppendRangeSegment } from './paradisActivityRange.js';
 
 const $ = dom.$;
@@ -60,6 +61,7 @@ export class ParadisSpaceUsageSection extends Disposable implements IParadisUsag
 	readonly element: HTMLElement;
 	private readonly body: HTMLElement;
 	private readonly updatedLabel: HTMLElement;
+	private readonly busy: ParadisActivityBusyIndicator;
 	private readonly syncRange: () => void;
 	private readonly client: ParadisAgentActivityClient;
 	private readonly ccusageClient: ParadisCcusageClient;
@@ -91,6 +93,7 @@ export class ParadisSpaceUsageSection extends Disposable implements IParadisUsag
 		});
 		dom.append(toolbar, $('.paradis-ccusage-toolbar-spacer'));
 		this.updatedLabel = dom.append(toolbar, $('span.paradis-ccusage-updated'));
+		this.busy = this._register(new ParadisActivityBusyIndicator(this.element, toolbar, this.updatedLabel));
 		this.body = dom.append(this.element, $('.paradis-ccusage-body'));
 		this.render();
 	}
@@ -165,6 +168,9 @@ export class ParadisSpaceUsageSection extends Disposable implements IParadisUsag
 	private render(): void {
 		dom.clearNode(this.body);
 		this.body.classList.toggle('stale', this.loading && this.data !== undefined);
+		// 前の結果を薄くして残している間は、「更新: 時刻」の代わりに集計中であることを出す
+		this.busy.setBusy(this.loading, this.rangeDays, this.data !== undefined);
+		this.updatedLabel.style.display = this.loading && this.data !== undefined ? 'none' : '';
 		this.updatedLabel.textContent = this.data
 			? localize('paradis.spaceUsage.updated', "更新: {0}", new Date(this.data.usage.computedAt).toLocaleTimeString())
 			: '';
