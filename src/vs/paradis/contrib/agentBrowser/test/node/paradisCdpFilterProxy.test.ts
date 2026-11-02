@@ -1372,6 +1372,32 @@ suite('Paradis CDP screenshot filter', () => {
 		]);
 	});
 
+	test('both routes refuse a window size command and a Cookie header, and forward neither', async () => {
+		const page = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		page.upstream.readyState = TestWebSocket.OPEN;
+		page.upstream.emit('open');
+		const browser = await createOpenBrowserProxyFixture();
+		publishAllowedSession(browser, 'session-1');
+		browser.upstream.sent.length = 0;
+		const window = { method: 'Browser.setWindowBounds', params: { windowId: 1, bounds: { width: 10 } } };
+		const cookie = { method: 'Network.setExtraHTTPHeaders', params: { headers: { Cookie: 'a=b' } } };
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 1, ...window })));
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 2, ...cookie })));
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 3, ...window })));
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 4, sessionId: 'session-1', ...cookie })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const refusals = [...parseSent(page.client), ...parseSent(browser.client)]
+			.filter(frame => (frame as { error?: unknown }).error !== undefined)
+			.map(frame => [(frame as { id: number }).id, (frame as { error: { message: string } }).error.message.split(':')[0]]);
+		const forwarded = [...parseSent(page.upstream), ...parseSent(browser.upstream)].map(frame => (frame as { id: number }).id).filter(id => id > 0);
+		assert.deepStrictEqual({ refusals, forwarded }, {
+			// The page route refuses Browser.* earlier, as a shared-state method; the browser route as a window size command
+			refusals: [[1, 'Browser.setWindowBounds is not permitted'], [2, 'Network.setExtraHTTPHeaders with a Cookie header is not permitted'], [3, 'Browser.setWindowBounds is not supported'], [4, 'Network.setExtraHTTPHeaders with a Cookie header is not permitted']],
+			forwarded: [],
+		});
+	});
+
 	test('wraps scripts registered for new documents so they never run in an extension page, on both routes', async () => {
 		const browser = await createOpenBrowserProxyFixture();
 		publishAllowedSession(browser, 'session-1');

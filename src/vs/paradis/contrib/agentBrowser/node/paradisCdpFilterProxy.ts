@@ -852,6 +852,16 @@ function sharedStateDeniedMessage(method: string): string | undefined {
  * 何を使うべきか」をLLMが読める形で返す。
  */
 const LAYOUT_MANAGED_DENIED_MESSAGE = 'the Para Code embedded browser view is laid out by the workbench, so its window/content size cannot be changed over CDP (the resize_page tool is not supported). To change the page viewport, use the set_viewport tool of the para-browser server (or the emulate tool) instead.';
+
+/** 共有の状態（Cookie・権限・ダウンロードなど）に触れる命令と、Cookie を書き換える命令への断り（両方の経路で、この順に見る）。 */
+function sharedStateOrCookieDeniedMessage(method: string, params: Record<string, unknown> | undefined): string | undefined {
+	return sharedStateDeniedMessage(method) ?? paradisCookieAndRewriteDeniedMessage(method, params);
+}
+
+/** 枠の大きさを workbench が決める命令への断り（両方の経路）。当てはまらなければ undefined。 */
+function layoutManagedDeniedMessage(method: string): string | undefined {
+	return LAYOUT_MANAGED_DENIED_METHODS.has(method) ? `${method} is not supported: ${LAYOUT_MANAGED_DENIED_MESSAGE}` : undefined;
+}
 /** 共有中のタブが開いた別のページ（ポップアップなど）のセッションへ大きさの命令が来たときの答え。 */
 const PARADIS_CHILD_PAGE_VIEWPORT_MESSAGE = 'Para Code cannot change the page size (viewport) of this page from this session: it is a tab or window opened by the shared page. Call list_browser_tabs, then call set_viewport (or emulate) with that tab\'s tab_id.';
 
@@ -1628,10 +1638,9 @@ export function paradisProxyPageUpgrade(
 			}
 			// 常時拒否メソッドはページレベル接続でも遮断する（Page.close等は共有ビューを破壊する）
 			const denied = ALWAYS_DENIED_METHODS.get(msg.method)
-				?? sharedStateDeniedMessage(msg.method)
-				?? paradisCookieAndRewriteDeniedMessage(msg.method, msg.params)
+				?? sharedStateOrCookieDeniedMessage(msg.method, msg.params)
 				?? (msg.method.startsWith('Target.') ? `${msg.method} is not permitted on a page-scoped CDP connection.` : undefined)
-				?? (LAYOUT_MANAGED_DENIED_METHODS.has(msg.method) ? `${msg.method} is not supported: ${LAYOUT_MANAGED_DENIED_MESSAGE}` : undefined)
+				?? layoutManagedDeniedMessage(msg.method)
 				?? remoteDenied;
 			if (denied !== undefined) {
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
@@ -2559,8 +2568,9 @@ export async function paradisProxyBrowserUpgrade(
 				rejectRequest(message, alwaysDenied);
 				return;
 			}
-			if (LAYOUT_MANAGED_DENIED_METHODS.has(message.method)) {
-				rejectRequest(message, `${message.method} is not supported: ${LAYOUT_MANAGED_DENIED_MESSAGE}`);
+			const layoutDenied = layoutManagedDeniedMessage(message.method);
+			if (layoutDenied !== undefined) {
+				rejectRequest(message, layoutDenied);
 				return;
 			}
 
@@ -2632,9 +2642,7 @@ export async function paradisProxyBrowserUpgrade(
 					rejectRequest(message, extensionDenied);
 					return;
 				}
-				const sharedStateDenied = sharedStateDeniedMessage(message.method)
-					?? paradisCookieAndRewriteDeniedMessage(message.method, message.params)
-					?? remoteDenied;
+				const sharedStateDenied = sharedStateOrCookieDeniedMessage(message.method, message.params) ?? remoteDenied;
 				if (sharedStateDenied !== undefined) {
 					rejectRequest(message, sharedStateDenied);
 					return;
