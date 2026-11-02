@@ -12,7 +12,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { decodeParadisWorkbookJson, unpackParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ParadisSpreadsheetService } from '../../node/paradisSpreadsheetService.js';
 import type { ParadisOfficeSemanticWorkerMessage } from '../../node/office/paradisOfficeSemanticWorkerQueue.js';
-import { PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS, ParadisSpreadsheetParseWorkerBackend, type IParadisSpreadsheetParseWorker, type IParadisSpreadsheetParseWorkerRun } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
+import { PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS, ParadisSpreadsheetParseWorkerBackend, paradisSpreadsheetParseErrorResult, type IParadisSpreadsheetParseWorker, type IParadisSpreadsheetParseWorkerRun } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
 const WORKER_PATH = FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain.js').fsPath;
 
@@ -62,6 +62,26 @@ suite('ParadisSpreadsheetParseWorker', () => {
 			hung: { kind: 'unavailable', reason: 'limitExceeded' },
 			reports: [['spreadsheet-parse', 'deadline', 'run-deadline']],
 		});
+	});
+
+	test('turns a workbook beyond the string limit into a too-large refusal and keeps other messages', () => {
+		let overflow: unknown;
+		try {
+			'x'.repeat(2 ** 30);
+		} catch (error) {
+			overflow = error;
+		}
+		deepStrictEqual([
+			paradisSpreadsheetParseErrorResult(overflow),
+			paradisSpreadsheetParseErrorResult(new RangeError('Invalid array length')),
+			paradisSpreadsheetParseErrorResult(new Error('Corrupted zip')),
+			paradisSpreadsheetParseErrorResult('plain'),
+		], [
+			{ kind: 'unavailable', reason: 'limitExceeded' },
+			{ kind: 'error', message: 'Invalid array length' },
+			{ kind: 'error', message: 'Corrupted zip' },
+			{ kind: 'error', message: 'plain' },
+		]);
 	});
 
 	test('sends one warm request while one is waiting or running, and none while the worker is up', async () => {

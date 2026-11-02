@@ -36,6 +36,18 @@ export type ParadisSpreadsheetParseWorkerResult =
 	| { readonly kind: 'error'; readonly message: string }
 	| { readonly kind: 'unavailable'; readonly reason: ParadisOfficeSemanticWorkerFailure };
 
+/**
+ * 解析が投げた例外を、worker の返事にする。V8 の文字列の上限を超えた（シートの XML などが大きすぎて
+ * `Invalid string length` になった）ときは、ヒープの上限・締め切りと同じく大きすぎるブックとして断る
+ * （ビューアは「ブックが大きすぎるため…」と出す）。それ以外は文言を持ち帰る（ビューアがそのまま画面に出す）。
+ */
+export function paradisSpreadsheetParseErrorResult(error: unknown): ParadisSpreadsheetParseWorkerResult {
+	if (error instanceof RangeError && error.message === 'Invalid string length') {
+		return { kind: 'unavailable', reason: 'limitExceeded' };
+	}
+	return { kind: 'error', message: error instanceof Error ? error.message : String(error) };
+}
+
 export type IParadisSpreadsheetParseWorker = IParadisOfficeSemanticWorker<IParadisSpreadsheetParseWorkerRun, ParadisSpreadsheetParseWorkerResult>;
 
 /**
