@@ -141,8 +141,8 @@ suite('Paradis menu bar (main)', () => {
 		assert.deepStrictEqual({ before, afterOne, afterAll: host.tray!.labels().slice(0, 4), title: host.tray!.title }, {
 			before: '要対応 1 件・作業中 3',
 			afterOne: '要対応 1 件・作業中 2',
-			// 要対応は台帳を読むウィンドウが無いので空にし、使用量は最後の値を残す
-			afterAll: ['要対応はありません', '---', '使用量', 'Claude Code  work  5時間 40%・週 -'],
+			// 要対応は台帳を読むウィンドウが無いので空にし、使用量は最後の値を残す（数字は 2 行目にある）
+			afterAll: ['要対応はありません', '---', '使用量', 'Claude Code  work'],
 			title: 'C 40%',
 		});
 	});
@@ -173,6 +173,28 @@ suite('Paradis menu bar (main)', () => {
 			fired: 1,
 			pending: { request: 'openUsagePanel' },
 			afterwards: {},
+		});
+		await flush();
+	});
+
+	test('hands a menu choice to the last normal window as a setting, only for the menu bar\'s own settings', async () => {
+		const { menuBar, host, windows } = create();
+		const requests: ParadisMenuBarRequest[] = [];
+		const listener = menuBar.onDidRequest(request => requests.push(request));
+		const normal = new FakeWindow(7);
+		windows.windows = [normal];
+		windows.lastActive = normal;
+		menuBar.update('window:7', report(0, 0, 0));
+		await flush();
+		host.tray!.handlers!.setSetting('paradis.menuBar.usageStyle', 'ring');
+		host.tray!.handlers!.setSetting('paradis.window.transparency.enabled', false);
+		windows.windows = [];
+		windows.lastActive = undefined;
+		host.tray!.handlers!.setSetting('paradis.menuBar.includeRemote', false);
+		listener.dispose();
+		assert.deepStrictEqual({ requests, opened: windows.emptyWindowsOpened }, {
+			requests: [{ type: 'setSetting', windowId: 7, key: 'paradis.menuBar.usageStyle', value: 'ring' }],
+			opened: 0,
 		});
 		await flush();
 	});
