@@ -61,6 +61,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalizeScrollProgress, paradisReadViewerScrollState, paradisScrollRestoreScript } from '../common/paradisViewerScroll.js';
 import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
+import { appendParadisViewerToolbarChoice, appendParadisViewerToolbarChoiceGroup, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from './paradisViewerToolbar.js';
 
 import './media/paradisFileViewer.css';
 
@@ -337,17 +338,15 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	protected override createEditor(parent: HTMLElement): void {
 		this._rootElement = dom.append(parent, dom.$('.paradis-file-viewer'));
 
-		// ペイン内ツールバー（常時表示・両モード共通位置）。左=Rendered/Raw セグメントトグル、右=サブクラス固有（HTMLズーム等）。
-		const toolbar = dom.append(this._rootElement, dom.$('.paradis-file-viewer-toolbar'));
-		const toggle = dom.append(toolbar, dom.$('.paradis-file-viewer-toggle'));
-		this._renderedBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
-		this._renderedBtn.textContent = localize('paradis.fileViewer.rendered', "プレビュー");
+		// ペイン内ツールバー（全ビューア共通のバー）。左=プレビュー/ソースの切り替え、右=サブクラス固有（拡大縮小・再読み込み）。
+		const toolbar = createParadisViewerToolbar(this._rootElement, 'paradis-file-viewer-toolbar');
+		const toggle = appendParadisViewerToolbarChoiceGroup(toolbar.start, 'paradis-file-viewer-toggle', localize('paradis.fileViewer.viewMode', "表示"));
+		this._renderedBtn = appendParadisViewerToolbarChoice(toggle, localize('paradis.fileViewer.rendered', "プレビュー"));
 		this._register(dom.addDisposableListener(this._renderedBtn, dom.EventType.CLICK, () => this.setViewMode('rendered')));
-		this._rawBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
-		this._rawBtn.textContent = localize('paradis.fileViewer.raw', "ソース");
+		this._rawBtn = appendParadisViewerToolbarChoice(toggle, localize('paradis.fileViewer.raw', "ソース"));
 		this._register(dom.addDisposableListener(this._rawBtn, dom.EventType.CLICK, () => this.setViewMode('raw')));
 
-		this._toolbarRightElement = dom.append(toolbar, dom.$('.paradis-file-viewer-toolbar-right'));
+		this._toolbarRightElement = toolbar.end;
 		this.onCreateToolbar(this._toolbarRightElement);
 
 		const content = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
@@ -804,8 +803,10 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI, token: CancellationToken = CancellationToken.None): Promise<void> {
 		this._mode = mode;
-		this._renderedBtn?.classList.toggle('active', mode === 'rendered');
-		this._rawBtn?.classList.toggle('active', mode === 'raw');
+		if (this._renderedBtn && this._rawBtn) {
+			setParadisViewerToolbarOptionChecked(this._renderedBtn, mode === 'rendered');
+			setParadisViewerToolbarOptionChecked(this._rawBtn, mode === 'raw');
+		}
 
 		if (mode === 'raw') {
 			await this._ensureRawEditor(resource);

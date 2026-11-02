@@ -15,7 +15,7 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { configureParadisSpanRunner, ParadisSpanAttributes } from '../../../sentry/common/paradisSentryDiagnostics.js';
-import { PARADIS_PDF_FIRST_PAINT_MESSAGE } from '../../common/paradisPdfViewerHtml.js';
+import { PARADIS_PDF_FIRST_PAINT_MESSAGE, PARADIS_PDF_VIEW_STATE_MESSAGE, PARADIS_PDF_ZOOM_MESSAGE } from '../../common/paradisPdfViewerHtml.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
@@ -109,11 +109,12 @@ suite('ParadisPdfFileEditor', () => {
 		disposables.add({ dispose: () => configureParadisSpanRunner((_feature, _operation, _attributes, callback) => callback()) });
 		const messages = disposables.add(new Emitter<{ message: unknown }>());
 		const html: string[] = [];
+		const htmlSet = disposables.add(new Emitter<void>());
 		const webview = {
 			contentOptions: {},
 			onFatalError: Event.None,
 			onMessage: messages.event,
-			setHtml: (value: string) => { html.push(value); },
+			setHtml: (value: string) => { html.push(value); htmlSet.fire(); },
 			claim: () => { },
 			release: () => { },
 			focus: () => { },
@@ -133,12 +134,11 @@ suite('ParadisPdfFileEditor', () => {
 		} as unknown as ISharedProcessService;
 		const editor = disposables.add(new ParadisPdfFileEditor(new TestEditorGroupView(1), sharedProcessService, NullTelemetryService, new TestThemeService(), disposables.add(new TestStorageService()), webviewService, fileService, new TestLayoutService()));
 		editor.create(document.createElement('div'));
+		const firstHtml = Event.toPromise(htmlSet.event, disposables);
 		const input = disposables.add(new ParadisPdfInput(URI.file('/workspace/document.pdf'), { isDirty: () => false } as unknown as ITextFileService, { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService));
 		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
 		editor.layout(new Dimension(800, 600));
-		for (let attempt = 0; attempt < 50 && html.length === 0; attempt++) {
-			await new Promise(resolve => setTimeout(resolve, 0));
-		}
+		await firstHtml;
 		const render = /render: "(?<render>[^"]+)"/.exec(html[html.length - 1] ?? '')?.groups?.render;
 		ok(render);
 
@@ -146,6 +146,61 @@ suite('ParadisPdfFileEditor', () => {
 		const afterStale = spans.length;
 		messages.fire({ message: { type: PARADIS_PDF_FIRST_PAINT_MESSAGE, render, pages: 3 } });
 		deepStrictEqual({ afterStale, sent: spans.map(span => [span.safe_viewer, span.safe_pages, span.safe_size_kb]) }, { afterStale: 0, sent: [['pdf', 3, 2]] });
+	});
+
+	test('shows the zoom and page of the current document in the toolbar and sends the zoom buttons to the page', async () => {
+		const disposables = store.add(new DisposableStore());
+		const messages = disposables.add(new Emitter<{ message: unknown }>());
+		const html: string[] = [];
+		const htmlSet = disposables.add(new Emitter<void>());
+		const posted: unknown[] = [];
+		const webview = {
+			contentOptions: {},
+			onFatalError: Event.None,
+			onMessage: messages.event,
+			setHtml: (value: string) => { html.push(value); htmlSet.fire(); },
+			postMessage: async (message: unknown) => { posted.push(message); return true; },
+			claim: () => { },
+			release: () => { },
+			focus: () => { },
+			setAnchorElement: () => { },
+			container: document.createElement('div'),
+			dispose: () => { },
+		} as unknown as IOverlayWebview;
+		const webviewService = { createWebviewOverlay: () => webview } as unknown as IWebviewService;
+		const fileService = {
+			readFile: async () => ({ value: VSBuffer.fromString('%PDF-') }),
+			stat: async () => ({ size: 2048 }),
+			createWatcher: () => { throw new Error('watching is unavailable in this test'); },
+			onDidWatchError: Event.None,
+		} as unknown as IFileService;
+		const sharedProcessService = {
+			getChannel: () => ({ call: () => Promise.reject(new Error('no preview server')), listen: () => { throw new Error('not used'); } }),
+		} as unknown as ISharedProcessService;
+		const editor = disposables.add(new ParadisPdfFileEditor(new TestEditorGroupView(1), sharedProcessService, NullTelemetryService, new TestThemeService(), disposables.add(new TestStorageService()), webviewService, fileService, new TestLayoutService()));
+		const parent = document.createElement('div');
+		editor.create(parent);
+		const firstHtml = Event.toPromise(htmlSet.event, disposables);
+		const input = disposables.add(new ParadisPdfInput(URI.file('/workspace/document.pdf'), { isDirty: () => false } as unknown as ITextFileService, { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService));
+		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		editor.layout(new Dimension(800, 600));
+		await firstHtml;
+		const render = /render: "(?<render>[^"]+)"/.exec(html[html.length - 1] ?? '')?.groups?.render;
+		ok(render);
+		const bar = () => [parent.querySelector('.paradis-pdf-toolbar .paradis-viewer-toolbar-position')?.textContent, parent.querySelector('.paradis-pdf-toolbar .paradis-viewer-toolbar-percent')?.textContent];
+
+		messages.fire({ message: { type: PARADIS_PDF_VIEW_STATE_MESSAGE, render: 'an-earlier-document', zoom: 300, page: 9, pages: 9 } });
+		const afterStale = bar();
+		messages.fire({ message: { type: PARADIS_PDF_VIEW_STATE_MESSAGE, render, zoom: 85, page: 2, pages: 12 } });
+		const afterCurrent = bar();
+		parent.querySelectorAll<HTMLButtonElement>('.paradis-pdf-toolbar .paradis-viewer-toolbar-button').forEach(button => button.click());
+		parent.querySelector<HTMLButtonElement>('.paradis-pdf-toolbar .paradis-viewer-toolbar-percent')!.click();
+
+		deepStrictEqual({ afterStale, afterCurrent, posted }, {
+			afterStale: ['', ''],
+			afterCurrent: ['2 / 12 ページ', '85%'],
+			posted: ['out', 'in', 'fit', 'reset'].map(command => ({ type: PARADIS_PDF_ZOOM_MESSAGE, command })),
+		});
 	});
 
 	test('keeps the shown PDF when coming back to its tab, unless the file changed or the first paint never came', async () => {
