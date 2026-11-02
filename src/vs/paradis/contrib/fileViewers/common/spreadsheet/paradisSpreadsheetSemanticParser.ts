@@ -14,6 +14,7 @@ import {
 	type ParadisOfficeInventoryPart,
 } from '../paradisOfficeProtocol.js';
 import {
+	joinParadisOfficeChunks,
 	canonicalizeParadisOfficeArchiveName,
 	type IParadisOfficeArchive,
 	type ParadisOfficeArchiveEntry,
@@ -2258,13 +2259,7 @@ async function readPartBytes(
 	if (length !== entry.declaredExpandedBytes) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
-	const bytes = new Uint8Array(length);
-	let offset = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return bytes;
+	return joinParadisOfficeChunks(chunks, length);
 }
 
 function sameFingerprint(left: ParadisOfficeFingerprint, right: ParadisOfficeFingerprint): boolean {

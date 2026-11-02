@@ -62,7 +62,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalizeScrollProgress, paradisReadViewerScrollState, paradisScrollRestoreScript } from '../common/paradisViewerScroll.js';
 import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
-import { paradisCanSwapViewerBody, paradisViewerBodyMessage, type IParadisRenderedDocument, type IParadisSwappableBody } from '../common/paradisViewerBodySwap.js';
+import { paradisCanSwapViewerBody, paradisMustResendViewerHtmlOnClaim, paradisViewerBodyMessage, type IParadisRenderedDocument, type IParadisSwappableBody } from '../common/paradisViewerBodySwap.js';
 import { appendParadisViewerToolbarChoice, appendParadisViewerToolbarChoiceGroup, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from './paradisViewerToolbar.js';
 
 import './media/paradisFileViewer.css';
@@ -819,7 +819,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			this._webviewClaimed = true;
 			// 本文を差し替えた後は、webview が覚えている HTML 全体が差し替える前の本文のまま。claim で webview が
 			// 作り直されるとそれが貼り直されるので、同じ内容でも HTML 全体を送り直す。
-			if (this._swappableBody?.swapped) {
+			if (paradisMustResendViewerHtmlOnClaim(this._swappableBody)) {
 				this._renderedSource = undefined;
 				this._swappableBody = undefined;
 			}

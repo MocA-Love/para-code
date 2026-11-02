@@ -15,7 +15,8 @@
 
 import { reportParadisDiagnosticError, paradisSafeErrorName, type ParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { createParadisWorker, type ParadisWorker } from '../../../../node/paradisWorker.js';
-import type { WorkerOptions } from 'worker_threads';
+import type { ResourceLimits, WorkerOptions } from 'worker_threads';
+import type { IParadisOfficeSemanticWorker } from './paradisOfficeSemanticWorkerQueue.js';
 
 /** どの worker か。 */
 export type ParadisOfficeWorkerName = 'word-semantic' | 'spreadsheet-semantic' | 'spreadsheet-parse' | 'spreadsheet-metafile' | 'office-v1';
@@ -132,4 +133,12 @@ export function createParadisOfficeWorker(name: ParadisOfficeWorkerName, entryPa
 	}
 	watchParadisOfficeWorker(name, worker);
 	return worker;
+}
+
+/**
+ * 待ち行列（paradisOfficeSemanticWorkerQueue.ts）で使う Office の worker を、共通の入口から起こす（{@link createParadisOfficeWorker}）。
+ * worker_threads の Worker の `on` は値を any で渡すので、待ち行列の型への読み替えはここ 1 か所でする。
+ */
+export function createParadisOfficeSemanticWorker<TRun, TResult>(name: ParadisOfficeWorkerName, entryPath: string, resourceLimits: ResourceLimits): IParadisOfficeSemanticWorker<TRun, TResult> {
+	return createParadisOfficeWorker(name, entryPath, { resourceLimits }) as unknown as IParadisOfficeSemanticWorker<TRun, TResult>;
 }

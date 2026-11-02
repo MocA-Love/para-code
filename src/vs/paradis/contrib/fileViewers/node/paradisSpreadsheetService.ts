@@ -28,6 +28,7 @@ import {
 	IParadisRichTextPart,
 	IParadisRowData,
 	canonicalizeDataValidationEntries,
+	isParadisSpreadsheetCompoundFile,
 	IParadisSheetData,
 	IParadisSpreadsheetService,
 	ParadisSpreadsheetImageRejection,
@@ -1426,8 +1427,10 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 		// rId -> sheetN.xml のファイル番号(workbook.xml.rels)
 		const ridToFile = new Map<string, number>();
 		const wbRels = files['xl/_rels/workbook.xml.rels'];
+		// シートの番号と、メモの人の名前（persons）の両方に使うので 1 回だけ読む。
+		const workbookRelationships = wbRels ? (await wbRels.async('text')).match(/<Relationship[^>]*>/g) ?? [] : [];
 		if (wbRels) {
-			for (const rel of (await wbRels.async('text')).match(/<Relationship[^>]*>/g) ?? []) {
+			for (const rel of workbookRelationships) {
 				const id = rel.match(/Id="([^"]+)"/);
 				const t = rel.match(/Target="[^"]*worksheets\/sheet(\d+)\.xml"/);
 				if (id && t) {
@@ -1561,7 +1564,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 		const commentBudget = createParadisSpreadsheetCommentBudget();
 		let personsXml: string | undefined;
 		if (wbRels) {
-			for (const rel of (await wbRels.async('text')).match(/<Relationship[^>]*>/g) ?? []) {
+			for (const rel of workbookRelationships) {
 				const target = /\bType="[^"]*\/person"/.test(rel) ? rel.match(/Target="([^"]+)"/)?.[1] : undefined;
 				const file = target ? files[resolveXlPart('xl', target)] : undefined;
 				if (file) {
@@ -1634,7 +1637,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		// CFB(Compound File Binary)コンテナ=暗号化ブック。zip ではないため jszip/exceljs からは
 		// 「central directory が見つからない」ような不親切なエラーで落ちる。先頭マジックで判別し、
 		// ビューア/差分がそのまま表示できる理由文言へ変換する(D0 CF 11 E0 = OLE2 標準シグネチャ)。
-		if (source.length >= 4 && source[0] === 0xD0 && source[1] === 0xCF && source[2] === 0x11 && source[3] === 0xE0) {
+		if (isParadisSpreadsheetCompoundFile(source)) {
 			throw new Error(localize('paradis.spreadsheet.encryptedWorkbook', "このブックはパスワードで保護されているため開けません。パスワードを解除してから再度お試しください。"));
 		}
 		// exceljs は部品名の型と相対 Target を前提にする。絶対 Target や別名のコメント部品があると、
