@@ -14,6 +14,8 @@
 //     リフレッシュ/永続化は行わず、401時のみ `codex app-server` RPC にフォールバックして
 //     codex CLI 自身にリフレッシュさせる(auth.jsonへの書き込みを自前で行わないため)
 
+import { localize } from '../../../../nls.js';
+
 export const PARADIS_LIMITS_MONITOR_CHANNEL = 'paradisLimitsMonitor';
 
 export type ParadisLimitsProvider = 'claude' | 'codex';
@@ -328,7 +330,7 @@ export function paradisLimitsWorstPercent(account: IParadisLimitsAccount): numbe
 	return values.length > 0 ? Math.max(...values) : undefined;
 }
 
-/** 'in 3h 23m' / 'in 3d 12h' 形式の残り時間表示。過去や不正値は undefined。 */
+/** 「2時間13分」「4日6時間」「35分」形式の残り時間表示（後ろに「後」を付けて使う）。過去や不正値は undefined。 */
 export function paradisLimitsFormatCountdown(resetsAt: number | undefined, now: number): string | undefined {
 	if (resetsAt === undefined || !isFinite(resetsAt)) {
 		return undefined;
@@ -342,12 +344,12 @@ export function paradisLimitsFormatCountdown(resetsAt: number | undefined, now: 
 	const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
 	const minutes = totalMinutes % 60;
 	if (days > 0) {
-		return `${days}d ${hours}h`;
+		return localize('paradis.limitsMonitor.countdownDays', "{0}日{1}時間", days, hours);
 	}
 	if (hours > 0) {
-		return `${hours}h ${minutes}m`;
+		return localize('paradis.limitsMonitor.countdownHours', "{0}時間{1}分", hours, minutes);
 	}
-	return `${minutes}m`;
+	return localize('paradis.limitsMonitor.countdownMinutes', "{0}分", minutes);
 }
 
 type ParadisLimitsAccountIdentityFields = Pick<IParadisLimitsAccount, 'id' | 'provider' | 'email' | 'accountId' | 'organizationName' | 'registrable'>;
