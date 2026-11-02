@@ -9,7 +9,7 @@
 // URL バー右のダウンロードボタンから開く一覧（「ダウンロード / フォルダを開く」と各ファイルの行）。
 //
 // 自前の DOM なので、内蔵ブラウザのネイティブビューの上に出すには overlayManager.ts の
-// OVERLAY_DEFINITIONS に `paradis-browser-downloads-popover` を載せてある（載せないとページの裏に
+// OVERLAY_DEFINITIONS に載せた共通の印 `paradis-overlay-popover` を付けてある（載せないとページの裏に
 // 隠れて何も見えない）。プロファイルのドロップダウン（paradisBrowserProfileDropdown.ts）と同じ作りで、
 // 外側クリック・Esc・リサイズ・ウィンドウのフォーカス喪失で閉じ、閉じたらボタンへフォーカスを戻す。
 //
@@ -37,6 +37,7 @@ import { localize } from '../../../../nls.js';
 import { ByteSize } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisBrowserDownloadItem, paradisDownloadDayKey, paradisFormatDownloadClock, paradisFormatDownloadDay, paradisFormatDownloadStart } from '../common/paradisBrowserDownloads.js';
 import { IParadisBrowserDownloadsService } from './paradisBrowserDownloadsService.js';
@@ -99,7 +100,7 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		super();
 
 		this._container = _anchor ? layoutService.getContainer(dom.getWindow(_anchor)) : layoutService.activeContainer;
-		this._element = $('.paradis-browser-downloads-popover');
+		this._element = $('.paradis-browser-downloads-popover.paradis-overlay-popover');
 		this._element.tabIndex = -1;
 		this._element.setAttribute('role', 'dialog');
 		this._element.setAttribute('aria-label', localize('paradis.browserDownloads.popover.label', "ダウンロード"));
@@ -399,26 +400,9 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 			}
 		}));
 
-		// フォーカスが一覧の外へ出たら閉じる（キー操作でコマンドパレットやスペース切替へ移ったとき）。
-		// ボタンへ戻るのは開き直しの操作なので閉じない。
-		this._register(dom.addDisposableListener(this._element, dom.EventType.FOCUS_OUT, event => {
-			const next = event.relatedTarget as Node | null;
-			if (next && !this._element.contains(next) && !this._anchor?.contains(next)) {
-				this.close();
-			}
-		}));
-
-		// 外側クリック。capture で拾い、ページ側の要素が伝播を止めても閉じられるようにする。
-		// `instanceof Node` は補助ウィンドウで realm が違って false になり得るので contains() だけで見る。
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.MOUSE_DOWN, event => {
-			const target = event.target as Node | null;
-			if (target && (this._element.contains(target) || this._anchor?.contains(target))) {
-				return;
-			}
-			this.close();
-		}, true));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.RESIZE, () => this.close()));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.BLUR, () => this.close()));
+		// フォーカスが一覧の外へ出たら閉じる（キー操作でコマンドパレットやスペース切替へ移ったとき）。ボタンへ戻るのは
+		// 開き直しの操作なので閉じない。外側の押下・窓の大きさの変化・窓の blur でも閉じる（paradisAnchoredPopover.ts）
+		this._register(paradisWatchPopoverDismiss(targetWindow, { element: this._element, anchor: this._anchor, close: () => this.close(), closeOnFocusOut: true, closeOnResize: true, closeOnBlur: true }));
 	}
 
 	private _trapTab(backwards: boolean, event: KeyboardEvent): void {
