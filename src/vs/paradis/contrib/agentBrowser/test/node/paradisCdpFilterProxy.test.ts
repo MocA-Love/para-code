@@ -7,7 +7,7 @@ import assert from 'assert';
 import { EventEmitter } from 'events';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../../platform/browserView/common/browserViewScreenshot.js';
+import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../../platform/browserView/common/paraBrowserViewScreenshot.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
 import { IParadisBoundContext, paradisForwardableCdpFrame, paradisReadCdpFrame, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';

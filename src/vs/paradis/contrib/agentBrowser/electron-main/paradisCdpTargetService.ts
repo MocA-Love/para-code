@@ -23,7 +23,7 @@ import type { BrowserView } from '../../../../platform/browserView/electron-main
 import { ParadisAgentEmulationLedger, paradisEffectiveTouchEmulation, paradisEmulatedScreenshotSize, paradisIsCdpEmulationMethod, paradisMergeEmulatedMedia, paradisParseTouchEmulation, paradisScaleCdpInputCoordinates } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { paraSetBrowserViewOpener } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
-import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
+import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/paraBrowserViewAutomationInput.js';
 import {
 	IParadisCdpExactViewService,
 	IParadisCdpFrameEvent,
