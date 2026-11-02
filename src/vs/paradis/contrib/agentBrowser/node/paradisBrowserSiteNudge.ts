@@ -31,7 +31,7 @@ export const PARADIS_SITE_NUDGE_ACTION_TOOLS: ReadonlySet<string> = new Set([
 const REPEATABLE_TOOLS: ReadonlySet<string> = new Set(['press_key', 'type_text', 'hover', 'mouse_action']);
 
 /** 相手の要素を表さない引数（入れる値や待ち時間）。やり直しかどうかは、これを除いた引数で見る。 */
-const NON_TARGET_ARGUMENTS: ReadonlySet<string> = new Set(['value', 'includeSnapshot', 'timeout', 'timeout_seconds', 'interval_ms', 'settle_ms', 'tab_id']);
+const NON_TARGET_ARGUMENTS: ReadonlySet<string> = new Set(['value', 'includeSnapshot', 'timeout', 'timeout_seconds', 'interval_ms', 'interval_seconds', 'settle_ms', 'settle_seconds', 'tab_id']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);

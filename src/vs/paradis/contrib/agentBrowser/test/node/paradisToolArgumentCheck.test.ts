@@ -41,9 +41,9 @@ suite('paradisToolArgumentCheck', () => {
 		}, {
 			ok: undefined,
 			nullIsOmitted: undefined,
-			timeoutMs: 'wait_until was not run: wait_until has no argument "timeout"; use "timeout_seconds" instead: How long to wait (0.5-100, default 10). It is in seconds: 30000 ms is 30.',
-			timeoutSmall: 'wait_until was not run: wait_until has no argument "timeout"; use "timeout_seconds" instead: How long to wait (0.5-100, default 10). It is in seconds.',
-			millis: 'wait_until was not run: wait_until has no argument "timeout_ms"; use "timeout_seconds" instead: How long to wait (0.5-100, default 10). It is in seconds: 5000 ms is 5.',
+			timeoutMs: 'wait_until was not run: wait_until has no argument "timeout"; use "timeout_seconds" instead: Seconds to wait (default 10, at most 100). It is in seconds: 30000 ms is 30.',
+			timeoutSmall: 'wait_until was not run: wait_until has no argument "timeout"; use "timeout_seconds" instead: Seconds to wait (default 10, at most 100). It is in seconds.',
+			millis: 'wait_until was not run: wait_until has no argument "timeout_ms"; use "timeout_seconds" instead: Seconds to wait (default 10, at most 100). It is in seconds: 5000 ms is 5.',
 			tabId: 'wait_until was not run: wait_until has no argument "tabId"; use "tab_id" instead: tabId.',
 			stringNumber: 'wait_until was not run: "timeout_seconds" of wait_until must be a number, not a string ("30"). Pass 30 without quotes.',
 			stringBoolean: 'wait_until was not run: "exact" of wait_until must be a boolean, not a string ("true"). Pass true without quotes.',
@@ -88,7 +88,7 @@ suite('paradisToolArgumentCheck', () => {
 			devtoolsListed,
 			remembered: service._listedToolSchemas.has('pane'),
 		}, {
-			timeout: [true, 'wait_until was not run: wait_until has no argument "timeout"; use "timeout_seconds" instead: How long to wait (0.5-100, default 10). It is in seconds: 30000 ms is 30.'],
+			timeout: [true, 'wait_until was not run: wait_until has no argument "timeout"; use "timeout_seconds" instead: Seconds to wait (default 10, at most 100). It is in seconds: 30000 ms is 30.'],
 			ok: undefined,
 			hover: [true, 'hover was not run: hover has no argument "text".'],
 			unknownTool: undefined,

@@ -72,7 +72,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: one endpoint exposes one page (the page shared with this pane, or the tab given by tab_id) plus the pages that page opened with a target=_blank link or window.open, so new_page, resize_page and close_page are not supported (use the set_viewport tool, or the emulate tool, to change the viewport, and open_browser_tab / close_browser_tab plus the tab_id argument of the browser tools to work with several tabs).',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target this pane\'s current tab (or tab_id). Note: one endpoint exposes one page (the page shared with this pane, or the tab given by tab_id) plus the pages that page opened with a target=_blank link or window.open, so new_page, resize_page and close_page are not supported (use the set_viewport tool, or the emulate tool, to change the viewport, and open_browser_tab / close_browser_tab plus the tab_id argument of the browser tools to work with several tabs).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -197,7 +197,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 			type: 'object',
 			properties: {
 				profile: { type: 'string', description: 'Name of the profile to switch to (see list_browser_profiles).' },
-				tabId: { type: 'string', description: 'Optional tabId of your tab (tab_id also works). Omit to switch this pane\'s current tab (the one you last opened or selected, otherwise the page shared with this terminal pane).' },
+				tabId: { type: 'string', description: 'Optional tabId of your tab (tab_id also works). Omit to switch this pane\'s current tab (the one you last opened or selected, otherwise this pane\'s current tab (or tab_id)).' },
 			},
 			required: ['profile'],
 			additionalProperties: false,

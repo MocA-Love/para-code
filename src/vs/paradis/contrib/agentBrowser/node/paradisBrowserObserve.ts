@@ -8,7 +8,7 @@
 
 // 入力・遷移の道具の結果の末尾に、操作の後のページの様子を添える（para-browser-improvement.html の E1 と I1）。
 //   - E1（`paradis.agentBrowser.settleAfterAction`）: 操作の後、DOM の変化が止まり通信が落ち着くまで
-//     （既定で上限 2 秒、`settle_ms`）道具の側で待ち、URL・タイトルの変化と、増えた・変わった・消えた要素を返す
+//     （既定で上限 2 秒、`settle_seconds`。前の名前の `settle_ms` は paradisToolArgumentAliases.ts が読み替える）道具の側で待ち、URL・タイトルの変化と、増えた・変わった・消えた要素を返す
 //   - I1（`paradis.agentBrowser.reportBrowserState`）: 使えるタブ、その操作で開いたページ、新しいダウンロード、
 //     開いているダイアログを返す。前回の報告と同じなら省く
 // どちらも既定は無効。待ちと変化の取り方はページの中の関数（paradisBrowserObservePageScript.ts）で行う。
@@ -20,7 +20,7 @@
 // - ダイアログを伝えるのは、vendored の記録（list_pages の `# Open dialog`）で開いていると確かめられたときだけ。
 //   ページが 3 秒答えなかっただけなら「ページが応答していない」と伝える（実利用で 211 回、重いページを取り違えていた）
 // - run_steps の中の手順ごとには添えず、run_steps 全体の後に 1 回だけ添える
-// - 足した引数（`settle_ms`・`observe`）は、道具へ渡す前に必ず取り除く（内蔵 chrome-devtools-mcp は未知の引数を断る）
+// - 足した引数（`settle_seconds`・`observe`）は、道具へ渡す前に必ず取り除く（内蔵 chrome-devtools-mcp は未知の引数を断る）
 
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { paradisPaneTokenOfScopeKey } from '../common/paradisAgentTabScope.js';
@@ -84,15 +84,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** 足した引数を取り除く。`observe: 'none'` か `settle_ms: 0` なら待ちも変化も省く。 */
+/** 足した引数を取り除く。`observe: 'none'` か `settle_seconds: 0` なら待ちも変化も省く。 */
 export function paradisTakeObserveArguments(args: unknown): { readonly rest: unknown; readonly settleMs: number; readonly observe: 'changes' | 'none' | 'snapshot' } {
-	if (!isRecord(args) || (!Object.hasOwn(args, 'settle_ms') && !Object.hasOwn(args, 'observe'))) {
+	if (!isRecord(args) || (!Object.hasOwn(args, 'settle_seconds') && !Object.hasOwn(args, 'observe'))) {
 		return { rest: args, settleMs: PARADIS_SETTLE_DEFAULT_MS, observe: 'changes' };
 	}
-	const { settle_ms: settleValue, observe: observeValue, ...rest } = args;
-	const settleMs = typeof settleValue === 'number' && Number.isFinite(settleValue) ? Math.max(0, Math.min(SETTLE_MAX_MS, Math.round(settleValue))) : PARADIS_SETTLE_DEFAULT_MS;
+	const { settle_seconds: settleValue, observe: observeValue, ...rest } = args;
+	const settleMs = typeof settleValue === 'number' && Number.isFinite(settleValue) ? Math.max(0, Math.min(SETTLE_MAX_MS, Math.round(settleValue * 1000))) : PARADIS_SETTLE_DEFAULT_MS;
 	const observe = observeValue === 'none' || observeValue === 'snapshot' ? observeValue : 'changes';
 	return { rest, settleMs, observe };
+}
+
+/** 説明に文を足す。元の説明が句点で終わっていなければ句点を足してからつなぐ（上流の説明には句点の無いものがある）。 */
+export function paradisAppendSentences(description: string | undefined, sentences: readonly string[]): string {
+	const base = (description ?? '').trim();
+	if (sentences.length === 0) {
+		return base;
+	}
+	const ended = base.length === 0 || /[.!?)]$/.test(base) ? base : `${base}.`;
+	return `${ended} ${sentences.join(' ')}`.trim();
 }
 
 /** tools/list の道具に、E1 の引数と説明を足す（E1 が有効で、対象の道具のときだけ）。 */
@@ -104,14 +114,14 @@ export function paradisWithObserveArguments<T extends { readonly name: string; r
 	const properties: Record<string, unknown> = isRecord(tool.inputSchema.properties) ? { ...tool.inputSchema.properties } : {};
 	const notes: string[] = [];
 	if (options.settle) {
-		properties.settle_ms = { type: 'number', description: `After the action, wait up to this many milliseconds for the page to settle (no DOM change for ${QUIET_MS} ms and no request in flight) before reporting what changed. Default ${PARADIS_SETTLE_DEFAULT_MS}, 0 to not wait.` };
-		properties.observe = { type: 'string', enum: ['changes', 'none', 'snapshot'], description: 'What to append after the action: "changes" (default: URL/title change and the elements that appeared, changed or disappeared), "snapshot" (the full page snapshot) or "none".' };
-		notes.push(`After the action Para Code waits for the page to settle (up to ${PARADIS_SETTLE_DEFAULT_MS} ms) and appends what changed on the page, so you usually do not need take_snapshot or wait_until right after it.`);
+		properties.settle_seconds = { type: 'number', minimum: 0, maximum: SETTLE_MAX_MS / 1000, description: `Seconds to wait for the page to settle (default ${PARADIS_SETTLE_DEFAULT_MS / 1000}; 0: no wait).` };
+		properties.observe = { type: 'string', enum: ['changes', 'none', 'snapshot'], description: 'What to append: "changes" (default), "snapshot" (instead of includeSnapshot) or "none".' };
+		notes.push('Para Code then waits for the page to settle and appends what changed, so you rarely need take_snapshot or wait_until next.');
 	}
 	if (options.state) {
-		notes.push('When the browser state changed, the result also lists your tabs, pages this action opened, new downloads and an open dialog.');
+		notes.push('If the browser state changed, the result also lists your tabs, new pages and downloads, and an open dialog.');
 	}
-	return { ...tool, description: `${tool.description ?? ''} ${notes.join(' ')}`.trim(), inputSchema: { ...tool.inputSchema, properties } };
+	return { ...tool, description: paradisAppendSentences(tool.description, notes), inputSchema: { ...tool.inputSchema, properties } };
 }
 
 /** 観測に要る、サービスから借りるもの。 */

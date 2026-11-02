@@ -97,7 +97,7 @@ suite('Paradis site recipes (E3)', () => {
 			expectPredicate: 'save_recipe: "predicate" in expect (or done_when) cannot be saved in a recipe (a later agent runs the recipe without reading it). Use text, text_gone, visible, gone, disabled, enabled, url_includes, value_not_empty or value_equals.',
 			repeatPredicate: true,
 			doneWhenPredicate: true,
-			waitPredicate: 'save_recipe: wait_until with "predicate" cannot be saved in a recipe (a later agent runs the recipe without reading it). Wait for text, a locator or network_idle_ms instead, or use expect with value_not_empty / value_equals for the value of an input.',
+			waitPredicate: 'save_recipe: wait_until with "predicate" cannot be saved in a recipe (a later agent runs the recipe without reading it). Wait for text, a locator or network_idle_seconds instead, or use expect with value_not_empty / value_equals for the value of an input.',
 			snapshotFile: 'save_recipe: take_snapshot with "filePath" cannot be saved in a recipe (a later agent runs the recipe without reading it): it reads or writes files on this computer.',
 			captureSaveTo: 'save_recipe: capture_screenshot with "saveTo" cannot be saved in a recipe (a later agent runs the recipe without reading it): it reads or writes files on this computer.',
 			nestedScript: true,
