@@ -8,7 +8,7 @@
 
 import { deepStrictEqual, ok } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { buildParadisPdfViewerHtml, createParadisPdfPageScheduler, fitsParadisPdfCanvasBudget, IParadisPdfCanvasInfo, IParadisPdfPagePlan, IParadisPdfRenderJob, PARADIS_PDF_CANVAS_PIXEL_BUDGET, PARADIS_PDF_FIRST_PAINT_MESSAGE, PARADIS_PDF_KEEP_PAGES, PARADIS_PDF_PRERENDER_PAGES, PARADIS_PDF_RANGE_THRESHOLD_BYTES, planParadisPdfPages, selectParadisPdfCanvasesToRelease, shouldParadisPdfUseRangeRequests } from '../../common/paradisPdfViewerHtml.js';
+import { nextParadisPdfZoomScale, buildParadisPdfViewerHtml, createParadisPdfPageScheduler, fitsParadisPdfCanvasBudget, IParadisPdfCanvasInfo, IParadisPdfPagePlan, IParadisPdfRenderJob, PARADIS_PDF_CANVAS_PIXEL_BUDGET, PARADIS_PDF_FIRST_PAINT_MESSAGE, PARADIS_PDF_KEEP_PAGES, PARADIS_PDF_PRERENDER_PAGES, PARADIS_PDF_RANGE_THRESHOLD_BYTES, planParadisPdfPages, selectParadisPdfCanvasesToRelease, shouldParadisPdfUseRangeRequests } from '../../common/paradisPdfViewerHtml.js';
 
 suite('ParadisPdfViewerHtml', () => {
 
@@ -152,5 +152,8 @@ suite('ParadisPdfViewerHtml', () => {
 			cancelled: fake.cancelled,
 			drawn: [...fake.canvasesByIndex.keys()].sort((a, b) => a - b),
 		}, { cancelled: [0], drawn: [298, 299, 300, 301, 302] });
+	});
+	test('the page only follows the four zoom commands from the toolbar', () => {
+		deepStrictEqual(['in', 'out', 'fit', 'reset', 'print', undefined, 42].map(command => nextParadisPdfZoomScale(command, 1, 0.8, 1.5)), [1.2, 1 / 1.2, 1.5, 0.8, undefined, undefined, undefined]);
 	});
 });

@@ -25,6 +25,8 @@
 	color: var(--vscode-foreground);
 	font-size: var(--vscode-fontSize-label1);
 	overflow: hidden;
+	container-type: inline-size;
+	container-name: paradis-viewer-toolbar;
 }
 
 .paradis-viewer-toolbar-start,
@@ -163,7 +165,27 @@
 	font-variant-numeric: tabular-nums;
 }
 
-/* The Office find widget sits just below the toolbar instead of covering its buttons. */
-:has(> .paradis-viewer-toolbar) > .paradis-office-find-widget {
-	top: calc(28px + 4px);
+/* The Office find widget sits just below the toolbar (whatever its height) instead of covering its buttons. */
+.paradis-viewer-toolbar-host > .paradis-office-find-widget {
+	top: calc(var(--paradis-viewer-toolbar-height, 28px) + 4px);
+}
+
+/* Narrow panes: drop the legend, then fold to icons so the buttons on the right stay visible
+ * (the start area already shrinks first). Toggles keep their label when they have no icon. */
+@container paradis-viewer-toolbar (max-width: 560px) {
+	.paradis-viewer-toolbar-legend {
+		display: none;
+	}
+}
+
+@container paradis-viewer-toolbar (max-width: 420px) {
+	.paradis-viewer-toolbar-separator,
+	.paradis-viewer-toolbar-percent,
+	.paradis-viewer-toolbar-option:has(> .codicon) > .paradis-viewer-toolbar-option-label {
+		display: none;
+	}
+
+	.paradis-viewer-toolbar-end {
+		gap: var(--vscode-spacing-size20);
+	}
 }

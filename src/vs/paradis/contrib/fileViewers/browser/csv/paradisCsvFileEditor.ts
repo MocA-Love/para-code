@@ -62,7 +62,7 @@ import { ParadisCsvFileInput, PARADIS_CSV_EDITOR_ID, rememberParadisCsvViewMode,
 import { ParadisCsvTableView } from './paradisCsvTableView.js';
 
 import '../media/paradisFileViewer.css';
-import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarOption, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../paradisViewerToolbar.js';
+import { appendParadisViewerToolbarChoice, appendParadisViewerToolbarChoiceGroup, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../paradisViewerToolbar.js';
 
 const TEXT_EDITOR_OPTIONS: IEditorConstructionOptions = {
 	automaticLayout: true,
@@ -175,10 +175,10 @@ export class ParadisCsvFileEditor extends EditorPane {
 
 		// Markdown ビューアの「プレビュー | ソース」と同じ部品・同じ位置に「表 | テキスト」を置く。
 		const toolbar = createParadisViewerToolbar(this._rootElement, 'paradis-file-viewer-toolbar');
-		const toggle = appendParadisViewerToolbarGroup(toolbar.start, 'paradis-file-viewer-toggle');
-		this._tableButton = appendParadisViewerToolbarOption(toggle, localize('paradis.csv.table', "表"));
+		const toggle = appendParadisViewerToolbarChoiceGroup(toolbar.start, 'paradis-file-viewer-toggle', localize('paradis.csv.viewMode', "表示"));
+		this._tableButton = appendParadisViewerToolbarChoice(toggle, localize('paradis.csv.table', "表"));
 		this._register(dom.addDisposableListener(this._tableButton, dom.EventType.CLICK, () => this.setViewMode('table')));
-		this._textButton = appendParadisViewerToolbarOption(toggle, localize('paradis.csv.text', "テキスト"));
+		this._textButton = appendParadisViewerToolbarChoice(toggle, localize('paradis.csv.text', "テキスト"));
 		this._register(dom.addDisposableListener(this._textButton, dom.EventType.CLICK, () => this.setViewMode('text')));
 
 		this._noticeElement = dom.append(this._rootElement, dom.$('.paradis-csv-notice'));
