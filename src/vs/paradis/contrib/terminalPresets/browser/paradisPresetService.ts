@@ -440,7 +440,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			.map((definition, index) => ({ definition, index }))
 			.filter((entry): entry is { definition: IParadisPresetDefinition; index: number } => isValidPresetDefinition(entry.definition));
 		const sharedNames = paradisSharedPresetNames(valid.map(entry => entry.definition));
-		const repositoryPresetFile = this._repositoryPresetFile(presetFile);
+		const { repositoryPresetFile, relatedPresetFiles } = this._presetFilesOfRepository(presetFile);
 		return valid
 			.map(({ definition, index }) => {
 				const entry: IParadisPresetDefinition = { ...definition, id: paradisUsablePresetId(definition, takenIds) };
@@ -451,7 +451,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 					sourceUri: presetFile,
 					sourceIndex: index,
 					key: paradisPresetKey('workspace', presetFile, entry, index),
-					locallyHidden: paradisIsLocallyHidden(this._locallyHiddenWorkspacePresets, paradisLocallyHiddenKeys(repositoryPresetFile, presetFile, entry, sharedNames.has(entry.name.trim()))),
+					locallyHidden: paradisIsLocallyHidden(this._locallyHiddenWorkspacePresets, paradisLocallyHiddenKeys(repositoryPresetFile, relatedPresetFiles, entry, sharedNames.has(entry.name.trim()))),
 					envInactive: !paradisPresetHostsMatch(entry.hosts, this._currentRemoteAuthority),
 				};
 			});
@@ -708,22 +708,31 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	 */
 	private _locallyHiddenKeys(sourceUri: URI, definition: IParadisPresetDefinition, siblings: readonly { readonly name: string }[]): IParadisLocallyHiddenKeys {
 		const nameIsShared = paradisSharedPresetNames(siblings).has(definition.name.trim());
-		return paradisLocallyHiddenKeys(this._repositoryPresetFile(sourceUri), sourceUri, definition, nameIsShared);
+		const { repositoryPresetFile, relatedPresetFiles } = this._presetFilesOfRepository(sourceUri);
+		return paradisLocallyHiddenKeys(repositoryPresetFile, relatedPresetFiles, definition, nameIsShared);
 	}
 
 	/**
 	 * 「自分だけ非表示」のキーに使う .paracode.json。ワークツリーの中の .paracode.json は親リポジトリの
 	 * .paracode.json に寄せる（ワークツリーは親の写しを持つので、ワークツリーを作るたびに隠したものが
 	 * 戻らないように）。ワークツリーでなければ、または一覧がまだ揃っていなければ、そのまま返す。
+	 * `relatedPresetFiles` は、開いているファイルと、同じ親に属する全ワークツリーの .paracode.json。
+	 *
+	 * ワークツリーはディスクで見つけた全件（`getDetectedWorktrees`）から探す。`getWorktrees` は
+	 * `autoImportWorktrees` が OFF だと Para Code の外で作ったワークツリーを含まず、親へ寄せられない。
 	 */
-	private _repositoryPresetFile(presetFile: URI): URI {
+	private _presetFilesOfRepository(presetFile: URI): { readonly repositoryPresetFile: URI; readonly relatedPresetFiles: readonly URI[] } {
 		const folder = dirname(presetFile);
 		for (const repository of this.workspaceSwitchService.repositories) {
-			if (this.worktreeService.getWorktrees(repository.id).some(worktree => isEqual(worktree.uri, folder))) {
-				return joinPath(repository.uri, PARADIS_WORKSPACE_PRESET_FILE);
+			const worktrees = this.worktreeService.getDetectedWorktrees(repository.id);
+			if (isEqual(repository.uri, folder) || worktrees.some(worktree => isEqual(worktree.uri, folder))) {
+				return {
+					repositoryPresetFile: joinPath(repository.uri, PARADIS_WORKSPACE_PRESET_FILE),
+					relatedPresetFiles: [presetFile, ...worktrees.map(worktree => joinPath(worktree.uri, PARADIS_WORKSPACE_PRESET_FILE))],
+				};
 			}
 		}
-		return presetFile;
+		return { repositoryPresetFile: presetFile, relatedPresetFiles: [presetFile] };
 	}
 
 	private _readLocallyHiddenWorkspacePresets(): string[] {
@@ -795,10 +804,10 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		if (hidden) {
 			this._locallyHiddenWorkspacePresets.add(keys.primary);
 		} else {
-			// 旧形式のキーで隠していたものも戻す（新形式だけ消すと、旧形式のキーで隠れたまま残る）。
+			// 照合に使うほかのキー（旧形式・ワークツリーの URI で書かれたもの）も消す。1 つでも残ると隠れたままになる。
 			this._locallyHiddenWorkspacePresets.delete(keys.primary);
-			for (const legacy of keys.legacy) {
-				this._locallyHiddenWorkspacePresets.delete(legacy);
+			for (const alias of keys.aliases) {
+				this._locallyHiddenWorkspacePresets.delete(alias);
 			}
 		}
 		this._writeLocallyHiddenWorkspacePresets();

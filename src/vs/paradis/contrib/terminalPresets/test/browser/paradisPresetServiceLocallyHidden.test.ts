@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -33,9 +33,13 @@ suite('ParadisPresetService locally hidden presets', () => {
 	const setup: IParadisPresetDefinition = { name: 'SETUP', commands: ['bun i'] };
 	const dev: IParadisPresetDefinition = { name: 'dev', commands: ['bun dev'] };
 
-	/** フォルダごとの .paracode.json の中身を持つサービスを作る。ワークツリーは `/repos/app` の子として登録する。 */
-	function createService(files: Map<string, readonly IParadisPresetDefinition[]>, storage: InMemoryStorageService, folders: readonly URI[] = []): ParadisPresetService {
-		const worktree = upcastPartial<IParadisWorktree>({ repositoryId: 'app', name: 'feature', uri: worktreeUri });
+	const worktree = upcastPartial<IParadisWorktree>({ repositoryId: 'app', name: 'feature', uri: worktreeUri });
+
+	/**
+	 * フォルダごとの .paracode.json の中身を持つサービスを作る。`worktrees.list` が `/repos/app` の
+	 * ワークツリーとしてディスクで見つかった一覧で、変えたら `worktrees.changed.fire()` で知らせる。
+	 */
+	function createService(files: Map<string, readonly IParadisPresetDefinition[]>, storage: InMemoryStorageService, folders: readonly URI[] = [], worktrees = { list: [worktree], changed: store.add(new Emitter<void>()) }): ParadisPresetService {
 		return store.add(new ParadisPresetService(
 			upcastPartial<IConfigurationService>({ onDidChangeConfiguration: Event.None, getValue: () => undefined }),
 			upcastPartial<IWorkspaceContextService>({ onDidChangeWorkspaceFolders: Event.None, getWorkspace: () => upcastPartial<IWorkspace>({ folders: folders.map(uri => upcastPartial<IWorkspaceFolder>({ uri })) }) }),
@@ -56,7 +60,7 @@ suite('ParadisPresetService locally hidden presets', () => {
 				onDidChangeRepositories: Event.None,
 				repositories: [upcastPartial<IParadisWorkspaceRepository>({ id: 'app', name: 'app', uri: repositoryUri })],
 			}),
-			upcastPartial<IParadisWorktreeService>({ onDidChangeWorktrees: Event.None, getWorktrees: (id: string) => id === 'app' ? [worktree] : [] }),
+			upcastPartial<IParadisWorktreeService>({ onDidChangeWorktrees: worktrees.changed.event, getDetectedWorktrees: (id: string) => id === 'app' ? worktrees.list : [] }),
 		));
 	}
 
@@ -103,5 +107,47 @@ suite('ParadisPresetService locally hidden presets', () => {
 		service.setWorkspacePresetLocallyHidden(second, true);
 		const presets = service.presets.filter(preset => preset.source === 'workspace');
 		assert.deepStrictEqual(presets.map(preset => [preset.commands, preset.locallyHidden]), [[['bun i'], false], [['make setup'], true]]);
+	});
+
+	test('a worktree preset is hidden once the worktree list arrives, also when it was hidden before the list arrived', async () => {
+		const files = new Map([
+			['/repos/app/.paracode.json', [setup, dev]],
+			['/worktrees/app-feature/.paracode.json', [setup, dev]],
+		]);
+		const worktrees = { list: [] as IParadisWorktree[], changed: store.add(new Emitter<void>()) };
+		const service = createService(files, store.add(new InMemoryStorageService()), [worktreeUri], worktrees);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const hiddenInOpenFolder = () => service.presets.filter(preset => preset.locallyHidden).map(preset => preset.name);
+
+		// 一覧が揃う前にワークツリーで dev を隠す（ワークツリーの URI で書かれる）。親では SETUP を隠す。
+		service.setWorkspacePresetLocallyHidden(service.presets.find(preset => preset.name === 'dev')!, true);
+		const [repositorySetup] = await service.getPresetsForFolder(repositoryUri);
+		service.setWorkspacePresetLocallyHidden(repositorySetup, true);
+		const beforeList = hiddenInOpenFolder();
+
+		worktrees.list = [worktree];
+		worktrees.changed.fire();
+		const afterList = hiddenInOpenFolder();
+
+		// 親から dev を表示に戻すと、ワークツリーの URI で書かれたキーも消える。
+		const repositoryDev = (await service.getPresetsForFolder(repositoryUri)).find(preset => preset.name === 'dev')!;
+		service.setWorkspacePresetLocallyHidden(repositoryDev, false);
+		assert.deepStrictEqual({ beforeList, afterList, afterShowing: hiddenInOpenFolder() }, {
+			beforeList: ['dev'],
+			afterList: ['SETUP', 'dev'],
+			afterShowing: ['SETUP'],
+		});
+	});
+
+	test('showing a preset again removes old keys written in other worktrees of the same repository', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const fingerprint = paradisPresetFingerprint(setup, { ignoreAppliesTo: true });
+		storage.store('paradis.terminal.presets.locallyHiddenWorkspace', JSON.stringify([`${URI.joinPath(worktreeUri, '.paracode.json').toString()}::${fingerprint}`]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		const files = new Map([['/repos/app/.paracode.json', [setup]]]);
+		const service = createService(files, storage);
+		const before = await hiddenNames(service, repositoryUri);
+		const [repositorySetup] = await service.getPresetsForFolder(repositoryUri);
+		service.setWorkspacePresetLocallyHidden(repositorySetup, false);
+		assert.deepStrictEqual({ before, after: await hiddenNames(service, repositoryUri), ledger: storage.get('paradis.terminal.presets.locallyHiddenWorkspace', StorageScope.WORKSPACE) }, { before: ['SETUP'], after: [], ledger: '[]' });
 	});
 });
