@@ -1351,6 +1351,27 @@ suite('Paradis CDP screenshot filter', () => {
 		}
 	});
 
+	test('a visible WebP screenshot goes upstream as the client sent it, on both routes', async () => {
+		const visible = () => context({ isBoundPageVisible: async () => true });
+		const page = createProxyFixture(visible());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		page.upstream.readyState = TestWebSocket.OPEN;
+		page.upstream.emit('open');
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 7, method: 'Page.captureScreenshot', params: { format: 'webp' } })));
+		const browser = await createOpenBrowserProxyFixture(visible());
+		publishAllowedSession(browser, 'session-1');
+		browser.upstream.sent.length = 0;
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 8, sessionId: 'session-1', method: 'Page.captureScreenshot', params: { format: 'webp' } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const upstreamFrames = [...parseSent(page.upstream), ...parseSent(browser.upstream)]
+			.filter(frame => (frame as { id: number }).id > 0)
+			.map(frame => { const { id, sessionId, method, params } = frame as { id: number; sessionId?: string; method: string; params: unknown }; return { id, sessionId, method, params }; });
+		assert.deepStrictEqual(upstreamFrames, [
+			{ id: 7, sessionId: undefined, method: 'Page.captureScreenshot', params: { format: 'webp' } },
+			{ id: 8, sessionId: 'session-1', method: 'Page.captureScreenshot', params: { format: 'webp' } },
+		]);
+	});
+
 	test('wraps scripts registered for new documents so they never run in an extension page, on both routes', async () => {
 		const browser = await createOpenBrowserProxyFixture();
 		publishAllowedSession(browser, 'session-1');
