@@ -37,7 +37,7 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisLocalRepositoryPickContext, paradisPickAndAddLocalRepositories } from '../browser/paradisPickLocalRepositories.js';
 import { paradisHostPathFor } from '../../../common/paradisHostPath.js';
-import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID, PARADIS_CLONE_PARENT_DIR_SETTING, paradisParseGitUrl } from '../common/paradisRepositoryClone.js';
+import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID, PARADIS_CLONE_PARENT_DIR_SETTING, paradisParseGitUrl, paradisRedactCloneLogText } from '../common/paradisRepositoryClone.js';
 import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 
@@ -403,7 +403,7 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		} catch (error) {
 			if (!isCancellationError(error)) {
 				// allow-any-unicode-next-line
-				notificationService.error(localize('paradis.repositoryClone.failedNotification', "{0} のクローンに失敗しました: {1}", url, toErrorMessage(error)));
+				notificationService.error(localize('paradis.repositoryClone.failedNotification', "{0} のクローンに失敗しました: {1}", paradisRedactCloneLogText(url), paradisRedactCloneLogText(toErrorMessage(error))));
 			}
 			return;
 		}

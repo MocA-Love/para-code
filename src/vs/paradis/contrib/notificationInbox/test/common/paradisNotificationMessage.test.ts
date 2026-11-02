@@ -9,6 +9,8 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisInboxPaneKey, paradisPermissionPreview, paradisPickNotificationMessage, paradisRedactSecrets } from '../../common/paradisNotificationInbox.js';
+import { paradisScheduledRunLastMessage } from '../../../scheduledRuns/common/paradisScheduledRuns.js';
+import { paradisRedactCloneLogText } from '../../../workspaceSwitch/common/paradisRepositoryClone.js';
 
 suite('Paradis notification message', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -170,6 +172,21 @@ suite('Paradis notification message', () => {
 			azure: 'DefaultEndpointsProtocol=https;AccountName=a;AccountKey=***;EndpointSuffix=x',
 			slack: 'posted to https://hooks.slack.com/***',
 			permission: 'Bash: git push https://***@example.com/repo.git',
+		});
+	});
+
+	test('masks a multi-line PEM key and a token-only URL on every path that reaches the inbox or a notification', () => {
+		const text = 'see https://tok123@example.com/repo.git\n-----BEGIN RSA PRIVATE KEY-----\nMIIEabc\n-----END RSA PRIVATE KEY-----\nend';
+		assert.deepStrictEqual({
+			message: paradisPickNotificationMessage({ lastMessage: { text, at: 12_000 } }, 'review', 10_000).text,
+			permission: paradisPermissionPreview(`Bash: ${text}`),
+			scheduledRun: paradisScheduledRunLastMessage(text),
+			clone: paradisRedactCloneLogText(text),
+		}, {
+			message: 'see https://***@example.com/repo.git\n-----BEGIN RSA PRIVATE KEY----- ***\nend',
+			permission: 'Bash: see https://***@example.com/repo.git -----BEGIN RSA PRIVATE KEY----- ***',
+			scheduledRun: 'see https://***@example.com/repo.git\n-----BEGIN RSA PRIVATE KEY----- ***\nend',
+			clone: 'see https://***@example.com/repo.git\n-----BEGIN RSA PRIVATE KEY----- ***\nend',
 		});
 	});
 

@@ -1373,7 +1373,7 @@ export class ParadisWorktreeGitService {
 					} else {
 						this.logService.warn(paradisRedactCloneLogText(`[ParadisWorktreeGit] git clone ${url} failed (exit ${code}): ${errorLines.join(' / ')}`));
 						// allow-any-unicode-next-line
-						settle(new Error(errorLines.join('\n') || localize('paradis.repositoryClone.failed', "git clone が失敗しました (exit {0})。", String(code))));
+						settle(new Error(paradisRedactCloneLogText(errorLines.join('\n')) || localize('paradis.repositoryClone.failed', "git clone が失敗しました (exit {0})。", String(code))));
 					}
 				});
 			});
