@@ -11,7 +11,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisCellData, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
 import { ParadisSpreadsheetGridRenderer } from '../../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
-import { createVirtualGridIndex, createVirtualGridViewport, legacyGridTile, measureVirtualGridContentRows, virtualGridLayoutFrame } from '../../electron-browser/paradisSpreadsheetEditor.js';
+import { createVirtualGridIndex, createVirtualGridViewport, legacyGridTile, measureVirtualGridContentRows, relayoutVirtualGrid, virtualGridLayoutFrame } from '../../electron-browser/paradisSpreadsheetEditor.js';
 import { applyOverflow, buildSheetTableDom } from '../../electron-browser/paradisSpreadsheetRender.js';
 
 const empty: IParadisCellData = { value: '', style: {} };
@@ -287,6 +287,48 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 			borders: { upperBottom: border, lowerTop: '' },
 			wrappedRowGrows: true,
 			copied: ['1'],
+		});
+	});
+
+	test('measures rows only when shown, grows rows with only vertical text, keeps frozen tiles to frozen columns, and relayouts by the zoom', async () => {
+		const doc = mainWindow.document;
+		const data = sheet();
+		// 画面に出ていない入れ物では測れない（0 で伸ばさずに覚えると、出た後も低いままになる）
+		const detached = doc.createElement('div');
+		const notShown = measureVirtualGridContentRows(detached, data);
+		// 縦書きのセルだけの行も、文字に合わせて伸びる
+		const shown = doc.body.appendChild(doc.createElement('div'));
+		const vertical: IParadisSheetData = { ...data, freezePane: undefined, rows: [{ excelRow: 1, height: 20, cells: [{ value: '縦書きの長い文字', style: {}, verticalText: true }, empty, empty, empty, empty] }] };
+		const verticalRow = measureVirtualGridContentRows(shown, vertical)?.get(0) ?? 0;
+		shown.remove();
+		// 固定列の枠のタイルは、スクロールする列の右寄せのセル（左へはみ出す）を拾わない
+		const index = createVirtualGridIndex(data);
+		const leftTile = legacyGridTile(data, { id: 1, generation: 1, revision: 'r', pane: 'left', range: [1, 0, 5, 2] }, index);
+		const bodyTile = legacyGridTile(data, { id: 2, generation: 1, revision: 'r', pane: 'body', range: [1, 2, 5, 4] }, index);
+		// layout() の本体: 倍率 0.5 で、入れ物の大きさを倍率で割った frame で描き直す
+		const host = doc.body.appendChild(doc.createElement('div'));
+		host.style.width = '300px';
+		host.style.height = '100px';
+		host.style.overflow = 'auto';
+		host.style.position = 'relative';
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(host, createVirtualGridViewport(data, 17, 'layout'), { getViewport: async request => legacyGridTile(data, request, index), zoom: 0.5 }));
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 1, height: 1 });
+		await relayoutVirtualGrid(renderer, host, { width: 999, height: 999 });
+		const frame = renderer.frame;
+		host.remove();
+
+		deepStrictEqual({
+			notShown,
+			verticalGrows: verticalRow > 20,
+			leftTileTakesScrollingSource: leftTile.cells.some(cell => cell.text === '右寄せで左へ'),
+			bodyTileTakesIt: bodyTile.cells.some(cell => cell.text === '右寄せで左へ'),
+			frame: [frame.width, frame.height],
+		}, {
+			notShown: undefined,
+			verticalGrows: true,
+			leftTileTakesScrollingSource: false,
+			bodyTileTakesIt: true,
+			frame: [600, 200],
 		});
 	});
 });

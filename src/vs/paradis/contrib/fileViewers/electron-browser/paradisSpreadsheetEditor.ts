@@ -455,6 +455,11 @@ export function virtualGridLayoutFrame(frame: ParadisSpreadsheetViewportFrame, h
 	return { ...frame, width: Math.max(1, hostWidth / zoom), height: Math.max(1, hostHeight / zoom) };
 }
 
+/** エディタの大きさが変わったときに仮想グリッドを描き直す（`layout()` の本体）。入れ物が無ければエディタの大きさを使う。 */
+export function relayoutVirtualGrid(renderer: ParadisSpreadsheetGridRenderer, host: HTMLElement | undefined, dimension: { readonly width: number; readonly height: number }): Promise<unknown> {
+	return renderer.render(virtualGridLayoutFrame(renderer.frame, host?.clientWidth ?? dimension.width, host?.clientHeight ?? dimension.height, renderer.zoomFactor));
+}
+
 /**
  * 仮想グリッドの viewport。寸法は倍率を掛ける前のまま持つ（倍率は描画側が中身ごと掛ける）。
  * 先頭の 1 行・1 列は見出しで、シートの固定枠と一緒に固定する。
@@ -476,6 +481,9 @@ export function createVirtualGridViewport(sheet: IParadisSheetData, headerHeight
 	});
 }
 
+/** シートごとの、中身の文字が収まる行の高さ（測れたものだけ）。 */
+const VIRTUAL_GRID_CONTENT_ROWS = new WeakMap<IParadisSheetData, ReadonlyMap<number, number>>();
+
 const ROW_PROBE_STYLES = ['fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'letterSpacing', 'lineHeight', 'paddingBottom', 'paddingTop'] as const;
 const WRAPPED_PROBE_STYLES = [...ROW_PROBE_STYLES, 'paddingLeft', 'paddingRight', 'whiteSpace', 'wordBreak'] as const;
 
@@ -485,7 +493,11 @@ const WRAPPED_PROBE_STYLES = [...ROW_PROBE_STYLES, 'paddingLeft', 'paddingRight'
  * 文字の大きさ・書体ごとに 1 行の高さを一度だけ測り、行ごとにその最大を取る。折り返しのあるセルは、同じ幅・同じ文字の
  * 大きさの箱を置いて 1 つずつ測る（どちらも 1 回の配置でまとめて測る）。結合したセルは数えない。
  */
-export function measureVirtualGridContentRows(host: HTMLElement, sheet: IParadisSheetData): ReadonlyMap<number, number> {
+export function measureVirtualGridContentRows(host: HTMLElement, sheet: IParadisSheetData): ReadonlyMap<number, number> | undefined {
+	// 画面に出ていない（大きさが無い）ときは測れない。0 のまま伸ばさずに使うと、出た後も低いままになるので、測れなかったと返す
+	if (!host.isConnected || host.getClientRects().length === 0) {
+		return undefined;
+	}
 	const doc = host.ownerDocument;
 	const box = doc.createElement('div');
 	box.style.position = 'absolute';
@@ -497,13 +509,14 @@ export function measureVirtualGridContentRows(host: HTMLElement, sheet: IParadis
 	const rowKeys: (readonly string[])[] = sheet.rows.map((row, rowIndex) => {
 		const keys = new Set<string>();
 		row.cells.forEach((cell, columnIndex) => {
-			if (cell.wrapText && !cell.hidden && cell.value && (cell.rowSpan ?? 1) <= 1) {
+			// 折り返しと縦書きのセルは、同じ幅の箱に置いて 1 つずつ測る（その行が折り返し・縦書きのセルだけでも伸びるように）
+			if ((cell.wrapText || cell.verticalText) && !cell.hidden && cell.value && (cell.rowSpan ?? 1) <= 1) {
 				let width = 0;
 				for (let offset = 0; offset < (cell.colSpan ?? 1); offset++) {
 					width += sheet.columnWidths[columnIndex + offset] ?? 0;
 				}
 				const element = doc.createElement('div');
-				element.className = 'paradis-spreadsheet-virtual-cell paradis-spreadsheet-virtual-cell-wrap';
+				element.className = `paradis-spreadsheet-virtual-cell ${cell.verticalText ? 'paradis-spreadsheet-virtual-cell-vertical' : 'paradis-spreadsheet-virtual-cell-wrap'}`;
 				element.style.position = 'static';
 				element.style.width = `${width}px`;
 				const wrapStyle = cell.style as Record<string, string | undefined>;
@@ -904,6 +917,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	/** いまの仮想グリッドの viewport と revision（描き直す前に、見ていた位置を取り出すため）。 */
 	private _virtualViewport: ParadisSpreadsheetViewport | undefined;
 	private _virtualRevision: string | undefined;
+	/** 仮想グリッドを画面に出ていないときに作り、行の高さを測れていない。 */
+	private _virtualRowsUnmeasured = false;
 	private _previousVirtualPosition: { readonly revision: string; readonly anchor: ReturnType<ParadisSpreadsheetViewport['logicalAnchor']> } | undefined;
 
 	/** 仮想グリッドで見ていた位置。同じシートの描き直しでだけ使う。 */
@@ -1725,7 +1740,17 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		// 寸法は倍率を掛ける前のまま持ち、倍率は描画側が中身ごと掛ける（DOM の表の transform: scale と同じ見え方）。
 		// 先頭の 1 行・1 列は見出し（列記号と行番号）で、シートの固定枠と一緒に固定する。
 		const revision = `${this._loadGeneration}:${this._activeSheetIndex}:${sheet.name}`;
-		const viewport = createVirtualGridViewport(sheet, measureVirtualGridHeaderHeight(host), revision, measureVirtualGridContentRows(host, sheet));
+		// 行の高さはシートごとに一度だけ測って覚える（拡大・縮小で描き直すたびに測り直さない。寸法は倍率を掛ける前のもの）。
+		// 画面に出ていなくて測れなかったときは覚えず、出たとき（layout）に描き直して測る
+		let contentRows = VIRTUAL_GRID_CONTENT_ROWS.get(sheet);
+		if (!contentRows) {
+			contentRows = measureVirtualGridContentRows(host, sheet);
+			if (contentRows) {
+				VIRTUAL_GRID_CONTENT_ROWS.set(sheet, contentRows);
+			}
+		}
+		this._virtualRowsUnmeasured = !contentRows;
+		const viewport = createVirtualGridViewport(sheet, measureVirtualGridHeaderHeight(host), revision, contentRows);
 		const index = createVirtualGridIndex(sheet);
 		const renderer = new ParadisSpreadsheetGridRenderer(host, viewport, {
 			getViewport: async request => legacyGridTile(sheet, request, index),
@@ -2283,9 +2308,12 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			this._root.style.height = `${dimension.height}px`;
 		}
 		const virtualRenderer = this._virtualRenderer.value;
-		if (virtualRenderer) {
-			const host = this._virtualHostEl;
-			void virtualRenderer.render(virtualGridLayoutFrame(virtualRenderer.frame, host?.clientWidth ?? dimension.width, host?.clientHeight ?? dimension.height, virtualRenderer.zoomFactor));
+		if (virtualRenderer && this._virtualRowsUnmeasured && this._virtualHostEl?.getClientRects().length) {
+			// 画面に出たので、行の高さを測って描き直す（見ていた位置は保つ）
+			this._virtualRowsUnmeasured = false;
+			this._renderSheet();
+		} else if (virtualRenderer) {
+			void relayoutVirtualGrid(virtualRenderer, this._virtualHostEl, dimension);
 		} else {
 			this._applyScale();
 		}
