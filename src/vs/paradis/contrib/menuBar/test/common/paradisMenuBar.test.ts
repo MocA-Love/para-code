@@ -67,8 +67,10 @@ function shape(items: readonly ParadisMenuBarMenuItem[]): unknown[] {
 	return items.map(item => {
 		switch (item.kind) {
 			case 'separator': return '---';
-			case 'submenu': return { submenu: item.label, items: shape(item.items) };
+			case 'submenu': return { submenu: item.sublabel ? `${item.label} / ${item.sublabel}` : item.label, items: shape(item.items) };
 			case 'account': return item.sublabel ? `${item.label} / ${item.sublabel}` : item.label;
+			case 'header': return `## ${item.label}`;
+			case 'choice': return `${item.checked ? (item.radio ? '(o)' : '[x]') : (item.radio ? '( )' : '[ ]')} ${item.label}`;
 			default: return item.label;
 		}
 	});
@@ -199,9 +201,9 @@ suite('Paradis menu bar', () => {
 		const menu = paradisMenuBarMenuModel({ inbox: { attentionCount: 0, blockingCount: 0, items: [], revision: 0 }, working: 0, accounts: merged, cost: undefined, now: NOW }, SETTINGS);
 		const submenu = menu.find((item): item is Extract<ParadisMenuBarMenuItem, { kind: 'submenu' }> => item.kind === 'submenu');
 		assert.deepStrictEqual(shape(submenu?.items ?? []).slice(0, 3), [
-			'work@a.example  5時間 42%・週 31%',
-			'work@b.example  5時間 12%・週 20%',
-			'solo  5時間 30%・週 50%',
+			'work@a.example / 5時間 42%・週 31%',
+			'work@b.example / 5時間 12%・週 20%',
+			'solo / 5時間 30%・週 50%',
 		]);
 	});
 
@@ -238,7 +240,7 @@ suite('Paradis menu bar', () => {
 		});
 	});
 
-	test('builds a short menu: accounts in use, then a submenu per service', () => {
+	test('builds a short menu: one row per service (a submenu when it has several accounts), names on the first line and numbers on the second', () => {
 		const input = {
 			inbox: { attentionCount: 0, blockingCount: 0, items: [], revision: 0 },
 			working: 2,
@@ -247,29 +249,27 @@ suite('Paradis menu bar', () => {
 			now: NOW,
 		};
 		assert.deepStrictEqual(shape(paradisMenuBarMenuModel(input, SETTINGS)), [
-			'要対応はありません',
+			'## 要対応はありません',
 			'---',
-			'使用量',
-			'Claude Code  work-1  5時間 42%・週 31%',
+			'## 使用量',
 			{
-				submenu: 'Claude Code（6）', items: [
-					'work-1  5時間 42%・週 31%',
-					'work-2  5時間 12%・週 20%',
-					'team-b  5時間 30%・週 50%',
-					'team-a  5時間 63%・週 45%',
-					'personal  5時間 5%・週 88%',
-					'work-3  5時間 100%・週 71% / 15:52 に戻る',
+				submenu: 'Claude Code  work-1（6） / 5時間 42%・週 31%', items: [
+					'work-1 / 5時間 42%・週 31%',
+					'work-2 / 5時間 12%・週 20%',
+					'team-b / 5時間 30%・週 50%',
+					'team-a / 5時間 63%・週 45%',
+					'personal / 5時間 5%・週 88%',
+					'work-3 / 5時間 100%・週 71%・15:52 に戻る',
 					'---',
 					'アカウントを切り替える…',
 				],
 			},
-			'Codex  main  5時間 18%・週 9%',
 			{
-				submenu: 'Codex（4）', items: [
-					'main  5時間 18%・週 9%',
-					'sub-1  5時間 0%・週 12%',
-					'sub-2  5時間 24%・週 40%',
-					'team-a  5時間 100%・週 100% / 10/18 18:00 に戻る',
+				submenu: 'Codex  main（4） / 5時間 18%・週 9%', items: [
+					'main / 5時間 18%・週 9%',
+					'sub-1 / 5時間 0%・週 12%',
+					'sub-2 / 5時間 24%・週 40%',
+					'team-a / 5時間 100%・週 100%・10/18 18:00 に戻る',
 					'---',
 					'アカウントを切り替える…',
 				],
@@ -277,20 +277,57 @@ suite('Paradis menu bar', () => {
 			{ submenu: '今日のコスト $12.40', items: ['この PC  $9.10', 'dev-server  $3.30', '---', 'AI コストを開く'] },
 			'---',
 			'Para Code を開く',
+			{
+				submenu: 'アイコンの横に出すもの', items: [
+					'(o) 使用量',
+					'( ) 許可待ちと質問の数',
+					'( ) なし',
+					'---',
+					'## 使用量の出し方',
+					'(o) 数字',
+					'( ) 細いバー 2 本',
+					'( ) マークを囲む輪',
+					'( ) 上限に近いときだけ数字',
+					'---',
+					'## 数える枠',
+					'(o) 5 時間の枠',
+					'( ) 週の枠',
+					'( ) 5 時間と週の多い方',
+					'---',
+					'[x] SSH の接続先の分も合わせる',
+				],
+			},
 			'メニューバーの設定…',
 		]);
-		// 作業中の数は設定でオンにしたときだけ見出しに足す。簡単な表示では戻る時刻を同じ行に書く
+		// 作業中の数は設定でオンにしたときだけ見出しに足す。簡単な表示では 2 行目を使わず、戻る時刻を同じ行に書く
 		const plain = paradisMenuBarMenuModel(input, { ...SETTINGS, menuWorkingCount: true, plainMenu: true, menuUsage: true });
 		const claudeSubmenu = plain.find((item): item is Extract<ParadisMenuBarMenuItem, { kind: 'submenu' }> => item.kind === 'submenu' && item.label.startsWith('Claude'));
 		assert.deepStrictEqual({
 			header: shape(plain)[0],
+			service: claudeSubmenu?.label,
 			exhausted: shape(claudeSubmenu?.items ?? [])[5],
-			withoutUsage: shape(paradisMenuBarMenuModel(input, { ...SETTINGS, menuUsage: false })),
+			withoutUsage: shape(paradisMenuBarMenuModel(input, { ...SETTINGS, menuUsage: false })).filter(item => typeof item === 'string'),
 		}, {
-			header: '要対応はありません・作業中 2',
+			header: '## 要対応はありません・作業中 2',
+			service: 'Claude Code  work-1（6）  5時間 42%・週 31%',
 			exhausted: 'work-3  5時間 100%・週 71%（15:52 に戻る）',
-			withoutUsage: ['要対応はありません', '---', 'Para Code を開く', 'メニューバーの設定…'],
+			withoutUsage: ['## 要対応はありません', '---', 'Para Code を開く', 'メニューバーの設定…'],
 		});
+	});
+
+	test('keeps a service with one account as a plain row', () => {
+		const input = {
+			inbox: { attentionCount: 0, blockingCount: 0, items: [], revision: 0 },
+			working: 0,
+			accounts: manyAccounts().filter(a => a.name === 'main' || a.name === 'work-1'),
+			cost: undefined,
+			now: NOW,
+		};
+		assert.deepStrictEqual(shape(paradisMenuBarMenuModel(input, SETTINGS)).slice(2, 5), [
+			'## 使用量',
+			'Claude Code  work-1 / 5時間 42%・週 31%',
+			'Codex  main / 5時間 18%・週 9%',
+		]);
 	});
 
 	test('counts the blocking panes apart from the finished ones', () => {
