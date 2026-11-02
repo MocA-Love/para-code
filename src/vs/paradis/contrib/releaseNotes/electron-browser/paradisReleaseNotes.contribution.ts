@@ -18,7 +18,6 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { getParadisChangelogFeedUrl } from '../../../../platform/update/common/paradisUpdateChannel.js';
 import { asText, IRequestService } from '../../../../platform/request/common/request.js';
@@ -30,12 +29,15 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { mergeChangelogs, parseParadisChangelog } from '../common/paradisChangelogModel.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisChangelogLifecycle } from './paradisChangelogLifecycle.js';
-import { ParadisChangelogModal, toViewReleases } from './paradisChangelogModal.js';
+import { ParadisChangelogView, toViewReleases } from './paradisChangelogView.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
+import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId, paradisRegisterHubArea } from '../../paradisHub/electron-browser/paradisHub.js';
+import { paradisOpenHub } from '../../paradisHub/electron-browser/paradisHubOpen.js';
 
 /**
  * 歯車メニュー(左下)の「更新の確認...」の下に「更新履歴」を追加する。
- * Para Code (fork) が本家に加えた変更を、モーダルのバージョンナビゲーター
- * (paradisChangelogModal.ts)でユーザーが確認できるようにする。
+ * Para Code (fork) が本家に加えた変更を、統合のモーダルの「更新履歴」の領域
+ * (paradisChangelogView.ts)でユーザーが確認できるようにする。
  * 履歴の追記ルールは CLAUDE.md の「更新履歴（アプリ内 changelog）の運用」を参照。
  */
 const PARADIS_SHOW_CHANGELOG_COMMAND_ID = 'paradis.showChangelog';
@@ -50,45 +52,89 @@ class ParadisShowChangelogAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor): Promise<void> {
-		// ServicesAccessor は await を挟むと無効になるため、全サービスを先に取り出す
-		const commandService = accessor.get(ICommandService);
-		const editorService = accessor.get(IEditorService);
-		const fileService = accessor.get(IFileService);
-		const layoutService = accessor.get(ILayoutService);
-		const storageService = accessor.get(IStorageService);
-		const productService = accessor.get(IProductService);
-		const requestService = accessor.get(IRequestService);
-
-		// パッケージ版では out へ .md を同梱している (build/next/paradisResources.ts の
-		// paradisDesktopResourcePatterns にグロブを登録済み)
-		const changelogUri = FileAccess.asFileUri('vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md');
-		let bundledMd: string;
-		try {
-			bundledMd = (await fileService.readFile(changelogUri)).value.toString();
-		} catch {
-			// 同梱 md を読めない(リリース形態の想定外の変化)場合は従来の表示へフォールバックする
-			try {
-				await commandService.executeCommand('markdown.showPreview', changelogUri);
-			} catch {
-				await editorService.openEditor({ resource: changelogUri, options: { pinned: true } });
-			}
-			return;
-		}
-		openParadisChangelogModal(bundledMd, {
-			layoutService,
-			storageService,
-			productService,
-			requestService,
-			commandService
-		});
+	/** @param version 開いたときに出すバージョン（`paracode-N` か N）。 */
+	run(accessor: ServicesAccessor, version?: unknown): void {
+		paradisOpenHub(accessor, ParadisHubAreaId.Changelog, typeof version === 'string' || typeof version === 'number' ? String(version) : undefined);
 	}
 }
 
 registerAction2(ParadisShowChangelogAction);
 
+/** 統合のモーダルの「更新履歴」の領域。同梱の md を読んでから表示を作り、サーバーから最新の md も取りに行く。 */
+class ParadisChangelogArea extends Disposable implements IParadisHubAreaView {
+
+	private view: ParadisChangelogView | undefined;
+	private pendingVersion: string | undefined;
+
+	constructor(
+		private readonly containers: IParadisHubAreaContainers,
+		private readonly host: IParadisHubHost,
+		@ICommandService private readonly commandService: ICommandService,
+		@IEditorService private readonly editorService: IEditorService,
+		@IFileService private readonly fileService: IFileService,
+		@IStorageService private readonly storageService: IStorageService,
+		@IProductService private readonly productService: IProductService,
+		@IRequestService private readonly requestService: IRequestService,
+	) {
+		super();
+		void this.load();
+	}
+
+	private async load(): Promise<void> {
+		// パッケージ版では out へ .md を同梱している (build/next/paradisResources.ts の
+		// paradisDesktopResourcePatterns にグロブを登録済み)
+		const changelogUri = FileAccess.asFileUri('vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md');
+		let bundledMd: string;
+		try {
+			bundledMd = (await this.fileService.readFile(changelogUri)).value.toString();
+		} catch {
+			// 同梱 md を読めない(リリース形態の想定外の変化)場合は、器を閉じて従来の表示へフォールバックする
+			if (this._store.isDisposed) {
+				return;
+			}
+			this.host.close();
+			try {
+				await this.commandService.executeCommand('markdown.showPreview', changelogUri);
+			} catch {
+				await this.editorService.openEditor({ resource: changelogUri, options: { pinned: true } });
+			}
+			return;
+		}
+		if (this._store.isDisposed) {
+			return;
+		}
+		this.view = this._register(openParadisChangelogView(this.containers, bundledMd, {
+			storageService: this.storageService,
+			productService: this.productService,
+			requestService: this.requestService,
+			commandService: this.commandService,
+		}));
+		this.view.reveal(this.pendingVersion);
+	}
+
+	reveal(version: string | undefined): void {
+		if (this.view) {
+			this.view.reveal(version);
+		} else {
+			this.pendingVersion = version;
+		}
+	}
+
+	setVisible(_visible: boolean): void { }
+
+	layout(_width: number): void { }
+}
+
+paradisRegisterHubArea({
+	id: ParadisHubAreaId.Changelog,
+	// allow-any-unicode-next-line
+	label: localize('paradis.changelog.areaLabel', "更新履歴"),
+	order: 50,
+	create: (instantiationService, containers, host) => instantiationService.createInstance(ParadisChangelogArea, containers, host),
+});
+
 /**
- * モーダル(案B: バージョンナビゲーター型)で更新履歴を開く。
+ * 統合のモーダルの「更新履歴」の領域に、更新履歴を描く。
  *
  * 基本データは「このビルドに同梱された md」。そこへ update サーバー
  * (cloudflare/update-server の GET /api/changelog/:quality。:quality は更新フィードと同じ
@@ -104,7 +150,7 @@ const PARADIS_CHANGELOG_LAST_READ_KEY = 'paradis.changelog.lastReadVersion';
 
 const CHANGELOG_SANITY_RE = /^##\s+paracode-\d+/m;
 
-const changelogLifecycle = new ParadisChangelogLifecycle<ParadisChangelogModal>();
+const changelogLifecycle = new ParadisChangelogLifecycle<ParadisChangelogView>();
 
 // abstractUpdateService.getUpdateAccessHeaders と同じ契約(CF Access サービストークン)。
 // electron-main 層の関数は renderer から import できないため、同じヘッダーをここで組む。
@@ -166,18 +212,18 @@ async function fetchRemoteChangelogMd(
 }
 
 interface IParadisChangelogServices {
-	readonly layoutService: ILayoutService;
 	readonly storageService: IStorageService;
 	readonly productService: IProductService;
 	readonly requestService: IRequestService;
 	readonly commandService: ICommandService;
 }
 
-function openParadisChangelogModal(
+function openParadisChangelogView(
+	containers: IParadisHubAreaContainers,
 	bundledMd: string,
 	services: IParadisChangelogServices,
-): void {
-	const { layoutService, storageService, productService, requestService, commandService } = services;
+): ParadisChangelogView {
+	const { storageService, productService, requestService, commandService } = services;
 
 	const bundledReleases = parseParadisChangelog(bundledMd);
 	// 同梱 md の先頭が「このビルドが出荷された時点の最新リリース」= インストール済みバージョン
@@ -188,8 +234,8 @@ function openParadisChangelogModal(
 	const initialLastReadVersion = storageService.getNumber(PARADIS_CHANGELOG_LAST_READ_KEY, StorageScope.APPLICATION, 0);
 	const cachedFetchedAt = storageService.getNumber(PARADIS_CHANGELOG_FETCHED_AT_KEY, StorageScope.APPLICATION, 0);
 
-	const generation = changelogLifecycle.open(() => new ParadisChangelogModal(
-		layoutService.activeContainer,
+	const generation = changelogLifecycle.open(() => new ParadisChangelogView(
+		containers,
 		{
 			releases: toViewReleases(mergeChangelogs(cachedRemoteReleases, bundledReleases), installedVersion),
 			installedVersion
@@ -211,7 +257,7 @@ function openParadisChangelogModal(
 	// updateUrl 未設定(開発ビルド等)ではサーバー問い合わせをしない
 	if (!getParadisChangelogFeedUrl(productService)) {
 		generation.finishFetch();
-		return;
+		return modal;
 	}
 
 	modal.setRemoteState({ kind: 'fetching' });
@@ -240,6 +286,7 @@ function openParadisChangelogModal(
 			modal.setRemoteState({ kind: 'error' });
 		}
 	}).finally(() => generation.finishFetch());
+	return modal;
 }
 
 // 歯車メニューの「更新の確認...」(update.ts の appendUpdateMenuItems が使う group '7_update') の

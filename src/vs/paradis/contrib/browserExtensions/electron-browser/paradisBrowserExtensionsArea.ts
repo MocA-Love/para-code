@@ -6,14 +6,14 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 内蔵ブラウザの Chrome 拡張機能（試験的）の管理モーダル。左に一覧（プロファイルごとの有効/無効）、右に選んだ 1 件の詳細
-// （権限・背景の処理の状態とログ・DevTools・読み込み直す・削除。Q527 の案 B）。モーダルの殻はブラウザプロファイルの管理と
-// 同じもの（backdrop が overlayManager に登録済みで、表示中はページの WebContentsView が止まる）を広げて使う。
+// 内蔵ブラウザの Chrome 拡張機能（試験的）の管理。統合のモーダルの「ブラウザ拡張機能」の領域（Q537 の 38）。
+// 左のナビに入れた拡張機能の一覧と追加の入口、右に選んだ 1 件の詳細（有効にする場所・この場所での設定・権限・
+// 背景の処理の状態とログ・DevTools・読み込み直す・削除。Q527 の案 B の 2 列のまま）。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -21,10 +21,12 @@ import { localize } from '../../../../nls.js';
 import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
+import { paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
+import { paradisOpenHub } from '../../paradisHub/electron-browser/paradisHubOpen.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
-import { ParadisProfileModal } from '../../browserProfiles/electron-browser/paradisBrowserProfileDialogs.js';
 import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisBrowserProfilesService } from '../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
 import {
@@ -134,7 +136,7 @@ const WORKER_LOG_POLL_MS = 1_500;
 /** 画面に残すログの行（main が覚えている数と同じ）。 */
 const MAX_SHOWN_LOG_LINES = 200;
 
-class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
+export class ParadisBrowserExtensionsArea extends Disposable implements IParadisHubAreaView {
 
 	private readonly _mainService: IParadisBrowserExtensionsMainService;
 	private readonly _noticeElement: HTMLElement;
@@ -142,7 +144,8 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	private readonly _listElement: HTMLElement;
 	private readonly _detailElement: HTMLElement;
 	private readonly _messageElement: HTMLElement;
-	private readonly _addButton: HTMLButtonElement;
+	private readonly _addItem: HTMLElement;
+	private readonly _storeRow: HTMLElement;
 	private readonly _storeInput: HTMLInputElement;
 	private readonly _storeButton: HTMLButtonElement;
 	/** 一覧と詳細の作り直しごとに捨てるリスナー置き場。 */
@@ -150,7 +153,6 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	private readonly _noticeStore = this._register(new DisposableStore());
 	private readonly _logTimer = this._register(new IntervalTimer());
 	private readonly _workersChanged = this._register(new RunOnceScheduler(() => void this._refreshWorkers(), 300));
-	private _noticeButton: HTMLButtonElement | undefined;
 	private _logElement: HTMLElement | undefined;
 	/** 一覧の行（拡張機能の id → 行）。選び直した行へフォーカスを戻すのに使う。 */
 	private readonly _rowElements = new Map<string, HTMLElement>();
@@ -166,28 +168,49 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	private _busy = false;
 
 	constructor(
+		containers: IParadisHubAreaContainers,
+		private readonly host: IParadisHubHost,
 		@IMainProcessService mainProcessService: IMainProcessService,
 		@IParadisBrowserProfilesService private readonly profilesService: IParadisBrowserProfilesService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
-		@ILayoutService layoutService: ILayoutService,
 		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
 	) {
-		super(localize('paradis.browserExtensions.title', "ブラウザの拡張機能（試験的）"), Codicon.extensions, layoutService);
+		super();
 		this._mainService = ProxyChannel.toService<IParadisBrowserExtensionsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL));
-		// 一覧＋詳細の 2 列にするので、殻（ブラウザプロファイルの管理と共通）を広げる
-		this.body.parentElement?.classList.add('pbe-wide');
 
-		dom.append(this.body, $('p.pbpm-description')).textContent = localize(
+		// ---------- 左のナビ: 入れた拡張機能 / 追加 / 設定 ----------
+		const nav = containers.nav;
+		paradisHubNavCaption(nav, localize('paradis.browserExtensions.listLabel', "入れた拡張機能"));
+		this._listElement = dom.append(nav, $('.pbe-list'));
+		this._listElement.setAttribute('role', 'listbox');
+		this._listElement.setAttribute('aria-label', localize('paradis.browserExtensions.listLabel', "入れた拡張機能"));
+
+		paradisHubNavCaption(nav, localize('paradis.browserExtensions.addCaption', "追加"));
+		const storeItem = paradisHubNavItem(nav, localize('paradis.browserExtensions.addFromStore', "Chrome ウェブストアから"), { icon: Codicon.add });
+		this._register(dom.addDisposableListener(storeItem.element, dom.EventType.CLICK, () => this._showStoreRow()));
+		const folderItem = paradisHubNavItem(nav, localize('paradis.browserExtensions.add', "フォルダから読み込む…"), { icon: Codicon.newFolder });
+		this._addItem = folderItem.element;
+		this._register(dom.addDisposableListener(folderItem.element, dom.EventType.CLICK, () => {
+			if (!this._addItem.classList.contains('is-disabled')) {
+				void this._addFromFolder();
+			}
+		}));
+		paradisHubNavCaption(nav, localize('paradis.browserExtensions.settingsCaption', "設定"));
+		const settingsItem = paradisHubNavItem(nav, localize('paradis.browserExtensions.settingsLink', "内蔵ブラウザ・拡張機能"), { icon: Codicon.settingsGear, external: true });
+		this._register(dom.addDisposableListener(settingsItem.element, dom.EventType.CLICK, () => this.host.open(ParadisHubAreaId.Settings, 'psd-sec-browser')));
+
+		// ---------- 右の本文: 説明・お知らせ・有効にする場所・ストアから追加・メッセージ・詳細 ----------
+		containers.content.classList.add('paradis-browser-extensions-area');
+		const body = dom.append(containers.content, $('.pbe-area-body'));
+		dom.append(body, $('p.pbpm-description')).textContent = localize(
 			'paradis.browserExtensions.description',
 			"拡張機能は、入れたタブで開いたページの中身を読み書きできます。信頼できるものだけ入れてください。エージェントのタブ・使い捨てのタブには入りません。SSH 先のページには、「SSH 先のページでも使う」をオンにした拡張機能だけが入ります。",
 		);
-		this._noticeElement = dom.append(this.body, $('.pbe-notice'));
+		this._noticeElement = dom.append(body, $('.pbe-notice'));
 
-		const columns = dom.append(this.body, $('.pbe-columns'));
-		const side = dom.append(columns, $('.pbe-side'));
-		const profileRow = dom.append(side, $('label.pbe-profile'));
+		const profileRow = dom.append(body, $('label.pbe-profile'));
 		dom.append(profileRow, $('span')).textContent = localize('paradis.browserExtensions.profile', "有効にする場所");
 		this._profileSelect = dom.append(profileRow, $<HTMLSelectElement>('select.pbe-select'));
 		this._register(dom.addDisposableListener(this._profileSelect, 'change', () => {
@@ -195,13 +218,14 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 			this._render();
 		}));
 
-		// Chrome ウェブストアのリンクか ID を貼って入れる（外と話すのは「追加」を押したときだけ）
-		const storeRow = dom.append(side, $('.pbe-store'));
-		this._storeInput = dom.append(storeRow, $<HTMLInputElement>('input.pbpm-input.pbe-store-input'));
+		// Chrome ウェブストアのリンクか ID を貼って入れる（外と話すのは「追加」を押したときだけ）。ナビの「Chrome ウェブストアから」で出す
+		this._storeRow = dom.append(body, $('.pbe-store'));
+		this._storeRow.style.display = 'none';
+		this._storeInput = dom.append(this._storeRow, $<HTMLInputElement>('input.pbpm-input.pbe-store-input'));
 		this._storeInput.type = 'text';
 		this._storeInput.placeholder = localize('paradis.browserExtensions.store.placeholder', "Chrome ウェブストアのリンクか拡張機能の ID");
 		this._storeInput.setAttribute('aria-label', localize('paradis.browserExtensions.store.label', "Chrome ウェブストアから追加する拡張機能のリンクか ID"));
-		this._storeButton = dom.append(storeRow, $<HTMLButtonElement>('button.pbpm-btn.secondary'));
+		this._storeButton = dom.append(this._storeRow, $<HTMLButtonElement>('button.pbpm-btn.secondary'));
 		this._storeButton.type = 'button';
 		this._storeButton.textContent = localize('paradis.browserExtensions.store.add', "ストアから追加");
 		this._register(dom.addDisposableListener(this._storeButton, dom.EventType.CLICK, () => void this._addFromWebStore()));
@@ -212,21 +236,32 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 			}
 		}));
 
-		this._listElement = dom.append(side, $('.pbpm-list.pbe-list'));
-		this._listElement.setAttribute('role', 'listbox');
-		this._listElement.setAttribute('aria-label', localize('paradis.browserExtensions.listLabel', "入れた拡張機能"));
-		this._messageElement = dom.append(side, $('.pbe-message'));
+		this._messageElement = dom.append(body, $('.pbe-message'));
 		this._messageElement.setAttribute('role', 'status');
-		this._detailElement = dom.append(columns, $('.pbe-detail'));
-
-		this._addButton = this.appendButton(localize('paradis.browserExtensions.add', "フォルダから読み込む…"), 'secondary', () => void this._addFromFolder());
-		this.appendButton(localize('paradis.browserExtensions.done', "閉じる"), 'primary', () => this.close());
+		this._detailElement = dom.append(body, $('.pbe-detail'));
 
 		this._register(this.profilesService.onDidChangeProfiles(() => this._renderProfiles()));
 		// 背景の処理が動き出した・止まった・起動に失敗した: 開いている画面にも出す（続けて来ても 1 回にまとめる）
 		this._register(this._mainService.onDidChangeWorkers(() => this._workersChanged.schedule()));
 		this._renderProfiles();
 		void this._refresh();
+	}
+
+	reveal(extensionId: string | undefined): void {
+		if (extensionId && this._state?.extensions.some(extension => extension.id === extensionId) && this._selectedId !== extensionId) {
+			this._selectedId = extensionId;
+			this._render();
+		}
+	}
+
+	setVisible(_visible: boolean): void { }
+
+	layout(_width: number): void { }
+
+	/** ナビの「Chrome ウェブストアから」: リンクか ID を貼る欄を出してフォーカスする。 */
+	private _showStoreRow(): void {
+		this._storeRow.style.display = '';
+		this._storeInput.focus();
 	}
 
 	private async _refresh(): Promise<void> {
@@ -269,7 +304,6 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	/** 試験的な設定の状態（オフ・再起動待ち）を出す。 */
 	private _renderNotice(): void {
 		this._noticeStore.clear();
-		this._noticeButton = undefined;
 		dom.clearNode(this._noticeElement);
 		const state = this._state;
 		if (!state || (state.active && state.setting)) {
@@ -280,7 +314,6 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		const text = dom.append(this._noticeElement, $('span'));
 		const button = dom.append(this._noticeElement, $<HTMLButtonElement>('button.pbpm-btn.primary'));
 		button.type = 'button';
-		this._noticeButton = button;
 		if (!state.active && !state.setting) {
 			text.textContent = localize('paradis.browserExtensions.notice.off', "試験的な機能です。今はオフになっています。オンにすると、再起動の後に使えます。");
 			button.textContent = localize('paradis.browserExtensions.notice.turnOn', "オンにする");
@@ -306,24 +339,20 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		this._rowStatusElements.clear();
 		this._workerErrorElement = undefined;
 		this._workerStatusElement = undefined;
-		this.contentFocusables.length = 0;
-		this.contentFocusables.push(this._profileSelect, this._storeInput, this._storeButton);
-		if (this._noticeButton) {
-			this.contentFocusables.push(this._noticeButton);
-		}
 		dom.clearNode(this._listElement);
 		dom.clearNode(this._detailElement);
 		const state = this._state;
-		this._addButton.disabled = !state?.active || this._busy;
+		this._addItem.classList.toggle('is-disabled', !state?.active || this._busy);
+		this._addItem.setAttribute('aria-disabled', String(!state?.active || this._busy));
 		this._storeInput.disabled = !state?.active || this._busy;
 		this._storeButton.disabled = !state?.active || this._busy;
 		if (!state) {
-			this.focusModal();
 			return;
 		}
 		if (state.extensions.length === 0) {
-			dom.append(this._listElement, $('.pbpm-empty')).textContent = localize('paradis.browserExtensions.emptyWithStore', "まだ拡張機能がありません。Chrome ウェブストアの拡張機能のリンクを上に貼って「ストアから追加」を押すか、展開済みの拡張機能のフォルダを「フォルダから読み込む…」で選んでください。");
-			this.focusModal();
+			dom.append(this._listElement, $('.pbe-list-empty')).textContent = localize('paradis.browserExtensions.emptyNav', "まだありません");
+			dom.append(this._detailElement, $('.pbpm-empty')).textContent = localize('paradis.browserExtensions.emptyWithStore', "まだ拡張機能がありません。左の「Chrome ウェブストアから」でリンクか ID を貼って「ストアから追加」を押すか、展開済みの拡張機能のフォルダを「フォルダから読み込む…」で選んでください。");
+			this._storeRow.style.display = '';
 			return;
 		}
 		if (!state.extensions.some(extension => extension.id === this._selectedId)) {
@@ -336,7 +365,6 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		if (selected) {
 			this._renderDetail(selected, state.active);
 		}
-		this.focusModal();
 	}
 
 	private _appendIcon(parent: HTMLElement, extension: IParadisBrowserExtensionView, large: boolean): void {
@@ -353,12 +381,12 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	/** 一覧の 1 行（アイコン・名前・状態・この場所で有効にするチェック）。押すと詳細の列に出す。 */
 	private _renderListRow(extension: IParadisBrowserExtensionView, active: boolean): void {
 		const selected = extension.id === this._selectedId;
-		const row = dom.append(this._listElement, $('.pbpm-row.pbe-list-row'));
+		const row = dom.append(this._listElement, $('.phub-nav-item.pbe-list-row'));
 		row.classList.toggle('is-selected', selected);
 		row.setAttribute('role', 'option');
 		row.setAttribute('aria-selected', String(selected));
-		row.tabIndex = 0;
-		this.contentFocusables.push(row);
+		// Tab で止まるのは選んでいる行だけ（ほかへは上下の矢印で移る。器の paradisHubDialog.ts）
+		row.tabIndex = selected ? 0 : -1;
 		this._rowElements.set(extension.id, row);
 		this._appendIcon(row, extension, false);
 		const info = dom.append(row, $('.pbpm-info'));
@@ -366,14 +394,6 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		const status = dom.append(info, $('.pbpm-meta'));
 		this._rowStatusElements.set(extension.id, status);
 		this._fillRowStatus(status, extension);
-		const toggle = dom.append(row, $<HTMLInputElement>('input.pbe-toggle'));
-		toggle.type = 'checkbox';
-		toggle.checked = extension.enabledIn.includes(this._profile);
-		toggle.disabled = !active || this._busy;
-		toggle.setAttribute('aria-label', localize('paradis.browserExtensions.toggle', "「{0}」をこの場所で有効にする", extension.name));
-		this.contentFocusables.push(toggle);
-		this._renderStore.add(dom.addDisposableListener(toggle, 'change', () => this._setEnabled(extension, toggle.checked)));
-		this._renderStore.add(dom.addDisposableListener(toggle, dom.EventType.CLICK, event => event.stopPropagation()));
 		const select = () => {
 			if (this._selectedId !== extension.id) {
 				this._selectedId = extension.id;
@@ -570,13 +590,9 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	private _renderOptions(parent: HTMLElement, extension: IParadisBrowserExtensionView, active: boolean): void {
 		const section = this._appendSection(parent, localize('paradis.browserExtensions.section.options', "この場所での設定"));
 		const enabled = dom.append(section, $<HTMLLabelElement>('label.pbe-row-option'));
-		const enabledBox = dom.append(enabled, $<HTMLInputElement>('input'));
-		enabledBox.type = 'checkbox';
-		enabledBox.checked = extension.enabledIn.includes(this._profile);
-		enabledBox.disabled = !active || this._busy;
+		const enabledSwitch = this._renderStore.add(new ParadisSwitch(enabled, { checked: extension.enabledIn.includes(this._profile), disabled: !active || this._busy }));
 		dom.append(enabled, $('span')).textContent = localize('paradis.browserExtensions.enabledHere', "この場所で有効にする");
-		this.contentFocusables.push(enabledBox);
-		this._renderStore.add(dom.addDisposableListener(enabledBox, 'change', () => this._setEnabled(extension, enabledBox.checked)));
+		this._renderStore.add(enabledSwitch.onDidChange(checked => this._setEnabled(extension, checked)));
 
 		const options: IExtensionOption[] = [];
 		if (extension.userScripts) {
@@ -610,13 +626,9 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		}
 		for (const option of options) {
 			const label = dom.append(section, $<HTMLLabelElement>('label.pbe-row-option'));
-			const box = dom.append(label, $<HTMLInputElement>('input'));
-			box.type = 'checkbox';
-			box.checked = option.checked;
-			box.disabled = !active || this._busy;
+			const optionSwitch = this._renderStore.add(new ParadisSwitch(label, { checked: option.checked, disabled: !active || this._busy }));
 			dom.append(label, $('span')).textContent = option.label;
-			this.contentFocusables.push(box);
-			this._renderStore.add(dom.addDisposableListener(box, 'change', () => void this._run(() => option.run(box.checked))));
+			this._renderStore.add(optionSwitch.onDidChange(checked => void this._run(() => option.run(checked))));
 			dom.append(section, $('.pbe-option-note')).textContent = option.note;
 		}
 		if (extension.touchesPages) {
@@ -654,7 +666,6 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		log.setAttribute('role', 'log');
 		log.setAttribute('aria-label', localize('paradis.browserExtensions.worker.logLabel', "背景の処理のログ"));
 		log.tabIndex = 0;
-		this.contentFocusables.push(log);
 		this._logElement = log;
 		const id = extension.id;
 		const empty = dom.append(log, $('.pbe-log-empty'));
@@ -709,7 +720,6 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		button.type = 'button';
 		button.textContent = label;
 		button.disabled = disabled || this._busy;
-		this.contentFocusables.push(button);
 		this._renderStore.add(dom.addDisposableListener(button, 'click', () => void run()));
 		return button;
 	}
@@ -728,7 +738,6 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		const confirm = dom.append(buttons, $<HTMLButtonElement>('button.pbpm-btn.danger'));
 		confirm.type = 'button';
 		confirm.textContent = localize('paradis.browserExtensions.confirmRemove', "削除する");
-		this.contentFocusables.push(cancel, confirm);
 		this._renderStore.add(dom.addDisposableListener(cancel, 'click', () => this._render()));
 		this._renderStore.add(dom.addDisposableListener(confirm, 'click', () => void this._run(() => this._mainService.remove(extension.id))));
 		confirm.focus();
@@ -799,7 +808,7 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 	}
 }
 
-/** 管理モーダルを開く。 */
+/** 統合のモーダルの「ブラウザ拡張機能」の領域を開く。 */
 export function paradisShowBrowserExtensionsDialog(instantiationService: IInstantiationService): void {
-	instantiationService.createInstance(ParadisBrowserExtensionsDialog);
+	instantiationService.invokeFunction(accessor => paradisOpenHub(accessor, ParadisHubAreaId.Extensions));
 }
