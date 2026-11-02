@@ -15,10 +15,10 @@
 // ほかの chrome.privacy の設定は Para Code に同じものが無く、詰め物が not_controllable と答えて set を断る（paradisInstallPrivacy）。
 
 import { promises as fs } from 'fs';
-import { dirname } from '../../../../base/common/path.js';
 import { PARADIS_SHIM_PRIVACY_NAMESPACE } from '../common/paradisBrowserExtensionShim.js';
 import { IParadisExtensionApiCaller, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 
 /** Chrome の値（Electron の setWebRTCIPHandlingPolicy と同じ）。 */
 export const PARADIS_WEBRTC_IP_HANDLING_POLICIES = ['default', 'default_public_and_private_interfaces', 'default_public_interface_only', 'disable_non_proxied_udp'] as const;
@@ -59,6 +59,7 @@ export class ParadisBrowserExtensionPrivacy {
 
 	private _state: State = {};
 	private _saving: Promise<void> = Promise.resolve();
+	private _writer: ParadisJsonStateWriter | undefined;
 	private _now = 0;
 
 	constructor(
@@ -177,12 +178,8 @@ export class ParadisBrowserExtensionPrivacy {
 	}
 
 	private _save(): Promise<void> {
-		const state = JSON.stringify(this._state);
-		this._saving = this._saving.then(async () => {
-			await fs.mkdir(dirname(this._path), { recursive: true });
-			await fs.writeFile(`${this._path}.tmp`, state);
-			await fs.rename(`${this._path}.tmp`, this._path);
-		}).catch(error => this._logService.warn('[paradis] could not save the browser extension privacy settings', error));
+		this._writer ??= new ParadisJsonStateWriter(this._path, true);
+		this._saving = this._writer.write(JSON.stringify(this._state)).catch(error => this._logService.warn('[paradis] could not save the browser extension privacy settings', error));
 		return this._saving;
 	}
 }

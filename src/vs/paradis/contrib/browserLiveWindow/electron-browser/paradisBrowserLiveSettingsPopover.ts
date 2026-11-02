@@ -11,6 +11,7 @@ import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import {
 	IParadisBrowserLiveViewState,
 	PARADIS_BROWSER_LIVE_MAX_COLUMNS,
@@ -162,15 +163,8 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 
 		// --- 開閉 ------------------------------------------------------------------------
 		const targetWindow = getWindow(container);
-		this._register(addDisposableListener(targetWindow.document, EventType.MOUSE_DOWN, event => {
-			const target = event.target;
-			// 要素でない target (テキストノード等) は「外側」として扱う。判定できないからと
-			// 開いたままにすると、閉じ方が分からない状態になる。
-			const inside = isHTMLElement(target) && (this.element.contains(target) || this.host.anchor.contains(target));
-			if (!inside) {
-				this.host.close(false);
-			}
-		}, true));
+		// 外側の押下で閉じる。押下の target は要素なので、要素かどうかは見ずに contains() だけで判定する（paradisAnchoredPopover.ts）
+		this._register(paradisWatchPopoverDismiss(targetWindow, { element: this.element, anchor: this.host.anchor, close: () => this.host.close(false), listenOnDocument: true }));
 		this._register(addDisposableListener(targetWindow.document, EventType.KEY_DOWN, event => {
 			if (new StandardKeyboardEvent(event).keyCode !== KeyCode.Escape) {
 				return;

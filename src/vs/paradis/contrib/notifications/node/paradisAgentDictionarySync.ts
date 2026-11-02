@@ -23,7 +23,7 @@ import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { dirname, join } from '../../../../base/common/path.js';
+import { join } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
@@ -52,6 +52,7 @@ import {
 	paradisVoiceTuningArgs,
 	paradisVoiceTuningFromConfig,
 } from '../common/paradisVoiceTuning.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 
 /** `--version` も `--set-dictionary` も設定を 1 つ書くだけ（ロック待ちは aivis-mcp 側で 5 秒まで）。 */
 const RUN_TIMEOUT_MS = 10_000;
@@ -341,11 +342,8 @@ export class ParadisAgentDictionarySyncService {
 
 	private async writeWritten(state: IParadisAgentWrittenState): Promise<void> {
 		try {
-			await fs.mkdir(dirname(this.statePath), { recursive: true });
-			const temp = `${this.statePath}.${process.pid}.tmp`;
 			const content = Object.keys(state.voiceSettings).length > 0 ? { ...state.dictionaries, voiceSettings: state.voiceSettings } : state.dictionaries;
-			await fs.writeFile(temp, JSON.stringify(content), { encoding: 'utf8', mode: 0o600 });
-			await fs.rename(temp, this.statePath);
+			await paradisWriteFileAtomic(this.statePath, JSON.stringify(content), { createParentMode: 0o777 });
 		} catch (error) {
 			this.options.logService.warn(`[ParadisAgentDictionary] could not remember the dictionary written to aivis-mcp: ${error instanceof Error ? error.message : String(error)}`);
 		}
