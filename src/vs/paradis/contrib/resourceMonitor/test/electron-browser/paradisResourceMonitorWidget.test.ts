@@ -11,6 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IParadisResourceMonitorSnapshot } from '../../common/paradisResourceMonitor.js';
+import { PARADIS_RESOURCE_TITLE_BAR_ITEMS, paradisResourceTitleBarDefault, paradisResourceTitleBarSettingKey } from '../../common/paradisResourceTitleBar.js';
 import { ParadisResourceMonitorClient } from '../../electron-browser/paradisResourceMonitorClient.js';
 import { IParadisResourceMonitorPanelOptions, ParadisResourceMonitorPanel } from '../../electron-browser/paradisResourceMonitorPanel.js';
 import { createParadisResourceMonitorWidget, IParadisResourceMonitorPollTimer, ParadisResourceMonitorWidget, paradisResourceMonitorPollingPolicy } from '../../electron-browser/paradisResourceMonitorWidget.js';
@@ -556,7 +557,7 @@ suite('ParadisResourceMonitorWidget', () => {
 			await flushMicrotasks();
 			await flushMicrotasks();
 			const button = container.querySelector('button')!;
-			button.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+			button.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
 			menuActions.find(action => action.id === 'paradis.resourceMonitor.toggle.disk')?.run();
 			assert.deepStrictEqual({
 				title: container.querySelector('.paradis-resource-monitor-trigger-text')?.textContent,
@@ -572,5 +573,45 @@ suite('ParadisResourceMonitorWidget', () => {
 		} finally {
 			widget.dispose();
 		}
+	});
+
+	test('keeps today\'s title with the default items, and leaves the SSH host name out of the menu in a local window', async () => {
+		const render = async (defaultMachineId: ParadisSystemUsageMachineId) => {
+			const defaults = new Map<string, boolean>([['paradis.resourceMonitor.enabled', true], ...PARADIS_RESOURCE_TITLE_BAR_ITEMS.map((item): [string, boolean] => [paradisResourceTitleBarSettingKey(item), paradisResourceTitleBarDefault(item)])]);
+			const configurationService = {
+				getValue: (key: string) => defaults.get(key),
+				onDidChangeConfiguration: () => ({ dispose() { } } satisfies IDisposable),
+			} as unknown as IConfigurationService;
+			let menuIds: string[] = [];
+			let anchorIsButton = false;
+			const contextMenuService = {
+				showContextMenu: (delegate: IContextMenuDelegate) => {
+					menuIds = delegate.getActions().map(action => action.id);
+					anchorIsButton = delegate.getAnchor() instanceof HTMLElement;
+				},
+			} as unknown as IContextMenuService;
+			const client = { getSnapshot: async () => createSnapshot(), switchToScope() { } } as unknown as ParadisResourceMonitorClient;
+			const instantiationService = { createInstance: () => client } as unknown as IInstantiationService;
+			const container = document.createElement('div');
+			const widget = new ParadisResourceMonitorWidget(container, { document: new TestDocument(), pollTimer: new TestIntervalTimer() }, instantiationService, configurationService, new TestSystemUsageModel(defaultMachineId), testCommandService, contextMenuService);
+			try {
+				await flushMicrotasks();
+				await flushMicrotasks();
+				const button = container.querySelector('button')!;
+				// キーボード（Shift+F10）で開くと右ボタンではないので、メニューはボタンの位置に出す
+				button.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 0 }));
+				return {
+					title: container.querySelector('.paradis-resource-monitor-trigger-text')?.textContent,
+					hostInMenu: menuIds.includes('paradis.resourceMonitor.toggle.machineName'),
+					anchorIsButton,
+				};
+			} finally {
+				widget.dispose();
+			}
+		};
+		assert.deepStrictEqual([await render('local'), await render('remote')], [
+			{ title: 'CPU 34% · RAM 71%', hostInMenu: false, anchorIsButton: true },
+			{ title: 'dev-server · CPU 82% · RAM 87%', hostInMenu: true, anchorIsButton: true },
+		]);
 	});
 });
