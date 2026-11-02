@@ -14,6 +14,7 @@
 
 import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { paradisDocxDiffAstHelpers } from '../../electron-browser/word/paradisDocxDiffWebviewAst.js';
 import {
 	IParadisDocxAnnotation,
 	IParadisDocxFiller,
@@ -28,6 +29,7 @@ import {
 	IParadisDocxDiffWebviewHost,
 	IParadisDocxPreviewApi,
 	buildParadisDocxDiffContext,
+	buildParadisDocxDiffHtml,
 	paradisDocxDiffWebviewMain,
 } from '../../electron-browser/paradisDocxDiffWebview.js';
 
@@ -152,7 +154,8 @@ function harness(original: IParadisDocxAstDocument, modified: IParadisDocxAstDoc
 		clearTimeout: () => { },
 	};
 
-	paradisDocxDiffWebviewMain(buildParadisDocxDiffContext('loading'), host);
+	const ctx = buildParadisDocxDiffContext('loading');
+	paradisDocxDiffWebviewMain(ctx, host, paradisDocxDiffAstHelpers(ctx));
 
 	const attrs = { seg: 'data-paradis-seg', diff: 'data-paradis-diff', ghost: 'data-paradis-ghost' };
 	return {
@@ -490,6 +493,15 @@ suite('Paradis Word diff webview', () => {
 		deepStrictEqual(test.lines('original'), ['本文', '<ghost:added:ゴースト>']);
 	});
 
+	test('埋め込んだ inline script が構文として読める（本体・AST の部分・ブートストラップを引数でつなぐ）', () => {
+		const html = buildParadisDocxDiffHtml({ original: '前', modified: '後', loading: '読み込み中' });
+		const inline = [...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)].map(match => match[1]);
+		const boot = inline.filter(source => source.includes('paradisDocxDiffAstHelpers') || source.includes('astHelpers'));
+		// 実行はせず、関数として組み立てられる（構文が壊れていない）ことだけを見る。
+		inline.forEach(source => new Function(source));
+		ok(boot.length === 1);
+	});
+
 	test('文字列化して実行しても動く（外側の識別子に依存していない）', async () => {
 		// この方式の唯一の不変条件は「関数が自己完結していること」。関数を直接呼ぶだけの
 		// テストでは、うっかりモジュールスコープを参照しても緑のままで、実機の webview だけが
@@ -497,6 +509,8 @@ suite('Paradis Word diff webview', () => {
 		const test = harness(document([simple('本文')]), document([simple('本文')]));
 		const source = `return (${paradisDocxDiffWebviewMain.toString()});`;
 		const revived = new Function(source)() as typeof paradisDocxDiffWebviewMain;
+		// AST の部分も、本番と同じく文字列化してから作り、名前ではなく引数で渡す。
+		const revivedAst = new Function(`return (${paradisDocxDiffAstHelpers.toString()});`)() as typeof paradisDocxDiffAstHelpers;
 		const posted: unknown[] = [];
 		let handler: ((message: ParadisDocxHostMessage) => void) | undefined;
 		const host: IParadisDocxDiffWebviewHost = {
@@ -504,7 +518,8 @@ suite('Paradis Word diff webview', () => {
 			post: message => posted.push(message),
 			onMessage: next => { handler = next; },
 		};
-		revived(buildParadisDocxDiffContext('loading'), host);
+		const ctx = buildParadisDocxDiffContext('loading');
+		revived(ctx, host, revivedAst(ctx));
 		deepStrictEqual(posted, [{ type: 'ready' }]);
 		handler!({ type: 'load', generation: 9, original: bytes(1), modified: bytes(2), assetPlaceholders: [] });
 		await new Promise(resolve => setTimeout(resolve, 0));
