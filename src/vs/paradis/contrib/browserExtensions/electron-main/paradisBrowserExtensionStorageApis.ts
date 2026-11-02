@@ -22,6 +22,7 @@ import { join } from '../../../../base/common/path.js';
 import { PARADIS_SHIM_STORAGE_RELAY_NAMESPACE, PARADIS_SHIM_STORAGE_SYNC_NAMESPACE } from '../common/paradisBrowserExtensionShim.js';
 import { paradisIsExtensionId } from '../common/paradisBrowserExtensions.js';
 import { IParadisExtensionApiCaller, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 
 /** Para Code が守る storage.sync の大きさの上限（書き込みの頻度は守らない）。 */
 export const PARADIS_STORAGE_SYNC_QUOTAS = { QUOTA_BYTES: 102_400, QUOTA_BYTES_PER_ITEM: 8192, MAX_ITEMS: 512 } as const;
@@ -145,9 +146,7 @@ export class ParadisBrowserExtensionSyncStore {
 				}
 				const target = this._file(place, extensionId);
 				await fs.mkdir(this._folder(place), { recursive: true });
-				const temporary = `${target}.tmp`;
-				await fs.writeFile(temporary, JSON.stringify(items));
-				await fs.rename(temporary, target);
+				await paradisWriteFileAtomic(target, JSON.stringify(items));
 			}
 		}).catch(error => this._logService.warn('[paradis] could not save browser extension sync storage', error));
 		return this._writing;

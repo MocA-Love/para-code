@@ -21,6 +21,7 @@ import type { Session } from 'electron';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import { paradisMatchesUrlPattern } from './paradisBrowserExtensionTabs.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 
 /** chrome.permissions.Permissions。 */
 export interface IParadisPermissionSet {
@@ -143,6 +144,7 @@ export class ParadisBrowserExtensionPermissions {
 	/** 場所 → 拡張機能の id → 後から許した権限。 */
 	private _state: State = {};
 	private _saving: Promise<void> = Promise.resolve();
+	private _writer: ParadisJsonStateWriter | undefined;
 	private readonly _gestures = new WeakMap<ParadisApiSession | Session, Map<string, number>>();
 	private readonly _pending = new Set<string>();
 	/** この起動で削除した拡張機能（削除と同時の書き込みが、消した権限を書き戻さないように）。 */
@@ -225,12 +227,8 @@ export class ParadisBrowserExtensionPermissions {
 	}
 
 	private _save(): Promise<void> {
-		const state = this._state;
-		this._saving = this._saving.then(async () => {
-			const temporary = `${this._path}.tmp`;
-			await fs.writeFile(temporary, JSON.stringify(state));
-			await fs.rename(temporary, this._path);
-		}).catch(error => this._logService.warn('[paradis] could not save the browser extension permission grants', error));
+		this._writer ??= new ParadisJsonStateWriter(this._path);
+		this._saving = this._writer.write(JSON.stringify(this._state)).catch(error => this._logService.warn('[paradis] could not save the browser extension permission grants', error));
 		return this._saving;
 	}
 

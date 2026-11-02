@@ -171,6 +171,7 @@ const WEB_STORE_PRELOAD = 'vs/paradis/contrib/browserExtensions/electron-browser
 /** chrome.userScripts の注入の preload（P9b）。 */
 const USER_SCRIPTS_PRELOAD = 'vs/paradis/contrib/browserExtensions/electron-browser/paradisUserScriptsPreload.js';
 import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
+import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 
 /** 拡張機能を読み込むセッションの持ち主（BrowserSession の一部）。 */
 export interface IParadisExtensionSessionOwner {
@@ -416,7 +417,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private _ledger: IParadisBrowserExtensionsLedger = PARADIS_EMPTY_EXTENSIONS_LEDGER;
 	private readonly _ready: Promise<void>;
 	/** 台帳を書く順番（同時に書かない）。 */
-	private _saving: Promise<void> = Promise.resolve();
+	private _ledgerWriter: ParadisJsonStateWriter | undefined;
 	/** 起動の時点の設定の値（切り替えは再起動で効く）。 */
 	readonly active: boolean;
 	/** 詰め物の呼び出しを受ける main 側（P4）。 */
@@ -819,18 +820,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 
 	/** 台帳を保存する（順番に）。保存できたら true。 */
 	private _save(): Promise<boolean> {
-		const ledger = this._ledger;
-		const saved = this._saving.then(async () => {
-			await fs.mkdir(this._root, { recursive: true });
-			const temporary = `${this._ledgerPath}.tmp`;
-			await fs.writeFile(temporary, JSON.stringify(paradisSerializeExtensionsLedger(ledger), undefined, '\t'));
-			await fs.rename(temporary, this._ledgerPath);
-			return true;
-		}).catch(error => {
+		this._ledgerWriter ??= new ParadisJsonStateWriter(this._ledgerPath, true);
+		const saved = this._ledgerWriter.write(JSON.stringify(paradisSerializeExtensionsLedger(this._ledger), undefined, '\t')).then(() => true, error => {
 			this._logService.warn('[paradis] could not save the browser extensions ledger', error);
 			return false;
 		});
-		this._saving = saved.then(() => undefined);
 		return saved;
 	}
 
