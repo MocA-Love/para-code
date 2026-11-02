@@ -92,6 +92,17 @@ suite('ParadisLimitsMonitor', () => {
 		assert.strictEqual(paradisLimitsFormatCountdown(undefined, Date.now()), undefined);
 	});
 
+	test('writes the time left in Japanese units', () => {
+		const now = 1_000_000_000_000;
+		const minute = 60_000;
+		assert.deepStrictEqual([
+			paradisLimitsFormatCountdown(now + (2 * 60 + 13) * minute, now),
+			paradisLimitsFormatCountdown(now + ((4 * 24 + 6) * 60) * minute, now),
+			paradisLimitsFormatCountdown(now + 35 * minute, now),
+			paradisLimitsFormatCountdown(now - minute, now),
+		], ['2時間13分', '4日6時間', '35分', undefined]);
+	});
+
 	test('uses the documented severity boundaries', () => {
 		assert.deepStrictEqual([
 			paradisLimitsSeverity(59.999),
@@ -211,7 +222,7 @@ suite('ParadisLimitsMonitor', () => {
 			paradisLimitsWindowView({ usedPercent: 80, resetsAt: now - 1 }, now),
 			paradisLimitsWindowView({ usedPercent: 80 }, now),
 		], [
-			{ kind: 'value', percent: 80, countdown: '1h 30m' },
+			{ kind: 'value', percent: 80, countdown: '1時間30分' },
 			{ kind: 'reset' },
 			{ kind: 'reset' },
 			{ kind: 'value', percent: 80 },
