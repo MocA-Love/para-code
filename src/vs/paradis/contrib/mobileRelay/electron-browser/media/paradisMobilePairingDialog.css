@@ -1,0 +1,104 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments) */
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * モバイル端末の接続の QR のモーダル（paradisMobilePairingDialog.ts）。箱の地・枠・角丸・影は共通の S 段
+ * （paradisModal.css）。幅は QR（240）と手順が並ぶように S 段の上限の 560 にする。
+ */
+
+.paradis-mobile-pairing-backdrop {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, 0.5);
+	/* 確認コードの確認（本家のダイアログ、z-index 2575）より下に置き、その裏に隠さない */
+	z-index: 2570;
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog.paradis-modal-s {
+	width: 560px;
+	outline: none;
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-header {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 35px;
+	padding: 0 var(--vscode-spacing-size80) 0 var(--vscode-spacing-size160);
+	flex: none;
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-body {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size160);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size240) var(--vscode-spacing-size160);
+}
+
+/* QR は白い余白込みの SVG。読み取りやすさのため拡大縮小でぼかさない */
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr {
+	flex: none;
+	width: 240px;
+	height: 240px;
+	border-radius: var(--vscode-cornerRadius-large);
+	image-rendering: pixelated;
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-steps {
+	margin: 0;
+	padding-left: var(--vscode-spacing-size160);
+	line-height: 1.6;
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-steps > li + li {
+	margin-top: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-footer {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160);
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	flex: none;
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-remaining {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	font-variant-numeric: tabular-nums;
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-remaining.expired {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-spacer {
+	flex: 1;
+}
+
+/* 本家の Button は横幅いっぱいに伸びるので、内容の幅に戻す */
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-footer > .monaco-text-button {
+	flex: none;
+	width: auto;
+}
