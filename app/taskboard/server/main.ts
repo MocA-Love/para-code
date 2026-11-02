@@ -24,7 +24,7 @@ import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoice
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
 import { listTask, TaskDetailFeed } from './taskDetail.js';
-import { archiveDoneTasks, archiveFile, TASK_BOARD_ARCHIVE_INTERVAL_MS } from './archive.js';
+import { archiveDoneTasks, archiveFile, listArchived, readArchive, restoreFromArchive, TASK_BOARD_ARCHIVE_INTERVAL_MS } from './archive.js';
 import { dataDir, Store, StoreBusyError, storeOwner, type ILocalSettings } from './store.js';
 import { excludeBoardFiles, git, GitWorkspaces, inspectClones, remoteUrl } from './workspaces.js';
 
@@ -367,6 +367,8 @@ async function main(restart?: IRestart): Promise<void> {
 
 	let engine!: TaskBoardEngine;
 	let broadcastTimer: NodeJS.Timeout | undefined;
+	/** ファイルへ移したタスクの数（ボードに戻したものは除く）。数え終わるまでは無い。 */
+	let archivedCount: number | undefined;
 	const sockets = new Set<WebSocket>();
 	/** 開いているタスクの活動と出力を、その画面にだけ送る。 */
 	const details = new TaskDetailFeed<WebSocket>({
@@ -498,6 +500,7 @@ async function main(restart?: IRestart): Promise<void> {
 		manual: [...sim.manual],
 		github: sync ? sync.getState() : { mode: 'off' },
 		runtime: runtime(),
+		...(archivedCount !== undefined ? { archivedCount } : {}),
 	});
 
 	// 認証は時間がかかることがあるので、フロー（個人のフォルダにログイン名が要る）の読み込みと並べて待つ
@@ -543,6 +546,15 @@ async function main(restart?: IRestart): Promise<void> {
 	sim.onEngineChange();
 
 	// 完了から 14 日経ったタスクを台帳から archive.jsonl へ移す（起動直後と 1 時間ごと。変更のたびには調べない）
+	const archivedTasks = async () => listArchived(await readArchive(archiveFile(store.directory)), taskId => engine.getTask(taskId) !== undefined);
+	/** 「完了」の列に出す、移したタスクの数を数え直して画面へ送る。 */
+	const recountArchived = async () => {
+		const count = (await archivedTasks()).length;
+		if (count !== archivedCount) {
+			archivedCount = count;
+			broadcastSoon();
+		}
+	};
 	const archiveOld = async () => {
 		if (closing) {
 			return;
@@ -556,6 +568,7 @@ async function main(restart?: IRestart): Promise<void> {
 			// 書けなかったタスクは台帳に残るので、次の回にやり直す
 			log(`archive failed: ${(err as Error).message}`);
 		}
+		await recountArchived().catch(err => log(`archive count failed: ${(err as Error).message}`));
 	};
 
 	/* ---------------- RPC ---------------- */
@@ -576,6 +589,11 @@ async function main(restart?: IRestart): Promise<void> {
 		sendInput: p => engine.sendInput(p.taskId, p.text),
 		sendKey: p => engine.sendKey(p.taskId, p.key),
 		removeTask: p => engine.removeTask(p.taskId),
+		archivedTasks: () => archivedTasks(),
+		restoreArchivedTask: async p => {
+			await restoreFromArchive(engine, archiveFile(store.directory), p.taskId);
+			await recountArchived();
+		},
 		answerManual: p => { sim.answerManual(p.sessionId, p.allow); },
 		adoptManual: p => {
 			const session = sim.manual.find(m => m.id === p.sessionId);

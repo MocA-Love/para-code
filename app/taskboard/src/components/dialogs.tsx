@@ -1,10 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
-import type { ITaskBoardFlow, ITaskBoardSnapshot, ITaskBoardStep, ITaskBoardTask, TaskBoardAgentKind } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardArchivedTask, ITaskBoardFlow, ITaskBoardSnapshot, ITaskBoardStep, ITaskBoardTask, TaskBoardAgentKind } from '@engine/paradisTaskBoard.js';
+import { rpc } from '../api.js';
 import { useApp } from '../context.js';
-import { KIND, stepName } from '../format.js';
-import { useStored } from '../hooks.js';
+import { ago, KIND, stepName } from '../format.js';
+import { useAsync, useStored } from '../hooks.js';
 import { Icon, type IconName } from '../icons.js';
 
 /** 共通の枠。Esc と背景のクリックで閉じ、開いたら最初の入力か主ボタンに合わせる。 */
@@ -259,6 +260,41 @@ export function ShortcutsDialog() {
 	return (
 		<Modal title="キーボード" icon="keyboard">
 			<div className="shortcuts">{rows.map(([k, d]) => <Fragment key={k}><kbd>{k}</kbd><span>{d}</span></Fragment>)}</div>
+		</Modal>
+	);
+}
+
+/** 完了から日が経って記録のファイルへ移したタスクの一覧。1 件ずつボードの「完了」に戻せる。 */
+export function ArchivedTasksDialog() {
+	const app = useApp();
+	const list = useAsync<readonly ITaskBoardArchivedTask[]>(() => rpc('archivedTasks', {}), []);
+	const [busy, setBusy] = useState<string | undefined>();
+	const now = Date.now();
+	return (
+		<Modal title="移したタスク" icon="issueClosed" size="lg" footer={<button className="btn" onClick={app.closeDialog}>閉じる</button>}>
+			<p style={{ marginTop: 0 }}>完了してから 14 日経ったタスクは、ボードの一覧から外して記録のファイルへ移しています。戻すと「完了」の列に出ます（そこから 14 日経つと、また移します）。</p>
+			{list.loading && !list.data ? <p className="faint">読み込んでいます…</p>
+				: list.error ? <p className="faint">読めませんでした: {list.error.message}</p>
+					: !list.data?.length ? <p className="faint">移したタスクはありません。</p>
+						: (
+							<div className="archived-list">
+								{list.data.map(t => (
+									<div key={t.id} className="archived-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
+										<div style={{ flex: 1, minWidth: 0 }}>
+											<div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
+											<div className="faint">{t.issue ? `${t.issue.repo} #${t.issue.number} · ` : ''}完了 {ago(t.finishedAt, now)}</div>
+										</div>
+										<button className="btn sm" disabled={busy !== undefined} onClick={async () => {
+											setBusy(t.id);
+											// 失敗しても一覧は読み直す（ほかの画面で戻された場合に消える）
+											await app.call('restoreArchivedTask', { taskId: t.id }, { title: 'ボードに戻しました', body: t.title, tone: 'green' });
+											setBusy(undefined);
+											list.reload();
+										}}>ボードに戻す</button>
+									</div>
+								))}
+							</div>
+						)}
 		</Modal>
 	);
 }
