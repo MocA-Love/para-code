@@ -33,6 +33,7 @@ import { IParadisAgentApprovalRequest, IParadisAgentBrowserTabsService, ParadisA
 import { countParadisDescendants, findParadisBookmarkByUrl, findParadisNodeById, findParadisParentFolderId, isParadisBookmarkFolder, ParadisBookmarkMoveError, ParadisBookmarkNode } from '../common/paradisBookmarkModel.js';
 import { PARADIS_BOOKMARK_MCP_CHANNEL, PARADIS_BOOKMARK_MCP_METHOD, PARADIS_BOOKMARK_URL_MAX_LENGTH, ParadisBookmarkToolRequest, ParadisBookmarkToolResult, paradisBookmarkToolTitle, paradisBookmarkToolTree, paradisBookmarkToolUrlAllowed } from '../common/paradisBookmarkTools.js';
 import { IParadisBookmarksService } from './paradisBookmarksService.js';
+import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 
 const MOVE_ERRORS: Readonly<Record<ParadisBookmarkMoveError, string>> = {
 	'not-found': 'No bookmark or folder has that "id". Call list_bookmarks for the current ids.',
@@ -145,8 +146,10 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 		if (command !== PARADIS_BOOKMARK_MCP_METHOD) {
 			throw new Error(`Method not found: ${command}`);
 		}
-		const [paneToken, request] = Array.isArray(arg) ? arg : [];
-		if (typeof paneToken !== 'string' || !isRequest(request)) {
+		const args = ParadisChannelArgs.from(arg);
+		const paneToken = args.string(0);
+		const request = args.at(1);
+		if (paneToken === undefined || !isRequest(request)) {
 			return fail('Para Code received a malformed bookmark request.') as T;
 		}
 		return await this.handle(paneToken, request, cancellationToken ?? CancellationToken.None) as T;

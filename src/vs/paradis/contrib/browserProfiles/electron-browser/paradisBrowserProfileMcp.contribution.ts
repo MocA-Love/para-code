@@ -58,6 +58,7 @@ import {
 import { IParadisBrowserProfile, PARADIS_BROWSER_PROFILE_COLORS, paradisIsDuplicateProfileName, paradisNormalizeProfileName } from '../common/paradisBrowserProfileModel.js';
 import { IParadisBrowserProfilesService } from './paradisBrowserProfilesService.js';
 import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
+import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 
 /**
  * 作ったペインの印。ペイントークンそのものは保存しない（台帳はアプリの保存領域に平文で残るため）。
@@ -100,23 +101,22 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 	}
 
 	async call<T>(_ctx: unknown, command: string, arg?: unknown, cancellationToken?: CancellationToken): Promise<T> {
-		const args = Array.isArray(arg) ? arg : [];
-		const token = typeof args[0] === 'string' ? args[0] : undefined;
-		const text = (index: number) => typeof args[index] === 'string' ? args[index] as string : undefined;
+		const args = ParadisChannelArgs.from(arg);
+		const token = args.string(0);
 		const cancellation = cancellationToken ?? CancellationToken.None;
 		switch (command) {
 			case PARADIS_BROWSER_PROFILE_MCP_METHOD:
-				return this._openBrowserProfile(token, text(1) ?? '', text(2), cancellation) as Promise<T>;
+				return this._openBrowserProfile(token, args.string(1) ?? '', args.string(2), cancellation) as Promise<T>;
 			case PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD:
 				return this._listProfiles(token) as Promise<T>;
 			case PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD:
-				return this._createProfile(token, text(1) ?? '') as Promise<T>;
+				return this._createProfile(token, args.string(1) ?? '') as Promise<T>;
 			case PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD:
-				return this._switchProfile(token, text(1) ?? '', text(2), cancellation) as Promise<T>;
+				return this._switchProfile(token, args.string(1) ?? '', args.string(2), cancellation) as Promise<T>;
 			case PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD:
-				return this._deleteProfile(token, text(1) ?? '') as Promise<T>;
+				return this._deleteProfile(token, args.string(1) ?? '') as Promise<T>;
 			case PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD:
-				return this._isPaneOwnedProfile(token, text(1) ?? '') as Promise<T>;
+				return this._isPaneOwnedProfile(token, args.string(1) ?? '') as Promise<T>;
 		}
 		throw new Error(`Method not found: ${command}`);
 	}
