@@ -111,36 +111,8 @@ import { SandboxHelperService } from '../../platform/sandbox/node/sandboxHelper.
 // for as long as they do (see those files for why)
 import { paradisTerminalReconnectionGraceTime } from '../../paradis/contrib/remoteTerminals/common/paradisTerminalGraceTime.js';
 import { paradisEnableRemotePtyHostDaemon } from '../../paradis/contrib/ptyDaemon/node/paradisRemotePtyHost.js';
-import { registerParadisPtyDaemonStatusForServer } from '../../paradis/contrib/ptyDaemon/node/paradisPtyDaemonStatusServer.js';
 import { registerParadisServerTerminalLifetime } from '../../paradis/contrib/remoteTerminals/node/paradisServerTerminalLifetime.js';
-// PARA-PATCH: channel that runs git on this machine for a connected client (registered below)
-import { registerParadisWorktreeGitForServer } from '../../paradis/contrib/workspaceSwitch/node/paradisWorktreeGitChannel.js';
-// PARA-PATCH: usage and limits are recorded on this machine, so a connected client asks here
-import { registerParadisCcusageForServer } from '../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
-import { registerParadisLimitsMonitorForServer } from '../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
-// PARA-PATCH: rtk keeps its savings log on the machine that ran the command (registered below)
-import { registerParadisRtkForServer } from '../../paradis/contrib/rtk/node/paradisRtkChannel.js';
-// PARA-PATCH: this machine's own load, for a connected client to show instead of its own
-import { registerParadisHostResourcesForServer } from '../../paradis/contrib/resourceMonitor/node/paradisHostResourcesChannel.js';
-// PARA-PATCH: agent session transcripts (~/.claude, ~/.codex) live on this machine, so a connected client's Session Resume view asks here
-import { registerParadisSessionResumeForServer } from '../../paradis/contrib/sessionResume/node/paradisSessionResumeChannel.js';
-// PARA-PATCH: a connected client's spaces live on this machine's disk, so the Space Disk usage view asks here
-import { registerParadisSpaceDiskForServer } from '../../paradis/contrib/spaceDisk/node/paradisSpaceDiskChannel.js';
-// PARA-PATCH: a page previewed from this machine reads its files from here, served on this machine's loopback and reached over a forwarded port
-import { registerParadisHtmlPreviewForServer } from '../../paradis/contrib/fileViewers/node/paradisHtmlPreviewChannel.js';
-// PARA-PATCH: new remote servers parse Office sources beside the files; old clients retain the legacy channel.
-import { registerParadisOfficeForServer } from '../../paradis/contrib/fileViewers/node/paradisOfficeServerChannel.js';
-// PARA-PATCH: a connected client's Codex state DB / rollouts live on this machine, so the terminal title tracker asks here
-import { registerParadisCodexTerminalTitleForServer } from '../../paradis/contrib/codexTerminalTitle/node/paradisCodexTerminalTitleChannel.js';
-// PARA-PATCH: a connected client's mobile find/grep needs ripgrep to run against this machine's files
-import { registerParadisRemoteSearchForServer } from '../../paradis/contrib/mobileRelay/node/paradisRemoteSearchChannel.js';
-// PARA-PATCH: the gh calls made while a client is connected happen here, and the sink that records
-// them is per-process, so nothing is counted unless this side owns one too (registered below)
-import { registerParadisGithubMetricsForServer } from '../../paradis/contrib/githubMetrics/node/paradisGithubMetricsChannel.js';
-// PARA-PATCH: while a client is connected, the ports it needs to inspect/kill are listening on
-// this machine, not the one showing the window (registered below)
-import { registerParadisPortListForServer } from '../../paradis/contrib/portList/node/paradisPortListChannelServer.js';
-// PARA-PATCH: single entry point for further fork server channels (see paradis.server.contribution.ts)
+// PARA-PATCH: every fork server channel, registered in order by paradis.server.contribution.ts
 import { registerParadisServerContributions } from '../../paradis/paradis.server.contribution.js';
 
 const eventPrefix = 'monacoworkbench';
@@ -465,52 +437,8 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 
 		socketServer.registerChannel(SANDBOX_HELPER_CHANNEL_NAME, new SandboxHelperChannel(new SandboxHelperService()));
 
-		// PARA-PATCH: expose the same git channel the shared process has, so a connected
-		// client can clone onto this machine. The shared process copy always runs git
-		// locally, so handing it a path on this side fails with ENOENT.
-		disposables.add(registerParadisWorktreeGitForServer(socketServer, logService));
-
-		// PARA-PATCH: the agents run here while a client is connected, so what they used is
-		// recorded in this machine's home. Counting it on the client side misses all of it.
-		disposables.add(registerParadisCcusageForServer(socketServer, logService, configurationService));
-		disposables.add(registerParadisLimitsMonitorForServer(socketServer, logService));
-		// PARA-PATCH: rtk records what it saved on the machine that ran the command, so while a
-		// client is connected those savings pile up here, not on the machine showing the window.
-		disposables.add(registerParadisRtkForServer(socketServer, logService));
-		// PARA-PATCH: while a client is connected, the terminals and agents run here, so
-		// "how busy is the machine" means this machine, not the one showing the window.
-		disposables.add(registerParadisHostResourcesForServer(socketServer, logService));
-		// PARA-PATCH: expose the same Session Resume channel the shared process has, so a connected
-		// client's Session Resume view can list/preview/search transcripts saved on this machine.
-		disposables.add(registerParadisSessionResumeForServer(socketServer, logService));
-		// PARA-PATCH: expose the same Space Disk channel the shared process has, so a connected
-		// client can measure disk usage for spaces that live on this machine.
-		disposables.add(registerParadisSpaceDiskForServer(socketServer, logService));
-		// PARA-PATCH: expose the same HTML preview server the shared process has, so a connected
-		// client can render a page that lives on this machine with its own files alongside it. The
-		// client forwards this port; nothing here is reachable from outside this machine.
-		disposables.add(registerParadisHtmlPreviewForServer(socketServer));
-		disposables.add(registerParadisOfficeForServer(socketServer, configurationService));
-		// PARA-PATCH: expose the same Codex terminal title channel the shared process has, so a
-		// connected client can read Codex thread metadata that lives on this machine.
-		disposables.add(registerParadisCodexTerminalTitleForServer(socketServer, logService));
-		// PARA-PATCH: expose the same ripgrep search channel the shared process has, so a connected
-		// client's mobile find/grep can search files that live on this machine.
-		disposables.add(registerParadisRemoteSearchForServer(socketServer, logService));
-		// PARA-PATCH: while a client is connected, the gh calls Para Code makes run here, and the
-		// sink that records them only exists in the process that owns this service. Without one on
-		// this side every call is dropped, so the client's GitHub usage view shows nothing at all.
-		disposables.add(registerParadisGithubMetricsForServer(socketServer, logService));
-		// PARA-PATCH: expose the same port-list channel the shared process has, so a connected
-		// client's title bar widget can search/kill ports that are actually listening on this machine.
-		disposables.add(registerParadisPortListForServer(socketServer, logService));
-		// PARA-PATCH: every fork channel registered through paradis.server.contribution.ts
-		disposables.add(registerParadisServerContributions(socketServer, accessor));
-
-		// PARA-PATCH: the daemon that outlives this server lives on this machine, so a connected
-		// client's status bar has to ask this side. Asking its own main process instead showed the
-		// client PC's daemon in a window whose terminals all run here — and offered to stop it.
-		disposables.add(registerParadisPtyDaemonStatusForServer(socketServer, ptyHostService, configurationService, environmentService.userDataPath, logService));
+		// PARA-PATCH: every fork channel (see paradis.server.contribution.ts)
+		disposables.add(registerParadisServerContributions(socketServer, accessor, logService, configurationService, ptyHostService, environmentService.userDataPath));
 
 		socketServer.registerChannel(REMOTE_TERMINAL_CHANNEL_NAME, new RemoteTerminalChannel(environmentService, logService, ptyHostService, productService, extensionManagementService, configurationService));
 
