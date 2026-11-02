@@ -17,7 +17,6 @@
 import { promises as fs } from 'fs';
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import type { IParadisPackedWorkbookData } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ownedParadisOfficeBytes, ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorker, type IParadisOfficeSemanticWorkerTimers, type ParadisOfficeSemanticWorkerFailure } from '../office/paradisOfficeSemanticWorkerQueue.js';
 import { createParadisOfficeWorker } from '../office/paradisOfficeWorkerDiagnostics.js';
 
@@ -27,9 +26,12 @@ export interface IParadisSpreadsheetParseWorkerRun {
 	readonly imagePixelBudget?: number;
 }
 
-/** worker の返事。解析の例外は文言だけを持ち帰る（ビューアがそのまま画面に出す）。 */
+/**
+ * worker の返事。ブックは書式を表にまとめた形の JSON のバイト列（`encodeParadisWorkbookJson`）。
+ * 解析の例外は文言だけを持ち帰る（ビューアがそのまま画面に出す）。
+ */
 export type ParadisSpreadsheetParseWorkerResult =
-	| { readonly kind: 'workbook'; readonly workbook: IParadisPackedWorkbookData }
+	| { readonly kind: 'workbookJson'; readonly json: Uint8Array }
 	| { readonly kind: 'warm' }
 	| { readonly kind: 'error'; readonly message: string }
 	| { readonly kind: 'unavailable'; readonly reason: ParadisOfficeSemanticWorkerFailure };
@@ -37,13 +39,14 @@ export type ParadisSpreadsheetParseWorkerResult =
 export type IParadisSpreadsheetParseWorker = IParadisOfficeSemanticWorker<IParadisSpreadsheetParseWorkerRun, ParadisSpreadsheetParseWorkerResult>;
 
 /**
- * 依頼が途絶えてから worker を終了させるまでの時間。Excel を開いているあいだは持っておく（エディタを開く・戻すたびに
- * 温める依頼が来て延びる）。Excel を開かない人には worker を起動しない。
+ * 依頼が途絶えてから worker を終了させるまでの時間。Excel のエディタを開く・戻すたびに温める依頼が来て延びる。
+ * 大きなブックの後は worker のヒープが大きく残るので、ほかの worker より長いが 30 分までは持たない。
+ * Excel を開かない人には worker を起動しない。
  */
-export const PARADIS_SPREADSHEET_PARSE_WORKER_IDLE_MS = 30 * 60 * 1000;
+export const PARADIS_SPREADSHEET_PARSE_WORKER_IDLE_MS = 5 * 60 * 1000;
 /**
- * 実行の締め切り。返ってこない worker を止めるためだけのもので、ブックを断るためではない（過ぎたら shared process
- * 本体で解析し直す。worker を入れる前は締め切りが無かった）。実ファイルでいちばん重いブックでも 12 秒ほど。
+ * 実行の締め切り。返ってこない worker を止めるためのもの。実ファイルでいちばん重いブックでも 12 秒ほど。
+ * 過ぎたら（worker のヒープの上限を超えたときと同じく）大きすぎるブックとして断る。
  */
 export const PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS = 10 * 60 * 1000;
 /** 待ち行列で待てる時間。過ぎたら本体で解析する。 */
@@ -53,8 +56,8 @@ export const PARADIS_SPREADSHEET_PARSE_QUEUE_LIMIT = 8;
 /** 待ち行列に置ける依頼のバイト数の合計。ビューアが読む上限（20 MiB）の 4 件ぶん。 */
 export const PARADIS_SPREADSHEET_PARSE_QUEUE_BYTES = 80 * 1024 * 1024;
 /**
- * worker のヒープの上限。詳しい解析の worker（384 MB）より大きくとる。超えたら shared process 本体で解析し直す
- * （worker を入れる前と同じ扱い）。
+ * worker のヒープの上限。詳しい解析の worker（384 MB）より大きくとる。超えたら大きすぎるブックとして断る
+ * （shared process 本体で上限なしに解析し直すと、本体のメモリを使い切るおそれがあるため）。
  */
 export const PARADIS_SPREADSHEET_PARSE_WORKER_RESOURCE_LIMITS = Object.freeze({ maxOldGenerationSizeMb: 3072, maxYoungGenerationSizeMb: 64, stackSizeMb: 8 });
 
