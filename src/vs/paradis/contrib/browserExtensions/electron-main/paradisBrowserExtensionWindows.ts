@@ -14,6 +14,7 @@
 import * as electron from 'electron';
 import type { WebContents } from 'electron';
 import { PARADIS_BROWSER_EXTENSION_WINDOW_CHANNEL } from '../../../../platform/browserView/common/paradisBrowserExtensionWindow.js';
+import { paradisAttachToEveryWebContents } from './paradisBrowserExtensionContentsHooks.js';
 
 const extensionWindows = new WeakSet<WebContents>();
 let listening = false;
@@ -101,14 +102,10 @@ function answer(contents: WebContents): void {
  * 受けないので、WebContents ごとの ipc で受ける。
  */
 export function paradisListenForBrowserExtensionWindowQueries(): void {
-	const app = electron.app;
-	if (listening || !app) {
+	if (listening || !electron.app) {
 		return;
 	}
 	listening = true;
-	app.on('web-contents-created', (_event, contents) => answer(contents));
-	// 既にある WebContents（内蔵ブラウザのタブはまだ無いはず。念のため）
-	for (const contents of electron.webContents?.getAllWebContents() ?? []) {
-		answer(contents);
-	}
+	// 既にある WebContents にも立てる（内蔵ブラウザのタブはまだ無いはず。念のため）
+	paradisAttachToEveryWebContents(answer);
 }
