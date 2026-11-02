@@ -32,7 +32,8 @@ import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IEditorOptions } from '../../../../../platform/editor/common/editor.js';
-import { ByteSize, FileChangeType, IFileService } from '../../../../../platform/files/common/files.js';
+import { ByteSize, IFileService } from '../../../../../platform/files/common/files.js';
+import { watchParadisViewerResource } from '../paradisOverlayWebviewPane.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
@@ -385,19 +386,13 @@ export class ParadisImageFileEditor extends EditorPane {
 	// --- 読み込みと表示 ---
 
 	private _watch(resource: URI, input: ParadisImageInput, store: DisposableStore): void {
-		let watcher;
-		try {
-			watcher = store.add(this._fileService.createWatcher(resource, { recursive: false, excludes: [] }));
-		} catch {
-			// watcher が作れなくても表示は続けられる。
-			return;
-		}
-		store.add(watcher.onDidChange(async e => {
-			if (!e.contains(resource) || this.input !== input) {
+		// 通知が続いても 50ms に 1 回だけ確かめて読み直す（保存のたびの exists・読み込み・decode を重ねない）。
+		store.add(watchParadisViewerResource(this._fileService, resource, async deleted => {
+			if (this.input !== input) {
 				return;
 			}
 			// 消えた（upstream はタブを閉じる）。保存の途中で一瞬消える場合があるので、本当に無いかを確かめる。
-			if (e.contains(resource, FileChangeType.DELETED) && !await this._fileService.exists(resource)) {
+			if (deleted && !await this._fileService.exists(resource)) {
 				if (this.input === input) {
 					this.group.closeEditor(input);
 				}
