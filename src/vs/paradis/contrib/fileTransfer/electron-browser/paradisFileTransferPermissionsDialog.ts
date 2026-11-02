@@ -16,6 +16,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
+import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
 import {
 	paradisFormatMode,
 	paradisFormatOctalMode,
@@ -37,6 +38,11 @@ export interface IParadisPermissionsDialogOptions {
 	readonly typeChar: ParadisFileTypeChar;
 	/** フォルダーを含むか（「中身にも適用」を出す）。 */
 	readonly hasDirectory: boolean;
+	/**
+	 * 変更せずに閉じられたときの下書きのキー（対象の側と項目の一覧）。別のモーダルに閉じられたときなどに選んだ権限を覚え、
+	 * 同じ項目を同じ権限のまま開き直したときに戻す。省くと覚えない。
+	 */
+	readonly draftKey?: string;
 }
 
 export interface IParadisPermissionsDialogResult {
@@ -44,17 +50,35 @@ export interface IParadisPermissionsDialogResult {
 	readonly recursive: boolean;
 }
 
+/**
+ * 「変更」も「キャンセル」も押さずに閉じた権限の選択（キー → 選んだ権限）。キーには開いたときの権限を含め、
+ * 項目の権限がその後に変わっていたら戻さない。「中身にも適用」は覚えない（戻すと、開いて Enter を押すだけで
+ * 確かめずに中身まで変えてしまうため。いつも外した状態で開く）。
+ */
+const permissionsDrafts = new ParadisModalDrafts<{ readonly mode: number }>();
+
 /** ダイアログを開き、「変更」なら選んだ値を、閉じたら undefined を返す。 */
 export function paradisShowPermissionsDialog(container: HTMLElement, options: IParadisPermissionsDialogOptions): Promise<IParadisPermissionsDialogResult | undefined> {
 	return new Promise(resolve => {
 		const store = new DisposableStore();
-		let mode = options.initialMode & 0o7777;
+		const initial = { mode: options.initialMode & 0o7777 };
+		const draftKey = options.draftKey === undefined ? undefined : `${options.draftKey}|${initial.mode}`;
+		const draft = draftKey === undefined ? undefined : permissionsDrafts.take(draftKey);
+		let mode = draft?.mode ?? initial.mode;
 		let settled = false;
-		const finish = (result: IParadisPermissionsDialogResult | undefined) => {
+		/** 「変更」と「キャンセル」なら下書きを捨て、それ以外（Esc・外側の押下・別のモーダル）で閉じたら変えた値を残す。 */
+		const finish = (result: IParadisPermissionsDialogResult | undefined, discard: boolean) => {
 			if (settled) {
 				return;
 			}
 			settled = true;
+			if (draftKey !== undefined) {
+				if (discard) {
+					permissionsDrafts.discard(draftKey);
+				} else {
+					permissionsDrafts.keepIfChanged(draftKey, { mode }, paradisModalDraftSnapshot(initial));
+				}
+			}
 			backdrop.remove();
 			store.dispose();
 			resolve(result);
@@ -71,6 +95,9 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 		title.textContent = localize('paradis.fileTransfer.permissions.title', "{0} の権限を変更", options.title);
 		modal.setAttribute('aria-labelledby', title.id);
 		dom.append(modal, $('.para-ft-modal-detail')).textContent = options.location;
+		if (draft) {
+			dom.append(modal, $('.para-ft-modal-detail')).textContent = PARADIS_MODAL_DRAFT_RESTORED;
+		}
 
 		const grid = dom.append(modal, $('.para-ft-pgrid'));
 		grid.setAttribute('role', 'group');
@@ -139,17 +166,17 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 		const change = dom.append(buttons, $<HTMLButtonElement>('button.para-ft-button.primary'));
 		change.type = 'button';
 		change.textContent = localize('paradis.fileTransfer.permissions.apply', "変更");
-		store.add(dom.addDisposableListener(cancel, 'click', () => finish(undefined)));
-		store.add(dom.addDisposableListener(change, 'click', () => finish({ mode, recursive: !!recursiveInput?.checked })));
+		store.add(dom.addDisposableListener(cancel, 'click', () => finish(undefined, true)));
+		store.add(dom.addDisposableListener(change, 'click', () => finish({ mode, recursive: !!recursiveInput?.checked }, true)));
 		store.add(dom.addDisposableListener(octal, 'keydown', e => {
 			if (e.key === 'Enter' && !change.disabled) {
 				e.preventDefault();
-				finish({ mode, recursive: !!recursiveInput?.checked });
+				finish({ mode, recursive: !!recursiveInput?.checked }, true);
 			}
 		}));
 		store.add(dom.addDisposableListener(backdrop, 'mousedown', e => {
 			if (e.target === backdrop) {
-				finish(undefined);
+				finish(undefined, false);
 			}
 		}));
 
@@ -176,8 +203,8 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 		store.add(new ParadisModalFocus({
 			backdrop,
 			modal,
-			onEscape: () => finish(undefined),
-			close: () => finish(undefined),
+			onEscape: () => finish(undefined, false),
+			close: () => finish(undefined, false),
 		}));
 		octal.focus();
 		octal.select();

@@ -34,6 +34,8 @@ import { IParadisNotificationsSettingsService } from '../browser/paradisNotifica
 import { paradisElevenLabsDictionaryCache } from './paradisElevenLabsApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
+import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
 
 const $ = dom.$;
 
@@ -309,7 +311,20 @@ interface IEditableRow {
 	reading: string;
 }
 
-class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
+/** 辞書の作成・編集の中身（保存前の下書き・読み込んだときの写しに使う）。他のツールで作った規則は入れない（開くたびに読み直す）。 */
+interface IElevenLabsEditorState {
+	readonly name: string;
+	readonly description: string;
+	readonly rows: readonly IEditableRow[];
+}
+
+/**
+ * 保存せずに閉じた辞書の作成・編集（`create` または `edit:<辞書の ID>` → 中身）。別のモーダルを開いたときや Hub ごと
+ * 閉じたときに打ちかけの入力を覚えておき、次に同じ辞書（作成なら作成）を開いたときに戻す。「キャンセル」と保存で捨てる。
+ */
+const elevenLabsEditorDrafts = new ParadisModalDrafts<IElevenLabsEditorState>();
+
+export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _bodyEl: HTMLElement;
@@ -318,6 +333,11 @@ class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 	private _existingRules: readonly ParadisElevenLabsRule[] = [];
 	private _name = '';
 	private _description = '';
+	/** 読み込んだときの中身（保存前の変更があるかを比べる）。読み込む前は undefined。 */
+	private _loaded: string | undefined;
+	/** 「キャンセル」と保存で閉じるときは、下書きを残さない。 */
+	private _discardOnClose = false;
+	private _closed = false;
 
 	constructor(
 		layoutService: ILayoutService,
@@ -343,11 +363,16 @@ class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 				this.dispose();
 			}
 		}));
+		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
+		// 別のモーダルに閉じられたとき・Esc・外側の押下では、保存前の変更を下書きとして残す（dispose）
+		dialog.tabIndex = -1;
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose() }));
 		layoutService.activeContainer.appendChild(this._backdrop);
+		dialog.focus();
 
 		if (!dict) {
 			this._rows = [{ surface: '', reading: '' }];
-			this._renderBody(dialog);
+			this._restoreDraftAndRender(dialog);
 			return;
 		}
 		this._bodyEl.textContent = '…';
@@ -359,7 +384,7 @@ class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 			this._description = detail.description;
 			this._existingRules = detail.rules;
 			this._rows = paradisEntriesFromElevenLabsRules(detail.rules).map(entry => ({ ...entry }));
-			this._renderBody(dialog);
+			this._restoreDraftAndRender(dialog);
 		}, error => {
 			if (this._store.isDisposed) {
 				return;
@@ -367,6 +392,32 @@ class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 			dom.clearNode(this._bodyEl);
 			dom.append(this._bodyEl, $('.pns-error')).textContent = error instanceof Error ? error.message : String(error);
 		});
+	}
+
+	private get _draftKey(): string {
+		return this.dict ? `edit:${this.dict.id}` : 'create';
+	}
+
+	private _state(): IElevenLabsEditorState {
+		return { name: this._name, description: this._description, rows: this._rows };
+	}
+
+	/** 読み込んだ中身を写しに取り、下書きがあれば中身をそれに置き換えて描く。 */
+	private _restoreDraftAndRender(dialog: HTMLElement): void {
+		this._loaded = paradisModalDraftSnapshot(this._state());
+		const draft = elevenLabsEditorDrafts.take(this._draftKey);
+		if (draft) {
+			// 名前と説明は作るときだけ入力できる。編集では読み込んだ名前を出す
+			if (!this.dict) {
+				this._name = draft.name;
+				this._description = draft.description;
+			}
+			this._rows = [...draft.rows];
+		}
+		this._renderBody(dialog);
+		if (draft) {
+			this._bodyEl.prepend($('.pns-nested-desc', undefined, PARADIS_MODAL_DRAFT_RESTORED));
+		}
 	}
 
 	private _renderBody(dialog: HTMLElement): void {
@@ -377,11 +428,13 @@ class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 		dom.append(nameRow, $('label.pns-label')).textContent = STR_NAME_LABEL;
 		if (isNew) {
 			const nameInput = dom.append(nameRow, $('input')) as HTMLInputElement;
+			nameInput.value = this._name;
 			nameInput.maxLength = 100;
 			this._register(dom.addDisposableListener(nameInput, 'input', () => { this._name = nameInput.value; }));
 			const descRow = dom.append(this._bodyEl, $('.pns-field'));
 			dom.append(descRow, $('label.pns-label')).textContent = STR_DESCRIPTION_LABEL;
 			const descInput = dom.append(descRow, $('input')) as HTMLInputElement;
+			descInput.value = this._description;
 			descInput.maxLength = 500;
 			this._register(dom.addDisposableListener(descInput, 'input', () => { this._description = descInput.value; }));
 			nameInput.focus();
@@ -429,7 +482,10 @@ class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 		const footer = dom.append(dialog, $('.pns-nested-footer'));
 		const cancelBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
 		cancelBtn.textContent = STR_CANCEL;
-		this._register(dom.addDisposableListener(cancelBtn, 'click', () => this.dispose()));
+		this._register(dom.addDisposableListener(cancelBtn, 'click', () => {
+			this._discardOnClose = true;
+			this.dispose();
+		}));
 		const saveBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary')) as HTMLButtonElement;
 		saveBtn.textContent = STR_SAVE;
 		this._register(dom.addDisposableListener(saveBtn, 'click', async () => {
@@ -455,9 +511,11 @@ class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 				const channel = this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL);
 				if (this.dict) {
 					await channel.call('setElevenLabsDictionaryRules', [this.apiKey, this.dict.id, rules]);
+					this._discardOnClose = true;
 					this.onSaved(undefined);
 				} else {
 					const created = await channel.call<{ id: string }>('createElevenLabsDictionary', [this.apiKey, this._name.trim(), this._description.trim(), rules]);
+					this._discardOnClose = true;
 					this.onSaved(created.id);
 				}
 				this.dispose();
@@ -487,6 +545,16 @@ class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 	}
 
 	override dispose(): void {
+		if (this._closed) {
+			return;
+		}
+		this._closed = true;
+		// 読み込んだときから変わっていれば、下書きとして残す（「キャンセル」・保存のときは捨てる）
+		if (this._discardOnClose) {
+			elevenLabsEditorDrafts.discard(this._draftKey);
+		} else {
+			elevenLabsEditorDrafts.keepIfChanged(this._draftKey, this._state(), this._loaded);
+		}
 		this._backdrop.remove();
 		super.dispose();
 	}

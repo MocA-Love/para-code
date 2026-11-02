@@ -313,6 +313,7 @@ export class ParadisFileTransferPaneOperations {
 			initialMode: first.mode,
 			typeChar: paradisTypeCharOf(first),
 			hasDirectory: entries.some(entry => entry.kind === 'directory'),
+			draftKey: [this.context.side, ...entries.map(entry => entry.resource.toString()).sort()].join('\n'),
 		});
 		if (!result) {
 			return;
