@@ -35,7 +35,7 @@ suite('ParadisModalFocus', () => {
 		outside.remove();
 	});
 
-	function open(): ITestModal {
+	function open(nested?: boolean): ITestModal {
 		const backdrop = mainWindow.document.createElement('div');
 		const modal = mainWindow.document.createElement('div');
 		modal.tabIndex = -1;
@@ -52,6 +52,7 @@ suite('ParadisModalFocus', () => {
 			modal,
 			onEscape: () => { result.escapes++; },
 			close: () => result.close(),
+			nested,
 		}));
 		modal.focus();
 		return result;
@@ -107,5 +108,19 @@ suite('ParadisModalFocus', () => {
 		pressEscape(second.modal);
 		assert.deepStrictEqual({ firstClosed: first.closes, firstEscapes: first.escapes, secondEscapes: second.escapes }, { firstClosed: 1, firstEscapes: 0, secondEscapes: 1 });
 		second.close();
+	});
+
+	test('a nested box leaves the modal under it open and takes Escape, and the next modal closes both', () => {
+		const hub = open();
+		const nested = open(true);
+		pressEscape(nested.modal);
+		const whileNested = { hubClosed: hub.closes, hubEscapes: hub.escapes, nestedEscapes: nested.escapes };
+		const next = open();
+		assert.deepStrictEqual({ whileNested, hubClosed: hub.closes, nestedClosed: nested.closes }, {
+			whileNested: { hubClosed: 0, hubEscapes: 0, nestedEscapes: 1 },
+			hubClosed: 1,
+			nestedClosed: 1,
+		});
+		next.close();
 	});
 });
