@@ -21,6 +21,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -40,7 +41,10 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisPdfInput } from './paradisPdfInput.js';
 import { PARADIS_PDF_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { buildParadisPdfViewerHtml, PARADIS_PDF_FIRST_PAINT_MESSAGE, shouldParadisPdfUseRangeRequests } from '../common/paradisPdfViewerHtml.js';
+import { buildParadisPdfViewerHtml, PARADIS_PDF_FIRST_PAINT_MESSAGE, PARADIS_PDF_VIEW_STATE_MESSAGE, PARADIS_PDF_ZOOM_MESSAGE, ParadisPdfZoomCommand, shouldParadisPdfUseRangeRequests } from '../common/paradisPdfViewerHtml.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPercent, createParadisViewerToolbar } from '../browser/paradisViewerToolbar.js';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { localize } from '../../../../nls.js';
 import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 import { canReuseParadisShownDocument, IParadisShownDocument } from '../common/paradisViewerShownDocument.js';
 
@@ -87,6 +91,8 @@ export class ParadisPdfFileEditor extends EditorPane {
 	private _rootElement: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
 	private _webview: IOverlayWebview | undefined;
+	private _pageLabel: HTMLElement | undefined;
+	private _percentButton: HTMLButtonElement | undefined;
 	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
 	private readonly _originPool: ParadisWebviewOriginPool;
 	private _webviewClaimed = false;
@@ -131,10 +137,19 @@ export class ParadisPdfFileEditor extends EditorPane {
 		this._rootElement = dom.append(parent, dom.$('.paradis-pdf-viewer'));
 		this._rootElement.style.position = 'relative';
 		this._rootElement.style.overflow = 'hidden';
-		// overlay webview を重ねる位置合わせ用アンカー（paradisRenderedFileEditor と同方式）。
+		// 全ビューア共通のバー。左にページ番号、右に拡大縮小と「幅に合わせる」。ページの中には置かない。
+		const toolbar = createParadisViewerToolbar(this._rootElement, 'paradis-pdf-toolbar', localize('paradis.pdf.toolbar', "PDF のツールバー"));
+		this._pageLabel = dom.append(toolbar.start, dom.$('span.paradis-viewer-toolbar-position'));
+		const zoom = appendParadisViewerToolbarGroup(toolbar.end);
+		this._appendZoomButton(zoom, Codicon.zoomOut, localize('paradis.pdf.zoomOut', "ズームアウト"), 'out');
+		this._percentButton = appendParadisViewerToolbarPercent(zoom, localize('paradis.pdf.resetZoom', "ズームをリセット"));
+		this._register(dom.addDisposableListener(this._percentButton, dom.EventType.CLICK, () => this._postZoom('reset')));
+		this._appendZoomButton(zoom, Codicon.zoomIn, localize('paradis.pdf.zoomIn', "ズームイン"), 'in');
+		this._appendZoomButton(appendParadisViewerToolbarGroup(toolbar.end), Codicon.screenFull, localize('paradis.pdf.fitWidth', "幅に合わせる"), 'fit');
+		// overlay webview を重ねる位置合わせ用アンカー（paradisRenderedFileEditor と同方式）。バーの下から。
 		this._webviewContainer = dom.append(this._rootElement, dom.$('.paradis-pdf-viewer-webview'));
 		this._webviewContainer.style.position = 'absolute';
-		this._webviewContainer.style.inset = '0';
+		this._webviewContainer.style.inset = '28px 0 0 0';
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
@@ -249,6 +264,12 @@ export class ParadisPdfFileEditor extends EditorPane {
 		this._webview = webview;
 		store.add(webview);
 		store.add(webview.onMessage(({ message }) => {
+			if (typeof message === 'object' && message !== null && (message as { type?: unknown }).type === PARADIS_PDF_VIEW_STATE_MESSAGE
+				&& this._renderedDocument !== undefined && (message as { render?: unknown }).render === this._renderedDocument.render) {
+				const state = message as { zoom?: unknown; page?: unknown; pages?: unknown };
+				this._showViewState(state.zoom, state.page, state.pages);
+				return;
+			}
 			// 使い回した webview では、前の文書の知らせが遅れて届くことがある。いま描いている HTML の知らせだけを使う。
 			if (typeof message === 'object' && message !== null && (message as { type?: unknown }).type === PARADIS_PDF_FIRST_PAINT_MESSAGE
 				&& this._renderedDocument !== undefined && (message as { render?: unknown }).render === this._renderedDocument.render) {
@@ -265,6 +286,25 @@ export class ParadisPdfFileEditor extends EditorPane {
 			}
 		}));
 		return webview;
+	}
+
+	private _appendZoomButton(parent: HTMLElement, icon: ThemeIcon, title: string, command: ParadisPdfZoomCommand): void {
+		const button = appendParadisViewerToolbarIconButton(parent, icon, title);
+		this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this._postZoom(command)));
+	}
+
+	private _postZoom(command: ParadisPdfZoomCommand): void {
+		void this._webview?.postMessage({ type: PARADIS_PDF_ZOOM_MESSAGE, command });
+	}
+
+	/** ページの中から届いた拡大率とページ番号をバーに出す。値が無いとき（描く前）は空にする。 */
+	private _showViewState(zoom: unknown, page: unknown, pages: unknown): void {
+		if (this._percentButton) {
+			this._percentButton.textContent = typeof zoom === 'number' ? `${zoom}%` : '';
+		}
+		if (this._pageLabel) {
+			this._pageLabel.textContent = typeof page === 'number' && typeof pages === 'number' ? localize('paradis.pdf.pageOf', "{0} / {1} ページ", page, pages) : '';
+		}
 	}
 
 	private _localResourceRoots(resource: URI): URI[] {
@@ -350,6 +390,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 		const libBase = served && this._resolvedLibBase ? this._resolvedLibBase : asWebviewUri(FileAccess.asFileUri(PDFJS_MEDIA_ROOT)).toString(true);
 		const useRangeRequests = shouldParadisPdfUseRangeRequests(size, served);
 		const nonce = generateUuid();
+		this._showViewState(undefined, undefined, undefined);
 		this._renderedDocument = { sizeKb: size === undefined ? undefined : Math.round(size / 1024), rangeRequests: useRangeRequests, render: nonce };
 		return buildParadisPdfViewerHtml({
 			nonce,

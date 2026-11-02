@@ -11,23 +11,7 @@
 	overflow: hidden;
 }
 
-/* Always-visible in-pane toolbar (top). Left: Rendered/Raw segmented toggle. Right: subclass controls (HTML zoom). */
-.paradis-file-viewer-toolbar {
-	display: flex;
-	flex: 0 0 auto;
-	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
-	padding: 3px 8px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
-	background-color: var(--vscode-editorWidget-background);
-}
-
-.paradis-file-viewer-toolbar-right {
-	display: flex;
-	align-items: center;
-	gap: 2px;
-}
+/* The toolbar itself is the shared viewer toolbar (paradisViewerToolbar.css). */
 
 .paradis-file-viewer-content {
 	position: relative;
@@ -61,76 +45,3 @@
 .paradis-file-viewer-editor.active {
 	visibility: visible;
 }
-
-/* Segmented Rendered/Raw toggle (Superset FileViewerToolbar ToggleGroup equivalent). */
-.paradis-file-viewer-toggle {
-	display: inline-flex;
-	align-items: center;
-	gap: 1px;
-	padding: 1px;
-	border-radius: 6px;
-	background-color: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
-}
-
-.paradis-file-viewer-toggle-item {
-	border: none;
-	border-radius: 5px;
-	background: transparent;
-	color: var(--vscode-descriptionForeground);
-	padding: 1px 10px;
-	font-size: 11px;
-	line-height: 18px;
-	cursor: pointer;
-}
-
-.paradis-file-viewer-toggle-item:hover {
-	color: var(--vscode-foreground);
-}
-
-.paradis-file-viewer-toggle-item.active {
-	background-color: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
-	color: var(--vscode-foreground);
-	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-}
-
-/* HTML zoom controls (now hosted in the toolbar-right container). */
-.paradis-html-zoom-button {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	width: 22px;
-	height: 22px;
-	padding: 0;
-	border: none;
-	border-radius: 4px;
-	background: transparent;
-	color: var(--vscode-foreground);
-	cursor: pointer;
-}
-
-.paradis-html-zoom-button:hover {
-	background-color: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-html-zoom-button:disabled {
-	opacity: 0.4;
-	cursor: default;
-}
-
-.paradis-html-zoom-percent {
-	min-width: 42px;
-	height: 22px;
-	padding: 0 4px;
-	border: none;
-	border-radius: 4px;
-	background: transparent;
-	color: var(--vscode-foreground);
-	font-size: 11px;
-	cursor: pointer;
-	text-align: center;
-}
-
-.paradis-html-zoom-percent:hover {
-	background-color: var(--vscode-toolbar-hoverBackground);
-}
-
