@@ -1,0 +1,64 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* The one on/off switch of Para Code's own screens (paradisSwitch.ts): 36x20, knob 16. */
+
+.monaco-workbench .paradis-switch {
+	box-sizing: border-box;
+	position: relative;
+	flex: none;
+	width: 36px;
+	height: 20px;
+	margin: 0;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: var(--vscode-button-secondaryBackground);
+	cursor: pointer;
+	vertical-align: middle;
+}
+
+.monaco-workbench .paradis-switch::after {
+	content: '';
+	position: absolute;
+	top: 1px;
+	left: 1px;
+	width: 16px;
+	height: 16px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: var(--vscode-button-secondaryForeground);
+}
+
+.monaco-workbench .paradis-switch.checked {
+	background: var(--vscode-button-background);
+}
+
+.monaco-workbench .paradis-switch.checked::after {
+	left: 17px;
+	background: var(--vscode-button-foreground);
+}
+
+.monaco-workbench.monaco-enable-motion .paradis-switch,
+.monaco-workbench.monaco-enable-motion .paradis-switch::after {
+	transition: background-color 0.15s ease, left 0.15s ease;
+}
+
+.monaco-workbench .paradis-switch:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+/* Keyboard focus only; after a mouse click the frame is removed by contrib/focusRing. */
+.monaco-workbench .paradis-switch:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+.monaco-workbench.hc-black .paradis-switch,
+.monaco-workbench.hc-light .paradis-switch {
+	border-color: var(--vscode-contrastBorder);
+}
