@@ -186,7 +186,6 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _scroll: { readonly resource: URI; readonly progress: number } | undefined;
 	// watcher・claim・モード切替から始まった描画が逆順で完了しても、最後に開始した結果だけを反映する。
 	private _renderGeneration = 0;
-	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
 
 	constructor(
 		id: string,
