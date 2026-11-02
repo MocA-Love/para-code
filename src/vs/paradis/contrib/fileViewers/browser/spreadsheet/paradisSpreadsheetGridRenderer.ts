@@ -205,6 +205,24 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		await this.render({ ...this._frame, scrollTop: reveal.scrollTop, scrollLeft: reveal.scrollLeft });
 	}
 
+	/**
+	 * 本体の枠（スクロールする側）に、セルと同じ座標の飾り（図形・改ページ線・ページ番号など）を重ねる。
+	 * `background` はセルより奥（ページ番号の透かし）、`foreground` はセルより手前に置く。座標は倍率を掛ける前のもので、
+	 * 入れ物の zoom で一緒に拡大縮小する。グリッドを捨てると一緒に外れる。
+	 */
+	addDecorations(background: readonly (HTMLElement | SVGElement)[], foreground: readonly (HTMLElement | SVGElement)[]): void {
+		const body = this.panes.get('body')!;
+		for (const element of background) {
+			element.style.zIndex = '0';
+			body.insertBefore(element, body.firstChild);
+		}
+		for (const element of foreground) {
+			// セルは描き直すたびに後ろへ足されるので、手前に出すには重なりの順を指定する
+			element.style.zIndex = '3';
+			body.appendChild(element);
+		}
+	}
+
 	whenIdle(): Promise<void> {
 		return this.idle;
 	}

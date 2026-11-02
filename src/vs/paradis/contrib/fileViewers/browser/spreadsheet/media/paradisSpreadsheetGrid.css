@@ -145,3 +145,10 @@
 	line-height: 1.6;
 	pointer-events: none;
 }
+
+/* allow-any-unicode-next-line */
+/* 枠線を出さない設定のシート。セルに書かれた罫線（インライン）はそのまま出る。 */
+.paradis-spreadsheet-virtual-nogrid .paradis-spreadsheet-virtual-cell:not(.paradis-spreadsheet-virtual-colhead):not(.paradis-spreadsheet-virtual-rowhead):not(.paradis-spreadsheet-virtual-corner) {
+	border-right-color: transparent;
+	border-bottom-color: transparent;
+}
