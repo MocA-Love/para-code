@@ -327,47 +327,6 @@
 	cursor: pointer;
 }
 
-.monaco-workbench .paradis-scheduled-runs .psr-toggle {
-	appearance: none;
-	width: 38px;
-	height: 20px;
-	border-radius: 11px;
-	position: relative;
-	cursor: pointer;
-	flex: none;
-	margin: 0;
-	background: var(--vscode-checkbox-background, var(--vscode-input-background));
-	border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border, transparent));
-	transition: background 0.15s;
-}
-
-.monaco-workbench .paradis-scheduled-runs .psr-toggle:checked {
-	background: var(--vscode-button-background);
-	border-color: var(--vscode-button-background);
-}
-
-.monaco-workbench .paradis-scheduled-runs .psr-toggle::after {
-	content: '';
-	position: absolute;
-	left: 2px;
-	top: 2px;
-	width: 14px;
-	height: 14px;
-	border-radius: 50%;
-	background: var(--vscode-foreground);
-	transition: left 0.15s;
-}
-
-.monaco-workbench .paradis-scheduled-runs .psr-toggle:checked::after {
-	left: 20px;
-	background: var(--vscode-button-foreground);
-}
-
-.monaco-workbench .paradis-scheduled-runs .psr-toggle:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}
-
 .monaco-workbench .paradis-scheduled-runs .psr-summary {
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	border-radius: 6px;
