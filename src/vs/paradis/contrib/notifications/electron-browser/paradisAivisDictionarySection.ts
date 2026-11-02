@@ -31,6 +31,7 @@ import {
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { getCachedAivisDictionaryList, invalidateAivisDictionaryListCache, setCachedAivisDictionaryList } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 
 const $ = dom.$;
 
@@ -450,6 +451,8 @@ class ParadisDictionaryEditorDialog extends Disposable {
 
 		this._backdrop = $('.paradis-notif-nested-backdrop');
 		const dialog = $('.paradis-notif-nested-dialog.wide');
+		// 辞書の編集は段 M の箱（Q537 の 43 A）
+		dialog.classList.add(...paradisModalClasses(ParadisModalSize.Medium));
 		this._backdrop.appendChild(dialog);
 
 		dom.append(dialog, $('h3')).textContent = STR_EDIT_TITLE;

@@ -6,68 +6,17 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /* allow-any-unicode-next-line */
-/* 通知設定ダイアログ（Settings Editor 風レイアウト: ヘッダー検索 + 左ナビ + 右コンテンツ）。 */
+/* 統合のモーダルの「通知」の領域（paradisNotificationSettingsArea.ts）。器・見出しの行・左ナビは paradisHub.css。 */
 /* allow-any-unicode-next-line */
-/* paradisBindingDialog.css と同じ方式: 自前backdrop+モーダル、色は全て --vscode-* テーマトークン。 */
+/* ここは見出しの行の検索欄・自動保存の印と、右の本文。色は全て --vscode-* テーマトークン。 */
 
-/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, editor-background panel (translucent when window transparency is on), radius 8px, shadow-xl. */
-.paradis-notif-settings-backdrop {
-	position: absolute;
-	inset: 0;
-	background: rgba(0, 0, 0, 0.5);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	z-index: 2700;
-}
-
-.paradis-notif-settings {
-	width: 940px;
-	max-width: 94vw;
-	/* allow-any-unicode-next-line */
-	/* 大きなモニタでは高さだけ伸ばす（paradisSettingsDialog.css と同じ理由）。 */
-	height: clamp(700px, 88vh, 1200px);
-	max-height: 92vh;
-	background: var(--vscode-editor-background);
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 8px;
-	display: flex;
-	flex-direction: column;
-	box-shadow: var(--vscode-shadow-xl);
-	overflow: hidden;
-	font-size: 13px;
-	outline: none;
-}
-
-/* The modal receives focus (tabindex=-1) for Escape handling; the workbench-wide keyboard-focus rule ([tabindex="-1"]:focus in workbench media/style.css) would otherwise draw a focusBorder frame around the whole dialog. */
-.monaco-workbench .paradis-notif-settings:focus {
-	outline: none !important;
-}
-
-.paradis-notif-settings .codicon {
+.paradis-notif-area .codicon {
 	font-size: 14px;
 }
 
 /* ---------- header ---------- */
 
-.paradis-notif-settings .pns-header {
-	padding: 12px 18px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	flex-shrink: 0;
-}
-
-.paradis-notif-settings .pns-header h2 {
-	margin: 0;
-	font-size: 14.5px;
-	font-weight: 600;
-	flex: none;
-}
-
-.paradis-notif-settings .pns-search {
+.paradis-hub .pns-search {
 	flex: 1;
 	max-width: 340px;
 	min-width: 140px;
@@ -81,13 +30,13 @@
 	padding: 4px 8px;
 }
 
-.paradis-notif-settings .pns-search:focus-within {
+.paradis-hub .pns-search:focus-within {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }
 
 /* 検索欄の input は設定行向けの幅広ルールを打ち消してインライン表示にする。 */
-.paradis-notif-settings .pns-search input {
+.paradis-hub .pns-search input {
 	flex: 1;
 	min-width: 0;
 	width: auto;
@@ -100,7 +49,7 @@
 	font-family: inherit;
 }
 
-.paradis-notif-settings .pns-saved-flash {
+.paradis-hub .pns-saved-flash {
 	margin-left: auto;
 	font-size: 11px;
 	color: var(--vscode-terminal-ansiGreen, var(--vscode-charts-green));
@@ -109,25 +58,13 @@
 	white-space: nowrap;
 }
 
-.paradis-notif-settings .pns-saved-flash.visible {
+.paradis-hub .pns-saved-flash.visible {
 	opacity: 1;
-}
-
-.paradis-notif-settings .pns-close {
-	cursor: pointer;
-	color: var(--vscode-icon-foreground);
-	border-radius: 4px;
-	padding: 4px;
-	display: flex;
-}
-
-.paradis-notif-settings .pns-close:hover {
-	background: var(--vscode-toolbar-hoverBackground);
 }
 
 /* ---------- footer（すべて既定へ戻す / 閉じる） ---------- */
 
-.paradis-notif-settings .pns-footer {
+.paradis-notif-area .pns-footer {
 	flex-shrink: 0;
 	display: flex;
 	align-items: center;
@@ -136,67 +73,10 @@
 	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 }
 
-.paradis-notif-settings .pns-footer-close {
-	margin-left: auto;
-}
-
 /* ---------- body（左ナビ + 右コンテンツ） ---------- */
 
-.paradis-notif-settings .pns-body {
-	flex: 1;
-	display: flex;
-	min-height: 0;
-}
-
-.paradis-notif-settings .pns-nav {
-	width: 212px;
-	flex: none;
-	background: var(--vscode-sideBar-background);
-	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	padding: 8px 6px;
-	overflow-y: auto;
-}
-
-.paradis-notif-settings .pns-nav-caption {
-	font-size: 10.5px;
-	text-transform: uppercase;
-	letter-spacing: .06em;
-	color: var(--vscode-descriptionForeground);
-	padding: 9px 10px 3px;
-}
-
-.paradis-notif-settings .pns-nav-item {
-	display: flex;
-	align-items: center;
-	gap: 7px;
-	padding: 6px 11px;
-	border-radius: 6px;
-	cursor: pointer;
-	font-size: 12.5px;
-	user-select: none;
-}
-
-.paradis-notif-settings .pns-nav-item:hover {
-	background: var(--vscode-list-hoverBackground);
-}
-
-.paradis-notif-settings .pns-nav-item.active {
-	background: var(--vscode-list-activeSelectionBackground);
-	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
-	outline: 1px solid var(--vscode-list-focusAndSelectionOutline, transparent);
-	outline-offset: -1px;
-}
-
-.paradis-notif-settings .pns-nav-label {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
 /* ナビ右端の状態バッジ（オン/オフ・選択中の着信音名） */
-.paradis-notif-settings .pns-nav-status {
+.paradis-hub .pns-nav-status {
 	font-size: 10.5px;
 	flex-shrink: 0;
 	max-width: 84px;
@@ -205,56 +85,40 @@
 	white-space: nowrap;
 }
 
-.paradis-notif-settings .pns-nav-status.st-ok {
+.paradis-hub .pns-nav-status.st-ok {
 	color: var(--vscode-terminal-ansiGreen, var(--vscode-charts-green));
 }
 
-.paradis-notif-settings .pns-nav-status.st-off {
+.paradis-hub .pns-nav-status.st-off {
 	color: var(--vscode-descriptionForeground);
 }
 
-.paradis-notif-settings .pns-nav-status.st-warn {
+.paradis-hub .pns-nav-status.st-warn {
 	color: var(--vscode-editorWarning-foreground);
 }
 
-/* 検索中のみ表示されるヒット件数チップ */
-.paradis-notif-settings .pns-nav-chip {
-	display: none;
-	font-size: 10px;
-	color: var(--vscode-descriptionForeground);
-	background: var(--vscode-editorWidget-background);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 9px;
-	padding: 0 6px;
-	line-height: 14px;
-	flex-shrink: 0;
-}
-
-.paradis-notif-settings .pns-nav-item.filtering .pns-nav-chip {
-	display: block;
-}
-
-.paradis-notif-settings .pns-content {
+.paradis-notif-area .pns-content {
 	flex: 1;
 	min-width: 0;
+	min-height: 0;
 	overflow-y: auto;
 	padding: 14px 22px 30px;
 }
 
 /* ---------- sections ---------- */
 
-.paradis-notif-settings .pns-section {
+.paradis-notif-area .pns-section {
 	position: relative;
 	margin-bottom: 26px;
 }
 
-.paradis-notif-settings .pns-section-title {
+.paradis-notif-area .pns-section-title {
 	font-size: 14px;
 	font-weight: 600;
 	margin: 0 0 3px 0;
 }
 
-.paradis-notif-settings .pns-section-desc {
+.paradis-notif-area .pns-section-desc {
 	font-size: 12px;
 	color: var(--vscode-descriptionForeground);
 	margin: 0 0 8px 0;
@@ -263,7 +127,7 @@
 
 /* ---------- settings rows（label+hint 左 / コントロール右、下罫線区切り） ---------- */
 
-.paradis-notif-settings .setting-row {
+.paradis-notif-area .setting-row {
 	display: flex;
 	align-items: center;
 	gap: 16px;
@@ -271,17 +135,17 @@
 	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
 }
 
-.paradis-notif-settings .sr-main {
+.paradis-notif-area .sr-main {
 	flex: 1;
 	min-width: 0;
 }
 
-.paradis-notif-settings .sr-label {
+.paradis-notif-area .sr-label {
 	font-size: 13px;
 	font-weight: 600;
 }
 
-.paradis-notif-settings .sr-desc {
+.paradis-notif-area .sr-desc {
 	font-size: 11.5px;
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
@@ -289,12 +153,12 @@
 }
 
 /* 検索フィルタで非一致になった行・要素の非表示 */
-.paradis-notif-settings .row-hidden {
+.paradis-notif-area .row-hidden {
 	display: none !important;
 }
 
 /* おやすみモード中の封印オーバーレイ（デスクトップ通知/通知サウンド/Aivis） */
-.paradis-notif-settings .pns-section.disabled-veil::after {
+.paradis-notif-area .pns-section.disabled-veil::after {
 	/* allow-any-unicode-next-line */
 	content: 'おやすみモード中 — 通知はすべて止まっています';
 	position: absolute;
@@ -311,29 +175,29 @@
 }
 
 /* Aivis 無効時のフィールド群（非表示ではなく無効化） */
-.paradis-notif-settings .pns-fields.disabled {
+.paradis-notif-area .pns-fields.disabled {
 	opacity: .45;
 	pointer-events: none;
 }
 
 /* Model UUID の検証結果 hint（ok=緑 / ng=赤） */
-.paradis-notif-settings .pns-uuid-hint {
+.paradis-notif-area .pns-uuid-hint {
 	font-size: 11.5px;
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
 	line-height: 1.55;
 }
 
-.paradis-notif-settings .pns-uuid-hint.ok {
+.paradis-notif-area .pns-uuid-hint.ok {
 	color: var(--vscode-terminal-ansiGreen, var(--vscode-charts-green));
 }
 
-.paradis-notif-settings .pns-uuid-hint.ng {
+.paradis-notif-area .pns-uuid-hint.ng {
 	color: var(--vscode-errorForeground);
 }
 
 /* 完了/許可要求フォーマット行のコントロール列（textarea + テスト再生ボタン） */
-.paradis-notif-settings .pns-format-control {
+.paradis-notif-area .pns-format-control {
 	display: flex;
 	flex-direction: column;
 	align-items: flex-end;
@@ -341,19 +205,19 @@
 	flex-shrink: 0;
 }
 
-.paradis-notif-settings .pns-format-control textarea {
+.paradis-notif-area .pns-format-control textarea {
 	width: 300px;
 }
 
 /* 通知するイベント等、コントロール側の横並びコンテナ */
-.paradis-notif-settings .pns-events-box {
+.paradis-notif-area .pns-events-box {
 	display: flex;
 	align-items: center;
 	gap: 14px;
 	flex-shrink: 0;
 }
 
-.paradis-notif-settings .pns-events-box label {
+.paradis-notif-area .pns-events-box label {
 	display: flex;
 	align-items: center;
 	gap: 5px;
@@ -363,51 +227,6 @@
 }
 
 /* ---------- toggle switch ---------- */
-
-.paradis-notif-settings .pns-toggle {
-	position: relative;
-	width: 34px;
-	height: 18px;
-	flex-shrink: 0;
-	padding: 0;
-	appearance: none;
-	-webkit-appearance: none;
-	background: var(--vscode-checkbox-background, var(--vscode-input-background));
-	border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border));
-	border-radius: 10px;
-	cursor: pointer;
-	outline: none;
-	transition: background-color .12s;
-}
-
-.paradis-notif-settings .pns-toggle::after {
-	content: '';
-	position: absolute;
-	top: 1px;
-	left: 1px;
-	width: 14px;
-	height: 14px;
-	border-radius: 50%;
-	background: var(--vscode-foreground);
-	opacity: .6;
-	transition: transform .12s;
-}
-
-.paradis-notif-settings .pns-toggle:checked {
-	background: var(--vscode-button-background);
-	border-color: var(--vscode-button-background);
-}
-
-.paradis-notif-settings .pns-toggle:checked::after {
-	transform: translateX(16px);
-	background: var(--vscode-button-foreground);
-	opacity: 1;
-}
-
-.paradis-notif-settings .pns-toggle:disabled {
-	opacity: .5;
-	cursor: default;
-}
 
 /* ---------- form controls ---------- */
 /* allow-any-unicode-next-line */
@@ -419,13 +238,13 @@
 /* allow-any-unicode-next-line */
 /* より詳細度の高いセレクタで後から上書きする。 */
 /* allow-any-unicode-next-line */
-/* ネストダイアログ(YouTube取込・辞書編集等)は `.paradis-notif-settings` の子孫ではなく */
+/* ネストダイアログ(YouTube取込・辞書編集等)は `.paradis-notif-area` の子孫ではなく */
 /* allow-any-unicode-next-line */
 /* `.paradis-notif-nested-dialog` 配下に独立して存在するため、同じルールを両方に適用する。 */
 
-.paradis-notif-settings input,
-.paradis-notif-settings select,
-.paradis-notif-settings textarea,
+.paradis-notif-area input,
+.paradis-notif-area select,
+.paradis-notif-area textarea,
 .paradis-notif-nested-dialog input,
 .paradis-notif-nested-dialog select,
 .paradis-notif-nested-dialog textarea {
@@ -440,15 +259,15 @@
 	font-family: inherit;
 }
 
-.paradis-notif-settings textarea,
+.paradis-notif-area textarea,
 .paradis-notif-nested-dialog textarea {
 	resize: vertical;
 	min-height: 44px;
 }
 
-.paradis-notif-settings input:focus,
-.paradis-notif-settings select:focus,
-.paradis-notif-settings textarea:focus,
+.paradis-notif-area input:focus,
+.paradis-notif-area select:focus,
+.paradis-notif-area textarea:focus,
 .paradis-notif-nested-dialog input:focus,
 .paradis-notif-nested-dialog select:focus,
 .paradis-notif-nested-dialog textarea:focus {
@@ -458,11 +277,11 @@
 
 /* 検索欄の input は枠側の :focus-within 輪郭に任せるため、上の汎用 input:focus（同特異度で
  * 後から定義されており outline: none に勝てなかった）より特異度を上げて打ち消す。 */
-.paradis-notif-settings .pns-search input:focus {
+.paradis-hub .pns-search input:focus {
 	outline: none;
 }
 
-.paradis-notif-settings input[type="range"],
+.paradis-notif-area input[type="range"],
 .paradis-notif-nested-dialog input[type="range"] {
 	width: 100%;
 	background: transparent;
@@ -471,7 +290,7 @@
 	accent-color: var(--vscode-button-background);
 }
 
-.paradis-notif-settings .pns-btn {
+.paradis-notif-area .pns-btn {
 	display: inline-flex;
 	align-items: center;
 	gap: 5px;
@@ -485,124 +304,131 @@
 	white-space: nowrap;
 }
 
-.paradis-notif-settings .pns-btn:hover {
+.paradis-notif-area .pns-btn:hover {
 	background: var(--vscode-button-secondaryHoverBackground);
 }
 
-.paradis-notif-settings .pns-btn:disabled {
+.paradis-notif-area .pns-btn:disabled {
 	opacity: .5;
 	cursor: default;
 }
 
-.paradis-notif-settings .pns-btn-primary {
+.paradis-notif-area .pns-btn-primary {
 	background: var(--vscode-button-background);
 	color: var(--vscode-button-foreground);
 	border-color: transparent;
 }
 
-.paradis-notif-settings .pns-btn-primary:hover {
+.paradis-notif-area .pns-btn-primary:hover {
 	background: var(--vscode-button-hoverBackground);
 }
 
-.paradis-notif-settings .pns-btn-icon {
+.paradis-notif-area .pns-btn-icon {
 	padding: 4px 6px;
 }
 
-.paradis-notif-settings .pns-btn-danger:hover {
+.paradis-notif-area .pns-btn-danger:hover {
 	color: var(--vscode-errorForeground);
 	border-color: var(--vscode-errorForeground);
 }
 
 /* allow-any-unicode-next-line */
 /* input + 付随ボタン（APIキーの表示/非表示切り替え等）を横並びにするラッパー */
-.paradis-notif-settings .pns-input-group {
+.paradis-notif-area .pns-input-group {
 	display: flex;
 	align-items: center;
 	gap: 6px;
 }
 
-.paradis-notif-settings .pns-input-group input {
+.paradis-notif-area .pns-input-group input {
 	flex: 1;
 	min-width: 0;
 	width: auto;
 }
 
-/* ---------- ringtone grid cards（2列グリッドカード + 試聴進捗バー） ---------- */
+/* ---------- ringtone list（1 行ずつの一覧 + 試聴進捗バー。Q537 の 43 A） ---------- */
 
-.paradis-notif-settings .pns-ringtone-grid {
-	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-	gap: 8px;
-	padding: 10px 4px 2px;
+.paradis-notif-area .pns-ringtone-grid {
+	display: flex;
+	flex-direction: column;
+	margin: 10px 0 2px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-medium);
+	overflow: hidden;
 }
 
-.paradis-notif-settings .pns-ringtone-card {
+.paradis-notif-area .pns-ringtone-card {
 	position: relative;
 	display: flex;
 	align-items: center;
-	gap: 10px;
-	padding: 9px 12px;
+	gap: 8px;
+	min-height: 30px;
+	padding: 3px 10px;
 	cursor: pointer;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 }
 
-.paradis-notif-settings .pns-ringtone-card:hover {
+.paradis-notif-area .pns-ringtone-card:last-child {
+	border-bottom: none;
+}
+
+.paradis-notif-area .pns-ringtone-card:hover {
 	background: var(--vscode-list-hoverBackground);
 }
 
-.paradis-notif-settings .pns-ringtone-card.selected {
-	border-color: var(--vscode-focusBorder);
-	background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent);
+.paradis-notif-area .pns-ringtone-card.selected {
+	background: var(--vscode-list-inactiveSelectionBackground, color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent));
 }
 
-/* 選択中カードの右上に丸バッジでチェックを重ねる。 */
-.paradis-notif-settings .pns-ringtone-check {
-	position: absolute;
-	top: -7px;
-	right: -7px;
-	width: 18px;
-	height: 18px;
-	border-radius: 50%;
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-	display: none;
+/* 選んでいる行の左端にチェックを出す（ほかの行は同じ幅を空けて揃える）。 */
+.paradis-notif-area .pns-ringtone-check {
+	width: 16px;
+	flex-shrink: 0;
+	display: flex;
 	align-items: center;
 	justify-content: center;
-	font-size: 12px;
-	z-index: 1;
+	visibility: hidden;
+	color: var(--vscode-textLink-foreground);
+	font-size: 14px;
 }
 
-.paradis-notif-settings .pns-ringtone-card.selected .pns-ringtone-check {
-	display: flex;
+.paradis-notif-area .pns-ringtone-card.selected .pns-ringtone-check {
+	visibility: visible;
 }
 
-.paradis-notif-settings .pns-ringtone-emoji {
-	font-size: 17px;
-	width: 22px;
+.paradis-notif-area .pns-ringtone-emoji {
+	font-size: 14px;
+	width: 18px;
 	text-align: center;
 	flex-shrink: 0;
 }
 
-.paradis-notif-settings .pns-ringtone-info {
+/* 名前・長さ・説明を 1 行に並べ、説明は収まらない分を省く。 */
+.paradis-notif-area .pns-ringtone-info {
 	flex: 1;
 	min-width: 0;
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
 }
 
-.paradis-notif-settings .pns-ringtone-name {
+.paradis-notif-area .pns-ringtone-name {
 	font-size: 12.5px;
 	font-weight: 500;
 	display: flex;
-	align-items: center;
+	align-items: baseline;
 	gap: 6px;
+	flex-shrink: 0;
 }
 
-.paradis-notif-settings .pns-ringtone-duration {
+.paradis-notif-area .pns-ringtone-duration {
 	font-size: 10.5px;
 	color: var(--vscode-descriptionForeground);
 }
 
-.paradis-notif-settings .pns-ringtone-desc {
+.paradis-notif-area .pns-ringtone-desc {
+	flex: 1;
+	min-width: 0;
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	overflow: hidden;
@@ -610,30 +436,32 @@
 	white-space: nowrap;
 }
 
-/* 試聴中の進捗バー（着信音の長さいっぱいまで伸びる） */
-.paradis-notif-settings .pns-rt-progress {
-	height: 3px;
-	border-radius: 2px;
-	background: var(--vscode-editorWidget-border, var(--vscode-widget-border));
+/* 試聴中の進捗バー（行の下端に重ね、着信音の長さいっぱいまで伸びる） */
+.paradis-notif-area .pns-rt-progress {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	height: 2px;
+	background: transparent;
 	overflow: hidden;
-	margin-top: 5px;
 	display: none;
 }
 
-.paradis-notif-settings .pns-ringtone-card.playing .pns-rt-progress {
+.paradis-notif-area .pns-ringtone-card.playing .pns-rt-progress {
 	display: block;
 }
 
-.paradis-notif-settings .pns-rt-progress-fill {
+.paradis-notif-area .pns-rt-progress-fill {
 	display: block;
 	height: 100%;
 	width: 0;
 	background: var(--vscode-focusBorder);
 }
 
-.paradis-notif-settings .pns-ringtone-play {
-	width: 24px;
-	height: 24px;
+.paradis-notif-area .pns-ringtone-play {
+	width: 22px;
+	height: 22px;
 	border-radius: 50%;
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	display: flex;
@@ -645,13 +473,13 @@
 	background: transparent;
 }
 
-.paradis-notif-settings .pns-ringtone-play:hover {
+.paradis-notif-area .pns-ringtone-play:hover {
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
 /* allow-any-unicode-next-line */
 /* Superset同様「▶ ⇔ ■(Stop)」のアイコントグルのみで再生状態を示す（塗りつぶし色は使わない）。 */
-.paradis-notif-settings .pns-ringtone-play.playing {
+.paradis-notif-area .pns-ringtone-play.playing {
 	border-color: var(--vscode-focusBorder);
 	color: var(--vscode-textLink-foreground);
 }
@@ -659,24 +487,24 @@
 /* ---------- preset tiles (Aivis) ---------- */
 
 /* プリセットタイルは setting-row のコントロール列に入りきらないため、行の下へ全幅で敷く。 */
-.paradis-notif-settings .setting-row.pns-field-block {
+.paradis-notif-area .setting-row.pns-field-block {
 	flex-wrap: wrap;
 	row-gap: 8px;
 	padding-bottom: 14px;
 }
 
-.paradis-notif-settings .setting-row.pns-field-block .sr-label,
-.paradis-notif-settings .setting-row.pns-field-block .pns-preset-grid {
+.paradis-notif-area .setting-row.pns-field-block .sr-label,
+.paradis-notif-area .setting-row.pns-field-block .pns-preset-grid {
 	flex-basis: 100%;
 }
 
-.paradis-notif-settings .pns-preset-grid {
+.paradis-notif-area .pns-preset-grid {
 	display: grid;
 	grid-template-columns: repeat(3, 1fr);
 	gap: 8px;
 }
 
-.paradis-notif-settings .pns-preset-tile {
+.paradis-notif-area .pns-preset-tile {
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	border-radius: 6px;
 	padding: 8px;
@@ -686,16 +514,16 @@
 	gap: 4px;
 }
 
-.paradis-notif-settings .pns-preset-tile:hover {
+.paradis-notif-area .pns-preset-tile:hover {
 	background: var(--vscode-list-hoverBackground);
 }
 
-.paradis-notif-settings .pns-preset-tile.selected {
+.paradis-notif-area .pns-preset-tile.selected {
 	border-color: var(--vscode-focusBorder);
 	background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent);
 }
 
-.paradis-notif-settings .pns-preset-icon {
+.paradis-notif-area .pns-preset-icon {
 	width: 28px;
 	height: 28px;
 	border-radius: 6px;
@@ -708,13 +536,13 @@
 	flex-shrink: 0;
 }
 
-.paradis-notif-settings .pns-preset-icon img {
+.paradis-notif-area .pns-preset-icon img {
 	width: 100%;
 	height: 100%;
 	object-fit: cover;
 }
 
-.paradis-notif-settings .pns-preset-name {
+.paradis-notif-area .pns-preset-name {
 	font-size: 12px;
 	font-weight: 500;
 	overflow: hidden;
@@ -722,7 +550,7 @@
 	white-space: nowrap;
 }
 
-.paradis-notif-settings .pns-preset-author {
+.paradis-notif-area .pns-preset-author {
 	font-size: 10.5px;
 	color: var(--vscode-descriptionForeground);
 	overflow: hidden;
@@ -730,7 +558,7 @@
 	white-space: nowrap;
 }
 
-.paradis-notif-settings .pns-preset-actions {
+.paradis-notif-area .pns-preset-actions {
 	display: flex;
 	gap: 6px;
 	margin-top: 2px;
@@ -738,7 +566,7 @@
 
 /* ---------- placeholder chips ---------- */
 
-.paradis-notif-settings .pns-chip-row {
+.paradis-notif-area .pns-chip-row {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
@@ -746,7 +574,7 @@
 
 /* ---------- waveform editor ---------- */
 
-.paradis-notif-settings .pns-waveform {
+.paradis-notif-area .pns-waveform {
 	width: 100%;
 	height: 80px;
 	border-radius: 6px;
@@ -755,7 +583,7 @@
 	display: block;
 }
 
-.paradis-notif-settings .pns-waveform-times {
+.paradis-notif-area .pns-waveform-times {
 	display: flex;
 	justify-content: space-between;
 	font-size: 10.5px;
@@ -765,7 +593,7 @@
 
 /* ---------- install log console ---------- */
 
-.paradis-notif-settings .pns-log-console {
+.paradis-notif-area .pns-log-console {
 	max-height: 180px;
 	overflow-y: auto;
 	background: color-mix(in srgb, var(--vscode-editorWidget-background) 60%, black 8%);
@@ -777,28 +605,28 @@
 	line-height: 1.5;
 }
 
-.paradis-notif-settings .pns-log-line.warn {
+.paradis-notif-area .pns-log-line.warn {
 	color: var(--vscode-editorWarning-foreground);
 }
 
-.paradis-notif-settings .pns-log-line.error {
+.paradis-notif-area .pns-log-line.error {
 	color: var(--vscode-editorError-foreground);
 }
 
 /* ---------- dictionary cards ---------- */
 
-.paradis-notif-settings .pns-dict-card {
+.paradis-notif-area .pns-dict-card {
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	border-radius: 6px;
 	padding: 10px 12px;
 	margin-bottom: 8px;
 }
 
-.paradis-notif-settings .pns-dict-card.active {
+.paradis-notif-area .pns-dict-card.active {
 	border-color: var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder));
 }
 
-.paradis-notif-settings .pns-dict-badge-active {
+.paradis-notif-area .pns-dict-badge-active {
 	font-size: 9.5px;
 	font-weight: 600;
 	padding: 1px 6px;
@@ -807,53 +635,53 @@
 	color: var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder));
 }
 
-.paradis-notif-settings .pns-dict-table {
+.paradis-notif-area .pns-dict-table {
 	width: 100%;
 	border-collapse: collapse;
 	font-size: 11.5px;
 }
 
-.paradis-notif-settings .pns-dict-table th,
-.paradis-notif-settings .pns-dict-table td {
+.paradis-notif-area .pns-dict-table th,
+.paradis-notif-area .pns-dict-table td {
 	text-align: left;
 	padding: 4px 6px;
 }
 
 /* ---------- usage stat cards / bar chart ---------- */
 
-.paradis-notif-settings .pns-stat-grid {
+.paradis-notif-area .pns-stat-grid {
 	display: grid;
 	grid-template-columns: repeat(3, 1fr);
 	gap: 10px;
 	margin-bottom: 14px;
 }
 
-.paradis-notif-settings .pns-stat-card {
+.paradis-notif-area .pns-stat-card {
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	border-radius: 6px;
 	padding: 10px 12px;
 }
 
-.paradis-notif-settings .pns-stat-label {
+.paradis-notif-area .pns-stat-label {
 	font-size: 10px;
 	text-transform: uppercase;
 	letter-spacing: .04em;
 	color: var(--vscode-descriptionForeground);
 }
 
-.paradis-notif-settings .pns-stat-value {
+.paradis-notif-area .pns-stat-value {
 	font-size: 19px;
 	font-weight: 600;
 	margin-top: 2px;
 }
 
-.paradis-notif-settings .pns-stat-sub {
+.paradis-notif-area .pns-stat-sub {
 	font-size: 10.5px;
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
 }
 
-.paradis-notif-settings .pns-bar-chart {
+.paradis-notif-area .pns-bar-chart {
 	display: flex;
 	align-items: flex-end;
 	gap: 2px;
@@ -863,20 +691,20 @@
 	padding: 8px;
 }
 
-.paradis-notif-settings .pns-bar {
+.paradis-notif-area .pns-bar {
 	flex: 1;
 	background: var(--vscode-charts-green, var(--vscode-button-background));
 	border-radius: 2px 2px 0 0;
 	min-height: 2px;
 }
 
-.paradis-notif-settings .pns-usage-table {
+.paradis-notif-area .pns-usage-table {
 	width: 100%;
 	border-collapse: collapse;
 	font-size: 11px;
 }
 
-.paradis-notif-settings .pns-usage-table th {
+.paradis-notif-area .pns-usage-table th {
 	text-align: left;
 	color: var(--vscode-descriptionForeground);
 	font-weight: 500;
@@ -884,23 +712,23 @@
 	background: var(--vscode-keybindingTable-headerBackground, transparent);
 }
 
-.paradis-notif-settings .pns-usage-table td {
+.paradis-notif-area .pns-usage-table td {
 	padding: 3px 8px;
 }
 
-.paradis-notif-settings .pns-usage-table td.num {
+.paradis-notif-area .pns-usage-table td.num {
 	text-align: right;
 }
 
 /* ---------- misc ---------- */
 
-.paradis-notif-settings .pns-error {
+.paradis-notif-area .pns-error {
 	color: var(--vscode-errorForeground);
 	font-size: 11.5px;
 	margin-top: 6px;
 }
 
-.paradis-notif-settings .pns-empty {
+.paradis-notif-area .pns-empty {
 	text-align: center;
 	color: var(--vscode-descriptionForeground);
 	font-size: 12px;
@@ -911,11 +739,11 @@
 
 /* ---------- legacy row helpers ---------- */
 /* allow-any-unicode-next-line */
-/* 辞書編集等のネストダイアログは `.paradis-notif-settings` の子孫ではないため、 */
+/* 辞書編集等のネストダイアログは `.paradis-notif-area` の子孫ではないため、 */
 /* allow-any-unicode-next-line */
 /* input/select と同じく両方のスコープに同じルールを適用する。 */
 
-.paradis-notif-settings .pns-row,
+.paradis-notif-area .pns-row,
 .paradis-notif-nested-dialog .pns-row {
 	display: flex;
 	align-items: center;
@@ -925,19 +753,19 @@
 }
 
 /* 使用量のAPIキー別内訳・音声エディタ等で使う補助テキスト（旧版から復元）。 */
-.paradis-notif-settings .pns-row-hint,
+.paradis-notif-area .pns-row-hint,
 .paradis-notif-nested-dialog .pns-row-hint {
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
 }
 
-.paradis-notif-settings .pns-field,
+.paradis-notif-area .pns-field,
 .paradis-notif-nested-dialog .pns-field {
 	margin-bottom: 14px;
 }
 
-.paradis-notif-settings label.pns-label,
+.paradis-notif-area label.pns-label,
 .paradis-notif-nested-dialog label.pns-label {
 	display: block;
 	font-size: 12px;
@@ -1103,35 +931,35 @@
 
 /* ---------- 音声報告: 読み上げエンジンの切り替え・ElevenLabs の声 ---------- */
 
-.paradis-notif-settings .pns-engine-switch {
+.paradis-notif-area .pns-engine-switch {
 	display: flex;
 	gap: 4px;
 	flex-shrink: 0;
 }
 
-.paradis-notif-settings .pns-voice-header {
+.paradis-notif-area .pns-voice-header {
 	display: flex;
 	align-items: center;
 	gap: 8px;
 	flex-basis: 100%;
 }
 
-.paradis-notif-settings .setting-row.pns-field-block .pns-voice-header .sr-label {
+.paradis-notif-area .setting-row.pns-field-block .pns-voice-header .sr-label {
 	flex: 1;
 	flex-basis: auto;
 }
 
-.paradis-notif-settings .setting-row.pns-field-block .pns-voice-note {
+.paradis-notif-area .setting-row.pns-field-block .pns-voice-note {
 	flex-basis: 100%;
 }
 
-.paradis-notif-settings .pns-voice-tags {
+.paradis-notif-area .pns-voice-tags {
 	display: flex;
 	gap: 4px;
 	min-height: 16px;
 }
 
-.paradis-notif-settings .pns-voice-tag {
+.paradis-notif-area .pns-voice-tag {
 	font-size: 10px;
 	line-height: 14px;
 	padding: 0 6px;
@@ -1140,7 +968,7 @@
 	color: var(--vscode-textLink-foreground);
 }
 
-.paradis-notif-settings .pns-quota-bar {
+.paradis-notif-area .pns-quota-bar {
 	height: 6px;
 	border-radius: 3px;
 	background: var(--vscode-input-background);
@@ -1149,7 +977,31 @@
 	margin-bottom: 14px;
 }
 
-.paradis-notif-settings .pns-quota-fill {
+.paradis-notif-area .pns-quota-fill {
 	height: 100%;
 	background: var(--vscode-charts-green, var(--vscode-button-background));
+}
+
+/* ---------- 「設定 (Para Code)」から移した行（Q537 の 35 A） ---------- */
+
+.paradis-notif-area .pns-group-title {
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--vscode-descriptionForeground);
+	margin: 16px 0 2px;
+}
+
+.paradis-notif-area .pns-moved-badge {
+	margin-left: 8px;
+	font-size: 10.5px;
+	font-weight: 400;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* 辞書の編集は段 M の箱（paradisModal.css。Q537 の 43 A）。高さは固定で、長い表は中でスクロールする。 */
+.monaco-workbench .paradis-notif-nested-dialog.paradis-modal-m {
+	display: block;
+	overflow-y: auto;
 }
