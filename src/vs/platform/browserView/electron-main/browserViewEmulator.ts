@@ -9,6 +9,7 @@ import { IBrowserDeviceProfile } from '../common/browserView.js';
 import { ILogService } from '../../log/common/log.js';
 import type { BrowserView } from './browserView.js';
 import { ICDPConnection } from '../common/cdp/types.js';
+import { paraBrowserViewEmulationParams, paraBrowserViewScalesByZoom, paraSetBrowserViewEmulationZoom } from './paraBrowserViewZoom.js'; // PARA-PATCH: shrink fixed viewport sizes by page zoom instead of the emulation scale (Para Code, paraBrowserViewZoom.ts)
 
 /**
  * Manages device emulation for a browser view. The renderer is authoritative
@@ -51,7 +52,8 @@ export class BrowserViewEmulator extends Disposable {
 	}
 
 	get emulatedScaleFactor(): number {
-		if (!this._lastLayout) {
+		// PARA-PATCH: while the page is shrunk by zoom, CDP input and capture coordinates already include it (paraBrowserViewZoom.ts)
+		if (!this._lastLayout || paraBrowserViewScalesByZoom(this.browser.webContents)) {
 			return 1;
 		}
 		return this._lastLayout.scale * this._lastLayout.hostZoom;
@@ -68,6 +70,7 @@ export class BrowserViewEmulator extends Disposable {
 
 		if (prev && !device && this.isSafeToApplyEmulation()) {
 			this.browser.webContents.disableDeviceEmulation();
+			paraSetBrowserViewEmulationZoom(this.browser.webContents, 1); // PARA-PATCH: drop the zoom that shrank the fixed size (paraBrowserViewZoom.ts)
 			void this._applyTouchAndMedia();
 		}
 
@@ -110,14 +113,12 @@ export class BrowserViewEmulator extends Disposable {
 			return;
 		}
 		this._lastApplied = { viewportWidth: w, viewportHeight: h, scale: s, hostZoom: z, mobile };
-		const params: Electron.Parameters = {
-			screenPosition: mobile ? 'mobile' : 'desktop',
-			screenSize: { width: w, height: h },
-			viewSize: { width: w, height: h },
-			deviceScaleFactor: this._device.deviceScaleFactor ?? 0,
-			viewPosition: { x: 0, y: 0 },
-			scale: s * z,
-		};
+		// PARA-PATCH: shrink by page zoom instead of `scale: s * z` once the tab's zoom is kept to itself; the emulation
+		// scale makes Chromium misroute clicks on rounded or overlapping cross-process iframes (paraBrowserViewZoom.ts)
+		const params: Electron.Parameters = paraBrowserViewEmulationParams(this.browser.webContents, {
+			width: w, height: h, pageScale: s * z, mobile, deviceScaleFactor: this._device.deviceScaleFactor,
+			onReady: () => { this._lastApplied = undefined; this._reapply(); },
+		});
 
 		// There's a bug where `screenPosition: 'mobile'` doesn't apply scaling correctly on the first call of enabling emulation,
 		// so we have to first enable emulation in desktop mode and then switch it to mobile below.
