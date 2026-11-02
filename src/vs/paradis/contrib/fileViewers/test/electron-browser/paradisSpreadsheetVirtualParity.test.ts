@@ -11,8 +11,8 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisCellData, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
 import { ParadisSpreadsheetGridRenderer } from '../../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
-import { createVirtualGridIndex, createVirtualGridViewport, legacyGridTile, measureVirtualGridContentRows, relayoutVirtualGrid, virtualGridLayoutFrame } from '../../electron-browser/paradisSpreadsheetEditor.js';
-import { applyOverflow, buildSheetTableDom } from '../../electron-browser/paradisSpreadsheetRender.js';
+import { createVirtualGridIndex, createVirtualGridViewport, legacyGridTile, measureVirtualGridContentRows, relayoutVirtualGrid, virtualGridLayoutFrame, virtualGridRowTops } from '../../electron-browser/paradisSpreadsheetEditor.js';
+import { applyOverflow, buildPageBreakOverlay, buildSheetTableDom, describeSheetPageBreaks } from '../../electron-browser/paradisSpreadsheetRender.js';
 
 const empty: IParadisCellData = { value: '', style: {} };
 const text = (value: string, style: Record<string, string> = {}): IParadisCellData => ({ value, style });
@@ -329,6 +329,62 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 			leftTileTakesScrollingSource: false,
 			bodyTileTakesIt: true,
 			frame: [600, 200],
+		});
+	});
+
+	test('puts shapes, page breaks and page numbers at the same row positions as the table, inside the zoomed grid', async () => {
+		const doc = mainWindow.document;
+		const data: IParadisSheetData = {
+			...sheet(),
+			freezePane: undefined,
+			rowBreaks: [2],
+			colBreaks: [3],
+			printArea: { minR: 1, minC: 2, maxR: 5, maxC: 5 },
+			rows: [
+				{ excelRow: 1, height: 20, cells: [text('abc'), text('123'), empty, empty, empty] },
+				{ excelRow: 2, height: 20, cells: [text('和文の行'), empty, empty, empty, empty] },
+				{ excelRow: 3, height: 30, cells: [text('x'), empty, empty, empty, empty] },
+				{ excelRow: 5, height: 20, cells: [empty, empty, empty, empty, empty] },
+			],
+		};
+		// 今の描き方: 行の位置は tr を測る（エディタの _placeGeometryOverlays と同じ）
+		const tableHost = doc.body.appendChild(doc.createElement('div'));
+		const dom = buildSheetTableDom(data);
+		tableHost.appendChild(dom.table);
+		const tableTops = new Map<number, number>();
+		for (const { excelRow, tr } of dom.dataRows) {
+			tableTops.set(excelRow, tr.offsetTop);
+		}
+		const lastRow = dom.dataRows.at(-1)!;
+		tableTops.set(lastRow.excelRow + 1, lastRow.tr.offsetTop + lastRow.tr.offsetHeight);
+		const headerHeight = dom.thead.getBoundingClientRect().height;
+		tableHost.remove();
+
+		// 仮想グリッド: 行の位置は viewport から取る
+		const gridHost = doc.body.appendChild(doc.createElement('div'));
+		gridHost.style.width = '600px';
+		gridHost.style.height = '300px';
+		gridHost.style.overflow = 'auto';
+		gridHost.style.position = 'relative';
+		const viewport = createVirtualGridViewport(data, headerHeight, 'overlays', measureVirtualGridContentRows(gridHost, data));
+		const gridTops = virtualGridRowTops(data, viewport);
+		const index = createVirtualGridIndex(data);
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(gridHost, viewport, { getViewport: async request => legacyGridTile(data, request, index), zoom: 0.5 }));
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 1200, height: 600 });
+		const { rowLines, colLines, labels } = describeSheetPageBreaks(data);
+		const overlay = buildPageBreakOverlay(rowLines, colLines, data.printArea, labels, gridTops, data.columnWidths, data.minCol, doc);
+		renderer.addDecorations(overlay.labels ? [overlay.labels] : [], overlay.lines ? [overlay.lines] : []);
+		const sizer = gridHost.querySelector('.paradis-spreadsheet-virtual-sizer');
+		const placed = { linesInZoomedGrid: !!overlay.lines && !!sizer?.contains(overlay.lines), linesInFront: overlay.lines?.style.zIndex };
+		gridHost.remove();
+
+		deepStrictEqual({
+			// 英数字だけの行・和文の行・高さを指定した行のどれも、表の行と同じ位置（1px 以内）
+			sameRowTops: [...tableTops].map(([row, top]) => [row, Math.abs((gridTops.get(row) ?? -100) - top) <= 1]),
+			placed,
+		}, {
+			sameRowTops: [[1, true], [2, true], [3, true], [5, true], [6, true]],
+			placed: { linesInZoomedGrid: true, linesInFront: '3' },
 		});
 	});
 });
