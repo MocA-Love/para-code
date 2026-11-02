@@ -13,7 +13,7 @@
 import { createHash } from 'crypto';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { StopWatch } from '../../../../../base/common/stopwatch.js';
-import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, throwIfParadisOfficeCancelled, type IParadisOfficeArchive } from '../../common/office/paradisOfficeArchive.js';
+import { canonicalizeParadisOfficeArchiveName, joinParadisOfficeChunks, ParadisOfficePackageError, throwIfParadisOfficeCancelled, type IParadisOfficeArchive } from '../../common/office/paradisOfficeArchive.js';
 import { inspectOfficePackage, type ParadisOfficePackageInventory } from '../../common/office/paradisOfficePackageCore.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { compareWordSemantics } from '../../common/word/paradisWordSemanticDiff.js';
@@ -110,13 +110,7 @@ async function readAllParts(archive: IParadisOfficeArchive, token: CancellationT
 				}
 				chunks.push(chunk.slice());
 			}
-			const bytes = new Uint8Array(length);
-			let offset = 0;
-			for (const chunk of chunks) {
-				bytes.set(chunk, offset);
-				offset += chunk.byteLength;
-			}
-			parts.set(name, bytes);
+			parts.set(name, joinParadisOfficeChunks(chunks, length));
 		}
 	} finally {
 		archive.dispose();
