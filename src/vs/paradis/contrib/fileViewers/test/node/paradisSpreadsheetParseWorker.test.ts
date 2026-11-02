@@ -12,7 +12,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { decodeParadisWorkbookJson, unpackParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ParadisSpreadsheetService } from '../../node/paradisSpreadsheetService.js';
 import type { ParadisOfficeSemanticWorkerMessage } from '../../node/office/paradisOfficeSemanticWorkerQueue.js';
-import { ParadisSpreadsheetParseWorkerBackend, type IParadisSpreadsheetParseWorker, type IParadisSpreadsheetParseWorkerRun } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
+import { PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS, ParadisSpreadsheetParseWorkerBackend, type IParadisSpreadsheetParseWorker, type IParadisSpreadsheetParseWorkerRun } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
 const WORKER_PATH = FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain.js').fsPath;
 
@@ -37,6 +37,32 @@ async function inventedWorkbook(): Promise<Buffer> {
 
 suite('ParadisSpreadsheetParseWorker', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('reports a parse stopped by the run deadline, but not one that ran out of memory', async () => {
+		const listeners = new Map<string, ((value: never) => void)[]>();
+		const worker = {
+			postMessage: () => undefined,
+			on: (event: string, listener: (value: never) => void) => { listeners.set(event, [...(listeners.get(event) ?? []), listener]); return worker; },
+			terminate: async () => 0,
+		};
+		const runTimers: (() => void)[] = [];
+		const reports: unknown[] = [];
+		const backend = disposables.add(new ParadisSpreadsheetParseWorkerBackend(() => { listeners.clear(); return worker as unknown as IParadisSpreadsheetParseWorker; }, {
+			setTimeout: (handler: () => void, delay: number) => { if (delay === PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS) { runTimers.push(handler); } return {}; },
+			clearTimeout: () => undefined,
+		}, (...args) => { reports.push(args); }));
+		const emit = (event: string, value: unknown) => { for (const listener of listeners.get(event) ?? []) { listener(value as never); } };
+		const outOfMemory = backend.parse(new Uint8Array([1]), undefined, CancellationToken.None);
+		emit('error', Object.assign(new Error('heap'), { code: 'ERR_WORKER_OUT_OF_MEMORY' }));
+		const afterOutOfMemory = { result: await outOfMemory, reports: reports.length };
+		const hung = backend.parse(new Uint8Array([2]), undefined, CancellationToken.None);
+		runTimers.at(-1)!();
+		deepStrictEqual({ afterOutOfMemory, hung: await hung, reports }, {
+			afterOutOfMemory: { result: { kind: 'unavailable', reason: 'limitExceeded' }, reports: 0 },
+			hung: { kind: 'unavailable', reason: 'limitExceeded' },
+			reports: [['spreadsheet-parse', 'deadline', 'run-deadline']],
+		});
+	});
 
 	test('sends one warm request while one is waiting or running, and none while the worker is up', async () => {
 		const posted: ParadisOfficeSemanticWorkerMessage<IParadisSpreadsheetParseWorkerRun>[] = [];

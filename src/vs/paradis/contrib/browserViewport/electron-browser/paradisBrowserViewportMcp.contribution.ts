@@ -33,6 +33,7 @@ import {
 	paradisResolveViewportSpec,
 } from '../common/paradisBrowserViewport.js';
 import { IParadisBrowserViewportService } from './paradisBrowserViewportService.js';
+import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 
 const AGENT_LABEL_MAX_LENGTH = 40;
 
@@ -50,26 +51,28 @@ class ParadisBrowserViewportMcpChannel implements IServerChannel {
 	}
 
 	async call<T>(_ctx: unknown, command: string, arg?: unknown): Promise<T> {
-		const args = Array.isArray(arg) ? arg : [];
+		const args = ParadisChannelArgs.from(arg);
 		switch (command) {
 			case ParadisViewportMcpMethod.List:
 				return this._list() as T;
 			case ParadisViewportMcpMethod.Set:
 				return await this._set(
-					typeof args[0] === 'string' ? args[0] : undefined,
-					typeof args[1] === 'string' ? args[1] : '',
-					typeof args[2] === 'string' ? args[2] : '',
+					args.string(0),
+					args.string(1) ?? '',
+					args.string(2) ?? '',
 				) as T;
 			case ParadisViewportMcpMethod.NoteAgentEmulation: {
-				const model = typeof args[1] === 'string' ? this.browserViewWorkbenchService.getKnownBrowserViews().get(args[1])?.model : undefined;
+				const viewId = args.string(1);
+				const model = viewId !== undefined ? this.browserViewWorkbenchService.getKnownBrowserViews().get(viewId)?.model : undefined;
 				if (model) {
-					const previous = args[2] && typeof args[2] === 'object' ? args[2] as IBrowserDeviceProfile : undefined;
-					await this.viewportService.noteAgentEmulation(model, this._agentLabel(typeof args[0] === 'string' ? args[0] : undefined), previous);
+					const previousArg = args.at(2);
+					const previous = previousArg && typeof previousArg === 'object' ? previousArg as IBrowserDeviceProfile : undefined;
+					await this.viewportService.noteAgentEmulation(model, this._agentLabel(args.string(0)), previous);
 				}
 				return undefined as T;
 			}
 			case ParadisViewportMcpMethod.Describe:
-				return this._describe(Array.isArray(args[0]) ? args[0].filter((id): id is string => typeof id === 'string') : []) as T;
+				return this._describe(args.strings(0)) as T;
 		}
 		throw new Error(`Method not found: ${command}`);
 	}
