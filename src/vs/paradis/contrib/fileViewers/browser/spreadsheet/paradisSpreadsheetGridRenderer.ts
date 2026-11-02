@@ -93,6 +93,11 @@ export interface ParadisSpreadsheetGridRendererOptions {
 	 * CSV のビューアは自分の選択範囲でコピーするので使わない。既定は false。
 	 */
 	readonly copyFocusedCell?: boolean;
+	/**
+	 * 選んだ範囲（`copyFocusedCell` のとき、ドラッグ・Shift+クリック・Shift+矢印で選ぶ）をコピーする文字を返す。
+	 * 画面の外の行は描いていないので、DOM ではなく元のデータから作る（Excel のビューア）。無ければフォーカスのセルの文字。
+	 */
+	readonly copyRange?: (range: ParadisSpreadsheetVirtualRange) => string;
 }
 
 interface RenderedCell {
@@ -121,6 +126,11 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	private readonly keyListener: (event: KeyboardEvent) => void;
 	private readonly copyListener: (event: ClipboardEvent) => void;
 	private readonly pointerListener: (event: MouseEvent) => void;
+	private readonly pointerMoveListener: (event: MouseEvent) => void;
+	private readonly pointerUpListener: () => void;
+	/** 範囲の選択の起点（フォーカスのセルとの間が選んだ範囲）と、ドラッグ中か。 */
+	private selectionAnchor = { row: 0, column: 0 };
+	private dragging = false;
 	/** 描くときに切った（とても長い）セルの元の文字。コピーでは切らずに渡す。 */
 	private readonly fullTexts = new Map<string, string>();
 	private resizeObserver: IDisposable | undefined;
@@ -167,11 +177,15 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.keyListener = event => this.onKeyDown(event);
 		this.copyListener = event => this.onCopy(event);
 		this.pointerListener = event => this.onPointerDown(event);
+		this.pointerMoveListener = event => this.onPointerMove(event);
+		this.pointerUpListener = () => { this.dragging = false; };
 		container.addEventListener('scroll', this.scrollListener, { passive: true });
 		container.addEventListener('keydown', this.keyListener);
 		if (options.copyFocusedCell) {
 			container.addEventListener('copy', this.copyListener);
 			container.addEventListener('mousedown', this.pointerListener);
+			container.addEventListener('mousemove', this.pointerMoveListener);
+			this.document.addEventListener('mouseup', this.pointerUpListener);
 		}
 		this.attachRemeasureTriggers();
 	}
@@ -218,13 +232,24 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		}
 	}
 
-	async revealCell(row: number, column: number): Promise<void> {
+	/**
+	 * セルを画面に出す。`center` のときは画面の中央に出す（検索で移るときの DOM の表の `scrollIntoView` の中央寄せと同じ）。
+	 */
+	async revealCell(row: number, column: number, center = false): Promise<void> {
 		if (this.disposed) {
 			return;
 		}
 		const reveal = this.viewport.revealCell(this._frame, row, column);
 		this.focused = { row: reveal.row, column: reveal.column };
-		await this.render({ ...this._frame, scrollTop: reveal.scrollTop, scrollLeft: reveal.scrollLeft });
+		this.selectionAnchor = this.focused;
+		let { scrollTop, scrollLeft } = reveal;
+		if (center) {
+			const plan = this.viewport.plan(this._frame);
+			const bounds = this.viewport.cellBounds(reveal.row, reveal.column);
+			scrollTop = Math.max(0, bounds.top - plan.frozenHeight - Math.max(0, this._frame.height - plan.frozenHeight - bounds.height) / 2);
+			scrollLeft = Math.max(0, bounds.left - plan.frozenWidth - Math.max(0, this._frame.width - plan.frozenWidth - bounds.width) / 2);
+		}
+		await this.render({ ...this._frame, scrollTop, scrollLeft });
 	}
 
 	/**
@@ -258,6 +283,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.container.removeEventListener('keydown', this.keyListener);
 		this.container.removeEventListener('copy', this.copyListener);
 		this.container.removeEventListener('mousedown', this.pointerListener);
+		this.container.removeEventListener('mousemove', this.pointerMoveListener);
+		this.document.removeEventListener('mouseup', this.pointerUpListener);
 		this.resizeObserver?.dispose();
 		for (const schedule of this.mediaSchedules.values()) {
 			schedule.dispose();
@@ -585,6 +612,10 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		}
 		event.preventDefault();
 		this.focused = this.viewport.moveFocus(this.focused, event.key, { ctrlKey: event.ctrlKey || event.metaKey });
+		if (!event.shiftKey) {
+			// Shift を押していなければ範囲は移した先の 1 つのセル（押していれば起点を残して広げる）
+			this.selectionAnchor = this.focused;
+		}
 		this.scrollFocusedCellIntoView();
 		this.queueRender();
 	}
@@ -598,12 +629,22 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		if (selection && !selection.isCollapsed && selection.toString().length > 0) {
 			return;
 		}
-		const entry = [...this.cells].find(([, rendered]) => Number(rendered.element.dataset.row) === this.focused.row && Number(rendered.element.dataset.column) === this.focused.column);
-		// 見出し・空のセルではコピーを横取りしない（手元のクリップボードを空で上書きしない）
-		if (!entry || entry[1].element.dataset.header || !event.clipboardData) {
+		if (!event.clipboardData) {
 			return;
 		}
-		const value = this.fullTexts.get(entry[0]) ?? entry[1].element.textContent ?? '';
+		let value: string;
+		if (this.options.copyRange) {
+			// 選んだ範囲（1 つのセルだけのときはそのセル）を、元のデータから行はタブ・行末は改行でつなぐ
+			value = this.options.copyRange(this.selectionRange);
+		} else {
+			const entry = [...this.cells].find(([, rendered]) => Number(rendered.element.dataset.row) === this.focused.row && Number(rendered.element.dataset.column) === this.focused.column);
+			// 見出しのセルではコピーを横取りしない
+			if (!entry || entry[1].element.dataset.header) {
+				return;
+			}
+			value = this.fullTexts.get(entry[0]) ?? entry[1].element.textContent ?? '';
+		}
+		// 空のときは横取りしない（手元のクリップボードを空で上書きしない）
 		if (!value) {
 			return;
 		}
@@ -611,17 +652,49 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		event.preventDefault();
 	}
 
-	/** クリックしたセルにフォーカスを移す（キーの移動とコピーの起点になる）。 */
-	private onPointerDown(event: MouseEvent): void {
+	/** 選んだ範囲 [行, 列, 行の終わり, 列の終わり)。 */
+	get selectionRange(): ParadisSpreadsheetVirtualRange {
+		return [
+			Math.min(this.selectionAnchor.row, this.focused.row), Math.min(this.selectionAnchor.column, this.focused.column),
+			Math.max(this.selectionAnchor.row, this.focused.row) + 1, Math.max(this.selectionAnchor.column, this.focused.column) + 1,
+		];
+	}
+
+	private cellAt(event: MouseEvent, includeHeaders = false): { readonly row: number; readonly column: number } | undefined {
 		const target = event.target as Element | null;
 		const element = target?.closest?.('.paradis-spreadsheet-virtual-cell') as HTMLElement | null | undefined;
-		if (!element || !this.container.contains(element)) {
-			return;
+		if (!element || !this.container.contains(element) || (element.dataset.header && !includeHeaders)) {
+			return undefined;
 		}
 		const row = Number(element.dataset.row);
 		const column = Number(element.dataset.column);
-		if (Number.isSafeInteger(row) && Number.isSafeInteger(column)) {
-			this.focused = { row, column };
+		return Number.isSafeInteger(row) && Number.isSafeInteger(column) ? { row, column } : undefined;
+	}
+
+	/** クリックしたセルにフォーカスを移す。Shift なら起点を残して範囲を広げ、押したまま動かすと範囲を選ぶ。 */
+	private onPointerDown(event: MouseEvent): void {
+		// 見出しをクリックしたときは、そこにフォーカスを移すだけ（表と同じく、その後のコピーでは何も入らない）
+		const cell = event.button === 0 ? this.cellAt(event, true) : undefined;
+		if (!cell) {
+			return;
+		}
+		const header = !!(event.target as Element).closest?.('.paradis-spreadsheet-virtual-cell')?.getAttribute('data-header');
+		this.focused = cell;
+		if (!event.shiftKey || header) {
+			this.selectionAnchor = cell;
+		}
+		this.dragging = !header;
+		this.updateFocusedCell();
+	}
+
+	private onPointerMove(event: MouseEvent): void {
+		if (!this.dragging || (event.buttons & 1) === 0) {
+			this.dragging = false;
+			return;
+		}
+		const cell = this.cellAt(event);
+		if (cell && (cell.row !== this.focused.row || cell.column !== this.focused.column)) {
+			this.focused = cell;
 			this.updateFocusedCell();
 		}
 	}
@@ -645,8 +718,15 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	}
 
 	private updateFocusedCell(): void {
+		const [rowStart, columnStart, rowEnd, columnEnd] = this.selectionRange;
+		// 1 つのセルだけのときは表と同じく塗らない（表でもクリックしただけでは選択の色が付かない）
+		const multiple = rowEnd - rowStart > 1 || columnEnd - columnStart > 1;
 		for (const rendered of this.cells.values()) {
-			const selected = Number(rendered.element.dataset.row) === this.focused.row && Number(rendered.element.dataset.column) === this.focused.column;
+			const cellRow = Number(rendered.element.dataset.row);
+			const cellColumn = Number(rendered.element.dataset.column);
+			rendered.element.classList.toggle('paradis-spreadsheet-virtual-selected', multiple && !rendered.element.dataset.header
+				&& cellRow >= rowStart && cellRow < rowEnd && cellColumn >= columnStart && cellColumn < columnEnd);
+			const selected = cellRow === this.focused.row && cellColumn === this.focused.column;
 			rendered.element.tabIndex = selected ? 0 : -1;
 			if (selected) {
 				this.container.setAttribute('aria-activedescendant', ensureCellId(rendered.element, this.focused.row, this.focused.column));

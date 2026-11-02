@@ -11,8 +11,8 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisCellData, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
 import { ParadisSpreadsheetGridRenderer } from '../../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
-import { collapseBorders, createVirtualGridIndex, createVirtualGridViewport, legacyGridTile, measureVirtualGridContentRows, relayoutVirtualGrid, virtualGridLayoutFrame, virtualGridRowTops } from '../../electron-browser/paradisSpreadsheetEditor.js';
-import { applyOverflow, buildPageBreakOverlay, buildSheetTableDom, describeSheetPageBreaks } from '../../electron-browser/paradisSpreadsheetRender.js';
+import { collapseBorders, createVirtualGridIndex, createVirtualGridViewport, legacyGridTile, measureVirtualGridContentRows, relayoutVirtualGrid, virtualGridCopyText, virtualGridLayoutFrame, virtualGridRowTops } from '../../electron-browser/paradisSpreadsheetEditor.js';
+import { applyOverflow, buildPageBreakOverlay, buildShapeOverlay, buildSheetTableDom, buildShownNoteOverlay, describeSheetPageBreaks } from '../../electron-browser/paradisSpreadsheetRender.js';
 
 const empty: IParadisCellData = { value: '', style: {} };
 const text = (value: string, style: Record<string, string> = {}): IParadisCellData => ({ value, style });
@@ -557,6 +557,178 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 		}, {
 			rows: data.rows.map(row => ({ excelRow: row.excelRow, sameHeight: true, sameRowNumber: true })),
 			counts: { rowCount: true, columnCount: true, lastColumnNumber: true },
+		});
+	});
+
+	test('copies a selected range as the table does: tabs between cells, new lines between rows, merged values once, no frozen copies', async () => {
+		const doc = mainWindow.document;
+		const merged: IParadisCellData = { value: '結合', style: {}, colSpan: 2 };
+		const covered: IParadisCellData = { value: '', style: {}, hidden: true };
+		const data: IParadisSheetData = {
+			name: 'Copy', minCol: 1, columnCount: 4, columnWidths: [60, 60, 0, 60], truncated: false,
+			freezePane: { rows: 1, cols: 1 },
+			rows: [
+				{ excelRow: 1, height: 20, cells: [text('a1'), text('b1'), text('hidden'), text('d1')] },
+				{ excelRow: 2, height: 20, cells: [text('a2'), merged, covered, text('d2')] },
+				{ excelRow: 4, height: 20, cells: [text('a4'), empty, text('c4'), text('d4')] },
+			],
+		};
+		// 今の描き方: 1 行の中で範囲を選んだときのブラウザの文字
+		const tableHost = doc.body.appendChild(doc.createElement('div'));
+		// テストのページは文字を選べない設定なので、エディタと同じく選べるようにする
+		tableHost.style.userSelect = 'text';
+		const dom = buildSheetTableDom(data);
+		tableHost.appendChild(dom.table);
+		const tds = (rowIndex: number) => [...dom.dataRows[rowIndex].tr.children].slice(1) as HTMLElement[];
+		const selectInTable = (from: HTMLElement, to: HTMLElement) => {
+			const range = doc.createRange();
+			range.setStartBefore(from.firstChild ?? from);
+			range.setEndAfter(to.lastChild ?? to);
+			const selection = mainWindow.getSelection()!;
+			selection.removeAllRanges();
+			selection.addRange(range);
+			const value = selection.toString();
+			selection.removeAllRanges();
+			return value;
+		};
+		const tableRow = selectInTable(tds(0)[0], tds(0)[3]);
+		const tableMergedRow = selectInTable(tds(1)[0], tds(1)[1]);
+		tableHost.remove();
+
+		// 仮想グリッド: ドラッグ・Shift+クリック・Shift+矢印で選んでコピー
+		const host = doc.body.appendChild(doc.createElement('div'));
+		host.style.width = '400px';
+		host.style.height = '200px';
+		host.style.overflow = 'auto';
+		host.style.position = 'relative';
+		host.classList.add('paradis-spreadsheet-virtual-excel');
+		const index = createVirtualGridIndex(data);
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(host, createVirtualGridViewport(data, 17, 'copy'), {
+			getViewport: async request => legacyGridTile(data, request, index), copyFocusedCell: true, copyRange: range => virtualGridCopyText(data, range),
+		}));
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 400, height: 200 });
+		// 固定枠（1 行 1 列）の複製があっても、同じセルは 1 つとして数える
+		const cell = (row: number, column: number) => host.querySelector<HTMLElement>(`.paradis-spreadsheet-virtual-cell[data-row="${row + 1}"][data-column="${column + 1}"]`)!;
+		const copy = () => {
+			const event = new ClipboardEvent('copy', { clipboardData: new DataTransfer(), cancelable: true, bubbles: true });
+			host.dispatchEvent(event);
+			return event.clipboardData?.getData('text/plain') ?? '';
+		};
+		const press = (target: HTMLElement, init: MouseEventInit) => target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, ...init }));
+		// ドラッグで 1 行目の A〜D
+		press(cell(0, 0), {});
+		cell(0, 3).dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1 }));
+		doc.dispatchEvent(new MouseEvent('mouseup'));
+		const dragged = copy();
+		const selectedCount = host.querySelectorAll('.paradis-spreadsheet-virtual-selected').length;
+		// Shift+クリックで 2 行目の A から結合（B〜C）まで
+		press(cell(1, 0), {});
+		press(cell(1, 1), { shiftKey: true });
+		const shiftClicked = copy();
+		// Shift+矢印で A1 から 3 行ぶん下へ
+		press(cell(0, 0), {});
+		host.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', shiftKey: true, bubbles: true }));
+		host.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', shiftKey: true, bubbles: true }));
+		const shiftArrows = copy();
+		host.remove();
+
+		deepStrictEqual({ dragged, shiftClicked, shiftArrows, selectedCount: selectedCount > 1 }, {
+			dragged: tableRow,
+			shiftClicked: tableMergedRow,
+			shiftArrows: 'a1\na2\na4',
+			selectedCount: true,
+		});
+		// 表のコピーでは、幅 0 の隠れた列は空の欄になる
+		deepStrictEqual([tableRow, tableMergedRow], ['a1\tb1\t\td1', 'a2\t結合']);
+	});
+
+	test('places shapes and shown notes where the table does, moves them with the content under frozen panes, and centers search reveals', async () => {
+		const doc = mainWindow.document;
+		const base = sheet();
+		const data: IParadisSheetData = {
+			...base,
+			columnWidths: [60, 60, 60, 60, 60],
+			rows: [...base.rows, ...Array.from({ length: 30 }, (_unused, index) => ({ excelRow: 10 + index, height: 20, cells: [text(`r${index}`), empty, empty, empty, empty] }))],
+			shapes: [{ type: 'line', flipV: false, flipH: false, from: { c: 1, co: 0, r: 1, ro: 0 }, to: { c: 3, co: 0, r: 3, ro: 0 }, outlineColor: '#ff0000', outlineWidth: 2, dash: 'solid' }],
+			comments: [{ ref: 'D2', row: 1, column: 2, kind: 'note', entries: [{ author: 'A', text: 'メモ' }], shown: { from: { c: 3, co: 0, r: 0, ro: 0 }, to: { c: 4, co: 0, r: 2, ro: 0 } } }],
+		};
+		const firstDrawn = (overlay: Element | undefined) => overlay?.querySelector('line, path, rect, polyline, div') ?? overlay;
+		const offsetFrom = (element: Element | null | undefined, origin: Element) => {
+			const rect = element!.getBoundingClientRect();
+			const at = origin.getBoundingClientRect();
+			return [Math.round(rect.left - at.left), Math.round(rect.top - at.top)];
+		};
+		// 今の描き方: 行の位置は tr を測る（エディタの _placeGeometryOverlays と同じ）
+		const tableHost = doc.body.appendChild(doc.createElement('div'));
+		tableHost.style.position = 'relative';
+		const dom = buildSheetTableDom(data);
+		tableHost.appendChild(dom.table);
+		const tableTops = new Map(dom.dataRows.map(({ excelRow, tr }) => [excelRow, tr.offsetTop] as const));
+		const lastRow = dom.dataRows.at(-1)!;
+		tableTops.set(lastRow.excelRow + 1, lastRow.tr.offsetTop + lastRow.tr.offsetHeight);
+		const tableShape = buildShapeOverlay(data.shapes!, tableTops, data.columnWidths, data.minCol, doc)!;
+		const tableNote = buildShownNoteOverlay(data.comments!, tableTops, data.columnWidths, data.minCol, doc)!;
+		tableHost.append(tableShape, tableNote);
+		const table = { shape: offsetFrom(firstDrawn(tableShape), dom.table), note: offsetFrom(firstDrawn(tableNote), dom.table) };
+		const headerHeight = dom.thead.getBoundingClientRect().height;
+		tableHost.remove();
+
+		// 仮想グリッド: 行の位置は viewport から取る。固定枠（1 行 1 列）がある
+		const host = doc.body.appendChild(doc.createElement('div'));
+		host.style.width = '300px';
+		host.style.height = '150px';
+		host.style.overflow = 'auto';
+		host.style.position = 'relative';
+		host.classList.add('paradis-spreadsheet-virtual-excel');
+		const viewport = createVirtualGridViewport(data, headerHeight, 'shapes', measureVirtualGridContentRows(host, data));
+		const tops = virtualGridRowTops(data, viewport);
+		const index = createVirtualGridIndex(data);
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(host, viewport, { getViewport: async request => legacyGridTile(data, request, index), copyFocusedCell: true }));
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 300, height: 150 });
+		const gridShape = buildShapeOverlay(data.shapes!, tops, data.columnWidths, data.minCol, doc)!;
+		const gridNote = buildShownNoteOverlay(data.comments!, tops, data.columnWidths, data.minCol, doc)!;
+		renderer.addDecorations([], [gridShape, gridNote]);
+		const sizer = host.querySelector('.paradis-spreadsheet-virtual-sizer')!;
+		const grid = { shape: offsetFrom(firstDrawn(gridShape), sizer), note: offsetFrom(firstDrawn(gridNote), sizer) };
+		// スクロールすると、重ね描きは中身と一緒に動く（固定枠には残らない）
+		const before = offsetFrom(firstDrawn(gridShape), host);
+		await renderer.render({ scrollTop: 40, scrollLeft: 50, width: 300, height: 150 });
+		const after = offsetFrom(firstDrawn(gridShape), host);
+		// 検索で移るときは、セルを本体の枠（固定枠を除いた部分）の中央に出す
+		await renderer.revealCell(25, 3, true);
+		const target = viewport.cellBounds(25, 3);
+		const frame = renderer.frame;
+		const frozen = viewport.cellBounds(2, 2);
+		const bodyHeight = frame.height - frozen.top;
+		const centeredRow = Math.abs(target.top - frozen.top - frame.scrollTop + target.height / 2 - bodyHeight / 2) <= 1;
+		host.remove();
+
+		// 縦に結合した折り返しは、図形・用紙設定のあるシート（判定で仮想グリッドに移るシート）でも同じに伸びる
+		const mergeSheet: IParadisSheetData = {
+			name: 'M', minCol: 1, columnCount: 2, columnWidths: [80, 80], truncated: false,
+			rows: [
+				{ excelRow: 1, height: 20, cells: [{ value: '縦に結合した折り返しの長い文字です。'.repeat(6), style: {}, wrapText: true, rowSpan: 2 }, text('a')] },
+				{ excelRow: 2, height: 20, cells: [{ value: '', style: {}, hidden: true }, text('b')] },
+			],
+		};
+		const probe = doc.body.appendChild(doc.createElement('div'));
+		probe.classList.add('paradis-spreadsheet-virtual-excel');
+		const plain = [...(measureVirtualGridContentRows(probe, mergeSheet) ?? new Map())];
+		const withShapes = [...(measureVirtualGridContentRows(probe, { ...mergeSheet, shapes: data.shapes, printArea: { minR: 1, minC: 1, maxR: 2, maxC: 2 }, rowBreaks: [1] }) ?? new Map())];
+		probe.remove();
+
+		deepStrictEqual({
+			shape: grid.shape.map((value, axis) => Math.abs(value - table.shape[axis]) <= 1),
+			note: grid.note.map((value, axis) => Math.abs(value - table.note[axis]) <= 1),
+			movedWithContent: [before[0] - after[0], before[1] - after[1]],
+			centeredRow,
+			mergeGrowsTheSame: plain.length > 0 && JSON.stringify(plain) === JSON.stringify(withShapes),
+		}, {
+			shape: [true, true],
+			note: [true, true],
+			movedWithContent: [50, 40],
+			centeredRow: true,
+			mergeGrowsTheSame: true,
 		});
 	});
 });
