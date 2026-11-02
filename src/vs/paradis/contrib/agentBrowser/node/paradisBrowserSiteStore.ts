@@ -7,12 +7,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // サイトメモ（E4）とサイトの手順（E3）の置き場。スペース（リポジトリ）とオリジンの組ごとに、項目の一覧を 1 つの
-// JSON ファイルへ書く。読み書きのたびにファイルを読み直すので、Para Code が 2 つ（ステーブルとベータ）動いていても、
-// 書く直前に読み直して足し、互いの項目を消さない（同じ瞬間の書き込みは後勝ち）。
+// JSON ファイルへ書く。読み書きのたびにファイルが変わっていないかを確かめ、変わっていれば読み直すので、Para Code が
+// 2 つ（ステーブルとベータ）動いていても、書く直前に読み直して足し、互いの項目を消さない（同じ瞬間の書き込みは後勝ち）。
 
 import { promises as fs } from 'fs';
-import { dirname } from '../../../../base/common/path.js';
-import { generateUuid } from '../../../../base/common/uuid.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 
 /** 1 つのファイルに持つ組（スペース × オリジン）の上限。古い組から消す。 */
 const MAX_KEYS = 2000;
@@ -36,6 +35,11 @@ export function paradisLocalDate(date: Date): string {
  */
 export class ParadisBrowserSiteStore<T> {
 	private writing: Promise<unknown> = Promise.resolve();
+	/**
+	 * 最後に読んだ・書いた中身と、そのときのファイルの印（inode・更新時刻・大きさ）。印が同じなら読み直さない
+	 * （書き込みは一時ファイルの rename なので、別のプロセスが書けば inode が変わる）。
+	 */
+	private cached: { readonly stamp: string; readonly map: ReadonlyMap<string, T[]> } | undefined;
 
 	constructor(private readonly filePath: string, private readonly field: string, private readonly maxFileChars: number = MAX_FILE_CHARS) { }
 
@@ -43,26 +47,43 @@ export class ParadisBrowserSiteStore<T> {
 		return `${space}\n${origin}`;
 	}
 
-	private async load(): Promise<Map<string, T[]>> {
+	private async stamp(): Promise<string | undefined> {
 		try {
-			const parsed: unknown = JSON.parse(await fs.readFile(this.filePath, 'utf8'));
-			const items = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)[this.field] : undefined;
-			return new Map(Object.entries(typeof items === 'object' && items !== null ? items : {}).filter((entry): entry is [string, T[]] => Array.isArray(entry[1])));
+			const stat = await fs.stat(this.filePath);
+			return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
 		} catch {
-			return new Map();
+			return undefined;
 		}
 	}
 
+	/** 中身を読む。返す Map は呼んだ側で変えてよい（覚えている中身とは別の Map）。 */
+	private async load(): Promise<Map<string, T[]>> {
+		const stamp = await this.stamp();
+		if (stamp !== undefined && this.cached?.stamp === stamp) {
+			return new Map(this.cached.map);
+		}
+		let map: Map<string, T[]>;
+		try {
+			const parsed: unknown = JSON.parse(await fs.readFile(this.filePath, 'utf8'));
+			const items = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)[this.field] : undefined;
+			map = new Map(Object.entries(typeof items === 'object' && items !== null ? items : {}).filter((entry): entry is [string, T[]] => Array.isArray(entry[1])));
+		} catch {
+			map = new Map();
+		}
+		// 読んでいる間に書き換えられたかもしれないので、読む前の印で覚える（次は印が違うので読み直す）
+		this.cached = stamp !== undefined ? { stamp, map: new Map(map) } : undefined;
+		return map;
+	}
+
 	private async save(map: Map<string, T[]>, grew: boolean): Promise<void> {
-		const text = JSON.stringify({ version: 1, [this.field]: Object.fromEntries(map) }, null, '\t');
+		const text = JSON.stringify({ version: 1, [this.field]: Object.fromEntries(map) });
 		if (grew && text.length > this.maxFileChars) {
 			// 消す・減らす書き込みは上限を越えていても通す（越えた置き場を小さくできるように）
 			throw new ParadisBrowserSiteStoreFullError();
 		}
-		await fs.mkdir(dirname(this.filePath), { recursive: true });
-		const temporary = `${this.filePath}.${generateUuid()}.tmp`;
-		await fs.writeFile(temporary, text, { mode: 0o600 });
-		await fs.rename(temporary, this.filePath);
+		// 書いた後の印は、別のプロセスがすぐ後に書いたものと見分けられないので覚えない（次の読みで読み直す）
+		this.cached = undefined;
+		await paradisWriteFileAtomic(this.filePath, text, { newFileMode: 0o600, createParentMode: 0o777 });
 	}
 
 	async list(space: string, origin: string): Promise<readonly T[]> {
