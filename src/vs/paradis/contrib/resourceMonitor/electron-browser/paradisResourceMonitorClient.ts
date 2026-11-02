@@ -14,7 +14,8 @@
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { IParadisHostResources, IParadisResourceMonitorMainService, IParadisResourceMonitorMobileReport, IParadisResourceMonitorSessionRequest, IParadisResourceMonitorSnapshot, ParadisResourceMonitorFreshness, PARADIS_HOST_RESOURCES_CHANNEL, PARADIS_RESOURCE_MONITOR_CHANNEL } from '../common/paradisResourceMonitor.js';
@@ -165,10 +166,8 @@ export class ParadisResourceMonitorClient {
 	private collectSessionRequests(): IParadisResourceMonitorSessionRequest[] {
 		const scopeNameMap = this.buildScopeNameMap();
 
-		const instances: ITerminalInstance[] = [...this.terminalService.instances];
-		for (const group of this.terminalGroupService.paradisParkedGroups ?? []) {
-			instances.push(...group.terminalInstances);
-		}
+		// 待避中のグループとエディタ端末も含める
+		const instances = paradisCollectAllTerminalInstances(this.terminalService, this.terminalGroupService);
 
 		const sessions: IParadisResourceMonitorSessionRequest[] = [];
 		for (const instance of instances) {

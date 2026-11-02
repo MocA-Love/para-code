@@ -33,7 +33,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisClaudeResumeScreenPrompt, paradisScreenShowsAgentPrompt, paradisVisibleTerminalText, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt } from '../../agentChat/browser/paradisAgentTuiInput.js';
-import { paradisCollectAllTerminalInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneSession } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
