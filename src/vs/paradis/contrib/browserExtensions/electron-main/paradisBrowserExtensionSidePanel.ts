@@ -26,13 +26,13 @@ import type { BrowserWindow, Session, WebContents, WebContentsView } from 'elect
 import { promises as fs } from 'fs';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
-import { dirname } from '../../../../base/common/path.js';
 import { paradisIsExtensionPageHeld, paradisIsExtensionUiAllowedWhileHeld, paradisOnDidChangeExtensionPageHold, paradisOnDidChangeExtensionUiAllowedWhileHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import type { IParadisSidePanelRefusal } from '../common/paradisBrowserExtensions.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { paradisKeepOnExtensionPages, paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 
 const DEFAULT_TAB = -1;
 const WINDOW_ID_CURRENT = -2;
@@ -138,6 +138,7 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 	/** 場所 → 拡張機能の id → ボタンを押したときに開くか（保存する）。 */
 	private _behavior: Record<string, Record<string, boolean>> = {};
 	private _saving: Promise<void> = Promise.resolve();
+	private _writer: ParadisJsonStateWriter | undefined;
 	/** ウィンドウの id → 開いているパネル。 */
 	private readonly _panels = new Map<number, IPanel>();
 	private readonly _onDidChange = this._disposables.add(new Emitter<void>());
@@ -679,12 +680,8 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 	}
 
 	private _save(): Promise<void> {
-		const state = JSON.stringify(this._behavior);
-		this._saving = this._saving.then(async () => {
-			await fs.mkdir(dirname(this._path), { recursive: true });
-			await fs.writeFile(`${this._path}.tmp`, state);
-			await fs.rename(`${this._path}.tmp`, this._path);
-		}).catch(error => this._logService.warn('[paradis] could not save the browser extension side panel settings', error));
+		this._writer ??= new ParadisJsonStateWriter(this._path, true);
+		this._saving = this._writer.write(JSON.stringify(this._behavior)).catch(error => this._logService.warn('[paradis] could not save the browser extension side panel settings', error));
 		return this._saving;
 	}
 }
