@@ -16,7 +16,7 @@ import { dirname, isAbsolute, join, relative, sep } from '../../../../base/commo
 import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
 import { paradisPathHasVersionControlSegment } from '../common/paradisRemoteFileBridge.js';
 import { paradisCaptureExistsReason } from './paradisDevtoolsPathPolicy.js';
-import { IParadisQuerySpec, paradisEvaluateQuery, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
+import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
 
 /** 1 回で撮れる要素の数。 */
 export const PARADIS_CAPTURE_MAX_ELEMENTS = 10;
@@ -236,7 +236,8 @@ export class ParadisBrowserCapture {
 			return { ok: false, result: error(`${prefix}"index" must be a non-negative integer.`) };
 		}
 		const spec: IParadisQuerySpec = { ...locator.spec, mode: 'rect', ...(typeof index === 'number' ? { index } : {}) };
-		const { result, deadlineMs } = await paradisEvaluateQuery(call, spec, locator.uids, undefined, () => paradisEvaluateDeadline(spec, Date.now()));
+		const { deadlineMs, notAfter } = paradisEvaluateDeadline(spec, Date.now());
+		const result = await call.evaluate(paradisBuildQueryFunction(spec, locator.uids.length, undefined, notAfter), locator.uids, deadlineMs);
 		if (!call.isCurrent()) {
 			return { ok: false, result: error(BINDING_CHANGED) };
 		}

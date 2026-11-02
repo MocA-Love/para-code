@@ -40,9 +40,8 @@ class FakePage {
 	call(): IParadisBrowserActCall {
 		return {
 			evaluate: async source => {
-				// The short call (the page function is already on the document in this fake), or the full source
 				const rest = source.slice(source.indexOf(PARADIS_BROWSER_QUERY_PAGE_SCRIPT) + PARADIS_BROWSER_QUERY_PAGE_SCRIPT.length);
-				const spec = JSON.parse((source.includes(PARADIS_BROWSER_QUERY_PAGE_SCRIPT) ? /^\)\((?<spec>\{.*?\}), \[/s.exec(rest) : /\? f\((?<spec>\{.*?\}), \[/s.exec(source))!.groups!.spec) as { mode: string };
+				const spec = JSON.parse(/^\)\((?<spec>\{.*?\}), \[/s.exec(rest)!.groups!.spec) as { mode: string };
 				this.modes.push(spec.mode);
 				const list = this.answers[spec.mode];
 				return returned(list.length > 1 ? list.shift() : list[0]);

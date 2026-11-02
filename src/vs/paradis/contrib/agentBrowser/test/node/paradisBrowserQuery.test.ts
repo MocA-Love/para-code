@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisBrowserQueryCall, ParadisBrowserQuery, paradisBuildQueryCall, paradisBuildQueryFunction, paradisEvaluateQuery, paradisLookedAtRect, paradisNearMissHints, paradisParseEvaluateValue, paradisParseQueryLocator } from '../../node/paradisBrowserQuery.js';
+import { IParadisBrowserQueryCall, ParadisBrowserQuery, paradisBuildQueryFunction, paradisLookedAtRect, paradisNearMissHints, paradisParseQueryLocator } from '../../node/paradisBrowserQuery.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES, PARADIS_MCP_BROWSER_QUERY_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 
@@ -32,12 +32,6 @@ function failed(message: string): unknown {
 	return { content: [{ type: 'text', text: message }], isError: true };
 }
 
-/** The spec JSON in a page function source: the short call, or the full source that puts the function on the page. */
-function specSourceOf(source: string): string | undefined {
-	const rest = source.slice(source.indexOf(PARADIS_BROWSER_QUERY_PAGE_SCRIPT) + PARADIS_BROWSER_QUERY_PAGE_SCRIPT.length);
-	return source.includes(PARADIS_BROWSER_QUERY_PAGE_SCRIPT) ? /^\)\((?<spec>\{.*?\}), \[/s.exec(rest)?.groups?.spec : /\? f\((?<spec>\{.*?\}), \[/s.exec(source)?.groups?.spec;
-}
-
 /** Answers evaluate_script from a list and advances a fake clock by `stepMs` per call. */
 class FakePage {
 	now = 0;
@@ -52,7 +46,8 @@ class FakePage {
 		return {
 			evaluate: async (source, uids, deadlineMs) => {
 				this.deadlines.push(deadlineMs);
-				const json = specSourceOf(source);
+				const rest = source.slice(source.indexOf(PARADIS_BROWSER_QUERY_PAGE_SCRIPT) + PARADIS_BROWSER_QUERY_PAGE_SCRIPT.length);
+				const json = /^\)\((?<spec>\{.*?\}), \[/s.exec(rest)?.groups?.spec;
 				this.calls.push({ spec: json ? JSON.parse(json) : {}, uids });
 				this.now += this.stepMs;
 				return this.answers.length > 1 ? this.answers.shift() : this.answers[0];
@@ -86,62 +81,21 @@ suite('paradisBrowserQuery (shared process)', () => {
 		assert.deepStrictEqual([
 			parse(paradisBuildQueryFunction({ mode: 'wait', selector: '.a' }, 0)),
 			parse(paradisBuildQueryFunction({ mode: 'text', targetIndex: 0 }, 1, '() => window.ready // trailing comment')),
-			parse(paradisBuildQueryCall({ mode: 'wait', selector: '.a' }, 0)),
-			parse(paradisBuildQueryCall({ mode: 'text', targetIndex: 0 }, 1, '() => window.ready // trailing comment')),
-		], ['ok', 'ok', 'ok', 'ok']);
+		], ['ok', 'ok']);
 	});
 
-	test('the page function is put on the document once, and later checks send only a short call', async () => {
-		/** A document: the function sources run against its own global, which a navigation replaces. */
-		let pageGlobal: Record<string, unknown> = {};
-		const sent: string[] = [];
-		const deadlines: number[] = [];
-		let clock = 0;
-		const evaluate = async (source: string, _uids: readonly string[], deadlineMs?: number) => {
-			sent.push(source.includes(PARADIS_BROWSER_QUERY_PAGE_SCRIPT) ? 'full' : 'call');
-			deadlines.push(deadlineMs ?? -1);
-			clock += 10;
-			const run = new Function('globalThis', 'location', `return (${source});`)(pageGlobal, { href: 'about:blank' }) as () => Promise<unknown>;
-			return returned(await run());
-		};
-		const timing = () => ({ deadlineMs: 1_000 + clock, notAfter: Date.now() + 60_000 });
-		const spec = { mode: 'wait', sliceMs: 0, intervalMs: 50 } as const;
-		const values: unknown[] = [];
-		for (let i = 0; i < 2; i++) {
-			values.push(paradisParseEvaluateValue((await paradisEvaluateQuery({ evaluate }, spec, [], '() => true', timing)).result)?.value);
-		}
-		// A navigation: the new document has no function yet.
-		pageGlobal = {};
-		const navigated = pageGlobal;
-		values.push(paradisParseEvaluateValue((await paradisEvaluateQuery({ evaluate }, spec, [], '() => true', timing)).result)?.value);
-		// A page that freezes its global cannot keep the function, but the full source still answers.
-		pageGlobal = Object.freeze({});
-		values.push(paradisParseEvaluateValue((await paradisEvaluateQuery({ evaluate }, spec, [], '() => true', timing)).result)?.value);
-		assert.deepStrictEqual({
-			sent,
-			// The full source after a missing function gets a fresh deadline.
-			deadlines,
-			met: values.map(value => (value as { met?: unknown } | undefined)?.met),
-			// Kept out of sight: not enumerable, one own property
-			hidden: [Object.keys(navigated).length, Object.getOwnPropertyNames(navigated).length],
-		}, {
-			sent: ['call', 'full', 'call', 'call', 'full', 'call', 'full'],
-			deadlines: [1_000, 1_010, 1_020, 1_030, 1_040, 1_050, 1_060],
-			met: [true, true, true, true],
-			hidden: [0, 1],
-		});
-	});
-
-	test('a failed short call is returned as it is, without sending the page function', async () => {
-		const sent: string[] = [];
-		const navigating = failed('Execution context was destroyed');
-		const outcome = await paradisEvaluateQuery({ evaluate: async source => { sent.push(source.includes(PARADIS_BROWSER_QUERY_PAGE_SCRIPT) ? 'full' : 'call'); return navigating; } }, { mode: 'wait' }, [], undefined, () => ({ deadlineMs: 5, notAfter: 0 }));
-		assert.deepStrictEqual({ sent, same: outcome.result === navigating, deadlineMs: outcome.deadlineMs }, { sent: ['call'], same: true, deadlineMs: 5 });
+	test('every check sends the whole page function and never reads a function from the page global', async () => {
+		// A page can find and pre-place anything kept on its own global, so the page function is never kept there (PR #643 review)
+		const sources: string[] = [];
+		const page = new FakePage([returned({ met: false }), returned({ met: false }), returned({ met: true })]);
+		const call = page.call();
+		await page.query().call({ ...call, evaluate: (source, uids, deadlineMs) => { sources.push(source); return call.evaluate(source, uids, deadlineMs); } }, 'wait_until', { selector: '.a', timeout_seconds: 10 });
+		assert.deepStrictEqual(sources.map(source => [source.includes(PARADIS_BROWSER_QUERY_PAGE_SCRIPT), source.includes('globalThis[')]), [[true, false], [true, false], [true, false]]);
 	});
 
 	test('a predicate that never settles ends the check at the end of its slice', async () => {
 		const source = paradisBuildQueryFunction({ mode: 'wait', sliceMs: 100, intervalMs: 50 }, 0, '() => new Promise(() => { })');
-		const run = new Function('globalThis', 'location', `return (${source});`)({}, { href: 'about:blank' }) as () => Promise<Record<string, unknown>>;
+		const run = new Function('location', `return (${source});`)({ href: 'about:blank' }) as () => Promise<Record<string, unknown>>;
 		const result = await run();
 		assert.deepStrictEqual({ met: result.met, predicateError: result.predicateError }, { met: false, predicateError: 'the predicate did not settle within this check' });
 	});
@@ -343,7 +297,7 @@ suite('paradisBrowserQuery (shared process)', () => {
 		/** ページの関数を、その中から見える Date と performance を差し替えて動かす（このテストの大域は変えない）。 */
 		const runWith = (notAfter: number, clock: { readonly date: number; readonly monotonic: number }) => {
 			const source = paradisBuildQueryFunction({ mode: 'wait', sliceMs: 0, intervalMs: 50 }, 0, undefined, notAfter);
-			const run = new Function('globalThis', 'Date', 'performance', 'location', `return (${source});`)({}, { now: () => clock.date }, { timeOrigin: clock.monotonic, now: () => 0 }, { href: 'about:blank' }) as () => Promise<Record<string, unknown>>;
+			const run = new Function('Date', 'performance', 'location', `return (${source});`)({ now: () => clock.date }, { timeOrigin: clock.monotonic, now: () => 0 }, { href: 'about:blank' }) as () => Promise<Record<string, unknown>>;
 			return run();
 		};
 		const now = Date.now();
