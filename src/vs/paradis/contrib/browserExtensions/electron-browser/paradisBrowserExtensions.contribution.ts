@@ -10,13 +10,14 @@
 // paradis.electron-browser.contribution.ts への import 1 行で有効になる。
 
 import './media/paradisBrowserExtensions.css';
-import { localize2 } from '../../../../nls.js';
+import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { BrowserActionCategory } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { PARADIS_MANAGE_BROWSER_EXTENSIONS_COMMAND_ID } from '../common/paradisBrowserExtensions.js';
-import { paradisShowBrowserExtensionsDialog } from './paradisBrowserExtensionsDialog.js';
+import { ParadisBrowserExtensionsArea, paradisShowBrowserExtensionsDialog } from './paradisBrowserExtensionsArea.js';
+import { ParadisHubAreaId, paradisRegisterHubArea } from '../../paradisHub/electron-browser/paradisHub.js';
 import { IParadisBrowserExtensionsService, ParadisBrowserExtensionsService } from './paradisBrowserExtensionsService.js';
 import { ParadisBrowserExtensionTabActivationContribution } from './paradisBrowserExtensionTabActivation.js';
 import { IParadisBrowserExtensionToolbarService, ParadisBrowserExtensionToolbarContribution, ParadisBrowserExtensionToolbarService } from './paradisBrowserExtensionToolbar.js';
@@ -25,6 +26,15 @@ import './paradisBrowserExtensionSidePanel.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 
 registerSingleton(IParadisBrowserExtensionsService, ParadisBrowserExtensionsService, InstantiationType.Delayed);
+
+// 統合のモーダルの「ブラウザ拡張機能」の領域（Q537 の 38）
+paradisRegisterHubArea({
+	id: ParadisHubAreaId.Extensions,
+	// allow-any-unicode-next-line
+	label: localize('paradis.browserExtensions.areaLabel', "ブラウザ拡張機能"),
+	order: 40,
+	create: (instantiationService, containers, host) => instantiationService.createInstance(ParadisBrowserExtensionsArea, containers, host),
+});
 registerWorkbenchContribution2(ParadisBrowserExtensionTabActivationContribution.ID, ParadisBrowserExtensionTabActivationContribution, WorkbenchPhase.AfterRestored);
 registerSingleton(IParadisBrowserExtensionToolbarService, ParadisBrowserExtensionToolbarService, InstantiationType.Delayed);
 registerWorkbenchContribution2(ParadisBrowserExtensionToolbarContribution.ID, ParadisBrowserExtensionToolbarContribution, WorkbenchPhase.AfterRestored);
