@@ -21,6 +21,7 @@
 import './media/paradisAgentPageScriptsBanner.css';
 import { $, addDisposableListener, append, EventType, isAncestor, isHTMLElement } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { status as ariaStatus } from '../../../../base/browser/ui/aria/aria.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { AnchorAlignment, AnchorPosition } from '../../../../base/browser/ui/contextview/contextview.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
@@ -92,6 +93,8 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 	private entries: readonly IParadisAgentPageScriptEntry[] = [];
 	/** 一覧を取り直す世代（古い応答で新しい表示を上書きしない）。 */
 	private refreshGeneration = 0;
+	/** 一覧を 1 回でも取れたタブ（2 回目からは増えた分を読み上げる）。 */
+	private loadedModel: IBrowserViewModel | undefined;
 
 	constructor(
 		editor: BrowserEditor,
@@ -140,6 +143,7 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 
 	override onModelDetached(): void {
 		this.refreshGeneration++;
+		this.loadedModel = undefined;
 		this.details.clear();
 		this.render([]);
 	}
@@ -157,7 +161,9 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		if (generation !== this.refreshGeneration || this.editor.model !== model) {
 			return;
 		}
-		this.render(entries);
+		// タブを開いた直後の 1 回目は読み上げない（入っている分を「入れた」と言わない）
+		this.render(entries, this.loadedModel === model);
+		this.loadedModel = model;
 	}
 
 	/** ペインの指紋 → ターミナルの番号（このウィンドウのペインだけ。ほかのウィンドウのものは分からない）。 */
@@ -169,19 +175,37 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		return fingerprint => byFingerprint.get(fingerprint);
 	}
 
-	private chipLabel(): string {
-		return localize('paradis.agentPageScripts.bannerTitle', "このタブにエージェントのスクリプトが入っています（{0} 本）。ページを読み込むたびに動きます。", this.entries.length);
+	/** いちばん新しい 1 本の名前と持ち主（印の説明と読み上げに使う）。 */
+	private latestText(): string | undefined {
+		const latest = this.entries[this.entries.length - 1];
+		if (!latest) {
+			return undefined;
+		}
+		const owner = ownerText(latest.owner, this.paneNumbers());
+		return owner === undefined ? latest.label : localize('paradis.agentPageScripts.latest', "{0}（{1}）", latest.label, owner);
 	}
 
-	private async removeAll(): Promise<void> {
+	private chipLabel(): string {
+		return localize('paradis.agentPageScripts.chipTitle', "このタブにエージェントのスクリプトが入っています（{0} 本、いちばん新しいもの: {1}）。ページを読み込むたびに動きます。", this.entries.length, this.latestText() ?? '');
+	}
+
+	private async removeAll(button?: Button): Promise<void> {
 		const model = this.editor.model;
 		if (!model) {
 			return;
+		}
+		// 外している間は押せなくし、終わったら戻す（一覧が描き直されて消えていても害はない）
+		if (button) {
+			button.enabled = false;
 		}
 		try {
 			await this.surface.removeAllInitScripts(model.id);
 		} catch (error) {
 			this.logService.warn('[ParadisAgentPageScripts] could not remove the scripts of the tab', error);
+		} finally {
+			if (button) {
+				button.enabled = true;
+			}
 		}
 	}
 
@@ -210,8 +234,17 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		});
 	}
 
-	private render(entries: readonly IParadisAgentPageScriptEntry[]): void {
+	private render(entries: readonly IParadisAgentPageScriptEntry[], announce = false): void {
+		const added = announce && entries.length > this.entries.length;
 		this.entries = entries;
+		if (added) {
+			// 帯（role=status）の代わりに、増えたときだけ 1 回読み上げる
+			const latest = entries[entries.length - 1];
+			const owner = latest.owner?.name;
+			ariaStatus(owner === undefined
+				? localize('paradis.agentPageScripts.addedAnnounce', "エージェントがスクリプト「{0}」を入れました", latest.label)
+				: localize('paradis.agentPageScripts.addedAnnounceOwner', "{0} がスクリプト「{1}」を入れました", owner, latest.label));
+		}
 		this.count.textContent = String(entries.length);
 		this.chip.setAttribute('aria-label', this.chipLabel());
 		const visible = entries.length > 0;
@@ -268,7 +301,7 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 				removeAll.element.classList.add('paradis-page-scripts-small-button');
 				removeAll.label = localize('paradis.agentPageScripts.removeAll', "すべて外す");
 				store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), removeAll.element, localize('paradis.agentPageScripts.removeTitle', "このタブからエージェントのスクリプトをすべて外します。読み込み済みのページは、再読み込みするまでスクリプトの効果が残ります。")));
-				store.add(removeAll.onDidClick(() => void this.removeAll()));
+				store.add(removeAll.onDidClick(() => void this.removeAll(removeAll)));
 				this.iconButton(header, Codicon.close, localize('paradis.agentPageScripts.close', "閉じる"), store, () => this.details.clear());
 
 				const list = append(popover, $('.paradis-page-scripts-details-list'));
