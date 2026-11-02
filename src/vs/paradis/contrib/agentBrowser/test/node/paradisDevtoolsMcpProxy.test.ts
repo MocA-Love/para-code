@@ -326,6 +326,16 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		assert.strictEqual(receivedArgs.includes('--redactNetworkHeaders=true'), true);
 	});
 
+	test('greets a new child with initialize and then the initialized notification before the first call', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+			temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+			spawnChild: fixture.spawn,
+		}));
+		await proxy.listTools('secret-token', 1, 'ws://one');
+		assert.deepStrictEqual(fixture.children[0].requests.map(request => request.method).slice(0, 3), ['initialize', 'notifications/initialized', 'tools/list']);
+	});
+
 	test('disables update checks for the vendored child', async () => {
 		const fixture = createFakeDevtoolsChildren();
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
