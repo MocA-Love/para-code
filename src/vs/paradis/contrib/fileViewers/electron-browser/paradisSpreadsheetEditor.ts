@@ -100,6 +100,18 @@ interface IParadisSpreadsheetCommittedInput {
 	readonly viewState: ParadisSpreadsheetViewState;
 }
 
+/**
+ * 表を描いた後に続けて頼む処理（詳しい解析・EMF と WMF の変換）の token を作り、`slot` に預ける。`slot` の中身が
+ * 替わる（次の読み込み）・消える（別の入力・閉じる）と取り消す。`setInput` の token には繋がない: 本家の
+ * editorPanes は開き終わったところで `setInput` の token を取り消すので、繋ぐと描いた直後に必ず取り消され、
+ * 「詳しい解析を実行しています…」が残る。
+ */
+export function startSpreadsheetFollowUpRequest(slot: MutableDisposable<IDisposable>): CancellationToken {
+	const request = new CancellationTokenSource();
+	slot.value = toDisposable(() => request.dispose(true));
+	return request.token;
+}
+
 export function isParadisSpreadsheetV1Enabled(configuration: ParadisOfficeRuntimeConfiguration): boolean {
 	return configuration.engine !== 'legacy' && configuration.platformBackend && configuration.semanticSpreadsheet;
 }
@@ -1549,15 +1561,11 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._renderSemanticUi(workbook, viewState);
 		this._finishRecoveryRender(recoveryGeneration, resource, viewState);
 		if (diagnose && content) {
-			const request = new CancellationTokenSource(token);
-			this._semanticRequest.value = toDisposable(() => request.dispose(true));
-			void this._loadSemanticDiagnostics(resource, generation, workbook, content, request.token);
+			void this._loadSemanticDiagnostics(resource, generation, workbook, content, startSpreadsheetFollowUpRequest(this._semanticRequest));
 		}
 		// EMF・WMF は、表示を描いた後で worker に SVG にしてもらい、届いたら差し替える（それまでは代替表示の箱）。
 		if (content && hasPendingSpreadsheetMetafiles(workbook)) {
-			const request = new CancellationTokenSource(token);
-			this._metafileRequest.value = toDisposable(() => request.dispose(true));
-			void this._loadMetafiles(resource, generation, content, request.token);
+			void this._loadMetafiles(resource, generation, content, startSpreadsheetFollowUpRequest(this._metafileRequest));
 		}
 		if (this._committedInput && isEqual(this._committedInput.resource, resource) && this.input === this._committedInput.input) {
 			this._committedInput = this._captureCommittedInput(this._committedInput.input, this._committedInput.options);

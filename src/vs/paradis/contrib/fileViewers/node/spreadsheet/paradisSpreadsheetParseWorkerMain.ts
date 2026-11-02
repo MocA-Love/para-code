@@ -16,7 +16,7 @@ import { runParadisWorkerLoop } from '../../../../node/paradisWorkerLoop.js';
 import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { encodeParadisWorkbookJson, packParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ParadisSpreadsheetService } from '../paradisSpreadsheetService.js';
-import type { IParadisSpreadsheetParseWorkerRun, ParadisSpreadsheetParseWorkerResult } from './paradisSpreadsheetParseWorkerBackend.js';
+import { paradisSpreadsheetParseErrorResult, type IParadisSpreadsheetParseWorkerRun, type ParadisSpreadsheetParseWorkerResult } from './paradisSpreadsheetParseWorkerBackend.js';
 
 const service = new ParadisSpreadsheetService();
 
@@ -48,9 +48,11 @@ runParadisWorkerLoop<IParadisSpreadsheetParseWorkerRun, ParadisSpreadsheetParseW
 			// 壊れた・対応していないブックで exceljs・jszip が投げるのは素の Error で、利用者のファイルの問題なので送らない。
 			// TypeError など、それ以外の例外はこちらの不具合の疑いがあるので種類だけ送る。
 			// この判定のため、worker の中で自前の `new Error(...)` を投げると Sentry には送られない（送りたい失敗は別の型で投げる）。
-			const unexpected = !(error instanceof Error) || error.constructor !== Error;
+			// 大きすぎて文字列の上限を超えたものは、こちらの不具合ではないので送らない（大きすぎるブックとして断る）。
+			const result = paradisSpreadsheetParseErrorResult(error);
+			const unexpected = result.kind === 'error' && (!(error instanceof Error) || error.constructor !== Error);
 			return {
-				result: { kind: 'error', message: error instanceof Error ? error.message : String(error) },
+				result,
 				...(unexpected ? { cause: paradisOfficeWorkerFailureKind(error) } : {}),
 			};
 		}
