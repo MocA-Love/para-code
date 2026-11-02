@@ -264,7 +264,7 @@ suite('ParadisDocxFileEditor', () => {
 	});
 
 	/** `etag` を渡すと、文書の読み出しはその etag を返し、同じ etag で読まれたら「変わっていない」と答える。 */
-	function createDocxEditorFixture(fixtureOptions: { readonly etag?: string } = {}) {
+	function createDocxEditorFixture(fixtureOptions: { readonly etag?: string; readonly messages?: boolean } = {}) {
 		const watcherResources: string[] = [];
 		const readResources: string[] = [];
 		const documentReads: string[] = [];
@@ -272,6 +272,8 @@ suite('ParadisDocxFileEditor', () => {
 		const htmlDocuments: string[] = [];
 		const rawHtmlDocuments: string[] = [];
 		const postedDocuments: string[] = [];
+		// 本番の webview と同じく、ページからの知らせを受けられる偽物にするか。
+		const pageMessages = disposables.add(new Emitter<{ readonly message: unknown }>());
 		const localResourceRootsAtSetHtml: string[][] = [];
 		const watcherEmitters = new Map<string, Emitter<FileChangesEvent>[]>();
 		const queuedHeaders = new Map<string, HeaderResult[]>();
@@ -350,6 +352,7 @@ suite('ParadisDocxFileEditor', () => {
 				releases++;
 			},
 			setAnchorElement: () => recordOverlayCall(),
+			...(fixtureOptions.messages ? { onMessage: pageMessages.event } : {}),
 			postMessage: async (message: { readonly type?: unknown; readonly bytes?: unknown }) => {
 				recordOverlayCall();
 				// 文書は HTML に埋めず、transfer 付きで送る。中身を比べられるよう、送られた文書を文字列で覚える。
@@ -473,6 +476,13 @@ suite('ParadisDocxFileEditor', () => {
 			},
 			postedDocuments(): readonly string[] {
 				return [...postedDocuments];
+			},
+			/** ページからホストへの知らせを起こす（`messages` を付けた偽物だけ）。 */
+			firePageMessage(message: unknown): void {
+				pageMessages.fire({ message });
+			},
+			rawHtml(): readonly string[] {
+				return [...rawHtmlDocuments];
 			},
 			localResourceRootsAtSetHtml(): readonly (readonly string[])[] {
 				return localResourceRootsAtSetHtml.map(roots => [...roots]);
@@ -655,6 +665,28 @@ suite('ParadisDocxFileEditor', () => {
 				releases: 0,
 				htmlDocuments: ['viewer'],
 				overlayCallsAfterDispose: 0,
+			});
+		});
+
+		test('sends the sanitized document only when the page asks for it with its own id, and again when it asks again', async () => {
+			const fixture = createDocxEditorFixture({ messages: true });
+			const resource = URI.file('/workspace/asked.docx');
+			await fixture.editor.setInput(fixture.createInput(resource), undefined, Object.create(null), CancellationToken.None);
+			await fixture.settleCurrentRender();
+			const html = fixture.rawHtml().at(-1) ?? '';
+			const id = JSON.parse(/const DOCUMENT_ID = ("(?:[^"\\]|\\.)*");/.exec(html)?.[1] ?? '""') as string;
+			const generation = Number(/type: 'paradisOfficeRecovery',\s*generation: (\d+)/.exec(html)?.[1]);
+			// 知らせを受けられる webview では、描き終わりの応答（rendered）も待つので返しておく。
+			fixture.firePageMessage({ type: 'paradisOfficeRecovery', generation, hasExpectedRoot: true });
+			const beforeReady = fixture.postedDocuments().length;
+			fixture.firePageMessage({ type: 'paradisWordDocumentReady', id });
+			const afterReady = fixture.postedDocuments().length;
+			fixture.firePageMessage({ type: 'paradisWordDocumentReady', id: 'someone-else' });
+			const afterOtherId = fixture.postedDocuments().length;
+			fixture.firePageMessage({ type: 'paradisWordDocumentReady', id });
+			const documents = fixture.postedDocuments();
+			deepStrictEqual({ hasId: id.length > 0, beforeReady, afterReady, afterOtherId, afterAskingAgain: documents.length, sameDocument: documents[0] === documents[1] && documents[0].length > 0 }, {
+				hasId: true, beforeReady: 0, afterReady: 1, afterOtherId: 1, afterAskingAgain: 2, sameDocument: true,
 			});
 		});
 

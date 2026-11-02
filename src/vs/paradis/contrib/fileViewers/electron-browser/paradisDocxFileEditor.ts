@@ -354,7 +354,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 * いまのページに渡す消毒済みの文書。ページが受け口を用意したと知らせたら（`paradisWordDocumentReady`）、写しを
 	 * transfer 付きで送る（HTML に base64 で埋めない）。ページが読み直されても送り直せるよう、次に描くまで持つ。
 	 */
-	private _pendingDocument: { readonly id: string; readonly webview: IOverlayWebview; readonly bytes: Uint8Array } | undefined;
+	private _pendingDocument: { readonly id: string; readonly resource: URI; readonly webview: IOverlayWebview; readonly bytes: Uint8Array } | undefined;
 
 	/**
 	 * 表示の見張りと観測。
@@ -404,6 +404,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 			if (e.editor instanceof ParadisDocxInput) {
 				// 戻るために残していた描画（docx-preview の DOM）も捨てる。閉じた後まで抱えない。
 				this._pane.clearContentFor(e.editor.resource);
+				// ページへ送るために覚えていた消毒済みの文書も手放す。
+				if (this._pendingDocument && isEqual(this._pendingDocument.resource, e.editor.resource)) {
+					this._pendingDocument = undefined;
+				}
 			}
 		}));
 		this._rootElement = dom.append(parent, dom.$('.paradis-docx-viewer'));
@@ -1385,7 +1389,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 */
 	private _setDocumentPage(webview: IOverlayWebview, resource: URI, sanitized: Uint8Array | undefined, assetPlaceholderCount: number, viewState: ParadisWordViewState, recoveryGeneration: number): void {
 		const documentId = sanitized ? generateUuid() : undefined;
-		this._pendingDocument = sanitized && documentId ? { id: documentId, webview, bytes: sanitized } : undefined;
+		this._pendingDocument = sanitized && documentId ? { id: documentId, resource, webview, bytes: sanitized } : undefined;
 		this._pane.setDocumentHtml(webview, resource, applyParadisOfficeWebviewAccessibility(this._buildHtml(resource, documentId, assetPlaceholderCount, viewState, recoveryGeneration)));
 		if (!this._webviewSupportsRecoveryMessages) {
 			// ページからの知らせを受けられない webview には、書いた直後に送っておく（ページが読み込んでから受け取る）。
