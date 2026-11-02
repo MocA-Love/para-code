@@ -17,9 +17,11 @@ import { $, addDisposableListener, append, disposableWindowInterval, EventType, 
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { alert as ariaAlert } from '../../../../base/browser/ui/aria/aria.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IParaBrowserViewLoadStall, ParaBrowserViewLoadStallResponse } from '../../../../platform/browserView/common/paraBrowserViewLoadStall.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
@@ -30,7 +32,7 @@ import { IParadisBrowserLoadStallChange, PARADIS_BROWSER_LOAD_STALL_CHANNEL, par
 
 /** 帯の文言。`elapsedMs` は読み込みを始めてから今までの時間。 */
 export function paradisBrowserLoadStallMessage(elapsedMs: number): string {
-	return localize('paradisBrowserLoadStall.message', "このページはまだ応答がありません（{0} 秒経過）。待ちますか？", Math.floor(elapsedMs / 1000));
+	return localize('paradisBrowserLoadStall.message', "このページはまだ応答がありません（{0} 秒経過）", Math.floor(elapsedMs / 1000));
 }
 
 export class ParadisBrowserLoadStallFeature extends BrowserEditorContribution {
@@ -57,12 +59,16 @@ export class ParadisBrowserLoadStallFeature extends BrowserEditorContribution {
 		// 読み上げは表示のたびに aria.alert で行う（role="alert" の表示切り替えは読み上げが安定しない）。
 		this._element.setAttribute('role', 'group');
 		this._element.setAttribute('aria-label', localize('paradisBrowserLoadStall.ariaLabel', "ページの応答待ち"));
+		// 帯は Para Code の帯の 1 種類（28px・全辺の枠・情報のアイコン・小さい本家の Button）。Q537 の 7 章、案 A
+		append(this._element, $(`span${ThemeIcon.asCSSSelector(Codicon.info)}`));
 		this._message = append(this._element, $('span.paradis-browser-load-stall-message'));
 
 		const wait = this._register(new Button(this._element, { ...defaultButtonStyles, title: localize('paradisBrowserLoadStall.waitTitle', "もうしばらく応答を待ちます") }));
+		wait.element.classList.add('paradis-browser-load-stall-button');
 		wait.label = localize('paradisBrowserLoadStall.wait', "待つ");
 		this._register(wait.onDidClick(() => this._respond('wait')));
 		const stop = this._register(new Button(this._element, { ...defaultButtonStyles, secondary: true, title: localize('paradisBrowserLoadStall.stopTitle', "読み込みを止めます") }));
+		stop.element.classList.add('paradis-browser-load-stall-button');
 		stop.label = localize('paradisBrowserLoadStall.stop', "中止");
 		this._register(stop.onDidClick(() => this._respond('stop')));
 

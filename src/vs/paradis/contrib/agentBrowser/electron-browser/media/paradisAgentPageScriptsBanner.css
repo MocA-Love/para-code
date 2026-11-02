@@ -5,90 +5,39 @@
 
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
-/* The banner over an integrated browser tab that carries agent init scripts. Anchored on `.browser-root` like the Design Mode tray. */
-.monaco-workbench .browser-root .paradis-page-scripts-banner {
-	display: flex;
-	align-items: center;
-	flex-shrink: 0;
-	gap: var(--vscode-spacing-size80);
-	margin: 0 var(--vscode-spacing-size80) var(--vscode-spacing-size40);
-	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size60) var(--vscode-spacing-size40) var(--vscode-spacing-size100);
-	border: var(--vscode-strokeThickness) solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
-	border-radius: var(--vscode-cornerRadius-medium);
-	background-color: var(--vscode-inputValidation-warningBackground, var(--vscode-editorWidget-background));
-	color: var(--vscode-foreground);
-	font-size: var(--vscode-fontSize-label1);
-	white-space: nowrap;
-	overflow: hidden;
-}
-
-.monaco-workbench .browser-root .paradis-page-scripts-banner .paradis-page-scripts-banner-text {
-	flex: 1 1 auto;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.monaco-workbench .browser-root .paradis-page-scripts-banner .paradis-page-scripts-banner-button {
-	flex-shrink: 0;
+/*
+ * The address bar mark of an integrated browser tab that carries agent init scripts, and the list it opens.
+ * Same shape as the upstream zoom pill (.browser-zoom-pill): 22px, 12px text, no frame; warning colour.
+ */
+.monaco-workbench .browser-root .paradis-page-scripts-chip {
 	display: inline-flex;
 	align-items: center;
-	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
-	border: var(--vscode-strokeThickness) solid var(--vscode-button-border, transparent);
+	gap: var(--vscode-spacing-size40);
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size60);
+	flex: none;
+	border: none;
 	border-radius: var(--vscode-cornerRadius-small);
-	background-color: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
+	background: transparent;
+	color: var(--vscode-editorWarning-foreground);
 	font: inherit;
 	font-size: var(--vscode-fontSize-label1);
-	line-height: 18px;
+	white-space: nowrap;
 	cursor: pointer;
 }
 
-.monaco-workbench .browser-root .paradis-page-scripts-banner .paradis-page-scripts-banner-button:not(:disabled):hover {
-	background-color: var(--vscode-button-secondaryHoverBackground);
+.monaco-workbench .browser-root .paradis-page-scripts-chip .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
 }
 
-.monaco-workbench .browser-root .paradis-page-scripts-banner .paradis-page-scripts-banner-text {
-	display: flex;
-	align-items: center;
-	gap: var(--vscode-spacing-size60);
+.monaco-workbench .browser-root .paradis-page-scripts-chip:hover,
+.monaco-workbench .browser-root .paradis-page-scripts-chip.active {
+	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
-.monaco-workbench .browser-root .paradis-page-scripts-banner .paradis-page-scripts-banner-name {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	min-width: 0;
-}
-
-.monaco-workbench .browser-root .paradis-page-scripts-banner .paradis-page-scripts-banner-button.active {
-	background-color: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-}
-
-/* The owner chip (C/X mark, name tag, pane number) in the banner and in the list. */
-.monaco-workbench .paradis-page-scripts-owner {
-	display: inline-flex;
-	align-items: center;
-	flex: none;
-	gap: var(--vscode-spacing-size40);
-	padding: 0 var(--vscode-spacing-size60) 0 var(--vscode-spacing-size20);
-	border-radius: var(--vscode-cornerRadius-small);
-	background-color: var(--vscode-badge-background);
-	color: #ffffff;
-	font-size: 11px;
-	line-height: 16px;
-	white-space: nowrap;
-}
-
-.monaco-workbench .paradis-page-scripts-owner .paradis-page-scripts-owner-mark {
-	display: inline-block;
-	width: 13px;
-	height: 13px;
-	border-radius: 50%;
-	background-color: rgba(255, 255, 255, 0.28);
-	font-size: 9px;
-	line-height: 13px;
-	text-align: center;
+.monaco-workbench .browser-root .paradis-page-scripts-chip:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
 }
 
 .monaco-workbench .paradis-page-scripts-unnamed {
@@ -98,27 +47,29 @@
 
 .monaco-workbench .paradis-page-scripts-tag {
 	flex: none;
+	display: inline-flex;
+	align-items: center;
+	height: 18px;
 	padding: 0 var(--vscode-spacing-size60);
 	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
-	border-radius: 999px;
+	border-radius: var(--vscode-cornerRadius-circle);
 	color: var(--vscode-descriptionForeground);
-	font-size: 11px;
-	line-height: 16px;
+	font-size: var(--vscode-fontSize-label3);
 	white-space: nowrap;
 }
 
-/* The details list, shown in a context view so the native browser page steps aside while it is open. */
+/* The list: a popover of the shared shape (header 30px, two-line rows 36px). */
 .monaco-workbench .paradis-page-scripts-details {
-	width: 600px;
+	width: 480px;
 	max-width: calc(100vw - 32px);
 	max-height: 440px;
 	overflow: auto;
 	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	border-radius: var(--vscode-cornerRadius-medium);
-	background-color: var(--vscode-editorWidget-background);
+	background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
 	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
-	box-shadow: 0 2px 8px var(--vscode-widget-shadow);
-	font-size: var(--vscode-fontSize-label1);
+	box-shadow: var(--vscode-shadow-lg);
+	font-size: var(--vscode-fontSize-body1);
 }
 
 .monaco-workbench .paradis-page-scripts-details-header {
@@ -126,82 +77,114 @@
 	top: 0;
 	display: flex;
 	align-items: center;
-	gap: var(--vscode-spacing-size60);
-	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
-	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	background-color: var(--vscode-editorWidget-background);
+	gap: var(--vscode-spacing-size40);
+	height: 30px;
+	padding: 0 var(--vscode-spacing-size40) 0 var(--vscode-spacing-size100);
+	background-color: inherit;
 }
 
 .monaco-workbench .paradis-page-scripts-details-title {
 	flex: 1 1 auto;
-	font-weight: 600;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .paradis-page-scripts-details .monaco-button.paradis-page-scripts-small-button {
+	width: auto;
+	height: 22px;
+	padding: 3px var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 14px;
+	flex: none;
+}
+
+.monaco-workbench .paradis-page-scripts-details-list {
+	padding: 0 var(--vscode-spacing-size40) var(--vscode-spacing-size40);
 }
 
 .monaco-workbench .paradis-page-scripts-details-row {
-	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
-	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 36px;
+	padding: 0 var(--vscode-spacing-size60);
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+.monaco-workbench .paradis-page-scripts-details-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench .paradis-page-scripts-row-icon {
+	flex: none;
+	color: var(--vscode-icon-foreground);
+}
+
+.monaco-workbench .paradis-page-scripts-details-main {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size20);
 }
 
 .monaco-workbench .paradis-page-scripts-details-name {
 	display: flex;
 	align-items: center;
-	flex-wrap: wrap;
 	gap: var(--vscode-spacing-size60);
+	min-width: 0;
 }
 
 .monaco-workbench .paradis-page-scripts-details-label {
-	font-weight: 600;
-	overflow-wrap: anywhere;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .monaco-workbench .paradis-page-scripts-details-meta {
-	margin-top: var(--vscode-spacing-size20);
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
-	font-size: 11.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
-.monaco-workbench .paradis-page-scripts-details-preview {
-	margin: var(--vscode-spacing-size60) 0 0;
-	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
-	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: var(--vscode-cornerRadius-small);
-	background-color: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
-	font-family: var(--monaco-monospace-font);
-	font-size: 11.5px;
-	line-height: 1.5;
-	white-space: pre;
-	overflow-x: auto;
-}
-
-.monaco-workbench .paradis-page-scripts-details-actions {
+.monaco-workbench .paradis-page-scripts-icon-button {
+	flex: none;
 	display: flex;
-	gap: var(--vscode-spacing-size60);
-	margin-top: var(--vscode-spacing-size60);
-}
-
-.monaco-workbench .paradis-page-scripts-details-button {
-	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
-	border: var(--vscode-strokeThickness) solid var(--vscode-button-border, transparent);
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
 	border-radius: var(--vscode-cornerRadius-small);
-	background-color: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	font: inherit;
-	font-size: var(--vscode-fontSize-label1);
-	line-height: 18px;
+	background: none;
+	color: var(--vscode-icon-foreground);
 	cursor: pointer;
 }
 
-.monaco-workbench .paradis-page-scripts-details-button:not(:disabled):hover {
-	background-color: var(--vscode-button-secondaryHoverBackground);
+.monaco-workbench .paradis-page-scripts-icon-button:not(:disabled):hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
-.monaco-workbench .paradis-page-scripts-details-button:disabled {
-	opacity: 0.5;
+.monaco-workbench .paradis-page-scripts-icon-button:disabled {
+	opacity: 0.4;
 	cursor: default;
 }
 
+.monaco-workbench .paradis-page-scripts-icon-button:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
 .monaco-workbench .paradis-page-scripts-details-footer {
-	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size100);
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	color: var(--vscode-descriptionForeground);
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label2);
 }
