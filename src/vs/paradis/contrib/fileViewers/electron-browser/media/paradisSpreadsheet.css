@@ -163,16 +163,6 @@
 	position: relative;
 }
 
-.paradis-spreadsheet-message {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	height: 100%;
-	padding: 24px;
-	text-align: center;
-	color: var(--vscode-descriptionForeground);
-}
-
 .paradis-spreadsheet-table {
 	border-collapse: collapse;
 	table-layout: fixed;

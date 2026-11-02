@@ -1,0 +1,109 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments) */
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Setup / Teardown スクリプトのダイアログ（paradisWorkspaceLifecycleDialog.ts）。箱の地・枠・角丸・影と幅は
+ * 共通の S 段（paradisModal.css）。ここは見出しの帯（35px）・本文・下端の帯だけを本家の段で書く。
+ */
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-header {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 35px;
+	padding: 0 var(--vscode-spacing-size80) 0 var(--vscode-spacing-size160);
+	flex: none;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size160) var(--vscode-spacing-size160);
+	min-height: 0;
+	overflow: auto;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-description {
+	margin-bottom: var(--vscode-spacing-size60);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-details {
+	margin-left: var(--vscode-spacing-size40);
+	color: var(--vscode-textLink-foreground);
+	cursor: default;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-details:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: var(--vscode-spacing-size20);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-label {
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-script + .plc-label {
+	margin-top: var(--vscode-spacing-size80);
+}
+
+/* 本家の入力欄と同じ地と枠。枠の色は Tab で入ったときだけ変える（マウスで押したときは変えない） */
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-script {
+	box-sizing: border-box;
+	width: 100%;
+	min-height: 64px;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size60);
+	resize: vertical;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	outline: none;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-script:focus-visible {
+	border-color: var(--vscode-focusBorder);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-error {
+	color: var(--vscode-errorForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-error:empty {
+	display: none;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160);
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	flex: none;
+}
+
+/* 本家の Button は既定で横幅いっぱいに伸びるので、内容の幅にする */
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-footer > .monaco-text-button {
+	width: auto;
+}
