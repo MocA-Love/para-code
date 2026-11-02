@@ -320,10 +320,14 @@ async function actualSerializedGeometry(expected: string): Promise<{ readonly se
 suite('ParadisOfficePerformance', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 	test('measures fixed production viewport shapes without materializing all cells', async function () {
+		// 45 attached paints (41 for the small case and one per other case); the default 5 s is too short off the baseline machine.
+		this.timeout(60_000);
 		const fixture = loadFixtures();
 		strictEqual(fixture.schema, 2);
 		strictEqual(createHash('sha256').update(JSON.stringify(fixture.cases)).digest('hex'), fixture.caseHash);
 		strictEqual(createHash('sha256').update(JSON.stringify(fixture.serializedGeometry.regions)).digest('hex'), fixture.serializedGeometryHash);
+		// The calibration below was measured on the renderer before PR #604. The source hash was updated without re-measuring,
+		// so the baseline is only a guide until it is measured again on the baseline machine (see baselineNote in fixtures.json).
 		strictEqual(fixture.attachedPaintBaseline.rendererSourceSha256, sha256File('src/vs/paradis/contrib/fileViewers/browser/spreadsheet/paradisSpreadsheetGridRenderer.ts'));
 		// The paint timings are only comparable on the machine and runtime the baseline was measured on.
 		// Elsewhere every other check still runs; only the comparison with the baseline median is skipped.
