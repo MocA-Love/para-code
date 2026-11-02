@@ -181,12 +181,20 @@ suite('paradisSpreadsheetViewport', () => {
 			shapes: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { shapes: [shape] })),
 			pageBreaks: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { rowBreaks: [10], colBreaks: [5] })),
 			printArea: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { printArea: { minR: 1, minC: 1, maxR: 80, maxC: 20 } })),
+			// xlsx のほぼ全シートに付く用紙設定
+			pageLayout: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, {
+				pageLayout: {
+					rowBands: [{ from: 1, to: 50, manual: false, size: 750 }, { from: 51, to: 101, manual: false, size: 765 }],
+					colBands: [{ from: 1, to: 100, manual: false, size: 4800 }],
+					autoRowBreaks: [50], autoColBreaks: [], pageNumbers: [[1], [2]], pageCount: 2, effectiveScale: 1, usableWidth: 500, usableHeight: 700,
+				},
+			})),
 			shownNote: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, {
 				comments: [{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [], shown: { from: { c: 1, co: 0, r: 0, ro: 0 }, to: { c: 3, co: 0, r: 4, ro: 0 } } }],
 			})),
 		}, {
 			plain: true, small: false, richText: false, shrinkToFit: false,
-			noGridLines: true, shapes: true, pageBreaks: true, printArea: true, shownNote: true,
+			noGridLines: true, shapes: true, pageBreaks: true, printArea: true, pageLayout: true, shownNote: true,
 		});
 	});
 });
