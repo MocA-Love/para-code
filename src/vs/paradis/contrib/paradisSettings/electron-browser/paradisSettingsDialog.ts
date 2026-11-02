@@ -285,6 +285,8 @@ interface IParadisSettingRowSpec {
 /** 節の中の小見出し（行の group）。 */
 // allow-any-unicode-next-line
 // allow-any-unicode-next-line
+const GROUP_AGENT_NOTIFY_ENTRY = localize('paradis.settings.groupAgentNotifyEntry', "通知");
+// allow-any-unicode-next-line
 const GROUP_TITLEBAR = localize('paradis.settings.groupTitleBar', "タイトルバー");
 // allow-any-unicode-next-line
 const GROUP_STATUSBAR = localize('paradis.settings.groupStatusBar', "ステータスバー");
@@ -601,6 +603,20 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			// allow-any-unicode-next-line
 			{ value: 60, label: localize('paradis.settings.claudeModApprovalWait60', "60分") },
 		],
+	},
+	{
+		sectionId: 'psd-sec-agent',
+		group: GROUP_AGENT_NOTIFY_ENTRY,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.notifyMessageEntry', "デスクトップ通知にエージェントの最後の発言を載せる"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.notifyMessageEntryDesc', "通知の領域の「デスクトップ通知」にあります。発言の冒頭が OS の通知に出るので、ロック画面や画面共有中に見えるのを避けたい場合はそこでオフにします。"),
+		keywords: 'paradis.notifications.osIncludeMessage notification message last agent os desktop lock screen secret',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.notifyMessageEntryAction', "通知の設定を開く"),
+			commandId: 'paradis.notifications.openSettings',
+		},
 	},
 	// --- エージェントに許すこと ---
 	{
@@ -1670,7 +1686,7 @@ const ROW_KEYS_OUTSIDE_PARADIS: readonly string[] = ROWS
 /** 行のボタンのコマンドのうち、統合のモーダルの中の領域を開くもの（器を閉じずに移る）。 */
 const HUB_TARGETS = new Map<string, { readonly area: ParadisHubAreaId; readonly section?: string }>([
 	['paradis.usage.showDashboard', { area: ParadisHubAreaId.Usage }],
-	['paradis.notifications.openSettings', { area: ParadisHubAreaId.Notifications }],
+	['paradis.notifications.openSettings', { area: ParadisHubAreaId.Notifications, section: 'pns-sec-desktop' }],
 ]);
 
 /**
