@@ -10,13 +10,12 @@
 
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
-import { basename, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
-import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { EditorInputCapabilities, IEditorSerializer, IUntypedEditorInput } from '../../../../workbench/common/editor.js';
+import { EditorInputCapabilities } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { ParadisFileViewerInput, ParadisFileViewerInputSerializer } from '../browser/paradisFileViewerInput.js';
+import { ParadisResourcePairDiffInput, ParadisResourcePairDiffInputSerializer } from '../browser/paradisResourcePairDiffInput.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID, PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID, PARADIS_SPREADSHEET_EDITOR_ID, PARADIS_SPREADSHEET_INPUT_TYPE_ID } from '../browser/paradisFileViewers.js';
 import type { ParadisOfficeSerializerRegistration } from '../browser/paradisOfficeConfiguration.js';
 
@@ -47,15 +46,7 @@ export class ParadisSpreadsheetInputSerializer extends ParadisFileViewerInputSer
 }
 
 /** Excel 差分ビューアの EditorInput(旧版=original / 新版=modified の2リソースを保持)。 */
-export class ParadisSpreadsheetDiffInput extends EditorInput {
-
-	constructor(
-		readonly originalResource: URI,
-		readonly modifiedResource: URI,
-		private readonly _label: string | undefined,
-	) {
-		super();
-	}
+export class ParadisSpreadsheetDiffInput extends ParadisResourcePairDiffInput {
 
 	override get typeId(): string {
 		return PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID;
@@ -69,58 +60,19 @@ export class ParadisSpreadsheetDiffInput extends EditorInput {
 		return EditorInputCapabilities.Readonly;
 	}
 
-	override get resource(): URI {
-		return this.modifiedResource;
-	}
-
-	override getName(): string {
-		// allow-any-unicode-next-line
-		return this._label || localize('paradis.spreadsheetDiff.name', "{0} (差分)", basename(this.modifiedResource));
-	}
-
 	override getIcon(): ThemeIcon {
 		return Codicon.table;
 	}
-
-	override async resolve(): Promise<null> {
-		return null;
-	}
-
-	override matches(other: EditorInput | IUntypedEditorInput): boolean {
-		if (super.matches(other)) {
-			return true;
-		}
-		if (other instanceof ParadisSpreadsheetDiffInput) {
-			return isEqual(other.originalResource, this.originalResource) && isEqual(other.modifiedResource, this.modifiedResource);
-		}
-		return false;
-	}
 }
 
-export class ParadisSpreadsheetDiffInputSerializer implements IEditorSerializer {
+export class ParadisSpreadsheetDiffInputSerializer extends ParadisResourcePairDiffInputSerializer<ParadisSpreadsheetDiffInput> {
 
-	canSerialize(editor: EditorInput): boolean {
+	protected owns(editor: EditorInput): editor is ParadisSpreadsheetDiffInput {
 		return editor instanceof ParadisSpreadsheetDiffInput;
 	}
 
-	serialize(editor: EditorInput): string | undefined {
-		if (!(editor instanceof ParadisSpreadsheetDiffInput)) {
-			return undefined;
-		}
-		return JSON.stringify({
-			original: editor.originalResource.toString(),
-			modified: editor.modifiedResource.toString(),
-			label: editor.getName(),
-		});
-	}
-
-	deserialize(instantiationService: IInstantiationService, serializedEditor: string): EditorInput | undefined {
-		try {
-			const data = JSON.parse(serializedEditor) as { original: string; modified: string; label?: string };
-			return instantiationService.createInstance(ParadisSpreadsheetDiffInput, URI.parse(data.original), URI.parse(data.modified), data.label);
-		} catch {
-			return undefined;
-		}
+	protected createInput(_instantiationService: IInstantiationService, original: URI, modified: URI, label: string | undefined): ParadisSpreadsheetDiffInput {
+		return new ParadisSpreadsheetDiffInput(original, modified, label);
 	}
 }
 

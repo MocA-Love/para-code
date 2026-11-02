@@ -12,7 +12,7 @@
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ParadisOfficePackageError } from '../../common/office/paradisOfficeArchive.js';
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
-import type { IParadisSemanticDiagnosticsSummary } from '../../common/paradisSpreadsheet.js';
+import { unavailableParadisSpreadsheetSemanticDiagnostics, type IParadisSemanticDiagnosticsSummary } from '../../common/paradisSpreadsheet.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { createParadisOfficeNodeArchive } from '../office/paradisOfficeNodeArchive.js';
 import { parseSpreadsheetSemanticNode } from './paradisSpreadsheetNodeAdapter.js';
@@ -22,16 +22,6 @@ import { parseSpreadsheetSemanticNode } from './paradisSpreadsheetNodeAdapter.js
  * 表示（exceljs の投影）は先に返し、診断は別の呼び出しで後から届くので、表示を待たせない。
  */
 export const PARADIS_SPREADSHEET_SEMANTIC_DIAGNOSTICS_DEADLINE_MS = 20_000;
-
-/** 解析を回せなかったときの要約。理由は IPC を越えても読めるコード（`busy`・`unsafe` など）。 */
-export function unavailableParadisSpreadsheetSemanticDiagnostics(reason: string, elapsedMilliseconds?: number): IParadisSemanticDiagnosticsSummary {
-	return {
-		available: false, terminal: false,
-		expectedParts: 0, parsedParts: 0, expectedSheets: 0, parsedSheets: 0, expectedCells: 0, parsedCells: 0,
-		unknownElements: 0, unresolvedReferences: 0, mismatchCount: 0, unavailableReason: reason,
-		...(elapsedMilliseconds !== undefined ? { elapsedMilliseconds } : {}),
-	};
-}
 
 /**
  * ExcelJS の投影とは別に OOXML を直接読み、到達度と食い違いを数える。
