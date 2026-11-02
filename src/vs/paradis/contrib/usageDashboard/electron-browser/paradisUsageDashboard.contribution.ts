@@ -20,6 +20,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ParadisHubAreaId, paradisRegisterHubArea } from '../../paradisHub/electron-browser/paradisHub.js';
 import { paradisOpenHub } from '../../paradisHub/electron-browser/paradisHubOpen.js';
 import { ParadisUsageArea, ParadisUsageDashboardTab } from './paradisUsageArea.js';
@@ -72,7 +73,7 @@ let legacyOpenScheduled = false;
 
 /**
  * 古いタブを復元しない（`undefined` を返すとそのタブは捨てられる）代わりに、統合のモーダルの使用量を開く。
- * 復元の途中で開くと窓の組み立てと重なるので、復元が終わった後に開く。
+ * 復元の途中で開くと窓の組み立てと重なるので、窓の復元が終わった（LifecyclePhase.Restored）後に開く。
  */
 class ParadisLegacyUsageEditorSerializer implements IEditorSerializer {
 
@@ -90,7 +91,8 @@ class ParadisLegacyUsageEditorSerializer implements IEditorSerializer {
 		if (!legacyOpenScheduled) {
 			legacyOpenScheduled = true;
 			const tab = this.tab;
-			setTimeout(() => instantiationService.invokeFunction(accessor => paradisOpenUsageDashboard(accessor, tab)), 0);
+			const lifecycleService = instantiationService.invokeFunction(accessor => accessor.get(ILifecycleService));
+			void lifecycleService.when(LifecyclePhase.Restored).then(() => instantiationService.invokeFunction(accessor => paradisOpenUsageDashboard(accessor, tab)));
 		}
 		return undefined;
 	}
