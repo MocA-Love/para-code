@@ -166,7 +166,8 @@
 	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
 }
 
-.paradis-hub .phub-nav-item.hidden {
+.paradis-hub .phub-nav-item.hidden,
+.paradis-hub .phub-nav-caption.hidden {
 	display: none;
 }
 

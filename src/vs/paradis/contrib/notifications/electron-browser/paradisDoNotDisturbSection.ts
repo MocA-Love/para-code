@@ -16,6 +16,7 @@ import { localize } from '../../../../nls.js';
 import { IParadisDoNotDisturbState, IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { paradisCreateDoNotDisturbRefreshController, paradisFormatDoNotDisturbRemaining, PARADIS_DO_NOT_DISTURB_DURATIONS, ParadisDoNotDisturbRefreshControllerFactory } from '../common/paradisDoNotDisturb.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
 const $ = dom.$;
 
@@ -78,12 +79,10 @@ export class ParadisDoNotDisturbSection extends Disposable {
 		const toggleLabels = dom.append(toggleRow, $('.sr-main'));
 		dom.append(toggleLabels, $('.sr-label')).textContent = STR_TOGGLE_LABEL;
 		dom.append(toggleLabels, $('.sr-desc')).textContent = STR_TOGGLE_HINT;
-		const toggle = dom.append(toggleRow, $('input.pns-toggle')) as HTMLInputElement;
-		toggle.type = 'checkbox';
-		toggle.checked = state.enabled;
-		this._renderDisposables.add(dom.addDisposableListener(toggle, 'change', () => {
+		const toggle = this._renderDisposables.add(new ParadisSwitch(toggleRow, { checked: state.enabled, ariaLabel: STR_TOGGLE_LABEL }));
+		this._renderDisposables.add(toggle.onDidChange(checked => {
 			// トグルからオンにした場合は既定で「自分でオフにするまで」。期間はこの下の select で選ぶ。
-			this.settingsService.setDoNotDisturb(toggle.checked, undefined);
+			this.settingsService.setDoNotDisturb(checked, undefined);
 		}));
 
 		if (!state.enabled) {
