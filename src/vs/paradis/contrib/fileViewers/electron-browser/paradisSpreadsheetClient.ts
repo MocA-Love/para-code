@@ -224,7 +224,7 @@ export class ParadisSpreadsheetNotWorkbookError extends Error {
  */
 export class ParadisSpreadsheetTooLargeError extends Error {
 	constructor() {
-		super(localize('paradis.spreadsheet.tooLarge', "ブックが大きすぎるため表示できません。Excel で開いてください。"));
+		super(localize('paradis.spreadsheet.tooLarge', "ブックが大きすぎるため、このビューアでは表示できません。"));
 	}
 }
 

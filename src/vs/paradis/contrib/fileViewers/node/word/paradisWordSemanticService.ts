@@ -270,7 +270,8 @@ export class ParadisWordSemanticService {
 	private async parseUncached(bytes: Uint8Array, token: CancellationToken, deadlineMilliseconds: number): Promise<ParsedWord> {
 		const inspectWatch = StopWatch.create(true);
 		// Word の解析と比較は、部品の正規化したハッシュを使わない（部品の比較は全バイトのハッシュで行う）ので求めない。
-		const inspected = await inspectOfficePackage(await createParadisOfficeNodeArchive(bytes.slice()), profile, token, { canonicalHashes: false });
+		// archive は渡したバイト列をその場で（同期で）写して持つので、ここで先に写さない（文書全体を 2 回写さない）。
+		const inspected = await inspectOfficePackage(await createParadisOfficeNodeArchive(bytes), profile, token, { canonicalHashes: false });
 		const inventory = resolveParadisWordInventory(inspected);
 		if (!inventory) {
 			throw new ParadisWordUnsupportedPackageError();

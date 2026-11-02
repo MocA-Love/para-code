@@ -18,7 +18,8 @@ import { convertParadisSpreadsheetMetafiles } from '../../node/spreadsheet/parad
 import { ParadisSpreadsheetMetafileWorkerBackend } from '../../node/spreadsheet/paradisSpreadsheetMetafileWorkerBackend.js';
 import { ParadisWorker } from '../../../../node/paradisWorker.js';
 import { collectParadisSpreadsheetSemanticDiagnostics } from '../../node/spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
-import { PARADIS_SPREADSHEET_SVG_IMAGE_COUNT, ParadisSpreadsheetService, applyTint, formatDateFallback, getCellDiagonalForTest, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
+import { PARADIS_SPREADSHEET_SVG_IMAGE_COUNT, ParadisSpreadsheetService, applyTint, formatDateFallback, getCellDiagonalForTest, paradisSheetXmlWithoutSheetData, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
+import { parsePageSetup } from '../../common/paradisSpreadsheetPageLayout.js';
 
 async function encodeWorkbook(configure: (workbook: ExcelJS.Workbook) => void): Promise<string> {
 	const workbook = new ExcelJS.Workbook();
@@ -77,6 +78,23 @@ async function picturesWorkbook(override?: readonly IPicturePart[]): Promise<{ r
 
 suite('ParadisSpreadsheetService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('reads page setup, breaks and validations the same with the cell data cut out of the sheet XML', () => {
+		const cells = '<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>&lt;pageSetup orientation="landscape"/&gt;</t></is></c></row></sheetData>';
+		const tail = '<dataValidations count="1"><dataValidation type="list" sqref="B3"><formula1>"a,b"</formula1></dataValidation></dataValidations>'
+			+ '<printOptions gridLines="1"/><pageMargins left="0.5" right="0.5" top="1" bottom="1" header="0.3" footer="0.3"/>'
+			+ '<pageSetup paperSize="8" orientation="landscape" fitToHeight="0"/><rowBreaks count="1"><brk id="40" man="1"/></rowBreaks>';
+		const samples = [
+			`<worksheet><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>${cells}${tail}</worksheet>`,
+			`<worksheet><sheetPr/>${cells}<customSheetViews><customSheetView guid="x"><pageSetup orientation="portrait"/></customSheetView></customSheetViews>${tail}</worksheet>`,
+			`<worksheet><sheetData/>${tail}</worksheet>`,
+			`<worksheet><sheetData><row r="1"/></sheetData >${tail}</worksheet>`,
+			`<worksheet>${cells.replace('</sheetData>', '')}${tail}</worksheet>`,
+		];
+		const read = (xml: string) => ({ setup: parsePageSetup(xml), breaks: xml.match(/<rowBreaks[^>]*>[\s\S]*?<\/rowBreaks>/)?.[0], validations: xml.match(/<dataValidation\b[^>]*>/g) });
+		deepStrictEqual(samples.map(xml => read(paradisSheetXmlWithoutSheetData(xml))), samples.map(read));
+		deepStrictEqual(samples.map(xml => paradisSheetXmlWithoutSheetData(xml).includes('<c r=')), [false, false, false, false, true]);
+	});
 
 	test('loads and shares the heavy runtime only when parsing starts', async () => {
 		let runtimeLoads = 0;
