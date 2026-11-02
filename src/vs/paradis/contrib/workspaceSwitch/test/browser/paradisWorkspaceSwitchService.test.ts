@@ -136,15 +136,26 @@ suite('ParadisWorkspaceSwitchService', () => {
 		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, true, false), false);
 	});
 
-	test('a worktree git forgot but whose folder remains stays listed as a leftover folder', () => {
+	test('only a folder without .git that matches no listed worktree becomes a leftover folder row', () => {
 		const known = { path: 'file:///repo-worktrees/feature', name: 'feature' };
-		const leftover = paradisLeftoverWorktreeEntry('repo', known, true);
+		const entry = (folderExists: boolean | undefined, gitEntryExists: boolean | undefined, matchesListedWorktree = false) => {
+			const leftover = paradisLeftoverWorktreeEntry('repo', known, { folderExists, gitEntryExists, matchesListedWorktree });
+			return leftover && { ...leftover, uri: leftover.uri.toString() };
+		};
 		assert.deepStrictEqual({
-			leftover: leftover && { ...leftover, uri: leftover.uri.toString() },
-			gone: paradisLeftoverWorktreeEntry('repo', known, false),
-			unknown: paradisLeftoverWorktreeEntry('repo', known, undefined),
+			leftover: entry(true, false),
+			// 生きているワークツリー（作成の途中で gitdir がまだ無い間も含む）は .git を持つ
+			hasGit: entry(true, true),
+			gitUnknown: entry(true, undefined),
+			// 記録した綴りが違うだけ（シンボリックリンク・大文字小文字）で、実体は一覧にあるワークツリー
+			sameAsListed: entry(true, false, true),
+			gone: entry(false, undefined),
+			unknown: entry(undefined, undefined),
 		}, {
 			leftover: { repositoryId: 'repo', name: 'feature', uri: 'file:///repo-worktrees/feature', missing: true, leftoverFolder: true },
+			hasGit: undefined,
+			gitUnknown: undefined,
+			sameAsListed: undefined,
 			gone: undefined,
 			unknown: undefined,
 		});

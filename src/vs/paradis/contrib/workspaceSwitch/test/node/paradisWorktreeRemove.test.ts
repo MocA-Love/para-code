@@ -62,19 +62,41 @@ suite('ParadisWorktreeGitService removeWorktree', () => {
 		}
 	});
 
-	test('leaves a folder with a .git entry to git even when forced', async () => {
+	test('a folder with a .git entry is never deleted through a leftover-folder request, and git is not asked either', async () => {
 		const root = join(tmpdir(), `paradis-remove-${generateUuid()}`);
 		const worktree = join(root, 'wt');
 		await fs.mkdir(worktree, { recursive: true });
 		await fs.writeFile(join(worktree, '.git'), 'gitdir: /elsewhere\n');
+		await fs.writeFile(join(worktree, 'uncommitted.txt'), 'work');
 		try {
 			const calls: Array<{ args: string[]; timeout: number | undefined }> = [];
 			const service = removeService(() => ({}), calls);
-			await service.removeWorktree({ repoPath: join(root, 'repo'), worktreePath: worktree, force: true, allowLeftoverCleanup: true });
+			await assert.rejects(service.removeWorktree({ repoPath: join(root, 'repo'), worktreePath: worktree, force: true, allowLeftoverCleanup: true }), /削除の途中で残ったフォルダーではない/);
+			await assert.rejects(service.removeWorktree({ repoPath: join(root, 'repo'), worktreePath: worktree, force: false, allowLeftoverCleanup: true }), /削除の途中で残ったフォルダーではない/);
 			assert.deepStrictEqual({
-				kept: await fs.stat(worktree).then(() => true, () => false),
-				commands: calls.map(call => call.args.slice(2).join(' ')),
-			}, { kept: true, commands: ['worktree prune', `worktree remove --force ${worktree}`] });
+				kept: await fs.stat(join(worktree, 'uncommitted.txt')).then(() => true, () => false),
+				ranRemove: calls.some(call => call.args.includes('remove')),
+			}, { kept: true, ranRemove: false });
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('a folder reached through a symlink to a listed worktree is not treated as a leftover', async () => {
+		const root = join(tmpdir(), `paradis-remove-${generateUuid()}`);
+		const real = join(root, 'real-wt');
+		const alias = join(root, 'alias-wt');
+		await fs.mkdir(real, { recursive: true });
+		await fs.writeFile(join(real, 'uncommitted.txt'), 'work');
+		await fs.symlink(real, alias, 'dir');
+		try {
+			const calls: Array<{ args: string[]; timeout: number | undefined }> = [];
+			const service = removeService(args => args.includes('list') ? { stdout: `worktree ${real}\0HEAD abc\0branch refs/heads/x\0\0` } : {}, calls);
+			await assert.rejects(service.removeWorktree({ repoPath: join(root, 'repo'), worktreePath: alias, force: true, allowLeftoverCleanup: true }), /削除の途中で残ったフォルダーではない/);
+			assert.deepStrictEqual({
+				kept: await fs.stat(join(real, 'uncommitted.txt')).then(() => true, () => false),
+				ranRemove: calls.some(call => call.args.includes('remove')),
+			}, { kept: true, ranRemove: false });
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}
@@ -89,14 +111,15 @@ suite('ParadisWorktreeGitService removeWorktree', () => {
 		try {
 			const notAWorktree = Object.assign(new Error('fatal: not a working tree'), { code: 128 });
 			const list = `worktree ${repository}\0HEAD abc\0branch refs/heads/main\0\0worktree ${listed}\0HEAD def\0branch refs/heads/x\0\0`;
-			const service = removeService(args => args.includes('remove') ? { error: notAWorktree } : args.includes('list') ? { stdout: list } : {}, []);
+			const calls: Array<{ args: string[]; timeout: number | undefined }> = [];
+			const service = removeService(args => args.includes('remove') ? { error: notAWorktree } : args.includes('list') ? { stdout: list } : {}, calls);
 			const targets = { above: join(root, 'parent'), repository, insideRepository: join(repository, 'src'), insideListed: join(listed, 'node_modules') };
 			const kept: Record<string, boolean> = {};
 			for (const [name, target] of Object.entries(targets)) {
-				await assert.rejects(service.removeWorktree({ repoPath: repository, worktreePath: target, force: true, allowLeftoverCleanup: true }), /not a working tree/);
+				await assert.rejects(service.removeWorktree({ repoPath: repository, worktreePath: target, force: true, allowLeftoverCleanup: true }), /削除の途中で残ったフォルダーではない/);
 				kept[name] = await fs.stat(target).then(() => true, () => false);
 			}
-			assert.deepStrictEqual(kept, { above: true, repository: true, insideRepository: true, insideListed: true });
+			assert.deepStrictEqual({ kept, ranRemove: calls.some(call => call.args.includes('remove')) }, { kept: { above: true, repository: true, insideRepository: true, insideListed: true }, ranRemove: false });
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}
