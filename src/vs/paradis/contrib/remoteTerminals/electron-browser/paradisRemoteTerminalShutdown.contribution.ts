@@ -33,7 +33,7 @@ import { raceTimeout } from '../../../../base/common/async.js';
 import { IParadisShutdownTerminal, paradisRegisterTerminalShutdownPolicy } from '../../../../workbench/contrib/terminal/browser/paradisTerminalShutdownPolicy.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ILifecycleService, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
-import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisKeptRemoteTerminals, PARADIS_KEEP_REMOTE_TERMINALS_KEY, paradisKeptPaneTokensStorageKey, paradisKeptTerminalsStorageKey, paradisParseKeepRemoteTerminalsChoice, paradisPlanRemoteTerminalShutdown, paradisRememberedChoice } from '../common/paradisRemoteTerminalShutdown.js';
 import { paradisRemoteHandlesTerminal } from '../../../common/paradisTerminalKeepPlan.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
@@ -260,28 +260,10 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 
 	/** 残せるターミナル（{@link countPersistentTerminals} が数えるもの）。 */
 	private listPersistentTerminals(): ITerminalInstance[] {
-		const counted = new Map<number, ITerminalInstance>();
+		// 待避中のエディタ端末も数える（数え漏らすと「1本も無い」と判断して尋ねず、そのまま終了させてしまう）。
 		// 判断本体 (`shouldKeepProcessAlive`) と同じ条件で数える。ここだけ緩いと、手元の端末しか
 		// 開いていない接続先ウィンドウでも尋ねてしまい、「残すと答えたのに消えた」になる。
-		const add = (instance: ITerminalInstance): void => {
-			if (!instance.isDisposed && instance.shouldPersist && instance.hasRemoteAuthority) {
-				counted.set(instance.instanceId, instance);
-			}
-		};
-		for (const instance of this.terminalService.instances) {
-			add(instance);
-		}
-		for (const group of this.terminalGroupService.paradisParkedGroups ?? []) {
-			for (const instance of group.terminalInstances) {
-				add(instance);
-			}
-		}
-		// エディタタブとして開いた端末のうち、別スペースへ待避しているものは上のどちらにも現れない。
-		// 数え漏らすと「1本も無い」と判断して尋ねず、そのまま終了させてしまう。
-		for (const instance of paradisListParkedTerminalEditorInstances()) {
-			add(instance);
-		}
-		return [...counted.values()];
+		return paradisCollectAllTerminalInstances(this.terminalService, this.terminalGroupService).filter(instance => instance.shouldPersist && instance.hasRemoteAuthority);
 	}
 }
 
