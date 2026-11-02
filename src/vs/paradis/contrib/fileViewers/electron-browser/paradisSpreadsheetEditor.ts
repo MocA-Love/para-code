@@ -1011,39 +1011,49 @@ function frozenPaneDescendants(root: HTMLElement): HTMLElement[] {
 	return found;
 }
 
-/** 複製した表の tbody 行を、DOM API だけで順に取り出す(セレクタに依存しない)。 */
-function frozenPaneBodyRows(table: HTMLElement): HTMLTableRowElement[] {
-	const rows: HTMLTableRowElement[] = [];
-	const bodies = (table as HTMLTableElement).tBodies;
-	for (let bodyIndex = 0; bodyIndex < (bodies?.length ?? 0); bodyIndex++) {
-		rows.push(...Array.from(bodies[bodyIndex].rows));
+/**
+ * 固定枠に要る分だけの表の複製を作る。表全体を複製してから落とすのではなく、見出し(colgroup・thead)と
+ * 先頭 `rowCount` 行、各行の行番号セルと先頭 `colCount` 列分(結合の colSpan を数える)のセルだけを複製する。
+ * 未指定の向きは全部残す。
+ */
+export function buildFrozenPaneClone(table: HTMLElement, rowCount: number | undefined, colCount: number | undefined): HTMLElement {
+	const clone = table.cloneNode(false) as HTMLElement;
+	let remainingRows = rowCount ?? Number.POSITIVE_INFINITY;
+	for (const child of Array.from(table.childNodes)) {
+		if (!dom.isHTMLElement(child) || child.tagName !== 'TBODY') {
+			clone.appendChild(child.cloneNode(true));
+			continue;
+		}
+		const body = child.cloneNode(false);
+		for (const row of Array.from((child as HTMLTableSectionElement).rows)) {
+			if (remainingRows <= 0) {
+				break;
+			}
+			remainingRows--;
+			body.appendChild(colCount === undefined ? row.cloneNode(true) : cloneFrozenPaneRow(row, colCount));
+		}
+		clone.appendChild(body);
 	}
-	return rows;
+	return clone;
 }
 
-/** 複製した表から、固定枠に不要な行・列を落として軽くする。 */
-export function trimFrozenPaneClone(table: HTMLElement, rowCount: number | undefined, colCount: number | undefined): void {
-	const bodyRows = frozenPaneBodyRows(table);
-	if (rowCount !== undefined) {
-		for (let index = rowCount; index < bodyRows.length; index++) {
-			bodyRows[index].remove();
+/** 行番号セル(先頭)と、データ列 `colCount` 本分のセルだけを複製した行。 */
+function cloneFrozenPaneRow(row: HTMLTableRowElement, colCount: number): Node {
+	const clone = row.cloneNode(false);
+	const cells = Array.from(row.children);
+	let spanned = 0;
+	cells.forEach((cell, index) => {
+		if (index === 0) {
+			clone.appendChild(cell.cloneNode(true));
+			return;
 		}
-	}
-	if (colCount === undefined) {
-		return;
-	}
-	// 行番号セル(先頭)は帯側が描くので固定枠側では残さず、データ列だけを colCount 本に切り詰める。
-	for (const row of frozenPaneBodyRows(table)) {
-		const cells = Array.from(row.children).slice(1);
-		let spanned = 0;
-		for (const cell of cells) {
-			if (spanned >= colCount) {
-				cell.remove();
-				continue;
-			}
-			spanned += Math.max(1, Number((cell as HTMLTableCellElement).colSpan) || 1);
+		if (spanned >= colCount) {
+			return;
 		}
-	}
+		spanned += Math.max(1, Number((cell as HTMLTableCellElement).colSpan) || 1);
+		clone.appendChild(cell.cloneNode(true));
+	});
+	return clone;
 }
 
 export class ParadisSpreadsheetEditor extends EditorPane {
@@ -1095,6 +1105,11 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _pageLabelOverlay: SVGElement | undefined;
 	// フォント反映等の再フローで行高が変わると図形/改ページ線の固定Y座標が古くなるため、再測定・再配置トリガを張る。
 	private _replaceToken: object = {};
+	/**
+	 * 重ね要素・帯・固定枠を最後に組んだときの行の位置と表の寸法。ResizeObserver やフォントの読み込みで呼ばれても、
+	 * これが同じなら作り直さない(同じ位置に同じものを作り直すだけになる)。表を組み直したら消す。
+	 */
+	private _placedLayoutKey: string | undefined;
 
 	private _scale = 1;
 	private _userAdjusted = false;
@@ -2063,6 +2078,25 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (!sheet || !inner) {
 			return;
 		}
+		const rowY = new Map<number, number>();
+		for (const { excelRow, tr } of this._dataRowEls) {
+			rowY.set(excelRow, tr.offsetTop);
+		}
+		const last = this._dataRowEls[this._dataRowEls.length - 1];
+		if (last) {
+			rowY.set(last.excelRow + 1, last.tr.offsetTop + last.tr.offsetHeight);
+		}
+		// 行の位置・見出しの列の位置・表の寸法が前回と同じなら、組み直しても同じものができるだけなので何もしない。
+		const layoutKey = [
+			...Array.from(rowY, ([row, y]) => `${row}:${y}`),
+			...this._headCellEls.map(cell => cell.offsetLeft),
+			this._tableEl?.offsetWidth ?? 0,
+			this._tableEl?.offsetHeight ?? 0,
+			this._theadEl?.offsetHeight ?? 0,
+		].join(',');
+		if (layoutKey === this._placedLayoutKey) {
+			return;
+		}
 		if (this._shapeOverlay) {
 			this._shapeOverlay.remove();
 			this._shapeOverlay = undefined;
@@ -2078,14 +2112,6 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (this._pageLabelOverlay) {
 			this._pageLabelOverlay.remove();
 			this._pageLabelOverlay = undefined;
-		}
-		const rowY = new Map<number, number>();
-		for (const { excelRow, tr } of this._dataRowEls) {
-			rowY.set(excelRow, tr.offsetTop);
-		}
-		const last = this._dataRowEls[this._dataRowEls.length - 1];
-		if (last) {
-			rowY.set(last.excelRow + 1, last.tr.offsetTop + last.tr.offsetHeight);
 		}
 		if (sheet.shapes && sheet.shapes.length > 0) {
 			const workbook = this._workbook;
@@ -2118,6 +2144,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._naturalTableHeight = this._tableEl?.offsetHeight ?? 0;
 		this._rebuildStickyStrips();
 		this._applyScale();
+		this._placedLayoutKey = layoutKey;
 	}
 
 	/**
@@ -2142,7 +2169,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}
 
 	/**
-	 * 固定枠(freeze pane)の重ね要素を組み直す。表を複製して不要な行・列を落とし、
+	 * 固定枠(freeze pane)の重ね要素を組み直す。表から要る行・列だけを複製し、
 	 * 帯と同じ要領でスクロールへ追従させる。仮想化表示では表そのものが無いため何もしない。
 	 */
 	private _rebuildFrozenPanes(): void {
@@ -2166,7 +2193,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			if (!inner) {
 				return;
 			}
-			const clone = table.cloneNode(true) as HTMLElement;
+			const clone = buildFrozenPaneClone(table, rowCount, colCount);
 			clone.removeAttribute('id');
 			// 複製は読み上げ・操作の対象にしない(本体の表と二重に読まれるのを防ぐ)。
 			clone.setAttribute('aria-hidden', 'true');
@@ -2177,7 +2204,6 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				element.removeAttribute('id');
 				element.removeAttribute('tabindex');
 			}
-			trimFrozenPaneClone(clone, rowCount, colCount);
 			// 見出し行と行番号列は帯が描くので、複製側では負のオフセットで画面外へ送る。
 			const shift = $('.paradis-spreadsheet-frozen-shift');
 			shift.style.marginTop = `${-this._headHeight}px`;
@@ -2215,6 +2241,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	/** シート切替・破棄で固定枠の複製を捨てる(複製した表を残すと次のシートに重なる)。 */
 	private _clearFrozenPanes(): void {
+		this._placedLayoutKey = undefined;
 		this._frozenRowsHeight = 0;
 		this._frozenColsWidth = 0;
 		for (const inner of [this._frozenRowsInner, this._frozenColsInner, this._frozenCornerInner]) {

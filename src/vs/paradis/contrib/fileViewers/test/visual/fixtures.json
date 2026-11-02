@@ -4,8 +4,8 @@
 	"serializedGeometryHash": "befa51cea63bb0f69d0cbca37d0c08190dbb3086997372c1982514a728105be5",
 	"attachedPaintBaseline": {
 		"environmentIdentity": "platform=darwin|arch=arm64|release=25.5.0|cpu=Apple M4|cores=10|memoryGiB=32|node=24.18.1|electron=42.8.1|chrome=148.0.7778.280",
-		"rendererSourceSha256": "1e24fb81bc30a44d71ecebc1477d22ac142ad8c1fbe4a4f72c0e383f90512851",
-		"baselineNote": "The paint baseline (calibration) was measured on the renderer before PR #604. rendererSourceSha256 was updated to the current source without re-measuring; treat the baseline as a guide until it is measured again on the baseline machine.",
+		"rendererSourceSha256": "755fab33bcf761608bb9238d132b6ae2e7f8154aa97475a3e2bfa09b923d23fa",
+		"baselineNote": "The paint baseline (calibration) was measured on the renderer before PR #604. rendererSourceSha256 was updated (again after the renderer stopped rewriting unchanged cells and started coalescing scroll renders) to the current source without re-measuring; treat the baseline as a guide until it is measured again on the baseline machine.",
 		"rendererCompiledSha256": "7464a7be30ff859df946fee63098a7676cbc195e66979543b87ec4d56c39d4ee",
 		"calibration": { "measuredAt": "2026-08-28T00:11:55Z", "measurementIterations": 41, "samplesMilliseconds": [9.899999976158142, 6.100000023841858, 5.799999982118607, 11.5, 13.300000011920929, 12.599999994039536, 13.300000011920929, 12.099999994039536, 13.5, 13.299999982118607, 12.199999988079071, 13.600000023841858, 13.099999994039536, 13.399999976158142, 11.900000005960464, 12.700000017881393, 13.199999988079071, 12.700000017881393, 14.299999982118607, 13.200000017881393, 13.5, 13.299999982118607, 13.099999994039536, 12.900000005960464, 13.400000005960464, 13.099999994039536, 13.400000005960464, 13, 13.300000011920929, 12.800000011920929, 13.299999982118607, 13, 13.099999994039536, 13.5, 13, 12.400000005960464, 14.099999994039536, 12.800000011920929, 13.400000005960464, 12.799999982118607, 13.099999994039536], "medianMilliseconds": 13.099999994039536, "requestedRegressionPercent": 10, "validation": "identity-and-threshold" }
 	},
