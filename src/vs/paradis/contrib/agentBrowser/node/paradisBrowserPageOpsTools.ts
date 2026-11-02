@@ -35,7 +35,7 @@ const TARGET_PROPERTIES = {
 export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	{
 		name: 'mouse_action',
-		description: 'Low-level mouse input on the page shared with this terminal pane, for what the chrome-devtools click / click_at / hover / drag tools cannot do: right-click (context_click), middle-click, moving the pointer to coordinates (hover at x/y), pressing and releasing a button separately, a pointer drag between coordinates (sliders, canvas; the chrome-devtools drag tool is for HTML drag-and-drop between elements), and the mouse wheel. For a plain left click or double click use click (uid) or click_at (x/y) with dblClick instead. Input is refused while the user is using that page.',
+		description: 'Low-level mouse input on this pane\'s current tab (or tab_id), for what the chrome-devtools click / click_at / hover / drag tools cannot do: right-click (context_click), middle-click, moving the pointer to coordinates (hover at x/y), pressing and releasing a button separately, a pointer drag between coordinates (sliders, canvas; the chrome-devtools drag tool is for HTML drag-and-drop between elements), and the mouse wheel. For a plain left click or double click use click (uid) or click_at (x/y) with dblClick instead. Input is refused while the user is using that page.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -48,7 +48,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 				delta_x: { type: 'number', description: 'wheel only: horizontal scroll in CSS pixels (positive scrolls right).' },
 				delta_y: { type: 'number', description: 'wheel only: vertical scroll in CSS pixels (positive scrolls down).' },
 				modifiers: { type: 'array', items: { type: 'string', enum: ['Alt', 'Control', 'Meta', 'Shift'] }, description: 'Keys held during the action.' },
-				steps: { type: 'number', description: 'move / drag: number of intermediate pointer moves (1-50, default 5).' },
+				steps: { type: 'number', minimum: 1, maximum: 50, description: 'move / drag: number of intermediate pointer moves (default 5).' },
 			},
 			required: ['action'],
 			additionalProperties: false,
@@ -56,7 +56,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'save_page_as_pdf',
-		description: 'Print the page shared with this terminal pane to a PDF file. The file is saved in the Para Code download folder (the same place as browser downloads; an existing file is never overwritten, a number is added instead) and appears in the download list marked as saved by an agent. Returns the saved path.',
+		description: 'Print this pane\'s current tab (or tab_id) to a PDF file. The file is saved in the Para Code download folder (the same place as browser downloads; an existing file is never overwritten, a number is added instead) and appears in the download list marked as saved by an agent. Returns the saved path.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -72,7 +72,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'set_extra_http_headers',
-		description: 'Send extra HTTP request headers from the page shared with this terminal pane (for example a feature-flag header of a test environment). By default they are sent only to the origin of the page at the time of the call (never to CDNs, analytics or other sites the page loads); pass "origins" to name the origins yourself. Only works on a tab whose browser storage this terminal pane uses alone: a tab opened with open_browser_tab and "private": true, or a profile this pane created that nobody else uses. Other tabs (tabs the user opened or shared, your ordinary agent tabs whose storage all agents of the workspace share) are refused, because the effect would stay in that storage for the other tabs. The headers apply only to that tab, replace any headers set before, and are removed when the tab is closed or no longer shared with this pane. Pass an empty object to remove them. Cookie headers cannot be set (agents cannot read or write cookies in Para Code). While headers are set, the browser cache and service workers are bypassed for that tab. Header values are not shown again by get_page_network_overrides.',
+		description: 'Send extra HTTP request headers from this pane\'s current tab or tab_id (for example a feature-flag header of a test environment). By default they are sent only to the origin of the page at the time of the call (never to CDNs, analytics or other sites the page loads); pass "origins" to name the origins yourself. Only works on a tab whose browser storage this terminal pane uses alone: a tab opened with open_browser_tab and "private": true, or a profile this pane created that nobody else uses. Other tabs (tabs the user opened or shared, your ordinary agent tabs whose storage all agents of the workspace share) are refused, because the effect would stay in that storage for the other tabs. The headers apply only to that tab, replace any headers set before, and are removed when the tab is closed or no longer shared with this pane. Pass an empty object to remove them. Cookie headers cannot be set (agents cannot read or write cookies in Para Code). While headers are set, the browser cache and service workers are bypassed for that tab. Header values are not shown again by get_page_network_overrides.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -85,7 +85,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'set_http_credentials',
-		description: 'Answer HTTP authentication (Basic / Digest) prompts of one site in the page shared with this terminal pane with the given user name and password, instead of the login prompt. Only prompts from that exact origin are answered (never proxy prompts), only in that browser tab, and a wrong password is not retried in a loop. Only works on a tab whose browser storage this terminal pane uses alone: a tab opened with open_browser_tab and "private": true, or a profile this pane created that nobody else uses. Other tabs (tabs the user opened or shared, your ordinary agent tabs whose storage all agents of the workspace share) are refused, because the effect would stay in that storage for the other tabs. The credentials are kept in memory only, are never shown again, and are removed when the tab is closed or no longer shared with this pane. Pass clear: true to remove them.',
+		description: 'Answer HTTP authentication (Basic / Digest) prompts of one site in this pane\'s current tab (or tab_id) with the given user name and password, instead of the login prompt. Only prompts from that exact origin are answered (never proxy prompts), only in that browser tab, and a wrong password is not retried in a loop. Only works on a tab whose browser storage this terminal pane uses alone: a tab opened with open_browser_tab and "private": true, or a profile this pane created that nobody else uses. Other tabs (tabs the user opened or shared, your ordinary agent tabs whose storage all agents of the workspace share) are refused, because the effect would stay in that storage for the other tabs. The credentials are kept in memory only, are never shown again, and are removed when the tab is closed or no longer shared with this pane. Pass clear: true to remove them.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -99,7 +99,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'set_request_rules',
-		description: 'Block or rewrite requests of the page shared with this terminal pane. Rules are checked in order and the first rule whose url_pattern matches is used ("*" matches any characters, "?" exactly one; for example "*://*.analytics.example.com/*"). Actions: block (the request fails), set_headers (add, replace or remove request headers; cookie headers cannot be touched), redirect (the browser is redirected to redirect_url and follows it as a normal request, so the agent network restrictions still apply), respond (answer with the given status and text body without contacting the server; Set-Cookie and headers the browser would remember are refused, and the response is never cached). Only works on a tab whose browser storage this terminal pane uses alone: a tab opened with open_browser_tab and "private": true, or a profile this pane created that nobody else uses. Other tabs (tabs the user opened or shared, your ordinary agent tabs whose storage all agents of the workspace share) are refused, because the effect would stay in that storage for the other tabs. The rules apply only to that browser tab (not to cross-origin iframes), replace the rules set before, and are removed when the tab is closed or no longer shared with this pane. Pass an empty array to remove all rules. While rules are set, the browser cache and service workers are bypassed for that tab.',
+		description: 'Block or rewrite requests of this pane\'s current tab (or tab_id). Rules are checked in order and the first rule whose url_pattern matches is used ("*" matches any characters, "?" exactly one; for example "*://*.analytics.example.com/*"). Actions: block (the request fails), set_headers (add, replace or remove request headers; cookie headers cannot be touched), redirect (the browser is redirected to redirect_url and follows it as a normal request, so the agent network restrictions still apply), respond (answer with the given status and text body without contacting the server; Set-Cookie and headers the browser would remember are refused, and the response is never cached). Only works on a tab whose browser storage this terminal pane uses alone: a tab opened with open_browser_tab and "private": true, or a profile this pane created that nobody else uses. Other tabs (tabs the user opened or shared, your ordinary agent tabs whose storage all agents of the workspace share) are refused, because the effect would stay in that storage for the other tabs. The rules apply only to that browser tab (not to cross-origin iframes), replace the rules set before, and are removed when the tab is closed or no longer shared with this pane. Pass an empty array to remove all rules. While rules are set, the browser cache and service workers are bypassed for that tab.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -129,33 +129,33 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'get_page_network_overrides',
-		description: 'Show what set_extra_http_headers, set_http_credentials and set_request_rules currently apply to the page shared with this terminal pane: the extra header names (not their values) and the origins they are sent to, the origin that gets credentials (not the password), and each request rule with how many requests it matched.',
+		description: 'Show what set_extra_http_headers, set_http_credentials and set_request_rules currently apply to this pane\'s current tab (or tab_id): the extra header names (not their values) and the origins they are sent to, the origin that gets credentials (not the password), and each request rule with how many requests it matched.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
 		name: 'download_by_click',
-		description: 'Click an element (or coordinates) of the page shared with this terminal pane that starts a file download, and wait for the download. The file is saved in the Para Code download folder like any browser download, marked as downloaded by an agent (the user can show it in its folder, but it is not offered to be opened), and never overwrites an existing file. Returns the saved path and state. For a link you already know the URL of, navigating to it also downloads, but this tool tells you where the file went.',
+		description: 'Click an element (or coordinates) of this pane\'s current tab (or tab_id) that starts a file download, and wait for the download. The file is saved in the Para Code download folder like any browser download, marked as downloaded by an agent (the user can show it in its folder, but it is not offered to be opened), and never overwrites an existing file. Returns the saved path and state. For a link you already know the URL of, navigating to it also downloads, but this tool tells you where the file went.',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				...TARGET_PROPERTIES,
-				timeout_seconds: { type: 'number', description: 'How long to wait for the download to start and finish (5-50, default 30). A download still running after that is reported as in progress.' },
+				timeout_seconds: { type: 'number', minimum: 5, maximum: 50, description: 'Seconds to wait for the download to start and finish (default 30). A download still running after that is reported as in progress.' },
 			},
 			additionalProperties: false,
 		},
 	},
 	{
 		name: 'highlight_element',
-		description: 'Draw a highlight box over an element (or a rectangle) of the page shared with this terminal pane, so the user can see what you are referring to. The page itself is not changed. The highlight disappears after duration_seconds, when another highlight is drawn, or with clear: true.',
+		description: 'Draw a highlight box over an element (or a rectangle) of this pane\'s current tab (or tab_id), so the user can see what you are referring to. The page itself is not changed. The highlight disappears after duration_seconds, when another highlight is drawn, or with clear: true.',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				uid: { type: 'string', description: 'uid of the element from a recent take_snapshot. Give either uid or x/y/width/height.' },
 				x: { type: 'number', description: 'Left edge in CSS pixels of the viewport.' },
 				y: { type: 'number', description: 'Top edge in CSS pixels of the viewport.' },
-				width: { type: 'number' },
-				height: { type: 'number' },
-				duration_seconds: { type: 'number', description: 'How long to show it (1-30, default 3).' },
+				width: { type: 'number', description: 'Width in CSS pixels of the viewport.' },
+				height: { type: 'number', description: 'Height in CSS pixels of the viewport.' },
+				duration_seconds: { type: 'number', minimum: 1, maximum: 30, description: 'Seconds to show it (default 3).' },
 				clear: { type: 'boolean', description: 'Remove the current highlight instead.' },
 			},
 			additionalProperties: false,
@@ -163,7 +163,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'add_init_script',
-		description: 'Add JavaScript that runs at the start of every document the page shared with this terminal pane loads from now on (navigations and reloads, in every frame, before the page\'s own scripts), for example to install window.__ hooks, record events or mask personal data for screenshots. Unlike navigate_page "initScript", it stays until removed. It works on any shared tab, including tabs the user opened, and also runs while the user browses in that tab, so keep it small and harmless. It is removed automatically when the tab is closed or is no longer shared with this pane. When you have finished checking, call remove_init_script to take it off again. Returns the script id.',
+		description: 'Add JavaScript that runs at the start of every document this pane\'s current tab (or tab_id) loads from now on (navigations and reloads, in every frame, before the page\'s own scripts), for example to install window.__ hooks, record events or mask personal data for screenshots. Unlike navigate_page "initScript", it stays until removed. It works on any shared tab, including tabs the user opened, and also runs while the user browses in that tab, so keep it small and harmless. It is removed automatically when the tab is closed or is no longer shared with this pane. When you have finished checking, call remove_init_script to take it off again. Returns the script id.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -177,7 +177,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'remove_init_script',
-		description: 'Remove a script added with add_init_script from the page shared with this terminal pane, by its id, or all of your scripts on that tab with all: true. Documents already loaded keep what the script did until they reload.',
+		description: 'Remove a script added with add_init_script from this pane\'s current tab (or tab_id), by its id, or all of your scripts on that tab with all: true. Documents already loaded keep what the script did until they reload.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -189,7 +189,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'list_init_scripts',
-		description: 'List the scripts you added with add_init_script that are still active on the page shared with this terminal pane (id, label, size, when added), and how many other panes have scripts there. Use it to check that nothing is left behind after you finish.',
+		description: 'List the scripts you added with add_init_script that are still active on this pane\'s current tab or tab_id (id, label, size, when added), and how many other panes have scripts there. Use it to check that nothing is left behind after you finish.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 ] as const;
