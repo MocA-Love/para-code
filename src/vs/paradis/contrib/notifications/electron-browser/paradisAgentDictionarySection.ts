@@ -13,6 +13,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
 const $ = dom.$;
 
@@ -23,7 +24,7 @@ const STR_DESC = localize('paradis.notif.agentDictionary.desc', "エージェン
 
 export class ParadisAgentDictionarySection extends Disposable {
 
-	private readonly toggle: HTMLInputElement;
+	private readonly toggle: ParadisSwitch;
 
 	constructor(
 		container: HTMLElement,
@@ -34,12 +35,10 @@ export class ParadisAgentDictionarySection extends Disposable {
 		const labels = dom.append(row, $('.sr-main'));
 		dom.append(labels, $('.sr-label')).textContent = STR_LABEL;
 		dom.append(labels, $('.sr-desc')).textContent = STR_DESC;
-		this.toggle = dom.append(row, $('input.pns-toggle')) as HTMLInputElement;
-		this.toggle.type = 'checkbox';
-		this.toggle.setAttribute('aria-label', STR_LABEL);
+		this.toggle = this._register(new ParadisSwitch(row, { checked: false, ariaLabel: STR_LABEL }));
 		this.refresh();
-		this._register(dom.addDisposableListener(this.toggle, 'change', () => {
-			this.settingsService.setAivisSettings({ shareDictionaryWithAgents: this.toggle.checked });
+		this._register(this.toggle.onDidChange(checked => {
+			this.settingsService.setAivisSettings({ shareDictionaryWithAgents: checked });
 		}));
 		this._register(this.settingsService.onDidChange(scope => {
 			if (scope === 'aivis') {
