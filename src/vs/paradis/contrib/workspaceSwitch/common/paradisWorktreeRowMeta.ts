@@ -66,7 +66,9 @@ const PARADIS_WORKTREE_META_ADDED_LATER: ReadonlySet<ParadisWorktreeMetaId> = ne
 /** メタ段を持たない行 (2段) の高さ。 */
 export const PARADIS_WORKTREE_ROW_HEIGHT = 44;
 /** メタ段を持つ行 (3段) の高さ。 */
-export const PARADIS_WORKTREE_ROW_HEIGHT_WITH_META = 60;
+export const PARADIS_WORKTREE_ROW_HEIGHT_WITH_META = 66;
+/** リポジトリの見出しの行の高さ（本家の一覧の行と同じ）。スペースの行は 2 段 44・3 段 66 で、どれも 22 の倍。 */
+export const PARADIS_REPOSITORY_ROW_HEIGHT = 22;
 
 export function paradisWorktreeMetaLabel(id: ParadisWorktreeMetaId): string {
 	switch (id) {

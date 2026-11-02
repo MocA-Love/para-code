@@ -169,8 +169,10 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		const details = dom.append(description, $('span.plc-details'));
 		details.textContent = STR_DETAILS;
 		details.tabIndex = 0;
+		details.setAttribute('role', 'button');
 		details.setAttribute('aria-label', STR_DETAILS_HOVER);
-		this._register(this.hoverService.setupDelayedHover(details, { content: STR_DETAILS_HOVER, container: this._backdrop }));
+		// キーボードで移ったときも同じホバーを出す
+		this._register(this.hoverService.setupDelayedHover(details, { content: STR_DETAILS_HOVER, container: this._backdrop }, { setupKeyboardEvents: true }));
 
 		this._setupInput = this._appendScriptField(body, 'paradis-lifecycle-setup-input', STR_SETUP_LABEL);
 		this._teardownInput = this._appendScriptField(body, 'paradis-lifecycle-teardown-input', STR_TEARDOWN_LABEL);
