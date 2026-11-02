@@ -254,43 +254,8 @@
 
 /* Diff */
 
-.paradis-spreadsheet-diff-toolbar {
-	display: flex;
-	flex: 0 0 auto;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
-	padding: 4px 12px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
-	background-color: var(--vscode-editorWidget-background);
-	color: var(--vscode-foreground);
-	font-size: 12px;
-}
-
-.paradis-spreadsheet-diff-toolbar-left {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	min-width: 0;
-}
-
-.paradis-spreadsheet-diff-toolbar-right {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-}
-
 /* allow-any-unicode-next-line */
 /* 差分色の凡例(追加/削除/変更)。Word 差分(paradisDocxDiff.css)と同じ語彙・スウォッチ。 */
-.paradis-spreadsheet-diff-legend {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground, #616161);
-	white-space: nowrap;
-}
-
 .paradis-spreadsheet-diff-legend-item {
 	display: flex;
 	align-items: center;
@@ -302,68 +267,6 @@
 	height: 9px;
 	border-radius: 2px;
 	flex: 0 0 auto;
-}
-
-.paradis-spreadsheet-validation-filter {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	height: 26px;
-	padding: 2px 8px;
-	border: 1px solid var(--vscode-button-border, transparent);
-	border-radius: 3px;
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	font-size: 11px;
-	cursor: pointer;
-}
-
-.paradis-spreadsheet-validation-filter:hover:not(:disabled) {
-	background: var(--vscode-button-secondaryHoverBackground);
-}
-
-.paradis-spreadsheet-validation-filter.active {
-	border-color: var(--vscode-focusBorder);
-	background: var(--vscode-list-activeSelectionBackground);
-	color: var(--vscode-list-activeSelectionForeground);
-}
-
-.paradis-spreadsheet-validation-filter:disabled {
-	opacity: .45;
-	cursor: default;
-}
-
-.paradis-spreadsheet-diff-zoom {
-	display: flex;
-	align-items: center;
-	gap: 2px;
-}
-
-.paradis-spreadsheet-diff-nav {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-}
-
-.paradis-spreadsheet-diff-navbtn {
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	border: 1px solid var(--vscode-button-border, transparent);
-	border-radius: 4px;
-	padding: 2px 10px;
-	font-size: 11px;
-	cursor: pointer;
-}
-
-.paradis-spreadsheet-diff-navbtn:hover {
-	background: var(--vscode-button-secondaryHoverBackground);
-}
-
-.paradis-spreadsheet-diff-navpos {
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
-	min-width: 44px;
-	text-align: center;
 }
 
 .paradis-spreadsheet-diff-body {
@@ -733,70 +636,6 @@
 }
 
 /* Header bar (viewer). Same tone as the diff toolbar. */
-.paradis-spreadsheet-header {
-	display: flex;
-	flex: 0 0 auto;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
-	padding: 3px 10px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
-	background-color: var(--vscode-editorWidget-background);
-	color: var(--vscode-foreground);
-}
-
-.paradis-spreadsheet-header-left {
-	min-width: 0;
-	flex: 1 1 auto;
-}
-
-.paradis-spreadsheet-header-right {
-	display: flex;
-	align-items: center;
-	gap: 2px;
-}
-
-.paradis-spreadsheet-iconbtn {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	width: 22px;
-	height: 22px;
-	padding: 0;
-	border: none;
-	border-radius: 4px;
-	background: transparent;
-	color: var(--vscode-foreground);
-	cursor: pointer;
-}
-
-.paradis-spreadsheet-iconbtn:hover {
-	background-color: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-spreadsheet-percent {
-	min-width: 44px;
-	height: 22px;
-	padding: 0 4px;
-	border: none;
-	border-radius: 4px;
-	background: transparent;
-	color: var(--vscode-foreground);
-	font-size: 11px;
-	cursor: pointer;
-	text-align: center;
-}
-
-.paradis-spreadsheet-percent:hover {
-	background-color: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-spreadsheet-openapp {
-	display: flex;
-	align-items: center;
-	margin-left: 4px;
-}
-
 /* allow-any-unicode-next-line */
 /* ページ番号の透かし(SVG)。セルの内容の背面に敷く。 */
 .paradis-spreadsheet-pagelabels {

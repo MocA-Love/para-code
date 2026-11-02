@@ -60,6 +60,26 @@ export function shouldParadisPdfUseRangeRequests(size: number | undefined, serve
  * 作ったときの nonce を載せる（使い回した webview に残った前の文書の知らせを、エディタが見分けるため）。
  */
 export const PARADIS_PDF_FIRST_PAINT_MESSAGE = 'paradis-pdf-first-paint';
+/** ページの中から、いまの拡大率とページ番号をエディタのバーへ知らせる。 */
+export const PARADIS_PDF_VIEW_STATE_MESSAGE = 'paradis-pdf-view-state';
+/** エディタのバーのボタンから、ページの中の拡大縮小を動かす。 */
+export const PARADIS_PDF_ZOOM_MESSAGE = 'paradis-pdf-zoom';
+/** {@link PARADIS_PDF_ZOOM_MESSAGE} で送る操作。`reset` は開いたときの倍率に戻す。 */
+export type ParadisPdfZoomCommand = 'in' | 'out' | 'fit' | 'reset';
+
+/**
+ * バーから届いた操作の次の倍率。知らない操作には `undefined` を返して何もしない（ページの中で
+ * 文字列に直して使うので、外の名前を参照しない）。
+ */
+export function nextParadisPdfZoomScale(command: unknown, scale: number, initialScale: number, fitScale: number): number | undefined {
+	switch (command) {
+		case 'in': return scale * 1.2;
+		case 'out': return scale / 1.2;
+		case 'fit': return fitScale;
+		case 'reset': return initialScale;
+		default: return undefined;
+	}
+}
 
 /** {@link planParadisPdfPages} の結果。番号はすべて 0 始まり。 */
 export interface IParadisPdfPagePlan {
@@ -353,36 +373,14 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 			font-size: 13px;
 		}
 		#scroller { position: absolute; inset: 0; overflow: auto; }
-		#pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px 16px 24px; }
+		#pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px 16px 24px; }
 		.pm-page { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
 		.pm-page canvas { display: block; width: 100%; height: 100%; }
-		#toolbar {
-			position: fixed; top: 6px; left: 50%; transform: translateX(-50%); z-index: 10;
-			display: flex; align-items: center; gap: 2px;
-			background: var(--vscode-editorWidget-background, #252526);
-			color: var(--vscode-editorWidget-foreground, #ccc);
-			border: 1px solid var(--vscode-editorWidget-border, #454545);
-			border-radius: 5px; padding: 2px 6px; user-select: none;
-		}
-		#toolbar button {
-			background: transparent; color: inherit; border: none; border-radius: 3px;
-			width: 24px; height: 22px; cursor: pointer; font-size: 14px; line-height: 1;
-		}
-		#toolbar button:hover { background: var(--vscode-toolbar-hoverBackground, rgba(90,93,94,.31)); }
-		#zoomLabel { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
-		#pageLabel { margin-left: 8px; opacity: .8; font-variant-numeric: tabular-nums; }
 		${PARADIS_VIEWER_WEBVIEW_STATE_STYLE}
 	</style>
 </head>
 <body>
 	<div id="scroller"><div id="pages"></div></div>
-	<div id="toolbar" hidden>
-		<button id="zoomOut" title="縮小">−</button>
-		<span id="zoomLabel">100%</span>
-		<button id="zoomIn" title="拡大">＋</button>
-		<button id="zoomFit" title="幅に合わせる">⤢</button>
-		<span id="pageLabel"></span>
-	</div>
 	${paradisViewerWebviewStatusHtml()}
 	<script type="module" nonce="${nonce}">
 		const PDF_URL = ${JSON.stringify(pdfUrl)};
@@ -398,6 +396,7 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 		const selectRelease = ${selectParadisPdfCanvasesToRelease.toString()};
 		const fitsBudget = ${fitsParadisPdfCanvasBudget.toString()};
 		const createScheduler = ${createParadisPdfPageScheduler.toString()};
+		const nextZoom = ${nextParadisPdfZoomScale.toString()};
 		const statusEl = document.getElementById('status');
 		// 最初のページが描けたことをエディタへ知らせる（開いてから描けるまでの計測）。
 		const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
@@ -428,9 +427,9 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 
 			const scroller = document.getElementById('scroller');
 			const pagesEl = document.getElementById('pages');
-			const toolbar = document.getElementById('toolbar');
-			const zoomLabel = document.getElementById('zoomLabel');
-			const pageLabel = document.getElementById('pageLabel');
+			// 拡大率とページ番号はエディタのバーに出す（ページの中にはバーを置かない）。
+			let currentPage = 0;
+			const postViewState = () => vscodeApi?.postMessage({ type: '${PARADIS_PDF_VIEW_STATE_MESSAGE}', render: ${JSON.stringify(nonce)}, zoom: Math.round(scale * 100), page: currentPage + 1, pages: pages.length });
 
 			// 1 ページ目だけ先に取る。残りのページは近づいたときに取る（区間読みでは、全ページを先に
 			// 取ると結局ほぼ全体を読むことになる）。大きさが分かるまでは 1 ページ目と同じ大きさで置く。
@@ -455,7 +454,7 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 			};
 			const applySizes = () => {
 				for (const p of pages) { sizePage(p); }
-				zoomLabel.textContent = Math.round(scale * 100) + '%';
+				postViewState();
 			};
 
 			const loadPage = (p) => {
@@ -564,13 +563,13 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 			const updatePageLabel = () => {
 				// 見えているページの中から、画面の真ん中にかかっているものを選ぶ（全ページは見ない）。
 				const range = scheduler.visibleRange();
-				if (!range) { pageLabel.textContent = '1 / ' + pages.length; return; }
+				if (!range) { if (currentPage !== 0) { currentPage = 0; postViewState(); } return; }
 				const mid = scroller.scrollTop + scroller.clientHeight / 2;
 				let current = range.first;
 				for (let i = range.first; i <= range.last; i++) {
 					if (pages[i].wrap.offsetTop <= mid) { current = i; }
 				}
-				pageLabel.textContent = (current + 1) + ' / ' + pages.length;
+				if (current !== currentPage) { currentPage = current; postViewState(); }
 			};
 
 			const observer = new IntersectionObserver(entries => {
@@ -595,9 +594,13 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 				zoomTimer = setTimeout(rerenderVisible, 120);
 			};
 
-			document.getElementById('zoomIn').addEventListener('click', () => setZoom(scale * 1.2));
-			document.getElementById('zoomOut').addEventListener('click', () => setZoom(scale / 1.2));
-			document.getElementById('zoomFit').addEventListener('click', () => setZoom(fitScale()));
+			const initialScale = scale;
+			window.addEventListener('message', e => {
+				const d = e.data;
+				if (!d || d.type !== '${PARADIS_PDF_ZOOM_MESSAGE}') { return; }
+				const next = nextZoom(d.command, scale, initialScale, fitScale());
+				if (next !== undefined) { setZoom(next); }
+			});
 			scroller.addEventListener('scroll', updatePageLabel, { passive: true });
 			window.addEventListener('resize', () => { clearTimeout(zoomTimer); zoomTimer = setTimeout(rerenderVisible, 200); });
 			// Ctrl/Cmd + ホイールでズーム（一般的なPDFビューアと同じ操作感）。
@@ -610,7 +613,7 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 
 			applySizes();
 			updatePageLabel();
-			toolbar.hidden = false;
+			postViewState();
 			statusEl.remove();
 
 			// 全体を読んである文書は、残りのページの大きさを裏で揃えておく（大きさの違うページが
