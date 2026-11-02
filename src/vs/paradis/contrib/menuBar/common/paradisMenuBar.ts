@@ -56,6 +56,14 @@ export const PARADIS_MENU_BAR_MENU_WORKING_COUNT_SETTING = 'paradis.menuBar.menu
  */
 export const PARADIS_MENU_BAR_PLAIN_MENU_SETTING = 'paradis.menuBar.plainMenu';
 
+/** メニューの中のチェックの項目から書き換えてよい設定（Q537 の 45 A）。ウィンドウはこれ以外の書き換えを受けない。 */
+export const PARADIS_MENU_BAR_MENU_SETTINGS: readonly string[] = [
+	PARADIS_MENU_BAR_TITLE_SETTING,
+	PARADIS_MENU_BAR_USAGE_STYLE_SETTING,
+	PARADIS_MENU_BAR_USAGE_WINDOW_SETTING,
+	PARADIS_MENU_BAR_INCLUDE_REMOTE_SETTING,
+];
+
 export interface IParadisMenuBarSettings {
 	readonly iconEnabled: boolean;
 	readonly title: ParadisMenuBarTitle;
@@ -185,7 +193,9 @@ export type ParadisMenuBarRequest =
 	| { readonly type: 'reveal'; readonly windowId: number; readonly entryId: string }
 	| { readonly type: 'openUsagePanel'; readonly windowId: number }
 	| { readonly type: 'openCostDashboard'; readonly windowId: number }
-	| { readonly type: 'openSettings'; readonly windowId: number };
+	| { readonly type: 'openSettings'; readonly windowId: number }
+	/** メニューのチェックの項目で設定を書き換える（main は設定を書けないので、ウィンドウに頼む）。`key` は {@link PARADIS_MENU_BAR_MENU_SETTINGS} のどれか。 */
+	| { readonly type: 'setSetting'; readonly windowId: number; readonly key: string; readonly value: string | boolean };
 
 /**
  * ウィンドウの出どころの鍵。手元は 'local'。接続先は同じホストを `host` と `user@host`（や
