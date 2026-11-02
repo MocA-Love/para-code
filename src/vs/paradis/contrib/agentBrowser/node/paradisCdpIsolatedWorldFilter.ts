@@ -180,7 +180,8 @@ export class ParadisCdpIsolatedWorldFilter {
 		if (state === undefined) {
 			return SESSION_NOT_FOUND_MESSAGE;
 		}
-		if (state.overflowed) {
+		// 溢れている間も、ページを移す命令は通す（エージェントが自分で抜けられるように。文書が替われば台帳も戻る）
+		if (state.overflowed && method !== 'Page.navigate' && method !== 'Page.reload') {
 			return OVERFLOW_DENIED_MESSAGE;
 		}
 		const record = isRecord(params) ? params : undefined;
@@ -234,6 +235,20 @@ export class ParadisCdpIsolatedWorldFilter {
 			state.hiddenContextIds.delete(result.executionContextId);
 			allowAdd(state.visibleContextIds, result.executionContextId);
 		}
+	}
+
+	/**
+	 * コンテキストに属するイベント（コンソール・例外）を届けるか。隠したコンテキストのものは落とす。溢れている間は
+	 * 隠したものを覚え切れていないので、見せてよい台帳にあるコンテキストのものだけ届ける。
+	 */
+	private _contextEventVerdict(state: ISessionState, contextId: unknown): ParadisIsolatedWorldEventVerdict {
+		if (typeof contextId !== 'number') {
+			return state.overflowed ? 'drop' : 'forward';
+		}
+		if (state.overflowed) {
+			return state.visibleContextIds.has(contextId) ? 'forward' : 'drop';
+		}
+		return state.hiddenContextIds.has(contextId) ? 'drop' : 'forward';
 	}
 
 	/** ブラウザ → クライアントのイベントを見る。 */
@@ -319,6 +334,10 @@ export class ParadisCdpIsolatedWorldFilter {
 				return 'forward';
 			case 'Debugger.scriptParsed':
 			case 'Debugger.scriptFailedToParse': {
+				// 溢れている間は、隠したコンテキストを覚え切れていないので、見せてよいコンテキストのものだけ届ける
+				if (state.overflowed && !(typeof record?.executionContextId === 'number' && state.visibleContextIds.has(record.executionContextId))) {
+					return 'drop';
+				}
 				const auxData = isRecord(record?.executionContextAuxData) ? record.executionContextAuxData : undefined;
 				const contextId = record?.executionContextId;
 				const inHidden = (typeof contextId === 'number' && state.hiddenContextIds.has(contextId))
@@ -332,6 +351,10 @@ export class ParadisCdpIsolatedWorldFilter {
 				return 'forward';
 			}
 			case 'Debugger.paused': {
+				// 溢れている間はどの段が隠したものか分からず、クライアントの Debugger.resume も断るので、Para Code が再開させる
+				if (state.overflowed) {
+					return 'resume';
+				}
 				const frames = Array.isArray(record?.callFrames) ? record.callFrames : [];
 				state.hiddenCallFrameIds.clear();
 				let topHidden = false;
@@ -356,13 +379,11 @@ export class ParadisCdpIsolatedWorldFilter {
 				state.hiddenCallFrameIds.clear();
 				return 'forward';
 			case 'Runtime.consoleAPICalled': {
-				const contextId = record?.executionContextId;
-				return typeof contextId === 'number' && state.hiddenContextIds.has(contextId) ? 'drop' : 'forward';
+				return this._contextEventVerdict(state, record?.executionContextId);
 			}
 			case 'Runtime.exceptionThrown': {
 				const details = isRecord(record?.exceptionDetails) ? record.exceptionDetails : undefined;
-				const contextId = details?.executionContextId;
-				return typeof contextId === 'number' && state.hiddenContextIds.has(contextId) ? 'drop' : 'forward';
+				return this._contextEventVerdict(state, details?.executionContextId);
 			}
 			default:
 				return 'forward';
