@@ -58,6 +58,7 @@ import { paradisCookieAndRewriteDeniedMessage, paradisSanitizeCookieBearingEvent
 import { paradisRemotePaneCdpDeniedMessage } from './paradisCdpRemotePolicy.js';
 import { PARADIS_HIDDEN_EXTENSION_FRAME_URL, PARADIS_PAGE_URL_FRESH_MS, paradisExtensionPageDeniedMessage, paradisGuardNewDocumentScriptParams, paradisIsAllowedOnExtensionPage, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisIsUndecidedPageUrl, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../common/paradisCdpExtensionScope.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { IParadisCdpFrame, MAX_CDP_FRAME_BYTES, ParadisBoundedSendOutcome, paradisCdpErrorFrame, paradisCdpErrorResponse, paradisForwardableCdpFrame, paradisReadCdpFrame, rawDataByteLength, rawDataText, sendWithBoundedBackpressure, sendWithBoundedBackpressureOutcome } from './paradisCdpFrames.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -200,10 +201,6 @@ interface IParadisPendingRequest {
 
 const MAX_CDP_PENDING_REQUESTS = 1_024;
 
-// Debugger metadata can legitimately contain multi-megabyte inline source maps in a single
-// frame. Keep every transport stage on the same bounded ceiling so a valid frame accepted by
-// the parser is not rejected by an earlier queue or later backpressure check.
-const MAX_CDP_FRAME_BYTES = 32 * 1024 * 1024;
 // Chromium serializes lone surrogates in page strings (a truncated emoji in app data, a console
 // message, an exception text) as raw WTF-8 bytes. `ws` validates every incoming text frame and
 // turns such a frame into an `error` event, which tore the whole upstream connection down for
@@ -220,7 +217,6 @@ const MAX_UPSTREAM_WS_PAYLOAD_BYTES = 256 * 1024 * 1024;
 const UPSTREAM_SOCKET_OPTIONS: wsTypes.ClientOptions = { maxPayload: MAX_UPSTREAM_WS_PAYLOAD_BYTES, skipUTF8Validation: true };
 const OVERSIZED_RESPONSE_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: CDP response exceeded 32 MiB and was dropped by Para Code; retry with a smaller request';
 const MAX_CDP_CONNECTING_QUEUE_BYTES = MAX_CDP_FRAME_BYTES;
-const MAX_CDP_OPEN_BUFFERED_BYTES = MAX_CDP_FRAME_BYTES;
 const MAX_CDP_METHOD_LENGTH = 256;
 const MAX_CDP_IDENTIFIER_LENGTH = 512;
 // `ws` transport errors are protocol-level ("invalid UTF-8 sequence", "Max payload size exceeded",
@@ -464,59 +460,6 @@ function describeInputBarrierTimeout(
 	return `PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout (${detail})`;
 }
 
-function rawDataByteLength(data: wsTypes.RawData): number {
-	if (Array.isArray(data)) {
-		return data.reduce((total, chunk) => total + chunk.byteLength, 0);
-	}
-	return data.byteLength;
-}
-
-function rawDataText(data: wsTypes.RawData): string {
-	if (Array.isArray(data)) {
-		return Buffer.concat(data).toString('utf8');
-	}
-	return Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8');
-}
-
-// `buffer.isUtf8` is not importable under the node layer's import rules; a fatal decoder is the
-// same check without the dependency.
-const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
-
-/** 上流から来た 1 フレーム。バイト列の連結と文字列への読み出しを 1 回だけにするため、読んだものを持ち回る。 */
-export interface IParadisCdpFrame {
-	readonly data: wsTypes.RawData;
-	readonly bytes: number;
-	readonly text: string;
-}
-
-export function paradisReadCdpFrame(data: wsTypes.RawData, bytes = rawDataByteLength(data)): IParadisCdpFrame {
-	return { data, bytes, text: rawDataText(data) };
-}
-
-/**
- * クライアントへそのまま送ってよい形（{@link reencodeUtf8} と同じ結果）。読み出した文字列に U+FFFD が無ければ
- * 元のバイト列は正しい UTF-8 なので、厳密な検証（全体の decode）を省いて元のまま返す。U+FFFD があるときだけ
- * （壊れた並びか、本当に U+FFFD を含むか）検証する。
- */
-export function paradisForwardableCdpFrame(frame: IParadisCdpFrame): wsTypes.RawData | string {
-	return frame.text.includes('\uFFFD') ? reencodeUtf8(frame.data) : frame.data;
-}
-
-/**
- * Returns the frame unchanged when it is already valid UTF-8 (no re-encoded copy for multi-megabyte
- * screenshot frames); otherwise decodes it with U+FFFD replacement so the client's own `ws`
- * validation accepts the forwarded text frame.
- */
-function reencodeUtf8(data: wsTypes.RawData): wsTypes.RawData | string {
-	const buffer = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
-	try {
-		strictUtf8Decoder.decode(buffer);
-		return data;
-	} catch {
-		return buffer.toString('utf8');
-	}
-}
-
 type ParadisUpstreamErrorKind = 'invalid-utf8' | 'max-payload' | 'econnreset' | 'econnrefused' | 'handshake' | 'other';
 
 /** Buckets a `ws` client error so Sentry gets a kind, never the text. */
@@ -649,43 +592,6 @@ function upstreamErrorDetail(error: unknown): string {
 	return message.length > MAX_UPSTREAM_ERROR_DETAIL_LENGTH ? `${message.slice(0, MAX_UPSTREAM_ERROR_DETAIL_LENGTH)}…` : message;
 }
 
-function payloadByteLength(data: wsTypes.RawData | string): number {
-	return typeof data === 'string' ? Buffer.byteLength(data, 'utf8') : rawDataByteLength(data);
-}
-
-type ParadisBoundedSendOutcome = 'sent' | 'frame-too-large' | 'buffer-full' | 'send-failed';
-
-function sendWithBoundedBackpressureOutcome(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, forceText = false): ParadisBoundedSendOutcome {
-	const bytes = payloadByteLength(data);
-	// スクリーンショットのフレームも同じ上限（MAX_CDP_FRAME_BYTES の上のコメント）。送り先に溜められる量も同じ値
-	const frameLimit = MAX_CDP_FRAME_BYTES;
-	const bufferedLimit = MAX_CDP_OPEN_BUFFERED_BYTES;
-	const bufferedAmount = Number.isSafeInteger(socket.bufferedAmount) && socket.bufferedAmount >= 0 ? socket.bufferedAmount : bufferedLimit + 1;
-	if (bytes > frameLimit) {
-		return 'frame-too-large';
-	}
-	if (bufferedAmount + bytes > bufferedLimit) {
-		return 'buffer-full';
-	}
-	try {
-		// CDPはテキスト専用プロトコル。Bufferをそのまま送るとwsがバイナリフレーム化し、
-		// Chromium DevToolsエンドポイントが最初のバイナリフレーム受信で接続を切断する。
-		// ページ経路はRawData(Buffer)を素通しするため、テキストフレームを強制する。
-		if (forceText) {
-			socket.send(data, { binary: false });
-		} else {
-			socket.send(data);
-		}
-		return 'sent';
-	} catch {
-		return 'send-failed';
-	}
-}
-
-function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, forceText = false): boolean {
-	return sendWithBoundedBackpressureOutcome(socket, data, forceText) === 'sent';
-}
-
 /**
  * Events a CDP client can lose without its view of targets, frames or execution contexts going
  * wrong: logs, network and console traffic. When the client is not draining its socket, one of
@@ -757,10 +663,6 @@ function hasBoundedRoutingIdentifiers(value: unknown): boolean {
 
 function logNonThrowing(logService: ILogService, level: 'trace' | 'debug' | 'warn', message: string): void {
 	try { logService[level](message); } catch { /* diagnostics must not interrupt transport cleanup */ }
-}
-
-function isolatedWorldDeniedFrame(message: IParadisClientCommand, reason: string): string {
-	return JSON.stringify({ id: message.id, ...(message.sessionId !== undefined ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: reason } });
 }
 
 function parseClientCommand(data: wsTypes.RawData): IParadisClientCommand | undefined {
@@ -1572,11 +1474,7 @@ export function paradisProxyPageUpgrade(
 				if (barrier.kind === 'timeout' && !closed && ctx.isCurrentLease() && ctx.boundTargetIds().has(targetId)) {
 					const reason = describeInputBarrierTimeout('page', barrier.remaining, sessionId => sessionId === undefined || !detachedSessions.has(sessionId), logService);
 					ctx.noteInputRejection?.(reason);
-					sendToClient({
-						id: msg.id,
-						...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}),
-						error: { code: -32000, message: reason },
-					});
+					sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, reason));
 				}
 				return;
 			}
@@ -1592,7 +1490,7 @@ export function paradisProxyPageUpgrade(
 				}
 				sendToClient(result.status === 'success'
 					? { id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), result: result.result }
-					: { id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: result.message } });
+					: paradisCdpErrorResponse(msg.id, msg.sessionId, result.message));
 			}, closeBoth);
 			await Promise.race([operation.drained, connectionClosed]);
 		};
@@ -1619,7 +1517,7 @@ export function paradisProxyPageUpgrade(
 				?? remoteDenied;
 			if (denied !== undefined) {
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
-					const serialized = JSON.stringify({ id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: denied } });
+					const serialized = paradisCdpErrorFrame(msg.id, msg.sessionId, denied);
 					if (!sendWithBoundedBackpressure(clientWs, serialized)) {
 						closeBoth();
 					}
@@ -1653,12 +1551,12 @@ export function paradisProxyPageUpgrade(
 			}
 			const extensionDenied = navigationDenied ?? paradisExtensionPageDeniedMessage(msg.method, msg.params, paradisIsBrowserExtensionUrl(pageUrl) || isolatedWorlds.isOnExtensionPage(''));
 			if (extensionDenied !== undefined) {
-				sendToClient({ id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: extensionDenied } });
+				sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, extensionDenied));
 				return;
 			}
 			const isolatedDenied = isolatedWorlds.checkClientCommand(msg.sessionId ?? '', msg.id, msg.method, msg.params);
 			if (isolatedDenied !== undefined) {
-				if (clientWs.readyState === ws.WebSocket.OPEN && !sendWithBoundedBackpressure(clientWs, isolatedWorldDeniedFrame(msg, isolatedDenied))) {
+				if (clientWs.readyState === ws.WebSocket.OPEN && !sendWithBoundedBackpressure(clientWs, paradisCdpErrorFrame(msg.id, msg.sessionId, isolatedDenied))) {
 					closeBoth();
 				}
 				return;
@@ -1695,7 +1593,7 @@ export function paradisProxyPageUpgrade(
 				try {
 					paramsJson = JSON.stringify(msg.params ?? {});
 				} catch {
-					sendToClient({ id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: `PARA_BROWSER_RETRYABLE: ${msg.method} parameters could not be serialized` } });
+					sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, `PARA_BROWSER_RETRYABLE: ${msg.method} parameters could not be serialized`));
 					return;
 				}
 				return dispatchInputAfterPriorRequests(msg, paramsJson);
@@ -1818,7 +1716,7 @@ export function paradisProxyPageUpgrade(
 							return;
 						}
 						if (clientWs.readyState === ws.WebSocket.OPEN) {
-							const serialized = JSON.stringify({ id: peek.id, ...(peek.sessionId !== undefined ? { sessionId: peek.sessionId } : {}), error: { code: -32000, message: OVERSIZED_RESPONSE_ERROR_MESSAGE } });
+							const serialized = paradisCdpErrorFrame(peek.id, peek.sessionId, OVERSIZED_RESPONSE_ERROR_MESSAGE);
 							if (!sendWithBoundedBackpressure(clientWs, serialized, true)) {
 								closeBoth();
 							}
@@ -2396,7 +2294,7 @@ export async function paradisProxyBrowserUpgrade(
 			sendToClient(response);
 		};
 		const rejectRequest = (message: Pick<IParadisClientCommand, 'id' | 'sessionId'>, reason: string) => {
-			sendToClient({ id: message.id, ...(message.sessionId !== undefined ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: reason } });
+			sendToClient(paradisCdpErrorResponse(message.id, message.sessionId, reason));
 		};
 		const dispatchInputAfterPriorRequests = async (
 			message: IParadisClientCommand,
@@ -2878,7 +2776,7 @@ export async function paradisProxyBrowserUpgrade(
 					if (completion.handled && completion.suppress) {
 						return;
 					}
-					sendToClient({ id: peek.id, ...(pending.sessionId !== undefined ? { sessionId: pending.sessionId } : {}), error: { code: -32000, message: OVERSIZED_RESPONSE_ERROR_MESSAGE } });
+					sendToClient(paradisCdpErrorResponse(peek.id, pending.sessionId, OVERSIZED_RESPONSE_ERROR_MESSAGE));
 				}
 				return;
 			}
