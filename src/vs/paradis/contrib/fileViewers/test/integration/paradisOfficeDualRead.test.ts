@@ -29,7 +29,7 @@ import {
 } from '../../browser/paradisOfficeConfiguration.js';
 import { ParadisOfficeBrowserViewerResolverContribution } from '../../browser/paradisOfficeBrowser.contribution.js';
 import { ParadisOfficeDiagnosticInput } from '../../browser/paradisOfficeDiagnosticInput.js';
-import { sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/paradisDocxDiffWebview.js';
+import { sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/word/paradisDocxSanitize.js';
 import {
 	createParadisOfficeSearchPrintCallbacks,
 	ParadisOfficeConfigurationReader,

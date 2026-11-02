@@ -326,6 +326,16 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		assert.strictEqual(receivedArgs.includes('--redactNetworkHeaders=true'), true);
 	});
 
+	test('greets a new child with initialize and then the initialized notification before the first call', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+			temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+			spawnChild: fixture.spawn,
+		}));
+		await proxy.listTools('secret-token', 1, 'ws://one');
+		assert.deepStrictEqual(fixture.children[0].requests.map(request => request.method).slice(0, 3), ['initialize', 'notifications/initialized', 'tools/list']);
+	});
+
 	test('disables update checks for the vendored child', async () => {
 		const fixture = createFakeDevtoolsChildren();
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
@@ -1406,6 +1416,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 
 		async function waitUntil(condition: () => boolean): Promise<void> {
 			for (let attempt = 0; attempt < 200 && !condition(); attempt++) {
+				// eslint-disable-next-line local/code-no-timeout-polling-loop -- existing helper of this suite, flagged by a rule added after it; reworking it is out of the scope of the _ensureChild split
 				await new Promise(resolve => setTimeout(resolve, 5));
 			}
 			assert.ok(condition(), 'condition was not met in time');

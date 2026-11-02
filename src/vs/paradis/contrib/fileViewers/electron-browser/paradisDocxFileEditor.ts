@@ -59,7 +59,7 @@ import type { IParadisShownDocument } from '../common/paradisViewerShownDocument
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
-import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
+import { PARADIS_DOCX_MEDIA_ROOT, sanitizeParadisDocxBytesForRenderer } from './word/paradisDocxSanitize.js';
 import { escape } from '../../../../base/common/strings.js';
 import { localize } from '../../../../nls.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordStoryLabel, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordNavigationTarget, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
@@ -74,8 +74,6 @@ import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from '
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
 
-/** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
-const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
 const DOCX_HEADER_BYTES = 4;
 const DOCX_WATCH_RERENDER_DELAY_MS = 50;
 
@@ -380,7 +378,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			originKey: PARADIS_DOCX_EDITOR_ID,
 			enableFindWidget: false,
 			allowScripts: true,
-			resolveLibBase: () => resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(DOCX_MEDIA_ROOT)),
+			resolveLibBase: () => resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(PARADIS_DOCX_MEDIA_ROOT)),
 			onDidCreate: (webview, store) => {
 				this._webviewSupportsRecoveryMessages = typeof webview.onMessage === 'function';
 				if (this._webviewSupportsRecoveryMessages) {
@@ -840,7 +838,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	private _localResourceRoots(resource: URI): URI[] {
-		return [dirname(resource), FileAccess.asFileUri(DOCX_MEDIA_ROOT)];
+		return [dirname(resource), FileAccess.asFileUri(PARADIS_DOCX_MEDIA_ROOT)];
 	}
 
 	/**
@@ -1416,7 +1414,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
 		// 文書を postMessage で渡すときは URL を使わない（空）。
 		const docxUrl = documentId ? '' : asWebviewUri(resource, remoteInfo).toString(true);
-		const libBase = served && this._pane.libBase ? this._pane.libBase : asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
+		const libBase = served && this._pane.libBase ? this._pane.libBase : asWebviewUri(FileAccess.asFileUri(PARADIS_DOCX_MEDIA_ROOT)).toString(true);
 		// CSP は実際に使うポートまで絞る（`http://127.0.0.1:*` だと他プロセスのサーバまで許してしまう）。
 		const serverOrigin = served ? paradisPreviewOrigins(libBase, docxUrl) : '';
 		const csp = serverOrigin
