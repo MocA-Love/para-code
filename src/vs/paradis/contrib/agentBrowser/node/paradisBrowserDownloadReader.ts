@@ -16,12 +16,16 @@
 import type ExcelJS from 'exceljs';
 import { promises as fs } from 'fs';
 import { basename, extname, isAbsolute, relative, sep } from '../../../../base/common/path.js';
-import { paradisReadDownloadWorkbookInWorker } from './paradisBrowserDownloadWorkbookWorker.js';
+import { IParadisDownloadWorkbookRunOptions, paradisReadDownloadWorkbookInWorker } from './paradisBrowserDownloadWorkbookWorker.js';
 import { IParadisPdfPageRange, IParadisPdfTextOptions, PARADIS_PDF_MAX_CHARS, PARADIS_PDF_MAX_PAGES, PARADIS_PDF_SOFT_TIMEOUT_MS, ParadisPdfTextResult, paradisExtractPdfText, paradisParsePdfPageRange } from './paradisBrowserPdfText.js';
 
 export const PARADIS_READ_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024;
 /** xlsx を展開した後の大きさの上限（圧縮された小さいファイルが shared process のメモリを食い尽くさないように）。 */
 export const PARADIS_READ_DOWNLOAD_MAX_UNZIPPED_BYTES = 200 * 1024 * 1024;
+/** xlsx を読む待ち行列の上限（走っているものを含む）。超えたら混んでいると断る。 */
+export const PARADIS_READ_DOWNLOAD_MAX_QUEUED_WORKBOOKS = 3;
+/** xlsx を読む期限（待ち行列で待った時間を含む）。MCP の呼び出しの上限（300 秒）より先に答える。 */
+export const PARADIS_READ_DOWNLOAD_WORKBOOK_DEADLINE_MS = 150_000;
 const DEFAULT_MAX_CELLS = 2000;
 const MAX_MAX_CELLS = 20_000;
 const MAX_CELL_CHARS = 500;
@@ -38,7 +42,7 @@ export interface IParadisDownloadReaderHost {
 	/** テストで exceljs を差し込むと、worker を使わずにこの場で解析する。 */
 	loadExcel?(): Promise<typeof ExcelJS>;
 	/** xlsx を読む（テストで差し替える）。既定は worker で読む。 */
-	readWorkbook?(request: IParadisDownloadWorkbookRequest): Promise<unknown>;
+	readWorkbook?(request: IParadisDownloadWorkbookRequest, options: IParadisDownloadWorkbookRunOptions): Promise<unknown>;
 	/** PDF のテキストを取り出す（テストで差し替える）。既定は pdf.js を Worker で動かす。 */
 	extractPdfText?(data: Uint8Array, options: IParadisPdfTextOptions): Promise<ParadisPdfTextResult>;
 }
@@ -220,10 +224,13 @@ export class ParadisBrowserDownloadReader {
 	private pdfQueue: Promise<unknown> = Promise.resolve();
 	/** xlsx の解析を 1 つずつにする（大きなブックの worker を同時に何本も立てない）。 */
 	private workbookQueue: Promise<unknown> = Promise.resolve();
+	/** 走っているものと待っているものの数。 */
+	private workbooksQueued = 0;
 
 	constructor(private readonly host: IParadisDownloadReaderHost) { }
 
-	async call(rawArgs: unknown): Promise<ToolResult> {
+	/** @param signal 呼び出し側が諦めたら、待っている xlsx の解析を始めない（走っていれば止める）。 */
+	async call(rawArgs: unknown, signal?: AbortSignal): Promise<ToolResult> {
 		const args = rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs) ? rawArgs as Record<string, unknown> : {};
 		const path = args.path;
 		if (typeof path !== 'string' || !isAbsolute(path)) {
@@ -285,7 +292,7 @@ export class ParadisBrowserDownloadReader {
 		switch (extension) {
 			case '.xlsx':
 			case '.xlsm':
-				return this.readWorkbook(name, data, sheet, range, maxCells);
+				return this.readWorkbook(name, data, sheet, range, maxCells, signal);
 			case '.csv':
 			case '.tsv':
 			case '.txt':
@@ -299,7 +306,7 @@ export class ParadisBrowserDownloadReader {
 		}
 	}
 
-	private async readWorkbook(name: string, data: Buffer, sheet: string | number | undefined, range: IParadisCellRange | undefined, maxCells: number): Promise<ToolResult> {
+	private async readWorkbook(name: string, data: Buffer, sheet: string | number | undefined, range: IParadisCellRange | undefined, maxCells: number, signal: AbortSignal | undefined): Promise<ToolResult> {
 		if (data.length >= 4 && data[0] === 0xD0 && data[1] === 0xCF && data[2] === 0x11 && data[3] === 0xE0) {
 			return error(`${name} is password-protected (encrypted) or an old binary workbook, so it cannot be read.`);
 		}
@@ -313,11 +320,17 @@ export class ParadisBrowserDownloadReader {
 		const request: IParadisDownloadWorkbookRequest = { name, data, ...(sheet !== undefined ? { sheet } : {}), ...(range !== undefined ? { range } : {}), maxCells };
 		// 解析は exceljs を読み込む worker で行う（大きなブックの解析の間、shared process の本線を止めない。
 		// paradisBrowserDownloadWorkbookWorker.ts）。テストが exceljs を差し込んだときだけ、この場で解析する
+		// 待ち行列には上限を置き（待つ間、1 件ごとに最大 50 MB を持つ）、待った時間も含めた期限で切る（MCP の呼び出しの上限より先に答える）
+		if (this.workbooksQueued >= PARADIS_READ_DOWNLOAD_MAX_QUEUED_WORKBOOKS) {
+			return error(`Para Code is already reading ${this.workbooksQueued} Excel files for agents. Call read_download again in a moment.`);
+		}
+		const deadline = Date.now() + PARADIS_READ_DOWNLOAD_WORKBOOK_DEADLINE_MS;
 		const loadExcel = this.host.loadExcel;
 		const parse = loadExcel !== undefined
 			? async () => paradisRenderDownloadWorkbook(await loadExcel(), request)
-			: () => (this.host.readWorkbook ?? paradisReadDownloadWorkbookInWorker)(request);
-		const run = this.workbookQueue.then(parse);
+			: () => (this.host.readWorkbook ?? paradisReadDownloadWorkbookInWorker)(request, { deadline, signal });
+		this.workbooksQueued++;
+		const run = this.workbookQueue.then(parse).finally(() => this.workbooksQueued--);
 		this.workbookQueue = run.catch(() => undefined);
 		try {
 			return await run;
