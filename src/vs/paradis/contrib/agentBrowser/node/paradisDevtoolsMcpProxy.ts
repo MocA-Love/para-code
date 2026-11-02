@@ -63,6 +63,8 @@ const CALL_TIMEOUT_MS = 300_000;
 const IDLE_KILL_MS = 30 * 60_000;
 /** 改行されない子プロセスstdoutを保持できる最大byte数。 */
 const MAX_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
+/** 1 行を読み終えた後も持ち続ける stdout の入れ物の大きさの上限。これより伸びていたら手放す。 */
+const STDOUT_BUFFER_KEEP_BYTES = 64 * 1024;
 /** 1子プロセスで同時に待機できるJSON-RPC要求数。 */
 const MAX_PENDING_REQUESTS = 256;
 /** 1子プロセスのstdinに滞留できる最大byte数。 */
@@ -1119,6 +1121,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			}
 			const line = entry.stdoutBuffer.subarray(0, entry.stdoutBufferLength - 1).toString('utf8').trim();
 			entry.stdoutBufferLength = 0;
+			// 大きな 1 行（スナップショットなど）で伸びた入れ物は、子が生きている間ずっと持たない
+			if (entry.stdoutBuffer.byteLength > STDOUT_BUFFER_KEEP_BYTES) {
+				entry.stdoutBuffer = Buffer.alloc(0);
+			}
 			if (!line) {
 				continue;
 			}
