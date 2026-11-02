@@ -431,8 +431,9 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 		for (const row of stats.commands) {
 			const tr = dom.append(body, $('tr'));
 			const command = dom.append(tr, $('td'));
-			command.textContent = row.command;
-			command.title = row.command;
+			// 先頭の語が読めない記録（引数だけ・秘密を含む語など）は名前を出さずにまとめる
+			command.textContent = row.command || localize('paradis.rtk.periodCommands.other', "（その他）");
+			command.title = command.textContent;
 			dom.append(tr, $('td.num')).textContent = row.count.toLocaleString();
 			dom.append(tr, $('td.num')).textContent = paradisRtkFormatTokens(row.savedTokens);
 			dom.append(tr, $('td.num')).textContent = `${paradisRtkSavingsPercent(row.savedTokens, row.inputTokens).toFixed(0)}%`;
