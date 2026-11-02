@@ -104,8 +104,10 @@ function setup(extensionManifest: Record<string, unknown>) {
 	const focus = new Emitter<number>();
 	const views: IFakeView[] = [];
 	const activated: string[] = [];
+	/** How many times the tab list was read (one tab event must read it once, not once per extension). */
+	const listed = { count: 0 };
 	const environment: IParadisTabEnvironment = {
-		listViews: () => views,
+		listViews: () => { listed.count++; return views; },
 		onDidCreateView: created.event,
 		listWindows: () => [fakeWindow(1), fakeWindow(2)],
 		lastActiveWindowId: () => 1,
@@ -162,7 +164,7 @@ function setup(extensionManifest: Record<string, unknown>) {
 		focus.dispose();
 		views.forEach(view => { view.close.dispose(); view.visibility.dispose(); });
 	};
-	return { electronSession, otherSession, views, created, activated, call, callPage, openEvents, listen, dispose, host, addTabs, focus, tabs, apiSession, extension };
+	return { electronSession, otherSession, views, created, activated, call, callPage, openEvents, listen, dispose, host, addTabs, focus, tabs, apiSession, extension, listed };
 }
 
 suite('ParadisBrowserExtensionTabs', () => {
@@ -265,6 +267,21 @@ suite('ParadisBrowserExtensionTabs', () => {
 			const lines = new TextDecoder().decode(value).trim().split('\n').map(line => paradisDecodeExtensionWire(line) as { args: [{ id: number; url?: string }] });
 			// onCreated には URL を入れない（目印が遅れたエージェントのタブの URL を最初の知らせで漏らさない）
 			assert.deepStrictEqual(lines.map(line => [line.args[0].id, line.args[0].url]), [[user.webContents.id, undefined]]);
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('a tab event reads the tab list once, however many extensions it goes to', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, apiSession, extension, listed, dispose } = setup({ permissions: ['tabs'] });
+		try {
+			const others = Array.from({ length: 4 }, (_, index) => ({ ...extension, id: String.fromCharCode(98 + index).repeat(32) }));
+			(apiSession.extensions as { getAllExtensions(): readonly IParadisApiExtension[] }).getAllExtensions = () => [extension, ...others];
+			const contents = fakeContents(electronSession, 'https://example.com/', 'Example');
+			await addTabs(fakeView('user', contents, 1));
+			const before = listed.count;
+			contents.emit('page-title-updated', {}, 'Tick');
+			assert.deepStrictEqual(listed.count - before, 1);
 		} finally {
 			dispose();
 		}

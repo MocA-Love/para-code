@@ -572,15 +572,24 @@ export function paradisCursorGlideMs(
 	return Math.round(Math.max(tuning.minMs, Math.min(maxMs, distance / tuning.pxPerMs)));
 }
 
+/** isolated world で演出の本体を置く場所（文書ごと。遷移すると isolated world ごと消える）。 */
+const RUNNER_KEY = '__paraCodeAgentCursorOverlayRun';
+
 /**
- * isolated worldで実行する自己完結スクリプトを組み立てる。
- *
- * 毎回まるごと送る（差分注入や `Page.addScriptToEvaluateOnNewDocument` による常駐はしない）。
- * ナビゲーション後もそのまま作り直せるうえ、送り先はelectron-main→レンダラのIPCなので
- * CDPゲートウェイの帯域予算とは無関係だからである。
+ * 短い呼び出し（{@link paradisBuildCursorOverlayCall}）が、本体がまだ置かれていない文書で返す値。
+ * これが返ったら、本体ごと送る {@link paradisBuildCursorOverlayScript} を送り直す。
  */
-export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwnedCommand, tuning: IParadisCursorOverlayTuning = PARADIS_CURSOR_OVERLAY_TUNING): string {
-	return `(function (c) {
+export const PARADIS_CURSOR_OVERLAY_MISSING = '__paraCodeAgentCursorOverlayMissing';
+
+/**
+ * 演出の本体。命令（`c`）を引数で受け取る関数式で、ソースは命令によらず同じ。
+ *
+ * 以前は命令の値を末尾に埋め込んだ約 80 KB のスクリプトを命令ごとに送っていた（ソースが毎回変わるので
+ * ページ側のコンパイル結果も使い回せなかった）。今は文書ごとに 1 度だけ isolated world の `window` に置き、
+ * 以降は短い呼び出しだけを送る。コメントは残す（送るのは文書ごとに 1 度だけで、正規表現で消すと
+ * 文字列の中の `//` を壊す危険のほうが大きい）。
+ */
+const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 	'use strict';
 	try {
 		var K = ${JSON.stringify(STATE_KEY)};
@@ -1487,5 +1496,36 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 		}
 		return 0;
 	} catch (e) { return 0; }
-})(${paradisEncodeCursorOverlayPayload(command, tuning)})`;
+}`;
+
+/**
+ * isolated world で実行する、本体を置いてから命令を実行するスクリプトを組み立てる。
+ *
+ * 文書ごとの最初の 1 回だけ送る（{@link paradisBuildCursorOverlayCall} が {@link PARADIS_CURSOR_OVERLAY_MISSING}
+ * を返したとき）。`Page.addScriptToEvaluateOnNewDocument` による常駐はしない。遷移すると isolated world
+ * ごと消えるので、次の命令で置き直せば足りる。
+ */
+export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwnedCommand, tuning: IParadisCursorOverlayTuning = PARADIS_CURSOR_OVERLAY_TUNING): string {
+	return `(function (f) {
+	try { window[${JSON.stringify(RUNNER_KEY)}] = f; } catch (e) { }
+	return f(${paradisEncodeCursorOverlayPayload(command, tuning)});
+})(${PARADIS_CURSOR_OVERLAY_BODY})`;
+}
+
+/**
+ * isolated world で実行する、置いてある本体を呼ぶだけの短いスクリプトを組み立てる。本体が無い文書
+ * （初回・遷移の後）では {@link PARADIS_CURSOR_OVERLAY_MISSING} を返す。
+ */
+export function paradisBuildCursorOverlayCall(command: ParadisCursorOverlayOwnedCommand, tuning: IParadisCursorOverlayTuning = PARADIS_CURSOR_OVERLAY_TUNING): string {
+	return `(function (f) {
+	return typeof f === 'function' ? f(${paradisEncodeCursorOverlayPayload(command, tuning)}) : ${JSON.stringify(PARADIS_CURSOR_OVERLAY_MISSING)};
+})(window[${JSON.stringify(RUNNER_KEY)}])`;
+}
+
+/**
+ * 本体が無い文書で、本体を置かずに終えてよい命令か。どれも既にある演出の状態にしか作用せず、その状態は
+ * 本体が作るものなので、本体の無い文書には作用する相手も無い。
+ */
+export function paradisCursorOverlayCommandNeedsNoBody(command: ParadisCursorOverlayOwnedCommand): boolean {
+	return command.kind === 'release' || command.kind === 'remove' || command.kind === 'show' || command.kind === 'hide';
 }

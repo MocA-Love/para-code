@@ -25,6 +25,7 @@ import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/com
 import { IParadisAddExtensionResult, PARADIS_DEFAULT_EXTENSION_PROFILE, paradisIsExtensionId } from '../common/paradisBrowserExtensions.js';
 import { IParadisWebStoreReply as IParadisWebStoreBridgeReply, PARADIS_CHROME_WEB_STORE_ORIGIN, PARADIS_WEB_STORE_CHANNEL, PARADIS_WEB_STORE_EVENT_CHANNEL, PARADIS_WEB_STORE_QUERY } from '../common/paradisBrowserExtensionWebStore.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { paradisAttachToEveryWebContents } from './paradisBrowserExtensionContentsHooks.js';
 
 /** 利用者の操作とみなす入力から、入れる・外すを受ける間。 */
 const GESTURE_WINDOW_MS = 5_000;
@@ -106,15 +107,7 @@ export class ParadisWebStoreBridge {
 
 	/** これから作られるすべての WebContents に受け手を立てる（同期の問いは受け手が無いと renderer が止まる）。 */
 	listen(): void {
-		const app = electron.app;
-		if (!app) {
-			return;
-		}
-		const onCreated = (_event: unknown, contents: WebContents) => this.attach(contents);
-		app.on('web-contents-created', onCreated);
-		for (const contents of electron.webContents?.getAllWebContents() ?? []) {
-			this.attach(contents);
-		}
+		paradisAttachToEveryWebContents(contents => this.attach(contents));
 	}
 
 	dispose(): void {

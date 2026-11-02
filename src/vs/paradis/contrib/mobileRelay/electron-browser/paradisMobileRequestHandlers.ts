@@ -152,6 +152,17 @@ function findRegisteredRequest(channel: ParadisMobileRequestChannel, message: un
 }
 
 /**
+ * 要求の `ws` がこのウィンドウから届くスペースなら `ws` を返す。違えば `unknown workspace` で応答して `undefined`。
+ */
+export function paradisRequireMobileWorkspace(request: IParadisMobileRequest, context: IParadisMobileRequestContext): string | undefined {
+	if (typeof request.ws !== 'string' || request.ws.length === 0 || context.root === undefined) {
+		context.reply({ error: `unknown workspace: ${request.ws ?? ''}` });
+		return undefined;
+	}
+	return request.ws;
+}
+
+/**
  * 登録された種類なら処理して true を返す。provider は、既存の分岐で処理しなかった要求（すでに JSON として
  * 読んだもの）についてだけ、チャネルごとに1か所でこれを呼ぶ。
  */

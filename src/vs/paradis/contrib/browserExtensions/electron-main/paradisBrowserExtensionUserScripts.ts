@@ -46,6 +46,7 @@ import {
 } from '../common/paradisBrowserExtensionUserScripts.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import { paradisChromeFrameId, paradisMatchesUrlPattern } from './paradisBrowserExtensionTabs.js';
+import { paradisAttachToEveryWebContents } from './paradisBrowserExtensionContentsHooks.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 
@@ -253,14 +254,7 @@ export class ParadisBrowserExtensionUserScripts {
 
 	/** これから作られるすべての WebContents に受け手を立てる（同期の問いは受け手が無いと renderer が止まる）。 */
 	listen(): void {
-		const app = electron.app;
-		if (!app) {
-			return;
-		}
-		app.on('web-contents-created', (_event, contents) => this.attach(contents));
-		for (const contents of electron.webContents?.getAllWebContents() ?? []) {
-			this.attach(contents);
-		}
+		paradisAttachToEveryWebContents(contents => this.attach(contents));
 	}
 
 	/** 1 つの WebContents に受け手を立てる（テストからも呼ぶ）。 */
