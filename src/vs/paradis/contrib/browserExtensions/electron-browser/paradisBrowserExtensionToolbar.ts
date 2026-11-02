@@ -67,7 +67,7 @@ import {
 	PARADIS_BROWSER_EXTENSIONS_CHANNEL,
 	PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING,
 } from '../common/paradisBrowserExtensions.js';
-import { paradisShowBrowserExtensionsDialog } from './paradisBrowserExtensionsDialog.js';
+import { paradisShowBrowserExtensionsDialog } from './paradisBrowserExtensionsArea.js';
 
 const $ = dom.$;
 
