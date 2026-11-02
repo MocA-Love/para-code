@@ -88,6 +88,11 @@ export interface ParadisSpreadsheetGridRendererOptions {
 	 * （DOM の表が `transform: scale` で全体を縮めるのと同じ見え方にするため）。既定は 1。
 	 */
 	readonly zoom?: number;
+	/**
+	 * クリックしたセルにフォーカスを移し、文字を選ばずにコピーしたらそのセルの値をコピーする（Excel のビューア）。
+	 * CSV のビューアは自分の選択範囲でコピーするので使わない。既定は false。
+	 */
+	readonly copyFocusedCell?: boolean;
 }
 
 interface RenderedCell {
@@ -164,14 +169,24 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.pointerListener = event => this.onPointerDown(event);
 		container.addEventListener('scroll', this.scrollListener, { passive: true });
 		container.addEventListener('keydown', this.keyListener);
-		container.addEventListener('copy', this.copyListener);
-		container.addEventListener('mousedown', this.pointerListener);
+		if (options.copyFocusedCell) {
+			container.addEventListener('copy', this.copyListener);
+			container.addEventListener('mousedown', this.pointerListener);
+		}
 		this.attachRemeasureTriggers();
 	}
 
 	get liveCellCount(): number { return this.cells.size; }
 	/** 表示の倍率。`render` に渡す frame は倍率を掛ける前の寸法（入れ物の clientWidth などは倍率で割って渡す）。 */
 	get zoomFactor(): number { return this.zoom; }
+	/** フォーカスのあるセル（描き直しの後に戻すため）。 */
+	get focusedCell(): { readonly row: number; readonly column: number } { return { ...this.focused }; }
+	/** フォーカスのあるセルを決める（次の描画で反映する）。 */
+	setFocusedCell(row: number, column: number): void {
+		if (Number.isSafeInteger(row) && Number.isSafeInteger(column)) {
+			this.focused = { row, column };
+		}
+	}
 	get frame(): ParadisSpreadsheetViewportFrame { return { ...this._frame }; }
 
 	async render(frame: ParadisSpreadsheetViewportFrame): Promise<ParadisSpreadsheetViewportPlan> {
