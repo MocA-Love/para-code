@@ -61,6 +61,7 @@ import {
 	ParadisDocxHostMessage,
 	ParadisDocxSide,
 } from '../common/paradisDocx.js';
+import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE } from '../common/paradisViewerWebviewState.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
@@ -1092,7 +1093,7 @@ export function paradisDocxDiffWebviewBoot(ctx: IParadisDocxDiffWebviewContext, 
 			byId('pane-' + side).addEventListener('scroll', handler),
 		setStatus: (text: string | undefined) => {
 			if (text) {
-				status.textContent = text;
+				(status.firstElementChild ?? status).textContent = text;
 				status.style.display = '';
 			} else {
 				status.style.display = 'none';
@@ -1196,7 +1197,7 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 		.pane-sizer { overflow: hidden; }
 		.pane-zoom { transform-origin: top left; width: fit-content; min-width: 100%; }
 		#separator { width: 1px; flex: 0 0 auto; background-color: var(--vscode-editorWidget-border, #454545); }
-		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; pointer-events: none; }
+		${PARADIS_VIEWER_WEBVIEW_STATE_STYLE}
 
 		/* docx-preview が作る用紙。差分では連続フローで描くので、影と余白だけ整える。 */
 		.docx-l-wrapper, .docx-r-wrapper { background: transparent; padding: 16px 8px 48px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
@@ -1270,7 +1271,7 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 			<div class="pane" id="pane-modified"><div class="pane-sizer" id="sizer-modified"><div class="pane-zoom" id="zoom-modified"><div id="doc-modified"></div></div></div></div>
 		</div>
 	</div>
-	<div id="status">${escapeHtml(labels.loading)}</div>
+	<div id="status" class="loading" role="status"><span>${escapeHtml(labels.loading)}</span></div>
 	<div id="style-original" style="display:none"></div>
 	<div id="style-modified" style="display:none"></div>
 	<script nonce="${nonce}">
