@@ -222,7 +222,7 @@
 	translucent, so match the ring to the same translucent title bar color (via the mirrored
 	`--paradis-titlebar-bg`) instead of an opaque disc floating over the bar. */
 .monaco-workbench.paradis-transparent .paradis-resource-monitor-trigger-dot {
-	box-shadow: 0 0 0 2px color-mix(in srgb, var(--paradis-titlebar-bg, var(--vscode-titleBar-activeBackground, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent);
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--paradis-titlebar-bg, var(--vscode-titleBar-activeBackground, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent);
 }
 
 /* Modern UI / floating panels (`workbench.experimental.modernUI`, upstream 1.129). The floating
