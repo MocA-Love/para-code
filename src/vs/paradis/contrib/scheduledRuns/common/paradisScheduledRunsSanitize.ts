@@ -16,6 +16,7 @@ import {
 	IParadisScheduledRunTarget,
 	ParadisScheduledRunReason,
 } from './paradisScheduledRuns.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 const REPORT_STATUSES: ReadonlySet<string> = new Set(['running', 'needsAttention', 'completed', 'timedOut', 'failed', 'cancelled']);
 const REASONS: ReadonlySet<string> = new Set<ParadisScheduledRunReason>([
@@ -28,10 +29,6 @@ const REASONS: ReadonlySet<string> = new Set<ParadisScheduledRunReason>([
 const MAX_DETAIL_LENGTH = 500;
 const MAX_ID_LENGTH = 200;
 const MAX_TEXT_LENGTH = 10_000;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function optionalString(value: unknown, max = MAX_ID_LENGTH): string | undefined | false {
 	if (value === undefined || value === null || value === '') {

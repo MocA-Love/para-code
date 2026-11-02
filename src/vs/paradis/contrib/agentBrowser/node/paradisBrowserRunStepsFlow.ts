@@ -25,6 +25,7 @@
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { PARADIS_RUN_STEPS_ALLOWED_TOOLS } from './paradisBrowserRunSteps.js';
 import { paradisNormalizeLegacyToolArguments } from './paradisToolArgumentAliases.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 実行する手順（ループの中の繰り返しを含む）の合計の上限。 */
 export const PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED = 200;
@@ -78,10 +79,6 @@ interface IContentItem {
 	readonly type: string;
 	readonly text?: string;
 	readonly [key: string]: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function failure(message: string): unknown {

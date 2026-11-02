@@ -25,6 +25,7 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../platform
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IParadisAgentCommandTemplate, IParadisAgentModelOption, PARADIS_CODEX_FULL_AUTO_FLAGS, PARADIS_DEFAULT_AGENT_COMMANDS, paradisCodexEffortFlag } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { PARADIS_PAST_DEFAULT_AGENT_COMMANDS } from './paradisAgentListPastDefaults.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 export const PARADIS_AGENT_MODEL_CATALOG_CHANNEL = 'paradisAgentModelCatalog';
 
@@ -104,10 +105,6 @@ export const PARADIS_CLAUDE_MODEL_LIST_ARGS: readonly string[] = [
 
 /** 一覧に出てこないが CLI が受け付ける別名。既定の候補から引き継ぐ。 */
 const CLAUDE_UNLISTED_ALIASES: readonly string[] = ['opusplan'];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /** 説明文の先頭（`Opus 5.5 · Best for …` の `Opus 5.5`）。API キーで使っているときだけこの形になる。 */
 function claudeDescriptionHead(description: unknown): string | undefined {

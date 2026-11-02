@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { isRecord } from '../../../common/paradisGuards.js';
+
 // Codex の hook の信頼を Para Code が代わりに付けるための共有定義。
 //
 // Codex は hooks.json の hook を使う前に、利用者の「信頼する」を求める。信頼は
@@ -98,10 +100,6 @@ export interface IParadisCodexHookTrustGrantResult {
 	/** 今回信頼を付けた hook のイベント名。 */
 	readonly grantedEvents: readonly string[];
 	readonly detail?: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function normalizeForCompare(path: string, isWindows: boolean): string {
