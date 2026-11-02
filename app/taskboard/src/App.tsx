@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ITaskBoardRepositoryChoice, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardRpcMethod } from '@engine/paradisTaskBoard.js';
 import { PARADIS_TASK_BOARD_SCREENSHOT_TOOLS } from '@engine/paradisTaskBoardToolApprovals.js';
-import { connect, onNotice, reconnectNow, rpc, RpcError, useBoard } from './api.js';
+import { connect, focusTask, onNotice, reconnectNow, rpc, RpcError, useBoard } from './api.js';
 import { Board, Dock } from './components/Board.js';
 import { AddTaskDialog, ConfirmDialog, ShortcutsDialog } from './components/dialogs.js';
 import { FlowEditor } from './components/FlowEditor.js';
@@ -260,6 +260,9 @@ function Shell({ snapshot, theme, setTheme }: { snapshot: ITaskBoardSnapshot; th
 		setToasts(list => [...list.slice(-3), { ...t, id }]);
 		setTimeout(() => dismiss(id), t.tone === 'red' ? 8000 : 4500);
 	}, [dismiss]);
+
+	// 開いているタスクの活動とターミナルの出力だけを受け取る（一覧のスナップショットには入っていない）
+	useEffect(() => focusTask(route.taskId), [route.taskId]);
 
 	useEffect(() => onNotice(notice => {
 		const text = noticeText(notice, snapRef.current);

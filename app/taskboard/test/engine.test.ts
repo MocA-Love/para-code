@@ -68,6 +68,17 @@ function intake(n: number, extra: object = {}) {
 }
 
 describe('TaskBoardEngine', () => {
+	test('the detail revision grows on every log line, even when the log is full and the new line repeats the last one', () => {
+		const { engine } = setup();
+		engine.syncIntake([intake(7)]);
+		engine.reportOutput('gh:o/r#7', Array.from({ length: 400 }, () => 'same'));
+		const full = { revision: engine.getTaskDetailRevision('gh:o/r#7'), log: [...engine.getTask('gh:o/r#7')!.log] };
+		engine.reportOutput('gh:o/r#7', ['same']);
+		const after = engine.getTask('gh:o/r#7')!;
+		expect({ sameLog: JSON.stringify(after.log) === JSON.stringify(full.log), grew: engine.getTaskDetailRevision('gh:o/r#7') > full.revision, listed: engine.listTasks().map(t => t.id) })
+			.toEqual({ sameLog: true, grew: true, listed: ['gh:o/r#7'] });
+	});
+
 	test('start leases a slot, prepares it and starts the agent with the issue in the prompt', async () => {
 		const { engine, ports } = setup();
 		engine.syncIntake([intake(7)]);
