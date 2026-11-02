@@ -21,7 +21,7 @@ import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextke
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
-import { KEYBINDING_CONTEXT_WEBVIEW_FIND_WIDGET_ENABLED, KEYBINDING_CONTEXT_WEBVIEW_FIND_WIDGET_FOCUSED, KEYBINDING_CONTEXT_WEBVIEW_FIND_WIDGET_VISIBLE } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { KEYBINDING_CONTEXT_WEBVIEW_FIND_WIDGET_FOCUSED, KEYBINDING_CONTEXT_WEBVIEW_FIND_WIDGET_VISIBLE } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { PARADIS_HTML_EDITOR_ID, PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
@@ -35,6 +35,15 @@ const viewerEditorActiveContext = ContextKeyExpr.or(
 );
 const findActiveContext = ContextKeyExpr.and(viewerEditorActiveContext, EditorContextKeys.focus.toNegated())!;
 
+/**
+ * プレビュー内検索（Cmd+F）を受け付ける条件。`webviewFindWidgetEnabled` は見ない。ビューアの webview は
+ * claim のときにペインに閉じた context を渡さないので、このキーはウィンドウ全体で 1 つになり、検索を
+ * 無効にした webview（PDF・Word のビューア等）が後から claim すると false に上書きされる。ここの
+ * ビューアは常に検索を有効にして作っている（paradisRenderedFileEditor の enableFindWidget: true）ので、
+ * 条件に含める必要が無い。
+ */
+export const paradisFileViewerShowFindWhen = findActiveContext;
+
 function getActiveViewerPane(accessor: ServicesAccessor): ParadisRenderedFileEditor | undefined {
 	const pane = accessor.get(IEditorService).activeEditorPane;
 	return pane instanceof ParadisRenderedFileEditor ? pane : undefined;
@@ -46,7 +55,7 @@ class ParadisFileViewerShowFindAction extends Action2 {
 			id: 'paradis.fileViewer.showFind',
 			title: localize2('paradis.fileViewer.showFind', "プレビュー内を検索"),
 			keybinding: {
-				when: ContextKeyExpr.and(findActiveContext, KEYBINDING_CONTEXT_WEBVIEW_FIND_WIDGET_ENABLED),
+				when: paradisFileViewerShowFindWhen,
 				primary: KeyMod.CtrlCmd | KeyCode.KeyF,
 				weight: KeybindingWeight.EditorContrib
 			}
@@ -54,6 +63,7 @@ class ParadisFileViewerShowFindAction extends Action2 {
 	}
 
 	override run(accessor: ServicesAccessor): void {
+		// Raw 表示ならペインがコードエディタの検索を出す（showFind 参照）
 		getActiveViewerPane(accessor)?.showFind();
 	}
 }
