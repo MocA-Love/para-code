@@ -23,7 +23,7 @@ import {
 	paradisPullRequestMergeOutcome,
 } from '../common/paradisMobilePullRequest.js';
 import { ParadisMobileSendGate, paradisAgentPromptServices, paradisDeliverAgentPrompt, paradisParseAgentPromptTarget } from './paradisMobileAgentPromptDelivery.js';
-import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
+import { IParadisMobileRequestContext, registerParadisMobileRequestHandler, paradisRequireMobileWorkspace } from './paradisMobileRequestHandlers.js';
 
 /**
  * スマホのプルリクエストの画面（Orca W2-36、Q128 A）。`gh` はそのスペースの作業ツリーがあるマシン（SSH 先を含む）の
@@ -67,14 +67,6 @@ function pullRequestHost(accessor: ServicesAccessor, root: URI): IPullRequestHos
 	};
 }
 
-function requireWorkspace(request: IParadisMobileRequest, context: IParadisMobileRequestContext): string | undefined {
-	if (typeof request.ws !== 'string' || request.ws.length === 0 || context.root === undefined) {
-		context.reply({ error: `unknown workspace: ${request.ws ?? ''}` });
-		return undefined;
-	}
-	return request.ws;
-}
-
 /** 古い接続先のサーバー（SSH）はこの呼び出しを知らない。 */
 function describeLookupError(error: unknown): string {
 	if (paradisIsMobileHostNoResponse(error)) {
@@ -106,7 +98,7 @@ async function freshDetail(host: IPullRequestHost, context: IParadisMobileReques
 
 registerParadisMobileRequestHandler('scm', 'prView', {
 	async handle(accessor, request, context) {
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		const host = context.root !== undefined ? pullRequestHost(accessor, context.root) : undefined;
 		if (ws === undefined) {
 			return;
@@ -135,7 +127,7 @@ registerParadisMobileRequestHandler('scm', 'prView', {
 registerParadisMobileRequestHandler('scm', 'prFixChecks', {
 	async handle(accessor, request, context) {
 		const services = paradisAgentPromptServices(accessor);
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		const root = context.root;
 		const host = root !== undefined ? pullRequestHost(accessor, root) : undefined;
 		if (ws === undefined || root === undefined) {
@@ -186,7 +178,7 @@ registerParadisMobileRequestHandler('scm', 'prFixChecks', {
 
 registerParadisMobileRequestHandler('scm', 'prMerge', {
 	async handle(accessor, request, context) {
-		const ws = requireWorkspace(request, context);
+		const ws = paradisRequireMobileWorkspace(request, context);
 		const host = context.root !== undefined ? pullRequestHost(accessor, context.root) : undefined;
 		if (ws === undefined) {
 			return;
