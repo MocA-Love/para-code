@@ -49,7 +49,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisAggregateAgentStatus, paradisSortAgentStatuses, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisSortAgentStatuses, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
@@ -62,7 +62,7 @@ import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisSelectIssueLoo
 import { IParadisAgentInsightsService, IParadisAgentScopePane } from '../../agentInsights/common/paradisAgentInsights.js';
 import { paradisScopeSubagentsHoverMarkdown } from '../../agentInsights/browser/paradisAgentInsightsPresentation.js';
 import { IParadisPromptCacheChip, ParadisPromptCacheChips } from '../../agentInsights/browser/paradisPromptCacheChips.js';
-import { IParadisWorktreeMetaEntry, IParadisWorktreeMetaPresence, PARADIS_DEFAULT_WORKTREE_ROW_META, PARADIS_WORKTREE_ROW_HEIGHT, PARADIS_WORKTREE_ROW_META_SETTING_ID, ParadisWorktreeMetaId, paradisCanMoveWorktreeMeta, paradisMoveWorktreeMeta, paradisNormalizeWorktreeRowMeta, paradisSetWorktreeMetaAlign, paradisSetWorktreeMetaVisible, paradisWorktreeMetaLabel, paradisWorktreeMetaOrder, paradisWorktreeMetaShown, paradisWorktreeRowHasMeta, paradisWorktreeRowHeight } from '../common/paradisWorktreeRowMeta.js';
+import { IParadisWorktreeMetaEntry, IParadisWorktreeMetaPresence, PARADIS_DEFAULT_WORKTREE_ROW_META, PARADIS_REPOSITORY_ROW_HEIGHT, PARADIS_WORKTREE_ROW_HEIGHT, PARADIS_WORKTREE_ROW_META_SETTING_ID, ParadisWorktreeMetaId, paradisCanMoveWorktreeMeta, paradisMoveWorktreeMeta, paradisNormalizeWorktreeRowMeta, paradisSetWorktreeMetaAlign, paradisSetWorktreeMetaVisible, paradisWorktreeMetaLabel, paradisWorktreeMetaOrder, paradisWorktreeMetaShown, paradisWorktreeRowHasMeta, paradisWorktreeRowHeight } from '../common/paradisWorktreeRowMeta.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
  * createWorktree/removeWorktree コマンドと同様に ID 文字列を直書きする (web ビルドでは
@@ -389,6 +389,8 @@ interface IWorktreeTemplateData {
 	readonly pinHover: IManagedHover;
 	/** クリックリスナーが renderElement 後の最新の行を参照するためのホルダー */
 	readonly pinContext: { worktree?: IParadisWorktree };
+	/** 行の「…」。押すと右クリックと同じメニューを出す（ホバーとフォーカスのときだけ見える）。 */
+	readonly more: HTMLElement;
 	readonly templateDisposables: DisposableStore;
 }
 
@@ -477,7 +479,8 @@ class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement
 		if (isWorktree(element)) {
 			return this.getWorktreeHeight(element);
 		}
-		return isCreating(element) ? PARADIS_WORKTREE_ROW_HEIGHT : 30;
+		// リポジトリの見出しは本家の一覧の行と同じ 22px
+		return isCreating(element) ? PARADIS_WORKTREE_ROW_HEIGHT : PARADIS_REPOSITORY_ROW_HEIGHT;
 	}
 
 	getTemplateId(element: WorkspaceTreeElement): string {
@@ -645,6 +648,8 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		private readonly promptCacheChips: ParadisPromptCacheChips,
 		/** ドットのホバーに足すサブエージェント一覧の材料 (スペースに確実に属するペインだけ) */
 		private readonly getScopePanes: (stateKey: string) => readonly IParadisAgentScopePane[],
+		/** 行の「…」を押したとき、右クリックと同じメニューをその下に出す */
+		private readonly showWorktreeMenu: (worktree: IParadisWorktree, anchor: HTMLElement) => void,
 	) { }
 
 	/**
@@ -747,7 +752,28 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			}));
 		}
 		const pinHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pin, ''));
-		return { row, icon, name, branch, meta, metaSpacer, metaElements: new Map<ParadisWorktreeMetaId, HTMLElement>([['pr', pr], ['issues', issue], ['diff', diff], ['notes', note], ['promptCache', promptCache.element]]), dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, promptCache, pin, pinIcon, pinHover, pinContext, templateDisposables };
+		// 行の「…」。1 段目の点の右に置き、ピンと同じく行のクリック (切り替え) へ届く前に止める
+		const more = DOM.append(line1, DOM.$('.paradis-worktree-more'));
+		more.setAttribute('role', 'button');
+		more.tabIndex = -1;
+		more.setAttribute('aria-haspopup', 'true');
+		// allow-any-unicode-next-line
+		const moreLabel = localize('paradis.workspaceSwitch.worktreeMore', "その他の操作");
+		more.setAttribute('aria-label', moreLabel);
+		DOM.append(more, DOM.$(ThemeIcon.asCSSSelector(Codicon.ellipsis)));
+		templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), more, moreLabel));
+		for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK]) {
+			templateDisposables.add(DOM.addDisposableListener(more, eventType, event => {
+				if (!pinContext.worktree) {
+					return;
+				}
+				DOM.EventHelper.stop(event, true);
+				if (eventType === DOM.EventType.CLICK) {
+					this.showWorktreeMenu(pinContext.worktree, more);
+				}
+			}));
+		}
+		return { more, row, icon, name, branch, meta, metaSpacer, metaElements: new Map<ParadisWorktreeMetaId, HTMLElement>([['pr', pr], ['issues', issue], ['diff', diff], ['notes', note], ['promptCache', promptCache.element]]), dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, promptCache, pin, pinIcon, pinHover, pinContext, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
@@ -769,13 +795,12 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		const breakdown: readonly ParadisAgentStatus[] = worktree.missing ? []
 			: pendingStage !== undefined ? ['working']
 				: this.getBreakdown(worktreeStateKeyFor(worktree));
-		const status = paradisAggregateAgentStatus(breakdown);
 		const fallback = worktree.missing ? Codicon.warning : active ? Codicon.check : worktree.isMainCheckout ? Codicon.repo : Codicon.gitBranch;
-		// 切り替え中だけは回転を許す。常時動くエージェント状態と違って、ユーザーが今起こした
-		// 一過性の待ちであり、同時に回るのも1行だけなので、明滅より「まだ待ち」が伝わる
-		// (回転を避けている理由は applyStatusIcon のコメント参照)。エージェント状態のドットに
-		// 上書きされないよう、この間は status を渡さない
-		applyStatusIcon(templateData.icon, switching ? undefined : status, switching ? Codicon.loading : fallback);
+		// 左のアイコンは行の種類（今いる・本体・ワークツリー・消えた）だけを出し、エージェントの状態は右の点に
+		// まとめる（Q537 の 51 A）。切り替え中だけは回転を許す。常時動くエージェント状態と違って、ユーザーが
+		// 今起こした一過性の待ちであり、同時に回るのも1行だけなので、明滅より「まだ待ち」が伝わる
+		// (回転を避けている理由は applyStatusIcon のコメント参照)
+		applyStatusIcon(templateData.icon, undefined, switching ? Codicon.loading : fallback);
 		templateData.icon.classList.toggle('codicon-modifier-spin', switching);
 		renderStatusDots(templateData.dots, breakdown);
 		const dotsTooltip = agentStatusSummaryTooltip(breakdown);
@@ -1201,7 +1226,11 @@ export class ParadisWorkspacesView extends ViewPane {
 			() => this.rowMeta,
 			worktree => this.worktreeMetaPresence(worktree),
 			promptCacheChips,
-			stateKey => this.agentInsightsService.getScopePanes(stateKey)
+			stateKey => this.agentInsightsService.getScopePanes(stateKey),
+			(worktree, anchor) => this.contextMenuService.showContextMenu({
+				getAnchor: () => anchor,
+				getActions: () => this.buildWorktreeContextMenuActions(worktree),
+			})
 		);
 		const creatingRenderer = new CreatingSpaceRenderer(
 			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color)
@@ -2017,6 +2046,15 @@ export class ParadisWorkspacesView extends ViewPane {
 				'paradis-menu-icon codicon codicon-folder-opened',
 				!worktree.missing,
 				() => this.commandService.executeCommand('revealFileInOS', worktree.uri)
+			),
+			new Separator(),
+			// リポジトリの行と同じ。スクリプトはリポジトリ単位 (.paracode.json) なので、行の持ち主のリポジトリを開く
+			new Action(
+				'paradis.workspaceSwitch.worktree.configureLifecycleScripts',
+				localize('paradis.workspaceSwitch.configureLifecycleScriptsContext', "Setup / Teardown スクリプト..."),
+				'paradis-menu-icon codicon codicon-tools',
+				true,
+				() => this.commandService.executeCommand('paradis.workspaceSwitch.configureLifecycleScripts', worktree.repositoryId)
 			)
 		];
 

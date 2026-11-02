@@ -170,7 +170,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 	void dialog;
 }
 
-class ParadisCreateWorktreeDialog extends Disposable {
+export class ParadisCreateWorktreeDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _dialog: HTMLElement;

@@ -25,7 +25,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { IStorageService, StorageScope, StorageTarget, WillSaveStateReason } from '../../../../platform/storage/common/storage.js';
 import { IParadisSpaceNoteLine, IParadisSpaceNotesService, PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisContinueSpaceNoteList, paradisMergeSpaceNoteEdits, paradisParseSpaceNote, paradisToggleSpaceNoteListMarkers } from '../common/paradisSpaceNotes.js';
 
-const HEADER_HEIGHT = 26;
+const HEADER_HEIGHT = 22;
 const MIN_BODY_HEIGHT = 72;
 const DEFAULT_BODY_HEIGHT = 180;
 /** メモ欄を広げてもツリーに必ず残す高さ。 */
