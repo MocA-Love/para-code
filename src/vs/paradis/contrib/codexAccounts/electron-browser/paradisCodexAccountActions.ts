@@ -161,7 +161,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 			// 使っているアカウントは右上の「使用中」で示す（renderAccountBadges）。
 			return;
 		}
-		dom.append(container, $('span.plm-card-action-note')).textContent = localize('paradis.codexAccounts.switchFromNewTerminals', "新しいターミナルから");
+		// 「新しいターミナルから」の注記は常には出さず、ボタンのホバーの説明に任せる。
 		const button = dom.append(container, $('button.plm-card-action-btn')) as HTMLButtonElement;
 		button.type = 'button';
 		button.disabled = this.switching;
