@@ -5,7 +5,6 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 import { deepStrictEqual, ok, strictEqual } from 'assert';
-import { timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -152,15 +151,18 @@ suite('ParadisPdfFileEditor', () => {
 	test('keeps the shown PDF when coming back to its tab, unless the file changed or the first paint never came', async () => {
 		// 別の種類のタブへ移ると clearInput → setVisible(false)、戻ると setVisible(true) → setInput になる。
 		const disposables = store.add(new DisposableStore());
-		const run = async (confirmPaint: boolean, etagOnReturn: string) => {
+		const run = async (confirmPaint: boolean, mtimeOnReturn: number) => {
 			const messages = disposables.add(new Emitter<{ message: unknown }>());
+			const htmlSet = disposables.add(new Emitter<void>());
+			const statCalled = disposables.add(new Emitter<void>());
 			const html: string[] = [];
-			let etag = 'v1';
+			let mtime = 1;
+			let stats = 0;
 			const webview = {
 				contentOptions: {},
 				onFatalError: Event.None,
 				onMessage: messages.event,
-				setHtml: (value: string) => { html.push(value); },
+				setHtml: (value: string) => { html.push(value); htmlSet.fire(); },
 				claim: () => { },
 				release: () => { },
 				focus: () => { },
@@ -170,7 +172,7 @@ suite('ParadisPdfFileEditor', () => {
 			} as unknown as IOverlayWebview;
 			const fileService = {
 				readFile: async () => ({ value: VSBuffer.fromString('%PDF-') }),
-				stat: async () => ({ size: 2048, etag }),
+				stat: async () => { stats++; statCalled.fire(); return { size: 2048, mtime, etag: `e${mtime}` }; },
 				createWatcher: () => { throw new Error('watching is unavailable in this test'); },
 				onDidWatchError: Event.None,
 			} as unknown as IFileService;
@@ -181,29 +183,44 @@ suite('ParadisPdfFileEditor', () => {
 			editor.create(document.createElement('div'));
 			const resource = URI.file('/workspace/document.pdf');
 			const createInput = () => disposables.add(new ParadisPdfInput(resource, { isDirty: () => false } as unknown as ITextFileService, { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService));
-			// 描画の前置き（ライブラリの置き場の解決・ヘッダーと stat の読み出し）が終わるまで待つ（Word のテストと同じ待ち方）。
-			const settle = () => timeout(50);
+
+			const firstHtml = Event.toPromise(htmlSet.event, disposables);
 			await editor.setInput(createInput(), undefined, Object.create(null), CancellationToken.None);
 			editor.layout(new Dimension(800, 600));
-			await settle();
+			await firstHtml;
 			if (confirmPaint) {
 				const render = /render: "(?<render>[^"]+)"/.exec(html[html.length - 1] ?? '')?.groups?.render;
 				messages.fire({ message: { type: PARADIS_PDF_FIRST_PAINT_MESSAGE, render, pages: 1 } });
 			}
 			editor.clearInput();
 			editor.setVisible(false);
-			etag = etagOnReturn;
+			mtime = mtimeOnReturn;
+			stats = 0;
+			const rerendered = Event.toPromise(htmlSet.event, disposables);
+			const checked = Event.toPromise(statCalled.event, disposables);
 			editor.setVisible(true);
 			await editor.setInput(createInput(), undefined, Object.create(null), CancellationToken.None);
-			await settle();
-			return html.length;
+			if (confirmPaint && mtimeOnReturn === 1) {
+				// 使い回すときは stat を 1 回読んで判定するだけ。判定の続きが走り切るまで待つ。
+				await checked;
+				for (let turn = 0; turn < 8; turn++) {
+					await Promise.resolve();
+				}
+			} else {
+				await rerendered;
+			}
+			return { html: html.length, stats };
 		};
 
 		deepStrictEqual({
-			unchanged: await run(true, 'v1'),
-			changedWhileAway: await run(true, 'v2'),
-			neverPainted: await run(false, 'v1'),
-		}, { unchanged: 1, changedWhileAway: 2, neverPainted: 2 });
+			unchanged: await run(true, 1),
+			changedWhileAway: await run(true, 2),
+			neverPainted: await run(false, 1),
+		}, {
+			unchanged: { html: 1, stats: 1 },
+			changedWhileAway: { html: 2, stats: 2 },
+			neverPainted: { html: 2, stats: 1 },
+		});
 	});
 
 	test('maps PDF preflight results to the observable render outcome', () => {

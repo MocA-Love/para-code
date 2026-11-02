@@ -62,10 +62,10 @@ export async function readParadisPdfHeader(fileService: IFileService, resource: 
 }
 
 /** 文書の大きさ（バイト）と etag。分からなければ `undefined`（区間読みにせず、描いた記録も残さない）。 */
-async function readParadisPdfStat(fileService: IFileService, resource: URI): Promise<{ readonly size: number; readonly etag: string } | undefined> {
+async function readParadisPdfStat(fileService: IFileService, resource: URI): Promise<{ readonly size: number; readonly mtime: number; readonly etag: string } | undefined> {
 	try {
 		const stat = await fileService.stat(resource);
-		return { size: stat.size, etag: stat.etag };
+		return { size: stat.size, mtime: stat.mtime, etag: stat.etag };
 	} catch {
 		return undefined;
 	}
@@ -122,6 +122,12 @@ export class ParadisPdfFileEditor extends EditorPane {
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
+		// タブを閉じたら、戻るための記録も捨てる。
+		this._register(this.group.onDidCloseEditor(e => {
+			if (e.editor instanceof ParadisPdfInput && this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
+				this._shownDocument = undefined;
+			}
+		}));
 		this._rootElement = dom.append(parent, dom.$('.paradis-pdf-viewer'));
 		this._rootElement.style.position = 'relative';
 		this._rootElement.style.overflow = 'hidden';
@@ -269,6 +275,11 @@ export class ParadisPdfFileEditor extends EditorPane {
 	 * @param reuseShown タブへ戻ったときの描画。同じ文書がまだ webview に残っていれば送り直さない。
 	 * ファイルの変更や新しい入力では `false`（必ず描き直す）。
 	 */
+	/** 残っている表示を使い回せるかを決める値。中身は etag・大きさ・更新時刻で見る（中身のハッシュは取らない）。 */
+	private _shownKeys(stat: { readonly size: number; readonly mtime: number; readonly etag: string }, documentUrl: string | undefined): readonly unknown[] {
+		return [stat.etag, stat.size, stat.mtime, documentUrl ?? ''];
+	}
+
 	protected _renderResource(resource: URI, reuseShown = false): void {
 		const generation = ++this._renderGeneration;
 		void this._renderResourceAfterPreflight(resource, generation, reuseShown);
@@ -277,11 +288,17 @@ export class ParadisPdfFileEditor extends EditorPane {
 	private async _renderResourceAfterPreflight(resource: URI, generation: number, reuseShown: boolean): Promise<void> {
 		await this._resolveLibBase();
 		if (reuseShown && this._shownDocument && this._webview && this._webviewServiceWorkerDisabled === this._canServe(resource)) {
-			const stat = await readParadisPdfStat(this._fileService, resource);
+			// 配信サーバから読んでいる文書は、登録を取り直してから使い回す。取り直さないと、裏にいる間に
+			// 古い順に外され（上限 64 件）、区間読みの大きな PDF で、まだ読んでいないページが読めなくなる。
+			// 外れていたら新しい URL になるので、鍵が合わずに描き直す。
+			const [stat, documentUrl] = await Promise.all([
+				readParadisPdfStat(this._fileService, resource),
+				this._canServe(resource) ? resolveParadisViewerDocumentUrl(this._sharedProcessService, resource) : Promise.resolve(undefined),
+			]);
 			if (generation !== this._renderGeneration || !isEqual(this._currentResource, resource)) {
 				return;
 			}
-			if (stat?.etag && canReuseParadisShownDocument(this._shownDocument, resource, this._webview, [stat.etag])) {
+			if (stat?.etag && canReuseParadisShownDocument(this._shownDocument, resource, this._webview, this._shownKeys(stat, documentUrl))) {
 				// 前の表示がそのまま見えている。描くのにかかった時間ではないので、開くまでの計測も使わない。
 				this._openTiming.clear();
 				return;
@@ -312,7 +329,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 				return;
 			case 'viewer':
 				// 描き終わりの知らせ（first paint）が届くまでは使い回さない。
-				this._shownDocument = stat?.etag ? { resource, webview, keys: [stat.etag], confirmed: false } : undefined;
+				this._shownDocument = stat?.etag ? { resource, webview, keys: this._shownKeys(stat, documentUrl), confirmed: false } : undefined;
 				webview.setHtml(this._buildHtml(resource, documentUrl, stat?.size));
 				return;
 			case 'stale':
