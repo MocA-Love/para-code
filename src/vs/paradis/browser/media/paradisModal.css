@@ -1,0 +1,44 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* Size tiers of Para Code's modal boxes (paradisModal.ts). */
+
+.monaco-workbench .paradis-modal {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-large);
+	box-shadow: var(--vscode-shadow-xl);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+/* S: confirmations and small forms. Width 480 (a dialog may set its own width between 420 and 560), height follows the content. */
+.monaco-workbench .paradis-modal.paradis-modal-s {
+	width: 480px;
+	max-width: 94vw;
+	max-height: 88vh;
+}
+
+/* M: work in context. Fixed height so switching views inside does not resize the box. */
+.monaco-workbench .paradis-modal.paradis-modal-m {
+	width: 880px;
+	max-width: 94vw;
+	height: clamp(520px, 72vh, 820px);
+	max-height: 92vh;
+}
+
+/* L: screens with their own areas (usage, settings, notifications, extensions). */
+.monaco-workbench .paradis-modal.paradis-modal-l {
+	width: clamp(1040px, 78vw, 2000px);
+	max-width: 95vw;
+	height: clamp(726px, 88vh, 1400px);
+	max-height: 92vh;
+}

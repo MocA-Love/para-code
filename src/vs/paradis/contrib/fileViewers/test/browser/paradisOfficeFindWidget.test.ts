@@ -260,6 +260,35 @@ suite('ParadisOfficeFindWidget', () => {
 		strictEqual(document.activeElement, previous);
 	});
 
+	test('searches again with match case when the case toggle is switched', async () => {
+		const host = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(host);
+		store.add({ dispose: () => host.remove() });
+		const queries: { readonly text: string; readonly matchCase: boolean }[] = [];
+		const widget = store.add(new ParadisOfficeFindWidget(host, {
+			search: async query => {
+				queries.push({ text: query.text, matchCase: query.matchCase });
+				return { results: [], total: 0, capped: false };
+			},
+		}));
+		widget.reveal('Needle');
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+		const toggle = host.querySelector<HTMLElement>('.paradis-office-find-input .monaco-custom-toggle')!;
+		toggle.click();
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+		toggle.click();
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+
+		deepStrictEqual({ queries, checked: toggle.getAttribute('aria-checked') }, {
+			queries: [
+				{ text: 'Needle', matchCase: false },
+				{ text: 'Needle', matchCase: true },
+				{ text: 'Needle', matchCase: false },
+			],
+			checked: 'false',
+		});
+	});
+
 	test('shows an explicit unavailable state instead of invoking a transport fallback', () => {
 		const host = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(host);
