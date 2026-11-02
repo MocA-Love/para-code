@@ -6,7 +6,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisApplySameUriScopeCorrection, paradisCancelRetirementAfterScopeRollback, paradisCommitPreparedScopeRetirement, paradisRunBestEffortPhases } from '../../browser/paradisWorkspaceSwitchService.js';
-import { paradisDiscardScopeBeforeRemovingKnownWorktree, paradisIsPresentWorktree, paradisShouldAutoRetireMissingWorktree } from '../../browser/paradisWorktreeService.js';
+import { paradisDiscardScopeBeforeRemovingKnownWorktree, paradisIsPresentWorktree, paradisLeftoverWorktreeEntry, paradisShouldAutoRetireMissingWorktree } from '../../browser/paradisWorktreeService.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IParadisWorktree } from '../../common/paradisWorkspaceSwitch.js';
 
@@ -134,6 +134,20 @@ suite('ParadisWorkspaceSwitchService', () => {
 		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, false, true), false);
 		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, false, false), true);
 		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, true, false), false);
+	});
+
+	test('a worktree git forgot but whose folder remains stays listed as a leftover folder', () => {
+		const known = { path: 'file:///repo-worktrees/feature', name: 'feature' };
+		const leftover = paradisLeftoverWorktreeEntry('repo', known, true);
+		assert.deepStrictEqual({
+			leftover: leftover && { ...leftover, uri: leftover.uri.toString() },
+			gone: paradisLeftoverWorktreeEntry('repo', known, false),
+			unknown: paradisLeftoverWorktreeEntry('repo', known, undefined),
+		}, {
+			leftover: { repositoryId: 'repo', name: 'feature', uri: 'file:///repo-worktrees/feature', missing: true, leftoverFolder: true },
+			gone: undefined,
+			unknown: undefined,
+		});
 	});
 
 	test('keeps a missing worktree known when scope retirement is vetoed', async () => {
