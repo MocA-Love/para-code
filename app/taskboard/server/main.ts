@@ -24,6 +24,7 @@ import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoice
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
 import { listTask, TaskDetailFeed } from './taskDetail.js';
+import { archiveDoneTasks, archiveFile, TASK_BOARD_ARCHIVE_INTERVAL_MS } from './archive.js';
 import { dataDir, Store, StoreBusyError, storeOwner, type ILocalSettings } from './store.js';
 import { excludeBoardFiles, git, GitWorkspaces, inspectClones, remoteUrl } from './workspaces.js';
 
@@ -490,7 +491,7 @@ async function main(restart?: IRestart): Promise<void> {
 	const snapshot = (): ITaskBoardSnapshot => ({
 		version: engine.getVersion(),
 		now: Date.now(),
-		tasks: engine.listTasks().map(listTask),
+		tasks: engine.listTasks(listTask),
 		flows: [...engine.getFlows()],
 		activeFlowId: engine.getActiveFlowId(),
 		slots: engine.getSlots(),
@@ -540,6 +541,22 @@ async function main(restart?: IRestart): Promise<void> {
 	}
 	engine.onDidNotice(notice => send({ type: 'notice', notice }));
 	sim.onEngineChange();
+
+	// 完了から 14 日経ったタスクを台帳から archive.jsonl へ移す（起動直後と 1 時間ごと。変更のたびには調べない）
+	const archiveOld = async () => {
+		if (closing) {
+			return;
+		}
+		try {
+			const archived = await archiveDoneTasks(engine, archiveFile(store.directory));
+			if (archived) {
+				log(`archived ${archived} finished task(s)`);
+			}
+		} catch (err) {
+			// 書けなかったタスクは台帳に残るので、次の回にやり直す
+			log(`archive failed: ${(err as Error).message}`);
+		}
+	};
 
 	/* ---------------- RPC ---------------- */
 
@@ -1089,6 +1106,9 @@ async function main(restart?: IRestart): Promise<void> {
 	}
 
 	let closing = false;
+	// 完了から 14 日経ったタスクを移す（`closing` を読むので、この宣言より後で始める）
+	void archiveOld();
+	timers.push(setInterval(() => void archiveOld(), TASK_BOARD_ARCHIVE_INTERVAL_MS).unref());
 	/** 止める。`switchTo` を渡すと、同じプロセスの中で、同じポートと鍵のままそのリポジトリを開き直す。 */
 	const shutdown = async (switchTo?: string) => {
 		if (closing) {
