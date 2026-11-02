@@ -39,7 +39,8 @@ const POPOVER_WIDTH = 320;
 
 export interface IParadisServiceStatusPopoverOptions {
 	readonly snapshot: IParadisServiceStatusSnapshot | undefined;
-	readonly onClose: () => void;
+	/** @param restoreFocus Esc で閉じたとき true。タイトルバーの項目へフォーカスを戻す。 */
+	readonly onClose: (restoreFocus: boolean) => void;
 	/** 「今すぐ確認」: 最短間隔のガードを飛ばして取り直す。 */
 	readonly onRefresh: () => void;
 }
@@ -58,6 +59,8 @@ export class ParadisServiceStatusPopover extends Disposable {
 	private readonly bodyElement: HTMLElement;
 	private readonly _bodyListeners = this._register(new DisposableStore());
 	private snapshot: IParadisServiceStatusSnapshot | undefined;
+	/** 描き直しの後にフォーカスを戻す先（data-focus-key → 要素）。 */
+	private readonly focusTargets = new Map<string, HTMLElement>();
 
 	constructor(
 		private readonly anchor: HTMLElement,
@@ -84,7 +87,7 @@ export class ParadisServiceStatusPopover extends Disposable {
 		this._register(dom.addDisposableListener(this.element, 'keydown', e => {
 			if (e.key === 'Escape') {
 				e.preventDefault();
-				this.options.onClose();
+				this.options.onClose(true);
 			}
 		}));
 	}
@@ -107,7 +110,7 @@ export class ParadisServiceStatusPopover extends Disposable {
 		if (dom.isAncestor(target, this.element) || dom.isAncestor(target, this.anchor)) {
 			return;
 		}
-		this.options.onClose();
+		this.options.onClose(false);
 	}
 
 	private reposition(): void {
@@ -120,7 +123,13 @@ export class ParadisServiceStatusPopover extends Disposable {
 	}
 
 	private render(): void {
+		// 描き直すとボタンが作り直されてフォーカスが外れる（Esc で閉じられなくなる）。押されていたボタンなら、
+		// 描き直した後の同じボタンへフォーカスを戻す。
+		const focused = dom.getActiveElement();
+		const focusKey = dom.isHTMLElement(focused) && dom.isAncestor(focused, this.bodyElement) ? focused.dataset.focusKey : undefined;
+		const hadFocus = !!focused && dom.isAncestor(focused, this.element);
 		this._bodyListeners.clear();
+		this.focusTargets.clear();
 		dom.clearNode(this.bodyElement);
 		const snapshot = this.snapshot;
 
@@ -136,8 +145,13 @@ export class ParadisServiceStatusPopover extends Disposable {
 		}
 
 		const footer = dom.append(this.bodyElement, $('.pssp-footer'));
-		this.appendLink(footer, localize('paradis.serviceStatus.refreshNow', "今すぐ確認"), () => this.options.onRefresh());
-		this.appendLink(footer, localize('paradis.serviceStatus.settings', "設定"), () => { void this.commandService.executeCommand('workbench.action.openSettings', 'paradis.serviceStatus'); });
+		this.appendLink(footer, 'refresh', localize('paradis.serviceStatus.refreshNow', "今すぐ確認"), () => this.options.onRefresh());
+		this.appendLink(footer, 'settings', localize('paradis.serviceStatus.settings', "設定"), () => { void this.commandService.executeCommand('workbench.action.openSettings', 'paradis.serviceStatus'); });
+
+		if (hadFocus) {
+			const target = focusKey !== undefined ? this.focusTargets.get(focusKey) : undefined;
+			(target ?? this.element).focus();
+		}
 	}
 
 	private renderRow(provider: ParadisServiceStatusProvider, entry: IParadisServiceStatusEntry | undefined): void {
@@ -161,6 +175,8 @@ export class ParadisServiceStatusPopover extends Disposable {
 		const open = dom.append(row, $(`span.pssp-icon-button${ThemeIcon.asCSSSelector(Codicon.globe)}`));
 		open.setAttribute('role', 'button');
 		open.tabIndex = 0;
+		open.dataset.focusKey = `open-${provider}`;
+		this.focusTargets.set(open.dataset.focusKey, open);
 		const label = localize('paradis.serviceStatus.openStatusPage', "{0} を開く", source.statusPageUrl.replace(/^https:\/\//, ''));
 		open.setAttribute('aria-label', label);
 		open.title = label;
@@ -169,10 +185,12 @@ export class ParadisServiceStatusPopover extends Disposable {
 		this._bodyListeners.add(dom.addDisposableListener(open, 'keydown', e => onActivateKey(e, openStatusPage)));
 	}
 
-	private appendLink(parent: HTMLElement, text: string, run: () => void): void {
+	private appendLink(parent: HTMLElement, focusKey: string, text: string, run: () => void): void {
 		const link = dom.append(parent, $('a.pssp-link'));
 		link.setAttribute('role', 'button');
 		link.tabIndex = 0;
+		link.dataset.focusKey = focusKey;
+		this.focusTargets.set(focusKey, link);
 		link.textContent = text;
 		this._bodyListeners.add(dom.addDisposableListener(link, 'click', e => { e.preventDefault(); run(); }));
 		this._bodyListeners.add(dom.addDisposableListener(link, 'keydown', e => onActivateKey(e, run)));

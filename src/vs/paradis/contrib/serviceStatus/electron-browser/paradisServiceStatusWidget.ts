@@ -54,6 +54,9 @@ const IDLE_POLL_INTERVAL_MS = 300_000;
  *  常にこのガードへ引っかかって実効間隔が2倍になる、という事態を避ける。 */
 const MIN_REFRESH_INTERVAL_MS = 50_000;
 
+/** 「今すぐ確認」の最短間隔。 */
+const MIN_MANUAL_REFRESH_INTERVAL_MS = 5_000;
+
 let sharedSnapshot: IParadisServiceStatusSnapshot | undefined;
 let sharedFetchPromise: Promise<IParadisServiceStatusSnapshot> | undefined;
 
@@ -72,6 +75,7 @@ class ParadisServiceStatusWidget extends Disposable {
 	private readonly pollTimer = this._register(new IntervalTimer());
 
 	private latestSnapshot: IParadisServiceStatusSnapshot | undefined;
+	private lastManualRefreshAt = 0;
 	private disposed = false;
 
 	constructor(
@@ -152,17 +156,30 @@ class ParadisServiceStatusWidget extends Disposable {
 		this.button.classList.add('active');
 		this.popover.value = this.instantiationService.createInstance(ParadisServiceStatusPopover, this.button, {
 			snapshot: this.latestSnapshot,
-			onClose: () => this.closePopover(),
-			onRefresh: () => { void this.poll(true); },
+			onClose: restoreFocus => this.closePopover(restoreFocus),
+			onRefresh: () => this.refreshNow(),
 		});
 		this.reschedulePolling();
 		void this.poll();
 	}
 
-	private closePopover(): void {
+	private closePopover(restoreFocus = false): void {
 		this.button.classList.remove('active');
 		this.popover.clear();
 		this.reschedulePolling();
+		if (restoreFocus) {
+			this.button.focus();
+		}
+	}
+
+	/** 「今すぐ確認」。連打で statuspage を叩き続けないよう、最短 {@link MIN_MANUAL_REFRESH_INTERVAL_MS} 空ける。 */
+	private refreshNow(): void {
+		const now = Date.now();
+		if (now - this.lastManualRefreshAt < MIN_MANUAL_REFRESH_INTERVAL_MS) {
+			return;
+		}
+		this.lastManualRefreshAt = now;
+		void this.poll(true);
 	}
 
 	/** タイトルバーの項目のホバー: 3 サービスの名前と状態を 1 行ずつ。 */
