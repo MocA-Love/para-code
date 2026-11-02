@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { asRecord } from '../../../common/paradisGuards.js';
+
 // Codex が rollout へ role user のメッセージとして差し込む文（AGENTS.md・環境情報・plugin の案内・/goal の
 // 内部文脈など）を、ユーザーの発言と見分ける判定。チャット・セッション名・ターミナルのタブ名・再開一覧の
 // プレビュー・サブエージェントの指示が、すべてここを通す。
@@ -47,10 +49,6 @@ export function paradisMaskCodexEncryptedPayloads(value: string): string {
  */
 const INJECTED_TAG_PATTERN = /^(?:# AGENTS\.md instructions(?:\s|$)|<(?:environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS|turn_aborted|recommended_plugins|codex_internal_context|subagent_notification|user_shell_command|realtime_delegation|skill|external_codex_apps_open_page|goal_context)[\s>/])/;
 
-function record(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
 /** 本文の先頭が、Codex が差し込む文の見出し・タグか（素性の書かれていない古い形式・本文だけが分かる呼び出し側用）。 */
 export function paradisIsCodexInjectedText(text: string): boolean {
 	return INJECTED_TAG_PATTERN.test(text.trimStart());
@@ -58,7 +56,7 @@ export function paradisIsCodexInjectedText(text: string): boolean {
 
 /** content の 1 件ずつの素性。数が content と合わない・形が違うときは使わない（undefined）。 */
 function contentItemKinds(payload: Record<string, unknown>, itemCount: number): readonly string[] | undefined {
-	const kinds = record(payload.internal_chat_message_metadata_passthrough)?.content_item_kinds;
+	const kinds = asRecord(payload.internal_chat_message_metadata_passthrough)?.content_item_kinds;
 	if (!Array.isArray(kinds) || kinds.length !== itemCount || !kinds.every(kind => typeof kind === 'string')) {
 		return undefined;
 	}
@@ -66,7 +64,7 @@ function contentItemKinds(payload: Record<string, unknown>, itemCount: number): 
 }
 
 function itemText(item: unknown): string {
-	const value = record(item)?.text;
+	const value = asRecord(item)?.text;
 	return typeof value === 'string' ? value : '';
 }
 

@@ -50,6 +50,7 @@ import { IParadisActionResult, IParadisActionMenu, IParadisBrowserExtensionComma
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import type { IParadisLoadedExtension } from './paradisBrowserExtensionActions.js';
 import { paradisChromeFrameId, paradisMatchesUrlPattern, type IParadisTabView, type ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 右クリックの項目とショートカットに要る、main のほかの部分（拡張機能の管理が渡す）。 */
 export interface IParadisMenusEnvironment {
@@ -86,10 +87,6 @@ type State = Record<string, Record<string, IParadisStoredMenuItem[]>>;
 function hasPermission(extension: IParadisApiExtension, permission: string): boolean {
 	const permissions = extension.manifest.permissions;
 	return Array.isArray(permissions) && permissions.includes(permission);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** process.platform を manifest の suggested_key の鍵にする。 */

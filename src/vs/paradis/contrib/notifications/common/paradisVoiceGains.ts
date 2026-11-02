@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { asFiniteNumber } from '../../../common/paradisGuards.js';
+
 // 通知設定の「音量の補正」ページが、この PC の aivis-mcp（2.5.4 以上）の音量の表を扱うための共有定義。
 // 実行は shared process の node 側（node/paradisVoiceGainsService.ts）。
 //
@@ -109,12 +111,8 @@ export function paradisIsSafeAivisMcpPath(path: string, platform: string): boole
 	return path.startsWith('/');
 }
 
-function finiteNumber(value: unknown): number | undefined {
-	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
 function count(value: unknown): number {
-	const number = finiteNumber(value);
+	const number = asFiniteNumber(value);
 	return number !== undefined && number >= 0 ? Math.floor(number) : 0;
 }
 
@@ -133,8 +131,8 @@ export function paradisParseVoiceGainList(stdout: string): IParadisVoiceGainList
 	if (!json || !Array.isArray(json.entries)) {
 		return undefined;
 	}
-	const learnWindow = finiteNumber(json.learnWindow);
-	const minLearnSeconds = finiteNumber(json.minLearnSeconds);
+	const learnWindow = asFiniteNumber(json.learnWindow);
+	const minLearnSeconds = asFiniteNumber(json.minLearnSeconds);
 	const entries: IParadisVoiceGainEntry[] = [];
 	for (const raw of json.entries) {
 		if (!raw || typeof raw !== 'object') {
@@ -152,13 +150,13 @@ export function paradisParseVoiceGainList(stdout: string): IParadisVoiceGainList
 			provider: typeof value.provider === 'string' && value.provider ? value.provider : parts.provider,
 			voice: typeof value.voice === 'string' && value.voice ? value.voice : parts.voice,
 			model: typeof value.model === 'string' && value.model ? value.model : parts.model,
-			gainDb: finiteNumber(value.gainDb),
+			gainDb: asFiniteNumber(value.gainDb),
 			sampleCount: count(value.sampleCount),
-			updatedAt: finiteNumber(value.updatedAt),
+			updatedAt: asFiniteNumber(value.updatedAt),
 		});
 	}
 	return {
-		target: finiteNumber(json.target),
+		target: asFiniteNumber(json.target),
 		learnWindow: learnWindow !== undefined && learnWindow >= 1 ? Math.floor(learnWindow) : 9,
 		minLearnSeconds: minLearnSeconds !== undefined && minLearnSeconds > 0 ? minLearnSeconds : 2.5,
 		entries,
