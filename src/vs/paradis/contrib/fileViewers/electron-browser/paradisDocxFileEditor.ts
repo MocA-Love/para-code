@@ -395,11 +395,14 @@ export class ParadisDocxFileEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		// タブを閉じたら、戻るための記録と描画を捨てる。
 		this._register(this.group.onDidCloseEditor(e => {
-			if (e.editor instanceof ParadisDocxInput && this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
-				this._shownDocument = undefined;
-				// 戻るために残していた描画（docx-preview の DOM）も捨てる。閉じた後まで抱えない。
-				this._pane.clearContent();
+			if (!(e.editor instanceof ParadisDocxInput)) {
+				return;
 			}
+			if (this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
+				this._shownDocument = undefined;
+			}
+			// 戻るために残していた描画（docx-preview の DOM）も捨てる。閉じた後まで抱えない。
+			this._pane.clearContentFor(e.editor.resource);
 		}));
 		this._rootElement = dom.append(parent, dom.$('.paradis-docx-viewer'));
 		this._rootElement.style.position = 'relative';
@@ -776,7 +779,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 					// 原因は既に記録済み（白紙も時間切れも観測した場所で1件ずつ積んである）。
 					this._probe.reportFailure();
 					this._shownDocument = undefined;
-					this._pane.webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildBlankFileHtml()));
+					if (this._pane.webview) {
+						this._pane.setDocumentHtml(this._pane.webview, resource, applyParadisOfficeWebviewAccessibility(this._buildBlankFileHtml()));
+					}
 					break;
 			}
 		}
@@ -798,13 +803,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._markerByLocator = undefined;
 		// 載せ直した表示は、描き終わりを確かめるまで使い回さない。
 		this._shownDocument = undefined;
-		this._pane.webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(
-			snapshot.resource,
-			snapshot.inlineData,
-			snapshot.assetPlaceholderCount,
-			snapshot.viewState,
-			recoveryGeneration,
-		)));
+		const webview = this._pane.webview;
+		if (webview) {
+			this._pane.setDocumentHtml(webview, snapshot.resource, applyParadisOfficeWebviewAccessibility(this._buildHtml(
+				snapshot.resource,
+				snapshot.inlineData,
+				snapshot.assetPlaceholderCount,
+				snapshot.viewState,
+				recoveryGeneration,
+			)));
+		}
 		this._probe.armRender(recoveryGeneration);
 		return true;
 	}
@@ -931,7 +939,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				// この面の**本物の失敗が無言で落ちる**。読み出しが例外で落ちた場合だけ、
 				// その理由が catch で記録されているので、それが原因欄になって送られる。
 				this._probe.reportFailure();
-				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildRejectedFileHtml()));
+				this._pane.setDocumentHtml(webview, resource, applyParadisOfficeWebviewAccessibility(this._buildRejectedFileHtml()));
 				// A rejected-file page has no renderer root probe, but it is still a completed load.
 				this._finishRecoveryWithoutProbe(recoveryGeneration);
 				return;
@@ -946,7 +954,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 					assetPlaceholderCount: this._assetPlaceholders.length, bytes: this._openBytes,
 					placeholders: this._assetPlaceholders, exclusions: this._packageExclusions, paragraphs: undefined,
 				} : undefined;
-				webview.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._renderSnapshot.viewState, recoveryGeneration)));
+				this._pane.setDocumentHtml(webview, resource, applyParadisOfficeWebviewAccessibility(this._buildHtml(resource, inlineData, this._assetPlaceholders.length, this._renderSnapshot.viewState, recoveryGeneration)));
 				// 詳しい解析は表示を出した後に頼む（表示を待たせない）。同じ中身なら頼み直さない。
 				if (semanticSource) {
 					this._requestSemanticAnalysis(resource, semanticSource, inputEpoch);

@@ -71,14 +71,19 @@ suite('ParadisOverlayWebviewPane', () => {
 		];
 		disableServiceWorker = true;
 		claimed.push(pane.place(true, mainWindow, container, options, () => { }));
-		pane.clearContent();
+		// 閉じたタブの文書が、いま書いてある文書のときだけ空にする。
+		const shown = URI.file('/doc/shown.pdf');
+		pane.setDocumentHtml(pane.webview!, shown, '<p>doc</p>');
+		pane.clearContentFor(URI.file('/doc/other.pdf'));
+		pane.clearContentFor(shown);
+		pane.clearContentFor(shown);
 		claimed.push(pane.place(false, mainWindow, container, options, () => { }));
 		deepStrictEqual({ claimed, disposedCalls, created }, {
 			claimed: [true, false, true, undefined],
 			disposedCalls: 1,
 			created: [
 				{ disableServiceWorker: false, html: [], claims: 1, releases: 1, disposed: true },
-				{ disableServiceWorker: true, html: [''], claims: 1, releases: 1, disposed: false },
+				{ disableServiceWorker: true, html: ['<p>doc</p>', ''], claims: 1, releases: 1, disposed: false },
 			],
 		});
 	});
