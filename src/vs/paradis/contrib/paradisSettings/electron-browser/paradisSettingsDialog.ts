@@ -1644,7 +1644,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.transparency', "ウィンドウを透過させる"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.transparencyDesc', "切り替えたあと、ウィンドウの再読み込みが必要です。"),
+		description: localize('paradis.settings.transparencyDesc', "切り替えはアプリを再起動すると効きます（ウィンドウの再読み込みでは効きません）。"),
 		keywords: 'window transparency transparent',
 	},
 	{
