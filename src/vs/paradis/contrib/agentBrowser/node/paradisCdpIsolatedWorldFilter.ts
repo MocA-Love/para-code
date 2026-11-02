@@ -44,6 +44,10 @@ const MAX_TRACKED_IDS = 10_000;
 const CONTEXT_DENIED_MESSAGE = 'This execution context is not available on the Para Code CDP gateway (Para Code keeps its own isolated worlds hidden from agents). Use the page\'s default context or an isolated world you created with Page.createIsolatedWorld.';
 /** 消えた・知らない文脈への命令に返す答え（Chromium の答えと同じ文。クライアントはやり直せる失敗として扱う）。 */
 const CONTEXT_NOT_FOUND_MESSAGE = 'Cannot find context with specified id';
+/** 知らないセッションへの命令（Chromium の答えと同じ）。 */
+const SESSION_NOT_FOUND_MESSAGE = 'Session with given id not found.';
+/** 隠すものの台帳が溢れたセッションへの命令。 */
+const OVERFLOW_DENIED_MESSAGE = 'This frame has created too many hidden contexts or scripts for the Para Code CDP gateway to track, so commands to it are refused until it navigates.';
 const SCRIPT_DENIED_MESSAGE = 'This script belongs to a Para Code isolated world and is not available on the Para Code CDP gateway.';
 
 /** V8 の RemoteObjectId（isolate.context.object）。 */
@@ -53,6 +57,8 @@ const OBJECT_ID_PATTERN = /^-?\d+\.(?<context>\d+)\.\d+$/;
 const CALL_FRAME_ID_PATTERN = /^-?\d+\.(?<context>\d+)\.\d+$/;
 
 interface ISessionState {
+	/** 拒否の台帳が上限に達した（{@link denyAdd}）。文書が替わるまで、このセッションへの命令を断る。 */
+	overflowed: boolean;
 	readonly visibleContextIds: Set<number>;
 	readonly visibleUniqueIds: Set<string>;
 	readonly hiddenContextIds: Set<number>;
@@ -81,10 +87,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function boundedAdd<T>(set: Set<T>, value: T): void {
-	if (set.size < MAX_TRACKED_IDS) {
-		set.add(value);
+/**
+ * 見せてよいもの（許可の台帳）を上限まで覚える。上限に達したら一番古いものを忘れて足す。古い番号が消えても、
+ * その番号は「知らない番号」として断られるだけ（安全な側に倒れる）。
+ */
+function allowAdd<T>(set: Set<T>, value: T): void {
+	if (set.has(value)) {
+		return;
 	}
+	if (set.size >= MAX_TRACKED_IDS) {
+		const oldest = set.values().next();
+		if (!oldest.done) {
+			set.delete(oldest.value);
+		}
+	}
+	set.add(value);
+}
+
+/**
+ * 隠すもの（拒否の台帳）を覚える。上限に達したら古いものは忘れず（忘れると隠したものが見える）、そのセッションを
+ * 「台帳が溢れた」として、文書が替わるまでそのセッションへの命令を全部断る（安全な側に倒す）。
+ */
+function denyAdd<T>(state: ISessionState, set: Set<T>, value: T): void {
+	if (set.has(value)) {
+		return;
+	}
+	if (set.size >= MAX_TRACKED_IDS) {
+		state.overflowed = true;
+		return;
+	}
+	set.add(value);
 }
 
 export class ParadisCdpIsolatedWorldFilter {
@@ -95,6 +127,7 @@ export class ParadisCdpIsolatedWorldFilter {
 		let state = this._sessions.get(sessionKey);
 		if (!state) {
 			state = {
+				overflowed: false,
 				visibleContextIds: new Set(),
 				visibleUniqueIds: new Set(),
 				hiddenContextIds: new Set(),
@@ -124,8 +157,16 @@ export class ParadisCdpIsolatedWorldFilter {
 		return (this._sessions.get(sessionKey)?.extensionDefaultContextIds.size ?? 0) > 0;
 	}
 
+	/** ブラウザが attach を知らせたセッション（ブラウザの経路の許可したセッション）。その命令を受けるようにする。 */
+	noteSession(sessionKey: string): void {
+		this._state(sessionKey);
+	}
+
 	forgetSession(sessionKey: string): void {
-		this._sessions.delete(sessionKey);
+		// ページ本体の台帳は忘れない（作り直すと隠したものの台帳が空になる）
+		if (sessionKey !== '') {
+			this._sessions.delete(sessionKey);
+		}
 	}
 
 	/**
@@ -133,7 +174,16 @@ export class ParadisCdpIsolatedWorldFilter {
 	 * worldName の要求と Page.createIsolatedWorld の要求 id もここで覚える。
 	 */
 	checkClientCommand(sessionKey: string, id: number, method: string, params: unknown): string | undefined {
-		const state = this._state(sessionKey);
+		// 台帳はブラウザから来たもの（ページ本体・attach の知らせ・イベント）でだけ作る。クライアントが送った sessionId で
+		// 作ると、偽の sessionId を大量に送って台帳を入れ替えさせられるので、知らないセッションへの命令は断る
+		const state = sessionKey === '' ? this._state('') : this._sessions.get(sessionKey);
+		if (state === undefined) {
+			return SESSION_NOT_FOUND_MESSAGE;
+		}
+		// 溢れている間も、ページを移す命令は通す（エージェントが自分で抜けられるように。文書が替われば台帳も戻る）
+		if (state.overflowed && method !== 'Page.navigate' && method !== 'Page.reload') {
+			return OVERFLOW_DENIED_MESSAGE;
+		}
 		const record = isRecord(params) ? params : undefined;
 		if (record) {
 			for (const key of ['contextId', 'executionContextId'] as const) {
@@ -166,11 +216,11 @@ export class ParadisCdpIsolatedWorldFilter {
 				return SCRIPT_DENIED_MESSAGE;
 			}
 			if ((method === 'Page.createIsolatedWorld' || method === 'Page.addScriptToEvaluateOnNewDocument') && typeof record.worldName === 'string' && !RESERVED_WORLD_NAMES.has(record.worldName)) {
-				boundedAdd(state.requestedWorldNames, record.worldName);
+				allowAdd(state.requestedWorldNames, record.worldName);
 			}
 		}
 		if (method === 'Page.createIsolatedWorld') {
-			boundedAdd(state.pendingCreateWorld, id);
+			allowAdd(state.pendingCreateWorld, id);
 		}
 		return undefined;
 	}
@@ -183,8 +233,22 @@ export class ParadisCdpIsolatedWorldFilter {
 		}
 		if (isRecord(result) && typeof result.executionContextId === 'number' && !state.extensionContextIds.has(result.executionContextId)) {
 			state.hiddenContextIds.delete(result.executionContextId);
-			boundedAdd(state.visibleContextIds, result.executionContextId);
+			allowAdd(state.visibleContextIds, result.executionContextId);
 		}
+	}
+
+	/**
+	 * コンテキストに属するイベント（コンソール・例外）を届けるか。隠したコンテキストのものは落とす。溢れている間は
+	 * 隠したものを覚え切れていないので、見せてよい台帳にあるコンテキストのものだけ届ける。
+	 */
+	private _contextEventVerdict(state: ISessionState, contextId: unknown): ParadisIsolatedWorldEventVerdict {
+		if (typeof contextId !== 'number') {
+			return state.overflowed ? 'drop' : 'forward';
+		}
+		if (state.overflowed) {
+			return state.visibleContextIds.has(contextId) ? 'forward' : 'drop';
+		}
+		return state.hiddenContextIds.has(contextId) ? 'drop' : 'forward';
 	}
 
 	/** ブラウザ → クライアントのイベントを見る。 */
@@ -192,6 +256,13 @@ export class ParadisCdpIsolatedWorldFilter {
 		const state = this._state(sessionKey);
 		const record = isRecord(params) ? params : undefined;
 		switch (method) {
+			case 'Target.attachedToTarget': {
+				// ページの経路の子セッション（iframe・worker の auto-attach）。この知らせの後から命令を受ける
+				if (typeof record?.sessionId === 'string') {
+					this.noteSession(record.sessionId);
+				}
+				return 'forward';
+			}
 			case 'Runtime.executionContextCreated': {
 				const context = isRecord(record?.context) ? record.context : undefined;
 				if (!context || typeof context.id !== 'number') {
@@ -201,9 +272,9 @@ export class ParadisCdpIsolatedWorldFilter {
 				const name = typeof context.name === 'string' ? context.name : '';
 				const extension = paradisIsBrowserExtensionUrl(context.origin);
 				if (extension) {
-					boundedAdd(state.extensionContextIds, context.id);
+					denyAdd(state, state.extensionContextIds, context.id);
 					if (auxData?.isDefault === true) {
-						boundedAdd(state.extensionDefaultContextIds, context.id);
+						denyAdd(state, state.extensionDefaultContextIds, context.id);
 					}
 				}
 				const hidden = extension
@@ -216,15 +287,15 @@ export class ParadisCdpIsolatedWorldFilter {
 				}
 				const uniqueId = typeof context.uniqueId === 'string' ? context.uniqueId : undefined;
 				if (hidden) {
-					boundedAdd(state.hiddenContextIds, context.id);
+					denyAdd(state, state.hiddenContextIds, context.id);
 					if (uniqueId !== undefined) {
-						boundedAdd(state.hiddenUniqueIds, uniqueId);
+						denyAdd(state, state.hiddenUniqueIds, uniqueId);
 					}
 					return 'drop';
 				}
-				boundedAdd(state.visibleContextIds, context.id);
+				allowAdd(state.visibleContextIds, context.id);
 				if (uniqueId !== undefined) {
-					boundedAdd(state.visibleUniqueIds, uniqueId);
+					allowAdd(state.visibleUniqueIds, uniqueId);
 				}
 				return 'forward';
 			}
@@ -256,22 +327,34 @@ export class ParadisCdpIsolatedWorldFilter {
 				state.visibleUniqueIds.clear();
 				state.hiddenContextIds.clear();
 				state.hiddenUniqueIds.clear();
+				// 文書が替わると前の文書のスクリプトと止まった場所も無くなる（溜め続けない）
+				state.hiddenScriptIds.clear();
+				state.hiddenCallFrameIds.clear();
+				state.overflowed = false;
 				return 'forward';
 			case 'Debugger.scriptParsed':
 			case 'Debugger.scriptFailedToParse': {
+				// 溢れている間は、隠したコンテキストを覚え切れていないので、見せてよいコンテキストのものだけ届ける
+				if (state.overflowed && !(typeof record?.executionContextId === 'number' && state.visibleContextIds.has(record.executionContextId))) {
+					return 'drop';
+				}
 				const auxData = isRecord(record?.executionContextAuxData) ? record.executionContextAuxData : undefined;
 				const contextId = record?.executionContextId;
 				const inHidden = (typeof contextId === 'number' && state.hiddenContextIds.has(contextId))
 					|| (auxData?.isDefault === false && !(typeof contextId === 'number' && state.visibleContextIds.has(contextId)));
 				if (inHidden) {
 					if (typeof record?.scriptId === 'string') {
-						boundedAdd(state.hiddenScriptIds, record.scriptId);
+						denyAdd(state, state.hiddenScriptIds, record.scriptId);
 					}
 					return 'drop';
 				}
 				return 'forward';
 			}
 			case 'Debugger.paused': {
+				// 溢れている間はどの段が隠したものか分からず、クライアントの Debugger.resume も断るので、Para Code が再開させる
+				if (state.overflowed) {
+					return 'resume';
+				}
 				const frames = Array.isArray(record?.callFrames) ? record.callFrames : [];
 				state.hiddenCallFrameIds.clear();
 				let topHidden = false;
@@ -286,7 +369,7 @@ export class ParadisCdpIsolatedWorldFilter {
 					if (hidden) {
 						topHidden ||= index === 0;
 						if (callFrameId !== undefined) {
-							boundedAdd(state.hiddenCallFrameIds, callFrameId);
+							denyAdd(state, state.hiddenCallFrameIds, callFrameId);
 						}
 					}
 				});
@@ -296,13 +379,11 @@ export class ParadisCdpIsolatedWorldFilter {
 				state.hiddenCallFrameIds.clear();
 				return 'forward';
 			case 'Runtime.consoleAPICalled': {
-				const contextId = record?.executionContextId;
-				return typeof contextId === 'number' && state.hiddenContextIds.has(contextId) ? 'drop' : 'forward';
+				return this._contextEventVerdict(state, record?.executionContextId);
 			}
 			case 'Runtime.exceptionThrown': {
 				const details = isRecord(record?.exceptionDetails) ? record.exceptionDetails : undefined;
-				const contextId = details?.executionContextId;
-				return typeof contextId === 'number' && state.hiddenContextIds.has(contextId) ? 'drop' : 'forward';
+				return this._contextEventVerdict(state, details?.executionContextId);
 			}
 			default:
 				return 'forward';
