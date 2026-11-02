@@ -211,6 +211,9 @@ export function paradisPageUpgradeTargetIsCurrent(
 	return requestedTargetId !== undefined && requestedTargetId === resolvedTargetId && resolvedTargetId === currentTargetId;
 }
 
+/** 対象が無いときの {@link IParadisCdpFilterContext.boundTargetIds}（読むだけなので 1 つを使い回す）。 */
+const EMPTY_BOUND_TARGET_IDS: ReadonlySet<string> = new Set<string>();
+
 export class ParadisCdpGateway extends Disposable {
 
 	/** TCPソケット単位のトークン解決キャッシュ（正の解決のみメモ化）。 */
@@ -620,6 +623,7 @@ export class ParadisCdpGateway extends Disposable {
 		// 直近の値で埋める。恒久失効時はcloseConnectionsForTokenが世代をbumpしてisCurrentLeaseを偽にし、
 		// 接続ごと殺すのでスナップショットが古い値を返し続ける心配はない。
 		let lastKnownBoundTargetId: string | undefined;
+		let boundTargetIdsSet: { readonly targetId: string; readonly ids: ReadonlySet<string> } | undefined;
 		// 戻り経路から来た接続か（接続ごとに1回だけ、手元のファイルに触れるコマンドが初めて来たときに調べる）
 		let viaTunnel: boolean | undefined = peer === undefined ? false : undefined;
 		let viaTunnelLookup: Promise<boolean> | undefined;
@@ -640,16 +644,22 @@ export class ParadisCdpGateway extends Disposable {
 			rawScreenshotCoordinator: this._rawScreenshotAuthorities.forAuthority(token),
 			networkActivity: this._networkActivity.forAuthority(token),
 			isCurrentLease,
+			// フレームごとに呼ばれるので、同じ対象の間は同じ集合を返す（読むだけの ReadonlySet。毎回作り直さない）
 			boundTargetIds: () => {
 				if (!isCurrentLease()) {
-					return new Set<string>();
+					return EMPTY_BOUND_TARGET_IDS;
 				}
 				const tid = this.delegate.getBoundTargetId(token);
 				if (tid) {
 					lastKnownBoundTargetId = tid;
-					return new Set([tid]);
 				}
-				return lastKnownBoundTargetId ? new Set([lastKnownBoundTargetId]) : new Set<string>();
+				if (lastKnownBoundTargetId === undefined) {
+					return EMPTY_BOUND_TARGET_IDS;
+				}
+				if (boundTargetIdsSet?.targetId !== lastKnownBoundTargetId) {
+					boundTargetIdsSet = { targetId: lastKnownBoundTargetId, ids: new Set([lastKnownBoundTargetId]) };
+				}
+				return boundTargetIdsSet.ids;
 			},
 			captureBoundPageScreenshot: async options => {
 				if (!isCurrentLease()) {
