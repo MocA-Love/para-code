@@ -49,7 +49,7 @@ import type { IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
 import type * as wsTypes from 'ws';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX, BROWSER_VIEW_SCREENSHOT_MAX_EDGE, BROWSER_VIEW_SCREENSHOT_MAX_PIXELS, BROWSER_VIEW_SCREENSHOT_TIMEOUT_MS } from '../../../../platform/browserView/common/browserViewScreenshot.js';
+import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX, BROWSER_VIEW_SCREENSHOT_MAX_EDGE, BROWSER_VIEW_SCREENSHOT_MAX_PIXELS, BROWSER_VIEW_SCREENSHOT_TIMEOUT_MS } from '../../../../platform/browserView/common/paraBrowserViewScreenshot.js';
 import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
