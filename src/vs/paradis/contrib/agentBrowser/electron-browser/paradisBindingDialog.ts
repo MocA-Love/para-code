@@ -15,13 +15,11 @@
 
 import './media/paradisBindingDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { BugIndicatingError } from '../../../../base/common/errors.js';
 import { Emitter } from '../../../../base/common/event.js';
-import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -44,6 +42,7 @@ import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisRunD
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
 
@@ -313,7 +312,8 @@ export class ParadisBindingDialog extends Disposable {
 			() => this._render(),
 		));
 
-		this._backdrop = $('.paradis-binding-dialog-backdrop');
+		// `paradis-modal-backdrop` は、内蔵ブラウザのページがこのダイアログより前に出ないための共通の印（overlayManager.ts）
+		this._backdrop = $('.paradis-binding-dialog-backdrop.paradis-modal-backdrop');
 		const modal = $('.paradis-binding-dialog');
 		modal.classList.add(...paradisModalClasses(ParadisModalSize.Medium));
 		this._backdrop.appendChild(modal);
@@ -347,13 +347,6 @@ export class ParadisBindingDialog extends Disposable {
 				this.close();
 			}
 		}));
-		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode === KeyCode.Escape) {
-				event.preventDefault();
-				this.close();
-			}
-		}));
 
 		this._register(this.bindingModel.onDidChange(() => this._render()));
 		this._register(this.mobileCanvasModel.onDidChange(() => this._render()));
@@ -362,6 +355,9 @@ export class ParadisBindingDialog extends Disposable {
 			this._register(this.pageModel.onDidChangeSharingState(() => this._render()));
 		}
 
+		// フォーカス・Esc・重なり順は fork のモーダルに共通の扱いに乗せる（描き直しで検索欄からフォーカスが外れても戻す。
+		// Esc は描き直しで BODY に落ちたフォーカスからも受ける）。開く前のフォーカスを覚えるので、modal.focus() より前に作る
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal, onEscape: () => this.close(), close: () => this.close() }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 		// ページ無しで開いた場合（モバイル端末アタッチ目的）は端末ビュー、
 		// ページ起点のダイアログはターミナルペインビューを初期表示にする。
