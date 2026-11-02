@@ -362,10 +362,8 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 		const disposables = new DisposableStore();
 		this._disposables.add(disposables);
 		const userTab = () => this._announced.has(view.id) && this._isUserTab(view) && this._sessions.has(contents.session);
-		const describe = (extension: IParadisApiExtension) => {
-			const entry = this._findTab(contents.session, contents.id);
-			return entry ? this._describe(extension, entry) : undefined;
-		};
+		/** このタブを今の一覧から引く（1 回の知らせで 1 度だけ。拡張機能ごとに変わるのは見せ方だけ）。 */
+		const findThis = () => this._findTab(contents.session, contents.id);
 		const announce = () => {
 			if (contents.isDestroyed() || !this._isUserTab(view) || this._announced.has(view.id)) {
 				return;
@@ -374,8 +372,9 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			if (!existing) {
 				// 目印が遅れて届くエージェントのタブの URL を、最初の知らせで漏らさないよう、onCreated には URL と
 				// タイトルを入れない（Chrome でも新しいタブの onCreated には読み込み前の URL が無いことがある）
+				const entry = findThis();
 				this._emitPerExtension(contents.session, 'tabs', 'onCreated', extension => {
-					const tab = describe(extension);
+					const tab = entry ? this._describe(extension, entry) : undefined;
 					if (!tab) {
 						return undefined;
 					}
@@ -395,8 +394,9 @@ export class ParadisBrowserExtensionTabs implements IDisposable {
 			if (!userTab()) {
 				return;
 			}
+			const entry = findThis();
 			this._emitPerExtension(contents.session, 'tabs', 'onUpdated', extension => {
-				const tab = describe(extension);
+				const tab = entry ? this._describe(extension, entry) : undefined;
 				const change = tab ? changeInfo(extension, typeof tab.url === 'string') : undefined;
 				return tab && change && Object.keys(change).length > 0 ? [contents.id, change, tab] : undefined;
 			});
