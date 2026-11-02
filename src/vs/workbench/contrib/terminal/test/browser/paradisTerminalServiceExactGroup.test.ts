@@ -12,7 +12,7 @@ import { TerminalLocation } from '../../../../../platform/terminal/common/termin
 import { ICreateTerminalOptions, ITerminalInstance } from '../../browser/terminal.js';
 import { TerminalService } from '../../browser/terminalService.js';
 import { IEditorGroup } from '../../../../services/editor/common/editorGroupsService.js';
-import { paradisGetTerminalCreationScopeLease, paradisRegisterTerminalCreationScopeProvider } from '../../browser/paradisTerminalCreationScope.js';
+import { paradisGetTerminalCreationScopeLease, paradisRegisterTerminalCreationScopeProvider } from '../../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalCreationScope.js';
 import { paradisResolveTerminalScopeCandidate } from '../../../../../paradis/contrib/workspaceSwitch/common/paradisTerminalProcessScope.js';
 
 suite('Paradis TerminalService exact group integration', () => {

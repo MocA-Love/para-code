@@ -10,7 +10,7 @@ import assert from 'assert';
 import { timeout } from '../../../../../base/common/async.js';
 import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/common/errors.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ShutdownReason } from '../../../../services/lifecycle/common/lifecycle.js';
+import { ShutdownReason } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import {
 	IParadisShutdownTerminal,
 	IParadisTerminalShutdownPolicy,

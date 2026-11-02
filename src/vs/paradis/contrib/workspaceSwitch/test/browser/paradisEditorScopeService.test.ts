@@ -21,7 +21,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../../pla
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IWorkingCopyBackupService } from '../../../../../workbench/services/workingCopy/common/workingCopyBackup.js';
-import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
+import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision, WorkingCopyBackupRestoreRouter } from '../../common/paradisWorkingCopyBackupRestoreRouter.js';
 import { IWorkingCopy, IWorkingCopyIdentifier } from '../../../../../workbench/services/workingCopy/common/workingCopy.js';
 import { IWorkingCopyEditorService } from '../../../../../workbench/services/workingCopy/common/workingCopyEditorService.js';
 import { IWorkingCopyService } from '../../../../../workbench/services/workingCopy/common/workingCopyService.js';

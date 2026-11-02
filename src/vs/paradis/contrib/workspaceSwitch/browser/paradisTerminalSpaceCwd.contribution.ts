@@ -36,7 +36,7 @@ import { IShellLaunchConfig, TerminalLocation } from '../../../../platform/termi
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { paradisGetTerminalCreationScopeLease } from '../../../../workbench/contrib/terminal/browser/paradisTerminalCreationScope.js';
+import { paradisGetTerminalCreationScopeLease } from './paradisTerminalCreationScope.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdResolver, paradisRegisterTerminalLaunchPreparer } from '../common/paradisTerminalLaunchPreparers.js';

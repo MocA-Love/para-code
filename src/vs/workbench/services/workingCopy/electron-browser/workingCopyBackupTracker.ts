@@ -25,7 +25,7 @@ import { IProgressService, ProgressLocation } from '../../../../platform/progres
 import { Promises, raceCancellation } from '../../../../base/common/async.js';
 import { IWorkingCopyEditorService } from '../common/workingCopyEditorService.js';
 // PARA-PATCH: import the backup restore router so backups can be deferred per space
-import { IWorkingCopyBackupRestoreRouter } from '../common/workingCopyBackupRestoreRouter.js';
+import { IWorkingCopyBackupRestoreRouter } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkingCopyBackupRestoreRouter.js';
 
 export class NativeWorkingCopyBackupTracker extends WorkingCopyBackupTracker implements IWorkbenchContribution {
 

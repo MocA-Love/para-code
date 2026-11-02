@@ -10,7 +10,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { ITerminalInstance, ITerminalService } from '../../../contrib/terminal/browser/terminal.js';
-import { paradisRegisterTerminalCreationScopeProvider } from '../../../contrib/terminal/browser/paradisTerminalCreationScope.js';
+import { paradisRegisterTerminalCreationScopeProvider } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalCreationScope.js';
 import { MainThreadTerminalService } from '../../browser/mainThreadTerminalService.js';
 import { TerminalLaunchConfig } from '../../common/extHost.protocol.js';
 

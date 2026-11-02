@@ -1957,6 +1957,9 @@ export default defineConfig(
 				{
 					'target': 'src/vs/workbench/api/~',
 					'restrictions': [
+						// PARA-PATCH: mainThreadTerminalService.ts が拡張から作るターミナルのスペースの持ち主
+						// (paradisCaptureTerminalCreationScopeLease) を受け取るための逆方向 import。この 1 ファイルだけを許可する
+						'vs/paradis/contrib/workspaceSwitch/browser/paradisTerminalCreationScope.js',
 						'vscode',
 						'vs/base/~',
 						'vs/base/parts/*/~',

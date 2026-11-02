@@ -17,7 +17,7 @@ import { IEditorService } from '../../editor/common/editorService.js';
 import { EditorsOrder } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 // PARA-PATCH: import the backup restore router so backup restoration can be scoped to spaces
-import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision } from './workingCopyBackupRestoreRouter.js';
+import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkingCopyBackupRestoreRouter.js';
 
 /**
  * The working copy backup tracker deals with:
