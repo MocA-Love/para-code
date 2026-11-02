@@ -37,7 +37,6 @@ import {
 	PARADIS_SERVICE_STATUS_PROVIDERS,
 	PARADIS_SERVICE_STATUS_SETTING_ENABLED,
 	PARADIS_SERVICE_STATUS_SEVERITIES,
-	PARADIS_SERVICE_STATUS_SOURCES,
 	ParadisServiceStatusProvider,
 	paradisServiceStatusStateText,
 } from '../common/paradisServiceStatus.js';
