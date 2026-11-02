@@ -12,6 +12,7 @@
 
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { paradisIsCodexFormCancel } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 接続口を有効にする設定（オフなら HTTP を立てない）。 */
 export const PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING = 'paradis.taskBoard.bridge.enabled';
@@ -271,10 +272,6 @@ type Parsed<T> = { readonly ok: true; readonly value: T } | { readonly ok: false
 
 function invalid(message: string): { readonly ok: false; readonly code: 'invalid'; readonly message: string } {
 	return { ok: false, code: 'invalid', message };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;

@@ -15,6 +15,7 @@
 
 import { PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpConfigState } from './paradisAgentBrowser.js';
 import { MultilineDelimiter, PARADIS_CODEX_MCP_MANAGED_LINES, PARADIS_MCP_SERVER_NAME, findTomlAssignment, parseTomlKeyPath, scanTomlLine } from './paradisMcpSetupEncoding.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** stdioシムのファイル名断片。設定値がこれを含めば para-browser（旧shim方式）とみなす。 */
 export const PARADIS_MCP_SHIM_MARKER = 'paradisBrowserMcpShim';
@@ -41,10 +42,6 @@ export interface IParadisCodexMcpConfigInspection {
 	readonly detectedPort?: number;
 	/** needsFix時に修正対象となる `[mcp_servers.<name>]` のサーバー名。 */
 	readonly staleServerName?: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** MCPサーバー1エントリ（command/args）がshimを参照しているか。 */

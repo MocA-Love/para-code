@@ -8,6 +8,7 @@
 
 import type { IParadisCodexGoal, IParadisCodexPlanStep } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 import type { IParadisRecoveredAgentActivity } from './paradisPersistedAgentActivity.js';
+import { asRecord } from '../../../common/paradisGuards.js';
 
 export type ParadisAgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
 
@@ -128,10 +129,6 @@ export interface IParadisAgentActivityState {
 	readonly updatedAt: number;
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
 function text(value: unknown): string | undefined {
 	return typeof value === 'string' && value.length > 0 ? value.slice(0, 1_000) : undefined;
 }
@@ -197,7 +194,7 @@ interface ICodexCollaboration {
 
 function codexCollaboration(item: Readonly<Record<string, unknown>>): ICodexCollaboration {
 	const tool = text(item.tool);
-	const states = record(item.agentsStates);
+	const states = asRecord(item.agentsStates);
 	const agentStatuses = new Map<string, unknown>();
 	const legacyIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.map(text).filter((id): id is string => id !== undefined) : [];
 	const documentedReceiverId = text(item.receiverThreadId);
@@ -212,9 +209,9 @@ function codexCollaboration(item: Readonly<Record<string, unknown>>): ICodexColl
 	for (const rawId of Object.keys(states ?? {})) {
 		const id = text(rawId);
 		if (id === undefined) { continue; }
-		agentStatuses.set(id, record(states?.[rawId])?.status);
+		agentStatuses.set(id, asRecord(states?.[rawId])?.status);
 	}
-	const documentedStatus = record(item.agentStatus)?.status ?? item.agentStatus;
+	const documentedStatus = asRecord(item.agentStatus)?.status ?? item.agentStatus;
 	if (documentedStatus !== undefined) {
 		for (const id of agentStatuses.keys()) {
 			if (agentStatuses.get(id) === undefined) { agentStatuses.set(id, documentedStatus); }
@@ -413,7 +410,7 @@ export class ParadisAgentActivityTracker {
 			this.compactions.set(`compact:${at}`, { id: `compact:${at}`, status: 'completed', startedAt: at, updatedAt: at });
 			return this.finishApply(before, at);
 		}
-		const item = record(params.item);
+		const item = asRecord(params.item);
 		const type = text(item?.type);
 		if (type === 'contextCompaction') {
 			const id = text(item?.id) ?? `compact:${at}`;

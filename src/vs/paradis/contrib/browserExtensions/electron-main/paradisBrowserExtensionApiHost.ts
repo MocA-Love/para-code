@@ -33,6 +33,7 @@ import {
 	paradisEncodeExtensionWire,
 } from '../common/paradisBrowserExtensionApiWire.js';
 import type { IParadisWorkerLogLine } from '../common/paradisBrowserExtensions.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 拡張機能（Electron の Extension の、ここで使うところ）。 */
 export interface IParadisApiExtension {
@@ -173,10 +174,6 @@ const MAX_QUEUED_USER_ACTIONS = 3;
 type ParsedRequest =
 	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[] }
 	| { readonly type: 'listen'; readonly namespace: string; readonly event: string; readonly active: boolean };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 /** 呼び出しの形を確かめる（違えば undefined）。 */
 function parseRequest(value: unknown): ParsedRequest | undefined {

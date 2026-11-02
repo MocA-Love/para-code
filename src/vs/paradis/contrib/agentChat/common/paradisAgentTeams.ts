@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { asFiniteNumber } from '../../../common/paradisGuards.js';
+
 // Claude Code のエージェントチーム（Agent Teams）を、チーム 1 つを単位として追う。モバイルのトークに 1 枚のカードを出し、
 // 押すとメンバー・やりとり・計画を並べたチームの画面を開く（agent.teams.v1。team-card-mock の案 T1）。
 //
@@ -181,10 +183,6 @@ function rec(value: unknown): Record<string, unknown> | undefined {
 
 function str(value: unknown, limit = 1_000): string | undefined {
 	return typeof value === 'string' && value.trim().length > 0 ? value.trim().slice(0, limit) : undefined;
-}
-
-function finite(value: unknown): number | undefined {
-	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function matching(value: string | undefined, pattern: RegExp): string | undefined {
@@ -401,7 +399,7 @@ export function paradisParseTeamConfig(value: unknown): IParadisTeamConfig | und
 		const color = matching(str(member.color, 20), COLOR_PATTERN);
 		const model = matching(str(member.model, 100), MODEL_PATTERN);
 		const agentType = str(member.agentType, 60);
-		const joinedAt = finite(member.joinedAt);
+		const joinedAt = asFiniteNumber(member.joinedAt);
 		members.push({ name, backend, ...(color !== undefined ? { color } : {}), ...(model !== undefined ? { model } : {}), ...(agentType !== undefined ? { agentType } : {}), ...(joinedAt !== undefined ? { joinedAt } : {}) });
 	}
 	return { members, ...(leadName !== undefined ? { leadName } : {}) };

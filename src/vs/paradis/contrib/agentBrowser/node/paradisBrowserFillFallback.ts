@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { isRecord } from '../../../common/paradisGuards.js';
+
 // 内蔵 chrome-devtools-mcp の `fill` が、キーの抑止を用意できずに断られたときの入れ直し。
 // `fill` は 1 文字ずつ Input.dispatchKeyEvent で打つので、キーの抑止（ページへ打ったキーを Para Code の
 // ショートカットとして拾わない仕組み）が用意できないページでは 1 文字目から断られる。文字を入れるだけなら
@@ -63,6 +65,3 @@ function isTextPart(value: unknown): value is { type: 'text'; text: string } {
 	return isRecord(value) && value.type === 'text' && typeof value.text === 'string';
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}

@@ -18,6 +18,7 @@ import { promises as fs } from 'fs';
 import { dirname } from '../../../../base/common/path.js';
 import { PARADIS_SHIM_PRIVACY_NAMESPACE } from '../common/paradisBrowserExtensionShim.js';
 import { IParadisExtensionApiCaller, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** Chrome の値（Electron の setWebRTCIPHandlingPolicy と同じ）。 */
 export const PARADIS_WEBRTC_IP_HANDLING_POLICIES = ['default', 'default_public_and_private_interfaces', 'default_public_interface_only', 'disable_non_proxied_udp'] as const;
@@ -52,10 +53,6 @@ type State = Record<string, ISetting[]>;
 
 function isPolicy(value: unknown): value is ParadisWebRtcIpHandlingPolicy {
 	return typeof value === 'string' && (PARADIS_WEBRTC_IP_HANDLING_POLICIES as readonly string[]).includes(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 export class ParadisBrowserExtensionPrivacy {

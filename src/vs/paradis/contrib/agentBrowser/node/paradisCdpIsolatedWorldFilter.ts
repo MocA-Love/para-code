@@ -34,6 +34,7 @@
 // セッション（フラット化した子セッションの sessionId、ページ直結なら ''）ごとに状態を持つ。
 
 import { paradisIsBrowserExtensionUrl } from '../common/paradisCdpExtensionScope.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** クライアントが要求しても見せない world の名前（Electron が自分の world に付ける名前）。 */
 const RESERVED_WORLD_NAMES: ReadonlySet<string> = new Set(['', 'Electron Isolated Context']);
@@ -82,10 +83,6 @@ interface ISessionState {
 }
 
 export type ParadisIsolatedWorldEventVerdict = 'forward' | 'drop' | 'resume';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /**
  * 見せてよいもの（許可の台帳）を上限まで覚える。上限に達したら一番古いものを忘れて足す。古い番号が消えても、
