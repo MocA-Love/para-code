@@ -402,6 +402,19 @@ export function computeOverflowRoom(cells: readonly IParadisCellData[], index: n
 	return { left, right };
 }
 
+/** {@link computeOverflowRoom} と同じ数え方で、左右の連続した空セルの列数を返す（仮想グリッドが範囲の外の元セルを拾うため）。 */
+export function computeOverflowColumns(cells: readonly IParadisCellData[], index: number): { readonly left: number; readonly right: number } {
+	let right = 0;
+	for (let j = index + 1; j < cells.length && isOverflowEmpty(cells[j]); j++) {
+		right++;
+	}
+	let left = 0;
+	for (let j = index - 1; j >= 0 && isOverflowEmpty(cells[j]); j--) {
+		left++;
+	}
+	return { left, right };
+}
+
 /** はみ出し候補セルの内容を計測用 span に包んで返す(通常時は普通のインライン span として描画される)。 */
 export function createOverflowSpan(td: HTMLElement, cell: IParadisCellData): HTMLElement {
 	const span = td.ownerDocument.createElement('span');
