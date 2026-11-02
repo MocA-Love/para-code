@@ -1416,6 +1416,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 
 		async function waitUntil(condition: () => boolean): Promise<void> {
 			for (let attempt = 0; attempt < 200 && !condition(); attempt++) {
+				// eslint-disable-next-line local/code-no-timeout-polling-loop -- existing helper of this suite, flagged by a rule added after it; reworking it is out of the scope of the _ensureChild split
 				await new Promise(resolve => setTimeout(resolve, 5));
 			}
 			assert.ok(condition(), 'condition was not met in time');
