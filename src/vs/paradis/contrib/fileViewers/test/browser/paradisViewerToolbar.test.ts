@@ -1,0 +1,122 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { deepStrictEqual } from 'assert';
+import { mainWindow } from '../../../../../base/browser/window.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import {
+	appendParadisViewerToolbarChoice,
+	appendParadisViewerToolbarChoiceGroup,
+	appendParadisViewerToolbarGroup,
+	appendParadisViewerToolbarIconButton,
+	appendParadisViewerToolbarOption,
+	appendParadisViewerToolbarPanelToggle,
+	appendParadisViewerToolbarPercent,
+	appendParadisViewerToolbarSeparator,
+	createParadisViewerToolbar,
+	setParadisViewerToolbarHeight,
+	setParadisViewerToolbarOptionChecked,
+} from '../../browser/paradisViewerToolbar.js';
+
+suite('ParadisViewerToolbar', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	function host(width = 800): HTMLElement {
+		const element = mainWindow.document.createElement('div');
+		element.style.width = `${width}px`;
+		element.style.position = 'relative';
+		mainWindow.document.body.appendChild(element);
+		return element;
+	}
+
+	test('builds a 28px bar with 22px buttons, a 44px percentage and the right accessibility state', () => {
+		const root = host();
+		try {
+			const toolbar = createParadisViewerToolbar(root, 'example-bar', 'Example');
+			const modes = appendParadisViewerToolbarChoiceGroup(toolbar.start, 'example-modes', 'View');
+			const preview = appendParadisViewerToolbarChoice(modes, 'Preview');
+			const source = appendParadisViewerToolbarChoice(modes, 'Source');
+			setParadisViewerToolbarOptionChecked(preview, true);
+			const filter = appendParadisViewerToolbarOption(toolbar.end, 'Rules', Codicon.checklist);
+			setParadisViewerToolbarOptionChecked(filter, true);
+			const panel = appendParadisViewerToolbarPanelToggle(toolbar.end, 'Changes');
+			setParadisViewerToolbarOptionChecked(panel, true);
+			const zoom = appendParadisViewerToolbarGroup(toolbar.end);
+			const button = appendParadisViewerToolbarIconButton(zoom, Codicon.zoomIn, 'Zoom In');
+			const percent = appendParadisViewerToolbarPercent(zoom, 'Reset Zoom');
+			percent.textContent = '100%';
+
+			deepStrictEqual({
+				bar: [toolbar.element.getBoundingClientRect().height, toolbar.element.getAttribute('role'), toolbar.element.getAttribute('aria-label'), root.classList.contains('paradis-viewer-toolbar-host')],
+				modes: [modes.getAttribute('role'), preview.getAttribute('role'), preview.getAttribute('aria-checked'), source.getAttribute('aria-checked'), preview.classList.contains('checked')],
+				filter: [filter.getAttribute('aria-pressed'), filter.classList.contains('checked')],
+				panel: [panel.getAttribute('aria-expanded'), panel.hasAttribute('aria-pressed')],
+				button: [button.getBoundingClientRect().width, button.getBoundingClientRect().height, button.getAttribute('aria-label'), !!button.querySelector('.codicon-zoom-in')],
+				percent: percent.getBoundingClientRect().width >= 44,
+			}, {
+				bar: [28, 'toolbar', 'Example', true],
+				modes: ['radiogroup', 'radio', 'true', 'false', true],
+				filter: ['true', true],
+				panel: ['true', false],
+				button: [22, 22, 'Zoom In', true],
+				percent: true,
+			});
+		} finally {
+			root.remove();
+		}
+	});
+
+	test('hides an empty group together with the separator before it', () => {
+		const root = host();
+		try {
+			const toolbar = createParadisViewerToolbar(root, 'example-bar');
+			appendParadisViewerToolbarIconButton(appendParadisViewerToolbarGroup(toolbar.end), Codicon.zoomIn, 'Zoom In');
+			const separatorBeforeEmpty = appendParadisViewerToolbarSeparator(toolbar.end);
+			const empty = appendParadisViewerToolbarGroup(toolbar.end);
+			const separatorBeforeFilled = appendParadisViewerToolbarSeparator(toolbar.end);
+			appendParadisViewerToolbarIconButton(appendParadisViewerToolbarGroup(toolbar.end), Codicon.linkExternal, 'Open');
+			const display = (element: HTMLElement) => mainWindow.getComputedStyle(element).display;
+			deepStrictEqual([display(separatorBeforeEmpty), display(empty), display(separatorBeforeFilled)], ['none', 'none', 'block']);
+		} finally {
+			root.remove();
+		}
+	});
+
+	test('folds labels and the percentage in a narrow pane but keeps every button visible', () => {
+		const root = host(360);
+		try {
+			const toolbar = createParadisViewerToolbar(root, 'example-bar');
+			const withIcon = appendParadisViewerToolbarOption(toolbar.end, 'Rules', Codicon.checklist);
+			const withoutIcon = appendParadisViewerToolbarOption(toolbar.end, 'Changes');
+			const percent = appendParadisViewerToolbarPercent(toolbar.end, 'Reset Zoom');
+			const display = (element: Element | null) => element ? mainWindow.getComputedStyle(element).display : 'missing';
+			deepStrictEqual({
+				iconLabel: display(withIcon.querySelector('.paradis-viewer-toolbar-option-label')),
+				textLabel: display(withoutIcon.querySelector('.paradis-viewer-toolbar-option-label')),
+				percent: display(percent),
+			}, { iconLabel: 'none', textLabel: 'block', percent: 'none' });
+		} finally {
+			root.remove();
+		}
+	});
+
+	test('lets the find widget follow the bar height', () => {
+		const root = host();
+		try {
+			createParadisViewerToolbar(root, 'example-bar');
+			const find = mainWindow.document.createElement('div');
+			find.className = 'paradis-office-find-widget';
+			find.style.position = 'absolute';
+			root.appendChild(find);
+			const before = mainWindow.getComputedStyle(find).top;
+			setParadisViewerToolbarHeight(root, 52);
+			deepStrictEqual([before, mainWindow.getComputedStyle(find).top], ['32px', '56px']);
+		} finally {
+			root.remove();
+		}
+	});
+});

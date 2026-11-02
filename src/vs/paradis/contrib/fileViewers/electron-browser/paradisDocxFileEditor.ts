@@ -18,6 +18,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
 import { basename, dirname, isEqual } from '../../../../base/common/resources.js';
@@ -71,6 +72,7 @@ import type { IParadisWordAnalysis, IParadisWordAnalysisResult } from '../common
 import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
@@ -105,7 +107,12 @@ export const PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS = 5_000;
 export const PARADIS_WORD_SEMANTIC_BUSY_RETRIES = 3;
 
 /** ツールバーが 1 行のときの高さ。まだ描かれていなくて高さが測れないときに使う。 */
-const PARADIS_WORD_TOOLBAR_MIN_OFFSET = 36;
+const PARADIS_WORD_TOOLBAR_MIN_OFFSET = 28;
+
+/** バーの拡大縮小の 1 段の倍率と範囲（文書の描画が受け付ける 0.25〜4 倍）。 */
+const PARADIS_WORD_ZOOM_STEP = 1.2;
+const PARADIS_WORD_ZOOM_MIN = 0.25;
+const PARADIS_WORD_ZOOM_MAX = 4;
 
 /** 解析が最後まで通った文書の、文書内の変更履歴とコメントの一覧の完全さ。 */
 function analyzedWordManifest(analysis: IParadisWordAnalysis): ParadisOfficeCompletenessManifest {
@@ -312,6 +319,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _semanticBusyBytes: Uint8Array | undefined;
 	/** リボンのボタンのリスナー。描き直すたびに外す。 */
 	private readonly _ribbonDisposables = this._register(new DisposableStore());
+	private readonly _openAppDisposables = this._register(new MutableDisposable<DisposableStore>());
+	private _zoomPercent: HTMLButtonElement | undefined;
+	private _openAppElement: HTMLElement | undefined;
 	private _semanticBytes: Uint8Array | undefined;
 	private _semanticResult: IParadisWordAnalysisResult | undefined;
 	private _semanticSearch: ParadisOfficeSemanticSearch | undefined;
@@ -388,29 +398,30 @@ export class ParadisDocxFileEditor extends EditorPane {
 			isActive: () => !!this._webview?.isFocused,
 			onNavigate: result => this._postReveal(createParadisWordSearchReveal(result, this._findMatchCase), result.navigableAnchor),
 		});
-		this._semanticToolbar = dom.append(this._rootElement, dom.$('.paradis-word-semantic-toolbar'));
-		this._semanticToolbar.setAttribute('role', 'toolbar');
-		this._semanticToolbar.setAttribute('aria-label', localize('paradis.word.toolbar', "Word 文書のツールバー"));
+		// 全ビューア共通のバー。解析の結果（リボン）は幅が狭いと折り返すので、高さは中身に合わせる。
+		const semanticToolbar = createParadisViewerToolbar(this._rootElement, 'paradis-word-semantic-toolbar.paradis-viewer-toolbar-wrap', localize('paradis.word.toolbar', "Word 文書のツールバー"));
+		this._semanticToolbar = semanticToolbar.element;
 		this._semanticToolbar.style.position = 'absolute';
 		this._semanticToolbar.style.inset = '0 0 auto 0';
-		this._semanticToolbar.style.minHeight = '32px';
 		this._semanticToolbar.style.zIndex = '10';
-		this._semanticToolbar.style.display = 'none';
-		this._semanticToolbar.style.alignItems = 'center';
-		this._semanticToolbar.style.gap = '8px';
-		this._semanticToolbar.style.padding = '2px 8px';
-		this._semanticToolbar.style.background = 'var(--vscode-editor-background)';
-		this._diagnosticsElement = dom.append(this._semanticToolbar, dom.$('.paradis-word-diagnostics-host'));
+		this._diagnosticsElement = dom.append(semanticToolbar.start, dom.$('.paradis-word-diagnostics-host'));
 		this._diagnosticsElement.style.flex = '1 1 auto';
 		this._diagnosticsElement.style.minWidth = '0';
-		this._inspectorToggle = dom.append(this._semanticToolbar, dom.$('button.paradis-word-inspector-toggle')) as HTMLButtonElement;
-		this._inspectorToggle.type = 'button';
-		// 幅が狭いときにボタンの文字が縦に折り返さないようにする。
-		this._inspectorToggle.style.flex = '0 0 auto';
-		this._inspectorToggle.style.whiteSpace = 'nowrap';
-		this._inspectorToggle.textContent = localize('paradis.word.inspector', "変更点");
+		// 右: 変更点（解析の結果があるときだけ）｜拡大縮小｜既定のアプリで開く。
+		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(semanticToolbar.end, localize('paradis.word.inspector', "変更点"), Codicon.checklist);
+		this._inspectorToggle.classList.add('paradis-word-inspector-toggle');
+		this._inspectorToggle.style.display = 'none';
+		appendParadisViewerToolbarSeparator(semanticToolbar.end);
+		const zoom = appendParadisViewerToolbarGroup(semanticToolbar.end);
+		const zoomOut = appendParadisViewerToolbarIconButton(zoom, Codicon.zoomOut, localize('paradis.word.zoomOut', "ズームアウト"));
+		this._register(dom.addDisposableListener(zoomOut, dom.EventType.CLICK, () => this._setWordZoom(this._currentWordViewState().zoom / PARADIS_WORD_ZOOM_STEP)));
+		this._zoomPercent = appendParadisViewerToolbarPercent(zoom, localize('paradis.word.resetZoom', "ズームをリセット"));
+		this._register(dom.addDisposableListener(this._zoomPercent, dom.EventType.CLICK, () => this._setWordZoom(1)));
+		const zoomIn = appendParadisViewerToolbarIconButton(zoom, Codicon.zoomIn, localize('paradis.word.zoomIn', "ズームイン"));
+		this._register(dom.addDisposableListener(zoomIn, dom.EventType.CLICK, () => this._setWordZoom(this._currentWordViewState().zoom * PARADIS_WORD_ZOOM_STEP)));
+		appendParadisViewerToolbarSeparator(semanticToolbar.end);
+		this._openAppElement = appendParadisViewerToolbarGroup(semanticToolbar.end);
 		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.inspector', "変更点"));
-		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._register(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
 			if (!this._inspectorPanel) {
 				return;
@@ -419,7 +430,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}));
 		this._inspectorPanel = dom.append(this._rootElement, dom.$('.paradis-word-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
-		this._inspectorPanel.style.top = '36px';
+		this._inspectorPanel.style.top = '28px';
 		this._inspectorPanel.style.right = '8px';
 		this._inspectorPanel.style.zIndex = '20';
 		this._inspectorPanel.style.width = '360px';
@@ -432,7 +443,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._webviewContainer.setAttribute('role', 'region');
 		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.documentContent', "Word 文書の内容"));
 		this._webviewContainer.style.position = 'absolute';
-		this._webviewContainer.style.inset = '0';
+		this._webviewContainer.style.inset = `${PARADIS_WORD_TOOLBAR_MIN_OFFSET}px 0 0 0`;
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
@@ -480,6 +491,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 		this._wordViewState = wordViewStateFromOptions(options?.viewState, this._currentWordViewState());
 		this._clearSemanticUi();
+		this._updateZoomLabel();
+		this._renderOpenInApp(resource);
 		if (!isEqual(this._currentResource, resource)) {
 			this._resetSemanticAnalysis();
 		}
@@ -1037,6 +1050,45 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 	}
 
+	/** バーの拡大縮小。変更点パネルの倍率と同じ状態を変え、文書を描き直す。 */
+	private _setWordZoom(zoom: number): void {
+		const current = this._currentWordViewState();
+		const next: ParadisWordViewState = Object.freeze({ ...current, zoom: Math.min(PARADIS_WORD_ZOOM_MAX, Math.max(PARADIS_WORD_ZOOM_MIN, zoom)) });
+		if (next.zoom === current.zoom) {
+			return;
+		}
+		this._wordViewState = next;
+		this._changeInspector.value?.setViewState(next);
+		this._updateZoomLabel();
+		if (this._currentResource && this._webviewClaimed) {
+			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
+			this._recoveryState = transition.state;
+			this._applyRecoveryEffects(transition.effects, this._currentResource);
+		}
+	}
+
+	private _updateZoomLabel(): void {
+		if (this._zoomPercent) {
+			this._zoomPercent.textContent = `${Math.round(this._currentWordViewState().zoom * 100)}%`;
+		}
+	}
+
+	/** ローカルのファイルなら「既定のアプリで開く」を出す（入力ごとに作り直す）。 */
+	private _renderOpenInApp(resource: URI): void {
+		const element = this._openAppElement;
+		if (!element) {
+			return;
+		}
+		dom.clearNode(element);
+		const store = new DisposableStore();
+		this._openAppDisposables.value = store;
+		if (resource.scheme !== Schemas.file) {
+			return;
+		}
+		const button = appendParadisViewerToolbarIconButton(element, Codicon.linkExternal, localize('paradis.word.openInApp', "既定のアプリで開く"));
+		store.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => void this._nativeHostService?.openExternal(resource.toString(true))));
+	}
+
 	private _currentWordViewState(): ParadisWordViewState {
 		return this._changeInspector.value?.getViewState() ?? this._wordViewState;
 	}
@@ -1047,19 +1099,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (this._diagnosticsElement) {
 			dom.clearNode(this._diagnosticsElement);
 		}
-		if (this._semanticToolbar) {
-			this._semanticToolbar.style.display = 'none';
-		}
 		if (this._inspectorPanel) {
 			dom.clearNode(this._inspectorPanel);
 			this._inspectorPanel.style.display = 'none';
 		}
 		if (this._inspectorToggle) {
 			this._inspectorToggle.setAttribute('aria-expanded', 'false');
+			this._inspectorToggle.style.display = 'none';
 		}
-		if (this._webviewContainer) {
-			this._webviewContainer.style.top = '0';
-		}
+		this._syncSemanticToolbarOffset();
 	}
 
 	/**
@@ -1067,10 +1115,14 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 * ツールバーが高くなるので、決め打ちの高さではなく実際の高さを使う。
 	 */
 	private _syncSemanticToolbarOffset(): void {
-		if (!this._semanticToolbar || this._semanticToolbar.style.display === 'none') {
+		if (!this._semanticToolbar) {
 			return;
 		}
-		const top = `${Math.max(PARADIS_WORD_TOOLBAR_MIN_OFFSET, this._semanticToolbar.offsetHeight)}px`;
+		const height = Math.max(PARADIS_WORD_TOOLBAR_MIN_OFFSET, this._semanticToolbar.offsetHeight);
+		if (this._rootElement) {
+			setParadisViewerToolbarHeight(this._rootElement, height);
+		}
+		const top = `${height}px`;
 		if (this._webviewContainer) {
 			this._webviewContainer.style.top = top;
 		}
@@ -1128,6 +1180,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			onDidChangeViewState: state => {
 				const changed = state.zoom !== this._wordViewState.zoom || state.displayMode !== this._wordViewState.displayMode;
 				this._wordViewState = state;
+				this._updateZoomLabel();
 				if (changed && this._currentResource && this._webviewClaimed) {
 					const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
 					this._recoveryState = transition.state;

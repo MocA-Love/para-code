@@ -82,6 +82,7 @@ import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from '
 import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import './media/paradisDocxDiff.css';
 import { PARADIS_VIEWER_LOADING_LABEL, PARADIS_VIEWER_OPEN_IN_APP_LABEL, PARADIS_VIEWER_RETRY_LABEL } from '../browser/paradisViewerState.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
 
 const $ = dom.$;
 
@@ -281,15 +282,13 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			isActive: () => !!this._webview?.isFocused,
 		});
 
-		const toolbar = dom.append(this._root, $('.paradis-docx-diff-toolbar'));
-		toolbar.setAttribute('role', 'toolbar');
-		toolbar.setAttribute('aria-label', localize('paradis.word.diffToolbar', "Word 比較のツールバー"));
-		const left = dom.append(toolbar, $('.paradis-docx-diff-toolbar-left'));
-		this._countEl = dom.append(left, $('span.paradis-docx-diff-count'));
+		const toolbar = createParadisViewerToolbar(this._root, 'paradis-docx-diff-toolbar', localize('paradis.word.diffToolbar', "Word 比較のツールバー"));
+		const left = toolbar.start;
+		this._countEl = dom.append(left, $('span.paradis-docx-diff-count.paradis-viewer-toolbar-text'));
 		this._noticeEl = dom.append(left, $('span.paradis-docx-diff-notice'));
 		this._noticeEl.style.display = 'none';
 		this._diagnosticsEl = dom.append(left, $('span.paradis-word-diff-diagnostics'));
-		const legend = dom.append(left, $('.paradis-docx-diff-legend'));
+		const legend = dom.append(left, $('.paradis-docx-diff-legend.paradis-viewer-toolbar-legend'));
 		for (const entry of LEGEND) {
 			const item = dom.append(legend, $('span.paradis-docx-diff-legend-item'));
 			const swatch = dom.append(item, $('span.paradis-docx-diff-legend-swatch'));
@@ -299,13 +298,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			applyParadisOfficeChangeLegendSemantics(item, swatch, { category: entry.status, label, marker: entry.marker });
 		}
 
-		const right = dom.append(toolbar, $('.paradis-docx-diff-toolbar-right'));
-		this._inspectorToggle = dom.append(right, $('button.paradis-docx-diff-toggle')) as HTMLButtonElement;
-		this._inspectorToggle.type = 'button';
-		this._inspectorToggle.textContent = localize('paradis.word.diffInspector', "変更点");
+		const right = toolbar.end;
+		const views = appendParadisViewerToolbarGroup(right);
+		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(views, localize('paradis.word.diffInspector', "変更点"));
 		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.diffInspector', "変更点"));
 		this._inspectorToggle.style.display = 'none';
-		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
 			if (!this._inspectorPanel || !this._inspectorToggle) {
 				return;
@@ -315,39 +312,33 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			this._inspectorToggle.setAttribute('aria-expanded', String(visible));
 		}));
 
-		this._formatToggle = dom.append(right, $('button.paradis-docx-diff-toggle')) as HTMLButtonElement;
+		this._formatToggle = appendParadisViewerToolbarOption(views, localize('paradis.docxDiff.formatToggle', "書式の変更"), Codicon.symbolText);
 		this._accessibility.labelButton(this._formatToggle, localize('paradis.docxDiff.formatToggle', "書式の変更"));
-		dom.append(this._formatToggle, $(`span${ThemeIcon.asCSSSelector(Codicon.symbolText)}`));
-		// allow-any-unicode-next-line
-		dom.append(this._formatToggle, $('span')).textContent = localize('paradis.docxDiff.formatToggle', "書式の変更");
 		this._headerDisposables.add(dom.addDisposableListener(this._formatToggle, dom.EventType.CLICK, () => this._setShowFormatChanges(!this._showFormatChanges)));
 
-		const zoom = dom.append(right, $('.paradis-docx-diff-zoom'));
+		appendParadisViewerToolbarSeparator(right);
+		const zoom = appendParadisViewerToolbarGroup(right, 'paradis-docx-diff-zoom');
 		this._appendIconButton(zoom, Codicon.zoomOut, localize('paradis.docxDiff.zoomOut', "ズームアウト"), this._headerDisposables, () => this._zoom(1 / ZOOM_STEP));
-		this._percentEl = dom.append(zoom, $('button.paradis-docx-diff-percent')) as HTMLButtonElement;
-		this._percentEl.title = localize('paradis.docxDiff.resetZoom', "ズームをリセット");
+		this._percentEl = appendParadisViewerToolbarPercent(zoom, localize('paradis.docxDiff.resetZoom', "ズームをリセット"));
 		this._accessibility.labelButton(this._percentEl, localize('paradis.docxDiff.resetZoom', "ズームをリセット"));
 		this._headerDisposables.add(dom.addDisposableListener(this._percentEl, dom.EventType.CLICK, () => this._setScale(1)));
 		this._appendIconButton(zoom, Codicon.zoomIn, localize('paradis.docxDiff.zoomIn', "ズームイン"), this._headerDisposables, () => this._zoom(ZOOM_STEP));
 
-		const nav = dom.append(right, $('.paradis-docx-diff-nav'));
-		const previous = dom.append(nav, $('button.paradis-docx-diff-navbtn')) as HTMLButtonElement;
-		previous.textContent = localize('paradis.docxDiff.previous', "前へ");
-		this._navPositionEl = dom.append(nav, $('span.paradis-docx-diff-navpos'));
-		const next = dom.append(nav, $('button.paradis-docx-diff-navbtn')) as HTMLButtonElement;
-		next.textContent = localize('paradis.docxDiff.next', "次へ");
-		this._accessibility.labelButton(previous, localize('paradis.word.previousChange', "前の変更"));
-		this._accessibility.labelButton(next, localize('paradis.word.nextChange', "次の変更"));
-		this._headerDisposables.add(dom.addDisposableListener(previous, dom.EventType.CLICK, () => this._navigate(-1)));
-		this._headerDisposables.add(dom.addDisposableListener(next, dom.EventType.CLICK, () => this._navigate(1)));
-		this._openAppEl = dom.append(nav, $('.paradis-docx-diff-openapp'));
+		// 前後の変更へ移る（本家の差分エディタと同じ ↑↓ のアイコン）。
+		appendParadisViewerToolbarSeparator(right);
+		const nav = appendParadisViewerToolbarGroup(right, 'paradis-docx-diff-nav');
+		this._appendIconButton(nav, Codicon.arrowUp, localize('paradis.word.previousChange', "前の変更"), this._headerDisposables, () => this._navigate(-1));
+		this._navPositionEl = dom.append(nav, $('span.paradis-docx-diff-navpos.paradis-viewer-toolbar-position'));
+		this._appendIconButton(nav, Codicon.arrowDown, localize('paradis.word.nextChange', "次の変更"), this._headerDisposables, () => this._navigate(1));
+		appendParadisViewerToolbarSeparator(right);
+		this._openAppEl = appendParadisViewerToolbarGroup(right, 'paradis-docx-diff-openapp');
 
 		this._webviewContainer = dom.append(this._root, $('.paradis-docx-diff-body'));
 		this._webviewContainer.setAttribute('role', 'region');
 		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.comparisonContent', "Word 比較の内容"));
 		this._inspectorPanel = dom.append(this._root, $('.paradis-word-diff-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
-		this._inspectorPanel.style.top = '42px';
+		this._inspectorPanel.style.top = '32px';
 		this._inspectorPanel.style.right = '8px';
 		this._inspectorPanel.style.zIndex = '20';
 		this._inspectorPanel.style.width = '360px';
@@ -366,10 +357,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	 * pane 寿命の store に登録すると、入力を切り替えるたびにリスナーが溜まる。
 	 */
 	private _appendIconButton(parent: HTMLElement, icon: ThemeIcon, title: string, disposables: DisposableStore, onClick: () => void): HTMLButtonElement {
-		const button = dom.append(parent, $('button.paradis-docx-diff-iconbtn')) as HTMLButtonElement;
-		button.title = title;
+		const button = appendParadisViewerToolbarIconButton(parent, icon, title);
 		this._accessibility?.labelButton(button, title);
-		dom.append(button, $(`span${ThemeIcon.asCSSSelector(icon)}`));
 		disposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, onClick));
 		return button;
 	}
@@ -1310,8 +1299,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		if (!this._formatToggle) {
 			return;
 		}
-		this._formatToggle.classList.toggle('active', this._showFormatChanges);
-		this._formatToggle.setAttribute('aria-pressed', String(this._showFormatChanges));
+		setParadisViewerToolbarOptionChecked(this._formatToggle, this._showFormatChanges);
 	}
 
 	// ── ライフサイクル ────────────────────────────────────────────────────
