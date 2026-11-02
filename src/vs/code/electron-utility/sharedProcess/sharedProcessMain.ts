@@ -2,7 +2,6 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 
 import { hostname, release } from 'os';
 // PARA-PATCH: Capture Para Code shared-process failures through Sentry's Electron utility transport.
@@ -152,50 +151,7 @@ import { McpGalleryManifestIPCService } from '../../../platform/mcp/common/mcpGa
 import { IMeteredConnectionService } from '../../../platform/meteredConnection/common/meteredConnection.js';
 import { MeteredConnectionChannelClient, METERED_CONNECTION_CHANNEL } from '../../../platform/meteredConnection/common/meteredConnectionIpc.js';
 import { PlaywrightChannel } from '../../../platform/browserView/node/playwrightChannel.js';
-// PARA-PATCH: ブラウザページ⇔エージェントCLI紐付け用のバインディングレジストリ+MCPサーバー（fork独自、src/vs/paradis/contrib/agentBrowser/ 参照）
-import { registerParadisAgentBrowser } from '../../../paradis/contrib/agentBrowser/node/paradisAgentBrowserChannel.js';
-// PARA-PATCH: モバイル端末（iOSシミュレータ/Androidエミュレータ）⇔エージェントCLI紐付け（fork独自、src/vs/paradis/contrib/mobileCanvas/ 参照）
-import { registerParadisMobileCanvas } from '../../../paradis/contrib/mobileCanvas/node/paradisMobileCanvasChannel.js';
-// PARA-PATCH: 通知サウンド/Aivis読み上げ用バックエンド（fork独自、src/vs/paradis/contrib/notifications/ 参照）
-import { registerParadisNotifications } from '../../../paradis/contrib/notifications/node/paradisNotificationsChannel.js';
-// PARA-PATCH: おやすみモードを aivis-mcp 側のミュートへ伝える aivis CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/notifications/ 参照）
-import { registerParadisAivisMuteBridge } from '../../../paradis/contrib/notifications/node/paradisAivisMuteBridgeChannel.js';
-// PARA-PATCH: Excelビューア/差分用の xlsx パースバックエンド（fork独自、src/vs/paradis/contrib/fileViewers/ 参照）
-import { registerParadisSpreadsheet } from '../../../paradis/contrib/fileViewers/node/paradisSpreadsheetChannel.js';
-// PARA-PATCH: versioned Office document backend (fork独自、旧paradisSpreadsheet channelは互換用に維持)
-import { registerParadisOffice } from '../../../paradis/contrib/fileViewers/node/paradisOfficeChannel.js';
-// PARA-PATCH: Word ビューア/差分の詳しい解析バックエンド（fork独自、src/vs/paradis/contrib/fileViewers/ 参照）
-import { registerParadisWordSemantic } from '../../../paradis/contrib/fileViewers/node/word/paradisWordSemanticChannel.js';
-// PARA-PATCH: 「Para ホスト」ビューが未接続ホストを ssh 越しに読むためのバックエンド（fork独自、src/vs/paradis/contrib/remoteHosts/ 参照）
-import { registerParadisRemoteHosts } from '../../../paradis/contrib/remoteHosts/node/paradisRemoteHostsChannel.js';
-// PARA-PATCH: HTMLプレビューの配信サーバ（fork独自、src/vs/paradis/contrib/fileViewers/ 参照）
-import { registerParadisHtmlPreview } from '../../../paradis/contrib/fileViewers/node/paradisHtmlPreviewChannel.js';
-// PARA-PATCH: worktree作成用の git 実行バックエンド（fork独自、src/vs/paradis/contrib/workspaceSwitch/ 参照）
-import { registerParadisWorktreeGit } from '../../../paradis/contrib/workspaceSwitch/node/paradisWorktreeGitChannel.js';
-// PARA-PATCH: モバイルリレー接続（fork独自、src/vs/paradis/contrib/mobileRelay/ 参照）。リレーへのoutbound WSSと
-// E2E暗号をshared processが所有する（ウィンドウreload非依存・Node webcryptoでX25519が動く）
-import { registerParadisMobileRelay } from '../../../paradis/contrib/mobileRelay/node/paradisMobileRelayChannel.js';
-// PARA-PATCH: モバイルの find/grep 用 ripgrep チャネル（fork独自、shared processとREHサーバー両方に登録する）
-import { registerParadisRemoteSearch } from '../../../paradis/contrib/mobileRelay/node/paradisRemoteSearchChannel.js';
-// PARA-PATCH: ccusage CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/ccusage/ 参照）
-import { registerParadisCcusage } from '../../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
-// PARA-PATCH: rtk CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/rtk/ 参照）
-import { registerParadisRtk } from '../../../paradis/contrib/rtk/node/paradisRtkChannel.js';
-// PARA-PATCH: Claude Code / Codex のローカルセッション履歴ブラウザ（fork独自、read-only）
-import { registerParadisSessionResume } from '../../../paradis/contrib/sessionResume/node/paradisSessionResumeChannel.js';
-// PARA-PATCH: スペース(リポジトリ/worktree)の容量計測（fork独自、src/vs/paradis/contrib/spaceDisk/ 参照）
-import { registerParadisSpaceDisk } from '../../../paradis/contrib/spaceDisk/node/paradisSpaceDiskChannel.js';
-// PARA-PATCH: Codex terminal title metadata reader（fork独自、read-only SQLite）
-import { registerParadisCodexTerminalTitle } from '../../../paradis/contrib/codexTerminalTitle/node/paradisCodexTerminalTitleChannel.js';
-// PARA-PATCH: AIリミットモニターバックエンド（Codex の wham usage 取得。Claude は paradis.sharedProcess.contribution.ts 経由。fork独自、src/vs/paradis/contrib/limitsMonitor/ 参照）
-import { registerParadisLimitsMonitor } from '../../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
-// PARA-PATCH: GitHub API 利用状況バックエンド（gh api rate_limit + gh 呼び出しの計測。fork独自、src/vs/paradis/contrib/githubMetrics/ 参照）
-import { registerParadisGithubMetrics } from '../../../paradis/contrib/githubMetrics/node/paradisGithubMetricsChannel.js';
-// PARA-PATCH: Copilot 小型モデルでの短文生成バックエンド（ブランチ名など。fork独自、src/vs/paradis/contrib/copilotUtility/ 参照）
-import { registerParadisCopilotUtility } from '../../../paradis/contrib/copilotUtility/node/paradisCopilotUtilityChannel.js';
-// PARA-PATCH: ローカルでリッスン中のポート一覧バックエンド（fork独自、src/vs/paradis/contrib/portList/ 参照）
-import { registerParadisPortList } from '../../../paradis/contrib/portList/node/paradisPortListChannel.js';
-// PARA-PATCH: single entry point for further fork shared-process channels (see paradis.sharedProcess.contribution.ts)
+// PARA-PATCH: every fork shared-process channel, registered in order by paradis.sharedProcess.contribution.ts
 import { registerParadisSharedProcessContributions } from '../../../paradis/paradis.sharedProcess.contribution.js';
 import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
 import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
@@ -565,82 +521,8 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		const playwrightChannel = this._register(new PlaywrightChannel(this.server, accessor.get(IMainProcessService), accessor.get(ILogService), agentNetworkFilterService, accessor.get(ITelemetryService)));
 		this.server.registerChannel('playwright', playwrightChannel);
 
-		// PARA-PATCH: 通知サウンド/Aivis読み上げバックエンド（カスタム音源管理・YouTube取込・Aivis Cloud APIクライアント）
-		const paradisNotifications = this._register(registerParadisNotifications(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
-
-		// PARA-PATCH: ブラウザページ⇔エージェントCLI紐付け（バインディングレジストリ+MCP/CDPゲートウェイサーバーの生成とチャネル登録）
-		const paradisAgentBrowser = this._register(registerParadisAgentBrowser(
-			this.server,
-			playwrightChannel,
-			accessor.get(INativeEnvironmentService).userDataPath,
-			accessor.get(IMainProcessService),
-			accessor.get(ILogService),
-			accessor.get(IConfigurationService),
-			this.configuration.args,
-			audio => paradisNotifications.publishMobileVoiceClip(audio),
-			paradisNotifications,
-		));
-
-		// PARA-PATCH: モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは上のMCPサーバーへ相乗りさせるため、
-		// エージェントCLI側に追加のMCP設定は要らない
-		this._register(registerParadisMobileCanvas(
-			this.server,
-			accessor.get(INativeEnvironmentService).builtinExtensionsPath,
-			accessor.get(ILogService),
-			provider => paradisAgentBrowser.registerToolProvider(provider),
-		));
-
-		// PARA-PATCH: Excelビューア/差分の xlsx パースバックエンド（exceljs。rendererでは動かないためshared processで実行）
-		this._register(registerParadisSpreadsheet(this.server));
-		this._register(registerParadisOffice(this.server));
-		// PARA-PATCH: Word の詳しい解析（yauzl・crypto を使うため shared process で実行）
-		this._register(registerParadisWordSemantic(this.server));
-
-		// PARA-PATCH: 「Para ホスト」ビューが、このウィンドウが繋がっていないホストの中身を
-		// ssh 越しに読むためのバックエンド（繋がっているホストは IFileService 経由なのでここは通らない）
-		registerParadisRemoteHosts(this.server, accessor.get(ILogService));
-
-		// PARA-PATCH: HTMLプレビューが読むファイルを 127.0.0.1 だけに配るローカルサーバ
-		// （最初にプレビューを開くまで listen しない）
-		this._register(registerParadisHtmlPreview(this.server));
-
-		// PARA-PATCH: worktree作成用の git 実行バックエンド（git worktree add / ブランチ列挙）
-		this._register(registerParadisWorktreeGit(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
-
-		// PARA-PATCH: モバイルリレーサービス（src/vs/paradis/contrib/mobileRelay/ 参照）
-		this._register(registerParadisMobileRelay(this.server, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args, paradisAgentBrowser, paradisNotifications.onDidCreateMobileVoiceClip, probe => paradisNotifications.setMobileVoiceListenerProbe(probe)));
-		// PARA-PATCH: モバイルの find/grep 用 ripgrep チャネル
-		this._register(registerParadisRemoteSearch(this.server, accessor.get(ILogService)));
-
-		// PARA-PATCH: ccusage CLI 実行バックエンド（src/vs/paradis/contrib/ccusage/ 参照）
-		this._register(registerParadisCcusage(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
-		// PARA-PATCH: rtk CLI 実行バックエンド（src/vs/paradis/contrib/rtk/ 参照）
-		this._register(registerParadisRtk(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
-		// PARA-PATCH: おやすみモード ⇔ aivis-mcp のミュート同期（src/vs/paradis/contrib/notifications/ 参照）
-		this._register(registerParadisAivisMuteBridge(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
-		// PARA-PATCH: read-only Claude Code / Codex local session history browser (src/vs/paradis/contrib/sessionResume/)
-		this._register(registerParadisSessionResume(this.server, accessor.get(ILogService)));
-
-		// PARA-PATCH: スペースの容量計測（数十秒かかるのでmainではなくここに置く。src/vs/paradis/contrib/spaceDisk/ 参照）
-		this._register(registerParadisSpaceDisk(this.server, accessor.get(ILogService)));
-
-		// PARA-PATCH: Codex terminal title metadata reader（Codex App Serverは起動しない）
-		this._register(registerParadisCodexTerminalTitle(this.server, accessor.get(ILogService)));
-
-		// PARA-PATCH: AIリミットモニターバックエンド（src/vs/paradis/contrib/limitsMonitor/ 参照）
-		this._register(registerParadisLimitsMonitor(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
-
-		// PARA-PATCH: GitHub API 利用状況バックエンド（src/vs/paradis/contrib/githubMetrics/ 参照）
-		this._register(registerParadisGithubMetrics(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
-
-		// PARA-PATCH: Copilot 小型モデルでの短文生成バックエンド（src/vs/paradis/contrib/copilotUtility/ 参照）
-		this._register(registerParadisCopilotUtility(this.server, accessor.get(ILogService), accessor.get(IProductService)));
-
-		// PARA-PATCH: ローカルでリッスン中のポート一覧バックエンド（src/vs/paradis/contrib/portList/ 参照）
-		this._register(registerParadisPortList(this.server, accessor.get(ILogService)));
-
-		// PARA-PATCH: every fork channel registered through paradis.sharedProcess.contribution.ts
-		this._register(registerParadisSharedProcessContributions(this.server, accessor));
+		// PARA-PATCH: every fork channel (see paradis.sharedProcess.contribution.ts)
+		this._register(registerParadisSharedProcessContributions(this.server, accessor, this.configuration.args, playwrightChannel));
 
 		// Local Git
 		const localGitChannel = ProxyChannel.fromService(accessor.get(ILocalGitService), this._store);
