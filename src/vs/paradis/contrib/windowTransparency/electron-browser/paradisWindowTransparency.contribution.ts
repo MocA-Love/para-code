@@ -174,12 +174,15 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 
 	private promptRestart(enabled: boolean): void {
 		const message = enabled
-			? localize('paradis.window.transparency.restartToEnable', "Window transparency will take effect after the application is restarted. Reloading the window is not sufficient.")
-			: localize('paradis.window.transparency.restartToDisable', "Window transparency will be fully removed after the application is restarted.");
+			// allow-any-unicode-next-line
+			? localize('paradis.window.transparency.restartToEnable', "ウィンドウの透過の切り替えは、アプリを再起動すると効きます（ウィンドウの再読み込みでは効きません）。")
+			// allow-any-unicode-next-line
+			: localize('paradis.window.transparency.restartToDisable', "ウィンドウの透過は、アプリを再起動すると完全に外れます（ウィンドウの再読み込みでは外れません）。");
 
 		this.notificationService.prompt(Severity.Info, message, [
 			{
-				label: localize('paradis.window.transparency.restartToApply', "Restart to Apply"),
+				// allow-any-unicode-next-line
+				label: localize('paradis.window.transparency.restartToApply', "再起動して反映"),
 				run: () => this.nativeHostService.relaunch()
 			}
 		]);
