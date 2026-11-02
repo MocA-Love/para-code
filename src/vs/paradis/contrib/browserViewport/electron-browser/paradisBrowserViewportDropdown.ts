@@ -23,6 +23,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { ParadisPopoverRows, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import {
 	IParadisViewportSize,
 	IParadisViewportState,
@@ -79,9 +80,8 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 
 	private readonly _element: HTMLElement;
 	private readonly _listElement: HTMLElement;
-	private readonly _rows: IDropdownRow[] = [];
+	private readonly _rows = new ParadisPopoverRows<IDropdownRow>();
 	private readonly _container: HTMLElement;
-	private _focusedIndex = 0;
 	private _disposed = false;
 	private _widthInput: HTMLInputElement | undefined;
 	private _heightInput: HTMLInputElement | undefined;
@@ -92,7 +92,8 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 	) {
 		super();
 
-		this._container = layoutService.activeContainer;
+		// 開いたボタンのウィンドウに置く（補助ウィンドウのボタンから開いたとき、別の窓に出ないように）
+		this._container = layoutService.getContainer(dom.getWindow(options.anchor));
 		this._element = $('.paradis-browser-viewport-dropdown.paradis-overlay-popover');
 		this._element.tabIndex = -1;
 		this._listElement = dom.append(this._element, $('.pbv-list'));
@@ -108,7 +109,7 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 
 		this._layout();
 		this._registerListeners();
-		this._focusInitialRow();
+		this._rows.focusInitial();
 	}
 
 	// #region 描画
@@ -159,10 +160,9 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 		const run = () => this._applyCustom();
 		this._register(dom.addDisposableListener(apply, dom.EventType.MOUSE_DOWN, event => event.preventDefault()));
 		this._register(dom.addDisposableListener(apply, dom.EventType.CLICK, () => run()));
-		this._rows.push({ element, run, focusTarget: width });
-		const index = this._rows.length - 1;
+		const index = this._rows.add({ element, run, focusTarget: width });
 		for (const input of [width, height]) {
-			this._register(dom.addDisposableListener(input, dom.EventType.FOCUS, () => this._focusRow(index, false)));
+			this._register(dom.addDisposableListener(input, dom.EventType.FOCUS, () => this._rows.focus(index, false)));
 		}
 	}
 
@@ -263,11 +263,10 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 
 	private _prepareRow(element: HTMLElement, run: () => void): void {
 		element.tabIndex = -1;
-		this._rows.push({ element, run });
-		const index = this._rows.length - 1;
+		const index = this._rows.add({ element, run });
 		this._register(dom.addDisposableListener(element, dom.EventType.MOUSE_DOWN, event => event.preventDefault()));
 		this._register(dom.addDisposableListener(element, dom.EventType.CLICK, () => run()));
-		this._register(dom.addDisposableListener(element, dom.EventType.MOUSE_OVER, () => this._focusRow(index, false)));
+		this._register(dom.addDisposableListener(element, dom.EventType.MOUSE_OVER, () => this._rows.focus(index, false)));
 	}
 
 	// #endregion
@@ -310,99 +309,30 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 
 		this._register(dom.addDisposableListener(this._element, dom.EventType.KEY_DOWN, event => this._onKeyDown(event)));
 
-		// 外側クリック。capture で拾うのは、ページ側の要素が stopPropagation しても閉じられるようにするため
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.MOUSE_DOWN, event => {
-			const target = event.target as Node | null;
-			if (target && (this._element.contains(target) || this.options.anchor.contains(target))) {
-				return;
-			}
-			this.close();
-		}, true));
-		// 自分の一覧のスクロールでは閉じない（開いた直後の scrollIntoView でも発火するため）
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.SCROLL, event => {
-			const target = event.target as Node | null;
-			if (target && this._element.contains(target)) {
-				return;
-			}
-			this.close();
-		}, true));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.RESIZE, () => this.close()));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.BLUR, () => this.close()));
+		// 自分の一覧のスクロールでは閉じない（開いた直後の scrollIntoView でも発火するため。paradisAnchoredPopover.ts）
+		this._register(paradisWatchPopoverDismiss(targetWindow, { element: this._element, anchor: this.options.anchor, close: () => this.close(), closeOnScroll: true, closeOnResize: true, closeOnBlur: true }));
 	}
 
 	private _onKeyDown(event: KeyboardEvent): void {
 		const keyboardEvent = new StandardKeyboardEvent(event);
 		const inInput = event.target === this._widthInput || event.target === this._heightInput;
-		switch (keyboardEvent.keyCode) {
-			case KeyCode.Escape:
-				keyboardEvent.preventDefault();
-				keyboardEvent.stopPropagation();
-				this.close();
-				return;
-			case KeyCode.DownArrow:
-				keyboardEvent.preventDefault();
-				this._focusRow(this._focusedIndex + 1, true);
-				return;
-			case KeyCode.UpArrow:
-				keyboardEvent.preventDefault();
-				this._focusRow(this._focusedIndex - 1, true);
-				return;
-			case KeyCode.Home:
-			case KeyCode.End:
-				if (inInput) {
-					return;
-				}
-				keyboardEvent.preventDefault();
-				this._focusRow(keyboardEvent.keyCode === KeyCode.Home ? 0 : this._rows.length - 1, true);
-				return;
-			case KeyCode.Enter:
-				keyboardEvent.preventDefault();
-				this._rows[this._focusedIndex]?.run();
-				return;
-			case KeyCode.Space:
-				if (inInput) {
-					return;
-				}
-				keyboardEvent.preventDefault();
-				this._rows[this._focusedIndex]?.run();
-				return;
-			case KeyCode.Tab:
-				// フォーカストラップ。自由入力の欄では、幅 → 高さ → 次の行の順に移る
-				keyboardEvent.preventDefault();
-				if (event.target === this._widthInput && !keyboardEvent.shiftKey) {
-					this._heightInput?.focus();
-					return;
-				}
-				if (event.target === this._heightInput && keyboardEvent.shiftKey) {
-					this._widthInput?.focus();
-					return;
-				}
-				this._focusRow(this._focusedIndex + (keyboardEvent.shiftKey ? -1 : 1), true);
-				return;
-			default:
-				return;
-		}
-	}
-
-	private _focusInitialRow(): void {
-		const selected = this._rows.findIndex(row => row.element.classList.contains('is-selected'));
-		this._focusRow(selected >= 0 ? selected : 0, true);
-	}
-
-	private _focusRow(index: number, moveFocus: boolean): void {
-		if (this._rows.length === 0) {
+		// 自由入力の欄の中では、Home・End・Space は欄の中の操作。Tab は幅 → 高さ → 次の行の順に移る
+		if (inInput && (keyboardEvent.keyCode === KeyCode.Home || keyboardEvent.keyCode === KeyCode.End || keyboardEvent.keyCode === KeyCode.Space)) {
 			return;
 		}
-		const wrapped = ((index % this._rows.length) + this._rows.length) % this._rows.length;
-		this._focusedIndex = wrapped;
-		for (const [position, row] of this._rows.entries()) {
-			row.element.classList.toggle('is-focused', position === wrapped);
+		if (keyboardEvent.keyCode === KeyCode.Tab) {
+			if (event.target === this._widthInput && !keyboardEvent.shiftKey) {
+				keyboardEvent.preventDefault();
+				this._heightInput?.focus();
+				return;
+			}
+			if (event.target === this._heightInput && keyboardEvent.shiftKey) {
+				keyboardEvent.preventDefault();
+				this._widthInput?.focus();
+				return;
+			}
 		}
-		if (moveFocus) {
-			const row = this._rows[wrapped];
-			(row.focusTarget ?? row.element).focus();
-			row.element.scrollIntoView({ block: 'nearest' });
-		}
+		this._rows.handleKeyDown(keyboardEvent, () => this.close());
 	}
 
 	// #endregion
