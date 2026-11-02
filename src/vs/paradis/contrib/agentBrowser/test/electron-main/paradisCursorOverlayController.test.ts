@@ -6,7 +6,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { browserViewIsolatedWorldId } from '../../../../../platform/browserView/common/browserView.js';
-import { PARADIS_CURSOR_OVERLAY_TUNING } from '../../common/paradisCursorOverlay.js';
+import { PARADIS_CURSOR_OVERLAY_MISSING, PARADIS_CURSOR_OVERLAY_TUNING } from '../../common/paradisCursorOverlay.js';
 import { IParadisCursorOverlayTarget, ParadisCursorOverlayController } from '../../electron-main/paradisCursorOverlayController.js';
 
 /** Records every script the controller runs, and lets a test decide what the page "returns". */
@@ -38,9 +38,9 @@ class TestTarget implements IParadisCursorOverlayTarget {
 	}
 }
 
-/** The command the generated script carries (the JSON argument of the self-calling function). */
+/** The command the generated script carries (the JSON argument the body is called with, in the short call or the full script). */
 function payloadOf(code: string): Record<string, unknown> {
-	return JSON.parse(/\}\)\((?<json>\{[\s\S]*\})\)$/.exec(code)!.groups!.json);
+	return JSON.parse(/\bf\((?<json>\{.*\})\)(?: :|;)/.exec(code)!.groups!.json);
 }
 
 /** Records the payloads a target receives, with only the fields a test looks at. */
@@ -92,6 +92,38 @@ suite('Paradis Cursor Overlay Controller', () => {
 				worlds: [browserViewIsolatedWorldId, browserViewIsolatedWorldId],
 			},
 		);
+	});
+
+	test('the body is sent once per document: a short call first, the full script only where the body is missing', async () => {
+		const target = new TestTarget();
+		let clock = 0;
+		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+		/** Whether the page has the body (a navigation drops it). */
+		let installed = false;
+		const sent: string[] = [];
+		target.webContents.executeJavaScriptInIsolatedWorld = async (_worldId, scripts) => {
+			const code = scripts[0].code;
+			const full = code.includes('function (c) {');
+			sent.push(`${full ? 'full' : 'call'}:${kindOf(code)}`);
+			if (full) {
+				installed = true;
+				return 0;
+			}
+			return installed ? 0 : PARADIS_CURSOR_OVERLAY_MISSING;
+		};
+
+		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 0, y: 0 });
+		clock += 1_000;
+		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 10, y: 0 });
+		// A navigation drops the body; the next command puts it back.
+		installed = false;
+		clock += 1_000;
+		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 20, y: 0 });
+		// Hiding before a capture only acts on what is already there, so a missing body is not sent for it.
+		installed = false;
+		await controller.hideForCapture(target);
+
+		assert.deepStrictEqual(sent, ['call:move', 'full:move', 'call:move', 'call:move', 'full:move', 'call:hide']);
 	});
 
 	test('the page is never asked how long to wait, so a hung page cannot stall dispatch', async () => {

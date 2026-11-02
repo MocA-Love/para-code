@@ -65,6 +65,8 @@ export interface IParadisOfficeSemanticWorkerQueueOptions<TRun, TResult> {
 	/** 依頼が途絶えてから worker を終了させるまでの時間。 */
 	readonly idleMs: number;
 	readonly timers?: IParadisOfficeSemanticWorkerTimers;
+	/** 実行の締め切りで worker を止めたときに呼ぶ（返ってこない worker を、大きいだけのブックと分けて報告するため）。 */
+	readonly onRunDeadline?: () => void;
 }
 
 /** 依頼ごとの指定。 */
@@ -280,6 +282,11 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 		}
 		this.running = undefined;
 		this.stopWorker();
+		try {
+			this.options.onRunDeadline?.();
+		} catch {
+			// 報告が待ち行列の動きを変えてはいけない。
+		}
 		this.settle(request, this.options.failure('limitExceeded'));
 		this.pump();
 	}
