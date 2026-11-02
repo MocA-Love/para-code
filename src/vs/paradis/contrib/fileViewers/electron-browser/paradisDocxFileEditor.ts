@@ -53,6 +53,7 @@ import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeCo
 import { createParadisOfficeWordPrintModel, type ParadisOfficeWordPrintItem } from '../common/paradisOfficePrint.js';
 import { buildParadisOfficeWordCsp, paradisOfficeBrokenImagePlaceholderSvg, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
+import { PARADIS_WEBVIEW_HOST_MESSAGE_CHECK } from '../common/paradisWebviewHostMessage.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 import type { IParadisShownDocument } from '../common/paradisViewerShownDocument.js';
@@ -1506,10 +1507,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 			// 消毒した文書は、HTML に埋めずにホストから受け取る（受け口を用意したと知らせると、transfer 付きで届く）。
 			// webview の基盤（親のフレーム）から届いた、このページ宛ての文書だけを受ける。
 			const DOCUMENT_ID = ${JSON.stringify(documentId ?? '')};
+			// webview の基盤はページの window.parent を置き換えるので、送り主が本物の親のフレームかで見分ける。
+			const paradisFromHost = ${PARADIS_WEBVIEW_HOST_MESSAGE_CHECK};
 			const paradisDocument = DOCUMENT_ID ? new Promise(resolve => {
 				window.addEventListener('message', event => {
 					const data = event.data;
-					if (event.source === window.parent && data && data.type === 'paradisWordDocument' && data.id === DOCUMENT_ID && data.bytes instanceof ArrayBuffer) {
+					if (paradisFromHost(event) && data && data.type === 'paradisWordDocument' && data.id === DOCUMENT_ID && data.bytes instanceof ArrayBuffer) {
 						resolve(data.bytes);
 					}
 				});
