@@ -51,6 +51,8 @@ export class ParadisAgentChatComposer extends Disposable {
 	readonly element: HTMLElement;
 	private readonly textarea: HTMLTextAreaElement;
 	private readonly sendButton: Button;
+	/** 作業中だけ出す短い注記（送った文は終わってから読まれる）。入力中も見えるよう placeholder とは別に置く。 */
+	private readonly busyNote: HTMLElement;
 	private readonly notice: HTMLElement;
 	private readonly slashMenu: HTMLElement;
 
@@ -86,7 +88,7 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.textarea.spellcheck = false;
 		this.textarea.setAttribute('aria-label', localize('paradisAgentChat.inputAria', "エージェントへのメッセージ"));
 		const footer = append(box, $('.paradis-agent-chat-composer-footer'));
-		append(footer, $('span.paradis-agent-chat-composer-spacer'));
+		this.busyNote = append(footer, $('span.paradis-agent-chat-composer-busy'));
 		this.sendButton = this._register(new Button(footer, { ...defaultButtonStyles }));
 		this.sendButton.element.classList.add('paradis-agent-chat-send');
 		this.sendButton.label = localize('paradisAgentChat.send', "送信");
@@ -200,12 +202,16 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.updateHint();
 	}
 
-	/** 送り方は入力欄の placeholder に書く（入力欄の下に説明の行を常に出さない）。 */
+	/**
+	 * 送り方と改行のしかたは入力欄の placeholder に書く（入力欄の下に説明の行を常には出さない）。
+	 * 作業中に送ると終わってから読まれることは、入力中も見えるよう、作業中の間だけ送信ボタンの左に出す。
+	 */
 	private updateHint(): void {
-		const key = this.host.getSendKey() === 'modEnter' ? (isMacintosh ? '⌘Enter' : 'Ctrl+Enter') : 'Enter';
-		this.textarea.placeholder = this.busy
-			? localize('paradisAgentChat.placeholderBusy', "作業中です。送ると終わってから読まれます（{0} で送信）", key)
-			: localize('paradisAgentChat.placeholder', "メッセージ（{0} で送信）", key);
+		const modifier = isMacintosh ? '⌘' : 'Ctrl+';
+		this.textarea.placeholder = this.host.getSendKey() === 'modEnter'
+			? localize('paradisAgentChat.placeholderModEnter', "メッセージ（{0}Enter で送信 · Enter で改行）", modifier)
+			: localize('paradisAgentChat.placeholder', "メッセージ（Enter で送信 · Shift+Enter で改行）");
+		this.busyNote.textContent = this.busy ? localize('paradisAgentChat.busyNote', "作業中です。送ると終わってから読まれます") : '';
 	}
 
 	private updateSendState(): void {
