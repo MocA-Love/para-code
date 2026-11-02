@@ -7,28 +7,23 @@
 
 import * as assert from 'assert';
 import * as sinon from 'sinon';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
-import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService } from '../../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
-import { TestEditorGroupView } from '../../../../../workbench/test/browser/workbenchTestServices.js';
-import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import {
 	ParadisCcusageWarmLeasePayload,
 	ParadisCcusageWarmTarget,
 } from '../../common/paradisCcusage.js';
 import { ParadisCcusageStatusBarContribution, paradisCcusageStatusPollDelay } from '../../electron-browser/paradisCcusage.contribution.js';
 import { PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH } from '../../electron-browser/paradisCcusageClient.js';
-import { ParadisCcusageEditor } from '../../electron-browser/paradisCcusageEditor.js';
-import { ParadisCcusageInput } from '../../electron-browser/paradisCcusageInput.js';
+import { ParadisCcusageSection } from '../../electron-browser/paradisCcusageSection.js';
 
 const STATUS_BAR_ENABLED_SETTING = 'paradis.ccusage.statusBar.enabled';
 
@@ -212,14 +207,11 @@ function createStatusContribution(harness: ITestCcusageHarness): ParadisCcusageS
 	);
 }
 
-function createEditor(harness: ITestCcusageHarness, storageService: TestStorageService): ParadisCcusageEditor {
-	return new ParadisCcusageEditor(
-		new TestEditorGroupView(1),
-		NullTelemetryService,
-		new TestThemeService(),
-		storageService,
-		harness.instantiationService,
-	);
+/** 使用量の領域と同じく、セクションを入れ物に入れて使う（見えている間だけ warm lease を持つ）。 */
+function createSection(harness: ITestCcusageHarness, parent: HTMLElement): ParadisCcusageSection {
+	const section = harness.instantiationService.createInstance(ParadisCcusageSection);
+	parent.appendChild(section.element);
+	return section;
 }
 
 async function settle(): Promise<void> {
@@ -280,21 +272,18 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		assert.strictEqual(harness.channel.activeLeases.size, 0);
 	});
 
-	test('holds the dashboard warm lease only for a visible editor with an input and reacquires it on return', async () => {
+	test('holds the dashboard warm lease only while the section is visible and reacquires it on return', async () => {
 		sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
 		const harness = createHarness();
 		disposables.add(harness.instantiationService);
 		disposables.add(toDisposable(() => harness.configuration.dispose()));
-		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
-		const input = disposables.add(ParadisCcusageInput.instance);
 		const parent = document.createElement('div');
 		disposables.add(toDisposable(() => parent.remove()));
-		editor.create(parent);
+		const section = disposables.add(createSection(harness, parent));
 
-		editor.setVisible(true);
 		await settle();
 		assert.strictEqual(harness.channel.activeLeases.size, 0);
-		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		section.setVisible(true);
 		await settle();
 		assert.deepStrictEqual(singleActiveLease(harness.channel), [
 			{ kind: 'daily', options: { since: '20260519' } },
@@ -303,39 +292,30 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 			{ kind: 'projects', options: { since: '20260519' } },
 		]);
 
-		editor.setVisible(false);
+		section.setVisible(false);
 		await settle();
 		assert.strictEqual(harness.channel.activeLeases.size, 0);
-		editor.setVisible(true);
+		section.setVisible(true);
 		await settle();
 		assert.strictEqual(harness.channel.activeLeases.size, 1);
-		editor.clearInput();
-		await settle();
-		assert.strictEqual(harness.channel.activeLeases.size, 0);
-		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
-		await settle();
-		assert.strictEqual(harness.channel.activeLeases.size, 1);
-		editor.dispose();
+		section.dispose();
 		await settle();
 		assert.strictEqual(harness.channel.activeLeases.size, 0);
 	});
 
-	test('releases a late dashboard acquire after the editor is hidden', async () => {
+	test('releases a late dashboard acquire after the section is hidden', async () => {
 		const harness = createHarness();
 		disposables.add(harness.instantiationService);
 		disposables.add(toDisposable(() => harness.configuration.dispose()));
-		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
-		const input = disposables.add(ParadisCcusageInput.instance);
 		const parent = document.createElement('div');
 		disposables.add(toDisposable(() => parent.remove()));
-		editor.create(parent);
-		editor.setVisible(true);
+		const section = disposables.add(createSection(harness, parent));
 		harness.channel.holdNextWarmLeases();
-		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		section.setVisible(true);
 		await settle();
 		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
 
-		editor.setVisible(false);
+		section.setVisible(false);
 		harness.channel.resolveNextWarmLease();
 		await settle();
 		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.active), [true, false]);
@@ -345,47 +325,19 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		assert.strictEqual(harness.channel.activeLeases.size, 0);
 	});
 
-	test('releases a late dashboard acquire after the editor input is cleared', async () => {
+	test('releases a late dashboard acquire after the section is disposed', async () => {
 		const harness = createHarness();
 		disposables.add(harness.instantiationService);
 		disposables.add(toDisposable(() => harness.configuration.dispose()));
-		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
-		const input = disposables.add(ParadisCcusageInput.instance);
 		const parent = document.createElement('div');
 		disposables.add(toDisposable(() => parent.remove()));
-		editor.create(parent);
-		editor.setVisible(true);
+		const section = disposables.add(createSection(harness, parent));
 		harness.channel.holdNextWarmLeases();
-		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		section.setVisible(true);
 		await settle();
 		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
 
-		editor.clearInput();
-		harness.channel.resolveNextWarmLease();
-		await settle();
-		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.active), [true, false]);
-		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
-		harness.channel.resolveNextWarmLease();
-		await settle();
-		assert.strictEqual(harness.channel.activeLeases.size, 0);
-	});
-
-	test('releases a late dashboard acquire after the editor is disposed', async () => {
-		const harness = createHarness();
-		disposables.add(harness.instantiationService);
-		disposables.add(toDisposable(() => harness.configuration.dispose()));
-		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
-		const input = disposables.add(ParadisCcusageInput.instance);
-		const parent = document.createElement('div');
-		disposables.add(toDisposable(() => parent.remove()));
-		editor.create(parent);
-		editor.setVisible(true);
-		harness.channel.holdNextWarmLeases();
-		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
-		await settle();
-		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
-
-		editor.dispose();
+		section.dispose();
 		harness.channel.resolveNextWarmLease();
 		await settle();
 		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.active), [true, false]);
@@ -441,13 +393,10 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		disposables.add(harness.instantiationService);
 		disposables.add(toDisposable(() => harness.configuration.dispose()));
 		const status = disposables.add(createStatusContribution(harness));
-		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
-		const input = disposables.add(ParadisCcusageInput.instance);
 		const parent = document.createElement('div');
 		disposables.add(toDisposable(() => parent.remove()));
-		editor.create(parent);
-		editor.setVisible(true);
-		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		const section = disposables.add(createSection(harness, parent));
+		section.setVisible(true);
 		await settle();
 
 		const toolbarButtons = [...parent.querySelectorAll('button')];
@@ -487,7 +436,7 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		]);
 
 		status.dispose();
-		editor.dispose();
+		section.dispose();
 	});
 
 	test('keeps foreground fetches and their error UI independent from a failed warm lease IPC call', async () => {
@@ -505,19 +454,16 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		assert.strictEqual(harness.channel.dailyCalls(), 1);
 
 		harness.channel.dailyFailure = new Error('foreground dashboard failure');
-		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
-		const input = disposables.add(ParadisCcusageInput.instance);
 		const parent = document.createElement('div');
 		disposables.add(toDisposable(() => parent.remove()));
-		editor.create(parent);
-		editor.setVisible(true);
-		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		const section = disposables.add(createSection(harness, parent));
+		section.setVisible(true);
 		await settle();
 		// 文言は翻訳で変わるので、失敗の理由が画面に出ていることだけを見る
 		assert.ok(parent.textContent?.includes('foreground dashboard failure'));
 
 		status.dispose();
-		editor.dispose();
+		section.dispose();
 	});
 
 	// fetchReport を持たない古い接続先（REH）では、1 回だけ fetchReport を試して従来のコマンドへ落ち、以後は従来のコマンドだけを使う。

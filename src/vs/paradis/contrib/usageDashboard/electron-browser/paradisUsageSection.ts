@@ -6,16 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 使用量ダッシュボード (ccusage / GitHub API / rtk) の各パネルが満たす共通の形。
+// 使用量の領域（paradisUsageArea.ts）の各パネルが満たす共通の形。
 //
-// もともと3機能はそれぞれ独立した EditorPane (タブ) だったが、統合ダイアログからも
-// 同じ中身を出せるよう、描画本体を EditorPane から切り離してこのインターフェースに
-// 合わせた「セクション」クラスへ移した。EditorPane 側はセクションを1つ内包するだけの
-// 薄いラッパになっていて、両方の入口が同じコードを通る。
-//
-// ホスト (タブ / ダイアログ) が違っても扱いを変えなくて済むよう、幅と可視状態は
-// ホストから明示的に渡す。EditorPane の layout()/setEditorVisible() や、ダイアログの
-// ResizeObserver / タブ切り替えがそれぞれの経路でここへ流し込む。
+// もともと各機能はそれぞれ独立した EditorPane (タブ) だった。描画本体を EditorPane から切り離してこの
+// インターフェースに合わせた「セクション」クラスへ移し、いまは統合のモーダルの使用量の領域だけが包む。
+// 幅と可視状態はホスト（領域）から明示的に渡す。
 
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 
