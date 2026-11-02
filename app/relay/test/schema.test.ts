@@ -39,4 +39,38 @@ describe('DeviceDO schema', () => {
 			untouched: { version: 1, index: 0, columns },
 		});
 	});
+
+	it('produces the tables, columns and indexes this schema version promises', async () => {
+		// 表・列・索引を変えたら、この期待の形と一緒に SCHEMA_VERSION（deviceDO.ts）も上げる。上げ忘れると、
+		// 済んだ版を持つ今の DO では新しい文が流れない
+		const stub = env.DEVICES.get(env.DEVICES.newUniqueId());
+		const shape = await runInDurableObject(stub, (_instance, state) => {
+			const sql = state.storage.sql;
+			const objects = sql.exec(`SELECT type, name, tbl_name AS tableName FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY type, name`).toArray();
+			const columns = Object.fromEntries(objects.filter(object => object.type === 'table').map(object => [object.name, sql.exec(`PRAGMA table_info(${object.name as string})`).toArray().map(row => `${row.name as string} ${row.type as string}`)]));
+			return { version: schemaState(sql).version, objects, columns };
+		});
+		expect(shape).toEqual({
+			version: 1,
+			objects: [
+				{ type: 'index', name: 'push_requests_at', tableName: 'push_requests' },
+				{ type: 'table', name: 'device', tableName: 'device' },
+				{ type: 'table', name: 'meta', tableName: 'meta' },
+				{ type: 'table', name: 'mobiles', tableName: 'mobiles' },
+				{ type: 'table', name: 'pc_notices', tableName: 'pc_notices' },
+				{ type: 'table', name: 'pending', tableName: 'pending' },
+				{ type: 'table', name: 'push_queue', tableName: 'push_queue' },
+				{ type: 'table', name: 'push_requests', tableName: 'push_requests' },
+			],
+			columns: {
+				device: ['id INTEGER', 'pcPublicKey TEXT', 'pcTokenHash TEXT'],
+				meta: ['key TEXT', 'value INTEGER'],
+				mobiles: ['mobileId TEXT', 'name TEXT', 'tokenHash TEXT', 'createdAt INTEGER', 'apnsToken TEXT', 'apnsEnv TEXT', 'lastSeenAt INTEGER'],
+				pc_notices: ['mobileId TEXT', 'at INTEGER'],
+				pending: ['pairId TEXT', 'tokenHash TEXT', 'expiresAt INTEGER'],
+				push_queue: ['id INTEGER', 'mobileId TEXT', 'payload TEXT', 'collapseId TEXT', 'threadId TEXT', 'attempt INTEGER', 'nextAt INTEGER', 'expiresAt INTEGER'],
+				push_requests: ['requestId TEXT', 'at INTEGER'],
+			},
+		});
+	});
 });
