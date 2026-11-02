@@ -123,17 +123,19 @@
 /* 縦位置。div では vertical-align が効かないので、縦に並べて寄せる（既定は Excel と同じ下寄せ）。 */
 /* allow-any-unicode-next-line */
 /* :where で除外の条件の優先度を 0 にする（そうしないと下の上寄せ・中央寄せのクラスに勝ってしまう）。 */
-.paradis-spreadsheet-virtual-cell:where(:not(.paradis-spreadsheet-virtual-cell-vertical):not(.paradis-spreadsheet-virtual-colhead):not(.paradis-spreadsheet-virtual-rowhead):not(.paradis-spreadsheet-virtual-corner)) {
+/* allow-any-unicode-next-line */
+/* Excel のビューアの入れ物（.paradis-spreadsheet-virtual-excel）だけ。CSV のビューアは同じグリッドを今の見た目のまま使う。 */
+.paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell:where(:not(.paradis-spreadsheet-virtual-cell-vertical):not(.paradis-spreadsheet-virtual-colhead):not(.paradis-spreadsheet-virtual-rowhead):not(.paradis-spreadsheet-virtual-corner)) {
 	display: flex;
 	flex-direction: column;
 	justify-content: flex-end;
 }
 
-.paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-valign-top {
+.paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-valign-top {
 	justify-content: flex-start;
 }
 
-.paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-valign-middle {
+.paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-valign-middle {
 	justify-content: center;
 }
 
