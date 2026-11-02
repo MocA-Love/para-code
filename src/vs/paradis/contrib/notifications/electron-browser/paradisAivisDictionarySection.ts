@@ -32,6 +32,7 @@ import { IParadisNotificationsSettingsService } from '../browser/paradisNotifica
 import { getCachedAivisDictionaryList, invalidateAivisDictionaryListCache, setCachedAivisDictionaryList } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
 
@@ -429,7 +430,27 @@ interface IWordRow {
 	priority: number;
 }
 
-class ParadisDictionaryEditorDialog extends Disposable {
+const STR_DRAFT_RESTORED = localize('paradis.notif.dict.draftRestored', "保存する前に閉じた編集を戻しました。いらなければ「キャンセル」で捨てられます。");
+
+/** 辞書の編集の中身（保存前の下書き・読み込んだときの写しに使う）。 */
+interface IDictionaryEditorState {
+	readonly name: string;
+	readonly description: string;
+	readonly words: readonly IWordRow[];
+}
+
+/**
+ * 保存せずに閉じた辞書の編集（辞書の uuid → 中身）。別のモーダルを開いたとき（コマンドパレットからの紐付けのダイアログなど）や
+ * Hub ごと閉じたときに、打ちかけの入力を失わないよう覚えておき、次にその辞書を開いたときに戻す。「キャンセル」と保存で捨てる。
+ * このウィンドウを開いている間だけ（ディスクには書かない）。
+ */
+const dictionaryEditorDrafts = new Map<string, IDictionaryEditorState>();
+
+function copyEditorState(state: IDictionaryEditorState): IDictionaryEditorState {
+	return { name: state.name, description: state.description, words: state.words.map(word => ({ ...word })) };
+}
+
+export class ParadisDictionaryEditorDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _bodyEl: HTMLElement;
@@ -439,6 +460,11 @@ class ParadisDictionaryEditorDialog extends Disposable {
 	private _words: IWordRow[] = [];
 	private _name = '';
 	private _description = '';
+	/** 読み込んだときの中身（保存前の変更があるかを比べる）。読み込む前は undefined。 */
+	private _loaded: string | undefined;
+	/** 「キャンセル」と保存で閉じるときは、下書きを残さない。 */
+	private _discardOnClose = false;
+	private _closed = false;
 
 	constructor(
 		layoutService: ILayoutService,
@@ -467,7 +493,12 @@ class ParadisDictionaryEditorDialog extends Disposable {
 			}
 		}));
 
+		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
+		// 別のモーダルに閉じられたとき・Esc・外側の押下では、保存前の変更を下書きとして残す（dispose）
+		dialog.tabIndex = -1;
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose() }));
 		layoutService.activeContainer.appendChild(this._backdrop);
+		dialog.focus();
 
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisAivisDictionaryDetail>('getAivisDictionary', [apiKey, uuid]).then(detail => {
 			if (this._store.isDisposed) {
@@ -483,7 +514,19 @@ class ParadisDictionaryEditorDialog extends Disposable {
 				wordType: w.word_type,
 				priority: w.priority,
 			}));
+			this._loaded = JSON.stringify(this._state());
+			const draft = dictionaryEditorDrafts.get(uuid);
+			dictionaryEditorDrafts.delete(uuid);
+			if (draft) {
+				const restored = copyEditorState(draft);
+				this._name = restored.name;
+				this._description = restored.description;
+				this._words = [...restored.words];
+			}
 			this._renderBody(dialog);
+			if (draft) {
+				this._bodyEl.prepend($('.pns-nested-desc', undefined, STR_DRAFT_RESTORED));
+			}
 		}, error => {
 			if (this._store.isDisposed) {
 				return;
@@ -551,7 +594,10 @@ class ParadisDictionaryEditorDialog extends Disposable {
 		const footer = dom.append(dialog, $('.pns-nested-footer'));
 		const cancelBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
 		cancelBtn.textContent = STR_CANCEL;
-		this._register(dom.addDisposableListener(cancelBtn, 'click', () => this.dispose()));
+		this._register(dom.addDisposableListener(cancelBtn, 'click', () => {
+			this._discardOnClose = true;
+			this.dispose();
+		}));
 
 		const saveBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary')) as HTMLButtonElement;
 		saveBtn.textContent = STR_SAVE;
@@ -588,6 +634,7 @@ class ParadisDictionaryEditorDialog extends Disposable {
 			}));
 			try {
 				await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('updateAivisDictionary', [this.apiKey, this.uuid, this._name.trim(), this._description.trim(), words]);
+				this._discardOnClose = true;
 				this.onSaved();
 				this.dispose();
 			} catch (error) {
@@ -646,7 +693,19 @@ class ParadisDictionaryEditorDialog extends Disposable {
 		}));
 	}
 
+	private _state(): IDictionaryEditorState {
+		return { name: this._name, description: this._description, words: this._words };
+	}
+
 	override dispose(): void {
+		if (this._closed) {
+			return;
+		}
+		this._closed = true;
+		// 読み込んだときから変わっていれば、下書きとして残す（「キャンセル」・保存のときは残さない）
+		if (!this._discardOnClose && this._loaded !== undefined && JSON.stringify(this._state()) !== this._loaded) {
+			dictionaryEditorDrafts.set(this.uuid, copyEditorState(this._state()));
+		}
 		this._backdrop.remove();
 		super.dispose();
 	}
