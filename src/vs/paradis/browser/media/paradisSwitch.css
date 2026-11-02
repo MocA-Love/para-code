@@ -58,7 +58,26 @@
 	outline-offset: 2px;
 }
 
+/*
+	High contrast themes leave the button backgrounds empty, so on and off would differ only by the knob
+	position. Off: contrastBorder frame and a foreground knob. On: contrastActiveBorder frame and knob.
+*/
 .monaco-workbench.hc-black .paradis-switch,
 .monaco-workbench.hc-light .paradis-switch {
 	border-color: var(--vscode-contrastBorder);
+}
+
+.monaco-workbench.hc-black .paradis-switch::after,
+.monaco-workbench.hc-light .paradis-switch::after {
+	background: var(--vscode-foreground);
+}
+
+.monaco-workbench.hc-black .paradis-switch.checked,
+.monaco-workbench.hc-light .paradis-switch.checked {
+	border-color: var(--vscode-contrastActiveBorder);
+}
+
+.monaco-workbench.hc-black .paradis-switch.checked::after,
+.monaco-workbench.hc-light .paradis-switch.checked::after {
+	background: var(--vscode-contrastActiveBorder);
 }
