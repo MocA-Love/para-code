@@ -51,16 +51,17 @@ export interface IParadisPermissionsDialogResult {
 }
 
 /**
- * 「変更」も「キャンセル」も押さずに閉じた権限の選択（キー → 選んだ値）。キーには開いたときの権限を含め、
- * 項目の権限がその後に変わっていたら戻さない。
+ * 「変更」も「キャンセル」も押さずに閉じた権限の選択（キー → 選んだ権限）。キーには開いたときの権限を含め、
+ * 項目の権限がその後に変わっていたら戻さない。「中身にも適用」は覚えない（戻すと、開いて Enter を押すだけで
+ * 確かめずに中身まで変えてしまうため。いつも外した状態で開く）。
  */
-const permissionsDrafts = new ParadisModalDrafts<IParadisPermissionsDialogResult>();
+const permissionsDrafts = new ParadisModalDrafts<{ readonly mode: number }>();
 
 /** ダイアログを開き、「変更」なら選んだ値を、閉じたら undefined を返す。 */
 export function paradisShowPermissionsDialog(container: HTMLElement, options: IParadisPermissionsDialogOptions): Promise<IParadisPermissionsDialogResult | undefined> {
 	return new Promise(resolve => {
 		const store = new DisposableStore();
-		const initial: IParadisPermissionsDialogResult = { mode: options.initialMode & 0o7777, recursive: false };
+		const initial = { mode: options.initialMode & 0o7777 };
 		const draftKey = options.draftKey === undefined ? undefined : `${options.draftKey}|${initial.mode}`;
 		const draft = draftKey === undefined ? undefined : permissionsDrafts.take(draftKey);
 		let mode = draft?.mode ?? initial.mode;
@@ -75,7 +76,7 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 				if (discard) {
 					permissionsDrafts.discard(draftKey);
 				} else {
-					permissionsDrafts.keepIfChanged(draftKey, { mode, recursive: !!recursiveInput?.checked }, paradisModalDraftSnapshot(initial));
+					permissionsDrafts.keepIfChanged(draftKey, { mode }, paradisModalDraftSnapshot(initial));
 				}
 			}
 			backdrop.remove();
@@ -155,7 +156,6 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 			const recursiveRow = dom.append(modal, $('label.para-ft-recursive'));
 			recursiveInput = dom.append(recursiveRow, $<HTMLInputElement>('input'));
 			recursiveInput.type = 'checkbox';
-			recursiveInput.checked = !!draft?.recursive;
 			dom.append(recursiveRow, $('span')).textContent = localize('paradis.fileTransfer.permissions.recursive', "中身にも適用（ファイルの実行権は元の有無を保ちます。リンクの先は変えません）");
 		}
 

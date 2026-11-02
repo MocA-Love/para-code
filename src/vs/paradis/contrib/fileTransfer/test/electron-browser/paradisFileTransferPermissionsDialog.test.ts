@@ -14,15 +14,16 @@ import { paradisOpenAnotherModal } from '../../../paradisSettings/test/browser/p
 suite('ParadisFileTransferPermissionsDialog', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('keeps the chosen permissions when another modal closes the dialog, restores them for the same items, and drops them on Cancel', async () => {
+	test('keeps the chosen permissions (but not "apply to contents") when another modal closes the dialog, restores them for the same items, and drops them on Cancel', async () => {
 		const root = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(root);
 		const options = (draftKey: string, initialMode = 0o644): IParadisPermissionsDialogOptions => ({
-			title: 'deploy.sh', location: 'example:/srv/deploy.sh', initialMode, typeChar: '-', hasDirectory: false, draftKey,
+			title: 'deploy', location: 'example:/srv/deploy', initialMode, typeChar: 'd', hasDirectory: true, draftKey,
 		});
 		const octal = () => root.querySelector<HTMLInputElement>('.para-ft-octal-input')!.value;
 		const hasNote = () => (root.textContent ?? '').includes('保存する前に閉じた編集を戻しました');
-		const view = () => ({ octal: octal(), note: hasNote() });
+		const recursive = () => root.querySelector<HTMLInputElement>('.para-ft-recursive input')!;
+		const view = () => ({ octal: octal(), recursive: recursive().checked, note: hasNote() });
 		const cancel = () => root.querySelector<HTMLButtonElement>('.para-ft-modal-buttons button.secondary')!.click();
 		try {
 			const first = paradisShowPermissionsDialog(root, options('remote\nfile-a'));
@@ -30,6 +31,7 @@ suite('ParadisFileTransferPermissionsDialog', () => {
 			const ownerExecute = root.querySelectorAll<HTMLInputElement>('.para-ft-pgrid input')[2];
 			ownerExecute.checked = true;
 			ownerExecute.dispatchEvent(new Event('change'));
+			recursive().checked = true;
 			const other = paradisOpenAnotherModal();
 			const closedByOther = await first;
 			other.dispose();
@@ -55,10 +57,10 @@ suite('ParadisFileTransferPermissionsDialog', () => {
 			await third;
 			assert.deepStrictEqual({ closedByOther, otherItemView, modeChangedView, afterReopen, afterCancel, leftOpen: root.children.length }, {
 				closedByOther: undefined,
-				otherItemView: { octal: '644', note: false },
-				modeChangedView: { octal: '600', note: false },
-				afterReopen: { octal: '744', note: true },
-				afterCancel: { octal: '644', note: false },
+				otherItemView: { octal: '644', recursive: false, note: false },
+				modeChangedView: { octal: '600', recursive: false, note: false },
+				afterReopen: { octal: '744', recursive: false, note: true },
+				afterCancel: { octal: '644', recursive: false, note: false },
 				leftOpen: 0,
 			});
 		} finally {
