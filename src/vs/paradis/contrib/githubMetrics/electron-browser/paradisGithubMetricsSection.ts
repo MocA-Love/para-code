@@ -264,6 +264,14 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 			.sort((a, b) => b.rolling1h.calls - a.rolling1h.calls)
 			.slice(0, 3)
 			.map(operation => `${operation.callSite} ${operation.rolling1h.calls}`);
+		// 残量を取る呼び出し（GET /user と GraphQL の viewer）も枠を使うので、帯の数に含めたまま、内訳にもそう書く
+		// （/rate_limit と違って枠に数えられる）。下の「Para Code の内訳」には出さないので、ここで数を合わせる
+		const probes = snapshot.operations
+			.filter(operation => operation.topWorktreePath === PARADIS_GITHUB_MONITOR_SPACE)
+			.reduce((sum, operation) => sum + operation.rolling1h.calls - operation.rolling1h.rateLimited, 0);
+		if (probes > 0) {
+			top.push(localize('paradis.githubMetrics.who.probes', "残量の取得 {0}", probes));
+		}
 		dom.append(paraRow, $('.paradis-ghm-sub')).textContent = top.length > 0
 			? localize('paradis.githubMetrics.who.paraCodeTop', "REST {0}・GraphQL {1} · {2}", paraCode.core, paraCode.graphql, top.join('・'))
 			: localize('paradis.githubMetrics.who.paraCodeCounts', "REST {0}・GraphQL {1}", paraCode.core, paraCode.graphql);
