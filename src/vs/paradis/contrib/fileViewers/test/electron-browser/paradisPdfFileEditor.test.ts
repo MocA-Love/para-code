@@ -5,6 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 import { deepStrictEqual, ok, strictEqual } from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -146,6 +147,63 @@ suite('ParadisPdfFileEditor', () => {
 		const afterStale = spans.length;
 		messages.fire({ message: { type: PARADIS_PDF_FIRST_PAINT_MESSAGE, render, pages: 3 } });
 		deepStrictEqual({ afterStale, sent: spans.map(span => [span.safe_viewer, span.safe_pages, span.safe_size_kb]) }, { afterStale: 0, sent: [['pdf', 3, 2]] });
+	});
+
+	test('keeps the shown PDF when coming back to its tab, unless the file changed or the first paint never came', async () => {
+		// 別の種類のタブへ移ると clearInput → setVisible(false)、戻ると setVisible(true) → setInput になる。
+		const disposables = store.add(new DisposableStore());
+		const run = async (confirmPaint: boolean, etagOnReturn: string) => {
+			const messages = disposables.add(new Emitter<{ message: unknown }>());
+			const html: string[] = [];
+			let etag = 'v1';
+			const webview = {
+				contentOptions: {},
+				onFatalError: Event.None,
+				onMessage: messages.event,
+				setHtml: (value: string) => { html.push(value); },
+				claim: () => { },
+				release: () => { },
+				focus: () => { },
+				setAnchorElement: () => { },
+				container: document.createElement('div'),
+				dispose: () => { },
+			} as unknown as IOverlayWebview;
+			const fileService = {
+				readFile: async () => ({ value: VSBuffer.fromString('%PDF-') }),
+				stat: async () => ({ size: 2048, etag }),
+				createWatcher: () => { throw new Error('watching is unavailable in this test'); },
+				onDidWatchError: Event.None,
+			} as unknown as IFileService;
+			const sharedProcessService = {
+				getChannel: () => ({ call: () => Promise.reject(new Error('no preview server')), listen: () => { throw new Error('not used'); } }),
+			} as unknown as ISharedProcessService;
+			const editor = disposables.add(new ParadisPdfFileEditor(new TestEditorGroupView(1), sharedProcessService, NullTelemetryService, new TestThemeService(), disposables.add(new TestStorageService()), { createWebviewOverlay: () => webview } as unknown as IWebviewService, fileService, new TestLayoutService()));
+			editor.create(document.createElement('div'));
+			const resource = URI.file('/workspace/document.pdf');
+			const createInput = () => disposables.add(new ParadisPdfInput(resource, { isDirty: () => false } as unknown as ITextFileService, { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService));
+			// 描画の前置き（ライブラリの置き場の解決・ヘッダーと stat の読み出し）が終わるまで待つ（Word のテストと同じ待ち方）。
+			const settle = () => timeout(50);
+			await editor.setInput(createInput(), undefined, Object.create(null), CancellationToken.None);
+			editor.layout(new Dimension(800, 600));
+			await settle();
+			if (confirmPaint) {
+				const render = /render: "(?<render>[^"]+)"/.exec(html[html.length - 1] ?? '')?.groups?.render;
+				messages.fire({ message: { type: PARADIS_PDF_FIRST_PAINT_MESSAGE, render, pages: 1 } });
+			}
+			editor.clearInput();
+			editor.setVisible(false);
+			etag = etagOnReturn;
+			editor.setVisible(true);
+			await editor.setInput(createInput(), undefined, Object.create(null), CancellationToken.None);
+			await settle();
+			return html.length;
+		};
+
+		deepStrictEqual({
+			unchanged: await run(true, 'v1'),
+			changedWhileAway: await run(true, 'v2'),
+			neverPainted: await run(false, 'v1'),
+		}, { unchanged: 1, changedWhileAway: 2, neverPainted: 2 });
 	});
 
 	test('maps PDF preflight results to the observable render outcome', () => {
