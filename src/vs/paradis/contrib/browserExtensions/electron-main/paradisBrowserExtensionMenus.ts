@@ -51,6 +51,7 @@ import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, Pa
 import type { IParadisLoadedExtension } from './paradisBrowserExtensionActions.js';
 import { paradisChromeFrameId, paradisMatchesUrlPattern, type IParadisTabView, type ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 
 /** 右クリックの項目とショートカットに要る、main のほかの部分（拡張機能の管理が渡す）。 */
 export interface IParadisMenusEnvironment {
@@ -99,6 +100,7 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 	/** セッションの保存先 → 拡張機能 → 項目。 */
 	private _state: State = {};
 	private _saving: Promise<void> = Promise.resolve();
+	private _writer: ParadisJsonStateWriter | undefined;
 	private readonly _snapshots = new Map<string, IMenuSnapshot>();
 	/** この起動で削除した拡張機能（削除と同時の書き込みが、消した項目を書き戻さないように）。 */
 	private readonly _forgotten = new Set<string>();
@@ -156,12 +158,8 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 	}
 
 	private _save(): Promise<void> {
-		const state = this._state;
-		this._saving = this._saving.then(async () => {
-			const temporary = `${this._path}.tmp`;
-			await fs.writeFile(temporary, JSON.stringify(state));
-			await fs.rename(temporary, this._path);
-		}).catch(error => this._logService.warn('[paradis] could not save the browser extension menu items', error));
+		this._writer ??= new ParadisJsonStateWriter(this._path);
+		this._saving = this._writer.write(JSON.stringify(this._state)).catch(error => this._logService.warn('[paradis] could not save the browser extension menu items', error));
 		return this._saving;
 	}
 

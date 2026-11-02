@@ -15,7 +15,6 @@
 // 変わらない。理由の詳細は同モジュールの冒頭を参照。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { generateUuid } from '../../../../base/common/uuid.js';
 import { URI } from '../../../../base/common/uri.js';
 import { isEqual } from '../../../../base/common/resources.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -43,9 +42,10 @@ import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/
 import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
 import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
+import { PARADIS_VIEWER_BODY_ROOT_ID, paradisViewerBodySwapScript, type IParadisRenderedDocument } from '../common/paradisViewerBodySwap.js';
 import { inlineParadisMarkdownMedia, ParadisInlineMediaCache, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
 import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
-import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension } from './paradisMarkdownMermaid.js';
+import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension, PARADIS_MERMAID_RERUN_SCRIPT } from './paradisMarkdownMermaid.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from './paradisViewerZoom.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
@@ -160,7 +160,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		}
 	}
 
-	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview, token: CancellationToken): Promise<string> {
+	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview, token: CancellationToken): Promise<IParadisRenderedDocument> {
 		// フロントマターを素の Markdown として marked に渡すと、先頭の `---` が水平線、
 		// 閉じの `---` が setext 見出し記法と解釈されて YAML 全体が巨大な見出しに化ける。
 		// 事前に分離し、設定スタイルに応じた表示（非表示 / YAML コードブロック / テーブル）に置き換える。
@@ -188,7 +188,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 			body => rewriteParadisMarkdownLinks(body, resource, workspaceFolder),
 			this._mediaCache);
 
-		const nonce = generateUuid();
+		// 同じ webview の描き直しでは同じ nonce（本文だけを差し替えるとき、外側の CSP がそのまま使えるように）。
+		const nonce = this.documentNonce;
 		const colorMap = TokenizationRegistry.getColorMap();
 		const tokenCss = colorMap ? generateTokensCSSForColorMap(colorMap) : '';
 
@@ -197,16 +198,17 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		const hasMermaid = containsParadisMermaidBlock(media.html);
 		const mermaidScriptSource = hasMermaid ? await loadParadisMermaidScriptSource(this._fileService) : undefined;
 		if (token.isCancellationRequested) {
-			return '';
+			return { html: '' };
 		}
 		const mermaidEnabled = hasMermaid && mermaidScriptSource !== undefined;
+		const body = `${frontMatter.htmlPrefix}${media.html}`;
 
 		// 実行できるのは、この HTML 自身が埋め込む nonce 付き <script>（ビューアの補助スクリプトと、
 		// mermaid を使う文書では vendored mermaid.js 本体 + 直後の初期化コード）だけであり、
 		// Markdown の記述内容や外部ソースからスクリプトを注入する余地はない。
 		const scriptSrc = ` script-src 'nonce-${nonce}';`;
 
-		return `<!DOCTYPE html>
+		const html = `<!DOCTYPE html>
 <html>
 	<head>
 		<meta charset="utf-8">
@@ -221,12 +223,16 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		</style>
 	</head>
 	<body class="paradis-markdown-body">
-		${frontMatter.htmlPrefix}${media.html}
+		<div id="${PARADIS_VIEWER_BODY_ROOT_ID}">${body}</div>
 		${mermaidEnabled ? this._renderMermaidScripts(nonce, mermaidScriptSource!) : ''}
 		${paradisViewerZoomScript(nonce)}
+		${paradisViewerBodySwapScript(nonce, mermaidEnabled ? PARADIS_MERMAID_RERUN_SCRIPT : '')}
 		${this.viewerPageScripts(resource, nonce)}
 	</body>
 </html>`;
+		// 2 回目以降の描き直しは、外側（nonce・配色・Mermaid の有無）が同じなら本文だけを送る。Mermaid 本体（約 3.5MB）と
+		// スタイルは最初の 1 回だけ読み込む。倍率はページへ別に送っているので鍵に入れない。
+		return { html, swap: { key: `${nonce}\n${mermaidEnabled}\n${tokenCss}`, body } };
 	}
 
 	/**

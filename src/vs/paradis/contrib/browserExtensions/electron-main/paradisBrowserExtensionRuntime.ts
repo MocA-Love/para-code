@@ -17,6 +17,7 @@
 
 import { promises as fs } from 'fs';
 import { IParadisExtensionApiCaller, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
+import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 
 /** 最後に読み込んだ版。 */
 export interface IParadisLoadedVersions {
@@ -59,6 +60,7 @@ function isVersions(value: unknown): value is IParadisLoadedVersions {
 export class ParadisBrowserExtensionRuntimeState {
 	private _state: State = {};
 	private _saving: Promise<void> = Promise.resolve();
+	private _writer: ParadisJsonStateWriter | undefined;
 	/** この起動で削除した拡張機能（同じ起動の中では入れ直せないので、以後は記録しない）。 */
 	private readonly _forgotten = new Set<string>();
 
@@ -102,12 +104,8 @@ export class ParadisBrowserExtensionRuntimeState {
 	}
 
 	private _save(): Promise<void> {
-		const state = this._state;
-		this._saving = this._saving.then(async () => {
-			const temporary = `${this._path}.tmp`;
-			await fs.writeFile(temporary, JSON.stringify(state));
-			await fs.rename(temporary, this._path);
-		}).catch(error => this._logService.warn('[paradis] could not save the browser extension runtime state', error));
+		this._writer ??= new ParadisJsonStateWriter(this._path);
+		this._saving = this._writer.write(JSON.stringify(this._state)).catch(error => this._logService.warn('[paradis] could not save the browser extension runtime state', error));
 		return this._saving;
 	}
 }
