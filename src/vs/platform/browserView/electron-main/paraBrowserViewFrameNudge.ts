@@ -5,7 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { WebContents } from 'electron';
+import type { WebContents, WebContentsView } from 'electron';
 
 /**
  * How long one capture may stay in flight before another may start. `capturePage` on a surface
@@ -39,6 +39,45 @@ export class ParaBrowserViewCaptureNudge {
 	private disabled = false;
 
 	constructor(private readonly now: () => number = Date.now) { }
+
+	/**
+	 * Draw this view exactly once while it stays hidden, then hide it again.
+	 *
+	 * A hidden view is never drawn by the display compositor, so viz keeps counting undrawn
+	 * CompositorFrames and cuts off BeginFrame delivery once more than three pile up
+	 * (`CompositorFrameSinkSupport::ShouldSendBeginFrame`). The counter only moves in
+	 * `OnSurfaceWillDraw()`, i.e. when the surface is actually drawn, so a view that stays hidden
+	 * never recovers on its own — it sits at roughly 1fps until something draws it. That starves
+	 * `requestAnimationFrame` and `IntersectionObserver`, which is exactly what automation waits on
+	 * before clicking. Normally Chromium would have hidden the renderer too and none of this would
+	 * run, but `setBackgroundThrottling(false)` keeps it producing frames nobody draws.
+	 *
+	 * Briefly showing the view puts its surface back on the draw path and resets the counter. This
+	 * mirrors what the screenshot path already does, and deliberately pokes the underlying
+	 * `WebContentsView` rather than `BrowserView.setVisible` so the view's intended visibility and its
+	 * visibility event are left untouched (moved here from `BrowserView.nudgeHiddenFrame`).
+	 *
+	 * @returns whether a nudge was performed.
+	 * @param canDraw the view is not disposed and has been laid out at least once
+	 * @param win the window the view is currently in
+	 */
+	nudgeView(view: Pick<WebContentsView, 'getVisible' | 'setVisible' | 'webContents'>, canDraw: boolean, win: IParaBrowserViewNudgeWindow | undefined): boolean {
+		// `canDraw` includes BrowserView's `_hasBeenLaidOut`, which mirrors the guard in setVisible(): a view
+		// that was never laid out is not in the window's content view yet, so showing it would not draw anything anyway.
+		if (!canDraw || view.webContents.isDestroyed()) {
+			return false;
+		}
+		if (view.getVisible()) {
+			// A shown view in a minimized / hidden / background window is not drawn either; nudge it with a 1x1 capture instead of a visibility toggle.
+			return this.nudge(win, view.webContents);
+		}
+		try {
+			view.setVisible(true);
+		} finally {
+			view.setVisible(false);
+		}
+		return true;
+	}
 
 	/** @returns whether a capture was requested. */
 	nudge(win: IParaBrowserViewNudgeWindow | undefined, webContents: Pick<WebContents, 'capturePage'>): boolean {
