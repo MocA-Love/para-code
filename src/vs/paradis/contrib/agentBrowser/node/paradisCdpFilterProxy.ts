@@ -482,11 +482,6 @@ function rawDataText(data: wsTypes.RawData): string {
 // same check without the dependency.
 const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
-/**
- * Returns the frame unchanged when it is already valid UTF-8 (no re-encoded copy for multi-megabyte
- * screenshot frames); otherwise decodes it with U+FFFD replacement so the client's own `ws`
- * validation accepts the forwarded text frame.
- */
 /** 上流から来た 1 フレーム。バイト列の連結と文字列への読み出しを 1 回だけにするため、読んだものを持ち回る。 */
 export interface IParadisCdpFrame {
 	readonly data: wsTypes.RawData;
@@ -507,6 +502,11 @@ export function paradisForwardableCdpFrame(frame: IParadisCdpFrame): wsTypes.Raw
 	return frame.text.includes('\uFFFD') ? reencodeUtf8(frame.data) : frame.data;
 }
 
+/**
+ * Returns the frame unchanged when it is already valid UTF-8 (no re-encoded copy for multi-megabyte
+ * screenshot frames); otherwise decodes it with U+FFFD replacement so the client's own `ws`
+ * validation accepts the forwarded text frame.
+ */
 function reencodeUtf8(data: wsTypes.RawData): wsTypes.RawData | string {
 	const buffer = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
 	try {
@@ -1865,6 +1865,8 @@ export function paradisProxyPageUpgrade(
 							const detachedSessionId = boundedIdentifier(response.params?.sessionId);
 							if (detachedSessionId !== undefined) {
 								completeForwardedRequestBarriersOfSession(forwardedRequestBarriers, detachedSessionId);
+								// ブラウザの経路（forgetSessionOnly）と同じく、切り離された子セッションの台帳を忘れる
+								isolatedWorlds.forgetSession(detachedSessionId);
 								if (detachedSessions.size >= MAX_CDP_ROUTING_ENTRIES) {
 									detachedSessions.clear();
 								}
@@ -2049,6 +2051,8 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			allowedSessionIds.add(sessionId);
 			sessionIdToTargetId.set(sessionId, targetId);
+			// isolated world の台帳は、許可したセッションにだけ作る（クライアントが送った sessionId では作らない）
+			isolatedWorlds.noteSession(sessionId);
 			return true;
 		};
 		// Sessions the client has been told about (an attachedToTarget event or an attachToTarget
@@ -2200,6 +2204,9 @@ export async function paradisProxyBrowserUpgrade(
 				targetUrls.delete(current);
 				targetUrlCheckedAt.delete(current);
 				documentTargetIds.delete(current);
+				// 消えたターゲットの移動の時刻と文書の場所も忘れる（残すと上限に達して、新しいターゲットの移動の確かめが抜ける）
+				movedAt.delete(current);
+				documentLocations.delete(current);
 				for (const [child, parent] of childToParent) {
 					// A page the user shared is never dropped because its opener went away.
 					if (parent === current && !visited.has(child) && !bound.has(child)) {
@@ -2299,7 +2306,9 @@ export async function paradisProxyBrowserUpgrade(
 				return;
 			}
 			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
-				const outcome = sendWithBoundedBackpressureOutcome(clientWs, paradisForwardableCdpFrame(frame), frame.bytes > MAX_CDP_FRAME_BYTES, true);
+				// U+FFFD への置き換えでフレームが大きくなりうるので、送る物の大きさで判定する（ページの経路と同じ）
+				const forwarded = paradisForwardableCdpFrame(frame);
+				const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, (forwarded === frame.data ? frame.bytes : payloadByteLength(forwarded)) > MAX_CDP_FRAME_BYTES, true);
 				if (outcome !== 'sent' && !backpressure.onSendFailure(outcome, typeof message.method === 'string' ? message.method : undefined, typeof message.id === 'number')) {
 					closeBoth();
 				}

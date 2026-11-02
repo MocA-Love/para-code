@@ -629,6 +629,13 @@ export class ParadisSnapshotCache {
 			return index >= 0 && item.text.length - index > PARADIS_SNAPSHOT_MAX_CHARS;
 		});
 		this.entries.delete(token);
+		// 期限の過ぎた控えは、ほかのペインのものも捨てる（recall されないまま大きな結果と子プロセスを持ち続けない）
+		const now = this.now();
+		for (const [key, entry] of this.entries) {
+			if (now - entry.at > PARADIS_SNAPSHOT_CACHE_MS) {
+				this.entries.delete(key);
+			}
+		}
 		if (!long) {
 			return;
 		}
@@ -638,7 +645,7 @@ export class ParadisSnapshotCache {
 				this.entries.delete(oldest.value);
 			}
 		}
-		this.entries.set(token, { result, at: this.now(), child, generation });
+		this.entries.set(token, { result, at: now, child, generation });
 	}
 
 	/** 控えた結果と、それを取った時刻（ミリ秒）。古い・別の子プロセスや世代のものなら undefined。 */
