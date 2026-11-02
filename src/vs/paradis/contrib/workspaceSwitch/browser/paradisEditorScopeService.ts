@@ -26,7 +26,7 @@ import { IWorkingCopyBackupService } from '../../../../workbench/services/workin
 import { WorkingCopyBackupRestoreDecision, IWorkingCopyBackupRestoreRouter } from '../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
 import { IWorkingCopyEditorService } from '../../../../workbench/services/workingCopy/common/workingCopyEditorService.js';
 import { IWorkingCopyService } from '../../../../workbench/services/workingCopy/common/workingCopyService.js';
-import { IParadisEditorScopeService, ParadisWorkingCopyOwnerLedger, ParadisWorkingCopyOwnerLedgerLoadState } from '../common/paradisEditorScope.js';
+import { IParadisEditorScopeService, ParadisScopeRetirementPreparation, ParadisWorkingCopyOwnerLedger, ParadisWorkingCopyOwnerLedgerLoadState } from '../common/paradisEditorScope.js';
 import { IParadisAuxiliaryWindowScopeService, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../common/paradisWorkspaceSwitch.js';
 import { paradisHasParkedTerminals } from './paradisTerminalEditorPark.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -702,8 +702,12 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 	}
 
 	async prepareScopeRetirement(stateKey: string): Promise<boolean> {
+		return (await this.prepareScopeRetirementResult(stateKey)) === 'prepared';
+	}
+
+	async prepareScopeRetirementResult(stateKey: string): Promise<ParadisScopeRetirementPreparation> {
 		if (this.preparedRetirements.has(stateKey)) {
-			return true;
+			return 'prepared';
 		}
 
 		const liveWorkingSet = this.liveWorkingSets.get(stateKey);
@@ -728,7 +732,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 					const result = await this.prepareLiveEditorRetirement(editor, retirementPlacements, workingCopiesByEditor.get(editor) ?? []);
 					if (!result.confirmed) {
 						await this.restoreFrozenRetirement(stateKey, frozenPlacements, workingCopiesByEditor, frozenRetentions);
-						return false;
+						return result.cancelled ? 'cancelled' : 'failed';
 					}
 					if (result.editorToRevert) {
 						editorsToRevert.push(result.editorToRevert);
@@ -752,7 +756,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				});
 				if (!confirmed) {
 					await this.restoreFrozenRetirement(stateKey, frozenPlacements, workingCopiesByEditor, frozenRetentions);
-					return false;
+					return 'cancelled';
 				}
 			}
 
@@ -772,7 +776,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				frozenWorkingCopiesByEditor: this.selectWorkingCopyOwners(workingCopiesByEditor, frozenEditors),
 				frozenRetentions
 			});
-			return true;
+			return 'prepared';
 		} catch (error) {
 			await this.restoreFrozenRetirement(stateKey, frozenPlacements, workingCopiesByEditor, frozenRetentions);
 			throw error;
@@ -1203,7 +1207,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		return scope.kind === 'managed' && this.retirementFences.has(scope.stateKey);
 	}
 
-	private async prepareLiveEditorRetirement(editor: EditorInput, placements: readonly IParadisLiveEditorPlacement[], workingCopies: readonly IWorkingCopy[]): Promise<{ readonly confirmed: boolean; readonly editorToRevert?: IParadisPreparedEditorRevert }> {
+	private async prepareLiveEditorRetirement(editor: EditorInput, placements: readonly IParadisLiveEditorPlacement[], workingCopies: readonly IWorkingCopy[]): Promise<{ readonly confirmed: boolean; readonly cancelled?: boolean; readonly editorToRevert?: IParadisPreparedEditorRevert }> {
 		let shouldConfirm = editor.isModified() || workingCopies.some(workingCopy => workingCopy.isModified());
 		let closeHandlerWantsConfirm = false;
 		if (editor.closeHandler) {
@@ -1244,7 +1248,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			case ConfirmResult.DONT_SAVE:
 				return { confirmed: true, editorToRevert: { editor, groupId: placement.groupId, workingCopies } };
 			case ConfirmResult.CANCEL:
-				return { confirmed: false };
+				return { confirmed: false, cancelled: true };
 		}
 	}
 

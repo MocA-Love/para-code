@@ -36,7 +36,7 @@ import { IParadisLongFrameSummary, IParadisLongFrameWindow, paradisDiffLongFrame
 import { paradisBeginFolderUpdateTrace, paradisSafeSwitchAttributes } from '../common/paradisFolderUpdateTrace.js';
 import { IParadisWorkspaceFileFlush, paradisWhenWorkspaceFileFlushed } from '../common/paradisWorkspaceFileWriteCache.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisIsPresentWorktreeKey, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
+import { IParadisEditorScopeService, ParadisScopeRetirementPreparation } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
 import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalEditorEndedListener, paradisRegisterTerminalEditorRevealGuard, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwnerScope } from './paradisTerminalEditorPark.js';
@@ -720,6 +720,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	prepareScopeRetirement(stateKey: string): Promise<boolean> {
 		return this.editorScopeService.prepareScopeRetirement(stateKey);
+	}
+
+	prepareScopeRetirementResult(stateKey: string): Promise<ParadisScopeRetirementPreparation> {
+		return this.editorScopeService.prepareScopeRetirementResult(stateKey);
 	}
 
 	cancelScopeRetirement(stateKey: string): Promise<void> {

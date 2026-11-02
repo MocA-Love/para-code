@@ -32,7 +32,7 @@ import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradi
 import { IParadisGithubCallResource, paradisGithubCallSiteFromArgs, paradisGithubResourceFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
 import { PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_CLOSED_ISSUE_MAX_AGE_MS, paradisCoerceGithubStatusMaxAge, ParadisGithubLookupCache } from '../common/paradisGithubLookupCache.js';
-import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, ParadisDiffStatFailure, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisWorktreeListIncludes, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, ParadisDiffStatFailure, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisWorktreeListOverlaps, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine, paradisRedactCloneLogText } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
@@ -1004,7 +1004,7 @@ export class ParadisWorktreeGitService {
 		// 前回の削除が途中で止まると、git の登録（`.git/worktrees/<name>`）は消えたのにフォルダーだけが
 		// 残ることがある。この状態の git は `--force` でも「not a working tree」で断るので、強制削除の
 		// 同意があるときはフォルダーをこちらで消す。
-		if (request.force && await this.isLeftoverWorktreeDirectory(request)) {
+		if (request.force && request.allowLeftoverCleanup === true && await this.isLeftoverWorktreeDirectory(request)) {
 			await fs.rm(request.worktreePath, { recursive: true, force: true, maxRetries: 3 });
 			return;
 		}
@@ -1060,7 +1060,8 @@ export class ParadisWorktreeGitService {
 	 * git に登録されていない作業ツリーの残骸か。次の全部を満たすときだけ true を返す。
 	 *  - フォルダーがある
 	 *  - 中に `.git` が無い（あれば作業ツリーか別のリポジトリなので、git に任せる）
-	 *  - `git worktree list` が読めて、そこにこのパスが無い
+	 *  - `git worktree list` が読めて、一覧のどの作業ツリー・リポジトリとも同じでも上位でもその中でもない
+	 *    （親リポジトリの上位のフォルダーや、`repo/src` のような `.git` の無いフォルダーを消さないため）
 	 * WSL の中のリポジトリは対象にしない（一覧のパスの名前空間が違い、突き合わせが確かでないため）。
 	 */
 	private async isLeftoverWorktreeDirectory(request: IParadisRemoveWorktreeRequest<string>): Promise<boolean> {
@@ -1087,7 +1088,7 @@ export class ParadisWorktreeGitService {
 		const repository = await this.resolveWorktreePath(request.repoPath);
 		const comparison = { ignoreCase: !isLinux, backslashIsSeparator: isWindows };
 		const entries = await Promise.all(paradisParseWorktreeListPorcelain(output).map(async entry => ({ ...entry, path: await this.resolveWorktreePath(entry.path) })));
-		return !paradisWorktreeListIncludes([...entries, { path: repository }], target, comparison);
+		return !paradisWorktreeListOverlaps([...entries, { path: repository }], target, comparison);
 	}
 
 	/**
