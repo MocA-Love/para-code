@@ -37,6 +37,8 @@ import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/p
 // PARA-PATCH: reattach diagnostics (see paradisReattachTally.ts)
 import { paradisNoteAttached, paradisNoteRevived, paradisTakeReattachTally } from '../../../paradis/contrib/ptyDaemon/node/paradisReattachTally.js';
 import { IParadisReattachTally } from '../common/paradisReattachTally.js';
+// PARA-PATCH: the fork's revive and reattach bookkeeping (see paradisPtyServiceRevive.ts)
+import { IParadisPtyReviveTables, paradisClaimAndAttachPty, paradisForgetExitedPty, paradisHeldPtyEntries, paradisHeldPtyWorkspaceNames, paradisLayoutAccountsForHeldTerminals, paradisProcessDetailsFields, paradisRememberAdoptedPty, paradisRememberRevivedPty, paradisResolveRevivedPtyByNonce, paradisTagRevivedOrphan } from './paradisPtyServiceRevive.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
 import { memoize } from '../../../base/common/decorators.js';
@@ -113,20 +115,14 @@ export class PtyService extends Disposable implements IPtyService {
 	private readonly _detachInstanceRequestStore: RequestStore<IProcessDetails | undefined, { workspaceId: string; instanceId: number }>;
 	private readonly _revivedPtyIdMap: Map<string, { newId: number; state: ISerializedTerminalState }> = new Map();
 	// PARA-PATCH: fork bookkeeping below: new id -> old id revive map, nonce index, adopted nonces, orphan attach claims
+	// (see IParadisPtyReviveTables in paradisPtyServiceRevive.ts)
 	private readonly _revivedPtyOldIdByNewId: Map<string, number> = new Map();
-	/**
-	 * PARA-PATCH: revived terminals indexed by shell integration nonce, see getRevivedPtyNewId.
-	 *
-	 * `_revivedPtyIdMap` above is keyed by the id of the session that was revived and is consumed as
-	 * the panel layout claims each entry, so it cannot answer for a restored editor tab. A nonce, on
-	 * the other hand, names the terminal itself no matter which generation asks, which makes this
-	 * index safe to keep for as long as the host lives.
-	 */
 	private readonly _paradisRevivedNewIdByNonce = new Map<string, number>();
-	/** PARA-CODE: which entries above name a terminal taken back from the daemon rather than revived. */
 	private readonly _paradisAdoptedNonces = new Set<string>();
-	/** Short leases serialize nonce-proven orphan attachment across renderer processes. */
 	private readonly _paradisOrphanAttachClaims = new Map<number, number>();
+	private get _paradisReviveTables(): IParadisPtyReviveTables {
+		return { revivedOldIdByNewId: this._revivedPtyOldIdByNewId, revivedNewIdByNonce: this._paradisRevivedNewIdByNonce, adoptedNonces: this._paradisAdoptedNonces, orphanAttachClaims: this._paradisOrphanAttachClaims };
+	}
 
 	// #region Pty service contribution RPC calls
 
@@ -332,16 +328,9 @@ export class PtyService extends Disposable implements IPtyService {
 		// Don't start the process here as there's no terminal to answer CPR
 		const oldId = this._getRevivingProcessId(workspaceId, terminal.id);
 		this._revivedPtyIdMap.set(oldId, { newId, state: terminal });
-		// PARA-PATCH: remember new id -> old id so listProcesses/layouts can report paradisRevivedFromPersistentProcessId
-		this._revivedPtyOldIdByNewId.set(this._getRevivingProcessId(workspaceId, newId), terminal.id);
-		paradisNoteRevived(workspaceId, newId); // PARA-PATCH: count it for the reattach diagnostics (paradisReattachTally.ts)
-		// PARA-PATCH: also index by nonce so a restored editor tab can find this terminal (getRevivedPtyNewId)
-		const nonce = paradisTerminalIdentityNonce(terminal.processDetails.shellIntegrationNonce);
-		// PARA-PATCH: never over a terminal taken back from the daemon. That one is still running the
-		// work; this one is a shell restarted from a saved screenful.
-		if (nonce !== undefined && !this._paradisAdoptedNonces.has(nonce)) {
-			this._paradisRevivedNewIdByNonce.set(nonce, newId);
-		}
+		// PARA-PATCH: count it for the reattach diagnostics (paradisReattachTally.ts), and remember it by old id and nonce (paradisPtyServiceRevive.ts)
+		paradisNoteRevived(workspaceId, newId);
+		paradisRememberRevivedPty(this._paradisReviveTables, this._getRevivingProcessId(workspaceId, newId), terminal.id, newId, terminal.processDetails.shellIntegrationNonce);
 		this._logService.info(`Revived process, old id ${oldId} -> new id ${newId}`);
 	}
 
@@ -383,19 +372,8 @@ export class PtyService extends Disposable implements IPtyService {
 		};
 		const persistentProcess = new PersistentTerminalProcess(id, process, workspaceId, workspaceName, shouldPersist, cols, rows, processLaunchOptions, unicodeVersion, this._reconnectConstants, this._logService, isReviving && isString(shellLaunchConfig.initialText) ? shellLaunchConfig.initialText : undefined, rawReviveBuffer, shellLaunchConfig.icon, shellLaunchConfig.color, shellLaunchConfig.name, shellLaunchConfig.fixedDimensions, paradisAdoptTarget);
 		process.onProcessExit(event => {
-			// PARA-PATCH: drop the orphan attach claim and the reverse revive entry of the exited pty
-			this._paradisOrphanAttachClaims.delete(id);
-			this._revivedPtyOldIdByNewId.delete(this._getRevivingProcessId(workspaceId, id));
-			// PARA-PATCH: let go of the nonce this terminal was answering for. Nothing else clears
-			// these, and an entry naming a terminal that has exited is worse than no entry: the
-			// adopted mark keeps every later revive of the same tab from registering, so once an
-			// adopted terminal ends, its tab can never be reconnected again for as long as this pty
-			// host lives — the exact failure the mark exists to prevent, in the other direction.
-			const exitedNonce = paradisTerminalIdentityNonce(options.shellIntegration.nonce);
-			if (exitedNonce !== undefined && this._paradisRevivedNewIdByNonce.get(exitedNonce) === id) {
-				this._paradisRevivedNewIdByNonce.delete(exitedNonce);
-				this._paradisAdoptedNonces.delete(exitedNonce);
-			}
+			// PARA-PATCH: drop the orphan attach claim, the reverse revive entry and the nonce of the exited pty (paradisPtyServiceRevive.ts)
+			paradisForgetExitedPty(this._paradisReviveTables, id, this._getRevivingProcessId(workspaceId, id), options.shellIntegration.nonce);
 			for (const contrib of this._contributions) {
 				contrib.handleProcessDispose(id);
 			}
@@ -414,29 +392,9 @@ export class PtyService extends Disposable implements IPtyService {
 			}
 		});
 		this._ptys.set(id, persistentProcess);
-		// PARA-PATCH: taking a terminal back from a daemon hands out a new id, exactly like reviving
-		// one does, so it has to answer the same question reviving answers. A window restoring an
-		// editor terminal knows only the id it was given generations ago plus the nonce, and asks
-		// `getRevivedPtyNewId` to translate. Registering nothing here is what left every adopted
-		// editor terminal unreachable: the window gave up, launched a fresh shell, and the process we
-		// had just taken back sat in `_ptys` with nobody attached to it.
-		//
-		// Two held terminals can carry the same nonce: when an attach fails, upstream relaunches the
-		// tab and the replacement keeps the instance's nonce, so a daemon that outlived a failed
-		// reconnect holds both the original and an empty replacement under one nonce. Adoption offers
-		// them live-first, oldest-first (paradisTerminalAdoption.ts), so refusing to overwrite hands
-		// the tab back the one still running rather than the shell started because we could not find
-		// it.
+		// PARA-PATCH: a terminal taken back from a daemon answers getRevivedPtyNewId like a revived one (paradisPtyServiceRevive.ts)
 		if (paradisAdoptTarget) {
-			const adoptedNonce = paradisTerminalIdentityNonce(options.shellIntegration.nonce);
-			if (adoptedNonce !== undefined && !this._paradisAdoptedNonces.has(adoptedNonce)) {
-				// **Taking one back outranks reviving one.** Both write this table, and a revive can
-				// land either side of adoption, so order cannot decide it. One of the two is the
-				// process that has been running all along; the other is a shell started from a saved
-				// screenful. Remember which is which rather than letting the clock choose.
-				this._paradisAdoptedNonces.add(adoptedNonce);
-				this._paradisRevivedNewIdByNonce.set(adoptedNonce, id);
-			}
+			paradisRememberAdoptedPty(this._paradisReviveTables, id, options.shellIntegration.nonce);
 		}
 		return id;
 	}
@@ -460,44 +418,11 @@ export class PtyService extends Disposable implements IPtyService {
 		}
 	}
 
-	// PARA-PATCH: atomic nonce-proven orphan claim and attach RPC, see IPtyService#paradisClaimAndAttachToProcess
-	/**
-	 * Resolve and claim an orphan in one pty-host RPC. Renderer-side list/held checks cannot prevent
-	 * two windows from racing on the same snapshot, so the final nonce/orphan decision lives here.
-	 */
+	// PARA-PATCH: atomic nonce-proven orphan claim and attach RPC, see IPtyService#paradisClaimAndAttachToProcess and paradisClaimAndAttachPty
 	@traceRpc
 	async paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number> {
 		await paradisAdoptionSettled();
-		const expectedNonce = paradisTerminalIdentityNonce(paradisExpectedNonce);
-		if (expectedNonce === undefined) {
-			throw new Error('Cannot claim a terminal without a valid nonce');
-		}
-		const resolvedId = await this.getRevivedPtyNewId(workspaceId, id, expectedNonce) ?? id;
-		const pty = this._throwIfNoPty(resolvedId);
-		if (pty.workspaceId !== workspaceId || this._paradisNonceOf(resolvedId) !== expectedNonce) {
-			throw new Error('The terminal claim did not match the requested workspace and nonce');
-		}
-		const now = Date.now();
-		const existingClaim = this._paradisOrphanAttachClaims.get(resolvedId);
-		if (existingClaim !== undefined && existingClaim > now) {
-			throw new Error('The terminal is already being attached by another renderer');
-		}
-		// Hold the reservation across the async orphan question. A bounded lease recovers if the
-		// renderer disappears before the RPC completes.
-		this._paradisOrphanAttachClaims.set(resolvedId, now + 10_000);
-		try {
-			if (!await pty.isOrphaned()) {
-				throw new Error('The terminal is already attached to a renderer');
-			}
-			await pty.attach();
-			// Keep a brief post-RPC lease until the winning renderer has registered its Local/RemotePty
-			// and can answer the next orphan question.
-			this._paradisOrphanAttachClaims.set(resolvedId, Date.now() + 2_000);
-			return resolvedId;
-		} catch (error) {
-			this._paradisOrphanAttachClaims.delete(resolvedId);
-			throw error;
-		}
+		return paradisClaimAndAttachPty(this._paradisOrphanAttachClaims, this._ptys, workspaceId, id, paradisExpectedNonce, (w, i, n) => this.getRevivedPtyNewId(w, i, n), i => this._throwIfNoPty(i));
 	}
 
 	@traceRpc
@@ -549,36 +474,17 @@ export class PtyService extends Disposable implements IPtyService {
 	}
 
 	@traceRpc
-	/**
-	 * PARA-PATCH: everything this host is holding, including terminals a window is attached to.
-	 *
-	 * `listProcesses` below cannot answer that: it ends with `filter(entry => entry.isOrphan)`,
-	 * because it exists to offer terminals that can still be attached to. The pty daemon needs the
-	 * other question — what is being held right now — for the count it shows and for deciding
-	 * when it may stop. See vs/paradis/contrib/ptyDaemon.
-	 */
+	/** PARA-PATCH: everything this host is holding, including terminals a window is attached to (see paradisHeldPtyEntries). */
 	async paradisListHeldTerminals(): Promise<IProcessDetails[]> {
-		const held = Array.from(this._ptys.entries()).filter(([_, pty]) => pty.shouldPersistTerminal);
-		return Promise.all(held.map(([id, data]) => this._buildProcessDetails(id, data)));
+		return Promise.all(paradisHeldPtyEntries(this._ptys).map(([id, data]) => this._buildProcessDetails(id, data)));
 	}
 
 	/**
-	 * PARA-PATCH: lightweight counterpart of {@link paradisListHeldTerminals} for pollers that
-	 * only need how many terminals are held and their workspace names. `_buildProcessDetails`
-	 * shells out per terminal (`getCwd` runs lsof on macOS) and waits on the orphan barrier,
-	 * which is pure waste when nothing but the name is going to be read.
-	 *
-	 * Deliberately not `@traceRpc`: this is an in-process query from the pty daemon's pollers,
-	 * so neither the trace log nor simulated latency injection should apply.
+	 * PARA-PATCH: held terminals' workspace names only (see paradisHeldPtyWorkspaceNames).
+	 * Deliberately not `@traceRpc`: this is an in-process query from the pty daemon's pollers.
 	 */
 	async paradisListHeldWorkspaceNames(): Promise<{ workspaceName: string }[]> {
-		const names: { workspaceName: string }[] = [];
-		for (const [, data] of this._ptys.entries()) {
-			if (data.shouldPersistTerminal) {
-				names.push({ workspaceName: data.workspaceName });
-			}
-		}
-		return names;
+		return paradisHeldPtyWorkspaceNames(this._ptys);
 	}
 
 	async listProcesses(): Promise<IProcessDetails[]> {
@@ -588,17 +494,8 @@ export class PtyService extends Disposable implements IPtyService {
 		const persistentProcesses = Array.from(this._ptys.entries()).filter(([_, pty]) => pty.shouldPersistTerminal);
 
 		this._logService.info(`Listing ${persistentProcesses.length} persistent terminals, ${this._ptys.size} total terminals`);
-		// PARA-PATCH: tag orphans with the id they had before revive (paradisRevivedFromPersistentProcessId)
-		const promises = persistentProcesses.map(async ([id, terminalProcessData]) => {
-			const processDetails = await this._buildProcessDetails(id, terminalProcessData);
-			if (!processDetails.isOrphan) {
-				return processDetails;
-			}
-			const revivedFromPersistentProcessId = this._getRevivedFromPersistentProcessId(terminalProcessData.workspaceId, id);
-			return revivedFromPersistentProcessId === undefined
-				? processDetails
-				: { ...processDetails, paradisRevivedFromPersistentProcessId: revivedFromPersistentProcessId };
-		});
+		// PARA-PATCH: tag orphans with the id they had before revive (paradisTagRevivedOrphan)
+		const promises = persistentProcesses.map(async ([id, terminalProcessData]) => paradisTagRevivedOrphan(await this._buildProcessDetails(id, terminalProcessData), this._getRevivedFromPersistentProcessId(terminalProcessData.workspaceId, id)));
 		const allTerminals = await Promise.all(promises);
 		return allTerminals.filter(entry => entry.isOrphan);
 	}
@@ -766,16 +663,7 @@ export class PtyService extends Disposable implements IPtyService {
 		return undefined;
 	}
 
-	/**
-	 * PARA-PATCH: `paradisExpectedNonce` names the terminal the caller means to reattach to.
-	 *
-	 * A persistent process id only means something within the session that handed it out — this host
-	 * restarts the counter at 0, so reviving old ids 4, 5, 13… hands out new ids 1, 2, 3… and the two
-	 * ranges overlap. A serialized editor input, which is written once and then restored several
-	 * generations later, therefore cannot be resolved by id alone: attaching to whichever terminal
-	 * holds that number now takes the process away from the window that owns it. The nonce is carried
-	 * across revives, so it answers the question the id cannot.
-	 */
+	// PARA-PATCH: `paradisExpectedNonce` names the terminal the caller means to reattach to (see paradisResolveRevivedPtyByNonce)
 	@traceRpc
 	async getRevivedPtyNewId(workspaceId: string, id: number, paradisExpectedNonce?: string): Promise<number | undefined> {
 		// PARA-PATCH: the tables consulted below are filled in as terminals are taken back from a
@@ -785,20 +673,7 @@ export class PtyService extends Disposable implements IPtyService {
 		try {
 			const expectedNonce = paradisTerminalIdentityNonce(paradisExpectedNonce);
 			if (expectedNonce !== undefined) {
-				// The terminal was revived in this host, possibly generations ago.
-				const revivedId = this._paradisRevivedNewIdByNonce.get(expectedNonce);
-				if (revivedId !== undefined && this._paradisNonceOf(revivedId) === expectedNonce) {
-					return revivedId;
-				}
-				// No revive in between (a window reload): the id still names the right terminal.
-				if (this._paradisNonceOf(id) === expectedNonce) {
-					return undefined;
-				}
-				// The id names somebody else's terminal. Answering with an id that cannot exist makes
-				// the attach fail, which upstream handles by launching a fresh shell — far better than
-				// stealing a live process. An id with nothing behind it fails either way; when no
-				// terminal anywhere carries the nonce, say it has ended (paradisPtyReadopt.ts).
-				return this._ptys.has(id) ? PARADIS_UNRESOLVABLE_PTY_ID : paradisAnswerForMissingNonce(expectedNonce, Array.from(this._ptys.keys(), ptyId => this._paradisNonceOf(ptyId)));
+				return paradisResolveRevivedPtyByNonce(this._paradisRevivedNewIdByNonce, this._ptys, id, expectedNonce, paradisAnswerForMissingNonce);
 			}
 			return this._revivedPtyIdMap.get(this._getRevivingProcessId(workspaceId, id))?.newId;
 		} catch (e) {
@@ -811,28 +686,10 @@ export class PtyService extends Disposable implements IPtyService {
 		}
 	}
 
-	/** PARA-CODE: The shell integration nonce of a live terminal, if there is one. */
-	private _paradisNonceOf(id: number): string | undefined {
-		return paradisTerminalIdentityNonce(this._ptys.get(id)?.processLaunchOptions.options.shellIntegration.nonce);
-	}
-
 	@traceRpc
 	async setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void> {
-		// PARA-PATCH: a window can hand over a layout that leaves out terminals a daemon is holding
-		// for this very workspace, and taking that at face value is how the running processes lose
-		// their way back onto the screen.
-		//
-		// Two ways it happens. A window that restored nothing — because taking the terminals back ran
-		// past its deadline — saves an empty layout, and an empty layout is the signal telling the
-		// daemon to forget the one it was keeping. And a window that revived from a saved screenful
-		// re-seeds the layout it wrote before the update, in ids from a pty host that no longer
-		// exists; those ids are small integers from a counter that restarts, so they land on today's
-		// terminals by coincidence rather than missing cleanly.
-		//
-		// A layout that accounts for every terminal the daemon holds here is the whole picture and is
-		// taken as such. One that does not is somebody's partial view, and there is nothing to gain
-		// by writing it down.
-		if (!this._paradisLayoutAccountsForHeldTerminals(args)) {
+		// PARA-PATCH: ignore a layout that leaves out terminals a daemon is holding for this workspace (see paradisLayoutAccountsForHeldTerminals)
+		if (!paradisLayoutAccountsForHeldTerminals(this._ptys, args, paradisHandleOf)) {
 			this._logService.info(`Ignoring a layout for ${args.workspaceId} that leaves out terminals the daemon is holding`);
 			return;
 		}
@@ -852,41 +709,6 @@ export class PtyService extends Disposable implements IPtyService {
 	 */
 	paradisSetTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): void {
 		this._workspaceLayoutInfos.set(args.workspaceId, args);
-	}
-
-	/**
-	 * PARA-CODE: Whether a layout names every terminal a daemon is holding for its workspace.
-	 *
-	 * Holding none — the ordinary case, with the daemon off — makes this trivially true, so nothing
-	 * changes for anyone not using it. Terminals that are not persisted (extension terminals, the
-	 * MCP terminal, tasks without reconnection) never appear in a saved layout, so they are not
-	 * counted either; one of them open would otherwise make every layout look partial.
-	 */
-	private _paradisLayoutAccountsForHeldTerminals(args: ISetTerminalLayoutInfoArgs): boolean {
-		const held = new Set<number>();
-		for (const [id, pty] of this._ptys) {
-			if (pty.workspaceId === args.workspaceId && pty.shouldPersistTerminal && paradisHandleOf(id) !== undefined) {
-				held.add(id);
-			}
-		}
-		if (held.size === 0) {
-			return true;
-		}
-		for (const tab of args.tabs ?? []) {
-			for (const terminal of tab.terminals ?? []) {
-				held.delete(terminal.terminal);
-			}
-		}
-		for (const id of args.background ?? []) {
-			held.delete(id);
-		}
-		// Editor terminals never appear in the layout (their tabs restore through the editor), so a
-		// window naming them is accounting for them, not leaving them out. The ids are exact: a window
-		// that failed to take a held terminal back names the shell it started instead, not the held one.
-		for (const id of args.paradisEditorTerminals ?? []) {
-			held.delete(id);
-		}
-		return held.size === 0;
 	}
 
 	@traceRpc
@@ -975,9 +797,6 @@ export class PtyService extends Disposable implements IPtyService {
 		// take some time
 		const wasRevived = revivedFromPersistentProcessId !== undefined;
 		const [cwd, isOrphan] = await Promise.all([persistentProcess.getCwd(), wasRevived ? true : persistentProcess.isOrphaned()]);
-		// PARA-PATCH: mobile relay recovery — read the pane token injected at PTY launch
-		// PARA-CODE: Carry the exact token injected at PTY launch across revive and detach.
-		const paneToken = persistentProcess.shellLaunchConfig.env?.['PARA_CODE_TERMINAL_PANE_ID'];
 		const result = {
 			id,
 			title: persistentProcess.title,
@@ -998,14 +817,8 @@ export class PtyService extends Disposable implements IPtyService {
 			type: persistentProcess.shellLaunchConfig.type,
 			hasChildProcesses: persistentProcess.hasChildProcesses,
 			shellIntegrationNonce: persistentProcess.processLaunchOptions.options.shellIntegration.nonce,
-			// PARA-PATCH: tells readers keyed by persistent process id that this id says nothing about
-			// earlier sessions. See IProcessDetails#paradisAdopted.
-			...(persistentProcess.paradisAdopted ? { paradisAdopted: true } : {}),
-			// PARA-PATCH: the process outlives this pty host, see IProcessDetails#paradisHeldByDaemon
-			...(persistentProcess.paradisHeldByDaemon ? { paradisHeldByDaemon: true } : {}),
-			// PARA-PATCH: mobile relay recovery — include the validated pane token in process details
-			...(typeof paneToken === 'string' && paneToken.length > 0 && paneToken.length <= 200 ? { paradisPaneToken: paneToken } : {}),
-			...(revivedFromPersistentProcessId !== undefined ? { paradisRevivedFromPersistentProcessId: revivedFromPersistentProcessId } : {}),
+			// PARA-PATCH: adopted / held by daemon / pane token / pre-revive id (see paradisProcessDetailsFields)
+			...paradisProcessDetailsFields(persistentProcess, revivedFromPersistentProcessId),
 			tabActions: persistentProcess.shellLaunchConfig.tabActions
 		};
 		performance.mark(`code/didBuildProcessDetails/${id}`);
