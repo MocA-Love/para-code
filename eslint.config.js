@@ -2213,6 +2213,12 @@ export default defineConfig(
 							'when': 'hasNode',
 							'pattern': 'vs/paradis/paradis.sharedProcess.contribution.js'
 						},
+						// PARA-PATCH: app.ts が main プロセス向け fork 独自チャネルの集約入り口
+						// (registerParadisMainProcessContributions) を1回呼ぶための import
+						{
+							'when': 'hasNode',
+							'pattern': 'vs/paradis/paradis.mainProcess.contribution.js'
+						},
 						{
 							'when': 'hasBrowser',
 							'pattern': 'vs/workbench/workbench.web.main.js'
@@ -2252,20 +2258,6 @@ export default defineConfig(
 						'vs/workbench/api/~',
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
-						// PARA-PATCH: serverServices.ts が SSH 接続先で git を動かすチャネル
-						// (registerParadisWorktreeGitForServer) を登録するための逆方向 import
-						'vs/paradis/contrib/workspaceSwitch/~',
-						// PARA-PATCH: serverServices.ts が使用量・利用上限を接続先で数えるチャネル
-						// (registerParadisCcusageForServer / registerParadisLimitsMonitorForServer) を
-						// 登録するための逆方向 import
-						'vs/paradis/contrib/ccusage/~',
-						'vs/paradis/contrib/limitsMonitor/~',
-						// PARA-PATCH: serverServices.ts が接続先の rtk 節約量を答えるチャネル
-						// (registerParadisRtkForServer) を登録するための逆方向 import
-						'vs/paradis/contrib/rtk/~',
-						// PARA-PATCH: serverServices.ts が接続先のマシン全体の使用量を答えるチャネル
-						// (registerParadisHostResourcesForServer) を登録するための逆方向 import
-						'vs/paradis/contrib/resourceMonitor/~',
 						// PARA-PATCH: serverServices.ts がターミナルの猶予時間を決めるための逆方向 import
 						// (paradisTerminalReconnectionGraceTime)
 						'vs/paradis/contrib/remoteTerminals/~',
@@ -2273,33 +2265,9 @@ export default defineConfig(
 						// 常駐へ出すかどうかを決めるための逆方向 import
 						// (paradisEnableRemotePtyHostDaemon)
 						'vs/paradis/contrib/ptyDaemon/~',
-						// PARA-PATCH: serverServices.ts が接続先の ~/.claude・~/.codex を答えるチャネル
-						// (registerParadisSessionResumeForServer) を登録するための逆方向 import
-						'vs/paradis/contrib/sessionResume/~',
-						// PARA-PATCH: serverServices.ts が接続先のディスク使用量を答えるチャネル
-						// (registerParadisSpaceDiskForServer) を登録するための逆方向 import
-						'vs/paradis/contrib/spaceDisk/~',
-						// PARA-PATCH: serverServices.ts が接続先の Codex state DB を答えるチャネル
-						// (registerParadisCodexTerminalTitleForServer) を登録するための逆方向 import
-						'vs/paradis/contrib/codexTerminalTitle/~',
-						// PARA-PATCH: serverServices.ts が接続先のファイルを 127.0.0.1 に配るチャネル
-						// (registerParadisHtmlPreviewForServer) を登録するための逆方向 import。
-						// fileViewers はエディタペイン本体（browser / electron-browser）も抱えるので、
-						// Node 層から誤って DOM 依存のコードを import しないよう common/node に絞る。
-						'vs/paradis/contrib/fileViewers/{common,node}/**',
-						// PARA-PATCH: serverServices.ts が接続先で ripgrep を動かすチャネル
-						// (registerParadisRemoteSearchForServer) を登録するための逆方向 import。
-						// mobileRelay 全体（ペアリング・E2E暗号・リレー本体等）を許可すると誤 import を
-						// 招くため、必要な node 層だけに絞る。
-						'vs/paradis/contrib/mobileRelay/node/**',
-						// PARA-PATCH: serverServices.ts が接続先で走った gh 呼び出しを数えるチャネル
-						// (registerParadisGithubMetricsForServer) を登録するための逆方向 import
-						'vs/paradis/contrib/githubMetrics/~',
-						// PARA-PATCH: serverServices.ts が接続先でリッスン中のポート一覧を答えるチャネル
-						// (registerParadisPortListForServer) を登録するための逆方向 import
-						'vs/paradis/contrib/portList/~',
 						// PARA-PATCH: serverServices.ts が fork 独自チャネルの集約入り口
-						// (registerParadisServerContributions) を1回呼ぶための逆方向 import
+						// (registerParadisServerContributions) を1回呼ぶための逆方向 import。
+						// fork のチャネルの登録はすべてこの集約入り口の中にあるので、個別の contrib への許可は要らない
 						'vs/paradis/paradis.server.contribution.js',
 						'vs/server/~'
 					]
@@ -2400,6 +2368,18 @@ export default defineConfig(
 					// PARA-PATCH: shared process 向け fork独自チャネルの集約入り口（sharedProcessMain.ts から1回だけ呼ばれる）
 					'target': 'src/vs/paradis/paradis.sharedProcess.contribution.ts',
 					'layer': 'electron-utility',
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/paradis/~',
+						'vs/paradis/contrib/*/~'
+					]
+				},
+				{
+					// PARA-PATCH: main プロセス向け fork独自チャネルの集約入り口（app.ts から1回だけ呼ばれる）
+					'target': 'src/vs/paradis/paradis.mainProcess.contribution.ts',
+					'layer': 'electron-main',
 					'restrictions': [
 						'vs/base/~',
 						'vs/base/parts/*/~',

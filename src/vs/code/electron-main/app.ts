@@ -39,37 +39,15 @@ import { IEncryptionMainService } from '../../platform/encryption/common/encrypt
 import { EncryptionMainService } from '../../platform/encryption/electron-main/encryptionMainService.js';
 import { ipcBrowserViewChannelName } from '../../platform/browserView/common/browserView.js';
 import { ipcBrowserViewGroupChannelName } from '../../platform/browserView/common/browserViewGroup.js';
-// PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway
-import { IParadisAgentCursorEvents, PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_AGENT_CURSOR_CHANNEL, PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL, PARADIS_CDP_TARGET_CHANNEL } from '../../paradis/contrib/agentBrowser/common/paradisAgentBrowser.js';
-import { ParadisCdpTargetService } from '../../paradis/contrib/agentBrowser/electron-main/paradisCdpTargetService.js';
-import { ParadisCursorOverlayController } from '../../paradis/contrib/agentBrowser/electron-main/paradisCursorOverlayController.js';
+// PARA-PATCH: every fork main-process channel (see paradis.mainProcess.contribution.ts)
+import { registerParadisMainProcessContributions } from '../../paradis/paradis.mainProcess.contribution.js';
 // PARA-PATCH: browser mirror WebRTC spike — capture a single WebContentsView instead of the whole screen when armed
 import { paradisResolveMirrorCaptureFrame } from '../../paradis/contrib/browserMirror/electron-main/paradisBrowserMirrorCapture.js';
-// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator
-import { PARADIS_RESOURCE_MONITOR_CHANNEL } from '../../paradis/contrib/resourceMonitor/common/paradisResourceMonitor.js';
-import { ParadisResourceMonitorMainService } from '../../paradis/contrib/resourceMonitor/electron-main/paradisResourceMonitorMainService.js';
-import { paradisRegisterHealthBeacon } from '../../paradis/contrib/healthBeacon/electron-main/paradisHealthBeaconMain.js';
-// PARA-PATCH: on-demand main process heap snapshot for leak diagnosis
-import { paradisRegisterHeapSnapshot } from '../../paradis/contrib/heapSnapshot/electron-main/paradisHeapSnapshotMain.js';
-// PARA-PATCH: named persistent browser profiles (see paradis/contrib/browserProfiles)
-import { paradisRegisterBrowserProfiles } from '../../paradis/contrib/browserProfiles/electron-main/paradisBrowserProfilesMain.js';
-import { paradisRegisterBrowserDownloads } from '../../paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloadsMain.js'; // PARA-PATCH: browser download list channel for the URL bar button
-// PARA-PATCH: pty daemon status channel for the status bar entry (see paradis/contrib/ptyDaemon)
-import { paradisRegisterPtyDaemonStatus } from '../../paradis/contrib/ptyDaemon/electron-main/paradisPtyDaemonStatusService.js';
-import { paradisRegisterUpdateTerminals } from '../../paradis/contrib/updateTerminals/electron-main/paradisUpdateTerminalsMain.js'; // PARA-PATCH: confirm ending kept terminals before restarting to update
-// PARA-PATCH: menu bar (tray) icon with the notification inbox and agent usage (see paradis/contrib/menuBar)
-import { paradisRegisterMenuBar } from '../../paradis/contrib/menuBar/electron-main/paradisMenuBarMain.js';
-import { paradisRegisterKeepAwake } from '../../paradis/contrib/keepAwake/electron-main/paradisKeepAwakeMain.js'; // PARA-PATCH: sleep prevention blockers owned per window (see paradis/contrib/keepAwake)
-import { paradisRegisterTaskBoardHost } from '../../paradis/contrib/taskBoard/electron-main/paradisTaskBoardHostMain.js'; // PARA-PATCH: open the bundled task board in its own window (see paradis/contrib/taskBoard)
 // PARA-PATCH: LocalPty channel that does not eagerly buffer the per-process pty events
 import { paradisCreateLocalPtyChannel } from '../../paradis/contrib/ptyChannel/electron-main/paradisLocalPtyChannel.js';
-import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../paradis/contrib/mobileRelay/common/paradisMobileWindowLease.js';
-import { ParadisMobileWindowLeaseChannel } from '../../paradis/contrib/mobileRelay/electron-main/paradisMobileWindowLeaseChannel.js';
 // PARA-PATCH: clear stale webview service worker registrations before the first window opens
 import { paradisResetWebviewServiceWorkers } from '../../paradis/contrib/fileViewers/electron-main/paradisWebviewServiceWorkerReset.js';
 import { paradisWatchWebviewServiceWorkers } from '../../paradis/contrib/fileViewers/electron-main/paradisWebviewServiceWorkerWatch.js';
-import { paradisRegisterDesignMode } from '../../paradis/contrib/browserDesignMode/electron-main/paradisDesignModeMain.js'; // PARA-PATCH: integrated browser Design Mode picker and image store channel
-import { paradisRegisterBrowserLoadStall } from '../../paradis/contrib/browserLoadStall/electron-main/paradisBrowserLoadStallMain.js'; // PARA-PATCH: integrated browser "still waiting" question channel and stalled-load diagnostics
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
 import { BrowserViewGroupMainService, IBrowserViewGroupMainService } from '../../platform/browserView/electron-main/browserViewGroupMainService.js';
 import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
@@ -1507,66 +1485,8 @@ export class CodeApplication extends Disposable {
 		mainProcessElectronServer.registerChannel(ipcBrowserViewGroupChannelName, browserViewGroupChannel);
 		sharedProcessClient.then(client => client.registerChannel(ipcBrowserViewGroupChannelName, browserViewGroupChannel));
 
-		// PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway (shared process only)
-		const paradisCdpTargetService = new ParadisCdpTargetService(
-			accessor.get(IBrowserViewMainService),
-			undefined,
-			undefined,
-			// PARA-PATCH: agent cursor overlay, gated by the Para Code setting (default on, matching the registry default)
-			new ParadisCursorOverlayController(() => this.configurationService.getValue<boolean>(PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING) !== false),
-		);
-		// PARA-PATCH: pin the real remote-debugging port now, before a second instance can overwrite
-		// DevToolsActivePort — this process is the one that wrote it (see paradisCdpUpstreamPortPin.ts).
-		paradisCdpTargetService.pinUpstreamPort();
-		// PARA-PATCH: the shared process (mobile browser mirror) subscribes to the agent cursor only while a phone watches; do not buffer it until then
-		const paradisCdpTargetChannel = ProxyChannel.fromService(paradisCdpTargetService, disposables, { unbufferedEvents: ['onDidChangeAgentCursor'] });
-		sharedProcessClient.then(client => client.registerChannel(PARADIS_CDP_TARGET_CHANNEL, paradisCdpTargetChannel));
-		// PARA-PATCH: mirror the agent cursor to the workbench too (the browser wall redraws it over the thumbnails; a page that is not on screen never paints its own overlay). Read-only surface: the renderer only subscribes to the event.
-		const paradisAgentCursorSurface: IParadisAgentCursorEvents = { onDidChangeAgentCursor: paradisCdpTargetService.onDidChangeAgentCursor };
-		// unbufferedEvents: nobody listens while the browser wall is closed, and the default
-		// buffering would pile every agent mouse move up in main until someone does. Dropping
-		// them is fine — the wall only mirrors what is happening right now.
-		mainProcessElectronServer.registerChannel(PARADIS_AGENT_CURSOR_CHANNEL, ProxyChannel.fromService(paradisAgentCursorSurface, disposables, { unbufferedEvents: ['onDidChangeAgentCursor'] }));
-		// PARA-PATCH: tell the workbench which integrated browser tabs carry agent init scripts, and let the user remove them from the tab
-		mainProcessElectronServer.registerChannel(PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL, ProxyChannel.fromService(paradisCdpTargetService.pageScriptsSurface, disposables));
-
-		// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator (main process only)
-		const paradisResourceMonitorChannel = ProxyChannel.fromService(new ParadisResourceMonitorMainService(), disposables);
-		mainProcessElectronServer.registerChannel(PARADIS_RESOURCE_MONITOR_CHANNEL, paradisResourceMonitorChannel);
-		disposables.add(paradisRegisterDesignMode(mainProcessElectronServer, accessor.get(IBrowserViewMainService), this.environmentMainService.userDataPath)); // PARA-PATCH: integrated browser Design Mode (see paradis/contrib/browserDesignMode)
-		disposables.add(paradisRegisterBrowserLoadStall(mainProcessElectronServer)); // PARA-PATCH: integrated browser "still waiting" question (see paradis/contrib/browserLoadStall)
-
-		// PARA-PATCH: periodic memory/CPU health beacon to Sentry (see paradis/contrib/healthBeacon).
-		// This one, updateTerminals and taskBoardHost act on onWillShutdown, so they stay out of `disposables`:
-		// this application disposes itself inside its own onWillShutdown listener, which would unsubscribe
-		// them before the event reaches them. They live until the process exits.
-		paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), this.lifecycleMainService, this.logService);
-
-		// PARA-PATCH: on-demand main process heap snapshot (see paradis/contrib/heapSnapshot)
-		disposables.add(paradisRegisterHeapSnapshot(mainProcessElectronServer));
-
-		// PARA-PATCH: named browser profile session maintenance channel (see paradis/contrib/browserProfiles)
-		disposables.add(paradisRegisterBrowserProfiles(mainProcessElectronServer, accessor.get(IInstantiationService)));
-		disposables.add(paradisRegisterBrowserDownloads(mainProcessElectronServer, this.configurationService)); // PARA-PATCH: browser download list (see paradis/contrib/browserDownloads)
-
-		// PARA-PATCH: what the pty daemon is holding, for the status bar entry that makes terminals
-		// running outside the app visible (see paradis/contrib/ptyDaemon)
-		disposables.add(paradisRegisterPtyDaemonStatus(mainProcessElectronServer, accessor.get(ILocalPtyService), this.configurationService, this.environmentMainService, this.productService, this.logService));
-		paradisRegisterUpdateTerminals(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IDialogMainService), this.configurationService, this.environmentMainService, this.productService, accessor.get(IUpdateService), this.lifecycleMainService, this.logService); // PARA-PATCH: ask before ending terminals kept on remotes / the pty daemon when restarting to update (see paradis/contrib/updateTerminals). Not in `disposables`: see the health beacon above
-
-		// PARA-PATCH: menu bar (tray) icon with the notification inbox and agent usage, off by default (see paradis/contrib/menuBar)
-		disposables.add(paradisRegisterMenuBar(mainProcessElectronServer, accessor.get(IWindowsMainService), this.configurationService, this.logService));
-		disposables.add(paradisRegisterKeepAwake(mainProcessElectronServer, accessor.get(IWindowsMainService))); // PARA-PATCH: stop a window's sleep prevention when it reloads, crashes and reopens, or closes (see paradis/contrib/keepAwake)
-		paradisRegisterTaskBoardHost(mainProcessElectronServer, this.configurationService, this.environmentMainService, this.lifecycleMainService, this.logService); // PARA-PATCH: start the bundled task board and open it in its own window (see paradis/contrib/taskBoard). Not in `disposables`: see the health beacon above
-
-		// allow-any-unicode-next-line
-		// PARA-PATCH: Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。
-		const paradisMobileWindowLeaseChannel = disposables.add(new ParadisMobileWindowLeaseChannel(mainProcessElectronServer, accessor.get(IWindowsMainService), this.lifecycleMainService));
-		// allow-any-unicode-next-line
-		// Renderer向けchannelは接続固有wrapperをMain authority自身が登録する。
-		// allow-any-unicode-next-line
-		// global登録すると同一windowの旧接続claimを新世代へ誤束縛できるため、Shared Processへだけ直接公開する。
-		sharedProcessClient.then(client => client.registerChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, paradisMobileWindowLeaseChannel));
+		// PARA-PATCH: every fork main-process channel (see paradis.mainProcess.contribution.ts)
+		registerParadisMainProcessContributions(accessor, mainProcessElectronServer, sharedProcessClient, disposables, { configurationService: this.configurationService, environmentMainService: this.environmentMainService, productService: this.productService, lifecycleMainService: this.lifecycleMainService, logService: this.logService });
 
 		// Signing
 		const signChannel = ProxyChannel.fromService(accessor.get(ISignService), disposables);
