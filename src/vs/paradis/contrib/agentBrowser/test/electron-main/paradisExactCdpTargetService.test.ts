@@ -6,7 +6,7 @@
 import * as assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import type { BrowserViewAutomationKeyFailureReason, IBrowserViewAutomationKeyFailureDetail } from '../../../../../platform/browserView/common/browserViewAutomationInput.js';
+import type { BrowserViewAutomationKeyFailureReason, IBrowserViewAutomationKeyFailureDetail } from '../../../../../platform/browserView/common/paraBrowserViewAutomationInput.js';
 import type { BrowserView } from '../../../../../platform/browserView/electron-main/browserView.js';
 import type { IBrowserViewMainService } from '../../../../../platform/browserView/electron-main/browserViewMainService.js';
 import {

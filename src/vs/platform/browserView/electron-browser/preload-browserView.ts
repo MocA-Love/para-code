@@ -9,7 +9,7 @@
 // Only `import type` is allowed in preload scripts — Electron preloads cannot resolve module imports at runtime.
 import type { BrowserElementSelectionMode, IBrowserElementCommentsUpdate, IBrowserElementSelectionOptions, IBrowserViewPreloadLocalizedStrings, IBrowserViewTheme, IBrowserViewRect } from '../common/browserView.js';
 // PARA-PATCH: import automation-input types so the preload can suppress synthetic automation keystrokes (Para Browser MCP automation input isolation)
-import type { BrowserViewAutomationTrustedFocusPredicate, IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
+import type { BrowserViewAutomationTrustedFocusPredicate, IBrowserViewAutomationKeySignature } from '../common/paraBrowserViewAutomationInput.js';
 
 const commentElementSelectionMode = 'comment' as BrowserElementSelectionMode;
 let localizedStrings: IBrowserViewPreloadLocalizedStrings = {
