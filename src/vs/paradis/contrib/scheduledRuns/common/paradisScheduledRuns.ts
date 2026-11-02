@@ -18,6 +18,7 @@
 // ここには両方が使う型と、副作用の無い判定だけを置く（テストしやすくするため）。
 
 import { localize } from '../../../../nls.js';
+import { paradisRedactTextSecrets } from '../../../common/paradisSecretRedaction.js';
 import { IParadisCronSchedule, paradisCronMinimumGapMinutes, paradisCronOccurrencesBetween, paradisParseCron, PARADIS_MINUTE_MS } from './paradisScheduleCron.js';
 
 export const PARADIS_SCHEDULED_RUNS_CHANNEL = 'paradisScheduledRuns';
@@ -206,6 +207,18 @@ export interface IParadisScheduledRunRecord {
 
 /** 最後の発言として残す長さ。 */
 export const PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH = 400;
+
+/** 最後の発言を伏せるとき、残す長さより余分に取る分（境目にかかったトークンも形のまま伏せられるように）。 */
+const LAST_MESSAGE_REDACTION_MARGIN = 256;
+
+/**
+ * 実行の記録に残す最後の発言。履歴はファイルに残り画面・受信箱・通知にも出るので、通知と同じ規則
+ * （`paradisRedactTextSecrets`）で秘密らしい値を伏せてから切り詰める（切り詰めた後だと、境目で切れたトークンの
+ * 断片が伏せ字の形に当たらず残る）。伏せる正規表現は長い文で遅くなるので、少し余分に取った先頭だけを伏せる。
+ */
+export function paradisScheduledRunLastMessage(text: string): string {
+	return paradisRedactTextSecrets(text.trim().slice(0, PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH + LAST_MESSAGE_REDACTION_MARGIN)).slice(0, PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH);
+}
 
 /** ウィンドウへ送る実行依頼。 */
 export interface IParadisScheduledRunRequest {
