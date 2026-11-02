@@ -112,8 +112,6 @@ suite('Paradis Cursor Overlay Controller', () => {
 			return installed ? 0 : PARADIS_CURSOR_OVERLAY_MISSING;
 		};
 
-		// Nothing to release before the body exists, so a missing body is not sent for it.
-		await controller.onMouseEvent(target, { type: 'mouseReleased', x: 1, y: 1, button: 'left' });
 		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 0, y: 0 });
 		clock += 1_000;
 		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 10, y: 0 });
@@ -121,8 +119,11 @@ suite('Paradis Cursor Overlay Controller', () => {
 		installed = false;
 		clock += 1_000;
 		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 20, y: 0 });
+		// Hiding before a capture only acts on what is already there, so a missing body is not sent for it.
+		installed = false;
+		await controller.hideForCapture(target);
 
-		assert.deepStrictEqual(sent, ['call:release', 'call:move', 'full:move', 'call:move', 'call:move', 'full:move']);
+		assert.deepStrictEqual(sent, ['call:move', 'full:move', 'call:move', 'call:move', 'full:move', 'call:hide']);
 	});
 
 	test('the page is never asked how long to wait, so a hung page cannot stall dispatch', async () => {
