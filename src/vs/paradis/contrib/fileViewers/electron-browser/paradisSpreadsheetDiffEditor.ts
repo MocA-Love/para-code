@@ -58,6 +58,7 @@ import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreads
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 
 import './media/paradisSpreadsheet.css';
+import { IParadisViewerStateAction, PARADIS_VIEWER_LOADING_LABEL, PARADIS_VIEWER_OPEN_IN_APP_LABEL, PARADIS_VIEWER_RETRY_LABEL, ParadisViewerStateKind, renderParadisViewerState } from '../browser/paradisViewerState.js';
 
 const $ = dom.$;
 const ZOOM_MIN = 0.2;
@@ -956,7 +957,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		const previousValidation = this._selectedValidation;
 		if (!preserveCommitted) {
 			this._clearSemanticUi();
-			this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "差分を読み込み中..."));
+			this._renderMessage(PARADIS_VIEWER_LOADING_LABEL, 'loading');
 		}
 		try {
 			// パース失敗(暗号化・破損・サイズ超過)を空ブックとして握りつぶすと、
@@ -1006,7 +1007,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 							side: origResult.error && modResult.error ? 'both' : origResult.error ? 'original' : 'modified',
 						});
 					}
-					this._renderMessage(localize('paradis.spreadsheet.diffLoadFailed', "差分を表示できません。{0}", reasons.join(' / ')));
+					this._renderMessage(localize('paradis.spreadsheet.diffLoadFailed', "差分を表示できません。{0}", reasons.join(' / ')), 'error');
 				}
 				return false;
 			}
@@ -1072,7 +1073,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._recoveryState = transition.state;
 				if (!preserveCommitted || transition.effects.length === 0) {
 					this._probe.noteAndReport({ cause: 'source', stage: 'source', error: err });
-					this._renderMessage(localize('paradis.spreadsheet.errorDiff', "スプレッドシートの差分を開けませんでした: {0}", err instanceof Error ? err.message : String(err)));
+					this._renderMessage(localize('paradis.spreadsheet.errorDiff', "スプレッドシートの差分を開けませんでした: {0}", err instanceof Error ? err.message : String(err)), 'error');
 				}
 			}
 			return false;
@@ -1357,7 +1358,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		appendField(localize('paradis.spreadsheet.validation.errorMessage', "エラーメッセージ"), original?.error ?? unset, modified?.error ?? unset);
 	}
 
-	private _renderMessage(message: string): void {
+	private _renderMessage(message: string, kind: ParadisViewerStateKind = 'info', actions: readonly IParadisViewerStateAction[] = []): void {
 		if (!this._bodyEl) {
 			return;
 		}
@@ -1383,8 +1384,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._renderedValidationCells = [];
 		this._panesEl = undefined;
 		this._validationInspector = undefined;
-		const msg = dom.append(this._bodyEl, $('.paradis-spreadsheet-message'));
-		msg.textContent = message;
+		this._renderDisposables.add(renderParadisViewerState(this._bodyEl, kind, message, actions));
 	}
 
 	private _renderRecoveryError(): void {
@@ -1392,30 +1392,21 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		// 梯子を使い切った終端。ここが利用者の見る失敗なので、溜めた観測を1件だけ送る。
 		// 原因は既に記録済み（白紙も時間切れも観測した場所で1件ずつ積んである）。
 		this._probe.reportFailure();
-		this._renderMessage(localize('paradis.spreadsheet.diffBlank', "比較結果を表示できませんでした。"));
 		const resource = this._modifiedResource;
-		if (!this._bodyEl || !resource) {
-			return;
+		const actions: IParadisViewerStateAction[] = resource ? [{
+			label: PARADIS_VIEWER_RETRY_LABEL,
+			run: () => {
+				// 再試行は新しい1回。前回送った記録を畳んでおかないと、また失敗しても無言になる。
+				this._probe.beginRetry();
+				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
+				this._recoveryState = transition.state;
+				this._applyRecoveryEffects(transition.effects, this._currentSpreadsheetViewState());
+			},
+		}] : [];
+		if (resource?.scheme === Schemas.file) {
+			actions.push({ label: PARADIS_VIEWER_OPEN_IN_APP_LABEL, run: () => void this._nativeHostService.openExternal(resource.toString(true)) });
 		}
-		const actions = dom.append(this._bodyEl, $('.paradis-spreadsheet-recovery-actions'));
-		const retry = dom.append(actions, $('button')) as HTMLButtonElement;
-		retry.type = 'button';
-		retry.textContent = localize('paradis.spreadsheet.diffRetry', "再試行");
-		this._renderDisposables.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
-			// 再試行は新しい1回。前回送った記録を畳んでおかないと、また失敗しても無言になる。
-			this._probe.beginRetry();
-			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
-			this._recoveryState = transition.state;
-			this._applyRecoveryEffects(transition.effects, this._currentSpreadsheetViewState());
-		}));
-		if (resource.scheme === Schemas.file) {
-			const open = dom.append(actions, $('button')) as HTMLButtonElement;
-			open.type = 'button';
-			open.textContent = localize('paradis.spreadsheet.diffOpenAfterBlank', "既定のアプリで開く");
-			this._renderDisposables.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
-				void this._nativeHostService.openExternal(resource.toString(true));
-			}));
-		}
+		this._renderMessage(localize('paradis.spreadsheet.diffBlank', "比較結果を表示できませんでした。"), 'error', actions);
 	}
 
 	private _renderSheet(): void {
@@ -1428,7 +1419,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		const sheet = this._diffSheets[this._activeSheetIndex];
 		if (!sheet) {
-			this._renderMessage(localize('paradis.spreadsheet.noChanges', "変更はありません"));
+			this._renderMessage(localize('paradis.spreadsheet.noChanges', "変更はありません"), 'done');
 			return;
 		}
 

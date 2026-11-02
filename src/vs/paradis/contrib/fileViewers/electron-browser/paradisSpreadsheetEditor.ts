@@ -65,6 +65,7 @@ import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from '
 
 import '../browser/spreadsheet/media/paradisSpreadsheetGrid.css';
 import './media/paradisSpreadsheet.css';
+import { IParadisViewerStateAction, PARADIS_VIEWER_LOADING_LABEL, PARADIS_VIEWER_OPEN_IN_APP_LABEL, PARADIS_VIEWER_RETRY_LABEL, ParadisViewerStateKind, renderParadisViewerState } from '../browser/paradisViewerState.js';
 
 const $ = dom.$;
 const ZOOM_MIN = 0.2;
@@ -1099,6 +1100,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	private readonly _headerDisposables = this._register(new DisposableStore());
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
+	/** 読み込み中・表示できないときの面（{@link renderParadisViewerState}）。 */
+	private readonly _stateView = this._register(new MutableDisposable<IDisposable>());
 	// タブ描画は _renderTabs のたびに DOM とリスナーを作り直すため、入力単位の store ではなく
 	// 描画単位の専用 store で管理する(旧タブのリスナー/切り離し済み DOM を都度解放する)。
 	private readonly _tabsDisposables = this._register(new MutableDisposable<DisposableStore>());
@@ -1476,7 +1479,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._probe.armSource(recoveryGeneration);
 		if (!preserveCommitted) {
 			this._clearSemanticUi();
-			this._renderMessage(localize('paradis.spreadsheet.loading', "スプレッドシートを読み込み中..."));
+			this._renderMessage(PARADIS_VIEWER_LOADING_LABEL, 'loading');
 		}
 		let workbook: IParadisWorkbookData;
 		let content: VSBuffer | undefined;
@@ -1499,7 +1502,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 					if (!(err instanceof ParadisSpreadsheetNotWorkbookError)) {
 						this._probe.noteAndReport({ cause: 'source', stage: 'source', error: err });
 					}
-					this._renderMessage(localize('paradis.spreadsheet.error', "スプレッドシートを開けませんでした: {0}", err instanceof Error ? err.message : String(err)));
+					this._renderMessage(localize('paradis.spreadsheet.error', "スプレッドシートを開けませんでした: {0}", err instanceof Error ? err.message : String(err)), 'error', this._openInAppActions(resource));
 				}
 			}
 			return false;
@@ -1795,7 +1798,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._inputDisposables.value?.add(scheduledNavigation);
 	}
 
-	private _renderMessage(message: string): void {
+	private _renderMessage(message: string, kind: ParadisViewerStateKind = 'info', actions: readonly IParadisViewerStateAction[] = []): void {
 		if (!this._bodyEl) {
 			return;
 		}
@@ -1806,8 +1809,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (this._tabsEl) {
 			dom.clearNode(this._tabsEl);
 		}
-		const msg = dom.append(this._bodyEl, $('.paradis-spreadsheet-message'));
-		msg.textContent = message;
+		this._stateView.value = renderParadisViewerState(this._bodyEl, kind, message, actions);
+	}
+
+	/** ローカルのファイルなら「既定のアプリで開く」を出す。 */
+	private _openInAppActions(resource: URI): IParadisViewerStateAction[] {
+		return resource.scheme === Schemas.file
+			? [{ label: PARADIS_VIEWER_OPEN_IN_APP_LABEL, run: () => void this._nativeHostService.openExternal(resource.toString(true)) }]
+			: [];
 	}
 
 	private _renderRecoveryError(resource: URI): void {
@@ -1815,32 +1824,20 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		// 梯子を使い切った終端。ここが利用者の見る失敗なので、溜めた観測を1件だけ送る。
 		// 原因は既に記録済み（白紙も時間切れも観測した場所で1件ずつ積んである）。
 		this._probe.reportFailure();
-		this._renderMessage(localize('paradis.spreadsheet.blank', "シートの内容を表示できませんでした。"));
-		if (!this._bodyEl) {
-			return;
-		}
-		const actions = dom.append(this._bodyEl, $('.paradis-spreadsheet-recovery-actions'));
-		const retry = dom.append(actions, $('button')) as HTMLButtonElement;
-		retry.type = 'button';
-		retry.textContent = localize('paradis.spreadsheet.retry', "再試行");
-		this._inputDisposables.value?.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
-			// 再試行は新しい1回。前回送った記録を畳んでおかないと、また失敗しても無言になる。
-			this._probe.beginRetry();
-			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
-			this._recoveryState = transition.state;
-			this._applyRecoveryEffects(transition.effects, resource, this._currentSpreadsheetViewState());
-		}));
-		if (resource.scheme === Schemas.file) {
-			const open = dom.append(actions, $('button')) as HTMLButtonElement;
-			open.type = 'button';
-			open.textContent = localize('paradis.spreadsheet.openAfterBlank', "既定のアプリで開く");
-			this._inputDisposables.value?.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
-				void this._nativeHostService.openExternal(resource.toString(true));
-			}));
-		}
+		this._renderMessage(localize('paradis.spreadsheet.blank', "シートの内容を表示できませんでした。"), 'error', [{
+			label: PARADIS_VIEWER_RETRY_LABEL,
+			run: () => {
+				// 再試行は新しい1回。前回送った記録を畳んでおかないと、また失敗しても無言になる。
+				this._probe.beginRetry();
+				const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
+				this._recoveryState = transition.state;
+				this._applyRecoveryEffects(transition.effects, resource, this._currentSpreadsheetViewState());
+			},
+		}, ...this._openInAppActions(resource)]);
 	}
 
 	private _renderSheet(): void {
+		this._stateView.clear();
 		if (!this._bodyEl) {
 			return;
 		}

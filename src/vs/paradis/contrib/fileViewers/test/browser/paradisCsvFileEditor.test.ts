@@ -213,9 +213,9 @@ suite('ParadisCsvFileEditor', () => {
 		await harness.editor.setInput(harness.input, undefined, Object.create(null), CancellationToken.None);
 		harness.stat = { size: 2 * 1024 * 1024 * 1024, mtime: 1 };
 		harness.editor.setViewMode('text');
-		await until(() => !!harness.root.querySelector('.paradis-csv-text-message.visible .paradis-csv-link-button'), 'confirmation');
+		await until(() => !!harness.root.querySelector('.paradis-csv-text-message.visible .monaco-button'), 'confirmation');
 		const before = harness.modelReferences.length;
-		const openAnyway = [...harness.root.querySelectorAll<HTMLButtonElement>('.paradis-csv-text-message.visible .paradis-csv-link-button')][0];
+		const openAnyway = [...harness.root.querySelectorAll<HTMLButtonElement>('.paradis-csv-text-message.visible .monaco-button')][0];
 		openAnyway.click();
 		await until(() => harness.modelReferences.length > before, 'model reference after confirming');
 		deepStrictEqual({ before, after: harness.modelReferences.length, control: !!harness.editor.getControl() }, { before: 0, after: 1, control: true });

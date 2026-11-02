@@ -43,6 +43,8 @@ import { PARADIS_PDF_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { buildParadisPdfViewerHtml, PARADIS_PDF_FIRST_PAINT_MESSAGE, shouldParadisPdfUseRangeRequests } from '../common/paradisPdfViewerHtml.js';
 import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 import { canReuseParadisShownDocument, IParadisShownDocument } from '../common/paradisViewerShownDocument.js';
+import { localize } from '../../../../nls.js';
+import { paradisViewerWebviewFailureHtml } from '../common/paradisViewerWebviewState.js';
 
 /** vendored pdf.js 成果物の配置ディレクトリ（AppResourcePath）。 */
 const PDFJS_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs' as const;
@@ -338,7 +340,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 	}
 
 	private _buildRejectedFileHtml(): string {
-		return '<!DOCTYPE html><html><body>PDF を表示できませんでした: ファイルが空または破損しています</body></html>';
+		return paradisViewerWebviewFailureHtml(localize('paradis.pdf.failed', "PDF を表示できませんでした: {0}", localize('paradis.viewer.emptyOrBroken', "ファイルが空または破損しています")));
 	}
 
 	private _buildHtml(resource: URI, documentUrl: string | undefined, size: number | undefined): string {
