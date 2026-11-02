@@ -189,6 +189,7 @@
 
 .paradis-limits-panel .plm-account {
 	/* Rows of the list (no separator lines); the row under the pointer is highlighted like a list row. */
+	position: relative;
 	margin: 0 var(--vscode-spacing-size40);
 	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80) var(--vscode-spacing-size80);
 	border-radius: var(--vscode-cornerRadius-small);
@@ -311,13 +312,27 @@
 	background: transparent;
 	color: var(--vscode-icon-foreground);
 	cursor: pointer;
-	/* Only on the row under the pointer or with the focus, like the upstream list row actions. */
-	visibility: hidden;
+	/* Only on the row under the pointer or with the focus, like the upstream list row actions. Hidden with
+		opacity so it stays reachable with Tab. */
+	opacity: 0;
 }
 
 .paradis-limits-panel .plm-account:hover .plm-account-icon-btn,
-.paradis-limits-panel .plm-account:focus-within .plm-account-icon-btn {
-	visibility: visible;
+.paradis-limits-panel .plm-account:focus-within .plm-account-icon-btn,
+.paradis-limits-panel .plm-account-icon-btn:focus-visible {
+	opacity: 1;
+}
+
+/* allow-any-unicode-next-line */
+/* 「…」は DOM ではカードのボタンの後ろ（Tab の順）にあり、見た目だけ右上の行に重ねる。バッジはその分だけ左へ寄せる。 */
+.paradis-limits-panel .plm-account-menu {
+	position: absolute;
+	top: var(--vscode-spacing-size60);
+	right: var(--vscode-spacing-size80);
+}
+
+.paradis-limits-panel .plm-account.has-menu .plm-badge-group {
+	margin-right: calc(22px + var(--vscode-spacing-size40));
 }
 
 .paradis-limits-panel .plm-account-icon-btn .codicon {
@@ -331,7 +346,6 @@
 .paradis-limits-panel .plm-account-icon-btn:focus-visible {
 	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
 	outline-offset: -1px;
-	visibility: visible;
 }
 
 /* 5時間/7日/モデル別枠の複数行を1つのgridにまとめる。行ごとに.plm-meterがgridを
@@ -366,8 +380,8 @@
 .paradis-limits-panel .plm-meter-track {
 	height: 4px;
 	border-radius: 2px;
-	/* 空き(未使用)部分。fillの緑/amber/赤と紛れないよう、背景から一段浮く中立グレー固定にする */
-	background: rgba(128, 128, 128, 0.28);
+	/* 空き(未使用)部分。fillの緑/amber/赤と紛れないよう、テーマの中立の色（スクロールバーのつまみ）にする */
+	background: var(--vscode-scrollbarSlider-background);
 	overflow: hidden;
 }
 

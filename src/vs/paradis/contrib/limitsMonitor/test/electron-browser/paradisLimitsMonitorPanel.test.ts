@@ -77,6 +77,9 @@ suite('ParadisLimitsMonitorPanel', () => {
 				footer: !!panel.querySelector('.plm-footer'),
 				addButtons: [...panel.querySelectorAll('.plm-provider-header button.plm-add-btn')].map(button => button.getAttribute('aria-label')),
 				resets: [...panel.querySelectorAll('.plm-meter-reset')].map(cell => cell.textContent),
+				// 「…」はカードの最後（Tab でカードのボタンの後）にあり、隠していてもフォーカスを受けられる。
+				menuIsLastInCard: panel.querySelector('.plm-account')?.lastElementChild?.classList.contains('plm-account-menu'),
+				menuFocusable: (() => { const menu = panel.querySelector<HTMLButtonElement>('.plm-account-menu'); menu?.focus(); return document.activeElement === menu; })(),
 			}, {
 				firstChild: 'plm-header',
 				title: 'AI 利用リミット',
@@ -84,6 +87,8 @@ suite('ParadisLimitsMonitorPanel', () => {
 				footer: false,
 				addButtons: ['Claude のアカウントを追加', 'Codex のアカウントを追加'],
 				resets: ['2時間13分後', '4日6時間後'],
+				menuIsLastInCard: true,
+				menuFocusable: true,
 			});
 		} finally {
 			root.remove();
