@@ -22,6 +22,8 @@
 // webview のライフサイクル（OverlayWebview + claim/release）は paradisDocxFileEditor.ts と同方式。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { Button } from '../../../../base/browser/ui/button/button.js';
+import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -79,6 +81,7 @@ import type { IParadisWordComparisonResult } from '../common/word/paradisWordSem
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import './media/paradisDocxDiff.css';
+import { PARADIS_VIEWER_LOADING_LABEL, PARADIS_VIEWER_OPEN_IN_APP_LABEL, PARADIS_VIEWER_RETRY_LABEL } from '../browser/paradisViewerState.js';
 
 const $ = dom.$;
 
@@ -629,7 +632,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(buildParadisDocxDiffHtml({
 			original: localize('paradis.docxDiff.paneOriginal', "旧版 — {0}", basename(this._originalResource!)),
 			modified: localize('paradis.docxDiff.paneModified', "新版 — {0}", basename(this._modifiedResource!)),
-			loading: localize('paradis.docxDiff.loading', "読み込み中…"),
+			loading: PARADIS_VIEWER_LOADING_LABEL,
 		}, this._resolvedLibBase)));
 		this._probe.armRender(recoveryGeneration);
 		return true;
@@ -704,7 +707,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			// allow-any-unicode-next-line
 			modified: localize('paradis.docxDiff.paneModified', "新版 — {0}", basename(modified)),
 			// allow-any-unicode-next-line
-			loading: localize('paradis.docxDiff.loading', "読み込み中…"),
+			loading: PARADIS_VIEWER_LOADING_LABEL,
 		}, libBase)));
 		// 読み出しは終わったので、ここからは描画側を見張る（バイト数が確定した後なので予算も正確）。
 		this._probe.armRender(recoveryGeneration);
@@ -855,10 +858,14 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		if (!this._noticeEl || !resource) {
 			return;
 		}
-		const retry = dom.append(this._noticeEl, $('button')) as HTMLButtonElement;
-		retry.type = 'button';
-		retry.textContent = localize('paradis.docxDiff.retry', "再試行");
-		this._inputDisposables.value?.add(dom.addDisposableListener(retry, dom.EventType.CLICK, () => {
+		// 本文は webview の中なので、失敗の文とボタンはバーの知らせの欄に置く。ボタンは本家の Button（小）。
+		const store = this._inputDisposables.value;
+		if (!store) {
+			return;
+		}
+		const retry = store.add(new Button(this._noticeEl, { ...defaultButtonStyles, small: true }));
+		retry.label = PARADIS_VIEWER_RETRY_LABEL;
+		store.add(retry.onDidClick(() => {
 			// 再試行は新しい1回。前回送った記録を畳んでおかないと、また失敗しても無言になる。
 			this._probe.beginRetry();
 			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
@@ -866,12 +873,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			this._applyRecoveryEffects(transition.effects);
 		}));
 		if (resource.scheme === Schemas.file) {
-			const open = dom.append(this._noticeEl, $('button')) as HTMLButtonElement;
-			open.type = 'button';
-			open.textContent = localize('paradis.docxDiff.openAfterBlank', "既定のアプリで開く");
-			this._inputDisposables.value?.add(dom.addDisposableListener(open, dom.EventType.CLICK, () => {
-				void this._nativeHostService.openExternal(resource.toString(true));
-			}));
+			const open = store.add(new Button(this._noticeEl, { ...defaultButtonStyles, small: true, secondary: true }));
+			open.label = PARADIS_VIEWER_OPEN_IN_APP_LABEL;
+			store.add(open.onDidClick(() => void this._nativeHostService.openExternal(resource.toString(true))));
 		}
 	}
 

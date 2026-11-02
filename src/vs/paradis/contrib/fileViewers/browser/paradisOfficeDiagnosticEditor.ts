@@ -7,7 +7,7 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -52,6 +52,7 @@ import {
 	type ParadisOfficeConfigurationReader,
 	type ParadisOfficeRuntimeConfiguration,
 } from '../common/paradisOfficeCapabilities.js';
+import { PARADIS_VIEWER_LOADING_LABEL, PARADIS_VIEWER_OPEN_IN_APP_LABEL, renderParadisViewerState } from './paradisViewerState.js';
 
 const maximumBrowserOfficeBytes = 16 * 1024 * 1024;
 const officeWorkerModule = 'vs/paradis/contrib/fileViewers/browser/paradisOfficeWebWorker.js';
@@ -85,28 +86,23 @@ export function createParadisOfficeDiagnostic(resource: URI): ParadisOfficeDiagn
 	return { resource, format: diagnosticFormat, reason, canOpenExternal: resource.scheme === Schemas.file };
 }
 
-/** Renders metadata only. This function deliberately has no byte input or binary decoding path. */
+/**
+ * Renders metadata only. This function deliberately has no byte input or binary decoding path.
+ * 見た目は本家のエディタの「開けません」の形（{@link renderParadisViewerState}）。外部で開けないときはボタンを出さない。
+ */
 export function renderParadisOfficeDiagnostic(
 	container: HTMLElement,
 	diagnostic: ParadisOfficeDiagnostic,
 	onOpenExternal: (resource: URI) => void,
-): void {
+): IDisposable {
 	container.replaceChildren();
-	const title = dom.append(container, dom.$('h2'));
-	title.textContent = localize('paradis.office.unsupported.title', "この形式の Office ファイルはプレビューできません");
-	const format = dom.append(container, dom.$('p'));
-	format.textContent = localize('paradis.office.unsupported.format', "検出した形式: {0}", diagnostic.format);
-	const explanation = dom.append(container, dom.$('p'));
-	explanation.textContent = diagnosticText(diagnostic.reason);
-	const button = dom.append(container, dom.$('button')) as HTMLButtonElement;
-	button.type = 'button';
-	button.textContent = localize('paradis.office.unsupported.openExternal', "外部のアプリで開く");
-	button.disabled = !diagnostic.canOpenExternal;
-	button.addEventListener(dom.EventType.CLICK, () => {
-		if (diagnostic.canOpenExternal) {
-			onOpenExternal(diagnostic.resource);
-		}
-	});
+	return renderParadisViewerState(
+		container,
+		'info',
+		localize('paradis.office.unsupported.title', "この形式の Office ファイルはプレビューできません"),
+		diagnostic.canOpenExternal ? [{ label: PARADIS_VIEWER_OPEN_IN_APP_LABEL, run: () => onOpenExternal(diagnostic.resource) }] : [],
+		`${diagnosticText(diagnostic.reason)} ${localize('paradis.office.unsupported.format', "検出した形式: {0}", diagnostic.format)}`,
+	);
 }
 
 function diagnosticText(reason: ParadisOfficeDiagnosticReason): string {
@@ -124,6 +120,7 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 
 	private rootElement: HTMLElement | undefined;
 	private readonly inputCancellation = this._register(new MutableDisposable<CancellationTokenSource>());
+	private readonly stateView = this._register(new MutableDisposable<IDisposable>());
 
 	constructor(
 		group: IEditorGroup,
@@ -139,6 +136,7 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 
 	protected override createEditor(parent: HTMLElement): void {
 		this.rootElement = dom.append(parent, dom.$('.paradis-office-browser-viewer'));
+		this.rootElement.style.position = 'relative';
 		this.rootElement.style.overflow = 'auto';
 		this.rootElement.style.padding = '16px';
 	}
@@ -158,7 +156,7 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 			this.renderWorkerFallback(officeInput.resource, workerAvailable ? 'configurationDisabled' : 'workerUnavailable');
 			return;
 		}
-		this.renderStatus(localize('paradis.office.loading', "Office ファイルを解析しています…"));
+		this.renderStatus(PARADIS_VIEWER_LOADING_LABEL);
 		try {
 			const [original, modified] = officeInput.originalResource
 				? await Promise.all([
@@ -200,14 +198,18 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 	}
 
 	private renderStatus(message: string): void {
-		this.rootElement?.replaceChildren(message);
+		if (!this.rootElement) {
+			return;
+		}
+		this.rootElement.replaceChildren();
+		this.stateView.value = renderParadisViewerState(this.rootElement, 'loading', message);
 	}
 
 	private renderDiagnostic(diagnostic: ParadisOfficeDiagnostic): void {
 		if (!this.rootElement) {
 			return;
 		}
-		renderParadisOfficeDiagnostic(this.rootElement, diagnostic, resource => {
+		this.stateView.value = renderParadisOfficeDiagnostic(this.rootElement, diagnostic, resource => {
 			void this.openerService.open(resource, { openExternal: true, allowContributedOpeners: false, fromUserGesture: true });
 		});
 	}
@@ -217,23 +219,22 @@ export class ParadisOfficeDiagnosticEditor extends EditorPane {
 			return;
 		}
 		this.rootElement.replaceChildren();
-		const title = dom.append(this.rootElement, dom.$('h2'));
-		title.textContent = localize('paradis.office.workerUnavailable.title', "Office ファイルのプレビューを表示できません");
-		const detail = dom.append(this.rootElement, dom.$('p'));
-		detail.textContent = localize('paradis.office.workerUnavailable.detail', "この内容を安全にプレビューできませんでした（{0}）。", reason);
 		const diagnostic = createParadisOfficeDiagnostic(resource);
-		const button = dom.append(this.rootElement, dom.$('button')) as HTMLButtonElement;
-		button.type = 'button';
-		button.textContent = localize('paradis.office.unsupported.openExternal', "外部のアプリで開く");
-		button.disabled = !diagnostic.canOpenExternal;
-		button.addEventListener(dom.EventType.CLICK, () => {
-			if (diagnostic.canOpenExternal) {
-				void this.openerService.open(resource, { openExternal: true, allowContributedOpeners: false, fromUserGesture: true });
-			}
-		});
+		this.stateView.value = renderParadisViewerState(
+			this.rootElement,
+			'warning',
+			localize('paradis.office.workerUnavailable.title', "Office ファイルのプレビューを表示できません"),
+			diagnostic.canOpenExternal ? [{
+				label: PARADIS_VIEWER_OPEN_IN_APP_LABEL,
+				run: () => void this.openerService.open(resource, { openExternal: true, allowContributedOpeners: false, fromUserGesture: true }),
+			}] : [],
+			localize('paradis.office.workerUnavailable.detail', "この内容を安全にプレビューできませんでした（{0}）。", reason),
+		);
 	}
 
+
 	private renderSummary(summary: ParadisOfficeBrowserSemanticSummary): void {
+		this.stateView.clear();
 		if (!this.rootElement) {
 			return;
 		}

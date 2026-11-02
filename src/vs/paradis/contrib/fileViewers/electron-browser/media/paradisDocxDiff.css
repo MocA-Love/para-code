@@ -181,3 +181,11 @@
 	min-height: 0;
 	overflow: hidden;
 }
+
+/* Retry / open buttons placed after the failure notice (the document itself is inside the webview). */
+.paradis-docx-diff-notice .monaco-button {
+	display: inline-flex;
+	width: auto;
+	margin-left: var(--vscode-spacing-size60);
+	vertical-align: middle;
+}

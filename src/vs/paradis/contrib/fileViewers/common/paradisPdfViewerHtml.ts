@@ -24,6 +24,9 @@
  * これ以上の大きさの文書だけ区間読みにする。実測（2026-10-09）で、5 MB では区間読みが遅く、
  * 10 MB では測るたびに勝ち負けが入れ替わり、20 MB 以上では区間読みが速かったので、その間に置いた。
  */
+import { localize } from '../../../../nls.js';
+import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from './paradisViewerWebviewState.js';
+
 export const PARADIS_PDF_RANGE_THRESHOLD_BYTES = 16 * 1024 * 1024;
 
 /** 区間読みの 1 回の大きさ。pdf.js の既定（64 KiB）だと往復が多すぎる。 */
@@ -368,7 +371,7 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 		#toolbar button:hover { background: var(--vscode-toolbar-hoverBackground, rgba(90,93,94,.31)); }
 		#zoomLabel { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
 		#pageLabel { margin-left: 8px; opacity: .8; font-variant-numeric: tabular-nums; }
-		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; }
+		${PARADIS_VIEWER_WEBVIEW_STATE_STYLE}
 	</style>
 </head>
 <body>
@@ -380,7 +383,7 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 		<button id="zoomFit" title="幅に合わせる">⤢</button>
 		<span id="pageLabel"></span>
 	</div>
-	<div id="status">読み込み中…</div>
+	${paradisViewerWebviewStatusHtml()}
 	<script type="module" nonce="${nonce}">
 		const PDF_URL = ${JSON.stringify(pdfUrl)};
 		const LIB = ${JSON.stringify(libBase)};
@@ -618,7 +621,7 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 				})().catch(() => { /* 大きさを揃えられなくても、近づいたときに取り直す */ });
 			}
 		} catch (err) {
-			statusEl.textContent = 'PDF を表示できませんでした: ' + (err && err.message ? err.message : err);
+			${paradisViewerWebviewFailureScript(localize('paradis.pdf.failed', "PDF を表示できませんでした: {0}"))}
 		}
 	</script>
 </body>
