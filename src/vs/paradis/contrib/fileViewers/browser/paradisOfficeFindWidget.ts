@@ -8,6 +8,9 @@ import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { getBaseLayerHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate2.js';
+import type { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { Toggle } from '../../../../base/browser/ui/toggle/toggle.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
@@ -45,6 +48,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 	private readonly closeButton: HTMLButtonElement;
 	private readonly statusElement: HTMLElement;
 	private readonly currentElement: HTMLElement;
+	private readonly statusHover: IManagedHover;
 	private readonly request = this._register(new MutableDisposable<CancellationTokenSource>());
 	private searchProvider: ParadisOfficeFindSearchProvider | undefined;
 	private unavailableMessage: string | undefined;
@@ -99,15 +103,15 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.statusElement.setAttribute('aria-atomic', 'true');
 		this.element.appendChild(this.statusElement);
 
-		this.previousButton = button(document, Codicon.arrowUp, localize('paradis.office.findPrevious', "前の一致"));
-		this.element.appendChild(this.previousButton);
-		this.nextButton = button(document, Codicon.arrowDown, localize('paradis.office.findNext', "次の一致"));
-		this.element.appendChild(this.nextButton);
-		this.closeButton = button(document, Codicon.close, localize('paradis.office.findClose', "閉じる"));
-		this.element.appendChild(this.closeButton);
+		// ツールチップは本家と同じ管理されたホバーで出す（ネイティブの title は使わない）。
+		this.statusHover = this._register(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('mouse'), this.statusElement, ''));
+
+		this.previousButton = this.appendButton(document, Codicon.arrowUp, localize('paradis.office.findPrevious', "前の一致"));
+		this.nextButton = this.appendButton(document, Codicon.arrowDown, localize('paradis.office.findNext', "次の一致"));
+		this.closeButton = this.appendButton(document, Codicon.close, localize('paradis.office.findClose', "閉じる"));
 
 		// 一致した場所（シート名・前後の文）は本家の小窓に無い 2 行目になるので、画面には出さず、
-		// 読み上げと件数のツールチップに渡す。
+		// 件数のツールチップに出す。要素は DOM に残す（見えないだけで、読み上げの順に入る）。
 		this.currentElement = document.createElement('span');
 		this.currentElement.className = 'paradis-office-find-current';
 		this.element.appendChild(this.currentElement);
@@ -322,7 +326,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 
 	private updateResultPresentation(): void {
 		const result = this.results[this.currentIndex];
-		this.statusElement.title = '';
+		this.statusHover.update('');
 		if (!result && this.results.length > 0) {
 			// 一致はあるが、まだどれにも移動していない（`refresh({ navigate: false })` の後）。
 			this.currentElement.textContent = '';
@@ -343,7 +347,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		const visibleTotal = this.capped ? `${this.total}+` : String(this.total);
 		this.statusElement.textContent = localize('paradis.office.findPosition', "{1} 件中 {0} 件目", this.currentIndex + 1, visibleTotal);
 		this.currentElement.textContent = `${result.locationBadge.label}: ${result.preview.before}${result.preview.match}${result.preview.after}`;
-		this.statusElement.title = this.currentElement.textContent;
+		this.statusHover.update(this.currentElement.textContent);
 		this.previousButton.disabled = false;
 		this.nextButton.disabled = false;
 	}
@@ -369,7 +373,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.total = 0;
 		this.capped = false;
 		this.currentElement.textContent = '';
-		this.statusElement.title = '';
+		this.statusHover.update('');
 		this.previousButton.disabled = true;
 		this.nextButton.disabled = true;
 	}
@@ -410,18 +414,19 @@ export class ParadisOfficeFindWidget extends Disposable {
 		}
 	}
 
+	private appendButton(document: Document, icon: ThemeIcon, label: string): HTMLButtonElement {
+		const result = document.createElement('button');
+		result.type = 'button';
+		result.className = `paradis-office-find-button ${ThemeIcon.asClassName(icon)}`;
+		result.setAttribute('aria-label', label);
+		this.element.appendChild(result);
+		this._register(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('mouse'), result, label));
+		return result;
+	}
+
 	override dispose(): void {
 		this.cancelSearch();
 		this.element.remove();
 		super.dispose();
 	}
-}
-
-function button(document: Document, icon: ThemeIcon, label: string): HTMLButtonElement {
-	const result = document.createElement('button');
-	result.type = 'button';
-	result.className = `paradis-office-find-button ${ThemeIcon.asClassName(icon)}`;
-	result.setAttribute('aria-label', label);
-	result.title = label;
-	return result;
 }
