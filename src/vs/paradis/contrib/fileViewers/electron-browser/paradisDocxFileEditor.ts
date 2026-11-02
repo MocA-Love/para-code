@@ -28,8 +28,8 @@ import { IConfigurationService, type IConfigurationValue } from '../../../../pla
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js';
-import { paradisPreviewOrigins, resolveParadisViewerDocumentUrl, resolveParadisViewerLibBase } from './paradisViewerAssets.js';
+import { ParadisOverlayWebviewPane } from '../browser/paradisOverlayWebviewPane.js';
+import { paradisPreviewOrigins, resolveParadisViewerLibBase } from './paradisViewerAssets.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -37,12 +37,12 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { extractParadisWordRenderableObjects } from '../common/word/paradisWordRenderableExtractor.js';
 import { readWordRenderablePackageParts } from '../browser/word/paradisWordPackageParts.js';
 import { buildParadisWordOverlayItems } from './word/paradisWordObjectOverlayHtml.js';
-import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisDocxInput } from './paradisDocxInput.js';
 import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
@@ -286,11 +286,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _inspectorToggle: HTMLButtonElement | undefined;
 	private _inspectorPanel: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
-	private _webview: IOverlayWebview | undefined;
+	/** overlay webview（作り方・配置・同梱ライブラリの置き場は部品が持つ）。 */
+	private readonly _pane: ParadisOverlayWebviewPane;
 	private _webviewSupportsRecoveryMessages = false;
-	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
-	private readonly _originPool: ParadisWebviewOriginPool;
-	private _webviewClaimed = false;
 	private _editorVisible = false;
 	private _currentResource: URI | undefined;
 	private _renderGeneration = 0;
@@ -359,32 +357,48 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private readonly _probe = this._register(new ParadisOfficeViewerProbe('word-view', generation => this._onRenderTimeout(generation)));
 	private _recreatingForRecovery = false;
 
-	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, layoutService: IWorkbenchLayoutService);
-	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, layoutService: IWorkbenchLayoutService, configurationService: IConfigurationService);
 	constructor(
 		group: IEditorGroup,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
-		@IWebviewService private readonly _webviewService: IWebviewService,
+		@IWebviewService webviewService: IWebviewService,
 		@IFileService private readonly _fileService: IFileService,
-		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
-		@IConfigurationService private readonly _configurationService: IConfigurationService = undefined!,
-		@INativeHostService private readonly _nativeHostService: INativeHostService = undefined!,
+		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@INativeHostService private readonly _nativeHostService: INativeHostService,
 	) {
 		super(PARADIS_DOCX_EDITOR_ID, group, telemetryService, themeService, storageService);
+		this._pane = this._register(new ParadisOverlayWebviewPane(this, {
+			originKey: PARADIS_DOCX_EDITOR_ID,
+			enableFindWidget: false,
+			allowScripts: true,
+			resolveLibBase: () => resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(DOCX_MEDIA_ROOT)),
+			onDidCreate: (webview, store) => {
+				this._webviewSupportsRecoveryMessages = typeof webview.onMessage === 'function';
+				if (this._webviewSupportsRecoveryMessages) {
+					store.add(webview.onMessage(event => this._onRecoveryMessage(event.message)));
+				}
+			},
+			onDidDispose: () => {
+				this._webviewSupportsRecoveryMessages = false;
+				this._shownDocument = undefined;
+			},
+			reportFatalErrorAs: PARADIS_DOCX_EDITOR_ID,
+		}, webviewService, layoutService, storageService));
 		// ライブラリの置き場は入力に依らないので、ここで先に決めておく。開く操作が
 		// 共有プロセスの応答を待たされる最悪値が、そのぶん短くなる。
-		void this._resolveLibBase();
-		this._originPool = ParadisWebviewOriginPool.getShared(storageService);
+		void this._pane.resolveLibBase();
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
-		// タブを閉じたら、戻るための記録も捨てる。
+		// タブを閉じたら、戻るための記録と描画を捨てる。
 		this._register(this.group.onDidCloseEditor(e => {
 			if (e.editor instanceof ParadisDocxInput && this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
 				this._shownDocument = undefined;
+				// 戻るために残していた描画（docx-preview の DOM）も捨てる。閉じた後まで抱えない。
+				this._pane.clearContent();
 			}
 		}));
 		this._rootElement = dom.append(parent, dom.$('.paradis-docx-viewer'));
@@ -395,7 +409,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._rootElement, {
 			unavailableMessage: localize('paradis.word.searchUnavailableAdapter', "この形式では検索を利用できません。"),
-			isActive: () => !!this._webview?.isFocused,
+			isActive: () => !!this._pane.webview?.isFocused,
 			onNavigate: result => this._postReveal(createParadisWordSearchReveal(result, this._findMatchCase), result.navigableAnchor),
 		});
 		// 全ビューア共通のバー。解析の結果（リボン）は幅が狭いと折り返すので、高さは中身に合わせる。
@@ -453,23 +467,13 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._openBytes = 0;
 		const previousInput = this._input;
 		const previousOptions = this._options;
-		const previousDocumentUrl = this._documentUrl;
-		// 配信先はここで決めておく（描画経路で待つと追い越し制御の順序が変わる）。失敗しても
-		// 従来の webview リソース経路に倒れるだけなので、結果は見ずに済ませる。
+		// 同梱ライブラリの置き場はここで決めておく（描画経路で待つと追い越し制御の順序が変わる）。失敗しても
+		// 従来の webview リソース経路に倒れるだけなので、結果は見ずに済ませる。文書そのものは data: で渡すので配信サーバへ載せない。
 		if (input instanceof ParadisDocxInput && input.resource) {
-			const resource = input.resource;
-			await this._resolveLibBase();
-			const documentUrl = this._canServe(resource) ? await resolveParadisViewerDocumentUrl(this._sharedProcessService, resource) : undefined;
-			if (this._canServe(resource) && documentUrl === undefined) {
-				// 文書だけ載らなかった。この webview の作り方では読めないので、以後サーバを使わない。
-				this._documentServeFailed = true;
-			}
-			// **エポックで守ること。** 追い越された古い入力の URL を後から代入すると、
-			// 新しく開いたファイルの位置に前のファイルが表示される。
+			await this._pane.resolveLibBase();
 			if (invocationEpoch !== this._inputEpoch) {
 				return;
 			}
-			this._documentUrl = documentUrl;
 		}
 		await super.setInput(input, options, context, token);
 		if (this._disposed || invocationEpoch !== this._inputEpoch) {
@@ -478,14 +482,13 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (token.isCancellationRequested) {
 			this._input = previousInput;
 			this._options = previousOptions;
-			this._documentUrl = previousDocumentUrl;
 			// 取り消された入力の計測は捨てる（残すと、前の文書の次の描画がこの時刻からの時間として送られる）。
 			this._openTiming.clear();
 			return;
 		}
 
 		const resource = (input as ParadisDocxInput).resource;
-		this._runtimeConfiguration = this._configurationService ? snapshotWordRuntimeConfiguration(this._configurationService) : undefined;
+		this._runtimeConfiguration = snapshotWordRuntimeConfiguration(this._configurationService);
 		// 母数は「利用者が1つの文書を開いた」回数。同じ文書ならタブを往復しても増えない。
 		this._probe.beginOpen(input.resource?.toString() ?? '', this._diagnosticEngine());
 
@@ -514,8 +517,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const rerenderScheduler = store.add(new RunOnceScheduler(() => {
 			const expectedGeneration = watchInvalidationGeneration;
 			watchInvalidationGeneration = undefined;
-			if (expectedGeneration === this._renderGeneration && isEqual(this._currentResource, resource) && this._webviewClaimed) {
-				if (this._webview && !this._webviewSupportsRecoveryMessages) {
+			if (expectedGeneration === this._renderGeneration && isEqual(this._currentResource, resource) && this._pane.claimed) {
+				if (this._pane.webview && !this._webviewSupportsRecoveryMessages) {
 					// Legacy overlays cannot acknowledge a renderer probe. Keep their existing
 					// preflight concurrency and let _renderGeneration fence stale completions.
 					this._renderResource(resource);
@@ -527,7 +530,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			}
 		}, DOCX_WATCH_RERENDER_DELAY_MS));
 		const scheduleWatchRerender = () => {
-			if (!isEqual(this._currentResource, resource) || !this._webviewClaimed) {
+			if (!isEqual(this._currentResource, resource) || !this._pane.claimed) {
 				return;
 			}
 			watchInvalidationGeneration = this._renderGeneration;
@@ -551,62 +554,22 @@ export class ParadisDocxFileEditor extends EditorPane {
 			// watcher が作れなくても表示は継続できる。
 		}
 
-		if (this._webviewClaimed) {
+		if (this._pane.claimed) {
 			this._renderResource(resource);
 		}
 		this._updateWebviewPlacement();
 	}
 
 	/**
-	 * 同梱ライブラリの置き場。**ペインにつき一度だけ**決める（アプリの中にあるので入力に依らない）。
-	 * 文書の URL は入力ごとに解決する（使い回されるペインで焼き付けると、2件目に1件目が出る）。
-	 *
-	 * 解決は**描画経路からは待たない。** 描画の入口で待つと、そこにある世代・エポックによる
-	 * 追い越し制御の順序が変わってしまう（実際にテストが落ちた）。入力を受け取った時点と
-	 * placement から先に決めておき、描画中は結果を同期で読むだけにする。
+	 * 同梱ライブラリをローカルの配信サーバから出せるか（置き場を決められて、文書が手元にある）。出せるなら
+	 * service worker を切った webview にする。文書は data: で渡すので、配信サーバに載せるのはライブラリだけ。
 	 */
-	private _libBase: Promise<string | undefined> | undefined;
-	private _libBaseResolved = false;
-	private _resolvedLibBase: string | undefined;
-	/** いまの webview を作ったときに service worker を切ったか。要否が変わったら作り直す。 */
-	private _webviewServiceWorkerDisabled = false;
-	/** 入力ごとに解決した文書の URL（配信サーバから出せないときは undefined）。 */
-	private _documentUrl: string | undefined;
-	/** webview とその貸し出し origin。作り直せるようにまとめて捨てられる形で持つ。 */
-	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
-
-	private async _resolveLibBase(): Promise<string | undefined> {
-		this._libBase ??= resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(DOCX_MEDIA_ROOT));
-		const libBase = await this._libBase;
-		this._resolvedLibBase = libBase;
-		this._libBaseResolved = true;
-		return libBase;
-	}
-
-	/**
-	 * 文書だけ載せられなかったことがあるか。
-	 *
-	 * ライブラリは載ったが文書の mount だけ失敗すると、「service worker を切った webview に、
-	 * service worker でしか解決できない URL を渡す」状態になり、ライブラリすら読めなくなる。
-	 * **真偽値を毎回計算し直すと placement 側（文書 URL を知らない）と食い違って作り直しが
-	 * 往復する**ので、一度失敗したらラッチして以後はサーバを使わない。
-	 */
-	private _documentServeFailed = false;
-
-	/** このリソースを配信サーバから出せるか（ライブラリを載せられて、文書が手元にある）。 */
 	private _canServe(resource: URI): boolean {
-		return !!this._resolvedLibBase && !this._documentServeFailed && resource.scheme === Schemas.file;
+		return !!this._pane.libBase && resource.scheme === Schemas.file;
 	}
 
 	private _disposeWebview(): void {
-		if (this._webview && this._webviewClaimed) {
-			this._webview.release(this);
-		}
-		this._webviewClaimed = false;
-		this._webview = undefined;
-		this._webviewSupportsRecoveryMessages = false;
-		this._shownDocument = undefined;
-		this._webviewStore.clear();
+		this._pane.disposeWebview();
 	}
 
 	// ── 表示失敗の観測 ────────────────────────────────────────────────────
@@ -669,7 +632,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const shown = this._shownDocument;
 		const etag = DOCX_OPEN_CACHE.get(resource)?.etag;
 		const viewState = this._currentWordViewState();
-		if (!shown || !etag || webview !== this._webview || !canReuseParadisShownDocument(shown, resource, this._webview, this._shownKeys(etag, viewState))) {
+		if (!shown || !etag || webview !== this._pane.webview || !canReuseParadisShownDocument(shown, resource, this._pane.webview, this._shownKeys(etag, viewState))) {
 			return false;
 		}
 		this._assetPlaceholders = shown.placeholders;
@@ -778,7 +741,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._recoveryState = transition.state;
 			this._applyRecoveryEffects(transition.effects, this._currentResource);
 		} else if (candidate.action === 'openExternally') {
-			void this._nativeHostService?.openExternal(this._currentResource.toString(true));
+			void this._nativeHostService.openExternal(this._currentResource.toString(true));
 		}
 	}
 
@@ -813,7 +776,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 					// 原因は既に記録済み（白紙も時間切れも観測した場所で1件ずつ積んである）。
 					this._probe.reportFailure();
 					this._shownDocument = undefined;
-					this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildBlankFileHtml()));
+					this._pane.webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildBlankFileHtml()));
 					break;
 			}
 		}
@@ -828,14 +791,14 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 */
 	private _mountRenderSnapshot(recoveryGeneration: number): boolean {
 		const snapshot = this._renderSnapshot;
-		if (!snapshot || !isEqual(snapshot.resource, this._currentResource) || !this._webviewClaimed) {
+		if (!snapshot || !isEqual(snapshot.resource, this._currentResource) || !this._pane.claimed) {
 			return false;
 		}
 		this._renderedParagraphs = undefined;
 		this._markerByLocator = undefined;
 		// 載せ直した表示は、描き終わりを確かめるまで使い回さない。
 		this._shownDocument = undefined;
-		this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(
+		this._pane.webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(
 			snapshot.resource,
 			snapshot.inlineData,
 			snapshot.assetPlaceholderCount,
@@ -861,46 +824,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	private _ensureWebview(resource: URI): IOverlayWebview {
-		const wantsServiceWorkerDisabled = this._canServe(resource);
-		if (this._webview && this._webviewServiceWorkerDisabled !== wantsServiceWorkerDisabled) {
-			// 生成時オプションなので、要否が変わったら作り直すしかない（別のファイルを開いたとき等）。
-			this._disposeWebview();
-		}
-		if (this._webview) {
-			return this._webview;
-		}
-		const store = new DisposableStore();
-		this._webviewStore.value = store;
-		this._webviewServiceWorkerDisabled = wantsServiceWorkerDisabled;
-		// origin を渡さないと webview ごとに新しい service worker 登録が増え、二度と消えない。
-		const originLease = store.add(this._originPool.acquire(PARADIS_DOCX_EDITOR_ID));
-		const webview = this._webviewService.createWebviewOverlay({
-			origin: originLease.origin,
-			title: undefined,
-			options: {
-				purpose: WebviewContentPurpose.CustomEditor,
-				enableFindWidget: false,
-				tryRestoreScrollPosition: true,
-				// 非表示になるたびに service worker 登録からやり直すと、白紙で止まる窓が毎回でき直す
-				// （paradisRenderedFileEditor.ts と同じ「間欠的に白紙になる」フィールド報告の主因）。
-				// 生かしたまま隠すことでその窓を無くす。
-				retainContextWhenHidden: true,
-				// ローカルサーバから配れるなら service worker は要らない（60秒待ちの経路に入らない）。
-				disableServiceWorker: wantsServiceWorkerDisabled
-			},
-			contentOptions: {
-				allowScripts: true,
-				localResourceRoots: this._localResourceRoots(resource)
-			},
-			extension: undefined
-		});
-		this._webview = webview;
-		store.add(webview);
-		this._webviewSupportsRecoveryMessages = typeof webview.onMessage === 'function';
-		if (this._webviewSupportsRecoveryMessages) {
-			store.add(webview.onMessage(event => this._onRecoveryMessage(event.message)));
-		}
-		return webview;
+		return this._pane.ensure(this._canServe(resource), this._localResourceRoots(resource));
 	}
 
 	private _localResourceRoots(resource: URI): URI[] {
@@ -936,7 +860,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		};
 		const isValid = await readParadisDocxHeader(this._fileService, resource);
 		let decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
-		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._webviewClaimed || token.isCancellationRequested) {
+		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._pane.claimed || token.isCancellationRequested) {
 			// **何も走らせずに戻るので、見張りも解くこと。** 残すと、走っていない読み込みが
 			// 予算切れで時間切れ扱いになり、作り直しの梯子が空回りする。
 			this._probe.disarm();
@@ -953,7 +877,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				// 同じ文書を前に消毒していて、ファイルが変わっていなければ、覚えた結果を使う。
 				const read = await readParadisOfficeFile(this._fileService, resource, DOCX_OPEN_CACHE, PARADIS_DOCX_MAX_BYTES);
 				let document: IParadisDocxOpenCacheValue;
-				if (reuseShown && read.kind === 'cached' && generation === this._renderGeneration && inputEpoch === this._inputEpoch && this._webviewClaimed
+				if (reuseShown && read.kind === 'cached' && generation === this._renderGeneration && inputEpoch === this._inputEpoch && this._pane.claimed
 					&& this._reuseShownDocument(resource, webview, read.value, inputEpoch, recoveryGeneration)) {
 					return;
 				}
@@ -991,7 +915,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				}
 				decision = 'rejected';
 			}
-			if (generation !== this._renderGeneration || inputEpoch !== this._inputEpoch || !this._webviewClaimed) {
+			if (generation !== this._renderGeneration || inputEpoch !== this._inputEpoch || !this._pane.claimed) {
 				return;
 			}
 		}
@@ -1060,7 +984,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._wordViewState = next;
 		this._changeInspector.value?.setViewState(next);
 		this._updateZoomLabel();
-		if (this._currentResource && this._webviewClaimed) {
+		if (this._currentResource && this._pane.claimed) {
 			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
 			this._recoveryState = transition.state;
 			this._applyRecoveryEffects(transition.effects, this._currentResource);
@@ -1086,7 +1010,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			return;
 		}
 		const button = appendParadisViewerToolbarIconButton(element, Codicon.linkExternal, localize('paradis.word.openInApp', "既定のアプリで開く"));
-		store.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => void this._nativeHostService?.openExternal(resource.toString(true))));
+		store.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => void this._nativeHostService.openExternal(resource.toString(true))));
 	}
 
 	private _currentWordViewState(): ParadisWordViewState {
@@ -1181,7 +1105,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				const changed = state.zoom !== this._wordViewState.zoom || state.displayMode !== this._wordViewState.displayMode;
 				this._wordViewState = state;
 				this._updateZoomLabel();
-				if (changed && this._currentResource && this._webviewClaimed) {
+				if (changed && this._currentResource && this._pane.claimed) {
 					const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'watchChanged' });
 					this._recoveryState = transition.state;
 					this._applyRecoveryEffects(transition.effects, this._currentResource);
@@ -1347,7 +1271,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _postReveal(request: ParadisWordRevealRequest, paragraphLocator: string | undefined): void {
 		const marker = paragraphLocator ? this._markerByLocator?.get(paragraphLocator) : undefined;
 		const notFound = localize('paradis.word.revealNotFound', "表示の中で見つかりません。");
-		void this._webview?.postMessage(marker ? { ...request, notFound, marker } : { ...request, notFound });
+		void this._pane.webview?.postMessage(marker ? { ...request, notFound, marker } : { ...request, notFound });
 	}
 
 	/**
@@ -1357,7 +1281,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _publishAnnotations(): void {
 		const analysis = this._semanticResult?.ok ? this._semanticResult : undefined;
 		const rendered = this._renderedParagraphs;
-		if (!analysis || !rendered || !this._webview) {
+		if (!analysis || !rendered || !this._pane.webview) {
 			this._markerByLocator = undefined;
 			return;
 		}
@@ -1382,7 +1306,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				}
 			}
 		}
-		void this._webview.postMessage({
+		void this._pane.webview.postMessage({
 			type: 'paradisWordAnnotations',
 			marks,
 			comments,
@@ -1424,7 +1348,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 */
 	private async _deliverWordObjects(webview: IOverlayWebview, bytes: Uint8Array, generation: number, inputEpoch: number, token: CancellationToken): Promise<boolean> {
 		const isCurrent = () => generation === this._renderGeneration && inputEpoch === this._inputEpoch
-			&& this._webviewClaimed && !token.isCancellationRequested;
+			&& this._pane.claimed && !token.isCancellationRequested;
 		try {
 			const parts = await readWordRenderablePackageParts(bytes, token);
 			if (parts.size === 0 || !isCurrent()) {
@@ -1451,13 +1375,14 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _buildHtml(resource: URI, inlineData?: string, assetPlaceholderCount = 0, viewState: ParadisWordViewState = this._wordViewState, recoveryGeneration = this._recoveryState.generation): string {
 		// 配信サーバを使うかどうかは webview の作り方と揃える。片方だけサーバにすると、
 		// service worker を切った webview に解決できない URL を渡すことになる。
-		const served = this._webviewServiceWorkerDisabled && this._documentUrl !== undefined;
+		// 文書は data: で渡すので、ライブラリを配信サーバから出す webview なら served。
+		const served = this._pane.serviceWorkerDisabled;
 		const nonce = generateUuid();
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
 		const docxUrl = inlineData
 			? `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${inlineData}`
-			: (served ? this._documentUrl! : asWebviewUri(resource, remoteInfo).toString(true));
-		const libBase = served && this._resolvedLibBase ? this._resolvedLibBase : asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
+			: asWebviewUri(resource, remoteInfo).toString(true);
+		const libBase = served && this._pane.libBase ? this._pane.libBase : asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
 		// CSP は実際に使うポートまで絞る（`http://127.0.0.1:*` だと他プロセスのサーバまで許してしまう）。
 		const serverOrigin = served ? paradisPreviewOrigins(libBase, docxUrl) : '';
 		const csp = serverOrigin
@@ -1471,6 +1396,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 			});
 		const zoom = Math.min(4, Math.max(0.25, viewState.zoom));
 		const displayMode = viewState.displayMode;
+		// ページの中で出す文も localize する。script の中に置くので `</script>` で閉じられないよう `<` をエスケープする。
+		const libraryLoadFailed = JSON.stringify(localize('paradis.word.libraryLoadFailed', "レンダリングライブラリの読み込みに失敗しました")).replace(/</g, '\\u003c');
 
 		// CSP: スクリプトは nonce 付き inline と webview リソース(https:)のみ。docx-preview が本文中に
 		// 埋め込む style は要素インライン + 動的 <style> なので style-src に 'unsafe-inline' を許可する
@@ -1644,7 +1571,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			contentEl.addEventListener('error', event => replaceParadisBrokenImage(event.target), true);
 			try {
 				if (!window.docx || !window.JSZip) {
-					throw new Error('レンダリングライブラリの読み込みに失敗しました');
+					throw new Error(${libraryLoadFailed});
 				}
 				const buf = await (await fetch(DOCX_URL)).arrayBuffer();
 				const renderOptions = {
@@ -1809,29 +1736,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	private _updateWebviewPlacement(): void {
 		const resource = this._currentResource;
-		const shouldShow = this._editorVisible && !!resource;
-		if (!shouldShow) {
-			if (this._webview && this._webviewClaimed) {
-				this._webview.release(this);
-				this._webviewClaimed = false;
-			}
-			return;
-		}
-		if (!this._webview && !this._libBaseResolved) {
-			// 配信先が決まる前に作ると service worker の要否を間違える。**ここで自分で解決を蹴ること。**
-			// 描画側に任せると、描画は claim 済みでないと走らないので、初回は誰も蹴らずに白紙のまま止まる。
-			void this._resolveLibBase().then(() => this._updateWebviewPlacement());
-			return;
-		}
-		const webview = this._ensureWebview(resource);
-		const justClaimed = !this._webviewClaimed;
-		if (justClaimed) {
-			webview.claim(this, this.window, undefined);
-			this._webviewClaimed = true;
-		}
-		dom.setParentFlowTo(webview.container, this._webviewContainer!);
-		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
-		if (justClaimed && !this._recreatingForRecovery) {
+		const justClaimed = this._pane.place(this._editorVisible && !!resource, this.window, this._webviewContainer!,
+			() => ({ disableServiceWorker: this._canServe(resource!), localResourceRoots: this._localResourceRoots(resource!) }),
+			() => this._updateWebviewPlacement());
+		if (justClaimed && resource && !this._recreatingForRecovery) {
 			this._renderResource(resource, undefined, true);
 		}
 	}
@@ -1853,10 +1761,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			// 描き終わったか分からない表示は、戻ったときに描き直す（白紙や図形の抜けを残さない）。
 			this._shownDocument = undefined;
 		}
-		if (this._webview && this._webviewClaimed) {
-			this._webview.release(this);
-			this._webviewClaimed = false;
-		}
+		this._pane.release();
 		super.clearInput();
 	}
 
@@ -1896,7 +1801,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	override focus(): void {
 		super.focus();
-		this._webview?.focus();
+		this._pane.webview?.focus();
 	}
 
 	override layout(dimension: dom.Dimension): void {

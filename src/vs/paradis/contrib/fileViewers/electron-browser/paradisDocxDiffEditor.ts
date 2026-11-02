@@ -43,10 +43,10 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
-import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js';
+import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { ParadisOverlayWebviewPane } from '../browser/paradisOverlayWebviewPane.js';
 import { resolveParadisViewerLibBase } from './paradisViewerAssets.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { PARADIS_DOCX_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
@@ -181,9 +181,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _formatToggle: HTMLButtonElement | undefined;
 	private _openAppEl: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
-	private _webview: IOverlayWebview | undefined;
-	private readonly _originPool: ParadisWebviewOriginPool;
-	private _webviewClaimed = false;
+	/** overlay webview（作り方・配置・同梱ライブラリの置き場は部品が持つ）。 */
+	private readonly _pane: ParadisOverlayWebviewPane;
 	private _editorVisible = false;
 
 	private _originalResource: URI | undefined;
@@ -204,7 +203,6 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	private readonly _headerDisposables = this._register(new DisposableStore());
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
-	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
@@ -250,25 +248,32 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	 */
 	private _noticeIsFailure = false;
 
-	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, nativeHostService: INativeHostService, layoutService: IWorkbenchLayoutService);
-	constructor(group: IEditorGroup, sharedProcessService: ISharedProcessService, telemetryService: ITelemetryService, themeService: IThemeService, storageService: IStorageService, webviewService: IWebviewService, fileService: IFileService, nativeHostService: INativeHostService, layoutService: IWorkbenchLayoutService, configurationService: IConfigurationService);
 	constructor(
 		group: IEditorGroup,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
-		@IWebviewService private readonly _webviewService: IWebviewService,
+		@IWebviewService webviewService: IWebviewService,
 		@IFileService private readonly _fileService: IFileService,
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
-		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
-		@IConfigurationService private readonly _configurationService: IConfigurationService = undefined!,
+		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super(PARADIS_DOCX_DIFF_EDITOR_ID, group, telemetryService, themeService, storageService);
+		this._pane = this._register(new ParadisOverlayWebviewPane(this, {
+			originKey: PARADIS_DOCX_DIFF_EDITOR_ID,
+			enableFindWidget: false,
+			allowScripts: true,
+			resolveLibBase: () => resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(DOCX_MEDIA_ROOT)),
+			onDidCreate: (webview, store) => {
+				store.add(webview.onMessage(event => this._onWebviewMessage(event.message as ParadisDocxWebviewMessage)));
+			},
+			reportFatalErrorAs: PARADIS_DOCX_DIFF_EDITOR_ID,
+		}, webviewService, layoutService, storageService));
 		// ライブラリの置き場は入力に依らないので、ここで先に決めておく。開く操作が
 		// 共有プロセスの応答を待たされる最悪値が、そのぶん短くなる。
-		void this._resolveLibBase();
-		this._originPool = ParadisWebviewOriginPool.getShared(storageService);
+		void this._pane.resolveLibBase();
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
@@ -279,7 +284,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}));
 		this._findWidget.value = new ParadisOfficeFindWidget(this._root, {
 			unavailableMessage: localize('paradis.word.diffSearchUnavailable', "この比較では文書内の検索を利用できません。"),
-			isActive: () => !!this._webview?.isFocused,
+			isActive: () => !!this._pane.webview?.isFocused,
 		});
 
 		const toolbar = createParadisViewerToolbar(this._root, 'paradis-docx-diff-toolbar', localize('paradis.word.diffToolbar', "Word 比較のツールバー"));
@@ -379,7 +384,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 
 		const diffInput = input as ParadisDocxDiffInput;
-		this._runtimeConfiguration = this._configurationService ? snapshotWordDiffRuntimeConfiguration(this._configurationService) : undefined;
+		this._runtimeConfiguration = snapshotWordDiffRuntimeConfiguration(this._configurationService);
 
 		const nestedState = options?.viewState && Object.prototype.hasOwnProperty.call(options.viewState, 'viewState')
 			? (options.viewState as { readonly viewState?: unknown }).viewState
@@ -456,7 +461,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		// 既に claim 済みならここで読み直す。未 claim なら _updateWebviewPlacement が claim して
 		// そこから1回だけ読み込む。**逆順にすると新規オープンで必ず2回読み込む**（claim 時に1回、
 		// その直後にもう1回）ので、この並びを崩さないこと。
-		if (this._webviewClaimed) {
+		if (this._pane.claimed) {
 			this._reload();
 		}
 		this._updateWebviewPlacement();
@@ -464,63 +469,14 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	// ── webview ───────────────────────────────────────────────────────────
 
-	/**
-	 * 同梱ライブラリをローカルサーバに載せた結果。**ペインにつき一度だけ**決める
-	 * （`disableServiceWorker` は webview の生成時にしか渡せない。paradisViewerAssets.ts 参照）。
-	 * 文書そのものは postMessage で渡すので、ここで載せるのはライブラリだけ。
-	 */
-	private _libBase: Promise<string | undefined> | undefined;
-	private _libBaseResolved = false;
-	private _resolvedLibBase: string | undefined;
-
-	private async _resolveLibBase(): Promise<string | undefined> {
-		this._libBase ??= resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(DOCX_MEDIA_ROOT));
-		const libBase = await this._libBase;
-		this._resolvedLibBase = libBase;
-		this._libBaseResolved = true;
-		return libBase;
-	}
-
+	/** webview を返す（同梱ライブラリをローカルサーバから配れるなら service worker を切った webview）。 */
 	private _ensureWebview(): IOverlayWebview {
-		if (this._webview) {
-			return this._webview;
-		}
-		// origin を渡さないと webview ごとに service worker 登録が増え、二度と消えない。
-		const store = new DisposableStore();
-		this._webviewStore.value = store;
-		const lease = store.add(this._originPool.acquire(PARADIS_DOCX_DIFF_EDITOR_ID));
-		const webview = this._webviewService.createWebviewOverlay({
-			origin: lease.origin,
-			title: undefined,
-			options: {
-				purpose: WebviewContentPurpose.CustomEditor,
-				enableFindWidget: false,
-				tryRestoreScrollPosition: true,
-				// 隠すたびに service worker 登録からやり直すと白紙で止まる窓ができる。
-				retainContextWhenHidden: true,
-				// ローカルサーバから配れるなら service worker は要らない。
-				disableServiceWorker: !!this._resolvedLibBase
-			},
-			contentOptions: {
-				allowScripts: true,
-				// .docx 本体は postMessage で渡すので、許可するのは vendored ライブラリだけでよい。
-				localResourceRoots: [FileAccess.asFileUri(DOCX_MEDIA_ROOT)]
-			},
-			extension: undefined
-		});
-		this._webview = webview;
-		store.add(webview);
-		store.add(webview.onMessage(event => this._onWebviewMessage(event.message as ParadisDocxWebviewMessage)));
-		return webview;
+		// .docx 本体は postMessage で渡すので、許可するのは vendored ライブラリだけでよい。
+		return this._pane.ensure(!!this._pane.libBase, [FileAccess.asFileUri(DOCX_MEDIA_ROOT)]);
 	}
 
 	private _disposeWebview(): void {
-		if (this._webview && this._webviewClaimed) {
-			this._webview.release(this);
-		}
-		this._webviewClaimed = false;
-		this._webview = undefined;
-		this._webviewStore.clear();
+		this._pane.disposeWebview();
 	}
 
 	/** webview を作り直して読み込みからやり直す。 */
@@ -611,18 +567,18 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	 * 状態は `loading` のまま誰も次を蹴らず、**再試行ボタンにも到達しない永久停止になる**。
 	 */
 	private _remountDocumentSnapshot(recoveryGeneration: number): boolean {
-		if (!this._documentSnapshot || !this._webviewClaimed) {
+		if (!this._documentSnapshot || !this._pane.claimed) {
 			return false;
 		}
 		this._recoveryGeneration = recoveryGeneration;
 		this._loadGeneration++;
 		this._forgetRenderedParagraphs();
 		this._webviewRecoveryGeneration = recoveryGeneration;
-		this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(buildParadisDocxDiffHtml({
+		this._pane.webview?.setHtml(applyParadisOfficeWebviewAccessibility(buildParadisDocxDiffHtml({
 			original: localize('paradis.docxDiff.paneOriginal', "旧版 — {0}", basename(this._originalResource!)),
 			modified: localize('paradis.docxDiff.paneModified', "新版 — {0}", basename(this._modifiedResource!)),
 			loading: PARADIS_VIEWER_LOADING_LABEL,
-		}, this._resolvedLibBase)));
+		}, this._pane.libBase)));
 		this._probe.armRender(recoveryGeneration);
 		return true;
 	}
@@ -642,10 +598,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	}
 
 	private async _reloadAfterAssets(recoveryGeneration: number): Promise<void> {
-		const libBase = await this._resolveLibBase();
+		const libBase = await this._pane.resolveLibBase();
 		const original = this._originalResource;
 		const modified = this._modifiedResource;
-		if (!original || !modified || !this._webviewClaimed) {
+		if (!original || !modified || !this._pane.claimed) {
 			return;
 		}
 		const loadGeneration = ++this._loadGeneration;
@@ -704,7 +660,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	/** webview の受信準備ができてから .docx の中身を送る（先に送ると取りこぼす）。 */
 	private async _sendDocuments(): Promise<void> {
-		const webview = this._webview;
+		const webview = this._pane.webview;
 		const snapshot = this._documentSnapshot;
 		if (!webview || !snapshot) {
 			return;
@@ -906,7 +862,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._legacyResult = result;
 		this._renderSemanticUi(result);
 		// 文言（書式変更のツールチップ）は webview では作れないので、送る直前にここで埋める。
-		void this._webview?.postMessage({
+		void this._pane.webview?.postMessage({
 			type: 'annotate',
 			annotations: localizeDocxAnnotations(result.annotations),
 			fillers: result.fillers,
@@ -1001,13 +957,13 @@ export class ParadisDocxDiffEditor extends EditorPane {
 					this._currentIndex = index;
 					this._updateNav();
 				}
-				void this._webview?.postMessage({ type: 'reveal', changeId });
+				void this._pane.webview?.postMessage({ type: 'reveal', changeId });
 			},
 			onDidChangeViewState: state => {
 				this._wordViewState = state;
 				this._displayMode = state.displayMode;
 				this._setScale(state.zoom);
-				void this._webview?.postMessage({ type: 'revisionMode', mode: state.displayMode });
+				void this._pane.webview?.postMessage({ type: 'revisionMode', mode: state.displayMode });
 			},
 		});
 		this._changeInspector.value = inspector;
@@ -1067,14 +1023,14 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	 */
 	private _revealSemanticChange(semantic: Extract<IParadisWordComparisonResult, { readonly ok: true }>, change: ParadisOfficeChange): boolean {
 		const target = semantic.navigation[change.id];
-		if (!target || !this._webview) {
+		if (!target || !this._pane.webview) {
 			return false;
 		}
 		const marker = this._paragraphMarkers?.[target.side].get(target.paragraph);
 		if (!marker) {
 			return false;
 		}
-		void this._webview.postMessage({ type: 'revealAnchor', side: target.side, marker, focus: wordChangeText(change) ?? '' });
+		void this._pane.webview.postMessage({ type: 'revealAnchor', side: target.side, marker, focus: wordChangeText(change) ?? '' });
 		return true;
 	}
 
@@ -1261,7 +1217,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._currentIndex = next;
 		this._updateNav();
 		this._accessibility?.announceChangeLabel(describeDocxChangeStatus(this._changes[next].status), next, this._changes.length);
-		void this._webview?.postMessage({ type: 'reveal', changeId: this._changes[next].id });
+		void this._pane.webview?.postMessage({ type: 'reveal', changeId: this._changes[next].id });
 	}
 
 	private _zoom(factor: number): void {
@@ -1280,7 +1236,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			inspector.setViewState({ ...inspector.getViewState(), zoom: clamped });
 		}
 		this._updateScaleLabel();
-		void this._webview?.postMessage({ type: 'zoom', scale: clamped });
+		void this._pane.webview?.postMessage({ type: 'zoom', scale: clamped });
 	}
 
 	private _updateScaleLabel(): void {
@@ -1292,7 +1248,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _setShowFormatChanges(enabled: boolean): void {
 		this._showFormatChanges = enabled;
 		this._updateFormatToggle();
-		void this._webview?.postMessage({ type: 'showFormatChanges', enabled });
+		void this._pane.webview?.postMessage({ type: 'showFormatChanges', enabled });
 	}
 
 	private _updateFormatToggle(): void {
@@ -1305,27 +1261,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	// ── ライフサイクル ────────────────────────────────────────────────────
 
 	private _updateWebviewPlacement(): void {
-		const shouldShow = this._editorVisible && !!this._originalResource && !!this._modifiedResource;
-		if (!shouldShow) {
-			if (this._webview && this._webviewClaimed) {
-				this._webview.release(this);
-				this._webviewClaimed = false;
-			}
-			return;
-		}
-		if (!this._webview && !this._libBaseResolved) {
-			// 配信先が決まる前に作ると service worker の要否を間違える。ここで自分で解決を蹴る。
-			void this._resolveLibBase().then(() => this._updateWebviewPlacement());
-			return;
-		}
-		const webview = this._ensureWebview();
-		const justClaimed = !this._webviewClaimed;
-		if (justClaimed) {
-			webview.claim(this, this.window, undefined);
-			this._webviewClaimed = true;
-		}
-		dom.setParentFlowTo(webview.container, this._webviewContainer!);
-		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
+		const show = this._editorVisible && !!this._originalResource && !!this._modifiedResource;
+		const justClaimed = this._pane.place(show, this.window, this._webviewContainer!,
+			() => ({ disableServiceWorker: !!this._pane.libBase, localResourceRoots: [FileAccess.asFileUri(DOCX_MEDIA_ROOT)] }),
+			() => this._updateWebviewPlacement());
 		if (justClaimed && !this._recreatingForRecovery) {
 			this._reload();
 		}
@@ -1350,13 +1289,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._recoveryGeneration = 0;
 		this._webviewRecoveryGeneration = 0;
 		this._sentRecoveryGeneration = 0;
-		if (this._webview && this._webviewClaimed) {
-			this._webview.release(this);
-			this._webviewClaimed = false;
-		}
+		this._pane.release();
 		// retainContextWhenHidden なので release だけでは webview は生きたまま残る。
 		// 左右2文書ぶんのパース済み AST と描画済み DOM を抱えたままになるので、中身を捨てる。
-		this._webview?.setHtml('');
+		this._pane.clearContent();
 		super.clearInput();
 	}
 
@@ -1396,7 +1332,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	override focus(): void {
 		super.focus();
-		this._webview?.focus();
+		this._pane.webview?.focus();
 	}
 
 	override layout(dimension: dom.Dimension): void {
