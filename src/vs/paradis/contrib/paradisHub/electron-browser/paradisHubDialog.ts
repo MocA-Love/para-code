@@ -20,9 +20,11 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisHubAreaContainers, IParadisHubAreaDescriptor, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId, paradisHubAreas } from './paradisHub.js';
+import { paradisHubFocusNavItem, paradisHubNavItems } from './paradisHubNav.js';
 
 const $ = dom.$;
 
@@ -32,6 +34,9 @@ const STR_TITLE = localize('paradis.hub.title', "Para Code");
 const STR_CLOSE_ARIA = localize('paradis.hub.closeAria', "閉じる");
 // allow-any-unicode-next-line
 const STR_AREAS_ARIA = localize('paradis.hub.areasAria', "領域");
+
+/** 同じ窓に器が 2 つ並ぶことはないが、閉じて開き直した直後でも ID が重ならないよう通し番号を付ける。 */
+let dialogCounter = 0;
 
 interface IAreaEntry {
 	readonly descriptor: IParadisHubAreaDescriptor;
@@ -58,8 +63,10 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 		section: string | undefined,
 		@ILayoutService layoutService: ILayoutService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
+		const idPrefix = `paradis-hub-${++dialogCounter}`;
 
 		// `paradis-modal-backdrop` は、内蔵ブラウザのページがこのモーダルより前に出ないための印（overlayManager.ts）
 		this.backdrop = $('.paradis-hub-backdrop.paradis-modal-backdrop');
@@ -87,32 +94,28 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 			const button = dom.append(areaSeg, $('button')) as HTMLButtonElement;
 			button.type = 'button';
 			button.setAttribute('role', 'tab');
+			button.id = `${idPrefix}-tab-${descriptor.id}`;
+			button.tabIndex = -1;
 			button.textContent = descriptor.label;
 			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.open(descriptor.id)));
 
 			const areaHeader = dom.append(headerSlots, $('.phub-header-slot'));
 			const body = dom.append(bodies, $('.phub-body'));
+			body.id = `${idPrefix}-panel-${descriptor.id}`;
+			body.setAttribute('role', 'tabpanel');
+			body.setAttribute('aria-labelledby', button.id);
+			button.setAttribute('aria-controls', body.id);
 			const nav = dom.append(body, $('nav.phub-nav'));
 			const content = dom.append(body, $('.phub-content'));
 			areaHeader.style.display = 'none';
 			body.style.display = 'none';
 			this.entries.set(descriptor.id, { descriptor, button, header: areaHeader, body, containers: { nav, content, header: areaHeader } });
 
-			// ナビの項目はキーボードでも押せるようにする（Enter・Space）
-			this._register(dom.addDisposableListener(nav, dom.EventType.KEY_DOWN, e => {
-				const event = new StandardKeyboardEvent(e);
-				const item = dom.isHTMLElement(e.target) ? e.target.closest<HTMLElement>('.phub-nav-item') : null;
-				if (item && (event.keyCode === KeyCode.Enter || event.keyCode === KeyCode.Space)) {
-					event.preventDefault();
-					item.click();
-				}
-			}));
+			// ナビの項目は Enter・Space で押せ、上下の矢印・Home・End で移れる（Tab で止まるのは選んでいる項目だけ）
+			this._register(dom.addDisposableListener(nav, dom.EventType.KEY_DOWN, e => this.onNavKeyDown(nav, e)));
 		}
-
-		// 本文の幅は器でしか分からないので、実測して開いている領域へ渡す（窓の大きさの変化にも付いていく）
-		const observer = new ResizeObserver(() => this.layoutActive());
-		observer.observe(bodies);
-		this._register({ dispose: () => observer.disconnect() });
+		// 上段は選んでいるタブだけが Tab で止まり、左右の矢印・Home・End で移って開く（タブの決まり）
+		this._register(dom.addDisposableListener(areaSeg, dom.EventType.KEY_DOWN, e => this.onAreaKeyDown(e)));
 
 		this._register(dom.addDisposableListener(this.backdrop, dom.EventType.MOUSE_DOWN, e => {
 			if (e.target === this.backdrop) {
@@ -121,6 +124,11 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 		}));
 
 		layoutService.activeContainer.appendChild(this.backdrop);
+		// 本文の幅は器でしか分からないので、実測して開いている領域へ渡す（窓の大きさの変化にも付いていく）。
+		// 補助の窓で開いたときはその窓の ResizeObserver を使う
+		const observer = new (dom.getWindow(layoutService.activeContainer).ResizeObserver)(() => this.layoutActive());
+		observer.observe(bodies);
+		this._register({ dispose: () => observer.disconnect() });
 		this._register(new ParadisModalFocus({
 			backdrop: this.backdrop,
 			modal: this.modal,
@@ -136,10 +144,11 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 		this.modal.focus();
 	}
 
-	/** 領域（と節）を開く。まだ作っていない領域はここで作る。 */
+	/** 領域（と節）を開く。まだ作っていない領域はここで作る。登録されていない領域なら何もしない。 */
 	open(area: ParadisHubAreaId, section?: string): void {
-		const entry = this.entries.get(area) ?? this.entries.values().next().value;
+		const entry = this.entries.get(area);
 		if (!entry) {
+			this.logService.warn(`[ParadisHub] the area '${area}' is not registered; it was not opened`);
 			return;
 		}
 		const id = entry.descriptor.id;
@@ -160,6 +169,7 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 				const selected = other === entry;
 				other.button.classList.toggle('checked', selected);
 				other.button.setAttribute('aria-selected', String(selected));
+				other.button.tabIndex = selected ? 0 : -1;
 			}
 			entry.body.style.display = '';
 			entry.header.style.display = '';
@@ -171,6 +181,52 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 
 	close(): void {
 		this.dispose();
+	}
+
+	/** 上段の左右の矢印・Home・End。移った先のタブを開き、フォーカスもそこへ移す。 */
+	private onAreaKeyDown(e: KeyboardEvent): void {
+		const event = new StandardKeyboardEvent(e);
+		const ids = [...this.entries.keys()];
+		const current = this.activeArea !== undefined ? ids.indexOf(this.activeArea) : 0;
+		let next: number;
+		switch (event.keyCode) {
+			case KeyCode.LeftArrow: next = (current - 1 + ids.length) % ids.length; break;
+			case KeyCode.RightArrow: next = (current + 1) % ids.length; break;
+			case KeyCode.Home: next = 0; break;
+			case KeyCode.End: next = ids.length - 1; break;
+			default: return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+		this.open(ids[next]);
+		this.entries.get(ids[next])?.button.focus();
+	}
+
+	/** 左のナビの Enter・Space（押す）と、上下の矢印・Home・End（フォーカスを移す）。 */
+	private onNavKeyDown(nav: HTMLElement, e: KeyboardEvent): void {
+		const event = new StandardKeyboardEvent(e);
+		const target = dom.isHTMLElement(e.target) ? e.target.closest<HTMLElement>('.phub-nav-item') : null;
+		if (!target) {
+			return;
+		}
+		if (event.keyCode === KeyCode.Enter || event.keyCode === KeyCode.Space) {
+			event.preventDefault();
+			target.click();
+			return;
+		}
+		const items = paradisHubNavItems(nav).filter(item => !item.classList.contains('hidden'));
+		const index = items.indexOf(target);
+		let next: number;
+		switch (event.keyCode) {
+			case KeyCode.UpArrow: next = Math.max(0, index - 1); break;
+			case KeyCode.DownArrow: next = Math.min(items.length - 1, index + 1); break;
+			case KeyCode.Home: next = 0; break;
+			case KeyCode.End: next = items.length - 1; break;
+			default: return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+		paradisHubFocusNavItem(nav, items[next]);
 	}
 
 	/** この器が `container`（窓の作業領域）の中に出ているか。 */

@@ -38,7 +38,8 @@ export interface IParadisHubNavItem {
 export function paradisHubNavItem(nav: HTMLElement, label: string, options: IParadisHubNavItemOptions = {}): IParadisHubNavItem {
 	const element = dom.append(nav, $('.phub-nav-item'));
 	element.setAttribute('role', 'button');
-	element.tabIndex = 0;
+	// Tab で止まるのは選んでいる項目だけ（ほかへは上下の矢印で移る。器の paradisHubDialog.ts）
+	element.tabIndex = -1;
 	if (options.icon) {
 		element.appendChild($(`span.phub-nav-icon${ThemeIcon.asCSSSelector(options.icon)}`));
 	}
@@ -53,6 +54,27 @@ export function paradisHubNavItem(nav: HTMLElement, label: string, options: IPar
 		setActive: active => {
 			element.classList.toggle('active', active);
 			element.setAttribute('aria-current', active ? 'true' : 'false');
+			if (active) {
+				paradisHubFocusNavItem(nav, element, false);
+			}
 		},
 	};
+}
+
+/**
+ * ナビの中で Tab が止まる項目を `item` にする（ほかの項目は -1）。`focus` が true ならフォーカスも移す。
+ * 選んでいる項目が変わったときと、矢印でフォーカスを移したときに呼ぶ。
+ */
+export function paradisHubFocusNavItem(nav: HTMLElement, item: HTMLElement, focus = true): void {
+	for (const other of paradisHubNavItems(nav)) {
+		other.tabIndex = other === item ? 0 : -1;
+	}
+	if (focus) {
+		item.focus();
+	}
+}
+
+/** ナビの項目（見出しを除く）を上から順に。 */
+export function paradisHubNavItems(nav: HTMLElement): HTMLElement[] {
+	return [...nav.children].filter((child): child is HTMLElement => dom.isHTMLElement(child) && child.classList.contains('phub-nav-item'));
 }

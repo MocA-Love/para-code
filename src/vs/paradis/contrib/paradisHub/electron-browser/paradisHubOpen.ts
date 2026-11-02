@@ -11,7 +11,8 @@
 import { Event } from '../../../../base/common/event.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { ParadisHubAreaId } from './paradisHub.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { ParadisHubAreaId, paradisHubAreas } from './paradisHub.js';
 import { ParadisHubDialog } from './paradisHubDialog.js';
 
 /** 同時に 1 つだけ開く。同じ窓で開いているときは、その器のまま領域と節を切り替える。 */
@@ -19,6 +20,11 @@ let activeDialog: ParadisHubDialog | undefined;
 
 /** 統合のモーダルを、領域（と節）を指定して開く。 */
 export function paradisOpenHub(accessor: ServicesAccessor, area: ParadisHubAreaId, section?: string): void {
+	// 登録されていない領域を渡されたら、別の領域で代わりに開かず、開かなかったことを残す
+	if (!paradisHubAreas().some(descriptor => descriptor.id === area)) {
+		accessor.get(ILogService).warn(`[ParadisHub] the area '${area}' is not registered; the modal was not opened`);
+		return;
+	}
 	if (activeDialog?.isShownIn(accessor.get(ILayoutService).activeContainer)) {
 		activeDialog.open(area, section);
 		return;
