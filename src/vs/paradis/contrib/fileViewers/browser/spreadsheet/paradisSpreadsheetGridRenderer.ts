@@ -5,6 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Disposable, type IDisposable } from '../../../../../base/common/lifecycle.js';
+import { equals } from '../../../../../base/common/objects.js';
 import {
 	ParadisSpreadsheetViewport,
 	type ParadisSpreadsheetAxisRemeasurement,
@@ -84,6 +85,11 @@ export interface ParadisSpreadsheetGridRendererOptions {
 	readonly fontsReady?: Promise<unknown>;
 	readonly scheduleMedia?: (callback: () => void) => IDisposable;
 	/**
+	 * スクロール・キー操作の後の描き直しを次のフレームまで待たせる口。同じフレームの間に何度呼ばれても描くのは 1 回。
+	 * 既定は requestAnimationFrame（window の無い文書では setTimeout）。
+	 */
+	readonly scheduleFrame?: (callback: () => void) => IDisposable;
+	/**
 	 * 表示の倍率。中身（文字・余白・罫線）ごと CSS の zoom で拡大縮小し、座標は倍率を掛ける前の寸法のまま扱う
 	 * （DOM の表が `transform: scale` で全体を縮めるのと同じ見え方にするため）。既定は 1。
 	 */
@@ -105,6 +111,16 @@ interface RenderedCell {
 	pane: ParadisSpreadsheetPaneKind;
 	/** 描いている行・列の範囲 [行, 列, 行の終わり, 列の終わり)（結合とはみ出しを含む）。 */
 	extent: ParadisSpreadsheetVirtualRange;
+	/** 最後に描いた中身と位置。次の描画で同じなら書き直さない。 */
+	cell?: ParadisSpreadsheetGridCell;
+	bounds?: CellBox;
+}
+
+interface CellBox {
+	readonly left: number;
+	readonly top: number;
+	readonly width: number;
+	readonly height: number;
 }
 
 interface PendingOverflow {
@@ -145,6 +161,10 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	private disposed = false;
 	private rendering = false;
 	private idle: Promise<void> = Promise.resolve();
+	/** 次のフレームの描き直しを予約済みか。予約中のスクロール・キー操作は、その 1 回にまとめる。 */
+	private frameQueued = false;
+	private frameSchedule: IDisposable | undefined;
+	private releaseFrame: (() => void) | undefined;
 	private _frame: ParadisSpreadsheetViewportFrame = { scrollTop: 0, scrollLeft: 0, width: 0, height: 0 };
 	private focused = { row: 0, column: 0 };
 	private readonly zoom: number;
@@ -236,7 +256,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this._frame = { ...this._frame, ...restored };
 		this.rendering = true;
 		try {
-			await this.renderCurrent(true);
+			// 書体や寸法が変わると、同じ中身でもはみ出しや斜線の測り直しが要るので全部書き直す
+			await this.renderCurrent(true, true);
 		} finally {
 			this.rendering = false;
 		}
@@ -296,6 +317,10 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.document.removeEventListener('mousemove', this.pointerMoveListener);
 		this.document.removeEventListener('mouseup', this.pointerUpListener);
 		this.stopAutoScroll();
+		this.frameSchedule?.dispose();
+		this.frameSchedule = undefined;
+		// 予約していた描き直しを待つ whenIdle を止めたままにしない（続きは disposed を見て何もしない）
+		this.releaseFrame?.();
 		this.resizeObserver?.dispose();
 		for (const schedule of this.mediaSchedules.values()) {
 			schedule.dispose();
@@ -307,7 +332,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		super.dispose();
 	}
 
-	private async renderCurrent(applyScroll = false): Promise<ParadisSpreadsheetViewportPlan> {
+	private async renderCurrent(applyScroll = false, force = false): Promise<ParadisSpreadsheetViewportPlan> {
 		const plan = this.viewport.plan(this._frame);
 		this.sizer.style.width = `${plan.totalWidth}px`;
 		this.sizer.style.height = `${plan.totalHeight}px`;
@@ -355,7 +380,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 				}
 				const key = cellKey(request.pane, cell.row, cell.column);
 				activeCells.add(key);
-				this.renderCell(key, request.pane, cell, plan.generation);
+				this.renderCell(key, request.pane, cell, plan.generation, bounds, force);
 			}
 		}));
 		if (this.disposed || plan.generation !== this.viewport.generation) {
@@ -367,9 +392,14 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		return plan;
 	}
 
-	private renderCell(key: string, paneKind: ParadisSpreadsheetPaneKind, cell: ParadisSpreadsheetGridCell, generation: number): void {
+	private renderCell(key: string, paneKind: ParadisSpreadsheetPaneKind, cell: ParadisSpreadsheetGridCell, generation: number, bounds: CellBox, force: boolean): void {
 		const pane = this.panes.get(paneKind)!;
 		let rendered = this.cells.get(key);
+		// 前に描いたときと中身・位置・枠が同じセルは、書き直しても同じになるので触らない（スクロールのたびに見えている
+		// 全セルの class・style・文字を設定し直さない）。画像は世代ごとに遅れて足すので、画像のあるセルは毎回描く
+		if (!force && rendered && rendered.pane === paneKind && !cell.media && rendered.cell && sameBox(rendered.bounds, bounds) && equals(rendered.cell, cell)) {
+			return;
+		}
 		if (!rendered) {
 			const element = this.cellPool.pop() ?? this.document.createElement('div');
 			rendered = { element, pane: paneKind, extent: cellExtent(cell) };
@@ -380,6 +410,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			pane.appendChild(rendered.element);
 		}
 		rendered.extent = cellExtent(cell);
+		rendered.cell = cell;
+		rendered.bounds = bounds;
 		const element = rendered.element;
 		this.mediaSchedules.get(key)?.dispose();
 		this.mediaSchedules.delete(key);
@@ -390,7 +422,6 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			}
 		}
 		element.removeAttribute('style');
-		const bounds = this.viewport.cellBounds(cell.row, cell.column, cell.rowSpan, cell.columnSpan);
 		element.style.left = `${bounds.left}px`;
 		element.style.top = `${bounds.top}px`;
 		element.style.width = `${bounds.width}px`;
@@ -433,7 +464,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		}
 		if (cell.baseDiagonal || cell.conditionalDiagonal) {
 			// One layout read supplies both layers. Scroll/freeze/overscan coordinates never enter diagonal geometry.
-			const measured = this.measureCell(element);
+			const measured = this.measureCell(element, bounds);
 			if (measured.width > 0 && measured.height > 0) {
 				if (cell.baseDiagonal) {
 					this.appendDiagonal(element, cell.baseDiagonal, measured, 'base');
@@ -444,7 +475,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			}
 		}
 		if (cell.media && isSafeMediaSource(cell.media.source)) {
-			const schedule = (this.options.scheduleMedia ?? (callback => defaultScheduleMedia(this.document, callback)))(() => {
+			const schedule = (this.options.scheduleMedia ?? (callback => defaultScheduleFrame(this.document, callback)))(() => {
 				if (this.disposed || generation !== this.viewport.generation || this.cells.get(key)?.element !== element) {
 					return;
 				}
@@ -506,13 +537,13 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		}
 	}
 
-	private measureCell(element: HTMLElement): ParadisSpreadsheetCellBounds {
+	private measureCell(element: HTMLElement, bounds: CellBox): ParadisSpreadsheetCellBounds {
 		if (this.options.measureCell) {
 			return sanitizeBounds(this.options.measureCell(element));
 		}
-		// 画面上の寸法は zoom を掛けた後なので、中の座標（斜線の svg）に使うときは倍率で割る
-		const bounds = element.getBoundingClientRect();
-		return sanitizeBounds({ width: bounds.width / this.zoom, height: bounds.height / this.zoom });
+		// セルは box-sizing: border-box で、幅と高さは viewport の寸法（倍率を掛ける前）をそのまま当てている。
+		// 書き込みの途中で getBoundingClientRect を読んでレイアウトを起こさないよう、当てた寸法を使う
+		return sanitizeBounds({ width: bounds.width, height: bounds.height });
 	}
 
 	private appendDiagonal(element: HTMLElement, diagonal: ParadisSpreadsheetGridDiagonal, bounds: ParadisSpreadsheetCellBounds, layer: 'base' | 'conditional'): void {
@@ -595,17 +626,36 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		fontsReady?.then(() => this.queueRemeasure(), () => undefined);
 	}
 
+	/**
+	 * スクロール・キー操作の後の描き直しを次のフレームで 1 回だけ行う。予約中に何度呼ばれても増やさず、
+	 * 描く位置（入れ物のスクロールと大きさ）は描く直前に読む。
+	 */
 	private queueRender(): void {
-		this._frame = {
-			scrollTop: this.container.scrollTop / this.zoom,
-			scrollLeft: this.container.scrollLeft / this.zoom,
-			width: this.container.clientWidth ? this.container.clientWidth / this.zoom : this._frame.width,
-			height: this.container.clientHeight ? this.container.clientHeight / this.zoom : this._frame.height,
-		};
-		this.idle = this.idle.then(async () => {
-			if (!this.disposed) {
-				await this.render(this._frame);
+		if (this.frameQueued) {
+			return;
+		}
+		this.frameQueued = true;
+		const frame = new Promise<void>(resolve => {
+			this.releaseFrame = resolve;
+			const schedule = this.options.scheduleFrame ?? (callback => defaultScheduleFrame(this.document, callback));
+			this.frameSchedule = schedule(() => {
+				this.frameQueued = false;
+				this.frameSchedule = undefined;
+				this.releaseFrame = undefined;
+				resolve();
+			});
+		});
+		this.idle = this.idle.then(() => frame).then(async () => {
+			if (this.disposed) {
+				return;
 			}
+			this._frame = {
+				scrollTop: this.container.scrollTop / this.zoom,
+				scrollLeft: this.container.scrollLeft / this.zoom,
+				width: this.container.clientWidth ? this.container.clientWidth / this.zoom : this._frame.width,
+				height: this.container.clientHeight ? this.container.clientHeight / this.zoom : this._frame.height,
+			};
+			await this.render(this._frame);
 		});
 	}
 
@@ -929,7 +979,7 @@ function isSafeMediaSource(source: string): boolean {
 		|| /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z\d+/=]+$/i.test(source);
 }
 
-function defaultScheduleMedia(document: Document, callback: () => void): IDisposable {
+function defaultScheduleFrame(document: Document, callback: () => void): IDisposable {
 	const targetWindow = document.defaultView;
 	if (targetWindow) {
 		const handle = targetWindow.requestAnimationFrame(callback);
@@ -937,6 +987,10 @@ function defaultScheduleMedia(document: Document, callback: () => void): IDispos
 	}
 	const handle = setTimeout(callback, 0);
 	return { dispose: () => clearTimeout(handle) };
+}
+
+function sameBox(previous: CellBox | undefined, next: CellBox): boolean {
+	return !!previous && previous.left === next.left && previous.top === next.top && previous.width === next.width && previous.height === next.height;
 }
 
 function isNavigationKey(key: string): key is ParadisSpreadsheetNavigationKey {
