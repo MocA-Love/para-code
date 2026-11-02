@@ -33,6 +33,7 @@ import { sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/word
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
 import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { paradisEmptyDocxBytes } from '../../common/paradisOfficeDiffSide.js';
+import { PARADIS_WEBVIEW_HOST_MESSAGE_CHECK } from '../../common/paradisWebviewHostMessage.js';
 
 interface IDocxEditorSnapshot {
 	readonly watcherResources: readonly string[];
@@ -686,8 +687,10 @@ suite('ParadisDocxFileEditor', () => {
 			const afterOtherId = fixture.postedDocuments().length;
 			fixture.firePageMessage({ type: 'paradisWordDocumentReady', id });
 			const documents = fixture.postedDocuments();
-			deepStrictEqual({ hasId: id.length > 0, beforeReady, afterReady, afterOtherId, afterAskingAgain: documents.length, sameDocument: documents[0] === documents[1] && documents[0].length > 0 }, {
-				hasId: true, beforeReady: 0, afterReady: 1, afterOtherId: 1, afterAskingAgain: 2, sameDocument: true,
+			// ページは webview の基盤が window.parent を置き換えた後に動くので、送り主は共通の判定で見分ける（window.parent と比べない）。
+			const checksHost = html.includes(`const paradisFromHost = ${PARADIS_WEBVIEW_HOST_MESSAGE_CHECK};`) && html.includes('if (paradisFromHost(event) && data') && !html.includes('event.source === window.parent');
+			deepStrictEqual({ hasId: id.length > 0, checksHost, beforeReady, afterReady, afterOtherId, afterAskingAgain: documents.length, sameDocument: documents[0] === documents[1] && documents[0].length > 0 }, {
+				hasId: true, checksHost: true, beforeReady: 0, afterReady: 1, afterOtherId: 1, afterAskingAgain: 2, sameDocument: true,
 			});
 		});
 
