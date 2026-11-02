@@ -35,6 +35,7 @@ import { localize } from '../../../../nls.js';
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { ParadisPopoverRows, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import { IParadisBrowserProfile } from '../common/paradisBrowserProfileModel.js';
 import { IParadisViewSessionInfo } from '../common/paradisBrowserProfileChannel.js';
 import { IParadisSpaceDefaultResolution, ParadisSpaceDefaultTarget, paradisSpaceDefaultTargetsEqual } from '../common/paradisBrowserSpaceDefaults.js';
@@ -92,9 +93,8 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 
 	private readonly _element: HTMLElement;
 	private readonly _listElement: HTMLElement;
-	private readonly _rows: IDropdownRow[] = [];
+	private readonly _rows = new ParadisPopoverRows<IDropdownRow>();
 	private readonly _container: HTMLElement;
-	private _focusedIndex = 0;
 	private _disposed = false;
 
 	constructor(
@@ -104,8 +104,9 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 	) {
 		super();
 
-		this._container = layoutService.activeContainer;
-		this._element = $('.paradis-browser-profile-dropdown');
+		// 開いたボタンのウィンドウに置く（補助ウィンドウのボタンから開いたとき、別の窓に出ないように）
+		this._container = layoutService.getContainer(dom.getWindow(options.anchor));
+		this._element = $('.paradis-browser-profile-dropdown.paradis-overlay-popover');
 		this._element.tabIndex = -1;
 		this._listElement = dom.append(this._element, $('.pbp-list'));
 		this._listElement.setAttribute('role', 'listbox');
@@ -120,7 +121,7 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 
 		this._layout();
 		this._registerListeners();
-		this._focusInitialRow();
+		this._rows.focusInitial();
 	}
 
 	// #region 描画
@@ -316,14 +317,13 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 		}
 		element.tabIndex = -1;
 		const row: IDropdownRow = { element, run, pin };
-		this._rows.push(row);
-		const index = this._rows.length - 1;
+		const index = this._rows.add(row);
 		this._register(dom.addDisposableListener(element, dom.EventType.MOUSE_DOWN, event => {
 			// ここで既定を止めないと、押した瞬間にフォーカスが移って外側クリック判定と競合する。
 			event.preventDefault();
 		}));
 		this._register(dom.addDisposableListener(element, dom.EventType.CLICK, () => run()));
-		this._register(dom.addDisposableListener(element, dom.EventType.MOUSE_OVER, () => this._focusRow(index, false)));
+		this._register(dom.addDisposableListener(element, dom.EventType.MOUSE_OVER, () => this._rows.focus(index, false)));
 		return row;
 	}
 
@@ -371,103 +371,21 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 
 		this._register(dom.addDisposableListener(this._element, dom.EventType.KEY_DOWN, event => this._onKeyDown(event)));
 
-		// 外側クリック。capture で拾うのは、ページ側の要素が stopPropagation しても閉じられるようにするため。
-		// `instanceof Node` で判定しないのは、補助ウィンドウでは realm が違って false になり得るため
-		// （その場合「外側」と誤判定して閉じてしまう）。contains() だけで見る。
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.MOUSE_DOWN, event => {
-			const target = event.target as Node | null;
-			if (target && (this._element.contains(target) || this.options.anchor.contains(target))) {
-				return;
-			}
-			this.close();
-		}, true));
-
-		// スクロール・リサイズでアンカーが動くと、位置がずれたまま残る。追従させるより閉じる方が
-		// 正直（QuickPick も同じ振る舞い）。
-		//
-		// ただし**自分のリスト自身のスクロールでは閉じない**。このドロップダウンは
-		// overflow:auto = 自分がスクロールコンテナで、scroll はバブルしないが capture 段は
-		// window を通るため、素朴に閉じるとホイールで即閉じる。さらに開いた直後の
-		// scrollIntoView() でも発火するので、選択行が折り返しより下にあると「開いた瞬間に閉じる」。
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.SCROLL, event => {
-			const target = event.target as Node | null;
-			if (target && this._element.contains(target)) {
-				return;
-			}
-			this.close();
-		}, true));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.RESIZE, () => this.close()));
-		// ピルごとエディタが破棄されたら、宙に浮いたドロップダウンだけが残らないようにする。
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.BLUR, () => this.close()));
+		// スクロール・リサイズでアンカーが動くと、位置がずれたまま残る。追従させるより閉じる方が正直（QuickPick も同じ振る舞い）。
+		// 自分のリスト自身のスクロール（ホイール・開いた直後の scrollIntoView）では閉じない。ピルごとエディタが破棄されたら、
+		// 宙に浮いたドロップダウンだけが残らないよう、窓の blur でも閉じる（paradisAnchoredPopover.ts）
+		this._register(paradisWatchPopoverDismiss(targetWindow, { element: this._element, anchor: this.options.anchor, close: () => this.close(), closeOnScroll: true, closeOnResize: true, closeOnBlur: true }));
 	}
 
 	private _onKeyDown(event: KeyboardEvent): void {
 		const keyboardEvent = new StandardKeyboardEvent(event);
-		switch (keyboardEvent.keyCode) {
-			case KeyCode.Escape:
-				keyboardEvent.preventDefault();
-				keyboardEvent.stopPropagation();
-				this.close();
-				return;
-			case KeyCode.DownArrow:
-				keyboardEvent.preventDefault();
-				this._focusRow(this._focusedIndex + 1, true);
-				return;
-			case KeyCode.UpArrow:
-				keyboardEvent.preventDefault();
-				this._focusRow(this._focusedIndex - 1, true);
-				return;
-			case KeyCode.Home:
-				keyboardEvent.preventDefault();
-				this._focusRow(0, true);
-				return;
-			case KeyCode.End:
-				keyboardEvent.preventDefault();
-				this._focusRow(this._rows.length - 1, true);
-				return;
-			case KeyCode.Enter:
-				keyboardEvent.preventDefault();
-				if (keyboardEvent.ctrlKey || keyboardEvent.metaKey) {
-					this._rows[this._focusedIndex]?.pin?.();
-					return;
-				}
-				this._rows[this._focusedIndex]?.run();
-				return;
-			case KeyCode.Space:
-				keyboardEvent.preventDefault();
-				this._rows[this._focusedIndex]?.run();
-				return;
-			case KeyCode.Tab:
-				// フォーカストラップ。Tab を外へ逃がすと、ドロップダウンが開いたままワークベンチ
-				// 側の要素へフォーカスが移り、閉じ方が分からなくなる。
-				keyboardEvent.preventDefault();
-				this._focusRow(this._focusedIndex + (keyboardEvent.shiftKey ? -1 : 1), true);
-				return;
-			default:
-				return;
-		}
-	}
-
-	/** 開いた直後のフォーカス先は「今使っているもの」。無ければ先頭。 */
-	private _focusInitialRow(): void {
-		const selected = this._rows.findIndex(row => row.element.classList.contains('is-selected'));
-		this._focusRow(selected >= 0 ? selected : 0, true);
-	}
-
-	private _focusRow(index: number, moveFocus: boolean): void {
-		if (this._rows.length === 0) {
+		// Ctrl/Cmd+Enter はピンを押したのと同じ
+		if (keyboardEvent.keyCode === KeyCode.Enter && (keyboardEvent.ctrlKey || keyboardEvent.metaKey)) {
+			keyboardEvent.preventDefault();
+			this._rows.focused?.pin?.();
 			return;
 		}
-		const wrapped = ((index % this._rows.length) + this._rows.length) % this._rows.length;
-		this._focusedIndex = wrapped;
-		for (const [position, row] of this._rows.entries()) {
-			row.element.classList.toggle('is-focused', position === wrapped);
-		}
-		if (moveFocus) {
-			const element = this._rows[wrapped].element;
-			element.focus();
-			element.scrollIntoView({ block: 'nearest' });
-		}
+		this._rows.handleKeyDown(keyboardEvent, () => this.close());
 	}
 
 	// #endregion

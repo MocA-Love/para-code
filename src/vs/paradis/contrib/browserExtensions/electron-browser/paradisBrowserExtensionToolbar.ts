@@ -47,6 +47,7 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { createDecorator, IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
@@ -824,15 +825,8 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 				keyboardEvent.preventDefault();
 			}
 		}));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.MOUSE_DOWN, event => {
-			const target = event.target as Node | null;
-			// 行の「…」のメニュー（context view）を押したときは閉じない
-			if (target && (this._element.contains(target) || this.anchor.contains(target) || (dom.isHTMLElement(target) && target.closest('.context-view')))) {
-				return;
-			}
-			this.close();
-		}, true));
-		this._register(dom.addDisposableListener(targetWindow, dom.EventType.RESIZE, () => this.close()));
+		// 行の「…」のメニュー（context view）を押したときは閉じない。窓の blur では閉じない（paradisAnchoredPopover.ts）
+		this._register(paradisWatchPopoverDismiss(targetWindow, { element: this._element, anchor: this.anchor, close: () => this.close(), isAlsoInside: target => dom.isHTMLElement(target) && target.closest('.context-view') !== null, closeOnResize: true }));
 	}
 
 	private _moveFocus(backwards: boolean): void {
