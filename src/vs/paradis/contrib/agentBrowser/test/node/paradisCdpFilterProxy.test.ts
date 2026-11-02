@@ -10,7 +10,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../../platform/browserView/common/paraBrowserViewScreenshot.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
-import { IParadisBoundContext, paradisForwardableCdpFrame, paradisReadCdpFrame, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
+import { paradisCdpErrorFrame, paradisForwardableCdpFrame, paradisReadCdpFrame } from '../../node/paradisCdpFrames.js';
+import { IParadisBoundContext, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpGatewayDelegate, ParadisCdpGateway, paradisPageUpgradeTargetIsCurrent } from '../../node/paradisCdpGateway.js';
 import { ParadisCdpUpstream } from '../../node/paradisCdpUpstream.js';
@@ -33,6 +34,13 @@ function context(overrides: Partial<IParadisBoundContext> = {}): IParadisBoundCo
 suite('Paradis CDP screenshot filter', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 	teardown(() => sinon.restore());
+
+	test('error frames to the client keep the CDP shape: id, then sessionId only when the command had one, then the error', () => {
+		assert.deepStrictEqual([paradisCdpErrorFrame(7, undefined, 'denied'), paradisCdpErrorFrame(8, 'S1', 'denied')], [
+			'{"id":7,"error":{"code":-32000,"message":"denied"}}',
+			'{"id":8,"sessionId":"S1","error":{"code":-32000,"message":"denied"}}',
+		]);
+	});
 
 	test('maps viewport capture to the delegated PNG path', () => {
 		assert.deepStrictEqual(paradisMapCaptureScreenshotParams(undefined), { format: 'png' });
