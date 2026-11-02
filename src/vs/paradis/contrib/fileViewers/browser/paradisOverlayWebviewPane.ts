@@ -27,6 +27,7 @@ import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../.
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisWebviewOriginPool } from './paradisWebviewOriginPool.js';
+import { canReuseParadisShownDocument, type IParadisShownDocument } from '../common/paradisViewerShownDocument.js';
 
 /** {@link ParadisOverlayWebviewPane} の作り方。 */
 export interface IParadisOverlayWebviewPaneOptions {
@@ -51,8 +52,12 @@ export interface IParadisOverlayWebviewPaneOptions {
 	readonly reportFatalErrorAs?: string;
 }
 
-/** ファイルビューアが持つ overlay webview。 */
-export class ParadisOverlayWebviewPane extends Disposable {
+/**
+ * ファイルビューアが持つ overlay webview。`TShown` は、タブを離れて戻ったときに描き直さないための記録
+ * （{@link IParadisShownDocument}。ビューアごとの欄を足してよい）。記録を捨てる時点（webview を捨てた・閉じた・
+ * 描き終わりを確かめる前に離れた）と、同じ webview かの判定はここが持つ。
+ */
+export class ParadisOverlayWebviewPane<TShown extends IParadisShownDocument<IOverlayWebview> = IParadisShownDocument<IOverlayWebview>> extends Disposable {
 
 	private readonly _originPool: ParadisWebviewOriginPool;
 	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
@@ -65,6 +70,7 @@ export class ParadisOverlayWebviewPane extends Disposable {
 	private _documentServeFailed = false;
 	/** いま webview に書いてある文書のリソース（閉じたタブの中身を捨てるかの判断に使う）。 */
 	private _displayedResource: URI | undefined;
+	private _shown: TShown | undefined;
 
 	constructor(
 		/** claim・release の持ち主（エディタ）。 */
@@ -118,6 +124,34 @@ export class ParadisOverlayWebviewPane extends Disposable {
 
 	markDocumentServeFailed(): void {
 		this._documentServeFailed = true;
+	}
+
+	/** webview にいま残っている文書の記録（タブへ戻ったときに描き直さないため）。 */
+	get shown(): TShown | undefined {
+		return this._shown;
+	}
+
+	set shown(value: TShown | undefined) {
+		this._shown = value;
+	}
+
+	/** 記録の中身が `keys` と同じで、描き終わりを確かめてあり、いまの webview に描いたものか。 */
+	canReuseShown(resource: URI, keys: readonly unknown[]): boolean {
+		return canReuseParadisShownDocument(this._shown, resource, this._webview, keys);
+	}
+
+	/** `webview` に描いた記録があれば、描き終わりを確かめたことにする。 */
+	confirmShown(webview: IOverlayWebview): void {
+		if (this._shown && this._shown.webview === webview) {
+			this._shown = { ...this._shown, confirmed: true };
+		}
+	}
+
+	/** 描き終わりを確かめる前に離れたら、記録を捨てる（戻ったときに描き直す。白紙のまま残さない）。 */
+	forgetUnconfirmedShown(): void {
+		if (this._shown && !this._shown.confirmed) {
+			this._shown = undefined;
+		}
 	}
 
 	/** 同梱ライブラリの置き場を決める。**ペインにつき一度だけ**決める（アプリの中にあるので入力に依らない）。 */
@@ -181,6 +215,8 @@ export class ParadisOverlayWebviewPane extends Disposable {
 		this.release();
 		this._webview = undefined;
 		this._displayedResource = undefined;
+		// 作り直した webview には前の中身が無い。
+		this._shown = undefined;
 		this._webviewStore.clear();
 		this._options.onDidDispose?.();
 	}
@@ -235,9 +271,18 @@ export class ParadisOverlayWebviewPane extends Disposable {
 		this._displayedResource = undefined;
 	}
 
-	/** いま書いてある文書が `resource` なら中身を空にする（閉じたタブのために残していた描画結果を捨てる）。 */
+	/**
+	 * タブを閉じた。そのタブの文書の記録を捨て、いま書いてある文書がそれなら中身も空にする（閉じたタブのために
+	 * 残していた描画結果を捨てる）。
+	 */
 	clearContentFor(resource: URI | undefined): void {
-		if (resource && this._displayedResource && isEqual(this._displayedResource, resource)) {
+		if (!resource) {
+			return;
+		}
+		if (this._shown && isEqual(this._shown.resource, resource)) {
+			this._shown = undefined;
+		}
+		if (this._displayedResource && isEqual(this._displayedResource, resource)) {
 			this.clearContent();
 		}
 	}

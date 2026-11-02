@@ -271,6 +271,7 @@ suite('ParadisDocxFileEditor', () => {
 		const readOptions: { length: number }[] = [];
 		const htmlDocuments: string[] = [];
 		const rawHtmlDocuments: string[] = [];
+		const postedDocuments: string[] = [];
 		const localResourceRootsAtSetHtml: string[][] = [];
 		const watcherEmitters = new Map<string, Emitter<FileChangesEvent>[]>();
 		const queuedHeaders = new Map<string, HeaderResult[]>();
@@ -310,7 +311,8 @@ suite('ParadisDocxFileEditor', () => {
 			};
 			return {
 				classification,
-				docxUrl: parsedDocxUrl?.startsWith('data:') ? '<sanitized-docx-data>' : parsedDocxUrl,
+				// 消毒した文書は HTML に埋めず postMessage で送るので、URL は空。
+				docxUrl: parsedDocxUrl === '' ? '<sanitized-docx-message>' : parsedDocxUrl,
 				csp: styleNonce ? cspMatch?.[1].replace(`nonce-${styleNonce}`, 'nonce-<nonce>') : cspMatch?.[1],
 				scriptUrls: externalScripts.map(match => match[2]),
 				nonceConsistency: {
@@ -348,6 +350,14 @@ suite('ParadisDocxFileEditor', () => {
 				releases++;
 			},
 			setAnchorElement: () => recordOverlayCall(),
+			postMessage: async (message: { readonly type?: unknown; readonly bytes?: unknown }) => {
+				recordOverlayCall();
+				// 文書は HTML に埋めず、transfer 付きで送る。中身を比べられるよう、送られた文書を文字列で覚える。
+				if (message?.type === 'paradisWordDocument' && message.bytes instanceof ArrayBuffer) {
+					postedDocuments.push(Array.from(new Uint8Array(message.bytes)).join(','));
+				}
+				return true;
+			},
 			setHtml: (html: string) => {
 				recordOverlayCall();
 				htmlDocuments.push(classifyHtml(html));
@@ -461,11 +471,8 @@ suite('ParadisDocxFileEditor', () => {
 			documentReads(): readonly string[] {
 				return [...documentReads];
 			},
-			docxUrls(): readonly (string | undefined)[] {
-				return rawHtmlDocuments.map(html => {
-					const match = /const DOCX_URL = ("(?:[^"\\]|\\.)*");/.exec(html);
-					return match ? JSON.parse(match[1]) as string : undefined;
-				});
+			postedDocuments(): readonly string[] {
+				return [...postedDocuments];
 			},
 			localResourceRootsAtSetHtml(): readonly (readonly string[])[] {
 				return localResourceRootsAtSetHtml.map(roots => [...roots]);
@@ -662,11 +669,11 @@ suite('ParadisDocxFileEditor', () => {
 			fixture.fire(resource);
 			await fixture.settleCurrentRender();
 
-			const urls = fixture.docxUrls();
+			const documents = fixture.postedDocuments();
 			deepStrictEqual({
 				documentReads: fixture.documentReads(),
 				html: fixture.snapshot().htmlDocuments,
-				sameDocument: urls.length === 2 && urls.every(url => url?.startsWith('data:') && url === urls[0]),
+				sameDocument: documents.length === 2 && documents.every(document => document.length > 0 && document === documents[0]),
 			}, {
 				// 戻ったとき（2 回目）は webview に残っている表示を使い、送り直さない。変わった後は描き直す。
 				documentReads: ['read', 'not modified', 'read'],
@@ -699,7 +706,7 @@ suite('ParadisDocxFileEditor', () => {
 		const exactOrigins = new URL(libraryBase).origin;
 		return {
 			classification: 'viewer',
-			docxUrl: '<sanitized-docx-data>',
+			docxUrl: '<sanitized-docx-message>',
 			csp: `default-src 'none'; script-src 'nonce-<nonce>' ${exactOrigins}; style-src 'unsafe-inline'; img-src data: blob: ${exactOrigins}; font-src data: blob: ${exactOrigins}; connect-src ${exactOrigins} data: blob:; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none';`,
 			scriptUrls: [`${libraryBase}/jszip.min.js`, `${libraryBase}/docx-preview.min.js`],
 			nonceConsistency: {
