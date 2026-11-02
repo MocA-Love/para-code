@@ -221,11 +221,8 @@
 
 /* ---- 集計し直している間の印（paradisActivityBusy.ts） ---- */
 
-.paradis-ccusage.paradis-activity-panel {
-	position: relative;
-}
-
-/* 進捗線はパネルの上端に重ねる（場所を取らないので、出し入れで中身が動かない） */
+/* 進捗線はパネルの上端に重ねる（場所を取らないので、出し入れで中身が動かない）。
+	基準の position: relative は .paradis-ccusage が持っている */
 .paradis-ccusage.paradis-activity-panel > .paradis-activity-progress {
 	position: absolute;
 	top: 0;
