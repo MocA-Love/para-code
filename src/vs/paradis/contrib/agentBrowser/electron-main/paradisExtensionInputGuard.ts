@@ -336,7 +336,8 @@ interface ICdpTargetInfoLike {
  */
 export class ParadisFrameTargetTracker {
 
-	private readonly _targets = new Map<string, { url?: string; sessionId?: string; parentSessionId?: string }>();
+	/** `extension` は `url` が拡張のページか（URL を覚えるときに一緒に判定する。イベントごとに全部を判定し直さない）。 */
+	private readonly _targets = new Map<string, { url?: string; extension: boolean; sessionId?: string; parentSessionId?: string }>();
 	private readonly _sessionTargets = new Map<string, string>();
 
 	/**
@@ -352,7 +353,8 @@ export class ParadisFrameTargetTracker {
 				const sessionId = typeof record?.sessionId === 'string' ? record.sessionId : undefined;
 				if (targetId !== undefined && sessionId !== undefined && this._targets.size < 4_096) {
 					// Electron はページ（ルート）のイベントのセッションを空文字で渡す
-					this._targets.set(targetId, { url: typeof info?.url === 'string' ? info.url : undefined, sessionId, parentSessionId: eventSessionId ? eventSessionId : undefined });
+					const url = typeof info?.url === 'string' ? info.url : undefined;
+					this._targets.set(targetId, { url, extension: paradisIsBrowserExtensionUrl(url), sessionId, parentSessionId: eventSessionId ? eventSessionId : undefined });
 					this._sessionTargets.set(sessionId, targetId);
 				}
 				return;
@@ -361,6 +363,7 @@ export class ParadisFrameTargetTracker {
 				const known = targetId !== undefined ? this._targets.get(targetId) : undefined;
 				if (known && typeof info?.url === 'string') {
 					known.url = info.url;
+					known.extension = paradisIsBrowserExtensionUrl(info.url);
 				}
 				return;
 			}
@@ -371,7 +374,7 @@ export class ParadisFrameTargetTracker {
 					this._sessionTargets.delete(sessionId);
 					const known = this._targets.get(detached);
 					if (known?.sessionId === sessionId) {
-						if (paradisIsBrowserExtensionUrl(known.url)) {
+						if (known.extension) {
 							// 拡張のページの iframe は、こちらで切り離す（下の paradisInputGuardTab）。当たり判定のために URL は覚えておく
 							known.sessionId = undefined;
 						} else {
@@ -404,7 +407,7 @@ export class ParadisFrameTargetTracker {
 	extensionSessions(): { readonly sessionId: string; readonly parentSessionId?: string }[] {
 		const sessions: { sessionId: string; parentSessionId?: string }[] = [];
 		for (const known of this._targets.values()) {
-			if (known.sessionId !== undefined && paradisIsBrowserExtensionUrl(known.url)) {
+			if (known.sessionId !== undefined && known.extension) {
 				sessions.push({ sessionId: known.sessionId, parentSessionId: known.parentSessionId });
 			}
 		}
