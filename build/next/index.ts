@@ -145,6 +145,8 @@ const desktopEntryPoints = [
 	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetMetafileWorkerMain',
 	// PARA-PATCH: worker thread the shared process starts to parse Excel workbooks for the viewer (fileViewers)
 	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain',
+	// PARA-PATCH: worker thread the shared process starts to read downloaded xlsx files for the read_download tool (agentBrowser)
+	'vs/paradis/contrib/agentBrowser/node/paradisBrowserDownloadWorkbookWorkerMain',
 ];
 
 const codeEntryPoints = [

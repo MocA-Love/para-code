@@ -487,6 +487,26 @@ const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
  * screenshot frames); otherwise decodes it with U+FFFD replacement so the client's own `ws`
  * validation accepts the forwarded text frame.
  */
+/** 上流から来た 1 フレーム。バイト列の連結と文字列への読み出しを 1 回だけにするため、読んだものを持ち回る。 */
+export interface IParadisCdpFrame {
+	readonly data: wsTypes.RawData;
+	readonly bytes: number;
+	readonly text: string;
+}
+
+export function paradisReadCdpFrame(data: wsTypes.RawData, bytes = rawDataByteLength(data)): IParadisCdpFrame {
+	return { data, bytes, text: rawDataText(data) };
+}
+
+/**
+ * クライアントへそのまま送ってよい形（{@link reencodeUtf8} と同じ結果）。読み出した文字列に U+FFFD が無ければ
+ * 元のバイト列は正しい UTF-8 なので、厳密な検証（全体の decode）を省いて元のまま返す。U+FFFD があるときだけ
+ * （壊れた並びか、本当に U+FFFD を含むか）検証する。
+ */
+export function paradisForwardableCdpFrame(frame: IParadisCdpFrame): wsTypes.RawData | string {
+	return frame.text.includes('\uFFFD') ? reencodeUtf8(frame.data) : frame.data;
+}
+
 function reencodeUtf8(data: wsTypes.RawData): wsTypes.RawData | string {
 	const buffer = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
 	try {
@@ -771,12 +791,17 @@ function parseClientCommand(data: wsTypes.RawData): IParadisClientCommand | unde
 }
 
 function parseJsonRecord(data: wsTypes.RawData, maxBytes = MAX_CDP_FRAME_BYTES): IJsonRpcMsg | undefined {
-	if (rawDataByteLength(data) > maxBytes) {
+	return rawDataByteLength(data) > maxBytes ? undefined : parseJsonRecordFrame(paradisReadCdpFrame(data), maxBytes);
+}
+
+/** {@link parseJsonRecord} の、読み出し済みのフレームを受ける形（同じフレームを 2 度文字列にしない）。 */
+function parseJsonRecordFrame(frame: IParadisCdpFrame, maxBytes = MAX_CDP_FRAME_BYTES): IJsonRpcMsg | undefined {
+	if (frame.bytes > maxBytes) {
 		return undefined;
 	}
 	let value: unknown;
 	try {
-		value = JSON.parse(rawDataText(data));
+		value = JSON.parse(frame.text);
 	} catch {
 		return undefined;
 	}
@@ -1804,7 +1829,9 @@ export function paradisProxyPageUpgrade(
 					}
 					return;
 				}
-				const response = parseJsonRecord(data, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
+				// 1 フレームは 1 回だけ文字列にして parse する（スクリーンショットは数 MB〜32 MiB ある）
+				const frame = paradisReadCdpFrame(data, frameBytes);
+				const response = parseJsonRecordFrame(frame, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
 				if (typeof response?.id === 'number' && Number.isSafeInteger(response.id)) {
 					completeForwardedRequestBarrier(forwardedRequestBarriers, response.id, response.sessionId);
 				}
@@ -1871,8 +1898,11 @@ export function paradisProxyPageUpgrade(
 					}
 				}
 				if (rawScreenshotActive) {
-					let msg: IJsonRpcMsg | undefined;
-					try { msg = JSON.parse(rawDataText(data)) as IJsonRpcMsg; } catch { /* non-JSON frame */ }
+					// 読んだ答えを使い回す。形の確かめで落ちたフレームだけ、id と sessionId を読むために parse し直す
+					let msg: IJsonRpcMsg | undefined = response;
+					if (msg === undefined) {
+						try { msg = JSON.parse(frame.text) as IJsonRpcMsg; } catch { /* non-JSON frame */ }
+					}
 					const completion = rawScreenshots.complete(rawScreenshotOwner, msg?.id, msg?.sessionId);
 					if (frameBytes > MAX_CDP_FRAME_BYTES && !completion.handled) {
 						closeBoth();
@@ -1884,7 +1914,7 @@ export function paradisProxyPageUpgrade(
 				}
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
 					// U+FFFD replacement can grow the frame, so size the backpressure check on what is actually sent.
-					const forwarded = cookieSanitized ?? reencodeUtf8(data);
+					const forwarded = cookieSanitized ?? paradisForwardableCdpFrame(frame);
 					const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, payloadByteLength(forwarded) > MAX_CDP_FRAME_BYTES, true);
 					if (outcome !== 'sent' && !backpressure.onSendFailure(outcome, response?.method ?? (typeof response?.id === 'number' ? undefined : 'unknown'), typeof response?.id === 'number')) {
 						closeBoth();
@@ -2266,6 +2296,19 @@ export async function paradisProxyBrowserUpgrade(
 					if (!backpressure.onSendFailure(outcome, typeof record.method === 'string' ? record.method : undefined, isResponse)) {
 						closeBoth();
 					}
+				}
+			}
+		};
+		/** 上流のフレームを書き換えずに届ける（{@link sendToClient} と同じ確かめ。JSON に戻さず、大きさも計り直さない）。 */
+		const sendFrameToClient = (message: IJsonRpcMsg, frame: IParadisCdpFrame) => {
+			if (!ctx.isCurrentLease()) {
+				closeBoth();
+				return;
+			}
+			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
+				const outcome = sendWithBoundedBackpressureOutcome(clientWs, paradisForwardableCdpFrame(frame), frame.bytes > MAX_CDP_FRAME_BYTES, true);
+				if (outcome !== 'sent' && !backpressure.onSendFailure(outcome, typeof message.method === 'string' ? message.method : undefined, typeof message.id === 'number')) {
+					closeBoth();
 				}
 			}
 		};
@@ -2845,7 +2888,9 @@ export async function paradisProxyBrowserUpgrade(
 				}
 				return;
 			}
-			const message = parseJsonRecord(data, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
+			// 1 フレームは 1 回だけ文字列にして parse する。書き換えずに届ける答えは、このバイト列をそのまま送る
+			const frame = paradisReadCdpFrame(data, frameBytes);
+			const message = parseJsonRecordFrame(frame, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
 			if (!message
 				|| (message.params !== undefined && !isRecord(message.params))
 				|| (message.sessionId !== undefined && boundedIdentifier(message.sessionId) === undefined)) {
@@ -2970,7 +3015,8 @@ export async function paradisProxyBrowserUpgrade(
 					sendToClient({ ...message, result: { ...message.result, targetInfo: rewriteTargetInfoType(message.result.targetInfo as ITargetInfoLike) } });
 					return;
 				}
-				sendToClient(message);
+				// 書き換えない答え（スクリーンショットなど大きいものはここを通る）は、parse した物を JSON に戻さずに届ける
+				sendFrameToClient(message, frame);
 				return;
 			}
 			if (frameBytes > MAX_CDP_FRAME_BYTES) {
