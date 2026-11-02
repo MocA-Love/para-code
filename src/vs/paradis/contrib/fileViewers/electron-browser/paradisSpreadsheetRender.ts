@@ -816,18 +816,39 @@ function appendFilterMarker(td: HTMLElement): void {
 	marker.setAttribute('aria-hidden', 'true');
 }
 
-export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTableDom {
+/** 表の骨組みの 1 行（{@link buildParadisSheetTableSkeleton}）。 */
+export interface IParadisSheetTableSkeletonRow {
+	readonly height: number;
+}
+
+/**
+ * シートの表の骨組み（colgroup・列記号の見出しの行・各行の tr と行番号のセル）を組み、セルは `appendCells` に任せる。
+ * 通常のエディタ（{@link buildSheetTableDom}）と差分エディタの両方が使う。
+ */
+export function buildParadisSheetTableSkeleton<TRow extends IParadisSheetTableSkeletonRow>(options: {
+	readonly columnWidths: readonly number[];
+	/** 列記号の見出しの数。 */
+	readonly columnCount: number;
+	/** 使用範囲の先頭の列（1 始まり）。列記号はここから振る。 */
+	readonly minCol: number;
+	readonly grid: boolean;
+	readonly naturalWidth: number;
+	readonly rows: readonly TRow[];
+	/** 行番号のセルの文字。 */
+	readonly rowLabel: (row: TRow, index: number) => string;
+	/** 行番号のセルの後ろにセルを足す。 */
+	readonly appendCells: (tr: HTMLTableRowElement, row: TRow, index: number) => void;
+}): { readonly table: HTMLTableElement; readonly thead: HTMLElement; readonly headCells: HTMLElement[]; readonly rowEls: HTMLTableRowElement[] } {
 	const table = $('table.paradis-spreadsheet-table') as HTMLTableElement;
-	if (sheet.showGridLines !== false) {
+	if (options.grid) {
 		table.classList.add('grid');
 	}
-	const naturalWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((sum, w) => sum + w, 0);
-	table.style.width = `${naturalWidth}px`;
+	table.style.width = `${options.naturalWidth}px`;
 
 	const colgroup = dom.append(table, $('colgroup'));
 	const rowNumCol = dom.append(colgroup, $('col')) as HTMLTableColElement;
 	rowNumCol.style.width = `${PARADIS_ROW_NUM_COL_WIDTH}px`;
-	for (const w of sheet.columnWidths) {
+	for (const w of options.columnWidths) {
 		const col = dom.append(colgroup, $('col')) as HTMLTableColElement;
 		if (w) {
 			col.style.width = `${w}px`;
@@ -838,74 +859,91 @@ export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTable
 	const headCells: HTMLElement[] = [];
 	const headRow = dom.append(thead, $('tr'));
 	dom.append(headRow, $('th.paradis-spreadsheet-corner'));
-	for (let i = 0; i < sheet.columnCount; i++) {
+	for (let i = 0; i < options.columnCount; i++) {
 		const th = dom.append(headRow, $('th.paradis-spreadsheet-colhead'));
 		// 使用範囲が D 列始まりのシートでは Excel も「D,E,F…」を表示するため、minCol を起点にする。
-		th.textContent = getColumnLabel(sheet.minCol - 1 + i);
+		th.textContent = getColumnLabel(options.minCol - 1 + i);
 		headCells.push(th);
 	}
 
 	const tbody = dom.append(table, $('tbody'));
+	const rowEls: HTMLTableRowElement[] = [];
+	options.rows.forEach((row, index) => {
+		const tr = dom.append(tbody, $('tr')) as HTMLTableRowElement;
+		tr.style.height = `${row.height}px`;
+		rowEls.push(tr);
+		const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
+		rowHead.textContent = options.rowLabel(row, index);
+		options.appendCells(tr, row, index);
+	});
+	return { table, thead, headCells, rowEls };
+}
+
+export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTableDom {
+	const naturalWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((sum, w) => sum + w, 0);
 	const dataRows: { excelRow: number; tr: HTMLElement }[] = [];
 	const shrinkCells: { td: HTMLElement; span: HTMLElement }[] = [];
 	const overflowCells: IParadisOverflowItem[] = [];
 	const comments = commentKindsByCell(sheet);
-	let displayRowNum = 0;
-	for (const row of sheet.rows) {
-		displayRowNum++;
-		const tr = dom.append(tbody, $('tr')) as HTMLTableRowElement;
-		tr.style.height = `${row.height}px`;
-		dataRows.push({ excelRow: row.excelRow, tr });
-		const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
+	const { table, thead, headCells } = buildParadisSheetTableSkeleton({
+		columnWidths: sheet.columnWidths,
+		columnCount: sheet.columnCount,
+		minCol: sheet.minCol,
+		grid: sheet.showGridLines !== false,
+		naturalWidth,
+		rows: sheet.rows,
 		// Excel の行番号は絶対番号。フィルタで隠れた行があると可視行の通し番号とはズレる
 		// (Excel は「1,2,5,6…」と表示する)。excelRow が無い呼び出し元(旧データ)のみ連番へフォールバック。
-		rowHead.textContent = String(row.excelRow ?? displayRowNum);
-		for (let ci = 0; ci < row.cells.length; ci++) {
-			const cell = row.cells[ci];
-			if (cell.hidden) {
-				continue;
-			}
-			const td = dom.append(tr, $('td')) as HTMLTableCellElement;
-			if (cell.colSpan && cell.colSpan > 1) {
-				td.colSpan = cell.colSpan;
-			}
-			if (cell.rowSpan && cell.rowSpan > 1) {
-				td.rowSpan = cell.rowSpan;
-			}
-			applyBaseCellStyle(td, cell);
-			if (cell.shrinkToFit && !cell.wrapText && !cell.verticalText) {
-				shrinkCells.push({ td, span: createShrinkSpan(td, cell) });
-			} else {
-				const toward = overflowToward(cell);
-				const room = toward !== 'none' ? computeOverflowRoom(row.cells, ci, sheet.columnWidths) : undefined;
-				if (toward !== 'none' && room && (room.left > 0 || room.right > 0)) {
-					overflowCells.push({ td, span: createOverflowSpan(td, cell), toward, leftRoom: room.left, rightRoom: room.right, valign: (cell.style.verticalAlign as string) || 'bottom' });
+		rowLabel: (row, index) => String(row.excelRow ?? index + 1),
+		appendCells: (tr, row) => {
+			dataRows.push({ excelRow: row.excelRow, tr });
+			for (let ci = 0; ci < row.cells.length; ci++) {
+				const cell = row.cells[ci];
+				if (cell.hidden) {
+					continue;
+				}
+				const td = dom.append(tr, $('td')) as HTMLTableCellElement;
+				if (cell.colSpan && cell.colSpan > 1) {
+					td.colSpan = cell.colSpan;
+				}
+				if (cell.rowSpan && cell.rowSpan > 1) {
+					td.rowSpan = cell.rowSpan;
+				}
+				applyBaseCellStyle(td, cell);
+				if (cell.shrinkToFit && !cell.wrapText && !cell.verticalText) {
+					shrinkCells.push({ td, span: createShrinkSpan(td, cell) });
 				} else {
-					setCellContent(td, cell);
+					const toward = overflowToward(cell);
+					const room = toward !== 'none' ? computeOverflowRoom(row.cells, ci, sheet.columnWidths) : undefined;
+					if (toward !== 'none' && room && (room.left > 0 || room.right > 0)) {
+						overflowCells.push({ td, span: createOverflowSpan(td, cell), toward, leftRoom: room.left, rightRoom: room.right, valign: (cell.style.verticalAlign as string) || 'bottom' });
+					} else {
+						setCellContent(td, cell);
+					}
+				}
+				// テーブル/オートフィルタの体裁。値そのものは変えず、クラスだけを足す。
+				const excelCol = sheet.minCol + ci;
+				const role = tableCellRole(sheet, row.excelRow, excelCol);
+				if (role) {
+					td.classList.toggle('paradis-spreadsheet-table-header', role.header);
+					td.classList.toggle('paradis-spreadsheet-table-totals', role.totals);
+					td.classList.toggle('paradis-spreadsheet-table-stripe', role.stripe);
+					td.classList.toggle('paradis-spreadsheet-table-emphasis', role.emphasizedColumn);
+				}
+				if (isFilterHeaderCell(sheet.filterRanges, row.excelRow, excelCol)) {
+					appendFilterMarker(td);
+				}
+				if (cell.diagonal) {
+					appendDiagonalOverlay(td, cell.diagonal);
+				}
+				const comment = comments.get(`${row.excelRow}:${excelCol}`);
+				if (comment) {
+					td.classList.add(commentMarkerClass(comment.kind));
+					td.dataset.paradisCommentRef = comment.ref;
 				}
 			}
-			// テーブル/オートフィルタの体裁。値そのものは変えず、クラスだけを足す。
-			const excelCol = sheet.minCol + ci;
-			const role = tableCellRole(sheet, row.excelRow, excelCol);
-			if (role) {
-				td.classList.toggle('paradis-spreadsheet-table-header', role.header);
-				td.classList.toggle('paradis-spreadsheet-table-totals', role.totals);
-				td.classList.toggle('paradis-spreadsheet-table-stripe', role.stripe);
-				td.classList.toggle('paradis-spreadsheet-table-emphasis', role.emphasizedColumn);
-			}
-			if (isFilterHeaderCell(sheet.filterRanges, row.excelRow, excelCol)) {
-				appendFilterMarker(td);
-			}
-			if (cell.diagonal) {
-				appendDiagonalOverlay(td, cell.diagonal);
-			}
-			const comment = comments.get(`${row.excelRow}:${excelCol}`);
-			if (comment) {
-				td.classList.add(commentMarkerClass(comment.kind));
-				td.dataset.paradisCommentRef = comment.ref;
-			}
-		}
-	}
+		},
+	});
 
 	return { table, naturalWidth, thead, headCells, dataRows, shrinkCells, overflowCells };
 }
