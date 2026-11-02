@@ -1257,7 +1257,14 @@ export class ParadisWorkspacesView extends ViewPane {
 				// 左端の chevron でのみ行う (見出し行本体のクリックは何もしない)
 				expandOnlyOnTwistieClick: true,
 				accessibilityProvider: {
-					getAriaLabel: (element: WorkspaceTreeElement) => isCreating(element) ? creatingElementLabel(element) : element.name,
+					// 左のアイコンが種類だけになった（51 A）ので、エージェントの様子は名前の後ろに要約して読み上げる
+					getAriaLabel: (element: WorkspaceTreeElement) => {
+						if (isCreating(element)) {
+							return creatingElementLabel(element);
+						}
+						const summary = isWorktree(element) && !element.missing ? agentStatusSummaryTooltip(getBreakdown(worktreeStateKeyFor(element))) : '';
+						return summary ? localize('paradis.workspaceSwitch.worktreeAriaLabel', "{0}、{1}", element.name, summary) : element.name;
+					},
 					getWidgetAriaLabel: () => localize('paradisWorkspaces', "スペース")
 				}
 			}

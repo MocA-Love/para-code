@@ -544,9 +544,10 @@
 	font-size: var(--vscode-codiconFontSize-compact);
 }
 
-/* 行の「…」。右クリックと同じメニューを出す。ほかの行の操作と同じく、ホバーとフォーカスのときだけ見せる */
+/* 行の「…」。右クリックと同じメニューを出す。ほかの行の操作と同じく、ホバーとフォーカスのときだけ見せる。
+ * 見えない間は幅も取らない（点を右端に寄せたままにする） */
 .paradis-workspaces-list .paradis-worktree-more {
-	display: flex;
+	display: none;
 	align-items: center;
 	justify-content: center;
 	flex-shrink: 0;
@@ -555,12 +556,11 @@
 	border-radius: var(--vscode-cornerRadius-small);
 	color: var(--vscode-icon-foreground);
 	cursor: pointer;
-	opacity: 0;
 }
 
 .paradis-workspaces-list .monaco-tl-row:hover .paradis-worktree-more,
 .paradis-workspaces-list .monaco-list-row.focused .paradis-worktree-more {
-	opacity: 1;
+	display: flex;
 }
 
 .paradis-workspaces-list .paradis-worktree-more:hover {
