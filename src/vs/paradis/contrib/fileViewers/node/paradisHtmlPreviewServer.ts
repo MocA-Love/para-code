@@ -46,6 +46,11 @@ import { IParadisHtmlPreviewService, IParadisPreviewMount, IParadisPreviewMountO
 
 /** 同時に載せておくフォルダーの上限。超えたら古いものから外す。 */
 const PARADIS_HTML_PREVIEW_MAX_MOUNTS = 64;
+/**
+ * 同梱ライブラリの応答に付ける。トークンはサーバを立てるたびに変わるので、版の違うライブラリを覚えたまま使うことはない。
+ * 期限内でも ETag で確かめ直せる（変わっていなければ 304）。
+ */
+const PARADIS_PREVIEW_PINNED_CACHE_CONTROL = 'private, max-age=86400';
 
 /** 拡張子から Content-Type を引く。分からないものは中身を推測させない。 */
 const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
@@ -190,7 +195,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 	/** 実パス → トークン。同じフォルダーを何度開いてもトークンを増やさない。 */
 	private readonly _tokenByRoot = new Map<string, string>();
 	/** トークン → 配信範囲。`onlyFile` があるとそのファイル以外は返さない。 */
-	private readonly _rootByToken = new Map<string, { readonly root: string; readonly onlyFile: string | undefined }>();
+	private readonly _rootByToken = new Map<string, { readonly root: string; readonly onlyFile: string | undefined; readonly key: string }>();
 	/**
 	 * 古いものから外す対象にしない実パス（ビューアの同梱ライブラリ）。ペインはその URL を一度だけ決めて
 	 * 覚え続けるので、外すとそのペインの次の文書が白紙になる。数はビューアの種類ぶんしか増えない。
@@ -218,7 +223,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 			this._tokenByRoot.delete(key);
 		} else {
 			token = randomBytes(16).toString('hex');
-			this._rootByToken.set(token, { root, onlyFile: asFile ? basename(resolved) : undefined });
+			this._rootByToken.set(token, { root, onlyFile: asFile ? basename(resolved) : undefined, key });
 		}
 		this._tokenByRoot.set(key, token);
 		if (options?.pinned) {
@@ -352,6 +357,9 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		// 区間読みの途中でファイルが書き換わると、別の版の断片を継ぎ合わせてしまう。版を ETag で示し、
 		// `If-Range` が今の版と合わなければ区間を無視して全体を返す（RFC 9110 の決まり）。
 		const etag = `"${stat.size}-${Math.floor(stat.mtimeMs)}"`;
+		// 同梱ライブラリ（固定した置き場）は変わらないので、描き直すたびに数 MB を取り直さないよう覚えさせる。
+		// 文書側は書き換わるので今までどおり覚えさせない。
+		const pinned = this._pinnedRoots.has(mounted.key);
 		const ifRange = firstHeader(request.headers['if-range']);
 		const range = ifRange === undefined || ifRange === etag ? parseParadisByteRange(firstHeader(request.headers.range), stat.size) : undefined;
 		// 安全のためのヘッダーは、416 を含むどの応答にも同じものを付ける。
@@ -370,9 +378,14 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 			// トークンは URL の中にある。ページが `<meta name="referrer" content="unsafe-url">` を
 			// 書くと、外部への全リクエストに URL ごと載ってしまうので、こちらから止めておく。
 			'Referrer-Policy': 'no-referrer',
-			'Cache-Control': 'no-store',
+			'Cache-Control': pinned ? PARADIS_PREVIEW_PINNED_CACHE_CONTROL : 'no-store',
 			'X-Content-Type-Options': 'nosniff',
 		};
+		if (pinned && firstHeader(request.headers['if-none-match']) === etag) {
+			response.writeHead(304, commonHeaders);
+			response.end();
+			return;
+		}
 		if (range === 'unsatisfiable') {
 			response.writeHead(416, { ...commonHeaders, 'Content-Range': `bytes */${stat.size}` });
 			response.end();
