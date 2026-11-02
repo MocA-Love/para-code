@@ -27,3 +27,13 @@ export function clampParadisTransparencyOpacity(raw: number | undefined): number
 	const value = typeof raw === 'number' && !isNaN(raw) ? raw : PARADIS_TRANSPARENCY_DEFAULT_OPACITY;
 	return Math.min(PARADIS_TRANSPARENCY_MAX_OPACITY, Math.max(PARADIS_TRANSPARENCY_MIN_OPACITY, value));
 }
+
+/**
+ * 透過の切り替えが、まだ再起動していないため効いていないか。透過はウィンドウを作るときにしか決まらない。
+ * @param enabledSetting `paradis.window.transparency.enabled` の値（未設定は有効）
+ * @param canUse この環境で透過を使えるか（Windows の native タイトルバーでは使えない）
+ * @param nativeTransparent いまのウィンドウが透過で作られたか
+ */
+export function paradisTransparencyRestartPending(enabledSetting: boolean | undefined, canUse: boolean, nativeTransparent: boolean): boolean {
+	return (enabledSetting !== false && canUse) !== nativeTransparent;
+}

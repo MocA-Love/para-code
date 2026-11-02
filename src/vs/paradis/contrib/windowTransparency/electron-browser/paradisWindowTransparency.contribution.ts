@@ -20,7 +20,7 @@ import { INativeWorkbenchEnvironmentService } from '../../../../workbench/servic
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { clampParadisTransparencyOpacity, PARADIS_TRANSPARENCY_ENABLED_KEY, PARADIS_TRANSPARENCY_OPACITY_KEY, PARADIS_TRANSPARENT_CLASS } from '../common/paradisTransparency.js';
+import { clampParadisTransparencyOpacity, PARADIS_TRANSPARENCY_ENABLED_KEY, PARADIS_TRANSPARENCY_OPACITY_KEY, PARADIS_TRANSPARENT_CLASS, paradisTransparencyRestartPending } from '../common/paradisTransparency.js';
 
 const OPACITY_CUSTOM_PROPERTY = '--paradis-transparency-opacity';
 
@@ -166,9 +166,8 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 		// ネイティブウィンドウの実状態と現在の設定が食い違う＝透過状態を反映するにはアプリの再起動が必要
 		// （`transparent` は生成時フラグで、ウィンドウの再読み込みでは決して反映されない）。
 		// 透過を使えない環境では、再起動しても不透明のままなので有効にしたときは案内しない。
-		const wanted = enabled && this.canUseTransparency();
-		if (wanted !== this.nativeTransparent) {
-			this.promptRestart(wanted);
+		if (paradisTransparencyRestartPending(enabled, this.canUseTransparency(), this.nativeTransparent)) {
+			this.promptRestart(enabled && this.canUseTransparency());
 		}
 	}
 

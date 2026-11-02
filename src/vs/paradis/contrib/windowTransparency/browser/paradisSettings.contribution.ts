@@ -31,7 +31,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// user settings.json だけを読んで決めるため、Workspace/プロファイルスコープでの上書きを許すと
 			// mainとレンダラで値が食い違い「クラスは付くが透けない」状態になる。
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.window.transparency.enabled', "ワークベンチの背景を半透明にしてデスクトップを透かして表示するかどうかを制御します。半透明になるのはワークベンチ本体（エディタ、サイドバー、パネル、タイトルバーなど）のみで、ダイアログ・メニュー・通知は不透明のままです。統合ターミナルも背景が透過されます。Windowsでは`#window.titleBarStyle#`が`native`の場合、Electronの制約により透明化は無効になります。変更の反映にはアプリケーションの再起動が必要です。")
+			markdownDescription: localize('paradis.window.transparency.enabled', "オンにすると、エディタ・サイドバー・パネル・タイトルバーの地が透けてデスクトップが見えます。メニュー・ホバー・通知・ダイアログは透けません。統合ターミナルの地も透けます。Windows で `#window.titleBarStyle#` が `native` のときは、Electron の制約で透けません。切り替えはアプリを再起動すると効きます（ウィンドウの再読み込みでは効きません）。")
 		},
 		'paradis.window.transparency.opacity': {
 			type: 'number',
