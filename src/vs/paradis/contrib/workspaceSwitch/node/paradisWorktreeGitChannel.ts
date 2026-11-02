@@ -1002,9 +1002,16 @@ export class ParadisWorktreeGitService {
 			// prune の失敗は致命的ではない
 		}
 		// 前回の削除が途中で止まると、git の登録（`.git/worktrees/<name>`）は消えたのにフォルダーだけが
-		// 残ることがある。この状態の git は `--force` でも「not a working tree」で断るので、強制削除の
-		// 同意があるときはフォルダーをこちらで消す。
-		if (request.force && request.allowLeftoverCleanup === true && await this.isLeftoverWorktreeDirectory(request)) {
+		// 残ることがある。この状態の git は `--force` でも「not a working tree」で断るので、残骸の行からの
+		// 依頼（allowLeftoverCleanup）はフォルダーをこちらで消す。残骸と判定できないフォルダー（`.git` が
+		// あるもの、一覧のワークツリーやリポジトリと重なるもの）は、git にも回さずに断る。生きている
+		// ワークツリーを残骸と取り違えた依頼が `git worktree remove --force` まで進み、未コミットの変更を
+		// 消さないようにするため。
+		if (request.allowLeftoverCleanup === true) {
+			if (!request.force || !await this.isLeftoverWorktreeDirectory(request)) {
+				// allow-any-unicode-next-line
+				throw new Error(localize('paradis.worktree.notLeftoverFolder', "「{0}」は削除の途中で残ったフォルダーではないため、削除しませんでした（ワークツリーとして使われているか、ほかのワークツリーやリポジトリと重なっています）。一覧を読み直してから、もう一度お試しください。", request.worktreePath));
+			}
 			await fs.rm(request.worktreePath, { recursive: true, force: true, maxRetries: 3 });
 			return;
 		}

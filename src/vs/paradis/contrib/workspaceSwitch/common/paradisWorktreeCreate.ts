@@ -162,8 +162,9 @@ export interface IParadisRemoveWorktreeRequest<TPath extends string = ParadisHos
 	 */
 	readonly unlock?: boolean;
 	/**
-	 * true の場合、`force` と合わせて、git の登録が消えて残ったフォルダー（途中で止まった削除の残骸）を
-	 * 直接消してよい。呼び出し側が「このパスは自分の一覧にあるワークツリーだ」と確かめたときだけ立てる。
+	 * true の場合、git の登録が消えて残ったフォルダー（途中で止まった削除の残骸）を直接消す依頼。
+	 * `force` と合わせて、呼び出し側が自分の一覧の残骸の行（`leftoverFolder`）だと確かめたときだけ立てる。
+	 * 受け側で残骸と判定できなければ、git に回さずにエラーにする。
 	 */
 	readonly allowLeftoverCleanup?: boolean;
 }
@@ -279,6 +280,11 @@ function paradisPathIsInside(child: string, parent: string, options: IParadisWor
 function paradisSameWorktreePath(a: string, b: string, options: IParadisWorktreePathComparison): boolean {
 	const left = paradisNormalizeWorktreePath(a, options);
 	return left.length > 0 && left === paradisNormalizeWorktreePath(b, options);
+}
+
+/** 2 つのパスが同じ作業ツリーを指すか（区切り・末尾スラッシュ・必要なら大文字小文字を無視する）。 */
+export function paradisIsSameWorktreePath(a: string, b: string, options: IParadisWorktreePathComparison): boolean {
+	return paradisSameWorktreePath(a, b, options);
 }
 
 /** 比べるためにパスを揃える（区切り・末尾スラッシュ・必要なら大文字小文字）。 */

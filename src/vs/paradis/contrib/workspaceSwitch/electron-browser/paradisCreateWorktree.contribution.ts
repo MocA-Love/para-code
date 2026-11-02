@@ -475,7 +475,6 @@ class ParadisRemoveWorktreeAction extends Action2 {
 						// allow-any-unicode-next-line
 						title: localize('paradis.workspaceSwitch.removeWorktreeProgress', "ワークツリー「{0}」を削除しています…", worktree.name),
 					}, task);
-					const knownWorktree = listedWorktree !== undefined;
 
 					let removedFromDisk = false;
 					try {
@@ -525,7 +524,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 							return;
 						}
 						try {
-							await withRemovalProgress(() => channel.call('removeWorktree', [{ ...removeRequest, force: true, unlock: lock.locked, allowLeftoverCleanup: knownWorktree }]));
+							await withRemovalProgress(() => channel.call('removeWorktree', [{ ...removeRequest, force: true, unlock: lock.locked }]));
 							removedFromDisk = true;
 						} catch (forceError) {
 							logService.error('[ParadisRemoveWorktree] force removal failed', forceError);
