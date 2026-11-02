@@ -41,7 +41,7 @@
 //     2 つを続けて送ると再開が効かず、webview の service worker が起動途中のまま固まり、
 //     画像プレビューが 60 秒止まった末に表示されなくなる（{@link ParadisOutOfScopeAttachRelease}）。
 
-import { raceTimeout } from '../../../../base/common/async.js';
+import { raceTimeout, timeout } from '../../../../base/common/async.js';
 import { paradisIsCdpEmulationMethod, paradisIsCdpViewportMethod } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import { paradisNeutralizeDefaultUserAgentOverride } from '../../browserUserAgent/common/paradisChromeClientHints.js';
 import { ParadisNetworkActivity, paradisRootTargetOfSession } from './paradisCdpNetworkActivity.js';
@@ -58,6 +58,8 @@ import { paradisCookieAndRewriteDeniedMessage, paradisSanitizeCookieBearingEvent
 import { paradisRemotePaneCdpDeniedMessage } from './paradisCdpRemotePolicy.js';
 import { PARADIS_HIDDEN_EXTENSION_FRAME_URL, PARADIS_PAGE_URL_FRESH_MS, paradisExtensionPageDeniedMessage, paradisGuardNewDocumentScriptParams, paradisIsAllowedOnExtensionPage, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisIsUndecidedPageUrl, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../common/paradisCdpExtensionScope.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { ParadisReverseIndexedMap } from './paradisCdpReverseIndexedMap.js';
+import { IParadisCdpFrame, MAX_CDP_FRAME_BYTES, ParadisBoundedSendOutcome, paradisCdpErrorFrame, paradisCdpErrorResponse, paradisForwardableCdpFrame, paradisReadCdpFrame, rawDataByteLength, rawDataText, sendWithBoundedBackpressure, sendWithBoundedBackpressureOutcome } from './paradisCdpFrames.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -200,11 +202,6 @@ interface IParadisPendingRequest {
 
 const MAX_CDP_PENDING_REQUESTS = 1_024;
 
-// Debugger metadata can legitimately contain multi-megabyte inline source maps in a single
-// frame. Keep every transport stage on the same bounded ceiling so a valid frame accepted by
-// the parser is not rejected by an earlier queue or later backpressure check.
-const MAX_CDP_FRAME_BYTES = 32 * 1024 * 1024;
-const MAX_CDP_SCREENSHOT_FRAME_BYTES = MAX_CDP_FRAME_BYTES;
 // Chromium serializes lone surrogates in page strings (a truncated emoji in app data, a console
 // message, an exception text) as raw WTF-8 bytes. `ws` validates every incoming text frame and
 // turns such a frame into an `error` event, which tore the whole upstream connection down for
@@ -221,7 +218,6 @@ const MAX_UPSTREAM_WS_PAYLOAD_BYTES = 256 * 1024 * 1024;
 const UPSTREAM_SOCKET_OPTIONS: wsTypes.ClientOptions = { maxPayload: MAX_UPSTREAM_WS_PAYLOAD_BYTES, skipUTF8Validation: true };
 const OVERSIZED_RESPONSE_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: CDP response exceeded 32 MiB and was dropped by Para Code; retry with a smaller request';
 const MAX_CDP_CONNECTING_QUEUE_BYTES = MAX_CDP_FRAME_BYTES;
-const MAX_CDP_OPEN_BUFFERED_BYTES = MAX_CDP_FRAME_BYTES;
 const MAX_CDP_METHOD_LENGTH = 256;
 const MAX_CDP_IDENTIFIER_LENGTH = 512;
 // `ws` transport errors are protocol-level ("invalid UTF-8 sequence", "Max payload size exceeded",
@@ -230,6 +226,16 @@ const MAX_UPSTREAM_ERROR_DETAIL_LENGTH = 256;
 const MAX_CDP_ROUTING_ENTRIES = 4_096;
 const MAX_CDP_PENDING_POLICY_BYTES = 1024 * 1024;
 const PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS = 5_000;
+
+/**
+ * 命令を通す前にページ・ターゲットの今の URL を Target.getTargetInfo で確かめるときの、答えを待つ上限（ミリ秒）。
+ * 答えが来ないまま待ち続けると、その接続の後の命令が全部止まるので、過ぎたらその命令を断り（再試行してよい失敗）、
+ * 次の命令で確かめ直す。
+ */
+const PARADIS_TARGET_URL_CHECK_TIMEOUT_MS = 5_000;
+
+/** {@link PARADIS_TARGET_URL_CHECK_TIMEOUT_MS} を過ぎて URL を確かめられなかった命令への答え。 */
+const PARADIS_TARGET_URL_CHECK_TIMEOUT_MESSAGE = 'PARA_BROWSER_RETRYABLE: Para Code could not confirm which page this tab shows in time (the browser did not answer). Retry once.';
 
 /** 文書そのものに場所を聞くときの待ちの上限（ミリ秒）。 */
 const PARADIS_LOCATE_DOCUMENT_TIMEOUT_MS = 1_000;
@@ -241,7 +247,7 @@ const PARADIS_PAGE_MOVE_WAIT_MS = 10_000;
 async function paradisWaitWhile(predicate: () => boolean, timeoutMs: number): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (predicate() && Date.now() < deadline) {
-		await new Promise(resolve => setTimeout(resolve, 20));
+		await timeout(20);
 	}
 }
 
@@ -465,59 +471,6 @@ function describeInputBarrierTimeout(
 	return `PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout (${detail})`;
 }
 
-function rawDataByteLength(data: wsTypes.RawData): number {
-	if (Array.isArray(data)) {
-		return data.reduce((total, chunk) => total + chunk.byteLength, 0);
-	}
-	return data.byteLength;
-}
-
-function rawDataText(data: wsTypes.RawData): string {
-	if (Array.isArray(data)) {
-		return Buffer.concat(data).toString('utf8');
-	}
-	return Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8');
-}
-
-// `buffer.isUtf8` is not importable under the node layer's import rules; a fatal decoder is the
-// same check without the dependency.
-const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
-
-/** 上流から来た 1 フレーム。バイト列の連結と文字列への読み出しを 1 回だけにするため、読んだものを持ち回る。 */
-export interface IParadisCdpFrame {
-	readonly data: wsTypes.RawData;
-	readonly bytes: number;
-	readonly text: string;
-}
-
-export function paradisReadCdpFrame(data: wsTypes.RawData, bytes = rawDataByteLength(data)): IParadisCdpFrame {
-	return { data, bytes, text: rawDataText(data) };
-}
-
-/**
- * クライアントへそのまま送ってよい形（{@link reencodeUtf8} と同じ結果）。読み出した文字列に U+FFFD が無ければ
- * 元のバイト列は正しい UTF-8 なので、厳密な検証（全体の decode）を省いて元のまま返す。U+FFFD があるときだけ
- * （壊れた並びか、本当に U+FFFD を含むか）検証する。
- */
-export function paradisForwardableCdpFrame(frame: IParadisCdpFrame): wsTypes.RawData | string {
-	return frame.text.includes('\uFFFD') ? reencodeUtf8(frame.data) : frame.data;
-}
-
-/**
- * Returns the frame unchanged when it is already valid UTF-8 (no re-encoded copy for multi-megabyte
- * screenshot frames); otherwise decodes it with U+FFFD replacement so the client's own `ws`
- * validation accepts the forwarded text frame.
- */
-function reencodeUtf8(data: wsTypes.RawData): wsTypes.RawData | string {
-	const buffer = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data);
-	try {
-		strictUtf8Decoder.decode(buffer);
-		return data;
-	} catch {
-		return buffer.toString('utf8');
-	}
-}
-
 type ParadisUpstreamErrorKind = 'invalid-utf8' | 'max-payload' | 'econnreset' | 'econnrefused' | 'handshake' | 'other';
 
 /** Buckets a `ws` client error so Sentry gets a kind, never the text. */
@@ -650,42 +603,6 @@ function upstreamErrorDetail(error: unknown): string {
 	return message.length > MAX_UPSTREAM_ERROR_DETAIL_LENGTH ? `${message.slice(0, MAX_UPSTREAM_ERROR_DETAIL_LENGTH)}…` : message;
 }
 
-function payloadByteLength(data: wsTypes.RawData | string): number {
-	return typeof data === 'string' ? Buffer.byteLength(data, 'utf8') : rawDataByteLength(data);
-}
-
-type ParadisBoundedSendOutcome = 'sent' | 'frame-too-large' | 'buffer-full' | 'send-failed';
-
-function sendWithBoundedBackpressureOutcome(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false, forceText = false): ParadisBoundedSendOutcome {
-	const bytes = payloadByteLength(data);
-	const frameLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES;
-	const bufferedLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_OPEN_BUFFERED_BYTES;
-	const bufferedAmount = Number.isSafeInteger(socket.bufferedAmount) && socket.bufferedAmount >= 0 ? socket.bufferedAmount : bufferedLimit + 1;
-	if (bytes > frameLimit) {
-		return 'frame-too-large';
-	}
-	if (bufferedAmount + bytes > bufferedLimit) {
-		return 'buffer-full';
-	}
-	try {
-		// CDPはテキスト専用プロトコル。Bufferをそのまま送るとwsがバイナリフレーム化し、
-		// Chromium DevToolsエンドポイントが最初のバイナリフレーム受信で接続を切断する。
-		// ページ経路はRawData(Buffer)を素通しするため、テキストフレームを強制する。
-		if (forceText) {
-			socket.send(data, { binary: false });
-		} else {
-			socket.send(data);
-		}
-		return 'sent';
-	} catch {
-		return 'send-failed';
-	}
-}
-
-function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false, forceText = false): boolean {
-	return sendWithBoundedBackpressureOutcome(socket, data, allowScreenshotFrame, forceText) === 'sent';
-}
-
 /**
  * Events a CDP client can lose without its view of targets, frames or execution contexts going
  * wrong: logs, network and console traffic. When the client is not draining its socket, one of
@@ -757,10 +674,6 @@ function hasBoundedRoutingIdentifiers(value: unknown): boolean {
 
 function logNonThrowing(logService: ILogService, level: 'trace' | 'debug' | 'warn', message: string): void {
 	try { logService[level](message); } catch { /* diagnostics must not interrupt transport cleanup */ }
-}
-
-function isolatedWorldDeniedFrame(message: IParadisClientCommand, reason: string): string {
-	return JSON.stringify({ id: message.id, ...(message.sessionId !== undefined ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: reason } });
 }
 
 function parseClientCommand(data: wsTypes.RawData): IParadisClientCommand | undefined {
@@ -1485,23 +1398,33 @@ export function paradisProxyPageUpgrade(
 		// PARADIS_PAGE_URL_FRESH_MS より古ければ Target.getTargetInfo で引き直す。Page.frameNavigated でも追う。
 		// エージェントが手にしている間の拡張のページへの移動は main が取り消す（paradisExtensionNavigationGuard.ts）
 		let pageUrl: string | undefined;
+		// pageUrl が拡張のページか（pageUrl を変えるときに一緒に判定し直す。イベントごとに判定しない）
+		let pageOnExtension = false;
 		// pageUrl を最後に確かめた時刻
 		let pageUrlCheckedAt: number | undefined;
-		// 問い合わせ中のもの（同時に来た命令で重ねない）
-		let pageUrlCheck: Promise<void> | undefined;
+		// 問い合わせ中のもの（同時に来た命令で重ねない）。答えが来たら true、上限を過ぎたら false
+		let pageUrlCheck: Promise<boolean> | undefined;
 		// 応答を待っている、クライアントが出したページの移動の id
 		const pageMoveRequests = new Set<number>();
 		// こちらが出した要求（負の id）の応答を待つもの
 		const internalWaiters = new Map<number, (response: IJsonRpcMsg | undefined) => void>();
 		// 拡張の frame の URL を伏せる応答（Page.getFrameTree / getResourceTree）の id と method
 		const frameTreeRequests = new Map<number, string>();
-		const requestPageInternal = (method: string, params: Record<string, unknown>): Promise<IJsonRpcMsg | undefined> => {
+		/** `timeoutMs` を過ぎても答えが来なければ 'timeout'（待ち受けは外す。遅れて来た答えは届けずに捨てる）。 */
+		const requestPageInternal = (method: string, params: Record<string, unknown>, timeoutMs: number): Promise<IJsonRpcMsg | 'timeout' | undefined> => {
 			if (closed || internalWaiters.size >= MAX_CDP_PENDING_REQUESTS) {
 				return Promise.resolve(undefined);
 			}
 			const id = -(++isolatedWorldRequestSequence);
 			return new Promise(resolve => {
-				internalWaiters.set(id, resolve);
+				const timer = setTimeout(() => {
+					internalWaiters.delete(id);
+					resolve('timeout');
+				}, timeoutMs);
+				internalWaiters.set(id, response => {
+					clearTimeout(timer);
+					resolve(response);
+				});
 				sendToUpstream(Buffer.from(JSON.stringify({ id, method, params })));
 			});
 		};
@@ -1538,7 +1461,7 @@ export function paradisProxyPageUpgrade(
 				return;
 			}
 			if (upstream.readyState === ws.WebSocket.OPEN) {
-				if (!sendWithBoundedBackpressure(upstream, data, false, true)) {
+				if (!sendWithBoundedBackpressure(upstream, data, true)) {
 					closeBoth();
 				}
 			} else if (upstream.readyState === ws.WebSocket.CONNECTING) {
@@ -1558,7 +1481,7 @@ export function paradisProxyPageUpgrade(
 			}
 			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
 				const serialized = JSON.stringify(response);
-				if (!sendWithBoundedBackpressure(clientWs, serialized, Buffer.byteLength(serialized, 'utf8') > MAX_CDP_FRAME_BYTES)) {
+				if (!sendWithBoundedBackpressure(clientWs, serialized)) {
 					closeBoth();
 				}
 			}
@@ -1572,11 +1495,7 @@ export function paradisProxyPageUpgrade(
 				if (barrier.kind === 'timeout' && !closed && ctx.isCurrentLease() && ctx.boundTargetIds().has(targetId)) {
 					const reason = describeInputBarrierTimeout('page', barrier.remaining, sessionId => sessionId === undefined || !detachedSessions.has(sessionId), logService);
 					ctx.noteInputRejection?.(reason);
-					sendToClient({
-						id: msg.id,
-						...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}),
-						error: { code: -32000, message: reason },
-					});
+					sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, reason));
 				}
 				return;
 			}
@@ -1592,7 +1511,7 @@ export function paradisProxyPageUpgrade(
 				}
 				sendToClient(result.status === 'success'
 					? { id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), result: result.result }
-					: { id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: result.message } });
+					: paradisCdpErrorResponse(msg.id, msg.sessionId, result.message));
 			}, closeBoth);
 			await Promise.race([operation.drained, connectionClosed]);
 		};
@@ -1619,7 +1538,7 @@ export function paradisProxyPageUpgrade(
 				?? remoteDenied;
 			if (denied !== undefined) {
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
-					const serialized = JSON.stringify({ id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: denied } });
+					const serialized = paradisCdpErrorFrame(msg.id, msg.sessionId, denied);
 					if (!sendWithBoundedBackpressure(clientWs, serialized)) {
 						closeBoth();
 					}
@@ -1641,24 +1560,39 @@ export function paradisProxyPageUpgrade(
 			const navigationDenied = paradisExtensionPageDeniedMessage(msg.method, msg.params, false);
 			if (navigationDenied === undefined && !pageUrlChecked && !paradisIsAllowedOnExtensionPage(msg.method, msg.params)
 				&& (pageUrlCheckedAt === undefined || Date.now() - pageUrlCheckedAt >= PARADIS_PAGE_URL_FRESH_MS)) {
-				pageUrlCheck ??= requestPageInternal('Target.getTargetInfo', {}).then(response => {
+				pageUrlCheck ??= requestPageInternal('Target.getTargetInfo', {}, PARADIS_TARGET_URL_CHECK_TIMEOUT_MS).then(response => {
+					// 答えが来ない・送れなかった（上限など）ときは確かめられなかったものとして断る（通さない）
+					if (response === 'timeout' || response === undefined) {
+						return false;
+					}
 					const result = isRecord(response?.result) ? response.result : undefined;
 					const info = isRecord(result?.targetInfo) ? result.targetInfo : undefined;
 					if (typeof info?.url === 'string') {
 						pageUrl = info.url;
+						pageOnExtension = paradisIsBrowserExtensionUrl(pageUrl);
 						pageUrlCheckedAt = Date.now();
 					}
+					return true;
 				}).finally(() => pageUrlCheck = undefined);
-				return pageUrlCheck.then(() => closed ? undefined : processClientMessage(data, remoteResolved, true));
+				return pageUrlCheck.then(answered => {
+					if (closed) {
+						return undefined;
+					}
+					if (!answered) {
+						sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, PARADIS_TARGET_URL_CHECK_TIMEOUT_MESSAGE));
+						return undefined;
+					}
+					return processClientMessage(data, remoteResolved, true);
+				});
 			}
-			const extensionDenied = navigationDenied ?? paradisExtensionPageDeniedMessage(msg.method, msg.params, paradisIsBrowserExtensionUrl(pageUrl) || isolatedWorlds.isOnExtensionPage(''));
+			const extensionDenied = navigationDenied ?? paradisExtensionPageDeniedMessage(msg.method, msg.params, pageOnExtension || isolatedWorlds.isOnExtensionPage(''));
 			if (extensionDenied !== undefined) {
-				sendToClient({ id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: extensionDenied } });
+				sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, extensionDenied));
 				return;
 			}
 			const isolatedDenied = isolatedWorlds.checkClientCommand(msg.sessionId ?? '', msg.id, msg.method, msg.params);
 			if (isolatedDenied !== undefined) {
-				if (clientWs.readyState === ws.WebSocket.OPEN && !sendWithBoundedBackpressure(clientWs, isolatedWorldDeniedFrame(msg, isolatedDenied))) {
+				if (clientWs.readyState === ws.WebSocket.OPEN && !sendWithBoundedBackpressure(clientWs, paradisCdpErrorFrame(msg.id, msg.sessionId, isolatedDenied))) {
 					closeBoth();
 				}
 				return;
@@ -1695,7 +1629,7 @@ export function paradisProxyPageUpgrade(
 				try {
 					paramsJson = JSON.stringify(msg.params ?? {});
 				} catch {
-					sendToClient({ id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: `PARA_BROWSER_RETRYABLE: ${msg.method} parameters could not be serialized` } });
+					sendToClient(paradisCdpErrorResponse(msg.id, msg.sessionId, `PARA_BROWSER_RETRYABLE: ${msg.method} parameters could not be serialized`));
 					return;
 				}
 				return dispatchInputAfterPriorRequests(msg, paramsJson);
@@ -1795,7 +1729,7 @@ export function paradisProxyPageUpgrade(
 				return;
 			}
 			for (const buf of pending) {
-				if (!sendWithBoundedBackpressure(upstream, buf, false, true)) { closeBoth(); break; }
+				if (!sendWithBoundedBackpressure(upstream, buf, true)) { closeBoth(); break; }
 			}
 			pending.length = 0;
 			pendingBytes = 0;
@@ -1806,7 +1740,7 @@ export function paradisProxyPageUpgrade(
 				}
 				const frameBytes = rawDataByteLength(data);
 				const rawScreenshotActive = rawScreenshots.hasActiveRequestForOwner(rawScreenshotOwner);
-				if (frameBytes > (rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES)) {
+				if (frameBytes > MAX_CDP_FRAME_BYTES) {
 					// Drop just this frame. A response gets an error so the client's promise settles;
 					// an event is simply lost, which every CDP client tolerates.
 					const peek = peekOversizedFrame(data);
@@ -1818,8 +1752,8 @@ export function paradisProxyPageUpgrade(
 							return;
 						}
 						if (clientWs.readyState === ws.WebSocket.OPEN) {
-							const serialized = JSON.stringify({ id: peek.id, ...(peek.sessionId !== undefined ? { sessionId: peek.sessionId } : {}), error: { code: -32000, message: OVERSIZED_RESPONSE_ERROR_MESSAGE } });
-							if (!sendWithBoundedBackpressure(clientWs, serialized, false, true)) {
+							const serialized = paradisCdpErrorFrame(peek.id, peek.sessionId, OVERSIZED_RESPONSE_ERROR_MESSAGE);
+							if (!sendWithBoundedBackpressure(clientWs, serialized, true)) {
 								closeBoth();
 							}
 						}
@@ -1828,7 +1762,7 @@ export function paradisProxyPageUpgrade(
 				}
 				// 1 フレームは 1 回だけ文字列にして parse する（スクリーンショットは数 MB〜32 MiB ある）
 				const frame = paradisReadCdpFrame(data, frameBytes);
-				const response = parseJsonRecordFrame(frame, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
+				const response = parseJsonRecordFrame(frame, MAX_CDP_FRAME_BYTES);
 				if (typeof response?.id === 'number' && Number.isSafeInteger(response.id)) {
 					completeForwardedRequestBarrier(forwardedRequestBarriers, response.id, response.sessionId);
 				}
@@ -1879,10 +1813,11 @@ export function paradisProxyPageUpgrade(
 						}
 						if (response.method === 'Page.frameNavigated' && !sessionKey && isRecord(response.params?.frame) && response.params.frame.parentId === undefined && typeof response.params.frame.url === 'string') {
 							pageUrl = response.params.frame.url;
+							pageOnExtension = paradisIsBrowserExtensionUrl(pageUrl);
 							pageUrlCheckedAt = Date.now();
 						}
 						// 拡張のページにいる間は、ページの移動のイベントのほか（通信・コンソール・DOM など）は届けない
-						if ((paradisIsBrowserExtensionUrl(pageUrl) || isolatedWorlds.isOnExtensionPage(sessionKey)) && !paradisIsEventAllowedOnExtensionPage(response.method)) {
+						if ((pageOnExtension || isolatedWorlds.isOnExtensionPage(sessionKey)) && !paradisIsEventAllowedOnExtensionPage(response.method)) {
 							return;
 						}
 						// 拡張の frame の URL（拡張の ID）と、拡張の content script の位置を伏せる
@@ -1901,10 +1836,6 @@ export function paradisProxyPageUpgrade(
 						try { msg = JSON.parse(frame.text) as IJsonRpcMsg; } catch { /* non-JSON frame */ }
 					}
 					const completion = rawScreenshots.complete(rawScreenshotOwner, msg?.id, msg?.sessionId);
-					if (frameBytes > MAX_CDP_FRAME_BYTES && !completion.handled) {
-						closeBoth();
-						return;
-					}
 					if (completion.handled && completion.suppress) {
 						return;
 					}
@@ -1912,7 +1843,7 @@ export function paradisProxyPageUpgrade(
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
 					// U+FFFD replacement can grow the frame, so size the backpressure check on what is actually sent.
 					const forwarded = cookieSanitized ?? paradisForwardableCdpFrame(frame);
-					const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, payloadByteLength(forwarded) > MAX_CDP_FRAME_BYTES, true);
+					const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, true);
 					if (outcome !== 'sent' && !backpressure.onSendFailure(outcome, response?.method ?? (typeof response?.id === 'number' ? undefined : 'unknown'), typeof response?.id === 'number')) {
 						closeBoth();
 					}
@@ -1972,9 +1903,9 @@ export async function paradisProxyBrowserUpgrade(
 		const pendingUpstream: string[] = [];
 		let pendingUpstreamBytes = 0;
 		const allowedSessionIds = new Set<string>();
-		const sessionIdToTargetId = new Map<string, string>();
+		const sessionIdToTargetId = new ParadisReverseIndexedMap<string, string>();
 		const allowedTargetIds = new Set<string>();
-		const childToParent = new Map<string, string>();
+		const childToParent = new ParadisReverseIndexedMap<string, string>();
 		// 見せているターゲットの今の URL（拡張のページにいる間は、そのセッションへの命令を断る）
 		const targetUrls = new Map<string, string>();
 		// targetUrls を最後に確かめた時刻（中身を読む・操作する命令の前に、古ければ引き直す）
@@ -1988,7 +1919,7 @@ export async function paradisProxyBrowserUpgrade(
 			}
 		};
 		// 問い合わせ中のもの（同じターゲットへ同時に来た命令で重ねない）
-		const targetUrlChecks = new Map<string, Promise<void>>();
+		const targetUrlChecks = new Map<string, Promise<boolean>>();
 		// エージェントがページを移した時刻（その後、文書そのものに 1 回場所を聞く）
 		const movedAt = new Map<string, number>();
 		// 文書そのものに聞いた場所（移動のイベントか、次の移動の命令で忘れる）
@@ -2055,7 +1986,7 @@ export async function paradisProxyBrowserUpgrade(
 		// Sessions the client has been told about (an attachedToTarget event or an attachToTarget
 		// result reached it), with the session the event arrived on. Only these get a synthetic
 		// detach when the proxy drops them; the client has never heard of the others.
-		const clientKnownSessions = new Map<string, string | undefined>();
+		const clientKnownSessions = new ParadisReverseIndexedMap<string, string | undefined>();
 		const markClientKnownSession = (sessionId: string, parentSessionId: string | undefined) => {
 			if (clientKnownSessions.has(sessionId) || clientKnownSessions.size < MAX_CDP_ROUTING_ENTRIES) {
 				clientKnownSessions.set(sessionId, parentSessionId);
@@ -2090,8 +2021,8 @@ export async function paradisProxyBrowserUpgrade(
 			const seen = new Set<string>([sessionId]);
 			for (let index = -1; index < descendants.length; index++) {
 				const parent = index < 0 ? sessionId : descendants[index];
-				for (const [child, childParent] of clientKnownSessions) {
-					if (childParent === parent && !seen.has(child)) {
+				for (const child of clientKnownSessions.keysOf(parent)) {
+					if (!seen.has(child)) {
 						seen.add(child);
 						descendants.push(child);
 					}
@@ -2204,25 +2135,25 @@ export async function paradisProxyBrowserUpgrade(
 				// 消えたターゲットの移動の時刻と文書の場所も忘れる（残すと上限に達して、新しいターゲットの移動の確かめが抜ける）
 				movedAt.delete(current);
 				documentLocations.delete(current);
-				for (const [child, parent] of childToParent) {
+				for (const child of childToParent.keysOf(current)) {
 					// A page the user shared is never dropped because its opener went away.
-					if (parent === current && !visited.has(child) && !bound.has(child)) {
+					if (!visited.has(child) && !bound.has(child)) {
 						queue.push(child);
 					}
 				}
 				childToParent.delete(current);
 			}
-			for (const [child, parent] of [...childToParent]) {
-				if (visited.has(parent)) {
+			for (const parent of visited) {
+				for (const child of childToParent.keysOf(parent)) {
 					childToParent.delete(child);
 				}
 			}
 			let droppedBoundSession = false;
 			for (const dropped of [...visited].reverse()) {
-				for (const [sessionId, mappedTargetId] of [...sessionIdToTargetId]) {
+				for (const sessionId of sessionIdToTargetId.keysOf(dropped)) {
 					// A session already forgotten as a descendant of an earlier one is skipped.
-					if (mappedTargetId === dropped && sessionIdToTargetId.has(sessionId)) {
-						droppedBoundSession ||= bound.has(mappedTargetId);
+					if (sessionIdToTargetId.get(sessionId) === dropped) {
+						droppedBoundSession ||= bound.has(dropped);
 						forgetSession(sessionId, true);
 					}
 				}
@@ -2231,12 +2162,7 @@ export async function paradisProxyBrowserUpgrade(
 		};
 		/** Whether any session still points at the target (a target can have several, e.g. puppeteer's and the DevTools universe's). */
 		const targetHasSession = (targetId: string): boolean => {
-			for (const mappedTargetId of sessionIdToTargetId.values()) {
-				if (mappedTargetId === targetId) {
-					return true;
-				}
-			}
-			return false;
+			return sessionIdToTargetId.hasValue(targetId);
 		};
 		const backpressure = new ParadisClientBackpressureReporter('browser', logService);
 
@@ -2286,7 +2212,7 @@ export async function paradisProxyBrowserUpgrade(
 			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
 				let serialized: string;
 				try { serialized = JSON.stringify(message); } catch { closeBoth(); return; }
-				const outcome = sendWithBoundedBackpressureOutcome(clientWs, serialized, Buffer.byteLength(serialized, 'utf8') > MAX_CDP_FRAME_BYTES);
+				const outcome = sendWithBoundedBackpressureOutcome(clientWs, serialized);
 				if (outcome !== 'sent') {
 					const record = isRecord(message) ? message : {};
 					const isResponse = typeof record.id === 'number';
@@ -2305,7 +2231,7 @@ export async function paradisProxyBrowserUpgrade(
 			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
 				// U+FFFD への置き換えでフレームが大きくなりうるので、送る物の大きさで判定する（ページの経路と同じ）
 				const forwarded = paradisForwardableCdpFrame(frame);
-				const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, (forwarded === frame.data ? frame.bytes : payloadByteLength(forwarded)) > MAX_CDP_FRAME_BYTES, true);
+				const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, true);
 				if (outcome !== 'sent' && !backpressure.onSendFailure(outcome, typeof message.method === 'string' ? message.method : undefined, typeof message.id === 'number')) {
 					closeBoth();
 				}
@@ -2400,7 +2326,7 @@ export async function paradisProxyBrowserUpgrade(
 			sendToClient(response);
 		};
 		const rejectRequest = (message: Pick<IParadisClientCommand, 'id' | 'sessionId'>, reason: string) => {
-			sendToClient({ id: message.id, ...(message.sessionId !== undefined ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: reason } });
+			sendToClient(paradisCdpErrorResponse(message.id, message.sessionId, reason));
 		};
 		const dispatchInputAfterPriorRequests = async (
 			message: IParadisClientCommand,
@@ -2453,14 +2379,39 @@ export async function paradisProxyBrowserUpgrade(
 		};
 		/** sendInternal の応答を待つ。接続が閉じた・セッションが消えた・送れなかったときは undefined。 */
 		const requestInternal = (method: string, params: Record<string, unknown>, targetId?: string, sessionId?: string): Promise<IJsonRpcMsg | undefined> => {
+			return startInternalRequest(method, params, targetId, sessionId).response;
+		};
+		/** {@link requestInternal} の本体。待ち受けを外せるよう、送った id も返す（送らなかったら undefined）。 */
+		const startInternalRequest = (method: string, params: Record<string, unknown>, targetId?: string, sessionId?: string): { readonly id: number | undefined; readonly response: Promise<IJsonRpcMsg | undefined> } => {
 			if (closed || internalWaiters.size >= MAX_CDP_PENDING_REQUESTS) {
-				return Promise.resolve(undefined);
+				return { id: undefined, response: Promise.resolve(undefined) };
 			}
 			const id = sendInternal(method, params, sessionId, targetId);
 			if (id === undefined) {
-				return Promise.resolve(undefined);
+				return { id: undefined, response: Promise.resolve(undefined) };
 			}
-			return new Promise(resolve => internalWaiters.set(id, resolve));
+			return { id, response: new Promise(resolve => internalWaiters.set(id, resolve)) };
+		};
+		/**
+		 * {@link requestInternal} を `timeoutMs` まで待つ。過ぎたら 'timeout'。そのときは待ち受けと台帳から外し、遅れて来た答えは
+		 * 退いた id として黙って捨てる（取り残しを溜めない。溜まると上限で requestInternal が送らずに undefined を返す）。
+		 */
+		const requestInternalWithin = (timeoutMs: number, method: string, params: Record<string, unknown>, targetId?: string, sessionId?: string): Promise<IJsonRpcMsg | 'timeout' | undefined> => {
+			const { id, response: request } = startInternalRequest(method, params, targetId, sessionId);
+			let timedOut = false;
+			return raceTimeout(request, timeoutMs, () => {
+				timedOut = true;
+				if (id === undefined) {
+					return;
+				}
+				internalWaiters.delete(id);
+				const pending = internalPending.get(id);
+				if (pending) {
+					internalPending.delete(id);
+					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+					retireRequestId(id);
+				}
+			}).then(response => timedOut ? 'timeout' : response);
 		};
 		/**
 		 * ターゲットの今の URL を Target.getTargetInfo で引き直す。共有したページが開いたばかりの新しいタブは、
@@ -2473,7 +2424,8 @@ export async function paradisProxyBrowserUpgrade(
 			const value = isRecord(located?.result) && isRecord(located.result.result) ? located.result.result.value : undefined;
 			return typeof value === 'string' && value.length > 0 ? value : undefined;
 		};
-		const confirmTargetUrl = (targetId: string, sessionId?: string): Promise<void> => {
+		/** 確かめられたら true。Target.getTargetInfo の答えが {@link PARADIS_TARGET_URL_CHECK_TIMEOUT_MS} を過ぎても来なければ false。 */
+		const confirmTargetUrl = (targetId: string, sessionId?: string): Promise<boolean> => {
 			const existing = targetUrlChecks.get(targetId);
 			if (existing) {
 				return existing;
@@ -2481,11 +2433,15 @@ export async function paradisProxyBrowserUpgrade(
 			const check = (async () => {
 				const deadline = Date.now() + PARADIS_UNDECIDED_TAB_WAIT_MS;
 				for (; ;) {
-					const response = await requestInternal('Target.getTargetInfo', { targetId }, targetId);
+					const response = await requestInternalWithin(PARADIS_TARGET_URL_CHECK_TIMEOUT_MS, 'Target.getTargetInfo', { targetId }, targetId);
+					// 答えが来ない・送れなかった（上限など）ときは確かめられなかったものとして断る（通さない）
+					if (response === 'timeout' || (response === undefined && !closed)) {
+						return false;
+					}
 					const info = isRecord(response?.result) && isRecord(response.result.targetInfo) ? response.result.targetInfo : undefined;
 					noteTargetUrl(targetId, info?.url);
 					if (closed || sessionId === undefined || paradisIsBrowserExtensionUrl(targetUrls.get(targetId))) {
-						return;
+						return true;
 					}
 					// 次のどちらかのときは、文書そのものに今の場所を 1 回聞いて覚える（移動のイベントか、次の移動の命令で忘れる）:
 					//  - エージェントがページを移した直後。Target の情報がまだ前の URL のことがある（Electron 43.7.7 で、別プロセスの
@@ -2495,12 +2451,12 @@ export async function paradisProxyBrowserUpgrade(
 					const moved = movedAt.has(targetId);
 					const undecided = childToParent.has(targetId) && paradisIsUndecidedPageUrl(info?.url);
 					if (!moved && !undecided) {
-						return;
+						return true;
 					}
 					const remembered = documentLocations.get(targetId);
 					if (!moved && remembered !== undefined) {
 						noteTargetUrl(targetId, remembered);
-						return;
+						return true;
 					}
 					const located = await locateDocument(targetId, sessionId);
 					if (located !== undefined) {
@@ -2509,11 +2465,11 @@ export async function paradisProxyBrowserUpgrade(
 							documentLocations.set(targetId, located);
 						}
 						movedAt.delete(targetId);
-						return;
+						return true;
 					}
 					// 文書がまだ答えられない（読み込みの途中）。少し待って問い直す
 					if (closed || Date.now() >= deadline) {
-						return;
+						return true;
 					}
 					await new Promise(resolve => setTimeout(resolve, 100));
 				}
@@ -2595,6 +2551,17 @@ export async function paradisProxyBrowserUpgrade(
 						movedAt.set(extensionTargetId, Date.now());
 					}
 				}
+				/** 確かめた後に命令を処理し直す。答えが来ずに確かめられなかったら、その命令は断る（次の命令で確かめ直す）。 */
+				const afterTargetUrlCheck = (confirmed: boolean | undefined) => {
+					if (closed) {
+						return undefined;
+					}
+					if (confirmed === false) {
+						sendToClient(paradisCdpErrorResponse(message.id, message.sessionId, PARADIS_TARGET_URL_CHECK_TIMEOUT_MESSAGE));
+						return undefined;
+					}
+					return processClientMessage(data, remoteResolved, true);
+				};
 				if (!targetUrlConfirmed && extensionTargetId !== undefined && (documentTargetIds.has(extensionTargetId) || ctx.boundTargetIds().has(extensionTargetId))
 					&& paradisExtensionPageDeniedMessage(message.method, message.params, false) === undefined
 					&& !paradisIsAllowedOnExtensionPage(message.method, message.params)) {
@@ -2604,7 +2571,7 @@ export async function paradisProxyBrowserUpgrade(
 					if (moving()) {
 						return paradisWaitWhile(() => !closed && moving(), PARADIS_PAGE_MOVE_WAIT_MS)
 							.then(() => closed ? undefined : confirmTargetUrl(extensionTargetId, message.sessionId))
-							.then(() => closed ? undefined : processClientMessage(data, remoteResolved, true));
+							.then(confirmed => afterTargetUrlCheck(confirmed));
 					}
 					// 共有したページ本体は PARADIS_PAGE_URL_FRESH_MS の間だけ答えを使い回す。iframe・子タブは毎回確かめる
 					// （エージェントが手にしていないときに、転送で拡張のページへ移る iframe を使い回しの間に読ませないため）
@@ -2612,7 +2579,7 @@ export async function paradisProxyBrowserUpgrade(
 					const freshMs = ctx.boundTargetIds().has(extensionTargetId) ? PARADIS_PAGE_URL_FRESH_MS : 0;
 					if (checkedAt === undefined || Date.now() - checkedAt >= freshMs
 						|| (childToParent.has(extensionTargetId) && paradisIsUndecidedPageUrl(targetUrls.get(extensionTargetId)))) {
-						return confirmTargetUrl(extensionTargetId, message.sessionId).then(() => closed ? undefined : processClientMessage(data, remoteResolved, true));
+						return confirmTargetUrl(extensionTargetId, message.sessionId).then(confirmed => afterTargetUrlCheck(confirmed));
 					}
 				}
 				const sessionOnExtensionPage = paradisIsBrowserExtensionUrl(extensionTargetId !== undefined ? targetUrls.get(extensionTargetId) : undefined)
@@ -2856,8 +2823,7 @@ export async function paradisProxyBrowserUpgrade(
 				return;
 			}
 			const frameBytes = rawDataByteLength(data);
-			const rawScreenshotActive = rawScreenshots.hasActiveRequestForOwner(rawScreenshotOwner);
-			if (frameBytes > (rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES)) {
+			if (frameBytes > MAX_CDP_FRAME_BYTES) {
 				// Drop just this frame (see the page route). Responses to forwarded requests are
 				// answered with an error and released from the pending books; internal ones are
 				// released silently; events are lost.
@@ -2883,13 +2849,13 @@ export async function paradisProxyBrowserUpgrade(
 					if (completion.handled && completion.suppress) {
 						return;
 					}
-					sendToClient({ id: peek.id, ...(pending.sessionId !== undefined ? { sessionId: pending.sessionId } : {}), error: { code: -32000, message: OVERSIZED_RESPONSE_ERROR_MESSAGE } });
+					sendToClient(paradisCdpErrorResponse(peek.id, pending.sessionId, OVERSIZED_RESPONSE_ERROR_MESSAGE));
 				}
 				return;
 			}
 			// 1 フレームは 1 回だけ文字列にして parse する。書き換えずに届ける答えは、このバイト列をそのまま送る
 			const frame = paradisReadCdpFrame(data, frameBytes);
-			const message = parseJsonRecordFrame(frame, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
+			const message = parseJsonRecordFrame(frame, MAX_CDP_FRAME_BYTES);
 			if (!message
 				|| (message.params !== undefined && !isRecord(message.params))
 				|| (message.sessionId !== undefined && boundedIdentifier(message.sessionId) === undefined)) {
@@ -2906,10 +2872,6 @@ export async function paradisProxyBrowserUpgrade(
 					return;
 				}
 				if (message.id < 0) {
-					if (frameBytes > MAX_CDP_FRAME_BYTES) {
-						closeBoth();
-						return;
-					}
 					const pending = internalPending.get(message.id);
 					if (!pending && retiredRequestIds.delete(message.id)) {
 						// Our own request on a session that went away; already written off.
@@ -2967,10 +2929,6 @@ export async function paradisProxyBrowserUpgrade(
 				pendingRequests.delete(message.id);
 				pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
 				const rawCompletion = rawScreenshots.complete(rawScreenshotOwner, message.id, message.sessionId);
-				if (frameBytes > MAX_CDP_FRAME_BYTES && !rawCompletion.handled) {
-					closeBoth();
-					return;
-				}
 				if (rawCompletion.handled && rawCompletion.suppress) {
 					return;
 				}
@@ -3018,11 +2976,6 @@ export async function paradisProxyBrowserUpgrade(
 				sendFrameToClient(message, frame);
 				return;
 			}
-			if (frameBytes > MAX_CDP_FRAME_BYTES) {
-				closeBoth();
-				return;
-			}
-
 			if (typeof message.method !== 'string' || message.method.length === 0 || message.method.length > MAX_CDP_METHOD_LENGTH) {
 				closeBoth();
 				return;

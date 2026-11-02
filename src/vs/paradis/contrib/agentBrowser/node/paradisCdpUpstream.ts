@@ -19,6 +19,8 @@
 import { promises as fs } from 'fs';
 import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { timeout } from '../../../../base/common/async.js';
+import { paradisReadBoundedBody } from '../common/paradisBoundedResponse.js';
 
 const DEVTOOLS_PORT_FILE = 'DevToolsActivePort';
 const UPSTREAM_FETCH_TIMEOUT_MS = 5_000;
@@ -76,10 +78,6 @@ export interface IParadisCdpUpstreamJsonResult<T> {
 	readonly value: T;
 	/** Exact port used by the successful request that produced {@link value}. */
 	readonly port: number;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -321,7 +319,7 @@ export class ParadisCdpUpstream {
 			if (port !== undefined || Date.now() >= deadline) {
 				return port;
 			}
-			await delay(100);
+			await timeout(100);
 		}
 	}
 
@@ -330,41 +328,16 @@ export class ParadisCdpUpstream {
 	}
 
 	private async _readBoundedJson(response: ParadisCdpFetchResponse): Promise<unknown> {
-		const chunks: Uint8Array[] = [];
-		let total = 0;
+		let combined: Uint8Array;
 		if (response.body) {
-			const reader = response.body.getReader();
-			try {
-				for (; ;) {
-					const { done, value } = await reader.read();
-					if (done) {
-						break;
-					}
-					total += value.byteLength;
-					if (total > MAX_UPSTREAM_JSON_BYTES) {
-						await reader.cancel();
-						throw new Error('Upstream CDP JSON response exceeds the byte limit');
-					}
-					chunks.push(value);
-				}
-			} finally {
-				reader.releaseLock();
-			}
+			combined = await paradisReadBoundedBody(response.body, MAX_UPSTREAM_JSON_BYTES, 'Upstream CDP JSON response exceeds the byte limit');
 		} else if (response.arrayBuffer) {
-			const value = new Uint8Array(await response.arrayBuffer());
-			total = value.byteLength;
-			if (total > MAX_UPSTREAM_JSON_BYTES) {
+			combined = new Uint8Array(await response.arrayBuffer());
+			if (combined.byteLength > MAX_UPSTREAM_JSON_BYTES) {
 				throw new Error('Upstream CDP JSON response exceeds the byte limit');
 			}
-			chunks.push(value);
 		} else {
 			throw new Error('Upstream CDP JSON response has no readable body');
-		}
-		const combined = new Uint8Array(total);
-		let offset = 0;
-		for (const chunk of chunks) {
-			combined.set(chunk, offset);
-			offset += chunk.byteLength;
 		}
 		const text = new TextDecoder('utf-8', { fatal: true }).decode(combined);
 		return JSON.parse(text) as unknown;
