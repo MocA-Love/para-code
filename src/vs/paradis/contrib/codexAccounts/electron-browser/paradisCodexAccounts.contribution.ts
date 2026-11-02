@@ -166,7 +166,7 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 		const nextName = state ? accountName(state, next, this.emailMaskService) : next ?? localize('paradis.codexAccounts.defaultHome', "既定のアカウント");
 		const previousName = state && previousHomes.size === 1 ? accountName(state, [...previousHomes][0], this.emailMaskService) : undefined;
 		// 通知は 1 文にし、動いている Codex が前のアカウントのままである説明は「詳細」で開く。
-		const message = localize('paradis.codexAccounts.switched', "Codex のアカウントを {0} に切り替えました。", nextName);
+		const message = localize('paradis.codexAccounts.switchedKeepRunning', "Codex のアカウントを {0} に切り替えました（開いている Codex は前のアカウントのまま）。", nextName);
 		const detail = previousName !== undefined
 			? localize('paradis.codexAccounts.switchedRunningDetail', "開いている Codex {0} 個は前のアカウント（{1}）のまま動いています。新しく開いたターミナルから切り替わります。", count, previousName)
 			: localize('paradis.codexAccounts.switchedRunningDetailMixed', "開いている Codex {0} 個は前のアカウントのまま動いています。新しく開いたターミナルから切り替わります。", count);
