@@ -39,6 +39,7 @@ import {
 	paradisParseExactBrowserViewId,
 	paradisParseExactBrowserViewWindowId,
 	paradisParseExactCdpScreenshotOptions,
+	IParadisCdpInputCommand,
 	paradisParseCdpInputCommand,
 	paradisParsePageScriptOwner,
 	IParadisExactViewEmulationResult,
@@ -200,6 +201,23 @@ export const PARADIS_UPSTREAM_KEY_MARK_DEADLINE_MS = 10_000;
  */
 function paradisViewOfPageOpsTarget(target: IParadisPageOpsTarget): BrowserView {
 	return target as unknown as BrowserView;
+}
+
+/** キーの準備（登録・有効化）がなぜ失敗したか。準備の途中でコールバックが埋める（診断と答えの文に使う）。 */
+class ParadisAutomationKeyFailureNote {
+	reason: BrowserViewAutomationKeyFailureReason | undefined;
+	/** 答えなかったフレーム（ack-timeout のときだけ。種類と数だけ）。 */
+	detail: IBrowserViewAutomationKeyFailureDetail | undefined;
+
+	readonly onFailure = (reason: BrowserViewAutomationKeyFailureReason, _phase: 'register' | 'activate', detail?: IBrowserViewAutomationKeyFailureDetail): void => {
+		this.reason = reason;
+		this.detail = detail;
+	};
+
+	reset(): void {
+		this.reason = undefined;
+		this.detail = undefined;
+	}
 }
 
 export class ParadisCdpTargetService implements IParadisCdpExactViewService, IParadisCdpPageOpsService {
@@ -1285,102 +1303,43 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 		this.nudgeFrameBeforeInput(view);
 
-		// エージェントが操作していることを見せる合成カーソル。実際の配送より先にカーソルを
-		// 目標座標へ滑らせ、着いてから配送することで、ホバーが「カーソルが着いた瞬間」に
-		// 効いているように見せる。直後に押す move（`pacing.pressFollows`）は待たない。待ち時間は
-		// 上限つきで、演出が失敗しても0になるだけ。
-		// この後の commit 手順は毎回 authority と focus を取り直すので、ここで待つのは安全。
-		let cursorWaitMs = 0;
-		const pacing = paradisParseCursorPacing(pacingValue);
-		if (command.method === 'Input.dispatchMouseEvent') {
-			cursorWaitMs = await this.cursorOverlay.onMouseEvent(view, command.params, pacing);
-			// 一覧ウィンドウ・モバイルの写しは、待った時間ではなくページのカーソルが滑る時間で動かす。
-			void this.fireAgentCursorMove(descriptor.viewId, view, command.params, this.cursorOverlay.lastGlideMs(view, pacing?.owner), pacing?.owner);
-			if (cursorWaitMs > 0) {
-				await timeout(cursorWaitMs);
-			}
-		} else if (command.method === 'Input.dispatchKeyEvent' || command.method === 'Input.insertText') {
-			// キー入力には座標が無いので、フォーカスされている要素へ寄せるようページ側へ頼む。
-			// 配送は待たせない。
-			this.cursorOverlay.onKeyEvent(view, command.method, command.params as Readonly<Record<string, unknown>>, pacing?.owner);
-		}
+		// 合成カーソルを目標へ滑らせてから配る（showAgentCursorBeforeInput）
+		const cursorWaitMs = await this.showAgentCursorBeforeInput(descriptor.viewId, view, command, pacingValue);
 
-		const keySignature = command.method === 'Input.dispatchKeyEvent'
-			? browserViewAutomationKeySignatureFromCdp(command.params)
-			: undefined;
-		let automationRegistration: Awaited<ReturnType<BrowserView['prepareAutomationKeyInput']>> = undefined;
 		// Why the last key preparation failed. The callback fills it in during the awaits below.
-		let keyFailure: BrowserViewAutomationKeyFailureReason | undefined;
-		// Which frames did not answer when the failure was a timeout (kinds and counts only).
-		let keyFailureDetail: IBrowserViewAutomationKeyFailureDetail | undefined;
-		const onKeyFailure = (reason: BrowserViewAutomationKeyFailureReason, _phase: 'register' | 'activate', detail?: IBrowserViewAutomationKeyFailureDetail) => {
-			keyFailure = reason;
-			keyFailureDetail = detail;
-		};
-		const lastKeyFailure = () => keyFailure;
-		const lastKeyFailureDetail = () => keyFailureDetail;
+		const keyFailures = new ParadisAutomationKeyFailureNote();
+		let automationRegistration: Awaited<ReturnType<BrowserView['prepareAutomationKeyInput']>> = undefined;
 		if (command.method === 'Input.dispatchKeyEvent') {
-			if (!keySignature) {
-				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: ${command.method} does not have a suppressible exact key signature` };
+			const registered = await this.registerAutomationKey(view, command, keyFailures);
+			if (registered.kind === 'refused') {
+				return registered.result;
 			}
-			this.browserDiagnostics?.recorder.noteKeyAttempt(paradisBrowserViewDiagnosticHost(view));
-			for (let attempt = 0; attempt < 2 && !automationRegistration; attempt++) {
-				keyFailure = undefined;
-				keyFailureDetail = undefined;
-				try {
-					automationRegistration = await view.prepareAutomationKeyInput(keySignature, onKeyFailure);
-				} catch {
-					automationRegistration = undefined;
-				}
-				// A navigation or a frame coming and going while the frames answered is over by now; one
-				// more try is safe because nothing has been sent. A busy page (ack-timeout) is not retried.
-				if (!automationRegistration && lastKeyFailure() !== 'cleared' && lastKeyFailure() !== 'frames-changed') {
-					break;
-				}
-			}
-			if (!automationRegistration) {
-				this.reportAutomationKeyFailure('register', lastKeyFailure(), lastKeyFailureDetail());
-				this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'register', lastKeyFailure(), lastKeyFailureDetail()?.unansweredFrames);
-				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (${describeAutomationKeyFailure(lastKeyFailure(), lastKeyFailureDetail())})` };
-			}
+			automationRegistration = registered.registration;
 		}
 
 		let committed = false;
 		let focusAuthorityBeforeSend: object | undefined;
 		try {
-			if (this.resolveExistingExactView(descriptor) !== view) {
-				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };
-			}
-			try {
-				if (view.webContents.isFocused()) {
-					return { status: 'retryable', message: PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE };
-				}
-			} catch {
-				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state became unavailable before input dispatch' };
+			const changedBeforeKey = this.exactViewChangedBeforeInput(descriptor, view);
+			if (changedBeforeKey) {
+				return changedBeforeKey;
 			}
 			if (automationRegistration) {
 				let activated = false;
-				keyFailure = undefined;
-				keyFailureDetail = undefined;
+				keyFailures.reset();
 				try {
 					activated = await automationRegistration.activate();
 				} catch {
 					// Activation failures are definite because the debugger command has not been sent.
 				}
 				if (!activated) {
-					this.reportAutomationKeyFailure('activate', lastKeyFailure(), lastKeyFailureDetail());
-					this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'activate', lastKeyFailure(), lastKeyFailureDetail()?.unansweredFrames);
-					return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (${describeAutomationKeyFailure(lastKeyFailure(), lastKeyFailureDetail())})` };
+					this.reportAutomationKeyFailure('activate', keyFailures.reason, keyFailures.detail);
+					this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'activate', keyFailures.reason, keyFailures.detail?.unansweredFrames);
+					return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (${describeAutomationKeyFailure(keyFailures.reason, keyFailures.detail)})` };
 				}
-				if (this.resolveExistingExactView(descriptor) !== view) {
-					return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };
-				}
-				try {
-					if (view.webContents.isFocused()) {
-						return { status: 'retryable', message: PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE };
-					}
-				} catch {
-					return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state became unavailable before input dispatch' };
+				const changed = this.exactViewChangedBeforeInput(descriptor, view);
+				if (changed) {
+					return changed;
 				}
 			}
 			// ページの上に出ている拡張の画面（パスワード管理のメニューなど）に届く入力は断る（paradisExtensionInputGuard.ts）。
@@ -1394,15 +1353,9 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			if (extensionVerdict.refusal !== undefined) {
 				return { status: 'retryable', message: extensionVerdict.refusal };
 			}
-			if (this.resolveExistingExactView(descriptor) !== view) {
-				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };
-			}
-			try {
-				if (view.webContents.isFocused()) {
-					return { status: 'retryable', message: PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE };
-				}
-			} catch {
-				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state became unavailable before input dispatch' };
+			const changedBeforeSend = this.exactViewChangedBeforeInput(descriptor, view);
+			if (changedBeforeSend) {
+				return changedBeforeSend;
 			}
 			// Commit point: all allowlist, focus and exact identity checks are complete immediately before send.
 			if (automationRegistration && !automationRegistration.commit()) {
@@ -1440,22 +1393,9 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			} catch {
 				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: BrowserView debugger input dispatch did not complete' };
 			}
-			if (this.resolveExistingExactView(descriptor) !== view) {
-				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: exact BrowserView authority changed after input dispatch' };
-			}
-			try {
-				if (view.captureAutomationInputFocusAuthority() !== focusAuthorityBeforeSend) {
-					return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: BrowserView focus authority changed after input dispatch' };
-				}
-			} catch {
-				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: BrowserView focus authority became unavailable after input dispatch' };
-			}
-			try {
-				if (view.webContents.isFocused()) {
-					return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: the bound BrowserView became focused after input dispatch' };
-				}
-			} catch {
-				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: exact BrowserView focus state became unavailable after input dispatch' };
+			const unknown = this.inputOutcomeUnknownAfterDispatch(descriptor, view, focusAuthorityBeforeSend);
+			if (unknown) {
+				return unknown;
 			}
 			return cursorWaitMs > 0 ? { status: 'success', result, cursorWaitMs } : { status: 'success', result };
 		} finally {
@@ -1465,6 +1405,106 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 				automationRegistration?.cancel();
 			}
 		}
+	}
+
+	/**
+	 * 入力を配る前の確かめ（何度も行う）。共有の先が替わった・利用者がタブにフォーカスしたら、断る答えを返す。
+	 * 配ってよければ undefined。
+	 */
+	private exactViewChangedBeforeInput(descriptor: IParadisExactBrowserViewDescriptor, view: BrowserView): IParadisCdpInputDispatchResult | undefined {
+		if (this.resolveExistingExactView(descriptor) !== view) {
+			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };
+		}
+		try {
+			if (view.webContents.isFocused()) {
+				return { status: 'retryable', message: PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE };
+			}
+		} catch {
+			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state became unavailable before input dispatch' };
+		}
+		return undefined;
+	}
+
+	/**
+	 * 配った後の確かめ。共有の先・フォーカスの権限・フォーカスのどれかが変わっていたら、届いたか分からない答えを返す。
+	 * 変わっていなければ undefined。
+	 */
+	private inputOutcomeUnknownAfterDispatch(descriptor: IParadisExactBrowserViewDescriptor, view: BrowserView, focusAuthorityBeforeSend: object): IParadisCdpInputDispatchResult | undefined {
+		if (this.resolveExistingExactView(descriptor) !== view) {
+			return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: exact BrowserView authority changed after input dispatch' };
+		}
+		try {
+			if (view.captureAutomationInputFocusAuthority() !== focusAuthorityBeforeSend) {
+				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: BrowserView focus authority changed after input dispatch' };
+			}
+		} catch {
+			return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: BrowserView focus authority became unavailable after input dispatch' };
+		}
+		try {
+			if (view.webContents.isFocused()) {
+				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: the bound BrowserView became focused after input dispatch' };
+			}
+		} catch {
+			return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: exact BrowserView focus state became unavailable after input dispatch' };
+		}
+		return undefined;
+	}
+
+	/**
+	 * エージェントが操作していることを見せる合成カーソル。実際の配送より先にカーソルを目標座標へ滑らせ、着いてから
+	 * 配送することで、ホバーが「カーソルが着いた瞬間」に効いているように見せる。直後に押す move（`pacing.pressFollows`）は
+	 * 待たない。待ち時間は上限つきで、演出が失敗しても 0 になるだけ。この後の commit 手順は毎回 authority と focus を
+	 * 取り直すので、ここで待つのは安全。待った時間（ms）を返す。
+	 */
+	private async showAgentCursorBeforeInput(viewId: string, view: BrowserView, command: IParadisCdpInputCommand, pacingValue: unknown): Promise<number> {
+		let cursorWaitMs = 0;
+		const pacing = paradisParseCursorPacing(pacingValue);
+		if (command.method === 'Input.dispatchMouseEvent') {
+			cursorWaitMs = await this.cursorOverlay.onMouseEvent(view, command.params, pacing);
+			// 一覧ウィンドウ・モバイルの写しは、待った時間ではなくページのカーソルが滑る時間で動かす。
+			void this.fireAgentCursorMove(viewId, view, command.params, this.cursorOverlay.lastGlideMs(view, pacing?.owner), pacing?.owner);
+			if (cursorWaitMs > 0) {
+				await timeout(cursorWaitMs);
+			}
+		} else if (command.method === 'Input.dispatchKeyEvent' || command.method === 'Input.insertText') {
+			// キー入力には座標が無いので、フォーカスされている要素へ寄せるようページ側へ頼む。
+			// 配送は待たせない。
+			this.cursorOverlay.onKeyEvent(view, command.method, command.params as Readonly<Record<string, unknown>>, pacing?.owner);
+		}
+		return cursorWaitMs;
+	}
+
+	/**
+	 * キーの入力を、ページの preload に「これは利用者のキーではない」と先に知らせる（登録）。登録できなければ断る答えを
+	 * 返す。移動やフレームの出入りで登録が外れたときだけ、まだ何も送っていないので 1 回だけやり直す（忙しいページの
+	 * ack-timeout はやり直さない）。
+	 */
+	private async registerAutomationKey(view: BrowserView, command: IParadisCdpInputCommand, keyFailures: ParadisAutomationKeyFailureNote): Promise<{ readonly kind: 'registered'; readonly registration: NonNullable<Awaited<ReturnType<BrowserView['prepareAutomationKeyInput']>>> } | { readonly kind: 'refused'; readonly result: IParadisCdpInputDispatchResult }> {
+		const keySignature = browserViewAutomationKeySignatureFromCdp(command.params);
+		if (!keySignature) {
+			return { kind: 'refused', result: { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: ${command.method} does not have a suppressible exact key signature` } };
+		}
+		this.browserDiagnostics?.recorder.noteKeyAttempt(paradisBrowserViewDiagnosticHost(view));
+		let automationRegistration: Awaited<ReturnType<BrowserView['prepareAutomationKeyInput']>> = undefined;
+		for (let attempt = 0; attempt < 2 && !automationRegistration; attempt++) {
+			keyFailures.reset();
+			try {
+				automationRegistration = await view.prepareAutomationKeyInput(keySignature, keyFailures.onFailure);
+			} catch {
+				automationRegistration = undefined;
+			}
+			// A navigation or a frame coming and going while the frames answered is over by now; one
+			// more try is safe because nothing has been sent. A busy page (ack-timeout) is not retried.
+			if (!automationRegistration && keyFailures.reason !== 'cleared' && keyFailures.reason !== 'frames-changed') {
+				break;
+			}
+		}
+		if (!automationRegistration) {
+			this.reportAutomationKeyFailure('register', keyFailures.reason, keyFailures.detail);
+			this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'register', keyFailures.reason, keyFailures.detail?.unansweredFrames);
+			return { kind: 'refused', result: { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (${describeAutomationKeyFailure(keyFailures.reason, keyFailures.detail)})` } };
+		}
+		return { kind: 'registered', registration: automationRegistration };
 	}
 
 	// --- 追加のブラウザ操作（para-browser MCP の B7） --------------------------------------------
