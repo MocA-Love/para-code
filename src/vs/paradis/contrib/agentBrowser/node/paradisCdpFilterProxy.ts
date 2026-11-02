@@ -204,7 +204,6 @@ const MAX_CDP_PENDING_REQUESTS = 1_024;
 // frame. Keep every transport stage on the same bounded ceiling so a valid frame accepted by
 // the parser is not rejected by an earlier queue or later backpressure check.
 const MAX_CDP_FRAME_BYTES = 32 * 1024 * 1024;
-const MAX_CDP_SCREENSHOT_FRAME_BYTES = MAX_CDP_FRAME_BYTES;
 // Chromium serializes lone surrogates in page strings (a truncated emoji in app data, a console
 // message, an exception text) as raw WTF-8 bytes. `ws` validates every incoming text frame and
 // turns such a frame into an `error` event, which tore the whole upstream connection down for
@@ -656,10 +655,11 @@ function payloadByteLength(data: wsTypes.RawData | string): number {
 
 type ParadisBoundedSendOutcome = 'sent' | 'frame-too-large' | 'buffer-full' | 'send-failed';
 
-function sendWithBoundedBackpressureOutcome(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false, forceText = false): ParadisBoundedSendOutcome {
+function sendWithBoundedBackpressureOutcome(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, forceText = false): ParadisBoundedSendOutcome {
 	const bytes = payloadByteLength(data);
-	const frameLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES;
-	const bufferedLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_OPEN_BUFFERED_BYTES;
+	// スクリーンショットのフレームも同じ上限（MAX_CDP_FRAME_BYTES の上のコメント）。送り先に溜められる量も同じ値
+	const frameLimit = MAX_CDP_FRAME_BYTES;
+	const bufferedLimit = MAX_CDP_OPEN_BUFFERED_BYTES;
 	const bufferedAmount = Number.isSafeInteger(socket.bufferedAmount) && socket.bufferedAmount >= 0 ? socket.bufferedAmount : bufferedLimit + 1;
 	if (bytes > frameLimit) {
 		return 'frame-too-large';
@@ -682,8 +682,8 @@ function sendWithBoundedBackpressureOutcome(socket: wsTypes.WebSocket, data: wsT
 	}
 }
 
-function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false, forceText = false): boolean {
-	return sendWithBoundedBackpressureOutcome(socket, data, allowScreenshotFrame, forceText) === 'sent';
+function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, forceText = false): boolean {
+	return sendWithBoundedBackpressureOutcome(socket, data, forceText) === 'sent';
 }
 
 /**
@@ -1538,7 +1538,7 @@ export function paradisProxyPageUpgrade(
 				return;
 			}
 			if (upstream.readyState === ws.WebSocket.OPEN) {
-				if (!sendWithBoundedBackpressure(upstream, data, false, true)) {
+				if (!sendWithBoundedBackpressure(upstream, data, true)) {
 					closeBoth();
 				}
 			} else if (upstream.readyState === ws.WebSocket.CONNECTING) {
@@ -1558,7 +1558,7 @@ export function paradisProxyPageUpgrade(
 			}
 			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
 				const serialized = JSON.stringify(response);
-				if (!sendWithBoundedBackpressure(clientWs, serialized, Buffer.byteLength(serialized, 'utf8') > MAX_CDP_FRAME_BYTES)) {
+				if (!sendWithBoundedBackpressure(clientWs, serialized)) {
 					closeBoth();
 				}
 			}
@@ -1795,7 +1795,7 @@ export function paradisProxyPageUpgrade(
 				return;
 			}
 			for (const buf of pending) {
-				if (!sendWithBoundedBackpressure(upstream, buf, false, true)) { closeBoth(); break; }
+				if (!sendWithBoundedBackpressure(upstream, buf, true)) { closeBoth(); break; }
 			}
 			pending.length = 0;
 			pendingBytes = 0;
@@ -1806,7 +1806,7 @@ export function paradisProxyPageUpgrade(
 				}
 				const frameBytes = rawDataByteLength(data);
 				const rawScreenshotActive = rawScreenshots.hasActiveRequestForOwner(rawScreenshotOwner);
-				if (frameBytes > (rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES)) {
+				if (frameBytes > MAX_CDP_FRAME_BYTES) {
 					// Drop just this frame. A response gets an error so the client's promise settles;
 					// an event is simply lost, which every CDP client tolerates.
 					const peek = peekOversizedFrame(data);
@@ -1819,7 +1819,7 @@ export function paradisProxyPageUpgrade(
 						}
 						if (clientWs.readyState === ws.WebSocket.OPEN) {
 							const serialized = JSON.stringify({ id: peek.id, ...(peek.sessionId !== undefined ? { sessionId: peek.sessionId } : {}), error: { code: -32000, message: OVERSIZED_RESPONSE_ERROR_MESSAGE } });
-							if (!sendWithBoundedBackpressure(clientWs, serialized, false, true)) {
+							if (!sendWithBoundedBackpressure(clientWs, serialized, true)) {
 								closeBoth();
 							}
 						}
@@ -1828,7 +1828,7 @@ export function paradisProxyPageUpgrade(
 				}
 				// 1 フレームは 1 回だけ文字列にして parse する（スクリーンショットは数 MB〜32 MiB ある）
 				const frame = paradisReadCdpFrame(data, frameBytes);
-				const response = parseJsonRecordFrame(frame, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
+				const response = parseJsonRecordFrame(frame, MAX_CDP_FRAME_BYTES);
 				if (typeof response?.id === 'number' && Number.isSafeInteger(response.id)) {
 					completeForwardedRequestBarrier(forwardedRequestBarriers, response.id, response.sessionId);
 				}
@@ -1901,10 +1901,6 @@ export function paradisProxyPageUpgrade(
 						try { msg = JSON.parse(frame.text) as IJsonRpcMsg; } catch { /* non-JSON frame */ }
 					}
 					const completion = rawScreenshots.complete(rawScreenshotOwner, msg?.id, msg?.sessionId);
-					if (frameBytes > MAX_CDP_FRAME_BYTES && !completion.handled) {
-						closeBoth();
-						return;
-					}
 					if (completion.handled && completion.suppress) {
 						return;
 					}
@@ -1912,7 +1908,7 @@ export function paradisProxyPageUpgrade(
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
 					// U+FFFD replacement can grow the frame, so size the backpressure check on what is actually sent.
 					const forwarded = cookieSanitized ?? paradisForwardableCdpFrame(frame);
-					const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, payloadByteLength(forwarded) > MAX_CDP_FRAME_BYTES, true);
+					const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, true);
 					if (outcome !== 'sent' && !backpressure.onSendFailure(outcome, response?.method ?? (typeof response?.id === 'number' ? undefined : 'unknown'), typeof response?.id === 'number')) {
 						closeBoth();
 					}
@@ -2286,7 +2282,7 @@ export async function paradisProxyBrowserUpgrade(
 			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
 				let serialized: string;
 				try { serialized = JSON.stringify(message); } catch { closeBoth(); return; }
-				const outcome = sendWithBoundedBackpressureOutcome(clientWs, serialized, Buffer.byteLength(serialized, 'utf8') > MAX_CDP_FRAME_BYTES);
+				const outcome = sendWithBoundedBackpressureOutcome(clientWs, serialized);
 				if (outcome !== 'sent') {
 					const record = isRecord(message) ? message : {};
 					const isResponse = typeof record.id === 'number';
@@ -2305,7 +2301,7 @@ export async function paradisProxyBrowserUpgrade(
 			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
 				// U+FFFD への置き換えでフレームが大きくなりうるので、送る物の大きさで判定する（ページの経路と同じ）
 				const forwarded = paradisForwardableCdpFrame(frame);
-				const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, (forwarded === frame.data ? frame.bytes : payloadByteLength(forwarded)) > MAX_CDP_FRAME_BYTES, true);
+				const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, true);
 				if (outcome !== 'sent' && !backpressure.onSendFailure(outcome, typeof message.method === 'string' ? message.method : undefined, typeof message.id === 'number')) {
 					closeBoth();
 				}
@@ -2856,8 +2852,7 @@ export async function paradisProxyBrowserUpgrade(
 				return;
 			}
 			const frameBytes = rawDataByteLength(data);
-			const rawScreenshotActive = rawScreenshots.hasActiveRequestForOwner(rawScreenshotOwner);
-			if (frameBytes > (rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES)) {
+			if (frameBytes > MAX_CDP_FRAME_BYTES) {
 				// Drop just this frame (see the page route). Responses to forwarded requests are
 				// answered with an error and released from the pending books; internal ones are
 				// released silently; events are lost.
@@ -2889,7 +2884,7 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			// 1 フレームは 1 回だけ文字列にして parse する。書き換えずに届ける答えは、このバイト列をそのまま送る
 			const frame = paradisReadCdpFrame(data, frameBytes);
-			const message = parseJsonRecordFrame(frame, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
+			const message = parseJsonRecordFrame(frame, MAX_CDP_FRAME_BYTES);
 			if (!message
 				|| (message.params !== undefined && !isRecord(message.params))
 				|| (message.sessionId !== undefined && boundedIdentifier(message.sessionId) === undefined)) {
@@ -2906,10 +2901,6 @@ export async function paradisProxyBrowserUpgrade(
 					return;
 				}
 				if (message.id < 0) {
-					if (frameBytes > MAX_CDP_FRAME_BYTES) {
-						closeBoth();
-						return;
-					}
 					const pending = internalPending.get(message.id);
 					if (!pending && retiredRequestIds.delete(message.id)) {
 						// Our own request on a session that went away; already written off.
@@ -2967,10 +2958,6 @@ export async function paradisProxyBrowserUpgrade(
 				pendingRequests.delete(message.id);
 				pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
 				const rawCompletion = rawScreenshots.complete(rawScreenshotOwner, message.id, message.sessionId);
-				if (frameBytes > MAX_CDP_FRAME_BYTES && !rawCompletion.handled) {
-					closeBoth();
-					return;
-				}
 				if (rawCompletion.handled && rawCompletion.suppress) {
 					return;
 				}
@@ -3018,11 +3005,6 @@ export async function paradisProxyBrowserUpgrade(
 				sendFrameToClient(message, frame);
 				return;
 			}
-			if (frameBytes > MAX_CDP_FRAME_BYTES) {
-				closeBoth();
-				return;
-			}
-
 			if (typeof message.method !== 'string' || message.method.length === 0 || message.method.length > MAX_CDP_METHOD_LENGTH) {
 				closeBoth();
 				return;
