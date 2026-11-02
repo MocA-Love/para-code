@@ -10,17 +10,17 @@
 // 対象リソース(file: / git: / vscode-remote:)のバイト列を IFileService で読み、base64化して
 // パースチャネルへ渡す。git: スキーム(差分の旧版)も IFileService 経由で読めるため差分でも共用できる。
 
-import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { basename } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME } from '../common/paradisSpreadsheet.js';
 import { describeParadisOfficeReadFailure, IParadisOfficeDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisOfficeDiffSides } from '../common/paradisOfficeDiffSide.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
-import { unpackParadisWorkbookStyles, type IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
+import { decodeParadisWorkbookJson, unpackParadisWorkbookStyles, type IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { parseDrawingObjects } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
@@ -63,6 +63,8 @@ export async function openSpreadsheetResource(
 	resource: URI,
 	cache: ParadisOfficeOpenCache<IParadisSpreadsheetOpenCacheValue>,
 	onSourceBytes?: (totalBytes: number, content: VSBuffer) => void,
+	/** 取り消すと shared process の解析の待ち行列からも外れる。 */
+	token: CancellationToken = CancellationToken.None,
 ): Promise<IParadisSpreadsheetOpenCacheValue & { readonly fromCache: boolean }> {
 	const read = await readParadisOfficeFile(fileService, resource, cache, PARADIS_SPREADSHEET_MAX_BYTES);
 	if (read.kind === 'cached') {
@@ -71,7 +73,7 @@ export async function openSpreadsheetResource(
 	}
 	const content = read.content.value;
 	onSourceBytes?.(content.byteLength, content);
-	const workbook = await parseSpreadsheetContent(sharedProcessService, resource, content);
+	const workbook = await parseSpreadsheetContent(sharedProcessService, resource, content, undefined, token);
 	cache.set(resource, read.content.etag, { workbook, content }, estimateParadisWorkbookBytes(workbook, content));
 	return { workbook, content, fromCache: false };
 }
@@ -103,11 +105,20 @@ export function estimateParadisWorkbookBytes(workbook: IParadisWorkbookData, con
 	return bytes;
 }
 
-async function parseSpreadsheetContent(sharedProcessService: ISharedProcessService, resource: URI, content: VSBuffer, imagePixelBudget?: number): Promise<IParadisWorkbookData> {
+async function parseSpreadsheetContent(sharedProcessService: ISharedProcessService, resource: URI, content: VSBuffer, imagePixelBudget?: number, token: CancellationToken = CancellationToken.None): Promise<IParadisWorkbookData> {
 	throwIfNotWorkbook(resource, content);
-	const base64 = encodeBase64(content);
-	// 解析の worker はセルの書式を表にまとめて返すので、ここで元の形に戻す（まとめていない形はそのまま）。
-	const raw = unpackParadisWorkbookStyles(await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData | IParadisPackedWorkbookData>('parseWorkbook', imagePixelBudget === undefined ? [base64] : [base64, imagePixelBudget]));
+	// バイト列のまま送る（base64 にすると 20 MiB のブックが約 27 MB の文字列になって往復する）。
+	let reply: IParadisWorkbookData | IParadisPackedWorkbookData | VSBuffer;
+	try {
+		reply = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData | IParadisPackedWorkbookData | VSBuffer>('parseWorkbook', imagePixelBudget === undefined ? [content] : [content, imagePixelBudget], token);
+	} catch (error) {
+		if (error instanceof Error && error.name === PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME) {
+			throw new ParadisSpreadsheetTooLargeError();
+		}
+		throw error;
+	}
+	// 解析の worker はセルの書式を表にまとめた JSON のバイト列で返すので、ここで元の形に戻す（本体で解析したときはそのまま）。
+	const raw = unpackParadisWorkbookStyles(reply instanceof VSBuffer ? decodeParadisWorkbookJson(reply.buffer) : reply);
 
 	const drawings = raw.drawingsBySheet;
 	if (!drawings) {
@@ -205,6 +216,21 @@ export class ParadisSpreadsheetNotWorkbookError extends Error {
 			? localize('paradis.spreadsheet.ownerFile', "Excel が編集中に作る一時ファイルです。元のブックを開いてください。")
 			: localize('paradis.spreadsheet.notWorkbook', "xlsx 形式のファイルではないため開けません。Excel が編集中に作る一時ファイルの可能性があります。"));
 	}
+}
+
+/**
+ * ブックが大きすぎて解析できなかった（解析の worker のヒープの上限・締め切りを超えた）。利用者のファイルの大きさの
+ * 問題なので、失敗の報告（Sentry）には送らない。
+ */
+export class ParadisSpreadsheetTooLargeError extends Error {
+	constructor() {
+		super(localize('paradis.spreadsheet.tooLarge', "ブックが大きすぎるため表示できません。Excel で開いてください。"));
+	}
+}
+
+/** 失敗の報告（Sentry）に送らない、利用者のファイルの性質による失敗か。 */
+export function isParadisSpreadsheetUnreportedError(error: unknown): boolean {
+	return error instanceof ParadisSpreadsheetNotWorkbookError || error instanceof ParadisSpreadsheetTooLargeError;
 }
 
 /** 差分の片側を読んだ結果。`absent` は、その版にファイルがそもそも無かった（追加・削除されたファイル）こと。 */
