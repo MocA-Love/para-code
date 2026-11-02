@@ -12,12 +12,14 @@
 
 import { $, addDisposableListener, append, clearNode, EventType } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { Button } from '../../../../base/browser/ui/button/button.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
+import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IParadisAgentChatCommand } from '../common/paradisAgentChat.js';
 import { paradisDuplicateAgentChatCommandNames, paradisFilterAgentChatCommands, paradisAgentChatSlashQuery } from '../common/paradisAgentChatComposerLogic.js';
 
@@ -48,8 +50,9 @@ export class ParadisAgentChatComposer extends Disposable {
 
 	readonly element: HTMLElement;
 	private readonly textarea: HTMLTextAreaElement;
-	private readonly sendButton: HTMLButtonElement;
-	private readonly hint: HTMLElement;
+	private readonly sendButton: Button;
+	/** 作業中だけ出す短い注記（送った文は終わってから読まれる）。入力中も見えるよう placeholder とは別に置く。 */
+	private readonly busyNote: HTMLElement;
 	private readonly notice: HTMLElement;
 	private readonly slashMenu: HTMLElement;
 
@@ -85,10 +88,10 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.textarea.spellcheck = false;
 		this.textarea.setAttribute('aria-label', localize('paradisAgentChat.inputAria', "エージェントへのメッセージ"));
 		const footer = append(box, $('.paradis-agent-chat-composer-footer'));
-		this.hint = append(footer, $('span.paradis-agent-chat-composer-hint'));
-		this.sendButton = append(footer, $('button.paradis-agent-chat-send')) as HTMLButtonElement;
-		this.sendButton.type = 'button';
-		this.sendButton.textContent = localize('paradisAgentChat.send', "送信");
+		this.busyNote = append(footer, $('span.paradis-agent-chat-composer-busy'));
+		this.sendButton = this._register(new Button(footer, { ...defaultButtonStyles }));
+		this.sendButton.element.classList.add('paradis-agent-chat-send');
+		this.sendButton.label = localize('paradisAgentChat.send', "送信");
 
 		this._register(addDisposableListener(this.textarea, 'compositionstart', () => { this.composing = true; }));
 		this._register(addDisposableListener(this.textarea, 'compositionend', () => {
@@ -102,7 +105,7 @@ export class ParadisAgentChatComposer extends Disposable {
 			// メニューのクリックより先に blur が来るので、少し待ってから閉じる。
 			blurTimer.value = disposableTimeout(() => this.hideSlashMenu(), 150);
 		}));
-		this._register(addDisposableListener(this.sendButton, EventType.CLICK, () => this.submit()));
+		this._register(this.sendButton.onDidClick(() => this.submit()));
 		this.updateHint();
 		this.updateSendState();
 	}
@@ -199,17 +202,21 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.updateHint();
 	}
 
+	/**
+	 * 送り方と改行のしかたは入力欄の placeholder に書く（入力欄の下に説明の行を常には出さない）。
+	 * 作業中に送ると終わってから読まれることは、入力中も見えるよう、作業中の間だけ送信ボタンの左に出す。
+	 */
 	private updateHint(): void {
 		const modifier = isMacintosh ? '⌘' : 'Ctrl+';
-		const text = this.host.getSendKey() === 'modEnter'
-			? localize('paradisAgentChat.hintModEnter', "{0}Enter で送信 · Enter で改行", modifier)
-			: localize('paradisAgentChat.hintEnter', "Enter で送信 · Shift+Enter で改行");
-		this.hint.textContent = this.busy ? localize('paradisAgentChat.hintBusy', "{0} · 作業中に送ると、終わってから読まれます", text) : text;
+		this.textarea.placeholder = this.host.getSendKey() === 'modEnter'
+			? localize('paradisAgentChat.placeholderModEnter', "メッセージ（{0}Enter で送信 · Enter で改行）", modifier)
+			: localize('paradisAgentChat.placeholder', "メッセージ（Enter で送信 · Shift+Enter で改行）");
+		this.busyNote.textContent = this.busy ? localize('paradisAgentChat.busyNote', "作業中です。送ると終わってから読まれます") : '';
 	}
 
 	private updateSendState(): void {
 		const empty = this.textarea.value.trim().length === 0;
-		this.sendButton.disabled = empty || this.blockedReason !== undefined || this.sending;
+		this.sendButton.enabled = !empty && this.blockedReason === undefined && !this.sending;
 	}
 
 	private onInput(): void {

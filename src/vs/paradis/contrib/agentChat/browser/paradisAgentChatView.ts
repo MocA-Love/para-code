@@ -14,11 +14,13 @@
 import { $, addDisposableListener, append, clearNode, EventType, getWindow, isHTMLInputElement, isHTMLTextAreaElement } from '../../../../base/browser/dom.js';
 import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
 import { DataTransfers } from '../../../../base/browser/dnd.js';
+import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
+import { Button } from '../../../../base/browser/ui/button/button.js';
 import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { IAction, toAction } from '../../../../base/common/actions.js';
+import { Action, IAction, toAction } from '../../../../base/common/actions.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -36,6 +38,7 @@ import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMe
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
 import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisGroupAgentChatItems, paradisIsFileWriteTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisPathBasename, paradisSummarizeAgentChatGroup, ParadisAgentChatEntry, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
+import { paradisAgentChatButton } from './paradisAgentChatButton.js';
 import { IParadisAgentChatComposerHost, ParadisAgentChatComposer } from './paradisAgentChatComposer.js';
 import { IParadisAgentChatAsyncDrafts, paradisAsyncQuestionsSignature, paradisBuildAsyncReplyFromDrafts, paradisGroupAsyncQuestions, paradisNewAgentChatAsyncDrafts, paradisRenderAsyncQuestionCard, paradisRenderQuestionReplies } from './paradisAgentChatAsyncQuestions.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
@@ -119,7 +122,7 @@ export class ParadisAgentChatView extends Disposable {
 	private readonly headerAgent: HTMLElement;
 	private readonly headerModel: HTMLElement;
 	private readonly headerStatus: HTMLElement;
-	private readonly backButton: HTMLButtonElement;
+	private readonly backAction: Action;
 	private readonly scroller: HTMLElement;
 	private readonly list: HTMLElement;
 	private readonly notice: HTMLElement;
@@ -216,9 +219,10 @@ export class ParadisAgentChatView extends Disposable {
 		this.headerModel = append(header, $('span.paradis-agent-chat-header-model'));
 		this.headerStatus = append(header, $('span.paradis-agent-chat-header-status'));
 		append(header, $('span.paradis-agent-chat-header-spacer'));
-		this.backButton = append(header, $('button.paradis-agent-chat-back')) as HTMLButtonElement;
-		this.backButton.type = 'button';
-		this._register(addDisposableListener(this.backButton, EventType.CLICK, () => this._onDidRequestTerminal.fire()));
+		// ターミナルへ戻るのは本家のツールバーのアイコンのボタン。キーはホバーで見せる。
+		this.backAction = this._register(new Action('paradisAgentChat.back', localize('paradisAgentChat.back', "ターミナルに戻る"), ThemeIcon.asClassName(Codicon.terminal), true, async () => this._onDidRequestTerminal.fire()));
+		const backBar = this._register(new ActionBar(append(header, $('.paradis-agent-chat-back'))));
+		backBar.push(this.backAction, { icon: true, label: false });
 
 		const body = append(this.element, $('.paradis-agent-chat-body'));
 		this.scroller = append(body, $('.paradis-agent-chat-scroll'));
@@ -403,10 +407,9 @@ export class ParadisAgentChatView extends Disposable {
 
 	private updateBackLabel(): void {
 		const keybinding = this.host.getToggleKeybindingLabel();
-		clearNode(this.backButton);
-		this.backButton.append(renderIcon(Codicon.terminal), $('span', undefined, keybinding !== undefined
-			? localize('paradisAgentChat.backWithKey', "{0} でターミナルに戻る", keybinding)
-			: localize('paradisAgentChat.back', "ターミナルに戻る")));
+		this.backAction.tooltip = keybinding !== undefined
+			? localize('paradisAgentChat.backTooltip', "ターミナルに戻る ({0})", keybinding)
+			: localize('paradisAgentChat.back', "ターミナルに戻る");
 	}
 
 	private resetRendered(): void {
@@ -1193,7 +1196,7 @@ export class ParadisAgentChatView extends Disposable {
 		const otherComposing = { value: false };
 		store.add(addDisposableListener(otherInput, 'compositionstart', () => { otherComposing.value = true; }));
 		store.add(addDisposableListener(otherInput, 'compositionend', () => { otherComposing.value = false; }));
-		const submit: { button?: HTMLButtonElement } = {};
+		const submit: { button?: Button } = {};
 		const isReady = () => currentDraft.answers.every(answer => answer !== undefined);
 		const applyOther = () => {
 			const text = otherInput.value;
@@ -1215,7 +1218,7 @@ export class ParadisAgentChatView extends Disposable {
 			}
 			// 打つたびにカードを作り直さず、送るボタンの押せる状態だけを合わせる。
 			if (submit.button !== undefined) {
-				submit.button.disabled = !isReady() || currentDraft.sending || currentDraft.sent;
+				submit.button.enabled = isReady() && !currentDraft.sending && !currentDraft.sent;
 			}
 		};
 		store.add(addDisposableListener(otherInput, EventType.INPUT, applyOther));
@@ -1236,15 +1239,14 @@ export class ParadisAgentChatView extends Disposable {
 		}));
 
 		const footer = append(card, $('.paradis-agent-chat-card-footer'));
-		const submitButton = submit.button = append(footer, $('button.paradis-agent-chat-primary')) as HTMLButtonElement;
-		submitButton.type = 'button';
-		submitButton.disabled = !isReady() || currentDraft.sending || currentDraft.sent;
-		submitButton.textContent = currentDraft.sending
+		const submitButton = submit.button = paradisAgentChatButton(footer, 'primary', store);
+		submitButton.enabled = isReady() && !currentDraft.sending && !currentDraft.sent;
+		submitButton.label = currentDraft.sending
 			? localize('paradisAgentChat.sending', "送っています…")
 			: currentDraft.sent
 				? localize('paradisAgentChat.sent', "送りました")
 				: localize('paradisAgentChat.submitAnswers', "回答を送る");
-		store.add(addDisposableListener(submitButton, EventType.CLICK, () => this.submitQuestions(item.group, questions.length, currentDraft)));
+		store.add(submitButton.onDidClick(() => this.submitQuestions(item.group, questions.length, currentDraft)));
 		append(footer, $('span.paradis-agent-chat-card-note')).textContent = currentDraft.error ?? (currentDraft.sent
 			? localize('paradisAgentChat.sentNote', "ターミナルに反映されるのを待っています")
 			: localize('paradisAgentChat.answerInTerminalNote', "ターミナル側で答えた場合も自動的に閉じます"));
@@ -1310,25 +1312,22 @@ export class ParadisAgentChatView extends Disposable {
 		const choices = interaction.choices ?? [];
 		if (choices.length === 0) {
 			// 中身を同期できなかった Codex の承認。ここからは答えられないので、ターミナルへ案内する。
-			const back = append(footer, $('button.paradis-agent-chat-primary')) as HTMLButtonElement;
-			back.type = 'button';
-			back.textContent = localize('paradisAgentChat.answerInTerminal', "ターミナルで答える");
-			store.add(addDisposableListener(back, EventType.CLICK, () => this._onDidRequestTerminal.fire()));
+			const back = paradisAgentChatButton(footer, 'primary', store);
+			back.label = localize('paradisAgentChat.answerInTerminal', "ターミナルで答える");
+			store.add(back.onDidClick(() => this._onDidRequestTerminal.fire()));
 			return card;
 		}
 		if (interaction.answerOn === 'pc') {
 			// 端末の確認の画面でしか許可できない（Claude Code の mod の `decider: 'person'`）。選択肢は拒否だけなので、許可はターミナルへ案内する
-			const back = append(footer, $('button.paradis-agent-chat-primary')) as HTMLButtonElement;
-			back.type = 'button';
-			back.textContent = localize('paradisAgentChat.answerInTerminal', "ターミナルで答える");
-			store.add(addDisposableListener(back, EventType.CLICK, () => this._onDidRequestTerminal.fire()));
+			const back = paradisAgentChatButton(footer, 'primary', store);
+			back.label = localize('paradisAgentChat.answerInTerminal', "ターミナルで答える");
+			store.add(back.onDidClick(() => this._onDidRequestTerminal.fire()));
 		}
 		for (const choice of choices) {
-			const button = append(footer, $(choice.tone === 'approve' ? 'button.paradis-agent-chat-primary' : 'button.paradis-agent-chat-secondary')) as HTMLButtonElement;
-			button.type = 'button';
-			button.textContent = choice.label;
-			button.disabled = approvalState?.sending === true || approvalState?.sent === true;
-			store.add(addDisposableListener(button, EventType.CLICK, () => this.submitApproval(interaction.id, choice.id)));
+			const button = paradisAgentChatButton(footer, choice.tone === 'approve' ? 'primary' : 'secondary', store);
+			button.label = choice.label;
+			button.enabled = approvalState?.sending !== true && approvalState?.sent !== true;
+			store.add(button.onDidClick(() => this.submitApproval(interaction.id, choice.id)));
 		}
 		const note = append(footer, $('span.paradis-agent-chat-card-note'));
 		note.textContent = approvalState?.error ?? (approvalState?.sending

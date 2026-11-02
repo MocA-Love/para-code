@@ -17,6 +17,7 @@ import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { IParadisCodexAsyncQuestion, paradisBuildCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { IParadisAgentQuestionReply } from '../common/paradisAgentChat.js';
+import { paradisAgentChatButton } from './paradisAgentChatButton.js';
 
 /** 1 問の書きかけの答え。選んだ選択肢と自由入力は同時には使わない（打つと選択を外す）。 */
 export interface IParadisAgentChatAsyncAnswerDraft {
@@ -168,14 +169,13 @@ export function paradisRenderAsyncQuestionCard(questions: readonly IParadisCodex
 	store.add(addDisposableListener(otherInput, 'compositionend', () => { composing.value = false; }));
 
 	const footer = append(card, $('.paradis-agent-chat-card-footer'));
-	const submitButton = append(footer, $('button.paradis-agent-chat-primary')) as HTMLButtonElement;
-	submitButton.type = 'button';
+	const submitButton = paradisAgentChatButton(footer, 'primary', store);
 	const answeredCount = () => questions.filter(candidate => !drafts.sent.has(candidate.id) && paradisAsyncAnswerText(candidate, drafts.answers.get(candidate.id)) !== undefined).length;
 	const unsent = questions.filter(candidate => !drafts.sent.has(candidate.id)).length;
 	const updateSubmit = () => {
 		const count = answeredCount();
-		submitButton.disabled = sending || count === 0;
-		submitButton.textContent = sending
+		submitButton.enabled = !sending && count > 0;
+		submitButton.label = sending
 			? localize('paradisAgentChat.sending', "送っています…")
 			: unsent > 1
 				? localize('paradisAgentChat.asyncSubmitCount', "回答を送る（{0}/{1}）", count, unsent)
@@ -208,7 +208,7 @@ export function paradisRenderAsyncQuestionCard(questions: readonly IParadisCodex
 			}
 		}
 	}));
-	store.add(addDisposableListener(submitButton, EventType.CLICK, () => actions.submit(callId)));
+	store.add(submitButton.onDidClick(() => actions.submit(callId)));
 	const error = drafts.error?.callId === callId ? drafts.error.message : undefined;
 	append(footer, $('span.paradis-agent-chat-card-note')).textContent = error ?? (busy
 		? localize('paradisAgentChat.asyncNoteWorking', "答えた問いだけを送ります。送ると書きかけの応答は打ち切られ、答えを読んで続けます")
