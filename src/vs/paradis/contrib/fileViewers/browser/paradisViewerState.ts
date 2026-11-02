@@ -67,7 +67,8 @@ export function renderParadisViewerState(container: HTMLElement, kind: ParadisVi
 		status.textContent = message;
 		return store;
 	}
-	element.setAttribute('role', 'alert');
+	// 失敗だけを割り込みで読み上げる。変更なし・空・対応外は落ち着いた知らせにする。
+	element.setAttribute('role', kind === 'error' ? 'alert' : 'status');
 	const iconContainer = dom.append(element, dom.$('.paradis-viewer-state-icon'));
 	dom.append(iconContainer, dom.$(ThemeIcon.asCSSSelector(iconFor(kind))));
 	dom.append(element, dom.$('.paradis-viewer-state-label')).textContent = message;
