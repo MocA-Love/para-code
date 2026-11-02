@@ -79,8 +79,10 @@
 	outline-offset: -2px;
 }
 
+/* allow-any-unicode-next-line */
+/* 行は文字に合わせて伸ばしてある。それでも収まらないときは切る（下寄せのまま見せると上の行に重なる）。 */
 .paradis-spreadsheet-virtual-cell-wrap {
-	overflow: visible;
+	overflow: hidden;
 	white-space: pre-wrap;
 	overflow-wrap: break-word;
 }
@@ -115,4 +117,37 @@
 	font-size: 9px;
 	font-weight: normal;
 	user-select: none;
+}
+
+/* allow-any-unicode-next-line */
+/* 縦位置。div では vertical-align が効かないので、縦に並べて寄せる（既定は Excel と同じ下寄せ）。 */
+/* allow-any-unicode-next-line */
+/* :where で除外の条件の優先度を 0 にする（そうしないと下の上寄せ・中央寄せのクラスに勝ってしまう）。 */
+/* allow-any-unicode-next-line */
+/* Excel のビューアの入れ物（.paradis-spreadsheet-virtual-excel）だけ。CSV のビューアは同じグリッドを今の見た目のまま使う。 */
+.paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell:where(:not(.paradis-spreadsheet-virtual-cell-vertical):not(.paradis-spreadsheet-virtual-colhead):not(.paradis-spreadsheet-virtual-rowhead):not(.paradis-spreadsheet-virtual-corner)) {
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+}
+
+.paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-valign-top {
+	justify-content: flex-start;
+}
+
+.paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-valign-middle {
+	justify-content: center;
+}
+
+/* allow-any-unicode-next-line */
+/* オートフィルタの見出しの記号（DOM の表の .paradis-spreadsheet-filter-marker と同じ見た目）。 */
+.paradis-spreadsheet-virtual-filter::after {
+	content: '\25BC';
+	position: absolute;
+	right: 3px;
+	bottom: 1px;
+	color: #666666;
+	font-size: 8px;
+	line-height: 1.6;
+	pointer-events: none;
 }
