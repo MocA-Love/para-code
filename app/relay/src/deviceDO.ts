@@ -106,10 +106,25 @@ export function mobileCredentialTtlMs(env: unknown): number | undefined {
 	return Math.max(7, days) * 24 * 60 * 60 * 1000;
 }
 
+/** 表の形の版（{@link DeviceDO.migrateSchema}）。表・列・索引を足したら増やす。 */
+const SCHEMA_VERSION = 1;
+
+/** ES256 JWT の使い回し（isolate の中の DO で共有する。DO ごとに持つと、起きるたびに署名し直す）。 */
+const APNS_JWT_CACHE: ApnsJwtCache = {};
+
+/** UTF-8 のバイト数が `max` を越えるか（ASCII だけの文は符号化しないで済ませる）。 */
+function utf8LengthExceeds(text: string, max: number): boolean {
+	if (text.length > max) {
+		return true; // 1 文字は 1 バイト以上
+	}
+	if (text.length * 3 <= max) {
+		return false; // 1 文字（UTF-16 の 1 単位）は 3 バイト以下
+	}
+	return new TextEncoder().encode(text).length > max;
+}
+
 export class DeviceDO implements DurableObject {
 	private readonly sql: SqlStorage;
-	// ES256 JWTのメモリキャッシュ（apns.ts が45分間再利用する）。
-	private readonly apnsJwtCache: ApnsJwtCache = {};
 	/** TURN資格情報の発行時刻（レート制限用。インメモリで十分、詳細は turnCredentials 参照）。 */
 	private turnIssueTimes: number[] = [];
 	/** 資格を使った時刻を最後に確かめた時刻（メモリ。`touchMobile` の間引き）。 */
@@ -117,6 +132,27 @@ export class DeviceDO implements DurableObject {
 
 	constructor(private readonly state: DurableObjectState, private readonly env: unknown) {
 		this.sql = state.storage.sql;
+		this.migrateSchema();
+		// 保活のping/pongはエッジが自動応答する。hibernation中のDOを起こさないので、
+		// アイドル接続を維持するコストがほぼゼロで済む（起こすと課金対象の実行時間が発生する）。
+		// 照合はバイト列の完全一致なので、クライアントは必ず同じ定数を送ること。
+		this.state.setWebSocketAutoResponse(
+			new WebSocketRequestResponsePair(PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG),
+		);
+	}
+
+	/**
+	 * 表を作り、古い DO の表を今の形へ直す。DO は起きるたびに作られるので、済んだ版を meta に書き、同じ版なら
+	 * meta を読むだけで終える（毎回 CREATE TABLE と、列が既にあって例外になる ALTER TABLE を流さない）。
+	 * 版を上げるときは {@link SCHEMA_VERSION} を増やし、ここへ冪等な文を足す（古い版の DO でもう一度流れる）。
+	 */
+	private migrateSchema(): void {
+		// 失効の掃除の次の時刻など、1行だけの値。
+		this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER)`);
+		const done = this.sql.exec(`SELECT value FROM meta WHERE key = 'schemaVersion'`).toArray()[0] as { value?: unknown } | undefined;
+		if (done?.value === SCHEMA_VERSION) {
+			return;
+		}
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), pcPublicKey TEXT, pcTokenHash TEXT)`);
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS mobiles (mobileId TEXT PRIMARY KEY, name TEXT, tokenHash TEXT, createdAt INTEGER)`);
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS pending (pairId TEXT PRIMARY KEY, tokenHash TEXT, expiresAt INTEGER)`);
@@ -131,14 +167,9 @@ export class DeviceDO implements DurableObject {
 		this.migrateMobilesForLastSeen();
 		// PC がつながっていない間に失効させたモバイル。次に PC がつながったら mobile-revoked で伝える（W2-35）。
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS pc_notices (mobileId TEXT PRIMARY KEY, at INTEGER)`);
-		// 失効の掃除の次の時刻など、1行だけの値。
-		this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER)`);
-		// 保活のping/pongはエッジが自動応答する。hibernation中のDOを起こさないので、
-		// アイドル接続を維持するコストがほぼゼロで済む（起こすと課金対象の実行時間が発生する）。
-		// 照合はバイト列の完全一致なので、クライアントは必ず同じ定数を送ること。
-		this.state.setWebSocketAutoResponse(
-			new WebSocketRequestResponsePair(PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG),
-		);
+		// 古い依頼 ID を時刻で消すので、時刻に索引を張る（プッシュのたびに消す）。
+		this.sql.exec(`CREATE INDEX IF NOT EXISTS push_requests_at ON push_requests (at)`);
+		this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('schemaVersion', ?)`, SCHEMA_VERSION);
 	}
 
 	private migrateMobilesForPush(): void {
@@ -387,6 +418,14 @@ export class DeviceDO implements DurableObject {
 		}
 		const target = Math.min(...candidates);
 		// アラームは storage 配下のAPIで管理する（state 直下には存在しない）。
+		const current = await this.state.storage.getAlarm();
+		if (current === null || current > target) {
+			await this.state.storage.setAlarm(target);
+		}
+	}
+
+	/** alarm が `target` までに鳴るようにする（もっと早く張ってあれば変えない）。 */
+	private async ensureAlarmBy(target: number): Promise<void> {
 		const current = await this.state.storage.getAlarm();
 		if (current === null || current > target) {
 			await this.state.storage.setAlarm(target);
@@ -724,7 +763,7 @@ export class DeviceDO implements DurableObject {
 	}
 
 	private async pushNotify(mobileId: string, payload: string, collapseId: string | undefined, threadId: string | undefined): Promise<void> {
-		if (typeof payload !== 'string' || new TextEncoder().encode(payload).length > MAX_PUSH_PAYLOAD_BYTES) {
+		if (typeof payload !== 'string' || utf8LengthExceeds(payload, MAX_PUSH_PAYLOAD_BYTES)) {
 			console.warn('[push] payload missing or too large; dropping');
 			return;
 		}
@@ -763,7 +802,7 @@ export class DeviceDO implements DurableObject {
 			this.sendPushAck(ws, requestId, 'accepted');
 			return;
 		}
-		if (typeof payload !== 'string' || typeof mobileId !== 'string' || new TextEncoder().encode(payload).length > MAX_PUSH_PAYLOAD_BYTES) {
+		if (typeof payload !== 'string' || typeof mobileId !== 'string' || utf8LengthExceeds(payload, MAX_PUSH_PAYLOAD_BYTES)) {
 			console.warn('[push] payload missing or too large; dropping');
 			// 送り直しても変わらないので、PC には受け取ったと返して outbox から外させる
 			this.sendPushAck(ws, requestId, 'rejected');
@@ -772,13 +811,18 @@ export class DeviceDO implements DurableObject {
 		const expiresAtSeconds = Math.floor(now / 1000) + PUSH_EXPIRATION_SECONDS;
 		const pushCollapseId = collapseId ?? randomTokenB64u(16);
 		this.sql.exec('INSERT INTO push_requests (requestId, at) VALUES (?, ?)', requestId, now);
-		this.sql.exec('DELETE FROM push_requests WHERE requestId NOT IN (SELECT requestId FROM push_requests ORDER BY at DESC LIMIT ?)', MAX_PUSH_REQUEST_ROWS);
+		if (this.rowCount('push_requests') > MAX_PUSH_REQUEST_ROWS) {
+			this.sql.exec('DELETE FROM push_requests WHERE requestId NOT IN (SELECT requestId FROM push_requests ORDER BY at DESC LIMIT ?)', MAX_PUSH_REQUEST_ROWS);
+		}
 		// 送る前に行を置く。送っている間に落ちても alarm が送り直す（行は送り終えてから消す）
 		const id = this.insertPushRow({ mobileId, payload, collapseId: pushCollapseId, threadId, attempt: 0, expiresAtSeconds }, now + PUSH_SEND_LEASE_MS);
-		await this.scheduleAlarm();
+		// 今置いた行の時刻までに alarm が鳴るようにする（ほかの行・掃除の時刻は、置いたときに alarm へ入れてある）
+		await this.ensureAlarmBy(now + PUSH_SEND_LEASE_MS);
 		this.sendPushAck(ws, requestId, 'accepted');
-		await this.sendQueuedPush({ id, mobileId, payload, collapseId: pushCollapseId, threadId, attempt: 0, expiresAtSeconds });
-		await this.scheduleAlarm();
+		const nextAt = await this.sendQueuedPush({ id, mobileId, payload, collapseId: pushCollapseId, threadId, attempt: 0, expiresAtSeconds });
+		if (nextAt !== undefined) {
+			await this.ensureAlarmBy(nextAt);
+		}
 	}
 
 	private sendPushAck(ws: WebSocket, requestId: string, result: 'accepted' | 'rejected'): void {
@@ -790,8 +834,15 @@ export class DeviceDO implements DurableObject {
 			'INSERT INTO push_queue (mobileId, payload, collapseId, threadId, attempt, nextAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
 			push.mobileId, push.payload, push.collapseId ?? null, push.threadId ?? null, push.attempt, nextAt, push.expiresAtSeconds,
 		).toArray()[0];
-		this.sql.exec('DELETE FROM push_queue WHERE id NOT IN (SELECT id FROM push_queue ORDER BY id DESC LIMIT ?)', MAX_PUSH_QUEUE_ROWS);
+		if (this.rowCount('push_queue') > MAX_PUSH_QUEUE_ROWS) {
+			this.sql.exec('DELETE FROM push_queue WHERE id NOT IN (SELECT id FROM push_queue ORDER BY id DESC LIMIT ?)', MAX_PUSH_QUEUE_ROWS);
+		}
 		return row!.id as number;
+	}
+
+	private rowCount(table: 'push_queue' | 'push_requests'): number {
+		const row = this.sql.exec(`SELECT COUNT(*) AS n FROM ${table}`).toArray()[0] as { n?: unknown } | undefined;
+		return typeof row?.n === 'number' ? row.n : 0;
 	}
 
 	/**
@@ -799,25 +850,25 @@ export class DeviceDO implements DurableObject {
 	 * 一時的な失敗なら次の時刻を書く（上限・有効期限を超えるなら消す）。送信が例外で終わったら、行は貸し出しの
 	 * 期限まで残し、その後に送り直す（失敗の回数は数える）。
 	 */
-	private async sendQueuedPush(push: QueuedPush): Promise<void> {
+	private async sendQueuedPush(push: QueuedPush): Promise<number | undefined> {
 		this.sql.exec('UPDATE push_queue SET nextAt = ? WHERE id = ?', Date.now() + PUSH_SEND_LEASE_MS, push.id);
 		let result: ApnsSendResult | undefined;
 		try {
 			result = await this.sendPushOnce(push);
 		} catch (err) {
 			console.warn('[push] send failed:', err);
-			this.reschedulePushRow(push, undefined, Date.now() + PUSH_SEND_LEASE_MS);
-			return;
+			return this.reschedulePushRow(push, undefined, Date.now() + PUSH_SEND_LEASE_MS);
 		}
 		if (result?.kind === 'retry') {
-			this.reschedulePushRow(push, result.retryAfterMs);
-			return;
+			return this.reschedulePushRow(push, result.retryAfterMs);
 		}
 		this.sql.exec('DELETE FROM push_queue WHERE id = ?', push.id);
+		return undefined;
 	}
 
 	/** 失敗を1回数えて次の時刻を書く。上限を超えた・有効期限までに送れないなら消す。 */
-	private reschedulePushRow(push: QueuedPush, retryAfterMs: number | undefined, at?: number): void {
+	/** 次に送る時刻を返す（消したなら undefined）。 */
+	private reschedulePushRow(push: QueuedPush, retryAfterMs: number | undefined, at?: number): number | undefined {
 		const attempt = push.attempt + 1;
 		const nextAt = at ?? Date.now() + pushRetryDelayMs(attempt, retryAfterMs, Math.random());
 		if (attempt > PUSH_MAX_RETRIES || nextAt >= push.expiresAtSeconds * 1000) {
@@ -825,9 +876,10 @@ export class DeviceDO implements DurableObject {
 				console.warn('[push] giving up after retries');
 			}
 			this.sql.exec('DELETE FROM push_queue WHERE id = ?', push.id);
-			return;
+			return undefined;
 		}
 		this.sql.exec('UPDATE push_queue SET attempt = ?, nextAt = ? WHERE id = ?', attempt, nextAt, push.id);
+		return nextAt;
 	}
 
 	/**
@@ -848,7 +900,7 @@ export class DeviceDO implements DurableObject {
 			expiresAtSeconds: push.expiresAtSeconds,
 			...(push.collapseId !== undefined ? { collapseId: push.collapseId } : {}),
 			...(push.threadId !== undefined ? { threadId: push.threadId } : {}),
-		}, this.apnsJwtCache);
+		}, APNS_JWT_CACHE);
 		if (result.kind === 'drop-token') {
 			// 410 Unregistered / 400 BadDeviceToken: 失効・不正なトークンをDBから消す。
 			// 送った後にアプリが別のトークンを登録し直していたら、そちらは消さない。

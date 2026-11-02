@@ -12,7 +12,7 @@ import assert from 'assert';
 import { EventEmitter } from 'events';
 import { FileAccess, type AppResourcePath } from '../../../../../base/common/network.js';
 import { createParadisWorker } from '../../../../node/paradisWorker.js';
-import { unavailableParadisSpreadsheetSemanticDiagnostics } from '../../node/spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
+import { unavailableParadisSpreadsheetSemanticDiagnostics } from '../../common/paradisSpreadsheet.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { isParadisSentryScrubbedWord, type ParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisOfficeWorkerFailureKind, resetParadisOfficeWorkerFailureReportsForTest, watchParadisOfficeWorker, type IParadisWatchedOfficeWorker, type ParadisOfficeWorkerName } from '../../node/office/paradisOfficeWorkerDiagnostics.js';

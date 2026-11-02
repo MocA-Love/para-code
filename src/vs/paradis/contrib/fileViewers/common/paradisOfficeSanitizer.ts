@@ -9,7 +9,7 @@ import type { ParadisOfficeFingerprint, ParadisOfficePlaceholder, ParadisOfficeR
 import { localize } from '../../../../nls.js';
 import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from './word/paradisWordImageInspection.js';
 import { convertParadisOfficeMetafileParts } from './office/paradisOfficeMetafileParts.js';
-import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
+import { canonicalizeParadisOfficeArchiveName, joinParadisOfficeChunks, ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from './office/paradisOfficeCanonicalXml.js';
 import { PARADIS_OFFICE_BROKEN_IMAGE_SVG } from './paradisOfficeBrokenImage.js';
 
@@ -1905,10 +1905,7 @@ async function readPackageEntry(archive: ParadisOfficePackageArchive, entry: Par
 		await yieldPackageWork(input);
 	}
 	if (length !== entry.declaredExpandedBytes) { throw new ParadisOfficePackageError('malformed'); }
-	const result = new Uint8Array(length);
-	let offset = 0;
-	for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
-	return result;
+	return joinParadisOfficeChunks(chunks, length);
 }
 
 function sanitizePackageMedia(nodeId: string, name: string, raw: Uint8Array, semanticSvg: boolean, token?: CancellationToken, checkpoint?: () => void): { readonly bytes: Uint8Array; readonly asset: ParadisOfficeRenderableAsset; readonly placeholder?: ParadisOfficePlaceholder } {

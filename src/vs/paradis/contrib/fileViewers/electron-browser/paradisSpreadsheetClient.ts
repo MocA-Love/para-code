@@ -17,14 +17,13 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME } from '../common/paradisSpreadsheet.js';
+import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_MAX_BYTES, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME, isParadisSpreadsheetCompoundFile } from '../common/paradisSpreadsheet.js';
 import { describeParadisOfficeReadFailure, IParadisOfficeDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisOfficeDiffSides } from '../common/paradisOfficeDiffSide.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
 import { decodeParadisWorkbookJson, unpackParadisWorkbookStyles, type IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { parseDrawingObjects } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
-export const PARADIS_SPREADSHEET_MAX_BYTES = 20 * 1024 * 1024;
 
 /**
  * 指定リソースの xlsx を読み込み、shared process でパースした構造化データを返す。
@@ -295,7 +294,7 @@ export async function loadParadisSpreadsheetDiffSide(
 function throwIfNotWorkbook(resource: URI, content: VSBuffer): void {
 	const bytes = content.buffer;
 	const zip = bytes.byteLength >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04;
-	const compoundFile = bytes.byteLength >= 4 && bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
+	const compoundFile = isParadisSpreadsheetCompoundFile(bytes);
 	if (!zip && !compoundFile) {
 		// 所有者ファイルの文は、名前が `~$` で始まり、中身も ZIP でないときだけ出す。
 		throw new ParadisSpreadsheetNotWorkbookError(basename(resource).startsWith('~$'));
