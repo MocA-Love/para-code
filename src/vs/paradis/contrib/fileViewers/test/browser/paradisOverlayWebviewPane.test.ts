@@ -78,6 +78,22 @@ suite('ParadisOverlayWebviewPane', () => {
 		pane.clearContentFor(shown);
 		pane.clearContentFor(shown);
 		claimed.push(pane.place(false, mainWindow, container, options, () => { }));
+		// 戻ったときに描き直さないための記録: 描き終わりを確かめたものだけ使い回し、確かめる前に離れたら捨て、閉じたら捨てる。
+		const webview = pane.webview!;
+		const record = (confirmed: boolean) => ({ resource: shown, webview, keys: ['etag'], confirmed });
+		pane.shown = record(false);
+		const beforeConfirm = pane.canReuseShown(shown, ['etag']);
+		pane.confirmShown(webview);
+		const afterConfirm = [pane.canReuseShown(shown, ['etag']), pane.canReuseShown(shown, ['other'])];
+		pane.forgetUnconfirmedShown();
+		const keptConfirmed = pane.shown !== undefined;
+		pane.shown = record(false);
+		pane.forgetUnconfirmedShown();
+		const droppedUnconfirmed = pane.shown === undefined;
+		pane.shown = record(true);
+		pane.clearContentFor(shown);
+		const droppedOnClose = pane.shown === undefined;
+		deepStrictEqual({ beforeConfirm, afterConfirm, keptConfirmed, droppedUnconfirmed, droppedOnClose }, { beforeConfirm: false, afterConfirm: [true, false], keptConfirmed: true, droppedUnconfirmed: true, droppedOnClose: true });
 		deepStrictEqual({ claimed, disposedCalls, created }, {
 			claimed: [true, false, true, undefined],
 			disposedCalls: 1,
