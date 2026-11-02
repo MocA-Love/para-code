@@ -44,7 +44,7 @@ import { IParadisBrowserDownloadsService } from './paradisBrowserDownloadsServic
 const $ = dom.$;
 
 /** 一覧の幅。狭いウィンドウでは左右をクランプして内側に収める。 */
-const POPOVER_WIDTH = 340;
+const POPOVER_WIDTH = 320;
 /** ボタンとの縦の隙間。 */
 const ANCHOR_GAP = 4;
 /** コンテナ端との最小マージン。 */
@@ -106,13 +106,11 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 
 		const header = dom.append(this._element, $('.pbd-header'));
 		dom.append(header, $('.pbd-title')).textContent = localize('paradis.browserDownloads.popover.title', "ダウンロード");
-		const openFolder = dom.append(header, $<HTMLButtonElement>('button.pbd-link'));
-		openFolder.textContent = localize('paradis.browserDownloads.openFolder', "フォルダを開く");
+		// 見出しの操作はアイコンの 2 つ（Q537 の 7 章「ダウンロード」、案 A）
+		const openFolder = this._iconButton(header, Codicon.folderOpened, localize('paradis.browserDownloads.openFolder', "フォルダを開く"),
+			() => this._downloads.openDownloadsFolder(), this._store,
+			localize('paradis.browserDownloads.openFolderFailed', "保存先のフォルダが見つかりませんでした。自動保存をオフにしている場合は、各ファイルの「フォルダで表示」を使ってください。"));
 		this._headerButtons.push(openFolder);
-		this._register(dom.addDisposableListener(openFolder, dom.EventType.CLICK, () => this._run(
-			() => this._downloads.openDownloadsFolder(),
-			localize('paradis.browserDownloads.openFolderFailed', "保存先のフォルダが見つかりませんでした。自動保存をオフにしている場合は、各ファイルの「フォルダで表示」を使ってください。"),
-		)));
 		this._clearButton = this._iconButton(header, Codicon.clearAll, localize('paradis.browserDownloads.clearFinished', "終わったものを一覧から消す"), () => this._downloads.clearFinished(), this._store);
 		this._headerButtons.push(this._clearButton);
 

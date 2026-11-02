@@ -666,7 +666,7 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 	private readonly _element: HTMLElement;
 	private readonly _list: HTMLElement;
 	private readonly _container: HTMLElement;
-	private readonly _footerButton: HTMLButtonElement;
+	private readonly _manageButton: HTMLButtonElement;
 	private _focusable: HTMLElement[] = [];
 	private readonly _rowStore = this._register(new MutableDisposable());
 	private _disposed = false;
@@ -686,13 +686,16 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 		this._element.setAttribute('role', 'dialog');
 		const title = localize('paradis.browserExtensions.popover.title', "拡張機能");
 		this._element.setAttribute('aria-label', title);
-		dom.append(this._element, $('.pbx-header')).textContent = title;
+		// 見出し 30px と、管理を開く歯車（Q537 の 7 章「拡張機能」、案 A）
+		const header = dom.append(this._element, $('.pbx-header'));
+		dom.append(header, $('span.pbx-title')).textContent = title;
+		this._manageButton = dom.append(header, $<HTMLButtonElement>(`button.pbx-icon-button${ThemeIcon.asCSSSelector(Codicon.settingsGear)}`));
+		const manageLabel = localize('paradis.browserExtensions.popover.manage', "拡張機能を管理…");
+		this._manageButton.setAttribute('aria-label', manageLabel);
+		this._register(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this._manageButton, manageLabel));
 		this._list = dom.append(this._element, $('.pbx-list'));
 		this._list.setAttribute('role', 'list');
-		const footer = dom.append(this._element, $('.pbx-footer'));
-		this._footerButton = dom.append(footer, $<HTMLButtonElement>('button.pbx-link'));
-		this._footerButton.textContent = localize('paradis.browserExtensions.popover.manage', "拡張機能を管理…");
-		this._register(dom.addDisposableListener(this._footerButton, dom.EventType.CLICK, () => {
+		this._register(dom.addDisposableListener(this._manageButton, dom.EventType.CLICK, () => {
 			this.close();
 			paradisShowBrowserExtensionsDialog(this._instantiationService);
 		}));
@@ -707,7 +710,7 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 		anchor.setAttribute('aria-expanded', 'true');
 		this._layout();
 		this._registerListeners();
-		(this._focusable[0] ?? this._footerButton).focus();
+		(this._focusable[0] ?? this._manageButton).focus();
 	}
 
 	private _render(): void {
@@ -833,7 +836,7 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 	}
 
 	private _moveFocus(backwards: boolean): void {
-		const focusable = [...this._focusable, this._footerButton];
+		const focusable = [...this._focusable, this._manageButton];
 		const index = focusable.findIndex(element => dom.isActiveElement(element));
 		const next = backwards
 			? (index <= 0 ? focusable.length - 1 : index - 1)
