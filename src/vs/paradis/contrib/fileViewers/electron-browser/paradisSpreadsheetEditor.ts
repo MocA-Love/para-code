@@ -58,7 +58,7 @@ import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, conve
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridCell, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
-import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest, type ParadisSpreadsheetViewportFrame } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
+import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest, type ParadisSpreadsheetViewportFrame, type ParadisSpreadsheetVirtualRange } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
 import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
@@ -328,16 +328,13 @@ export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData
 	return { ...model, approximationWarnings };
 }
 
-/** Keeps legacy-only visual features on the existing renderer until their bounded tile adapters exist. */
+/**
+ * 大きなシートを仮想グリッドで描くか。仮想グリッドは見出し・固定枠・はみ出し・結合・罫線・表の体裁・行の高さ・
+ * 図形・「表示」のメモ・改ページ・印刷範囲・ページ番号を DOM の表と同じに描く。まだ描けない縮小表示（shrinkToFit）と
+ * リッチテキストのあるシートだけは、今の描き方（DOM の表）に留める。
+ */
 export function shouldVirtualizeSpreadsheetSheet(sheet: IParadisSheetData): boolean {
-	if (sheet.rows.length * sheet.columnCount <= VIRTUAL_GRID_CELL_THRESHOLD
-		|| sheet.showGridLines === false
-		|| (sheet.shapes?.length ?? 0) > 0
-		|| sheet.comments?.some(comment => comment.shown)
-		|| (sheet.rowBreaks?.length ?? 0) > 0
-		|| (sheet.colBreaks?.length ?? 0) > 0
-		|| sheet.printArea !== undefined
-		|| sheet.pageLayout !== undefined) {
+	if (sheet.rows.length * sheet.columnCount <= VIRTUAL_GRID_CELL_THRESHOLD) {
 		return false;
 	}
 	for (const row of sheet.rows) {
@@ -362,6 +359,9 @@ export interface IParadisVirtualGridIndex {
 	readonly comments: ReadonlyMap<string, IParadisCellComment>;
 	/** 結合の起点（データの行・列の番号）。範囲の外にある起点も、範囲に掛かっていればタイルに入れる。 */
 	readonly merges: readonly { readonly row: number; readonly column: number; readonly rowSpan: number; readonly columnSpan: number }[];
+	/** 結合の起点を行ごとに並べたもの（タイルごとに全件を見ないため）と、いちばん縦に長い結合の行数。 */
+	readonly mergesByRow: ReadonlyMap<number, readonly { readonly row: number; readonly column: number; readonly rowSpan: number; readonly columnSpan: number }[]>;
+	readonly maxMergeRows: number;
 	/** 固定した列の数（データの列）。固定枠のタイルのはみ出しは、この境目で切る。 */
 	readonly frozenColumns: number;
 }
@@ -373,7 +373,13 @@ export function createVirtualGridIndex(sheet: IParadisSheetData): IParadisVirtua
 			merges.push({ row: rowIndex, column: columnIndex, rowSpan: cell.rowSpan ?? 1, columnSpan: cell.colSpan ?? 1 });
 		}
 	}));
-	return { comments: commentKindsByCell(sheet), merges, frozenColumns: resolveFrozenPaneExtent(sheet).colCount };
+	const mergesByRow = new Map<number, typeof merges>();
+	let maxMergeRows = 1;
+	for (const merge of merges) {
+		mergesByRow.set(merge.row, [...(mergesByRow.get(merge.row) ?? []), merge]);
+		maxMergeRows = Math.max(maxMergeRows, merge.rowSpan);
+	}
+	return { comments: commentKindsByCell(sheet), merges, mergesByRow, maxMergeRows, frozenColumns: resolveFrozenPaneExtent(sheet).colCount };
 }
 
 /**
@@ -544,6 +550,55 @@ export function virtualGridLayoutFrame(frame: ParadisSpreadsheetViewportFrame, h
 	return { ...frame, width: Math.max(1, hostWidth / zoom), height: Math.max(1, hostHeight / zoom) };
 }
 
+/**
+ * Excel の行番号 → 仮想グリッドの上での行の上端（最後の行の次の番号には下端を入れる）。DOM の表の `tr.offsetTop` と
+ * 同じく、列記号の行の高さを含む。列の座標は DOM の表と同じく、行番号の列（36px）の右から列幅を足して求まる。
+ */
+export function virtualGridRowTops(sheet: IParadisSheetData, viewport: ParadisSpreadsheetViewport): Map<number, number> {
+	const tops = new Map<number, number>();
+	sheet.rows.forEach((row, index) => tops.set(row.excelRow, viewport.cellBounds(index + VIRTUAL_GRID_HEADER_ROWS, 0).top));
+	const last = sheet.rows.at(-1);
+	if (last) {
+		const bounds = viewport.cellBounds(sheet.rows.length - 1 + VIRTUAL_GRID_HEADER_ROWS, 0);
+		tops.set(last.excelRow + 1, bounds.top + bounds.height);
+	}
+	return tops;
+}
+
+/**
+ * 選んだ範囲（仮想グリッドの番号）をコピーする文字。DOM の表で範囲を選んでコピーしたときのブラウザの形に合わせ、
+ * 行の中のセルはタブ、行の終わりは改行でつなぐ。結合は起点のセルに値があり、覆われたセルは表に td が無いので飛ばす。
+ * 幅 0 の隠れた列は空の欄（表と同じ）。見出しの行・列は含めない。画面の外の行も含める（元のデータから作るので、固定枠の複製も混ざらない）。
+ */
+export function virtualGridCopyText(sheet: IParadisSheetData, range: ParadisSpreadsheetVirtualRange): string {
+	const [rowStart, columnStart, rowEnd, columnEnd] = range;
+	const dataRowStart = Math.max(rowStart, VIRTUAL_GRID_HEADER_ROWS) - VIRTUAL_GRID_HEADER_ROWS;
+	const dataRowEnd = Math.min(sheet.rows.length, rowEnd - VIRTUAL_GRID_HEADER_ROWS);
+	const dataColumnStart = Math.max(columnStart, VIRTUAL_GRID_HEADER_COLUMNS) - VIRTUAL_GRID_HEADER_COLUMNS;
+	const dataColumnEnd = Math.min(sheet.columnCount, columnEnd - VIRTUAL_GRID_HEADER_COLUMNS);
+	// 見出しのセルだけを選んでいるとき（見出しをクリックした後）は何もコピーしない
+	if (rowStart < VIRTUAL_GRID_HEADER_ROWS && rowEnd <= VIRTUAL_GRID_HEADER_ROWS || columnStart < VIRTUAL_GRID_HEADER_COLUMNS && columnEnd <= VIRTUAL_GRID_HEADER_COLUMNS) {
+		return '';
+	}
+	if (dataRowStart >= dataRowEnd || dataColumnStart >= dataColumnEnd) {
+		return '';
+	}
+	const lines: string[] = [];
+	for (let rowIndex = dataRowStart; rowIndex < dataRowEnd; rowIndex++) {
+		const values: string[] = [];
+		for (let columnIndex = dataColumnStart; columnIndex < dataColumnEnd; columnIndex++) {
+			const cell = sheet.rows[rowIndex].cells[columnIndex];
+			if (cell?.hidden) {
+				continue;
+			}
+			// 幅 0 の隠れた列は、表でも文字が描かれないので空の欄になる
+			values.push((sheet.columnWidths[columnIndex] ?? 0) > 0 ? cell?.value ?? '' : '');
+		}
+		lines.push(values.join('\t'));
+	}
+	return lines.join('\n');
+}
+
 /** エディタの大きさが変わったときに仮想グリッドを描き直す（`layout()` の本体）。入れ物が無ければエディタの大きさを使う。 */
 export function relayoutVirtualGrid(renderer: ParadisSpreadsheetGridRenderer, host: HTMLElement | undefined, dimension: { readonly width: number; readonly height: number }): Promise<unknown> {
 	return renderer.render(virtualGridLayoutFrame(renderer.frame, host?.clientWidth ?? dimension.width, host?.clientHeight ?? dimension.height, renderer.zoomFactor));
@@ -638,7 +693,9 @@ export function measureVirtualGridContentRows(host: HTMLElement, sheet: IParadis
 				continue;
 			}
 			const style = cell.style as Record<string, string | undefined>;
-			const key = ROW_PROBE_STYLES.map(property => style[property] ?? '').join('|');
+			// 英数字だけの文字は、和文の書体に切り替わらないので 1 行が低い。見本の文字も揃える
+			const cjk = /[^\u0000-\u007f]/.test(cell.value);
+			const key = `${ROW_PROBE_STYLES.map(property => style[property] ?? '').join('|')}|${cjk ? 'cjk' : 'latin'}`;
 			if (!probes.has(key)) {
 				const element = doc.createElement('div');
 				element.className = 'paradis-spreadsheet-virtual-cell';
@@ -648,7 +705,7 @@ export function measureVirtualGridContentRows(host: HTMLElement, sheet: IParadis
 						(element.style as unknown as Record<string, string>)[property] = style[property]!;
 					}
 				}
-				element.textContent = 'Ag\u6f22';
+				element.textContent = cjk ? 'Ag\u6f22' : 'Ag';
 				box.appendChild(element);
 				probes.set(key, element);
 			}
@@ -785,9 +842,11 @@ export function legacyGridTile(sheet: IParadisSheetData, request: ParadisSpreads
 		}
 	}
 	// 起点が範囲の外にある結合（上や左に外れていても、範囲に掛かっていれば描く）
-	for (const merge of index.merges) {
-		if (merge.row < dataRowEnd && dataRowStart < merge.row + merge.rowSpan && merge.column < dataColumnEnd && dataColumnStart < merge.column + merge.columnSpan) {
-			push(merge.row, merge.column);
+	for (let row = Math.max(0, dataRowStart - index.maxMergeRows + 1); row < dataRowEnd; row++) {
+		for (const merge of index.mergesByRow.get(row) ?? []) {
+			if (dataRowStart < merge.row + merge.rowSpan && merge.column < dataColumnEnd && dataColumnStart < merge.column + merge.columnSpan) {
+				push(merge.row, merge.column);
+			}
 		}
 	}
 	return { revision: request.revision, range: request.range, cells };
@@ -1051,13 +1110,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _virtualRevision: string | undefined;
 	/** 仮想グリッドを画面に出ていないときに作り、行の高さを測れていない。 */
 	private _virtualRowsUnmeasured = false;
-	private _previousVirtualPosition: { readonly revision: string; readonly anchor: ReturnType<ParadisSpreadsheetViewport['logicalAnchor']>; readonly focused?: { readonly row: number; readonly column: number } } | undefined;
+	private _previousVirtualPosition: { readonly revision: string; readonly anchor: ReturnType<ParadisSpreadsheetViewport['logicalAnchor']>; readonly selection?: ParadisSpreadsheetGridRenderer['selection'] } | undefined;
 
 	/** 仮想グリッドで見ていた位置。同じシートの描き直しでだけ使う。 */
-	private get _virtualPosition(): { readonly revision: string; readonly anchor: ReturnType<ParadisSpreadsheetViewport['logicalAnchor']>; readonly focused?: { readonly row: number; readonly column: number } } | undefined {
+	private get _virtualPosition(): { readonly revision: string; readonly anchor: ReturnType<ParadisSpreadsheetViewport['logicalAnchor']>; readonly selection?: ParadisSpreadsheetGridRenderer['selection'] } | undefined {
 		const renderer = this._virtualRenderer.value;
 		const viewport = this._virtualViewport;
-		return renderer && viewport && this._virtualRevision ? { revision: this._virtualRevision, anchor: viewport.logicalAnchor(renderer.frame), focused: renderer.focusedCell } : undefined;
+		return renderer && viewport && this._virtualRevision ? { revision: this._virtualRevision, anchor: viewport.logicalAnchor(renderer.frame), selection: renderer.selection } : undefined;
 	}
 	private readonly _gridAccessibility = this._register(new MutableDisposable<IDisposable>());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisSpreadsheetChangeInspector>());
@@ -1725,7 +1784,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const scheduledNavigation = dom.scheduleAtNextAnimationFrame(dom.getWindow(body), () => {
 			const virtualHost = this._virtualHostEl;
 			if (virtualHost && this._virtualRenderer.value) {
-				void this._virtualRenderer.value.revealCell(rowIndex + VIRTUAL_GRID_HEADER_ROWS, columnIndex + VIRTUAL_GRID_HEADER_COLUMNS);
+				// DOM の表と同じく、検索で移ったセルは画面の中央に出す
+				void this._virtualRenderer.value.revealCell(rowIndex + VIRTUAL_GRID_HEADER_ROWS, columnIndex + VIRTUAL_GRID_HEADER_COLUMNS, true);
 				return;
 			}
 			const rowElement = this._dataRowEls.find(item => item.excelRow === navigation.cell!.row)?.tr as HTMLTableRowElement | undefined;
@@ -1898,6 +1958,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._virtualRowsUnmeasured = !contentRows;
 		const viewport = createVirtualGridViewport(sheet, measureVirtualGridHeaderHeight(host), revision, contentRows);
 		const index = createVirtualGridIndex(sheet);
+		// 枠線を出さない設定のシート（DOM の表は grid のクラスを付けない）
+		host.classList.toggle('paradis-spreadsheet-virtual-nogrid', sheet.showGridLines === false);
 		// Excel の見た目（縦位置など）の CSS はこのクラスの中だけに効く（CSV のビューアも同じグリッドを使う）
 		host.classList.add('paradis-spreadsheet-virtual-excel');
 		const renderer = new ParadisSpreadsheetGridRenderer(host, viewport, {
@@ -1905,8 +1967,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			fontsReady: dom.getWindow(host).document.fonts.ready,
 			zoom: target,
 			copyFocusedCell: true,
+			copyRange: range => virtualGridCopyText(sheet, range),
 		});
-		applyParadisOfficeGridMetadata(host, localize('paradis.spreadsheet.sheetGrid', "シート「{0}」", sheet.name), Math.max(1, sheet.rows.length), Math.max(1, sheet.columnCount));
+		// 行・列の数は、セルの aria の番号と同じく見出しの 1 行・1 列を含める
+		applyParadisOfficeGridMetadata(host, localize('paradis.spreadsheet.sheetGrid', "シート「{0}」", sheet.name), Math.max(1, sheet.rows.length) + VIRTUAL_GRID_HEADER_ROWS, Math.max(1, sheet.columnCount) + VIRTUAL_GRID_HEADER_COLUMNS);
 		// 打ち切りの知らせは、グリッド（本体いっぱいに広がる）の下に置き、その分だけグリッドを縮める（重なって隠れないように）
 		let noticeHeight = 0;
 		if (sheet.truncated) {
@@ -1923,11 +1987,12 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const previous = this._previousVirtualPosition;
 		this._previousVirtualPosition = undefined;
 		const start = previous?.revision === revision ? viewport.remeasure({}, previous.anchor) : { scrollTop: 0, scrollLeft: 0 };
-		if (previous?.revision === revision && previous.focused) {
-			// フォーカスしていたセルも保つ
-			renderer.setFocusedCell(previous.focused.row, previous.focused.column);
+		if (previous?.revision === revision && previous.selection) {
+			// 選んでいた範囲とフォーカスしていたセルも保つ
+			renderer.setSelection(previous.selection.anchor, previous.selection.focused);
 		}
 		this._virtualRenderer.value = renderer;
+		this._renderVirtualOverlays(sheet, viewport, renderer, host.ownerDocument);
 		this._virtualViewport = viewport;
 		this._virtualRevision = revision;
 		void renderer.render({
@@ -1937,6 +2002,40 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		});
 		if (this._percentBtn) {
 			this._percentBtn.textContent = `${Math.round(target * 100)}%`;
+		}
+	}
+
+	/**
+	 * 図形・「表示」のメモ・改ページ線・印刷範囲・ページ番号の透かしを、DOM の表と同じ組み立てで仮想グリッドに重ねる。
+	 * 行の位置は viewport から取る（DOM を測らない）。列の位置と見出しの分のずれは DOM の表と同じなので、組み立てはそのまま使える。
+	 */
+	private _renderVirtualOverlays(sheet: IParadisSheetData, viewport: ParadisSpreadsheetViewport, renderer: ParadisSpreadsheetGridRenderer, doc: Document): void {
+		const rowY = virtualGridRowTops(sheet, viewport);
+		const foreground: (HTMLElement | SVGElement)[] = [];
+		const background: (HTMLElement | SVGElement)[] = [];
+		if (sheet.shapes && sheet.shapes.length > 0) {
+			const workbook = this._workbook;
+			const shapes = buildShapeOverlay(sheet.shapes, rowY, sheet.columnWidths, sheet.minCol, doc, {
+				onImageError: shape => this._noteBrokenImage(workbook, sheet.name, shape),
+			});
+			if (shapes) {
+				foreground.push(shapes);
+			}
+		}
+		const notes = sheet.comments ? buildShownNoteOverlay(sheet.comments, rowY, sheet.columnWidths, sheet.minCol, doc) : undefined;
+		if (notes) {
+			foreground.push(notes);
+		}
+		const { rowLines, colLines, labels } = describeSheetPageBreaks(sheet);
+		const breaks = buildPageBreakOverlay(rowLines, colLines, sheet.printArea, labels, rowY, sheet.columnWidths, sheet.minCol, doc);
+		if (breaks.lines) {
+			foreground.push(breaks.lines);
+		}
+		if (breaks.labels) {
+			background.push(breaks.labels);
+		}
+		if (foreground.length || background.length) {
+			renderer.addDecorations(background, foreground);
 		}
 	}
 

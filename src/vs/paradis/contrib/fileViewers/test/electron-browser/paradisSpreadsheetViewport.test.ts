@@ -165,23 +165,37 @@ suite('paradisSpreadsheetViewport', () => {
 		strictEqual(scaleSpreadsheetLogicalOffset(120, 100, 20), 20);
 	});
 
-	test('keeps legacy-only presentation features on the existing renderer', () => {
-		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection()), true);
-		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { showGridLines: false })), false);
-		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection({ value: 'rich', style: {}, richText: [{ text: 'rich', style: { fontWeight: 'bold' } }] })), false);
-		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection({ value: 'shrink', style: {}, shrinkToFit: true })), false);
-		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, {
-			shapes: [{
-				type: 'line', flipV: false, flipH: false,
-				from: { c: 0, co: 0, r: 0, ro: 0 }, to: { c: 1, co: 0, r: 1, ro: 0 },
-				outlineColor: '#000000', outlineWidth: 1, dash: 'solid',
-			}],
-		})), false);
-		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { rowBreaks: [10] })), false);
-		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { comments: [{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [] }] })), true);
-		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, {
-			comments: [{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [], shown: { from: { c: 1, co: 0, r: 0, ro: 0 }, to: { c: 3, co: 0, r: 4, ro: 0 } } }],
-		})), false);
+	test('keeps only shrink-to-fit and rich text on the existing renderer', () => {
+		const shape = {
+			type: 'line' as const, flipV: false, flipH: false,
+			from: { c: 0, co: 0, r: 0, ro: 0 }, to: { c: 1, co: 0, r: 1, ro: 0 },
+			outlineColor: '#000000', outlineWidth: 1, dash: 'solid' as const,
+		};
+		deepStrictEqual({
+			plain: shouldVirtualizeSpreadsheetSheet(largeProjection()),
+			small: shouldVirtualizeSpreadsheetSheet({ ...largeProjection(), rows: largeProjection().rows.slice(0, 10) }),
+			richText: shouldVirtualizeSpreadsheetSheet(largeProjection({ value: 'rich', style: {}, richText: [{ text: 'rich', style: { fontWeight: 'bold' } }] })),
+			shrinkToFit: shouldVirtualizeSpreadsheetSheet(largeProjection({ value: 'shrink', style: {}, shrinkToFit: true })),
+			// 仮想グリッドも同じに描けるようになったもの
+			noGridLines: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { showGridLines: false })),
+			shapes: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { shapes: [shape] })),
+			pageBreaks: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { rowBreaks: [10], colBreaks: [5] })),
+			printArea: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { printArea: { minR: 1, minC: 1, maxR: 80, maxC: 20 } })),
+			// xlsx のほぼ全シートに付く用紙設定
+			pageLayout: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, {
+				pageLayout: {
+					rowBands: [{ from: 1, to: 50, manual: false, size: 750 }, { from: 51, to: 101, manual: false, size: 765 }],
+					colBands: [{ from: 1, to: 100, manual: false, size: 4800 }],
+					autoRowBreaks: [50], autoColBreaks: [], pageNumbers: [[1], [2]], pageCount: 2, effectiveScale: 1, usableWidth: 500, usableHeight: 700,
+				},
+			})),
+			shownNote: shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, {
+				comments: [{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [], shown: { from: { c: 1, co: 0, r: 0, ro: 0 }, to: { c: 3, co: 0, r: 4, ro: 0 } } }],
+			})),
+		}, {
+			plain: true, small: false, richText: false, shrinkToFit: false,
+			noGridLines: true, shapes: true, pageBreaks: true, printArea: true, pageLayout: true, shownNote: true,
+		});
 	});
 });
 
