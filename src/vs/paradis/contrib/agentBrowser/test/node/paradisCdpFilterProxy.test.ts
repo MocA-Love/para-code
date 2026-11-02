@@ -12,7 +12,7 @@ import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.j
 import { PARADIS_PAGE_URL_FRESH_MS } from '../../common/paradisCdpExtensionScope.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
 import { paradisCdpErrorFrame, paradisForwardableCdpFrame, paradisReadCdpFrame } from '../../node/paradisCdpFrames.js';
-import { IParadisBoundContext, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
+import { IParadisBoundContext, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisTargetUrlCheckAnswered, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpGatewayDelegate, ParadisCdpGateway, paradisPageUpgradeTargetIsCurrent } from '../../node/paradisCdpGateway.js';
 import { ParadisCdpUpstream } from '../../node/paradisCdpUpstream.js';
@@ -1312,6 +1312,12 @@ suite('Paradis CDP screenshot filter', () => {
 		}
 	});
 
+	test('a URL check counts as confirmed only with an answer: a timeout or a request that could not be sent refuses the command, on both routes', () => {
+		// Both routes refuse when this is false. On the page route an unsent request (undefined) cannot be produced from outside:
+		// one check is shared by all waiting commands and a timed-out one leaves the waiter, so the cap is never reached.
+		assert.deepStrictEqual([paradisTargetUrlCheckAnswered({ id: -1, result: {} }), paradisTargetUrlCheckAnswered('timeout'), paradisTargetUrlCheckAnswered(undefined)], [true, false, false]);
+	});
+
 	test('a URL check that timed out leaves nothing behind: a late answer is dropped quietly, and a thousand more timeouts are still refused', async () => {
 		const clock = sinon.useFakeTimers();
 		fixtureTargetInfoSilent.value = true;
@@ -1343,6 +1349,53 @@ suite('Paradis CDP screenshot filter', () => {
 			fixtureUnansweredTargetInfo.length = 0;
 			clock.restore();
 		}
+	});
+
+	test('a visible WebP screenshot goes upstream as the client sent it, on both routes', async () => {
+		const visible = () => context({ isBoundPageVisible: async () => true });
+		const page = createProxyFixture(visible());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		page.upstream.readyState = TestWebSocket.OPEN;
+		page.upstream.emit('open');
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 7, method: 'Page.captureScreenshot', params: { format: 'webp' } })));
+		const browser = await createOpenBrowserProxyFixture(visible());
+		publishAllowedSession(browser, 'session-1');
+		browser.upstream.sent.length = 0;
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 8, sessionId: 'session-1', method: 'Page.captureScreenshot', params: { format: 'webp' } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const upstreamFrames = [...parseSent(page.upstream), ...parseSent(browser.upstream)]
+			.filter(frame => (frame as { id: number }).id > 0)
+			.map(frame => { const { id, sessionId, method, params } = frame as { id: number; sessionId?: string; method: string; params: unknown }; return { id, sessionId, method, params }; });
+		assert.deepStrictEqual(upstreamFrames, [
+			{ id: 7, sessionId: undefined, method: 'Page.captureScreenshot', params: { format: 'webp' } },
+			{ id: 8, sessionId: 'session-1', method: 'Page.captureScreenshot', params: { format: 'webp' } },
+		]);
+	});
+
+	test('both routes refuse a window size command and a Cookie header, and forward neither', async () => {
+		const page = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		page.upstream.readyState = TestWebSocket.OPEN;
+		page.upstream.emit('open');
+		const browser = await createOpenBrowserProxyFixture();
+		publishAllowedSession(browser, 'session-1');
+		browser.upstream.sent.length = 0;
+		const window = { method: 'Browser.setWindowBounds', params: { windowId: 1, bounds: { width: 10 } } };
+		const cookie = { method: 'Network.setExtraHTTPHeaders', params: { headers: { Cookie: 'a=b' } } };
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 1, ...window })));
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 2, ...cookie })));
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 3, ...window })));
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 4, sessionId: 'session-1', ...cookie })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const refusals = [...parseSent(page.client), ...parseSent(browser.client)]
+			.filter(frame => (frame as { error?: unknown }).error !== undefined)
+			.map(frame => [(frame as { id: number }).id, (frame as { error: { message: string } }).error.message.split(':')[0]]);
+		const forwarded = [...parseSent(page.upstream), ...parseSent(browser.upstream)].map(frame => (frame as { id: number }).id).filter(id => id > 0);
+		assert.deepStrictEqual({ refusals, forwarded }, {
+			// The page route refuses Browser.* earlier, as a shared-state method; the browser route as a window size command
+			refusals: [[1, 'Browser.setWindowBounds is not permitted'], [2, 'Network.setExtraHTTPHeaders with a Cookie header is not permitted'], [3, 'Browser.setWindowBounds is not supported'], [4, 'Network.setExtraHTTPHeaders with a Cookie header is not permitted']],
+			forwarded: [],
+		});
 	});
 
 	test('wraps scripts registered for new documents so they never run in an extension page, on both routes', async () => {
