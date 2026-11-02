@@ -22,6 +22,8 @@ import {
 	IParadisRtkDailyRow,
 	IParadisRtkExecOptions,
 	IParadisRtkHistoryEntry,
+	IParadisRtkHistoryStats,
+	IParadisRtkMissedCommand,
 	IParadisRtkSummary,
 	paradisRtkLocalDateString,
 	PARADIS_RTK_CHANNEL
@@ -144,6 +146,20 @@ export class ParadisRtkClient {
 	 * — rtk は常に全期間を返すため、期間切り替えのたびに CLI を再実行する必要が無い。
 	 * 一部レポートの失敗は failedReports として返し、全体は成立させる。
 	 */
+	/** 期間のコマンド別・リポジトリ別（rtk の履歴の DB）。DB を読めない古い接続先・形の違う DB では undefined。 */
+	async fetchHistoryStats(since: string, until: string, bypassCache = false): Promise<IParadisRtkHistoryStats | undefined> {
+		try {
+			return await this.channel.call<IParadisRtkHistoryStats | undefined>('fetchHistoryStats', [{ ...this.execOptions(bypassCache), since, until }]);
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** rtk を通さずに打ったコマンド（`rtk discover`）。重いので shared process / 接続先が長く覚えている。 */
+	fetchMissed(days: number, bypassCache = false): Promise<readonly IParadisRtkMissedCommand[]> {
+		return this.channel.call<readonly IParadisRtkMissedCommand[]>('fetchMissed', [{ ...this.execOptions(bypassCache), days }]);
+	}
+
 	async fetchDashboard(bypassCache = false): Promise<IParadisRtkDashboardData> {
 		const options = this.execOptions(bypassCache);
 		const today = await this.fetchToday();

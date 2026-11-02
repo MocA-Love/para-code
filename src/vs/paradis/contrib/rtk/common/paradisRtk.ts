@@ -87,6 +87,40 @@ export function paradisRtkLocalDateString(date: Date): string {
 	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+/** 期間を指定した集計の要求（rtk の履歴の DB を読む。Q537 の 15 B）。日付は rtk を実行するマシンのローカル日付。 */
+export interface IParadisRtkHistoryStatsOptions extends IParadisRtkExecOptions {
+	/** YYYY-MM-DD（含む）。 */
+	readonly since: string;
+	/** YYYY-MM-DD（含む）。 */
+	readonly until: string;
+}
+
+/** 履歴の DB から数えた、期間のコマンド別・リポジトリ別の集計。DB を読めなければ undefined が返る。 */
+export interface IParadisRtkHistoryStats {
+	readonly totals: { readonly commands: number; readonly inputTokens: number; readonly savedTokens: number; readonly execMs: number };
+	/** コマンド別（節約量の多い順、上位だけ）。 */
+	readonly commands: readonly { readonly command: string; readonly count: number; readonly inputTokens: number; readonly savedTokens: number; readonly execMs: number }[];
+	/**
+	 * 作業フォルダをリポジトリへ束ねたもの（AI コストのリポジトリ別と同じ束ね方。節約量の多い順）。
+	 * `outside` は git の外・作業フォルダの記録が無いもの。
+	 */
+	readonly repos: readonly { readonly name: string; readonly folders: number; readonly count: number; readonly savedTokens: number }[];
+	readonly outside: { readonly count: number; readonly savedTokens: number };
+}
+
+/** `rtk discover` の結果（rtk を通さずに打ったコマンドと、通していれば減らせた見込み）。 */
+export interface IParadisRtkMissedCommand {
+	readonly command: string;
+	readonly rtkEquivalent: string;
+	readonly count: number;
+	readonly estimatedSavedTokens: number;
+}
+
+export interface IParadisRtkMissedOptions extends IParadisRtkExecOptions {
+	/** 直近何日の会話を見るか。 */
+	readonly days: number;
+}
+
 /** チャネルのメソッドと戻り値(shared process / 接続先の REH の双方が同じ形で実装する)。 */
 export interface IParadisRtkService {
 	/** rtk を実行するマシンにとっての今日(YYYY-MM-DD)。日付の基準を集計側へ合わせるために使う。 */
@@ -99,6 +133,10 @@ export interface IParadisRtkService {
 	fetchByCommand(options: IParadisRtkExecOptions): Promise<IParadisRtkCommandRow[]>;
 	/** 直近に実行されたコマンド(新しい順)。 */
 	fetchRecentHistory(options: IParadisRtkExecOptions): Promise<IParadisRtkHistoryEntry[]>;
+	/** 期間のコマンド別・リポジトリ別の集計（履歴の DB を読む）。読めなければ undefined。 */
+	fetchHistoryStats(options: IParadisRtkHistoryStatsOptions): Promise<IParadisRtkHistoryStats | undefined>;
+	/** rtk を通さずに打ったコマンド（`rtk discover`。重いので結果を長く覚える）。 */
+	fetchMissed(options: IParadisRtkMissedOptions): Promise<readonly IParadisRtkMissedCommand[]>;
 }
 
 /** 1234567 → "1.2M"。ステータスバー・KPI・グラフ軸で同じ丸め方を使うため共有する。 */

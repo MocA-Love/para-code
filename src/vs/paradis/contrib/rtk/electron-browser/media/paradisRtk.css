@@ -171,6 +171,7 @@
 @container paradis-rtk-panel (max-width: 900px) {
 	.paradis-rtk-kpis { grid-template-columns: 1fr 1fr; }
 	.paradis-rtk-grid2 { grid-template-columns: 1fr; }
+	.paradis-rtk-columns { grid-template-columns: 1fr; }
 }
 
 /* ---- stat tiles ---- */
@@ -369,4 +370,27 @@
 .paradis-rtk-tooltip .tt-val {
 	font-weight: 600;
 	font-variant-numeric: tabular-nums;
+}
+
+/* Two stacked columns (Q537 decision 15 B): the period on the left, the breakdowns on the right, as on the AI cost page. */
+.paradis-rtk-columns {
+	display: grid;
+	grid-template-columns: 1.5fr 1fr;
+	gap: 12px;
+	margin-bottom: 12px;
+	align-items: start;
+}
+
+.paradis-rtk-col {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	min-width: 0;
+}
+
+.paradis-rtk-commands td:first-child {
+	max-width: 260px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
