@@ -108,6 +108,27 @@ export function paradisRedactSecrets(text: string): string {
 }
 
 /**
+ * 複数行の文（エージェントの発言・承認の中身・コマンドの出力）を、通知・受信箱・モバイルで同じ強さで伏せる。
+ * {@link paradisRedactSecrets} は 1 行の文を前提にしているので、先に次を足してから行ごとに当てる。
+ * - 複数行の PEM の秘密鍵は、BEGIN から END までを丸ごと伏せる（1 行ずつ見ると鍵の本文の行が残る）
+ * - URL に埋め込まれた資格情報は、パスワードの無い形（`https://token@host`）も伏せる（git の remote の表記に出る）
+ * - Azure の接続文字列の `AccountKey=` など、Slack の Incoming Webhook の URL（workflows・triggers・slack-gov）
+ *
+ * `paradisRedactSecrets` に混ぜないのは、サイトのメモ（`ssh://git@host` を書いたメモを拒まない）と Sentry が
+ * あちらの規則だけを使うため。形の決まっていない秘密は拾えない（見落としはありうる）。
+ */
+export function paradisRedactTextSecrets(text: string): string {
+	const prepared = text
+		.replace(/-----BEGIN (?<kind>[A-Z ]*)PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '-----BEGIN $<kind>PRIVATE KEY----- ***')
+		.replace(/(?<scheme>[a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, '$<scheme>***@')
+		// Azure の接続文字列（`AccountKey=…;`・`SharedAccessKey=…`・SAS の `sig=…`）
+		.replace(/\b(?<name>AccountKey|SharedAccessKey|SharedAccessSignature|sig)=(?<value>[^;&\s"']+)/gi, '$<name>=***')
+		// Slack の Incoming Webhook（URL そのものが資格情報）
+		.replace(/https:\/\/hooks\.slack(?:-gov)?\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9/_-]+/g, 'https://hooks.slack.com/***');
+	return prepared.split('\n').map(line => paradisRedactSecrets(line)).join('\n');
+}
+
+/**
  * {@link paradisRedactSecrets} と同じ規則で、伏せた部分を `marker` にする（Sentry は `[Filtered]`）。
  * 印を `paradisRedactSecrets` の省略可能な引数にしないのは、`lines.map(paradisRedactSecrets)` が添え字を印として渡すため。
  */

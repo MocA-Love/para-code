@@ -21,7 +21,7 @@ import { StringSHA1 } from '../../../../base/common/hash.js';
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { paradisOneLine } from '../../agentInsights/common/paradisAgentInsights.js';
-import { paradisRedactSecrets } from '../../../common/paradisSecretRedaction.js';
+import { paradisRedactSecrets, paradisRedactTextSecrets } from '../../../common/paradisSecretRedaction.js';
 
 // 伏せ字の規則は Sentry へ送る文と共用するので、依存の無い共通のファイルに置いてある。
 export { paradisRedactSecrets };
@@ -252,12 +252,12 @@ export function paradisPermissionPreview(text: string): string {
 	const oneLine = text.replace(/\s+/g, ' ').trim();
 	const prefixed = /^(?<tool>[A-Za-z][\w.-]*): (?<detail>.*)$/.exec(oneLine);
 	if (prefixed?.groups) {
-		return `${prefixed.groups.tool}: ${paradisRedactSecrets(prefixed.groups.detail)}`;
+		return `${prefixed.groups.tool}: ${paradisRedactTextSecrets(prefixed.groups.detail)}`;
 	}
 	if (/^[A-Za-z][\w.-]*$/.test(oneLine)) {
 		return oneLine; // ツール名だけ
 	}
-	return `Bash: ${paradisRedactSecrets(oneLine)}`;
+	return `Bash: ${paradisRedactTextSecrets(oneLine)}`;
 }
 
 /** 中継から読んだペインの様子のうち、通知に使う部分。 */
@@ -275,7 +275,7 @@ export interface IParadisNotificationMessageSource {
  */
 export function paradisPickNotificationMessage(source: IParadisNotificationMessageSource | undefined, kind: ParadisInboxKind, since: number): { readonly text?: string; readonly fresh: boolean } {
 	if (kind !== 'review' && source?.interaction !== undefined) {
-		const text = kind === 'permission' ? paradisPermissionPreview(source.interaction.text) : paradisRedactSecrets(source.interaction.text);
+		const text = kind === 'permission' ? paradisPermissionPreview(source.interaction.text) : paradisRedactTextSecrets(source.interaction.text);
 		return { text, fresh: true };
 	}
 	const message = source?.lastMessage;
@@ -284,5 +284,5 @@ export function paradisPickNotificationMessage(source: IParadisNotificationMessa
 		return { fresh: kind !== 'review' || source === undefined };
 	}
 	const fresh = kind !== 'review' || message.at === undefined || message.at >= since;
-	return { text: fresh ? paradisRedactSecrets(message.text) : undefined, fresh };
+	return { text: fresh ? paradisRedactTextSecrets(message.text) : undefined, fresh };
 }
