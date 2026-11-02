@@ -8,9 +8,14 @@ import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
+import { Toggle } from '../../../../base/browser/ui/toggle/toggle.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { defaultToggleStyles } from '../../../../platform/theme/browser/defaultStyles.js';
+import './media/paradisOfficeFindWidget.css';
 import type { ParadisOfficeSearchResult } from '../common/paradisOfficeProtocol.js';
 import { PARADIS_OFFICE_SEARCH_PAGE_SIZE, PARADIS_OFFICE_SEARCH_RESULT_LIMIT, type ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
 
@@ -26,11 +31,15 @@ export interface ParadisOfficeFindWidgetOptions {
 	readonly isActive?: () => boolean;
 }
 
-/** Shared script-free Office find surface. Navigation is delegated as a typed logical result only. */
+/**
+ * Shared script-free Office find surface. Navigation is delegated as a typed logical result only.
+ * 見た目は本家のエディタの検索の小窓（findWidget.css）に合わせる: 高さ 34・角丸 large・影 shadow-lg、
+ * 入力欄の中に「大文字と小文字を区別」の Toggle、件数、↑↓ と閉じるの codicon のボタン。
+ */
 export class ParadisOfficeFindWidget extends Disposable {
 	private readonly element: HTMLElement;
 	private readonly input: HTMLInputElement;
-	private readonly matchCaseButton: HTMLButtonElement;
+	private readonly matchCaseToggle: Toggle;
 	private readonly previousButton: HTMLButtonElement;
 	private readonly nextButton: HTMLButtonElement;
 	private readonly closeButton: HTMLButtonElement;
@@ -63,41 +72,25 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.element.setAttribute('role', 'search');
 		this.element.setAttribute('aria-label', localize('paradis.office.findWidget', "Office 文書内を検索"));
 		this.element.setAttribute('aria-hidden', 'true');
-		this.element.style.position = 'absolute';
-		this.element.style.inset = '8px 8px auto auto';
-		this.element.style.zIndex = '40';
 		this.element.style.display = 'none';
-		this.element.style.flexWrap = 'wrap';
-		this.element.style.alignItems = 'center';
-		this.element.style.gap = '4px';
-		this.element.style.maxWidth = 'min(560px, calc(100% - 16px))';
-		this.element.style.padding = '6px';
-		this.element.style.border = '1px solid var(--vscode-widget-border, transparent)';
-		this.element.style.borderRadius = '4px';
-		this.element.style.background = 'var(--vscode-editorWidget-background)';
-		this.element.style.color = 'var(--vscode-editorWidget-foreground)';
-		this.element.style.boxShadow = '0 2px 8px var(--vscode-widget-shadow)';
 
+		const inputBox = document.createElement('div');
+		inputBox.className = 'paradis-office-find-input';
+		this.element.appendChild(inputBox);
 		this.input = document.createElement('input');
 		this.input.type = 'search';
 		this.input.maxLength = MAXIMUM_QUERY_LENGTH;
 		this.input.placeholder = localize('paradis.office.findPlaceholder', "検索");
 		this.input.setAttribute('aria-label', localize('paradis.office.findInput', "検索"));
-		this.input.style.minWidth = '180px';
-		this.input.style.background = 'var(--vscode-input-background)';
-		this.input.style.color = 'var(--vscode-input-foreground)';
-		this.input.style.border = '1px solid var(--vscode-input-border, transparent)';
-		this.element.appendChild(this.input);
+		inputBox.appendChild(this.input);
 
-		this.matchCaseButton = button(document, 'Aa', localize('paradis.office.findMatchCase', "大文字と小文字を区別"));
-		this.matchCaseButton.setAttribute('aria-pressed', 'false');
-		this.element.appendChild(this.matchCaseButton);
-		this.previousButton = button(document, '↑', localize('paradis.office.findPrevious', "前の一致"));
-		this.element.appendChild(this.previousButton);
-		this.nextButton = button(document, '↓', localize('paradis.office.findNext', "次の一致"));
-		this.element.appendChild(this.nextButton);
-		this.closeButton = button(document, '×', localize('paradis.office.findClose', "閉じる"));
-		this.element.appendChild(this.closeButton);
+		this.matchCaseToggle = this._register(new Toggle({
+			icon: Codicon.caseSensitive,
+			title: localize('paradis.office.findMatchCase', "大文字と小文字を区別"),
+			isChecked: false,
+			...defaultToggleStyles,
+		}));
+		inputBox.appendChild(this.matchCaseToggle.domNode);
 
 		this.statusElement = document.createElement('span');
 		this.statusElement.className = 'paradis-office-find-status';
@@ -105,12 +98,18 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.statusElement.setAttribute('aria-live', 'polite');
 		this.statusElement.setAttribute('aria-atomic', 'true');
 		this.element.appendChild(this.statusElement);
+
+		this.previousButton = button(document, Codicon.arrowUp, localize('paradis.office.findPrevious', "前の一致"));
+		this.element.appendChild(this.previousButton);
+		this.nextButton = button(document, Codicon.arrowDown, localize('paradis.office.findNext', "次の一致"));
+		this.element.appendChild(this.nextButton);
+		this.closeButton = button(document, Codicon.close, localize('paradis.office.findClose', "閉じる"));
+		this.element.appendChild(this.closeButton);
+
+		// 一致した場所（シート名・前後の文）は本家の小窓に無い 2 行目になるので、画面には出さず、
+		// 読み上げと件数のツールチップに渡す。
 		this.currentElement = document.createElement('span');
 		this.currentElement.className = 'paradis-office-find-current';
-		this.currentElement.style.flexBasis = '100%';
-		this.currentElement.style.overflow = 'hidden';
-		this.currentElement.style.textOverflow = 'ellipsis';
-		this.currentElement.style.whiteSpace = 'nowrap';
 		this.element.appendChild(this.currentElement);
 		parent.appendChild(this.element);
 
@@ -125,11 +124,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 			}));
 		}
 		this._register(dom.addDisposableListener(this.input, dom.EventType.INPUT, () => void this.beginSearch()));
-		this._register(dom.addDisposableListener(this.matchCaseButton, dom.EventType.CLICK, () => {
-			const pressed = this.matchCaseButton.getAttribute('aria-pressed') !== 'true';
-			this.matchCaseButton.setAttribute('aria-pressed', String(pressed));
-			void this.beginSearch();
-		}));
+		this._register(this.matchCaseToggle.onChange(() => void this.beginSearch()));
 		this._register(dom.addDisposableListener(this.previousButton, dom.EventType.CLICK, () => void this.findPrevious()));
 		this._register(dom.addDisposableListener(this.nextButton, dom.EventType.CLICK, () => void this.findNext()));
 		this._register(dom.addDisposableListener(this.closeButton, dom.EventType.CLICK, () => this.hide()));
@@ -254,7 +249,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.request.value = request;
 		this.statusElement.textContent = localize('paradis.office.findSearching', "検索中…");
 		try {
-			const page = await provider({ text: query, matchCase: this.matchCaseButton.getAttribute('aria-pressed') === 'true' }, undefined, request.token);
+			const page = await provider({ text: query, matchCase: this.matchCaseToggle.checked }, undefined, request.token);
 			if (generation !== this.generation || request.token.isCancellationRequested) {
 				return;
 			}
@@ -282,7 +277,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		}
 		const generation = this.generation;
 		try {
-			const page = await provider({ text: this.input.value.normalize('NFC').trim(), matchCase: this.matchCaseButton.getAttribute('aria-pressed') === 'true' }, cursor, request.token);
+			const page = await provider({ text: this.input.value.normalize('NFC').trim(), matchCase: this.matchCaseToggle.checked }, cursor, request.token);
 			if (generation !== this.generation || request.token.isCancellationRequested) {
 				return false;
 			}
@@ -327,6 +322,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 
 	private updateResultPresentation(): void {
 		const result = this.results[this.currentIndex];
+		this.statusElement.title = '';
 		if (!result && this.results.length > 0) {
 			// 一致はあるが、まだどれにも移動していない（`refresh({ navigate: false })` の後）。
 			this.currentElement.textContent = '';
@@ -347,6 +343,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		const visibleTotal = this.capped ? `${this.total}+` : String(this.total);
 		this.statusElement.textContent = localize('paradis.office.findPosition', "{1} 件中 {0} 件目", this.currentIndex + 1, visibleTotal);
 		this.currentElement.textContent = `${result.locationBadge.label}: ${result.preview.before}${result.preview.match}${result.preview.after}`;
+		this.statusElement.title = this.currentElement.textContent;
 		this.previousButton.disabled = false;
 		this.nextButton.disabled = false;
 	}
@@ -354,7 +351,11 @@ export class ParadisOfficeFindWidget extends Disposable {
 	private updateAvailability(): void {
 		const available = this.searchProvider !== undefined;
 		this.input.disabled = !available;
-		this.matchCaseButton.disabled = !available;
+		if (available) {
+			this.matchCaseToggle.enable();
+		} else {
+			this.matchCaseToggle.disable();
+		}
 		if (!available) {
 			this.previousButton.disabled = true;
 			this.nextButton.disabled = true;
@@ -368,6 +369,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.total = 0;
 		this.capped = false;
 		this.currentElement.textContent = '';
+		this.statusElement.title = '';
 		this.previousButton.disabled = true;
 		this.nextButton.disabled = true;
 	}
@@ -415,10 +417,10 @@ export class ParadisOfficeFindWidget extends Disposable {
 	}
 }
 
-function button(document: Document, text: string, label: string): HTMLButtonElement {
+function button(document: Document, icon: ThemeIcon, label: string): HTMLButtonElement {
 	const result = document.createElement('button');
 	result.type = 'button';
-	result.textContent = text;
+	result.className = `paradis-office-find-button ${ThemeIcon.asClassName(icon)}`;
 	result.setAttribute('aria-label', label);
 	result.title = label;
 	return result;

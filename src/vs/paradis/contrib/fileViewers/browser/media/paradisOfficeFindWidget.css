@@ -1,0 +1,115 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Office (Excel / Word / CSV) find widget. Mirrors the editor find widget
+ * (src/vs/editor/contrib/find/browser/findWidget.css): 34px tall, large corner radius,
+ * shadow-lg, an input with the match-case toggle inside, the match count, and codicon buttons.
+ */
+
+.paradis-office-find-widget {
+	position: absolute;
+	top: var(--vscode-spacing-size80);
+	right: var(--vscode-spacing-size160);
+	z-index: 40;
+	height: 34px;
+	max-width: calc(100% - 2 * var(--vscode-spacing-size160));
+	box-sizing: border-box;
+	align-items: center;
+	gap: var(--vscode-spacing-size20);
+	padding: 0 var(--vscode-spacing-size40) 0 9px;
+	line-height: 19px;
+	color: var(--vscode-editorWidget-foreground);
+	background-color: var(--vscode-editorWidget-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
+	border-radius: var(--vscode-cornerRadius-large);
+	box-shadow: var(--vscode-shadow-lg);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.paradis-office-find-widget .paradis-office-find-input {
+	display: flex;
+	align-items: center;
+	flex: 0 1 auto;
+	width: 219px;
+	min-width: 120px;
+	height: 26px;
+	box-sizing: border-box;
+	padding: 0 var(--vscode-spacing-size20) 0 var(--vscode-spacing-size40);
+	background-color: var(--vscode-input-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+.paradis-office-find-widget .paradis-office-find-input:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-office-find-widget .paradis-office-find-input > input {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 100%;
+	padding: 0;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: var(--vscode-input-foreground);
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.paradis-office-find-widget .paradis-office-find-input > input::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+.paradis-office-find-widget .paradis-office-find-input > input::-webkit-search-cancel-button {
+	display: none;
+}
+
+.paradis-office-find-widget .paradis-office-find-status {
+	flex: 0 0 auto;
+	min-width: 69px;
+	margin-left: 3px;
+	padding-left: 2px;
+	white-space: nowrap;
+}
+
+.paradis-office-find-widget .paradis-office-find-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: 22px;
+	height: 22px;
+	margin-left: 1px;
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: transparent;
+	color: var(--vscode-icon-foreground);
+	cursor: pointer;
+}
+
+.paradis-office-find-widget .paradis-office-find-button:hover:not(:disabled) {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-office-find-widget .paradis-office-find-button:disabled {
+	color: var(--vscode-disabledForeground);
+	cursor: default;
+}
+
+/* The location of the current match (sheet name and the text around it) is read out and shown as the
+ * match count's tooltip, but not drawn as a second line (the editor find widget has none). */
+.paradis-office-find-widget .paradis-office-find-current {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
