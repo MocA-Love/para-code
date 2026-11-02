@@ -21,7 +21,7 @@
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IParadisCdpInputDispatchResult } from '../common/paradisAgentBrowser.js';
 import type { IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
-import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisLookedAtRect, paradisNearMissHints, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
+import { IParadisQuerySpec, paradisEvaluateQuery, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisLookedAtRect, paradisNearMissHints, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 
 /** 「探して操作する」ツールの名前。 */
@@ -144,8 +144,7 @@ export class ParadisBrowserActBy {
 	/** 1 回 evaluate する。値か、エージェントへ返す失敗。 */
 	private async run(call: IParadisBrowserActCall, spec: IParadisQuerySpec, uids: readonly string[]): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; result: ToolResult }> {
 		// 答えないページを 180 秒待たない。遅れて動いた古い評価は値を書き込まない（q.html Q379 の 4）
-		const { deadlineMs, notAfter } = paradisEvaluateDeadline(spec, Date.now());
-		const result = await call.evaluate(paradisBuildQueryFunction(spec, uids.length, undefined, notAfter), uids, deadlineMs);
+		const { result, deadlineMs } = await paradisEvaluateQuery(call, spec, uids, undefined, () => paradisEvaluateDeadline(spec, Date.now()));
 		if (!call.isCurrent()) {
 			return { ok: false, result: error(BINDING_CHANGED) };
 		}

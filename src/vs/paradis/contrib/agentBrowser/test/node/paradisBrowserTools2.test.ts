@@ -135,7 +135,8 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 		];
 		const result = await new ParadisBrowserCapture().call({
 			evaluate: async source => {
-				assert.ok(source.includes(PARADIS_BROWSER_QUERY_PAGE_SCRIPT));
+				// The short call that runs the page function already on the document (this fake never reports it missing)
+				assert.ok(source.includes('"mode":"rect"') && !source.includes(PARADIS_BROWSER_QUERY_PAGE_SCRIPT));
 				return answers.shift();
 			},
 			isCurrent: () => true,
