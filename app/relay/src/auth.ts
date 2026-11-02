@@ -2,11 +2,14 @@
 
 /** トークンのハッシュ化と検証（リレーは生トークンを保存しない）。 */
 
-import { fromBase64Url } from '@para/protocol';
+import { fromBase64Url, toBase64Url } from '@para/protocol';
+
+function toHex(bytes: ArrayBuffer): string {
+	return [...new Uint8Array(bytes)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 export async function hashToken(token: string): Promise<string> {
-	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-	return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+	return toHex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
 }
 
 /**
@@ -24,8 +27,7 @@ export async function pairingKeyFingerprint(data: string): Promise<string | unde
 		if (pub.length !== 32) {
 			return undefined;
 		}
-		const digest = await crypto.subtle.digest('SHA-256', pub as BufferSource);
-		return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+		return toHex(await crypto.subtle.digest('SHA-256', pub as BufferSource));
 	} catch {
 		return undefined;
 	}
@@ -44,9 +46,7 @@ export function timingSafeEqualHex(a: string, b: string): boolean {
 }
 
 export function randomTokenB64u(bytes = 32): string {
-	const raw = crypto.getRandomValues(new Uint8Array(bytes));
-	let base64 = btoa(String.fromCharCode(...raw));
-	return base64.replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+	return toBase64Url(crypto.getRandomValues(new Uint8Array(bytes)));
 }
 
 // WebSocketアップグレード時にトークンを載せるサブプロトコル接頭辞（`para-auth.<token>`）。
