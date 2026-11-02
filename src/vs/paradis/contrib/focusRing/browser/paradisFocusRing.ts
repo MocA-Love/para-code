@@ -12,7 +12,7 @@
 //
 // fork の画面（クラスが `paradis-` か `para-` で始まる要素とその中）でフォーカスが入ったとき、
 // キーボードのフォーカス（`:focus-visible`）でなければ印のクラスを付け、CSS（media/paradisFocusRing.css）で
-// その間だけ枠を消す。CSS の接頭辞の属性セレクタ（[class*=" paradis-"]）は、どこかのクラスが変わるたびに
+// その間だけ枠を消す。fork の画面の中にある本家の部品（検索の小窓・一覧など）にも効く。CSS の接頭辞の属性セレクタ（[class*=" paradis-"]）は、どこかのクラスが変わるたびに
 // 画面全体のスタイルを計算し直させるので hygiene が禁じている。判定は JS の classList で行い、CSS は
 // 固定の印のクラスだけを見る。
 
@@ -57,12 +57,29 @@ function isTextEntry(element: Element): boolean {
 	return isHTMLInputElement(element) && !NON_TEXT_INPUT_TYPES.has(element.type);
 }
 
+const DIALOG_ROLES = new Set(['dialog', 'alertdialog']);
+
 /**
- * fork のダイアログやパネルが Esc を受けるために自分でフォーカスする入れ物（tabindex="-1"）。
- * キーボードで開いたときも枠は出さず、中の部品で出す。
+ * fork のダイアログの根元（role="dialog" 等で、Esc を受けるために自分でフォーカスする tabindex="-1" の入れ物）。
+ * キーボードで開いたときも枠は出さず、中の部品で出す。矢印キーで動かす部品（roving tabindex）の
+ * tabindex="-1" のボタンは対象にしない（矢印や Home・End で移ったときに枠が要る）。
  */
-function isForkFocusContainer(element: Element): boolean {
-	return element.getAttribute('tabindex') === '-1' && isForkElement(element);
+function isForkDialogRoot(element: Element): boolean {
+	return element.getAttribute('tabindex') === '-1' && DIALOG_ROLES.has(element.getAttribute('role') ?? '') && isForkElement(element);
+}
+
+/** ハイコントラストのテーマでは、本家と同じくマウスのときも枠を出す。 */
+function isHighContrast(element: Element): boolean {
+	const workbench = element.closest('.monaco-workbench');
+	return !!workbench && (workbench.classList.contains('hc-black') || workbench.classList.contains('hc-light'));
+}
+
+/** フォーカスが入った要素に印を付けるか。 */
+function shouldQuietFocus(element: Element): boolean {
+	if (isHighContrast(element) || isTextEntry(element) || !isInsideForkUi(element)) {
+		return false;
+	}
+	return isForkDialogRoot(element) || !element.matches(':focus-visible');
 }
 
 /** 1 つの窓の文書で、fork の画面に入ったフォーカスに印を付け外しする。 */
@@ -73,9 +90,8 @@ export function installParadisFocusQuieting(targetWindow: Window): IDisposable {
 		if (!isHTMLElement(target)) {
 			return;
 		}
-		if (isForkFocusContainer(target) || (!isTextEntry(target) && !target.matches(':focus-visible') && isInsideForkUi(target))) {
-			target.classList.add(PARADIS_POINTER_FOCUS_CLASS);
-		}
+		// 付けるだけでなく外しもする（前のフォーカスの印が残っていると、キーボードで戻ったときに枠が出ない）。
+		target.classList.toggle(PARADIS_POINTER_FOCUS_CLASS, shouldQuietFocus(target));
 	}, true));
 	store.add(addDisposableListener(targetWindow.document, EventType.FOCUS_OUT, event => {
 		const target = event.target;

@@ -7,7 +7,8 @@
 
 /*
 	paradisFocusRing.ts adds .paradis-pointer-focus to a focused element inside Para Code's own UI when the
-	focus did not come from the keyboard (and to fork dialogs that focus themselves to receive Escape).
+	focus did not come from the keyboard (and to fork dialog roots, role="dialog", that focus themselves to
+	receive Escape). It is not added in high contrast themes.
 	The workbench "Keyboard Focus Indication Styles" (src/vs/workbench/browser/media/style.css) draw the
 	focusBorder outline on button/checkbox/select/[tabindex] with :focus, which also stays after a mouse
 	click. This (0,3,1) rule beats those (0,2,1 and 0,3,0) while the marker is present.

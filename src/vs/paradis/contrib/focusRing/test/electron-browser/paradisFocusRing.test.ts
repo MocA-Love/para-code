@@ -12,7 +12,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { AppResourcePath, FileAccess } from '../../../../../base/common/network.js';
 import { ipcRenderer } from '../../../../../base/parts/sandbox/electron-browser/globals.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { installParadisFocusQuieting } from '../../browser/paradisFocusRing.js';
+import { installParadisFocusQuieting, PARADIS_POINTER_FOCUS_CLASS } from '../../browser/paradisFocusRing.js';
 
 // 本家の workbench の規則（src/vs/workbench/browser/media/style.css の Keyboard Focus Indication Styles）と同じもの。
 // テストの画面には読み込まれないので、ここで同じ規則を足す。fork の画面の CSS が使うテーマの色も入れる
@@ -83,7 +83,7 @@ suite('Paradis focus ring', () => {
 		workbench.innerHTML = html; // test-only fixture markup
 	}
 
-	/** フォーカスしたときの outline の線。キーボードのフォーカスとして扱われたかどうかも返す。 */
+	/** フォーカスしたときの outline の線と、キーボードのフォーカスとして扱われたか。 */
 	function focusOutline(id: string, focusVisible: boolean): { outline: string; keyboard: boolean } {
 		const element = mainWindow.document.getElementById(id)!;
 		element.blur();
@@ -91,9 +91,14 @@ suite('Paradis focus ring', () => {
 		return { outline: mainWindow.getComputedStyle(element).outlineStyle, keyboard: element.matches(':focus-visible') };
 	}
 
-	test('fork controls drop the frame only when the focus did not come from the keyboard; upstream controls and text inputs keep it', () => {
+	/** マウスで押したとき（focusVisible: false）と Tab で移ったとき（true）の outline の線。 */
+	function mouseAndKeyboard(id: string): string {
+		return `${focusOutline(id, false).outline} ${focusOutline(id, true).outline}`;
+	}
+
+	test('fork controls drop the frame only for non-keyboard focus; upstream controls, look-alike classes and text inputs keep it', () => {
 		make([
-			'<div class="paradis-dialog" tabindex="-1" id="root">',
+			'<div class="paradis-dialog" role="dialog" tabindex="-1" id="root">',
 			'<button id="forkButton">run</button>',
 			'<input type="checkbox" id="forkCheck">',
 			'<input type="text" id="forkText">',
@@ -103,28 +108,57 @@ suite('Paradis focus ring', () => {
 			'<div class="upstream-part"><button id="upstreamButton">ok</button><button class="parameter-hints" id="lookalike">x</button></div>',
 		].join(''));
 
-		const expected = (frame: { keyboard: boolean }, forkScoped: boolean) => forkScoped && !frame.keyboard ? 'none' : 'solid';
-		const actual: Record<string, boolean> = {};
-		const wanted: Record<string, boolean> = {};
-		for (const focusVisible of [false, true]) {
-			for (const [id, forkScoped] of [['forkButton', true], ['forkCheck', true], ['forkGrip', true], ['forkSelfButton', true], ['upstreamButton', false], ['lookalike', false]] as const) {
-				const frame = focusOutline(id, focusVisible);
-				actual[`${id}/${focusVisible}`] = frame.outline === expected(frame, forkScoped);
-				wanted[`${id}/${focusVisible}`] = true;
-			}
+		const states: Record<string, string> = {};
+		for (const id of ['forkButton', 'forkCheck', 'forkGrip', 'forkSelfButton', 'upstreamButton', 'lookalike', 'forkText', 'root']) {
+			states[id] = mouseAndKeyboard(id);
 		}
-		const text = focusOutline('forkText', false);
-		const root = focusOutline('root', true);
-		assert.deepStrictEqual(
-			{ ...actual, forkText: text.outline, root: root.outline },
-			{ ...wanted, forkText: 'solid', root: 'none' },
-		);
+		assert.deepStrictEqual(states, {
+			forkButton: 'none solid',
+			forkCheck: 'none solid',
+			forkGrip: 'none solid',
+			forkSelfButton: 'none solid',
+			upstreamButton: 'solid solid',
+			lookalike: 'solid solid',
+			forkText: 'solid solid',
+			root: 'none none',
+		});
+	});
+
+	test('arrow-key widgets (roving tabindex), a marker left by an earlier mouse focus, and high contrast themes keep the keyboard frame', () => {
+		make([
+			// 使用率のグラフの区間の切り替え（paradisSystemUsageChart.ts。選んでいないボタンは tabindex="-1"）
+			'<div class="paradis-sysusage-segments" role="radiogroup">',
+			'<button class="paradis-sysusage-segment-button" role="radio" tabindex="0" id="segSelected">5m</button>',
+			'<button class="paradis-sysusage-segment-button" role="radio" tabindex="-1" id="segOther">1h</button>',
+			'</div>',
+			// Office のタブ（paradisOfficeAccessibility.ts の wireParadisOfficeTabList。選んでいないタブは tabindex="-1"）
+			'<div class="paradis-office-tabs" role="tablist"><button role="tab" tabindex="-1" id="officeTab">Sheet2</button></div>',
+			'<div class="monaco-workbench hc-black"><div class="paradis-panel"><button id="hcButton">ok</button></div></div>',
+		].join(''));
+
+		const states: Record<string, string> = {};
+		for (const id of ['segOther', 'officeTab', 'hcButton']) {
+			states[id] = mouseAndKeyboard(id);
+		}
+		// 前のマウスのフォーカスの印が残ったまま、キーボードで入る（focusout が来ずに印が残った場合）
+		const element = mainWindow.document.getElementById('segSelected')!;
+		element.blur();
+		element.classList.add(PARADIS_POINTER_FOCUS_CLASS);
+		element.focus({ focusVisible: true } as FocusOptions);
+		states.segReturned = mainWindow.getComputedStyle(element).outlineStyle;
+
+		assert.deepStrictEqual(states, {
+			segOther: 'none solid',
+			officeTab: 'none solid',
+			hcButton: 'solid solid',
+			segReturned: 'solid',
+		});
 	});
 
 	test('the real fork screens (presets, settings, title bar usage, usage dashboard) follow the same rule with their own CSS loaded', () => {
 		make([
 			// コマンドプリセット（paradisPresetEditorDialog.ts の行のボタンと掴み）
-			'<div class="paradis-preset-editor-dialog" tabindex="-1" id="presets"><div class="ppe-row"><span class="ppe-grip" tabindex="0" id="ppeGrip">::</span>',
+			'<div class="paradis-preset-editor-dialog" id="presets"><div class="ppe-row"><span class="ppe-grip" tabindex="0" id="ppeGrip">::</span>',
 			'<div class="ppe-row-actions"><button class="ppe-btn" type="button" id="ppeRun">run</button><button class="ppe-btn ppe-btn-danger" type="button" id="ppeDelete">delete</button></div></div>',
 			'<input class="ppe-input" type="text" id="ppeInput"></div>',
 			// 設定 (Para Code)（paradisSettingsDialog.ts のスイッチとボタン）
@@ -144,7 +178,7 @@ suite('Paradis focus ring', () => {
 			states[id] = `${mouse.keyboard ? 'kb' : 'mouse'}:${mouse.outline} ${keyboard.keyboard ? 'kb' : 'mouse'}:${keyboard.outline}`;
 		}
 		const containers: Record<string, string> = {};
-		for (const id of ['presets', 'settings', 'usage']) {
+		for (const id of ['settings', 'usage']) {
 			containers[id] = focusOutline(id, true).outline;
 		}
 		states.ppeInput = focusOutline('ppeInput', false).outline;
@@ -162,7 +196,7 @@ suite('Paradis focus ring', () => {
 				ccSeg: 'mouse:none kb:solid',
 				ppeInput: 'solid',
 			},
-			containers: { presets: 'none', settings: 'none', usage: 'none' },
+			containers: { settings: 'none', usage: 'none' },
 		});
 	});
 });
