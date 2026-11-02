@@ -20,14 +20,15 @@
 	-webkit-app-region: no-drag;
 	display: flex;
 	align-items: center;
-	gap: 4px;
+	gap: var(--vscode-spacing-size40);
+	/* Same steps as the other title bar items (see paradisResourceMonitor.css). */
 	height: 22px;
-	padding: 0 6px;
-	margin: 0 2px;
+	padding: 0 3px;
+	margin: 0 1px;
 	border: none;
-	border-radius: 4px;
+	border-radius: var(--vscode-cornerRadius-small);
 	background: transparent;
-	color: var(--vscode-titleBar-inactiveForeground, var(--vscode-foreground));
+	color: inherit;
 	font-size: 12px;
 	cursor: pointer;
 }
@@ -35,12 +36,11 @@
 .paradis-limits-trigger:hover,
 .paradis-limits-trigger.active {
 	background: var(--vscode-toolbar-hoverBackground);
-	color: var(--vscode-titleBar-activeForeground, var(--vscode-foreground));
 }
 
 .paradis-limits-logo {
-	width: 13px;
-	height: 13px;
+	width: 16px;
+	height: 16px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -53,14 +53,14 @@
 }
 
 .paradis-limits-logo svg {
-	width: 13px;
-	height: 13px;
+	width: 16px;
+	height: 16px;
 	display: block;
 }
 
 .paradis-limits-ring {
-	width: 17px;
-	height: 17px;
+	width: 16px;
+	height: 16px;
 	flex: none;
 }
 
@@ -69,20 +69,20 @@
 }
 
 .paradis-limits-ring .paradis-limits-ring-arc {
-	stroke: #2ea043;
+	stroke: var(--vscode-charts-green);
 }
 
 .paradis-limits-ring.elevated .paradis-limits-ring-arc {
-	stroke: #f59e0b;
+	stroke: var(--vscode-charts-yellow);
 }
 
 .paradis-limits-ring.high .paradis-limits-ring-arc,
 .paradis-limits-ring.error .paradis-limits-ring-arc {
-	stroke: #ef4444;
+	stroke: var(--vscode-charts-red);
 }
 
 .paradis-limits-ring.error .paradis-limits-ring-error-mark {
-	fill: #ef4444;
+	fill: var(--vscode-charts-red);
 	font-size: 10px;
 	font-weight: 700;
 }

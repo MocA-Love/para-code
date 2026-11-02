@@ -8,7 +8,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { Color, RGBA } from '../../../../../base/common/color.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { isParadisTransparentActive, paradisXtermBackground } from '../../browser/paradisTerminalTransparency.js';
-import { clampParadisTransparencyOpacity } from '../../common/paradisTransparency.js';
+import { clampParadisTransparencyOpacity, paradisTransparencyRestartPending } from '../../common/paradisTransparency.js';
 
 suite('ParadisWindowTransparency', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -31,6 +31,17 @@ suite('ParadisWindowTransparency', () => {
 			1,
 			1,
 		]);
+	});
+
+	test('asks for a restart only while the setting and the window disagree', () => {
+		assert.deepStrictEqual([
+			paradisTransparencyRestartPending(undefined, true, true),
+			paradisTransparencyRestartPending(true, true, false),
+			paradisTransparencyRestartPending(false, true, true),
+			paradisTransparencyRestartPending(false, true, false),
+			paradisTransparencyRestartPending(true, false, false),
+			paradisTransparencyRestartPending(true, false, true),
+		], [false, true, true, false, false, true]);
 	});
 
 	test('preserves RGB while making the xterm background transparent only for an active transparent workbench', () => {
