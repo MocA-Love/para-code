@@ -11,6 +11,7 @@ import { Emitter, Event } from '../../../base/common/event.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
 import { IBrowserViewAudience, IBrowserViewBounds, IBrowserViewDevToolsStateEvent, IBrowserViewFocusEvent, IBrowserViewKeyDownEvent, IBrowserViewState, IBrowserViewNavigationEvent, IBrowserViewLoadingEvent, IBrowserViewLoadError, IBrowserViewTitleChangeEvent, IBrowserViewFaviconChangeEvent, IBrowserViewCaptureScreenshotOptions, IBrowserViewFindInPageOptions, IBrowserViewFindInPageResult, IBrowserViewVisibilityEvent, browserViewIsolatedWorldId, browserZoomFactors, browserZoomDefaultIndex, IBrowserViewOwner, IBrowserViewEditorOpenOptions, IBrowserViewPermissionRequestEvent, equalsBrowserViewAudience, isBrowserViewAssociatedResourceNavigation, matchesBrowserViewAudience, IBrowserViewHost, BrowserViewPresentation, getBrowserViewPopupAction } from '../common/browserView.js';
 import { BrowserViewEmulator } from './browserViewEmulator.js';
+import { paraBrowserViewZoomShrink, paraSetBrowserViewUserZoom } from './paraBrowserViewZoom.js'; // PARA-PATCH: per-tab browser zoom (paraBrowserViewZoom.ts)
 import { BrowserViewInspector } from './browserViewInspector.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
 import { ICodeWindow, LoadReason } from '../../window/electron-main/window.js';
@@ -505,7 +506,7 @@ export class BrowserView extends Disposable {
 			// Chromium resets the zoom factor to its per-origin default (100%) when
 			// navigating to a new document. Re-apply our stored zoom to override it.
 			this._consoleLogs.length = 0; // Clear console logs on navigation since they are per-page
-			this._view.webContents.setZoomFactor(browserZoomFactors[this._browserZoomIndex]);
+			paraSetBrowserViewUserZoom(this._view.webContents, browserZoomFactors[this._browserZoomIndex]); // PARA-PATCH: keep this tab's zoom to itself and combine it with a shrunk fixed size (paraBrowserViewZoom.ts)
 
 			// Enable pinch-to-zoom
 			void this._view.webContents.setVisualZoomLevelLimits(1, 3).catch(error => {
@@ -1214,7 +1215,7 @@ export class BrowserView extends Disposable {
 	setBrowserZoomIndex(zoomIndex: number): void {
 		this._browserZoomIndex = Math.max(0, Math.min(zoomIndex, browserZoomFactors.length - 1));
 		const browserZoomFactor = browserZoomFactors[this._browserZoomIndex];
-		this._view.webContents.setZoomFactor(browserZoomFactor);
+		paraSetBrowserViewUserZoom(this._view.webContents, browserZoomFactor); // PARA-PATCH: see paraBrowserViewZoom.ts
 	}
 
 	/**
@@ -1502,7 +1503,7 @@ export class BrowserView extends Disposable {
 		// window can be resolved (e.g. during teardown).
 		const hostWindow = this._hostWindow;
 		const display = hostWindow ? screen.getDisplayMatching(hostWindow.getBounds()) : screen.getPrimaryDisplay();
-		const devicePixelRatio = browserViewEffectiveCaptureBeyondDevicePixelRatio(display.scaleFactor, this.emulator.device?.deviceScaleFactor);
+		const devicePixelRatio = browserViewEffectiveCaptureBeyondDevicePixelRatio(display.scaleFactor, this.emulator.device?.deviceScaleFactor) / paraBrowserViewZoomShrink(this._view.webContents); // PARA-PATCH: a page shrunk by zoom keeps its full devicePixelRatio (paraBrowserViewZoom.ts)
 		const scale = browserViewCalculateBoundedCaptureScale({
 			width: size.width,
 			height: size.height,
@@ -1588,7 +1589,8 @@ export class BrowserView extends Disposable {
 	}
 
 	private _captureBeyondViewportDevicePixelRatio(): number {
-		return browserViewEffectiveCaptureBeyondDevicePixelRatio(this._devicePixelRatio(), this.emulator.device?.deviceScaleFactor);
+		// PARA-PATCH: a page shrunk by zoom keeps its full devicePixelRatio, so it captures at 1 / shrink more pixels than the zoom suggests (paraBrowserViewZoom.ts)
+		return browserViewEffectiveCaptureBeyondDevicePixelRatio(this._devicePixelRatio(), this.emulator.device?.deviceScaleFactor) / paraBrowserViewZoomShrink(this._view.webContents);
 	}
 
 	private async _waitForNextPaint(): Promise<void> {
