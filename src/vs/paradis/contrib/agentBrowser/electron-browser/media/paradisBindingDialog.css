@@ -31,6 +31,8 @@
 .paradis-binding-dialog {
 	width: 880px;
 	max-width: 94vw;
+	/* 左のナビで中身を切り替えても箱の高さが変わらないよう、高さを決めておく（長い中身は本文だけスクロール）。 */
+	height: clamp(520px, 72vh, 820px);
 	max-height: 92vh;
 	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);

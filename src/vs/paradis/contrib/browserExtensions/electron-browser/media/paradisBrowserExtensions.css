@@ -47,12 +47,44 @@
 /* Two columns (Q527): the list on the left, the selected extension on the right. */
 .paradis-browser-profile-modal.pbe-wide {
 	width: 940px;
+	/* 選ぶ拡張機能で右の詳細の長さが変わっても、箱の高さは変えない。一覧と詳細はそれぞれの中でスクロールする。 */
+	height: clamp(520px, 72vh, 820px);
+}
+
+.paradis-browser-profile-modal.pbe-wide .pbpm-body {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
 }
 
 .paradis-browser-profile-modal .pbe-columns {
 	display: flex;
 	gap: 14px;
 	min-height: 0;
+}
+
+.paradis-browser-profile-modal.pbe-wide .pbpm-body > :not(.pbe-columns),
+.paradis-browser-profile-modal.pbe-wide .pbe-side > :not(.pbe-list) {
+	flex: none;
+}
+
+.paradis-browser-profile-modal.pbe-wide .pbe-columns {
+	flex: 1;
+}
+
+.paradis-browser-profile-modal.pbe-wide .pbe-side {
+	min-height: 0;
+}
+
+.paradis-browser-profile-modal.pbe-wide .pbe-list {
+	flex: 1;
+	max-height: none;
+}
+
+.paradis-browser-profile-modal.pbe-wide .pbe-detail {
+	overflow-y: auto;
 }
 
 .paradis-browser-profile-modal .pbe-side {
