@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useSyncExternalStore } from 'react';
-import type { ITaskBoardNotice, ITaskBoardRpc, ITaskBoardSnapshot, TaskBoardErrorCode, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardNotice, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTaskDetail, TaskBoardClientMessage, TaskBoardErrorCode, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
+import { withTaskDetail } from './taskDetail.js';
 
 /*
  * サーバーとのやりとり。状態はサーバーが送るスナップショットを丸ごと持つ（台帳は小さいので差分にしない）。
@@ -82,6 +83,34 @@ function set(patch: Partial<IState>): void {
 	listeners.forEach(l => l());
 }
 
+/** サーバーから届いた一覧のスナップショット（活動と出力は空）と、開いているタスクの詳しい分。 */
+let listSnapshot: ITaskBoardSnapshot | undefined;
+let detail: ITaskBoardTaskDetail | undefined;
+let focusedTaskId: string | undefined;
+
+function publishSnapshot(patch: Partial<IState> = {}): void {
+	set({ ...patch, snapshot: listSnapshot && withTaskDetail(listSnapshot, detail) });
+}
+
+function sendFocus(ws: WebSocket | undefined): void {
+	if (ws?.readyState === WebSocket.OPEN) {
+		ws.send(JSON.stringify({ type: 'focus', ...(focusedTaskId ? { taskId: focusedTaskId } : {}) } satisfies TaskBoardClientMessage));
+	}
+}
+
+/** 開いているタスクをサーバーへ知らせる。そのタスクの活動とターミナルの出力だけが届くようになる。 */
+export function focusTask(taskId: string | undefined): void {
+	if (taskId === focusedTaskId) {
+		return;
+	}
+	focusedTaskId = taskId;
+	if (detail) {
+		detail = undefined;
+		publishSnapshot();
+	}
+	sendFocus(socket);
+}
+
 let socket: WebSocket | undefined;
 let retry = 0;
 let retryTimer: number | undefined;
@@ -109,11 +138,18 @@ export function connect(force = false): void {
 	ws.onopen = () => {
 		retry = 0;
 		set({ connection: 'open' });
+		sendFocus(ws);
 	};
 	ws.onmessage = event => {
 		const message = JSON.parse(String(event.data)) as TaskBoardServerMessage;
 		if (message.type === 'snapshot') {
-			set({ snapshot: message.snapshot, receivedAt: Date.now() });
+			listSnapshot = message.snapshot;
+			publishSnapshot({ receivedAt: Date.now() });
+		} else if (message.type === 'taskDetail') {
+			if (message.detail.taskId === focusedTaskId) {
+				detail = message.detail;
+				publishSnapshot();
+			}
 		} else if (message.type === 'notice') {
 			noticeListeners.forEach(l => l(message.notice));
 		}

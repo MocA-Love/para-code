@@ -363,6 +363,10 @@ export interface ITaskBoardRuntime {
 export interface ITaskBoardSnapshot {
 	readonly version: number;
 	readonly now: number;
+	/**
+	 * 一覧に要る分だけ。`activities` と `log` は空で届き（使うほど大きくなるため）、開いているタスクの分は
+	 * `taskDetail` のメッセージで別に届く。成果物の本文も外してある（`hasContent` だけ）。
+	 */
 	readonly tasks: readonly ITaskBoardTask[];
 	readonly flows: readonly ITaskBoardFlow[];
 	readonly activeFlowId: string;
@@ -574,10 +578,22 @@ export interface ITaskBoardProjectOptionInput {
 	readonly description: string;
 }
 
+/** 開いているタスクの、一覧のスナップショットから外した分。 */
+export interface ITaskBoardTaskDetail {
+	readonly taskId: string;
+	readonly activities: readonly ITaskBoardActivity[];
+	readonly log: readonly string[];
+}
+
 /** サーバーから画面へ流れるメッセージ。 */
 export type TaskBoardServerMessage =
 	| { readonly type: 'snapshot'; readonly snapshot: ITaskBoardSnapshot }
-	| { readonly type: 'notice'; readonly notice: ITaskBoardNotice };
+	| { readonly type: 'notice'; readonly notice: ITaskBoardNotice }
+	| { readonly type: 'taskDetail'; readonly detail: ITaskBoardTaskDetail };
+
+/** 画面からサーバーへ流れるメッセージ（イベントの WebSocket）。開いているタスクを知らせる（閉じたら `taskId` なし）。 */
+export type TaskBoardClientMessage =
+	| { readonly type: 'focus'; readonly taskId?: string };
 
 export type TaskBoardErrorCode =
 	| 'not-found'

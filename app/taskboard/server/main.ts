@@ -23,6 +23,7 @@ import { RELAY_UNSUPPORTED, RelayClient, RemoteCommandRunner, RemoteWorkspaces, 
 import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
+import { listTask, parseClientMessage, taskDetail, taskDetailSignature } from './taskDetail.js';
 import { dataDir, Store, StoreBusyError, storeOwner, type ILocalSettings } from './store.js';
 import { excludeBoardFiles, git, GitWorkspaces, inspectClones, remoteUrl } from './workspaces.js';
 
@@ -255,10 +256,6 @@ function isHtmlArtifact(artifact: ITaskBoardArtifact): boolean {
 	return /\.html?$/i.test(artifact.path ?? '') || /^\s*(<!doctype html|<html)/i.test(artifact.content ?? '');
 }
 
-function stripContent(task: ITaskBoardTask): ITaskBoardTask {
-	return { ...task, artifacts: task.artifacts.map((a): ITaskBoardArtifact => ({ ...a, content: undefined, hasContent: Boolean(a.content) })) };
-}
-
 function prFromDetail(base: ITaskBoardPrRef, d: ITaskBoardPullDetail): ITaskBoardPrRef {
 	const failing = d.checks.some(c => c.state === 'failure' || c.state === 'cancelled');
 	const pending = d.checks.some(c => c.state === 'pending' || c.state === 'queued');
@@ -370,6 +367,8 @@ async function main(restart?: IRestart): Promise<void> {
 	let engine!: TaskBoardEngine;
 	let broadcastTimer: NodeJS.Timeout | undefined;
 	const sockets = new Set<WebSocket>();
+	/** 画面ごとの開いているタスクと、最後に送った詳しい分の目印（同じなら送り直さない）。 */
+	const focused = new Map<WebSocket, { readonly taskId: string; signature?: string }>();
 	const send = (message: TaskBoardServerMessage) => {
 		const text = JSON.stringify(message);
 		for (const socket of sockets) {
@@ -378,6 +377,20 @@ async function main(restart?: IRestart): Promise<void> {
 			}
 		}
 	};
+	/** 開いているタスクの活動と出力を、その画面にだけ送る。変わっていなければ送らない。 */
+	const sendDetail = (socket: WebSocket) => {
+		const focus = focused.get(socket);
+		const task = focus && engine.getTask(focus.taskId);
+		if (!focus || !task || socket.readyState !== WebSocket.OPEN) {
+			return;
+		}
+		const signature = taskDetailSignature(task);
+		if (signature === focus.signature) {
+			return;
+		}
+		focus.signature = signature;
+		socket.send(JSON.stringify({ type: 'taskDetail', detail: taskDetail(task) } satisfies TaskBoardServerMessage));
+	};
 	const broadcastSoon = () => {
 		if (broadcastTimer) {
 			return;
@@ -385,6 +398,9 @@ async function main(restart?: IRestart): Promise<void> {
 		broadcastTimer = setTimeout(() => {
 			broadcastTimer = undefined;
 			send({ type: 'snapshot', snapshot: snapshot() });
+			for (const socket of focused.keys()) {
+				sendDetail(socket);
+			}
 		}, 60);
 	};
 
@@ -483,7 +499,7 @@ async function main(restart?: IRestart): Promise<void> {
 	const snapshot = (): ITaskBoardSnapshot => ({
 		version: engine.getVersion(),
 		now: Date.now(),
-		tasks: engine.getTasks().map(stripContent),
+		tasks: engine.getTasks().map(listTask),
 		flows: [...engine.getFlows()],
 		activeFlowId: engine.getActiveFlowId(),
 		slots: engine.getSlots(),
@@ -1046,7 +1062,21 @@ async function main(restart?: IRestart): Promise<void> {
 		}
 		wss.handleUpgrade(req, socket, head, ws => {
 			sockets.add(ws);
-			ws.on('close', () => sockets.delete(ws));
+			ws.on('close', () => {
+				sockets.delete(ws);
+				focused.delete(ws);
+			});
+			ws.on('message', data => {
+				const message = parseClientMessage(String(data));
+				if (message?.type === 'focus') {
+					if (message.taskId === undefined) {
+						focused.delete(ws);
+					} else {
+						focused.set(ws, { taskId: message.taskId });
+						sendDetail(ws);
+					}
+				}
+			});
 			ws.send(JSON.stringify({ type: 'snapshot', snapshot: snapshot() } satisfies TaskBoardServerMessage));
 		});
 	});
