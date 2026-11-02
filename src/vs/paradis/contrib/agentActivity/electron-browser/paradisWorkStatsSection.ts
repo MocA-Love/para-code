@@ -27,6 +27,7 @@ import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { IParadisWorkStatsResult, ParadisWorkStatsAgentFilter, paradisCombineWorkStats } from '../common/paradisAgentActivity.js';
 import { ParadisAgentActivityClient } from './paradisAgentActivityClient.js';
+import { ParadisActivityBusyIndicator } from './paradisActivityBusy.js';
 import { IParadisActivityRange, ParadisActivityRangeDays, paradisActivityRange, paradisAppendRangeSegment, paradisFormatActiveDuration, paradisShortDay } from './paradisActivityRange.js';
 import { IParadisShareCardData, paradisDrawShareCard, paradisShareCardPng } from './paradisWorkShareCard.js';
 
@@ -38,6 +39,7 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 	readonly element: HTMLElement;
 	private readonly body: HTMLElement;
 	private readonly shareButton: HTMLButtonElement;
+	private readonly busy: ParadisActivityBusyIndicator;
 	private readonly syncRange: () => void;
 	private readonly agentButtons = new Map<ParadisWorkStatsAgentFilter, HTMLButtonElement>();
 	private readonly client: ParadisAgentActivityClient;
@@ -92,6 +94,7 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 				this.notificationService.error(localize('paradis.workStats.shareFailed', "共有画像を作れませんでした: {0}", error instanceof Error ? error.message : String(error)));
 			});
 		}));
+		this.busy = this._register(new ParadisActivityBusyIndicator(this.element, toolbar, this.shareButton));
 		this.body = dom.append(this.element, $('.paradis-ccusage-body'));
 		this.render();
 	}
@@ -150,6 +153,7 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 		this.shareButton.disabled = this.data === undefined;
 		dom.clearNode(this.body);
 		this.body.classList.toggle('stale', this.loading && this.data !== undefined);
+		this.busy.setBusy(this.loading, this.rangeDays, this.data !== undefined);
 		if (this.error) {
 			const message = dom.append(this.body, $('.paradis-ccusage-message'));
 			dom.append(message, $(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
