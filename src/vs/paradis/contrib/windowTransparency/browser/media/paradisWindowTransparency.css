@@ -19,11 +19,12 @@
 
 /* Workbench root. Upstream's theming participant (src/vs/workbench/browser/style.ts) always paints
 	an opaque WORKBENCH_BACKGROUND on `.monaco-workbench`; without overriding it the transparent
-	native window is never revealed (the whole feature is a no-op). Applying the same color-mix keeps
-	an opaque-enough backstop under floating overlays (quick input, menus, hovers, notifications,
-	shadow-DOM dialogs) so they never leak the desktop, while still letting it show through. */
+	native window is never revealed (the whole feature is a no-op). Clear it entirely: each part below
+	carries the single translucent layer, so the chosen opacity is exactly how opaque the window looks
+	(painting the same mix here as well stacked two layers, and 80% looked like 96%). Floating overlays
+	that used to lean on this root for opacity get their own opaque backstops further down. */
 .monaco-workbench.paradis-transparent {
-	background-color: color-mix(in srgb, var(--vscode-editor-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+	background-color: transparent !important;
 }
 
 .monaco-workbench.paradis-transparent .part.titlebar {
@@ -123,6 +124,17 @@
 	background: linear-gradient(var(--vscode-notifications-background, var(--vscode-editor-background)), var(--vscode-notifications-background, var(--vscode-editor-background))), var(--vscode-editor-background) !important;
 }
 
+/* Editor-hosted floating widgets (suggest list, find / replace) used to sit on the translucent workbench
+	root as their backstop. With the root cleared, give them the same opaque base as the overlays above so
+	a theme that ships a translucent widget color never shows the desktop through them. */
+.monaco-workbench.paradis-transparent .monaco-editor .suggest-widget {
+	background: linear-gradient(var(--vscode-editorSuggestWidget-background, var(--vscode-editorWidget-background)), var(--vscode-editorSuggestWidget-background, var(--vscode-editorWidget-background))), var(--vscode-editor-background) !important;
+}
+
+.monaco-workbench.paradis-transparent .monaco-editor .find-widget {
+	background: linear-gradient(var(--vscode-editorWidget-background, var(--vscode-editor-background)), var(--vscode-editorWidget-background, var(--vscode-editor-background))), var(--vscode-editor-background) !important;
+}
+
 /* Frosted glass (workbench.modernUIFrostedGlass, q.html Q330 D). Upstream makes the glass surfaces'
 	own background tokens transparent and paints the glass in a ::before layer (frostedGlass.css), so the
 	opaque editor-colour backstops above would turn the notification list into the editor colour and darken
@@ -167,12 +179,21 @@
 /* Editor group backdrop. editorGroupView.ts paints an opaque editorBackground on `.editor-container` */
 /* via inline style, which blocks the translucent `.part.editor` layer behind every editor kind */
 /* (text editors, md/html Raw viewers, terminals opened as editors). Clear it so the part's single */
-/* translucent layer shows through; `!important` outranks the inline style. The Para Code spreadsheet */
-/* editor (Excel viewer) is excluded so its sheet backdrop keeps today's opaque rendering; webview */
-/* based editors (browser tabs, md/html Rendered) composite above this layer and are unaffected. */
-.monaco-workbench.paradis-transparent .part.editor .editor-container:not(:has(.paradis-spreadsheet, .paradis-spreadsheet-diff, .paradis-csv-viewer.paradis-csv-table-mode, .settings-editor, .keybindings-editor, .extension-editor, .profiles-editor)) {
+/* translucent layer shows through; `!important` outranks the inline style. The editors listed in */
+/* :not(:has(...)) keep the opaque inline editorBackground (see the comments below). The Para Code */
+/* spreadsheet editor (Excel viewer) is excluded so its sheet backdrop keeps today's opaque rendering. */
+.monaco-workbench.paradis-transparent .part.editor .editor-container:not(:has(.paradis-image-viewer, [id^="webview-editor-element-"], .paradis-file-viewer-editor:not(.active), .paradis-spreadsheet, .paradis-spreadsheet-diff, .paradis-csv-viewer.paradis-csv-table-mode, .settings-editor, .keybindings-editor, .extension-editor, .profiles-editor)) {
 	background-color: transparent !important;
 }
+
+/* Page content stays opaque. The image viewer is excluded so pictures (including their transparent
+	pixels) never show the desktop through them. Webview editors (upstream webview / custom editors such
+	as the image and Markdown previews, `webview-editor-element-*`) and the Para Code Markdown / HTML
+	viewers while they show the rendered page (their source editor is not `.active`) are excluded too: a
+	webview paints its page over whatever is under its anchor, and a page without its own background would
+	otherwise sit over the desktop. (`:has()` cannot be nested, so the viewer is matched by its inactive
+	source editor rather than by `.paradis-file-viewer:not(:has(...))`, which would drop the whole rule.)
+	Webviews in the side bars and the panel are not page content and keep the translucent part color. */
 
 /* The CSV viewer is excluded only while it shows the table (same reasoning as the Excel viewer: its frozen
 	header and row-number panes must stay opaque to hide the cells scrolling underneath). Its Text mode is
@@ -223,6 +244,18 @@
 	`--paradis-titlebar-bg`) instead of an opaque disc floating over the bar. */
 .monaco-workbench.paradis-transparent .paradis-resource-monitor-trigger-dot {
 	box-shadow: 0 0 0 2px color-mix(in srgb, var(--paradis-titlebar-bg, var(--vscode-titleBar-activeBackground, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent);
+}
+
+/* Modern UI without floating panels rounds the editor part's corners (editorBorder.css). The corners show
+	whatever is under the part, which is the cleared workbench root, so the desktop showed through them at
+	full strength. Carry the editor's single translucent layer on the grid cell that holds the part instead,
+	and clear the part itself, so the corners read like the rest of the editor area. */
+.monaco-workbench.paradis-transparent.modern-ui:not(.floating-panels) .split-view-view:has(> .part.editor:not(.modal-editor-part)) {
+	background-color: color-mix(in srgb, var(--vscode-editor-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent.modern-ui:not(.floating-panels) .split-view-view > .part.editor:not(.modal-editor-part) {
+	background-color: transparent !important;
 }
 
 /* Modern UI / floating panels (`workbench.experimental.modernUI`, upstream 1.129). The floating
