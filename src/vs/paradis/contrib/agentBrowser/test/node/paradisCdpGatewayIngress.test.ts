@@ -503,6 +503,21 @@ suite('Paradis CDP gateway ingress authority', () => {
 		assert.strictEqual(JSON.stringify(fixture.result()).includes('private result'), false);
 	});
 
+	test('a connection that cannot take a WebSocket seat is closed, and its context stops being current', () => {
+		const fixture = createUpgradeFixture('/devtools/browser/stored?pane=pane-token');
+		const state = fixture.gateway as unknown as {
+			_makeContext(access: { token: string; lease: ITestLease }, reservation: { attach(ws: unknown): boolean; releaseIfUnattached(): void }): { isCurrentLease(): boolean; onOpen(ws: unknown): void };
+			_connectionsByToken: Map<string, Set<unknown>>;
+		};
+		const closes: number[] = [];
+		const connection = { close: (code: number) => { closes.push(code); }, terminate: () => undefined, on: () => undefined };
+		const context = state._makeContext({ token: 'pane-token', lease: fixture.lease }, { attach: () => false, releaseIfUnattached: () => undefined });
+		const before = context.isCurrentLease();
+		context.onOpen(connection);
+		assert.deepStrictEqual({ before, after: context.isCurrentLease(), closes, registered: state._connectionsByToken.has('pane-token') }, { before: true, after: false, closes: [1013], registered: false });
+		fixture.gateway.dispose();
+	});
+
 	test('standalone disposal invalidates contexts and clears every token registry', () => {
 		const fixture = createUpgradeFixture('/devtools/browser/stored?pane=pane-token');
 		const state = fixture.gateway as unknown as {
