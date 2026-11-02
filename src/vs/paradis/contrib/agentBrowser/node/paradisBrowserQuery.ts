@@ -21,7 +21,6 @@
 //   await の後は共有が変わっていないかを毎回確かめる
 
 import type { IParadisCursorRect } from '../common/paradisCursorOverlay.js';
-import { generateUuid } from '../../../../base/common/uuid.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 import { PARADIS_MAIN_WAIT_MAX_SECONDS, PARADIS_SUBAGENT_WAIT_MAX_SECONDS } from '../common/paradisSubagentToolCalls.js';
@@ -164,56 +163,15 @@ export function paradisIsTransientEvaluateFailure(result: unknown): boolean {
 }
 
 /**
- * ページの関数を文書ごとに 1 度だけ置く場所（ページの `globalThis` の、列挙されず書き換えも消すこともできない
- * プロパティ）。shared process を読み込むたびに作り直す推測できない名前なので、ページが先に同じ名前で偽物を置けない。
+ * ページの中で動かす関数のソースを作る。`spec` は JSON で、`predicate` はそのまま埋め込む
+ * （evaluate_script と同じく、エージェントが書いた JavaScript をページで動かす）。`notAfter`（エポックからの ms）を
+ * 過ぎてから動き始めたら、ページの関数は何もせずに `{ paraLate: true }` を返す。
  */
-const PAGE_FUNCTION_KEY = `__paraCodeBrowserQuery_${generateUuid().replace(/-/g, '')}`;
-
-/**
- * 短い呼び出し（{@link paradisBuildQueryCall}）が、関数がまだ置かれていない文書で返す値。これが返ったら
- * 関数ごと送る {@link paradisBuildQueryFunction} を送り直す（{@link paradisEvaluateQuery}）。
- */
-export const PARADIS_QUERY_FUNCTION_MISSING = '__paraCodeBrowserQueryMissing';
-
-function queryArguments(spec: IParadisQuerySpec, uidCount: number, predicate: string | undefined, notAfter: number | undefined): { readonly params: string; readonly args: string } {
+export function paradisBuildQueryFunction(spec: IParadisQuerySpec, uidCount: number, predicate?: string, notAfter?: number): string {
 	const params = Array.from({ length: uidCount }, (_, index) => `e${index}`).join(', ');
 	const predicateSource = predicate === undefined ? 'undefined' : `() => (${predicate}\n)`;
 	const notAfterSource = notAfter !== undefined && Number.isFinite(notAfter) ? String(Math.round(notAfter)) : 'undefined';
-	return { params, args: `${JSON.stringify(spec)}, [${params}], ${predicateSource}, ${notAfterSource}` };
-}
-
-/**
- * ページの中で動かす関数を文書に置いてから呼ぶソースを作る。`spec` は JSON で、`predicate` はそのまま埋め込む
- * （evaluate_script と同じく、エージェントが書いた JavaScript をページで動かす）。`notAfter`（エポックからの ms）を
- * 過ぎてから動き始めたら、ページの関数は何もせずに `{ paraLate: true }` を返す。置けなかった（ページが固めている）
- * ときも、その場の関数で答える。
- */
-export function paradisBuildQueryFunction(spec: IParadisQuerySpec, uidCount: number, predicate?: string, notAfter?: number): string {
-	const { params, args } = queryArguments(spec, uidCount, predicate, notAfter);
-	return `async (${params}) => ((f) => { try { Object.defineProperty(globalThis, ${JSON.stringify(PAGE_FUNCTION_KEY)}, { value: f, enumerable: false, writable: false, configurable: false }); } catch { } return f; })(${PARADIS_BROWSER_QUERY_PAGE_SCRIPT})(${args})`;
-}
-
-/**
- * 文書に置いてあるページの関数を呼ぶだけの短いソースを作る（約 50 KB の関数を毎回送らない）。関数が無い文書
- * （初回・遷移の後）では {@link PARADIS_QUERY_FUNCTION_MISSING} を返す。
- */
-export function paradisBuildQueryCall(spec: IParadisQuerySpec, uidCount: number, predicate?: string, notAfter?: number): string {
-	const { params, args } = queryArguments(spec, uidCount, predicate, notAfter);
-	return `async (${params}) => { const f = globalThis[${JSON.stringify(PAGE_FUNCTION_KEY)}]; return typeof f === 'function' ? f(${args}) : ${JSON.stringify(PARADIS_QUERY_FUNCTION_MISSING)}; }`;
-}
-
-/**
- * ページの関数を 1 回動かす。まず短い呼び出しを送り、関数がまだ無い文書でだけ関数ごと送り直す（文書ごとに 1 度だけ
- * 往復が 1 回増える）。送り直すときは締め切りと開始の期限（`timing`）を取り直す。戻り値は最後に送った評価の結果と締め切り。
- */
-export async function paradisEvaluateQuery(call: Pick<IParadisBrowserQueryCall, 'evaluate'>, spec: IParadisQuerySpec, uids: readonly string[], predicate: string | undefined, timing: () => { readonly deadlineMs: number; readonly notAfter: number }): Promise<{ readonly result: unknown; readonly deadlineMs: number }> {
-	const first = timing();
-	const result = await call.evaluate(paradisBuildQueryCall(spec, uids.length, predicate, first.notAfter), uids, first.deadlineMs);
-	if ((result as { isError?: unknown } | undefined)?.isError === true || paradisParseEvaluateValue(result)?.value !== PARADIS_QUERY_FUNCTION_MISSING) {
-		return { result, deadlineMs: first.deadlineMs };
-	}
-	const again = timing();
-	return { result: await call.evaluate(paradisBuildQueryFunction(spec, uids.length, predicate, again.notAfter), uids, again.deadlineMs), deadlineMs: again.deadlineMs };
+	return `async (${params}) => (${PARADIS_BROWSER_QUERY_PAGE_SCRIPT})(${JSON.stringify(spec)}, [${params}], ${predicateSource}, ${notAfterSource})`;
 }
 
 /** この評価の締め切り（1 区切り＋{@link PARADIS_EVALUATE_DEADLINE_MARGIN_MS}）と、ページが動き始めてよい最後の時刻。 */
@@ -373,10 +331,9 @@ export class ParadisBrowserQuery {
 
 	/** 1 回 evaluate する。値か、エージェントへ返す失敗。 */
 	private async run(call: IParadisBrowserQueryCall, spec: IParadisQuerySpec, uids: readonly string[], predicate?: string, shortDeadlineMs?: number): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; result: ToolResult; transient: boolean; unresponsive?: boolean }> {
-		const { result, deadlineMs } = await paradisEvaluateQuery(call, spec, uids, predicate, () => {
-			const now = this.now();
-			return shortDeadlineMs !== undefined ? { deadlineMs: shortDeadlineMs, notAfter: now + shortDeadlineMs - LATE_START_GUARD_MS / 2 } : paradisEvaluateDeadline(spec, now);
-		});
+		const now = this.now();
+		const { deadlineMs, notAfter } = shortDeadlineMs !== undefined ? { deadlineMs: shortDeadlineMs, notAfter: now + shortDeadlineMs - LATE_START_GUARD_MS / 2 } : paradisEvaluateDeadline(spec, now);
+		const result = await call.evaluate(paradisBuildQueryFunction(spec, uids.length, predicate, notAfter), uids, deadlineMs);
 		if (!call.isCurrent()) {
 			return { ok: false, result: error(BINDING_CHANGED), transient: false };
 		}
