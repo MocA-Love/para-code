@@ -20,6 +20,8 @@ import {
 export const AIVIS_BASE_URL = 'https://api.aivis-project.com';
 /** 管理系の API（モデル・辞書・使用量・残高）の 1 回の上限。本文を読み終えるまでを含む。 */
 const AIVIS_REQUEST_TIMEOUT_MS = 20_000;
+/** 辞書の書き出し・読み込みの上限（語の多い辞書は 20 秒では足りないことがある）。 */
+const AIVIS_DICTIONARY_TRANSFER_TIMEOUT_MS = 120_000;
 
 type FetchLike = (input: URL, init: RequestInit) => Promise<Response>;
 
@@ -28,6 +30,8 @@ interface IAivisRequestInit {
 	readonly query?: Record<string, string | number | boolean | undefined>;
 	readonly json?: unknown;
 	readonly accept?: string;
+	/** 辞書の書き出し・読み込みのように時間のかかる要求（長い方の上限を使う）。 */
+	readonly transfer?: boolean;
 }
 
 class AivisApiError extends Error {
@@ -46,6 +50,7 @@ export class ParadisAivisClient {
 	constructor(
 		private readonly fetchImpl: FetchLike = (input, init) => fetch(input, init),
 		private readonly timeoutMs = AIVIS_REQUEST_TIMEOUT_MS,
+		private readonly transferTimeoutMs = AIVIS_DICTIONARY_TRANSFER_TIMEOUT_MS,
 	) { }
 
 	/**
@@ -69,7 +74,7 @@ export class ParadisAivisClient {
 			body = JSON.stringify(init.json);
 		}
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+		const timer = setTimeout(() => controller.abort(), init.transfer ? this.transferTimeoutMs : this.timeoutMs);
 		try {
 			const response = await this.fetchImpl(url, { method: init.method ?? 'GET', headers, body, signal: controller.signal });
 			if (!response.ok) {
@@ -170,7 +175,7 @@ export class ParadisAivisClient {
 
 	async exportDictionary(apiKey: string, uuid: string): Promise<Record<string, unknown>> {
 		try {
-			return await this._json<Record<string, unknown>>(`/v1/user-dictionaries/${uuid}/export`, apiKey);
+			return await this._json<Record<string, unknown>>(`/v1/user-dictionaries/${uuid}/export`, apiKey, { transfer: true });
 		} catch (error) {
 			throw this._wrapError(error);
 		}
@@ -178,7 +183,7 @@ export class ParadisAivisClient {
 
 	async importDictionary(apiKey: string, uuid: string, data: Record<string, unknown>, override: boolean): Promise<void> {
 		try {
-			await this._send(`/v1/user-dictionaries/${uuid}/import`, apiKey, { method: 'POST', query: { override }, json: data });
+			await this._send(`/v1/user-dictionaries/${uuid}/import`, apiKey, { method: 'POST', query: { override }, json: data, transfer: true });
 		} catch (error) {
 			throw this._wrapError(error);
 		}

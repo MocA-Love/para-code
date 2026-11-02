@@ -32,6 +32,26 @@ suite('ParadisAivisClient', () => {
 
 	const failure = (promise: Promise<unknown>) => promise.then(() => 'resolved', (error: Error) => error.message);
 
+	test('gives the dictionary export and import the longer limit', async () => {
+		const slow = (_input: URL, init: RequestInit) => new Promise<Response>((resolve, reject) => {
+			const timer = setTimeout(() => resolve(new Response('{}', { status: 200 })), 100);
+			init.signal?.addEventListener('abort', () => {
+				clearTimeout(timer);
+				reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+			});
+		});
+		const client = new ParadisAivisClient(slow, 30, 1_000);
+		assert.deepStrictEqual({
+			me: await failure(client.getMe('key')),
+			exported: await client.exportDictionary('key', 'uuid'),
+			imported: await failure(client.importDictionary('key', 'uuid', {}, false)),
+		}, {
+			me: 'Aivis API のリクエストがタイムアウトしました',
+			exported: {},
+			imported: 'resolved',
+		});
+	});
+
 	test('gives up when the API does not answer or stops in the middle of the body, and keeps the HTTP error and the missing model as before', async () => {
 		const notFound = new ParadisAivisClient(async () => new Response('missing', { status: 404 }), 50);
 		const serverError = new ParadisAivisClient(async () => new Response('boom', { status: 500 }), 50);

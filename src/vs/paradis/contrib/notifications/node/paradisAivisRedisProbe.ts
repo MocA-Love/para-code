@@ -93,6 +93,8 @@ export class ParadisAivisRedisKeyProbe {
 	private pending: { readonly count: number; readonly replies: RespReply[]; readonly resolve: (replies: RespReply[] | undefined) => void } | undefined;
 	private broken = false;
 	private setupSent = false;
+	/** 同時に呼ばれた {@link has} を 1 つずつ順に送る（返事は送った順に届くので、待ちを 1 つにしておく）。 */
+	private queue: Promise<unknown> = Promise.resolve();
 
 	private constructor(private readonly host: string, private readonly port: number, private readonly setup: readonly (readonly string[])[]) { }
 
@@ -120,7 +122,13 @@ export class ParadisAivisRedisKeyProbe {
 	/**
 	 * キーがあるか。つながらない（Redis が無い）ときは false。確かめられないとき（認証の失敗・時間切れ・途中で切れた）は undefined。
 	 */
-	async has(key: string): Promise<boolean | undefined> {
+	has(key: string): Promise<boolean | undefined> {
+		const next = this.queue.then(() => this.hasNow(key));
+		this.queue = next.catch(() => undefined);
+		return next;
+	}
+
+	private async hasNow(key: string): Promise<boolean | undefined> {
 		if (this.broken) {
 			return undefined;
 		}
