@@ -32,6 +32,7 @@ import type { IParadisSidePanelRefusal } from '../common/paradisBrowserExtension
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { paradisKeepOnExtensionPages, paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 const DEFAULT_TAB = -1;
 const WINDOW_ID_CURRENT = -2;
@@ -91,10 +92,6 @@ interface IPanel {
 	/** shownFor のタブが閉じたら隠す見張り（renderer から「隠す」が届かないときに備える）。 */
 	shownForWatch: IDisposable | undefined;
 	readonly disposables: DisposableStore;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** 拡張機能自身のページか（chrome-extension: の origin は "null" になるので、スキームと host で比べる）。 */

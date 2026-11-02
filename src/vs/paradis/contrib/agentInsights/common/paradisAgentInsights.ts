@@ -17,6 +17,7 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { asRecord } from '../../../common/paradisGuards.js';
 
 /** サブエージェントの状態（モバイル中継の ParadisAgentActivityStatus と同じ語彙）。 */
 export type ParadisAgentPaneSubagentStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
@@ -108,10 +109,6 @@ export const PARADIS_PROMPT_CACHE_TTL_1H = 60 * 60 * 1000;
 /** 残りがこれ以下になったら警告色にする。 */
 export const PARADIS_PROMPT_CACHE_WARNING_MS = 60 * 1000;
 
-function record(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
 function positive(value: unknown): boolean {
 	return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
@@ -135,7 +132,7 @@ export function paradisReadClaudePromptCacheUsage(line: Readonly<Record<string, 
 	if (line.type !== 'assistant' || line.isSidechain === true) {
 		return undefined;
 	}
-	const usage = record(record(line.message)?.usage);
+	const usage = asRecord(asRecord(line.message)?.usage);
 	if (!usage) {
 		return undefined;
 	}
@@ -143,7 +140,7 @@ export function paradisReadClaudePromptCacheUsage(line: Readonly<Record<string, 
 	if (!Number.isFinite(timestamp)) {
 		return undefined;
 	}
-	const creation = record(usage.cache_creation);
+	const creation = asRecord(usage.cache_creation);
 	const wrote5m = positive(creation?.ephemeral_5m_input_tokens);
 	const wrote1h = positive(creation?.ephemeral_1h_input_tokens);
 	if (wrote1h) {
@@ -216,12 +213,12 @@ const INTERACTION_TEXT_LIMIT = 200;
  * 複数問あるときは先頭だけを出す（残りは端末かモバイルで見る）。
  */
 export function paradisSummarizeQuestionInput(toolInput: unknown): string | undefined {
-	const questions = record(toolInput)?.questions;
+	const questions = asRecord(toolInput)?.questions;
 	if (!Array.isArray(questions)) {
 		return undefined;
 	}
 	for (const item of questions) {
-		const question = record(item)?.question;
+		const question = asRecord(item)?.question;
 		if (typeof question === 'string' && question.trim().length > 0) {
 			return paradisOneLine(question, INTERACTION_TEXT_LIMIT);
 		}
@@ -234,7 +231,7 @@ export function paradisSummarizeQuestionInput(toolInput: unknown): string | unde
  * 無ければツール名だけにする（入力の JSON をそのまま出しても読めないため）。
  */
 export function paradisSummarizePermissionInput(toolName: string | undefined, toolInput: unknown): string | undefined {
-	const input = record(toolInput);
+	const input = asRecord(toolInput);
 	const pick = (...keys: string[]): string | undefined => {
 		for (const key of keys) {
 			const value = input?.[key];

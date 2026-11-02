@@ -29,6 +29,7 @@ import { paradisParseRunStepsFlow } from './paradisBrowserRunStepsFlow.js';
 import { paradisDevtoolsPathArguments } from './paradisDevtoolsPathPolicy.js';
 import { paradisSiteNoteContainsCardNumber, paradisSiteNoteLooksSecret } from './paradisBrowserSiteNotes.js';
 import { ParadisBrowserSiteStore, paradisLocalDate } from './paradisBrowserSiteStore.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 const MAX_RECIPES_PER_KEY = 30;
 /** 1 つの手順の大きさ（JSON の文字数）。 */
@@ -66,10 +67,6 @@ function originOf(url: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** 既定の置き場（利用者のフォルダの .para-code の下）。 */

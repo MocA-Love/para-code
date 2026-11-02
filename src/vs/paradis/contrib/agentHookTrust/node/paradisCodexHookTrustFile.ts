@@ -34,6 +34,7 @@ import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js'
 import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { encodeParadisTomlBasicString, MultilineDelimiter, parseTomlKeyPath, scanTomlLine } from '../../agentBrowser/common/paradisMcpSetupEncoding.js';
 import { IParadisCodexHookListing, IParadisCodexHookTrustGrantResult, IParadisCodexHookTrustStatus } from '../common/paradisCodexHookTrust.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** hooks.json のイベント名 → Codex が鍵とハッシュに使う小文字の名前（hooks/src/lib.rs の `hook_event_key_label`）。 */
 const CODEX_HOOK_EVENT_LABELS: Readonly<Record<string, string>> = {
@@ -59,10 +60,6 @@ const EVENTS_WITH_ADDITIONAL_CONTEXT = new Set(['pre_tool_use', 'post_tool_use',
 
 /** 既定のタイムアウトが短いイベント（SessionEnd と Interrupt は既定 1 秒、上限 3 秒）。 */
 const SHORT_TIMEOUT_EVENTS = new Set(['session_end', 'interrupt']);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /** キーを並べ替えた JSON（serde_json の `sort_all_objects` + `to_vec` と同じ、空白なし）。 */
 function canonicalJson(value: unknown): string {

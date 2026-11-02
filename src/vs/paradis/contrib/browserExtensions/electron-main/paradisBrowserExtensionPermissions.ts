@@ -20,6 +20,7 @@ import { promises as fs } from 'fs';
 import type { Session } from 'electron';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import { paradisMatchesUrlPattern } from './paradisBrowserExtensionTabs.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** chrome.permissions.Permissions。 */
 export interface IParadisPermissionSet {
@@ -115,10 +116,6 @@ export function paradisPlanPermissionRemoval(manifest: Record<string, unknown>, 
 		return { kind: 'invalid', error: 'You cannot remove required permissions.' };
 	}
 	return { kind: 'remove', removed: { permissions: permissions.filter(permission => granted.permissions.includes(permission)), origins: origins.filter(origin => granted.origins.includes(origin)) } };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** `{ permissions?, origins? }` の引数。 */

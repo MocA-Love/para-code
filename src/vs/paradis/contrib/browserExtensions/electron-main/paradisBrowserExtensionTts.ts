@@ -20,6 +20,7 @@ import { randomUUID } from 'crypto';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { PARADIS_SHIM_TTS_NAMESPACE } from '../common/paradisBrowserExtensionShim.js';
 import { IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 const MAX_UTTERANCE_CHARS = 32_768;
 const EVENT_PREFIX = '__paradis_tts__';
@@ -98,7 +99,6 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 			void this._stop(entry => entry.session === session && entry.extensionId === extensionId && (connection === undefined || entry.connection === connection));
 		});
 		const text = (value: unknown): value is string => typeof value === 'string' && value.length <= MAX_UTTERANCE_CHARS;
-		const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 		_host.registerNamespace(PARADIS_SHIM_TTS_NAMESPACE, {
 			permission: 'tts',
 			methods: {

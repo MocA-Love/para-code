@@ -24,7 +24,7 @@ import { localize } from '../../../../nls.js';
 import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
 import { IParadisAddExtensionResult, PARADIS_DEFAULT_EXTENSION_PROFILE, paradisIsExtensionId } from '../common/paradisBrowserExtensions.js';
 import { IParadisWebStoreReply as IParadisWebStoreBridgeReply, PARADIS_CHROME_WEB_STORE_ORIGIN, PARADIS_WEB_STORE_CHANNEL, PARADIS_WEB_STORE_EVENT_CHANNEL, PARADIS_WEB_STORE_QUERY } from '../common/paradisBrowserExtensionWebStore.js';
-
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 利用者の操作とみなす入力から、入れる・外すを受ける間。 */
 const GESTURE_WINDOW_MS = 5_000;
@@ -67,10 +67,6 @@ function originOf(url: string): string | undefined {
 	} catch {
 		return undefined;
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function parseManifest(raw: unknown): Record<string, unknown> | undefined {

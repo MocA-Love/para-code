@@ -22,6 +22,7 @@
 // 子プロセスの zod は未知の引数を断るので、Para Code 側で足した引数は渡す前に必ず取り除く。
 
 import { paradisIsAllowedAgentTabUrl } from '../common/paradisAgentBrowserTabs.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** take_snapshot が 1 回に返す本文の上限（文字数）。 */
 export const PARADIS_SNAPSHOT_MAX_CHARS = 20_000;
@@ -61,10 +62,6 @@ const INPUT_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 type IJsonSchemaObject = Record<string, unknown>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /** Para Code が足した・変えた引数を、子プロセスへ渡す前の形に戻したもの。 */
 export interface IParadisPreparedDevtoolsCall {
