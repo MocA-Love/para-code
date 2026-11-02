@@ -161,6 +161,12 @@ export interface IParadisRemoveWorktreeRequest<TPath extends string = ParadisHos
 	 * ロック理由をユーザーに見せて同意を取ったうえでこれを立てる。
 	 */
 	readonly unlock?: boolean;
+	/**
+	 * true の場合、git の登録が消えて残ったフォルダー（途中で止まった削除の残骸）を直接消す依頼。
+	 * `force` と合わせて、呼び出し側が自分の一覧の残骸の行（`leftoverFolder`）だと確かめたときだけ立てる。
+	 * 受け側で残骸と判定できなければ、git に回さずにエラーにする。
+	 */
+	readonly allowLeftoverCleanup?: boolean;
 }
 
 /** `git worktree list --porcelain` の1エントリ（ロック判定に要るものだけ）。 */
@@ -249,17 +255,45 @@ export function paradisFindWorktreeLock(
 	return { locked, reason };
 }
 
+/**
+ * `git worktree list` のエントリのどれかと、このパスが同じか、上位か、その中か。比べ方は
+ * {@link paradisFindWorktreeLock} と同じ。残骸のフォルダーを直接消す前に、生きている作業ツリーや
+ * リポジトリを巻き込まないことを確かめるのに使う。
+ */
+export function paradisWorktreeListOverlaps(
+	entries: readonly { readonly path: string }[],
+	worktreePath: string,
+	options: IParadisWorktreePathComparison,
+): boolean {
+	return entries.some(entry => paradisSameWorktreePath(entry.path, worktreePath, options)
+		|| paradisPathIsInside(entry.path, worktreePath, options)
+		|| paradisPathIsInside(worktreePath, entry.path, options));
+}
+
+/** `child` が `parent` の中（同じパスは含まない）にあるか。 */
+function paradisPathIsInside(child: string, parent: string, options: IParadisWorktreePathComparison): boolean {
+	const parentPath = paradisNormalizeWorktreePath(parent, options);
+	return parentPath.length > 0 && paradisNormalizeWorktreePath(child, options).startsWith(`${parentPath}/`);
+}
+
 /** 区切りと末尾スラッシュ、必要なら大文字小文字を無視してパスを比べる。 */
 function paradisSameWorktreePath(a: string, b: string, options: IParadisWorktreePathComparison): boolean {
-	const normalize = (value: string) => {
-		// バックスラッシュを区切りとして潰すのは Windows だけ。Linux / macOS ではバックスラッシュは
-		// 正当なファイル名文字なので、無条件に潰すと別々の作業ツリーを同一視してしまう。
-		const separated = options.backslashIsSeparator ? value.replace(/\\/g, '/') : value;
-		const trimmed = separated.replace(/\/+$/, '');
-		return options.ignoreCase ? trimmed.toLowerCase() : trimmed;
-	};
-	const left = normalize(a);
-	return left.length > 0 && left === normalize(b);
+	const left = paradisNormalizeWorktreePath(a, options);
+	return left.length > 0 && left === paradisNormalizeWorktreePath(b, options);
+}
+
+/** 2 つのパスが同じ作業ツリーを指すか（区切り・末尾スラッシュ・必要なら大文字小文字を無視する）。 */
+export function paradisIsSameWorktreePath(a: string, b: string, options: IParadisWorktreePathComparison): boolean {
+	return paradisSameWorktreePath(a, b, options);
+}
+
+/** 比べるためにパスを揃える（区切り・末尾スラッシュ・必要なら大文字小文字）。 */
+function paradisNormalizeWorktreePath(value: string, options: IParadisWorktreePathComparison): string {
+	// バックスラッシュを区切りとして潰すのは Windows だけ。Linux / macOS ではバックスラッシュは
+	// 正当なファイル名文字なので、無条件に潰すと別々の作業ツリーを同一視してしまう。
+	const separated = options.backslashIsSeparator ? value.replace(/\\/g, '/') : value;
+	const trimmed = separated.replace(/\/+$/, '');
+	return options.ignoreCase ? trimmed.toLowerCase() : trimmed;
 }
 
 /**
