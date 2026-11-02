@@ -24,7 +24,12 @@ import { fromNow } from '../../../../base/common/date.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { basename } from '../../../../base/common/path.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { IParadisCostDay, IParadisRepoUsageResult, paradisActivityDayKey, paradisAllocateSpaceCosts } from '../../agentActivity/common/paradisAgentActivity.js';
+import { PARADIS_REPO_OUTSIDE_KEY } from '../../agentActivity/common/paradisRepoIdentity.js';
+import { ParadisAgentActivityClient } from '../../agentActivity/electron-browser/paradisAgentActivityClient.js';
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
@@ -110,6 +115,13 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	private customToInput: HTMLInputElement | undefined;
 
 	private readonly client: ParadisCcusageClient;
+	/** リポジトリ別の束ね方（会話ログの作業フォルダ）を取る先。 */
+	private readonly activityClient: ParadisAgentActivityClient;
+	private repoData: IParadisRepoUsageResult | undefined;
+	private repoError: string | undefined;
+	private repoSequence = 0;
+	/** 中身（クローン・ワークツリー）を開いているリポジトリ。 */
+	private readonly expandedRepos = new Set<string>();
 	private readonly warmLease = this._register(new MutableDisposable<IDisposable>());
 	private readonly bodyDisposables = this._register(new DisposableStore());
 	private readonly relayoutScheduler = this._register(new RunOnceScheduler(() => this.renderBody(), 100));
@@ -135,9 +147,11 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	constructor(
 		@IThemeService private readonly themeService: IThemeService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisCcusageClient);
+		this.activityClient = instantiationService.createInstance(ParadisAgentActivityClient);
 		this._register(this.themeService.onDidColorThemeChange(() => this.renderBody()));
 
 		this.element = $('.paradis-ccusage');
@@ -444,6 +458,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			message.appendChild(this.body.ownerDocument.createTextNode(
 				localize('paradis.ccusage.loading', "ccusage でデータを集計しています… 初回は少し時間がかかることがあります")));
 		}
+		void this.refreshRepos(bypassCache);
 		try {
 			this.data = await this.client.fetchDashboard(bypassCache);
 		} catch (error) {
@@ -458,6 +473,36 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		if (this.pendingBypassRefresh && !this._store.isDisposed) {
 			this.pendingBypassRefresh = false;
 			await this.refresh(true);
+		}
+	}
+
+	/**
+	 * リポジトリ別の束ね方を取り直す（取れたら描き直す）。SSH の窓では会話ログが手元に無いので取らない。
+	 * 期間の切り替えは描き直すだけで済むよう、ダッシュボードと同じ 90 日分を取る。
+	 */
+	private async refreshRepos(bypassCache: boolean): Promise<void> {
+		if (this.remoteAgentService.getConnection()) {
+			return;
+		}
+		const sequence = ++this.repoSequence;
+		this.repoError = undefined;
+		const today = new Date();
+		const since = paradisActivityDayKey(new Date(today.getFullYear(), today.getMonth(), today.getDate() - (FETCH_WINDOW_DAYS - 1)));
+		try {
+			const result = await this.activityClient.repoUsage({ since, until: paradisActivityDayKey(today), bypassCache });
+			if (sequence === this.repoSequence) {
+				this.repoData = result;
+			}
+		} catch (error) {
+			if (sequence === this.repoSequence) {
+				this.repoError = error instanceof Error ? error.message : String(error);
+			}
+		} finally {
+			if (sequence === this.repoSequence && !this._store.isDisposed) {
+				if (this.data) {
+					this.renderBody();
+				}
+			}
 		}
 	}
 
@@ -528,22 +573,18 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		this.renderKpis(this.body, days, totals);
 		this.renderBlockCard(this.body);
 
-		const grid = dom.append(this.body, $('.paradis-ccusage-grid2'));
-		const left = dom.append(grid, $('.paradis-ccusage-card'));
-		this.renderDailyChart(left, buckets, totals, granularity);
-		const right = dom.append(grid, $('.paradis-ccusage-card'));
-		this.renderModelBreakdown(right, totals);
+		// 左の列は時間の流れ（日別 → トークン推移 → 最近のセッション）、右の列は内訳（モデル別 → リポジトリ別）。
+		// 列ごとに縦に積むので、片方が長くても途中に空きができない（Q537 の 13 A）
+		const columns = dom.append(this.body, $('.paradis-ccusage-columns'));
+		const left = dom.append(columns, $('.paradis-ccusage-col'));
+		const right = dom.append(columns, $('.paradis-ccusage-col'));
+		this.renderDailyChart(dom.append(left, $('.paradis-ccusage-card')), buckets, totals, granularity);
+		this.renderTokenTrend(dom.append(left, $('.paradis-ccusage-card')), buckets, granularity);
 		if (this.agentFilter === 'all' || this.agentFilter === 'claude') {
-			this.renderProjects(right, range);
+			this.renderSessions(dom.append(left, $('.paradis-ccusage-card')), range);
 		}
-
-		const grid2 = dom.append(this.body, $('.paradis-ccusage-grid2'));
-		const trendCard = dom.append(grid2, $('.paradis-ccusage-card'));
-		this.renderTokenTrend(trendCard, buckets, granularity);
-		if (this.agentFilter === 'all' || this.agentFilter === 'claude') {
-			const sessionsCard = dom.append(grid2, $('.paradis-ccusage-card'));
-			this.renderSessions(sessionsCard, range);
-		}
+		this.renderModelBreakdown(dom.append(right, $('.paradis-ccusage-card')), totals);
+		this.renderRepos(dom.append(right, $('.paradis-ccusage-card')), range);
 	}
 
 	private filterDaysInRange(days: IParadisCcusageDayData[], range: IDateRange): IParadisCcusageDayData[] {
@@ -997,34 +1038,97 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		}
 	}
 
-	private renderProjects(card: HTMLElement, range: IDateRange): void {
-		// 選択中の期間内のコストへスライスしてから集計する
-		const projects = (this.data?.projects ?? [])
-			.map(project => ({
-				name: project.name,
-				rawName: project.rawName,
-				cost: project.dailyCosts.reduce((sum, day) => sum + (day.date >= range.from && day.date <= range.to ? day.cost : 0), 0),
-			}))
-			.filter(project => project.cost > 0)
-			.sort((a, b) => b.cost - a.cost);
-		if (projects.length === 0) {
+	/**
+	 * リポジトリ別（Q537 の 13 A。以前の「プロジェクト別」の置き換え）。会話ログの作業フォルダをリポジトリへ束ね
+	 * （同じ remote の並列クローンとワークツリーをまとめる）、ccusage の金額を日・モデルごとのトークンの比で分けた目安。
+	 */
+	private renderRepos(card: HTMLElement, range: IDateRange): void {
+		dom.append(card, $('h3')).textContent = this.metric === 'tokens'
+			? localize('paradis.ccusage.repos.titleTokens', "リポジトリ別トークン数")
+			: localize('paradis.ccusage.repos.title', "リポジトリ別コスト");
+		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.repos.desc', "会話ログのトークンの比で分けた目安・クローンとワークツリーをまとめる");
+		if (this.remoteAgentService.getConnection()) {
+			dom.append(card, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.repos.remote', "SSH で接続しているウィンドウでは出せません。手元のフォルダを開いたウィンドウで確認してください。");
 			return;
 		}
-		const heading = dom.append(card, $('h3'));
-		heading.style.marginTop = '16px';
-		heading.textContent = localize('paradis.ccusage.projects.title', "プロジェクト別コスト");
-		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.projects.desc', "Claude Codeのみ・上位{0}件", Math.min(MAX_PROJECT_ROWS, projects.length));
+		const repoData = this.repoData;
+		if (!repoData) {
+			const message = dom.append(card, $('.paradis-ccusage-note'));
+			message.textContent = this.repoError !== undefined
+				? localize('paradis.ccusage.repos.error', "会話ログを集計できませんでした: {0}", this.repoError)
+				: localize('paradis.ccusage.repos.loading', "会話ログを集計しています…");
+			return;
+		}
+
+		// 選んでいるエージェントの金額だけを分ける
+		const costDays: IParadisCostDay[] = (this.data?.days ?? []).map(day => ({
+			date: day.date,
+			models: day.models
+				.filter(model => this.agentFilter === 'all' || model.agent === this.agentFilter)
+				.map(model => ({ model: model.model, agent: model.agent, cost: model.cost })),
+		}));
+		const allocation = paradisAllocateSpaceCosts(costDays, repoData.buckets, range.from, range.to);
+		const byFolder = new Map(allocation.spaces.map(space => [space.key, space]));
+		const valueOf = (folder: string) => {
+			const entry = byFolder.get(folder);
+			return this.metric === 'tokens' ? entry?.tokens ?? 0 : entry?.cost ?? 0;
+		};
+		const format = (value: number) => this.metric === 'tokens' ? paradisFormatTokens(value) : paradisFormatUsd(value);
+
+		const repos = repoData.repos
+			.map(repo => ({ repo, value: repo.folders.reduce((sum, folder) => sum + valueOf(folder), 0) }))
+			.filter(entry => entry.value > 0)
+			.sort((a, b) => b.value - a.value);
+		const outside = valueOf(PARADIS_REPO_OUTSIDE_KEY);
+		const unallocated = this.metric === 'tokens' ? 0 : allocation.unallocatedCost;
+		if (repos.length === 0 && outside <= 0) {
+			dom.append(card, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.repos.none', "選択した期間の会話ログが見つかりません。");
+			return;
+		}
 
 		const seq = this.seqPalette;
-		const top = projects.slice(0, MAX_PROJECT_ROWS);
-		const restCost = projects.slice(MAX_PROJECT_ROWS).reduce((sum, p) => sum + p.cost, 0);
-		// 「その他」の合計が個別プロジェクトの最大値を超えることがあるため、スケールに含める
-		const maxCost = Math.max(0.01, ...top.map(p => p.cost), restCost);
-		top.forEach((project, index) => {
-			appendHBarRow(card, project.name, project.rawName, project.cost, maxCost, seq[Math.min(index, seq.length - 1)], paradisFormatUsd(project.cost));
+		const top = repos.slice(0, MAX_PROJECT_ROWS);
+		const rest = repos.slice(MAX_PROJECT_ROWS).reduce((sum, entry) => sum + entry.value, 0);
+		const maxValue = Math.max(0.01, ...top.map(entry => entry.value), rest, outside, unallocated);
+		top.forEach(({ repo, value }, index) => {
+			const folders = repo.folders.filter(folder => valueOf(folder) > 0);
+			const label = folders.length > 1 ? localize('paradis.ccusage.repos.count', "{0} ×{1}", repo.name, folders.length) : repo.name;
+			const row = appendHBarRow(card, label, folders.join('\n'), value, maxValue, seq[Math.min(index, seq.length - 1)], format(value));
+			if (folders.length > 1) {
+				// 押すと中身（クローン・ワークツリー）を開く
+				row.classList.add('expandable');
+				row.setAttribute('role', 'button');
+				row.tabIndex = 0;
+				row.setAttribute('aria-expanded', String(this.expandedRepos.has(repo.key)));
+				const toggle = () => {
+					if (!this.expandedRepos.delete(repo.key)) {
+						this.expandedRepos.add(repo.key);
+					}
+					this.renderBody();
+				};
+				this.bodyDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, toggle));
+				this.bodyDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						toggle();
+					}
+				}));
+				if (this.expandedRepos.has(repo.key)) {
+					for (const folder of folders.sort((a, b) => valueOf(b) - valueOf(a))) {
+						const sub = appendHBarRow(card, basename(folder), folder, valueOf(folder), maxValue, seq[Math.min(index, seq.length - 1)], format(valueOf(folder)));
+						sub.classList.add('sub');
+					}
+				}
+			}
 		});
-		if (restCost > 0) {
-			appendHBarRow(card, localize('paradis.ccusage.projects.rest', "その他（{0}）", projects.length - MAX_PROJECT_ROWS), '', restCost, maxCost, seq[seq.length - 1], paradisFormatUsd(restCost));
+		if (rest > 0) {
+			appendHBarRow(card, localize('paradis.ccusage.repos.rest', "その他（{0}）", repos.length - MAX_PROJECT_ROWS), '', rest, maxValue, seq[seq.length - 1], format(rest));
+		}
+		if (outside > 0) {
+			appendHBarRow(card, localize('paradis.ccusage.repos.outside', "リポジトリ外"), localize('paradis.ccusage.repos.outsideTooltip', "git のリポジトリの外のフォルダでの会話"), outside, maxValue, OTHER_COLOR, format(outside));
+		}
+		if (unallocated > 0.005) {
+			appendHBarRow(card, localize('paradis.ccusage.repos.unallocated', "未割り当て"), localize('paradis.ccusage.repos.unallocatedTooltip', "ccusage には金額があるものの、この PC の会話ログに対応する記録が見つからなかった分"), unallocated, maxValue, OTHER_COLOR, format(unallocated));
 		}
 	}
 
@@ -1032,7 +1136,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.sessions.title', "最近のセッション");
 		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.sessions.desc', "Claude Codeのみ・新しい順");
 
-		// filterDaysInRange/renderProjects と同じ「ローカル日付文字列の辞書順比較」で期間判定を揃える。
+		// filterDaysInRange と同じ「ローカル日付文字列の辞書順比較」で期間判定を揃える。
 		// 活動日時が取れないセッションは判定不能なので表示に残す。
 		const sessions = (this.data?.sessions ?? [])
 			.filter(session => {
@@ -1143,7 +1247,7 @@ function appendBlockStat(card: HTMLElement, label: string, value: string): void 
 	dom.append(kv, $('.v')).textContent = value;
 }
 
-function appendHBarRow(container: HTMLElement, name: string, tooltip: string, value: number, maxValue: number, color: string, formatted: string): void {
+function appendHBarRow(container: HTMLElement, name: string, tooltip: string, value: number, maxValue: number, color: string, formatted: string): HTMLElement {
 	const row = dom.append(container, $('.paradis-ccusage-hbar-row'));
 	const nameEl = dom.append(row, $('span.name'));
 	nameEl.textContent = name;
@@ -1155,6 +1259,7 @@ function appendHBarRow(container: HTMLElement, name: string, tooltip: string, va
 	bar.style.width = `${Math.min(100, Math.max(1, (value / maxValue) * 100)).toFixed(1)}%`;
 	bar.style.background = color;
 	dom.append(row, $('span.val')).textContent = formatted;
+	return row;
 }
 
 function agentDisplayName(agent: ParadisCcusageAgent): string {
