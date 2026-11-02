@@ -38,6 +38,7 @@ import {
 	IParadisMenuBarSettings,
 	PARADIS_MENU_BAR_CHANNEL,
 	PARADIS_MENU_BAR_ICON_SETTING,
+	PARADIS_MENU_BAR_MENU_SETTINGS,
 	ParadisMenuBarRequest,
 	paradisReadMenuBarSettings,
 	paradisSanitizeMenuBarReport,
@@ -72,7 +73,7 @@ export interface IParadisMenuBarChannelHost {
 	registerChannel(channelName: string, channel: IServerChannel<string>): void;
 }
 
-type PendingRequest = Exclude<ParadisMenuBarRequest['type'], 'reveal'>;
+type PendingRequest = Exclude<ParadisMenuBarRequest['type'], 'reveal' | 'setSetting'>;
 
 /** 描く絵。`render` は倍率ごとのビットマップを返す。 */
 export interface IParadisMenuBarImage {
@@ -85,6 +86,8 @@ export interface IParadisMenuBarImage {
 export interface IParadisMenuBarMenuHandlers {
 	reveal(entryId: string): void;
 	run(action: ParadisMenuBarAction): void;
+	/** メニューのチェックの項目で設定を書き換える。 */
+	setSetting(key: string, value: string | boolean): void;
 }
 
 /** メニューバーのアイコン 1 つ（Electron の Tray の必要な所だけ）。 */
@@ -135,27 +138,36 @@ function toNativeImage(image: IParadisMenuBarImage): NativeImage {
 	return result;
 }
 
+/** 行の頭の 2 本のバーと 2 行目。macOS のテンプレート画像でだけ明暗に合い、2 行目も macOS にしか出ない。 */
+function withBarsAndSublabel(options: MenuItemConstructorOptions, plain: boolean, bars: { readonly fiveHour?: number; readonly sevenDay?: number } | undefined, sublabel: string | undefined): MenuItemConstructorOptions {
+	// Windows の暗いメニューではテンプレート画像が黒いまま見えなくなるので、Windows では文字だけにする
+	if (!plain && isMacintosh) {
+		if (bars) {
+			options.icon = toNativeImage({ render: scale => paradisRenderMenuBarRowBars(scale, BLACK, bars.fiveHour, bars.sevenDay), template: true });
+		}
+		if (sublabel) {
+			options.sublabel = sublabel;
+		}
+	}
+	return options;
+}
+
 function toMenuItem(item: ParadisMenuBarMenuItem, plain: boolean, handlers: IParadisMenuBarMenuHandlers): MenuItemConstructorOptions {
 	switch (item.kind) {
 		case 'separator': return { type: 'separator' };
 		case 'header':
+			// macOS 14 以降の区切り見出し。押せない灰色の行（info）と見分けがつくようにする。
+			// 簡単な表示と Windows では今までどおり押せない行にする
+			return !plain && isMacintosh ? { type: 'header', label: item.label } : { label: item.label, enabled: false };
 		case 'info':
 			return { label: item.label, enabled: false };
 		case 'entry': return { label: item.label, click: () => handlers.reveal(item.entryId) };
-		case 'account': {
-			const options: MenuItemConstructorOptions = { label: item.label, click: () => handlers.run('openUsagePanel') };
-			// 行の頭のバーは macOS のテンプレート画像でだけ明暗に合う（Windows の暗いメニューでは黒いまま
-			// 見えなくなる）ので、Windows では文字だけにする。2 行目も macOS にしか出ない
-			if (!plain && isMacintosh) {
-				options.icon = toNativeImage({ render: scale => paradisRenderMenuBarRowBars(scale, BLACK, item.bars.fiveHour, item.bars.sevenDay), template: true });
-				if (item.sublabel) {
-					options.sublabel = item.sublabel;
-				}
-			}
-			return options;
-		}
-		case 'submenu': return { label: item.label, submenu: item.items.map(child => toMenuItem(child, plain, handlers)) };
+		case 'account':
+			return withBarsAndSublabel({ label: item.label, click: () => handlers.run('openUsagePanel') }, plain, item.bars, item.sublabel);
+		case 'submenu':
+			return withBarsAndSublabel({ label: item.label, submenu: item.items.map(child => toMenuItem(child, plain, handlers)) }, plain, item.bars, item.sublabel);
 		case 'action': return { label: item.label, click: () => handlers.run(item.action) };
+		case 'choice': return { type: item.radio ? 'radio' : 'checkbox', label: item.label, checked: item.checked, click: () => handlers.setSetting(item.key, item.value) };
 	}
 }
 
@@ -319,6 +331,7 @@ export class ParadisMenuBar extends Disposable {
 		this.tray.setMenu(model, settings.plainMenu, {
 			reveal: entryId => this.safely(() => this.requestFromWindow(windowId => ({ type: 'reveal', windowId, entryId }))),
 			run: action => this.safely(() => this.runAction(action)),
+			setSetting: (key, value) => this.safely(() => this.setSetting(key, value)),
 		});
 	}
 
@@ -373,6 +386,20 @@ export class ParadisMenuBar extends Disposable {
 	}
 
 	/**
+	 * 設定はウィンドウに書いてもらう（main からは設定を書けない）。ウィンドウが 1 つも無いときは、作ったウィンドウへ
+	 * 渡す手段が無いので何もしない（メニューの見た目は次に設定が届いたときに戻る）。
+	 */
+	private setSetting(key: string, value: string | boolean): void {
+		if (!PARADIS_MENU_BAR_MENU_SETTINGS.includes(key)) {
+			return;
+		}
+		const window = this.targetWindow();
+		if (window) {
+			this._onDidRequest.fire({ type: 'setSetting', windowId: window.id, key, value });
+		}
+	}
+
+	/**
 	 * 最後に使っていたウィンドウに処理を頼む。ペインへの移動はペインを持っているウィンドウが
 	 * 自分で前に出る（台帳経由）ので、`focus` はウィンドウ自体を前に出したいときだけ。
 	 */
@@ -380,7 +407,7 @@ export class ParadisMenuBar extends Disposable {
 		const window = this.targetWindow();
 		if (!window) {
 			const request = create(0);
-			if (request.type !== 'reveal') {
+			if (request.type !== 'reveal' && request.type !== 'setSetting') {
 				this.pendingRequest = request.type;
 			}
 			void this.windowsMainService.openEmptyWindow({ context: OpenContext.MENU });
