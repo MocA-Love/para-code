@@ -506,5 +506,58 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 		const merged = viewport.cellBounds(1, 1, 2, 1).height;
 		deepStrictEqual({ grows: merged > 40, sameAsTable: Math.abs(merged - mergedTd) <= 2 }, { grows: true, sameAsTable: true });
 	});
+
+	test('matches the table row by row: heights for Latin, CJK, bold and large text, and aria row and column numbers', async () => {
+		const doc = mainWindow.document;
+		const data: IParadisSheetData = {
+			name: 'Rows', minCol: 3, columnCount: 4, columnWidths: [70, 70, 70, 70], truncated: false,
+			rows: [
+				{ excelRow: 1, height: 20, cells: [text('abc'), text('123'), empty, empty] },
+				{ excelRow: 2, height: 20, cells: [text('和文だけ'), empty, empty, empty] },
+				{ excelRow: 4, height: 20, cells: [text('Bold', { fontWeight: '700' }), text('Mixed 和'), empty, empty] },
+				{ excelRow: 5, height: 20, cells: [text('Large', { fontSize: '18pt' }), empty, empty, empty] },
+				{ excelRow: 7, height: 34, cells: [text('tall row'), empty, empty, empty] },
+				{ excelRow: 8, height: 20, cells: [empty, empty, empty, text('last')] },
+			],
+		};
+		const tableHost = doc.body.appendChild(doc.createElement('div'));
+		const dom = buildSheetTableDom(data);
+		tableHost.appendChild(dom.table);
+		const tableRows = dom.dataRows.map(({ excelRow, tr }) => ({ excelRow, height: tr.getBoundingClientRect().height, rowNumber: (tr as HTMLTableRowElement).rowIndex + 1 }));
+		const tableLast = dom.dataRows.at(-1)!.tr.children[4] as HTMLTableCellElement;
+		const table = { rowCount: dom.table.rows.length, columnCount: dom.headCells.length + 1, lastColumnNumber: tableLast.cellIndex + 1, headerHeight: dom.thead.getBoundingClientRect().height };
+		tableHost.remove();
+
+		const gridHost = doc.body.appendChild(doc.createElement('div'));
+		gridHost.style.width = '600px';
+		gridHost.style.height = '400px';
+		gridHost.style.overflow = 'auto';
+		gridHost.style.position = 'relative';
+		gridHost.classList.add('paradis-spreadsheet-virtual-excel');
+		const viewport = createVirtualGridViewport(data, table.headerHeight, 'rows', measureVirtualGridContentRows(gridHost, data));
+		const index = createVirtualGridIndex(data);
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(gridHost, viewport, { getViewport: async request => legacyGridTile(data, request, index), copyFocusedCell: true }));
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 600, height: 400 });
+		const firstCells = data.rows.map((_row, rowIndex) => gridHost.querySelector<HTMLElement>(`.paradis-spreadsheet-virtual-cell[data-row="${rowIndex + 1}"][data-column="1"]`));
+		const last = gridHost.querySelector<HTMLElement>('.paradis-spreadsheet-virtual-cell[data-row="6"][data-column="4"]');
+		const grid = {
+			rowCount: Number(gridHost.getAttribute('aria-rowcount')),
+			columnCount: Number(gridHost.getAttribute('aria-colcount')),
+			lastColumnNumber: Number(last?.getAttribute('aria-colindex')),
+		};
+		gridHost.remove();
+
+		deepStrictEqual({
+			rows: tableRows.map((row, rowIndex) => ({
+				excelRow: row.excelRow,
+				sameHeight: Math.abs(viewport.cellBounds(rowIndex + 1, 1).height - row.height) <= 1,
+				sameRowNumber: Number(firstCells[rowIndex]?.getAttribute('aria-rowindex')) === row.rowNumber,
+			})),
+			counts: { rowCount: grid.rowCount === table.rowCount, columnCount: grid.columnCount === table.columnCount, lastColumnNumber: grid.lastColumnNumber === table.lastColumnNumber },
+		}, {
+			rows: data.rows.map(row => ({ excelRow: row.excelRow, sameHeight: true, sameRowNumber: true })),
+			counts: { rowCount: true, columnCount: true, lastColumnNumber: true },
+		});
+	});
 });
 
