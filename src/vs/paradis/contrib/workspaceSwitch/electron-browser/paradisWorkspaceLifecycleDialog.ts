@@ -7,10 +7,17 @@
 
 // リポジトリの Setup / Teardown スクリプト（.paracode.json の setupScript / teardownScript）を
 // 編集するダイアログ。Workspaces ビューのリポジトリ行コンテキストメニューから開く。
-// 実装様式は paradisCreateWorktreeDialog.ts と同じ自前 DOM + backdrop 方式（同じ CSS を共有）。
+// 背景の暗幕は paradisCreateWorktreeDialog.ts と同じ（同じ CSS の backdrop）。箱は共通の S 段（paradisModal.ts）で、
+// 見出しの帯・本文・下端の帯を持ち、ボタンと閉じるボタンは本家の部品を使う。
 
 import './media/paradisCreateWorktreeDialog.css';
+import './media/paradisWorkspaceLifecycleDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
+import { Button } from '../../../../base/browser/ui/button/button.js';
+import { toAction } from '../../../../base/common/actions.js';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -19,7 +26,10 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
+import { ParadisModalSize, paradisModalClasses } from '../../../browser/paradisModal.js';
 import { IParadisWorkspaceRepository } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisWorkspaceLifecycleConfig, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES, paradisParseWorkspaceLifecycleConfig, paradisUpdateWorkspaceLifecycleConfig } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR, PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
@@ -29,11 +39,17 @@ const $ = dom.$;
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.workspaceLifecycle.title', "Setup / Teardown スクリプト");
 // allow-any-unicode-next-line
-const STR_DESCRIPTION = localize('paradis.workspaceLifecycle.description', "{0} に保存されます（コミットすればチーム全体・全 worktree に反映されます）。このリポジトリで worktree を作成・削除するたびに自動実行され、既定では最長 {2} 分で打ち切られます（{0} に setupTimeoutMinutes / teardownTimeoutMinutes を書けば変更できます）。実行時は環境変数 {1} に親リポジトリの絶対パスが渡されます。保存時、コメント付き JSONC のコメントは保持されません。", PARADIS_WORKSPACE_PRESET_FILE, PARADIS_PROJECT_ROOT_ENV_VAR, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES);
+const STR_DESCRIPTION = localize('paradis.workspaceLifecycle.summary', "{0} に保存し、worktree の作成・削除のたびに実行します。", PARADIS_WORKSPACE_PRESET_FILE);
 // allow-any-unicode-next-line
-const STR_SETUP_LABEL = localize('paradis.workspaceLifecycle.setupLabel', "Setup スクリプト（worktree 作成直後、対象 worktree を作業ディレクトリとして実行）");
+const STR_DETAILS = localize('paradis.workspaceLifecycle.details', "詳しく");
 // allow-any-unicode-next-line
-const STR_TEARDOWN_LABEL = localize('paradis.workspaceLifecycle.teardownLabel', "Teardown スクリプト（worktree 削除前、対象 worktree を作業ディレクトリとして実行）");
+const STR_DETAILS_HOVER = localize('paradis.workspaceLifecycle.detailsHover', "コミットすればチーム全体・全 worktree に反映されます。どちらも対象の worktree を作業ディレクトリとして実行し、既定では最長 {1} 分で打ち切ります（{0} に setupTimeoutMinutes / teardownTimeoutMinutes を書けば変えられます）。実行時は環境変数 {2} に親リポジトリの絶対パスが渡されます。保存すると、{0} のコメントは消えます。", PARADIS_WORKSPACE_PRESET_FILE, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES, PARADIS_PROJECT_ROOT_ENV_VAR);
+// allow-any-unicode-next-line
+const STR_SETUP_LABEL = localize('paradis.workspaceLifecycle.setupShortLabel', "Setup（作成の直後）");
+// allow-any-unicode-next-line
+const STR_TEARDOWN_LABEL = localize('paradis.workspaceLifecycle.teardownShortLabel', "Teardown（削除の前）");
+// allow-any-unicode-next-line
+const STR_CLOSE = localize('paradis.workspaceLifecycle.close', "閉じる");
 // allow-any-unicode-next-line
 const STR_CANCEL = localize('paradis.workspaceLifecycle.cancel', "キャンセル");
 // allow-any-unicode-next-line
@@ -69,6 +85,7 @@ export function openParadisWorkspaceLifecycleDialog(accessor: ServicesAccessor, 
 	paradisActiveWorkspaceLifecycleDialog = new ParadisWorkspaceLifecycleDialog(
 		accessor.get(ILayoutService),
 		accessor.get(IFileService),
+		accessor.get(IHoverService),
 		repository,
 	);
 }
@@ -81,8 +98,8 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 	private _setupInput!: HTMLTextAreaElement;
 	private _teardownInput!: HTMLTextAreaElement;
 	private _errorEl!: HTMLElement;
-	private _saveBtn!: HTMLButtonElement;
-	private _cancelBtn!: HTMLButtonElement;
+	private _saveBtn!: Button;
+	private _cancelBtn!: Button;
 	private _busy = false;
 	/**
 	 * 今のスクリプトを読み終えたか。読み終える前に保存すると、空の入力欄で既存のスクリプトを上書きして消すので、
@@ -93,12 +110,16 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 	constructor(
 		layoutService: ILayoutService,
 		private readonly fileService: IFileService,
+		private readonly hoverService: IHoverService,
 		private readonly repository: IParadisWorkspaceRepository,
 	) {
 		super();
 
 		this._backdrop = $('.paradis-create-worktree-backdrop');
-		this._dialog = $('.paradis-create-worktree-dialog');
+		this._dialog = $('.paradis-workspace-lifecycle-dialog');
+		this._dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
+		this._dialog.setAttribute('role', 'dialog');
+		this._dialog.setAttribute('aria-modal', 'true');
 		this._backdrop.appendChild(this._dialog);
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
@@ -134,38 +155,49 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 	private _renderForm(): void {
 		dom.clearNode(this._dialog);
 
-		dom.append(this._dialog, $('h3.pcw-title')).textContent = STR_TITLE;
-		dom.append(this._dialog, $('div.pcw-label')).textContent = STR_DESCRIPTION;
+		const header = dom.append(this._dialog, $('.plc-header'));
+		const title = dom.append(header, $('h3.plc-title'));
+		title.textContent = STR_TITLE;
+		title.id = 'paradis-lifecycle-title';
+		this._dialog.setAttribute('aria-labelledby', title.id);
+		const closeBar = this._register(new ActionBar(dom.append(header, $('.plc-header-actions'))));
+		closeBar.push(toAction({ id: 'paradis.workspaceLifecycle.close', label: STR_CLOSE, class: ThemeIcon.asClassName(Codicon.close), run: () => { if (!this._busy) { this.dispose(); } } }), { icon: true, label: false });
 
-		const setupLabel = dom.append(this._dialog, $('label.pcw-label')) as HTMLLabelElement;
-		setupLabel.textContent = STR_SETUP_LABEL;
-		setupLabel.htmlFor = 'paradis-lifecycle-setup-input';
-		this._setupInput = dom.append(this._dialog, $('textarea.pcw-prompt')) as HTMLTextAreaElement;
-		this._setupInput.id = 'paradis-lifecycle-setup-input';
-		this._setupInput.rows = 3;
-		this._setupInput.spellcheck = false;
-		// 読み終えるまでは打てない（読んだ値で、打った文字を上書きしないため）
-		this._setupInput.readOnly = true;
+		const body = dom.append(this._dialog, $('.plc-body'));
+		const description = dom.append(body, $('.plc-description'));
+		dom.append(description, $('span')).textContent = STR_DESCRIPTION;
+		const details = dom.append(description, $('span.plc-details'));
+		details.textContent = STR_DETAILS;
+		details.tabIndex = 0;
+		details.setAttribute('aria-label', STR_DETAILS_HOVER);
+		this._register(this.hoverService.setupDelayedHover(details, { content: STR_DETAILS_HOVER, container: this._backdrop }));
 
-		const teardownLabel = dom.append(this._dialog, $('label.pcw-label')) as HTMLLabelElement;
-		teardownLabel.textContent = STR_TEARDOWN_LABEL;
-		teardownLabel.htmlFor = 'paradis-lifecycle-teardown-input';
-		this._teardownInput = dom.append(this._dialog, $('textarea.pcw-prompt')) as HTMLTextAreaElement;
-		this._teardownInput.id = 'paradis-lifecycle-teardown-input';
-		this._teardownInput.rows = 3;
-		this._teardownInput.spellcheck = false;
-		this._teardownInput.readOnly = true;
+		this._setupInput = this._appendScriptField(body, 'paradis-lifecycle-setup-input', STR_SETUP_LABEL);
+		this._teardownInput = this._appendScriptField(body, 'paradis-lifecycle-teardown-input', STR_TEARDOWN_LABEL);
 
-		this._errorEl = dom.append(this._dialog, $('.pcw-error'));
+		this._errorEl = dom.append(body, $('.plc-error'));
 
-		const footer = dom.append(this._dialog, $('.pcw-footer'));
-		this._cancelBtn = dom.append(footer, $('button.pcw-btn')) as HTMLButtonElement;
-		this._cancelBtn.textContent = STR_CANCEL;
-		this._register(dom.addDisposableListener(this._cancelBtn, 'click', () => this.dispose()));
-		this._saveBtn = dom.append(footer, $('button.pcw-btn.pcw-btn-primary')) as HTMLButtonElement;
-		this._saveBtn.textContent = STR_SAVE;
-		this._saveBtn.disabled = true;
-		this._register(dom.addDisposableListener(this._saveBtn, 'click', () => void this._save()));
+		const footer = dom.append(this._dialog, $('.plc-footer'));
+		this._cancelBtn = this._register(new Button(footer, { ...defaultButtonStyles, secondary: true }));
+		this._cancelBtn.label = STR_CANCEL;
+		this._register(this._cancelBtn.onDidClick(() => this.dispose()));
+		this._saveBtn = this._register(new Button(footer, { ...defaultButtonStyles }));
+		this._saveBtn.label = STR_SAVE;
+		this._saveBtn.enabled = false;
+		this._register(this._saveBtn.onDidClick(() => void this._save()));
+	}
+
+	/** 欄の名前と、等幅のスクリプトの入力欄（3 行）。読み終えるまでは打てない（読んだ値で、打った文字を上書きしないため）。 */
+	private _appendScriptField(parent: HTMLElement, id: string, labelText: string): HTMLTextAreaElement {
+		const label = dom.append(parent, $('label.plc-label')) as HTMLLabelElement;
+		label.textContent = labelText;
+		label.htmlFor = id;
+		const input = dom.append(parent, $('textarea.plc-script')) as HTMLTextAreaElement;
+		input.id = id;
+		input.rows = 3;
+		input.spellcheck = false;
+		input.readOnly = true;
+		return input;
 	}
 
 	private async _loadExisting(): Promise<void> {
@@ -188,15 +220,15 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		this._loaded = true;
 		this._setupInput.readOnly = false;
 		this._teardownInput.readOnly = false;
-		this._saveBtn.disabled = this._busy;
+		this._saveBtn.enabled = !this._busy;
 		this.focusInput();
 	}
 
 	private _setBusy(busy: boolean): void {
 		this._busy = busy;
-		this._saveBtn.disabled = busy || !this._loaded;
-		this._cancelBtn.disabled = busy;
-		this._saveBtn.textContent = busy ? STR_SAVING : STR_SAVE;
+		this._saveBtn.enabled = !busy && this._loaded;
+		this._cancelBtn.enabled = !busy;
+		this._saveBtn.label = busy ? STR_SAVING : STR_SAVE;
 	}
 
 	private async _save(): Promise<void> {
