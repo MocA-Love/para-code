@@ -26,7 +26,10 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../platform
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
+import { paradisCanUseWindowTransparency } from '../../../../platform/window/common/paradisWindowTransparency.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 import { paradisToggleChecked, paradisToggleValue } from '../common/paradisSettingsToggle.js';
 import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
@@ -35,6 +38,7 @@ import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
 import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { PARADIS_TRANSPARENCY_ENABLED_KEY, paradisTransparencyRestartPending } from '../../windowTransparency/common/paradisTransparency.js';
 import {
 	PARADIS_MENU_BAR_INCLUDE_REMOTE_SETTING,
 	PARADIS_MENU_BAR_MENU_USAGE_SETTING,
@@ -265,6 +269,11 @@ interface IParadisSettingRowSpec {
 	readonly inverted?: boolean;
 	/** オン/オフの設定をチェックの並びで 1 行にまとめる（メニューに出す項目など）。`key` は持たない。 */
 	readonly checks?: readonly { readonly key: string; readonly label: string }[];
+	/**
+	 * 切り替えがアプリの再起動で効く設定で、まだ再起動していない間だけ行の下に出す案内（「再起動して反映」のボタン付き）。
+	 * 今はウィンドウの透過だけ（ダイアログが開いている間は再起動を促す通知が裏に隠れるため）。
+	 */
+	readonly restartNotice?: string;
 }
 
 /** 節の中の小見出し（行の group）。 */
@@ -1644,7 +1653,9 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.transparency', "ウィンドウを透過させる"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.transparencyDesc', "切り替えたあと、ウィンドウの再読み込みが必要です。"),
+		description: localize('paradis.settings.transparencyDesc', "オンにすると、エディタ・サイドバー・パネル・タイトルバーの地が透けてデスクトップが見えます。メニュー・ホバー・通知・ダイアログは透けません。"),
+		// allow-any-unicode-next-line
+		restartNotice: localize('paradis.settings.transparencyRestart', "切り替えはアプリを再起動すると効きます（ウィンドウの再読み込みでは効きません）。"),
 		keywords: 'window transparency transparent',
 	},
 	{
@@ -1661,6 +1672,32 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			{ value: 0.85, label: '85%' },
 			{ value: 0.8, label: '80%' },
 			{ value: 0.7, label: '70%' },
+		],
+	},
+	{
+		sectionId: 'psd-sec-window',
+		group: GROUP_WINDOW_LOOK,
+		key: 'workbench.modernUIFrostedGlass',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.frostedGlass', "すりガラス（メニュー・コマンドパレット・ホバーの後ろをぼかす）"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.frostedGlassDesc', "本家の設定 workbench.modernUIFrostedGlass をここでも切り替えます。"),
+		keywords: 'frosted glass blur modern ui transparency',
+	},
+	{
+		sectionId: 'psd-sec-window',
+		group: GROUP_WINDOW_LOOK,
+		key: 'workbench.modernUIFrostedGlassOpacity',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.frostedGlassOpacity', "ぼかしの面の濃さ"),
+		keywords: 'frosted glass opacity blur',
+		choices: [
+			{ value: 100, label: '100%' },
+			{ value: 90, label: '90%' },
+			{ value: 80, label: '80%' },
+			{ value: 70, label: '70%' },
+			{ value: 60, label: '60%' },
+			{ value: 50, label: '50%' },
 		],
 	},
 	{
@@ -1765,6 +1802,8 @@ export class ParadisSettingsDialog extends Disposable {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@INativeHostService private readonly nativeHostService: INativeHostService,
+		@INativeWorkbenchEnvironmentService private readonly environmentService: INativeWorkbenchEnvironmentService,
 	) {
 		super();
 		this._register(paradisMarkSettingsDialogOpen());
@@ -1939,6 +1978,9 @@ export class ParadisSettingsDialog extends Disposable {
 			if (spec.offWarning) {
 				this._buildOffWarning(main, spec.key, spec.offWarning);
 			}
+			if (spec.restartNotice) {
+				this._buildRestartNotice(main, spec.restartNotice);
+			}
 		} else if (spec.checks) {
 			this._buildChecks(main, spec.checks);
 		}
@@ -2112,6 +2154,28 @@ export class ParadisSettingsDialog extends Disposable {
 		warning.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
 		dom.append(warning, $('span')).textContent = text;
 		const sync = () => warning.classList.toggle('hidden', this.configurationService.getValue(key) !== false);
+		sync();
+		this._refreshers.push(sync);
+	}
+
+	/**
+	 * 再起動しないと効かない切り替え（ウィンドウの透過）をしたままの間だけ、行の下に案内と「再起動して反映」を出す。
+	 * 透過はウィンドウを作るときにしか決まらないので、いまのウィンドウが透過で作られたかと設定を比べる。
+	 */
+	private _buildRestartNotice(main: HTMLElement, text: string): void {
+		const notice = dom.append(main, $('.psd-row-restart'));
+		notice.setAttribute('role', 'status');
+		notice.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.info)}`));
+		dom.append(notice, $('span.psd-row-restart-text')).textContent = text;
+		const button = dom.append(notice, $('button.psd-btn.psd-btn-primary')) as HTMLButtonElement;
+		// allow-any-unicode-next-line
+		button.textContent = localize('paradis.settings.restartToApply', "再起動して反映");
+		this._register(dom.addDisposableListener(button, 'click', () => { void this.nativeHostService.relaunch(); }));
+		const sync = () => notice.classList.toggle('hidden', !paradisTransparencyRestartPending(
+			this.configurationService.getValue<boolean>(PARADIS_TRANSPARENCY_ENABLED_KEY),
+			paradisCanUseWindowTransparency(this.configurationService),
+			this.environmentService.window.paradisTransparentWindow === true,
+		));
 		sync();
 		this._refreshers.push(sync);
 	}

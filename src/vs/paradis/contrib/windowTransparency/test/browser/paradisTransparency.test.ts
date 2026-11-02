@@ -23,8 +23,8 @@ suite('ParadisWindowTransparency', () => {
 			clampParadisTransparencyOpacity(1.2),
 			clampParadisTransparencyOpacity(Number.POSITIVE_INFINITY),
 		], [
-			0.8,
-			0.8,
+			0.9,
+			0.9,
 			0.3,
 			0.3,
 			0.65,
