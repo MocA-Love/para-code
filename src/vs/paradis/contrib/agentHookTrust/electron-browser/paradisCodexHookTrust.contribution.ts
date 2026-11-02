@@ -183,7 +183,7 @@ class ParadisCodexHookTrustPrompt extends Disposable implements IWorkbenchContri
 			[
 				{
 					// allow-any-unicode-next-line
-					label: localize('paradis.codexHookTrust.trust', "信頼する"),
+					label: localize('paradis.codexHookTrust.trustAuto', "信頼する（以後も自動で信頼）"),
 					run: () => this.trust(),
 				},
 				{
@@ -337,7 +337,7 @@ class ParadisShowCodexHookStatusAction extends Action2 {
 				// この PC に未信頼の hook があるときだけ、ここから信頼を付けられる
 				...(localPending ? [{
 					// allow-any-unicode-next-line
-					label: localize({ key: 'paradis.codexHookStatus.trust', comment: ['&& denotes a mnemonic'] }, "信頼する(&&T)"), run: () => 'trust' as const,
+					label: localize({ key: 'paradis.codexHookStatus.trustLocal', comment: ['&& denotes a mnemonic'] }, "この PC の hook を信頼する（以後も自動で信頼）(&&T)"), run: () => 'trust' as const,
 				}] : []),
 			],
 			cancelButton: localize('paradis.codexHookStatus.close', "OK"),
