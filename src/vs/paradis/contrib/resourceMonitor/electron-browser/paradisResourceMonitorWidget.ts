@@ -163,9 +163,11 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		e.preventDefault();
 		e.stopPropagation();
 		this.contextMenuService.showContextMenu({
-			getAnchor: () => new StandardMouseEvent(dom.getWindow(this.button), e),
+			// Shift+F10・メニューキーで開いたとき（右ボタンで押していない）は、ボタンの位置に出す
+			getAnchor: () => e.button === 2 ? new StandardMouseEvent(dom.getWindow(this.button), e) : this.button,
 			getActions: () => [
-				...PARADIS_RESOURCE_TITLE_BAR_ITEMS.map(item => toAction({
+				// 接続先の名前は SSH のウィンドウでだけ出るので、手元のウィンドウでは選ばせない
+				...PARADIS_RESOURCE_TITLE_BAR_ITEMS.filter(item => item !== 'machineName' || this.systemUsageModel.getDefaultMachineId() === 'remote').map(item => toAction({
 					id: `paradis.resourceMonitor.toggle.${item}`,
 					label: paradisResourceTitleBarItemLabel(item),
 					checked: this.isItemOn(item),
