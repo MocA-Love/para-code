@@ -974,7 +974,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				// `token` はゲートウェイの台帳のキー（ペインのトークン、または `&tab=` 付きの接続ならスコープキー）
 				captureIngressLease: key => this._captureGatewayLease(key),
 				isIngressLeaseCurrent: lease => this._isGatewayLeaseCurrent(lease),
-				getBoundTargetId: key => this.captureIngressLease(paradisPaneTokenOfScopeKey(key)) === undefined ? undefined : this._bindingForKey(key)?.exactView.targetId,
+				// CDP のフレームごとに呼ばれるので、lease を作らずに確かめる（captureIngressLease と同じ条件）
+				getBoundTargetId: key => this._ingressLeaseOwner(paradisPaneTokenOfScopeKey(key)) === undefined ? undefined : this._bindingForKey(key)?.exactView.targetId,
 				ensureBoundTargetId: token => this._ensureBoundTargetId(token),
 				getTokenForShellPid: pid => this._getTokenForShellPid(pid),
 				captureBoundPageScreenshot: (token, options) => this._captureBoundPageScreenshot(token, options),
@@ -1992,6 +1993,17 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/** Captures one uninterrupted owner lifecycle for all non-Renderer ingress. */
 	captureIngressLease(token: string): IParadisAgentBrowserIngressLease | undefined {
+		const ownerLease = this._ingressLeaseOwner(token);
+		if (ownerLease === undefined) {
+			return undefined;
+		}
+		const lease = Object.freeze({ token });
+		this._ingressLeaseStates.set(lease, ownerLease);
+		return lease;
+	}
+
+	/** {@link captureIngressLease} が lease を出せるときの持ち主の lease（出せなければ undefined）。lease は作らない。 */
+	private _ingressLeaseOwner(token: string): IParadisBindingOwnedTokenLease | undefined {
 		if (typeof token !== 'string'
 			|| token.length === 0
 			|| token.length > MAX_PANE_TOKEN_LENGTH
@@ -2003,13 +2015,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			|| this._terminalExitedTokens.has(token)) {
 			return undefined;
 		}
-		const ownerLease = this._bindingAuthority.captureOwnedTokenLease(token);
-		if (ownerLease === undefined) {
-			return undefined;
-		}
-		const lease = Object.freeze({ token });
-		this._ingressLeaseStates.set(lease, ownerLease);
-		return lease;
+		return this._bindingAuthority.captureOwnedTokenLease(token);
 	}
 
 	isIngressLeaseCurrent(lease: IParadisAgentBrowserIngressLease): boolean {
