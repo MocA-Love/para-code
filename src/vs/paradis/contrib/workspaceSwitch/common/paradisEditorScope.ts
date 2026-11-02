@@ -48,6 +48,8 @@ export interface IParadisEditorScopeService {
 	hasLiveState(stateKey: string): boolean;
 	hasRetirementData(stateKey: string): Promise<boolean>;
 	prepareScopeRetirement(stateKey: string): Promise<boolean>;
+	/** {@link prepareScopeRetirement} と同じ準備をし、止まったときは利用者が断ったのか失敗したのかを返す。 */
+	prepareScopeRetirementResult(stateKey: string): Promise<ParadisScopeRetirementPreparation>;
 	cancelScopeRetirement(stateKey: string): Promise<void>;
 	retireScope(stateKey: string): Promise<boolean>;
 	retireScopes(stateKeys: readonly string[], onWillCommit?: () => void): Promise<boolean>;
@@ -197,3 +199,9 @@ export class ParadisWorkingCopyOwnerLedger {
 		return JSON.stringify(serialized);
 	}
 }
+
+/**
+ * スペースを退役させる準備の結果。`cancelled` は保存の確認などで利用者が［キャンセル］を選んだとき、
+ * `failed` はそれ以外の理由（保存の失敗、閉じる確認の例外など）で止まったとき。
+ */
+export type ParadisScopeRetirementPreparation = 'prepared' | 'cancelled' | 'failed';
