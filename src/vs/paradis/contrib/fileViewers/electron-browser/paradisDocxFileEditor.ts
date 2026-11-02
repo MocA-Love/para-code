@@ -69,6 +69,7 @@ import { ParadisOfficeSemanticSearch } from '../common/paradisOfficeSearch.js';
 import type { IParadisWordAnalysis, IParadisWordAnalysisResult } from '../common/word/paradisWordSemanticSummary.js';
 import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
+import { appendParadisViewerToolbarPanelToggle, createParadisViewerToolbar } from '../browser/paradisViewerToolbar.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
@@ -103,7 +104,7 @@ export const PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS = 5_000;
 export const PARADIS_WORD_SEMANTIC_BUSY_RETRIES = 3;
 
 /** ツールバーが 1 行のときの高さ。まだ描かれていなくて高さが測れないときに使う。 */
-const PARADIS_WORD_TOOLBAR_MIN_OFFSET = 36;
+const PARADIS_WORD_TOOLBAR_MIN_OFFSET = 28;
 
 /** 解析が最後まで通った文書の、文書内の変更履歴とコメントの一覧の完全さ。 */
 function analyzedWordManifest(analysis: IParadisWordAnalysis): ParadisOfficeCompletenessManifest {
@@ -386,29 +387,19 @@ export class ParadisDocxFileEditor extends EditorPane {
 			isActive: () => !!this._webview?.isFocused,
 			onNavigate: result => this._postReveal(createParadisWordSearchReveal(result, this._findMatchCase), result.navigableAnchor),
 		});
-		this._semanticToolbar = dom.append(this._rootElement, dom.$('.paradis-word-semantic-toolbar'));
-		this._semanticToolbar.setAttribute('role', 'toolbar');
-		this._semanticToolbar.setAttribute('aria-label', localize('paradis.word.toolbar', "Word 文書のツールバー"));
+		// 全ビューア共通のバー。解析の結果（リボン）は幅が狭いと折り返すので、高さは中身に合わせる。
+		const semanticToolbar = createParadisViewerToolbar(this._rootElement, 'paradis-word-semantic-toolbar.paradis-viewer-toolbar-wrap', localize('paradis.word.toolbar', "Word 文書のツールバー"));
+		this._semanticToolbar = semanticToolbar.element;
 		this._semanticToolbar.style.position = 'absolute';
 		this._semanticToolbar.style.inset = '0 0 auto 0';
-		this._semanticToolbar.style.minHeight = '32px';
 		this._semanticToolbar.style.zIndex = '10';
 		this._semanticToolbar.style.display = 'none';
-		this._semanticToolbar.style.alignItems = 'center';
-		this._semanticToolbar.style.gap = '8px';
-		this._semanticToolbar.style.padding = '2px 8px';
-		this._semanticToolbar.style.background = 'var(--vscode-editor-background)';
-		this._diagnosticsElement = dom.append(this._semanticToolbar, dom.$('.paradis-word-diagnostics-host'));
+		this._diagnosticsElement = dom.append(semanticToolbar.start, dom.$('.paradis-word-diagnostics-host'));
 		this._diagnosticsElement.style.flex = '1 1 auto';
 		this._diagnosticsElement.style.minWidth = '0';
-		this._inspectorToggle = dom.append(this._semanticToolbar, dom.$('button.paradis-word-inspector-toggle')) as HTMLButtonElement;
-		this._inspectorToggle.type = 'button';
-		// 幅が狭いときにボタンの文字が縦に折り返さないようにする。
-		this._inspectorToggle.style.flex = '0 0 auto';
-		this._inspectorToggle.style.whiteSpace = 'nowrap';
-		this._inspectorToggle.textContent = localize('paradis.word.inspector', "変更点");
+		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(semanticToolbar.end, localize('paradis.word.inspector', "変更点"));
+		this._inspectorToggle.classList.add('paradis-word-inspector-toggle');
 		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.inspector', "変更点"));
-		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._register(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
 			if (!this._inspectorPanel) {
 				return;
@@ -417,7 +408,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}));
 		this._inspectorPanel = dom.append(this._rootElement, dom.$('.paradis-word-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
-		this._inspectorPanel.style.top = '36px';
+		this._inspectorPanel.style.top = '28px';
 		this._inspectorPanel.style.right = '8px';
 		this._inspectorPanel.style.zIndex = '20';
 		this._inspectorPanel.style.width = '360px';

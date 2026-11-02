@@ -16,14 +16,12 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
+import { appendParadisViewerToolbarIconButton } from '../browser/paradisViewerToolbar.js';
 
-const $ = dom.$;
 
 /** ヘッダー用のアイコンボタンを作る。 */
 export function appendIconButton(parent: HTMLElement, icon: ThemeIcon, title: string, disposables: DisposableStore, onClick: () => void): HTMLButtonElement {
-	const button = dom.append(parent, $('button.paradis-spreadsheet-iconbtn')) as HTMLButtonElement;
-	button.title = title;
-	dom.append(button, $(`span${ThemeIcon.asCSSSelector(icon)}`));
+	const button = appendParadisViewerToolbarIconButton(parent, icon, title);
 	disposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, onClick));
 	return button;
 }

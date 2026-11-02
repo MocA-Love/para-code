@@ -15,7 +15,6 @@ import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
-import { localize } from '../../../../nls.js';
 import { DiffEditorWidget } from '../../../../editor/browser/widget/diffEditor/diffEditorWidget.js';
 import { IDiffEditor } from '../../../../editor/browser/editorBrowser.js';
 import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/common/services/resolverService.js';
@@ -56,14 +55,7 @@ export class ParadisFileDiffEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		this._rootElement = dom.append(parent, dom.$('.paradis-file-viewer'));
 
-		// 通常ビューアと同じ見た目のヘッダー。現状は Raw(テキスト差分)のみなので表示だけのトグルを置く。
-		const toolbar = dom.append(this._rootElement, dom.$('.paradis-file-viewer-toolbar'));
-		const toggle = dom.append(toolbar, dom.$('.paradis-file-viewer-toggle'));
-		const rawBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item.active')) as HTMLButtonElement;
-		rawBtn.textContent = localize('paradis.fileViewer.rawDiff', "生の差分表示");
-		rawBtn.disabled = true;
-		dom.append(toolbar, dom.$('.paradis-file-viewer-toolbar-right'));
-
+		// 本家の差分エディタと同じく上のバーは出さない（切り替える表示が無いため）。
 		const content = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
 		this._diffContainer = dom.append(content, dom.$('.paradis-file-viewer-editor.active'));
 	}

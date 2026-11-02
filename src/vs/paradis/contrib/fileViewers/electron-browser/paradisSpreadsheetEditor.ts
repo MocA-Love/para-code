@@ -57,6 +57,7 @@ import { createParadisSpreadsheetPrintDrawingBudget, paradisSpreadsheetPrintLayo
 import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, convertSpreadsheetMetafiles, estimateParadisWorkbookBytes, hasPendingSpreadsheetMetafiles, openSpreadsheetResource, ParadisSpreadsheetNotWorkbookError, warmSpreadsheetParser, type IParadisSpreadsheetOpenCacheValue } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar } from '../browser/paradisViewerToolbar.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridCell, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
 import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest, type ParadisSpreadsheetViewportFrame, type ParadisSpreadsheetVirtualRange } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
@@ -1181,15 +1182,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			onNavigate: result => this._navigateToLogicalLocator(result.locator, result.navigableAnchor),
 		});
 
-		const header = dom.append(this._root, $('.paradis-spreadsheet-header'));
-		header.setAttribute('role', 'toolbar');
-		header.setAttribute('aria-label', localize('paradis.spreadsheet.toolbar', "スプレッドシートのツールバー"));
-		const left = dom.append(header, $('.paradis-spreadsheet-header-left'));
-		this._diagnosticsEl = dom.append(left, $('.paradis-spreadsheet-diagnostics-host'));
-		const right = dom.append(header, $('.paradis-spreadsheet-header-right'));
-		this._inspectorToggle = dom.append(right, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
-		this._inspectorToggle.type = 'button';
-		this._inspectorToggle.textContent = localize('paradis.spreadsheet.inspector', "変更点");
+		const header = createParadisViewerToolbar(this._root, 'paradis-spreadsheet-header', localize('paradis.spreadsheet.toolbar', "スプレッドシートのツールバー"));
+		this._diagnosticsEl = dom.append(header.start, $('.paradis-spreadsheet-diagnostics-host'));
+		const right = header.end;
+		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(right, localize('paradis.spreadsheet.inspector', "変更点"));
 		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "変更点"));
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
 		this._inspectorToggle.style.display = 'none';
@@ -1204,7 +1200,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		this._inspectorPanel = dom.append(this._root, $('.paradis-spreadsheet-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
-		this._inspectorPanel.style.top = '34px';
+		this._inspectorPanel.style.top = '32px';
 		this._inspectorPanel.style.right = '8px';
 		this._inspectorPanel.style.zIndex = '20';
 		this._inspectorPanel.style.width = '360px';
@@ -1214,17 +1210,18 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._inspectorPanel.style.display = 'none';
 
 		// ズーム −/%/＋（HTMLビューアと同じUI）。
+		const zoom = appendParadisViewerToolbarGroup(right);
 		const zoomOutLabel = localize('paradis.spreadsheet.zoomOut', "ズームアウト");
-		this._accessibility.labelButton(appendIconButton(right, Codicon.zoomOut, zoomOutLabel, this._headerDisposables, () => this._zoom(1 / 1.2)), zoomOutLabel);
-		this._percentBtn = dom.append(right, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
-		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "ズームをリセット");
+		this._accessibility.labelButton(appendIconButton(zoom, Codicon.zoomOut, zoomOutLabel, this._headerDisposables, () => this._zoom(1 / 1.2)), zoomOutLabel);
+		this._percentBtn = appendParadisViewerToolbarPercent(zoom, localize('paradis.spreadsheet.resetZoom', "ズームをリセット"));
 		this._accessibility.labelButton(this._percentBtn, localize('paradis.spreadsheet.resetZoom', "ズームをリセット"));
 		this._register(dom.addDisposableListener(this._percentBtn, dom.EventType.CLICK, () => this._resetZoom()));
 		const zoomInLabel = localize('paradis.spreadsheet.zoomIn', "ズームイン");
-		this._accessibility.labelButton(appendIconButton(right, Codicon.zoomIn, zoomInLabel, this._headerDisposables, () => this._zoom(1.2)), zoomInLabel);
+		this._accessibility.labelButton(appendIconButton(zoom, Codicon.zoomIn, zoomInLabel, this._headerDisposables, () => this._zoom(1.2)), zoomInLabel);
 
 		// 「既定のアプリで開く」ボタンは resource 依存なので入力ごとに作り直す。
-		this._openAppEl = dom.append(right, $('.paradis-spreadsheet-openapp'));
+		appendParadisViewerToolbarSeparator(right);
+		this._openAppEl = appendParadisViewerToolbarGroup(right, 'paradis-spreadsheet-openapp');
 
 		// bodywrap はスクロールしない位置基準。固定ヘッダー帯(列ラベル/行番号/角)を body(スクローラ)の
 		// 兄弟として重ね、body の scroll イベントで transform だけ更新する。
