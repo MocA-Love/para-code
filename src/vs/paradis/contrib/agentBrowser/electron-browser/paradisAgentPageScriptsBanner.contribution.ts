@@ -6,12 +6,12 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 内蔵ブラウザのタブに、エージェントが置いたスクリプト（add_init_script）が入っている間、ナビバーの下に
-// 帯を出す。スクリプトはページを読み込むたびに動き、利用者がそのタブで見るページにも効くので、入っていることと
+// 内蔵ブラウザのタブに、エージェントが置いたスクリプト（add_init_script）が入っている間、アドレスバーに
+// 本数の印を出す（Q537 の 7 章、案 B。以前はナビバーの下の帯だった）。スクリプトはページを読み込むたびに動き、利用者がそのタブで見るページにも効くので、入っていることと
 // 「誰が・何を」入れたかが見えるようにする（q.html の Q300、案 C）。
 //
-//  - 帯: いちばん新しい 1 本の名前と持ち主（C/X・名札・ペイン番号）、ほかの本数、「詳細」「すべて外す」
-//  - 「詳細」: 一覧（名前・持ち主・時刻・大きさ・先頭 3 行）。1 本ずつ外せ、「中身を見る」で全文を読み取り専用の
+//  - 印: 本数。ホバーで説明、押すと一覧
+//  - 一覧: 名前・持ち主（名札・ペイン番号）・時刻・大きさ。1 本ずつ外せ、「中身を見る」で全文を読み取り専用の
 //    エディタに開く
 //
 // 一覧と本文は electron-main から PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL で取る（タブ＝BrowserView の id ごと）。
@@ -19,11 +19,14 @@
 // （IContextViewService）で出す。upstream のファイルには触らず、BrowserEditor.registerContribution() の拡張点だけで足している。
 
 import './media/paradisAgentPageScriptsBanner.css';
-import { $, addDisposableListener, append, clearNode, EventType, isAncestor, isHTMLElement } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, EventType, isAncestor, isHTMLElement } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { AnchorAlignment, AnchorPosition } from '../../../../base/browser/ui/contextview/contextview.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { Button } from '../../../../base/browser/ui/button/button.js';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -36,6 +39,7 @@ import { IContextViewService } from '../../../../platform/contextview/browser/co
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
@@ -45,8 +49,8 @@ import { IParadisAgentPageScriptEntry, IParadisAgentPageScriptOwner, IParadisAge
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { paradisRefreshAgentPageScriptModels } from '../browser/paradisAgentPageScriptModels.js';
 
-/** Toolbar の帯の並び順（Design Mode のトレイより上に出す）。 */
-const BANNER_ORDER = 5;
+/** アドレスバーの右の印の並び順（星 60 の後、プロファイル 70 の前）。 */
+const CHIP_ORDER = 65;
 
 /** 置いた時刻（時:分:秒）。 */
 function timeOf(addedAt: number): string {
@@ -54,18 +58,13 @@ function timeOf(addedAt: number): string {
 	return [date.getHours(), date.getMinutes(), date.getSeconds()].map(part => String(part).padStart(2, '0')).join(':');
 }
 
-/** 持ち主の印・名札・ペイン番号を出す小さな札。色は main で `#rrggbb` に限ってある。 */
-function appendOwnerChip(parent: HTMLElement, owner: IParadisAgentPageScriptOwner | undefined, paneOf: (fingerprint: string) => number | undefined): void {
+/** 持ち主の名札とペイン番号（一覧の 2 行目に出す）。 */
+function ownerText(owner: IParadisAgentPageScriptOwner | undefined, paneOf: (fingerprint: string) => number | undefined): string | undefined {
 	if (!owner) {
-		return;
-	}
-	const chip = append(parent, $('span.paradis-page-scripts-owner'));
-	chip.style.backgroundColor = /^#[0-9a-fA-F]{6}$/.test(owner.color) ? owner.color : '';
-	if (owner.mark) {
-		append(chip, $('b.paradis-page-scripts-owner-mark')).textContent = owner.mark;
+		return undefined;
 	}
 	const pane = paneOf(owner.pane);
-	append(chip, $('span')).textContent = pane === undefined
+	return pane === undefined
 		? owner.name
 		: localize('paradis.agentPageScripts.ownerWithPane', "{0} · ペイン {1}", owner.name, pane);
 }
@@ -80,16 +79,16 @@ function appendScriptName(parent: HTMLElement, entry: IParadisAgentPageScriptEnt
 	}
 }
 
-/** タブにエージェントのスクリプトが入っている間だけ出す帯。 */
+/**
+ * タブにエージェントのスクリプトが入っている間だけ、アドレスバーに出す印（本数）。押すと一覧を開く。
+ * 帯をやめてページの領域を動かさない形にした（Q537 の 7 章「ページのスクリプトの帯」、案 B）。
+ */
 export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 
 	private readonly surface: IParadisAgentPageScriptsSurface;
-	private readonly banner: HTMLElement;
-	private readonly label: HTMLElement;
-	private readonly detailsButton: HTMLButtonElement;
-	private readonly removeButton: HTMLButtonElement;
+	private readonly chip: HTMLButtonElement;
+	private readonly count: HTMLElement;
 	private readonly details = this._register(new MutableDisposable<IDisposable>());
-	private visible = false;
 	private entries: readonly IParadisAgentPageScriptEntry[] = [];
 	/** 一覧を取り直す世代（古い応答で新しい表示を上書きしない）。 */
 	private refreshGeneration = 0;
@@ -106,26 +105,18 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 	) {
 		super(editor);
 		this.surface = ProxyChannel.toService<IParadisAgentPageScriptsSurface>(mainProcessService.getChannel(PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL));
-		this.banner = $('.paradis-page-scripts-banner');
-		this.banner.setAttribute('role', 'status');
-		this.banner.style.display = 'none';
-		this.label = append(this.banner, $('span.paradis-page-scripts-banner-text'));
-		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), this.label, () => localize('paradis.agentPageScripts.bannerTitle', "このタブにエージェントのスクリプトが入っています（{0} 本）。ページを読み込むたびに動きます。", this.entries.length)));
-		this.detailsButton = append(this.banner, $<HTMLButtonElement>('button.paradis-page-scripts-banner-button'));
-		this.detailsButton.type = 'button';
-		this.detailsButton.textContent = localize('paradis.agentPageScripts.details', "詳細");
-		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.detailsButton, localize('paradis.agentPageScripts.detailsTitle', "このタブに入っているスクリプトの一覧を開きます。")));
-		this.detailsButton.setAttribute('aria-haspopup', 'dialog');
-		this._register(addDisposableListener(this.detailsButton, EventType.CLICK, () => this.toggleDetails()));
-		this.removeButton = append(this.banner, $<HTMLButtonElement>('button.paradis-page-scripts-banner-button'));
-		this.removeButton.type = 'button';
-		this.removeButton.textContent = localize('paradis.agentPageScripts.removeAll', "すべて外す");
-		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.removeButton, localize('paradis.agentPageScripts.removeTitle', "このタブからエージェントのスクリプトをすべて外します。読み込み済みのページは、再読み込みするまでスクリプトの効果が残ります。")));
-		this._register(addDisposableListener(this.removeButton, EventType.CLICK, () => void this.removeAll()));
+		this.chip = $<HTMLButtonElement>('button.paradis-page-scripts-chip');
+		this.chip.type = 'button';
+		this.chip.style.display = 'none';
+		this.chip.setAttribute('aria-haspopup', 'dialog');
+		append(this.chip, $(`span${ThemeIcon.asCSSSelector(Codicon.code)}`));
+		this.count = append(this.chip, $('span.paradis-page-scripts-chip-count'));
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.chip, () => this.chipLabel()));
+		this._register(addDisposableListener(this.chip, EventType.CLICK, () => this.toggleDetails()));
 	}
 
 	override get widgets(): readonly IBrowserEditorWidget[] {
-		return [{ location: BrowserWidgetLocation.Toolbar, element: this.banner, order: BANNER_ORDER }];
+		return [{ location: BrowserWidgetLocation.PostUrl, element: this.chip, order: CHIP_ORDER }];
 	}
 
 	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
@@ -153,7 +144,7 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		this.render([]);
 	}
 
-	/** 一覧を取り直して帯（と開いていれば一覧）を描き直す。 */
+	/** 一覧を取り直して印（と開いていれば一覧）を描き直す。 */
 	private async refresh(model: IBrowserViewModel): Promise<void> {
 		const generation = ++this.refreshGeneration;
 		let entries: IParadisAgentPageScriptEntry[];
@@ -178,18 +169,19 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		return fingerprint => byFingerprint.get(fingerprint);
 	}
 
+	private chipLabel(): string {
+		return localize('paradis.agentPageScripts.bannerTitle', "このタブにエージェントのスクリプトが入っています（{0} 本）。ページを読み込むたびに動きます。", this.entries.length);
+	}
+
 	private async removeAll(): Promise<void> {
 		const model = this.editor.model;
 		if (!model) {
 			return;
 		}
-		this.removeButton.disabled = true;
 		try {
 			await this.surface.removeAllInitScripts(model.id);
 		} catch (error) {
 			this.logService.warn('[ParadisAgentPageScripts] could not remove the scripts of the tab', error);
-		} finally {
-			this.removeButton.disabled = false;
 		}
 	}
 
@@ -220,17 +212,8 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 
 	private render(entries: readonly IParadisAgentPageScriptEntry[]): void {
 		this.entries = entries;
-		clearNode(this.label);
-		const latest = entries[entries.length - 1];
-		if (latest) {
-			const paneOf = this.paneNumbers();
-			append(this.label, $('span')).textContent = localize('paradis.agentPageScripts.bannerPrefix', "エージェントのスクリプト:");
-			appendScriptName(this.label, latest, 'paradis-page-scripts-banner-name');
-			appendOwnerChip(this.label, latest.owner, paneOf);
-			if (entries.length > 1) {
-				append(this.label, $('span')).textContent = localize('paradis.agentPageScripts.others', "ほか {0} 本", entries.length - 1);
-			}
-		}
+		this.count.textContent = String(entries.length);
+		this.chip.setAttribute('aria-label', this.chipLabel());
 		const visible = entries.length > 0;
 		if (!visible) {
 			this.details.clear();
@@ -238,12 +221,7 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 			// 開いている一覧も描き直す
 			this.showDetails();
 		}
-		if (visible !== this.visible) {
-			this.visible = visible;
-			this.banner.style.display = visible ? '' : 'none';
-			// 帯の高さの分だけページの領域が変わるので、ネイティブのビューの位置を合わせ直す
-			this.editor.layoutBrowserContainer();
-		}
+		this.chip.style.display = visible ? '' : 'none';
 	}
 
 	private toggleDetails(): void {
@@ -254,16 +232,30 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		}
 	}
 
+	/** 一行のアイコンのボタン（ホバーで説明）。 */
+	private iconButton(parent: HTMLElement, icon: ThemeIcon, label: string, store: DisposableStore, run: (() => void) | undefined): HTMLButtonElement {
+		const button = append(parent, $<HTMLButtonElement>(`button.paradis-page-scripts-icon-button${ThemeIcon.asCSSSelector(icon)}`));
+		button.type = 'button';
+		button.setAttribute('aria-label', label);
+		store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), button, label));
+		if (run) {
+			store.add(addDisposableListener(button, EventType.CLICK, run));
+		} else {
+			button.disabled = true;
+		}
+		return button;
+	}
+
 	/** 一覧を出す（新しい順）。ブラウザのページに重なるので context view で出す。 */
 	private showDetails(): void {
 		const entries = this.entries;
 		const paneOf = this.paneNumbers();
-		this.detailsButton.classList.add('active');
+		this.chip.classList.add('active');
 		/** 自分で閉じている最中（`handle` の dispose の中）か。 */
 		let closing = false;
 		const view = this.contextViewService.showContextView({
-			getAnchor: () => this.detailsButton,
-			anchorAlignment: AnchorAlignment.RIGHT,
+			getAnchor: () => this.chip,
+			anchorAlignment: AnchorAlignment.LEFT,
 			anchorPosition: AnchorPosition.BELOW,
 			render: container => {
 				const store = new DisposableStore();
@@ -272,60 +264,52 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 				popover.setAttribute('aria-label', localize('paradis.agentPageScripts.detailsLabel', "このタブのエージェントのスクリプト"));
 				const header = append(popover, $('.paradis-page-scripts-details-header'));
 				append(header, $('span.paradis-page-scripts-details-title')).textContent = localize('paradis.agentPageScripts.detailsHeader', "このタブのエージェントのスクリプト（{0} 本）・新しい順", entries.length);
-				const removeAll = append(header, $<HTMLButtonElement>('button.paradis-page-scripts-details-button'));
-				removeAll.type = 'button';
-				removeAll.textContent = localize('paradis.agentPageScripts.removeAll', "すべて外す");
-				store.add(addDisposableListener(removeAll, EventType.CLICK, () => void this.removeAll()));
-				const close = append(header, $<HTMLButtonElement>('button.paradis-page-scripts-details-button'));
-				close.type = 'button';
-				close.textContent = localize('paradis.agentPageScripts.close', "閉じる");
-				store.add(addDisposableListener(close, EventType.CLICK, () => this.details.clear()));
+				const removeAll = store.add(new Button(header, { ...defaultButtonStyles, secondary: true }));
+				removeAll.element.classList.add('paradis-page-scripts-small-button');
+				removeAll.label = localize('paradis.agentPageScripts.removeAll', "すべて外す");
+				store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), removeAll.element, localize('paradis.agentPageScripts.removeTitle', "このタブからエージェントのスクリプトをすべて外します。読み込み済みのページは、再読み込みするまでスクリプトの効果が残ります。")));
+				store.add(removeAll.onDidClick(() => void this.removeAll()));
+				this.iconButton(header, Codicon.close, localize('paradis.agentPageScripts.close', "閉じる"), store, () => this.details.clear());
 
 				const list = append(popover, $('.paradis-page-scripts-details-list'));
 				for (const entry of [...entries].reverse()) {
 					const row = append(list, $('.paradis-page-scripts-details-row'));
-					const first = append(row, $('.paradis-page-scripts-details-name'));
+					append(row, $(`span.paradis-page-scripts-row-icon${ThemeIcon.asCSSSelector(Codicon.code)}`));
+					const main = append(row, $('.paradis-page-scripts-details-main'));
+					const first = append(main, $('.paradis-page-scripts-details-name'));
 					appendScriptName(first, entry, 'paradis-page-scripts-details-label');
-					appendOwnerChip(first, entry.owner, paneOf);
-					append(row, $('.paradis-page-scripts-details-meta')).textContent = localize(
+					const meta = localize(
 						'paradis.agentPageScripts.meta', "{0} · {1} に入れた · {2} 字 · {3} 行",
 						entry.id, timeOf(entry.addedAt), entry.chars.toLocaleString(), entry.lines.toLocaleString());
-					append(row, $('pre.paradis-page-scripts-details-preview')).textContent = entry.preview;
-					const actions = append(row, $('.paradis-page-scripts-details-actions'));
-					const view = append(actions, $<HTMLButtonElement>('button.paradis-page-scripts-details-button'));
-					view.type = 'button';
-					view.textContent = localize('paradis.agentPageScripts.view', "中身を見る");
-					if (entry.sourceKept) {
-						store.add(addDisposableListener(view, EventType.CLICK, () => this.openSource(entry)));
-					} else {
-						view.disabled = true;
-						store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), view, localize('paradis.agentPageScripts.sourceNotKept', "スクリプトが多いため、この本文は保持していません。")));
-					}
-					const remove = append(actions, $<HTMLButtonElement>('button.paradis-page-scripts-details-button'));
-					remove.type = 'button';
-					remove.textContent = localize('paradis.agentPageScripts.remove', "外す");
-					store.add(addDisposableListener(remove, EventType.CLICK, () => void this.removeOne(entry.id)));
+					const owner = ownerText(entry.owner, paneOf);
+					append(main, $('.paradis-page-scripts-details-meta')).textContent = owner === undefined
+						? meta
+						: localize('paradis.agentPageScripts.ownerAndMeta', "{0} · {1}", owner, meta);
+					this.iconButton(row, Codicon.goToFile, entry.sourceKept
+						? localize('paradis.agentPageScripts.view', "中身を見る")
+						: localize('paradis.agentPageScripts.sourceNotKept', "スクリプトが多いため、この本文は保持していません。"), store, entry.sourceKept ? () => this.openSource(entry) : undefined);
+					this.iconButton(row, Codicon.close, localize('paradis.agentPageScripts.remove', "外す"), store, () => void this.removeOne(entry.id));
 				}
 				append(popover, $('.paradis-page-scripts-details-footer')).textContent = localize('paradis.agentPageScripts.detailsFooter', "外しても、読み込み済みのページは再読み込みするまで効果が残ります。");
 				store.add(addDisposableListener(popover, EventType.KEY_DOWN, event => {
 					if (new StandardKeyboardEvent(event).equals(KeyCode.Escape)) {
 						event.preventDefault();
 						this.details.clear();
-						this.detailsButton.focus();
+						this.chip.focus();
 					}
 				}));
 				return store;
 			},
 			onDOMEvent: (event: { readonly target?: EventTarget | null }) => {
-				// 既定では「ワークベンチの外」でしか閉じないので、一覧と「詳細」の外を押したら閉じる。
+				// 既定では「ワークベンチの外」でしか閉じないので、一覧と印の外を押したら閉じる。
 				// ここへ来るイベントは包まれていて `type` を持たないので、見るのは `target` だけ。
 				const target = event.target;
-				if (isHTMLElement(target) && !isAncestor(target, this.contextViewService.getContextViewElement()) && !isAncestor(target, this.detailsButton)) {
+				if (isHTMLElement(target) && !isAncestor(target, this.contextViewService.getContextViewElement()) && !isAncestor(target, this.chip)) {
 					this.details.clear();
 				}
 			},
 			onHide: () => {
-				this.detailsButton.classList.remove('active');
+				this.chip.classList.remove('active');
 				// ほかの context view が開くなど、外から閉じられた。自分で閉じているときは dispose の中なので触らない
 				if (!closing && this.details.value === handle) {
 					this.details.clear();
