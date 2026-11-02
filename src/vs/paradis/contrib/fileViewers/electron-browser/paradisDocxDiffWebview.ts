@@ -31,14 +31,13 @@
 
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { FileAccess } from '../../../../base/common/network.js';
-import type { CancellationToken } from '../../../../base/common/cancellation.js';
-import { setTimeout0 } from '../../../../base/common/platform.js';
+import { escape } from '../../../../base/common/strings.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { paradisPreviewOrigins } from './paradisViewerAssets.js';
 import { PARADIS_WORD_ANCHOR_RUNTIME, PARADIS_WORD_ANCHOR_STYLE } from './word/paradisWordAnchorRuntime.js';
-import { createParadisOfficeWebArchive } from '../browser/office/paradisOfficeWebArchive.js';
-import { buildParadisOfficeWordCsp, paradisOfficeBrokenImagePlaceholderSvg, paradisOfficeWebviewResourceOrigin, sanitizeOfficeDocxPackageForRenderer, type ParadisOfficeRenderablePackage } from '../common/paradisOfficeSanitizer.js';
+import { PARADIS_DOCX_MEDIA_ROOT } from './word/paradisDocxSanitize.js';
+import { buildParadisOfficeWordCsp, paradisOfficeBrokenImagePlaceholderSvg, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 import {
 	IParadisDocxAnnotation,
 	IParadisDocxBlock,
@@ -62,41 +61,6 @@ import {
 	ParadisDocxSide,
 } from '../common/paradisDocx.js';
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE } from '../common/paradisViewerWebviewState.js';
-
-/** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
-const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
-
-/** Owns and sanitizes every package asset before docx-preview can observe the package. */
-export async function sanitizeParadisDocxBytesForRenderer(bytes: Uint8Array, nodeId: string, token?: CancellationToken, imagePixelBudget?: number): Promise<ParadisOfficeRenderablePackage> {
-	if (!(bytes instanceof Uint8Array) || bytes.byteLength > 16 * 1024 * 1024) { throw new Error('Office package exceeds renderer preprocessing limits'); }
-	const owned = new Uint8Array(bytes.byteLength);
-	owned.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-	const archive = await createParadisOfficeWebArchive(owned);
-	return sanitizeOfficeDocxPackageForRenderer({ nodeId, source: owned, archive, token, deadline: Date.now() + 10_000, scheduler: createParadisDocxSlicedScheduler(), ...(imagePixelBudget !== undefined ? { imagePixelBudget } : {}) });
-}
-
-/** 前処理が続けて走ってよい時間。これを超えたら 1 回だけ譲る（画面の操作が止まって見えない長さ）。 */
-const DOCX_PREPROCESS_SLICE_MS = 12;
-
-/**
- * 前処理（ZIP の読み直しと消毒）が描画の合間に譲るための scheduler。
- *
- * 以前は部品 1 つごとに `setTimeout(0)` で譲っていたが、ブラウザは入れ子の `setTimeout` を 4ms 以上に
- * 引き延ばすので、部品の数 × 4ms が丸ごと待ち時間になっていた（実測で、小さな文書でも 0.5 秒前後）。
- * 一定時間ぶん続けて処理してから、引き延ばされない `setTimeout0`（postMessage）で譲る。出力は変わらない。
- */
-export function createParadisDocxSlicedScheduler(sliceMilliseconds = DOCX_PREPROCESS_SLICE_MS, now: () => number = () => performance.now()): () => Promise<void> {
-	let sliceStart = now();
-	return () => {
-		if (now() - sliceStart < sliceMilliseconds) {
-			return Promise.resolve();
-		}
-		return new Promise<void>(resolve => setTimeout0(() => {
-			sliceStart = now();
-			resolve();
-		}));
-	};
-}
 
 // ── docx-preview の AST（使う部分だけを緩く型付けする） ────────────────────
 //
@@ -1145,16 +1109,12 @@ export function buildParadisDocxDiffContext(labelLoading: string): IParadisDocxD
 	};
 }
 
-function escapeHtml(value: string): string {
-	return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 /** 差分ビューアの webview HTML を組み立てる。 */
 export function buildParadisDocxDiffHtml(labels: { original: string; modified: string; loading: string }, libBaseOverride?: string): string {
 	const nonce = generateUuid();
 	// 同梱ライブラリの置き場。ローカルサーバから配れる場合はそちらを使う（service worker を
 	// 使わずに済み、60秒待ちの経路に入らない）。渡されなければ従来どおり webview リソース。
-	const libBase = libBaseOverride ?? asWebviewUri(FileAccess.asFileUri(DOCX_MEDIA_ROOT)).toString(true);
+	const libBase = libBaseOverride ?? asWebviewUri(FileAccess.asFileUri(PARADIS_DOCX_MEDIA_ROOT)).toString(true);
 	// CSP は実際に使うポートまで絞る（`http://127.0.0.1:*` だと他プロセスのサーバまで許してしまう）。
 	const serverOrigin = paradisPreviewOrigins(libBase);
 	const csp = serverOrigin
@@ -1262,16 +1222,16 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 	<div id="asset-placeholders" role="status" style="display:none"></div>
 	<div id="panes">
 		<div class="pane-wrap">
-			<div class="pane-label">${escapeHtml(labels.original)}</div>
+			<div class="pane-label">${escape(labels.original)}</div>
 			<div class="pane" id="pane-original"><div class="pane-sizer" id="sizer-original"><div class="pane-zoom" id="zoom-original"><div id="doc-original"></div></div></div></div>
 		</div>
 		<div id="separator"></div>
 		<div class="pane-wrap">
-			<div class="pane-label">${escapeHtml(labels.modified)}</div>
+			<div class="pane-label">${escape(labels.modified)}</div>
 			<div class="pane" id="pane-modified"><div class="pane-sizer" id="sizer-modified"><div class="pane-zoom" id="zoom-modified"><div id="doc-modified"></div></div></div></div>
 		</div>
 	</div>
-	<div id="status" class="loading" role="status"><span>${escapeHtml(labels.loading)}</span></div>
+	<div id="status" class="loading" role="status"><span>${escape(labels.loading)}</span></div>
 	<div id="style-original" style="display:none"></div>
 	<div id="style-modified" style="display:none"></div>
 	<script nonce="${nonce}">

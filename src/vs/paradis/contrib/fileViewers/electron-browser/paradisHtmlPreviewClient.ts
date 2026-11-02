@@ -24,7 +24,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IRemoteAuthorityResolverService } from '../../../../platform/remote/common/remoteAuthorityResolver.js';
 import { getRemoteTunnelGeneration, ITunnelService, RemoteTunnel } from '../../../../platform/tunnel/common/tunnel.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
-import { IParadisPreviewMount, IParadisPreviewMountOptions, PARADIS_HTML_PREVIEW_CHANNEL } from '../common/paradisHtmlPreview.js';
+import { IParadisPreviewMount, IParadisPreviewMountOptions, isParadisPreviewLoopbackHost, PARADIS_HTML_PREVIEW_CHANNEL } from '../common/paradisHtmlPreview.js';
 
 /** 載せた結果と、webview から実際に叩けるポート。 */
 export interface IParadisPreviewLocation {
@@ -146,7 +146,7 @@ export class ParadisRemotePreviewMounter extends Disposable {
 			// 手元の bind 先はキーに入らない。`remote.autoForwardPorts`（既定 on）が先に同じポートを
 			// 0.0.0.0 で張っていれば、こちらの指定は黙って無視されて既存のものが返る。**返ってきた
 			// 実際の bind 先を確かめ、ループバックでなければ使わない**（従来経路へ倒す）。
-			if (!isLoopbackAddress(tunnel.localAddress)) {
+			if (!isParadisPreviewLoopbackHost(tunnel.localAddress)) {
 				throw new Error('The remote preview port was forwarded to ' + tunnel.localAddress + ', which is not loopback');
 			}
 			transferred = true;
@@ -157,12 +157,6 @@ export class ParadisRemotePreviewMounter extends Disposable {
 			}
 		}
 	}
-}
-
-/** `127.0.0.1:1234` 形式が手元だけに開いているか。 */
-function isLoopbackAddress(localAddress: string): boolean {
-	const host = localAddress.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
-	return host === '127.0.0.1' || host === 'localhost' || host === '::1';
 }
 
 /** `127.0.0.1:1234` 形式からポートだけ取り出す。取れなければ投げる。 */
