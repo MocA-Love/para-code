@@ -254,7 +254,15 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		}
 	}
 
-	setVisible(_visible: boolean): void { }
+	setVisible(visible: boolean): void {
+		if (!visible) {
+			// 見えない間は背景の処理のログを読み直さない（ほかの領域を見ている間も 1.5 秒ごとに読み直さないように）
+			this._logTimer.cancel();
+		} else if (this._state) {
+			// 見えたら描き直して、ログの読み直しを再開する
+			this._render();
+		}
+	}
 
 	layout(_width: number): void { }
 
@@ -403,10 +411,34 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		};
 		this._renderStore.add(dom.addDisposableListener(row, dom.EventType.CLICK, select));
 		this._renderStore.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => {
-			if (event.target === row && (event.key === 'Enter' || event.key === ' ')) {
-				event.preventDefault();
-				select();
+			if (event.target !== row) {
+				return;
 			}
+			if (event.key === 'Enter' || event.key === ' ') {
+				event.preventDefault();
+				event.stopPropagation();
+				select();
+				return;
+			}
+			// Tab で止まるのは選んでいる行だけなので、上下の矢印・Home・End で隣の行へ移って選ぶ（listbox の決まり）。
+			// 器のナビの矢印の処理には渡さない（一覧の行は器のナビの直下ではないため、そちらでは行を辿れない）
+			const ids = this._state?.extensions.map(candidate => candidate.id) ?? [];
+			const index = ids.indexOf(extension.id);
+			const next = event.key === 'ArrowUp' ? Math.max(0, index - 1)
+				: event.key === 'ArrowDown' ? Math.min(ids.length - 1, index + 1)
+					: event.key === 'Home' ? 0
+						: event.key === 'End' ? ids.length - 1
+							: undefined;
+			if (next === undefined || index < 0) {
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			if (ids[next] !== this._selectedId) {
+				this._selectedId = ids[next];
+				this._render();
+			}
+			this._focusSelectedRow();
 		}));
 	}
 

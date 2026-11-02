@@ -31,8 +31,12 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 import { ParadisChangelogLifecycle } from './paradisChangelogLifecycle.js';
 import { ParadisChangelogView, toViewReleases } from './paradisChangelogView.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import * as dom from '../../../../base/browser/dom.js';
+import { URI } from '../../../../base/common/uri.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId, paradisRegisterHubArea } from '../../paradisHub/electron-browser/paradisHub.js';
 import { paradisOpenHub } from '../../paradisHub/electron-browser/paradisHubOpen.js';
+
+const $ = dom.$;
 
 /**
  * 歯車メニュー(左下)の「更新の確認...」の下に「更新履歴」を追加する。
@@ -88,15 +92,10 @@ class ParadisChangelogArea extends Disposable implements IParadisHubAreaView {
 		try {
 			bundledMd = (await this.fileService.readFile(changelogUri)).value.toString();
 		} catch {
-			// 同梱 md を読めない(リリース形態の想定外の変化)場合は、器を閉じて従来の表示へフォールバックする
-			if (this._store.isDisposed) {
-				return;
-			}
-			this.host.close();
-			try {
-				await this.commandService.executeCommand('markdown.showPreview', changelogUri);
-			} catch {
-				await this.editorService.openEditor({ resource: changelogUri, options: { pinned: true } });
+			// 同梱 md を読めない(リリース形態の想定外の変化)場合は、この領域に知らせを出し、従来の表示(Markdown の
+			// プレビュー)で開くボタンを置く。器ごと閉じるとほかの領域を見ていた人まで追い出すため閉じない
+			if (!this._store.isDisposed) {
+				this.renderLoadFailure(changelogUri);
 			}
 			return;
 		}
@@ -110,6 +109,24 @@ class ParadisChangelogArea extends Disposable implements IParadisHubAreaView {
 			commandService: this.commandService,
 		}));
 		this.view.reveal(this.pendingVersion);
+	}
+
+	private renderLoadFailure(changelogUri: URI): void {
+		const message = dom.append(this.containers.content, $('.para-cl-empty'));
+		// allow-any-unicode-next-line
+		dom.append(message, $('p')).textContent = localize('paradis.changelog.loadFailed', "このアプリに同梱された更新履歴を読めませんでした。");
+		const button = dom.append(message, $('button.para-cl-btn')) as HTMLButtonElement;
+		button.type = 'button';
+		// allow-any-unicode-next-line
+		button.textContent = localize('paradis.changelog.openMarkdown', "Markdown のプレビューで開く");
+		this._register(dom.addDisposableListener(button, dom.EventType.CLICK, async () => {
+			this.host.close();
+			try {
+				await this.commandService.executeCommand('markdown.showPreview', changelogUri);
+			} catch {
+				await this.editorService.openEditor({ resource: changelogUri, options: { pinned: true } });
+			}
+		}));
 	}
 
 	reveal(version: string | undefined): void {
