@@ -20,12 +20,15 @@
 
 import './media/paradisResourceMonitor.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { Separator, toAction } from '../../../../base/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IParadisResourceMonitorSnapshot, ParadisResourceMonitorFreshness } from '../common/paradisResourceMonitor.js';
@@ -33,12 +36,15 @@ import { paradisGetTrackedHostMemorySeverity } from '../common/paradisResourceMo
 import { ParadisResourceMonitorClient } from './paradisResourceMonitorClient.js';
 import { IParadisResourceMonitorPanelOptions, ParadisResourceMonitorPanel } from './paradisResourceMonitorPanel.js';
 import { IParadisSystemUsageModel, IParadisSystemUsageView, ParadisSystemUsageMachineId } from './paradisSystemUsageModel.js';
-import { paradisFormatSystemUsageValue } from '../common/paradisSystemUsageFormat.js';
 import { PARADIS_SYSTEM_USAGE_OPEN_COMMAND_ID } from './paradisSystemUsageEditorInput.js';
+import { PARADIS_RESOURCE_TITLE_BAR_ITEMS, ParadisResourceTitleBarItem, paradisResourceTitleBarItemLabel, paradisResourceTitleBarSettingKey, paradisResourceTitleBarText } from '../common/paradisResourceTitleBar.js';
 
 const $ = dom.$;
 
 const CONFIG_KEY_ENABLED = 'paradis.resourceMonitor.enabled';
+/** 「設定 (Para Code)」の開き方（コマンドと節）。paradisSettings 側を import すると層が逆になるので文字で持つ。 */
+const OPEN_PARA_SETTINGS_COMMAND_ID = 'paradis.openSettingsDialog';
+const PARA_SETTINGS_USAGE_SECTION_ID = 'psd-sec-usage';
 
 /** パネル表示中のポーリング間隔。 */
 const PANEL_OPEN_POLL_INTERVAL_MS = 2000;
@@ -105,6 +111,7 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IParadisSystemUsageModel private readonly systemUsageModel: IParadisSystemUsageModel,
 		@ICommandService private readonly commandService: ICommandService,
+		@IContextMenuService private readonly contextMenuService: IContextMenuService,
 	) {
 		super();
 		this.document = dependencies.document;
@@ -125,6 +132,8 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		this.textElement.textContent = '--';
 
 		this._register(dom.addDisposableListener(this.button, 'click', () => this.togglePanel()));
+		// 右クリックで、タイトルバーに出す項目を選ぶ（Q537 の 10 A）。書き込む先は「設定 (Para Code)」のチェックと同じ設定。
+		this._register(dom.addDisposableListener(this.button, dom.EventType.CONTEXT_MENU, e => this.showItemsMenu(e)));
 
 		// パネル非表示の不可視中はアイドルtimer自体を止める。可視化時は5秒timerを再アームし、
 		// 古い表示を残さないよう即時取得する。パネル表示中は不可視でも2秒timerを維持する。
@@ -140,7 +149,36 @@ export class ParadisResourceMonitorWidget extends Disposable {
 			if (e.affectsConfiguration(CONFIG_KEY_ENABLED)) {
 				this.applyEnabled();
 			}
+			if (PARADIS_RESOURCE_TITLE_BAR_ITEMS.some(item => e.affectsConfiguration(paradisResourceTitleBarSettingKey(item))) && this.latestSystemUsage) {
+				this.updateTriggerSystemUsage(this.latestSystemUsage);
+			}
 		}));
+	}
+
+	private isItemOn(item: ParadisResourceTitleBarItem): boolean {
+		return this.configurationService.getValue<boolean>(paradisResourceTitleBarSettingKey(item)) === true;
+	}
+
+	private showItemsMenu(e: MouseEvent): void {
+		e.preventDefault();
+		e.stopPropagation();
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => new StandardMouseEvent(dom.getWindow(this.button), e),
+			getActions: () => [
+				...PARADIS_RESOURCE_TITLE_BAR_ITEMS.map(item => toAction({
+					id: `paradis.resourceMonitor.toggle.${item}`,
+					label: paradisResourceTitleBarItemLabel(item),
+					checked: this.isItemOn(item),
+					run: () => this.configurationService.updateValue(paradisResourceTitleBarSettingKey(item), !this.isItemOn(item)),
+				})),
+				new Separator(),
+				toAction({
+					id: 'paradis.resourceMonitor.openSettings',
+					label: localize('paradis.resourceMonitor.openSettings', "設定を開く…"),
+					run: () => this.commandService.executeCommand(OPEN_PARA_SETTINGS_COMMAND_ID, PARA_SETTINGS_USAGE_SECTION_ID),
+				}),
+			],
+		});
 	}
 
 	override dispose(): void {
@@ -305,9 +343,13 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		if (latest === undefined) {
 			return;
 		}
-		const values = localize('paradis.resourceMonitor.triggerValues', "CPU {0} · RAM {1}", paradisFormatSystemUsageValue(latest.cpu, 'percent'), paradisFormatSystemUsageValue(latest.mem, 'percent'));
-		this.textElement.textContent = view.machineId === 'remote' ? `${view.label} · ${values}` : values;
-		this.button.setAttribute('aria-label', localize('paradis.resourceMonitor.triggerAriaMachine', "{0} の CPU とメモリの使用率: {1}", view.label, values));
+		const text = paradisResourceTitleBarText(item => this.isItemOn(item), latest, view.machine, view.machineId === 'remote' ? view.label : undefined);
+		this.textElement.textContent = text;
+		this.textElement.style.display = text ? '' : 'none';
+		const values = paradisResourceTitleBarText(item => item !== 'machineName' && this.isItemOn(item), latest, view.machine, undefined);
+		this.button.setAttribute('aria-label', values
+			? localize('paradis.resourceMonitor.triggerAriaUsage', "{0} の使用率: {1}", view.label, values)
+			: localize('paradis.resourceMonitor.triggerAriaNoItems', "{0} の使用率", view.label));
 	}
 
 	private updateTriggerText(snapshot: IParadisResourceMonitorSnapshot): void {
