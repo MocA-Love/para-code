@@ -59,6 +59,7 @@ import {
 import { IParadisScheduledRunsClient } from './paradisScheduledRunsClient.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
 const $ = dom.$;
 
@@ -393,13 +394,11 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const head = dom.append(this.content, $('.psr-detail-head'));
 		dom.append(head, $('h3')).textContent = definition.name;
 		const toggleLabel = dom.append(head, $('label.psr-toggle-label'));
-		const toggle = dom.append(toggleLabel, $('input.psr-toggle')) as HTMLInputElement;
-		toggle.type = 'checkbox';
-		toggle.checked = definition.enabled;
+		const toggle = this.contentDisposables.add(new ParadisSwitch(toggleLabel, { checked: definition.enabled }));
 		dom.append(toggleLabel, $('span')).textContent = definition.enabled ? localize('paradis.scheduledRuns.enabled', "有効") : localize('paradis.scheduledRuns.disabled', "無効");
-		this.contentDisposables.add(dom.addDisposableListener(toggle, 'change', async () => {
-			toggle.disabled = true;
-			const result = await this.client.setEnabled(definition.id, toggle.checked);
+		this.contentDisposables.add(toggle.onDidChange(async checked => {
+			toggle.enabled = false;
+			const result = await this.client.setEnabled(definition.id, checked);
 			if (!result.ok) {
 				this.showMessage(result.error ?? '', 'error');
 			} else {
