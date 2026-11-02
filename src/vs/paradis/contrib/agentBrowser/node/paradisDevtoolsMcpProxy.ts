@@ -946,9 +946,18 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			throw new ParadisDevtoolsResourceLimitError();
 		}
 
-		const entryPath = FileAccess.asFileUri(DEVTOOLS_MCP_ENTRY).fsPath;
 		const tokenFingerprint = this._tokenFingerprint(token);
 		this._debug(`[ParadisDevtoolsProxy] Spawning chrome-devtools-mcp for pane ${tokenFingerprint} generation=${generation}`);
+		const { child, ownTemporaryDirectory } = this._spawnChildProcess(token, wsEndpoint);
+		const entry = this._newChildEntry(token, child, generation, wsEndpoint, tokenFingerprint, ownTemporaryDirectory);
+		this._watchChildProcess(token, entry);
+		this._startChildHandshake(token, entry);
+		return entry;
+	}
+
+	/** chrome-devtools-mcp の子プロセスを起こす（引数と env はここで決める）。 */
+	private _spawnChildProcess(token: string, wsEndpoint: string): { readonly child: ChildProcessWithoutNullStreams; readonly ownTemporaryDirectory: string | undefined } {
+		const entryPath = FileAccess.asFileUri(DEVTOOLS_MCP_ENTRY).fsPath;
 		const spawnChild = this.options.spawnChild ?? ((command, args, options) => spawn(command, args, options));
 		// 起こすたびに在るかを確かめる（OS の掃除で消えていれば作り直す。作れなければ次の起動でまた試す）
 		const ownTemporaryDirectory = this.options.temporaryDirectory ?? this._temporaryDirectory?.ensure();
@@ -986,6 +995,11 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			stdio: ['pipe', 'pipe', 'pipe'],
 		});
 
+		return { child, ownTemporaryDirectory };
+	}
+
+	/** 起こした子の台帳の 1 行を作り、席と uid の印の履歴に載せる。 */
+	private _newChildEntry(token: string, child: ChildProcessWithoutNullStreams, generation: number, wsEndpoint: string, tokenFingerprint: string, ownTemporaryDirectory: string | undefined): IChildEntry {
 		const entry: IChildEntry = {
 			child,
 			generation,
@@ -1029,7 +1043,12 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		const issuedTags = [...(this._issuedUidTags.get(token) ?? []), entry.uidTag].slice(-PARADIS_UID_TAG_HISTORY);
 		this._issuedUidTags.set(token, issuedTags);
 		this._childSlots.add(entry);
+		return entry;
+	}
 
+	/** 子の stdout・stderr と、error・exit・close を受ける。台帳へ載せて、使っていない時間と健康の見張りを始める。 */
+	private _watchChildProcess(token: string, entry: IChildEntry): void {
+		const { child, tokenFingerprint, generation } = entry;
 		entry.stdoutDataListener = (chunk: Buffer) => this._onStdout(token, entry, chunk);
 		child.stdout.on('data', entry.stdoutDataListener);
 		// 子プロセスのstderrは秘密情報を含み得るため、表示も送信もしない。末尾だけを手元に置き、落ちたときに
@@ -1072,7 +1091,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		this._resetIdleTimer(token, entry);
 		entry.healthTimer = setInterval(() => void this._checkHealth(token, entry), this._limit(this.options.healthIntervalMs, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS));
 
-		// initialize ハンドシェイク（応答確認後に initialized 通知を送る）
+	}
+
+	/** initialize のやり取りを始める（応答を確かめてから initialized を送る）。 */
+	private _startChildHandshake(token: string, entry: IChildEntry): void {
 		entry.ready = this._request(token, entry, 'initialize', {
 			protocolVersion: '2024-11-05',
 			// roots を名乗らないと vendored は roots/list を呼ばず、validatePath が何も確かめない。
@@ -1086,8 +1108,6 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		});
 		// ready の失敗は _request 側で pending 経由でも観測されるため、未処理拒否だけ握りつぶす
 		entry.ready.catch(() => { });
-
-		return entry;
 	}
 
 	private _onStdout(token: string, entry: IChildEntry, chunk: Buffer): void {

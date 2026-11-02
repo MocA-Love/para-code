@@ -70,7 +70,8 @@ import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/paradisDocxDiffPresentation.js';
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
-import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
+import { buildParadisDocxDiffHtml } from './paradisDocxDiffWebview.js';
+import { PARADIS_DOCX_MEDIA_ROOT, sanitizeParadisDocxBytesForRenderer } from './word/paradisDocxSanitize.js';
 import { PARADIS_WORD_SEMANTIC_BUSY_RETRIES, PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS, acceptRenderedParagraphs, createLegacyWordPrintModel, createParadisWordSourceDescriptor, equalParadisWordBytes, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
@@ -85,9 +86,6 @@ import { PARADIS_VIEWER_LOADING_LABEL, PARADIS_VIEWER_OPEN_IN_APP_LABEL, PARADIS
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
 
 const $ = dom.$;
-
-/** vendored docx-preview / jszip の配置ディレクトリ（webview に許可するリソースの根）。 */
-const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
 
 const ZOOM_STEP = 1.2;
 const ZOOM_MIN = 0.4;
@@ -265,7 +263,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			originKey: PARADIS_DOCX_DIFF_EDITOR_ID,
 			enableFindWidget: false,
 			allowScripts: true,
-			resolveLibBase: () => resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(DOCX_MEDIA_ROOT)),
+			resolveLibBase: () => resolveParadisViewerLibBase(this._sharedProcessService, FileAccess.asFileUri(PARADIS_DOCX_MEDIA_ROOT)),
 			onDidCreate: (webview, store) => {
 				store.add(webview.onMessage(event => this._onWebviewMessage(event.message as ParadisDocxWebviewMessage)));
 			},
@@ -472,7 +470,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	/** webview を返す（同梱ライブラリをローカルサーバから配れるなら service worker を切った webview）。 */
 	private _ensureWebview(): IOverlayWebview {
 		// .docx 本体は postMessage で渡すので、許可するのは vendored ライブラリだけでよい。
-		return this._pane.ensure(!!this._pane.libBase, [FileAccess.asFileUri(DOCX_MEDIA_ROOT)]);
+		return this._pane.ensure(!!this._pane.libBase, [FileAccess.asFileUri(PARADIS_DOCX_MEDIA_ROOT)]);
 	}
 
 	private _disposeWebview(): void {
@@ -1263,7 +1261,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _updateWebviewPlacement(): void {
 		const show = this._editorVisible && !!this._originalResource && !!this._modifiedResource;
 		const justClaimed = this._pane.place(show, this.window, this._webviewContainer!,
-			() => ({ disableServiceWorker: !!this._pane.libBase, localResourceRoots: [FileAccess.asFileUri(DOCX_MEDIA_ROOT)] }),
+			() => ({ disableServiceWorker: !!this._pane.libBase, localResourceRoots: [FileAccess.asFileUri(PARADIS_DOCX_MEDIA_ROOT)] }),
 			() => this._updateWebviewPlacement());
 		if (justClaimed && !this._recreatingForRecovery) {
 			this._reload();

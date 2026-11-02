@@ -13,10 +13,18 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { isLinux, isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisHtmlPreviewServer, parseParadisByteRange, parseParadisPreviewPath } from '../../node/paradisHtmlPreviewServer.js';
+import { isParadisPreviewLoopbackHost } from '../../common/paradisHtmlPreview.js';
 
 suite('ParadisHtmlPreviewServer', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('accepts only loopback hosts, with or without a port', () => {
+		const hosts = ['127.0.0.1:1234', '[::1]:80', 'localhost', '127.0.0.2', 'localhost.evil.example', undefined];
+		deepStrictEqual(hosts.map(host => [host, isParadisPreviewLoopbackHost(host)]), [
+			['127.0.0.1:1234', true], ['[::1]:80', true], ['localhost', true], ['127.0.0.2', false], ['localhost.evil.example', false], [undefined, false],
+		]);
+	});
 
 	async function createRoot(): Promise<string> {
 		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-html-preview-'));

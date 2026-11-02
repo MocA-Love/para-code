@@ -42,7 +42,7 @@ import { pipeline } from 'stream';
 import { randomBytes } from 'crypto';
 import { basename, dirname, extname, join, sep } from '../../../../base/common/path.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IParadisHtmlPreviewService, IParadisPreviewMount, IParadisPreviewMountOptions } from '../common/paradisHtmlPreview.js';
+import { IParadisHtmlPreviewService, IParadisPreviewMount, IParadisPreviewMountOptions, isParadisPreviewLoopbackHost } from '../common/paradisHtmlPreview.js';
 
 /** 同時に載せておくフォルダーの上限。超えたら古いものから外す。 */
 const PARADIS_HTML_PREVIEW_MAX_MOUNTS = 64;
@@ -101,15 +101,6 @@ function isWebviewOrigin(origin: string | undefined): boolean {
 /** ヘッダーは配列で来ることがある。先頭だけを見る。 */
 function firstHeader(value: string | string[] | undefined): string | undefined {
 	return Array.isArray(value) ? value[0] : value;
-}
-
-/** `Host` として受け付ける相手。ポートは問わない（OS 任せで決まるため）。 */
-function isLoopbackHost(host: string | undefined): boolean {
-	if (!host) {
-		return false;
-	}
-	const name = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
-	return name === '127.0.0.1' || name === 'localhost' || name === '::1';
 }
 
 /**
@@ -306,7 +297,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		if (request.method !== 'GET' && request.method !== 'HEAD') {
 			return this._fail(response, 405);
 		}
-		if (!isLoopbackHost(firstHeader(request.headers.host))) {
+		if (!isParadisPreviewLoopbackHost(firstHeader(request.headers.host))) {
 			return this._fail(response, 403);
 		}
 		if (!isWebviewOrigin(firstHeader(request.headers.origin))) {
