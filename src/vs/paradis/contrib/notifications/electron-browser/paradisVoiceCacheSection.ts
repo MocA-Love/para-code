@@ -19,6 +19,7 @@ import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js
 import { IParadisVoiceCacheInfo, paradisVoiceCacheTotals } from '../common/paradisVoiceCache.js';
 import { ParadisAivisRenderGeneration } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
 const $ = dom.$;
 
@@ -91,12 +92,9 @@ export class ParadisVoiceCacheSection extends Disposable {
 		const labels = dom.append(row, $('.sr-main'));
 		dom.append(labels, $('.sr-label')).textContent = STR_LABEL;
 		dom.append(labels, $('.sr-desc')).textContent = STR_DESC;
-		const toggle = dom.append(row, $('input.pns-toggle')) as HTMLInputElement;
-		toggle.type = 'checkbox';
-		toggle.checked = settings.elevenLabsVoiceCache !== false;
-		toggle.setAttribute('aria-label', STR_LABEL);
-		this._renderDisposables.add(dom.addDisposableListener(toggle, 'change', () => {
-			this.settingsService.setAivisSettings({ elevenLabsVoiceCache: toggle.checked });
+		const toggle = this._renderDisposables.add(new ParadisSwitch(row, { checked: settings.elevenLabsVoiceCache !== false, ariaLabel: STR_LABEL }));
+		this._renderDisposables.add(toggle.onDidChange(checked => {
+			this.settingsService.setAivisSettings({ elevenLabsVoiceCache: checked });
 		}));
 
 		const bodyEl = dom.append(this.container, $('div'));

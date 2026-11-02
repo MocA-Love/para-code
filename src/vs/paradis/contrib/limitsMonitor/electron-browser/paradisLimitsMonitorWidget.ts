@@ -94,12 +94,12 @@ function paradisLimitsStatusSummary(account: IParadisLimitsAccount): string {
 let latestWidget: ParadisLimitsMonitorWidget | undefined;
 
 // メニューバーのアイコンから使用量パネルを開く。タイトルバーに出していない（設定でオフ）ときは、
-// 開く先が無いので「設定 (Para Code)」の使用量の節を開く。
+// 開く先が無いので、表示のオン/オフがある「設定 (Para Code)」のタイトルバーとステータスバーの節を開く。
 CommandsRegistry.registerCommand(PARADIS_LIMITS_OPEN_PANEL_COMMAND_ID, async accessor => {
 	if (latestWidget?.openPanel()) {
 		return;
 	}
-	await accessor.get(ICommandService).executeCommand('paradis.openSettingsDialog', 'psd-sec-usage');
+	await accessor.get(ICommandService).executeCommand('paradis.openSettingsDialog', 'psd-sec-titlebar');
 });
 
 /** titlebarPart.ts の PARA-PATCH 点から呼ばれるファクトリ。 */

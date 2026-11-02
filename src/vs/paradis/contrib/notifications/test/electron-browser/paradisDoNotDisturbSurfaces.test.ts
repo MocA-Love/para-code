@@ -267,6 +267,10 @@ function normalizeElement(element: Element): INormalizedElement {
 		const input = element as HTMLInputElement;
 		return { ...normalized, type: input.type, checked: input.checked };
 	}
+	if (element.getAttribute('role') === 'switch') {
+		// オン/オフは共通のスイッチ（ParadisSwitch）。クラスの checked は aria-checked と同じなので除いて比べる
+		return { ...normalized, className: 'paradis-switch', type: 'switch', checked: element.getAttribute('aria-checked') === 'true' };
+	}
 	return normalized;
 }
 
@@ -438,7 +442,7 @@ suite('Paradis DND actual surfaces', () => {
 								{ tag: 'div', className: 'sr-desc', text: 'このPCでの通知をすべて止めます。モバイルアプリへのPush通知は対象外です。', children: [] },
 							],
 						},
-						{ tag: 'input', className: 'pns-toggle', text: '', children: [], type: 'checkbox', checked: false },
+						{ tag: 'button', className: 'paradis-switch', text: '', children: [], type: 'switch', checked: false },
 					],
 				},
 			],
@@ -453,7 +457,7 @@ suite('Paradis DND actual surfaces', () => {
 								{ tag: 'div', className: 'sr-desc', text: 'このPCでの通知をすべて止めます。モバイルアプリへのPush通知は対象外です。', children: [] },
 							],
 						},
-						{ tag: 'input', className: 'pns-toggle', text: '', children: [], type: 'checkbox', checked: true },
+						{ tag: 'button', className: 'paradis-switch', text: '', children: [], type: 'switch', checked: true },
 					],
 				},
 				{
@@ -487,7 +491,7 @@ suite('Paradis DND actual surfaces', () => {
 								{ tag: 'div', className: 'sr-desc', text: 'このPCでの通知をすべて止めます。モバイルアプリへのPush通知は対象外です。', children: [] },
 							],
 						},
-						{ tag: 'input', className: 'pns-toggle', text: '', children: [], type: 'checkbox', checked: true },
+						{ tag: 'button', className: 'paradis-switch', text: '', children: [], type: 'switch', checked: true },
 					],
 				},
 				{
@@ -531,9 +535,8 @@ suite('Paradis DND actual surfaces', () => {
 		const manualSelect = container.querySelector('select') as HTMLSelectElement;
 		manualSelect.value = 'manual';
 		dispatchChangeEvent(manualSelect);
-		const toggle = container.querySelector('input.pns-toggle') as HTMLInputElement;
-		toggle.checked = false;
-		dispatchChangeEvent(toggle);
+		const toggle = container.querySelector('button.paradis-switch') as HTMLButtonElement;
+		toggle.click();
 		assert.deepStrictEqual(settings.setDoNotDisturbCalls.slice(1), [
 			{ enabled: true, until: undefined },
 			{ enabled: false, until: undefined },
@@ -604,7 +607,7 @@ suite('Paradis DND actual surfaces', () => {
 			store.add(new TestStatusContribution(statusbar, settings));
 			const container = createContainer('DND idle');
 			store.add(new TestSection(container, settings));
-			const toggle = container.querySelector('input.pns-toggle');
+			const toggle = container.querySelector('button.paradis-switch');
 			const initialReads = settings.getDoNotDisturbReadCount;
 			manualTimer.advanceBy(600_000);
 
@@ -613,7 +616,7 @@ suite('Paradis DND actual surfaces', () => {
 				fires: manualTimer.fireCount,
 				statusUpdates: statusbar.updates.length,
 				readDelta: settings.getDoNotDisturbReadCount - initialReads,
-				toggleIdentitySame: container.querySelector('input.pns-toggle') === toggle,
+				toggleIdentitySame: container.querySelector('button.paradis-switch') === toggle,
 			}, { pending: 0, fires: 0, statusUpdates: 0, readDelta: 0, toggleIdentitySame: true });
 		}
 	});
@@ -705,14 +708,14 @@ suite('Paradis DND actual surfaces', () => {
 
 			settings.setState(transition.state);
 			settings.fireDedicated(false);
-			const renderedToggle = container.querySelector('input.pns-toggle');
+			const renderedToggle = container.querySelector('button.paradis-switch');
 			const afterEvent = {
 				pending: manualTimer.pendingCount,
 				reads: settings.getDoNotDisturbReadCount,
 				statusUpdates: statusbar.updates.length,
 				statusText: statusbar.updates.at(-1)?.text,
 				sectionChildren: container.childElementCount,
-				toggleChecked: (renderedToggle as HTMLInputElement).checked,
+				toggleChecked: renderedToggle?.getAttribute('aria-checked') === 'true',
 				setCount: manualTimer.setCount,
 			};
 			for (const callbackId of capturedCallbackIds) {
@@ -724,7 +727,7 @@ suite('Paradis DND actual surfaces', () => {
 				lateCallbackDeltas: {
 					reads: settings.getDoNotDisturbReadCount - afterEvent.reads,
 					statusUpdates: statusbar.updates.length - afterEvent.statusUpdates,
-					sectionRenders: container.querySelector('input.pns-toggle') === renderedToggle ? 0 : 1,
+					sectionRenders: container.querySelector('button.paradis-switch') === renderedToggle ? 0 : 1,
 					sets: manualTimer.setCount - afterEvent.setCount,
 					pending: manualTimer.pendingCount,
 				},
@@ -851,7 +854,7 @@ suite('Paradis DND actual surfaces', () => {
 		const container = createContainer('DND disposed section');
 		const section = store.add(new TestSection(container, settings));
 		const capturedCallbackIds = [...manualTimer.capturedCallbackIds];
-		const oldToggle = container.querySelector('input.pns-toggle');
+		const oldToggle = container.querySelector('button.paradis-switch');
 		status.dispose();
 		section.dispose();
 		const beforeLateWork = {
@@ -872,7 +875,7 @@ suite('Paradis DND actual surfaces', () => {
 			updates: statusbar.updates.length,
 			setCount: manualTimer.setCount,
 			domSame: assert.deepStrictEqual(normalizeDndDom(container), beforeLateWork.dom) === undefined,
-			toggleIdentitySame: container.querySelector('input.pns-toggle') === oldToggle,
+			toggleIdentitySame: container.querySelector('button.paradis-switch') === oldToggle,
 		}, {
 			pending: 0,
 			accessorDisposeCount: 1,
@@ -890,7 +893,7 @@ suite('Paradis DND actual surfaces', () => {
 			pending: manualTimer.pendingCount,
 			readDelta: settings.getDoNotDisturbReadCount - beforeLateWork.reads,
 			children: reopenedContainer.childElementCount,
-			toggleChecked: (reopenedContainer.querySelector('input.pns-toggle') as HTMLInputElement).checked,
+			toggleChecked: reopenedContainer.querySelector('button.paradis-switch')?.getAttribute('aria-checked') === 'true',
 			hint: reopenedContainer.querySelectorAll('.setting-row')[1]?.querySelector('.sr-desc')?.textContent,
 		}, { pending: 1, readDelta: 1, children: 4, toggleChecked: true, hint: 'あと1分で自動的に解除されます。' });
 	});
