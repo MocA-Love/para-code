@@ -58,6 +58,7 @@ import { paradisCookieAndRewriteDeniedMessage, paradisSanitizeCookieBearingEvent
 import { paradisRemotePaneCdpDeniedMessage } from './paradisCdpRemotePolicy.js';
 import { PARADIS_HIDDEN_EXTENSION_FRAME_URL, PARADIS_PAGE_URL_FRESH_MS, paradisExtensionPageDeniedMessage, paradisGuardNewDocumentScriptParams, paradisIsAllowedOnExtensionPage, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisIsUndecidedPageUrl, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../common/paradisCdpExtensionScope.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { ParadisReverseIndexedMap } from './paradisCdpReverseIndexedMap.js';
 import { IParadisCdpFrame, MAX_CDP_FRAME_BYTES, ParadisBoundedSendOutcome, paradisCdpErrorFrame, paradisCdpErrorResponse, paradisForwardableCdpFrame, paradisReadCdpFrame, rawDataByteLength, rawDataText, sendWithBoundedBackpressure, sendWithBoundedBackpressureOutcome } from './paradisCdpFrames.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
@@ -1866,9 +1867,9 @@ export async function paradisProxyBrowserUpgrade(
 		const pendingUpstream: string[] = [];
 		let pendingUpstreamBytes = 0;
 		const allowedSessionIds = new Set<string>();
-		const sessionIdToTargetId = new Map<string, string>();
+		const sessionIdToTargetId = new ParadisReverseIndexedMap<string, string>();
 		const allowedTargetIds = new Set<string>();
-		const childToParent = new Map<string, string>();
+		const childToParent = new ParadisReverseIndexedMap<string, string>();
 		// 見せているターゲットの今の URL（拡張のページにいる間は、そのセッションへの命令を断る）
 		const targetUrls = new Map<string, string>();
 		// targetUrls を最後に確かめた時刻（中身を読む・操作する命令の前に、古ければ引き直す）
@@ -1949,7 +1950,7 @@ export async function paradisProxyBrowserUpgrade(
 		// Sessions the client has been told about (an attachedToTarget event or an attachToTarget
 		// result reached it), with the session the event arrived on. Only these get a synthetic
 		// detach when the proxy drops them; the client has never heard of the others.
-		const clientKnownSessions = new Map<string, string | undefined>();
+		const clientKnownSessions = new ParadisReverseIndexedMap<string, string | undefined>();
 		const markClientKnownSession = (sessionId: string, parentSessionId: string | undefined) => {
 			if (clientKnownSessions.has(sessionId) || clientKnownSessions.size < MAX_CDP_ROUTING_ENTRIES) {
 				clientKnownSessions.set(sessionId, parentSessionId);
@@ -1984,8 +1985,8 @@ export async function paradisProxyBrowserUpgrade(
 			const seen = new Set<string>([sessionId]);
 			for (let index = -1; index < descendants.length; index++) {
 				const parent = index < 0 ? sessionId : descendants[index];
-				for (const [child, childParent] of clientKnownSessions) {
-					if (childParent === parent && !seen.has(child)) {
+				for (const child of clientKnownSessions.keysOf(parent)) {
+					if (!seen.has(child)) {
 						seen.add(child);
 						descendants.push(child);
 					}
@@ -2098,25 +2099,25 @@ export async function paradisProxyBrowserUpgrade(
 				// 消えたターゲットの移動の時刻と文書の場所も忘れる（残すと上限に達して、新しいターゲットの移動の確かめが抜ける）
 				movedAt.delete(current);
 				documentLocations.delete(current);
-				for (const [child, parent] of childToParent) {
+				for (const child of childToParent.keysOf(current)) {
 					// A page the user shared is never dropped because its opener went away.
-					if (parent === current && !visited.has(child) && !bound.has(child)) {
+					if (!visited.has(child) && !bound.has(child)) {
 						queue.push(child);
 					}
 				}
 				childToParent.delete(current);
 			}
-			for (const [child, parent] of [...childToParent]) {
-				if (visited.has(parent)) {
+			for (const parent of visited) {
+				for (const child of childToParent.keysOf(parent)) {
 					childToParent.delete(child);
 				}
 			}
 			let droppedBoundSession = false;
 			for (const dropped of [...visited].reverse()) {
-				for (const [sessionId, mappedTargetId] of [...sessionIdToTargetId]) {
+				for (const sessionId of sessionIdToTargetId.keysOf(dropped)) {
 					// A session already forgotten as a descendant of an earlier one is skipped.
-					if (mappedTargetId === dropped && sessionIdToTargetId.has(sessionId)) {
-						droppedBoundSession ||= bound.has(mappedTargetId);
+					if (sessionIdToTargetId.get(sessionId) === dropped) {
+						droppedBoundSession ||= bound.has(dropped);
 						forgetSession(sessionId, true);
 					}
 				}
@@ -2125,12 +2126,7 @@ export async function paradisProxyBrowserUpgrade(
 		};
 		/** Whether any session still points at the target (a target can have several, e.g. puppeteer's and the DevTools universe's). */
 		const targetHasSession = (targetId: string): boolean => {
-			for (const mappedTargetId of sessionIdToTargetId.values()) {
-				if (mappedTargetId === targetId) {
-					return true;
-				}
-			}
-			return false;
+			return sessionIdToTargetId.hasValue(targetId);
 		};
 		const backpressure = new ParadisClientBackpressureReporter('browser', logService);
 
