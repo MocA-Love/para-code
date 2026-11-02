@@ -6,14 +6,17 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { EventEmitter } from 'events';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { Worker } from 'worker_threads';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisCaptureSavePath, paradisWriteCaptureFile } from '../../node/paradisBrowserCapture.js';
-import { ParadisBrowserDownloadReader, paradisDecodeText, paradisParseA1Range, paradisParseDelimited, paradisZipUncompressedSize } from '../../node/paradisBrowserDownloadReader.js';
+import { paradisReadDownloadWorkbookInWorker } from '../../node/paradisBrowserDownloadWorkbookWorker.js';
+import { ParadisBrowserDownloadReader, paradisRenderDownloadWorkbook, paradisDecodeText, paradisParseA1Range, paradisParseDelimited, paradisZipUncompressedSize } from '../../node/paradisBrowserDownloadReader.js';
 import { paradisParsePdfPageRange } from '../../node/paradisBrowserPdfText.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_FILE_TOOL_NAMES, PARADIS_MCP_BROWSER_FILE_TOOLS } from '../../node/paradisBrowserQueryTools.js';
@@ -197,7 +200,9 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 		}
 	});
 
-	test('read_download reads csv and xlsx ranges in the download folder only', async () => {
+	test('read_download reads csv and xlsx ranges in the download folder only', async function () {
+		// exceljs を読み込むので、ほかのスイートと一緒に回すと既定の 5 秒を超えることがある
+		this.timeout(20_000);
 		assert.deepStrictEqual(PARADIS_MCP_BROWSER_FILE_TOOLS.map(tool => tool.name), [...PARADIS_BROWSER_FILE_TOOL_NAMES]);
 		const folder = await fs.mkdtemp(join(tmpdir(), 'paradis-read-download-'));
 		try {
@@ -210,7 +215,8 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 			workbook.addWorksheet('Summary').addRows([['Item', 'Price'], ['Apple', 120], ['Pear', 200]]);
 			workbook.addWorksheet('Raw').addRow(['x']);
 			await fs.writeFile(join(downloads, 'book.xlsx'), Buffer.from(await workbook.xlsx.writeBuffer()));
-			const reader = new ParadisBrowserDownloadReader({ downloadsDirectory: async () => downloads });
+			// exceljs をこの場で読む（worker で読む経路は下の 'reads an xlsx in the worker' が node の単体テストで確かめる）
+			const reader = new ParadisBrowserDownloadReader({ downloadsDirectory: async () => downloads, loadExcel: async () => ExcelJS });
 			const csv = await reader.call({ path: join(downloads, 'list.csv') });
 			const xlsx = await reader.call({ path: join(downloads, 'book.xlsx'), range: 'A2:B3' });
 			const outside = await reader.call({ path: join(folder, 'secret.csv') });
@@ -283,6 +289,155 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 			}, {
 				ranges: [{ start: 3, end: 3 }, { start: 1, end: 5 }, { start: 10 }, { start: 2, end: 4 }, undefined, undefined, undefined, undefined],
 				more: 'Stopped at 100000 characters (page 5 is cut); pass "pages": "5-" to continue from that page.',
+			});
+		} finally {
+			await fs.rm(folder, { recursive: true, force: true });
+		}
+	});
+
+	test('read_download reads an xlsx in the worker started through the common worker entry', async function () {
+		// The Electron renderer test host cannot launch worker_threads. The node unit runner is the
+		// production execution boundary (the shared process) and runs this test.
+		if (process.type === 'renderer') {
+			this.skip();
+		}
+		const ExcelJS = (await import('exceljs')).default;
+		const workbook = new ExcelJS.Workbook();
+		workbook.addWorksheet('Summary').addRows([['Item', 'Price'], ['Apple', 120]]);
+		const data = Buffer.from(await workbook.xlsx.writeBuffer());
+		const inWorker = await paradisReadDownloadWorkbookInWorker({ name: 'book.xlsx', data, maxCells: 100 });
+		const inProcess = await paradisRenderDownloadWorkbook(ExcelJS, { name: 'book.xlsx', data, maxCells: 100 });
+		const broken = await paradisReadDownloadWorkbookInWorker({ name: 'broken.xlsx', data: Buffer.from('not a zip'), maxCells: 100 });
+		assert.deepStrictEqual({ same: inWorker, broken: [isError(broken), textOf(broken)] }, { same: inProcess, broken: [true, 'broken.xlsx could not be read as an Excel workbook.'] });
+	});
+
+	test('read_download hands an xlsx to the workbook reader one at a time, and the main thread does not parse it', async () => {
+		const folder = await fs.mkdtemp(join(tmpdir(), 'paradis-read-download-'));
+		try {
+			const ExcelJS = (await import('exceljs')).default;
+			const workbook = new ExcelJS.Workbook();
+			workbook.addWorksheet('Summary').addRow(['x']);
+			await fs.writeFile(join(folder, 'book.xlsx'), Buffer.from(await workbook.xlsx.writeBuffer()));
+			const order: string[] = [];
+			let release: () => void = () => { };
+			const firstHeld = new Promise<void>(resolve => release = resolve);
+			const firstStarted = new DeferredPromise<void>();
+			const reader = new ParadisBrowserDownloadReader({
+				downloadsDirectory: async () => folder,
+				readWorkbook: async request => {
+					order.push(`start ${request.sheet ?? 'first'} ${request.data.byteLength > 0}`);
+					if (request.sheet === undefined) {
+						firstStarted.complete();
+						await firstHeld;
+					}
+					order.push(`end ${request.sheet ?? 'first'}`);
+					return { content: [{ type: 'text', text: `read ${request.name}` }] };
+				},
+			});
+			const first = reader.call({ path: join(folder, 'book.xlsx') });
+			await firstStarted.p;
+			const second = reader.call({ path: join(folder, 'book.xlsx'), sheet: 'Summary' });
+			// 2 件目が待ち行列に入ってから 1 件目を終わらせる
+			await new Promise(resolve => setTimeout(resolve, 20));
+			release();
+			assert.deepStrictEqual({ first: textOf(await first), second: textOf(await second), order }, {
+				first: 'read book.xlsx',
+				second: 'read book.xlsx',
+				order: ['start first true', 'end first', 'start Summary true', 'end Summary'],
+			});
+		} finally {
+			await fs.rm(folder, { recursive: true, force: true });
+		}
+	});
+
+	test('the workbook worker answers every ending and reports only what may be a Para Code fault', async () => {
+		class FakeWorker extends EventEmitter {
+			terminateRequested = false;
+			constructor(private readonly onPost: (worker: FakeWorker) => void) {
+				super();
+			}
+			postMessage(): void {
+				queueMicrotask(() => this.onPost(this));
+			}
+			terminate(): Promise<number> {
+				this.terminateRequested = true;
+				queueMicrotask(() => this.emit('exit', 1));
+				return Promise.resolve(1);
+			}
+		}
+		const run = async (onPost: (worker: FakeWorker) => void, options: { deadline?: number; signal?: AbortSignal } = {}) => {
+			const reported: string[] = [];
+			let created = 0;
+			const result = await paradisReadDownloadWorkbookInWorker({ name: 'book.xlsx', data: new Uint8Array([1, 2]), maxCells: 10 }, {
+				...options,
+				createWorker: () => { created++; return new FakeWorker(onPost); },
+				report: (_error, extra) => reported.push(extra.stage),
+			});
+			// こちらから止めた後の終了（terminate の後の exit）が届くのを待つ
+			await new Promise(resolve => setTimeout(resolve, 0));
+			return { text: textOf(result), reported, created };
+		};
+		const aborted = new AbortController();
+		aborted.abort();
+		assert.deepStrictEqual({
+			answered: await run(worker => worker.emit('message', { kind: 'result', result: { content: [{ type: 'text', text: 'cells' }] } })),
+			outOfMemory: await run(worker => { worker.emit('error', Object.assign(new Error('heap'), { code: 'ERR_WORKER_OUT_OF_MEMORY' })); worker.emit('exit', 1); }),
+			exitedWithoutAnswer: await run(worker => worker.emit('exit', 1)),
+			loadFailed: await run(worker => worker.emit('message', { kind: 'failed', stage: 'load', cause: 'ERR_MODULE_NOT_FOUND' })),
+			renderFailed: await run(worker => worker.emit('message', { kind: 'failed', stage: 'render', cause: 'TypeError' })),
+			timedOut: await run(() => { }, { deadline: Date.now() + 5 }),
+			waitedTooLong: await run(() => { }, { deadline: Date.now() - 1 }),
+			cancelled: await run(() => { }, { signal: aborted.signal }),
+		}, {
+			answered: { text: 'cells', reported: [], created: 1 },
+			outOfMemory: { text: 'book.xlsx is too large to read as a whole. Save a smaller part of the data (for example one sheet as csv) and read that.', reported: [], created: 1 },
+			exitedWithoutAnswer: { text: 'book.xlsx could not be read: the Excel reader stopped (exit code 1).', reported: ['exit'], created: 1 },
+			loadFailed: { text: 'book.xlsx could not be read: the Excel reader failed to load.', reported: ['load'], created: 1 },
+			renderFailed: { text: 'book.xlsx could not be read: the Excel reader failed while reading it.', reported: ['render'], created: 1 },
+			timedOut: { text: 'Reading book.xlsx took too long and was stopped. Save a smaller part of the data (for example one sheet as csv) and read that.', reported: ['timeout'], created: 1 },
+			waitedTooLong: { text: 'Para Code is busy reading other Excel files, and book.xlsx waited too long. Call read_download again.', reported: [], created: 0 },
+			cancelled: { text: 'Reading book.xlsx was cancelled.', reported: [], created: 0 },
+		});
+	});
+
+	test('read_download refuses an xlsx while three are already being read or waiting', async () => {
+		const folder = await fs.mkdtemp(join(tmpdir(), 'paradis-read-download-'));
+		try {
+			const ExcelJS = (await import('exceljs')).default;
+			const workbook = new ExcelJS.Workbook();
+			workbook.addWorksheet('Summary').addRow(['x']);
+			await fs.writeFile(join(folder, 'book.xlsx'), Buffer.from(await workbook.xlsx.writeBuffer()));
+			let release: () => void = () => { };
+			const held = new Promise<void>(resolve => release = resolve);
+			const started: string[] = [];
+			const allRead = new DeferredPromise<void>();
+			let reads = 0;
+			const reader = new ParadisBrowserDownloadReader({
+				downloadsDirectory: async () => folder,
+				readFile: async path => {
+					const data = await fs.readFile(path);
+					if (++reads === 3) {
+						allRead.complete();
+					}
+					return data;
+				},
+				readWorkbook: async (_request, options) => {
+					started.push(typeof options.deadline);
+					await held;
+					return { content: [{ type: 'text', text: 'read' }] };
+				},
+			});
+			const call = () => reader.call({ path: join(folder, 'book.xlsx') });
+			const first = [call(), call(), call()];
+			// 3 件ともファイルを読み終えて待ち行列に入ってから 4 件目を呼ぶ
+			await allRead.p;
+			await new Promise(resolve => setTimeout(resolve, 0));
+			const busy = await call();
+			release();
+			assert.deepStrictEqual({ busy: [isError(busy), textOf(busy)], first: (await Promise.all(first)).map(textOf), started }, {
+				busy: [true, 'Para Code is already reading 3 Excel files for agents. Call read_download again in a moment.'],
+				first: ['read', 'read', 'read'],
+				started: ['number', 'number', 'number'],
 			});
 		} finally {
 			await fs.rm(folder, { recursive: true, force: true });

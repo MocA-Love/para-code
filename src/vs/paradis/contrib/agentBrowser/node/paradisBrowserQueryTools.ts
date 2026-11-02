@@ -173,6 +173,9 @@ export const PARADIS_MCP_BROWSER_RUN_STEPS_TOOLS = [
 	},
 ] as const;
 
+/** read_download の説明の最後の文。接続先のペインでは paradisRemoteFileTransfer.ts が言い換える。 */
+export const PARADIS_READ_DOWNLOAD_OWN_TOOLS_NOTE = 'If you can read the saved file with your own tools, you may do that instead.';
+
 /** Names of the capture and file tools. */
 export const PARADIS_BROWSER_FILE_TOOL_NAMES = [
 	'capture_screenshot',
@@ -211,7 +214,7 @@ export const PARADIS_MCP_BROWSER_FILE_TOOLS = [
 	},
 	{
 		name: 'read_download',
-		description: 'Read the contents of a file that download_by_click or save_page_as_pdf saved in Para Code\'s download folder, without opening it in another program: for .xlsx / .xlsm the list of sheets and the cells of a range (values as displayed), for .csv / .tsv / .txt the rows of a range (UTF-8 or Shift_JIS), for .pdf the text of each page (up to 50 pages and 100000 characters per call; pass "pages" for another part). Output is limited by max_cells; pass "range" for another part. Encrypted PDFs and scanned pages without text cannot be read. Only files inside the download folder can be read. If you can read the saved file with your own tools, you may do that instead.',
+		description: 'Read the contents of a file that download_by_click or save_page_as_pdf saved in Para Code\'s download folder, without opening it in another program: for .xlsx / .xlsm the list of sheets and the cells of a range (values as displayed), for .csv / .tsv / .txt the rows of a range (UTF-8 or Shift_JIS), for .pdf the text of each page (up to 50 pages and 100000 characters per call; pass "pages" for another part). Output is limited by max_cells; pass "range" for another part. Encrypted PDFs and scanned pages without text cannot be read. Only files inside the download folder can be read. ' + PARADIS_READ_DOWNLOAD_OWN_TOOLS_NOTE,
 		inputSchema: {
 			type: 'object',
 			properties: {
