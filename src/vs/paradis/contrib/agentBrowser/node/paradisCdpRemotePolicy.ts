@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { isRecord } from '../../../common/paradisGuards.js';
+
 // 接続先（SSH・WSL・コンテナ）のペインからの CDP で、手元のファイルに触れる操作だけを断る
 // （NOTES.md「chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）。
 //
@@ -47,10 +49,6 @@ function trimC0AndSpace(value: string): string {
 		end--;
 	}
 	return value.slice(start, end);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 const REMOTE_REASON = 'this CDP connection comes from a terminal pane in a remote window (SSH, WSL, container), or Para Code has not registered this pane yet (wait a moment and retry), and the browser runs on the user\'s local machine, so it would reach the user\'s local files.';

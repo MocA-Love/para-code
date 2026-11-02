@@ -16,6 +16,7 @@
 //   - エージェントは `full: true` で全体を取れる。全体を返したときも控えは取り直す
 
 import { PARADIS_SNAPSHOT_MAX_CHARS } from './paradisDevtoolsToolAdjustments.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** vendored の take_snapshot が本文の前に置く見出し。 */
 const SNAPSHOT_HEADING = '## Latest page snapshot';
@@ -50,10 +51,6 @@ interface IParsedSnapshot {
 	readonly nodes: ReadonlyMap<string, ISnapshotNode>;
 	/** 本文に出てくる順。 */
 	readonly order: readonly string[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** スナップショットの本文を読む。uid の行が無い・同じ uid が 2 回出る・字下げが飛ぶときは undefined（差分にしない）。 */

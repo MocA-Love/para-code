@@ -46,6 +46,7 @@ import {
 } from '../common/paradisBrowserExtensionUserScripts.js';
 import { IParadisApiExtension, IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import { paradisChromeFrameId, paradisMatchesUrlPattern } from './paradisBrowserExtensionTabs.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /**
  * USER_SCRIPT の world の番号の始め。0（ページ）・999（Electron の preload）・Chromium の拡張機能の content script の world
@@ -113,10 +114,6 @@ interface IPort {
 }
 
 type FrameLike = Pick<WebFrameMain, 'url' | 'parent' | 'frameTreeNodeId' | 'processId' | 'routingId'> & { isDestroyed?(): boolean; send?(channel: string, ...args: unknown[]): void };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function serializedLength(value: unknown): number | undefined {
 	try {

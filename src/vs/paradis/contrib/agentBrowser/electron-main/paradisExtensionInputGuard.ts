@@ -29,6 +29,7 @@
 import type { WebContents, WebFrameMain } from 'electron';
 import type { IDisposable } from '../../../../base/common/lifecycle.js';
 import { paradisIsBrowserExtensionUrl } from '../common/paradisCdpExtensionScope.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 断るときにエージェントへ返す文。 */
 export const PARADIS_EXTENSION_INPUT_DENIED_MESSAGE = 'This input would reach a browser extension\'s own UI drawn over the page (for example a password manager\'s menu). Para Code does not let agents click, tap or type into browser extension UI. Click somewhere else, or ask the user to use the extension.';
@@ -122,10 +123,6 @@ function hasExtensionFrame(webContents: ParadisInputGuardWebContents): boolean {
 	} catch {
 		return false;
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** 同じプロセスの iframe の URL を、その文書のフレームの木から引く（無ければ undefined）。 */

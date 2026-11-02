@@ -8,6 +8,7 @@
 
 import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload } from '../../agentChat/common/paradisCodexInjectedContext.js';
 import { ADVISOR_TEXT_LIMIT, IParadisAgentAdvisorUpdate } from './paradisAgentActivity.js';
+import { asRecord } from '../../../common/paradisGuards.js';
 
 export type ParadisRecoveredAgentStatus = 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown';
 
@@ -71,10 +72,6 @@ const STALE_ACTIVITY_MS = 15 * 60 * 1_000;
  */
 const PARTIAL_ASSISTANT_LINE_GRACE_MS = 2 * 60 * 1_000;
 
-function record(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
 function text(value: unknown): string | undefined {
 	return typeof value === 'string' && value.trim().length > 0 ? value.trim().slice(0, TEXT_LIMIT) : undefined;
 }
@@ -95,7 +92,7 @@ function flattenContent(value: unknown): string {
 	if (!Array.isArray(value)) { return ''; }
 	return value.map(item => {
 		if (typeof item === 'string') { return item; }
-		const entry = record(item);
+		const entry = asRecord(item);
 		return text(entry?.text) ?? text(entry?.thinking) ?? flattenContent(entry?.content);
 	}).filter(Boolean).join('\n');
 }
@@ -120,7 +117,7 @@ function activeOrEnded(mtime: number, now: number): ParadisRecoveredAgentStatus 
 }
 
 function hasBlock(content: unknown, type: string): boolean {
-	return Array.isArray(content) && content.some(item => record(item)?.type === type);
+	return Array.isArray(content) && content.some(item => asRecord(item)?.type === type);
 }
 
 /**
@@ -162,7 +159,7 @@ function agentIdFromToolResult(value: string): { readonly id: string; readonly n
  */
 function harnessNotifications(content: unknown): string[] {
 	const texts = typeof content === 'string' ? [content]
-		: Array.isArray(content) ? content.map(item => record(item)).filter(item => item?.type === 'text').map(item => text(item?.text) ?? '') : [];
+		: Array.isArray(content) ? content.map(item => asRecord(item)).filter(item => item?.type === 'text').map(item => text(item?.text) ?? '') : [];
 	return texts.filter(value => value.trimStart().startsWith('<task-notification>'));
 }
 
@@ -171,7 +168,7 @@ function harnessNotifications(content: unknown): string[] {
  * 本文の末尾にしか ID が無く、本文の中の ID 風の文字列と見分けにくいので、こちらを先に使う。
  */
 function agentIdFromStructuredResult(entry: Record<string, unknown>, key: 'agentId' | 'resumedAgentId'): string | undefined {
-	const id = text(record(entry.toolUseResult)?.[key]);
+	const id = text(asRecord(entry.toolUseResult)?.[key]);
 	return id !== undefined && ID_PATTERN.test(id) ? id : undefined;
 }
 
@@ -203,7 +200,7 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 
 	for (const line of lines) {
 		let entry: Record<string, unknown> | undefined;
-		try { entry = record(JSON.parse(line)); } catch { continue; }
+		try { entry = asRecord(JSON.parse(line)); } catch { continue; }
 		if (entry === undefined) { continue; }
 		const lineAt = timestamp(entry.timestamp);
 		if (lineAt !== undefined) { lastLineAt = Math.max(lastLineAt ?? lineAt, lineAt); }
@@ -213,9 +210,9 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 		sawOwnerLine = true;
 		ownerLabel = text(entry.agentType) ?? text(entry.agent_type) ?? ownerLabel;
 		const type = text(entry.type);
-		const message = record(entry.message);
+		const message = asRecord(entry.message);
 		// 作業中に届いた完了通知は `queued_command` の attachment として書かれる（通知の約4分の1）
-		const attachment = type === 'attachment' ? record(entry.attachment) : undefined;
+		const attachment = type === 'attachment' ? asRecord(entry.attachment) : undefined;
 		const content = attachment?.type === 'queued_command' ? attachment.prompt : message?.content;
 
 		if (ownerId !== undefined && type === 'user' && ownerDetail === undefined) {
@@ -250,15 +247,15 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 		}
 		if (!Array.isArray(content)) { continue; }
 		// 構造化した結果は行に 1 つなので、tool_result が 1 つだけの行でしか使わない
-		const singleResult = content.filter(item => record(item)?.type === 'tool_result').length === 1;
+		const singleResult = content.filter(item => asRecord(item)?.type === 'tool_result').length === 1;
 		for (const rawBlock of content) {
-			const block = record(rawBlock);
+			const block = asRecord(rawBlock);
 			if (block === undefined) { continue; }
 			if (block.type === 'tool_use') {
 				const tool = text(block.name);
 				const toolUseId = text(block.id);
 				if ((tool === 'Agent' || tool === 'Task') && toolUseId !== undefined) {
-					const input = record(block.input);
+					const input = asRecord(block.input);
 					const detail = text(input?.description) ?? text(input?.prompt);
 					const label = text(input?.subagent_type) ?? text(input?.agent_type) ?? 'SubAgent';
 					pendingTools.set(toolUseId, { label, ...(detail !== undefined ? { detail } : {}), at });
@@ -324,8 +321,8 @@ export function paradisParseClaudeAdvisors(ownerId: string | undefined, lines: r
 			continue;
 		}
 		let entry: Record<string, unknown> | undefined;
-		try { entry = record(JSON.parse(line)); } catch { continue; }
-		const content = record(entry?.message)?.content;
+		try { entry = asRecord(JSON.parse(line)); } catch { continue; }
+		const content = asRecord(entry?.message)?.content;
 		// 親の transcript に混ざる sidechain の行（古い版のサブエージェント）は、その子の相談なので親の分に数えない
 		if (entry === undefined || entry.type !== 'assistant' || entry.isSidechain === true || !Array.isArray(content)) {
 			continue;
@@ -337,7 +334,7 @@ export function paradisParseClaudeAdvisors(ownerId: string | undefined, lines: r
 		const rawModel = text(entry.advisorModel);
 		const model = rawModel !== undefined && ADVISOR_MODEL_PATTERN.test(rawModel) ? rawModel : undefined;
 		for (const rawBlock of content) {
-			const block = record(rawBlock);
+			const block = asRecord(rawBlock);
 			if (block?.type === 'server_tool_use' && block.name === 'advisor') {
 				const id = text(block.id);
 				if (id !== undefined && ID_PATTERN.test(id) && !advisors.has(id)) {
@@ -352,7 +349,7 @@ export function paradisParseClaudeAdvisors(ownerId: string | undefined, lines: r
 					continue;
 				}
 				const previous = advisors.get(id);
-				const result = record(block.content);
+				const result = asRecord(block.content);
 				const type = text(result?.type);
 				const errorCode = type === 'advisor_tool_result_error' ? text(result?.error_code) : undefined;
 				const plain = type === 'advisor_result' ? text(result?.text) : undefined;
@@ -372,8 +369,8 @@ export function paradisParseClaudeAdvisors(ownerId: string | undefined, lines: r
 
 function parseCodexSource(source: string): { readonly parentId?: string; readonly depth?: number; readonly label?: string } {
 	try {
-		const root = record(JSON.parse(source));
-		const spawn = record(record(root?.subagent)?.thread_spawn);
+		const root = asRecord(JSON.parse(source));
+		const spawn = asRecord(asRecord(root?.subagent)?.thread_spawn);
 		const parentId = text(spawn?.parent_thread_id);
 		const rawDepth = number(spawn?.depth);
 		const depth = rawDepth !== undefined ? Math.min(5, Math.max(1, Math.trunc(rawDepth))) : undefined;
@@ -397,17 +394,17 @@ export function paradisParseCodexPersistedActivity(id: string, source: string, l
 	let status: ParadisRecoveredAgentStatus = activeOrEnded(mtime, now);
 	for (const line of lines) {
 		let entry: Record<string, unknown> | undefined;
-		try { entry = record(JSON.parse(line)); } catch { continue; }
+		try { entry = asRecord(JSON.parse(line)); } catch { continue; }
 		if (entry === undefined) { continue; }
 		const at = timestamp(entry.timestamp) ?? mtime;
 		startedAt = sawLine ? Math.min(startedAt, at) : at;
 		updatedAt = Math.max(updatedAt, at);
 		sawLine = true;
 		if (entry.type === 'session_meta') {
-			const payload = record(entry.payload);
+			const payload = asRecord(entry.payload);
 			label = text(payload?.agent_nickname) ?? text(payload?.agent_path) ?? label;
 		} else if (entry.type === 'response_item') {
-			const payload = record(entry.payload);
+			const payload = asRecord(entry.payload);
 			if (payload?.type === 'message' && payload.role === 'user' && detail === undefined && !sawTask) {
 				// AGENTS.md・環境情報・plugin の案内などの差し込みは指示ではない
 				const authored = paradisCodexUserAuthoredContent(payload);
@@ -421,11 +418,11 @@ export function paradisParseCodexPersistedActivity(id: string, source: string, l
 				}
 			}
 		} else if (entry.type === 'event_msg') {
-			const payload = record(entry.payload);
+			const payload = asRecord(entry.payload);
 			switch (text(payload?.type)) {
 				case 'task_started': status = activeOrEnded(mtime, now); break;
 				// usage limit などで終わったターンは `error` の event_msg ではなく、task_complete の `error` に残る
-				case 'task_complete': status = record(payload?.error) !== undefined ? 'failed' : 'completed'; break;
+				case 'task_complete': status = asRecord(payload?.error) !== undefined ? 'failed' : 'completed'; break;
 				case 'error': status = 'failed'; break;
 				case 'turn_aborted': status = 'interrupted'; break;
 			}

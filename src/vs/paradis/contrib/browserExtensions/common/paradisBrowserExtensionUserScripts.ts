@@ -10,6 +10,7 @@
 // 形と文は Chromium の user_scripts の API（extensions/browser/api/user_scripts）に合わせる。
 
 import { paradisIsChromeWebStoreUrl } from './paradisBrowserExtensionWebStore.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** preload との約束（../electron-browser/paradisUserScriptsPreload.ts と同じ名前。テストが一致を確かめる）。 */
 export const PARADIS_USER_SCRIPTS_QUERY = 'paradis:userScriptsQuery';
@@ -73,10 +74,6 @@ export const PARADIS_USER_SCRIPTS_DEFAULT_CSP = 'script-src \'self\' \'wasm-unsa
 
 /** 断るときに投げる（文は拡張機能へ届く）。 */
 export class ParadisUserScriptsError extends Error { }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 /** Chrome の match pattern として読めるか（当たるかは main の paradisMatchesUrlPattern が見る）。 */
 export function paradisIsUserScriptMatchPattern(pattern: string): boolean {

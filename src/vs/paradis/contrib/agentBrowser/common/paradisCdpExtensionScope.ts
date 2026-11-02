@@ -21,15 +21,12 @@
 // 大文字の `CHROME-EXTENSION://` も通る。`blob:` / `filesystem:` で包んだ形は net::ERR_ABORTED で止まる）。
 
 import { paradisIsBrowserExtensionUrl } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 export { paradisIsBrowserExtensionUrl };
 
 /** 隠した拡張の frame の代わりに見せる URL。 */
 export const PARADIS_HIDDEN_EXTENSION_FRAME_URL = 'about:blank#para-code-hidden-extension-frame';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /** 拡張の frame なら URL と origin を伏せた写しを返す。拡張の frame でなければそのまま返す。 */
 function redactFrame(frame: Record<string, unknown>): Record<string, unknown> {

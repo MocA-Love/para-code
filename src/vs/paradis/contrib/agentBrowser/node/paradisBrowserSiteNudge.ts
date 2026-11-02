@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { isRecord } from '../../../common/paradisGuards.js';
+
 // 詰まった後にうまくいったとき、分かったことをサイトメモ（E4）や手順（E3）に残せると 1 行添える（q.html Q327 B）。
 // エージェントは道具の説明だけでは自分からメモを書かなかった（台で 16 回中 0 回）ので、書く理由がある場面で知らせる。
 //
@@ -32,10 +34,6 @@ const REPEATABLE_TOOLS: ReadonlySet<string> = new Set(['press_key', 'type_text',
 
 /** 相手の要素を表さない引数（入れる値や待ち時間）。やり直しかどうかは、これを除いた引数で見る。 */
 const NON_TARGET_ARGUMENTS: ReadonlySet<string> = new Set(['value', 'includeSnapshot', 'timeout', 'timeout_seconds', 'interval_ms', 'interval_seconds', 'settle_ms', 'settle_seconds', 'tab_id']);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 /** 道具と相手の要素の組（同じなら、同じ操作のやり直し）。 */
 function actionSignature(tool: string, args: unknown): string {

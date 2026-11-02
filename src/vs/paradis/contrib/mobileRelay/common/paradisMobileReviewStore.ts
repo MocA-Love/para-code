@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { IParadisMobileReviewMark, IParadisMobileReviewNote } from './paradisMobileDiffReview.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /**
  * モバイルの差分レビューの記録を PC に保存する形（Orca W2-14）。スペースのメモと同じく、ウィンドウの
@@ -56,10 +57,6 @@ export interface IParadisMobileReviewSpace {
 export type ParadisMobileReviewStore = ReadonlyMap<string, IParadisMobileReviewSpace>;
 
 const EMPTY_SPACE: IParadisMobileReviewSpace = { marks: {}, notes: [], updatedAt: 0, revision: 0 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function validTime(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;

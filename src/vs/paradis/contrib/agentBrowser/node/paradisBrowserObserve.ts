@@ -27,6 +27,7 @@ import { paradisPaneTokenOfScopeKey } from '../common/paradisAgentTabScope.js';
 import { PARADIS_PAGE_UNRESPONSIVE, paradisIsTransientEvaluateFailure, paradisParseEvaluateValue } from './paradisBrowserQuery.js';
 import { TERMINATED_ERROR_MESSAGE } from './paradisDevtoolsMcpProxy.js';
 import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveReadFunction } from './paradisBrowserObservePageScript.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 変化を添える道具（E1）。前の名前の `settle_ms` を読み替える道具も同じ（paradisToolArgumentAliases.ts）。 */
 export const PARADIS_SETTLE_TOOLS: ReadonlySet<string> = new Set([
@@ -78,10 +79,6 @@ export function paradisObserveOptionsFor(name: string, settings: IParadisObserve
 	const settle = settings.settle && PARADIS_SETTLE_TOOLS.has(name);
 	const state = settings.state && STATE_TOOLS.has(name);
 	return settle || state ? { settle, state } : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** 足した引数を取り除く。`observe: 'none'` か `settle_seconds: 0` なら待ちも変化も省く。 */
@@ -359,8 +356,6 @@ export class ParadisBrowserObserver {
 		}
 		return { quiet, waited: host.now() - start, navigated, ...(dialog !== undefined ? { dialog } : {}), ...(unresponsive !== undefined ? { unresponsive } : {}) };
 	}
-
-
 
 	private async _state(host: IParadisObserveHost, stateKey: string, before: IBefore, pages: IPagesState | undefined, ownTabId: string | undefined): Promise<string | undefined> {
 		// 打ち切られた（取り消された・失敗の後の締め切りを過ぎた）観測は、状態を取らず、報告したことにもしない

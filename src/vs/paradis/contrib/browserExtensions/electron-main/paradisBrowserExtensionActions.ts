@@ -43,6 +43,7 @@ import { IParadisActionResult, IParadisBrowserExtensionToolbar, IParadisPopupReq
 import { IParadisApiExtension, IParadisExtensionApiCaller, IParadisExtensionApiMethod, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { paradisKeepOnExtensionPages } from './paradisBrowserExtensionWindows.js';
+import { isRecord } from '../../../common/paradisGuards.js';
 
 /** 読み込んだ拡張機能（Electron の Extension の、ここで使うところ）。 */
 export interface IParadisLoadedExtension extends IParadisApiExtension {
@@ -92,10 +93,6 @@ interface ISerializedImageData {
 	readonly width: number;
 	readonly height: number;
 	readonly data: readonly number[];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function pngChunk(type: string, data: Buffer): Buffer {
