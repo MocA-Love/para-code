@@ -24,9 +24,12 @@ suite('ParadisRepoIdentity', () => {
 			'https://github.com/owner/repo',
 			'https://user@GitHub.com/owner/repo.git/',
 			'ssh://git@github.com:22/owner/repo.git',
+			// 認証情報を埋め込んだ URL も同じ鍵になり、鍵に認証情報が残らない
+			'https://x-access-token:ghp_secret@github.com/owner/repo.git',
 			'/srv/git/repo.git',
 			'',
 		].map(paradisNormalizeRemoteUrl), [
+			'github.com/owner/repo',
 			'github.com/owner/repo',
 			'github.com/owner/repo',
 			'github.com/owner/repo',

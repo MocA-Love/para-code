@@ -213,6 +213,11 @@ export interface IParadisGithubConsumption {
 	readonly exhaustionEtaMs: number | undefined;
 	/** サンプル間の消費量（古い順）。スパークライン用。 */
 	readonly series: readonly number[];
+	/**
+	 * 直近1時間のサンプルの残量（古い順）。時刻の軸をそろえて残量の推移を線で描くのに使う（Q537 の 14 A）。
+	 * 古い版の shared process からは来ない。
+	 */
+	readonly history?: readonly { readonly at: number; readonly remaining: number; readonly limit: number; readonly resetAt: number }[];
 }
 
 export interface IParadisGithubTotals {
@@ -747,6 +752,12 @@ export class ParadisGithubRateLimitHistory {
 				perMinute,
 				exhaustionEtaMs,
 				series: deltas.slice(-MAX_CONSUMPTION_SERIES).map(delta => delta.consumed),
+				history: this.samples
+					.filter(sample => sample.at >= now - 60 * 60 * 1000)
+					.flatMap(sample => {
+						const entry = sample.byResource.get(resource);
+						return entry ? [{ at: sample.at, remaining: entry.remaining, limit: entry.limit, resetAt: entry.resetAt }] : [];
+					}),
 			});
 		}
 		return result;

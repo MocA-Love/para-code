@@ -660,3 +660,36 @@
 	color: var(--vscode-descriptionForeground);
 	margin-top: 8px;
 }
+
+/* Remaining quota over the last 60 minutes (Q537 decision 14 A): one line per resource on a time axis, dotted lines at resets. */
+.paradis-ghm-chart.remaining {
+	height: 80px;
+	margin-top: 6px;
+}
+
+.paradis-ghm-chart.remaining polyline {
+	fill: none;
+	stroke: var(--vscode-charts-blue);
+	stroke-width: 2px;
+	stroke-linejoin: round;
+	vector-effect: non-scaling-stroke;
+}
+
+.paradis-ghm-chart.remaining polyline.graphql {
+	stroke: var(--vscode-charts-purple);
+}
+
+.paradis-ghm-chart.remaining line.reset {
+	stroke: var(--vscode-descriptionForeground);
+	stroke-width: 1px;
+	stroke-dasharray: 3 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.paradis-ghm-chart-axis {
+	display: flex;
+	justify-content: space-between;
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	margin: 2px 0 6px;
+}
