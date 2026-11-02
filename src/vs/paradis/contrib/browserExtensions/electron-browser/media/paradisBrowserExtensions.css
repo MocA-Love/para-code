@@ -76,6 +76,8 @@
 
 .paradis-browser-profile-modal.pbe-wide .pbe-side {
 	min-height: 0;
+	/* 窓が低いときも「有効にする場所」「ストアから追加」まで届くよう、左の列ごとスクロールできるようにする */
+	overflow-y: auto;
 }
 
 .paradis-browser-profile-modal.pbe-wide .pbe-list {
