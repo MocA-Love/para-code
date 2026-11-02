@@ -91,6 +91,7 @@ interface IStatePushMetricsProviderFixture {
 
 class RecordingStatePushMetricsProvider {
 	readonly enabledCalls: boolean[] = [];
+	readonly syncEnabledCalls: boolean[] = [];
 
 	constructor(private readonly events?: string[]) {
 	}
@@ -98,6 +99,10 @@ class RecordingStatePushMetricsProvider {
 	setStatePushMetricsEnabled(enabled: boolean): void {
 		this.events?.push(`metrics:${enabled}`);
 		this.enabledCalls.push(enabled);
+	}
+
+	setStateSyncEnabled(enabled: boolean): void {
+		this.syncEnabledCalls.push(enabled);
 	}
 }
 
@@ -123,7 +128,7 @@ function createStatePushMetricsProviderFixture(): { provider: IStatePushMetricsP
 }
 
 suite('ParadisMobileWorkspaceProvider', () => {
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('uses shell-integration cwd when available', async () => {
 		assert.strictEqual(await paradisResolveLocalAgentPaneCwd({
@@ -191,6 +196,131 @@ suite('ParadisMobileWorkspaceProvider', () => {
 		fixture.agentPaneCwdListeners.dispose();
 		cwdChanged.dispose();
 	}));
+
+	test('batches event-driven agent pane syncs into one per 500ms', () => runWithFakedTimers({}, async () => {
+		let pushes = 0;
+		const fixture = Object.assign(Object.create(ParadisMobileWorkspaceProvider.prototype) as object, {
+			pushAgentPanes: async () => { pushes++; },
+		}) as unknown as { pushAgentPanesSoon(): void; agentPaneCwdSyncScheduler: RunOnceScheduler; pushAgentPanes(): Promise<void> };
+		fixture.agentPaneCwdSyncScheduler = new RunOnceScheduler(() => { void fixture.pushAgentPanes(); }, 500);
+
+		const counts: number[] = [];
+		for (let index = 0; index < 5; index++) {
+			fixture.pushAgentPanesSoon();
+		}
+		counts.push(pushes);
+		await timeout(501);
+		counts.push(pushes);
+		assert.deepStrictEqual(counts, [0, 1]);
+
+		fixture.agentPaneCwdSyncScheduler.dispose();
+	}));
+
+	suite('モバイル連携が無効・オフラインの間の state 送信', () => {
+		interface IStateSyncFixture {
+			pushState(force?: boolean): void;
+			pushStateSoon(): void;
+			setStateSyncEnabled(enabled: boolean): void;
+			setMobileOnline(online: boolean): void;
+			setConfirmedAgentPaneTokens(tokens: readonly string[]): void;
+			setProvisionalAgentPaneToken(token: string, active: boolean): void;
+			stateUrgentPending: boolean;
+		}
+
+		/** `pushStateNow`（組み立てと送信）だけを差し替え、集約と 5 秒のまとめは本物を使う。 */
+		function createStateSyncFixture(): { fixture: IStateSyncFixture; sends: boolean[]; branches: { count: number } } {
+			const sends: boolean[] = [];
+			const branches = { count: 0 };
+			const fixture = Object.assign(Object.create(ParadisMobileWorkspaceProvider.prototype) as object, {
+				stateSyncEnabled: false,
+				statePendingWhileDisabled: false,
+				stateUrgentPending: false,
+				branchesStale: false,
+				mobileOnline: false,
+				confirmedAgentPaneTokens: new Set<string>(),
+				provisionalAgentPaneTokens: new Set<string>(),
+				pushStateNow: (force: boolean) => { fixture.stateUrgentPending = false; sends.push(force); },
+				refreshBranches: () => { branches.count++; },
+			}) as unknown as IStateSyncFixture;
+			Object.assign(fixture, {
+				pushStateScheduler: store.add(new RunOnceScheduler(() => fixture.pushState(), 100)),
+				pushStateCosmeticScheduler: store.add(new RunOnceScheduler(() => fixture.pushState(), 500)),
+				offlineStatePushScheduler: store.add(new RunOnceScheduler(() => (fixture as unknown as { pushStateNow(force: boolean): void }).pushStateNow(false), 5_000)),
+				prStatusScheduler: store.add(new RunOnceScheduler(() => { }, 60_000)),
+			});
+			return { fixture, sends, branches };
+		}
+
+		test('無効の間はイベント起点の送信をせず、有効へ転じたら 1 回だけまとめて送る', () => runWithFakedTimers({}, async () => {
+			const { fixture, sends } = createStateSyncFixture();
+			fixture.pushState();
+			fixture.pushState();
+			await timeout(5_001);
+			const whileDisabled = [...sends];
+			fixture.pushState(true);
+			const forced = [...sends];
+			fixture.pushState();
+			fixture.setStateSyncEnabled(true);
+			// オフラインなので、有効へ戻した後の送信も 5 秒のまとめに乗る
+			await timeout(5_101);
+			assert.deepStrictEqual({ whileDisabled, forced, sends }, { whileDisabled: [], forced: [true], sends: [true, false] });
+		}));
+
+		test('オフラインの 5 秒の予約を残したまま無効にしても、有効へ戻したときに送る', () => runWithFakedTimers({}, async () => {
+			const { fixture, sends } = createStateSyncFixture();
+			fixture.setStateSyncEnabled(true);
+			fixture.pushState();
+			fixture.setStateSyncEnabled(false);
+			await timeout(5_001);
+			const whileDisabled = [...sends];
+			fixture.setStateSyncEnabled(true);
+			// オフラインなので、有効へ戻した後の送信も 5 秒のまとめに乗る
+			await timeout(5_101);
+			assert.deepStrictEqual({ whileDisabled, sends }, { whileDisabled: [], sends: [false] });
+		}));
+
+		test('オフラインの間は 5 秒に 1 回へまとめ、オンラインへ転じたら待たせていた分をすぐ送る', () => runWithFakedTimers({}, async () => {
+			const { fixture, sends } = createStateSyncFixture();
+			fixture.setStateSyncEnabled(true);
+			for (let index = 0; index < 5; index++) {
+				fixture.pushState();
+			}
+			const beforeInterval = sends.length;
+			await timeout(5_001);
+			const afterInterval = sends.length;
+			fixture.pushState();
+			fixture.setMobileOnline(true);
+			await timeout(101);
+			const afterOnline = sends.length;
+			fixture.pushState();
+			assert.deepStrictEqual({ beforeInterval, afterInterval, afterOnline, sends }, { beforeInterval: 0, afterInterval: 1, afterOnline: 2, sends: [false, false, false] });
+		}));
+
+		test('初期化の順（pushState(true) → getStatus の待ち → setMobileOnline）でも、待ちの間の変化を捨てない', () => runWithFakedTimers({}, async () => {
+			const { fixture, sends } = createStateSyncFixture();
+			fixture.setStateSyncEnabled(true);
+			fixture.pushState(true);
+			fixture.pushStateSoon();
+			await timeout(101);
+			fixture.setMobileOnline(true);
+			await timeout(5_001);
+			assert.deepStrictEqual(sends, [true, false]);
+		}));
+
+		test('オフラインでも、通知の材料（エージェント端末のトークン）の変化は 5 秒待たずに送る', () => runWithFakedTimers({}, async () => {
+			const { fixture, sends } = createStateSyncFixture();
+			fixture.setStateSyncEnabled(true);
+			fixture.setConfirmedAgentPaneTokens(['token-a']);
+			await timeout(101);
+			const afterConfirmed = [...sends];
+			fixture.setProvisionalAgentPaneToken('token-b', true);
+			await timeout(101);
+			const afterProvisional = [...sends];
+			fixture.pushStateSoon();
+			await timeout(101);
+			assert.deepStrictEqual({ afterConfirmed, afterProvisional, sends, urgent: fixture.stateUrgentPending }, { afterConfirmed: [false], afterProvisional: [false, false], sends: [false, false], urgent: false });
+		}));
+	});
 
 	suite('質問が描かれたかの照合', () => {
 		test('折り返しの改行と空白を無視して目印を探す', () => {
@@ -519,9 +649,10 @@ suite('ParadisMobileWorkspaceProvider', () => {
 				false,
 			);
 
-			assert.deepStrictEqual({ events, metricsEnabledCalls: lifecycle.provider.enabledCalls }, {
+			assert.deepStrictEqual({ events, metricsEnabledCalls: lifecycle.provider.enabledCalls, syncEnabledCalls: lifecycle.provider.syncEnabledCalls }, {
 				events: ['provider', 'focus:false', 'metrics:false'],
 				metricsEnabledCalls: [false],
+				syncEnabledCalls: [false],
 			});
 		});
 
@@ -540,9 +671,10 @@ suite('ParadisMobileWorkspaceProvider', () => {
 			lifecycle.setEnabled(false);
 			lifecycle.setEnabled(true);
 
-			assert.deepStrictEqual({ events, metricsEnabledCalls: lifecycle.provider.enabledCalls }, {
+			assert.deepStrictEqual({ events, metricsEnabledCalls: lifecycle.provider.enabledCalls, syncEnabledCalls: lifecycle.provider.syncEnabledCalls }, {
 				events: ['focus:true', 'focus-shared:false', 'focus-shared:true'],
 				metricsEnabledCalls: [true, false, true],
+				syncEnabledCalls: [true, false, true],
 			});
 		});
 
