@@ -12,6 +12,7 @@
 
 import { Codicon } from '../../../../base/common/codicons.js';
 import { URI, UriComponents } from '../../../../base/common/uri.js';
+import { isEqual } from '../../../../base/common/resources.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -23,6 +24,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
@@ -31,6 +33,8 @@ import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IPar
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
 import { paradisGithubStatusMaxAge } from '../common/paradisGithubLookupCache.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
+import { ParadisScopeRetirementPreparation } from '../common/paradisEditorScope.js';
+import { paradisRemoveWorktreePrepareMessage, ParadisWorktreeRemovalGuard } from '../common/paradisWorktreeRemoval.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisIsLifecycleScriptApproved, paradisPrefersTeardown, paradisReadWorkspaceLifecycleConfig, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisCollectPerWorktree, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
@@ -248,6 +252,8 @@ export async function paradisRemoveWorktreeSequence(actions: IParadisRemoveWorkt
 	await actions.remove();
 }
 
+const paradisWorktreeRemovalGuard = new ParadisWorktreeRemovalGuard();
+
 /**
  * ワークツリー（スペース）をディスクごと削除するコマンド。Workspaces ビューの worktree 行の
  * コンテキストメニューから、対象の IParadisWorktree を引数に呼ばれる（browser 層のビューは
@@ -272,6 +278,23 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		if (!worktree) {
 			return;
 		}
+		const end = paradisWorktreeRemovalGuard.tryBegin(paradisWorktreeStateKey(URI.isUri(worktree.uri) ? worktree.uri : URI.revive(worktree.uri)));
+		if (!end) {
+			accessor.get(INotificationService).info(
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.removeWorktreeAlreadyRunning', "ワークツリー「{0}」は削除中です。終わるまでお待ちください。", worktree.name)
+			);
+			return;
+		}
+		try {
+			// アクセサは同期実行中しか有効でないので、await を挟まずに渡す
+			await this.removeWorktree(accessor, worktree, options);
+		} finally {
+			end();
+		}
+	}
+
+	private async removeWorktree(accessor: ServicesAccessor, worktree: IParadisWorktree, options: { readonly requestedByAgent?: string } | undefined): Promise<void> {
 		const dialogService = accessor.get(IDialogService);
 		const switchService = accessor.get(IParadisWorkspaceSwitchService);
 		const worktreeService = accessor.get(IParadisWorktreeService);
@@ -280,6 +303,8 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		// 一致する無関係な手元のディレクトリを削除してしまう）。
 		const resolveGitHost = paradisWorktreeGitWriteHostResolver(accessor);
 		const logService = accessor.get(ILogService);
+		const notificationService = accessor.get(INotificationService);
+		const progressService = accessor.get(IProgressService);
 		// アクセサは同期実行中しか有効でないため、await をまたぐ teardown 実行用に
 		// instantiationService だけ取り出しておき、実行時は invokeFunction で新しいアクセサを作る
 		const instantiationService = accessor.get(IInstantiationService);
@@ -293,6 +318,12 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		if (!repository) {
 			return;
 		}
+		// 残骸のフォルダーを直接消してよいのは、この画面が一覧に持っているワークツリーだけ（コマンドへ任意の
+		// URI を渡されても、一覧に無いフォルダーを消す経路に入らないように）。フラグも渡された引数ではなく一覧の値を見る。
+		const listedWorktree = worktreeService.getWorktrees(repository.id).find(candidate => isEqual(candidate.uri, uri));
+		// git の登録が消えてフォルダーだけ残った行（途中で止まった削除の残骸）。git には頼めないので、
+		// 強制削除の同意を最初の確認で取り、残骸の削除の経路で消す。後片付けのスクリプトは走らせない。
+		const leftoverFolder = listedWorktree?.missing === true && listedWorktree.leftoverFolder === true;
 
 		// teardown スクリプトがあれば、削除の確認の 1 枚で「実行するか」も選ばせる。以前は削除の確認の後に
 		// 別の承認ダイアログを出しており、そこの［キャンセル］が「削除をやめる」ではなく「teardown を飛ばして
@@ -300,11 +331,13 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		// 設定を読めないとき（.paracode.json が壊れている等）はチェックを出さず、従来どおり削除の途中で
 		// teardown を試みて失敗の確認に回す（読めないことを黙って「teardown 無し」と扱わない）。
 		let teardown: { readonly script: string; readonly timeoutMinutes: number | undefined } | undefined;
-		try {
-			const config = await paradisReadWorkspaceLifecycleConfig(fileService, repository.uri);
-			teardown = config.teardownScript ? { script: config.teardownScript, timeoutMinutes: config.teardownTimeoutMinutes } : undefined;
-		} catch (error) {
-			logService.warn('[ParadisRemoveWorktree] could not read the teardown script before confirming', error);
+		if (!leftoverFolder) {
+			try {
+				const config = await paradisReadWorkspaceLifecycleConfig(fileService, repository.uri);
+				teardown = config.teardownScript ? { script: config.teardownScript, timeoutMinutes: config.teardownTimeoutMinutes } : undefined;
+			} catch (error) {
+				logService.warn('[ParadisRemoveWorktree] could not read the teardown script before confirming', error);
+			}
 		}
 		const teardownDetail = teardown === undefined
 			? ''
@@ -322,7 +355,11 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				? localize('paradis.workspaceSwitch.removeWorktreeAgentRequest', "この削除は、あなたではなくターミナル「{0}」のエージェントからの依頼です。\n\n", options.requestedByAgent)
 				: '')
 				// allow-any-unicode-next-line
-				+ localize('paradis.workspaceSwitch.removeWorktreeDetail', "パス: {0}\n\nディスク上の作業ツリーを削除します。未コミットの変更は失われます。", uri.fsPath)
+				+ (leftoverFolder
+					// allow-any-unicode-next-line
+					? localize('paradis.workspaceSwitch.removeLeftoverFolderDetail', "パス: {0}\n\n途中で止まった削除で残ったフォルダーを、中身ごと削除します。git はこのフォルダーをもうワークツリーとして扱っていません。", uri.fsPath)
+					// allow-any-unicode-next-line
+					: localize('paradis.workspaceSwitch.removeWorktreeDetail', "パス: {0}\n\nディスク上の作業ツリーを削除します。未コミットの変更は失われます。", uri.fsPath))
 				+ teardownDetail,
 			// allow-any-unicode-next-line
 			primaryButton: localize('paradis.workspaceSwitch.removeWorktreeConfirmAction', "削除"),
@@ -346,7 +383,25 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			paradisRememberTeardownChoice(storageService, repository.uri, runTeardownScript);
 		}
 		const stateKey = paradisWorktreeStateKey(uri);
-		if (!await switchService.prepareScopeRetirement(stateKey)) {
+		// このスペースのエディタとバックアップを片付けられないと削除は進まない。以前は理由を出さずに
+		// 終わっていたので、［削除］を押しても何も起きないように見えた。
+		let prepared: ParadisScopeRetirementPreparation;
+		try {
+			prepared = await switchService.prepareScopeRetirementResult(stateKey);
+		} catch (error) {
+			logService.error('[ParadisRemoveWorktree] preparing the space for removal failed', error);
+			await dialogService.error(
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.removeWorktreePrepareFailed', "このスペースのエディタを片付けられなかったため、ワークツリーの削除を中止しました。"),
+				error instanceof Error ? error.message : String(error)
+			);
+			return;
+		}
+		if (prepared !== 'prepared') {
+			const message = paradisRemoveWorktreePrepareMessage(prepared, worktree.name);
+			if (message) {
+				notificationService.notify({ severity: Severity.Info, message });
+			}
 			return;
 		}
 
@@ -410,12 +465,20 @@ class ParadisRemoveWorktreeAction extends Action2 {
 					const removeRequest: IParadisRemoveWorktreeRequest = {
 						repoPath: path(repository.uri),
 						worktreePath: path(uri),
-						force: false
+						force: leftoverFolder,
+						allowLeftoverCleanup: leftoverFolder
 					};
+
+					// 削除は大きな作業ツリーで数分かかるので、実行中であることを見せる
+					const withRemovalProgress = (task: () => Promise<unknown>) => progressService.withProgress({
+						location: ProgressLocation.Notification,
+						// allow-any-unicode-next-line
+						title: localize('paradis.workspaceSwitch.removeWorktreeProgress', "ワークツリー「{0}」を削除しています…", worktree.name),
+					}, task);
 
 					let removedFromDisk = false;
 					try {
-						await channel.call('removeWorktree', [removeRequest]);
+						await withRemovalProgress(() => channel.call('removeWorktree', [removeRequest]));
 						removedFromDisk = true;
 					} catch (error) {
 						// 失敗の理由は2種類あり、求めるべき同意も違う。
@@ -461,7 +524,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 							return;
 						}
 						try {
-							await channel.call('removeWorktree', [{ ...removeRequest, force: true, unlock: lock.locked }]);
+							await withRemovalProgress(() => channel.call('removeWorktree', [{ ...removeRequest, force: true, unlock: lock.locked }]));
 							removedFromDisk = true;
 						} catch (forceError) {
 							logService.error('[ParadisRemoveWorktree] force removal failed', forceError);

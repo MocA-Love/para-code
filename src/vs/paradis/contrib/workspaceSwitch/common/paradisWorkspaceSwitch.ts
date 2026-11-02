@@ -12,6 +12,7 @@ import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { ParadisScopeRetirementPreparation } from './paradisEditorScope.js';
 import { IAuxiliaryEditorPart, IEditorGroup, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
 export const IParadisWorkspaceSwitchService = createDecorator<IParadisWorkspaceSwitchService>('paradisWorkspaceSwitchService');
@@ -74,6 +75,11 @@ export interface IParadisWorktree {
 	readonly uri: URI;
 	/** 作業ツリーのディレクトリが見つからない (自動削除OFFで残っている) */
 	readonly missing?: boolean;
+	/**
+	 * git の登録（`.git/worktrees/<name>`）は無いのに、フォルダーはディスクに残っている。途中で止まった
+	 * 削除の残骸で、`missing` と一緒に立つ。Workspaces ビューは「フォルダーを削除」を出す。
+	 */
+	readonly leftoverFolder?: boolean;
 	/**
 	 * git のメタデータのディレクトリ (`<repo>/.git/worktrees/<name>`)。ディスクから検出できたときだけ入る。
 	 * Workspaces ビューが stage・commit・checkout を知るための非再帰の監視に使う。
@@ -809,6 +815,8 @@ export interface IParadisWorkspaceSwitchService {
 	 */
 	hasScopeRetirementData(stateKey: string): Promise<boolean>;
 	prepareScopeRetirement(stateKey: string): Promise<boolean>;
+	/** {@link prepareScopeRetirement} と同じ準備をし、止まったときは利用者が断ったのか失敗したのかを返す。 */
+	prepareScopeRetirementResult(stateKey: string): Promise<ParadisScopeRetirementPreparation>;
 	cancelScopeRetirement(stateKey: string): Promise<void>;
 	discardScopeState(stateKey: string): Promise<boolean>;
 	acknowledgeScopeRetirement(stateKey: string): void;

@@ -2066,8 +2066,19 @@ export class ParadisWorkspacesView extends ViewPane {
 		}
 
 		if (worktree.missing) {
+			actions.push(new Separator());
+			if (worktree.leftoverFolder) {
+				// 途中で止まった削除の残骸のフォルダー。削除コマンドが同じ確認・安全の判定を通して消す。
+				actions.push(new Action(
+					'paradis.workspaceSwitch.worktree.removeLeftoverFolder',
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.removeLeftoverFolderContext', "残ったフォルダーを削除"),
+					'paradis-menu-icon codicon codicon-trash paradis-menu-danger',
+					true,
+					() => this.commandService.executeCommand('paradis.workspaceSwitch.removeWorktree', worktree)
+				));
+			}
 			actions.push(
-				new Separator(),
 				new Action(
 					'paradis.workspaceSwitch.worktree.removeFromList',
 					// allow-any-unicode-next-line

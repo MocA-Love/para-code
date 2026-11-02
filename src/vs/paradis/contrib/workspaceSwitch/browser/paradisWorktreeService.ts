@@ -11,10 +11,12 @@ import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { isLinux } from '../../../../base/common/platform.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisResolveExternalPath, paradisWorktreePathFromGitdir } from '../../../common/paradisPathUri.js';
+import { paradisIsSameWorktreePath } from '../common/paradisWorktreeCreate.js';
 import { paradisIsOrphanTerminalRevivalComplete } from './paradisTerminalEditorPark.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisRegisterWorktreePresenceLookup, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
@@ -55,6 +57,31 @@ export function paradisIsPresentWorktree(stateKey: string, repositoryIds: readon
 		}
 	}
 	return false;
+}
+
+/** {@link paradisLeftoverWorktreeEntry} に渡す、ディスクを確かめた結果。undefined は確かめられなかった。 */
+export interface IParadisLeftoverProbe {
+	/** 記録したパスにフォルダーがあるか。 */
+	readonly folderExists: boolean | undefined;
+	/** そのフォルダーの中に `.git` があるか。生きているワークツリーには必ずある。 */
+	readonly gitEntryExists: boolean | undefined;
+	/** 実体のパス（シンボリックリンク・大文字小文字を揃えたもの）で、git の一覧のワークツリーと同じか。 */
+	readonly matchesListedWorktree: boolean;
+}
+
+/**
+ * git の一覧から消えた既知のワークツリーのうち、途中で止まった削除の残骸のフォルダーを、自動で外さずに
+ * 一覧へ残す行にする。Workspaces ビューが「残ったフォルダーを削除」を出し、確認 1 回で中身ごと消せる行なので、
+ * 生きているワークツリーを決して取り違えないよう、次の全部が確かなときだけ行を作る。
+ *  - フォルダーがある
+ *  - 中に `.git` が無い（作成の途中で gitdir がまだ書かれていない間も `.git` はあるので、この行にならない）
+ *  - 実体のパスで比べても、git の一覧のどのワークツリーとも同じでない
+ * それ以外は undefined（従来どおり missing の扱い）。
+ */
+export function paradisLeftoverWorktreeEntry(repositoryId: string, known: { readonly path: string; readonly name: string }, probe: IParadisLeftoverProbe): IParadisWorktree | undefined {
+	return probe.folderExists === true && probe.gitEntryExists === false && !probe.matchesListedWorktree
+		? { repositoryId, name: known.name, uri: URI.parse(known.path), missing: true, leftoverFolder: true }
+		: undefined;
 }
 
 /** Auto-removal is safe only for an inactive missing worktree with no retained scope data. */
@@ -373,6 +400,13 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 						continue;
 					}
 					const missingStateKey = paradisWorktreeStateKey(URI.parse(known.path));
+					// git の登録は無いのにフォルダーが残っている（途中で止まった削除の残骸）。自動で外すと
+					// 消す入口が無くなるので、一覧に残して「フォルダーを削除」を出せるようにする。
+					const leftover = paradisLeftoverWorktreeEntry(repository.id, known, await this.probeLeftover(URI.parse(known.path), scanned));
+					if (leftover) {
+						list.push(leftover);
+						continue;
+					}
 					const hasRetirementData = autoRemove ? await this.workspaceSwitchService.hasScopeRetirementData(missingStateKey) : false;
 					if (canAutoRetire && paradisShouldAutoRetireMissingWorktree(autoRemove, hasRetirementData, this.workspaceSwitchService.activeStateKey === missingStateKey)) {
 						const removed = await paradisDiscardScopeBeforeRemovingKnownWorktree(
@@ -485,6 +519,29 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		} catch (error) {
 			return ParadisWorktreeService.isMissingError(error) ? false : undefined;
 		}
+	}
+
+	/** 記録したパスが残骸のフォルダーかを確かめる（{@link paradisLeftoverWorktreeEntry}）。 */
+	private async probeLeftover(uri: URI, scanned: readonly IParadisWorktree[]): Promise<IParadisLeftoverProbe> {
+		const folderExists = await this.probeExists(uri);
+		if (folderExists !== true) {
+			return { folderExists, gitEntryExists: undefined, matchesListedWorktree: false };
+		}
+		const gitEntryExists = await this.probeExists(joinPath(uri, '.git'));
+		if (gitEntryExists !== false) {
+			return { folderExists, gitEntryExists, matchesListedWorktree: false };
+		}
+		// 記録したパスと git の一覧のパスは、シンボリックリンク越しや大文字小文字の違いで綴りが揃わないことがある。
+		// 実体のパスを、node 側の削除と同じ比べ方で突き合わせる。
+		const realPath = async (candidate: URI) => (await this.fileService.realpath(candidate).catch(() => undefined) ?? candidate).path;
+		const target = await realPath(uri);
+		const comparison = { ignoreCase: !isLinux, backslashIsSeparator: false };
+		for (const worktree of scanned) {
+			if (worktree.uri.scheme === uri.scheme && paradisIsSameWorktreePath(await realPath(worktree.uri), target, comparison)) {
+				return { folderExists, gitEntryExists, matchesListedWorktree: true };
+			}
+		}
+		return { folderExists, gitEntryExists, matchesListedWorktree: false };
 	}
 
 	private async scanWorktrees(repository: IParadisWorkspaceRepository): Promise<IParadisWorktreeScan> {
