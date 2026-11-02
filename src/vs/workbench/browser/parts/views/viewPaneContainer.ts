@@ -643,7 +643,7 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 
 		this.dimension = dimension;
 		if (this.didLayout) {
-			this.saveViewSizes();
+			// PARA-PATCH: save view sizes only on sash drags (onDidSashChange); sizes redistributed when views come and go must not overwrite them
 		} else {
 			this.didLayout = true;
 			this.restoreViewSizes();
