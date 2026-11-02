@@ -49,6 +49,18 @@ export interface ParadisSpreadsheetGridCell {
 	readonly baseDiagonal?: ParadisSpreadsheetGridDiagonal;
 	readonly conditionalDiagonal?: ParadisSpreadsheetGridDiagonal;
 	readonly media?: ParadisSpreadsheetGridMedia;
+	/** 空いた隣のセルへ文字をはみ出させる（DOM の表の `applyOverflow` と同じ決まり）。幅は倍率を掛ける前の寸法。 */
+	readonly overflow?: ParadisSpreadsheetGridOverflow;
+}
+
+export interface ParadisSpreadsheetGridOverflow {
+	readonly toward: 'left' | 'right' | 'center';
+	readonly leftRoom: number;
+	readonly rightRoom: number;
+	readonly valign: string;
+	/** はみ出しうる列の範囲 [始まり, 終わり)。範囲の外にある元のセルを、その範囲を描くときにも残すために使う。 */
+	readonly fromColumn: number;
+	readonly toColumn: number;
 }
 
 export interface ParadisSpreadsheetGridTile {
@@ -69,11 +81,24 @@ export interface ParadisSpreadsheetGridRendererOptions {
 	readonly observeResize?: (callback: () => void) => IDisposable;
 	readonly fontsReady?: Promise<unknown>;
 	readonly scheduleMedia?: (callback: () => void) => IDisposable;
+	/**
+	 * 表示の倍率。中身（文字・余白・罫線）ごと CSS の zoom で拡大縮小し、座標は倍率を掛ける前の寸法のまま扱う
+	 * （DOM の表が `transform: scale` で全体を縮めるのと同じ見え方にするため）。既定は 1。
+	 */
+	readonly zoom?: number;
 }
 
 interface RenderedCell {
 	readonly element: HTMLElement;
 	pane: ParadisSpreadsheetPaneKind;
+	/** 描いている行・列の範囲 [行, 列, 行の終わり, 列の終わり)（結合とはみ出しを含む）。 */
+	extent: ParadisSpreadsheetVirtualRange;
+}
+
+interface PendingOverflow {
+	readonly element: HTMLElement;
+	readonly span: HTMLElement;
+	readonly overflow: ParadisSpreadsheetGridOverflow;
 }
 
 /** Reusable, safe DOM renderer over generation-fenced viewport tiles. */
@@ -93,6 +118,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	private idle: Promise<void> = Promise.resolve();
 	private _frame: ParadisSpreadsheetViewportFrame = { scrollTop: 0, scrollLeft: 0, width: 0, height: 0 };
 	private focused = { row: 0, column: 0 };
+	private readonly zoom: number;
+	private pendingOverflow: PendingOverflow[] = [];
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -101,6 +128,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	) {
 		super();
 		this.options = options;
+		this.zoom = Number.isFinite(options.zoom) && options.zoom! > 0 ? options.zoom! : 1;
 		this.document = container.ownerDocument;
 		container.classList.add('paradis-spreadsheet-virtual-grid');
 		container.setAttribute('role', 'grid');
@@ -109,6 +137,9 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		container.tabIndex = 0;
 		this.sizer = this.document.createElement('div');
 		this.sizer.className = 'paradis-spreadsheet-virtual-sizer';
+		if (this.zoom !== 1) {
+			this.sizer.style.zoom = String(this.zoom);
+		}
 		container.appendChild(this.sizer);
 		for (const kind of paneKinds) {
 			const pane = this.document.createElement('div');
@@ -138,8 +169,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this._frame = normalizeRendererFrame(frame);
 		this.rendering = true;
 		try {
-			this.container.scrollTop = this._frame.scrollTop;
-			this.container.scrollLeft = this._frame.scrollLeft;
+			this.container.scrollTop = this._frame.scrollTop * this.zoom;
+			this.container.scrollLeft = this._frame.scrollLeft * this.zoom;
 			return await this.renderCurrent();
 		} finally {
 			this.rendering = false;
@@ -155,8 +186,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this._frame = { ...this._frame, ...restored };
 		this.rendering = true;
 		try {
-			this.container.scrollTop = restored.scrollTop;
-			this.container.scrollLeft = restored.scrollLeft;
+			this.container.scrollTop = restored.scrollTop * this.zoom;
+			this.container.scrollLeft = restored.scrollLeft * this.zoom;
 			await this.renderCurrent();
 		} finally {
 			this.rendering = false;
@@ -207,7 +238,14 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 				}
 			}
 		}
+		// 起点が範囲の外にある結合・はみ出しのセルは、範囲に掛かっていれば残す（外すと描き直すたびに作り直しになる）
+		for (const [key, rendered] of this.cells) {
+			if (plan.panes.some(pane => pane.kind === rendered.pane && rangesIntersect(rendered.extent, pane.range))) {
+				plannedCells.add(key);
+			}
+		}
 		this.pruneCells(plannedCells);
+		this.pendingOverflow = [];
 		const activeCells = new Set<string>();
 		const requests = plan.panes.flatMap(pane => pane.tiles.map(tile => this.viewport.beginTileRequest(tile)));
 		await Promise.all(requests.map(async request => {
@@ -222,7 +260,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 				return;
 			}
 			for (const cell of tile.cells) {
-				if (!cellInRange(cell, request.range)) {
+				if (!rangesIntersect(cellExtent(cell), request.range)) {
 					continue;
 				}
 				const bounds = this.viewport.cellBounds(cell.row, cell.column, cell.rowSpan, cell.columnSpan);
@@ -238,6 +276,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			return plan;
 		}
 		this.pruneCells(activeCells);
+		this.applyOverflow();
 		this.updateFocusedCell();
 		return plan;
 	}
@@ -248,13 +287,14 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		if (!rendered) {
 			const element = this.cellPool.pop() ?? this.document.createElement('div');
 			element.setAttribute('role', 'gridcell');
-			rendered = { element, pane: paneKind };
+			rendered = { element, pane: paneKind, extent: cellExtent(cell) };
 			this.cells.set(key, rendered);
 			pane.appendChild(element);
 		} else if (rendered.pane !== paneKind) {
 			rendered.pane = paneKind;
 			pane.appendChild(rendered.element);
 		}
+		rendered.extent = cellExtent(cell);
 		const element = rendered.element;
 		this.mediaSchedules.get(key)?.dispose();
 		this.mediaSchedules.delete(key);
@@ -286,6 +326,15 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		element.dataset.row = String(cell.row);
 		element.dataset.column = String(cell.column);
 		element.textContent = boundedText(cell.text);
+		if (cell.overflow && (cell.overflow.leftRoom > 0 || cell.overflow.rightRoom > 0)) {
+			// 文字を span に包んでおき、全部の描画の後でまとめて測る（DOM の表の `createOverflowSpan` と同じ形）
+			const span = this.document.createElement('span');
+			span.className = 'paradis-spreadsheet-overflow';
+			span.textContent = element.textContent;
+			element.textContent = '';
+			element.appendChild(span);
+			this.pendingOverflow.push({ element, span, overflow: cell.overflow });
+		}
 		if (cell.baseDiagonal || cell.conditionalDiagonal) {
 			// One layout read supplies both layers. Scroll/freeze/overscan coordinates never enter diagonal geometry.
 			const measured = this.measureCell(element);
@@ -313,6 +362,51 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 				void image.decode?.().catch(() => undefined);
 			});
 			this.mediaSchedules.set(key, schedule);
+		}
+	}
+
+	/**
+	 * 列幅を超える文字を隣の空いたセルへ広げる。DOM の表の `applyOverflow` と同じく、まず全部を測ってから書く。
+	 * セルは絶対配置のままにし、隣のセルより前に出す（DOM の表では位置を指定したセルが手前に描かれる）。
+	 */
+	private applyOverflow(): void {
+		const pending = this.pendingOverflow.filter(item => item.element.isConnected && item.element.contains(item.span));
+		this.pendingOverflow = [];
+		const measures = pending.map(item => ({ item, need: item.element.scrollWidth, avail: item.element.clientWidth }));
+		for (const { item: { element, span, overflow }, need, avail } of measures) {
+			if (avail <= 0 || need <= avail) {
+				continue;
+			}
+			const extraRight = overflow.toward === 'left' ? 0 : overflow.rightRoom;
+			const extraLeft = overflow.toward === 'right' ? 0 : overflow.leftRoom;
+			if (extraRight <= 0 && extraLeft <= 0) {
+				continue;
+			}
+			element.style.overflow = 'visible';
+			element.style.zIndex = '1';
+			span.style.position = 'absolute';
+			span.style.top = '0';
+			span.style.bottom = '0';
+			span.style.display = 'flex';
+			span.style.alignItems = overflow.valign === 'top' ? 'flex-start' : overflow.valign === 'middle' ? 'center' : 'flex-end';
+			span.style.whiteSpace = 'nowrap';
+			span.style.overflow = 'hidden';
+			span.style.pointerEvents = 'none';
+			span.style.boxSizing = 'border-box';
+			span.style.padding = '0 3px';
+			if (overflow.toward === 'right') {
+				span.style.left = '0';
+				span.style.width = `${avail + extraRight}px`;
+				span.style.justifyContent = 'flex-start';
+			} else if (overflow.toward === 'left') {
+				span.style.right = '0';
+				span.style.width = `${avail + extraLeft}px`;
+				span.style.justifyContent = 'flex-end';
+			} else {
+				span.style.left = `${-extraLeft}px`;
+				span.style.width = `${avail + extraLeft + extraRight}px`;
+				span.style.justifyContent = 'center';
+			}
 		}
 	}
 
@@ -405,10 +499,10 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 
 	private queueRender(): void {
 		this._frame = {
-			scrollTop: this.container.scrollTop,
-			scrollLeft: this.container.scrollLeft,
-			width: this.container.clientWidth || this._frame.width,
-			height: this.container.clientHeight || this._frame.height,
+			scrollTop: this.container.scrollTop / this.zoom,
+			scrollLeft: this.container.scrollLeft / this.zoom,
+			width: this.container.clientWidth ? this.container.clientWidth / this.zoom : this._frame.width,
+			height: this.container.clientHeight ? this.container.clientHeight / this.zoom : this._frame.height,
 		};
 		this.idle = this.idle.then(async () => {
 			if (!this.disposed) {
@@ -449,8 +543,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		} else if (bounds.left + bounds.width > scrollLeft + this._frame.width) {
 			scrollLeft = bounds.left + bounds.width - this._frame.width;
 		}
-		this.container.scrollTop = Math.max(0, scrollTop);
-		this.container.scrollLeft = Math.max(0, scrollLeft);
+		this.container.scrollTop = Math.max(0, scrollTop) * this.zoom;
+		this.container.scrollLeft = Math.max(0, scrollLeft) * this.zoom;
 	}
 
 	private updateFocusedCell(): void {
@@ -477,9 +571,23 @@ function finiteNonNegative(value: number): number {
 	return Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
-function cellInRange(cell: ParadisSpreadsheetGridCell, range: ParadisSpreadsheetVirtualRange): boolean {
-	return Number.isSafeInteger(cell.row) && Number.isSafeInteger(cell.column)
-		&& cell.row >= range[0] && cell.row < range[2] && cell.column >= range[1] && cell.column < range[3];
+/** セルが描く範囲（結合とはみ出しを含む）。行・列が整数でなければ空の範囲。 */
+function cellExtent(cell: ParadisSpreadsheetGridCell): ParadisSpreadsheetVirtualRange {
+	if (!Number.isSafeInteger(cell.row) || !Number.isSafeInteger(cell.column)) {
+		return [0, 0, 0, 0];
+	}
+	const rowEnd = cell.row + Math.max(1, Math.trunc(cell.rowSpan ?? 1));
+	let from = cell.column;
+	let to = cell.column + Math.max(1, Math.trunc(cell.columnSpan ?? 1));
+	if (cell.overflow && Number.isSafeInteger(cell.overflow.fromColumn) && Number.isSafeInteger(cell.overflow.toColumn)) {
+		from = Math.min(from, cell.overflow.fromColumn);
+		to = Math.max(to, cell.overflow.toColumn);
+	}
+	return [cell.row, from, rowEnd, to];
+}
+
+function rangesIntersect(a: ParadisSpreadsheetVirtualRange, b: ParadisSpreadsheetVirtualRange): boolean {
+	return a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
 }
 
 function cellKey(pane: ParadisSpreadsheetPaneKind, row: number, column: number): string {

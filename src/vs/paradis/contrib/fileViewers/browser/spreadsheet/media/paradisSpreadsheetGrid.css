@@ -98,3 +98,21 @@
 	max-height: 100%;
 	object-fit: contain;
 }
+
+/* allow-any-unicode-next-line */
+/* 見出し（列記号・行番号・左上の角）。DOM の表の .paradis-spreadsheet-colhead/rowhead/corner と同じ見た目にする。 */
+.paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-colhead,
+.paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-rowhead,
+.paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-corner {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 2px 4px;
+	border-right: 1px solid #d0d0d0;
+	border-bottom: 1px solid #d0d0d0;
+	background-color: #f3f3f3;
+	color: #666666;
+	font-size: 9px;
+	font-weight: normal;
+	user-select: none;
+}
