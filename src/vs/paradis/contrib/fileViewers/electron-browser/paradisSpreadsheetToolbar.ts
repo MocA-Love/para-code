@@ -18,7 +18,6 @@ import { localize } from '../../../../nls.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { appendParadisViewerToolbarIconButton } from '../browser/paradisViewerToolbar.js';
 
-
 /** ヘッダー用のアイコンボタンを作る。 */
 export function appendIconButton(parent: HTMLElement, icon: ThemeIcon, title: string, disposables: DisposableStore, onClick: () => void): HTMLButtonElement {
 	const button = appendParadisViewerToolbarIconButton(parent, icon, title);

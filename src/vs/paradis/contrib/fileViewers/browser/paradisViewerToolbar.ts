@@ -28,6 +28,7 @@ export interface IParadisViewerToolbar {
  */
 export function createParadisViewerToolbar(parent: HTMLElement, className: string, ariaLabel?: string): IParadisViewerToolbar {
 	const element = dom.append(parent, dom.$(`.paradis-viewer-toolbar.${className}`));
+	parent.classList.add('paradis-viewer-toolbar-host');
 	element.setAttribute('role', 'toolbar');
 	if (ariaLabel) {
 		element.setAttribute('aria-label', ariaLabel);
@@ -83,12 +84,38 @@ export function appendParadisViewerToolbarOption(parent: HTMLElement, label: str
 }
 
 /**
- * 表示の切り替えのオン・オフを付け外す。パネルを開け閉めするボタン（`aria-expanded` を持つもの）は
- * `aria-expanded` を、それ以外は `aria-pressed` を合わせる。
+ * 表示の切り替えのオン・オフを付け外す。1 つを選ぶ組の項目（`role="radio"`）は `aria-checked` を、
+ * パネルを開け閉めするボタン（`aria-expanded` を持つもの）は `aria-expanded` を、それ以外は `aria-pressed` を合わせる。
  */
 export function setParadisViewerToolbarOptionChecked(button: HTMLElement, checked: boolean): void {
 	button.classList.toggle('checked', checked);
-	button.setAttribute(button.hasAttribute('aria-expanded') ? 'aria-expanded' : 'aria-pressed', String(checked));
+	const attribute = button.getAttribute('role') === 'radio' ? 'aria-checked' : button.hasAttribute('aria-expanded') ? 'aria-expanded' : 'aria-pressed';
+	button.setAttribute(attribute, String(checked));
+}
+
+/** 1 つだけを選ぶ組（「プレビュー | ソース」など）。`role="radiogroup"` を付ける。 */
+export function appendParadisViewerToolbarChoiceGroup(parent: HTMLElement, className: string, ariaLabel: string): HTMLElement {
+	const group = appendParadisViewerToolbarGroup(parent, className);
+	group.setAttribute('role', 'radiogroup');
+	group.setAttribute('aria-label', ariaLabel);
+	return group;
+}
+
+/** {@link appendParadisViewerToolbarChoiceGroup} の中の 1 項目（`role="radio"`）。 */
+export function appendParadisViewerToolbarChoice(parent: HTMLElement, label: string): HTMLButtonElement {
+	const button = appendParadisViewerToolbarOption(parent, label);
+	button.removeAttribute('aria-pressed');
+	button.setAttribute('role', 'radio');
+	button.setAttribute('aria-checked', 'false');
+	return button;
+}
+
+/**
+ * バーの高さ（px）をビューアの根に知らせる。検索の小窓などバーの下に置く物が、高さが変わるバー
+ * （Word の解析の結果が折り返すとき）にも合わせられるようにする。
+ */
+export function setParadisViewerToolbarHeight(root: HTMLElement, height: number): void {
+	root.style.setProperty('--paradis-viewer-toolbar-height', `${height}px`);
 }
 
 /** パネルを開け閉めする切り替え（「変更点」など）。状態は `aria-expanded` で持つ。 */

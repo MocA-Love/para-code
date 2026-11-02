@@ -303,7 +303,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 			this._percentButton.textContent = typeof zoom === 'number' ? `${zoom}%` : '';
 		}
 		if (this._pageLabel) {
-			this._pageLabel.textContent = typeof page === 'number' && typeof pages === 'number' ? `${page} / ${pages}` : '';
+			this._pageLabel.textContent = typeof page === 'number' && typeof pages === 'number' ? localize('paradis.pdf.pageOf', "{0} / {1} ページ", page, pages) : '';
 		}
 	}
 

@@ -64,6 +64,20 @@ export const PARADIS_PDF_ZOOM_MESSAGE = 'paradis-pdf-zoom';
 /** {@link PARADIS_PDF_ZOOM_MESSAGE} で送る操作。`reset` は開いたときの倍率に戻す。 */
 export type ParadisPdfZoomCommand = 'in' | 'out' | 'fit' | 'reset';
 
+/**
+ * バーから届いた操作の次の倍率。知らない操作には `undefined` を返して何もしない（ページの中で
+ * 文字列に直して使うので、外の名前を参照しない）。
+ */
+export function nextParadisPdfZoomScale(command: unknown, scale: number, initialScale: number, fitScale: number): number | undefined {
+	switch (command) {
+		case 'in': return scale * 1.2;
+		case 'out': return scale / 1.2;
+		case 'fit': return fitScale;
+		case 'reset': return initialScale;
+		default: return undefined;
+	}
+}
+
 /** {@link planParadisPdfPages} の結果。番号はすべて 0 始まり。 */
 export interface IParadisPdfPagePlan {
 	/** 見えているページの先頭と末尾（含む）。 */
@@ -379,6 +393,7 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 		const selectRelease = ${selectParadisPdfCanvasesToRelease.toString()};
 		const fitsBudget = ${fitsParadisPdfCanvasBudget.toString()};
 		const createScheduler = ${createParadisPdfPageScheduler.toString()};
+		const nextZoom = ${nextParadisPdfZoomScale.toString()};
 		const statusEl = document.getElementById('status');
 		// 最初のページが描けたことをエディタへ知らせる（開いてから描けるまでの計測）。
 		const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
@@ -580,10 +595,8 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 			window.addEventListener('message', e => {
 				const d = e.data;
 				if (!d || d.type !== '${PARADIS_PDF_ZOOM_MESSAGE}') { return; }
-				if (d.command === 'in') { setZoom(scale * 1.2); }
-				else if (d.command === 'out') { setZoom(scale / 1.2); }
-				else if (d.command === 'fit') { setZoom(fitScale()); }
-				else if (d.command === 'reset') { setZoom(initialScale); }
+				const next = nextZoom(d.command, scale, initialScale, fitScale());
+				if (next !== undefined) { setZoom(next); }
 			});
 			scroller.addEventListener('scroll', updatePageLabel, { passive: true });
 			window.addEventListener('resize', () => { clearTimeout(zoomTimer); zoomTimer = setTimeout(rerenderVisible, 200); });

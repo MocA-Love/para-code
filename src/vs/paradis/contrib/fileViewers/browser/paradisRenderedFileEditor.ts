@@ -61,7 +61,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalizeScrollProgress, paradisReadViewerScrollState, paradisScrollRestoreScript } from '../common/paradisViewerScroll.js';
 import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
-import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarOption, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from './paradisViewerToolbar.js';
+import { appendParadisViewerToolbarChoice, appendParadisViewerToolbarChoiceGroup, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from './paradisViewerToolbar.js';
 
 import './media/paradisFileViewer.css';
 
@@ -340,10 +340,10 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 		// ペイン内ツールバー（全ビューア共通のバー）。左=プレビュー/ソースの切り替え、右=サブクラス固有（拡大縮小・再読み込み）。
 		const toolbar = createParadisViewerToolbar(this._rootElement, 'paradis-file-viewer-toolbar');
-		const toggle = appendParadisViewerToolbarGroup(toolbar.start, 'paradis-file-viewer-toggle');
-		this._renderedBtn = appendParadisViewerToolbarOption(toggle, localize('paradis.fileViewer.rendered', "プレビュー"));
+		const toggle = appendParadisViewerToolbarChoiceGroup(toolbar.start, 'paradis-file-viewer-toggle', localize('paradis.fileViewer.viewMode', "表示"));
+		this._renderedBtn = appendParadisViewerToolbarChoice(toggle, localize('paradis.fileViewer.rendered', "プレビュー"));
 		this._register(dom.addDisposableListener(this._renderedBtn, dom.EventType.CLICK, () => this.setViewMode('rendered')));
-		this._rawBtn = appendParadisViewerToolbarOption(toggle, localize('paradis.fileViewer.raw', "ソース"));
+		this._rawBtn = appendParadisViewerToolbarChoice(toggle, localize('paradis.fileViewer.raw', "ソース"));
 		this._register(dom.addDisposableListener(this._rawBtn, dom.EventType.CLICK, () => this.setViewMode('raw')));
 
 		this._toolbarRightElement = toolbar.end;
