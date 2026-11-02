@@ -139,11 +139,14 @@ export class ParadisPdfFileEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		// タブを閉じたら、戻るための記録と描画を捨てる。
 		this._register(this.group.onDidCloseEditor(e => {
-			if (e.editor instanceof ParadisPdfInput && this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
-				this._shownDocument = undefined;
-				// 戻るために残していた描画（pdf.js の canvas）も捨てる。閉じた後まで抱えない。
-				this._pane.clearContent();
+			if (!(e.editor instanceof ParadisPdfInput)) {
+				return;
 			}
+			if (this._shownDocument && isEqual(e.editor.resource, this._shownDocument.resource)) {
+				this._shownDocument = undefined;
+			}
+			// 戻るために残していた描画（pdf.js の canvas）も捨てる。閉じた後まで抱えない。
+			this._pane.clearContentFor(e.editor.resource);
 		}));
 		this._rootElement = dom.append(parent, dom.$('.paradis-pdf-viewer'));
 		this._rootElement.style.position = 'relative';
@@ -298,12 +301,12 @@ export class ParadisPdfFileEditor extends EditorPane {
 		switch (getParadisPdfRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration)) {
 			case 'rejected':
 				this._shownDocument = undefined;
-				webview.setHtml(this._buildRejectedFileHtml());
+				this._pane.setDocumentHtml(webview, resource, this._buildRejectedFileHtml());
 				return;
 			case 'viewer':
 				// 描き終わりの知らせ（first paint）が届くまでは使い回さない。
 				this._shownDocument = stat?.etag ? { resource, webview, keys: this._shownKeys(stat, documentUrl), confirmed: false } : undefined;
-				webview.setHtml(this._buildHtml(resource, documentUrl, stat?.size));
+				this._pane.setDocumentHtml(webview, resource, this._buildHtml(resource, documentUrl, stat?.size));
 				return;
 			case 'stale':
 				return;

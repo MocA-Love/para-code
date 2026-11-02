@@ -18,6 +18,7 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { FileChangeType, IFileService } from '../../../../platform/files/common/files.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -62,6 +63,8 @@ export class ParadisOverlayWebviewPane extends Disposable {
 	private _libBaseResolved: boolean;
 	private _resolvedLibBase: string | undefined;
 	private _documentServeFailed = false;
+	/** いま webview に書いてある文書のリソース（閉じたタブの中身を捨てるかの判断に使う）。 */
+	private _displayedResource: URI | undefined;
 
 	constructor(
 		/** claim・release の持ち主（エディタ）。 */
@@ -177,6 +180,7 @@ export class ParadisOverlayWebviewPane extends Disposable {
 	disposeWebview(): void {
 		this.release();
 		this._webview = undefined;
+		this._displayedResource = undefined;
 		this._webviewStore.clear();
 		this._options.onDidDispose?.();
 	}
@@ -219,9 +223,23 @@ export class ParadisOverlayWebviewPane extends Disposable {
 		return justClaimed;
 	}
 
-	/** webview の中身を空にする（閉じたタブのために残していた描画結果を捨てる）。 */
+	/** `resource` の文書の HTML を webview へ書く（書いた文書を覚えておく）。 */
+	setDocumentHtml(webview: IOverlayWebview, resource: URI, html: string): void {
+		webview.setHtml(html);
+		this._displayedResource = resource;
+	}
+
+	/** webview の中身を空にする。 */
 	clearContent(): void {
 		this._webview?.setHtml('');
+		this._displayedResource = undefined;
+	}
+
+	/** いま書いてある文書が `resource` なら中身を空にする（閉じたタブのために残していた描画結果を捨てる）。 */
+	clearContentFor(resource: URI | undefined): void {
+		if (resource && this._displayedResource && isEqual(this._displayedResource, resource)) {
+			this.clearContent();
+		}
 	}
 }
 
