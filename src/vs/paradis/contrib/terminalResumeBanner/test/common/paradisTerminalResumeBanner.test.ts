@@ -10,7 +10,7 @@ import assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/runWithFakedTimers.js';
-import { PARADIS_RESUME_LEDGER_TTL_MS, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
+import { PARADIS_RESUME_LEDGER_TTL_MS, ParadisResumeBannerChoice, paradisResumeBannerChoiceCommand, paradisResumeBannerLayout, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
 
 suite('paradisTerminalResumeBanner', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -29,6 +29,54 @@ suite('paradisTerminalResumeBanner', () => {
 			bareTitle: paradisResumeTitleFromTab('OpenCode'),
 			ledger: [...paradisParseResumeLedger(paradisSerializeResumeLedger(ledger), now).values()],
 		}, { resume: '/opt/example/bin/example-cli --session ses_saved', bareName: undefined, unsafeCommand: undefined, fork: 'opencode --session ses_saved --fork', unsafe: undefined, title: 'Fix the parser', bareTitle: undefined, ledger: [entry] });
+	});
+
+	test('the banner buttons and menu start the matching command for each agent', () => {
+		const commands = (agent: 'claude' | 'codex' | 'opencode', sessionId: string) => {
+			const layout = paradisResumeBannerLayout(agent);
+			const commandOf = (choice: ParadisResumeBannerChoice) => {
+				const command = paradisResumeBannerChoiceCommand(choice);
+				return command === undefined ? 'copy' : paradisResumeCommandLine(agent, sessionId, command.mode, command.dangerouslyBypassPermissions);
+			};
+			return {
+				buttons: layout.buttons.map(choice => [choice, commandOf(choice)]),
+				menu: layout.menu.map(item => item === 'separator' ? item : [item, commandOf(item)]),
+			};
+		};
+		assert.deepStrictEqual({
+			claude: commands('claude', 'a1b2c3d4-0000-4000-8000-000000000001'),
+			codex: commands('codex', '0199aaaa-0000-7000-8000-000000000002'),
+			opencode: commands('opencode', 'ses_saved'),
+		}, {
+			claude: {
+				buttons: [
+					['resume', 'claude --permission-mode manual --resume a1b2c3d4-0000-4000-8000-000000000001'],
+					['resumeBypass', 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-4000-8000-000000000001'],
+				],
+				menu: [
+					['fork', 'claude --permission-mode manual --resume a1b2c3d4-0000-4000-8000-000000000001 --fork-session'],
+					['forkBypass', 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-4000-8000-000000000001 --fork-session'],
+					'separator',
+					['copyId', 'copy'],
+				],
+			},
+			codex: {
+				buttons: [
+					['resume', 'codex resume --sandbox workspace-write --ask-for-approval on-request 0199aaaa-0000-7000-8000-000000000002'],
+					['resumeBypass', 'codex resume --dangerously-bypass-approvals-and-sandbox 0199aaaa-0000-7000-8000-000000000002'],
+				],
+				menu: [
+					['fork', 'codex fork --sandbox workspace-write --ask-for-approval on-request 0199aaaa-0000-7000-8000-000000000002'],
+					['forkBypass', 'codex fork --dangerously-bypass-approvals-and-sandbox 0199aaaa-0000-7000-8000-000000000002'],
+					'separator',
+					['copyId', 'copy'],
+				],
+			},
+			opencode: {
+				buttons: [['resume', 'opencode --session ses_saved']],
+				menu: [['fork', 'opencode --session ses_saved --fork'], 'separator', ['copyId', 'copy']],
+			},
+		});
 	});
 
 	test('builds resume and CLI fork commands, with or without skipping permission checks, only for ids that cannot be read as options', () => {

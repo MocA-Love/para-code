@@ -116,6 +116,47 @@ export function paradisResumeCommandLine(agent: ParadisResumeAgent, sessionId: s
 	return paradisAgentResumeCommandLine(agent, sessionId, mode, { dangerouslyBypassPermissions, cli });
 }
 
+/** バナーで選べる操作。`resumeBypass`・`forkBypass` は権限の確認を省く。 */
+export type ParadisResumeBannerChoice = 'resume' | 'resumeBypass' | 'fork' | 'forkBypass' | 'copyId';
+
+/** バナーの並び。`buttons` は帯に並ぶボタン、`menu` は「…」のメニュー（`separator` は区切り線）。 */
+export interface IParadisResumeBannerLayout {
+	readonly buttons: readonly ParadisResumeBannerChoice[];
+	readonly menu: readonly (ParadisResumeBannerChoice | 'separator')[];
+}
+
+/**
+ * 帯には「再開」と「確認なしで再開」を並べ、複製（分岐）と ID のコピーは「…」のメニューに置く。
+ * OpenCode の CLI には確認を省くフラグが無いので、確認なしの 2 つを出さない。
+ */
+export function paradisResumeBannerLayout(agent: ParadisResumeAgent): IParadisResumeBannerLayout {
+	const canBypass = paradisResumeBypassFlag(agent) !== undefined;
+	return {
+		buttons: canBypass ? ['resume', 'resumeBypass'] : ['resume'],
+		menu: canBypass ? ['fork', 'forkBypass', 'separator', 'copyId'] : ['fork', 'separator', 'copyId'],
+	};
+}
+
+/** 操作が起動するコマンドの種類。ID のコピーは何も起動しないので undefined。 */
+export function paradisResumeBannerChoiceCommand(choice: ParadisResumeBannerChoice): { readonly mode: 'resume' | 'fork'; readonly dangerouslyBypassPermissions: boolean } | undefined {
+	switch (choice) {
+		case 'resume': return { mode: 'resume', dangerouslyBypassPermissions: false };
+		case 'resumeBypass': return { mode: 'resume', dangerouslyBypassPermissions: true };
+		case 'fork': return { mode: 'fork', dangerouslyBypassPermissions: false };
+		case 'forkBypass': return { mode: 'fork', dangerouslyBypassPermissions: true };
+		case 'copyId': return undefined;
+	}
+}
+
+/** 権限の確認を省くフラグ（文言とツールチップに出す）。OpenCode には無い。 */
+export function paradisResumeBypassFlag(agent: ParadisResumeAgent): string | undefined {
+	switch (agent) {
+		case 'claude': return '--dangerously-skip-permissions';
+		case 'codex': return '--dangerously-bypass-approvals-and-sandbox';
+		case 'opencode': return undefined;
+	}
+}
+
 /**
  * タブの見出しから会話の名前を取り出す。Claude Code は作業中の印（回転する点字や ✳）を先頭に
  * 付けるので落とす。シェル名・エージェント名だけのもの、Codex のスレッド ID は名前として使わない。
