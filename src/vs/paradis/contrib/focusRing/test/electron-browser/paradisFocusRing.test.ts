@@ -12,6 +12,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { AppResourcePath, FileAccess } from '../../../../../base/common/network.js';
 import { ipcRenderer } from '../../../../../base/parts/sandbox/electron-browser/globals.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { installParadisFocusQuieting } from '../../browser/paradisFocusRing.js';
 
 // 本家の workbench の規則（src/vs/workbench/browser/media/style.css の Keyboard Focus Indication Styles）と同じもの。
 // テストの画面には読み込まれないので、ここで同じ規則を足す。fork の画面の CSS が使うテーマの色も入れる
@@ -51,7 +52,7 @@ async function setWebContentsFocus(): Promise<void> {
 
 suite('Paradis focus ring', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	let workbench: HTMLElement;
 	let style: HTMLStyleElement;
@@ -66,6 +67,7 @@ suite('Paradis focus ring', () => {
 		workbench.className = 'monaco-workbench';
 		mainWindow.document.body.appendChild(workbench);
 		links = await Promise.all(STYLESHEETS.map(loadStylesheet));
+		store.add(installParadisFocusQuieting(mainWindow));
 	});
 
 	teardown(() => {
