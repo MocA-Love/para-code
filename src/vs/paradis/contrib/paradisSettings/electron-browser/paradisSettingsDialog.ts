@@ -38,6 +38,7 @@ import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
 import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { paradisResourceTitleBarItemLabel } from '../../resourceMonitor/common/paradisResourceTitleBar.js';
 import { PARADIS_TRANSPARENCY_ENABLED_KEY, paradisTransparencyRestartPending } from '../../windowTransparency/common/paradisTransparency.js';
 import {
 	PARADIS_MENU_BAR_INCLUDE_REMOTE_SETTING,
@@ -1358,6 +1359,45 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.resourceMonitor', "CPU・メモリをタイトルバーに表示"),
 		keywords: 'resource monitor cpu memory titlebar',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		group: GROUP_USAGE_LIMITS,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.resourceMonitorItems', "タイトルバーに出す項目"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.resourceMonitorItemsDesc', "タイトルバーの使用率の表示を右クリックしても選べます。押して開く一覧には、選ばなかった項目も出ます。"),
+		keywords: 'resource monitor titlebar items cpu memory disk swap network io ssh host',
+		checks: [
+			{
+				key: 'paradis.resourceMonitor.titleBar.cpu',
+				label: paradisResourceTitleBarItemLabel('cpu'),
+			},
+			{
+				key: 'paradis.resourceMonitor.titleBar.memory',
+				label: paradisResourceTitleBarItemLabel('memory'),
+			},
+			{
+				key: 'paradis.resourceMonitor.titleBar.disk',
+				label: paradisResourceTitleBarItemLabel('disk'),
+			},
+			{
+				key: 'paradis.resourceMonitor.titleBar.swap',
+				label: paradisResourceTitleBarItemLabel('swap'),
+			},
+			{
+				key: 'paradis.resourceMonitor.titleBar.diskIo',
+				label: paradisResourceTitleBarItemLabel('diskIo'),
+			},
+			{
+				key: 'paradis.resourceMonitor.titleBar.network',
+				label: paradisResourceTitleBarItemLabel('network'),
+			},
+			{
+				key: 'paradis.resourceMonitor.titleBar.machineName',
+				label: paradisResourceTitleBarItemLabel('machineName'),
+			},
+		],
 	},
 	{
 		sectionId: 'psd-sec-usage',
