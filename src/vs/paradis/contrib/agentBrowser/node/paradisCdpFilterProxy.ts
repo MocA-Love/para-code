@@ -1561,7 +1561,8 @@ export function paradisProxyPageUpgrade(
 			if (navigationDenied === undefined && !pageUrlChecked && !paradisIsAllowedOnExtensionPage(msg.method, msg.params)
 				&& (pageUrlCheckedAt === undefined || Date.now() - pageUrlCheckedAt >= PARADIS_PAGE_URL_FRESH_MS)) {
 				pageUrlCheck ??= requestPageInternal('Target.getTargetInfo', {}, PARADIS_TARGET_URL_CHECK_TIMEOUT_MS).then(response => {
-					if (response === 'timeout') {
+					// 答えが来ない・送れなかった（上限など）ときは確かめられなかったものとして断る（通さない）
+					if (response === 'timeout' || response === undefined) {
 						return false;
 					}
 					const result = isRecord(response?.result) ? response.result : undefined;
@@ -2378,14 +2379,39 @@ export async function paradisProxyBrowserUpgrade(
 		};
 		/** sendInternal の応答を待つ。接続が閉じた・セッションが消えた・送れなかったときは undefined。 */
 		const requestInternal = (method: string, params: Record<string, unknown>, targetId?: string, sessionId?: string): Promise<IJsonRpcMsg | undefined> => {
+			return startInternalRequest(method, params, targetId, sessionId).response;
+		};
+		/** {@link requestInternal} の本体。待ち受けを外せるよう、送った id も返す（送らなかったら undefined）。 */
+		const startInternalRequest = (method: string, params: Record<string, unknown>, targetId?: string, sessionId?: string): { readonly id: number | undefined; readonly response: Promise<IJsonRpcMsg | undefined> } => {
 			if (closed || internalWaiters.size >= MAX_CDP_PENDING_REQUESTS) {
-				return Promise.resolve(undefined);
+				return { id: undefined, response: Promise.resolve(undefined) };
 			}
 			const id = sendInternal(method, params, sessionId, targetId);
 			if (id === undefined) {
-				return Promise.resolve(undefined);
+				return { id: undefined, response: Promise.resolve(undefined) };
 			}
-			return new Promise(resolve => internalWaiters.set(id, resolve));
+			return { id, response: new Promise(resolve => internalWaiters.set(id, resolve)) };
+		};
+		/**
+		 * {@link requestInternal} を `timeoutMs` まで待つ。過ぎたら 'timeout'。そのときは待ち受けと台帳から外し、遅れて来た答えは
+		 * 退いた id として黙って捨てる（取り残しを溜めない。溜まると上限で requestInternal が送らずに undefined を返す）。
+		 */
+		const requestInternalWithin = (timeoutMs: number, method: string, params: Record<string, unknown>, targetId?: string, sessionId?: string): Promise<IJsonRpcMsg | 'timeout' | undefined> => {
+			const { id, response: request } = startInternalRequest(method, params, targetId, sessionId);
+			let timedOut = false;
+			return raceTimeout(request, timeoutMs, () => {
+				timedOut = true;
+				if (id === undefined) {
+					return;
+				}
+				internalWaiters.delete(id);
+				const pending = internalPending.get(id);
+				if (pending) {
+					internalPending.delete(id);
+					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+					retireRequestId(id);
+				}
+			}).then(response => timedOut ? 'timeout' : response);
 		};
 		/**
 		 * ターゲットの今の URL を Target.getTargetInfo で引き直す。共有したページが開いたばかりの新しいタブは、
@@ -2407,9 +2433,9 @@ export async function paradisProxyBrowserUpgrade(
 			const check = (async () => {
 				const deadline = Date.now() + PARADIS_UNDECIDED_TAB_WAIT_MS;
 				for (; ;) {
-					let timedOut = false;
-					const response = await raceTimeout(requestInternal('Target.getTargetInfo', { targetId }, targetId), PARADIS_TARGET_URL_CHECK_TIMEOUT_MS, () => timedOut = true);
-					if (timedOut) {
+					const response = await requestInternalWithin(PARADIS_TARGET_URL_CHECK_TIMEOUT_MS, 'Target.getTargetInfo', { targetId }, targetId);
+					// 答えが来ない・送れなかった（上限など）ときは確かめられなかったものとして断る（通さない）
+					if (response === 'timeout' || (response === undefined && !closed)) {
 						return false;
 					}
 					const info = isRecord(response?.result) && isRecord(response.result.targetInfo) ? response.result.targetInfo : undefined;
