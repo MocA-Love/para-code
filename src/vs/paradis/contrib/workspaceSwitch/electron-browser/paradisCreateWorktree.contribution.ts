@@ -28,7 +28,7 @@ import { IProgressService, ProgressLocation } from '../../../../platform/progres
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
-import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_REMOVE_WORKTREE_COMMAND_ID, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_GET_DIFF_STATS_COMMAND_ID, PARADIS_REMOVE_WORKTREE_COMMAND_ID, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
 import { paradisGithubStatusMaxAge } from '../common/paradisGithubLookupCache.js';
@@ -49,7 +49,6 @@ export const PARADIS_CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.creat
 // 値は副作用の無い common に置き、ここから呼んでいた既存の import のために再公開する
 export { PARADIS_REMOVE_WORKTREE_COMMAND_ID };
 export const PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID = 'paradis.workspaceSwitch.configureLifecycleScripts';
-export const PARADIS_GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
 export const PARADIS_GET_PR_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getPrStatuses';
 export const PARADIS_GET_ISSUE_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getIssueStatuses';
 

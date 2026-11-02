@@ -286,6 +286,9 @@ export const PARADIS_UNATTRIBUTED_TERMINAL_SCOPE = 'paradis:unattributed-termina
  */
 export const PARADIS_REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.removeWorktree';
 
+/** ワークツリーの差分統計を返す内部コマンド。登録は electron-browser の contribution、呼ぶのは Workspaces ビュー。 */
+export const PARADIS_GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
+
 export const IParadisTerminalScopeService = createDecorator<IParadisTerminalScopeService>('paradisTerminalScopeService');
 
 /**
