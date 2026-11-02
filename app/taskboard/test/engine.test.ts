@@ -68,6 +68,44 @@ function intake(n: number, extra: object = {}) {
 }
 
 describe('TaskBoardEngine', () => {
+	test('moves only tasks finished 14 days ago out of the ledger, and does not take their issues in again', () => {
+		const day = 24 * 60 * 60 * 1000;
+		const { engine, tick } = setup();
+		engine.syncIntake([intake(1), intake(2), intake(3), intake(4)]);
+		const local = engine.addTask({ title: 'Local task' });
+		engine.markDone('gh:o/r#1');
+		engine.markDone(local);
+		tick(2 * day);
+		engine.markDone('gh:o/r#2');
+		engine.start('gh:o/r#4', { agent: 'codex' });
+		engine.reportOutput('gh:o/r#1', ['line']);
+		tick(13 * day);
+
+		const picked = engine.archivableTasks(14 * day).map(t => t.id).sort();
+		const archived = engine.archiveTasks([...picked, 'gh:o/r#3', 'missing']);
+		engine.syncIntake([intake(1), intake(2), intake(3), intake(4)]);
+		const saved = engine.serialize();
+		const { engine: reloaded } = setup();
+		reloaded.restore(saved);
+		reloaded.syncIntake([intake(1), intake(2), intake(3), intake(4)]);
+
+		expect({
+			picked,
+			archived,
+			left: engine.listTasks(t => t.id).sort(),
+			revisionForgotten: engine.getTaskDetailRevision('gh:o/r#1'),
+			savedArchivedIds: saved.archivedIds,
+			afterReload: reloaded.listTasks(t => t.id).sort(),
+		}).toEqual({
+			picked: ['gh:o/r#1', local].sort(),
+			archived: 2,
+			left: ['gh:o/r#2', 'gh:o/r#3', 'gh:o/r#4'],
+			revisionForgotten: 0,
+			savedArchivedIds: ['gh:o/r#1'],
+			afterReload: ['gh:o/r#2', 'gh:o/r#3', 'gh:o/r#4'],
+		});
+	});
+
 	test('the detail revision grows on every log line, even when the log is full and the new line repeats the last one', () => {
 		const { engine } = setup();
 		engine.syncIntake([intake(7)]);
@@ -75,7 +113,7 @@ describe('TaskBoardEngine', () => {
 		const full = { revision: engine.getTaskDetailRevision('gh:o/r#7'), log: [...engine.getTask('gh:o/r#7')!.log] };
 		engine.reportOutput('gh:o/r#7', ['same']);
 		const after = engine.getTask('gh:o/r#7')!;
-		expect({ sameLog: JSON.stringify(after.log) === JSON.stringify(full.log), grew: engine.getTaskDetailRevision('gh:o/r#7') > full.revision, listed: engine.listTasks().map(t => t.id) })
+		expect({ sameLog: JSON.stringify(after.log) === JSON.stringify(full.log), grew: engine.getTaskDetailRevision('gh:o/r#7') > full.revision, listed: engine.listTasks(t => t.id) })
 			.toEqual({ sameLog: true, grew: true, listed: ['gh:o/r#7'] });
 	});
 

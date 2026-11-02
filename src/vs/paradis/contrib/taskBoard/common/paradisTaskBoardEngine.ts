@@ -150,6 +150,8 @@ export interface ITaskBoardPersisted {
 	readonly tasks: readonly ITaskBoardTask[];
 	/** ワークツリーの作業場所のパス（タスク id ごと）。再起動の後も同じ作業場所で続けられるように。 */
 	readonly worktreePaths?: Readonly<Record<string, string>>;
+	/** 完了から日が経ってファイルへ移した GitHub のタスク。取り込みで同じ Issue を作り直さないために覚える。 */
+	readonly archivedIds?: readonly string[];
 }
 
 interface IStepInput {
@@ -204,6 +206,8 @@ export class TaskBoardEngine {
 	private readonly tasks = new Map<string, ITaskRecord>();
 	/** タスクごとの、活動かターミナルの出力を足した回数（保存しない）。上限で古いものを捨てても増え続けるので、変わったかの目印に使える。 */
 	private readonly detailRevisions = new Map<string, number>();
+	/** ファイルへ移した GitHub のタスク（取り込みで作り直さない）。 */
+	private readonly archivedIds = new Set<string>();
 	private flows: ITaskBoardFlow[] = [TASK_BOARD_DEFAULT_FLOW];
 	private activeFlowId = TASK_BOARD_DEFAULT_FLOW.id;
 	private poolSlots: ITaskBoardSlot[] = [];
@@ -264,11 +268,12 @@ export class TaskBoardEngine {
 	}
 
 	/**
-	 * 写さずに全タスクを返す（送る直前に形を作る一覧用）。`getTasks` は活動と出力の配列まで写すので、
-	 * 変更のたびに呼ぶと、使わない分の写しが毎回できる。**返した値を持ち続けたり書き換えたりしない。**
+	 * 全タスクを写さずに `project` へ渡し、その戻り値を並べる（送る直前に形を作る一覧用）。`getTasks` は活動と出力の
+	 * 配列まで写すので、変更のたびに呼ぶと、使わない分の写しが毎回できる。中身は呼んでいる間だけ渡し、外へは出さない
+	 * （`project` は渡された値を持ち続けたり書き換えたりしない形を返すこと）。
 	 */
-	listTasks(): readonly ITaskBoardTask[] {
-		return [...this.tasks.values()];
+	listTasks<T>(project: (task: Readonly<ITaskBoardTask>) => T): T[] {
+		return [...this.tasks.values()].map(task => project(task));
 	}
 
 	/** 活動かターミナルの出力が足された回数。開いているタスクの分を送り直すかの判定に使う。 */
@@ -396,7 +401,11 @@ export class TaskBoardEngine {
 
 	serialize(): ITaskBoardPersisted {
 		const worktreePaths = Object.fromEntries([...this.worktreeSlots].filter(([, slot]) => slot.path).map(([taskId, slot]) => [taskId, slot.path]));
-		return { version: 1, activeFlowId: this.activeFlowId, tasks: this.getTasks(), ...(Object.keys(worktreePaths).length ? { worktreePaths } : {}) };
+		return {
+			version: 1, activeFlowId: this.activeFlowId, tasks: this.getTasks(),
+			...(Object.keys(worktreePaths).length ? { worktreePaths } : {}),
+			...(this.archivedIds.size ? { archivedIds: [...this.archivedIds] } : {}),
+		};
 	}
 
 	/**
@@ -406,6 +415,13 @@ export class TaskBoardEngine {
 	restore(data: ITaskBoardPersisted): void {
 		this.tasks.clear();
 		this.worktreeSlots.clear();
+		this.detailRevisions.clear();
+		this.archivedIds.clear();
+		for (const id of data.archivedIds ?? []) {
+			if (typeof id === 'string') {
+				this.archivedIds.add(id);
+			}
+		}
 		if (this.flows.some(f => f.id === data.activeFlowId)) {
 			this.activeFlowId = data.activeFlowId;
 		}
@@ -513,7 +529,8 @@ export class TaskBoardEngine {
 					existing.updatedAt = this.now();
 					updated++;
 				}
-			} else {
+			} else if (!this.archivedIds.has(id)) {
+				// ファイルへ移した完了タスクは作り直さない（完了したタスクは、Issue が開いたままでも未着手に戻らないのと同じ）
 				this.create('github', id, item.title, meta);
 				added++;
 			}
@@ -521,7 +538,7 @@ export class TaskBoardEngine {
 		if (complete) {
 			for (const task of [...this.tasks.values()]) {
 				if (task.source === 'github' && task.step === TASK_BOARD_TODO && !seen.has(task.id)) {
-					this.tasks.delete(task.id);
+					this.forget(task.id);
 					removed++;
 				}
 			}
@@ -540,8 +557,47 @@ export class TaskBoardEngine {
 		if (task.source === 'github' && task.step === TASK_BOARD_TODO) {
 			throw new TaskBoardError('invalid-state', 'tasks from GitHub are removed by the intake');
 		}
-		this.tasks.delete(taskId);
+		this.forget(taskId);
 		this.changed();
+	}
+
+	/**
+	 * 完了してから `ageMs` 以上経ったタスクの写し（成果物の本文を含む）。ファイルへ移す前に読む。
+	 * 完了した時刻が分からないもの（古い台帳）は対象にしない。
+	 */
+	archivableTasks(ageMs: number): ITaskBoardTask[] {
+		const before = this.now() - ageMs;
+		return this.getTasks().filter(task => task.step === TASK_BOARD_DONE && typeof task.stepSince === 'number' && task.stepSince <= before);
+	}
+
+	/**
+	 * ファイルへ移し終えたタスクを台帳から外す（書き終える前に外すと、失敗したときに消える）。
+	 * 外す間に完了から動いたタスクは外さない。外した数を返す。
+	 */
+	archiveTasks(taskIds: readonly string[]): number {
+		let archived = 0;
+		for (const taskId of taskIds) {
+			const task = this.tasks.get(taskId);
+			if (!task || task.step !== TASK_BOARD_DONE) {
+				continue;
+			}
+			if (task.source === 'github') {
+				this.archivedIds.add(taskId);
+			}
+			this.forget(taskId);
+			archived++;
+		}
+		if (archived) {
+			this.changed();
+		}
+		return archived;
+	}
+
+	/** タスクを台帳から外し、タスクごとに持っている記録も消す。 */
+	private forget(taskId: string): void {
+		this.tasks.delete(taskId);
+		this.worktreeSlots.delete(taskId);
+		this.detailRevisions.delete(taskId);
 	}
 
 	/** 手で起動したエージェントを、フローの途中の工程にいるタスクとして取り込む。 */
