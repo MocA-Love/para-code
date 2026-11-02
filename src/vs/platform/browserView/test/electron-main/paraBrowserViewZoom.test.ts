@@ -24,6 +24,10 @@ class FakeTab extends EventEmitter {
 		this.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
 		this.emit('did-navigate');
 	}
+	startDownload(): void {
+		// a navigation that ends in a download (or a 204, or is cancelled) never commits: no did-navigate, no did-fail-load
+		this.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+	}
 	failLoad(): void {
 		this.isolated = false;
 		this.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
@@ -146,7 +150,8 @@ suite('paraBrowserViewZoom', () => {
 		hold = undefined;
 		paraSetBrowserViewUserZoom(tab as unknown as WebContents, 1.25);
 		await flush();
-		assert.deepStrictEqual(tab.zoomCalls, [{ factor: 1.25, isolated: true }]);
+		// nothing was set at the site's level, and the zoom reached the new document once it was isolated
+		assert.deepStrictEqual({ calls: [...new Set(tab.zoomCalls.map(call => JSON.stringify(call)))] }, { calls: ['{"factor":1.25,"isolated":true}'] });
 	});
 
 	test('a navigation that ends on an error page drops the isolation and isolates the tab again before re-applying', async () => {
@@ -162,6 +167,21 @@ suite('paraBrowserViewZoom', () => {
 			scalesWhileReisolating: false,
 			last: { factor: 0.5, isolated: true },
 			scalesAfter: true,
+		});
+	});
+	test('a navigation that never commits (a download) keeps the tab isolated, so the reported scale matches the shrunk page', async () => {
+		const tab = new FakeTab();
+		request(tab, 0.5);
+		await flush();
+		request(tab, 0.5);
+		await flush();
+		const calls = tab.zoomCalls.length;
+		tab.startDownload();
+		await flush();
+		assert.deepStrictEqual({ scalesByZoom: paraBrowserViewScalesByZoom(tab as unknown as WebContents), newCalls: tab.zoomCalls.length - calls, params: request(tab, 0.5).scale }, {
+			scalesByZoom: true,
+			newCalls: 0,
+			params: 1,
 		});
 	});
 });

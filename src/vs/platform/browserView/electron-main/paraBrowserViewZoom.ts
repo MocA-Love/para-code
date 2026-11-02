@@ -53,6 +53,8 @@ interface IZoomState {
 	isolated: boolean;
 	/** 切り離している最中。 */
 	isolating: Promise<ParaIsolation> | undefined;
+	/** メインフレームの移動が始まるたびに進める。途中の切り離しの試みが古くなったかを見る。 */
+	generation: number;
 	/** 切り離せたとき・画面の倍率が替わったときに呼ぶ（エミュレーションを当て直す）。 */
 	onIsolated: (() => void) | undefined;
 	/** devicePixelRatio を補うのに使った画面の倍率。 */
@@ -81,24 +83,26 @@ function isolatorFor(webContents: WebContents): IParaBrowserZoomIsolator {
 function stateOf(webContents: WebContents): IZoomState {
 	let state = states.get(webContents);
 	if (!state) {
-		state = { user: 1, emulation: 1, isolated: false, isolating: undefined, onIsolated: undefined, displayScaleFactor: undefined, watchedWindow: undefined };
+		state = { user: 1, emulation: 1, isolated: false, isolating: undefined, generation: 0, onIsolated: undefined, displayScaleFactor: undefined, watchedWindow: undefined };
 		states.set(webContents, state);
 		const created = state;
-		// 文書が替わると切り離しが外れる（エラーのページへの移動は did-navigate を出さず did-fail-load だけ）。ほかの受け手
-		// （拡大率を当て直す処理）より先に知り、途中の切り離しは古いものとして捨てる
-		const forget = () => {
+		// 文書が確定すると切り離しが外れる（エラーのページへの移動は did-navigate を出さず did-fail-load だけ）。ほかの受け手
+		// （拡大率を当て直す処理）より先に知る。移動の始まりでは、まだ今の文書のまま切り離しは効いているので、途中の試みを
+		// 古いものにするだけ（ダウンロード・204・取り消しのように確定しない移動もある）
+		const committed = () => {
+			created.generation++;
 			created.isolated = false;
 			created.isolating = undefined;
 		};
 		webContents.prependListener('did-start-navigation', (details: { isMainFrame?: boolean; isSameDocument?: boolean }) => {
 			if (details?.isMainFrame !== false && details?.isSameDocument !== true) {
-				forget();
+				created.generation++;
 			}
 		});
-		webContents.prependListener('did-navigate', forget);
+		webContents.prependListener('did-navigate', committed);
 		webContents.prependListener('did-fail-load', (_event: unknown, _code: number, _description: string, _url: string, isMainFrame: boolean) => {
 			if (isMainFrame) {
-				forget();
+				committed();
 				// エラーのページでは、拡大率を当て直す処理（did-navigate の受け手）が走らないので、ここで当て直す
 				apply(webContents, created);
 			}
@@ -119,9 +123,15 @@ function apply(webContents: WebContents, state: IZoomState): void {
 		return;
 	}
 	void isolate(webContents, state).then(isolation => {
-		if (webContents.isDestroyed() || isolation === 'stale') {
-			// 古くなった（試している間に文書が替わった）ときは何も当てない。サイトの値として当てると同じサイトのタブへ
-			// 広がる。新しい文書の分は、移動の後の当て直しが改めて切り離してから当てる
+		if (webContents.isDestroyed()) {
+			return;
+		}
+		if (isolation === 'stale') {
+			// 試している間に移動が始まった・文書が替わった。この結果では何も当てない（サイトの値として当てると同じサイトの
+			// タブへ広がる）。切り離しから試し直す（文書が替わっていれば、移動の後の当て直しとまとめて 1 回になる）
+			if (!state.isolated && !state.isolating) {
+				apply(webContents, state);
+			}
 			return;
 		}
 		if (isolation === 'isolated') {
@@ -139,9 +149,13 @@ function isolate(webContents: WebContents, state: IZoomState): Promise<ParaIsola
 		return Promise.resolve('isolated');
 	}
 	if (!state.isolating) {
+		const generation = state.generation;
 		const attempt: Promise<ParaIsolation> = isolatorFor(webContents).isolate(webContents).catch(() => false).then(isolated => {
-			if (state.isolating !== attempt) {
-				// 試している間に文書が替わった
+			if (state.isolating !== attempt || state.generation !== generation) {
+				// 試している間に移動が始まった・文書が替わった
+				if (state.isolating === attempt) {
+					state.isolating = undefined;
+				}
 				return 'stale';
 			}
 			state.isolating = undefined;
@@ -260,6 +274,7 @@ function watchDisplayScaleFactor(webContents: WebContents, state: IZoomState): n
 		const onMoved = () => {
 			if (webContents.isDestroyed() || state.watchedWindow !== window) {
 				window.removeListener('move', onMoved);
+				electron.screen.removeListener('display-metrics-changed', onMoved);
 				return;
 			}
 			if (paraBrowserViewScalesByZoom(webContents) && read() !== state.displayScaleFactor) {
@@ -268,7 +283,12 @@ function watchDisplayScaleFactor(webContents: WebContents, state: IZoomState): n
 		};
 		state.watchedWindow = window;
 		window.on('move', onMoved);
-		webContents.once('destroyed', () => window.removeListener('move', onMoved));
+		// 画面の倍率そのものが替わったとき（設定の変更・外部ディスプレイのつなぎ替え）も拾う
+		electron.screen.on('display-metrics-changed', onMoved);
+		webContents.once('destroyed', () => {
+			window.removeListener('move', onMoved);
+			electron.screen.removeListener('display-metrics-changed', onMoved);
+		});
 	}
 	state.displayScaleFactor = read();
 	return state.displayScaleFactor;
@@ -312,6 +332,8 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 	private page: Promise<WebContents | undefined> | undefined;
 	/** 切り離したタブ（閉じたら外す。空になったらページを閉じる）。 */
 	private readonly tabs = new Set<WebContents>();
+	/** 切り離している最中の数（その間はページを閉じない）。 */
+	private pending = 0;
 	/** 拡張機能を読み込めないセッション（メモリだけのセッション）。 */
 	private unsupported = false;
 	/** 読み込んだ拡張機能の id（ページを閉じても拡張機能は読み込んだまま）。 */
@@ -323,20 +345,26 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 		if (this.unsupported) {
 			return false;
 		}
-		this.page ??= this.open();
-		const page = await this.page;
-		if (!page || page.isDestroyed() || webContents.isDestroyed()) {
-			if (page?.isDestroyed()) {
-				this.page = undefined;
+		this.pending++;
+		let settled: unknown;
+		try {
+			this.page ??= this.open();
+			const page = await this.page;
+			if (!page || page.isDestroyed() || webContents.isDestroyed()) {
+				if (!page || page.isDestroyed()) {
+					this.page = undefined;
+				}
+				return false;
 			}
-			return false;
+			settled = await page.executeJavaScript(`chrome.tabs.setZoomSettings(${webContents.id}, { mode: 'automatic', scope: 'per-tab' }).then(() => true, () => false)`);
+		} finally {
+			this.pending--;
 		}
-		const settled = await page.executeJavaScript(`chrome.tabs.setZoomSettings(${webContents.id}, { mode: 'automatic', scope: 'per-tab' }).then(() => true, () => false)`);
 		if (settled === true && !this.tabs.has(webContents)) {
 			this.tabs.add(webContents);
 			webContents.once('destroyed', () => {
 				this.tabs.delete(webContents);
-				if (this.tabs.size === 0) {
+				if (this.tabs.size === 0 && this.pending === 0) {
 					this.close();
 				}
 			});
@@ -362,9 +390,11 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 				await fs.writeFile(join(folder, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: PARA_BROWSER_ZOOM_HELPER_EXTENSION_NAME, version: '1.0', description: 'Keeps the zoom of each Para Code browser tab to that tab.' }));
 				await fs.writeFile(join(folder, 'zoom.html'), '<!doctype html><title>zoom</title>');
 				this.extensionId = (await this.session.extensions.loadExtension(folder)).id;
-			} catch {
-				// メモリだけのセッションは拡張機能を読み込めない。このセッションでは二度と試さない
-				this.unsupported = true;
+			} catch (error) {
+				// メモリだけのセッションは拡張機能を読み込めない。このセッションでは二度と試さない（ほかの失敗は次にまた試す）
+				if (/temporary session/i.test(error instanceof Error ? error.message : String(error))) {
+					this.unsupported = true;
+				}
 				return undefined;
 			}
 		}
