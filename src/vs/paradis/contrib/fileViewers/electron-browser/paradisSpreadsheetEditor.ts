@@ -36,7 +36,7 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IParadisCellComment, IParadisRenderShape, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import { IParadisCellComment, IParadisCellData, IParadisRenderShape, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell, type ParadisOfficeSpreadsheetPrintSheet } from '../common/paradisOfficePrint.js';
@@ -50,7 +50,7 @@ import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js'
 import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
-import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, buildShownNoteOverlay, commentKindsByCell, commentMarkerClass, computeOverflowColumns, computeOverflowRoom, describeSheetPageBreaks, getColumnLabel, overflowToward } from './paradisSpreadsheetRender.js';
+import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, buildShownNoteOverlay, commentKindsByCell, commentMarkerClass, computeOverflowColumns, computeOverflowRoom, describeSheetPageBreaks, getColumnLabel, isFilterHeaderCell, overflowToward, tableCellRole } from './paradisSpreadsheetRender.js';
 import { ParadisSpreadsheetBrokenImages } from './paradisSpreadsheetBrokenImages.js';
 import { spreadsheetBrokenImagePlaceholders, spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { createParadisSpreadsheetPrintDrawingBudget, paradisSpreadsheetPrintLayout, type IParadisSpreadsheetPrintLayout } from './paradisSpreadsheetPrintLayout.js';
@@ -374,6 +374,31 @@ export function createVirtualGridIndex(sheet: IParadisSheetData): IParadisVirtua
 	return { comments: commentKindsByCell(sheet), merges };
 }
 
+/**
+ * 仮想グリッドのセルの罫線。読み込みは隣り合う辺の罫線を両方のセルに書く（DOM の表は border-collapse で 1 本にまとまる）。
+ * 仮想グリッドのセルは別々の箱なので、そのままだと 2 本重なる。各セルは右と下の辺だけを描き、左と上の辺の罫線は
+ * 左・上の隣が自分の右・下の罫線として描く（隣が自分の罫線を持っていればそちらを使う）。
+ */
+function virtualGridCellStyle(sheet: IParadisSheetData, rowIndex: number, columnIndex: number, cell: IParadisCellData): Readonly<Record<string, string>> {
+	const style: Record<string, string> = { ...(cell.style as Record<string, string>) };
+	const row = sheet.rows[rowIndex];
+	const right = row.cells[columnIndex + (cell.colSpan ?? 1)];
+	const below = sheet.rows[rowIndex + (cell.rowSpan ?? 1)]?.cells[columnIndex];
+	if (!style.borderRight && right && !right.hidden && (right.style.borderLeft as string | undefined)) {
+		style.borderRight = right.style.borderLeft as string;
+	}
+	if (!style.borderBottom && below && !below.hidden && (below.style.borderTop as string | undefined)) {
+		style.borderBottom = below.style.borderTop as string;
+	}
+	if (columnIndex > 0) {
+		delete style.borderLeft;
+	}
+	if (rowIndex > 0) {
+		delete style.borderTop;
+	}
+	return style;
+}
+
 /** データのセル 1 つを、仮想グリッドの番号のセルにする（はみ出しの決まりは DOM の表と同じ）。 */
 function virtualGridCell(sheet: IParadisSheetData, index: IParadisVirtualGridIndex, rowIndex: number, columnIndex: number): ParadisSpreadsheetGridCell | undefined {
 	const row = sheet.rows[rowIndex];
@@ -385,15 +410,26 @@ function virtualGridCell(sheet: IParadisSheetData, index: IParadisVirtualGridInd
 	const room = toward !== 'none' ? computeOverflowRoom(row.cells, columnIndex, sheet.columnWidths) : undefined;
 	const columns = room && (room.left > 0 || room.right > 0) ? computeOverflowColumns(row.cells, columnIndex) : undefined;
 	const column = columnIndex + VIRTUAL_GRID_HEADER_COLUMNS;
+	const excelColumn = sheet.minCol + columnIndex;
+	const role = tableCellRole(sheet, row.excelRow, excelColumn);
+	const valign = cell.style.verticalAlign as string | undefined;
 	return {
 		row: rowIndex + VIRTUAL_GRID_HEADER_ROWS,
 		column,
 		text: cell.value,
-		style: cell.style,
+		style: virtualGridCellStyle(sheet, rowIndex, columnIndex, cell),
 		classNames: [
 			...(cell.wrapText ? ['paradis-spreadsheet-virtual-cell-wrap'] : []),
 			...(cell.verticalText ? ['paradis-spreadsheet-virtual-cell-vertical'] : []),
-			...commentClassFor(index.comments, row.excelRow, sheet.minCol + columnIndex),
+			// div では vertical-align が効かないので、縦位置はクラスで並べ方を変える（既定は Excel と同じ下寄せ）
+			...(valign === 'top' ? ['paradis-spreadsheet-virtual-valign-top'] : valign === 'middle' ? ['paradis-spreadsheet-virtual-valign-middle'] : []),
+			...commentClassFor(index.comments, row.excelRow, excelColumn),
+			// テーブル/オートフィルタの体裁（DOM の表と同じクラス）
+			...(role?.header ? ['paradis-spreadsheet-table-header'] : []),
+			...(role?.totals ? ['paradis-spreadsheet-table-totals'] : []),
+			...(role?.stripe ? ['paradis-spreadsheet-table-stripe'] : []),
+			...(role?.emphasizedColumn ? ['paradis-spreadsheet-table-emphasis'] : []),
+			...(isFilterHeaderCell(sheet.filterRanges, row.excelRow, excelColumn) ? ['paradis-spreadsheet-virtual-filter'] : []),
 		],
 		...(cell.rowSpan ? { rowSpan: cell.rowSpan } : {}),
 		...(cell.colSpan ? { columnSpan: cell.colSpan } : {}),
@@ -411,20 +447,69 @@ function virtualGridCell(sheet: IParadisSheetData, index: IParadisVirtualGridInd
  * 仮想グリッドの viewport。寸法は倍率を掛ける前のまま持つ（倍率は描画側が中身ごと掛ける）。
  * 先頭の 1 行・1 列は見出しで、シートの固定枠と一緒に固定する。
  */
-export function createVirtualGridViewport(sheet: IParadisSheetData, headerHeight: number, revision: string): ParadisSpreadsheetViewport {
+export function createVirtualGridViewport(sheet: IParadisSheetData, headerHeight: number, revision: string, wrappedRowHeights: ReadonlyMap<number, number> = new Map()): ParadisSpreadsheetViewport {
 	const frozen = resolveFrozenPaneExtent(sheet);
 	return new ParadisSpreadsheetViewport({
 		rowCount: Math.max(1, sheet.rows.length) + VIRTUAL_GRID_HEADER_ROWS,
 		columnCount: Math.max(1, sheet.columnCount) + VIRTUAL_GRID_HEADER_COLUMNS,
 		defaultRowHeight: 20,
 		defaultColumnWidth: 80,
-		rowMetrics: [{ index: 0, size: headerHeight }, ...sheet.rows.map((row, index) => ({ index: index + VIRTUAL_GRID_HEADER_ROWS, size: row.height }))],
+		// 行の高さは DOM の表と同じく最小の高さとして扱い、折り返した文字が収まらなければ伸ばす
+		rowMetrics: [{ index: 0, size: headerHeight }, ...sheet.rows.map((row, index) => ({ index: index + VIRTUAL_GRID_HEADER_ROWS, size: Math.max(row.height, wrappedRowHeights.get(index) ?? 0) }))],
 		columnMetrics: [{ index: 0, size: PARADIS_ROW_NUM_COL_WIDTH }, ...sheet.columnWidths.map((width, index) => ({ index: index + VIRTUAL_GRID_HEADER_COLUMNS, size: width, hidden: width <= 0 }))],
 		frozenRows: VIRTUAL_GRID_HEADER_ROWS + frozen.rowCount,
 		frozenColumns: VIRTUAL_GRID_HEADER_COLUMNS + frozen.colCount,
 		maxLiveCells: VIRTUAL_GRID_CELL_THRESHOLD,
 		revision,
 	});
+}
+
+const WRAPPED_PROBE_STYLES = ['fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'letterSpacing', 'lineHeight', 'paddingBottom', 'paddingLeft', 'paddingRight', 'paddingTop', 'whiteSpace', 'wordBreak'] as const;
+
+/**
+ * 折り返しのあるセルの文字が収まる高さ（データの行の番号 → 高さ）。DOM の表では行が中身に合わせて伸びるので、
+ * 仮想グリッドでも同じ幅・同じ文字の大きさの箱を一度にまとめて置いて測る（1 回の配置で済ませる）。
+ */
+export function measureVirtualGridWrappedRows(host: HTMLElement, sheet: IParadisSheetData): ReadonlyMap<number, number> {
+	const doc = host.ownerDocument;
+	const box = doc.createElement('div');
+	box.style.position = 'absolute';
+	box.style.visibility = 'hidden';
+	box.style.left = '0';
+	box.style.top = '0';
+	const probes: { readonly rowIndex: number; readonly element: HTMLElement }[] = [];
+	sheet.rows.forEach((row, rowIndex) => row.cells.forEach((cell, columnIndex) => {
+		if (!cell.wrapText || cell.hidden || !cell.value || (cell.rowSpan ?? 1) > 1) {
+			return;
+		}
+		let width = 0;
+		for (let offset = 0; offset < (cell.colSpan ?? 1); offset++) {
+			width += sheet.columnWidths[columnIndex + offset] ?? 0;
+		}
+		const element = doc.createElement('div');
+		element.className = 'paradis-spreadsheet-virtual-cell paradis-spreadsheet-virtual-cell-wrap';
+		element.style.position = 'static';
+		element.style.width = `${width}px`;
+		const style = cell.style as Record<string, string | undefined>;
+		for (const property of WRAPPED_PROBE_STYLES) {
+			if (style[property]) {
+				(element.style as unknown as Record<string, string>)[property] = style[property]!;
+			}
+		}
+		element.textContent = cell.value;
+		box.appendChild(element);
+		probes.push({ rowIndex, element });
+	}));
+	const heights = new Map<number, number>();
+	if (!probes.length) {
+		return heights;
+	}
+	host.appendChild(box);
+	for (const { rowIndex, element } of probes) {
+		heights.set(rowIndex, Math.max(heights.get(rowIndex) ?? 0, element.getBoundingClientRect().height));
+	}
+	box.remove();
+	return heights;
 }
 
 /**
@@ -1590,7 +1675,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		// 寸法は倍率を掛ける前のまま持ち、倍率は描画側が中身ごと掛ける（DOM の表の transform: scale と同じ見え方）。
 		// 先頭の 1 行・1 列は見出し（列記号と行番号）で、シートの固定枠と一緒に固定する。
 		const revision = `${this._loadGeneration}:${this._activeSheetIndex}:${sheet.name}`;
-		const viewport = createVirtualGridViewport(sheet, measureVirtualGridHeaderHeight(host), revision);
+		const viewport = createVirtualGridViewport(sheet, measureVirtualGridHeaderHeight(host), revision, measureVirtualGridWrappedRows(host, sheet));
 		const index = createVirtualGridIndex(sheet);
 		const renderer = new ParadisSpreadsheetGridRenderer(host, viewport, {
 			getViewport: async request => legacyGridTile(sheet, request, index),
@@ -1598,6 +1683,18 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			zoom: target,
 		});
 		applyParadisOfficeGridMetadata(host, localize('paradis.spreadsheet.sheetGrid', "シート「{0}」", sheet.name), Math.max(1, sheet.rows.length), Math.max(1, sheet.columnCount));
+		// 打ち切りの知らせは、グリッド（本体いっぱいに広がる）の下に置き、その分だけグリッドを縮める（重なって隠れないように）
+		let noticeHeight = 0;
+		if (sheet.truncated) {
+			const notice = dom.append(this._bodyEl, $('.paradis-spreadsheet-truncated'));
+			notice.textContent = localize('paradis.spreadsheet.truncated', "先頭2,000行のみ表示しています。ファイル全体にはさらに行があります。");
+			notice.style.position = 'absolute';
+			notice.style.left = '0';
+			notice.style.right = '0';
+			notice.style.bottom = '0';
+			noticeHeight = notice.offsetHeight;
+			host.style.bottom = `${noticeHeight}px`;
+		}
 		// 同じシートを描き直す（拡大・縮小、図形の診断など）ときは、見ていた位置を保つ
 		const previous = this._previousVirtualPosition;
 		this._previousVirtualPosition = undefined;
@@ -1608,12 +1705,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		void renderer.render({
 			...start,
 			width: Math.max(1, this._bodyEl.clientWidth / target),
-			height: Math.max(1, this._bodyEl.clientHeight / target),
+			height: Math.max(1, (this._bodyEl.clientHeight - noticeHeight) / target),
 		});
-		if (sheet.truncated) {
-			const notice = dom.append(this._bodyEl, $('.paradis-spreadsheet-truncated'));
-			notice.textContent = localize('paradis.spreadsheet.truncated', "先頭2,000行のみ表示しています。ファイル全体にはさらに行があります。");
-		}
 		if (this._percentBtn) {
 			this._percentBtn.textContent = `${Math.round(target * 100)}%`;
 		}

@@ -112,6 +112,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	private readonly options: ParadisSpreadsheetGridRendererOptions;
 	private readonly scrollListener: () => void;
 	private readonly keyListener: (event: KeyboardEvent) => void;
+	private readonly copyListener: (event: ClipboardEvent) => void;
 	private resizeObserver: IDisposable | undefined;
 	private disposed = false;
 	private rendering = false;
@@ -154,8 +155,10 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			}
 		};
 		this.keyListener = event => this.onKeyDown(event);
+		this.copyListener = event => this.onCopy(event);
 		container.addEventListener('scroll', this.scrollListener, { passive: true });
 		container.addEventListener('keydown', this.keyListener);
+		container.addEventListener('copy', this.copyListener);
 		this.attachRemeasureTriggers();
 	}
 
@@ -214,6 +217,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.disposed = true;
 		this.container.removeEventListener('scroll', this.scrollListener);
 		this.container.removeEventListener('keydown', this.keyListener);
+		this.container.removeEventListener('copy', this.copyListener);
 		this.resizeObserver?.dispose();
 		for (const schedule of this.mediaSchedules.values()) {
 			schedule.dispose();
@@ -529,6 +533,23 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.queueRender();
 	}
 
+	/**
+	 * 文字を選んでいないときのコピーは、フォーカスのあるセルの値をコピーする。セルは絶対配置の箱で、
+	 * 画面の外の行は描いていないので、選ばずにコピーしても何も入らなかった。選んでいるときはブラウザに任せる。
+	 */
+	private onCopy(event: ClipboardEvent): void {
+		const selection = this.document.getSelection();
+		if (selection && !selection.isCollapsed && selection.toString().length > 0) {
+			return;
+		}
+		const focused = [...this.cells.values()].find(rendered => Number(rendered.element.dataset.row) === this.focused.row && Number(rendered.element.dataset.column) === this.focused.column);
+		if (!focused || !event.clipboardData) {
+			return;
+		}
+		event.clipboardData.setData('text/plain', focused.element.textContent ?? '');
+		event.preventDefault();
+	}
+
 	private scrollFocusedCellIntoView(): void {
 		const bounds = this.viewport.cellBounds(this.focused.row, this.focused.column);
 		let scrollTop = this._frame.scrollTop;
@@ -594,6 +615,11 @@ function cellKey(pane: ParadisSpreadsheetPaneKind, row: number, column: number):
 	return `${pane}:${row}:${column}`;
 }
 
+/** データバーの linear-gradient だけ（url・関数の入れ子・画像は通さない）。 */
+function isSafeGradient(value: string): boolean {
+	return value.length <= 1_024 && /^linear-gradient\([#%(),.\s\w-]*\)$/i.test(value) && !/url\s*\(|expression\s*\(|javascript:|image|element\s*\(/i.test(value);
+}
+
 function boundedText(value: string): string {
 	return typeof value === 'string' ? value.slice(0, 32_768) : '';
 }
@@ -605,6 +631,9 @@ function applySafeStyle(element: HTMLElement, style: Readonly<Record<string, str
 	const target = element.style as unknown as Record<string, string>;
 	for (const [property, value] of Object.entries(style)) {
 		if (safeStyleProperties.has(property) && typeof value === 'string' && value.length <= 1_024 && !/(?:url\s*\(|expression\s*\(|javascript:)/i.test(value)) {
+			target[property] = value;
+		} else if (property === 'backgroundImage' && typeof value === 'string' && isSafeGradient(value)) {
+			// 条件付き書式のデータバー（DOM の表と同じ linear-gradient だけを通す）
 			target[property] = value;
 		}
 	}

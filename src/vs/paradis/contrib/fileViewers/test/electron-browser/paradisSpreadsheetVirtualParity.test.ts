@@ -11,7 +11,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisCellData, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
 import { ParadisSpreadsheetGridRenderer } from '../../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
-import { createVirtualGridIndex, createVirtualGridViewport, legacyGridTile } from '../../electron-browser/paradisSpreadsheetEditor.js';
+import { createVirtualGridIndex, createVirtualGridViewport, legacyGridTile, measureVirtualGridWrappedRows } from '../../electron-browser/paradisSpreadsheetEditor.js';
 import { applyOverflow, buildSheetTableDom } from '../../electron-browser/paradisSpreadsheetRender.js';
 
 const empty: IParadisCellData = { value: '', style: {} };
@@ -132,6 +132,76 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 		deepStrictEqual({ atTwo, restored }, {
 			atTwo: { zoom: '2', containerScroll: [60, 80], frame: [30, 40] },
 			restored: { scrollTop: 30, scrollLeft: 40 },
+		});
+	});
+
+	test('draws the same table styles, filter marker, data bar, vertical position, single borders and wrapped row height as the table', async () => {
+		const border = '1px solid rgb(0, 0, 0)';
+		const longText = '折り返す長い文字です。折り返す長い文字です。折り返す長い文字です。';
+		const data: IParadisSheetData = {
+			name: 'Styles', minCol: 1, columnCount: 3, columnWidths: [80, 80, 80], truncated: false,
+			tables: [{ name: 'T', range: { minR: 1, minC: 1, maxR: 3, maxC: 2 }, headerRow: true, totalsRow: false, showRowStripes: true, showColumnStripes: false, showFirstColumn: false, showLastColumn: false }],
+			filterRanges: [{ minR: 1, minC: 1, maxR: 3, maxC: 2 }],
+			rows: [
+				{ excelRow: 1, height: 20, cells: [text('見出し', { borderBottom: border }), text('列'), text('上', { verticalAlign: 'top' })] },
+				{ excelRow: 2, height: 20, cells: [text('1', { borderTop: border, backgroundImage: 'linear-gradient(to right, rgb(99, 142, 198) 50%, transparent 50%)' }), text('2'), { value: longText, style: {}, wrapText: true }] },
+				{ excelRow: 3, height: 20, cells: [text('3'), text('4'), text('中', { verticalAlign: 'middle' })] },
+			],
+		};
+		const doc = mainWindow.document;
+		const tableHost = doc.body.appendChild(doc.createElement('div'));
+		const dom = buildSheetTableDom(data);
+		tableHost.appendChild(dom.table);
+		const td = (row: number, column: number) => dom.dataRows[row].tr.children[column + 1] as HTMLElement;
+		const roles = (element: HTMLElement) => ['paradis-spreadsheet-table-header', 'paradis-spreadsheet-table-stripe'].filter(name => element.classList.contains(name));
+		const tableRowHeight = dom.dataRows[1].tr.getBoundingClientRect().height;
+		const tableResult = {
+			roles: [roles(td(0, 0)), roles(td(1, 0)), roles(td(2, 0))],
+			filter: [td(0, 0).querySelector('.paradis-spreadsheet-filter-marker') !== null, td(1, 0).querySelector('.paradis-spreadsheet-filter-marker') !== null],
+			dataBar: td(1, 0).style.backgroundImage !== '',
+			valign: [td(0, 2).style.verticalAlign, td(2, 2).style.verticalAlign],
+		};
+
+		const gridHost = doc.body.appendChild(doc.createElement('div'));
+		gridHost.style.width = '600px';
+		gridHost.style.height = '300px';
+		gridHost.style.overflow = 'auto';
+		gridHost.style.position = 'relative';
+		const viewport = createVirtualGridViewport(data, 17, 'styles', measureVirtualGridWrappedRows(gridHost, data));
+		const index = createVirtualGridIndex(data);
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(gridHost, viewport, { getViewport: async request => legacyGridTile(data, request, index), measureCell: () => ({ width: 1, height: 1 }) }));
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 600, height: 300 });
+		const cell = (row: number, column: number) => gridHost.querySelector<HTMLElement>(`.paradis-spreadsheet-virtual-cell[data-row="${row + 1}"][data-column="${column + 1}"]`)!;
+		const gridResult = {
+			roles: [roles(cell(0, 0)), roles(cell(1, 0)), roles(cell(2, 0))],
+			filter: [cell(0, 0).classList.contains('paradis-spreadsheet-virtual-filter'), cell(1, 0).classList.contains('paradis-spreadsheet-virtual-filter')],
+			dataBar: cell(1, 0).style.backgroundImage !== '',
+			valign: [cell(0, 2).classList.contains('paradis-spreadsheet-virtual-valign-top') ? 'top' : '', cell(2, 2).classList.contains('paradis-spreadsheet-virtual-valign-middle') ? 'middle' : ''],
+		};
+		// 罫線は 1 本: 上のセルの下の辺だけが描き、下のセルの上の辺は描かない
+		const borders = { upperBottom: cell(0, 0).style.borderBottom, lowerTop: cell(1, 0).style.borderTop };
+		const wrappedRow = viewport.cellBounds(2, 3).height;
+		// 文字を選んでいないコピーは、フォーカスのあるセルの値になる
+		await renderer.revealCell(2, 1);
+		const copied: string[] = [];
+		const copy = new ClipboardEvent('copy', { clipboardData: new DataTransfer(), cancelable: true });
+		gridHost.dispatchEvent(copy);
+		copied.push(copy.clipboardData?.getData('text/plain') ?? '');
+		tableHost.remove();
+		gridHost.remove();
+
+		deepStrictEqual({
+			table: tableResult,
+			grid: gridResult,
+			borders,
+			wrappedRowGrows: wrappedRow > 20 && Math.abs(wrappedRow - tableRowHeight) <= 2,
+			copied,
+		}, {
+			table: { roles: [['paradis-spreadsheet-table-header'], ['paradis-spreadsheet-table-stripe'], []], filter: [true, false], dataBar: true, valign: ['top', 'middle'] },
+			grid: { roles: [['paradis-spreadsheet-table-header'], ['paradis-spreadsheet-table-stripe'], []], filter: [true, false], dataBar: true, valign: ['top', 'middle'] },
+			borders: { upperBottom: border, lowerTop: '' },
+			wrappedRowGrows: true,
+			copied: ['1'],
 		});
 	});
 });
