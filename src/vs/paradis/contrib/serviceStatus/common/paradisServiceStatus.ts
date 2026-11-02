@@ -123,7 +123,7 @@ export function paradisServiceStatusSeverity(indicator: string | undefined): Par
 	}
 }
 
-/** 重大度の表示ラベル。トリガーの `aria-label` とポップオーバーのバッジで共有する。 */
+/** 重大度の表示ラベル。トリガーの `aria-label`・ホバー・ポップオーバーで共有する。 */
 export function paradisServiceStatusSeverityLabel(severity: ParadisServiceStatusSeverity): string {
 	switch (severity) {
 		case 'ok':
@@ -137,4 +137,9 @@ export function paradisServiceStatusSeverityLabel(severity: ParadisServiceStatus
 		default:
 			return localize('paradis.serviceStatus.severity.unknown', "不明");
 	}
+}
+
+/** 「Claude: 正常」のように、サービスの名前と状態を 1 つの文にする。タイトルバーの項目のホバーと aria-label で使う。 */
+export function paradisServiceStatusStateText(provider: ParadisServiceStatusProvider, severity: ParadisServiceStatusSeverity): string {
+	return localize('paradis.serviceStatus.stateText', "{0}: {1}", PARADIS_SERVICE_STATUS_SOURCES[provider].label, paradisServiceStatusSeverityLabel(severity));
 }

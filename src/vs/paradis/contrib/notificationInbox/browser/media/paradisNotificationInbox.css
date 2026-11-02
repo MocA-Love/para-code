@@ -18,10 +18,10 @@
 	display: inline-flex;
 	align-items: center;
 	height: 22px;
-	padding: 0 var(--vscode-spacing-size40);
+	padding: 0 3px;
 	border-radius: var(--vscode-cornerRadius-small);
 	cursor: pointer;
-	color: var(--vscode-titleBar-activeForeground);
+	color: inherit;
 	-webkit-app-region: no-drag;
 	white-space: nowrap;
 }
