@@ -9,6 +9,7 @@ import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../../platform/browserView/common/paraBrowserViewScreenshot.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
+import { PARADIS_PAGE_URL_FRESH_MS } from '../../common/paradisCdpExtensionScope.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
 import { paradisCdpErrorFrame, paradisForwardableCdpFrame, paradisReadCdpFrame } from '../../node/paradisCdpFrames.js';
 import { IParadisBoundContext, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
@@ -1271,6 +1272,46 @@ suite('Paradis CDP screenshot filter', () => {
 		}
 	});
 
+	test('a URL check the browser never answers refuses that command as retryable on both routes, and the next command checks again', async () => {
+		const clock = sinon.useFakeTimers();
+		fixtureTargetInfoSilent.value = true;
+		try {
+			const browser = await createOpenBrowserProxyFixture();
+			publishAllowedSession(browser, 'session-1');
+			browser.upstream.sent.length = 0;
+			// The URL the attach event brought is no longer fresh, so the next read of the shared page checks it.
+			await clock.tickAsync(PARADIS_PAGE_URL_FRESH_MS + 1);
+			const page = createProxyFixture(context());
+			paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+			page.upstream.readyState = TestWebSocket.OPEN;
+			page.upstream.emit('open');
+			page.client.emit('message', Buffer.from(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: '1' } })));
+			browser.client.emit('message', Buffer.from(JSON.stringify({ id: 2, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
+			await clock.tickAsync(4_000);
+			const refusedBefore = [...parseSent(page.client), ...parseSent(browser.client)].filter(frame => (frame as { error?: unknown }).error !== undefined).length;
+			await clock.tickAsync(2_000);
+			const refused = [...parseSent(page.client), ...parseSent(browser.client)]
+				.filter(frame => (frame as { error?: unknown }).error !== undefined)
+				.map(frame => [(frame as { id: number }).id, /^PARA_BROWSER_RETRYABLE: Para Code could not confirm which page/.test((frame as { error: { message: string } }).error.message)]);
+			const forwardedWhileSilent = [...parseSent(page.upstream), ...parseSent(browser.upstream)].map(frame => (frame as { id: number }).id).filter(id => id > 0);
+			// The browser answers again: the next command is checked again and goes through.
+			fixtureTargetInfoSilent.value = false;
+			page.client.emit('message', Buffer.from(JSON.stringify({ id: 3, method: 'Runtime.evaluate', params: { expression: '1' } })));
+			browser.client.emit('message', Buffer.from(JSON.stringify({ id: 4, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
+			await clock.tickAsync(10);
+			const forwardedAfter = [...parseSent(page.upstream), ...parseSent(browser.upstream)].map(frame => (frame as { id: number }).id).filter(id => id > 0);
+			assert.deepStrictEqual({ refusedBefore, refused, forwardedWhileSilent, forwardedAfter }, {
+				refusedBefore: 0,
+				refused: [[1, true], [2, true]],
+				forwardedWhileSilent: [],
+				forwardedAfter: [3, 4],
+			});
+		} finally {
+			fixtureTargetInfoSilent.value = false;
+			clock.restore();
+		}
+	});
+
 	test('wraps scripts registered for new documents so they never run in an extension page, on both routes', async () => {
 		const browser = await createOpenBrowserProxyFixture();
 		publishAllowedSession(browser, 'session-1');
@@ -2155,6 +2196,8 @@ const fixturePageUrl = { value: 'https://example.test/' };
 const fixtureTargetUrls = new Map<string, string>();
 /** What a document answers when the gateway asks it where it is, and how long it takes. */
 const fixtureDocumentLocation = { value: 'https://example.test/', delayMs: 0 };
+/** When true, the fake upstream never answers the gateway's own Target.getTargetInfo (a wedged browser). */
+const fixtureTargetInfoSilent = { value: false };
 
 function createProxyFixture(ctx: IParadisBoundContext): {
 	readonly ctx: IParadisBoundContext;
@@ -2192,6 +2235,9 @@ function createProxyFixture(ctx: IParadisBoundContext): {
 				return;
 			}
 			if (frame?.method === 'Target.getTargetInfo' && typeof frame.id === 'number' && frame.id < 0) {
+				if (fixtureTargetInfoSilent.value) {
+					return;
+				}
 				const targetId = frame.params?.targetId ?? 'target-1';
 				queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify({ id: frame.id, result: { targetInfo: { targetId, type: 'page', url: fixtureTargetUrls.get(targetId) ?? fixturePageUrl.value } } }))));
 				return;
