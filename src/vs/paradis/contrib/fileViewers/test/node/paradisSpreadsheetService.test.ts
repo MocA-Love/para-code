@@ -90,10 +90,12 @@ suite('ParadisSpreadsheetService', () => {
 			`<worksheet><sheetData/>${tail}</worksheet>`,
 			`<worksheet><sheetData><row r="1"/></sheetData >${tail}</worksheet>`,
 			`<worksheet>${cells.replace('</sheetData>', '')}${tail}</worksheet>`,
+			`<worksheet><!-- <sheetData> --><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>${cells}${tail}</worksheet>`,
+			`<worksheet><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t><![CDATA[</sheetData><pageSetup orientation="portrait"/>]]></t></is></c></row></sheetData>${tail}</worksheet>`,
 		];
 		const read = (xml: string) => ({ setup: parsePageSetup(xml), breaks: xml.match(/<rowBreaks[^>]*>[\s\S]*?<\/rowBreaks>/)?.[0], validations: xml.match(/<dataValidation\b[^>]*>/g) });
 		deepStrictEqual(samples.map(xml => read(paradisSheetXmlWithoutSheetData(xml))), samples.map(read));
-		deepStrictEqual(samples.map(xml => paradisSheetXmlWithoutSheetData(xml).includes('<c r=')), [false, false, false, false, true]);
+		deepStrictEqual(samples.map(xml => paradisSheetXmlWithoutSheetData(xml).includes('<c r=')), [false, false, false, false, true, true, true]);
 	});
 
 	test('loads and shares the heavy runtime only when parsing starts', async () => {
