@@ -35,7 +35,8 @@ import { IExtensionService } from '../../../../workbench/services/extensions/com
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { paradisCollectAllTerminalInstances, paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
+import { paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';

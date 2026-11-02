@@ -19,7 +19,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
-import { paradisCollectAllTerminalInstances } from '../browser/paradisLivePaneInstances.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { paradisReplayedPromptShownOnScreen } from '../browser/paradisReplayedPromptCheck.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';

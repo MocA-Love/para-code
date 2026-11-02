@@ -24,7 +24,6 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisRedactSecrets } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { paradisNextCronOccurrence, paradisParseCron } from '../common/paradisScheduleCron.js';
 import {
 	IParadisScheduledRunDefinition,
@@ -40,7 +39,6 @@ import {
 	paradisIsActiveRunStatus,
 	PARADIS_SCHEDULED_RUN_CATCH_UP_MS,
 	PARADIS_SCHEDULED_RUN_HISTORY_LIMIT,
-	PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH,
 	PARADIS_SCHEDULED_RUN_LEASE_MS,
 	PARADIS_SCHEDULED_RUN_MAX_CONCURRENT,
 	paradisCountRunningRuns,
@@ -49,12 +47,10 @@ import {
 	PARADIS_SCHEDULED_RUN_TIMEOUT_MS,
 	paradisRevalidateStoredDefinition,
 	paradisSanitizeScheduledRunPrompt,
+	paradisScheduledRunLastMessage,
 	paradisValidateScheduledRunDraft,
 } from '../common/paradisScheduledRuns.js';
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunReport } from '../common/paradisScheduledRunsSanitize.js';
-
-/** 最後の発言を伏せるとき、残す長さより余分に取る分（境目にかかったトークンも形のまま伏せられるように）。 */
-const LAST_MESSAGE_REDACTION_MARGIN = 256;
 
 /** transcript の置き場所からエージェントを見分ける（Claude は `projects/`、Codex は `sessions/` の rollout）。 */
 export function paradisAgentFromTranscriptPath(path: string | undefined): 'claude' | 'codex' | undefined {
@@ -482,10 +478,7 @@ export class ParadisScheduledRunsService extends Disposable {
 		}
 		const lastMessage = event.event === 'Stop' ? event.payload?.last_assistant_message : undefined;
 		if (typeof lastMessage === 'string' && lastMessage.trim().length > 0) {
-			// 履歴はファイルに残り画面にも出るので、秘密らしい値を伏せてから切り詰める（切り詰めた後だと、境目で
-			// 切れたトークンの断片が伏せ字の形に当たらず残る）。伏せる正規表現は長い文で遅くなるので、少し余分に
-			// 取った先頭だけを伏せる
-			patch.lastMessage = paradisRedactSecrets(lastMessage.trim().slice(0, PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH + LAST_MESSAGE_REDACTION_MARGIN)).slice(0, PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH);
+			patch.lastMessage = paradisScheduledRunLastMessage(lastMessage);
 		}
 		if (Object.keys(patch).length > 0) {
 			this.updateRun(run.id, patch);
