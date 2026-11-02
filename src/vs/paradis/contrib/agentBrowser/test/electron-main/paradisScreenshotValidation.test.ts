@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { nativeImage } from 'electron';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { browserViewBitmapHasVisibleAlpha } from '../../../../../platform/browserView/common/browserViewScreenshot.js';
+import { browserViewBitmapHasVisibleAlpha } from '../../../../../platform/browserView/common/paraBrowserViewScreenshot.js';
 
 suite('Paradis screenshot NativeImage validation', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();

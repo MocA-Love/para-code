@@ -374,7 +374,7 @@ export interface IParadisBrowserLiveCaptureTarget {
  * 別ウィンドウで見張ること」なので、裏のタブや他スペースのページこそ見たい対象になる。
  *
  * ただし裏のページは撮影のたびに main 側で可視化のキックと1フレームぶんのペイント待ちが走り
- * (browserViewScreenshot.ts の prepareBrowserViewScreenshotCapture)、撮影はビューごとに
+ * (paraBrowserViewScreenshot.ts の prepareBrowserViewScreenshotCapture)、撮影はビューごとに
  * 直列化されているため、エージェント自身のスクリーンショットを待たせる。前面のタブより
  * 間隔を空けるのはそのため。負荷が気になる場合は更新頻度そのものを下げられる。
  */
