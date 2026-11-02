@@ -27,10 +27,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import {
-	IParadisGithubCallCounts,
-	IParadisGithubConsumption,
 	IParadisGithubMetricsSnapshot,
-	IParadisGithubOperationStat,
 	IParadisGithubRateLimitEntry,
 	paradisGithubFormatCountdown,
 	paradisGithubOtherConsumption,
@@ -54,18 +51,13 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const VISIBLE_REFRESH_INTERVAL_MS = 60_000;
 /** コピーボタンのフィードバック表示時間。 */
 const COPIED_FEEDBACK_MS = 2000;
-/** 表に出す呼び出し元・スペースの最大数。 */
+/** 表に出す呼び出し元の最大数。 */
 const MAX_OPERATION_ROWS = 12;
-const MAX_SPACE_ROWS = 12;
 /** 一覧に出す直近エラーの最大数。 */
 const MAX_ERROR_ROWS = 5;
 /** ホストから幅を教えてもらう前に仮定しておく幅。 */
 const DEFAULT_SECTION_WIDTH = 900;
 
-/** 内訳・概況カードで見る時間窓。「セッション」はレート枠消費(アカウント全体)には対応する集計が無いため、1時間相当にフォールバックする。 */
-type ParadisGithubWindowKey = '5m' | '1h' | 'session';
-/** 資源での絞り込み。'all' は全資源を合算表示する。 */
-type ParadisGithubResourceFilter = 'all' | 'core' | 'graphql';
 
 export class ParadisGithubMetricsSection extends Disposable implements IParadisUsageSection {
 
@@ -86,9 +78,6 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 	private loading = false;
 	/** ホストから渡された使える幅。実測できないダイアログ内でもチャートを組めるよう覚えておく。 */
 	private sectionWidth = DEFAULT_SECTION_WIDTH;
-	/** セグメントコントロールの選択状態。データの再取得はせず、既存スナップショットの再描画だけで反映する。 */
-	private windowKey: ParadisGithubWindowKey = '5m';
-	private resourceFilter: ParadisGithubResourceFilter = 'all';
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
@@ -219,119 +208,135 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 			);
 		}
 
-		this.renderControls(body);
-		this.renderOverview(body, snapshot);
-		this.renderRateLimits(body, snapshot);
-		this.renderConsumption(body, snapshot);
-		this.renderBreakdown(body, snapshot);
+		// 「枠は足りるか」と「誰が使っているか」の 2 つに絞る（Q537 の 14 A）。GitHub の枠は 1 時間の窓なので、どれも直近 1 時間で見る
+		this.renderLimitsAndUsers(body, snapshot);
+		this.renderRemainingTrend(body, snapshot);
+		this.renderParaCodeBreakdown(body, snapshot);
 		this.renderErrors(body, snapshot);
 		this.renderDebugCopy(body, snapshot);
 	}
 
-	/** 期間・リソースのセグメントコントロール。クリックしても再取得はせず renderBody() を呼び直すだけ。 */
-	private renderControls(container: HTMLElement): void {
-		const row = dom.append(container, $('.paradis-ghm-segrow'));
+	/** 左に「枠は足りるか」（資源ごとの残量・リセット・このペースでの見込み・止めている取得）、右に「誰が使っているか」。 */
+	private renderLimitsAndUsers(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
+		const grid = dom.append(container, $('.paradis-ghm-grid.cols2'));
 
-		dom.append(row, $('.paradis-ghm-seggroup-label')).textContent = localize('paradis.githubMetrics.controls.window', "期間");
-		const windowSeg = dom.append(row, $('.paradis-ghm-seg'));
-		const windowOptions: { key: ParadisGithubWindowKey; label: string }[] = [
-			{ key: '5m', label: localize('paradis.githubMetrics.window.5m', "5分") },
-			{ key: '1h', label: localize('paradis.githubMetrics.window.1h', "1時間") },
-			{ key: 'session', label: localize('paradis.githubMetrics.window.session', "セッション") },
-		];
-		for (const option of windowOptions) {
-			const button = dom.append(windowSeg, $('button')) as HTMLButtonElement;
-			button.textContent = option.label;
-			button.classList.toggle('checked', this.windowKey === option.key);
-			this.bodyDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => {
-				this.windowKey = option.key;
-				this.renderBody();
-			}));
-		}
-
-		dom.append(row, $('.paradis-ghm-seggroup-label')).textContent = localize('paradis.githubMetrics.controls.resource', "リソース");
-		const resourceSeg = dom.append(row, $('.paradis-ghm-seg'));
-		const resourceOptions: { key: ParadisGithubResourceFilter; label: string; gql?: boolean }[] = [
-			{ key: 'all', label: localize('paradis.githubMetrics.resource.all', "すべて") },
-			{ key: 'core', label: localize('paradis.githubMetrics.resource.core', "コア（REST）") },
-			{ key: 'graphql', label: localize('paradis.githubMetrics.resource.graphql', "GraphQL"), gql: true },
-			// search は枠の取得経路が無い（専用エンドポイントを叩かないとヘッダが返らない）ため出さない
-		];
-		for (const option of resourceOptions) {
-			const button = dom.append(resourceSeg, $('button')) as HTMLButtonElement;
-			button.textContent = option.label;
-			button.classList.toggle('checked', this.resourceFilter === option.key);
-			if (option.gql) {
-				button.classList.add('gql');
-			}
-			this.bodyDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => {
-				this.resourceFilter = option.key;
-				this.renderBody();
-			}));
-		}
-	}
-
-	private renderOverview(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
-		const grid = dom.append(container, $('.paradis-ghm-grid.cols4'));
-
-		for (const resource of PARADIS_GITHUB_PRIMARY_RESOURCES) {
-			const entry = snapshot.rateLimits.find(item => item.resource === resource);
-			const card = dom.append(grid, $('.paradis-ghm-card'));
-			card.classList.toggle('emph', this.resourceFilter === resource);
-			dom.append(card, $('.k')).textContent = localize('paradis.githubMetrics.card.remaining', "残り {0}", paradisGithubResourceLabel(resource));
-			if (entry) {
-				const ratio = entry.limit > 0 ? Math.max(0, Math.min(1, entry.remaining / entry.limit)) : 0;
-				const value = dom.append(card, $('.v'));
-				value.textContent = entry.remaining.toLocaleString();
-				dom.append(value, $('small')).textContent = ` / ${entry.limit.toLocaleString()}`;
-				const gauge = dom.append(card, $('.paradis-ghm-gauge'));
-				dom.append(gauge, $(`span.${paradisGithubSeverity(ratio)}`)).style.width = `${paradisGithubRoundedPercent(ratio)}%`;
-				dom.append(card, $('.s')).textContent = entry.resetAt > snapshot.generatedAt
-					? localize('paradis.githubMetrics.card.resetsIn', "{0}後にリセット", paradisGithubFormatCountdown(entry.resetAt - snapshot.generatedAt))
-					: localize('paradis.githubMetrics.card.resetting', "リセット中");
-			} else {
-				dom.append(card, $('.v')).textContent = '—';
-				dom.append(card, $('.s')).textContent = localize('paradis.githubMetrics.card.noValue', "取得できません");
-			}
-		}
-
-		// レート枠の消費(アカウント全体)には「セッション」に対応する累計が無いため、1時間相当にフォールバックする
-		const consumptionWindow = this.windowKey === '5m' ? '5m' : '1h';
-		const consumedCard = dom.append(grid, $('.paradis-ghm-card'));
-		dom.append(consumedCard, $('.k')).textContent = consumptionWindow === '5m'
-			? localize('paradis.githubMetrics.card.consumed5m', "直近5分の消費量")
-			: localize('paradis.githubMetrics.card.consumed1h', "直近1時間の消費量");
-		const consumedValue = sumConsumption(snapshot.consumption, this.resourceFilter, consumptionWindow);
-		dom.append(consumedCard, $('.v')).textContent = consumedValue !== undefined ? Math.round(consumedValue).toLocaleString() : '—';
-		const primaryConsumption = snapshot.consumption.find(item => item.resource === (this.resourceFilter === 'all' ? 'core' : this.resourceFilter));
-		dom.append(consumedCard, $('.s')).textContent = primaryConsumption?.perMinute !== undefined
-			? localize('paradis.githubMetrics.card.pace', "{0} req/分・全ソース合計", primaryConsumption.perMinute.toFixed(1))
-			: localize('paradis.githubMetrics.card.measuring', "計測中…");
-
-		const operationCounts = sumOperationCounts(snapshot.operations, this.resourceFilter, this.windowKey);
-		const callsCard = dom.append(grid, $('.paradis-ghm-card'));
-		dom.append(callsCard, $('.k')).textContent = localize('paradis.githubMetrics.card.paraCalls', "Para Codeが送信（{0}）", windowLabel(this.windowKey));
-		dom.append(callsCard, $('.v')).textContent = operationCounts.calls.toLocaleString();
-		dom.append(callsCard, $('.s')).textContent = localize(
-			'paradis.githubMetrics.card.paraCallsSub',
-			"失敗{0}件・レート制限{1}件・セッション内{2}件",
-			operationCounts.failures,
-			operationCounts.rateLimited,
-			snapshot.totals.sessionCalls
-		);
-	}
-
-	private renderRateLimits(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
+		const limitsColumn = dom.append(grid, $('div'));
+		dom.append(limitsColumn, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.enough', "枠は足りるか（アカウント全体）");
+		const limitsPanel = dom.append(limitsColumn, $('.paradis-ghm-panel'));
 		if (snapshot.rateLimits.length === 0) {
+			dom.append(limitsPanel, $('.paradis-ghm-empty')).textContent = localize('paradis.githubMetrics.limits.none', "まだ枠の残りを取得できていません。");
+		}
+		// 主要資源を先に、それ以外は元の順で続ける（見る頻度の高い順に並べる）
+		for (const entry of [...snapshot.rateLimits].sort((a, b) => resourceRank(a) - resourceRank(b))) {
+			this.renderRateLimitRow(limitsPanel, entry, snapshot);
+		}
+		const pauses = snapshot.rateLimitPauses ?? [];
+		dom.append(limitsPanel, $('.paradis-ghm-hint')).textContent = pauses.length === 0
+			? localize('paradis.githubMetrics.pauses.none', "止めている取得: なし（枠を使い切ると、プルリクエストと Issue の更新をリセットまで止めます）")
+			: localize('paradis.githubMetrics.pauses.some', "止めている取得: {0}", pauses.map(pause => localize('paradis.githubMetrics.pauses.entry', "{0} の枠でプルリクエストと Issue の更新を {1} 分後まで", paradisGithubResourceLabel(pause.resource), Math.max(1, Math.ceil((pause.until - snapshot.generatedAt) / 60_000)))).join('、'));
+
+		const usersColumn = dom.append(grid, $('div'));
+		dom.append(usersColumn, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.who', "誰が使っているか（直近1時間）");
+		const usersPanel = dom.append(usersColumn, $('.paradis-ghm-panel'));
+		this.renderUsers(usersPanel, snapshot);
+	}
+
+	/** Para Code が送ったものと、それ以外（枠の消費から Para Code の分を引いた推定）。 */
+	private renderUsers(panel: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
+		const paraCode = { core: 0, graphql: 0 };
+		for (const operation of snapshot.operations) {
+			const counts = operation.rolling1h;
+			paraCode[operation.resource] += counts.calls - counts.rateLimited;
+		}
+		const paraTotal = paraCode.core + paraCode.graphql;
+		const other = paradisGithubOtherConsumption(snapshot.consumption, snapshot.operations, 'all', '1h');
+		const maxCalls = Math.max(1, paraTotal, Math.round(other ?? 0));
+
+		const paraRow = dom.append(panel, $('.paradis-ghm-hbar-row'));
+		const paraHead = dom.append(paraRow, $('.paradis-ghm-hbar-head'));
+		dom.append(paraHead, $('.paradis-ghm-hbar-name')).textContent = localize('paradis.githubMetrics.who.paraCode', "Para Code");
+		dom.append(paraHead, $('.paradis-ghm-hbar-value')).textContent = paraTotal.toLocaleString();
+		const paraTrack = dom.append(paraRow, $('.paradis-ghm-hbar-track'));
+		dom.append(paraTrack, $('span.core')).style.width = `${(paraCode.core / maxCalls) * 100}%`;
+		dom.append(paraTrack, $('span.graphql')).style.width = `${(paraCode.graphql / maxCalls) * 100}%`;
+		const top = snapshot.operations
+			.filter(operation => operation.rolling1h.calls > 0 && operation.topWorktreePath !== PARADIS_GITHUB_MONITOR_SPACE)
+			.sort((a, b) => b.rolling1h.calls - a.rolling1h.calls)
+			.slice(0, 3)
+			.map(operation => `${operation.callSite} ${operation.rolling1h.calls}`);
+		dom.append(paraRow, $('.paradis-ghm-sub')).textContent = top.length > 0
+			? localize('paradis.githubMetrics.who.paraCodeTop', "REST {0}・GraphQL {1} · {2}", paraCode.core, paraCode.graphql, top.join('・'))
+			: localize('paradis.githubMetrics.who.paraCodeCounts', "REST {0}・GraphQL {1}", paraCode.core, paraCode.graphql);
+
+		const otherRow = dom.append(panel, $('.paradis-ghm-hbar-row'));
+		const otherHead = dom.append(otherRow, $('.paradis-ghm-hbar-head'));
+		dom.append(otherHead, $('.paradis-ghm-hbar-name')).textContent = localize('paradis.githubMetrics.who.other', "Para Code 以外");
+		dom.append(otherHead, $('.paradis-ghm-hbar-value')).textContent = other !== undefined ? Math.round(other).toLocaleString() : '—';
+		const otherTrack = dom.append(otherRow, $('.paradis-ghm-hbar-track'));
+		dom.append(otherTrack, $('span.other')).style.width = `${((other ?? 0) / maxCalls) * 100}%`;
+		dom.append(otherRow, $('.paradis-ghm-sub')).textContent = other !== undefined
+			? localize('paradis.githubMetrics.who.otherSub', "エージェントがターミナルで打った gh、拡張機能、ブラウザなど。枠の消費から Para Code の送信を引いた推定で、中身は GitHub から分かりません")
+			: localize('paradis.githubMetrics.who.measuring', "枠の消費を計測中です（この画面かステータスバーが出ている間に残量を取ります）");
+	}
+
+	/** 直近 60 分の残量の推移。サンプルの間隔に関係なく、時刻の軸をそろえて線で描く。 */
+	private renderRemainingTrend(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
+		const series = PARADIS_GITHUB_PRIMARY_RESOURCES
+			.map(resource => ({ resource, points: snapshot.consumption.find(item => item.resource === resource)?.history ?? [] }))
+			.filter(entry => entry.points.length >= 2);
+		if (series.length === 0) {
 			return;
 		}
-		dom.append(container, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.limits', "レート制限");
-		const list = dom.append(container, $('.paradis-ghm-panel'));
+		dom.append(container, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.remainingTrend', "残量の推移（直近60分）");
+		const panel = dom.append(container, $('.paradis-ghm-panel.padded'));
+		const legend = dom.append(panel, $('.paradis-ghm-legend'));
+		for (const { resource } of series) {
+			const item = dom.append(legend, $('span'));
+			dom.append(item, $('i')).style.background = resource === 'graphql' ? 'var(--vscode-charts-purple)' : 'var(--vscode-charts-blue)';
+			dom.append(item, $('span')).textContent = paradisGithubResourceLabel(resource);
+		}
+		panel.appendChild(createRemainingChart(panel.ownerDocument, series, snapshot.generatedAt));
+		const axis = dom.append(panel, $('.paradis-ghm-chart-axis'));
+		dom.append(axis, $('span')).textContent = localize('paradis.githubMetrics.trend.start', "60分前");
+		dom.append(axis, $('span')).textContent = localize('paradis.githubMetrics.trend.now', "現在");
+		dom.append(panel, $('.paradis-ghm-chart-caption')).textContent = localize('paradis.githubMetrics.trend.remainingCaption', "縦軸は残りの割合。点線は枠のリセット。残量はこの画面かステータスバーが出ている間だけ取ります。");
+	}
 
-		// 主要資源を先に、それ以外は元の順で続ける（見る頻度の高い順に並べる）
-		const ordered = [...snapshot.rateLimits].sort((a, b) => resourceRank(a) - resourceRank(b));
-		for (const entry of ordered) {
-			this.renderRateLimitRow(list, entry, snapshot);
+	/** Para Code が送ったものの内訳（直近 1 時間。0 件の行と、残量を取るための呼び出しは出さない）。 */
+	private renderParaCodeBreakdown(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
+		dom.append(container, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.paraCode', "Para Code の内訳（直近1時間）");
+		const panel = dom.append(container, $('.paradis-ghm-panel'));
+		const operations = snapshot.operations
+			.filter(operation => operation.rolling1h.calls > 0 && operation.topWorktreePath !== PARADIS_GITHUB_MONITOR_SPACE)
+			.sort((a, b) => b.rolling1h.calls - a.rolling1h.calls);
+		if (operations.length === 0) {
+			dom.append(panel, $('.paradis-ghm-empty')).textContent = localize('paradis.githubMetrics.paraCode.none', "直近1時間に Para Code が送ったものはありません。");
+			return;
+		}
+		const maxCalls = Math.max(1, ...operations.map(operation => operation.rolling1h.calls));
+		for (const operation of operations.slice(0, MAX_OPERATION_ROWS)) {
+			const counts = operation.rolling1h;
+			const row = dom.append(panel, $('.paradis-ghm-hbar-row'));
+			const head = dom.append(row, $('.paradis-ghm-hbar-head'));
+			const name = dom.append(head, $('.paradis-ghm-hbar-name.paradis-ghm-mono'));
+			name.textContent = operation.callSite;
+			if (operation.topWorktreePath) {
+				dom.append(name, $('.paradis-ghm-hbar-sub')).textContent = localize('paradis.githubMetrics.table.topWorktree', "最多: {0}", spaceLabel(operation.topWorktreePath));
+			}
+			dom.append(head, $('.paradis-ghm-hbar-value')).textContent = counts.calls.toLocaleString();
+			const track = dom.append(row, $('.paradis-ghm-hbar-track'));
+			dom.append(track, $(`span.${operation.resource}`)).style.width = `${Math.max(2, (counts.calls / maxCalls) * 100)}%`;
+			const facts: string[] = [localize('paradis.githubMetrics.hbar.avg', "平均{0}", paradisGithubFormatDuration(counts.avgDurationMs))];
+			if (counts.failures > 0) {
+				facts.push(localize('paradis.githubMetrics.hbar.failed', "失敗{0}件", counts.failures));
+			}
+			if (counts.lastRunAt !== undefined) {
+				facts.push(localize('paradis.githubMetrics.hbar.last', "最終: {0}", fromNow(counts.lastRunAt, true)));
+			}
+			dom.append(row, $('.paradis-ghm-sub')).textContent = facts.join(' · ');
+			if (operation.lastErrorMessage) {
+				dom.append(row, $('.paradis-ghm-sub.bad')).textContent = localize('paradis.githubMetrics.hbar.lastError', "直近のエラー（全期間）: {0}", operation.lastErrorMessage);
+			}
 		}
 	}
 
@@ -361,172 +366,10 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 		}
 		if (consumption?.exhaustionEtaMs !== undefined) {
 			facts.push(localize('paradis.githubMetrics.limit.eta', "このペースだとあと{0}で枯渇", paradisGithubFormatCountdown(consumption.exhaustionEtaMs)));
+		} else if (consumption?.perMinute !== undefined && entry.resetAt > snapshot.generatedAt) {
+			facts.push(localize('paradis.githubMetrics.limit.enough', "このペースならリセットまでもつ"));
 		}
 		dom.append(row, $('.paradis-ghm-limit-facts')).textContent = facts.join(' · ');
-	}
-
-	private renderConsumption(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
-		const core = snapshot.consumption.find(item => item.resource === 'core');
-		const graphql = snapshot.consumption.find(item => item.resource === 'graphql');
-
-		if (this.resourceFilter === 'all') {
-			if ((!core || core.series.length < 2) && (!graphql || graphql.series.length < 2)) {
-				return;
-			}
-			dom.append(container, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.trend', "消費量の推移");
-			const panel = dom.append(container, $('.paradis-ghm-panel.padded'));
-			dom.append(panel, $('.paradis-ghm-chart-caption')).textContent =
-				localize('paradis.githubMetrics.trend.caption.all', "サンプル間で消費したリクエスト数（全ソース合算、右が最新）。サンプルはこの画面またはステータスバーが表示されている間だけ取得するため、各バーの時間幅は揃いません。");
-			const legend = dom.append(panel, $('.paradis-ghm-legend'));
-			const coreLegend = dom.append(legend, $('span'));
-			dom.append(coreLegend, $('i', { style: 'background:var(--vscode-charts-blue)' }));
-			dom.append(coreLegend, $('span')).textContent = paradisGithubResourceLabel('core');
-			const graphqlLegend = dom.append(legend, $('span'));
-			dom.append(graphqlLegend, $('i', { style: 'background:var(--vscode-charts-purple)' }));
-			dom.append(graphqlLegend, $('span')).textContent = paradisGithubResourceLabel('graphql');
-			panel.appendChild(createStackedBarChart(panel.ownerDocument, core?.series ?? [], 'core', graphql?.series ?? [], 'graphql'));
-			return;
-		}
-
-		const consumption = snapshot.consumption.find(item => item.resource === this.resourceFilter);
-		if (!consumption || consumption.series.length < 2) {
-			return;
-		}
-		dom.append(container, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.trendResource', "{0}の消費量の推移", paradisGithubResourceLabel(this.resourceFilter));
-		const panel = dom.append(container, $('.paradis-ghm-panel.padded'));
-		dom.append(panel, $('.paradis-ghm-chart-caption')).textContent =
-			localize('paradis.githubMetrics.trend.caption', "サンプル間で消費したリクエスト数（全ソース合算、右が最新）。サンプルはこの画面またはステータスバーが表示されている間だけ取得するため、各バーの時間幅は揃いません。");
-		panel.appendChild(createBarChart(panel.ownerDocument, consumption.series, this.resourceFilter));
-	}
-
-	/** 内訳を「呼び出し元」「スペース」の2カラムで見せる。ccusageダッシュボードと同じ2カラムパネル構成。 */
-	private renderBreakdown(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
-		const grid = dom.append(container, $('.paradis-ghm-grid.cols2'));
-
-		const callerColumn = dom.append(grid, $('div'));
-		const callerTitle = dom.append(callerColumn, $('.paradis-ghm-section-title'));
-		callerTitle.textContent = localize('paradis.githubMetrics.section.byCaller', "内訳：呼び出し元");
-		if (this.resourceFilter === 'graphql') {
-			dom.append(callerTitle, $('span.hint')).textContent = localize('paradis.githubMetrics.byCaller.graphqlHint', "（GraphQL操作）");
-		}
-		const callerPanel = dom.append(callerColumn, $('.paradis-ghm-panel'));
-		this.renderCallerBreakdown(callerPanel, snapshot);
-
-		const spaceColumn = dom.append(grid, $('div'));
-		const spaceTitle = dom.append(spaceColumn, $('.paradis-ghm-section-title'));
-		spaceTitle.textContent = localize('paradis.githubMetrics.section.bySpace', "内訳：スペース");
-		if (this.resourceFilter !== 'all') {
-			dom.append(spaceTitle, $('span.hint')).textContent = localize('paradis.githubMetrics.bySpace.allResourcesHint', "（全リソース）");
-		}
-		const spacePanel = dom.append(spaceColumn, $('.paradis-ghm-panel'));
-		this.renderSpaceBreakdown(spacePanel, snapshot);
-	}
-
-	private renderCallerBreakdown(panel: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
-		const operations = snapshot.operations
-			.filter(operation => this.resourceFilter === 'all' || operation.resource === this.resourceFilter)
-			.slice()
-			.sort((a, b) => countsForWindow(b, this.windowKey).calls - countsForWindow(a, this.windowKey).calls);
-
-		// 枠の消費(アカウント全体)には「セッション」の累計が無いため、1時間へ丸める(概況カードと同じ)
-		const other = paradisGithubOtherConsumption(snapshot.consumption, snapshot.operations, this.resourceFilter, this.windowKey === '5m' ? '5m' : '1h');
-
-		if (operations.length === 0 && other === undefined) {
-			dom.append(panel, $('.paradis-ghm-empty')).textContent = localize('paradis.githubMetrics.operations.empty', "Para Codeはまだ GitHub へリクエストを送信していません。");
-			this.renderOutsideHint(panel);
-			return;
-		}
-
-		// バーの長さは表示中の行同士の相対比較（最大値=満幅）。全件0でも見えるよう下限を設ける
-		const maxCalls = Math.max(1, Math.round(other ?? 0), ...operations.map(operation => countsForWindow(operation, this.windowKey).calls));
-
-		for (const operation of operations.slice(0, MAX_OPERATION_ROWS)) {
-			const counts = countsForWindow(operation, this.windowKey);
-			const row = dom.append(panel, $('.paradis-ghm-hbar-row'));
-
-			const head = dom.append(row, $('.paradis-ghm-hbar-head'));
-			const name = dom.append(head, $('.paradis-ghm-hbar-name.paradis-ghm-mono'));
-			name.textContent = operation.callSite;
-			if (operation.topWorktreePath) {
-				dom.append(name, $('.paradis-ghm-hbar-sub')).textContent = localize('paradis.githubMetrics.table.topWorktree', "最多: {0}", spaceLabel(operation.topWorktreePath));
-			}
-			dom.append(head, $('.paradis-ghm-hbar-value')).textContent = counts.calls.toLocaleString();
-
-			const track = dom.append(row, $('.paradis-ghm-hbar-track'));
-			const widthPercent = Math.max(2, (counts.calls / maxCalls) * 100);
-			dom.append(track, $(`span.${operation.resource}`)).style.width = `${widthPercent}%`;
-
-			const facts: string[] = [localize('paradis.githubMetrics.hbar.avg', "平均{0}", paradisGithubFormatDuration(counts.avgDurationMs))];
-			if (counts.failures > 0) {
-				facts.push(localize('paradis.githubMetrics.hbar.failed', "失敗{0}件", counts.failures));
-			}
-			// counts はすでに選択中の窓（5分/1時間/セッション）の集計なので、lastRunAt もその窓の中の最終実行になる
-			facts.push(counts.lastRunAt !== undefined ? localize('paradis.githubMetrics.hbar.last', "最終: {0}", fromNow(counts.lastRunAt, true)) : localize('paradis.githubMetrics.hbar.neverRun', "この期間内は未実行"));
-			const sub = dom.append(row, $('.paradis-ghm-sub'));
-			sub.textContent = facts.join(' · ');
-			if (operation.lastErrorMessage) {
-				dom.append(row, $('.paradis-ghm-sub.bad')).textContent = localize('paradis.githubMetrics.hbar.lastError', "直近のエラー（全期間）: {0}", operation.lastErrorMessage);
-			}
-		}
-
-		if (other !== undefined) {
-			const row = dom.append(panel, $('.paradis-ghm-hbar-row'));
-			const head = dom.append(row, $('.paradis-ghm-hbar-head'));
-			dom.append(head, $('.paradis-ghm-hbar-name')).textContent = localize('paradis.githubMetrics.other.name', "その他（エージェント・拡張など）");
-			dom.append(head, $('.paradis-ghm-hbar-value')).textContent = Math.round(other).toLocaleString();
-			const track = dom.append(row, $('.paradis-ghm-hbar-track'));
-			dom.append(track, $('span.other')).style.width = `${Math.max(2, (other / maxCalls) * 100)}%`;
-			dom.append(row, $('.paradis-ghm-sub')).textContent = this.windowKey === 'session'
-				? localize('paradis.githubMetrics.other.subSession', "枠の消費から Para Code の送信を引いた推定（直近1時間）")
-				: localize('paradis.githubMetrics.other.sub', "枠の消費から Para Code の送信を引いた推定");
-		}
-		this.renderOutsideHint(panel);
-	}
-
-	/** 内訳に出るのは Para Code 自身の送信だけであることを明記する。 */
-	private renderOutsideHint(panel: HTMLElement): void {
-		dom.append(panel, $('.paradis-ghm-hint')).textContent = localize('paradis.githubMetrics.outsideHint', "エージェントがターミナルで実行した gh や拡張機能の呼び出しは、呼び出し元・スペースの内訳に出ません。");
-	}
-
-	private renderSpaceBreakdown(panel: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
-		const spaces = snapshot.spaces
-			.slice()
-			.sort((a, b) => countsForWindow(b, this.windowKey).calls - countsForWindow(a, this.windowKey).calls);
-
-		if (spaces.length === 0) {
-			dom.append(panel, $('.paradis-ghm-empty')).textContent = localize('paradis.githubMetrics.operations.empty', "Para Codeはまだ GitHub へリクエストを送信していません。");
-			return;
-		}
-
-		const maxCalls = Math.max(1, ...spaces.map(space => countsForWindow(space, this.windowKey).calls));
-
-		for (const space of spaces.slice(0, MAX_SPACE_ROWS)) {
-			const counts = countsForWindow(space, this.windowKey);
-			const row = dom.append(panel, $('.paradis-ghm-hbar-row'));
-
-			const head = dom.append(row, $('.paradis-ghm-hbar-head'));
-			const name = dom.append(head, $('.paradis-ghm-hbar-name'));
-			name.textContent = spaceLabel(space.space);
-			if (space.topCallSite) {
-				dom.append(name, $('.paradis-ghm-hbar-sub')).textContent = localize('paradis.githubMetrics.hbar.topCallSite', "最多: {0}", space.topCallSite);
-			}
-			dom.append(head, $('.paradis-ghm-hbar-value')).textContent = counts.calls.toLocaleString();
-
-			const track = dom.append(row, $('.paradis-ghm-hbar-track'));
-			const widthPercent = Math.max(2, (counts.calls / maxCalls) * 100);
-			// coreRatioも選択中の窓に対応するものを使う（数値とバーの色分けが食い違わないように）
-			const coreRatio = this.windowKey === '5m' ? space.rolling5mCoreRatio : this.windowKey === '1h' ? space.rolling1hCoreRatio : space.coreRatio;
-			const corePercent = Math.round(coreRatio * 100);
-			dom.append(track, $('span.core')).style.width = `${widthPercent * corePercent / 100}%`;
-			dom.append(track, $('span.graphql')).style.width = `${widthPercent * (100 - corePercent) / 100}%`;
-
-			const facts: string[] = [localize('paradis.githubMetrics.hbar.avg', "平均{0}", paradisGithubFormatDuration(counts.avgDurationMs))];
-			if (counts.failures > 0) {
-				facts.push(localize('paradis.githubMetrics.hbar.failed', "失敗{0}件", counts.failures));
-			}
-			facts.push(counts.lastRunAt !== undefined ? localize('paradis.githubMetrics.hbar.last', "最終: {0}", fromNow(counts.lastRunAt, true)) : localize('paradis.githubMetrics.hbar.neverRun', "この期間内は未実行"));
-			dom.append(row, $('.paradis-ghm-sub')).textContent = facts.join(' · ');
-		}
 	}
 
 	private renderErrors(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
@@ -583,130 +426,6 @@ function resourceRank(entry: IParadisGithubRateLimitEntry): number {
 	return index >= 0 ? index : PARADIS_GITHUB_PRIMARY_RESOURCES.length;
 }
 
-/**
- * サンプル間の消費量を棒グラフにする（軸なし・相対比較だけを見るためのミニチャート）。
- * 補助ウィンドウでも動くよう、要素は必ず描画先の Document から作る。
- * `resourceClass` は CSS 側の `.paradis-ghm-chart rect.<class>` で色付けする（core/graphql）。
- */
-function createBarChart(doc: Document, series: readonly number[], resourceClass: string): SVGElement {
-	const width = 100;
-	const height = 32;
-	const max = Math.max(1, ...series);
-	const gap = 0.6;
-	const barWidth = Math.max(0.5, (width - gap * (series.length - 1)) / series.length);
-
-	const svg = doc.createElementNS(SVG_NS, 'svg');
-	svg.setAttribute('class', 'paradis-ghm-chart');
-	svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-	svg.setAttribute('preserveAspectRatio', 'none');
-	svg.setAttribute('aria-hidden', 'true');
-
-	series.forEach((value, index) => {
-		const barHeight = Math.max(0.6, (value / max) * height);
-		const rect = doc.createElementNS(SVG_NS, 'rect');
-		rect.setAttribute('class', resourceClass);
-		rect.setAttribute('x', `${index * (barWidth + gap)}`);
-		rect.setAttribute('y', `${height - barHeight}`);
-		rect.setAttribute('width', `${barWidth}`);
-		rect.setAttribute('height', `${barHeight}`);
-		svg.appendChild(rect);
-	});
-	return svg;
-}
-
-/**
- * 資源2種を積み上げた棒グラフ（core/graphqlの合算トレンド用）。系列の長さが揃っていない場合は
- * 短い方を0で埋める（片方の資源だけ十分なサンプルが無い場合でも描画は崩さない）。
- */
-function createStackedBarChart(doc: Document, seriesA: readonly number[], classA: string, seriesB: readonly number[], classB: string): SVGElement {
-	const width = 100;
-	const height = 32;
-	const length = Math.max(seriesA.length, seriesB.length);
-	const at = (series: readonly number[], index: number): number => series[index - (length - series.length)] ?? 0;
-	const totals = Array.from({ length }, (_, index) => at(seriesA, index) + at(seriesB, index));
-	const max = Math.max(1, ...totals);
-	const gap = 0.6;
-	const barWidth = Math.max(0.5, (width - gap * (length - 1)) / length);
-
-	const svg = doc.createElementNS(SVG_NS, 'svg');
-	svg.setAttribute('class', 'paradis-ghm-chart');
-	svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-	svg.setAttribute('preserveAspectRatio', 'none');
-	svg.setAttribute('aria-hidden', 'true');
-
-	for (let index = 0; index < length; index++) {
-		const x = index * (barWidth + gap);
-		const valueA = at(seriesA, index);
-		const valueB = at(seriesB, index);
-		let y = height;
-
-		if (valueB > 0) {
-			const barHeight = (valueB / max) * height;
-			y -= barHeight;
-			const rect = doc.createElementNS(SVG_NS, 'rect');
-			rect.setAttribute('class', classB);
-			rect.setAttribute('x', `${x}`);
-			rect.setAttribute('y', `${y}`);
-			rect.setAttribute('width', `${barWidth}`);
-			rect.setAttribute('height', `${barHeight}`);
-			svg.appendChild(rect);
-		}
-		if (valueA > 0) {
-			const barHeight = (valueA / max) * height;
-			y -= barHeight;
-			const rect = doc.createElementNS(SVG_NS, 'rect');
-			rect.setAttribute('class', classA);
-			rect.setAttribute('x', `${x}`);
-			rect.setAttribute('y', `${y}`);
-			rect.setAttribute('width', `${barWidth}`);
-			rect.setAttribute('height', `${barHeight}`);
-			svg.appendChild(rect);
-		}
-	}
-	return svg;
-}
-
-/** callSite別・スペース別の集計から、選択中の時間窓に対応するカウントを取り出す。 */
-function countsForWindow(stat: { readonly session: IParadisGithubCallCounts; readonly rolling5m: IParadisGithubCallCounts; readonly rolling1h: IParadisGithubCallCounts }, windowKey: ParadisGithubWindowKey): IParadisGithubCallCounts {
-	switch (windowKey) {
-		case '5m': return stat.rolling5m;
-		case '1h': return stat.rolling1h;
-		case 'session': return stat.session;
-	}
-}
-
-/** 選択中の時間窓・資源フィルタで、呼び出し元の合計カウントを作る（概況カードの「Sent by Para Code」用）。 */
-function sumOperationCounts(operations: readonly IParadisGithubOperationStat[], resourceFilter: ParadisGithubResourceFilter, windowKey: ParadisGithubWindowKey): { calls: number; failures: number; rateLimited: number } {
-	let calls = 0, failures = 0, rateLimited = 0;
-	for (const operation of operations) {
-		if (resourceFilter !== 'all' && operation.resource !== resourceFilter) {
-			continue;
-		}
-		const counts = countsForWindow(operation, windowKey);
-		calls += counts.calls;
-		failures += counts.failures;
-		rateLimited += counts.rateLimited;
-	}
-	return { calls, failures, rateLimited };
-}
-
-/**
- * 選択中の資源フィルタ・時間窓で、レート枠消費（アカウント全体）を合算する。
- * `window` は '5m'|'1h' のみを取る（'session' に対応する消費の集計は無いため、呼び出し側で1hへ丸めてから渡す）。
- */
-function sumConsumption(consumption: readonly IParadisGithubConsumption[], resourceFilter: ParadisGithubResourceFilter, window: '5m' | '1h'): number | undefined {
-	const relevant = resourceFilter === 'all' ? consumption : consumption.filter(item => item.resource === resourceFilter);
-	let total: number | undefined;
-	for (const item of relevant) {
-		const value = window === '5m' ? item.rolling5m : item.rolling1h;
-		if (value === undefined) {
-			continue;
-		}
-		total = (total ?? 0) + value;
-	}
-	return total;
-}
-
 /** ワークツリー等に紐付かない呼び出し（Agent Sessionsウィンドウ自身のGitHub APIクライアント経由、レート枠の取得）を分かりやすい名前にする。 */
 function spaceLabel(space: string): string {
 	switch (space) {
@@ -716,15 +435,6 @@ function spaceLabel(space: string): string {
 			return localize('paradis.githubMetrics.space.monitor', "残量の取得（自動監視）");
 		default:
 			return space;
-	}
-}
-
-/** 概況カードの見出しに使う、時間窓の短い表現。 */
-function windowLabel(windowKey: ParadisGithubWindowKey): string {
-	switch (windowKey) {
-		case '5m': return localize('paradis.githubMetrics.window.label.5m', "5分");
-		case '1h': return localize('paradis.githubMetrics.window.label.1h', "1時間");
-		case 'session': return localize('paradis.githubMetrics.window.label.session', "セッション");
 	}
 }
 
@@ -770,4 +480,43 @@ function buildReportTemplate(snapshot: IParadisGithubMetricsSnapshot): string {
 	}
 	lines.push('', '## Debug bundle', '```json', JSON.stringify(snapshot, undefined, 2), '```');
 	return lines.join('\n');
+}
+
+/**
+ * 直近 60 分の残量（残りの割合）の推移を、資源ごとの線で描く。横軸は時刻（左端が 60 分前、右端が今）。
+ * サンプルの間隔に関係なく時刻の位置に点を置き、枠がリセットされた所（リセット時刻が進んだ所）に点線を引く。
+ * 補助ウィンドウでも動くよう、要素は必ず描画先の Document から作る。
+ */
+function createRemainingChart(doc: Document, series: readonly { readonly resource: string; readonly points: readonly { readonly at: number; readonly remaining: number; readonly limit: number; readonly resetAt: number }[] }[], now: number): SVGElement {
+	const width = 600;
+	const height = 80;
+	const start = now - 60 * 60 * 1000;
+	const x = (at: number) => Math.max(0, Math.min(width, ((at - start) / (now - start)) * width));
+	const y = (ratio: number) => height - 2 - Math.max(0, Math.min(1, ratio)) * (height - 4);
+	const svg = doc.createElementNS(SVG_NS, 'svg');
+	svg.setAttribute('class', 'paradis-ghm-chart remaining');
+	svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+	svg.setAttribute('preserveAspectRatio', 'none');
+	svg.setAttribute('aria-hidden', 'true');
+	for (const { resource, points } of series) {
+		let previousReset: number | undefined;
+		for (const point of points) {
+			// リセット時刻が 1 分より大きく進んだら、その時刻に枠がリセットされた
+			if (previousReset !== undefined && point.resetAt - previousReset > 60_000) {
+				const line = doc.createElementNS(SVG_NS, 'line');
+				line.setAttribute('class', 'reset');
+				line.setAttribute('x1', `${x(point.at)}`);
+				line.setAttribute('x2', `${x(point.at)}`);
+				line.setAttribute('y1', '0');
+				line.setAttribute('y2', `${height}`);
+				svg.appendChild(line);
+			}
+			previousReset = point.resetAt;
+		}
+		const polyline = doc.createElementNS(SVG_NS, 'polyline');
+		polyline.setAttribute('class', resource);
+		polyline.setAttribute('points', points.filter(point => point.at >= start).map(point => `${x(point.at)},${y(point.limit > 0 ? point.remaining / point.limit : 0)}`).join(' '));
+		svg.appendChild(polyline);
+	}
+	return svg;
 }
