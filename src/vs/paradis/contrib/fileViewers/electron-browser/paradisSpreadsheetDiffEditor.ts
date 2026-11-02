@@ -37,7 +37,7 @@ import { IEditorGroup } from '../../../../workbench/services/editor/common/edito
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { ParadisOfficeAccessibility, applyParadisOfficeChangeLegendSemantics, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
-import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
+import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildParadisSheetTableSkeleton, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
 import { IParadisDataValidation, IParadisRenderShape, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import type { ParadisOfficeChange, ParadisOfficeChangeCategory, ParadisOfficeChangeValue, ParadisOfficeCompletenessManifest, ParadisOfficeRenderCoverage } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
@@ -1546,52 +1546,34 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		const contentEl = dom.append(sizer, $('.paradis-spreadsheet-diff-content'));
 
 		const columnWidths = this._columnWidths;
-		const table = dom.append(contentEl, $('table.paradis-spreadsheet-table.grid')) as HTMLTableElement;
-		table.style.width = `${this._naturalTableWidth}px`;
-
-		const colgroup = dom.append(table, $('colgroup'));
-		const rowNumCol = dom.append(colgroup, $('col')) as HTMLTableColElement;
-		rowNumCol.style.width = `${PARADIS_ROW_NUM_COL_WIDTH}px`;
-		for (const w of columnWidths) {
-			const col = dom.append(colgroup, $('col')) as HTMLTableColElement;
-			if (w) {
-				col.style.width = `${w}px`;
-			}
-		}
-
-		// 列ヘッダ(A,B,C…)。通常ビューアと同じく使用範囲の先頭列(minCol)を起点にする。
-		const thead = dom.append(table, $('thead.paradis-spreadsheet-head'));
-		const headRow = dom.append(thead, $('tr'));
-		dom.append(headRow, $('th.paradis-spreadsheet-corner'));
-		for (let ci = 0; ci < columnWidths.length; ci++) {
-			const th = dom.append(headRow, $('th.paradis-spreadsheet-colhead'));
-			th.textContent = getColumnLabel(minCol - 1 + ci);
-		}
-
-		const tbody = dom.append(table, $('tbody'));
-		const rowEls: HTMLElement[] = [];
 		const rowMeta: { excelRow: number; tr: HTMLElement }[] = [];
 		const overflowCells: IParadisOverflowItem[] = [];
-		rows.forEach((row, rowIdx) => {
-			const tr = dom.append(tbody, $('tr')) as HTMLTableRowElement;
-			rowEls.push(tr);
-			if (row.excelRow !== undefined) {
-				rowMeta.push({ excelRow: row.excelRow, tr });
-			}
-			tr.style.height = `${row.height}px`;
-			const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
-			// Excel の行番号は絶対番号(excelRow)。空行(相手側にのみ対応行がある)は番号を出さない。
-			rowHead.textContent = row.excelRow !== undefined ? String(row.excelRow) : '';
-			for (let ci = 0; ci < row.cells.length; ci++) {
-				const cell = row.cells[ci];
-				if (cell.hidden) {
-					continue;
+		// 表の骨組みは通常のビューアと同じ。列ヘッダ(A,B,C…)は使用範囲の先頭列(minCol)を起点にし、
+		// Excel の行番号は絶対番号(excelRow)。空行(相手側にのみ対応行がある)は番号を出さない。
+		const { table, rowEls } = buildParadisSheetTableSkeleton({
+			columnWidths,
+			columnCount: columnWidths.length,
+			minCol,
+			grid: true,
+			naturalWidth: this._naturalTableWidth,
+			rows,
+			rowLabel: row => row.excelRow !== undefined ? String(row.excelRow) : '',
+			appendCells: (tr, row, rowIdx) => {
+				if (row.excelRow !== undefined) {
+					rowMeta.push({ excelRow: row.excelRow, tr });
 				}
-				const validation = validationByCell.get(`${rowIdx}:${ci}`);
-				const visibleValidation = validation && (validation.status === 'modified' || validation.status === 'removed' && side === 'original' || validation.status === 'added' && side === 'modified') ? validation : undefined;
-				this._buildDiffCell(tr, cell, row.cells, ci, columnWidths, overflowCells, visibleValidation);
-			}
+				for (let ci = 0; ci < row.cells.length; ci++) {
+					const cell = row.cells[ci];
+					if (cell.hidden) {
+						continue;
+					}
+					const validation = validationByCell.get(`${rowIdx}:${ci}`);
+					const visibleValidation = validation && (validation.status === 'modified' || validation.status === 'removed' && side === 'original' || validation.status === 'added' && side === 'modified') ? validation : undefined;
+					this._buildDiffCell(tr, cell, row.cells, ci, columnWidths, overflowCells, visibleValidation);
+				}
+			},
 		});
+		dom.append(contentEl, table);
 		this._renderDisposables.add(wireParadisOfficeTableGrid(table, {
 			label: localize('paradis.spreadsheet.diffGrid', "{0} のシート", label),
 			rowCount: Math.max(1, rows.length),
