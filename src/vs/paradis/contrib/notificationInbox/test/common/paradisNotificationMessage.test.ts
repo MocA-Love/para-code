@@ -153,6 +153,26 @@ suite('Paradis notification message', () => {
 		});
 	});
 
+	test('masks the same secrets as mobile notifications before an OS notification or the inbox shows them', () => {
+		const since = 10_000;
+		const done = (text: string) => paradisPickNotificationMessage({ lastMessage: { text, at: 12_000 } }, 'review', since).text;
+		assert.deepStrictEqual({
+			userAndToken: done('pushed to https://user:token@example.com/repo.git'),
+			tokenOnly: done('remote is https://tok123@example.com/repo.git'),
+			pem: done('key:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEabc\ndef\n-----END RSA PRIVATE KEY-----\nafter'),
+			azure: done('DefaultEndpointsProtocol=https;AccountName=a;AccountKey=abc123==;EndpointSuffix=x'),
+			slack: done('posted to https://hooks.slack.com/workflows/T1/A2/xyz'),
+			permission: paradisPickNotificationMessage({ interaction: { text: 'git push https://tok123@example.com/repo.git', at: 1 } }, 'permission', since).text,
+		}, {
+			userAndToken: 'pushed to https://***@example.com/repo.git',
+			tokenOnly: 'remote is https://***@example.com/repo.git',
+			pem: 'key:\n-----BEGIN RSA PRIVATE KEY----- ***\nafter',
+			azure: 'DefaultEndpointsProtocol=https;AccountName=a;AccountKey=***;EndpointSuffix=x',
+			slack: 'posted to https://hooks.slack.com/***',
+			permission: 'Bash: git push https://***@example.com/repo.git',
+		});
+	});
+
 	test('derives a stable opaque pane key instead of exposing the token', () => {
 		const key = paradisInboxPaneKey('pane-token-1');
 		assert.deepStrictEqual({ stable: key === paradisInboxPaneKey('pane-token-1'), distinct: key !== paradisInboxPaneKey('pane-token-2'), opaque: !key.includes('pane-token'), length: key.length }, {
