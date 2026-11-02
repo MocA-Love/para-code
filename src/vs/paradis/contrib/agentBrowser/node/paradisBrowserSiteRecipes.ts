@@ -161,7 +161,7 @@ function recipeStepsRefusal(steps: readonly unknown[], origin: string): string |
 		} else if (fileArguments.length > 0) {
 			refusal = `${String(step.tool)} with "${fileArguments.join('", "')}" cannot be saved in a recipe ${readBy}: it reads or writes files on this computer.`;
 		} else if (step.tool === 'wait_until' && stepArgs.predicate !== undefined) {
-			refusal = `wait_until with "predicate" cannot be saved in a recipe ${readBy}. Wait for text, a locator or network_idle_ms instead, or use expect with value_not_empty / value_equals for the value of an input.`;
+			refusal = `wait_until with "predicate" cannot be saved in a recipe ${readBy}. Wait for text, a locator or network_idle_seconds instead, or use expect with value_not_empty / value_equals for the value of an input.`;
 		} else if (predicateIn !== undefined) {
 			refusal = `"predicate" in ${predicateIn} (or done_when) cannot be saved in a recipe ${readBy}. Use text, text_gone, visible, gone, disabled, enabled, url_includes, value_not_empty or value_equals.`;
 		}
@@ -354,7 +354,7 @@ const URL_PROPERTY = { type: 'string', description: 'A URL of the site (the reci
 export const PARADIS_SITE_RECIPE_TOOLS = [
 	{
 		name: 'save_recipe',
-		description: 'Save the steps that reach a screen on a website open in this pane (for example logging in, or opening the CSV export page), so later agents in this repository can repeat them with one run_recipe call. Steps take the same form as run_steps (tools, expect, sleep_ms, for_each, repeat_until); write elements by role, name or text, not uid. Put values that change in {{name}} placeholders and list them in params; never write passwords or other secrets into the steps. Scripts cannot be saved (evaluate_script, initScript, predicate conditions), and navigate_page stays on the same site. done_when checks that the screen was reached. Saving under an existing name replaces it (fix a recipe this way when it stops).',
+		description: 'Save the steps that reach a screen on a website open in this pane (for example logging in, or opening the CSV export page), so later agents in this repository can repeat them with one run_recipe call. Steps take the same form as run_steps (tools, expect, sleep_seconds, for_each, repeat_until); write elements by role, name or text, not uid. Put values that change in {{name}} placeholders and list them in params; never write passwords or other secrets into the steps. Scripts cannot be saved (evaluate_script, initScript, predicate conditions), and navigate_page stays on the same site. done_when checks that the screen was reached. Saving under an existing name replaces it (fix a recipe this way when it stops).',
 		inputSchema: {
 			type: 'object',
 			properties: {

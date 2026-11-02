@@ -10,7 +10,7 @@
 // 今の run_steps（paradisBrowserRunSteps.ts）に次を足す:
 //   - 前の手順の結果の参照（`$3.text`・`$3.items`、for_each の中の `$item`・`$index`）
 //   - expect（文字が出る・消える・要素が見える・消える・押せる・押せない・URL・JavaScript の条件を、上限まで待って確かめる）
-//   - sleep_ms（決まった時間だけ待つ。evaluate_script の中の setTimeout の代わり）
+//   - sleep_seconds（決まった時間だけ待つ。前の名前の sleep_ms も paradisToolArgumentAliases.ts が読み替える。evaluate_script の中の setTimeout の代わり）
 //   - for_each（一覧の項目ごとに同じ手順）・repeat_until（条件が成り立つまで同じ手順。ページ送り）
 // 道具の手順は、今の run_steps と同じくサービスの通常の呼び出しへ渡す（確認・入力の通り道は単体で呼んだときと同じ）。
 //
@@ -24,6 +24,7 @@
 
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { PARADIS_RUN_STEPS_ALLOWED_TOOLS } from './paradisBrowserRunSteps.js';
+import { paradisNormalizeLegacyToolArguments } from './paradisToolArgumentAliases.js';
 
 /** 実行する手順（ループの中の繰り返しを含む）の合計の上限。 */
 export const PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED = 200;
@@ -94,7 +95,7 @@ function parseCondition(raw: unknown, where: string): Condition | string {
 		return `${where} must be an object with one of: ${CONDITION_KEYS.join(', ')}.`;
 	}
 	const keys = Object.keys(raw).filter(key => (CONDITION_KEYS as readonly string[]).includes(key));
-	const extra = Object.keys(raw).filter(key => !(CONDITION_KEYS as readonly string[]).includes(key) && key !== 'timeout_ms');
+	const extra = Object.keys(raw).filter(key => !(CONDITION_KEYS as readonly string[]).includes(key) && key !== 'timeout_seconds');
 	if (keys.length !== 1 || extra.length > 0) {
 		return `${where} must have exactly one of: ${CONDITION_KEYS.join(', ')}${extra.length > 0 ? ` (unknown: ${extra.join(', ')})` : ''}.`;
 	}
@@ -119,6 +120,14 @@ function parseCondition(raw: unknown, where: string): Condition | string {
 		return `${where}: "${kind}" must be a locator such as {"role": "button", "name": "Next"} or {"selector": "..."} (keys: ${LOCATOR_KEYS.join(', ')}).`;
 	}
 	return { kind, locator: value };
+}
+
+/** 秒の値（0 から上限まで）をミリ秒にする。無ければ既定（ミリ秒）、範囲の外か数でなければ undefined。 */
+function boundedSecondsAsMs(value: unknown, maxMs: number, fallbackMs: number): number | undefined {
+	if (value === undefined) {
+		return fallbackMs;
+	}
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value * 1000 <= maxMs ? Math.round(value * 1000) : undefined;
 }
 
 function boundedInteger(value: unknown, min: number, max: number, fallback: number): number | undefined {
@@ -156,15 +165,15 @@ function parseBlock(raw: unknown, depth: number, where: string): FlowStep[] | st
 			if (typeof condition === 'string') {
 				return condition;
 			}
-			const timeoutMs = boundedInteger((step.expect as Record<string, unknown>).timeout_ms, 0, MAX_EXPECT_MS, DEFAULT_EXPECT_MS);
+			const timeoutMs = boundedSecondsAsMs((step.expect as Record<string, unknown>).timeout_seconds, MAX_EXPECT_MS, DEFAULT_EXPECT_MS);
 			if (timeoutMs === undefined) {
-				return `${at}: "expect.timeout_ms" must be 0-${MAX_EXPECT_MS}.`;
+				return `${at}: "expect.timeout_seconds" must be 0-${MAX_EXPECT_MS / 1000}.`;
 			}
 			steps.push({ kind: 'expect', condition, timeoutMs });
-		} else if (step.sleep_ms !== undefined) {
-			const ms = boundedInteger(step.sleep_ms, 0, MAX_SLEEP_MS, 0);
+		} else if (step.sleep_seconds !== undefined) {
+			const ms = boundedSecondsAsMs(step.sleep_seconds, MAX_SLEEP_MS, 0);
 			if (ms === undefined) {
-				return `${at}: "sleep_ms" must be 0-${MAX_SLEEP_MS}.`;
+				return `${at}: "sleep_seconds" must be 0-${MAX_SLEEP_MS / 1000}.`;
 			}
 			steps.push({ kind: 'sleep', ms });
 		} else if (step.for_each !== undefined || step.repeat_until !== undefined) {
@@ -192,7 +201,7 @@ function parseBlock(raw: unknown, depth: number, where: string): FlowStep[] | st
 				steps.push({ kind: 'repeat_until', condition, steps: inner, max });
 			}
 		} else {
-			return `${at} must have "tool", "expect", "sleep_ms", "for_each" or "repeat_until".`;
+			return `${at} must have "tool", "expect", "sleep_seconds", "for_each" or "repeat_until".`;
 		}
 	}
 	return steps;
@@ -200,7 +209,9 @@ function parseBlock(raw: unknown, depth: number, where: string): FlowStep[] | st
 
 /** 引数を確かめて、手順の木にする。 */
 export function paradisParseRunStepsFlow(rawArgs: unknown): { readonly ok: true; readonly steps: readonly FlowStep[]; readonly continueOnError: boolean; readonly maxMs: number } | { readonly ok: false; readonly error: string } {
-	const args = isRecord(rawArgs) ? rawArgs : {};
+	// 前に保存した手順・前からの呼び出しの前の名前（sleep_ms・expect の timeout_ms）を読み替える
+	const normalized = paradisNormalizeLegacyToolArguments('run_steps', rawArgs);
+	const args = isRecord(normalized) ? normalized : {};
 	if (args.continue_on_error !== undefined && typeof args.continue_on_error !== 'boolean') {
 		return { ok: false, error: '"continue_on_error" must be true or false.' };
 	}
@@ -387,8 +398,8 @@ class FlowRun {
 			return { ...args, timeout_seconds: Math.max(0.5, Math.min(asked, remaining / 1000)) };
 		}
 		if (tool === 'wait_for') {
-			const asked = typeof args.timeout === 'number' ? args.timeout : 5000;
-			return { ...args, timeout: Math.max(500, Math.min(asked, remaining)) };
+			const asked = typeof args.timeout_seconds === 'number' && args.timeout_seconds > 0 ? args.timeout_seconds : 5;
+			return { ...args, timeout_seconds: Math.max(0.5, Math.min(asked, remaining / 1000)) };
 		}
 		return args;
 	}
@@ -456,7 +467,7 @@ class FlowRun {
 				case 'sleep': {
 					this.executed++;
 					await this.sleep(Math.min(step.ms, this.remainingMs()));
-					this.push(`--- ${label}: sleep_ms ${step.ms} ok`);
+					this.push(`--- ${label}: sleep_seconds ${step.ms / 1000} ok`);
 					break;
 				}
 				case 'for_each': {
@@ -646,10 +657,10 @@ export function paradisRunStepsFlowDescriptor<T extends { readonly name: string;
 	if (tool.name !== 'run_steps') {
 		return tool;
 	}
-	const description = 'Run a small script of browser steps on the page shared with this terminal pane in one call, in order. A step is one of: '
+	const description = 'Run a small script of browser steps on this pane\'s current tab (or tab_id) in one call, in order. A step is one of: '
 		+ '{"tool": "click_by", "args": {...}} (a tool, checked and run exactly as if called alone); '
-		+ '{"expect": {"text": "Saved"}} (wait until a condition holds, default up to 5 s, "timeout_ms" up to 60000; conditions: text, text_gone, visible / gone / disabled / enabled with a locator such as {"role": "button", "name": "Next"}, url_includes, value_not_empty / value_equals for the value of an input such as {"value_not_empty": {"selector": "#city"}} or {"value_equals": {"selector": "#qty", "value": "3"}}, predicate as a JavaScript function); '
-		+ '{"sleep_ms": 500} (fixed wait, use instead of setTimeout in evaluate_script); '
+		+ '{"expect": {"text": "Saved"}} (wait until a condition holds, default up to 5 s, "timeout_seconds" up to 60; conditions: text, text_gone, visible / gone / disabled / enabled with a locator such as {"role": "button", "name": "Next"}, url_includes, value_not_empty / value_equals for the value of an input such as {"value_not_empty": {"selector": "#city"}} or {"value_equals": {"selector": "#qty", "value": "3"}}, predicate as a JavaScript function); '
+		+ '{"sleep_seconds": 0.5} (fixed wait, use instead of setTimeout in evaluate_script); '
 		+ '{"for_each": "$3.items", "steps": [...]} (repeat steps for each item; "$3.items" are the matches of a get_text with all: true at top-level step 3, or a literal list; use $item and $index inside); '
 		+ '{"repeat_until": {"disabled": {"role": "button", "name": "Next"}}, "steps": [...], "max": 20} (repeat steps until the condition holds, checked before each round; for paging). '
 		+ 'Tool arguments can refer to earlier top-level results: "$2.text" is the text of step 2 (for get_text, just the text), "$$" is a literal $. '
@@ -669,19 +680,19 @@ export function paradisRunStepsFlowDescriptor<T extends { readonly name: string;
 						properties: {
 							tool: { type: 'string', description: 'Tool name, for example "click_by".' },
 							args: { type: 'object', description: 'Arguments of that tool, as when calling it alone. Strings may contain $N.text, $N.items, $item, $index.' },
-							expect: { type: 'object', description: 'Condition to wait for: one of text, text_gone, visible, gone, disabled, enabled, url_includes, value_not_empty, value_equals, predicate; optional timeout_ms.' },
-							sleep_ms: { type: 'number', description: `Wait this long (0-${MAX_SLEEP_MS}).` },
+							expect: { type: 'object', description: 'Condition to wait for: one of text, text_gone, visible, gone, disabled, enabled, url_includes, value_not_empty, value_equals, predicate; optional timeout_seconds (default 5).' },
+							sleep_seconds: { type: 'number', minimum: 0, maximum: MAX_SLEEP_MS / 1000, description: 'Wait this many seconds.' },
 							for_each: { description: 'A list, or "$N.items" / "$N.text" of an earlier top-level step.', anyOf: [{ type: 'array' }, { type: 'string' }] },
 							repeat_until: { type: 'object', description: 'Condition (as in expect) checked before each round; the steps repeat until it holds.' },
 							steps: { type: 'array', items: { type: 'object' }, description: 'Steps of for_each / repeat_until (loops nest at most 2 deep).' },
-							max: { type: 'number', description: `Most rounds of for_each / repeat_until (1-${MAX_ROUNDS}; defaults 50 / ${DEFAULT_ROUNDS}).` },
+							max: { type: 'number', minimum: 1, maximum: MAX_ROUNDS, description: `Most rounds of for_each / repeat_until (defaults 50 / ${DEFAULT_ROUNDS}).` },
 						},
 						additionalProperties: false,
 					},
 					description: `At most ${MAX_STEPS_PER_BLOCK} steps per list.`,
 				},
 				continue_on_error: { type: 'boolean', description: 'Run the remaining steps after a step fails (default false).' },
-				max_seconds: { type: 'number', description: `Time limit for the whole run (1-${MAX_MAX_SECONDS}, default ${DEFAULT_MAX_SECONDS}).` },
+				max_seconds: { type: 'number', minimum: 1, maximum: MAX_MAX_SECONDS, description: `Time limit in seconds for the whole run (default ${DEFAULT_MAX_SECONDS}).` },
 			},
 			required: ['steps'],
 			additionalProperties: false,

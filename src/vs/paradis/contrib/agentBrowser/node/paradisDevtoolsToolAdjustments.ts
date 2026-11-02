@@ -94,15 +94,66 @@ function withCaptureNoOverwriteNote(properties: IJsonSchemaObject): void {
 	}
 }
 
-/** tools/list で公開するスキーマ。wait_for と take_snapshot の引数を足す・広げる。take_screenshot・take_snapshot の filePath の説明に上書きしないことを足す（他はそのまま）。 */
+/**
+ * 内蔵 chrome-devtools-mcp の道具の説明を、Para Code での使い方に合わせて書き換えたもの（q.html Q535）。同梱のファイルは
+ * 書き換えず、ここで差し替える（上流を取り込み直しても消えない）。どのタブに効くか、似た道具との使い分け、
+ * Para Code では使えない上流の説明（DevTools のパネルで選んだ要素など）を直す。ここに無い道具は、「選ばれたページ」を
+ * 「このペインの今のタブ」と言い換えるだけにする。
+ */
+const PARADIS_DEVTOOLS_TOOL_DESCRIPTIONS: ReadonlyMap<string, string> = new Map([
+	['take_snapshot', 'Take a text snapshot of this pane\'s current tab (or tab_id) based on the a11y tree. It lists the page elements with a uid to pass to click, fill and the other tools. Always use the latest snapshot, and prefer it over a screenshot. For the words only, use get_text; to find out why an element is hidden or covered, use inspect_element.'],
+	['take_screenshot', 'Take a screenshot of the viewport, the full page (fullPage) or one element (uid). To crop a rectangle or capture several elements in one call, use capture_screenshot.'],
+	['list_pages', 'List the pages of this pane\'s current tab (or tab_id): the tab itself and the popups and target=_blank pages it opened. Your other tabs are not listed; use list_browser_tabs for those.'],
+	['select_page', 'Switch between the pages that list_pages shows (a tab and the popups it opened). To work on another tab, pass tab_id or call select_browser_tab.'],
+	['evaluate_script', 'Run a JavaScript function in this pane\'s current tab (or tab_id) and return its result as JSON (the value must be JSON-serializable). Do not wait (setTimeout, polling) or scroll here: use wait_until, scroll_to, get_text / inspect_element and click_by / fill_by instead.'],
+	['wait_for', 'Wait until the given text appears on this pane\'s current tab (or tab_id). For elements, JavaScript conditions or network idle, use wait_until. By default the response does not include a page snapshot; pass includeSnapshot: true or call take_snapshot when you need element uids.'],
+	['fill_form', 'Fill several form elements (inputs, selects, checkboxes, radios) from a snapshot in one call. For React or MUI fields, or fields you can find by their label, use fill_by.'],
+	['navigate_page', 'Go to a URL, or back, forward or reload, in this pane\'s current tab (or tab_id).'],
+	['handle_dialog', 'Accept or dismiss a browser dialog (alert, confirm, prompt) open on this pane\'s current tab (or tab_id).'],
+	['click', 'Click an element by its uid from a snapshot. If you can describe the element (role + name, text, CSS), click_by needs no snapshot.'],
+	['click_at', 'Click at x / y in CSS pixels of the viewport (as in a take_screenshot of the viewport).'],
+	['type_text', 'Type text with the keyboard into the focused element (shortcuts, editors that ignore fill). To set the value of a field, use fill_by.'],
+	['hover', 'Hover over an element by its uid from a snapshot.'],
+	['drag', 'Drag an element onto another element (HTML drag and drop, by uids from a snapshot). For sliders or canvas, use mouse_action.'],
+	['get_network_request', 'Get one network request of this pane\'s current tab (or tab_id) by its reqid from list_network_requests.'],
+]);
+
+/** 引数の説明の差し替え（道具 → 引数 → 説明）。単位と、上流の文の意味の通らないところを直す。 */
+const PARADIS_DEVTOOLS_PROPERTY_DESCRIPTIONS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
+	['navigate_page', new Map([['handleBeforeUnload', 'Accept or dismiss beforeunload dialogs from this navigation (default accept).']])],
+	['click_at', new Map([['x', 'X in CSS pixels of the viewport.'], ['y', 'Y in CSS pixels of the viewport.']])],
+	['get_network_request', new Map([['reqid', 'The reqid from list_network_requests.']])],
+]);
+
+/** 上流のミリ秒の `timeout` を、秒の `timeout_seconds` として見せる（paradisToolArgumentAliases.ts が子へ渡す前にミリ秒へ戻す）。 */
+function withSecondsTimeout(properties: IJsonSchemaObject, description: string, bounds: { readonly minimum: number; readonly maximum?: number }): void {
+	if (properties.timeout === undefined) {
+		return;
+	}
+	delete properties.timeout;
+	properties.timeout_seconds = { type: 'number', ...bounds, description };
+}
+
+/**
+ * tools/list で公開するスキーマ。説明を Para Code での使い方に合わせ（{@link PARADIS_DEVTOOLS_TOOL_DESCRIPTIONS}）、待ち時間を秒にし、
+ * wait_for と take_snapshot の引数を足す・広げる。take_screenshot・take_snapshot の filePath の説明に上書きしないことを足す。
+ */
 export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: string; readonly description?: string; readonly inputSchema?: unknown }>(tool: T): T {
 	if (!isRecord(tool.inputSchema) || !isRecord(tool.inputSchema.properties)) {
 		return tool;
 	}
 	const properties: IJsonSchemaObject = { ...tool.inputSchema.properties };
-	let description = tool.description;
+	const description = PARADIS_DEVTOOLS_TOOL_DESCRIPTIONS.get(tool.name)
+		?? tool.description?.replace(/\bthe (?:currently )?selected page\b/g, 'this pane\'s current tab (or tab_id)');
+	for (const [key, text] of PARADIS_DEVTOOLS_PROPERTY_DESCRIPTIONS.get(tool.name) ?? []) {
+		if (isRecord(properties[key])) {
+			properties[key] = { ...properties[key], description: text };
+		}
+	}
+	if (tool.name === 'navigate_page' || tool.name === 'wait_for') {
+		withSecondsTimeout(properties, 'Seconds to wait (0 or omitted: the default).', { minimum: 0 });
+	}
 	if (tool.name === 'wait_for') {
-		description = `${tool.description ?? 'Wait for the specified text to appear on the selected page.'} By default the response does not include a page snapshot; pass includeSnapshot: true or call take_snapshot when you need element uids.`;
 		const text = isRecord(properties.text) ? properties.text : { type: 'array', items: { type: 'string' }, minItems: 1 };
 		const arraySchema: IJsonSchemaObject = { ...text };
 		delete arraySchema.description;
@@ -120,9 +171,11 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 		delete properties.paraCodeDeadlineMs;
 		if (properties.paraCodeTimeoutMs !== undefined) {
 			delete properties.paraCodeTimeoutMs;
-			properties.timeout = {
-				type: 'integer',
-				description: `Maximum time in milliseconds to wait for the script (default ${PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS}, from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}; Claude Code moves a tool call that runs longer than 120 seconds to the background). When the page does not answer in time, the call fails with PARA_BROWSER_PAGE_UNRESPONSIVE and the tab is free for other tools again.`,
+			properties.timeout_seconds = {
+				type: 'number',
+				minimum: MIN_TIMEOUT_MS / 1000,
+				maximum: MAX_TIMEOUT_MS / 1000,
+				description: `Seconds to wait for the script (default ${PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS / 1000}; Claude Code moves a tool call that runs longer than 120 seconds to the background). When the page does not answer in time, the call fails with PARA_BROWSER_PAGE_UNRESPONSIVE and the tab is free for other tools again.`,
 			};
 		}
 	} else if (tool.name === 'take_snapshot') {
@@ -141,8 +194,6 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 		withCaptureNoOverwriteNote(properties);
 	} else if (tool.name === 'take_screenshot' && properties.filePath !== undefined) {
 		withCaptureNoOverwriteNote(properties);
-	} else {
-		return tool;
 	}
 	return { ...tool, ...(description !== undefined ? { description } : {}), inputSchema: { ...tool.inputSchema, properties } };
 }
@@ -216,7 +267,7 @@ function explainTimedOut(text: string): string {
 	}
 	const seconds = Number(match.groups.ms) / 1000;
 	return match.groups.tool === 'evaluate_script'
-		? `PARA_BROWSER_PAGE_UNRESPONSIVE: the script did not finish within ${seconds} s (the page may be busy running scripts or loading, or frozen, or the script itself waits that long), so Para Code stopped waiting. The script may still run when the page answers. Other tools on this tab are not held up and take_screenshot still works. Pass a larger "timeout" (milliseconds) for a script that needs longer.`
+		? `PARA_BROWSER_PAGE_UNRESPONSIVE: the script did not finish within ${seconds} s (the page may be busy running scripts or loading, or frozen, or the script itself waits that long), so Para Code stopped waiting. The script may still run when the page answers. Other tools on this tab are not held up and take_screenshot still works. Pass a larger "timeout_seconds" for a script that needs longer.`
 		: `PARA_BROWSER_PAGE_UNRESPONSIVE: the page did not return its accessibility tree within ${seconds} s (it may be busy running scripts or loading, or frozen), so Para Code stopped waiting. Other tools on this tab are not held up and take_screenshot still works; retry when the page responds.`;
 }
 
@@ -312,7 +363,7 @@ const SCRIPT_WAIT_PATTERN = /\bsetTimeout\s*\(/;
 export const PARADIS_SCRIPT_CLICK_HINT = 'Tip: use click_by (role + name, text or selector) instead of .click() in evaluate_script; it shows the user your cursor moving to the element, works with React/MUI, and explains why an element cannot be clicked.';
 
 /** evaluate_script の中で `setTimeout` を使ったときに結果へ足す案内（q.html Q397 A1）。 */
-export const PARADIS_SCRIPT_WAIT_HINT = 'Tip: to wait for the page, use wait_until (a selector, text or a JavaScript predicate, with network_idle_ms for requests) instead of setTimeout in evaluate_script; it checks in short slices without holding this tab and returns as soon as the condition holds.';
+export const PARADIS_SCRIPT_WAIT_HINT = 'Tip: to wait for the page, use wait_until (a selector, text or a JavaScript predicate, with network_idle_seconds for requests) instead of setTimeout in evaluate_script; it checks in short slices without holding this tab and returns as soon as the condition holds.';
 
 /**
  * エージェントの evaluate_script の結果に、中で `.click()` や `setTimeout` を使っていたら案内を 1 行ずつ足す。

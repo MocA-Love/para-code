@@ -778,7 +778,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 	test('deeply freezes cached tool descriptors against caller mutation', async () => {
 		const fixture = createFakeDevtoolsChildren({
 			toolsListResult: {
-				tools: [{ name: 'list_pages', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } }],
+				tools: [{ name: 'list_console_messages', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } }],
 			},
 		});
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
@@ -790,7 +790,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		assert.throws(() => mutableTool.name = 'poisoned');
 		assert.throws(() => mutableTool.inputSchema.properties.selector.type = 'number');
 		const cached = await proxy.listTools('secret-token', 1, 'ws://one');
-		assert.deepStrictEqual(cached, [{ name: 'list_pages', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } }]);
+		assert.deepStrictEqual(cached, [{ name: 'list_console_messages', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } }]);
 	});
 
 	test('bounds newline-less stdout and rejects every pending request without exposing it', async () => {

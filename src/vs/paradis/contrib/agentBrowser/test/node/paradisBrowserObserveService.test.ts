@@ -68,7 +68,7 @@ suite('Paradis browser observe in the service', () => {
 
 	test('the action goes to the tab chosen before observing, inside one turn of that tab\'s lane', async () => {
 		const log: string[] = [];
-		const result = await service(log)._callToolObserved({ token: TOKEN }, 'click_by', { name: 'click_by', arguments: { role: 'button', settle_ms: 500 } }, { settle: true, state: false });
+		const result = await service(log)._callToolObserved({ token: TOKEN }, 'click_by', { name: 'click_by', arguments: { role: 'button', settle_seconds: 0.5 } }, { settle: true, state: false });
 		assert.deepStrictEqual({ log, result }, {
 			log: [
 				'before busy=true',
