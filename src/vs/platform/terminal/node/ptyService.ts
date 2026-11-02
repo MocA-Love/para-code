@@ -481,7 +481,8 @@ export class PtyService extends Disposable implements IPtyService {
 
 	/**
 	 * PARA-PATCH: held terminals' workspace names only (see paradisHeldPtyWorkspaceNames).
-	 * Deliberately not `@traceRpc`: this is an in-process query from the pty daemon's pollers.
+	 * Deliberately not `@traceRpc`: this is an in-process query from the pty daemon's pollers,
+	 * so neither the trace log nor simulated latency injection should apply.
 	 */
 	async paradisListHeldWorkspaceNames(): Promise<{ workspaceName: string }[]> {
 		return paradisHeldPtyWorkspaceNames(this._ptys);
