@@ -148,6 +148,81 @@ suite('ParadisPdfFileEditor', () => {
 		deepStrictEqual({ afterStale, sent: spans.map(span => [span.safe_viewer, span.safe_pages, span.safe_size_kb]) }, { afterStale: 0, sent: [['pdf', 3, 2]] });
 	});
 
+	test('keeps the shown PDF when coming back to its tab, unless the file changed or the first paint never came', async () => {
+		// 別の種類のタブへ移ると clearInput → setVisible(false)、戻ると setVisible(true) → setInput になる。
+		const disposables = store.add(new DisposableStore());
+		const run = async (confirmPaint: boolean, mtimeOnReturn: number) => {
+			const messages = disposables.add(new Emitter<{ message: unknown }>());
+			const htmlSet = disposables.add(new Emitter<void>());
+			const statCalled = disposables.add(new Emitter<void>());
+			const html: string[] = [];
+			let mtime = 1;
+			let stats = 0;
+			const webview = {
+				contentOptions: {},
+				onFatalError: Event.None,
+				onMessage: messages.event,
+				setHtml: (value: string) => { html.push(value); htmlSet.fire(); },
+				claim: () => { },
+				release: () => { },
+				focus: () => { },
+				setAnchorElement: () => { },
+				container: document.createElement('div'),
+				dispose: () => { },
+			} as unknown as IOverlayWebview;
+			const fileService = {
+				readFile: async () => ({ value: VSBuffer.fromString('%PDF-') }),
+				stat: async () => { stats++; statCalled.fire(); return { size: 2048, mtime, etag: `e${mtime}` }; },
+				createWatcher: () => { throw new Error('watching is unavailable in this test'); },
+				onDidWatchError: Event.None,
+			} as unknown as IFileService;
+			const sharedProcessService = {
+				getChannel: () => ({ call: () => Promise.reject(new Error('no preview server')), listen: () => { throw new Error('not used'); } }),
+			} as unknown as ISharedProcessService;
+			const editor = disposables.add(new ParadisPdfFileEditor(new TestEditorGroupView(1), sharedProcessService, NullTelemetryService, new TestThemeService(), disposables.add(new TestStorageService()), { createWebviewOverlay: () => webview } as unknown as IWebviewService, fileService, new TestLayoutService()));
+			editor.create(document.createElement('div'));
+			const resource = URI.file('/workspace/document.pdf');
+			const createInput = () => disposables.add(new ParadisPdfInput(resource, { isDirty: () => false } as unknown as ITextFileService, { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService));
+
+			const firstHtml = Event.toPromise(htmlSet.event, disposables);
+			await editor.setInput(createInput(), undefined, Object.create(null), CancellationToken.None);
+			editor.layout(new Dimension(800, 600));
+			await firstHtml;
+			if (confirmPaint) {
+				const render = /render: "(?<render>[^"]+)"/.exec(html[html.length - 1] ?? '')?.groups?.render;
+				messages.fire({ message: { type: PARADIS_PDF_FIRST_PAINT_MESSAGE, render, pages: 1 } });
+			}
+			editor.clearInput();
+			editor.setVisible(false);
+			mtime = mtimeOnReturn;
+			stats = 0;
+			const rerendered = Event.toPromise(htmlSet.event, disposables);
+			const checked = Event.toPromise(statCalled.event, disposables);
+			editor.setVisible(true);
+			await editor.setInput(createInput(), undefined, Object.create(null), CancellationToken.None);
+			if (confirmPaint && mtimeOnReturn === 1) {
+				// 使い回すときは stat を 1 回読んで判定するだけ。判定の続きが走り切るまで待つ。
+				await checked;
+				for (let turn = 0; turn < 8; turn++) {
+					await Promise.resolve();
+				}
+			} else {
+				await rerendered;
+			}
+			return { html: html.length, stats };
+		};
+
+		deepStrictEqual({
+			unchanged: await run(true, 1),
+			changedWhileAway: await run(true, 2),
+			neverPainted: await run(false, 1),
+		}, {
+			unchanged: { html: 1, stats: 1 },
+			changedWhileAway: { html: 2, stats: 2 },
+			neverPainted: { html: 2, stats: 1 },
+		});
+	});
+
 	test('maps PDF preflight results to the observable render outcome', () => {
 		const resource = URI.file('/workspace/document.pdf');
 		const otherResource = URI.file('/workspace/other.pdf');

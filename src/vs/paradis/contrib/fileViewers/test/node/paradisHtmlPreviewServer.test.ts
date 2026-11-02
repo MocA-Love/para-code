@@ -411,6 +411,29 @@ suite('ParadisHtmlPreviewServer', () => {
 			}, { library: 200, oldestDocument: 404 });
 		});
 
+		test('lets the viewer libraries be cached and revalidated, but never the documents', async () => {
+			const disposables = store.add(new DisposableStore());
+			const server = disposables.add(new ParadisHtmlPreviewServer());
+			const root = await createRoot();
+			disposables.add({ dispose: () => { void fs.rm(root, { recursive: true, force: true }); } });
+			const library = await server.mount(join(root, 'assets'), { pinned: true });
+			const document = await server.mount(root);
+			const get = async (token: string, path: string, etag?: string) => {
+				const response = await fetch(`http://127.0.0.1:${library.port}/${token}/${path}`, etag ? { headers: { 'If-None-Match': etag } } : undefined);
+				await response.arrayBuffer();
+				return { status: response.status, cache: response.headers.get('cache-control'), etag: response.headers.get('etag') ?? '' };
+			};
+			const libraryFirst = await get(library.token, 'app.js');
+			const documentFirst = await get(document.token, 'index.html');
+
+			deepStrictEqual({
+				library: libraryFirst.cache,
+				libraryRevalidated: (await get(library.token, 'app.js', libraryFirst.etag)).status,
+				document: documentFirst.cache,
+				documentRevalidated: (await get(document.token, 'index.html', documentFirst.etag)).status,
+			}, { library: 'private, max-age=86400', libraryRevalidated: 304, document: 'no-store', documentRevalidated: 200 });
+		});
+
 		(isLinux ? test : test.skip)('closes the file when the client goes away in the middle of a response', async () => {
 			const disposables = store.add(new DisposableStore());
 			const server = disposables.add(new ParadisHtmlPreviewServer());
