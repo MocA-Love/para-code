@@ -25,7 +25,7 @@ import { RunOnceScheduler, timeout } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
 import { isCancellationError, onUnexpectedError } from '../../../../../base/common/errors.js';
-import { DisposableStore, IReference, MutableDisposable } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, IReference, MutableDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { extname, isEqual } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
@@ -134,6 +134,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 	private _loadGeneration = 0;
 	/** 表が今の内容より古い（テキスト側の編集やディスクの変更をまだ反映していない）。 */
 	private _tableStale = true;
+	/** 隠れている間に古くなった表を、見えたときに読み直す（今の input の間だけ）。 */
+	private _reloadWhenVisible: (() => void) | undefined;
 	private _missingResource: URI | undefined;
 	private _delimiter: ParadisCsvDelimiter = ',';
 	private _loading = false;
@@ -240,11 +242,29 @@ export class ParadisCsvFileEditor extends EditorPane {
 				this._loadTable(resource, true).catch(onUnexpectedError);
 			}
 		}, RELOAD_DELAY_MS));
+		let changedWhileHidden = false;
+		const reloadWhenVisible = () => {
+			if (changedWhileHidden && this._mode === 'table' && !reloadScheduler.isScheduled()) {
+				changedWhileHidden = false;
+				reloadScheduler.schedule(0);
+			}
+		};
+		this._reloadWhenVisible = reloadWhenVisible;
+		store.add(toDisposable(() => {
+			if (this._reloadWhenVisible === reloadWhenVisible) {
+				this._reloadWhenVisible = undefined;
+			}
+		}));
 		// 読み直しは throttle する（予約済みなら延ばさない）。書き込みが続くファイルでも一定間隔で最新になり、
 		// 打鍵のたびに予約し直して永遠に読み直さない、ということも起きない。
 		const scheduleReload = (delay: number) => {
 			this._tableStale = true;
+			// 隠れている間は古い印だけ付け、見えたときに 1 回読み直す（全文の取り出しと索引の作り直しを編集のたびにしない）
 			if (this._mode !== 'table') {
+				return;
+			}
+			if (!this.isVisible()) {
+				changedWhileHidden = true;
 				return;
 			}
 			if (delay === 0) {
@@ -680,6 +700,13 @@ export class ParadisCsvFileEditor extends EditorPane {
 			case '\t': return localize('paradis.csv.delimiterTab', "タブ");
 			case ';': return localize('paradis.csv.delimiterSemicolon', "セミコロン");
 			default: return localize('paradis.csv.delimiterComma', "カンマ");
+		}
+	}
+
+	protected override setEditorVisible(visible: boolean): void {
+		super.setEditorVisible(visible);
+		if (visible) {
+			this._reloadWhenVisible?.();
 		}
 	}
 
