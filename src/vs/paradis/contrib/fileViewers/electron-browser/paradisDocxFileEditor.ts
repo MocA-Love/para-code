@@ -60,6 +60,7 @@ import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
+import { escape } from '../../../../base/common/strings.js';
 import { localize } from '../../../../nls.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordStoryLabel, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordNavigationTarget, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
 import { EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS, paradisWordPackageExclusions, renderWordSemanticRibbon, summarizeParadisWordBlockedParts, wordSemanticFailureMessage, type ParadisWordPackageExclusions, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
@@ -70,6 +71,7 @@ import { ParadisOfficeSemanticSearch } from '../common/paradisOfficeSearch.js';
 import type { IParadisWordAnalysis, IParadisWordAnalysisResult } from '../common/word/paradisWordSemanticSummary.js';
 import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
+import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
@@ -1395,7 +1397,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 
 	private _buildRejectedFileHtml(): string {
-		return '<!DOCTYPE html><html><body>Word 文書を表示できませんでした: ファイルが空または破損しています</body></html>';
+		return paradisViewerWebviewFailureHtml(localize('paradis.word.failed', "Word 文書を表示できませんでした: {0}", localize('paradis.viewer.emptyOrBroken', "ファイルが空または破損しています")));
 	}
 
 	private _buildBlankFileHtml(): string {
@@ -1527,14 +1529,14 @@ export class ParadisDocxFileEditor extends EditorPane {
 		上にオーバーフローして重なって表示されてしまう。fixedレイアウトは「列幅は固定するが、
 		中身は溢れさせない」という直感的な挙動を期待されるため、必ず折り返して高さ側に逃がす。 */
 		#content table td, #content table th { overflow-wrap: break-word; }
-		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; }
+		${PARADIS_VIEWER_WEBVIEW_STATE_STYLE}
 		${PARADIS_WORD_ANCHOR_STYLE}
 	</style>
 </head>
 <body class="paradis-word-${displayMode}">
-	${assetPlaceholderCount > 0 ? `<div role="status" id="asset-placeholders">Office assets unavailable: ${assetPlaceholderCount}</div>` : ''}
+	${assetPlaceholderCount > 0 ? `<div role="status" id="asset-placeholders">${escape(localize('paradis.word.assetsUnavailable', "表示できない部品: {0} 件", assetPlaceholderCount))}</div>` : ''}
 	<div id="scroller"><div id="content"></div></div>
-	<div id="status">読み込み中…</div>
+	${paradisViewerWebviewStatusHtml()}
 	<script nonce="${nonce}" src="${libBase}/jszip.min.js"></script>
 	<script nonce="${nonce}" src="${libBase}/docx-preview.min.js"></script>
 	<script nonce="${nonce}">
@@ -1797,7 +1799,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				}
 				statusEl.remove();
 			} catch (err) {
-				statusEl.textContent = 'Word 文書を表示できませんでした: ' + (err && err.message ? err.message : err);
+				${paradisViewerWebviewFailureScript(localize('paradis.word.failed', "Word 文書を表示できませんでした: {0}"))}
 			}
 		})();
 	</script>
