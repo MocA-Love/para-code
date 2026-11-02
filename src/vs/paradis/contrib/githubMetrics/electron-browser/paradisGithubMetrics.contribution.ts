@@ -9,7 +9,7 @@
 // GitHub API 利用状況ビューの登録入り口。paradis.electron-browser.contribution.ts から import される。
 // - ステータスバー右側（ccusage の右・通知ベルの左）の GitHub 項目。表示は残量%（主要資源のうち最小）
 // - ホバーは短いテキストだけ。ポップオーバー（案A）はクリックでのみ開き、開いたら固定表示にする
-// - ポップオーバーの「詳細を開く」でダッシュボード EditorPane（案B）
+// - ポップオーバーの「詳細を開く」で統合のモーダルの使用量（GitHub API）
 // - 設定 `paradis.githubMetrics.*` のスキーマ登録
 // レート枠取得と計測本体は shared process 側(node/paradisGithubMetricsChannel.ts)にある。
 
@@ -23,12 +23,9 @@ import { Action2, registerAction2 } from '../../../../platform/actions/common/ac
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
-import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment, StatusbarEntryKind } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import {
@@ -37,9 +34,7 @@ import {
 	paradisGithubWorstRemainingRatio,
 } from '../common/paradisGithubMetrics.js';
 import { ParadisGithubMetricsClient, PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL, PARADIS_GITHUB_METRICS_SETTING_STATUS_BAR_ENABLED } from './paradisGithubMetricsClient.js';
-import { ParadisGithubMetricsEditor } from './paradisGithubMetricsEditor.js';
 import { paradisGithubRoundedPercent } from './paradisGithubMetricsFormat.js';
-import { ParadisGithubMetricsInput, ParadisGithubMetricsInputSerializer, PARADIS_GITHUB_METRICS_EDITOR_ID, PARADIS_GITHUB_METRICS_INPUT_TYPE_ID } from './paradisGithubMetricsInput.js';
 import { paradisOpenUsageDashboard } from '../../usageDashboard/electron-browser/paradisUsageDashboard.contribution.js';
 import { ParadisGithubMetricsPopover } from './paradisGithubMetricsPopover.js';
 
@@ -58,24 +53,6 @@ const STATUS_BAR_PRIORITY = -9991;
 const POPOVER_WINDOW_EDGE_MARGIN = 12;
 /** ホバーの枠線（左右 1px ずつ）。ポップオーバーの外形に足すと実際の占有幅になる。 */
 const HOVER_BORDER_WIDTH = 2;
-
-// ---------- editor pane / serializer ----------
-
-Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(
-		ParadisGithubMetricsEditor,
-		PARADIS_GITHUB_METRICS_EDITOR_ID,
-		localize('paradis.githubMetrics.editorName', "GitHub API 利用状況")
-	),
-	[
-		new SyncDescriptor(ParadisGithubMetricsInput)
-	]
-);
-
-Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
-	PARADIS_GITHUB_METRICS_INPUT_TYPE_ID,
-	ParadisGithubMetricsInputSerializer
-);
 
 // ---------- command ----------
 
