@@ -103,6 +103,20 @@ suite('ParadisLimitsMonitor', () => {
 		], ['2時間13分', '4日6時間', '35分', undefined]);
 	});
 
+	test('rounds the time left up to whole minutes at the unit boundaries', () => {
+		const now = 1_000_000_000_000;
+		const minute = 60_000;
+		assert.deepStrictEqual([
+			paradisLimitsFormatCountdown(now, now),
+			paradisLimitsFormatCountdown(now + 30_000, now),
+			paradisLimitsFormatCountdown(now + 59 * minute + 1, now),
+			paradisLimitsFormatCountdown(now + 60 * minute, now),
+			paradisLimitsFormatCountdown(now + 24 * 60 * minute - 1, now),
+			paradisLimitsFormatCountdown(now + 24 * 60 * minute, now),
+			paradisLimitsFormatCountdown(now + 25 * 60 * minute + 1, now),
+		], [undefined, '1分', '1時間0分', '1時間0分', '1日0時間', '1日0時間', '1日1時間']);
+	});
+
 	test('uses the documented severity boundaries', () => {
 		assert.deepStrictEqual([
 			paradisLimitsSeverity(59.999),

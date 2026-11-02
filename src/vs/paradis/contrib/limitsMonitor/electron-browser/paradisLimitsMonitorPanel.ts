@@ -456,8 +456,6 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 				: this.statusBadgeLabel(account.status);
 		}
 
-		this.renderAccountMenu(badgeGroup, account, others, remoteHost);
-
 		// Codex のホームはメールの下の副題に出す（まとめた同じアカウントのホームも並べる。隠したものは出さない）。
 		if (account.provider === 'codex' && account.homeLabel) {
 			const labels = [account.homeLabel, ...others.map(other => other.homeLabel ?? other.id)];
@@ -481,6 +479,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 
 		if (compact && !expanded) {
+			this.renderAccountMenu(card, account, others, remoteHost);
 			return;
 		}
 		if (previous) {
@@ -520,6 +519,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		if (!remoteHost) {
 			this.renderAccountActions(card, account);
 		}
+		// 「…」は右上に重ねて描くが、DOM ではカードのボタンの後ろに置く（Tab でカードのボタンの次に届く）。
+		this.renderAccountMenu(card, account, others, remoteHost);
 	}
 
 	private isAccountSelected(account: IParadisLimitsAccount): boolean {
@@ -527,7 +528,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	}
 
 	/** 右上の「…」。一覧から隠す・削除（まとめたカードはホームごと）を出す。 */
-	private renderAccountMenu(badgeGroup: HTMLElement, account: IParadisLimitsAccount, others: readonly IParadisLimitsAccount[], remoteHost: boolean): void {
+	private renderAccountMenu(card: HTMLElement, account: IParadisLimitsAccount, others: readonly IParadisLimitsAccount[], remoteHost: boolean): void {
 		const members = [account, ...others];
 		const name = this.options.displayName(account);
 		// メニューの項目（文言と実行する処理）。Action はメニューを出すたびに作る。
@@ -553,7 +554,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			return;
 		}
 		const label = localize('paradis.limitsMonitor.accountMenu', "{0} のほかの操作", name);
-		const button = dom.append(badgeGroup, $('button.plm-account-icon-btn.plm-account-menu')) as HTMLButtonElement;
+		card.classList.add('has-menu');
+		const button = dom.append(card, $('button.plm-account-icon-btn.plm-account-menu')) as HTMLButtonElement;
 		button.type = 'button';
 		button.setAttribute('aria-label', label);
 		button.setAttribute('aria-haspopup', 'menu');
