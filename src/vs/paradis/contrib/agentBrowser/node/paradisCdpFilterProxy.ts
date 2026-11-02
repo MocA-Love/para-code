@@ -59,6 +59,7 @@ import { paradisRemotePaneCdpDeniedMessage } from './paradisCdpRemotePolicy.js';
 import { PARADIS_HIDDEN_EXTENSION_FRAME_URL, PARADIS_PAGE_URL_FRESH_MS, paradisExtensionPageDeniedMessage, paradisGuardNewDocumentScriptParams, paradisIsAllowedOnExtensionPage, paradisIsBrowserExtensionUrl, paradisIsEventAllowedOnExtensionPage, paradisIsUndecidedPageUrl, paradisRedactExtensionFrameEvent, paradisRedactExtensionFrameResponse } from '../common/paradisCdpExtensionScope.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 import { ParadisReverseIndexedMap } from './paradisCdpReverseIndexedMap.js';
+import { ParadisCdpClientCommandQueue } from './paradisCdpClientCommandQueue.js';
 import { IParadisCdpFrame, MAX_CDP_FRAME_BYTES, ParadisBoundedSendOutcome, paradisCdpErrorFrame, paradisCdpErrorResponse, paradisForwardableCdpFrame, paradisReadCdpFrame, rawDataByteLength, rawDataText, sendWithBoundedBackpressure, sendWithBoundedBackpressureOutcome } from './paradisCdpFrames.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
@@ -1390,9 +1391,8 @@ export function paradisProxyPageUpgrade(
 		let resolveConnectionClosed!: () => void;
 		const connectionClosed = new Promise<void>(resolve => resolveConnectionClosed = resolve);
 		let pendingBytes = 0;
-		let scheduledClientMessages = 0;
-		let scheduledClientBytes = 0;
-		let clientCommandTail: Promise<void> | undefined;
+		// クライアントの命令を届いた順に処理する列（ページの経路は列が 1 つ）
+		const clientCommands = new ParadisCdpClientCommandQueue(data => processClientMessage(data), () => closeBoth(), MAX_CDP_PENDING_REQUESTS, MAX_CDP_CONNECTING_QUEUE_BYTES);
 		const forwardedRequestBarriers = new Map<number, IParadisForwardedRequestBarrier>();
 		// Child sessions (flatten auto-attach) that detached on this page connection, for the barrier diagnostics.
 		const detachedSessions = new Set<string>();
@@ -1691,44 +1691,11 @@ export function paradisProxyPageUpgrade(
 			const bytes = rawDataByteLength(data);
 			if (closed
 				|| bytes > MAX_CDP_FRAME_BYTES
-				|| scheduledClientMessages >= MAX_CDP_PENDING_REQUESTS
-				|| scheduledClientBytes + bytes > MAX_CDP_CONNECTING_QUEUE_BYTES) {
+				|| clientCommands.isFull(bytes)) {
 				closeBoth();
 				return;
 			}
-			const previous = clientCommandTail;
-			if (!previous) {
-				try {
-					const wait = processClientMessage(data);
-					if (wait) {
-						const guarded = wait.catch(closeBoth);
-						clientCommandTail = guarded;
-						void guarded.finally(() => {
-							if (clientCommandTail === guarded) {
-								clientCommandTail = undefined;
-							}
-						});
-					}
-				} catch {
-					closeBoth();
-				}
-				return;
-			}
-			scheduledClientMessages++;
-			scheduledClientBytes += bytes;
-			const next = previous
-				.then(() => processClientMessage(data))
-				.catch(closeBoth)
-				.finally(() => {
-					scheduledClientMessages = Math.max(0, scheduledClientMessages - 1);
-					scheduledClientBytes = Math.max(0, scheduledClientBytes - bytes);
-				});
-			clientCommandTail = next;
-			void next.finally(() => {
-				if (clientCommandTail === next) {
-					clientCommandTail = undefined;
-				}
-			});
+			clientCommands.enqueue(data, bytes, '');
 		});
 		upstream.on('open', () => {
 			if (closed || !ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
@@ -1950,10 +1917,8 @@ export async function paradisProxyBrowserUpgrade(
 		const outOfScopeRelease = new ParadisOutOfScopeAttachRelease((method, params, sessionId) => { sendInternal(method, params, sessionId); });
 		let resolveConnectionClosed!: () => void;
 		const connectionClosed = new Promise<void>(resolve => resolveConnectionClosed = resolve);
-		let scheduledClientMessages = 0;
-		let scheduledClientBytes = 0;
-		// セッション（ルートは ''）ごとの、処理中の命令の列の最後
-		const clientCommandTails = new Map<string, Promise<void>>();
+		// セッション（ルートは ''）ごとに、クライアントの命令を届いた順に処理する列
+		const clientCommands = new ParadisCdpClientCommandQueue(data => processClientMessage(data), () => closeBoth(), MAX_CDP_PENDING_REQUESTS, MAX_CDP_CONNECTING_QUEUE_BYTES);
 
 		/** `onRejected` は接続を閉じる前に呼ぶ（一時停止している子を再開させるため）。 */
 		const addAllowedTarget = (targetId: string, openerId?: string, onRejected?: () => void): boolean => {
@@ -2784,47 +2749,14 @@ export async function paradisProxyBrowserUpgrade(
 			const bytes = rawDataByteLength(data);
 			if (closed
 				|| bytes > MAX_CDP_FRAME_BYTES
-				|| scheduledClientMessages >= MAX_CDP_PENDING_REQUESTS
-				|| scheduledClientBytes + bytes > MAX_CDP_CONNECTING_QUEUE_BYTES) {
+				|| clientCommands.isFull(bytes)) {
 				closeBoth();
 				return;
 			}
 			// 命令はセッションごとに順に処理する。待つ命令（URL の確かめ・移動の応答待ち・入力の順番待ち）があっても、
 			// ほかのセッション（ほかのタブ・iframe）の命令は待たせない。壊れたフレームはセッション無しの列で扱う
 			const sessionKey = parseClientCommand(data)?.sessionId ?? '';
-			const previous = clientCommandTails.get(sessionKey);
-			if (!previous) {
-				try {
-					const wait = processClientMessage(data);
-					if (wait) {
-						const guarded = wait.catch(closeBoth);
-						clientCommandTails.set(sessionKey, guarded);
-						void guarded.finally(() => {
-							if (clientCommandTails.get(sessionKey) === guarded) {
-								clientCommandTails.delete(sessionKey);
-							}
-						});
-					}
-				} catch {
-					closeBoth();
-				}
-				return;
-			}
-			scheduledClientMessages++;
-			scheduledClientBytes += bytes;
-			const next = previous
-				.then(() => processClientMessage(data))
-				.catch(closeBoth)
-				.finally(() => {
-					scheduledClientMessages = Math.max(0, scheduledClientMessages - 1);
-					scheduledClientBytes = Math.max(0, scheduledClientBytes - bytes);
-				});
-			clientCommandTails.set(sessionKey, next);
-			void next.finally(() => {
-				if (clientCommandTails.get(sessionKey) === next) {
-					clientCommandTails.delete(sessionKey);
-				}
-			});
+			clientCommands.enqueue(data, bytes, sessionKey);
 		});
 
 		upstream.on('message', (data: wsTypes.RawData) => {
