@@ -96,6 +96,7 @@ export class BrowserView extends Disposable {
 		emulatedDeviceScaleFactor: () => this.emulator.device?.deviceScaleFactor,
 		sendCommand: (method, params) => this.debugger.sendCommand(method, params),
 		waitForNextPaint: () => this._waitForNextPaint(),
+		reapplyEmulation: () => this.emulator.paraReapplyEmulation(),
 	}, this.logService);
 	private readonly _paraAutomationKeys = this._register(new ParaBrowserViewAutomationKeys(() => this.webContents, () => this._isDisposed, this.logService));
 
