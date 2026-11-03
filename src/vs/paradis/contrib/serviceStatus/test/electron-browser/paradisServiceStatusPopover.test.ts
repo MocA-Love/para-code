@@ -133,7 +133,7 @@ suite('ParadisServiceStatusWidget', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('shows the three services as dots in one title bar item, and opens and closes the popover from the keyboard', async () => {
+	test('shows one chip per service with its state dot, and moves the popover to the pressed chip', async () => {
 		const container = document.createElement('div');
 		document.body.appendChild(container);
 		try {
@@ -146,11 +146,11 @@ suite('ParadisServiceStatusWidget', () => {
 			instantiationService.stub(ICommandService, upcastPartial<ICommandService>({ executeCommand: async () => undefined }));
 			store.add(createParadisServiceStatusWidget(instantiationService, container));
 
-			const buttons = container.querySelectorAll<HTMLButtonElement>('button.paradis-service-status-trigger');
-			const button = buttons[0];
+			const buttons = [...container.querySelectorAll<HTMLButtonElement>('button.paradis-service-status-trigger')];
+			const [claude, openai, github] = buttons;
 			// 取得が済むと項目の aria-label が状態入りに書き換わるので、それを待つ。
 			await new Promise<void>(resolve => {
-				const done = () => button.getAttribute('aria-label')?.includes('OpenAI') ?? false;
+				const done = () => openai.getAttribute('aria-label')?.includes('軽微') ?? false;
 				if (done()) {
 					resolve();
 					return;
@@ -161,28 +161,36 @@ suite('ParadisServiceStatusWidget', () => {
 						resolve();
 					}
 				});
-				observer.observe(button, { attributes: true, attributeFilter: ['aria-label'] });
+				observer.observe(openai, { attributes: true, attributeFilter: ['aria-label'] });
 			});
-			const dots = [...button.querySelectorAll('.paradis-service-status-dot')].map(dot => dot.className.replace('paradis-service-status-dot ', ''));
-			button.focus();
-			button.click();
-			const opened = !!container.querySelector('.paradis-service-status-popover');
+			const chips = buttons.map(button => [
+				button.dataset.provider,
+				!!button.querySelector('.paradis-service-status-logo'),
+				button.querySelector('.paradis-service-status-dot')?.className.replace('paradis-service-status-dot ', ''),
+			].join(' | '));
+			openai.focus();
+			openai.click();
+			const openedAtOpenAI = openai.classList.contains('active');
+			github.click();
+			const movedToGitHub = !openai.classList.contains('active') && github.classList.contains('active') && container.querySelectorAll('.paradis-service-status-popover').length === 1;
 			(document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 
 			assert.deepStrictEqual({
-				items: buttons.length,
-				dots,
-				label: button.getAttribute('aria-label'),
-				opened,
-				closed: !container.querySelector('.paradis-service-status-popover'),
-				focusBack: document.activeElement === button,
+				chips,
+				label: openai.getAttribute('aria-label'),
+				openedAtOpenAI,
+				movedToGitHub,
+				closed: !container.querySelector('.paradis-service-status-popover') && !github.classList.contains('active'),
+				focusBack: document.activeElement === github,
+				claudeLabel: claude.getAttribute('aria-label'),
 			}, {
-				items: 1,
-				dots: ['ok', 'minor', 'ok'],
-				label: 'サービスの稼働状況: Claude: 正常, OpenAI: 軽微な障害, GitHub: 正常',
-				opened: true,
+				chips: ['claude | true | ok', 'codex | true | minor', 'github | true | ok'],
+				label: 'サービスの稼働状況: OpenAI: 軽微な障害',
+				openedAtOpenAI: true,
+				movedToGitHub: true,
 				closed: true,
 				focusBack: true,
+				claudeLabel: 'サービスの稼働状況: Claude: 正常',
 			});
 		} finally {
 			container.remove();
