@@ -27,7 +27,7 @@
 		radius, 2px between items. The title bar sets its own active / inactive foreground on the
 		part, so inherit it instead of always using the inactive color. */
 	height: 22px;
-	padding: 0 3px;
+	padding: var(--paradis-titlebar-item-padding);
 	margin: 0 1px;
 	border: none;
 	border-radius: var(--vscode-cornerRadius-small);

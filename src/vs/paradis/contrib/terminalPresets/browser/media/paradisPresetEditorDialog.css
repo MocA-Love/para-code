@@ -395,7 +395,7 @@
 	padding: 0 var(--vscode-spacing-size60);
 	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	border-radius: var(--vscode-cornerRadius-circle);
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	font-weight: var(--vscode-fontWeight-regular);
 	line-height: 16px;
 	white-space: nowrap;
