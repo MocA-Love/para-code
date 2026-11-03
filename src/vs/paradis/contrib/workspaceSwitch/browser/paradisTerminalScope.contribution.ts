@@ -956,6 +956,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				this.retryOrphanRevivalAfterAdoption();
 				return;
 			}
+			// 終わったのを見たら回数を戻す。窓を開いたまま pty ホストが起き直すと、次の引き取りでまた
+			// 聞き直しが要る。前の回の残りで上限に届いていると、そのときに一度も聞き直さない。
+			this._adoptionRetryAttempts = 0;
 			void this.retryOrphanRevivalIfInterrupted();
 		}, ParadisTerminalWorkspaceScope.ADOPTION_RETRY_INTERVAL_MS);
 	}
