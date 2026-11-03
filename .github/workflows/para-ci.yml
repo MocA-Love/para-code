@@ -98,9 +98,15 @@ jobs:
       # --continue-on-error lets the other checks finish and report; the step still fails if any of them failed.
       - name: Hygiene & other checks
         if: success() || failure()
-        run: npm exec -- npm-run-all2 -lp --continue-on-error hygiene eslint valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
+        run: npm exec -- npm-run-all2 -lp --continue-on-error hygiene valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # eslint alone still ran the runner out of memory (shutdown, exit 143) when it shared the runner with the
+      # checks above, so it gets its own step.
+      - name: ESLint
+        if: success() || failure()
+        run: npm run eslint
 
       - name: Check cyclic dependencies
         run: node build/lib/checkCyclicDependencies.ts out-build
