@@ -22,7 +22,7 @@
 	gap: var(--vscode-spacing-size40);
 	/* Same steps as the other title bar items (see paradisResourceMonitor.css). */
 	height: 22px;
-	padding: 0 3px;
+	padding: var(--paradis-titlebar-item-padding);
 	margin: 0 1px;
 	border: none;
 	border-radius: var(--vscode-cornerRadius-small);
