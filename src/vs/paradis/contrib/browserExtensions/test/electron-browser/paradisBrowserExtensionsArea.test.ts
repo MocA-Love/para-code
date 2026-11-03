@@ -29,14 +29,13 @@ function extension(id: string, name: string): IParadisBrowserExtensionView {
 suite('ParadisBrowserExtensionsArea', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	// 一覧は選んでいる行だけが Tab で止まるので、上下の矢印・Home・End で隣の行へ移って選べること
-	test('moves the selection through the installed list with the arrow keys, Home and End', async () => {
+	function createArea(extensions: IParadisBrowserExtensionView[]) {
 		const doc = mainWindow.document;
 		const containers = { nav: doc.body.appendChild(doc.createElement('nav')), content: doc.body.appendChild(doc.createElement('div')), header: doc.createElement('div') };
 		store.add({ dispose: () => { containers.nav.remove(); containers.content.remove(); } });
-		const state = { active: true, setting: true, extensions: [extension('a', 'Alpha'), extension('b', 'Beta'), extension('c', 'Gamma')] };
+		const state = { active: true, setting: true, extensions };
 		const channel: IChannel = {
-			call: async <T>(command: string) => (command === 'getState' ? state : undefined) as T,
+			call: async <T>(command: string) => (command === 'getState' ? state : command === 'getWorkerLog' ? [] : undefined) as T,
 			listen: <T>() => Event.None as Event<T>,
 		};
 		const instantiationService = store.add(new TestInstantiationService());
@@ -48,6 +47,34 @@ suite('ParadisBrowserExtensionsArea', () => {
 		instantiationService.stub(IParadisAgentBrowserBindingModel, { bindings: [] } as Partial<IParadisAgentBrowserBindingModel>);
 		const host: IParadisHubHost = { close: () => { }, open: () => { } };
 		store.add(instantiationService.createInstance(ParadisBrowserExtensionsArea, containers, host));
+		return containers;
+	}
+
+	// Q544: 背景の処理がある拡張機能は、設定と権限を左の列、ログを右の列に置く。無いものは 1 列のまま
+	test('puts the service worker log in a right column only for extensions that have one', async () => {
+		const containers = createArea([{ ...extension('a', 'Alpha'), worker: { running: false } }, extension('b', 'Beta')]);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const layout = () => {
+			const detail = containers.content.querySelector<HTMLElement>('.pbe-detail')!;
+			return {
+				twoColumns: detail.classList.contains('pbe-detail-2col'),
+				children: [...detail.children].map(child => child.className),
+				log: [...detail.querySelectorAll('.pbe-log')].map(log => log.closest('.pbe-col-log') !== null),
+			};
+		};
+		const steps = [layout()];
+		containers.nav.querySelectorAll<HTMLElement>('.pbe-list-row')[1].click();
+		steps.push(layout());
+		assert.deepStrictEqual(steps, [
+			{ twoColumns: true, children: ['pbe-col-main', 'pbe-col-log'], log: [true] },
+			{ twoColumns: false, children: ['pbe-detail-header', 'pbe-detail-actions', 'pbe-confirm-host', 'pbe-callout is-error', 'pbe-section', 'pbe-section'], log: [] },
+		]);
+	});
+
+	// 一覧は選んでいる行だけが Tab で止まるので、上下の矢印・Home・End で隣の行へ移って選べること
+	test('moves the selection through the installed list with the arrow keys, Home and End', async () => {
+		const doc = mainWindow.document;
+		const containers = createArea([extension('a', 'Alpha'), extension('b', 'Beta'), extension('c', 'Gamma')]);
 		await new Promise(resolve => setTimeout(resolve, 0));
 
 		const selected = () => {
