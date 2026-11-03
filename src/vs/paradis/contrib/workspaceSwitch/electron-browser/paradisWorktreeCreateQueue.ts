@@ -21,21 +21,17 @@ import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationHandle, INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, paradisSanitizeBranchName } from '../common/paradisWorktreeCreate.js';
 import { IParadisHeadlessWorktreeRequest, ParadisWorktreeCreateStage, paradisRunWorktreeCreateFlow } from './paradisWorktreeHeadlessCreate.js';
+import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueueService.js';
 
-export const IParadisWorktreeCreateQueueService = createDecorator<IParadisWorktreeCreateQueueService>('paradisWorktreeCreateQueueService');
-
-/** バックグラウンド作成キュー。enqueue は即座に戻り、進行状況は通知/ステータスバー/ビューに出る。 */
-export interface IParadisWorktreeCreateQueueService {
-	readonly _serviceBrand: undefined;
-	enqueue(request: IParadisHeadlessWorktreeRequest): void;
-}
+// 識別子と形は paradisWorktreeCreateQueueService.ts にある（ダイアログとの循環を避けるため）。今までの読み手のためにここからも出す。
+export { IParadisWorktreeCreateQueueService };
 
 /** browser 層のビューと同じく、コマンド実体（electron-browser 層）の ID を直書きで参照する。 */
 const CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
