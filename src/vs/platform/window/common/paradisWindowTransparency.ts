@@ -18,3 +18,24 @@ import { hasNativeTitlebar } from './window.js';
 export function paradisCanUseWindowTransparency(configurationService: IConfigurationService, windows: boolean = isWindows): boolean {
 	return !windows || !hasNativeTitlebar(configurationService);
 }
+
+/**
+ * `paradis.window.transparency.enabled` を書いていないときの既定値。Windows だけオフにする。
+ * Electron は透過のウィンドウで WS_THICKFRAME を外すため、Windows で透過にすると Win+矢印や画面の端への
+ * ドラッグでのスナップと、縁をつかんでのリサイズが効かなくなる。renderer の設定の登録 (paradisSettings.contribution.ts)
+ * と main の判定 (paradisShouldCreateTransparentWindow) の両方がこの値を使う。
+ */
+export function paradisWindowTransparencyDefault(windows: boolean = isWindows): boolean {
+	return !windows;
+}
+
+/**
+ * main プロセスがウィンドウを透過で作るか。main には renderer で登録した設定の既定値が見えず、
+ * 書いていない設定は undefined になるため、そのときは paradisWindowTransparencyDefault を使う。
+ * Windows では設定に true を明示したときだけ透過にする。
+ */
+export function paradisShouldCreateTransparentWindow(configurationService: IConfigurationService, windows: boolean = isWindows): boolean {
+	const setting = configurationService.getValue<boolean>('paradis.window.transparency.enabled');
+	const enabled = typeof setting === 'boolean' ? setting : paradisWindowTransparencyDefault(windows);
+	return enabled && paradisCanUseWindowTransparency(configurationService, windows);
+}
