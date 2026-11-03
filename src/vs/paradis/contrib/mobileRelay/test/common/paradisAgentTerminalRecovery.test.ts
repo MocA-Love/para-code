@@ -90,6 +90,7 @@ suite('ParadisAgentTerminalRecoveryTracker', () => {
 });
 
 class TestRecoveryTerminal implements IParadisAgentRecoveryTerminal {
+	private readonly _store = new DisposableTestStore();
 	private readonly onDisposedEmitter = this._store.add(new Emitter<void>());
 	readonly onDisposed = this.onDisposedEmitter.event;
 	private readonly addedEmitter = this._store.add(new Emitter<ICommandDetectionCapability>());
@@ -102,7 +103,7 @@ class TestRecoveryTerminal implements IParadisAgentRecoveryTerminal {
 	};
 	isDisposed = false;
 
-	constructor(readonly instanceId: number, private readonly _store = new DisposableTestStore()) { }
+	constructor(readonly instanceId: number) { }
 
 	addCommandDetection(capability: ICommandDetectionCapability): void {
 		this.commandDetection = capability;
@@ -119,6 +120,7 @@ class TestRecoveryTerminal implements IParadisAgentRecoveryTerminal {
 }
 
 class TestCommandDetectionCapability implements Pick<ICommandDetectionCapability, 'executingCommand' | 'onCommandExecuted' | 'onCommandFinished'> {
+	private readonly _store = new DisposableTestStore();
 	private readonly executedEmitter = this._store.add(new Emitter<ITerminalCommand>());
 	private readonly finishedEmitter = this._store.add(new Emitter<ITerminalCommand>());
 	private _executedListenerCount = 0;
@@ -126,7 +128,7 @@ class TestCommandDetectionCapability implements Pick<ICommandDetectionCapability
 	readonly onCommandExecuted = this.countedEvent(this.executedEmitter, () => this._executedListenerCount++, () => this._executedListenerCount--);
 	readonly onCommandFinished = this.countedEvent(this.finishedEmitter, () => this._finishedListenerCount++, () => this._finishedListenerCount--);
 
-	constructor(public executingCommand: string | undefined, private readonly _store = new DisposableTestStore()) { }
+	constructor(public executingCommand: string | undefined) { }
 
 	get executedListenerCount(): number { return this._executedListenerCount; }
 	get finishedListenerCount(): number { return this._finishedListenerCount; }

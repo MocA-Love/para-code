@@ -89,16 +89,9 @@ export class BrowserView extends Disposable {
 	private readonly _consoleLogs: string[] = [];
 	// PARA-PATCH: state for the hardened screenshot pipeline and automation-key isolation - serialize captures, and the per-view automation key state in paraBrowserViewAutomationKeys.ts (Para Browser MCP screenshot + automation input hardening)
 	private readonly _screenshotCoordinator = new BrowserViewScreenshotCoordinator();
-	// PARA-PATCH: the capture helpers of the hardened screenshot pipeline (paraBrowserViewScreenshotCapture.ts)
-	private readonly _paraScreenshot = new ParaBrowserViewScreenshotCapture({
-		webContents: () => this._view.webContents,
-		hostWindow: () => this._hostWindow,
-		emulatedDeviceScaleFactor: () => this.emulator.device?.deviceScaleFactor,
-		sendCommand: (method, params) => this.debugger.sendCommand(method, params),
-		waitForNextPaint: () => this._waitForNextPaint(),
-		reapplyEmulation: () => this.emulator.paraReapplyEmulation(),
-	}, this.logService);
-	private readonly _paraAutomationKeys = this._register(new ParaBrowserViewAutomationKeys(() => this.webContents, () => this._isDisposed, this.logService));
+	// PARA-PATCH: the capture helpers of the hardened screenshot pipeline (paraBrowserViewScreenshotCapture.ts) and the automation key state (paraBrowserViewAutomationKeys.ts). Both are created in the constructor because they need the injected logService (define-class-fields-check)
+	private readonly _paraScreenshot: ParaBrowserViewScreenshotCapture;
+	private readonly _paraAutomationKeys: ParaBrowserViewAutomationKeys;
 
 	/**
 	 * Resize a full-page screenshot so its largest dimension never exceeds this many pixels. A very tall
@@ -169,6 +162,16 @@ export class BrowserView extends Disposable {
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 	) {
 		super();
+		// PARA-PATCH: create the screenshot and automation key helpers here, after the injected logService is assigned (see the fields above)
+		this._paraScreenshot = new ParaBrowserViewScreenshotCapture({
+			webContents: () => this._view.webContents,
+			hostWindow: () => this._hostWindow,
+			emulatedDeviceScaleFactor: () => this.emulator.device?.deviceScaleFactor,
+			sendCommand: (method, params) => this.debugger.sendCommand(method, params),
+			waitForNextPaint: () => this._waitForNextPaint(),
+			reapplyEmulation: () => this.emulator.paraReapplyEmulation(),
+		}, this.logService);
+		this._paraAutomationKeys = this._register(new ParaBrowserViewAutomationKeys(() => this.webContents, () => this._isDisposed, this.logService));
 		this._owner = owner;
 
 		const webPreferences: Electron.WebPreferences = {

@@ -737,7 +737,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	// ターミナルID → 離れた後に PC の寸法へ戻すまでの猶予のタイマー（W2-19）。
 	private readonly termViewportReleaseTimers = new Map<number, ReturnType<typeof setTimeout>>();
 	// モバイル発の /model・/effort 切替でClaude TUIが出す確認ダイアログを自動確定するガード。
-	private readonly modelSwitchGuard = this._register(new ParadisAgentModelSwitchGuard(this.logService));
+	// 注入された logService を使うので、作るのは constructor の中（define-class-fields-check）。
+	private readonly modelSwitchGuard: ParadisAgentModelSwitchGuard;
 	// PC本体のバッテリー状態（Battery Status API）。未対応環境ではundefinedのまま＝state未配信。
 	private battery: IParadisMobileDesktopBattery | undefined;
 	private readonly mobileWarmLeases: ParadisMobileWarmLeaseProvider;
@@ -832,6 +833,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly requestHandlerServices?: Pick<IParadisMobileRequestHost, 'invokeFunction' | 'getMobileCapabilities' | 'getMobileWireVersion'>,
 	) {
 		super();
+		this.modelSwitchGuard = this._register(new ParadisAgentModelSwitchGuard(this.logService));
 		this.mobileWarmLeases = this._register(new ParadisMobileWarmLeaseProvider(setUsageWarmLease, setSpaceDiskWarmLease));
 		let markInitialAgentPanesReady!: () => void;
 		this.initialAgentPanesReady = new Promise<void>(resolve => { markInitialAgentPanesReady = resolve; });

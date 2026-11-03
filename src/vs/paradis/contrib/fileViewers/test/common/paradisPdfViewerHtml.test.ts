@@ -22,39 +22,45 @@ suite('ParadisPdfViewerHtml', () => {
 		maxPixels = 0;
 		autoFinish = true;
 
-		constructor(readonly pageCount: number, readonly pixelsPerPage: number) { }
+		readonly host: ReturnType<FakeHost['createHost']>;
 
-		readonly host = {
-			pageCount: this.pageCount,
-			prerender: PARADIS_PDF_PRERENDER_PAGES,
-			keep: PARADIS_PDF_KEEP_PAGES,
-			pixelBudget: PARADIS_PDF_CANVAS_PIXEL_BUDGET,
-			plan: planParadisPdfPages,
-			selectRelease: selectParadisPdfCanvasesToRelease,
-			fitsBudget: fitsParadisPdfCanvasBudget,
-			canvases: () => [...this.canvasesByIndex].map(([index, pixels]) => ({ index, pixels, current: true })),
-			estimatePixels: () => this.pixelsPerPage,
-			render: (index: number): IParadisPdfRenderJob => {
-				let settle!: () => void;
-				let cancelled = false;
-				const done = new Promise<void>(resolve => { settle = resolve; });
-				const finish = () => {
-					if (!cancelled) {
-						this.canvasesByIndex.set(index, this.pixelsPerPage);
-						this.maxPixels = Math.max(this.maxPixels, [...this.canvasesByIndex.values()].reduce((a, b) => a + b, 0));
+		constructor(readonly pageCount: number, readonly pixelsPerPage: number) {
+			this.host = this.createHost();
+		}
+
+		createHost() {
+			return {
+				pageCount: this.pageCount,
+				prerender: PARADIS_PDF_PRERENDER_PAGES,
+				keep: PARADIS_PDF_KEEP_PAGES,
+				pixelBudget: PARADIS_PDF_CANVAS_PIXEL_BUDGET,
+				plan: planParadisPdfPages,
+				selectRelease: selectParadisPdfCanvasesToRelease,
+				fitsBudget: fitsParadisPdfCanvasBudget,
+				canvases: () => [...this.canvasesByIndex].map(([index, pixels]) => ({ index, pixels, current: true })),
+				estimatePixels: () => this.pixelsPerPage,
+				render: (index: number): IParadisPdfRenderJob => {
+					let settle!: () => void;
+					let cancelled = false;
+					const done = new Promise<void>(resolve => { settle = resolve; });
+					const finish = () => {
+						if (!cancelled) {
+							this.canvasesByIndex.set(index, this.pixelsPerPage);
+							this.maxPixels = Math.max(this.maxPixels, [...this.canvasesByIndex.values()].reduce((a, b) => a + b, 0));
+						}
+						this.pending.delete(index);
+						settle();
+					};
+					if (this.autoFinish) {
+						queueMicrotask(finish);
+					} else {
+						this.pending.set(index, finish);
 					}
-					this.pending.delete(index);
-					settle();
-				};
-				if (this.autoFinish) {
-					queueMicrotask(finish);
-				} else {
-					this.pending.set(index, finish);
-				}
-				return { done, cancel: () => { cancelled = true; this.cancelled.push(index); finish(); } };
-			},
-			release: (index: number) => { this.canvasesByIndex.delete(index); },
-		};
+					return { done, cancel: () => { cancelled = true; this.cancelled.push(index); finish(); } };
+				},
+				release: (index: number) => { this.canvasesByIndex.delete(index); },
+			};
+		}
 	}
 
 	test('reads only large documents in pieces, and only from the preview server', () => {
