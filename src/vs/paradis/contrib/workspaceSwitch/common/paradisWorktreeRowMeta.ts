@@ -68,7 +68,7 @@ export const PARADIS_WORKTREE_ROW_HEIGHT = 44;
 /** メタ段を持つ行 (3段) の高さ。 */
 export const PARADIS_WORKTREE_ROW_HEIGHT_WITH_META = 60;
 /** リポジトリの見出しの行の高さ。スペースの行は 2 段 44・3 段 60（paracode-179 の段組み。Q544 の 3）。 */
-export const PARADIS_REPOSITORY_ROW_HEIGHT = 28;
+export const PARADIS_REPOSITORY_ROW_HEIGHT = 30;
 
 export function paradisWorktreeMetaLabel(id: ParadisWorktreeMetaId): string {
 	switch (id) {
