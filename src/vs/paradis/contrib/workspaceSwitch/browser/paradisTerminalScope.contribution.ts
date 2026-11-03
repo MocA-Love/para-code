@@ -97,6 +97,12 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 	/** 孤児復活のやり直しが走っている最中か（切り替えのたびに多重起動しないため）。 */
 	private _orphanRevivalRetrying = false;
+	/** 引き取りの終わりを待つ聞き直し（{@link retryOrphanRevivalAfterAdoption}）。 */
+	private readonly _adoptionRetry = this._register(new MutableDisposable());
+	private _adoptionRetryAttempts = 0;
+	/** 聞き直しの間隔と回数。合わせて 5 分。pty ホストの待ちの上限（30 秒）を十分に超える。 */
+	private static readonly ADOPTION_RETRY_INTERVAL_MS = 5_000;
+	private static readonly MAX_ADOPTION_RETRY_ATTEMPTS = 60;
 
 	/**
 	 * 前回セッションのレイアウト復元が終わるまで park を保留しているグループ → 所属リポジトリID。
@@ -794,11 +800,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		let adoption: ParadisPtyAdoptionState = 'settled';
 		try {
 			const backend = await this.terminalInstanceService.getBackend(this.environmentService.remoteAuthority);
+			// 一覧の前と後の両方で聞く。後だけだと、期限切れで返った一覧を受け取った直後に引き取りが
+			// 終わると「済んだ」と読んでしまう。前で「まだ」なら、一覧は引き取りの途中で返った
+			// かもしれない（pty ホストは一覧を返す前に引き取りの終わりを待つが、待つのは期限まで）。
+			const before = backend ? await paradisPtyAdoptionState() : 'settled';
 			details = await backend?.listProcesses();
-			// 一覧の後に聞く。pty ホストは一覧を返す前に引き取りの終わりを待つので、ここで「まだ」なら
-			// その一覧は待ちの期限を過ぎて返した、引き取る前のもの。
 			if (details !== undefined) {
-				adoption = await paradisPtyAdoptionState();
+				adoption = before === 'pending' ? 'pending' : await paradisPtyAdoptionState();
 			}
 		} catch (error) {
 			onUnexpectedError(error);
@@ -924,7 +932,32 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				recordReattachFailure();
 			}
 		}
+		if (adoption === 'pending') {
+			this.retryOrphanRevivalAfterAdoption();
+		}
 		return complete;
+	}
+
+	/**
+	 * 引き取りが終わるのを待って、拾い直しをやり直す。
+	 *
+	 * 引き取りの途中の一覧で回った拾い直しは「済んだ」にならず、何もしなければ次のスペースの
+	 * 切り替えまでやり直さない。その間、ほかのスペースの端末はモバイルにも出ない。pty ホストからは
+	 * 終わりの知らせが来ないので、間を置いて聞き直す（上限つき）。
+	 */
+	private retryOrphanRevivalAfterAdoption(): void {
+		if (this._adoptionRetry.value !== undefined || this._adoptionRetryAttempts >= ParadisTerminalWorkspaceScope.MAX_ADOPTION_RETRY_ATTEMPTS || this._store.isDisposed) {
+			return;
+		}
+		this._adoptionRetry.value = disposableTimeout(async () => {
+			this._adoptionRetry.clear();
+			this._adoptionRetryAttempts++;
+			if (await paradisPtyAdoptionState() === 'pending') {
+				this.retryOrphanRevivalAfterAdoption();
+				return;
+			}
+			void this.retryOrphanRevivalIfInterrupted();
+		}, ParadisTerminalWorkspaceScope.ADOPTION_RETRY_INTERVAL_MS);
 	}
 
 	/**
