@@ -8,7 +8,9 @@
 import { IShellLaunchConfig, TerminalExitReason, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { INotificationHandle, INotificationService, IPromptChoice, Severity } from '../../../../../platform/notification/common/notification.js';
 import assert from 'assert';
+import * as sinon from 'sinon';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
+import { ParadisPtyAdoptionState, paradisRegisterPtyAdoptionProbe } from '../../../ptyDaemon/common/paradisPtyHandover.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
@@ -430,6 +432,53 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				complete: true,
 				parkedInSpaceC: [],
 			});
+		} finally {
+			paradisResetOrphanTerminalRevivalForTest();
+			testDisposables.dispose();
+		}
+	});
+
+	// 期限切れで返った一覧を受け取った直後に引き取りが終わると、一覧の後に聞いた答えは「済んだ」になる。
+	// 一覧の前にも聞き、そこで「まだ」なら済んだにしない。引き取りが終わったら間を置いてやり直す。
+	test('does not count a revival as complete when adoption was still running before the listing, and retries once it settles', async () => {
+		const testDisposables = new DisposableStore();
+		paradisResetOrphanTerminalRevivalForTest();
+		try {
+			// 引き取りは一覧が返った直後に終わる（期限切れで返った一覧の後）。
+			let listings = 0;
+			const asked: ParadisPtyAdoptionState[] = [];
+			testDisposables.add(paradisRegisterPtyAdoptionProbe(async () => {
+				const answer: ParadisPtyAdoptionState = listings === 0 ? 'pending' : 'settled';
+				asked.push(answer);
+				return answer;
+			}));
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const clock = sinon.useFakeTimers({ shouldAdvanceTime: true });
+			testDisposables.add({ dispose: () => clock.restore() });
+			const scope = harness.installTerminalScope(async () => { }, {
+				worktreeReady: true,
+				connected: true,
+				terminalInstanceService: {
+					getBackend: async () => ({ listProcesses: async () => { listings++; return []; } }) as unknown as Awaited<ReturnType<ITerminalInstanceService['getBackend']>>,
+					createInstance: () => { throw new Error('nothing to reattach'); },
+				},
+			});
+			await settle();
+			const attempts = () => (scope as unknown as { _adoptionRetryAttempts: number })._adoptionRetryAttempts;
+			const afterFirst = { listings, complete: paradisIsOrphanTerminalRevivalComplete(), attempts: attempts() };
+			await clock.tickAsync(5_000);
+			await settle();
+
+			assert.deepStrictEqual(
+				{ afterFirst, afterRetry: { listings, complete: paradisIsOrphanTerminalRevivalComplete(), attempts: attempts() }, asked },
+				{
+					afterFirst: { listings: 1, complete: false, attempts: 0 },
+					// 終わったのを見たら回数は 0 に戻る（窓を開いたまま pty ホストが起き直したときに、上限が残らない）。
+					afterRetry: { listings: 2, complete: true, attempts: 0 },
+					asked: ['pending', 'settled', 'settled', 'settled'],
+				},
+			);
 		} finally {
 			paradisResetOrphanTerminalRevivalForTest();
 			testDisposables.dispose();

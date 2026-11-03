@@ -225,24 +225,68 @@ suite('Para Code adopted pty reattach', () => {
 		assert.deepStrictEqual({ resolved, adopted }, { resolved: adopted, adopted });
 	});
 
-	test('a layout that leaves out a terminal the daemon holds is not taken as the whole picture', async () => {
+	test('a layout that leaves out a terminal the daemon holds keeps that terminal where it was', async () => {
 		// A window re-seeds the layout it saved before the update, in ids from a pty host that no
 		// longer exists. Those ids are small integers from a counter that restarts, so they land on
 		// today's terminals by coincidence — which is why "does it name anything we know" is not a
-		// usable test, and "does it account for what the daemon holds" is.
+		// usable test, and "does it account for what the daemon holds" is. The terminal it leaves out
+		// keeps its tab from the layout recorded before; the window's own tab is taken as it is.
 		const daemon = useDaemon();
 		const pty = service();
 		const adopted = await adopt(pty, 'nonce-of-the-tab');
 		const restored = { workspaceId: 'ws', tabs: [{ isActive: true, activePersistentProcessId: adopted, terminals: [{ relativeSize: 1, terminal: adopted }] }], background: [] };
 		await pty.setTerminalLayoutInfo(restored);
-		const afterRestore = [...daemon.layouts];
 
-		await pty.setTerminalLayoutInfo({ workspaceId: 'ws', tabs: [{ isActive: true, activePersistentProcessId: OLD_ID, terminals: [{ relativeSize: 1, terminal: OLD_ID }] }], background: [] });
+		const stale = { isActive: true, activePersistentProcessId: OLD_ID, terminals: [{ relativeSize: 1, terminal: OLD_ID }] };
+		await pty.setTerminalLayoutInfo({ workspaceId: 'ws', tabs: [stale], background: [] });
 		const kept = (pty as unknown as { _workspaceLayoutInfos: Map<string, unknown> })._workspaceLayoutInfos.get('ws');
 
-		// An empty layout is what tells the daemon to forget the one it keeps, so the second call must
-		// leave no trace at all — in memory or on the daemon.
-		assert.deepStrictEqual({ kept, told: daemon.layouts }, { kept: restored, told: afterRestore });
+		assert.deepStrictEqual(
+			{ kept, told: daemon.layouts.map(encoded => JSON.parse(encoded).tabs.map((tab: { terminals: { terminal: number }[] }) => tab.terminals.map(terminal => terminal.terminal))) },
+			{
+				kept: { workspaceId: 'ws', tabs: [stale, { isActive: false, activePersistentProcessId: adopted, terminals: [{ relativeSize: 1, terminal: adopted }] }], background: [] },
+				// The daemon keeps layouts in its own handles; the stale id names nothing it holds.
+				told: [[[HANDLE]], [[HANDLE]]],
+			},
+		);
+	});
+
+	test('one held terminal left out does not freeze the layout: new tabs are recorded and the left-out one keeps its place', async () => {
+		// On a remote host the pty host ignored the window's layout more than 30 times in a day,
+		// because one terminal the daemon held was never named. Every panel tab made since was lost on
+		// the next update. Only the terminal left out is in doubt.
+		const daemon = useDaemon();
+		const pty = service();
+		const first = await adopt(pty, 'nonce-of-the-first', { handle: 3 });
+		const hidden = await adopt(pty, 'nonce-of-the-hidden', { handle: 4 });
+		const second = await adopt(pty, 'nonce-of-the-second', { handle: 5 });
+		const third = await adopt(pty, 'nonce-of-the-third', { handle: 6 });
+		await pty.setTerminalLayoutInfo({
+			workspaceId: 'ws',
+			tabs: [{ isActive: true, activePersistentProcessId: second, terminals: [{ relativeSize: 0.5, terminal: first }, { relativeSize: 0.5, terminal: second }] }],
+			background: [hidden],
+			paradisEditorTerminals: [third],
+		});
+
+		// The window splits off a new tab and no longer names the split's first half or the background one.
+		const now = { isActive: true, activePersistentProcessId: third, terminals: [{ relativeSize: 1, terminal: third }] };
+		await pty.setTerminalLayoutInfo({ workspaceId: 'ws', tabs: [now], background: [], paradisEditorTerminals: [second] });
+
+		assert.deepStrictEqual(
+			{
+				kept: (pty as unknown as { _workspaceLayoutInfos: Map<string, unknown> })._workspaceLayoutInfos.get('ws'),
+				told: daemon.layouts.length,
+			},
+			{
+				kept: {
+					workspaceId: 'ws',
+					tabs: [now, { isActive: false, activePersistentProcessId: first, terminals: [{ relativeSize: 0.5, terminal: first }] }],
+					background: [hidden],
+					paradisEditorTerminals: [second],
+				},
+				told: 2,
+			},
+		);
 	});
 
 	test('a layout naming the editor terminals it keeps outside the panel is the whole picture (Q146)', async () => {
