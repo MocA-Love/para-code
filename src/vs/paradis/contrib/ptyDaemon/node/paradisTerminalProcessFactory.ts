@@ -122,6 +122,8 @@ let settling: Promise<unknown> | undefined;
 export function paradisAwaitAdoption(work: Promise<unknown> | undefined): void {
 	settling = work;
 	settleBy = work === undefined ? undefined : Date.now() + ADOPTION_TIMEOUT;
+	pending = work;
+	missed = false;
 	// 済んだら待ちを外す。**この待ちは一度きりの口だけを通らない** —— 繋ぎ直しも一覧も毎回
 	// ここを通るので、外しておかないと以後ずっと呼ばれるたびにタイマーを1つ起こすことになる。
 	// 失敗しても外す（待つ相手がもう居ない点は同じ）。
@@ -131,7 +133,38 @@ export function paradisAwaitAdoption(work: Promise<unknown> | undefined): void {
 			settling = undefined;
 			settleBy = undefined;
 		}
+		// 期限切れで待ちを外した後も、引き取りそのものはまだ走っている。終わったことは別に持つ。
+		if (pending === work) {
+			pending = undefined;
+		}
 	}
+}
+
+/**
+ * まだ終わっていない引き取り。**期限切れで待つのをやめても残る**（{@link settling} とはそこが違う）。
+ *
+ * 窓の拾い直し（`paradisTerminalScope.contribution.ts`）が、一覧を「全部」と読んでよいかを
+ * 決めるのに使う。期限切れの後に返した一覧は引き取る前のもので、そこに無い端末を「もう無い」と
+ * 読むと、所属の台帳を削ってしまい次の起動でも戻らなくなる。
+ */
+let pending: Promise<unknown> | undefined;
+
+/** 誰かが引き取りの終わりを待ちきれずに先へ進んだか。起動時の引き取りの遅れを窓へ知らせるのに使う。 */
+let missed = false;
+
+/** 引き取りがまだ終わっていないか。常駐を使っていない・終わった・失敗したなら false。 */
+export function paradisIsAdoptionPending(): boolean {
+	return pending !== undefined;
+}
+
+/**
+ * 期限切れで、引き取りを待たずに答えた口があったか。
+ *
+ * あったなら、その後に引き取った端末を窓は見ていない（配置も一覧も引き取る前に返した）。
+ * 起動時の引き取りの結果に印を付け、「再読み込みで表示されます」の知らせに数える（`paradisPtyReadopt.ts`）。
+ */
+export function paradisAdoptionWaitWasMissed(): boolean {
+	return missed;
 }
 
 /**
@@ -145,13 +178,18 @@ export function paradisAwaitAdoption(work: Promise<unknown> | undefined): void {
 let settleBy: number | undefined;
 
 /**
- * 引き取りが終わるのを待つ上限。
+ * 引き取りが終わるのを待つ上限。**pty ホストの起動から数える。**
  *
- * 待つ鎖には常駐の起動待ち（最大10秒）が含まれる。**初めて常駐を起こす起動で、ターミナルの
- * 復元がそれだけ止まるのは重い。** 間に合わなければ諦めて先へ進む — 引き取ったぶんは次に
- * 配置を聞かれたときに出る。
+ * 待つ鎖には常駐の起動待ち（最大10秒）と、引き取りそのものが含まれる。引き取りは本数に比例して
+ * 延び、SSH 先の更新で 28 本を引き取ったときは pty ホストの起動から 3.2 秒かかった（以前の上限は
+ * 3 秒）。上限を過ぎて答えた配置と一覧は空で、upstream は聞き直さないので、間に合わなかった端末は
+ * **その窓では二度と出ない**（タブごと消える）。待たされるのは窓のターミナルの復元だけなので、
+ * 起動待ちの 10 秒に引き取りの実測の 6 倍ほどを足した長さにした。
+ *
+ * 無限には待たない。常駐が応答しないまま固まったときに、ターミナルが一つも出ない窓にしないため。
+ * 間に合わなければ諦めて先へ進み、後で引き取ったぶんは「再読み込みで表示されます」と知らせる。
  */
-const ADOPTION_TIMEOUT = 3_000;
+const ADOPTION_TIMEOUT = 30_000;
 
 /** 引き取りが終わるのを待つ。常駐を使っていなければ即座に戻る。 */
 export async function paradisAdoptionSettled(): Promise<void> {
@@ -168,10 +206,17 @@ export async function paradisAdoptionSettled(): Promise<void> {
 			settling = undefined;
 			settleBy = undefined;
 		}
+		noteMissed(work);
 		return;
 	}
 	// 拒否は飲む。引き取れなかったことを、配置を答えられないことにしない。
-	await raceTimeout(work.catch(() => { }), remaining);
+	await raceTimeout(work.catch(() => { }), remaining, () => noteMissed(work));
+}
+
+function noteMissed(work: Promise<unknown>): void {
+	if (pending === work) {
+		missed = true;
+	}
 }
 
 /** いま常駐に持たせているか。引き取りや状態表示が同じ答えを見るための唯一の口。 */

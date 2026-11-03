@@ -31,6 +31,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
+import { ParadisPtyAdoptionState, paradisOrphanListingIsComplete, paradisPtyAdoptionState } from '../../ptyDaemon/common/paradisPtyHandover.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisRegisterTerminalEditorOwnerProbe, paradisUnparkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { IParadisTerminalOrphanPty, paradisDuplicatedNonces, paradisOrphanAttachTarget, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 import { ParadisTerminalInstanceRecords } from './paradisTerminalInstanceRecords.js';
@@ -790,9 +791,15 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 */
 	private async reviveOrphanedScopedEditorTerminals(persistentProcessScopes: ReadonlyMap<number, string>): Promise<boolean> {
 		let details;
+		let adoption: ParadisPtyAdoptionState = 'settled';
 		try {
 			const backend = await this.terminalInstanceService.getBackend(this.environmentService.remoteAuthority);
 			details = await backend?.listProcesses();
+			// 一覧の後に聞く。pty ホストは一覧を返す前に引き取りの終わりを待つので、ここで「まだ」なら
+			// その一覧は待ちの期限を過ぎて返した、引き取る前のもの。
+			if (details !== undefined) {
+				adoption = await paradisPtyAdoptionState();
+			}
 		} catch (error) {
 			onUnexpectedError(error);
 			return false;
@@ -812,8 +819,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this.migrateProcessScopesToNonceScopes(details, workspaceId, persistentProcessScopes);
 		// 1件でも取りこぼしたら完走扱いにしない。フラグが保証したいのは「台帳がもう増えない」
 		// ではなく「台帳が空ならそのスコープに端末は無い」の方で、復活に失敗した PTY は
-		// pty host に生きたまま台帳へ入らないため、両者がずれる
-		let complete = true;
+		// pty host に生きたまま台帳へ入らないため、両者がずれる。
+		// 常駐からの引き取りが終わる前の一覧も同じ。そこに無い端末は、後から pty host に現れる。
+		// 完走にすると nonce 台帳が削られ、次の起動でもスペースを引けずに拾われなくなる
+		// （SSH 先の更新で 28 本の引き取りが待ちの期限を超えたときに起きた）。
+		let complete = paradisOrphanListingIsComplete(adoption, details.length);
 		const sharedPanelNonces = this.sharedPanelOrphanNonces();
 		const duplicatedNonces = paradisDuplicatedNonces(details);
 		for (const detail of details) {
