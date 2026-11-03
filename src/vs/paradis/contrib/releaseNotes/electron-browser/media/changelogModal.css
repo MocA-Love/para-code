@@ -123,7 +123,7 @@
 	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
 	border-radius: 8px;
 	padding: 14px 16px 16px;
-	background: color-mix(in srgb, var(--vscode-foreground) 2%, transparent);
+	background: var(--vscode-editorWidget-background);
 }
 
 .paradis-changelog-area .para-cl-card-head {
@@ -213,7 +213,7 @@
 	padding-left: 16px;
 	font-size: 13px;
 	line-height: 1.65;
-	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	color: var(--vscode-foreground);
 }
 
 .paradis-changelog-area .para-cl-items li::before {
@@ -243,6 +243,15 @@
 
 .paradis-changelog-area .para-cl-footnote {
 	padding: 8px 20px 12px;
+	justify-content: center;
+}
+
+/* L の器では本文が横に伸びすぎるので、版の見出しとカードを 740px までにして中央に置く */
+.paradis-changelog-area .para-cl-ver-head,
+.paradis-changelog-area .para-cl-card {
+	max-width: 740px;
+	margin-left: auto;
+	margin-right: auto;
 }
 
 /* 一覧の未読の点（項目の右端の日付の手前） */
