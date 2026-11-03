@@ -94,12 +94,35 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Run these one after another: in parallel they still ran the runner out of memory (shutdown, exit 143).
-      # hygiene always fails on product.json's extensionsGallery (an intentional fork change, see NOTES.md), so
-      # --continue-on-error lets the other checks finish and report; the step still fails if any of them failed.
-      - name: Hygiene & other checks
+      # hygiene always reports product.json's extensionsGallery (an intentional fork change, see NOTES.md
+      # "hygieneチェックとproduct.jsonの既知の衝突"). Pass only when that is the single finding: one such line and
+      # "Hygiene failed with 1 errors.". Any other finding changes the count, and other failures (such as
+      # check-package-json) print no count line, so both still fail the step. build/hygiene.ts is not changed.
+      - name: Hygiene
         if: success() || failure()
-        run: npm exec -- npm-run-all2 -l --continue-on-error hygiene valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
+        run: |
+          log="$RUNNER_TEMP/hygiene.log"
+          set +e
+          npm run hygiene 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          known=$(grep -cF "product.json: Contains 'extensionsGallery'" "$log" || true)
+          if [ "$known" -eq 1 ] && grep -qF "Hygiene failed with 1 errors." "$log"; then
+            echo "::notice::hygiene reported only the known product.json extensionsGallery finding (see NOTES.md), so it counts as passed."
+            exit 0
+          fi
+          exit "$status"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Run these one after another: in parallel they still ran the runner out of memory (shutdown, exit 143).
+      # --continue-on-error lets every check finish and report; the step still fails if any of them failed.
+      - name: Other checks
+        if: success() || failure()
+        run: npm exec -- npm-run-all2 -l --continue-on-error valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
