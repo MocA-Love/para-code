@@ -9,7 +9,7 @@
  * that lists all three services (paradisServiceStatusPopover.ts). As in paracode-179, each service has its
  * own chip (its logo with a severity dot at the bottom right). The chips follow the steps of the other
  * icon-only title bar items (22px, 3px sides, small corner radius, inherited title bar foreground); the
- * popover uses the upstream hover colors. Severity colors are the fixed paracode-179 accents.
+ * popover uses the paracode-179 editor widget colors. Severity colors are the fixed paracode-179 accents.
  */
 
 /* ---------- trigger chips (title bar) ---------- */
@@ -95,11 +95,11 @@
 .paradis-service-status-popover {
 	position: fixed;
 	z-index: 2500;
-	background: var(--vscode-editorHoverWidget-background);
-	border: 1px solid var(--vscode-editorHoverWidget-border);
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
 	border-radius: var(--vscode-cornerRadius-medium);
 	box-shadow: var(--vscode-shadow-lg);
-	color: var(--vscode-editorHoverWidget-foreground);
+	color: var(--vscode-foreground);
 	font-size: var(--vscode-fontSize-label1);
 	outline: none;
 	overflow: hidden;
@@ -138,7 +138,7 @@
 }
 
 .paradis-service-status-popover .pssp-row.selected {
-	background: var(--vscode-list-hoverBackground);
+	background: var(--vscode-toolbar-hoverBackground);
 }
 
 .paradis-service-status-popover .pssp-row > .pssp-name {
@@ -195,7 +195,7 @@
 	gap: var(--vscode-spacing-size40);
 	margin-top: var(--vscode-spacing-size60);
 	padding-top: var(--vscode-spacing-size60);
-	border-top: 1px solid var(--vscode-editorHoverWidget-border);
+	border-top: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
 }
 
 .paradis-service-status-popover .pssp-link {
