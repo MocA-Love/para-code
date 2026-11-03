@@ -118,8 +118,8 @@ function sampleFromHostResources(host: IParadisHostResources): IParadisSystemUsa
 	return {
 		t: host.collectedAt,
 		...(host.cpu !== undefined ? { cpu: Math.round(host.cpu * 10) / 10 } : {}),
-		...(mem !== undefined ? { mem } : {}),
-		...(diskPercent !== undefined ? { disk: diskPercent } : {}),
+		...(mem !== undefined ? { mem, memUsed: host.memory.used } : {}),
+		...(diskPercent !== undefined ? { disk: diskPercent, diskUsed: disk.total - disk.free } : {}),
 	};
 }
 

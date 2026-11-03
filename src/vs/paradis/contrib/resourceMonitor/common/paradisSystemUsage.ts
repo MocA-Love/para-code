@@ -61,10 +61,17 @@ export interface IParadisSystemUsageSample {
 	readonly netTx?: number;
 	/** スワップ使用量(バイト)。 */
 	readonly swapUsed?: number;
+	/**
+	 * メモリ・ディスクの使用量(バイト)。タイトルバーで「使用量 / 全体」を出すための値で、細かい段の点と応答の
+	 * `latest` にだけ載る（点列の列・粗い段の平均・モバイルの写しには入れない。{@link PARADIS_SYSTEM_USAGE_FIELDS} の外）。
+	 * 古い測る側は送らないので、受け手は割合と全体から出す。
+	 */
+	readonly memUsed?: number;
+	readonly diskUsed?: number;
 }
 
-/** 1 点の数値項目の名前（`t` 以外）。 */
-export type ParadisSystemUsageField = Exclude<keyof IParadisSystemUsageSample, 't'>;
+/** 1 点の数値項目の名前（`t` と、点列に入れない使用量以外）。 */
+export type ParadisSystemUsageField = Exclude<keyof IParadisSystemUsageSample, 't' | 'memUsed' | 'diskUsed'>;
 
 export const PARADIS_SYSTEM_USAGE_FIELDS: readonly ParadisSystemUsageField[] = ['cpu', 'mem', 'disk', 'diskRead', 'diskWrite', 'netRx', 'netTx', 'swapUsed'];
 
@@ -425,7 +432,7 @@ export function paradisParseSystemUsageSample(value: unknown): IParadisSystemUsa
 		return undefined;
 	}
 	const sample: { -readonly [K in keyof IParadisSystemUsageSample]: IParadisSystemUsageSample[K] } = { t };
-	for (const field of PARADIS_SYSTEM_USAGE_FIELDS) {
+	for (const field of [...PARADIS_SYSTEM_USAGE_FIELDS, 'memUsed', 'diskUsed'] as const) {
 		const fieldValue = record[field];
 		if (typeof fieldValue === 'number' && Number.isFinite(fieldValue)) {
 			sample[field] = fieldValue;
