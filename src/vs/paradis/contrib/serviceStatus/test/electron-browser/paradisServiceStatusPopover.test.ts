@@ -185,12 +185,12 @@ suite('ParadisServiceStatusWidget', () => {
 				claudeLabel: claude.getAttribute('aria-label'),
 			}, {
 				chips: ['claude | true | ok', 'codex | true | minor', 'github | true | ok'],
-				label: 'サービスの稼働状況: OpenAI: 軽微な障害',
+				label: 'OpenAI のステータス: 軽微な障害',
 				openedAtOpenAI: true,
 				movedToGitHub: true,
 				closed: true,
 				focusBack: true,
-				claudeLabel: 'サービスの稼働状況: Claude: 正常',
+				claudeLabel: 'Claude のステータス: 正常',
 			});
 		} finally {
 			container.remove();
