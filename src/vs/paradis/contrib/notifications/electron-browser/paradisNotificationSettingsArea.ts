@@ -47,7 +47,7 @@ import { openParadisMyinstantsImportDialog } from './paradisMyinstantsImportDial
 import { PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost } from '../../paradisHub/electron-browser/paradisHub.js';
-import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
+import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem, ParadisHubScrollSpy } from '../../paradisHub/electron-browser/paradisHubNav.js';
 
 const $ = dom.$;
 
@@ -225,6 +225,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 
 	private readonly _navItems = new Map<string, INavItemEntry>();
 	private readonly _sectionEls: { readonly id: string; readonly el: HTMLElement }[] = [];
+	private readonly _scrollSpy: ParadisHubScrollSpy;
 	private _desktopSectionEl!: HTMLElement;
 	private _soundSectionEl!: HTMLElement;
 	private _aivisSectionEl!: HTMLElement;
@@ -322,12 +323,21 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		this._register(this.settingsService.onDidChangeDoNotDisturb(() => this._dndRefreshController?.refresh()));
 
 		this._render();
+		// 本文のスクロールに合わせて左のナビの選択を切り替える（節は _render で作り終えている）
+		this._scrollSpy = this._register(new ParadisHubScrollSpy({
+			content: this._contentEl,
+			nav: containers.nav,
+			sections: this._sectionEls.map(section => ({ id: section.id, element: section.el })),
+			navItem: id => this._navItems.get(id)?.item,
+			onDidSelect: id => this._activateNavItem(id),
+		}));
 	}
 
 	reveal(sectionId: string | undefined): void {
 		const target = this._sectionEls.find(section => section.id === sectionId);
 		if (target) {
 			this._activateNavItem(target.id);
+			this._scrollSpy.suppress(target.id);
 			target.el.scrollIntoView({ block: 'start' });
 		}
 	}
@@ -403,6 +413,8 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 
 	private _navigateTo(targetId: string): void {
 		this._activateNavItem(targetId);
+		// 押した節へ着くまでの途中の節で選択が揺れないよう、スクロールが止まるまで追従を止める
+		this._scrollSpy.suppress(targetId);
 		this._sectionEls.find(section => section.id === targetId)?.el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 

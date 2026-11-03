@@ -34,7 +34,7 @@ import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogSt
 import { paradisToggleChecked, paradisToggleValue } from '../common/paradisSettingsToggle.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, PARADIS_HUB_CLOSE_AFTER_COMMAND, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
-import { paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
+import { paradisHubNavCaption, paradisHubNavItem, ParadisHubScrollSpy } from '../../paradisHub/electron-browser/paradisHubNav.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
@@ -1742,6 +1742,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 	private readonly _refreshers: (() => void)[] = [];
 	/** 最後に開いた節。領域を開き直したときはここへ戻る。 */
 	private _activeSectionId = SECTIONS[0].id;
+	private readonly _scrollSpy: ParadisHubScrollSpy;
 
 	constructor(
 		containers: IParadisHubAreaContainers,
@@ -1773,6 +1774,14 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		this._searchEmptyEl = dom.append(this._contentEl, $('.psd-search-empty'));
 		this._searchEmptyEl.textContent = STR_SEARCH_EMPTY;
 		this._searchEmptyEl.classList.add('hidden');
+		// 本文のスクロールに合わせて左のナビの選択を切り替える
+		this._scrollSpy = this._register(new ParadisHubScrollSpy({
+			content: this._contentEl,
+			nav: containers.nav,
+			sections: SECTIONS.map(spec => ({ id: spec.id, element: this._sections.get(spec.id)! })),
+			navItem: id => this._navItems.get(id)?.item,
+			onDidSelect: id => this._activateNavItem(id),
+		}));
 
 		// 別ウィンドウ・設定エディタ側からの変更にも追従させる。paradis.* の外の設定
 		// (git.* や accessibility.* など) も載せているので、それらのキーも見る
@@ -1818,6 +1827,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 			return;
 		}
 		this._activateNavItem(section.id);
+		this._scrollSpy.suppress(section.id);
 		this._sections.get(section.id)?.scrollIntoView({ block: 'start' });
 	}
 
@@ -2189,6 +2199,8 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 
 	private _navigateTo(sectionId: string): void {
 		this._activateNavItem(sectionId);
+		// 押した節へ着くまでの途中の節で選択が揺れないよう、スクロールが止まるまで追従を止める
+		this._scrollSpy.suppress(sectionId);
 		this._sections.get(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 
