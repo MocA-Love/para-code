@@ -224,41 +224,8 @@ export function paradisPtyDaemonConnection(): IParadisPtyHostConnection | undefi
 	return connection;
 }
 
-/**
- * ターミナルの番号と、常駐側の handle の対応。
- *
- * 配置を預けるときに要る。番号はアプリを起こすたびに振り直されるので、**そのまま預けても
- * 次の起動では何も指さない**（`paradisTerminalLayout.ts`）。
- */
-const handles = new Map<number, number>();
-
-/** 番号に handle を結び付ける。器ができた時点で呼ぶ。 */
-export function paradisRememberHandle(id: number, handle: number): void {
-	handles.set(id, handle);
-}
-
-export function paradisForgetHandle(id: number): void {
-	handles.delete(id);
-}
-
-export function paradisHandleOf(id: number): number | undefined {
-	return handles.get(id);
-}
-
-/** このプロセスが引き取り済みの handle。引き取り直しで二重に載せないために使う。 */
-export function paradisKnownHandles(): ReadonlySet<number> {
-	return new Set(handles.values());
-}
-
-/** handle から番号を引く（{@link paradisHandleOf} の逆）。 */
-export function paradisIdOfHandle(handle: number): number | undefined {
-	for (const [id, known] of handles) {
-		if (known === handle) {
-			return id;
-		}
-	}
-	return undefined;
-}
+// 台帳は paradisTerminalHandles.ts にある（paradisDaemonTerminalProcess.ts との循環を避けるため）。今までの読み手のためにここからも出す。
+export { paradisForgetHandle, paradisHandleOf, paradisIdOfHandle, paradisKnownHandles, paradisRememberHandle } from './paradisTerminalHandles.js';
 
 /**
  * ターミナル1本を作る。`ptyService.ts` の唯一の生成点から呼ばれる。
