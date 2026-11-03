@@ -12,6 +12,7 @@
 // Electron専用API（INativeHostService 経由の BrowserWindow 操作等）に依存する contribution は
 // ここではなく paradis.electron-browser.contribution.ts に追加すること。
 
+import './contrib/density/browser/paradisDensity.contribution.js';
 import './contrib/windowTransparency/browser/paradisSettings.contribution.js';
 import './contrib/workspaceSwitch/browser/paradisWorkspaceSwitch.contribution.js';
 import './contrib/workspaceSwitch/browser/paradisTerminalSpaceCwd.contribution.js';
