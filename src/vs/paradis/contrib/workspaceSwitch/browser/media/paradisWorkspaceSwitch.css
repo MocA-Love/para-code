@@ -263,7 +263,7 @@
 }
 
 .paradis-workspaces-list .paradis-agent-dot-more {
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	font-variant-numeric: tabular-nums;
 	color: var(--vscode-descriptionForeground);
 	margin-left: 1px;

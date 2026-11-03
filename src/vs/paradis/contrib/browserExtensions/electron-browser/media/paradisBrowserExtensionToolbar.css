@@ -125,6 +125,7 @@
 	gap: var(--vscode-spacing-size40);
 	height: 30px;
 	padding: 0 var(--vscode-spacing-size40) 0 var(--vscode-spacing-size100);
+	border-bottom: var(--paradis-popover-header-border);
 	flex: none;
 }
 
@@ -137,7 +138,7 @@
 
 .monaco-workbench .paradis-browser-extensions-popover .pbx-list {
 	overflow-y: auto;
-	padding: 0 var(--vscode-spacing-size40) var(--vscode-spacing-size40);
+	padding: var(--paradis-popover-list-top) var(--vscode-spacing-size40) var(--vscode-spacing-size40);
 }
 
 .monaco-workbench .paradis-browser-extensions-popover .pbx-row {

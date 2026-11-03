@@ -346,7 +346,8 @@
 	width: auto;
 }
 
-/* ---------- ringtone list（1 行ずつの一覧 + 試聴進捗バー。Q537 の 43 A） ---------- */
+/* allow-any-unicode-next-line */
+/* ---------- ringtone list（名前と説明の 2 段の一覧 + 試聴進捗バー。Q537 の 43 A、Q544 の 5） ---------- */
 
 .paradis-notif-area .pns-ringtone-grid {
 	display: flex;
@@ -362,8 +363,9 @@
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	min-height: 30px;
+	min-height: var(--paradis-row-two-line);
 	padding: 3px 10px;
+	box-sizing: border-box;
 	cursor: pointer;
 	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 }
@@ -403,13 +405,22 @@
 	flex-shrink: 0;
 }
 
-/* 名前・長さ・説明を 1 行に並べ、説明は収まらない分を省く。 */
-.paradis-notif-area .pns-ringtone-info {
+/* allow-any-unicode-next-line */
+/* 名前・長さの下に説明を置き、説明は省かずに折り返す。 */
+.paradis-notif-area .pns-ringtone-card .pns-ringtone-info {
 	flex: 1;
 	min-width: 0;
 	display: flex;
-	align-items: baseline;
-	gap: 10px;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+}
+
+.paradis-notif-area .pns-ringtone-card .pns-ringtone-desc {
+	flex: none;
+	max-width: 100%;
+	white-space: normal;
+	overflow-wrap: anywhere;
 }
 
 .paradis-notif-area .pns-ringtone-name {
