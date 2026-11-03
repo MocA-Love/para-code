@@ -93,8 +93,8 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 	}
 
 	private isEnabled(): boolean {
-		// 既定ON。レジストリ既定値 (true) が解決されるため通常 `=== true` でも同じだが、
-		// mainプロセス側の生成時判定 (windowImpl.ts) と同じ「未設定=有効」の式に揃えておく。
+		// レジストリ既定値（macOS・Linux はオン、Windows はオフ。paradisWindowTransparencyDefault）が解決されるため、
+		// 未設定でも mainプロセス側の生成時判定 (paradisShouldCreateTransparentWindow) と同じ値になる。
 		return this.configurationService.getValue<boolean>(PARADIS_TRANSPARENCY_ENABLED_KEY) !== false;
 	}
 

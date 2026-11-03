@@ -9,6 +9,7 @@
 import { localize } from '../../../../nls.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { paradisWindowTransparencyDefault } from '../../../../platform/window/common/paradisWindowTransparency.js';
 
 // Paradis独自設定の集約セクション。将来的にこのセクションへ他のParadis独自設定も追加していく想定のため、
 // title/id は共通の 'paradis' とし、各機能はプロパティのプレフィックス（例: paradis.window.*）で区別する。
@@ -24,14 +25,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	properties: {
 		'paradis.window.transparency.enabled': {
 			type: 'boolean',
-			// 既定ON。mainプロセス側の生成時判定 (windowImpl.ts の PARA-PATCH) はこのレジストリ既定値が
-			// 見えないため、あちらは `!== false` で同じ「既定ON」を表現している。変える場合は両方揃えること。
-			default: true,
+			// 既定は macOS・Linux でオン、Windows でオフ。mainプロセス側の生成時判定 (windowImpl.ts の PARA-PATCH) は
+			// このレジストリ既定値が見えないため、両方が同じ paradisWindowTransparencyDefault を使う。
+			default: paradisWindowTransparencyDefault(),
 			// APPLICATIONスコープ: ネイティブウィンドウの生成時フラグはmainプロセスがdefaultプロファイルの
 			// user settings.json だけを読んで決めるため、Workspace/プロファイルスコープでの上書きを許すと
 			// mainとレンダラで値が食い違い「クラスは付くが透けない」状態になる。
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.window.transparency.enabled', "オンにすると、エディタ・サイドバー・パネル・タイトルバーの地が透けてデスクトップが見えます。メニュー・ホバー・通知・ダイアログは透けません。統合ターミナルの地も透けます。Windows で `#window.titleBarStyle#` が `native` のときは、Electron の制約で透けません。切り替えはアプリを再起動すると効きます（ウィンドウの再読み込みでは効きません）。")
+			markdownDescription: localize('paradis.window.transparency.enabled', "オンにすると、エディタ・サイドバー・パネル・タイトルバーの地が透けてデスクトップが見えます。メニュー・ホバー・通知・ダイアログは透けません。統合ターミナルの地も透けます。Windows で `#window.titleBarStyle#` が `native` のときは、Electron の制約で透けません。Windows でオンにすると、Win+矢印や画面の端へのドラッグでのスナップと、縁をつかんでのリサイズが効かなくなります（Windows では既定でオフです）。切り替えはアプリを再起動すると効きます（ウィンドウの再読み込みでは効きません）。")
 		},
 		'paradis.window.transparency.opacity': {
 			type: 'number',
