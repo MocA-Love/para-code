@@ -51,7 +51,7 @@
 	display: flex;
 	align-items: flex-start;
 	gap: var(--vscode-spacing-size160);
-	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size240) var(--vscode-spacing-size160);
+	padding: var(--paradis-modal-body-top) var(--vscode-spacing-size240) var(--vscode-spacing-size160);
 }
 
 /* QR は白い余白込みの SVG。読み取りやすさのため拡大縮小でぼかさない */

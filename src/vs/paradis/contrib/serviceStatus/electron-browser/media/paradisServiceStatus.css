@@ -24,7 +24,7 @@
 	height: 22px;
 	min-width: 22px;
 	margin: 0 1px;
-	padding: 0 3px;
+	padding: var(--paradis-titlebar-item-padding);
 	border: none;
 	border-radius: var(--vscode-cornerRadius-small);
 	background: transparent;
@@ -118,9 +118,10 @@
 
 .paradis-service-status-popover .pssp-row {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: var(--vscode-spacing-size80);
-	height: 22px;
+	gap: 0 var(--vscode-spacing-size80);
+	min-height: 22px;
 	padding: 0 var(--vscode-spacing-size40);
 	margin: 0 calc(-1 * var(--vscode-spacing-size40));
 	border-radius: var(--vscode-cornerRadius-small);
@@ -138,14 +139,23 @@
 	flex: none;
 }
 
-/* The status page's own (English) wording, only while something is wrong. */
+/* The status page's own (English) wording, only while something is wrong. A paragraph on its own line
+	under the name (the row wraps), so the whole text can be read. */
 .paradis-service-status-popover .pssp-row > .pssp-desc {
-	flex: 1;
+	order: 1;
+	flex: 1 0 100%;
 	min-width: 0;
+	box-sizing: border-box;
+	padding: 0 0 var(--vscode-spacing-size40) calc(16px + var(--vscode-spacing-size80));
 	color: var(--vscode-descriptionForeground);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	line-height: 1.5;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+/* With the description on its own line, the open button keeps to the right end of the first line. */
+.paradis-service-status-popover .pssp-row > .pssp-desc ~ .pssp-icon-button {
+	margin-left: auto;
 }
 
 .paradis-service-status-popover .pssp-row > .pssp-spacer {
