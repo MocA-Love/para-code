@@ -1044,7 +1044,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 				closed.dispose();
 				if (pairingFlow.shouldCancelOnClose()) {
 					pairingListener.clear();
-					void this.service.cancelPairing();
+					void this.service.cancelPairing(session.pairId);
 				}
 			});
 		}
@@ -1057,11 +1057,14 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 					detail: localize('paradis.mobile.confirmSasDetail', "モバイルアプリに表示されている確認コードが次の6桁と一致することを確認してください:\n\n    {0}\n\n一致しない場合は接続を拒否してください（第三者による中間者攻撃の可能性があります）。", event.sasCode),
 					primaryButton: localize('paradis.mobile.approve', "接続を承認"),
 					cancelButton: localize('paradis.mobile.reject', "拒否"),
-				}).finally(() => pairingFlow.endConfirm());
+				});
 				if (confirmed) {
+					// 承認した時点で決着とみなす。成立の知らせが届く前に小窓を閉じても、承認を取り消さない
+					pairingFlow.settle();
 					await this.service.approvePairing();
 				} else {
-					await this.service.cancelPairing();
+					pairingFlow.endConfirm();
+					await this.service.cancelPairing(session.pairId);
 				}
 			} else if (event.kind === 'paired') {
 				pairingFlow.settle();

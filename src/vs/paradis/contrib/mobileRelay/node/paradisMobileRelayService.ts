@@ -103,6 +103,7 @@ import {
 	ParadisMobileInboundFrameWire,
 	ParadisMobilePairingEvent,
 	ParadisMobileTerminalOperationStatus,
+	paradisCancelsCurrentPairing,
 	paradisFormatPcName,
 	paradisMobileWindowRoute,
 } from '../common/paradisMobileRelay.js';
@@ -2453,7 +2454,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// 初回ペアリングの時点で名前が分かると、モバイルは接続前のPC一覧にも正しい名前を出せる。
 			...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
 		});
-		return { deviceId: this.state.device.deviceId, pairingUri, expiresAt: body.expiresAt };
+		return { deviceId: this.state.device.deviceId, pairingUri, expiresAt: body.expiresAt, pairId: body.pairId };
 	}
 
 	async approvePairing(): Promise<void> {
@@ -2472,8 +2473,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// 実際の mobiles への追加は relay からの 'paired'(mobileId) 受信時に行う。
 	}
 
-	async cancelPairing(): Promise<void> {
-		if (this.pairing) {
+	async cancelPairing(pairId?: string): Promise<void> {
+		if (this.pairing && paradisCancelsCurrentPairing(this.pairing.pairId, pairId)) {
 			this.sendControl({ type: 'pairing-reject', pairId: this.pairing.pairId });
 			this.pairing = undefined;
 		}

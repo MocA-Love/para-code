@@ -271,6 +271,16 @@ export interface IParadisMobilePairingSession {
 	readonly pairingUri: string;
 	/** このペアリングセッションの失効時刻（epoch ms）。 */
 	readonly expiresAt: number;
+	/** このペアリングの id。{@link IParadisMobileRelayService.cancelPairing} に渡すと、このペアリングだけを断る。 */
+	readonly pairId?: string;
+}
+
+/**
+ * `cancelPairing(requestedPairId)` が今のペアリング（`currentPairId`）を断るか。id を渡さない古い呼び出しは今のものを断る。
+ * 渡したときは同じ id のときだけ（小窓を開いたまま接続をやり直すと、前の小窓が閉じたときに新しいペアリングを断らない）。
+ */
+export function paradisCancelsCurrentPairing(currentPairId: string | undefined, requestedPairId?: string): boolean {
+	return currentPairId !== undefined && (requestedPairId === undefined || currentPairId === requestedPairId);
 }
 
 /** ペアリング進行イベント（shared process → renderer）。 */
@@ -360,7 +370,8 @@ export interface IParadisMobileRelayService {
 	/** resetRegistration は失効した登録を捨てて作り直す（接続済みモバイルは全て解除される）。 */
 	beginPairing(resetRegistration?: boolean): Promise<IParadisMobilePairingSession>;
 	approvePairing(): Promise<void>;
-	cancelPairing(): Promise<void>;
+	/** `pairId` を渡すと、今のペアリングがそれと同じときだけ断る（後から始めた別のペアリングを断らない）。 */
+	cancelPairing(pairId?: string): Promise<void>;
 	/**
 	 * 承認済みデバイスを失効させる。`mobileId` を渡せばその端末だけ、無ければ `deviceName` の名前の端末を外す。
 	 * 台帳を保存できなくても、その端末の接続は切ってから失敗を返す。
