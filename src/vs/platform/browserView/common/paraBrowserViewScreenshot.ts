@@ -432,3 +432,21 @@ export function browserViewValidateAndEncodeScreenshot<TEncoded extends Uint8Arr
 	}
 	return { valid: true, encoded, width: input.width, height: input.height };
 }
+
+/**
+ * The `Page.captureScreenshot` clip for a document rectangle (CSS px) of a page drawn at `zoomFactor`
+ * (the page zoom, which includes the shrink of a fixed-size tab, paraBrowserViewZoom.ts). Under page zoom
+ * Chromium reads the clip in zoomed units, so a CSS rectangle used as is lands elsewhere (measured on
+ * Electron 43: the bottom-right element of a 1600x900 page shrunk to 0.39 came back blank). The clip is
+ * zoomed and widened to whole units so the element is not cut, and `scale` restores CSS size.
+ */
+export function browserViewDocumentRectClip(pageRect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }, zoomFactor: number): { x: number; y: number; width: number; height: number; scale: number } {
+	if (!Number.isFinite(zoomFactor) || zoomFactor <= 0 || Math.abs(zoomFactor - 1) < 0.0001) {
+		return { ...pageRect, scale: 1 };
+	}
+	const left = Math.floor(pageRect.x * zoomFactor);
+	const top = Math.floor(pageRect.y * zoomFactor);
+	const right = Math.ceil((pageRect.x + pageRect.width) * zoomFactor);
+	const bottom = Math.ceil((pageRect.y + pageRect.height) * zoomFactor);
+	return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top), scale: 1 / zoomFactor };
+}
