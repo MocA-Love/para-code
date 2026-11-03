@@ -790,8 +790,7 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 	 * プロセスを新しいプロセスグループの先頭として起こし、出力を上限まで集める。時間切れと cancel では
 	 * グループごと SIGTERM → 猶予の後 SIGKILL。終わった後、孫が出力をつかんだままでも closeGrace で切り上げる。
 	 */
-	private spawnBounded(file: string, args: readonly string[], cwd: string | undefined, env: Record<string, string>, timeoutMs: number, onData: ((chunk: string) => void) | undefined):
-		{ readonly promise: Promise<{ code: number | null; signal: string | null; stdout: string; stderr: string; timedOut: boolean; cancelled: boolean }>; cancel(): void } {
+	private spawnBounded(file: string, args: readonly string[], cwd: string | undefined, env: Record<string, string>, timeoutMs: number, onData: ((chunk: string) => void) | undefined): { readonly promise: Promise<{ code: number | null; signal: string | null; stdout: string; stderr: string; timedOut: boolean; cancelled: boolean }>; cancel(): void } {
 		const maxKept = onData ? PARADIS_TASK_BOARD_REMOTE_LIMITS.maxKeptStdoutChars : PARADIS_TASK_BOARD_REMOTE_LIMITS.maxGitOutputChars;
 		let child: cp.ChildProcess | undefined;
 		let stopping = false;

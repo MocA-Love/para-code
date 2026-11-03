@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { createParadisOfficeError, type ParadisOfficeError } from '../common/paradisOfficeErrors.js';
 import {
@@ -157,6 +158,11 @@ export class ParadisOfficePrintService {
 	}
 }
 
+// The workbench enforces Trusted Types, so assigning a plain string to `srcdoc` throws. The print HTML is built by
+// renderParadisOfficePrintHtml: every document value goes through escapeHtml, the page carries its own
+// `default-src 'none'` CSP, and the frame's sandbox has no allow-scripts. The policy name is in workbench.html's trusted-types list.
+const ttPolicy = createTrustedTypesPolicy('paradisOfficePrint', { createHTML: value => value });
+
 /** Creates the concrete Web/Electron browser-print callback used by the Office editors. */
 export function createParadisOfficeBrowserPrintCallback(targetWindow: Window): ParadisOfficePrintBackend['printHtml'] {
 	return (html, token) => new Promise<void>((resolve, reject) => {
@@ -209,7 +215,7 @@ export function createParadisOfficeBrowserPrintCallback(targetWindow: Window): P
 			}
 		};
 		frame.onerror = () => finish(new ParadisOfficePrintError('printFailed'));
-		frame.srcdoc = html;
+		frame.srcdoc = (ttPolicy?.createHTML(html) ?? html) as unknown as string;
 		targetWindow.document.body.appendChild(frame);
 	});
 }

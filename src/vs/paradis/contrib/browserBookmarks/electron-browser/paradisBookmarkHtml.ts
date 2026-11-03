@@ -10,6 +10,7 @@
 // Netscape形式は閉じタグ（</DT>）を省略するのが慣習のため、ブラウザが修復したDOMツリーに
 // 頼らず、生のトークン列（<A>/<Hn>/<DL>/<DT>）を正規表現で走査してツリーを復元する。
 
+import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
 import {
 	IParadisImportedFolder,
 	isParadisBookmark,
@@ -73,8 +74,16 @@ function parseTimestamp(value: string | null): number {
 	return Number.isFinite(unixSeconds) ? unixSeconds * 1000 : Date.now();
 }
 
+// ワークベンチは Trusted Types を強制しており、DOMParser.parseFromString に生の文字列を渡すと
+// 「This document requires 'TrustedHTML' assignment」で落ちる。upstream の htmlToMarkdown.ts と同じく
+// 素通しのポリシーで包んで渡す（名前は workbench.html の trusted-types の一覧に載せてある）。
+// 読み込むファイルは信頼できないが、DOMParser が作る文書はブラウジングコンテキストを持たず、
+// スクリプトも画像の読み込みも走らない。ここでは属性と textContent を読むだけで、要素を画面の DOM へ入れない。
+const ttPolicy = createTrustedTypesPolicy('paradisBookmarkHtml', { createHTML: value => value });
+
 function parseElementFragment<T extends Element>(parser: DOMParser, html: string, selector: string): T | null {
-	const parsedDocument = parser.parseFromString(html, 'text/html');
+	const trusted = ttPolicy?.createHTML(html) ?? html;
+	const parsedDocument = parser.parseFromString(trusted as unknown as string, 'text/html');
 	const element = parsedDocument.body.firstElementChild;
 	if (!element?.matches(selector)) {
 		return null;
