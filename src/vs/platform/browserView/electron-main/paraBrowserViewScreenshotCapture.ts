@@ -8,7 +8,7 @@
 import { nativeImage, screen, type BrowserWindow, type NativeImage, type WebContents } from 'electron';
 import { VSBuffer } from '../../../base/common/buffer.js';
 import { ILogService } from '../../log/common/log.js';
-import { browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/paraBrowserViewScreenshot.js';
+import { browserViewDocumentRectClip, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/paraBrowserViewScreenshot.js';
 import { paraBrowserViewZoomShrink } from './paraBrowserViewZoom.js';
 
 /** The parts of a BrowserView the screenshot helpers read, each read again on every use. */
@@ -48,7 +48,8 @@ export class ParaBrowserViewScreenshotCapture {
 					format,
 					...(format === 'jpeg' ? { quality } : {}),
 					captureBeyondViewport: true,
-					clip: { ...pageRect, scale: 1 },
+					// Match the clip to the page zoom (including the shrink of a fixed-size tab)
+					clip: browserViewDocumentRectClip(pageRect, this.host.webContents().getZoomFactor()),
 				}, captureSignal);
 				browserViewThrowIfScreenshotAborted(captureSignal);
 				return this.validateAndEncodeScreenshot(image, format, quality, route, attempt);
