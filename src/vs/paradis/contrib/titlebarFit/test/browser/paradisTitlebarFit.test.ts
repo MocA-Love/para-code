@@ -8,6 +8,7 @@
 
 import assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
+import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createParadisTitlebarFit } from '../../browser/paradisTitlebarFit.js';
 
@@ -24,6 +25,7 @@ suite('ParadisTitlebarFit', () => {
 
 		const observers: TestResizeObserver[] = [];
 		const fit = createParadisTitlebarFit(root, left, {
+			scheduleFrame,
 			resizeObserverCtor: class extends TestResizeObserver {
 				constructor(callback: ResizeObserverCallback) {
 					super(callback);
@@ -127,6 +129,7 @@ suite('ParadisTitlebarFit', () => {
 
 		const observers: TestResizeObserver[] = [];
 		const fit = createParadisTitlebarFit(root, left, {
+			scheduleFrame,
 			resizeObserverCtor: class extends TestResizeObserver {
 				constructor(callback: ResizeObserverCallback) {
 					super(callback);
@@ -169,6 +172,54 @@ suite('ParadisTitlebarFit', () => {
 			style.remove();
 		}
 	});
+
+	test('measures the fold again once per frame, and not at all while the title bar keeps its widths (the CPU/RAM text changes every second)', async () => {
+		const doc = mainWindow.document;
+		const root = doc.createElement('div');
+		root.style.cssText = 'display: flex; width: 600px; height: 30px;';
+		const left = doc.createElement('div');
+		left.style.cssText = 'display: flex; width: 300px; flex: none;';
+		root.appendChild(left);
+		doc.body.appendChild(root);
+		const usage = doc.createElement('div');
+		usage.style.cssText = 'width: 120px; flex: none;';
+		usage.textContent = 'CPU 12%';
+		left.appendChild(usage);
+
+		const observers: TestResizeObserver[] = [];
+		let measured = 0;
+		const fit = createParadisTitlebarFit(root, left, {
+			scheduleFrame,
+			resizeObserverCtor: class extends TestResizeObserver {
+				constructor(callback: ResizeObserverCallback) {
+					super(callback);
+					observers.push(this);
+				}
+			},
+			onDidMeasureFold: () => measured++,
+		});
+		try {
+			observers[0].fire();
+			const first = measured;
+			// 文字だけ変わって幅は同じ (3 回書き換えても 1 フレームにまとまり、測り直さない)
+			usage.textContent = 'CPU 13%';
+			usage.firstChild!.textContent = 'CPU 14%';
+			usage.textContent = 'CPU 15%';
+			await flushMutations();
+			const sameWidth = measured - first;
+			// 幅も変わる書き換えを 3 回 → 1 フレームで 1 回だけ測る
+			usage.style.width = '140px';
+			usage.textContent = 'CPU 100%';
+			usage.textContent = 'CPU 99%';
+			usage.textContent = 'CPU 98%';
+			await flushMutations();
+			const widthChanged = measured - first;
+			assert.deepStrictEqual({ first, sameWidth, widthChanged }, { first: 1, sameWidth: 0, widthChanged: 1 });
+		} finally {
+			fit.dispose();
+			root.remove();
+		}
+	});
 });
 
 function appendMenubar(left: HTMLElement, width: number): HTMLElement {
@@ -182,9 +233,15 @@ function appendMenubar(left: HTMLElement, width: number): HTMLElement {
 	return menubar;
 }
 
-/** MutationObserver の通知はマイクロタスクで届くので、それが済むまで待つ。 */
+/** MutationObserver の通知はマイクロタスクで届き、update は {@link scheduleFrame} の次の回にまとめられるので、両方が済むまで待つ。 */
 function flushMutations(): Promise<void> {
-	return new Promise(resolve => setTimeout(resolve, 0));
+	return new Promise(resolve => setTimeout(() => setTimeout(resolve, 0), 0));
+}
+
+/** テストでは描画のフレームの代わりに次のタスクで走らせる (見えていない窓ではフレームが来ないことがある)。 */
+function scheduleFrame(runner: () => void): IDisposable {
+	const handle = setTimeout(runner, 0);
+	return toDisposable(() => clearTimeout(handle));
 }
 
 /** 通知を手で起こせる ResizeObserver。observe した要素を覚えておく。 */
