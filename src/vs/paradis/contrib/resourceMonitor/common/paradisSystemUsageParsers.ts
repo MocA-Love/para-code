@@ -70,10 +70,12 @@ export function paradisComputeSystemUsageSample(previous: IParadisSystemUsageCou
 	const mem = percent(next.memUsed, next.memTotal);
 	if (mem !== undefined) {
 		sample.mem = mem;
+		sample.memUsed = Math.max(0, Math.round(next.memUsed!));
 	}
 	const disk = percent(next.diskUsed, next.diskTotal);
 	if (disk !== undefined) {
 		sample.disk = disk;
+		sample.diskUsed = Math.max(0, Math.round(next.diskUsed!));
 	}
 	if (finite(next.swapUsed)) {
 		sample.swapUsed = Math.max(0, Math.round(next.swapUsed));

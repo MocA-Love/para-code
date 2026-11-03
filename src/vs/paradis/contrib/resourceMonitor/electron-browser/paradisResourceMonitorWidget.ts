@@ -26,7 +26,9 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { Separator, toAction } from '../../../../base/common/actions.js';
+import { Separator, SubmenuAction, toAction } from '../../../../base/common/actions.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -37,7 +39,7 @@ import { ParadisResourceMonitorClient } from './paradisResourceMonitorClient.js'
 import { IParadisResourceMonitorPanelOptions, ParadisResourceMonitorPanel } from './paradisResourceMonitorPanel.js';
 import { IParadisSystemUsageModel, IParadisSystemUsageView, ParadisSystemUsageMachineId } from './paradisSystemUsageModel.js';
 import { PARADIS_SYSTEM_USAGE_OPEN_COMMAND_ID } from './paradisSystemUsageEditorInput.js';
-import { PARADIS_RESOURCE_TITLE_BAR_ITEMS, ParadisResourceTitleBarItem, paradisResourceTitleBarItemLabel, paradisResourceTitleBarSettingKey, paradisResourceTitleBarText } from '../common/paradisResourceTitleBar.js';
+import { PARADIS_RESOURCE_TITLE_BAR_FORMATS, PARADIS_RESOURCE_TITLE_BAR_ITEMS, PARADIS_RESOURCE_TITLE_BAR_SIZED_ITEMS, ParadisResourceTitleBarFormat, ParadisResourceTitleBarItem, ParadisResourceTitleBarSizedItem, paradisParseResourceTitleBarFormat, paradisResourceTitleBarDetail, paradisResourceTitleBarFormatLabel, paradisResourceTitleBarFormatSettingKey, paradisResourceTitleBarFormatTitle, paradisResourceTitleBarItemLabel, paradisResourceTitleBarSettingKey, paradisResourceTitleBarText } from '../common/paradisResourceTitleBar.js';
 
 const $ = dom.$;
 
@@ -98,6 +100,8 @@ export class ParadisResourceMonitorWidget extends Disposable {
 	private latestSnapshot: IParadisResourceMonitorSnapshot | undefined;
 	/** タイトルバーに出しているマシンの、最後に取れた値（パネルを開いたときにすぐ描く）。 */
 	private latestSystemUsage: IParadisSystemUsageView | undefined;
+	/** ホバーに出す詳しい数字（出し方の設定に関わらない）。 */
+	private hoverText = '';
 	private isFetchingSystemUsage = false;
 	/** 取得中にマシンが切り替えられた。終わったらもう一度取る（前の取得は前のマシンの値だけを持ち帰る）。 */
 	private systemUsageRefreshPending = false;
@@ -113,6 +117,7 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		@IParadisSystemUsageModel private readonly systemUsageModel: IParadisSystemUsageModel,
 		@ICommandService private readonly commandService: ICommandService,
 		@IContextMenuService private readonly contextMenuService: IContextMenuService,
+		@IHoverService hoverService: IHoverService,
 	) {
 		super();
 		this.document = dependencies.document;
@@ -132,6 +137,8 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		this.textElement = dom.append(this.button, $('.paradis-resource-monitor-trigger-text'));
 		this.textElement.textContent = '--';
 
+		// ホバーには、タイトルバーの出し方に関わらず詳しい数字（使用量・全体・空き・割合）を出す。パネルを開いている間は出さない
+		this._register(hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), this.button, () => this.panel.value ? undefined : this.hoverText || undefined));
 		this._register(dom.addDisposableListener(this.button, 'click', () => this.togglePanel()));
 		// 右クリックで、タイトルバーに出す項目を選ぶ（Q537 の 10 A）。書き込む先は「設定 (Para Code)」のチェックと同じ設定。
 		this._register(dom.addDisposableListener(this.button, dom.EventType.CONTEXT_MENU, e => this.showItemsMenu(e)));
@@ -150,7 +157,9 @@ export class ParadisResourceMonitorWidget extends Disposable {
 			if (e.affectsConfiguration(CONFIG_KEY_ENABLED)) {
 				this.applyEnabled();
 			}
-			if (PARADIS_RESOURCE_TITLE_BAR_ITEMS.some(item => e.affectsConfiguration(paradisResourceTitleBarSettingKey(item))) && this.latestSystemUsage) {
+			const affectsItems = PARADIS_RESOURCE_TITLE_BAR_ITEMS.some(item => e.affectsConfiguration(paradisResourceTitleBarSettingKey(item)))
+				|| PARADIS_RESOURCE_TITLE_BAR_SIZED_ITEMS.some(item => e.affectsConfiguration(paradisResourceTitleBarFormatSettingKey(item)));
+			if (affectsItems && this.latestSystemUsage) {
 				this.updateTriggerSystemUsage(this.latestSystemUsage);
 			}
 		}));
@@ -158,6 +167,10 @@ export class ParadisResourceMonitorWidget extends Disposable {
 
 	private isItemOn(item: ParadisResourceTitleBarItem): boolean {
 		return this.configurationService.getValue<boolean>(paradisResourceTitleBarSettingKey(item)) === true;
+	}
+
+	private formatOf(item: ParadisResourceTitleBarSizedItem): ParadisResourceTitleBarFormat {
+		return paradisParseResourceTitleBarFormat(this.configurationService.getValue(paradisResourceTitleBarFormatSettingKey(item)));
 	}
 
 	private showItemsMenu(e: MouseEvent): void {
@@ -174,6 +187,18 @@ export class ParadisResourceMonitorWidget extends Disposable {
 					checked: this.isItemOn(item),
 					run: () => this.configurationService.updateValue(paradisResourceTitleBarSettingKey(item), !this.isItemOn(item)),
 				})),
+				new Separator(),
+				// メモリ・ディスク・スワップの出し方（割合・使用量 / 全体・使用量・空き）
+				...PARADIS_RESOURCE_TITLE_BAR_SIZED_ITEMS.map(item => new SubmenuAction(
+					`paradis.resourceMonitor.format.${item}`,
+					paradisResourceTitleBarFormatTitle(item),
+					PARADIS_RESOURCE_TITLE_BAR_FORMATS.map(format => toAction({
+						id: `paradis.resourceMonitor.format.${item}.${format}`,
+						label: paradisResourceTitleBarFormatLabel(format),
+						checked: this.formatOf(item) === format,
+						run: () => this.configurationService.updateValue(paradisResourceTitleBarFormatSettingKey(item), format),
+					})),
+				)),
 				new Separator(),
 				toAction({
 					id: 'paradis.resourceMonitor.openSettings',
@@ -346,10 +371,12 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		if (latest === undefined) {
 			return;
 		}
-		const text = paradisResourceTitleBarText(item => this.isItemOn(item), latest, view.machine, view.machineId === 'remote' ? view.label : undefined);
+		const formatOf = (item: ParadisResourceTitleBarSizedItem) => this.formatOf(item);
+		const text = paradisResourceTitleBarText(item => this.isItemOn(item), latest, view.machine, view.machineId === 'remote' ? view.label : undefined, formatOf);
 		this.textElement.textContent = text;
 		this.textElement.style.display = text ? '' : 'none';
-		const values = paradisResourceTitleBarText(item => item !== 'machineName' && this.isItemOn(item), latest, view.machine, undefined);
+		this.hoverText = paradisResourceTitleBarDetail(latest, view.machine, view.label);
+		const values = paradisResourceTitleBarText(item => item !== 'machineName' && this.isItemOn(item), latest, view.machine, undefined, formatOf);
 		this.button.setAttribute('aria-label', values
 			? localize('paradis.resourceMonitor.triggerAriaUsage', "{0} の使用率: {1}", view.label, values)
 			: localize('paradis.resourceMonitor.triggerAriaNoItems', "{0} の使用率", view.label));
