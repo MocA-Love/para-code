@@ -20,8 +20,11 @@ const MAX_PART_BYTES = 8 * 1024 * 1024;
 const MAX_PARTS = 512;
 /** 全パート合計の上限。 */
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
-/** 1 パートの読み取りの上限。圧縮率は renderer の詳しい解析（browser の予算）と同じ。 */
-const PART_LIMITS: IParadisOfficePartLimits = { maxBytes: MAX_PART_BYTES, compressionRatio: PARADIS_OFFICE_BUDGET_PROFILES.browser.compressionRatio };
+/**
+ * 1 パートの読み取りの上限。圧縮率は Word の詳しい解析（shared process の worker、desktopLocal の予算）と同じ。
+ * 食い違うと、その間の圧縮率の文書だけ「解析は通るのに図形が出ない」になる。
+ */
+const PART_LIMITS: IParadisOfficePartLimits = { maxBytes: MAX_PART_BYTES, compressionRatio: PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal.compressionRatio };
 
 /** 抽出に要るのは document/header/footer と chart/diagram、そしてそれらの rels だけ。 */
 function isWantedPart(name: string): boolean {

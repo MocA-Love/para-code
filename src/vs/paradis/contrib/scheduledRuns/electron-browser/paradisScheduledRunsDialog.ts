@@ -182,15 +182,17 @@ export function paradisFormScheduleToCron(values: Pick<IFormValues, 'scheduleKin
 }
 
 /**
- * 保存せずに閉じた編集のフォーム（`edit:<定期実行の id>` または新規の `new` → 値）。別のモーダルを開いたときや
+ * 保存せずに閉じた編集のフォーム（`edit:<定期実行の id>` または新規の `new:<スペース>` → 値）。別のモーダルを開いたときや
  * 閉じるボタン・外側の押下で閉じたときに打ちかけの入力を覚えておき、次に同じ定期実行の編集（新規なら新規作成）を
- * 始めたときに戻す。「キャンセル」（Esc を含む）と保存で捨てる。
+ * 始めたときに戻す。「キャンセル」（Esc を含む）と保存で捨てる。新規の下書きはスペースごとに分ける（分けないと、
+ * あるスペースのリポジトリを選んだ下書きが、別のスペースの新規作成に戻る）。
  */
 const formDrafts = new ParadisModalDrafts<IFormValues>();
 const NEW_FORM_DRAFT_KEY = 'new';
 
-function formDraftKey(id: string | undefined): string {
-	return id === undefined ? NEW_FORM_DRAFT_KEY : `edit:${id}`;
+/** 下書きのキー。新規はスペース（`activeStateKey`）ごとに分ける。 */
+export function paradisScheduledRunFormDraftKey(id: string | undefined, spaceKey: string | undefined): string {
+	return id === undefined ? `${NEW_FORM_DRAFT_KEY}:${spaceKey ?? ''}` : `edit:${id}`;
 }
 
 function draftFromForm(values: IFormValues): IParadisScheduledRunDraft {
@@ -229,6 +231,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	private editing: IFormValues | undefined;
 	/** 編集のフォームで何か入力したか（開いた直後の選択肢の補正は数えない）。下書きを戻したときは最初から true。 */
 	private editingDirty = false;
+	/** 今の編集の下書きのキー。編集を始めたときのスペースで決め、閉じる・取り消す・保存するときも同じキーを使う。 */
+	private editingDraftKey = '';
 	/** 編集のフォームに下書きを戻したか（描き直しても注記を出し続ける）。 */
 	private editingRestored = false;
 	private usage: Map<string, IRunUsage> | undefined;
@@ -314,7 +318,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		}
 		// 編集の途中で閉じられたら（別のモーダル・閉じるボタン・外側の押下）、入力を下書きとして残す
 		if (this.editing && this.editingDirty) {
-			formDrafts.keep(formDraftKey(this.editing.id), this.editing);
+			formDrafts.keep(this.editingDraftKey, this.editing);
 		}
 		this.backdrop.remove();
 		super.dispose();
@@ -622,7 +626,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			this.showMessage(result.error ?? '', 'error');
 			return;
 		}
-		formDrafts.discard(formDraftKey(definition.id));
+		formDrafts.discard(paradisScheduledRunFormDraftKey(definition.id, undefined));
 	}
 
 	private findWorktree(stateKey: string): IParadisWorktree | undefined {
@@ -695,7 +699,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	}
 
 	private startEdit(definition: IParadisScheduledRunDefinition | undefined): void {
-		const draft = formDrafts.take(formDraftKey(definition?.id));
+		this.editingDraftKey = paradisScheduledRunFormDraftKey(definition?.id, this.switchService.activeStateKey);
+		const draft = formDrafts.take(this.editingDraftKey);
 		this.editingDirty = this.editingRestored = draft !== undefined;
 		const values = draft ?? (definition ? formValuesFromDefinition(definition) : emptyFormValues());
 		if (!definition && !draft) {
@@ -714,7 +719,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 
 	private cancelEdit(): void {
 		if (this.editing) {
-			formDrafts.discard(formDraftKey(this.editing.id));
+			formDrafts.discard(this.editingDraftKey);
 		}
 		this.editing = undefined;
 		this.clearMessage();
@@ -918,7 +923,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				save.disabled = false;
 				return;
 			}
-			formDrafts.discard(formDraftKey(values.id));
+			formDrafts.discard(this.editingDraftKey);
 			this.editing = undefined;
 			this.selectedId = result.definition?.id ?? this.selectedId;
 			this.showMessage(values.id

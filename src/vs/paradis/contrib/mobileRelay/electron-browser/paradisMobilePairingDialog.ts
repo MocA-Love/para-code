@@ -24,6 +24,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { ParadisModalSize, paradisModalClasses } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
 
@@ -99,12 +100,6 @@ export class ParadisMobilePairingDialog extends Disposable {
 				this.dispose();
 			}
 		}));
-		this._register(dom.addDisposableListener(this.backdrop, 'keydown', e => {
-			if (e.key === 'Escape') {
-				e.preventDefault();
-				this.dispose();
-			}
-		}));
 
 		const timer = this._register(new IntervalTimer());
 		timer.cancelAndSet(() => this.updateRemaining(), 1000, dom.getWindow(layoutService.activeContainer));
@@ -112,6 +107,14 @@ export class ParadisMobilePairingDialog extends Disposable {
 
 		layoutService.activeContainer.appendChild(this.backdrop);
 		this._register(toDisposable(() => this.backdrop.remove()));
+		// ほかの Para Code のモーダルと同じ決まりに乗せる（Esc で閉じる・閉じたら前のフォーカスへ戻す・後から別のモーダルを
+		// 開いたら閉じる）。乗せないと Hub などを開いたときに裏に隠れたまま、期限だけが進む。
+		this._register(new ParadisModalFocus({
+			backdrop: this.backdrop,
+			modal: dialog,
+			onEscape: () => this.dispose(),
+			close: () => this.dispose(),
+		}));
 		dialog.focus();
 	}
 

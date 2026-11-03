@@ -140,6 +140,41 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 		});
 	});
 
+	test('still spreads overflowing text when a newer render overtook the render that drew the cell', async () => {
+		const data = sheet();
+		const host = mainWindow.document.body.appendChild(mainWindow.document.createElement('div'));
+		host.style.width = '600px';
+		host.style.height = '200px';
+		host.style.overflow = 'auto';
+		host.style.position = 'relative';
+		host.classList.add('paradis-spreadsheet-virtual-excel');
+		const index = createVirtualGridIndex(data);
+		let releaseOthers: () => void = () => { };
+		const othersReleased = new Promise<void>(resolve => { releaseOthers = resolve; });
+		let first = true;
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(host, createVirtualGridViewport(data, 17, 'overtaken'), {
+			getViewport: async request => {
+				// 最初の描画では、左へはみ出す文字のある上の面（固定の行）だけを先に返し、ほかの面は後の描画が始まるまで待たせる。
+				if (first && request.pane !== 'top') {
+					await othersReleased;
+				}
+				return legacyGridTile(data, request, index);
+			},
+			copyFocusedCell: true,
+			measureCell: () => ({ width: 1, height: 1 }),
+		}));
+		const frame = { scrollTop: 0, scrollLeft: 0, width: 600, height: 200 };
+		const overtaken = renderer.render(frame);
+		await timeout(0);
+		first = false;
+		const newer = renderer.render(frame);
+		releaseOthers();
+		await Promise.all([overtaken, newer]);
+		const spread = [...host.querySelectorAll<HTMLElement>('.paradis-spreadsheet-overflow')].filter(span => span.style.width).map(span => span.textContent);
+		host.remove();
+		deepStrictEqual(spread, ['とても長い文字が右へはみ出す', '右寄せで左へ']);
+	});
+
 	test('scales the cells with their text and keeps the logical position across a zoom change', async () => {
 		const data = sheet();
 		const doc = mainWindow.document;
