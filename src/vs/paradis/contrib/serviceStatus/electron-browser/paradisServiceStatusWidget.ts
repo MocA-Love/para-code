@@ -6,8 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Claude/Codex(OpenAI)/GitHub のサービスステータスのタイトルバー左側トリガー。3 サービスの状態を
-// 1 つの項目の中の点で並べ、押すと 3 サービスをまとめたポップオーバーを開く(Q537 の 41 A)。titlebarPart.ts の PARA-PATCH 点(resourceMonitor/
+// Claude/Codex(OpenAI)/GitHub のサービスステータスのタイトルバー左側トリガー。paracode-179 と同じく
+// サービスごとにロゴの項目を並べ、右下の点で状態を出す(Q544)。どれを押しても 3 サービスをまとめた
+// ポップオーバーを、押した項目の下に開く(Q537 の 41 A)。titlebarPart.ts の PARA-PATCH 点(resourceMonitor/
 // limitsMonitorウィジェットの隣)から createParadisServiceStatusWidget(instantiationService, container)
 // として1回だけ生成される。
 //
@@ -42,6 +43,7 @@ import {
 } from '../common/paradisServiceStatus.js';
 import { ParadisServiceStatusClient } from './paradisServiceStatusClient.js';
 import { ParadisServiceStatusPopover } from './paradisServiceStatusPopover.js';
+import { appendParadisServiceStatusLogo } from './paradisServiceStatusLogos.js';
 
 const $ = dom.$;
 
@@ -69,8 +71,10 @@ class ParadisServiceStatusWidget extends Disposable {
 
 	private readonly client: ParadisServiceStatusClient;
 	private readonly document: Document;
-	private readonly button: HTMLElement;
+	private readonly buttons = new Map<ParadisServiceStatusProvider, HTMLElement>();
 	private readonly dots = new Map<ParadisServiceStatusProvider, HTMLElement>();
+	/** ポップオーバーを開いた項目。同じ項目をもう一度押したら閉じる。 */
+	private activeProvider: ParadisServiceStatusProvider | undefined;
 	private readonly popover = this._register(new MutableDisposable<ParadisServiceStatusPopover>());
 	private readonly pollTimer = this._register(new IntervalTimer());
 
@@ -89,14 +93,17 @@ class ParadisServiceStatusWidget extends Disposable {
 		this.document = dom.getDocument(container);
 		this.client = this.instantiationService.createInstance(ParadisServiceStatusClient);
 
-		this.button = dom.append(container, $('button.paradis-service-status-trigger'));
-		this.button.setAttribute('type', 'button');
-		this.button.setAttribute('aria-label', localize('paradis.serviceStatus.triggerAriaAll', "サービスの稼働状況"));
 		for (const provider of PARADIS_SERVICE_STATUS_PROVIDERS) {
-			this.dots.set(provider, dom.append(this.button, $('span.paradis-service-status-dot.unknown')));
+			const button = dom.append(container, $('button.paradis-service-status-trigger'));
+			button.setAttribute('type', 'button');
+			button.dataset.provider = provider;
+			appendParadisServiceStatusLogo(button, provider);
+			this.dots.set(provider, dom.append(button, $('span.paradis-service-status-dot.unknown')));
+			this._register(dom.addDisposableListener(button, 'click', () => this.toggle(provider)));
+			this._register(hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), button, () => this.stateText(provider)));
+			this.buttons.set(provider, button);
 		}
-		this._register(dom.addDisposableListener(this.button, 'click', () => this.toggle()));
-		this._register(hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), this.button, () => this.hoverContent()));
+		this.renderTriggerLabels();
 
 		// 可視復帰時に(有効かつポップオーバー非表示なら)即時1回だけ更新する(resourceMonitorと同じ方式)
 		this._register(dom.addDisposableListener(this.document, 'visibilitychange', () => {
@@ -119,7 +126,9 @@ class ParadisServiceStatusWidget extends Disposable {
 
 	override dispose(): void {
 		this.disposed = true;
-		this.button.remove();
+		for (const button of this.buttons.values()) {
+			button.remove();
+		}
 		super.dispose();
 	}
 
@@ -129,7 +138,9 @@ class ParadisServiceStatusWidget extends Disposable {
 
 	private applyEnabled(): void {
 		const enabled = this.isEnabled();
-		this.button.style.display = enabled ? '' : 'none';
+		for (const button of this.buttons.values()) {
+			button.style.display = enabled ? '' : 'none';
+		}
 		if (enabled) {
 			this.reschedulePolling();
 			void this.poll();
@@ -148,13 +159,19 @@ class ParadisServiceStatusWidget extends Disposable {
 		this.pollTimer.cancelAndSet(() => this.poll(), interval);
 	}
 
-	private toggle(): void {
-		if (this.popover.value) {
-			this.closePopover();
+	private toggle(provider: ParadisServiceStatusProvider): void {
+		const button = this.buttons.get(provider);
+		if (!button) {
 			return;
 		}
-		this.button.classList.add('active');
-		this.popover.value = this.instantiationService.createInstance(ParadisServiceStatusPopover, this.button, {
+		const wasOpenHere = this.activeProvider === provider;
+		this.closePopover();
+		if (wasOpenHere) {
+			return;
+		}
+		this.activeProvider = provider;
+		button.classList.add('active');
+		this.popover.value = this.instantiationService.createInstance(ParadisServiceStatusPopover, button, {
 			snapshot: this.latestSnapshot,
 			onClose: restoreFocus => this.closePopover(restoreFocus),
 			onRefresh: () => this.refreshNow(),
@@ -164,11 +181,13 @@ class ParadisServiceStatusWidget extends Disposable {
 	}
 
 	private closePopover(restoreFocus = false): void {
-		this.button.classList.remove('active');
+		const button = this.activeProvider ? this.buttons.get(this.activeProvider) : undefined;
+		this.activeProvider = undefined;
+		button?.classList.remove('active');
 		this.popover.clear();
 		this.reschedulePolling();
 		if (restoreFocus) {
-			this.button.focus();
+			button?.focus();
 		}
 	}
 
@@ -182,16 +201,15 @@ class ParadisServiceStatusWidget extends Disposable {
 		void this.poll(true);
 	}
 
-	/** タイトルバーの項目のホバー: 3 サービスの名前と状態を 1 行ずつ。 */
-	private hoverContent(): HTMLElement {
-		const content = $('div');
-		for (const provider of PARADIS_SERVICE_STATUS_PROVIDERS) {
-			const severity = this.latestSnapshot?.entries[provider]?.severity ?? 'unknown';
-			const row = dom.append(content, $('.paradis-service-status-hover-row'));
-			dom.append(row, $(`span.paradis-service-status-dot.${severity}`));
-			dom.append(row, $('span')).textContent = paradisServiceStatusStateText(provider, severity);
+	/** 項目のホバーと読み上げ: そのサービスの名前と状態。 */
+	private stateText(provider: ParadisServiceStatusProvider): string {
+		return paradisServiceStatusStateText(provider, this.latestSnapshot?.entries[provider]?.severity ?? 'unknown');
+	}
+
+	private renderTriggerLabels(): void {
+		for (const [provider, button] of this.buttons) {
+			button.setAttribute('aria-label', localize('paradis.serviceStatus.triggerAriaWithState', "サービスの稼働状況: {0}", this.stateText(provider)));
 		}
-		return content;
 	}
 
 	/**
@@ -229,17 +247,14 @@ class ParadisServiceStatusWidget extends Disposable {
 	}
 
 	private renderTriggers(snapshot: IParadisServiceStatusSnapshot): void {
-		const states: string[] = [];
 		for (const provider of PARADIS_SERVICE_STATUS_PROVIDERS) {
 			const entry: IParadisServiceStatusEntry | undefined = snapshot.entries[provider];
-			const severity = entry?.severity ?? 'unknown';
 			const dot = this.dots.get(provider);
 			if (dot) {
 				dot.classList.remove(...PARADIS_SERVICE_STATUS_SEVERITIES);
-				dot.classList.add(severity);
+				dot.classList.add(entry?.severity ?? 'unknown');
 			}
-			states.push(paradisServiceStatusStateText(provider, severity));
 		}
-		this.button.setAttribute('aria-label', localize('paradis.serviceStatus.triggerAriaAllWithState', "サービスの稼働状況: {0}", states.join(', ')));
+		this.renderTriggerLabels();
 	}
 }
