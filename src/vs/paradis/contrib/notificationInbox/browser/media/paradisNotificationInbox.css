@@ -18,7 +18,7 @@
 	display: inline-flex;
 	align-items: center;
 	height: 22px;
-	padding: 0 3px;
+	padding: var(--paradis-titlebar-item-padding);
 	border-radius: var(--vscode-cornerRadius-small);
 	cursor: pointer;
 	color: inherit;
@@ -42,14 +42,14 @@
 }
 
 .monaco-workbench .paradis-notification-inbox-titlebar-widget > .paradis-notification-inbox-badge {
-	/* Wide enough for "9+", the longest label, so the bell keeps one width at any count. */
-	min-width: 20px;
+	/* Wide enough for "9+" (the longest label, 21px at the chip size), so the bell keeps one width at any count. */
+	min-width: 22px;
 	box-sizing: border-box;
 	height: 16px;
 	margin-left: var(--vscode-spacing-size40);
 	padding: 0 var(--vscode-spacing-size40);
 	border-radius: var(--vscode-cornerRadius-circle);
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	font-weight: var(--vscode-fontWeight-semiBold);
 	display: flex;
 	align-items: center;

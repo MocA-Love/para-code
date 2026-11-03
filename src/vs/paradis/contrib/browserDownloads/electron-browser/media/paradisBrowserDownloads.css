@@ -122,13 +122,14 @@
 	display: none;
 }
 
-/* The shared popover shape: header 30px with icon buttons, two-line rows 36px. */
+/* The shared popover shape: header 30px with icon buttons, two-line rows (paradisDensity.css). */
 .monaco-workbench .paradis-browser-downloads-popover .pbd-header {
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size40);
 	height: 30px;
 	padding: 0 var(--vscode-spacing-size40) 0 var(--vscode-spacing-size100);
+	border-bottom: var(--paradis-popover-header-border);
 	flex: none;
 }
 
@@ -185,7 +186,7 @@
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
-	padding: 0 var(--vscode-spacing-size40) var(--vscode-spacing-size40);
+	padding: var(--paradis-popover-list-top) var(--vscode-spacing-size40) var(--vscode-spacing-size40);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-empty {
@@ -210,7 +211,8 @@
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size80);
-	min-height: 36px;
+	min-height: var(--paradis-row-two-line);
+	box-sizing: border-box;
 	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size60);
 	border-radius: var(--vscode-cornerRadius-small);
 }
