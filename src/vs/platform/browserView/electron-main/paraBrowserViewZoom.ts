@@ -26,6 +26,7 @@ import * as electron from 'electron';
 import type { WebContents } from 'electron';
 import { promises as fs } from 'fs';
 import { join } from '../../../base/common/path.js';
+import { paraBrowserViewShrinkLayout } from '../common/paraBrowserViewShrinkLayout.js';
 
 /** 拡大率が 1 とみなす差。 */
 const ZOOM_EPSILON = 0.0001;
@@ -233,14 +234,15 @@ export function paraBrowserViewEmulationParams(webContents: WebContents, request
 		void isolate(webContents, state);
 		return scaleByEmulation();
 	}
-	paraSetBrowserViewEmulationZoom(webContents, request.pageScale);
+	const { viewSize, zoom } = paraBrowserViewShrinkLayout(request.width, request.height, request.pageScale);
+	paraSetBrowserViewEmulationZoom(webContents, zoom);
 	const targetPixelRatio = request.deviceScaleFactor ?? watchDisplayScaleFactor(webContents, state);
 	return {
 		screenPosition,
 		screenSize: size,
-		viewSize: { width: Math.max(1, Math.round(request.width * request.pageScale)), height: Math.max(1, Math.round(request.height * request.pageScale)) },
+		viewSize,
 		// 拡大率で下がる devicePixelRatio を、表示サイズで決めた値（無ければ画面の値）に戻す
-		deviceScaleFactor: Math.min(MAX_EMULATED_DEVICE_SCALE_FACTOR, targetPixelRatio / request.pageScale),
+		deviceScaleFactor: Math.min(MAX_EMULATED_DEVICE_SCALE_FACTOR, targetPixelRatio / zoom),
 		viewPosition: { x: 0, y: 0 },
 		scale: 1,
 	};
