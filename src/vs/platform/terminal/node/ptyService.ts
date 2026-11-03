@@ -38,7 +38,7 @@ import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/p
 import { paradisNoteAttached, paradisNoteRevived, paradisTakeReattachTally } from '../../../paradis/contrib/ptyDaemon/node/paradisReattachTally.js';
 import { IParadisReattachTally } from '../common/paradisReattachTally.js';
 // PARA-PATCH: the fork's revive and reattach bookkeeping (see paradisPtyServiceRevive.ts)
-import { IParadisPtyReviveTables, paradisClaimAndAttachPty, paradisForgetExitedPty, paradisHeldPtyEntries, paradisHeldPtyWorkspaceNames, paradisLayoutAccountsForHeldTerminals, paradisProcessDetailsFields, paradisRememberAdoptedPty, paradisRememberRevivedPty, paradisResolveRevivedPtyByNonce, paradisTagRevivedOrphan } from './paradisPtyServiceRevive.js';
+import { IParadisPtyReviveTables, paradisClaimAndAttachPty, paradisForgetExitedPty, paradisHeldPtyEntries, paradisHeldPtyWorkspaceNames, paradisLayoutKeepingHeldTerminals, paradisProcessDetailsFields, paradisRememberAdoptedPty, paradisRememberRevivedPty, paradisResolveRevivedPtyByNonce, paradisTagRevivedOrphan } from './paradisPtyServiceRevive.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
 import { memoize } from '../../../base/common/decorators.js';
@@ -694,15 +694,19 @@ export class PtyService extends Disposable implements IPtyService {
 
 	@traceRpc
 	async setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void> {
-		// PARA-PATCH: ignore a layout that leaves out terminals a daemon is holding for this workspace (see paradisLayoutAccountsForHeldTerminals)
-		if (!paradisLayoutAccountsForHeldTerminals(this._ptys, args, paradisHandleOf)) {
+		// PARA-PATCH: terminals a daemon is holding for this workspace that the layout leaves out keep their place from the layout recorded before (see paradisLayoutKeepingHeldTerminals)
+		const paradisLayout = paradisLayoutKeepingHeldTerminals(this._ptys, args, this._workspaceLayoutInfos.get(args.workspaceId), paradisHandleOf);
+		if (!paradisLayout) {
 			this._logService.info(`Ignoring a layout for ${args.workspaceId} that leaves out terminals the daemon is holding`);
 			return;
 		}
-		this.paradisSetTerminalLayoutInfo(args);
+		if (paradisLayout !== args) {
+			this._logService.info(`Kept terminals the daemon is holding in the layout for ${args.workspaceId}, which left them out`);
+		}
+		this.paradisSetTerminalLayoutInfo(paradisLayout);
 		// PARA-PATCH: this only lives as long as the process, so terminals kept by a daemon would
 		// come back with nowhere to appear. See paradisTerminalLayout.ts.
-		paradisRememberLayout(args);
+		paradisRememberLayout(paradisLayout);
 	}
 
 	/**
