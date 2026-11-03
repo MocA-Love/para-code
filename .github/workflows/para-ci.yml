@@ -94,11 +94,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Run these one after another: in parallel they still ran the runner out of memory (shutdown, exit 143).
       # hygiene always fails on product.json's extensionsGallery (an intentional fork change, see NOTES.md), so
       # --continue-on-error lets the other checks finish and report; the step still fails if any of them failed.
       - name: Hygiene & other checks
         if: success() || failure()
-        run: npm exec -- npm-run-all2 -lp --continue-on-error hygiene valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
+        run: npm exec -- npm-run-all2 -l --continue-on-error hygiene valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
