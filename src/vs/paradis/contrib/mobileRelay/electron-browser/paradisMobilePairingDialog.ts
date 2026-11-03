@@ -16,6 +16,7 @@ import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { toAction } from '../../../../base/common/actions.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -37,12 +38,46 @@ export function paradisPairingRemainingText(expiresAt: number, now: number): str
 	return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+/**
+ * ペアリングの小窓が閉じたときに待ち受けを取り消すかを決める。成立・失敗した後（呼び出し側が小窓を閉じる）と、
+ * 確認コードのダイアログが出ている間（その答えで承認・拒否する）は取り消さない。取り消すのは 1 回だけ。
+ */
+export class ParadisPairingCloseGuard {
+	private settled = false;
+	private confirming = 0;
+
+	/** 成立・失敗した。 */
+	settle(): void {
+		this.settled = true;
+	}
+
+	beginConfirm(): void {
+		this.confirming++;
+	}
+
+	endConfirm(): void {
+		this.confirming = Math.max(0, this.confirming - 1);
+	}
+
+	/** 小窓が閉じた。取り消すなら true（以後は false）。 */
+	shouldCancelOnClose(): boolean {
+		if (this.settled || this.confirming > 0) {
+			return false;
+		}
+		this.settled = true;
+		return true;
+	}
+}
+
 export class ParadisMobilePairingDialog extends Disposable {
 
 	private readonly backdrop: HTMLElement;
 	private readonly remaining: HTMLElement;
 	private readonly copyButton: Button;
 	private readonly copiedReset = this._register(new MutableDisposable());
+	/** 閉じた（閉じるボタン・外側の押下・Esc・別のモーダル・呼び出し側の dispose のどれでも）ときに 1 回だけ知らせる。 */
+	private readonly _onDidClose = new Emitter<void>();
+	readonly onDidClose = this._onDidClose.event;
 
 	constructor(
 		qrSvg: string,
@@ -116,6 +151,15 @@ export class ParadisMobilePairingDialog extends Disposable {
 			close: () => this.dispose(),
 		}));
 		dialog.focus();
+	}
+
+	override dispose(): void {
+		if (this._store.isDisposed) {
+			return;
+		}
+		super.dispose();
+		this._onDidClose.fire();
+		this._onDidClose.dispose();
 	}
 
 	private updateRemaining(): void {
