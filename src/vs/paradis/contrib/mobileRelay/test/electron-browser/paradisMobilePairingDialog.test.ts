@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
-import { ParadisMobilePairingDialog, paradisPairingRemainingText } from '../../electron-browser/paradisMobilePairingDialog.js';
+import { ParadisMobilePairingDialog, ParadisPairingCloseGuard, paradisPairingRemainingText } from '../../electron-browser/paradisMobilePairingDialog.js';
 import { paradisOpenAnotherModal } from '../../../paradisSettings/test/browser/paradisModalTestUtils.js';
 
 suite('ParadisMobilePairingDialog', () => {
@@ -77,5 +77,31 @@ suite('ParadisMobilePairingDialog', () => {
 		second.dispose();
 		container.remove();
 		assert.deepStrictEqual({ openedFirst, afterOtherModal, afterEscape }, { openedFirst: true, afterOtherModal: false, afterEscape: false });
+	});
+
+	test('tells once that it closed, and the close guard cancels only a pairing that is neither settled nor being confirmed', () => {
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const layoutService = { activeContainer: container } as Pick<ILayoutService, 'activeContainer'> as ILayoutService;
+		const clipboardService = { writeText: async () => { } } as Pick<IClipboardService, 'writeText'> as IClipboardService;
+		const dialog = new ParadisMobilePairingDialog('<svg xmlns="http://www.w3.org/2000/svg"/>', 'paracode-mobile://pair?x=1', Date.now() + 60_000, layoutService, clipboardService);
+		let closes = 0;
+		const listener = dialog.onDidClose(() => closes++);
+		container.querySelector<HTMLElement>('.paradis-mobile-pairing-dialog')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+		dialog.dispose();
+		listener.dispose();
+		container.remove();
+
+		const closedWhileWaiting = new ParadisPairingCloseGuard();
+		const waiting = [closedWhileWaiting.shouldCancelOnClose(), closedWhileWaiting.shouldCancelOnClose()];
+		const settled = new ParadisPairingCloseGuard();
+		settled.settle();
+		const confirming = new ParadisPairingCloseGuard();
+		confirming.beginConfirm();
+		const duringConfirm = confirming.shouldCancelOnClose();
+		confirming.endConfirm();
+		assert.deepStrictEqual({ closes, waiting, afterSettled: settled.shouldCancelOnClose(), duringConfirm, afterConfirm: confirming.shouldCancelOnClose() }, {
+			closes: 1, waiting: [true, false], afterSettled: false, duringConfirm: false, afterConfirm: true,
+		});
 	});
 });

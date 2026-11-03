@@ -39,7 +39,7 @@ import { encodeQrCode, qrToSvg } from '../common/paradisQrCode.js';
 import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisConfirmedAgentPanes, IParadisGitResult, IParadisMobileRelayService, IParadisMobileStatus, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_CHANNEL, PARADIS_MOBILE_RELAY_URL_KEY, paradisMobileWindowRoute } from '../common/paradisMobileRelay.js';
-import { ParadisMobilePairingDialog } from './paradisMobilePairingDialog.js';
+import { ParadisMobilePairingDialog, ParadisPairingCloseGuard } from './paradisMobilePairingDialog.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
 import { ParadisMobileBrowserScopeSync } from './paradisMobileBrowserScopeSync.js';
@@ -1030,33 +1030,48 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// QR を小さいモーダルで表示（QR生成は自前の paradisQrCode.ts、依存ゼロ）。
 		// ペアリング成立/失敗でモーダルは自動で閉じる。
 		const pairingPanel = this.openPairingPanel(session.deviceId, session.pairingUri, session.expiresAt);
+		// 成立も失敗もしないまま小窓が閉じられたら（閉じるボタン・Esc・別のモーダル）、待ち受けを取り消す。
+		// 取り消さないと、期限（5 分）まで待ち受けが残る。確認コードのダイアログが出ている間は、その答えに任せる。
+		const pairingFlow = new ParadisPairingCloseGuard();
 
 		// SAS確認を待つ。onPairingEvent の 'awaiting-approval' で確認ダイアログを出す。
 		// awaiting-approval を受けてもリスナーは維持する（confirm dialog 表示中に届く
 		// paired/failed まで拾い切る必要があるため）。一連のペアリングフローの終端
 		// （paired または failed）でのみ clear する。
 		const pairingListener = this._register(new MutableDisposable());
+		if (pairingPanel) {
+			const closed = pairingPanel.onDidClose(() => {
+				closed.dispose();
+				if (pairingFlow.shouldCancelOnClose()) {
+					pairingListener.clear();
+					void this.service.cancelPairing();
+				}
+			});
+		}
 		pairingListener.value = this.service.onPairingEvent(async event => {
 			if (event.kind === 'awaiting-approval') {
+				pairingFlow.beginConfirm();
 				const { confirmed } = await this.dialogService.confirm({
 					type: 'info',
 					message: localize('paradis.mobile.confirmSas', "モバイルデバイス「{0}」を接続しますか？", event.proposedName),
 					detail: localize('paradis.mobile.confirmSasDetail', "モバイルアプリに表示されている確認コードが次の6桁と一致することを確認してください:\n\n    {0}\n\n一致しない場合は接続を拒否してください（第三者による中間者攻撃の可能性があります）。", event.sasCode),
 					primaryButton: localize('paradis.mobile.approve', "接続を承認"),
 					cancelButton: localize('paradis.mobile.reject', "拒否"),
-				});
+				}).finally(() => pairingFlow.endConfirm());
 				if (confirmed) {
 					await this.service.approvePairing();
 				} else {
 					await this.service.cancelPairing();
 				}
 			} else if (event.kind === 'paired') {
+				pairingFlow.settle();
 				pairingListener.clear();
 				pairingPanel?.dispose();
 				// ペアリング直後の端末は何も持っていないので必ず送る。
 				this.provider.pushState(true);
 				this.notificationService.info(localize('paradis.mobile.paired', "モバイルデバイス「{0}」を接続しました。", event.deviceName));
 			} else if (event.kind === 'failed') {
+				pairingFlow.settle();
 				pairingListener.clear();
 				pairingPanel?.dispose();
 				this.notificationService.warn(localize('paradis.mobile.pairFailed2', "ペアリングに失敗しました: {0}", event.reason));
@@ -1065,7 +1080,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	}
 
 	/** ペアリングの QR を小さいモーダルで開く。失敗時はダイアログにフォールバック。 */
-	private openPairingPanel(deviceId: string, pairingUri: string, expiresAt: number): { dispose(): void } | undefined {
+	private openPairingPanel(deviceId: string, pairingUri: string, expiresAt: number): ParadisMobilePairingDialog | undefined {
 		try {
 			const svg = qrToSvg(encodeQrCode(pairingUri), 6);
 			return this.instantiationService.createInstance(ParadisMobilePairingDialog, svg, pairingUri, expiresAt);
