@@ -52,12 +52,30 @@
  * was positioned from.
  */
 
-/* 1400px or less: the agent list and browser list buttons become icon-only. */
-.monaco-workbench .part.titlebar > .titlebar-container.paradis-fit-1400 :is(.paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label, .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label) {
+/*
+ * The width steps alone cannot keep room to drag the window: the AI limits rings grow with the number
+ * of accounts. So paradisTitlebarFit.ts also measures the widest free span between the items and, while
+ * it is under 40px, adds `paradis-fold-1` .. `paradis-fold-4`, which fold the same parts in the same
+ * order as the width steps and then go further (3 and 4). Each width step rule below therefore also
+ * matches its fold level.
+ */
+
+/* 1400px or less (or fold 1): the agent list and browser list buttons become icon-only. */
+.monaco-workbench .part.titlebar > .titlebar-container:is(.paradis-fit-1400, .paradis-fold-1) :is(.paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label, .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label) {
 	display: none;
 }
 
-/* 1200px or less: the CPU/RAM button shows only its icon (and the severity dot). */
-.monaco-workbench .part.titlebar > .titlebar-container.paradis-fit-1200 > .titlebar-left > .paradis-resource-monitor-trigger > .paradis-resource-monitor-trigger-text {
+/* 1200px or less (or fold 2): the CPU/RAM button shows only its icon (and the severity dot). */
+.monaco-workbench .part.titlebar > .titlebar-container:is(.paradis-fit-1200, .paradis-fold-2) > .titlebar-left > .paradis-resource-monitor-trigger > .paradis-resource-monitor-trigger-text {
+	display: none;
+}
+
+/* Fold 3: hide the service status items with nothing to report (an incident or maintenance brings them back). */
+.monaco-workbench .part.titlebar > .titlebar-container.paradis-fold-3 > .titlebar-left > .paradis-service-status-trigger:not(:has(> .paradis-service-status-dot:is(.minor, .major, .maintenance))) {
+	display: none;
+}
+
+/* Fold 4: the AI limits button keeps its logos and the rings that need attention (60% or more, or an error). */
+.monaco-workbench .part.titlebar > .titlebar-container.paradis-fold-4 > .titlebar-left > .paradis-limits-trigger > .paradis-limits-ring:not(.elevated, .high, .error) {
 	display: none;
 }

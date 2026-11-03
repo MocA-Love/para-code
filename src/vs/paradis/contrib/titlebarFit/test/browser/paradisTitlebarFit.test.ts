@@ -86,6 +86,89 @@ suite('ParadisTitlebarFit', () => {
 			root.remove();
 		}
 	});
+
+	test('folds one more level at a time until a free span of 40px is left to drag the window, and only as far as needed', async () => {
+		const doc = mainWindow.document;
+		const style = doc.createElement('style');
+		// 段ごとに隠す部品 (本物の規則は paradisTitlebarFit.css。ここでは段の数え方だけを見る)
+		style.textContent = '.t-root.paradis-fold-1 .t-a, .t-root.paradis-fold-2 .t-b, .t-root.paradis-fold-3 .t-c { display: none; }';
+		doc.head.appendChild(style);
+		const root = doc.createElement('div');
+		root.className = 't-root';
+		root.style.cssText = 'display: flex; width: 600px; height: 30px;';
+		const left = doc.createElement('div');
+		left.style.cssText = 'display: flex; width: 300px; flex: none;';
+		const center = doc.createElement('div');
+		center.className = 'titlebar-center';
+		center.style.cssText = 'display: flex; width: 200px; flex: none;';
+		const windowTitle = doc.createElement('div');
+		windowTitle.className = 'window-title';
+		const commandCenter = doc.createElement('div');
+		commandCenter.className = 'command-center';
+		commandCenter.style.cssText = 'width: 200px;';
+		windowTitle.appendChild(commandCenter);
+		center.appendChild(windowTitle);
+		const right = doc.createElement('div');
+		right.className = 'titlebar-right';
+		right.style.cssText = 'display: flex; width: 100px; flex: none;';
+		root.append(left, center, right);
+		doc.body.appendChild(root);
+		const item = (className: string, width: number, parent: HTMLElement) => {
+			const element = doc.createElement('div');
+			element.className = className;
+			element.style.cssText = `width: ${width}px; flex: none;`;
+			parent.appendChild(element);
+			return element;
+		};
+		item('t-a', 60, left);
+		item('t-b', 100, left);
+		const last = item('t-c', 120, left);
+		item('t-right', 100, right);
+
+		const observers: TestResizeObserver[] = [];
+		const fit = createParadisTitlebarFit(root, left, {
+			resizeObserverCtor: class extends TestResizeObserver {
+				constructor(callback: ResizeObserverCallback) {
+					super(callback);
+					observers.push(this);
+				}
+			}
+		});
+		const folds = () => [...root.classList].filter(name => name.startsWith('paradis-fold-')).sort().join(' ');
+		try {
+			// 空き 20px → 1 段 (t-a を隠すと 80px 空く) で止まる
+			observers[0].fire();
+			const oneLevel = folds();
+			// t-c が広がって 1 段では 20px しか空かない → 2 段 (t-b) まで
+			last.style.width = '220px';
+			await flushMutations();
+			observers[0].fire();
+			const twoLevels = folds();
+			// 畳めない部品で埋まっている → 最後の段まで畳む
+			const fixed = item('t-fixed', 300, left);
+			await flushMutations();
+			observers[0].fire();
+			const allLevels = folds();
+			// 空きが十分なら畳まない
+			fixed.remove();
+			last.style.width = '20px';
+			await flushMutations();
+			observers[0].fire();
+			const none = folds();
+			fit.dispose();
+			assert.deepStrictEqual({ oneLevel, twoLevels, allLevels, none, afterDispose: folds() }, {
+				oneLevel: 'paradis-fold-1',
+				twoLevels: 'paradis-fold-1 paradis-fold-2',
+				allLevels: 'paradis-fold-1 paradis-fold-2 paradis-fold-3 paradis-fold-4',
+				none: '',
+				afterDispose: '',
+			});
+		} finally {
+			fit.dispose();
+			root.remove();
+			style.remove();
+		}
+	});
 });
 
 function appendMenubar(left: HTMLElement, width: number): HTMLElement {
