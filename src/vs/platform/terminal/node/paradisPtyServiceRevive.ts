@@ -5,7 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { IShellLaunchConfig, PARADIS_UNRESOLVABLE_PTY_ID, paradisTerminalIdentityNonce } from '../common/terminal.js';
+import { IShellLaunchConfig, ITerminalTabLayoutInfoById, PARADIS_UNRESOLVABLE_PTY_ID, paradisTerminalIdentityNonce } from '../common/terminal.js';
 import { IProcessDetails, ISetTerminalLayoutInfoArgs } from '../common/terminalProcess.js';
 
 /*
@@ -224,6 +224,11 @@ export async function paradisClaimAndAttachPty(
  * @param handleOf `paradisHandleOf` (paradisTerminalProcessFactory.ts).
  */
 export function paradisLayoutAccountsForHeldTerminals(ptys: ReadonlyMap<number, IParadisRevivePty>, args: ISetTerminalLayoutInfoArgs, handleOf: (id: number) => number | undefined): boolean {
+	return paradisHeldTerminalsLeftOut(ptys, args, handleOf).size === 0;
+}
+
+/** The terminals a daemon holds for the layout's workspace that the layout does not name. */
+function paradisHeldTerminalsLeftOut(ptys: ReadonlyMap<number, IParadisRevivePty>, args: ISetTerminalLayoutInfoArgs, handleOf: (id: number) => number | undefined): Set<number> {
 	const held = new Set<number>();
 	for (const [id, pty] of ptys) {
 		if (pty.workspaceId === args.workspaceId && pty.shouldPersistTerminal && handleOf(id) !== undefined) {
@@ -231,7 +236,7 @@ export function paradisLayoutAccountsForHeldTerminals(ptys: ReadonlyMap<number, 
 		}
 	}
 	if (held.size === 0) {
-		return true;
+		return held;
 	}
 	for (const tab of args.tabs ?? []) {
 		for (const terminal of tab.terminals ?? []) {
@@ -247,7 +252,60 @@ export function paradisLayoutAccountsForHeldTerminals(ptys: ReadonlyMap<number, 
 	for (const id of args.paradisEditorTerminals ?? []) {
 		held.delete(id);
 	}
-	return held.size === 0;
+	return held;
+}
+
+/**
+ * The layout to record for `PtyService#setTerminalLayoutInfo`: the window's layout, with every
+ * terminal the daemon holds here that it leaves out carried over from the layout recorded before.
+ * `undefined` means "record nothing".
+ *
+ * Throwing the whole layout away whenever one held terminal was missing from it (what this did
+ * before) made a single stray terminal freeze the layout for good: on a remote host the pty host
+ * logged "Ignoring a layout" more than 30 times in a day, and every panel tab made or closed since
+ * was lost on the next update. Only the terminals left out are in doubt, so only they keep their
+ * old place; the rest is the window's.
+ *
+ * Carried over, a terminal keeps the tab it was in (with the others from that tab left out too),
+ * appended after the window's own tabs and never active; a background one stays in the background.
+ * A held terminal the earlier layout did not have either has no place to keep, and the daemon's
+ * layout does not have it (the earlier layout is what adoption read from the daemon, or a later one
+ * that accounted for everything held), so it stays out — it is not invented into a tab, where a
+ * parked editor terminal of another space would come back as a panel tab of this one.
+ *
+ * With no earlier layout at all nothing can be carried, and the answer stays "record nothing":
+ * reading the daemon's layout may simply have failed, and an empty layout from a window that
+ * restored nothing is what tells the daemon to forget the one it keeps.
+ *
+ * @param previous What `PtyService` recorded for this workspace so far (`_workspaceLayoutInfos`).
+ * @param handleOf `paradisHandleOf` (paradisTerminalProcessFactory.ts).
+ */
+export function paradisLayoutKeepingHeldTerminals(ptys: ReadonlyMap<number, IParadisRevivePty>, args: ISetTerminalLayoutInfoArgs, previous: ISetTerminalLayoutInfoArgs | undefined, handleOf: (id: number) => number | undefined): ISetTerminalLayoutInfoArgs | undefined {
+	const leftOut = paradisHeldTerminalsLeftOut(ptys, args, handleOf);
+	if (leftOut.size === 0) {
+		return args;
+	}
+	if (!previous) {
+		return undefined;
+	}
+	const carriedTabs: ITerminalTabLayoutInfoById[] = [];
+	for (const tab of previous.tabs ?? []) {
+		const terminals = (tab.terminals ?? []).filter(terminal => leftOut.has(terminal.terminal));
+		if (terminals.length === 0) {
+			continue;
+		}
+		const active = terminals.some(terminal => terminal.terminal === tab.activePersistentProcessId) ? tab.activePersistentProcessId : terminals[0].terminal;
+		carriedTabs.push({ isActive: false, activePersistentProcessId: active, terminals });
+	}
+	const carriedBackground = (previous.background ?? []).filter(id => leftOut.has(id));
+	if (carriedTabs.length === 0 && carriedBackground.length === 0) {
+		return args;
+	}
+	return {
+		...args,
+		tabs: [...(args.tabs ?? []), ...carriedTabs],
+		background: [...(args.background ?? []), ...carriedBackground],
+	};
 }
 
 /**
