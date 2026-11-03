@@ -13,6 +13,7 @@ import { IClipboardService } from '../../../../../platform/clipboard/common/clip
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { ParadisMobilePairingDialog, ParadisPairingCloseGuard, paradisPairingRemainingText } from '../../electron-browser/paradisMobilePairingDialog.js';
 import { paradisOpenAnotherModal } from '../../../paradisSettings/test/browser/paradisModalTestUtils.js';
+import { paradisCancelsCurrentPairing } from '../../common/paradisMobileRelay.js';
 
 suite('ParadisMobilePairingDialog', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -102,6 +103,35 @@ suite('ParadisMobilePairingDialog', () => {
 		confirming.endConfirm();
 		assert.deepStrictEqual({ closes, waiting, afterSettled: settled.shouldCancelOnClose(), duringConfirm, afterConfirm: confirming.shouldCancelOnClose() }, {
 			closes: 1, waiting: [true, false], afterSettled: false, duringConfirm: false, afterConfirm: true,
+		});
+	});
+
+	test('does not cancel a pairing approved before it settles, and a modal of an earlier pairing does not cancel the next one', () => {
+		// 確認コードのダイアログで承認した（呼び出し側は承認の時点で settle する）後、成立の知らせより先に小窓を閉じる
+		const approved = new ParadisPairingCloseGuard();
+		approved.beginConfirm();
+		approved.settle();
+		const closedAfterApprove = approved.shouldCancelOnClose();
+		// 拒否したときは確認を終えるだけ（拒否で断る）。その後に閉じても二重には断らない
+		const rejected = new ParadisPairingCloseGuard();
+		rejected.beginConfirm();
+		rejected.endConfirm();
+		const closedAfterReject = rejected.shouldCancelOnClose();
+		assert.deepStrictEqual({
+			closedAfterApprove,
+			closedAfterReject,
+			// 1 回目の小窓を開いたまま接続をやり直し（今のペアリングは 2 回目）、1 回目の小窓が閉じられた
+			firstModalClosesSecondPairing: paradisCancelsCurrentPairing('pair-2', 'pair-1'),
+			secondModalClosesSecondPairing: paradisCancelsCurrentPairing('pair-2', 'pair-2'),
+			callerWithoutId: paradisCancelsCurrentPairing('pair-2'),
+			nothingPending: paradisCancelsCurrentPairing(undefined, 'pair-1'),
+		}, {
+			closedAfterApprove: false,
+			closedAfterReject: true,
+			firstModalClosesSecondPairing: false,
+			secondModalClosesSecondPairing: true,
+			callerWithoutId: true,
+			nothingPending: false,
 		});
 	});
 });
