@@ -1582,7 +1582,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.transparency', "ウィンドウを透過させる"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.transparencyDesc', "オンにすると、エディタ・サイドバー・パネル・タイトルバーの地が透けてデスクトップが見えます。メニュー・ホバー・通知・ダイアログは透けません。"),
+		description: localize('paradis.settings.transparencyDesc', "オンにすると、エディタ・サイドバー・パネル・タイトルバーの地が透けてデスクトップが見えます。メニュー・ホバー・通知・ダイアログは透けません。Windows でオンにすると、Win+矢印や画面の端へのドラッグでのスナップと、縁をつかんでのリサイズが効かなくなります（Windows では既定でオフです）。"),
 		// allow-any-unicode-next-line
 		restartNotice: localize('paradis.settings.transparencyRestart', "切り替えはアプリを再起動すると効きます（ウィンドウの再読み込みでは効きません）。"),
 		keywords: 'window transparency transparent',

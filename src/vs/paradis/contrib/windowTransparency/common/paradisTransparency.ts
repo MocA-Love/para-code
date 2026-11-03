@@ -30,7 +30,7 @@ export function clampParadisTransparencyOpacity(raw: number | undefined): number
 
 /**
  * 透過の切り替えが、まだ再起動していないため効いていないか。透過はウィンドウを作るときにしか決まらない。
- * @param enabledSetting `paradis.window.transparency.enabled` の値（未設定は有効）
+ * @param enabledSetting `paradis.window.transparency.enabled` の値（レジストリ既定値を解決したもの。undefined は有効として扱う）
  * @param canUse この環境で透過を使えるか（Windows の native タイトルバーでは使えない）
  * @param nativeTransparent いまのウィンドウが透過で作られたか
  */
