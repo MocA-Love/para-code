@@ -88,7 +88,7 @@ jobs:
 
       # The runner was shut down (exit 143) about 40 s into tsgo-typecheck on every run, before it could report
       # anything: running core-ci in parallel with hygiene, eslint and the other checks ran the runner out of memory
-      # (推測). Compile and type check first on their own, then run the remaining checks in parallel.
+      #, most likely. Compile and type check first on their own, then run the remaining checks in parallel.
       - name: Compile & type check
         run: npm run core-ci
         env:
