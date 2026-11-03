@@ -38,7 +38,9 @@ import {
 	PARADIS_SERVICE_STATUS_PROVIDERS,
 	PARADIS_SERVICE_STATUS_SETTING_ENABLED,
 	PARADIS_SERVICE_STATUS_SEVERITIES,
+	PARADIS_SERVICE_STATUS_SOURCES,
 	ParadisServiceStatusProvider,
+	paradisServiceStatusSeverityLabel,
 	paradisServiceStatusStateText,
 } from '../common/paradisServiceStatus.js';
 import { ParadisServiceStatusClient } from './paradisServiceStatusClient.js';
@@ -208,7 +210,8 @@ class ParadisServiceStatusWidget extends Disposable {
 
 	private renderTriggerLabels(): void {
 		for (const [provider, button] of this.buttons) {
-			button.setAttribute('aria-label', localize('paradis.serviceStatus.triggerAriaWithState', "サービスの稼働状況: {0}", this.stateText(provider)));
+			const severity = this.latestSnapshot?.entries[provider]?.severity ?? 'unknown';
+			button.setAttribute('aria-label', localize('paradis.serviceStatus.triggerAriaWithState', "{0} のステータス: {1}", PARADIS_SERVICE_STATUS_SOURCES[provider].label, paradisServiceStatusSeverityLabel(severity)));
 		}
 	}
 
