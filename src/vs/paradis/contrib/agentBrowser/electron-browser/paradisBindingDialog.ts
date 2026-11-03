@@ -97,10 +97,6 @@ const strMcpNote = (count: number) => localize('paradis.bindingDialog.mcpNote', 
 // allow-any-unicode-next-line
 const STR_MCP_NOTE_LINK = localize('paradis.bindingDialog.mcpNoteLink', "MCP接続設定を開く");
 // allow-any-unicode-next-line
-const STR_EXTENSION_WARNING_MORE = localize('paradis.bindingDialog.extensionWarningMore', "詳しく");
-// allow-any-unicode-next-line
-const STR_EXTENSION_WARNING_LESS = localize('paradis.bindingDialog.extensionWarningLess', "たたむ");
-// allow-any-unicode-next-line
 const STR_EXTENSIONS_CHECKING = localize('paradis.bindingDialog.extensionsChecking', "このタブに拡張機能が入っているか確かめています…");
 // allow-any-unicode-next-line
 const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "エージェントは共有したページだけを読み取り・操作できます");
@@ -269,8 +265,6 @@ export class ParadisBindingDialog extends Disposable {
 	private _extensionWarning: string | undefined;
 	/** 知らせの答えが返ったか（返るまで共有のスイッチを押せない）。 */
 	private _extensionWarningResolved = false;
-	/** 拡張機能の知らせを全文で出しているか（既定は 1 行に縮める）。 */
-	private _extensionWarningExpanded = false;
 	private readonly _extensionWarningReady: Promise<void>;
 	private readonly _onDidDispose = this._register(new Emitter<void>());
 	/** 閉じた（破棄された）ことを、開いた側が参照を手放すために知らせる。 */
@@ -665,23 +659,11 @@ export class ParadisBindingDialog extends Disposable {
 			checking.textContent = STR_EXTENSIONS_CHECKING;
 		}
 		if (this._extensionWarning) {
+			// 知らせは縮めずに全文を折り返して出す（Q544 の 4）
 			const warning = dom.append(this._body, $('.pbd-extension-warning'));
 			warning.setAttribute('role', 'note');
 			warning.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
 			dom.append(warning, $('span.pbd-extension-warning-text')).textContent = this._extensionWarning;
-			const more = this._renderDisposables.add(new Button(warning, { ...defaultButtonStyles, secondary: true }));
-			more.element.classList.add('pbd-small');
-			const syncMore = () => {
-				warning.classList.toggle('expanded', this._extensionWarningExpanded);
-				more.label = this._extensionWarningExpanded ? STR_EXTENSION_WARNING_LESS : STR_EXTENSION_WARNING_MORE;
-				more.element.setAttribute('aria-expanded', String(this._extensionWarningExpanded));
-			};
-			syncMore();
-			// 描き直さずにその場で開閉する（押したボタンにフォーカスを残す）
-			this._renderDisposables.add(more.onDidClick(() => {
-				this._extensionWarningExpanded = !this._extensionWarningExpanded;
-				syncMore();
-			}));
 		}
 		const search = dom.append(this._body, $('.pbd-list-search'));
 		search.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
