@@ -96,6 +96,12 @@ export class BrowserViewEmulator extends Disposable {
 		this._reapply();
 	}
 
+	// PARA-PATCH: apply the emulation again after a capture beyond the viewport cleared it (paraBrowserViewScreenshotCapture.ts)
+	paraReapplyEmulation(): void {
+		this._lastApplied = undefined;
+		this._reapply();
+	}
+
 	private _reapply(): void {
 		if (!this._device || !this.isSafeToApplyEmulation()) {
 			return;

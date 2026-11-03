@@ -8,7 +8,7 @@
 import { nativeImage, screen, type BrowserWindow, type NativeImage, type WebContents } from 'electron';
 import { VSBuffer } from '../../../base/common/buffer.js';
 import { ILogService } from '../../log/common/log.js';
-import { browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/paraBrowserViewScreenshot.js';
+import { browserViewDocumentRectClip, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/paraBrowserViewScreenshot.js';
 import { paraBrowserViewZoomShrink } from './paraBrowserViewZoom.js';
 
 /** The parts of a BrowserView the screenshot helpers read, each read again on every use. */
@@ -20,6 +20,13 @@ export interface IParaBrowserViewScreenshotHost {
 	emulatedDeviceScaleFactor(): number | undefined;
 	sendCommand(method: string, params?: unknown): Promise<unknown>;
 	waitForNextPaint(): Promise<void>;
+	/**
+	 * Applies the fixed-size emulation again. A capture beyond the viewport overrides the device metrics for the
+	 * shot and, when it clears them, drops the deviceScaleFactor the emulation set (measured on Electron 43: a tab
+	 * shrunk by page zoom came back with devicePixelRatio 0.39 and a smaller viewport, so later clicks near the
+	 * bottom and right edges missed).
+	 */
+	reapplyEmulation(): void;
 }
 
 /**
@@ -48,7 +55,8 @@ export class ParaBrowserViewScreenshotCapture {
 					format,
 					...(format === 'jpeg' ? { quality } : {}),
 					captureBeyondViewport: true,
-					clip: { ...pageRect, scale: 1 },
+					// Match the clip to the page zoom (including the shrink of a fixed-size tab)
+					clip: browserViewDocumentRectClip(pageRect, this.host.webContents().getZoomFactor()),
 				}, captureSignal);
 				browserViewThrowIfScreenshotAborted(captureSignal);
 				return this.validateAndEncodeScreenshot(image, format, quality, route, attempt);
@@ -71,7 +79,10 @@ export class ParaBrowserViewScreenshotCapture {
 			browserViewThrowIfScreenshotAborted(signal);
 			const encoded = typeof result.data === 'string' ? Buffer.from(result.data, 'base64') : Buffer.alloc(0);
 			return nativeImage.createFromBuffer(encoded);
-		}, () => this.host.webContents().setVisualZoomLevelLimits(1, 3), () => {
+		}, async () => {
+			this.host.reapplyEmulation();
+			await this.host.webContents().setVisualZoomLevelLimits(1, 3);
+		}, () => {
 			this.logService.warn('[BrowserView] screenshot zoom restore failed route=capture-beyond-viewport');
 		});
 	}

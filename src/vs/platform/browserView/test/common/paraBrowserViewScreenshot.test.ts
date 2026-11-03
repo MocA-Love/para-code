@@ -7,10 +7,27 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { BROWSER_VIEW_SCREENSHOT_MAX_ENCODED_BYTES, BROWSER_VIEW_SCREENSHOT_MAX_QUEUE_DEPTH, BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewBitmapHasVisibleAlpha, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotCoalesceKey, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, prepareBrowserViewScreenshotCapture } from '../../common/paraBrowserViewScreenshot.js';
+import { BROWSER_VIEW_SCREENSHOT_MAX_ENCODED_BYTES, browserViewDocumentRectClip, BROWSER_VIEW_SCREENSHOT_MAX_QUEUE_DEPTH, BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewBitmapHasVisibleAlpha, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotCoalesceKey, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, prepareBrowserViewScreenshotCapture } from '../../common/paraBrowserViewScreenshot.js';
 
 suite('BrowserView screenshot', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('zooms the document clip with the page zoom, widens it to whole units and restores CSS size with scale', () => {
+		const rect = { x: 1470, y: 850, width: 120, height: 40 };
+		const zoom = 0.39088541666666665;
+		const shrunk = browserViewDocumentRectClip(rect, zoom);
+		assert.deepStrictEqual({
+			unzoomed: browserViewDocumentRectClip(rect, 1),
+			shrunk: { ...shrunk, scale: Number(shrunk.scale.toFixed(4)) },
+			coversElement: shrunk.x <= rect.x * zoom && shrunk.y <= rect.y * zoom && shrunk.x + shrunk.width >= (rect.x + rect.width) * zoom && shrunk.y + shrunk.height >= (rect.y + rect.height) * zoom,
+			invalidZoom: browserViewDocumentRectClip(rect, 0),
+		}, {
+			unzoomed: { ...rect, scale: 1 },
+			shrunk: { x: 574, y: 332, width: 48, height: 16, scale: 2.5583 },
+			coversElement: true,
+			invalidZoom: { ...rect, scale: 1 },
+		});
+	});
 
 	test('rejects empty and fully transparent RGBA bitmaps', () => {
 		assert.strictEqual(browserViewBitmapHasVisibleAlpha(new Uint8Array()), false);
