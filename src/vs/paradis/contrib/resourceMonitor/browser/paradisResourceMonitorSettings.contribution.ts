@@ -13,7 +13,7 @@
 import { localize } from '../../../../nls.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationPropertySchema, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { ParadisResourceTitleBarItem, paradisResourceTitleBarDefault, paradisResourceTitleBarItemLabel } from '../common/paradisResourceTitleBar.js';
+import { PARADIS_RESOURCE_TITLE_BAR_FORMATS, ParadisResourceTitleBarItem, ParadisResourceTitleBarSizedItem, paradisResourceTitleBarDefault, paradisResourceTitleBarFormatLabel, paradisResourceTitleBarItemLabel } from '../common/paradisResourceTitleBar.js';
 
 function titleBarItemSchema(item: ParadisResourceTitleBarItem): IConfigurationPropertySchema {
 	return {
@@ -21,6 +21,17 @@ function titleBarItemSchema(item: ParadisResourceTitleBarItem): IConfigurationPr
 		default: paradisResourceTitleBarDefault(item),
 		scope: ConfigurationScope.APPLICATION,
 		description: localize('paradis.resourceMonitor.titleBarItem', "タイトルバーの資源表示に「{0}」を出します。押して開く一覧には、選ばなかった項目も出ます。", paradisResourceTitleBarItemLabel(item)),
+	};
+}
+
+function titleBarFormatSchema(item: ParadisResourceTitleBarSizedItem): IConfigurationPropertySchema {
+	return {
+		type: 'string',
+		enum: [...PARADIS_RESOURCE_TITLE_BAR_FORMATS],
+		enumDescriptions: PARADIS_RESOURCE_TITLE_BAR_FORMATS.map(format => paradisResourceTitleBarFormatLabel(format)),
+		default: 'percent',
+		scope: ConfigurationScope.APPLICATION,
+		description: localize('paradis.resourceMonitor.titleBarFormat', "タイトルバーの資源表示で「{0}」をどう出すか。大きさが分からないときは割合で出します。ホバーには出し方に関わらず詳しい数字が出ます。", paradisResourceTitleBarItemLabel(item)),
 	};
 }
 
@@ -46,5 +57,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		'paradis.resourceMonitor.titleBar.diskIo': titleBarItemSchema('diskIo'),
 		'paradis.resourceMonitor.titleBar.network': titleBarItemSchema('network'),
 		'paradis.resourceMonitor.titleBar.machineName': titleBarItemSchema('machineName'),
+		// 出し方（割合・使用量 / 全体・使用量・空き）。全体の大きさがあるメモリ・ディスク・スワップだけ
+		'paradis.resourceMonitor.titleBar.memoryFormat': titleBarFormatSchema('memory'),
+		'paradis.resourceMonitor.titleBar.diskFormat': titleBarFormatSchema('disk'),
+		'paradis.resourceMonitor.titleBar.swapFormat': titleBarFormatSchema('swap'),
 	}
 });

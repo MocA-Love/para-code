@@ -95,7 +95,7 @@ suite('ParadisSystemUsageService', () => {
 		const service = new ParadisSystemUsageService({ reader, now: () => 42, schedule: () => ({ dispose() { } }) });
 		try {
 			const response = await service.getSystemUsage({ tier: 'coarse' });
-			assert.deepStrictEqual({ reads: reader.reads, latest: response.latest, coarse: response.series.t }, { reads: 1, latest: { t: 42, mem: 25 }, coarse: [] });
+			assert.deepStrictEqual({ reads: reader.reads, latest: response.latest, coarse: response.series.t }, { reads: 1, latest: { t: 42, mem: 25, memUsed: 4 }, coarse: [] });
 		} finally {
 			service.dispose();
 		}
