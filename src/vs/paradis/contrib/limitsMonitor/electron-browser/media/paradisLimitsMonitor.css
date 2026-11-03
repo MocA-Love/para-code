@@ -446,7 +446,7 @@
 }
 
 .paradis-limits-panel .plm-hidden-disclosure summary:hover {
-	background: var(--vscode-list-hoverBackground);
+	background: var(--vscode-toolbar-hoverBackground);
 }
 
 .paradis-limits-panel .plm-hidden-disclosure summary::-webkit-details-marker {
