@@ -17,5 +17,5 @@
  * `PARA_GENERATE_NODE_COMPILE_CACHE=1` is set (for trying it again on a build).
  */
 export function shouldGenerateParadisNodeCompileCache(env: NodeJS.ProcessEnv = process.env): boolean {
-	return env['PARA_GENERATE_NODE_COMPILE_CACHE'] === '1';
+	return env.PARA_GENERATE_NODE_COMPILE_CACHE === '1';
 }
