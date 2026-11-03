@@ -456,7 +456,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			await harness.workspaceSwitchService.switchRepository('space-a');
 			const clock = sinon.useFakeTimers({ shouldAdvanceTime: true });
 			testDisposables.add({ dispose: () => clock.restore() });
-			harness.installTerminalScope(async () => { }, {
+			const scope = harness.installTerminalScope(async () => { }, {
 				worktreeReady: true,
 				connected: true,
 				terminalInstanceService: {
@@ -465,13 +465,19 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				},
 			});
 			await settle();
-			const afterFirst = { listings, complete: paradisIsOrphanTerminalRevivalComplete() };
+			const attempts = () => (scope as unknown as { _adoptionRetryAttempts: number })._adoptionRetryAttempts;
+			const afterFirst = { listings, complete: paradisIsOrphanTerminalRevivalComplete(), attempts: attempts() };
 			await clock.tickAsync(5_000);
 			await settle();
 
 			assert.deepStrictEqual(
-				{ afterFirst, afterRetry: { listings, complete: paradisIsOrphanTerminalRevivalComplete() }, asked },
-				{ afterFirst: { listings: 1, complete: false }, afterRetry: { listings: 2, complete: true }, asked: ['pending', 'settled', 'settled', 'settled'] },
+				{ afterFirst, afterRetry: { listings, complete: paradisIsOrphanTerminalRevivalComplete(), attempts: attempts() }, asked },
+				{
+					afterFirst: { listings: 1, complete: false, attempts: 0 },
+					// 終わったのを見たら回数は 0 に戻る（窓を開いたまま pty ホストが起き直したときに、上限が残らない）。
+					afterRetry: { listings: 2, complete: true, attempts: 0 },
+					asked: ['pending', 'settled', 'settled', 'settled'],
+				},
 			);
 		} finally {
 			paradisResetOrphanTerminalRevivalForTest();
