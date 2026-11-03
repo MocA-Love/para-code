@@ -176,6 +176,16 @@ export class ParadisChangelogView extends Disposable {
 		}
 	}
 
+	/** 選んでいるバージョン（`reveal` に渡せる形）と本文のスクロール位置。統合のモーダルを開き直したときに戻すため。 */
+	get viewState(): { readonly version: string | undefined; readonly scrollTop: number } {
+		return { version: this.selectedVersion !== undefined ? String(this.selectedVersion) : undefined, scrollTop: this.contentElement.scrollTop };
+	}
+
+	/** 本文のスクロール位置を戻す。 */
+	set scrollTop(scrollTop: number) {
+		this.contentElement.scrollTop = scrollTop;
+	}
+
 	/** バージョン（`paracode-N` の N。文字列でも数でもよい）を選ぶ。無ければ何もしない。 */
 	reveal(version: string | undefined): void {
 		const target = version !== undefined ? Number(String(version).replace(/^paracode-/, '')) : NaN;

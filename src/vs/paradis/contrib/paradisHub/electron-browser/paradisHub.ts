@@ -34,6 +34,21 @@ export interface IParadisHubAreaContainers {
 	readonly header: HTMLElement;
 }
 
+/**
+ * 統合のモーダルの中のボタンから実行したコマンドが、この値を返したら器を閉じる。
+ * 本家のダイアログを器の上に出し、その中で設定エディタなどのエディタのタブを開くと選ばれたときに使う
+ * （エディタのタブは器の下に出て見えないため）。
+ */
+export const PARADIS_HUB_CLOSE_AFTER_COMMAND = 'paradis.hub.closeAfterCommand';
+
+/** 器を閉じて開き直したときに戻す、領域の中の場所。 */
+export interface IParadisHubAreaViewState {
+	/** 開いていた節（`reveal` に渡す ID）。 */
+	readonly section?: string;
+	/** 本文のスクロール位置。 */
+	readonly scrollTop?: number;
+}
+
 /** 領域から器へ頼むこと。 */
 export interface IParadisHubHost {
 	/** 器を閉じる。 */
@@ -52,6 +67,10 @@ export interface IParadisHubAreaView extends IDisposable {
 	layout(width: number): void;
 	/** Esc を領域で使うとき（検索語を消すなど）は true を返す。false なら器を閉じる。 */
 	handleEscape?(): boolean;
+	/** 器を閉じる直前に呼ぶ。いまの節とスクロール位置を返すと、同じ窓で同じ領域を開き直したときに戻す。 */
+	saveViewState?(): IParadisHubAreaViewState | undefined;
+	/** 開き直したときに、{@link saveViewState} が返した場所へ戻す（`reveal` の後に呼ぶ）。 */
+	restoreViewState?(state: IParadisHubAreaViewState): void;
 }
 
 /** 領域の登録。 */

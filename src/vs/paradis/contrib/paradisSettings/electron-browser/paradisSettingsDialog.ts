@@ -33,7 +33,7 @@ import { INativeWorkbenchEnvironmentService } from '../../../../workbench/servic
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 import { paradisToggleChecked, paradisToggleValue } from '../common/paradisSettingsToggle.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
-import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
+import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, PARADIS_HUB_CLOSE_AFTER_COMMAND, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
 import { paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
@@ -1687,7 +1687,32 @@ const ROW_KEYS_OUTSIDE_PARADIS: readonly string[] = ROWS
 const HUB_TARGETS = new Map<string, { readonly area: ParadisHubAreaId; readonly section?: string }>([
 	['paradis.usage.showDashboard', { area: ParadisHubAreaId.Usage }],
 	['paradis.notifications.openSettings', { area: ParadisHubAreaId.Notifications, section: 'pns-sec-desktop' }],
+	['paradis.browserExtensions.manage', { area: ParadisHubAreaId.Extensions }],
 ]);
+
+/**
+ * 行のボタンのコマンドのうち、本家のダイアログ（確認・状態の表示）だけを出すもの。器を閉じずに実行し、ダイアログは
+ * 器より上に出す（paradisHub.css）。コマンドが {@link PARADIS_HUB_CLOSE_AFTER_COMMAND} を返したら、そのときだけ閉じる。
+ * これ以外のコマンド（エディタのタブ・クイックピック・fork の別のモーダルを開くもの）は器の下に出るので、閉じてから実行する。
+ */
+const KEEP_OPEN_COMMANDS: ReadonlySet<string> = new Set([
+	PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID,
+	PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID,
+	PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID,
+	'paradis.sessionIndex.delete',
+]);
+
+/**
+ * 行のボタンのコマンドを、器の中でどう実行するか。`area` は器の中の領域へ移る、`keepOpen` は器を開いたまま実行する、
+ * `close` は器を閉じてから実行する。
+ */
+export function paradisSettingsActionKind(commandId: string): { readonly kind: 'area'; readonly area: ParadisHubAreaId; readonly section?: string } | { readonly kind: 'keepOpen' | 'close' } {
+	const target = HUB_TARGETS.get(commandId);
+	if (target) {
+		return { kind: 'area', ...target };
+	}
+	return { kind: KEEP_OPEN_COMMANDS.has(commandId) ? 'keepOpen' : 'close' };
+}
 
 /**
  * 節の行を、小見出しごとにまとめて並べる（小見出しの順は最初に出てきた順、同じ小見出しの中は元の順）。
@@ -1773,6 +1798,19 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		this._activateNavItem(this._activeSectionId);
 	}
 
+	saveViewState(): IParadisHubAreaViewState {
+		return { section: this._activeSectionId, scrollTop: this._contentEl.scrollTop };
+	}
+
+	restoreViewState(state: IParadisHubAreaViewState): void {
+		if (state.section !== undefined && this._sections.has(state.section)) {
+			this._activateNavItem(state.section);
+		}
+		if (state.scrollTop !== undefined) {
+			this._contentEl.scrollTop = state.scrollTop;
+		}
+	}
+
 	reveal(sectionId: string | undefined): void {
 		const section = SECTIONS.find(spec => spec.id === sectionId);
 		if (!section) {
@@ -1802,13 +1840,21 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 	}
 
 	/** 行のボタンが開く先。統合のモーダルの中にあるものは、閉じずにその領域へ移る。 */
-	private _runAction(commandId: string): void {
-		const target = HUB_TARGETS.get(commandId);
-		if (target) {
-			this.host.open(target.area, target.section);
+	private async _runAction(commandId: string): Promise<void> {
+		const action = paradisSettingsActionKind(commandId);
+		if (action.kind === 'area') {
+			this.host.open(action.area, action.section);
 			return;
 		}
-		// 遷移先も同じ層のモーダルなので、重ならないようこちらを閉じてから開く
+		if (action.kind === 'keepOpen') {
+			const result = await this.commandService.executeCommand(commandId);
+			if (result === PARADIS_HUB_CLOSE_AFTER_COMMAND && !this._store.isDisposed) {
+				this.host.close();
+			}
+			return;
+		}
+		// 開く先が器より下の層（エディタのタブ・クイックピック・fork の別のモーダル）なので、こちらを閉じてから開く。
+		// 閉じたときの節とスクロール位置は器が覚え、次に設定を開いたときに戻す
 		this.host.close();
 		void this.commandService.executeCommand(commandId);
 	}
@@ -1891,7 +1937,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 			const button = dom.append(row, $(`button.psd-btn${spec.action.primary ? '.psd-btn-primary' : ''}`)) as HTMLButtonElement;
 			button.textContent = spec.action.label;
 			const commandId = spec.action.commandId;
-			this._register(dom.addDisposableListener(button, 'click', () => this._runAction(commandId)));
+			this._register(dom.addDisposableListener(button, 'click', () => void this._runAction(commandId)));
 		} else if (spec.key) {
 			this._buildControl(row, spec.key, spec);
 			if (spec.offWarning) {

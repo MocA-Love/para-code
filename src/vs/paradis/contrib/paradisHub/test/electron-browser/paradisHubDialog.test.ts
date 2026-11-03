@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId, paradisRegisterHubArea } from '../../electron-browser/paradisHub.js';
+import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, ParadisHubAreaId, paradisRegisterHubArea } from '../../electron-browser/paradisHub.js';
 import { ParadisHubDialog } from '../../electron-browser/paradisHubDialog.js';
 import { paradisOpenHub } from '../../electron-browser/paradisHubOpen.js';
 import { paradisHubNavItem } from '../../electron-browser/paradisHubNav.js';
@@ -40,6 +40,14 @@ class TestArea implements IParadisHubAreaView {
 	}
 
 	layout(): void { }
+
+	saveViewState(): IParadisHubAreaViewState {
+		return { section: `saved-${this.id}`, scrollTop: 40 };
+	}
+
+	restoreViewState(state: IParadisHubAreaViewState): void {
+		this.calls.push(`restore:${state.section}:${state.scrollTop}`);
+	}
 
 	handleEscape(): boolean {
 		this.calls.push('escape');
@@ -72,7 +80,7 @@ suite('ParadisHubDialog', () => {
 		const instantiationService = store.add(new TestInstantiationService());
 		instantiationService.stub(ILayoutService, { activeContainer: container } as Partial<ILayoutService>);
 		instantiationService.stub(ILogService, new NullLogService());
-		const dialog = store.add(instantiationService.createInstance(ParadisHubDialog, area, section));
+		const dialog = store.add(instantiationService.createInstance(ParadisHubDialog, area, section, undefined));
 		return { dialog, container };
 	}
 
@@ -155,6 +163,40 @@ suite('ParadisHubDialog', () => {
 			down: { focused: 'usage nav 2', tabIndexes: [-1, 0, -1] },
 			end: 'usage nav 3',
 		});
+	});
+
+	// エディタのタブを開くボタンで閉じた後に開き直すと、同じ領域なら閉じたときの節とスクロール位置へ戻る
+	test('reopens the same area at the section and scroll position it was closed at, unless another area or a section is asked for', () => {
+		const container = mainWindow.document.body.appendChild(mainWindow.document.createElement('div'));
+		store.add(toDisposable(() => container.remove()));
+		const instantiationService = store.add(new TestInstantiationService());
+		instantiationService.stub(ILayoutService, { activeContainer: container } as Partial<ILayoutService>);
+		instantiationService.stub(ILogService, new NullLogService());
+		// 開いている間は、本家のダイアログと通知を器より上に出すための印が作業領域に付く
+		const marked: boolean[] = [];
+		const openAndClose = (area: ParadisHubAreaId, section?: string) => {
+			created.clear();
+			instantiationService.invokeFunction(accessor => paradisOpenHub(accessor, area, section));
+			marked.push(container.classList.contains('paradis-hub-open'));
+			const calls = [...created.values()].map(view => [...view.calls]);
+			container.querySelector<HTMLButtonElement>('.phub-close')!.click();
+			return calls;
+		};
+		assert.deepStrictEqual([
+			openAndClose(ParadisHubAreaId.Settings, 'psd-sec-agent'),
+			openAndClose(ParadisHubAreaId.Settings),
+			openAndClose(ParadisHubAreaId.Settings, 'psd-sec-menubar'),
+			openAndClose(ParadisHubAreaId.Usage),
+			openAndClose(ParadisHubAreaId.Usage),
+			{ open: marked, afterClose: container.classList.contains('paradis-hub-open'), dialogs: container.querySelectorAll('.paradis-hub').length },
+		], [
+			[['visible:true', 'reveal:psd-sec-agent']],
+			[['visible:true', 'reveal:saved-settings', 'restore:saved-settings:40']],
+			[['visible:true', 'reveal:psd-sec-menubar']],
+			[['visible:true', 'reveal:']],
+			[['visible:true', 'reveal:saved-usage', 'restore:saved-usage:40']],
+			{ open: [true, true, true, true, true], afterClose: false, dialogs: 0 },
+		]);
 	});
 
 	test('does not open an area that is not registered', () => {

@@ -19,6 +19,21 @@
 	z-index: 2700;
 }
 
+/* While the hub is open (paradisHubDialog.ts puts .paradis-hub-open on the window's workbench element), the workbench dialogs (confirm / status prompts started from a button in the hub, such as
+	"Check the Status..." in Settings) would open at 2575, under the hub, so the hub used to close itself first. Lift them
+	above the hub instead, and above the hub's nested boxes (2800), but keep them below the agent approval prompt (2850,
+	paradisAgentApproval.css): :where() keeps this rule's specificity below that rule's, whatever the load order.
+	Only DOM dialogs need this; with dialogStyle "native" confirm/info are OS sheets, which are always in front. */
+.monaco-workbench.paradis-hub-open :where(.monaco-dialog-modal-block) {
+	z-index: 2825;
+}
+
+/* The toast that reports the result of such a command (2545) would also be hidden behind the hub. Put it above the
+	hub but below the dialogs, the same order as without the hub. */
+.monaco-workbench.paradis-hub-open > .notifications-toasts {
+	z-index: 2740;
+}
+
 .monaco-workbench .paradis-hub {
 	outline: none;
 }
