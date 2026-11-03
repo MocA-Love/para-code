@@ -58,4 +58,12 @@ suite('ParadisChangelogView', () => {
 			dots: containers.nav.querySelectorAll('.para-cl-dot').length,
 		}, { heading: 'paracode-178', now: 'paracode-180', banner: '', selected: [180], dots: 0 });
 	});
+
+	// 統合のモーダルを開き直したときに戻すため、選んでいるバージョンを reveal に渡せる形で返す
+	test('reports the chosen version in the form reveal takes', () => {
+		const { view } = create([]);
+		const initial = view.viewState.version;
+		view.reveal('paracode-178');
+		assert.deepStrictEqual({ initial, chosen: view.viewState }, { initial: '180', chosen: { version: '178', scrollTop: 0 } });
+	});
 });

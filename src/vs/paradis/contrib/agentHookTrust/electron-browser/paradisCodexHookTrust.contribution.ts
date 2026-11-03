@@ -41,6 +41,7 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, paradisAgentHooksEnabled } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { PARADIS_REMOTE_AGENT_TUNNEL_SETTING } from '../../agentBrowser/electron-browser/paradisRemoteAgentTunnel.contribution.js';
+import { PARADIS_HUB_CLOSE_AFTER_COMMAND } from '../../paradisHub/electron-browser/paradisHub.js';
 import {
 	IParadisCodexHookTrustGrantResult,
 	IParadisCodexHookTrustStatus,
@@ -291,7 +292,8 @@ class ParadisShowCodexHookStatusAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor): Promise<void> {
+	/** 「設定を開く」を選んだときは、統合のモーダルから実行していたら閉じるよう {@link PARADIS_HUB_CLOSE_AFTER_COMMAND} を返す。 */
+	async run(accessor: ServicesAccessor): Promise<typeof PARADIS_HUB_CLOSE_AFTER_COMMAND | undefined> {
 		const sharedProcessService = accessor.get(ISharedProcessService);
 		const remoteAgentService = accessor.get(IRemoteAgentService);
 		const environmentService = accessor.get(IWorkbenchEnvironmentService);
@@ -347,7 +349,9 @@ class ParadisShowCodexHookStatusAction extends Action2 {
 			await grantCodexHookTrust(configurationService, sharedProcessService, logService, notificationService);
 		} else if (result === 'settings') {
 			await commandService.executeCommand('workbench.action.openSettings', PARADIS_CODEX_HOOK_TRUST_SETTING);
+			return PARADIS_HUB_CLOSE_AFTER_COMMAND;
 		}
+		return undefined;
 	}
 }
 

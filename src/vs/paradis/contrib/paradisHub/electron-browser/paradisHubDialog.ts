@@ -23,7 +23,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
-import { IParadisHubAreaContainers, IParadisHubAreaDescriptor, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId, paradisHubAreas } from './paradisHub.js';
+import { IParadisHubAreaContainers, IParadisHubAreaDescriptor, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, ParadisHubAreaId, paradisHubAreas } from './paradisHub.js';
 import { paradisHubFocusNavItem, paradisHubNavItems } from './paradisHubNav.js';
 
 const $ = dom.$;
@@ -35,8 +35,17 @@ const STR_CLOSE_ARIA = localize('paradis.hub.closeAria', "閉じる");
 // allow-any-unicode-next-line
 const STR_AREAS_ARIA = localize('paradis.hub.areasAria', "領域");
 
+/** 器を開いている間、その窓の作業領域（`.monaco-workbench`）に付ける印。 */
+const OPEN_CLASS = 'paradis-hub-open';
+
 /** 同じ窓に器が 2 つ並ぶことはないが、閉じて開き直した直後でも ID が重ならないよう通し番号を付ける。 */
 let dialogCounter = 0;
+
+/** 閉じたときに開いていた領域と、その中の場所。同じ窓で開き直したときに戻す（paradisHubOpen.ts）。 */
+export interface IParadisHubClosedState {
+	readonly area: ParadisHubAreaId;
+	readonly view: IParadisHubAreaViewState | undefined;
+}
 
 interface IAreaEntry {
 	readonly descriptor: IParadisHubAreaDescriptor;
@@ -53,6 +62,7 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 	private readonly entries = new Map<ParadisHubAreaId, IAreaEntry>();
 	private readonly views = this._register(new DisposableMap<ParadisHubAreaId, IParadisHubAreaView>());
 	private activeArea: ParadisHubAreaId | undefined;
+	private _closedState: IParadisHubClosedState | undefined;
 
 	private readonly _onDidDispose = this._register(new Emitter<void>());
 	/** 閉じた（破棄された）ことを、開いた側が参照を手放すために知らせる。 */
@@ -61,6 +71,7 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 	constructor(
 		area: ParadisHubAreaId,
 		section: string | undefined,
+		restoreState: IParadisHubAreaViewState | undefined,
 		@ILayoutService layoutService: ILayoutService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ILogService private readonly logService: ILogService,
@@ -123,10 +134,14 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 			}
 		}));
 
-		layoutService.activeContainer.appendChild(this.backdrop);
+		const container = layoutService.activeContainer;
+		container.appendChild(this.backdrop);
+		// 開いている間は、本家のダイアログと通知を器より上に出す（paradisHub.css）
+		container.classList.add(OPEN_CLASS);
+		this._register({ dispose: () => container.classList.remove(OPEN_CLASS) });
 		// 本文の幅は器でしか分からないので、実測して開いている領域へ渡す（窓の大きさの変化にも付いていく）。
 		// 補助の窓で開いたときはその窓の ResizeObserver を使う
-		const observer = new (dom.getWindow(layoutService.activeContainer).ResizeObserver)(() => this.layoutActive());
+		const observer = new (dom.getWindow(container).ResizeObserver)(() => this.layoutActive());
 		observer.observe(bodies);
 		this._register({ dispose: () => observer.disconnect() });
 		this._register(new ParadisModalFocus({
@@ -141,7 +156,15 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 			close: () => this.dispose(),
 		}));
 		this.open(area, section);
+		if (restoreState) {
+			this.views.get(area)?.restoreViewState?.(restoreState);
+		}
 		this.modal.focus();
+	}
+
+	/** 閉じたときに開いていた領域と場所（閉じる前は undefined）。 */
+	get closedState(): IParadisHubClosedState | undefined {
+		return this._closedState;
 	}
 
 	/** 領域（と節）を開く。まだ作っていない領域はここで作る。登録されていない領域なら何もしない。 */
@@ -245,6 +268,10 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 	override dispose(): void {
 		if (this._store.isDisposed) {
 			return;
+		}
+		// 外した後はスクロール位置が 0 に読めるので、DOM にあるうちに読む
+		if (this.activeArea !== undefined) {
+			this._closedState = { area: this.activeArea, view: this.views.get(this.activeArea)?.saveViewState?.() };
 		}
 		this.backdrop.remove();
 		this._onDidDispose.fire();
