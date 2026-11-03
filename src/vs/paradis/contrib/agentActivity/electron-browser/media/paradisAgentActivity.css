@@ -118,7 +118,7 @@
 
 .paradis-ccusage.paradis-activity-panel .paradis-work-chart .axis {
 	fill: var(--vscode-descriptionForeground);
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 }
 
 .paradis-ccusage.paradis-activity-panel .paradis-work-chart .grid {

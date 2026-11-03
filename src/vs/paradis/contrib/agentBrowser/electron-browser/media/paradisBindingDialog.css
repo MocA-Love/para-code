@@ -72,7 +72,7 @@
 	padding: 0 var(--vscode-spacing-size60);
 	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	border-radius: var(--vscode-cornerRadius-circle);
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	color: var(--vscode-descriptionForeground);
 	white-space: nowrap;
 	flex: none;
@@ -282,7 +282,7 @@
 	background: transparent;
 	border: var(--vscode-strokeThickness) solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
 	color: var(--vscode-editorWarning-foreground);
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	padding: 0 var(--vscode-spacing-size60);
 }
 
@@ -535,7 +535,7 @@
 }
 
 .paradis-binding-dialog .pbd-setup-result-target {
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	color: var(--vscode-descriptionForeground);
 	font-family: var(--monaco-monospace-font);
 	word-break: break-all;
