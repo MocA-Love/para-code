@@ -12,7 +12,7 @@
 	background-color: var(--vscode-editorWidget-background);
 	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	box-shadow: 0 8px 26px var(--vscode-widget-shadow);
-	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	color: var(--vscode-foreground);
 	font-size: 12px;
 	outline: none;
 }
