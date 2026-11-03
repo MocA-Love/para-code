@@ -127,6 +127,9 @@ interface PendingOverflow {
 	readonly element: HTMLElement;
 	readonly span: HTMLElement;
 	readonly overflow: ParadisSpreadsheetGridOverflow;
+	/** はみ出しを当て終えたら `rendered.cell` に記録する中身（当てる前に記録すると、次の描画で同じ中身として飛ばされる）。 */
+	readonly rendered: RenderedCell;
+	readonly cell: ParadisSpreadsheetGridCell;
 }
 
 /** Reusable, safe DOM renderer over generation-fenced viewport tiles. */
@@ -460,7 +463,9 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			span.textContent = element.textContent;
 			element.textContent = '';
 			element.appendChild(span);
-			this.pendingOverflow.push({ element, span, overflow: cell.overflow });
+			// はみ出しを当てるまでは描き終えていない。世代が進んで当てずに終わっても、次の描画で書き直させる。
+			rendered.cell = undefined;
+			this.pendingOverflow.push({ element, span, overflow: cell.overflow, rendered, cell });
 		}
 		if (cell.baseDiagonal || cell.conditionalDiagonal) {
 			// One layout read supplies both layers. Scroll/freeze/overscan coordinates never enter diagonal geometry.
@@ -500,7 +505,10 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		const pending = this.pendingOverflow.filter(item => item.element.isConnected && item.element.contains(item.span));
 		this.pendingOverflow = [];
 		const measures = pending.map(item => ({ item, need: item.element.scrollWidth, avail: item.element.clientWidth }));
-		for (const { item: { element, span, overflow }, need, avail } of measures) {
+		for (const { item: { element, span, overflow, rendered, cell }, need, avail } of measures) {
+			if (rendered.element === element) {
+				rendered.cell = cell;
+			}
 			if (avail <= 0 || need <= avail) {
 				continue;
 			}
