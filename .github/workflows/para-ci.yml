@@ -86,8 +86,19 @@ jobs:
           npm run markdown-editor-package-json-check
           npm --prefix extensions/markdown-language-features run test-markdown-editor-package-json
 
-      - name: Compile & Hygiene
-        run: npm exec -- npm-run-all2 -lp core-ci hygiene eslint valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
+      # The runner was shut down (exit 143) about 40 s into tsgo-typecheck on every run, before it could report
+      # anything: running core-ci in parallel with hygiene, eslint and the other checks ran the runner out of memory
+      #, most likely. Compile and type check first on their own, then run the remaining checks in parallel.
+      - name: Compile & type check
+        run: npm run core-ci
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # hygiene always fails on product.json's extensionsGallery (an intentional fork change, see NOTES.md), so
+      # --continue-on-error lets the other checks finish and report; the step still fails if any of them failed.
+      - name: Hygiene & other checks
+        if: success() || failure()
+        run: npm exec -- npm-run-all2 -lp --continue-on-error hygiene eslint valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -223,7 +223,7 @@
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	height: 22px;
+	height: var(--paradis-menu-row);
 	/* flex-shrink の既定値(1)のままだと、項目数が多く overflow-y: auto が効く前に各行が
 		min-content まで潰れてしまう。潰さずスクロールへ回す。 */
 	flex: 0 0 auto;

@@ -5,25 +5,27 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /*
- * Service status (Claude/OpenAI/GitHub) title bar item (paradisServiceStatusWidget.ts) and the popover
- * that lists all three services (paradisServiceStatusPopover.ts). The item follows the same steps as the
- * other title bar items (22px, small corner radius, inherited title bar foreground); the popover uses the
- * upstream hover colors. Severity colors come from the charts-* theme tokens.
+ * Service status (Claude/OpenAI/GitHub) title bar chips (paradisServiceStatusWidget.ts) and the popover
+ * that lists all three services (paradisServiceStatusPopover.ts). As in paracode-179, each service has its
+ * own chip (its logo with a severity dot at the bottom right). The chips follow the steps of the other
+ * icon-only title bar items (22px, 3px sides, small corner radius, inherited title bar foreground); the
+ * popover uses the upstream hover colors. Severity colors are the fixed paracode-179 accents.
  */
 
-/* ---------- trigger (title bar) ---------- */
+/* ---------- trigger chips (title bar) ---------- */
 
 .paradis-service-status-trigger {
 	/* Same drag-region caveat as the other title bar triggers: explicit z-index needed. */
 	z-index: 2500;
 	-webkit-app-region: no-drag;
+	position: relative;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	gap: 3px;
 	height: 22px;
 	min-width: 22px;
 	margin: 0 1px;
+	/* Icon-only, so the 3px of the other icon-only items (not the 5px of items with text). */
 	padding: 0 3px;
 	border: none;
 	border-radius: var(--vscode-cornerRadius-small);
@@ -60,24 +62,32 @@
 	border-radius: 50%;
 }
 
+/* On a chip the dot sits on the logo's bottom right, ringed with the title bar color. */
+.paradis-service-status-trigger .paradis-service-status-dot {
+	position: absolute;
+	right: 1px;
+	bottom: 1px;
+	box-shadow: 0 0 0 1.5px var(--vscode-titleBar-activeBackground, transparent);
+}
+
 .paradis-service-status-dot.ok {
-	background: var(--vscode-charts-green);
+	background: #2ea043;
 }
 
 .paradis-service-status-dot.minor {
-	background: var(--vscode-charts-yellow);
+	background: #f0b429;
 }
 
 .paradis-service-status-dot.major {
-	background: var(--vscode-charts-red);
+	background: #ef4444;
 }
 
 .paradis-service-status-dot.maintenance {
-	background: var(--vscode-charts-blue);
+	background: #58a6ff;
 }
 
 .paradis-service-status-dot.unknown {
-	background: var(--vscode-descriptionForeground);
+	background: #8b8b8b;
 }
 
 /* ---------- popover (all services) ---------- */
@@ -118,9 +128,10 @@
 
 .paradis-service-status-popover .pssp-row {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: var(--vscode-spacing-size80);
-	height: 22px;
+	gap: 0 var(--vscode-spacing-size80);
+	min-height: 22px;
 	padding: 0 var(--vscode-spacing-size40);
 	margin: 0 calc(-1 * var(--vscode-spacing-size40));
 	border-radius: var(--vscode-cornerRadius-small);
@@ -138,14 +149,23 @@
 	flex: none;
 }
 
-/* The status page's own (English) wording, only while something is wrong. */
+/* The status page's own (English) wording, only while something is wrong. A paragraph on its own line
+	under the name (the row wraps), so the whole text can be read. */
 .paradis-service-status-popover .pssp-row > .pssp-desc {
-	flex: 1;
+	order: 1;
+	flex: 1 0 100%;
 	min-width: 0;
+	box-sizing: border-box;
+	padding: 0 0 var(--vscode-spacing-size40) calc(16px + var(--vscode-spacing-size80));
 	color: var(--vscode-descriptionForeground);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	line-height: 1.5;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+/* With the description on its own line, the open button keeps to the right end of the first line. */
+.paradis-service-status-popover .pssp-row > .pssp-desc ~ .pssp-icon-button {
+	margin-left: auto;
 }
 
 .paradis-service-status-popover .pssp-row > .pssp-spacer {
@@ -191,14 +211,6 @@
 
 .paradis-service-status-popover .pssp-link + .pssp-link {
 	margin-left: var(--vscode-spacing-size80);
-}
-
-/* The summary shown in the title bar item's hover. */
-.paradis-service-status-hover-row {
-	display: flex;
-	align-items: center;
-	gap: var(--vscode-spacing-size60);
-	line-height: 20px;
 }
 
 /* パネル本体は tabIndex=-1 にして Esc / クリック外しの受け口にしているだけなので、

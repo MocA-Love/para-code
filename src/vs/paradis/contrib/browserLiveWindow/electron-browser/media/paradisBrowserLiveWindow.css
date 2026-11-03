@@ -16,7 +16,7 @@
 	/* Same steps as the upstream title bar actions and the other Para Code title bar items:
 		22px tall, 16px icon, small corner radius, the title bar's own (active / inactive) foreground. */
 	height: 22px;
-	padding: 0 3px;
+	padding: var(--paradis-titlebar-item-padding);
 	border-radius: var(--vscode-cornerRadius-small);
 	cursor: pointer;
 	color: inherit;
@@ -64,7 +64,7 @@
 	margin-left: var(--vscode-spacing-size40);
 	padding: 0 var(--vscode-spacing-size40);
 	border-radius: var(--vscode-cornerRadius-circle);
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	font-weight: var(--vscode-fontWeight-semiBold);
 	display: flex;
 	align-items: center;
