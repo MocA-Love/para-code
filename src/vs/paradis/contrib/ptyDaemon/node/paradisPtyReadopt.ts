@@ -36,7 +36,7 @@ import { paradisHasRelayedFailures } from '../../sentry/common/paradisRelayedDia
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAdoptedTerminal } from './paradisTerminalAdoption.js';
 import { paradisRecordAdoption } from './paradisReattachTally.js';
-import { paradisIdOfHandle, paradisKnownHandles, paradisPtyDaemonConnection } from './paradisTerminalProcessFactory.js';
+import { paradisAdoptionWaitWasMissed, paradisIdOfHandle, paradisKnownHandles, paradisPtyDaemonConnection } from './paradisTerminalProcessFactory.js';
 
 /** 別の相手が見ている端末が空いたかを見に行く間隔。覚えている端末がある間だけ回す。 */
 const PARADIS_READOPT_POLL_MS = 30_000;
@@ -185,6 +185,9 @@ async function run(trigger: ParadisPtyAdoptTrigger, ptyService: IParadisAdoption
 		finished: outcome.finished,
 		layouts: outcome.layouts,
 		durationMs: Date.now() - startedAt,
+		// 起動時の引き取りが待ちの期限を過ぎていたら、窓は引き取る前の配置と一覧で進んでいる。
+		// 見回りで見つけた分と同じく「再読み込みで表示されます」と知らせる（`paradisPtyLateAdoptions`）。
+		...(trigger === 'startup' && paradisAdoptionWaitWasMissed() ? { late: true } : {}),
 	};
 	// 見回りで何も起きなかった回は記録しない。30 秒ごとに空の記録が積み上がるだけになる。
 	if (trigger !== 'poll' || result.adopted > 0 || result.failed > 0 || !result.reachable) {

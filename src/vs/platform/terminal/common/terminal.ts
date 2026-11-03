@@ -397,6 +397,8 @@ export interface IPtyService {
 	// PARA-PATCH: hand terminals held by the pty daemon over between pty hosts (paradisPtyReadopt.ts); optional, a host that has none returns undefined
 	paradisReadoptFromDaemon?(trigger: ParadisPtyAdoptTrigger): Promise<IParadisPtyAdoptionRun | undefined>;
 	paradisTakeHandoverReport?(): Promise<IParadisPtyHandoverReport | undefined>;
+	// PARA-PATCH: whether taking the daemon's terminals back is still running, so a listing is not read as complete (paradisTerminalProcessFactory.ts); optional, an older pty host has none
+	paradisIsAdoptionPending?(): Promise<boolean>;
 	// PARA-PATCH: what the startup revive and reattach came to, for the reattach diagnostics (paradisReattachTally.ts); optional, an older pty host has none
 	paradisTakeReattachTally?(workspaceId: string): Promise<IParadisReattachTally | undefined>;
 	detachFromProcess(id: number, forcePersist?: boolean): Promise<void>;

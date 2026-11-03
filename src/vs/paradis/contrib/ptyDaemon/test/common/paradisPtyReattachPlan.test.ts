@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisPtyHandoverReport, paradisIsEmptyPtyHandoverReport, paradisPtyHandoverProblem, paradisPtyHandoverSpans, paradisPtyLateAdoptions } from '../../common/paradisPtyHandover.js';
+import { IParadisPtyHandoverReport, paradisIsEmptyPtyHandoverReport, paradisOrphanListingIsComplete, paradisPtyHandoverProblem, paradisPtyHandoverSpans, paradisPtyLateAdoptions } from '../../common/paradisPtyHandover.js';
 import { IParadisPtyAttachment } from '../../common/paradisPtyProtocol.js';
 import { paradisPlanPtyReattach } from '../../common/paradisPtyReattachPlan.js';
 
@@ -86,6 +86,24 @@ suite('Para pty handover report', () => {
 		assert.deepStrictEqual(
 			{ operations: spans.map(span => span.operation), scrubbed, problem: problem?.operation, late: paradisPtyLateAdoptions(report), rebuildReason: spans[2].attributes.safe_rebuild_spans_resize },
 			{ operations: ['adopt', 'adopt', 'reattach'], scrubbed: [], problem: 'failed:adopt', late: 1, rebuildReason: 1 },
+		);
+	});
+
+	test('起動時の引き取りは、待ちの期限を過ぎて終わったときだけ再読み込みの知らせに数える', () => {
+		const startup = report.adoptions[0];
+		const inTime: IParadisPtyHandoverReport = { ...report, adoptions: [startup] };
+		const late: IParadisPtyHandoverReport = { ...report, adoptions: [{ ...startup, late: true }, report.adoptions[1]] };
+		assert.deepStrictEqual(
+			{ inTime: paradisPtyLateAdoptions(inTime), late: paradisPtyLateAdoptions(late), lateAttribute: paradisPtyHandoverSpans(late, true)[0].attributes.safe_late },
+			{ inTime: 0, late: 3, lateAttribute: true },
+		);
+	});
+
+	test('拾い直しの一覧は、引き取りが走っている間は全部と読まず、空は引き取りの終わりを聞けたときだけ全部と読む', () => {
+		const states = ['settled', 'pending', 'unknown'] as const;
+		assert.deepStrictEqual(
+			states.map(state => [state, paradisOrphanListingIsComplete(state, 0), paradisOrphanListingIsComplete(state, 2)]),
+			[['settled', true, true], ['pending', false, false], ['unknown', false, true]],
 		);
 	});
 
