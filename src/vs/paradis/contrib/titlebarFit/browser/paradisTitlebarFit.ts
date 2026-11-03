@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { DisposableResizeObserver, getWindow } from '../../../../base/browser/dom.js';
+import { DisposableResizeObserver, getWindow, scheduleAtNextAnimationFrame } from '../../../../base/browser/dom.js';
 import { Disposable, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import './media/paradisTitlebarFit.css';
 
@@ -33,6 +33,10 @@ const MENUBAR_VISIBLE_CLASS = 'paradis-fit-menubar-visible';
 /** テストで差し替える依存。既定は要素が属するウィンドウの `ResizeObserver`。 */
 export interface IParadisTitlebarFitOptions {
 	readonly resizeObserverCtor?: typeof ResizeObserver;
+	/** 中身の変化をまとめて走らせる先。既定は要素が属するウィンドウの次のフレーム。 */
+	readonly scheduleFrame?: (runner: () => void) => IDisposable;
+	/** 畳む段を測り直したとき呼ぶ (テストで測り直しの回数を数える)。 */
+	readonly onDidMeasureFold?: () => void;
 }
 
 /** titlebarPart.ts の PARA-PATCH 点 (NativeTitlebarPart.createContentArea) から呼ばれるファクトリ。 */
@@ -55,11 +59,15 @@ class ParadisTitlebarFit extends Disposable {
 	private readonly resizeObserver: DisposableResizeObserver;
 	private readonly menubarObservation = this._register(new MutableDisposable<IDisposable>());
 	private observedMenubar: HTMLElement | undefined;
+	/** 中身の変化をまとめて次のフレームで 1 回だけ update する予約。 */
+	private readonly pendingUpdate = this._register(new MutableDisposable<IDisposable>());
+	/** 前に畳む段を測ったときのタイトルバーの形 ({@link foldSignature})。同じなら測り直さない。 */
+	private lastFoldSignature: string | undefined;
 
 	constructor(
 		private readonly rootContainer: HTMLElement,
 		private readonly leftContent: HTMLElement,
-		options?: IParadisTitlebarFitOptions,
+		private readonly options?: IParadisTitlebarFitOptions,
 	) {
 		super();
 
@@ -70,10 +78,22 @@ class ParadisTitlebarFit extends Disposable {
 
 		// メニューバーは設定の変更で作り直される。付け替わった要素を追いかけて、表示の切り替え
 		// (display: none ⇄ flex) も ResizeObserver で拾う。左側の部品の `active` (パネルを開いている)
-		// の付け外しも見て、閉じたときに止めていた段を追いつかせる
-		const mutationObserver = new targetWindow.MutationObserver(() => this.update());
+		// の付け外しも見て、閉じたときに止めていた段を追いつかせる。使用率の文字は毎秒書き換わるので、
+		// 変化は次のフレームで 1 回にまとめる (幅が前と同じなら測り直しも飛ばす。updateFoldLevel)
+		const mutationObserver = new targetWindow.MutationObserver(() => this.scheduleUpdate());
 		this._register(toDisposable(() => mutationObserver.disconnect()));
-		mutationObserver.observe(leftContent, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+		mutationObserver.observe(leftContent, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class'] });
+	}
+
+	private scheduleUpdate(): void {
+		if (this.pendingUpdate.value) {
+			return;
+		}
+		const runner = () => {
+			this.pendingUpdate.clear();
+			this.update();
+		};
+		this.pendingUpdate.value = this.options?.scheduleFrame ? this.options.scheduleFrame(runner) : scheduleAtNextAnimationFrame(getWindow(this.rootContainer), runner);
 	}
 
 	override dispose(): void {
@@ -117,13 +137,28 @@ class ParadisTitlebarFit extends Disposable {
 	 * メニューバーが見えているあいだは左側をメニューバーが測って畳むので、ここでは畳まない。
 	 */
 	private updateFoldLevel(): void {
-		this.setFoldLevel(0);
-		if (this.rootContainer.classList.contains(MENUBAR_VISIBLE_CLASS)) {
+		// 外枠の幅と左側の子 (数・class・今の段での幅) が前に測ったときと同じなら、空きも同じなので測らない
+		// (使用率の文字が毎秒変わっても、幅が変わらなければここで止まる)
+		if (this.foldSignature() === this.lastFoldSignature) {
 			return;
 		}
-		for (let level = 1; level <= FOLD_LEVELS && this.largestDragGap() < MIN_DRAG_GAP; level++) {
-			this.setFoldLevel(level);
+		this.setFoldLevel(0);
+		if (!this.rootContainer.classList.contains(MENUBAR_VISIBLE_CLASS)) {
+			for (let level = 1; level <= FOLD_LEVELS && this.largestDragGap() < MIN_DRAG_GAP; level++) {
+				this.setFoldLevel(level);
+			}
 		}
+		this.lastFoldSignature = this.foldSignature();
+		this.options?.onDidMeasureFold?.();
+	}
+
+	/** 畳む段の答えを変えうるもの: 外枠の幅、メニューバーの表示、左側の子の数・class・幅 (今の段のまま)。 */
+	private foldSignature(): string {
+		const parts = [String(this.rootContainer.clientWidth), String(this.rootContainer.classList.contains(MENUBAR_VISIBLE_CLASS))];
+		for (const child of this.leftContent.children) {
+			parts.push(`${child.className}:${(child as HTMLElement).offsetWidth}`);
+		}
+		return parts.join('|');
 	}
 
 	private setFoldLevel(level: number): void {
