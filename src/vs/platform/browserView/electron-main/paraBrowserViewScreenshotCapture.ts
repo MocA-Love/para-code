@@ -20,6 +20,13 @@ export interface IParaBrowserViewScreenshotHost {
 	emulatedDeviceScaleFactor(): number | undefined;
 	sendCommand(method: string, params?: unknown): Promise<unknown>;
 	waitForNextPaint(): Promise<void>;
+	/**
+	 * Applies the fixed-size emulation again. A capture beyond the viewport overrides the device metrics for the
+	 * shot and, when it clears them, drops the deviceScaleFactor the emulation set (measured on Electron 43: a tab
+	 * shrunk by page zoom came back with devicePixelRatio 0.39 and a smaller viewport, so later clicks near the
+	 * bottom and right edges missed).
+	 */
+	reapplyEmulation(): void;
 }
 
 /**
@@ -72,7 +79,10 @@ export class ParaBrowserViewScreenshotCapture {
 			browserViewThrowIfScreenshotAborted(signal);
 			const encoded = typeof result.data === 'string' ? Buffer.from(result.data, 'base64') : Buffer.alloc(0);
 			return nativeImage.createFromBuffer(encoded);
-		}, () => this.host.webContents().setVisualZoomLevelLimits(1, 3), () => {
+		}, async () => {
+			this.host.reapplyEmulation();
+			await this.host.webContents().setVisualZoomLevelLimits(1, 3);
+		}, () => {
 			this.logService.warn('[BrowserView] screenshot zoom restore failed route=capture-beyond-viewport');
 		});
 	}
