@@ -33,7 +33,7 @@ import { ParadisChangelogView, toViewReleases } from './paradisChangelogView.js'
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId, paradisRegisterHubArea } from '../../paradisHub/electron-browser/paradisHub.js';
+import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, ParadisHubAreaId, paradisRegisterHubArea } from '../../paradisHub/electron-browser/paradisHub.js';
 import { paradisOpenHub } from '../../paradisHub/electron-browser/paradisHubOpen.js';
 
 const $ = dom.$;
@@ -69,6 +69,8 @@ class ParadisChangelogArea extends Disposable implements IParadisHubAreaView {
 
 	private view: ParadisChangelogView | undefined;
 	private pendingVersion: string | undefined;
+	/** 同梱の md を読み終える前に戻すよう頼まれたスクロール位置。 */
+	private pendingScrollTop: number | undefined;
 
 	constructor(
 		private readonly containers: IParadisHubAreaContainers,
@@ -109,6 +111,9 @@ class ParadisChangelogArea extends Disposable implements IParadisHubAreaView {
 			commandService: this.commandService,
 		}));
 		this.view.reveal(this.pendingVersion);
+		if (this.pendingScrollTop !== undefined) {
+			this.view.scrollTop = this.pendingScrollTop;
+		}
 	}
 
 	private renderLoadFailure(changelogUri: URI): void {
@@ -134,6 +139,25 @@ class ParadisChangelogArea extends Disposable implements IParadisHubAreaView {
 			this.view.reveal(version);
 		} else {
 			this.pendingVersion = version;
+		}
+	}
+
+	saveViewState(): IParadisHubAreaViewState | undefined {
+		if (!this.view) {
+			return undefined;
+		}
+		const { version, scrollTop } = this.view.viewState;
+		return { section: version, scrollTop };
+	}
+
+	restoreViewState(state: IParadisHubAreaViewState): void {
+		if (state.scrollTop === undefined) {
+			return;
+		}
+		if (this.view) {
+			this.view.scrollTop = state.scrollTop;
+		} else {
+			this.pendingScrollTop = state.scrollTop;
 		}
 	}
 

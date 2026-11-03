@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisHubAreaId } from '../../../paradisHub/electron-browser/paradisHub.js';
 import { paradisSettingsSectionTarget } from '../../electron-browser/paradisSettingsDialog.contribution.js';
-import { paradisRowsGroupedInOrder } from '../../electron-browser/paradisSettingsDialog.js';
+import { paradisRowsGroupedInOrder, paradisSettingsActionKind } from '../../electron-browser/paradisSettingsDialog.js';
 
 suite('ParadisSettingsArea', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -26,6 +26,31 @@ suite('ParadisSettingsArea', () => {
 			{ area: ParadisHubAreaId.Notifications },
 			{ area: ParadisHubAreaId.Settings, section: 'psd-sec-menubar' },
 			{ area: ParadisHubAreaId.Settings, section: undefined },
+		]);
+	});
+
+	// 本家のダイアログだけを出すボタンは器を開いたまま、器の中の領域はそこへ移り、器より下に出るものは閉じてから開く
+	test('keeps the hub open for the commands that only show a workbench dialog', () => {
+		assert.deepStrictEqual([
+			'paradis.agentHooks.showCodexHookStatus',
+			'paradis.agentIde.installSkills',
+			'paradis.computerUse.showStatus',
+			'paradis.sessionIndex.delete',
+			'paradis.browserExtensions.manage',
+			'paradis.notifications.openSettings',
+			'paradis.editor.showLayoutPresets',
+			'paradis.terminal.configurePresets',
+			'paradis.agentBrowser.openBindingDialog',
+		].map(paradisSettingsActionKind), [
+			{ kind: 'keepOpen' },
+			{ kind: 'keepOpen' },
+			{ kind: 'keepOpen' },
+			{ kind: 'keepOpen' },
+			{ kind: 'area', area: ParadisHubAreaId.Extensions },
+			{ kind: 'area', area: ParadisHubAreaId.Notifications, section: 'pns-sec-desktop' },
+			{ kind: 'close' },
+			{ kind: 'close' },
+			{ kind: 'close' },
 		]);
 	});
 

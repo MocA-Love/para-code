@@ -70,6 +70,19 @@ suite('ParadisModalFocus', () => {
 		assert.strictEqual(mainWindow.document.activeElement, outside);
 	});
 
+	test('leaves focus where it is when it already moved out of the modal before closing', () => {
+		const opened = mainWindow.document.createElement('input');
+		mainWindow.document.body.appendChild(opened);
+		outside.focus();
+		const modal = open();
+		// a button in the modal opened an editor, which took focus, and then the modal closed
+		opened.focus();
+		modal.close();
+		const focused = mainWindow.document.activeElement;
+		opened.remove();
+		assert.strictEqual(focused, opened);
+	});
+
 	test('handles Escape from inside the modal and after focus fell to the body, but not from elsewhere or while composing', () => {
 		const modal = open();
 		pressEscape(modal.modal);
