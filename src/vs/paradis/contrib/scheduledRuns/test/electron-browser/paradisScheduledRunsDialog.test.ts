@@ -25,6 +25,29 @@ import { IParadisScheduledRunsClient } from '../../electron-browser/paradisSched
 import { ParadisScheduledRunsDialog } from '../../electron-browser/paradisScheduledRunsDialog.js';
 import { paradisOpenAnotherModal } from '../../../paradisSettings/test/browser/paradisModalTestUtils.js';
 
+/** 定期実行のダイアログを開く。`spaceKey` は今いるスペース（`activeStateKey`）。 */
+async function openDialog(root: HTMLElement, state: IParadisScheduledRunsState, spaceKey?: string): Promise<ParadisScheduledRunsDialog> {
+	const dialog = new ParadisScheduledRunsDialog(
+		upcastPartial<ILayoutService>({ activeContainer: root }),
+		upcastPartial<IParadisScheduledRunsClient>({ onDidChange: BaseEvent.None, getState: async () => state }),
+		upcastPartial<IParadisWorkspaceSwitchService>({ repositories: [{ id: 'repo', name: 'repo', uri: URI.parse('file:///repo') }] as never, activeStateKey: spaceKey }),
+		upcastPartial<IParadisWorktreeService>({ getDetectedWorktrees: () => [] }),
+		upcastPartial<IParadisAgentModelCatalogService>({
+			onDidChange: BaseEvent.None,
+			refresh: () => { },
+			isFixedBySettings: () => false,
+			getAgentTemplates: () => [{ id: 'claude', label: 'Claude', command: 'claude' }],
+		}),
+		upcastPartial<IDialogService>({}),
+		upcastPartial<ICommandService>({}),
+		upcastPartial<ISharedProcessService>({}),
+		upcastPartial<IConfigurationService>({}),
+		new NullLogService(),
+	);
+	await timeout(0);
+	return dialog;
+}
+
 suite('ParadisScheduledRunsDialog', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -37,27 +60,7 @@ suite('ParadisScheduledRunsDialog', () => {
 			agentId: 'claude', prompt: `Saved prompt of ${name}`, dailyLimit: 3, createdAt: 0, updatedAt: 0,
 		});
 		const state: IParadisScheduledRunsState = { definitions: [definition('a', 'Morning'), definition('b', 'Evening')], runs: [], nextRuns: {} };
-		const open = async () => {
-			const dialog = new ParadisScheduledRunsDialog(
-				upcastPartial<ILayoutService>({ activeContainer: root }),
-				upcastPartial<IParadisScheduledRunsClient>({ onDidChange: BaseEvent.None, getState: async () => state }),
-				upcastPartial<IParadisWorkspaceSwitchService>({ repositories: [{ id: 'repo', name: 'repo', uri: URI.parse('file:///repo') }] as never }),
-				upcastPartial<IParadisWorktreeService>({ getDetectedWorktrees: () => [] }),
-				upcastPartial<IParadisAgentModelCatalogService>({
-					onDidChange: BaseEvent.None,
-					refresh: () => { },
-					isFixedBySettings: () => false,
-					getAgentTemplates: () => [{ id: 'claude', label: 'Claude', command: 'claude' }],
-				}),
-				upcastPartial<IDialogService>({}),
-				upcastPartial<ICommandService>({}),
-				upcastPartial<ISharedProcessService>({}),
-				upcastPartial<IConfigurationService>({}),
-				new NullLogService(),
-			);
-			await timeout(0);
-			return dialog;
-		};
+		const open = () => openDialog(root, state);
 		const buttonByText = (text: string) => [...root.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === text)!;
 		const editRun = (name: string) => {
 			[...root.querySelectorAll<HTMLButtonElement>('.psr-nav-item')].find(item => item.textContent?.includes(name))!.click();
@@ -101,6 +104,37 @@ suite('ParadisScheduledRunsDialog', () => {
 				afterUntouchedClose: { prompt: 'Saved prompt of Morning', note: false },
 				leftOpen: 0,
 			});
+		} finally {
+			root.remove();
+		}
+	});
+
+	test('keeps the new-run form per space, so a draft from one space does not come back in another', async () => {
+		const root = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(root);
+		const state: IParadisScheduledRunsState = { definitions: [], runs: [], nextRuns: {} };
+		const buttonByText = (text: string) => [...root.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === text)!;
+		const prompt = () => root.querySelector<HTMLTextAreaElement>('.psr-form textarea')!;
+		try {
+			const inA = await openDialog(root, state, 'space-a');
+			buttonByText('新規作成').click();
+			prompt().value = 'Typed in space A';
+			prompt().dispatchEvent(new Event('input', { bubbles: true }));
+			paradisOpenAnotherModal().dispose();
+			inA.dispose();
+
+			const inB = await openDialog(root, state, 'space-b');
+			buttonByText('新規作成').click();
+			const inSpaceB = prompt().value;
+			buttonByText('キャンセル').click();
+			inB.dispose();
+
+			const backInA = await openDialog(root, state, 'space-a');
+			buttonByText('新規作成').click();
+			const inSpaceA = prompt().value;
+			buttonByText('キャンセル').click();
+			backInA.dispose();
+			assert.deepStrictEqual({ inSpaceB, inSpaceA, leftOpen: root.children.length }, { inSpaceB: '', inSpaceA: 'Typed in space A', leftOpen: 0 });
 		} finally {
 			root.remove();
 		}
