@@ -478,7 +478,7 @@ class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement
 		if (isWorktree(element)) {
 			return this.getWorktreeHeight(element);
 		}
-		// リポジトリの見出しは本家の一覧の行と同じ 22px
+		// リポジトリの見出しは 30px（paracode-179 の段組み）
 		return isCreating(element) ? PARADIS_WORKTREE_ROW_HEIGHT : PARADIS_REPOSITORY_ROW_HEIGHT;
 	}
 

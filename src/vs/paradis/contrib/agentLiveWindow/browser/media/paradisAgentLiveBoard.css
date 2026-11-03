@@ -170,7 +170,7 @@
 	margin-right: 6px;
 	padding: 0 6px;
 	border-radius: var(--vscode-cornerRadius-small);
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	line-height: 16px;
 	vertical-align: 1px;
 	color: var(--vscode-charts-red, #ef4444);

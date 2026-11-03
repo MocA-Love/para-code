@@ -54,11 +54,11 @@
 	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
 	border-radius: var(--vscode-cornerRadius-circle);
 	color: var(--vscode-descriptionForeground);
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	white-space: nowrap;
 }
 
-/* The list: a popover of the shared shape (header 30px, two-line rows 36px). */
+/* The list: a popover of the shared shape (header 30px, two-line rows from paradisDensity.css). */
 .monaco-workbench .paradis-page-scripts-details {
 	width: 480px;
 	max-width: calc(100vw - 32px);
@@ -80,6 +80,7 @@
 	gap: var(--vscode-spacing-size40);
 	height: 30px;
 	padding: 0 var(--vscode-spacing-size40) 0 var(--vscode-spacing-size100);
+	border-bottom: var(--paradis-popover-header-border);
 	background-color: inherit;
 }
 
@@ -103,14 +104,14 @@
 }
 
 .monaco-workbench .paradis-page-scripts-details-list {
-	padding: 0 var(--vscode-spacing-size40) var(--vscode-spacing-size40);
+	padding: var(--paradis-popover-list-top) var(--vscode-spacing-size40) var(--vscode-spacing-size40);
 }
 
 .monaco-workbench .paradis-page-scripts-details-row {
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size80);
-	height: 36px;
+	height: var(--paradis-row-two-line);
 	padding: 0 var(--vscode-spacing-size60);
 	border-radius: var(--vscode-cornerRadius-small);
 }

@@ -40,7 +40,7 @@ import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
 import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
-import { paradisResourceTitleBarItemLabel } from '../../resourceMonitor/common/paradisResourceTitleBar.js';
+import { paradisResourceTitleBarFormatTitle, paradisResourceTitleBarItemLabel } from '../../resourceMonitor/common/paradisResourceTitleBar.js';
 import { PARADIS_TRANSPARENCY_ENABLED_KEY, paradisTransparencyRestartPending } from '../../windowTransparency/common/paradisTransparency.js';
 import {
 	PARADIS_MENU_BAR_INCLUDE_REMOTE_SETTING,
@@ -1326,6 +1326,33 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 				label: paradisResourceTitleBarItemLabel('machineName'),
 			},
 		],
+	},
+	{
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
+		key: 'paradis.resourceMonitor.titleBar.memoryFormat',
+		label: paradisResourceTitleBarFormatTitle('memory'),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.resourceMonitorFormat.memory', "タイトルバーに割合・使用量 / 全体・使用量・空きのどれで出すかを選びます。右クリックでも選べ、ホバーにはいつも詳しい数字が出ます。"),
+		keywords: 'resource monitor titlebar format percent used total free gb memory ram',
+	},
+	{
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
+		key: 'paradis.resourceMonitor.titleBar.diskFormat',
+		label: paradisResourceTitleBarFormatTitle('disk'),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.resourceMonitorFormat.disk', "タイトルバーに割合・使用量 / 全体・使用量・空きのどれで出すかを選びます。右クリックでも選べ、ホバーにはいつも詳しい数字が出ます。"),
+		keywords: 'resource monitor titlebar format percent used total free gb disk storage',
+	},
+	{
+		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
+		group: GROUP_TITLEBAR,
+		key: 'paradis.resourceMonitor.titleBar.swapFormat',
+		label: paradisResourceTitleBarFormatTitle('swap'),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.resourceMonitorFormat.swap', "タイトルバーに割合・使用量 / 全体・使用量・空きのどれで出すかを選びます。右クリックでも選べ、ホバーにはいつも詳しい数字が出ます。"),
+		keywords: 'resource monitor titlebar format percent used total free gb swap',
 	},
 	{
 		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,

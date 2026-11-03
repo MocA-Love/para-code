@@ -21,7 +21,7 @@
 	gap: 2px;
 	padding: 0 4px;
 	border-radius: var(--vscode-cornerRadius-small);
-	font-size: var(--vscode-fontSize-label3);
+	font-size: var(--paradis-chip-font-size);
 	font-variant-numeric: tabular-nums;
 	line-height: 16px;
 	color: var(--vscode-descriptionForeground);
