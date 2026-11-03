@@ -150,7 +150,8 @@ export class ParadisModalFocus extends Disposable {
 	}
 
 	/**
-	 * 閉じるときに呼ぶ。開く前にフォーカスがあった場所へ戻す（その場所が消えていたら何もしない）。
+	 * 閉じるときに呼ぶ。開く前にフォーカスがあった場所へ戻す（その場所が消えていたら、またはフォーカスが既にモーダルの外へ
+	 * 移っていたら何もしない）。
 	 * モーダルの外枠を DOM から外した後に呼ぶこと。
 	 */
 	restoreFocus(): void {
@@ -158,6 +159,11 @@ export class ParadisModalFocus extends Disposable {
 			return;
 		}
 		this.closed = true;
+		// モーダルの中から開いたエディタなど、閉じる前にフォーカスが外の場所へ移っていたら、そちらを残す
+		const active = this.targetWindow.document.activeElement;
+		if (dom.isHTMLElement(active) && active.isConnected && active !== this.targetWindow.document.body && !this.options.backdrop.contains(active)) {
+			return;
+		}
 		const previous = this.previousFocus;
 		if (previous?.isConnected && !this.options.backdrop.contains(previous)) {
 			previous.focus();
