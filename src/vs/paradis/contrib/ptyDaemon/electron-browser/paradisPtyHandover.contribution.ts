@@ -38,9 +38,11 @@ import {
 	IParadisPtyHandoverService,
 	PARADIS_PTY_HANDOVER_CHANNEL,
 	paradisIsEmptyPtyHandoverReport,
+	ParadisPtyAdoptionState,
 	paradisPtyHandoverProblem,
 	paradisPtyHandoverSpans,
 	paradisPtyLateAdoptions,
+	paradisRegisterPtyAdoptionProbe,
 } from '../common/paradisPtyHandover.js';
 
 /** 取りに行く間隔。出来事は窓の開け閉めと更新のときにしか起きないので、粗くてよい。 */
@@ -215,3 +217,41 @@ class ParadisPtyHandoverReporter extends Disposable implements IWorkbenchContrib
 }
 
 registerWorkbenchContribution2(ParadisPtyHandoverReporter.ID, ParadisPtyHandoverReporter, WorkbenchPhase.Eventually);
+
+/**
+ * 起動時の引き取りがまだ走っているかを、拾い直し（`paradisTerminalScope.contribution.ts`）へ答える口。
+ *
+ * 拾い直しはターミナルの再接続が済んだ直後に走るので、上の記録係（Eventually）より先に要る。
+ * 復元の前に登録しておく。聞く先は記録係と同じ（SSH 先なら接続先の pty ホスト）。
+ */
+class ParadisPtyAdoptionProbe extends Disposable implements IWorkbenchContribution {
+
+	static readonly ID = 'paradis.ptyAdoptionProbe';
+
+	constructor(
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
+		@ILocalPtyService private readonly localPtyService: ILocalPtyService,
+	) {
+		super();
+		this._register(paradisRegisterPtyAdoptionProbe(() => this.state()));
+	}
+
+	private async state(): Promise<ParadisPtyAdoptionState> {
+		let pending: Promise<boolean | undefined>;
+		if (this.environmentService.remoteAuthority !== undefined) {
+			const connection = this.remoteAgentService.getConnection();
+			if (!connection) {
+				return 'unknown';
+			}
+			pending = ProxyChannel.toService<IParadisPtyHandoverService>(connection.getChannel(PARADIS_PTY_HANDOVER_CHANNEL)).adoptionPending();
+		} else {
+			pending = this.localPtyService.paradisIsAdoptionPending?.() ?? Promise.resolve(undefined);
+		}
+		// 古い REH（この口が無い）は失敗し、呼び出し側が unknown として受ける。
+		const answer = await raceTimeout(pending, PARADIS_HANDOVER_TIMEOUT_MS);
+		return answer === undefined ? 'unknown' : answer ? 'pending' : 'settled';
+	}
+}
+
+registerWorkbenchContribution2(ParadisPtyAdoptionProbe.ID, ParadisPtyAdoptionProbe, WorkbenchPhase.BlockRestore);
