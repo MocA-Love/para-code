@@ -80,7 +80,12 @@ export class ParaBrowserViewScreenshotCapture {
 			const encoded = typeof result.data === 'string' ? Buffer.from(result.data, 'base64') : Buffer.alloc(0);
 			return nativeImage.createFromBuffer(encoded);
 		}, async () => {
-			this.host.reapplyEmulation();
+			// Each restore runs even when the other one throws
+			try {
+				this.host.reapplyEmulation();
+			} catch (error) {
+				this.logService.warn('[BrowserView] screenshot emulation restore failed route=capture-beyond-viewport', error);
+			}
 			await this.host.webContents().setVisualZoomLevelLimits(1, 3);
 		}, () => {
 			this.logService.warn('[BrowserView] screenshot zoom restore failed route=capture-beyond-viewport');
