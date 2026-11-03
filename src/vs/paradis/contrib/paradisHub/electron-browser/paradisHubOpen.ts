@@ -26,7 +26,7 @@ const closedStates = new WeakMap<Window, IParadisHubClosedState>();
  * 開き直すときに戻す場所。開く領域が最後に閉じた領域と同じで、節を指定していないときだけ戻す
  * （コマンドが別の領域や節を指定したら、そちらを優先する）。
  */
-export function paradisHubResumeTarget(closed: IParadisHubClosedState | undefined, area: ParadisHubAreaId, section: string | undefined): IParadisHubClosedState['view'] {
+function paradisHubResumeTarget(closed: IParadisHubClosedState | undefined, area: ParadisHubAreaId, section: string | undefined): IParadisHubClosedState['view'] {
 	return closed && closed.area === area && section === undefined ? closed.view : undefined;
 }
 
