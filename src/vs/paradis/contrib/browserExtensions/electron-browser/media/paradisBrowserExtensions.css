@@ -454,3 +454,103 @@
 .paradis-browser-extensions-area .pbe-detail {
 	margin-top: 14px;
 }
+
+/* ---------- Q544: keep the body within 880px and give the log the rest of the height ---------- */
+
+.paradis-browser-extensions-area .pbe-area-body {
+	display: flex;
+	flex-direction: column;
+}
+
+.paradis-browser-extensions-area .pbe-area-body > * {
+	max-width: 880px;
+	width: 100%;
+	box-sizing: border-box;
+}
+
+/* the select is as wide as its options instead of stretching across the row */
+.paradis-browser-extensions-area .pbe-select {
+	flex: none;
+	max-width: 100%;
+}
+
+/* 44 = the switch (36) + the gap to its label (8) */
+.paradis-browser-extensions-area .pbe-option-note {
+	margin-left: 44px;
+}
+
+.paradis-browser-extensions-area .pbe-row-note {
+	margin-top: 6px;
+}
+
+.paradis-browser-extensions-area .pbe-detail {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.paradis-browser-extensions-area .pbe-section-worker {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.paradis-browser-extensions-area .pbe-log {
+	flex: 1;
+	height: auto;
+	min-height: 150px;
+}
+
+/* An extension with a service worker: settings and permissions on the left (640px), the log fills the right column.
+	When the right column would be narrower than 280px (640 + 24 + 280 = 944), the detail falls back to the single column above,
+	with the log below the permissions. A container query on the body is used instead of flex-wrap: wrapped flex lines would share
+	the spare height and leave a gap above the log. */
+.paradis-browser-extensions-area .pbe-area-body {
+	container-type: inline-size;
+}
+
+.paradis-browser-extensions-area .pbe-area-body > .pbe-detail-2col {
+	max-width: none;
+}
+
+.paradis-browser-extensions-area .pbe-detail-2col {
+	flex-direction: row;
+	gap: 24px;
+}
+
+.paradis-browser-extensions-area .pbe-col-main {
+	flex: 0 0 640px;
+	min-width: 0;
+}
+
+.paradis-browser-extensions-area .pbe-col-log {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.paradis-browser-extensions-area .pbe-col-log .pbe-section-worker {
+	margin-top: 0;
+}
+
+@container (max-width: 943.98px) {
+	.paradis-browser-extensions-area .pbe-area-body > .pbe-detail-2col {
+		max-width: 880px;
+	}
+
+	.paradis-browser-extensions-area .pbe-detail-2col {
+		flex-direction: column;
+		gap: 0;
+	}
+
+	.paradis-browser-extensions-area .pbe-col-main {
+		flex: none;
+	}
+
+	.paradis-browser-extensions-area .pbe-col-log .pbe-section-worker {
+		margin-top: 12px;
+	}
+}

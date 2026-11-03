@@ -349,6 +349,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		this._workerStatusElement = undefined;
 		dom.clearNode(this._listElement);
 		dom.clearNode(this._detailElement);
+		this._detailElement.classList.remove('pbe-detail-2col');
 		const state = this._state;
 		this._addItem.classList.toggle('is-disabled', !state?.active || this._busy);
 		this._addItem.setAttribute('aria-disabled', String(!state?.active || this._busy));
@@ -541,9 +542,11 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		});
 	}
 
-	/** 詳細の列（選んだ 1 件）。 */
+	/** 詳細の列（選んだ 1 件）。背景の処理がある拡張機能は 2 列にし、ログを右の列に置く（Q544）。 */
 	private _renderDetail(extension: IParadisBrowserExtensionView, active: boolean): void {
-		const detail = this._detailElement;
+		const twoColumns = !!extension.worker;
+		this._detailElement.classList.toggle('pbe-detail-2col', twoColumns);
+		const detail = twoColumns ? dom.append(this._detailElement, $('.pbe-col-main')) : this._detailElement;
 		const header = dom.append(detail, $('.pbe-detail-header'));
 		this._appendIcon(header, extension, true);
 		const titles = dom.append(header, $('.pbe-detail-titles'));
@@ -607,8 +610,8 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 
 		this._renderOptions(detail, extension, active);
 		this._renderPermissions(detail, extension);
-		if (extension.worker) {
-			this._renderWorker(detail, extension);
+		if (twoColumns) {
+			this._renderWorker(dom.append(this._detailElement, $('.pbe-col-log')), extension);
 		}
 	}
 
@@ -692,6 +695,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	/** 「背景の処理」（状態と console のログ）。開いている間だけログを読み直す。 */
 	private _renderWorker(parent: HTMLElement, extension: IParadisBrowserExtensionView): void {
 		const section = this._appendSection(parent, localize('paradis.browserExtensions.section.worker', "背景の処理（service worker）"));
+		section.classList.add('pbe-section-worker');
 		this._workerStatusElement = dom.append(section, $('.pbpm-meta'));
 		this._fillWorkerStatus(this._workerStatusElement, extension);
 		const log = dom.append(section, $('.pbe-log'));
