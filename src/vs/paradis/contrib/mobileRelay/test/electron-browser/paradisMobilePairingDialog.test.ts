@@ -12,6 +12,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { ParadisMobilePairingDialog, paradisPairingRemainingText } from '../../electron-browser/paradisMobilePairingDialog.js';
+import { paradisOpenAnotherModal } from '../../../paradisSettings/test/browser/paradisModalTestUtils.js';
 
 suite('ParadisMobilePairingDialog', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -55,5 +56,26 @@ suite('ParadisMobilePairingDialog', () => {
 			copied: ['paracode-mobile://pair?x=1'],
 			after: null,
 		});
+	});
+
+	test('closes when another Para Code modal opens, and on Esc, instead of staying hidden behind it', () => {
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const layoutService = { activeContainer: container } as Pick<ILayoutService, 'activeContainer'> as ILayoutService;
+		const clipboardService = { writeText: async () => { } } as Pick<IClipboardService, 'writeText'> as IClipboardService;
+		const open = () => new ParadisMobilePairingDialog('<svg xmlns="http://www.w3.org/2000/svg"/>', 'paracode-mobile://pair?x=1', Date.now() + 60_000, layoutService, clipboardService);
+		const shown = () => !!container.querySelector('.paradis-mobile-pairing-backdrop');
+		const first = open();
+		const openedFirst = shown();
+		const other = paradisOpenAnotherModal();
+		const afterOtherModal = shown();
+		other.dispose();
+		first.dispose();
+		const second = open();
+		container.querySelector<HTMLElement>('.paradis-mobile-pairing-dialog')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+		const afterEscape = shown();
+		second.dispose();
+		container.remove();
+		assert.deepStrictEqual({ openedFirst, afterOtherModal, afterEscape }, { openedFirst: true, afterOtherModal: false, afterEscape: false });
 	});
 });
