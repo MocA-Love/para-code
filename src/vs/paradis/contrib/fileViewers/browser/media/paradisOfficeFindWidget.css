@@ -24,7 +24,7 @@
 	gap: var(--vscode-spacing-size20);
 	padding: 0 var(--vscode-spacing-size40) 0 9px;
 	line-height: 19px;
-	color: var(--vscode-editorWidget-foreground);
+	color: var(--vscode-foreground);
 	background-color: var(--vscode-editorWidget-background);
 	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
 	border-radius: var(--vscode-cornerRadius-large);

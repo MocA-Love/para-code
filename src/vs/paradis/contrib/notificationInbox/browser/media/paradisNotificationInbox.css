@@ -97,7 +97,7 @@
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
 	border-radius: var(--vscode-cornerRadius-large);
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
-	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	color: var(--vscode-foreground);
 	font-size: var(--vscode-fontSize-label1);
 	outline: none;
 	overflow: hidden;

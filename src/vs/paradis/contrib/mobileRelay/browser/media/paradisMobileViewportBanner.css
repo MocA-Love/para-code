@@ -24,7 +24,7 @@
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size80);
-	color: var(--vscode-editorWidget-foreground);
+	color: var(--vscode-foreground);
 	background-color: var(--vscode-editorWidget-background);
 	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
 	border-radius: var(--vscode-cornerRadius-large);
