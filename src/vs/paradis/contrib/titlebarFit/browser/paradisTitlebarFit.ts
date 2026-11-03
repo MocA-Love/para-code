@@ -16,6 +16,17 @@ import './media/paradisTitlebarFit.css';
  */
 const FIT_STEPS = [1400, 1200, 1000] as const;
 
+/**
+ * 測って畳む段の数。幅の段で足りないとき (利用リミットの輪はアカウントの数で幅が変わる)、窓をつかんで
+ * ドラッグできる空きが {@link MIN_DRAG_GAP} に満たないあいだ、`paradis-fold-1` から順に足していく。
+ * 段の中身は CSS (paradisTitlebarFit.css) にあり、どれも幅の段と同じ「優先度の低い順」:
+ * 1 エージェント一覧・ブラウザ一覧の文字、2 使用率の文字、3 知らせの無いサービスの項目、4 利用リミットの余裕のある輪
+ */
+const FOLD_LEVELS = 4;
+
+/** タイトルバーに残す、ドラッグできるひと続きの空きの幅 (px)。 */
+const MIN_DRAG_GAP = 40;
+
 /** カスタムメニューバーがタイトルバー左側に見えているあいだ付けるクラス。 */
 const MENUBAR_VISIBLE_CLASS = 'paradis-fit-menubar-visible';
 
@@ -69,6 +80,7 @@ class ParadisTitlebarFit extends Disposable {
 		for (const step of FIT_STEPS) {
 			this.rootContainer.classList.remove(`paradis-fit-${step}`);
 		}
+		this.setFoldLevel(0);
 		this.rootContainer.classList.remove(MENUBAR_VISIBLE_CLASS);
 		super.dispose();
 	}
@@ -94,6 +106,82 @@ class ParadisTitlebarFit extends Disposable {
 		for (const step of FIT_STEPS) {
 			this.rootContainer.classList.toggle(`paradis-fit-${step}`, width <= step);
 		}
+		this.updateFoldLevel();
+	}
+
+	/**
+	 * 幅の段を当てたうえで、ドラッグできる空きが足りなければ畳む段を 1 つずつ上げて測り直す。毎回 0 から
+	 * 積み上げ、描画の前に同期で測るのでちらつかない。クラスはタイトルバーの外枠 (rootContainer) にだけ
+	 * 付ける (左側の中身のクラスを変えると MutationObserver がまた update を呼ぶ)。全部畳んでも足りない
+	 * 狭さでは、左側を内容の幅に固定する規則 (paradisTitlebarFit.css の 1) が重なりだけを防ぐ。
+	 * メニューバーが見えているあいだは左側をメニューバーが測って畳むので、ここでは畳まない。
+	 */
+	private updateFoldLevel(): void {
+		this.setFoldLevel(0);
+		if (this.rootContainer.classList.contains(MENUBAR_VISIBLE_CLASS)) {
+			return;
+		}
+		for (let level = 1; level <= FOLD_LEVELS && this.largestDragGap() < MIN_DRAG_GAP; level++) {
+			this.setFoldLevel(level);
+		}
+	}
+
+	private setFoldLevel(level: number): void {
+		for (let index = 1; index <= FOLD_LEVELS; index++) {
+			this.rootContainer.classList.toggle(`paradis-fold-${index}`, index <= level);
+		}
+	}
+
+	/**
+	 * タイトルバーの中で、押せる部品 (左側と右側の子、中央のコマンドセンター) に挟まれたいちばん広い空きの幅。
+	 * 空きはタイトルバー全体の drag 領域なので、そのままつかんで窓を動かせる。左端の部品より左は数えない
+	 * (macOS では信号機のボタンがあり、使用率の項目の margin-left はそれを避けるための余白)。右端は右側の
+	 * padding の内側まで数える。
+	 */
+	private largestDragGap(): number {
+		const left = this.leftContent;
+		const center = this.childWithClass(this.rootContainer, 'titlebar-center');
+		const right = this.childWithClass(this.rootContainer, 'titlebar-right');
+		const spans: { start: number; end: number }[] = [];
+		const addChildren = (parent: HTMLElement | undefined) => {
+			for (const child of parent?.children ?? []) {
+				const rect = child.getBoundingClientRect();
+				if (rect.width > 0) {
+					spans.push({ start: rect.left, end: rect.right });
+				}
+			}
+		};
+		addChildren(left);
+		const windowTitle = center && this.childWithClass(center, 'window-title');
+		const commandCenter = windowTitle && this.childWithClass(windowTitle, 'command-center');
+		if (commandCenter && !commandCenter.classList.contains('hide')) {
+			const rect = commandCenter.getBoundingClientRect();
+			if (rect.width > 0) {
+				spans.push({ start: rect.left, end: rect.right });
+			}
+		}
+		addChildren(right);
+
+		const targetWindow = getWindow(this.rootContainer);
+		spans.sort((a, b) => a.start - b.start);
+		let cursor = spans.length ? spans[0].start : left.getBoundingClientRect().left;
+		const rightRect = (right ?? this.rootContainer).getBoundingClientRect();
+		const end = rightRect.right - (right ? parseFloat(targetWindow.getComputedStyle(right).paddingRight) || 0 : 0);
+		let largest = 0;
+		for (const span of spans) {
+			largest = Math.max(largest, span.start - cursor);
+			cursor = Math.max(cursor, span.end);
+		}
+		return Math.max(largest, end - cursor);
+	}
+
+	private childWithClass(parent: HTMLElement, className: string): HTMLElement | undefined {
+		for (const child of parent.children) {
+			if (child.classList.contains(className)) {
+				return child as HTMLElement;
+			}
+		}
+		return undefined;
 	}
 
 	private hasOpenPanel(): boolean {
