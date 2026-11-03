@@ -158,13 +158,13 @@ async function confirmPush(dialogService: IDialogService, notificationService: I
 		// allow-any-unicode-next-line
 		localize('paradis.taskBoard.relay.pushMessage', "タスクボードのブランチ {0} を push しますか？", request.branch),
 		detail, markdown, request.canRemember, PARADIS_TASK_BOARD_RELAY_CONFIRM_TIMEOUT_MS, {
-			// allow-any-unicode-next-line
-			deny: localize('paradis.taskBoard.relay.pushDeny', "送らない"),
-			// allow-any-unicode-next-line
-			once: localize('paradis.taskBoard.relay.pushOnce', "今回だけ送る"),
-			// allow-any-unicode-next-line
-			remember: localize('paradis.taskBoard.relay.pushRemember', "このブランチは今後聞かずに送る"),
-		});
+		// allow-any-unicode-next-line
+		deny: localize('paradis.taskBoard.relay.pushDeny', "送らない"),
+		// allow-any-unicode-next-line
+		once: localize('paradis.taskBoard.relay.pushOnce', "今回だけ送る"),
+		// allow-any-unicode-next-line
+		remember: localize('paradis.taskBoard.relay.pushRemember', "このブランチは今後聞かずに送る"),
+	});
 }
 
 /** 担当を起動するときだけ許可を渡すかを確かめる（Q525 の d = B）。起動の待ち（150 秒）より短い 120 秒で打ち切る。 */
@@ -183,12 +183,12 @@ async function confirmLaunchTools(dialogService: IDialogService, notificationSer
 		// allow-any-unicode-next-line
 		localize('paradis.taskBoard.relay.toolsMessage', "SSH の {0} に、起動のときだけ許可を渡しますか？", name),
 		detail, markdown, true, 120_000, {
-			// allow-any-unicode-next-line
-			deny: localize('paradis.taskBoard.relay.toolsDeny', "渡さない"),
-			once: '',
-			// allow-any-unicode-next-line
-			remember: localize('paradis.taskBoard.relay.toolsRemember', "このリポジトリでは渡す"),
-		});
+		// allow-any-unicode-next-line
+		deny: localize('paradis.taskBoard.relay.toolsDeny', "渡さない"),
+		once: '',
+		// allow-any-unicode-next-line
+		remember: localize('paradis.taskBoard.relay.toolsRemember', "このリポジトリでは渡す"),
+	});
 	return answer === 'remember' ? 'remember' : 'deny';
 }
 

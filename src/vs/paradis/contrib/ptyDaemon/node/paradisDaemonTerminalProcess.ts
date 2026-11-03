@@ -76,7 +76,8 @@ import { IParadisPtyScreenSink, IParadisTerminalProcessLike } from '../common/pa
 import { IParadisPtyLetGoMark, paradisPlanPtyReattach } from '../common/paradisPtyReattachPlan.js';
 import { paradisRecordFinishedWhileAway, paradisRecordLetGo, paradisRecordReattach, paradisRecordSpared } from './paradisPtyHandoverJournal.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisAdoptTarget, paradisForgetHandle, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
+import type { IParadisAdoptTarget } from './paradisTerminalProcessFactory.js';
+import { paradisForgetHandle, paradisRememberHandle } from './paradisTerminalHandles.js';
 import { paradisReadCwd, paradisStatKind } from './paradisPtyIntrospection.js';
 
 /**

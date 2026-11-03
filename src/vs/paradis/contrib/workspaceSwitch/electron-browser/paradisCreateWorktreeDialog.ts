@@ -42,7 +42,7 @@ import { paradisSyncSelectOptions } from '../../agentModelCatalog/browser/paradi
 import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
 import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
-import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
+import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueueService.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
