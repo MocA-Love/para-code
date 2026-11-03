@@ -77,12 +77,22 @@ suite('ParadisSystemUsageModel', () => {
 		}, {
 			calls: ['remote:paradisHostResources/getSystemUsage', 'remote:paradisHostResources/getHostResources'],
 			legacy: true,
-			latest: { t: 77, cpu: 42.4, mem: 80, disk: 75 },
+			latest: { t: 77, cpu: 42.4, mem: 80, memUsed: 80, disk: 75, diskUsed: 750 },
 			unsupported: ['diskIo', 'network', 'swap'],
 			samples: [],
 			label: 'SSH: dev-server',
 			error: undefined,
 		});
+	});
+
+	// タイトルバーの「使用量 / 全体」は、応答の latest に載った使用量（バイト）をそのまま使う。知らない項目は落とす
+	test('keeps the memory and disk usage in bytes from the latest sample of the response', async () => {
+		const calls: IChannelCall[] = [];
+		const model = createModel(command => command === 'getSystemUsage'
+			? { ...usageResponse('remote-run', 'dev-server'), latest: { t: 2, cpu: 20, mem: 25.1, memUsed: 16_106_127_360, disk: 89.6, diskUsed: 442_381_631_488, extra: 1 } }
+			: undefined, calls);
+		const view = await model.refresh('remote', '5m');
+		assert.deepStrictEqual(view.latest, { t: 2, cpu: 20, mem: 25.1, disk: 89.6, memUsed: 16_106_127_360, diskUsed: 442_381_631_488 });
 	});
 
 	test('asks the shared process for this computer and the server for the remote, then only for the difference', async () => {

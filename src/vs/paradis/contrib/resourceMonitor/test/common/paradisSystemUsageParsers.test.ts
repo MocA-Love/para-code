@@ -202,10 +202,11 @@ suite('ParadisSystemUsageParsers', () => {
 			// スリープ明けで 10 分空いた: 速度と CPU は出さない（平均にすると実態と違う）
 			afterSleep: paradisComputeSystemUsageSample(first, { ...second, at: 600_000 }),
 		}, {
-			firstReading: { t: 0, mem: 25, disk: 25, swapUsed: 7 },
+			// メモリとディスクは使用量（バイト）も添える（タイトルバーの「使用量 / 全体」）
+			firstReading: { t: 0, mem: 25, memUsed: 4, disk: 25, diskUsed: 50, swapUsed: 7 },
 			// 送信は累計が減った（カウンタの巻き戻り）ので出さない
-			second: { t: 5_000, mem: 50, disk: 25, swapUsed: 9, cpu: 50, diskRead: 1000, diskWrite: 2000, netRx: 10_000 },
-			afterSleep: { t: 600_000, mem: 50, disk: 25, swapUsed: 9 },
+			second: { t: 5_000, mem: 50, memUsed: 8, disk: 25, diskUsed: 50, swapUsed: 9, cpu: 50, diskRead: 1000, diskWrite: 2000, netRx: 10_000 },
+			afterSleep: { t: 600_000, mem: 50, memUsed: 8, disk: 25, diskUsed: 50, swapUsed: 9 },
 		});
 	});
 });
