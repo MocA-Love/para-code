@@ -17,7 +17,7 @@
 	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	border-radius: var(--vscode-cornerRadius-medium);
 	background-color: var(--vscode-editorWidget-background);
-	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	color: var(--vscode-foreground);
 	font-size: var(--vscode-fontSize-label1);
 	white-space: nowrap;
 	overflow: hidden;

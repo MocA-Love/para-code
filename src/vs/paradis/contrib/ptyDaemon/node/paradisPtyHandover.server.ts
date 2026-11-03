@@ -33,6 +33,7 @@ ParadisServerContributions.register('ptyHandover', ({ server, accessor }) => {
 	const service: IParadisPtyHandoverService = {
 		takeReport: async () => ptyService.paradisTakeHandoverReport?.(),
 		readopt: async trigger => paradisIsRequestableTrigger(trigger) ? ptyService.paradisReadoptFromDaemon?.(trigger) : undefined,
+		adoptionPending: async () => await ptyService.paradisIsAdoptionPending?.() ?? false,
 	};
 	const store = new DisposableStore();
 	server.registerChannel(PARADIS_PTY_HANDOVER_CHANNEL, ProxyChannel.fromService<RemoteAgentConnectionContext>(service, store));

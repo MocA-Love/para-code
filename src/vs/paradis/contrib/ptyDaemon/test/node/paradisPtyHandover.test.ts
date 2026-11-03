@@ -15,7 +15,8 @@
 // 本物のソケットもシェルも挟まないが、通るコードは production と同じ。
 
 import assert from 'assert';
-import { timeout } from '../../../../../base/common/async.js';
+import * as sinon from 'sinon';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -27,16 +28,16 @@ import { ISetTerminalLayoutInfoArgs } from '../../../../../platform/terminal/com
 import { IParadisPtyHost } from '../../common/paradisPtyProtocol.js';
 import { PARADIS_PTY_HOST_STATE_DIR } from '../../common/paradisPtyHostPaths.js';
 import { IParadisAdoptionTarget } from '../../node/paradisAdoptIntoPtyService.js';
-import { paradisAdoptAtStartup, paradisReadoptFromDaemon } from '../../node/paradisPtyReadopt.js';
+import { paradisAdoptAtStartup, paradisReadoptFromDaemon, paradisResetReadopt } from '../../node/paradisPtyReadopt.js';
 import { paradisEnableRemotePtyHostDaemon } from '../../node/paradisRemotePtyHost.js';
 import { paradisRememberLayout } from '../../node/paradisTerminalLayoutStore.js';
-import { IParadisAdoptTarget, paradisForgetHandle, paradisIdOfHandle, paradisKnownHandles, paradisUsePtyDaemon } from '../../node/paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisAdoptionSettled, paradisAwaitAdoption, paradisForgetHandle, paradisIdOfHandle, paradisIsAdoptionPending, paradisKnownHandles, paradisUsePtyDaemon } from '../../node/paradisTerminalProcessFactory.js';
 import { IParadisPtyScreenSink } from '../../common/paradisTerminalProcessLike.js';
 import { PARADIS_TERMINAL_KEEP_BACKGROUND_ENV } from '../../../terminalCloseCleanup/common/paradisTerminalCloseCleanup.js';
 import { ParadisDaemonTerminalProcess } from '../../node/paradisDaemonTerminalProcess.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { paradisTakePtyHandoverReport } from '../../node/paradisPtyHandoverJournal.js';
-import { paradisIsEmptyPtyHandoverReport } from '../../common/paradisPtyHandover.js';
+import { paradisIsEmptyPtyHandoverReport, paradisPtyLateAdoptions } from '../../common/paradisPtyHandover.js';
 import { paradisRecordRelayedFailure, paradisTakeRelayedFailures } from '../../../sentry/common/paradisRelayedDiagnostics.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
 import { paradisAdoptTerminals } from '../../node/paradisTerminalAdoption.js';
@@ -440,6 +441,78 @@ suite('Para pty daemon handover between pty hosts', () => {
 				restoredLayout: layouts.at(-1)?.tabs.map(tab => tab.terminals.map(terminal => terminal.terminal)),
 			},
 			{ atStartup: [], kept: [[1]], run: { adopted: 1, foreign: 0 }, created: [1], restoredLayout: [[101]] },
+		);
+	});
+
+	/**
+	 * SSH 先の更新で起きたことの再現。28 本の引き取りに pty ホストの起動から 3.2 秒かかり、3 秒で
+	 * 待つのをやめた配置と一覧が空を返して、窓は 5 本しか繋ぎ直せなかった。
+	 *
+	 * 引き取りの遅さは、器を作る口（`createProcess`）を止めて作る。時計は偽物にして、期限の前後を刻む。
+	 */
+	async function adoptSlowly(finishAfterMs: number | undefined): Promise<{ waitedPastOldDeadline: boolean; answeredBy: number | undefined; pendingWhenAnswered: boolean; pendingAfter: boolean; late: number }> {
+		const { host, disposables } = createHost();
+		// A: 更新前の版の pty ホスト。窓が去ったので手を離している。
+		const a = createProcess(host, disposables, 'paradis-pty-host:1:a', { withoutOrigin: true });
+		await a.start();
+		await host.setMetadata(1, JSON.stringify({ workspaceId: 'ws-1', workspaceName: 'para', shouldPersist: true }));
+		await a.paradisLetGo();
+
+		// B: 更新後の版の pty ホスト。
+		paradisUsePtyDaemon({ host, client: { onDidDispose: () => ({ dispose() { } }) } as never, viewer: 'paradis-pty-host:2:b' });
+		store.add(toDisposable(() => paradisUsePtyDaemon(undefined)));
+		store.add(toDisposable(() => paradisForgetHandle(101)));
+		store.add(toDisposable(() => paradisResetReadopt()));
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+		store.add(toDisposable(() => clock.restore()));
+		store.add(toDisposable(() => paradisAwaitAdoption(undefined)));
+		const slow = new DeferredPromise<void>();
+		const service: IParadisAdoptionTarget = {
+			paradisSetTerminalLayoutInfo: () => { },
+			createProcess: async () => { await slow.p; return 101; },
+		};
+		// ptyHostMain.ts と同じ並び: 引き取りを預け、窓が配置を聞きに来る。
+		const startedAt = Date.now();
+		const adopting = paradisAdoptAtStartup(service, host, new NullLogService());
+		paradisAwaitAdoption(adopting);
+		let answeredAt: number | undefined;
+		let pendingWhenAnswered = false;
+		void paradisAdoptionSettled().then(() => {
+			answeredAt = Date.now() - startedAt;
+			pendingWhenAnswered = paradisIsAdoptionPending();
+		});
+
+		await clock.tickAsync(3_500);
+		const waitedPastOldDeadline = answeredAt === undefined;
+		if (finishAfterMs !== undefined) {
+			await clock.tickAsync(finishAfterMs - 3_500);
+			void slow.complete();
+			await clock.tickAsync(0);
+		}
+		await clock.tickAsync(60_000);
+		if (!slow.isSettled) {
+			void slow.complete();
+		}
+		await adopting;
+		const report = paradisTakePtyHandoverReport({ daemon: true, foreignHeld: 0 });
+		return { waitedPastOldDeadline, answeredBy: answeredAt, pendingWhenAnswered, pendingAfter: paradisIsAdoptionPending(), late: paradisPtyLateAdoptions(report) };
+	}
+
+	test('起動時の引き取りが 3 秒を超えても、配置は引き取りが終わるまで待つ。間に合えば再読み込みの知らせは出さない', async () => {
+		const outcome = await adoptSlowly(5_000);
+
+		assert.deepStrictEqual(
+			{ ...outcome, answeredBy: outcome.answeredBy !== undefined && outcome.answeredBy >= 5_000 && outcome.answeredBy < 30_000 },
+			{ waitedPastOldDeadline: true, answeredBy: true, pendingWhenAnswered: false, pendingAfter: false, late: 0 },
+		);
+	});
+
+	test('引き取りが待ちの上限も超えたら先へ進み、終わるまでは「まだ」と答え、遅れて引き取った分を再読み込みの知らせに数える', async () => {
+		const outcome = await adoptSlowly(undefined);
+
+		assert.deepStrictEqual(
+			{ ...outcome, answeredBy: outcome.answeredBy !== undefined && outcome.answeredBy <= 30_000 },
+			{ waitedPastOldDeadline: true, answeredBy: true, pendingWhenAnswered: true, pendingAfter: false, late: 1 },
 		);
 	});
 

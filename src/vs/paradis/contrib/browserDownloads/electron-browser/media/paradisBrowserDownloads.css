@@ -97,7 +97,7 @@
 	overflow: hidden;
 	box-sizing: border-box;
 	background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
-	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	color: var(--vscode-foreground);
 	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	border-radius: var(--vscode-cornerRadius-medium, 6px);
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));

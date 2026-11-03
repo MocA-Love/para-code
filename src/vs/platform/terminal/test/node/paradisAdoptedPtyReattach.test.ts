@@ -332,13 +332,13 @@ suite('Para Code adopted pty reattach', () => {
 	});
 
 	test('giving up on adoption gives up for good rather than costing every later call', async () => {
-		const adopting = new DeferredPromise<void>();
-		paradisAwaitAdoption(adopting.p);
 		const clock = sinon.useFakeTimers({ shouldAdvanceTime: true });
 		store.add(toDisposable(() => clock.restore()));
+		const adopting = new DeferredPromise<void>();
+		paradisAwaitAdoption(adopting.p);
 
 		const first = paradisAdoptionSettled();
-		await clock.tickAsync(3_000);
+		await clock.tickAsync(30_000);
 		await first;
 
 		// The daemon never answered. Waiting again cannot make it answer, and a pty host lives for
@@ -348,6 +348,30 @@ suite('Para Code adopted pty reattach', () => {
 		const waitedAgain = Date.now() - before;
 
 		assert.deepStrictEqual({ waitedAgain: waitedAgain < 50 }, { waitedAgain: true });
+	});
+
+	test('a layout asked while many terminals are still being taken back waits past the old three seconds', async () => {
+		// The update on a remote host that lost tabs: 28 terminals took 3.2 s from the pty host's start,
+		// and a layout answered at 3 s held none of them. Upstream never asks again.
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+		store.add(toDisposable(() => clock.restore()));
+		const pty = service();
+		const adopting = new DeferredPromise<void>();
+		paradisAwaitAdoption(adopting.p);
+		let answered = false;
+		const asked = pty.getTerminalLayoutInfo({ workspaceId: 'ws' }).then(layout => { answered = true; return layout; });
+
+		await clock.tickAsync(3_500);
+		const answeredAtOldDeadline = answered;
+		const pendingMeanwhile = await pty.paradisIsAdoptionPending();
+		void adopting.complete();
+		await clock.tickAsync(0);
+		await asked;
+
+		assert.deepStrictEqual(
+			{ answeredAtOldDeadline, pendingMeanwhile, answered, pendingAfter: await pty.paradisIsAdoptionPending() },
+			{ answeredAtOldDeadline: false, pendingMeanwhile: true, answered: true, pendingAfter: false },
+		);
 	});
 
 	test('a terminal that was taken back can be told apart before anyone opens it', async () => {

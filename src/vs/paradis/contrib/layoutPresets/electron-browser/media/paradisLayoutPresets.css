@@ -329,7 +329,7 @@
 	border: 1px solid var(--vscode-editorWidget-border);
 	border-radius: 8px;
 	background-color: var(--vscode-editorWidget-background);
-	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	color: var(--vscode-foreground);
 	box-shadow: 0 4px 12px var(--vscode-widget-shadow);
 }
 

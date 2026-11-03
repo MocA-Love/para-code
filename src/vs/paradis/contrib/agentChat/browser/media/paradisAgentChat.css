@@ -578,7 +578,7 @@
 	flex-direction: column;
 	gap: var(--vscode-spacing-size80);
 	padding: var(--vscode-spacing-size120);
-	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	color: var(--vscode-foreground);
 	background-color: var(--vscode-editorWidget-background);
 	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
 	border-radius: var(--vscode-cornerRadius-large);
@@ -912,7 +912,7 @@
 	box-sizing: border-box;
 	padding: var(--vscode-spacing-size40);
 	overflow-y: auto;
-	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	color: var(--vscode-foreground);
 	background-color: var(--vscode-editorWidget-background);
 	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
 	border-radius: var(--vscode-cornerRadius-large);
