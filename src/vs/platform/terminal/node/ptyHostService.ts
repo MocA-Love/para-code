@@ -243,6 +243,11 @@ export class PtyHostService extends Disposable implements IPtyHostService {
 	async paradisTakeHandoverReport(): Promise<IParadisPtyHandoverReport | undefined> {
 		return this._optionalProxy?.paradisTakeHandoverReport?.();
 	}
+	// PARA-PATCH: forward whether the pty host is still taking terminals back from the daemon (paradisTerminalProcessFactory.ts)
+	async paradisIsAdoptionPending(): Promise<boolean> {
+		// No pty host yet means nothing is being taken back yet either; an older pty host has no method.
+		return await this._optionalProxy?.paradisIsAdoptionPending?.() ?? false;
+	}
 	// PARA-PATCH: forward the reattach tally without starting a pty host (paradisReattachTally.ts)
 	async paradisTakeReattachTally(workspaceId: string): Promise<IParadisReattachTally | undefined> {
 		return this._optionalProxy?.paradisTakeReattachTally?.(workspaceId);

@@ -32,7 +32,7 @@ import { IParadisPtyScreenSink, IParadisTerminalProcessLike } from '../../../par
 // PARA-PATCH: hand terminals held by the pty daemon over between pty hosts, and count what went wrong for the window to report (see paradisPtyReadopt.ts)
 import { paradisAnswerForMissingNonce, paradisCountNoPty, paradisCountReconnectFailed, paradisReadoptFromDaemon, paradisTakeHandoverReport } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyReadopt.js';
 import type { IParadisPtyAdoptionRun, IParadisPtyHandoverReport, ParadisPtyAdoptTrigger } from '../../../paradis/contrib/ptyDaemon/common/paradisPtyHandover.js';
-import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf, paradisSetAppQuitting } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf, paradisIsAdoptionPending, paradisSetAppQuitting } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
 // PARA-PATCH: reattach diagnostics (see paradisReattachTally.ts)
 import { paradisNoteAttached, paradisNoteRevived, paradisTakeReattachTally } from '../../../paradis/contrib/ptyDaemon/node/paradisReattachTally.js';
@@ -536,6 +536,11 @@ export class PtyService extends Disposable implements IPtyService {
 	@traceRpc
 	async paradisTakeHandoverReport(): Promise<IParadisPtyHandoverReport | undefined> {
 		return paradisTakeHandoverReport();
+	}
+	// PARA-PATCH: whether that taking back is still running past the wait's deadline (see paradisTerminalProcessFactory.ts)
+	@traceRpc
+	async paradisIsAdoptionPending(): Promise<boolean> {
+		return paradisIsAdoptionPending();
 	}
 
 	@traceRpc

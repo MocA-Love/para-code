@@ -18,6 +18,7 @@
 //
 // 中身は件数・時間・固定の語だけ。パス・スペース名・題名・画面の中身は入れない。
 
+import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IParadisRelayedFailure } from '../../sentry/common/paradisRelayedDiagnostics.js';
 import { ParadisPtyRebuildReason } from './paradisPtyReattachPlan.js';
 
@@ -49,6 +50,11 @@ export interface IParadisPtyAdoptionRun {
 	/** 配置を戻せたスペースの数。 */
 	readonly layouts: number;
 	readonly durationMs: number;
+	/**
+	 * 起動時の引き取りが、配置や一覧を待つ期限（`paradisTerminalProcessFactory.ts`）を過ぎてから
+	 * 終わったか。過ぎていれば、載せた端末は窓にまだ出ていない。省略は「過ぎていない」（古い pty ホストも）。
+	 */
+	readonly late?: boolean;
 }
 
 /** 戻ってきたときの埋め直しの内訳（`paradisPtyReattachPlan.ts`）。 */
@@ -99,6 +105,11 @@ export interface IParadisPtyHandoverService {
 	takeReport(): Promise<IParadisPtyHandoverReport | undefined>;
 	/** 別の pty ホストが握っていた端末を、空いていれば引き取る。 */
 	readopt(trigger: ParadisPtyAdoptTrigger): Promise<IParadisPtyAdoptionRun | undefined>;
+	/**
+	 * 起動時の引き取りがまだ終わっていないか（待ちの期限を過ぎても走っている）。pty ホストが
+	 * 起きていなければ false（起こさない）。古い REH はこの口を持たず、呼ぶと失敗する。
+	 */
+	adoptionPending(): Promise<boolean>;
 }
 
 /** 記録が空か（送るものが無いか）。 */
@@ -142,6 +153,7 @@ export function paradisPtyHandoverSpans(report: IParadisPtyHandoverReport, remot
 			safe_finished: run.finished,
 			safe_layouts: run.layouts,
 			safe_duration_ms: run.durationMs,
+			safe_late: run.late === true,
 		},
 	}));
 	const r = report.reattach;
@@ -201,7 +213,68 @@ export function paradisPtyHandoverProblem(report: IParadisPtyHandoverReport): { 
 	};
 }
 
-/** 窓が開いた後で引き取った本数（見回りで見つけたもの）。窓を再読み込みすると表示される。 */
+/**
+ * 窓が開いた後で引き取った本数。窓を再読み込みすると表示される。
+ *
+ * 見回りで見つけたものと、起動時の引き取りが待ちの期限を過ぎてから終わったもの（`late`）。期限内に
+ * 終わった起動時の分は窓が配置と一覧で受け取っているので数えない（数えると毎回の再起動で知らせが出る）。
+ */
 export function paradisPtyLateAdoptions(report: IParadisPtyHandoverReport): number {
-	return report.adoptions.filter(run => run.trigger === 'poll').reduce((sum, run) => sum + run.adopted, 0);
+	return report.adoptions.filter(run => run.trigger === 'poll' || (run.trigger === 'startup' && run.late === true)).reduce((sum, run) => sum + run.adopted, 0);
+}
+
+/**
+ * 起動時の引き取りの状態を窓から見たもの。
+ *
+ * - `settled`: 終わった（常駐を使っていない、または pty ホストがまだ起きていないも含む）
+ * - `pending`: 待ちの期限を過ぎても、まだ走っている。この間に受け取った一覧は引き取る前のもの
+ * - `unknown`: 聞けなかった（この口を持たない古い REH・pty ホスト、問い合わせの失敗）
+ */
+export type ParadisPtyAdoptionState = 'settled' | 'pending' | 'unknown';
+
+let adoptionProbe: (() => Promise<ParadisPtyAdoptionState>) | undefined;
+
+/**
+ * 引き取りの状態を聞く口を登録する。手元と接続先の分岐を持つ electron-browser 側から登録する
+ * （`paradisPtyHandover.contribution.ts`）。拾い直し（`paradisTerminalScope.contribution.ts`）は
+ * browser 層にあり、`ILocalPtyService` を受け取れないため。
+ */
+export function paradisRegisterPtyAdoptionProbe(probe: () => Promise<ParadisPtyAdoptionState>): IDisposable {
+	adoptionProbe = probe;
+	return toDisposable(() => {
+		if (adoptionProbe === probe) {
+			adoptionProbe = undefined;
+		}
+	});
+}
+
+/**
+ * 起動時の引き取りの状態。口が登録されていなければ `settled`（Web ビルド。常駐の引き継ぎの記録も
+ * 取りに行かないので、今までどおりの読み方にする）。
+ */
+export async function paradisPtyAdoptionState(): Promise<ParadisPtyAdoptionState> {
+	if (!adoptionProbe) {
+		return 'settled';
+	}
+	try {
+		return await adoptionProbe();
+	} catch {
+		return 'unknown';
+	}
+}
+
+/**
+ * 拾い直し（孤児の端末を窓へ戻す）の一覧を「全部」と読んでよいか。
+ *
+ * 一覧は窓に繋がっていない端末だけなので、全部が繋がった普通の起動では空が正しい答えになる。
+ * 空だけを理由に「全部ではない」とすると、そういう起動では拾い直しが一度も済まず、消えた
+ * worktree の片付けと所属の台帳の整理が止まる。だから空を疑うのは、引き取りが終わったと
+ * pty ホストから聞けなかったときだけにする。引き取りが走っている間の一覧は、空でなくても全部ではない。
+ */
+export function paradisOrphanListingIsComplete(adoption: ParadisPtyAdoptionState, orphans: number): boolean {
+	switch (adoption) {
+		case 'settled': return true;
+		case 'pending': return false;
+		case 'unknown': return orphans > 0;
+	}
 }
