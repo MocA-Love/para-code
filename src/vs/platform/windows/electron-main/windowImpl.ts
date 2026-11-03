@@ -38,8 +38,8 @@ import { defaultBrowserWindowOptions, getAllWindowsExcludingOffscreen, IWindowsM
 import { ISingleFolderWorkspaceIdentifier, IWorkspaceIdentifier, isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier, toWorkspaceIdentifier } from '../../workspace/common/workspace.js';
 import { IWorkspacesManagementMainService } from '../../workspaces/electron-main/workspacesManagementMainService.js';
 import { IWindowState, ICodeWindow, ILoadEvent, WindowMode, WindowError, LoadReason, defaultWindowState, IBaseWindow } from '../../window/electron-main/window.js';
-// PARA-PATCH: shared "can this window be transparent" check, also used by the renderer's restart prompt.
-import { paradisCanUseWindowTransparency } from '../../window/common/paradisWindowTransparency.js';
+// PARA-PATCH: shared "should this window be transparent" check (per-OS default; Windows defaults to off).
+import { paradisShouldCreateTransparentWindow } from '../../window/common/paradisWindowTransparency.js';
 import { IPolicyService } from '../../policy/common/policy.js';
 import { IUserDataProfile } from '../../userDataProfile/common/userDataProfile.js';
 import { IStateService } from '../../state/node/state.js';
@@ -809,14 +809,12 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 			// workbench contribution, not the Agent Sessions window entry, so only normal windows should
 			// opt into a transparent native surface. The actual creation state is remembered and forwarded
 			// to the renderer (see updateConfiguration) so it can gate its CSS on the real native state.
-			// Default ON (`!== false`): the setting's registry default (true) lives in the renderer-side
-			// configuration registry which the main process cannot see, so "unset" must mean enabled here too.
+			// The main process cannot see the renderer-side registry default, so an unset value falls back
+			// to paradisWindowTransparencyDefault: ON on macOS/Linux, OFF on Windows (Electron drops
+			// WS_THICKFRAME for transparent windows, which breaks Aero Snap and edge resizing).
 			// Transparent Electron windows on Windows require a frameless window. Disable the renderer's
 			// translucent CSS as well by reporting the actual creation state for native-titlebar windows.
-			const paradisTransparencySupported = paradisCanUseWindowTransparency(this.configurationService);
-			const paradisTransparencyEnabled = !config.isSessionsWindow
-				&& paradisTransparencySupported
-				&& this.configurationService.getValue<boolean>('paradis.window.transparency.enabled') !== false;
+			const paradisTransparencyEnabled = !config.isSessionsWindow && paradisShouldCreateTransparentWindow(this.configurationService);
 			this.paradisTransparentWindow = paradisTransparencyEnabled;
 			const options = instantiationService.invokeFunction(defaultBrowserWindowOptions, this.windowState, paradisTransparencyEnabled ? { transparent: true } : undefined, webPreferences);
 			const iconPath = config.isSessionsWindow && isWindows ? join(this.environmentMainService.appRoot, 'resources/win32/sessions.ico') : undefined;
