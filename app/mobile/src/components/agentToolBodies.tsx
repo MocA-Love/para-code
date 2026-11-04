@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentChatImage, AgentChatMessage } from '../store.js';
 import { basename, countLines, parseToolInput, splitMcpTool, type AgentTimelineStep } from '../agentToolMeta.js';
 import { ExpandableText, IOBlock, ioStyles as baseIoStyles } from './agentIoBlock.js';
+import { localFileTargetKey, useLocalFileOpener } from './localFileOpener.js';
 import { ToolImageLightbox, ToolImagePreview, isPreviewableToolImage, useToolImage } from './toolImage.js';
 import { formatImageBytes } from '../agentToolImages.js';
 import { haptic } from '../haptics.js';
@@ -300,24 +301,41 @@ function safeStringify(value: unknown): string | undefined {
 	}
 }
 
-/** ファイル操作の対象を1枚のカードで示す（ファイル名を主、ディレクトリを従）。 */
+/**
+ * ファイル操作の対象を1枚のカードで示す（ファイル名を主、ディレクトリを従）。押すとビューアで開く
+ * （会話の中のファイルのリンクと同じく、PC でワークスペースの中のファイルへ解決してから開く）。
+ */
 function FileCard({ path }: { path: string }) {
 	const name = basename(path);
 	const dir = path.slice(0, Math.max(0, path.length - name.length));
 	const theme = useThemeColors();
 	const ioStyles = useChatStyles(baseIoStyles);
+	const styles = useChatStyles(baseStyles);
 	const box = useChatIconSize(CARD_ICON_BOX);
 	const glyph = useChatIconSize(CARD_ICON_GLYPH);
+	const { open, openingKey, viewer } = useLocalFileOpener();
+	const target = { path };
 	return (
-		<View style={ioStyles.card}>
-			<View style={[ioStyles.cardIcon, { width: box, height: box, backgroundColor: theme.accentWash }]}>
-				<Ionicons name="document-text-outline" size={glyph} color={theme.accent} />
-			</View>
-			<View style={ioStyles.cardBody}>
-				<Text style={ioStyles.cardTitle} numberOfLines={1}>{name}</Text>
-				{dir.length > 0 ? <Text style={ioStyles.cardSub} numberOfLines={1} ellipsizeMode="head">{dir}</Text> : null}
-			</View>
-		</View>
+		<>
+			<Pressable
+				style={({ pressed }) => [ioStyles.card, pressed ? styles.cardPressed : null]}
+				onPress={() => open(target)}
+				accessibilityRole="button"
+				accessibilityLabel={`${name}を開く`}
+			>
+				<View style={[ioStyles.cardIcon, { width: box, height: box, backgroundColor: theme.accentWash }]}>
+					<Ionicons name="document-text-outline" size={glyph} color={theme.accent} />
+				</View>
+				<View style={ioStyles.cardBody}>
+					<Text style={ioStyles.cardTitle} numberOfLines={1}>{name}</Text>
+					{dir.length > 0 ? <Text style={ioStyles.cardSub} numberOfLines={1} ellipsizeMode="head">{dir}</Text> : null}
+				</View>
+				{openingKey === localFileTargetKey(target)
+					? <ActivityIndicator size="small" color={theme.accent} />
+					: <Ionicons name="chevron-forward" size={glyph} color={colors.textDim} />}
+			</Pressable>
+			{viewer}
+		</>
 	);
 }
 
@@ -448,6 +466,7 @@ export function resultLineCount(message: AgentChatMessage | undefined): number {
 }
 
 const baseStyles = StyleSheet.create({
+	cardPressed: { opacity: 0.72 },
 	pending: { color: colors.textDim, fontSize: type.caption, fontStyle: 'italic' },
 	imageError: { color: colors.red },
 	caption: { color: colors.textDim, fontSize: type.caption, lineHeight: 16 },
