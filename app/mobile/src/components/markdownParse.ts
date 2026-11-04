@@ -296,3 +296,94 @@ export function parseInline(text: string): InlineToken[] {
 	flush();
 	return tokens;
 }
+
+// ---- 写すための文字（メニューの「テキストをコピー」「段落を選んでコピー」「コードを選んでコピー」） ----------------
+
+/** インラインの記号を外した文字。外のリンクは名前と行き先を両方残す（行き先が消えると写した意味が無い）。 */
+function inlinePlainText(text: string): string {
+	return parseInline(text).map(token => {
+		switch (token.kind) {
+			case 'external':
+				return token.label === token.url ? token.url : `${token.label} (${token.url})`;
+			case 'local':
+				return token.label;
+			default:
+				return token.text;
+		}
+	}).join('');
+}
+
+/** ブロック 1 つを書式なしの文字にする。箇条書きは字下げと印を残す（並びが読めるように）。 */
+export function blockPlainText(block: Block): string {
+	switch (block.kind) {
+		case 'code':
+			return block.text;
+		case 'heading':
+		case 'para':
+			return inlinePlainText(block.text);
+		case 'bullet':
+			return `${'  '.repeat(block.depth)}${block.marker} ${inlinePlainText(block.text)}`;
+		case 'table':
+			return [block.header, ...block.rows].map(row => row.map(inlinePlainText).join('\t')).join('\n');
+		case 'quote':
+			return joinPlainBlocks(block.blocks);
+		case 'rule':
+			return '';
+	}
+}
+
+function joinPlainBlocks(blocks: readonly Block[]): string {
+	let out = '';
+	let previous: Block | undefined;
+	for (const block of blocks) {
+		const text = blockPlainText(block);
+		if (text.length === 0) {
+			continue;
+		}
+		// 続いた箇条書きは 1 行ずつ、ほかは空行で区切る
+		out += previous === undefined ? '' : previous.kind === 'bullet' && block.kind === 'bullet' ? '\n' : '\n\n';
+		out += text;
+		previous = block;
+	}
+	return out;
+}
+
+/** Markdown の記号（`**`、`` ` ``、`#`、`>`、`|` など）を外した文字。 */
+export function markdownPlainText(source: string): string {
+	return joinPlainBlocks(parseBlocks(source));
+}
+
+/** メニューに並べる 1 つ（見出しは本文の頭の 1 行）。 */
+export interface MarkdownCopyPart {
+	readonly label: string;
+	readonly text: string;
+}
+
+/** 入れ子のメニューに並べる上限（長い返事でメニューが画面を埋めないように）。 */
+export const MAX_COPY_PARTS = 30;
+const PART_LABEL_LENGTH = 40;
+
+function partLabel(text: string): string {
+	const line = text.split('\n').find(candidate => candidate.trim().length > 0)?.trim() ?? '';
+	return line.length > PART_LABEL_LENGTH ? `${line.slice(0, PART_LABEL_LENGTH)}…` : line;
+}
+
+/** 段落（コード以外の上の段のブロック）とコードブロックを、メニューで 1 つずつ選べる形にする。 */
+export function markdownCopyParts(source: string): { readonly paragraphs: readonly MarkdownCopyPart[]; readonly codes: readonly MarkdownCopyPart[] } {
+	const paragraphs: MarkdownCopyPart[] = [];
+	const codes: MarkdownCopyPart[] = [];
+	for (const block of parseBlocks(source)) {
+		if (block.kind === 'code') {
+			if (codes.length < MAX_COPY_PARTS && block.text.trim().length > 0) {
+				const head = partLabel(block.text);
+				codes.push({ label: block.lang !== undefined ? `${block.lang} · ${head}` : head, text: block.text });
+			}
+			continue;
+		}
+		const text = blockPlainText(block).trim();
+		if (paragraphs.length < MAX_COPY_PARTS && text.length > 0) {
+			paragraphs.push({ label: partLabel(text), text });
+		}
+	}
+	return { paragraphs, codes };
+}

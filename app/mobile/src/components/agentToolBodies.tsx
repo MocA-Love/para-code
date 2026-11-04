@@ -6,7 +6,10 @@ import { Ionicons } from '@expo/vector-icons';
 import type { AgentChatImage, AgentChatMessage } from '../store.js';
 import { basename, countLines, parseToolInput, splitMcpTool, type AgentTimelineStep } from '../agentToolMeta.js';
 import { ExpandableText, IOBlock, ioStyles as baseIoStyles } from './agentIoBlock.js';
+import { ContextMenu, nativeContextMenuAvailable } from './contextMenu.js';
+import { contextMenuOps } from './copyActions.js';
 import { localFileTargetKey, useLocalFileOpener } from './localFileOpener.js';
+import { buildToolFileMenu } from '../features/code/pathMenu.js';
 import { ToolImageLightbox, ToolImagePreview, isPreviewableToolImage, useToolImage } from './toolImage.js';
 import { formatImageBytes } from '../agentToolImages.js';
 import { haptic } from '../haptics.js';
@@ -315,25 +318,29 @@ function FileCard({ path }: { path: string }) {
 	const glyph = useChatIconSize(CARD_ICON_GLYPH);
 	const { open, openingKey, viewer } = useLocalFileOpener();
 	const target = { path };
+	// 長押し（iPad では右クリックも）で名前・パスのコピー（Q548 案 A。ネイティブのメニューが無いビルドでは付けない）
+	const menu = nativeContextMenuAvailable ? buildToolFileMenu({ path }, { ...contextMenuOps(), open: () => open(target) }) : undefined;
 	return (
 		<>
-			<Pressable
-				style={({ pressed }) => [ioStyles.card, pressed ? styles.cardPressed : null]}
-				onPress={() => open(target)}
-				accessibilityRole="button"
-				accessibilityLabel={`${name}を開く`}
-			>
-				<View style={[ioStyles.cardIcon, { width: box, height: box, backgroundColor: theme.accentWash }]}>
-					<Ionicons name="document-text-outline" size={glyph} color={theme.accent} />
-				</View>
-				<View style={ioStyles.cardBody}>
-					<Text style={ioStyles.cardTitle} numberOfLines={1}>{name}</Text>
-					{dir.length > 0 ? <Text style={ioStyles.cardSub} numberOfLines={1} ellipsizeMode="head">{dir}</Text> : null}
-				</View>
-				{openingKey === localFileTargetKey(target)
-					? <ActivityIndicator size="small" color={theme.accent} />
-					: <Ionicons name="chevron-forward" size={glyph} color={colors.textDim} />}
-			</Pressable>
+			<ContextMenu menu={menu}>
+				<Pressable
+					style={({ pressed }) => [ioStyles.card, pressed ? styles.cardPressed : null]}
+					onPress={() => open(target)}
+					accessibilityRole="button"
+					accessibilityLabel={`${name}を開く`}
+				>
+					<View style={[ioStyles.cardIcon, { width: box, height: box, backgroundColor: theme.accentWash }]}>
+						<Ionicons name="document-text-outline" size={glyph} color={theme.accent} />
+					</View>
+					<View style={ioStyles.cardBody}>
+						<Text style={ioStyles.cardTitle} numberOfLines={1}>{name}</Text>
+						{dir.length > 0 ? <Text style={ioStyles.cardSub} numberOfLines={1} ellipsizeMode="head">{dir}</Text> : null}
+					</View>
+					{openingKey === localFileTargetKey(target)
+						? <ActivityIndicator size="small" color={theme.accent} />
+						: <Ionicons name="chevron-forward" size={glyph} color={colors.textDim} />}
+				</Pressable>
+			</ContextMenu>
 			{viewer}
 		</>
 	);

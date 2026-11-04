@@ -9,6 +9,8 @@ import type { FilesSearchMode } from '../../filesSearch.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { colors, space, type } from '../../theme.js';
 import { EmptyState, HeaderButton, Screen, ScreenHeader } from '../../ui/index.js';
+import { contextMenuOps } from '../../components/copyActions.js';
+import { useContextMenuSheet, type ContextMenuSpec } from '../../components/contextMenu.js';
 import { useCodeCache } from './codeCache.js';
 import { CenterSpinner, OfflineBanner, SpaceGateBody, useReadableColumn } from './codeParts.js';
 import { fileViewerHref } from './codeRoutes.js';
@@ -16,6 +18,7 @@ import { FilesSearchBar, FindResultRow, GrepResultRow, TreeRowView } from './fil
 import { buildFileDecorationIndex, fileDecorationOf } from './fileDecorations.js';
 import type { TreeRow } from './fileTree.js';
 import { saveTreeScroll, treeScroll } from './fileTreeStore.js';
+import { buildFileMenu, buildGrepMatchMenu } from './pathMenu.js';
 import type { PanelDock } from './panelDock.js';
 import type { CodeSpace } from './useCodeSpace.js';
 import { useFileSearch, type FileSearchState } from './useFileSearch.js';
@@ -107,6 +110,12 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 		void refreshStatus();
 	};
 
+	// 行の長押しのメニュー（名前・相対パスのコピー。Q548 案 A）。ネイティブのメニューが無いビルドではシートで出す
+	const menuOps = useMemo(() => contextMenuOps(), []);
+	const menuSheet = useContextMenuSheet();
+	const fileMenu = (path: string, dir: boolean, line?: number) => buildFileMenu({ path, dir }, { ...menuOps, ...(dir ? {} : { open: () => openFile(path, line) }) });
+	const grepMenu = (match: { readonly path: string; readonly line: number; readonly text: string }) => buildGrepMatchMenu(match, { ...menuOps, open: () => openFile(match.path, match.line) });
+
 	const searching = searchOpen && query.trim().length > 0;
 	return (
 		<Screen>
@@ -123,7 +132,7 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 				<View style={styles.body}>
 					<OfflineBanner reason={codeSpace.unavailable} />
 					{searching ? (
-						<SearchResults pcId={codeSpace.pcId} search={search} query={query} mode={mode} unavailable={codeSpace.unavailable} bottomInset={insets.bottom} onOpen={openFile} />
+						<SearchResults pcId={codeSpace.pcId} search={search} query={query} mode={mode} unavailable={codeSpace.unavailable} bottomInset={insets.bottom} onOpen={openFile} fileMenu={fileMenu} grepMenu={grepMenu} longPress={menuSheet.longPress} />
 					) : !tree.root.loaded ? (
 						tree.root.error !== undefined ? (
 							<EmptyState icon={CircleAlert} title="ファイルを読み込めませんでした" body={tree.root.error} action={codeSpace.live ? { label: '再読み込み', onPress: () => tree.retry('') } : undefined} />
@@ -146,29 +155,35 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 							onScrollToIndexFailed={info => {
 								listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: true });
 							}}
-							renderItem={({ item }) => (
-								<TreeRowView
-									pcId={codeSpace.pcId}
-									row={item}
-									expanded={tree.expanded.has(item.path)}
-									highlighted={item.path === tree.highlighted || (item.kind === 'file' && item.path === tree.opened)}
-									decoration={item.kind === 'dir' || item.kind === 'file' ? fileDecorationOf(decorations, { path: item.path, dir: item.kind === 'dir', ignored: item.ignored }) : undefined}
-									disabled={codeSpace.pcId === undefined}
-									onToggle={tree.toggle}
-									onOpen={path => openFile(path)}
-									onRetry={tree.retry}
-								/>
-							)}
+							renderItem={({ item }) => {
+								const menu = item.kind === 'dir' || item.kind === 'file' ? fileMenu(item.path, item.kind === 'dir') : undefined;
+								return (
+									<TreeRowView
+										pcId={codeSpace.pcId}
+										row={item}
+										expanded={tree.expanded.has(item.path)}
+										highlighted={item.path === tree.highlighted || (item.kind === 'file' && item.path === tree.opened)}
+										decoration={item.kind === 'dir' || item.kind === 'file' ? fileDecorationOf(decorations, { path: item.path, dir: item.kind === 'dir', ignored: item.ignored }) : undefined}
+										disabled={codeSpace.pcId === undefined}
+										onToggle={tree.toggle}
+										onOpen={path => openFile(path)}
+										onRetry={tree.retry}
+										menu={menu}
+										onLongPress={menuSheet.longPress(menu)}
+									/>
+								);
+							}}
 						/>
 					)}
 				</View>
 			</SpaceGateBody>
+			{menuSheet.sheet}
 		</Screen>
 	);
 }
 
 /** 検索の結果（検索中・切断・失敗・一致なし・結果）。 */
-function SearchResults({ pcId, search, query, mode, unavailable, bottomInset, onOpen }: {
+function SearchResults({ pcId, search, query, mode, unavailable, bottomInset, onOpen, fileMenu, grepMenu, longPress }: {
 	pcId: string | undefined;
 	search: FileSearchState;
 	query: string;
@@ -176,6 +191,9 @@ function SearchResults({ pcId, search, query, mode, unavailable, bottomInset, on
 	unavailable: string | undefined;
 	bottomInset: number;
 	onOpen: (path: string, line?: number) => void;
+	fileMenu: (path: string, dir: boolean) => ContextMenuSpec;
+	grepMenu: (match: { readonly path: string; readonly line: number; readonly text: string }) => ContextMenuSpec;
+	longPress: (menu: ContextMenuSpec | undefined) => (() => void) | undefined;
 }) {
 	const column = useReadableColumn();
 	if (search.error !== undefined) {
@@ -194,7 +212,10 @@ function SearchResults({ pcId, search, query, mode, unavailable, bottomInset, on
 				contentContainerStyle={contentStyle}
 				keyboardShouldPersistTaps="handled"
 				keyboardDismissMode="on-drag"
-				renderItem={({ item }) => <FindResultRow pcId={pcId} path={item} query={query} onOpen={path => onOpen(path)} />}
+				renderItem={({ item }) => {
+					const menu = fileMenu(item, false);
+					return <FindResultRow pcId={pcId} path={item} query={query} onOpen={path => onOpen(path)} menu={menu} onLongPress={longPress(menu)} />;
+				}}
 				ListFooterComponent={found.truncated ? <Text style={styles.note}>結果が多いため一部だけを出しています</Text> : null}
 			/>
 		);
@@ -211,7 +232,10 @@ function SearchResults({ pcId, search, query, mode, unavailable, bottomInset, on
 				contentContainerStyle={contentStyle}
 				keyboardShouldPersistTaps="handled"
 				keyboardDismissMode="on-drag"
-				renderItem={({ item }) => <GrepResultRow path={item.path} line={item.line} text={item.text} query={query} onOpen={onOpen} />}
+				renderItem={({ item }) => {
+					const menu = grepMenu(item);
+					return <GrepResultRow path={item.path} line={item.line} text={item.text} query={query} onOpen={onOpen} menu={menu} onLongPress={longPress(menu)} />;
+				}}
 				ListFooterComponent={found.truncated ? <Text style={styles.note}>結果が多いため一部だけを出しています</Text> : null}
 			/>
 		);

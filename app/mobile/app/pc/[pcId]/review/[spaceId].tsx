@@ -352,6 +352,7 @@ export default function ReviewScreen() {
 							{textRaw ? (
 								<DiffBody
 									diff={diff}
+									path={path}
 									rows={rows}
 									unavailable={codeSpace.unavailable}
 									notes={placedNotes}
@@ -423,8 +424,10 @@ function showStageFailure(text: string): void {
 }
 
 /** 差分の本文（読み込み中・切断・失敗・差分なし・表計算の差分・テキストの差分）。 */
-function DiffBody({ diff, rows, unavailable, notes, onLongPressRow, onPressNote }: {
+function DiffBody({ diff, path, rows, unavailable, notes, onLongPressRow, onPressNote }: {
 	diff: DiffContent;
+	/** 差分のファイル（行の長押しのメニューの「パス:行番号をコピー」）。 */
+	path: string;
 	rows: ReturnType<typeof parseUnifiedDiff> | undefined;
 	unavailable: string | undefined;
 	notes: PlacedNotes | undefined;
@@ -462,7 +465,7 @@ function DiffBody({ diff, rows, unavailable, notes, onLongPressRow, onPressNote 
 			</ScrollView>
 		);
 	}
-	const lines = <DiffLines rows={rows} {...(notes !== undefined ? { notes, onPressNote } : {})} {...(onLongPressRow !== undefined ? { onLongPressRow } : {})} />;
+	const lines = <DiffLines rows={rows} path={path} {...(notes !== undefined ? { notes, onPressNote } : {})} {...(onLongPressRow !== undefined ? { onLongPressRow } : {})} />;
 	// 大きすぎる差分は PC が先頭だけを送る（scm の diff の truncated）
 	return diff.truncated ? (
 		<View style={styles.body}>
