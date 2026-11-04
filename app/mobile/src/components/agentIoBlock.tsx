@@ -8,12 +8,13 @@ import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.
 import { hitSlopToMinimum } from './hitSlop.js';
 import { monoFamily } from '../monoFont.js';
 import { haptic } from '../haptics.js';
-import { clipForDisplay } from './agentIoClip.js';
+import { PC_FULL_TEXT_LIMIT, clipForDisplay, isFullTextCapped } from './agentIoClip.js';
 import { scaleChatSize } from '../chatTextScale.js';
 import { useChatStyles, useChatTextScale } from '../ui/chatTextScale.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
 import { isClipboardAvailable, writeClipboardText } from '../nativeClipboard.js';
 import { useParaToast } from '../paraToast.js';
+import { COPY_TOAST_MS, notifyCopyFailed } from './copyActions.js';
 
 /**
  * タイムラインのステップを開いたときに出す「入力／結果」の枠。
@@ -44,7 +45,19 @@ export function useFullText(message: AgentChatMessage, terminalKey: string | und
 			.catch((err: Error) => setError(err.message))
 			.finally(() => setLoading(false));
 	};
-	return { full, loading, error, load, available: terminalKey !== undefined };
+	/** 全文を取り寄せて返す（取り寄せ済みならそれ）。コピーの前に使う（Q549 U10）。 */
+	const fetchFull = async (): Promise<string> => {
+		if (full !== undefined) {
+			return full;
+		}
+		if (terminalKey === undefined) {
+			throw new Error('PCに接続すると全文をコピーできます');
+		}
+		const text = await requestFull(terminalKey, message.rev);
+		setFull(text);
+		return text;
+	};
+	return { full, loading, error, load, fetchFull, available: terminalKey !== undefined };
 }
 
 /**
@@ -76,7 +89,7 @@ export function ExpandableText({ message, terminalKey, style }: { message: Agent
 
 export function IOBlock({ label, message, terminalKey, lines, text }: { label: string; message: AgentChatMessage; terminalKey?: string; lines?: boolean; text?: string }) {
 	const [wrap, setWrap] = useState(false);
-	const { full, loading, error, load, available } = useFullText(message, terminalKey);
+	const { full, loading, error, load, fetchFull, available } = useFullText(message, terminalKey);
 	const theme = useThemeColors();
 	const styles = useChatStyles(baseStyles);
 	// text 指定は「入力JSONから抜き出したコマンド本文」など、表示だけ差し替えたい場合に使う。
@@ -87,7 +100,18 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 	const { text: displayBody, omittedLines } = clipForDisplay(body);
 	return (
 		<View style={styles.io}>
-			<IOBar label={lines === true && lineCount > 0 ? `${label} · ${lineCount}行` : label} wrap={wrap} onToggleWrap={() => setWrap(value => !value)} copyText={body} />
+			<IOBar
+				label={lines === true && lineCount > 0 ? `${label} · ${lineCount}行` : label}
+				wrap={wrap}
+				onToggleWrap={() => setWrap(value => !value)}
+				// PC 側で切り詰められているときは、届いた分ではなく全文を取り寄せてから写す（Q549 U10 案 A）
+				copyText={message.truncated === true && full === undefined && available ? fetchFull : body}
+				onCopied={copiedText => {
+					if (message.truncated === true && isFullTextCapped(copiedText)) {
+						useParaToast.getState().show({ key: 'io-copy-capped', text: '途中までをコピーしました', sub: `PC から届く全文は ${PC_FULL_TEXT_LIMIT / 1024}K 字までです`, icon: 'alert-circle', tone: 'warn' }, COPY_TOAST_MS);
+					}
+				}}
+			/>
 			<ScrollView style={styles.ioScroll} nestedScrollEnabled contentContainerStyle={styles.ioScrollContent}>
 				{wrap
 					? <Text style={[styles.ioText, styles.ioWrapText]} selectable>{displayBody}</Text>
@@ -110,25 +134,46 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 
 /**
  * 枠の見出し行（名前・「折り返し」・「コピー」）。ツールの入出力の枠と、会話のコードブロックで同じ形にする。
- * `toast` を付けると、写したときに「コピーしました」のお知らせも出す（会話のコードブロック。ターミナル・メモと同じ知らせ）。
+ * 写せたら押したボタンが「コピー済」に変わるので、トーストは重ねない。写せなかったときだけトーストで知らせる（Q549 U3 案 B）。
+ * `copyText` を関数にすると、押してから文字を用意する（切り詰められた本文の全文を取り寄せてから写すとき）。
  */
-export function IOBar({ label, wrap, onToggleWrap, copyText, toast }: { label: string; wrap: boolean; onToggleWrap: () => void; copyText: string; toast?: boolean }) {
+export function IOBar({ label, wrap, onToggleWrap, copyText, onCopied }: {
+	label: string;
+	wrap: boolean;
+	onToggleWrap: () => void;
+	copyText: string | (() => Promise<string>);
+	/** 写せた後に、写した文字で呼ぶ。 */
+	onCopied?: (text: string) => void;
+}) {
 	const [copied, setCopied] = useState(false);
 	const theme = useThemeColors();
 	const styles = useChatStyles(baseStyles);
 	// クリップボードのネイティブ部品が無いビルドではコピーのボタンを出さない（nativeClipboard.ts）。
 	const canCopy = isClipboardAvailable();
-	const copy = () => {
-		void writeClipboardText(copyText).then(done => {
-			haptic(done ? 'success' : 'error');
-			if (done) {
-				setCopied(true);
-				setTimeout(() => setCopied(false), 1200);
-				if (toast === true) {
-					useParaToast.getState().show({ key: 'chat-code-copy', text: 'コピーしました', icon: 'copy-outline', tone: 'done' }, 1500);
-				}
+	const [preparing, setPreparing] = useState(false);
+	const copy = async () => {
+		let text: string;
+		if (typeof copyText === 'string') {
+			text = copyText;
+		} else {
+			setPreparing(true);
+			try {
+				text = await copyText();
+			} catch (error) {
+				notifyCopyFailed(error instanceof Error ? error.message : String(error));
+				return;
+			} finally {
+				setPreparing(false);
 			}
-		});
+		}
+		if (!await writeClipboardText(text)) {
+			notifyCopyFailed();
+			return;
+		}
+		haptic('success');
+		setCopied(true);
+		setTimeout(() => setCopied(false), COPY_TOAST_MS);
+		onCopied?.(text);
 	};
 	return (
 		<View style={styles.ioBar}>
@@ -143,8 +188,8 @@ export function IOBar({ label, wrap, onToggleWrap, copyText, toast }: { label: s
 				<Text style={[styles.ioActionText, wrap ? { color: theme.accent } : null]}>折り返し</Text>
 			</Pressable>
 			{canCopy ? (
-				<Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction} hitSlop={IO_ACTION_HIT_SLOP}>
-					<Text style={[styles.ioActionText, copied ? styles.ioActionDone : null]}>{copied ? 'コピー済' : 'コピー'}</Text>
+				<Pressable onPress={() => { void copy(); }} disabled={preparing} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction} hitSlop={IO_ACTION_HIT_SLOP}>
+					<Text style={[styles.ioActionText, copied ? styles.ioActionDone : null]}>{preparing ? '取得中…' : copied ? 'コピー済' : 'コピー'}</Text>
 				</Pressable>
 			) : null}
 		</View>

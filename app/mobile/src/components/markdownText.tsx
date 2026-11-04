@@ -16,6 +16,10 @@ import { useChatIconSize, useChatStyles, useChatTextScale } from '../ui/chatText
 import { useThemeColors } from '../ui/themeColorsStore.js';
 import type { LocalFileTarget } from '../localFileTarget.js';
 import { IOBar } from './agentIoBlock.js';
+import { ContextMenu, useContextMenuSheet } from './contextMenu.js';
+import type { ContextMenuOps, ContextMenuSpec } from './contextMenuModel.js';
+import { contextMenuOps } from './copyActions.js';
+import { buildExternalLinkMenu, buildLocalFileLinkMenu } from './linkMenu.js';
 import { HorizontalScrollFade } from './horizontalScrollFade.js';
 import { localFileTargetKey, useLocalFileOpener } from './localFileOpener.js';
 import { MAX_BULLET_DEPTH, parseBlocks, parseInline, type Block, type InlineToken } from './markdownParse.js';
@@ -121,17 +125,19 @@ const HIGHLIGHT_REQUEST_DELAY_MS = 250;
  */
 const HeadingBlock = memo(function HeadingBlock({ text, level, onOpenLocal }: { text: string; level: number; onOpenLocal: (target: LocalFileTarget) => void }) {
 	const selectable = useContext(SelectableContext);
+	const links = useContext(LinkMenuContext);
 	const theme = useThemeColors();
 	const styles = useChatStyles(baseStyles);
 	return (
 		<Text style={[styles.body, styles.heading, level === 1 ? styles.h1 : level === 2 ? styles.h2 : null]} selectable={selectable}>
-			{renderInlineTokens(parseInline(text), styles, styles.body, onOpenLocal, theme.accent)}
+			{renderInlineTokens(parseInline(text), styles, styles.body, onOpenLocal, theme.accent, links.externalLongPress)}
 		</Text>
 	);
 });
 
 const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Extract<Block, { kind: 'table' }>; onOpenLocal: (target: LocalFileTarget) => void }) {
 	const selectable = useContext(SelectableContext);
+	const links = useContext(LinkMenuContext);
 	// 列数はヘッダー基準（本体行の過不足セルは空/切り捨てで揃える）
 	const cols = block.header.length;
 	// 列幅は内容から見積もって固定する。flex:1 で画面幅へ押し込むと列が潰れて
@@ -147,7 +153,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 					{block.header.map((cell, c) => (
 						<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
 							<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable={selectable}>
-								{renderInlineTokens(parseInline(cell), styles, styles.body, onOpenLocal, theme.accent)}
+								{renderInlineTokens(parseInline(cell), styles, styles.body, onOpenLocal, theme.accent, links.externalLongPress)}
 							</Text>
 						</View>
 					))}
@@ -157,7 +163,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 						{Array.from({ length: cols }, (_, c) => (
 							<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
 								<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable={selectable}>
-									{renderInlineTokens(parseInline(row[c] ?? ''), styles, styles.body, onOpenLocal, theme.accent)}
+									{renderInlineTokens(parseInline(row[c] ?? ''), styles, styles.body, onOpenLocal, theme.accent, links.externalLongPress)}
 								</Text>
 							</View>
 						))}
@@ -260,7 +266,7 @@ const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?:
 		);
 	return (
 		<View style={[styles.codeBlock, highlighted?.bg !== undefined ? { backgroundColor: highlighted.bg } : null]}>
-			<IOBar label={lang ?? 'コード'} wrap={wrap} onToggleWrap={() => setWrap(value => !value)} copyText={text} toast />
+			<IOBar label={lang ?? 'コード'} wrap={wrap} onToggleWrap={() => setWrap(value => !value)} copyText={text} />
 			{wrap
 				? <View style={styles.codeContent}>{body}</View>
 				: <HorizontalScrollFade contentStyle={styles.codeContent}>{body}</HorizontalScrollFade>}
@@ -269,7 +275,7 @@ const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?:
 });
 
 /** `linkColor` はリンクの色（設定 → 色の「選択の印・リンク」）。 */
-function renderInlineTokens(tokens: InlineToken[], styles: typeof baseStyles, baseStyle: object, onOpenLocal: (target: LocalFileTarget) => void, linkColor: string): ReactNode[] {
+function renderInlineTokens(tokens: InlineToken[], styles: typeof baseStyles, baseStyle: object, onOpenLocal: (target: LocalFileTarget) => void, linkColor: string, externalLongPress: (url: string) => (() => void) | undefined): ReactNode[] {
 	return tokens.map((token, i) => {
 		if (token.kind === 'code') {
 			return <Text key={i} style={[baseStyle, styles.inlineCode]}>{token.text}</Text>;
@@ -278,7 +284,8 @@ function renderInlineTokens(tokens: InlineToken[], styles: typeof baseStyles, ba
 			return <Text key={i} style={[baseStyle, styles.bold]}>{token.text}</Text>;
 		}
 		if (token.kind === 'external') {
-			return <Text key={i} style={[baseStyle, styles.link, { color: linkColor }]} onPress={() => { void Linking.openURL(token.url).catch(() => { /* 開けないURLは無視 */ }); }}>{token.label}</Text>;
+			// 押したら今までどおりすぐ開く。長押しで URL の操作（Q549 U9。ネイティブのメニューがあるビルドでは発言のメニューの「リンク」）
+			return <Text key={i} style={[baseStyle, styles.link, { color: linkColor }]} onPress={() => openExternalUrl(token.url)} onLongPress={externalLongPress(token.url)}>{token.label}</Text>;
 		}
 		if (token.kind === 'local') {
 			return <Text key={i} style={[baseStyle, styles.link, { color: linkColor }]} onPress={() => onOpenLocal(token.target)}>{token.label}</Text>;
@@ -288,6 +295,9 @@ function renderInlineTokens(tokens: InlineToken[], styles: typeof baseStyles, ba
 }
 
 function LocalFileCard({ label, target, opening, onPress }: { label: string; target: LocalFileTarget; opening: boolean; onPress: () => void }) {
+	const links = useContext(LinkMenuContext);
+	// 長押しで「ファイルを開く」「パスをコピー」「行番号つきでコピー」（Q549 U4）
+	const menu = buildLocalFileLinkMenu(target, { ...links.ops, open: onPress });
 	const name = target.path.split(/[\\/]/).pop() ?? target.path;
 	const theme = useThemeColors();
 	const styles = useChatStyles(baseStyles);
@@ -295,24 +305,27 @@ function LocalFileCard({ label, target, opening, onPress }: { label: string; tar
 	const fileIconBox = useChatIconSize(32);
 	const location = target.line !== undefined ? `行 ${target.line}${target.column !== undefined ? `、列 ${target.column}` : ''}` : undefined;
 	return (
-		<Pressable style={({ pressed }) => [styles.fileCard, pressed ? styles.fileCardPressed : null]} onPress={onPress} accessibilityRole="button" accessibilityLabel={`${label}を開く`}>
-			<View style={[styles.fileIcon, { width: fileIconBox, height: fileIconBox, backgroundColor: theme.accentWash }]}><Ionicons name="document-text-outline" size={iconSize} color={theme.accent} /></View>
-			<View style={styles.fileInfo}>
-				<Text style={styles.fileLabel} numberOfLines={1}>{label || name}</Text>
-				<Text style={styles.filePath} numberOfLines={2}>{target.path}{location !== undefined ? ` · ${location}` : ''}</Text>
-			</View>
-			{opening ? <ActivityIndicator size="small" color={theme.accent} /> : <Ionicons name="chevron-forward" size={iconSize} color={colors.textDim} />}
-		</Pressable>
+		<ContextMenu menu={menu} previewRadius={radius.control}>
+			<Pressable style={({ pressed }) => [styles.fileCard, pressed ? styles.fileCardPressed : null]} onPress={onPress} onLongPress={links.longPress(menu)} accessibilityRole="button" accessibilityLabel={`${label}を開く`}>
+				<View style={[styles.fileIcon, { width: fileIconBox, height: fileIconBox, backgroundColor: theme.accentWash }]}><Ionicons name="document-text-outline" size={iconSize} color={theme.accent} /></View>
+				<View style={styles.fileInfo}>
+					<Text style={styles.fileLabel} numberOfLines={1}>{label || name}</Text>
+					<Text style={styles.filePath} numberOfLines={2}>{target.path}{location !== undefined ? ` · ${location}` : ''}</Text>
+				</View>
+				{opening ? <ActivityIndicator size="small" color={theme.accent} /> : <Ionicons name="chevron-forward" size={iconSize} color={colors.textDim} />}
+			</Pressable>
+		</ContextMenu>
 	);
 }
 
 const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLocal: (target: LocalFileTarget) => void; openingKey?: string }) {
 	const selectable = useContext(SelectableContext);
+	const links = useContext(LinkMenuContext);
 	const theme = useThemeColors();
 	const styles = useChatStyles(baseStyles);
 	const tokens = parseInline(text);
 	if (!tokens.some(token => token.kind === 'local')) {
-		return <Text style={styles.body} selectable={selectable}>{renderInlineTokens(tokens, styles, styles.body, onOpenLocal, theme.accent)}</Text>;
+		return <Text style={styles.body} selectable={selectable}>{renderInlineTokens(tokens, styles, styles.body, onOpenLocal, theme.accent, links.externalLongPress)}</Text>;
 	}
 	const groups: InlineToken[][] = [];
 	for (const token of tokens) {
@@ -330,7 +343,7 @@ const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }:
 				if (local?.kind === 'local') {
 					return <LocalFileCard key={i} label={local.label} target={local.target} opening={openingKey === localFileTargetKey(local.target)} onPress={() => onOpenLocal(local.target)} />;
 				}
-				return <Text key={i} style={styles.body} selectable={selectable}>{renderInlineTokens(group, styles, styles.body, onOpenLocal, theme.accent)}</Text>;
+				return <Text key={i} style={styles.body} selectable={selectable}>{renderInlineTokens(group, styles, styles.body, onOpenLocal, theme.accent, links.externalLongPress)}</Text>;
 			})}
 		</View>
 	);
@@ -342,6 +355,18 @@ const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }:
  */
 const SelectableContext = createContext(true);
 
+/** 本文の中のリンクの長押し（ネイティブのメニューが無いビルドのシートと、写す道具）。MarkdownText が 1 つずつ持つ。 */
+interface LinkMenus {
+	readonly ops: ContextMenuOps;
+	readonly longPress: (menu: ContextMenuSpec | undefined) => (() => void) | undefined;
+	readonly externalLongPress: (url: string) => (() => void) | undefined;
+}
+const LinkMenuContext = createContext<LinkMenus>({ ops: { canCopy: false, copy: () => undefined, copyLater: () => undefined, share: () => undefined }, longPress: () => undefined, externalLongPress: () => undefined });
+
+function openExternalUrl(url: string): void {
+	void Linking.openURL(url).catch(() => { /* 開けないURLは無視 */ });
+}
+
 export function MarkdownText({ text, selectable = true }: {
 	text: string;
 	/** 既定は true（今の長押しのコピー）。長押しのメニューで包むときだけ false を渡す。 */
@@ -352,12 +377,25 @@ export function MarkdownText({ text, selectable = true }: {
 	// 本文が変わらない再レンダー（リンクを押したときのローカルstate更新など）で
 	// パースし直さない。`parseBlocks` は `text` だけの純粋関数。
 	const blocks = useMemo(() => parseBlocks(text), [text]);
+	const menuSheet = useContextMenuSheet();
+	const { longPress } = menuSheet;
+	const links = useMemo<LinkMenus>(() => {
+		const ops = contextMenuOps();
+		return {
+			ops,
+			longPress,
+			externalLongPress: url => longPress(buildExternalLinkMenu({ url }, { ...ops, open: () => openExternalUrl(url) })),
+		};
+	}, [longPress]);
 	return (
 		<View style={styles.root}>
 			<SelectableContext.Provider value={selectable}>
-				<BlockList blocks={blocks} onOpenLocal={open} openingKey={openingKey} />
+				<LinkMenuContext.Provider value={links}>
+					<BlockList blocks={blocks} onOpenLocal={open} openingKey={openingKey} />
+				</LinkMenuContext.Provider>
 			</SelectableContext.Provider>
 			{viewer}
+			{menuSheet.sheet}
 		</View>
 	);
 }

@@ -353,6 +353,29 @@ export function markdownPlainText(source: string): string {
 	return joinPlainBlocks(parseBlocks(source));
 }
 
+/** 本文の外のリンク（http・https）の行き先。同じものは 1 回だけ、{@link MAX_COPY_PARTS} まで。 */
+export function markdownExternalLinks(source: string): readonly { readonly label: string; readonly url: string }[] {
+	const links: { label: string; url: string }[] = [];
+	const visit = (blocks: readonly Block[]) => {
+		for (const block of blocks) {
+			const texts = block.kind === 'para' || block.kind === 'heading' || block.kind === 'bullet' ? [block.text]
+				: block.kind === 'table' ? [...block.header, ...block.rows.flat()] : [];
+			if (block.kind === 'quote') {
+				visit(block.blocks);
+			}
+			for (const text of texts) {
+				for (const token of parseInline(text)) {
+					if (token.kind === 'external' && links.length < MAX_COPY_PARTS && !links.some(link => link.url === token.url)) {
+						links.push({ label: token.label, url: token.url });
+					}
+				}
+			}
+		}
+	};
+	visit(parseBlocks(source));
+	return links;
+}
+
 /** メニューに並べる 1 つ（見出しは本文の頭の 1 行）。 */
 export interface MarkdownCopyPart {
 	readonly label: string;
