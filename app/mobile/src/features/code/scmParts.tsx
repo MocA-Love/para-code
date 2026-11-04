@@ -1,9 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native';
 import { ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Minus, Plus, Sparkles, X } from 'lucide-react-native';
 import type { ParadisMobileSyncOperation } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
+import { ContextMenu, useContextMenuSheet, type ContextMenuSpec } from '../../components/contextMenu.js';
+import { contextMenuOps } from '../../components/copyActions.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
@@ -16,6 +18,7 @@ import type { CommitAction, ScmCounts, ScmEntry } from './scmModel.js';
 import { splitPath } from './scmModel.js';
 import type { AgentHandoffResult, CommitFailureView, ScmSyncSummary } from './scmSync.js';
 import type { CommitFiles } from './useScmData.js';
+import { SHORT_HASH_LENGTH, buildCommitFileMenu, buildCommitMenu } from './pathMenu.js';
 
 /**
  * ソース管理の画面の部品（Orca の MobileSourceControlBranchCard / FileRows / コミットバー /
@@ -95,31 +98,38 @@ function prStateColor(state: string): string {
 }
 
 /** 変更の行（モックの `.frow`。状態の記号・ファイル名・フォルダ）。押すと差分レビューへ。 */
-export function ScmFileRow({ entry, disabled, onPress, stage }: {
+export function ScmFileRow({ entry, disabled, onPress, stage, menu, onLongPress }: {
 	entry: ScmEntry;
 	disabled: boolean;
 	onPress: () => void;
 	/** ファイルごとのステージ（PC が扱えるときだけ。Orca W2-15）。 */
 	stage?: { readonly busy: boolean; readonly disabled: boolean; readonly onPress: () => void };
+	/** 長押しのメニュー（名前・相対パスのコピー・差分・ステージ。`contextMenu.tsx`）。 */
+	menu?: ContextMenuSpec;
+	/** ネイティブのメニューが無いビルドで、長押しでシートを出す。 */
+	onLongPress?: () => void;
 }) {
 	const { name, dir } = splitPath(entry.path);
 	const row = (
-		<Pressable
-			onPress={() => { haptic('move'); onPress(); }}
-			disabled={disabled}
-			style={({ pressed }) => [styles.fileRow, pressed ? styles.fileRowPressed : undefined, disabled ? styles.dim : undefined]}
-			accessibilityRole="button"
-			accessibilityLabel={`${entry.meta.label}: ${entry.path}`}
-			accessibilityHint="差分を開きます"
-		>
-			<Text style={[styles.symbol, { color: entry.meta.color }]}>{entry.meta.symbol}</Text>
-			<Icon icon={FileText} size={iconSize.md} color={colors.textDim} />
-			<View style={styles.fileCol}>
-				<Text style={styles.fileName} numberOfLines={1}>{name}</Text>
-				<Text style={styles.fileSub} numberOfLines={1}>{dir.length > 0 ? `${dir} · ${entry.meta.label}` : entry.meta.label}</Text>
-			</View>
-			<Icon icon={ChevronRight} size={iconSize.md} color={colors.textMuted} />
-		</Pressable>
+		<ContextMenu menu={menu}>
+			<Pressable
+				onPress={() => { haptic('move'); onPress(); }}
+				onLongPress={onLongPress}
+				disabled={disabled}
+				style={({ pressed }) => [styles.fileRow, pressed ? styles.fileRowPressed : undefined, disabled ? styles.dim : undefined]}
+				accessibilityRole="button"
+				accessibilityLabel={`${entry.meta.label}: ${entry.path}`}
+				accessibilityHint="差分を開きます"
+			>
+				<Text style={[styles.symbol, { color: entry.meta.color }]}>{entry.meta.symbol}</Text>
+				<Icon icon={FileText} size={iconSize.md} color={colors.textDim} />
+				<View style={styles.fileCol}>
+					<Text style={styles.fileName} numberOfLines={1}>{name}</Text>
+					<Text style={styles.fileSub} numberOfLines={1}>{dir.length > 0 ? `${dir} · ${entry.meta.label}` : entry.meta.label}</Text>
+				</View>
+				<Icon icon={ChevronRight} size={iconSize.md} color={colors.textMuted} />
+			</Pressable>
+		</ContextMenu>
 	);
 	if (stage === undefined) {
 		return row;
@@ -287,35 +297,43 @@ export function HistoryList({ log, now, commitFiles, onExpand, onOpenWeb }: {
 	onOpenWeb: ((hash: string) => void) | undefined;
 }) {
 	const [expanded, setExpanded] = useState<string | undefined>(undefined);
+	// 行の長押しのメニュー（ハッシュ・件名・ファイルのパスのコピー。Q548 案 A）。ネイティブのメニューが無いビルドではシート
+	const menuOps = useMemo(() => contextMenuOps(), []);
+	const menuSheet = useContextMenuSheet();
 	return (
 		<View>
+			{menuSheet.sheet}
 			{log.commits.map(commit => {
 				const open = expanded === commit.hash;
 				const detail = commitFiles[commit.hash];
+				const commitMenu = buildCommitMenu(commit, { ...menuOps, ...(onOpenWeb !== undefined ? { openWeb: () => onOpenWeb(commit.hash) } : {}) });
 				return (
 					<View key={commit.hash} style={styles.historyItem}>
 						<View style={styles.historyRowWrap}>
-							<Pressable
-								onPress={() => {
-									haptic('move');
-									setExpanded(open ? undefined : commit.hash);
-									if (!open) {
-										onExpand(commit.hash);
-									}
-								}}
-								style={({ pressed }) => [styles.historyRow, pressed ? styles.fileRowPressed : undefined]}
-								accessibilityRole="button"
-								accessibilityState={{ expanded: open }}
-								accessibilityLabel={`${commit.subject}、変わったファイル`}
-							>
-								<Icon icon={open ? ChevronDown : GitCommitHorizontal} size={iconSize.md} color={colors.textMuted} />
-								<View style={styles.fileCol}>
-									<Text style={styles.historySubject} numberOfLines={2}>{commit.subject}</Text>
-									<Text style={styles.historyMeta} numberOfLines={1}>
-										{`${commit.hash.slice(0, 7)} · ${commit.at !== undefined ? formatRelativeTime(commit.at, now) : commit.when}`}
-									</Text>
-								</View>
-							</Pressable>
+							<ContextMenu menu={commitMenu} style={styles.historyRowMenu}>
+								<Pressable
+									onPress={() => {
+										haptic('move');
+										setExpanded(open ? undefined : commit.hash);
+										if (!open) {
+											onExpand(commit.hash);
+										}
+									}}
+									onLongPress={menuSheet.longPress(commitMenu)}
+									style={({ pressed }) => [styles.historyRow, pressed ? styles.fileRowPressed : undefined]}
+									accessibilityRole="button"
+									accessibilityState={{ expanded: open }}
+									accessibilityLabel={`${commit.subject}、変わったファイル`}
+								>
+									<Icon icon={open ? ChevronDown : GitCommitHorizontal} size={iconSize.md} color={colors.textMuted} />
+									<View style={styles.fileCol}>
+										<Text style={styles.historySubject} numberOfLines={2}>{commit.subject}</Text>
+										<Text style={styles.historyMeta} numberOfLines={1}>
+											{`${commit.hash.slice(0, SHORT_HASH_LENGTH)} · ${commit.at !== undefined ? formatRelativeTime(commit.at, now) : commit.when}`}
+										</Text>
+									</View>
+								</Pressable>
+							</ContextMenu>
 							{onOpenWeb !== undefined ? (
 								<Pressable
 									onPress={() => { onOpenWeb(commit.hash); }}
@@ -334,11 +352,20 @@ export function HistoryList({ log, now, commitFiles, onExpand, onOpenWeb }: {
 								{detail?.files !== undefined && detail.files.length === 0 ? <Text style={styles.historyMeta}>変わったファイルはありません</Text> : null}
 								{(detail?.files ?? []).map(file => {
 									const meta = scmChangeMeta(commitFileKind(file.status), file.status);
-									return (
-										<View key={`${file.status}${file.path}`} style={styles.commitFileRow} accessibilityLabel={`${meta.label}: ${file.path}`}>
+									const fileMenu = buildCommitFileMenu(file, menuOps);
+									const fallback = menuSheet.longPress(fileMenu);
+									const body = (
+										<>
 											<Text style={[styles.symbolSmall, { color: meta.color }]}>{meta.symbol}</Text>
 											<Text style={styles.commitFilePath} numberOfLines={1}>{file.path}</Text>
-										</View>
+										</>
+									);
+									return (
+										<ContextMenu key={`${file.status}${file.path}`} menu={fileMenu}>
+											{fallback !== undefined
+												? <Pressable onLongPress={fallback} style={styles.commitFileRow} accessibilityLabel={`${meta.label}: ${file.path}`} accessibilityHint="長押しでパスをコピーできます">{body}</Pressable>
+												: <View style={styles.commitFileRow} accessibilityLabel={`${meta.label}: ${file.path}`}>{body}</View>}
+										</ContextMenu>
 									);
 								})}
 							</View>
@@ -513,6 +540,10 @@ const styles = StyleSheet.create({
 	historyRowWrap: {
 		flexDirection: 'row',
 		alignItems: 'stretch',
+	},
+	historyRowMenu: {
+		flex: 1,
+		minWidth: 0,
 	},
 	historyRow: {
 		flex: 1,

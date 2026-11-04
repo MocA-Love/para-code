@@ -1,9 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useRef, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Linking, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { CircleCheck, CircleAlert, CloudOff, GitCommitHorizontal, RefreshCw } from 'lucide-react-native';
+import { useContextMenuSheet } from '../../components/contextMenu.js';
+import { contextMenuOps } from '../../components/copyActions.js';
 import { haptic } from '../../haptics.js';
 import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
@@ -30,6 +32,7 @@ import {
 } from './scmModel.js';
 import { branchSyncOf, commitFailureView, commitHint, commitScope, scmPrimaryAction, scmPushConfirm, scmSyncSummary, type ScmPushConfirm } from './scmSync.js';
 import { mergeConfirmMessage, prMergeToastText, type PrDetail } from './pullRequest.js';
+import { buildScmFileMenu } from './pathMenu.js';
 import { PullRequestPanel } from './pullRequestParts.js';
 import { useCodeSpace, type CodeSpaceTarget } from './useCodeSpace.js';
 import type { PanelDock } from './panelDock.js';
@@ -206,6 +209,15 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 		router.push(href);
 	};
 
+	// 変更の行の長押しのメニュー（名前・相対パスのコピー・差分・ステージ。Q548 案 A）。ネイティブのメニューが無いビルドではシート
+	const menuOps = useMemo(() => contextMenuOps(), []);
+	const menuSheet = useContextMenuSheet();
+	const scmFileMenu = (entry: ScmEntry, canStage: boolean) => buildScmFileMenu(entry, {
+		...menuOps,
+		openDiff: () => openReview(entry.path),
+		...(canStage ? { toggleStage: () => void toggleStage(entry) } : {}),
+	});
+
 	const changesState = listBodyState({ data: statusState.status?.files, error: statusState.error, unavailable: codeSpace.unavailable });
 	const historyState = listBodyState({ data: history.log?.commits, error: history.error, unavailable: codeSpace.unavailable });
 
@@ -262,15 +274,21 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 									{groupScmEntries(entries).map(section => (
 										<View key={section.group}>
 											<GroupHeading title={section.title} count={section.entries.length} />
-											{section.entries.map(entry => (
-												<ScmFileRow
-													key={entry.path}
-													entry={entry}
-													disabled={codeSpace.pcId === undefined}
-													onPress={() => openReview(entry.path)}
-													{...(stageFile.enabled && entry.kind !== 'conflict' ? { stage: { busy: stageFile.pending.has(entry.path), disabled: !codeSpace.live, onPress: () => void toggleStage(entry) } } : {})}
-												/>
-											))}
+											{section.entries.map(entry => {
+												const canStage = stageFile.enabled && entry.kind !== 'conflict';
+												const menu = scmFileMenu(entry, canStage && codeSpace.live && !stageFile.pending.has(entry.path));
+												return (
+													<ScmFileRow
+														key={entry.path}
+														entry={entry}
+														disabled={codeSpace.pcId === undefined}
+														onPress={() => openReview(entry.path)}
+														{...(canStage ? { stage: { busy: stageFile.pending.has(entry.path), disabled: !codeSpace.live, onPress: () => void toggleStage(entry) } } : {})}
+														menu={menu}
+														onLongPress={menuSheet.longPress(menu)}
+													/>
+												);
+											})}
 										</View>
 									))}
 								</ListBody>
@@ -375,6 +393,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 				onConfirm={() => void runSync('push')}
 				onClose={() => setConfirmingPush(false)}
 			/>
+			{menuSheet.sheet}
 		</Screen>
 	);
 }

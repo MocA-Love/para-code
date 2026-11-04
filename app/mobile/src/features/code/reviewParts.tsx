@@ -3,6 +3,8 @@
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Check, ChevronLeft, ChevronRight, FileText, RefreshCw, X } from 'lucide-react-native';
 import type { ParadisMobileReviewState } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileDiffReview.js';
+import { ContextMenu, nativeContextMenuAvailable } from '../../components/contextMenu.js';
+import { contextMenuOps } from '../../components/copyActions.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { DiffRow } from '../../components/diffParser.js';
 import { haptic } from '../../haptics.js';
@@ -15,6 +17,7 @@ import { NoteBubble, StaleNotes } from './reviewNoteParts.js';
 import { canAnnotateRow, type DiffLineItem, type PlacedNotes, type ReviewNote } from './reviewNotes.js';
 import { REVIEW_FILTERS, diffLineNumber, diffSign, reviewStateOf, type ReviewFilter } from './diffReview.js';
 import { splitPath, type ScmEntry } from './scmModel.js';
+import { buildDiffLineMenu } from './pathMenu.js';
 import { StageToggle } from './scmParts.js';
 
 /**
@@ -111,9 +114,13 @@ export function ReviewFileSummary({ entry, path, stats, state, stage }: {
  * 差分の行（行番号 40・記号 12・本文。追加と削除は地の色で分ける）。
  * `notes` を渡すと、メモを付いた行のすぐ下に、行が見つからないメモを差分の上に出す（Orca W2-28）。
  * `onLongPressRow` を渡すと、削除行と見出し以外の行を長押しでメモを書ける。
+ * `path` を渡すと、ネイティブのメニューが使えるビルドでは長押しで「この行にメモを書く」「この行をコピー」
+ * 「パス:行番号をコピー」のメニューを出す（Q548 案 A。メニューが無いビルドは今のまま、長押しですぐメモ）。
  */
-export function DiffLines({ rows, notes, onLongPressRow, onPressNote }: {
+export function DiffLines({ rows, path, notes, onLongPressRow, onPressNote }: {
 	rows: readonly DiffRow[];
+	/** 差分のファイルの相対パス（メニューの「パス:行番号をコピー」に使う）。 */
+	path?: string;
 	notes?: PlacedNotes;
 	onLongPressRow?: (row: DiffRow & { newNo: number }) => void;
 	onPressNote?: (note: ReviewNote) => void;
@@ -130,13 +137,13 @@ export function DiffLines({ rows, notes, onLongPressRow, onPressNote }: {
 			windowSize={15}
 			ListHeaderComponent={notes !== undefined && onPressNote !== undefined ? <StaleNotes notes={notes.stale} onPress={onPressNote} /> : null}
 			renderItem={({ item }) => item.kind === 'row'
-				? <DiffLine row={item.row} onLongPress={onLongPressRow} />
+				? <DiffLine row={item.row} path={path} onLongPress={onLongPressRow} />
 				: <NoteBubble note={item.note} onPress={note => onPressNote?.(note)} />}
 		/>
 	);
 }
 
-function DiffLine({ row, onLongPress }: { row: DiffRow; onLongPress?: (row: DiffRow & { newNo: number }) => void }) {
+function DiffLine({ row, path, onLongPress }: { row: DiffRow; path: string | undefined; onLongPress?: (row: DiffRow & { newNo: number }) => void }) {
 	const number = diffLineNumber(row);
 	const body = (
 		<>
@@ -146,6 +153,13 @@ function DiffLine({ row, onLongPress }: { row: DiffRow; onLongPress?: (row: Diff
 		</>
 	);
 	const lineStyle = [styles.line, row.kind === 'add' ? styles.lineAdd : row.kind === 'del' ? styles.lineDel : undefined];
+	if (nativeContextMenuAvailable && path !== undefined && row.kind !== 'hunk') {
+		const menu = buildDiffLineMenu({ path, line: row.newNo, text: row.text }, {
+			...contextMenuOps(),
+			...(onLongPress !== undefined && canAnnotateRow(row) ? { writeNote: () => { haptic('lift'); onLongPress(row); } } : {}),
+		});
+		return <ContextMenu menu={menu}><View style={lineStyle}>{body}</View></ContextMenu>;
+	}
 	if (onLongPress === undefined || !canAnnotateRow(row)) {
 		return <View style={lineStyle}>{body}</View>;
 	}
