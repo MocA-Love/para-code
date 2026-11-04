@@ -1,0 +1,306 @@
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { scaleChatSize, type ChatTextScale } from '../../chatTextScale.js';
+import { BULLET_INDENT, tableColumnWidths } from '../../components/markdownLayout.js';
+import { MAX_BULLET_DEPTH, parseBlocks, parseInline, type Block, type InlineToken } from '../../components/markdownParse.js';
+import { alpha, colors, mono, tint, type } from '../../theme.js';
+import { escapeHtml } from '../code/fileViewerModel.js';
+import { viewerScriptCspMeta } from '../code/fileFind.js';
+
+/**
+ * その場で範囲を選ぶ（Q551 案 4）ときに、発言の表示と差し替える WebView の HTML。RN を持たない純関数。
+ *
+ * - 本文は会話の描画（`markdownText.tsx`）と同じ `parseBlocks` / `parseInline` で読み、同じ寸法（字・行間・余白・
+ *   コードの帯・表の列の幅・引用の棒）の CSS で描く。差し替えた瞬間に字の位置がずれて跳ねないようにするため
+ *   （ファイルのビューアの `buildMarkdownHtml` は marked で読むのでブロックの切れ方が違い、字も 15/24 で大きい）
+ * - 発言から来た文字は、すべて `escapeHtml` を通して要素の中身にだけ置く（属性には入れない。`escapeHtml` は引用符を
+ *   変えないため）。リンクは `href` を持たない色付きの文字にして、押しても遷移しない
+ * - スクリプトは nonce 付きの 1 つだけ（`viewerScriptCspMeta`）。高さを知らせることと、押した点の単語を選ぶことだけをする
+ * - 発言は `segments` の並びで受ける。今は押した発言 1 つだけを渡すが、「画面の発言をまとめて」に広げるときは
+ *   ここに並べれば発言をまたいで選べる
+ */
+
+/** 差し替える発言 1 つ。 */
+export interface InplaceSelectSegment {
+	/** 発言の元の文字（エージェントは Markdown）。 */
+	readonly text: string;
+	/** Markdown として描くか（自分の発言は false。吹き出しの字で、そのまま描く）。 */
+	readonly markdown: boolean;
+}
+
+/** 会話の描画に合わせるための値（画面の側で集めて渡す）。 */
+export interface InplaceSelectLook {
+	/** 会話の文字サイズの設定（`useChatTextScale()`）。 */
+	readonly scale: ChatTextScale;
+	/** OS の文字の倍率（`useWindowDimensions().fontScale`）。RN の Text は掛けるが、WebView の CSS は掛けないので自分で掛ける。 */
+	readonly osFontScale: number;
+	/** `StyleSheet.hairlineWidth`。 */
+	readonly hairline: number;
+	/** 本文の色（エージェントは `colors.text`、自分の発言は吹き出しの上の色）。 */
+	readonly fg: string;
+	/** リンクの色（設定 → 色の「選択の印・リンク」）。 */
+	readonly accent: string;
+	/** ファイルのカードのアイコンの台の色。 */
+	readonly accentWash: string;
+	/** 選んだ範囲の色。 */
+	readonly selection: string;
+}
+
+/** 押した点（WebView の左上からの pt）。ここの単語を選んだ状態で開く。 */
+export interface InplaceSelectPoint {
+	readonly x: number;
+	readonly y: number;
+}
+
+/** WebView から届く知らせ。`ready` は描き終えた（単語も選んだ）、`height` は中身の高さが変わった。 */
+export interface InplaceSelectMessage {
+	readonly kind: 'ready' | 'height';
+	readonly height: number;
+}
+
+/** 知らせの高さの上限（壊れた値で一覧を伸ばさない）。 */
+const MAX_REPORTED_HEIGHT = 200_000;
+
+/** WebView の `onMessage` の `data` を読む。形が違うものは捨てる。 */
+export function parseInplaceSelectMessage(data: unknown): InplaceSelectMessage | undefined {
+	if (typeof data !== 'string' || data.length > 200) {
+		return undefined;
+	}
+	let value: unknown;
+	try {
+		value = JSON.parse(data);
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const kind = (value as { type?: unknown }).type;
+	const height = (value as { height?: unknown }).height;
+	if ((kind !== 'ready' && kind !== 'height') || typeof height !== 'number' || !Number.isFinite(height) || height <= 0) {
+		return undefined;
+	}
+	return { kind, height: Math.min(MAX_REPORTED_HEIGHT, Math.ceil(height)) };
+}
+
+/**
+ * 差し替えている間の行の最小の高さ。WebView の中身が元の表示より高いときだけ、その高さまで行を伸ばす
+ * （低いときは元の表示の高さのまま。一覧の行の高さを変えない）。
+ */
+export function inplaceSelectMinHeight(nativeHeight: number | undefined, webHeight: number | undefined): number | undefined {
+	if (webHeight === undefined) {
+		return undefined;
+	}
+	return nativeHeight === undefined || webHeight > nativeHeight + 0.5 ? webHeight : undefined;
+}
+
+/**
+ * 押した点を WebView の中の点に直す。触れた点（画面の座標）と、包んだ部品の画面の上の四角から求める。
+ * 四角の外・古い（`maxAgeMs` より前の）触れた点は使わない（iPad の右クリックなど、触れずにメニューを開いたとき）。
+ */
+export function localPressPoint(
+	touch: { readonly pageX: number; readonly pageY: number; readonly at: number } | undefined,
+	frame: { readonly pageX: number; readonly pageY: number; readonly width: number; readonly height: number },
+	now: number,
+	maxAgeMs = 15_000,
+): InplaceSelectPoint | undefined {
+	if (touch === undefined || now - touch.at > maxAgeMs || now < touch.at) {
+		return undefined;
+	}
+	const x = touch.pageX - frame.pageX;
+	const y = touch.pageY - frame.pageY;
+	if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > frame.width || y > frame.height) {
+		return undefined;
+	}
+	return { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 };
+}
+
+/** 寸法の計算（`chatTextScale.ts` の `scaleChatStyle` と同じ掛け方）。 */
+interface Metrics {
+	/** 字の大きさ・行の高さ（OS の倍率まで掛けた px）。 */
+	readonly font: (value: number) => number;
+	/** 縦の余白・間隔（割合の半分だけ広げる）。 */
+	readonly spacing: (value: number) => number;
+	/** アイコン・字下げ（割合そのもの）。 */
+	readonly layout: (value: number) => number;
+}
+
+function metricsOf(look: InplaceSelectLook): Metrics {
+	const os = Number.isFinite(look.osFontScale) && look.osFontScale > 0 ? look.osFontScale : 1;
+	const spacingScale = 1 + (look.scale.layout - 1) / 2;
+	return {
+		font: value => Math.round(value * look.scale.font * os * 100) / 100,
+		spacing: value => Math.round(value * spacingScale * 2) / 2,
+		layout: value => scaleChatSize(value, look.scale),
+	};
+}
+
+function inlineHtml(tokens: readonly InlineToken[]): string {
+	return tokens.map(token => {
+		switch (token.kind) {
+			case 'code':
+				return `<span class="ic">${escapeHtml(token.text)}</span>`;
+			case 'bold':
+				return `<span class="b">${escapeHtml(token.text)}</span>`;
+			case 'external':
+			case 'local':
+				return `<span class="a">${escapeHtml(token.label)}</span>`;
+			default:
+				return escapeHtml(token.text);
+		}
+	}).join('');
+}
+
+/** 本文の段落（ファイルのリンクはカードにして、前後の文字と分ける。`markdownText.tsx` の InlineBlock と同じ）。 */
+function inlineBlockHtml(text: string): string {
+	const tokens = parseInline(text);
+	if (!tokens.some(token => token.kind === 'local')) {
+		return `<div class="p">${inlineHtml(tokens)}</div>`;
+	}
+	const groups: InlineToken[][] = [];
+	for (const token of tokens) {
+		const last = groups[groups.length - 1];
+		if (token.kind !== 'local' && last !== undefined && last[0]?.kind !== 'local') {
+			last.push(token);
+		} else {
+			groups.push([token]);
+		}
+	}
+	const parts = groups.map(group => {
+		const local = group[0];
+		if (local?.kind === 'local') {
+			const name = local.target.path.split(/[\\/]/).pop() ?? local.target.path;
+			const location = local.target.line !== undefined ? ` · 行 ${local.target.line}${local.target.column !== undefined ? `、列 ${local.target.column}` : ''}` : '';
+			return `<div class="fc"><div class="fi"></div><div class="fn"><div class="fl">${escapeHtml(local.label || name)}</div><div class="fp">${escapeHtml(local.target.path)}${escapeHtml(location)}</div></div><div class="fv"></div></div>`;
+		}
+		return `<div class="p">${inlineHtml(group)}</div>`;
+	});
+	return `<div class="st">${parts.join('')}</div>`;
+}
+
+function alignClass(align: string | undefined): string {
+	return align === 'center' ? ' ac' : align === 'right' ? ' ar' : '';
+}
+
+function tableHtml(block: Extract<Block, { kind: 'table' }>, look: InplaceSelectLook): string {
+	const cols = block.header.length;
+	const widths = tableColumnWidths(block, cols, look.scale);
+	const cell = (text: string, c: number, head: boolean) =>
+		`<div class="td${head ? ' th' : ''}${alignClass(block.aligns[c])}" style="width:${widths[c] ?? 52}px">${inlineHtml(parseInline(text))}</div>`;
+	const head = `<div class="tr hd">${block.header.map((text, c) => cell(text, c, true)).join('')}</div>`;
+	const rows = block.rows.map((row, r) => `<div class="tr${r % 2 === 1 ? ' alt' : ''}">${Array.from({ length: cols }, (_, c) => cell(row[c] ?? '', c, false)).join('')}</div>`);
+	return `<div class="tw"><div class="tb">${head}${rows.join('')}</div></div>`;
+}
+
+function blocksHtml(blocks: readonly Block[], look: InplaceSelectLook, metrics: Metrics): string {
+	return blocks.map(block => {
+		switch (block.kind) {
+			case 'code':
+				// 見出しの帯（言語名と「折り返し」「コピー」）は会話と同じ高さで描くだけで、選べない・押せない
+				return `<div class="cb"><div class="io"><span class="iol">${escapeHtml(block.lang ?? 'コード')}</span><span class="ioa">折り返し</span><span class="ioa">コピー</span></div><div class="cc"><div class="ct">${escapeHtml(block.text)}</div></div></div>`;
+			case 'heading':
+				return `<div class="p h${block.level === 1 ? ' h1' : ''}">${inlineHtml(parseInline(block.text))}</div>`;
+			case 'bullet':
+				return `<div class="bl" style="padding-left:${Math.min(block.depth, MAX_BULLET_DEPTH) * metrics.layout(BULLET_INDENT)}px"><span class="bm">${escapeHtml(block.marker)}</span><div class="bb">${inlineBlockHtml(block.text)}</div></div>`;
+			case 'table':
+				return tableHtml(block, look);
+			case 'quote':
+				return `<div class="q"><div class="qb"></div><div class="qc">${blocksHtml(block.blocks, look, metrics)}</div></div>`;
+			case 'rule':
+				return '<div class="hr"></div>';
+			case 'para':
+				return inlineBlockHtml(block.text);
+		}
+	}).join('');
+}
+
+function segmentHtml(segment: InplaceSelectSegment, look: InplaceSelectLook, metrics: Metrics): string {
+	if (!segment.markdown) {
+		return `<div class="seg"><div class="u">${escapeHtml(segment.text)}</div></div>`;
+	}
+	return `<div class="seg">${blocksHtml(parseBlocks(segment.text), look, metrics)}</div>`;
+}
+
+/** 数を CSS・スクリプトに置ける形にする（数でなければ 0）。 */
+function num(value: number): string {
+	return Number.isFinite(value) ? String(Math.round(value * 100) / 100) : '0';
+}
+
+/** 色を CSS に置ける形にする（`#rrggbb` / `rgba(...)` など、記号の少ない値だけを通す）。 */
+function cssColor(value: string, fallback: string): string {
+	return /^[#\w\s(),.%-]{1,64}$/.test(value) ? value : fallback;
+}
+
+function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
+	const { font, spacing, layout } = metrics;
+	const hair = `${num(look.hairline)}px solid ${colors.border}`;
+	const fg = cssColor(look.fg, colors.text);
+	return `
+	html, body { margin: 0; padding: 0; background: transparent; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+	body { color: ${fg}; font-family: -apple-system, system-ui, sans-serif; font-size: ${num(font(type.body))}px; line-height: ${num(font(20))}px; -webkit-user-select: text; user-select: text; -webkit-tap-highlight-color: transparent; }
+	::selection { background: ${cssColor(look.selection, colors.accent)}; }
+	#m, .seg { display: flex; flex-direction: column; gap: ${num(spacing(6))}px; }
+	.p { white-space: pre-wrap; overflow-wrap: break-word; }
+	.b, .h { font-weight: 700; }
+	.h1 { font-size: ${num(font(type.title))}px; }
+	.ic { font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.meta))}px; background: ${tint(colors.idle, alpha.line)}; border-radius: 6px; }
+	.a { color: ${cssColor(look.accent, colors.accent)}; text-decoration: underline; }
+	.st { display: flex; flex-direction: column; gap: ${num(spacing(6))}px; }
+	.bl { display: flex; gap: ${num(spacing(6))}px; }
+	.bm { color: ${colors.textDim}; flex: none; }
+	.bb { flex: 1; min-width: 0; }
+	.q { display: flex; gap: ${num(spacing(8))}px; }
+	.qb { width: 3px; flex: none; border-radius: 6px; background: ${colors.border}; }
+	.qc { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: ${num(spacing(6))}px; opacity: 0.86; }
+	.hr { height: ${num(look.hairline)}px; background: ${colors.border}; margin: ${num(spacing(6))}px 0; }
+	.cb { background: ${colors.codeBg}; border: 1px solid ${colors.border}; border-radius: 6px; overflow: hidden; }
+	.io { display: flex; align-items: center; gap: ${num(spacing(6))}px; padding: ${num(spacing(5))}px 8px; background: rgba(255,255,255,0.035); border-bottom: ${hair}; -webkit-user-select: none; user-select: none; }
+	.iol { flex: 1; min-width: 0; color: ${colors.textDim}; font-size: ${num(font(type.badge))}px; line-height: normal; font-weight: 800; letter-spacing: ${num(0.9 * look.scale.layout)}px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.ioa { min-height: 20px; box-sizing: border-box; display: flex; align-items: center; border: ${hair}; border-radius: 6px; padding: ${num(spacing(2))}px 7px; color: ${colors.textDim}; font-size: ${num(font(type.badge))}px; line-height: normal; }
+	.cc { overflow-x: auto; }
+	.ct { display: inline-block; min-width: 100%; box-sizing: border-box; padding: ${num(spacing(8))}px; color: ${colors.text}; font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.caption))}px; line-height: ${num(font(16))}px; white-space: pre; }
+	.tw { border: 1px solid ${colors.border}; border-radius: 6px; overflow-x: auto; margin: ${num(spacing(2))}px 0; }
+	.tb { display: inline-flex; flex-direction: column; }
+	.tr { display: flex; border-top: ${hair}; }
+	.tr.hd { background: ${tint(colors.idle, alpha.wash)}; border-top: 0; }
+	.tr.alt { background: ${tint(colors.idle, alpha.faint)}; }
+	.td { flex: none; box-sizing: border-box; padding: ${num(spacing(5))}px 7px; font-size: ${num(font(type.meta))}px; line-height: ${num(font(17))}px; white-space: pre-wrap; overflow-wrap: break-word; }
+	.td + .td { border-left: ${hair}; }
+	.th { font-weight: 700; }
+	.ac { text-align: center; }
+	.ar { text-align: right; }
+	.fc { display: flex; align-items: center; gap: ${num(spacing(10))}px; background: ${colors.glassBg}; border: 1px solid ${colors.glassBorder}; border-radius: 6px; padding: ${num(spacing(10))}px 11px; }
+	.fi { width: ${num(layout(32))}px; height: ${num(layout(32))}px; flex: none; border-radius: 6px; background: ${cssColor(look.accentWash, colors.accentWash)}; }
+	.fn { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: ${num(spacing(2))}px; }
+	.fl { font-size: ${num(font(type.body))}px; line-height: normal; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.fp { color: ${colors.textDim}; font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.badge))}px; line-height: ${num(font(14))}px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+	.fv { width: ${num(layout(18))}px; flex: none; }
+	.u { font-size: ${num(font(type.chat))}px; line-height: ${num(font(23))}px; font-weight: 500; white-space: pre-wrap; overflow-wrap: break-word; }
+`;
+}
+
+/**
+ * 高さを知らせ、押した点の単語を選ぶスクリプト。押した点が無ければ何も選ばない（つまみが出ないときは、
+ * 差し替えた後にもう一度長押しして選ぶ）。
+ */
+function selectScript(point: InplaceSelectPoint | undefined): string {
+	const at = point !== undefined ? `[${num(point.x)},${num(point.y)}]` : 'null';
+	return `(function(){
+var root=document.getElementById('m');
+function post(kind){try{window.ReactNativeWebView.postMessage(JSON.stringify({type:kind,height:Math.ceil(root.getBoundingClientRect().height)}));}catch(e){}}
+function selectAt(p){if(!p||!document.caretRangeFromPoint){return;}var r=document.caretRangeFromPoint(p[0],p[1]);if(!r||!root.contains(r.startContainer)){return;}var s=window.getSelection();if(!s){return;}s.removeAllRanges();s.addRange(r);if(s.modify){s.modify('move','backward','word');s.modify('extend','forward','word');}}
+var done=false;
+function ready(){if(done){return;}done=true;try{selectAt(${at});}catch(e){}post('ready');if(window.ResizeObserver){new ResizeObserver(function(){post('height');}).observe(root);}}
+if(document.readyState==='complete'){ready();}else{window.addEventListener('load',ready);}
+})();`;
+}
+
+/** 差し替える WebView の HTML。`nonce` は `createMobileOfficeNonce()` で作り、HTML を作るたびに新しくする。 */
+export function buildInplaceSelectHtml(segments: readonly InplaceSelectSegment[], look: InplaceSelectLook, nonce: string, point?: InplaceSelectPoint): string {
+	const metrics = metricsOf(look);
+	const body = segments.map(segment => segmentHtml(segment, look, metrics)).join('');
+	return `<!DOCTYPE html><html><head>${viewerScriptCspMeta(nonce)}
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>${styleSheet(look, metrics)}</style>
+</head><body><div id="m">${body}</div><script nonce="${nonce}">${selectScript(point)}</script></body></html>`;
+}

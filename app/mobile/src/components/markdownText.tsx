@@ -11,7 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
-import { scaleChatSize, type ChatTextScale } from '../chatTextScale.js';
+import { scaleChatSize } from '../chatTextScale.js';
 import { useChatIconSize, useChatStyles, useChatTextScale } from '../ui/chatTextScale.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
 import type { LocalFileTarget } from '../localFileTarget.js';
@@ -23,33 +23,7 @@ import { buildExternalLinkMenu, buildLocalFileLinkMenu } from './linkMenu.js';
 import { HorizontalScrollFade } from './horizontalScrollFade.js';
 import { localFileTargetKey, useLocalFileOpener } from './localFileOpener.js';
 import { MAX_BULLET_DEPTH, parseBlocks, parseInline, type Block, type InlineToken } from './markdownParse.js';
-
-/** 表セルの表示幅（fontSize 12 相当）。全角は2文字ぶんとして数える。 */
-function estimateTextWidth(text: string): number {
-	let width = 0;
-	for (const char of text) {
-		// 記号混じりでも大きく外さない程度の粗い見積もり（半角6.6px / 全角12px）。
-		width += /[　-鿿＀-￯]/.test(char) ? 12 : 6.6;
-	}
-	return width;
-}
-
-/**
- * 列ごとに「一番長いセル」を基準に幅を決める。極端に長い列は上限で頭打ちにする。
- * 会話の文字サイズ（`scale`）を変えているときは、見積もりも同じ割合で広げる・狭める。
- */
-function tableColumnWidths(block: { header: string[]; rows: string[][] }, cols: number, scale: ChatTextScale): number[] {
-	const widths: number[] = [];
-	for (let c = 0; c < cols; c++) {
-		let max = estimateTextWidth(block.header[c] ?? '');
-		for (const row of block.rows) {
-			max = Math.max(max, estimateTextWidth(row[c] ?? ''));
-		}
-		// +14 はセル左右のパディング、+8 は見積もり誤差ぶんの余白（足りないと折り返す）。
-		widths.push(scaleChatSize(Math.min(260, Math.max(52, Math.ceil(max) + 22)), scale));
-	}
-	return widths;
-}
+import { BULLET_INDENT, tableColumnWidths } from './markdownLayout.js';
 
 // ---- コードブロックのPCテーマハイライト -------------------------------------------------------
 
@@ -440,9 +414,6 @@ function BlockList({ blocks, onOpenLocal, openingKey }: { blocks: readonly Block
 		</>
 	);
 }
-
-/** 入れ子の箇条書きの 1 段ぶんの字下げ（会話の文字サイズが 100% のとき）。 */
-const BULLET_INDENT = 16;
 
 const baseStyles = StyleSheet.create({
 	root: { gap: 6 },
