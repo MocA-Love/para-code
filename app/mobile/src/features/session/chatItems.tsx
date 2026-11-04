@@ -179,7 +179,7 @@ const ToolRunRow = memo(function ToolRunRow({ msgs, terminalKey, allOpen }: { ms
 	return (
 		<View style={styles.row}>
 			{menuSheet.sheet}
-			<ContextMenu menu={runMenu}>
+			<ContextMenu menu={runMenu} style={styles.lineMenu}>
 				<Pressable
 					style={styles.runHead}
 					hitSlop={LINE_SLOP}
@@ -218,7 +218,7 @@ function ToolLine({ step, terminalKey, sheetLongPress }: { step: AgentTimelineSt
 	const menu = buildToolStepMenu({ label: `${description.label}${description.namespace ?? ''}`, arg: description.arg, rawInput: step.use?.text }, contextMenuOps());
 	return (
 		<View>
-			<ContextMenu menu={menu}>
+			<ContextMenu menu={menu} style={styles.lineMenu}>
 				<Pressable
 					style={styles.line}
 					hitSlop={LINE_SLOP}
@@ -451,6 +451,15 @@ function HistoryQuestionRow({ text, count, answered, outcome }: { text: string; 
 }
 
 const baseStyles = StyleSheet.create({
+	/**
+	 * ツールの行を包むメニューの入れ物。行の当たり判定は `LINE_SLOP` で上下に 8 ずつ広げているが、ネイティブのメニューの
+	 * ビューは行の大きさちょうどなので、そのままだと広げた分が入れ物の外になって届かない（Fabric のビューは枠の外の
+	 * 当たりを子へ渡さない）。入れ物を同じだけ広げ、余白で打ち消して見た目と並びは変えない。
+	 */
+	lineMenu: {
+		marginVertical: -LINE_SLOP.top,
+		paddingVertical: LINE_SLOP.top,
+	},
 	row: {
 		paddingHorizontal: space.lg,
 		paddingVertical: space.sm,

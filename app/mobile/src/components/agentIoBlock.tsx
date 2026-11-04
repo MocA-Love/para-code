@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import { useAppStore } from '../appState.js';
 import type { AgentChatMessage } from '../store.js';
@@ -151,6 +151,9 @@ export function IOBar({ label, wrap, onToggleWrap, copyText, onCopied }: {
 	// クリップボードのネイティブ部品が無いビルドではコピーのボタンを出さない（nativeClipboard.ts）。
 	const canCopy = isClipboardAvailable();
 	const [preparing, setPreparing] = useState(false);
+	// 全文を取り寄せている間に枠が消えたら（画面を離れた・行を閉じた）、届いても写さない
+	const mountedRef = useRef(true);
+	useEffect(() => () => { mountedRef.current = false; }, []);
 	const copy = async () => {
 		let text: string;
 		if (typeof copyText === 'string') {
@@ -158,12 +161,20 @@ export function IOBar({ label, wrap, onToggleWrap, copyText, onCopied }: {
 		} else {
 			setPreparing(true);
 			try {
+				// 取り寄せは PC への要求の側で 15 秒で打ち切られ、失敗として返る（requestAgentToolFullText）
 				text = await copyText();
 			} catch (error) {
-				notifyCopyFailed(error instanceof Error ? error.message : String(error));
+				if (mountedRef.current) {
+					notifyCopyFailed(error instanceof Error ? error.message : String(error));
+				}
 				return;
 			} finally {
-				setPreparing(false);
+				if (mountedRef.current) {
+					setPreparing(false);
+				}
+			}
+			if (!mountedRef.current) {
+				return;
 			}
 		}
 		if (!await writeClipboardText(text)) {
