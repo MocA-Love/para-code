@@ -14,6 +14,8 @@ export { BROWSER_JPEG_BINARY_ENCODING, decodeBinaryBrowserJpegFrame, isBinaryBro
 export type { BrowserJpegFrame } from './browserFrame.js';
 export { FS_BINARY_RESPONSE_ENCODING, decodeBinaryFsResponse, isBinaryFsResponse } from './fileResponse.js';
 export type { BinaryFsResponse, BinaryFsResponseType } from './fileResponse.js';
+export { FS_ABSOLUTE_PATH_CAPABILITY, FS_ABSOLUTE_PATH_KIND, parseFsAbsolutePathResponse } from './fsAbsolutePath.js';
+export type { FsAbsolutePathResponse } from './fsAbsolutePath.js';
 export { FS_BINARY_UPLOAD_ENCODING, decodeBinaryFsUpload, encodeBinaryFsUpload, isBinaryFsUpload } from './fileUpload.js';
 export type { BinaryFsUpload, BinaryFsUploadMetadata } from './fileUpload.js';
 export { TERMINAL_BINARY_DATA_ENCODING, decodeBinaryTerminalData, encodeBinaryTerminalData, isBinaryTerminalData } from './terminalData.js';

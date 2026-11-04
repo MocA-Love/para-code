@@ -2,12 +2,20 @@
 
 import { describe, expect, it } from 'vitest';
 import type { ContextMenuAction, ContextMenuOps, ContextMenuSpec } from '../../components/contextMenuModel.js';
-import { buildCommitMenu, buildDiffLineMenu, buildFileMenu, buildScmFileMenu, buildToolFileMenu } from './pathMenu.js';
+import { buildCommitFileMenu, buildCommitMenu, buildDiffLineMenu, buildFileMenu, buildScmFileMenu, buildToolFileMenu } from './pathMenu.js';
 
 /** 記録するだけの道具。 */
 function recorder(canCopy = true): { ops: ContextMenuOps; log: string[] } {
 	const log: string[] = [];
-	return { log, ops: { canCopy, copy: (text, toast) => log.push(`copy ${text} / ${toast}`), share: text => log.push(`share ${text}`) } };
+	return {
+		log,
+		ops: {
+			canCopy,
+			copy: (text, toast) => log.push(`copy ${text} / ${toast}`),
+			copyLater: (load, toast) => { void load().then(text => log.push(`copy later ${text} / ${toast}`)); },
+			share: text => log.push(`share ${text}`),
+		},
+	};
 }
 
 /** 比べやすい形（処理は省き、押せない・区切りだけ残す）。 */
@@ -105,5 +113,27 @@ describe('pathMenu', () => {
 				{ id: 'open', title: 'ファイルを開く', section: true },
 			],
 		});
+	});
+
+	it('asks the PC for the absolute path only when the item is chosen, and explains why it is greyed out', async () => {
+		const { ops, log } = recorder();
+		let asked = 0;
+		const available = buildCommitFileMenu({ path: 'src/a.ts', absolute: { kind: 'available', hint: '接続先 example-host のパス', load: async () => { asked++; return '/home/example/src/a.ts'; } } }, ops);
+		const absolute = (menu: ContextMenuSpec) => shape({ actions: menu.actions.filter(action => action.id === 'copy-absolute') });
+		expect({
+			available: absolute(available),
+			unsupported: absolute(buildCommitFileMenu({ path: 'src/a.ts', absolute: { kind: 'unsupported' } }, ops)),
+			offline: absolute(buildCommitFileMenu({ path: 'src/a.ts', absolute: { kind: 'offline' } }, ops)),
+			asked,
+		}).toEqual({
+			available: { title: undefined, actions: [{ id: 'copy-absolute', title: '絶対パスをコピー', subtitle: '接続先 example-host のパス' }] },
+			unsupported: { title: undefined, actions: [{ id: 'copy-absolute', title: '絶対パスをコピー', subtitle: 'PC の Para Code を更新すると使えます', disabled: true }] },
+			offline: { title: undefined, actions: [{ id: 'copy-absolute', title: '絶対パスをコピー', subtitle: 'PC につながると使えます', disabled: true }] },
+			asked: 0,
+		});
+		select(available, 'copy-absolute');
+		await Promise.resolve();
+		await Promise.resolve();
+		expect({ asked, log }).toEqual({ asked: 1, log: ['copy later /home/example/src/a.ts / 絶対パスをコピーしました'] });
 	});
 });

@@ -52,6 +52,8 @@ export interface ContextMenuOps {
 	/** 写せるビルドか（クリップボードの部品が無ければ、コピーの項目を薄くする）。 */
 	readonly canCopy: boolean;
 	copy(text: string, toast: string): void;
+	/** 押してから取りに行く文字を写す（PC への問い合わせ。取れなければ理由をトーストで出す）。 */
+	copyLater(load: () => Promise<string>, toast: string): void;
 	share(text: string): void;
 }
 

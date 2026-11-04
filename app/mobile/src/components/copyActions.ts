@@ -29,6 +29,12 @@ export function contextMenuOps(): ContextMenuOps {
 	return {
 		canCopy: isClipboardAvailable(),
 		copy: (text, toast) => { void copyTextWithToast(text, toast); },
+		copyLater: (load, toast) => {
+			void load().then(text => copyTextWithToast(text, toast), (error: unknown) => {
+				haptic('error');
+				useParaToast.getState().show({ key: 'context-menu-copy', text: 'コピーできませんでした', sub: error instanceof Error ? error.message : String(error), icon: 'alert-circle', tone: 'warn' }, 4000);
+			});
+		},
 		share: shareText,
 	};
 }
