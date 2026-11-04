@@ -16,7 +16,6 @@ import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
-import { OperatingSystem } from '../../../../base/common/platform.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
@@ -85,6 +84,7 @@ import { paradisDecodeMobileAgentAction } from '../common/paradisMobileAgentActi
 
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
+import { paradisRemoteAbsolutePath } from '../common/paradisMobileRemotePath.js';
 import { PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT, paradisIsMobileHtmlPath, paradisPrepareMobileHtmlImages } from './paradisMobileHtmlImageRequests.js';
 import { PARADIS_MOBILE_SHOW_PREFIX_ARGS, ParadisMobileIgnoredRuns, paradisMarkMobileIgnoredEntries, paradisMobileIgnoredRepoDir, paradisMobileIgnoredStatusArgs, paradisParseMobileIgnoredNames } from '../common/paradisMobileIgnoredEntries.js';
 import { paradisReadMobileScmStatus } from '../common/paradisMobileScmStatusRead.js';
@@ -343,21 +343,6 @@ async function paradisTerminalCwdResource(instance: Pick<ITerminalInstance, 'rem
 	}
 	const cwd = instance.capabilities.get(TerminalCapability.CwdDetection)?.getCwd();
 	return cwd ? paradisResolveExternalPath(URI.from({ scheme: Schemas.vscodeRemote, authority: remoteAuthority, path: '/' }), cwd) : undefined;
-}
-
-/**
- * 接続先の URI を、接続先のOSで通用する絶対パスへ直す。
- *
- * `URI.fsPath` は「このPCのOS」で区切りを決めるので、Windows のPCから Linux へ繋いでいると
- * `/home/u/x` が `\home\u\x` になり、接続先のエージェントが開けないパスになる。
- */
-function paradisRemoteAbsolutePath(uri: URI, os: OperatingSystem): string {
-	if (os !== OperatingSystem.Windows) {
-		return uri.path;
-	}
-	// Windows のパスは URI 上では `/c:/Users/...` の形で載っている
-	const path = /^\/[A-Za-z]:/.test(uri.path) ? uri.path.slice(1) : uri.path;
-	return path.replace(/\//g, '\\');
 }
 
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */

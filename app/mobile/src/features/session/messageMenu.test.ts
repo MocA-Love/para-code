@@ -14,7 +14,7 @@ describe('buildMessageMenu', () => {
 		let selected = 0;
 		const menu = buildMessageMenu(
 			{ text: '直しました。\n\n- **一つ目**\n- 二つ目\n\n```ts\nconst a = 1;\n```\n\n```bash\nnpm test\n```', markdown: true },
-			{ canCopy: true, copy: (text, toast) => log.push(`${toast}: ${text}`), share: text => log.push(`share: ${text}`), selectRange: () => { selected++; } },
+			{ canCopy: true, copyLater: () => undefined, copy: (text, toast) => log.push(`${toast}: ${text}`), share: text => log.push(`share: ${text}`), selectRange: () => { selected++; } },
 		);
 		expect(tree(menu)).toEqual([
 			'テキストをコピー',
@@ -34,14 +34,14 @@ describe('buildMessageMenu', () => {
 	});
 
 	it('keeps a plain reply short: no markdown copy when nothing would change, one code item for one block', () => {
-		const ops = { canCopy: true, copy: () => undefined, share: () => undefined, selectRange: () => undefined };
+		const ops = { canCopy: true, copyLater: () => undefined, copy: () => undefined, share: () => undefined, selectRange: () => undefined };
 		expect(tree(buildMessageMenu({ text: '了解です', markdown: true }, ops))).toEqual(['テキストをコピー', '範囲を選んでコピー…', '共有…']);
 		expect(tree(buildMessageMenu({ text: '見て\n\n```\nls\n```', markdown: true }, ops))).toEqual(['テキストをコピー', 'Markdown のままコピー', 'コードをコピー', '範囲を選んでコピー…', '共有…']);
 	});
 
 	it('copies the user message as typed', () => {
 		const log: string[] = [];
-		const menu = buildMessageMenu({ text: '**そのまま**', markdown: false }, { canCopy: true, copy: text => log.push(text), share: () => undefined, selectRange: () => undefined });
+		const menu = buildMessageMenu({ text: '**そのまま**', markdown: false }, { canCopy: true, copyLater: () => undefined, copy: text => log.push(text), share: () => undefined, selectRange: () => undefined });
 		expect(tree(menu)).toEqual(['テキストをコピー', '範囲を選んでコピー…', '共有…']);
 		menu.actions[0]?.onSelect?.();
 		expect(log).toEqual(['**そのまま**']);
