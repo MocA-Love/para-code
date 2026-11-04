@@ -89,7 +89,7 @@ export function ContextMenu({ menu, style, previewRadius = radius.control, previ
 	return (
 		<Native
 			items={items}
-			title={menu?.title ?? ''}
+			title={[menu?.title, menu?.message].filter(part => part !== undefined && part.length > 0).join('\n')}
 			previewCornerRadius={previewRadius}
 			previewBackgroundColor={previewBackground}
 			onSelect={event => {
@@ -131,7 +131,8 @@ export function contextMenuSheetActions(menu: ContextMenuSpec | undefined): Acti
 /**
  * ネイティブのメニューが無いビルドで、長押しで出すアプリのシート（画面に 1 つ）。
  * `longPress(menu)` を行の `onLongPress` に渡す。ネイティブのメニューがあるビルドでは `undefined` を返す
- * （長押しはネイティブのメニューが受ける）。`sheet` は画面の木に必ず置く。
+ * （長押しはネイティブのメニューが受ける）。`sheet` は画面の木に必ず置く（初めて開くまでは何も描かない。会話の発言ごとに
+ * 置いても、開かないかぎり重くならない）。
  */
 export function useContextMenuSheet(): { longPress: (menu: ContextMenuSpec | undefined) => (() => void) | undefined; sheet: ReactNode } {
 	const [menu, setMenu] = useState<ContextMenuSpec | undefined>();
@@ -146,6 +147,6 @@ export function useContextMenuSheet(): { longPress: (menu: ContextMenuSpec | und
 			setVisible(true);
 		};
 	}, []);
-	const sheet = <ActionSheet visible={visible} title={menu?.title} actions={contextMenuSheetActions(menu)} onClose={() => setVisible(false)} />;
+	const sheet = menu === undefined ? null : <ActionSheet visible={visible} title={menu.title} message={menu.message} actions={contextMenuSheetActions(menu)} onClose={() => setVisible(false)} />;
 	return { longPress, sheet };
 }

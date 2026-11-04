@@ -24,5 +24,6 @@ import './paradisMobileAttachmentRequests.js'; // モバイルから上げた添
 import './paradisMobileVoiceUsageRequests.js'; // 読み上げ（Aivis・ElevenLabs）の使用量（usage.voice.v1）
 import './paradisMobileDoNotDisturbRequests.js'; // PC のおやすみモードの切り替え（notify.dnd-remote.v1）
 import './paradisMobileHtmlImageRequests.js'; // HTML の埋め込み画像を 1 枚ずつ（fs.html-images.v1）
+import './paradisMobileAbsolutePathRequests.js'; // 行の長押しの「絶対パスをコピー」（fs.absolute-path.v1）
 
 export { };
