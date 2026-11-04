@@ -11,8 +11,8 @@ function ops(log: string[]): ContextMenuOps {
 	return { canCopy: true, copy: (text, toast) => log.push(`${toast}: ${text}`), copyLater: () => undefined, share: () => undefined };
 }
 
-function rows(menu: ContextMenuSpec): unknown {
-	return { title: menu.title, message: menu.message, actions: menu.actions.map(action => [action.id, action.subtitle]) };
+function rows(menu: ContextMenuSpec): { title: string | undefined; message: string | undefined; actions: [string, string | undefined][] } {
+	return { title: menu.title, message: menu.message, actions: menu.actions.map(action => [action.id, action.subtitle] as [string, string | undefined]) };
 }
 
 describe('link and tool row menus (Q549)', () => {
