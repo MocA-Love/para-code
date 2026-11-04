@@ -178,18 +178,23 @@ function inlineBlockHtml(text: string): string {
 	return `<div class="st">${parts.join('')}</div>`;
 }
 
-function alignClass(align: string | undefined): string {
-	return align === 'center' ? ' ac' : align === 'right' ? ' ar' : '';
+function alignAttr(align: string | undefined): string {
+	return align === 'center' ? ' class="ac"' : align === 'right' ? ' class="ar"' : '';
 }
 
 function tableHtml(block: Extract<Block, { kind: 'table' }>, look: InplaceSelectLook): string {
 	const cols = block.header.length;
 	const widths = tableColumnWidths(block, cols, look.scale);
-	const cell = (text: string, c: number, head: boolean) =>
-		`<div class="td${head ? ' th' : ''}${alignClass(block.aligns[c])}" style="width:${widths[c] ?? 52}px">${inlineHtml(parseInline(text))}</div>`;
-	const head = `<div class="tr hd">${block.header.map((text, c) => cell(text, c, true)).join('')}</div>`;
-	const rows = block.rows.map((row, r) => `<div class="tr${r % 2 === 1 ? ' alt' : ''}">${Array.from({ length: cols }, (_, c) => cell(row[c] ?? '', c, false)).join('')}</div>`);
-	return `<div class="tw"><div class="tb">${head}${rows.join('')}</div></div>`;
+	// 本物の表にする（選んで写すと行ごとに 1 行・セルはタブで区切られる。メニューの「テキストをコピー」と同じ形）
+	const colgroup = `<colgroup>${widths.map(width => `<col style="width:${width}px">`).join('')}</colgroup>`;
+	const cell = (text: string, c: number, head: boolean) => {
+		const tag = head ? 'th' : 'td';
+		return `<${tag}${alignAttr(block.aligns[c])}>${inlineHtml(parseInline(text))}</${tag}>`;
+	};
+	const head = `<tr class="hd">${block.header.map((text, c) => cell(text, c, true)).join('')}</tr>`;
+	const rows = block.rows.map((row, r) => `<tr${r % 2 === 1 ? ' class="alt"' : ''}>${Array.from({ length: cols }, (_, c) => cell(row[c] ?? '', c, false)).join('')}</tr>`);
+	const total = widths.reduce((sum, width) => sum + width, 0);
+	return `<div class="tw"><table style="width:${total}px">${colgroup}${head}${rows.join('')}</table></div>`;
 }
 
 function blocksHtml(blocks: readonly Block[], look: InplaceSelectLook, metrics: Metrics): string {
@@ -200,8 +205,12 @@ function blocksHtml(blocks: readonly Block[], look: InplaceSelectLook, metrics: 
 				return `<div class="cb"><div class="io"><span class="iol">${escapeHtml(block.lang ?? 'コード')}</span><span class="ioa">折り返し</span><span class="ioa">コピー</span></div><div class="cc"><div class="ct">${escapeHtml(block.text)}</div></div></div>`;
 			case 'heading':
 				return `<div class="p h${block.level === 1 ? ' h1' : ''}">${inlineHtml(parseInline(block.text))}</div>`;
-			case 'bullet':
-				return `<div class="bl" style="padding-left:${Math.min(block.depth, MAX_BULLET_DEPTH) * metrics.layout(BULLET_INDENT)}px"><span class="bm">${escapeHtml(block.marker)}</span><div class="bb">${inlineBlockHtml(block.text)}</div></div>`;
+			case 'bullet': {
+				// 印と本文は表のセルにする（flex や中の div だと、選んで写したときに印だけが 1 行になる。セルならタブで続く）
+				const tokens = parseInline(block.text);
+				const body = tokens.some(token => token.kind === 'local') ? `<div class="bb">${inlineBlockHtml(block.text)}</div>` : `<div class="bb p">${inlineHtml(tokens)}</div>`;
+				return `<div class="bl" style="padding-left:${Math.min(block.depth, MAX_BULLET_DEPTH) * metrics.layout(BULLET_INDENT)}px"><div class="br"><span class="bm">${escapeHtml(block.marker)}</span>${body}</div></div>`;
+			}
 			case 'table':
 				return tableHtml(block, look);
 			case 'quote':
@@ -246,9 +255,9 @@ function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
 	.ic { font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.meta))}px; background: ${tint(colors.idle, alpha.line)}; border-radius: 6px; }
 	.a { color: ${cssColor(look.accent, colors.accent)}; text-decoration: underline; }
 	.st { display: flex; flex-direction: column; gap: ${num(spacing(6))}px; }
-	.bl { display: flex; gap: ${num(spacing(6))}px; }
-	.bm { color: ${colors.textDim}; flex: none; }
-	.bb { flex: 1; min-width: 0; }
+	.br { display: table; width: 100%; table-layout: auto; border-collapse: collapse; }
+	.bm { display: table-cell; width: 1px; white-space: nowrap; padding-right: ${num(spacing(6))}px; color: ${colors.textDim}; }
+	.bb { display: table-cell; }
 	.q { display: flex; gap: ${num(spacing(8))}px; }
 	.qb { width: 3px; flex: none; border-radius: 6px; background: ${colors.border}; }
 	.qc { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: ${num(spacing(6))}px; opacity: 0.86; }
@@ -260,13 +269,13 @@ function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
 	.cc { overflow-x: auto; }
 	.ct { display: inline-block; min-width: 100%; box-sizing: border-box; padding: ${num(spacing(8))}px; color: ${colors.text}; font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.caption))}px; line-height: ${num(font(16))}px; white-space: pre; }
 	.tw { border: 1px solid ${colors.border}; border-radius: 6px; overflow-x: auto; margin: ${num(spacing(2))}px 0; }
-	.tb { display: inline-flex; flex-direction: column; }
-	.tr { display: flex; border-top: ${hair}; }
-	.tr.hd { background: ${tint(colors.idle, alpha.wash)}; border-top: 0; }
-	.tr.alt { background: ${tint(colors.idle, alpha.faint)}; }
-	.td { flex: none; box-sizing: border-box; padding: ${num(spacing(5))}px 7px; font-size: ${num(font(type.meta))}px; line-height: ${num(font(17))}px; white-space: pre-wrap; overflow-wrap: break-word; }
-	.td + .td { border-left: ${hair}; }
-	.th { font-weight: 700; }
+	table { border-collapse: collapse; table-layout: fixed; border-spacing: 0; }
+	tr + tr > th, tr + tr > td { border-top: ${hair}; }
+	tr.hd { background: ${tint(colors.idle, alpha.wash)}; }
+	tr.alt { background: ${tint(colors.idle, alpha.faint)}; }
+	th, td { box-sizing: border-box; padding: ${num(spacing(5))}px 7px; font-size: ${num(font(type.meta))}px; line-height: ${num(font(17))}px; text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: break-word; }
+	th + th, td + td { border-left: ${hair}; }
+	th { font-weight: 700; }
 	.ac { text-align: center; }
 	.ar { text-align: right; }
 	.fc { display: flex; align-items: center; gap: ${num(spacing(10))}px; background: ${colors.glassBg}; border: 1px solid ${colors.glassBorder}; border-radius: 6px; padding: ${num(spacing(10))}px 11px; }

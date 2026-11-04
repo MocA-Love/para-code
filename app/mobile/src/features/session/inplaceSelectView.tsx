@@ -10,8 +10,11 @@ import { useChatTextScale } from '../../ui/chatTextScale.js';
 import { useThemeColors } from '../../ui/index.js';
 import { buildInplaceSelectHtml, parseInplaceSelectMessage, type InplaceSelectPoint, type InplaceSelectSegment } from './inplaceSelectHtml.js';
 
-/** スクリプトが「描き終えた」を知らせてこないときに、それでも出すまでの待ち（ms）。 */
-const READY_FALLBACK_MS = 1200;
+/**
+ * 読み込みを終えた後、スクリプトが「描き終えた」を知らせてこないときに、それでも出すまでの待ち（ms）。
+ * 読み込みを終えないうち（白紙のまま）は出さない（元の表示を隠して空の発言にしないように）。
+ */
+const READY_AFTER_LOAD_MS = 300;
 
 /**
  * 発言の表示の上に重ねる、範囲を選ぶための WebView（Q551 案 4）。重ねる位置と大きさは呼び出し側
@@ -55,12 +58,13 @@ export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight }:
 			callbacks.current.onReady();
 		}
 	};
-	// スクリプトが動かなかったときも、選べるように出す（高さは元の表示のまま）
-	useEffect(() => {
-		const timer = setTimeout(markReady, READY_FALLBACK_MS);
-		return () => clearTimeout(timer);
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- 始めたときに 1 回だけ
-	}, []);
+	// 読み込んだのにスクリプトが知らせてこないときも、選べるように出す（高さは元の表示のまま）
+	const loadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	useEffect(() => () => clearTimeout(loadTimer.current), []);
+	const onLoadEnd = () => {
+		clearTimeout(loadTimer.current);
+		loadTimer.current = setTimeout(markReady, READY_AFTER_LOAD_MS);
+	};
 
 	const onMessage = (event: WebViewMessageEvent) => {
 		const message = parseInplaceSelectMessage(event.nativeEvent.data);
@@ -82,6 +86,7 @@ export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight }:
 				originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 				javaScriptEnabled
 				onMessage={onMessage}
+				onLoadEnd={onLoadEnd}
 				onShouldStartLoadWithRequest={guardWebViewNavigation}
 				// 縦のスクロールは会話の一覧に任せる（中身の高さまで WebView を伸ばすので、中でスクロールしない）
 				scrollEnabled={false}
