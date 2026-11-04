@@ -30,6 +30,8 @@ export interface ContextMenuAction {
 export interface ContextMenuSpec {
 	/** メニューの見出し（ファイルの相対パスなど）。 */
 	readonly title?: string;
+	/** 見出しの下に出す全文（ツールの引数など）。ネイティブのメニューでは見出しに続けて出す。 */
+	readonly message?: string;
 	readonly actions: readonly ContextMenuAction[];
 }
 

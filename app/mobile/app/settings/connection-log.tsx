@@ -15,6 +15,7 @@ import { appLinkMetrics } from '../../src/linkMetricsRuntime.js';
 import { haptic } from '../../src/haptics.js';
 import { isClipboardAvailable, writeClipboardText } from '../../src/nativeClipboard.js';
 import { useParaToast } from '../../src/paraToast.js';
+import { COPY_TOAST_MS } from '../../src/components/copyActions.js';
 import { colors, radius, space, type } from '../../src/theme.js';
 import { ListGroup, ListRow, connectionKind } from '../../src/ui/index.js';
 
@@ -96,7 +97,7 @@ export default function ConnectionLogScreen() {
 		});
 		const copied = await writeClipboardText(report);
 		haptic(copied ? 'success' : 'error');
-		toast({ key: 'connection-log-copy', text: copied ? '報告をコピーしました' : 'コピーできませんでした', icon: copied ? 'checkmark-circle-outline' : 'alert-circle-outline', tone: copied ? 'info' : 'warn' }, 2_500);
+		toast({ key: 'connection-log-copy', text: copied ? '報告をコピーしました' : 'コピーできませんでした', icon: copied ? 'checkmark-circle-outline' : 'alert-circle-outline', tone: copied ? 'info' : 'warn' }, COPY_TOAST_MS);
 	};
 
 	const copyLinkMetrics = async () => {
@@ -107,7 +108,7 @@ export default function ConnectionLogScreen() {
 		}
 		const copied = await writeClipboardText(formatAppLinkMetricsReport(snapshot, APP_VERSION, Date.now()));
 		haptic(copied ? 'success' : 'error');
-		toast({ key: 'link-metrics-copy', text: copied ? '計測の結果をコピーしました' : 'コピーできませんでした', icon: copied ? 'checkmark-circle-outline' : 'alert-circle-outline', tone: copied ? 'info' : 'warn' }, 2_500);
+		toast({ key: 'link-metrics-copy', text: copied ? '計測の結果をコピーしました' : 'コピーできませんでした', icon: copied ? 'checkmark-circle-outline' : 'alert-circle-outline', tone: copied ? 'info' : 'warn' }, COPY_TOAST_MS);
 	};
 
 	return (

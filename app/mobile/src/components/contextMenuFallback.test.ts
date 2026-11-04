@@ -42,7 +42,7 @@ describe('ContextMenu without the native module', () => {
 			renderer = create(createElement(Screen));
 		});
 		expect(renderer!.root.findAllByType('ParaContextMenuView' as ElementType)).toHaveLength(0);
-		expect(renderer!.root.findByType('ActionSheet' as ElementType).props.visible).toBe(false);
+		expect(renderer!.root.findAllByType('ActionSheet' as ElementType)).toHaveLength(0);
 		act(() => open?.());
 		const sheet = renderer!.root.findByType('ActionSheet' as ElementType);
 		expect({ visible: sheet.props.visible, title: sheet.props.title, rows: sheet.props.actions.map((row: { label: string; hint?: string; icon?: unknown }) => [row.label, row.hint, row.icon]) }).toEqual({

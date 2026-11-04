@@ -43,8 +43,7 @@ import type { TermStreamEvent } from '../store.js';
 import { TERMINAL_FOLLOW_MIN_FONT_SIZE, TERMINAL_FONT_SIZE_MIN, terminalGridFor, type TerminalGrid } from '../terminalViewport.js';
 import { colors } from '../theme.js';
 import { haptic } from '../haptics.js';
-import { writeClipboardText } from '../nativeClipboard.js';
-import { useParaToast } from '../paraToast.js';
+import { copyTextWithToast } from './copyActions.js';
 import { findTerminalLinkAt, findTerminalLinks, terminalOsc8Link, type TerminalLinkTarget } from '../terminalLinks.js';
 import { EmptyState } from './emptyState.js';
 import { createTermReadyWatchdog } from './termReadyWatchdog.js';
@@ -1264,12 +1263,7 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				if (typeof msg.text !== 'string' || msg.text.length === 0) {
 					return;
 				}
-				void writeClipboardText(msg.text).then(copied => {
-					if (copied) {
-						haptic('success');
-						useParaToast.getState().show({ key: 'terminal-copy', text: 'コピーしました', icon: 'copy-outline', tone: 'done' }, 1500);
-					}
-				});
+				void copyTextWithToast(msg.text, 'コピーしました');
 				return;
 			}
 			case 'selection':

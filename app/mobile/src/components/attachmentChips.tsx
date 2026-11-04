@@ -9,9 +9,9 @@ import { attachmentShareableUri, useAttachmentImage, type AttachmentLoad, type A
 import type { MessageAttachment } from '../attachments/attachmentText.js';
 import type { ComposerAttachment } from '../attachments/composerAttachments.js';
 import { haptic } from '../haptics.js';
-import { writeClipboardText } from '../nativeClipboard.js';
 import { paraAlert } from '../paraAlert.js';
 import { useParaToast } from '../paraToast.js';
+import { copyTextWithToast } from './copyActions.js';
 import { isPhotoLibrarySaveAvailable, saveImageToPhotos } from '../photoLibrary.js';
 import type { AgentChatImage } from '../store.js';
 import { colors, radius, space, squircle, type } from '../theme.js';
@@ -215,12 +215,7 @@ export function MessageAttachmentChips({ attachments, terminalKey, fallback, onB
 					label: `画像 ${menu + 1} のパスをコピー`,
 					icon: Copy,
 					onPress: () => {
-						void writeClipboardText(menuTarget.path).then(copied => {
-							if (copied) {
-								haptic('success');
-								useParaToast.getState().show({ key: `attachment-path:${menuTarget.name}`, text: 'パスをコピーしました', icon: 'copy-outline', tone: 'done' }, 2_000);
-							}
-						});
+						void copyTextWithToast(menuTarget.path, 'パスをコピーしました');
 					},
 				}] : []}
 				onClose={() => setMenu(undefined)}

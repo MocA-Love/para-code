@@ -3,7 +3,7 @@
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Check, ChevronLeft, ChevronRight, FileText, RefreshCw, X } from 'lucide-react-native';
 import type { ParadisMobileReviewState } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileDiffReview.js';
-import { ContextMenu, nativeContextMenuAvailable } from '../../components/contextMenu.js';
+import { ContextMenu, useContextMenuSheet, type ContextMenuSpec } from '../../components/contextMenu.js';
 import { contextMenuOps } from '../../components/copyActions.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { DiffRow } from '../../components/diffParser.js';
@@ -114,8 +114,8 @@ export function ReviewFileSummary({ entry, path, stats, state, stage }: {
  * 差分の行（行番号 40・記号 12・本文。追加と削除は地の色で分ける）。
  * `notes` を渡すと、メモを付いた行のすぐ下に、行が見つからないメモを差分の上に出す（Orca W2-28）。
  * `onLongPressRow` を渡すと、削除行と見出し以外の行を長押しでメモを書ける。
- * `path` を渡すと、ネイティブのメニューが使えるビルドでは長押しで「この行にメモを書く」「この行をコピー」
- * 「パス:行番号をコピー」のメニューを出す（Q548 案 A。メニューが無いビルドは今のまま、長押しですぐメモ）。
+ * `path` を渡すと、長押しで先に「この行にメモを書く」「この行をコピー」「パス:行番号をコピー」の操作を出す
+ * （Q548 案 A・Q549 U6 案 A。削除した行はコピーだけ）。ネイティブのメニューが無いビルドではアプリのシートで出す。
  */
 export function DiffLines({ rows, path, notes, onLongPressRow, onPressNote }: {
 	rows: readonly DiffRow[];
@@ -126,24 +126,33 @@ export function DiffLines({ rows, path, notes, onLongPressRow, onPressNote }: {
 	onPressNote?: (note: ReviewNote) => void;
 }) {
 	const items: readonly DiffLineItem[] = notes?.items ?? rows.map((row, index) => ({ kind: 'row' as const, row, index }));
+	const menuSheet = useContextMenuSheet();
 	return (
-		<FlatList
-			data={items}
-			keyExtractor={item => item.kind === 'row' ? String(item.index) : `note-${item.note.id}`}
-			style={styles.lines}
-			contentContainerStyle={styles.linesContent}
-			initialNumToRender={60}
-			maxToRenderPerBatch={80}
-			windowSize={15}
-			ListHeaderComponent={notes !== undefined && onPressNote !== undefined ? <StaleNotes notes={notes.stale} onPress={onPressNote} /> : null}
-			renderItem={({ item }) => item.kind === 'row'
-				? <DiffLine row={item.row} path={path} onLongPress={onLongPressRow} />
-				: <NoteBubble note={item.note} onPress={note => onPressNote?.(note)} />}
-		/>
+		<>
+			{menuSheet.sheet}
+			<FlatList
+				data={items}
+				keyExtractor={item => item.kind === 'row' ? String(item.index) : `note-${item.note.id}`}
+				style={styles.lines}
+				contentContainerStyle={styles.linesContent}
+				initialNumToRender={60}
+				maxToRenderPerBatch={80}
+				windowSize={15}
+				ListHeaderComponent={notes !== undefined && onPressNote !== undefined ? <StaleNotes notes={notes.stale} onPress={onPressNote} /> : null}
+				renderItem={({ item }) => item.kind === 'row'
+					? <DiffLine row={item.row} path={path} onLongPress={onLongPressRow} sheetLongPress={menuSheet.longPress} />
+					: <NoteBubble note={item.note} onPress={note => onPressNote?.(note)} />}
+			/>
+		</>
 	);
 }
 
-function DiffLine({ row, path, onLongPress }: { row: DiffRow; path: string | undefined; onLongPress?: (row: DiffRow & { newNo: number }) => void }) {
+function DiffLine({ row, path, onLongPress, sheetLongPress }: {
+	row: DiffRow;
+	path: string | undefined;
+	onLongPress?: (row: DiffRow & { newNo: number }) => void;
+	sheetLongPress: (menu: ContextMenuSpec | undefined) => (() => void) | undefined;
+}) {
 	const number = diffLineNumber(row);
 	const body = (
 		<>
@@ -153,12 +162,25 @@ function DiffLine({ row, path, onLongPress }: { row: DiffRow; path: string | und
 		</>
 	);
 	const lineStyle = [styles.line, row.kind === 'add' ? styles.lineAdd : row.kind === 'del' ? styles.lineDel : undefined];
-	if (nativeContextMenuAvailable && path !== undefined && row.kind !== 'hunk') {
+	if (path !== undefined && row.kind !== 'hunk') {
 		const menu = buildDiffLineMenu({ path, line: row.newNo, text: row.text }, {
 			...contextMenuOps(),
 			...(onLongPress !== undefined && canAnnotateRow(row) ? { writeNote: () => { haptic('lift'); onLongPress(row); } } : {}),
 		});
-		return <ContextMenu menu={menu}><View style={lineStyle}>{body}</View></ContextMenu>;
+		const fallback = sheetLongPress(menu);
+		if (fallback === undefined) {
+			return <ContextMenu menu={menu}><View style={lineStyle}>{body}</View></ContextMenu>;
+		}
+		return (
+			<Pressable
+				onLongPress={fallback}
+				delayLongPress={350}
+				style={({ pressed }) => [...lineStyle, pressed ? styles.linePressed : undefined]}
+				accessibilityHint="長押しでこの行のメモやコピーの操作を出せます"
+			>
+				{body}
+			</Pressable>
+		);
 	}
 	if (onLongPress === undefined || !canAnnotateRow(row)) {
 		return <View style={lineStyle}>{body}</View>;
