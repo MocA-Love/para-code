@@ -5,7 +5,7 @@
  * それ以外はプレーンテキストとして安全に表示する（未対応記法で壊れない）。
  */
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
@@ -120,16 +120,18 @@ const HIGHLIGHT_REQUEST_DELAY_MS = 250;
  * `onOpenLocal` は呼び出し側で useCallback 済みという前提。
  */
 const HeadingBlock = memo(function HeadingBlock({ text, level, onOpenLocal }: { text: string; level: number; onOpenLocal: (target: LocalFileTarget) => void }) {
+	const selectable = useContext(SelectableContext);
 	const theme = useThemeColors();
 	const styles = useChatStyles(baseStyles);
 	return (
-		<Text style={[styles.body, styles.heading, level === 1 ? styles.h1 : level === 2 ? styles.h2 : null]} selectable>
+		<Text style={[styles.body, styles.heading, level === 1 ? styles.h1 : level === 2 ? styles.h2 : null]} selectable={selectable}>
 			{renderInlineTokens(parseInline(text), styles, styles.body, onOpenLocal, theme.accent)}
 		</Text>
 	);
 });
 
 const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Extract<Block, { kind: 'table' }>; onOpenLocal: (target: LocalFileTarget) => void }) {
+	const selectable = useContext(SelectableContext);
 	// 列数はヘッダー基準（本体行の過不足セルは空/切り捨てで揃える）
 	const cols = block.header.length;
 	// 列幅は内容から見積もって固定する。flex:1 で画面幅へ押し込むと列が潰れて
@@ -144,7 +146,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 				<View style={[styles.tableRow, styles.tableHead]}>
 					{block.header.map((cell, c) => (
 						<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
-							<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
+							<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable={selectable}>
 								{renderInlineTokens(parseInline(cell), styles, styles.body, onOpenLocal, theme.accent)}
 							</Text>
 						</View>
@@ -154,7 +156,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 					<View key={r} style={[styles.tableRow, r % 2 === 1 ? styles.tableRowAlt : null]}>
 						{Array.from({ length: cols }, (_, c) => (
 							<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
-								<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
+								<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable={selectable}>
 									{renderInlineTokens(parseInline(row[c] ?? ''), styles, styles.body, onOpenLocal, theme.accent)}
 								</Text>
 							</View>
@@ -167,6 +169,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 });
 
 const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?: string }) {
+	const selectable = useContext(SelectableContext);
 	const fsHighlight = useAppStore(s => s.fsHighlight);
 	const styles = useChatStyles(baseStyles);
 	const [wrap, setWrap] = useState(false);
@@ -233,9 +236,9 @@ const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?:
 	const highlighted = data?.key === cacheKey ? data.value : undefined;
 	// 既定はコードを折り返さず横スクロールにする（インデントと桁が崩れないようにする）。見出しの「折り返し」で切り替える。
 	const body = highlighted === undefined
-		? <Text style={[styles.codeText, wrap ? styles.codeWrap : null]} selectable>{text}</Text>
+		? <Text style={[styles.codeText, wrap ? styles.codeWrap : null]} selectable={selectable}>{text}</Text>
 		: (
-			<Text style={[styles.codeText, wrap ? styles.codeWrap : null, highlighted.fg !== undefined ? { color: highlighted.fg } : null]} selectable>
+			<Text style={[styles.codeText, wrap ? styles.codeWrap : null, highlighted.fg !== undefined ? { color: highlighted.fg } : null]} selectable={selectable}>
 				{highlighted.lines.map((line, li) => (
 					<Text key={li}>
 						{li > 0 ? '\n' : ''}
@@ -304,11 +307,12 @@ function LocalFileCard({ label, target, opening, onPress }: { label: string; tar
 }
 
 const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLocal: (target: LocalFileTarget) => void; openingKey?: string }) {
+	const selectable = useContext(SelectableContext);
 	const theme = useThemeColors();
 	const styles = useChatStyles(baseStyles);
 	const tokens = parseInline(text);
 	if (!tokens.some(token => token.kind === 'local')) {
-		return <Text style={styles.body} selectable>{renderInlineTokens(tokens, styles, styles.body, onOpenLocal, theme.accent)}</Text>;
+		return <Text style={styles.body} selectable={selectable}>{renderInlineTokens(tokens, styles, styles.body, onOpenLocal, theme.accent)}</Text>;
 	}
 	const groups: InlineToken[][] = [];
 	for (const token of tokens) {
@@ -326,13 +330,23 @@ const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }:
 				if (local?.kind === 'local') {
 					return <LocalFileCard key={i} label={local.label} target={local.target} opening={openingKey === localFileTargetKey(local.target)} onPress={() => onOpenLocal(local.target)} />;
 				}
-				return <Text key={i} style={styles.body} selectable>{renderInlineTokens(group, styles, styles.body, onOpenLocal, theme.accent)}</Text>;
+				return <Text key={i} style={styles.body} selectable={selectable}>{renderInlineTokens(group, styles, styles.body, onOpenLocal, theme.accent)}</Text>;
 			})}
 		</View>
 	);
 });
 
-export function MarkdownText({ text }: { text: string }) {
+/**
+ * 本文の Text を長押しで写せるようにするか（RN の `selectable`。iOS では長押しで全文の「コピー」が出る）。
+ * 発言をネイティブのメニューで包むときは外す（同じ長押しを取り合わないように）。
+ */
+const SelectableContext = createContext(true);
+
+export function MarkdownText({ text, selectable = true }: {
+	text: string;
+	/** 既定は true（今の長押しのコピー）。長押しのメニューで包むときだけ false を渡す。 */
+	selectable?: boolean;
+}) {
 	const { open, openingKey, viewer } = useLocalFileOpener();
 	const styles = useChatStyles(baseStyles);
 	// 本文が変わらない再レンダー（リンクを押したときのローカルstate更新など）で
@@ -340,7 +354,9 @@ export function MarkdownText({ text }: { text: string }) {
 	const blocks = useMemo(() => parseBlocks(text), [text]);
 	return (
 		<View style={styles.root}>
-			<BlockList blocks={blocks} onOpenLocal={open} openingKey={openingKey} />
+			<SelectableContext.Provider value={selectable}>
+				<BlockList blocks={blocks} onOpenLocal={open} openingKey={openingKey} />
+			</SelectableContext.Provider>
 			{viewer}
 		</View>
 	);

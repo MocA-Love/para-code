@@ -26,6 +26,7 @@ import { TeamCardRowView } from './teamCard.js';
 import type { ChatRow } from './chatRows.js';
 import { questionRowOutcome } from './questionOutcomes.js';
 import { SubagentCardRowView, SubagentResumeLink } from './subagentCard.js';
+import { MessageContextMenu, chatTextSelectable } from './messageContextMenu.js';
 
 /** ツールの行は見た目 28。当たり判定は上下に 8 ずつ広げて 44 にする。 */
 const LINE_SLOP = { top: 8, bottom: 8, left: 0, right: 0 };
@@ -78,7 +79,9 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 					<Text style={styles.peerLabel}>{`Claude teammate${message.peerName !== undefined ? ` · ${message.peerName}` : ''}`}</Text>
 				</View>
 				{message.peerSummary !== undefined ? <Text style={styles.peerSummary}>{message.peerSummary}</Text> : null}
-				<MarkdownText text={message.text} />
+				<MessageContextMenu text={message.text} markdown speaker="チームメイトの発言">
+					<MarkdownText text={message.text} selectable={chatTextSelectable} />
+				</MessageContextMenu>
 			</View>
 		);
 	}
@@ -102,7 +105,11 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 	}
 	return (
 		<View style={styles.row}>
-			{hasText ? <MarkdownText text={message.text} /> : null}
+			{hasText ? (
+				<MessageContextMenu text={message.text} markdown speaker="エージェントの発言">
+					<MarkdownText text={message.text} selectable={chatTextSelectable} />
+				</MessageContextMenu>
+			) : null}
 			{hasImages ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
 		</View>
 	);
@@ -137,7 +144,12 @@ function UserMessageRow({ message, terminalKey }: { message: AgentChatMessage; t
 				{parsed.attachments.length > 0 ? (
 					<MessageAttachmentChips attachments={parsed.attachments} terminalKey={terminalKey} fallback={fallback} onBubble={theme.onBubble} />
 				) : null}
-				{hasText ? <Text style={[styles.bubbleText, { color: theme.onBubble }]} selectable>{parsed.body}</Text> : null}
+				{/* メニューは本文だけを包む（添付の札は自分の長押しでパスを写すので、取り合わないように） */}
+				{hasText ? (
+					<MessageContextMenu text={parsed.body} markdown={false} speaker="自分の発言" previewRadius={radius.control} previewBackground={theme.bubble}>
+						<Text style={[styles.bubbleText, { color: theme.onBubble }]} selectable={chatTextSelectable}>{parsed.body}</Text>
+					</MessageContextMenu>
+				) : null}
 				{images.length > 0 && !hideImageCards ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
 			</View>
 		</View>

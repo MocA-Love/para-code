@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { parseBlocks } from './markdownParse.js';
+import { markdownCopyParts, markdownPlainText, parseBlocks } from './markdownParse.js';
 
 describe('parseBlocks', () => {
 	it('reads quotes, rules and nested bullets instead of leaving the marks in the text', () => {
@@ -66,5 +66,52 @@ describe('parseBlocks', () => {
 		expect(parseBlocks('>>>>> deep')).toEqual([
 			{ kind: 'quote', blocks: [{ kind: 'quote', blocks: [{ kind: 'quote', blocks: [{ kind: 'quote', blocks: [{ kind: 'para', text: '> deep' }] }] }] }] },
 		]);
+	});
+});
+
+describe('markdownPlainText', () => {
+	it('drops the marks but keeps the list shape, link targets and table cells', () => {
+		expect(markdownPlainText([
+			'## 変えたこと',
+			'**太字**と`code`と[説明](https://example.com/a)と[src/app.ts](src/app.ts:4)',
+			'- 親',
+			'  - 子',
+			'',
+			'> 引用の文',
+			'',
+			'---',
+			'| a | b |',
+			'| --- | --- |',
+			'| 1 | **2** |',
+			'```ts',
+			'const x = 1;',
+			'```',
+		].join('\n'))).toBe([
+			'変えたこと',
+			'',
+			'太字とcodeと説明 (https://example.com/a)とsrc/app.ts',
+			'',
+			'• 親',
+			'  ◦ 子',
+			'',
+			'引用の文',
+			'',
+			'a\tb',
+			'1\t2',
+			'',
+			'const x = 1;',
+		].join('\n'));
+	});
+});
+
+describe('markdownCopyParts', () => {
+	it('lists paragraphs and code blocks separately with a one-line label', () => {
+		expect(markdownCopyParts('最初の段落はとても長い文章で、四十文字を超えたところで切られて末尾に省略の印が付きます。\n\n```bash\nnpm test -- login\nnpm run lint\n```\n\n- 項目')).toEqual({
+			paragraphs: [
+				{ label: '最初の段落はとても長い文章で、四十文字を超えたところで切られて末尾に省略の印が付…', text: '最初の段落はとても長い文章で、四十文字を超えたところで切られて末尾に省略の印が付きます。' },
+				{ label: '• 項目', text: '• 項目' },
+			],
+			codes: [{ label: 'bash · npm test -- login', text: 'npm test -- login\nnpm run lint' }],
+		});
 	});
 });
