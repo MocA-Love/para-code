@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View, type StyleProp, type TextStyle } from 'react-native';
 import { ChevronDown, ChevronRight, Search } from 'lucide-react-native';
+import { ContextMenu, type ContextMenuSpec } from '../../components/contextMenu.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { BreadcrumbItem } from '../../filesBreadcrumb.js';
 import { matchRanges, type FilesSearchMode } from '../../filesSearch.js';
@@ -28,7 +29,7 @@ const CHEVRON_WIDTH = 16;
  * ツリーの1行（フォルダは押すと開閉、ファイルは押すとビューアへ）。`decoration` は Git の色と右端の文字
  * （`fileDecorations.ts`。PC のエクスプローラーと同じ見え方）。
  */
-export function TreeRowView({ pcId, row, expanded, highlighted, decoration, disabled, onToggle, onOpen, onRetry }: {
+export function TreeRowView({ pcId, row, expanded, highlighted, decoration, disabled, onToggle, onOpen, onRetry, menu, onLongPress }: {
 	/** アイコンのテーマを引く PC。 */
 	pcId: string | undefined;
 	row: TreeRow;
@@ -39,6 +40,10 @@ export function TreeRowView({ pcId, row, expanded, highlighted, decoration, disa
 	onToggle: (path: string) => void;
 	onOpen: (path: string) => void;
 	onRetry: (path: string) => void;
+	/** 長押しのメニュー（名前・相対パスのコピーなど。`contextMenu.tsx`）。 */
+	menu?: ContextMenuSpec;
+	/** ネイティブのメニューが無いビルドで、長押しでシートを出す（`useContextMenuSheet`）。 */
+	onLongPress?: () => void;
 }) {
 	const theme = useThemeColors();
 	const indent = { paddingLeft: space.lg + row.depth * INDENT };
@@ -70,29 +75,32 @@ export function TreeRowView({ pcId, row, expanded, highlighted, decoration, disa
 	}
 	const dir = row.kind === 'dir';
 	return (
-		<Pressable
-			onPress={() => {
-				haptic('move');
-				if (dir) {
-					onToggle(row.path);
-				} else {
-					onOpen(row.path);
-				}
-			}}
-			disabled={disabled && !dir}
-			style={({ pressed }) => [styles.row, indent, highlighted ? { backgroundColor: theme.accentWash } : undefined, pressed ? styles.pressed : undefined]}
-			accessibilityRole="button"
-			accessibilityState={dir ? { expanded } : undefined}
-			accessibilityLabel={`${dir ? 'フォルダ' : 'ファイル'} ${row.name}${decoration !== undefined ? `、${decoration.label}` : ''}`}
-		>
-			{dir ? <Icon icon={expanded ? ChevronDown : ChevronRight} size={iconSize.md} color={colors.textMuted} /> : <View style={styles.chevronSpace} />}
-			<FileTypeIcon pcId={pcId} name={row.name} dir={dir} expanded={dir ? expanded : undefined} parentName={baseName(parentPath(row.path)) || undefined} />
-			<View style={styles.col}>
-				<Text style={[styles.name, decoration !== undefined ? { color: decoration.color } : undefined]} numberOfLines={1}>{row.name}</Text>
-				{!dir && row.size !== undefined ? <Text style={styles.sub}>{formatSize(row.size)}</Text> : null}
-			</View>
-			<Text style={[styles.badge, decoration !== undefined ? { color: decoration.color } : undefined]} importantForAccessibility="no">{decoration?.badge ?? ''}</Text>
-		</Pressable>
+		<ContextMenu menu={menu}>
+			<Pressable
+				onPress={() => {
+					haptic('move');
+					if (dir) {
+						onToggle(row.path);
+					} else {
+						onOpen(row.path);
+					}
+				}}
+				onLongPress={onLongPress}
+				disabled={disabled && !dir}
+				style={({ pressed }) => [styles.row, indent, highlighted ? { backgroundColor: theme.accentWash } : undefined, pressed ? styles.pressed : undefined]}
+				accessibilityRole="button"
+				accessibilityState={dir ? { expanded } : undefined}
+				accessibilityLabel={`${dir ? 'フォルダ' : 'ファイル'} ${row.name}${decoration !== undefined ? `、${decoration.label}` : ''}`}
+			>
+				{dir ? <Icon icon={expanded ? ChevronDown : ChevronRight} size={iconSize.md} color={colors.textMuted} /> : <View style={styles.chevronSpace} />}
+				<FileTypeIcon pcId={pcId} name={row.name} dir={dir} expanded={dir ? expanded : undefined} parentName={baseName(parentPath(row.path)) || undefined} />
+				<View style={styles.col}>
+					<Text style={[styles.name, decoration !== undefined ? { color: decoration.color } : undefined]} numberOfLines={1}>{row.name}</Text>
+					{!dir && row.size !== undefined ? <Text style={styles.sub}>{formatSize(row.size)}</Text> : null}
+				</View>
+				<Text style={[styles.badge, decoration !== undefined ? { color: decoration.color } : undefined]} importantForAccessibility="no">{decoration?.badge ?? ''}</Text>
+			</Pressable>
+		</ContextMenu>
 	);
 }
 
@@ -174,39 +182,45 @@ function Highlighted({ text, query, smartCase, lines, style }: { text: string; q
 }
 
 /** ファイル名の検索の結果の行。 */
-export function FindResultRow({ pcId, path, query, onOpen }: { pcId: string | undefined; path: string; query: string; onOpen: (path: string) => void }) {
+export function FindResultRow({ pcId, path, query, onOpen, menu, onLongPress }: { pcId: string | undefined; path: string; query: string; onOpen: (path: string) => void; menu?: ContextMenuSpec; onLongPress?: () => void }) {
 	const at = path.lastIndexOf('/');
 	const name = at < 0 ? path : path.slice(at + 1);
 	return (
-		<Pressable
-			onPress={() => { haptic('move'); onOpen(path); }}
-			style={({ pressed }) => [styles.row, styles.resultRow, pressed ? styles.pressed : undefined]}
-			accessibilityRole="button"
-			accessibilityLabel={`ファイル ${path}`}
-		>
-			<FileTypeIcon pcId={pcId} name={name} dir={false} parentName={baseName(parentPath(path)) || undefined} />
-			<View style={styles.col}>
-				<Highlighted text={name} query={query} smartCase={false} lines={1} style={styles.name} />
-				<Highlighted text={path} query={query} smartCase={false} lines={1} style={styles.sub} />
-			</View>
-		</Pressable>
+		<ContextMenu menu={menu}>
+			<Pressable
+				onPress={() => { haptic('move'); onOpen(path); }}
+				onLongPress={onLongPress}
+				style={({ pressed }) => [styles.row, styles.resultRow, pressed ? styles.pressed : undefined]}
+				accessibilityRole="button"
+				accessibilityLabel={`ファイル ${path}`}
+			>
+				<FileTypeIcon pcId={pcId} name={name} dir={false} parentName={baseName(parentPath(path)) || undefined} />
+				<View style={styles.col}>
+					<Highlighted text={name} query={query} smartCase={false} lines={1} style={styles.name} />
+					<Highlighted text={path} query={query} smartCase={false} lines={1} style={styles.sub} />
+				</View>
+			</Pressable>
+		</ContextMenu>
 	);
 }
 
 /** 内容の検索の結果の行（パス:行番号 と、その行）。 */
-export function GrepResultRow({ path, line, text, query, onOpen }: { path: string; line: number; text: string; query: string; onOpen: (path: string, line: number) => void }) {
+export function GrepResultRow({ path, line, text, query, onOpen, menu, onLongPress }: { path: string; line: number; text: string; query: string; onOpen: (path: string, line: number) => void; menu?: ContextMenuSpec; onLongPress?: () => void }) {
 	return (
-		<Pressable
-			onPress={() => { haptic('move'); onOpen(path, line); }}
-			style={({ pressed }) => [styles.row, styles.resultRow, pressed ? styles.pressed : undefined]}
-			accessibilityRole="button"
-			accessibilityLabel={`${path} の ${line} 行目`}
-		>
-			<View style={styles.col}>
-				<Text style={styles.sub} numberOfLines={1}>{`${path}:${line}`}</Text>
-				<Highlighted text={text.trim()} query={query} smartCase lines={2} style={styles.preview} />
-			</View>
-		</Pressable>
+		<ContextMenu menu={menu}>
+			<Pressable
+				onPress={() => { haptic('move'); onOpen(path, line); }}
+				onLongPress={onLongPress}
+				style={({ pressed }) => [styles.row, styles.resultRow, pressed ? styles.pressed : undefined]}
+				accessibilityRole="button"
+				accessibilityLabel={`${path} の ${line} 行目`}
+			>
+				<View style={styles.col}>
+					<Text style={styles.sub} numberOfLines={1}>{`${path}:${line}`}</Text>
+					<Highlighted text={text.trim()} query={query} smartCase lines={2} style={styles.preview} />
+				</View>
+			</Pressable>
+		</ContextMenu>
 	);
 }
 
