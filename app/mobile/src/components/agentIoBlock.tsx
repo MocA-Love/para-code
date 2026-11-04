@@ -13,6 +13,7 @@ import { scaleChatSize } from '../chatTextScale.js';
 import { useChatStyles, useChatTextScale } from '../ui/chatTextScale.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
 import { isClipboardAvailable, writeClipboardText } from '../nativeClipboard.js';
+import { useParaToast } from '../paraToast.js';
 
 /**
  * タイムラインのステップを開いたときに出す「入力／結果」の枠。
@@ -75,7 +76,6 @@ export function ExpandableText({ message, terminalKey, style }: { message: Agent
 
 export function IOBlock({ label, message, terminalKey, lines, text }: { label: string; message: AgentChatMessage; terminalKey?: string; lines?: boolean; text?: string }) {
 	const [wrap, setWrap] = useState(false);
-	const [copied, setCopied] = useState(false);
 	const { full, loading, error, load, available } = useFullText(message, terminalKey);
 	const theme = useThemeColors();
 	const styles = useChatStyles(baseStyles);
@@ -83,38 +83,11 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 	// 全文取得後は取得結果（＝元の生テキスト）へ切り替える。
 	const body = (full ?? text ?? message.text).replace(/\n+$/, '');
 	const lineCount = body.length === 0 ? 0 : body.split('\n').length;
-	// クリップボードのネイティブ部品が無いビルドではコピーのボタンを出さない（nativeClipboard.ts）。
-	const canCopy = isClipboardAvailable();
-	const copy = () => {
-		void writeClipboardText(body).then(copied => {
-			haptic(copied ? 'success' : 'error');
-			if (copied) {
-				setCopied(true);
-				setTimeout(() => setCopied(false), 1200);
-			}
-		});
-	};
 	// 表示は上限ぶんだけ測らせる（Yogaの測定コストは全文サイズに比例する）。コピーは全文。
 	const { text: displayBody, omittedLines } = clipForDisplay(body);
 	return (
 		<View style={styles.io}>
-			<View style={styles.ioBar}>
-				<Text style={styles.ioLabel} numberOfLines={1}>{lines === true && lineCount > 0 ? `${label} · ${lineCount}行` : label}</Text>
-				<Pressable
-					onPress={() => { haptic('tick'); setWrap(value => !value); }}
-					accessibilityRole="button"
-					accessibilityLabel={wrap ? '折り返しを解除' : '折り返して表示'}
-					style={styles.ioAction}
-					hitSlop={IO_ACTION_HIT_SLOP}
-				>
-					<Text style={[styles.ioActionText, wrap ? { color: theme.accent } : null]}>折り返し</Text>
-				</Pressable>
-				{canCopy ? (
-					<Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction} hitSlop={IO_ACTION_HIT_SLOP}>
-						<Text style={[styles.ioActionText, copied ? styles.ioActionDone : null]}>{copied ? 'コピー済' : 'コピー'}</Text>
-					</Pressable>
-				) : null}
-			</View>
+			<IOBar label={lines === true && lineCount > 0 ? `${label} · ${lineCount}行` : label} wrap={wrap} onToggleWrap={() => setWrap(value => !value)} copyText={body} />
 			<ScrollView style={styles.ioScroll} nestedScrollEnabled contentContainerStyle={styles.ioScrollContent}>
 				{wrap
 					? <Text style={[styles.ioText, styles.ioWrapText]} selectable>{displayBody}</Text>
@@ -129,6 +102,49 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 				<Pressable style={styles.ioFoot} onPress={load} disabled={!available || loading} accessibilityRole="button" accessibilityLabel="全文を表示">
 					<Text style={styles.ioFootText}>{loading ? '全文を取得しています…' : error ?? 'PC側で切り詰め済み'}</Text>
 					{error === undefined && !loading ? <Text style={[styles.fullLink, { color: theme.accent }]}>{available ? '全文を表示' : 'PCに接続が必要'}</Text> : null}
+				</Pressable>
+			) : null}
+		</View>
+	);
+}
+
+/**
+ * 枠の見出し行（名前・「折り返し」・「コピー」）。ツールの入出力の枠と、会話のコードブロックで同じ形にする。
+ * `toast` を付けると、写したときに「コピーしました」のお知らせも出す（会話のコードブロック。ターミナル・メモと同じ知らせ）。
+ */
+export function IOBar({ label, wrap, onToggleWrap, copyText, toast }: { label: string; wrap: boolean; onToggleWrap: () => void; copyText: string; toast?: boolean }) {
+	const [copied, setCopied] = useState(false);
+	const theme = useThemeColors();
+	const styles = useChatStyles(baseStyles);
+	// クリップボードのネイティブ部品が無いビルドではコピーのボタンを出さない（nativeClipboard.ts）。
+	const canCopy = isClipboardAvailable();
+	const copy = () => {
+		void writeClipboardText(copyText).then(done => {
+			haptic(done ? 'success' : 'error');
+			if (done) {
+				setCopied(true);
+				setTimeout(() => setCopied(false), 1200);
+				if (toast === true) {
+					useParaToast.getState().show({ key: 'chat-code-copy', text: 'コピーしました', icon: 'copy-outline', tone: 'done' }, 1500);
+				}
+			}
+		});
+	};
+	return (
+		<View style={styles.ioBar}>
+			<Text style={styles.ioLabel} numberOfLines={1}>{label}</Text>
+			<Pressable
+				onPress={() => { haptic('tick'); onToggleWrap(); }}
+				accessibilityRole="button"
+				accessibilityLabel={wrap ? '折り返しを解除' : '折り返して表示'}
+				style={styles.ioAction}
+				hitSlop={IO_ACTION_HIT_SLOP}
+			>
+				<Text style={[styles.ioActionText, wrap ? { color: theme.accent } : null]}>折り返し</Text>
+			</Pressable>
+			{canCopy ? (
+				<Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction} hitSlop={IO_ACTION_HIT_SLOP}>
+					<Text style={[styles.ioActionText, copied ? styles.ioActionDone : null]}>{copied ? 'コピー済' : 'コピー'}</Text>
 				</Pressable>
 			) : null}
 		</View>
