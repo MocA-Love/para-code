@@ -28,6 +28,7 @@ import { reportMobileDiagnosticError } from '../src/mobileDiagnostics.js';
 import { useParaToast } from '../src/paraToast.js';
 import { notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink, readNotificationId, readNotificationInteractionId, readNotificationSeenOnTap, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
 import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
+import { observeInplaceSelectTouchEnd, observeInplaceSelectTouchStart } from '../src/features/session/inplaceSelectSession.js';
 import { useQuickReplies } from '../src/features/settings/quickRepliesStore.js';
 import { loadThemeColors } from '../src/features/settings/themeColorSettings.js';
 import { useHapticPreference } from '../src/hapticPreference.js';
@@ -260,7 +261,8 @@ function RootLayout() {
 
 	return (
 		// GestureHandlerRootView: 画面の中のスワイプ（行のスワイプ操作など）のネイティブジェスチャ認識に必須
-		<GestureHandlerRootView style={styles.root}>
+		// onTouchStart / onTouchEnd: 会話の発言をその場で範囲選択している間に、外を押したら元の表示に戻す（触れは取らない。inplaceSelectSession.ts）
+		<GestureHandlerRootView style={styles.root} onTouchStart={observeInplaceSelectTouchStart} onTouchEnd={observeInplaceSelectTouchEnd}>
 			{/* 開発ビルドだけ、表示中の画面をデバッガから読めるようにする（__DEV__ は実行中に変わらない） */}
 			{__DEV__ ? <DevProbe /> : null}
 			<RootFrame>
