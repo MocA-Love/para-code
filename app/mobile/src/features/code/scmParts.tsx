@@ -18,7 +18,7 @@ import type { CommitAction, ScmCounts, ScmEntry } from './scmModel.js';
 import { splitPath } from './scmModel.js';
 import type { AgentHandoffResult, CommitFailureView, ScmSyncSummary } from './scmSync.js';
 import type { CommitFiles } from './useScmData.js';
-import { SHORT_HASH_LENGTH, buildCommitFileMenu, buildCommitMenu } from './pathMenu.js';
+import { SHORT_HASH_LENGTH, buildCommitFileMenu, buildCommitMenu, type AbsolutePathOption } from './pathMenu.js';
 
 /**
  * ソース管理の画面の部品（Orca の MobileSourceControlBranchCard / FileRows / コミットバー /
@@ -289,12 +289,14 @@ export function CommitBar({ action, message, onChangeMessage, onCommit, onBlocke
 }
 
 /** コミットの一覧（モックの `.hrow`）。行を押すとそのコミットで変わったファイルを開閉する。 */
-export function HistoryList({ log, now, commitFiles, onExpand, onOpenWeb }: {
+export function HistoryList({ log, now, commitFiles, onExpand, onOpenWeb, absolutePath }: {
 	log: ScmLogResult;
 	now: number;
 	commitFiles: Readonly<Record<string, CommitFiles>>;
 	onExpand: (hash: string) => void;
 	onOpenWeb: ((hash: string) => void) | undefined;
+	/** コミットの中のファイルの「絶対パスをコピー」（`useAbsolutePathOption`）。 */
+	absolutePath?: (path: string) => AbsolutePathOption;
 }) {
 	const [expanded, setExpanded] = useState<string | undefined>(undefined);
 	// 行の長押しのメニュー（ハッシュ・件名・ファイルのパスのコピー。Q548 案 A）。ネイティブのメニューが無いビルドではシート
@@ -352,7 +354,7 @@ export function HistoryList({ log, now, commitFiles, onExpand, onOpenWeb }: {
 								{detail?.files !== undefined && detail.files.length === 0 ? <Text style={styles.historyMeta}>変わったファイルはありません</Text> : null}
 								{(detail?.files ?? []).map(file => {
 									const meta = scmChangeMeta(commitFileKind(file.status), file.status);
-									const fileMenu = buildCommitFileMenu(file, menuOps);
+									const fileMenu = buildCommitFileMenu({ path: file.path, ...(absolutePath !== undefined ? { absolute: absolutePath(file.path) } : {}) }, menuOps);
 									const fallback = menuSheet.longPress(fileMenu);
 									const body = (
 										<>

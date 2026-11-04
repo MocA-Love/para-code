@@ -30,6 +30,8 @@ export interface ContextMenuAction {
 export interface ContextMenuSpec {
 	/** メニューの見出し（ファイルの相対パスなど）。 */
 	readonly title?: string;
+	/** 見出しの下に出す全文（ツールの引数など）。ネイティブのメニューでは見出しに続けて出す。 */
+	readonly message?: string;
 	readonly actions: readonly ContextMenuAction[];
 }
 
@@ -52,6 +54,8 @@ export interface ContextMenuOps {
 	/** 写せるビルドか（クリップボードの部品が無ければ、コピーの項目を薄くする）。 */
 	readonly canCopy: boolean;
 	copy(text: string, toast: string): void;
+	/** 押してから取りに行く文字を写す（PC への問い合わせ。取れなければ理由をトーストで出す）。 */
+	copyLater(load: () => Promise<string>, toast: string): void;
 	share(text: string): void;
 }
 

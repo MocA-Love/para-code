@@ -10,6 +10,17 @@
  * 打ち切っているため、ここより大きくなることはない。
  */
 const IO_DISPLAY_LINES = 500;
+
+/**
+ * PC が取り寄せの全文を切る長さ（PC の `paradisAgentTranscriptParser.ts` の `FULL_TEXT_LIMIT` と同じ値。あちらは依存が
+ * 多くアプリから読めないので写してある）。全文がちょうどこの長さなら、PC で切れたとみなす（PC は切れた印を返さない）。
+ */
+export const PC_FULL_TEXT_LIMIT = 64 * 1024;
+
+/** 取り寄せた全文が PC の上限で切れているか。 */
+export function isFullTextCapped(text: string): boolean {
+	return text.length >= PC_FULL_TEXT_LIMIT;
+}
 const IO_DISPLAY_CHARS = 20_000;
 
 export function clipForDisplay(body: string): { text: string; omittedLines: number } {

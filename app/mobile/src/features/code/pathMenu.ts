@@ -8,9 +8,24 @@ import { baseName } from './fileTree.js';
  * 見出しは相対パス。パスはスペースのフォルダの根からの相対（`/` 区切り）。
  */
 
+/**
+ * 「絶対パスをコピー」の項目の状態（`useAbsolutePath.ts` が決める）。絶対パスは押したときに PC へ 1 回問い合わせ、
+ * メニューにも端末にも残さない（補足には「PC 上のパス」などの説明だけを出す）。
+ */
+export type AbsolutePathOption =
+	| { readonly kind: 'available'; readonly hint: string; readonly load: () => Promise<string> }
+	/** PC が `fs.absolute-path.v1` を広告していない（古い Para Code）。 */
+	| { readonly kind: 'unsupported' }
+	/** PC につながっていない・スペースの画面が準備中。 */
+	| { readonly kind: 'offline' };
+
+/** 古い PC のときの補足。 */
+export const ABSOLUTE_PATH_UNSUPPORTED_HINT = 'PC の Para Code を更新すると使えます';
+const ABSOLUTE_PATH_OFFLINE_HINT = 'PC につながると使えます';
+
 /** ファイル・フォルダの行（ファイル一覧のツリー・名前の検索の結果）。 */
-export function buildFileMenu(input: { readonly path: string; readonly dir: boolean }, ops: ContextMenuOps & { readonly open?: () => void }): ContextMenuSpec {
-	const actions: ContextMenuAction[] = [...pathCopyActions(input.path, ops)];
+export function buildFileMenu(input: { readonly path: string; readonly dir: boolean; readonly absolute?: AbsolutePathOption }, ops: ContextMenuOps & { readonly open?: () => void }): ContextMenuSpec {
+	const actions: ContextMenuAction[] = [...pathCopyActions(input.path, ops, input.absolute)];
 	if (ops.open !== undefined) {
 		actions.push({ id: 'open', title: input.dir ? '開く' : 'ファイルを開く', icon: 'open', startsSection: true, onSelect: ops.open });
 	}
@@ -19,12 +34,12 @@ export function buildFileMenu(input: { readonly path: string; readonly dir: bool
 }
 
 /** 内容の検索の結果の行（パス:行番号）。 */
-export function buildGrepMatchMenu(input: { readonly path: string; readonly line: number; readonly text: string }, ops: ContextMenuOps & { readonly open: () => void }): ContextMenuSpec {
+export function buildGrepMatchMenu(input: { readonly path: string; readonly line: number; readonly text: string; readonly absolute?: AbsolutePathOption }, ops: ContextMenuOps & { readonly open: () => void }): ContextMenuSpec {
 	const location = `${input.path}:${input.line}`;
 	return {
 		title: location,
 		actions: [
-			...pathCopyActions(input.path, ops),
+			...pathCopyActions(input.path, ops, input.absolute),
 			copyAction(ops, { id: 'copy-location', title: 'パス:行番号をコピー', subtitle: location, icon: 'line', text: location, toast: 'パスと行番号をコピーしました' }),
 			copyAction(ops, { id: 'copy-line', title: 'この行をコピー', icon: 'copy', text: input.text, toast: '行をコピーしました' }),
 			{ id: 'open', title: 'ファイルを開く', icon: 'open', startsSection: true, onSelect: ops.open },
@@ -33,9 +48,9 @@ export function buildGrepMatchMenu(input: { readonly path: string; readonly line
 }
 
 /** ソース管理の変更の行。 */
-export function buildScmFileMenu(input: { readonly path: string; readonly staged?: boolean }, ops: ContextMenuOps & { readonly openDiff: () => void; readonly toggleStage?: () => void }): ContextMenuSpec {
+export function buildScmFileMenu(input: { readonly path: string; readonly staged?: boolean; readonly absolute?: AbsolutePathOption }, ops: ContextMenuOps & { readonly openDiff: () => void; readonly toggleStage?: () => void }): ContextMenuSpec {
 	const actions: ContextMenuAction[] = [
-		...pathCopyActions(input.path, ops),
+		...pathCopyActions(input.path, ops, input.absolute),
 		{ id: 'diff', title: '差分を開く', icon: 'diff', startsSection: true, onSelect: ops.openDiff },
 	];
 	if (ops.toggleStage !== undefined) {
@@ -65,8 +80,8 @@ export function buildCommitMenu(input: { readonly hash: string; readonly subject
 }
 
 /** コミットの中のファイルの行。 */
-export function buildCommitFileMenu(input: { readonly path: string }, ops: ContextMenuOps): ContextMenuSpec {
-	return { title: input.path, actions: pathCopyActions(input.path, ops) };
+export function buildCommitFileMenu(input: { readonly path: string; readonly absolute?: AbsolutePathOption }, ops: ContextMenuOps): ContextMenuSpec {
+	return { title: input.path, actions: pathCopyActions(input.path, ops, input.absolute) };
 }
 
 /**
@@ -102,11 +117,30 @@ export function buildToolFileMenu(input: { readonly path: string }, ops: Context
 	};
 }
 
-/** 名前・相対パスのコピー（どの行でも先頭に並べる）。 */
-function pathCopyActions(path: string, ops: ContextMenuOps): ContextMenuAction[] {
+/** 名前・相対パス（・絶対パス）のコピー（どの行でも先頭に並べる）。 */
+function pathCopyActions(path: string, ops: ContextMenuOps, absolute: AbsolutePathOption | undefined): ContextMenuAction[] {
 	const name = baseName(path) || path;
-	return [
+	const actions = [
 		copyAction(ops, { id: 'copy-name', title: '名前をコピー', subtitle: name, icon: 'name', text: name, toast: '名前をコピーしました' }),
 		copyAction(ops, { id: 'copy-relative', title: '相対パスをコピー', subtitle: path, icon: 'path', text: path, toast: '相対パスをコピーしました' }),
 	];
+	if (absolute !== undefined) {
+		actions.push(absolutePathAction(absolute, ops));
+	}
+	return actions;
+}
+
+function absolutePathAction(absolute: AbsolutePathOption, ops: ContextMenuOps): ContextMenuAction {
+	const base = { id: 'copy-absolute', title: '絶対パスをコピー', icon: 'absolutePath' as const };
+	if (!ops.canCopy) {
+		return copyAction(ops, { ...base, text: '', toast: '' });
+	}
+	switch (absolute.kind) {
+		case 'available':
+			return { ...base, subtitle: absolute.hint, onSelect: () => ops.copyLater(absolute.load, '絶対パスをコピーしました') };
+		case 'unsupported':
+			return { ...base, subtitle: ABSOLUTE_PATH_UNSUPPORTED_HINT, disabled: true };
+		case 'offline':
+			return { ...base, subtitle: ABSOLUTE_PATH_OFFLINE_HINT, disabled: true };
+	}
 }

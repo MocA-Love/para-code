@@ -8,6 +8,7 @@ import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 import { writeClipboardText } from '../../nativeClipboard.js';
 import { useParaToast } from '../../paraToast.js';
+import { COPY_TOAST_MS } from '../../components/copyActions.js';
 import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import {
@@ -104,7 +105,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		const copied = await writeClipboardText(line.text);
 		useParaToast.getState().show(copied
 			? { key: 'space-note-copied', text: 'テキストをコピーしました', icon: 'copy-outline', tone: 'done' }
-			: { key: 'space-note-copied', text: 'コピーできませんでした', icon: 'alert-circle', tone: 'warn' }, 1_500);
+			: { key: 'space-note-copied', text: 'コピーできませんでした', icon: 'alert-circle', tone: 'warn' }, COPY_TOAST_MS);
 	};
 
 	const startLineEdit = (line: SpaceNoteLine, raw: string) => {

@@ -33,6 +33,7 @@ import {
 import { branchSyncOf, commitFailureView, commitHint, commitScope, scmPrimaryAction, scmPushConfirm, scmSyncSummary, type ScmPushConfirm } from './scmSync.js';
 import { mergeConfirmMessage, prMergeToastText, type PrDetail } from './pullRequest.js';
 import { buildScmFileMenu } from './pathMenu.js';
+import { useAbsolutePathOption } from './useAbsolutePath.js';
 import { PullRequestPanel } from './pullRequestParts.js';
 import { useCodeSpace, type CodeSpaceTarget } from './useCodeSpace.js';
 import type { PanelDock } from './panelDock.js';
@@ -212,7 +213,8 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	// 変更の行の長押しのメニュー（名前・相対パスのコピー・差分・ステージ。Q548 案 A）。ネイティブのメニューが無いビルドではシート
 	const menuOps = useMemo(() => contextMenuOps(), []);
 	const menuSheet = useContextMenuSheet();
-	const scmFileMenu = (entry: ScmEntry, canStage: boolean) => buildScmFileMenu(entry, {
+	const absolutePath = useAbsolutePathOption(codeSpace);
+	const scmFileMenu = (entry: ScmEntry, canStage: boolean) => buildScmFileMenu({ ...entry, absolute: absolutePath(entry.path) }, {
 		...menuOps,
 		openDiff: () => openReview(entry.path),
 		...(canStage ? { toggleStage: () => void toggleStage(entry) } : {}),
@@ -326,6 +328,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 											commitFiles={history.commitFiles}
 											onExpand={history.loadCommitFiles}
 											onOpenWeb={webUrl !== undefined ? hash => { void Linking.openURL(`${webUrl}/commit/${hash}`); } : undefined}
+											absolutePath={absolutePath}
 										/>
 									) : null}
 									{history.log?.hasMore === true ? (

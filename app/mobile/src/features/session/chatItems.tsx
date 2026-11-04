@@ -27,6 +27,9 @@ import type { ChatRow } from './chatRows.js';
 import { questionRowOutcome } from './questionOutcomes.js';
 import { SubagentCardRowView, SubagentResumeLink } from './subagentCard.js';
 import { MessageContextMenu, chatTextSelectable } from './messageContextMenu.js';
+import { buildToolRunMenu, buildToolStepMenu } from './toolRunMenu.js';
+import { ContextMenu, useContextMenuSheet, type ContextMenuSpec } from '../../components/contextMenu.js';
+import { contextMenuOps } from '../../components/copyActions.js';
 
 /** ツールの行は見た目 28。当たり判定は上下に 8 ずつ広げて 44 にする。 */
 const LINE_SLOP = { top: 8, bottom: 8, left: 0, right: 0 };
@@ -170,23 +173,30 @@ const ToolRunRow = memo(function ToolRunRow({ msgs, terminalKey, allOpen }: { ms
 			names.push(name);
 		}
 	}
+	// 長押しで並びの全文とコピー（Q549 U8 案 A）。ネイティブのメニューが無いビルドではシート（中の行と共用）
+	const menuSheet = useContextMenuSheet();
+	const runMenu = buildToolRunMenu({ steps: steps.map(step => describeStep(step)) }, contextMenuOps());
 	return (
 		<View style={styles.row}>
-			<Pressable
-				style={styles.runHead}
-				hitSlop={LINE_SLOP}
-				onPress={() => { haptic('move'); setOpen(!expanded); }}
-				accessibilityRole="button"
-				accessibilityState={{ expanded }}
-				accessibilityLabel={`ツール実行 ${steps.length}件（${names.join('、')}）`}
-			>
-				<Icon icon={expanded ? ChevronDown : SquareChevronRight} size={iconSize} color={colors.textMuted} />
-				<Text style={styles.runCount}>{`${steps.length}×`}</Text>
-				<Text style={styles.runLabel} numberOfLines={1}>{names.join(', ')}</Text>
-			</Pressable>
+			{menuSheet.sheet}
+			<ContextMenu menu={runMenu} style={styles.lineMenu}>
+				<Pressable
+					style={styles.runHead}
+					hitSlop={LINE_SLOP}
+					onPress={() => { haptic('move'); setOpen(!expanded); }}
+					onLongPress={menuSheet.longPress(runMenu)}
+					accessibilityRole="button"
+					accessibilityState={{ expanded }}
+					accessibilityLabel={`ツール実行 ${steps.length}件（${names.join('、')}）`}
+				>
+					<Icon icon={expanded ? ChevronDown : SquareChevronRight} size={iconSize} color={colors.textMuted} />
+					<Text style={styles.runCount}>{`${steps.length}×`}</Text>
+					<Text style={styles.runLabel} numberOfLines={1}>{names.join(', ')}</Text>
+				</Pressable>
+			</ContextMenu>
 			{expanded ? (
 				<View style={styles.runBody}>
-					{steps.map(step => <ToolLine key={step.key} step={step} terminalKey={terminalKey} />)}
+					{steps.map(step => <ToolLine key={step.key} step={step} terminalKey={terminalKey} sheetLongPress={menuSheet.longPress} />)}
 				</View>
 			) : null}
 		</View>
@@ -198,28 +208,33 @@ const ToolRunRow = memo(function ToolRunRow({ msgs, terminalKey, allOpen }: { ms
 	&& prev.msgs.every((m, i) => m === next.msgs[i]));
 
 /** ツール実行の1行（モックの `.tline`: 名前 13/600 と引数の要約 12、等幅）。 */
-function ToolLine({ step, terminalKey }: { step: AgentTimelineStep; terminalKey: string }) {
+function ToolLine({ step, terminalKey, sheetLongPress }: { step: AgentTimelineStep; terminalKey: string; sheetLongPress: (menu: ContextMenuSpec | undefined) => (() => void) | undefined }) {
 	const [open, setOpen] = useState(false);
 	const styles = useChatStyles(baseStyles);
 	const iconSize = useChatIconSize(15);
 	const description = describeStep(step);
 	const failed = description.tone === 'error';
+	// 長押しで引数の全文とコピー（Q549 U8 案 A）
+	const menu = buildToolStepMenu({ label: `${description.label}${description.namespace ?? ''}`, arg: description.arg, rawInput: step.use?.text }, contextMenuOps());
 	return (
 		<View>
-			<Pressable
-				style={styles.line}
-				hitSlop={LINE_SLOP}
-				onPress={() => { haptic('move'); setOpen(value => !value); }}
-				accessibilityRole="button"
-				accessibilityState={{ expanded: open }}
-				accessibilityLabel={`${description.label}の詳細を${open ? '閉じる' : '開く'}`}
-			>
-				<Icon icon={open ? ChevronDown : SquareChevronRight} size={iconSize} color={colors.textMuted} />
-				<Text style={[styles.lineName, failed ? styles.lineFailed : undefined]}>{description.label}{description.namespace ?? ''}</Text>
-				{description.arg !== undefined && description.arg.length > 0
-					? <Text style={styles.linePreview} numberOfLines={1}>{description.arg}</Text>
-					: null}
-			</Pressable>
+			<ContextMenu menu={menu} style={styles.lineMenu}>
+				<Pressable
+					style={styles.line}
+					hitSlop={LINE_SLOP}
+					onPress={() => { haptic('move'); setOpen(value => !value); }}
+					onLongPress={sheetLongPress(menu)}
+					accessibilityRole="button"
+					accessibilityState={{ expanded: open }}
+					accessibilityLabel={`${description.label}の詳細を${open ? '閉じる' : '開く'}`}
+				>
+					<Icon icon={open ? ChevronDown : SquareChevronRight} size={iconSize} color={colors.textMuted} />
+					<Text style={[styles.lineName, failed ? styles.lineFailed : undefined]}>{description.label}{description.namespace ?? ''}</Text>
+					{description.arg !== undefined && description.arg.length > 0
+						? <Text style={styles.linePreview} numberOfLines={1}>{description.arg}</Text>
+						: null}
+				</Pressable>
+			</ContextMenu>
 			{open ? (
 				<View style={styles.lineDetail}>
 					{step.use?.tool === 'SendMessage' ? <SubagentResumeLink step={step} terminalKey={terminalKey} /> : null}
@@ -436,6 +451,15 @@ function HistoryQuestionRow({ text, count, answered, outcome }: { text: string; 
 }
 
 const baseStyles = StyleSheet.create({
+	/**
+	 * ツールの行を包むメニューの入れ物。行の当たり判定は `LINE_SLOP` で上下に 8 ずつ広げているが、ネイティブのメニューの
+	 * ビューは行の大きさちょうどなので、そのままだと広げた分が入れ物の外になって届かない（Fabric のビューは枠の外の
+	 * 当たりを子へ渡さない）。入れ物を同じだけ広げ、余白で打ち消して見た目と並びは変えない。
+	 */
+	lineMenu: {
+		marginVertical: -LINE_SLOP.top,
+		paddingVertical: LINE_SLOP.top,
+	},
 	row: {
 		paddingHorizontal: space.lg,
 		paddingVertical: space.sm,

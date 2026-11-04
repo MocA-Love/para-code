@@ -19,6 +19,7 @@ import { buildFileDecorationIndex, fileDecorationOf } from './fileDecorations.js
 import type { TreeRow } from './fileTree.js';
 import { saveTreeScroll, treeScroll } from './fileTreeStore.js';
 import { buildFileMenu, buildGrepMatchMenu } from './pathMenu.js';
+import { useAbsolutePathOption } from './useAbsolutePath.js';
 import type { PanelDock } from './panelDock.js';
 import type { CodeSpace } from './useCodeSpace.js';
 import { useFileSearch, type FileSearchState } from './useFileSearch.js';
@@ -113,8 +114,9 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 	// 行の長押しのメニュー（名前・相対パスのコピー。Q548 案 A）。ネイティブのメニューが無いビルドではシートで出す
 	const menuOps = useMemo(() => contextMenuOps(), []);
 	const menuSheet = useContextMenuSheet();
-	const fileMenu = (path: string, dir: boolean, line?: number) => buildFileMenu({ path, dir }, { ...menuOps, ...(dir ? {} : { open: () => openFile(path, line) }) });
-	const grepMenu = (match: { readonly path: string; readonly line: number; readonly text: string }) => buildGrepMatchMenu(match, { ...menuOps, open: () => openFile(match.path, match.line) });
+	const absolutePath = useAbsolutePathOption(codeSpace);
+	const fileMenu = (path: string, dir: boolean, line?: number) => buildFileMenu({ path, dir, absolute: absolutePath(path) }, { ...menuOps, ...(dir ? {} : { open: () => openFile(path, line) }) });
+	const grepMenu = (match: { readonly path: string; readonly line: number; readonly text: string }) => buildGrepMatchMenu({ ...match, absolute: absolutePath(match.path) }, { ...menuOps, open: () => openFile(match.path, match.line) });
 
 	const searching = searchOpen && query.trim().length > 0;
 	return (

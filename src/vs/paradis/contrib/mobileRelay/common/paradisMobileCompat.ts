@@ -251,6 +251,13 @@ export const ParadisMobileCapability = {
 	 * 普通の `action/sendMessage` で送る（古い PC でも同じ発言として届く）。アプリは PC が広告しているときだけ専用のカードを出す。
 	 */
 	AgentAsyncQuestions: 'agent.async-questions.v1',
+	/**
+	 * fs の `absolutePath`（`ws`・`path`。スペースの中の相対パスを、ファイルがある機械の OS で通用する絶対パスにして返す。
+	 * SSH 先・Windows の区切りも直す。`paradisMobileAbsolutePath.ts` / `paradisMobileAbsolutePathRequests.ts`。Q548）。PC だけが広告する。
+	 * アプリは行の長押しのメニューで「絶対パスをコピー」を押したときだけ問い合わせ、広告しない PC では項目を薄くして
+	 * 「PC の Para Code を更新すると使えます」と出す。絶対パスは端末に残さない。
+	 */
+	FsAbsolutePath: 'fs.absolute-path.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -311,6 +318,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentTeams,
 	ParadisMobileCapability.FsHtmlImages,
 	ParadisMobileCapability.AgentAsyncQuestions,
+	ParadisMobileCapability.FsAbsolutePath,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
