@@ -1,16 +1,16 @@
 {
-	"electron": "43.7.7",
+	"electron": "43.8.3",
 	"chrome": "150.0.7871.250",
-	"checkedAt": "2026-10-29T23:05:17.040Z",
+	"checkedAt": "2026-11-05T08:57:15.913Z",
 	"results": [
 		{
 			"category": "パスワード管理",
 			"label": "1Password",
 			"id": "aeblfdkhhhdcdjpifhhbdiojplfjncoa",
 			"install": "ok",
-			"installMs": 1569,
+			"installMs": 13048,
 			"name": "1Password – Password Manager",
-			"version": "8.12.42.36",
+			"version": "8.12.44.33",
 			"manifestVersion": 3,
 			"permissions": [
 				"alarms",
@@ -37,21 +37,30 @@
 			"injected": 0,
 			"devtoolsPage": false,
 			"sidePanel": false,
-			"popup": "rendered",
-			"popupElements": 26,
+			"popup": "none (onClicked)",
 			"popupErrors": [],
-			"missingApis": [],
 			"options": "none",
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"missingApis": [],
+			"missingApisFrom": "manifest.json",
+			"workerErrors": [
+				"Uncaught (in promise) Error: WASM is not initialized, unable to make core call."
+			],
+			"workerInitialized": "[Background] 👍 Finished initializing 1Password",
+			"apiFailures": [
+				"paradisNativeMessaging.connect: Specified native messaging host not found."
+			],
+			"apiPending": []
 		},
 		{
 			"category": "パスワード管理",
 			"label": "Bitwarden",
 			"id": "nngceckbapebfimnlniiiahkandclblb",
 			"install": "ok",
-			"installMs": 1735,
+			"installMs": 9171,
 			"name": "Bitwarden Password Manager",
-			"version": "2026.10.1",
+			"version": "2026.10.2",
 			"manifestVersion": 3,
 			"permissions": [
 				"activeTab",
@@ -84,6 +93,8 @@
 			"sidePanelPath": "sidepanel-disabled.html",
 			"popup": "rendered",
 			"popupElements": 121,
+			"popupText": 288,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "none",
@@ -92,16 +103,18 @@
 			"sidePanelErrors": [],
 			"workerErrors": [
 				"Uncaught (in promise) Error: Could not establish connection. Receiving end does not exist."
-			]
+			],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "パスワード管理",
 			"label": "Dashlane",
 			"id": "fdjamakpfbbddfjaooikfcpapjohcfmg",
 			"install": "ok",
-			"installMs": 1318,
+			"installMs": 6704,
 			"name": "Dashlane — Password Manager",
-			"version": "6.2644.0",
+			"version": "6.2645.0",
 			"manifestVersion": 3,
 			"permissions": [
 				"contextMenus",
@@ -128,22 +141,28 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 47,
+			"popupText": 146,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "rendered",
 			"optionsElements": 119,
 			"optionsErrors": [],
+			"newtab": "none",
+			"sidePanelPage": "none",
 			"workerErrors": [
-				"[background/framework] Error while processing incoming carbon-legacy.carbon command (id: 0.7253788613823207) TypeError: a is not a function",
+				"[background/framework] Error while processing incoming carbon-legacy.carbon command (id: 0.1686757226480976) TypeError: a is not a function",
 				"[background/amphora] a is not a function [object Object]"
-			]
+			],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "パスワード管理",
 			"label": "Keeper",
 			"id": "bfogiafebfohielmmehodmfbbebbbpei",
 			"install": "ok",
-			"installMs": 4836,
+			"installMs": 31784,
 			"name": "Keeper® Password Manager & Digital Vault",
 			"version": "18.2.0",
 			"manifestVersion": 3,
@@ -174,21 +193,27 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 17,
+			"popupText": 21,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "rendered",
 			"optionsElements": 3,
 			"optionsErrors": [],
+			"newtab": "none",
+			"sidePanelPage": "none",
 			"workerErrors": [
 				"Uncaught (in promise) Error: Wrong Extension Context. The background script is bundled into this space"
-			]
+			],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "パスワード管理",
 			"label": "NordPass",
 			"id": "eiaeiblijfjekdanodkjadfinkhbfgcd",
 			"install": "ok",
-			"installMs": 905,
+			"installMs": 2732,
 			"name": "NordPass® Password Manager & Digital Vault",
 			"version": "7.12.15",
 			"manifestVersion": 3,
@@ -214,19 +239,23 @@
 			"injected": 2,
 			"devtoolsPage": false,
 			"sidePanel": false,
-			"popup": "unreadable",
+			"popup": "none (onClicked)",
 			"popupErrors": [],
 			"options": "none",
+			"newtab": "none",
+			"sidePanelPage": "none",
 			"missingApis": [],
 			"missingApisFrom": "manifest.json",
-			"workerErrors": []
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "パスワード管理",
 			"label": "Proton Pass",
 			"id": "ghmbeldphafepmbegfdlkpapadhbakde",
 			"install": "ok",
-			"installMs": 1031,
+			"installMs": 4290,
 			"name": "Proton Pass: Free Password Manager",
 			"version": "1.43.0",
 			"manifestVersion": 3,
@@ -255,6 +284,8 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 141,
+			"popupText": 78,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [
 				"alarms",
@@ -269,14 +300,18 @@
 			"options": "rendered",
 			"optionsElements": 117,
 			"optionsErrors": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "開発",
 			"label": "React Developer Tools",
 			"id": "fmkadmapgofadopljbjfkapdkoienihi",
 			"install": "ok",
-			"installMs": 182,
+			"installMs": 923,
 			"name": "React Developer Tools",
 			"version": "8.0.0",
 			"manifestVersion": 3,
@@ -296,17 +331,23 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 4,
+			"popupText": 105,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "none",
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "開発",
 			"label": "Redux DevTools",
 			"id": "lmhkpmbekcpmknklioeibfkpmmfibljd",
 			"install": "ok",
-			"installMs": 207,
+			"installMs": 1226,
 			"name": "Redux DevTools",
 			"version": "3.2.12",
 			"manifestVersion": 3,
@@ -323,21 +364,24 @@
 			"injected": 0,
 			"devtoolsPage": true,
 			"sidePanel": false,
-			"popup": "rendered",
-			"popupElements": 6,
+			"popup": "none (disabled)",
 			"popupErrors": [],
-			"missingApis": [],
 			"options": "rendered",
 			"optionsElements": 69,
 			"optionsErrors": [],
-			"workerErrors": []
+			"missingApis": [],
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "開発",
 			"label": "Vue.js devtools",
 			"id": "nhdogjmejiglipccpnnnanhbledajbpd",
 			"install": "ok",
-			"installMs": 339,
+			"installMs": 716,
 			"name": "Vue.js devtools",
 			"version": "7.7.7",
 			"manifestVersion": 3,
@@ -354,17 +398,23 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 2,
+			"popupText": 19,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "none",
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "開発",
 			"label": "Angular DevTools",
 			"id": "ienfalfjdbdpebioblfackkekamfmbnh",
 			"install": "ok",
-			"installMs": 225,
+			"installMs": 596,
 			"name": "Angular DevTools",
 			"version": "1.22.1",
 			"manifestVersion": 3,
@@ -384,17 +434,23 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 5,
+			"popupText": 93,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "none",
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "開発",
 			"label": "Svelte DevTools",
 			"id": "kfidecgcdjjfpeckbblhmfkhmlgecoff",
 			"install": "ok",
-			"installMs": 565,
+			"installMs": 807,
 			"name": "Svelte DevTools",
 			"version": "2.2.2",
 			"manifestVersion": 3,
@@ -412,16 +468,20 @@
 			"sidePanel": false,
 			"popup": "none",
 			"options": "none",
+			"newtab": "none",
+			"sidePanelPage": "none",
 			"missingApis": [],
 			"missingApisFrom": "manifest.json",
-			"workerErrors": []
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "開発",
 			"label": "Lighthouse",
 			"id": "blipmdconlkpinefehnmjammfjpmpbjk",
 			"install": "ok",
-			"installMs": 288,
+			"installMs": 800,
 			"name": "Lighthouse",
 			"version": "100.0.0.5",
 			"manifestVersion": 3,
@@ -438,18 +498,24 @@
 			"devtoolsPage": false,
 			"sidePanel": false,
 			"popup": "rendered",
-			"popupElements": 42,
+			"popupElements": 115,
+			"popupText": 1234,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "none",
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "開発",
 			"label": "Wappalyzer",
 			"id": "gppongmhjkpfnbhagpmjfkannfbllamg",
 			"install": "ok",
-			"installMs": 8340,
+			"installMs": 115601,
 			"name": "Wappalyzer - Technology profiler",
 			"version": "6.12.8",
 			"manifestVersion": 3,
@@ -475,19 +541,25 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 130,
+			"popupText": 252,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "rendered",
 			"optionsElements": 20,
 			"optionsErrors": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "開発",
 			"label": "JSON Formatter",
 			"id": "bcjindcccaagfpapjjmafapmmgkkhgoa",
 			"install": "ok",
-			"installMs": 158,
+			"installMs": 224,
 			"name": "JSON Formatter",
 			"version": "0.10.2",
 			"manifestVersion": 3,
@@ -507,14 +579,18 @@
 			"optionsElements": 13,
 			"optionsErrors": [],
 			"missingApis": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "見た目・読みやすさ",
 			"label": "Dark Reader",
 			"id": "eimadpbcbfnmbkopoojfekhnkhdbieeh",
 			"install": "ok",
-			"installMs": 218,
+			"installMs": 722,
 			"name": "Dark Reader",
 			"version": "4.9.134",
 			"manifestVersion": 3,
@@ -535,6 +611,8 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 356,
+			"popupText": 1232,
+			"popupSpinners": 0,
 			"popupErrors": [
 				"Unrecognized Content-Security-Policy directive 'navigate-to'."
 			],
@@ -544,14 +622,18 @@
 			"optionsErrors": [
 				"Unrecognized Content-Security-Policy directive 'navigate-to'."
 			],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "見た目・読みやすさ",
 			"label": "Stylus",
 			"id": "clngdbkpkpeebahjckkjfobafhncgmne",
 			"install": "ok",
-			"installMs": 298,
+			"installMs": 1308,
 			"name": "Stylus",
 			"version": "2.4.17",
 			"manifestVersion": 3,
@@ -581,19 +663,25 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 55,
+			"popupText": 83,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "none",
 			"newtab": "none",
 			"sidePanelPage": "none",
-			"workerErrors": []
+			"workerErrors": [],
+			"apiFailures": [
+				"contextMenus.remove: Cannot find menu item with id editor.contextDelete"
+			],
+			"apiPending": []
 		},
 		{
 			"category": "見た目・読みやすさ",
 			"label": "Refined GitHub",
 			"id": "hlepfoohegkhhmjieoechaddaejaokhf",
 			"install": "ok",
-			"installMs": 494,
+			"installMs": 3672,
 			"name": "Refined GitHub",
 			"version": "26.10.26",
 			"manifestVersion": 3,
@@ -617,14 +705,22 @@
 			"optionsElements": 1877,
 			"optionsErrors": [],
 			"missingApis": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [
+				"contextMenus.update: Cannot find menu item with id webext-permission-toggle:add-permission",
+				"contextMenus.update: Cannot find menu item with id reload-without-content-scripts",
+				"contextMenus.update: Cannot find menu item with id identify-feature"
+			],
+			"apiPending": []
 		},
 		{
 			"category": "見た目・読みやすさ",
 			"label": "OctoTree",
 			"id": "bkhaagjahfmjljalopjnoealnfndnagc",
 			"install": "ok",
-			"installMs": 1479,
+			"installMs": 4977,
 			"name": "Octotree - GitHub code tree",
 			"version": "9.3.2",
 			"manifestVersion": 3,
@@ -644,23 +740,29 @@
 			"sidePanel": false,
 			"popup": "none",
 			"options": "none",
+			"newtab": "none",
+			"sidePanelPage": "none",
 			"missingApis": [],
 			"missingApisFrom": "manifest.json",
-			"workerErrors": []
+			"workerErrors": [],
+			"apiFailures": [
+				"contextMenus.remove: Cannot find menu item with id webext-permission-toggle:add-permission"
+			],
+			"apiPending": []
 		},
 		{
 			"category": "見た目・読みやすさ",
 			"label": "Mercury Reader",
 			"id": "oknpjjbmpnndlpmnhmekjpocelpnlfdi",
 			"install": "webStoreFailed: Not a CRX file",
-			"installMs": 105
+			"installMs": 115
 		},
 		{
 			"category": "翻訳・文章",
 			"label": "Google 翻訳",
 			"id": "aapbdbdomjkkjkaonfhkkikfgjllcleb",
 			"install": "ok",
-			"installMs": 232,
+			"installMs": 763,
 			"name": "Google Translate",
 			"version": "2.0.18",
 			"manifestVersion": 3,
@@ -681,6 +783,8 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 15,
+			"popupText": 112,
+			"popupSpinners": 0,
 			"popupErrors": [
 				"Uncaught (in promise) Error: Cannot access contents of the page. Extension manifest must request permission to access the respective host.",
 				"Uncaught (in promise) Error: Cannot access contents of the page. Extension manifest must request permission to access the respective host."
@@ -689,18 +793,22 @@
 			"options": "rendered",
 			"optionsElements": 281,
 			"optionsErrors": [],
+			"newtab": "none",
+			"sidePanelPage": "none",
 			"workerErrors": [
 				"Uncaught (in promise) Error: Could not establish connection. Receiving end does not exist."
-			]
+			],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "翻訳・文章",
 			"label": "DeepL",
 			"id": "cofdbpoegempjloogbagkncekinflcnj",
 			"install": "ok",
-			"installMs": 1634,
+			"installMs": 4968,
 			"name": "DeepL: translate and write with AI",
-			"version": "1.105.1",
+			"version": "1.106.0",
 			"manifestVersion": 3,
 			"permissions": [
 				"activeTab",
@@ -725,13 +833,12 @@
 			"devtoolsPage": false,
 			"sidePanel": true,
 			"sidePanelPath": "side-panel.html",
-			"popup": "rendered",
-			"popupElements": 190,
+			"popup": "side panel",
 			"popupErrors": [],
-			"missingApis": [],
 			"options": "rendered",
 			"optionsElements": 131,
 			"optionsErrors": [],
+			"missingApis": [],
 			"newtab": "none",
 			"sidePanelPage": "rendered",
 			"sidePanelErrors": [],
@@ -741,16 +848,21 @@
 				"Error: Cannot find menu item with id dlParent",
 				"Error: Cannot find menu item with id dlTranslateFullPage",
 				"Error: Cannot find menu item with id dlParent"
-			]
+			],
+			"apiFailures": [
+				"contextMenus.update: Cannot find menu item with id dlTranslateFullPage",
+				"contextMenus.update: Cannot find menu item with id dlParent"
+			],
+			"apiPending": []
 		},
 		{
 			"category": "翻訳・文章",
 			"label": "Grammarly",
 			"id": "kbfnbcaeplbcioakkpcpgfkobkghlhen",
 			"install": "ok",
-			"installMs": 1473,
+			"installMs": 11306,
 			"name": "Grammarly: AI Writing Assistant and Grammar Checker App",
-			"version": "14.1343.0",
+			"version": "14.1344.0",
 			"manifestVersion": 3,
 			"permissions": [
 				"scripting",
@@ -774,6 +886,8 @@
 			"sidePanelPath": "src/sidePanel.html",
 			"popup": "rendered",
 			"popupElements": 53,
+			"popupText": 252,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "none",
@@ -786,14 +900,16 @@
 				"grm ERROR [extension-api.managed-storage.chrome] ░░ Manage storage timeout to get \"GrammarlyExtensionMode\"",
 				"grm ERROR [extension-api.managed-storage.chrome] ░░ Manage storage timeout to get \"GrammarlyEnrollmentToken\"",
 				"grm ERROR [knowledgeHub.bgService] ░░ User institution id is not defined"
-			]
+			],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "翻訳・文章",
 			"label": "LanguageTool",
 			"id": "oldceeleldhonbafppcapldpdifcinji",
 			"install": "ok",
-			"installMs": 1068,
+			"installMs": 4415,
 			"name": "AI Grammar Checker & Paraphraser – LanguageTool",
 			"version": "11.5.0",
 			"manifestVersion": 3,
@@ -812,22 +928,26 @@
 			"injected": 0,
 			"devtoolsPage": false,
 			"sidePanel": false,
-			"popup": "unreadable",
+			"popup": "closed",
 			"popupErrors": [],
 			"options": "rendered",
 			"optionsElements": 412,
 			"optionsErrors": [],
 			"missingApis": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "広告・プライバシー",
 			"label": "uBlock Origin Lite",
 			"id": "ddkjiahejlhfcafbddmgiahcphecmpfh",
 			"install": "ok",
-			"installMs": 1021,
+			"installMs": 5208,
 			"name": "uBlock Origin Lite",
-			"version": "2026.1026.1812",
+			"version": "2026.1103.1743",
 			"manifestVersion": 3,
 			"permissions": [
 				"activeTab",
@@ -851,21 +971,27 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 54,
+			"popupText": 105,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "rendered",
 			"optionsElements": 284,
 			"optionsErrors": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "広告・プライバシー",
 			"label": "AdGuard",
 			"id": "bgnkhhnnamicmpeenaelnjfhikgbkllg",
 			"install": "ok",
-			"installMs": 1689,
+			"installMs": 8594,
 			"name": "AdGuard AdBlocker",
-			"version": "5.5.3.28",
+			"version": "5.5.3.44",
 			"manifestVersion": 3,
 			"permissions": [
 				"tabs",
@@ -896,20 +1022,26 @@
 			"devtoolsPage": true,
 			"sidePanel": false,
 			"popup": "rendered",
-			"popupElements": 179,
+			"popupElements": 119,
+			"popupText": 0,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "rendered",
-			"optionsElements": 251,
+			"optionsElements": 16,
 			"optionsErrors": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "広告・プライバシー",
 			"label": "Privacy Badger",
 			"id": "pkehgijcmpdhfbdbbnkijodmdjhbjlgp",
 			"install": "ok",
-			"installMs": 339,
+			"installMs": 2646,
 			"name": "Privacy Badger",
 			"version": "2026.9.15.2",
 			"manifestVersion": 3,
@@ -933,21 +1065,28 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 113,
+			"popupText": 295,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "rendered",
-			"optionsElements": 4293,
+			"optionsElements": 4294,
 			"optionsErrors": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"workerInitialized": "8.11s %c2.54s%c     Initialization complete color:yellow color:auto",
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "広告・プライバシー",
 			"label": "Ghostery",
 			"id": "mlomiejdfkolichcflejclcbmpeaniij",
 			"install": "ok",
-			"installMs": 1197,
+			"installMs": 10823,
 			"name": "Ghostery AdBlocker for Privacy",
-			"version": "10.6.10",
+			"version": "10.6.11",
 			"manifestVersion": 3,
 			"permissions": [
 				"alarms",
@@ -977,19 +1116,25 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 40,
+			"popupText": 118,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "rendered",
 			"optionsElements": 74,
 			"optionsErrors": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "Orca で不可だったもの",
 			"label": "Tampermonkey",
 			"id": "dhdgffkkebhmkfjojejmpbldmpobfkfo",
 			"install": "ok",
-			"installMs": 251,
+			"installMs": 2429,
 			"name": "Tampermonkey",
 			"version": "5.5.1",
 			"manifestVersion": 3,
@@ -1024,21 +1169,27 @@
 			"sidePanel": false,
 			"popup": "rendered",
 			"popupElements": 101,
+			"popupText": 222,
+			"popupSpinners": 0,
 			"popupErrors": [],
 			"missingApis": [],
 			"options": "rendered",
 			"optionsElements": 1684,
 			"optionsErrors": [],
-			"workerErrors": []
+			"newtab": "none",
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "Orca で不可だったもの",
 			"label": "Loom",
 			"id": "liecbddmkiiihnedobmlmillhodjkdmb",
 			"install": "ok",
-			"installMs": 2252,
+			"installMs": 3477,
 			"name": "Loom – Screen Recorder & Screen Capture",
-			"version": "5.5.214",
+			"version": "5.5.215",
 			"manifestVersion": 3,
 			"permissions": [
 				"system.memory",
@@ -1063,21 +1214,23 @@
 			"injected": 0,
 			"devtoolsPage": false,
 			"sidePanel": false,
-			"popup": "unreadable",
+			"popup": "closed",
 			"popupErrors": [],
 			"options": "none",
 			"newtab": "none",
 			"sidePanelPage": "none",
 			"missingApis": [],
 			"missingApisFrom": "manifest.json",
-			"workerErrors": []
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "Orca で不可だったもの",
 			"label": "Momentum",
 			"id": "laookkfknpbbblfpciffpaejjkokdgca",
 			"install": "ok",
-			"installMs": 1326,
+			"installMs": 5015,
 			"name": "Momentum",
 			"version": "2.27.9",
 			"manifestVersion": 3,
@@ -1118,19 +1271,21 @@
 				"topSites",
 				"scripting",
 				"alarms",
-				"tabGroups",
 				"search"
 			],
-			"workerErrors": []
+			"sidePanelPage": "none",
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "その他",
 			"label": "Google Keep",
 			"id": "lpcaedmchfhocbbapmcbpinfpgnhiddi",
 			"install": "ok",
-			"installMs": 418,
+			"installMs": 1772,
 			"name": "Google Keep Chrome Extension",
-			"version": "4.26431.540.1",
+			"version": "4.26441.540.1",
 			"manifestVersion": 3,
 			"permissions": [
 				"activeTab",
@@ -1151,18 +1306,22 @@
 			"sidePanel": false,
 			"popup": "none",
 			"options": "none",
+			"newtab": "none",
+			"sidePanelPage": "none",
 			"missingApis": [],
 			"missingApisFrom": "manifest.json",
-			"workerErrors": []
+			"workerErrors": [],
+			"apiFailures": [],
+			"apiPending": []
 		},
 		{
 			"category": "AI",
 			"label": "Claude",
 			"id": "fcoeoabgfenejglbffodgkkbkcdhcgfn",
 			"install": "ok",
-			"installMs": 1990,
+			"installMs": 2286,
 			"name": "Claude",
-			"version": "1.0.104",
+			"version": "1.0.105",
 			"manifestVersion": 3,
 			"permissions": [
 				"sidePanel",
@@ -1198,7 +1357,11 @@
 			"missingApis": [],
 			"newtab": "none",
 			"sidePanelPage": "none",
-			"workerErrors": []
+			"workerErrors": [],
+			"apiFailures": [
+				"paradisNativeMessaging.connect: Specified native messaging host not found."
+			],
+			"apiPending": []
 		}
 	]
 }

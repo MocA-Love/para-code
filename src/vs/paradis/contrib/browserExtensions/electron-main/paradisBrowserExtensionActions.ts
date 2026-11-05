@@ -73,6 +73,26 @@ export interface IParadisActionsEnvironment {
 	workAreaFor(rect: IParadisRect): IParadisRect;
 }
 
+/**
+ * ポップアップの DevTools を開くキー（Chrome と同じ: F12、Ctrl+Shift+I、macOS は Cmd+Option+I）。ポップアップの窓の中だけで見る
+ * （workbench の窓のキー割り当てには関わらない）。
+ */
+export function paradisIsPopupDevToolsShortcut(input: { readonly type: string; readonly key: string; readonly code: string; readonly control: boolean; readonly shift: boolean; readonly alt: boolean; readonly meta: boolean }, platform: NodeJS.Platform): boolean {
+	if (input.type !== 'keyDown') {
+		return false;
+	}
+	if (input.key === 'F12') {
+		return !input.control && !input.shift && !input.alt && !input.meta;
+	}
+	// macOS の Option を押すと key は別の文字になる（Option+I は「ˆ」）ので、キーの場所（code）で見る
+	if (input.code !== 'KeyI') {
+		return false;
+	}
+	return platform === 'darwin'
+		? input.meta && input.alt && !input.control && !input.shift
+		: input.control && input.shift && !input.alt && !input.meta;
+}
+
 // 描き直しを束ねる長さ（バッジを頻繁に変える拡張機能でも、描き直しは少しにする）
 const TOOLBAR_CHANGED_DELAY_MS = 50;
 const POPUP_REQUEST_TIMEOUT_MS = 3_000;
@@ -729,6 +749,11 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 				if (this._popup === popup) {
 					this._closePopup();
 				}
+			} else if (paradisIsPopupDevToolsShortcut(input, process.platform)) {
+				// Chrome の「ポップアップを検証」と同じく、ポップアップ（拡張機能自身のページだけを出す窓）の DevTools を別の窓で開く。
+				// Para Code のメニューのキー（workbench の DevTools）へは渡さない
+				event.preventDefault();
+				contents.openDevTools({ mode: 'detach' });
 			}
 		});
 		// target=_blank のリンクは、そのタブと同じ場所の新しいタブで開く
@@ -739,14 +764,15 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 		// 拡張機能自身のページの間だけ移れる（アドレスバーの無い窓でウェブのページを開かせない）
 		paradisKeepOnExtensionPages(contents, target => isPageOf(target, resolved.extension.id));
 		window.on('blur', () => {
-			if (this._popup === popup) {
+			// DevTools へフォーカスが移ったときは閉じない（Chrome も検証中のポップアップは開いたまま）
+			if (this._popup === popup && !contents.isDevToolsOpened()) {
 				this._lastBlurClose = { session: popup.session, extensionId: popup.extensionId, at: Date.now() };
 				this._closePopup();
 			}
 		});
 		// Para Code のウィンドウに戻った・押したタブが隠れた・閉じたら閉じる（フォーカスを渡せない環境でも残らないように）
 		const closeOnParentFocus = () => {
-			if (this._popup === popup) {
+			if (this._popup === popup && !contents.isDevToolsOpened()) {
 				this._closePopup();
 			}
 		};
