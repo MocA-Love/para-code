@@ -93,6 +93,17 @@ export function paradisIsPopupDevToolsShortcut(input: { readonly type: string; r
 		: input.control && input.shift && !input.alt && !input.meta;
 }
 
+/** ポップアップを閉じるきっかけ。 */
+export type ParadisPopupCloseReason = 'blur' | 'parentFocus' | 'tabHidden' | 'tabClosed';
+
+/**
+ * ポップアップを閉じるか。DevTools を開いている間は、フォーカスの移り（ポップアップの blur と親の窓の focus）では閉じない
+ * （Chrome も検証中のポップアップは開いたまま）。押したタブが隠れた・閉じたときは、DevTools を開いていても閉じる。
+ */
+export function paradisShouldClosePopup(reason: ParadisPopupCloseReason, devToolsOpened: boolean): boolean {
+	return !devToolsOpened || reason === 'tabHidden' || reason === 'tabClosed';
+}
+
 // 描き直しを束ねる長さ（バッジを頻繁に変える拡張機能でも、描き直しは少しにする）
 const TOOLBAR_CHANGED_DELAY_MS = 50;
 const POPUP_REQUEST_TIMEOUT_MS = 3_000;
@@ -764,18 +775,18 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 		// 拡張機能自身のページの間だけ移れる（アドレスバーの無い窓でウェブのページを開かせない）
 		paradisKeepOnExtensionPages(contents, target => isPageOf(target, resolved.extension.id));
 		window.on('blur', () => {
-			// DevTools へフォーカスが移ったときは閉じない（Chrome も検証中のポップアップは開いたまま）
-			if (this._popup === popup && !contents.isDevToolsOpened()) {
+			if (this._popup === popup && paradisShouldClosePopup('blur', contents.isDevToolsOpened())) {
 				this._lastBlurClose = { session: popup.session, extensionId: popup.extensionId, at: Date.now() };
 				this._closePopup();
 			}
 		});
 		// Para Code のウィンドウに戻った・押したタブが隠れた・閉じたら閉じる（フォーカスを渡せない環境でも残らないように）
-		const closeOnParentFocus = () => {
-			if (this._popup === popup && !contents.isDevToolsOpened()) {
+		const closeFor = (reason: ParadisPopupCloseReason) => {
+			if (this._popup === popup && paradisShouldClosePopup(reason, contents.isDevToolsOpened())) {
 				this._closePopup();
 			}
 		};
+		const closeOnParentFocus = () => closeFor('parentFocus');
 		parent.on('focus', closeOnParentFocus);
 		disposables.add(toDisposable(() => {
 			if (!parent.isDestroyed()) {
@@ -784,10 +795,10 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 		}));
 		disposables.add(resolved.view.onDidChangeVisibility(visible => {
 			if (!visible) {
-				closeOnParentFocus();
+				closeFor('tabHidden');
 			}
 		}));
-		disposables.add(resolved.view.onDidClose(closeOnParentFocus));
+		disposables.add(resolved.view.onDidClose(() => closeFor('tabClosed')));
 		window.once('closed', () => {
 			disposables.dispose();
 			if (this._popup === popup) {
