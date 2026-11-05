@@ -3877,6 +3877,8 @@ async function createHarness(
 			stat: statTargetFolder,
 			// 切り替えの間に届いた変更通知を数えるだけ (計測)。
 			onDidFilesChange: Event.None,
+			// 遅い切り替えのログの「最後の削除」を覚えるだけ。
+			onDidRunOperation: Event.None,
 			readFile: async () => {
 				if (workspaceFileDiskContent === undefined) {
 					throw new FileOperationError('missing', FileOperationResult.FILE_NOT_FOUND);
