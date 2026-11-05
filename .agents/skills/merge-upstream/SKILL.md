@@ -135,6 +135,8 @@ npm run valid-layers-check
 - IME パッチ: `npm install` のログに `Patched @xterm/xterm ... IME handling` が出るか。版が変わると警告だけで素の xterm になる（CI では失敗する）。新しい版の `node_modules/@xterm/xterm` で `git apply --check build/npm/paradisXtermIme/xterm-ime.patch` が通れば `build/npm/paradisXtermImePatch.ts` の `PARADIS_XTERM_IME_TARGET_VERSION` を書き換え、通らなければ Orca の新しいパッチから作り直す
 - 描画ずれの修復が読む非公開プロパティ: `grep -c "_renderService\|_isPaused\|_charAtlas\|_themeService" node_modules/@xterm/xterm/lib/xterm.js node_modules/@xterm/addon-webgl/lib/addon-webgl.js` が 0 にならないか
 
+**`build/win32/inno_updater.exe`**: fork は Windows でバージョン付きの配置（`win32VersionedUpdate`）を使わないので、旧来の `_` を移す経路を持つ updater（いまは 0.23.0）を残す。衝突したら fork の側を取り、`node --test build/lib/test/paradisInnoUpdater.test.ts` が通ることを確かめる（NOTES.md の「コメントを書けないファイルへの変更一覧」）。
+
 **`build/node_modules`**: root の `npm install` が exit 0 でも build/ のサブインストールがスキップされることがある。起動時に `gulp-merge-json` の `ERR_MODULE_NOT_FOUND` が出たら `cd build && npm ci`。
 
 ---
