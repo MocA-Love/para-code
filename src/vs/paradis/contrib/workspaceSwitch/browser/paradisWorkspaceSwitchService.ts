@@ -34,6 +34,8 @@ import { IParadisMainLoadService, IParadisMainLoopWindowSummary, IParadisStatRou
 import { IParadisLongTaskSummary, IParadisLongTaskWindow, paradisStartLongTaskWindow } from '../../mainLoad/browser/paradisLongTaskMonitor.js';
 import { IParadisLongFrameSummary, IParadisLongFrameWindow, paradisDiffLongFrames, paradisLongFrameAttributes, paradisStartLongFrameWindow } from '../../mainLoad/browser/paradisLongFrameMonitor.js';
 import { paradisBeginFolderUpdateTrace, paradisSafeSwitchAttributes } from '../common/paradisFolderUpdateTrace.js';
+import { IParadisFileIoWindow, paradisBeginFileIoWindow, ParadisFileIoSide } from '../common/paradisFileIoWatch.js';
+import { IParadisSlowSwitchSample, paradisFormatSlowSwitchLog, paradisFormatStuckSwitchLog, paradisShouldLogSlowSwitch } from '../common/paradisSlowSwitchLog.js';
 import { IParadisWorkspaceFileFlush, paradisWhenWorkspaceFileFlushed } from '../common/paradisWorkspaceFileWriteCache.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisIsPresentWorktreeKey, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService, ParadisScopeRetirementPreparation } from '../common/paradisEditorScope.js';
@@ -46,7 +48,7 @@ import { paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisTimeBoundedTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
 import { paradisClearVerifiedWorkspaceFolders, paradisMarkVerifiedWorkspaceFolder, paradisTakeVerifiedWorkspaceFolderHits } from '../common/paradisWorkspaceFolderVerification.js';
-import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
+import { FileOperation, FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { paradisBlockTerminalInput } from './paradisTerminalInputGate.js';
@@ -318,6 +320,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * その回を飛ばす（連打された中間スペースを経由しないため）。詳細は `switchToTarget`。
 	 */
 	private _coalesceGeneration = 0;
+	/**
+	 * このウィンドウで最後にファイルやフォルダを消した時刻（接続先と手元）。遅い切り替えのログに
+	 * 「何秒前に消したか」を出すため。接続先の大きなフォルダの削除は、`delete` が返った後も
+	 * 接続先のサーバーの中で消し続け、その間の切り替えのファイル操作を待たせる。
+	 */
+	private readonly _lastDeleteAt: Record<ParadisFileIoSide, number | undefined> = { remote: undefined, local: undefined };
 
 	private _switching = false;
 	private readonly _activeSwitchBodies = new Set<Promise<void>>();
@@ -406,6 +414,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	) {
 		super();
 		this._sharedTerminalPanel = paradisSharedPanelEnabledAtStartup(configurationService);
+		this._register(fileService.onDidRunOperation(event => {
+			if (event.isOperation(FileOperation.DELETE)) {
+				this._lastDeleteAt[event.resource.scheme === Schemas.vscodeRemote ? 'remote' : 'local'] = Date.now();
+			}
+		}));
 		this._register(toDisposable(() => {
 			if (this._switchOwnerLeaseTimer !== undefined) {
 				mainWindow.clearInterval(this._switchOwnerLeaseTimer);
@@ -1591,6 +1604,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// **`coalesce` の無い要求 (内部呼び出し) は世代を進めず、飛ばされることもない。** 退役の
 		// ロールバックや worktree 作成直後の切り替えは、成立を前提に後続処理が走るため。
 		const coalesceGeneration = options?.coalesce ? ++this._coalesceGeneration : undefined;
+		// 遅い切り替えのログの「待ち」。前の切り替えの終わりを待った時間も、ユーザーには
+		// 「切り替え中…」の一部に見えるので、本体の時間と分けて出す。
+		const requestedAt = Date.now();
 
 		// 計測は sequencer の待ちを含めない位置から始める。キュー待ちは「切り替えが遅い」ではなく
 		// 「連打された」なので、混ぜると分布が読めなくなる。件数は sample rate で絞られる。
@@ -1659,7 +1675,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			const inputGate = paradisBlockTerminalInput({
 				onAutoRelease: () => this.logService.warn(`[ParadisWorkspaceSwitch] Terminal input gate auto-released; the switch to ${stateKey} never finished`),
 			});
-			const watchdog = setTimeout(() => this.onSwitchWatchdogFired(stateKey, uri, inputGate), ParadisWorkspaceSwitchService.SWITCH_WATCHDOG_MS);
+			// 遅い切り替えのログ用。ファイル IPC の返事待ちの数と待ち時間を、この切り替えの間だけ集める。
+			// 締め切りの警告は本体の外から読むので、いまの段階も外に置く。
+			const fileIoWindow = paradisBeginFileIoWindow();
+			const liveProgress: { phase?: string; phaseStartedAt?: number; phaseMs: Record<string, number> } = { phaseMs: {} };
+			const watchdog = setTimeout(() => {
+				this.logStuckSwitch(liveProgress, fileIoWindow, requestedAt);
+				this.onSwitchWatchdogFired(stateKey, uri, inputGate);
+			}, ParadisWorkspaceSwitchService.SWITCH_WATCHDOG_MS);
 
 			const switching = this.trackSwitchBody(this.withSwitchProgress(stateKey, uri, () => runInParadisSpan('workspaceSwitch', 'switch', {
 				safe_terminal_editors: terminalEditors,
@@ -1671,7 +1694,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// サンプリング抽選を受ける（本番で1件も届いていなかった一因）。数値を自分で持てば
 				// 実行文脈にも await の位置にも一切依存しない。
 				const switchStartedAt = Date.now();
-				const phaseMs: Record<string, number> = {};
+				const phaseMs: Record<string, number> = liveProgress.phaseMs;
 				// 段階ごとの renderer の長いタスクの合計 (ms)。`verify_folder_wait` と
 				// `update_folders_write` の伸びは「main が返した後、renderer が返事を処理するまで」の
 				// 待ちだったので、その間に renderer が自分の長い処理で塞がっていたかを段階ごとに見る。
@@ -1687,10 +1710,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					const longTasksBefore = tracked?.snapshot();
 					const framesTracked = ParadisWorkspaceSwitchService.LONG_FRAME_PHASES.has(name) ? phaseLongTasks.frames : undefined;
 					const longFramesBefore = framesTracked?.snapshot();
+					liveProgress.phase = name;
+					liveProgress.phaseStartedAt = startedAt;
 					try {
 						return await run();
 					} finally {
 						phaseMs[name] = Date.now() - startedAt;
+						liveProgress.phase = undefined;
 						const longTasksAfter = tracked?.snapshot();
 						if (longTasksBefore !== undefined && longTasksAfter !== undefined) {
 							phaseLongTaskMs[name] = Math.max(0, longTasksAfter.totalMs - longTasksBefore.totalMs);
@@ -2159,9 +2185,23 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						Object.assign(extraAttributes, paradisLongFrameAttributes(`safe_${phase}_`, frames));
 					}
 					const mainLoop = mainLoopWindow?.then(id => id === undefined ? undefined : mainLoadProbe?.endWindow(id)).catch(() => undefined);
+					const switchTotalMs = Date.now() - switchStartedAt;
+					this.logSlowSwitch({
+						queuedMs: Math.max(0, switchStartedAt - requestedAt),
+						totalMs: switchTotalMs,
+						completed,
+						failed: switchError !== undefined,
+						targetRemote: uri.scheme === Schemas.vscodeRemote,
+						sourceRemote: previousUri === undefined ? undefined : previousUri.scheme === Schemas.vscodeRemote,
+						phaseMs,
+						io: fileIoWindow.summarize(),
+						fileEvents: switchEventCounts.fileEvents,
+						configEvents: switchEventCounts.configEvents,
+						lastDeleteAgoMs: this.lastDeleteAgoMs(requestedAt),
+					});
 					void this.recordSwitchPhasesWithMainLoad({
 						startedAt: switchStartedAt,
-						totalMs: Date.now() - switchStartedAt,
+						totalMs: switchTotalMs,
 						phaseMs,
 						completed,
 						failed: switchError !== undefined,
@@ -2181,6 +2221,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// 解除は**この1箇所**に集約する。ここは `notify_scope_switched` を待ち終えた後で、
 				// かつ早期 return (同一URIの近道) や例外を含むどの経路も必ず通る唯一の場所。
 				clearTimeout(watchdog);
+				fileIoWindow.dispose();
 				inputGate.dispose();
 				this.setPendingSwitchKey(undefined);
 			}));
@@ -2255,6 +2296,43 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			// allow-any-unicode-next-line
 			"「{0}」への切り替えに時間がかかっています。まだ処理中のため表示は前のスペースのままかもしれませんが、ターミナルの入力は使えるようにしました。作業中のスペースを確かめてから入力してください。",
 			this.switchDisplayName(stateKey, uri)));
+	}
+
+	/** 切り替えの要求より前の、最後の削除からの経過。要求の後に消したものは数えない。 */
+	private lastDeleteAgoMs(requestedAt: number): Record<ParadisFileIoSide, number | undefined> {
+		const ago = (at: number | undefined) => at === undefined || at > requestedAt ? undefined : requestedAt - at;
+		return { remote: ago(this._lastDeleteAt.remote), local: ago(this._lastDeleteAt.local) };
+	}
+
+	/**
+	 * 遅かった切り替え（クリックから終わるまで 2 秒超）を、ウィンドウのログに 1 行で残す。
+	 * Sentry が上限で使えない間も原因を追えるようにするため。投げない。
+	 */
+	private logSlowSwitch(sample: IParadisSlowSwitchSample): void {
+		try {
+			if (paradisShouldLogSlowSwitch(sample)) {
+				this.logService.warn(paradisFormatSlowSwitchLog(sample));
+			}
+		} catch (error) {
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to log a slow space switch', error);
+		}
+	}
+
+	/** 締め切りの警告のときに、いまどの段階で止まっているかとファイル IPC の様子を残す。投げない。 */
+	private logStuckSwitch(progress: { readonly phase?: string; readonly phaseStartedAt?: number; readonly phaseMs: Readonly<Record<string, number>> }, fileIoWindow: IParadisFileIoWindow, requestedAt: number): void {
+		try {
+			const now = Date.now();
+			this.logService.warn(paradisFormatStuckSwitchLog({
+				elapsedMs: now - requestedAt,
+				phase: progress.phase,
+				phaseElapsedMs: progress.phase !== undefined && progress.phaseStartedAt !== undefined ? now - progress.phaseStartedAt : undefined,
+				phaseMs: progress.phaseMs,
+				io: fileIoWindow.summarize(),
+				lastDeleteAgoMs: this.lastDeleteAgoMs(requestedAt),
+			}));
+		} catch (error) {
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to log a stuck space switch', error);
+		}
 	}
 
 	/** 進行表示と警告で見せるスペース名。登録済みなら付けた名前、そうでなければフォルダ名。 */

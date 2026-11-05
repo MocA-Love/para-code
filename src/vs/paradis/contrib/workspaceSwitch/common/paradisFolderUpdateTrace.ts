@@ -29,6 +29,7 @@
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { paradisNoteFileCallStarted } from './paradisFileIoWatch.js';
 
 /**
  * 区間の境目。**この順に通る**（Sentry での読み方は NOTES.md の「スペース切り替えの計測」）。
@@ -219,18 +220,29 @@ function readBytesOf(command: string, result: unknown): number {
 }
 
 /**
+ * 返事待ちの台帳 (`paradisFileIoWatch.ts`) に載せる。返すのは元の promise（数えるための枝は
+ * 失敗を握るだけで、呼び出し元の受け取る結果を変えない）。
+ */
+function paradisWatchFileCall<T>(result: Promise<T>, locality: ParadisFileIoLocality, command: string): Promise<T> {
+	const settle = paradisNoteFileCallStarted(locality, command);
+	result.then(() => settle(true), () => settle(false));
+	return result;
+}
+
+/**
  * ファイルのプロバイダのチャネルを包み、記録中だけ呼び出しを数える。記録中でなければ
- * 元のチャネルへそのまま渡す（返す promise も元のもの）。
+ * 元のチャネルへそのまま渡す（返す promise も元のもの）。返事待ちの数と待ち時間だけは
+ * 常に数える（スペースの切り替えが遅かったときのログ用。`paradisFileIoWatch.ts`）。
  */
 export function paradisCountFileChannel(channel: IChannel, locality: ParadisFileIoLocality): IChannel {
 	return {
 		call<T>(command: string, arg?: unknown, cancellationToken?: CancellationToken): Promise<T> {
 			const trace = active;
 			if (trace === undefined) {
-				return channel.call<T>(command, arg, cancellationToken);
+				return paradisWatchFileCall(channel.call<T>(command, arg, cancellationToken), locality, command);
 			}
 			const startedAt = clock();
-			const result = channel.call<T>(command, arg, cancellationToken);
+			const result = paradisWatchFileCall(channel.call<T>(command, arg, cancellationToken), locality, command);
 			const tally = trace.io[locality];
 			const kind = kindOf(command);
 			tally.calls++;
