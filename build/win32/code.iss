@@ -1621,6 +1621,14 @@ begin
   Result := (WizardIsTaskSelected('addcontextmenufolders') and not ShouldUseWindows11ContextMenu()) or ShouldRepairFolderContextMenu();
 end;
 
+// PARA-PATCH: the translated UpdatingVisualStudioCode messages name Visual Studio Code;
+// show the product name in the inno_updater progress window instead.
+function ParadisUpdatingLabel(): String;
+begin
+  Result := ExpandConstant('{cm:UpdatingVisualStudioCode}');
+  StringChangeEx(Result, 'Visual Studio Code', '{#NameLong}', True);
+end;
+
 function BoolToStr(Value: Boolean): String;
 begin
   if Value then
@@ -1876,7 +1884,8 @@ begin
       if not SessionEndFileExists() and not CancelFileExists() then begin
         StopTunnelServiceIfNeeded();
         Log('Invoking inno_updater for background update');
-        Exec(ExpandConstant('{app}\{#VersionedResourcesFolder}\tools\inno_updater.exe'), ExpandConstant('"{app}\{#ExeBasename}.exe" ' + BoolToStr(LockFileExists()) + ' "{cm:UpdatingVisualStudioCode}"'), '', SW_SHOW, ewWaitUntilTerminated, UpdateResultCode);
+        // PARA-PATCH: the progress label comes from ParadisUpdatingLabel (product name instead of Visual Studio Code).
+        Exec(ExpandConstant('{app}\{#VersionedResourcesFolder}\tools\inno_updater.exe'), ExpandConstant('"{app}\{#ExeBasename}.exe" ' + BoolToStr(LockFileExists()) + ' "') + ParadisUpdatingLabel() + '"', '', SW_SHOW, ewWaitUntilTerminated, UpdateResultCode);
         DeleteFile(ExpandConstant('{app}\updating_version'));
         Log('inno_updater completed successfully');
         #if "system" == InstallTarget
