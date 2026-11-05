@@ -11,7 +11,10 @@
 //  - Chrome ウェブストアから入れられるか（ストアの署名の確かめを含む）と、Electron に読み込めるか
 //  - service worker が動き出すか、worker の console に出たエラー
 //  - 手元の試験用のページ（ログインの欄・JSON を含む）で、content script の文脈ができるか
-//  - ポップアップ（action.default_popup）とオプションのページが開くか、そこでのエラー、宣言した権限の chrome.* があるか
+//  - ポップアップ（action.default_popup）が、ツールバーのボタンを押したとき（activateAction）と同じ経路で開き、15 秒の後に
+//    回る印（読み込み中の表示）が残っていないか・文字が出ているか。そこでのエラー
+//  - オプションのページが開くか、そこでのエラー、宣言した権限の chrome.* があるか
+//  - worker の console で初期化を終えたと分かる行が出たか、拡張機能へ失敗で返した詰め物の呼び出し（tabs.query など）
 //  - DevTools のページを持つか（パネルが出るかは手で見る）
 // 外と話すのは、一覧の拡張機能をストアから落とすときだけ（試験用のページは 127.0.0.1）。
 //
@@ -28,6 +31,9 @@
 //   node --experimental-strip-types src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatReport.ts src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.json src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat.html src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/browser-extensions-compat-notes.json
 // 手で確かめたこと（自動では見られないこと）は browser-extensions-compat-notes.json に書く（表を作り直すときも渡す）。
 // HOME は一時のフォルダに替えて動かす（userData は PARADIS_COMPAT_ROOT の下に作る）。PARADIS_COMPAT_IDS=<id>,<id> で一部だけ試せる。
+// PARADIS_COMPAT_FOLDERS=<フォルダ>,<フォルダ> を渡すと、ストアから落とさずに、展開済みのフォルダを「フォルダから追加」と同じ形で
+// 読み込んで試す（手元にある拡張機能で再現するため。結果は表に入れない）。PARADIS_COMPAT_TRACE=1 で、詰め物の呼び出しと答えを
+// すべて console に出す。
 // PARADIS_COMPAT_RUN=1 のときだけ動く（ほかから読まれても何もしない）。
 // 今の表の元の結果は browser-extensions-compat.json。一部だけ測り直したら、その行を入れ替えてから表を作り直す。
 
@@ -43,6 +49,8 @@ import type { CDPEvent, ICDPConnection } from '../../../../../../platform/browse
 import { IParadisAddExtensionResult } from '../../../common/paradisBrowserExtensions.js';
 import { IParadisBrowserExtensionTabsOptions, ParadisBrowserExtensionsManager, ParadisExtensionSession } from '../../../electron-main/paradisBrowserExtensionsMain.js';
 import { paradisListenForBrowserExtensionWindowQueries } from '../../../electron-main/paradisBrowserExtensionWindows.js';
+import { paradisCreateBrowserExtensionActionPopup, paradisWorkAreaFor } from '../../../electron-main/paradisBrowserExtensionTabEnvironment.js';
+import type { ParadisExtensionApiReply } from '../../../common/paradisBrowserExtensionApiWire.js';
 
 /**
  * 結果に手元の絶対パス（ユーザー名を含む）を残さない。リポジトリの直下は `<repo>`、確認用のフォルダは `<compat-root>`、
@@ -107,9 +115,19 @@ export interface IParadisCompatResult {
 	/** そのとき拡張機能が登録したユーザースクリプトの数。 */
 	userScriptsRegistered?: number;
 	sidePanel?: boolean;
+	/**
+	 * ツールバーのボタン（activateAction）で開いたポップアップ: rendered（文字か画像が出て、回る印が無い）・spinning（15 秒の後も
+	 * 回る印が残る）・no text（要素はあるが文字も画像も無い）・empty・closed（読む前に閉じた）・failed (...)・crashed・none（manifest に
+	 * ポップアップが無い）・none (onClicked)（manifest にはあるが、拡張機能が action.setPopup で外していて、押すと onClicked になる）・
+	 * none (disabled)（拡張機能がこのページでボタンを無効にしている）・side panel（ボタンでサイドパネルが開く）。
+	 */
 	popup?: string;
 	options?: string;
 	popupElements?: number;
+	/** ポップアップの本文の文字数（15 秒まで待った後）。 */
+	popupText?: number;
+	/** ポップアップに残っていた回る印（読み込み中の表示）の数。 */
+	popupSpinners?: number;
 	optionsElements?: number;
 	popupErrors?: string[];
 	optionsErrors?: string[];
@@ -127,7 +145,23 @@ export interface IParadisCompatResult {
 	missingApis?: string[];
 	missingApisFrom?: string;
 	workerErrors?: string[];
+	/** worker の console の、初期化を終えたと分かる最初の行（無ければ undefined）。 */
+	workerInitialized?: string;
+	/** 拡張機能へ失敗で返した詰め物の呼び出し（`名前空間.関数: 文`。同じものは 1 つ）。 */
+	apiFailures?: string[];
+	/** 確かめを終えたときに、まだ答えていなかった詰め物の呼び出し（`文脈 名前空間.関数`）。 */
+	apiPending?: string[];
 }
+
+/**
+ * ポップアップの「読み込み中」の印（1Password の .loadingConfig と、ARIA の busy・値の無い progressbar）。class の名前の一部
+ * （spinner・loader など）では探さない（読み込みと関係の無い要素に当たり、回っていないものを spinning にしてしまうため）。
+ */
+const SPINNER_SELECTOR = '.loadingConfig, [aria-busy="true"], [role="progressbar"]:not([aria-valuenow])';
+/** ポップアップが落ち着くまで待つ長さ（回る印がこの後も残っていれば spinning）。PARADIS_COMPAT_POPUP_WAIT_MS で延ばせる（DevTools で覗くとき）。 */
+const POPUP_SETTLE_MS = Number(process.env.PARADIS_COMPAT_POPUP_WAIT_MS) || 15_000;
+/** worker が初期化を終えたと分かる console の行。 */
+const WORKER_INITIALIZED = /\bfinished initiali[sz]ing\b|\binitiali[sz]ation (?:complete|finished)\b/i;
 
 type Manifest = Record<string, unknown> & {
 	manifest_version?: number;
@@ -242,6 +276,96 @@ function wait(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+interface IPopupOutcome {
+	readonly state: string;
+	readonly elements?: number;
+	readonly text?: number;
+	readonly spinners?: number;
+	readonly missing?: string[];
+	readonly errors: readonly string[];
+}
+
+/**
+ * ツールバーのボタンを押したときと同じ経路（activateAction）でポップアップを開き、落ち着くまで（最大 15 秒）待って読む。
+ * 文字が出て回る印が無くなったら、そこで読み終える。
+ */
+async function openPopupFromToolbar(manager: ParadisBrowserExtensionsManager, actionPopups: { window: BrowserWindow; errors: string[] }[], tab: BrowserWindow, id: string, wantedApis: readonly (string | undefined)[]): Promise<IPopupOutcome> {
+	actionPopups.splice(0);
+	// DevTools（--remote-debugging-port）で worker を覗く・状態を整える間だけ止める（PARADIS_COMPAT_PAUSE_BEFORE_POPUP_MS）
+	const pause = Number(process.env.PARADIS_COMPAT_PAUSE_BEFORE_POPUP_MS);
+	if (pause > 0) {
+		console.log(`[compat] pausing ${pause} ms before the toolbar button (${id})`);
+		await wait(pause);
+	}
+	// 拡張機能が action.setPopup で外していれば、押してもポップアップは出ない（onClicked になる。1Password はアカウントが無いとき）
+	const button = (await manager.getToolbar('compat'))?.actions.find(action => action.extensionId === id);
+	if (button && !button.enabled) {
+		return { state: 'none (disabled)', errors: [] };
+	}
+	if (button && !button.hasPopup) {
+		return { state: 'none (onClicked)', errors: [] };
+	}
+	const bounds = tab.getContentBounds();
+	// 右上のボタンの場所（ウィンドウの中の座標）
+	const activated = await manager.activateAction('compat', id, { windowId: tab.id, x: bounds.width - 40, y: 8, width: 28, height: 28 }, false);
+	if (!activated.ok) {
+		return { state: `failed (${activated.error})`, errors: [] };
+	}
+	const opened = actionPopups[0];
+	if (!opened) {
+		// ボタンでサイドパネルを開く設定（sidePanel.setPanelBehavior）なら、ポップアップより先にパネルが開く
+		return { state: button?.hasSidePanel ? 'side panel' : 'failed (no popup window)', errors: [] };
+	}
+	const { window, errors } = opened;
+	let failed: string | undefined;
+	window.webContents.on('did-fail-load', (_event, code, description) => { failed = `${code} ${description}`; });
+	let crashed = false;
+	window.webContents.on('render-process-gone', () => { crashed = true; });
+	const read = async (): Promise<{ elements: number; text: number; images: number; spinners: number; missing: string[] } | undefined> => window.isDestroyed() ? undefined : window.webContents.executeJavaScript(`(() => {
+		const visible = element => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden';
+		const missing = ${JSON.stringify(wantedApis)}
+			.filter((name, index, all) => all.indexOf(name) === index)
+			.filter(name => name.split('.').reduce((target, key) => target && target[key], globalThis.chrome) === undefined);
+		return {
+			elements: document.querySelectorAll('body *').length,
+			text: (document.body && document.body.innerText || '').trim().length,
+			// 画像（CSS の背景画像も。1Password の鍵の画面はロゴだけで文字が無い）
+			images: [...document.querySelectorAll('body *')].filter(element => visible(element) && (element.matches('img, svg, canvas, video') || getComputedStyle(element).backgroundImage !== 'none')).length,
+			spinners: [...document.querySelectorAll(${JSON.stringify(SPINNER_SELECTOR)})].filter(visible).length,
+			missing,
+		};
+	})()`).catch(() => undefined);
+	const started = Date.now();
+	let view: Awaited<ReturnType<typeof read>>;
+	while (Date.now() - started < POPUP_SETTLE_MS && !failed && !crashed) {
+		await wait(500);
+		view = await read();
+		if (view === undefined && window.isDestroyed()) {
+			break;
+		}
+		if (view && (view.text > 0 || view.images > 0) && view.spinners === 0 && Date.now() - started >= 3000) {
+			break;
+		}
+	}
+	const state = failed ? `failed (${failed})`
+		: crashed ? 'crashed'
+			: !view ? (window.isDestroyed() ? 'closed' : 'unreadable')
+				: view.spinners > 0 ? 'spinning'
+					: view.text > 0 || view.images > 0 ? 'rendered'
+						: view.elements > 0 ? 'no text' : 'empty';
+	// PARADIS_COMPAT_SHOTS=<フォルダ> なら、読んだときのポップアップの絵と DOM を残す（手で確かめるため。結果には入れない）
+	const shots = process.env.PARADIS_COMPAT_SHOTS;
+	if (shots && !window.isDestroyed()) {
+		await fs.mkdir(shots, { recursive: true });
+		await fs.writeFile(join(shots, `${id}-popup.png`), (await window.webContents.capturePage()).toPNG());
+		await fs.writeFile(join(shots, `${id}-popup.html`), String(await window.webContents.executeJavaScript('document.documentElement.outerHTML').catch(() => '')));
+	}
+	if (!window.isDestroyed()) {
+		window.destroy();
+	}
+	return { state, elements: view?.elements, text: view?.text, spinners: view?.spinners, missing: view?.missing, errors: [...errors] };
+}
+
 async function run(resultPath: string, root: string): Promise<void> {
 	paradisListenForBrowserExtensionWindowQueries();
 	const http = await import('http');
@@ -286,8 +410,59 @@ async function run(resultPath: string, root: string): Promise<void> {
 	};
 	const environment = environmentObject as unknown as IParadisBrowserExtensionTabsOptions['environment'];
 	const quiet = { warn: () => { } };
-	const manager = new ParadisBrowserExtensionsManager(join(root, 'manager'), () => true, quiet, () => undefined, { environment, createPopout: () => { throw new Error('not in the compatibility check'); } }, { askInstall: async () => true, askRemove: async () => true });
+	// ツールバーのボタンのポップアップは製品と同じ窓で開く。作った窓を覚え、読み込む前から console を拾う
+	const actionPopups: { window: BrowserWindow; errors: string[] }[] = [];
+	const createActionPopup: NonNullable<IParadisBrowserExtensionTabsOptions['createActionPopup']> = (parent, bounds, popupSession) => {
+		const window = paradisCreateBrowserExtensionActionPopup(parent, bounds, popupSession);
+		const entry = { window, errors: [] as string[] };
+		window.webContents.on('console-message', event => {
+			const details = event as unknown as { level?: unknown; message?: unknown };
+			if (details.level === 'error') {
+				entry.errors.push(String(details.message).slice(0, 300));
+			}
+		});
+		actionPopups.push(entry);
+		return window;
+	};
+	const manager = new ParadisBrowserExtensionsManager(join(root, 'manager'), () => true, quiet, () => undefined, { environment, createPopout: () => { throw new Error('not in the compatibility check'); }, createActionPopup, workAreaFor: paradisWorkAreaFor }, { askInstall: async () => true, askRemove: async () => true });
+	// 詰め物の呼び出しのうち、拡張機能へ失敗で返したもの（拡張機能が受けを持たないと、そこで止まる）。PARADIS_COMPAT_TRACE=1 なら全部を出す
+	const apiFailures = new Map<string, Set<string>>();
+	const trace = process.env.PARADIS_COMPAT_TRACE === '1';
+	type Invoke = (caller: { readonly extension: { readonly id: string }; readonly connection: string }, contexts: unknown, rawRequest: unknown) => Promise<ParadisExtensionApiReply>;
+	const apiHost = (manager as unknown as { _apiHost: { _invoke: Invoke } })._apiHost;
+	const invoke = apiHost._invoke;
+	// 答えていない呼び出し（拡張機能の id → 呼び出しの名前の一覧）
+	const apiPending = new Map<string, Map<number, string>>();
+	let callSeq = 0;
+	apiHost._invoke = async (caller, contexts, rawRequest) => {
+		const request = (rawRequest ?? {}) as { type?: unknown; namespace?: unknown; method?: unknown; event?: unknown; args?: unknown };
+		const name = `${String(request.namespace)}.${String(request.type === 'listen' ? request.event : request.method)}`;
+		const seq = ++callSeq;
+		const pending = apiPending.get(caller.extension.id) ?? new Map<number, string>();
+		apiPending.set(caller.extension.id, pending);
+		pending.set(seq, `${caller.connection} ${name}`);
+		if (trace) {
+			console.log(`[compat] api#${seq} ${caller.extension.id.slice(0, 8)} ${caller.connection} ${name}(${JSON.stringify(request.args ?? []).slice(0, 200)})`);
+		}
+		const reply = await invoke.call(apiHost, caller, contexts, rawRequest);
+		pending.delete(seq);
+		if (trace) {
+			console.log(`[compat] api#${seq} -> ${JSON.stringify(reply).slice(0, 300)}`);
+		}
+		if (!reply.ok) {
+			const failures = apiFailures.get(caller.extension.id) ?? new Set<string>();
+			failures.add(`${name}: ${reply.error}`.slice(0, 200));
+			apiFailures.set(caller.extension.id, failures);
+		}
+		return reply;
+	};
 	await manager.attach(ses as unknown as ParadisExtensionSession, { id: 'global', storageScope: BrowserViewStorageScope.Global });
+	// PARADIS_COMPAT_SECOND_SESSION=1: ワークスペースの保存先を別にしたときと同じく、拡張機能をもう 1 つのセッションにも読み込む
+	// （同じ写し・同じトークンの worker が 2 つ動く。ボタンはグローバルのタブで押す）
+	const secondSession = process.env.PARADIS_COMPAT_SECOND_SESSION === '1' ? session.fromPartition('persist:paradis-compat-workspace') : undefined;
+	if (secondSession) {
+		await manager.attach(secondSession as unknown as ParadisExtensionSession, { id: 'workspace:compat', storageScope: BrowserViewStorageScope.Workspace });
+	}
 	created.fire({ view: views[0], existing: true });
 	// worker の console（拡張機能ごとに分ける）
 	const workerConsole = new Map<string, string[]>();
@@ -315,21 +490,25 @@ async function run(resultPath: string, root: string): Promise<void> {
 	console.log(`[compat] ready: Electron ${process.versions.electron}, test page ${pageUrl}`);
 
 	const only = process.env.PARADIS_COMPAT_IDS ? new Set(process.env.PARADIS_COMPAT_IDS.split(',')) : undefined;
+	const folders = process.env.PARADIS_COMPAT_FOLDERS ? process.env.PARADIS_COMPAT_FOLDERS.split(',').filter(Boolean) : [];
+	// フォルダから試すときは、ストアの一覧は試さない
+	const targets: (readonly [string, string, string, string | undefined])[] = folders.length > 0
+		? folders.map(folder => ['フォルダから', folder.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? folder, '', folder] as const)
+		: PARADIS_COMPAT_EXTENSIONS.filter(([, , id]) => !only || only.has(id)).map(([category, label, id]) => [category, label, id, undefined] as const);
 	const results: IParadisCompatResult[] = [];
-	for (const [category, label, id] of PARADIS_COMPAT_EXTENSIONS) {
-		if (only && !only.has(id)) {
-			continue;
-		}
-		const result: IParadisCompatResult = { category, label, id };
+	for (const [category, label, storeId, folder] of targets) {
+		const result: IParadisCompatResult = { category, label, id: storeId };
 		results.push(result);
 		const started = Date.now();
 		console.log(`[compat] ${label}: installing`);
-		const added: IParadisAddExtensionResult = await manager.addFromWebStore(id, 'default', 'compat').catch(error => ({ ok: false, reason: 'failed', detail: String(error) }));
+		const added: IParadisAddExtensionResult = await (folder !== undefined ? manager.addUnpacked(folder, 'default') : manager.addFromWebStore(storeId, 'default', 'compat')).catch(error => ({ ok: false, reason: 'failed', detail: String(error) }));
 		result.install = added.ok ? 'ok' : `${added.reason}${added.detail ? `: ${added.detail}` : ''}`;
 		result.installMs = Date.now() - started;
 		if (!added.ok) {
 			continue;
 		}
+		const id = added.extension.id;
+		result.id = id;
 		result.name = added.extension.name;
 		result.version = added.extension.version;
 		const manifest: Manifest = JSON.parse(await fs.readFile(join(added.extension.path, 'paracode-original-manifest.json'), 'utf8').catch(() => fs.readFile(join(added.extension.path, 'manifest.json'), 'utf8')));
@@ -401,7 +580,21 @@ async function run(resultPath: string, root: string): Promise<void> {
 		if (typeof sidePanelPath === 'string') {
 			result.sidePanelPath = sidePanelPath;
 		}
-		for (const [kind, path] of [['popup', popupPath], ['options', optionsPath], ['newtab', newtabPath], ['sidePanelPage', sidePanelPath]] as const) {
+		const wantedApis = permissions.map(permission => permission.replace(/\?$/, '')).map(permission => PERMISSION_NAMESPACES[permission]).filter(Boolean);
+		if (typeof popupPath === 'string') {
+			const opened = await openPopupFromToolbar(manager, actionPopups, tab, id, wantedApis);
+			result.popup = opened.state;
+			result.popupElements = opened.elements;
+			result.popupText = opened.text;
+			result.popupSpinners = opened.spinners;
+			result.popupErrors = withoutDevPreloadNoise(opened.errors).slice(0, 5);
+			if (opened.missing) {
+				result.missingApis = opened.missing;
+			}
+		} else {
+			result.popup = 'none';
+		}
+		for (const [kind, path] of [['options', optionsPath], ['newtab', newtabPath], ['sidePanelPage', sidePanelPath]] as const) {
 			if (typeof path !== 'string') {
 				result[kind] = 'none';
 				continue;
@@ -423,16 +616,13 @@ async function run(resultPath: string, root: string): Promise<void> {
 			// サイドパネルのページは長めに待つ（Bitwarden は 3 秒では中身が空だった。読み込みの後に画面を組み立てるため。推測）
 			await wait(kind === 'sidePanelPage' ? 8000 : 3000);
 			const view: { elements: number; text: number; missing: string[] } | undefined = crashed || page.isDestroyed() ? undefined : await page.webContents.executeJavaScript(`(() => {
-				const missing = ${JSON.stringify(permissions.map(permission => permission.replace(/\?$/, '')).map(permission => PERMISSION_NAMESPACES[permission]).filter(Boolean))}
+				const missing = ${JSON.stringify(wantedApis)}
 					.filter((name, index, all) => all.indexOf(name) === index)
 					.filter(name => name.split('.').reduce((target, key) => target && target[key], globalThis.chrome) === undefined);
 				return { elements: document.querySelectorAll('body *').length, text: (document.body && document.body.innerText || '').trim().length, missing };
 			})()`).catch(() => undefined);
 			result[kind] = failed ? `failed (${failed})` : crashed ? 'crashed' : view ? (view.elements > 0 ? 'rendered' : 'empty') : 'unreadable';
-			if (kind === 'popup') {
-				result.popupElements = view?.elements;
-				result.popupErrors = withoutDevPreloadNoise(errors).slice(0, 5);
-			} else if (kind === 'options') {
+			if (kind === 'options') {
 				result.optionsElements = view?.elements;
 				result.optionsErrors = withoutDevPreloadNoise(errors).slice(0, 5);
 			} else if (kind === 'newtab') {
@@ -457,6 +647,14 @@ async function run(resultPath: string, root: string): Promise<void> {
 			page.destroy();
 		}
 		result.workerErrors = (workerConsole.get(id) ?? []).slice(0, 5);
+		result.workerInitialized = (await manager.getWorkerLog(id)).map(line => line.message).find(message => WORKER_INITIALIZED.test(message))?.slice(0, 200);
+		result.apiFailures = [...(apiFailures.get(id) ?? [])].slice(0, 10);
+		result.apiPending = [...(apiPending.get(id)?.values() ?? [])].slice(0, 10);
+		if (trace) {
+			for (const line of await manager.getWorkerLog(id)) {
+				console.log(`[compat] worker ${line.level} ${line.message.slice(0, 300)}`);
+			}
+		}
 		await manager.remove(id);
 		for (const extra of opened.splice(0)) {
 			if (!extra.isDestroyed()) {
@@ -465,7 +663,7 @@ async function run(resultPath: string, root: string): Promise<void> {
 		}
 		views.splice(1);
 		await fs.writeFile(resultPath, redactLocalPaths(JSON.stringify({ electron: process.versions.electron, chrome: process.versions.chrome, checkedAt: new Date().toISOString(), results }, undefined, '\t'), root));
-		console.log(`[compat] ${label}: install=${result.install} worker=${result.worker} content=${result.contentScript} popup=${result.popup} missing=${(result.missingApis ?? []).join(',')}`);
+		console.log(`[compat] ${label}: install=${result.install} worker=${result.worker} content=${result.contentScript} popup=${result.popup} missing=${(result.missingApis ?? []).join(',')} initialized=${result.workerInitialized !== undefined} failures=${(result.apiFailures ?? []).join(' | ')}`);
 	}
 	await fs.writeFile(resultPath, redactLocalPaths(JSON.stringify({ electron: process.versions.electron, chrome: process.versions.chrome, checkedAt: new Date().toISOString(), results }, undefined, '\t'), root));
 	manager.dispose();
