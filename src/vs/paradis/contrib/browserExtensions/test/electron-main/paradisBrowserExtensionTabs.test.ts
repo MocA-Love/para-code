@@ -21,7 +21,7 @@ import { ParadisBrowserExtensionSidePanel } from '../../electron-main/paradisBro
 import { ParadisBrowserExtensionDebugger } from '../../electron-main/paradisBrowserExtensionDebugger.js';
 import type { CDPEvent, ICDPConnection } from '../../../../../platform/browserView/common/cdp/types.js';
 import { IParadisTabEnvironment, IParadisTabView, ParadisBrowserExtensionTabs, paradisCanSeeTabUrl, paradisMatchesUrlPattern } from '../../electron-main/paradisBrowserExtensionTabs.js';
-import { IParadisActionsEnvironment, ParadisBrowserExtensionActions } from '../../electron-main/paradisBrowserExtensionActions.js';
+import { IParadisActionsEnvironment, ParadisBrowserExtensionActions, paradisIsPopupDevToolsShortcut, paradisShouldClosePopup } from '../../electron-main/paradisBrowserExtensionActions.js';
 import { ParadisBrowserExtensionMenus } from '../../electron-main/paradisBrowserExtensionMenus.js';
 import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions, paradisOriginPatternCovers, paradisPlanPermissionRequest } from '../../electron-main/paradisBrowserExtensionPermissions.js';
 import { IParadisExtensionNotification, IParadisManagedExtension, IParadisServicesEnvironment, ParadisBrowserExtensionServices, paradisDownloadFilename, paradisDownloadHeaders, paradisExtensionDownloadsFolder, paradisNotificationIconPath } from '../../electron-main/paradisBrowserExtensionServices.js';
@@ -752,6 +752,33 @@ suite('ParadisBrowserExtensionActions', () => {
 			dispose();
 		}
 	}));
+
+	test('opens the popup DevTools with the Chrome keys only', () => {
+		const key = (keyName: string, code: string, modifiers: { control?: boolean; shift?: boolean; alt?: boolean; meta?: boolean } = {}, type = 'keyDown') =>
+			({ type, key: keyName, code, control: false, shift: false, alt: false, meta: false, ...modifiers });
+		const cases = {
+			f12: key('F12', 'F12'),
+			ctrlShiftI: key('I', 'KeyI', { control: true, shift: true }),
+			macCmdOptI: key('\u02c6', 'KeyI', { meta: true, alt: true }),
+			ctrlI: key('i', 'KeyI', { control: true }),
+			shiftF12: key('F12', 'F12', { shift: true }),
+			keyUp: key('F12', 'F12', {}, 'keyUp'),
+		};
+		const answers = (platform: NodeJS.Platform) => Object.fromEntries(Object.entries(cases).map(([name, input]) => [name, paradisIsPopupDevToolsShortcut(input, platform)]));
+		assert.deepStrictEqual({ darwin: answers('darwin'), linux: answers('linux') }, {
+			darwin: { f12: true, ctrlShiftI: false, macCmdOptI: true, ctrlI: false, shiftF12: false, keyUp: false },
+			linux: { f12: true, ctrlShiftI: true, macCmdOptI: false, ctrlI: false, shiftF12: false, keyUp: false },
+		});
+	});
+
+	test('keeps the popup open for DevTools only across focus changes, not when its tab hides or closes', () => {
+		const reasons = ['blur', 'parentFocus', 'tabHidden', 'tabClosed'] as const;
+		const answers = (devToolsOpened: boolean) => Object.fromEntries(reasons.map(reason => [reason, paradisShouldClosePopup(reason, devToolsOpened)]));
+		assert.deepStrictEqual({ withDevTools: answers(true), withoutDevTools: answers(false) }, {
+			withDevTools: { blur: false, parentFocus: false, tabHidden: true, tabClosed: true },
+			withoutDevTools: { blur: true, parentFocus: true, tabHidden: true, tabClosed: true },
+		});
+	});
 });
 
 suite('ParadisBrowserExtensionMenus', () => {

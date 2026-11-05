@@ -124,9 +124,25 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 	if (result.category === '広告・プライバシー') {
 		reasons.push('広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません');
 	}
+	if (result.popup === 'spinning') {
+		reasons.push(`ポップアップは、ツールバーのボタンで開いてから 15 秒たっても読み込み中の印が残りました（回り続けて開きません）`);
+	} else if (result.popup === 'no text') {
+		reasons.push('ポップアップは開きましたが、文字も画像も出ませんでした');
+	} else if (result.popup === 'none (onClicked)') {
+		reasons.push('この状態ではポップアップを出さず、ボタンを押すと拡張機能が自分で処理します（action.setPopup で外しています。ログインの前など）');
+	} else if (result.popup === 'none (disabled)') {
+		reasons.push('試験用のページでは、拡張機能がボタンを無効にしています（ポップアップは見ていません）');
+	} else if (result.popup === 'closed') {
+		reasons.push('【要確認】ポップアップは開いた後、読む前に閉じました（拡張機能が自分で閉じたか、フォーカスが外れたためです。手で確かめます）');
+	} else if (result.popup === 'side panel') {
+		reasons.push('ボタンを押すと、ポップアップではなくサイドパネルが開きます');
+	}
+	if (result.apiPending && result.apiPending.length > 0) {
+		reasons.push(`答えを返していない Para Code の API の呼び出し: ${result.apiPending.slice(0, 3).join('、')}`);
+	}
 	for (const kind of ['popup', 'options'] as const) {
 		const value = result[kind];
-		if (typeof value === 'string' && value !== 'none' && value !== 'rendered') {
+		if (typeof value === 'string' && value !== 'none' && value !== 'rendered' && !(kind === 'popup' && ['spinning', 'no text', 'none (onClicked)', 'none (disabled)', 'side panel', 'closed'].includes(value))) {
 			reasons.push(value === 'unreadable'
 				? `【要確認】${kind === 'popup' ? 'ポップアップ' : 'オプションのページ'}は開きましたが、自動の確かめの前に閉じたか、読めませんでした（手で確かめます）`
 				: `${kind === 'popup' ? 'ポップアップ' : 'オプションのページ'}が ${value} でした`);
@@ -143,7 +159,7 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 	if (result.devtoolsPage) {
 		reasons.push('DevTools のパネルは自動では見ていません（手で確かめます）');
 	}
-	const partial = missingMajor.length > 0 || refusedForms.length > 0 || ownErrors.length > 0 || (result.contentScript === 'did not run' && result.contentScriptForTestPage !== false) || apiErrors.length > 0 || userScriptsDidNotRun || blockingDeferred || newtabBroken || sidePanelBroken || (result.popup !== 'none' && result.popup !== 'rendered');
+	const partial = missingMajor.length > 0 || refusedForms.length > 0 || ownErrors.length > 0 || (result.contentScript === 'did not run' && result.contentScriptForTestPage !== false) || apiErrors.length > 0 || userScriptsDidNotRun || blockingDeferred || newtabBroken || sidePanelBroken || (result.popup !== undefined && !['none', 'none (onClicked)', 'none (disabled)', 'side panel', 'rendered'].includes(result.popup)) || (result.apiPending ?? []).length > 0;
 	return { status: partial ? 'partial' : 'ok', reasons: reasons.length > 0 ? reasons : ['読み込み・worker・content script・ポップアップのどれも問題ありませんでした'] };
 }
 
@@ -205,12 +221,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 
 <h2>自動で見たことと、見ていないこと</h2>
 <div class="panel">
-<p>拡張機能ごとに、次の 5 つを記録しました。<strong>サインインが要る働き（パスワード管理の解錠・自動入力、翻訳のアカウントなど）と DevTools のパネルは、自動では見ていません</strong>。それらは Mac での手の確認（Q479・Q484〜Q486）で見ます。</p>
+<p>拡張機能ごとに、次の 6 つを記録しました。<strong>サインインが要る働き（パスワード管理の解錠・自動入力、翻訳のアカウントなど）と DevTools のパネルは、自動では見ていません</strong>。それらは Mac での手の確認（Q479・Q484〜Q486）で見ます。</p>
 <ul>
 <li>ストアから入れられるか、Electron に読み込めるか</li>
 <li>service worker が動き出すか、worker の console のエラー</li>
 <li>手元の試験用のページ（ログインの欄・文章を含む）で content script の文脈ができるか</li>
-<li>ポップアップとオプションのページが開くか、そこでのエラー</li>
+<li>ポップアップを、ツールバーのボタンを押したときと同じ経路で開き、15 秒たっても読み込み中の印（回る印）が残っていないか、文字か画像が出たか。オプションのページが開くか。そこでのエラー</li>
+<li>worker が初期化を終えたと分かる行を出したか、Para Code の API の呼び出しで失敗したもの・答えを返していないもの</li>
 <li>宣言した権限の <code>chrome.*</code> が、ポップアップかオプションのページにあるか</li>
 </ul>
 <p>広告ブロッカー（<code>declarativeNetRequest</code>）は D7 で後回しにしたので、ここでは「入るがブロックしない」かを記録しただけです。</p>
