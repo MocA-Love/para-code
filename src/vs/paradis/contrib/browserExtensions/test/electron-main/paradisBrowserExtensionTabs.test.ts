@@ -21,7 +21,7 @@ import { ParadisBrowserExtensionSidePanel } from '../../electron-main/paradisBro
 import { ParadisBrowserExtensionDebugger } from '../../electron-main/paradisBrowserExtensionDebugger.js';
 import type { CDPEvent, ICDPConnection } from '../../../../../platform/browserView/common/cdp/types.js';
 import { IParadisTabEnvironment, IParadisTabView, ParadisBrowserExtensionTabs, paradisCanSeeTabUrl, paradisMatchesUrlPattern } from '../../electron-main/paradisBrowserExtensionTabs.js';
-import { IParadisActionsEnvironment, ParadisBrowserExtensionActions, paradisIsPopupDevToolsShortcut } from '../../electron-main/paradisBrowserExtensionActions.js';
+import { IParadisActionsEnvironment, ParadisBrowserExtensionActions, paradisIsPopupDevToolsShortcut, paradisShouldClosePopup } from '../../electron-main/paradisBrowserExtensionActions.js';
 import { ParadisBrowserExtensionMenus } from '../../electron-main/paradisBrowserExtensionMenus.js';
 import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions, paradisOriginPatternCovers, paradisPlanPermissionRequest } from '../../electron-main/paradisBrowserExtensionPermissions.js';
 import { IParadisExtensionNotification, IParadisManagedExtension, IParadisServicesEnvironment, ParadisBrowserExtensionServices, paradisDownloadFilename, paradisDownloadHeaders, paradisExtensionDownloadsFolder, paradisNotificationIconPath } from '../../electron-main/paradisBrowserExtensionServices.js';
@@ -768,6 +768,15 @@ suite('ParadisBrowserExtensionActions', () => {
 		assert.deepStrictEqual({ darwin: answers('darwin'), linux: answers('linux') }, {
 			darwin: { f12: true, ctrlShiftI: false, macCmdOptI: true, ctrlI: false, shiftF12: false, keyUp: false },
 			linux: { f12: true, ctrlShiftI: true, macCmdOptI: false, ctrlI: false, shiftF12: false, keyUp: false },
+		});
+	});
+
+	test('keeps the popup open for DevTools only across focus changes, not when its tab hides or closes', () => {
+		const reasons = ['blur', 'parentFocus', 'tabHidden', 'tabClosed'] as const;
+		const answers = (devToolsOpened: boolean) => Object.fromEntries(reasons.map(reason => [reason, paradisShouldClosePopup(reason, devToolsOpened)]));
+		assert.deepStrictEqual({ withDevTools: answers(true), withoutDevTools: answers(false) }, {
+			withDevTools: { blur: false, parentFocus: false, tabHidden: true, tabClosed: true },
+			withoutDevTools: { blur: true, parentFocus: true, tabHidden: true, tabClosed: true },
 		});
 	});
 });
