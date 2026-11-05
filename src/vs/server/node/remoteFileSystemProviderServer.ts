@@ -10,7 +10,7 @@ import { IFileChange } from '../../platform/files/common/files.js';
 import { ILogService } from '../../platform/log/common/log.js';
 import { createURITransformer } from '../../base/common/uriTransformer.js';
 import { RemoteAgentConnectionContext } from '../../platform/remote/common/remoteAgentEnvironment.js';
-import { DiskFileSystemProvider } from '../../platform/files/node/diskFileSystemProvider.js';
+import { ParadisDetachedDeleteDiskFileSystemProvider } from '../../platform/files/node/paradisDetachedDeleteDiskFileSystemProvider.js'; // PARA-PATCH: see constructor
 import { posix, delimiter } from '../../base/common/path.js';
 import { IServerEnvironmentService } from './serverEnvironmentService.js';
 import { AbstractDiskFileSystemProviderChannel, AbstractSessionFileWatcher, ISessionFileWatcher } from '../../platform/files/node/diskFileSystemProviderServer.js';
@@ -26,7 +26,7 @@ export class RemoteAgentFileSystemProviderChannel extends AbstractDiskFileSystem
 		private readonly environmentService: IServerEnvironmentService,
 		private readonly configurationService: IConfigurationService
 	) {
-		super(new DiskFileSystemProvider(logService), logService);
+		super(new ParadisDetachedDeleteDiskFileSystemProvider(logService, environmentService.userDataPath), logService); // PARA-PATCH: delete folders outside the server process so other file calls do not queue behind it
 
 		this._register(this.provider);
 	}

@@ -3129,3 +3129,19 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 
 - SSH の窓のボードの git・ファイル・工程のコマンド・push は、ボード → 接続口 → SSH の窓（許すかの判定）→ REH の `paradisTaskBoardRemote`（引数・パス・env の検査と実行）で中継する。設計は PR #572〜#576 の本文を見る
 - 既知の限界（設計の T2 の範囲）: push の送り先の照合は、`remote get-url --push --all origin` の URL の文字列と mirror の設定だけで行う。担当は作業場所のリポジトリの設定（`core.sshCommand`・`http.proxy`・`url.<base>.insteadOf` の書き換え先の接続のしかた）や pre-push フックを書き換えられるので、URL が同じでも別の所へ送らせることはできる。担当はもともと接続先で自分の通信を使えるため、ボードが防ぐのは「手元の確認を通らずに、知らない URL へ送る」ことまでとしている
+
+## SSH 先のフォルダの削除は REH のプロセスの外で消す（2026-11-06、Q555）
+
+SSH の窓でエクスプローラーから大きなフォルダを削除した直後、スペースの切り替えが「切り替え中…」のまま止まった件の原因と直し方です。接続先にはごみ箱が無いので、エクスプローラーの「削除」は `DiskFileSystemProvider.delete` の `recursive` で `Promises.rm(path, RimRafMode.MOVE)` になります。一時フォルダ（REH の `TMPDIR`）へ rename できれば返事はすぐ返りますが、中身は REH のプロセスの中で `fs.promises.rm` が消し続けます。Node 24 の `rm` は子の数だけ並列に `lstat`・`unlink` を投げるので、libuv のスレッドプールの待ち行列が埋まり、同じプロセスが受ける切り替えの stat・読み込み・設定の読み込みが消し終わるまで待たされます。rename が `EXDEV` で失敗したときは、同じ `rm` をその場で待ちます（どちらでも詰まります）。
+
+| 台（Node 24、NVMe、同じプロセスで 20ms ごとに stat×6＋readFile＋readdir） | 消す時間 | 1 回の待ちの最大 |
+|---|---|---|
+| 15 万ファイル、同じプロセスで `rm`（MOVE の経路） | 6.0 秒 | 4951ms |
+| 15 万ファイル、同じプロセスで `rm`（EXDEV でその場） | 5.1 秒 | 3064ms |
+| 15 万ファイル、別のプロセスの `rm -rf` | 4.5〜6.3 秒 | 6〜59ms |
+| 45 万ファイル、同じプロセスで `rm`（MOVE の経路） | 27.5 秒 | 24926ms |
+| 45 万ファイル、別のプロセスの `rm -rf` | 24.7 秒 | 82ms |
+
+直し方は `src/vs/platform/files/node/paradisDetachedDeleteDiskFileSystemProvider.ts` で、REH のファイルのチャネル（`remoteFileSystemProviderServer.ts` の 1 行の PARA-PATCH）だけが使います。中身ごとの完全削除だけを、同じファイルシステムの退避場所（サーバーのデータのフォルダの `paradisDeleting`、一時フォルダ、消す対象の隣の順）へ rename し、優先度を下げた別のプロセスの `rm -rf` で消して待ちません。どこへも rename できなければ別のプロセスの `rm -rf` を待ち、失敗したら upstream の消し方に戻します。サーバーが消し終わる前に止まった残りは、次の起動で `paradisDeleting` の中の `.para-deleting-*` だけを消します。Windows・ごみ箱・中身ごとでない削除は upstream のままです。手元の窓の完全削除（ごみ箱を使わない設定）は main のプロセスで同じように詰まることがありますが、今回は触っていません。
+
+切り替えが 2 秒を超えたときは、ウィンドウのログ（SSH の窓でも手元の `window<N>/renderer.log`）に `[ParadisWorkspaceSwitch] Slow space switch:` の 1 行が出ます（段階ごとの ms、ファイル IPC の返事待ちの数・最長・stat の幅、最後の削除からの秒数）。20 秒で止まっているときは `Space switch still running after` の行が、いまの段階と一緒に出ます。
