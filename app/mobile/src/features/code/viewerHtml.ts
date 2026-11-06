@@ -2,6 +2,7 @@
 
 import docxPreviewBundle from '../../../assets/docxpreview/docxPreviewBundle.json';
 import { colors } from '../../theme.js';
+import { secureMobileOfficeHtml } from '../../components/officeCapability.js';
 
 /*
  * Word 文書と画像のプレビューの HTML。旧ビューア（`src/components/fileViewer.tsx`）から、中身を変えずに
@@ -61,6 +62,8 @@ export function buildDocxHtml(docxBase64: string): string {
 <script>${docxPreviewBundle.jszip}</script>
 <script>${docxPreviewBundle.docxPreview}</script>
 <script>
+	// 描いている間は印を立てておく（アプリの「表示が空か」の見張りが、大きな文書の描画の途中で空と決めつけないため）
+	window.__paradisOfficeBusy = true;
 	(async () => {
 		const statusEl = document.getElementById('status');
 		const contentEl = document.getElementById('content');
@@ -191,6 +194,8 @@ export function buildDocxHtml(docxBase64: string): string {
 			statusEl.remove();
 		} catch (err) {
 			statusEl.textContent = 'Word 文書を表示できませんでした: ' + (err && err.message ? err.message : err);
+		} finally {
+			window.__paradisOfficeBusy = false;
 		}
 	})();
 </script>
@@ -216,3 +221,19 @@ export function buildImageHtml(base64: string, ext: string): string {
 </head><body><img src="data:${mime};base64,${base64}"></body></html>`;
 }
 
+/** {@link buildSecureDocxHtml} が本文の代わりに入れておく印（base64 の文字だけで、文書の中に他に現れない）。 */
+const DOCX_BASE64_PLACEHOLDER = 'PARADISDOCXBASE64PLACEHOLDER';
+
+/**
+ * `secureMobileOfficeHtml(buildDocxHtml(base64), nonce)` と同じ文字列を作る。CSP の書き込みを本文（数十 MB の
+ * base64）を入れる前の小さな HTML で済ませ、本文は最後に 1 回だけつなぐ（大きな文字列に正規表現を 3 回かけない）。
+ */
+export function buildSecureDocxHtml(docxBase64: string, nonce: string): string {
+	const shell = secureMobileOfficeHtml(buildDocxHtml(DOCX_BASE64_PLACEHOLDER), nonce);
+	const quoted = JSON.stringify(DOCX_BASE64_PLACEHOLDER);
+	const at = shell.indexOf(quoted);
+	if (at < 0 || shell.indexOf(quoted, at + quoted.length) >= 0) {
+		return secureMobileOfficeHtml(buildDocxHtml(docxBase64), nonce);
+	}
+	return shell.slice(0, at) + JSON.stringify(docxBase64) + shell.slice(at + quoted.length);
+}

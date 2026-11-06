@@ -65,4 +65,18 @@ describe('ContentHashResponseCache', () => {
 		expect(oversized.resolve('large', request, { id: 'large', t: 'read', content: 'x'.repeat(100), contentHash: HASH_A }).ok).toBe(true);
 		expect(oversized.prepare('large').fields.ifContentHash).toBeUndefined();
 	});
+
+	it('skips caching when the response text is already over the limit, and hands out a fresh copy on every hit', () => {
+		const cache = new ContentHashResponseCache({ maxEntries: 2, maxBytes: 1000, maxEntryBytes: 500 });
+		const big = cache.prepare('big');
+		expect(cache.resolve('big', big, { id: 'b1', t: 'read', content: 'x', contentHash: HASH_A }, 300).ok).toBe(true);
+		expect(cache.prepare('big').fields.ifContentHash).toBeUndefined();
+
+		const first = cache.prepare('small');
+		cache.resolve('small', first, { id: 's1', t: 'read', content: 'a', contentHash: HASH_B }, 50);
+		const hit = cache.resolve('small', cache.prepare('small'), { id: 's2', t: 'read', notModified: true, contentHash: HASH_B });
+		expect(hit).toEqual({ ok: true, value: { id: 's2', t: 'read', content: 'a' } });
+		(hit as { value: Record<string, unknown> }).value['content'] = 'changed';
+		expect(cache.resolve('small', cache.prepare('small'), { id: 's3', t: 'read', notModified: true, contentHash: HASH_B })).toEqual({ ok: true, value: { id: 's3', t: 'read', content: 'a' } });
+	});
 });
