@@ -102,7 +102,12 @@ export class ParadisPdfFileEditor extends EditorPane {
 	/** 開いてから最初のページが描けるまでの計測（Sentry へ数値だけ送る）。 */
 	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
 	/** いま描いている文書の、計測に添える値（大きさと区間読みか）。 */
-	private _renderedDocument: { readonly sizeKb: number | undefined; readonly rangeRequests: boolean; readonly render: string } | undefined;
+	private _renderedDocument: { readonly sizeKb: number | undefined; readonly rangeRequests: boolean; readonly served: boolean; readonly render: string } | undefined;
+	/**
+	 * 開いた時刻（`setInput`、`performance.now()`）と、そこから配信サーバへの登録が返るまで・webview を確保するまでの ms。
+	 * 開いてから描けるまでのどこで待ったかを、計測に添えて送るため（表示には使わない）。
+	 */
+	private _openMarks: { readonly startedAt: number; mount?: number; webview?: number } | undefined;
 	/**
 	 * webview に残っている文書。タブを離れると clearInput を通るので、入力ではなくペインに持つ。
 	 * 同じ文書・同じ etag へ戻ったときは描き直さない（retainContextWhenHidden で中身もスクロール位置も残っている）。
@@ -165,6 +170,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 		const resource = (input as ParadisPdfInput).resource;
 		this._currentResource = resource;
 		this._openTiming.value = startParadisViewerOpenTiming('pdf');
+		this._openMarks = { startedAt: performance.now() };
 
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
@@ -205,10 +211,14 @@ export class ParadisPdfFileEditor extends EditorPane {
 				&& this._renderedDocument !== undefined && (message as { render?: unknown }).render === this._renderedDocument.render) {
 				this._pane.confirmShown(webview);
 				const pages = (message as { pages?: unknown }).pages;
+				const marks = this._openMarks;
 				this._openTiming.value?.painted({
 					...(typeof pages === 'number' ? { safe_pages: pages } : {}),
 					...(this._renderedDocument?.sizeKb !== undefined ? { safe_size_kb: this._renderedDocument.sizeKb } : {}),
 					safe_range: this._renderedDocument?.rangeRequests ?? false,
+					safe_served: this._renderedDocument?.served ?? false,
+					...(marks?.mount !== undefined ? { safe_mount_ms: marks.mount } : {}),
+					...(marks?.webview !== undefined ? { safe_webview_ms: marks.webview } : {}),
 				});
 				this._openTiming.clear();
 			}
@@ -272,6 +282,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 			}
 		}
 		const documentUrl = this._canServe(resource) ? await resolveParadisViewerDocumentUrl(this._sharedProcessService, resource) : undefined;
+		this._noteOpenMark('mount');
 		if (this._canServe(resource) && documentUrl === undefined) {
 			// 文書だけ載らなかった。この webview の作り方では読めないので、以後サーバを使わない。
 			this._pane.markDocumentServeFailed();
@@ -282,6 +293,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 			return;
 		}
 		const webview = this._ensureWebview(resource);
+		this._noteOpenMark('webview');
 		// 配信先が決まる前に見送った claim をここで拾う。
 		this._updateWebviewPlacement();
 		webview.contentOptions = {
@@ -318,7 +330,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 		const useRangeRequests = shouldParadisPdfUseRangeRequests(size, served);
 		const nonce = generateUuid();
 		this._showViewState(undefined, undefined, undefined);
-		this._renderedDocument = { sizeKb: size === undefined ? undefined : Math.round(size / 1024), rangeRequests: useRangeRequests, render: nonce };
+		this._renderedDocument = { sizeKb: size === undefined ? undefined : Math.round(size / 1024), rangeRequests: useRangeRequests, served, render: nonce };
 		return buildParadisPdfViewerHtml({
 			nonce,
 			pdfUrl,
@@ -329,6 +341,13 @@ export class ParadisPdfFileEditor extends EditorPane {
 			// 区間読みは配信サーバ（Range に対応済み）から読むときだけ。service worker 経由は今までどおり。
 			useRangeRequests,
 		});
+	}
+
+	/** 開いてから（`setInput` から）いままでの ms を、計測に添える値として覚える。 */
+	private _noteOpenMark(name: 'mount' | 'webview'): void {
+		if (this._openMarks) {
+			this._openMarks[name] = Math.round(performance.now() - this._openMarks.startedAt);
+		}
 	}
 
 	private _updateWebviewPlacement(): void {
