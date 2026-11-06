@@ -7,7 +7,7 @@
 /* eslint-disable local/code-no-unexternalized-strings */
 
 import { deepStrictEqual, ok, strictEqual } from 'assert';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -252,6 +252,39 @@ suite('ParadisHtmlFileEditor', () => {
 			beforeAnswer: undefined,
 			base: PREVIEW_BASE,
 		});
+	});
+
+	test('while the window is restoring, the page is still drawn after the editor cancels the setInput token once setInput returns', async () => {
+		// editorPanes は setInput が返ると、その進み具合の operation を止めて token を取り消す。待たずに返した描画は
+		// その token に縛られず、最後まで描かなければならない。
+		let answerMount: (value: unknown) => void = () => { };
+		const mount = new Promise(resolve => { answerMount = resolve; });
+		let drawn: (html: string) => void = () => { };
+		const whenDrawn = new Promise<string>(resolve => { drawn = resolve; });
+		const webview = {
+			contentOptions: {},
+			onFatalError: Event.None,
+			onDidScroll: Event.None,
+			setHtml: (html: string) => { if (html) { drawn(html); } },
+			focus: () => { },
+			dispose: () => { },
+			postMessage: async () => true,
+		} as unknown as IOverlayWebview;
+		const textFileService = { read: () => Promise.resolve({ value: '<main>x</main>' }) } as unknown as ITextFileService;
+		const fileService = {
+			createWatcher: () => { throw new Error('watching is unavailable in this test'); },
+			onDidWatchError: Event.None,
+		} as unknown as IFileService;
+		const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
+		const restoring = createProductionEditor({ createWebviewOverlay: () => webview } as unknown as IWebviewService, textFileService, fileService, true, createSharedProcessService(() => mount), createLifecycleService(LifecyclePhase.Ready));
+		const input = disposables.add(new ParadisHtmlFileInput(URI.file('/workspace/site/index.html'), textFileService, workingCopyService));
+		const operation = new CancellationTokenSource();
+
+		await restoring.setInput(input, undefined, Object.create(null), operation.token);
+		operation.dispose(true);
+		answerMount(PREVIEW_MOUNT);
+		const html = await whenDrawn;
+		strictEqual(new DOMParser().parseFromString(html, 'text/html').querySelector('base')?.getAttribute('href'), PREVIEW_BASE);
 	});
 
 	test('when the drawing that setInput did not wait for fails, the editor is opened again after the window is restored to show the error', async () => {
