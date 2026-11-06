@@ -38,6 +38,7 @@ import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PI
 import { inspectParadisOfficeBmp } from '../common/office/paradisOfficeBmpInspection.js';
 import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOfficeSanitizer.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
+import { limitWorkbookRowsForExcelJs, PARADIS_SPREADSHEET_ROW_LIMIT_MIN_SHEET_BYTES } from './spreadsheet/paradisSpreadsheetRowLimit.js';
 import { unprefixWorkbookSpreadsheetMl } from './spreadsheet/paradisSpreadsheetPrefixedXml.js';
 import { installParadisExcelJsMergeFastPath, paradisExcelJsMergeRanges } from './spreadsheet/paradisSpreadsheetExcelJsMerges.js';
 import { createParadisSpreadsheetCommentBudget, readParadisSpreadsheetSheetComments } from './spreadsheet/paradisSpreadsheetComments.js';
@@ -1619,7 +1620,14 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 	private runtimePromise: Promise<IParadisSpreadsheetRuntime> | undefined;
 
-	constructor(private readonly runtimeLoader: SpreadsheetRuntimeLoader = loadSpreadsheetRuntime) { }
+	constructor(
+		private readonly runtimeLoader: SpreadsheetRuntimeLoader = loadSpreadsheetRuntime,
+		/**
+		 * 大きなシートで、表示に使わない行を exceljs に読ませない（{@link limitWorkbookRowsForExcelJs}）。
+		 * `false` で切らない（テストで比べるため）。数は手を入れるシートの大きさの下限。
+		 */
+		private readonly rowLimitMinSheetBytes: number | false = PARADIS_SPREADSHEET_ROW_LIMIT_MIN_SHEET_BYTES,
+	) { }
 
 	async parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData> {
 		return this.parseWorkbookBytes(Buffer.from(base64Content, 'base64'), imagePixelBudget);
@@ -1644,7 +1652,9 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		// ブック全体が開けなくなるので、そのときだけ exceljs の想定する並びへ直してから渡す。
 		// OpenXML SDK などが書く `<x:workbook>` のような接頭辞付きの要素名は exceljs も自前の読み取りも
 		// 読めないので、接頭辞の付いた部品があるときだけ、接頭辞の無い形にそろえてから渡す。
-		const buffer = await normalizeWorkbookForExcelJs(await unprefixWorkbookSpreadsheetMl(source, runtime.JSZip), runtime.JSZip);
+		const normalized = await normalizeWorkbookForExcelJs(await unprefixWorkbookSpreadsheetMl(source, runtime.JSZip), runtime.JSZip);
+		// 表示は各シートの先頭 MAX_ROWS 行だけなので、大きなシートはその下のセルを落としてから読む（結果は変わらない）。
+		const buffer = this.rowLimitMinSheetBytes === false ? normalized : await limitWorkbookRowsForExcelJs(normalized, MAX_ROWS, runtime.JSZip, this.rowLimitMinSheetBytes);
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
