@@ -49,7 +49,8 @@ import { IParadisAgentActivityState, IParadisAgentAdvisorUpdate, ParadisAgentAct
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
-import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudeAdvisors, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
+import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudeAdvisorsEntries, paradisParseClaudePersistedActivityEntries, paradisParseCodexPersistedActivityEntries } from './paradisPersistedAgentActivity.js';
+import { ParadisTranscriptEntryWindows } from './paradisTranscriptEntryWindow.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { PARADIS_JSON_GZIP_RESPONSE_ENCODING } from '../common/paradisMobileGzipJson.js';
 import { paradisEncodeAgentOutboundPayload } from './paradisAgentChatGzip.js';
@@ -417,6 +418,8 @@ const TOOL_IMAGE_MAX_IN_FLIGHT = 4;
 const PERSISTED_ACTIVITY_HEAD_BYTES = 256 * 1024;
 const PERSISTED_ACTIVITY_MAX_AGENTS = 100;
 const PERSISTED_ACTIVITY_META_MAX_BYTES = 64 * 1024;
+/** 復元用の会話ログの窓を覚えておく量（全ファイルの合計。解いた行は元の大きさとおおむね同じだけ使う）。 */
+const PERSISTED_TRANSCRIPT_CACHE_BYTES = 24 * 1024 * 1024;
 /**
  * live ティッカー（モバイルの「応答を生成中（NN分NN秒）」）を強制失効させるまでの無更新時間。
  * 完了シグナル（Claude の Stop hook / Codex の turn/completed）は単一障害点で、1つでも
@@ -689,33 +692,26 @@ async function isAllowedOpenTranscriptPath(handle: fs.FileHandle, transcriptPath
 	} catch { return false; }
 }
 
-/** 復元用に先頭メタ情報と末尾状態を上限付きで読み、途中行は採用しない。 */
-async function readPersistedTranscriptLines(transcriptPath: string): Promise<readonly string[]> {
+/**
+ * 復元用に読んだ会話ログの窓（ファイルごとに読んだ位置と解いた行を覚え、hook のたびに増えた分だけ読む）。
+ * 覚える量の上限は全ファイルで {@link PERSISTED_TRANSCRIPT_CACHE_BYTES}。
+ */
+const persistedTranscriptWindows = new ParadisTranscriptEntryWindows(PERSISTED_ACTIVITY_HEAD_BYTES, INITIAL_READ_TAIL_BYTES, PERSISTED_TRANSCRIPT_CACHE_BYTES);
+
+/** 復元用に先頭メタ情報と末尾状態を上限付きで読んで解いた行。途中行は採用しない。 */
+async function readPersistedTranscriptEntries(transcriptPath: string): Promise<readonly Record<string, unknown>[]> {
 	if (!await isAllowedTranscriptPath(transcriptPath)) { return []; }
 	let handle: fs.FileHandle | undefined;
 	try {
-		const stat = await fs.stat(transcriptPath);
-		if (!stat.isFile() || stat.size <= 0) { return []; }
 		handle = await fs.open(transcriptPath, 'r');
 		if (!await isAllowedOpenTranscriptPath(handle, transcriptPath)) { return []; }
-		const tailBytes = Math.min(INITIAL_READ_TAIL_BYTES, stat.size);
-		if (stat.size <= PERSISTED_ACTIVITY_HEAD_BYTES + tailBytes) {
-			const buffer = Buffer.alloc(stat.size);
-			const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-			return buffer.subarray(0, bytesRead).toString('utf8').split('\n').filter(Boolean);
-		}
-		const head = Buffer.alloc(PERSISTED_ACTIVITY_HEAD_BYTES);
-		const tail = Buffer.alloc(tailBytes);
-		const [headRead, tailRead] = await Promise.all([
-			handle.read(head, 0, head.length, 0),
-			handle.read(tail, 0, tail.length, stat.size - tailBytes),
-		]);
-		const headLines = head.subarray(0, headRead.bytesRead).toString('utf8').split('\n');
-		headLines.pop();
-		const tailLines = tail.subarray(0, tailRead.bytesRead).toString('utf8').split('\n');
-		tailLines.shift();
-		return [...headLines, ...tailLines].filter(Boolean);
+		const opened = handle;
+		return await persistedTranscriptWindows.read(transcriptPath, {
+			stat: () => opened.stat(),
+			read: (buffer, offset, length, position) => opened.read(buffer, offset, length, position),
+		});
 	} catch {
+		persistedTranscriptWindows.forget(transcriptPath);
 		return [];
 	} finally {
 		if (handle !== undefined) { await handle.close().catch(() => undefined); }
@@ -8697,21 +8693,21 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			};
 			const rootStat = await fs.stat(session.transcriptPath).catch(() => undefined);
-			const rootLines = await readPersistedTranscriptLines(session.transcriptPath);
+			const rootLines = await readPersistedTranscriptEntries(session.transcriptPath);
 			if (rootStat !== undefined) {
-				const parsed = paradisParseClaudePersistedActivity(undefined, rootLines, rootStat.mtimeMs, now);
+				const parsed = paradisParseClaudePersistedActivityEntries(undefined, rootLines, rootStat.mtimeMs, now);
 				for (const agent of parsed.spawned) { rememberSpawned(agent); }
 				rememberNotifications(parsed.notifications);
 				rememberResumes(parsed.resumeToolUseIds);
-				advisors.push(...paradisParseClaudeAdvisors(undefined, rootLines, now));
+				advisors.push(...paradisParseClaudeAdvisorsEntries(undefined, rootLines, now));
 			}
 			const files = await discoverClaudePersistedSubagentFiles(session.transcriptPath);
 			// 名前付きの起動は、親の会話が名前で呼び、ファイルは別の ID を持つ。名前 → ファイル ID で1つに束ねる
 			const fileIdsByName = new Map<string, string>();
 			for (const file of files) {
-				const fileLines = await readPersistedTranscriptLines(file.path);
-				const parsed = paradisParseClaudePersistedActivity(file.id, fileLines, file.mtime, now, file.meta);
-				advisors.push(...paradisParseClaudeAdvisors(file.id, fileLines, now));
+				const fileLines = await readPersistedTranscriptEntries(file.path);
+				const parsed = paradisParseClaudePersistedActivityEntries(file.id, fileLines, file.mtime, now, file.meta);
+				advisors.push(...paradisParseClaudeAdvisorsEntries(file.id, fileLines, now));
 				// ファイル ID から名前を取るのは meta の写らない SSH の写しだけ（手元の古い版の `acompact-` 等を名前と誤読しない）
 				const fileName = file.meta?.name ?? (paradisIsRemoteAgentTranscriptMirrorPath(file.path) ? paradisClaudeNamedAgentFromFileId(file.id) : undefined);
 				if (parsed.owner !== undefined) { owners.set(file.id, fileName !== undefined ? { ...parsed.owner, name: fileName, label: fileName } : parsed.owner); }
@@ -8770,7 +8766,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			const homes = this.agentHomesForToken(token);
 			const files = homes === undefined ? [] : await discoverCodexPersistedSubagentFiles(session.sessionId, homes);
 			for (const file of files) {
-				const parsed = paradisParseCodexPersistedActivity(file.id, file.source, await readPersistedTranscriptLines(file.path), file.mtime, now);
+				const parsed = paradisParseCodexPersistedActivityEntries(file.id, file.source, await readPersistedTranscriptEntries(file.path), file.mtime, now);
 				if (parsed === undefined) { continue; }
 				if (parsed.parentId === session.sessionId) {
 					const { parentId: _, ...rootChild } = parsed;
