@@ -62,10 +62,15 @@ const terminalAttachments = createTerminalAttachments(
  * 「スマホの幅に合わせる」で PC のターミナルを縮めている間に PC で［PC の幅に戻す］が押されたら（W2-19）、
  * ターミナルの上に「PC 側で元の幅に戻されました」と［再び合わせる］を出す。開き直すまではスマホから縮めない。
  */
-export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }: {
+export function TerminalPane({ terminal, active, keyboardVisible, bottomInset, shown = true }: {
 	terminal: SpaceTerminal;
 	/** この画面が前面にあり、このタブを見ているか。 */
 	active: boolean;
+	/**
+	 * このタブが出ているか（既定 true）。別のタブへ移っても WebView を作り直さないよう、セッションの画面は最近見た
+	 * ターミナルを隠したまま残す。隠している間は PC の購読を解き、画面の寸法の申告にも触らない。
+	 */
+	shown?: boolean;
 	keyboardVisible: boolean;
 	bottomInset: number;
 }) {
@@ -87,16 +92,25 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 
 	// タブを離れたら PC 側の購読を解く（放置すると全ターミナルの出力が送られ続ける）。ただし同じターミナルを
 	// 別の画面がまだ見ていれば解かない。
-	useEffect(() => terminalAttachments.hold(terminalKey), [terminalKey]);
+	useEffect(() => (shown ? terminalAttachments.hold(terminalKey) : undefined), [terminalKey, shown]);
 	const subscribe = useMemo(() => (listener: Parameters<typeof subscribeTerminal>[1]) => subscribeTerminal(terminalKey, listener), [terminalKey, subscribeTerminal]);
 	const resync = useMemo(() => () => attachTerminal(terminalKey), [terminalKey, attachTerminal]);
 
 	// TermView が実測したグリッドと設定から、PC への寸法の申告を組み立てる（旧画面と同じ）。
 	const [grid, setGrid] = useState<TerminalGrid | undefined>(undefined);
+	// 寸法の申告はアプリ全体で 1 つ。隠しているペインは触らない（出ているペインの申告を上書き・取り下げない）
+	const shownRef = useRef(shown);
+	shownRef.current = shown;
 	useEffect(() => {
-		setTerminalViewport(terminalViewportForPrefs(grid, terminalPrefs));
-	}, [grid, terminalPrefs, activePcId, setTerminalViewport]);
-	useEffect(() => () => setTerminalViewport(undefined), [setTerminalViewport]);
+		if (shown) {
+			setTerminalViewport(terminalViewportForPrefs(grid, terminalPrefs));
+		}
+	}, [grid, terminalPrefs, activePcId, setTerminalViewport, shown]);
+	useEffect(() => () => {
+		if (shownRef.current) {
+			setTerminalViewport(undefined);
+		}
+	}, [setTerminalViewport]);
 
 	// PC で幅を戻されたか（W2-19）。開き直す（このペインを作り直す）と PC も印を外すので、ペインの間だけ持つ。
 	const [viewportRevoked, setViewportRevoked] = useState(() => isTerminalViewportRevoked(terminalKey));
