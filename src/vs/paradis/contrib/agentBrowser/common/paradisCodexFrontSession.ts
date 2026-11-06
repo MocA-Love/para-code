@@ -15,9 +15,10 @@
 //   読み込み済みの会話を開くだけでは hook は来ない。閉じた会話を開いて送ると SessionStart（source `resume`）が来る。
 //
 // 利用者が表の会話でしか起こせない hook（UserPromptSubmit と、compact 以外の SessionStart）だけで表の会話を決め、
-// それ以外の hook で会話が違うものは「裏の会話」として扱う。子エージェントの hook は親の会話の session_id で届く
+// それ以外の hook で会話が違うものは「裏の会話」として扱う。command center で開いただけでまだ送っていない会話は、
+// hook が来ないので、送るまでは前の会話が表のまま（開いた会話の hook は裏として扱われる）。子エージェントの hook は親の会話の session_id で届く
 // （codex-rs/core/src/agent/control.rs の `session_id` は木全体で同じ）ので、親と同じ側に入る。
-// 裏の会話の承認待ち（PermissionRequest）だけは覚え、その会話の次の hook で外す。
+// 裏の会話の承認待ち（PermissionRequest）だけは覚え、その会話の次の hook か、Codex の終了（端末の状態の clear）で外す。
 
 /** 表の会話を決める hook か。compact の SessionStart は裏の会話の自動の要約でも来るので数えない。 */
 function setsFrontSession(event: string, source: string | undefined): boolean {
@@ -45,16 +46,20 @@ export class ParadisCodexFrontSessions {
 
 	/**
 	 * hook 1 つを、表の会話のもの（`front`）か裏の会話のもの（`background`）に分ける。分けると同時に表の会話と
-	 * 裏の承認待ちの記録を進める。session_id の無い hook と、表の会話がまだ分からないペインの hook は表とみなす。
+	 * 裏の承認待ちの記録を進める。session_id の無い hook は表とみなす。
+	 *
+	 * @param options.knownFront 台帳に無いペインの表の会話の手がかり（Para Code の再起動前にそのペインで控えた会話）。
+	 * 無ければ、そのペインで最初に届いた hook の会話を表にする。
+	 * @param options.recordWait 裏の会話の承認待ちを覚えるか（控えの流し直しでは、画面で確かめていない待ちを覚えない）。
 	 */
-	classify(token: string, event: string, sessionId: string | undefined, source: string | undefined, at: number): 'front' | 'background' {
+	classify(token: string, event: string, sessionId: string | undefined, source: string | undefined, at: number, options?: { readonly knownFront?: string; readonly recordWait?: boolean }): 'front' | 'background' {
 		if (sessionId === undefined || sessionId.length === 0) {
 			return 'front';
 		}
-		const pane = this._panes.get(token);
+		let pane = this._panes.get(token);
 		if (pane === undefined) {
-			this._panes.set(token, { front: sessionId, backgroundWaits: new Map() });
-			return 'front';
+			pane = { front: options?.knownFront || sessionId, backgroundWaits: new Map() };
+			this._panes.set(token, pane);
 		}
 		if (setsFrontSession(event, source)) {
 			pane.front = sessionId;
@@ -65,7 +70,7 @@ export class ParadisCodexFrontSessions {
 			return 'front';
 		}
 		if (event === 'PermissionRequest') {
-			if (!pane.backgroundWaits.has(sessionId)) {
+			if (options?.recordWait !== false && !pane.backgroundWaits.has(sessionId)) {
 				pane.backgroundWaits.set(sessionId, at);
 			}
 		} else {
@@ -83,6 +88,16 @@ export class ParadisCodexFrontSessions {
 			}
 		}
 		return waits;
+	}
+
+	/** ペインの裏の承認待ちを捨てる（Codex が終わった。表の会話は残す）。消したものがあれば true。 */
+	clearBackgroundWaits(token: string): boolean {
+		const pane = this._panes.get(token);
+		if (pane === undefined || pane.backgroundWaits.size === 0) {
+			return false;
+		}
+		pane.backgroundWaits.clear();
+		return true;
 	}
 
 	/** ペインの記録を捨てる（端末の終了・ペインの片付け）。 */

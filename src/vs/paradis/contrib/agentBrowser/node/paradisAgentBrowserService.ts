@@ -1686,7 +1686,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			// Codex の裏の会話の hook（command center で切り替えた後）は、ペインの会話にも状態にもしない
 			if (transcriptPath !== undefined && paradisHookAgentKindForTranscript(transcriptPath) === 'codex'
-				&& this._codexFrontSessions.classify(token, record.event, field('session_id'), field('source'), record.at) === 'background') {
+				// 画面で確かめていない控えの許可要求では、裏の会話の承認待ちを覚えない（W2-20 の決まりと同じく、確かめずに待ちを出さない）
+				&& this._codexFrontSessions.classify(token, record.event, field('session_id'), field('source'), record.at, { knownFront: this._codexPaneSessionId(token), recordWait: false }) === 'background') {
 				continue;
 			}
 			accepted.push(record);
@@ -1755,8 +1756,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		const status = paradisCopyProgramStatus(value);
 		const ingressLease = this.captureIngressLease(token);
+		// 前面の Codex が終わった（シェルへ戻った・落ちた）。裏の会話の承認待ちは、もう答える画面が無いので消す。
+		// hook の届くペインでもここだけは見る（裏の会話の承認待ちは、その会話の次の hook でしか外れないため）
+		const clearedBackgroundWait = status?.state === 'clear' && ingressLease !== undefined && this._codexFrontSessions.clearBackgroundWaits(token);
 		if (status === undefined || ingressLease === undefined || !paradisProgramStatusApplies(this._hookReportedTokens.has(token))) {
-			return false;
+			return clearedBackgroundWait;
 		}
 		const now = Date.now();
 		// renderer でも間引いているが、ここでも 1 秒に数回までにする（renderer 以外の呼び出しや不具合で IPC が続いても状態を振らない）
@@ -4800,7 +4804,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			// 「待っている」として出す（listPaneStatuses）。表の会話は利用者が表でしか起こせない hook で決める（paradisCodexFrontSession.ts）
 			if (eventType && eventType !== 'TerminalExit' && agentKind !== 'opencode' && transcriptPath !== undefined
 				&& paradisHookAgentKindForTranscript(transcriptPath) === 'codex'
-				&& this._codexFrontSessions.classify(token, eventType, sessionId, stringField('source'), Date.now()) === 'background') {
+				&& this._codexFrontSessions.classify(token, eventType, sessionId, stringField('source'), Date.now(), { knownFront: this._codexPaneSessionId(token) }) === 'background') {
+				// hook の届くペインとしては数える（控えの古い hook を後から流し直さない・OSC 7501 の状態を使わない）
+				this._agentHookTokens.add(token);
+				this._hookReportedTokens.add(token);
 				this._runNonThrowingDiagnostic(() => this.logService.trace(`[ParadisAgentBrowser] agent-hook (background Codex conversation): ${eventType}`));
 				res.writeHead(200, { 'Content-Type': 'application/json' });
 				res.end(JSON.stringify({ ok: true, background: true }));
@@ -4995,6 +5002,15 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._runNonThrowingCleanup('terminal-exit-hook', () => fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: Date.now() }));
 		this._runNonThrowingCleanup('terminal-exit-acknowledgement', () => this._onDidAcknowledgePane.fire(token));
 		return true;
+	}
+
+	/**
+	 * Para Code がそのペインで控えている Codex の会話（再起動の前から残っている表の会話）。台帳に無いペインの最初の
+	 * hook が裏の会話のものでも、表と裏を取り違えないための手がかり。
+	 */
+	private _codexPaneSessionId(token: string): string | undefined {
+		const session = this._paneSessions.get(token);
+		return session?.agent === 'codex' ? session.sessionId : undefined;
 	}
 
 	/**

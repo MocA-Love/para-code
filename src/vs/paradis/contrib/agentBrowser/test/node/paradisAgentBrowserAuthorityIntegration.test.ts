@@ -1001,6 +1001,46 @@ suite('ParadisAgentBrowser authority integration', () => {
 		});
 	});
 
+	// 承認待ちのまま Codex を終えた（シェルへ戻った・落ちた）ら、裏の会話の承認待ちの印も消す。その会話の hook はもう来ない。
+	test('a background Codex approval wait goes away when Codex ends in the pane', async () => {
+		const { fixture, connection, send, status } = await codexPaneFixture();
+		const { A, B } = PARADIS_CODEX_COMMAND_CENTER_SESSIONS;
+		const codex = (event: string, sessionId: string, extra: Readonly<Record<string, unknown>> = {}) =>
+			send('codex-switch', 200, event, { session_id: sessionId, transcript_path: `/Users/example/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-${sessionId}.jsonl`, cwd: '/Users/example/work', ...extra });
+		await codex('UserPromptSubmit', A, { prompt: 'run a command' });
+		await codex('UserPromptSubmit', B, { prompt: 'keep working' });
+		await codex('Stop', B);
+		await codex('PermissionRequest', A, { tool_name: 'exec_command' });
+		const waiting = await status('codex-switch');
+		// the renderer reports the end of the foreground Codex as a cleared program status
+		const changed = await fixture.service.notePaneProgramStatus(connection, 'codex-switch', { state: 'clear', app: 'codex' });
+		assert.deepStrictEqual({ waiting, changed, after: await status('codex-switch') }, { waiting: 'permission', changed: true, after: 'review' });
+	});
+
+	// Para Code を起動し直してもペイン（pty daemon）は生き残る。最初に届いた hook が裏の会話のものでも、
+	// 再起動の前に控えたペインの会話を表にして、表と裏を取り違えない。
+	test('after a restart, a Codex pane keeps the conversation it had even when a background conversation reports first', async () => {
+		const { fixture, send, paneSession } = await codexPaneFixture();
+		const { A, B } = PARADIS_CODEX_COMMAND_CENTER_SESSIONS;
+		Reflect.get(fixture.service, '_paneSessions').set('codex-switch', { agent: 'codex', sessionId: B, at: 1 });
+		const published: string[] = [];
+		const listener = onParadisAgentHookEvent(event => {
+			if (event.token === 'codex-switch') {
+				published.push(`${event.event}:${event.sessionId === B ? 'B' : 'A'}`);
+			}
+		});
+		try {
+			const codex = (event: string, sessionId: string) =>
+				send('codex-switch', 200, event, { session_id: sessionId, transcript_path: `/Users/example/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-${sessionId}.jsonl`, cwd: '/Users/example/work' });
+			await codex('Stop', A);
+			const afterBackground = await paneSession('codex-switch') === B ? 'B' : 'A';
+			await codex('Stop', B);
+			assert.deepStrictEqual({ afterBackground, published }, { afterBackground: 'B', published: ['Stop:B'] });
+		} finally {
+			listener.dispose();
+		}
+	});
+
 	// Para Code が止まっている間の hook の控え（W2-20）は、ペインの同期の後に流し直す。完了は鳴らさない印、
 	// 許可要求は画面を確かめてもらうまで状態にもカードにもしない。この起動で本物の hook が届いたペインと
 	// 古すぎる許可要求は触らない。
