@@ -183,8 +183,31 @@ function isAsyncLaunchResult(value: string): boolean {
 	return /Async agent launched|async_launched|spawned successfully|is now running/i.test(value);
 }
 
+/**
+ * transcript の行を JSON として解く。解けない行（書きかけの最後の行など）とオブジェクトでない行は落とす。
+ * 下の解析関数はこの結果を受けるので、解いた行を覚えておけば読み直すたびに解き直さずに済む。
+ */
+export function paradisParseTranscriptEntries(lines: readonly string[]): Record<string, unknown>[] {
+	const entries: Record<string, unknown>[] = [];
+	for (const line of lines) {
+		const entry = paradisParseTranscriptEntry(line);
+		if (entry !== undefined) { entries.push(entry); }
+	}
+	return entries;
+}
+
+/** transcript の 1 行を JSON として解く（解けない・オブジェクトでなければ undefined）。 */
+export function paradisParseTranscriptEntry(line: string): Record<string, unknown> | undefined {
+	try { return asRecord(JSON.parse(line)); } catch { return undefined; }
+}
+
 /** Claude root／子transcriptから、所有Agent自身と直接生成した子Agentを復元する。 */
 export function paradisParseClaudePersistedActivity(ownerId: string | undefined, lines: readonly string[], mtime: number, now: number, meta?: IParadisClaudeSubagentMeta): IParadisClaudePersistedActivity {
+	return paradisParseClaudePersistedActivityEntries(ownerId, paradisParseTranscriptEntries(lines), mtime, now, meta);
+}
+
+/** {@link paradisParseClaudePersistedActivity} の、解いた行を受ける版。 */
+export function paradisParseClaudePersistedActivityEntries(ownerId: string | undefined, entries: readonly Record<string, unknown>[], mtime: number, now: number, meta?: IParadisClaudeSubagentMeta): IParadisClaudePersistedActivity {
 	const pendingTools = new Map<string, { readonly label: string; readonly detail?: string; readonly at: number }>();
 	const spawned = new Map<string, IParadisRecoveredAgentActivity>();
 	const notifications = new Map<string, { readonly status: ParadisRecoveredAgentStatus; readonly at: number }>();
@@ -198,10 +221,7 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 	let sawOwnerLine = false;
 	let lastLineAt: number | undefined;
 
-	for (const line of lines) {
-		let entry: Record<string, unknown> | undefined;
-		try { entry = asRecord(JSON.parse(line)); } catch { continue; }
-		if (entry === undefined) { continue; }
+	for (const entry of entries) {
 		const lineAt = timestamp(entry.timestamp);
 		if (lineAt !== undefined) { lastLineAt = Math.max(lastLineAt ?? lineAt, lineAt); }
 		const at = lineAt ?? mtime;
@@ -315,16 +335,17 @@ const ADVISOR_MODEL_PATTERN = /^[A-Za-z0-9._:@-]{1,100}$/;
  * 読むときのその子の ID（親の会話では undefined）。結果の無い相談は、古ければ中断とみなす。
  */
 export function paradisParseClaudeAdvisors(ownerId: string | undefined, lines: readonly string[], now: number): IParadisAgentAdvisorUpdate[] {
+	// 相談の行は必ず `advisor` の文字を含むので、解く前に安く絞る
+	return paradisParseClaudeAdvisorsEntries(ownerId, paradisParseTranscriptEntries(lines.filter(line => line.includes('advisor'))), now);
+}
+
+/** {@link paradisParseClaudeAdvisors} の、解いた行を受ける版。 */
+export function paradisParseClaudeAdvisorsEntries(ownerId: string | undefined, entries: readonly Record<string, unknown>[], now: number): IParadisAgentAdvisorUpdate[] {
 	const advisors = new Map<string, IParadisAgentAdvisorUpdate>();
-	for (const line of lines) {
-		if (!line.includes('advisor')) {
-			continue;
-		}
-		let entry: Record<string, unknown> | undefined;
-		try { entry = asRecord(JSON.parse(line)); } catch { continue; }
-		const content = asRecord(entry?.message)?.content;
+	for (const entry of entries) {
+		const content = asRecord(entry.message)?.content;
 		// 親の transcript に混ざる sidechain の行（古い版のサブエージェント）は、その子の相談なので親の分に数えない
-		if (entry === undefined || entry.type !== 'assistant' || entry.isSidechain === true || !Array.isArray(content)) {
+		if (entry.type !== 'assistant' || entry.isSidechain === true || !Array.isArray(content)) {
 			continue;
 		}
 		const at = timestamp(entry.timestamp);
@@ -381,6 +402,11 @@ function parseCodexSource(source: string): { readonly parentId?: string; readonl
 
 /** Codex child threadのsourceとrolloutから、親子関係・指示・終端状態を復元する。 */
 export function paradisParseCodexPersistedActivity(id: string, source: string, lines: readonly string[], mtime: number, now: number): IParadisRecoveredAgentActivity | undefined {
+	return paradisParseCodexPersistedActivityEntries(id, source, paradisParseTranscriptEntries(lines), mtime, now);
+}
+
+/** {@link paradisParseCodexPersistedActivity} の、解いた行を受ける版。 */
+export function paradisParseCodexPersistedActivityEntries(id: string, source: string, entries: readonly Record<string, unknown>[], mtime: number, now: number): IParadisRecoveredAgentActivity | undefined {
 	if (!ID_PATTERN.test(id)) { return undefined; }
 	const sourceInfo = parseCodexSource(source);
 	let label = sourceInfo.label ?? 'SubAgent';
@@ -392,10 +418,7 @@ export function paradisParseCodexPersistedActivity(id: string, source: string, l
 	let updatedAt = mtime;
 	let sawLine = false;
 	let status: ParadisRecoveredAgentStatus = activeOrEnded(mtime, now);
-	for (const line of lines) {
-		let entry: Record<string, unknown> | undefined;
-		try { entry = asRecord(JSON.parse(line)); } catch { continue; }
-		if (entry === undefined) { continue; }
+	for (const entry of entries) {
 		const at = timestamp(entry.timestamp) ?? mtime;
 		startedAt = sawLine ? Math.min(startedAt, at) : at;
 		updatedAt = Math.max(updatedAt, at);

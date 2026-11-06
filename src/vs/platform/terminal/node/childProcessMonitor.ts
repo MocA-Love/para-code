@@ -8,7 +8,8 @@ import { parse } from '../../../base/common/path.js';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { ProcessItem } from '../../../base/common/processes.js';
-import { listProcesses } from '../../../base/node/ps.js';
+// PARA-PATCH: on Linux read the children from /proc instead of starting ps and cpuUsage.sh every 5 seconds per busy terminal (paradisChildProcessList.ts)
+import { paradisListChildProcesses as listProcesses } from './paradisChildProcessList.js';
 import { ILogService } from '../../log/common/log.js';
 
 const enum Constants {
