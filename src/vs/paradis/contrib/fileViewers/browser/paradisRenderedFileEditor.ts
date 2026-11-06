@@ -31,6 +31,7 @@ import { isCancellationError, onUnexpectedError } from '../../../../base/common/
 import { DisposableStore, IDisposable, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
@@ -53,7 +54,7 @@ import { ITextResourceConfigurationService } from '../../../../editor/common/ser
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
-import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { ParadisSpanAttributes, reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { onParadisWebviewSignal, ParadisWebviewSignalCode } from '../../sentry/common/paradisWebviewSignals.js';
 import { PARADIS_VIEWER_CONTENT_TIMEOUT_MS, PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS, paradisViewerContentTimeout, ParadisViewerRecoveryPolicy } from '../common/paradisViewerRecovery.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
@@ -102,6 +103,21 @@ export function paradisShouldReportViewModeError(err: unknown, alreadyReported: 
 	return !(err instanceof Error && toFileOperationResult(err) === FileOperationResult.FILE_NOT_FOUND);
 }
 
+/** 保存の通知から描き直すまでの最短の待ち。小さい文書は今までどおりこの時間で描き直す。 */
+const PARADIS_VIEWER_RERENDER_MIN_DELAY_MS = 50;
+/** 待ちの上限。大きい文書でも、保存してからこれより長くは待たせない。 */
+const PARADIS_VIEWER_RERENDER_MAX_DELAY_MS = 2_000;
+
+/**
+ * 保存の通知から描き直すまでの待ち。前回の描画にかかった時間だけ待つ（最短 50ms、最長 2 秒）。
+ *
+ * 1MB の Markdown は 1 回の描画で UI スレッドを 1 秒以上使う。エージェントが書き続けるたびに 50ms で
+ * 描き直すと、UI が止まりっぱなしになる。
+ */
+export function paradisViewerRerenderDelay(lastRenderMs: number): number {
+	return Math.min(Math.max(PARADIS_VIEWER_RERENDER_MIN_DELAY_MS, Math.round(lastRenderMs)), PARADIS_VIEWER_RERENDER_MAX_DELAY_MS);
+}
+
 /**
  * Rendered/Raw を内蔵する EditorPane 基底。webview と埋め込みコードエディタのライフサイクル管理・
  * ファイル読込・自動再レンダリング・モード切替を担い、Rendered の HTML 生成はサブクラスの {@link renderDocument} に委ねる。
@@ -125,6 +141,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private readonly _contentWatchdog = this._register(new MutableDisposable<IDisposable>());
 	/** 開いてから最初に描けるまでの計測（{@link openTimingKind} を返すサブクラスだけ）。 */
 	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
+	/** 開いてから描けるまでの計測に添える値（文字数・手元か SSH 先か・ウィンドウを開いてからの秒数）。 */
+	private _openTimingValues: ParadisSpanAttributes = {};
 	// webview のイベント通知中に webview 自身を捨てないよう、立て直しは次のタイミングまで遅らせる。
 	private readonly _deferredRecovery = this._register(new MutableDisposable<IDisposable>());
 	private readonly _recoveryPolicy = new ParadisViewerRecoveryPolicy();
@@ -274,6 +292,14 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		return false;
 	}
 
+	/**
+	 * `setInput` が最初の描画を待つか。待たないビューアは描画を後ろで進め、エディタの復元を先に終わらせる。
+	 * 描画の失敗は `setInput` の失敗ではなく、描画の失敗として扱う。
+	 */
+	protected get awaitsInitialRender(): boolean {
+		return true;
+	}
+
 	/** 開いてから最初に描けるまでを Sentry へ送るときの種類。送らないビューアは `undefined`。 */
 	protected get openTimingKind(): ParadisViewerOpenKind | undefined {
 		return undefined;
@@ -284,7 +310,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	 * `afterExtension` は、最初の待ち時間を過ぎて延長の間に描けたか。
 	 */
 	private _reportFirstPaint(afterExtension: boolean): void {
-		this._openTiming.value?.painted({ safe_after_extension: afterExtension });
+		this._openTiming.value?.painted({ ...this._openTimingValues, safe_after_extension: afterExtension });
 		this._openTiming.clear();
 	}
 
@@ -400,6 +426,11 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		const resource = viewerInput.resource;
 		const openTimingKind = this.openTimingKind;
 		this._openTiming.value = openTimingKind ? startParadisViewerOpenTiming(openTimingKind) : undefined;
+		// 中身・パスは送らない。`performance.now()` はこのウィンドウのページを読み込んでからの時間。
+		this._openTimingValues = {
+			safe_remote: resource.scheme === Schemas.vscodeRemote,
+			safe_since_load_s: Math.round(performance.now() / 1000),
+		};
 		// 同じ URI の入力を設定し直す経路でも、旧入力から継続中の描画を無効化する。
 		this._renderGeneration++;
 		// ペインは別のファイルを開くときも使い回されるので、前のファイルの失敗回数を持ち越さない。
@@ -423,12 +454,32 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._inputDisposables.value = store;
 		let initialViewApplied = false;
 		let rerenderAfterInitial = false;
+		// 保存の通知からの描き直しは重ねない。描いている間に来た通知は覚えておき、描き終えてから最新の内容で
+		// もう一度描く（最後の内容は必ず描く）。
+		let rendering = false;
+		let renderAgain = false;
+		let lastRenderMs = 0;
 		const rerender = () => {
-			if (isEqual(this._currentResource, resource) && this._pane.claimed && this._mode === 'rendered') {
-				this._renderResourceInBackground(resource);
+			if (!isEqual(this._currentResource, resource) || !this._pane.claimed || this._mode !== 'rendered') {
+				return;
 			}
+			if (rendering) {
+				renderAgain = true;
+				return;
+			}
+			rendering = true;
+			const startedAt = Date.now();
+			// renderResource が送るべき失敗は自分で送る（_renderResourceInBackground と同じ扱い）。
+			this.renderResource(resource, CancellationToken.None).catch(() => { /* reported by renderResource when needed */ }).finally(() => {
+				rendering = false;
+				lastRenderMs = Date.now() - startedAt;
+				if (renderAgain && !store.isDisposed) {
+					renderAgain = false;
+					rerenderScheduler.schedule(paradisViewerRerenderDelay(lastRenderMs));
+				}
+			});
 		};
-		const rerenderScheduler = store.add(new RunOnceScheduler(rerender, 50));
+		const rerenderScheduler = store.add(new RunOnceScheduler(rerender, PARADIS_VIEWER_RERENDER_MIN_DELAY_MS));
 		// watch エラーはワークスペース全体から連続して届く場合があるため、通常の変更通知より長く抑制する。
 		const watchRecoveryScheduler = store.add(new RunOnceScheduler(rerender, 1000));
 		const scheduleRerender = (scheduler: RunOnceScheduler) => {
@@ -439,7 +490,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 				return;
 			}
 			if (!scheduler.isScheduled()) {
-				scheduler.schedule();
+				scheduler.schedule(scheduler === rerenderScheduler ? paradisViewerRerenderDelay(lastRenderMs) : undefined);
 			}
 		};
 
@@ -468,10 +519,21 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		}));
 
 		// Rendered の配置と実描画は _applyViewMode がまとめて担う。
-		await this._applyViewMode(viewerInput.viewMode, resource, token);
-		initialViewApplied = true;
-		if (rerenderAfterInitial) {
-			rerenderScheduler.schedule();
+		const initialView = this._applyViewMode(viewerInput.viewMode, resource, token);
+		const afterInitialView = () => {
+			initialViewApplied = true;
+			if (rerenderAfterInitial && !store.isDisposed) {
+				rerenderScheduler.schedule();
+			}
+		};
+		if (this.awaitsInitialRender) {
+			await initialView;
+			afterInitialView();
+		} else {
+			initialView.then(afterInitialView, err => {
+				afterInitialView();
+				this._onViewModeError(err);
+			});
 		}
 	}
 
@@ -532,6 +594,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			localResourceRoots: [dirname(resource)]
 		};
 
+		this._openTimingValues = { ...this._openTimingValues, safe_source_chars: text.length };
 		const rendered = await this.renderDocument(text, resource, webview, token);
 		if (!this._isRenderCurrent(generation, resource, token)) {
 			return;

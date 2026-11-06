@@ -6,6 +6,10 @@ Para Code が本家 VS Code に加えた変更の一覧です。新しいバー�
 
 ## 未リリース
 
+### 改善
+
+- 大きな Markdown のプレビューが速くなり、起動直後の HTML のプレビューがウィンドウの起動を待たせなくなりました
+
 ### 修正
 
 - Windows で、アプリ内の「更新」ボタンからの更新が「Failed to install Visual Studio Code update.」と出て失敗していたのを直しました（paracode-166 から）。今の版からこの版へも、アプリ内の更新で入れられます。更新中に出る進み具合の窓も Para Code の名前で出ます
