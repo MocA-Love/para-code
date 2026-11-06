@@ -115,6 +115,8 @@ export default function PcLayout() {
 						screenOptions={({ route }) => ({
 							headerShown: false,
 							contentStyle: { backgroundColor: colors.bg },
+							// 下に隠れた画面は描き直さない（前面へ戻ったときに追いつく）
+							freezeOnBlur: true,
 							// 2列では左の列の行を押すと右の中身が入れ替わる（押し進む動きは付けない。Orca と同じ）。
 							animation: regular && route.name === 'session/[spaceId]' ? 'none' : 'default',
 						})}
