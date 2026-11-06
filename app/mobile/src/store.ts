@@ -4338,7 +4338,7 @@ export class MobileController {
 				entry.reject(new PcReplyError(msg.error, typeof msg.code === 'string' ? msg.code : undefined));
 				timing?.finish(msg.id, 'error');
 			} else if (entry.contentHash !== undefined) {
-				const resolved = this.fsContentHashCache.resolve(entry.contentHash.key, entry.contentHash.prepared, msg);
+				const resolved = this.fsContentHashCache.resolve(entry.contentHash.key, entry.contentHash.prepared, msg, text.length);
 				timing?.mark('cache_resolve');
 				if (resolved.ok) {
 					entry.resolve(resolved.value);

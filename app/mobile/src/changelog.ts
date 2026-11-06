@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-28',
 		items: [
 			{
+				icon: 'document-outline',
+				title: '大きな PDF・Word・画像を開くときに、アプリが固まる時間を短くしました',
+				body: 'アプリを裏に回してから戻ったとき、ファイルの中身が変わっていなければ、読んでいた位置がそのまま残ります。大きな Word が「表示結果が空でした」になることがあったのも直しました。',
+			},
+			{
 				icon: 'speedometer-outline',
 				title: '過去の会話とソース管理で、文字を打つたびに画面が引っかかるのを直しました',
 				body: '続きの依頼やコミットメッセージを打つたびに、会話や変更の一覧を全部描き直していました。iPad で列やドックの幅を変えるときの動きも軽くしました。',
