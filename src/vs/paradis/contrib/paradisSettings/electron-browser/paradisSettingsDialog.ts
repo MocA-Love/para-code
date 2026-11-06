@@ -1031,6 +1031,16 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		group: GROUP_BROWSER_VIEW,
+		key: 'paradis.browser.freezeHiddenTabs',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserFreezeHiddenTabs', "長く見ていないタブを一時停止する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserFreezeHiddenTabsDesc', "30 分以上見えていないタブを止めて、CPU を使わないようにします。読み込み直さないので、スクロール位置や入力中の文字はそのまま残ります。エージェントに渡しているタブと、音を鳴らしているタブは止めません。"),
+		keywords: 'browser tab freeze sleep suspend hidden cpu memory performance',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		group: GROUP_BROWSER_DOWNLOADS,
 		key: 'paradis.browser.downloads.enabled',
 		// allow-any-unicode-next-line
