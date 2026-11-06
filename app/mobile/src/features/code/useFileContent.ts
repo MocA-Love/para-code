@@ -12,6 +12,26 @@ import { FileViewerLoadTrace } from './fileViewerTiming.js';
 import { errorMessage } from './scmModel.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
+/**
+ * 接続が戻っても読み直さない種類（PDF・Word・動画などのバイナリと表計算）。中身の照合（`ifContentHash`）が無いか
+ * 大きいので、同じ PC のウィンドウへつながり直しただけなら、読み終えている中身をそのまま見せ続ける。
+ */
+const KEEP_ON_RECONNECT: ReadonlySet<string> = new Set(['pdf', 'docx', 'media', 'xlsx']);
+
+/** 読み直したテキストが前と同じか（同じなら表示を作り直さない。読んでいた位置と検索の位置が残る）。 */
+function sameText(previous: FsReadResult | undefined, next: FsReadResult): boolean {
+	return previous !== undefined
+		&& previous.content === next.content
+		&& previous.truncated === next.truncated
+		&& previous.size === next.size
+		&& previous.html === next.html
+		&& previous.css === next.css
+		&& previous.bg === next.bg
+		&& previous.fg === next.fg
+		&& previous.highlightTruncated === next.highlightTruncated
+		&& previous.htmlImages?.count === next.htmlImages?.count;
+}
+
 export interface FileContent {
 	/** `fsRead` の結果（テキスト。ハイライト付き）。 */
 	readonly text?: FsReadResult;
@@ -54,6 +74,9 @@ export interface FileContentState {
  *
  * HTML のプレビューは、PC が対応していれば埋め込み画像を抜いた本文で読む（fs.html-images.v1。画像は表示が 1 枚ずつ
  * 取り寄せる）。抜いた本文はソースに使えないので、HTML だけはプレビューへ戻したら画像を抜いた本文で読み直す。
+ *
+ * 接続し直したとき、同じ PC のウィンドウへ戻っただけなら、バイナリと表計算は読み直さない（{@link KEEP_ON_RECONNECT}）。
+ * テキストは読み直すが、中身が前と同じなら前の `text` をそのまま使う（WebView を読み直さない）。
  */
 export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode): FileContentState {
 	const { fsRead, fsHtmlImage, fsXlsx, fsPdf, fsDocx, fsMedia } = useAppStore(useShallow(s => ({ fsRead: s.fsRead, fsHtmlImage: s.fsHtmlImage, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia })));
@@ -72,6 +95,8 @@ export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode)
 	const highlight = !splitHtmlImages && highlightFor === path;
 	// 画像を取り寄せている途中で、PC の中身が変わっていた（読み直す）
 	const [reloads, setReloads] = useState(0);
+	// 読み終えた中身の条件（接続し直しただけで同じ条件に戻ったかを見る）と、そのときのテキスト
+	const loaded = useRef<{ readonly file: string; readonly target: string; readonly text: FsReadResult | undefined } | undefined>(undefined);
 
 	useEffect(() => {
 		const gen = ++loadGen.current;
@@ -81,6 +106,11 @@ export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode)
 		}
 		if (fetchKind === 'none') {
 			setContent({ unsupported: true });
+			return undefined;
+		}
+		const file = [wsId, path, fetchKind, highlight, splitHtmlImages, reloads].join('\0');
+		const previous = loaded.current?.file === file ? loaded.current : undefined;
+		if (previous?.target === rendererTarget && KEEP_ON_RECONNECT.has(fetchKind)) {
 			return undefined;
 		}
 		const current = () => loadGen.current === gen && currentRendererTarget(wsId) === rendererTarget;
@@ -126,13 +156,28 @@ export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode)
 		};
 		load()
 			.then(({ value, response }) => {
-				if (current()) {
-					trace.fetched(response);
-					setContent({ ...value, trace });
+				if (!current()) {
+					return;
 				}
+				const text = value.text;
+				const kept = previous?.text;
+				if (text !== undefined && kept !== undefined && sameText(kept, text)) {
+					// 同じファイルを読み直したら中身が前と同じだった。前の text を使い続ける（画像の取り寄せ口だけは
+					// 新しいものに替え、取り寄せ損ねていた画像を頼み直させる）
+					loaded.current = { file, target: rendererTarget, text: kept };
+					trace.cancel();
+					if (value.htmlImages !== undefined) {
+						setContent(shown => (shown?.text === kept ? { ...shown, htmlImages: value.htmlImages } : shown));
+					}
+					return;
+				}
+				loaded.current = { file, target: rendererTarget, text };
+				trace.fetched(response);
+				setContent({ ...value, trace });
 			})
 			.catch((e: unknown) => {
 				if (current()) {
+					loaded.current = undefined;
 					trace.failed();
 					// PC が中身をテキストではないと判断した（先頭に NUL がある）
 					setContent(pcReplyErrorCode(e) === 'not-text' ? { unsupported: true } : { error: errorMessage(e) });
