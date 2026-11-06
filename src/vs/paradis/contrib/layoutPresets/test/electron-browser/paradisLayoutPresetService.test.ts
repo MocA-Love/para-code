@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -46,6 +46,10 @@ suite('ParadisLayoutPresetService', () => {
 		];
 		const log: string[] = [];
 		const processReady: DeferredPromise<void>[] = [];
+		/** 起動の前に端末を閉じる（`processReady` は解決しないまま）。 */
+		const closeTerminal: (() => void)[] = [];
+		/** 1 つ目の端末を作った。 */
+		const firstCreated = new DeferredPromise<void>();
 		const makePart = (windowId: number): IEditorPart => {
 			const groups = [0, 1, 2].map(index => upcastPartial<IEditorGroup>({ id: windowId * 10 + index, windowId, focus: () => { }, closeAllEditors: (async () => { options.onCloseAllEditors?.(state); return true; }) as IEditorGroup['closeAllEditors'] }));
 			return upcastPartial<IEditorPart>({
@@ -70,12 +74,20 @@ suite('ParadisLayoutPresetService', () => {
 					log.push(`terminal:${id}:${URI.isUri(createOptions?.cwd) ? createOptions.cwd.path : createOptions?.cwd}`);
 					const ready = new DeferredPromise<void>();
 					processReady.push(ready);
-					return upcastPartial<ITerminalInstance>({
+					const onDisposed = store.add(new Emitter<ITerminalInstance>());
+					const instance = upcastPartial<ITerminalInstance>({
 						instanceId: id,
 						processReady: ready.p,
 						isDisposed: false,
+						onDisposed: onDisposed.event,
 						sendText: async (text: string) => { log.push(`send:${id}:${text}`); },
 					});
+					closeTerminal.push(() => {
+						(instance as { isDisposed: boolean }).isDisposed = true;
+						onDisposed.fire(instance);
+					});
+					firstCreated.complete();
+					return instance;
 				},
 			}),
 			upcastPartial<IWorkspaceContextService>({ getWorkspace: () => upcastPartial<IWorkspace>({ folders: [upcastPartial<IWorkspaceFolder>({ uri: state.folder })] }) }),
@@ -94,7 +106,7 @@ suite('ParadisLayoutPresetService', () => {
 			upcastPartial<IParadisWorktreeService>({ getWorktrees: () => [] }),
 			upcastPartial<IWorkbenchEnvironmentService>({ remoteAuthority: undefined }),
 		));
-		return { service, state, log, processReady };
+		return { service, state, log, processReady, closeTerminal, firstCreated };
 	}
 
 	/** スペースの切り替えを写す: 切り替え中になり、フォルダとアクティブなスペースが入れ替わる。 */
@@ -116,6 +128,22 @@ suite('ParadisLayoutPresetService', () => {
 			'send:1:npm run watch',
 		]);
 		assert.strictEqual(log.filter(entry => entry.startsWith('info:')).length, 1);
+	});
+
+	test('goes on to the remaining slots when the first terminal is closed before it starts', async () => {
+		const { service, log, closeTerminal, firstCreated } = createService({});
+		const applying = service.applyPreset(preset, { mode: ParadisLayoutApplyMode.Add });
+		// 1 枠目のプロセスの準備を待っている間に閉じる。processReady は解決しない。
+		await firstCreated.p;
+		closeTerminal[0]();
+		await applying;
+		assert.deepStrictEqual(log, [
+			'terminal:1:/repos/a',
+			'scope:1:space-a',
+			'terminal:2:/repos/a/app',
+			'scope:2:space-a',
+			'file:/repos/a/README.md',
+		]);
 	});
 
 	test('a window pinned to another space uses that space and its folder', async () => {

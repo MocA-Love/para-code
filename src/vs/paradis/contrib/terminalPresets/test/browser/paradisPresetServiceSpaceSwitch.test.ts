@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -32,10 +32,14 @@ suite('ParadisPresetService space switch', () => {
 	 * 1 つ目のターミナルの準備を待っている間に、メインのウィンドウのスペースを A から B へ切り替える。
 	 * `pinnedTo` を渡すと、プリセットを実行するグループはそのスペースに固定した補助ウィンドウにある。
 	 */
-	async function runAcrossSwitch(pinnedTo?: string): Promise<string[]> {
+	function createService(pinnedTo?: string) {
 		const state = { activeStateKey: 'space-a', folders: [] as URI[] };
 		const log: string[] = [];
 		const processReady: DeferredPromise<void>[] = [];
+		/** 起動の前に端末を閉じる（`processReady` は解決しないまま）。 */
+		const closeTerminal: (() => void)[] = [];
+		/** 1 つ目の端末を作った。 */
+		const firstCreated = new DeferredPromise<void>();
 		const group = upcastPartial<IEditorGroup>({ id: 1 });
 		let instanceId = 0;
 		const service = store.add(new ParadisPresetService(
@@ -53,14 +57,22 @@ suite('ParadisPresetService space switch', () => {
 					log.push(`terminal:${id}:${URI.isUri(options?.cwd) ? options.cwd.path : options?.cwd}`);
 					const ready = new DeferredPromise<void>();
 					processReady.push(ready);
-					return upcastPartial<ITerminalInstance>({
+					const onDisposed = store.add(new Emitter<ITerminalInstance>());
+					const instance = upcastPartial<ITerminalInstance>({
 						instanceId: id,
 						shellLaunchConfig: {},
 						processReady: ready.p,
 						isDisposed: false,
+						onDisposed: onDisposed.event,
 						sendText: async (text: string) => { log.push(`send:${id}:${text}`); },
 						focus: () => { },
 					});
+					closeTerminal.push(() => {
+						(instance as { isDisposed: boolean }).isDisposed = true;
+						onDisposed.fire(instance);
+					});
+					firstCreated.complete();
+					return instance;
 				},
 			}),
 			upcastPartial<IEditorGroupsService>({ activeGroup: group, getGroups: () => [group] }),
@@ -83,15 +95,20 @@ suite('ParadisPresetService space switch', () => {
 		));
 		// フォルダの監視を張らせないよう、サービスを作った後でスペース A のフォルダを開いた状態にする。
 		state.folders = [URI.file('/repos/a')];
-		const preset: IParadisResolvedPreset = {
-			key: 'user:dev',
-			name: 'dev',
-			source: 'user',
-			sourceIndex: 0,
-			layout: 'tabs',
-			tasks: [{ commands: ['npm run server'], cwd: 'server' }, { commands: ['npm run web'] }],
-		};
+		return { service, state, log, processReady, closeTerminal, firstCreated };
+	}
 
+	const preset: IParadisResolvedPreset = {
+		key: 'user:dev',
+		name: 'dev',
+		source: 'user',
+		sourceIndex: 0,
+		layout: 'tabs',
+		tasks: [{ commands: ['npm run server'], cwd: 'server' }, { commands: ['npm run web'] }],
+	};
+
+	async function runAcrossSwitch(pinnedTo?: string): Promise<string[]> {
+		const { service, state, log, processReady } = createService(pinnedTo);
 		const running = service.runPreset(preset);
 		await Promise.resolve();
 		state.activeStateKey = 'space-b';
@@ -122,6 +139,19 @@ suite('ParadisPresetService space switch', () => {
 			'terminal:2:/repos/c',
 			'scope:2:space-c',
 			'send:2:npm run web',
+		]);
+	});
+
+	test('stops the remaining tasks when the first terminal is closed before it starts', async () => {
+		const { service, log, closeTerminal, firstCreated } = createService();
+		const running = service.runPreset(preset);
+		await firstCreated.p;
+		// processReady は解決しないまま閉じる。
+		closeTerminal[0]();
+		await assert.rejects(running);
+		assert.deepStrictEqual(log, [
+			'terminal:1:/repos/a/server',
+			'scope:1:space-a',
 		]);
 	});
 });
