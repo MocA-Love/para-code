@@ -8,7 +8,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { FileOperationError, FileOperationResult } from '../../../../../platform/files/common/files.js';
-import { paradisShouldReportViewModeError } from '../../browser/paradisRenderedFileEditor.js';
+import { paradisShouldReportViewModeError, paradisViewerRerenderDelay } from '../../browser/paradisRenderedFileEditor.js';
 
 suite('ParadisRenderedFileEditor', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -31,5 +31,9 @@ suite('ParadisRenderedFileEditor', () => {
 			other: true,
 			nonError: true,
 		});
+	});
+
+	test('waits for the previous render before drawing a saved file again, between 50 ms and 2 s', () => {
+		assert.deepStrictEqual([0, 12, 50, 400, 1_700, 90_000].map(paradisViewerRerenderDelay), [50, 50, 50, 400, 1_700, 2_000]);
 	});
 });

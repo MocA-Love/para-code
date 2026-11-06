@@ -29,6 +29,7 @@ import { IWorkingCopyService } from '../../../../../workbench/services/workingCo
 import { TestEditorGroupsService, TestEditorGroupView, TestLayoutService, TestTextResourceConfigurationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { TestStorageService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
+import { ILifecycleService, LifecyclePhase } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ParadisHtmlFileEditor } from '../../electron-browser/paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput } from '../../electron-browser/paradisHtmlFileInput.js';
 import { notifyParadisWebviewSignal, ParadisWebviewSignalCode } from '../../../sentry/common/paradisWebviewSignals.js';
@@ -70,6 +71,11 @@ function createSharedProcessService(mount: (directory: string) => Promise<unknow
 			listen: () => { throw new Error('not used'); },
 		}),
 	} as unknown as ISharedProcessService;
+}
+
+/** ウィンドウの復元の段階だけを持つ lifecycle service。既定は復元が済んだ後。 */
+function createLifecycleService(phase: LifecyclePhase = LifecyclePhase.Restored): ILifecycleService {
+	return { phase } as unknown as ILifecycleService;
 }
 
 /** SSH 接続の有無を差し替えられる remote agent service。 */
@@ -141,10 +147,11 @@ suite('ParadisHtmlFileEditor', () => {
 			createRemoteAuthorityResolverService(),
 			remote.tunnel ?? createTunnelService(),
 			disposables.add(new TestWorkspaceTrustManagementService()),
+			createLifecycleService(),
 		));
 	}
 
-	function createProductionEditor(webviewService: IWebviewService, textFileService: ITextFileService, fileService: IFileService, trusted = true): TestParadisHtmlFileEditor {
+	function createProductionEditor(webviewService: IWebviewService, textFileService: ITextFileService, fileService: IFileService, trusted = true, sharedProcessService = createSharedProcessService(), phase = LifecyclePhase.Restored): TestParadisHtmlFileEditor {
 		return disposables.add(new TestParadisHtmlFileEditor(
 			new TestEditorGroupView(1),
 			NullTelemetryService,
@@ -161,12 +168,13 @@ suite('ParadisHtmlFileEditor', () => {
 			new TestTextResourceConfigurationService(),
 			Object.create(null) as IEditorService,
 			new TestEditorGroupsService(),
-			createSharedProcessService(),
+			sharedProcessService,
 			createWorkspaceContextService(undefined),
 			createRemoteAgentService(),
 			createRemoteAuthorityResolverService(),
 			createTunnelService(),
 			disposables.add(new TestWorkspaceTrustManagementService(trusted)),
+			createLifecycleService(phase),
 		));
 	}
 
@@ -207,6 +215,43 @@ suite('ParadisHtmlFileEditor', () => {
 		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
 		return { contentOptions: contentOptionsAtSetHtml, html: renderedHtml, editor };
 	}
+
+	test('while the window is restoring, setInput does not wait for the preview server, and the page is drawn when it answers', async () => {
+		let answerMount: (value: unknown) => void = () => { };
+		const mount = new Promise(resolve => { answerMount = resolve; });
+		let renderedHtml: string | undefined;
+		let drawn: (html: string) => void = () => { };
+		const whenDrawn = new Promise<string>(resolve => { drawn = resolve; });
+		const webview = {
+			contentOptions: {},
+			onFatalError: Event.None,
+			onDidScroll: Event.None,
+			setHtml: (html: string) => { renderedHtml = html; drawn(html); },
+			focus: () => { },
+			dispose: () => { },
+			postMessage: async () => true,
+		} as unknown as IOverlayWebview;
+		const textFileService = { read: () => Promise.resolve({ value: '<main>x</main>' }) } as unknown as ITextFileService;
+		const fileService = {
+			createWatcher: () => { throw new Error('watching is unavailable in this test'); },
+			onDidWatchError: Event.None,
+		} as unknown as IFileService;
+		const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
+		const restoring = createProductionEditor({ createWebviewOverlay: () => webview } as unknown as IWebviewService, textFileService, fileService, true, createSharedProcessService(() => mount), LifecyclePhase.Ready);
+		const input = disposables.add(new ParadisHtmlFileInput(URI.file('/workspace/site/index.html'), textFileService, workingCopyService));
+
+		await restoring.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		const beforeAnswer = renderedHtml;
+		answerMount(PREVIEW_MOUNT);
+		const html = await whenDrawn;
+		deepStrictEqual({
+			beforeAnswer,
+			base: new DOMParser().parseFromString(html, 'text/html').querySelector('base')?.getAttribute('href'),
+		}, {
+			beforeAnswer: undefined,
+			base: PREVIEW_BASE,
+		});
+	});
 
 	test('public setInput applies script and resource policy before setting rendered HTML', async () => {
 		const { contentOptions, html } = await renderThroughSetInput(true);
@@ -398,7 +443,7 @@ suite('ParadisHtmlFileEditor', () => {
 				new TestTextResourceConfigurationService(), Object.create(null) as IEditorService, new TestEditorGroupsService(),
 				createSharedProcessService(directory => { mounted = directory; return Promise.resolve(PREVIEW_MOUNT); }),
 				workspace, createRemoteAgentService(), createRemoteAuthorityResolverService(), createTunnelService(),
-				disposables.add(new TestWorkspaceTrustManagementService())));
+				disposables.add(new TestWorkspaceTrustManagementService()), createLifecycleService()));
 
 			const document = new DOMParser().parseFromString(
 				await editor.render('<img src="a.png">', URI.file('/workspace/site/index.html')), 'text/html');

@@ -45,6 +45,7 @@ import { ITunnelService } from '../../../../platform/tunnel/common/tunnel.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
+import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
@@ -96,6 +97,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		@IRemoteAuthorityResolverService private readonly _remoteAuthorityResolverService: IRemoteAuthorityResolverService,
 		@ITunnelService private readonly _tunnelService: ITunnelService,
 		@IWorkspaceTrustManagementService private readonly _workspaceTrustManagementService: IWorkspaceTrustManagementService,
+		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
 	) {
 		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
 		this._zoom = this._register(new ParadisViewerZoomControls(() => this._onDidChangeZoom()));
@@ -111,6 +113,19 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 
 	protected override get openTimingKind(): ParadisViewerOpenKind {
 		return 'html';
+	}
+
+	/**
+	 * ウィンドウの復元中（Restored の前）は、最初の描画を待たずに `setInput` を返す。
+	 *
+	 * 描画は shared process のプレビューサーバへの mount を待つ。shared process への接続は Restored か
+	 * ウィンドウを開いてから 2 秒のどちらかまで始まらず（sharedProcessService.ts）、Restored は表示中の
+	 * エディタの復元（この `setInput`）を最大 2 秒待つ（workbench.ts）。互いに待って 2 秒のタイマーで
+	 * 解けるので、起動時に HTML のタブがあるとウィンドウ全体の Restored が遅れていた。復元が済んだ後に
+	 * 開くときは今までどおり待つ（開けなかったときの扱いを変えない）。
+	 */
+	protected override get awaitsInitialRender(): boolean {
+		return this._lifecycleService.phase >= LifecyclePhase.Restored;
 	}
 
 	/**
