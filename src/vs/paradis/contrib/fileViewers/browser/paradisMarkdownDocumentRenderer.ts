@@ -137,14 +137,28 @@ async function renderMarkdown(
 	if (deferred.length === 0) {
 		return { html, insertHighlightedCode: () => { } };
 	}
-	if (!hasEachMarkerOnce(html.toString(), marker, deferred.length)) {
-		// 消毒で印が消えた・増えた。差し込む場所が決まらないので、今までどおり全体を消毒する。
+	// 印を消して、今までどおり全体を消毒する。
+	const sanitizeWhole = () => {
 		for (const code of deferred) {
 			code.token.text = code.html;
 		}
-		return { html: sanitizeMarkdownHtml(m.parser(tokens), options), insertHighlightedCode: () => { } };
+		return sanitizeMarkdownHtml(m.parser(tokens), options);
+	};
+	if (!hasEachMarkerOnce(html.toString(), marker, deferred.length)) {
+		// 消毒で印が消えた・増えた。差し込む場所が決まらないので、今までどおり全体を消毒する。
+		return { html: sanitizeWhole(), insertHighlightedCode: () => { } };
 	}
-	return { html, insertHighlightedCode: body => insertParadisTokenizedCode(body, marker, deferred) };
+	return {
+		html,
+		insertHighlightedCode: body => {
+			if (!insertParadisTokenizedCode(body, marker, deferred)) {
+				// 文字列では 1 回ずつあった印が、text node としては揃わなかった（属性の中に入った等）。
+				// 差し込まずに、全体を消毒した結果で中身を置き換える（コードを失わない）。
+				const whole = new DOMParser().parseFromString(sanitizeWhole() as unknown as string, 'text/html').body;
+				body.replaceChildren(...[...whole.childNodes].map(node => body.ownerDocument.importNode(node, true)));
+			}
+		},
+	};
 }
 
 /** 消毒に通さずに差し込むコード。 */
@@ -234,8 +248,11 @@ function hasEachMarkerOnce(html: string, marker: string, count: number): boolean
 	return seen.every(value => value === 1);
 }
 
-/** 木の中の印を、色付けしたコードの要素に置き換える。要素は div・span・br、属性は class、文字は text node だけ。 */
-function insertParadisTokenizedCode(body: HTMLElement, marker: string, codes: readonly IDeferredCode[]): void {
+/**
+ * 木の中の印を、色付けしたコードの要素に置き換える。要素は div・span・br、属性は class、文字は text node だけ。
+ * text node の中に印がそれぞれちょうど 1 回ずつ無ければ、何も変えずに `false` を返す。
+ */
+function insertParadisTokenizedCode(body: HTMLElement, marker: string, codes: readonly IDeferredCode[]): boolean {
 	const doc = body.ownerDocument;
 	const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT);
 	const found: Text[] = [];
@@ -245,6 +262,18 @@ function insertParadisTokenizedCode(body: HTMLElement, marker: string, codes: re
 		}
 	}
 	const pattern = new RegExp(`${marker}(\\d+)Z`, 'g');
+	const seen = new Array<number>(codes.length).fill(0);
+	for (const node of found) {
+		for (const match of node.data.matchAll(pattern)) {
+			const index = Number(match[1]);
+			if (!(index < codes.length) || ++seen[index] > 1) {
+				return false;
+			}
+		}
+	}
+	if (!seen.every(value => value === 1)) {
+		return false;
+	}
 	for (const node of found) {
 		const data = node.data;
 		const parts: Node[] = [];
@@ -261,6 +290,7 @@ function insertParadisTokenizedCode(body: HTMLElement, marker: string, codes: re
 		}
 		node.replaceWith(...parts);
 	}
+	return true;
 }
 
 function buildTokenizedCode(doc: Document, segments: readonly ParadisTokenizedSegment[]): HTMLElement {

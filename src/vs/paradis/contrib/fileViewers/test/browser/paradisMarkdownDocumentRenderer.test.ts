@@ -180,6 +180,20 @@ suite('paradisMarkdownDocumentRenderer', () => {
 		});
 	});
 
+	test('falls back to sanitizing everything when a marker is not in a text node', async () => {
+		const options = { allowRelativeMediaPaths: true, allowRelativeLinkPaths: true, markedExtensions: [markedMermaidExtension()] };
+		const text = DOCUMENTS['lists and references'];
+		const whole = parseBody(await renderParadisMarkdownDocument(text, extensionService, languageService, options));
+		const deferred = await renderParadisMarkdownDocumentDeferred(text, extensionService, languageService, options);
+		const body = parseBody(deferred.html);
+		// 印を属性へ移す（文字列では 1 回ずつ数えられるが、text node としては見つからない状態）。
+		const code = body.querySelector('pre > code')!;
+		code.setAttribute('title', code.textContent ?? '');
+		code.textContent = '\n';
+		deferred.insertHighlightedCode(body);
+		assert.deepStrictEqual({ same: body.innerHTML === whole.innerHTML, code: body.querySelectorAll('.monaco-tokenized-source').length }, { same: true, code: 3 });
+	});
+
 	test('only the fixed shape of tokenizeToString is inserted without sanitizing', () => {
 		const open = '<div class="monaco-tokenized-source">';
 		const inputs: Record<string, string> = {
