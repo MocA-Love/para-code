@@ -26,12 +26,16 @@ interface IFakeCodexRecord {
 // find out which names are subcommands. PARADIS_TEST_COMPLETION_NAMES lists the names it knows.
 // `--version` answers the launcher's `--no-daemon` probe without being recorded; with
 // PARADIS_TEST_NO_DAEMON_UNSUPPORTED=1 it rejects the flag like Codex 0.155 and older.
+// `agents --help` answers the launcher's command center probe without being recorded: it lists
+// `--no-daemon` like Codex 0.167 and later, or hides it with PARADIS_TEST_AGENTS_EMBEDDED_UNSUPPORTED=1.
 const FAKE_CODEX_WITH_COMPLETION = `#!/usr/bin/env node
 const fs = require('fs');
 const net = require('net');
 const args = process.argv.slice(2);
 if (args.includes('--version')) {
 	process.exit(process.env.PARADIS_TEST_NO_DAEMON_UNSUPPORTED === '1' && args.includes('--no-daemon') ? 2 : 0);
+} else if (args[0] === 'agents' && args[1] === '--help' && args.length === 2) {
+	process.stdout.write(process.env.PARADIS_TEST_AGENTS_EMBEDDED_UNSUPPORTED === '1' ? 'Usage: codex agents\\n' : 'Usage: codex agents\\n      --no-daemon\\n');
 } else if (args[0] === 'app-server' && args[1] === '--listen') {
 	const server = net.createServer(socket => socket.end());
 	const close = () => server.close(() => process.exit(0));
@@ -196,7 +200,7 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 				}
 			}
 
-			assert.deepStrictEqual(paneManaged, ['', 'explain this repo', 'resume', 'fork', '-- plugin list']);
+			assert.deepStrictEqual(paneManaged, ['agents', '', 'explain this repo', 'resume', 'fork', '-- plugin list']);
 		} finally {
 			await fs.rm(testRoot, { recursive: true, force: true });
 		}
@@ -227,8 +231,8 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 	// runs every pane's hooks and MCP servers with the environment of the terminal that started
 	// it, and Codex attaches to a running one even with the auto-start turned off, so only
 	// `--no-daemon` keeps a session embedded. Codex 0.155 and older reject that flag and get the
-	// auto-start override instead. Non-interactive commands, `codex agents` (it needs the shared
-	// server), explicit `--remote` sessions and a `--no-daemon` the user typed are passed through
+	// auto-start override instead. `codex agents` gets `--no-daemon` only from Codex 0.167 on
+	// (older versions need the shared server for it). Non-interactive commands, explicit `--remote` sessions and a `--no-daemon` the user typed are passed through
 	// unchanged.
 	test('keeps interactive sessions off the shared background server when no pane socket is set', async () => {
 		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
@@ -256,6 +260,8 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 			for (const args of [[], ['resume', 'thread-3']]) {
 				stderrOutput += (await execFileAsync(launcherPath, args, { env: olderCodex, timeout: 15_000 })).stderr;
 			}
+			// Codex 0.166 and older need the shared server for `codex agents`
+			stderrOutput += (await execFileAsync(launcherPath, ['agents'], { env: { ...env, PARADIS_TEST_AGENTS_EMBEDDED_UNSUPPORTED: '1' }, timeout: 15_000 })).stderr;
 
 			assert.deepStrictEqual({ records: await readRecords(recordPath), stderrOutput }, {
 				records: [
@@ -263,12 +269,13 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 					['--no-daemon', '-c', 'model_reasoning_effort=high', 'a prompt'],
 					['exec', 'status'],
 					['--remote', 'unix:///tmp/other.sock'],
-					['agents'],
+					['--no-daemon', 'agents'],
 					['queue', 'list'],
 					['--no-daemon', 'fork', 'thread-1'],
 					['--no-daemon', 'resume', 'thread-2'],
 					['-c', 'features.daemon_auto_start=false'],
 					['-c', 'features.daemon_auto_start=false', 'resume', 'thread-3'],
+					['agents'],
 				],
 				stderrOutput: '',
 			});
@@ -305,6 +312,7 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 				stderrOutput += (await run(args)).stderr;
 			}
 			stderrOutput += (await run(['resume', 'thread-3'], { PARADIS_TEST_NO_DAEMON_UNSUPPORTED: '1' })).stderr;
+			stderrOutput += (await run(['agents'], { PARADIS_TEST_AGENTS_EMBEDDED_UNSUPPORTED: '1' })).stderr;
 			const resolved = await run(['resume', 'thread-4'], { PARA_CODE_CODEX_LAUNCHER_MODE: 'resolve' });
 
 			assert.deepStrictEqual({ records: await readRecords(recordPath), stderrOutput, resolved: resolved.stdout.trim() }, {
@@ -313,11 +321,12 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 					['--no-daemon', 'a prompt'],
 					['--no-daemon', 'resume', 'thread-1'],
 					['exec', 'status'],
-					['agents'],
+					['--no-daemon', 'agents'],
 					['queue', 'list'],
 					['--remote', 'ws://127.0.0.1:1'],
 					['--no-daemon', 'fork', 'thread-2'],
 					['-c', 'features.daemon_auto_start=false', 'resume', 'thread-3'],
+					['agents'],
 				],
 				stderrOutput: '',
 				resolved: join(fakeBin, 'codex'),
