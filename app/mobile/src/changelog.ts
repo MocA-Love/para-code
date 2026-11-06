@@ -46,7 +46,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'document-outline',
 				title: '大きな PDF・Word・画像を開くときに、アプリが固まる時間を短くしました',
-				body: 'アプリを裏に回してから戻ったときも、開いていたファイルと差分を取り直さず、読んでいた位置もそのまま残ります。大きな Word が「表示結果が空でした」になることがあったのも直しました。',
+				body: 'アプリを裏に回してから戻ったとき、ファイルの中身が変わっていなければ、読んでいた位置がそのまま残ります。大きな Word が「表示結果が空でした」になることがあったのも直しました。',
 			},
 			{
 				icon: 'help-circle-outline',

@@ -12,16 +12,9 @@ import { FileViewerLoadTrace } from './fileViewerTiming.js';
 import { errorMessage } from './scmModel.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
-/**
- * 接続が戻っても読み直さない種類（PDF・Word・動画などのバイナリと表計算）。中身の照合（`ifContentHash`）が無いか
- * 大きいので、同じ PC のウィンドウへつながり直しただけなら、読み終えている中身をそのまま見せ続ける。
- */
-const KEEP_ON_RECONNECT: ReadonlySet<string> = new Set(['pdf', 'docx', 'media', 'xlsx']);
-
-/** 読み直したテキストが前と同じか（同じなら表示を作り直さない。読んでいた位置と検索の位置が残る）。 */
-function sameText(previous: FsReadResult | undefined, next: FsReadResult): boolean {
-	return previous !== undefined
-		&& previous.content === next.content
+/** 読み直したテキストが前と同じか。 */
+function sameText(previous: FsReadResult, next: FsReadResult): boolean {
+	return previous.content === next.content
 		&& previous.truncated === next.truncated
 		&& previous.size === next.size
 		&& previous.html === next.html
@@ -30,6 +23,25 @@ function sameText(previous: FsReadResult | undefined, next: FsReadResult): boole
 		&& previous.fg === next.fg
 		&& previous.highlightTruncated === next.highlightTruncated
 		&& previous.htmlImages?.count === next.htmlImages?.count;
+}
+
+/**
+ * 同じファイルを読み直した中身が前と同じか（同じなら表示を作り直さない。WebView を読み直さないので、
+ * 読んでいた位置と検索の位置が残る）。
+ */
+function sameContent(previous: FileContent, next: FileContent): boolean {
+	if (previous.text !== undefined || next.text !== undefined) {
+		return previous.text !== undefined && next.text !== undefined && sameText(previous.text, next.text);
+	}
+	if (previous.binary !== undefined || next.binary !== undefined) {
+		return previous.binary === next.binary;
+	}
+	if (previous.xlsx !== undefined && next.xlsx !== undefined) {
+		return previous.xlsx.html === next.xlsx.html
+			&& previous.xlsx.sheet === next.xlsx.sheet
+			&& (previous.xlsx.sheets ?? []).join('\0') === (next.xlsx.sheets ?? []).join('\0');
+	}
+	return false;
 }
 
 export interface FileContent {
@@ -75,8 +87,8 @@ export interface FileContentState {
  * HTML のプレビューは、PC が対応していれば埋め込み画像を抜いた本文で読む（fs.html-images.v1。画像は表示が 1 枚ずつ
  * 取り寄せる）。抜いた本文はソースに使えないので、HTML だけはプレビューへ戻したら画像を抜いた本文で読み直す。
  *
- * 接続し直したとき、同じ PC のウィンドウへ戻っただけなら、バイナリと表計算は読み直さない（{@link KEEP_ON_RECONNECT}）。
- * テキストは読み直すが、中身が前と同じなら前の `text` をそのまま使う（WebView を読み直さない）。
+ * 接続し直したときは読み直すが、中身が前と同じなら前の中身をそのまま使う（{@link sameContent}）。表計算は、選んでいた
+ * シートを読み直す。
  */
 export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode): FileContentState {
 	const { fsRead, fsHtmlImage, fsXlsx, fsPdf, fsDocx, fsMedia } = useAppStore(useShallow(s => ({ fsRead: s.fsRead, fsHtmlImage: s.fsHtmlImage, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia })));
@@ -96,7 +108,7 @@ export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode)
 	// 画像を取り寄せている途中で、PC の中身が変わっていた（読み直す）
 	const [reloads, setReloads] = useState(0);
 	// 読み終えた中身の条件（接続し直しただけで同じ条件に戻ったかを見る）と、そのときのテキスト
-	const loaded = useRef<{ readonly file: string; readonly target: string; readonly text: FsReadResult | undefined } | undefined>(undefined);
+	const loaded = useRef<{ readonly file: string; readonly value: FileContent } | undefined>(undefined);
 
 	useEffect(() => {
 		const gen = ++loadGen.current;
@@ -110,16 +122,14 @@ export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode)
 		}
 		const file = [wsId, path, fetchKind, highlight, splitHtmlImages, reloads].join('\0');
 		const previous = loaded.current?.file === file ? loaded.current : undefined;
-		if (previous?.target === rendererTarget && KEEP_ON_RECONNECT.has(fetchKind)) {
-			return undefined;
-		}
 		const current = () => loadGen.current === gen && currentRendererTarget(wsId) === rendererTarget;
 		const trace = new FileViewerLoadTrace(fetchKind, path);
 		// 応答そのもの（response）も返すのは、計測で PC 側の記録と突き合わせる要求の id を読むため。
 		const load = async (): Promise<{ readonly value: FileContent; readonly response: object }> => {
 			switch (fetchKind) {
 				case 'xlsx': {
-					const response = await fsXlsx(wsId, path);
+					// 読み直すときは、選んでいたシートを読む（先頭のシートへ戻さない）
+					const response = await fsXlsx(wsId, path, previous?.value.xlsx?.sheet);
 					return { response, value: { xlsx: { html: response.html, sheets: response.sheets, sheet: response.sheet } } };
 				}
 				case 'pdf': {
@@ -159,19 +169,17 @@ export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode)
 				if (!current()) {
 					return;
 				}
-				const text = value.text;
-				const kept = previous?.text;
-				if (text !== undefined && kept !== undefined && sameText(kept, text)) {
-					// 同じファイルを読み直したら中身が前と同じだった。前の text を使い続ける（画像の取り寄せ口だけは
+				if (previous !== undefined && sameContent(previous.value, value)) {
+					// 同じファイルを読み直したら中身が前と同じだった。前の中身を使い続ける（HTML の画像の取り寄せ口だけは
 					// 新しいものに替え、取り寄せ損ねていた画像を頼み直させる）
-					loaded.current = { file, target: rendererTarget, text: kept };
 					trace.cancel();
-					if (value.htmlImages !== undefined) {
+					const kept = previous.value.text;
+					if (kept !== undefined && value.htmlImages !== undefined) {
 						setContent(shown => (shown?.text === kept ? { ...shown, htmlImages: value.htmlImages } : shown));
 					}
 					return;
 				}
-				loaded.current = { file, target: rendererTarget, text };
+				loaded.current = { file, value };
 				trace.fetched(response);
 				setContent({ ...value, trace });
 			})
@@ -199,7 +207,11 @@ export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode)
 		fsXlsx(wsId, path, index)
 			.then(value => {
 				if (sheetGen.current === gen && currentRendererTarget(wsId) === rendererTarget) {
-					setContent({ xlsx: { html: value.html, sheets: value.sheets, sheet: value.sheet } });
+					const xlsx = { html: value.html, sheets: value.sheets, sheet: value.sheet };
+					if (loaded.current !== undefined) {
+						loaded.current = { ...loaded.current, value: { xlsx } };
+					}
+					setContent({ xlsx });
 				}
 			})
 			.catch((e: unknown) => {
