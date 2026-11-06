@@ -22,7 +22,7 @@ import { isAbsolute } from '../../../../base/common/path.js';
 import { isWindows, OperatingSystem } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
-import { ParadisProcessReadyResult, paradisWaitForProcessReady } from '../../../common/paradisProcessReady.js';
+import { ParadisProcessReadyResult, paradisProcessReadyTimeoutFor, paradisWaitForProcessReady } from '../../../common/paradisProcessReady.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -1491,7 +1491,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		let result: ParadisProcessReadyResult;
 		try {
 			// 起動に失敗した・閉じられた端末では processReady が解決しないので、期限つきで待つ。
-			result = await paradisWaitForProcessReady(instance);
+			result = await paradisWaitForProcessReady(instance, paradisProcessReadyTimeoutFor(this.environmentService.remoteAuthority));
 		} catch (error) {
 			reportParadisDiagnosticError('owned', 'terminal-preset', 'process-ready', error, {
 				duration_ms: Date.now() - startedAt,
@@ -1511,7 +1511,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			// 待てなければ残りのタスクを始めずに失敗として返す（呼び出し元が知らせる）。
 			throw new Error(result === 'disposed'
 				? localize('paradis.presets.terminalClosedBeforeStart', "ターミナルが起動する前に閉じられました。")
-				: localize('paradis.presets.terminalDidNotStart', "ターミナルが起動しませんでした。"));
+				: localize('paradis.presets.terminalDidNotStart', "ターミナルが時間内に起動しなかったため、残りのコマンドを送りませんでした。ターミナルは開いたままです。"));
 		}
 		const duration = Date.now() - startedAt;
 		if (duration >= 5_000) {
