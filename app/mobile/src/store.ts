@@ -5687,7 +5687,8 @@ export class MobileController {
 				this.state.agentChats.set(terminalKey, {
 					...kept,
 					rev: msg.rev ?? existing.rev,
-					messages: merged.slice(-500),
+					// 新しい発言が無い差分（ライブ本文・info だけ）では配列を作り直さない。会話の画面が行を組み直さずに済む
+					messages: fresh.length === 0 && existing.messages.length <= 500 ? existing.messages : merged.slice(-500),
 					syncedAt: Date.now(),
 					// 500 件で切ったら、前が省略されていることを示す（さかのぼって読む案内を出すため。レビュー M5）。切った分は
 					// 古い発言へ繰り入れられるように渡す（差分 1 回に 500 件を超える発言が載ると、差分自身の古い側も切れるため）。

@@ -713,11 +713,17 @@ function pcHue(pc: PairedPc): number {
 	return hash;
 }
 
+function isLive(summary: PcSummary): boolean {
+	return summary.connection === 'online' && summary.pcOnline;
+}
+
 function sameSummary(a: PcSummary, b: PcSummary): boolean {
 	return a.id === b.id && a.name === b.name && a.hue === b.hue && a.connection === b.connection && a.pcOnline === b.pcOnline
 		&& a.pairingRejected === b.pairingRejected && a.updateRequired === b.updateRequired
 		&& a.workspaces === b.workspaces && a.terminals === b.terminals && a.waiting === b.waiting && a.running === b.running
-		&& a.lastOnlineAt === b.lastOnlineAt && a.lastKnown === b.lastKnown
+		// つながっている間は lastOnlineAt を比べない（State が届くたびに進むので、比べると一覧が毎回作り直される）。
+		// 読むのは切れているときの表示だけで、切れたときは connection・pcOnline が変わって作り直される
+		&& (isLive(b) || a.lastOnlineAt === b.lastOnlineAt) && a.lastKnown === b.lastKnown
 		// battery はオブジェクトなので中身で比べる（参照比較だと毎回「変わった」ことになり、
 		// 一覧を購読しているUIとLive Activityの同期が状態更新のたびに走ってしまう）。
 		&& a.battery?.level === b.battery?.level && a.battery?.charging === b.battery?.charging
@@ -905,14 +911,7 @@ function retireLegacyNotifyKey(): void {
  */
 export function agentSendQueueKey(pcId: string): Uint8Array | undefined {
 	const pc = runtimes.get(pcId)?.pc;
-	if (identity === undefined || pc === undefined) {
-		return undefined;
-	}
-	try {
-		return deriveNotifyKey(identity.secretKey, pc.creds.pcPublicKey);
-	} catch {
-		return undefined;
-	}
+	return pc !== undefined ? notifyKeyOf(pc) : undefined;
 }
 
 function persistNotifyKeyFor(pc: PairedPc): void {
@@ -984,7 +983,13 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
  * それ以外は一覧の件数（PcSummary）にだけ効く。
  */
 function applyControllerState(runtime: PcRuntime, next: StoreState): void {
-	const wasOnline = runtime.state.connection === 'online';
+	const previous = runtime.state;
+	const wasOnline = previous.connection === 'online';
+	// PC の一覧（pcs）と前回の一覧の記録は、State と接続の様子だけから作る。ブラウザの画像・会話の配信だけの
+	// 更新では作り直さない（それらは State よりずっと多く届く）
+	const summaryInputsChanged = previous.workspace !== next.workspace || previous.connection !== next.connection
+		|| previous.pcOnline !== next.pcOnline || previous.pairingRejected !== next.pairingRejected
+		|| previous.updateRequired !== next.updateRequired || previous.sessionProtocolReady !== next.sessionProtocolReady;
 	if (runtime.pc.id === activePcId && !removingPcIds.has(runtime.pc.id)) {
 		playConnectionHaptic(runtime.state, next);
 	}
@@ -1011,12 +1016,16 @@ function applyControllerState(runtime: PcRuntime, next: StoreState): void {
 	}
 	// PCが名乗った名前を台帳へ取り込む（ユーザーが自分で付けた名前は上書きしない）。
 	adoptReportedPcName(runtime, next.workspace?.pcName);
-	rememberLastKnown(runtime, next);
+	if (summaryInputsChanged) {
+		rememberLastKnown(runtime, next);
+	}
 	// 見ていない PC ではアーカイブの印の点検（下の releaseArchivedOnAttention）をしない。印はその PC へ切り替えた
 	// ときに点検される。そのため、見ていない間に「要対応になって戻るはずだった」エージェントがまた作業を始めると、
 	// 印が残ったまま実行中の数（PcSummary.running）と横断の一覧から外れる（要対応はアーカイブを見ないので影響しない）。
 	if (runtime.pc.id !== activePcId) {
-		useAppStore.setState({ pcs: pcSummaries() });
+		if (summaryInputsChanged) {
+			useAppStore.setState({ pcs: pcSummaries() });
+		}
 		return;
 	}
 	// 状態が届くたびにアーカイブの印を点検する（回答待ちになったものは一覧へ戻し、
@@ -1032,7 +1041,7 @@ function applyControllerState(runtime: PcRuntime, next: StoreState): void {
 		useAppStore.setState({ archivedKeys: value });
 		persistArchivedKeys(runtime.pc.id, value);
 	}
-	useAppStore.setState({ ...next, pcs: pcSummaries() });
+	useAppStore.setState(summaryInputsChanged ? { ...next, pcs: pcSummaries() } : next);
 }
 
 /** PCから届いた表示名を台帳へ反映する（変化があれば保存し直す）。 */
@@ -1047,13 +1056,25 @@ function adoptReportedPcName(runtime: PcRuntime, reported: string | undefined): 
 	useAppStore.setState({ pcs: pcSummaries() });
 }
 
+/**
+ * 導いた通知鍵（PC ID ごと）。導出は純 JS の X25519 + HKDF で重く、State が届くたびに呼ばれるので覚えておく。
+ * この端末の鍵と PC の公開鍵が同じ間だけ使う（ペアリングし直したら導き直す）。
+ */
+const notifyKeyCache = new Map<string, { readonly secretKey: Uint8Array; readonly pcPublicKey: Uint8Array; readonly key: Uint8Array }>();
+
 /** そのPCの通知鍵（outbox・前回の一覧の封緘に使う。ペアリング済みなら接続せずに導ける）。 */
 function notifyKeyOf(pc: PairedPc): Uint8Array | undefined {
 	if (identity === undefined) {
 		return undefined;
 	}
+	const cached = notifyKeyCache.get(pc.id);
+	if (cached !== undefined && cached.secretKey === identity.secretKey && cached.pcPublicKey === pc.creds.pcPublicKey) {
+		return cached.key;
+	}
 	try {
-		return deriveNotifyKey(identity.secretKey, pc.creds.pcPublicKey);
+		const key = deriveNotifyKey(identity.secretKey, pc.creds.pcPublicKey);
+		notifyKeyCache.set(pc.id, { secretKey: identity.secretKey, pcPublicKey: pc.creds.pcPublicKey, key });
+		return key;
 	} catch {
 		return undefined;
 	}
@@ -1926,6 +1947,7 @@ export const useAppStore = create<AppState>(set => ({
 			throw error;
 		}
 		runtimes.delete(id);
+		notifyKeyCache.delete(id);
 		removingPcIds.delete(id);
 		// PC に届かない間に預かった送信（W2-29）も捨てる。
 		await createAgentSendOutboxStore(id).clear().catch(err => console.warn('[appState] failed to clear the agent send outbox', err));
