@@ -25,6 +25,8 @@ import { IParadisMcpToolCallContext } from '../../common/paradisMcpToolProvider.
 import { paradisOpenCodeBridge } from '../../node/paradisOpenCodeBridge.js';
 import { paradisOpenCodeCliRegistry } from '../../node/paradisOpenCodeCliRegistry.js';
 import { ParadisAgentHookOwnership } from '../../node/paradisAgentHookOwnership.js';
+import { ParadisCodexFrontSessions } from '../../common/paradisCodexFrontSession.js';
+import { PARADIS_CODEX_COMMAND_CENTER_HOOKS, PARADIS_CODEX_COMMAND_CENTER_SESSIONS } from './paradisCodexCommandCenterHooksFixture.js';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
@@ -160,6 +162,7 @@ function createFixture(): {
 		_userTurnStarts: new Map<string, number>(),
 		_announcedReviews: new Map<string, { turn: number; certain: boolean }>(),
 		_paneSessions: new Map(),
+		_codexFrontSessions: new ParadisCodexFrontSessions(),
 		_activityApprovalTokens: new Set<string>(),
 		_awaitingUserTokens: new Set<string>(),
 		// hook の控え（W2-20）。無いフォルダを指すので、流し直しは何も読まない。
@@ -887,6 +890,115 @@ suite('ParadisAgentBrowser authority integration', () => {
 			{ token: 'codex-a', agent: 'codex', sessionId: 'session-codex', at: 'number' },
 			{ token: 'remote-a', agent: 'claude', sessionId: 'session-remote', remote: true, at: 'number' },
 		]);
+	});
+
+	// Codex 0.167.0 の command center では、1 つの TUI の中で会話を切り替えられ、裏の会話の hook も同じペインのトークンで
+	// 届く（実物の記録: paradisCodexCommandCenterHooksFixture.ts）。ペインの会話と状態は、画面に出ている会話のものだけにする。
+	async function codexPaneFixture() {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'codex-switch', shellPid: 100 }, { token: 'claude-switch', shellPid: 101 }]));
+		Reflect.set(fixture.service, '_classifyCaller', async () => 'pane');
+		Reflect.set(fixture.service, '_hookOwnership', new ParadisAgentHookOwnership({
+			snapshot: async () => new Map([
+				[100, { pid: 100, ppid: 1, command: 'zsh', startKey: 'shell-codex' }],
+				[200, { pid: 200, ppid: 100, command: '/opt/codex/vendor/bin/codex --no-daemon', startKey: 'codex' }],
+				[101, { pid: 101, ppid: 1, command: 'zsh', startKey: 'shell-claude' }],
+				[201, { pid: 201, ppid: 101, command: 'claude', startKey: 'claude' }],
+			])
+		}));
+		const send = async (token: string, pid: number, event: string, payload: Readonly<Record<string, unknown>>) => {
+			const request = new TestRequest('POST', `/agent-hook?pane=${token}&event=${event}&pid=${pid}`, JSON.stringify(payload));
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+			request.emit('data', Buffer.from(request.body));
+			request.emit('end');
+			await pending;
+		};
+		const paneSession = async (token: string) => (await fixture.service.listAgentStatusSnapshot(connection)).paneSessions?.find(session => session.token === token)?.sessionId;
+		const status = async (token: string) => (await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === token)?.status ?? 'idle';
+		return { fixture, connection, send, paneSession, status };
+	}
+
+	test('a Codex pane follows only the conversation on screen when the command center switches conversations (recorded on 0.167.0)', async () => {
+		const { send, paneSession } = await codexPaneFixture();
+		const names: Readonly<Record<string, string>> = { [PARADIS_CODEX_COMMAND_CENTER_SESSIONS.A]: 'A', [PARADIS_CODEX_COMMAND_CENTER_SESSIONS.B]: 'B', [PARADIS_CODEX_COMMAND_CENTER_SESSIONS.OLD]: 'OLD' };
+		const published: string[] = [];
+		const listener = onParadisAgentHookEvent(event => {
+			if (event.token === 'codex-switch') {
+				published.push(`${event.event}:${names[event.sessionId ?? ''] ?? '?'}`);
+			}
+		});
+		try {
+			const steps: string[] = [];
+			for (const hook of PARADIS_CODEX_COMMAND_CENTER_HOOKS) {
+				await send('codex-switch', 200, hook.event, hook.payload);
+				steps.push(`${hook.step} ${hook.event}:${names[String(hook.payload.session_id)]} front=${hook.front} pane=${names[(await paneSession('codex-switch')) ?? ''] ?? 'none'}`);
+			}
+			assert.deepStrictEqual({ steps, published }, {
+				steps: [
+					'1 SessionStart:A front=A pane=A',
+					'1 UserPromptSubmit:A front=A pane=A',
+					'1 Stop:A front=A pane=A',
+					'2 UserPromptSubmit:A front=A pane=A',
+					'3 SessionStart:B front=B pane=B',
+					'3 UserPromptSubmit:B front=B pane=B',
+					'3 Stop:B front=B pane=B',
+					// the background A finishes while B is on screen: the pane keeps B
+					'4 Stop:A front=B pane=B',
+					'7 SessionStart:OLD front=OLD pane=OLD',
+					'7 UserPromptSubmit:OLD front=OLD pane=OLD',
+					'7 Stop:OLD front=OLD pane=OLD',
+					'6 UserPromptSubmit:A front=A pane=A',
+					'6 Stop:A front=A pane=A',
+				],
+				// the background Stop reaches neither the phone nor the activity tree
+				published: [
+					'SessionStart:A', 'UserPromptSubmit:A', 'Stop:A', 'UserPromptSubmit:A',
+					'SessionStart:B', 'UserPromptSubmit:B', 'Stop:B',
+					'SessionStart:OLD', 'UserPromptSubmit:OLD', 'Stop:OLD',
+					'UserPromptSubmit:A', 'Stop:A',
+				],
+			});
+		} finally {
+			listener.dispose();
+		}
+	});
+
+	// 裏の会話の承認待ちは、偽のモデルにツールを呼ばせていないので記録が無い（同じ送り方からの推測）。表の会話の状態は
+	// 変えずに、ペインを「待っている」として出し、その会話の次の hook で外す。Claude Code のペインは従来どおり乗り換える。
+	test('a background Codex conversation waiting for approval shows the pane as waiting without taking it over, and Claude Code panes are unchanged', async () => {
+		const { send, paneSession, status } = await codexPaneFixture();
+		const { A, B } = PARADIS_CODEX_COMMAND_CENTER_SESSIONS;
+		const codex = (event: string, sessionId: string, extra: Readonly<Record<string, unknown>> = {}) =>
+			send('codex-switch', 200, event, { session_id: sessionId, transcript_path: `/Users/example/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-${sessionId}.jsonl`, cwd: '/Users/example/work', ...extra });
+		const observed: string[] = [];
+		const observe = async (label: string) => observed.push(`${label}: ${await status('codex-switch')} ${(await paneSession('codex-switch')) === B ? 'B' : 'A'}`);
+		await codex('UserPromptSubmit', A, { prompt: 'run a command' });
+		await codex('SessionStart', B, { source: 'startup' });
+		await codex('UserPromptSubmit', B, { prompt: 'keep working' });
+		await codex('PreToolUse', B, { tool_name: 'exec_command' });
+		await observe('B working');
+		await codex('PermissionRequest', A, { tool_name: 'exec_command' });
+		await observe('A asks in the background');
+		await codex('PostToolUse', A, { tool_name: 'exec_command' });
+		await observe('A approved');
+		await codex('SessionStart', A, { source: 'compact' });
+		await observe('A compacts in the background');
+
+		const claude = (sessionId: string) => send('claude-switch', 201, 'Stop', { session_id: sessionId, transcript_path: `/Users/example/.claude/projects/work/${sessionId}.jsonl`, cwd: '/Users/example/work' });
+		await claude('claude-first');
+		await claude('claude-second');
+		assert.deepStrictEqual({ observed, claude: await paneSession('claude-switch') }, {
+			observed: [
+				'B working: working B',
+				'A asks in the background: permission B',
+				'A approved: working B',
+				'A compacts in the background: working B',
+			],
+			claude: 'claude-second',
+		});
 	});
 
 	// Para Code が止まっている間の hook の控え（W2-20）は、ペインの同期の後に流し直す。完了は鳴らさない印、
