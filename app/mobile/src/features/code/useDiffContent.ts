@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../appState.js';
 import { diffSourceOf, type DiffSource } from './diffReview.js';
 import { errorMessage } from './scmModel.js';
@@ -19,6 +19,8 @@ export interface DiffContent {
 
 interface Loaded {
 	readonly key: string;
+	/** 読んだときの PC のウィンドウ（`rendererTarget`）。 */
+	readonly target?: string;
 	readonly text?: string;
 	readonly truncated?: boolean;
 	readonly html?: string;
@@ -28,6 +30,7 @@ interface Loaded {
 /**
  * 1ファイルの差分を読む（旧 `src/components/diffView.tsx` の取得処理）。ファイルが変わったら
  * 前のファイルの差分は出さない。接続し直したときは読み直すが、読み終わるまでは前回の結果を出しておく。
+ * 同じ PC のウィンドウへつながり直しただけで、前回の結果が失敗でなければ読み直さない（大きな差分を取り直さない）。
  *
  * `identity` は変更の中身の識別（`ScmEntry.identity`）。一覧を読み直して識別が変わった（確認した後に書き換えられた）
  * ときも読み直す。古い差分のまま「もう一度確認済みにする」を押せないようにするため（Orca W2-14）。
@@ -39,6 +42,8 @@ export function useDiffContent(space: CodeSpace, path: string | undefined, stage
 	const key = `${space.wsId ?? ''}\0${path ?? ''}\0${staged}\0${identity ?? ''}`;
 	const [loaded, setLoaded] = useState<Loaded | undefined>(undefined);
 	const { wsId, rendererTarget } = space;
+	const loadedRef = useRef(loaded);
+	loadedRef.current = loaded;
 
 	useEffect(() => {
 		if (path === undefined || wsId === undefined || rendererTarget === undefined) {
@@ -48,11 +53,15 @@ export function useDiffContent(space: CodeSpace, path: string | undefined, stage
 			setLoaded({ key, error: 'この Office 形式の差分は表示できません' });
 			return undefined;
 		}
+		const previous = loadedRef.current;
+		if (previous?.key === key && previous.target === rendererTarget && previous.error === undefined) {
+			return undefined;
+		}
 		let cancelled = false;
 		const current = () => !cancelled && currentRendererTarget(wsId) === rendererTarget;
 		const request = source === 'spreadsheet'
-			? scmXlsxDiff(wsId, path).then(result => ({ key, html: result.html }))
-			: scmDiff(wsId, path, staged).then(result => ({ key, text: result.diff, truncated: result.truncated === true }));
+			? scmXlsxDiff(wsId, path).then(result => ({ key, target: rendererTarget, html: result.html }))
+			: scmDiff(wsId, path, staged).then(result => ({ key, target: rendererTarget, text: result.diff, truncated: result.truncated === true }));
 		request
 			.then(result => { if (current()) { setLoaded(result); } })
 			.catch((e: unknown) => { if (current()) { setLoaded({ key, error: errorMessage(e) }); } });

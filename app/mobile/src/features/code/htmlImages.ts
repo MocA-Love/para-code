@@ -31,7 +31,7 @@ const PRIORITY_RANK: Readonly<Record<HtmlImagePriority, number>> = { click: 0, v
 const REQUEST_TYPE = 'paradisHtmlImage';
 
 /**
- * 本文より先に入れるスクリプト（`injectedJavaScriptBeforeContentLoaded`）。大域の名前は `__paradis` で始まる 1 つだけ。
+ * 本文より先に入れるスクリプト（`injectedJavaScriptBeforeContentLoaded`）。大域の名前は `__paradis` で始まる 2 つだけ。
  */
 export const HTML_IMAGES_LOADER_SCRIPT = `(function () {
 	if (window.__paradisDeliverHtmlImage) { return; }
@@ -92,14 +92,26 @@ export const HTML_IMAGES_LOADER_SCRIPT = `(function () {
 		watch('visible', '0px');
 		watch('near', '200% 0px');
 	}
-	if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', start); } else { start(); }
-	window.addEventListener('load', function () {
+	function requestRest() {
 		setTimeout(function () {
 			document.querySelectorAll('img[' + ATTRIBUTE + ']').forEach(function (img) { request(img.getAttribute(ATTRIBUTE), 'idle'); });
 		}, 300);
-	});
+	}
+	window.__paradisRetryHtmlImages = function () {
+		sent = {};
+		start();
+		requestRest();
+	};
+	if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', start); } else { start(); }
+	window.addEventListener('load', requestRest);
 })();
 true;`;
+
+/**
+ * まだ差し替えていない画像を、見えているものから頼み直させるスクリプト（`injectJavaScript`）。本文を読み直さずに
+ * 取り寄せ口だけを替えた（接続し直した）とき、前の取り寄せ口で取り損ねた画像を空白のまま残さないために流す。
+ */
+export const HTML_IMAGES_RETRY_SCRIPT = 'window.__paradisRetryHtmlImages && window.__paradisRetryHtmlImages();\ntrue;';
 
 /** 取り寄せた画像をページへ返すスクリプト（`injectJavaScript`）。 */
 export function buildHtmlImageDeliverScript(index: number, data: string): string {

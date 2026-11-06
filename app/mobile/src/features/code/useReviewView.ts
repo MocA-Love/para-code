@@ -69,6 +69,16 @@ function afterInteractions(): Promise<void> {
 
 const TOO_LARGE_RAW = '大きすぎるため Raw は出せません（片側 20MB まで）';
 
+/** 見方を行き来しても読み直さないよう、読み終えた中身を覚えておく数（「表示・差分・Raw」の 3 つ）。 */
+const REVIEW_VIEW_CACHE_SIZE = 3;
+
+interface LoadedReviewView {
+	readonly key: string;
+	/** 読んだときの PC のウィンドウ（`rendererTarget`）。ウィンドウが替わったら読み直す。 */
+	readonly target: string;
+	readonly content: ReviewViewContent;
+}
+
 export function base64ToBytes(base64: string): Uint8Array {
 	const binary = atob(base64);
 	const bytes = new Uint8Array(binary.length);
@@ -80,6 +90,8 @@ export function base64ToBytes(base64: string): Uint8Array {
 
 /**
  * 差分の画面の見方ごとの中身を読む。見方・ファイル・中身の識別が変わったら読み直し、前の結果は出さない。
+ * 読み終えた中身は {@link REVIEW_VIEW_CACHE_SIZE} 件まで覚えておき、同じ PC のウィンドウのまま見方を戻した・接続し直した
+ * ときは読み直さない（失敗した結果は覚えない）。
  * 作業ツリーの側はファイルビューアと同じ要求（`fsRead` / `fsMedia` / `fsXlsx` / `fsDocx`）、それ以外の側は `fileAt`。
  * テキストの Raw は読まない（`useDiffContent` が `git diff` を読む）。
  */
@@ -88,7 +100,9 @@ export function useReviewView(space: CodeSpace, path: string | undefined, kind: 
 	const { pcId, wsId, rendererTarget } = space;
 	const [sheet, setSheet] = useState<number | undefined>(undefined);
 	const key = `${wsId ?? ''}\0${path ?? ''}\0${mode}\0${identity ?? ''}\0${sides.before}\0${sides.after}\0${sheet ?? ''}`;
-	const [loaded, setLoaded] = useState<{ readonly key: string; readonly content: ReviewViewContent } | undefined>(undefined);
+	const [loaded, setLoaded] = useState<readonly LoadedReviewView[]>([]);
+	const loadedRef = useRef(loaded);
+	loadedRef.current = loaded;
 	const pathRef = useRef(path);
 	if (pathRef.current !== path) {
 		pathRef.current = path;
@@ -102,8 +116,14 @@ export function useReviewView(space: CodeSpace, path: string | undefined, kind: 
 		if (!wanted || path === undefined || wsId === undefined || rendererTarget === undefined) {
 			return undefined;
 		}
+		if (loadedRef.current.some(entry => entry.key === key && entry.target === rendererTarget && entry.content.error === undefined)) {
+			return undefined;
+		}
 		let cancelled = false;
 		const current = () => !cancelled && currentRendererTarget(wsId) === rendererTarget;
+		const remember = (content: ReviewViewContent) => {
+			setLoaded(previous => [{ key, target: rendererTarget, content }, ...previous.filter(entry => entry.key !== key)].slice(0, REVIEW_VIEW_CACHE_SIZE));
+		};
 		const renderSide = reviewRenderSide(sides);
 		const load = async (): Promise<ReviewViewContent> => {
 			if (mode === 'render') {
@@ -162,11 +182,11 @@ export function useReviewView(space: CodeSpace, path: string | undefined, kind: 
 					: { error: 'ファイルの中身を読み取れませんでした' };
 		};
 		load()
-			.then(content => { if (current()) { setLoaded({ key, content }); } })
+			.then(content => { if (current()) { remember(content); } })
 			.catch((e: unknown) => {
 				// 置き換えられた要求（同じ端末から次の Word 差分を頼んだ）は、次の応答を待つだけで何も出さない
 				if (current() && errorMessage(e) !== SUPERSEDED_ERROR) {
-					setLoaded({ key, content: { error: errorMessage(e) } });
+					remember({ error: errorMessage(e) });
 				}
 			});
 		return () => { cancelled = true; };
@@ -175,5 +195,5 @@ export function useReviewView(space: CodeSpace, path: string | undefined, kind: 
 	}, [key, wanted, rendererTarget, fsRead, fsXlsx, fsDocx, fsMedia, scmXlsxDiff, pcId]);
 
 	const selectSheet = useCallback((index: number) => setSheet(index), []);
-	return { content: loaded?.key === key ? loaded.content : undefined, selectSheet };
+	return { content: loaded.find(entry => entry.key === key)?.content, selectSheet };
 }
