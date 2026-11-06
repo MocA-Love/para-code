@@ -15,10 +15,14 @@ import assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { timeout } from '../../../../../base/common/async.js';
+import { Event } from '../../../../../base/common/event.js';
 import { join } from '../../../../../base/common/path.js';
+import { serve } from '../../../../../base/parts/ipc/node/ipc.net.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { paradisPtyHostDaemonEnv, paradisSpawnDaemon } from '../../node/paradisEnsurePtyHost.js';
+import { paradisEnsurePtyHost, paradisPtyHostDaemonEnv, paradisSpawnDaemon } from '../../node/paradisEnsurePtyHost.js';
+import { PARADIS_PTY_DAEMON_AUTH_CHANNEL } from '../../common/paradisPtyDaemonControl.js';
+import { paradisDaemonRecordFile, paradisWriteDaemonRecord } from '../../node/paradisPtyDaemonLedger.js';
 
 suite('ParadisEnsurePtyHost', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -102,6 +106,35 @@ suite('ParadisEnsurePtyHost', () => {
 			}
 			assert.deepStrictEqual(daemon?.state(), { state: 'exited', exitCode: 3 });
 		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+});
+
+// 受理した接続ぶんの `Protocol` は `IPCServer` が畳まないので、リーク検査は外してある
+// (`paradisPtyDaemonControlClient.test.ts` と同じ理由)。
+// eslint-disable-next-line local/code-ensure-no-disposables-leak-in-test
+suite('ParadisEnsurePtyHost handshake', () => {
+	test('接続を受けるだけで名乗りに答えない常駐は、待ち続けずに諦める（アプリの中で動かす）', async function () {
+		this.timeout(10_000);
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-ensure-pty-host-'));
+		const socketPath = join(dir, 'pty.sock');
+		// 固まった常駐の代わり。接続は受けるが、名乗り（合言葉）に答えない。
+		const server = await serve(socketPath);
+		server.registerChannel(PARADIS_PTY_DAEMON_AUTH_CHANNEL, { call: () => new Promise(() => { }), listen: () => Event.None });
+		try {
+			await paradisWriteDaemonRecord(paradisDaemonRecordFile(dir, 'test'), { pid: process.pid, socketPath, buildId: 'test', buildKey: 'test', startedAt: Date.now(), token: 'token' });
+			const connection = await paradisEnsurePtyHost({
+				paths: { socketPath, ledgerDir: dir, ledgerFile: join(dir, 'ledger.json'), socketPathTooLong: false },
+				// 起こしには行かない（行ったら落ちる実行ファイル）
+				launch: { execPath: join(dir, 'missing-executable'), args: [], env: {} },
+				logService: new NullLogService(),
+				handshakeTimeout: 200,
+			});
+			assert.strictEqual(connection, undefined);
+		} finally {
+			server.dispose();
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
