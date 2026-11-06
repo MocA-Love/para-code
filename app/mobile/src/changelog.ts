@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-28',
 		items: [
 			{
+				icon: 'flash-outline',
+				title: 'エージェントが動いている間やターミナルの出力が多い間の、画面のもたつきを減らしました',
+				body: '見えていない画面や変わっていない会話の行を、PC から状態が届くたびに描き直さないようにしました。',
+			},
+			{
 				icon: 'document-outline',
 				title: '大きな PDF・Word・画像を開くときに、アプリが固まる時間を短くしました',
 				body: 'アプリを裏に回してから戻ったとき、ファイルの中身が変わっていなければ、読んでいた位置がそのまま残ります。大きな Word が「表示結果が空でした」になることがあったのも直しました。',
