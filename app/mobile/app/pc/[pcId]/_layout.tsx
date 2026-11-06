@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRoute } from 'expo-router';
 import { useAppStore } from '../../../src/appState.js';
@@ -83,10 +83,11 @@ export default function PcLayout() {
 	// 何も開いていないときは隠さない（隠すと右の「エージェントが開かれていません」だけになる）。
 	const canCollapse = regular && detailOpen;
 	const showSidebar = regular && (!collapsed || !detailOpen);
-	const toggle = () => {
+	// 左の列の PC の画面（memo）へ渡すので、境界をドラッグしている間も同じ関数のままにする
+	const toggle = useCallback(() => {
 		haptic('move');
 		setCollapsed(!collapsed);
-	};
+	}, [collapsed, setCollapsed]);
 	useShortcutSlot('sidebar', focused && canCollapse ? { toggle } : undefined);
 
 	if (pcId === undefined) {
