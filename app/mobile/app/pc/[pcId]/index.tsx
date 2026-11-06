@@ -44,6 +44,16 @@ export default function PcIndexRoute() {
 			if (stacked !== undefined && stacked.length > 1) {
 				current.dispatch({ type: 'POP_TO_TOP' });
 			}
+		}, (spaceId, params) => {
+			const current = navigationRef.current;
+			const state = current.getState();
+			const top = state?.routes[1];
+			if (state === undefined || state.routes.length !== 2 || top === undefined || top.name !== 'session/[spaceId]'
+				|| (top.params as { spaceId?: unknown } | undefined)?.spaceId !== spaceId) {
+				return false;
+			}
+			current.dispatch({ type: 'SET_PARAMS', payload: { params }, source: top.key, target: state.key });
+			return true;
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- isColumnBase は ref とルートの key だけを読む
 	}, [regular, pcId, columnKey]);

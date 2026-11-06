@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { afterEach, describe, expect, test } from 'vitest';
-import { resetDetailColumnFor, useDetailColumn } from './detailColumn.js';
+import { resetDetailColumnFor, showSessionInDetailColumn, useDetailColumn } from './detailColumn.js';
 
 function snapshot() {
 	return useDetailColumn.getState().entries.map(({ key, pcId, open }) => ({ key, pcId, open }));
@@ -65,5 +65,26 @@ describe('detailColumn', () => {
 		attach('a', 'pc-a', () => {});
 		detachOld();
 		expect(snapshot()).toEqual([{ key: 'a', pcId: 'pc-a', open: false }]);
+	});
+
+	test('同じスペースのセッションは、前面の列がその PC のときだけ作り直さずに引数を替える', () => {
+		const shown: string[] = [];
+		const { attach } = useDetailColumn.getState();
+		attach('a', 'pc-a', () => { }, (spaceId, params) => {
+			if (spaceId !== 'space-1') {
+				return false;
+			}
+			shown.push(`${spaceId}:${params['tab']}`);
+			return true;
+		});
+		attach('b', 'pc-b', () => { });
+		const whileOtherPcInFront = showSessionInDetailColumn('pc-a', 'space-1', { tab: 'terminal:t1', latest: 'l1' });
+		useDetailColumn.getState().bringToFront('a');
+		expect({
+			whileOtherPcInFront,
+			sameSpace: showSessionInDetailColumn('pc-a', 'space-1', { tab: 'terminal:t2', latest: 'l2' }),
+			otherSpace: showSessionInDetailColumn('pc-a', 'space-2', { tab: '', latest: 'l3' }),
+			shown,
+		}).toEqual({ whileOtherPcInFront: false, sameSpace: true, otherSpace: false, shown: ['space-1:terminal:t2'] });
 	});
 });
