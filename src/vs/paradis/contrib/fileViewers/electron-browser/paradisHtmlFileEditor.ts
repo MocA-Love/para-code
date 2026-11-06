@@ -46,6 +46,8 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
@@ -126,6 +128,11 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	 */
 	protected override get awaitsInitialRender(): boolean {
 		return this._lifecycleService.phase >= LifecyclePhase.Restored;
+	}
+
+	/** 復元が済んでから開き直す（その時は待つので、失敗は今までどおり「開けなかった」表示になる）。 */
+	protected override onInitialRenderFailedInBackground(input: EditorInput, options: IEditorOptions | undefined): void {
+		this._lifecycleService.when(LifecyclePhase.Restored).then(() => super.onInitialRenderFailedInBackground(input, options));
 	}
 
 	/**

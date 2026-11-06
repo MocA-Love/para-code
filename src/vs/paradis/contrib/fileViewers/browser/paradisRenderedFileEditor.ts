@@ -59,7 +59,7 @@ import { onParadisWebviewSignal, ParadisWebviewSignalCode } from '../../sentry/c
 import { PARADIS_VIEWER_CONTENT_TIMEOUT_MS, PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS, paradisViewerContentTimeout, ParadisViewerRecoveryPolicy } from '../common/paradisViewerRecovery.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
-import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
+import { EditorActivation, IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalizeScrollProgress, paradisReadViewerScrollState, paradisScrollRestoreScript } from '../common/paradisViewerScroll.js';
 import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
@@ -300,6 +300,24 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		return true;
 	}
 
+	/**
+	 * 待たずに返した最初の描画が失敗した。既定では入力を開き直し、今度は待つ `setInput` の失敗として
+	 * エディタに「開けなかった」表示を出す。開き直しがまた待たずに返らないよう、サブクラスは
+	 * {@link awaitsInitialRender} が true になってから呼ぶこと。
+	 */
+	protected onInitialRenderFailedInBackground(input: EditorInput, options: IEditorOptions | undefined): void {
+		if (this.input !== input || !this.group.contains(input)) {
+			return;
+		}
+		this.group.openEditor(input, {
+			...options,
+			pinned: this.group.isPinned(input),
+			preserveFocus: true,
+			activation: EditorActivation.PRESERVE,
+			forceReload: true,
+		}).catch(onUnexpectedError);
+	}
+
 	/** 開いてから最初に描けるまでを Sentry へ送るときの種類。送らないビューアは `undefined`。 */
 	protected get openTimingKind(): ParadisViewerOpenKind | undefined {
 		return undefined;
@@ -533,6 +551,11 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			initialView.then(afterInitialView, err => {
 				afterInitialView();
 				this._onViewModeError(err);
+				// 待っていれば `setInput` の失敗としてエディタに「開けなかった」表示が出ていた。同じ表示にするため、
+				// まだこの入力を表示していれば開き直す（取り消し・別の入力への切り替えは失敗ではない）。
+				if (!isCancellationError(err) && this.input === input) {
+					this.onInitialRenderFailedInBackground(input, options);
+				}
 			});
 		}
 	}
