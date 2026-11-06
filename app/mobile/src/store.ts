@@ -1756,8 +1756,6 @@ export interface StoreState {
 	/** 結果不明になったmutation。新IDで自動再実行せずUIへ明示する。 */
 	terminalOperationIssue: string | undefined;
 	unknownTerminalOperationCount: number;
-	/** ターミナルID → 受信済み出力（末尾のみ保持）。 */
-	terminalOutput: Map<string, string>;
 	/** 受信した通知（新しい順、最大50件）。 */
 	notifications: NotifyPayload[];
 	/**
@@ -1801,7 +1799,6 @@ export function createEmptyStoreState(): StoreState {
 		updateRequired: undefined,
 		terminalOperationIssue: undefined,
 		unknownTerminalOperationCount: 0,
-		terminalOutput: new Map(),
 		notifications: [],
 		pushRegistered: undefined,
 		initializing: false,
@@ -1824,7 +1821,6 @@ const OPERATION_RUN_KEY = 'para.operationRun';
  */
 const AGENT_STALE_WATCHDOG_MS = 30_000;
 
-const MAX_TERM_BUFFER = 200_000;
 // --- ターミナル同期プロトコル（epoch/seq対応PC向け）の定数 ---
 // 受信文字数がこの閾値を超えるたびにACKを返す（PC側フロー制御の材料。本家
 // FlowControlConstants.CharCountAckSize と同値）。
@@ -2454,7 +2450,6 @@ export class MobileController {
 			this.state.updateRequired = undefined;
 			this.wireProtocolVersion = APP_PROTOCOL_VERSION;
 			this.refreshTerminalOperationIssue();
-			this.state.terminalOutput = new Map();
 			this.state.notifications = [];
 			this.pendingNotificationDismissals.clear();
 			this.notificationDismissalModes.clear();
@@ -2464,7 +2459,7 @@ export class MobileController {
 			this.state.browserFocus = undefined;
 			this.state.browserCursors = EMPTY_BROWSER_CURSORS;
 			this.state.agentChats = new Map();
-			this.emit({ term: true, notifications: true, agentChats: true });
+			this.emit({ notifications: true, agentChats: true });
 		} catch (error) {
 			// durable clearに失敗した場合は旧pairとcached stateを維持し、再試行できる状態へ戻す。
 			this.resetting = false;
@@ -5158,7 +5153,6 @@ export class MobileController {
 					// 版数が合わないPCから預かったぶんは適用先が無い。抱えたままにしない。
 					this.resumeFrames.clear();
 					this.state.workspace = undefined;
-					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
 					this.pendingAgentLiveResyncs.clear();
 					this.state.browserFrame = undefined;
@@ -5177,7 +5171,7 @@ export class MobileController {
 						stream.cache = undefined;
 						stream.rendererTarget = undefined;
 					}
-					this.emit({ term: true, agentChats: true, notifications: true });
+					this.emit({ agentChats: true, notifications: true });
 					return;
 				}
 				if (typeof incoming.desktopEpoch !== 'string' || typeof incoming.revision !== 'number' || typeof incoming.complete !== 'boolean'
@@ -5254,7 +5248,6 @@ export class MobileController {
 				this.refreshWarmLeaseTargets();
 				this.cancelStaleRendererRequests();
 				if (epochChanged) {
-					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
 					this.pendingAgentLiveResyncs.clear();
 					for (const stream of this.termStreams.values()) {
@@ -5277,13 +5270,8 @@ export class MobileController {
 					this.agentCommandCatalogTimers.clear();
 				}
 				// 切断中に exit 通知を取り逃したケースに備え、現存しないターミナルの
-				// terminalOutput / agentChats エントリを掃除する。
+				// agentChats エントリを掃除する。
 				const live = new Set(this.state.workspace.terminals.map(terminal => terminal.terminalKey));
-				for (const terminalKey of this.state.terminalOutput.keys()) {
-					if (!live.has(terminalKey)) {
-						this.state.terminalOutput.delete(terminalKey);
-					}
-				}
 				for (const terminalKey of this.state.agentChats.keys()) {
 					if (!live.has(terminalKey)) {
 						this.state.agentChats.delete(terminalKey);
@@ -5313,11 +5301,11 @@ export class MobileController {
 						this.termStreams.delete(terminalKey);
 					}
 				}
-				// terminalOutput / agentChats は上の掃除でミューテートしうるため、常に新参照へ
+				// agentChats は上の掃除でミューテートしうるため、常に新参照へ
 				// 差し替える（掃除が空振りでも安全側に倒す）。workspace 本体は revision が毎回
 				// 進むので参照も毎回変わる。構造共有で据え置かれるのは配下の配列と要素なので、
 				// 購読側が「必要な部分だけを購読する」前提は今も変わらない。
-				this.emit({ term: true, agentChats: true });
+				this.emit({ agentChats: true });
 				this.reconcileTerminalOperationOutbox(incoming.desktopEpoch);
 				if (firstReadyState) {
 					this.resumeLiveSessionSubscriptions();
@@ -5351,11 +5339,9 @@ export class MobileController {
 					if (!this.handleTermSyncData({ terminalKey: msg.terminalKey, data: msg.data, snapshot: msg.snapshot === true, epoch: msg.epoch, seq: msg.seq, cols: msg.cols, rows: msg.rows, unicode: msg.unicode })) {
 						return;
 					}
+					// 出力は購読しているターミナルの表示（TermView）へ handleTermSyncData が直接渡す。店には持たない
+					// （1 フレームごとに店全体を配り直すと、出力が多い間すべての画面の購読が走り続ける）。
 					appLinkMetrics.noteTermData(msg.data.length);
-					const prev = msg.snapshot ? '' : (this.state.terminalOutput.get(msg.terminalKey) ?? '');
-					const next = (prev + msg.data).slice(-MAX_TERM_BUFFER);
-					this.state.terminalOutput.set(msg.terminalKey, next);
-					this.emit({ term: true });
 				} else if (msg.t === 'viewport-revoked') {
 					this.handleTerminalViewportRevoked(msg.terminalKey);
 				} else if (msg.t === 'exit') {
@@ -5363,7 +5349,6 @@ export class MobileController {
 					if (stream === undefined || typeof msg.epoch !== 'number' || msg.epoch !== stream.epoch) {
 						return;
 					}
-					this.state.terminalOutput.delete(msg.terminalKey);
 					this.revokedViewportTerminals.delete(msg.terminalKey);
 					for (const listener of stream.listeners) {
 						listener({ kind: 'exit' });
@@ -5375,7 +5360,7 @@ export class MobileController {
 					this.attachedAgents.delete(msg.terminalKey);
 					this.attachedAgentTargets.delete(msg.terminalKey);
 					this.pendingAgentLiveResyncs.delete(msg.terminalKey);
-					this.emit({ term: true, agentChats: true });
+					this.emit({ agentChats: true });
 				}
 			} catch { /* ignore */ }
 		} else if (frame.ch === 'notify') {
@@ -5890,7 +5875,7 @@ export class MobileController {
 	}
 
 	/**
-	 * 状態変化を購読側へ通知する。terminalOutput / notifications / agentChats の3コレクションは
+	 * 状態変化を購読側へ通知する。notifications / agentChats の2コレクションは
 	 * ミューテートしても参照は変わらないため、明示的に新しい参照へ差し替えないと Zustand の
 	 * useShallow セレクタが変化を検知できない。逆に「毎回すべて new し直す」と、どのチャネルの
 	 * 更新でも全画面が再レンダーされてしまう（バッテリー・描画コスト）。
@@ -5903,7 +5888,7 @@ export class MobileController {
 	 * connection / pcOnline / workspace / browserFrame は常に丸ごと再代入されるスカラ相当なので、
 	 * this.state の現在値をそのまま渡せば参照比較が正しく働く（changed で管理する必要はない）。
 	 */
-	private emit(changed?: { term?: boolean; notifications?: boolean; agentChats?: boolean }): void {
+	private emit(changed?: { notifications?: boolean; agentChats?: boolean }): void {
 		const prev = this.lastEmitted;
 		const next: StoreState = {
 			connection: this.state.connection,
@@ -5923,7 +5908,6 @@ export class MobileController {
 			browserCursors: this.state.browserCursors,
 			initializing: this.state.initializing,
 			initError: this.state.initError,
-			terminalOutput: (!prev || changed?.term) ? new Map(this.state.terminalOutput) : prev.terminalOutput,
 			notifications: (!prev || changed?.notifications) ? [...this.state.notifications] : prev.notifications,
 			agentChats: (!prev || changed?.agentChats) ? new Map(this.state.agentChats) : prev.agentChats,
 		};

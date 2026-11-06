@@ -1387,7 +1387,6 @@ export const useAppStore = create<AppState>(set => ({
 	updateRequired: undefined,
 	terminalOperationIssue: undefined,
 	unknownTerminalOperationCount: 0,
-	terminalOutput: new Map(),
 	notifications: [],
 	browserFrame: undefined,
 	browserPage: undefined,
