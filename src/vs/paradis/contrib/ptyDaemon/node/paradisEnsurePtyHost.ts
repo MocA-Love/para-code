@@ -42,8 +42,10 @@ const CONNECT_TIMEOUT = 2_000;
  *
  * 接続を受けるだけで答えない常駐（プロセスが固まっている）を待ち続けると、全ての端末の生成が
  * ここで止まる（`paradisTerminalProcessFactory.ts` が繋ぎ終わるのを待つため）。
+ * 重い機械のコールドスタートや、更新の直後に全ウィンドウが一斉に繋ぎに来る場面でも越えないよう長めに取る
+ * （越えると、常駐に残した前の端末へ繋がらない）。
  */
-const HANDSHAKE_TIMEOUT = 5_000;
+const HANDSHAKE_TIMEOUT = 30_000;
 
 /** 起こしてから待つ上限。ここを過ぎたら常駐を諦めて、今までどおりアプリの中で動かす。 */
 const STARTUP_TIMEOUT = 10_000;

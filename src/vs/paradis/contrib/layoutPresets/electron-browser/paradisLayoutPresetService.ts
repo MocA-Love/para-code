@@ -35,7 +35,7 @@ import { GroupOrientation, GroupsOrder, IEditorGroup, IEditorGroupsService, IEdi
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
-import { paradisWaitForProcessReady } from '../../../common/paradisProcessReady.js';
+import { paradisProcessReadyTimeoutFor, paradisWaitForProcessReady } from '../../../common/paradisProcessReady.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisPresetTitleConfig } from '../../terminalPresets/browser/paradisPresetService.js';
 import { paradisSpaceFolderForBackend } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
@@ -399,12 +399,12 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 		}
 		// 起動に失敗した・閉じられた端末では processReady が解決しないので、期限つきで待つ。
 		// 待てなければコマンドを送らずに、この枠を失敗として残りの枠へ進む（呼び出し元がまとめて扱う）。
-		const ready = await paradisWaitForProcessReady(instance);
+		const ready = await paradisWaitForProcessReady(instance, paradisProcessReadyTimeoutFor(this.environmentService.remoteAuthority));
 		if (ready === 'disposed' || instance.isDisposed) {
 			return;
 		}
 		if (ready === 'timeout') {
-			throw new Error('The terminal process did not start in time');
+			throw new Error('The terminal process did not start in time; the command was not sent and the terminal stays open');
 		}
 		await instance.sendText(command, true);
 	}

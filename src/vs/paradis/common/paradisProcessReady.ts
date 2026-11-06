@@ -19,8 +19,19 @@
 import { raceTimeout } from '../../base/common/async.js';
 import { Event } from '../../base/common/event.js';
 
-/** 起動を待つ上限の既定。常駐の起動待ち（最大 10 秒）や SSH 先の起動でも正しく遅くなるので長めに取る。 */
+/**
+ * 起動を待つ上限の既定。常駐の起動待ち（最大 10 秒）でも正しく遅くなるので長めに取る。
+ * SSH の接続先のウィンドウでは期限を付けない（{@link paradisProcessReadyTimeoutFor}）。
+ */
 export const PARADIS_PROCESS_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * そのウィンドウで使う期限。接続先のウィンドウでは、接続の直後に起動が大きく遅れることがあり、今まで
+ * 成功していた起動を打ち切らないよう期限を付けない（閉じられたときだけやめる）。
+ */
+export function paradisProcessReadyTimeoutFor(remoteAuthority: string | undefined): number {
+	return remoteAuthority ? Infinity : PARADIS_PROCESS_READY_TIMEOUT_MS;
+}
 
 /** 待つ相手（`ITerminalInstance` のうち使うところ）。workbench を import しないための形。 */
 export interface IParadisProcessReadyTarget {
