@@ -6,8 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Markdown レンダリングビューア（読み取り専用）。VS Code 標準の renderMarkdownDocument
-// （extensions/markdown-language-features と同じ marked ベースのレンダラ + シンタックスハイライト）
+// Markdown レンダリングビューア（読み取り専用）。VS Code 標準の renderMarkdownDocument と同じ変換
+// （marked ベースのレンダラ + シンタックスハイライト。paradisMarkdownDocumentRenderer）
 // と標準プレビュー CSS（DEFAULT_MARKDOWN_STYLES）を流用し、webview に表示する。
 //
 // この webview は service worker を使わない（`disableServiceWorker`）。そのぶん相対パスの画像は
@@ -39,7 +39,8 @@ import { ITextFileService } from '../../../../workbench/services/textfile/common
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
-import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
+import { DEFAULT_MARKDOWN_STYLES } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
+import { renderParadisMarkdownDocument } from './paradisMarkdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
 import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
 import { PARADIS_VIEWER_BODY_ROOT_ID, paradisViewerBodySwapScript, type IParadisRenderedDocument } from '../common/paradisViewerBodySwap.js';
@@ -166,11 +167,10 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		// 事前に分離し、設定スタイルに応じた表示（非表示 / YAML コードブロック / テーブル）に置き換える。
 		const frontMatter = applyParadisFrontMatter(text, this._getFrontMatterStyle(resource));
 
-		const rendered = await renderMarkdownDocument(frontMatter.markdown, this._extensionService, this._languageService, {
-			sanitizerConfig: {
-				allowRelativeMediaPaths: true,
-				allowRelativeLinkPaths: true,
-			},
+		// upstream の renderMarkdownDocument と同じ結果を、文書の大きさに比例する時間で返す（理由は同モジュールの冒頭）。
+		const rendered = await renderParadisMarkdownDocument(frontMatter.markdown, this._extensionService, this._languageService, {
+			allowRelativeMediaPaths: true,
+			allowRelativeLinkPaths: true,
 			markedExtensions: [markedMermaidExtension()],
 		}, token);
 
