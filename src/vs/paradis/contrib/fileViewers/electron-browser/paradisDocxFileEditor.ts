@@ -1483,10 +1483,6 @@ export class ParadisDocxFileEditor extends EditorPane {
 			委ねてしまわないよう、用紙自体に黒を明示する。docx-preview は色指定のある文字だけ
 			個別に(インラインstyleで)色を上書きするため、そちらは引き続き優先される。 */
 			color: #000;
-			/* 画面の外のページは組まない（長い文書で全ページのレイアウトを待たない）。高さは docx-preview が付ける
-			min-height（用紙の高さ）で取られ、一度描いたページは実際の高さを覚える。 */
-			content-visibility: auto;
-			contain-intrinsic-size: auto 0px;
 		}
 		/* table-layout:fixed の表（幅固定）で、折り返し不可能な内容（プレースホルダ変数名等の
 		連続した英数字トークン）がセル幅を超えると、既定では折り返されずセルの外・隣接セルの
@@ -1675,21 +1671,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 				// 高さと違って幅は伸びず、白紙の外へそのままはみ出して背後の(暗い)背景が
 				// 直接見えてしまう。各ページを実際のコンテンツ幅に合わせて伸ばし、はみ出し分も
 				// 白紙の中に収める（ページ自体を「用紙が足りない分だけ大きい用紙」にする）。
-				// 画面の外のページは組まれていない（content-visibility: auto）ので、幅はページが見えたときに合わせる。
-				const widenParadisPage = section => {
+				for (const section of contentEl.querySelectorAll('.docx-wrapper > section.docx')) {
 					const needed = section.scrollWidth;
 					if (needed > section.clientWidth) {
 						section.style.width = needed + 'px';
-					}
-				};
-				for (const section of contentEl.querySelectorAll('.docx-wrapper > section.docx')) {
-					section.addEventListener('contentvisibilityautostatechange', event => {
-						if (!event.skipped) {
-							widenParadisPage(section);
-						}
-					});
-					if (section.checkVisibility({ contentVisibilityAuto: true })) {
-						widenParadisPage(section);
 					}
 				}
 				// docx-preview はグラフ・SmartArt・図形を描かないが、その drawing の枠は残す。
