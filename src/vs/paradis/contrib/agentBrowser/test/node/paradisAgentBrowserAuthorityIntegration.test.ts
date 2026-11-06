@@ -1017,28 +1017,29 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.deepStrictEqual({ waiting, changed, after: await status('codex-switch') }, { waiting: 'permission', changed: true, after: 'review' });
 	});
 
-	// Para Code を起動し直してもペイン（pty daemon）は生き残る。最初に届いた hook が裏の会話のものでも、
-	// 再起動の前に控えたペインの会話を表にして、表と裏を取り違えない。
-	test('after a restart, a Codex pane keeps the conversation it had even when a background conversation reports first', async () => {
-		const { fixture, send, paneSession } = await codexPaneFixture();
+	// 普通の再起動では、ペインの会話の控え（_paneSessions）も残らない。最初に届いたのが裏の会話の Stop でも表に固定せず、
+	// その後の表の会話の承認待ちはそのまま通す。表は次に送ったとき（UserPromptSubmit）に決まる。
+	test('after a restart without a kept conversation, a background Stop that arrives first does not fix the conversation on screen', async () => {
+		const { send, paneSession, status } = await codexPaneFixture();
 		const { A, B } = PARADIS_CODEX_COMMAND_CENTER_SESSIONS;
-		Reflect.get(fixture.service, '_paneSessions').set('codex-switch', { agent: 'codex', sessionId: B, at: 1 });
-		const published: string[] = [];
-		const listener = onParadisAgentHookEvent(event => {
-			if (event.token === 'codex-switch') {
-				published.push(`${event.event}:${event.sessionId === B ? 'B' : 'A'}`);
-			}
-		});
-		try {
-			const codex = (event: string, sessionId: string) =>
-				send('codex-switch', 200, event, { session_id: sessionId, transcript_path: `/Users/example/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-${sessionId}.jsonl`, cwd: '/Users/example/work' });
-			await codex('Stop', A);
-			const afterBackground = await paneSession('codex-switch') === B ? 'B' : 'A';
-			await codex('Stop', B);
-			assert.deepStrictEqual({ afterBackground, published }, { afterBackground: 'B', published: ['Stop:B'] });
-		} finally {
-			listener.dispose();
-		}
+		const codex = (event: string, sessionId: string, extra: Readonly<Record<string, unknown>> = {}) =>
+			send('codex-switch', 200, event, { session_id: sessionId, transcript_path: `/Users/example/.codex/sessions/2026/11/07/rollout-2026-11-07T08-00-00-${sessionId}.jsonl`, cwd: '/Users/example/work', ...extra });
+		const observed: string[] = [];
+		const observe = async (label: string) => observed.push(`${label}: ${await status('codex-switch')} ${(await paneSession('codex-switch')) === B ? 'B' : 'A'}`);
+		// A runs in the background, B is on screen
+		await codex('Stop', A);
+		await observe('background A stops first');
+		await codex('PermissionRequest', B, { tool_name: 'exec_command' });
+		await observe('B on screen asks');
+		await codex('PostToolUse', B, { tool_name: 'exec_command' });
+		await codex('UserPromptSubmit', B, { prompt: 'next' });
+		await codex('Stop', A);
+		await observe('background A stops after B was sent');
+		assert.deepStrictEqual(observed, [
+			'background A stops first: review A',
+			'B on screen asks: permission B',
+			'background A stops after B was sent: working B',
+		]);
 	});
 
 	// Para Code が止まっている間の hook の控え（W2-20）は、ペインの同期の後に流し直す。完了は鳴らさない印、

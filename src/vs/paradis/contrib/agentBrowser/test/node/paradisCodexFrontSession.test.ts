@@ -35,15 +35,16 @@ suite('ParadisCodexFrontSessions', () => {
 		});
 	});
 
-	// 台帳に無いペインでは、控えていた会話を表にする（無ければ最初に届いた hook の会話）。
-	test('takes the known conversation of an unknown pane as the one on screen', () => {
+	// 台帳に無いペインでは、表を決める hook が来るまで表を固定せず、それまでは表として通す。
+	test('does not fix the conversation on screen of an unknown pane until a hook that sets it', () => {
 		const sessions = new ParadisCodexFrontSessions();
 		assert.deepStrictEqual([
-			sessions.classify('known', 'Stop', 'behind', undefined, 1, { knownFront: 'front' }),
-			sessions.classify('known', 'Stop', 'front', undefined, 2),
 			sessions.classify('fresh', 'Stop', 'first', undefined, 3),
 			sessions.classify('fresh', 'Stop', 'second', undefined, 4),
-			sessions.classify('restarted', 'SessionStart', 'new', 'startup', 5, { knownFront: 'old' }),
-		], ['background', 'front', 'front', 'background', 'front']);
+			sessions.classify('fresh', 'UserPromptSubmit', 'second', undefined, 5),
+			sessions.classify('fresh', 'Stop', 'first', undefined, 6),
+			sessions.classify('compacting', 'SessionStart', 'behind', 'compact', 7),
+			sessions.classify('compacting', 'Stop', 'other', undefined, 8),
+		], ['front', 'front', 'front', 'background', 'front', 'front']);
 	});
 });

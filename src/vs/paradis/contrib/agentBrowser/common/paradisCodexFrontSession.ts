@@ -48,20 +48,26 @@ export class ParadisCodexFrontSessions {
 	 * hook 1 つを、表の会話のもの（`front`）か裏の会話のもの（`background`）に分ける。分けると同時に表の会話と
 	 * 裏の承認待ちの記録を進める。session_id の無い hook は表とみなす。
 	 *
-	 * @param options.knownFront 台帳に無いペインの表の会話の手がかり（Para Code の再起動前にそのペインで控えた会話）。
-	 * 無ければ、そのペインで最初に届いた hook の会話を表にする。
+	 * 台帳に無いペインでは、表を決める hook（UserPromptSubmit・compact 以外の SessionStart）が来るまで表を決めず、それまでの
+	 * hook は今までどおり表として通す。Para Code の再起動後（ペインは pty daemon で生き残るが、ペインの会話の控えは残らない）に
+	 * 最初に届いた hook が裏の会話のものでも、それを表に固定しないため。
+	 *
 	 * @param options.recordWait 裏の会話の承認待ちを覚えるか（控えの流し直しでは、画面で確かめていない待ちを覚えない）。
 	 */
-	classify(token: string, event: string, sessionId: string | undefined, source: string | undefined, at: number, options?: { readonly knownFront?: string; readonly recordWait?: boolean }): 'front' | 'background' {
+	classify(token: string, event: string, sessionId: string | undefined, source: string | undefined, at: number, options?: { readonly recordWait?: boolean }): 'front' | 'background' {
 		if (sessionId === undefined || sessionId.length === 0) {
 			return 'front';
 		}
+		const setsFront = setsFrontSession(event, source);
 		let pane = this._panes.get(token);
 		if (pane === undefined) {
-			pane = { front: options?.knownFront || sessionId, backgroundWaits: new Map() };
+			if (!setsFront) {
+				return 'front';
+			}
+			pane = { front: sessionId, backgroundWaits: new Map() };
 			this._panes.set(token, pane);
 		}
-		if (setsFrontSession(event, source)) {
+		if (setsFront) {
 			pane.front = sessionId;
 			pane.backgroundWaits.delete(sessionId);
 			return 'front';
