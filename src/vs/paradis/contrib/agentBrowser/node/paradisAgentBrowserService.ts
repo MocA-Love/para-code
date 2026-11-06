@@ -38,7 +38,7 @@ import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenPr
 import { IParadisListViewportsResult, IParadisSetViewportResult, IParadisViewportState, PARADIS_BROWSER_VIEWPORT_MCP_CHANNEL, ParadisViewportMcpMethod } from '../../browserViewport/common/paradisBrowserViewport.js';
 import { paradisFormatSetViewportResult, paradisFormatViewportList, paradisViewportForAgent } from '../../browserViewport/common/paradisBrowserViewportTools.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_MAX_WAITING_CHILDREN, PARADIS_MAX_WAITING_CHILDREN_PER_TAB, PARADIS_OPENED_TAB_BURST_LIMIT, PARADIS_OPENED_TAB_BURST_RETRIES, PARADIS_OPENED_TAB_BURST_WINDOW_MS, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisOpenedTabBurstGuard, ParadisOpenedTabGrantResult, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
-import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
+import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisExactViewKey, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -73,6 +73,7 @@ import { paradisClassifyPeer, paradisPeerIsOneOf, ParadisPeerUnknownReason } fro
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, ParadisProgramState, paradisCodexProgramStatusTransition, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
+import { PARADIS_AGENT_VIEW_IDLE_THROTTLE_MS } from '../common/paradisAgentViewIdleThrottle.js';
 import { ParadisCursorPacingLedger, paradisCursorScrollDirectionForTool, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
 import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
@@ -471,6 +472,13 @@ const PARADIS_TAB_SCOPED_TOOL_NAMES: ReadonlySet<string> = new Set([
  */
 const PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES: ReadonlySet<string> = new Set(['run_steps', 'set_cursor_label', 'get_cdp_endpoint', 'get_shared_page']);
 
+/** 長い道具の呼び出し（wait_until など）の途中で、main へ「使っている」と知らせ直す間隔。休ませるまでの時間より短くする。 */
+const PARADIS_AGENT_ACTIVITY_RENOTE_MS = 20_000;
+/** 続けて呼ばれた道具で、main へ知らせるのを省く間隔。 */
+const PARADIS_AGENT_ACTIVITY_MIN_NOTE_MS = 5_000;
+/** 知らせた時刻を覚えておくタブの数の上限。 */
+const PARADIS_AGENT_ACTIVITY_MAX_VIEWS = 512;
+
 /** ヒントを添えるときに控えるペインのスペースの期限（ミリ秒）。 */
 const PARADIS_SITE_NOTE_SPACE_CACHE_MS = 60_000;
 /** ヒントを添えるために窓のタブの一覧を待つ上限（ミリ秒）。 */
@@ -643,6 +651,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	// 入力が詰まったときの一時停止と再開をログと Sentry に残す（停止が解けないとそのページのマウスとキーが全部断られるため）
 	/** 同じタブへのツール呼び出しを 1 本ずつ流す列（鍵はタブのスコープキー）。 */
 	private readonly _toolCallLanes = new ParadisToolCallLanes();
+	/** タブ（exact view の鍵）ごとに、最後に main へ「使った」と知らせた時刻。古い順に並ぶ。 */
+	private readonly _agentActivityNotedAt = new Map<string, number>();
 	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue({ onDiagnostic: (event, queueKey) => this._onCdpInputQueueDiagnostic(event, queueKey) }));
 	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
 	private readonly _inputRejections = new ParadisInputRejectionLog();
@@ -6143,7 +6153,61 @@ export class ParadisAgentBrowserService extends Disposable {
 			// （{@link _callToolObserved} は呼ぶ前にタブを確かめ直すので、ここへ来るのは間にタブが替わったときだけ）
 			return Promise.resolve(this._toolError(PARADIS_TAB_CHANGED_DURING_CALL_MESSAGE) as T);
 		}
-		return key === heldLane ? operation() : this._toolCallLanes.run(key, operation, signal);
+		return key === heldLane ? operation() : this._toolCallLanes.run(key, () => this._withAgentActivity(key, operation), signal);
+	}
+
+	/**
+	 * 道具の呼び出しの間、そのタブを「エージェントが使っている」と main へ知らせる（paradisAgentViewIdleThrottle.ts）。
+	 * main は手にしたままのタブでも、しばらく使われなければ背景の抑制を戻すので、始め・途中・終わりに知らせる。
+	 */
+	private async _withAgentActivity<T>(key: string, operation: () => Promise<T>): Promise<T> {
+		const exactView = this._bindingForKey(key)?.exactView;
+		if (exactView === undefined) {
+			return operation();
+		}
+		await this._noteAgentActivity(exactView, 'start');
+		const renote = setInterval(() => void this._noteAgentActivity(exactView, 'during'), PARADIS_AGENT_ACTIVITY_RENOTE_MS);
+		try {
+			return await operation();
+		} finally {
+			clearInterval(renote);
+			void this._noteAgentActivity(exactView, 'end');
+		}
+	}
+
+	private async _noteAgentActivity(exactView: IParadisExactBrowserViewDescriptor, phase: 'start' | 'during' | 'end'): Promise<void> {
+		const viewKey = paradisExactViewKey(exactView);
+		const now = Date.now();
+		const last = this._agentActivityNotedAt.get(viewKey);
+		if (phase === 'during' && last !== undefined && now - last < PARADIS_AGENT_ACTIVITY_RENOTE_MS / 2) {
+			return;
+		}
+		if (phase === 'start' && last !== undefined && now - last < PARADIS_AGENT_ACTIVITY_MIN_NOTE_MS) {
+			return;
+		}
+		this._agentActivityNotedAt.delete(viewKey);
+		this._agentActivityNotedAt.set(viewKey, now);
+		if (this._agentActivityNotedAt.size > PARADIS_AGENT_ACTIVITY_MAX_VIEWS) {
+			// 古い順に並んでいるので、先頭（いちばん前に知らせたタブ）から捨てる
+			const oldest = this._agentActivityNotedAt.keys().next().value;
+			if (oldest !== undefined) {
+				this._agentActivityNotedAt.delete(oldest);
+			}
+		}
+		let call: Promise<void>;
+		try {
+			call = Promise.resolve(this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call<boolean>('noteExactViewAgentActivity', [exactView]))
+				.then(() => undefined, () => undefined);
+		} catch {
+			// main へ知らせられなくても道具はそのまま動かす（入力は main 側でも使った合図として数える）
+			return;
+		}
+		// 抑制を戻しているかもしれない（前に知らせてから休ませるまでの時間が過ぎた）ときだけ、切り直すのを待ってから
+		// 道具を通す。待たないと、抑制が効いたまま rAF を待つ道具が遅れる
+		if (phase === 'start' && (last === undefined || now - last >= PARADIS_AGENT_VIEW_IDLE_THROTTLE_MS - PARADIS_AGENT_ACTIVITY_MIN_NOTE_MS)) {
+			await call;
+		}
 	}
 
 	/** タブを決めた後の Para のツールの呼び出し（{@link _callToolInner} の続き）。 */
