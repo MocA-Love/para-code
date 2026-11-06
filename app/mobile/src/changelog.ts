@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-28',
 		items: [
 			{
+				icon: 'swap-horizontal-outline',
+				title: 'ターミナルのタブを行き来したときに、表示が出るまで待たなくなりました',
+				body: '最近見たターミナルを開いたまま残し、戻ったときは中身だけを描き直します。iPad で開いているセッションの行をもう一度押しても、入力途中の文字やターミナルが消えなくなりました。',
+			},
+			{
 				icon: 'flash-outline',
 				title: 'エージェントが動いている間やターミナルの出力が多い間の、画面のもたつきを減らしました',
 				body: '見えていない画面や変わっていない会話の行を、PC から状態が届くたびに描き直さないようにしました。',
