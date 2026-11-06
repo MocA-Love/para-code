@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { HTML_IMAGE_FETCH_CONCURRENCY, HtmlImageQueue, buildHtmlImageDeliverScript, parseHtmlImageRequest, type HtmlImagePriority } from './htmlImages.js';
+import { HTML_IMAGES_LOADER_SCRIPT, HTML_IMAGES_RETRY_SCRIPT, HTML_IMAGE_FETCH_CONCURRENCY, HtmlImageQueue, buildHtmlImageDeliverScript, parseHtmlImageRequest, type HtmlImagePriority } from './htmlImages.js';
 
 const ask = (index: number, priority: HtmlImagePriority) => JSON.stringify({ type: 'paradisHtmlImage', index, priority });
 
@@ -118,5 +118,13 @@ describe('buildHtmlImageDeliverScript', () => {
 		const window = { __paradisDeliverHtmlImage: (...args: unknown[]) => { received.push(args); } };
 		new Function('window', buildHtmlImageDeliverScript(7, data))(window);
 		expect(received).toEqual([['7', data]]);
+	});
+
+	test('the retry script asks the page again for the images it has not swapped in yet', () => {
+		let retried = 0;
+		new Function('window', HTML_IMAGES_RETRY_SCRIPT)({ __paradisRetryHtmlImages: () => { retried++; } });
+		new Function('window', HTML_IMAGES_RETRY_SCRIPT)({});
+		// 読み込みのスクリプトが頼み直しの口を用意している（構文の確認も兼ねる）
+		expect({ retried, exposed: HTML_IMAGES_LOADER_SCRIPT.includes('window.__paradisRetryHtmlImages = function'), parses: (() => { new Function(HTML_IMAGES_LOADER_SCRIPT); return true; })() }).toEqual({ retried: 1, exposed: true, parses: true });
 	});
 });
