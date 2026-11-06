@@ -26,9 +26,9 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError, onUnexpectedError } from '../../../../base/common/errors.js';
-import { DisposableStore, IDisposable, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, IReference, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Schemas } from '../../../../base/common/network.js';
@@ -537,14 +537,24 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		}));
 
 		// Rendered の配置と実描画は _applyViewMode がまとめて担う。
-		const initialView = this._applyViewMode(viewerInput.viewMode, resource, token);
+		// 待たずに返す描画は `setInput` の token を使わない。editorPanes は `setInput` が返ると、その token を
+		// 取り消す（進み具合の operation を止める）ので、使うと描く前に黙って打ち切られて白紙のまま残る。
+		// 代わりにこの入力の間だけ生きる token を使う（入力の切り替え・clearInput・dispose で取り消す）。
+		const awaitsInitialRender = this.awaitsInitialRender;
+		let initialToken = token;
+		if (!awaitsInitialRender) {
+			const initialRender = new CancellationTokenSource();
+			store.add(toDisposable(() => initialRender.dispose(true)));
+			initialToken = initialRender.token;
+		}
+		const initialView = this._applyViewMode(viewerInput.viewMode, resource, initialToken);
 		const afterInitialView = () => {
 			initialViewApplied = true;
 			if (rerenderAfterInitial && !store.isDisposed) {
 				rerenderScheduler.schedule();
 			}
 		};
-		if (this.awaitsInitialRender) {
+		if (awaitsInitialRender) {
 			await initialView;
 			afterInitialView();
 		} else {
