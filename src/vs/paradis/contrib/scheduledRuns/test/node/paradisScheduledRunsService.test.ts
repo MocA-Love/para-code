@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { join } from '../../../../../base/common/path.js';
@@ -36,11 +37,12 @@ suite('ParadisScheduledRunsService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function setup(initial?: IParadisScheduledRunsStoredState, startAt = at(2026, 9, 25, 8, 0)) {
-		const state = { now: startAt, stored: initial, writes: 0, failWrites: false };
+		const state = { now: startAt, stored: initial, writes: 0, failWrites: false, writeGate: undefined as Promise<void> | undefined };
 		const hooks = disposables.add(new Emitter<IParadisScheduledRunHookEvent>());
 		const service = disposables.add(new ParadisScheduledRunsService({
 			read: async () => state.stored,
 			write: async value => {
+				await state.writeGate;
 				if (state.failWrites) {
 					throw new Error('ENOSPC');
 				}
@@ -89,6 +91,29 @@ suite('ParadisScheduledRunsService', () => {
 			stored: [true],
 			memory: [[true, true]],
 		});
+	});
+
+	test('undoing a change that could not be written keeps what happened while it was being written', async () => {
+		const { state, service, requests } = setup();
+		await service.whenReady();
+		const id = await createEnabled(service);
+		state.failWrites = true;
+		const gate = new DeferredPromise<void>();
+		state.writeGate = gate.p;
+		// 名前だけ変える保存が書けずに終わるまでの間に、予定の時刻が来て回が始まる
+		const renaming = service.save({ ...DRAFT, id, name: 'renamed' });
+		// 保存が中身を変えて書き込みを待ち始めるまで進める
+		await new Promise(resolve => setTimeout(resolve, 0));
+		state.now = at(2026, 9, 25, 9, 0) + 20_000;
+		service.tick();
+		gate.complete();
+		const renamed = await renaming;
+		assert.deepStrictEqual({
+			ok: renamed.ok,
+			requested: requests.length,
+			runs: service.getState().runs.map(run => run.definitionId === id),
+			name: service.getState().definitions.map(definition => definition.name),
+		}, { ok: false, requested: 1, runs: [true], name: [DRAFT.name] });
 	});
 
 	test('requests a run at the scheduled time, and a window claims it once', async () => {
