@@ -108,7 +108,7 @@ export class ParadisWorkspacesNav extends Disposable {
 		this._register(this.storageService.onDidChangeValue(StorageScope.PROFILE, HIDDEN_NAV_ITEMS_STORAGE_KEY, this._store)(() => this.renderItems()));
 	}
 
-	/** 行の数が変わって高さが変わったときに呼ぶ（ビューがツリーを配分し直す）。 */
+	/** 行を隠した・戻したときに呼ぶ（ビューが控えた高さを捨て、ツリーを配分し直す）。 */
 	setHeightChangeListener(listener: () => void): void {
 		this.onDidChangeHeight = listener;
 	}
@@ -149,12 +149,15 @@ export class ParadisWorkspacesNav extends Disposable {
 		this.rowDisposables.clear();
 		DOM.clearNode(this.navContainer);
 		const hidden = this.hiddenItems();
+		// 行のまとまりは Tab の止まりを 1 つにし、中は上下の矢印で動く（ツールバーと同じ）
+		const rows: HTMLElement[] = [];
 		for (const item of this.availableItems()) {
 			if (hidden.has(item.id)) {
 				continue;
 			}
 			const row = DOM.append(this.navContainer, DOM.$(`.paradis-workspaces-nav-row.paradis-workspaces-nav-${item.id}`));
-			row.tabIndex = 0;
+			row.tabIndex = rows.length === 0 ? 0 : -1;
+			rows.push(row);
 			row.setAttribute('role', 'button');
 			row.setAttribute('aria-label', item.tooltip);
 			DOM.append(row, DOM.$(ThemeIcon.asCSSSelector(item.icon)));
@@ -167,6 +170,19 @@ export class ParadisWorkspacesNav extends Disposable {
 				if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
 					event.preventDefault();
 					run();
+					return;
+				}
+				const index = rows.indexOf(row);
+				const next = event.equals(KeyCode.DownArrow) ? Math.min(rows.length - 1, index + 1)
+					: event.equals(KeyCode.UpArrow) ? Math.max(0, index - 1)
+						: event.equals(KeyCode.Home) ? 0
+							: event.equals(KeyCode.End) ? rows.length - 1
+								: -1;
+				if (next >= 0) {
+					event.preventDefault();
+					rows[index].tabIndex = -1;
+					rows[next].tabIndex = 0;
+					rows[next].focus();
 				}
 			}));
 			this.rowDisposables.add(DOM.addDisposableListener(row, DOM.EventType.CONTEXT_MENU, e => this.showNavMenu(e)));
