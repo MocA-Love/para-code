@@ -76,16 +76,26 @@ export function paradisMarkdownAlertOf(tokens: readonly marked.Token[]): { reado
 	return { kind, tokens: [restParagraph, ...rest] };
 }
 
-/** 注意書きを描く marked の拡張。注意書きでない引用は既定の描き方に任せる。 */
+/**
+ * 注意書きを描く marked の拡張。GitHub と同じく、一番外側の引用だけを注意書きにする（引用の中の引用・注意書きの中の
+ * 引用は普通の引用）。入れ子を数えるため、注意書きでない引用も marked の既定と同じ形でここで描く。
+ */
 export function markedParadisAlertExtension(): marked.MarkedExtension {
+	let depth = 0;
 	return {
 		renderer: {
-			blockquote(this: marked.Renderer, token: marked.Tokens.Blockquote): string | false {
-				const alert = paradisMarkdownAlertOf(token.tokens);
-				if (!alert) {
-					return false;
+			blockquote(this: marked.Renderer, token: marked.Tokens.Blockquote): string {
+				const alert = depth === 0 ? paradisMarkdownAlertOf(token.tokens) : undefined;
+				depth++;
+				let body: string;
+				try {
+					body = this.parser.parse(alert ? alert.tokens : token.tokens);
+				} finally {
+					depth--;
 				}
-				const body = this.parser.parse(alert.tokens);
+				if (!alert) {
+					return `<blockquote>\n${body}</blockquote>\n`;
+				}
 				return `<div class="paradis-markdown-alert paradis-markdown-alert-${alert.kind}" role="note">\n<p class="paradis-markdown-alert-title">${escape(alertLabel(alert.kind))}</p>\n${body}</div>\n`;
 			},
 		},
