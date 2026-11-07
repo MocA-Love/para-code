@@ -132,8 +132,12 @@ export default function SessionScreen() {
 	// 作り直さない。戻ったときは PC の snapshot 1 回で描き直す）。先頭が今のもの。
 	const shownTerminalKey = current !== undefined && !showChat && (viewReady || current.agent !== true) ? current.terminalKey : undefined;
 	const [recentTerminalKeys, setRecentTerminalKeys] = useState<readonly string[]>([]);
-	if (shownTerminalKey !== undefined && recentTerminalKeys[0] !== shownTerminalKey) {
-		setRecentTerminalKeys([shownTerminalKey, ...recentTerminalKeys.filter(key => key !== shownTerminalKey)].slice(0, 1 + KEPT_TERMINAL_VIEWS));
+	// 閉じた（一覧から消えた）ターミナルは枠を空ける
+	const liveRecentKeys = recentTerminalKeys.filter(key => terminals.some(terminal => terminal.terminalKey === key));
+	if (shownTerminalKey !== undefined && liveRecentKeys[0] !== shownTerminalKey) {
+		setRecentTerminalKeys([shownTerminalKey, ...liveRecentKeys.filter(key => key !== shownTerminalKey)].slice(0, 1 + KEPT_TERMINAL_VIEWS));
+	} else if (liveRecentKeys.length !== recentTerminalKeys.length) {
+		setRecentTerminalKeys(liveRecentKeys);
 	}
 	const terminalDeck = recentTerminalKeys
 		.map(key => terminals.find(terminal => terminal.terminalKey === key))

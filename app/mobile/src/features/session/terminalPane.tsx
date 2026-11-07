@@ -18,7 +18,8 @@ import { PcCapability } from '../../pcCompat.js';
 import { encodeSessionTab } from '../../routes.js';
 import { terminalLinkNeedsConfirmation, terminalUrlDestination, terminalUrlHost, type TerminalLinkTarget } from '../../terminalLinks.js';
 import { terminalSubmitPlan } from '../../terminalKeys.js';
-import { terminalViewportForPrefs, type TerminalGrid } from '../../terminalViewport.js';
+import { terminalViewportForPrefs, type TerminalGrid, type TerminalViewport } from '../../terminalViewport.js';
+import { createTerminalViewportOwnership } from './terminalViewportOwner.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
 import { monoFamily } from '../../monoFont.js';
 import { colors, radius, space, type } from '../../theme.js';
@@ -37,6 +38,8 @@ import { readClipboardText } from '../../nativeClipboard.js';
  * 画面のペインが持つターミナルの出力購読。同じターミナルのセッションが2枚積まれても、上を閉じたときに
  * 下の購読まで解かないよう、最後の1つが手放したときだけ detach する（`terminalAttachments.ts`）。
  */
+const terminalViewportOwnership = createTerminalViewportOwnership<TerminalViewport>(viewport => useAppStore.getState().setTerminalViewport(viewport));
+
 const terminalAttachments = createTerminalAttachments(
 	terminalKey => useAppStore.getState().attachTerminal(terminalKey),
 	terminalKey => useAppStore.getState().detachTerminal(terminalKey),
@@ -75,7 +78,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset, s
 	bottomInset: number;
 }) {
 	const terminalKey = terminal.terminalKey;
-	const { attachTerminal, subscribeTerminal, sendInput, sendLiveKeys, sendLiveArrowKey, sendTextInput, scrollTerminal, terminalPrefs, setTerminalPref, setTerminalViewport, activePcId, fsUpload } = useAppStore(useShallow(s => ({
+	const { attachTerminal, subscribeTerminal, sendInput, sendLiveKeys, sendLiveArrowKey, sendTextInput, scrollTerminal, terminalPrefs, setTerminalPref, activePcId, fsUpload } = useAppStore(useShallow(s => ({
 		attachTerminal: s.attachTerminal,
 		subscribeTerminal: s.subscribeTerminal,
 		sendInput: s.sendInput,
@@ -85,7 +88,6 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset, s
 		scrollTerminal: s.scrollTerminal,
 		terminalPrefs: s.terminalPrefs,
 		setTerminalPref: s.setTerminalPref,
-		setTerminalViewport: s.setTerminalViewport,
 		activePcId: s.activePcId,
 		fsUpload: s.fsUpload,
 	})));
@@ -94,23 +96,28 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset, s
 	// 別の画面がまだ見ていれば解かない。
 	useEffect(() => (shown ? terminalAttachments.hold(terminalKey) : undefined), [terminalKey, shown]);
 	const subscribe = useMemo(() => (listener: Parameters<typeof subscribeTerminal>[1]) => subscribeTerminal(terminalKey, listener), [terminalKey, subscribeTerminal]);
-	const resync = useMemo(() => () => attachTerminal(terminalKey), [terminalKey, attachTerminal]);
+	// 隠している間は PC の購読を解いているので、表示が作り直し（resync）を頼んでも attach しない（出したときに attach する）
+	const shownForResync = useRef(shown);
+	shownForResync.current = shown;
+	const resync = useMemo(() => () => {
+		if (shownForResync.current) {
+			attachTerminal(terminalKey);
+		}
+	}, [terminalKey, attachTerminal]);
 
 	// TermView が実測したグリッドと設定から、PC への寸法の申告を組み立てる（旧画面と同じ）。
 	const [grid, setGrid] = useState<TerminalGrid | undefined>(undefined);
-	// 寸法の申告はアプリ全体で 1 つ。隠しているペインは触らない（出ているペインの申告を上書き・取り下げない）
-	const shownRef = useRef(shown);
-	shownRef.current = shown;
+	// 寸法の申告はアプリ全体で 1 つ。出ている間はこのペインの申告を出し、隠れた・外れたときは自分の申告なら取り下げる
+	// （後から出たペインの申告は消さない。terminalViewportOwner.ts）
+	const viewportOwner = useRef({}).current;
 	useEffect(() => {
 		if (shown) {
-			setTerminalViewport(terminalViewportForPrefs(grid, terminalPrefs));
+			terminalViewportOwnership.claim(viewportOwner, terminalViewportForPrefs(grid, terminalPrefs));
+		} else {
+			terminalViewportOwnership.release(viewportOwner);
 		}
-	}, [grid, terminalPrefs, activePcId, setTerminalViewport, shown]);
-	useEffect(() => () => {
-		if (shownRef.current) {
-			setTerminalViewport(undefined);
-		}
-	}, [setTerminalViewport]);
+	}, [grid, terminalPrefs, activePcId, shown, viewportOwner]);
+	useEffect(() => () => terminalViewportOwnership.release(viewportOwner), [viewportOwner]);
 
 	// PC で幅を戻されたか（W2-19）。開き直す（このペインを作り直す）と PC も印を外すので、ペインの間だけ持つ。
 	const [viewportRevoked, setViewportRevoked] = useState(() => isTerminalViewportRevoked(terminalKey));
@@ -379,6 +386,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset, s
 				onPaste={() => { void paste(); }}
 			/>
 			<TerminalInputBar
+				shown={shown}
 				live={live}
 				liveResetKey={liveResetKey}
 				liveConnected={liveReady}
