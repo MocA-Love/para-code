@@ -10,6 +10,7 @@
 // 内訳は同梱の mod が応答の終わりごとに送ってくる（paradisClaudeModBridge.ts の `context`）。終わった会話の内訳は
 // Claude Code のどこにも残らないので、ここで保存したものが「最近のセッション」から開ける唯一の記録になる。
 //
+// - 会話ごとに、最後の内訳と一番大きかった時点の内訳（`/compact` の前の山。「AI コスト」の期間の集計に使う）を持つ
 // - 件数は {@link MAX_SESSIONS}、ファイルの大きさは {@link MAX_FILE_CHARS} まで。超えたら古い会話から捨てる
 // - 書き込みはまとめて遅らせる（応答の終わりごとに書かない）。書きかけで落ちても前のファイルが残るよう、別名で書いてから置き換える
 // - 「動いている」会話は、mod が生きているペインの最後の会話（`bye`・`alive-changed` で外す）
@@ -21,11 +22,15 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IParadisClaudeContextBreakdown, paradisParseClaudeContextBreakdown } from '../common/paradisClaudeContextBreakdown.js';
 import { ParadisClaudeModEvent } from './paradisClaudeModBridge.js';
 
-/** 覚えておく会話の数。 */
-const MAX_SESSIONS = 300;
+/**
+ * 覚えておく会話の数。1 会話は最後と山の 2 件でおよそ 7 KB（MCP サーバー 9・スキル 220・メモリファイル 6 の設定で測った）、
+ * 一覧が上限の 20 行で名前が長いと 46 KB。90 日間を選んでも足りるよう多めに持つ。
+ */
+const MAX_SESSIONS = 1_500;
 /** 保存するファイルの大きさの上限（文字数）。 */
-const MAX_FILE_CHARS = 4 * 1024 * 1024;
-const WRITE_DELAY_MS = 3_000;
+const MAX_FILE_CHARS = 12 * 1024 * 1024;
+/** 書き込みをまとめる間隔（ファイルが数 MB になるので、応答の終わりごとには書かない）。 */
+const WRITE_DELAY_MS = 30_000;
 const FILE_VERSION = 1;
 
 /** 保存したペインの指紋の形。 */
@@ -35,7 +40,15 @@ const SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 interface IRecord {
 	/** 送ってきたペイン（ペイントークンの指紋）。 */
 	readonly owner: string;
+	/** 最後の内訳。 */
 	readonly breakdown: IParadisClaudeContextBreakdown;
+	/** 一番大きかった時点の内訳（山を持たない古い保存は最後の内訳と同じ）。 */
+	readonly peak: IParadisClaudeContextBreakdown;
+}
+
+/** 大きい方の内訳（同じなら後のもの）。 */
+function larger(a: IParadisClaudeContextBreakdown, b: IParadisClaudeContextBreakdown): IParadisClaudeContextBreakdown {
+	return a.totalTokens > b.totalTokens ? a : b;
 }
 
 /** ペイントークンの指紋（ファイルにはトークンそのものを書かない）。 */
@@ -83,8 +96,9 @@ export class ParadisClaudeContextStore extends Disposable {
 			case 'context': {
 				const owner = ownerOf(event.token);
 				const key = keyOf(owner, event.sessionId);
+				const previous = this.sessions.get(key);
 				this.sessions.delete(key);
-				this.sessions.set(key, { owner, breakdown: event.breakdown });
+				this.sessions.set(key, { owner, breakdown: event.breakdown, peak: previous !== undefined ? larger(previous.peak, event.breakdown) : event.breakdown });
 				this.live.set(event.token, key);
 				this.trim();
 				this.scheduleWrite();
@@ -102,17 +116,25 @@ export class ParadisClaudeContextStore extends Disposable {
 		}
 	}
 
-	/** 動いている会話の内訳（新しい順）。 */
-	async liveBreakdowns(): Promise<IParadisClaudeContextBreakdown[]> {
+	/**
+	 * 最後の応答が `from`〜`to`（PC の時計、両端を含む）にある会話の、一番大きかった時点の内訳。同じ会話を 2 つのペインが
+	 * 送っていれば大きい方を使う。`since` は保存してある内訳のうち一番古い時刻。
+	 */
+	async peaksBetween(from: number, to: number): Promise<{ readonly peaks: IParadisClaudeContextBreakdown[]; readonly since?: number }> {
 		await this.ensureLoaded();
-		const result: IParadisClaudeContextBreakdown[] = [];
-		for (const key of new Set(this.live.values())) {
-			const record = this.sessions.get(key);
-			if (record !== undefined) {
-				result.push(record.breakdown);
+		const bySession = new Map<string, IRecord>();
+		let since: number | undefined;
+		for (const record of this.sessions.values()) {
+			since = since === undefined ? record.breakdown.at : Math.min(since, record.breakdown.at);
+			if (record.breakdown.at < from || record.breakdown.at > to) {
+				continue;
+			}
+			const other = bySession.get(record.breakdown.sessionId);
+			if (other === undefined || record.peak.totalTokens > other.peak.totalTokens) {
+				bySession.set(record.breakdown.sessionId, record);
 			}
 		}
-		return result.sort((a, b) => b.at - a.at);
+		return { peaks: [...bySession.values()].map(record => record.peak), ...(since !== undefined ? { since } : {}) };
 	}
 
 	/**
@@ -206,18 +228,31 @@ export class ParadisClaudeContextStore extends Disposable {
 		const fresh = new Map(this.sessions);
 		this.sessions.clear();
 		for (const entry of entries.slice(-MAX_SESSIONS)) {
-			const raw = entry !== null && typeof entry === 'object' ? entry as { owner?: unknown; sessionId?: unknown; at?: unknown } : undefined;
+			const raw = entry !== null && typeof entry === 'object' ? entry as { owner?: unknown; sessionId?: unknown; at?: unknown; peak?: unknown } : undefined;
 			const owner = typeof raw?.owner === 'string' && OWNER_PATTERN.test(raw.owner) ? raw.owner : undefined;
 			const sessionId = typeof raw?.sessionId === 'string' && SESSION_ID_PATTERN.test(raw.sessionId) ? raw.sessionId : undefined;
 			const at = typeof raw?.at === 'number' && Number.isFinite(raw.at) ? raw.at : undefined;
 			const breakdown = owner !== undefined && sessionId !== undefined && at !== undefined ? paradisParseClaudeContextBreakdown(entry, sessionId, at) : undefined;
 			const key = owner !== undefined && breakdown !== undefined ? keyOf(owner, breakdown.sessionId) : undefined;
-			if (owner !== undefined && breakdown !== undefined && key !== undefined && !fresh.has(key)) {
-				this.sessions.delete(key);
-				this.sessions.set(key, { owner, breakdown });
+			if (owner === undefined || breakdown === undefined || key === undefined) {
+				continue;
 			}
+			// 山を持たない保存（#741 の形）は、最後の内訳を山とみなす
+			const peakRaw = raw?.peak !== null && typeof raw?.peak === 'object' ? raw.peak as { at?: unknown } : undefined;
+			const peakAt = typeof peakRaw?.at === 'number' && Number.isFinite(peakRaw.at) ? peakRaw.at : undefined;
+			const peak = peakAt !== undefined ? paradisParseClaudeContextBreakdown(peakRaw, breakdown.sessionId, peakAt) : undefined;
+			const saved: IRecord = { owner, breakdown, peak: peak !== undefined ? larger(peak, breakdown) : breakdown };
+			const newer = fresh.get(key);
+			if (newer !== undefined) {
+				// 読む前に届いた内訳を残し、保存してあった山とは大きい方を使う
+				fresh.set(key, { ...newer, peak: larger(saved.peak, newer.peak) });
+				continue;
+			}
+			this.sessions.delete(key);
+			this.sessions.set(key, saved);
 		}
 		for (const [key, record] of fresh) {
+			this.sessions.delete(key);
 			this.sessions.set(key, record);
 		}
 		this.trim();
@@ -272,7 +307,11 @@ export class ParadisClaudeContextStore extends Disposable {
 }
 
 function serialize(sessions: readonly IRecord[]): string {
-	return JSON.stringify({ version: FILE_VERSION, sessions: sessions.map(record => ({ owner: record.owner, ...record.breakdown })) });
+	return JSON.stringify({
+		version: FILE_VERSION,
+		// 山が最後の内訳と同じなら書かない（読むときは最後の内訳を山とみなす）
+		sessions: sessions.map(record => ({ owner: record.owner, ...record.breakdown, ...(record.peak !== record.breakdown ? { peak: record.peak } : {}) })),
+	});
 }
 
 let current: ParadisClaudeContextStore | undefined;

@@ -18,7 +18,7 @@ import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
-import { PARADIS_CLAUDE_CONTEXT_CHANNEL } from '../common/paradisClaudeContextBreakdown.js';
+import { PARADIS_CLAUDE_CONTEXT_CHANNEL, paradisAggregateClaudeContextPeriod } from '../common/paradisClaudeContextBreakdown.js';
 import { paradisClaudeModBridge } from './paradisClaudeModBridge.js';
 import { IParadisClaudeContextFiles, ParadisClaudeContextStore, paradisClaudeContextStore, paradisSetClaudeContextStore } from './paradisClaudeContextStore.js';
 
@@ -35,8 +35,15 @@ class ParadisClaudeContextChannel<TContext> implements IServerChannel<TContext> 
 
 	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		switch (command) {
-			case 'live':
-				return this.store.liveBreakdowns() as Promise<T>;
+			case 'period': {
+				// 期間の内訳（「AI コスト」の画面）。集計はここで済ませ、会話ごとの内訳は送らない
+				const from = Array.isArray(arg) && typeof arg[0] === 'number' && Number.isFinite(arg[0]) ? arg[0] : undefined;
+				const to = Array.isArray(arg) && typeof arg[1] === 'number' && Number.isFinite(arg[1]) ? arg[1] : undefined;
+				if (from === undefined || to === undefined) {
+					return Promise.reject(new Error('period takes [from, to]'));
+				}
+				return this.store.peaksBetween(from, to).then(({ peaks, since }) => paradisAggregateClaudeContextPeriod(peaks, since)) as Promise<T>;
+			}
 			case 'session': {
 				const sessionId = Array.isArray(arg) && typeof arg[0] === 'string' ? arg[0] : undefined;
 				return (sessionId !== undefined && sessionId.length <= 200 ? this.store.breakdownOf(sessionId) : Promise.resolve(undefined)) as Promise<T>;
