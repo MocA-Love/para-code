@@ -23,6 +23,7 @@ import { generateTokensCSSForColorMap } from '../../../../editor/common/language
 import { tokenizeToString } from '../../../../editor/common/languages/textToHtmlTokenizer.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { readParadisFileHead } from '../../../../platform/files/common/paradisReadFileHead.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { editorBackground, editorForeground } from '../../../../platform/theme/common/colorRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -2483,7 +2484,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return undefined;
 		}
 		try {
-			const content = await this.fileService.readFile(uri, { length });
+			const content = await readParadisFileHead(this.fileService, uri, { length });
 			return { text: content.value.toString(), truncated: content.size > length };
 		} catch {
 			return undefined;
@@ -3009,7 +3010,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: `PDF が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
-				const content = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: BINARY_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
+				const content = await paradisWithCancellableHostDeadline(token => readParadisFileHead(this.fileService, uri, { length: BINARY_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				timing?.mark('read');
 				// 標準base64（パディング付き）。モバイル側は expo-file-system の Base64 エンコーディング指定で
 				// ネイティブデコードしながらファイルへ書くため、JSでのデコードは発生しない。
@@ -3029,7 +3030,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: `Word 文書が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
-				const content = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: BINARY_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
+				const content = await paradisWithCancellableHostDeadline(token => readParadisFileHead(this.fileService, uri, { length: BINARY_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				timing?.mark('read');
 				const size = stat.size ?? 0;
 				if (!replyBinary('docx', size, content.value.buffer)) {
@@ -3046,7 +3047,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: `ファイルが大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
-				const content = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: BINARY_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
+				const content = await paradisWithCancellableHostDeadline(token => readParadisFileHead(this.fileService, uri, { length: BINARY_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				timing?.mark('read');
 				const size = stat.size ?? 0;
 				if (!replyBinary('media', size, content.value.buffer)) {
@@ -3071,7 +3072,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const readLimit = splitImages ? PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT : FS_READ_LIMIT;
 				// 画像の抜き出しも読み出しと同じ時間で打ち切る（打ち切ったら、抜き出しは手を離した区切りで止まる）
 				const { whole, split } = await paradisWithCancellableHostDeadline(async token => {
-					const read = await this.fileService.readFile(uri, { length: readLimit }, token);
+					const read = await readParadisFileHead(this.fileService, uri, { length: readLimit }, token);
 					timing?.mark('read');
 					return {
 						whole: read,
