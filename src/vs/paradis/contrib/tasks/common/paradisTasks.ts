@@ -81,7 +81,7 @@ export interface IParadisTasksRateLimit {
 }
 
 /** 取得に失敗した理由。画面はこれで案内の文を選ぶ。 */
-export type ParadisTasksErrorKind = 'no-gh' | 'auth' | 'rate-limited' | 'failed';
+export type ParadisTasksErrorKind = 'no-gh' | 'auth' | 'rate-limited' | 'timeout' | 'failed';
 
 export interface IParadisTasksError {
 	readonly kind: ParadisTasksErrorKind;

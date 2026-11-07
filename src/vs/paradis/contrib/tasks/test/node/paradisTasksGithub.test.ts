@@ -59,7 +59,7 @@ suite('ParadisTasksGithubService', () => {
 	// 枠を使い切ったら止め、止めている間は gh を起動しない。gh が無い・ログインしていないは別の理由で返す
 	test('stops on rate limit and reports gh problems', async () => {
 		const now = 1_000_000;
-		let output = { stdout: '', stderr: 'GraphQL: API rate limit exceeded for user', failed: true, notFound: false };
+		let output: { stdout: string; stderr: string; failed: boolean; notFound: boolean; timedOut?: boolean } = { stdout: '', stderr: 'GraphQL: API rate limit exceeded for user', failed: true, notFound: false };
 		let calls = 0;
 		const service = store.add(new ParadisTasksGithubService(async () => {
 			calls++;
@@ -72,13 +72,15 @@ suite('ParadisTasksGithubService', () => {
 		const auth = await service2.search({ mode: 'issue', repositories: ['a/b'], query: '' });
 		output = { stdout: '', stderr: '', failed: true, notFound: true };
 		const noGh = await service2.search({ mode: 'issue', repositories: ['a/b'], query: 'x' });
+		output = { stdout: '', stderr: '', failed: true, notFound: false, timedOut: true };
+		const timedOut = await service2.search({ mode: 'issue', repositories: ['a/b'], query: 'y' });
 		const none = await service2.search({ mode: 'issue', repositories: [], query: '' });
 		assert.deepStrictEqual({
-			kinds: [limited, paused, auth, noGh].map(result => result.ok ? 'ok' : result.error.kind),
+			kinds: [limited, paused, auth, noGh, timedOut].map(result => result.ok ? 'ok' : result.error.kind),
 			calls,
 			none: none.ok ? none.result.items.length : -1,
 		}, {
-			kinds: ['rate-limited', 'rate-limited', 'auth', 'no-gh'],
+			kinds: ['rate-limited', 'rate-limited', 'auth', 'no-gh', 'timeout'],
 			calls: 1,
 			none: 0,
 		});
