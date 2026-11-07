@@ -401,3 +401,99 @@
 .paradis-tasks-card-assignees {
 	margin-top: 6px;
 }
+
+.paradis-tasks-roadmap {
+	overflow-x: auto;
+}
+
+.paradis-tasks-roadmap-row {
+	display: grid;
+	grid-template-columns: minmax(180px, 30%) 1fr;
+	align-items: center;
+	min-width: 640px;
+	min-height: 30px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+}
+
+.paradis-tasks-roadmap-row.head {
+	min-height: 26px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11.5px;
+}
+
+.paradis-tasks-roadmap-row.paradis-tasks-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-tasks-roadmap-name {
+	display: flex;
+	gap: 6px;
+	min-width: 0;
+	padding: 4px 10px 4px 2px;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.paradis-tasks-roadmap-ref {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.paradis-tasks-roadmap-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-tasks-roadmap-track {
+	position: relative;
+	align-self: stretch;
+	min-height: 26px;
+}
+
+.paradis-tasks-roadmap-tick {
+	position: absolute;
+	top: 6px;
+	padding-left: 4px;
+	white-space: nowrap;
+}
+
+.paradis-tasks-roadmap-grid {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	border-left: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+}
+
+.paradis-tasks-roadmap-today {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	border-left: 1px solid var(--vscode-charts-red);
+}
+
+.paradis-tasks-roadmap-bar {
+	position: absolute;
+	top: 8px;
+	height: 14px;
+	border-radius: 7px;
+	opacity: 0.8;
+}
+
+.paradis-tasks-roadmap-undated-title {
+	margin: 14px 2px 6px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.paradis-tasks-roadmap-undated-item {
+	display: flex;
+	gap: 8px;
+	padding: 5px 2px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	cursor: pointer;
+}
+
+.paradis-tasks-roadmap-undated-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
