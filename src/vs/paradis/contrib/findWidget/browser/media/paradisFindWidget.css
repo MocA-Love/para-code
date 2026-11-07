@@ -1,0 +1,41 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * The terminal, chat and webview (HTML / Markdown viewer) find widgets come from upstream's
+ * SimpleFindWidget (simpleFindWidget.css), which still uses the old shape: a panel glued to the
+ * top edge with only its bottom corners rounded at the control tier. The editor find widget
+ * (findWidget.css) is a floating card on the outer tier. Give SimpleFindWidget the same shape under
+ * Modern UI so both find widgets read as one surface (Q575).
+ *
+ * The integrated browser restyles SimpleFindWidget into an inline bar (browser.css,
+ * .browser-find-widget-wrapper); leave it alone.
+ *
+ * Remove this file when upstream redesigns SimpleFindWidget.
+ */
+
+.modern-ui .simple-find-part-wrapper:not(.browser-find-widget-wrapper *) {
+	padding-top: var(--vscode-spacing-size40);
+}
+
+.modern-ui .simple-find-part-wrapper:not(.browser-find-widget-wrapper *) > .simple-find-part {
+	min-height: 34px;
+	padding: 0 var(--vscode-spacing-size40) 0 var(--vscode-spacing-size80);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
+	border-radius: var(--vscode-cornerRadius-large);
+	box-shadow: var(--vscode-shadow-lg), 0 2px 8px var(--vscode-widget-shadow, transparent);
+}
+
+.modern-ui .simple-find-part-wrapper:not(.browser-find-widget-wrapper *) > .simple-find-part div.button {
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+/* The card draws its own border now; the resize sash keeps its hover feedback but no permanent line. */
+.modern-ui .simple-find-part-wrapper:not(.browser-find-widget-wrapper *) > .simple-find-part > .monaco-sash {
+	border-left-color: transparent;
+	border-radius: var(--vscode-cornerRadius-large) 0 0 var(--vscode-cornerRadius-large);
+}
