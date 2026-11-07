@@ -735,6 +735,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** transcript/app-server由来の承認待ちを一度観測したtoken。解除時だけpermissionをworkingへ戻す。 */
 	private readonly _activityApprovalTokens = new Set<string>();
 	/**
+	 * MCP の入力の依頼（Claude Code の Elicitation hook）で許可待ちへ入れる前の状態（無ければ待機）と、決着して
+	 * いない依頼の数。数が 0 になった決着（ElicitationResult）でここへ戻す。ターンの外でも依頼は来るので、決着を一律に working にすると待機のペインが
+	 * 作業中のまま残り、review にすると完了の通知がもう一度鳴る（Orca #33517 と同じく待つ前へ戻す）。
+	 */
+	private readonly _elicitationWaits = new Map<string, { readonly before: IParadisPaneStatusEntry | undefined; count: number }>();
+	/**
 	 * 完了ではなく、止まって利用者の次の指示を待っているために状態を消した（idle にした）token
 	 * （許可の拒否。`_settlePaneAwaitingUser`）。次に状態が付くまでスナップショットで知らせ、画面側が
 	 * 状態の消滅を完了（タブの緑の点）と数えないようにする。
@@ -2288,6 +2294,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneSessions.delete(token);
 		this._codexFrontSessions.forget(token);
 		this._activityApprovalTokens.delete(token);
+		this._elicitationWaits.delete(token);
 		this._awaitingUserTokens.delete(token);
 		this._agentHookTokens.delete(token);
 		this._hookReportedTokens.delete(token);
@@ -4914,6 +4921,50 @@ export class ParadisAgentBrowserService extends Disposable {
 				res.writeHead(200, { 'Content-Type': 'application/json' });
 				res.end(JSON.stringify({ ok: false, reason: 'caller not verified' }));
 				return;
+			}
+			if (eventType === 'Elicitation') {
+				// 依頼が重なったら数えるだけ（戻す先は最初の依頼の前の状態）。最初の依頼でも、既に許可待ち・質問中なら
+				// 待ちを戻す先にしない
+				const wait = this._elicitationWaits.get(token);
+				if (wait !== undefined) {
+					wait.count++;
+				} else {
+					const before = this._paneStatuses.get(token);
+					this._elicitationWaits.set(token, { before: before?.status !== 'permission' && before?.status !== 'question' ? before : undefined, count: 1 });
+				}
+			} else if (eventType === 'ElicitationResult') {
+				// 覚えが無い（ターンの区切りの後に届いた・Para Code の再起動をまたいだ）決着と、まだ他の依頼が残っている
+				// 決着は、状態を変えない
+				const wait = this._elicitationWaits.get(token);
+				if (wait === undefined || --wait.count > 0) {
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ ok: true }));
+					return;
+				}
+				this._elicitationWaits.delete(token);
+				// 会話の記録で質問・ツールの許可を待っていると分かっていれば（normalized が上で読み替わる）、そちらを出す
+				if (normalized === 'working') {
+					const before = wait.before;
+					if (before === undefined) {
+						this._paneStatuses.delete(token);
+					} else {
+						// 完了（review）へ戻すときは鳴らさない（完了の通知は待つ前に済んでいる）
+						this._paneStatuses.set(token, {
+							status: before.status,
+							changedAt: Date.now(),
+							...(before.cwd !== undefined ? { cwd: before.cwd } : {}),
+							...(before.backgroundCompletionFallback ? { backgroundCompletionFallback: true } : {}),
+							...(before.status === 'review' ? { quiet: true } : {}),
+						});
+					}
+					this._runNonThrowingDiagnostic(() => this.logService.trace(`[ParadisAgentBrowser] agent-hook: ${eventType} -> ${before?.status ?? 'idle'} (restored)`));
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ ok: true }));
+					return;
+				}
+			} else if (normalized === 'review' || normalized === 'idle' || eventType === 'UserPromptSubmit' || eventType === 'SessionStart') {
+				// ターンの区切り・終了の後に届いた決着は、待つ前へ戻さない（状態を変えない）
+				this._elicitationWaits.delete(token);
 			}
 			if (eventType === 'UserPromptSubmit' && !paradisIsHarnessNotificationPrompt(hookPayload?.prompt)) {
 				this._userTurnStarts.set(token, Date.now());
@@ -8122,6 +8173,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneSessions.clear();
 		this._codexFrontSessions.clear();
 		this._activityApprovalTokens.clear();
+		this._elicitationWaits.clear();
 		this._awaitingUserTokens.clear();
 		this._agentHookTokens.clear();
 		this._hookReportedTokens.clear();

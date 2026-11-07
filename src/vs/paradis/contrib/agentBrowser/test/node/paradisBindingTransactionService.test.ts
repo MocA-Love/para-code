@@ -107,6 +107,7 @@ function createFixture(): {
 		_announcedReviews: new Map<string, { turn: number; certain: boolean }>(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set(),
+		_elicitationWaits: new Map(),
 		_awaitingUserTokens: new Set<string>(),
 		// hook の控え（W2-20）。無いフォルダを指すので、流し直しは何も読まない。
 		_hookSpoolDir: '/nonexistent/paradis-agent-hook-spool',
