@@ -64,9 +64,11 @@ export const PARADIS_AGENT_HOOK_ID_PARAM = 'hid';
 /**
  * 控えないイベント。ツールの開始・終了と応答の途中経過は数が多く、再起動の後には transcript から
  * 同じことが分かるので控えない（Orca も Pre/PostToolUse を控えない）。モデルの切り替え（PostModelSwitch）も、遅れて
- * 流し直すと古いモデルの表示に戻してしまうので控えない（次の応答の行がモデルを運ぶ）。
+ * 流し直すと古いモデルの表示に戻してしまうので控えない（次の応答の行がモデルを運ぶ）。MCP の入力の依頼（Elicitation /
+ * ElicitationResult）も控えない: 流し直しの許可待ちは画面の確認を待つ作りで、MCP の入力の画面はその確認に当たらず、
+ * 決着だけが控えから漏れると古い許可待ちが戻る。
  */
-export const PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS: readonly string[] = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'MessageDisplay', 'PostModelSwitch'];
+export const PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS: readonly string[] = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'MessageDisplay', 'PostModelSwitch', 'Elicitation', 'ElicitationResult'];
 
 /** 控えの 1 行。 */
 export interface IParadisSpooledAgentHook {

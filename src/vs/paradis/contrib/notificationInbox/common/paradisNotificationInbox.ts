@@ -261,6 +261,10 @@ export function paradisInboxAttentionEntries(snapshot: IParadisInboxSnapshot, li
  */
 export function paradisPermissionPreview(text: string): string {
 	const oneLine = text.replace(/\s+/g, ' ').trim();
+	if (/^MCP[「 ]/.test(oneLine)) {
+		// MCP の入力の依頼（paradisElicitationSummary の「MCP「サーバー」が入力を求めています」）はツールの承認ではないので、ツール名を補わない
+		return paradisRedactTextSecrets(oneLine);
+	}
 	const prefixed = /^(?<tool>[A-Za-z][\w.-]*): (?<detail>.*)$/.exec(oneLine);
 	if (prefixed?.groups) {
 		return `${prefixed.groups.tool}: ${paradisRedactTextSecrets(prefixed.groups.detail)}`;

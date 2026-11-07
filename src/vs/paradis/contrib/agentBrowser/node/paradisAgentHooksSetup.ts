@@ -27,7 +27,7 @@ import { paradisWriteRollingBackupSync } from '../../../node/paradisRollingFileB
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { PARADIS_REMOTE_HOOK_PORTS_DIR_NAME } from '../common/paradisRemoteHookSource.js';
-import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_ELICITATION_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES, PARADIS_AGENT_HOOK_SPOOL_MAX_FILES, PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS } from '../common/paradisAgentHookSpool.js';
 import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHomeCandidates } from './paradisAgentHome.js';
@@ -821,6 +821,18 @@ export function paradisSupportsClaudeModelSwitchHook(versionOutput: string): boo
 	return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 251)));
 }
 
+/** Elicitation / ElicitationResult hook（Claude Code 2.1.63 で追加）を受け付ける版か。 */
+export function paradisSupportsClaudeElicitationHooks(versionOutput: string): boolean {
+	const match = /(\d+)\.(\d+)\.(\d+)/.exec(versionOutput);
+	if (!match) {
+		return false;
+	}
+	const major = Number(match[1]);
+	const minor = Number(match[2]);
+	const patch = Number(match[3]);
+	return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 63)));
+}
+
 export function paradisSupportsClaudeMessageDisplay(versionOutput: string): boolean {
 	const match = /(\d+)\.(\d+)\.(\d+)/.exec(versionOutput);
 	if (!match) {
@@ -838,7 +850,7 @@ export function paradisSupportsClaudeMessageDisplay(versionOutput: string): bool
  * する。外してしまうと、次に確かめられた起動で足し直すまで活動の表示が止まり、起動のたびに設定を書き換える。
  */
 export function paradisClaudeManagedHookEvents(versionOutput: string | undefined): IParadisManagedHookEvent[] {
-	const versionDependent = [...PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT];
+	const versionDependent = [...PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT, ...PARADIS_CLAUDE_ELICITATION_HOOK_EVENTS];
 	if (versionOutput === undefined) {
 		return [...PARADIS_CLAUDE_HOOK_EVENTS, ...versionDependent.map(event => ({ ...event, retainOnly: true }))];
 	}
@@ -847,6 +859,7 @@ export function paradisClaudeManagedHookEvents(versionOutput: string | undefined
 		...(paradisSupportsClaudeActivityHooks(versionOutput) ? PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS : []),
 		...(paradisSupportsClaudeMessageDisplay(versionOutput) ? [PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT] : []),
 		...(paradisSupportsClaudeModelSwitchHook(versionOutput) ? [PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT] : []),
+		...(paradisSupportsClaudeElicitationHooks(versionOutput) ? PARADIS_CLAUDE_ELICITATION_HOOK_EVENTS : []),
 	];
 }
 

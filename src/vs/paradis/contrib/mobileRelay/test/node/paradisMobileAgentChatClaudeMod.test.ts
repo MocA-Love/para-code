@@ -233,6 +233,29 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		});
 	}));
 
+	test('shows an MCP elicitation as waiting for permission and goes back after the last one is answered', () => withHarness(async harness => {
+		const access = harness.chat as unknown as { liveStates: Map<string, { phase: string; tool?: string }>; hookProcessing: Map<string, Promise<void>> };
+		const live = () => {
+			const state = access.liveStates.get(harness.token);
+			return state === undefined ? 'none' : `${state.phase}${state.tool !== undefined ? ` ${state.tool}` : ''}`;
+		};
+		const settled = () => waitFor(() => !access.hookProcessing.has(harness.token), 'hooks were not processed');
+		const observed: string[] = [];
+		harness.hook('UserPromptSubmit', { payload: { prompt: 'use the servers' } });
+		await waitFor(() => live() === 'thinking', 'the turn did not start');
+		harness.hook('Elicitation', { payload: { mcp_server_name: 'github', message: 'Sign in', mode: 'url' } });
+		harness.hook('Elicitation', { payload: { mcp_server_name: 'linear', message: 'Sign in', mode: 'url' } });
+		await waitFor(() => live() === 'permission mcp__linear', 'the elicitation was not shown');
+		observed.push(live());
+		harness.hook('ElicitationResult', { payload: { mcp_server_name: 'github', action: 'accept' } });
+		await settled();
+		observed.push(live());
+		harness.hook('ElicitationResult', { payload: { mcp_server_name: 'linear', action: 'accept' } });
+		await waitFor(() => live() === 'thinking', 'the live state did not go back');
+		observed.push(live());
+		assert.deepStrictEqual(observed, ['permission mcp__linear', 'permission mcp__linear', 'thinking']);
+	}));
+
 	test('streams the text the mod sends as the live message and clears it when the row lands', () => withHarness(async harness => {
 		await harness.mod('event', { events: [{ type: 'turn.start', turnId: 't-1' }, { type: 'step', turnId: 't-1', step: 0, chunks: [{ index: 0, text: 'こんに' }], end: false }] });
 		await harness.mod('event', { events: [{ type: 'step', turnId: 't-1', step: 0, chunks: [{ index: 0, text: 'ちは' }], end: true }] });

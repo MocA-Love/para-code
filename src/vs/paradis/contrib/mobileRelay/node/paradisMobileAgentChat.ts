@@ -72,6 +72,7 @@ import { paradisClaudeAttachNameQuery, paradisReadClaudeJobs, paradisSelectClaud
 import type { IParadisOpenCodeMessage } from '../../sessionResume/node/paradisOpenCodeHistory.js';
 import { ParadisOpenCodeActionOutcome, paradisOpenCodeBridge } from '../../agentBrowser/node/paradisOpenCodeBridge.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
+import { paradisElicitationSummary } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisClaudeModBridge, paradisClaudeModBridge, paradisClaudeModWaitForPrevious, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { IParadisClaudeContextBreakdown, paradisShortenContextBreakdownPaths } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
 import { paradisClaudeContextStore } from '../../claudeMod/node/paradisClaudeContextStore.js';
@@ -4594,12 +4595,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 入力の指紋ごと残り続ける。リロードの隙間で退避に載ったばかりのペインだけは、復活後に replay される
 		// PermissionRequest を元の tool_use_id へ結び付けられるよう、保留中の hook と同じ猶予だけ残す
 		// （live でない間は hook が保留に積まれるだけなので、猶予中にここが増えることはない）。
-		for (const token of new Set([...this.openToolUses.keys(), ...this.syntheticApprovalWaits.keys(), ...this.liveBeforePermission.keys()])) {
+		for (const token of new Set([...this.openToolUses.keys(), ...this.syntheticApprovalWaits.keys(), ...this.liveBeforePermission.keys(), ...this.liveElicitations.keys()])) {
 			const retired = this.retiredSessions.get(token);
 			if (!liveTokens.has(token) && !(retired !== undefined && now - retired.retiredAt <= PENDING_HOOK_TTL_MS)) {
 				this.openToolUses.delete(token);
 				this.syntheticApprovalWaits.delete(token);
 				this.liveBeforePermission.delete(token);
+				this.liveElicitations.delete(token);
 			}
 		}
 		// 接続先の印は、ウィンドウのリロードでtokenが一瞬liveでなくなる隙間では捨てない
@@ -6937,6 +6939,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		switch (event.event) {
 			case 'UserPromptSubmit':
 				this.liveToolIds.delete(event.token);
+				this.liveElicitations.delete(event.token);
 				this.liveMessageBuffers.delete(event.token);
 				this.lastTurnEndedAt.delete(event.token);
 				this.setLiveState(event.token, {
@@ -6985,6 +6988,43 @@ export class ParadisMobileAgentChat extends Disposable {
 					...(event.toolName !== undefined ? { tool: event.toolName } : {}),
 					...(detail !== undefined ? { detail } : {}),
 				});
+				return;
+			}
+			case 'Elicitation': {
+				// MCP サーバーが利用者へ入力を求めている（Claude Code 2.1.63+）。許可待ちと同じ様子で出し、決着で待つ前へ戻す。
+				// 答える選択肢は無い（承認の interaction は作らない。モバイルは「PC で内容を確認してください」を出す）
+				this.liveElicitations.set(event.token, (this.liveElicitations.get(event.token) ?? 0) + 1);
+				const before = this.liveStates.get(event.token);
+				if (before?.phase !== 'permission') {
+					this.liveBeforePermission.set(event.token, before);
+				}
+				const server = str(event.payload?.mcp_server_name)?.trim();
+				this.setLiveState(event.token, {
+					phase: 'permission', source: 'hook', startedAt: event.at, updatedAt: event.at,
+					tool: server !== undefined && server.length > 0 ? `mcp__${server}` : 'mcp',
+					detail: truncateText(paradisElicitationSummary(event.payload), 500),
+				});
+				return;
+			}
+			case 'ElicitationResult': {
+				const pending = (this.liveElicitations.get(event.token) ?? 0) - 1;
+				if (pending > 0) {
+					this.liveElicitations.set(event.token, pending);
+					return; // ほかの MCP の依頼がまだ待っている
+				}
+				this.liveElicitations.delete(event.token);
+				// ツールの許可待ちが残っていれば、そちらの決着（settleLiveAfterApprovals）に任せる
+				if (this.liveStates.get(event.token)?.phase !== 'permission' || !this.liveBeforePermission.has(event.token)
+					|| this.tailers.get(event.token)?.hasAnyPendingApproval() === true) {
+					return;
+				}
+				const before = this.liveBeforePermission.get(event.token);
+				this.liveBeforePermission.delete(event.token);
+				if (before === undefined) {
+					this.clearLiveState(event.token);
+				} else {
+					this.setLiveState(event.token, { ...before, updatedAt: event.at });
+				}
 				return;
 			}
 			case 'MessageDisplay':
@@ -7054,6 +7094,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.lastTurnEndedAt.set(event.token, event.at);
 		this.activeTurnTokens.delete(event.token);
 		this.liveBeforePermission.delete(event.token);
+		this.liveElicitations.delete(event.token);
 		this.clearLiveState(event.token);
 		const tracker = this.activityTrackers.get(event.token);
 		const activityEnded = event.event === 'SessionEnd'
@@ -8069,6 +8110,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'PermissionDenied':
 				next = current?.kind === 'permission' ? undefined : current;
 				break;
+			case 'Elicitation':
+				next = { kind: 'permission', text: paradisElicitationSummary(event.payload), at: event.at };
+				break;
+			case 'ElicitationResult':
+				next = current?.kind === 'permission' ? undefined : current;
+				break;
 			case 'UserPromptSubmit':
 			case 'SessionStart':
 			case 'SessionEnd':
@@ -8383,6 +8430,8 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** 許可を待つ前の様子（ペイン → 様子。無ければ何も動いていなかった）。 */
 	private readonly liveBeforePermission = new Map<string, IParadisAgentLiveState | undefined>();
+	/** 決着していない MCP の入力の依頼（Elicitation hook）の数（ペイン → 数）。 */
+	private readonly liveElicitations = new Map<string, number>();
 
 	/**
 	 * transcript に結果が書かれて承認が決着した後の、生成中の様子を直す。Claude Code 2.1.283 は許可を Esc で
@@ -8392,7 +8441,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private settleLiveAfterApprovals(token: string, rejected: boolean): void {
 		const tailer = this.tailers.get(token);
-		if (tailer === undefined || tailer.hasAnyPendingApproval()) {
+		// MCP の入力の依頼が待っている間は、許可待ちの様子を解かない（その決着の hook が戻す）
+		if (tailer === undefined || tailer.hasAnyPendingApproval() || (this.liveElicitations.get(token) ?? 0) > 0) {
 			return;
 		}
 		const live = this.liveStates.get(token);

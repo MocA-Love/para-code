@@ -66,6 +66,19 @@ suite('Paradis task board remote - checks', () => {
 		assert.deepStrictEqual(paradisTaskBoardRemoteGitPlan('/r', { kind: 'commit', message: 'fix (#1)' }).args, ['-C', '/r', '-c', 'core.quotepath=false', 'commit', '--quiet', '-m', 'fix (#1)']);
 	});
 
+	test('a new worktree is checked out in parallel only when asked, and only for worktreeAdd', () => {
+		const add = { kind: 'worktreeAdd', dir: '/w/a', branch: 'para/a', mode: 'new', base: { kind: 'head' } };
+		assert.deepStrictEqual({
+			parallel: paradisTaskBoardRemoteGitPlan('/r', add, { parallelCheckout: true }).args,
+			configured: paradisTaskBoardRemoteGitPlan('/r', add).args,
+			otherKind: paradisTaskBoardRemoteGitPlan('/r', { kind: 'commit', message: 'x' }, { parallelCheckout: true }).args,
+		}, {
+			parallel: ['-C', '/r', '-c', 'core.quotepath=false', '-c', 'checkout.workers=0', 'worktree', 'add', '--no-track', '-b', 'para/a', '/w/a', 'HEAD'],
+			configured: ['-C', '/r', '-c', 'core.quotepath=false', 'worktree', 'add', '--no-track', '-b', 'para/a', '/w/a', 'HEAD'],
+			otherKind: ['-C', '/r', '-c', 'core.quotepath=false', 'commit', '--quiet', '-m', 'x'],
+		});
+	});
+
 	test('git plans refuse operations and values outside the list', () => {
 		const ops: unknown[] = [
 			{ kind: 'gc' },

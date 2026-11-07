@@ -128,11 +128,13 @@ suite('Paradis notification message', () => {
 			paradisPermissionPreview('Write: /repo/.env'),
 			paradisPermissionPreview('WebFetch'),
 			paradisPermissionPreview('TOKEN=abcdef123456 ./deploy.sh'),
+			paradisPermissionPreview('MCP「github」が入力を求めています'),
 		], [
 			'Bash: npm test -- auth',
 			'Write: /repo/.env',
 			'WebFetch',
 			'Bash: TOKEN=*** ./deploy.sh',
+			'MCP「github」が入力を求めています',
 		]);
 	});
 
