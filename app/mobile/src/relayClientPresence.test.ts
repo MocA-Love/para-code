@@ -73,9 +73,11 @@ class ManualTimers implements Timers {
 	}
 }
 
-async function connectedClient(timers: Timers = new ManualTimers()): Promise<{ sockets: FakeSocket[]; presence: boolean[] }> {
+async function connectedClient(timers: Timers = new ManualTimers()): Promise<{ sockets: FakeSocket[]; presence: boolean[]; restartingWhenOnline: boolean[] }> {
 	const sockets: FakeSocket[] = [];
 	const presence: boolean[] = [];
+	const restartingWhenOnline: boolean[] = [];
+	let client: RelayClient | undefined;
 	const credentials: PairedCredentials = {
 		relayUrl: 'wss://relay.test',
 		deviceId: 'device',
@@ -83,7 +85,7 @@ async function connectedClient(timers: Timers = new ManualTimers()): Promise<{ s
 		mobileToken: 'token',
 		pcPublicKey: (await generateIdentity()).publicKey,
 	};
-	const client = new RelayClient(
+	client = new RelayClient(
 		await generateIdentity(),
 		credentials,
 		() => {
@@ -91,11 +93,18 @@ async function connectedClient(timers: Timers = new ManualTimers()): Promise<{ s
 			sockets.push(socket);
 			return socket;
 		},
-		{ onPcPresence: online => presence.push(online) },
+		{
+			onPcPresence: online => {
+				presence.push(online);
+				if (online) {
+					restartingWhenOnline.push(client?.restartingForPc === true);
+				}
+			},
+		},
 		timers,
 	);
 	client.connect();
-	return { sockets, presence };
+	return { sockets, presence, restartingWhenOnline };
 }
 
 /** 作られた順の index 番目のソケット。まだ作られていなければテストを失敗させる。 */
@@ -149,11 +158,12 @@ describe('RelayClient presence handling', () => {
 	});
 
 	it('reports every presence change to the caller', async () => {
-		const { sockets, presence } = await connectedClient();
+		const { sockets, presence, restartingWhenOnline } = await connectedClient();
 		const first = socketAt(sockets, 0);
 		first.deliverPresence(false);
 		first.deliverPresence(true);
 
-		expect(presence).toEqual([false, true]);
+		// PC が戻った知らせは、張り直すところだと分かる状態で届く（受け手は古いセッションで要求を送らない）
+		expect({ presence, restartingWhenOnline }).toEqual({ presence: [false, true], restartingWhenOnline: [true] });
 	});
 });

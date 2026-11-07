@@ -1306,8 +1306,21 @@ function parseAgentChatImages(value: unknown): AgentChatImage[] | undefined {
 }
 
 /** relay境界で受けたチャットメッセージ配列の、検証が必要な部分だけを差し替える。 */
+/**
+ * 届いた発言が描画で使う形をしているか（rev・text・role・kind）。型注釈は relay の境界では信用しない。
+ * text の無い発言が 1 件でも店に入ると、会話の画面が描画の途中で落ちる。
+ */
+function isAgentChatMessageShape(value: unknown): value is AgentChatMessage {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const raw = value as Record<string, unknown>;
+	return typeof raw['rev'] === 'number' && Number.isSafeInteger(raw['rev']) && typeof raw['text'] === 'string'
+		&& typeof raw['role'] === 'string' && typeof raw['kind'] === 'string';
+}
+
 function normalizeAgentChatMessages(value: AgentChatMessage[] | undefined): AgentChatMessage[] {
-	return (value ?? []).map(message => {
+	return (Array.isArray(value) ? value : []).filter(isAgentChatMessageShape).map(message => {
 		let normalized = message;
 		if (normalized?.compaction !== undefined) {
 			const compaction = parseAgentCompactionInfo(normalized.compaction);
@@ -2308,7 +2321,7 @@ export class MobileController {
 					this.cancelPendingAgentActions();
 					this.cancelPendingRequests();
 					agentChatsChanged = this.cancelStaleRendererRequests();
-				} else if (this.state.connection === 'online') {
+				} else if (this.state.connection === 'online' && this.client?.restartingForPc !== true) {
 					this.requestState();
 					this.sendSpeculativeAgentAttaches();
 				}
@@ -2588,12 +2601,23 @@ export class MobileController {
 	 * 未接続なら即座に接続、'online' 表示中は生存確認する（フォアグラウンド復帰時用）。
 	 * `fromHeartbeat` は25秒おきの心拍から呼ぶとき（再試行の回数を戻さない）。
 	 */
+	/** 続けて呼ばれた ensureConnected（接続済み）を 1 回にまとめる幅（ms）。 */
+	private static readonly ONLINE_PROBE_COALESCE_MS = 1_000;
+	private lastOnlineProbeAt = 0;
+
 	ensureConnected(fromHeartbeat = false): void {
 		const client = this.client;
 		if (!client) {
 			return;
 		}
 		if (client.connectionState === 'online') {
+			// 前面に戻ったときは複数の経路（見える状態の知らせ・通知センターの突き合わせ）から同時に呼ばれる。
+			// 続けて呼ばれたら 1 回にまとめる（state 要求と生存確認を 2 回ずつ送らない）
+			const now = Date.now();
+			if (now - this.lastOnlineProbeAt < MobileController.ONLINE_PROBE_COALESCE_MS) {
+				return;
+			}
+			this.lastOnlineProbeAt = now;
 			// zombie検出: 応答が必ず返るstate要求を送り、無応答なら接続を作り直す
 			this.requestState();
 			client.probeLiveness();
@@ -3332,7 +3356,13 @@ export class MobileController {
 	}
 
 	private resumeLiveSessionSubscriptions(): void {
+		const speculative = new Set(this.speculativeAgentAttaches);
+		this.speculativeAgentAttaches.clear();
 		for (const terminalKey of this.attachedAgents.keys()) {
+			const target = this.rendererTargetFor(terminalKey);
+			if (speculative.has(terminalKey) && target !== undefined && target === this.attachedAgentTargets.get(terminalKey)) {
+				continue;
+			}
 			this.sendAgentAttach(terminalKey);
 		}
 		for (const [terminalKey, stream] of this.termStreams) {
@@ -3425,10 +3455,20 @@ export class MobileController {
 	 * 要求し、それが決まるのは state 受信時なので、先に送ると操作台帳の再送順が壊れる。
 	 */
 	private sendSpeculativeAgentAttaches(): void {
+		this.speculativeAgentAttaches.clear();
 		for (const terminalKey of this.attachedAgents.keys()) {
-			this.sendAgentAttach(terminalKey, true);
+			if (this.sendAgentAttach(terminalKey, true)) {
+				this.speculativeAgentAttaches.add(terminalKey);
+			}
 		}
 	}
+
+	/**
+	 * 今回の繋ぎ直しで先出しした attach（{@link sendSpeculativeAgentAttaches}）。state が届いた後の
+	 * {@link resumeLiveSessionSubscriptions} は、同じ PC のウィンドウ宛てに先出し済みのものを送り直さない
+	 * （送り直すと PC は先出しの分を捨てて同じ応答をもう一度作る。epoch が変わった直後なら全量の snapshot が 2 回届く）。
+	 */
+	private readonly speculativeAgentAttaches = new Set<string>();
 
 	/**
 	 * state 適用までの間に預かっていたフレームを、届いた順に流し直す。
@@ -4111,17 +4151,18 @@ export class MobileController {
 		}
 	}
 
-	private sendAgentAttach(terminalKey: string, speculative = false): void {
+	/** 送ったら true。 */
+	private sendAgentAttach(terminalKey: string, speculative = false): boolean {
 		if (!this.isLiveAvailable(speculative)) {
-			return;
+			return false;
 		}
 		const terminal = this.terminalForKey(terminalKey);
 		if (terminal === undefined) {
-			return;
+			return false;
 		}
 		const target = this.rendererTargetFor(terminalKey);
 		if (target === undefined) {
-			return;
+			return false;
 		}
 		this.attachedAgentTargets.set(terminalKey, target);
 		// 手元に同ターミナルの受信済み状態があれば epoch/afterRev を申告して差分だけ受け取る。
@@ -4138,6 +4179,7 @@ export class MobileController {
 			? { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), epoch: existing.epoch, afterRev: lastMessageRev, liveEncoding: AGENT_LIVE_APPEND_ENCODING, responseEncoding: JSON_GZIP_RESPONSE_ENCODING }
 			: { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), liveEncoding: AGENT_LIVE_APPEND_ENCODING, responseEncoding: JSON_GZIP_RESPONSE_ENCODING };
 		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
+		return this.client !== undefined;
 	}
 
 	private terminalForKey(terminalKey: string): WorkspaceState['terminals'][number] | undefined {

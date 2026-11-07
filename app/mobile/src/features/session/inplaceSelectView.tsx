@@ -25,7 +25,7 @@ const READY_AFTER_LOAD_MS = 300;
  * - `segments` と `point` は差し替えを始めたときの写しを渡すこと。変わると HTML を作り直して選択が消える
  * - WebView の編集メニューに `menuItems` を足さない（足すと react-native-webview が OS の項目を全部消す）
  */
-export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight }: {
+export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight, onGone }: {
 	segments: readonly InplaceSelectSegment[];
 	point: InplaceSelectPoint | undefined;
 	/** 本文の色。 */
@@ -33,6 +33,8 @@ export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight }:
 	onReady: () => void;
 	/** 中身の高さ（pt）が分かった・変わった。 */
 	onHeight: (height: number) => void;
+	/** iOS が中身のプロセスを落とした。呼び出し側は差し替えをやめて元の表示へ戻す（隠したままにしない）。 */
+	onGone?: () => void;
 }) {
 	const theme = useThemeColors();
 	const scale = useChatTextScale();
@@ -87,6 +89,7 @@ export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight }:
 				javaScriptEnabled
 				onMessage={onMessage}
 				onLoadEnd={onLoadEnd}
+				onContentProcessDidTerminate={() => onGone?.()}
 				onShouldStartLoadWithRequest={guardWebViewNavigation}
 				// 縦のスクロールは会話の一覧に任せる（中身の高さまで WebView を伸ばすので、中でスクロールしない）
 				scrollEnabled={false}
