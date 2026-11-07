@@ -145,6 +145,8 @@ interface ITestHarnessOptions {
 	readonly persistedCommands?: readonly string[];
 	readonly environment?: IRemoteAgentEnvironment | null | Promise<IRemoteAgentEnvironment | null> | (() => Promise<IRemoteAgentEnvironment | null>);
 	readonly remoteAuthority?: string;
+	/** The active terminal's own remote authority. Defaults to the window's (a remote terminal in a remote window). */
+	readonly terminalRemoteAuthority?: string | null;
 	readonly read?: (resource: URI, token: CancellationToken | undefined) => Promise<IFileContent>;
 	readonly decodeZshHistory?: (bytes: Uint8Array) => string;
 	readonly parseZshHistory?: (content: string) => readonly string[];
@@ -245,7 +247,8 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 	};
 	const terminalService: Pick<ITerminalService, 'activeInstance'> = {
 		get activeInstance() {
-			return { shellType } as ITerminalService['activeInstance'];
+			const remoteAuthority = options.terminalRemoteAuthority === null ? undefined : options.terminalRemoteAuthority ?? options.remoteAuthority;
+			return { shellType, remoteAuthority } as ITerminalService['activeInstance'];
 		},
 	};
 	const accessor: ServicesAccessor = {
@@ -579,6 +582,15 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		assert.deepStrictEqual(await windows.provider.provideCompletions('e', 1, CancellationToken.None), []);
 		assert.strictEqual(windows.counters.read, 0);
 		windows.provider.dispose();
+	});
+
+	test('reads this machine\'s history for a local terminal in an SSH window', async () => {
+		const harness = createHarness({ shellType: PosixShellType.Bash, remoteAuthority: 'authority', terminalRemoteAuthority: null });
+		await harness.provider.provideCompletions('e', 1, CancellationToken.None);
+		assert.deepStrictEqual(harness.resources.map(resource => ({ scheme: resource.scheme, authority: resource.authority, file: resource.path.split('/').pop() })), [
+			{ scheme: 'file', authority: '', file: '.bash_history' },
+		]);
+		harness.provider.dispose();
 	});
 
 	test('retries location resolution after a transient environment failure', async () => {
