@@ -145,6 +145,8 @@ interface IRelaySession {
 	bound: boolean;
 	/** 走っている（確認待ちを含む）工程のコマンド。 */
 	readonly runs: Set<string>;
+	/** ボードが止めた実行。確認のダイアログを待っている間に止められたものを、許可されても送らないために控える。 */
+	readonly cancelledRuns: Set<string>;
 	/** 確認のダイアログを出している最中か（セッションごとに 1 件まで。コマンドと push で共有）。 */
 	confirming: boolean;
 	/** セッションを開いたときの origin の URL（認証情報を外したもの）と既定のブランチ。push のたびに照らす（G0）。 */
@@ -239,7 +241,7 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 			void channel.call('closeSession', [sessionId]).catch(() => undefined);
 			return paradisTaskBoardFail('unavailable', 'The window is closing.');
 		}
-		const session: IRelaySession = { sessionId, repository: mainUri, root, worktreeRoot, places: new Set([root]), bound: false, runs: new Set(), confirming: false, pinnedPush: undefined, pinnedFetch: undefined, defaultBranch: undefined };
+		const session: IRelaySession = { sessionId, repository: mainUri, root, worktreeRoot, places: new Set([root]), bound: false, runs: new Set(), cancelledRuns: new Set(), confirming: false, pinnedPush: undefined, pinnedFetch: undefined, defaultBranch: undefined };
 		this.sessions.set(sessionId, session);
 		const timer = new IntervalTimer();
 		timer.cancelAndSet(() => {
@@ -382,6 +384,9 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 					void this.startPush(session, op.place, op.runId, op.branch, op.setUpstream, op.interactive);
 					return { ok: true, value: { accepted: true, detail: `push ${op.branch}` } };
 				case 'cancelRun':
+					if (session.runs.has(op.runId)) {
+						session.cancelledRuns.add(op.runId);
+					}
 					return { ok: true, value: { cancelled: await channel.call<boolean>('cancelRun', [sessionId, op.runId]).catch(() => false) } };
 			}
 		} catch (error) {
@@ -396,6 +401,7 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 	private async startCommand(session: IRelaySession, place: string, runId: string, command: string, step: IParadisTaskBoardRelayCommandStep): Promise<void> {
 		const exit = (event: Omit<Extract<ParadisTaskBoardRelayEvent, { type: 'relay-exit' }>, 'type' | 'runId'>) => {
 			session.runs.delete(runId);
+			session.cancelledRuns.delete(runId);
 			this.sendEvent(session.sessionId, { type: 'relay-exit', runId, ...event });
 		};
 		const key = `${session.repository.toString()}|${step.flowId}|${step.stepId}`;
@@ -421,6 +427,11 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 			}
 		}
 		const channel = this.host.remoteChannel();
+		if (session.cancelledRuns.has(runId)) {
+			// 確認を待っている間にボードで止められた。許可されても送らない
+			exit({ code: null, signal: null, cancelled: true, timedOut: false, reason: 'cancelled' });
+			return;
+		}
 		if (!channel || !this.sessions.has(session.sessionId)) {
 			exit({ code: null, signal: null, cancelled: true, timedOut: false, reason: 'disconnected' });
 			return;
@@ -444,6 +455,7 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 	private async startPush(session: IRelaySession, place: string, runId: string, branch: string, setUpstream: boolean, interactive: boolean): Promise<void> {
 		const exit = (event: Omit<Extract<ParadisTaskBoardRelayEvent, { type: 'relay-exit' }>, 'type' | 'runId'>) => {
 			session.runs.delete(runId);
+			session.cancelledRuns.delete(runId);
 			this.sendEvent(session.sessionId, { type: 'relay-exit', runId, ...event });
 		};
 		const refuse = (reason: string) => exit({ code: null, signal: null, cancelled: false, timedOut: false, reason });
@@ -454,29 +466,36 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 		}
 		const git = async (op: Record<string, unknown>) => channel.call<{ readonly code: number; readonly stdout: string; readonly stderr: string }>('git', [session.sessionId, place, op]);
 		try {
-			const head = await git({ kind: 'headSha' });
+			// 互いの答えを使わない問い合わせは並べて待つ（SSH の往復を重ねない）。断る順番は今までと同じ
+			const [head, urls, mirror, remoteRef] = await Promise.all([
+				git({ kind: 'headSha' }),
+				git({ kind: 'remoteUrl', push: true, all: true }),
+				git({ kind: 'remoteMirror' }),
+				git({ kind: 'refExists', rev: { kind: 'remote', branch } }),
+			]);
 			const sha = head.stdout.trim();
 			if (head.code !== 0 || !/^[0-9a-f]{40}$/.test(sha)) {
 				refuse('no-commit');
 				return;
 			}
 			// 送り先は、ちょうど 1 本で、セッションを開いたときに固定したものだけ（pushurl を足すと送り先が増える）
-			const pushUrls = paradisTaskBoardRemoteStripUrlCredentials((await git({ kind: 'remoteUrl', push: true, all: true })).stdout).split('\n').map(url => url.trim()).filter(url => url.length > 0);
+			const pushUrls = paradisTaskBoardRemoteStripUrlCredentials(urls.stdout).split('\n').map(url => url.trim()).filter(url => url.length > 0);
 			const pushUrl = pushUrls[0] ?? '';
 			if (session.pinnedPush === undefined || pushUrls.length !== 1 || pushUrl !== session.pinnedPush) {
 				refuse('push-url-changed');
 				return;
 			}
 			// mirror の設定があると、push がすべての参照を送る
-			const mirror = await git({ kind: 'remoteMirror' });
 			if (mirror.code === 0 && mirror.stdout.trim().toLowerCase() !== 'false') {
 				refuse('push-mirror');
 				return;
 			}
-			const remoteBranch = (await git({ kind: 'refExists', rev: { kind: 'remote', branch } })).code === 0;
+			const remoteBranch = remoteRef.code === 0;
 			const base = remoteBranch ? { kind: 'remote', branch } : { kind: 'remote', branch: session.defaultBranch ?? 'main' };
-			const subjects = await git({ kind: 'commitSubjects', base, head: { kind: 'sha', sha } });
-			const changed = await git({ kind: 'changedFiles', base, head: { kind: 'sha', sha } });
+			const [subjects, changed] = await Promise.all([
+				git({ kind: 'commitSubjects', base, head: { kind: 'sha', sha } }),
+				git({ kind: 'changedFiles', base, head: { kind: 'sha', sha } }),
+			]);
 			if (subjects.code !== 0 || changed.code !== 0) {
 				refuse('cannot-read-commits');
 				return;
@@ -521,6 +540,11 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 					const latest = this.host.readRecord(key);
 					this.host.writeRecord(key, { ...latest, pushApproved: [...(latest.pushApproved ?? []).filter(name => name !== branch), branch].slice(-MAX_RECORDED) });
 				}
+			}
+			if (session.cancelledRuns.has(runId)) {
+				// 確認を待っている間にボードで止められた。許可されても送らない
+				exit({ code: null, signal: null, cancelled: true, timedOut: false, reason: 'cancelled' });
+				return;
 			}
 			if (!this.sessions.has(session.sessionId)) {
 				refuse('disconnected');
@@ -596,6 +620,7 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 		const worktrees = git.kind === 'worktreeAdd' ? [...record.worktrees.filter(worktree => worktree.dir !== git.dir), { dir: git.dir as string, branch: git.branch as string }] : git.kind === 'worktreeRemove' ? record.worktrees.filter(worktree => worktree.dir !== git.dir) : record.worktrees;
 		const createdBranch = git.mode === 'new' && typeof git.branch === 'string' && git.branch.startsWith('para/') ? git.branch : undefined;
 		const branches = createdBranch !== undefined ? [...record.branches.filter(branch => branch !== createdBranch), createdBranch] : record.branches;
-		this.host.writeRecord(key, { worktrees: worktrees.slice(-MAX_RECORDED), branches: branches.slice(-MAX_RECORDED) });
+		// 記録のほかの項目（覚えた push の許可など）は残す（writeRecord は丸ごと置き換える）
+		this.host.writeRecord(key, { ...record, worktrees: worktrees.slice(-MAX_RECORDED), branches: branches.slice(-MAX_RECORDED) });
 	}
 }
