@@ -78,7 +78,17 @@ suite('ParadisScheduledRunsService', () => {
 		const disabled = await service.setEnabled(id, false);
 		const saved = await service.save(DRAFT);
 		const deleted = await service.delete(id);
-		assert.deepStrictEqual([disabled.ok, saved.ok, deleted.ok, state.stored?.definitions.map(definition => definition.enabled)], [false, false, false, [true]]);
+		const savedAgain = await service.save(DRAFT);
+		// 書けなかった変更はメモリにも残さない（一覧に出ない・押し直しても増えない）
+		assert.deepStrictEqual({
+			results: [disabled.ok, saved.ok, deleted.ok, savedAgain.ok],
+			stored: state.stored?.definitions.map(definition => definition.enabled),
+			memory: service.getState().definitions.map(definition => [definition.id === id, definition.enabled]),
+		}, {
+			results: [false, false, false, false],
+			stored: [true],
+			memory: [[true, true]],
+		});
 	});
 
 	test('requests a run at the scheduled time, and a window claims it once', async () => {

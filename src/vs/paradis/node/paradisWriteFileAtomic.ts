@@ -164,12 +164,13 @@ export function paradisWriteFileAtomicSync(filePath: string, content: string): v
 /**
  * 一時ファイルを作れなかった・書けなかったとき、その場へ書く道へ落ちてよいか。
  *
- * 「一時ファイルを作れない」（ディレクトリに書き込めない・名前が埋まっている・権限を当てられない）だけ
+ * 「一時ファイルを作れない」（ディレクトリに書き込めない・名前が埋まっている・権限を当てられない・一時ファイルの名前が長すぎる）だけ
  * 落ちてよい。容量不足や I/O エラーは、その場へ書いても途中で失敗して元のファイルを壊すので落ちない。
  */
 export function paradisMayWriteInPlaceAfterTempFailure(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
-	return code === 'EACCES' || code === 'EPERM' || code === 'EEXIST';
+	// ENAMETOOLONG: 一時ファイルの名前（元の名前に印を足したもの）だけが長すぎる
+	return code === 'EACCES' || code === 'EPERM' || code === 'EEXIST' || code === 'ENAMETOOLONG';
 }
 
 export interface IParadisWriteFileAtomicOptions {
