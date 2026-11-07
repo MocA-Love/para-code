@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisParseTranscriptEntries } from '../../node/paradisPersistedAgentActivity.js';
+import { paradisParseClaudeAdvisorsEntries, paradisParseClaudePersistedActivityEntries, paradisParseCodexPersistedActivityEntries, paradisParseTranscriptEntries } from '../../node/paradisPersistedAgentActivity.js';
 import { IParadisTranscriptFile, ParadisTranscriptEntryWindows } from '../../node/paradisTranscriptEntryWindow.js';
 
 const HEAD = 48;
@@ -85,6 +85,39 @@ suite('ParadisTranscriptEntryWindows', () => {
 		file.content = Buffer.concat([file.content, Buffer.from(lines.slice(40).join('\n') + '\n')]);
 		await check('replaced');
 		assert.deepStrictEqual(mismatches, []);
+	});
+
+	test('the parsers do not change the parsed lines, which are shared between reads', async () => {
+		const windows = new ParadisTranscriptEntryWindows(1024, 4096, 1024 * 1024);
+		const file = new FakeFile();
+		const at = '2026-11-07T00:00:00.000Z';
+		file.content = Buffer.from([
+			{ type: 'user', timestamp: at, message: { content: 'start' } },
+			{ type: 'assistant', timestamp: at, message: { content: [{ type: 'tool_use', name: 'Agent', id: 'tu1', input: { description: 'look', subagent_type: 'Explore' } }, { type: 'server_tool_use', name: 'advisor', id: 'adv1' }] } },
+			{ type: 'user', timestamp: at, toolUseResult: { agentId: 'a1' }, message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: [{ type: 'text', text: 'Async agent launched agentId: a1' }] }] } },
+			{ type: 'assistant', timestamp: at, message: { stop_reason: 'end_turn', content: [{ type: 'advisor_tool_result', tool_use_id: 'adv1', content: { type: 'advisor_result', text: 'ok' } }, { type: 'text', text: 'done' }] } },
+			{ type: 'session_meta', timestamp: at, payload: { agent_nickname: 'child' } },
+			{ type: 'response_item', timestamp: at, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'do it' }] } },
+			{ type: 'event_msg', timestamp: at, payload: { type: 'task_complete' } },
+		].map(line => JSON.stringify(line)).join('\n') + '\n');
+		const freeze = (value: unknown): void => {
+			if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+				Object.freeze(value);
+				Object.values(value).forEach(freeze);
+			}
+		};
+		const run = async () => {
+			const entries = await windows.read('log', file);
+			entries.forEach(freeze);
+			const now = Date.parse(at) + 1000;
+			return JSON.stringify([
+				paradisParseClaudePersistedActivityEntries('owner', entries, now, now),
+				paradisParseClaudeAdvisorsEntries(undefined, entries, now),
+				paradisParseCodexPersistedActivityEntries('c1', '{}', entries, now, now),
+			], (_key, value) => value instanceof Map ? [...value] : value);
+		};
+		// 凍らせた行で例外が出ず（書き換えれば strict mode で TypeError）、2 回目の結果も同じ
+		assert.strictEqual(await run(), await run());
 	});
 
 	test('reads only what was appended after the first read', async () => {

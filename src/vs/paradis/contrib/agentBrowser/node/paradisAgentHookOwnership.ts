@@ -84,6 +84,12 @@ export interface IParadisHookProcessInfo {
 export interface IParadisHookSnapshotHint {
 	readonly pids: readonly number[];
 	readonly descendantsOf?: number;
+	/**
+	 * `descendantsOf` の子孫は、`pids[0]`（hook）の祖先にこれに当たる起動行があるときだけ要る（ペインの
+	 * `claude attach` を探すのは daemon の配下の hook だけ）。子孫を読むのはスレッドごとの子の一覧で重いので、
+	 * 要らなければ読まない。
+	 */
+	readonly descendantsOnlyUnder?: (command: string) => boolean;
 }
 
 /** プロセス表の取得（テストではfakeへ差し替える）。 */
@@ -719,23 +725,30 @@ async function linuxProcSnapshot(hint: IParadisHookSnapshotHint): Promise<Readon
 		result.set(pid, info);
 		return info;
 	};
-	for (const pid of hint.pids) {
+	let hookUnderMatch = false;
+	for (const [index, pid] of hint.pids.entries()) {
 		// 祖先は、祖先チェーン（MAX_ANCESTOR_DEPTH）とペインの子孫か（MAX_PANE_DESCENT_DEPTH）の深い方まで辿る
 		let current: number | undefined = pid;
 		for (let depth = 0; current !== undefined && current > 0 && depth <= MAX_PANE_DESCENT_DEPTH; depth++) {
 			const known: boolean = result.has(current);
 			const info: IParadisHookProcessInfo | undefined = await visit(current);
+			if (index === 0 && info !== undefined && hint.descendantsOnlyUnder?.(info.command)) {
+				hookUnderMatch = true;
+			}
 			current = known ? undefined : info?.ppid;
 		}
 	}
-	if (hint.descendantsOf !== undefined && await visit(hint.descendantsOf) !== undefined) {
+	if (hint.descendantsOf !== undefined && await visit(hint.descendantsOf) !== undefined && (hint.descendantsOnlyUnder === undefined || hookUnderMatch)) {
+		// 祖先として読んだプロセス（ペインの中の hook の発信元など）の下も辿る
+		const descended = new Set([hint.descendantsOf]);
 		let level = [hint.descendantsOf];
 		for (let depth = 0; level.length > 0 && depth < MAX_PANE_DESCENT_DEPTH; depth++) {
 			const next: number[] = [];
 			for (const pid of level) {
 				const children = await paradisReadProcChildren(pid, readProc).catch(() => []);
 				for (const child of children) {
-					if (!result.has(child) && await visit(child) !== undefined) {
+					if (!descended.has(child) && await visit(child) !== undefined) {
+						descended.add(child);
 						next.push(child);
 					}
 				}
@@ -1246,7 +1259,7 @@ export class ParadisAgentHookOwnership {
 
 	/**
 	 * プロセス表から引く pid: hook とその祖先、Para Code 自身とその祖先、ペインのシェルとその子孫（`claude attach` を
-	 * 探す）、所有者（生きているか）。所有者は表を待つ間に別の hook で替わりうるので、全ペインの分を挙げる。
+	 * 探す。hook が daemon の配下のときだけ）、所有者（生きているか）。所有者は表を待つ間に別の hook で替わりうるので、全ペインの分を挙げる。
 	 */
 	private snapshotHint(hookPid: number, paneShellPid: number | undefined): IParadisHookSnapshotHint {
 		const pids = [hookPid, this.selfPid];
@@ -1258,7 +1271,7 @@ export class ParadisAgentHookOwnership {
 				pids.push(owner.attachedHost.pid);
 			}
 		}
-		return paneShellPid !== undefined ? { pids: [...pids, paneShellPid], descendantsOf: paneShellPid } : { pids };
+		return paneShellPid !== undefined ? { pids: [...pids, paneShellPid], descendantsOf: paneShellPid, descendantsOnlyUnder: paradisIsClaudeBackgroundHostCommand } : { pids };
 	}
 
 	/** 直近に使ったプロセス表の控えの古さ（診断ログ用）。 */
