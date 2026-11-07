@@ -8,6 +8,7 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { CircleAlert, FileQuestion } from 'lucide-react-native';
 import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
 import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
+import { useWebViewRevival } from '../../components/webViewRevival.js';
 import { isFileViewerJavaScriptEnabled, isSearchableFileViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { haptic } from '../../haptics.js';
@@ -45,6 +46,7 @@ import { buildImageHtml, buildSecureDocxHtml, fileExt } from './viewerHtml.js';
 export function NativeFileView({ data, ext, trace }: { data: string; ext: string; trace?: FileViewerLoadTrace }) {
 	const [uri, setUri] = useState<string | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
+	const revival = useWebViewRevival();
 	useEffect(() => {
 		let cancelled = false;
 		let written: string | undefined;
@@ -89,8 +91,10 @@ export function NativeFileView({ data, ext, trace }: { data: string; ext: string
 	}
 	return (
 		<WebView
+			key={revival.generation}
 			style={styles.web}
 			source={{ uri }}
+			onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 			originWhitelist={['file://']}
 			allowingReadAccessToURL={uri}
 			javaScriptEnabled={false}
@@ -229,6 +233,8 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 			key={`${kind}:${webviewEpoch}`}
 			style={styles.web}
 			source={{ html }}
+			// iOS が中身のプロセスを落としたら作り直す（白紙のまま残さない）
+			onContentProcessDidTerminate={() => setWebviewEpoch(value => value + 1)}
 			originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 			javaScriptEnabled={javaScriptEnabled}
 			onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
@@ -385,6 +391,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			}
 		};
 	}, [htmlImages]);
+	const revival = useWebViewRevival();
 	const onViewMessage = (data: string) => {
 		if (imageQueueRef.current?.handleMessage(data) === true) {
 			return;
@@ -423,10 +430,11 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 		// 画像を取り寄せる本文は、取り寄せのスクリプトを最初から入れた WebView で開く（後から足すと次の読み込みまで効かない）
 		view = (
 			<WebView
-				key={htmlImages !== undefined ? 'html-images' : 'page'}
+				key={`${htmlImages !== undefined ? 'html-images' : 'page'}:${revival.generation}`}
 				ref={setWebRef}
 				style={styles.web}
 				source={{ html }}
+				onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 				originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 				javaScriptEnabled={allowJs}
 				onShouldStartLoadWithRequest={guardWebViewNavigation}

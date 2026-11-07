@@ -117,6 +117,14 @@ export class RelayClient {
 	 * 抑止しないと `unexpected-close-0` が Sentry のノイズになる。
 	 */
 	private closedForPcRestart = false;
+
+	/**
+	 * PC の再起動を見て、このソケットを閉じて張り直すところか。古い暗号セッションのままなので、新しい PC は
+	 * この間に送ったものを読めない（state の要求や attach は張り直した後に送る）。
+	 */
+	get restartingForPc(): boolean {
+		return this.closedForPcRestart;
+	}
 	private suspended = false;
 	/**
 	 * 裏に回ったあとも、いまのソケットだけを保っている（W2-34）。この間は張り直さない:
@@ -571,6 +579,12 @@ export class RelayClient {
 				if (wasOnlineOnThisSocket !== msg.online) {
 					this.logEvent({ kind: 'pc-presence', online: msg.online });
 				}
+				// PC の再起動（下で張り直す）なら、在否を知らせる前に印を立てる。受け手はこの間に古いセッションで
+				// 要求を送らない（{@link restartingForPc}）
+				const pcRestarted = msg.online && wasOnlineOnThisSocket === false;
+				if (pcRestarted) {
+					this.closedForPcRestart = true;
+				}
 				this.callbacks.onPcPresence?.(msg.online);
 				// PCがoffline→onlineへ戻った = PC側プロセスが再起動し、E2Eセッション（ephemeral鍵）
 				// が新しくなった。モバイル側のソケットはリレーDOに保持されたまま生きているため、
@@ -585,9 +599,8 @@ export class RelayClient {
 				// ③PCのリレーソケットが1006で落ちてPC側セッションが消える ④このpresenceフラップが届くが
 				// mux===null なので何もしない ⑤②のresponseが届きハンドシェイクは成功したように見える
 				// ⑥直後の requestState が、セッションを失ったPCから hello と誤解されて全滅。
-				if (msg.online && wasOnlineOnThisSocket === false) {
+				if (pcRestarted) {
 					this.reconnectAttempt = 0;
-					this.closedForPcRestart = true;
 					this.logEvent({ kind: 'pc-restarted' });
 					try {
 						this.socket?.close(4002, 'pc restarted');

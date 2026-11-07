@@ -1203,11 +1203,14 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 		clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
 	});
 	const watchdog = watchdogRef.current;
+	// リンクを光らせてから開くまでの待ち。待っている間に閉じたら開かない（閉じた後にビューアやブラウザが開かないように）
+	const linkOpenTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	useEffect(() => {
 		watchdog.arm();
 		return () => {
 			watchdog.dispose();
 			coalescer.clear();
+			clearTimeout(linkOpenTimer.current);
 		};
 	}, [watchdog, coalescer]);
 	const retryLoad = () => {
@@ -1235,7 +1238,8 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				}
 				haptic('move');
 				inject(`window.__para.flash(${Number(msg.token)}, ${link.start}, ${link.end})`);
-				setTimeout(() => open(link.kind === 'url' ? { kind: 'url', url: link.url } : { kind: 'file', target: link.target }), LINK_FLASH_MS);
+				clearTimeout(linkOpenTimer.current);
+				linkOpenTimer.current = setTimeout(() => open(link.kind === 'url' ? { kind: 'url', url: link.url } : { kind: 'file', target: link.target }), LINK_FLASH_MS);
 				return;
 			}
 			case 'links': {

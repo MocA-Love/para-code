@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { MOBILE_OFFICE_ORIGIN_WHITELIST } from '../../components/officeCapability.js';
+import { useWebViewRevival } from '../../components/webViewRevival.js';
 import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
 import { isDiffViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
 import { haptic } from '../../haptics.js';
@@ -61,13 +62,16 @@ export function ReviewImageCompare({ path, before, after, sideBySide }: { path: 
 
 function ImagePane({ label, data, ext }: { label: string; data: string | undefined; ext: string }) {
 	const html = useMemo(() => (data !== undefined ? buildImageHtml(data, ext) : undefined), [data, ext]);
+	const revival = useWebViewRevival();
 	return (
 		<View style={styles.pane}>
 			<Text style={styles.paneLabel}>{label}</Text>
 			{html !== undefined ? (
 				<WebView
+					key={revival.generation}
 					style={styles.web}
 					source={{ html }}
+					onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 					originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 					javaScriptEnabled={false}
 					onShouldStartLoadWithRequest={guardWebViewNavigation}
@@ -83,10 +87,13 @@ function ImagePane({ label, data, ext }: { label: string; data: string | undefin
 
 /** PC が描いた Excel・Word の差分（HTML）。Excel はシートの切り替えに JS を使い、Word は使わない。 */
 export function OfficeDiffWebView({ html, kind }: { html: string; kind: 'spreadsheet' | 'docx' }) {
+	const revival = useWebViewRevival();
 	return (
 		<WebView
+			key={revival.generation}
 			style={styles.web}
 			source={{ html }}
+			onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 			originWhitelist={kind === 'docx' ? [...MOBILE_OFFICE_ORIGIN_WHITELIST] : ['*']}
 			javaScriptEnabled={isDiffViewerJavaScriptEnabled(kind)}
 			onShouldStartLoadWithRequest={guardWebViewNavigation}
