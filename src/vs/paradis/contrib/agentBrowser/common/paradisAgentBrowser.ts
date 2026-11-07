@@ -1263,7 +1263,8 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 		// 要対応系: 許可要求・ユーザー入力要求
 		// Claude Code の MCP サーバーが利用者へ入力を求めている（Elicitation、2.1.63+）。答えるまでエージェントは
 		// 止まっているので許可待ちと同じ要対応にする。決着（ElicitationResult）は受け口が待つ前の状態へ戻す
-		// （paradisAgentBrowserService.ts）。戻す先を覚えていないときの既定は working（続く hook が直す）。
+		// （paradisAgentBrowserService.ts。依頼が重なれば最後の決着で戻し、覚えの無い決着では状態を変えない）。ここで
+		// working を返すのは、送り主を確かめられないペインでも解除のイベントとして通すため（受け口が working を上書きする）。
 		case 'Elicitation':
 		case 'PermissionRequest':
 		case 'exec_approval_request':
