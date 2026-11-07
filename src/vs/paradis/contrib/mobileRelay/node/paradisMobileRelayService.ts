@@ -135,6 +135,17 @@ const HELD_APPROVAL_NOTIFY_MAX_ROUNDS = 5;
  * 発生するトラフィックなので無駄に短くもしない値として45秒を採る。死活検知は最悪2tick（90秒）。
  */
 const RELAY_KEEPALIVE_INTERVAL_MS = 45_000;
+/** offer を renderer へ渡すまで持っておく ICE の上限（renderer 側の MAX_PENDING_ICE と同じ考え方）。 */
+const MAX_HELD_WEBRTC_ICE = 64;
+
+/** 写しの WebRTC の配送先（モバイルごと）。 */
+interface IParadisWebrtcRendererLease {
+	readonly sid: string;
+	readonly owner: IParadisMobileWindowLeaseRef;
+	/** offer を renderer へ渡すまで持っておく同じ sid の ICE。渡したら undefined。 */
+	heldIce: IParadisMobileInboundFrame[] | undefined;
+}
+
 /** WSハンドシェイクの応答を待つ上限（undiciの既定headersTimeout 300秒では復帰が遅すぎる）。 */
 const RELAY_CONNECT_TIMEOUT_MS = 15_000;
 /** これだけ連続でpongが返らなければ「このリレーは保活に応答しない」と学習し直す。 */
@@ -924,7 +935,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly terminalOperations = new ParadisMobileOperationLedger();
 	private readonly agentCommandAuthority = new ParadisAgentCommandAuthority();
 	private readonly terminalOperationTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	private readonly webrtcRendererLeases = new Map<string, { readonly sid: string; readonly owner: IParadisMobileWindowLeaseRef }>();
+	/** 写しの WebRTC の配送先。arm を待つ間に届いた ICE は、先に渡すと renderer が旧 sid として捨てるので offer の後に送る。 */
+	private readonly webrtcRendererLeases = new Map<string, IParadisWebrtcRendererLease>();
 	private readonly voiceSubscriptions = new ParadisVoiceSubscriptions();
 	/**
 	 * PC からリレーへのソケットは全端末で 1 本なので、送信の列も 1 本（mux の版 4）。ソケットの送信バッファが
@@ -4154,6 +4166,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.browserMirror.setFramesPaused(mobileId, false);
 		}
 		let owner: IParadisMobileWindowLeaseRef | undefined;
+		let offerLease: IParadisWebrtcRendererLease | undefined;
 		if (signal.t === 'webrtc-offer') {
 			if (typeof signal.id !== 'string' || signal.id.length === 0 || signal.id.length > 200
 				|| typeof signal.targetId !== 'string' || signal.targetId.length === 0 || signal.targetId.length > 500) {
@@ -4163,7 +4176,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			if (owner === undefined) {
 				return;
 			}
-			this.webrtcRendererLeases.set(mobileId, { sid, owner });
+			offerLease = { sid, owner, heldIce: [] };
+			this.webrtcRendererLeases.set(mobileId, offerLease);
 			// 写しの予約が取れなければ offer を renderer へ渡さない。予約の無い getDisplayMedia は main で
 			// 画面全体の取得へ進みうるため（予約できなかった要求を写しに使わない）。アプリは確立の時間切れで
 			// JPEG の写しへ戻る
@@ -4187,24 +4201,45 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 		} else {
 			const active = this.webrtcRendererLeases.get(mobileId);
-			owner = active?.sid === sid ? active.owner : undefined;
-			if (owner === undefined || !this.sameLease(this.terminalRegistry.leaseOfWindow(owner.windowId), owner)) {
+			if (active?.sid !== sid) {
+				// 前のセッションの遅れた ICE / stop。今のセッションの配送先は変えない
+				return;
+			}
+			owner = active.owner;
+			if (!this.sameLease(this.terminalRegistry.leaseOfWindow(owner.windowId), owner)) {
 				this.webrtcRendererLeases.delete(mobileId);
+				return;
+			}
+			if (signal.t === 'webrtc-ice' && active.heldIce !== undefined) {
+				// offer をまだ renderer へ渡していない。渡すときに続けて送る
+				if (active.heldIce.length < MAX_HELD_WEBRTC_ICE) {
+					active.heldIce.push(frame);
+				}
 				return;
 			}
 		}
 		const delivered = await this.withCurrentRegisteredLease(owner, async () => {
-			this._onInboundFrame.fire([frame.ch, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, frame.mobileId]);
+			const route = paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration);
+			this._onInboundFrame.fire([frame.ch, route, frame.seq, frame.payload, frame.mobileId]);
+			if (offerLease !== undefined) {
+				const held = offerLease.heldIce ?? [];
+				offerLease.heldIce = undefined;
+				for (const ice of held) {
+					this._onInboundFrame.fire([ice.ch, route, ice.seq, ice.payload, ice.mobileId]);
+				}
+			}
 			return true;
 		}, `webrtc:${owner.windowId}`);
 		if (delivered !== true) {
-			this.webrtcRendererLeases.delete(mobileId);
+			if (this.webrtcRendererLeases.get(mobileId)?.sid === sid) {
+				this.webrtcRendererLeases.delete(mobileId);
+			}
 			if (signal.t === 'webrtc-offer' && typeof signal.sid === 'string') {
 				this.cdpFrames?.disarmMirrorCapture(owner.windowId, signal.sid).catch(err => this.logService.warn('[paradisMobileRelay] webrtc disarm failed', err));
 			}
 			return;
 		}
-		if (signal.t === 'webrtc-stop') {
+		if (signal.t === 'webrtc-stop' && this.webrtcRendererLeases.get(mobileId)?.sid === sid) {
 			this.webrtcRendererLeases.delete(mobileId);
 		}
 	}

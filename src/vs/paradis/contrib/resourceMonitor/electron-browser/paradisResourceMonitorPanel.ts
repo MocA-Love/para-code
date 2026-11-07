@@ -82,6 +82,8 @@ export class ParadisResourceMonitorPanel extends Disposable {
 	private sortOption: ParadisResourceMonitorSortOption = 'memory';
 	private readonly collapsedScopes = new Set<string>();
 	private latestSnapshot: IParadisResourceMonitorSnapshot | undefined;
+	/** 最後に描いたスナップショットの中身（同じ収集の結果が続けて届いたら描き直さない）。 */
+	private renderedSnapshotKey: string | undefined;
 
 	/** renderBody() は毎ポーリングで呼ばれ DOM を作り直すため、その都度生成する行リスナーはここに登録し、再描画のたびに clear() する(クラス寿命の _store に溜めない)。 */
 	private readonly _bodyListeners = this._register(new DisposableStore());
@@ -191,6 +193,12 @@ export class ParadisResourceMonitorPanel extends Disposable {
 	/** ウィジェットが新しいスナップショットを取得するたびに呼ばれる。 */
 	updateSnapshot(snapshot: IParadisResourceMonitorSnapshot): void {
 		this.latestSnapshot = snapshot;
+		// main は同じ収集の結果を使い回すので、中身が同じなら行と listener を作り直さない
+		const key = JSON.stringify(snapshot);
+		if (key === this.renderedSnapshotKey) {
+			return;
+		}
+		this.renderedSnapshotKey = key;
 		this.renderHeader(snapshot);
 		this.renderBody(snapshot);
 	}
@@ -291,7 +299,8 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		this.renderAppSection(snapshot, totalUsage);
 
 		if (snapshot.scopes.length === 0) {
-			this.renderEmpty(localize('paradis.resourceMonitor.noSessions', "No active terminal sessions"));
+			// アプリの内訳は残し、端末の欄にだけ空の表示を足す
+			dom.append(this.bodyElement, $('.prm-empty')).textContent = localize('paradis.resourceMonitor.noSessions', "No active terminal sessions");
 			return;
 		}
 

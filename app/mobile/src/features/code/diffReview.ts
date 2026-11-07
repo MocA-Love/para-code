@@ -98,6 +98,32 @@ export function shouldTryReviewStage(entry: ScmEntry, canStage: boolean): boolea
 	return canStage && entry.group !== 'staged' && entry.kind !== 'conflict';
 }
 
+/** 「確認済みをステージ」の結果。`changed` は確認した後に変わっていた件数、`unverified` は PC が確かめられなかった件数。 */
+export interface ReviewStageResult {
+	readonly staged: number;
+	readonly skipped: number;
+	readonly changed: number;
+	readonly unverified: number;
+}
+
+/** PC の `reviewStage` の応答（`staged` はパス、`skipped` は `{ path, reason }` の一覧）を件数にする。 */
+export function reviewStageResult(reply: { readonly staged?: unknown; readonly skipped?: unknown }): ReviewStageResult {
+	const skipped = Array.isArray(reply.skipped) ? reply.skipped : [];
+	const count = (reason: string) => skipped.filter(item => typeof item === 'object' && item !== null && (item as { reason?: unknown }).reason === reason).length;
+	return { staged: Array.isArray(reply.staged) ? reply.staged.length : 0, skipped: skipped.length, changed: count('changed'), unverified: count('unverified') };
+}
+
+/** ステージしなかったものの説明（無ければ undefined）。理由ごとに、次にすることを書く。 */
+export function reviewStageSkipNote(result: ReviewStageResult): string | undefined {
+	const other = result.skipped - result.changed - result.unverified;
+	const parts = [
+		result.changed > 0 ? `確認した後に変わっていた ${result.changed} 件は確認し直してください。` : undefined,
+		result.unverified > 0 ? `接続が不安定で確かめられなかった ${result.unverified} 件はステージしていません。もう一度お試しください。` : undefined,
+		other > 0 ? `ほかの ${other} 件は、衝突しているなどの理由でステージしていません。` : undefined,
+	].filter((part): part is string => part !== undefined);
+	return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
 /** 確認済みの件数（いまの一覧に残っていて、確認した後に変わっていないものだけ数える）。 */
 export function reviewedCount(entries: readonly ScmEntry[], marks: ReviewMarks): number {
 	return entries.filter(entry => isReviewed(entry, marks)).length;

@@ -227,6 +227,14 @@ export function paradisModeBit(who: ParadisPermissionWho, what: ParadisPermissio
  * どれか持っていたときだけ選んだ値の実行権を戻す（`chmod -R u=rwX` と同じ考え方）。特殊ビットは付けない。フォルダーの
  * `755` をそのまま中身へ当てると、すべてのファイルが実行できるようになってしまうため。
  */
+/**
+ * 「中にも適用」でフォルダーを辿る間に当てておく権限。読んで入れる（所有者の r と x）ようにしておき、
+ * 中を済ませてから選んだ値に直す。先に選んだ値（`644` など x の無い値）にすると、中を読めずに途中で止まる。
+ */
+export function paradisTraversableDirectoryMode(finalMode: number): number {
+	return finalMode | 0o500;
+}
+
 export function paradisRecursiveModeFor(selectedMode: number, isDirectory: boolean, currentMode: number): number {
 	if (isDirectory) {
 		return selectedMode;
