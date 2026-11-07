@@ -134,3 +134,5 @@ import './contrib/editorDownload/electron-browser/paradisEditorDownload.contribu
 import './contrib/workspaceSwitch/electron-browser/paradisWorkspacesNativeWindowActivity.js';
 // Q570: the editor tab strip's "+ ⌄" opens the fork's launcher (terminal, browser, Markdown, agents)
 import './contrib/tabLauncher/electron-browser/paradisTabLauncher.contribution.js';
+// メニューのアイコン・危険の赤（ターミナル・タブ・エディタの右クリック。HTML のメニューのときだけ。Q575-9 段階 2）
+import './contrib/menuIcons/electron-browser/paradisContextMenuService.js';

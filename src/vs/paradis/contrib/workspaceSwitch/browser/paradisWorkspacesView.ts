@@ -33,6 +33,7 @@ import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { hasNativeContextMenu } from '../../../../platform/window/common/window.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
@@ -1863,12 +1864,13 @@ export class ParadisWorkspacesView extends ViewPane {
 	 * 描画する。HTML コンテキストメニュー (window.menuStyle: custom) のみ色が見える —
 	 * ネイティブメニューでは以前と同様に CSS が効かないため色名のみ表示される。
 	 */
-	private buildColorSubmenuActions(repository: IParadisWorkspaceRepository): IAction[] {
+	private buildColorSubmenuActions(repository: IParadisWorkspaceRepository, swatches = false): IAction[] {
+		const swatchClass = swatches ? ' paradis-menu-swatch' : '';
 		const colorActions = PARADIS_WORKSPACE_COLORS.map(color => {
 			const action = new Action(
 				`paradis.workspaceSwitch.color.${color.id}`,
 				colorLabel(color.id),
-				`paradis-menu-icon paradis-menu-color paradis-color-${color.id}`,
+				`paradis-menu-icon paradis-menu-color paradis-color-${color.id}${swatchClass}`,
 				true,
 				() => this.workspaceSwitchService.setRepositoryColor(repository.id, color.id)
 			);
@@ -1878,14 +1880,15 @@ export class ParadisWorkspacesView extends ViewPane {
 		const defaultAction = new Action(
 			'paradis.workspaceSwitch.color.default',
 			localize('paradis.workspaceSwitch.colorDefault', "既定"),
-			'paradis-menu-icon paradis-menu-color paradis-color-default',
+			`paradis-menu-icon paradis-menu-color paradis-color-default${swatchClass}`,
 			true,
 			() => this.workspaceSwitchService.setRepositoryColor(repository.id, undefined)
 		);
 		// パレット外の colorId (削済みID等) が残っている場合は Default 側にチェックを置く
 		defaultAction.checked = repository.color === undefined ||
 			!PARADIS_WORKSPACE_COLORS.some(color => color.id === repository.color);
-		return [...colorActions, new Separator(), defaultAction];
+		// 横一列の丸では区切りを挟まず、既定（破線の丸）を末尾に並べる
+		return swatches ? [...colorActions, defaultAction] : [...colorActions, new Separator(), defaultAction];
 	}
 
 	private buildRepositoryContextMenuActions(repository: IParadisWorkspaceRepository): IAction[] {
@@ -1901,15 +1904,17 @@ export class ParadisWorkspacesView extends ViewPane {
 				() => this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', repository.id)
 			),
 			new Separator(),
-			// 色選択はサブメニュー内の縦並びカラーリスト (buildColorSubmenuActions 参照)。
-			// 以前は QuickPick で行っていたが、モック (案C) の通りメニュー内で完結させる形に戻した。
-			// HTML メニューなら cssClass 経由で色ドットが描画できる
-			new SubmenuAction(
-				'paradis.workspaceSwitch.setColor',
-				// allow-any-unicode-next-line
-				localize('paradis.workspaceSwitch.setColorPick', "色を設定"),
-				this.buildColorSubmenuActions(repository)
-			),
+			// 色選択。HTML のメニュー（window.menuStyle: custom）では先頭に色の丸を横一列に並べ（Q575-8 案b、
+			// paradisWorkspaceSwitch.css の .paradis-menu-swatch）、ネイティブのメニューでは丸を描けないので
+			// 今までどおり色の名前の縦並びのサブメニュー (buildColorSubmenuActions 参照) にする
+			...(hasNativeContextMenu(this.configurationService)
+				? [new SubmenuAction(
+					'paradis.workspaceSwitch.setColor',
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.setColorPick', "色を設定"),
+					this.buildColorSubmenuActions(repository)
+				)]
+				: [...this.buildColorSubmenuActions(repository, true), new Separator()]),
 			new Action(
 				'paradis.workspaceSwitch.rename',
 				// allow-any-unicode-next-line
