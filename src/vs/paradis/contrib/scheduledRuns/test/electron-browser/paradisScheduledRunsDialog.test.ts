@@ -18,6 +18,7 @@ import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.j
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisScheduledRunDefinition, IParadisScheduledRunsState } from '../../common/paradisScheduledRuns.js';
@@ -43,6 +44,7 @@ async function openDialog(root: HTMLElement, state: IParadisScheduledRunsState, 
 		upcastPartial<ISharedProcessService>({}),
 		upcastPartial<IConfigurationService>({}),
 		new NullLogService(),
+		upcastPartial<IWorkspaceTrustManagementService>({}),
 	);
 	await timeout(0);
 	return dialog;
