@@ -20,6 +20,7 @@ import * as cp from 'child_process';
 import { promises as fsp } from 'fs';
 import * as os from 'os';
 import { dirname, isAbsolute, join } from '../../../../base/common/path.js';
+import { paradisSshIncludeFiles } from '../../../node/paradisSshIncludeFiles.js';
 import { parseSSHConfigHostEntries, stripSSHComment } from '../../../../platform/agentHost/common/sshConfigParsing.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Event } from '../../../../base/common/event.js';
@@ -113,16 +114,19 @@ export class ParadisRemoteHostsSshService {
 			for (const rawPattern of stripSSHComment(includeMatch[1]).split(/\s+/).filter(Boolean)) {
 				const pattern = rawPattern.replace(/^~/, os.homedir());
 				const resolved = isAbsolute(pattern) ? pattern : join(configDir, pattern);
-				// 相互 Include で無限に潜らないよう、一度見たパスは辿らない
-				if (seen.has(resolved)) {
-					continue;
-				}
-				seen.add(resolved);
-				try {
-					const sub = await fsp.readFile(resolved, 'utf-8');
-					hosts.push(...await this.collectHosts(sub, dirname(resolved), seen));
-				} catch {
-					// glob パターンや読めないファイルは黙って飛ばす (upstream と同じ)
+				// `*`・`?` を含む Include（`~/.ssh/conf.d/*.conf` など）は合うファイルを全部読む（SFTP の接続と同じ解き方）
+				for (const file of await paradisSshIncludeFiles(resolved)) {
+					// 相互 Include で無限に潜らないよう、一度見たパスは辿らない
+					if (seen.has(file)) {
+						continue;
+					}
+					seen.add(file);
+					try {
+						const sub = await fsp.readFile(file, 'utf-8');
+						hosts.push(...await this.collectHosts(sub, dirname(file), seen));
+					} catch {
+						// 読めないファイルは黙って飛ばす (upstream と同じ)
+					}
 				}
 			}
 		}

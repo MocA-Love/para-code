@@ -48,6 +48,13 @@ suite('paradisSpreadsheetRowAlign', () => {
 			]);
 		});
 
+		test('pairs two sheets of the viewer row limit (2,000 rows) with a row inserted in the middle', () => {
+			const original = Array.from({ length: 2000 }, (_, index) => `row ${index}`);
+			const modified = [...original.slice(0, 1000), 'inserted', ...original.slice(1000, 1999)];
+			const pairs = computeLcsRowPairs(original, modified);
+			deepStrictEqual({ pairs: pairs?.length, afterInsert: pairs?.find(pair => pair.o === 1000) }, { pairs: 1999, afterInsert: { o: 1000, m: 1001 } });
+		});
+
 		test('skips a row inserted at the top', () => {
 			deepStrictEqual(computeLcsRowPairs(['a', 'b'], ['x', 'a', 'b']), [
 				{ o: 0, m: 1 }, { o: 1, m: 2 },

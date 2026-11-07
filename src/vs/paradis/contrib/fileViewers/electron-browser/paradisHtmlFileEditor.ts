@@ -27,6 +27,8 @@ import { Schemas } from '../../../../base/common/network.js';
 import { escape } from '../../../../base/common/strings.js';
 import { dirname, relativePath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -55,7 +57,9 @@ import { ParadisRenderedFileEditor } from '../browser/paradisRenderedFileEditor.
 import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from '../browser/paradisViewerZoom.js';
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisPreviewLocation, ParadisRemotePreviewMounter, paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
-import { paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
+import { paradisPreviewLinkToFile, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
+import { paradisMarkdownLinkToOpen } from '../browser/paradisMarkdownLinks.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
 
@@ -72,6 +76,8 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	static readonly ID = PARADIS_HTML_EDITOR_ID;
 
 	private readonly _zoom: ParadisViewerZoomControls;
+	/** いま描いている文書の `<base>`（配っている URL と、そのフォルダー）。押したリンクをファイルへ戻すため。 */
+	private _linkBase: { readonly url: string; readonly root: URI } | undefined;
 	/** ローカルサーバを立てられなかった。以後はこのペインでは使わない。 */
 	private _previewServerUnavailable = false;
 	/** SSH 先のフォルダーを載せる係（ペインと寿命を共にし、転送もここで閉じる）。 */
@@ -100,6 +106,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		@ITunnelService private readonly _tunnelService: ITunnelService,
 		@IWorkspaceTrustManagementService private readonly _workspaceTrustManagementService: IWorkspaceTrustManagementService,
 		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
+		@IOpenerService private readonly _openerService: IOpenerService,
 	) {
 		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
 		this._zoom = this._register(new ParadisViewerZoomControls(() => this._onDidChangeZoom()));
@@ -115,6 +122,17 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 
 	protected override get openTimingKind(): ParadisViewerOpenKind {
 		return 'html';
+	}
+
+	// webview 基盤はページ内のアンカー以外のリンクを知らせるだけで自分では開かない（Markdown と同じ）。表示している
+	// フォルダーの中のファイルはエディタで開き、それ以外の http(s)・mailto などは外で開く
+	protected override onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
+		store.add(webview.onDidClickLink(link => {
+			const target = (this._linkBase !== undefined ? paradisPreviewLinkToFile(link, this._linkBase) : undefined) ?? paradisMarkdownLinkToOpen(link);
+			if (target) {
+				this._openerService.open(target, { fromUserGesture: true, allowContributedOpeners: true }).catch(onUnexpectedError);
+			}
+		}));
 	}
 
 	/**
@@ -186,6 +204,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 				const suffix = descends && relative ? relative.split('/') : [];
 
 				const located = await this._mountPreview(root);
+				this._linkBase = { url: paradisPreviewUrl(located.mount, located.port), root };
 				return escapeAttribute(paradisPreviewUrl(located.mount, located.port, suffix));
 			} catch (error) {
 				// shared process が落ちている、SSH のポート転送が張れない等。
@@ -199,7 +218,9 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 			}
 		}
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
-		return escapeAttribute(`${asWebviewUri(dirname(resource), remoteInfo).toString(true)}/`);
+		const url = `${asWebviewUri(dirname(resource), remoteInfo).toString(true)}/`;
+		this._linkBase = { url, root: dirname(resource) };
+		return escapeAttribute(url);
 	}
 
 	/** 手元か SSH 先か、フォルダーの scheme で配信先を選ぶ。 */

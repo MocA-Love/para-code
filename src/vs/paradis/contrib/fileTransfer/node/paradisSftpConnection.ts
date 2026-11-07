@@ -22,7 +22,8 @@ import * as os from 'os';
 import type { AnyAuthMethod, AuthenticationType, BaseAgent, Client, ConnectConfig, ParsedKey, SFTPWrapper } from 'ssh2';
 import type { Duplex } from 'stream';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { dirname, isAbsolute, join } from '../../../../base/common/path.js';
+import { isAbsolute, join } from '../../../../base/common/path.js';
+import { paradisSshIncludeFiles } from '../../../node/paradisSshIncludeFiles.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { resolveSSHKnownHostsFiles } from '../../../../platform/agentHost/node/sshConfigPaths.js';
 import { matchKnownHosts, parseKnownHosts, readHostKeyType } from '../../../../platform/agentHost/node/sshKnownHosts.js';
@@ -98,15 +99,8 @@ async function readSshConfigLines(path: string, home: string, seen: Set<string>)
 		for (const raw of patterns) {
 			const expanded = expandHome(raw, home);
 			const resolved = isAbsolute(expanded) ? expanded : join(home, '.ssh', expanded);
-			if (/[*?]/.test(resolved)) {
-				const base = resolved.slice(resolved.lastIndexOf('/') + 1);
-				const regex = new RegExp(`^${base.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
-				const files = await fsp.readdir(dirname(resolved)).catch(() => [] as string[]);
-				for (const file of files.filter(name => regex.test(name)).sort()) {
-					lines.push(...await readSshConfigLines(join(dirname(resolved), file), home, seen));
-				}
-			} else {
-				lines.push(...await readSshConfigLines(resolved, home, seen));
+			for (const file of await paradisSshIncludeFiles(resolved)) {
+				lines.push(...await readSshConfigLines(file, home, seen));
 			}
 		}
 	}
