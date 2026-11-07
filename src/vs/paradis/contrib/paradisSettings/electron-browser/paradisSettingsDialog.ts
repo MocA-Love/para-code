@@ -360,10 +360,10 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		group: GROUP_SPACE_LOCATION,
 		key: 'paradis.workspaceSwitch.trustClaudeFolder',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.trustClaudeFolder', "Para が作ったスペースでは、Claude Code のフォルダの信頼を済ませておく"),
+		label: localize('paradis.settings.trustClaudeFolder', "Para が作ったスペースでは、エージェントのフォルダの信頼を済ませておく"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.trustClaudeFolderDesc', "Claude Code の ~/.claude.json に、このスペースを信頼済みとして書きます。スペースを削除すると取り消します。"),
-		keywords: 'claude trust folder worktree space agent',
+		description: localize('paradis.settings.trustClaudeFolderDesc', "Claude Code の ~/.claude.json と Codex の config.toml に、このスペースを信頼済みとして書きます。スペースを削除すると取り消します。"),
+		keywords: 'claude codex trust folder worktree space agent',
 	},
 	{
 		sectionId: 'psd-sec-space',

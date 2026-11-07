@@ -48,7 +48,8 @@ export interface IParadisAddWorktreeRequest<TPath extends string = ParadisHostPa
 	/** 分岐元 ref（ブランチ名・タグ・SHA）。 */
 	readonly baseRef: string;
 	/**
-	 * 作った後に Claude Code のフォルダの信頼を済ませておくか（設定 `paradis.workspaceSwitch.trustClaudeFolder`）。
+	 * 作った後に Claude Code と Codex のフォルダの信頼を済ませておくか（設定 `paradis.workspaceSwitch.trustClaudeFolder`。
+	 * 名前は Claude だけだった頃のまま。変えると切っていた人の設定が戻るので変えない）。
 	 * 設定は呼ぶ側（renderer）が読んで載せる。項目の無い依頼（古い版の呼び出し）では書かない。
 	 */
 	readonly trustClaudeFolder?: boolean;
