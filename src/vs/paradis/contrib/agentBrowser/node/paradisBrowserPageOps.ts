@@ -103,6 +103,13 @@ function error(message: string): ToolResult {
 
 /** main へ頼むページの操作（上書き・init scripts・強調）を待つ上限。 */
 const PAGE_OPS_MAIN_TIMEOUT_MS = 30_000;
+
+/** main が {@link PAGE_OPS_MAIN_TIMEOUT_MS} までに答えなかった。 */
+class ParadisPageOpsMainTimeoutError extends Error {
+	constructor(method: string) {
+		super(`${method} did not answer in time`);
+	}
+}
 const INIT_SCRIPT_REMINDER = 'When you have finished checking, call remove_init_script to take it off (it also runs while the user browses in this tab).';
 
 const BINDING_CHANGED = 'PARA_BROWSER_RETRYABLE: the page shared with this terminal pane changed while the tool was running; check get_shared_page and retry.';
@@ -254,6 +261,19 @@ export class ParadisBrowserPageOps {
 	}
 
 	async call(call: IParadisPageOpsCall, name: string, rawArgs: unknown): Promise<ToolResult> {
+		try {
+			return await this.callTool(call, name, rawArgs);
+		} catch (failure) {
+			if (failure instanceof ParadisPageOpsMainTimeoutError) {
+				// 期限の後に main で済んでいることがある。どう確かめるかを添える
+				const check = name.endsWith('init_script') || name === 'list_init_scripts' ? 'list_init_scripts' : name === 'highlight_element' ? undefined : 'get_page_network_overrides';
+				return error(`${name}: Para Code did not get an answer from the page in time (the page may be busy).${check ? ` The change may still have been applied; check with ${check} before retrying.` : ''}`);
+			}
+			throw failure;
+		}
+	}
+
+	private async callTool(call: IParadisPageOpsCall, name: string, rawArgs: unknown): Promise<ToolResult> {
 		const binding = this.host.binding(call.token);
 		if (!binding) {
 			return error(this.host.notBoundMessage);
@@ -290,7 +310,7 @@ export class ParadisBrowserPageOps {
 					settle();
 				}
 			};
-			const timer = setTimeout(() => finish(() => reject(new Error(`${method} did not answer in time`))), PAGE_OPS_MAIN_TIMEOUT_MS);
+			const timer = setTimeout(() => finish(() => reject(new ParadisPageOpsMainTimeoutError(method))), PAGE_OPS_MAIN_TIMEOUT_MS);
 			const onAbort = () => finish(() => reject(new Error(`${method} was cancelled`)));
 			if (call.signal?.aborted) {
 				onAbort();

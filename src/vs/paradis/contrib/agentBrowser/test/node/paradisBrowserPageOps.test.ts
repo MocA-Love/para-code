@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createHash } from 'crypto';
 import { URI } from '../../../../../base/common/uri.js';
@@ -279,6 +280,13 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		cancelled.abort();
 		await assert.rejects(running, /cancelled/);
 	});
+
+	test('says how to check when electron-main does not answer in time, since the script may still be added', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const host = new FakeHost();
+		host.hangs.add('addExactViewInitScript');
+		const result = await new ParadisBrowserPageOps(host).call(createCall(), 'add_init_script', { source: 'window.__a = 1' });
+		assert.deepStrictEqual({ error: isError(result), check: textOf(result).includes('list_init_scripts') }, { error: true, check: true });
+	}));
 
 	test('add_init_script passes the checked script to electron-main and reminds to remove it', async () => {
 		const host = new FakeHost();
