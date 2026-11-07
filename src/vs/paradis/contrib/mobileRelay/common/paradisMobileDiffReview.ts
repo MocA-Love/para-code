@@ -270,7 +270,7 @@ function fnv1a(text: string, seed: number): string {
 /**
  * 変更1件の「中身」の識別（Orca の diffIdentity と同じ考え方）。状態・パス・元のパス・両側の行数（未追跡の
  * ファイルは大きさと時刻）から作るので、確認した後にエージェントが書き換えて行数が変われば別の値になる
- * （追跡中のファイルで行数が同じ書き換えは見分けられない）。
+ * （追跡中のファイルで行数が同じ書き換えは見分けられない。確認済みのステージでは、印に残した大きさと時刻で見分ける）。
  * ステージすると状態と行数の側が変わるので別の値になる（PC が確認済みのステージを行ったときは印を付け替える）。
  */
 export function paradisMobileDiffIdentity(file: IParadisMobileStatusFile): string {
@@ -283,6 +283,24 @@ export interface IParadisMobileReviewMark {
 	readonly identity: string;
 	/** 確認した時刻（epoch ms）。 */
 	readonly reviewedAt: number;
+	/**
+	 * 印を付けたときの作業ツリーのファイルの大きさと時刻（調べられたときだけ）。識別には入れず（取れない回で識別が
+	 * 揺れるため）、ステージのときだけ比べて、行数の同じ書き換えを見分ける。アプリへは送らない。
+	 */
+	readonly size?: number;
+	readonly mtime?: number;
+}
+
+/**
+ * 印を付けたときから作業ツリーのファイルが書き換えられたと見なすか（確認済みのステージで足さない）。
+ * 印に大きさと時刻が無い（古い印・付けたときに調べられなかった）ものは比べない。印にあるのに今は調べられない
+ * （消えた・読めない・接続先が返さない）ものは、確かめられないので書き換えられたと見なす。
+ */
+export function paradisReviewedFileRewritten(mark: IParadisMobileReviewMark | undefined, current: { readonly size: number; readonly mtime: number } | undefined): boolean {
+	if (mark?.size === undefined || mark.mtime === undefined) {
+		return false;
+	}
+	return current === undefined || current.size !== mark.size || current.mtime !== mark.mtime;
 }
 
 /** いまの変更に対する印の状態。`changed` は確認した後に中身が変わった（もう一度見てほしい）。 */

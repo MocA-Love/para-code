@@ -21,6 +21,7 @@ import {
 	paradisIsUntrackedFile,
 	paradisMobileReviewState,
 	paradisParseMobilePorcelainStatus,
+	paradisReviewedFileRewritten,
 	paradisStagedConsistently,
 	paradisStagedContentDiffers,
 } from '../common/paradisMobileDiffReview.js';
@@ -35,6 +36,7 @@ import {
 	PARADIS_MOBILE_REVIEW_STORAGE_KEY,
 	paradisAddMobileReviewNoteOnce,
 	paradisApplyMobileReviewMarkChanges,
+	paradisAttachMobileReviewMarkStats,
 	paradisDeleteMobileReviewNotes,
 	paradisEditMobileReviewNote,
 	paradisIsReviewNoteBody,
@@ -83,7 +85,9 @@ export function paradisWriteMobileReviewStore(storage: IStorageService, store: R
 
 /** 応答の本文（どの要求でも共通の部分）。 */
 export function paradisMobileReviewReply(ws: string, space: IParadisMobileReviewSpace): { readonly t: 'review'; readonly ws: string; readonly revision: number; readonly marks: IParadisMobileReviewSpace['marks']; readonly notes: IParadisMobileReviewSpace['notes'] } {
-	return { t: 'review', ws, revision: space.revision, marks: space.marks, notes: space.notes };
+	// 印に残した大きさと時刻は PC の中だけで使う（アプリへは識別と時刻だけ）
+	const marks = Object.fromEntries(Object.entries(space.marks).map(([path, mark]) => [path, { identity: mark.identity, reviewedAt: mark.reviewedAt }]));
+	return { t: 'review', ws, revision: space.revision, marks, notes: space.notes };
 }
 
 /** 変えた記録を次の版にして保存し、保存したものを返す（同期で読んでから書く呼び出し側の中で使う）。 */
@@ -115,7 +119,7 @@ async function readStatusWithCounts(context: IParadisMobileRequestContext, fileS
 	});
 }
 
-/** `git add` の後に、未追跡だったファイルの大きさを調べ直す上限（アプリは reviewStage を 90 秒待つ）。 */
+/** ファイルの大きさと時刻を調べる上限（印を付けるとき、ステージの前、`git add` の後。アプリは reviewStage を 90 秒待つ）。 */
 const AFTER_STAT_DEADLINE_MS = 10_000;
 
 /** `git add` の後に確かめられなかった（接続先が返さなかった）ときの応答。 */
@@ -186,6 +190,7 @@ registerParadisMobileRequestHandler('scm', 'reviewGet', {
 registerParadisMobileRequestHandler('scm', 'reviewSet', {
 	handle(accessor, request, context) {
 		const storage = accessor.get(IStorageService);
+		const fileService = accessor.get(IFileService);
 		const ws = paradisRequireMobileWorkspace(request, context);
 		if (ws === undefined) {
 			return;
@@ -195,7 +200,24 @@ registerParadisMobileRequestHandler('scm', 'reviewSet', {
 			context.reply({ error: 'invalid marks' });
 			return;
 		}
-		updateSpace(storage, ws, context, space => paradisApplyMobileReviewMarkChanges(space, changes, Date.now()), 'invalid marks');
+		const store = paradisReadMobileReviewStore(storage);
+		const space = saveSpace(storage, store, ws, paradisApplyMobileReviewMarkChanges(paradisMobileReviewSpace(store, ws), changes, Date.now()));
+		context.reply(paradisMobileReviewReply(ws, space));
+		// 確認済みにしたときの大きさと時刻を、応答の後に調べて印に足す（ステージのときに、行数の同じ書き換えを見分ける）。
+		// 調べられなかったもの・足す前にステージされたものは比べない（今までどおり）
+		const marked = new Map(changes.filter(change => change.identity !== null && space.marks[change.path] !== undefined).map(change => [change.path, space.marks[change.path]]));
+		const root = context.root;
+		if (root !== undefined && marked.size > 0) {
+			void paradisWithHostDeadline(paradisStatMobileWorkspaceFiles(fileService, root, [...marked.keys()]), AFTER_STAT_DEADLINE_MS).then(stats => {
+				const latest = paradisReadMobileReviewStore(storage);
+				const current = paradisMobileReviewSpace(latest, ws);
+				const next = paradisAttachMobileReviewMarkStats(current, marked, stats);
+				if (next !== current) {
+					latest.set(ws, next);
+					paradisWriteMobileReviewStore(storage, latest);
+				}
+			}, () => undefined);
+		}
 	},
 });
 
@@ -408,6 +430,19 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 			} else if (identity !== undefined && !toStage.includes(entry.path)) {
 				toStage.push(entry.path);
 				identities.set(entry.path, identity);
+			}
+		}
+		// 印を付けたときの大きさと時刻が残っている追跡中のファイルは、いまと比べる（行数の同じ書き換えは識別では見分けられない）。
+		// 違う・調べられないものは足さない
+		const withMarkStat = toStage.filter(path => byPath.get(path)?.x !== '?' && marks[path]?.size !== undefined);
+		if (withMarkStat.length > 0) {
+			const current = await paradisWithHostDeadline(paradisStatMobileWorkspaceFiles(fileService, root, withMarkStat), AFTER_STAT_DEADLINE_MS);
+			for (const path of withMarkStat) {
+				if (paradisReviewedFileRewritten(marks[path], current.get(path))) {
+					toStage.splice(toStage.indexOf(path), 1);
+					identities.delete(path);
+					skipped.push({ path, reason: 'changed' });
+				}
 			}
 		}
 		if (toStage.length > 0) {

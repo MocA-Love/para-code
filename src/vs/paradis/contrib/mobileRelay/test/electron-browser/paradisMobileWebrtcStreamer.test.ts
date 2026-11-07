@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { mainWindow } from '../../../../../base/browser/window.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -59,6 +60,35 @@ suite('ParadisMobileWebrtcStreamer', () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 
 		assert.deepStrictEqual({ stopped, sent }, { stopped: ['video'], sent: [] });
+	});
+
+	test('古い offer の確立の失敗が、後から来た offer を止めない', async () => {
+		const { streamer, sent, pending } = create();
+		const offer = (id: string, sid: string) => streamer.handleInbound({
+			ch: Channels.Browser,
+			ws: undefined,
+			seq: 0,
+			payload: VSBuffer.fromString(JSON.stringify({ t: 'webrtc-offer', id, sdp: 'v=0', sid })),
+			mobileId: 'm',
+		} satisfies IParadisMobileInboundFrame);
+		// RTCPeerConnection に渡すので本物の映像（canvas）を使う
+		const realStream = () => mainWindow.document.createElement('canvas').captureStream();
+		const first = realStream();
+		const [track] = first.getVideoTracks();
+		const settings = track.getSettings.bind(track);
+		// 古い offer がピアを作って setRemoteDescription を待ち始めたところで、次の offer を届ける
+		track.getSettings = () => {
+			queueMicrotask(() => offer('new', 'b'));
+			return settings();
+		};
+		offer('old', 'a');
+		pending[0](first);
+		await new Promise(resolve => setTimeout(resolve, 100));
+		pending[1](realStream());
+		await new Promise(resolve => setTimeout(resolve, 100));
+
+		// どちらの offer も自分の確立まで進み（この偽の SDP では失敗する）、それぞれの失敗を返す
+		assert.deepStrictEqual(sent.map(message => `${message.body.t}:${(message.body as { id?: string }).id}`), ['webrtc-error:old', 'webrtc-error:new']);
 	});
 
 	test('画面全体（monitor）の映像が来たら写しに使わず、止めて断る', async () => {
