@@ -15,6 +15,7 @@
 // 切り替え、切り替えが割り込まれたら開かない、補助ウィンドウのペインはそのウィンドウを前へ）。
 
 import { Codicon } from '../../../../base/common/codicons.js';
+import { stripIcons } from '../../../../base/common/iconLabels.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -123,7 +124,8 @@ class ParadisCrossJumpAction extends Action2 {
 
 		// 作成の行の行き先は今のスペースのリポジトリ（スペースの外なら先頭のリポジトリ）。
 		const createRepositoryId = spaces.find(space => space.space === activeStateKey)?.repositoryId ?? workspaceSwitchService.repositories[0]?.id;
-		const haystacks = [...agentItems, ...editorItems, ...spaceItems].flatMap(item => [item.label, item.description ?? '']);
+		// アイコンの書式（`$(bell)` など）は検索の対象にならないので外して比べる
+		const haystacks = [...agentItems, ...editorItems, ...spaceItems].flatMap(item => [stripIcons(item.label), item.description ?? '']);
 
 		const disposables = new DisposableStore();
 		const picker = disposables.add(quickInputService.createQuickPick<ParadisCrossJumpItem>({ useSeparators: true }));
