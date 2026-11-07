@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
@@ -43,6 +44,21 @@ suite('ParadisBrowserSiteStore', () => {
 			a: ['from stable', 'again'],
 			b: ['from beta'],
 			file: { version: 1, notes: { 'space\nhttps://b.example': ['from beta'], 'space\nhttps://a.example': ['from stable', 'again'] } },
+		});
+	});
+
+	test('does not overwrite a file it could not read with only the new entry', async () => {
+		const file = join(root, 'notes.json');
+		// 読めない（ここでは JSON として壊れている）ファイル。空とみなして書き戻すと、中身を全部失う。
+		await fs.writeFile(file, '{"version":1,"notes":{"space\\nhttps://a.example":["kept"]');
+		const store = new ParadisBrowserSiteStore<string>(file, 'notes');
+		await assert.rejects(store.update('space', 'https://b.example', () => ({ value: undefined, items: ['new'] })));
+		assert.deepStrictEqual({
+			list: await store.list('space', 'https://a.example'),
+			file: await fs.readFile(file, 'utf8'),
+		}, {
+			list: [],
+			file: '{"version":1,"notes":{"space\\nhttps://a.example":["kept"]',
 		});
 	});
 });

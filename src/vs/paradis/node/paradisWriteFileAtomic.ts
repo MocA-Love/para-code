@@ -105,6 +105,8 @@ function removeQuietlySync(filePath: string): void {
  * - 一時ファイルを作れない（ディレクトリに書き込めない等）ときや `rename` が通らないとき（Windows で
  *   他のプロセスが開いている等）は、一時ファイルを消してこれまでどおりその場へ書く。原子的でなく
  *   なるだけで、設定が置けないよりはよい
+ * - ただし一時ファイルへの書き込みが容量不足・I/O エラーで失敗したときは、その場へ書かずに投げる
+ *   （同じ理由でその場への書き込みも途中で失敗し、元のファイルを空・書きかけにするため）
  *
  * 所有者・ACL・拡張属性は一時ファイルへ引き継がない（NOTES.md の hook の節を参照）。
  */
@@ -140,8 +142,11 @@ export function paradisWriteFileAtomicSync(filePath: string, content: string): v
 			// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 			chmodSync(temp, mode);
 		}
-	} catch {
+	} catch (error) {
 		removeQuietlySync(temp);
+		if (!paradisMayWriteInPlaceAfterTempFailure(error)) {
+			throw error;
+		}
 		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		writeFileSync(target, content);
 		return;
@@ -154,6 +159,17 @@ export function paradisWriteFileAtomicSync(filePath: string, content: string): v
 		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		writeFileSync(target, content);
 	}
+}
+
+/**
+ * 一時ファイルを作れなかった・書けなかったとき、その場へ書く道へ落ちてよいか。
+ *
+ * 「一時ファイルを作れない」（ディレクトリに書き込めない・名前が埋まっている・権限を当てられない）だけ
+ * 落ちてよい。容量不足や I/O エラーは、その場へ書いても途中で失敗して元のファイルを壊すので落ちない。
+ */
+export function paradisMayWriteInPlaceAfterTempFailure(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code === 'EACCES' || code === 'EPERM' || code === 'EEXIST';
 }
 
 export interface IParadisWriteFileAtomicOptions {

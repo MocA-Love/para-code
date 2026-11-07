@@ -52,6 +52,8 @@ import {
 } from '../common/paradisScheduledRuns.js';
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunReport } from '../common/paradisScheduledRunsSanitize.js';
 
+const STR_SAVE_FAILED = localize('paradis.scheduledRuns.error.saveFailed', "変更を保存できませんでした。ディスクの空きと権限を確かめてから、もう一度やり直してください。");
+
 /** transcript の置き場所からエージェントを見分ける（Claude は `projects/`、Codex は `sessions/` の rollout）。 */
 export function paradisAgentFromTranscriptPath(path: string | undefined): 'claude' | 'codex' | undefined {
 	if (path === undefined) {
@@ -264,7 +266,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			this.definitions.push(definition);
 			this.lastEvaluatedAt[definition.id] = now;
 		}
-		this.commit();
+		if (!await this.commitForUser()) {
+			return { ok: false, error: STR_SAVE_FAILED };
+		}
 		return { ok: true, definition };
 	}
 
@@ -287,7 +291,9 @@ export class ParadisScheduledRunsService extends Disposable {
 		if (!enabled) {
 			this.cancelPending(id, 'disabled');
 		}
-		this.commit();
+		if (!await this.commitForUser()) {
+			return { ok: false, error: STR_SAVE_FAILED };
+		}
 		return { ok: true, definition };
 	}
 
@@ -306,7 +312,9 @@ export class ParadisScheduledRunsService extends Disposable {
 		// 終わった記録は消す。動いている記録は終わりの報告を受けるまで残し、次の整理で消す
 		this.runs = this.runs.filter(run => run.definitionId !== id || paradisIsActiveRunStatus(run.status));
 		delete this.lastEvaluatedAt[id];
-		this.commit();
+		if (!await this.commitForUser()) {
+			return { ok: false, error: STR_SAVE_FAILED };
+		}
 		return { ok: true };
 	}
 
@@ -638,6 +646,10 @@ export class ParadisScheduledRunsService extends Disposable {
 			}
 			return updated;
 		});
+		// 終わった実行（報告・生存報告切れ・時間切れ・取りやめのどれでも）のペインの対応は要らない
+		if (updated && !paradisIsActiveRunStatus(updated.status)) {
+			this.paneTokens.delete(runId);
+		}
 		return updated;
 	}
 
@@ -671,20 +683,34 @@ export class ParadisScheduledRunsService extends Disposable {
 	}
 
 	private commit(): void {
-		this.persist();
+		void this.persist();
 		this._onDidChange.fire();
 	}
 
-	private persist(): void {
+	/**
+	 * 利用者の操作（保存・有効/無効・削除）の書き込み。書き終わるまで待ち、書けたかを返す。
+	 * 書けなかったのに成功と返すと、ダイアログは下書きを捨て、再起動で無効にしたはずの定期実行が戻る。
+	 * メモリの中身は変えたまま（次に書けたときに残る）。
+	 */
+	private commitForUser(): Promise<boolean> {
+		const saved = this.persist();
+		this._onDidChange.fire();
+		return saved;
+	}
+
+	/** 書き込みを列に足す。列は失敗しても止めない。返り値は、この書き込みが済んだか。 */
+	private persist(): Promise<boolean> {
 		const snapshot: IParadisScheduledRunsStoredState = {
 			version: 1,
 			definitions: this.definitions,
 			runs: this.runs,
 			lastEvaluatedAt: { ...this.lastEvaluatedAt },
 		};
-		this.writeChain = this.writeChain.then(() => this.store.write(snapshot)).catch(error => {
+		const write = this.writeChain.then(() => this.store.write(snapshot));
+		this.writeChain = write.catch(error => {
 			this.logService.error('[ParadisScheduledRuns] could not save the schedules', error);
 		});
+		return write.then(() => true, () => false);
 	}
 
 	/** 書き込みが済むのを待つ（テスト・終了時用）。 */

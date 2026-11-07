@@ -94,6 +94,8 @@ export class ParadisAgentModelCatalogService {
 
 	private cache: Promise<Record<string, ICachedCatalog>> | undefined;
 	private inFlight: Promise<IParadisAgentModelCatalog[]> | undefined;
+	/** キャッシュの書き込みの列。 */
+	private writing: Promise<void> = Promise.resolve();
 	private lastResult: { readonly at: number; readonly catalogs: IParadisAgentModelCatalog[] } | undefined;
 	/** 一覧を取れなかった CLI（実行ファイルと版）と、その時刻。 */
 	private readonly failedProbes = new Map<ParadisCatalogAgentId, { readonly command: string; readonly version: string; readonly retryAt: number }>();
@@ -171,7 +173,11 @@ export class ParadisAgentModelCatalogService {
 		// 同じ入れ物を書き換える（claude と codex を並べて取るので、写しを作ると片方の結果が消える）
 		const cache = await this.readCache();
 		cache[agentId] = entry;
-		await this.backend.writeCache({ ...cache }).catch(error => this.logService.warn('[ParadisAgentModelCatalog] failed to save the cache', error));
+		// 書き込みは1つずつ順に流し、写しは順番が来た時点で取る（並べて書くと、後から始めた方の rename が
+		// 先に済んだとき、先に始めた方の古い写しで片方の結果が消える）
+		const write = this.writing.then(() => this.backend.writeCache({ ...cache }));
+		this.writing = write.catch(() => undefined);
+		await write.catch(error => this.logService.warn('[ParadisAgentModelCatalog] failed to save the cache', error));
 		this.logService.info(`[ParadisAgentModelCatalog] ${agentId} ${version}: ${models.map(model => model.id).join(', ')}`);
 		return publicCatalog(entry);
 	}
