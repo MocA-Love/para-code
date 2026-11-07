@@ -13,7 +13,9 @@
 // 送り先は今のスペースのエージェントだけ。別のスペースのエージェントへは送らない（スペースの取り違えを防ぐ）。
 
 import { Codicon } from '../../../../base/common/codicons.js';
-import { extUri } from '../../../../base/common/resources.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { isLinux } from '../../../../base/common/platform.js';
+import { extUri, extUriIgnorePathCase } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -78,7 +80,9 @@ export async function paradisHandOffToSpaceAgent(services: IParadisSpaceAgentHan
 	const expectedRoot = request.expectedRoot && request.expectedRoot.scheme !== space.uri.scheme
 		? space.uri.with({ path: request.expectedRoot.path })
 		: request.expectedRoot;
-	if (expectedRoot && !extUri.isEqualOrParent(expectedRoot, space.uri)) {
+	// 手元の Windows・macOS はパスの大文字小文字を区別しない（SSH 先は Linux とみなして区別する）
+	const comparer = space.uri.scheme === Schemas.file && !isLinux ? extUriIgnorePathCase : extUri;
+	if (expectedRoot && !comparer.isEqualOrParent(expectedRoot, space.uri)) {
 		notificationService.notify({ severity: Severity.Warning, message: localize('paradis.agentHandoff.otherSpace', "今のスペース（{0}）のリポジトリではないため、エージェントへ送りません。そのスペースへ切り替えてからやり直してください。", space.name) });
 		return false;
 	}
