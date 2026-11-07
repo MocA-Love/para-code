@@ -2115,7 +2115,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const resolution = paradisResolveNotifyContent({
 			kind,
 			...(presetQuestion ? { presetCategory: 'question' as const, ...(typeof record.body === 'string' ? { presetContent: record.body } : {}) } : {}),
-			...(token !== undefined ? { hookTurnEnd: this.notifyHookLedger.turnEnd(token, now), hookApproval: this.notifyHookLedger.approval(token, now), hookQuestion: this.notifyHookLedger.question(token, now) } : {}),
+			...(token !== undefined ? { hookTurnEnd: this.notifyHookLedger.turnEnd(token, now), hookApproval: this.notifyHookLedger.approval(token, now), hookQuestion: this.notifyHookLedger.question(token, now), hookElicitation: this.notifyHookLedger.elicitation(token, now) } : {}),
 			...(pane !== undefined ? { pane } : {}),
 			now,
 		});

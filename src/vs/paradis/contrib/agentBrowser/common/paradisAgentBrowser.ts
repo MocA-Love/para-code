@@ -13,6 +13,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { URI } from '../../../../base/common/uri.js';
+import { localize } from '../../../../nls.js';
 import type { ParadisBindingAuthorityStableScope } from './paradisBindingAuthority.js';
 import { paradisParseOwnerLabel } from './paradisCursorOverlay.js';
 import type { IBrowserDeviceProfile } from '../../../../platform/browserView/common/browserView.js';
@@ -1200,6 +1201,7 @@ export interface IParadisMcpFixRequest {
 const PARADIS_AGENT_HOOK_RELEASE_EVENTS: ReadonlySet<string> = new Set([
 	'PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'UserPromptSubmit', 'task_started',
 	'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd', 'Interrupt',
+	'ElicitationResult',
 ]);
 
 /** 送り主を確かめられなくても、許可待ち・質問中のペインで受け付けてよい hook か（{@link PARADIS_AGENT_HOOK_RELEASE_EVENTS}）。 */
@@ -1214,6 +1216,19 @@ export function paradisAgentHookEntersWait(eventType: string, message: string | 
 	}
 	const normalized = paradisNormalizeAgentHookEvent(eventType, message);
 	return normalized === 'permission' || normalized === 'question';
+}
+
+/**
+ * MCP の入力の依頼（Claude Code の Elicitation hook）を、受信箱・通知に出す 1 行にする（例「MCP「github」が入力を求めています」）。
+ * サーバー名が無ければ「MCP が入力を求めています」。payload の `message`（サーバーが示した文）は長さを絞って続ける。
+ */
+export function paradisElicitationSummary(payload: Readonly<Record<string, unknown>> | undefined): string {
+	const server = typeof payload?.mcp_server_name === 'string' ? payload.mcp_server_name.trim().replace(/\s+/g, ' ').slice(0, 80) : '';
+	const message = typeof payload?.message === 'string' ? payload.message.trim().replace(/\s+/g, ' ').slice(0, 200) : '';
+	const head = server.length > 0
+		? localize('paradis.agentHook.elicitation.server', "MCP「{0}」が入力を求めています", server)
+		: localize('paradis.agentHook.elicitation', "MCP が入力を求めています");
+	return message.length > 0 ? localize('paradis.agentHook.elicitation.withMessage', "{0}: {1}", head, message) : head;
 }
 
 /**
@@ -1246,6 +1261,11 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 		case 'Notification':
 			return message !== undefined && /permission/i.test(message) ? 'permission' : undefined;
 		// 要対応系: 許可要求・ユーザー入力要求
+		// Claude Code の MCP サーバーが利用者へ入力を求めている（Elicitation、2.1.63+）。答えるまでエージェントは
+		// 止まっているので許可待ちと同じ要対応にする。決着（ElicitationResult）は受け口が待つ前の状態へ戻す
+		// （paradisAgentBrowserService.ts。依頼が重なれば最後の決着で戻し、覚えの無い決着では状態を変えない）。ここで
+		// working を返すのは、送り主を確かめられないペインでも解除のイベントとして通すため（受け口が working を上書きする）。
+		case 'Elicitation':
 		case 'PermissionRequest':
 		case 'exec_approval_request':
 		case 'apply_patch_approval_request':
@@ -1265,6 +1285,7 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 		case 'PostToolUse':
 		case 'PostToolUseFailure':
 		case 'PermissionDenied':
+		case 'ElicitationResult':
 		case 'task_started':
 		case 'Start':
 			return 'working';

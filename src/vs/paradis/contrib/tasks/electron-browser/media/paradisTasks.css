@@ -290,3 +290,114 @@
 	margin: 10px auto;
 	display: flex;
 }
+
+.paradis-tasks-note {
+	margin: 0 2px 8px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+/* Fixed layout: the title takes 40% and the view's fields share the rest. */
+.paradis-tasks-project-table th.title {
+	width: 40%;
+}
+
+.paradis-tasks-project-table th.field,
+.paradis-tasks-project-table td.field {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-tasks-option {
+	font-size: 12px;
+}
+
+.paradis-tasks-board {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding-bottom: 8px;
+	overflow-x: auto;
+}
+
+.paradis-tasks-board-column {
+	flex: 0 0 260px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-radius: 8px;
+	background: var(--vscode-editor-background);
+}
+
+.paradis-tasks-board-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 10px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	font-weight: 600;
+}
+
+.paradis-tasks-board-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+}
+
+.paradis-tasks-board-name {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-tasks-board-count {
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	font-weight: normal;
+}
+
+.paradis-tasks-board-cards {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 8px;
+}
+
+.paradis-tasks-card {
+	padding: 8px 10px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.paradis-tasks-card:hover,
+.paradis-tasks-card:focus {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-tasks-card:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-tasks-card-top {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.paradis-tasks-card-top .paradis-tasks-icon-button {
+	width: 22px;
+	height: 22px;
+	border-color: transparent;
+}
+
+.paradis-tasks-card-title {
+	margin: 2px 0 4px;
+	overflow-wrap: anywhere;
+}
+
+.paradis-tasks-card-assignees {
+	margin-top: 6px;
+}

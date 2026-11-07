@@ -107,3 +107,111 @@
 .monaco-workbench .paradis-workspace-lifecycle-dialog .plc-footer > .monaco-text-button {
 	width: auto;
 }
+
+/* 新しいスペースへ持ち込むもの（G-06）。枠で囲み、「写す」「リンク」の行にパスの札を並べる */
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	margin-bottom: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80);
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-medium);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-title {
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-description,
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-note {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-row {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size60);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-values {
+	display: flex;
+	flex: 1;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-label {
+	width: 60px;
+	flex: none;
+	line-height: 24px;
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-items {
+	display: contents;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size20);
+	max-width: 100%;
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size20) var(--vscode-spacing-size20) var(--vscode-spacing-size60);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-chip-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-chip-remove {
+	padding: 0;
+	background: none;
+	color: inherit;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-chip-remove:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-chip-remove:focus-visible,
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-input:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-input {
+	min-width: 180px;
+	flex: 1;
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size60);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	outline: none;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-values > .monaco-text-button {
+	width: auto;
+}
+
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-input[hidden],
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-note[hidden],
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-values > .monaco-text-button[hidden] {
+	display: none;
+}

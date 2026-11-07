@@ -140,6 +140,16 @@ export const PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT: IParadisManagedHookEvent
  */
 export const PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT: IParadisManagedHookEvent = { eventName: 'PostModelSwitch' };
 
+/**
+ * MCP サーバーが利用者へ入力を求めている間（Elicitation）と、その決着（ElicitationResult）。Claude Code 2.1.63 で追加。
+ * 待っている間を許可待ちとして出し、決着で待つ前の状態へ戻す（Orca #33517 と同じ）。matcher は MCP サーバー名なので全部に当てる。
+ * 旧版は未知のhookキーを拒否し得るので版を確かめられたときだけ置く。
+ */
+export const PARADIS_CLAUDE_ELICITATION_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
+	{ eventName: 'Elicitation', matcher: '*' },
+	{ eventName: 'ElicitationResult', matcher: '*' },
+];
+
 /** Claude Code 2.1.207でpayloadを確認し、モバイルactivityへ実際に写像する追加hook。 */
 export const PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'SubagentStart' },

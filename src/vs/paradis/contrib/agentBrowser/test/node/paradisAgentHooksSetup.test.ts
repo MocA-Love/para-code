@@ -72,6 +72,19 @@ suite('ParadisAgentHooksSetup', () => {
 		}, { older: [], supported: [{ name: 'PostModelSwitch', retainOnly: false }], unknown: [{ name: 'PostModelSwitch', retainOnly: true }] });
 	});
 
+	test('adds the MCP elicitation hooks only for Claude Code 2.1.63 and later, and keeps them while the version is unknown', () => {
+		const names = (versionOutput: string | undefined) => paradisClaudeManagedHookEvents(versionOutput).filter(event => event.eventName.startsWith('Elicitation')).map(event => `${event.eventName}${event.matcher !== undefined ? `[${event.matcher}]` : ''}${event.retainOnly === true ? ' (retain)' : ''}`);
+		assert.deepStrictEqual({
+			older: names('2.1.62 (Claude Code)'),
+			supported: names('2.1.63 (Claude Code)'),
+			unknown: names(undefined),
+		}, {
+			older: [],
+			supported: ['Elicitation[*]', 'ElicitationResult[*]'],
+			unknown: ['Elicitation[*] (retain)', 'ElicitationResult[*] (retain)'],
+		});
+	});
+
 	test('marks managed commands with the current schema', () => {
 		assert.ok(paradisManagedAgentHookCommand().includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`));
 	});

@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { paradisElicitationSummary } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { NotifyKind } from '../common/paradisMobileProtocol.js';
 import { ParadisNotifyCategory, paradisNormalizeNotifyErrorCode } from '../common/paradisNotifyCompose.js';
@@ -49,6 +50,19 @@ export interface IParadisNotifyHookApproval {
 	readonly at: number;
 }
 
+/**
+ * MCP の入力の依頼（Claude Code の Elicitation hook）の記録。ツールの承認ではないので承認の記録とは別に持ち、
+ * 通知から答えさせない（答える ID を付けない）。
+ */
+export interface IParadisNotifyHookElicitation {
+	/** 受信箱・通知に出す 1 行（paradisElicitationSummary）。 */
+	readonly text: string;
+	readonly origin?: IParadisNotifyPromptOrigin;
+	/** 決着していない依頼の数。 */
+	readonly pending: number;
+	readonly at: number;
+}
+
 /** 質問（AskUserQuestion の PreToolUse）の hook の記録。どの会話が尋ねたかだけを持つ。 */
 export interface IParadisNotifyHookQuestion {
 	readonly toolUseId?: string;
@@ -87,6 +101,7 @@ export class ParadisNotifyHookLedger extends Disposable {
 	private readonly turnEnds = new Map<string, IParadisNotifyHookTurnEnd>();
 	private readonly approvals = new Map<string, IParadisNotifyHookApproval>();
 	private readonly questions = new Map<string, IParadisNotifyHookQuestion>();
+	private readonly elicitations = new Map<string, IParadisNotifyHookElicitation>();
 
 	constructor(subscribe = true) {
 		super();
@@ -102,6 +117,7 @@ export class ParadisNotifyHookLedger extends Disposable {
 				this.turnEnds.delete(event.token);
 				this.approvals.delete(event.token);
 				this.questions.delete(event.token);
+				this.elicitations.delete(event.token);
 				return;
 			case 'Stop':
 			case 'agent-turn-complete':
@@ -110,6 +126,7 @@ export class ParadisNotifyHookLedger extends Disposable {
 				const lastMessage = str(payload?.last_assistant_message) ?? str(payload?.['last-assistant-message']) ?? str(payload?.last_agent_message);
 				this.remember(this.turnEnds, event.token, { failed: false, ...(lastMessage !== undefined ? { lastMessage } : {}), at: event.at });
 				this.approvals.delete(event.token);
+				this.elicitations.delete(event.token);
 				this.forgetQuestionOf(event);
 				return;
 			}
@@ -121,6 +138,7 @@ export class ParadisNotifyHookLedger extends Disposable {
 				const errorMessage = str(payload?.error_details) ?? str(errorRecord?.message) ?? str(payload?.last_assistant_message);
 				this.remember(this.turnEnds, event.token, { failed: true, ...(errorCode !== undefined ? { errorCode } : {}), ...(errorMessage !== undefined ? { errorMessage } : {}), at: event.at });
 				this.approvals.delete(event.token);
+				this.elicitations.delete(event.token);
 				this.forgetQuestionOf(event);
 				return;
 			}
@@ -139,6 +157,21 @@ export class ParadisNotifyHookLedger extends Disposable {
 					});
 				}
 				return;
+			case 'Elicitation': {
+				const origin = hookOrigin(event);
+				const pending = (this.elicitations.get(event.token)?.pending ?? 0) + 1;
+				this.remember(this.elicitations, event.token, { text: paradisElicitationSummary(event.payload), ...(origin !== undefined ? { origin } : {}), pending, at: event.at });
+				return;
+			}
+			case 'ElicitationResult': {
+				const current = this.elicitations.get(event.token);
+				if (current !== undefined && current.pending > 1) {
+					this.elicitations.set(event.token, { ...current, pending: current.pending - 1 });
+				} else {
+					this.elicitations.delete(event.token);
+				}
+				return;
+			}
 			case 'PreToolUse':
 				if (event.toolName === 'AskUserQuestion') {
 					const origin = hookOrigin(event);
@@ -169,6 +202,11 @@ export class ParadisNotifyHookLedger extends Disposable {
 
 	approval(token: string, now: number): IParadisNotifyHookApproval | undefined {
 		const entry = this.approvals.get(token);
+		return entry !== undefined && now - entry.at <= APPROVAL_FRESH_MS ? entry : undefined;
+	}
+
+	elicitation(token: string, now: number): IParadisNotifyHookElicitation | undefined {
+		const entry = this.elicitations.get(token);
 		return entry !== undefined && now - entry.at <= APPROVAL_FRESH_MS ? entry : undefined;
 	}
 
@@ -282,6 +320,7 @@ export function paradisResolveNotifyContent(input: {
 	readonly hookTurnEnd?: IParadisNotifyHookTurnEnd;
 	readonly hookApproval?: IParadisNotifyHookApproval;
 	readonly hookQuestion?: IParadisNotifyHookQuestion;
+	readonly hookElicitation?: IParadisNotifyHookElicitation;
 	readonly pane?: IParadisNotifyPaneContent;
 	readonly now: number;
 }): IParadisNotifyContentResolution | undefined {
@@ -323,6 +362,12 @@ export function paradisResolveNotifyContent(input: {
 		// hook の中身（コマンドを優先した形）を使い、一致しなければその承認自身の中身を使う。待っている承認が無いときは
 		// hook の中身だけを使い、ID は付けない（通知から答えさせない）。
 		const hookApproval = input.hookApproval;
+		// MCP の入力の依頼。待っているツールの承認が無く、ツールの承認の hook より新しければ、その 1 行を中身にする
+		// （答える ID は付けない）
+		const elicitation = input.hookElicitation;
+		if (elicitation !== undefined && interaction?.kind !== 'approval' && (hookApproval === undefined || elicitation.at >= hookApproval.at)) {
+			return { kind: 'agent-question', category: 'approval', content: elicitation.text, ...(elicitation.origin !== undefined ? { origin: elicitation.origin } : {}) };
+		}
 		const hookMatches = hookApproval !== undefined && (interaction?.kind !== 'approval' || (hookApproval.toolUseId !== undefined && hookApproval.toolUseId === interaction.id));
 		const fromHook = hookMatches ? paradisApprovalNotifyParts(hookApproval.toolName, hookApproval.toolInput) : undefined;
 		const content = fromHook?.content ?? (interaction?.kind === 'approval' ? interaction.text : undefined);
