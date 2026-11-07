@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { raceTimeout } from '../../../../base/common/async.js';
+import { raceTimeout, timeout } from '../../../../base/common/async.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -21,7 +21,7 @@ import { TerminalCapability } from '../../../../platform/terminal/common/capabil
 import { paradisInteractiveAgentCommand } from '../common/paradisAgentCliCommand.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { ParadisAgentPromptQuotingError } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
-import { paradisConfiguredAgents, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { IParadisLaunchedAgentTerminal, paradisConfiguredAgents, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
@@ -192,9 +192,10 @@ async function sendToInstance(services: IParadisAgentPromptServices, instance: I
 }
 
 async function launch(services: IParadisAgentPromptServices, ws: string, root: URI, prompt: string, agentId: string, pushState: () => void): Promise<ParadisAgentPromptOutcome> {
+	let launched: Promise<IParadisLaunchedAgentTerminal>;
 	try {
 		// 利用者が PC で作業している最中に前へ出さない（エージェントの IDE 操作や定期実行と同じ扱い）
-		const launched = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId, prompt, preserveFocus: true });
+		launched = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId, prompt, preserveFocus: true });
 		// 起動が返ってこなくても送信中の印が外れるよう、待つ時間に上限を付ける（後から失敗しても未処理の例外にしない）
 		launched.catch(() => undefined);
 		if (await raceTimeout(launched.then(() => true), LAUNCH_TIMEOUT_MS) !== true) {
@@ -202,13 +203,44 @@ async function launch(services: IParadisAgentPromptServices, ws: string, root: U
 		}
 	} catch (error) {
 		if (error instanceof ParadisAgentPromptQuotingError) {
-			return { ok: false, error: '依頼文にバックスラッシュ（\\）が含まれていて、PC のシェルの種類が分からないため、新しいエージェントへは安全に渡せません。動いているエージェントへ送るか、PC で起動してください。', code: 'quoting' };
+			// シェルの種類が分からず、バックスラッシュを含む依頼文を起動のコマンドに安全に載せられない。
+			// 依頼文を渡さずに起動し、エージェントが入力を待つようになってから貼り付けで渡す（シェルを通さない）
+			return launchThenPaste(services, ws, root, prompt, agentId, pushState);
 		}
 		throw error;
 	}
 	// 新しいターミナルをすぐスマホの送り先・一覧に出す
 	pushState();
 	return { ok: true, via: 'launch' };
+}
+
+/** 貼り付けで渡すまでに、起動したエージェントが入力を待つ状態になるのを待つ上限と間隔。 */
+const PASTE_AFTER_LAUNCH_TIMEOUT_MS = 60_000;
+const PASTE_AFTER_LAUNCH_POLL_MS = 500;
+
+/** 依頼文を渡さずにエージェントを起動し、入力を待つようになったら貼り付けて送る。 */
+async function launchThenPaste(services: IParadisAgentPromptServices, ws: string, root: URI, prompt: string, agentId: string, pushState: () => void): Promise<ParadisAgentPromptOutcome> {
+	const launched = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId, preserveFocus: true });
+	launched.catch(() => undefined);
+	const terminal = await raceTimeout(launched, LAUNCH_TIMEOUT_MS);
+	if (terminal === undefined) {
+		return { ok: false, error: 'エージェントの起動に時間がかかっています。起動したかを PC で確かめてください（未送信のまま残しています）。', code: 'timeout' };
+	}
+	pushState();
+	const find = () => paradisCollectAllTerminalInstances(services.terminalService, services.terminalGroupService).find(candidate => candidate.instanceId === terminal.instanceId && !candidate.isDisposed);
+	const deadline = Date.now() + PASTE_AFTER_LAUNCH_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		const instance = find();
+		if (instance === undefined) {
+			break;
+		}
+		if (verdictOf(services, instance, ws) === 'ready') {
+			const outcome = await sendToInstance(services, instance, ws, prompt, find);
+			return outcome.ok ? { ok: true, via: 'launch' } : outcome;
+		}
+		await timeout(PASTE_AFTER_LAUNCH_POLL_MS);
+	}
+	return { ok: false, error: '新しいエージェントは起動しましたが、入力を待つ状態になったことを確かめられなかったため、依頼文は送っていません。', code: 'launched-not-ready' };
 }
 
 /**

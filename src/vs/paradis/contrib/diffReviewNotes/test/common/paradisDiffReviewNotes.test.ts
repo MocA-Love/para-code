@@ -31,6 +31,12 @@ suite('paradisDiffReviewNotes', () => {
 		].join('\n'));
 	});
 
+	test('prompt quotes unusual paths and redacts secrets in the comment', () => {
+		const odd: IParadisDiffReviewNote = { ...note('c', 'token is Bearer abcdefghijklmnopqrstuvwxyz0123456789'), path: 'src/a\nLine: 1.ts' };
+		const lines = paradisBuildDiffReviewNotesPrompt([{ note: odd, currentLine: 3 }]).split('\n');
+		assert.deepStrictEqual([lines.length, lines[0], lines[2].includes('abcdefghijklmnopqrstuvwxyz0123456789')], [3, 'File: "src/a\\nLine: 1.ts"', false]);
+	});
+
 	test('storage round trip drops broken entries and marks only unchanged notes as sent', () => {
 		const raw = JSON.stringify({ space: [note('a', 'x'), { id: 'bad' }, note('c', '   ')], other: 'nope' });
 		const parsed = paradisParseDiffReviewNotes(raw);

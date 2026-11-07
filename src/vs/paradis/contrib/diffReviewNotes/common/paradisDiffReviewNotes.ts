@@ -10,6 +10,7 @@
 // 純関数にしたもの。上限と行の追いかけはスマホの差分のメモ（W2-28）と同じ値・同じ関数を使う。
 // 保存はスマホのものとは別のキー（別の部品の保存キーを触らない）。
 
+import { paradisRedactTextSecrets } from '../../../common/paradisSecretRedaction.js';
 import { PARADIS_MOBILE_REVIEW_MAX_NOTES, PARADIS_MOBILE_REVIEW_NOTE_BODY_MAX, PARADIS_MOBILE_REVIEW_NOTE_LINE_TEXT_MAX } from '../../mobileRelay/common/paradisMobileReviewStore.js';
 
 export const PARADIS_DIFF_REVIEW_NOTES_STORAGE_KEY = 'paradis.diffReviewNotes.v1';
@@ -102,10 +103,19 @@ export interface IParadisDiffReviewNoteToSend {
  */
 export function paradisBuildDiffReviewNotesPrompt(notes: readonly IParadisDiffReviewNoteToSend[]): string {
 	return notes.map(({ note, currentLine }) => [
-		`File: ${note.path}`,
+		`File: ${quotePathIfNeeded(note.path)}`,
 		currentLine !== undefined ? `Line: ${currentLine}` : `Line: ${note.line} (the line changed after this note was written)`,
-		`User comment: ${JSON.stringify(note.body.trim())}`,
+		// メモには利用者が貼ったトークンなどが混ざりうるので、通知や受信箱と同じ規則で伏せる
+		`User comment: ${JSON.stringify(paradisRedactTextSecrets(note.body.trim()))}`,
 	].join('\n')).join('\n');
+}
+
+/**
+ * パスはふつう Orca と同じくそのまま書く。改行・制御文字・`"`・`\\` を含むパス（リポジトリから来るデータ）だけは
+ * JSON の文字列にして、1 件が 3 行の形を崩させない。
+ */
+function quotePathIfNeeded(path: string): string {
+	return /[\u0000-\u001f\u007f-\u009f\u2028\u2029"\\]/.test(path) ? JSON.stringify(path) : path;
 }
 
 /** 送った後、読んだときの版（`updatedAt`）のままのメモにだけ送信済みの印を付ける（送る間に書き直されたものには付けない）。 */
