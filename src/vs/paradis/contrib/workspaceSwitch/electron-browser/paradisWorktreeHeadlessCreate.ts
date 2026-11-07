@@ -381,8 +381,11 @@ export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor, o
 export interface IParadisAgentLaunchInWorkspaceRequest {
 	/** 起動先のルートディレクトリ。 */
 	readonly rootUri: URI;
-	/** ワークスペースの状態キー（リポジトリid または worktree:...）。ターミナルのスコープ付けに使う。 */
-	readonly stateKey: string;
+	/**
+	 * ワークスペースの状態キー（リポジトリid または worktree:...）。ターミナルのスコープ付けに使う。
+	 * undefined はスペースを使っていないウィンドウ（今のウィンドウにそのまま開く。preserveFocus とは併用できない）。
+	 */
+	readonly stateKey: string | undefined;
 	readonly agentId: string;
 	readonly prompt?: string;
 	readonly modelId?: string;
@@ -517,6 +520,9 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		throw new Error(`unknown agent: ${request.agentId}`);
 	}
 	if (request.preserveFocus === true) {
+		if (request.stateKey === undefined) {
+			throw new Error('preserveFocus needs a space');
+		}
 		// 利用者の入力を横取りしない: 前に出さず、setActiveInstance も呼ばない
 		const background = await paradisOpenEditorTerminalInSpace({ terminalService, terminalEditorService, terminalScopeService }, request.rootUri, request.stateKey, true);
 		await paradisWaitForShellTypeIfNeeded(background, request.prompt);
@@ -533,7 +539,7 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		cwd: request.rootUri,
 		location: TerminalLocation.Editor,
 	});
-	if (request.stateKey !== switchService.activeStateKey) {
+	if (request.stateKey !== undefined && request.stateKey !== switchService.activeStateKey) {
 		// PC側で非表示のワークスペース向け: スコープを付け替えて即parkさせる（表示を乱さない）。
 		// エディタターミナルの park は persistentProcessId が確定していないと失敗するため
 		// PTY 起動を待ってから assign する。あわせて createTerminal は openEditor の完了を
