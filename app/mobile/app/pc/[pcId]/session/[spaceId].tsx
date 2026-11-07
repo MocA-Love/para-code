@@ -128,6 +128,20 @@ export default function SessionScreen() {
 	// 開き方の設定を読み終えるまでペインを出さない（会話表示 → ターミナル表示の作り直しを避ける）。
 	const viewReady = useSessionViewReady();
 	const showChat = current !== undefined && current.agent === true && view === 'chat';
+	// ターミナルの表示は、最近見たものを隠したまま残す（タブ・会話⇄ターミナルを切り替えるたびに WebView と xterm を
+	// 作り直さない。戻ったときは PC の snapshot 1 回で描き直す）。先頭が今のもの。
+	const shownTerminalKey = current !== undefined && !showChat && (viewReady || current.agent !== true) ? current.terminalKey : undefined;
+	const [recentTerminalKeys, setRecentTerminalKeys] = useState<readonly string[]>([]);
+	// 閉じた（一覧から消えた）ターミナルは枠を空ける
+	const liveRecentKeys = recentTerminalKeys.filter(key => terminals.some(terminal => terminal.terminalKey === key));
+	if (shownTerminalKey !== undefined && liveRecentKeys[0] !== shownTerminalKey) {
+		setRecentTerminalKeys([shownTerminalKey, ...liveRecentKeys.filter(key => key !== shownTerminalKey)].slice(0, 1 + KEPT_TERMINAL_VIEWS));
+	} else if (liveRecentKeys.length !== recentTerminalKeys.length) {
+		setRecentTerminalKeys(liveRecentKeys);
+	}
+	const terminalDeck = recentTerminalKeys
+		.map(key => terminals.find(terminal => terminal.terminalKey === key))
+		.filter((terminal): terminal is SpaceTerminal => terminal !== undefined);
 
 	const openTab = (next: SessionTab | undefined, options: { latest?: boolean } = {}) => {
 		if (next?.kind === 'terminal') {
@@ -364,9 +378,10 @@ export default function SessionScreen() {
 				if (!viewReady && tab.terminal.agent === true) {
 					return <View style={styles.center}><ActivityIndicator color={colors.textDim} /></View>;
 				}
+				// ターミナルの表示は下の terminalDeck が出す
 				return showChat
 					? <AgentChatPane key={tab.terminal.terminalKey} terminal={tab.terminal} latest={latest} active={focused} bottomInset={bottomInset} />
-					: <TerminalPane key={tab.terminal.terminalKey} terminal={tab.terminal} active={focused} keyboardVisible={keyboardVisible} bottomInset={bottomInset} />;
+					: null;
 		}
 	})();
 
@@ -434,7 +449,23 @@ export default function SessionScreen() {
 					}
 				}}
 			>
-				<View style={styles.main}>{body}</View>
+				<View style={styles.main}>
+					{body}
+					{terminalDeck.map(terminal => {
+						const shown = terminal.terminalKey === shownTerminalKey && (route.status !== 'unknown' && route.spaceStatus !== 'missing' && tab.status === 'terminal');
+						return (
+							<View
+								key={terminal.terminalKey}
+								style={shown ? styles.fill : styles.keptTerminal}
+								pointerEvents={shown ? 'auto' : 'none'}
+								accessibilityElementsHidden={!shown}
+								importantForAccessibility={shown ? 'auto' : 'no-hide-descendants'}
+							>
+								<TerminalPane terminal={terminal} active={focused && shown} shown={shown} keyboardVisible={keyboardVisible} bottomInset={bottomInset} />
+							</View>
+						);
+					})}
+				</View>
 				{/* ドックの枠は常に置き、幅で出し入れする（本文の位置を変えないため）。 */}
 				<View style={[styles.dock, dockPanel !== undefined ? [styles.dockOpen, { width: dockWidth }] : undefined]}>
 					{dockPanel !== undefined && dockTarget !== undefined ? (
@@ -578,7 +609,18 @@ function TabMenu({ visible, item, pcId, phoneWidth, onToggleWidth, onShow, onRen
 	);
 }
 
+/** 今のもののほかに隠したまま残すターミナルの表示の数（q.html Q561。多いほど戻りが速く、記憶を使う）。 */
+const KEPT_TERMINAL_VIEWS = 2;
+
 const styles = StyleSheet.create({
+	keptTerminal: {
+		position: 'absolute',
+		top: 0,
+		right: 0,
+		bottom: 0,
+		left: 0,
+		opacity: 0,
+	},
 	fill: {
 		flex: 1,
 	},

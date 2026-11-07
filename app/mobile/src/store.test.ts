@@ -2213,6 +2213,26 @@ describe('MobileController terminal sync protocol', () => {
 		]);
 	});
 
+	it('declares the viewport only to attached terminals, not to hidden views that keep their subscription', async () => {
+		const { controller, pcGot } = await setup();
+		// 隠したペイン: 表示はストリームを購読したまま、PC の購読は解いている
+		controller.subscribeTerminal('terminal-1', () => { });
+		controller.attachTerminal('terminal-1');
+		await flush();
+		controller.detachTerminal('terminal-1');
+		await flush();
+		controller.setTerminalViewport({ cols: 40, rows: 20 });
+		await flush();
+		const whileHidden = pcGot.filter(message => message.t === 'viewport').length;
+		// 出し直した: attach に寸法が載り、その後の申告も届く
+		controller.attachTerminal('terminal-1');
+		controller.setTerminalViewport({ cols: 41, rows: 20 });
+		await flush();
+		controller.disconnect();
+		const attach = pcGot.filter(message => message.t === 'attach').at(-1) as { viewCols?: number } | undefined;
+		expect({ whileHidden, attachCols: attach?.viewCols, afterShown: pcGot.filter(message => message.t === 'viewport').length }).toEqual({ whileHidden: 0, attachCols: 40, afterShown: 1 });
+	});
+
 	it('ignores terminal frames without terminalKey and sync metadata', async () => {
 		const { controller, pcMux, enc, latestState } = await setup();
 		controller.subscribeTerminal('terminal-1', () => { });

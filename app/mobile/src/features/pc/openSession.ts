@@ -4,8 +4,8 @@ import type { useRouter } from 'expo-router';
 import { useAppStore } from '../../appState.js';
 import { createAgentLatestEntryToken } from '../../agentNavigation.js';
 import { haptic } from '../../haptics.js';
-import { resetDetailColumnFor } from '../../ipad/detailColumn.js';
-import { routes } from '../../routes.js';
+import { resetDetailColumnFor, showSessionInDetailColumn } from '../../ipad/detailColumn.js';
+import { encodeSessionTab, routes } from '../../routes.js';
 import { useLastSession } from '../home/lastSessionStore.js';
 
 type Router = ReturnType<typeof useRouter>;
@@ -32,7 +32,7 @@ export interface SessionTarget {
  *   別の PC のセッションなら、選択はルートの画面が PC を切り替えたあとに合わせるので触らない
  * - ホームの「再開」カードの記録を更新する
  * - iPad の2列でその PC の詳細の列が出ていれば、開いていたもの（別のセッションやソース管理）を閉じてから開く
- *   （詳細の列は積み増さず入れ替える。Orca と同じ）
+ *   （詳細の列は積み増さず入れ替える。Orca と同じ）。同じスペースのセッションが出ていれば、作り直さずにタブを替える
  */
 export function openSession(router: Router, target: SessionTarget): void {
 	haptic('move');
@@ -52,10 +52,16 @@ export function openSession(router: Router, target: SessionTarget): void {
 		...(target.branch !== undefined ? { branch: target.branch } : {}),
 		...(target.color !== undefined ? { color: target.color } : {}),
 	});
+	const latest = createAgentLatestEntryToken();
+	// タブを指定しない（スペースの行）ときは今までどおり開き直す（既定のタブを選び直す）
+	if (target.terminalKey !== undefined
+		&& showSessionInDetailColumn(target.pcId, target.spaceId, { tab: encodeSessionTab({ kind: 'terminal', terminalKey: target.terminalKey }), latest })) {
+		return;
+	}
 	resetDetailColumnFor(target.pcId);
 	// withAnchor: ホームの「再開」から入ったときも、PC の中の Stack の根（PC の画面・2列の置き場）を下に敷く。
 	router.push(routes.session(target.pcId, target.spaceId, {
 		...(target.terminalKey !== undefined ? { tab: { kind: 'terminal', terminalKey: target.terminalKey } } : {}),
-		latest: createAgentLatestEntryToken(),
+		latest,
 	}), { withAnchor: true });
 }
