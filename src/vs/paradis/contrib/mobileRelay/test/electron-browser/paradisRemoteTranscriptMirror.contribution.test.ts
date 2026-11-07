@@ -396,6 +396,20 @@ suite('ParadisRemoteTranscriptMirror contribution', () => {
 			.map(call => [call.data?.toString(), call.catchingUp]), [['past', true], ['new', false]]);
 	});
 
+	test('does not mark the rest of a copy that continues from the middle as catching up', async () => {
+		// 再接続・ウィンドウの再読み込みで写しの途中から続けるときは、切れていた間の分も今の出来事として写す
+		const fileService = new TranscriptFileService();
+		const channel = new TranscriptRelayChannel();
+		channel.beginOffset = 4;
+		fileService.setTranscript(VSBuffer.fromString('pastgap'));
+		createMirror(fileService, channel);
+		await waitUntil(() => channel.calls.some(call => call.command === 'appendRemoteTranscriptMirror'), 500);
+
+		assert.deepStrictEqual(channel.calls
+			.filter(call => call.command === 'appendRemoteTranscriptMirror')
+			.map(call => [call.data?.toString(), call.catchingUp]), [['gap', false]]);
+	});
+
 	test('appends immediately when an UPDATED event arrives after initial follow', async () => {
 		const fileService = new TranscriptFileService();
 		const channel = new TranscriptRelayChannel();
