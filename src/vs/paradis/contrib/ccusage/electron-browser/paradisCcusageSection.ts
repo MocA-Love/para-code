@@ -1067,7 +1067,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 				.filter(model => this.agentFilter === 'all' || model.agent === this.agentFilter)
 				.map(model => ({ model: model.model, agent: model.agent, cost: model.cost })),
 		}));
-		const allocation = paradisAllocateSpaceCosts(costDays, repoData.buckets, range.from, range.to);
+		const allocation = paradisAllocateSpaceCosts(costDays, repoData.buckets, range.from, range.to, this.agentFilter === 'all' ? undefined : this.agentFilter);
 		const byFolder = new Map(allocation.spaces.map(space => [space.key, space]));
 		const valueOf = (folder: string) => {
 			const entry = byFolder.get(folder);

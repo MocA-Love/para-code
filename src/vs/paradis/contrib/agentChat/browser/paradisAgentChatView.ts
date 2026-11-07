@@ -623,7 +623,9 @@ export class ParadisAgentChatView extends Disposable {
 		switch (item.kind) {
 			case 'tool': {
 				const key = item.use !== undefined ? this.fullTextKey(item.use.rev) : '';
-				return JSON.stringify([item.kind, item.use?.rev, item.result?.rev, expanded, this.expanded.has(`${item.key}:diff`), this.expanded.has(`${item.key}:load`), this.recentKeys.has(item.key), this.fullTexts.has(key), this.missingFullTexts.has(key), this.pendingFullTexts.has(key), this.imageSignature(item.result)]);
+				// 結果の全文（「全文を読み込む」）も、読み込めたら描き直す
+				const resultKey = item.result !== undefined ? this.fullTextKey(item.result.rev) : '';
+				return JSON.stringify([item.kind, item.use?.rev, item.result?.rev, expanded, this.expanded.has(`${item.key}:diff`), this.expanded.has(`${item.key}:load`), this.recentKeys.has(item.key), this.fullTexts.has(key), this.missingFullTexts.has(key), this.pendingFullTexts.has(key), this.fullTexts.has(resultKey), this.missingFullTexts.has(resultKey), this.pendingFullTexts.has(resultKey), this.imageSignature(item.result)]);
 			}
 			case 'questions': {
 				// 自由入力の文字は指紋に入れない（打つたびにカードを作り直すと、入力欄のフォーカスが外れる）。

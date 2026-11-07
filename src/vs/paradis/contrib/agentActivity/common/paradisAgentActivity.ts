@@ -687,7 +687,7 @@ function agentForModel(model: string): string {
  * Claude Code・Codex 以外（Gemini など）の金額は {@link IParadisSpaceCostAllocation.unallocatedCost} に残す。
  * こうすると、スペース別の合計と未割り当ての和が ccusage の合計に一致する。
  */
-export function paradisAllocateSpaceCosts(costDays: readonly IParadisCostDay[], buckets: readonly IParadisSpaceUsageBucket[], since: string, until: string): IParadisSpaceCostAllocation {
+export function paradisAllocateSpaceCosts(costDays: readonly IParadisCostDay[], buckets: readonly IParadisSpaceUsageBucket[], since: string, until: string, tokensAgent?: string): IParadisSpaceCostAllocation {
 	const costs = new Map<string, number>(buckets.map(bucket => [bucket.key, 0]));
 	let unallocatedCost = 0;
 	let totalCost = 0;
@@ -736,8 +736,11 @@ export function paradisAllocateSpaceCosts(costDays: readonly IParadisCostDay[], 
 		let tokens = 0;
 		for (const [day, models] of Object.entries(bucket.days)) {
 			if (inRange(day, since, until)) {
-				for (const value of Object.values(models)) {
-					tokens += paradisTotalTokens(value);
+				for (const [model, value] of Object.entries(models)) {
+					// エージェントを絞っているときは、そのエージェントのモデルのトークンだけを数える
+					if (tokensAgent === undefined || agentForModel(model) === tokensAgent) {
+						tokens += paradisTotalTokens(value);
+					}
 				}
 			}
 		}

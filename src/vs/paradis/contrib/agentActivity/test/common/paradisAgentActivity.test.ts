@@ -162,6 +162,15 @@ suite('ParadisAgentActivity', () => {
 		});
 	});
 
+	test('counts only the tokens of the chosen agent when the agent is narrowed', () => {
+		const buckets: IParadisSpaceUsageBucket[] = [
+			{ key: 'a', sessions: 1, days: { '2026-09-20': { 'claude-opus-4-20250101': { input: 0, output: 100, cacheCreation: 0, cacheRead: 0 } } } },
+			{ key: 'b', sessions: 2, days: { '2026-09-20': { 'claude-opus-4-20250101': { input: 0, output: 0, cacheCreation: 0, cacheRead: 5000 }, 'gpt-5': { input: 10, output: 0, cacheCreation: 0, cacheRead: 0 } } } },
+		];
+		const tokensOf = (agent?: 'claude' | 'codex') => paradisAllocateSpaceCosts([], buckets, '2026-09-20', '2026-09-26', agent).spaces.map(space => space.tokens);
+		assert.deepStrictEqual({ all: tokensOf(), claude: tokensOf('claude'), codex: tokensOf('codex') }, { all: [100, 5010], claude: [100, 5000], codex: [0, 10] });
+	});
+
 	test('combines work stats of the selected agents with the daily turns of every day in the range', () => {
 		const result = {
 			computedAt: 0,

@@ -7,6 +7,7 @@
 /* eslint-disable local/code-no-unexternalized-strings */
 
 import { deepStrictEqual, ok, strictEqual } from 'assert';
+import { NullOpenerService } from '../../../../../platform/opener/test/common/nullOpenerService.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -149,6 +150,7 @@ suite('ParadisHtmlFileEditor', () => {
 			remote.tunnel ?? createTunnelService(),
 			disposables.add(new TestWorkspaceTrustManagementService()),
 			createLifecycleService(),
+			NullOpenerService,
 		));
 	}
 
@@ -176,6 +178,7 @@ suite('ParadisHtmlFileEditor', () => {
 			createTunnelService(),
 			disposables.add(new TestWorkspaceTrustManagementService(trusted)),
 			lifecycleService,
+			NullOpenerService,
 		));
 	}
 
@@ -188,6 +191,7 @@ suite('ParadisHtmlFileEditor', () => {
 			contentOptions: {},
 			onFatalError: Event.None,
 			onDidScroll: Event.None,
+			onDidClickLink: Event.None,
 			setHtml: (html: string) => {
 				renderedHtml = html;
 				contentOptionsAtSetHtml = {
@@ -227,6 +231,7 @@ suite('ParadisHtmlFileEditor', () => {
 			contentOptions: {},
 			onFatalError: Event.None,
 			onDidScroll: Event.None,
+			onDidClickLink: Event.None,
 			setHtml: (html: string) => { renderedHtml = html; drawn(html); },
 			focus: () => { },
 			dispose: () => { },
@@ -265,6 +270,7 @@ suite('ParadisHtmlFileEditor', () => {
 			contentOptions: {},
 			onFatalError: Event.None,
 			onDidScroll: Event.None,
+			onDidClickLink: Event.None,
 			setHtml: (html: string) => { if (html) { drawn(html); } },
 			focus: () => { },
 			dispose: () => { },
@@ -350,6 +356,7 @@ suite('ParadisHtmlFileEditor', () => {
 			initialScrollProgress: 0,
 			onFatalError: Event.None,
 			onDidScroll: scroll.event,
+			onDidClickLink: Event.None,
 			setHtml: (html: string) => {
 				writes.push({
 					file: html.includes('other') ? 'other' : html ? 'index' : '',
@@ -407,6 +414,7 @@ suite('ParadisHtmlFileEditor', () => {
 			initialScrollProgress: 0,
 			onFatalError: Event.None,
 			onDidScroll: scroll.event,
+			onDidClickLink: Event.None,
 			setHtml: (html: string) => {
 				writes.push({
 					file: html.includes('other') ? 'other' : html ? 'index' : '',
@@ -500,7 +508,7 @@ suite('ParadisHtmlFileEditor', () => {
 				new TestTextResourceConfigurationService(), Object.create(null) as IEditorService, new TestEditorGroupsService(),
 				createSharedProcessService(directory => { mounted = directory; return Promise.resolve(PREVIEW_MOUNT); }),
 				workspace, createRemoteAgentService(), createRemoteAuthorityResolverService(), createTunnelService(),
-				disposables.add(new TestWorkspaceTrustManagementService()), createLifecycleService()));
+				disposables.add(new TestWorkspaceTrustManagementService()), createLifecycleService(), NullOpenerService));
 
 			const document = new DOMParser().parseFromString(
 				await editor.render('<img src="a.png">', URI.file('/workspace/site/index.html')), 'text/html');
