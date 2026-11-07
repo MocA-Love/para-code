@@ -140,3 +140,5 @@ import './contrib/tabLauncher/electron-browser/paradisTabLauncher.contribution.j
 import './contrib/menuIcons/electron-browser/paradisContextMenuService.js';
 // G-02: ソース管理の失敗（git の操作の失敗・マージの衝突）を今のスペースのエージェントに直させる
 import './contrib/scmAgentFix/electron-browser/paradisScmAgentFix.contribution.js';
+// G-01: 差分の行にメモを付け、まとめて今のスペースのエージェントへ送る
+import './contrib/diffReviewNotes/electron-browser/paradisDiffReviewNotes.contribution.js';
