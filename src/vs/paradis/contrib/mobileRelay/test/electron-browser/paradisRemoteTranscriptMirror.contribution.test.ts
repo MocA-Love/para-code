@@ -45,6 +45,7 @@ interface IRelayCall {
 	readonly remotePath?: string;
 	readonly data?: VSBuffer;
 	readonly result?: unknown;
+	readonly catchingUp?: unknown;
 }
 
 class TranscriptFileService extends TestFileService {
@@ -118,7 +119,7 @@ class TranscriptRelayChannel implements IChannel {
 		const ownerId = typeof parameters[0] === 'string' ? parameters[0] : '';
 		const remotePath = typeof parameters[1] === 'string' ? parameters[1] : undefined;
 		const data = parameters[2] instanceof VSBuffer ? parameters[2] : undefined;
-		this.calls.push({ command, ownerId, remotePath, data, ...(command === 'completeRemoteShellOutput' ? { result: parameters[2] } : {}) });
+		this.calls.push({ command, ownerId, remotePath, data, ...(command === 'completeRemoteShellOutput' ? { result: parameters[2] } : {}), ...(command === 'appendRemoteTranscriptMirror' ? { catchingUp: parameters[3] } : {}) });
 
 		switch (command) {
 			case 'listRemoteTranscriptMirrors':
@@ -372,6 +373,27 @@ suite('ParadisRemoteTranscriptMirror contribution', () => {
 			watches: fileService.watches.length,
 			reads: fileService.rangeReads.length,
 		}, { watches: 0, reads: 1 });
+	});
+
+	test('marks only what the host already had when the copy started as catching up', async () => {
+		// 写し始めた時点で接続先にあった分は過去の会話。読み手はその分の質問・ターンの終わりを鳴らさない。
+		// 後から書かれた分は今の出来事なので印を付けない（追いつく分と混ぜない）
+		const fileService = new TranscriptFileService();
+		const channel = new TranscriptRelayChannel();
+		fileService.setTranscript(VSBuffer.fromString('past'));
+		createMirror(fileService, channel);
+		await waitUntil(() => channel.calls.some(call => call.command === 'appendRemoteTranscriptMirror'), 500);
+
+		fileService.setTranscript(VSBuffer.fromString('pastnew'));
+		fileService.fireFileChanges(new FileChangesEvent([{
+			resource: remoteTranscriptUri(),
+			type: FileChangeType.UPDATED,
+		}], false));
+		await waitUntil(() => channel.calls.filter(call => call.command === 'appendRemoteTranscriptMirror').length === 2, 500);
+
+		assert.deepStrictEqual(channel.calls
+			.filter(call => call.command === 'appendRemoteTranscriptMirror')
+			.map(call => [call.data?.toString(), call.catchingUp]), [['past', true], ['new', false]]);
 	});
 
 	test('appends immediately when an UPDATED event arrives after initial follow', async () => {

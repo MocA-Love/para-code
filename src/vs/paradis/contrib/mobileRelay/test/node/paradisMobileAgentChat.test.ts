@@ -14,7 +14,7 @@ import * as sinon from 'sinon';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import { fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, onParadisAgentTurnEnded } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexForkCandidateAllowed, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisReadCodexForkHistory, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
@@ -674,9 +674,10 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
-	test('does not notify the past questions of a resumed host conversation while its copy is filled in', async () => {
+	test('does not notify the past questions of a resumed host conversation while its copy catches up', async () => {
 		// セッション履歴から再開した接続先の会話は、手元にまだ写しが無い。写しは会話を先頭から追記で育てるので、
-		// 過去の質問も追記として読まれる。読み始めより前に書かれた質問は鳴らさず、再開後に出た質問だけを鳴らす
+		// 過去の質問も追記として読まれる。写しが「追いつくための分」と印を付けた追記の質問は鳴らさず、
+		// その後に写した質問だけを鳴らす。接続先の時計が手元より遅れていても（行の時刻が古くても）鳴る
 		const userData = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-resume-data-')));
 		const mirror = new ParadisRemoteTranscriptMirrorStore(userData, new NullLogService());
 		const notified: string[] = [];
@@ -689,11 +690,12 @@ suite('ParadisMobileAgentChat', () => {
 		const question = (id: string, text: string, at: number) => JSON.stringify({
 			type: 'assistant', uuid: `u-${id}`, timestamp: new Date(at).toISOString(),
 			message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'AskUserQuestion', input: { questions: [{ question: text, header: '確認', options: [{ label: 'はい' }, { label: 'いいえ' }] }] } }] },
-		});
+		}) + '\n';
 		const answer = (id: string, at: number) => JSON.stringify({
 			type: 'user', uuid: `r-${id}`, timestamp: new Date(at).toISOString(),
 			message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'はい' }] },
-		});
+		}) + '\n';
+		const questionCount = () => access.tailers.get('pane-resumed')?.messages.filter(message => message.kind === 'question').length;
 		try {
 			chat.setEagerTailing(true);
 			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-resumed' }]), true);
@@ -703,21 +705,70 @@ suite('ParadisMobileAgentChat', () => {
 			});
 			await waitFor(() => access.tailers.has('pane-resumed'), 'the resumed session was not followed');
 
-			// 担当ウィンドウが接続先の会話を写す（過去の 2 問と、再開後の 1 問）
+			// 担当ウィンドウが接続先に既にあった会話（過去の 2 問）を写す
+			const encoder = new TextEncoder();
 			const dayAgo = Date.now() - 24 * 60 * 60_000;
-			const content = [
-				question('toolu_old1', '昨日の質問1', dayAgo), answer('toolu_old1', dayAgo + 1_000),
-				question('toolu_old2', '昨日の質問2', dayAgo + 2_000), answer('toolu_old2', dayAgo + 3_000),
-				question('toolu_new', '再開後の質問', Date.now()),
-			].join('\n') + '\n';
 			assert.strictEqual(await mirror.begin('window-a', remotePath), 0);
-			await mirror.append('window-a', remotePath, new TextEncoder().encode(content));
+			await mirror.append('window-a', remotePath, encoder.encode(question('toolu_old1', '昨日の質問1', dayAgo) + answer('toolu_old1', dayAgo + 1_000)), true);
+			await mirror.append('window-a', remotePath, encoder.encode(question('toolu_old2', '昨日の質問2', dayAgo + 2_000) + answer('toolu_old2', dayAgo + 3_000)), true);
+			await waitFor(() => questionCount() === 2, 'the copied conversation was not read');
 
-			await waitFor(() => access.tailers.get('pane-resumed')?.messages.filter(message => message.kind === 'question').length === 3, 'the copied conversation was not read');
+			// 再開後に出た質問。接続先の時計が遅れていて、行の時刻は手元の 1 日前
+			await mirror.append('window-a', remotePath, encoder.encode(question('toolu_new', '再開後の質問', dayAgo + 4_000)));
 			await waitFor(() => notified.length > 0, 'the question asked after the resume was not notified');
 			await new Promise(resolve => setTimeout(resolve, 50));
 			assert.deepStrictEqual(notified.map(text => text.includes('再開後の質問')), [true]);
 		} finally {
+			chat.dispose();
+			mirror.dispose();
+			await rm(userData, { recursive: true, force: true });
+		}
+	});
+
+	test('does not end a Codex turn for the past turns of a host conversation while its copy catches up', async () => {
+		// 写しが過去の会話を追記で届ける間の task_complete で、ペインを確認待ちへ動かさない（完了の通知が鳴る）。
+		// 追いついた後に書かれたターンの終わりは今までどおり知らせる
+		const userData = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-resume-codex-')));
+		const mirror = new ParadisRemoteTranscriptMirrorStore(userData, new NullLogService());
+		const chat = new ParadisMobileAgentChat(
+			() => { }, () => { }, () => { }, new NullLogService(),
+			async () => true, () => { }, undefined, mirror,
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly messages: readonly { readonly text: string }[] }> };
+		const token = 'pane-resumed-codex';
+		const ended: string[] = [];
+		const listener = onParadisAgentTurnEnded(event => {
+			if (event.token === token) {
+				ended.push(event.cause);
+			}
+		});
+		const threadId = '019a0000-0000-7000-8000-000000000001';
+		const remotePath = `/home/alice/.codex/sessions/2026/11/07/rollout-2026-11-07T00-00-00-${threadId}.jsonl`;
+		const line = (at: number, type: string, payload: Record<string, unknown>) => JSON.stringify({ timestamp: new Date(at).toISOString(), type, payload }) + '\n';
+		const turn = (at: number, text: string) => line(at, 'event_msg', { type: 'task_started', turn_id: `turn-${at}` })
+			+ line(at + 1, 'response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] })
+			+ line(at + 2, 'event_msg', { type: 'task_complete', turn_id: `turn-${at}` });
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({
+				token, event: 'SessionStart', sessionId: threadId,
+				transcriptPath: remotePath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', at: Date.now(),
+			});
+			await waitFor(() => access.tailers.has(token), 'the resumed Codex session was not followed');
+
+			const encoder = new TextEncoder();
+			const dayAgo = Date.now() - 24 * 60 * 60_000;
+			assert.strictEqual(await mirror.begin('window-a', remotePath), 0);
+			await mirror.append('window-a', remotePath, encoder.encode(line(dayAgo, 'session_meta', { id: threadId, cwd: '/srv/app' }) + turn(dayAgo + 1_000, '昨日の答え1') + turn(dayAgo + 2_000, '昨日の答え2')), true);
+			await waitFor(() => access.tailers.get(token)?.messages.some(message => message.text === '昨日の答え2') === true, 'the copied conversation was not read');
+			assert.deepStrictEqual(ended, []);
+
+			await mirror.append('window-a', remotePath, encoder.encode(turn(Date.now(), '再開後の答え')));
+			await waitFor(() => ended.length > 0, 'the turn after the resume did not end');
+			assert.deepStrictEqual([...new Set(ended)], ['turn']);
+		} finally {
+			listener.dispose();
 			chat.dispose();
 			mirror.dispose();
 			await rm(userData, { recursive: true, force: true });
