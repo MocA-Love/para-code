@@ -81,6 +81,11 @@ import { IParadisUpdateTerminalsDialog, paradisShowUpdateTerminalsDialog } from 
 
 /** 接続先へ聞くときの上限。 */
 const REMOTE_TIMEOUT_MS = 4_000;
+/**
+ * 更新前の問い合わせ（`collect`）で接続先へ聞くときの上限。main がウィンドウの答えを待つ上限
+ * （`paradisUpdateTerminalsMain.ts` の 4 秒）より確実に短くする。過ぎると main は「あとで更新」にする。
+ */
+const COLLECT_REMOTE_TIMEOUT_MS = 2_500;
 /** 終了の途中で止める合図を待つ上限（Ready のまま終了したとき）。閉じる処理を長く止めない。 */
 const QUIT_STOP_TIMEOUT_MS = 6_000;
 
@@ -193,9 +198,12 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 	async collect(): Promise<IParadisUpdateWindowReport | undefined> {
 		const authority = this.environmentService.remoteAuthority;
 		if (authority !== undefined) {
-			const acrossUpdate = await this.refreshRemoteAcrossUpdate();
 			const live = this.liveTerminals();
-			const orphans = await this.ownRemoteOrphans(authority, new Set(live.map(instance => instance.persistentProcessId).filter((id): id is number => id !== undefined)));
+			// 2つの問い合わせは互いの答えを使わないので並べて待つ（続けて待つと main の上限を超える）。
+			const [acrossUpdate, orphans] = await Promise.all([
+				this.refreshRemoteAcrossUpdate(COLLECT_REMOTE_TIMEOUT_MS),
+				this.ownRemoteOrphans(authority, new Set(live.map(instance => instance.persistentProcessId).filter((id): id is number => id !== undefined)), COLLECT_REMOTE_TIMEOUT_MS),
+			]);
 			return {
 				hostKey: authority,
 				hostLabel: this.hostLabel(authority),
@@ -316,7 +324,7 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 	}
 
 	/** 接続先の pty host に残っているもののうち、この PC が残したもの。 */
-	private async ownRemoteOrphans(authority: string, liveIds: ReadonlySet<number>): Promise<IProcessDetails[]> {
+	private async ownRemoteOrphans(authority: string, liveIds: ReadonlySet<number>, timeoutMs: number = REMOTE_TIMEOUT_MS): Promise<IProcessDetails[]> {
 		const tokens = new Set(paradisParseKeptPaneTokens(this.storageService.get(paradisKeptPaneTokensStorageKey(authority), StorageScope.APPLICATION)));
 		if (tokens.size === 0) {
 			return [];
@@ -326,7 +334,7 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 			return [];
 		}
 		try {
-			const processes = await raceTimeout(channel.call<IProcessDetails[]>(RemoteTerminalChannelRequest.ListProcesses), REMOTE_TIMEOUT_MS);
+			const processes = await raceTimeout(channel.call<IProcessDetails[]>(RemoteTerminalChannelRequest.ListProcesses), timeoutMs);
 			return paradisSelectOwnOrphans(processes ?? [], tokens, liveIds);
 		} catch (error) {
 			this.logService.trace('[paradisUpdateTerminals] could not list the terminals left on the remote', error);
@@ -382,13 +390,13 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 	 * 接続先のターミナルが更新をまたげるか（接続先の常駐の中に居るか）を聞き直して控える。
 	 * 答えが無ければ前に分かっていた値のまま。
 	 */
-	private async refreshRemoteAcrossUpdate(): Promise<ParadisTerminalsAcrossUpdate> {
+	private async refreshRemoteAcrossUpdate(timeoutMs: number = REMOTE_TIMEOUT_MS): Promise<ParadisTerminalsAcrossUpdate> {
 		const connection = this.remoteAgentService.getConnection();
 		if (!connection) {
 			return paradisGetRemoteTerminalsAcrossUpdate();
 		}
 		try {
-			const status = await raceTimeout(ProxyChannel.toService<IParadisPtyDaemonStatusService>(connection.getChannel(PARADIS_PTY_DAEMON_CHANNEL)).getStatus(), REMOTE_TIMEOUT_MS);
+			const status = await raceTimeout(ProxyChannel.toService<IParadisPtyDaemonStatusService>(connection.getChannel(PARADIS_PTY_DAEMON_CHANNEL)).getStatus(), timeoutMs);
 			if (status) {
 				paradisSetRemoteTerminalsAcrossUpdate(status.enabled && status.running ? 'survives' : 'stranded');
 			}
