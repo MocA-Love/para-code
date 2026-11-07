@@ -1276,6 +1276,34 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	test('resumes a hard-linked conversation in the selected Codex home even when that home\'s state DB does not list it', async () => {
+		const secondHome = join(root, 'codex-home-2');
+		const secondSessions = join(secondHome, 'sessions', '2026', '08', '13');
+		await fs.mkdir(secondSessions, { recursive: true });
+		const codexPath = join(codexSessions, 'rollout-codex-session.jsonl');
+		await writeLines(codexPath, [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'codex-session', cwd: workspace } }),
+			codexMessage('user', 'Codex fixture prompt'),
+		]);
+		await fs.link(codexPath, join(secondSessions, 'rollout-codex-session.jsonl'));
+		// 選んだホームの state DB は、リンクで入った会話を知らない
+		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		const database = new DatabaseSync(join(secondHome, 'state_1.sqlite'));
+		try {
+			database.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, rollout_path TEXT, updated_at INTEGER)');
+		} finally {
+			database.close();
+		}
+		const service = new ParadisSessionResumeService({
+			openCodeDatabases: async () => [],
+			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
+		}, new NullLogService());
+
+		const sessions = await service.list({ ...createListRequest(), preferredCodexHome: secondHome });
+
+		assert.deepStrictEqual(sessions.map(session => [session.id, session.codexHome]), [['codex-session', secondHome]]);
+	});
+
 	test('does not move a conversation to the selected Codex home when that home does not have it', async () => {
 		const secondHome = join(root, 'codex-home-2');
 		await fs.mkdir(join(secondHome, 'sessions'), { recursive: true });

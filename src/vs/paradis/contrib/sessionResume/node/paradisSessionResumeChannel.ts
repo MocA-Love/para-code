@@ -14,7 +14,7 @@ import { createRequire } from 'module';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
 import { Limiter } from '../../../../base/common/async.js';
-import { basename, dirname, isAbsolute, join, resolve } from '../../../../base/common/path.js';
+import { basename, dirname, isAbsolute, join, relative, resolve } from '../../../../base/common/path.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../base/common/platform.js';
@@ -494,9 +494,38 @@ export class ParadisSessionResumeService {
 				deduplicated[keptIndex] = { ...session, updatedAt: deduplicated[keptIndex].updatedAt };
 			}
 		}
-		const visible = deduplicated.slice(0, MAX_SESSIONS);
+		// 選んでいるホームの state DB は、リンクで後から入った会話を知らない（Codex の取り込みは初回だけ）ので、
+		// そのホームからは一覧に出てこない。同じ場所に同じファイル（ハードリンク）があれば、そのホームで再開させる。
+		const visible = await Promise.all(deduplicated.slice(0, MAX_SESSIONS).map(session => isPreferred(session) ? session : this.withLinkedPreferredCodexHome(session, preferredCodexHomes)));
 		this.trimCatalog(new Set(visible.map(session => session.catalogId)));
 		return await this.attachLatestMessages(visible);
+	}
+
+	/**
+	 * Codex の会話の rollout が、選んでいるホームの同じ相対パスに同じファイル（ハードリンク）としてもあれば、
+	 * 再開するホームをそちらに替える。別のファイル・無い・読めないときは替えない。
+	 */
+	private async withLinkedPreferredCodexHome(session: IParadisResumeSession, preferredCodexHomes: ReadonlySet<string>): Promise<IParadisResumeSession> {
+		const transcriptPath = this.catalog.get(session.catalogId)?.transcriptPath;
+		if (session.agent !== 'codex' || session.codexHome === undefined || transcriptPath === undefined) {
+			return session;
+		}
+		const relativePath = relative(session.codexHome, transcriptPath);
+		if (relativePath.length === 0 || relativePath.startsWith('..') || isAbsolute(relativePath)) {
+			return session;
+		}
+		try {
+			const original = await fs.lstat(transcriptPath);
+			for (const preferredHome of preferredCodexHomes) {
+				const linked = await fs.lstat(join(preferredHome, relativePath)).catch(() => undefined);
+				if (linked?.isFile() && original.isFile() && linked.dev === original.dev && linked.ino === original.ino) {
+					return { ...session, codexHome: preferredHome };
+				}
+			}
+		} catch {
+			// 読めなければ見つかったホームのまま
+		}
+		return session;
 	}
 
 	/**
