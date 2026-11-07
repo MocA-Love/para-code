@@ -14,6 +14,7 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisCodexLaunchHomeService } from '../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
 import { IParadisResumeListRequest, IParadisResumeOpenCodeDatabase, IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession, IParadisResumeSessionDetails, IParadisResumeSpace, PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
 
 const MAX_MERGED_SESSIONS = 600;
@@ -56,6 +57,7 @@ export class ParadisSessionResumeClient {
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisCodexLaunchHomeService private readonly codexLaunchHomeService: IParadisCodexLaunchHomeService,
 	) { }
 
 	// `remoteAuthority` という名前で持つのは、そのまま `paradisResolveHostPath` の接続情報として
@@ -95,12 +97,14 @@ export class ParadisSessionResumeClient {
 		// 唯一の呼び出しが失敗しても「もう片方は最初から成功扱い」でエラーが握り潰されてしまう。
 		const attempts: { readonly channel: IChannel; readonly local: boolean; readonly promise: Promise<readonly IParadisResumeSession[]> }[] = [];
 		if (localSpaces.length > 0) {
-			attempts.push({ channel: local, local: true, promise: this.callList(local, localSpaces, request.includeArchived) });
+			// Codex のアカウントの選択は、ウィンドウのマシン（接続先のウィンドウなら接続先）のホームを指す。
+			// 同じ会話が複数のホームにあるときは、新しく開くターミナルと同じホームのものを残してもらう。
+			attempts.push({ channel: local, local: true, promise: this.callList(local, localSpaces, request.includeArchived, undefined, remote === undefined ? this.codexLaunchHomeService.getLaunchHome() : undefined) });
 		}
 		if (remote !== undefined && remoteSpaces.length > 0) {
 			// 接続先で確かめて覚えた OpenCode 互換 CLI の DB は手元の Para Code が覚えているので、接続先へ渡す（接続先で確かめ直してから読む）
 			const openCodeDatabases = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<readonly IParadisResumeOpenCodeDatabase[]>('listOpenCodeCompatibleDatabases', [remote.remoteAuthority]).catch(() => []);
-			attempts.push({ channel: remote.channel, local: false, promise: openCodeDatabases.then(databases => this.callList(remote.channel, remoteSpaces, request.includeArchived, databases)) });
+			attempts.push({ channel: remote.channel, local: false, promise: openCodeDatabases.then(databases => this.callList(remote.channel, remoteSpaces, request.includeArchived, databases, this.codexLaunchHomeService.getLaunchHome())) });
 		}
 		const results = await Promise.allSettled(attempts.map(attempt => attempt.promise));
 		const sessions: IParadisResumeSession[] = [];
@@ -141,8 +145,8 @@ export class ParadisSessionResumeClient {
 		return sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_MERGED_SESSIONS);
 	}
 
-	private async callList(channel: IChannel, spaces: readonly IParadisResumeSpace[], includeArchived: boolean | undefined, openCodeDatabases?: readonly IParadisResumeOpenCodeDatabase[]): Promise<readonly IParadisResumeSession[]> {
-		const request: IParadisResumeListRequest = { spaces, includeArchived, ...(openCodeDatabases !== undefined && openCodeDatabases.length > 0 ? { openCodeDatabases } : {}) };
+	private async callList(channel: IChannel, spaces: readonly IParadisResumeSpace[], includeArchived: boolean | undefined, openCodeDatabases?: readonly IParadisResumeOpenCodeDatabase[], preferredCodexHome?: string): Promise<readonly IParadisResumeSession[]> {
+		const request: IParadisResumeListRequest = { spaces, includeArchived, ...(openCodeDatabases !== undefined && openCodeDatabases.length > 0 ? { openCodeDatabases } : {}), ...(preferredCodexHome !== undefined ? { preferredCodexHome } : {}) };
 		return channel.call<readonly IParadisResumeSession[]>('list', [request]);
 	}
 

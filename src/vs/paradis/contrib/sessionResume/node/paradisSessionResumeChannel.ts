@@ -14,7 +14,7 @@ import { createRequire } from 'module';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
 import { Limiter } from '../../../../base/common/async.js';
-import { basename, dirname, isAbsolute, join, resolve } from '../../../../base/common/path.js';
+import { basename, dirname, isAbsolute, join, relative, resolve } from '../../../../base/common/path.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../base/common/platform.js';
@@ -306,6 +306,11 @@ export class ParadisSessionResumeService {
 	private readonly catalog = new Map<string, ICatalogEntry>();
 	private readonly searchTextCache: ParadisSessionSearchTextCache;
 	/** 一覧行プレビューの tail 再読を避けるキャッシュ。キーは catalogId、不変条件(revision)は updatedAt。 */
+	/**
+	 * {@link withLinkedPreferredCodexHome} の結果（会話・更新時刻・見つかったホーム・選んでいるホームが同じ間は
+	 * 調べ直さない）。値は替える先のホーム（替えないときは null）。
+	 */
+	private readonly linkedCodexHomeCache = new Map<string, string | null>();
 	private readonly latestMessageCache = new Map<string, {
 		readonly revision: number;
 		readonly message: IParadisResumeLatestMessage | null;
@@ -386,13 +391,17 @@ export class ParadisSessionResumeService {
 			&& (database.label === undefined || paradisNormalizeOpenCodeCliLabel(database.label) === database.label)).slice(0, 64).map(database => ({
 				path: database.path, cli: database.cli, ...(database.label !== undefined ? { label: database.label } : {}),
 			})) : [];
-		return { spaces, includeArchived: request.includeArchived === true, ...(openCodeDatabases.length > 0 ? { openCodeDatabases } : {}) };
+		const preferredCodexHome = typeof request?.preferredCodexHome === 'string' && request.preferredCodexHome.length <= 4096 && isAbsolute(request.preferredCodexHome)
+			? request.preferredCodexHome
+			: undefined;
+		return { spaces, includeArchived: request.includeArchived === true, ...(openCodeDatabases.length > 0 ? { openCodeDatabases } : {}), ...(preferredCodexHome !== undefined ? { preferredCodexHome } : {}) };
 	}
 
 	private createListRequestKey(request: INormalizedParadisResumeListRequest): string {
 		return JSON.stringify({
 			includeArchived: request.includeArchived,
 			openCodeDatabases: request.openCodeDatabases ?? [],
+			preferredCodexHome: request.preferredCodexHome ?? null,
 			spaces: request.spaces.map(space => ({
 				stateKey: space.stateKey,
 				name: space.name,
@@ -449,11 +458,15 @@ export class ParadisSessionResumeService {
 			} catch { /* A missing or unsupported database must not hide the other agents' history. */ }
 		}
 		const homesSeen = new Set<string>();
+		/** 新しく開くターミナルが使うホーム（選んでいるアカウントのもの。選んでいなければ既定のホーム）。 */
+		const preferredCodexHomes = new Set<string>();
 		for (const space of request.spaces) {
 			const homes = this.resolveAgentHomes(space.cwd);
 			await this.collectClaude(space, homes.claude, homes.matchCwd, sessions);
 			// Codex はアカウントごとに別のホームで動くので、全ホームを見る。
-			for (const codexHome of homes.codexHomes ?? [homes.codex]) {
+			const codexHomes = homes.codexHomes ?? [homes.codex];
+			preferredCodexHomes.add(request.preferredCodexHome !== undefined && codexHomes.includes(request.preferredCodexHome) ? request.preferredCodexHome : homes.codex);
+			for (const codexHome of codexHomes) {
 				if (homesSeen.has(codexHome)) {
 					continue;
 				}
@@ -469,18 +482,68 @@ export class ParadisSessionResumeService {
 			}
 		}
 		// 会話ログはホーム間でハードリンクしているので、同じ会話が複数のホームから見つかる。
-		// 新しい順に並べて、同じ会話の2件目以降を落とす。
-		const seenSessions = new Set<string>();
-		const visible = sessions.sort((a, b) => b.updatedAt - a.updatedAt).filter(session => {
+		// 新しい順に並べて、同じ会話は1件にする。残すのは、新しく開くターミナルが使うホームで見つかったもの
+		// （無ければ最も新しいもの）。再開はその会話のホームで起動するので、先に見つかった既定のホームの方を
+		// 残すと、アカウントを切り替えた後も前のアカウントで再開してしまう。更新時刻は最も新しいものにそろえる
+		// （同じファイルなので、ホームごとの state DB の記録が古いだけ）。
+		const isPreferred = (session: IParadisResumeSession) => session.codexHome !== undefined && preferredCodexHomes.has(session.codexHome);
+		const keptSessions = new Map<string, number>();
+		const deduplicated: IParadisResumeSession[] = [];
+		for (const session of sessions.sort((a, b) => b.updatedAt - a.updatedAt)) {
 			const key = `${session.agent}\0${session.id}`;
-			if (seenSessions.has(key)) {
-				return false;
+			const keptIndex = keptSessions.get(key);
+			if (keptIndex === undefined) {
+				keptSessions.set(key, deduplicated.length);
+				deduplicated.push(session);
+			} else if (isPreferred(session) && !isPreferred(deduplicated[keptIndex])) {
+				deduplicated[keptIndex] = { ...session, updatedAt: deduplicated[keptIndex].updatedAt };
 			}
-			seenSessions.add(key);
-			return true;
-		}).slice(0, MAX_SESSIONS);
+		}
+		// 選んでいるホームの state DB は、リンクで後から入った会話を知らない（Codex の取り込みは初回だけ）ので、
+		// そのホームからは一覧に出てこない。同じ場所に同じファイル（ハードリンク）があれば、そのホームで再開させる。
+		const visible = await Promise.all(deduplicated.slice(0, MAX_SESSIONS).map(session => isPreferred(session) ? session : this.withLinkedPreferredCodexHome(session, preferredCodexHomes)));
 		this.trimCatalog(new Set(visible.map(session => session.catalogId)));
 		return await this.attachLatestMessages(visible);
+	}
+
+	/**
+	 * Codex の会話の rollout が、選んでいるホームの同じ相対パスに同じファイル（ハードリンク）としてもあれば、
+	 * 再開するホームをそちらに替える。別のファイル・無い・読めないときは替えない。
+	 */
+	private async withLinkedPreferredCodexHome(session: IParadisResumeSession, preferredCodexHomes: ReadonlySet<string>): Promise<IParadisResumeSession> {
+		const transcriptPath = this.catalog.get(session.catalogId)?.transcriptPath;
+		if (session.agent !== 'codex' || session.codexHome === undefined || transcriptPath === undefined) {
+			return session;
+		}
+		const cacheKey = JSON.stringify([session.catalogId, session.updatedAt, session.codexHome, [...preferredCodexHomes]]);
+		let linkedHome = this.linkedCodexHomeCache.get(cacheKey);
+		if (linkedHome === undefined) {
+			linkedHome = await this.findLinkedPreferredCodexHome(session.codexHome, transcriptPath, preferredCodexHomes);
+			if (this.linkedCodexHomeCache.size >= MAX_CATALOG_ENTRIES) {
+				this.linkedCodexHomeCache.clear();
+			}
+			this.linkedCodexHomeCache.set(cacheKey, linkedHome);
+		}
+		return linkedHome === null ? session : { ...session, codexHome: linkedHome };
+	}
+
+	private async findLinkedPreferredCodexHome(codexHome: string, transcriptPath: string, preferredCodexHomes: ReadonlySet<string>): Promise<string | null> {
+		const relativePath = relative(codexHome, transcriptPath);
+		if (relativePath.length === 0 || relativePath.startsWith('..') || isAbsolute(relativePath)) {
+			return null;
+		}
+		try {
+			const original = await fs.lstat(transcriptPath);
+			for (const preferredHome of preferredCodexHomes) {
+				const linked = await fs.lstat(join(preferredHome, relativePath)).catch(() => undefined);
+				if (linked?.isFile() && original.isFile() && linked.dev === original.dev && linked.ino === original.ino) {
+					return preferredHome;
+				}
+			}
+		} catch {
+			// 読めなければ見つかったホームのまま
+		}
+		return null;
 	}
 
 	/**

@@ -42,6 +42,12 @@ export interface IParadisResumeListRequest<TPath extends string = ParadisHostPat
 	 * 受けた側は、自分のマシンでホームの下か・実体はどこかを確かめ直してから読む。
 	 */
 	readonly openCodeDatabases?: readonly IParadisResumeOpenCodeDatabase[];
+	/**
+	 * 新しく開くターミナルが使う Codex のホーム（Codex のアカウント切替で選んでいるもの）。同じ会話が複数の
+	 * ホームにあるとき（切替で会話ログをリンクし合ったとき）は、このホームのものを残して、選んでいるアカウントで
+	 * 再開させる。省くと既定のホームを選んでいるものとみなす。そのマシンの Codex のホームでなければ使わない。
+	 */
+	readonly preferredCodexHome?: string;
 }
 
 /** {@link IParadisResumeListRequest.openCodeDatabases} の 1 件。`cli` は再開に使う実行ファイルの絶対パス。 */
