@@ -23,6 +23,20 @@ suite('ParadisMobileSearch', () => {
 		return { timedOut, lines };
 	}
 
+	// In the Electron test runner process.execPath is Electron itself: run it as Node for the stand-in.
+	let previousRunAsNode: string | undefined;
+	setup(() => {
+		previousRunAsNode = process.env.ELECTRON_RUN_AS_NODE;
+		process.env.ELECTRON_RUN_AS_NODE = '1';
+	});
+	teardown(() => {
+		if (previousRunAsNode === undefined) {
+			delete process.env.ELECTRON_RUN_AS_NODE;
+		} else {
+			process.env.ELECTRON_RUN_AS_NODE = previousRunAsNode;
+		}
+	});
+
 	test('a flood of warnings on stderr does not stall the search, and running out of time is reported', async () => {
 		// Far more than a pipe holds (64 KiB on Linux and macOS): unread, it would block the child.
 		const noisy = await run(`process.stderr.write('x'.repeat(4 * 1024 * 1024)); process.stdout.write('a.txt\\nb.txt\\n');`, 10_000);
