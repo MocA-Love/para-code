@@ -353,7 +353,12 @@ export class ParadisFileTransferPane extends Disposable {
 		this.header.filterBox.value = '';
 		this._onDidNavigate.fire(resource);
 		if (hostChanged) {
+			// 前のホストの行を残さない。新しい一覧が届く前に残った行を選んで操作すると、確認には新しいホストの名前が
+			// 出るのに、消えるのは前のホストのファイルになる
+			this.allEntries = [];
+			this.listError = undefined;
 			this.updateHostState();
+			this.render();
 		}
 		await this.load(false);
 	}

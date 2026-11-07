@@ -21,9 +21,11 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
-import { IWorkbenchExtensionManagementService } from '../../../../workbench/services/extensionManagement/common/extensionManagement.js';
+import { IExtensionManagementServerService, IWorkbenchExtensionManagementService } from '../../../../workbench/services/extensionManagement/common/extensionManagement.js';
+import { IExtensionManifestPropertiesService } from '../../../../workbench/services/extensions/common/extensionManifestPropertiesService.js';
 import { ILocaleService } from '../../../../workbench/services/localization/common/locale.js';
 import { BUNDLED_VSIX_FILES, INSTALLED_VSIX_STORAGE_KEY, ParadisBundledVsixInstaller } from '../common/paradisBundledVsixInstaller.js';
+import { paradisInstalledForThisWindow } from '../common/paradisDefaultExtensionsTarget.js';
 
 /**
  * Para Code が全ユーザーへデフォルト導入する拡張機能のID一覧（ギャラリー = Open VSX）。
@@ -113,6 +115,8 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 		@IFileService private readonly fileService: IFileService,
 		@INativeWorkbenchEnvironmentService private readonly environmentService: INativeWorkbenchEnvironmentService,
 		@IProgressService private readonly progressService: IProgressService,
+		@IExtensionManagementServerService private readonly extensionManagementServerService: IExtensionManagementServerService,
+		@IExtensionManifestPropertiesService private readonly extensionManifestPropertiesService: IExtensionManifestPropertiesService,
 	) {
 		super();
 		const remoteAuthority = this.environmentService.remoteAuthority;
@@ -200,8 +204,15 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 			return;
 		}
 
-		// 既にインストール済み（手動導入含む）のものは完了扱いにする
-		const installed = await this.extensionManagementService.getInstalled();
+		// 既にインストール済み（手動導入含む）のものは完了扱いにする。SSH のウィンドウでは、接続先に入っているものと
+		// 手元で動くものだけを数える（手元にしか無い接続先向けの拡張機能を入れ済みとしない）
+		const remoteServer = this.extensionManagementServerService.remoteExtensionManagementServer;
+		const installed = paradisInstalledForThisWindow(
+			await this.extensionManagementService.getInstalled(),
+			!!this.environmentService.remoteAuthority && !!remoteServer,
+			local => this.extensionManagementServerService.getExtensionManagementServer(local) === remoteServer,
+			local => this.extensionManifestPropertiesService.prefersExecuteOnUI(local.manifest),
+		);
 		for (const id of remaining) {
 			if (installed.some(local => areSameExtensions(local.identifier, { id }))) {
 				doneIds.add(id.toLowerCase());

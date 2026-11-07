@@ -49,6 +49,8 @@ interface ITestTerminalOptions {
 interface ITestHarness {
 	readonly layoutSources: ISessionTerminalGridLayoutSource[];
 	readonly createdInstances: ITestTerminalInstance[];
+	/** The launch configs `createInstance` was called with, in order. */
+	readonly createdConfigs: IShellLaunchConfig[];
 	readonly detachedInstances: ITerminalInstance[];
 	readonly detachRecords: Array<{ readonly instanceId: number; readonly wasInGridAtDetach: boolean }>;
 	readonly liveInstances: ITerminalInstance[];
@@ -65,6 +67,7 @@ interface ITestHarness {
 function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarness {
 	let nextInstanceId = 1;
 	const createdInstances: ITestTerminalInstance[] = [];
+	const createdConfigs: IShellLaunchConfig[] = [];
 	const detachedInstances: ITerminalInstance[] = [];
 	const detachRecords: Array<{ readonly instanceId: number; readonly wasInGridAtDetach: boolean }> = [];
 	const liveInstances: ITerminalInstance[] = [];
@@ -143,9 +146,10 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 	};
 
 	const terminalInstanceService = {
-		createInstance: (_shellLaunchConfig: IShellLaunchConfig, target: TerminalLocation) => {
+		createInstance: (shellLaunchConfig: IShellLaunchConfig, target: TerminalLocation) => {
 			const terminal = createTerminal({ target });
 			createdInstances.push(terminal);
+			createdConfigs.push(shellLaunchConfig);
 			return terminal.instance;
 		},
 	} as Partial<ITerminalInstanceService> as ITerminalInstanceService;
@@ -225,6 +229,7 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 	return {
 		layoutSources,
 		createdInstances,
+		createdConfigs,
 		detachedInstances,
 		detachRecords,
 		liveInstances,
@@ -319,6 +324,35 @@ suite('SessionTerminalGridGroup', () => {
 				activeInstanceId: created.instanceId,
 			},
 		);
+	});
+
+	test('a directional split keeps the parent on the same side (local or remote) and uses the given cwd', () => {
+		const harness = createTestHarness(disposables);
+		const first = harness.createTerminal();
+		const group = harness.createGroup(first.instance);
+		// A local terminal in an SSH window (its cwd is a file URI).
+		(first.instance.shellLaunchConfig as { cwd?: URI }).cwd = URI.file('/local/project');
+
+		group.splitInDirection(first.instance, Direction.Down, { cwd: '/local/project/src' });
+
+		const cwd = harness.createdConfigs[0].cwd;
+		assert.deepStrictEqual(URI.isUri(cwd) ? { scheme: cwd.scheme, path: cwd.path } : cwd, { scheme: 'file', path: '/local/project/src' });
+	});
+
+	test('reordering keeps the same terminal active', () => {
+		const harness = createTestHarness(disposables);
+		const first = harness.createTerminal();
+		const second = harness.createTerminal();
+		const third = harness.createTerminal();
+		const group = harness.createGroup(first.instance);
+		group.addInstance(second.instance);
+		group.addInstance(third.instance);
+		group.setActiveInstanceByIndex(0);
+
+		// Move the active terminal after the last one.
+		group.moveInstance(first.instance, 2, 'after');
+
+		assert.strictEqual(group.activeInstance?.instanceId, first.instance.instanceId);
 	});
 
 	test('ignores a split whose reference instance is not in the group', () => {

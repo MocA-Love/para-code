@@ -14,7 +14,10 @@ import { ContextKeyExpr, IContextKeyService, RawContextKey } from '../../../../p
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { Direction, ITerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { Direction, ITerminalConfigurationService, ITerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { getCwdForSplit } from '../../../../workbench/contrib/terminal/browser/terminalActions.js';
 import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/common/terminalContextKey.js';
 import { terminalStrings } from '../../../../workbench/contrib/terminal/common/terminalStrings.js';
 import { SessionTerminalGridGroup } from './sessionTerminalGridGroup.js';
@@ -58,8 +61,11 @@ registerWorkbenchContribution2(SessionTerminalGridContextContribution.ID, Sessio
 abstract class AbstractSessionTerminalSplitGridAction extends Action2 {
 	protected abstract getDirection(): Direction;
 
-	override run(accessor: ServicesAccessor): void {
+	override async run(accessor: ServicesAccessor): Promise<void> {
 		const terminalGroupService = accessor.get(ITerminalGroupService);
+		const workspaceContextService = accessor.get(IWorkspaceContextService);
+		const commandService = accessor.get(ICommandService);
+		const terminalConfigurationService = accessor.get(ITerminalConfigurationService);
 		const group = terminalGroupService.activeGroup;
 		if (!(group instanceof SessionTerminalGridGroup)) {
 			return;
@@ -68,7 +74,14 @@ abstract class AbstractSessionTerminalSplitGridAction extends Action2 {
 		if (!activeInstance) {
 			return;
 		}
-		group.splitInDirection(activeInstance, this.getDirection());
+		// Resolve the cwd from the split terminal like the regular split (`terminalService`) does.
+		// Without it, splitting a local terminal in an SSH window creates a remote terminal.
+		const cwd = await getCwdForSplit(activeInstance, workspaceContextService.getWorkspace().folders, commandService, terminalConfigurationService);
+		if (cwd === undefined) {
+			// The workspace folder pick was cancelled; like the regular split, do not split.
+			return;
+		}
+		group.splitInDirection(activeInstance, this.getDirection(), { cwd });
 	}
 }
 
