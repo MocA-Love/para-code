@@ -14,6 +14,7 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { paradisFollowModelReadonly } from './paradisModelReadonly.js';
 import { URI } from '../../../../base/common/uri.js';
 import { DiffEditorWidget } from '../../../../editor/browser/widget/diffEditor/diffEditorWidget.js';
 import { IDiffEditor } from '../../../../editor/browser/editorBrowser.js';
@@ -107,6 +108,8 @@ export class ParadisFileDiffEditor extends EditorPane {
 			original: originalRef.object.textEditorModel,
 			modified: modifiedRef.object.textEditorModel,
 		});
+		// 変更後の側は編集できる。読み取り専用のファイルなら編集させない（編集しても保存されずに消えるため）
+		store.add(paradisFollowModelReadonly(modifiedRef.object, options => widget.updateOptions(options)));
 	}
 
 	private _ensureWidget(): DiffEditorWidget {
