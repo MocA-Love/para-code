@@ -16,7 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisRemoteAgentHookFilesHost, ParadisRemoteAgentHookFiles, ParadisRemoteAgentHooksController, paradisMergeRemoteClaudeMcpJson } from '../../electron-browser/paradisRemoteAgentHooks.contribution.js';
+import { IParadisRemoteAgentHookFilesHost, ParadisRemoteAgentHookFiles, ParadisRemoteAgentHooksController, paradisCodexAccountHomePaths, paradisMergeRemoteClaudeMcpJson } from '../../electron-browser/paradisRemoteAgentHooks.contribution.js';
 import { paradisRollingBackupUri } from '../../../../common/paradisRollingFileBackupUri.js';
 
 interface IDeferred {
@@ -32,6 +32,28 @@ function deferred(): IDeferred {
 
 suite('ParadisRemoteAgentHooksController', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	// 接続先の手で作った名前のホームは、選ぶまで（REH が configurable: false と送る間）hook と MCP の設定を書かない。
+	// 古い REH は印を送らないので、今までどおり書く。
+	test('installs on the host only into the Codex account homes that may be written', () => {
+		const state = (configurable: boolean | undefined) => ({
+			homes: [
+				{ homePath: '/home/u/.codex', label: '~/.codex', isDefault: true, signedIn: true },
+				{ homePath: '/home/u/.codex-2', label: '~/.codex-2', isDefault: false, signedIn: true, configurable: true },
+				{ homePath: '/home/u/.codex-work', label: '~/.codex-work', isDefault: false, signedIn: true, ...(configurable !== undefined ? { configurable } : {}) },
+			],
+			selection: { revision: 0 },
+		});
+		assert.deepStrictEqual({
+			beforeSelect: paradisCodexAccountHomePaths(state(false)),
+			afterSelect: paradisCodexAccountHomePaths(state(true)),
+			oldHost: paradisCodexAccountHomePaths(state(undefined)),
+		}, {
+			beforeSelect: ['/home/u/.codex-2'],
+			afterSelect: ['/home/u/.codex-2', '/home/u/.codex-work'],
+			oldHost: ['/home/u/.codex-2', '/home/u/.codex-work'],
+		});
+	});
 
 	test('stops retrying after the second installation succeeds', async () => {
 		const events: string[] = [];

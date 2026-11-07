@@ -92,6 +92,12 @@ export interface IParadisResumeSession {
 	 * 渡す（選んでいるアカウントのホームには無いことがあるため）。
 	 */
 	readonly codexHome?: string;
+	/**
+	 * Codex の会話が、新しく開くターミナルが使うホーム（選んでいるアカウントのもの）に無い。そのまま再開すると、
+	 * 会話のある別のアカウント（{@link codexHome}）で動く。選んでいるアカウントで続けるには、先に
+	 * `linkCodexSession` で会話をそのホームへリンクする。
+	 */
+	readonly otherCodexAccount?: boolean;
 }
 
 /** 「…」メニューのコピー・開く操作に使う詳細。 */

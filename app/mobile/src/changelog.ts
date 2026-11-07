@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-07',
 		items: [
 			{
+				icon: 'swap-horizontal-outline',
+				title: '過去の会話を再開するとき、PC で選んでいる Codex のアカウントに無い会話なら、どちらのアカウントで開くかを選べるようにしました',
+				body: '前のアカウントで開くか、会話の履歴を選んでいるアカウントへつないで続けるかを選べます。',
+			},
+			{
 				icon: 'pie-chart-outline',
 				title: 'セッションのシートの「コンテキスト」から、何がコンテキストを使っているかの内訳を開けるようになりました',
 				body: '会話・メモリファイル・MCP・スキルなどがそれぞれどれだけ使っているかを、PC の Claude Code が応答を終えるたびに取り直して出します。PC の Para Code の更新が要ります。',

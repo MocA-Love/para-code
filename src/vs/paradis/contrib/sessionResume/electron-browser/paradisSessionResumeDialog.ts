@@ -27,6 +27,8 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import Severity from '../../../../base/common/severity.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IChatOutputRendererService } from '../../../../workbench/contrib/chat/browser/chatOutputItemRenderer.js';
 import { ParadisSessionIndexController } from '../../agentActivity/electron-browser/paradisSessionIndexController.js';
@@ -139,6 +141,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		@IMarkdownRendererService private readonly markdownRendererService: IMarkdownRendererService,
 		@IChatOutputRendererService private readonly chatOutputRendererService: IChatOutputRendererService,
 		@IStorageService private readonly storageService: IStorageService,
+		@IDialogService private readonly dialogService: IDialogService,
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisSessionResumeClient);
@@ -1141,6 +1144,40 @@ export class ParadisSessionResumeDialog extends Disposable {
 		}
 	}
 
+	/**
+	 * Codex の会話を再開するホーム。選んでいるアカウントのホームに無い会話は、前のアカウントで開くことを知らせ、
+	 * 選んでいるアカウントで続ける（履歴をリンクしてから開く）か、前のアカウントで開くかを選んでもらう。
+	 * 取り消したら null。
+	 */
+	private async codexHomeToResume(session: IParadisResumeSession): Promise<string | undefined | null> {
+		if (session.otherCodexAccount !== true) {
+			return session.codexHome;
+		}
+		// 一覧は確認のダイアログより上に重なるので、尋ねている間だけ下げる（下げないとダイアログが一覧の裏に隠れる）。
+		this.backdrop.classList.add('behind-dialog');
+		const { result } = await this.dialogService.prompt<'selected' | 'previous'>({
+			type: Severity.Info,
+			message: localize('paradis.sessionResume.otherCodexAccount', "この会話は、選んでいる Codex のアカウントの履歴にありません"),
+			detail: localize('paradis.sessionResume.otherCodexAccountDetail', "このまま開くと、会話を始めた前のアカウント（{0}）で動きます。選んでいるアカウントで続けるときは、この会話の履歴を選んでいるアカウントへリンクしてから開きます。", session.codexHome ?? ''),
+			buttons: [
+				{ label: localize('paradis.sessionResume.continueWithSelectedAccount', "選んでいるアカウントで続ける"), run: () => 'selected' },
+				{ label: localize('paradis.sessionResume.openWithPreviousAccount', "前のアカウントで開く"), run: () => 'previous' },
+			],
+			cancelButton: true,
+		}).finally(() => this.backdrop.classList.remove('behind-dialog'));
+		if (result === undefined) {
+			return null;
+		}
+		if (result === 'previous') {
+			return session.codexHome;
+		}
+		try {
+			return await this.client.linkCodexSession(session.catalogId);
+		} catch (error) {
+			throw new Error(localize('paradis.sessionResume.linkCodexSessionFailed', "この会話の履歴を、選んでいるアカウントへリンクできませんでした（{0}）。前のアカウントで開くことはできます。", error instanceof Error ? error.message : String(error)));
+		}
+	}
+
 	private async resume(session: IParadisResumeSession, options: IParadisSessionResumeEditorOptions): Promise<void> {
 		if (this.resumingCatalogIds.has(session.catalogId)) {
 			return;
@@ -1153,6 +1190,10 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.resumingCatalogIds.add(session.catalogId);
 		this.render();
 		try {
+			const codexHome = session.agent === 'codex' ? await this.codexHomeToResume(session) : undefined;
+			if (codexHome === null) {
+				return;
+			}
 			await paradisResumeSessionFromEditor({
 				rootUri: space.uri,
 				stateKey: space.stateKey,
@@ -1160,7 +1201,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				...(session.cli !== undefined ? { cli: session.cli } : {}),
 				sessionId: session.id,
 				currentSpace: session.currentSpace,
-				...(session.agent === 'codex' && session.codexHome !== undefined ? { codexHome: session.codexHome } : {}),
+				...(codexHome !== undefined ? { codexHome } : {}),
 			}, options, {
 				switchToStateKey: stateKey => this.workspaceSwitchService.switchToStateKey(stateKey),
 				resumeAgent: async request => { await this.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, request); },

@@ -524,7 +524,7 @@ export class ParadisSessionResumeService {
 			}
 			this.linkedCodexHomeCache.set(cacheKey, linkedHome);
 		}
-		return linkedHome === null ? session : { ...session, codexHome: linkedHome };
+		return linkedHome === null ? { ...session, otherCodexAccount: true } : { ...session, codexHome: linkedHome };
 	}
 
 	private async findLinkedPreferredCodexHome(codexHome: string, transcriptPath: string, preferredCodexHomes: ReadonlySet<string>): Promise<string | null> {
@@ -620,6 +620,48 @@ export class ParadisSessionResumeService {
 			this.latestMessageCache.clear();
 		}
 		this.latestMessageCache.set(catalogId, { revision, message });
+	}
+
+	/**
+	 * 一覧の Codex の会話（{@link IParadisResumeSession.otherCodexAccount}）を、新しく開くターミナルが使うホームへ
+	 * ハードリンクし、そのホームを返す（そこで再開すれば、選んでいるアカウントで続けられる）。`preferredCodexHome` は
+	 * 一覧の要求と同じ決まりで使う（このマシンの Codex のホームでなければ既定のホーム）。既にあれば何もしない。
+	 * 同じ場所に別のファイルがある・別のボリュームでリンクできないときは失敗する（コピーはしない）。
+	 */
+	async linkCodexSession(catalogId: string, preferredCodexHome: string | undefined): Promise<string> {
+		const entry = this.catalog.get(catalogId);
+		const sourceHome = entry?.session.codexHome;
+		if (!entry || entry.session.agent !== 'codex' || sourceHome === undefined || !pathInside(entry.allowedRoot, entry.transcriptPath)) {
+			throw new Error('Session is no longer available.');
+		}
+		const homes = this.resolveAgentHomes(entry.session.cwd);
+		const codexHomes = homes.codexHomes ?? [homes.codex];
+		const targetHome = typeof preferredCodexHome === 'string' && codexHomes.includes(preferredCodexHome) ? preferredCodexHome : homes.codex;
+		if (targetHome === sourceHome) {
+			return targetHome;
+		}
+		const relativePath = relative(sourceHome, entry.transcriptPath);
+		if (!codexHomes.includes(sourceHome) || relativePath.length === 0 || relativePath.startsWith('..') || isAbsolute(relativePath)) {
+			throw new Error('Session is no longer available.');
+		}
+		const original = await fs.lstat(entry.transcriptPath);
+		if (!original.isFile()) {
+			throw new Error('Session is no longer available.');
+		}
+		const targetPath = join(targetHome, relativePath);
+		// 会話ログが入るので、同じ PC の別ユーザーから読めないようにする（会話ログの共有と同じ）。
+		await fs.mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
+		try {
+			await fs.link(entry.transcriptPath, targetPath);
+		} catch (error) {
+			const existing = (error as NodeJS.ErrnoException).code === 'EEXIST' ? await fs.lstat(targetPath).catch(() => undefined) : undefined;
+			if (!existing?.isFile() || existing.dev !== original.dev || existing.ino !== original.ino) {
+				throw error;
+			}
+		}
+		// 一覧を引き直したときに、リンクしたホームの会話として出す。
+		this.linkedCodexHomeCache.clear();
+		return targetHome;
 	}
 
 	/**
@@ -1106,6 +1148,7 @@ export class ParadisSessionResumeChannel<TContext = string> implements IServerCh
 		switch (command) {
 			case 'list': return this.service.list((args[0] ?? {}) as IParadisResumeListRequest<string>) as Promise<T>;
 			case 'details': return this.service.details(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
+			case 'linkCodexSession': return this.service.linkCodexSession(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'search': return this.service.search(clientIdFrom(ctx), typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
 			// ブリッジ対応の OpenCode 互換 CLI の名乗りを、このマシン（SSH の接続先なら REH サーバー）で確かめる
