@@ -6,10 +6,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { execFileSync } from 'child_process';
 import { promises as fs, existsSync } from 'fs';
 import { createConnection, createServer, Server, Socket } from 'net';
 import { tmpdir } from 'os';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { join } from '../../../../../base/common/path.js';
+import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_COMPUTER_USE_APP_NAME, PARADIS_COMPUTER_USE_EXECUTABLE, PARADIS_COMPUTER_USE_PROTOCOL_VERSION } from '../../common/paradisComputerUse.js';
 import { IParadisComputerUseHelperHost, ParadisComputerUseHelperClient, ParadisComputerUseHelperError, paradisIsSupportedDarwin, paradisParseHelperStatus } from '../../node/paradisComputerUseHelperClient.js';
@@ -316,6 +319,39 @@ suite('ParadisComputerUseHelperClient', () => {
 		await client.check();
 		client.markDisabled();
 		assert.deepStrictEqual({ availability: client.availability, launches: fake.launches }, { availability: 'unchecked', launches: 1 });
+	});
+
+	test('does not start the helper again for a request that continues after it was turned off', async () => {
+		const { fake, client } = createClient();
+		await client.check();
+		client.markDisabled();
+		await assert.rejects(client.request('screenshotWindow'), (error: ParadisComputerUseHelperError) => error.code === 'unavailable');
+		const afterOff = fake.launches;
+		// オンに戻すと起動できる
+		assert.deepStrictEqual({ afterOff, check: await client.check(), launches: fake.launches }, { afterOff: 1, check: 'ok', launches: 2 });
+	});
+
+	(isWindows ? test.skip : test)('drops a connection that finishes starting after it was turned off while writing helper.pid', async () => {
+		const pidFile = join(root, 'runtime', 'helper.pid');
+		const fifoReady = new DeferredPromise<void>();
+		const { fake, client } = createClient({}, {
+			// 古い pid の確認が済んだ後に FIFO を置き、helper.pid の書き込みを読み手が来るまで止める
+			launch: async (_appPath, args) => {
+				execFileSync('mkfifo', [pidFile]);
+				fifoReady.complete();
+				await fakeLaunch(args);
+			},
+		});
+		const fakeLaunch = (args: readonly string[]) => fake.host(root).launch('', args, '');
+		const checking = client.check();
+		await fifoReady.p;
+		// FIFO を読む側で開くと、書く側（helper.pid の書き込み）が開いた時点で返る。書き終える前にオフにする
+		const reader = await fs.open(pidFile, 'r');
+		client.markDisabled();
+		const written = await reader.readFile('utf8');
+		await reader.close();
+		await checking;
+		assert.deepStrictEqual({ written, availability: client.availability, launches: fake.launches }, { written: '4321', availability: 'unchecked', launches: 1 });
 	});
 
 	test('parses the handshake and the Darwin version', () => {
