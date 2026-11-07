@@ -1,0 +1,292 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* The Tasks editor tab (see paradisTasksEditor.ts). Layout follows Orca's task page; colors come from the theme. */
+
+.paradis-tasks {
+	container: paradis-tasks / inline-size;
+	box-sizing: border-box;
+	height: 100%;
+	overflow-y: auto;
+	padding: 14px 24px 24px;
+	color: var(--vscode-foreground);
+	font-size: 13px;
+}
+
+.paradis-tasks:focus {
+	outline: none;
+}
+
+.paradis-tasks-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 10px;
+}
+
+.paradis-tasks-source-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-radius: 6px;
+}
+
+.paradis-tasks-grow {
+	flex: 1;
+}
+
+.paradis-tasks-chip {
+	padding: 3px 9px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-radius: 6px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.paradis-tasks button {
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+}
+
+.paradis-tasks button:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.paradis-tasks-pill,
+.paradis-tasks-combo,
+.paradis-tasks-icon-button,
+.paradis-tasks-more {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 28px;
+	padding: 0 10px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-radius: 6px;
+	background: transparent;
+	font-size: 12.5px;
+	white-space: nowrap;
+}
+
+.paradis-tasks-pill:hover:not(:disabled),
+.paradis-tasks-combo:hover:not(:disabled),
+.paradis-tasks-icon-button:hover:not(:disabled),
+.paradis-tasks-more:hover:not(:disabled) {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-tasks-pill.on {
+	background: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.paradis-tasks-presets .paradis-tasks-pill:not(.on) {
+	border-color: transparent;
+}
+
+.paradis-tasks-combo {
+	max-width: 420px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-tasks-button-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-tasks-icon-button {
+	justify-content: center;
+	width: 28px;
+	padding: 0;
+}
+
+.paradis-tasks-panel {
+	padding: 10px 12px 4px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-radius: 8px;
+	background: var(--vscode-sideBar-background, transparent);
+}
+
+.paradis-tasks-search {
+	display: flex;
+	flex: 1;
+	align-items: center;
+	gap: 6px;
+	min-width: 240px;
+	height: 28px;
+	padding: 0 4px 0 9px;
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border)));
+	border-radius: 6px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+}
+
+.paradis-tasks-search:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-tasks-search input {
+	flex: 1;
+	min-width: 0;
+	border: 0;
+	outline: none;
+	background: transparent;
+	color: inherit;
+	font-family: var(--monaco-monospace-font);
+	font-size: 12.5px;
+}
+
+.paradis-tasks-search .paradis-tasks-clear {
+	width: 22px;
+	height: 22px;
+	border-color: transparent;
+}
+
+.paradis-tasks-status {
+	min-height: 18px;
+	margin: 0 2px 6px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.paradis-tasks-table {
+	width: 100%;
+	border-collapse: collapse;
+	table-layout: fixed;
+}
+
+.paradis-tasks-table th {
+	padding: 7px 10px;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	color: var(--vscode-descriptionForeground);
+	font-size: 11.5px;
+	font-weight: 600;
+	text-align: left;
+}
+
+.paradis-tasks-table th.id { width: 60px; }
+.paradis-tasks-table th.assignees { width: 84px; }
+.paradis-tasks-table th.state { width: 84px; }
+.paradis-tasks-table th.updated { width: 96px; }
+.paradis-tasks-table th.actions { width: 36px; }
+
+/* In a narrow editor group, give the title the room: drop the assignee and updated columns. */
+@container paradis-tasks (max-width: 560px) {
+	.paradis-tasks-table .assignees,
+	.paradis-tasks-table .updated {
+		display: none;
+	}
+}
+
+.paradis-tasks-table td {
+	padding: 8px 10px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	vertical-align: top;
+}
+
+.paradis-tasks-item {
+	cursor: pointer;
+}
+
+.paradis-tasks-item:hover td,
+.paradis-tasks-item:focus td {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-tasks-item:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-tasks-table td.id,
+.paradis-tasks-table td.updated,
+.paradis-tasks-faint {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-tasks-item-title {
+	overflow-wrap: anywhere;
+}
+
+.paradis-tasks-item-context {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 8px;
+	margin-top: 4px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.paradis-tasks-label {
+	padding: 0 7px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-radius: 10px;
+	color: var(--vscode-foreground);
+	font-size: 11px;
+	line-height: 18px;
+}
+
+.paradis-tasks-avatar {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	margin-right: 4px;
+	overflow: hidden;
+	border-radius: 50%;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	font-size: 9px;
+}
+
+.paradis-tasks-avatar img {
+	width: 100%;
+	height: 100%;
+}
+
+.paradis-tasks-state {
+	font-size: 12px;
+}
+
+.paradis-tasks-state.open { color: var(--vscode-charts-green); }
+.paradis-tasks-state.done { color: var(--vscode-charts-purple); }
+.paradis-tasks-state.closed { color: var(--vscode-charts-red); }
+.paradis-tasks-state.draft { color: var(--vscode-descriptionForeground); }
+
+.paradis-tasks-table td.actions .paradis-tasks-icon-button {
+	width: 24px;
+	height: 24px;
+	border-color: transparent;
+}
+
+.paradis-tasks-empty {
+	padding: 40px 16px;
+	text-align: center;
+}
+
+.paradis-tasks-empty-title {
+	margin-bottom: 8px;
+	font-size: 15px;
+}
+
+.paradis-tasks-empty-body {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-tasks-more {
+	margin: 10px auto;
+	display: flex;
+}
