@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { memo, useCallback, useEffect, useState } from 'react';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CircleAlert } from 'lucide-react-native';
 import { AGENT_RESUME_CAPABILITY, AGENT_RESUME_PROMPT_LIMIT, parseAgentPastSessionPreview, type AgentPastSessionPreview } from '../../../../../../src/agentSessions.js';
@@ -33,7 +33,6 @@ export default function AgentHistorySessionScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const column = useReadableColumn();
-	const now = useNow();
 	const params = useLocalSearchParams<{ pcId?: string; spaceId?: string; key?: string }>();
 	const route = useRouteSpace(params.pcId, params.spaceId);
 	const key = firstParam(params.key);
@@ -132,17 +131,7 @@ export default function AgentHistorySessionScreen() {
 		if (preview === undefined) {
 			return <CenterSpinner label="会話を読み込んでいます…" />;
 		}
-		return (
-			<ScrollView contentContainerStyle={[styles.content, column]} keyboardShouldPersistTaps="handled">
-				{preview.truncated ? <Text style={textStyles.truncated}>古い発言は省略しています</Text> : null}
-				{preview.messages.map((message, index) => (
-					<View key={index} style={[textStyles.message, message.role === 'user' ? styles.user : undefined]}>
-						<Text style={textStyles.role}>{message.role === 'user' ? 'あなた' : session?.agent === 'opencode' ? 'OpenCode' : session?.agent === 'codex' ? 'Codex' : 'Claude Code'}{message.ts !== undefined ? ` · ${formatRelativeTime(message.ts, now)}` : ''}</Text>
-						{message.role === 'assistant' ? <MarkdownText text={message.text} /> : <Text style={textStyles.text} selectable>{message.text}</Text>}
-					</View>
-				))}
-			</ScrollView>
-		);
+		return <HistoryMessages preview={preview} chatFontSize={chatFontSize} column={column} />;
 	})();
 
 	return (
@@ -189,6 +178,31 @@ export default function AgentHistorySessionScreen() {
 		</ChatTextScaleProvider>
 	);
 }
+
+/**
+ * 過去の会話の発言の一覧（最大 200 件）。入力欄と別の部品にして memo し、続きの依頼を 1 文字打つたびに
+ * 全部の発言（MarkdownText）を描き直さない。経過時間の 1 分ごとの描き直しもここだけで済ませる。
+ */
+const HistoryMessages = memo(function HistoryMessages({ preview, chatFontSize, column }: {
+	preview: AgentPastSessionPreview;
+	chatFontSize: Parameters<typeof useChatTextScaleFor>[0];
+	column: StyleProp<ViewStyle>;
+}) {
+	const now = useNow();
+	const textStyles = scaleChatStyles(styles, useChatTextScaleFor(chatFontSize));
+	const session = preview.session;
+	return (
+		<ScrollView contentContainerStyle={[styles.content, column]} keyboardShouldPersistTaps="handled">
+			{preview.truncated ? <Text style={textStyles.truncated}>古い発言は省略しています</Text> : null}
+			{preview.messages.map((message, index) => (
+				<View key={index} style={[textStyles.message, message.role === 'user' ? styles.user : undefined]}>
+					<Text style={textStyles.role}>{message.role === 'user' ? 'あなた' : session.agent === 'opencode' ? 'OpenCode' : session.agent === 'codex' ? 'Codex' : 'Claude Code'}{message.ts !== undefined ? ` · ${formatRelativeTime(message.ts, now)}` : ''}</Text>
+					{message.role === 'assistant' ? <MarkdownText text={message.text} /> : <Text style={textStyles.text} selectable>{message.text}</Text>}
+				</View>
+			))}
+		</ScrollView>
+	);
+});
 
 const styles = StyleSheet.create({
 	fill: {

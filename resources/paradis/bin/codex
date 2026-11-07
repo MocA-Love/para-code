@@ -97,6 +97,16 @@ else
 	esac
 fi
 
+# Codex 0.167 and later open the agent command center (`codex agents`) on an embedded app
+# server with `--no-daemon`, so it gets the flag like an interactive session; on the shared
+# server its sessions would run with the environment of whichever terminal started it. 0.166
+# and older reject the flag there (it is hidden from `codex agents --help`), so they get the
+# command unchanged. Codex itself is asked through that help text, not a version string.
+if [ "$command_kind" = delegated ] && [ "$first_positional" = agents ] && [ "$early_delegate" -eq 0 ] && [ "$user_no_daemon" -eq 0 ] \
+	&& PATH=$clean_path "$real_codex" agents --help </dev/null 2>/dev/null | grep -q -e '--no-daemon'; then
+	exec env PATH="$clean_path" "$real_codex" --no-daemon "$@"
+fi
+
 if [ "$command_kind" = delegated ]; then
 	exec env PATH="$clean_path" "$real_codex" "$@"
 fi
@@ -116,7 +126,7 @@ fi
 # Which one applies is asked from Codex itself (the flag is accepted or it is not), not read
 # from a version string. That costs one `--version` run, about 10 ms for the native binary
 # and 40 ms behind npm's Node wrapper.
-# `codex agents` needs the shared server and rejects `--no-daemon`; it is delegated above.
+# `codex agents` is handled above: Codex 0.166 and older need the shared server for it.
 # Replace this process with the user's Codex, kept off the shared background server.
 exec_unmanaged() {
 	if PATH=$clean_path "$real_codex" --no-daemon --version </dev/null >/dev/null 2>&1; then
