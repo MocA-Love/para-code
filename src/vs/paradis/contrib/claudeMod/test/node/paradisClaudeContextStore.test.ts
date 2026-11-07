@@ -169,6 +169,21 @@ suite('ParadisClaudeContextStore', () => {
 		});
 	});
 
+	test('at the end of the process it reads and writes synchronously, keeping what was saved', () => {
+		const mine = owner('pane-a');
+		const state: { text: string | undefined } = { text: JSON.stringify({ version: 1, sessions: [{ owner: mine, ...breakdown('old', 1) }] }) };
+		const store = disposables.add(new ParadisClaudeContextStore({
+			read: async () => state.text,
+			write: async text => { state.text = text; },
+			readSync: () => state.text,
+			writeSync: text => { state.text = text; },
+		}, undefined, 60_000));
+		store.observe(context('pane-a', 'new', 2));
+		store.flushSync();
+		const saved = JSON.parse(state.text!) as { sessions: IParadisClaudeContextBreakdown[] };
+		assert.deepStrictEqual(saved.sessions.map(entry => entry.sessionId), ['old', 'new']);
+	});
+
 	test('paths sent to the phone show the home as ~', () => {
 		const shortened = paradisShortenContextBreakdownPaths({
 			...breakdown('s1', 1), cwd: '/Users/example/repo',

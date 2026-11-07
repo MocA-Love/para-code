@@ -10,7 +10,7 @@
 // `paradis.sharedProcess.contribution.ts` から副作用 import で読み込まれる。REH には置かない（SSH 先のペインの mod も戻りトンネルで手元の shared process へ送ってくる）。
 // モバイル（paradisMobileAgentChat.ts）は同じプロセスの保存を `paradisClaudeContextStore()` で直接読む。
 
-import { promises as fs } from 'fs';
+import { mkdirSync, promises as fs, readFileSync, renameSync, writeFileSync } from 'fs';
 import { Event } from '../../../../base/common/event.js';
 import { DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import * as path from '../../../../base/common/path.js';
@@ -73,6 +73,26 @@ function files(directory: string): IParadisClaudeContextFiles {
 			await fs.writeFile(temporary, text, 'utf8');
 			await fs.rename(temporary, file);
 		},
+		readSync: () => {
+			try {
+				// eslint-disable-next-line local/code-no-sync-fs -- プロセスの終わり（`exit`）だけで呼ぶ。そこでは非同期の I/O は終わりを待たれない
+				return readFileSync(file, 'utf8');
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+					return undefined;
+				}
+				throw error;
+			}
+		},
+		writeSync: text => {
+			// eslint-disable-next-line local/code-no-sync-fs -- プロセスの終わり（`exit`）だけで呼ぶ。そこでは非同期の I/O は終わりを待たれない
+			mkdirSync(directory, { recursive: true });
+			const temporary = `${file}.${process.pid}.tmp`;
+			// eslint-disable-next-line local/code-no-sync-fs -- プロセスの終わり（`exit`）だけで呼ぶ。そこでは非同期の I/O は終わりを待たれない
+			writeFileSync(temporary, text, 'utf8');
+			// eslint-disable-next-line local/code-no-sync-fs -- プロセスの終わり（`exit`）だけで呼ぶ。そこでは非同期の I/O は終わりを待たれない
+			renameSync(temporary, file);
+		},
 	};
 }
 
@@ -82,6 +102,10 @@ ParadisSharedProcessContributions.register(PARADIS_CLAUDE_CONTEXT_CHANNEL, ({ se
 	const disposables = new DisposableStore();
 	const store = disposables.add(new ParadisClaudeContextStore(files(directory), error => logService.warn('[paradisClaudeContext] could not read or write the saved context breakdowns', error)));
 	disposables.add(paradisClaudeModBridge.onEvent(event => store.observe(event)));
+	// 書き込みは 30 秒まとめるので、終わる前の分はプロセスの終わりに同期で書く（非同期の書き込みは終わりを待たれない）
+	const onExit = () => store.flushSync();
+	process.once('exit', onExit);
+	disposables.add(toDisposable(() => process.removeListener('exit', onExit)));
 	paradisSetClaudeContextStore(store);
 	disposables.add(toDisposable(() => {
 		if (paradisClaudeContextStore() === store) {

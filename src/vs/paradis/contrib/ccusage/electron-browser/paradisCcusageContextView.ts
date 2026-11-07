@@ -57,8 +57,8 @@ export interface IParadisContextPeriodCardInput {
 	readonly title: string;
 	readonly period: IParadisClaudeContextPeriod | undefined;
 	readonly error: string | undefined;
-	/** この期間の Claude Code の会話の数（ccusage の最近のセッションと同じ数え方）。 */
-	readonly conversationsInRange: number;
+	/** この期間の Claude Code の会話の数（ccusage の最近のセッションと同じ数え方）。母数がそろわない SSH の窓では undefined。 */
+	readonly conversationsInRange: number | undefined;
 }
 
 /**
@@ -81,9 +81,17 @@ export function paradisRenderContextPeriodCard(card: HTMLElement, input: IParadi
 	}
 	const since = period.since !== undefined ? new Date(period.since) : undefined;
 	const coverage = dom.append(card, $('.paradis-ccusage-context-coverage'));
-	coverage.textContent = since !== undefined
-		? localize('paradis.ccusage.contextPeriod.coverage', "この期間の Claude Code の会話 {0} 件のうち {1} 件分（内訳の保存は {2}/{3} から）", Math.max(input.conversationsInRange, period.conversations), period.conversations, since.getMonth() + 1, since.getDate())
-		: localize('paradis.ccusage.contextPeriod.coverageNone', "この期間の Claude Code の会話 {0} 件のうち 0 件分（内訳はまだ保存されていません）", input.conversationsInRange);
+	const inRange = input.conversationsInRange;
+	if (inRange === undefined) {
+		// SSH の窓: ccusage は接続先の会話だけを数えるので、手元の保存（どのマシンの会話も入る）と比べない
+		coverage.textContent = since !== undefined
+			? localize('paradis.ccusage.contextPeriod.coverageLocal', "この PC の Para Code で見た会話 {0} 件分（内訳の保存は {1}/{2} から）", period.conversations, since.getMonth() + 1, since.getDate())
+			: localize('paradis.ccusage.contextPeriod.coverageLocalNone', "この PC の Para Code で見た会話の内訳はまだ保存されていません");
+	} else {
+		coverage.textContent = since !== undefined
+			? localize('paradis.ccusage.contextPeriod.coverage', "この期間の Claude Code の会話 {0} 件のうち {1} 件分（内訳の保存は {2}/{3} から）", Math.max(inRange, period.conversations), period.conversations, since.getMonth() + 1, since.getDate())
+			: localize('paradis.ccusage.contextPeriod.coverageNone', "この期間の Claude Code の会話 {0} 件のうち 0 件分（内訳はまだ保存されていません）", inRange);
+	}
 	if (period.conversations === 0) {
 		dom.append(card, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.contextPeriod.none', "この期間に内訳を保存した会話はありません。内訳は Para Code のターミナルの Claude Code で応答が終わるたびに残ります。");
 		return;

@@ -35,7 +35,7 @@ import { ParadisClaudeContextClient } from '../../claudeMod/electron-browser/par
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
-import { ParadisCcusageAgent } from '../common/paradisCcusage.js';
+import { ParadisCcusageAgent, paradisCcusageAgentForModel } from '../common/paradisCcusage.js';
 import { paradisFormatTokens, paradisFormatUsd } from '../common/paradisCcusageFormat.js';
 import { IParadisContextViewOptions, paradisRenderContextBreakdown, paradisRenderContextPeriodCard } from './paradisCcusageContextView.js';
 import { FETCH_WINDOW_DAYS, IParadisCcusageDashboardData, IParadisCcusageDayData, IParadisCcusageModelSlice, PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS, ParadisCcusageClient } from './paradisCcusageClient.js';
@@ -327,10 +327,17 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		});
 	}
 
-	/** この期間の Claude Code の会話の数（「最近のセッション」と同じく、最終アクティビティの日で数える）。 */
-	private claudeConversationsIn(range: IDateRange): number {
+	/**
+	 * この期間の Claude Code の会話の数（「最近のセッション」と同じく、最終アクティビティの日で数える。Claude のモデルを
+	 * 使った会話だけ）。SSH の窓では ccusage は接続先で走り、内訳の保存は手元の Para Code がどのマシンの会話も持つので、
+	 * 母数がそろわない。そのときは undefined を返し、カードは保存した会話の数だけを出す。
+	 */
+	private claudeConversationsIn(range: IDateRange): number | undefined {
+		if (this.remoteAgentService.getConnection()) {
+			return undefined;
+		}
 		return (this.data?.sessions ?? []).filter(session => {
-			if (session.lastActivity === undefined) {
+			if (session.lastActivity === undefined || !session.models.some(model => paradisCcusageAgentForModel(model) === 'claude')) {
 				return false;
 			}
 			const day = localDateString(new Date(session.lastActivity));

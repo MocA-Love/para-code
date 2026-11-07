@@ -65,6 +65,9 @@ export interface IParadisClaudeContextFiles {
 	/** 無ければ undefined。 */
 	read(): Promise<string | undefined>;
 	write(text: string): Promise<void>;
+	/** プロセスの終わりに使う同期の読み書き（{@link ParadisClaudeContextStore.flushSync}）。 */
+	readSync?(): string | undefined;
+	writeSync?(text: string): void;
 }
 
 export class ParadisClaudeContextStore extends Disposable {
@@ -78,6 +81,10 @@ export class ParadisClaudeContextStore extends Disposable {
 	/** ペイン → いま動いている会話の鍵。 */
 	private readonly live = new Map<string, string>();
 	private loaded: Promise<void> | undefined;
+	/** 終了時に同期で読み込んだ（後から非同期の読み込みが終わっても合わせ直さない）。 */
+	private loadedSync = false;
+	/** 非同期の読み込みが終わった。 */
+	private loadSettled = false;
 	private writeTimer: ReturnType<typeof setTimeout> | undefined;
 	private writing: Promise<void> = Promise.resolve();
 	private dirty = false;
@@ -165,6 +172,36 @@ export class ParadisClaudeContextStore extends Disposable {
 		return false;
 	}
 
+	/**
+	 * プロセスの終わり（`exit`。非同期の処理はもう走らない）に、まだ書いていない内訳を同期で書く。まだファイルを読んでいなければ
+	 * 先に同期で読み、保存してあった過去の内訳を消さない。
+	 */
+	flushSync(): void {
+		if (!this.dirty && this.writeTimer === undefined) {
+			return;
+		}
+		if (this.writeTimer !== undefined) {
+			clearTimeout(this.writeTimer);
+			this.writeTimer = undefined;
+		}
+		const files = this.files;
+		if (files.readSync === undefined || files.writeSync === undefined) {
+			return;
+		}
+		try {
+			if (!this.loadSettled) {
+				this.loadedSync = true;
+				this.applyLoaded(files.readSync());
+			}
+			const text = this.serializeTrimmed();
+			if (text !== undefined) {
+				files.writeSync(text);
+			}
+		} catch (error) {
+			this.onError(error);
+		}
+	}
+
 	/** 遅らせている書き込みを今済ませる（終了時・テスト）。 */
 	async flush(): Promise<void> {
 		if (this.writeTimer !== undefined) {
@@ -200,7 +237,9 @@ export class ParadisClaudeContextStore extends Disposable {
 	}
 
 	private ensureLoaded(): Promise<void> {
-		this.loaded ??= this.load();
+		this.loaded ??= this.load().finally(() => {
+			this.loadSettled = true;
+		});
 		return this.loaded;
 	}
 
@@ -212,6 +251,13 @@ export class ParadisClaudeContextStore extends Disposable {
 			this.onError(error);
 			return;
 		}
+		if (!this.loadedSync) {
+			this.applyLoaded(text);
+		}
+	}
+
+	/** 読んだファイルの中身を、読む前に届いた内訳と合わせる。 */
+	private applyLoaded(text: string | undefined): void {
 		if (text === undefined) {
 			return;
 		}
@@ -283,8 +329,21 @@ export class ParadisClaudeContextStore extends Disposable {
 	}
 
 	private async writeNow(): Promise<void> {
-		if (!this.dirty) {
+		const text = this.serializeTrimmed();
+		if (text === undefined) {
 			return;
+		}
+		try {
+			await this.files.write(text);
+		} catch (error) {
+			this.onError(error);
+		}
+	}
+
+	/** 書く中身（大きすぎれば古い会話から捨てる）。書くものが無ければ undefined。 */
+	private serializeTrimmed(): string | undefined {
+		if (!this.dirty) {
+			return undefined;
 		}
 		this.dirty = false;
 		let sessions = [...this.sessions.values()];
@@ -298,11 +357,7 @@ export class ParadisClaudeContextStore extends Disposable {
 			sessions = sessions.slice(drop);
 			text = serialize(sessions);
 		}
-		try {
-			await this.files.write(text);
-		} catch (error) {
-			this.onError(error);
-		}
+		return text;
 	}
 }
 
