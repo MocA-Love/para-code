@@ -138,3 +138,5 @@ import './contrib/workspaceSwitch/electron-browser/paradisWorkspacesNativeWindow
 import './contrib/tabLauncher/electron-browser/paradisTabLauncher.contribution.js';
 // メニューのアイコン・危険の赤（ターミナル・タブ・エディタの右クリック。HTML のメニューのときだけ。Q575-9 段階 2）
 import './contrib/menuIcons/electron-browser/paradisContextMenuService.js';
+// G-05: スペース・タブ・エージェントを 1 つの検索で移る（既定のキーは付けない）
+import './contrib/crossJump/electron-browser/paradisCrossJump.contribution.js';
