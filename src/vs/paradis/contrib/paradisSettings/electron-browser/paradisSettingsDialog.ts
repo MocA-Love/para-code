@@ -1092,7 +1092,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.browserDataStorage', "ブラウザのデータの置き場所"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.browserDataStorageDesc', "Cookie・キャッシュ・保存データを、どのタブと共有するかです。名前付きのプロファイルのタブはこの設定に関係なく、そのプロファイルに置きます。スペースごとの既定は、アドレスバーのプロファイルの表示から付けられます。"),
+		description: localize('paradis.settings.browserDataStorageDesc', "Cookie・キャッシュ・保存データを、どのタブと共有するかです。名前付きのプロファイルのタブはこの設定に関係なく、そのプロファイルに置きます。スペースごとの既定は、アドレスバーのプロファイルの表示から付けられます。「エージェントのタブと共有」にすると、Cookie・ローカルストレージを含む全部のデータにエージェントが触れます。"),
 		keywords: 'browser data storage cookies session profile global workspace ephemeral',
 		choiceLabels: {
 			// allow-any-unicode-next-line
@@ -1104,7 +1104,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			// allow-any-unicode-next-line
 			ephemeral: localize('paradis.settings.browserDataStorageEphemeral', "タブごとに使い捨て"),
 			// allow-any-unicode-next-line
-			agent: localize('paradis.settings.browserDataStorageAgent', "エージェントのタブと共有（アプリを閉じると消える）"),
+			agent: localize('paradis.settings.browserDataStorageAgent', "エージェントのタブと共有（注意: Cookie・ローカルストレージを含む全部のデータにエージェントが触れます。アプリを閉じると消える）"),
 		},
 	},
 	{
