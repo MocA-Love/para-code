@@ -100,7 +100,7 @@ export function registerParadisMainProcessContributions(
 	mainProcessElectronServer.registerChannel(PARADIS_RESOURCE_MONITOR_CHANNEL, paradisResourceMonitorChannel);
 	disposables.add(paradisRegisterDesignMode(mainProcessElectronServer, accessor.get(IBrowserViewMainService), environmentMainService.userDataPath)); // integrated browser Design Mode (see paradis/contrib/browserDesignMode)
 	disposables.add(paradisRegisterBrowserLoadStall(mainProcessElectronServer)); // integrated browser "still waiting" question (see paradis/contrib/browserLoadStall)
-	disposables.add(new ParadisBrowserViewFreezer(accessor.get(IBrowserViewMainService), () => configurationService.getValue<boolean>(PARADIS_BROWSER_FREEZE_HIDDEN_TABS_SETTING) !== false)); // freeze integrated browser tabs hidden for a long time, without reloading them (see paradis/contrib/browserFreeze)
+	disposables.add(new ParadisBrowserViewFreezer(accessor.get(IBrowserViewMainService), () => configurationService.getValue<boolean>(PARADIS_BROWSER_FREEZE_HIDDEN_TABS_SETTING) === true)); // freeze integrated browser tabs hidden for a long time, without reloading them; off unless the user turns it on (see paradis/contrib/browserFreeze)
 
 	// periodic memory/CPU health beacon to Sentry (see paradis/contrib/healthBeacon).
 	// This one, updateTerminals and taskBoardHost act on onWillShutdown, so they stay out of `disposables`:
