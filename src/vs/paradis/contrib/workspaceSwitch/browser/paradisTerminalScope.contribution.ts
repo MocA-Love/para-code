@@ -29,6 +29,7 @@ import { TerminalGroupService } from '../../../../workbench/contrib/terminal/bro
 import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreationScopeLease } from './paradisTerminalCreationScope.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
+import { paradisWaitForProcessReady } from '../../../common/paradisProcessReady.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { ParadisPtyAdoptionState, paradisOrphanListingIsComplete, paradisPtyAdoptionState } from '../../ptyDaemon/common/paradisPtyHandover.js';
@@ -901,7 +902,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				// 繋いでいる PTY は孤児の一覧に出ないので、重複を数え切れない）。繋げた後で、pty host の再起動後の
 				// relaunch 用に照合付きの attach 先へ差し替える（paradisOrphanAttachTarget）。
 				const instance = this.terminalInstanceService.createInstance({ attachPersistentProcess: { ...detail, findRevivedId: false } }, TerminalLocation.Editor);
-				await instance.processReady;
+				// 起動の前に閉じられた端末の processReady は解決しないので、閉じられたら待つのをやめる
+				// （下の ID の確かめで失敗として扱う）。期限は付けない。遅れて元の PTY に繋がる相手を
+				// 期限で畳むと、その PTY を手放すことになる。
+				await paradisWaitForProcessReady(instance, Infinity);
 				// 繋ぎ直しに失敗すると、upstream は黙って新しいシェルを起こす（`terminalProcessManager`）。
 				// `processReady` はそれでも成功するので、ID を確かめないと空のシェルをこのスペースへ
 				// 入れてしまう。元の PTY は取り戻せていないので、完走扱いにもしない。
@@ -973,7 +977,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 */
 	private async reviveSharedPanelOrphan(detail: IProcessDetails, duplicatedNonces: ReadonlySet<string>): Promise<boolean> {
 		const instance = await this.terminalService.createTerminal({ config: { attachPersistentProcess: { ...detail, findRevivedId: false } }, location: TerminalLocation.Panel });
-		await instance.processReady;
+		// 閉じられたら待つのをやめる（上のエディタのタブへ戻す経路と同じく、期限は付けない）。
+		await paradisWaitForProcessReady(instance, Infinity);
 		if (!this._store.isDisposed && instance.persistentProcessId === detail.id) {
 			// pty host が再起動したときの relaunch は、この attach 先をそのまま使う。照合付きへ差し替える
 			instance.shellLaunchConfig.attachPersistentProcess = paradisOrphanAttachTarget(detail, !duplicatedNonces.has(detail.shellIntegrationNonce));
