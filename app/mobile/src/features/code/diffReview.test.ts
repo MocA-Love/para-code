@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../../components/diffParser.js';
 import type { ReviewMarks } from './codeCache.js';
-import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, parseReviewMarks, reviewQueue, reviewStateOf, reviewedCount, shouldTryReviewStage, stageableEntries, stepReview } from './diffReview.js';
+import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, parseReviewMarks, reviewQueue, reviewStageResult, reviewStageSkipNote, reviewStateOf, reviewedCount, shouldTryReviewStage, stageableEntries, stepReview } from './diffReview.js';
 import { scmEntries, scmEntry } from './scmModel.js';
 
 const entries = scmEntries({
@@ -151,5 +151,16 @@ describe('diffSourceOf / canOpenWorkingFile', () => {
 		expect(canOpenWorkingFile(entries[2])).toBe(false);
 		expect(canOpenWorkingFile(entries[0])).toBe(true);
 		expect(canOpenWorkingFile(undefined)).toBe(true);
+	});
+});
+
+describe('reviewStageResult', () => {
+	it('counts the files changed after the review and the ones the PC could not verify, and tells what to do for each', () => {
+		const result = reviewStageResult({ staged: ['a.ts'], skipped: [{ path: 'b.ts', reason: 'changed' }, { path: 'c.ts', reason: 'unverified' }, { path: 'd.ts', reason: 'conflict' }] });
+		expect({ result, note: reviewStageSkipNote(result), none: reviewStageSkipNote(reviewStageResult({ staged: ['a.ts'], skipped: [] })) }).toEqual({
+			result: { staged: 1, skipped: 3, changed: 1, unverified: 1 },
+			note: '確認した後に変わっていた 1 件は確認し直してください。 接続が不安定で確かめられなかった 1 件はステージしていません。もう一度お試しください。 ほかの 1 件は、衝突しているなどの理由でステージしていません。',
+			none: undefined,
+		});
 	});
 });

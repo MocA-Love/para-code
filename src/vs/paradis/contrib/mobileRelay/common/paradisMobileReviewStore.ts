@@ -72,7 +72,12 @@ function parseMark(value: unknown): IParadisMobileReviewMark | undefined {
 		return undefined;
 	}
 	const reviewedAt = validTime(value.reviewedAt);
-	return reviewedAt !== undefined ? { identity: value.identity, reviewedAt } : undefined;
+	if (reviewedAt === undefined) {
+		return undefined;
+	}
+	const size = validTime(value.size);
+	const mtime = validTime(value.mtime);
+	return size !== undefined && mtime !== undefined ? { identity: value.identity, reviewedAt, size, mtime } : { identity: value.identity, reviewedAt };
 }
 
 function parseMarks(value: unknown): Record<string, IParadisMobileReviewMark> {
@@ -265,6 +270,43 @@ export function paradisApplyMobileReviewMarkChanges(space: IParadisMobileReviewS
 }
 
 /**
+ * 付けた印に、付けたときに調べたファイルの大きさと時刻を足す（ステージのときに比べる）。調べている間に付け直された・
+ * 外された印（識別か時刻が違う）には足さない。足すものが無ければ同じものを返す。アプリへ送る中身は変わらないので、
+ * 版（revision）は進めない。
+ */
+export function paradisAttachMobileReviewMarkStats(space: IParadisMobileReviewSpace, marked: ReadonlyMap<string, IParadisMobileReviewMark>, stats: ReadonlyMap<string, { readonly size: number; readonly mtime: number }>): IParadisMobileReviewSpace {
+	let changed = false;
+	const marks: Record<string, IParadisMobileReviewMark> = { ...space.marks };
+	for (const [path, mark] of marked) {
+		const current = marks[path];
+		const stat = stats.get(path);
+		if (stat !== undefined && current !== undefined && current.identity === mark.identity && current.reviewedAt === mark.reviewedAt) {
+			marks[path] = { identity: current.identity, reviewedAt: current.reviewedAt, size: stat.size, mtime: stat.mtime };
+			changed = true;
+		}
+	}
+	return changed ? { ...space, marks } : space;
+}
+
+/**
+ * 確認した後に書き換えられたと分かった印を「確認後に変更あり」にする。識別をどのファイルの識別とも一致しない値
+ * （識別は 16 桁なので末尾に 1 桁足す）に替えるので、一覧では確認し直しが要る状態に出る。`rewritten` は
+ * パスごとの、調べたときの印の識別（その間に付け直された印には触らない）。
+ */
+export function paradisMarkMobileReviewRewritten(space: IParadisMobileReviewSpace, rewritten: ReadonlyMap<string, string>): IParadisMobileReviewSpace {
+	let changed = false;
+	const marks: Record<string, IParadisMobileReviewMark> = { ...space.marks };
+	for (const [path, identity] of rewritten) {
+		const mark = marks[path];
+		if (mark !== undefined && mark.identity === identity) {
+			marks[path] = { identity: identity.length < 64 ? `${identity}0` : '0', reviewedAt: mark.reviewedAt };
+			changed = true;
+		}
+	}
+	return changed ? { ...space, marks } : space;
+}
+
+/**
  * いまの変更の一覧に無いパスの印を外す（コミット・破棄されたファイル）。変わらなければ同じものを返す。
  * `changedPaths` は status のパス（リネームは新しい側）。
  */
@@ -285,7 +327,7 @@ export function paradisRemapMobileReviewMarks(space: IParadisMobileReviewSpace, 
 	for (const [path, { before, after }] of restaged) {
 		const mark = marks[path];
 		if (mark !== undefined && mark.identity === before && before !== after) {
-			marks[path] = { identity: after, reviewedAt: mark.reviewedAt };
+			marks[path] = { ...mark, identity: after };
 			changed = true;
 		}
 	}

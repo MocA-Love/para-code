@@ -7,13 +7,15 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { localize } from '../../../../nls.js';
-import { basename, joinPath } from '../../../../base/common/resources.js';
+import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
+import { paradisTransferTempName } from '../../fileTransfer/common/paradisFileTransferQueueTypes.js';
 
 /** 転送処理に必要なサービスの束。ビューが注入したものをそのまま渡す。 */
 export interface IParadisRemoteTransferServices {
@@ -53,6 +55,31 @@ async function confirmOverwrite(services: IParadisRemoteTransferServices, names:
 	return confirmed;
 }
 
+/**
+ * 写す。上書きのときは、送り先の隣の一時名へ写し終えてから置き換える。IFileService.copy の上書きは
+ * 写す前に送り先を消すので、途中で切れる・読めない・容量が足りないと、前の中身だけが失われる。
+ */
+async function copyReplacing(fileService: IFileService, source: URI, target: URI, overwrite: boolean): Promise<void> {
+	if (!overwrite) {
+		await fileService.copy(source, target, false);
+		return;
+	}
+	const temp = joinPath(dirname(target), paradisTransferTempName(generateUuid()));
+	try {
+		await fileService.copy(source, temp, false);
+	} catch (error) {
+		await fileService.del(temp, { recursive: true, useTrash: false }).catch(() => undefined);
+		throw error;
+	}
+	try {
+		await fileService.move(temp, target, true);
+	} catch (error) {
+		// 置き換え（送り先を消してから名前を変える）の途中で失敗した。写し終えた中身は一時名のまま残し、消さない
+		// （送り先が先に消えていることがあり、消すと何も残らない）。どこに残ったかを知らせる
+		throw new Error(localize('paraRemoteHosts.replaceFailed', "置き換えに失敗しました。転送した中身は {0} に残っています: {1}", basename(temp), error instanceof Error ? error.message : String(error)));
+	}
+}
+
 async function copyWithProgress(
 	services: IParadisRemoteTransferServices,
 	source: IParadisRemoteTransferSource,
@@ -64,7 +91,7 @@ async function copyWithProgress(
 			location: ProgressLocation.Window,
 			title: localize('paraRemoteHosts.transferring', "{0} を転送しています…", source.name),
 		},
-		() => services.fileService.copy(source.uri, target, overwrite),
+		() => copyReplacing(services.fileService, source.uri, target, overwrite),
 	);
 }
 
@@ -190,7 +217,7 @@ export async function paradisCopyToDirectory(
 			async () => {
 				for (let index = 0; index < sources.length; index++) {
 					try {
-						await services.fileService.copy(sources[index].uri, targets[index], existing.has(index));
+						await copyReplacing(services.fileService, sources[index].uri, targets[index], existing.has(index));
 					} catch (error) {
 						failedNames.push(sources[index].name);
 						firstError ??= error instanceof Error ? error : String(error);

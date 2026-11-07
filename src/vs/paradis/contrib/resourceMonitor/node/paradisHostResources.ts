@@ -17,6 +17,7 @@
 
 import { cpus, homedir, totalmem, freemem } from 'os';
 import { stat, statfs } from 'fs/promises';
+import { raceTimeout } from '../../../../base/common/async.js';
 import { IParadisHostDiskVolume, IParadisHostMemory, IParadisHostResources } from '../common/paradisResourceMonitor.js';
 
 /** CPU累積時間のサンプル1点。使用率は2点の差分からしか出せない。 */
@@ -88,21 +89,9 @@ const DISK_PATH_LIMIT = 24;
  */
 const DISK_STAT_TIMEOUT_MS = 1_000;
 
-/** 指定時間内に解決しなければ undefined を返す。 */
-async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T | undefined> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		return await Promise.race([
-			work,
-			new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
-		]);
-	} catch {
-		return undefined;
-	} finally {
-		if (timer !== undefined) {
-			clearTimeout(timer);
-		}
-	}
+/** 指定時間内に解決しなければ undefined を返す（失敗しても undefined）。使用率の計測（paradisSystemUsageSampler.ts）と共有する。 */
+export function paradisWithTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+	return raceTimeout(work.catch(() => undefined), timeoutMs);
 }
 
 /** ディスクの照会に使う関数。テストで差し替える。 */
@@ -115,7 +104,7 @@ export interface IParadisDiskQueryOps {
 const DEFAULT_DISK_QUERY_OPS: IParadisDiskQueryOps = { statfs, stat, timeoutMs: DISK_STAT_TIMEOUT_MS };
 
 /**
- * まだ返っていない照会（パスごと）。`withTimeout` は待つのをやめるだけで、照会そのものは libuv の
+ * まだ返っていない照会（パスごと）。`paradisWithTimeout` は待つのをやめるだけで、照会そのものは libuv の
  * threadpool を掴んだまま残る。返事をしないマウントへ収集のたびに新しく照会を出すと、溜まった照会が
  * threadpool を埋め、そのプロセスのファイルの読み書きが全部遅くなる。前の照会が返るまでは、そのパスに
  * 次を出さない（読めなかったパスと同じく、その回は捨てる）。
@@ -132,7 +121,7 @@ function queryDisk(path: string, ops: IParadisDiskQueryOps): Promise<readonly [A
 	// 記録を消すのは 2 つとも返ってから。`Promise.all` は片方が失敗した時点で決まるので、それを待つと
 	// `stat` だけすぐ失敗して `statfs` が返らないマウントで、返らない `statfs` が収集のたびに増える。
 	void Promise.allSettled([statfsQuery, statQuery]).then(() => { pendingDiskQueries.delete(path); });
-	return withTimeout(Promise.all([statfsQuery, statQuery] as const), ops.timeoutMs);
+	return paradisWithTimeout(Promise.all([statfsQuery, statQuery] as const), ops.timeoutMs);
 }
 
 /**
