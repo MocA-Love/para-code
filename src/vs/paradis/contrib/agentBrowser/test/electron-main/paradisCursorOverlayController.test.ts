@@ -518,7 +518,7 @@ suite('Paradis Cursor Overlay Controller', () => {
 		]);
 	});
 
-	test('scroll_to sends the direction it searches, and a script carries the name tag for its scrolls', () => {
+	test('scroll_to sends the direction it searches, and scroll_to and a script carry the name tag for their scrolls', () => {
 		const target = new TestTarget();
 		const controller = new ParadisCursorOverlayController(() => true, () => 1_000);
 		const seen = recordPayloads(target, ['kind', 'status', 'direction', 'scrollText']);
@@ -526,8 +526,8 @@ suite('Paradis Cursor Overlay Controller', () => {
 		controller.noteStatus(target, 'scroll', undefined, undefined);
 		controller.noteStatus(target, 'script', undefined, undefined);
 		assert.deepStrictEqual(seen, [
-			{ kind: 'status', status: 'scroll', direction: 'up' },
-			{ kind: 'status', status: 'scroll' },
+			{ kind: 'status', status: 'scroll', direction: 'up', scrollText: '探してスクロール {0}' },
+			{ kind: 'status', status: 'scroll', scrollText: '探してスクロール {0}' },
 			{ kind: 'status', status: 'script', scrollText: 'スクリプトでスクロール {0}' },
 		]);
 	});
