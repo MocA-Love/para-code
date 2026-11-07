@@ -20,7 +20,6 @@ import * as fs from 'fs';
 import type * as http from 'http';
 import type * as https from 'https';
 import * as os from 'os';
-import { dirname, sep } from '../../../../base/common/path.js';
 import { isLinux, isMacintosh } from '../../../../base/common/platform.js';
 import { IParadisPortEntry, IParadisPortPageInfo, IParadisPortPageRequest, IParadisPortServerEntry, IParadisPortServersSnapshot, PARADIS_PORT_PAGE_PROBE_LIMIT } from '../common/paradisPortList.js';
 
@@ -86,74 +85,14 @@ export async function readProcessCwds(pids: readonly number[]): Promise<Map<numb
 	return new Map();
 }
 
-/** `ps -o pid=,comm=` の出力（macOS では comm が実行ファイルの絶対パス）を読む。 */
-export function parsePsCommOutput(stdout: string): Map<number, string> {
-	const exes = new Map<number, string>();
-	for (const rawLine of stdout.split('\n')) {
-		const match = /^\s*(\d+)\s+(\/.*)$/.exec(rawLine);
-		if (match) {
-			exes.set(Number(match[1]), match[2].trim());
-		}
-	}
-	return exes;
-}
-
-/** プロセスの実行ファイルのパス。取れなかったものは結果に入れない。 */
-export async function readProcessExes(pids: readonly number[]): Promise<Map<number, string>> {
-	const unique = [...new Set(pids)].filter(pid => Number.isSafeInteger(pid) && pid > 0);
-	if (unique.length === 0) {
-		return new Map();
-	}
-	if (isLinux) {
-		const exes = new Map<number, string>();
-		await Promise.all(unique.map(async pid => {
-			try {
-				exes.set(pid, await fs.promises.readlink(`/proc/${pid}/exe`));
-			} catch {
-				// 別のユーザーのプロセスや、もう終わったプロセス
-			}
-		}));
-		return exes;
-	}
-	if (isMacintosh) {
-		return new Promise(resolve => {
-			cp.execFile('ps', ['-o', 'pid=,comm=', '-p', unique.join(',')], { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 }, (_error, stdout) => {
-				resolve(parsePsCommOutput(stdout ?? ''));
-			});
-		});
-	}
-	return new Map();
-}
-
-/**
- * Para Code（接続先ではサーバー）が入っているフォルダ。この下の実行ファイルで動くプロセス
- * （本体・ヘルパー・拡張機能のホストなど）のポートは新しいタブに出さない。ターミナルで動かした
- * 開発サーバーは別の実行ファイルなので外れない。macOS は `.app` の束の丸ごと。
- */
-export function paradisAppRootFor(execPath: string): string | undefined {
-	const bundle = execPath.indexOf('.app/');
-	if (bundle >= 0) {
-		return execPath.slice(0, bundle + 4);
-	}
-	const root = dirname(execPath);
-	// /usr/bin のような共有のフォルダだと、そこにある python3 や node の開発サーバーまで外してしまう
-	return SHARED_BIN_DIRS.has(root) ? undefined : root;
-}
-
-const SHARED_BIN_DIRS = new Set(['/bin', '/sbin', '/usr/bin', '/usr/sbin', '/usr/local/bin', '/opt/homebrew/bin', '/snap/bin']);
-
-/** `exe` が `root` の下にあるか。 */
-function isUnder(exe: string, root: string): boolean {
-	return exe === root || exe.startsWith(root.endsWith(sep) ? root : root + sep);
-}
-
 export interface IParadisPortServerDescriberOptions {
 	readonly readCwds?: (pids: readonly number[]) => Promise<Map<number, string>>;
-	readonly readExes?: (pids: readonly number[]) => Promise<Map<number, string>>;
-	/** Para Code 自身として外すプロセス（このプロセスと親）。 */
+	/**
+	 * Para Code 自身の内部の口（MCP・hook の受け口・CDP のゲートウェイ・リレーなど）を開いているプロセス。
+	 * 省略時は、このプロセス（手元では shared process、接続先では REH のサーバー）と親（手元では main）。
+	 * 拡張機能のホストは別のプロセスなので、拡張機能が立てたサーバー（とその子）のポートは残る。
+	 */
 	readonly ownPids?: readonly number[];
-	/** 外す実行ファイルのフォルダ。'' なら実行ファイルでは外さない。省略時は Para Code の入っている場所。 */
-	readonly appRoot?: string;
 	readonly homeDir?: string;
 	/** cwd と実行ファイルを覚えておく長さ（ポートの一覧を同じ結果で返す長さと同じ）。 */
 	readonly cacheMs: number;
@@ -161,24 +100,20 @@ export interface IParadisPortServerDescriberOptions {
 }
 
 /**
- * 待ち受けのポートに作業フォルダを付け、Para Code 自身のプロセスのものを外す。
- * cwd と実行ファイルは PID ごとに覚えておき、短い間に何度も聞かれても lsof・ps を起こし直さない。
+ * 待ち受けのポートに作業フォルダを付け、Para Code 自身の内部の口を外す。
+ * cwd は PID ごとに覚えておき、短い間に何度も聞かれても lsof を起こし直さない。
  */
 export class ParadisPortServerDescriber {
 
-	private readonly cache = new Map<number, { at: number; cwd: string | undefined; exe: string | undefined }>();
+	private readonly cache = new Map<number, { at: number; cwd: string | undefined }>();
 	private readonly readCwds: (pids: readonly number[]) => Promise<Map<number, string>>;
-	private readonly readExes: (pids: readonly number[]) => Promise<Map<number, string>>;
 	private readonly ownPids: ReadonlySet<number>;
-	private readonly appRoot: string | undefined;
 	private readonly homeDir: string;
 	private readonly now: () => number;
 
 	constructor(private readonly options: IParadisPortServerDescriberOptions) {
 		this.readCwds = options.readCwds ?? readProcessCwds;
-		this.readExes = options.readExes ?? readProcessExes;
 		this.ownPids = new Set(options.ownPids ?? [process.pid, process.ppid]);
-		this.appRoot = options.appRoot !== undefined ? (options.appRoot || undefined) : paradisAppRootFor(process.execPath);
 		this.homeDir = options.homeDir ?? paradisHomeDir();
 		this.now = options.now ?? Date.now;
 	}
@@ -192,15 +127,15 @@ export class ParadisPortServerDescriber {
 		}
 		const missing = [...new Set(entries.map(entry => entry.pid))].filter(pid => !this.cache.has(pid));
 		if (missing.length > 0) {
-			const [cwds, exes] = await Promise.all([this.readCwds(missing), this.readExes(missing)]);
+			const cwds = await this.readCwds(missing);
 			for (const pid of missing) {
-				this.cache.set(pid, { at: now, cwd: cwds.get(pid), exe: exes.get(pid) });
+				this.cache.set(pid, { at: now, cwd: cwds.get(pid) });
 			}
 		}
 		const result: IParadisPortServerEntry[] = [];
 		for (const entry of entries) {
 			const info = this.cache.get(entry.pid);
-			if (this.ownPids.has(entry.pid) || (this.appRoot !== undefined && info?.exe !== undefined && isUnder(info.exe, this.appRoot))) {
+			if (this.ownPids.has(entry.pid)) {
 				continue;
 			}
 			result.push(info?.cwd !== undefined ? { ...entry, cwd: info.cwd } : entry);
