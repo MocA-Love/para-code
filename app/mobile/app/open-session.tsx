@@ -52,7 +52,7 @@ export default function OpenSessionScreen() {
 			// この画面の下が PC の画面ならその中で開き、同じ画面が出ていれば閉じるだけ（`openPcRoute`）。
 			openPcRoute(router, container, relayTarget, 'overlay');
 		} else {
-			router.replace(routes.home());
+			goHome(router);
 		}
 	}, [relayTarget, router, container]);
 
@@ -63,7 +63,7 @@ export default function OpenSessionScreen() {
 		doneRef.current = true;
 		switch (target.kind) {
 			case 'home':
-				router.replace(routes.home());
+				goHome(router);
 				return;
 			case 'pc':
 				openPcRoute(router, container, routes.pc(target.pcId), 'overlay');
@@ -87,7 +87,7 @@ export default function OpenSessionScreen() {
 		const timer = setTimeout(() => {
 			if (!doneRef.current) {
 				doneRef.current = true;
-				router.replace(routes.home());
+				goHome(router);
 			}
 		}, WAIT_LIMIT_MS);
 		return () => clearTimeout(timer);
@@ -109,3 +109,15 @@ const styles = StyleSheet.create({
 		justifyContent: 'center',
 	},
 });
+
+/**
+ * ホームへ戻す。下にホームがあれば（積まれた中継の画面なら）そこまで閉じる。`replace` だとホームの上に
+ * もう 1 枚ホームが積まれ、スワイプで戻るとまたホームが出る。
+ */
+function goHome(router: ReturnType<typeof useRouter>): void {
+	if (router.canDismiss()) {
+		router.dismissTo(routes.home());
+		return;
+	}
+	router.replace(routes.home());
+}

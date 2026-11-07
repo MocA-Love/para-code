@@ -2435,6 +2435,7 @@ export class MobileController {
 			}
 			this.agentCommandCatalogTimers.clear();
 			this.termStreams.clear();
+			this.attachedTerminalKeys.clear();
 			this.operationOutboxKey = undefined;
 			this.operationOutboxScope = undefined;
 			this.outboxReplayEpoch = undefined;
@@ -2608,6 +2609,7 @@ export class MobileController {
 	 * seq欠落検出時・再接続時の再同期もこのメソッドで行う（新epochで取り直し）。
 	 */
 	attachTerminal(terminalKey: string): void {
+		this.attachedTerminalKeys.add(terminalKey);
 		const stream = this.ensureTermStream(terminalKey);
 		stream.epoch = ++this.termEpochCounter;
 		stream.lastSeq = undefined;
@@ -2623,6 +2625,7 @@ export class MobileController {
 	}
 
 	detachTerminal(terminalKey: string): void {
+		this.attachedTerminalKeys.delete(terminalKey);
 		// 開き直したら、また PC の幅を合わせてよい（PC も detach で戻された印を外す。W2-19）。
 		this.revokedViewportTerminals.delete(terminalKey);
 		// ストリーム状態は消さない（cache をタブ再訪時の即時再描画に使う）。
@@ -2660,10 +2663,21 @@ export class MobileController {
 		}
 	}
 
-	/** いまの申告を、購読中の全ターミナルへ送る（更新も同じ経路を通す）。PC で戻されたターミナルには送らない。 */
+	/**
+	 * attach しているターミナル（detach していないもの）。画面はターミナルの表示を隠したまま残すことがあり
+	 * （`terminalPane.tsx` の `shown`）、隠している間も表示はストリームを購読し続けるが、PC の購読は解いている。
+	 * 寸法の申告・繋がり直したときの attach し直しは、購読（listeners）ではなくこれで決める。
+	 */
+	private readonly attachedTerminalKeys = new Set<string>();
+
+	private wantsTerminal(terminalKey: string, stream: TermStreamState): boolean {
+		return stream.listeners.size > 0 && this.attachedTerminalKeys.has(terminalKey);
+	}
+
+	/** いまの申告を、attach 中の全ターミナルへ送る（更新も同じ経路を通す）。PC で戻されたターミナルには送らない。 */
 	private sendTerminalViewport(): void {
 		for (const [terminalKey, stream] of this.termStreams) {
-			if (stream.listeners.size > 0 && !this.revokedViewportTerminals.has(terminalKey)) {
+			if (this.wantsTerminal(terminalKey, stream) && !this.revokedViewportTerminals.has(terminalKey)) {
 				void this.sendTerm(terminalKey, { t: 'viewport', ...this.terminalViewportFields() });
 			}
 		}
@@ -3336,7 +3350,7 @@ export class MobileController {
 			this.sendAgentAttach(terminalKey);
 		}
 		for (const [terminalKey, stream] of this.termStreams) {
-			if (stream.listeners.size > 0) {
+			if (this.wantsTerminal(terminalKey, stream)) {
 				this.attachTerminal(terminalKey);
 			}
 		}
@@ -5299,6 +5313,7 @@ export class MobileController {
 				for (const terminalKey of this.termStreams.keys()) {
 					if (!live.has(terminalKey)) {
 						this.termStreams.delete(terminalKey);
+						this.attachedTerminalKeys.delete(terminalKey);
 					}
 				}
 				// agentChats は上の掃除でミューテートしうるため、常に新参照へ
@@ -5313,7 +5328,7 @@ export class MobileController {
 				this.replayResumeFrames();
 				for (const [terminalKey, stream] of this.termStreams) {
 					const target = this.rendererTargetFor(terminalKey);
-					if (stream.listeners.size > 0 && target !== undefined && target !== stream.rendererTarget) {
+					if (this.wantsTerminal(terminalKey, stream) && target !== undefined && target !== stream.rendererTarget) {
 						this.attachTerminal(terminalKey);
 					}
 				}
@@ -5354,6 +5369,7 @@ export class MobileController {
 						listener({ kind: 'exit' });
 					}
 					this.termStreams.delete(msg.terminalKey);
+					this.attachedTerminalKeys.delete(msg.terminalKey);
 					// 閉じたターミナルは二度と再attachされないため、チャット履歴も掃除する。
 					// （放置すると agentChats に使い捨てターミナル分のチャットが蓄積し続ける）
 					this.state.agentChats.delete(msg.terminalKey);
