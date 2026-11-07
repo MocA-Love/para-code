@@ -184,6 +184,7 @@ export function paradisTasksProjectsFromData(data: IGqlProjectsData, repositoryC
 const PROJECT_ITEMS_QUERY = `query($owner: String!, $number: Int!, $view: Int!, $n: Int!, $q: String, $after: String) {
 	repositoryOwner(login: $owner) { ... on ProjectV2Owner { projectV2(number: $number) {
 		title url
+		fields(first: 30) { nodes { ... on ProjectV2FieldCommon { name dataType } } }
 		view(number: $view) { number name layout filter
 			fields(first: 30) { nodes { ... on ProjectV2FieldCommon { name dataType } ... on ProjectV2SingleSelectField { options { name color } } } }
 			verticalGroupByFields(first: 1) { nodes { ... on ProjectV2FieldCommon { name } } }
@@ -232,6 +233,7 @@ interface IGqlProjectItem {
 interface IGqlProjectV2 {
 	readonly title?: string;
 	readonly url?: string;
+	readonly fields?: { readonly nodes?: readonly ({ readonly name?: string; readonly dataType?: string } | null)[] };
 	readonly view?: {
 		readonly number?: number; readonly name?: string; readonly layout?: string; readonly filter?: string | null;
 		readonly fields?: { readonly nodes?: readonly ({ readonly name?: string; readonly dataType?: string; readonly options?: readonly { readonly name?: string; readonly color?: string }[] } | null)[] };
@@ -302,11 +304,16 @@ export function paradisTasksProjectItemsFromData(data: IGqlProjectItemsData, vie
 		}
 	}
 	const columnField = view.verticalGroupByFields?.nodes?.[0]?.name ?? view.groupByFields?.nodes?.[0]?.name ?? undefined;
+	// ロードマップは、表に出していない日付・繰り返しの欄でも並べられる（ビューの欄には入らない）ので、プロジェクトの欄から拾う
+	const dateFields: IParadisTasksProjectField[] = (project.fields?.nodes ?? []).flatMap(field => field?.name && (field.dataType === 'DATE' || field.dataType === 'ITERATION')
+		? [{ name: field.name, dataType: field.dataType }]
+		: []);
 	return {
 		title: project.title ?? '',
 		url: project.url ?? '',
 		view: { number: view.number ?? viewNumber, name: view.name ?? '', layout: layoutOf(view.layout), filter: view.filter ?? undefined },
 		fields,
+		dateFields,
 		columnField,
 		items,
 		total: project.items?.totalCount ?? items.length,

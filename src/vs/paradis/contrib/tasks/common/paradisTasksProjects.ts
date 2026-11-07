@@ -105,6 +105,8 @@ export interface IParadisTasksProjectItemsResult {
 	readonly view: IParadisTasksProjectView;
 	/** ビューに出ている欄（並び順のまま）。 */
 	readonly fields: readonly IParadisTasksProjectField[];
+	/** プロジェクトの日付・繰り返しの欄（ビューに出していないものも含む。ロードマップに使う）。 */
+	readonly dateFields?: readonly IParadisTasksProjectField[];
 	/** ボードの列にする欄の名前（ビューの設定。無ければ Status）。 */
 	readonly columnField?: string;
 	readonly items: readonly IParadisTasksProjectItem[];
