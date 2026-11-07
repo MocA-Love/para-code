@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { memo } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { FileTreePanel } from '../features/code/fileTreePanel.js';
 import type { PanelDock } from '../features/code/panelDock.js';
@@ -12,8 +13,9 @@ import type { DockPanel } from './shortcuts.js';
 /**
  * セッションの右のドック（Orca の SessionDockColumn）。ソース管理・ファイル・メモを、ルートで開くときと
  * 同じ部品で出す。幅と出し入れはセッションの画面が決める（`canDockPanel` / `dockWidthFor`）。
+ * memo にしてあるので、`target` と `dock` は同じものを渡し続ける（幅のドラッグ中に中身を描き直さない）。
  */
-export function SessionDock({ panel, target, dock }: { panel: DockPanel; target: CodeSpaceTarget; dock: PanelDock }) {
+export const SessionDock = memo(function SessionDock({ panel, target, dock }: { panel: DockPanel; target: CodeSpaceTarget; dock: PanelDock }) {
 	return (
 		<View style={styles.root}>
 			{panel === 'scm' ? <SourceControlPanel target={target} dock={dock} />
@@ -21,7 +23,7 @@ export function SessionDock({ panel, target, dock }: { panel: DockPanel; target:
 				: <SpaceNotePanel target={target} dock={dock} />}
 		</View>
 	);
-}
+});
 
 function DockedFiles({ target, dock }: { target: CodeSpaceTarget; dock: PanelDock }) {
 	const codeSpace = useCodeSpace(target);
