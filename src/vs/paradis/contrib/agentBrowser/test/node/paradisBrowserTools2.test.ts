@@ -83,10 +83,37 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 		now = 40_000;
 		const longLived = activity.snapshot(30_000);
 		activity.forgetConnection(first);
-		assert.deepStrictEqual([afterFinish, longLived, activity.snapshot(30_000)], [
+		// r1 はもう 1 本の接続でも見ているので、先に始まりを見た接続が閉じても残る
+		const afterFirstClosed = activity.snapshot(30_000);
+		activity.forgetConnection(second);
+		assert.deepStrictEqual([afterFinish, longLived, afterFirstClosed, activity.snapshot(30_000)], [
 			{ inflight: 1, quietMs: 0, pendingUrls: ['https://example.com/a'], longLived: 0 },
 			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 1 },
+			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 1 },
 			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 0 },
+		]);
+	});
+
+	test('data of a long-lived request that is no longer counted does not reset the quiet time', () => {
+		let now = 0;
+		const activity = new ParadisNetworkActivity(() => now);
+		const connection = {};
+		activity.onEvent(connection, 'page', 'Network.requestWillBeSent', { requestId: 'sse', request: { url: 'https://example.com/events' } });
+		now = 40_000;
+		activity.onEvent(connection, 'page', 'Network.dataReceived', { requestId: 'sse' });
+		now = 41_000;
+		activity.onEvent(connection, 'page', 'Network.requestWillBeSent', { requestId: 'r', request: { url: 'https://example.com/r' } });
+		now = 41_500;
+		activity.onEvent(connection, 'page', 'Network.dataReceived', { requestId: 'r' });
+		now = 42_000;
+		const counted = activity.snapshot(30_000);
+		activity.onEvent(connection, 'page', 'Network.loadingFinished', { requestId: 'r' });
+		now = 44_000;
+		activity.onEvent(connection, 'page', 'Network.dataReceived', { requestId: 'sse' });
+		now = 45_000;
+		assert.deepStrictEqual([counted, activity.snapshot(30_000)], [
+			{ inflight: 1, quietMs: 500, pendingUrls: ['https://example.com/r'], longLived: 1 },
+			{ inflight: 0, quietMs: 3_000, pendingUrls: [], longLived: 1 },
 		]);
 	});
 

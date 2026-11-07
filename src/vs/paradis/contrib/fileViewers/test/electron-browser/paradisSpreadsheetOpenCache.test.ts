@@ -6,13 +6,15 @@
 
 import { deepStrictEqual } from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { CancellationError } from '../../../../../base/common/errors.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { FileOperationError, FileOperationResult, IFileContent, IFileService, IReadFileOptions } from '../../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { ParadisOfficeOpenCache } from '../../common/paradisOfficeOpenCache.js';
 import type { IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
-import { openSpreadsheetResource, type IParadisSpreadsheetOpenCacheValue } from '../../electron-browser/paradisSpreadsheetClient.js';
+import { loadParadisSpreadsheetDiffSide, openSpreadsheetResource, type IParadisSpreadsheetOpenCacheValue } from '../../electron-browser/paradisSpreadsheetClient.js';
 
 suite('ParadisSpreadsheetOpenCache', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -56,5 +58,34 @@ suite('ParadisSpreadsheetOpenCache', () => {
 			events: ['read v1', 'parseWorkbook v1', 'not modified v1', 'read v22', 'parseWorkbook v22', 'not modified v22'],
 			sizes: [5, 5, 5, 5],
 		});
+	});
+
+	test('passes the cancellation of a diff side to the parse request', async () => {
+		const fileService = {
+			async readFile(resource: URI): Promise<IFileContent> {
+				const value = VSBuffer.wrap(Uint8Array.of(0x50, 0x4B, 0x03, 0x04));
+				return { resource, name: 'book.xlsx', value, size: value.byteLength, etag: 'v1', mtime: 1, ctime: 1, readonly: false, locked: false, executable: false };
+			}
+		} as unknown as IFileService;
+		const tokens: (CancellationToken | undefined)[] = [];
+		const sharedProcessService = {
+			getChannel: () => ({
+				call: (_command: string, _args: unknown, token?: CancellationToken): Promise<IParadisWorkbookData> => {
+					tokens.push(token);
+					return new Promise((_resolve, reject) => {
+						const listener = token?.onCancellationRequested(() => {
+							listener?.dispose();
+							reject(new CancellationError());
+						});
+					});
+				},
+			}),
+		} as unknown as ISharedProcessService;
+		const source = new CancellationTokenSource();
+		const side = loadParadisSpreadsheetDiffSide(fileService, sharedProcessService, URI.file('/w/book.xlsx'), undefined, undefined, source.token);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		source.dispose(true);
+		const result = await side;
+		deepStrictEqual({ cancelled: tokens.map(token => token?.isCancellationRequested), failed: result.error instanceof CancellationError }, { cancelled: [true], failed: true });
 	});
 });

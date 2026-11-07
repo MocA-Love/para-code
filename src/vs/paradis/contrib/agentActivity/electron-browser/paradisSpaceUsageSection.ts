@@ -124,7 +124,8 @@ export class ParadisSpaceUsageSection extends Disposable implements IParadisUsag
 			const spaces = this.collectSpaces();
 			const [usage, dashboard] = await Promise.all([
 				this.client.spaceUsage({ since: range.since, until: range.until, spaces, bypassCache }),
-				this.ccusageClient.fetchDashboard(bypassCache).then(value => value, () => undefined),
+				// 日ごとのコストだけを使う（ほかのレポートは取らない）
+				this.ccusageClient.fetchDashboard(bypassCache, ['daily']).then(value => value, () => undefined),
 			]);
 			if (sequence !== this.sequence || this._store.isDisposed) {
 				return;

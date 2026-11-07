@@ -67,6 +67,8 @@ export interface IParadisOfficeSemanticWorkerQueueOptions<TRun, TResult> {
 	readonly timers?: IParadisOfficeSemanticWorkerTimers;
 	/** 実行の締め切りで worker を止めたときに呼ぶ（返ってこない worker を、大きいだけのブックと分けて報告するため）。 */
 	readonly onRunDeadline?: () => void;
+	/** 待ち行列で待ちすぎた依頼の結果（無ければ `failure('busy')`）。すぐに断った `busy` と分けたいときに渡す。 */
+	readonly queueExpired?: () => TResult;
 }
 
 /** 依頼ごとの指定。 */
@@ -299,7 +301,7 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 			return;
 		}
 		this.dequeue(index);
-		this.settle(request, this.options.failure('busy'));
+		this.settle(request, this.options.queueExpired?.() ?? this.options.failure('busy'));
 		this.scheduleIdle();
 	}
 
