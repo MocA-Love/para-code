@@ -38,14 +38,29 @@ suite('ParadisNotifyHookLedger', () => {
 		]);
 	});
 
-	test('MCP の入力の依頼（Elicitation）は答える ID の無い要対応として覚え、決着で忘れる', () => {
+	test('MCP の入力の依頼（Elicitation）は承認とは別に、答える ID の無い要対応として覚え、最後の決着で忘れる', () => {
 		const ledger = store.add(new ParadisNotifyHookLedger(false));
+		ledger.record(hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' }, toolUseId: 'toolu_9', at: 900 }));
 		ledger.record(hook('Elicitation', { sessionId: 'sess-1', payload: { mcp_server_name: 'github', message: 'Sign in to continue', mode: 'url' } }));
-		const approval = ledger.approval('tok', 2000);
-		const resolved = paradisResolveNotifyContent({ kind: 'agent-question', ...(approval !== undefined ? { hookApproval: approval } : {}), now: 2000 });
+		ledger.record(hook('Elicitation', { sessionId: 'sess-1', payload: { mcp_server_name: 'github', message: 'Sign in to continue', mode: 'url' } }));
+		const resolve = () => {
+			const approval = ledger.approval('tok', 2000);
+			const elicitation = ledger.elicitation('tok', 2000);
+			return paradisResolveNotifyContent({ kind: 'agent-question', ...(approval !== undefined ? { hookApproval: approval } : {}), ...(elicitation !== undefined ? { hookElicitation: elicitation } : {}), now: 2000 })?.content;
+		};
+		const waiting = resolve();
+		// ツールの承認の答える ID は上書きしない
+		const approvalRecord = ledger.approval('tok', 2000);
+		const elicitationRecord = ledger.elicitation('tok', 2000);
+		const withPendingApproval = paradisResolveNotifyContent({ kind: 'agent-question', ...(approvalRecord !== undefined ? { hookApproval: approvalRecord } : {}), ...(elicitationRecord !== undefined ? { hookElicitation: elicitationRecord } : {}), pane: { interaction: { kind: 'approval', id: 'toolu_9' } }, now: 2000 });
 		ledger.record(hook('ElicitationResult', { payload: { mcp_server_name: 'github', action: 'accept' } }));
-		assert.deepStrictEqual({ resolved, after: ledger.approval('tok', 2000) }, {
-			resolved: { kind: 'agent-question', category: 'approval', content: 'MCP「github」が入力を求めています: Sign in to continue', origin: { sessionId: 'sess-1' } },
+		const oneLeft = ledger.elicitation('tok', 2000)?.pending;
+		ledger.record(hook('ElicitationResult', { payload: { mcp_server_name: 'github', action: 'accept' } }));
+		assert.deepStrictEqual({ waiting, withPendingApproval: withPendingApproval?.interactionId, approval: ledger.approval('tok', 2000)?.toolUseId, oneLeft, after: ledger.elicitation('tok', 2000) }, {
+			waiting: 'MCP「github」が入力を求めています: Sign in to continue',
+			withPendingApproval: 'toolu_9',
+			approval: 'toolu_9',
+			oneLeft: 1,
 			after: undefined,
 		});
 	});
