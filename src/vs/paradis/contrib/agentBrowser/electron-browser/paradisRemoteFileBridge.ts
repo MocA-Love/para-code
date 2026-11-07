@@ -40,6 +40,8 @@ import {
 	paradisPathHasVersionControlSegment,
 } from '../common/paradisRemoteFileBridge.js';
 
+/** 受け渡し用フォルダの古い写しを掃除する最短の間隔。 */
+const PARADIS_REMOTE_FILE_SWEEP_INTERVAL_MS = 5 * 60_000;
 /** 受け渡し用フォルダの古い写しを消すときに、中のフォルダをたどる深さの上限。 */
 const MAX_SWEEP_DEPTH = 8;
 
@@ -126,7 +128,7 @@ export class ParadisRemoteFileBridge {
 		if (userFolder === undefined) {
 			return { ok: false, reason: 'noTemporaryFolder' };
 		}
-		await this.sweepOldCopies(userFolder);
+		this.sweepOldCopiesSoon(userFolder);
 		const target = await this.resolveWriteTarget(token, remoteAuthority, joinPath(userFolder, `${generateUuid().slice(0, 8)}-${fileName}`));
 		return target.ok ? this.writeAndVerify(target, data) : target;
 	}
@@ -346,8 +348,11 @@ export class ParadisRemoteFileBridge {
 				await this.fileService.createFolder(candidate).catch(() => undefined);
 			}
 			// ホームの下に在ることを、ホームの realpath と合わせて確かめる
-			const realHome = await this.fileService.realpath(remote.userHome).catch(() => undefined);
-			const realUserFolder = await this.fileService.realpath(candidate).catch(() => undefined);
+			// 互いに関わらない realpath は並べて待つ（接続先では 1 件ごとに往復する）
+			const [realHome, realUserFolder] = await Promise.all([
+				this.fileService.realpath(remote.userHome).catch(() => undefined),
+				this.fileService.realpath(candidate).catch(() => undefined),
+			]);
 			literal.push(candidate);
 			if (realHome !== undefined && realUserFolder !== undefined && isEqualOrParent(realUserFolder, realHome)) {
 				real.push(realUserFolder);
@@ -359,12 +364,9 @@ export class ParadisRemoteFileBridge {
 			literal.push(remote.tmpDir);
 			temporaryFolder = remote.tmpDir;
 		}
-		for (const folder of literal) {
-			if (folder === candidate) {
-				// 受け渡し用フォルダの realpath は上で（ホームの下にあるときだけ）載せた
-				continue;
-			}
-			const resolved = await this.fileService.realpath(folder).catch(() => undefined);
+		// 受け渡し用フォルダの realpath は上で（ホームの下にあるときだけ）載せた。ほかは並べて解く
+		const resolvedFolders = await Promise.all(literal.filter(folder => folder !== candidate).map(folder => this.fileService.realpath(folder).catch(() => undefined)));
+		for (const resolved of resolvedFolders) {
 			// 解けないフォルダ（まだ無い等）は、比べる相手にしない（外へのリンクを通さない側へ倒す）
 			if (resolved !== undefined) {
 				real.push(resolved);
@@ -373,9 +375,29 @@ export class ParadisRemoteFileBridge {
 		return { ok: true, value: { literal, real, userFolder, temporaryFolder } };
 	}
 
-	/** 受け渡し用フォルダの古い写しを消す（失敗は無視。次に写すときにまた試す）。 */
-	private async sweepOldCopies(userFolder: URI): Promise<void> {
-		await this.sweepFolder(userFolder, this.now() - PARADIS_REMOTE_FILE_COPY_TTL_MS, 0);
+	/** 受け渡し用フォルダごとの、最後に掃除を始めた時刻。 */
+	private readonly lastSweep = new Map<string, number>();
+	/** 裏で走っている掃除。 */
+	private sweeping: Promise<unknown> = Promise.resolve();
+
+	/** 裏で始めた掃除が済むのを待つ（テスト用）。 */
+	whenSwept(): Promise<void> {
+		return this.sweeping.then(() => undefined);
+	}
+
+	/**
+	 * 受け渡し用フォルダの古い写しを裏で消す（失敗は無視。次の機会にまた試す）。写すたびに待たない（接続先では
+	 * フォルダごとに往復する）。同じフォルダは {@link PARADIS_REMOTE_FILE_SWEEP_INTERVAL_MS} に 1 回まで。
+	 */
+	private sweepOldCopiesSoon(userFolder: URI): void {
+		const key = userFolder.toString();
+		const now = this.now();
+		const last = this.lastSweep.get(key);
+		if (last !== undefined && now - last < PARADIS_REMOTE_FILE_SWEEP_INTERVAL_MS) {
+			return;
+		}
+		this.lastSweep.set(key, now);
+		this.sweeping = this.sweepFolder(userFolder, now - PARADIS_REMOTE_FILE_COPY_TTL_MS, 0).catch(() => undefined);
 	}
 
 	/**
