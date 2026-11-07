@@ -219,4 +219,47 @@ suite('Paradis browser observe in the service', () => {
 		assert.deepStrictEqual({ isError: result.isError, retryable: result.content?.[0].text.startsWith('PARA_BROWSER_RETRYABLE') }, { isError: true, retryable: true });
 	});
 
+
+	test('every way a tool reaches a tab tells main the agent is using it: observed, plain, run_steps and direct CDP', async () => {
+		const exactView = { windowId: 1, viewId: 'view-1', targetId: 'target-1', viewLease: 'lease-1' };
+		const notes: string[] = [];
+		const withActivity = () => service([], {
+			_bindingForKey: () => ({ pageId: 'page-1', exactView }),
+			_agentActivityNotedAt: new Map<string, number>(),
+			mainProcessService: { getChannel: () => ({ call: async (method: string, args: unknown[]) => { notes.push(`${method} ${(args[0] as { viewId: string }).viewId}`); return true; } }) },
+		}) as IObserveServiceInternals & { _noteGatewayAgentActivity(key: string): void };
+		const counts: Record<string, number> = {};
+		const count = async (path: string, run: (svc: ReturnType<typeof withActivity>) => Promise<unknown> | void) => {
+			const before = notes.length;
+			await run(withActivity());
+			await Promise.resolve();
+			counts[path] = notes.length - before;
+		};
+		await count('observed', svc => svc._callToolObserved({ token: TOKEN }, 'click_by', { name: 'click_by', arguments: { role: 'button' } }, { settle: true, state: false }));
+		await count('plain', svc => svc._runInLane(TAB_KEY, undefined, async () => 'done'));
+		await count('run_steps', svc => svc._callToolObserved({ token: TOKEN }, 'run_steps', { name: 'run_steps', arguments: { steps: [], tab_id: 'tab-1' } }, { settle: true, state: false }));
+		await count('cdp', svc => svc._noteGatewayAgentActivity(TAB_KEY));
+		assert.deepStrictEqual({ reached: Object.fromEntries(Object.entries(counts).map(([path, n]) => [path, n > 0])), method: notes[0] }, {
+			reached: { observed: true, plain: true, run_steps: true, cdp: true },
+			method: 'noteExactViewAgentActivity view-1',
+		});
+	});
+
+	test('a browser-level CDP command addressed to another usable tab marks that tab as used, not the pane\'s current tab', async () => {
+		const shared = { windowId: 1, viewId: 'view-shared', targetId: 'target-shared', viewLease: 'lease-1' };
+		const opened = { windowId: 1, viewId: 'view-opened', targetId: 'target-opened', viewLease: 'lease-2' };
+		const notes: string[] = [];
+		const svc = service([], {
+			_bindings: new Map([[TOKEN, { pageId: 'page-1', exactView: shared }]]),
+			_agentTabGrants: new Map([[TOKEN, new Map([['tab-9', { pageId: 'tab-9', exactView: opened }]])]]),
+			_bindingForKey: () => ({ pageId: 'page-1', exactView: shared }),
+			_agentActivityNotedAt: new Map<string, number>(),
+			mainProcessService: { getChannel: () => ({ call: async (_method: string, args: unknown[]) => { notes.push((args[0] as { viewId: string }).viewId); return true; } }) },
+		}) as unknown as { _noteGatewayAgentActivity(key: string, targetId?: string): void };
+		svc._noteGatewayAgentActivity(TOKEN, 'target-opened');
+		svc._noteGatewayAgentActivity(TOKEN, 'target-of-another-pane');
+		svc._noteGatewayAgentActivity(TOKEN);
+		await Promise.resolve();
+		assert.deepStrictEqual(notes, ['view-opened', 'view-shared']);
+	});
 });

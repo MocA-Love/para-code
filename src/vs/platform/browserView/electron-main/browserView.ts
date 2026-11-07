@@ -35,6 +35,7 @@ import { ParaBrowserViewScreenshotCapture } from './paraBrowserViewScreenshotCap
 import { paraInstallBrowserViewLoadWatchdog } from './paraBrowserViewLoadWatchdog.js';
 // PARA-PATCH: import the fork's capture nudge for shown views in undrawn windows (Para Browser MCP frame keepalive)
 import { ParaBrowserViewCaptureNudge } from './paraBrowserViewFrameNudge.js';
+import { paraNoteBrowserViewCapture } from './paraBrowserViewCaptureWatch.js'; // PARA-PATCH: capture notice for the fork's tab freezer (paraBrowserViewCaptureWatch.ts)
 // PARA-PATCH: import the fork's focus-request marker, so focus diagnostics can tell a Para Code focus from one the page took (Para Code browser focus diagnostics)
 import { paraNoteBrowserViewFocusRequest } from './paraBrowserViewFocusRequest.js';
 // PARA-PATCH: import the fork's genuine Chrome identity, which gives every tab the UA and Client Hints of Google Chrome (Para Code)
@@ -942,6 +943,7 @@ export class BrowserView extends Disposable {
 	 */
 	// PARA-PATCH: route the capture through the serialized screenshot policy (coordinator + timing/trace + failure classification) instead of the inline capturePage path (Para Browser MCP screenshot hardening)
 	async captureScreenshot(options?: IBrowserViewCaptureScreenshotOptions): Promise<VSBuffer> {
+		paraNoteBrowserViewCapture(this); // PARA-PATCH: tell the fork's tab freezer a capture is starting, so it wakes a frozen tab and leaves watched tabs alone (paraBrowserViewCaptureWatch.ts)
 		const route = browserViewScreenshotRoute(options);
 		const startedAt = Date.now();
 		this.logService.trace(`[BrowserView] screenshot start route=${route}`);
