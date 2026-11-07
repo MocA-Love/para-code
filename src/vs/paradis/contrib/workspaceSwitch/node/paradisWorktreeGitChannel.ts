@@ -36,6 +36,8 @@ import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, Para
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine, paradisRedactCloneLogText } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
+import { IParadisCopyWorktreeIncludesRequest, IParadisWorktreeIncludeResult } from '../common/paradisWorktreeInclude.js';
+import { paradisMaterializeWorktreeIncludes, paradisReadWorktreeIncludeDeclarations, paradisUnlinkWorktreeSharedDirectories } from './paradisWorktreeIncludeCopy.js';
 import { PARADIS_GIT_NETWORK_SUBCOMMANDS, paradisRestrictedGitArgsError } from '../common/paradisGitRestrictedArgs.js';
 import { PARADIS_PR_DETAIL_FIELDS, PARADIS_PR_FAILED_LOG_JOBS, ParadisPullRequestLookup, paradisParseGhPullRequestDetail, paradisPickMergeMethod, paradisTailFailedJobLog } from '../../mobileRelay/common/paradisMobilePullRequest.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
@@ -982,6 +984,65 @@ export class ParadisWorktreeGitService {
 	}
 
 	/**
+	 * リポジトリの宣言（.paracode.json の `worktree`・`.worktreeinclude`）にあるものを、作ったばかりのワークツリーへ持ち込む
+	 * （G-06）。宣言は依頼で受け取らず、ここでリポジトリから読む。持ち込み先は、そのリポジトリの `git worktree list` に
+	 * 載っている、リポジトリ自身ではないワークツリーだけ（任意のフォルダへ無視しているファイルを写させないため）。
+	 * WSL の中のリポジトリへのリンクは作らない（Windows 側から 9P 越しのリンクは作れないことが多い）。
+	 */
+	async copyWorktreeIncludes(request: IParadisCopyWorktreeIncludesRequest<string>): Promise<IParadisWorktreeIncludeResult> {
+		for (const value of [request?.repoPath, request?.worktreePath]) {
+			if (typeof value !== 'string' || value.length === 0 || value.startsWith('-')) {
+				throw new Error(`Invalid argument: ${String(value)}`);
+			}
+		}
+		const declarations = await paradisReadWorktreeIncludeDeclarations(request.repoPath);
+		if (declarations.include.length === 0 && declarations.sharedDirectories.length === 0) {
+			return { copied: [], linked: [], skipped: [] };
+		}
+		if (!await this.isLinkedWorktreeOf(request.repoPath, request.worktreePath)) {
+			throw new Error(`Not a worktree of the repository: ${request.worktreePath}`);
+		}
+		const viaWsl = this.isWindowsHost && paradisParseWslUncPath(request.repoPath) !== undefined;
+		return paradisMaterializeWorktreeIncludes(request.repoPath, request.worktreePath, declarations, {
+			checkIgnored: (repoPath, paths) => this.checkIgnored(repoPath, paths),
+			canLink: !viaWsl,
+			directoryLinkType: this.isWindowsHost ? 'junction' : 'dir',
+		});
+	}
+
+	/**
+	 * `worktreePath` が `repoPath` と同じリポジトリの、リポジトリ自身ではないワークツリーのルートか。git に聞くので、
+	 * WSL の中のリポジトリでもパスの名前空間の違いに左右されない。
+	 */
+	private async isLinkedWorktreeOf(repoPath: string, worktreePath: string): Promise<boolean> {
+		const read = async (path: string, args: string[]) => (await this.exec(['-C', paradisWslPathArg(path), 'rev-parse', ...args])).replace(/\r?\n$/, '');
+		try {
+			const [worktreeCommon, repoCommon, worktreeGitDir, prefix] = await Promise.all([
+				read(worktreePath, ['--path-format=absolute', '--git-common-dir']),
+				read(repoPath, ['--path-format=absolute', '--git-common-dir']),
+				read(worktreePath, ['--path-format=absolute', '--git-dir']),
+				read(worktreePath, ['--show-prefix']),
+			]);
+			// 同じ共通の .git を使い、自分の .git が共通のものと別（＝追加のワークツリー）で、指したフォルダがそのルート
+			return worktreeCommon.length > 0 && worktreeCommon === repoCommon && worktreeGitDir !== worktreeCommon && prefix === '';
+		} catch {
+			return false;
+		}
+	}
+
+	/** `git check-ignore` で、無視されているパスだけを返す。どれも無視されていなければ git は 1 で終わる。読めなければ空。 */
+	private async checkIgnored(repoPath: string, paths: readonly string[]): Promise<ReadonlySet<string>> {
+		try {
+			// `-z` は --stdin のときしか使えない。引用符や制御文字を含む名前は git が引用して出すので一致せず、無視されていない扱いになる（安全側）
+			const stdout = await this.exec(['-C', paradisWslPathArg(repoPath), '-c', 'core.quotepath=false', 'check-ignore', '--', ...paths], undefined, { quiet: true });
+			const listed = new Set(stdout.split(/\r?\n/));
+			return new Set(paths.filter(path => listed.has(path)));
+		} catch {
+			return new Set();
+		}
+	}
+
+	/**
 	 * git worktree remove [--force] <worktreePath> を実行する。
 	 * 未コミット変更や未追跡ファイルがある場合、force なしだと git が失敗する（呼び出し側で
 	 * force 付き再試行を確認する）。stale なメタデータで失敗しないよう先に prune する。
@@ -1034,6 +1095,8 @@ export class ParadisWorktreeGitService {
 				// ロックされていなかった場合も失敗するので、ここでは中断しない（remove 側で判断する）
 			}
 		}
+		// 宣言でリンクしたフォルダは、git が未追跡と見て削除を断るので先に外す（G-06。リンク先の中身には触らない）
+		await paradisUnlinkWorktreeSharedDirectories(request.worktreePath, (await paradisReadWorktreeIncludeDeclarations(request.repoPath)).sharedDirectories);
 		const args: ParadisCommandArgument[] = ['-C', paradisWslPathArg(request.repoPath), 'worktree', 'remove'];
 		if (request.force) {
 			args.push('--force');
@@ -1535,6 +1598,7 @@ export class ParadisWorktreeGitChannel<TContext extends ParadisCloneOwner = stri
 			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
 			case 'getPrStatus': return this.service.getPrStatus(String(args[0]), paradisCoerceGithubStatusMaxAge(args[1])) as Promise<T>;
 			case 'getIssueStatuses': return this.service.getIssueStatuses(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : [], paradisCoerceGithubStatusMaxAge(args[2])) as Promise<T>;
+			case 'copyWorktreeIncludes': return this.service.copyWorktreeIncludes(args[0] as IParadisCopyWorktreeIncludesRequest<string>) as Promise<T>;
 			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest<string>) as Promise<T>;
 			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery<string>) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest<string>) as Promise<T>;
