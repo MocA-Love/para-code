@@ -67,7 +67,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
 			// allow-any-unicode-next-line
-			description: localize('paradis.workspaceSwitch.trustClaudeFolder', "Para Code が作ったスペース（worktree）を、Claude Code の設定ファイル（~/.claude.json）に信頼済みとして書きます。タスクボードなどで起動した Claude Code が、フォルダを信頼するかの確認で止まらなくなります。スペースを削除すると取り消します。")
+			description: localize('paradis.workspaceSwitch.trustClaudeFolder', "Para Code が作ったスペース（worktree）を、Claude Code の設定ファイル（~/.claude.json）と Codex の設定ファイル（config.toml）に信頼済みとして書きます。タスクボードなどで起動したエージェントが、フォルダを信頼するかの確認で止まらなくなります。スペースを削除すると取り消します。")
 		},
 		'paradis.workspaceSwitch.defaultAgent': {
 			type: 'string',
