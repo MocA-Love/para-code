@@ -80,7 +80,7 @@ function isInside(root: string, path: string): boolean {
 /** パスの一番近い、在るところまで遡って実体を解決する（無いところはまだ作っていないフォルダ）。 */
 async function realpathOfNearestExisting(path: string): Promise<string> {
 	let current = path;
-	for (;;) {
+	for (; ;) {
 		try {
 			return await fs.realpath(current);
 		} catch {
