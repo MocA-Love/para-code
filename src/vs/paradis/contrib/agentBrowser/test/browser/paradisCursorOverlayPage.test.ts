@@ -27,7 +27,16 @@ interface IPageState {
 	readonly sticky: string;
 	readonly wt: boolean;
 	readonly watch: boolean;
+	readonly bars: readonly IPageBar[] | null;
+	readonly ll: boolean;
 	wat: number;
+}
+
+/** A pseudo scrollbar the page script draws (q.html Q574). */
+interface IPageBar {
+	readonly el: HTMLElement;
+	readonly root: HTMLElement;
+	readonly v: number;
 }
 
 /** The body is kept on the window under this key once it has been sent. */
@@ -50,9 +59,9 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** A fixed scroll box at 100,50 (200 x 100) with tall content. */
-function scrollBox(): HTMLElement {
+function scrollBox(overflow = 'auto'): HTMLElement {
 	const box = mainWindow.document.createElement('div');
-	box.style.cssText = 'position:fixed;left:100px;top:50px;width:200px;height:100px;overflow:auto;margin:0;padding:0;border:0';
+	box.style.cssText = `position:fixed;left:100px;top:50px;width:200px;height:100px;overflow:${overflow};margin:0;padding:0;border:0`;
 	const content = mainWindow.document.createElement('div');
 	content.style.cssText = 'width:200px;height:3000px';
 	box.appendChild(content);
@@ -232,22 +241,97 @@ suite('Paradis Cursor Overlay page script', () => {
 		}
 	});
 
-	test('a script scroll shows one arrow at the edge it moved toward with the total, once it stops, even after the script returned', async () => {
+	test('a script scroll draws a pseudo scrollbar on the box while it moves, and once it stops brings the cursor beside the thumb with the total, even after the script returned', async () => {
 		const box = scrollBox();
 		try {
 			run({ kind: 'status', label: 'Claude', status: 'script', text: 'Running', park: true, scrollText: 'Scrolled {0}' }, QUICK);
 			const parked = [pageState()!.x, pageState()!.y];
-			// A smooth scroll arrives as several events: one arrow for the whole run.
+			// A smooth scroll arrives as several events: one bar follows it, the cursor waits for the stop.
 			scrollBoxBy(box, 300);
 			scrollBoxBy(box, 200);
-			const whileMoving = [pageState()!.x, pageState()!.y];
+			const s = pageState()!;
+			const whileMoving = { at: [s.x, s.y], bars: s.bars?.length };
 			run({ kind: 'status', label: 'Claude', status: 'idle', text: '' }, QUICK);
+			await sleep(SETTLED_MS);
+			// Where the real scrollbar is: over its gutter when it takes room, else inside the right edge.
+			const gutter = 200 - box.clientWidth;
+			const barX = Math.round(gutter > 0 ? 100 + box.clientWidth + (gutter - 7) / 2 : 100 + 200 - 7 - 2);
+			const bar = s.bars?.[0];
+			assert.deepStrictEqual(
+				{ whileMoving, bars: s.bars?.length, onBox: bar?.el === box, left: bar?.root.style.left, top: bar?.root.style.top, value: bar?.v, x: s.x, labelLeft: s.ll, t: s.t, arrow: s.mk?.style.opacity },
+				{ whileMoving: { at: parked, bars: 1 }, bars: 1, onBox: true, left: `${barX}px`, top: '52px', value: 500, x: barX - 25, labelLeft: true, t: 'Claude \u00b7 Scrolled 500px', arrow: '0' },
+			);
+		} finally {
+			box.remove();
+		}
+	});
+
+	test('a box the user cannot scroll (overflow: hidden) gets the arrow at its edge instead of a scrollbar', async () => {
+		const box = scrollBox('hidden');
+		try {
+			run({ kind: 'status', label: 'Claude', status: 'script', text: 'Running', park: true, scrollText: 'Scrolled {0}' }, QUICK);
+			scrollBoxBy(box, 300);
 			await sleep(SETTLED_MS);
 			const s = pageState()!;
 			assert.deepStrictEqual(
-				{ whileMoving, at: [s.x, s.y], t: s.t, arrow: s.mk?.textContent },
-				{ whileMoving: parked, at: [200, 132], t: 'Claude \u00b7 Scrolled 500px', arrow: '\u2193' },
+				{ bars: s.bars?.length, at: [s.x, s.y], t: s.t, arrow: s.mk?.textContent },
+				{ bars: 0, at: [200, 132], t: 'Claude \u00b7 Scrolled 300px', arrow: '\u2193' },
 			);
+		} finally {
+			box.remove();
+		}
+	});
+
+	test('a wheel, a key outside a field and scroll_to each show the scrollbar with their own words, and only scrolls that start while their window is open', async () => {
+		const box = scrollBox();
+		const text = () => pageState()!.t;
+		// The next stopped scroll is shown without the gap the cursor keeps between script clicks.
+		const quick: IParadisCursorOverlayTuning = { ...QUICK, scriptClickGapMs: 5 };
+		try {
+			run({ kind: 'move', x: 150, y: 80, label: 'Claude', durationMs: 0, frames: [{ x: 150, y: 80, r: 0, o: 1 }] }, quick);
+			run({ kind: 'wheel', label: 'Claude', dx: 0, dy: 120, text: 'Scroll', scrollText: 'Wheel {0}' }, quick);
+			const marked = pageState()!.mk?.style.opacity;
+			scrollBoxBy(box, 120);
+			await sleep(SETTLED_MS);
+			const wheel = text();
+			run({ kind: 'focus', label: 'Claude', texts: { typing: 'Typing', secret: 'Secret', page: 'Key' }, key: 'PageDown', scrollText: 'Key {0}' }, quick);
+			scrollBoxBy(box, 80);
+			await sleep(SETTLED_MS);
+			const key = text();
+			run({ kind: 'status', label: 'Claude', status: 'scroll', text: 'Scroll', park: true, scrollText: 'Find {0}' }, quick);
+			scrollBoxBy(box, 40);
+			await sleep(SETTLED_MS);
+			const find = text();
+			run({ kind: 'status', label: 'Claude', status: 'idle', text: '' }, quick);
+			// Long after the last input, a scroll of the page's own is not shown.
+			await sleep(quick.scrollInputMs + SETTLED_MS);
+			scrollBoxBy(box, 40);
+			const pending = pageScrolls()?.runs.length;
+			assert.deepStrictEqual({ marked, wheel, key, find, pending }, { marked: '0', wheel: 'Claude \u00b7 Wheel 120px', key: 'Claude \u00b7 Key 80px', find: 'Claude \u00b7 Find 40px', pending: 0 });
+		} finally {
+			box.remove();
+		}
+	});
+
+	test('inside the window of an agent wheel, a scroll right after a later input of the user is the user\'s', async () => {
+		const box = scrollBox();
+		// The agent's own wheel arrives within 20 ms of its notice; a later trusted input is the user's.
+		const quick: IParadisCursorOverlayTuning = { ...QUICK, scrollInputSlackMs: 20, scriptClickGapMs: 5 };
+		const scrolls = () => (mainWindow as unknown as Record<string, { user: number }>)[SCROLLS_KEY];
+		try {
+			run({ kind: 'move', x: 150, y: 80, label: 'Claude', durationMs: 0, frames: [{ x: 150, y: 80, r: 0, o: 1 }] }, quick);
+			run({ kind: 'wheel', label: 'Claude', dx: 0, dy: 120, text: 'Scroll', scrollText: 'Wheel {0}' }, quick);
+			// The agent's wheel (trusted, right after the notice): still the agent's.
+			scrolls().user = Date.now();
+			scrollBoxBy(box, 120);
+			await sleep(SETTLED_MS);
+			const agent = { t: pageState()!.t, value: pageState()!.bars?.[0]?.v };
+			// The user wheels later, while the window is still open: the bar and the name tag stay where the agent left them.
+			scrolls().user = Date.now();
+			scrollBoxBy(box, 60);
+			await sleep(SETTLED_MS);
+			const user = { t: pageState()!.t, value: pageState()!.bars?.[0]?.v };
+			assert.deepStrictEqual({ agent, user }, { agent: { t: 'Claude \u00b7 Wheel 120px', value: 120 }, user: { t: 'Claude \u00b7 Wheel 120px', value: 120 } });
 		} finally {
 			box.remove();
 		}

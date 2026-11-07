@@ -6,8 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { MenuSettings, MenuStyleConfiguration } from '../../../../platform/window/common/window.js';
 
 // Para Code が全ユーザーへ配布するデフォルト設定。
 // 拡張機能の `contributes.configurationDefaults` と同じ仕組み（設定の "default" レイヤーへの注入）なので、
@@ -40,6 +42,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// （paradisDefaultExtensions.contribution.ts）が、colorTheme「Houston」と同様、拡張のスキーマ登録後に
 		// テーマサービスが settings 値へ合流させるため、後追いインストールでも問題なく反映される。
 		'workbench.productIconTheme': 'bongocat',
+		// macOS の stable は upstream の既定が native で、右クリック・⌄・プルダウンの一覧が OS のメニューになり、テーマの色や
+		// Para Code のメニューのアイコン・赤字・色の丸が出ない。アプリの中のメニューをテーマで描く（Q575-2）。
+		// macOS の上のメニューバーは設定に関わらず native のまま（hasNativeMenu）。反映には再起動が要る。
+		// Windows・Linux は upstream の既定（inherit）のまま。custom にするとタイトルバーが native の人のメニューバーまで自前の描画になる
+		...(isMacintosh ? { [MenuSettings.MenuStyle]: MenuStyleConfiguration.CUSTOM } : {}),
 		// ブランドのプライマリカラー統一（#09AFD9）。既定テーマ Houston は独自のミント緑/水色アクセントを持つため、
 		// 主要なアクセント色と、ステータスバーの通常/フォルダ未オープン背景をブランド色へ寄せる。
 		// Dark 2026 / Light 2026（Para Code のもう一つの既定系テーマ）はアクセント自体はテーマ側で調整済みなので
@@ -69,7 +76,32 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'statusBar.noFolderForeground': '#FFFFFF',
 				'statusBar.focusBorder': '#FFFFFFB3',
 				'agentsBadge.background': '#09AFD9',
-				'agentsUnreadBadge.background': '#09AFD9'
+				'agentsUnreadBadge.background': '#09AFD9',
+				// Houston 0.1.2 はメニュー・ホバー・補完の地を Dark+ の古い灰（#252526）のまま持ち、影（widget.shadow）を
+				// 透明に定義しているため、浮いている面に影が付かず、地も Houston 自身の #343841 とずれる。入力欄と通知の枠は
+				// 明るい #bfc1c9 で、休んでいるときも目立つ。浮いている面の地・枠・影と、休んでいる枠の濃さをそろえる（Q575-1）
+				'widget.shadow': '#0000005c',
+				'widget.border': '#ffffff14',
+				'editorWidget.border': '#ffffff14',
+				'input.border': '#ffffff1f',
+				'dropdown.border': '#ffffff1f',
+				'checkbox.border': '#858b98',
+				'notifications.border': '#ffffff14',
+				'menu.background': '#343841',
+				'menu.border': '#ffffff14',
+				'menu.selectionBackground': '#09AFD933',
+				'menu.selectionForeground': '#eef0f9',
+				'menu.separatorBackground': '#ffffff1a',
+				'editorHoverWidget.background': '#343841',
+				'editorHoverWidget.border': '#ffffff14',
+				'editorSuggestWidget.background': '#343841',
+				'editorSuggestWidget.border': '#ffffff14',
+				'editorSuggestWidget.selectedBackground': '#09AFD933',
+				'editorSuggestWidget.highlightForeground': '#18BBE4',
+				// Houston の list.hoverBackground は editorWidget.background と同じ #343841 で、ポップオーバーの中の行に
+				// マウスを乗せても色が変わらない
+				'list.hoverBackground': '#ffffff0f',
+				'list.focusBackground': '#09AFD933'
 			},
 			'[Dark 2026]': {
 				'statusBar.background': '#09AFD9',
