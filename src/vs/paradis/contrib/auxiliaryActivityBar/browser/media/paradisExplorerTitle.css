@@ -1,0 +1,16 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Hide the workspace name ("para (Workspace)") that the Explorer writes into the side bar title
+ * when its single folder view is merged into the container. Upstream marks exactly that state with
+ * `preserve-merged-workspace-name-case` on the part (explorerView.ts `updateWorkspaceTitleCase`), so
+ * the title row and its actions stay and only the label text goes away. Other views keep their titles.
+ */
+.monaco-workbench .part.preserve-merged-workspace-name-case > .title > .title-label h2 {
+	visibility: hidden;
+}

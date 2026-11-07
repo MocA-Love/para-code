@@ -15,10 +15,9 @@ import { URI, UriComponents } from '../../../../base/common/uri.js';
 import { isEqual } from '../../../../base/common/resources.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
-import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -32,7 +31,6 @@ import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeServi
 import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
 import { paradisGithubStatusMaxAge } from '../common/paradisGithubLookupCache.js';
-import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { ParadisScopeRetirementPreparation } from '../common/paradisEditorScope.js';
 import { paradisRemoveWorktreePrepareMessage, ParadisWorktreeRemovalGuard } from '../common/paradisWorktreeRemoval.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
@@ -769,14 +767,3 @@ class ParadisConfigureLifecycleScriptsAction extends Action2 {
 
 registerAction2(ParadisConfigureLifecycleScriptsAction);
 
-// Workspaces ビュータイトルのボタン（「+」ボタンの左に配置）
-MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-	command: {
-		id: PARADIS_CREATE_WORKTREE_COMMAND_ID,
-		title: localize2('paradis.workspaceSwitch.createWorktreeMenu', "新しいワークツリースペース..."),
-		icon: Codicon.sparkle
-	},
-	when: ContextKeyExpr.equals('view', PARADIS_WORKSPACES_VIEW_ID),
-	group: 'navigation',
-	order: 0
-});
