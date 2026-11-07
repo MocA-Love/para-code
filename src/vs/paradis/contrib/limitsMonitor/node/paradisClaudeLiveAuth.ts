@@ -22,6 +22,8 @@
 // 上書きし返される。ロックの中で書けば、Claude Code は取り直した新しい認証情報を見て更新をやめる。
 // `~/.claude.json` の書き込みは `~/.claude.json.lock` で守る。ロックはどれも npm の proper-lockfile と
 // 同じ「ディレクトリを mkdir できた者が持ち主」という方式で、持っている間は mtime を更新し続ける。
+// Para Code が作ったワークツリーの信頼を ~/.claude.json に書く処理（workspaceSwitch/node/paradisClaudeFolderTrust.ts）も、
+// 同じ `~/.claude.json.lock` の形を前提にしている。ロックの形を変えるときは両方を直すこと。
 //
 // `CLAUDE_CONFIG_DIR` で既定以外の場所を使っている構成には対応しない（既定の ~/.claude だけを見る）。
 

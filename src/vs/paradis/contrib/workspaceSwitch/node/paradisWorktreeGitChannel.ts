@@ -15,6 +15,7 @@
 import * as cp from 'child_process';
 import { constants as fsConstants, promises as fs } from 'fs';
 import { homedir } from 'os';
+import { raceTimeout } from '../../../../base/common/async.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { basename, dirname, isAbsolute, join } from '../../../../base/common/path.js';
@@ -28,6 +29,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { localize } from '../../../../nls.js';
+import { paradisGrantClaudeWorktreeTrust, paradisReadClaudeTrustMarker, paradisRevokeClaudeWorktreeTrust } from './paradisClaudeFolderTrust.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisGithubCallResource, paradisGithubCallSiteFromArgs, paradisGithubResourceFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
@@ -133,6 +135,8 @@ const PARADIS_GIT_LONG_COMMAND_TIMEOUT_MS = 120_000;
  * 打ち切ると途中まで消えた状態で止まり、押すたびに 30 秒分しか進まなかった。
  */
 const PARADIS_WORKTREE_REMOVE_TIMEOUT_MS = 10 * 60_000;
+/** Claude Code の信頼の書き込み・取り消しを待つ上限。超えたら待たずに進む（書き込みは裏で続く）。 */
+const PARADIS_CLAUDE_TRUST_TIMEOUT_MS = 5_000;
 
 /** 時間切れの SIGTERM の後、SIGKILL するまでの猶予（git が index.lock を片付ける時間）。 */
 const PARADIS_GIT_KILL_GRACE_MS = 5_000;
@@ -989,6 +993,9 @@ export class ParadisWorktreeGitService {
 		}
 		const checkoutWorkers = await this.checkoutWorkersArgs(request.repoPath);
 		await this.exec(['-C', paradisWslPathArg(request.repoPath), ...checkoutWorkers, 'worktree', 'add', '--no-track', '-b', request.newBranch, paradisWslPathArg(request.worktreePath), request.baseRef]);
+		if (request.trustClaudeFolder === true) {
+			await this.grantClaudeTrust(request.worktreePath);
+		}
 	}
 
 	/**
@@ -1004,6 +1011,24 @@ export class ParadisWorktreeGitService {
 			return [];
 		} catch (error) {
 			return error instanceof ParadisGitExecError && error.exitCode === 1 ? ['-c', 'checkout.workers=0'] : [];
+		}
+	}
+
+	/**
+	 * 作ったワークツリーを Claude Code に信頼済みとして書く（Orca 第三弾 G-04）。作成は止めない: 失敗・時間切れは
+	 * ログに残すだけで、信頼の確認の画面は今までどおり検出される。WSL の中のワークツリーは、そこで動く Claude が
+	 * ディストロ側のホームの設定を読むので書かない。
+	 */
+	private async grantClaudeTrust(worktreePath: string): Promise<void> {
+		if (this.isWindowsHost && paradisParseWslUncPath(worktreePath) !== undefined) {
+			return;
+		}
+		try {
+			const env = await this.cachedShellEnv.getEnv();
+			const outcome = await raceTimeout(paradisGrantClaudeWorktreeTrust(worktreePath, env), PARADIS_CLAUDE_TRUST_TIMEOUT_MS);
+			this.logService.info(`[ParadisWorktreeGit] Claude Code folder trust for a new worktree: ${outcome ?? 'timed out'}`);
+		} catch (error) {
+			this.logService.warn('[ParadisWorktreeGit] could not pre-trust the new worktree for Claude Code', String(error));
 		}
 	}
 
@@ -1118,8 +1143,6 @@ export class ParadisWorktreeGitService {
 			await fs.rm(request.worktreePath, { recursive: true, force: true, maxRetries: 3 });
 			return {};
 		}
-		// 消すブランチは、画面の値ではなく作業ツリーの今の HEAD から決める（中でブランチを切り替えていることがあるため）
-		const branchToDelete = typeof request.deleteBranch === 'string' ? await this.deletableWorktreeBranch(request.repoPath, request.worktreePath, request.deleteBranch) : undefined;
 		// ロック解除は取り消せない副作用で、しかも「消せるかどうか」とは独立している。
 		// remove が別の理由（ファイルを掴んでいるプロセス、権限、ネットワークボリューム等）で
 		// 失敗すると、削除できていないのに他セッションの保護だけが消えた状態になる。
@@ -1139,6 +1162,12 @@ export class ParadisWorktreeGitService {
 				// ロックされていなかった場合も失敗するので、ここでは中断しない（remove 側で判断する）
 			}
 		}
+		// 順番は、信頼の控えを読む → 消すブランチを決める → 共有のリンクを外す → git worktree remove → 失敗したら
+		// リンクを作り直して投げる（信頼は残す）／成功したら信頼を取り消し、ブランチを消して結果を返す。Para Code が書いた Claude Code の信頼の控えは管理フォルダーにあり、削除で
+		// 消えるので最初に読む（G-04）
+		const claudeTrust = await paradisReadClaudeTrustMarker(request.worktreePath);
+		// 消すブランチは、画面の値ではなく作業ツリーの今の HEAD から決める（中でブランチを切り替えていることがあるため）
+		const branchToDelete = typeof request.deleteBranch === 'string' ? await this.deletableWorktreeBranch(request.repoPath, request.worktreePath, request.deleteBranch) : undefined;
 		// 持ち込みで作ったリンクは、git が未追跡と見て削除を断るので先に外す（G-06。リンク先の中身には触らない）。
 		// 外すのは作成のときに記録したものだけで、今の宣言は見ない（宣言を変えた後でも前のリンクを外すため）。
 		// 削除が断られたら作り直す（断られた作業ツリーからリンクだけが消えないように）
@@ -1171,6 +1200,14 @@ export class ParadisWorktreeGitService {
 				throw new Error(localize('paradis.worktree.removeTimedOut', "ワークツリーの削除が {0} 分以内に終わらなかったため打ち切りました。もう一度削除すると、残りを続けて削除します。", PARADIS_WORKTREE_REMOVE_TIMEOUT_MS / 60_000));
 			}
 			throw error;
+		}
+		if (claudeTrust !== undefined) {
+			try {
+				const outcome = await raceTimeout(paradisRevokeClaudeWorktreeTrust(claudeTrust), PARADIS_CLAUDE_TRUST_TIMEOUT_MS);
+				this.logService.info(`[ParadisWorktreeGit] Claude Code folder trust of a removed worktree: ${outcome ?? 'timed out'}`);
+			} catch (error) {
+				this.logService.warn('[ParadisWorktreeGit] could not revoke the Claude Code folder trust of a removed worktree', String(error));
+			}
 		}
 		return branchToDelete === undefined ? {} : this.deleteMergedBranch(request.repoPath, branchToDelete);
 	}
