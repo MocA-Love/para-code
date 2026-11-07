@@ -411,6 +411,12 @@ export interface IParadisAgentLaunchOptions {
 	readonly extraFlags?: string;
 }
 
+/**
+ * エージェントごとのモデル/エフォート/権限の前回の選択（`Record<agentId, IParadisAgentLaunchOptions>` の JSON、
+ * StorageScope.PROFILE）。「新しいスペース」のダイアログとタブの「＋」のランチャーが同じ値を読み書きする。
+ */
+export const PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY = 'paradis.workspaceSwitch.agentLaunchOptions';
+
 /** Claude Code のエフォート語彙（2026-07時点の公式ドキュメント準拠）。 */
 const CLAUDE_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 /** Codex のエフォート語彙（gpt-6.1-sol / gpt-6-astra / gpt-6-sol が選べる全部）。 */
