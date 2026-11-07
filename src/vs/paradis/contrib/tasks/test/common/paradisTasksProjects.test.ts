@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisTasksProjectField, IParadisTasksProjectItem, paradisTasksBoardColumns, paradisTasksBoardField, paradisTasksProjectItemsQuery, paradisTasksRoadmap, paradisTasksRoadmapFields, paradisTasksTableFields } from '../../common/paradisTasksProjects.js';
+import { IParadisTasksProjectField, IParadisTasksProjectItem, paradisTasksBoardColumns, paradisTasksBoardField, paradisTasksProjectItemsQuery, paradisTasksRoadmap, paradisTasksRoadmapFields, paradisTasksRoadmapLabelledTicks, paradisTasksTableFields } from '../../common/paradisTasksProjects.js';
 
 function item(id: string, status?: string): IParadisTasksProjectItem {
 	return { id, kind: 'issue', title: id, assignees: [], labels: [], values: status ? { Status: { text: status } } : {} };
@@ -85,5 +85,23 @@ suite('ParadisTasksProjects', () => {
 			ticks: [['2026-11-01', 0], ['2026-12-01', round(30 / 61)]],
 			today: round(7 / 61),
 		});
+	});
+
+	// 12 か月までは毎月、36 か月までは四半期、それより長いと 1 月だけ。狭い両端だけ外す（40 か月の先頭の 1 月は 2.5% なので外れる）
+	test('thins out roadmap month labels', () => {
+		const ticks = (start: number, count: number, firstWidth = 1 / count) => Array.from({ length: count }, (_, index) => {
+			const month = (start - 1 + index) % 12 + 1;
+			const year = 2026 + Math.floor((start - 1 + index) / 12);
+			return { date: `${year}-${String(month).padStart(2, '0')}-01`, at: index === 0 ? 0 : firstWidth + (index - 1) * (1 - firstWidth) / (count - 1) };
+		});
+		assert.deepStrictEqual([
+			paradisTasksRoadmapLabelledTicks(ticks(2, 10, 0.03)),
+			paradisTasksRoadmapLabelledTicks(ticks(11, 20)),
+			paradisTasksRoadmapLabelledTicks(ticks(1, 40)),
+		], [
+			[1, 2, 3, 4, 5, 6, 7, 8, 9],
+			[2, 5, 8, 11, 14, 17],
+			[12, 24, 36],
+		]);
 	});
 });

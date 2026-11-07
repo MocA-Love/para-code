@@ -22,10 +22,14 @@ import {
 	paradisTasksBoardColumns,
 	paradisTasksBoardField,
 	paradisTasksRoadmap,
+	paradisTasksRoadmapLabelledTicks,
 	paradisTasksTableFields,
 } from '../common/paradisTasksProjects.js';
 
 const $ = dom.$;
+
+/** ロードマップの名前の列の幅（media/paradisTasks.css の .paradis-tasks-roadmap-row と同じ値）。 */
+const ROADMAP_NAME_COLUMN_PX = 240;
 
 export interface IParadisTasksProjectViewHost {
 	/** 項目を開く（GitHub で開く。下書きは URL が無いので何もしない）。 */
@@ -241,21 +245,16 @@ export function paradisTasksRenderProjectRoadmap(container: HTMLElement, result:
 	const head = dom.append(grid, $('.paradis-tasks-roadmap-row.head'));
 	dom.append(head, $('.paradis-tasks-roadmap-name'));
 	const scale = dom.append(head, $('.paradis-tasks-roadmap-track'));
-	roadmap.ticks.forEach((tick, index) => {
-		// 端の短い月（幅の 6% 未満）は名前が隣と重なるので出さない（線は出す）
-		const next = roadmap.ticks[index + 1]?.at ?? 1;
-		if (next - tick.at < 0.06) {
-			return;
-		}
+	for (const index of paradisTasksRoadmapLabelledTicks(roadmap.ticks)) {
+		const tick = roadmap.ticks[index];
 		const label = dom.append(scale, $('span.paradis-tasks-roadmap-tick'));
 		label.style.left = percent(tick.at);
-		label.style.maxWidth = percent(next - tick.at);
+		label.style.maxWidth = percent((roadmap.ticks[index + 1]?.at ?? 1) - tick.at);
 		// 年は見出しの文に出すので、目盛りは 1 月だけ年を付ける
-		const withYear = tick.date.slice(5, 7) === '01';
-		label.textContent = withYear
+		label.textContent = tick.date.slice(5, 7) === '01'
 			? yearMonth(tick.date)
 			: localize('paradis.tasks.roadmap.month', "{0}月", Number(tick.date.slice(5, 7)));
-	});
+	}
 	for (const row of roadmap.rows) {
 		const line = dom.append(grid, $('.paradis-tasks-roadmap-row.paradis-tasks-item'));
 		const name = dom.append(line, $('.paradis-tasks-roadmap-name'));
@@ -264,9 +263,6 @@ export function paradisTasksRenderProjectRoadmap(container: HTMLElement, result:
 		const track = dom.append(line, $('.paradis-tasks-roadmap-track'));
 		for (const tick of roadmap.ticks) {
 			dom.append(track, $('span.paradis-tasks-roadmap-grid')).style.left = percent(tick.at);
-		}
-		if (roadmap.today !== undefined) {
-			dom.append(track, $('span.paradis-tasks-roadmap-today')).style.left = percent(roadmap.today);
 		}
 		const bar = dom.append(track, $('span.paradis-tasks-roadmap-bar'));
 		bar.style.left = percent(row.from);
@@ -277,6 +273,10 @@ export function paradisTasksRenderProjectRoadmap(container: HTMLElement, result:
 		bar.title = status ? `${period} · ${status.text}` : period;
 		line.title = `${row.item.title}\n${bar.title}`;
 		bindOpen(store, line, row.item, host);
+	}
+	// 今日の線は表全体に 1 本だけ（名前の列は 240px の固定幅。CSS の grid-template-columns と揃える）
+	if (roadmap.today !== undefined && roadmap.today >= 0 && roadmap.today <= 1) {
+		dom.append(grid, $('span.paradis-tasks-roadmap-today')).style.left = `calc(${ROADMAP_NAME_COLUMN_PX}px + (100% - ${ROADMAP_NAME_COLUMN_PX}px) * ${roadmap.today.toFixed(5)})`;
 	}
 	if (roadmap.undated.length > 0) {
 		dom.append(container, $('.paradis-tasks-roadmap-undated-title')).textContent = localize('paradis.tasks.roadmap.undated', "日付の無い項目（{0} 件）", roadmap.undated.length);
