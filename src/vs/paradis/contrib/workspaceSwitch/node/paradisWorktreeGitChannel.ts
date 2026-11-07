@@ -38,6 +38,8 @@ import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisClon
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
 import { IParadisFindGeneratedOutputsRequest, IParadisGeneratedOutputCandidate, IParadisRemoveGeneratedOutputsRequest, IParadisRemoveGeneratedOutputsResult, PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS } from '../common/paradisWorktreeGeneratedCleanup.js';
 import { IParadisGeneratedCleanupHost, paradisFindGeneratedOutputs, paradisRemoveGeneratedOutputs } from './paradisWorktreeGeneratedCleanup.js';
+import { IParadisCopyWorktreeIncludesRequest, IParadisWorktreeIncludeResult } from '../common/paradisWorktreeInclude.js';
+import { PARADIS_WORKTREE_LINK_RECORD_FILE, paradisMaterializeWorktreeIncludes, paradisReadWorktreeIncludeDeclarations, paradisRestoreWorktreeLinks, paradisUnlinkRecordedWorktreeLinks } from './paradisWorktreeIncludeCopy.js';
 import { PARADIS_GIT_NETWORK_SUBCOMMANDS, paradisRestrictedGitArgsError } from '../common/paradisGitRestrictedArgs.js';
 import { PARADIS_PR_DETAIL_FIELDS, PARADIS_PR_FAILED_LOG_JOBS, ParadisPullRequestLookup, paradisParseGhPullRequestDetail, paradisPickMergeMethod, paradisTailFailedJobLog } from '../../mobileRelay/common/paradisMobilePullRequest.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
@@ -319,7 +321,7 @@ export class ParadisWorktreeGitService {
 	 * git を実行する。`quiet` は定期の見回り（差分・PR のチップのブランチの取得）向けで、失敗を warn ではなく trace に出す。
 	 * 消えた worktree や git 管理外のフォルダーは見回りのたびに失敗し、ログを埋めるため。利用者の操作の失敗は warn のまま残す。
 	 */
-	private async exec(args: ParadisCommandArgument[], cwd?: string, options?: { readonly quiet?: boolean; readonly timeout?: number }): Promise<string> {
+	private async exec(args: ParadisCommandArgument[], cwd?: string, options?: { readonly quiet?: boolean; readonly timeout?: number; /** 標準入力へ渡して閉じる文字列（`--stdin` を取るコマンド向け）。 */ readonly input?: string }): Promise<string> {
 		const env = await this.cachedShellEnv.getEnv();
 		const invocation = await this.resolveInvocation('git', args, cwd, ['GIT_TERMINAL_PROMPT'], { ...env, GIT_TERMINAL_PROMPT: '0' });
 		const label = invocation.viaWsl ? `git (in WSL) ${invocation.args.join(' ')}` : `git ${invocation.args.join(' ')}`;
@@ -327,7 +329,7 @@ export class ParadisWorktreeGitService {
 			// タイムアウトは WSL 対応で必須になった。停止中のディストロへ最初の1本を打つと VM の
 			// 起動を待たされ、`/etc/wsl.conf` の boot.command 次第では返ってこない。呼び出し側は
 			// 単一の in-flight ガードで守られているので、1本詰まると以降のポーリングが全部止まる。
-			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: options?.timeout ?? PARADIS_WSL_COMMAND_TIMEOUT_MS, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env }, (err, stdout, stderr) => {
+			const child = this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: options?.timeout ?? PARADIS_WSL_COMMAND_TIMEOUT_MS, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env }, (err, stdout, stderr) => {
 				if (err) {
 					const detail = paradisReadableChildError(stderr, err, invocation.viaWsl);
 					if (options?.quiet) {
@@ -340,6 +342,11 @@ export class ParadisWorktreeGitService {
 					resolve(stdout);
 				}
 			});
+			if (options?.input !== undefined) {
+				// git が読む前に終わる（起動できない・時間切れ）と書き込みが EPIPE になる。失敗は上の callback で伝わる
+				child.stdin?.on('error', () => { });
+				child.stdin?.end(options.input);
+			}
 		});
 	}
 
@@ -984,6 +991,83 @@ export class ParadisWorktreeGitService {
 	}
 
 	/**
+	 * リポジトリの宣言（.paracode.json の `worktree`・`.worktreeinclude`）にあるものを、作ったばかりのワークツリーへ持ち込む
+	 * （G-06）。宣言は依頼で受け取らず、ここでリポジトリから読む。持ち込み先は、そのリポジトリの `git worktree list` に
+	 * 載っている、リポジトリ自身ではないワークツリーだけ（任意のフォルダへ無視しているファイルを写させないため）。
+	 * WSL の中のリポジトリへのリンクは作らない（Windows 側から 9P 越しのリンクは作れないことが多い）。
+	 */
+	async copyWorktreeIncludes(request: IParadisCopyWorktreeIncludesRequest<string>): Promise<IParadisWorktreeIncludeResult> {
+		for (const value of [request?.repoPath, request?.worktreePath]) {
+			if (typeof value !== 'string' || value.length === 0 || value.startsWith('-')) {
+				throw new Error(`Invalid argument: ${String(value)}`);
+			}
+		}
+		const declarations = await paradisReadWorktreeIncludeDeclarations(request.repoPath);
+		if (declarations.include.length === 0 && declarations.sharedDirectories.length === 0) {
+			return { copied: [], linked: [], skipped: [] };
+		}
+		if (!await this.isLinkedWorktreeOf(request.repoPath, request.worktreePath)) {
+			throw new Error(`Not a worktree of the repository: ${request.worktreePath}`);
+		}
+		const viaWsl = this.isWindowsHost && paradisParseWslUncPath(request.repoPath) !== undefined;
+		return paradisMaterializeWorktreeIncludes(request.repoPath, request.worktreePath, declarations, {
+			linkRecordPath: await this.worktreeLinkRecordPath(request.worktreePath),
+			checkIgnored: (repoPath, paths) => this.checkIgnored(repoPath, paths),
+			canLink: !viaWsl,
+			directoryLinkType: this.isWindowsHost ? 'junction' : 'dir',
+		});
+	}
+
+	/**
+	 * 持ち込みで作ったリンクの記録の置き場所。作業ツリーごとの git のフォルダ（`.git/worktrees/<名前>`）に置くので、
+	 * 作業ツリーの中身には現れず、`git worktree remove` が記録ごと片付ける。読めなければ undefined（記録しない・外さない）。
+	 */
+	private async worktreeLinkRecordPath(worktreePath: string): Promise<string | undefined> {
+		if (this.isWindowsHost && paradisParseWslUncPath(worktreePath) !== undefined) {
+			// WSL の中ではリンクを作らないので記録も要らない（git の返すパスはディストロの中の名前で、こちらから開けない）
+			return undefined;
+		}
+		try {
+			const gitDir = (await this.exec(['-C', paradisWslPathArg(worktreePath), 'rev-parse', '--path-format=absolute', '--git-dir'], undefined, { quiet: true })).replace(/\r?\n$/, '');
+			return gitDir.length > 0 ? join(gitDir, PARADIS_WORKTREE_LINK_RECORD_FILE) : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * `worktreePath` が `repoPath` と同じリポジトリの、リポジトリ自身ではないワークツリーのルートか。git に聞くので、
+	 * WSL の中のリポジトリでもパスの名前空間の違いに左右されない。
+	 */
+	private async isLinkedWorktreeOf(repoPath: string, worktreePath: string): Promise<boolean> {
+		const read = async (path: string, args: string[]) => (await this.exec(['-C', paradisWslPathArg(path), 'rev-parse', ...args])).replace(/\r?\n$/, '');
+		try {
+			const [worktreeCommon, repoCommon, worktreeGitDir, prefix] = await Promise.all([
+				read(worktreePath, ['--path-format=absolute', '--git-common-dir']),
+				read(repoPath, ['--path-format=absolute', '--git-common-dir']),
+				read(worktreePath, ['--path-format=absolute', '--git-dir']),
+				read(worktreePath, ['--show-prefix']),
+			]);
+			// 同じ共通の .git を使い、自分の .git が共通のものと別（＝追加のワークツリー）で、指したフォルダがそのルート
+			return worktreeCommon.length > 0 && worktreeCommon === repoCommon && worktreeGitDir !== worktreeCommon && prefix === '';
+		} catch {
+			return false;
+		}
+	}
+
+	/** `git check-ignore` で、無視されているパスだけを返す。どれも無視されていなければ git は 1 で終わる。読めなければ空。 */
+	private async checkIgnored(repoPath: string, paths: readonly string[]): Promise<ReadonlySet<string>> {
+		try {
+			// パスは標準入力へ NUL 区切りで渡す（名前の引用に左右されず、数が多くても引数の長さの上限に当たらない）
+			const stdout = await this.exec(['-C', paradisWslPathArg(repoPath), 'check-ignore', '--stdin', '-z'], undefined, { quiet: true, input: paths.map(path => `${path}\0`).join('') });
+			const listed = new Set(stdout.split('\0'));
+			return new Set(paths.filter(path => listed.has(path)));
+		} catch {
+			return new Set();
+		}
+	}
+
+	/**
 	 * git worktree remove [--force] <worktreePath> を実行する。
 	 * 未コミット変更や未追跡ファイルがある場合、force なしだと git が失敗する（呼び出し側で
 	 * force 付き再試行を確認する）。stale なメタデータで失敗しないよう先に prune する。
@@ -1038,6 +1122,11 @@ export class ParadisWorktreeGitService {
 				// ロックされていなかった場合も失敗するので、ここでは中断しない（remove 側で判断する）
 			}
 		}
+		// 持ち込みで作ったリンクは、git が未追跡と見て削除を断るので先に外す（G-06。リンク先の中身には触らない）。
+		// 外すのは作成のときに記録したものだけで、今の宣言は見ない（宣言を変えた後でも前のリンクを外すため）。
+		// 削除が断られたら作り直す（断られた作業ツリーからリンクだけが消えないように）
+		const recordPath = await this.worktreeLinkRecordPath(request.worktreePath);
+		const unlinked = recordPath === undefined ? [] : await paradisUnlinkRecordedWorktreeLinks(request.worktreePath, recordPath);
 		const args: ParadisCommandArgument[] = ['-C', paradisWslPathArg(request.repoPath), 'worktree', 'remove'];
 		if (request.force) {
 			args.push('--force');
@@ -1046,6 +1135,7 @@ export class ParadisWorktreeGitService {
 		try {
 			await this.exec(args, undefined, { timeout: PARADIS_WORKTREE_REMOVE_TIMEOUT_MS });
 		} catch (error) {
+			await paradisRestoreWorktreeLinks(request.worktreePath, unlinked);
 			if (restoreLock !== undefined) {
 				const relock: ParadisCommandArgument[] = ['-C', paradisWslPathArg(request.repoPath), 'worktree', 'lock'];
 				if (restoreLock.reason) {
@@ -1747,6 +1837,7 @@ export class ParadisWorktreeGitChannel<TContext extends ParadisCloneOwner = stri
 			case 'findGeneratedOutputs': return this.service.findGeneratedOutputs(args[0] as IParadisFindGeneratedOutputsRequest<string>) as Promise<T>;
 			case 'removeGeneratedOutputs': return this.service.removeGeneratedOutputs(args[0] as IParadisRemoveGeneratedOutputsRequest<string>) as Promise<T>;
 			case 'forceDeleteBranches': return this.service.forceDeleteBranches(args[0] as IParadisForceDeleteBranchesRequest<string>) as Promise<T>;
+			case 'copyWorktreeIncludes': return this.service.copyWorktreeIncludes(args[0] as IParadisCopyWorktreeIncludesRequest<string>) as Promise<T>;
 			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest<string>) as Promise<T>;
 			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery<string>) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest<string>) as Promise<T>;

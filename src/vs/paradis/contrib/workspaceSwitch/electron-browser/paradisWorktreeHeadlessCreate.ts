@@ -40,6 +40,7 @@ import {
 	PARADIS_COPILOT_UTILITY_CHANNEL,
 } from '../../copilotUtility/common/paradisCopilotUtility.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
+import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
@@ -55,6 +56,7 @@ import {
 	paradisSanitizeBranchName,
 	paradisShouldCreateDefaultTerminal,
 } from '../common/paradisWorktreeCreate.js';
+import { IParadisCopyWorktreeIncludesRequest, IParadisWorktreeIncludeResult, PARADIS_WORKTREE_INCLUDE_FILE, paradisParseWorktreeIncludeConfig, paradisSummarizeWorktreeIncludeFailure, paradisSummarizeWorktreeIncludeSkips } from '../common/paradisWorktreeInclude.js';
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisMarkTerminalEditorOpeningForScope } from '../browser/paradisTerminalEditorPark.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
@@ -636,6 +638,19 @@ export async function paradisCreateWorktreeHeadless(accessor: ServicesAccessor, 
 	return result;
 }
 
+/** リポジトリに持ち込みの宣言（.paracode.json の `worktree`・`.worktreeinclude`）があるか。読めなければ無い扱い。 */
+async function paradisHasWorktreeIncludeDeclarations(fileService: IFileService, repositoryUri: URI): Promise<boolean> {
+	try {
+		if (await fileService.exists(joinPath(repositoryUri, PARADIS_WORKTREE_INCLUDE_FILE))) {
+			return true;
+		}
+		const config = paradisParseWorktreeIncludeConfig((await fileService.readFile(joinPath(repositoryUri, PARADIS_WORKSPACE_PRESET_FILE))).value.toString());
+		return config.include.length > 0 || config.sharedDirectories.length > 0;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * worktree 作成フローの本体。ダイアログ発のバックグラウンド作成（キューサービス）と
  * モバイル発のヘッドレス作成の両方から使う。switchToCreated が false の場合は現在の
@@ -661,6 +676,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	const instantiationService = accessor.get(IInstantiationService);
 	const logService = accessor.get(ILogService);
 	const paneTokenService = accessor.get(IParadisPaneTokenService);
+	const fileService = accessor.get(IFileService);
 
 	const repository = switchService.repositories.find(r => r.id === request.repositoryId);
 	if (!repository) {
@@ -737,6 +753,18 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 		baseRef,
 	};
 	await gitHost.channel.call('addWorktree', [addRequest]);
+	// 宣言した .env などを持ち込む（G-06）。setup スクリプトより先に、setup を飛ばすときも行う。失敗しても作成は止めない
+	let includeWarning: string | undefined;
+	try {
+		const includeRequest: IParadisCopyWorktreeIncludesRequest = { repoPath: addRequest.repoPath, worktreePath: addRequest.worktreePath };
+		includeWarning = paradisSummarizeWorktreeIncludeSkips(await gitHost.channel.call<IParadisWorktreeIncludeResult>('copyWorktreeIncludes', [includeRequest]));
+	} catch (error) {
+		logService.warn('[ParadisWorktreeHeadlessCreate] copying the declared files into the new worktree failed', error);
+		// 古い接続先には持ち込みの口が無い。宣言の無いリポジトリでは、そのことを毎回知らせない
+		if (await paradisHasWorktreeIncludeDeclarations(fileService, repository.uri)) {
+			includeWarning = paradisSummarizeWorktreeIncludeFailure(toErrorMessage(error));
+		}
+	}
 
 	const createdWorktree: IParadisWorktree = {
 		repositoryId: repository.id,
@@ -811,7 +839,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 		});
 	} catch (error) {
 		logService.error('[ParadisWorktreeHeadlessCreate] post-create steps failed', error);
-		return { name: displayName, branch, warning: toErrorMessage(error), worktree: createdWorktree, ...(launchedAgent ? { agent: launchedAgent } : {}) };
+		return { name: displayName, branch, warning: [includeWarning, toErrorMessage(error)].filter(part => part !== undefined).join('\n'), worktree: createdWorktree, ...(launchedAgent ? { agent: launchedAgent } : {}) };
 	}
-	return { name: displayName, branch, worktree: createdWorktree, ...(launchedAgent ? { agent: launchedAgent } : {}) };
+	return { name: displayName, branch, worktree: createdWorktree, ...(includeWarning !== undefined ? { warning: includeWarning } : {}), ...(launchedAgent ? { agent: launchedAgent } : {}) };
 }
