@@ -272,8 +272,9 @@ function RootLayout() {
 					    `src/ui/screenHeader.tsx` の自前ヘッダー（戻る 36pt の円＋タイトル）を描く。
 					    画面ごとの登録（Stack.Screen）は置かず、段階3〜6の担当が画面のファイルを
 					    足すだけで並ぶようにしている。シートは画面の中の BottomDrawer で出す
-					    （`presentation: 'modal'` の画面は作らない）。 */}
-					<Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
+					    （`presentation: 'modal'` の画面は作らない）。
+					    下に隠れた画面（ホームなど）は freezeOnBlur で描き直しを止める（State が届くたびに裏で描き直さない）。 */}
+					<Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg }, freezeOnBlur: true }} />
 					{/* 旧来の部品が使うメニュー/ダイアログの描画先（overlayHost.tsx参照）。
 					    ロック画面の下の層に描くため、AuthGateの内側に置く */}
 					<OverlayHost />

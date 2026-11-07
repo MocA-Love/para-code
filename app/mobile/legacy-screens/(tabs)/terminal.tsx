@@ -36,8 +36,8 @@ import { terminalSubmitIcon, terminalSubmitPlan } from '../../src/terminalKeys.j
  */
 export default function TerminalScreen() {
 	const ws = useEffectiveWs();
-	const { workspace, terminalOutput, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal, terminalPrefs, setTerminalViewport, activePcId, scrollTerminal } = useAppStore(useShallow(s => ({
-		workspace: s.workspace, terminalOutput: s.terminalOutput,
+	const { workspace, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal, terminalPrefs, setTerminalViewport, activePcId, scrollTerminal } = useAppStore(useShallow(s => ({
+		workspace: s.workspace,
 		selectedTerminalKey: s.selectedTerminalKey, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, subscribeTerminal: s.subscribeTerminal, sendInput: s.sendInput,
 		sendArrowKey: s.sendArrowKey, sendTextInput: s.sendTextInput, createTerminal: s.createTerminal,
@@ -76,7 +76,8 @@ export default function TerminalScreen() {
 	const activeKey = activeTerminal?.terminalKey;
 	const activeKeyRef = useRef(activeKey);
 	activeKeyRef.current = activeKey;
-	const output = activeKey !== undefined ? terminalOutput.get(activeKey) ?? '' : '';
+	// 店はターミナルの出力を持たない（同期ストリームの subscribe だけで受ける）
+	const output = '';
 
 	useEffect(() => {
 		if (activeKey === undefined) {
