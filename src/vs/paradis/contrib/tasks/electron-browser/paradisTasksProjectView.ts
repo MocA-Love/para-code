@@ -178,8 +178,8 @@ export function paradisTasksRenderProjectBoard(container: HTMLElement, result: I
 		dom.append(container, $('.paradis-tasks-note')).textContent = localize('paradis.tasks.board.partial', "全 {0} 件のうち {1} 件を読みました。列の件数は読めた分です。下の「続きを読む」で残りを読みます。", result.total, result.items.length);
 	}
 	const board = dom.append(container, $('.paradis-tasks-board'));
-	// カードに出す欄（列にした欄とタイトルは除く。多すぎると読めないので 3 つまで）
-	const cardFields = paradisTasksTableFields(result.fields).filter(other => other.name !== field?.name && other.dataType !== 'ASSIGNEES').slice(0, 3);
+	// カードに出す欄（列にした欄・タイトル・担当者とラベル（カードに別に出す）は除く。多すぎると読めないので 3 つまで）
+	const cardFields = paradisTasksTableFields(result.fields).filter(other => other.name !== field?.name && other.dataType !== 'ASSIGNEES' && other.dataType !== 'LABELS').slice(0, 3);
 	for (const column of paradisTasksBoardColumns(result.items, field)) {
 		const columnElement = dom.append(board, $('.paradis-tasks-board-column'));
 		const header = dom.append(columnElement, $('.paradis-tasks-board-header'));
@@ -220,26 +220,42 @@ function shortDate(iso: string): string {
  * `todayIso` は今日の日付（`YYYY-MM-DD`）。
  */
 export function paradisTasksRenderProjectRoadmap(container: HTMLElement, result: IParadisTasksProjectItemsResult, store: DisposableStore, host: IParadisTasksProjectViewHost, todayIso: string): boolean {
-	const roadmap = paradisTasksRoadmap(result.items, result.fields, todayIso);
+	const fieldNames = new Set(result.fields.map(field => field.name));
+	const roadmap = paradisTasksRoadmap(result.items, [...result.fields, ...(result.dateFields ?? []).filter(field => !fieldNames.has(field.name))], todayIso);
 	if (!roadmap) {
 		return false;
 	}
 	const field = paradisTasksBoardField(result.fields, result.columnField);
 	const percent = (value: number) => `${(Math.min(1, Math.max(0, value)) * 100).toFixed(3)}%`;
-	dom.append(container, $('.paradis-tasks-note')).textContent = roadmap.startField === roadmap.endField
+	const firstTick = roadmap.ticks[0]?.date;
+	const lastTick = roadmap.ticks[roadmap.ticks.length - 1]?.date;
+	const yearMonth = (iso: string) => localize('paradis.tasks.roadmap.yearMonth', "{0}年{1}月", iso.slice(0, 4), Number(iso.slice(5, 7)));
+	const note = dom.append(container, $('.paradis-tasks-note'));
+	dom.append(note, $('span')).textContent = roadmap.startField === roadmap.endField
 		? localize('paradis.tasks.roadmap.oneField', "「{0}」の欄で並べています。", roadmap.startField)
 		: localize('paradis.tasks.roadmap.twoFields', "「{0}」から「{1}」までの期間で並べています。", roadmap.startField, roadmap.endField);
+	if (firstTick && lastTick) {
+		dom.append(note, $('span')).textContent = localize('paradis.tasks.roadmap.range', "表示は {0}〜{1} です。", yearMonth(firstTick), yearMonth(lastTick));
+	}
 	const grid = dom.append(container, $('.paradis-tasks-roadmap'));
 	const head = dom.append(grid, $('.paradis-tasks-roadmap-row.head'));
 	dom.append(head, $('.paradis-tasks-roadmap-name'));
 	const scale = dom.append(head, $('.paradis-tasks-roadmap-track'));
-	for (const tick of roadmap.ticks) {
+	roadmap.ticks.forEach((tick, index) => {
+		// 端の短い月（幅の 6% 未満）は名前が隣と重なるので出さない（線は出す）
+		const next = roadmap.ticks[index + 1]?.at ?? 1;
+		if (next - tick.at < 0.06) {
+			return;
+		}
 		const label = dom.append(scale, $('span.paradis-tasks-roadmap-tick'));
 		label.style.left = percent(tick.at);
-		label.textContent = tick.date.slice(5, 7) === '01' || tick === roadmap.ticks[0]
-			? localize('paradis.tasks.roadmap.yearMonth', "{0}年{1}月", tick.date.slice(0, 4), Number(tick.date.slice(5, 7)))
+		label.style.maxWidth = percent(next - tick.at);
+		// 年は見出しの文に出すので、目盛りは 1 月だけ年を付ける
+		const withYear = tick.date.slice(5, 7) === '01';
+		label.textContent = withYear
+			? yearMonth(tick.date)
 			: localize('paradis.tasks.roadmap.month', "{0}月", Number(tick.date.slice(5, 7)));
-	}
+	});
 	for (const row of roadmap.rows) {
 		const line = dom.append(grid, $('.paradis-tasks-roadmap-row.paradis-tasks-item'));
 		const name = dom.append(line, $('.paradis-tasks-roadmap-name'));

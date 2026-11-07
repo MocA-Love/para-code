@@ -454,7 +454,10 @@
 .paradis-tasks-roadmap-tick {
 	position: absolute;
 	top: 6px;
+	box-sizing: border-box;
 	padding-left: 4px;
+	overflow: hidden;
+	text-overflow: clip;
 	white-space: nowrap;
 }
 
