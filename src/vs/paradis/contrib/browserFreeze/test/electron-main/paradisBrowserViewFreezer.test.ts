@@ -8,7 +8,7 @@ import * as assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisFreezableBrowserView, IParadisFreezeTimer, ParadisBrowserViewFreezer, paradisThawBrowserView } from '../../electron-main/paradisBrowserViewFreezer.js';
+import { IParadisFreezableBrowserView, IParadisFreezeTimer, ParadisBrowserViewFreezer, paradisSetExtensionDebuggerAttached, paradisThawBrowserView } from '../../electron-main/paradisBrowserViewFreezer.js';
 
 class FakeTimer implements IParadisFreezeTimer {
 	private next = 1;
@@ -171,6 +171,25 @@ suite('ParadisBrowserViewFreezer', () => {
 			captured: ['Page.setWebLifecycleState frozen', 'Page.setWebLifecycleState active'],
 			capturedFrozen: 0,
 			capturedPending: 1,
+		});
+	});
+
+	test('wakes a frozen tab when an extension attaches a debugger, and leaves it running until the extension detaches', async () => {
+		const { commands, timer, view, setVisible } = create();
+		setVisible(false);
+		timer.fireAll();
+		paradisSetExtensionDebuggerAttached(view.webContents, true);
+		await Promise.resolve();
+		setVisible(true);
+		setVisible(false);
+		timer.fireAll();
+		const whileAttached = [...commands];
+		paradisSetExtensionDebuggerAttached(view.webContents, false);
+		timer.fireAll();
+		await Promise.resolve();
+		assert.deepStrictEqual({ whileAttached, after: commands.slice(whileAttached.length) }, {
+			whileAttached: ['Page.setWebLifecycleState frozen', 'Page.setWebLifecycleState active'],
+			after: ['Page.setWebLifecycleState frozen'],
 		});
 	});
 });

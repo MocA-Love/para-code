@@ -58,9 +58,22 @@ const defaultTimer: IParadisFreezeTimer = {
 /** 休ませたタブを起こす処理（BrowserView → 起こす）。エージェントがタブを手にしたときに CDP の通り道から呼ぶ。 */
 const thawers = new WeakMap<object, () => void>();
 
-/** そのタブを休ませていれば起こす（エージェントが手にした・撮るなど、ページを動かす前に呼ぶ）。 */
-export function paradisThawBrowserView(view: object): void {
-	thawers.get(view)?.();
+/** そのタブ（BrowserView、またはその webContents）を休ませていれば起こす（エージェントが手にした・撮るなど、ページを動かす前に呼ぶ）。 */
+export function paradisThawBrowserView(viewOrWebContents: object): void {
+	thawers.get(viewOrWebContents)?.();
+}
+
+/** 拡張機能（chrome.debugger）がつないでいるタブの webContents。つないでいる間は休ませない。 */
+const extensionDebuggerAttached = new WeakSet<object>();
+
+/** 拡張機能がタブにデバッガをつないだ（true）・外した（false）。つないだら、休ませていたタブを起こす。 */
+export function paradisSetExtensionDebuggerAttached(webContents: object, attached: boolean): void {
+	if (attached) {
+		extensionDebuggerAttached.add(webContents);
+		paradisThawBrowserView(webContents);
+	} else {
+		extensionDebuggerAttached.delete(webContents);
+	}
 }
 
 interface IViewState {
@@ -77,7 +90,8 @@ interface IViewState {
  * 凍結したページはタイマー・描画・ネットワークの処理が止まり、DOM・JS の状態・スクロール位置・入力中の値はそのまま
  * 残る。表示したら `active` に戻す。読み込み直しが起きる discard は使わない（スペースを切り替えて戻っても状態を
  * 保つため）。エージェントが手にしているタブ、音を鳴らしているタブ、DevTools を開いているタブ、映像を撮られている
- * タブ、最近スクリーンショットを撮られたタブ（ライブウィンドウのタイル）、通知を許可したサイトのタブは止めない
+ * タブ、最近スクリーンショットを撮られたタブ（ライブウィンドウのタイル）、通知を許可したサイトのタブ、拡張機能が
+ * デバッガをつないでいるタブは止めない
  * （止める時点で該当すれば、もう一度同じ時間を待つ）。
  */
 export class ParadisBrowserViewFreezer extends Disposable {
@@ -131,7 +145,9 @@ export class ParadisBrowserViewFreezer extends Disposable {
 		const store = new DisposableStore();
 		const state: IViewState = { timer: undefined, frozen: false, hiddenAt: this.now(), store };
 		this.views.set(view, state);
-		thawers.set(view, () => this.thaw(view, state));
+		const thaw = () => this.thaw(view, state);
+		thawers.set(view, thaw);
+		thawers.set(view.webContents, thaw);
 		store.add(view.onDidChangeVisibility(({ visible }) => {
 			if (visible) {
 				this.timer.clear(state.timer);
@@ -147,6 +163,7 @@ export class ParadisBrowserViewFreezer extends Disposable {
 			state.timer = undefined;
 			this.views.delete(view);
 			thawers.delete(view);
+			thawers.delete(view.webContents);
 			store.dispose();
 		};
 		store.add(view.onDidClose(untrack));
@@ -186,6 +203,7 @@ export class ParadisBrowserViewFreezer extends Disposable {
 				&& !webContents.isCurrentlyAudible()
 				&& !webContents.isDevToolsOpened()
 				&& !webContents.isBeingCaptured()
+				&& !extensionDebuggerAttached.has(webContents)
 				&& !this.isWatched(view, state)
 				&& !this.allowsNotifications(view);
 		} catch {
@@ -261,6 +279,7 @@ export class ParadisBrowserViewFreezer extends Disposable {
 		for (const [view, state] of this.views) {
 			this.timer.clear(state.timer);
 			thawers.delete(view);
+			thawers.delete(view.webContents);
 			state.store.dispose();
 		}
 		this.views.clear();
