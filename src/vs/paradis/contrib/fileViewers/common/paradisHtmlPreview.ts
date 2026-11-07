@@ -9,6 +9,9 @@
 // ビューアが読むファイルを配るローカルサーバの、renderer / shared process / リモートサーバで
 // 共有する定義。
 
+import { joinPath } from '../../../../base/common/resources.js';
+import { URI } from '../../../../base/common/uri.js';
+
 /** workbench(renderer) ⇔ shared process / リモートサーバ のチャネル名。 */
 export const PARADIS_HTML_PREVIEW_CHANNEL = 'paradisHtmlPreview';
 
@@ -64,4 +67,60 @@ export interface IParadisHtmlPreviewService {
 export function paradisPreviewUrl(mount: IParadisPreviewMount, port: number, segments: readonly string[] = []): string {
 	const suffix = segments.length > 0 ? `${segments.map(encodeURIComponent).join('/')}/` : '';
 	return `http://127.0.0.1:${port}/${mount.token}/${suffix}`;
+}
+
+/**
+ * プレビューの中で押したリンクが、表示しているフォルダー（`base` の URL で配っているもの）の中のファイルなら、
+ * そのファイルの URI を返す（エディタで開く）。配っている URL の外・`..` で上へ出るものは undefined
+ * （呼び出し側が外部の URL として開くかを決める）。
+ */
+export function paradisPreviewLinkToFile(link: string, base: { readonly url: string; readonly root: URI }): URI | undefined {
+	if (!link.startsWith(base.url)) {
+		return undefined;
+	}
+	const path = link.slice(base.url.length).split(/[?#]/, 1)[0];
+	let segments: string[];
+	try {
+		segments = path.split('/').filter(segment => segment.length > 0).map(segment => decodeURIComponent(segment));
+	} catch {
+		return undefined;
+	}
+	if (segments.length === 0 || segments.some(segment => segment === '.' || segment === '..' || segment.includes('/') || segment.includes('\\'))) {
+		return undefined;
+	}
+	return joinPath(base.root, ...segments);
+}
+
+/** フォルダーの外のリンクで開いてよい scheme（`file:` などは開かない）。 */
+const PARADIS_PREVIEW_EXTERNAL_SCHEMES: ReadonlySet<string> = new Set(['http', 'https', 'mailto']);
+
+/**
+ * プレビューの中で押したリンクの開き先。配っているフォルダーの中のファイルは `file`（エディタで開く）、
+ * http・https・mailto は `external`。それ以外の scheme と、プレビューの配信サーバ（`base` と同じ配信元、
+ * またはこの機械の中のトークン付きの URL）へのリンクは undefined（トークン付きの URL を外のブラウザへ渡さない）。
+ */
+export function paradisPreviewLinkTarget(link: string, base: { readonly url: string; readonly root: URI } | undefined): { readonly kind: 'file' | 'external'; readonly uri: URI } | undefined {
+	const file = base !== undefined ? paradisPreviewLinkToFile(link, base) : undefined;
+	if (file !== undefined) {
+		return { kind: 'file', uri: file };
+	}
+	let uri: URI;
+	try {
+		uri = URI.parse(link);
+	} catch {
+		return undefined;
+	}
+	if (!PARADIS_PREVIEW_EXTERNAL_SCHEMES.has(uri.scheme)) {
+		return undefined;
+	}
+	if (uri.scheme !== 'mailto') {
+		const baseUri = base !== undefined ? URI.parse(base.url) : undefined;
+		// 同じ配信元、またはこの機械の中の名前で先頭がトークンの形（32 桁の 16 進）の URL は配信サーバのものとみなす
+		// （手元の開発サーバ `http://localhost:3000/` などは開く）
+		const previewServer = isParadisPreviewLoopbackHost(uri.authority) && /^\/[0-9a-f]{32}(\/|$)/.test(uri.path);
+		if ((baseUri !== undefined && baseUri.scheme === uri.scheme && baseUri.authority === uri.authority) || previewServer) {
+			return undefined;
+		}
+	}
+	return { kind: 'external', uri };
 }

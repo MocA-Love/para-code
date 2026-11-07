@@ -186,6 +186,33 @@ suite('ParadisAgentChatView', () => {
 		});
 	});
 
+	test('shows the full output of a truncated tool result after loading it', async () => {
+		const { host, container } = await createView([{
+			token: 'pane', agent: 'claude', epoch: 'e', rev: 3, reset: true, busy: false, live: null,
+			messages: [
+				{ rev: 1, role: 'assistant', kind: 'tool_use', tool: 'Bash', toolUseId: 't1', text: JSON.stringify({ command: 'ls' }) },
+				{ rev: 2, role: 'tool', kind: 'tool_result', toolUseId: 't1', text: 'short', truncated: true },
+			],
+			interaction: null,
+			pendingQuestions: [],
+		}]);
+		host.getFullText = async () => 'FULL OUTPUT';
+		const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+		container.querySelector<HTMLElement>('.paradis-agent-chat-step.tool .paradis-agent-chat-step-label')!.parentElement!.click();
+		await settle();
+		const outputs = () => [...container.querySelectorAll<HTMLElement>('.paradis-agent-chat-step-body pre')].map(pre => pre.textContent);
+		const before = outputs();
+		const load = [...container.querySelectorAll<HTMLButtonElement>('.paradis-agent-chat-step-body button.paradis-agent-chat-link')].at(-1)!;
+		load.click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual({ before: before.at(-1), after: outputs().at(-1), loadButtons: container.querySelectorAll('.paradis-agent-chat-step-body button.paradis-agent-chat-link').length }, {
+			before: 'short',
+			after: 'FULL OUTPUT',
+			loadButtons: 0,
+		});
+	});
+
 	test('shows the approval card with its choices and the live bubble while the agent works', async () => {
 		const { host, container } = await createView([{
 			token: 'pane', agent: 'claude', epoch: 'e', rev: 1, reset: true, busy: true,

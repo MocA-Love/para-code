@@ -13,8 +13,12 @@
 import { LcsDiff, StringDiffSequence, type IContinueProcessingPredicate, type ISequence } from '../../../../base/common/diff/diff.js';
 import { IParadisRowData } from './paradisSpreadsheet.js';
 
-/** LCS を求める行数の組((行数+1)×(行数+1))の上限。超過時は呼び出し側がインデックス対比へフォールバックする(1999×1999行までは許容、2000×2000行は超過)。 */
-const MAX_LCS_CELLS = 4_000_000;
+/**
+ * LCS を求める行数の組((行数+1)×(行数+1))の上限。超過時は呼び出し側がインデックス対比へフォールバックする。
+ * ビューアが表示する上限(2,000 行。node/paradisSpreadsheetService.ts の MAX_ROWS)同士も対応を取れるようにする
+ * (以前の 4,000,000 では 2,000 行同士が必ず超え、途中に行を足しただけで以降がすべて変更扱いになった)。
+ */
+const MAX_LCS_CELLS = (2_000 + 1) * (2_000 + 1);
 
 /** フィンガープリントの打ち切り前の最大長。極端に長い行でメモリ・比較コストが爆発しないよう打ち切る。 */
 const FINGERPRINT_MAX_LENGTH = 2000;
