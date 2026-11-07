@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisTasksProjectField, IParadisTasksProjectItem, paradisTasksBoardColumns, paradisTasksBoardField, paradisTasksProjectItemsQuery, paradisTasksTableFields } from '../../common/paradisTasksProjects.js';
+import { IParadisTasksProjectField, IParadisTasksProjectItem, paradisTasksBoardColumns, paradisTasksBoardField, paradisTasksProjectItemsQuery, paradisTasksRoadmap, paradisTasksRoadmapFields, paradisTasksRoadmapLabelledTicks, paradisTasksTableFields } from '../../common/paradisTasksProjects.js';
 
 function item(id: string, status?: string): IParadisTasksProjectItem {
 	return { id, kind: 'issue', title: id, assignees: [], labels: [], values: status ? { Status: { text: status } } : {} };
@@ -43,5 +43,65 @@ suite('ParadisTasksProjects', () => {
 			table: ['Priority', 'Status'],
 			query: ['status:Todo assignee:@me', undefined, 'is:open'],
 		});
+	});
+
+	// 開始・終了の欄を名前で探し、無ければ繰り返し、それも無ければ最初の日付の欄
+	test('chooses roadmap fields', () => {
+		const date = (name: string): IParadisTasksProjectField => ({ name, dataType: 'DATE' });
+		assert.deepStrictEqual([
+			paradisTasksRoadmapFields([date('Due'), date('Start date'), date('Target date')]),
+			paradisTasksRoadmapFields([date('Due'), { name: 'Sprint', dataType: 'ITERATION' }]),
+			paradisTasksRoadmapFields([date('期限')]),
+			paradisTasksRoadmapFields([status]),
+		], [
+			{ start: 'Start date', end: 'Due', iteration: false },
+			{ start: 'Sprint', end: 'Sprint', iteration: true },
+			{ start: '期限', end: '期限', iteration: false },
+			undefined,
+		]);
+	});
+
+	// 幅は最初の月の 1 日から最後の月の末まで（今日を含む）。片方だけの日付は点、逆向きは入れ替え、日付の無い項目は分ける
+	test('lays out the roadmap', () => {
+		const fields: IParadisTasksProjectField[] = [{ name: 'Start', dataType: 'DATE' }, { name: 'End', dataType: 'DATE' }];
+		const dated = (id: string, start?: string, end?: string): IParadisTasksProjectItem => ({
+			id, kind: 'issue', title: id, assignees: [], labels: [],
+			values: { ...(start ? { Start: { text: start, date: start } } : {}), ...(end ? { End: { text: end, date: end } } : {}) },
+		});
+		const roadmap = paradisTasksRoadmap([dated('b', '2026-12-01', '2026-12-31'), dated('a', '2026-11-11'), dated('c', '2026-11-30', '2026-11-20'), dated('none')], fields, '2026-11-08')!;
+		const round = (value: number) => Math.round(value * 1000) / 1000;
+		assert.deepStrictEqual({
+			rows: roadmap.rows.map(row => [row.item.id, row.startDate, row.endDate, round(row.from), round(row.to)]),
+			undated: roadmap.undated.map(entry => entry.id),
+			ticks: roadmap.ticks.map(tick => [tick.date, round(tick.at)]),
+			today: round(roadmap.today!),
+		}, {
+			rows: [
+				['a', '2026-11-11', '2026-11-11', round(10 / 61), round(11 / 61)],
+				['c', '2026-11-20', '2026-11-30', round(19 / 61), round(30 / 61)],
+				['b', '2026-12-01', '2026-12-31', round(30 / 61), 1],
+			],
+			undated: ['none'],
+			ticks: [['2026-11-01', 0], ['2026-12-01', round(30 / 61)]],
+			today: round(7 / 61),
+		});
+	});
+
+	// 12 か月までは毎月、36 か月までは四半期、それより長いと 1 月だけ。狭い両端だけ外す（40 か月の先頭の 1 月は 2.5% なので外れる）
+	test('thins out roadmap month labels', () => {
+		const ticks = (start: number, count: number, firstWidth = 1 / count) => Array.from({ length: count }, (_, index) => {
+			const month = (start - 1 + index) % 12 + 1;
+			const year = 2026 + Math.floor((start - 1 + index) / 12);
+			return { date: `${year}-${String(month).padStart(2, '0')}-01`, at: index === 0 ? 0 : firstWidth + (index - 1) * (1 - firstWidth) / (count - 1) };
+		});
+		assert.deepStrictEqual([
+			paradisTasksRoadmapLabelledTicks(ticks(2, 10, 0.03)),
+			paradisTasksRoadmapLabelledTicks(ticks(11, 20)),
+			paradisTasksRoadmapLabelledTicks(ticks(1, 40)),
+		], [
+			[1, 2, 3, 4, 5, 6, 7, 8, 9],
+			[2, 5, 8, 11, 14, 17],
+			[12, 24, 36],
+		]);
 	});
 });
