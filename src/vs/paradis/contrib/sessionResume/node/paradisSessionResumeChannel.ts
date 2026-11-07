@@ -436,11 +436,15 @@ export class ParadisSessionResumeService {
 					const space = request.spaces.find(space => normalizePath(space.cwd) === normalizePath(saved.cwd));
 					if (!space || messages === undefined) { return; }
 					const latest = [...messages].reverse().find(message => message.kind === 'message');
-					this.addSession({
+					const catalogId = this.addSession({
 						id: saved.id, agent: 'opencode', cli: saved.cli, ...(database.label !== undefined ? { cliLabel: database.label } : {}), title: saved.title || latest?.text.slice(0, 120) || 'OpenCode',
 						preview: latest?.text.slice(0, 260) || '', cwd: saved.cwd, spaceStateKey: space.stateKey, spaceName: space.name,
 						currentSpace: space.current, createdAt: saved.createdAt, updatedAt: saved.updatedAt, archived: saved.archived, empty: messages.length === 0,
 					}, dbPath, dirname(dbPath), sessions);
+					// 読んだ最後の発言を覚える（最後の発言を出すときに、会話ごとに DB を開き直して同じ 2 件を読み直さない）
+					if (catalogId !== undefined) {
+						this.rememberLatestMessage(catalogId, saved.updatedAt, latest ? { role: latest.role, text: clipped(latest.text, LAST_MESSAGE_CHARS) } : null);
+					}
 				});
 			} catch { /* A missing or unsupported database must not hide the other agents' history. */ }
 		}
@@ -722,9 +726,10 @@ export class ParadisSessionResumeService {
 		return searchTextPromise;
 	}
 
-	private addSession(session: Omit<IParadisResumeSession, 'catalogId'>, transcriptPath: string, allowedRoot: string, target: IParadisResumeSession[]): void {
+	/** 一覧へ足す。足したら catalogId を返す（足さなかったら undefined）。 */
+	private addSession(session: Omit<IParadisResumeSession, 'catalogId'>, transcriptPath: string, allowedRoot: string, target: IParadisResumeSession[]): string | undefined {
 		if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(session.id) || !isAbsolute(transcriptPath) || !pathInside(allowedRoot, transcriptPath)) {
-			return;
+			return undefined;
 		}
 		const catalogId = paradisSessionCatalogId(session.agent, session.agent === 'opencode' ? `${transcriptPath}#${session.id}` : transcriptPath);
 		const complete: IParadisResumeSession = { ...session, catalogId };
@@ -736,6 +741,7 @@ export class ParadisSessionResumeService {
 		const searchTextPromise = previous?.session.updatedAt === complete.updatedAt ? previous.searchTextPromise : undefined;
 		this.catalog.set(catalogId, { session: complete, transcriptPath, allowedRoot, searchTextPromise, touchedAt: Date.now() });
 		target.push(complete);
+		return catalogId;
 	}
 
 	private trimCatalog(protectedCatalogIds: ReadonlySet<string>): void {

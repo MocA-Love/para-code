@@ -20,7 +20,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_BUSY_ERROR_NAME, PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_MAX_BYTES, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME, isParadisSpreadsheetCompoundFile } from '../common/paradisSpreadsheet.js';
 import { describeParadisOfficeReadFailure, IParadisOfficeDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisOfficeDiffSides } from '../common/paradisOfficeDiffSide.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
-import { decodeParadisWorkbookJson, unpackParadisWorkbookStyles, type IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
+import { decodeParadisWorkbookJson, unpackParadisWorkbookStylesInPlace, type IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { parseDrawingObjects } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
@@ -122,7 +122,8 @@ async function parseSpreadsheetContent(sharedProcessService: ISharedProcessServi
 		throw error;
 	}
 	// 解析の worker はセルの書式を表にまとめた JSON のバイト列で返すので、ここで元の形に戻す（本体で解析したときはそのまま）。
-	const raw = unpackParadisWorkbookStyles(reply instanceof VSBuffer ? decodeParadisWorkbookJson(reply.buffer) : reply);
+	// 復号した・IPC で受け取ったブックはここだけが持つので、写しを作らずに書式を戻す
+	const raw = unpackParadisWorkbookStylesInPlace(reply instanceof VSBuffer ? decodeParadisWorkbookJson(reply.buffer) : reply);
 
 	const drawings = raw.drawingsBySheet;
 	if (!drawings) {

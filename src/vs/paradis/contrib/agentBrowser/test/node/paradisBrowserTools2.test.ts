@@ -83,8 +83,12 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 		now = 40_000;
 		const longLived = activity.snapshot(30_000);
 		activity.forgetConnection(first);
-		assert.deepStrictEqual([afterFinish, longLived, activity.snapshot(30_000)], [
+		// r1 はもう 1 本の接続でも見ているので、先に始まりを見た接続が閉じても残る
+		const afterFirstClosed = activity.snapshot(30_000);
+		activity.forgetConnection(second);
+		assert.deepStrictEqual([afterFinish, longLived, afterFirstClosed, activity.snapshot(30_000)], [
 			{ inflight: 1, quietMs: 0, pendingUrls: ['https://example.com/a'], longLived: 0 },
+			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 1 },
 			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 1 },
 			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 0 },
 		]);
