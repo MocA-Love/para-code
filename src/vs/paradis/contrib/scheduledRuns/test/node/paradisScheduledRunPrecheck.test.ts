@@ -147,6 +147,30 @@ suite('ParadisScheduledRunPrecheck', () => {
 		}, { remote: false, plainHasPrecheck: false, sameDigest: true, precheckChangesDigest: true });
 	});
 
+	test('refuses a precheck for WSL and network folders, and keeps the agent-created mark until the user enables it', async () => {
+		const context = setup(async () => ({ exitCode: 0, durationMs: 0 }));
+		await context.service.whenReady();
+		const wsl = await context.service.save({ ...DRAFT, target: { ...DRAFT.target, repositoryUri: 'file://wsl.localhost/Ubuntu/home/repo' } });
+		const local = await context.service.save({ ...DRAFT, target: { ...DRAFT.target, repositoryUri: 'file:///c%3A/work/repo' } });
+		const byAgent = (await context.service.save({ ...DRAFT, createdByAgent: true })).definition!;
+		const edited = (await context.service.save({ ...DRAFT, id: byAgent.id, name: 'edited' })).definition!;
+		const enabled = (await context.service.setEnabled(byAgent.id, true)).definition!;
+		const disabledAgain = (await context.service.setEnabled(byAgent.id, false)).definition!;
+		assert.deepStrictEqual({
+			wsl: wsl.ok, local: local.ok,
+			created: [byAgent.createdByAgent, byAgent.agentReviewPending],
+			edited: [edited.createdByAgent, edited.agentReviewPending],
+			enabled: [enabled.createdByAgent, enabled.agentReviewPending],
+			disabledAgain: [disabledAgain.createdByAgent, disabledAgain.agentReviewPending],
+		}, {
+			wsl: false, local: true,
+			created: [true, true],
+			edited: [true, true],
+			enabled: [true, undefined],
+			disabledAgain: [true, undefined],
+		});
+	});
+
 	(isWindows ? test.skip : test)('runs the command in a shell and reports the exit code, the output and a timeout', async () => {
 		const runner = createParadisScheduledRunPrecheckRunner(async () => process.env);
 		const cwd = tmpdir();

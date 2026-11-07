@@ -108,6 +108,7 @@ class ParadisScheduledRunsMcpChannel implements IServerChannel {
 			prompt: request.prompt,
 			dailyLimit: request.dailyLimit,
 			...(request.precheck ? { precheck: request.precheck } : {}),
+			createdByAgent: true,
 		};
 		// 規則（間隔・長さ・事前確認を使えるリポジトリか）の文は利用者向けの日本語なので、そのまま添えて返す
 		const problem = paradisValidateScheduledRunDraft(draft);

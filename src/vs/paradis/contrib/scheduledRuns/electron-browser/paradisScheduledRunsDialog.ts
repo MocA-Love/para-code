@@ -402,6 +402,9 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			dot.classList.add(definition.enabled ? (latest ? `tone-${statusTone(latest)}` : 'tone-idle') : 'tone-off');
 			const main = dom.append(item, $('span.psr-nav-main'));
 			dom.append(main, $('span.psr-nav-name')).textContent = definition.name;
+			if (definition.createdByAgent) {
+				dom.append(main, $('span.psr-chip')).textContent = localize('paradis.scheduledRuns.createdByAgent', "エージェントが作成");
+			}
 			const sub = dom.append(main, $('span.psr-nav-sub'));
 			const next = this.state?.nextRuns[definition.id];
 			sub.textContent = !definition.enabled
@@ -449,11 +452,21 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	private renderDetail(definition: IParadisScheduledRunDefinition): void {
 		const head = dom.append(this.content, $('.psr-detail-head'));
 		dom.append(head, $('h3')).textContent = definition.name;
+		if (definition.createdByAgent) {
+			dom.append(head, $('span.psr-chip')).textContent = localize('paradis.scheduledRuns.createdByAgent', "エージェントが作成");
+		}
 		const toggleLabel = dom.append(head, $('label.psr-toggle-label'));
 		const toggle = this.contentDisposables.add(new ParadisSwitch(toggleLabel, { checked: definition.enabled }));
 		dom.append(toggleLabel, $('span')).textContent = definition.enabled ? localize('paradis.scheduledRuns.enabled', "有効") : localize('paradis.scheduledRuns.disabled', "無効");
 		this.contentDisposables.add(toggle.onDidChange(async checked => {
 			toggle.enabled = false;
+			// エージェントが作ったものを初めて有効にするときは、時刻で走る中身（指示と事前確認のコマンド）を見せて確かめる
+			if (checked && definition.agentReviewPending && !await this.confirmAgentCreated(definition)) {
+				if (!this._store.isDisposed) {
+					this.renderContent();
+				}
+				return;
+			}
 			const result = await this.client.setEnabled(definition.id, checked);
 			if (!result.ok) {
 				this.showMessage(result.error ?? '', 'error');
@@ -647,6 +660,24 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		this.showMessage(here
 			? localize('paradis.scheduledRuns.runNowStarted', "実行を始めました。30 分で打ち切ります。")
 			: localize('paradis.scheduledRuns.runNowElsewhere', "開始待ちにしました。リポジトリ「{0}」を開いているウィンドウで実行されます。", definition.target.repositoryName), 'info');
+	}
+
+	/** エージェントが作った定期実行を初めて有効にする前の確認。 */
+	private async confirmAgentCreated(definition: IParadisScheduledRunDefinition): Promise<boolean> {
+		const lines = [
+			localize('paradis.scheduledRuns.agentReviewPrompt', "指示:\n{0}", definition.prompt),
+			definition.precheck
+				? localize('paradis.scheduledRuns.agentReviewPrecheck', "事前確認のコマンド（時刻ごとにこの PC で実行します）:\n{0}", definition.precheck.command)
+				: localize('paradis.scheduledRuns.agentReviewNoPrecheck', "事前確認: なし"),
+			localize('paradis.scheduledRuns.agentReviewSchedule', "スケジュール: {0}（{1}）", paradisDescribeCron(definition.schedule), definition.schedule),
+		];
+		const { confirmed } = await this.dialogService.confirm({
+			type: 'warning',
+			message: localize('paradis.scheduledRuns.agentReviewTitle', "エージェントが作った定期実行「{0}」を有効にしますか？", definition.name),
+			detail: lines.join('\n\n'),
+			primaryButton: localize('paradis.scheduledRuns.agentReviewEnable', "有効にする"),
+		});
+		return confirmed;
 	}
 
 	private async deleteDefinition(definition: IParadisScheduledRunDefinition): Promise<void> {
@@ -860,13 +891,13 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const precheckInput = dom.append(precheckCell, $('textarea.psr-textarea.psr-mono')) as HTMLTextAreaElement;
 		precheckInput.value = values.precheckCommand;
 		precheckInput.rows = 2;
-		precheckInput.placeholder = localize('paradis.scheduledRuns.precheckPlaceholder', "例: test -n \"$(gh pr list --search 'review-requested:@me' --json number -q '.[0].number')\"");
+		precheckInput.placeholder = localize('paradis.scheduledRuns.precheckPlaceholder', "例: test -n \"$(gh pr list --search 'review-requested:@me' --json number -q '.[0].number')\"（Windows ではコマンドプロンプトで実行）");
 		this.contentDisposables.add(dom.addDisposableListener(precheckInput, 'input', () => { values.precheckCommand = precheckInput.value; update(); }));
 		const precheckLine = dom.append(precheckCell, $('.psr-inline'));
 		const precheckTimeout = this.select(precheckLine, PARADIS_SCHEDULED_RUN_PRECHECK_TIMEOUT_CHOICES.map(seconds => [String(seconds), precheckTimeoutLabel(seconds)] as [string, string]), String(values.precheckTimeoutSeconds));
 		this.contentDisposables.add(dom.addDisposableListener(precheckTimeout, 'change', () => { values.precheckTimeoutSeconds = Number(precheckTimeout.value); update(); }));
 		const precheckTry = this.button(precheckLine, localize('paradis.scheduledRuns.precheckTry', "試す"), 'secondary', Codicon.play);
-		dom.append(precheckCell, $('.psr-muted')).textContent = localize('paradis.scheduledRuns.precheckNote', "コマンドが 0 で終わったときだけエージェントを起動します。0 以外・時間切れなら、その回は見送ります。手動の「今すぐ実行」では走らせません。出力はエージェントには渡しません。");
+		dom.append(precheckCell, $('.psr-muted')).textContent = localize('paradis.scheduledRuns.precheckNote', "コマンドが 0 で終わったときだけエージェントを起動します。0 以外・時間切れなら、その回は見送ります。手動の「今すぐ実行」では走らせません。出力はエージェントには渡しません。リポジトリのフォルダで、macOS・Linux ではログインシェルの環境の sh、Windows ではコマンドプロンプト（cmd.exe）で実行します。");
 		const precheckResult = dom.append(precheckCell, $('pre.psr-prompt.psr-mono'));
 		precheckResult.style.display = 'none';
 		this.contentDisposables.add(dom.addDisposableListener(precheckTry, 'click', () => this.tryPrecheck(values, precheckTry, precheckResult)));

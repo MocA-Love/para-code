@@ -18,6 +18,7 @@
 // ここには両方が使う型と、副作用の無い判定だけを置く（テストしやすくするため）。
 
 import { localize } from '../../../../nls.js';
+import { URI } from '../../../../base/common/uri.js';
 import { paradisRedactTextSecrets } from '../../../common/paradisSecretRedaction.js';
 import { IParadisCronSchedule, paradisCronMinimumGapMinutes, paradisCronOccurrencesBetween, paradisParseCron, PARADIS_MINUTE_MS } from './paradisScheduleCron.js';
 
@@ -113,9 +114,18 @@ export function paradisScheduledRunPrecheckSummary(result: IParadisScheduledRunP
 	return localize('paradis.scheduledRuns.precheck.exit', "事前確認の終了コード {0}（{1} 秒）", result.exitCode ?? '?', seconds);
 }
 
-/** 事前確認を走らせられるリポジトリか（この PC のフォルダだけ。SSH などの接続先では走らせられない）。 */
+/**
+ * 事前確認を走らせられるリポジトリか。この PC のローカルのフォルダだけ。SSH などの接続先と、UNC のパス
+ * （Windows から見た WSL のフォルダ `\\wsl.localhost\...`・ネットワークのフォルダ。`file://<ホスト>/...`）は断る。
+ * Windows の `cmd.exe` は UNC のパスを作業ディレクトリにできず、黙って `C:\Windows` で走ってしまうため。
+ */
 export function paradisScheduledRunPrecheckSupported(repositoryUri: string): boolean {
-	return repositoryUri.startsWith('file:');
+	try {
+		const uri = URI.parse(repositoryUri);
+		return uri.scheme === 'file' && uri.authority === '' && !uri.path.startsWith('//');
+	} catch {
+		return false;
+	}
 }
 
 export interface IParadisScheduledRunTarget {
@@ -147,6 +157,10 @@ export interface IParadisScheduledRunDefinition {
 	readonly dailyLimit: number;
 	/** 事前確認。無ければ時刻どおりに必ず起動する。 */
 	readonly precheck?: IParadisScheduledRunPrecheck;
+	/** エージェントが MCP（create_scheduled_run）で作った。一覧に印を出す。 */
+	readonly createdByAgent?: boolean;
+	/** エージェントが作ってから、まだ利用者が一度も有効にしていない（初めて有効にするとき中身を見せて確かめる）。 */
+	readonly agentReviewPending?: boolean;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 	/**
@@ -170,6 +184,8 @@ export interface IParadisScheduledRunDraft {
 	readonly prompt: string;
 	readonly dailyLimit: number;
 	readonly precheck?: IParadisScheduledRunPrecheck;
+	/** 新しく作るときだけ見る。エージェントが MCP で作った印。 */
+	readonly createdByAgent?: boolean;
 }
 
 // ---------- 実行の記録 ----------
@@ -390,7 +406,7 @@ export function paradisValidateScheduledRunPrecheck(precheck: IParadisScheduledR
 		return localize('paradis.scheduledRuns.validate.precheckTimeout', "事前確認の制限時間は 1〜{0} 秒で指定してください。", PARADIS_SCHEDULED_RUN_PRECHECK_MAX_TIMEOUT_SECONDS);
 	}
 	if (repositoryUri && !paradisScheduledRunPrecheckSupported(repositoryUri)) {
-		return localize('paradis.scheduledRuns.validate.precheckRemote', "事前確認はこの PC のリポジトリでだけ使えます（SSH などの接続先のリポジトリでは使えません）。");
+		return localize('paradis.scheduledRuns.validate.precheckRemote', "事前確認はこの PC のフォルダのリポジトリでだけ使えます（SSH の接続先・WSL・ネットワークのフォルダのリポジトリでは使えません）。");
 	}
 	return undefined;
 }

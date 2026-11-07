@@ -76,13 +76,15 @@ export function paradisSanitizeScheduledRunDraft(value: unknown): IParadisSchedu
 	const permissionId = optionalString(value.permissionId);
 	const target = sanitizeTarget(value.target);
 	const precheck = paradisSanitizeScheduledRunPrecheckShape(value.precheck);
+	const createdByAgent = value.createdByAgent;
 	if (typeof name !== 'string' || name.length > MAX_TEXT_LENGTH
 		|| typeof schedule !== 'string' || schedule.length > 200
 		|| typeof agentId !== 'string' || agentId.length > MAX_ID_LENGTH
 		|| typeof prompt !== 'string' || prompt.length > MAX_TEXT_LENGTH
 		|| typeof dailyLimit !== 'number'
 		|| id === false || modelId === false || effortId === false || permissionId === false
-		|| !target || precheck === false) {
+		|| !target || precheck === false
+		|| (createdByAgent !== undefined && typeof createdByAgent !== 'boolean')) {
 		return undefined;
 	}
 	return {
@@ -92,6 +94,7 @@ export function paradisSanitizeScheduledRunDraft(value: unknown): IParadisSchedu
 		...(effortId !== undefined ? { effortId } : {}),
 		...(permissionId !== undefined ? { permissionId } : {}),
 		...(precheck !== undefined ? { precheck } : {}),
+		...(createdByAgent === true ? { createdByAgent } : {}),
 	};
 }
 
