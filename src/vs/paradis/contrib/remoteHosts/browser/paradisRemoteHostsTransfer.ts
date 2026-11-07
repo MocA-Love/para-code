@@ -7,13 +7,15 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { localize } from '../../../../nls.js';
-import { basename, joinPath } from '../../../../base/common/resources.js';
+import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
+import { paradisTransferTempName } from '../../fileTransfer/common/paradisFileTransferQueueTypes.js';
 
 /** 転送処理に必要なサービスの束。ビューが注入したものをそのまま渡す。 */
 export interface IParadisRemoteTransferServices {
@@ -53,6 +55,25 @@ async function confirmOverwrite(services: IParadisRemoteTransferServices, names:
 	return confirmed;
 }
 
+/**
+ * 写す。上書きのときは、送り先の隣の一時名へ写し終えてから置き換える。IFileService.copy の上書きは
+ * 写す前に送り先を消すので、途中で切れる・読めない・容量が足りないと、前の中身だけが失われる。
+ */
+async function copyReplacing(fileService: IFileService, source: URI, target: URI, overwrite: boolean): Promise<void> {
+	if (!overwrite) {
+		await fileService.copy(source, target, false);
+		return;
+	}
+	const temp = joinPath(dirname(target), paradisTransferTempName(generateUuid()));
+	try {
+		await fileService.copy(source, temp, false);
+	} catch (error) {
+		await fileService.del(temp, { recursive: true, useTrash: false }).catch(() => undefined);
+		throw error;
+	}
+	await fileService.move(temp, target, true);
+}
+
 async function copyWithProgress(
 	services: IParadisRemoteTransferServices,
 	source: IParadisRemoteTransferSource,
@@ -64,7 +85,7 @@ async function copyWithProgress(
 			location: ProgressLocation.Window,
 			title: localize('paraRemoteHosts.transferring', "{0} を転送しています…", source.name),
 		},
-		() => services.fileService.copy(source.uri, target, overwrite),
+		() => copyReplacing(services.fileService, source.uri, target, overwrite),
 	);
 }
 
@@ -165,9 +186,12 @@ export async function paradisCopyToDirectory(
 
 	// 既存チェック → 一括上書き確認。上書きを許すのは確認に出した名前だけ。確認を待つ間に別のアプリが
 	// 作った同名は overwrite=false のまま写すので、安全側で失敗する（確認していないものを消さない）
+	// 送り先のフォルダーを 1 回だけ読んで名前で調べる（1 件ずつ確かめると、SSH 先では件数ぶん往復を待つ）。
+	// 読めなければ 1 件ずつ確かめる
 	const existing = new Set<number>();
+	const listed = await services.fileService.resolve(targetDir).then(stat => new Set((stat.children ?? []).map(child => child.name)), () => undefined);
 	for (let index = 0; index < targets.length; index++) {
-		if (await services.fileService.exists(targets[index])) {
+		if (listed ? listed.has(basename(targets[index])) : await services.fileService.exists(targets[index])) {
 			existing.add(index);
 		}
 	}
@@ -190,7 +214,7 @@ export async function paradisCopyToDirectory(
 			async () => {
 				for (let index = 0; index < sources.length; index++) {
 					try {
-						await services.fileService.copy(sources[index].uri, targets[index], existing.has(index));
+						await copyReplacing(services.fileService, sources[index].uri, targets[index], existing.has(index));
 					} catch (error) {
 						failedNames.push(sources[index].name);
 						firstError ??= error instanceof Error ? error : String(error);

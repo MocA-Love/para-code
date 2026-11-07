@@ -63,6 +63,8 @@ export interface IParadisTransferQueueOptions {
 	readonly isDisconnected?: (item: IParadisTransferItem) => boolean;
 }
 
+/** 1 つのフォルダーの転送で、同時に写すファイルの数。 */
+const PARADIS_TRANSFER_FILE_PARALLEL = 3;
 /** 速度を計る窓。これより古い標本は捨てる。 */
 const SPEED_WINDOW_MS = 5000;
 /** 速度を出し始めるまでの最短の経過時間。 */
@@ -604,6 +606,11 @@ export class ParadisTransferQueue extends Disposable {
 			files.push({ source: item.source, target: item.target, size: stat.size });
 			return { directories, files, skipped, truncatedFolders: 0 };
 		}
+		// 一覧を読む口は、無いフォルダーを空として返す。選んだ後に消えた・移したフォルダーを空として写すと、
+		// 置き換えを承認した送り先を消して空のフォルダーで「完了」になるので、一番上だけは有無を確かめる
+		if (!await this.fileSystem.stat(item.source)) {
+			throw new FileOperationError(localize('paradis.fileTransfer.error.sourceMissing', "{0} が見つかりません", item.name), FileOperationResult.FILE_NOT_FOUND);
+		}
 		let truncatedFolders = 0;
 		const pending: Array<{ source: URI; target: URI }> = [{ source: item.source, target: item.target }];
 		while (pending.length && !token.isCancellationRequested) {
@@ -660,35 +667,54 @@ export class ParadisTransferQueue extends Disposable {
 			}
 			await this.fileSystem.createDirectory(directory);
 		}
-		for (const file of plan.files) {
-			if (token.isCancellationRequested) {
-				return false;
-			}
-			try {
-				await this.fileSystem.copyFile(file.source, file.target, {
-					overwrite: entry.overwrite,
-					runId,
-					onBytes: bytes => this.addBytes(entry, bytes),
-					onWriteInPlace: () => {
-						entry.item.writesInPlace = true;
-						this._onDidChange.fire();
-					},
-					token,
-				});
-				entry.item.doneFiles++;
-			} catch (error) {
-				if (token.isCancellationRequested || isCancellationError(error)) {
-					throw error;
+		// フォルダーは全部作ってあるので、ファイルは上限つきで並べて写す（1 件ずつ待つと、小さいファイルの多い
+		// フォルダーでは往復の待ちが件数ぶん積み重なる）。止めるべき失敗が出たら、新しく始めずに走っている分を待つ
+		let next = 0;
+		let failure: { readonly error: unknown } | undefined;
+		const worker = async (): Promise<void> => {
+			while (next < plan.files.length && failure === undefined && !token.isCancellationRequested) {
+				const index = next++;
+				try {
+					// 一時名は送り先のフォルダーに置くので、並べて写すファイルごとに変える
+					await this.copyOne(entry, plan.files[index], token, `${runId}-${index}`);
+				} catch (error) {
+					failure ??= { error };
 				}
-				// フォルダーの中の読めないファイルは飛ばして続ける（数は行に出す）
-				if (!entry.item.isDirectory || !paradisIsSkippableInsideFolder(paradisClassifyTransferError(error))) {
-					throw error;
-				}
-				entry.item.skipped++;
 			}
-			this.updateSpeed(entry, true);
+		};
+		await Promise.all(Array.from({ length: Math.min(PARADIS_TRANSFER_FILE_PARALLEL, plan.files.length) }, () => worker()));
+		if (failure !== undefined) {
+			throw failure.error;
 		}
-		return true;
+		// 最後の 1 件まで始めていれば済んだとする（置き換えの途中で取り消しても、置き換えが済んでいれば「完了」）
+		return next >= plan.files.length;
+	}
+
+	/** 1 件を写す。フォルダーの中の読めないファイルは飛ばして数える。 */
+	private async copyOne(entry: IEntry, file: IScanPlan['files'][number], token: CancellationToken, runId: string): Promise<void> {
+		try {
+			await this.fileSystem.copyFile(file.source, file.target, {
+				overwrite: entry.overwrite,
+				runId,
+				onBytes: bytes => this.addBytes(entry, bytes),
+				onWriteInPlace: () => {
+					entry.item.writesInPlace = true;
+					this._onDidChange.fire();
+				},
+				token,
+			});
+			entry.item.doneFiles++;
+		} catch (error) {
+			if (token.isCancellationRequested || isCancellationError(error)) {
+				throw error;
+			}
+			// フォルダーの中の読めないファイルは飛ばして続ける（数は行に出す）
+			if (!entry.item.isDirectory || !paradisIsSkippableInsideFolder(paradisClassifyTransferError(error))) {
+				throw error;
+			}
+			entry.item.skipped++;
+		}
+		this.updateSpeed(entry, true);
 	}
 
 	private addBytes(entry: IEntry, bytes: number): void {

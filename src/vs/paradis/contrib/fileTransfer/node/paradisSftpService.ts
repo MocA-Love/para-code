@@ -22,7 +22,7 @@ import { posix } from '../../../../base/common/path.js';
 import { URI, UriComponents } from '../../../../base/common/uri.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { createFileSystemProviderError, FileSystemProviderError, FileSystemProviderErrorCode, FileType, IStat } from '../../../../platform/files/common/files.js';
-import { paradisIsValidMode, paradisRecursiveModeFor } from '../common/paradisFileTransfer.js';
+import { paradisIsValidMode, paradisRecursiveModeFor, paradisTraversableDirectoryMode } from '../common/paradisFileTransfer.js';
 import {
 	IParadisSftpEntry,
 	IParadisSftpFileInfo,
@@ -30,6 +30,7 @@ import {
 	paradisSftpFailureMessage,
 	paradisIsSafeSftpEntryName,
 	paradisSftpIdleMs,
+	PARADIS_SFTP_MAX_IO,
 	PARADIS_SFTP_SCHEME,
 } from '../common/paradisSftp.js';
 import { paradisIsSafeSshHost } from '../../remoteHosts/common/paradisRemoteHosts.js';
@@ -37,14 +38,39 @@ import { IParadisSftpConnectorOptions, IParadisSftpSession, ParadisSftpConnectio
 
 /** 1 回の SFTP 要求の大きさ（OpenSSH が受け付ける大きさ）。 */
 const PARADIS_SFTP_CHUNK = 32 * 1024;
-/** 1 回の read / write で受け付ける上限。 */
-const PARADIS_SFTP_MAX_IO = 4 * 1024 * 1024;
+/**
+ * 開いたファイルの read / write / close 1 回を待つ上限。SSH の keepalive には答えるのに SFTP だけが答えない
+ * 接続で、待ち続けないようにする（4 MiB を遅い回線で書いても収まる長さ）。過ぎたらその接続を捨てる。
+ */
+const PARADIS_SFTP_IO_TIMEOUT_MS = 120_000;
 /** 1 フォルダーの上限。 */
 const PARADIS_SFTP_MAX_ENTRIES = 20_000;
 /** 「中身にも適用」・再帰の削除で辿る上限。 */
 const PARADIS_SFTP_MAX_RECURSIVE = 200_000;
 /** シンボリックリンクの先を調べるときに同時に投げる数。 */
 const PARADIS_SFTP_PARALLEL = 32;
+/** 再帰の削除・権限の変更で、同じフォルダーの中の項目に同時に投げる数。 */
+const PARADIS_SFTP_RECURSIVE_PARALLEL = 8;
+
+/** `items` を `limit` 件ずつ並べて処理する。1 件でも失敗したら、新しく始めずに走っている分を待って投げる。 */
+async function forEachLimited<T>(items: readonly T[], limit: number, run: (item: T) => Promise<void>): Promise<void> {
+	let next = 0;
+	let failure: { readonly error: unknown } | undefined;
+	const worker = async (): Promise<void> => {
+		while (next < items.length && failure === undefined) {
+			const item = items[next++];
+			try {
+				await run(item);
+			} catch (error) {
+				failure ??= { error };
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+	if (failure !== undefined) {
+		throw failure.error;
+	}
+}
 
 const S_IFMT = 0o170000;
 const S_IFDIR = 0o040000;
@@ -183,6 +209,8 @@ async function mapLimited<T, R>(items: readonly T[], limit: number, run: (item: 
 }
 
 interface IOpenHandle {
+	/** 開いたウィンドウ（チャネルの接続元）。ウィンドウが外れたらまとめて閉じる。 */
+	readonly owner: string;
 	readonly alias: string;
 	readonly generation: number;
 	readonly handle: Buffer;
@@ -198,9 +226,31 @@ export class ParadisSftpService extends Disposable {
 	private readonly handles = new Map<number, IOpenHandle>();
 	private nextHandle = 1;
 
-	constructor(options: IParadisSftpConnectorOptions) {
+	private readonly ioTimeoutMs: number;
+
+	constructor(options: IParadisSftpConnectorOptions & { readonly ioTimeoutMs?: number }) {
 		super();
 		this.pool = this._register(new ParadisSftpConnectionPool(options));
+		this.ioTimeoutMs = options.ioTimeoutMs ?? PARADIS_SFTP_IO_TIMEOUT_MS;
+	}
+
+	/**
+	 * 開いたファイルの 1 回の操作に期限を付ける。過ぎたらその世代の接続を捨てて（待っている要求も失敗する）、
+	 * 「繋がらない」として返す。
+	 */
+	private async withIoDeadline<T>(open: IOpenHandle, operation: Promise<T>): Promise<T> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const deadline = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				this.pool.drop(open.alias, open.generation);
+				reject(createFileSystemProviderError(paradisSftpFailureMessage('unreachable'), FileSystemProviderErrorCode.Unavailable));
+			}, this.ioTimeoutMs);
+		});
+		try {
+			return await Promise.race([operation, deadline]);
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	setIdleMs(ms: number): void {
@@ -326,17 +376,18 @@ export class ParadisSftpService extends Disposable {
 				let budget = PARADIS_SFTP_MAX_RECURSIVE;
 				const removeChildren = async (directory: string): Promise<void> => {
 					const { entries } = await readRawDirectory(sftp, directory, PARADIS_SFTP_MAX_RECURSIVE);
-					for (const entry of entries) {
-						if (--budget < 0) {
-							throw createFileSystemProviderError('too many entries', FileSystemProviderErrorCode.Unknown);
-						}
+					budget -= entries.length;
+					if (budget < 0) {
+						throw createFileSystemProviderError('too many entries', FileSystemProviderErrorCode.Unknown);
+					}
+					// 同じフォルダーの中のファイルは並べて消す（1 件ずつ往復を待たない）。フォルダーは 1 つずつ、中を消してから
+					// 消す（並べる数が深さぶん掛け算で増えないように）
+					await forEachLimited(entries.filter(entry => typeOfMode(entry.mode) !== FileType.Directory), PARADIS_SFTP_RECURSIVE_PARALLEL,
+						entry => call<void>(callback => sftp.unlink(posix.join(directory, entry.name), callback)));
+					for (const entry of entries.filter(candidate => typeOfMode(candidate.mode) === FileType.Directory)) {
 						const child = posix.join(directory, entry.name);
-						if (typeOfMode(entry.mode) === FileType.Directory) {
-							await removeChildren(child);
-							await call<void>(callback => sftp.rmdir(child, callback));
-						} else {
-							await call<void>(callback => sftp.unlink(child, callback));
-						}
+						await removeChildren(child);
+						await call<void>(callback => sftp.rmdir(child, callback));
 					}
 				};
 				await removeChildren(path);
@@ -405,43 +456,54 @@ export class ParadisSftpService extends Disposable {
 			throw createFileSystemProviderError('invalid mode', FileSystemProviderErrorCode.Unknown);
 		}
 		return this.run(resource, async ({ sftp }, path) => {
-			await call<void>(callback => sftp.chmod(path, mode, callback));
 			const stats = await lstat(sftp, path);
 			if (!recursive || typeOfMode(stats.mode) !== FileType.Directory) {
+				await call<void>(callback => sftp.chmod(path, mode, callback));
 				return;
 			}
+			// フォルダーは辿れる権限にしておき、中を済ませてから選んだ値に直す（先に x の無い値にすると中を読めない）
+			const setDirectory = async (directory: string, finalMode: number, inside: () => Promise<void>): Promise<void> => {
+				const traversable = paradisTraversableDirectoryMode(finalMode);
+				await call<void>(callback => sftp.chmod(directory, traversable, callback));
+				const settle = () => traversable !== finalMode ? call<void>(callback => sftp.chmod(directory, finalMode, callback)) : Promise.resolve();
+				try {
+					await inside();
+				} catch (error) {
+					// 途中で止まっても、選んだ値には直しておく（元の失敗を返す）
+					await settle().catch(() => undefined);
+					throw error;
+				}
+				await settle();
+			};
 			let budget = PARADIS_SFTP_MAX_RECURSIVE;
 			const walk = async (directory: string): Promise<void> => {
 				const { entries } = await readRawDirectory(sftp, directory, PARADIS_SFTP_MAX_RECURSIVE);
-				for (const entry of entries) {
-					if (--budget < 0) {
-						throw createFileSystemProviderError('too many entries', FileSystemProviderErrorCode.Unknown);
-					}
-					const type = typeOfMode(entry.mode);
-					// リンクは辿らない・変えない（リンク先の権限が変わる）
-					if (type !== FileType.Directory && type !== FileType.File) {
-						continue;
-					}
+				budget -= entries.length;
+				if (budget < 0) {
+					throw createFileSystemProviderError('too many entries', FileSystemProviderErrorCode.Unknown);
+				}
+				// 同じフォルダーの中のファイルは並べて変える（1 件ずつ往復を待たない）。フォルダーは 1 つずつ辿る
+				// （並べる数が深さぶん掛け算で増えないように）。リンクは辿らない・変えない（リンク先の権限が変わる）
+				await forEachLimited(entries.filter(entry => typeOfMode(entry.mode) === FileType.File), PARADIS_SFTP_RECURSIVE_PARALLEL,
+					entry => call<void>(callback => sftp.chmod(posix.join(directory, entry.name), paradisRecursiveModeFor(mode, false, entry.mode & 0o7777), callback)));
+				for (const entry of entries.filter(candidate => typeOfMode(candidate.mode) === FileType.Directory)) {
 					const child = posix.join(directory, entry.name);
-					await call<void>(callback => sftp.chmod(child, paradisRecursiveModeFor(mode, type === FileType.Directory, entry.mode & 0o7777), callback));
-					if (type === FileType.Directory) {
-						await walk(child);
-					}
+					await setDirectory(child, paradisRecursiveModeFor(mode, true, entry.mode & 0o7777), () => walk(child));
 				}
 			};
-			await walk(path);
+			await setDirectory(path, mode, () => walk(path));
 		});
 	}
 
 	// --- 開く・読む・書く・閉じる ------------------------------------------------------------------------
 
-	async openFile(resource: UriComponents, options: { readonly create: boolean; readonly append?: boolean }): Promise<number> {
+	async openFile(resource: UriComponents, options: { readonly create: boolean; readonly append?: boolean }, owner: string = ''): Promise<number> {
 		const { alias } = this.target(resource);
 		return this.run(resource, async ({ sftp }, path, generation) => {
 			const flags = options.create ? (options.append ? 'a' : 'w') : 'r';
 			const handle = await call<Buffer>(callback => sftp.open(path, flags, callback));
 			const id = this.nextHandle++;
-			this.handles.set(id, { alias, generation, handle, retained: this.pool.retainHandle(alias), pending: new Set() });
+			this.handles.set(id, { owner, alias, generation, handle, retained: this.pool.retainHandle(alias), pending: new Set() });
 			return id;
 		});
 	}
@@ -466,7 +528,7 @@ export class ParadisSftpService extends Disposable {
 
 	async read(id: number, position: number, length: number): Promise<VSBuffer> {
 		const open = this.handleFor(id);
-		return this.track(open, this.doRead(open, position, length));
+		return this.track(open, this.withIoDeadline(open, this.doRead(open, position, length)));
 	}
 
 	private async doRead(open: IOpenHandle, position: number, length: number): Promise<VSBuffer> {
@@ -503,7 +565,7 @@ export class ParadisSftpService extends Disposable {
 
 	async write(id: number, position: number, data: VSBuffer): Promise<number> {
 		const open = this.handleFor(id);
-		return this.track(open, this.doWrite(open, position, data));
+		return this.track(open, this.withIoDeadline(open, this.doWrite(open, position, data)));
 	}
 
 	private async doWrite(open: IOpenHandle, position: number, data: VSBuffer): Promise<number> {
@@ -536,13 +598,22 @@ export class ParadisSftpService extends Disposable {
 			// 書きかけの write を待ってから閉じる（閉じた後に残りが届くと、送り先が欠ける）
 			await Promise.allSettled([...open.pending]);
 			if (this.pool.isCurrent(open.alias, open.generation)) {
-				await this.pool.use(open.alias, ({ sftp }) => call<void>(callback => sftp.close(open.handle, callback)));
+				await this.withIoDeadline(open, this.pool.use(open.alias, ({ sftp }) => call<void>(callback => sftp.close(open.handle, callback))));
 			}
 		} catch (error) {
 			throw paradisToSftpProviderError(error);
 		} finally {
 			open.retained.dispose();
 		}
+	}
+
+	/**
+	 * 開いたウィンドウが外れた（閉じた・再読み込みした）。そのウィンドウが開いたままのファイルを閉じる。
+	 * 閉じないと開いたままの数が減らず、使い終わった接続が保持時間で閉じなくなる。
+	 */
+	async closeHandlesOf(owner: string): Promise<void> {
+		const ids = [...this.handles].filter(([, open]) => open.owner === owner).map(([id]) => id);
+		await Promise.allSettled(ids.map(id => this.close(id)));
 	}
 
 	override dispose(): void {
@@ -563,7 +634,7 @@ export class ParadisSftpChannel implements IServerChannel<string> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown, _token?: CancellationToken): Promise<T> {
+	call<T>(ctx: string, command: string, arg?: unknown, _token?: CancellationToken): Promise<T> {
 		const args = (Array.isArray(arg) ? arg : []) as unknown[];
 		switch (command) {
 			case 'configure': {
@@ -583,7 +654,7 @@ export class ParadisSftpChannel implements IServerChannel<string> {
 			case 'rename': return this.service.rename(args[0] as UriComponents, args[1] as UriComponents, { overwrite: !!(args[2] as { overwrite?: boolean } | undefined)?.overwrite }) as Promise<T>;
 			case 'posixRename': return this.service.posixRename(args[0] as UriComponents, args[1] as UriComponents) as Promise<T>;
 			case 'chmod': return this.service.chmod(args[0] as UriComponents, Number(args[1]), !!args[2]) as Promise<T>;
-			case 'openFile': return this.service.openFile(args[0] as UriComponents, { create: !!(args[1] as { create?: boolean } | undefined)?.create, append: !!(args[1] as { append?: boolean } | undefined)?.append }) as Promise<T>;
+			case 'openFile': return this.service.openFile(args[0] as UriComponents, { create: !!(args[1] as { create?: boolean } | undefined)?.create, append: !!(args[1] as { append?: boolean } | undefined)?.append }, ctx) as Promise<T>;
 			case 'read': return this.service.read(Number(args[0]), Number(args[1]), Number(args[2])) as Promise<T>;
 			case 'write': return this.service.write(Number(args[0]), Number(args[1]), args[2] as VSBuffer) as Promise<T>;
 			case 'close': return this.service.close(Number(args[0])) as Promise<T>;
