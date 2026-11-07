@@ -15,7 +15,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../base/common/path.js';
 import { isWindows } from '../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { paradisWriteFileAtomic } from '../../node/paradisWriteFileAtomic.js';
+import { paradisMayWriteInPlaceAfterTempFailure, paradisWriteFileAtomic } from '../../node/paradisWriteFileAtomic.js';
 
 (isWindows ? suite.skip : suite)('Paradis atomic file write', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -54,5 +54,13 @@ import { paradisWriteFileAtomic } from '../../node/paradisWriteFileAtomic.js';
 			plain: await fs.readFile(plain, 'utf8'),
 			mode: (await fs.stat(plain)).mode & 0o777,
 		}, { refused: 'ELOOP', real: 'real', plain: 'new', mode: 0o600 });
+	});
+
+	test('falls back to writing in place only when the temporary file cannot be created, not when the disk is full', () => {
+		const code = (value: string) => Object.assign(new Error(value), { code: value });
+		assert.deepStrictEqual(
+			['EACCES', 'EPERM', 'EEXIST', 'ENAMETOOLONG', 'ENOSPC', 'EIO', 'EDQUOT'].map(value => paradisMayWriteInPlaceAfterTempFailure(code(value))),
+			[true, true, true, true, false, false, false],
+		);
 	});
 });

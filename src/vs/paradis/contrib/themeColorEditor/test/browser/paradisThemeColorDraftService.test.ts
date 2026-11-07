@@ -10,7 +10,7 @@ import assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ConfigurationTarget, IConfigurationValue } from '../../../../../platform/configuration/common/configuration.js';
+import { ConfigurationTarget, IConfigurationUpdateOptions, IConfigurationValue } from '../../../../../platform/configuration/common/configuration.js';
 import { IConfirmation, IConfirmationResult } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
@@ -33,6 +33,8 @@ class LayeredConfigurationService extends TestConfigurationService {
 	readonly layers = new Map<string, ILayers>();
 	readonly writes: { key: string; target: ConfigurationTarget | undefined }[] = [];
 	userWriteGate: Promise<void> | undefined;
+	/** 立てると USER への書き込みが失敗する（settings.json の書式の誤りなど）。本物と同じく、donotNotifyError が無いと通知だけで resolve する。 */
+	failUserWrite = false;
 
 	layer(key: string): ILayers {
 		let layer = this.layers.get(key);
@@ -54,9 +56,9 @@ class LayeredConfigurationService extends TestConfigurationService {
 		};
 	}
 
-	override async updateValue(key: string, value: unknown, arg3?: unknown): Promise<void> {
-		// 3 番目の引数は ConfigurationTarget（数値）か overrides。ここでは target の形しか使わない。
-		const target = typeof arg3 === 'number' ? arg3 as ConfigurationTarget : undefined;
+	override async updateValue(key: string, value: unknown, arg3?: unknown, arg4?: unknown, options?: IConfigurationUpdateOptions): Promise<void> {
+		// 3 番目の引数は ConfigurationTarget（数値）か overrides（そのときは 4 番目が target）。ここでは target の形しか使わない。
+		const target = typeof arg3 === 'number' ? arg3 as ConfigurationTarget : typeof arg4 === 'number' ? arg4 as ConfigurationTarget : undefined;
 		this.writes.push({ key, target });
 		if (target === ConfigurationTarget.MEMORY) {
 			this.layer(key).memory = value;
@@ -64,6 +66,12 @@ class LayeredConfigurationService extends TestConfigurationService {
 			return;
 		}
 		await this.userWriteGate;
+		if (this.failUserWrite) {
+			if (options?.donotNotifyError) {
+				throw new Error('Unable to write into user settings');
+			}
+			return;
+		}
 		this.layer(key).user = value;
 		this.fire(key, ConfigurationTarget.USER);
 	}
@@ -121,6 +129,14 @@ suite('ParadisThemeColorDraftService', () => {
 			during: { memory: { 'focusBorder': '#ABCDEF', '[Houston]': { 'statusBar.background': '#FF0000' } }, dirty: 1 },
 			after: { memory: { 'focusBorder': '#ABCDEF' }, dirty: 0, user: { 'editor.foreground': '#EEEEEE', '[Houston]': { 'editor.background': '#111111' } } },
 		});
+	});
+
+	test('keeps the drafts and fails when the user settings cannot be written', async () => {
+		const { configuration, service } = create();
+		service.setColor('Houston', 'statusBar.background', '#FF0000');
+		configuration.failUserWrite = true;
+		await assert.rejects(service.save());
+		assert.strictEqual(service.dirtyCount, 1);
 	});
 
 	test('saving writes to USER and restores the memory layer', async () => {

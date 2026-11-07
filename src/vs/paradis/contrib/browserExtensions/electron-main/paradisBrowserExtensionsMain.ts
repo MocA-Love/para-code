@@ -804,8 +804,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._privacy?.load();
 		await this._userScripts?.load();
 		await this._sidePanel?.load();
-		// 削除の途中に落ちて残った storage.sync の中身を片付ける
-		await this._syncStore.forgetExtensionsExcept(new Set(this._ledger.extensions.map(extension => extension.id)));
+		// 削除の途中に落ちて残った storage.sync の中身を片付ける。台帳を読めなかった起動（空の台帳）では
+		// 片付けない（入れてある全部の拡張機能の storage.sync を消さないため。下のストアのフォルダの掃除と同じ）
+		if (this._ledgerLoaded) {
+			await this._syncStore.forgetExtensionsExcept(new Set(this._ledger.extensions.map(extension => extension.id)));
+		}
 		// 前の起動で写している途中に落ちて残ったフォルダを片付ける
 		for (const folder of [join(this._root, 'unpacked'), join(this._root, 'webstore')]) {
 			for (const name of await fs.readdir(folder).catch(() => [])) {
@@ -1068,19 +1071,17 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		const userScriptsRequested = new Set<string>();
 		// 「デバッガーの接続を許可」を出す拡張機能（manifest に debugger を求めるもの。chrome.debugger の口があるときだけ）
 		const debuggerRequested = new Set<string>();
-		for (const extension of this._ledger.extensions) {
-			const declared = this._userScripts || this._debugger ? await this._declaredPermissions(extension.path) : [];
-			if (this._userScripts && declared.includes('userScripts')) {
-				userScriptsRequested.add(extension.id);
-			}
-			if (this._debugger && declared.includes('debugger')) {
-				debuggerRequested.add(extension.id);
-			}
-		}
-		// 管理画面に出すアイコン・権限・背景の処理（manifest から）
+		// 管理画面に出すアイコン・権限・背景の処理（manifest から）。上の2つの判定にも同じ読みを使う
 		const summaries = new Map<string, IManifestSummary>();
 		for (const extension of this._ledger.extensions) {
-			summaries.set(extension.id, await this._readManifest(extension.path));
+			const summary = await this._readManifest(extension.path);
+			summaries.set(extension.id, summary);
+			if (this._userScripts && summary.permissions.includes('userScripts')) {
+				userScriptsRequested.add(extension.id);
+			}
+			if (this._debugger && summary.permissions.includes('debugger')) {
+				debuggerRequested.add(extension.id);
+			}
 		}
 		const icons = new Map<string, string>();
 		for (const extension of this._ledger.extensions) {
@@ -1547,9 +1548,14 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				// （台帳を書く前に落ちたら前の版のまま。書いた後に落ちたら新しい版。残ったフォルダは下で片付ける）
 				const target = join(this._root, 'webstore', `${installed.id}-${randomBytes(4).toString('hex')}`);
 				await fs.rename(staged, target);
+				const previousLedger = this._ledger;
 				this._ledger = paradisLedgerWithExtension(this._ledger, { ...installed, path: target, sourcePath: target, name: summary.name.startsWith('__MSG_') ? installed.name : summary.name, version: summary.version, manifestVersion: summary.manifestVersion, touchesPages: summary.touchesPages }, undefined);
 				if (await this._save()) {
 					await fs.rm(installed.path, { recursive: true, force: true }).catch(() => { /* 次の起動で片付ける */ });
+				} else {
+					// 台帳を書けなかった: ディスクの台帳は前の版を指したまま。メモリも前の版へ戻す（戻さないと、
+					// 下の掃除が前の版のフォルダを使っていないものとして消す）。新しい版は下の掃除で片付く
+					this._ledger = previousLedger;
 				}
 			} catch {
 				await fs.rm(staged, { recursive: true, force: true }).catch(() => { /* best effort */ });
@@ -1650,6 +1656,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		const copied = await this._copyFromFolder(existing.sourcePath, existing.generatedKey ? { kind: 'generated', key: existing.generatedKey } : { kind: 'path' });
 		if (!copied.ok) {
 			return copied;
+		}
+		if (this._removedThisRun.has(id) || !this._ledger.extensions.some(extension => extension.id === id)) {
+			// 写している間に（別のウィンドウから）削除された: 台帳へ戻さない
+			await fs.rm(copied.path, { recursive: true, force: true }).catch(() => { /* best effort */ });
+			return { ok: false, reason: 'restartNeeded' };
 		}
 		for (const entry of this._sessions) {
 			this._unload(entry, id);
