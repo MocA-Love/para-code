@@ -318,6 +318,59 @@ suite('ParadisAgentHooksSetup', () => {
 		}
 	});
 
+	test('takes the event from the first hook_event_name, falls back to type, and keeps only query-safe characters', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		this.timeout(15_000);
+		const { createServer } = await import('http');
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hook-event-'));
+		const events: (string | null)[] = [];
+		const server = createServer((request, response) => {
+			request.resume();
+			request.on('end', () => {
+				events.push(new URL(request.url ?? '', 'http://localhost').searchParams.get('event'));
+				response.writeHead(200);
+				response.end('{}');
+			});
+		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once('error', reject);
+				server.listen(0, '127.0.0.1', resolve);
+			});
+			const portFilePath = join(root, 'mcp-port.json');
+			// 整形された（複数行の）ポートファイルでも読める
+			await fs.writeFile(portFilePath, `{\n  "protocolVersion": 1,\n  "port" : ${(server.address() as AddressInfo).port}\n}\n`);
+			const scriptPath = await writeNotifyFixture(root);
+			const payloadPath = join(root, 'hook.json');
+			for (const payload of [
+				// ツールの入力の中の（エスケープされた）イベント名は拾わない
+				'{"tool_input":{"command":"echo \\"hook_event_name\\":\\"Stop\\""},"hook_event_name":"PreToolUse"}',
+				// Codex の legacy notify は type。最初の type を使う
+				'{"type":"agent-turn-complete","input":[{"type":"text"}]}',
+				// 空のイベント名は type へ回す
+				'{"hook_event_name":"","type":"fallback"}',
+				'{"hook_event_name":"a b/c?d"}',
+				// 使える文字が残らなければ送らない
+				'{"hook_event_name":"???"}',
+			]) {
+				await fs.writeFile(payloadPath, payload);
+				await runPipedNotifyScript(scriptPath, payloadPath, {
+					[PARADIS_PANE_TOKEN_ENV_VAR]: 'pane-token',
+					[PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath,
+				});
+			}
+
+			assert.deepStrictEqual(events, ['PreToolUse', 'agent-turn-complete', 'fallback', 'abcd']);
+		} finally {
+			if (server.listening) {
+				await new Promise<void>(resolve => server.close(() => resolve()));
+			}
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('PowerShell hook drains stdin on inactive exits and uses the oversized fallback', () => {
 		const script = paradisGetNotifyScriptContentPs1();
 		assert.match(script, /function Drain-StandardInput/);
