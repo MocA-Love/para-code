@@ -86,14 +86,14 @@ export function paradisRankFrequentPages(entries: readonly IParadisNewTabHistory
 		.map(page => ({ url: page.latest.url, title: displayTitle(page.titled ?? page.latest), iconKey: page.iconed?.icon, count: page.count }));
 }
 
-/** ブックマークの木から、タイルにするもの（バーの先頭の階層のブックマークだけ、フォルダは除く）。 */
+/** ブックマークの木から、タイルにするもの（バーの先頭の階層の http・https のブックマークだけ。フォルダと javascript: などは除く）。 */
 export function paradisBookmarkTiles(nodes: readonly { readonly type: string; readonly url?: string; readonly title?: string; readonly faviconHash?: string }[], limit = PARADIS_NEW_TAB_TILE_LIMIT): IParadisNewTabTile[] {
 	const tiles: IParadisNewTabTile[] = [];
 	for (const node of nodes) {
 		if (tiles.length >= limit) {
 			break;
 		}
-		if (node.type === 'bookmark' && node.url) {
+		if (node.type === 'bookmark' && node.url && paradisNewTabPageKey(node.url) !== undefined) {
 			tiles.push({ url: node.url, title: node.title?.trim() || node.url, iconKey: node.faviconHash });
 		}
 	}
