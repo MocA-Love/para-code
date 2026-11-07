@@ -155,3 +155,117 @@ export function paradisShortenContextBreakdownPaths(breakdown: IParadisClaudeCon
 		memoryFiles: breakdown.memoryFiles.map(row => ({ ...row, name: shortenHome(row.name, home) })),
 	};
 }
+
+/** 期間の内訳の、カテゴリ 1 つ分（値は 1 会話あたり）。 */
+export interface IParadisClaudeContextPeriodCategory {
+	readonly name: string;
+	readonly kind: ParadisClaudeContextCategoryKind;
+	/** 会話あたり平均トークン（そのカテゴリが無い会話は 0 と数える）。 */
+	readonly average: number;
+	readonly max: number;
+	/** 窓に対する平均の割合（0〜100）。 */
+	readonly share: number;
+}
+
+/** 期間の内訳の、メモリファイル・MCP サーバー・エージェント・スキルの 1 行。 */
+export interface IParadisClaudeContextPeriodItem {
+	readonly name: string;
+	/** 読まれた会話の数。 */
+	readonly conversations: number;
+	/** 読まれた会話での 1 会話あたり平均トークン。 */
+	readonly average: number;
+	readonly detail?: string;
+	readonly count?: number;
+}
+
+/**
+ * 期間の内訳（「AI コスト」の画面のカード）。会話ごとの一番大きかった時点（`/compact` の前の山）の内訳を集める。
+ * 会話の数が 0 なら `undefined` の項目は無く、一覧も空。
+ */
+export interface IParadisClaudeContextPeriod {
+	/** 集めた会話の数。 */
+	readonly conversations: number;
+	readonly averageTokens: number;
+	readonly averagePercent: number;
+	readonly maxPercent: number;
+	/** 会話すべての窓が同じならその大きさ。 */
+	readonly window?: number;
+	/** 会話以外（システムプロンプト・ツール・メモリファイル・MCP・スキルなど）の 1 会話あたり平均。 */
+	readonly fixedAverage: number;
+	readonly categories: readonly IParadisClaudeContextPeriodCategory[];
+	readonly memoryFiles: readonly IParadisClaudeContextPeriodItem[];
+	readonly mcpServers: readonly IParadisClaudeContextPeriodItem[];
+	readonly agents: readonly IParadisClaudeContextPeriodItem[];
+	readonly skills: readonly IParadisClaudeContextPeriodItem[];
+	/** 保存してある内訳のうち一番古いものの時刻（「保存は M/D から」）。 */
+	readonly since?: number;
+}
+
+/** 会話の中身にあたるカテゴリ（「毎回かかる分」から外す）。 */
+const CONVERSATION_CATEGORY = 'Messages';
+
+function aggregateItems(lists: readonly (readonly IParadisClaudeContextRow[])[]): IParadisClaudeContextPeriodItem[] {
+	const items = new Map<string, { name: string; conversations: number; tokens: number; detail?: string; count?: number }>();
+	for (const list of lists) {
+		const seen = new Set<string>();
+		for (const row of list) {
+			if (seen.has(row.name)) {
+				continue;
+			}
+			seen.add(row.name);
+			const item = items.get(row.name) ?? { name: row.name, conversations: 0, tokens: 0, ...(row.detail !== undefined ? { detail: row.detail } : {}) };
+			item.conversations++;
+			item.tokens += row.tokens;
+			if (row.count !== undefined) {
+				item.count = Math.max(item.count ?? 0, row.count);
+			}
+			items.set(row.name, item);
+		}
+	}
+	return [...items.values()]
+		.map(item => ({
+			name: item.name, conversations: item.conversations, average: Math.round(item.tokens / item.conversations),
+			...(item.detail !== undefined ? { detail: item.detail } : {}),
+			...(item.count !== undefined ? { count: item.count } : {}),
+		}))
+		.sort((a, b) => b.conversations - a.conversations || b.average - a.average)
+		.slice(0, PARADIS_CLAUDE_CONTEXT_MAX_ROWS);
+}
+
+/** 会話ごとの一番大きかった時点の内訳を、期間の内訳にまとめる。 */
+export function paradisAggregateClaudeContextPeriod(peaks: readonly IParadisClaudeContextBreakdown[], since?: number): IParadisClaudeContextPeriod {
+	const conversations = peaks.length;
+	const windows = new Set(peaks.map(peak => peak.window));
+	const categories = new Map<string, { name: string; kind: ParadisClaudeContextCategoryKind; tokens: number; max: number; share: number }>();
+	let fixedTokens = 0;
+	for (const peak of peaks) {
+		for (const category of peak.categories) {
+			const entry = categories.get(category.name) ?? { name: category.name, kind: category.kind, tokens: 0, max: 0, share: 0 };
+			entry.tokens += category.tokens;
+			entry.max = Math.max(entry.max, category.tokens);
+			entry.share += category.tokens / peak.window * 100;
+			categories.set(category.name, entry);
+			if (category.kind === 'used' && category.name !== CONVERSATION_CATEGORY) {
+				fixedTokens += category.tokens;
+			}
+		}
+	}
+	const average = (value: number) => conversations > 0 ? value / conversations : 0;
+	const kindOrder: Record<ParadisClaudeContextCategoryKind, number> = { used: 0, buffer: 1, free: 2, deferred: 3 };
+	return {
+		conversations,
+		averageTokens: Math.round(average(peaks.reduce((sum, peak) => sum + peak.totalTokens, 0))),
+		averagePercent: Math.round(average(peaks.reduce((sum, peak) => sum + peak.percent, 0))),
+		maxPercent: peaks.reduce((max, peak) => Math.max(max, peak.percent), 0),
+		...(windows.size === 1 ? { window: [...windows][0] } : {}),
+		fixedAverage: Math.round(average(fixedTokens)),
+		categories: [...categories.values()]
+			.map(entry => ({ name: entry.name, kind: entry.kind, average: Math.round(average(entry.tokens)), max: entry.max, share: average(entry.share) }))
+			.sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind] || b.average - a.average),
+		memoryFiles: aggregateItems(peaks.map(peak => peak.memoryFiles)),
+		mcpServers: aggregateItems(peaks.map(peak => peak.mcpServers)),
+		agents: aggregateItems(peaks.map(peak => peak.agents)),
+		skills: aggregateItems(peaks.map(peak => peak.skills)),
+		...(since !== undefined ? { since } : {}),
+	};
+}
