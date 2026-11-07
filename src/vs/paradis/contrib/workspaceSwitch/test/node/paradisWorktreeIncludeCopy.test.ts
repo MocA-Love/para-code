@@ -16,7 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import * as cp from 'child_process';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.js';
-import { IParadisWorktreeIncludeHost, paradisMaterializeWorktreeIncludes, paradisReadWorktreeIncludeDeclarations, paradisUnlinkWorktreeSharedDirectories } from '../../node/paradisWorktreeIncludeCopy.js';
+import { IParadisWorktreeIncludeHost, paradisMaterializeWorktreeIncludes, paradisReadWorktreeIncludeDeclarations, paradisRestoreWorktreeLinks, paradisUnlinkRecordedWorktreeLinks } from '../../node/paradisWorktreeIncludeCopy.js';
 
 (isWindows ? suite.skip : suite)('Paradis worktree include copy', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -32,6 +32,7 @@ import { IParadisWorktreeIncludeHost, paradisMaterializeWorktreeIncludes, paradi
 			checkIgnored: async (_repo, paths) => new Set(paths.filter(path => ignored.includes(path))),
 			canLink: true,
 			directoryLinkType: 'dir',
+			linkRecordPath: join(root, 'links.json'),
 			...overrides,
 		};
 	}
@@ -100,24 +101,39 @@ import { IParadisWorktreeIncludeHost, paradisMaterializeWorktreeIncludes, paradi
 		});
 	});
 
-	test('reads both declarations and unlinks only symlinks before removal', async () => {
+	test('reads both declarations, and before removal unlinks only the links it recorded', async () => {
 		await fs.writeFile(join(repo, '.paracode.json'), '{ "worktree": { "include": [".env"], "sharedDirectories": [".cache/models", ".env", "node_modules"] } }');
 		await fs.writeFile(join(repo, '.worktreeinclude'), '# local\nconfig/secrets.json\n.env\n');
 		const declarations = await paradisReadWorktreeIncludeDeclarations(repo);
 		await paradisMaterializeWorktreeIncludes(repo, worktree, declarations, host(['.env', 'config/secrets.json', '.cache/models']));
+		// 記録に無いリンク（利用者が自分で作ったもの）と、同じ名前の普通のフォルダには触らない
 		await fs.mkdir(join(worktree, 'node_modules'));
-		await paradisUnlinkWorktreeSharedDirectories(worktree, declarations.sharedDirectories);
+		await fs.symlink(outside, join(worktree, 'mine'));
+		const unlinked = await paradisUnlinkRecordedWorktreeLinks(worktree, join(root, 'links.json'));
+		const afterUnlink = (await fs.readdir(worktree)).sort();
+		// 削除が断られたら作り直す
+		await paradisRestoreWorktreeLinks(worktree, unlinked);
 
 		assert.deepStrictEqual({
 			declarations,
-			worktree: (await fs.readdir(worktree)).sort(),
+			unlinked: unlinked.map(record => record.path),
+			afterUnlink,
+			restored: await fs.readlink(join(worktree, '.cache', 'models')),
 			modelsKept: await fs.readFile(join(repo, '.cache', 'models', 'm.bin'), 'utf8'),
 		}, {
 			declarations: { include: ['.env', 'config/secrets.json'], sharedDirectories: ['.cache/models', 'node_modules'] },
-			// リンクは外し、同じ名前の普通のフォルダ（node_modules）は残す。リンク先の中身は消さない
-			worktree: ['.cache', '.env', 'config', 'node_modules'],
+			unlinked: ['.cache/models'],
+			afterUnlink: ['.cache', '.env', 'config', 'mine', 'node_modules'],
+			restored: join(repo, '.cache', 'models'),
 			modelsKept: 'model',
 		});
+	});
+
+	test('does not link without a place to record the link, and refuses a source that points outside', async () => {
+		await fs.writeFile(join(outside, 'shared.env'), 'x');
+		await fs.symlink(join(outside, 'shared.env'), join(repo, '.env.shared'));
+		const result = await paradisMaterializeWorktreeIncludes(repo, worktree, { include: ['.env.shared'], sharedDirectories: ['.cache/models'] }, host(['.env.shared', '.cache/models'], { linkRecordPath: undefined }));
+		assert.deepStrictEqual(result, { copied: [], linked: [], skipped: [{ path: '.env.shared', reason: 'outside' }, { path: '.cache/models', reason: 'unsupported' }] });
 	});
 
 	test('the git service copies only into a linked worktree of the same repository, with git deciding what is ignored', async () => {
@@ -133,12 +149,20 @@ import { IParadisWorktreeIncludeHost, paradisMaterializeWorktreeIncludes, paradi
 
 		const result = await service.copyWorktreeIncludes({ repoPath: repo, worktreePath: worktree });
 		const refusals = await Promise.all([repo, outside].map(path => service.copyWorktreeIncludes({ repoPath: repo, worktreePath: path }).then(() => 'copied', () => 'refused')));
-		// リンクを外してから消すので、--force 無しの削除が通る
+		// 宣言からリンクを外しても、作ったときの記録から外してから消すので、--force 無しの削除が通る
+		await fs.writeFile(join(repo, '.paracode.json'), '{}');
+		// 未追跡のファイルがあると git が断る。そのときは外したリンクを作り直す
+		await fs.writeFile(join(worktree, 'untracked.txt'), '');
+		const refusedRemoval = await service.removeWorktree({ repoPath: repo, worktreePath: worktree, force: false }).then(() => 'removed', () => 'refused');
+		const linkAfterRefusal = await fs.readlink(join(worktree, '.cache', 'models'));
+		await fs.unlink(join(worktree, 'untracked.txt'));
 		await service.removeWorktree({ repoPath: repo, worktreePath: worktree, force: false });
 
-		assert.deepStrictEqual({ result, refusals, removed: await fs.access(worktree).then(() => false, () => true), modelsKept: await fs.readFile(join(repo, '.cache', 'models', 'm.bin'), 'utf8') }, {
+		assert.deepStrictEqual({ result, refusals, refusedRemoval, linkAfterRefusal, removed: await fs.access(worktree).then(() => false, () => true), modelsKept: await fs.readFile(join(repo, '.cache', 'models', 'm.bin'), 'utf8') }, {
 			result: { copied: ['.env'], linked: ['.cache/models'], skipped: [{ path: 'README.md', reason: 'notIgnored' }] },
 			refusals: ['refused', 'refused'],
+			refusedRemoval: 'refused',
+			linkAfterRefusal: join(repo, '.cache', 'models'),
 			removed: true,
 			modelsKept: 'model',
 		});
