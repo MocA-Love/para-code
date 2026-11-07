@@ -21,6 +21,7 @@ import { paradisIsOrphanTerminalRevivalComplete } from './paradisTerminalEditorP
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisRegisterWorktreePresenceLookup, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { PARADIS_PINNED_WORKTREES_STORAGE_KEY, paradisParsePinnedWorktreeKeys, paradisRemoveStaleIds, paradisSerializePinnedWorktreeKeys } from '../common/paradisWorkspaceTreeState.js';
+import { ParadisCoalescedRun } from '../../../common/paradisCoalescedRun.js';
 import { paradisMapLimited } from '../../../common/paradisMapLimited.js';
 
 /**
@@ -114,6 +115,8 @@ export async function paradisDiscardScopeBeforeRemovingKnownWorktree(discardScop
  */
 /** 1 つのリポジトリの worktree を同時に読む数。 */
 const WORKTREE_SCAN_PARALLEL = 8;
+/** 同時に走査するリポジトリの数（リポジトリごとにさらに {@link WORKTREE_SCAN_PARALLEL} 件まで読む）。 */
+const REPOSITORY_SCAN_PARALLEL = 4;
 
 export class ParadisWorktreeService extends Disposable implements IParadisWorktreeService {
 
@@ -140,9 +143,11 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	private readonly _watchers = this._register(new DisposableMap<string>());
 
 	private readonly _refreshScheduler = this._register(new RunOnceScheduler(() => this.refresh(), 500));
-	/** 走っている refresh と、その後に 1 回だけ走らせる refresh。 */
-	private _refreshing: Promise<void> | undefined;
-	private _refreshQueued: Promise<void> | undefined;
+	/**
+	 * refresh は 1 本ずつ走らせ、走っている間に来た分は終わった後の 1 回にまとめる（並べて走らせると、遅い走査の
+	 * 古い結果が後から新しい一覧を上書きする）。
+	 */
+	private readonly _refreshRun = new ParadisCoalescedRun(() => this.runRefresh());
 
 	/** 初回 refresh を終えたか。起動直後は端末の復元前なので missing の自動退役を見送る。 */
 	private _initialRefreshDone = false;
@@ -343,17 +348,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	 * 購読側は失敗をログに出すだけで回復しないので、ここで必ず正常終了させる。
 	 */
 	private refresh(): Promise<void> {
-		// 1 本ずつ走らせる。走っている間に来た分は、終わった後の 1 回にまとめる（並べて走らせると、遅い走査の
-		// 古い結果が後から新しい一覧を上書きする）
-		if (this._refreshing) {
-			this._refreshQueued ??= this._refreshing.then(() => {
-				this._refreshQueued = undefined;
-				return this.refresh();
-			});
-			return this._refreshQueued;
-		}
-		this._refreshing = this.runRefresh().finally(() => this._refreshing = undefined);
-		return this._refreshing;
+		return this._refreshRun.trigger();
 	}
 
 	private async runRefresh(): Promise<void> {
@@ -381,7 +376,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		const retiredStateKeys = new Set<string>();
 
 		// リポジトリごとの走査とブランチ名の読み取りは、先にまとめて並べて待つ（接続先では 1 件ごとに往復する）
-		const reads = await Promise.all(repositories.map(repository => Promise.all([this.scanWorktrees(repository), this.readRepositoryBranch(repository)])));
+		const reads = await paradisMapLimited(repositories, REPOSITORY_SCAN_PARALLEL, repository => Promise.all([this.scanWorktrees(repository), this.readRepositoryBranch(repository)]));
 		for (let index = 0; index < repositories.length; index++) {
 			const repository = repositories[index];
 			const [scan, repositoryBranch] = reads[index];
