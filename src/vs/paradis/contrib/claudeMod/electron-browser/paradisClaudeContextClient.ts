@@ -12,7 +12,7 @@
 import { Event } from '../../../../base/common/event.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisClaudeContextBreakdown, PARADIS_CLAUDE_CONTEXT_CHANNEL } from '../common/paradisClaudeContextBreakdown.js';
+import { IParadisClaudeContextBreakdown, IParadisClaudeContextPeriod, PARADIS_CLAUDE_CONTEXT_CHANNEL } from '../common/paradisClaudeContextBreakdown.js';
 
 export class ParadisClaudeContextClient {
 
@@ -29,9 +29,9 @@ export class ParadisClaudeContextClient {
 		return this.channel.listen<void>('onDidChange');
 	}
 
-	/** 動いている会話の内訳（新しい順）。 */
-	live(): Promise<IParadisClaudeContextBreakdown[]> {
-		return this.channel.call('live');
+	/** 最後の応答が `from`〜`to`（ミリ秒、両端を含む）にある会話の、一番大きかった時点の内訳をまとめたもの。 */
+	period(from: number, to: number): Promise<IParadisClaudeContextPeriod> {
+		return this.channel.call('period', [from, to]);
 	}
 
 	/** 会話の最後の内訳（保存したもの）。無ければ undefined。 */

@@ -316,7 +316,7 @@ export class ParadisCursorOverlayController {
 		this.lastWheelAt.set(this.touch(view, owner), at);
 		const dx = typeof params.deltaX === 'number' && Number.isFinite(params.deltaX) ? params.deltaX : 0;
 		const dy = typeof params.deltaY === 'number' && Number.isFinite(params.deltaY) ? params.deltaY : 0;
-		this.run(view, { kind: 'wheel', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), dx, dy, text: statusText('scroll') });
+		this.run(view, { kind: 'wheel', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), dx, dy, text: statusText('scroll'), scrollText: wheelScrollLabel() });
 	}
 
 	/**
@@ -366,6 +366,7 @@ export class ParadisCursorOverlayController {
 			...(status !== 'idle' ? { park: true } : {}),
 			...(status === 'script' ? { clickText: scriptClickLabel(), scrollText: scriptScrollLabel(), since: extras?.since ?? at } : {}),
 			...(status === 'scroll' && extras?.direction ? { direction: extras.direction } : {}),
+			...(status === 'scroll' ? { scrollText: scrollToScrollLabel() } : {}),
 		});
 	}
 
@@ -493,7 +494,7 @@ export class ParadisCursorOverlayController {
 			return;
 		}
 		this.lastFocusNudgeAt.set(this.touch(view, owner), at);
-		this.run(view, { kind: 'focus', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), texts: typingTexts(), ...(key !== undefined ? { key } : {}) });
+		this.run(view, { kind: 'focus', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), texts: typingTexts(), scrollText: keyScrollLabel(), ...(key !== undefined ? { key } : {}) });
 	}
 
 	/**
@@ -773,6 +774,33 @@ function scriptScrollLabel(): string {
 		return localize('paradis.agentBrowser.cursorScriptScroll', "スクリプトでスクロール {0}");
 	} catch {
 		return 'Scrolled by script {0}';
+	}
+}
+
+/** エージェントのホイールで動いた入れ物の名札（q.html Q574）。`{0}` にはページが量を入れる。 */
+function wheelScrollLabel(): string {
+	try {
+		return localize('paradis.agentBrowser.cursorWheelScroll', "ホイールでスクロール {0}");
+	} catch {
+		return 'Scrolled by wheel {0}';
+	}
+}
+
+/** エージェントのキー（Space・PageDown など）で動いた入れ物の名札（q.html Q574）。 */
+function keyScrollLabel(): string {
+	try {
+		return localize('paradis.agentBrowser.cursorKeyScroll', "キーでスクロール {0}");
+	} catch {
+		return 'Scrolled by key {0}';
+	}
+}
+
+/** scroll_to が要素を探して動かした入れ物の名札（q.html Q574）。 */
+function scrollToScrollLabel(): string {
+	try {
+		return localize('paradis.agentBrowser.cursorScrollToScroll', "探してスクロール {0}");
+	} catch {
+		return 'Scrolled to find {0}';
 	}
 }
 

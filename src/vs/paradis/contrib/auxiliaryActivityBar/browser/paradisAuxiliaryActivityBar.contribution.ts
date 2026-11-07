@@ -7,3 +7,5 @@
 
 // Modern UI (floating panels) styling for the auxiliary activity bar. See the stylesheet for details.
 import './media/paradisAuxiliaryActivityBar.css';
+// Hides the Explorer's merged workspace name in the side bar title. See the stylesheet for details.
+import './media/paradisExplorerTitle.css';
