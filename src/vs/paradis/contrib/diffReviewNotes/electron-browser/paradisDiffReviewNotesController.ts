@@ -19,7 +19,7 @@ import { isLinux } from '../../../../base/common/platform.js';
 import { ICodeEditor, IEditorMouseEvent } from '../../../../editor/browser/editorBrowser.js';
 import { ICodeEditorService } from '../../../../editor/browser/services/codeEditorService.js';
 import { Range } from '../../../../editor/common/core/range.js';
-import { IEditorContribution } from '../../../../editor/common/editorCommon.js';
+import { IEditorContribution, IEditorDecorationsCollection } from '../../../../editor/common/editorCommon.js';
 import { ITextModel } from '../../../../editor/common/model.js';
 import { localize } from '../../../../nls.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
@@ -46,7 +46,7 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 		return editor.getContribution<ParadisDiffReviewNotesController>(PARADIS_DIFF_REVIEW_NOTES_CONTROLLER_ID);
 	}
 
-	private readonly hoverDecorations = this.editor.createDecorationsCollection();
+	private readonly hoverDecorations: IEditorDecorationsCollection;
 	private hoverLine: number | undefined;
 	private readonly draft = this._register(new MutableDisposable<ParadisDiffReviewNoteWidget>());
 	private readonly noteWidgets = this._register(new DisposableStore());
@@ -62,6 +62,7 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
+		this.hoverDecorations = this.editor.createDecorationsCollection();
 		this._register(this.editor.onMouseMove(e => this.onMouseMove(e)));
 		this._register(this.editor.onMouseLeave(() => this.clearHover()));
 		this._register(this.editor.onMouseDown(e => this.onMouseDown(e)));
