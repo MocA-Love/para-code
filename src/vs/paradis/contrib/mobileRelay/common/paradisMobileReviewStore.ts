@@ -289,6 +289,24 @@ export function paradisAttachMobileReviewMarkStats(space: IParadisMobileReviewSp
 }
 
 /**
+ * 確認した後に書き換えられたと分かった印を「確認後に変更あり」にする。識別をどのファイルの識別とも一致しない値
+ * （識別は 16 桁なので末尾に 1 桁足す）に替えるので、一覧では確認し直しが要る状態に出る。`rewritten` は
+ * パスごとの、調べたときの印の識別（その間に付け直された印には触らない）。
+ */
+export function paradisMarkMobileReviewRewritten(space: IParadisMobileReviewSpace, rewritten: ReadonlyMap<string, string>): IParadisMobileReviewSpace {
+	let changed = false;
+	const marks: Record<string, IParadisMobileReviewMark> = { ...space.marks };
+	for (const [path, identity] of rewritten) {
+		const mark = marks[path];
+		if (mark !== undefined && mark.identity === identity) {
+			marks[path] = { identity: identity.length < 64 ? `${identity}0` : '0', reviewedAt: mark.reviewedAt };
+			changed = true;
+		}
+	}
+	return changed ? { ...space, marks } : space;
+}
+
+/**
  * いまの変更の一覧に無いパスの印を外す（コミット・破棄されたファイル）。変わらなければ同じものを返す。
  * `changedPaths` は status のパス（リネームは新しい側）。
  */
