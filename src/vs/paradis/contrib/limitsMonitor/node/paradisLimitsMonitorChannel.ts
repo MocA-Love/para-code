@@ -219,6 +219,8 @@ interface ISetupSession {
 	codexExtraHomes?: readonly string[];
 	/** セッション終了時の後始末(子プロセスkill等)。 */
 	dispose(): void;
+	/** 取り消した（または時間切れにした）。起動の準備中なら、この印を見て codex を起こさずに戻る。 */
+	cancelled?: boolean;
 	/**
 	 * 始めた接続（REH のときだけ。{@link paradisConnectionClientId}）。ほかのクライアントからは
 	 * 状態（ログインの URL を含む）も見えず、取り消しも重複の確定もできない。
@@ -899,7 +901,7 @@ export class ParadisLimitsMonitorService {
 			id: sessionId,
 			state: { phase: 'starting' },
 			codexExtraHomes: extraHomes,
-			dispose: () => { },
+			dispose: () => { session.cancelled = true; },
 			owner,
 		};
 		this.setupSessions.set(sessionId, session);
@@ -941,6 +943,13 @@ export class ParadisLimitsMonitorService {
 			// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
 			// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
 			const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['login']) : undefined;
+			if (session.cancelled) {
+				// 準備（ホームの探索・コマンドの解決・シェル環境の取得）の間に取り消された。codex は起こさない
+				if (createdHome) {
+					await this.removeUnusedCodexHome(homePath);
+				}
+				return;
+			}
 			child = this.spawnCodexLogin(shimInvocation?.file ?? command, shimInvocation?.args ?? ['login'], {
 				env,
 				stdio: ['ignore', 'pipe', 'pipe'],
@@ -970,6 +979,7 @@ export class ParadisLimitsMonitorService {
 		let cancelled = false;
 		session.dispose = () => {
 			cancelled = true;
+			session.cancelled = true;
 			// cmd.exe ラップ時は kill() だと実体の codex が孫として残るためツリーごと落とす
 			paradisKillChildProcessTree(child, error => this.logService.trace(`[ParadisLimitsMonitor] failed to stop 'codex login': ${error}`));
 		};

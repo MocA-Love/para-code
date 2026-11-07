@@ -515,7 +515,7 @@ suite('AudioScheduler', () => {
 		const neverFinishes = new DeferredPromise<void>();
 		const playbackStarted = new DeferredPromise<void>();
 		const events: string[] = [];
-		const scheduler = track(createScheduler({ aivisPlaySafetyTimeoutMs: 25 }));
+		const scheduler = track(createScheduler({ aivisPlaySafetyTimeoutMs: 25, stopLocalPlayback: () => events.push('stop-player') }));
 
 		scheduler.enqueueAivis({
 			async synthesize() {
@@ -539,6 +539,8 @@ suite('AudioScheduler', () => {
 		assert.deepStrictEqual(events, [
 			'synthesize:stuck',
 			'play:stuck',
+			// 鳴り続けているプレイヤーを止めてから次へ（声を重ねない）
+			'stop-player',
 			'synthesize:next',
 			'play:next',
 		]);

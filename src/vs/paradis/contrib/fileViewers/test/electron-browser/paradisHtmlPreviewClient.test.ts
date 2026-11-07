@@ -11,7 +11,9 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IRemoteAuthorityResolverService } from '../../../../../platform/remote/common/remoteAuthorityResolver.js';
 import { getRemoteTunnelGeneration, ITunnelService, RemoteTunnel } from '../../../../../platform/tunnel/common/tunnel.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
-import { ParadisRemotePreviewMounter } from '../../electron-browser/paradisHtmlPreviewClient.js';
+import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
+import { paradisMountLocalPreview, ParadisRemotePreviewMounter } from '../../electron-browser/paradisHtmlPreviewClient.js';
 
 suite('ParadisRemotePreviewMounter', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -181,4 +183,18 @@ suite('ParadisRemotePreviewMounter', () => {
 		await fixture.mounter.mount(resource);
 		assert.strictEqual(fixture.openCount(), 2);
 	});
+});
+
+suite('paradisMountLocalPreview', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('gives up when the preview server does not answer, so the caller can fall back', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const sharedProcess = {
+			getChannel: () => ({
+				call: () => new Promise(() => { }),
+				listen: () => { throw new Error('not used'); },
+			}),
+		} as unknown as ISharedProcessService;
+		await assert.rejects(paradisMountLocalPreview(sharedProcess, URI.file('/work/site')), /did not mount the folder in time/);
+	}));
 });

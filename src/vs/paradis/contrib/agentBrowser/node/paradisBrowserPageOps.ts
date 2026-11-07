@@ -101,6 +101,8 @@ function error(message: string): ToolResult {
 	return { content: [{ type: 'text', text: message }], isError: true };
 }
 
+/** main へ頼むページの操作（上書き・init scripts・強調）を待つ上限。 */
+const PAGE_OPS_MAIN_TIMEOUT_MS = 30_000;
 const INIT_SCRIPT_REMINDER = 'When you have finished checking, call remove_init_script to take it off (it also runs while the user browses in this tab).';
 
 const BINDING_CHANGED = 'PARA_BROWSER_RETRYABLE: the page shared with this terminal pane changed while the tool was running; check get_shared_page and retry.';
@@ -273,6 +275,32 @@ export class ParadisBrowserPageOps {
 		}
 	}
 
+	/**
+	 * main（タブの debugger）へ頼む。固まったページで答えが返らないと、そのタブの列を空けられないので期限を付け、
+	 * 要求が切れたらすぐやめる。期限の後に遅れて済んだ変更は戻さない（そのタブの次の操作・共有の解除で整う）。
+	 */
+	private callMainBounded<T>(call: IParadisPageOpsCall, method: string, args: unknown[]): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			let settled = false;
+			const finish = (settle: () => void) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timer);
+					call.signal?.removeEventListener('abort', onAbort);
+					settle();
+				}
+			};
+			const timer = setTimeout(() => finish(() => reject(new Error(`${method} did not answer in time`))), PAGE_OPS_MAIN_TIMEOUT_MS);
+			const onAbort = () => finish(() => reject(new Error(`${method} was cancelled`)));
+			if (call.signal?.aborted) {
+				onAbort();
+				return;
+			}
+			call.signal?.addEventListener('abort', onAbort, { once: true });
+			this.host.callMain<T>(method, args).then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+		});
+	}
+
 	private isCurrent(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding): boolean {
 		call.requireCurrent();
 		return this.host.binding(call.token) === binding;
@@ -366,6 +394,11 @@ export class ParadisBrowserPageOps {
 			if (!this.isCurrent(call, binding)) {
 				await releaseOutstanding();
 				return { ok: false, sent: index, message: BINDING_CHANGED };
+			}
+			if (call.signal?.aborted) {
+				// 要求が切れた（MCP の接続が閉じた）。残りは送らず、押したままのボタンだけ離す
+				await releaseOutstanding();
+				return { ok: false, sent: index, message: 'the request was cancelled, so the rest of the input was not sent' };
 			}
 			const result = await this.host.dispatchInput(call.token, binding, command.method, JSON.stringify(command.params));
 			if (result.status !== 'success') {
@@ -482,7 +515,7 @@ export class ParadisBrowserPageOps {
 		// 保存領域の持ち主はペイン（`call.token` が tab_id のスコープキーでも、private のタブはペインのトークンから作る）
 		const storageOwnerKey = paradisPageOpsOwnerKey(paradisPaneTokenOfScopeKey(call.token));
 		// 呼んだペインだけが使う保存領域のタブか。main が判定し、プロファイルなら renderer の台帳でも確かめる。
-		const storage = await this.host.callMain<IParadisPageStorageDescription>('describeExactViewStorage', [binding.exactView, ownerKey, storageOwnerKey]);
+		const storage = await this.callMainBounded<IParadisPageStorageDescription>(call, 'describeExactViewStorage', [binding.exactView, ownerKey, storageOwnerKey]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
@@ -500,7 +533,7 @@ export class ParadisBrowserPageOps {
 			}
 			confirmedProfileId = storage.profileId;
 		}
-		const result = await this.host.callMain<IParadisPageOverridesResult>('applyExactViewPageOverrides', [binding.exactView, ownerKey, binding.generation, JSON.stringify(request), confirmedProfileId, storageOwnerKey]);
+		const result = await this.callMainBounded<IParadisPageOverridesResult>(call, 'applyExactViewPageOverrides', [binding.exactView, ownerKey, binding.generation, JSON.stringify(request), confirmedProfileId, storageOwnerKey]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
@@ -577,7 +610,7 @@ export class ParadisBrowserPageOps {
 	}
 
 	private async getOverrides(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding): Promise<ToolResult> {
-		const result = await this.host.callMain<IParadisPageOverridesResult>('getExactViewPageOverrides', [binding.exactView, paradisPageOpsOwnerKey(call.token)]);
+		const result = await this.callMainBounded<IParadisPageOverridesResult>(call, 'getExactViewPageOverrides', [binding.exactView, paradisPageOpsOwnerKey(call.token)]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
@@ -667,7 +700,7 @@ export class ParadisBrowserPageOps {
 
 	private async highlight(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, args: Record<string, unknown>): Promise<ToolResult> {
 		if (args.clear === true) {
-			await this.host.callMain<boolean>('highlightExactView', [binding.exactView, null, 0]);
+			await this.callMainBounded<boolean>(call, 'highlightExactView', [binding.exactView, null, 0]);
 			call.requireCurrent();
 			return text('Removed the highlight.');
 		}
@@ -690,7 +723,7 @@ export class ParadisBrowserPageOps {
 			}
 			rect = { x, y, width, height };
 		}
-		const shown = await this.host.callMain<boolean>('highlightExactView', [binding.exactView, rect, duration * 1000]);
+		const shown = await this.callMainBounded<boolean>(call, 'highlightExactView', [binding.exactView, rect, duration * 1000]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
@@ -709,7 +742,7 @@ export class ParadisBrowserPageOps {
 		// 補った名前を渡すと、main では名前があるものとして読まれ「名前なし」の印が消える。
 		const { source, label, runNow, named } = request.value;
 		const requestJson = JSON.stringify({ source, label: named ? label : undefined, runNow });
-		const result = await this.host.callMain<IParadisInitScriptsResult>('addExactViewInitScript', [binding.exactView, paradisPageOpsOwnerKey(call.token), binding.generation, requestJson, ...(owner ? [owner] : [])]);
+		const result = await this.callMainBounded<IParadisInitScriptsResult>(call, 'addExactViewInitScript', [binding.exactView, paradisPageOpsOwnerKey(call.token), binding.generation, requestJson, ...(owner ? [owner] : [])]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
@@ -727,7 +760,7 @@ export class ParadisBrowserPageOps {
 		if (all === (typeof id === 'string' && id.length > 0) || (id !== undefined && typeof id !== 'string')) {
 			return error('Give either "id" (from list_init_scripts) or "all": true.');
 		}
-		const result = await this.host.callMain<IParadisInitScriptsResult>('removeExactViewInitScripts', [binding.exactView, paradisPageOpsOwnerKey(call.token), all ? null : id]);
+		const result = await this.callMainBounded<IParadisInitScriptsResult>(call, 'removeExactViewInitScripts', [binding.exactView, paradisPageOpsOwnerKey(call.token), all ? null : id]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
@@ -738,7 +771,7 @@ export class ParadisBrowserPageOps {
 	}
 
 	private async listInitScripts(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding): Promise<ToolResult> {
-		const result = await this.host.callMain<IParadisInitScriptsResult>('listExactViewInitScripts', [binding.exactView, paradisPageOpsOwnerKey(call.token)]);
+		const result = await this.callMainBounded<IParadisInitScriptsResult>(call, 'listExactViewInitScripts', [binding.exactView, paradisPageOpsOwnerKey(call.token)]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}

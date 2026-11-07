@@ -37,8 +37,9 @@ class FakePage {
 
 	constructor(private readonly answers: Record<string, unknown[]>) { }
 
-	call(): IParadisBrowserActCall {
+	call(signal?: AbortSignal): IParadisBrowserActCall {
 		return {
+			signal,
 			evaluate: async source => {
 				const rest = source.slice(source.indexOf(PARADIS_BROWSER_QUERY_PAGE_SCRIPT) + PARADIS_BROWSER_QUERY_PAGE_SCRIPT.length);
 				const spec = JSON.parse(/^\)\((?<spec>\{.*?\}), \[/s.exec(rest)!.groups!.spec) as { mode: string };
@@ -75,6 +76,28 @@ suite('paradisBrowserActBy (shared process)', () => {
 			error: false,
 			first: 'Double-clicked at (50, 20).',
 			sent: ['mouseMoved@50,20', 'mousePressed@50,20#1', 'mouseReleased@50,20#1', 'mousePressed@50,20#2', 'mouseReleased@50,20#2'],
+		});
+	});
+
+	test('click_by stops pressing again once the request is cancelled, after releasing what it pressed', async () => {
+		const page = new FakePage({ locate: [button] });
+		const cancelled = new AbortController();
+		const call = page.call(cancelled.signal);
+		const dispatch = call.dispatch;
+		const result = await new ParadisBrowserActBy(() => 'ref').call({
+			...call,
+			// 1 回目を離したところで、MCP の接続が閉じる
+			dispatch: async (method, params) => {
+				const sent = await dispatch(method, params);
+				if (params.type === 'mouseReleased') {
+					cancelled.abort();
+				}
+				return sent;
+			},
+		}, 'click_by', { role: 'button', name: 'Save', double: true });
+		assert.deepStrictEqual({ error: isError(result), sent: page.sent }, {
+			error: true,
+			sent: ['mouseMoved@50,20', 'mousePressed@50,20#1', 'mouseReleased@50,20#1'],
 		});
 	});
 

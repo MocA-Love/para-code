@@ -9,8 +9,10 @@
 // Codex のアカウント追加（`codex login`）の前後。HOME は一時ディレクトリで、本物の codex は起動しない。
 
 import assert from 'assert';
+import { ChildProcess } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -24,6 +26,22 @@ class ParadisCodexMissingService extends ParadisLimitsMonitorService {
 	protected override async resolveCommand(): Promise<string> {
 		this.beforeFailure?.();
 		throw new Error('codex not found');
+	}
+}
+
+/** codex を探している間に止められる。見つけた後に codex を起こそうとしたかを覚える。 */
+class ParadisCodexSlowService extends ParadisLimitsMonitorService {
+	readonly found = new DeferredPromise<void>();
+	spawned = 0;
+
+	protected override async resolveCommand(): Promise<string> {
+		await this.found.p;
+		return 'codex';
+	}
+
+	protected override spawnCodexLogin(): ChildProcess {
+		this.spawned++;
+		throw new Error('codex must not start');
 	}
 }
 
@@ -64,6 +82,22 @@ suite('ParadisLimitsMonitor Codex login', () => {
 			homes: ['.codex'],
 			newHomeLeft: false,
 		});
+	});
+
+	test('does not start codex login when it was cancelled while getting ready, and removes the new home', async () => {
+		const service = new ParadisCodexSlowService(new NullLogService(), undefined, undefined, () => root);
+		const { sessionId } = await service.startCodexLogin(undefined, undefined);
+		// 新しいホームを作り、codex を探している間に取り消す
+		for (let i = 0; i < 100 && !existsSync(join(root, '.codex-2')); i++) {
+			await new Promise(resolve => setTimeout(resolve, 5));
+		}
+		service.cancelSetup(sessionId);
+		service.found.complete();
+		for (let i = 0; i < 100 && existsSync(join(root, '.codex-2')); i++) {
+			await new Promise(resolve => setTimeout(resolve, 5));
+		}
+		service.dispose();
+		assert.deepStrictEqual({ spawned: service.spawned, homes: readdirSync(root).sort() }, { spawned: 0, homes: [] });
 	});
 
 	test('removes a half-written config.toml with the new home, but keeps a new home that has anything else', async () => {

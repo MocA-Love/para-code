@@ -171,6 +171,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 
 	/** 再生中の音声プレイヤー（afplay 等）。音声入力が始まったら止める。 */
 	private readonly _audioPlayers = new Set<ChildProcess>();
+	/** Linux で形式（拡張子）ごとに、最後に鳴らせたプレイヤー。 */
+	private readonly _linuxPlayerByFormat = new Map<string, string>();
 	/** 音声入力で止めたプレイヤー。その終了は失敗として扱わない。 */
 	private readonly _stoppedPlayers = new WeakSet<ChildProcess>();
 	/** 音声入力（ディクテーション）中のウィンドウ（接続）。1つでもあれば読み上げを止める。上限はウィンドウごと。 */
@@ -243,8 +245,11 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			isHandoffAvailable: () => this._isHandoffAvailable(),
 			// worker の再生 lock の待ちは、スケジューラが再生の安全網の外で待つ
 			waitForPlayLock: async () => { await this._ingest?.whenPlayLockFree(PLAY_LOCK_WAIT_MS); },
+			stopLocalPlayback: () => this._stopAudioPlayers(),
 		});
 		this._register({ dispose: () => this._scheduler.dispose() });
+		// 終わるときも鳴っているプレイヤーを残さない
+		this._register({ dispose: () => this._stopAudioPlayers() });
 		if (this._ingest) {
 			const ingestForReady = this._ingest;
 			// 子が名乗ったら、復旧待ちの時間切れを忘れる（次に起こし直す間はまた待つ）
@@ -713,10 +718,15 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		// worker が鳴らしているエージェントの声・通知の読み上げも止める（20 秒ごとに延長し、外したら消す）
 		this._ingest?.setHold(this._dictationHoldOwner, held);
 		if (held) {
-			for (const player of this._audioPlayers) {
-				this._stoppedPlayers.add(player);
-				player.kill();
-			}
+			this._stopAudioPlayers();
+		}
+	}
+
+	/** 鳴っている手元のプレイヤーを止める（止めたものの終わりは失敗として扱わない）。 */
+	private _stopAudioPlayers(): void {
+		for (const player of this._audioPlayers) {
+			this._stoppedPlayers.add(player);
+			player.kill();
 		}
 	}
 
@@ -972,8 +982,13 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			...(/\.mp3$/i.test(soundPath) ? [['mpg123', ['-q', '-f', Math.round(volumeDecimal * 32768).toString(), soundPath]] as const] : []),
 			...(/\.wav$/i.test(soundPath) ? [['aplay', ['-q', soundPath]] as const] : []),
 		];
-		for (const [command, args] of candidates) {
+		// 前に鳴らせたプレイヤーを先に試す（形式ごと。使えないプレイヤーを毎回先頭から起こさない）
+		const format = /\.(?<extension>[a-z0-9]+)$/i.exec(soundPath)?.groups?.extension?.toLowerCase() ?? '';
+		const remembered = this._linuxPlayerByFormat.get(format);
+		const ordered = remembered === undefined ? candidates : [...candidates.filter(([command]) => command === remembered), ...candidates.filter(([command]) => command !== remembered)];
+		for (const [command, args] of ordered) {
 			if (await this._tryAudioPlayer(command, args)) {
+				this._linuxPlayerByFormat.set(format, command);
 				return;
 			}
 			if (this._scheduler.isHeld) {
