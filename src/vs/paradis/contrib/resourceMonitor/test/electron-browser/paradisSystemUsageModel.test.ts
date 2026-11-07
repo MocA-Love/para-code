@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisHostResources, IParadisResourceMonitorSnapshot } from '../../common/paradisResourceMonitor.js';
 import { IParadisSystemUsageRequest, IParadisSystemUsageResponse, paradisEncodeSystemUsageSeries } from '../../common/paradisSystemUsage.js';
@@ -55,12 +56,30 @@ suite('ParadisSystemUsageModel', () => {
 
 	function createModel(remote: ((command: string, arg: unknown) => unknown) | undefined, calls: IChannelCall[]) {
 		const shared = { getChannel: (name: string) => channelOf(`shared:${name}`, calls, () => usageResponse('local-run', 'this-mac.local')) };
-		const remoteAgent = {
-			getConnection: () => remote === undefined ? null : { remoteAuthority: 'ssh-remote+dev-server', getChannel: (name: string) => channelOf(`remote:${name}`, calls, remote) },
-		};
+		// 本物と同じく、同じ接続の間は同じものを返す
+		const connection = remote === undefined ? null : { remoteAuthority: 'ssh-remote+dev-server', getChannel: (name: string) => channelOf(`remote:${name}`, calls, remote) };
+		const remoteAgent = { getConnection: () => connection };
 		const label = { getHostLabel: () => 'SSH: dev-server' };
 		return new ParadisSystemUsageModel(shared as never, remoteAgent as never, label as never);
 	}
+
+	test('asks an old remote server only for the current values once it is known not to have the history', async () => {
+		const calls: IChannelCall[] = [];
+		const model = createModel(command => command === 'getSystemUsage' ? new Error('Method not found: getSystemUsage') : hostResources(42.44, 80), calls);
+		await model.refresh('remote', '5m');
+		const second = await model.refresh('remote', '5m');
+		assert.deepStrictEqual({ calls: calls.map(call => call.command), legacy: second.legacy }, {
+			calls: ['getSystemUsage', 'getHostResources', 'getHostResources'],
+			legacy: true,
+		});
+	});
+
+	test('gives up on a remote that does not answer instead of waiting forever', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const calls: IChannelCall[] = [];
+		const model = createModel(() => new Promise<never>(() => { }), calls);
+		const view = await model.refresh('remote', '5m');
+		assert.deepStrictEqual({ error: view.error, calls: calls.length }, { error: 'timed out', calls: 1 });
+	}));
 
 	test('falls back to the current values when the remote server does not know the history command', async () => {
 		const calls: IChannelCall[] = [];

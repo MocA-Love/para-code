@@ -99,6 +99,28 @@ export function unpackParadisWorkbookStyles(workbook: IParadisWorkbookData | IPa
 }
 
 /**
+ * {@link unpackParadisWorkbookStyles} と同じものを、写しを作らずに `workbook` を書き換えて返す。
+ * 復号した直後で、ほかに誰も持っていないブックだけに使う（セル数に比例する写しを作らない）。
+ */
+export function unpackParadisWorkbookStylesInPlace(workbook: IParadisWorkbookData | IParadisPackedWorkbookData): IParadisWorkbookData {
+	if (!isPacked(workbook)) {
+		return workbook;
+	}
+	const cellStyles = workbook.cellStyles;
+	const empty: IParadisCellStyle = {};
+	for (const sheet of workbook.sheets) {
+		for (const row of sheet.rows) {
+			for (const cell of row.cells) {
+				const style: unknown = cell.style;
+				(cell as unknown as { style: IParadisCellStyle }).style = (Number.isInteger(style) ? cellStyles[style as number] : undefined) ?? empty;
+			}
+		}
+	}
+	delete (workbook as { cellStyles?: unknown }).cellStyles;
+	return workbook as unknown as IParadisWorkbookData;
+}
+
+/**
  * 書式を表にまとめたブックを JSON のバイト列にする（解析の worker の中で使う）。shared process はこれを開かずに
  * renderer へ中継するので、大きなブックの写しと文字列化が shared process 本体で走らない。
  */

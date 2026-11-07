@@ -610,6 +610,17 @@ export class ParadisSftpConnectionPool extends Disposable {
 		return !!entry?.session && entry.generation === generation;
 	}
 
+	/**
+	 * その世代の接続を捨てる（答えなくなった接続）。待っている要求は失敗し、次の操作で繋ぎ直す。
+	 * もう世代が進んでいれば何もしない。
+	 */
+	drop(alias: string, generation: number): void {
+		const entry = this.entries.get(alias);
+		if (entry && entry.generation === generation && entry.session) {
+			this.close(entry, 'stalled');
+		}
+	}
+
 	/** ファイルを開いた・閉じた（開いている間は閉じない）。 */
 	retainHandle(alias: string): IDisposable {
 		const entry = this.entryFor(alias);
@@ -645,7 +656,7 @@ export class ParadisSftpConnectionPool extends Disposable {
 		}, this.idleMs);
 	}
 
-	private close(entry: IPoolEntry, why: 'idle' | 'dispose'): void {
+	private close(entry: IPoolEntry, why: 'idle' | 'dispose' | 'stalled'): void {
 		if (entry.session) {
 			this.options.logService.info(`${LOG_PREFIX} closed ${why}`);
 		}

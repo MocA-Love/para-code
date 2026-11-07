@@ -16,6 +16,7 @@
 
 import { localize } from '../../../../nls.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -100,7 +101,30 @@ interface IParadisSystemUsageMachineCache {
 	unsupported: readonly ParadisSystemUsageMetric[];
 	latest: IParadisSystemUsageSample | undefined;
 	legacy: boolean;
+	/** 履歴のコマンドを知らないと分かった接続（同じ接続の間は、履歴を問い合わせずに今の値だけを取る）。 */
+	legacyConnection: object | undefined;
 	error: string | undefined;
+}
+
+/** 使用率の問い合わせを待つ上限。接続が切れずに返らないときも、ほかのマシンの表示や次の更新を止めない。 */
+const SYSTEM_USAGE_CALL_TIMEOUT_MS = 15_000;
+
+/** 上限つきで呼ぶ。上限を過ぎたら要求を取り消して失敗にする。 */
+async function callWithDeadline<T>(channel: IChannel, command: string, arg: unknown): Promise<T> {
+	const source = new CancellationTokenSource();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await new Promise<T>((resolve, reject) => {
+			timer = setTimeout(() => {
+				source.cancel();
+				reject(new Error('timed out'));
+			}, SYSTEM_USAGE_CALL_TIMEOUT_MS);
+			channel.call<T>(command, arg, source.token).then(resolve, reject);
+		});
+	} finally {
+		clearTimeout(timer);
+		source.dispose();
+	}
 }
 
 /** ホスト名の最初の区切りまで（`dev-server.example.com` → `dev-server`）。 */
@@ -174,7 +198,7 @@ export class ParadisSystemUsageModel implements IParadisSystemUsageModel {
 	private cacheOf(machineId: ParadisSystemUsageMachineId): IParadisSystemUsageMachineCache {
 		let cache = this.caches.get(machineId);
 		if (cache === undefined) {
-			cache = { tiers: new Map(), machine: undefined, unsupported: [], latest: undefined, legacy: false, error: undefined };
+			cache = { tiers: new Map(), machine: undefined, unsupported: [], latest: undefined, legacy: false, legacyConnection: undefined, error: undefined };
 			this.caches.set(machineId, cache);
 		}
 		return cache;
@@ -186,7 +210,7 @@ export class ParadisSystemUsageModel implements IParadisSystemUsageModel {
 			throw new Error('not connected');
 		}
 		try {
-			return await channel.call<IParadisSystemUsageResponse>(PARADIS_SYSTEM_USAGE_COMMAND, request);
+			return await callWithDeadline<IParadisSystemUsageResponse>(channel, PARADIS_SYSTEM_USAGE_COMMAND, request);
 		} catch (error) {
 			if (machineId === 'remote' && paradisIsSystemUsageUnsupportedError(error)) {
 				return undefined;
@@ -220,8 +244,15 @@ export class ParadisSystemUsageModel implements IParadisSystemUsageModel {
 			...(last !== undefined && tierCache.instanceId !== undefined ? { since: last.t, instanceId: tierCache.instanceId } : {}),
 		};
 		try {
+			// 古い REH と分かった接続には、毎回まず履歴を問い合わせて断られる往復を省く
+			const connection = machineId === 'remote' ? this.remoteAgentService.getConnection() ?? undefined : undefined;
+			if (connection !== undefined && cache.legacyConnection === connection) {
+				await this.fetchLegacy(machineId, cache);
+				return;
+			}
 			const response = await this.fetchRaw(machineId, request);
 			if (response === undefined) {
+				cache.legacyConnection = connection;
 				await this.fetchLegacy(machineId, cache);
 				return;
 			}
@@ -253,7 +284,7 @@ export class ParadisSystemUsageModel implements IParadisSystemUsageModel {
 		if (channel === undefined) {
 			throw new Error('not connected');
 		}
-		const host = await channel.call<IParadisHostResources>('getHostResources', {});
+		const host = await callWithDeadline<IParadisHostResources>(channel, 'getHostResources', {});
 		cache.tiers.clear();
 		cache.legacy = true;
 		cache.error = undefined;

@@ -59,6 +59,11 @@ export type ParadisPtyRebuildReason =
  * @param attachment 戻ってきたときに常駐が返したもの。
  */
 export function paradisPlanPtyReattach(mark: IParadisPtyLetGoMark | undefined, attachment: IParadisPtyAttachment): ParadisPtyReattachPlan {
+	// 常駐が差分で返した（繋ぐときに渡した `since` から後だけ）。中身はもう末尾の差分
+	if (attachment.sinceMark === true) {
+		const data = attachment.frames.map(frame => frame.data).join('');
+		return data.length === 0 ? { kind: 'unchanged' } : { kind: 'tail', data };
+	}
 	if (attachment.written === undefined) {
 		return { kind: 'rebuild', reason: 'no-count' };
 	}

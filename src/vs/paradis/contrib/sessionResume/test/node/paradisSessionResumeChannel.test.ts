@@ -353,6 +353,36 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	test('reads the Codex index page by page and still finds an older conversation of the space behind many others', async () => {
+		const olderPath = join(codexSessions, 'rollout-older-db-session.jsonl');
+		await writeLines(olderPath, [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'older-db-session', cwd: workspace } }),
+			codexMessage('user', 'Older conversation'),
+		]);
+		createCodexDatabase(`
+			CREATE TABLE threads (
+				id TEXT PRIMARY KEY,
+				cwd TEXT NOT NULL,
+				rollout_path TEXT NOT NULL,
+				title TEXT NOT NULL,
+				updated_at_ms INTEGER NOT NULL
+			)
+		`, database => {
+			const insert = database.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?)');
+			// ほかのフォルダの新しい会話が 1 ページ（200 行）より多く並ぶ
+			database.exec('BEGIN');
+			for (let index = 0; index < 450; index++) {
+				insert.run(`other-${index}`, join(workspace, '..', 'elsewhere'), join(codexSessions, `rollout-other-${index}.jsonl`), `Other ${index}`, 10_000 + index);
+			}
+			database.exec('COMMIT');
+			insert.run('older-db-session', workspace, olderPath, 'Older database title', 1_000);
+		});
+
+		const sessions = await listSessions(createService());
+
+		assert.deepStrictEqual(sessions.map(session => ({ id: session.id, title: session.title })), [{ id: 'older-db-session', title: 'Older database title' }]);
+	});
+
 	test('falls back to Codex rollouts when the SQLite index lacks required columns', async () => {
 		const rolloutPath = join(codexSessions, 'rollout-missing-columns-fallback.jsonl');
 		await writeLines(rolloutPath, [
