@@ -126,3 +126,14 @@ export function paradisGroupNewTabServers(
 export function paradisNewTabServerAddress(port: number): string {
 	return `localhost:${port}`;
 }
+
+/** 新しいタブの PR の覚え: 古い（取った時刻の早い）順に、上限を超えた分を捨てる。取りに行っている途中のものは残す。 */
+export function paradisTrimPullRequestCache(cache: Map<string, { readonly at: number; readonly pending: boolean }>, limit: number): void {
+	if (cache.size <= limit) {
+		return;
+	}
+	const oldest = [...cache.entries()].filter(([, entry]) => !entry.pending).sort((a, b) => a[1].at - b[1].at);
+	for (const [key] of oldest.slice(0, cache.size - limit)) {
+		cache.delete(key);
+	}
+}
