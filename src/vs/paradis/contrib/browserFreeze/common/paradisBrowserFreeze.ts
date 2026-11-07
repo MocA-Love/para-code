@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-/** 長く隠れたままの内蔵ブラウザのタブを休ませる（凍結する）か。既定はオン。 */
+/** 長く隠れたままの内蔵ブラウザのタブを休ませる（凍結する）か。既定はオフ（裏で処理を進めるページや常時接続のページを止めないため）。 */
 export const PARADIS_BROWSER_FREEZE_HIDDEN_TABS_SETTING = 'paradis.browser.freezeHiddenTabs';
 
 /** 隠れてからこの時間がたったタブを休ませる。 */
