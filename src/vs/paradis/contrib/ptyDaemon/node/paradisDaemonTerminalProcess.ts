@@ -805,7 +805,8 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 
 	acknowledgeDataEvent(charCount: number): void {
 		if (this.handle !== undefined) {
-			void this.host.acknowledge(this.handle, charCount);
+			// 常駐との接続が切れていると断られる。ほかの知らせと同じく受け止める（unhandled rejection にしない）
+			this.tell('acknowledge', this.host.acknowledge(this.handle, charCount));
 		}
 	}
 

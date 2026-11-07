@@ -23,7 +23,8 @@ const MAX_URL = 200;
 interface IInflight {
 	readonly startedAt: number;
 	readonly url: string;
-	readonly connection: object;
+	/** その要求の始まりを見た接続（同じタブを 2 本の接続が見ていれば両方）。全部閉じたら台帳から外す。 */
+	readonly connections: Set<object>;
 	/** 最後に応答・データを受け取った時刻。静かな時間は、数えなかった長く続く要求の受信では戻さない。 */
 	lastDataAt?: number;
 }
@@ -57,12 +58,15 @@ export class ParadisNetworkActivity {
 		switch (method) {
 			case 'Network.requestWillBeSent': {
 				this._lastActivityAt = this._now();
-				if (!this._inflight.has(key)) {
+				const existing = this._inflight.get(key);
+				if (existing) {
+					existing.connections.add(connection);
+				} else {
 					if (this._inflight.size >= MAX_INFLIGHT) {
 						this._inflight.delete(this._inflight.keys().next().value!);
 					}
 					const url = (params as { request?: { url?: unknown } }).request?.url;
-					this._inflight.set(key, { startedAt: this._lastActivityAt, url: typeof url === 'string' ? url.slice(0, MAX_URL) : '', connection });
+					this._inflight.set(key, { startedAt: this._lastActivityAt, url: typeof url === 'string' ? url.slice(0, MAX_URL) : '', connections: new Set([connection]) });
 				}
 				return;
 			}
@@ -88,7 +92,8 @@ export class ParadisNetworkActivity {
 	/** 接続が閉じた。その接続で始まった要求の終わりはもう来ない。 */
 	forgetConnection(connection: object): void {
 		for (const [key, entry] of this._inflight) {
-			if (entry.connection === connection) {
+			// 同じ要求をほかの接続でも見ていれば、その接続から終わりが届くので残す
+			if (entry.connections.delete(connection) && entry.connections.size === 0) {
 				this._inflight.delete(key);
 			}
 		}
