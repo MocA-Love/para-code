@@ -15,6 +15,7 @@
 import * as cp from 'child_process';
 import { constants as fsConstants, promises as fs } from 'fs';
 import { homedir } from 'os';
+import { raceTimeout } from '../../../../base/common/async.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { basename, dirname, isAbsolute, join } from '../../../../base/common/path.js';
@@ -28,6 +29,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { localize } from '../../../../nls.js';
+import { paradisGrantClaudeWorktreeTrust, paradisReadClaudeTrustMarker, paradisRevokeClaudeWorktreeTrust } from './paradisClaudeFolderTrust.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisGithubCallResource, paradisGithubCallSiteFromArgs, paradisGithubResourceFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
@@ -129,6 +131,8 @@ const PARADIS_GIT_LONG_COMMAND_TIMEOUT_MS = 120_000;
  * 打ち切ると途中まで消えた状態で止まり、押すたびに 30 秒分しか進まなかった。
  */
 const PARADIS_WORKTREE_REMOVE_TIMEOUT_MS = 10 * 60_000;
+/** Claude Code の信頼の書き込み・取り消しを待つ上限。超えたら待たずに進む（書き込みは裏で続く）。 */
+const PARADIS_CLAUDE_TRUST_TIMEOUT_MS = 5_000;
 
 /** 時間切れの SIGTERM の後、SIGKILL するまでの猶予（git が index.lock を片付ける時間）。 */
 const PARADIS_GIT_KILL_GRACE_MS = 5_000;
@@ -979,6 +983,27 @@ export class ParadisWorktreeGitService {
 			// prune の失敗は致命的ではない
 		}
 		await this.exec(['-C', paradisWslPathArg(request.repoPath), 'worktree', 'add', '--no-track', '-b', request.newBranch, paradisWslPathArg(request.worktreePath), request.baseRef]);
+		if (request.trustClaudeFolder === true) {
+			await this.grantClaudeTrust(request.worktreePath);
+		}
+	}
+
+	/**
+	 * 作ったワークツリーを Claude Code に信頼済みとして書く（Orca 第三弾 G-04）。作成は止めない: 失敗・時間切れは
+	 * ログに残すだけで、信頼の確認の画面は今までどおり検出される。WSL の中のワークツリーは、そこで動く Claude が
+	 * ディストロ側のホームの設定を読むので書かない。
+	 */
+	private async grantClaudeTrust(worktreePath: string): Promise<void> {
+		if (this.isWindowsHost && paradisParseWslUncPath(worktreePath) !== undefined) {
+			return;
+		}
+		try {
+			const env = await this.cachedShellEnv.getEnv();
+			const outcome = await raceTimeout(paradisGrantClaudeWorktreeTrust(worktreePath, env), PARADIS_CLAUDE_TRUST_TIMEOUT_MS);
+			this.logService.info(`[ParadisWorktreeGit] Claude Code folder trust for a new worktree: ${outcome ?? 'timed out'}`);
+		} catch (error) {
+			this.logService.warn('[ParadisWorktreeGit] could not pre-trust the new worktree for Claude Code', String(error));
+		}
 	}
 
 	/**
@@ -1039,8 +1064,18 @@ export class ParadisWorktreeGitService {
 			args.push('--force');
 		}
 		args.push(paradisWslPathArg(request.worktreePath));
+		// Para Code が書いた Claude Code の信頼の控えは管理フォルダーにあり、削除で消えるので先に読む
+		const claudeTrust = await paradisReadClaudeTrustMarker(request.worktreePath);
 		try {
 			await this.exec(args, undefined, { timeout: PARADIS_WORKTREE_REMOVE_TIMEOUT_MS });
+			if (claudeTrust !== undefined) {
+				try {
+					const outcome = await raceTimeout(paradisRevokeClaudeWorktreeTrust(claudeTrust), PARADIS_CLAUDE_TRUST_TIMEOUT_MS);
+					this.logService.info(`[ParadisWorktreeGit] Claude Code folder trust of a removed worktree: ${outcome ?? 'timed out'}`);
+				} catch (error) {
+					this.logService.warn('[ParadisWorktreeGit] could not revoke the Claude Code folder trust of a removed worktree', String(error));
+				}
+			}
 		} catch (error) {
 			if (restoreLock !== undefined) {
 				const relock: ParadisCommandArgument[] = ['-C', paradisWslPathArg(request.repoPath), 'worktree', 'lock'];

@@ -735,6 +735,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 		worktreePath: gitHost.path(worktreeUri),
 		newBranch: branch,
 		baseRef,
+		trustClaudeFolder: configurationService.getValue<boolean>('paradis.workspaceSwitch.trustClaudeFolder') !== false,
 	};
 	await gitHost.channel.call('addWorktree', [addRequest]);
 
