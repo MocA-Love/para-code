@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // shared process のコンテキストの内訳の保存（paradisClaudeContext.sharedProcess.ts）を呼ぶ薄いクライアント。
-// 内訳は手元のペインの mod からだけ届くので、SSH のウィンドウでも手元の shared process へ聞く。
+// 内訳は SSH 先のペインの mod からも手元の shared process へ届くので、SSH のウィンドウでも手元へ聞く。
 
 import { Event } from '../../../../base/common/event.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';

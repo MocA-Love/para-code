@@ -214,7 +214,7 @@ type AgentOutbound =
 	| { t: 'tool-full'; id: number; requestId: string; rev: number; text?: string; error?: string }
 	/**
 	 * 会話のコンテキストの内訳（`agent.context-breakdown.v1`）。`breakdown` は最後に取れた 1 件（`at` が取った時刻）、`live` は
-	 * その会話がまだ動いているか。取れないときは `reason`（`agent`: Claude Code 以外、`remote`: SSH 先のペイン、`none`: まだ無い、
+	 * その会話がまだ動いているか。取れないときは `reason`（`agent`: Claude Code 以外、`remote`: SSH 先のペイン（今の PC は使わない。接続先でも mod が動くため）、`none`: まだ無い、
 	 * `unavailable`: ペインが分からない）と、そのまま出せる `error`。
 	 */
 	| { t: 'context-breakdown'; id: number; requestId: string; breakdown?: IParadisClaudeContextBreakdown; live?: boolean; reason?: ParadisContextBreakdownUnavailable; error?: string }
@@ -5199,10 +5199,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		const session = this.paneSessions.get(token);
 		if (session !== undefined && session.agent !== 'claude') {
 			fail('agent');
-			return;
-		}
-		if (this.isRemoteAgentPane(token)) {
-			fail('remote');
 			return;
 		}
 		const store = paradisClaudeContextStore();

@@ -117,7 +117,7 @@ export function paradisRenderContextLiveCard(
 			paradisRenderContextBreakdown(dom.append(card, $('.paradis-ccusage-context-open')), breakdown, options);
 		}
 	}
-	dom.append(card, $('.paradis-ccusage-note.paradis-ccusage-context-foot')).textContent = localize('paradis.ccusage.context.foot', "手元のターミナルの Claude Code だけ（Codex と SSH 先のペインは出ません）");
+	dom.append(card, $('.paradis-ccusage-note.paradis-ccusage-context-foot')).textContent = localize('paradis.ccusage.context.foot', "Para Code のターミナルの Claude Code だけ（Codex のペインは出ません）");
 }
 
 /** 内訳 1 件（帯・カテゴリ・メモリファイル・MCP サーバー・エージェント・スキル）。 */
