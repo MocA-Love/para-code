@@ -22,6 +22,7 @@ import { readFile, statfs } from 'fs/promises';
 import { cpus, freemem, homedir, totalmem } from 'os';
 import { parse as parsePath } from '../../../../base/common/path.js';
 import { ParadisSystemUsageMetric } from '../common/paradisSystemUsage.js';
+import { paradisWithTimeout } from './paradisHostResources.js';
 import {
 	IParadisSystemUsageCounters,
 	PARADIS_DARWIN_SYSTEM_USAGE_SCRIPT,
@@ -52,22 +53,6 @@ export interface IParadisSystemUsageReader {
 	read(now: number): Promise<IParadisSystemUsageCounters>;
 	/** 実行中の外部コマンドを止める。 */
 	dispose?(): void;
-}
-
-async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T | undefined> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		return await Promise.race([
-			work,
-			new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
-		]);
-	} catch {
-		return undefined;
-	} finally {
-		if (timer !== undefined) {
-			clearTimeout(timer);
-		}
-	}
 }
 
 type ParadisDiskUsage = { diskUsed?: number; diskTotal?: number };
@@ -112,7 +97,7 @@ export class ParadisDiskUsageReader {
 			}
 		});
 		this.inflight = settled;
-		const result = await withTimeout(outcome, this.timeoutMs);
+		const result = await paradisWithTimeout(outcome, this.timeoutMs);
 		if (result === undefined) {
 			// 時間内に返らなかった。返るまでは前回の値を使い続ける
 			return this.last;
@@ -175,13 +160,18 @@ async function waitForProcessGroupExit(pgid: number, limitMs: number): Promise<b
 
 /** 打ち切った後、グループが消えるのを待つ上限。これを過ぎても消えなければ、次の測定の前にもう一度確かめる。 */
 const PROCESS_GROUP_EXIT_WAIT_MS = 2_000;
+/**
+ * 殺した後に出力の終わり（close）を待つ上限。グループの誰かがカーネルの中で止まって出力を握ったままだと close が
+ * 来ないので、過ぎたら途中までの出力で終える（残ったグループは呼び出し側が残留として扱う）。
+ */
+const KILLED_CLOSE_WAIT_MS = 2_000;
 
 /**
  * `/bin/sh -c` を自分のプロセスグループ（`detached`）で起こす。時間切れ・出力の上限超え・{@link IParadisShellRun.kill}
  * では `process.kill(-pid, 'SIGKILL')` でグループごと殺し、グループが消えるまで待ってから解決する。
  * sh だけを殺すと、実行中だった子（ioreg など）が孤児になって残り続ける。
  */
-export function paradisRunShellInProcessGroup(script: string, options: { readonly timeoutMs: number; readonly maxBuffer: number; readonly env?: NodeJS.ProcessEnv }): IParadisShellRun {
+export function paradisRunShellInProcessGroup(script: string, options: { readonly timeoutMs: number; readonly maxBuffer: number; readonly env?: NodeJS.ProcessEnv; readonly killedCloseWaitMs?: number }): IParadisShellRun {
 	let child: ChildProcess;
 	try {
 		child = spawn('/bin/sh', ['-c', script], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: options.env, windowsHide: true });
@@ -192,6 +182,8 @@ export function paradisRunShellInProcessGroup(script: string, options: { readonl
 	const chunks: Buffer[] = [];
 	let size = 0;
 	let timedOut = false;
+	let finishNow: () => void = () => { };
+	let closeWaitTimer: ReturnType<typeof setTimeout> | undefined;
 	const killGroup = () => {
 		if (pid === undefined) {
 			return;
@@ -203,17 +195,24 @@ export function paradisRunShellInProcessGroup(script: string, options: { readonl
 		}
 		child.kill('SIGKILL');
 	};
+	/** 殺して、close が来なくても上限で終える。 */
+	const killAndBound = () => {
+		killGroup();
+		if (closeWaitTimer === undefined) {
+			closeWaitTimer = setTimeout(() => finishNow(), options.killedCloseWaitMs ?? KILLED_CLOSE_WAIT_MS);
+		}
+	};
 	child.stdout?.on('data', (chunk: Buffer) => {
 		size += chunk.length;
 		if (size > options.maxBuffer) {
-			killGroup();
+			killAndBound();
 			return;
 		}
 		chunks.push(chunk);
 	});
 	const timer = setTimeout(() => {
 		timedOut = true;
-		killGroup();
+		killAndBound();
 	}, options.timeoutMs);
 	const result = new Promise<{ readonly stdout: string; readonly timedOut: boolean }>(resolve => {
 		let settled = false;
@@ -223,6 +222,9 @@ export function paradisRunShellInProcessGroup(script: string, options: { readonl
 			}
 			settled = true;
 			clearTimeout(timer);
+			if (closeWaitTimer !== undefined) {
+				clearTimeout(closeWaitTimer);
+			}
 			if (pid !== undefined && paradisIsProcessGroupAlive(pid)) {
 				// sh が終わっても子が残っていることがある（打ち切った・sh が先に落ちた）。残りもまとめて止める
 				killGroup();
@@ -230,10 +232,11 @@ export function paradisRunShellInProcessGroup(script: string, options: { readonl
 			}
 			resolve({ stdout: Buffer.concat(chunks).toString('utf8'), timedOut });
 		};
+		finishNow = () => void finish();
 		child.once('close', () => void finish());
 		child.once('error', () => void finish());
 	});
-	return { pid, result, kill: killGroup };
+	return { pid, result, kill: killAndBound };
 }
 
 /** `os.cpus()` の累計（macOS・Windows 用。Linux は iowait・steal を捨てるので使わない）。 */

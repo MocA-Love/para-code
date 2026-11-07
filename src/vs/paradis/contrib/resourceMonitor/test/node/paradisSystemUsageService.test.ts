@@ -218,6 +218,25 @@ suite('ParadisSystemUsageService', () => {
 		}
 	});
 
+	(process.platform === 'win32' ? test.skip : test)('finishes a timed-out run even when a process outside the group keeps its output open', async function () {
+		this.timeout(10_000);
+		// perl が自分のセッションへ移って出力を握ったまま 3 秒残る（グループを殺しても close が来ない）
+		const run = paradisRunShellInProcessGroup(`perl -e 'use POSIX qw(setsid); setsid(); sleep 3' & /bin/sleep 30; echo never`, { timeoutMs: 500, maxBuffer: 1024, killedCloseWaitMs: 100 });
+		try {
+			const startedAt = Date.now();
+			const result = await run.result;
+			assert.deepStrictEqual({ timedOut: result.timedOut, quick: Date.now() - startedAt < 2_000 }, { timedOut: true, quick: true });
+		} finally {
+			if (run.pid !== undefined) {
+				try {
+					process.kill(-run.pid, 'SIGKILL');
+				} catch {
+					// もう居ない
+				}
+			}
+		}
+	});
+
 	(process.platform === 'win32' ? test.skip : test)('kills the process group on demand (dispose) and returns normal output otherwise', async function () {
 		this.timeout(10_000);
 		const normal = paradisRunShellInProcessGroup('echo hello', { timeoutMs: 5_000, maxBuffer: 1024 });
