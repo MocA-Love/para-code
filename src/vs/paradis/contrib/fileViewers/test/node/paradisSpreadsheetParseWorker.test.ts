@@ -12,7 +12,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { decodeParadisWorkbookJson, unpackParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ParadisSpreadsheetService } from '../../node/paradisSpreadsheetService.js';
 import type { ParadisOfficeSemanticWorkerMessage } from '../../node/office/paradisOfficeSemanticWorkerQueue.js';
-import { PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS, ParadisSpreadsheetParseWorkerBackend, paradisSpreadsheetParseErrorResult, type IParadisSpreadsheetParseWorker, type IParadisSpreadsheetParseWorkerRun } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
+import { PARADIS_SPREADSHEET_PARSE_QUEUE_DEADLINE_MS, PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS, ParadisSpreadsheetParseWorkerBackend, paradisSpreadsheetParseErrorResult, type IParadisSpreadsheetParseWorker, type IParadisSpreadsheetParseWorkerRun } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
 const WORKER_PATH = FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain.js').fsPath;
 
@@ -61,6 +61,41 @@ suite('ParadisSpreadsheetParseWorker', () => {
 			afterOutOfMemory: { result: { kind: 'unavailable', reason: 'limitExceeded' }, reports: 0 },
 			hung: { kind: 'unavailable', reason: 'limitExceeded' },
 			reports: [['spreadsheet-parse', 'deadline', 'run-deadline']],
+		});
+	});
+
+	test('puts a parse that waited too long back in the queue once, and refuses it as busy the second time', async () => {
+		const posted: ParadisOfficeSemanticWorkerMessage<IParadisSpreadsheetParseWorkerRun>[] = [];
+		const listeners = new Map<string, ((value: never) => void)[]>();
+		const worker = {
+			postMessage: (message: ParadisOfficeSemanticWorkerMessage<IParadisSpreadsheetParseWorkerRun>) => { posted.push(message); },
+			on: (event: string, listener: (value: never) => void) => { listeners.set(event, [...(listeners.get(event) ?? []), listener]); return worker; },
+			terminate: async () => 0,
+		};
+		const queueTimers: (() => void)[] = [];
+		const backend = disposables.add(new ParadisSpreadsheetParseWorkerBackend(() => worker as unknown as IParadisSpreadsheetParseWorker, {
+			setTimeout: (handler: () => void, delay: number) => { if (delay === PARADIS_SPREADSHEET_PARSE_QUEUE_DEADLINE_MS) { queueTimers.push(handler); } return {}; },
+			clearTimeout: () => undefined,
+		}));
+		const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+		const answer = (id: number, result: unknown) => { for (const listener of listeners.get('message') ?? []) { listener({ kind: 'result', id, result } as never); } };
+		const running = backend.parse(new Uint8Array([1]), undefined, CancellationToken.None);
+		const retried = backend.parse(new Uint8Array([2]), undefined, CancellationToken.None);
+		queueTimers[0]();
+		await settle();
+		const refused = backend.parse(new Uint8Array([3]), undefined, CancellationToken.None);
+		queueTimers[2]();
+		await settle();
+		queueTimers[3]();
+		const refusedResult = await refused;
+		answer(posted[0].id, { kind: 'error', message: 'first' });
+		await settle();
+		answer(posted[1].id, { kind: 'error', message: 'second' });
+		deepStrictEqual({ running: await running, retried: await retried, refused: refusedResult, queueTimers: queueTimers.length }, {
+			running: { kind: 'error', message: 'first' },
+			retried: { kind: 'error', message: 'second' },
+			refused: { kind: 'unavailable', reason: 'busy' },
+			queueTimers: 4,
 		});
 	});
 
