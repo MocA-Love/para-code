@@ -16,7 +16,7 @@ import {
 	IParadisCcusageSessionRow,
 	ParadisCcusageProjects,
 } from '../../common/paradisCcusage.js';
-import { ParadisCcusageClient, paradisCcusageDateArg, paradisCcusageLocalTimeZone, paradisCcusageProjectDisplayName } from '../../electron-browser/paradisCcusageClient.js';
+import { PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS, ParadisCcusageClient, paradisCcusageDateArg, paradisCcusageLocalTimeZone, paradisCcusageProjectDisplayName } from '../../electron-browser/paradisCcusageClient.js';
 
 interface IChannelCall {
 	readonly channel: string;
@@ -547,6 +547,33 @@ suite('ParadisCcusageClient', () => {
 			staleFromYesterday: undefined,
 			staleFromToday: 0,
 			commands: ['fetchReport'],
+		});
+	});
+
+	test('fetches only the reports a screen uses and does not count the others as failed', async () => {
+		const kinds: string[] = [];
+		const channel = {
+			call: async <T>(_command: string, args?: unknown): Promise<T> => {
+				const kind = (args as readonly [{ readonly kind: string }])[0].kind;
+				kinds.push(kind);
+				return { value: [], fetchedAt: 1, stale: false } as T;
+			},
+		};
+		const client = new ParadisCcusageClient(
+			{ getChannel: () => channel } as unknown as ISharedProcessService,
+			{ getValue: () => '' } as unknown as IConfigurationService,
+			{ getConnection: () => null } as unknown as IRemoteAgentService,
+		);
+
+		const dailyOnly = await client.fetchDashboard(false, ['daily']);
+		const dailyKinds = kinds.splice(0);
+		const desktop = await client.fetchDashboard(false, PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS);
+
+		assert.deepStrictEqual({ dailyKinds, desktopKinds: kinds, failed: [dailyOnly.failedReports, desktop.failedReports], block: dailyOnly.block }, {
+			dailyKinds: ['daily'],
+			desktopKinds: ['daily', 'blocks', 'session'],
+			failed: [[], []],
+			block: undefined,
 		});
 	});
 

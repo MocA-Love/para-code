@@ -16,7 +16,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { isParadisSpreadsheetCompoundFile, PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_MAX_BYTES, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME, unavailableParadisSpreadsheetSemanticDiagnostics, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService, type IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import { isParadisSpreadsheetCompoundFile, PARADIS_SPREADSHEET_BUSY_ERROR_NAME, PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_MAX_BYTES, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME, unavailableParadisSpreadsheetSemanticDiagnostics, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService, type IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import type { ParadisSpreadsheetParseWorkerResult } from './spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
 /** 詳しい解析を受け持つ口（テストで差し替えられるように）。 */
@@ -122,7 +122,8 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 
 	/**
 	 * worker が使えれば worker で解析し、セルの書式を表にまとめた形の JSON のバイト列を開かずにそのまま返す
-	 * （renderer が戻す）。worker を起動できない・落ちた・混んでいるときは、今までどおり本体で解析する。
+	 * （renderer が戻す）。worker を起動できない・落ちたときは、今までどおり本体で解析する。混んでいるときは本体へ回さずに断る
+	 * （混み合うのは重いブックが重なったときで、本体で解析すると shared process のほかの IPC が止まる）。
 	 * ブックが大きすぎて worker で解析できなかったとき（ヒープの上限・締め切り）は、本体で上限なしに解析し直さずに断る。
 	 */
 	private async parseWorkbook(input: unknown, imagePixelBudget: number | undefined, token: CancellationToken): Promise<IParadisWorkbookData | VSBuffer> {
@@ -145,7 +146,12 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 						error.name = PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME;
 						throw error;
 					}
-					// `failed`（worker を起動できない・落ちた）と `busy`（混んでいる）は、今までどおり本体で解析する。
+					if (result.reason === 'busy') {
+						const error = new Error('The workbook parser is busy.');
+						error.name = PARADIS_SPREADSHEET_BUSY_ERROR_NAME;
+						throw error;
+					}
+					// `failed`（worker を起動できない・落ちた）は、今までどおり本体で解析する。
 					// worker を起動できない配布版でも Excel を開けるように（起動の失敗は worker の見張りが Sentry へ送る）。
 					break;
 			}

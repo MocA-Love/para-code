@@ -35,6 +35,9 @@ suite('Para pty reattach plan', () => {
 				// 古い常駐は量を返さない。
 				noCount: paradisPlanPtyReattach({ written: 6, epoch: 0 }, attachment(frames)),
 				noMark: paradisPlanPtyReattach(undefined, attachment(frames, { written: 9, epoch: 0 })),
+				// 常駐が差分で返した（`since` から後だけ）。
+				sinceMarkTail: paradisPlanPtyReattach({ written: 6, epoch: 0 }, attachment([{ cols: 100, rows: 30, data: 'def' }], { written: 9, epoch: 0, sinceMark: true })),
+				sinceMarkUnchanged: paradisPlanPtyReattach({ written: 9, epoch: 0 }, attachment([], { written: 9, epoch: 0, sinceMark: true })),
 				// 控えの先頭がこぼれていても、増えた分が丸ごと残っていれば差分で足りる。
 				tailDespiteDropped: paradisPlanPtyReattach({ written: 7, epoch: 0 }, attachment(frames, { written: 9, epoch: 0, dropped: true })),
 			},
@@ -47,6 +50,8 @@ suite('Para pty reattach plan', () => {
 				rewound: { kind: 'rebuild', reason: 'rewound' },
 				noCount: { kind: 'rebuild', reason: 'no-count' },
 				noMark: { kind: 'rebuild', reason: 'no-mark' },
+				sinceMarkTail: { kind: 'tail', data: 'def' },
+				sinceMarkUnchanged: { kind: 'unchanged' },
 				tailDespiteDropped: { kind: 'tail', data: 'ef' },
 			},
 		);
