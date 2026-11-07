@@ -751,6 +751,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 		worktreePath: gitHost.path(worktreeUri),
 		newBranch: branch,
 		baseRef,
+		trustClaudeFolder: configurationService.getValue<boolean>('paradis.workspaceSwitch.trustClaudeFolder') !== false,
 	};
 	await gitHost.channel.call('addWorktree', [addRequest]);
 	// 宣言した .env などを持ち込む（G-06）。setup スクリプトより先に、setup を飛ばすときも行う。失敗しても作成は止めない
