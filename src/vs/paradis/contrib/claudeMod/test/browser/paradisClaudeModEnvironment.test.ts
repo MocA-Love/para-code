@@ -135,6 +135,72 @@ suite('ParadisClaudeModEnvironment', () => {
 		}, { withoutVersion: undefined, older: undefined, newer: true, settingOff: undefined, files: ['draft/.claude-plugin/plugin.json', 'draft/hooks/draft.ts', 'draft/hooks/hooks.json'] });
 	});
 
+	test('copies to the SSH host home and asks the host, not this machine, for the policy and the Claude Code version', async () => {
+		store.add(fileService.registerProvider('vscode-remote', store.add(new InMemoryFileSystemProvider())));
+		for (const [path, text] of [['draft/.claude-plugin/plugin.json', '{"name":"para-code-draft"}'], ['draft/hooks/hooks.json', '{"modules":["./draft.ts"]}'], ['draft/hooks/draft.ts', 'export const register = () => {};']]) {
+			await fileService.writeFile(joinPath(MOD, ...path.split('/')), VSBuffer.fromString(text));
+		}
+		// 手元の方針と版は見ない（手元では禁じられていて、手元の claude は古い）
+		await fileService.writeFile(URI.file(isMacintosh ? '/Library/Application Support/ClaudeCode/managed-settings.json' : '/etc/claude-code/managed-settings.json'), VSBuffer.fromString('{"disableSideloadFlags":true}'));
+		paradisSetClaudeVersionProvider(async () => '2.1.299 (Claude Code)');
+		const remoteHome = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/home/remote' });
+		const createRemote = (host: { readonly blockedByPolicy: () => Promise<boolean>; readonly claudeVersion: () => Promise<string | undefined> }, now?: () => number) => store.add(new ParadisClaudeModEnvironment(
+			APP_ROOT, async () => remoteHome, { remote: host, ...(now ? { now } : {}) }, fileService, configuration, new NullLogService(),
+		));
+		const allowed = createRemote({ blockedByPolicy: async () => false, claudeVersion: async () => '2.1.319 (Claude Code)' });
+		await allowed.ready;
+		const blocked = createRemote({ blockedByPolicy: async () => true, claudeVersion: async () => '2.1.319 (Claude Code)' });
+		await blocked.ready;
+		const unknown = createRemote({ blockedByPolicy: async () => { throw new Error('Unknown channel'); }, claudeVersion: async () => undefined });
+		await unknown.ready;
+		const directory = allowed.pluginDirectory();
+		assert.deepStrictEqual({
+			directory: directory !== undefined && /^\/home\/remote\/\.para-code\/claude-mod\/[0-9a-f]{16}$/.test(directory),
+			draft: allowed.draftPluginDirectory() === `${directory}/draft`,
+			copied: await fileService.exists(joinPath(remoteHome, '.para-code', 'claude-mod', directory!.split('/').pop()!, 'hooks', 'register.ts')),
+			blocked: blocked.pluginDirectory(),
+			unknown: unknown.pluginDirectory(),
+		}, { directory: true, draft: true, copied: true, blocked: undefined, unknown: undefined });
+	});
+
+	test('puts no mod files on an SSH host whose policy forbids it or that is not macOS / Linux, and copies once the host allows it', async () => {
+		store.add(fileService.registerProvider('vscode-remote', store.add(new InMemoryFileSystemProvider())));
+		const remoteHome = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/home/remote' });
+		let now = Date.now();
+		let blocked = true;
+		const environment = store.add(new ParadisClaudeModEnvironment(APP_ROOT, async () => remoteHome, {
+			now: () => now,
+			remote: { blockedByPolicy: async () => blocked, claudeVersion: async () => '2.1.319 (Claude Code)' },
+		}, fileService, configuration, new NullLogService()));
+		await environment.ready;
+		const blockedCopy = await fileService.exists(joinPath(remoteHome, '.para-code', 'claude-mod'));
+		blocked = false;
+		now += 61_000;
+		const triggers = environment.pluginDirectory();
+		await environment.ready;
+		assert.deepStrictEqual({ blockedCopy, triggers, allowed: environment.pluginDirectory()?.startsWith('/home/remote/.para-code/claude-mod/') }, { blockedCopy: false, triggers: undefined, allowed: true });
+	});
+
+	test('tries the copy again for a later pane when it failed (for example right after connecting)', async () => {
+		let now = Date.now();
+		let failing = true;
+		const home = URI.file('/home/retry');
+		const environment = store.add(new ParadisClaudeModEnvironment(APP_ROOT, async () => {
+			if (failing) {
+				throw new Error('not connected yet');
+			}
+			return home;
+		}, { now: () => now }, fileService, configuration, new NullLogService()));
+		await environment.ready;
+		const first = environment.pluginDirectory();
+		failing = false;
+		const soon = environment.pluginDirectory();
+		now += 61_000;
+		const triggers = environment.pluginDirectory();
+		await environment.ready;
+		assert.deepStrictEqual({ first, soon, triggers, later: environment.pluginDirectory()?.startsWith('/home/retry/.para-code/claude-mod/') }, { first: undefined, soon: undefined, triggers: undefined, later: true });
+	});
+
 	test('removes copies of other versions once they have been unused for 30 days, and keeps the current one', async () => {
 		const first = create();
 		await first.ready;

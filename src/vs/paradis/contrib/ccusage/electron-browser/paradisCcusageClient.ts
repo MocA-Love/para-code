@@ -82,6 +82,8 @@ export interface IParadisCcusageSessionData {
 	readonly project: string;
 	/** ccusage が返す生のプロジェクトパス表記(ツールチップ用)。 */
 	readonly rawProject: string;
+	/** Claude Code の会話の id（保存したコンテキストの内訳を開くのに使う）。 */
+	readonly sessionId?: string;
 	readonly lastActivity: number | undefined;
 	readonly models: string[];
 	readonly totalTokens: number;
@@ -451,6 +453,7 @@ function normalizeSessions(rows: IParadisCcusageSessionRow[]): IParadisCcusageSe
 		sessions.push({
 			project: paradisCcusageProjectDisplayName(rawProject),
 			rawProject,
+			...(row.sessionId !== undefined && /^[A-Za-z0-9._:-]{1,200}$/.test(row.sessionId) ? { sessionId: row.sessionId } : {}),
 			lastActivity: isNaN(lastActivity) ? undefined : lastActivity,
 			models: row.modelsUsed ?? [],
 			totalTokens: row.totalTokens ?? 0,

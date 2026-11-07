@@ -61,6 +61,10 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 	private readonly tracked = new Map<string, IDisposable>();
 	/** 接続先の次に読む位置。 */
 	private readonly offsets = new Map<string, number>();
+	/** 担当を取ったときに接続先に既にあった分の終わり（接続先のバイト位置）。ここまでの追記は過去の会話として写す。 */
+	private readonly catchUpEnds = new Map<string, number>();
+	/** 担当を取ったが、まだ接続先の大きさを見ていない（次の読みで {@link catchUpEnds} を決める）。 */
+	private readonly pendingCatchUp = new Set<string>();
 	private readonly reading = new Set<string>();
 	private readonly readAgain = new Set<string>();
 	private syncing = false;
@@ -173,6 +177,15 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 			return;
 		}
 		this.offsets.set(remotePath, offset);
+		// 手元に写しがまだ無ければ、担当を取った後の最初の読みで見た大きさまでを、接続先に既にあった分（過去の会話）として
+		// 印を付けて写す。印を受け付けるのは再開した会話だけ（台帳が決める）。写しの途中から続けるときは付けない
+		// （切れていた間の質問・ターンの終わりは鳴らす）
+		this.catchUpEnds.delete(remotePath);
+		if (offset === 0) {
+			this.pendingCatchUp.add(remotePath);
+		} else {
+			this.pendingCatchUp.delete(remotePath);
+		}
 		let watcher: IDisposable;
 		try {
 			watcher = this.fileService.watch(uri);
@@ -189,6 +202,8 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 		this.tracked.get(remotePath)?.dispose();
 		this.tracked.delete(remotePath);
 		this.offsets.delete(remotePath);
+		this.catchUpEnds.delete(remotePath);
+		this.pendingCatchUp.delete(remotePath);
 	}
 
 	/** 同じファイルの読みが重ならないようにしつつ、続きを読む。 */
@@ -218,6 +233,9 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 			return;
 		}
 		const size = stat.size ?? 0;
+		if (this.pendingCatchUp.delete(remotePath)) {
+			this.catchUpEnds.set(remotePath, size);
+		}
 		let offset = this.offsets.get(remotePath) ?? 0;
 		if (size < offset) {
 			// 接続先が別のセッションに置き換わった。写しを捨てて取り直す
@@ -228,9 +246,14 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 				return;
 			}
 			this.offsets.set(remotePath, offset);
+			// 置き換わった後の会話は、今書かれているもの
+			this.catchUpEnds.delete(remotePath);
 		}
 		while (offset < size && this.tracked.has(remotePath) && !this._store.isDisposed) {
-			const length = Math.min(READ_CHUNK_BYTES, size - offset);
+			// 追いつく分と、その後に書かれた分を同じ追記に混ぜない（読み手は追記ごとに過去の分かを見る）
+			const catchUpEnd = this.catchUpEnds.get(remotePath);
+			const catchingUp = catchUpEnd !== undefined && offset < catchUpEnd;
+			const length = Math.min(READ_CHUNK_BYTES, size - offset, catchingUp ? catchUpEnd - offset : Number.POSITIVE_INFINITY);
 			// readFile ではなく readFileStream を使う。readFile は「呼び手は分割を気にしない」と
 			// 見なして unbuffered 読みを選ぶため、接続先プロバイダでは transcript 全体を取り寄せて
 			// から手元で position/length を切り出す。追記1回ごとに会話全部が SSH を流れることに
@@ -240,7 +263,7 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 			if (data.byteLength === 0) {
 				return;
 			}
-			const next = await this.service.appendRemoteTranscriptMirror(this.ownerId, remotePath, data);
+			const next = await this.service.appendRemoteTranscriptMirror(this.ownerId, remotePath, data, catchingUp);
 			if (next === UNAVAILABLE) {
 				this.stop(remotePath);
 				return;

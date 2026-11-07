@@ -2543,8 +2543,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return this.remoteTranscriptMirror.begin(ownerId, remotePath);
 	}
 
-	async appendRemoteTranscriptMirror(ownerId: string, remotePath: string, data: VSBuffer): Promise<number> {
-		return this.remoteTranscriptMirror.append(ownerId, remotePath, data.buffer);
+	async appendRemoteTranscriptMirror(ownerId: string, remotePath: string, data: VSBuffer, catchingUp?: boolean): Promise<number> {
+		return this.remoteTranscriptMirror.append(ownerId, remotePath, data.buffer, catchingUp === true);
 	}
 
 	async resetRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number> {

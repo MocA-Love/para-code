@@ -61,7 +61,16 @@ export interface IParadisPaneTokenService {
 	 * 起こし直す経路に備えて同じトークンのenvを入れておく（繋げたときは使われない）。
 	 */
 	prepareShellLaunchConfig(shellLaunchConfig: IShellLaunchConfig): void;
+
+	/**
+	 * SSH の接続先のペインへ渡す mod（接続先へ写したもの）。接続先へ写せた後に paradisRemoteAgentHooks.contribution.ts が
+	 * 入れる。入るまで・入らない接続先（戻りトンネルが無い等）のペインには渡さない。
+	 */
+	setRemoteClaudeMod(claudeMod: IParadisPaneClaudeMod | undefined): void;
 }
+
+/** ペインへ渡す mod のフォルダ（{@link ParadisClaudeModEnvironment} の一部）。 */
+export type IParadisPaneClaudeMod = Pick<ParadisClaudeModEnvironment, 'pluginDirectory' | 'draftPluginDirectory'>;
 
 export class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenService {
 	declare readonly _serviceBrand: undefined;
@@ -85,9 +94,12 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 
 	/**
 	 * 手元のペインの Claude Code に読ませる Para Code の mod（Claude Mods）。手元で動く desktop の
-	 * ウィンドウだけが持つ（SSH の接続先・Windows・web では作らない。NOTES.md「Claude Mods」）。
+	 * ウィンドウだけが持つ（Windows・web では作らない。SSH の接続先のものは {@link remoteClaudeMod}。NOTES.md「Claude Mods」）。
 	 */
 	private readonly claudeMod: ParadisClaudeModEnvironment | undefined;
+
+	/** SSH の接続先のペインに読ませる mod（接続先の `~/.para-code/claude-mod/<指紋>/`）。{@link setRemoteClaudeMod} で入る。 */
+	private remoteClaudeMod: IParadisPaneClaudeMod | undefined;
 
 	constructor(
 		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
@@ -165,13 +177,18 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			? explicitCodexHome
 			: onWindowHost ? this.codexLaunchHomeService.getLaunchHome() : undefined;
 		shellLaunchConfig.env = paradisApplyCodexLaunchHome(shellLaunchConfig.env, codexHome);
-		// Claude Code へ Para Code の mod を読ませる（ユーザーが設定している値の後ろへつなぐ）。手元で動く
-		// ペインだけ。読ませられないとき（準備中・設定でオフ・組織の方針）は何も足さず、今までどおり動く。
-		const claudePluginDirectory = onWindowHost ? this.claudeMod?.pluginDirectory() : undefined;
+		// Claude Code へ Para Code の mod を読ませる（ユーザーが設定している値の後ろへつなぐ）。手元のウィンドウの
+		// 手元のペインと、SSH のウィンドウの接続先のペイン（接続先へ写したもの。接続先のポートファイルを渡すときだけ）。
+		// 読ませられないとき（準備中・設定でオフ・組織の方針）は何も足さず、今までどおり動く。区切りは ':'
+		// （手元も接続先も macOS / Linux だけ。接続先が Windows なら接続先の確かめで渡さない）。
+		const claudeMod = !onWindowHost ? undefined
+			: this.environmentService.remoteAuthority === undefined ? this.claudeMod
+				: this._getRemoteParaCodeDirectory() !== undefined ? this.remoteClaudeMod : undefined;
+		const claudePluginDirectory = claudeMod?.pluginDirectory();
 		if (claudePluginDirectory !== undefined) {
 			shellLaunchConfig.env = paradisAddClaudePluginDir(shellLaunchConfig.env, claudePluginDirectory, ':');
 			// 入力欄の文を知らせる mod（Claude Code 2.1.300 以降だけ。読めない版には渡さない）
-			const draftPluginDirectory = this.claudeMod?.draftPluginDirectory();
+			const draftPluginDirectory = claudeMod?.draftPluginDirectory();
 			if (draftPluginDirectory !== undefined) {
 				shellLaunchConfig.env = paradisAddClaudePluginDir(shellLaunchConfig.env, draftPluginDirectory, ':');
 			}
@@ -183,6 +200,10 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		if (attachTarget === undefined && onWindowHost) {
 			this.codexLaunchHomeService.recordPaneHome(token, codexHome);
 		}
+	}
+
+	setRemoteClaudeMod(claudeMod: IParadisPaneClaudeMod | undefined): void {
+		this.remoteClaudeMod = claudeMod;
 	}
 
 	/**
