@@ -24,6 +24,8 @@ interface IInflight {
 	readonly startedAt: number;
 	readonly url: string;
 	readonly connection: object;
+	/** 最後に応答・データを受け取った時刻。静かな時間は、数えなかった長く続く要求の受信では戻さない。 */
+	lastDataAt?: number;
 }
 
 /** ある時点の通信の様子。 */
@@ -65,11 +67,15 @@ export class ParadisNetworkActivity {
 				return;
 			}
 			case 'Network.responseReceived':
-			case 'Network.dataReceived':
-				if (this._inflight.has(key)) {
-					this._lastActivityAt = this._now();
+			case 'Network.dataReceived': {
+				// 受信は要求ごとに覚え、静かな時間へは snapshot で数える要求の分だけ入れる（SSE などを数から外しても、
+				// その受信が静かな時間を毎回 0 に戻さないように）
+				const entry = this._inflight.get(key);
+				if (entry) {
+					entry.lastDataAt = this._now();
 				}
 				return;
+			}
 			case 'Network.loadingFinished':
 			case 'Network.loadingFailed':
 				if (this._inflight.delete(key)) {
@@ -98,6 +104,7 @@ export class ParadisNetworkActivity {
 		const now = this._now();
 		let inflight = 0;
 		let longLived = 0;
+		let lastActivityAt = this._lastActivityAt;
 		const pendingUrls: string[] = [];
 		for (const entry of this._inflight.values()) {
 			if (now - entry.startedAt > ignoreOlderThanMs) {
@@ -105,11 +112,14 @@ export class ParadisNetworkActivity {
 				continue;
 			}
 			inflight++;
+			if (entry.lastDataAt !== undefined && (lastActivityAt === undefined || entry.lastDataAt > lastActivityAt)) {
+				lastActivityAt = entry.lastDataAt;
+			}
 			if (pendingUrls.length < 5) {
 				pendingUrls.push(entry.url);
 			}
 		}
-		return { inflight, quietMs: this._lastActivityAt === undefined ? undefined : now - this._lastActivityAt, pendingUrls, longLived };
+		return { inflight, quietMs: lastActivityAt === undefined ? undefined : now - lastActivityAt, pendingUrls, longLived };
 	}
 }
 

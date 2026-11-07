@@ -40,6 +40,15 @@ export const PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH = 'paradis.ccusage.executab
 /** 常に取得する期間(日)。UI の期間フィルターの最大値と一致させる。 */
 export const FETCH_WINDOW_DAYS = 90;
 
+/** ダッシュボードの 4 つのレポート。 */
+export type ParadisCcusageDashboardReport = 'daily' | 'blocks' | 'session' | 'projects';
+/** 4 つ全部（モバイルの使用量はプロジェクト別も出す）。 */
+export const PARADIS_CCUSAGE_DASHBOARD_REPORTS: readonly ParadisCcusageDashboardReport[] = ['daily', 'blocks', 'session', 'projects'];
+/** デスクトップの AI コスト画面が使うレポート（プロジェクト別は出さない）。 */
+export const PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS: readonly ParadisCcusageDashboardReport[] = ['daily', 'blocks', 'session'];
+/** 取らなかったレポートの印（失敗に数えない）。 */
+const SKIPPED_REPORT = new Error('skipped');
+
 /** 1日×1モデルのスライス(積み上げバー・モデル別集計の元データ)。 */
 export interface IParadisCcusageModelSlice {
 	readonly model: string;
@@ -165,9 +174,9 @@ export class ParadisCcusageClient {
 		return this.createWarmLease(() => this.statusWarmTargets());
 	}
 
-	/** dashboard表示が必要な間、4 reportのwarm leaseを維持する。 */
-	createDashboardWarmLease(): IDisposable {
-		return this.createWarmLease(() => this.dashboardWarmTargets());
+	/** dashboard表示が必要な間、warm leaseを維持する。`reports` は画面が使うレポート（省けば 4 つ全部）。 */
+	createDashboardWarmLease(reports: readonly ParadisCcusageDashboardReport[] = PARADIS_CCUSAGE_DASHBOARD_REPORTS): IDisposable {
+		return this.createWarmLease(() => this.dashboardWarmTargets().filter(target => (reports as readonly string[]).includes(target.kind)));
 	}
 
 	/** mobile providerのowner-scoped dashboard leaseを1回更新する。 */
@@ -315,28 +324,31 @@ export class ParadisCcusageClient {
 	 * 呼び出し側(エディタ)が日付でスライスする — 期間切り替えのたびに CLI を再実行しないため。
 	 * 一部レポートの失敗は failedReports として返し、全体は成立させる。
 	 */
-	async fetchDashboard(bypassCache = false): Promise<IParadisCcusageDashboardData> {
+	async fetchDashboard(bypassCache = false, reports: readonly ParadisCcusageDashboardReport[] = PARADIS_CCUSAGE_DASHBOARD_REPORTS): Promise<IParadisCcusageDashboardData> {
 		const options = this.execOptions(FETCH_WINDOW_DAYS, bypassCache);
 		const assembledAt = Date.now();
+		// 画面が使わないレポートは取らない（取らなかったものは空として返し、失敗には数えない）
+		const skip = <T>(): Promise<T> => Promise.reject(SKIPPED_REPORT);
 		const [daily, block, sessions, projects] = await Promise.allSettled([
 			this.fetchReport('daily', options),
-			this.fetchReport('blocks', this.execOptions(undefined, bypassCache)),
-			this.fetchReport('session', options),
-			this.fetchReport('projects', options),
+			reports.includes('blocks') ? this.fetchReport('blocks', this.execOptions(undefined, bypassCache)) : skip<IParadisCcusageReportResult<IParadisCcusageReportValues['blocks']>>(),
+			reports.includes('session') ? this.fetchReport('session', options) : skip<IParadisCcusageReportResult<IParadisCcusageReportValues['session']>>(),
+			reports.includes('projects') ? this.fetchReport('projects', options) : skip<IParadisCcusageReportResult<IParadisCcusageReportValues['projects']>>(),
 		]);
 		const fulfilled = [daily, block, sessions, projects].flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+		const failed = (result: PromiseSettledResult<unknown>) => result.status === 'rejected' && result.reason !== SKIPPED_REPORT;
 
 		const failedReports: string[] = [];
 		if (daily.status === 'rejected') {
 			failedReports.push('daily');
 		}
-		if (block.status === 'rejected') {
+		if (failed(block)) {
 			failedReports.push('blocks');
 		}
-		if (sessions.status === 'rejected') {
+		if (failed(sessions)) {
 			failedReports.push('session');
 		}
-		if (projects.status === 'rejected') {
+		if (failed(projects)) {
 			failedReports.push('projects');
 		}
 		// daily はダッシュボードの土台なので、失敗したらエラーとして扱う
