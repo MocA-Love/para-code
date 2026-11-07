@@ -760,9 +760,20 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		if (host === undefined || !path.startsWith('/')) {
 			return false;
 		}
+		// 一度 700 にできたフォルダは、保存のたびに ssh を起こし直さない（受け渡し用フォルダは消さないので、権限は残る）
+		const key = `${host}\n${path}`;
+		if (this.privateFolders.has(key)) {
+			return true;
+		}
 		const result = await this.runOneShotSsh([host, 'chmod', '700', paradisShellQuote(path)], false, `chmod 700 ${path} on ${host}`);
+		if (result.code === 0) {
+			this.privateFolders.add(key);
+		}
 		return result.code === 0;
 	}
+
+	/** `chmod 700` を済ませた（接続先, フォルダ）。 */
+	private readonly privateFolders = new Set<string>();
 
 	/**
 	 * 単発の ssh を起こし、**終了か時間切れのどちらかで必ず**決着させる。
