@@ -43,7 +43,7 @@ import { WorkbenchObjectTree } from '../../../../platform/list/browser/listServi
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
-import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
@@ -52,6 +52,7 @@ import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowse
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_GET_DIFF_STATS_COMMAND_ID, PARADIS_WORKSPACE_COLORS, paradisSortAgentStatuses, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
+import { ParadisWorkspacesNav } from './paradisWorkspacesNav.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
 import { paradisGithubTargetsFingerprint, ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLifecycle.js';
 import { IParadisDiffStatsTarget, ParadisWorkspacesDiffStatsTracker } from './paradisWorkspacesDiffStatsTracker.js';
@@ -1069,6 +1070,10 @@ export class ParadisWorkspacesView extends ViewPane {
 	private rowMeta = PARADIS_DEFAULT_WORKTREE_ROW_META;
 	/** メタ段のプロンプトキャッシュ残り時間。出る・消えるときだけツリーを組み直す (renderBody で作る) */
 	private promptCacheChips: ParadisPromptCacheChips | undefined;
+	/** ビュー上端の Orca 風のナビ（検索・タスク・定期実行・モバイル）と「プロジェクト」の見出し */
+	private nav: ParadisWorkspacesNav | undefined;
+	/** ナビの高さ。レイアウトのたびに測らないよう控え、行を隠した・戻したときだけ捨てる */
+	private navHeight: number | undefined;
 	/** ビュー下端に固定される「いま開いているスペースのメモ」欄 */
 	private notesPanel: ParadisSpaceNotesPanel | undefined;
 	/** メモ欄の高さが変わったときにツリーを再レイアウトするため、直近のレイアウト値を覚えておく */
@@ -1170,6 +1175,16 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		// ツリーとメモ欄を縦に積む (メモ欄は下端固定、ツリーが残りを占める)
 		container.classList.add('paradis-workspaces-pane-body');
+		const nav = this.nav = this._register(this.instantiationService.createInstance(ParadisWorkspacesNav, container, {
+			openSearch: () => this.pickSpace(),
+			agentCounts: () => this.agentCounts(),
+			onDidChangeAgentCounts: Event.any(this.agentStatusStore.onDidChangeAgentStatuses, this.createProgressStore.onDidChangeJobs, this.workspaceSwitchService.onDidChangeRepositories, this.worktreeService.onDidChangeWorktrees),
+			optionsActions: () => this.buildRowMetaSubmenuAction().actions.slice(),
+		}));
+		nav.setHeightChangeListener(() => {
+			this.navHeight = undefined;
+			this.relayout();
+		});
 		const treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list'));
 		// 明滅の位相合わせ。個々のドットではなくルート1箇所で受ける (行は使い回されるので、
 		// 要素ごとに張ると付け外しの管理が要る)。詳細は syncStatusBlinkPhase を参照。
@@ -1347,8 +1362,65 @@ export class ParadisWorkspacesView extends ViewPane {
 
 	/** ビューの高さをメモ欄とツリーへ配分する (layoutBody とメモ欄の高さ変更の共通処理)。 */
 	private layoutContents(height: number, width: number): void {
-		const notesHeight = this.notesPanel?.layout(height) ?? 0;
-		this.tree?.layout(Math.max(0, height - notesHeight), width);
+		if (this.navHeight === undefined && this.nav) {
+			// 見えていない間は 0 になるので控えない（次のレイアウトで測り直す）
+			const measured = this.nav.element.offsetHeight;
+			this.navHeight = measured > 0 ? measured : undefined;
+		}
+		const navHeight = this.navHeight ?? 0;
+		const notesHeight = this.notesPanel?.layout(Math.max(0, height - navHeight)) ?? 0;
+		this.tree?.layout(Math.max(0, height - navHeight - notesHeight), width);
+	}
+
+	/** 見出しのベルの数。許可待ち・質問 (attention) と作業中 (working) を、一覧の要約と同じ数え方で数える。 */
+	private agentCounts(): { attention: number; working: number } {
+		let attention = 0;
+		let working = 0;
+		for (const repository of this.workspaceSwitchService.repositories) {
+			for (const status of this.repositoryBreakdown(repository)) {
+				if (status === 'permission' || status === 'question') {
+					attention++;
+				} else if (status === 'working') {
+					working++;
+				}
+			}
+		}
+		return { attention, working };
+	}
+
+	/** ナビの「検索」: リポジトリ本体とワークツリーを 1 つの一覧から探して切り替える。 */
+	private async pickSpace(): Promise<void> {
+		interface ISpacePickItem extends IQuickPickItem { readonly worktree: IParadisWorktree }
+		const items: (ISpacePickItem | IQuickPickSeparator)[] = [];
+		const activeKey = this.workspaceSwitchService.activeStateKey;
+		for (const repository of this.workspaceSwitchService.repositories) {
+			items.push({ type: 'separator', label: repository.name });
+			const mainCheckout: IParadisWorktree = {
+				repositoryId: repository.id,
+				name: STR_MAIN_CHECKOUT_NAME,
+				branch: this.worktreeService.getRepositoryBranch(repository.id),
+				uri: repository.uri,
+				isMainCheckout: true
+			};
+			for (const worktree of [mainCheckout, ...this.worktreeService.getWorktrees(repository.id)]) {
+				if (worktree.missing) {
+					continue;
+				}
+				items.push({
+					worktree,
+					label: worktree.isMainCheckout ? `${repository.name} / ${worktree.name}` : worktree.name,
+					description: worktree.branch,
+					iconClass: ThemeIcon.asClassName(activeKey === worktreeStateKeyFor(worktree) ? Codicon.check : worktree.isMainCheckout ? Codicon.repo : Codicon.gitBranch),
+				});
+			}
+		}
+		const pick = await this.quickInputService.pick(items, {
+			placeHolder: localize('paradis.workspaceSwitch.searchSpaces', "スペースを名前やブランチで探す"),
+			matchOnDescription: true,
+		});
+		if (pick) {
+			this.openWorktree(pick.worktree);
+		}
 	}
 
 	/** worktree 行 (main checkout の合成行を含む) のクリックで、その作業ツリーへ切り替える。 */
