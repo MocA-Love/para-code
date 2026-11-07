@@ -377,12 +377,21 @@ function operationArgs(op: { readonly kind?: unknown } & Record<string, unknown>
 	}
 }
 
+/** {@link paradisTaskBoardRemoteGitPlan} の追加の指定。 */
+export interface IParadisTaskBoardRemoteGitPlanOptions {
+	/**
+	 * `worktreeAdd` の checkout をコアの数だけ並べて書き出す（`-c checkout.workers=0`、Orca #36559）。
+	 * 呼び出し側が、利用者が `checkout.workers` を設定していない（`git config --get` が 1 で終わった）と確かめたときだけ立てる。
+	 */
+	readonly parallelCheckout?: boolean;
+}
+
 /**
  * 操作を git の argv にする。値の形が違えば `invalid`、既定のブランチへの push は `denied` を投げる。
  * 組み立てた後にも、禁止のオプションと `paradisRestrictedGitArgsError`（強制 push・削除・URL の remote）を重ねて掛ける
  * （組み立ての間違いを見つけるため）。
  */
-export function paradisTaskBoardRemoteGitPlan(root: string, op: unknown): IParadisTaskBoardRemoteGitPlan {
+export function paradisTaskBoardRemoteGitPlan(root: string, op: unknown, options?: IParadisTaskBoardRemoteGitPlanOptions): IParadisTaskBoardRemoteGitPlan {
 	if (!op || typeof op !== 'object') {
 		invalid('operation must be an object');
 	}
@@ -400,7 +409,7 @@ export function paradisTaskBoardRemoteGitPlan(root: string, op: unknown): IParad
 	const kind = record.kind as string;
 	const readOnly = READ_ONLY_KINDS.has(kind);
 	return {
-		args: ['-C', absoluteDir(root), '-c', 'core.quotepath=false', ...(readOnly ? ['-c', 'core.fsmonitor=false'] : []), ...args],
+		args: ['-C', absoluteDir(root), '-c', 'core.quotepath=false', ...(readOnly ? ['-c', 'core.fsmonitor=false'] : []), ...(kind === 'worktreeAdd' && options?.parallelCheckout === true ? ['-c', 'checkout.workers=0'] : []), ...args],
 		readOnly,
 		network: kind === 'fetch' || kind === 'push',
 		hooks: kind === 'commit' || kind === 'push',
