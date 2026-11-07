@@ -15,6 +15,7 @@ import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IRemoteAgentConnection, IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
+import { IParadisCodexLaunchHomeService } from '../../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
 import { IParadisResumeSession } from '../../common/paradisSessionResume.js';
 import { IParadisResumeSpaceWithUri, ParadisSessionResumeClient } from '../../electron-browser/paradisSessionResumeClient.js';
 
@@ -70,8 +71,9 @@ suite('ParadisSessionResumeClient', () => {
 		return { getConnection: () => connection } as unknown as IRemoteAgentService;
 	}
 
-	function createClient(local: IChannel, remote?: IRemoteAgentConnection | null): ParadisSessionResumeClient {
-		return new ParadisSessionResumeClient(createSharedProcessService(local), createRemoteAgentService(remote ?? null), new NullLogService());
+	function createClient(local: IChannel, remote?: IRemoteAgentConnection | null, codexLaunchHome?: string): ParadisSessionResumeClient {
+		const launchHomeService = { getLaunchHome: () => codexLaunchHome } as unknown as IParadisCodexLaunchHomeService;
+		return new ParadisSessionResumeClient(createSharedProcessService(local), createRemoteAgentService(remote ?? null), new NullLogService(), launchHomeService);
 	}
 
 	function localSpace(name: string): IParadisResumeSpaceWithUri {
@@ -106,6 +108,18 @@ suite('ParadisSessionResumeClient', () => {
 			local: (local.calls[0].args as [{ openCodeDatabases?: unknown }])[0].openCodeDatabases,
 			remote: (remote.calls[0].args as [{ openCodeDatabases?: unknown }])[0].openCodeDatabases,
 		}, { queries: [['ssh-remote+host']], local: undefined, remote: local.openCodeDatabases });
+	});
+
+	test('asks the machine of the window to keep the conversations of the selected Codex account home', async () => {
+		const localOnly = new RecordingChannel();
+		await createClient(localOnly, null, '/home/local/.codex-2').list({ spaces: [localSpace('a')] });
+		const local = new RecordingChannel();
+		const remote = new RecordingChannel();
+		const connection = { remoteAuthority: 'ssh-remote+host', getChannel: () => remote } as unknown as IRemoteAgentConnection;
+		await createClient(local, connection, '/home/remote/.codex-3').list({ spaces: [localSpace('a'), remoteSpace('b', 'ssh-remote+host')] });
+		const preferred = (channel: RecordingChannel) => (channel.calls[0].args as [{ preferredCodexHome?: string }])[0].preferredCodexHome;
+		// SSH のウィンドウの選択は接続先のホームなので、手元の一覧には渡さない
+		assert.deepStrictEqual([preferred(localOnly), preferred(local), preferred(remote)], ['/home/local/.codex-2', undefined, '/home/remote/.codex-3']);
 	});
 
 	test('splits spaces between local and remote channels by scheme and authority, using OS-correct cwd', async () => {
