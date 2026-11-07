@@ -1,0 +1,423 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* タブ列の「＋ ⌄」から開くランチャー（paradisTabLauncherPopup.ts）。色はテーマの変数だけを使い、
+	面の質感はほかの自前のポップアップ（通知の受信箱・プリセットのまとめ）と揃える。 */
+
+.monaco-workbench .paradis-tab-launcher,
+.monaco-workbench .paradis-tab-launcher-side {
+	position: fixed;
+	z-index: 2550;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	padding: 4px;
+	max-height: calc(100vh - 16px);
+	overflow-y: auto;
+	color: var(--vscode-foreground);
+	background-color: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-large);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+	font-size: 13px;
+}
+
+.monaco-workbench .paradis-tab-launcher {
+	width: 300px;
+}
+
+.monaco-workbench .paradis-tab-launcher-side.paradis-tab-launcher-submenu {
+	min-width: 220px;
+	max-width: 360px;
+}
+
+.monaco-workbench .paradis-tab-launcher-side.paradis-tab-launcher-agent {
+	width: 404px;
+	padding: 0;
+	overflow: hidden;
+}
+
+/* ---- 検索欄 ---- */
+
+.monaco-workbench .paradis-tab-launcher-search {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 28px;
+	margin: 2px 2px 4px;
+	padding: 0 8px;
+	border-radius: var(--vscode-cornerRadius-small);
+	background-color: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	color: var(--vscode-input-foreground);
+}
+
+.monaco-workbench .paradis-tab-launcher-search:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.monaco-workbench .paradis-tab-launcher-search .codicon {
+	flex: none;
+	font-size: 14px;
+	color: var(--vscode-input-placeholderForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-search input {
+	flex: 1;
+	min-width: 0;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 12.5px;
+}
+
+/* 枠（:focus-within）で示すので、ワークベンチ共通の入力欄のフォーカス枠は重ねない */
+.monaco-workbench .paradis-tab-launcher-search input[type="text"]:focus {
+	outline: none;
+}
+
+.monaco-workbench .paradis-tab-launcher-search input::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+/* ---- 行 ---- */
+
+.monaco-workbench .paradis-tab-launcher-rows {
+	display: flex;
+	flex-direction: column;
+}
+
+.monaco-workbench .paradis-tab-launcher-row {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	flex: 0 0 auto;
+	height: var(--paradis-menu-row, 24px);
+	padding: 0 6px;
+	border-radius: var(--vscode-cornerRadius-small);
+	white-space: nowrap;
+	cursor: pointer;
+	outline: none;
+}
+
+.monaco-workbench .paradis-tab-launcher-row:hover,
+.monaco-workbench .paradis-tab-launcher-row:focus-visible,
+.monaco-workbench .paradis-tab-launcher-row:focus {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .paradis-tab-launcher-row.expanded {
+	background-color: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-row.disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.monaco-workbench .paradis-tab-launcher-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: 16px;
+	height: 16px;
+	font-size: 16px;
+}
+
+.monaco-workbench .paradis-tab-launcher-icon svg {
+	width: 14px;
+	height: 14px;
+}
+
+/* Claude のロゴだけ、ほかの面（使用量・新しいスペース）と同じ色を付ける */
+.monaco-workbench .paradis-tab-launcher-icon.claude {
+	color: #D97757;
+}
+
+.monaco-workbench .paradis-tab-launcher-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .paradis-tab-launcher-description {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-row.expanded .paradis-tab-launcher-description {
+	color: inherit;
+	opacity: 0.8;
+}
+
+.monaco-workbench .paradis-tab-launcher-chevron {
+	margin-left: auto;
+	flex: none;
+	font-size: 12px;
+}
+
+.monaco-workbench .paradis-tab-launcher-separator {
+	flex: none;
+	height: 1px;
+	margin: 4px 6px;
+	background-color: var(--vscode-menu-separatorBackground, var(--vscode-widget-border));
+	opacity: 0.6;
+}
+
+.monaco-workbench .paradis-tab-launcher-empty {
+	padding: 4px 8px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* ---- 起動パネル ---- */
+
+.monaco-workbench .paradis-tab-launcher-agent-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 10px 6px;
+}
+
+.monaco-workbench .paradis-tab-launcher-agent-name {
+	font-weight: 600;
+}
+
+.monaco-workbench .paradis-tab-launcher-agent-where {
+	margin-left: auto;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-model-search {
+	margin: 0 10px 4px;
+}
+
+.monaco-workbench .paradis-tab-launcher-models {
+	max-height: 168px;
+	overflow-y: auto;
+	padding: 0 4px;
+}
+
+.monaco-workbench .paradis-tab-launcher-model {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: var(--paradis-menu-row, 24px);
+	padding: 0 8px;
+	border-radius: var(--vscode-cornerRadius-small);
+	cursor: pointer;
+	outline: none;
+}
+
+.monaco-workbench .paradis-tab-launcher-model:hover,
+.monaco-workbench .paradis-tab-launcher-model:focus {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .paradis-tab-launcher-model.selected {
+	background-color: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-model-id {
+	font-family: var(--monaco-monospace-font);
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-model.selected .paradis-tab-launcher-model-id {
+	color: inherit;
+	opacity: 0.8;
+}
+
+.monaco-workbench .paradis-tab-launcher-check {
+	margin-left: auto;
+	visibility: hidden;
+}
+
+.monaco-workbench .paradis-tab-launcher-model.selected .paradis-tab-launcher-check {
+	visibility: visible;
+}
+
+.monaco-workbench .paradis-tab-launcher-options {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-top: 4px;
+	padding: 8px 10px;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
+}
+
+.monaco-workbench .paradis-tab-launcher-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12.5px;
+}
+
+.monaco-workbench .paradis-tab-launcher-option.hidden,
+.monaco-workbench .paradis-tab-launcher-hint.hidden {
+	display: none;
+}
+
+.monaco-workbench .paradis-tab-launcher-option-label {
+	flex: none;
+	width: 64px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-segments {
+	display: flex;
+	flex-wrap: wrap;
+	overflow: hidden;
+	border: 1px solid var(--vscode-checkbox-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+.monaco-workbench .paradis-tab-launcher-segment {
+	padding: 1px 6px;
+	border: none;
+	border-right: 1px solid var(--vscode-checkbox-border, var(--vscode-widget-border, transparent));
+	background: transparent;
+	color: var(--vscode-foreground);
+	font: inherit;
+	font-size: 11.5px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-tab-launcher-segment:last-child {
+	border-right: none;
+}
+
+.monaco-workbench .paradis-tab-launcher-segment:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .paradis-tab-launcher-segment.selected {
+	background-color: var(--vscode-inputOption-activeBackground);
+	color: var(--vscode-inputOption-activeForeground);
+	box-shadow: inset 0 0 0 1px var(--vscode-inputOption-activeBorder);
+}
+
+.monaco-workbench .paradis-tab-launcher-segment.danger.selected {
+	color: var(--vscode-errorForeground);
+	box-shadow: inset 0 0 0 1px var(--vscode-errorForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-segment:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .paradis-tab-launcher-note {
+	padding: 1px 6px;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-hint {
+	margin-left: 72px;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-hint.danger {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-prompt {
+	margin: 0 10px;
+	padding: 6px 8px;
+	border-radius: var(--vscode-cornerRadius-small);
+	background-color: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+}
+
+.monaco-workbench .paradis-tab-launcher-prompt:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.monaco-workbench .paradis-tab-launcher-prompt textarea {
+	display: block;
+	width: 100%;
+	box-sizing: border-box;
+	resize: none;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: var(--vscode-input-foreground);
+	font: inherit;
+	font-size: 12.5px;
+}
+
+.monaco-workbench .paradis-tab-launcher-prompt textarea::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+	margin-top: 8px;
+	padding: 8px 10px;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
+}
+
+.monaco-workbench .paradis-tab-launcher-button {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 24px;
+	padding: 0 9px;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	font: inherit;
+	font-size: 12px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-tab-launcher-button.primary {
+	background-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.monaco-workbench .paradis-tab-launcher-button.primary:hover {
+	background-color: var(--vscode-button-hoverBackground);
+}
+
+.monaco-workbench .paradis-tab-launcher-button.secondary {
+	background-color: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.monaco-workbench .paradis-tab-launcher-button.secondary:hover {
+	background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.monaco-workbench .paradis-tab-launcher-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+
+.monaco-workbench .paradis-tab-launcher-key {
+	font-size: 11px;
+	opacity: 0.8;
+}
+
+/* ⌄ を開いている間は押された見た目にする（upstream の ⌄ と同じ） */
+.monaco-workbench .paradis-tab-launcher-item .dropdown-action-container .action-label.checked {
+	background-color: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
+}
