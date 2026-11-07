@@ -154,6 +154,10 @@ export const ChatList = forwardRef<ChatListHandle, {
 		}
 	};
 
+	// 行の描き方は同じ関数のまま渡す（毎回作ると、一覧を描き直すたびに載っている全部のセルが描き直される）
+	const keyExtractor = useCallback((row: ChatRow) => chatRowKey(row, epoch), [epoch]);
+	const renderItem = useCallback(({ item }: { item: ChatRow }) => <ChatRowView row={item} terminalKey={terminalKey} allToolsOpen={allToolsOpen} />, [terminalKey, allToolsOpen]);
+
 	return (
 		<View style={styles.root}>
 			<FlatList
@@ -161,8 +165,8 @@ export const ChatList = forwardRef<ChatListHandle, {
 				style={revealed ? styles.shown : styles.hidden}
 				pointerEvents={revealed ? 'auto' : 'none'}
 				data={rows}
-				keyExtractor={row => chatRowKey(row, epoch)}
-				renderItem={({ item }) => <ChatRowView row={item} terminalKey={terminalKey} allToolsOpen={allToolsOpen} />}
+				keyExtractor={keyExtractor}
+				renderItem={renderItem}
 				extraData={allToolsOpen}
 				ListHeaderComponent={<HistoryHeader header={history} onLoadOlder={onLoadOlder} />}
 				maintainVisibleContentPosition={MAINTAIN_POSITION}
