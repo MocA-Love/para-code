@@ -84,8 +84,11 @@ export interface IParadisBoundContext {
 	readonly rawScreenshotCoordinator: ParadisRawScreenshotCoordinator;
 	/** wait_until の network idle 用の、共有中のタブの通信の台帳（ペインごと）。無ければ数えない。 */
 	readonly networkActivity?: ParadisNetworkActivity;
-	/** エージェントがこの接続で命令を送った（共有中のタブを使っている合図。paradisAgentViewIdleThrottle.ts）。 */
-	noteClientCommand?(): void;
+	/**
+	 * エージェントがこの接続で命令を送った（共有中のタブを使っている合図。paradisAgentViewIdleThrottle.ts）。
+	 * `targetId` は命令の宛先のタブ（ブラウザ単位の接続で sessionId などから分かったとき）。無ければ接続のタブ。
+	 */
+	noteClientCommand?(targetId?: string): void;
 	/**
 	 * バインド済みprimaryページのスクリーンショットを、electron-mainのupstream実装
 	 * `BrowserView.captureScreenshot()`（非表示時の回避策付き）へ委譲して撮る。
@@ -2808,8 +2811,10 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			// 命令はセッションごとに順に処理する。待つ命令（URL の確かめ・移動の応答待ち・入力の順番待ち）があっても、
 			// ほかのセッション（ほかのタブ・iframe）の命令は待たせない。壊れたフレームはセッション無しの列で扱う
-			ctx.noteClientCommand?.();
-			const sessionKey = parseClientCommand(data)?.sessionId ?? '';
+			const command = parseClientCommand(data);
+			// ブラウザ単位の接続は、sessionId で別の共有タブを操作することがある。宛先のタブを「使った」にする
+			ctx.noteClientCommand?.(command?.sessionId !== undefined ? sessionIdToTargetId.get(command.sessionId) : undefined);
+			const sessionKey = command?.sessionId ?? '';
 			clientCommands.enqueue(data, bytes, sessionKey);
 		});
 

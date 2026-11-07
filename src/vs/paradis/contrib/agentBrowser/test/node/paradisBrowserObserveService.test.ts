@@ -244,4 +244,22 @@ suite('Paradis browser observe in the service', () => {
 			method: 'noteExactViewAgentActivity view-1',
 		});
 	});
+
+	test('a browser-level CDP command addressed to another usable tab marks that tab as used, not the pane\'s current tab', async () => {
+		const shared = { windowId: 1, viewId: 'view-shared', targetId: 'target-shared', viewLease: 'lease-1' };
+		const opened = { windowId: 1, viewId: 'view-opened', targetId: 'target-opened', viewLease: 'lease-2' };
+		const notes: string[] = [];
+		const svc = service([], {
+			_bindings: new Map([[TOKEN, { pageId: 'page-1', exactView: shared }]]),
+			_agentTabGrants: new Map([[TOKEN, new Map([['tab-9', { pageId: 'tab-9', exactView: opened }]])]]),
+			_bindingForKey: () => ({ pageId: 'page-1', exactView: shared }),
+			_agentActivityNotedAt: new Map<string, number>(),
+			mainProcessService: { getChannel: () => ({ call: async (_method: string, args: unknown[]) => { notes.push((args[0] as { viewId: string }).viewId); return true; } }) },
+		}) as unknown as { _noteGatewayAgentActivity(key: string, targetId?: string): void };
+		svc._noteGatewayAgentActivity(TOKEN, 'target-opened');
+		svc._noteGatewayAgentActivity(TOKEN, 'target-of-another-pane');
+		svc._noteGatewayAgentActivity(TOKEN);
+		await Promise.resolve();
+		assert.deepStrictEqual(notes, ['view-opened', 'view-shared']);
+	});
 });

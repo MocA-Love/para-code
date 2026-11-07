@@ -999,7 +999,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				noteAgentCdpConnections: (token, connections) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', connections }),
 				// CDP で直接つないだクライアント（Playwright など）の命令も、タブを使っている合図にする。Playwright の click は
 				// 入力の前に rAF を待つので、抑制を戻したままだと隠れたタブで止まる
-				noteAgentCdpCommand: key => this._noteGatewayAgentActivity(key),
+				noteAgentCdpCommand: (key, targetId) => this._noteGatewayAgentActivity(key, targetId),
 				noteFocusEmulation: (token, enabled) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', focusEmulation: enabled }),
 				applyBoundPageEmulation: (key, connection, method, params) => this._applyBoundPageEmulation(key, connection, method, params),
 				releaseBoundPageEmulation: connection => this._releaseBoundPageEmulation(connection),
@@ -6183,11 +6183,27 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
-	private _noteGatewayAgentActivity(key: string): void {
-		const exactView = this._bindingForKey(key)?.exactView;
+	/** ゲートウェイを通った命令。宛先のタブ（`targetId`）が分かればそのタブ、無ければ接続のタブを「使った」にする。 */
+	private _noteGatewayAgentActivity(key: string, targetId?: string): void {
+		const exactView = targetId !== undefined ? this._paneExactViewForTarget(key, targetId) : this._bindingForKey(key)?.exactView;
 		if (exactView !== undefined) {
 			void this._noteAgentActivity(exactView, 'during');
 		}
+	}
+
+	/** このペインが使えるタブ（共有したページ・自分で開いたタブ）のうち、その targetId のもの。 */
+	private _paneExactViewForTarget(key: string, targetId: string): IParadisExactBrowserViewDescriptor | undefined {
+		const token = paradisPaneTokenOfScopeKey(key);
+		const shared = this._bindings.get(token)?.exactView;
+		if (shared?.targetId === targetId) {
+			return shared;
+		}
+		for (const entry of this._agentTabGrants.get(token)?.values() ?? []) {
+			if (entry.exactView.targetId === targetId) {
+				return entry.exactView;
+			}
+		}
+		return undefined;
 	}
 
 	private async _noteAgentActivity(exactView: IParadisExactBrowserViewDescriptor, phase: 'start' | 'during' | 'end'): Promise<void> {

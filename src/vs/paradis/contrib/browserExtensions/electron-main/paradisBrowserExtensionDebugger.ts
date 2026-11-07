@@ -30,6 +30,7 @@ import { paradisIsChromeWebStoreUrl } from '../common/paradisBrowserExtensionWeb
 import { IParadisExtensionApiCaller, ParadisApiSession, ParadisExtensionApiError, ParadisExtensionApiHost, paradisDefineExtensionMethod } from './paradisBrowserExtensionApiHost.js';
 import { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { paradisSetExtensionDebuggerAttached } from '../../browserFreeze/electron-main/paradisBrowserViewFreezer.js';
 
 /** chrome.debugger に要る main の口。 */
 export interface IParadisDebuggerEnvironment {
@@ -260,6 +261,9 @@ export class ParadisBrowserExtensionDebugger implements IDisposable {
 			canUseUrl: url => this._canUseUrl(caller, contents, url),
 		};
 		this._attachments.set(tabId, attachment);
+		// つないでいる間は、長く隠れたタブの一時停止（browserFreeze）をしない。止めていたら起こす
+		paradisSetExtensionDebuggerAttached(contents, true);
+		disposables.add(toDisposable(() => paradisSetExtensionDebuggerAttached(contents, false)));
 		const target = { session: caller.session, extensionId: caller.extension.id };
 		disposables.add(connection.onEvent(event => {
 			const params = isRecord(event.params) ? event.params : {};
