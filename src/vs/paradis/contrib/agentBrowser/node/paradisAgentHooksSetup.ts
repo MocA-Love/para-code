@@ -246,18 +246,13 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
 		'# never on the command line where other processes could read it with ps.',
 		// hook ごとの ID。受け口の返事が遅れて控えてしまっても、流し直しで二重にしないために使う。
 		...(spool ? [`HOOK_URL="http://127.0.0.1:$PORT/agent-hook?event=$EVENT&pid=$$&${PARADIS_AGENT_HOOK_ID_PARAM}=$HOOK_ID${hostQuery}"`] : [`HOOK_URL="http://127.0.0.1:$PORT/agent-hook?event=$EVENT&pid=$$${hostQuery}"`]),
-		'# A here-document, not a pipe from a function: no extra shell process per hook.',
-		`HOOK_AUTH="header = \\"Authorization: Bearer $${PARADIS_PANE_TOKEN_ENV_VAR}\\""`,
+		'hook_auth() {',
+		`  printf 'header = "Authorization: Bearer %s"\\n' "$${PARADIS_PANE_TOKEN_ENV_VAR}"`,
+		'}',
 		`if [ "$INPUT_BYTES" -gt ${PARADIS_AGENT_HOOK_MAX_BODY_BYTES} ]; then`,
-		'  HTTP_CODE=$(curl -s -m 3 --config - -o /dev/null -w \'%{http_code}\' "$HOOK_URL" 2>/dev/null <<HOOK_AUTH_EOF',
-		'$HOOK_AUTH',
-		'HOOK_AUTH_EOF',
-		') || true',
+		'  HTTP_CODE=$(hook_auth | curl -s -m 3 --config - -o /dev/null -w \'%{http_code}\' "$HOOK_URL" 2>/dev/null) || true',
 		'else',
-		'  HTTP_CODE=$(curl -s -m 3 --config - -o /dev/null -w \'%{http_code}\' -X POST -H "Content-Type: application/json" --data-binary @"$INPUT_FILE" "$HOOK_URL" 2>/dev/null <<HOOK_AUTH_EOF',
-		'$HOOK_AUTH',
-		'HOOK_AUTH_EOF',
-		') || true',
+		'  HTTP_CODE=$(hook_auth | curl -s -m 3 --config - -o /dev/null -w \'%{http_code}\' -X POST -H "Content-Type: application/json" --data-binary @"$INPUT_FILE" "$HOOK_URL" 2>/dev/null) || true',
 		'fi',
 		// 届かなかった（000）と、ペインがまだ同期されていない（503）だけを控える。知らない・終わったペイン（404）は
 		// 控えない（永久に控え続けないため）。

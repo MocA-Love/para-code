@@ -43,13 +43,14 @@ suite('paradisHookProcSnapshot', () => {
 		this.timeout(20_000);
 		// ペインのシェル → 子のシェル → hook（sleep）。ペインにはもう 1 本、関係の無い子もいる。
 		// ペインの起動行には改行・タブ・日本語を混ぜる（ps は LC_ALL=C で読むので、それぞれ空白・.・? に見える）
-		const pane: ChildProcess = spawn('sh', ['-c', 'sh -c "sleep 40; :" & sleep 41; :', 'x\ny\tz ペイン'], { detached: true });
+		// hook の発信元の子のシェルの下にも、hook と関係の無い子をもう 1 本置く（祖先として先に読んだプロセスの下も辿るか）
+		const pane: ChildProcess = spawn('sh', ['-c', 'sh -c "sleep 42 & sleep 40; :" & sleep 41; :', 'x\ny\tz ペイン'], { detached: true });
 		try {
 			let full: ReadonlyMap<number, IParadisHookProcessInfo> | undefined;
 			for (let attempt = 0; attempt < 50; attempt++) {
 				await timeout(100);
 				full = await paradisHookProcessSnapshotsForTest.posixProcessSnapshot();
-				if (full !== undefined && subtree(full, pane.pid!).length === 4) {
+				if (full !== undefined && subtree(full, pane.pid!).length === 5) {
 					break;
 				}
 			}
@@ -62,6 +63,12 @@ suite('paradisHookProcSnapshot', () => {
 				needed.map(pid => row(partial!.get(pid))),
 				needed.map(pid => row(full!.get(pid))),
 			);
+			// ペインの子孫は、hook の祖先に指定の起動行（daemon）があるときだけ読む
+			const unrelated = [...full!.values()].find(entry => entry.command === 'sleep 41')!.pid;
+			const hint = { pids: [hookPid, process.pid], descendantsOf: pane.pid! };
+			const withoutDaemon = await paradisHookProcessSnapshotsForTest.linuxProcSnapshot({ ...hint, descendantsOnlyUnder: () => false });
+			const underDaemon = await paradisHookProcessSnapshotsForTest.linuxProcSnapshot({ ...hint, descendantsOnlyUnder: command => command.startsWith('sh -c sleep 42') });
+			assert.deepStrictEqual({ withoutDaemon: withoutDaemon!.has(unrelated), underDaemon: underDaemon!.has(unrelated) }, { withoutDaemon: false, underDaemon: true });
 		} finally {
 			process.kill(-pane.pid!, 'SIGKILL');
 		}

@@ -703,6 +703,9 @@ async function readPersistedTranscriptEntries(transcriptPath: string): Promise<r
 	if (!await isAllowedTranscriptPath(transcriptPath)) { return []; }
 	let handle: fs.FileHandle | undefined;
 	try {
+		// 開く前に確かめる（名前付きパイプ等を開くと、書き手が来るまで読み取りのスレッドを塞ぐ）
+		const stat = await fs.stat(transcriptPath);
+		if (!stat.isFile() || stat.size <= 0) { return []; }
 		handle = await fs.open(transcriptPath, 'r');
 		if (!await isAllowedOpenTranscriptPath(handle, transcriptPath)) { return []; }
 		const opened = handle;
