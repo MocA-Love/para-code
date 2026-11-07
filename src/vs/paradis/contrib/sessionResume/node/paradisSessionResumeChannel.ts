@@ -306,6 +306,11 @@ export class ParadisSessionResumeService {
 	private readonly catalog = new Map<string, ICatalogEntry>();
 	private readonly searchTextCache: ParadisSessionSearchTextCache;
 	/** 一覧行プレビューの tail 再読を避けるキャッシュ。キーは catalogId、不変条件(revision)は updatedAt。 */
+	/**
+	 * {@link withLinkedPreferredCodexHome} の結果（会話・更新時刻・見つかったホーム・選んでいるホームが同じ間は
+	 * 調べ直さない）。値は替える先のホーム（替えないときは null）。
+	 */
+	private readonly linkedCodexHomeCache = new Map<string, string | null>();
 	private readonly latestMessageCache = new Map<string, {
 		readonly revision: number;
 		readonly message: IParadisResumeLatestMessage | null;
@@ -510,22 +515,35 @@ export class ParadisSessionResumeService {
 		if (session.agent !== 'codex' || session.codexHome === undefined || transcriptPath === undefined) {
 			return session;
 		}
-		const relativePath = relative(session.codexHome, transcriptPath);
+		const cacheKey = JSON.stringify([session.catalogId, session.updatedAt, session.codexHome, [...preferredCodexHomes]]);
+		let linkedHome = this.linkedCodexHomeCache.get(cacheKey);
+		if (linkedHome === undefined) {
+			linkedHome = await this.findLinkedPreferredCodexHome(session.codexHome, transcriptPath, preferredCodexHomes);
+			if (this.linkedCodexHomeCache.size >= MAX_CATALOG_ENTRIES) {
+				this.linkedCodexHomeCache.clear();
+			}
+			this.linkedCodexHomeCache.set(cacheKey, linkedHome);
+		}
+		return linkedHome === null ? session : { ...session, codexHome: linkedHome };
+	}
+
+	private async findLinkedPreferredCodexHome(codexHome: string, transcriptPath: string, preferredCodexHomes: ReadonlySet<string>): Promise<string | null> {
+		const relativePath = relative(codexHome, transcriptPath);
 		if (relativePath.length === 0 || relativePath.startsWith('..') || isAbsolute(relativePath)) {
-			return session;
+			return null;
 		}
 		try {
 			const original = await fs.lstat(transcriptPath);
 			for (const preferredHome of preferredCodexHomes) {
 				const linked = await fs.lstat(join(preferredHome, relativePath)).catch(() => undefined);
 				if (linked?.isFile() && original.isFile() && linked.dev === original.dev && linked.ino === original.ino) {
-					return { ...session, codexHome: preferredHome };
+					return preferredHome;
 				}
 			}
 		} catch {
 			// 読めなければ見つかったホームのまま
 		}
-		return session;
+		return null;
 	}
 
 	/**
