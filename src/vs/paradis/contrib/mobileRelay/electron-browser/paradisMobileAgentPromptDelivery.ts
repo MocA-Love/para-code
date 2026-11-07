@@ -16,6 +16,7 @@ import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowse
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { paradisCanPasteMultiline } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
+import { paradisAgentStartupScreenState } from '../../agentIde/common/paradisAgentStartupScreen.js';
 import { paradisScreenShowsAgentPrompt, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { paradisInteractiveAgentCommand } from '../common/paradisAgentCliCommand.js';
@@ -153,7 +154,23 @@ function isInSpaceAgent(services: IParadisAgentPromptServices, instance: ITermin
  */
 export function paradisPromptDeliveryScreenShowsPrompt(screen: string, executingCommand: string | undefined): boolean {
 	const agent = executingCommand !== undefined ? paradisInteractiveAgentCommand(executingCommand)?.agent : undefined;
-	return paradisScreenShowsAgentPrompt(screen, agent);
+	return paradisScreenShowsAgentPrompt(screen, agent) || paradisScreenShowsStartupConfirmation(screen);
+}
+
+/** 画面の末尾で探す行数（起動時の確認は最下部に出る）。 */
+const STARTUP_CONFIRMATION_TAIL_LINES = 12;
+
+/**
+ * 起動直後の確認（Claude Code の「Do you trust the files in this folder?」・「Quick safety check」、Codex の
+ * 「Do you trust the contents of this directory?」・「Trust this folder?」、「Press enter to continue」の案内）が出ているか。
+ * 貼り付けた後の Enter がその確認に答えてしまい、利用者の知らないうちにフォルダを信頼させないために、送ってよくない印にする。
+ */
+export function paradisScreenShowsStartupConfirmation(screen: string): boolean {
+	if (paradisAgentStartupScreenState(screen) === 'trust_dialog') {
+		return true;
+	}
+	const tail = screen.split('\n').slice(-STARTUP_CONFIRMATION_TAIL_LINES).join('').replace(/[\s\u2500-\u257f]/g, '').toLowerCase();
+	return /doyoutrustthefilesinthisfolder\?|doyoutrustthecontentsofthisdirectory\?|trustthisfolder\?|pressentertocontinue/.test(tail);
 }
 
 function verdictOf(services: IParadisAgentPromptServices, instance: ITerminalInstance | undefined, ws: string): ParadisReviewNotesTargetVerdict {
@@ -214,25 +231,33 @@ async function launch(services: IParadisAgentPromptServices, ws: string, root: U
 	return { ok: true, via: 'launch' };
 }
 
-/** 貼り付けで渡すまでに、起動したエージェントが入力を待つ状態になるのを待つ上限と間隔。 */
-const PASTE_AFTER_LAUNCH_TIMEOUT_MS = 60_000;
+/**
+ * 依頼文を渡さずに起動してから貼り付けるまでの、起動の待ちを含めた全体の上限と、見直す間隔。
+ * スマホは差分のメモを新しいエージェントへ送る要求を 60 秒で打ち切る（app/mobile の useReviewNotes。コミット・CI の
+ * 直しは 200 秒）。それを越えて後から送ると、スマホには失敗と出たのに送られている食い違いになるので、その内に収める。
+ */
+const PASTE_AFTER_LAUNCH_BUDGET_MS = 55_000;
 const PASTE_AFTER_LAUNCH_POLL_MS = 500;
 
 /** 依頼文を渡さずにエージェントを起動し、入力を待つようになったら貼り付けて送る。 */
 async function launchThenPaste(services: IParadisAgentPromptServices, ws: string, root: URI, prompt: string, agentId: string, pushState: () => void): Promise<ParadisAgentPromptOutcome> {
+	const deadline = Date.now() + PASTE_AFTER_LAUNCH_BUDGET_MS;
 	const launched = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId, preserveFocus: true });
 	launched.catch(() => undefined);
-	const terminal = await raceTimeout(launched, LAUNCH_TIMEOUT_MS);
+	const terminal = await raceTimeout(launched, Math.min(LAUNCH_TIMEOUT_MS, PASTE_AFTER_LAUNCH_BUDGET_MS));
 	if (terminal === undefined) {
 		return { ok: false, error: 'エージェントの起動に時間がかかっています。起動したかを PC で確かめてください（未送信のまま残しています）。', code: 'timeout' };
 	}
 	pushState();
 	const find = () => paradisCollectAllTerminalInstances(services.terminalService, services.terminalGroupService).find(candidate => candidate.instanceId === terminal.instanceId && !candidate.isDisposed);
-	const deadline = Date.now() + PASTE_AFTER_LAUNCH_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		const instance = find();
 		if (instance === undefined) {
 			break;
+		}
+		// 起動直後の信頼の確認は利用者だけが答えるもの。貼った後の Enter で黙って信頼させないよう、そこで止める
+		if (instance.xterm !== undefined && paradisAgentStartupScreenState(paradisVisibleTerminalText(instance)) === 'trust_dialog') {
+			return { ok: false, error: '起動したエージェントがフォルダを信頼するかを確かめています。PC で答えてから、もう一度送ってください（未送信のまま残しています）。', code: 'trust-dialog' };
 		}
 		if (verdictOf(services, instance, ws) === 'ready') {
 			const outcome = await sendToInstance(services, instance, ws, prompt, find);
