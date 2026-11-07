@@ -21,7 +21,7 @@ import {
 	paradisIsUntrackedFile,
 	paradisMobileReviewState,
 	paradisParseMobilePorcelainStatus,
-	paradisReviewedFileRewritten,
+	paradisCheckReviewedFile,
 	paradisStagedConsistently,
 	paradisStagedContentDiffers,
 } from '../common/paradisMobileDiffReview.js';
@@ -43,6 +43,7 @@ import {
 	paradisIsReviewNoteId,
 	paradisIsReviewNoteLine,
 	paradisIsReviewPath,
+	paradisMarkMobileReviewRewritten,
 	paradisMarkMobileReviewNotesSent,
 	paradisMobileReviewSpace,
 	paradisNextMobileReviewRevision,
@@ -382,7 +383,7 @@ registerParadisMobileRequestHandler('scm', 'reviewNotesSend', {
 });
 
 /** ステージしなかった理由。 */
-type ReviewStageSkip = 'gone' | 'changed' | 'not-reviewed' | 'staged' | 'conflict' | 'unsupported';
+type ReviewStageSkip = 'gone' | 'changed' | 'not-reviewed' | 'staged' | 'conflict' | 'unsupported' | 'unverified';
 
 registerParadisMobileRequestHandler('scm', 'reviewStage', {
 	async handle(accessor, request, context) {
@@ -433,15 +434,22 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 			}
 		}
 		// 印を付けたときの大きさと時刻が残っている追跡中のファイルは、いまと比べる（行数の同じ書き換えは識別では見分けられない）。
-		// 違う・調べられないものは足さない
+		// 違ったものは足さずに印を「確認後に変更あり」へ回し、調べられなかったもの（接続先が返さないなど）はそのファイルだけ
+		// `unverified` で足さない（ほかのファイルは続ける）
+		const rewritten = new Map<string, string>();
 		const withMarkStat = toStage.filter(path => byPath.get(path)?.x !== '?' && marks[path]?.size !== undefined);
 		if (withMarkStat.length > 0) {
-			const current = await paradisWithHostDeadline(paradisStatMobileWorkspaceFiles(fileService, root, withMarkStat), AFTER_STAT_DEADLINE_MS);
+			const current = await paradisWithHostDeadline(paradisStatMobileWorkspaceFiles(fileService, root, withMarkStat), AFTER_STAT_DEADLINE_MS)
+				.catch(() => new Map<string, { readonly size: number; readonly mtime: number }>());
 			for (const path of withMarkStat) {
-				if (paradisReviewedFileRewritten(marks[path], current.get(path))) {
+				const check = paradisCheckReviewedFile(marks[path], current.get(path));
+				if (check !== 'same') {
 					toStage.splice(toStage.indexOf(path), 1);
 					identities.delete(path);
-					skipped.push({ path, reason: 'changed' });
+					skipped.push({ path, reason: check === 'rewritten' ? 'changed' : 'unverified' });
+					if (check === 'rewritten') {
+						rewritten.set(path, marks[path].identity);
+					}
 				}
 			}
 		}
@@ -496,6 +504,6 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 				restaged.set(file.path, { before: previous, after: paradisMobileDiffIdentity(file) });
 			}
 		}
-		updateSpace(storage, ws, context, space => paradisRemapMobileReviewMarks(space, restaged), 'unreachable', { staged, skipped });
+		updateSpace(storage, ws, context, space => paradisRemapMobileReviewMarks(paradisMarkMobileReviewRewritten(space, rewritten), restaged), 'unreachable', { staged, skipped });
 	},
 });

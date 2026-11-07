@@ -292,15 +292,19 @@ export interface IParadisMobileReviewMark {
 }
 
 /**
- * 印を付けたときから作業ツリーのファイルが書き換えられたと見なすか（確認済みのステージで足さない）。
- * 印に大きさと時刻が無い（古い印・付けたときに調べられなかった）ものは比べない。印にあるのに今は調べられない
- * （消えた・読めない・接続先が返さない）ものは、確かめられないので書き換えられたと見なす。
+ * 印を付けたときから作業ツリーのファイルが書き換えられたか（確認済みのステージで足さない）。
+ * - `same`: 書き換えられていない、または比べない（印に大きさと時刻が無い: 古い印・付けたときに調べられなかった）
+ * - `rewritten`: 大きさか時刻が違う（印を「確認後に変更あり」に回す）
+ * - `unverified`: いまは調べられない（消えた・読めない・接続先が返さない）。そのファイルだけ足さない
  */
-export function paradisReviewedFileRewritten(mark: IParadisMobileReviewMark | undefined, current: { readonly size: number; readonly mtime: number } | undefined): boolean {
+export function paradisCheckReviewedFile(mark: IParadisMobileReviewMark | undefined, current: { readonly size: number; readonly mtime: number } | undefined): 'same' | 'rewritten' | 'unverified' {
 	if (mark?.size === undefined || mark.mtime === undefined) {
-		return false;
+		return 'same';
 	}
-	return current === undefined || current.size !== mark.size || current.mtime !== mark.mtime;
+	if (current === undefined) {
+		return 'unverified';
+	}
+	return current.size !== mark.size || current.mtime !== mark.mtime ? 'rewritten' : 'same';
 }
 
 /** いまの変更に対する印の状態。`changed` は確認した後に中身が変わった（もう一度見てほしい）。 */
