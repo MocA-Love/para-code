@@ -37,6 +37,7 @@ import { WorkbenchToolBar, HiddenItemStrategy } from '../../../../platform/actio
 import { LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js';
 import { DraggedTreeItemsIdentifier } from '../../../../editor/common/services/treeViewsDnd.js';
 import { IEditorResolverService } from '../../../services/editor/common/editorResolverService.js';
+import { IModelService } from '../../../../editor/common/services/model.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
 import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
 import { EDITOR_CORE_NAVIGATION_COMMANDS } from './editorCommands.js';
@@ -165,6 +166,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		@IEditorResolverService private readonly editorResolverService: IEditorResolverService,
 		@IHostService protected readonly hostService: IHostService,
 		@IMenuService protected readonly menuService: IMenuService,
+		@IModelService private readonly modelService: IModelService,
 	) {
 		super(themeService);
 
@@ -586,7 +588,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		this.groupLockedContext.set(this.tabsModel.isLocked);
 		this.editorCanSplitInGroupContext.set(editor.hasCapability(EditorInputCapabilities.CanSplitInGroup));
 		this.sideBySideEditorContext.set(editor.typeId === SideBySideEditorInput.ID);
-		applyAvailableEditorIds(this.editorAvailableEditorIds, editor, this.editorResolverService);
+		applyAvailableEditorIds(this.editorAvailableEditorIds, editor, this.editorResolverService, this.modelService);
 		paradisUpdateTabContextKeys(this.contextMenuContextKeyService, editor); // PARA-PATCH: let tab menu items (e.g. Download...) hide on diff tabs
 
 		// Find target anchor
