@@ -15,8 +15,10 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { ParadisScheduledRunsDialog } from './paradisScheduledRunsDialog.js';
 import './paradisScheduledRunsClient.js';
 import './paradisScheduledRunsRunner.contribution.js';
+import './paradisScheduledRunsMcpChannel.js';
+import { PARADIS_OPEN_SCHEDULED_RUNS_COMMAND_ID } from '../common/paradisScheduledRunTools.js';
 
-export const PARADIS_OPEN_SCHEDULED_RUNS_COMMAND_ID = 'paradis.openScheduledRuns';
+export { PARADIS_OPEN_SCHEDULED_RUNS_COMMAND_ID };
 
 let activeDialog: ParadisScheduledRunsDialog | undefined;
 

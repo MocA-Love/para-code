@@ -21,12 +21,14 @@
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisNextCronOccurrence, paradisParseCron } from '../common/paradisScheduleCron.js';
 import {
 	IParadisScheduledRunDefinition,
+	IParadisScheduledRunPrecheckResult,
 	IParadisScheduledRunRecord,
 	IParadisScheduledRunReport,
 	IParadisScheduledRunRequest,
@@ -49,8 +51,13 @@ import {
 	paradisSanitizeScheduledRunPrompt,
 	paradisScheduledRunLastMessage,
 	paradisValidateScheduledRunDraft,
+	paradisSanitizeScheduledRunPrecheck,
+	paradisScheduledRunPrecheckPassed,
+	paradisScheduledRunPrecheckSupported,
+	paradisValidateScheduledRunPrecheck,
 } from '../common/paradisScheduledRuns.js';
-import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunReport } from '../common/paradisScheduledRunsSanitize.js';
+import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunPrecheckShape, paradisSanitizeScheduledRunReport } from '../common/paradisScheduledRunsSanitize.js';
+import { ParadisScheduledRunPrecheckRunner } from './paradisScheduledRunPrecheck.js';
 
 const STR_SAVE_FAILED = localize('paradis.scheduledRuns.error.saveFailed', "変更を保存できませんでした。ディスクの空きと権限を確かめてから、もう一度やり直してください。");
 
@@ -137,14 +144,18 @@ export class ParadisScheduledRunsService extends Disposable {
 	private readonly ready: Promise<void>;
 	private writeChain: Promise<void> = Promise.resolve();
 	private readonly timer = this._register(new IntervalTimer());
+	/** 走っている事前確認（実行の id → 止める口）。実行が終わったら止める。 */
+	private readonly prechecks = new Map<string, AbortController>();
+	private readonly precheckRunner: ParadisScheduledRunPrecheckRunner | undefined;
 
 	constructor(
 		private readonly store: IParadisScheduledRunsStore,
 		private readonly clock: IParadisScheduledRunsClock,
 		private readonly logService: ILogService,
-		options: { readonly startTimer?: boolean; readonly hookEvents?: Event<IParadisScheduledRunHookEvent> } = {},
+		options: { readonly startTimer?: boolean; readonly hookEvents?: Event<IParadisScheduledRunHookEvent>; readonly precheckRunner?: ParadisScheduledRunPrecheckRunner } = {},
 	) {
 		super();
+		this.precheckRunner = options.precheckRunner;
 		this.ready = this.load();
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => this.onHookEvent(event)));
@@ -250,14 +261,15 @@ export class ParadisScheduledRunsService extends Disposable {
 			permissionId: draft.permissionId,
 			prompt: paradisSanitizeScheduledRunPrompt(draft.prompt),
 			dailyLimit: draft.dailyLimit,
+			precheck: draft.precheck ? paradisSanitizeScheduledRunPrecheck(draft.precheck) : undefined,
 		};
 		let definition: IParadisScheduledRunDefinition;
 		const id = existing?.id ?? generateUuid();
 		const lastBefore = this.lastEvaluatedAtOf(id);
 		let lastWritten: number | undefined;
 		if (existing) {
-			const { disabledReason: _cleared, ...rest } = existing;
-			definition = { ...rest, ...fields, updatedAt: now };
+			const { disabledReason: _cleared, precheck: _previous, ...rest } = existing;
+			definition = withoutUndefinedPrecheck({ ...rest, ...fields, updatedAt: now });
 			this.definitions = this.definitions.map(candidate => candidate.id === existing.id ? definition : candidate);
 			if (existing.schedule !== definition.schedule) {
 				// 時刻を変えたら、変える前の式で過ぎた時刻を新しい式で拾い直さない
@@ -266,7 +278,7 @@ export class ParadisScheduledRunsService extends Disposable {
 			}
 		} else {
 			// 作成直後は必ず無効。利用者が中身を確かめてから自分で有効にする
-			definition = { id, ...fields, enabled: false, createdAt: now, updatedAt: now };
+			definition = withoutUndefinedPrecheck({ id, ...fields, enabled: false, createdAt: now, updatedAt: now });
 			this.definitions.push(definition);
 			this.lastEvaluatedAt[definition.id] = now;
 			lastWritten = now;
@@ -394,6 +406,85 @@ export class ParadisScheduledRunsService extends Disposable {
 	}
 
 	// ---------- ウィンドウからの操作 ----------
+
+	/**
+	 * 受け持った実行の事前確認を走らせ、エージェントを起動してよいかを返す。
+	 *
+	 * 時刻で起動する回（手動以外）で、定義に事前確認があるときだけ走らせる。通らなければ、ここでその回を
+	 * 「事前確認で見送り」にして false を返す（ウィンドウは報告せずに手を引く）。`trusted` はウィンドウが
+	 * 確かめたリポジトリの信頼。信頼していなければコマンドを走らせずに見送る。
+	 * 走っている間に実行が止められた・別の状態になったときは、結果を書かずに false を返す。
+	 */
+	async runPrecheck(ctx: string, runId: string, trusted: boolean): Promise<boolean> {
+		await this.ready;
+		const run = this.runs.find(candidate => candidate.id === runId);
+		const definition = run && this.definitions.find(candidate => candidate.id === run.definitionId);
+		if (!run || !definition || run.claimedBy !== ctx || run.status !== 'starting') {
+			return false;
+		}
+		const precheck = definition.precheck;
+		if (!precheck || run.trigger === 'manual') {
+			return true;
+		}
+		const skip = (reason: ParadisScheduledRunReason, result?: IParadisScheduledRunPrecheckResult) => {
+			this.updateRun(runId, { status: 'skipped', reason, finishedAt: this.clock.now(), ...(result ? { precheck: result } : {}) });
+			this.commit();
+			return false;
+		};
+		if (!trusted) {
+			return skip('precheckUntrusted');
+		}
+		if (!this.precheckRunner || !paradisScheduledRunPrecheckSupported(definition.target.repositoryUri)) {
+			return skip('precheckFailed', { error: 'not supported for this repository', durationMs: 0 });
+		}
+		const controller = new AbortController();
+		this.prechecks.set(runId, controller);
+		let result: IParadisScheduledRunPrecheckResult;
+		try {
+			result = await this.precheckRunner({ command: precheck.command, cwd: URI.parse(definition.target.repositoryUri).fsPath, timeoutMs: precheck.timeoutSeconds * 1000, signal: controller.signal });
+		} catch (error) {
+			result = { error: error instanceof Error ? error.message : String(error), durationMs: 0 };
+		} finally {
+			if (this.prechecks.get(runId) === controller) {
+				this.prechecks.delete(runId);
+			}
+		}
+		// 待っている間に止められた・不明にされた・受け持ちが変わった回には書かない
+		const current = this.runs.find(candidate => candidate.id === runId);
+		if (controller.signal.aborted || !current || current.claimedBy !== ctx || current.status !== 'starting') {
+			return false;
+		}
+		if (!paradisScheduledRunPrecheckPassed(result)) {
+			return skip('precheckFailed', result);
+		}
+		this.updateRun(runId, { precheck: result });
+		this.commit();
+		return true;
+	}
+
+	/**
+	 * 保存する前に、事前確認を 1 回だけ試す（画面の「試す」）。記録には残さない。
+	 * 形・中身が保存の規則を満たさなければ、`error` に理由を入れて返す。
+	 */
+	async testPrecheck(value: unknown, repositoryUri: unknown): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }> {
+		const precheck = paradisSanitizeScheduledRunPrecheckShape(value);
+		if (!precheck || typeof repositoryUri !== 'string' || repositoryUri.length === 0 || repositoryUri.length > 2000) {
+			return { error: localize('paradis.scheduledRuns.error.badPrecheck', "事前確認の内容を読めませんでした。") };
+		}
+		const cleaned = paradisSanitizeScheduledRunPrecheck(precheck);
+		const problem = paradisValidateScheduledRunPrecheck(cleaned, repositoryUri);
+		if (problem !== undefined) {
+			return { error: problem };
+		}
+		if (!this.precheckRunner) {
+			return { error: localize('paradis.scheduledRuns.error.precheckUnavailable', "事前確認をこの環境では実行できません。") };
+		}
+		try {
+			return { result: await this.precheckRunner({ command: cleaned.command, cwd: URI.parse(repositoryUri).fsPath, timeoutMs: cleaned.timeoutSeconds * 1000 }) };
+		} catch (error) {
+			return { result: { error: error instanceof Error ? error.message : String(error), durationMs: 0 } };
+		}
+	}
 
 	/** 開始待ちの実行を受け持つ。先に来たウィンドウだけが受け取れる。 */
 	async claim(ctx: string, runId: string): Promise<IParadisScheduledRunRequest | undefined> {
@@ -687,6 +778,9 @@ export class ParadisScheduledRunsService extends Disposable {
 		// 終わった実行（報告・生存報告切れ・時間切れ・取りやめのどれでも）のペインの対応は要らない
 		if (updated && !paradisIsActiveRunStatus(updated.status)) {
 			this.paneTokens.delete(runId);
+			// 事前確認の途中で終わった（止めた・ウィンドウを閉じた・不明にした）回は、コマンドも止める
+			this.prechecks.get(runId)?.abort();
+			this.prechecks.delete(runId);
 		}
 		return updated;
 	}
@@ -790,7 +884,24 @@ export class ParadisScheduledRunsService extends Disposable {
 	}
 
 	/** 書き込みが済むのを待つ（テスト・終了時用）。 */
+	override dispose(): void {
+		for (const controller of this.prechecks.values()) {
+			controller.abort();
+		}
+		this.prechecks.clear();
+		super.dispose();
+	}
+
 	flush(): Promise<void> {
 		return this.writeChain;
 	}
+}
+
+/** 事前確認を外した保存で、`precheck: undefined` の項目を残さない（保存の形と指紋を前と同じにする）。 */
+function withoutUndefinedPrecheck(definition: IParadisScheduledRunDefinition): IParadisScheduledRunDefinition {
+	if (definition.precheck !== undefined) {
+		return definition;
+	}
+	const { precheck: _none, ...rest } = definition;
+	return rest;
 }

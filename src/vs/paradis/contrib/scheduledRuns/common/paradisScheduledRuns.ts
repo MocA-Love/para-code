@@ -55,6 +55,14 @@ export const PARADIS_SCHEDULED_RUN_MAX_NAME_LENGTH = 80;
 /** 実行中のウィンドウからの生存報告の間隔と、途絶えたとみなす時間。 */
 export const PARADIS_SCHEDULED_RUN_HEARTBEAT_MS = PARADIS_MINUTE_MS;
 export const PARADIS_SCHEDULED_RUN_LEASE_MS = 3 * PARADIS_MINUTE_MS;
+/** 事前確認の制限時間（秒）の既定値・範囲・画面の選択肢。 */
+export const PARADIS_SCHEDULED_RUN_PRECHECK_DEFAULT_TIMEOUT_SECONDS = 60;
+export const PARADIS_SCHEDULED_RUN_PRECHECK_MAX_TIMEOUT_SECONDS = 600;
+export const PARADIS_SCHEDULED_RUN_PRECHECK_TIMEOUT_CHOICES: readonly number[] = [30, 60, 120, 300, 600];
+/** 事前確認のコマンドの長さの上限。 */
+export const PARADIS_SCHEDULED_RUN_PRECHECK_MAX_COMMAND_LENGTH = 2000;
+/** 事前確認の出力として記録に残す長さ（末尾だけ）。 */
+export const PARADIS_SCHEDULED_RUN_PRECHECK_OUTPUT_LENGTH = 1000;
 
 // ---------- 定義 ----------
 
@@ -64,6 +72,51 @@ export type ParadisScheduledRunTargetKind =
 	| 'repository'
 	/** 毎回新しいスペース（worktree）を作って起動する。 */
 	| 'newSpace';
+
+/**
+ * 事前確認（Orca の automation precheck と同じ考え方）。時刻で起動する回だけ、エージェントを起動する前に
+ * リポジトリのメインのチェックアウトでシェルのコマンドを走らせ、終了コードが 0 のときだけ起動する。
+ * 0 以外・時間切れ・起動できないときは、その回を「事前確認で見送り」にする。判定は終了コードだけで、
+ * 出力はエージェントへの指示に足さない（記録に末尾を残すだけ）。手動の「今すぐ実行」では走らせない。
+ */
+export interface IParadisScheduledRunPrecheck {
+	readonly command: string;
+	readonly timeoutSeconds: number;
+}
+
+/** 事前確認の結果（記録に残す形。表示の文は画面側で作る）。 */
+export interface IParadisScheduledRunPrecheckResult {
+	/** 終了コード。時間切れ・起動できなかったときは無し。 */
+	readonly exitCode?: number;
+	readonly timedOut?: boolean;
+	/** 起動できなかったときの理由。 */
+	readonly error?: string;
+	readonly durationMs: number;
+	/** 標準出力と標準エラーの末尾（秘密らしい値は伏せる）。 */
+	readonly output?: string;
+}
+
+/** 事前確認が通ったか（終了コード 0 だけ）。 */
+export function paradisScheduledRunPrecheckPassed(result: IParadisScheduledRunPrecheckResult): boolean {
+	return result.exitCode === 0 && !result.timedOut && result.error === undefined;
+}
+
+/** 事前確認の結果の 1 行の説明。 */
+export function paradisScheduledRunPrecheckSummary(result: IParadisScheduledRunPrecheckResult): string {
+	const seconds = (Math.max(0, result.durationMs) / 1000).toFixed(1);
+	if (result.timedOut) {
+		return localize('paradis.scheduledRuns.precheck.timedOut', "事前確認が時間切れになりました（{0} 秒）", seconds);
+	}
+	if (result.error !== undefined) {
+		return localize('paradis.scheduledRuns.precheck.error', "事前確認を実行できませんでした: {0}", result.error);
+	}
+	return localize('paradis.scheduledRuns.precheck.exit', "事前確認の終了コード {0}（{1} 秒）", result.exitCode ?? '?', seconds);
+}
+
+/** 事前確認を走らせられるリポジトリか（この PC のフォルダだけ。SSH などの接続先では走らせられない）。 */
+export function paradisScheduledRunPrecheckSupported(repositoryUri: string): boolean {
+	return repositoryUri.startsWith('file:');
+}
 
 export interface IParadisScheduledRunTarget {
 	readonly kind: ParadisScheduledRunTargetKind;
@@ -92,6 +145,8 @@ export interface IParadisScheduledRunDefinition {
 	readonly prompt: string;
 	/** 1 日（ローカル時刻の 0 時区切り）に自動で始めてよい回数。 */
 	readonly dailyLimit: number;
+	/** 事前確認。無ければ時刻どおりに必ず起動する。 */
+	readonly precheck?: IParadisScheduledRunPrecheck;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 	/**
@@ -114,6 +169,7 @@ export interface IParadisScheduledRunDraft {
 	readonly permissionId?: string;
 	readonly prompt: string;
 	readonly dailyLimit: number;
+	readonly precheck?: IParadisScheduledRunPrecheck;
 }
 
 // ---------- 実行の記録 ----------
@@ -160,7 +216,11 @@ export type ParadisScheduledRunReason =
 	| 'userStopped'
 	| 'repositoryMissing'
 	| 'launchFailed'
-	| 'heartbeatLost';
+	| 'heartbeatLost'
+	/** 事前確認が 0 以外で終わった・時間切れ・実行できなかった。 */
+	| 'precheckFailed'
+	/** リポジトリを信頼していないので、事前確認のコマンドを走らせなかった。 */
+	| 'precheckUntrusted';
 
 /** 毎回新しいスペースを作ったときの、そのスペース。 */
 export interface IParadisScheduledRunSpace {
@@ -203,6 +263,8 @@ export interface IParadisScheduledRunRecord {
 	readonly agent?: 'claude' | 'codex';
 	/** エージェントの最後の発言（Stop hook の `last_assistant_message`、先頭だけ）。 */
 	readonly lastMessage?: string;
+	/** 事前確認を走らせた回の結果。 */
+	readonly precheck?: IParadisScheduledRunPrecheckResult;
 }
 
 /** 最後の発言として残す長さ。 */
@@ -310,7 +372,32 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 	if (!Number.isInteger(draft.dailyLimit) || draft.dailyLimit < 1 || draft.dailyLimit > PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT) {
 		return localize('paradis.scheduledRuns.validate.limit', "1 日の回数は 1〜{0} 回で指定してください。", PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT);
 	}
+	if (draft.precheck) {
+		return paradisValidateScheduledRunPrecheck(draft.precheck, draft.target.repositoryUri);
+	}
 	return undefined;
+}
+
+/** 事前確認の中身を検証する（コマンドの長さ・制限時間・実行できるリポジトリか）。 */
+export function paradisValidateScheduledRunPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string): string | undefined {
+	if (precheck.command.trim().length === 0) {
+		return localize('paradis.scheduledRuns.validate.precheckEmpty', "事前確認のコマンドを入れてください（使わないなら空にしてください）。");
+	}
+	if (precheck.command.length > PARADIS_SCHEDULED_RUN_PRECHECK_MAX_COMMAND_LENGTH) {
+		return localize('paradis.scheduledRuns.validate.precheckLong', "事前確認のコマンドは {0} 文字以内にしてください。", PARADIS_SCHEDULED_RUN_PRECHECK_MAX_COMMAND_LENGTH);
+	}
+	if (!Number.isInteger(precheck.timeoutSeconds) || precheck.timeoutSeconds < 1 || precheck.timeoutSeconds > PARADIS_SCHEDULED_RUN_PRECHECK_MAX_TIMEOUT_SECONDS) {
+		return localize('paradis.scheduledRuns.validate.precheckTimeout', "事前確認の制限時間は 1〜{0} 秒で指定してください。", PARADIS_SCHEDULED_RUN_PRECHECK_MAX_TIMEOUT_SECONDS);
+	}
+	if (repositoryUri && !paradisScheduledRunPrecheckSupported(repositoryUri)) {
+		return localize('paradis.scheduledRuns.validate.precheckRemote', "事前確認はこの PC のリポジトリでだけ使えます（SSH などの接続先のリポジトリでは使えません）。");
+	}
+	return undefined;
+}
+
+/** 事前確認のコマンドを保存する形にする（改行を LF にそろえ、改行とタブ以外の制御文字を落とす）。 */
+export function paradisSanitizeScheduledRunPrecheck(precheck: IParadisScheduledRunPrecheck): IParadisScheduledRunPrecheck {
+	return { command: paradisSanitizeScheduledRunPrompt(precheck.command).trim(), timeoutSeconds: precheck.timeoutSeconds };
 }
 
 /**
@@ -337,7 +424,12 @@ export function paradisRevalidateStoredDefinition(definition: IParadisScheduledR
 	const dailyLimit = Number.isInteger(definition.dailyLimit)
 		? Math.min(PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT, Math.max(1, definition.dailyLimit))
 		: PARADIS_SCHEDULED_RUN_DEFAULT_DAILY_LIMIT;
-	const cleaned: IParadisScheduledRunDefinition = { ...definition, dailyLimit, prompt: paradisSanitizeScheduledRunPrompt(definition.prompt) };
+	const cleaned: IParadisScheduledRunDefinition = {
+		...definition,
+		dailyLimit,
+		prompt: paradisSanitizeScheduledRunPrompt(definition.prompt),
+		...(definition.precheck ? { precheck: paradisSanitizeScheduledRunPrecheck(definition.precheck) } : {}),
+	};
 	const problem = paradisValidateScheduledRunDraft(cleaned);
 	if (problem === undefined) {
 		return { definition: cleaned };
@@ -495,6 +587,14 @@ export function paradisCleanupCandidateSpaces(definitionId: string, runs: readon
 	return unique.slice(PARADIS_SCHEDULED_RUN_KEEP_SPACES).filter(run => paradisIsFinishedRunStatus(run.status));
 }
 
+/** 実行の記録の状態の表示名（事前確認で見送った回は「事前確認で見送り」）。 */
+export function paradisScheduledRunRecordStatusLabel(run: Pick<IParadisScheduledRunRecord, 'status' | 'reason'>): string {
+	if (run.status === 'skipped' && (run.reason === 'precheckFailed' || run.reason === 'precheckUntrusted')) {
+		return localize('paradis.scheduledRuns.status.precheckSkipped', "事前確認で見送り");
+	}
+	return paradisScheduledRunStatusLabel(run.status);
+}
+
 /** 状態の表示名。 */
 export function paradisScheduledRunStatusLabel(status: ParadisScheduledRunStatus): string {
 	switch (status) {
@@ -533,5 +633,7 @@ export function paradisScheduledRunReasonLabel(reason: ParadisScheduledRunReason
 		case 'repositoryMissing': return localize('paradis.scheduledRuns.reason.repositoryMissing', "リポジトリがこのウィンドウに見つかりませんでした");
 		case 'launchFailed': return localize('paradis.scheduledRuns.reason.launchFailed', "エージェントを起動できませんでした");
 		case 'heartbeatLost': return localize('paradis.scheduledRuns.reason.heartbeatLost', "実行していたウィンドウから報告が途絶えました");
+		case 'precheckFailed': return localize('paradis.scheduledRuns.reason.precheckFailed', "事前確認が通らなかったため、エージェントを起動しませんでした");
+		case 'precheckUntrusted': return localize('paradis.scheduledRuns.reason.precheckUntrusted', "リポジトリを信頼していないため、事前確認のコマンドを実行せずに見送りました");
 	}
 }

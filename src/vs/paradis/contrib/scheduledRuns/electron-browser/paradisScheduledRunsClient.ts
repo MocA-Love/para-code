@@ -15,6 +15,8 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import {
 	IParadisScheduledRunDraft,
+	IParadisScheduledRunPrecheck,
+	IParadisScheduledRunPrecheckResult,
 	IParadisScheduledRunReport,
 	IParadisScheduledRunRequest,
 	IParadisScheduledRunsResult,
@@ -44,6 +46,10 @@ export interface IParadisScheduledRunsClient {
 	report(report: IParadisScheduledRunReport): Promise<boolean>;
 	/** 受け付けられなかった実行の id を返す（もう終わった・不明にされたもの）。 */
 	heartbeat(runIds: readonly string[]): Promise<string[]>;
+	/** 受け持った実行の事前確認を走らせる。false ならエージェントを起動しない（記録は shared process が書いた）。 */
+	runPrecheck(runId: string, trusted: boolean): Promise<boolean>;
+	/** 保存する前に事前確認を 1 回だけ試す（記録には残さない）。 */
+	testPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }>;
 }
 
 class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
@@ -73,6 +79,8 @@ class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
 	claim(runId: string): Promise<IParadisScheduledRunRequest | undefined> { return this.channel.call('claim', [runId]); }
 	report(report: IParadisScheduledRunReport): Promise<boolean> { return this.channel.call('report', [report]); }
 	heartbeat(runIds: readonly string[]): Promise<string[]> { return this.channel.call('heartbeat', [runIds]); }
+	runPrecheck(runId: string, trusted: boolean): Promise<boolean> { return this.channel.call('runPrecheck', [runId, trusted]); }
+	testPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }> { return this.channel.call('testPrecheck', [precheck, repositoryUri]); }
 }
 
 registerSingleton(IParadisScheduledRunsClient, ParadisScheduledRunsClient, InstantiationType.Delayed);

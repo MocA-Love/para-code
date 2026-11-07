@@ -25,6 +25,8 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
+import { URI } from '../../../../base/common/uri.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisCcusageSessionRow, PARADIS_CCUSAGE_CHANNEL } from '../../ccusage/common/paradisCcusage.js';
 import { FETCH_WINDOW_DAYS, PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH, paradisCcusageDateArg } from '../../ccusage/electron-browser/paradisCcusageClient.js';
@@ -43,6 +45,7 @@ import {
 import {
 	IParadisScheduledRunDefinition,
 	IParadisScheduledRunDraft,
+	IParadisScheduledRunPrecheckResult,
 	IParadisScheduledRunRecord,
 	IParadisScheduledRunsState,
 	ParadisScheduledRunTargetKind,
@@ -52,8 +55,12 @@ import {
 	PARADIS_SCHEDULED_RUN_KEEP_SPACES,
 	PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT,
 	PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES,
+	PARADIS_SCHEDULED_RUN_PRECHECK_DEFAULT_TIMEOUT_SECONDS,
+	PARADIS_SCHEDULED_RUN_PRECHECK_TIMEOUT_CHOICES,
+	paradisScheduledRunPrecheckPassed,
+	paradisScheduledRunPrecheckSummary,
 	paradisScheduledRunReasonLabel,
-	paradisScheduledRunStatusLabel,
+	paradisScheduledRunRecordStatusLabel,
 	paradisValidateScheduledRunDraft,
 } from '../common/paradisScheduledRuns.js';
 import { IParadisScheduledRunsClient } from './paradisScheduledRunsClient.js';
@@ -89,6 +96,9 @@ interface IFormValues {
 	permissionId: string;
 	prompt: string;
 	dailyLimit: number;
+	/** 事前確認のコマンド。空なら事前確認なし。 */
+	precheckCommand: string;
+	precheckTimeoutSeconds: number;
 }
 
 interface IRunUsage {
@@ -155,6 +165,8 @@ function formValuesFromDefinition(definition: IParadisScheduledRunDefinition): I
 	values.permissionId = definition.permissionId ?? '';
 	values.prompt = definition.prompt;
 	values.dailyLimit = definition.dailyLimit;
+	values.precheckCommand = definition.precheck?.command ?? '';
+	values.precheckTimeoutSeconds = definition.precheck?.timeoutSeconds ?? PARADIS_SCHEDULED_RUN_PRECHECK_DEFAULT_TIMEOUT_SECONDS;
 	return values;
 }
 
@@ -164,7 +176,21 @@ function emptyFormValues(): IFormValues {
 		targetKind: 'repository', repositoryUri: '', repositoryName: '', baseRef: '',
 		agentId: '', modelId: '', effortId: '', permissionId: '', prompt: '',
 		dailyLimit: PARADIS_SCHEDULED_RUN_DEFAULT_DAILY_LIMIT,
+		precheckCommand: '', precheckTimeoutSeconds: PARADIS_SCHEDULED_RUN_PRECHECK_DEFAULT_TIMEOUT_SECONDS,
 	};
+}
+
+/** 制限時間の選択肢の表示（30 秒・1 分・2 分…）。 */
+function precheckTimeoutLabel(seconds: number): string {
+	return seconds < 60
+		? localize('paradis.scheduledRuns.precheckSeconds', "{0} 秒", seconds)
+		: localize('paradis.scheduledRuns.precheckMinutes', "{0} 分", seconds / 60);
+}
+
+/** 事前確認の結果の表示（説明の 1 行と、出力の末尾）。 */
+function precheckResultText(result: IParadisScheduledRunPrecheckResult): string {
+	const summary = paradisScheduledRunPrecheckSummary(result);
+	return result.output ? `${summary}\n${result.output}` : summary;
 }
 
 /** フォームの時刻の欄から cron 式を作る。 */
@@ -212,6 +238,7 @@ function draftFromForm(values: IFormValues): IParadisScheduledRunDraft {
 		...(values.permissionId ? { permissionId: values.permissionId } : {}),
 		prompt: values.prompt,
 		dailyLimit: values.dailyLimit,
+		...(values.precheckCommand.trim() ? { precheck: { command: values.precheckCommand, timeoutSeconds: values.precheckTimeoutSeconds } } : {}),
 	};
 }
 
@@ -249,6 +276,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ILogService private readonly logService: ILogService,
+		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
 	) {
 		super();
 		this.backdrop = $('.paradis-scheduled-runs-backdrop.paradis-modal-backdrop');
@@ -486,6 +514,13 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		this.summaryRow(summary, localize('paradis.scheduledRuns.field.prompt', "指示"), value => {
 			dom.append(value, $('pre.psr-prompt')).textContent = definition.prompt;
 		});
+		if (definition.precheck) {
+			const precheck = definition.precheck;
+			this.summaryRow(summary, localize('paradis.scheduledRuns.field.precheck', "事前確認"), value => {
+				dom.append(value, $('pre.psr-prompt.psr-mono')).textContent = precheck.command;
+				dom.append(value, $('span.psr-muted')).textContent = localize('paradis.scheduledRuns.precheckDetail', "{0} で打ち切り。0 で終わったときだけ起動します（手動の実行では走らせません）。", precheckTimeoutLabel(precheck.timeoutSeconds));
+			});
+		}
 		this.summaryRow(summary, localize('paradis.scheduledRuns.field.guards', "安全装置"), value => {
 			value.textContent = localize('paradis.scheduledRuns.guards', "同時実行 1 / 1 日 {0} 回まで / 最短 {1} 分間隔 / 1 回 30 分で停止", definition.dailyLimit, PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES);
 		});
@@ -530,14 +565,17 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			}
 			const statusCell = dom.append(row, $('td.psr-nowrap'));
 			dom.append(statusCell, $(`span.psr-dot.tone-${statusTone(run)}`));
-			dom.append(statusCell, $('span')).textContent = paradisScheduledRunStatusLabel(run.status);
+			dom.append(statusCell, $('span')).textContent = paradisScheduledRunRecordStatusLabel(run);
 			const outputCell = dom.append(row, $('td.psr-output'));
+			// 事前確認で見送った回は、終了コードと出力の末尾を出す（記録はファイルから読むので形を確かめる）
+			const precheck = run.status === 'skipped' && run.precheck && typeof run.precheck.durationMs === 'number' ? run.precheck : undefined;
 			const output = run.lastMessage
 				?? run.detail
+				?? (precheck ? paradisScheduledRunPrecheckSummary(precheck) : undefined)
 				?? (run.reason ? paradisScheduledRunReasonLabel(run.reason, run) : undefined)
 				?? '';
 			outputCell.textContent = output;
-			outputCell.title = output;
+			outputCell.title = precheck ? precheckResultText(precheck) : output;
 			if (run.coalesced) {
 				dom.append(outputCell, $('span.psr-muted')).textContent = localize('paradis.scheduledRuns.coalesced', "（逃した {0} 回分をまとめて実行）", run.coalesced);
 			}
@@ -817,6 +855,22 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		prompt.placeholder = localize('paradis.scheduledRuns.promptPlaceholder', "例: 依存パッケージの更新を確認して、必要なら PR を作って");
 		this.contentDisposables.add(dom.addDisposableListener(prompt, 'input', () => { values.prompt = prompt.value; update(); }));
 
+		// 事前確認
+		const precheckCell = this.formRow(form, localize('paradis.scheduledRuns.field.precheck', "事前確認"));
+		const precheckInput = dom.append(precheckCell, $('textarea.psr-textarea.psr-mono')) as HTMLTextAreaElement;
+		precheckInput.value = values.precheckCommand;
+		precheckInput.rows = 2;
+		precheckInput.placeholder = localize('paradis.scheduledRuns.precheckPlaceholder', "例: test -n \"$(gh pr list --search 'review-requested:@me' --json number -q '.[0].number')\"");
+		this.contentDisposables.add(dom.addDisposableListener(precheckInput, 'input', () => { values.precheckCommand = precheckInput.value; update(); }));
+		const precheckLine = dom.append(precheckCell, $('.psr-inline'));
+		const precheckTimeout = this.select(precheckLine, PARADIS_SCHEDULED_RUN_PRECHECK_TIMEOUT_CHOICES.map(seconds => [String(seconds), precheckTimeoutLabel(seconds)] as [string, string]), String(values.precheckTimeoutSeconds));
+		this.contentDisposables.add(dom.addDisposableListener(precheckTimeout, 'change', () => { values.precheckTimeoutSeconds = Number(precheckTimeout.value); update(); }));
+		const precheckTry = this.button(precheckLine, localize('paradis.scheduledRuns.precheckTry', "試す"), 'secondary', Codicon.play);
+		dom.append(precheckCell, $('.psr-muted')).textContent = localize('paradis.scheduledRuns.precheckNote', "コマンドが 0 で終わったときだけエージェントを起動します。0 以外・時間切れなら、その回は見送ります。手動の「今すぐ実行」では走らせません。出力はエージェントには渡しません。");
+		const precheckResult = dom.append(precheckCell, $('pre.psr-prompt.psr-mono'));
+		precheckResult.style.display = 'none';
+		this.contentDisposables.add(dom.addDisposableListener(precheckTry, 'click', () => this.tryPrecheck(values, precheckTry, precheckResult)));
+
 		// 回数
 		const limitCell = this.formRow(form, localize('paradis.scheduledRuns.field.limit', "1 日の回数"));
 		const limitLine = dom.append(limitCell, $('.psr-inline'));
@@ -879,6 +933,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			}
 			error.textContent = problem ?? '';
 			save.disabled = problem !== undefined;
+			precheckTry.disabled = values.precheckCommand.trim().length === 0;
 		};
 
 		this.contentDisposables.add(dom.addDisposableListener(kind, 'change', () => { values.scheduleKind = kind.value as ScheduleKind; update(); }));
@@ -935,6 +990,42 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		fillAgentOptions();
 		update();
 		name.focus();
+	}
+
+	/** 事前確認を 1 回だけ試し、終了コードと出力をフォームの下に出す（保存はしない）。 */
+	private async tryPrecheck(values: IFormValues, button: HTMLButtonElement, output: HTMLElement): Promise<void> {
+		button.disabled = true;
+		output.style.display = '';
+		output.classList.remove('psr-danger-text');
+		output.textContent = localize('paradis.scheduledRuns.precheckRunning', "事前確認を実行しています…");
+		const show = (text: string, failed: boolean) => {
+			if (this._store.isDisposed) {
+				return;
+			}
+			button.disabled = false;
+			output.textContent = text;
+			output.classList.toggle('psr-danger-text', failed);
+		};
+		try {
+			// 時刻で走るときと同じく、信頼していないリポジトリではコマンドを走らせない
+			const trusted = (await this.workspaceTrustManagementService.getUriTrustInfo(URI.parse(values.repositoryUri))).trusted;
+			if (!trusted) {
+				show(paradisScheduledRunReasonLabel('precheckUntrusted'), true);
+				return;
+			}
+			const response = await this.client.testPrecheck({ command: values.precheckCommand, timeoutSeconds: values.precheckTimeoutSeconds }, values.repositoryUri);
+			if (response.error !== undefined || !response.result) {
+				show(response.error ?? '', true);
+				return;
+			}
+			const passed = paradisScheduledRunPrecheckPassed(response.result);
+			show(`${passed
+				? localize('paradis.scheduledRuns.precheckWouldRun', "通りました。この回はエージェントを起動します。")
+				: localize('paradis.scheduledRuns.precheckWouldSkip', "通りませんでした。この回は見送ります。")}\n${precheckResultText(response.result)}`, !passed);
+		} catch (error) {
+			this.logService.warn('[ParadisScheduledRuns] trying the precheck failed', error);
+			show(localize('paradis.scheduledRuns.precheckTryFailed', "事前確認を試せませんでした。"), true);
+		}
 	}
 
 	private formRow(form: HTMLElement, label: string): HTMLElement {
