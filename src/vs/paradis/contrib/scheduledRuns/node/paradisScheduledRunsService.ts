@@ -52,6 +52,14 @@ import {
 } from '../common/paradisScheduledRuns.js';
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunReport } from '../common/paradisScheduledRunsSanitize.js';
 
+/** 書けなかったときに戻すための、1 つの定義の姿。 */
+interface IParadisDefinitionState {
+	readonly index: number;
+	readonly definition: IParadisScheduledRunDefinition | undefined;
+	readonly runs: readonly IParadisScheduledRunRecord[];
+	readonly lastEvaluatedAt: { readonly value: number } | undefined;
+}
+
 const STR_SAVE_FAILED = localize('paradis.scheduledRuns.error.saveFailed', "変更を保存できませんでした。ディスクの空きと権限を確かめてから、もう一度やり直してください。");
 
 /** transcript の置き場所からエージェントを見分ける（Claude は `projects/`、Codex は `sessions/` の rollout）。 */
@@ -252,6 +260,8 @@ export class ParadisScheduledRunsService extends Disposable {
 			dailyLimit: draft.dailyLimit,
 		};
 		let definition: IParadisScheduledRunDefinition;
+		const id = existing?.id ?? generateUuid();
+		const before = this.definitionState(id);
 		if (existing) {
 			const { disabledReason: _cleared, ...rest } = existing;
 			definition = { ...rest, ...fields, updatedAt: now };
@@ -262,11 +272,11 @@ export class ParadisScheduledRunsService extends Disposable {
 			}
 		} else {
 			// 作成直後は必ず無効。利用者が中身を確かめてから自分で有効にする
-			definition = { id: generateUuid(), ...fields, enabled: false, createdAt: now, updatedAt: now };
+			definition = { id, ...fields, enabled: false, createdAt: now, updatedAt: now };
 			this.definitions.push(definition);
 			this.lastEvaluatedAt[definition.id] = now;
 		}
-		if (!await this.commitForUser()) {
+		if (!await this.commitForUser(() => this.restoreDefinitionState(id, before))) {
 			return { ok: false, error: STR_SAVE_FAILED };
 		}
 		return { ok: true, definition };
@@ -283,6 +293,7 @@ export class ParadisScheduledRunsService extends Disposable {
 			// 押し直しでは判定の起点を動かさない（直前の時刻を黙って逃さないように）
 			return { ok: true, definition: existing };
 		}
+		const before = this.definitionState(id);
 		const { disabledReason: _cleared, ...rest } = existing;
 		const definition = { ...rest, enabled, updatedAt: now };
 		this.definitions = this.definitions.map(candidate => candidate.id === id ? definition : candidate);
@@ -291,7 +302,7 @@ export class ParadisScheduledRunsService extends Disposable {
 		if (!enabled) {
 			this.cancelPending(id, 'disabled');
 		}
-		if (!await this.commitForUser()) {
+		if (!await this.commitForUser(() => this.restoreDefinitionState(id, before))) {
 			return { ok: false, error: STR_SAVE_FAILED };
 		}
 		return { ok: true, definition };
@@ -302,18 +313,20 @@ export class ParadisScheduledRunsService extends Disposable {
 		if (!this.definitions.some(definition => definition.id === id)) {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
 		}
+		const before = this.definitionState(id);
 		this.cancelPending(id, 'deleted');
-		for (const run of this.runs) {
-			if (run.definitionId === id && paradisIsActiveRunStatus(run.status) && run.claimedBy !== undefined) {
-				this._onDidRequestStop.fire({ runId: run.id, claimedBy: run.claimedBy });
-			}
-		}
 		this.definitions = this.definitions.filter(definition => definition.id !== id);
 		// 終わった記録は消す。動いている記録は終わりの報告を受けるまで残し、次の整理で消す
 		this.runs = this.runs.filter(run => run.definitionId !== id || paradisIsActiveRunStatus(run.status));
 		delete this.lastEvaluatedAt[id];
-		if (!await this.commitForUser()) {
+		if (!await this.commitForUser(() => this.restoreDefinitionState(id, before))) {
 			return { ok: false, error: STR_SAVE_FAILED };
+		}
+		// 動いている回を止めるのは、削除を書けた後（書けずに戻したのに止めてしまわないように）
+		for (const run of this.runs) {
+			if (run.definitionId === id && paradisIsActiveRunStatus(run.status) && run.claimedBy !== undefined) {
+				this._onDidRequestStop.fire({ runId: run.id, claimedBy: run.claimedBy });
+			}
 		}
 		return { ok: true };
 	}
@@ -692,10 +705,38 @@ export class ParadisScheduledRunsService extends Disposable {
 	 * 書けなかったのに成功と返すと、ダイアログは下書きを捨て、再起動で無効にしたはずの定期実行が戻る。
 	 * メモリの中身は変えたまま（次に書けたときに残る）。
 	 */
-	private commitForUser(): Promise<boolean> {
-		const saved = this.persist();
-		this._onDidChange.fire();
+	private async commitForUser(undo: () => void): Promise<boolean> {
+		const saved = await this.persist();
+		if (saved) {
+			this._onDidChange.fire();
+		} else {
+			undo();
+		}
 		return saved;
+	}
+
+	/** 1 つの定義について、利用者の操作で変える前の姿（書けなかったときに戻す）。 */
+	private definitionState(id: string): IParadisDefinitionState {
+		return {
+			index: this.definitions.findIndex(definition => definition.id === id),
+			definition: this.definitions.find(definition => definition.id === id),
+			runs: this.runs.filter(run => run.definitionId === id),
+			lastEvaluatedAt: Object.prototype.hasOwnProperty.call(this.lastEvaluatedAt, id) ? { value: this.lastEvaluatedAt[id] } : undefined,
+		};
+	}
+
+	private restoreDefinitionState(id: string, state: IParadisDefinitionState): void {
+		const definitions = this.definitions.filter(definition => definition.id !== id);
+		if (state.definition) {
+			definitions.splice(Math.min(Math.max(state.index, 0), definitions.length), 0, state.definition);
+		}
+		this.definitions = definitions;
+		this.runs = [...this.runs.filter(run => run.definitionId !== id), ...state.runs];
+		if (state.lastEvaluatedAt) {
+			this.lastEvaluatedAt[id] = state.lastEvaluatedAt.value;
+		} else {
+			delete this.lastEvaluatedAt[id];
+		}
 	}
 
 	/** 書き込みを列に足す。列は失敗しても止めない。返り値は、この書き込みが済んだか。 */

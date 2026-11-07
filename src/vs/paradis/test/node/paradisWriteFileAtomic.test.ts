@@ -59,8 +59,8 @@ import { paradisMayWriteInPlaceAfterTempFailure, paradisWriteFileAtomic } from '
 	test('falls back to writing in place only when the temporary file cannot be created, not when the disk is full', () => {
 		const code = (value: string) => Object.assign(new Error(value), { code: value });
 		assert.deepStrictEqual(
-			['EACCES', 'EPERM', 'EEXIST', 'ENOSPC', 'EIO', 'EDQUOT'].map(value => paradisMayWriteInPlaceAfterTempFailure(code(value))),
-			[true, true, true, false, false, false],
+			['EACCES', 'EPERM', 'EEXIST', 'ENAMETOOLONG', 'ENOSPC', 'EIO', 'EDQUOT'].map(value => paradisMayWriteInPlaceAfterTempFailure(code(value))),
+			[true, true, true, true, false, false, false],
 		);
 	});
 });
