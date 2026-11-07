@@ -81,6 +81,7 @@ class TestPaneTokens implements IParadisPaneTokenService {
 		return this.insights.insights.map(insight => ({ instanceId: Number(insight.token.slice(1)), token: insight.token }));
 	}
 	prepareShellLaunchConfig(_shellLaunchConfig: IShellLaunchConfig): void { }
+	setRemoteClaudeMod(): void { }
 }
 
 suite('ParadisPromptCacheClock', () => {

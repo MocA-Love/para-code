@@ -11,7 +11,7 @@ import { mainWindow } from '../../../../base/browser/window.js';
 import { Sequencer } from '../../../../base/common/async.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisWriteRollingBackupUri } from '../../../common/paradisRollingFileBackupUri.js';
@@ -19,6 +19,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -33,6 +34,9 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { IParadisCodexAccountsState, PARADIS_CODEX_ACCOUNTS_CHANNEL } from '../../codexAccounts/common/paradisCodexAccounts.js';
 import { IParadisCodexHookTrustGrantResult, PARADIS_CODEX_HOOK_TRUST_SETTING, PARADIS_REMOTE_CODEX_HOOK_TRUST_CHANNEL, paradisCodexHookTrustMode } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
 import { PARADIS_REMOTE_HOOK_PORTS_DIR_NAME, paradisRemoteHookSourceId } from '../common/paradisRemoteHookSource.js';
+import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
+import { ParadisClaudeModEnvironment } from '../../claudeMod/browser/paradisClaudeModEnvironment.js';
+import { IParadisRemoteClaudeModStatus, PARADIS_REMOTE_CLAUDE_MOD_CHANNEL } from '../../claudeMod/common/paradisClaudeMod.js';
 
 /**
  * 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。
@@ -416,6 +420,9 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	/** 直前に接続先へ聞いたアカウント用ホームの顔ぶれ（置けたら {@link codexAccountHomesKey} へ移す）。 */
 	private listedCodexAccountHomesKey: string | undefined;
 
+	/** 接続先へ写す Claude Code の mod（最初に hook 一式を置けたときに作る）。 */
+	private claudeMod: ParadisClaudeModEnvironment | undefined;
+
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
@@ -424,6 +431,8 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		@IPathService private readonly pathService: IPathService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@ILogService private readonly logService: ILogService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 	) {
 		super();
 		const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
@@ -600,6 +609,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 				this.codexAccountHomesKey = this.listedCodexAccountHomesKey;
 			}
 			await this.grantCodexHookTrust();
+			this.ensureClaudeMod(home);
 			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${remotePort})`);
 			return remotePort;
 		} catch (error) {
@@ -676,6 +686,38 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		await this.fileService.writeFile(staging, content.value);
 		await channel.call('markRemoteHookExecutable', [this.environmentService.remoteAuthority, staging.path]);
 		await this.fileService.move(staging, target, true);
+	}
+
+	/**
+	 * 接続先のペインの Claude Code に読ませる mod を、接続先の `~/.para-code/claude-mod/<指紋>/` へ写し始める（1 回だけ）。
+	 *
+	 * 手元と同じ {@link ParadisClaudeModEnvironment} を接続先のホームで動かす（指紋・書き換えない・30 日の掃除は同じ）。
+	 * 写し元は手元の Para Code に同梱したもの（REH には同梱していない）。managed 設定と `claude --version` は接続先の
+	 * REH に聞く。聞けない（古い REH）・接続先が Windows・方針で禁じられているときは渡さない。mod の通信は hook と
+	 * 同じ接続先のポートファイルと戻りトンネルで届くので、hook 一式を置けた後に始める。
+	 */
+	private ensureClaudeMod(home: URI): void {
+		const appRoot = (this.environmentService as IWorkbenchEnvironmentService & { readonly appRoot?: string }).appRoot;
+		const connection = this.remoteAgentService.getConnection();
+		if (this.claudeMod !== undefined || typeof appRoot !== 'string' || appRoot.length === 0 || connection === null) {
+			return;
+		}
+		const status = async (): Promise<IParadisRemoteClaudeModStatus | undefined> => {
+			try {
+				return await connection.getChannel(PARADIS_REMOTE_CLAUDE_MOD_CHANNEL).call<IParadisRemoteClaudeModStatus>('getStatus');
+			} catch (error) {
+				this.logService.trace('[paradis] the host cannot tell whether Claude Code may load the mod (older server?)', error);
+				return undefined;
+			}
+		};
+		this.claudeMod = this._register(this.instantiationService.createInstance(ParadisClaudeModEnvironment, appRoot, async () => home, {
+			remote: {
+				blockedByPolicy: async () => (await status())?.blockedByPolicy !== false,
+				claudeVersion: async () => (await status())?.versionOutput,
+			},
+		}));
+		this.paneTokenService.setRemoteClaudeMod(this.claudeMod);
+		this._register(toDisposable(() => this.paneTokenService.setRemoteClaudeMod(undefined)));
 	}
 
 	/** この PC 専用の、接続先のポートファイル。この PC の印が作れなければ undefined（共有のものだけを使う）。 */
