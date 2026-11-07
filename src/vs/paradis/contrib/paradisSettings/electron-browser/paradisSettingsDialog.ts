@@ -40,6 +40,7 @@ import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
 import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { PARADIS_BROWSER_HOME_PAGE_SETTING, PARADIS_BROWSER_IMPORT_LOGINS_COMMAND_ID, PARADIS_BROWSER_SITE_PERMISSIONS_COMMAND_ID } from '../../browserSettings/common/paradisBrowserSettings.js';
 import { paradisResourceTitleBarFormatTitle, paradisResourceTitleBarItemLabel } from '../../resourceMonitor/common/paradisResourceTitleBar.js';
 import { PARADIS_TRANSPARENCY_ENABLED_KEY, paradisTransparencyRestartPending } from '../../windowTransparency/common/paradisTransparency.js';
 import {
@@ -315,6 +316,12 @@ const GROUP_PRESET_COMMAND = localize('paradis.settings.groupPresetCommand', "�
 const GROUP_PRESET_LAYOUT = localize('paradis.settings.groupPresetLayout', "レイアウト");
 // allow-any-unicode-next-line
 const GROUP_BROWSER_VIEW = localize('paradis.settings.groupBrowserView', "表示");
+// allow-any-unicode-next-line
+const GROUP_BROWSER_NEW_TAB = localize('paradis.settings.groupBrowserNewTab', "新しいタブ");
+// allow-any-unicode-next-line
+const GROUP_BROWSER_SITES = localize('paradis.settings.groupBrowserSites', "サイトの権限");
+// allow-any-unicode-next-line
+const GROUP_BROWSER_PROFILES = localize('paradis.settings.groupBrowserProfiles', "データとログイン");
 // allow-any-unicode-next-line
 const GROUP_BROWSER_DOWNLOADS = localize('paradis.settings.groupBrowserDownloads', "ダウンロード");
 // allow-any-unicode-next-line
@@ -1038,6 +1045,95 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.browserFreezeHiddenTabsDesc', "オンにすると、隠して 30 分たったタブの処理を止めて CPU を減らし、表示すると再開します。読み込み直さないので、スクロール位置や入力中の文字は残ります。止めている間は処理が進まないため、裏で処理を進めたいページや、つなぎっぱなしのページ（チャット・監視画面など）は接続が切れることがあります。通知を許可したサイト、エージェントに渡しているタブ、音を鳴らしているタブ、ライブウィンドウに出ているタブは止めません。"),
 		keywords: 'browser tab freeze sleep suspend hidden cpu memory performance',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		group: GROUP_BROWSER_VIEW,
+		key: 'workbench.browser.pageZoom',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserPageZoom', "ページの倍率の既定"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserPageZoomDesc', "まだ倍率を変えていないサイトに使います。サイトごとの倍率は、アドレスバーの「− 100% ＋」で変えます。"),
+		keywords: 'browser zoom page default level',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			'Match Window': localize('paradis.settings.browserPageZoomMatchWindow', "ウィンドウに合わせる（既定）"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		group: GROUP_BROWSER_NEW_TAB,
+		key: PARADIS_BROWSER_HOME_PAGE_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserHomePage', "新しいタブで開くページ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserHomePageDesc', "URL を決めずに新しいタブを開いたときに読み込みます（http・https）。空欄なら、このスペースで動いているサーバーの一覧を出します。エージェントが開くタブには使いません。"),
+		placeholder: localize('paradis.settings.browserHomePagePlaceholder', "(新しいタブの画面)"),
+		keywords: 'browser home page homepage new tab start url',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		group: GROUP_BROWSER_SITES,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserSitePermissions', "サイトごとの許可とブロック"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserSitePermissionsDesc', "位置情報・カメラ・マイク・通知などを、サイトごとに許可・ブロックした内容の一覧です。開いているタブの保存先に記録された分を出し、毎回確認に戻せます。"),
+		keywords: 'browser site permissions camera microphone location notifications allow block',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.browserSitePermissionsAction', "一覧を開く…"),
+			commandId: PARADIS_BROWSER_SITE_PERMISSIONS_COMMAND_ID,
+		},
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		group: GROUP_BROWSER_PROFILES,
+		key: 'workbench.browser.dataStorage',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserDataStorage', "ブラウザのデータの置き場所"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserDataStorageDesc', "Cookie・キャッシュ・保存データを、どのタブと共有するかです。名前付きのプロファイルのタブはこの設定に関係なく、そのプロファイルに置きます。スペースごとの既定は、アドレスバーのプロファイルの表示から付けられます。"),
+		keywords: 'browser data storage cookies session profile global workspace ephemeral',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			default: localize('paradis.settings.browserDataStorageDefault', "ウィンドウで決める（手元はすべてのワークスペースで共有、SSH はワークスペースごと。既定）"),
+			// allow-any-unicode-next-line
+			global: localize('paradis.settings.browserDataStorageGlobal', "すべてのワークスペースで共有"),
+			// allow-any-unicode-next-line
+			workspace: localize('paradis.settings.browserDataStorageWorkspace', "ワークスペースごと"),
+			// allow-any-unicode-next-line
+			ephemeral: localize('paradis.settings.browserDataStorageEphemeral', "タブごとに使い捨て"),
+			// allow-any-unicode-next-line
+			agent: localize('paradis.settings.browserDataStorageAgent', "エージェントのタブと共有（アプリを閉じると消える）"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		group: GROUP_BROWSER_PROFILES,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserImportLogins', "ほかのブラウザのログインを取り込む"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserImportLoginsDesc', "Chrome・Edge・Brave・Arc・Vivaldi・Chromium から、サイトを選んで名前付きのプロファイルへ取り込みます。Google のログインは取り込みません（macOS だけ）。"),
+		keywords: 'browser import cookies login chrome edge brave arc vivaldi',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.browserImportLoginsAction', "取り込む…"),
+			commandId: PARADIS_BROWSER_IMPORT_LOGINS_COMMAND_ID,
+		},
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		group: GROUP_BROWSER_PROFILES,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserProfiles', "ブラウザのプロファイル"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserProfilesDesc', "名前ごとに Cookie と LocalStorage を残すプロファイルを作る・名前を変える・消すことができます。"),
+		keywords: 'browser profiles manage named profile cookies',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.browserProfilesAction', "プロファイルを管理…"),
+			commandId: 'paradis.browser.manageProfiles',
+		},
 	},
 	{
 		sectionId: 'psd-sec-browser',
