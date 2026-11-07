@@ -46,7 +46,8 @@ import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
 import { PARADIS_VIEWER_BODY_ROOT_ID, paradisViewerBodySwapScript, type IParadisRenderedDocument } from '../common/paradisViewerBodySwap.js';
 import { inlineParadisMarkdownMedia, ParadisInlineMediaCache, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
 import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
-import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension, PARADIS_MERMAID_RERUN_SCRIPT } from './paradisMarkdownMermaid.js';
+import { containsParadisMermaidBlock, IParadisMermaidZoomLabels, loadParadisMermaidScriptSource, markedMermaidExtension, PARADIS_MERMAID_RERUN_SCRIPT, PARADIS_MERMAID_ZOOM_STYLES, paradisMermaidZoomScript } from './paradisMarkdownMermaid.js';
+import { markedParadisAlertExtension, PARADIS_MARKDOWN_ALERT_STYLES } from './paradisMarkdownAlerts.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from './paradisViewerZoom.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
@@ -54,6 +55,22 @@ import { ParadisFileViewerInput } from './paradisFileViewerInput.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
+import { localize } from '../../../../nls.js';
+
+/** 図の拡大の窓の文言。 */
+function mermaidZoomLabels(): IParadisMermaidZoomLabels {
+	return {
+		expand: localize('paradis.markdown.mermaid.expand', "図を拡大"),
+		dialog: localize('paradis.markdown.mermaid.dialog', "拡大した図"),
+		zoomOut: localize('paradis.markdown.mermaid.zoomOut', "縮小"),
+		zoomIn: localize('paradis.markdown.mermaid.zoomIn', "拡大"),
+		fit: localize('paradis.markdown.mermaid.fit', "画面に合わせる"),
+		copy: localize('paradis.markdown.mermaid.copy', "PNG でコピー"),
+		close: localize('paradis.markdown.mermaid.close', "閉じる"),
+		copied: localize('paradis.markdown.mermaid.copied', "コピーしました"),
+		copyFailed: localize('paradis.markdown.mermaid.copyFailed', "コピーできませんでした"),
+	};
+}
 
 export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 
@@ -172,7 +189,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		const rendered = await renderParadisMarkdownDocumentDeferred(frontMatter.markdown, this._extensionService, this._languageService, {
 			allowRelativeMediaPaths: true,
 			allowRelativeLinkPaths: true,
-			markedExtensions: [markedMermaidExtension()],
+			markedExtensions: [markedMermaidExtension(), markedParadisAlertExtension()],
 		}, token);
 
 		// サニタイズ済みの HTML を受け取ってから、ローカルの画像だけを data: に差し替える。
@@ -224,10 +241,13 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 			${PARADIS_INLINE_MEDIA_STYLES}
 			${tokenCss}
 			.paradis-mermaid.mermaid { display: flex; justify-content: center; background: none; }
+			${PARADIS_MARKDOWN_ALERT_STYLES}
+			${mermaidEnabled ? PARADIS_MERMAID_ZOOM_STYLES : ''}
 		</style>
 	</head>
 	<body class="paradis-markdown-body">
 		<div id="${PARADIS_VIEWER_BODY_ROOT_ID}">${body}</div>
+		${mermaidEnabled ? paradisMermaidZoomScript(nonce, mermaidZoomLabels()) : ''}
 		${mermaidEnabled ? this._renderMermaidScripts(nonce, mermaidScriptSource!) : ''}
 		${paradisViewerZoomScript(nonce)}
 		${paradisViewerBodySwapScript(nonce, mermaidEnabled ? PARADIS_MERMAID_RERUN_SCRIPT : '')}
@@ -262,7 +282,9 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 				}
 				try {
 					mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: isDarkBackground() ? 'dark' : 'default' });
-					mermaid.run({ querySelector: '.paradis-mermaid' });
+					var run = mermaid.run({ querySelector: '.paradis-mermaid' });
+					var done = function () { if (window.__paradisMermaidZoom) { window.__paradisMermaidZoom.decorate(); } };
+					if (run && run.then) { run.then(done, function (err) { console.error('[paradis] mermaid render failed', err); done(); }); } else { done(); }
 				} catch (err) {
 					console.error('[paradis] mermaid render failed', err);
 				}
