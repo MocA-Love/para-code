@@ -72,6 +72,7 @@ import { paradisClaudeAttachNameQuery, paradisReadClaudeJobs, paradisSelectClaud
 import type { IParadisOpenCodeMessage } from '../../sessionResume/node/paradisOpenCodeHistory.js';
 import { ParadisOpenCodeActionOutcome, paradisOpenCodeBridge } from '../../agentBrowser/node/paradisOpenCodeBridge.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
+import { paradisElicitationSummary } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisClaudeModBridge, paradisClaudeModBridge, paradisClaudeModWaitForPrevious, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { IParadisClaudeContextBreakdown, paradisShortenContextBreakdownPaths } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
 import { paradisClaudeContextStore } from '../../claudeMod/node/paradisClaudeContextStore.js';
@@ -6987,6 +6988,34 @@ export class ParadisMobileAgentChat extends Disposable {
 				});
 				return;
 			}
+			case 'Elicitation': {
+				// MCP サーバーが利用者へ入力を求めている（Claude Code 2.1.63+）。許可待ちと同じ様子で出し、決着で待つ前へ戻す。
+				// 答える選択肢は無い（承認の interaction は作らない。モバイルは「PC で内容を確認してください」を出す）
+				const before = this.liveStates.get(event.token);
+				if (before?.phase !== 'permission') {
+					this.liveBeforePermission.set(event.token, before);
+				}
+				const server = str(event.payload?.mcp_server_name)?.trim();
+				this.setLiveState(event.token, {
+					phase: 'permission', source: 'hook', startedAt: event.at, updatedAt: event.at,
+					tool: server !== undefined && server.length > 0 ? `mcp__${server}` : 'mcp',
+					detail: truncateText(paradisElicitationSummary(event.payload), 500),
+				});
+				return;
+			}
+			case 'ElicitationResult': {
+				if (this.liveStates.get(event.token)?.phase !== 'permission' || !this.liveBeforePermission.has(event.token)) {
+					return;
+				}
+				const before = this.liveBeforePermission.get(event.token);
+				this.liveBeforePermission.delete(event.token);
+				if (before === undefined) {
+					this.clearLiveState(event.token);
+				} else {
+					this.setLiveState(event.token, { ...before, updatedAt: event.at });
+				}
+				return;
+			}
 			case 'MessageDisplay':
 				this.updateLiveMessage(event);
 				return;
@@ -8067,6 +8096,12 @@ export class ParadisMobileAgentChat extends Disposable {
 				next = current !== undefined && (current.kind === 'question') === (event.toolName === 'AskUserQuestion') ? undefined : current;
 				break;
 			case 'PermissionDenied':
+				next = current?.kind === 'permission' ? undefined : current;
+				break;
+			case 'Elicitation':
+				next = { kind: 'permission', text: paradisElicitationSummary(event.payload), at: event.at };
+				break;
+			case 'ElicitationResult':
 				next = current?.kind === 'permission' ? undefined : current;
 				break;
 			case 'UserPromptSubmit':

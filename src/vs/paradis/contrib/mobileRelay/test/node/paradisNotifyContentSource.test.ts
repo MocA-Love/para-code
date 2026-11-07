@@ -38,6 +38,18 @@ suite('ParadisNotifyHookLedger', () => {
 		]);
 	});
 
+	test('MCP の入力の依頼（Elicitation）は答える ID の無い要対応として覚え、決着で忘れる', () => {
+		const ledger = store.add(new ParadisNotifyHookLedger(false));
+		ledger.record(hook('Elicitation', { sessionId: 'sess-1', payload: { mcp_server_name: 'github', message: 'Sign in to continue', mode: 'url' } }));
+		const approval = ledger.approval('tok', 2000);
+		const resolved = paradisResolveNotifyContent({ kind: 'agent-question', ...(approval !== undefined ? { hookApproval: approval } : {}), now: 2000 });
+		ledger.record(hook('ElicitationResult', { payload: { mcp_server_name: 'github', action: 'accept' } }));
+		assert.deepStrictEqual({ resolved, after: ledger.approval('tok', 2000) }, {
+			resolved: { kind: 'agent-question', category: 'approval', content: 'MCP「github」が入力を求めています: Sign in to continue', origin: { sessionId: 'sess-1' } },
+			after: undefined,
+		});
+	});
+
 	test('AskUserQuestion の許可要求は承認として覚えない', () => {
 		const ledger = store.add(new ParadisNotifyHookLedger(false));
 		ledger.record(hook('PermissionRequest', { toolName: 'AskUserQuestion', toolInput: {} }));
