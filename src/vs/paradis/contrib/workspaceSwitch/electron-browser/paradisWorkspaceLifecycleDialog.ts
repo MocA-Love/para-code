@@ -20,7 +20,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -33,6 +33,7 @@ import { ParadisModalSize, paradisModalClasses } from '../../../browser/paradisM
 import { IParadisWorkspaceRepository } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisWorkspaceLifecycleConfig, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES, paradisParseWorkspaceLifecycleConfig, paradisUpdateWorkspaceLifecycleConfig } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR, PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { IParadisWorktreeIncludeConfig, PARADIS_WORKTREE_INCLUDE_FILE, PARADIS_WORKTREE_INCLUDE_MAX_ENTRIES, paradisNormalizeWorktreeIncludePath, paradisParseWorktreeIncludeConfig, paradisParseWorktreeIncludeFile, paradisUpdateWorktreeIncludeConfig } from '../common/paradisWorktreeInclude.js';
 
 const $ = dom.$;
 
@@ -49,6 +50,22 @@ const STR_SETUP_LABEL = localize('paradis.workspaceLifecycle.setupShortLabel', "
 // allow-any-unicode-next-line
 const STR_TEARDOWN_LABEL = localize('paradis.workspaceLifecycle.teardownShortLabel', "Teardown（削除の前）");
 // allow-any-unicode-next-line
+const STR_INCLUDE_TITLE = localize('paradis.workspaceLifecycle.includeTitle', "新しいスペースへ持ち込むもの");
+// allow-any-unicode-next-line
+const STR_INCLUDE_DESCRIPTION = localize('paradis.workspaceLifecycle.includeDescription', "git が無視しているファイルも、作成の直後に元のリポジトリから持ち込みます。");
+// allow-any-unicode-next-line
+const STR_INCLUDE_COPY = localize('paradis.workspaceLifecycle.includeCopy', "写す");
+// allow-any-unicode-next-line
+const STR_INCLUDE_LINK = localize('paradis.workspaceLifecycle.includeLink', "リンク");
+// allow-any-unicode-next-line
+const STR_INCLUDE_ADD = localize('paradis.workspaceLifecycle.includeAdd', "パスを追加");
+// allow-any-unicode-next-line
+const STR_INCLUDE_PLACEHOLDER = localize('paradis.workspaceLifecycle.includePlaceholder', "リポジトリからの相対パス（例: .env）");
+// allow-any-unicode-next-line
+const STR_INCLUDE_TOO_MANY = localize('paradis.workspaceLifecycle.includeTooMany', "持ち込むものは {0} 件までです。", PARADIS_WORKTREE_INCLUDE_MAX_ENTRIES);
+// allow-any-unicode-next-line
+const STR_INCLUDE_LINK_NOTE = localize('paradis.workspaceLifecycle.includeLinkNote', "リンクは元のフォルダを共有します（フォルダだけ）。node_modules のように並列のビルドで書き換わるフォルダは、リンクにすると作業がぶつかるので写すを選んでください。写すのは 1 回の作成で合わせて 2 GB・5 万ファイルまでです。");
+// allow-any-unicode-next-line
 const STR_CLOSE = localize('paradis.workspaceLifecycle.close', "閉じる");
 // allow-any-unicode-next-line
 const STR_CANCEL = localize('paradis.workspaceLifecycle.cancel', "キャンセル");
@@ -58,7 +75,7 @@ const STR_SAVE = localize('paradis.workspaceLifecycle.save', "保存");
 const STR_SAVING = localize('paradis.workspaceLifecycle.saving', "保存中…");
 
 /** リポジトリ直下の .paracode.json へ setupScript / teardownScript を書き込む。presets 等の既存フィールドは保持する。 */
-export async function paradisSaveWorkspaceLifecycleConfig(fileService: IFileService, repositoryUri: URI, config: IParadisWorkspaceLifecycleConfig): Promise<void> {
+export async function paradisSaveWorkspaceLifecycleConfig(fileService: IFileService, repositoryUri: URI, config: IParadisWorkspaceLifecycleConfig, include?: IParadisWorktreeIncludeConfig): Promise<void> {
 	const configUri = joinPath(repositoryUri, PARADIS_WORKSPACE_PRESET_FILE);
 	let existing: string | undefined;
 	try {
@@ -66,10 +83,13 @@ export async function paradisSaveWorkspaceLifecycleConfig(fileService: IFileServ
 	} catch (error) {
 		if (toFileOperationResult(error as Error) !== FileOperationResult.FILE_NOT_FOUND) { throw error; }
 	}
-	if (existing === undefined && !config.setupScript?.trim() && !config.teardownScript?.trim()) {
+	const hasInclude = include !== undefined && (include.include.length > 0 || include.sharedDirectories.length > 0);
+	if (existing === undefined && !config.setupScript?.trim() && !config.teardownScript?.trim() && !hasInclude) {
 		return;
 	}
-	const updated = paradisUpdateWorkspaceLifecycleConfig(existing, config);
+	const lifecycleUpdated = paradisUpdateWorkspaceLifecycleConfig(existing, config);
+	// 持ち込みの宣言は渡されたときだけ書き換える（渡さない呼び出し元は今の宣言を残す）
+	const updated = include === undefined ? lifecycleUpdated : paradisUpdateWorktreeIncludeConfig(lifecycleUpdated, include);
 	await fileService.writeFile(configUri, VSBuffer.fromString(updated));
 }
 
@@ -97,6 +117,9 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 
 	private _setupInput!: HTMLTextAreaElement;
 	private _teardownInput!: HTMLTextAreaElement;
+	private _copyList!: ParadisIncludePathList;
+	private _linkList!: ParadisIncludePathList;
+	private _includeFileNote!: HTMLElement;
 	private _errorEl!: HTMLElement;
 	private _saveBtn!: Button;
 	private _cancelBtn!: Button;
@@ -174,6 +197,15 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		// キーボードで移ったときも同じホバーを出す
 		this._register(this.hoverService.setupDelayedHover(details, { content: STR_DETAILS_HOVER, container: this._backdrop }, { setupKeyboardEvents: true }));
 
+		const include = dom.append(body, $('.plc-include'));
+		dom.append(include, $('.plc-include-title')).textContent = STR_INCLUDE_TITLE;
+		dom.append(include, $('.plc-include-description')).textContent = STR_INCLUDE_DESCRIPTION;
+		this._copyList = this._register(new ParadisIncludePathList(include, STR_INCLUDE_COPY, () => this._totalIncludeCount(), message => { this._errorEl.textContent = message; }));
+		this._linkList = this._register(new ParadisIncludePathList(include, STR_INCLUDE_LINK, () => this._totalIncludeCount(), message => { this._errorEl.textContent = message; }));
+		this._includeFileNote = dom.append(include, $('.plc-include-note'));
+		this._includeFileNote.hidden = true;
+		dom.append(include, $('.plc-include-note')).textContent = STR_INCLUDE_LINK_NOTE;
+
 		this._setupInput = this._appendScriptField(body, 'paradis-lifecycle-setup-input', STR_SETUP_LABEL);
 		this._teardownInput = this._appendScriptField(body, 'paradis-lifecycle-teardown-input', STR_TEARDOWN_LABEL);
 
@@ -209,6 +241,9 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 			const config = paradisParseWorkspaceLifecycleConfig(content);
 			this._setupInput.value = config.setupScript ?? '';
 			this._teardownInput.value = config.teardownScript ?? '';
+			const include = paradisParseWorktreeIncludeConfig(content);
+			this._copyList.setPaths(include.include);
+			this._linkList.setPaths(include.sharedDirectories);
 		} catch (error) {
 			if (toFileOperationResult(error as Error) !== FileOperationResult.FILE_NOT_FOUND) {
 				// 読めなかった。保存すると読めなかった中身を上書きしうるので、押せないままにする
@@ -219,11 +254,36 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		if (this._store.isDisposed) {
 			return;
 		}
+		await this._showIncludeFileNote();
+		if (this._store.isDisposed) {
+			return;
+		}
 		this._loaded = true;
+		this._copyList.setEnabled(true);
+		this._linkList.setEnabled(true);
 		this._setupInput.readOnly = false;
 		this._teardownInput.readOnly = false;
 		this._saveBtn.enabled = !this._busy;
 		this.focusInput();
+	}
+
+	private _totalIncludeCount(): number {
+		return this._copyList.paths.length + this._linkList.paths.length;
+	}
+
+	/** リポジトリに .worktreeinclude があれば、その件数を添える（中身はこの画面では書き換えない）。 */
+	private async _showIncludeFileNote(): Promise<void> {
+		try {
+			const content = (await this.fileService.readFile(joinPath(this.repository.uri, PARADIS_WORKTREE_INCLUDE_FILE))).value.toString();
+			const count = paradisParseWorktreeIncludeFile(content).length;
+			if (count > 0 && !this._store.isDisposed) {
+				// allow-any-unicode-next-line
+				this._includeFileNote.textContent = localize('paradis.workspaceLifecycle.includeFileNote', "リポジトリの {0} にある {1} 件も写します。", PARADIS_WORKTREE_INCLUDE_FILE, count);
+				this._includeFileNote.hidden = false;
+			}
+		} catch {
+			// 無ければ何も出さない
+		}
 	}
 
 	private _setBusy(busy: boolean): void {
@@ -243,11 +303,133 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 			await paradisSaveWorkspaceLifecycleConfig(this.fileService, this.repository.uri, {
 				setupScript: this._setupInput.value,
 				teardownScript: this._teardownInput.value,
-			});
+			}, { include: this._copyList.paths, sharedDirectories: this._linkList.paths });
 			this.dispose();
 		} catch (error) {
 			this._setBusy(false);
 			this._errorEl.textContent = toErrorMessage(error);
+		}
+	}
+}
+
+/**
+ * 「写す」「リンク」の 1 行。パスの札（× で外す）と「パスを追加」を並べ、押すとその場に入力欄を出す
+ * （Enter で足す、Escape でやめる）。読み終えるまでは押せない。
+ */
+class ParadisIncludePathList extends Disposable {
+
+	private readonly _items: HTMLElement;
+	private readonly _addButton: Button;
+	private readonly _input: HTMLInputElement;
+	private _paths: string[] = [];
+	/** 札の × の購読。描き直すたびに捨てる。 */
+	private readonly _chipListeners = this._register(new DisposableStore());
+
+	get paths(): readonly string[] {
+		return this._paths;
+	}
+
+	constructor(
+		parent: HTMLElement,
+		label: string,
+		private readonly totalCount: () => number,
+		private readonly showError: (message: string) => void,
+	) {
+		super();
+		const row = dom.append(parent, $('.plc-include-row'));
+		dom.append(row, $('span.plc-include-label')).textContent = label;
+		// 札・入力欄・「パスを追加」は 1 つの折り返す箱に入れ、折り返しても名前の列の右にそろえる
+		const values = dom.append(row, $('.plc-include-values'));
+		this._items = dom.append(values, $('.plc-include-items'));
+		this._input = dom.append(values, $('input.plc-include-input')) as HTMLInputElement;
+		this._input.type = 'text';
+		this._input.spellcheck = false;
+		this._input.placeholder = STR_INCLUDE_PLACEHOLDER;
+		this._input.setAttribute('aria-label', `${label}: ${STR_INCLUDE_PLACEHOLDER}`);
+		this._input.hidden = true;
+		this._addButton = this._register(new Button(values, { ...defaultButtonStyles, secondary: true }));
+		this._addButton.label = `+ ${STR_INCLUDE_ADD}`;
+		this._addButton.enabled = false;
+		this._register(this._addButton.onDidClick(() => this._startAdding()));
+		this._register(dom.addDisposableListener(this._input, 'keydown', e => {
+			if (e.key === 'Enter') {
+				e.preventDefault();
+				this._commit();
+			} else if (e.key === 'Escape') {
+				// ダイアログごと閉じない
+				e.preventDefault();
+				e.stopPropagation();
+				this._stopAdding();
+			}
+		}));
+		this._register(dom.addDisposableListener(this._input, 'blur', () => {
+			if (!this._input.hidden) {
+				this._commit();
+			}
+		}));
+	}
+
+	setPaths(paths: readonly string[]): void {
+		this._paths = [...paths];
+		this._render();
+	}
+
+	setEnabled(enabled: boolean): void {
+		this._addButton.enabled = enabled;
+	}
+
+	private _startAdding(): void {
+		this._input.value = '';
+		this._input.hidden = false;
+		this._addButton.element.hidden = true;
+		this._input.focus();
+	}
+
+	private _stopAdding(): void {
+		this._input.hidden = true;
+		this._addButton.element.hidden = false;
+		this._addButton.focus();
+	}
+
+	private _commit(): void {
+		const raw = this._input.value.trim();
+		if (raw.length === 0) {
+			this._stopAdding();
+			return;
+		}
+		const path = paradisNormalizeWorktreeIncludePath(raw);
+		if (path === undefined) {
+			// allow-any-unicode-next-line
+			this.showError(localize('paradis.workspaceLifecycle.includeInvalid', "「{0}」は使えません。リポジトリの中の相対パスを、* や ? を使わずに書いてください。", raw));
+			return;
+		}
+		if (!this._paths.includes(path)) {
+			if (this.totalCount() >= PARADIS_WORKTREE_INCLUDE_MAX_ENTRIES) {
+				this.showError(STR_INCLUDE_TOO_MANY);
+				return;
+			}
+			this._paths.push(path);
+			this._render();
+		}
+		this.showError('');
+		this._stopAdding();
+	}
+
+	private _render(): void {
+		this._chipListeners.clear();
+		dom.clearNode(this._items);
+		for (const path of this._paths) {
+			const chip = dom.append(this._items, $('span.plc-include-chip'));
+			dom.append(chip, $('span.plc-include-chip-label')).textContent = path;
+			const remove = dom.append(chip, $('button.plc-include-chip-remove')) as HTMLButtonElement;
+			remove.type = 'button';
+			remove.classList.add(...ThemeIcon.asClassNameArray(Codicon.close));
+			// allow-any-unicode-next-line
+			remove.setAttribute('aria-label', localize('paradis.workspaceLifecycle.removePath', "「{0}」を外す", path));
+			this._chipListeners.add(dom.addDisposableListener(remove, 'click', () => {
+				this._paths = this._paths.filter(candidate => candidate !== path);
+				this._render();
+			}));
 		}
 	}
 }
