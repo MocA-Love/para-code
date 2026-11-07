@@ -997,6 +997,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				closeInputConnection: connection => this._cdpInputQueue.closeConnection(connection),
 				noteInputRejection: (token, message) => this._inputRejections.record(token, message),
 				noteAgentCdpConnections: (token, connections) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', connections }),
+				// CDP で直接つないだクライアント（Playwright など）の命令も、タブを使っている合図にする。Playwright の click は
+				// 入力の前に rAF を待つので、抑制を戻したままだと隠れたタブで止まる
+				noteAgentCdpCommand: key => this._noteGatewayAgentActivity(key),
 				noteFocusEmulation: (token, enabled) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', focusEmulation: enabled }),
 				applyBoundPageEmulation: (key, connection, method, params) => this._applyBoundPageEmulation(key, connection, method, params),
 				releaseBoundPageEmulation: connection => this._releaseBoundPageEmulation(connection),
@@ -5974,11 +5977,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 		if (PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES.has(name)) {
 			// run_steps は手順ごとに列へ並ぶので、操作の間は列を持たない（持つと手順が自分を待って止まる）
-			const before = await this._toolCallLanes.run(tabKey, observeBefore, signal);
+			const before = await this._runLane(tabKey, observeBefore, signal);
 			const result = await this._callToolInner(ingressLease, call, signal, socket);
-			return this._toolCallLanes.run(tabKey, () => observeAfter(before, result), signal);
+			return this._runLane(tabKey, () => observeAfter(before, result), signal);
 		}
-		const observed = await this._toolCallLanes.run(tabKey, async () => {
+		const observed = await this._runLane(tabKey, async () => {
 			// 列に並んでいる間にタブがなくなる・替わることがある。操作が別の列へ並び直すと、2 つの呼び出しが互いの
 			// 列を待って止まりうるので、そのときは観測をやめ、列を手放してから普通に呼ぶ
 			const scopedNow = this._scopeToolCall(ingressLease, call.arguments);
@@ -6153,7 +6156,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			// （{@link _callToolObserved} は呼ぶ前にタブを確かめ直すので、ここへ来るのは間にタブが替わったときだけ）
 			return Promise.resolve(this._toolError(PARADIS_TAB_CHANGED_DURING_CALL_MESSAGE) as T);
 		}
-		return key === heldLane ? operation() : this._toolCallLanes.run(key, () => this._withAgentActivity(key, operation), signal);
+		return key === heldLane ? operation() : this._runLane(key, operation, signal);
+	}
+
+	/** タブの列に並んで動かし、その間はタブを「エージェントが使っている」と main へ知らせる。列に並ぶ入口はすべてここを通す。 */
+	private _runLane<T>(key: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		return this._toolCallLanes.run(key, () => this._withAgentActivity(key, operation), signal);
 	}
 
 	/**
@@ -6172,6 +6180,13 @@ export class ParadisAgentBrowserService extends Disposable {
 		} finally {
 			clearInterval(renote);
 			void this._noteAgentActivity(exactView, 'end');
+		}
+	}
+
+	private _noteGatewayAgentActivity(key: string): void {
+		const exactView = this._bindingForKey(key)?.exactView;
+		if (exactView !== undefined) {
+			void this._noteAgentActivity(exactView, 'during');
 		}
 	}
 

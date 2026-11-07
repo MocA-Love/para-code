@@ -1036,7 +1036,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.browserFreezeHiddenTabs', "長く見ていないタブを一時停止する"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.browserFreezeHiddenTabsDesc', "30 分以上見えていないタブを止めて、CPU を使わないようにします。読み込み直さないので、スクロール位置や入力中の文字はそのまま残ります。エージェントに渡しているタブと、音を鳴らしているタブは止めません。"),
+		description: localize('paradis.settings.browserFreezeHiddenTabsDesc', "隠したタブは 30 分たつと一時停止し、表示すると再開します。読み込み直さないので、スクロール位置や入力中の文字はそのまま残ります。通知を許可したサイト、エージェントに渡しているタブ、音を鳴らしているタブ、ライブウィンドウに出ているタブは止めません。"),
 		keywords: 'browser tab freeze sleep suspend hidden cpu memory performance',
 	},
 	{

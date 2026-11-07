@@ -9,7 +9,11 @@
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { paradisIsWebContentsHeldByAgent } from '../../browserDownloads/electron-main/paradisAgentDownloads.js';
+import { paraBrowserViewLastCaptureAt, paraOnWillCaptureBrowserView } from '../../../../platform/browserView/electron-main/paraBrowserViewCaptureWatch.js';
 import { PARADIS_BROWSER_FREEZE_AFTER_HIDDEN_MS } from '../common/paradisBrowserFreeze.js';
+
+/** この時間の内にスクリーンショットを撮られたタブ（ライブウィンドウのタイルなど、誰かが見ているタブ）は止めない。 */
+const PARADIS_BROWSER_FREEZE_WATCHED_MS = 5 * 60_000;
 
 /** 休ませる対象として見る BrowserView の部分（テストで偽物を渡せるように絞る）。 */
 export interface IParadisFreezableBrowserView {
@@ -18,7 +22,10 @@ export interface IParadisFreezableBrowserView {
 		isCurrentlyAudible(): boolean;
 		isDevToolsOpened(): boolean;
 		isBeingCaptured(): boolean;
+		getURL(): string;
 	};
+	/** タブのプロファイルのサイトの許可（通知を許可したサイトは止めない）。 */
+	readonly session?: { readonly permissions: { serialize(): { readonly origins: Readonly<Record<string, Readonly<Record<string, string | undefined>>>> } } };
 	readonly debugger: { sendCommandRaw(method: string, params?: unknown): Promise<unknown> };
 	readonly onDidChangeVisibility: Event<{ readonly visible: boolean }>;
 	readonly onDidClose: Event<void>;
@@ -66,7 +73,8 @@ interface IViewState {
  * 凍結したページはタイマー・描画・ネットワークの処理が止まり、DOM・JS の状態・スクロール位置・入力中の値はそのまま
  * 残る。表示したら `active` に戻す。読み込み直しが起きる discard は使わない（スペースを切り替えて戻っても状態を
  * 保つため）。エージェントが手にしているタブ、音を鳴らしているタブ、DevTools を開いているタブ、映像を撮られている
- * タブは止めない（止める時点で該当すれば、もう一度同じ時間を待つ）。
+ * タブ、最近スクリーンショットを撮られたタブ（ライブウィンドウのタイル）、通知を許可したサイトのタブは止めない
+ * （止める時点で該当すれば、もう一度同じ時間を待つ）。
  */
 export class ParadisBrowserViewFreezer extends Disposable {
 
@@ -78,8 +86,20 @@ export class ParadisBrowserViewFreezer extends Disposable {
 		private readonly delayMs: number = PARADIS_BROWSER_FREEZE_AFTER_HIDDEN_MS,
 		private readonly timer: IParadisFreezeTimer = defaultTimer,
 		private readonly isHeldByAgent: (webContents: object) => boolean = paradisIsWebContentsHeldByAgent,
+		private readonly lastCaptureAt: (view: object) => number | undefined = paraBrowserViewLastCaptureAt,
+		onWillCapture: (listener: (view: object) => void) => () => void = paraOnWillCaptureBrowserView,
+		private readonly now: () => number = Date.now,
 	) {
 		super();
+		// 撮られるタブ（ライブウィンドウのタイル・エージェントのスクリーンショット）を止めていたら、撮る前に起こす
+		const stopWatchingCaptures = onWillCapture(view => {
+			const state = this.views.get(view as IParadisFreezableBrowserView);
+			if (state?.frozen) {
+				this.thaw(view as IParadisFreezableBrowserView, state);
+				this.schedule(view as IParadisFreezableBrowserView, state);
+			}
+		});
+		this._register({ dispose: stopWatchingCaptures });
 		this._register(source.onDidCreateBrowserView(({ info }) => {
 			const view = source.tryGetBrowserView(info.id);
 			if (view) {
@@ -160,10 +180,43 @@ export class ParadisBrowserViewFreezer extends Disposable {
 				&& !this.isHeldByAgent(webContents)
 				&& !webContents.isCurrentlyAudible()
 				&& !webContents.isDevToolsOpened()
-				&& !webContents.isBeingCaptured();
+				&& !webContents.isBeingCaptured()
+				&& !this.isWatched(view)
+				&& !this.allowsNotifications(view);
 		} catch {
 			return false;
 		}
+	}
+
+	private isWatched(view: IParadisFreezableBrowserView): boolean {
+		const capturedAt = this.lastCaptureAt(view);
+		return capturedAt !== undefined && this.now() - capturedAt < PARADIS_BROWSER_FREEZE_WATCHED_MS;
+	}
+
+	/** 通知を許可したサイトのタブか（隠したまま通知を待つ使い方を止めない）。 */
+	private allowsNotifications(view: IParadisFreezableBrowserView): boolean {
+		let origin: string;
+		try {
+			origin = new URL(view.webContents.getURL()).origin;
+		} catch {
+			return false;
+		}
+		const origins = view.session?.permissions.serialize().origins ?? {};
+		for (const [key, decisions] of Object.entries(origins)) {
+			if (decisions.notifications !== 'allow') {
+				continue;
+			}
+			try {
+				if (new URL(key).origin === origin) {
+					return true;
+				}
+			} catch {
+				if (key === origin) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	private freeze(view: IParadisFreezableBrowserView, state: IViewState): void {

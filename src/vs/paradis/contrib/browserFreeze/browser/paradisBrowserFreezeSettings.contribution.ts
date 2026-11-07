@@ -22,7 +22,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.browser.freezeHiddenTabs', "内蔵ブラウザで 30 分以上見えていないタブを一時停止し、CPU を使わないようにします。ページは読み込み直さず、スクロール位置や入力中の文字もそのまま残り、タブを表示するとすぐ動き出します。エージェントに渡しているタブと、音を鳴らしているタブは止めません。"),
+			markdownDescription: localize('paradis.browser.freezeHiddenTabs', "内蔵ブラウザで隠したタブは、30 分たつと一時停止して CPU を使わなくなり、表示すると再開します。ページは読み込み直さず、スクロール位置や入力中の文字もそのまま残ります。通知を許可したサイト、エージェントに渡しているタブ、音を鳴らしているタブ、ライブウィンドウに出ているタブは止めません。"),
 		}
 	}
 });
