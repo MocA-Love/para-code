@@ -32,10 +32,13 @@ import {
 	IParadisPortKillRequest,
 	IParadisPortListRequest,
 	IParadisPortListSnapshot,
+	IParadisPortPageInfo,
+	IParadisPortServersSnapshot,
 	PARADIS_PORT_LIST_CHANNEL,
 	paradisIsRiskyPortAddress
 } from '../common/paradisPortList.js';
 import { executeParadisPortKillBatch } from '../common/paradisPortKillBatch.js';
+import { ParadisPortPageProbeCache, ParadisPortServerDescriber } from './paradisPortServers.js';
 
 const SNAPSHOT_MAX_AGE_MS = 2000;
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -216,7 +219,20 @@ export class ParadisPortListServerService {
 		private readonly logService: ILogService,
 		private readonly collect: () => Promise<readonly IParadisPortEntry[]> = () => collectEntries(logService),
 		private readonly signal: (pid: number) => void = pid => process.kill(pid, 'SIGTERM'),
+		private readonly servers = new ParadisPortServerDescriber({ cacheMs: SNAPSHOT_MAX_AGE_MS }),
+		private readonly pages = new ParadisPortPageProbeCache(),
 	) { }
+
+	/** 内蔵ブラウザの新しいタブ用。待ち受けのポートに、持ち主のプロセスの作業フォルダを付けて返す。 */
+	async getServers(request: IParadisPortListRequest): Promise<IParadisPortServersSnapshot> {
+		const snapshot = await this.getSnapshot(request);
+		return this.servers.describe(snapshot.entries, snapshot.collectedAt);
+	}
+
+	/** 内蔵ブラウザの新しいタブ用。ページの題とアイコン（loopback へだけ読みに行く）。 */
+	probePages(requests: readonly unknown[]): Promise<IParadisPortPageInfo[]> {
+		return this.pages.probePages(requests);
+	}
 
 	async getSnapshot(request: IParadisPortListRequest): Promise<IParadisPortListSnapshot> {
 		if (request.force !== true && this.cached !== undefined && Date.now() - this.cached.collectedAt <= SNAPSHOT_MAX_AGE_MS) {
@@ -291,6 +307,10 @@ class ParadisPortListServerChannel<TContext> implements IServerChannel<TContext>
 				return this.service.getSnapshot((args[0] ?? {}) as IParadisPortListRequest) as Promise<T>;
 			case 'kill':
 				return this.service.kill(args[0] as IParadisPortKillRequest) as Promise<T>;
+			case 'getServers':
+				return this.service.getServers((args[0] ?? {}) as IParadisPortListRequest) as Promise<T>;
+			case 'probePages':
+				return this.service.probePages(Array.isArray(args[0]) ? args[0] : []) as Promise<T>;
 			case 'killAll':
 				return this.service.killAll(Array.isArray(args[0]) ? args[0] : []) as Promise<T>;
 			default:

@@ -17,6 +17,9 @@ import {
 	IParadisPortKillRequest,
 	IParadisPortKillBatchResult,
 	IParadisPortListSnapshot,
+	IParadisPortPageInfo,
+	IParadisPortPageRequest,
+	IParadisPortServersSnapshot,
 	PARADIS_PORT_LIST_CHANNEL
 } from '../common/paradisPortList.js';
 
@@ -52,6 +55,16 @@ export class ParadisPortListClient {
 
 	getSnapshot(force = false): Promise<IParadisPortListSnapshot> {
 		return this.channelForConnection(this.remoteAgentService.getConnection()).call<IParadisPortListSnapshot>('getSnapshot', [{ force }]);
+	}
+
+	/** 内蔵ブラウザの新しいタブ用。SSH の窓では接続先のポートと作業フォルダ。 */
+	getServers(force = false): Promise<IParadisPortServersSnapshot> {
+		return this.channelForConnection(this.remoteAgentService.getConnection()).call<IParadisPortServersSnapshot>('getServers', [{ force }]);
+	}
+
+	/** 内蔵ブラウザの新しいタブ用。ページの題とアイコン（ポートを集めたのと同じマシンから読む）。 */
+	probePages(requests: readonly IParadisPortPageRequest[]): Promise<IParadisPortPageInfo[]> {
+		return this.channelForConnection(this.remoteAgentService.getConnection()).call<IParadisPortPageInfo[]>('probePages', [requests]);
 	}
 
 	/**
