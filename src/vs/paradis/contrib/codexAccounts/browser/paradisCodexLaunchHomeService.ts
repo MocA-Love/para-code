@@ -43,6 +43,26 @@ export function paradisApplyCodexLaunchHome(env: ITerminalEnvironment | undefine
 	return { ...env, [PARADIS_CODEX_HOME_ENV_VAR]: launchHome };
 }
 
+/** ランチャーが起動のたびに読む、今の選択のホームを書いたファイルのパス（`IParadisCodexAccountsState.launchHomeFile`）。 */
+export const PARADIS_CODEX_LAUNCH_HOME_FILE_ENV_VAR = 'PARA_CODE_CODEX_LAUNCH_HOME_FILE';
+/**
+ * ターミナルを開いたときに Para Code が入れた `CODEX_HOME`（入れなかったときは空）。ランチャーは、起動するときの
+ * `CODEX_HOME` がこれと同じとき（利用者が自分で変えていないとき）だけ、ファイルの今の選択に替える。
+ */
+export const PARADIS_CODEX_LAUNCH_HOME_ENV_VAR = 'PARA_CODE_CODEX_LAUNCH_HOME';
+
+/**
+ * 開いた後にアカウントを切り替えたターミナルでも、そこで起動する Codex が今の選択を使うよう、ランチャーへの
+ * 目印を入れる（POSIX でランチャーを PATH に入れたターミナルだけで効く。それ以外では何も起きない）。
+ * 会話をそのホームで再開するなど、呼び出し側が `CODEX_HOME` を決めたターミナルには入れない。
+ */
+export function paradisApplyCodexLaunchHomeFollow(env: ITerminalEnvironment | undefined, launchHomeFile: string | undefined, launchHome: string | undefined): ITerminalEnvironment | undefined {
+	if (launchHomeFile === undefined || launchHomeFile.length === 0) {
+		return env;
+	}
+	return { ...env, [PARADIS_CODEX_LAUNCH_HOME_FILE_ENV_VAR]: launchHomeFile, [PARADIS_CODEX_LAUNCH_HOME_ENV_VAR]: launchHome ?? '' };
+}
+
 /**
  * そのターミナルが、ウィンドウと同じマシン（手元のウィンドウなら手元、接続先のウィンドウなら接続先）で
  * 動くか。選択はそのマシンのホームを指すので、違うマシンで動くターミナルへは渡さない。
@@ -89,6 +109,12 @@ export interface IParadisCodexLaunchHomeService {
 	/** shared process の選択を反映する（electron-browser 側の contribution だけが呼ぶ）。 */
 	setLaunchHome(homePath: string | undefined): void;
 
+	/** ランチャーが読む選択のファイル（`IParadisCodexAccountsState.launchHomeFile`）。分からなければ undefined。 */
+	getLaunchHomeFile(): string | undefined;
+
+	/** {@link getLaunchHomeFile} を反映する（electron-browser 側の contribution だけが呼ぶ）。 */
+	setLaunchHomeFile(filePath: string | undefined): void;
+
 	/** ペイントークンごとに、開いたときのホームを覚える（paradisPaneTokenService が呼ぶ）。 */
 	recordPaneHome(token: string, homePath: string | undefined): void;
 
@@ -106,6 +132,7 @@ export class ParadisCodexLaunchHomeService extends Disposable implements IParadi
 	readonly onDidChangeLaunchHome = this._onDidChangeLaunchHome.event;
 
 	private launchHome: string | undefined;
+	private launchHomeFile: string | undefined;
 	private _synced = false;
 	private readonly paneHomes = new Map<string, { readonly homePath: string | undefined; readonly beforeSync: boolean }>();
 
@@ -127,6 +154,14 @@ export class ParadisCodexLaunchHomeService extends Disposable implements IParadi
 		this.launchHome = next;
 		this._synced = true;
 		this._onDidChangeLaunchHome.fire({ previous, next, initial });
+	}
+
+	getLaunchHomeFile(): string | undefined {
+		return this.launchHomeFile;
+	}
+
+	setLaunchHomeFile(filePath: string | undefined): void {
+		this.launchHomeFile = filePath !== undefined && filePath.length > 0 ? filePath : undefined;
 	}
 
 	recordPaneHome(token: string, homePath: string | undefined): void {

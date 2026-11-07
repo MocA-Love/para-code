@@ -33,6 +33,7 @@ import {
 	IParadisAgentLaunchOptions,
 	IParadisGitBranches,
 	paradisBuildAgentCommand,
+	PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY,
 	paradisDeduplicateWorktreeDirName,
 	paradisSanitizeBranchName,
 } from '../common/paradisWorktreeCreate.js';
@@ -142,8 +143,8 @@ const STR_NO_BRANCHES = localize('paradis.createWorktree.noBranches', "ブラン
 const STR_AUTO = localize('paradis.createWorktree.autoName', "(自動生成)");
 /** 前回選択したエージェント id の保存キー（StorageScope.PROFILE）。 */
 const STORAGE_KEY_LAST_AGENT = 'paradis.workspaceSwitch.lastSelectedAgent';
-/** エージェントごとのモデル/エフォート/権限の前回選択の保存キー（StorageScope.PROFILE）。 */
-const STORAGE_KEY_AGENT_OPTIONS = 'paradis.workspaceSwitch.agentLaunchOptions';
+/** エージェントごとのモデル/エフォート/権限の前回選択の保存キー（タブの「＋」のランチャーと共有）。 */
+const STORAGE_KEY_AGENT_OPTIONS = PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY;
 /** setup スクリプトをOFFにしたリポジトリ id 一覧の保存キー（StorageScope.PROFILE）。 */
 const STORAGE_KEY_SETUP_DISABLED = 'paradis.workspaceSwitch.setupDisabledRepositories';
 /** コマンドプレビューに埋め込むプロンプトの省略表示長。 */

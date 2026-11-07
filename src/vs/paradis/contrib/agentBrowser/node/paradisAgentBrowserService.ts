@@ -54,7 +54,7 @@ import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCliExecutable, paradisIsOpen
 import { IParadisAgentHookDropRecord, ParadisAgentHookDropCounter, ParadisHookIngressCause, paradisFormatHookDropLog, paradisHookDropPaneKey } from '../common/paradisAgentHookDropLog.js';
 import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
 import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
-import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexHome, paradisCodexHomes } from './paradisAgentHome.js';
+import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisProbeClaudeVersionOutput, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson } from './paradisAgentHooksSetup.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
@@ -1106,7 +1106,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${message}`, error));
 			},
 			// アカウントを切り替えた先の Codex（~/.codex-2 等）にも同じ設定を入れる。
-			() => paradisCodexHomes(),
+			() => paradisCodexConfigHomes(),
 			// ツール呼び出しの上限を足す入れ直しを、どの設定ファイルとポートで試したか（試したものは次の起動から試さない）。
 			join(this._userDataPath, 'paradis-mcp-tool-timeout-upgrade.json'),
 		);

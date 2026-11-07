@@ -67,6 +67,7 @@ class ParadisCodexAccountsSync extends Disposable implements IWorkbenchContribut
 			return;
 		}
 		this.lastRevision = state.selection.revision;
+		this.launchHomeService.setLaunchHomeFile(state.launchHomeFile);
 		this.launchHomeService.setLaunchHome(paradisCodexLaunchHomeFor(state));
 	}
 }

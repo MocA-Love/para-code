@@ -5,7 +5,7 @@ import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CircleAlert } from 'lucide-react-native';
 import { AGENT_RESUME_CAPABILITY, AGENT_RESUME_PROMPT_LIMIT, parseAgentPastSessionPreview, type AgentPastSessionPreview } from '../../../../../../src/agentSessions.js';
-import { enqueueAgentSend, resumeAndSend, useAgentSendLive } from '../../../../../../src/agentSendQueue.js';
+import { enqueueAgentSend, resumeAndSend, useAgentSendLive, type AgentResumeCodexAccount } from '../../../../../../src/agentSendQueue.js';
 import { sendPcRequest, useAppStore } from '../../../../../../src/appState.js';
 import { scaleChatStyles } from '../../../../../../src/chatTextScale.js';
 import { MarkdownText } from '../../../../../../src/components/markdownText.js';
@@ -14,6 +14,7 @@ import { useParaToast } from '../../../../../../src/paraToast.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../../src/features/code/codeParts.js';
 import { QueuedSendsBanner } from '../../../../../../src/features/session/queuedSends.js';
 import { haptic } from '../../../../../../src/haptics.js';
+import { paraAlert } from '../../../../../../src/paraAlert.js';
 import { usePcCapability } from '../../../../../../src/hooks/usePcCapability.js';
 import { useRouteSpace } from '../../../../../../src/hooks/useRouteTargets.js';
 import { useStableInsets } from '../../../../../../src/hooks/useStableInsets.js';
@@ -29,6 +30,17 @@ import { Button, EmptyState, Screen, ScreenHeader } from '../../../../../../src/
  * 切り替えない。権限は PC の既定）、準備ができたら依頼を渡す。PC に届かないときは、この端末に預かり
  * （24 時間まで）、つながった後に「再開して送る」を確かめてから送る。
  */
+/** PC で選んでいる Codex のアカウントに無い会話を、どちらのアカウントで開くか尋ねる。やめたら undefined。 */
+function chooseCodexAccount(message: string | undefined): Promise<Exclude<AgentResumeCodexAccount, 'ask'> | undefined> {
+	return new Promise(resolve => {
+		paraAlert.alert('前のアカウントの会話です', message, [
+			{ text: '選んでいるアカウントで続ける', onPress: () => resolve('selected') },
+			{ text: '前のアカウントで開く', onPress: () => resolve('previous') },
+			{ text: 'やめる', style: 'cancel', onPress: () => resolve(undefined) },
+		], { cancelable: true, onDismiss: () => resolve(undefined) });
+	});
+}
+
 export default function AgentHistorySessionScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
@@ -91,7 +103,15 @@ export default function AgentHistorySessionScreen() {
 				setNotice('PC に届かないため預かりました。つながったら、再開して送るか確かめます（24 時間まで）');
 				return;
 			}
-			const result = await resumeAndSend(pcId, sourceId, key, prompt);
+			let result = await resumeAndSend(pcId, sourceId, key, prompt, undefined, 'ask');
+			if (result.status === 'choose-account') {
+				// PC で選んでいる Codex のアカウントに無い会話。どちらのアカウントで開くかを選んでから送り直す
+				const choice = await chooseCodexAccount(result.message);
+				if (choice === undefined) {
+					return;
+				}
+				result = await resumeAndSend(pcId, sourceId, key, prompt, undefined, choice);
+			}
 			// 依頼まで渡せたときだけ完了。会話は開けたが渡せなかった・確認待ちなどは注意として返す
 			haptic(result.delivered === true ? 'success' : 'warning');
 			const movedToTerminal = result.terminalKey !== undefined && result.status !== 'needs-trust';

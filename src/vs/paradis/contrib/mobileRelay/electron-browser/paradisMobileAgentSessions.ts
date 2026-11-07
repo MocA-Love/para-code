@@ -190,8 +190,7 @@ const recentResumes = new Map<string, { readonly instanceId: number; readonly at
 /** {@link recentResumes} を覚えておく時間。 */
 const RECENT_RESUME_TTL_MS = 5 * 60_000;
 
-async function listSessions(tools: IAgentSessionTools, space: IParadisResumeSpaceWithUri): Promise<readonly IParadisResumeSession[]> {
-	const client = tools.instantiationService.createInstance(ParadisSessionResumeClient);
+async function listSessions(tools: IAgentSessionTools, space: IParadisResumeSpaceWithUri, client = tools.instantiationService.createInstance(ParadisSessionResumeClient)): Promise<readonly IParadisResumeSession[]> {
 	const sessions = await client.list({ spaces: [space] });
 	return sessions.filter(session => session.spaceStateKey === space.stateKey && session.empty !== true);
 }
@@ -297,6 +296,9 @@ registerParadisMobileRequestHandler('scm', 'agentSessionResume', {
 		const key = requireString(request.key, 'key', 64);
 		const requestId = requireString(request.requestId, 'requestId', 100);
 		const rawPrompt = typeof request.prompt === 'string' ? request.prompt : '';
+		// 選んでいる Codex のアカウントに無い会話の扱い（スマホが選ぶ）。`ask` は「該当すれば選ばせて」、省略は今までの
+		// アプリ（前のアカウントで開く）。
+		const codexAccount: CodexAccountChoice | undefined = request.codexAccount === 'ask' || request.codexAccount === 'selected' || request.codexAccount === 'previous' ? request.codexAccount : undefined;
 		if (!PARADIS_AGENT_SESSION_KEY_PATTERN.test(key) || rawPrompt.trim().length === 0 || rawPrompt.length > PARADIS_AGENT_RESUME_PROMPT_LIMIT) {
 			throw new Error('送る内容が正しくありません');
 		}
@@ -334,15 +336,19 @@ registerParadisMobileRequestHandler('scm', 'agentSessionResume', {
 		resumingRequestIds.add(requestId);
 		// 台帳へも先に入れる（再開の途中で PC が落ちても、送り直しで二度目を起こさない）。
 		writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'started' });
-		return resumeFromMobile(tools, space, key, requestId, paradisStripTerminalControlCharacters(rawPrompt), reply).finally(() => {
+		return resumeFromMobile(tools, space, key, requestId, paradisStripTerminalControlCharacters(rawPrompt), codexAccount, reply).finally(() => {
 			resumingKeys.delete(key);
 			resumingRequestIds.delete(requestId);
 		});
 	},
 });
 
+/** 選んでいる Codex のアカウントに無い会話を、どのアカウントで再開するか。 */
+type CodexAccountChoice = 'ask' | 'selected' | 'previous';
+
 interface IResumeReply {
-	readonly status: 'resumed' | 'running' | 'needs-trust' | 'duplicate';
+	/** `choose-account`: 選んでいる Codex のアカウントに無い会話。スマホが `codexAccount` を選んで送り直す。 */
+	readonly status: 'resumed' | 'running' | 'needs-trust' | 'duplicate' | 'choose-account';
 	readonly terminalKey?: string;
 	readonly delivered?: boolean;
 	readonly message?: string;
@@ -366,11 +372,13 @@ async function resumeFromMobile(
 	key: string,
 	requestId: string,
 	prompt: string,
+	codexAccount: CodexAccountChoice | undefined,
 	reply: (body: IResumeReply) => void,
 ): Promise<void> {
 	let terminalKey: string | undefined;
 	try {
-		const sessions = await listSessions(tools, space);
+		const client = tools.instantiationService.createInstance(ParadisSessionResumeClient);
+		const sessions = await listSessions(tools, space, client);
 		const session = sessions.find(candidate => paradisAgentSessionKey(candidate.agent, candidate.id) === key);
 		if (session === undefined) {
 			throw new Error('この会話は見つかりませんでした');
@@ -382,6 +390,19 @@ async function resumeFromMobile(
 			reply({ status: 'running', terminalKey: running, message: 'この会話は PC で開いています' });
 			return;
 		}
+		let codexHome = session.agent === 'codex' ? session.codexHome : undefined;
+		if (session.agent === 'codex' && session.otherCodexAccount === true) {
+			if (codexAccount === 'ask') {
+				writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'failed' });
+				reply({ status: 'choose-account', message: 'この会話は、選んでいる Codex のアカウントの履歴にありません。このまま開くと、会話を始めた前のアカウントで動きます。選んでいるアカウントで続けるときは、この会話の履歴を選んでいるアカウントへリンクしてから開きます' });
+				return;
+			}
+			if (codexAccount === 'selected') {
+				codexHome = await client.linkCodexSession(session.catalogId).catch(() => {
+					throw new Error('この会話の履歴を、選んでいるアカウントへリンクできませんでした。前のアカウントで開くことはできます');
+				});
+			}
+		}
 		const launched = await tools.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, {
 			rootUri: space.uri,
 			stateKey: space.stateKey,
@@ -391,7 +412,7 @@ async function resumeFromMobile(
 			dangerouslyBypassPermissions: false,
 			preserveFocus: true,
 			...(session.agent === 'opencode' && session.cli !== undefined ? { cli: session.cli } : {}),
-			...(session.agent === 'codex' && session.codexHome !== undefined ? { codexHome: session.codexHome } : {}),
+			...(codexHome !== undefined ? { codexHome } : {}),
 		});
 		recentResumes.set(key, { instanceId: launched.instanceId, at: Date.now() });
 		const instance = paradisCollectAllTerminalInstances(tools.terminalService, tools.terminalGroupService).find(candidate => candidate.instanceId === launched.instanceId);

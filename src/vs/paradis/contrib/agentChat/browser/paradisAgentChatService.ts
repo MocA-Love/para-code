@@ -18,4 +18,10 @@ export interface IParadisAgentChatService {
 	 * `{ groupId }`（無ければアクティブなグループのタブが対象）。
 	 */
 	toggleFromCommand(context: unknown): void;
+	/**
+	 * そのターミナルを、エージェントの会話が見つかり次第チャット表示へ切り替える（タブの「＋」の
+	 * ランチャーの「チャットで起動」）。会話は最初のやりとりで見つかるので、`timeoutMs` の間に
+	 * 見つからなければターミナル表示のまま false を返す。チャット表示を切っているときも false。
+	 */
+	openChatWhenReady(instanceId: number, timeoutMs: number): Promise<boolean>;
 }

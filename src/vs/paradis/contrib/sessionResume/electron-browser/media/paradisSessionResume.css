@@ -15,6 +15,10 @@
 	display: flex; align-items: center; justify-content: center;
 	background: rgba(0, 0, 0, 0.5);
 }
+/* 一覧から確認のダイアログ（dialog.css の z-index 2575）を出している間は、その下へ下げる。 */
+.paradis-session-resume-backdrop.behind-dialog {
+	z-index: 2574;
+}
 .paradis-session-resume-modal {
 	display: flex; flex-direction: column; min-width: 0; min-height: 0;
 	/* 3カラムの最小 936px に余白を足した既定寸法。狭い画面では vw/vh で頭打ちにし、
