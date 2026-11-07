@@ -30,6 +30,7 @@ import { randomUUID } from 'crypto';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { paradisSanitizeAgentHookPayload } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisIsDisplayOnlyModRow } from '../common/paradisClaudeMod.js';
+import { IParadisClaudeContextBreakdown, paradisParseClaudeContextBreakdown } from '../common/paradisClaudeContextBreakdown.js';
 
 /** 1 回の長いポーリングを受け口が持つ時間。mod 側には時間切れの指定が無いので、こちらで返す。 */
 const LONG_POLL_MS = 25_000;
@@ -151,6 +152,8 @@ export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId
 	| { readonly type: 'tool.check'; readonly toolUseId: string; readonly tool: string }
 	/** Claude Code の `session.measure` の `context`（statusline と同じコンテキストの値。mod 1.3.0 以降）。 */
 	| { readonly type: 'measure'; readonly window: number; readonly tokens?: number; readonly percent?: number }
+	/** コンテキストの内訳（mod 1.5.0 以降が応答の終わりごとに `$.session.usage({ breakdown: 'summary' })` で取る）。 */
+	| { readonly type: 'context'; readonly breakdown: IParadisClaudeContextBreakdown }
 	/** 質問・承認の待ちが増えた・終わった（ParadisMobileAgentChat がカードの選択肢を直す）。 */
 	| { readonly type: 'pending-changed'; readonly kind: 'question' | 'permission' }
 	/** {@link ParadisClaudeModBridge.isAlive} の答えが変わった（来た・途絶えた・ペインが消えた）。停止の可否を送り直すのに使う。 */
@@ -629,6 +632,14 @@ export class ParadisClaudeModBridge {
 					const percent = typeof context?.percent === 'number' && Number.isFinite(context.percent) && context.percent >= 0 && context.percent <= 100 ? context.percent : undefined;
 					if (state !== undefined && window !== undefined && window > 0) {
 						this.fire({ ...base, type: 'measure', window, ...(tokens !== undefined ? { tokens } : {}), ...(percent !== undefined ? { percent } : {}) });
+					}
+					break;
+				}
+				case 'context': {
+					// 確かめた送り主のものだけ保存する（偽の内訳で会話の記録を上書きさせない）
+					const breakdown = state !== undefined ? paradisParseClaudeContextBreakdown(event.context, sessionId, at) : undefined;
+					if (breakdown !== undefined) {
+						this.fire({ ...base, type: 'context', breakdown });
 					}
 					break;
 				}

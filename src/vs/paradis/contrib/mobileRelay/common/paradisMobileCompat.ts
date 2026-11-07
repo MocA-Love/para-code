@@ -258,6 +258,13 @@ export const ParadisMobileCapability = {
 	 * 「PC の Para Code を更新すると使えます」と出す。絶対パスは端末に残さない。
 	 */
 	FsAbsolutePath: 'fs.absolute-path.v1',
+	/**
+	 * agent の要求 `context-breakdown`（`id`・`token`・`requestId`）で、会話のコンテキストの内訳（`/context` と同じカテゴリ別・
+	 * メモリファイル別・MCP サーバー別・エージェント別・スキル別）を返す。同梱の Claude Mod が応答の終わりごとに取り、PC が会話ごとに
+	 * 最後の 1 件を保存したもの（`paradisClaudeContextStore.ts`）。取れないとき（Codex・SSH 先・まだ無い）は `reason` と `error`。
+	 * PC だけが広告する。アプリは広告している PC にだけ、セッションのシートのコンテキストの行から内訳へ進める。
+	 */
+	AgentContextBreakdown: 'agent.context-breakdown.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -319,6 +326,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.FsHtmlImages,
 	ParadisMobileCapability.AgentAsyncQuestions,
 	ParadisMobileCapability.FsAbsolutePath,
+	ParadisMobileCapability.AgentContextBreakdown,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
