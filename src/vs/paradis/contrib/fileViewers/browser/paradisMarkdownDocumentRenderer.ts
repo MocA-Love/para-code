@@ -27,7 +27,7 @@
 // 属性は class だけ。形が決まった形と違う・消毒で印が消えたなどのときは、今までどおり全体を消毒する。
 // 出来上がる木は全体を消毒した場合と同じ（テストで突き合わせている）。
 
-import { sanitizeHtml } from '../../../../base/browser/domSanitize.js';
+import { DomSanitizerConfig, safeSetInnerHtml, sanitizeHtml } from '../../../../base/browser/domSanitize.js';
 import { allowedMarkdownHtmlAttributes, allowedMarkdownHtmlTags } from '../../../../base/browser/markdownRenderer.js';
 import { raceCancellationError } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -137,16 +137,16 @@ async function renderMarkdown(
 	if (deferred.length === 0) {
 		return { html, insertHighlightedCode: () => { } };
 	}
-	// 印を消して、今までどおり全体を消毒する。
-	const sanitizeWhole = () => {
+	// 印を消して、色付けしたコードを含む今までどおりの HTML に戻す。
+	const restoreWhole = () => {
 		for (const code of deferred) {
 			code.token.text = code.html;
 		}
-		return sanitizeMarkdownHtml(m.parser(tokens), options);
+		return m.parser(tokens);
 	};
 	if (!hasEachMarkerOnce(html.toString(), marker, deferred.length)) {
 		// 消毒で印が消えた・増えた。差し込む場所が決まらないので、今までどおり全体を消毒する。
-		return { html: sanitizeWhole(), insertHighlightedCode: () => { } };
+		return { html: sanitizeMarkdownHtml(restoreWhole(), options), insertHighlightedCode: () => { } };
 	}
 	return {
 		html,
@@ -154,8 +154,7 @@ async function renderMarkdown(
 			if (!insertParadisTokenizedCode(body, marker, deferred)) {
 				// 文字列では 1 回ずつあった印が、text node としては揃わなかった（属性の中に入った等）。
 				// 差し込まずに、全体を消毒した結果で中身を置き換える（コードを失わない）。
-				const whole = new DOMParser().parseFromString(sanitizeWhole() as unknown as string, 'text/html').body;
-				body.replaceChildren(...[...whole.childNodes].map(node => body.ownerDocument.importNode(node, true)));
+				safeSetInnerHtml(body, restoreWhole(), markdownSanitizerConfig(options));
 			}
 		},
 	};
@@ -173,7 +172,11 @@ interface IDeferredCode {
 type ParadisTokenizedSegment = { readonly className: string; readonly text: string } | undefined;
 
 function sanitizeMarkdownHtml(raw: string, options: IParadisMarkdownDocumentOptions): TrustedHTML {
-	return sanitizeHtml(raw, {
+	return sanitizeHtml(raw, markdownSanitizerConfig(options));
+}
+
+function markdownSanitizerConfig(options: IParadisMarkdownDocumentOptions): DomSanitizerConfig {
+	return {
 		allowedLinkProtocols: { override: [Schemas.http, Schemas.https] },
 		allowRelativeLinkPaths: options.allowRelativeLinkPaths,
 		allowRelativeMediaPaths: options.allowRelativeMediaPaths,
@@ -190,7 +193,7 @@ function sanitizeMarkdownHtml(raw: string, options: IParadisMarkdownDocumentOpti
 			],
 			augment: [],
 		},
-	});
+	};
 }
 
 const TOKENIZED_OPEN = '<div class="monaco-tokenized-source">';
