@@ -23,7 +23,7 @@ import { BottomDrawer, ConfirmDrawer, EmptyState, HeaderButton, Screen, ScreenHe
 import { CenterSpinner, OfflineBanner, SpaceGateBody } from '../../../../src/features/code/codeParts.js';
 import { fileViewerHref } from '../../../../src/features/code/codeRoutes.js';
 import { FileViewerBody } from '../../../../src/features/code/fileViewerBody.js';
-import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewStateOf, reviewedCount, stageableEntries, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
+import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewStageSkipNote, reviewStateOf, reviewedCount, stageableEntries, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
 import { NoteComposer, ReviewNotesPanel, type NoteComposerTarget } from '../../../../src/features/code/reviewNoteParts.js';
 import { clearNotesConfirmMessage, newReviewNoteId, noteAnchorOf, noteCountsByPath, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type PlacedNotes, type ReviewNote } from '../../../../src/features/code/reviewNotes.js';
 import { DiffLines, ReviewFileList, ReviewFileSummary, ReviewFooter, ReviewSummary } from '../../../../src/features/code/reviewParts.js';
@@ -259,10 +259,11 @@ export default function ReviewScreen() {
 			return;
 		}
 		void statusState.refresh();
+		const skipNote = reviewStageSkipNote(result);
 		useParaToast.getState().show({
 			key: 'review-staged',
 			text: `${result.staged} 件をステージしました`,
-			...(result.skipped > 0 ? { sub: `${result.skipped} 件は確認した後に変わっていたなどの理由でステージしていません。` } : {}),
+			...(skipNote !== undefined ? { sub: skipNote } : {}),
 			icon: 'checkmark-circle-outline',
 			tone: result.skipped > 0 ? 'warn' : 'done',
 		}, 3_000);

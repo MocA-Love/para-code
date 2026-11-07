@@ -87,6 +87,34 @@ suite('ParadisPtyDaemonHost', () => {
 		);
 	});
 
+	test('戻ってきた側が受け取り終えた量を渡すと、控え全体ではなく離れている間に増えた分だけを返す', async () => {
+		const { host, ptys } = create();
+		const handle = (await host.spawn(request('build'))).handle;
+		await host.attach(handle, 'viewer');
+		ptys[0].emit('hello');
+		await host.detach(handle);
+		const first = await host.attach(handle, 'viewer');
+		await host.detach(handle);
+		ptys[0].emit(' world');
+		const grown = await host.attach(handle, 'viewer', { written: first.written!, epoch: first.epoch });
+		await host.detach(handle);
+		const same = await host.attach(handle, 'viewer', { written: grown.written!, epoch: grown.epoch });
+		await host.detach(handle);
+		// 古い呼び出し方（量を渡さない）は今までどおり控え全体
+		const whole = await host.attach(handle, 'viewer');
+
+		assert.deepStrictEqual({
+			grown: { data: grown.frames.map(frame => frame.data), sinceMark: grown.sinceMark },
+			same: { data: same.frames.map(frame => frame.data), sinceMark: same.sinceMark },
+			whole: { data: whole.frames.map(frame => frame.data).join(''), sinceMark: whole.sinceMark },
+		}, {
+			grown: { data: [' world'], sinceMark: true },
+			same: { data: [], sinceMark: true },
+			whole: { data: 'hello world', sinceMark: undefined },
+		});
+		await host.release(handle);
+	});
+
 	test('終わったターミナルを勝手に捨てない。閉じている間に走り切った結果は戻ってから読める', async () => {
 		const { host, ptys } = create();
 		const handle = (await host.spawn(request('build'))).handle;

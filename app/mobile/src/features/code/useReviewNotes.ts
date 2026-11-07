@@ -13,6 +13,7 @@ import { codeCacheKey, useReviewNotes } from './codeCache.js';
 import { pcReplyErrorCode } from '../../store.js';
 import { reviewFailureTitle, sendFailureMessage, type ReviewNote } from './reviewNotes.js';
 import type { ScmEntry } from './scmModel.js';
+import { reviewStageResult, type ReviewStageResult } from './diffReview.js';
 import type { CodeSpace } from './useCodeSpace.js';
 import type { ReviewMarksController } from './useReviewMarks.js';
 
@@ -43,7 +44,7 @@ export interface ReviewNotesController {
 	/** 選んだメモを送る。送れたら true（メモは「送信済み」になって残る）。 */
 	send(ids: readonly string[], target: { readonly terminalKey: string } | { readonly agent: string }): Promise<boolean>;
 	/** 確認済みで、確認した後に変わっていないファイルだけをステージする。 */
-	stage(entries: readonly ScmEntry[]): Promise<{ readonly staged: number; readonly skipped: number } | undefined>;
+	stage(entries: readonly ScmEntry[]): Promise<ReviewStageResult | undefined>;
 }
 
 const NO_NOTES: readonly ReviewNote[] = [];
@@ -131,7 +132,7 @@ export function useReviewNotesController(space: CodeSpace, review: ReviewMarksCo
 		if (reply === undefined) {
 			return undefined;
 		}
-		return { staged: Array.isArray(reply.staged) ? reply.staged.length : 0, skipped: Array.isArray(reply.skipped) ? reply.skipped.length : 0 };
+		return reviewStageResult(reply);
 	}, [run]);
 
 	return { enabled, canStage, notes: enabled ? notes : NO_NOTES, busy, error, clearError, add, edit, remove, clear, send, stage };

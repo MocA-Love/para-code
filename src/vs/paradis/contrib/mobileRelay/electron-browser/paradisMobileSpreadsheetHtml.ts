@@ -49,6 +49,27 @@ const $ = dom.$;
  * 現実的に描画できる規模を上限とする。超過時は後方シートから省略する。
  */
 const MOBILE_XLSX_HTML_MAX_BYTES = 6_000_000;
+/** 描くセル 1 つの HTML の最短（`<td></td>`）。 */
+const MIN_CELL_HTML_BYTES = 9;
+
+/**
+ * 組み立てる前に、上限を必ず超えると分かるシートか（描くセルの数 × 最短の長さが上限を超える）。
+ * 超えるシートは数十万セルの DOM を組み立てて測ってから断っていたので、組み立てずに同じ理由で断る。
+ */
+export function paradisMobileSheetCertainlyTooLarge(sheet: Pick<IParadisSheetData, 'rows'>): boolean {
+	let cells = 0;
+	for (const row of sheet.rows) {
+		for (const cell of row.cells) {
+			if (!cell.hidden) {
+				cells++;
+			}
+		}
+		if (cells * MIN_CELL_HTML_BYTES > MOBILE_XLSX_HTML_MAX_BYTES) {
+			return true;
+		}
+	}
+	return false;
+}
 
 const encoder = new TextEncoder();
 
@@ -506,6 +527,9 @@ async function renderSheetUncached(fileService: IFileService, sharedProcessServi
 	}
 	const index = Math.min(Math.max(0, sheetIndex), workbook.sheets.length - 1);
 	const sheet = workbook.sheets[index];
+	if (paradisMobileSheetCertainlyTooLarge(sheet)) {
+		throw new Error('このシートは大きすぎるため、モバイルでは表示できません');
+	}
 	const html = withMeasureHost((host, doc) => {
 		const deduper = new InlineStyleDeduper();
 		const section = buildSheetSectionHtml(sheet, host, doc, deduper, true);

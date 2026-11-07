@@ -54,7 +54,8 @@ export class ParadisSystemUsageEditor extends EditorPane {
 	private range: ParadisSystemUsageRange = '5m';
 	/** 進行中の取得の世代。マシン・時間の幅を変えたら上げ、前の応答は描かない。 */
 	private generation = 0;
-	private fetching = false;
+	/** 取得中の世代（{@link generation}）。前の世代の取得が終わらなくても、新しい世代の取得は始める。 */
+	private fetchingGeneration: number | undefined;
 	/** 取得中に選び直された。終わったらもう一度取る。 */
 	private refreshPending = false;
 
@@ -143,13 +144,14 @@ export class ParadisSystemUsageEditor extends EditorPane {
 		if (machineId === undefined || !this.isVisible()) {
 			return;
 		}
-		if (this.fetching) {
-			// 前の取得（前のマシン・時間の幅かもしれない）が終わってから取り直す
+		if (this.fetchingGeneration === this.generation) {
+			// 同じマシン・時間の幅の取得が終わってから取り直す。マシンや幅を替えた後は、前の取得
+			// （接続先が返さないこともある）を待たずに取る
 			this.refreshPending = true;
 			return;
 		}
 		const generation = this.generation;
-		this.fetching = true;
+		this.fetchingGeneration = generation;
 		try {
 			const view = await this.systemUsageModel.refresh(machineId, this.range);
 			if (generation !== this.generation) {
@@ -161,10 +163,12 @@ export class ParadisSystemUsageEditor extends EditorPane {
 				this.statusElement.textContent = localize('paradis.systemUsage.failed', "取得できませんでした: {0}", error instanceof Error ? error.message : String(error));
 			}
 		} finally {
-			this.fetching = false;
-			if (this.refreshPending) {
-				this.refreshPending = false;
-				void this.refresh();
+			if (this.fetchingGeneration === generation) {
+				this.fetchingGeneration = undefined;
+				if (this.refreshPending) {
+					this.refreshPending = false;
+					void this.refresh();
+				}
 			}
 		}
 	}

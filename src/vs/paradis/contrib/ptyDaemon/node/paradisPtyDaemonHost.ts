@@ -34,6 +34,7 @@ import {
 	IParadisPtyTitleEvent,
 	PARADIS_PTY_PROTOCOL_VERSION,
 } from '../common/paradisPtyProtocol.js';
+import { IParadisPtyLetGoMark } from '../common/paradisPtyReattachPlan.js';
 import { paradisDecodeTerminalMetadata } from '../common/paradisTerminalMetadata.js';
 import { IParadisPtyProcess, ParadisPtyHolder } from './paradisPtyHolder.js';
 
@@ -128,7 +129,7 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		return holder.summary();
 	}
 
-	async attach(handle: number, viewer: string): Promise<IParadisPtyAttachment> {
+	async attach(handle: number, viewer: string, since?: IParadisPtyLetGoMark): Promise<IParadisPtyAttachment> {
 		const holder = this.holders.get(handle);
 		if (!holder) {
 			throw new Error(`no terminal with handle ${handle}`);
@@ -150,7 +151,7 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 			this.viewers.set(viewer, watched);
 		}
 		watched.add(handle);
-		return holder.attach();
+		return holder.attach(since);
 	}
 
 	/**

@@ -123,8 +123,14 @@ export class ParadisMobileCanvasModel extends Disposable implements IParadisMobi
 	}
 
 	async detach(paneToken: string): Promise<void> {
+		// 写しているかを知っているのは shared process の台帳なので、外すのは毎回頼む。読み直す（端末の一覧を取りに
+		// 行き、ホストを起動しうる）のは、画面が見ているか、そのペインがアタッチされていたときだけ
+		// （Mobile Canvas を使っていないときに、ターミナルを閉じるたびにホストを起こさない）
+		const wasAttached = this.snapshot.attachments.some(attachment => attachment.paneToken === paneToken);
 		await this.sharedProcessService.getChannel(PARADIS_MOBILE_CANVAS_CHANNEL).call<void>('detach', { paneToken });
-		await this.refresh();
+		if (wasAttached || this._pollers > 0) {
+			await this.refresh();
+		}
 	}
 
 	private async _refresh(): Promise<void> {

@@ -349,7 +349,8 @@ export class ParadisFileServiceTransferFileSystem implements IParadisTransferFil
 
 	private async discardTemp(temp: URI): Promise<void> {
 		await this.fileService.del(temp, { useTrash: false }).catch(() => undefined);
-		if (!await this.stat(temp).catch(() => undefined)) {
+		// 無いと確かに分かったときだけ片付けの控えから外す（切れていて確かめられないときは残し、次の機会に片付ける）
+		if (await this.stat(temp).then(stat => stat === undefined, () => false)) {
 			this.options.journal?.remove(temp);
 		}
 	}
