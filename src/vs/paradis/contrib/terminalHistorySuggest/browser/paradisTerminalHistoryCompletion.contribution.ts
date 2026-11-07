@@ -102,6 +102,8 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 	private readonly _parseZshHistory: (content: string) => readonly string[];
 	private readonly _parseBashHistory: (content: string) => readonly string[];
 	private readonly _location: ParadisTerminalHistorySharedValue<IParadisTerminalHistoryLocation>;
+	/** この PC の履歴の場所。SSH のウィンドウの手元の端末に使う（ウィンドウの場所は接続先）。 */
+	private readonly _localLocation: ParadisTerminalHistorySharedValue<IParadisTerminalHistoryLocation>;
 	private readonly _fileHistoryCache: ParadisTerminalHistoryCache<IFileHistoryResult>;
 	private readonly _fallbackHistory: DisposableMap<TerminalShellType | undefined, ParadisTerminalHistorySharedValue<IFileHistoryResult>>;
 	private _isDisposed = false;
@@ -118,6 +120,7 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		this._parseZshHistory = options?.parseZshHistory ?? paradisParseZshHistory;
 		this._parseBashHistory = options?.parseBashHistory ?? paradisParseBashHistory;
 		this._location = this._register(new ParadisTerminalHistorySharedValue(() => this._resolveLocation()));
+		this._localLocation = this._register(new ParadisTerminalHistorySharedValue(async () => this._resolveLocalLocation()));
 		this._fileHistoryCache = this._register(new ParadisTerminalHistoryCache(FILE_HISTORY_TTL_MS, FILE_HISTORY_TTL_MS));
 		this._fallbackHistory = this._register(new DisposableMap());
 	}
@@ -183,7 +186,7 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		// (ITerminalCompletionProvider.provideCompletions には shellType が渡ってこないための代替)。
 		if (completions.length < MAX_RESULTS) {
 			const shellType = activeInstance?.shellType;
-			const fileHistoryResult = await this._getFileHistory(shellType, token);
+			const fileHistoryResult = await this._getFileHistory(shellType, token, activeInstance);
 			if (this._isDisposed || token.isCancellationRequested || fileHistoryResult.kind === 'cancelled') {
 				return undefined;
 			}
@@ -213,7 +216,7 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		if (this._isDisposed || token.isCancellationRequested || spaceResult.kind === 'cancelled') {
 			return undefined;
 		}
-		const fileResult = await this._getFileHistory(instance.shellType, token);
+		const fileResult = await this._getFileHistory(instance.shellType, token, instance);
 		if (this._isDisposed || token.isCancellationRequested || fileResult.kind === 'cancelled') {
 			return undefined;
 		}
@@ -258,9 +261,9 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 	 * zsh/bash は 30秒TTL で履歴ファイルを再読込する(セッション中に増えた履歴を追従させる)。
 	 * それ以外のシェルは upstream の getShellFileHistory(ウィンドウ生存中キャッシュ)へフォールバック。
 	 */
-	private async _getFileHistory(shellType: TerminalShellType | undefined, token: CancellationToken): Promise<ParadisTerminalHistoryWaitResult<IFileHistoryResult>> {
+	private async _getFileHistory(shellType: TerminalShellType | undefined, token: CancellationToken, instance?: ITerminalInstance): Promise<ParadisTerminalHistoryWaitResult<IFileHistoryResult>> {
 		if (shellType === PosixShellType.Zsh || shellType === PosixShellType.Bash) {
-			const locationResult = await this._location.get(token);
+			const locationResult = await this._locationFor(instance).get(token);
 			if (this._isDisposed || token.isCancellationRequested || locationResult.kind === 'cancelled') {
 				return { kind: 'cancelled' };
 			}
@@ -294,7 +297,7 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		if (path === undefined) {
 			return { kind: 'completed', value: undefined };
 		}
-		const locationResult = await this._location.get(token);
+		const locationResult = await this._locationFor(instance).get(token);
 		if (this._isDisposed || token.isCancellationRequested || locationResult.kind === 'cancelled') {
 			return { kind: 'cancelled' };
 		}
@@ -307,6 +310,21 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 			resource: URI.from({ scheme: locationResult.value.scheme, authority: locationResult.value.authority, path: URI.file(path).path }),
 		});
 		return this._fileHistoryCache.get(paradisTerminalHistoryCacheKey(shellType, request.resource), token, () => this._loadFileHistory(request));
+	}
+
+	/**
+	 * その端末のシェルが動いている側の履歴の場所。SSH のウィンドウでも、手元の端末（remoteAuthority の無いもの）は
+	 * この PC の履歴を読む（ウィンドウの場所で読むと、接続先の履歴を手元の端末に出す）。
+	 */
+	private _locationFor(instance: ITerminalInstance | undefined): ParadisTerminalHistorySharedValue<IParadisTerminalHistoryLocation> {
+		return instance !== undefined && !instance.remoteAuthority && this._remoteAgentService.getConnection() ? this._localLocation : this._location;
+	}
+
+	private _resolveLocalLocation(): IParadisTerminalHistoryLocation | undefined {
+		if (isWindows || !env.HOME) {
+			return undefined;
+		}
+		return Object.freeze({ scheme: Schemas.file, authority: undefined, home: env.HOME });
 	}
 
 	private async _resolveLocation(): Promise<IParadisTerminalHistoryLocation | undefined> {
