@@ -960,7 +960,7 @@ export class ParadisWorktreeGitService {
 		}
 	}
 
-	/** git worktree add --no-track -b <newBranch> <worktreePath> <baseRef> を実行する。 */
+	/** git worktree add --no-track -b <newBranch> <worktreePath> <baseRef> を実行する（checkout は並列で書き出す）。 */
 	// リクエスト型に `<string>` を明示しているのは、ここが電文を受け取る側だからで、意味がある。
 	// 共有の型の既定は `ParadisHostPath`（送る側が綴りの規則を通したことの印）で、素の文字列を
 	// 扱えるのは検証するこちら側だけ。詳細は src/vs/paradis/common/paradisHostPath.ts を参照。
@@ -978,7 +978,24 @@ export class ParadisWorktreeGitService {
 		} catch {
 			// prune の失敗は致命的ではない
 		}
-		await this.exec(['-C', paradisWslPathArg(request.repoPath), 'worktree', 'add', '--no-track', '-b', request.newBranch, paradisWslPathArg(request.worktreePath), request.baseRef]);
+		const checkoutWorkers = await this.checkoutWorkersArgs(request.repoPath);
+		await this.exec(['-C', paradisWslPathArg(request.repoPath), ...checkoutWorkers, 'worktree', 'add', '--no-track', '-b', request.newBranch, paradisWslPathArg(request.worktreePath), request.baseRef]);
+	}
+
+	/**
+	 * checkout を全コアで書き出すための `-c checkout.workers=0`（Orca #36559）。git の既定は 1 本の
+	 * worker なので、ファイルの多いリポジトリでは `worktree add` の大半が 1 コアでの書き出しになる。
+	 * 利用者が `checkout.workers` をどこかの設定で決めていればその値に任せ、何も足さない。
+	 * `git config --get` は未設定のとき終了コード 1 で終わる。それ以外の失敗では git の既定のまま
+	 * 作成を続ける（読めないだけで作成を止めない）。2.32 より古い git はこの設定を知らずに無視する。
+	 */
+	private async checkoutWorkersArgs(repoPath: string): Promise<string[]> {
+		try {
+			await this.exec(['-C', paradisWslPathArg(repoPath), 'config', '--get', 'checkout.workers'], undefined, { quiet: true });
+			return [];
+		} catch (error) {
+			return error instanceof ParadisGitExecError && error.exitCode === 1 ? ['-c', 'checkout.workers=0'] : [];
+		}
 	}
 
 	/**
