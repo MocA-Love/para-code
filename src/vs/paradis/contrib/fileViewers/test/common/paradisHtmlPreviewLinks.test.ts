@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisPreviewLinkToFile } from '../../common/paradisHtmlPreview.js';
+import { paradisPreviewLinkTarget, paradisPreviewLinkToFile } from '../../common/paradisHtmlPreview.js';
 
 suite('paradisPreviewLinkToFile', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -27,6 +27,28 @@ suite('paradisPreviewLinkToFile', () => {
 			external: undefined,
 			outside: undefined,
 			folder: undefined,
+		});
+	});
+
+	test('opens only http(s) and mailto outside the folder, and never hands a preview server URL to the browser', () => {
+		const base = { url: 'http://127.0.0.1:5000/0123456789abcdef0123456789abcdef/', root: URI.file('/work/site') };
+		const kind = (link: string) => paradisPreviewLinkTarget(link, base)?.kind;
+		assert.deepStrictEqual({
+			inside: kind('http://127.0.0.1:5000/0123456789abcdef0123456789abcdef/a.html'),
+			https: kind('https://example.com/'),
+			mailto: kind('mailto:someone@example.com'),
+			file: kind('file:///etc/passwd'),
+			sameServerOutside: kind('http://127.0.0.1:5000/other'),
+			otherPreview: kind('http://localhost:6000/fedcba9876543210fedcba9876543210/x.html'),
+			devServer: kind('http://localhost:3000/'),
+		}, {
+			inside: 'file',
+			https: 'external',
+			mailto: 'external',
+			file: undefined,
+			sameServerOutside: undefined,
+			otherPreview: undefined,
+			devServer: 'external',
 		});
 	});
 });

@@ -57,8 +57,7 @@ import { ParadisRenderedFileEditor } from '../browser/paradisRenderedFileEditor.
 import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from '../browser/paradisViewerZoom.js';
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisPreviewLocation, ParadisRemotePreviewMounter, paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
-import { paradisPreviewLinkToFile, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
-import { paradisMarkdownLinkToOpen } from '../browser/paradisMarkdownLinks.js';
+import { paradisPreviewLinkTarget, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
@@ -125,12 +124,12 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	// webview 基盤はページ内のアンカー以外のリンクを知らせるだけで自分では開かない（Markdown と同じ）。表示している
-	// フォルダーの中のファイルはエディタで開き、それ以外の http(s)・mailto などは外で開く
+	// フォルダーの中のファイルはエディタで開き、外は http(s)・mailto だけを開く（file: や配信サーバの URL は開かない）
 	protected override onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
 		store.add(webview.onDidClickLink(link => {
-			const target = (this._linkBase !== undefined ? paradisPreviewLinkToFile(link, this._linkBase) : undefined) ?? paradisMarkdownLinkToOpen(link);
+			const target = paradisPreviewLinkTarget(link, this._linkBase);
 			if (target) {
-				this._openerService.open(target, { fromUserGesture: true, allowContributedOpeners: true }).catch(onUnexpectedError);
+				this._openerService.open(target.uri, { fromUserGesture: true, allowContributedOpeners: true }).catch(onUnexpectedError);
 			}
 		}));
 	}

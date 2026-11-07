@@ -90,3 +90,37 @@ export function paradisPreviewLinkToFile(link: string, base: { readonly url: str
 	}
 	return joinPath(base.root, ...segments);
 }
+
+/** フォルダーの外のリンクで開いてよい scheme（`file:` などは開かない）。 */
+const PARADIS_PREVIEW_EXTERNAL_SCHEMES: ReadonlySet<string> = new Set(['http', 'https', 'mailto']);
+
+/**
+ * プレビューの中で押したリンクの開き先。配っているフォルダーの中のファイルは `file`（エディタで開く）、
+ * http・https・mailto は `external`。それ以外の scheme と、プレビューの配信サーバ（`base` と同じ配信元、
+ * またはこの機械の中のトークン付きの URL）へのリンクは undefined（トークン付きの URL を外のブラウザへ渡さない）。
+ */
+export function paradisPreviewLinkTarget(link: string, base: { readonly url: string; readonly root: URI } | undefined): { readonly kind: 'file' | 'external'; readonly uri: URI } | undefined {
+	const file = base !== undefined ? paradisPreviewLinkToFile(link, base) : undefined;
+	if (file !== undefined) {
+		return { kind: 'file', uri: file };
+	}
+	let uri: URI;
+	try {
+		uri = URI.parse(link);
+	} catch {
+		return undefined;
+	}
+	if (!PARADIS_PREVIEW_EXTERNAL_SCHEMES.has(uri.scheme)) {
+		return undefined;
+	}
+	if (uri.scheme !== 'mailto') {
+		const baseUri = base !== undefined ? URI.parse(base.url) : undefined;
+		// 同じ配信元、またはこの機械の中の名前で先頭がトークンの形（32 桁の 16 進）の URL は配信サーバのものとみなす
+		// （手元の開発サーバ `http://localhost:3000/` などは開く）
+		const previewServer = isParadisPreviewLoopbackHost(uri.authority) && /^\/[0-9a-f]{32}(\/|$)/.test(uri.path);
+		if ((baseUri !== undefined && baseUri.scheme === uri.scheme && baseUri.authority === uri.authority) || previewServer) {
+			return undefined;
+		}
+	}
+	return { kind: 'external', uri };
+}
