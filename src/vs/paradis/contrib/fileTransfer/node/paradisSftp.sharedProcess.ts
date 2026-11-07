@@ -18,4 +18,6 @@ import { ParadisSftpChannel, ParadisSftpService } from './paradisSftpService.js'
 ParadisSharedProcessContributions.register('sftp', ({ server, accessor }) => {
 	const service = new ParadisSftpService({ logService: accessor.get(ILogService) });
 	server.registerChannel(PARADIS_SFTP_CHANNEL, new ParadisSftpChannel(service));
+	// 閉じたウィンドウが開いたままにしたファイルを閉じる（開いたままの数が減らず、接続が閉じなくなる）
+	return server.onDidRemoveConnection(connection => void service.closeHandlesOf(connection.ctx));
 });

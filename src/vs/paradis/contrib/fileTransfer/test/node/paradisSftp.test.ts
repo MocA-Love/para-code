@@ -401,6 +401,42 @@ suite('Paradis file transfer - direct SSH (SFTP)', function () {
 		}
 	});
 
+	test('読む側が書く側より速く、4 MiB を超える塊になっても書ける', async () => {
+		const server = await startServer(ssh2, root, parsedUserKey, 'publickey');
+		try {
+			fs.writeFileSync(join(tmp, 'known_hosts'), `[127.0.0.1]:${server.port} ${server.hostPublicKey}\n`);
+			const { fileService, provider } = createFileService(createService(() => hostConfig(server)));
+			provider.allowHost('para-test');
+			const big = VSBuffer.alloc(5 * 1024 * 1024 + 3);
+			for (let index = 0; index < big.byteLength; index += 4096) {
+				big.buffer[index] = index % 251;
+			}
+			// 溜まった塊がつながって 1 つになったのと同じ形（5 MiB の塊が 1 つ）
+			const target = paradisSftpUri('para-test', '/home/large.bin');
+			await fileService.writeFile(target, bufferToStream(big));
+			assert.ok(fs.readFileSync(join(root, 'home', 'large.bin')).equals(Buffer.from(big.buffer)));
+		} finally {
+			await server.close();
+		}
+	});
+
+	test('ウィンドウが外れたら、そのウィンドウが開いたままのファイルを閉じ、接続を保持時間で閉じる', async () => {
+		const server = await startServer(ssh2, root, parsedUserKey, 'publickey');
+		try {
+			fs.writeFileSync(join(tmp, 'known_hosts'), `[127.0.0.1]:${server.port} ${server.hostPublicKey}\n`);
+			const service = createService(() => hostConfig(server));
+			service.setIdleMs(50);
+			const channel = new ParadisSftpChannel(service);
+			// 開いたまま閉じずにウィンドウが外れる
+			await channel.call('window:1', 'openFile', [paradisSftpUri('para-test', '/home/left-open.txt'), { create: true }]);
+			await service.closeHandlesOf('window:1');
+			await new Promise(resolve => setTimeout(resolve, 300));
+			assert.strictEqual(service.connectionCount, 0);
+		} finally {
+			await server.close();
+		}
+	});
+
 	test('known_hosts に無いホスト・鍵が違うホストには繋がない（受け入れて書き足さない）', async () => {
 		const server = await startServer(ssh2, root, parsedUserKey, 'publickey');
 		try {

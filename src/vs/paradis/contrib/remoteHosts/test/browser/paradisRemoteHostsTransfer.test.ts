@@ -15,6 +15,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { URI } from '../../../../../base/common/uri.js';
 import { ConfirmResult, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
+import { IFileOpenOptions } from '../../../../../platform/files/common/files.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -74,9 +75,19 @@ suite('paradisRemoteHostsTransfer', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
+	/** 名前に `unreadable` を含むファイルだけ読めない（写している途中で失敗する）。 */
+	class PartlyUnreadableProvider extends InMemoryFileSystemProvider {
+		override open(resource: URI, opts: IFileOpenOptions): Promise<number> {
+			if (!opts.create && resource.path.includes('unreadable')) {
+				return Promise.reject(new Error('EIO: i/o error'));
+			}
+			return super.open(resource, opts);
+		}
+	}
+
 	async function createFileService(disposables: DisposableStore): Promise<FileService> {
 		const fileService = disposables.add(new FileService(new NullLogService()));
-		const provider = disposables.add(new InMemoryFileSystemProvider());
+		const provider = disposables.add(new PartlyUnreadableProvider());
 		disposables.add(fileService.registerProvider(Schemas.file, provider));
 		return fileService;
 	}
@@ -155,6 +166,21 @@ suite('paradisRemoteHostsTransfer', () => {
 
 			const untouched = await fileService.readFile(uri('/home/user/report.txt'));
 			strictEqual(untouched.value.toString(), 'old');
+		});
+
+		test('keeps the existing folder when replacing it fails part way', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { services, fileService, fileDialogService, dialogService } = await setup(disposables);
+			await fileService.writeFile(uri('/remote/space/a.txt'), VSBuffer.fromString('new'));
+			await fileService.writeFile(uri('/remote/space/unreadable.txt'), VSBuffer.fromString('x'));
+			await fileService.writeFile(uri('/home/user/space/old.txt'), VSBuffer.fromString('old'));
+			fileDialogService.openDialogResult = [uri('/home/user')];
+			dialogService.setConfirmResult({ confirmed: true });
+
+			await paradisSaveToMachine(services, { uri: uri('/remote/space'), name: 'space', isDirectory: true }, uri('/home/user')).catch(() => undefined);
+
+			const kept = await fileService.readFile(uri('/home/user/space/old.txt'));
+			deepStrictEqual({ kept: kept.value.toString(), entries: (await fileService.resolve(uri('/home/user'))).children?.map(child => child.name) }, { kept: 'old', entries: ['space'] });
 		});
 
 		test('replaces an existing file once the user confirms', async () => {

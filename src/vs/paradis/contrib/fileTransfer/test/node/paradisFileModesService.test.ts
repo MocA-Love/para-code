@@ -77,6 +77,28 @@ import { IParadisFileStatInfo, PARADIS_FILE_MODES_PROTOCOL_VERSION } from '../..
 		});
 	});
 
+	test('chmod to a value without execute applies to everything inside, and the folder ends with the chosen value', async () => {
+		const service = new ParadisFileModesService();
+		await fsp.mkdir(join(root, 'dir', 'sub'));
+		await fsp.writeFile(join(root, 'dir', 'sub', 'deep.txt'), 'x');
+		const mode = async (path: string) => ((await fsp.lstat(join(root, path))).mode & 0o7777).toString(8);
+		try {
+			// x の無い値でも、中を読んでから最後にフォルダーへ当てる（先に当てると中を読めずに止まる）
+			await service.chmod({ resource: URI.file(join(root, 'dir')), mode: 0o644, recursive: true });
+			// x の無いフォルダーの中は覗けないので、外側から順に読んでは開ける
+			const dir = await mode('dir');
+			await fsp.chmod(join(root, 'dir'), 0o700);
+			const sub = await mode('dir/sub');
+			await fsp.chmod(join(root, 'dir', 'sub'), 0o700);
+			const result = { dir, sub, plain: await mode('dir/plain.txt'), deep: await mode('dir/sub/deep.txt') };
+			assert.deepStrictEqual(result, { dir: '644', sub: '644', plain: '644', deep: '644' });
+		} finally {
+			// 片付けられるように戻す
+			await fsp.chmod(join(root, 'dir'), 0o700).catch(() => undefined);
+			await fsp.chmod(join(root, 'dir', 'sub'), 0o700).catch(() => undefined);
+		}
+	});
+
 	test('refuses to chmod a link (chmod would change the link target), and strips special bits from files', async () => {
 		const service = new ParadisFileModesService();
 		const onLink = await service.chmod({ resource: URI.file(join(root, 'link')), mode: 0o700, recursive: false }).then(() => 'ok', () => 'rejected');
