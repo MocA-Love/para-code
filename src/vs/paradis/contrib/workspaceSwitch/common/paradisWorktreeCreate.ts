@@ -167,6 +167,33 @@ export interface IParadisRemoveWorktreeRequest<TPath extends string = ParadisHos
 	 * 受け側で残骸と判定できなければ、git に回さずにエラーにする。
 	 */
 	readonly allowLeftoverCleanup?: boolean;
+	/**
+	 * true の場合、作業ツリーを消せたら、その作業ツリーで開いていたブランチを `git branch -d` で消す（Orca W3 の G-07）。
+	 * `-d` なのでマージ済みのものしか消えない。git が断ったブランチは結果の `keptBranch` で返す。
+	 * 残骸の削除（allowLeftoverCleanup）と、detached HEAD・ほかの作業ツリーで開いているブランチ・追跡先のあるブランチ
+	 * （main などの共有のブランチ）には触らない。
+	 */
+	readonly deleteBranch?: boolean;
+}
+
+/** 残したブランチを強制的に消す依頼（`forceDeleteBranches`）。 */
+export interface IParadisForceDeleteBranchesRequest<TPath extends string = ParadisHostPath> {
+	readonly repoPath: TPath;
+	readonly branches: readonly string[];
+}
+
+/** `forceDeleteBranches` の結果。 */
+export interface IParadisForceDeleteBranchesResult {
+	readonly deleted: readonly string[];
+	readonly failed: readonly string[];
+}
+
+/** `removeWorktree` の結果。ブランチを消すよう頼んだときだけ中身がある。 */
+export interface IParadisRemoveWorktreeResult {
+	/** 消したブランチ。 */
+	readonly deletedBranch?: string;
+	/** git がマージされていないとして消さなかったブランチと、その先頭のコミット。 */
+	readonly keptBranch?: { readonly name: string; readonly sha: string };
 }
 
 /** `git worktree list --porcelain` の1エントリ（ロック判定に要るものだけ）。 */
