@@ -107,6 +107,14 @@ suite('ParadisMobileAgentChat desktop insights', () => {
 			fireParadisAgentHookEvent({ token, event: 'PostToolUse', sessionId: 'session-1', transcriptPath, cwd: '/repo', toolName: 'AskUserQuestion', at: Date.now() });
 			await waitFor(() => insight()?.interaction === undefined, 'answered question was not cleared');
 
+			// MCP の入力の依頼（Elicitation）は許可待ちとして出し、決着（ElicitationResult）で消える
+			fireParadisAgentHookEvent({ token, event: 'Elicitation', sessionId: 'session-1', transcriptPath, cwd: '/repo', payload: { mcp_server_name: 'github', message: 'Sign in', mode: 'url' }, at: Date.now() });
+			await waitFor(() => insight()?.interaction !== undefined, 'elicitation did not appear');
+			const elicitation = insight()?.interaction;
+			fireParadisAgentHookEvent({ token, event: 'ElicitationResult', sessionId: 'session-1', transcriptPath, cwd: '/repo', payload: { mcp_server_name: 'github', action: 'accept' }, at: Date.now() });
+			await waitFor(() => insight()?.interaction === undefined, 'answered elicitation was not cleared');
+			assert.deepStrictEqual(elicitation && { kind: elicitation.kind, text: elicitation.text }, { kind: 'permission', text: 'MCP「github」が入力を求めています: Sign in' });
+
 			// 知らないペイン・まだセッションの無いペインは返さない
 			assert.deepStrictEqual(chat.getDesktopPaneInsights(['unknown-pane']), []);
 			// モバイルへは何も送っていない

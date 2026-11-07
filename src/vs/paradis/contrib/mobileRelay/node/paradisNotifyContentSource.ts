@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { paradisElicitationSummary } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { NotifyKind } from '../common/paradisMobileProtocol.js';
 import { ParadisNotifyCategory, paradisNormalizeNotifyErrorCode } from '../common/paradisNotifyCompose.js';
@@ -46,6 +47,10 @@ export interface IParadisNotifyHookApproval {
 	readonly toolUseId?: string;
 	/** 許可を求めた会話（hook の `session_id`・`agent_id`）。 */
 	readonly origin?: IParadisNotifyPromptOrigin;
+	/**
+	 * MCP の入力の依頼（Elicitation hook）の 1 行。ツールの承認ではないので、通知から答えさせない（ID を付けない）。
+	 */
+	readonly elicitation?: string;
 	readonly at: number;
 }
 
@@ -137,6 +142,16 @@ export class ParadisNotifyHookLedger extends Disposable {
 						...(origin !== undefined ? { origin } : {}),
 						at: event.at,
 					});
+				}
+				return;
+			case 'Elicitation': {
+				const origin = hookOrigin(event);
+				this.remember(this.approvals, event.token, { elicitation: paradisElicitationSummary(event.payload), ...(origin !== undefined ? { origin } : {}), at: event.at });
+				return;
+			}
+			case 'ElicitationResult':
+				if (this.approvals.get(event.token)?.elicitation !== undefined) {
+					this.approvals.delete(event.token);
 				}
 				return;
 			case 'PreToolUse':
@@ -323,6 +338,10 @@ export function paradisResolveNotifyContent(input: {
 		// hook の中身（コマンドを優先した形）を使い、一致しなければその承認自身の中身を使う。待っている承認が無いときは
 		// hook の中身だけを使い、ID は付けない（通知から答えさせない）。
 		const hookApproval = input.hookApproval;
+		// MCP の入力の依頼。待っているツールの承認が無ければ、その 1 行を中身にする（答える ID は付けない）
+		if (hookApproval?.elicitation !== undefined && interaction?.kind !== 'approval') {
+			return { kind: 'agent-question', category: 'approval', content: hookApproval.elicitation, ...(hookApproval.origin !== undefined ? { origin: hookApproval.origin } : {}) };
+		}
 		const hookMatches = hookApproval !== undefined && (interaction?.kind !== 'approval' || (hookApproval.toolUseId !== undefined && hookApproval.toolUseId === interaction.id));
 		const fromHook = hookMatches ? paradisApprovalNotifyParts(hookApproval.toolName, hookApproval.toolInput) : undefined;
 		const content = fromHook?.content ?? (interaction?.kind === 'approval' ? interaction.text : undefined);
