@@ -49,6 +49,8 @@ import {
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
+import { IParadisAgentViewIdleTimer, PARADIS_AGENT_VIEW_IDLE_THROTTLE_MS, ParadisAgentViewIdleThrottle } from '../common/paradisAgentViewIdleThrottle.js';
+import { paradisThawBrowserView } from '../../browserFreeze/electron-main/paradisBrowserViewFreezer.js';
 import { IParadisCursorOwner, paradisCursorCaptureRange, paradisCursorStatusForMirror, paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
@@ -233,6 +235,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	/** Hidden agent-bound views that need a periodic draw so viz keeps sending them BeginFrames. */
 	private readonly frameKeepalive = new ParadisExactViewFrameKeepaliveRegistry();
 	private frameKeepaliveTimer: ReturnType<typeof setInterval> | undefined;
+	/**
+	 * エージェントが手にしているタブのうち、今使っているものだけ抑制を切る台帳。手にしたまま
+	 * {@link PARADIS_AGENT_VIEW_IDLE_THROTTLE_MS} 使われなければ抑制を戻し、次の道具の呼び出しでまた切る。
+	 */
+	private readonly idleThrottle: ParadisAgentViewIdleThrottle;
 	/** Concrete BrowserView object → opaque lease. Weak keys must never be reversed into strong view references. */
 	private readonly viewLeases = new WeakMap<object, string>();
 	/**
@@ -328,7 +335,13 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		private readonly reportAutomationKeyFailure: (phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined, detail?: IBrowserViewAutomationKeyFailureDetail) => void = paradisReportAutomationKeyFailure,
 		/** 内蔵ブラウザのフォーカスと入力の失敗の診断（Sentry のパンくずとまとめのイベント）。テストの偽物では作らない。 */
 		private readonly browserDiagnostics: ParadisBrowserFocusDiagnosticsMain | undefined = paradisCreateBrowserFocusDiagnostics(browserViewMainService),
+		/** 使っていないタブの抑制を戻すタイマー。テストでは差し替える。 */
+		idleThrottleTimer?: IParadisAgentViewIdleTimer,
 	) {
+		this.idleThrottle = new ParadisAgentViewIdleThrottle({
+			wake: descriptor => this.applyAgentThrottling(descriptor, false),
+			sleep: descriptor => this.applyAgentThrottling(descriptor, true),
+		}, PARADIS_AGENT_VIEW_IDLE_THROTTLE_MS, idleThrottleTimer);
 		// 子タブ（target=_blank・window.open・中クリック）を開いた元のタブを覚える。エージェントのタブから
 		// 開いた子タブで始まったダウンロードも、エージェント由来として扱うため。テストの偽物には無い。
 		const onDidCreateBrowserView = (browserViewMainService as Partial<IBrowserViewMainService>).onDidCreateBrowserView;
@@ -1155,6 +1168,14 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		paradisSetExtensionNavigationGuard(view.webContents, !enabledValue, { onBlocked: () => this._onDidBlockExtensionNavigation.fire(descriptor.viewId) });
 		if (enabledValue) {
 			this.pageOps.releaseTarget(view);
+			this.idleThrottle.release(descriptor);
+			// 隠れたまま抑制を戻しても、ページは「表示中」のまま描画を続ける（10 枚で CPU 4% → 17% を実測）。
+			// 一度だけ表示して隠し直し、隠れた状態をページへ伝え直す。
+			this.refreshHiddenAfterThrottle(view);
+		} else {
+			// 休ませて凍結していたタブは、エージェントが手にしたら起こす
+			paradisThawBrowserView(view);
+			this.idleThrottle.hold(descriptor);
 		}
 		// Throttling is disabled exactly while an agent holds this view, which is also exactly when
 		// the view needs the periodic nudge. Ride that signal instead of adding a second lifecycle.
@@ -1167,6 +1188,59 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 		this.updateFrameKeepaliveTimer();
 		return true;
+	}
+
+	/**
+	 * エージェントがこのタブを使った（道具の呼び出しの始め・途中・終わり）。抑制を戻していたら切り直す。
+	 * @returns 手にしているタブなら true
+	 */
+	async noteExactViewAgentActivity(descriptorValue: unknown): Promise<boolean> {
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		return descriptor !== undefined && this.idleThrottle.noteActivity(descriptor);
+	}
+
+	/**
+	 * 手にしたままのタブの抑制だけを切る・戻す（{@link idleThrottle} から）。手にしていること（ダウンロードの由来・
+	 * 上書き・拡張ページへの移動の取り消し）は変えない。
+	 */
+	private applyAgentThrottling(descriptor: IParadisExactBrowserViewDescriptor, enabled: boolean): void {
+		const view = this.resolveExistingExactView(descriptor);
+		if (!view) {
+			this.idleThrottle.release(descriptor);
+			this.frameKeepalive.remove(descriptor);
+			this.updateFrameKeepaliveTimer();
+			return;
+		}
+		try {
+			view.webContents.setBackgroundThrottling(enabled);
+		} catch {
+			return;
+		}
+		if (enabled) {
+			this.frameKeepalive.remove(descriptor);
+			this.refreshHiddenAfterThrottle(view);
+		} else {
+			this.frameKeepalive.add(descriptor);
+			// 抑制を戻している間に BeginFrame が止まっていることがあるので、一度描かせてから道具を通す
+			this.nudgeFrame(view);
+		}
+		this.updateFrameKeepaliveTimer();
+	}
+
+	/**
+	 * 抑制を戻した隠れたタブを、一度だけ表示して隠し直す。表示中のタブは、ウィンドウが裏にあるときだけ 1x1 の撮影になる
+	 * （{@link BrowserView.nudgeHiddenFrame}。どちらも見た目は変わらない）。
+	 */
+	private refreshHiddenAfterThrottle(view: BrowserView): void {
+		this.nudgeFrame(view);
+	}
+
+	private nudgeFrame(view: BrowserView): void {
+		try {
+			view.nudgeHiddenFrame();
+		} catch {
+			// best-effort, like the keepalive
+		}
 	}
 
 	/** Start or stop the keepalive timer so it only runs while at least one view is tracked. */
@@ -1301,6 +1375,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		} catch {
 			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state is unavailable' };
 		}
+		// 入力もエージェントが使っている合図（CDP で直接つないだクライアントの入力もここを通る）
+		this.idleThrottle.noteActivity(descriptor);
 		this.nudgeFrameBeforeInput(view);
 
 		// 合成カーソルを目標へ滑らせてから配る（showAgentCursorBeforeInput）

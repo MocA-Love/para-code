@@ -8,7 +8,7 @@
  *   （md は marked でHTML化、html はそのまま表示）
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { paraAlert } from '../paraAlert.js';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,11 +24,12 @@ import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
+import { useWebViewRevival } from './webViewRevival.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useCloseOnAppLock } from '../appLock.js';
 import { lockedModalVisible } from '../appLockPolicy.js';
 import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
-import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
+import { MobileOfficeWebView } from '../features/code/fileViewerBody.js';
 
 interface FileViewerProps {
 	path: string;
@@ -191,6 +192,8 @@ function buildDocxHtml(docxBase64: string): string {
 <script>${docxPreviewBundle.jszip}</script>
 <script>${docxPreviewBundle.docxPreview}</script>
 <script>
+	// 描いている間は印を立てておく（アプリの「表示が空か」の見張りが、大きな文書の描画の途中で空と決めつけないため）
+	window.__paradisOfficeBusy = true;
 	(async () => {
 		const statusEl = document.getElementById('status');
 		const contentEl = document.getElementById('content');
@@ -321,6 +324,8 @@ function buildDocxHtml(docxBase64: string): string {
 			statusEl.remove();
 		} catch (err) {
 			statusEl.textContent = 'Word 文書を表示できませんでした: ' + (err && err.message ? err.message : err);
+		} finally {
+			window.__paradisOfficeBusy = false;
 		}
 	})();
 </script>
@@ -354,6 +359,7 @@ function buildImageHtml(base64: string, ext: string): string {
  * 数十MBのファイルでもJSスレッドをブロックしない）。
  */
 function NativeFileView({ data, ext }: { data: string; ext: string }) {
+	const revival = useWebViewRevival();
 	const [uri, setUri] = useState<string | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
 	useEffect(() => {
@@ -401,8 +407,10 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 	}
 	return (
 		<WebView
+			key={revival.generation}
 			style={styles.web}
 			source={{ uri }}
+			onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 			originWhitelist={['file://']}
 			allowingReadAccessToURL={uri}
 			javaScriptEnabled={false}
@@ -411,144 +419,9 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 	);
 }
 
-interface MobileOfficeWebViewProps {
-	readonly path: string;
-	readonly kind: 'spreadsheet' | 'docx';
-	readonly html: string;
-	readonly javaScriptEnabled: boolean;
-	readonly viewState: Readonly<Record<string, string | number>>;
-	readonly onShouldStartLoadWithRequest: (request: { readonly url: string; readonly isTopFrame?: boolean }) => boolean;
-}
-
-/** Applies the shared bounded recovery reducer to the isolated mobile Office WebView. */
-function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewState, onShouldStartLoadWithRequest }: MobileOfficeWebViewProps) {
-	const snapshot = useMemo<IParadisOfficeRecoverySnapshot>(() => ({
-		source: { mode: 'document', source: { kind: 'file', uri: path, displayName: path.split('/').pop() ?? path } },
-		viewState,
-	}), [path, viewState]);
-	const initial = useRef(beginParadisOfficeRecovery(createParadisOfficeRecoveryState(), snapshot));
-	const recoveryState = useRef(initial.current.state);
-	const webviewRef = useRef<WebView>(null);
-	const lastInput = useRef({ html, snapshot });
-	const [generation, setGeneration] = useState(initial.current.state.generation);
-	const [webviewEpoch, setWebviewEpoch] = useState(0);
-	const [reloadEpoch, setReloadEpoch] = useState(0);
-	const [finalError, setFinalError] = useState(false);
-
-	const applyEffects = useCallback((effects: readonly ParadisOfficeRecoveryEffect[]) => {
-		for (const effect of effects) {
-			switch (effect.type) {
-				case 'load':
-					setFinalError(false);
-					setGeneration(effect.generation);
-					break;
-				case 'remount':
-				case 'restore':
-					setFinalError(false);
-					setGeneration(effect.generation);
-					setReloadEpoch(value => value + 1);
-					break;
-				case 'recreate':
-					setFinalError(false);
-					setGeneration(effect.generation);
-					setWebviewEpoch(value => value + 1);
-					break;
-				case 'showError':
-					setFinalError(true);
-					break;
-			}
-		}
-	}, []);
-
-	useEffect(() => {
-		if (lastInput.current.html === html && lastInput.current.snapshot === snapshot) {
-			return;
-		}
-		lastInput.current = { html, snapshot };
-		const transition = beginParadisOfficeRecovery(recoveryState.current, snapshot);
-		recoveryState.current = transition.state;
-		applyEffects(transition.effects);
-	}, [applyEffects, html, snapshot]);
-
-	useEffect(() => {
-		if (reloadEpoch > 0) {
-			webviewRef.current?.reload();
-		}
-	}, [reloadEpoch]);
-
-	const completeRender = (hasExpectedRoot: boolean) => {
-		const transition = reduceParadisOfficeRecovery(recoveryState.current, { type: 'rendered', generation, hasExpectedRoot });
-		recoveryState.current = transition.state;
-		applyEffects(transition.effects);
-	};
-
-	const retry = () => {
-		const transition = reduceParadisOfficeRecovery(recoveryState.current, { type: 'retry' });
-		recoveryState.current = transition.state;
-		applyEffects(transition.effects);
-	};
-
-	const openExternally = () => {
-		const uri = /^[a-z][a-z\d+.-]*:/i.test(path) ? path : `file://${path}`;
-		void Linking.openURL(uri).catch(() => paraAlert.alert('ファイルを開けませんでした', path));
-	};
-
-	if (finalError) {
-		return (
-			<View style={styles.recoveryBox}>
-				<Text style={styles.dim}>Office ファイルの表示結果が空でした。</Text>
-				<View style={styles.recoveryActions}>
-					<Button variant="secondary" label="再試行" onPress={retry} />
-					<Button variant="secondary" label="既定のアプリで開く" onPress={openExternally} />
-				</View>
-			</View>
-		);
-	}
-
-	const expectedSelector = kind === 'docx'
-		? '.docx-wrapper > section.docx'
-		: 'table, [role="grid"], .paradis-spreadsheet-virtual-host';
-	const probe = `(function () {
-		var sent = false;
-		var finish = function (present) {
-			if (sent) { return; }
-			sent = true;
-			observer.disconnect();
-			window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'paradisOfficeRecovery', generation: ${generation}, hasExpectedRoot: present }));
-		};
-		var check = function () { if (document.querySelector(${JSON.stringify(expectedSelector)})) { finish(true); } };
-		var observer = new MutationObserver(check);
-		observer.observe(document.documentElement, { childList: true, subtree: true });
-		check();
-		setTimeout(function () { finish(!!document.querySelector(${JSON.stringify(expectedSelector)})); }, 2000);
-		true;
-	})();`;
-
-	return (
-		<WebView
-			ref={webviewRef}
-			key={`${kind}:${webviewEpoch}`}
-			style={styles.web}
-			source={{ html }}
-			originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
-			javaScriptEnabled={javaScriptEnabled}
-			onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
-			injectedJavaScript={probe}
-			onMessage={event => {
-				try {
-					const message = JSON.parse(event.nativeEvent.data) as { readonly type?: string; readonly generation?: number; readonly hasExpectedRoot?: boolean };
-					if (message.type === 'paradisOfficeRecovery' && message.generation === generation && typeof message.hasExpectedRoot === 'boolean') {
-						completeRender(message.hasExpectedRoot);
-					}
-				} catch {
-					// Ignore messages that are not recovery observations.
-				}
-			}}
-		/>
-	);
-}
 
 export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, error, onClose }: FileViewerProps) {
+	const revival = useWebViewRevival();
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
 	// 変わったときに「fullScreenなのに上余白14pt」＝ヘッダーがステータスバーに潜る。
@@ -720,8 +593,10 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					// ペアリング済みワークスペースのHTMLはPC版と同様にスクリプト実行を許可する。
 					// スプレッドシート、Word、検索行ジャンプ付きコードビューも自前スクリプトを実行する。
 					<WebView
+						key={revival.generation}
 						style={styles.web}
 						source={{ html }}
+						onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 						originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 						javaScriptEnabled={allowJs}
 						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardWebViewNavigation}

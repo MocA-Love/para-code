@@ -25,6 +25,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { readParadisFileHead } from '../../../../platform/files/common/paradisReadFileHead.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ParadisOverlayWebviewPane, watchParadisViewerResource } from '../browser/paradisOverlayWebviewPane.js';
 import { paradisPreviewOrigins, resolveParadisViewerDocumentUrl, resolveParadisViewerLibBase } from './paradisViewerAssets.js';
@@ -59,7 +60,7 @@ export function isParadisPdfHeader(bytes: Uint8Array): boolean {
 
 export async function readParadisPdfHeader(fileService: IFileService, resource: URI): Promise<boolean | undefined> {
 	try {
-		return isParadisPdfHeader((await fileService.readFile(resource, { length: PDF_HEADER_BYTES })).value.buffer);
+		return isParadisPdfHeader((await readParadisFileHead(fileService, resource, { length: PDF_HEADER_BYTES })).value.buffer);
 	} catch {
 		return undefined;
 	}

@@ -5,7 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 import { deepStrictEqual, ok, strictEqual } from 'assert';
-import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { bufferToStream, VSBuffer } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
@@ -33,9 +33,9 @@ suite('ParadisPdfFileEditor', () => {
 	test('reads only the PDF header and rejects empty and corrupt input', async () => {
 		const options: { length: number }[] = [];
 		const fileService = {
-			readFile: async (_resource: URI, readOptions: { length: number }) => {
+			readFileStream: async (_resource: URI, readOptions: { length: number }) => {
 				options.push(readOptions);
-				return { value: VSBuffer.fromString('%PDF-') };
+				return { value: bufferToStream(VSBuffer.fromString('%PDF-')) };
 			}
 		} as unknown as IFileService;
 
@@ -64,7 +64,7 @@ suite('ParadisPdfFileEditor', () => {
 		} as unknown as IOverlayWebview;
 		const webviewService = { createWebviewOverlay: () => { created.push('webview'); return webview; } } as unknown as IWebviewService;
 		const fileService = {
-			readFile: async () => ({ value: VSBuffer.fromString('%PDF-') }),
+			readFileStream: async () => ({ value: bufferToStream(VSBuffer.fromString('%PDF-')) }),
 			createWatcher: () => { throw new Error('watching is unavailable in this test'); },
 			onDidWatchError: Event.None,
 		} as unknown as IFileService;
@@ -124,7 +124,7 @@ suite('ParadisPdfFileEditor', () => {
 		} as unknown as IOverlayWebview;
 		const webviewService = { createWebviewOverlay: () => webview } as unknown as IWebviewService;
 		const fileService = {
-			readFile: async () => ({ value: VSBuffer.fromString('%PDF-') }),
+			readFileStream: async () => ({ value: bufferToStream(VSBuffer.fromString('%PDF-')) }),
 			stat: async () => ({ size: 2048 }),
 			createWatcher: () => { throw new Error('watching is unavailable in this test'); },
 			onDidWatchError: Event.None,
@@ -169,7 +169,7 @@ suite('ParadisPdfFileEditor', () => {
 		} as unknown as IOverlayWebview;
 		const webviewService = { createWebviewOverlay: () => webview } as unknown as IWebviewService;
 		const fileService = {
-			readFile: async () => ({ value: VSBuffer.fromString('%PDF-') }),
+			readFileStream: async () => ({ value: bufferToStream(VSBuffer.fromString('%PDF-')) }),
 			stat: async () => ({ size: 2048 }),
 			createWatcher: () => { throw new Error('watching is unavailable in this test'); },
 			onDidWatchError: Event.None,
@@ -226,7 +226,7 @@ suite('ParadisPdfFileEditor', () => {
 				dispose: () => { },
 			} as unknown as IOverlayWebview;
 			const fileService = {
-				readFile: async () => ({ value: VSBuffer.fromString('%PDF-') }),
+				readFileStream: async () => ({ value: bufferToStream(VSBuffer.fromString('%PDF-')) }),
 				stat: async () => { stats++; statCalled.fire(); return { size: 2048, mtime, etag: `e${mtime}` }; },
 				createWatcher: () => { throw new Error('watching is unavailable in this test'); },
 				onDidWatchError: Event.None,

@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CircleAlert, History } from 'lucide-react-native';
 import { AGENT_RESUME_CAPABILITY, parseAgentPastSessionPage, type AgentPastSession } from '../../../../../src/agentSessions.js';
 import { sendPcRequest } from '../../../../../src/appState.js';
+import { useAgentSendLive } from '../../../../../src/agentSendQueue.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../src/features/code/codeParts.js';
 import { QueuedSendsBanner } from '../../../../../src/features/session/queuedSends.js';
 import { haptic } from '../../../../../src/haptics.js';
@@ -19,6 +20,8 @@ import { Button, EmptyState, ListRow, Screen, ScreenHeader } from '../../../../.
 
 /** 検索の入力が止まってから一覧を引き直すまで。 */
 const SEARCH_DEBOUNCE_MS = 350;
+/** 前に読んでからこれ以上たった繋ぎ直しでは、一覧を読み直す（ms）。裏にいた間に PC で増えた会話を出すため。 */
+const HISTORY_RELOAD_AFTER_MS = 2 * 60_000;
 
 /**
  * スペースの過去の会話（`/pc/[pcId]/session/[spaceId]/history`、W2-29）。
@@ -42,9 +45,16 @@ export default function AgentHistoryScreen() {
 	const requestSeq = useRef(0);
 	const pcId = route.pcId;
 	const spaceId = route.spaceId;
-	const ready = route.status === 'active' && route.spaceStatus === 'ready' && supported;
+	// つながっているかも見る（前面に戻った直後の繋ぎ直しの間に開くと、要求がすぐ失敗してそのまま残っていた）
+	const live = useAgentSendLive();
+	const ready = route.status === 'active' && route.spaceStatus === 'ready' && supported && live;
+	// 最後に先頭から読めた一覧（検索語・PC・スペース・時刻）。繋がり直しただけで、読んでから間もなければ読み直さない
+	const loaded = useRef<{ readonly query: string; readonly pcId: string; readonly spaceId: string; readonly at: number } | undefined>(undefined);
+	const sessionsRef = useRef(sessions);
+	sessionsRef.current = sessions;
 
-	const load = useCallback((offset: number, search: string) => {
+	/** `fillTo` を渡すと、その件数に届くまで続きのページも読む（読み進めた分を取り直す）。 */
+	const load = useCallback((offset: number, search: string, fillTo?: number, received = 0) => {
 		if (!ready || pcId === undefined || spaceId === undefined) {
 			return;
 		}
@@ -58,9 +68,16 @@ export default function AgentHistoryScreen() {
 					return;
 				}
 				const page = parseAgentPastSessionPage(reply);
+				if (offset === 0) {
+					loaded.current = { query: search, pcId, spaceId, at: Date.now() };
+				}
 				setSessions(previous => offset === 0 || previous === undefined ? page.sessions : [...previous, ...page.sessions]);
 				setNextOffset(page.nextOffset);
 				setError(undefined);
+				const total = received + page.sessions.length;
+				if (fillTo !== undefined && total < fillTo && page.nextOffset !== undefined && page.sessions.length > 0) {
+					load(page.nextOffset, search, fillTo, total);
+				}
 			})
 			.catch((reason: unknown) => {
 				if (seq === requestSeq.current) {
@@ -75,7 +92,14 @@ export default function AgentHistoryScreen() {
 	}, [ready, pcId, spaceId]);
 
 	useEffect(() => {
-		const timer = setTimeout(() => load(0, query), query.length > 0 ? SEARCH_DEBOUNCE_MS : 0);
+		const last = loaded.current;
+		const same = last !== undefined && last.query === query && last.pcId === pcId && last.spaceId === spaceId;
+		if (same && Date.now() - last.at < HISTORY_RELOAD_AFTER_MS) {
+			return undefined;
+		}
+		// 間が空いた繋ぎ直しでは、裏にいた間に増えた会話を出すため読み直す（読み進めたページ数ぶん）
+		const fillTo = same ? sessionsRef.current?.length : undefined;
+		const timer = setTimeout(() => load(0, query, fillTo), query.length > 0 ? SEARCH_DEBOUNCE_MS : 0);
 		return () => clearTimeout(timer);
 	}, [load, query]);
 

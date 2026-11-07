@@ -29,6 +29,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { readParadisFileHead } from '../../../../platform/files/common/paradisReadFileHead.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
 	PARADIS_MOBILE_ATTACHMENT_READ_LIMIT,
@@ -112,11 +113,11 @@ function failedReply(): object {
 type ReadOutcome = { readonly kind: 'ok'; readonly bytes: Uint8Array } | { readonly kind: 'reply'; readonly body: object };
 
 /** 置き場のファイルを読み、読んでいる間に差し替えられていない（実体のパス・大きさ・更新時刻が同じ）ことを確かめる。 */
-async function readVerified(fileService: Pick<IFileService, 'readFile' | 'realpath' | 'stat'>, directory: URI, name: string, resolved: ParadisMobileAttachmentResolution & { readonly kind: 'ok' }): Promise<ReadOutcome> {
+async function readVerified(fileService: Pick<IFileService, 'readFileStream' | 'realpath' | 'stat'>, directory: URI, name: string, resolved: ParadisMobileAttachmentResolution & { readonly kind: 'ok' }): Promise<ReadOutcome> {
 	let content: Uint8Array;
 	try {
 		// 検査の後に伸びていても上限より先は読まない
-		content = (await fileService.readFile(resolved.uri, { length: PARADIS_MOBILE_ATTACHMENT_READ_LIMIT + 1 })).value.buffer;
+		content = (await readParadisFileHead(fileService, resolved.uri, { length: PARADIS_MOBILE_ATTACHMENT_READ_LIMIT + 1 })).value.buffer;
 	} catch {
 		return { kind: 'reply', body: missingReply() };
 	}
@@ -131,7 +132,7 @@ async function readVerified(fileService: Pick<IFileService, 'readFile' | 'realpa
 }
 
 /** サムネイルを列の中で読み・確かめ・縮める（控えにあればそれ）。列が埋まっていたら `other`。 */
-function thumbnailFor(fileService: Pick<IFileService, 'readFile' | 'realpath' | 'stat'>, directory: URI, name: string, resolved: ParadisMobileAttachmentResolution & { readonly kind: 'ok' }): Promise<ReadOutcome> {
+function thumbnailFor(fileService: Pick<IFileService, 'readFileStream' | 'realpath' | 'stat'>, directory: URI, name: string, resolved: ParadisMobileAttachmentResolution & { readonly kind: 'ok' }): Promise<ReadOutcome> {
 	const key = ParadisMobileThumbnailCache.keyOf(directory, resolved);
 	const cached = thumbnailCache.get(key);
 	if (cached !== undefined) {

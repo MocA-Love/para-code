@@ -495,6 +495,8 @@ export interface IParadisCdpExactViewService {
 	detectExactViewHumanCheck(descriptor: unknown, alreadyReported: unknown): Promise<unknown>;
 	captureExactViewScreenshot(descriptor: unknown, options: unknown): Promise<string | null>;
 	setExactViewBackgroundThrottling(descriptor: unknown, enabled: unknown): Promise<boolean>;
+	/** エージェントがこのタブを使った。手にしたまま抑制を戻していたら切り直す（paradisAgentViewIdleThrottle.ts）。 */
+	noteExactViewAgentActivity(descriptor: unknown): Promise<boolean>;
 	/**
 	 * エージェントが CDP で送った大きさの命令（`Emulation.setDeviceMetricsOverride` など。
 	 * paradisBrowserViewportCdp.ts）を、upstream の Device Emulation の状態へ畳み込む。`owner` は CDP の

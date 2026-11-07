@@ -38,7 +38,7 @@ import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenPr
 import { IParadisListViewportsResult, IParadisSetViewportResult, IParadisViewportState, PARADIS_BROWSER_VIEWPORT_MCP_CHANNEL, ParadisViewportMcpMethod } from '../../browserViewport/common/paradisBrowserViewport.js';
 import { paradisFormatSetViewportResult, paradisFormatViewportList, paradisViewportForAgent } from '../../browserViewport/common/paradisBrowserViewportTools.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_MAX_WAITING_CHILDREN, PARADIS_MAX_WAITING_CHILDREN_PER_TAB, PARADIS_OPENED_TAB_BURST_LIMIT, PARADIS_OPENED_TAB_BURST_RETRIES, PARADIS_OPENED_TAB_BURST_WINDOW_MS, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisOpenedTabBurstGuard, ParadisOpenedTabGrantResult, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
-import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
+import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisExactViewKey, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -47,6 +47,7 @@ import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGRO
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisHookAgentKind, ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
+import { ParadisCodexFrontSessions } from '../common/paradisCodexFrontSession.js';
 import { paradisOpenCodeBridge } from './paradisOpenCodeBridge.js';
 import { IParadisOpenCodeCliDatabase, paradisNormalizeOpenCodeCliAuthority, paradisOpenCodeCliRegistry, paradisResolveProcessExecutable, paradisVerifyOpenCodeCliProcess } from './paradisOpenCodeCliRegistry.js';
 import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCliExecutable, paradisIsOpenCodeCompatibleCommand, paradisNormalizeOpenCodeCliLabel } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
@@ -73,6 +74,7 @@ import { paradisClassifyPeer, paradisPeerIsOneOf, ParadisPeerUnknownReason } fro
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, ParadisProgramState, paradisCodexProgramStatusTransition, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
+import { PARADIS_AGENT_VIEW_IDLE_THROTTLE_MS } from '../common/paradisAgentViewIdleThrottle.js';
 import { ParadisCursorPacingLedger, paradisCursorScrollDirectionForTool, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
 import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
@@ -471,6 +473,13 @@ const PARADIS_TAB_SCOPED_TOOL_NAMES: ReadonlySet<string> = new Set([
  */
 const PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES: ReadonlySet<string> = new Set(['run_steps', 'set_cursor_label', 'get_cdp_endpoint', 'get_shared_page']);
 
+/** 長い道具の呼び出し（wait_until など）の途中で、main へ「使っている」と知らせ直す間隔。休ませるまでの時間より短くする。 */
+const PARADIS_AGENT_ACTIVITY_RENOTE_MS = 20_000;
+/** 続けて呼ばれた道具で、main へ知らせるのを省く間隔。 */
+const PARADIS_AGENT_ACTIVITY_MIN_NOTE_MS = 5_000;
+/** 知らせた時刻を覚えておくタブの数の上限。 */
+const PARADIS_AGENT_ACTIVITY_MAX_VIEWS = 512;
+
 /** ヒントを添えるときに控えるペインのスペースの期限（ミリ秒）。 */
 const PARADIS_SITE_NOTE_SPACE_CACHE_MS = 60_000;
 /** ヒントを添えるために窓のタブの一覧を待つ上限（ミリ秒）。 */
@@ -643,6 +652,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	// 入力が詰まったときの一時停止と再開をログと Sentry に残す（停止が解けないとそのページのマウスとキーが全部断られるため）
 	/** 同じタブへのツール呼び出しを 1 本ずつ流す列（鍵はタブのスコープキー）。 */
 	private readonly _toolCallLanes = new ParadisToolCallLanes();
+	/** タブ（exact view の鍵）ごとに、最後に main へ「使った」と知らせた時刻。古い順に並ぶ。 */
+	private readonly _agentActivityNotedAt = new Map<string, number>();
 	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue({ onDiagnostic: (event, queueKey) => this._onCdpInputQueueDiagnostic(event, queueKey) }));
 	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
 	private readonly _inputRejections = new ParadisInputRejectionLog();
@@ -797,6 +808,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ために renderer へ渡す。SessionEnd（会話を終えた）と TerminalExit（ペインが消えた）で消す。
 	 */
 	private readonly _paneSessions = new Map<string, Omit<IParadisAgentPaneSession, 'token'>>();
+	/**
+	 * Codex のペインで画面に出ている会話と、裏の会話の承認待ち。command center（0.167.0 から）で切り替えた裏の会話の
+	 * hook も同じペインのトークンで届くので、ペインの会話・状態・hook のバスへは表の会話の hook だけを通す。
+	 */
+	private readonly _codexFrontSessions = new ParadisCodexFrontSessions();
 	/**
 	 * hook発信元プロセスの所有権レジストリ（ネストした子エージェントのhookによるペイン
 	 * セッション乗っ取り・状態汚染の防止）。詳細は paradisAgentHookOwnership.ts 参照。
@@ -987,6 +1003,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				closeInputConnection: connection => this._cdpInputQueue.closeConnection(connection),
 				noteInputRejection: (token, message) => this._inputRejections.record(token, message),
 				noteAgentCdpConnections: (token, connections) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', connections }),
+				// CDP で直接つないだクライアント（Playwright など）の命令も、タブを使っている合図にする。Playwright の click は
+				// 入力の前に rAF を待つので、抑制を戻したままだと隠れたタブで止まる
+				noteAgentCdpCommand: (key, targetId) => this._noteGatewayAgentActivity(key, targetId),
 				noteFocusEmulation: (token, enabled) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', focusEmulation: enabled }),
 				applyBoundPageEmulation: (key, connection, method, params) => this._applyBoundPageEmulation(key, connection, method, params),
 				releaseBoundPageEmulation: connection => this._releaseBoundPageEmulation(connection),
@@ -1678,6 +1697,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (origin.origin !== 'owner') {
 				continue;
 			}
+			// Codex の裏の会話の hook（command center で切り替えた後）は、ペインの会話にも状態にもしない
+			if (transcriptPath !== undefined && paradisHookAgentKindForTranscript(transcriptPath) === 'codex'
+				// 画面で確かめていない控えの許可要求では、裏の会話の承認待ちを覚えない（W2-20 の決まりと同じく、確かめずに待ちを出さない）
+				&& this._codexFrontSessions.classify(token, record.event, field('session_id'), field('source'), record.at, { recordWait: false }) === 'background') {
+				continue;
+			}
 			accepted.push(record);
 			this._recordPaneSession(token, record.event, field('session_id'), transcriptPath, field('cwd'), this._paneShells.get(token)?.remoteAuthority !== undefined);
 		}
@@ -1744,8 +1769,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		const status = paradisCopyProgramStatus(value);
 		const ingressLease = this.captureIngressLease(token);
+		// 前面の Codex が終わった（シェルへ戻った・落ちた）。裏の会話の承認待ちは、もう答える画面が無いので消す。
+		// hook の届くペインでもここだけは見る（裏の会話の承認待ちは、その会話の次の hook でしか外れないため）
+		const clearedBackgroundWait = status?.state === 'clear' && ingressLease !== undefined && this._codexFrontSessions.clearBackgroundWaits(token);
 		if (status === undefined || ingressLease === undefined || !paradisProgramStatusApplies(this._hookReportedTokens.has(token))) {
-			return false;
+			return clearedBackgroundWait;
 		}
 		const now = Date.now();
 		// renderer でも間引いているが、ここでも 1 秒に数回までにする（renderer 以外の呼び出しや不具合で IPC が続いても状態を振らない）
@@ -2258,6 +2286,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		paradisClaudeModBridge.forgetToken(token);
 		paradisOpenCodeBridge.unregister(token);
 		this._paneSessions.delete(token);
+		this._codexFrontSessions.forget(token);
 		this._activityApprovalTokens.delete(token);
 		this._awaitingUserTokens.delete(token);
 		this._agentHookTokens.delete(token);
@@ -4783,9 +4812,24 @@ export class ParadisAgentBrowserService extends Disposable {
 					return;
 				}
 			}
+			// Codex の command center（0.167.0 から）で裏へ回した会話の hook は、同じプロセス・同じペインのトークンで届く。
+			// ペインの会話の記録・状態・hook のバス（モバイルの会話の張り替え）には通さない。承認待ちだけを覚えて、ペインを
+			// 「待っている」として出す（listPaneStatuses）。表の会話は利用者が表でしか起こせない hook で決める（paradisCodexFrontSession.ts）
+			if (eventType && eventType !== 'TerminalExit' && agentKind !== 'opencode' && transcriptPath !== undefined
+				&& paradisHookAgentKindForTranscript(transcriptPath) === 'codex'
+				&& this._codexFrontSessions.classify(token, eventType, sessionId, stringField('source'), Date.now()) === 'background') {
+				// hook の届くペインとしては数える（控えの古い hook を後から流し直さない・OSC 7501 の状態を使わない）
+				this._agentHookTokens.add(token);
+				this._hookReportedTokens.add(token);
+				this._runNonThrowingDiagnostic(() => this.logService.trace(`[ParadisAgentBrowser] agent-hook (background Codex conversation): ${eventType}`));
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ ok: true, background: true }));
+				return;
+			}
 			if (eventType) {
 				if (eventType === 'TerminalExit') {
 					this._agentHookTokens.delete(token);
+					this._codexFrontSessions.forget(token);
 					this._hookReportedTokens.delete(token);
 					// 確かめられないまま解いた印は、HTTP の TerminalExit では外さない（トークンを持つ誰でも送れるので、
 					// 偽の Stop → TerminalExit で印を消して Enter を通す経路になる）。外すのはウィンドウからの
@@ -4973,11 +5017,30 @@ export class ParadisAgentBrowserService extends Disposable {
 		return true;
 	}
 
+	/**
+	 * ペインの状態に、Codex の裏の会話の承認待ちを重ねたもの。表の会話の記録は書き換えない（裏の会話が承認されたら、
+	 * 表の会話の状態がそのまま見える）。表の会話が許可待ち・質問中なら、そちらを出す。
+	 */
+	private _paneStatusesWithBackgroundWaits(): ReadonlyMap<string, IParadisPaneStatusEntry> {
+		const waits = this._codexFrontSessions.backgroundWaits();
+		if (waits.length === 0) {
+			return this._paneStatuses;
+		}
+		const merged = new Map(this._paneStatuses);
+		for (const { token, since } of waits) {
+			const entry = merged.get(token);
+			if (entry?.status !== 'permission' && entry?.status !== 'question') {
+				merged.set(token, { status: 'permission', changedAt: since, ...(entry?.cwd !== undefined ? { cwd: entry.cwd } : {}) });
+			}
+		}
+		return merged;
+	}
+
 	/** workbench のポーリング用: 現在のペイン実行状態一覧 */
 	async listPaneStatuses(connection: object): Promise<IParadisAgentPaneStatus[]> {
 		const eligibleTokens = this._currentEligibleTokens(connection);
 		this._sweepStalePaneStatuses(eligibleTokens);
-		return [...this._paneStatuses]
+		return [...this._paneStatusesWithBackgroundWaits()]
 			.filter(([token]) => eligibleTokens.has(token))
 			.map(([token, entry]) => ({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}), ...(entry.quiet && entry.status === 'review' ? { quiet: true as const } : {}) }));
 	}
@@ -4986,7 +5049,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	async listAgentStatusSnapshot(connection: object): Promise<IParadisAgentStatusSnapshot> {
 		const eligibleTokens = this._currentEligibleTokens(connection);
 		this._sweepStalePaneStatuses(eligibleTokens);
-		const paneStatuses = [...this._paneStatuses]
+		const paneStatuses = [...this._paneStatusesWithBackgroundWaits()]
 			.filter(([token]) => eligibleTokens.has(token))
 			.map(([token, entry]) => Object.freeze({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}), ...(entry.quiet && entry.status === 'review' ? { quiet: true as const } : {}) }));
 		const agentHookTokens = [...this._agentHookTokens].filter(token => eligibleTokens.has(token));
@@ -5964,11 +6027,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 		if (PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES.has(name)) {
 			// run_steps は手順ごとに列へ並ぶので、操作の間は列を持たない（持つと手順が自分を待って止まる）
-			const before = await this._toolCallLanes.run(tabKey, observeBefore, signal);
+			const before = await this._runLane(tabKey, observeBefore, signal);
 			const result = await this._callToolInner(ingressLease, call, signal, socket);
-			return this._toolCallLanes.run(tabKey, () => observeAfter(before, result), signal);
+			return this._runLane(tabKey, () => observeAfter(before, result), signal);
 		}
-		const observed = await this._toolCallLanes.run(tabKey, async () => {
+		const observed = await this._runLane(tabKey, async () => {
 			// 列に並んでいる間にタブがなくなる・替わることがある。操作が別の列へ並び直すと、2 つの呼び出しが互いの
 			// 列を待って止まりうるので、そのときは観測をやめ、列を手放してから普通に呼ぶ
 			const scopedNow = this._scopeToolCall(ingressLease, call.arguments);
@@ -6143,7 +6206,89 @@ export class ParadisAgentBrowserService extends Disposable {
 			// （{@link _callToolObserved} は呼ぶ前にタブを確かめ直すので、ここへ来るのは間にタブが替わったときだけ）
 			return Promise.resolve(this._toolError(PARADIS_TAB_CHANGED_DURING_CALL_MESSAGE) as T);
 		}
-		return key === heldLane ? operation() : this._toolCallLanes.run(key, operation, signal);
+		return key === heldLane ? operation() : this._runLane(key, operation, signal);
+	}
+
+	/** タブの列に並んで動かし、その間はタブを「エージェントが使っている」と main へ知らせる。列に並ぶ入口はすべてここを通す。 */
+	private _runLane<T>(key: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		return this._toolCallLanes.run(key, () => this._withAgentActivity(key, operation), signal);
+	}
+
+	/**
+	 * 道具の呼び出しの間、そのタブを「エージェントが使っている」と main へ知らせる（paradisAgentViewIdleThrottle.ts）。
+	 * main は手にしたままのタブでも、しばらく使われなければ背景の抑制を戻すので、始め・途中・終わりに知らせる。
+	 */
+	private async _withAgentActivity<T>(key: string, operation: () => Promise<T>): Promise<T> {
+		const exactView = this._bindingForKey(key)?.exactView;
+		if (exactView === undefined) {
+			return operation();
+		}
+		await this._noteAgentActivity(exactView, 'start');
+		const renote = setInterval(() => void this._noteAgentActivity(exactView, 'during'), PARADIS_AGENT_ACTIVITY_RENOTE_MS);
+		try {
+			return await operation();
+		} finally {
+			clearInterval(renote);
+			void this._noteAgentActivity(exactView, 'end');
+		}
+	}
+
+	/** ゲートウェイを通った命令。宛先のタブ（`targetId`）が分かればそのタブ、無ければ接続のタブを「使った」にする。 */
+	private _noteGatewayAgentActivity(key: string, targetId?: string): void {
+		const exactView = targetId !== undefined ? this._paneExactViewForTarget(key, targetId) : this._bindingForKey(key)?.exactView;
+		if (exactView !== undefined) {
+			void this._noteAgentActivity(exactView, 'during');
+		}
+	}
+
+	/** このペインが使えるタブ（共有したページ・自分で開いたタブ）のうち、その targetId のもの。 */
+	private _paneExactViewForTarget(key: string, targetId: string): IParadisExactBrowserViewDescriptor | undefined {
+		const token = paradisPaneTokenOfScopeKey(key);
+		const shared = this._bindings.get(token)?.exactView;
+		if (shared?.targetId === targetId) {
+			return shared;
+		}
+		for (const entry of this._agentTabGrants.get(token)?.values() ?? []) {
+			if (entry.exactView.targetId === targetId) {
+				return entry.exactView;
+			}
+		}
+		return undefined;
+	}
+
+	private async _noteAgentActivity(exactView: IParadisExactBrowserViewDescriptor, phase: 'start' | 'during' | 'end'): Promise<void> {
+		const viewKey = paradisExactViewKey(exactView);
+		const now = Date.now();
+		const last = this._agentActivityNotedAt.get(viewKey);
+		if (phase === 'during' && last !== undefined && now - last < PARADIS_AGENT_ACTIVITY_RENOTE_MS / 2) {
+			return;
+		}
+		if (phase === 'start' && last !== undefined && now - last < PARADIS_AGENT_ACTIVITY_MIN_NOTE_MS) {
+			return;
+		}
+		this._agentActivityNotedAt.delete(viewKey);
+		this._agentActivityNotedAt.set(viewKey, now);
+		if (this._agentActivityNotedAt.size > PARADIS_AGENT_ACTIVITY_MAX_VIEWS) {
+			// 古い順に並んでいるので、先頭（いちばん前に知らせたタブ）から捨てる
+			const oldest = this._agentActivityNotedAt.keys().next().value;
+			if (oldest !== undefined) {
+				this._agentActivityNotedAt.delete(oldest);
+			}
+		}
+		let call: Promise<void>;
+		try {
+			call = Promise.resolve(this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call<boolean>('noteExactViewAgentActivity', [exactView]))
+				.then(() => undefined, () => undefined);
+		} catch {
+			// main へ知らせられなくても道具はそのまま動かす（入力は main 側でも使った合図として数える）
+			return;
+		}
+		// 抑制を戻しているかもしれない（前に知らせてから休ませるまでの時間が過ぎた）ときだけ、切り直すのを待ってから
+		// 道具を通す。待たないと、抑制が効いたまま rAF を待つ道具が遅れる
+		if (phase === 'start' && (last === undefined || now - last >= PARADIS_AGENT_VIEW_IDLE_THROTTLE_MS - PARADIS_AGENT_ACTIVITY_MIN_NOTE_MS)) {
+			await call;
+		}
 	}
 
 	/** タブを決めた後の Para のツールの呼び出し（{@link _callToolInner} の続き）。 */
@@ -7975,6 +8120,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._remotePaneWindows.clear();
 		this._paneStatuses.clear();
 		this._paneSessions.clear();
+		this._codexFrontSessions.clear();
 		this._activityApprovalTokens.clear();
 		this._awaitingUserTokens.clear();
 		this._agentHookTokens.clear();

@@ -150,6 +150,20 @@ function ab(d: string | ArrayBufferView | ArrayBuffer): ArrayBuffer {
 }
 const flush = () => new Promise<void>(r => setTimeout(r, 0));
 
+/** そのターミナルの今の画面（同期ストリームの記録の再生。snapshot で置き換え、data を足す）。記録が無ければ undefined。 */
+function screenOf(controller: { subscribeTerminal(terminalKey: string, listener: (ev: import('./store.js').TermStreamEvent) => void): () => void }, terminalKey: string): string | undefined {
+	let screen: string | undefined;
+	const stop = controller.subscribeTerminal(terminalKey, ev => {
+		if (ev.kind === 'snapshot') {
+			screen = ev.data;
+		} else if (ev.kind === 'data') {
+			screen = (screen ?? '') + ev.data;
+		}
+	});
+	stop();
+	return screen;
+}
+
 async function gzipJsonResponse(value: object): Promise<Uint8Array> {
 	const json = new TextEncoder().encode(JSON.stringify(value));
 	const readable = new Blob([json.slice()]).stream().pipeThrough(new CompressionStream('gzip'));
@@ -531,8 +545,8 @@ describe('MobileController', () => {
 		await flush();
 
 		expect(latest?.workspace?.terminals.map(terminal => terminal.terminalKey)).toEqual(['terminal-a', 'terminal-b']);
-		expect(latest?.terminalOutput.get('terminal-a')).toBe('output-a');
-		expect(latest?.terminalOutput.get('terminal-b')).toBe('output-b');
+		expect(screenOf(controller, 'terminal-a')).toBe('output-a');
+		expect(screenOf(controller, 'terminal-b')).toBe('output-b');
 		expect(received.find(message => message.t === 'input')).toMatchObject({
 			protocolVersion: 4,
 			desktopEpoch: 'desktop-1',
@@ -571,7 +585,7 @@ describe('MobileController', () => {
 			],
 		}));
 		await flush();
-		expect(latest?.terminalOutput.size).toBe(0);
+		expect([screenOf(controller, 'terminal-a'), screenOf(controller, 'terminal-b')]).toEqual([undefined, undefined]);
 		expect(received.filter(message => message.t === 'attach')).toHaveLength(4);
 		const inputs = received.filter(message => message.t === 'input');
 		expect(inputs).toHaveLength(2);
@@ -616,7 +630,7 @@ describe('MobileController', () => {
 		}));
 		await flush();
 		expect(latest?.workspace?.terminals[0]?.terminalKey).toBe('terminal-1');
-		expect(latest?.terminalOutput.get('terminal-1')).toBe('last screen');
+		expect(screenOf(controller, 'terminal-1')).toBe('last screen');
 		expect(terminalFrames.filter(frame => frame.t === 'attach')).toHaveLength(1);
 		const lateReplay: import('./store.js').TermStreamEvent[] = [];
 		controller.subscribeTerminal('terminal-1', event => lateReplay.push(event));
@@ -632,7 +646,7 @@ describe('MobileController', () => {
 		const attaches = terminalFrames.filter(frame => frame.t === 'attach');
 		expect(attaches).toHaveLength(2);
 		expect(attaches[1]?.epoch).not.toBe(firstAttach.epoch);
-		expect(latest?.terminalOutput.get('terminal-1')).toBe('last screen');
+		expect(screenOf(controller, 'terminal-1')).toBe('last screen');
 	});
 
 	it('persists pending mutations across app restarts and never auto-resends outcome-unknown', async () => {
@@ -923,7 +937,7 @@ describe('MobileController', () => {
 		// PC → term data
 		pcMux.send(Channels.Terminal, new TextEncoder().encode(JSON.stringify({ t: 'data', terminalKey: 'terminal-1', data: 'hello\n', snapshot: true, epoch: attach.epoch, seq: 1 })));
 		await flush();
-		expect(latest?.terminalOutput.get('terminal-1')).toBe('hello\n');
+		expect(screenOf(controller, 'terminal-1')).toBe('hello\n');
 
 		// mobile → term input（PC側で受信を確認）
 			await controller.sendInput('terminal-1', 'ls');
@@ -1370,22 +1384,18 @@ describe('MobileController', () => {
 		controller.attachAgent('terminal-1');
 		await flush();
 
-		// term 出力更新: terminalOutput だけ新参照になり、agentChats/notifications は据え置き。
-		const beforeTerm = emits[emits.length - 1]!;
+		// term 出力: 店は配り直さない（出力はターミナルの表示がストリームから直接受ける）。
+		const emitsBeforeTerm = emits.length;
 		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'hello', snapshot: true, epoch: 0, seq: 1 }));
 		await flush();
-		const afterTerm = emits[emits.length - 1]!;
-		expect(afterTerm.terminalOutput).not.toBe(beforeTerm.terminalOutput);
-		expect(afterTerm.agentChats).toBe(beforeTerm.agentChats);
-		expect(afterTerm.notifications).toBe(beforeTerm.notifications);
+		expect(emits.length).toBe(emitsBeforeTerm);
 
-		// agentChat 更新: agentChats だけ新参照になり、terminalOutput/notifications は据え置き。
+		// agentChat 更新: agentChats だけ新参照になり、notifications は据え置き。
 		const beforeAgent = emits[emits.length - 1]!;
 		pcMux.send(Channels.Agent, enc({ t: 'snapshot', id: 1, token: 'agent-1', agent: 'claude', epoch: 'e1', rev: 0, messages: [] }));
 		await flush();
 		const afterAgent = emits[emits.length - 1]!;
 		expect(afterAgent.agentChats).not.toBe(beforeAgent.agentChats);
-		expect(afterAgent.terminalOutput).toBe(beforeAgent.terminalOutput);
 		expect(afterAgent.notifications).toBe(beforeAgent.notifications);
 
 		// browserFrame 更新: どの Map/配列の参照も変わらない（browserFrame のみ差し替わる）。
@@ -1394,9 +1404,33 @@ describe('MobileController', () => {
 		await flush();
 		const afterFrame = emits[emits.length - 1]!;
 		expect(afterFrame.browserFrame?.data).toBe('AAAA');
-		expect(afterFrame.terminalOutput).toBe(beforeFrame.terminalOutput);
 		expect(afterFrame.agentChats).toBe(beforeFrame.agentChats);
 		expect(afterFrame.notifications).toBe(beforeFrame.notifications);
+	});
+
+	it('drops agent messages that lack the fields the chat screen draws', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, s => { latest = s; });
+		const pcMuxP = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxP;
+		await flush();
+		const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
+		pcMux.send(Channels.State, enc(desktopState([{ id: 1, title: 'claude', agentToken: 'agent-1' }])));
+		await flush();
+		controller.attachAgent('terminal-1');
+		await flush();
+		const good = { rev: 1, role: 'assistant', kind: 'text', text: 'ok' };
+		pcMux.send(Channels.Agent, enc({ t: 'snapshot', id: 1, token: 'agent-1', agent: 'claude', epoch: 'e1', rev: 1, messages: [null, { rev: 2, role: 'assistant', kind: 'text' }, good] }));
+		await flush();
+		pcMux.send(Channels.Agent, enc({ t: 'delta', id: 1, token: 'agent-1', agent: 'claude', epoch: 'e1', rev: 3, messages: [{ rev: 2, role: 'assistant', text: 'no kind' }, { ...good, rev: 2, text: 'later' }] }));
+		await flush();
+		expect(latest?.agentChats.get('terminal-1')?.messages.map(message => message.text)).toEqual(['ok', 'later']);
 	});
 
 	it('routes voice clips and voice.stream.v1 parts to the voice handler without JSON-parsing binary chunks', async () => {
@@ -2103,20 +2137,20 @@ describe('MobileController terminal sync protocol', () => {
 		pcMux.send(Channels.Terminal, encodeBinaryTerminalData({ terminalKey: 'terminal-1', epoch, seq: 1, snapshot: true, cols: 120, rows: 40, unicode: '11' }, '\x1b[2J日本語🙂')!);
 		await flush();
 		expect(events).toEqual([{ kind: 'snapshot', data: '\x1b[2J日本語🙂', cols: 120, rows: 40, unicode: '11' }]);
-		expect(latestState()?.terminalOutput.get('terminal-1')).toBe('\x1b[2J日本語🙂');
+		expect(screenOf(controller, 'terminal-1')).toBe('\x1b[2J日本語🙂');
 		expect(pcGot.find(message => message.t === 'ack')).toMatchObject({ terminalKey: 'terminal-1', epoch, seq: 1 });
 
 		pcMux.send(Channels.Terminal, encodeBinaryTerminalData({ terminalKey: 'terminal-1', epoch, seq: 2 }, '\r\ntail')!);
 		await flush();
 		expect(events[1]).toEqual({ kind: 'data', data: '\r\ntail' });
-		expect(latestState()?.terminalOutput.get('terminal-1')).toBe('\x1b[2J日本語🙂\r\ntail');
+		expect(screenOf(controller, 'terminal-1')).toBe('\x1b[2J日本語🙂\r\ntail');
 
 		const malformed = encodeBinaryTerminalData({ terminalKey: 'terminal-1', epoch, seq: 3 }, 'ignored')!.slice();
 		new DataView(malformed.buffer).setUint32(8, 100, false);
 		pcMux.send(Channels.Terminal, malformed);
 		await flush();
 		expect(events).toHaveLength(2);
-		expect(latestState()?.terminalOutput.get('terminal-1')).toBe('\x1b[2J日本語🙂\r\ntail');
+		expect(screenOf(controller, 'terminal-1')).toBe('\x1b[2J日本語🙂\r\ntail');
 	});
 
 	it('discards frames from a stale epoch and pre-snapshot data', async () => {
@@ -2138,7 +2172,7 @@ describe('MobileController terminal sync protocol', () => {
 		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'stale', snapshot: true, epoch: epoch1, seq: 2 }));
 		await flush();
 		expect(events).toEqual([]);
-		expect(latestState()?.terminalOutput.get('terminal-1')).toBeUndefined();
+		expect(screenOf(controller, 'terminal-1')).toBeUndefined();
 		// 新epochのsnapshotは適用される
 		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'fresh', snapshot: true, epoch: epoch2, seq: 1 }));
 		await flush();
@@ -2146,7 +2180,7 @@ describe('MobileController terminal sync protocol', () => {
 		pcMux.send(Channels.Terminal, enc({ t: 'exit', terminalKey: 'terminal-1', epoch: epoch1 }));
 		await flush();
 		expect(events).toEqual([{ kind: 'snapshot', data: 'fresh' }]);
-		expect(latestState()?.terminalOutput.get('terminal-1')).toBe('fresh');
+		expect(screenOf(controller, 'terminal-1')).toBe('fresh');
 	});
 
 	it('re-attaches with a new epoch when a seq gap is detected', async () => {
@@ -2204,6 +2238,26 @@ describe('MobileController terminal sync protocol', () => {
 		]);
 	});
 
+	it('declares the viewport only to attached terminals, not to hidden views that keep their subscription', async () => {
+		const { controller, pcGot } = await setup();
+		// 隠したペイン: 表示はストリームを購読したまま、PC の購読は解いている
+		controller.subscribeTerminal('terminal-1', () => { });
+		controller.attachTerminal('terminal-1');
+		await flush();
+		controller.detachTerminal('terminal-1');
+		await flush();
+		controller.setTerminalViewport({ cols: 40, rows: 20 });
+		await flush();
+		const whileHidden = pcGot.filter(message => message.t === 'viewport').length;
+		// 出し直した: attach に寸法が載り、その後の申告も届く
+		controller.attachTerminal('terminal-1');
+		controller.setTerminalViewport({ cols: 41, rows: 20 });
+		await flush();
+		controller.disconnect();
+		const attach = pcGot.filter(message => message.t === 'attach').at(-1) as { viewCols?: number } | undefined;
+		expect({ whileHidden, attachCols: attach?.viewCols, afterShown: pcGot.filter(message => message.t === 'viewport').length }).toEqual({ whileHidden: 0, attachCols: 40, afterShown: 1 });
+	});
+
 	it('ignores terminal frames without terminalKey and sync metadata', async () => {
 		const { controller, pcMux, enc, latestState } = await setup();
 		controller.subscribeTerminal('terminal-1', () => { });
@@ -2211,6 +2265,6 @@ describe('MobileController terminal sync protocol', () => {
 		await flush();
 		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'legacy', snapshot: true }));
 		await flush();
-		expect(latestState()?.terminalOutput.get('terminal-1')).toBeUndefined();
+		expect(screenOf(controller, 'terminal-1')).toBeUndefined();
 	});
 });
