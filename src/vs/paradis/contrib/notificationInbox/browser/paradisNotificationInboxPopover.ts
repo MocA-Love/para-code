@@ -16,6 +16,7 @@
 import './media/paradisNotificationInbox.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
@@ -25,6 +26,7 @@ import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -32,6 +34,7 @@ import {
 	IParadisInboxEntry,
 	IParadisNotificationInboxService,
 	PARADIS_NOTIFICATION_MENU_BAR_SETTING,
+	paradisInboxEntryDetail,
 	paradisInboxEntryLocation,
 	paradisInboxKindLabel,
 } from '../common/paradisNotificationInbox.js';
@@ -71,6 +74,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		@IContextMenuService private readonly contextMenuService: IContextMenuService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 
@@ -235,23 +239,39 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		row.classList.toggle('closed', !entry.live);
 		this.rows.push(row);
 
+		// 1 段目: スペース名と時刻。色の付いた札は対応が要るもの（許可待ち・質問）だけに付け、ありふれた「完了」は時刻の横の小さい文字にする。
 		const top = dom.append(row, $('.pnip-row-top'));
 		dom.append(top, $('span.pnip-dot')).setAttribute('aria-hidden', 'true');
-		const chip = dom.append(top, $(`span.pnip-kind.${entry.kind}`));
-		chip.textContent = paradisInboxKindLabel(entry.kind);
-		const location = dom.append(top, $('span.pnip-location'));
-		location.textContent = paradisInboxEntryLocation(entry);
-		dom.append(top, $('span.pnip-time')).textContent = fromNow(entry.at, true);
+		if (entry.kind !== 'review') {
+			dom.append(top, $(`span.pnip-kind.${entry.kind}`)).textContent = paradisInboxKindLabel(entry.kind);
+		}
+		const space = dom.append(top, $('span.pnip-space'));
+		space.textContent = entry.space;
+		this.renderDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), space, paradisInboxEntryLocation(entry)));
+		dom.append(top, $('span.pnip-grow'));
+		const time = fromNow(entry.at, true);
+		dom.append(top, $('span.pnip-time')).textContent = entry.kind === 'review'
+			? localize('paradis.inbox.reviewTime', "完了 · {0}", time)
+			: time;
+
+		// 2 段目: worktree とタブ（スペース名と区切りが混ざらないよう分けて出す）。
+		const detail = paradisInboxEntryDetail(entry);
+		if (detail) {
+			dom.append(row, $('.pnip-detail')).textContent = detail;
+		}
 
 		if (entry.message) {
-			dom.append(row, $('.pnip-message')).textContent = entry.message;
+			// 本文は 1 行（許可待ち・質問は待っている内容が要点なので 2 行）で切れることがあるので、ホバーで全文を出す。
+			const message = dom.append(row, $('.pnip-message'));
+			message.textContent = entry.message;
+			this.renderDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), message, entry.message));
 		}
 		if (!entry.live) {
 			dom.append(row, $('.pnip-note')).textContent = localize('paradis.inbox.closedPane', "このペインは閉じています");
 		}
 
 		const state = entry.read ? localize('paradis.inbox.readState', "既読") : localize('paradis.inbox.unreadState', "未読");
-		row.setAttribute('aria-label', `${state} ${paradisInboxKindLabel(entry.kind)} ${location.textContent} ${entry.message ?? ''}`);
+		row.setAttribute('aria-label', `${state} ${paradisInboxKindLabel(entry.kind)} ${paradisInboxEntryLocation(entry)} ${entry.message ?? ''}`);
 
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, () => this.open(entry)));
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {

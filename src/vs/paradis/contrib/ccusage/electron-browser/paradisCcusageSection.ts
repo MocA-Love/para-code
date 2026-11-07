@@ -30,14 +30,14 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { IParadisCostDay, IParadisRepoUsageResult, paradisActivityDayKey, paradisAllocateSpaceCosts } from '../../agentActivity/common/paradisAgentActivity.js';
 import { PARADIS_REPO_OUTSIDE_KEY } from '../../agentActivity/common/paradisRepoIdentity.js';
 import { ParadisAgentActivityClient } from '../../agentActivity/electron-browser/paradisAgentActivityClient.js';
-import { IParadisClaudeContextBreakdown } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
+import { IParadisClaudeContextBreakdown, IParadisClaudeContextPeriod } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
 import { ParadisClaudeContextClient } from '../../claudeMod/electron-browser/paradisClaudeContextClient.js';
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
-import { ParadisCcusageAgent } from '../common/paradisCcusage.js';
+import { ParadisCcusageAgent, paradisCcusageAgentForModel } from '../common/paradisCcusage.js';
 import { paradisFormatTokens, paradisFormatUsd } from '../common/paradisCcusageFormat.js';
-import { IParadisContextViewOptions, paradisRenderContextBreakdown, paradisRenderContextLiveCard } from './paradisCcusageContextView.js';
+import { IParadisContextViewOptions, paradisRenderContextBreakdown, paradisRenderContextPeriodCard } from './paradisCcusageContextView.js';
 import { FETCH_WINDOW_DAYS, IParadisCcusageDashboardData, IParadisCcusageDayData, IParadisCcusageModelSlice, PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS, ParadisCcusageClient } from './paradisCcusageClient.js';
 
 const $ = dom.$;
@@ -127,13 +127,15 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	private readonly expandedRepos = new Set<string>();
 	/** コンテキストの内訳（同梱の mod が取り、shared process が会話ごとに保存したもの）を取る先。 */
 	private readonly contextClient: ParadisClaudeContextClient;
-	/** 動いている会話の内訳。undefined は読み込み中。 */
-	private liveContext: IParadisClaudeContextBreakdown[] | undefined;
-	private liveContextError: string | undefined;
-	private liveContextSequence = 0;
+	/** 選んでいる期間の内訳（会話ごとの一番大きかった時点で集計）。undefined は読み込み中。 */
+	private periodContext: IParadisClaudeContextPeriod | undefined;
+	private periodContextError: string | undefined;
+	/** 内訳を取った期間（`from|to`）。期間を替えたら取り直す。 */
+	private periodContextKey: string | undefined;
+	private periodContextSequence = 0;
 	/** 「最近のセッション」から開いた会話の保存した内訳（null は保存が無い）。 */
 	private readonly savedContext = new Map<string, IParadisClaudeContextBreakdown | null>();
-	/** 内訳を開いている会話（動いているセッションのカードと最近のセッションの表で共通）。 */
+	/** 「最近のセッション」で内訳を開いている会話。 */
 	private readonly expandedContext = new Set<string>();
 	/** 見えている間だけ、内訳が変わったら取り直す。 */
 	private readonly contextListener = this._register(new MutableDisposable<IDisposable>());
@@ -280,37 +282,67 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		if (visible) {
 			this.ensureLoaded();
 			if (this.contextListener.value === undefined) {
-				this.contextListener.value = this.contextClient.onDidChange(() => this.loadLiveContext());
-				this.loadLiveContext();
+				// 応答が終わって内訳が増えたら、今の期間の内訳と開いている保存した内訳を取り直す
+				this.contextListener.value = this.contextClient.onDidChange(() => {
+					this.savedContext.clear();
+					for (const sessionId of this.expandedContext) {
+						this.loadSavedContext(sessionId);
+					}
+					this.loadPeriodContext(this.currentRange(), true);
+				});
 			}
 		} else {
 			this.contextListener.clear();
 		}
 	}
 
-	/** 動いている会話の内訳を取り直す（開いたとき・応答が終わって内訳が変わったとき）。 */
-	private loadLiveContext(): void {
-		const sequence = ++this.liveContextSequence;
-		this.contextClient.live().then(live => {
-			if (sequence !== this.liveContextSequence) {
+	/**
+	 * 期間の内訳を取る（期間を替えたとき・内訳が変わったとき）。期間は画面の期間の選択（日付、両端を含む）で、
+	 * 内訳の側は最後の応答の時刻で入れる会話を決める。
+	 */
+	private loadPeriodContext(range: IDateRange, force = false): void {
+		const key = `${range.from}|${range.to}`;
+		if (!force && key === this.periodContextKey) {
+			return;
+		}
+		if (key !== this.periodContextKey) {
+			this.periodContext = undefined;
+			this.periodContextError = undefined;
+		}
+		this.periodContextKey = key;
+		const sequence = ++this.periodContextSequence;
+		this.contextClient.period(parseLocalDate(range.from).getTime(), addDaysLocal(parseLocalDate(range.to), 1).getTime() - 1).then(period => {
+			if (sequence !== this.periodContextSequence) {
 				return;
 			}
-			this.liveContext = live;
-			this.liveContextError = undefined;
-			for (const breakdown of live) {
-				// 開いている保存した内訳も新しいものに替える
-				if (this.savedContext.has(breakdown.sessionId)) {
-					this.savedContext.set(breakdown.sessionId, breakdown);
-				}
-			}
+			this.periodContext = period;
+			this.periodContextError = undefined;
 			this.scheduleContextRender();
 		}, (error: unknown) => {
-			if (sequence !== this.liveContextSequence) {
+			if (sequence !== this.periodContextSequence) {
 				return;
 			}
-			this.liveContextError = error instanceof Error ? error.message : String(error);
+			this.periodContextError = error instanceof Error ? error.message : String(error);
 			this.scheduleContextRender();
 		});
+	}
+
+	/**
+	 * この期間の Claude Code の会話の数（「最近のセッション」と同じく、最終アクティビティの日で数える。Claude のモデルを
+	 * 使った会話だけ）。SSH の窓では ccusage は接続先で走り、内訳の保存は手元の Para Code がどのマシンの会話も持つので、
+	 * 母数がそろわない。そのときは undefined を返し、カードは保存した会話の数だけを出す。
+	 */
+	private claudeConversationsIn(range: IDateRange): number | undefined {
+		if (this.remoteAgentService.getConnection()) {
+			return undefined;
+		}
+		return (this.data?.sessions ?? []).filter(session => {
+			if (session.lastActivity === undefined || !session.models.some(model => paradisCcusageAgentForModel(model) === 'claude')) {
+				return false;
+			}
+			const day = localDateString(new Date(session.lastActivity));
+			return day >= range.from && day <= range.to;
+		}).length;
 	}
 
 	private scheduleContextRender(): void {
@@ -322,18 +354,22 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	private toggleContext(sessionId: string): void {
 		if (!this.expandedContext.delete(sessionId)) {
 			this.expandedContext.add(sessionId);
-			// 動いている会話の内訳はカードが持っている。表の行でも開けるよう、保存したものも取っておく
 			if (!this.savedContext.has(sessionId)) {
-				this.contextClient.session(sessionId).then(breakdown => {
-					this.savedContext.set(sessionId, breakdown ?? null);
-					this.scheduleContextRender();
-				}, () => {
-					this.savedContext.set(sessionId, null);
-					this.scheduleContextRender();
-				});
+				this.loadSavedContext(sessionId);
 			}
 		}
 		this.renderBody();
+	}
+
+	/** 「最近のセッション」で開いた会話の、保存した最後の内訳を取る。 */
+	private loadSavedContext(sessionId: string): void {
+		this.contextClient.session(sessionId).then(breakdown => {
+			this.savedContext.set(sessionId, breakdown ?? null);
+			this.scheduleContextRender();
+		}, () => {
+			this.savedContext.set(sessionId, null);
+			this.scheduleContextRender();
+		});
 	}
 
 	private get contextViewOptions(): IParadisContextViewOptions {
@@ -658,9 +694,14 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			this.renderSessions(dom.append(left, $('.paradis-ccusage-card')), range);
 		}
 		if (this.agentFilter === 'all' || this.agentFilter === 'claude') {
-			// 今動いている Claude Code の会話のコンテキストの内訳（期間の集計とは混ぜない）
-			paradisRenderContextLiveCard(dom.append(right, $('.paradis-ccusage-card')), this.liveContext, this.liveContextError, this.expandedContext,
-				sessionId => this.toggleContext(sessionId), this.contextViewOptions);
+			// 選んでいる期間の Claude Code の会話のコンテキストの内訳（q.html Q576 案 A）
+			this.loadPeriodContext(range);
+			paradisRenderContextPeriodCard(dom.append(right, $('.paradis-ccusage-card')), {
+				title: this.periodLabel(localize('paradis.ccusage.contextPeriod.title', "コンテキストの内訳")),
+				period: this.periodContext,
+				error: this.periodContextError,
+				conversationsInRange: this.claudeConversationsIn(range),
+			}, this.contextViewOptions);
 		}
 		this.renderModelBreakdown(dom.append(right, $('.paradis-ccusage-card')), totals);
 		this.renderRepos(dom.append(right, $('.paradis-ccusage-card')), range);
@@ -1276,7 +1317,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 					const detailRow = dom.append(tbody, $('tr.paradis-ccusage-context-detail'));
 					const cell = dom.append(detailRow, $('td')) as HTMLTableCellElement;
 					cell.colSpan = 5;
-					const saved = this.liveContext?.find(breakdown => breakdown.sessionId === sessionId) ?? this.savedContext.get(sessionId);
+					const saved = this.savedContext.get(sessionId);
 					if (saved === undefined) {
 						dom.append(cell, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.context.loading', "読み込んでいます…");
 					} else if (saved === null) {
