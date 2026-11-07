@@ -44,8 +44,9 @@ registerAction2(class extends Action2 {
 			title: localize2('paradis.diffReviewNotes.addAtCursor', "この行に AI メモを書く"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: true,
-			precondition: EditorContextKeys.inDiffEditor,
-			menu: { id: MenuId.EditorContext, group: '1_paradis', order: 1, when: EditorContextKeys.inDiffEditor },
+			// メモを書けるのは新しい側（右・インライン表示ではその 1 枚）だけ
+			precondition: ContextKeyExpr.and(EditorContextKeys.inDiffEditor, ContextKeyExpr.has('isInDiffRightEditor')),
+			menu: { id: MenuId.EditorContext, group: '1_paradis', order: 1, when: ContextKeyExpr.and(EditorContextKeys.inDiffEditor, ContextKeyExpr.has('isInDiffRightEditor')) },
 		});
 	}
 
