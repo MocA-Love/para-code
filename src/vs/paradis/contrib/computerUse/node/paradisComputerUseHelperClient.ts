@@ -336,6 +336,8 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 	private _staleHelperChecked = false;
 	/** {@link stop} のたびに進める。止めた後に終わった起動の結果を捨てるため。 */
 	private _generation = 0;
+	/** 機能がオフの間は立てる。{@link request} は補助アプリを起動し直さずに断る（オンにすると {@link check} で下ろす）。 */
+	private _disabled = false;
 
 	private readonly _requestTimeoutMs: number;
 	private readonly _launchTimeoutMs: number;
@@ -376,6 +378,7 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 
 	/** 機能がオフの間の状態（起動はしない）。 */
 	markDisabled(): void {
+		this._disabled = true;
 		this.stop();
 		this._availability = this.staticAvailability() ?? 'unchecked';
 		this._detail = undefined;
@@ -383,6 +386,7 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 
 	/** 起動して handshake まで確かめ、状態を返す。既につながっていれば status を取り直す。 */
 	async check(): Promise<ParadisComputerUseAvailability> {
+		this._disabled = false;
 		this._consecutiveCrashes = 0;
 		try {
 			const connection = await this._ensureConnection();
@@ -397,6 +401,10 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 	}
 
 	async request(method: string, params: object = {}, signal?: AbortSignal): Promise<unknown> {
+		// オフにした後に続いた読み取り（ツリーの後のスクショなど）で補助アプリを起動し直さない
+		if (this._disabled) {
+			throw new ParadisComputerUseHelperError('unavailable', 'Computer Use is turned off.');
+		}
 		if (this._availability !== 'ok' && this._availability !== 'unchecked') {
 			throw new ParadisComputerUseHelperError('unavailable', `The Computer Use helper is not available (${this._availability}).`);
 		}
@@ -500,6 +508,10 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 				throw new ParadisComputerUseHelperError('cancelled', 'Computer Use was turned off while the helper was starting.');
 			}
 			await fs.writeFile(join(runtimeDirectory, 'helper.pid'), String(status!.pid), { mode: 0o600 }).catch(() => undefined);
+			// 書き込みを待つ間に止められたら、つながった接続を残さない
+			if (generation !== this._generation) {
+				throw new ParadisComputerUseHelperError('cancelled', 'Computer Use was turned off while the helper was starting.');
+			}
 			this._status = status;
 			this._availability = 'ok';
 			this._detail = undefined;
