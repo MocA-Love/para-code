@@ -50,6 +50,7 @@ import { IParadisHistoryPanelItem, paradisFilterHistory, paradisMergeHistory, pa
 import { ParadisTypedPrefixTracker, paradisPlanHistoryWrite, paradisWaitForTypedText } from '../common/paradisTerminalTypedPrefix.js';
 import { IParadisTerminalCommandRecordService } from './paradisTerminalCommandRecordService.js';
 import { PARADIS_HISTORY_PANEL_CHROME_HEIGHT, PARADIS_HISTORY_PANEL_ROW_HEIGHT, ParadisHistoryPanelScope, ParadisTerminalHistoryPanelWidget } from './paradisTerminalHistoryPanelWidget.js';
+import { paradisMapLimited } from '../../../common/paradisMapLimited.js';
 
 /** ↓ で履歴の一覧を開くか。 */
 export const PARADIS_TERMINAL_HISTORY_PANEL_ENABLED = 'paradis.terminal.historyPanel.enabled';
@@ -92,6 +93,10 @@ interface IHistoryData {
 	readonly all: readonly IParadisHistoryPanelItem[] | undefined;
 }
 
+/** ほかのスペースの履歴を同時に読む数。 */
+const OTHER_SPACES_READ_PARALLEL = 4;
+
+
 /** 開いている一覧 1 つ分。閉じると破棄する。 */
 class OpenPanel extends Disposable {
 	readonly cts = this._register(new CancellationTokenSource());
@@ -107,6 +112,8 @@ class OpenPanel extends Disposable {
 	accepting = false;
 	/** 見出しとキーの帯の高さ（px、前に描いたときの値）。 */
 	chromeHeight = PARADIS_HISTORY_PANEL_CHROME_HEIGHT;
+	/** 「すべて」の一覧を読む（「このスペース」で開いたときは、切り替えるまで読まない）。読み始めたら undefined。 */
+	loadAll: (() => void) | undefined;
 
 	constructor(readonly widget: ParadisTerminalHistoryPanelWidget, typed: string, scope: ParadisHistoryPanelScope | undefined) {
 		super();
@@ -346,6 +353,13 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		}
 		panel.scope = scope;
 		panel.selectedIndex = 0;
+		if (scope === 'all' && panel.loadAll) {
+			// ほかのスペースの履歴は、「すべて」を見るときに初めて読む
+			const loadAll = panel.loadAll;
+			panel.loadAll = undefined;
+			panel.loading = true;
+			loadAll();
+		}
 		this._applyFilter(panel);
 		this._renderPanel();
 	}
@@ -444,16 +458,32 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 				return;
 			}
 			panel.data = { ...panel.data, space: paradisMergeHistory(spaceRecords, [sources?.space ?? []]) };
-			this._applyFilter(panel);
-			this._renderPanel();
-			const others = await this._loadOtherSpaces(directory, token);
-			if (token.isCancellationRequested) {
+			// ほかの全スペースの記録と履歴ファイルを読むのは重い（SSH 先ではスペースごとに往復する）。「すべて」を
+			// 見るときまで遅らせる
+			const loadAll = async () => {
+				try {
+					const others = await this._loadOtherSpaces(directory, token);
+					if (token.isCancellationRequested) {
+						return;
+					}
+					panel.data = {
+						...panel.data,
+						all: paradisMergeHistory(spaceRecords.concat(others.records), [sources?.space ?? [], ...others.lists, persisted, shellFile]),
+					};
+				} catch (error) {
+					this._logService.trace('[paradisTerminalHistoryPanel] could not load the history of the other spaces', error);
+				}
+				panel.loading = false;
+				this._applyFilter(panel);
+				this._renderPanel();
+			};
+			if (panel.scope === 'all') {
+				this._applyFilter(panel);
+				this._renderPanel();
+				await loadAll();
 				return;
 			}
-			panel.data = {
-				...panel.data,
-				all: paradisMergeHistory(spaceRecords.concat(others.records), [sources?.space ?? [], ...others.lists, persisted, shellFile]),
-			};
+			panel.loadAll = () => void loadAll();
 			panel.loading = false;
 			this._applyFilter(panel);
 			this._renderPanel();
@@ -488,7 +518,8 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		}
 		const shell = this._spaceHistoryShell();
 		const own = directory.replace(/[\\/]+$/, '');
-		const results = await Promise.all(children.map(async child => {
+		// 同時に読む数を絞る（スペースが多いと、記録と履歴ファイルを一度に何十本も読みに行く）
+		const results = await paradisMapLimited(children, OTHER_SPACES_READ_PARALLEL, async child => {
 			const shellPath = `${root.replace(/[\\/]+$/, '')}/${child.name}`;
 			if (shellPath === own) {
 				return undefined;
@@ -498,7 +529,7 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 				shell !== undefined ? provider.readHistoryFile(`${shellPath}/${shell}_history`, shell, token) : Promise.resolve(undefined),
 			]);
 			return { records, list: list ?? [] };
-		}));
+		});
 		const records: IParadisCommandRecord[] = [...common];
 		const lists: (readonly string[])[] = [];
 		for (const result of results) {

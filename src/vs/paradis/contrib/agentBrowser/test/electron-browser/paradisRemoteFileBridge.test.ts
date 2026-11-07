@@ -326,6 +326,8 @@ suite('ParadisRemoteFileBridge', () => {
 		fs.files.set(`${USER_FOLDER}/run-1/shots/old.png`, { data: new Uint8Array(1), mtime: NOW - PARADIS_REMOTE_FILE_COPY_TTL_MS - 1 });
 		fs.files.set(`${USER_FOLDER}/run-2/recent.png`, { data: new Uint8Array(1), mtime: NOW - 1000 });
 		const copied = await bridge.writeTemporary('pane', AUTHORITY, 'Example Page.pdf', data);
+		// 古い写しの掃除は書き込みを待たせず裏で走る
+		await bridge.whenSwept();
 		assert.deepStrictEqual({
 			unresolved: await unresolved.bridge.writeTemporary('pane', AUTHORITY, 'a.pdf', data),
 			copied: copied.ok && /^\/home\/example\/\.para-code\/browser-files\/[0-9a-f]{8}-Example Page\.pdf$/.test(copied.path) && fs.files.has(copied.path),

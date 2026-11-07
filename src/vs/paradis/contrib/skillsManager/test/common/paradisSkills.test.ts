@@ -12,6 +12,7 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IFileService, IReadFileOptions, IResolveMetadataFileOptions } from '../../../../../platform/files/common/files.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -85,6 +86,31 @@ suite('paradisSkills', () => {
 		]);
 		assert.ok(paradisSkillDeleteBlocker(listings[1].skills[0]));
 		assert.deepStrictEqual(await paradisReadSkillFile(fileService, listings[0].skills[0]), { text: '---\nname: pdf\ndescription: d\n---\n', truncated: false });
+	});
+
+	test('reads the skills of one folder a few at a time, not one by one', async () => {
+		const { fileService, write } = setup(store.add(new DisposableStore()));
+		const [claude] = paradisPlanSkillRoots({ host: LOCAL, projects: [] });
+		for (const name of ['a', 'b', 'c', 'd', 'e']) {
+			await write(joinPath(claude.uri, name, 'SKILL.md'), `---\nname: ${name}\n---\n`);
+		}
+		const reads = { now: 0, max: 0 };
+		const counting = {
+			resolve: (resource: URI, options?: IResolveMetadataFileOptions) => fileService.resolve(resource, options),
+			realpath: (resource: URI) => fileService.realpath(resource),
+			readFile: async (resource: URI, options?: IReadFileOptions) => {
+				reads.now++;
+				reads.max = Math.max(reads.max, reads.now);
+				try {
+					await new Promise(resolve => setTimeout(resolve, 5));
+					return await fileService.readFile(resource, options);
+				} finally {
+					reads.now--;
+				}
+			},
+		} as Partial<IFileService> as IFileService;
+		const listing = await paradisListSkills(counting, claude);
+		assert.deepStrictEqual({ skills: listing.skills.map(skill => skill.name), overlapped: reads.max > 1 }, { skills: ['a', 'b', 'c', 'd', 'e'], overlapped: true });
 	});
 
 	test('installs a skill onto another host and refuses to overwrite without consent', async () => {

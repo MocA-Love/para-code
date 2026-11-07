@@ -23,6 +23,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { FileOperationResult, FileSystemProviderCapabilities, IFileService, IFileStat, toFileOperationResult } from '../../../../platform/files/common/files.js';
+import { paradisMapLimited } from '../../../common/paradisMapLimited.js';
 
 /** スキルを読むエージェント。 */
 export type ParadisSkillProvider = 'claude' | 'codex' | 'agents';
@@ -223,14 +224,21 @@ function locationKey(uri: URI): string {
 	return (uri.scheme === Schemas.file ? extUriBiasedIgnorePathCase : extUri).getComparisonKey(uri);
 }
 
+/** 1 つのフォルダの中のスキルを同時に読む数（接続先では 1 件ごとに往復する）。 */
+const SKILL_READ_PARALLEL = 8;
+
+
 async function readSkill(fileService: IFileService, root: IParadisSkillRoot, child: IFileStat, bundled: boolean): Promise<IParadisSkill | undefined> {
 	const skillFile = joinPath(child.resource, 'SKILL.md');
-	let text: string;
-	try {
-		text = (await fileService.readFile(skillFile, { length: SKILL_FILE_READ_LIMIT })).value.toString();
-	} catch {
+	// SKILL.md と実体の場所は互いに関わらないので並べて待つ
+	const [content, real] = await Promise.all([
+		fileService.readFile(skillFile, { length: SKILL_FILE_READ_LIMIT }).then(read => read.value.toString(), () => undefined),
+		realpathOf(fileService, child.resource),
+	]);
+	if (content === undefined) {
 		return undefined;
 	}
+	const text = content;
 	const metadata = paradisParseSkillMetadata(text);
 	return {
 		root,
@@ -240,10 +248,7 @@ async function readSkill(fileService: IFileService, root: IParadisSkillRoot, chi
 		uri: child.resource,
 		skillFile,
 		isSymbolicLink: child.isSymbolicLink,
-		...await (async () => {
-			const real = await realpathOf(fileService, child.resource);
-			return real && !sameLocation(real, child.resource) ? { realUri: real } : {};
-		})(),
+		...(real && !sameLocation(real, child.resource) ? { realUri: real } : {}),
 		bundled,
 		...(child.mtime !== undefined ? { mtime: child.mtime } : {}),
 	};
@@ -262,30 +267,26 @@ export async function paradisListSkills(fileService: IFileService, root: IParadi
 	}
 	const skills: IParadisSkill[] = [];
 	const children = (stat.children ?? []).filter(child => child.isDirectory).slice(0, MAX_SKILLS_PER_ROOT);
+	const own: IFileStat[] = [];
 	for (const child of children) {
 		if (child.name === '.system' && root.provider === 'codex') {
 			// Codex の同梱スキル。一覧には出すが消させない
 			try {
 				const system = await fileService.resolve(child.resource, { resolveMetadata: true });
-				for (const bundled of (system.children ?? []).filter(entry => entry.isDirectory)) {
-					const skill = await readSkill(fileService, root, bundled, true);
-					if (skill) {
-						skills.push(skill);
-					}
-				}
+				const bundled = await paradisMapLimited((system.children ?? []).filter(entry => entry.isDirectory), SKILL_READ_PARALLEL, entry => readSkill(fileService, root, entry, true));
+				skills.push(...bundled.filter((skill): skill is IParadisSkill => skill !== undefined));
 			} catch {
 				// 読めなければ同梱分は出さない
 			}
 			continue;
 		}
-		if (child.name.startsWith('.')) {
-			continue;
-		}
-		const skill = await readSkill(fileService, root, child, false);
-		if (skill) {
-			skills.push(skill);
+		if (!child.name.startsWith('.')) {
+			own.push(child);
 		}
 	}
+	// フォルダの中のスキルは件数を絞って並べて読む（1 件ずつ待つと、接続先では件数ぶん往復が積み重なる）
+	const read = await paradisMapLimited(own, SKILL_READ_PARALLEL, child => readSkill(fileService, root, child, false));
+	skills.push(...read.filter((skill): skill is IParadisSkill => skill !== undefined));
 	skills.sort((a, b) => a.name.localeCompare(b.name));
 	const realUri = await realpathOf(fileService, root.uri);
 	return { root, exists: true, skills, ...(realUri ? { realUri } : {}) };
