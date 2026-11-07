@@ -21,6 +21,7 @@ import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -50,6 +51,9 @@ import {
 import { PARADIS_TASKS_EDITOR_ID } from './paradisTasksEditorInput.js';
 
 const $ = dom.$;
+
+/** タスクボードの窓を開くコマンド（taskBoard/electron-browser/paradisTaskBoardEntry.contribution.ts）。 */
+const PARADIS_TASK_BOARD_OPEN_COMMAND_ID = 'paradis.taskBoard.open';
 
 const STORAGE_MODE = 'paradis.tasks.mode';
 const STORAGE_SELECTED = 'paradis.tasks.selectedRepositories';
@@ -160,6 +164,7 @@ export class ParadisTasksEditor extends EditorPane {
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IContextMenuService private readonly contextMenuService: IContextMenuService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super(PARADIS_TASKS_EDITOR_ID, group, telemetryService, themeService, tasksStorage);
 		this.github = ProxyChannel.toService<IParadisTasksGithubService>(sharedProcessService.getChannel(PARADIS_TASKS_GITHUB_CHANNEL));
@@ -187,6 +192,9 @@ export class ParadisTasksEditor extends EditorPane {
 		githubIcon.append(...this.icon(Codicon.github));
 		githubIcon.title = 'GitHub';
 		this.sourceChip = dom.append(sourceRow, $('span.paradis-tasks-chip'));
+		dom.append(sourceRow, $('span.paradis-tasks-grow'));
+		// タスクボード（工程のフローでエージェントを回す窓）へは、この画面から行く
+		this.button(sourceRow, localize('paradis.tasks.openTaskBoard', "タスクボードを開く"), () => void this.commandService.executeCommand(PARADIS_TASK_BOARD_OPEN_COMMAND_ID), 'paradis-tasks-pill', Codicon.tasklist);
 
 		const modeRow = dom.append(this.root, $('.paradis-tasks-row'));
 		for (const mode of ['issue', 'pr'] as const) {
