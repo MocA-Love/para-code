@@ -27,6 +27,7 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -94,6 +95,7 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
+		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
 	) {
 		super();
 		this._register(this.client.onDidRequestRun(request => this.onRequest(request)));
@@ -173,6 +175,27 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		if (!repository) {
 			this.finish(run, { runId: run.runId, status: 'failed', reason: 'repositoryMissing' });
 			return;
+		}
+		// 事前確認（時刻で起動する回だけ）。新しいスペースを作る前に、リポジトリのメインのチェックアウトで走らせる
+		// （見送る回にスペースを残さない）。走らせるかの判断と記録は shared process が持つ
+		if (definition.precheck && request.run.trigger !== 'manual') {
+			let proceed = false;
+			try {
+				const trusted = (await this.workspaceTrustManagementService.getUriTrustInfo(repository.uri)).trusted;
+				proceed = !run.finished && await this.client.runPrecheck(run.runId, trusted);
+			} catch (error) {
+				this.logService.warn('[ParadisScheduledRuns] the precheck failed', error);
+				if (!run.finished) {
+					this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: toErrorMessage(error) });
+				}
+				return;
+			}
+			if (!proceed) {
+				// 見送りは shared process が記録した（止めた回は止めた側が報告した）。報告せずに手を引く
+				run.finished = true;
+				this.cleanup(run);
+				return;
+			}
 		}
 		let launched: IParadisLaunchedAgentTerminal | undefined;
 		let space: IParadisScheduledRunSpace | undefined;
