@@ -164,6 +164,7 @@ function createFixture(): {
 		_paneSessions: new Map(),
 		_codexFrontSessions: new ParadisCodexFrontSessions(),
 		_activityApprovalTokens: new Set<string>(),
+		_elicitationWaits: new Map(),
 		_awaitingUserTokens: new Set<string>(),
 		// hook の控え（W2-20）。無いフォルダを指すので、流し直しは何も読まない。
 		_hookSpoolDir: '/nonexistent/paradis-agent-hook-spool',
@@ -1039,6 +1040,61 @@ suite('ParadisAgentBrowser authority integration', () => {
 			'background A stops first: review A',
 			'B on screen asks: permission B',
 			'background A stops after B was sent: working B',
+		]);
+	});
+
+	// MCP サーバーが入力を求めている間（Claude Code の Elicitation hook）は許可待ち。決着（ElicitationResult）で
+	// 待つ前の状態へ戻す: 作業中なら作業中、待機中なら待機、完了なら鳴らさない完了（Orca #33517）。
+	test('an MCP elicitation shows the Claude Code pane as waiting and the result restores the state from before', async () => {
+		const { fixture, connection, send, status } = await codexPaneFixture();
+		const claude = (event: string, extra: Readonly<Record<string, unknown>> = {}) =>
+			send('claude-switch', 201, event, { session_id: 'claude-elicit', transcript_path: '/Users/example/.claude/projects/work/claude-elicit.jsonl', cwd: '/Users/example/work', ...extra });
+		const quiet = async () => (await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === 'claude-switch')?.quiet === true;
+		const observed: string[] = [];
+		const observe = async (label: string) => observed.push(`${label}: ${await status('claude-switch')}${await quiet() ? ' (quiet)' : ''}`);
+		const elicit = { mcp_server_name: 'github', message: 'Sign in', mode: 'url' };
+		await claude('UserPromptSubmit', { prompt: 'use the server' });
+		await claude('PreToolUse', { tool_name: 'mcp__github__search', tool_use_id: 'toolu_1' });
+		await claude('Elicitation', elicit);
+		await observe('asks during a turn');
+		await claude('ElicitationResult', { mcp_server_name: 'github', action: 'accept' });
+		await observe('answered during a turn');
+		await claude('Stop');
+		await observe('turn ends');
+		await claude('Elicitation', elicit);
+		await observe('asks after the turn');
+		await claude('ElicitationResult', { mcp_server_name: 'github', action: 'cancel' });
+		await observe('answered after the turn');
+		await claude('SessionEnd');
+		await claude('TerminalExit');
+		await claude('Elicitation', elicit);
+		await observe('asks while idle');
+		await claude('ElicitationResult', { mcp_server_name: 'github', action: 'decline' });
+		await observe('answered while idle');
+		// 依頼が重なったら、最後の決着で戻す
+		await claude('UserPromptSubmit', { prompt: 'use two servers' });
+		await claude('Elicitation', elicit);
+		await claude('Elicitation', { ...elicit, mcp_server_name: 'linear' });
+		await claude('ElicitationResult', { mcp_server_name: 'github', action: 'accept' });
+		await observe('one of two answered');
+		await claude('ElicitationResult', { mcp_server_name: 'linear', action: 'accept' });
+		await observe('both answered');
+		// ターンの区切りの後に届いた決着（覚えが無い）は状態を変えない
+		await claude('Elicitation', elicit);
+		await claude('Stop');
+		await claude('ElicitationResult', { mcp_server_name: 'github', action: 'cancel' });
+		await observe('answered after a Stop');
+		assert.deepStrictEqual(observed, [
+			'asks during a turn: permission',
+			'answered during a turn: working',
+			'turn ends: review',
+			'asks after the turn: permission',
+			'answered after the turn: review (quiet)',
+			'asks while idle: permission',
+			'answered while idle: idle',
+			'one of two answered: permission',
+			'both answered: working',
+			'answered after a Stop: review',
 		]);
 	});
 

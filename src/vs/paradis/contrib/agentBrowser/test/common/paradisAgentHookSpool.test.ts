@@ -29,6 +29,8 @@ suite('paradisAgentHookSpool', () => {
 			line('UserPromptSubmit', 20),
 			'{"v":1,"event":"Stop","t":',          // cut in the middle of a write
 			line('PreToolUse', 5),                   // never replayed
+			line('Elicitation', 4),                  // never replayed (an MCP dialog cannot be confirmed on screen)
+			line('ElicitationResult', 3),
 			line('Stop', 8 * 24 * 60 * 60),          // older than 7 days
 			line('Stop', -3600),                     // from the future
 			JSON.stringify({ v: 2, event: 'Stop', t: 1 }),
