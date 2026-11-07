@@ -39,7 +39,6 @@ import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/par
 import { IParadisTasksRepository, paradisTasksResolveRepositories } from '../browser/paradisTasksRepositories.js';
 import {
 	IParadisTasksError,
-	IParadisTasksGithubService,
 	IParadisTasksItem,
 	PARADIS_TASKS_GITHUB_CHANNEL,
 	PARADIS_TASKS_MAX_REPOSITORIES,
@@ -48,16 +47,23 @@ import {
 	paradisTasksToggleQualifier,
 	ParadisTasksMode,
 } from '../common/paradisTasks.js';
+import { IParadisTasksGithubService, IParadisTasksProject, IParadisTasksProjectItem, IParadisTasksProjectItemsResult, IParadisTasksProjectView } from '../common/paradisTasksProjects.js';
 import { PARADIS_TASKS_EDITOR_ID } from './paradisTasksEditorInput.js';
+import { paradisTasksRenderProjectBoard, paradisTasksRenderProjectTable } from './paradisTasksProjectView.js';
 
 const $ = dom.$;
 
 /** タスクボードの窓を開くコマンド（taskBoard/electron-browser/paradisTaskBoardEntry.contribution.ts）。 */
 const PARADIS_TASK_BOARD_OPEN_COMMAND_ID = 'paradis.taskBoard.open';
 
+/** 画面の切り替え（Issue・PR は検索、プロジェクトは GitHub Projects v2）。 */
+type ParadisTasksTab = ParadisTasksMode | 'project';
+
 const STORAGE_MODE = 'paradis.tasks.mode';
+/** 選んだプロジェクトとビュー（`{ owner, number, view }`）。 */
+const STORAGE_PROJECT = 'paradis.tasks.project';
 const STORAGE_SELECTED = 'paradis.tasks.selectedRepositories';
-const STORAGE_QUERY = (mode: ParadisTasksMode) => `paradis.tasks.query.${mode}`;
+const STORAGE_QUERY = (mode: ParadisTasksTab) => `paradis.tasks.query.${mode}`;
 
 /** フィルターのメニューの 1 行。`exclusive` は同時に成り立たない修飾子（足すときに外す）。 */
 interface IFilterEntry {
@@ -119,19 +125,33 @@ export class ParadisTasksEditor extends EditorPane {
 
 	private root!: HTMLElement;
 	private sourceChip!: HTMLElement;
-	private modeButtons = new Map<ParadisTasksMode, HTMLButtonElement>();
+	private modeButtons = new Map<ParadisTasksTab, HTMLButtonElement>();
 	private repoButton!: HTMLButtonElement;
 	private externalButton!: HTMLButtonElement;
 	private presetBar!: HTMLElement;
 	private filterButton!: HTMLButtonElement;
 	private searchInput!: HTMLInputElement;
 	private statusLine!: HTMLElement;
+	private searchTable!: HTMLElement;
 	private tableBody!: HTMLElement;
+	private projectRow!: HTMLElement;
+	private projectButton!: HTMLButtonElement;
+	private projectHost!: HTMLElement;
+	private newButton!: HTMLButtonElement;
 	private emptyState!: HTMLElement;
 	private moreButton!: HTMLButtonElement;
 
-	private mode: ParadisTasksMode;
-	private readonly queries = new Map<ParadisTasksMode, string>();
+	private mode: ParadisTasksTab;
+	private readonly queries = new Map<ParadisTasksTab, string>();
+	/** 選べるプロジェクト（リポジトリにつながったもの・持ち主のもの・自分のもの）。読むまで undefined。 */
+	private projects: readonly IParadisTasksProject[] | undefined;
+	private projectsError: IParadisTasksError | undefined;
+	private projectsLoading = false;
+	private projectsGeneration = 0;
+	/** 選んでいるプロジェクトとビュー。 */
+	private projectChoice: { readonly owner: string; readonly number: number; readonly view: number } | undefined;
+	/** 選んでいるビューの項目（続きを読んだ分も足したもの）。 */
+	private projectResult: IParadisTasksProjectItemsResult | undefined;
 	/** 選べるリポジトリ（この窓のスペースから読んだもの）。読み終わるまで undefined。 */
 	private repositories: readonly IParadisTasksRepository[] | undefined;
 	/** 人が選んだリポジトリ（`owner/name`）。undefined なら先頭から上限まで全部。 */
@@ -168,9 +188,20 @@ export class ParadisTasksEditor extends EditorPane {
 	) {
 		super(PARADIS_TASKS_EDITOR_ID, group, telemetryService, themeService, tasksStorage);
 		this.github = ProxyChannel.toService<IParadisTasksGithubService>(sharedProcessService.getChannel(PARADIS_TASKS_GITHUB_CHANNEL));
-		this.mode = tasksStorage.get(STORAGE_MODE, StorageScope.WORKSPACE) === 'pr' ? 'pr' : 'issue';
+		const storedMode = tasksStorage.get(STORAGE_MODE, StorageScope.WORKSPACE);
+		this.mode = storedMode === 'pr' || storedMode === 'project' ? storedMode : 'issue';
 		for (const mode of ['issue', 'pr'] as const) {
 			this.queries.set(mode, tasksStorage.get(STORAGE_QUERY(mode), StorageScope.WORKSPACE) ?? PARADIS_TASKS_PRESETS[mode][0].query);
+		}
+		this.queries.set('project', tasksStorage.get(STORAGE_QUERY('project'), StorageScope.WORKSPACE) ?? '');
+		try {
+			const raw: unknown = JSON.parse(tasksStorage.get(STORAGE_PROJECT, StorageScope.WORKSPACE) ?? 'null');
+			const choice = raw as { owner?: unknown; number?: unknown; view?: unknown } | null;
+			if (choice && typeof choice.owner === 'string' && typeof choice.number === 'number' && typeof choice.view === 'number') {
+				this.projectChoice = { owner: choice.owner, number: choice.number, view: choice.view };
+			}
+		} catch {
+			this.projectChoice = undefined;
 		}
 		const selected = tasksStorage.get(STORAGE_SELECTED, StorageScope.WORKSPACE);
 		try {
@@ -197,8 +228,9 @@ export class ParadisTasksEditor extends EditorPane {
 		this.button(sourceRow, localize('paradis.tasks.openTaskBoard', "タスクボードを開く"), () => void this.commandService.executeCommand(PARADIS_TASK_BOARD_OPEN_COMMAND_ID), 'paradis-tasks-pill', Codicon.tasklist);
 
 		const modeRow = dom.append(this.root, $('.paradis-tasks-row'));
-		for (const mode of ['issue', 'pr'] as const) {
-			const button = this.button(modeRow, mode === 'issue' ? 'Issue' : 'PR', () => this.setMode(mode), 'paradis-tasks-pill');
+		for (const mode of ['issue', 'pr', 'project'] as const) {
+			const label = mode === 'issue' ? 'Issue' : mode === 'pr' ? 'PR' : localize('paradis.tasks.mode.project', "プロジェクト");
+			const button = this.button(modeRow, label, () => this.setMode(mode), 'paradis-tasks-pill');
 			this.modeButtons.set(mode, button);
 		}
 		this.repoButton = this.button(modeRow, '', () => void this.pickRepositories(), 'paradis-tasks-combo');
@@ -206,6 +238,8 @@ export class ParadisTasksEditor extends EditorPane {
 
 		const panel = dom.append(this.root, $('.paradis-tasks-panel'));
 		this.presetBar = dom.append(panel, $('.paradis-tasks-row.paradis-tasks-presets'));
+		this.projectRow = dom.append(panel, $('.paradis-tasks-row'));
+		this.projectButton = this.button(this.projectRow, '', () => void this.pickProject(), 'paradis-tasks-combo');
 		const searchRow = dom.append(panel, $('.paradis-tasks-row'));
 		this.filterButton = this.button(searchRow, localize('paradis.tasks.filter', "フィルター"), () => this.showFilterMenu(), 'paradis-tasks-pill', Codicon.filter);
 		const search = dom.append(searchRow, $('.paradis-tasks-search'));
@@ -223,11 +257,11 @@ export class ParadisTasksEditor extends EditorPane {
 			}
 		}));
 		this.iconButton(search, Codicon.close, localize('paradis.tasks.clearSearch', "検索を消す"), () => this.setQuery(''), 'paradis-tasks-clear');
-		this.iconButton(searchRow, Codicon.add, localize('paradis.tasks.newItem', "GitHub で新しく作る"), () => void this.openNewOnGithub());
+		this.newButton = this.iconButton(searchRow, Codicon.add, localize('paradis.tasks.newItem', "GitHub で新しく作る"), () => void this.openNewOnGithub());
 		this.iconButton(searchRow, Codicon.refresh, localize('paradis.tasks.refresh', "更新"), () => void this.load(true));
 
 		this.statusLine = dom.append(panel, $('.paradis-tasks-status'));
-		const table = dom.append(panel, $('table.paradis-tasks-table'));
+		const table = this.searchTable = dom.append(panel, $('table.paradis-tasks-table'));
 		const head = dom.append(dom.append(table, $('thead')), $('tr'));
 		for (const [label, className] of [
 			['ID', 'id'],
@@ -240,6 +274,7 @@ export class ParadisTasksEditor extends EditorPane {
 			dom.append(head, $(`th.${className}`)).textContent = label;
 		}
 		this.tableBody = dom.append(table, $('tbody'));
+		this.projectHost = dom.append(panel, $('.paradis-tasks-project'));
 		this.emptyState = dom.append(panel, $('.paradis-tasks-empty'));
 		this.moreButton = this.button(panel, localize('paradis.tasks.more', "続きを読む"), () => void this.load(false, true), 'paradis-tasks-more');
 
@@ -290,13 +325,17 @@ export class ParadisTasksEditor extends EditorPane {
 		}
 		const before = this.activeRepositories.join(',');
 		this.repositories = repositories;
+		if (before !== this.activeRepositories.join(',')) {
+			// 読むリポジトリが変わったら、プロジェクトの一覧も読み直す
+			this.projects = undefined;
+		}
 		this.render();
 		if (before !== this.activeRepositories.join(',') || this.items.length === 0) {
 			void this.load(false);
 		}
 	}
 
-	private setMode(mode: ParadisTasksMode): void {
+	private setMode(mode: ParadisTasksTab): void {
 		if (mode === this.mode) {
 			return;
 		}
@@ -320,6 +359,7 @@ export class ParadisTasksEditor extends EditorPane {
 
 	private resetItems(): void {
 		this.generation++;
+		this.projectResult = undefined;
 		this.items = [];
 		this.endCursor = undefined;
 		this.hasNextPage = false;
@@ -339,13 +379,18 @@ export class ParadisTasksEditor extends EditorPane {
 			this.render();
 			return;
 		}
+		if (this.mode === 'project') {
+			await this.loadProject(force, more);
+			return;
+		}
+		const mode = this.mode;
 		if (more && (!this.hasNextPage || this.loading)) {
 			return;
 		}
 		const generation = more ? this.generation : ++this.generation;
 		this.loading = true;
 		this.render();
-		const response = await this.github.search({ mode: this.mode, repositories, query: this.query, after: more ? this.endCursor : undefined, force });
+		const response = await this.github.search({ mode, repositories, query: this.query, after: more ? this.endCursor : undefined, force });
 		if (generation !== this.generation) {
 			return;
 		}
@@ -384,18 +429,35 @@ export class ParadisTasksEditor extends EditorPane {
 			? localize('paradis.tasks.noRepositories', "リポジトリがありません")
 			: active.join(', '), Codicon.chevronDown);
 		this.repoButton.disabled = count === 0;
-		this.externalButton.disabled = active.length !== 1;
 
 		dom.clearNode(this.presetBar);
 		this.presetDisposables.clear();
-		for (const preset of PARADIS_TASKS_PRESETS[this.mode]) {
-			const button = this.button(this.presetBar, presetLabel(this.mode, preset.id), () => this.setQuery(preset.query), 'paradis-tasks-pill', undefined, this.presetDisposables);
-			button.classList.toggle('on', preset.query === this.query);
+		const project = this.mode === 'project';
+		if (this.mode !== 'project') {
+			const mode = this.mode;
+			for (const preset of PARADIS_TASKS_PRESETS[mode]) {
+				const button = this.button(this.presetBar, presetLabel(mode, preset.id), () => this.setQuery(preset.query), 'paradis-tasks-pill', undefined, this.presetDisposables);
+				button.classList.toggle('on', preset.query === this.query);
+			}
 		}
+		this.presetBar.style.display = project ? 'none' : '';
+		this.projectRow.style.display = project ? '' : 'none';
+		this.filterButton.style.display = project ? 'none' : '';
+		this.newButton.style.display = project ? 'none' : '';
+		this.searchTable.style.display = project ? 'none' : '';
+		this.projectHost.style.display = project ? '' : 'none';
+		this.externalButton.disabled = project ? !this.selectedProject : active.length !== 1;
+		const view = this.selectedView;
+		this.setButtonLabel(this.projectButton, this.selectedProject
+			? `${this.selectedProject.title}${view ? ` / ${view.name}` : ''}`
+			: localize('paradis.tasks.chooseProject', "プロジェクトを選ぶ"), Codicon.chevronDown);
+		this.projectButton.disabled = this.projectsLoading && !this.projects;
 		if (this.searchInput && dom.getActiveElement() !== this.searchInput) {
 			this.searchInput.value = this.query;
 		}
-		this.searchInput.placeholder = this.mode === 'pr' ? 'is:pr is:open' : 'is:issue is:open';
+		this.searchInput.placeholder = project
+			? (view?.filter ? view.filter : localize('paradis.tasks.projectFilterPlaceholder', "絞り込み（例: status:Todo assignee:@me）"))
+			: this.mode === 'pr' ? 'is:pr is:open' : 'is:issue is:open';
 
 		this.renderStatus();
 		this.renderRows();
@@ -405,7 +467,11 @@ export class ParadisTasksEditor extends EditorPane {
 		const parts: string[] = [];
 		if (this.loading) {
 			parts.push(localize('paradis.tasks.loading', "読み込んでいます"));
-		} else if (this.fetchedAt !== undefined && !this.error) {
+		} else if (this.mode === 'project' && this.projectResult && !this.error) {
+			parts.push(localize('paradis.tasks.count', "{0} 件", this.projectResult.total));
+			parts.push(this.layoutLabel(this.projectResult.view));
+			parts.push(localize('paradis.tasks.fetchedAt', "取得 {0}", new Date(this.projectResult.fetchedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })));
+		} else if (this.mode !== 'project' && this.fetchedAt !== undefined && !this.error) {
 			parts.push(localize('paradis.tasks.count', "{0} 件", this.total));
 			parts.push(localize('paradis.tasks.fetchedAt', "取得 {0}", new Date(this.fetchedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })));
 		}
@@ -421,15 +487,29 @@ export class ParadisTasksEditor extends EditorPane {
 
 	private renderRows(): void {
 		dom.clearNode(this.tableBody);
+		dom.clearNode(this.projectHost);
 		dom.clearNode(this.emptyState);
 		this.rowDisposables.clear();
-		const empty = this.emptyMessage();
+		const empty = this.mode === 'project' ? this.projectEmptyMessage() : this.emptyMessage();
 		this.emptyState.style.display = empty ? '' : 'none';
-		this.moreButton.style.display = !empty && this.hasNextPage ? '' : 'none';
+		const hasNextPage = this.mode === 'project' ? this.projectResult?.hasNextPage === true : this.hasNextPage;
+		this.moreButton.style.display = !empty && hasNextPage ? '' : 'none';
 		this.moreButton.disabled = this.loading;
 		if (empty) {
 			dom.append(this.emptyState, $('.paradis-tasks-empty-title')).textContent = empty.title;
 			dom.append(this.emptyState, $('.paradis-tasks-empty-body')).textContent = empty.body;
+			return;
+		}
+		if (this.mode === 'project' && this.projectResult) {
+			const host = { openItem: (item: IParadisTasksProjectItem) => this.openProjectItem(item), showItemMenu: (item: IParadisTasksProjectItem, anchor: HTMLElement) => this.showProjectItemMenu(item, anchor) };
+			if (this.projectResult.view.layout === 'BOARD_LAYOUT') {
+				paradisTasksRenderProjectBoard(this.projectHost, this.projectResult, this.rowDisposables, host);
+			} else {
+				if (this.projectResult.view.layout === 'ROADMAP_LAYOUT') {
+					dom.append(this.projectHost, $('.paradis-tasks-note')).textContent = localize('paradis.tasks.roadmapAsTable', "ロードマップのビューは、今は表で出しています。");
+				}
+				paradisTasksRenderProjectTable(this.projectHost, this.projectResult, this.rowDisposables, host);
+			}
 			return;
 		}
 		for (const item of this.items) {
@@ -438,6 +518,49 @@ export class ParadisTasksEditor extends EditorPane {
 	}
 
 	private emptyMessage(): { readonly title: string; readonly body: string } | undefined {
+		const noSource = this.noSourceMessage();
+		if (noSource) {
+			return noSource;
+		}
+		if (this.error) {
+			return this.errorMessage(this.error);
+		}
+		if (!this.repositories || (this.loading && this.items.length === 0)) {
+			return { title: localize('paradis.tasks.loadingTitle', "読み込んでいます"), body: '' };
+		}
+		return this.items.length === 0 && this.fetchedAt !== undefined ? this.noResultMessage() : undefined;
+	}
+
+	private projectEmptyMessage(): { readonly title: string; readonly body: string } | undefined {
+		const noSource = this.noSourceMessage();
+		if (noSource) {
+			return noSource;
+		}
+		if (this.projectsError && !this.projects) {
+			return this.errorMessage(this.projectsError);
+		}
+		if (!this.repositories || (this.projectsLoading && !this.projects)) {
+			return { title: localize('paradis.tasks.loadingTitle', "読み込んでいます"), body: '' };
+		}
+		if (this.projects && this.projects.length === 0) {
+			return {
+				title: localize('paradis.tasks.empty.noProjects', "プロジェクトがありません"),
+				body: localize('paradis.tasks.empty.noProjectsBody', "選んだリポジトリにつながったプロジェクト、その持ち主のプロジェクト、自分のプロジェクトのどれもありませんでした。gh に project のスコープが無いときも読めません（`gh auth refresh -s read:project`）。"),
+			};
+		}
+		if (!this.selectedProject || !this.selectedView) {
+			return { title: localize('paradis.tasks.empty.chooseProject', "プロジェクトを選んでください"), body: localize('paradis.tasks.empty.chooseProjectBody', "上の「プロジェクトを選ぶ」から、プロジェクトとビューを選びます。") };
+		}
+		if (this.error) {
+			return this.errorMessage(this.error);
+		}
+		if (!this.projectResult) {
+			return { title: localize('paradis.tasks.loadingTitle', "読み込んでいます"), body: '' };
+		}
+		return this.projectResult.items.length === 0 ? this.noResultMessage() : undefined;
+	}
+
+	private noSourceMessage(): { readonly title: string; readonly body: string } | undefined {
 		if (this.repositories && this.activeRepositories.length === 0) {
 			return {
 				title: localize('paradis.tasks.empty.noSource', "リポジトリのソースが選択されていません"),
@@ -446,38 +569,168 @@ export class ParadisTasksEditor extends EditorPane {
 					: localize('paradis.tasks.empty.noneSelectedBody', "上のリポジトリの選択から、1 つ以上を選んでください。"),
 			};
 		}
-		if (this.error) {
-			switch (this.error.kind) {
-				case 'no-gh':
-					return { title: localize('paradis.tasks.error.noGh', "GitHub CLI（gh）が見つかりません"), body: localize('paradis.tasks.error.noGhBody', "gh を入れて、ターミナルで `gh auth login` を実行してください。") };
-				case 'auth':
-					return { title: localize('paradis.tasks.error.auth', "gh が GitHub にログインしていません"), body: localize('paradis.tasks.error.authBody', "ターミナルで `gh auth login` を実行してから、更新を押してください。") };
-				case 'rate-limited':
-					return {
-						title: localize('paradis.tasks.error.rateLimited', "GitHub の API の上限に達しました"),
-						body: this.error.retryAt
-							? localize('paradis.tasks.error.rateLimitedAt', "{0} ごろに読み直せます。", new Date(this.error.retryAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }))
-							: localize('paradis.tasks.error.rateLimitedLater', "しばらくしてから更新を押してください。"),
-					};
-				case 'timeout':
-					return { title: localize('paradis.tasks.error.timeout', "GitHub からの応答が時間内に返りませんでした"), body: localize('paradis.tasks.error.timeoutBody', "gh が 30 秒たっても答えなかったので止めました。ネットワークを確かめて、更新を押してください。") };
-				default:
-					return { title: localize('paradis.tasks.error.failed', "読み込めませんでした"), body: this.error.message };
+		return undefined;
+	}
+
+	private errorMessage(error: IParadisTasksError): { readonly title: string; readonly body: string } {
+		switch (error.kind) {
+			case 'no-gh':
+				return { title: localize('paradis.tasks.error.noGh', "GitHub CLI（gh）が見つかりません"), body: localize('paradis.tasks.error.noGhBody', "gh を入れて、ターミナルで `gh auth login` を実行してください。") };
+			case 'auth':
+				return { title: localize('paradis.tasks.error.auth', "gh が GitHub にログインしていません"), body: localize('paradis.tasks.error.authBody', "ターミナルで `gh auth login` を実行してから、更新を押してください。") };
+			case 'rate-limited':
+				return {
+					title: localize('paradis.tasks.error.rateLimited', "GitHub の API の上限に達しました"),
+					body: error.retryAt
+						? localize('paradis.tasks.error.rateLimitedAt', "{0} ごろに読み直せます。", new Date(error.retryAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }))
+						: localize('paradis.tasks.error.rateLimitedLater', "しばらくしてから更新を押してください。"),
+				};
+			case 'timeout':
+				return { title: localize('paradis.tasks.error.timeout', "GitHub からの応答が時間内に返りませんでした"), body: localize('paradis.tasks.error.timeoutBody', "gh が 30 秒たっても答えなかったので止めました。ネットワークを確かめて、更新を押してください。") };
+			default:
+				return { title: localize('paradis.tasks.error.failed', "読み込めませんでした"), body: error.message };
+		}
+	}
+
+	private noResultMessage(): { readonly title: string; readonly body: string } {
+		return {
+			title: localize('paradis.tasks.empty.noResult', "当てはまるものはありません"),
+			// SSH の窓では、リポジトリは接続先のものでも GitHub は手元の gh のアカウントで読むので、読めない非公開リポジトリは 0 件に見える
+			body: this.environmentService.remoteAuthority !== undefined
+				? localize('paradis.tasks.empty.noResultRemoteBody', "検索の文字列やフィルターを変えてみてください。この PC の gh のアカウントで読める範囲だけを出しています。")
+				: localize('paradis.tasks.empty.noResultBody', "検索の文字列やフィルターを変えてみてください。"),
+		};
+	}
+
+	private get selectedProject(): IParadisTasksProject | undefined {
+		const choice = this.projectChoice;
+		return choice ? this.projects?.find(project => project.owner.toLowerCase() === choice.owner.toLowerCase() && project.number === choice.number) : undefined;
+	}
+
+	private get selectedView(): IParadisTasksProjectView | undefined {
+		const choice = this.projectChoice;
+		return choice ? this.selectedProject?.views.find(view => view.number === choice.view) : undefined;
+	}
+
+	private layoutLabel(view: IParadisTasksProjectView): string {
+		switch (view.layout) {
+			case 'BOARD_LAYOUT': return localize('paradis.tasks.layout.board', "ボード");
+			case 'ROADMAP_LAYOUT': return localize('paradis.tasks.layout.roadmap', "ロードマップ");
+			default: return localize('paradis.tasks.layout.table', "テーブル");
+		}
+	}
+
+	/** プロジェクトの一覧を読む（5 分は shared process のキャッシュが答える）。 */
+	private async loadProjects(force: boolean): Promise<void> {
+		const repositories = this.activeRepositories;
+		const generation = ++this.projectsGeneration;
+		this.projectsLoading = true;
+		this.render();
+		const response = await this.github.listProjects({ repositories, force });
+		if (generation !== this.projectsGeneration) {
+			return;
+		}
+		this.projectsLoading = false;
+		if (response.ok) {
+			this.projects = response.result.projects;
+			this.projectsError = undefined;
+			this.remaining = response.result.rateLimit ?? this.remaining;
+		} else {
+			this.projectsError = response.error;
+		}
+	}
+
+	/** 選んだビューの項目を読む。プロジェクトの一覧がまだなら先に読む。 */
+	private async loadProject(force: boolean, more: boolean): Promise<void> {
+		if (!this.projects || force) {
+			await this.loadProjects(force);
+		}
+		const project = this.selectedProject;
+		const view = this.selectedView;
+		if (!project || !view) {
+			this.render();
+			return;
+		}
+		if (more && (!this.projectResult?.hasNextPage || this.loading)) {
+			return;
+		}
+		const generation = more ? this.generation : ++this.generation;
+		this.loading = true;
+		this.render();
+		const response = await this.github.projectItems({
+			owner: project.owner, number: project.number, view: view.number, viewFilter: view.filter, query: this.query,
+			after: more ? this.projectResult?.endCursor : undefined, force,
+		});
+		if (generation !== this.generation) {
+			return;
+		}
+		this.loading = false;
+		if (response.ok) {
+			this.projectResult = more && this.projectResult
+				? { ...response.result, items: [...this.projectResult.items, ...response.result.items] }
+				: response.result;
+			this.remaining = response.result.rateLimit ?? this.remaining;
+			this.error = undefined;
+		} else {
+			this.error = response.error;
+		}
+		this.render();
+	}
+
+	/** プロジェクト → ビューの順に選ぶ。ビューの選択から戻るとプロジェクトの選択に戻る。 */
+	private async pickProject(): Promise<void> {
+		if (!this.projects) {
+			await this.loadProjects(false);
+			this.render();
+		}
+		const projects = this.projects ?? [];
+		while (true) {
+			const projectItems: (IQuickPickItem & { readonly project: IParadisTasksProject })[] = projects.map(project => ({
+				label: project.title,
+				description: `${project.owner} #${project.number}${project.closed ? ` · ${localize('paradis.tasks.projectClosed', "クローズ")}` : ''}`,
+				project,
+			}));
+			const picked = await this.quickInputService.pick(projectItems, { placeHolder: localize('paradis.tasks.pickProject', "プロジェクトを選んでください") });
+			if (!picked) {
+				return;
+			}
+			const back = { label: `$(arrow-left) ${localize('paradis.tasks.back', "戻る")}`, back: true as const };
+			const viewItems: (IQuickPickItem & { readonly view?: IParadisTasksProjectView; readonly back?: true })[] = [
+				back,
+				...picked.project.views.map(view => ({ label: view.name, description: this.layoutLabel(view), detail: view.filter, view })),
+			];
+			const view = await this.quickInputService.pick(viewItems, { placeHolder: localize('paradis.tasks.pickView', "ビューを選んでください（{0}）", picked.project.title) });
+			if (!view) {
+				return;
+			}
+			if (view.view) {
+				this.projectChoice = { owner: picked.project.owner, number: picked.project.number, view: view.view.number };
+				this.tasksStorage.store(STORAGE_PROJECT, JSON.stringify(this.projectChoice), StorageScope.WORKSPACE, StorageTarget.USER);
+				this.resetItems();
+				this.render();
+				void this.load(false);
+				return;
 			}
 		}
-		if (!this.repositories || (this.loading && this.items.length === 0)) {
-			return { title: localize('paradis.tasks.loadingTitle', "読み込んでいます"), body: '' };
+	}
+
+	private openProjectItem(item: IParadisTasksProjectItem): void {
+		if (item.url) {
+			void this.openerService.open(URI.parse(item.url), { openExternal: true });
 		}
-		if (this.items.length === 0 && this.fetchedAt !== undefined) {
-			return {
-				title: localize('paradis.tasks.empty.noResult', "当てはまるものはありません"),
-				// SSH の窓では、リポジトリは接続先のものでも GitHub は手元の gh のアカウントで読むので、読めない非公開リポジトリは 0 件に見える
-				body: this.environmentService.remoteAuthority !== undefined
-					? localize('paradis.tasks.empty.noResultRemoteBody', "検索の文字列やフィルターを変えてみてください。この PC の gh のアカウントで読める範囲だけを出しています。")
-					: localize('paradis.tasks.empty.noResultBody', "検索の文字列やフィルターを変えてみてください。"),
-			};
-		}
-		return undefined;
+	}
+
+	private showProjectItemMenu(item: IParadisTasksProjectItem, anchor: HTMLElement): void {
+		const url = item.url;
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => anchor,
+			getActions: () => url ? [
+				toAction({ id: 'paradis.tasks.openOnGithub', label: localize('paradis.tasks.openOnGithub', "GitHub で開く"), run: () => this.openProjectItem(item) }),
+				toAction({ id: 'paradis.tasks.copyUrl', label: localize('paradis.tasks.copyUrl', "URL をコピー"), run: () => this.clipboardService.writeText(url) }),
+			] : [
+				toAction({ id: 'paradis.tasks.openProject', label: localize('paradis.tasks.openProjectOnGithub', "プロジェクトを GitHub で開く"), run: () => this.openRepositoryOnGithub() }),
+			],
+		});
 	}
 
 	private renderRow(item: IParadisTasksItem): void {
@@ -563,7 +816,7 @@ export class ParadisTasksEditor extends EditorPane {
 	private showFilterMenu(): void {
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => this.filterButton,
-			getActions: () => filterEntries().filter(entry => entry.modes.includes(this.mode)).map(entry => toAction({
+			getActions: () => filterEntries().filter(entry => this.mode !== 'project' && entry.modes.includes(this.mode)).map(entry => toAction({
 				id: `paradis.tasks.filter.${entry.qualifier}`,
 				label: entry.label,
 				checked: paradisTasksHasQualifier(this.query, entry.qualifier),
@@ -589,6 +842,7 @@ export class ParadisTasksEditor extends EditorPane {
 			return;
 		}
 		this.selected = picked.map(item => item.name);
+		this.projects = undefined;
 		this.tasksStorage.store(STORAGE_SELECTED, JSON.stringify(this.selected), StorageScope.WORKSPACE, StorageTarget.USER);
 		this.resetItems();
 		this.render();
@@ -596,6 +850,14 @@ export class ParadisTasksEditor extends EditorPane {
 	}
 
 	private openRepositoryOnGithub(): void {
+		const project = this.selectedProject;
+		if (this.mode === 'project') {
+			if (project?.url.startsWith('https://github.com/')) {
+				const view = this.selectedView;
+				void this.openerService.open(URI.parse(view ? `${project.url}/views/${view.number}` : project.url), { openExternal: true });
+			}
+			return;
+		}
 		const [repository] = this.activeRepositories;
 		if (repository) {
 			void this.openerService.open(URI.parse(`https://github.com/${repository}/${this.mode === 'pr' ? 'pulls' : 'issues'}`), { openExternal: true });

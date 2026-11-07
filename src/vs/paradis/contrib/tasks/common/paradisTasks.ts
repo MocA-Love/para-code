@@ -90,11 +90,15 @@ export interface IParadisTasksError {
 	readonly retryAt?: number;
 }
 
-export type ParadisTasksSearchResponse =
-	| { readonly ok: true; readonly result: IParadisTasksSearchResult }
+/** 取得口の応答。失敗は例外にせず理由を返す（画面が案内の文を選べるように）。 */
+export type ParadisTasksResponse<T> =
+	| { readonly ok: true; readonly result: T }
 	| { readonly ok: false; readonly error: IParadisTasksError };
 
-export interface IParadisTasksGithubService {
+export type ParadisTasksSearchResponse = ParadisTasksResponse<IParadisTasksSearchResult>;
+
+/** Issue・PR の検索の口。プロジェクトの口を足したものは common/paradisTasksProjects.ts の IParadisTasksGithubService。 */
+export interface IParadisTasksSearchService {
 	search(request: IParadisTasksSearchRequest): Promise<ParadisTasksSearchResponse>;
 }
 
