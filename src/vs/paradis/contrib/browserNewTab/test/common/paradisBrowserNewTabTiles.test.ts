@@ -31,11 +31,13 @@ suite('ParadisBrowserNewTab - tiles', () => {
 		]);
 	});
 
-	test('takes the bookmarks at the top of the bar and skips folders', () => {
+	test('takes the http and https bookmarks at the top of the bar and skips folders and bookmarklets', () => {
 		assert.deepStrictEqual(paradisBookmarkTiles([
 			{ type: 'bookmark', url: 'https://a.example.com', title: 'A', faviconHash: 'h' },
 			{ type: 'folder', title: 'Folder' },
 			{ type: 'bookmark', url: 'https://b.example.com', title: ' ' },
+			{ type: 'bookmark', url: 'javascript:alert(1)', title: 'Bookmarklet' },
+			{ type: 'bookmark', url: 'file:///etc/hosts', title: 'File' },
 		]), [
 			{ url: 'https://a.example.com', title: 'A', iconKey: 'h' },
 			{ url: 'https://b.example.com', title: 'https://b.example.com', iconKey: undefined },

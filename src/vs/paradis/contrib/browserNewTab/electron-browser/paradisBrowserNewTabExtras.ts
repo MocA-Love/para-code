@@ -34,12 +34,15 @@ import { IParadisPullRequestDetail, ParadisPullRequestLookup, paradisPullRequest
 import { PARADIS_OPEN_SETTINGS_DIALOG_COMMAND_ID } from '../../paradisSettings/electron-browser/paradisSettingsDialog.contribution.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
+import { paradisTrimPullRequestCache } from '../common/paradisBrowserNewTab.js';
 import { IParadisNewTabTile } from '../common/paradisBrowserNewTabTiles.js';
 
 const $ = dom.$;
 
 const PULL_REQUEST_CACHE_MS = 5 * 60_000;
 const PULL_REQUEST_MIN_REFRESH_MS = 30_000;
+/** 覚えておく PR の数の上限（スペースを多く渡り歩いても増え続けないように、古いものから捨てる）。 */
+const PULL_REQUEST_CACHE_LIMIT = 32;
 const IMPORT_HINT_HIDDEN_KEY = 'paradis.browserNewTab.importHintHidden';
 
 /** スペース（作業ツリーのルート）ごとの PR。窓の中の全部の新しいタブで共有する。 */
@@ -166,6 +169,7 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 			// gh が無い・古い接続先・つながらない。前の結果のまま（無ければ出さない）
 		}
 		pullRequests.set(key, { at: Date.now(), lookup, pending: false });
+		paradisTrimPullRequestCache(pullRequests, PULL_REQUEST_CACHE_LIMIT);
 		if (!this._store.isDisposed) {
 			this._onDidChange();
 		}
