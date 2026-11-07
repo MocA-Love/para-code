@@ -31,6 +31,8 @@ export function isParadisSpreadsheetCompoundFile(bytes: Uint8Array): boolean {
  * renderer はこの名前を見て利用者向けの文に置き換え、失敗の報告（Sentry）には送らない。
  */
 export const PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME = 'ParadisSpreadsheetTooLarge';
+/** 解析の worker が混んでいて引き受けなかった（間を空けて開き直せる）。 */
+export const PARADIS_SPREADSHEET_BUSY_ERROR_NAME = 'ParadisSpreadsheetBusy';
 
 /** CSSプロパティ(camelCase)→値。renderer で Object.assign(el.style, ...) して適用する。 */
 export interface IParadisCellStyle {

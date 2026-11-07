@@ -31,6 +31,7 @@ import { isWindows } from '../../../../base/common/platform.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { FlowControlConstants } from '../../../../platform/terminal/common/terminal.js';
 import { IParadisPtyAttachment, IParadisPtySummary } from '../common/paradisPtyProtocol.js';
+import { IParadisPtyLetGoMark, paradisPlanPtyReattach } from '../common/paradisPtyReattachPlan.js';
 import { ParadisPtyScrollback } from './paradisPtyScrollback.js';
 
 /**
@@ -224,16 +225,21 @@ export class ParadisPtyHolder extends Disposable {
 	 * **控えを渡すことと流し始めることが同じ tick で起きる**ので、間に出た分が落ちることはない。
 	 * 呼び出し側へは「この戻り値 → その後のイベント」の順で届く（同じ接続の上を順に流れる）。
 	 */
-	attach(): IParadisPtyAttachment {
+	attach(since?: IParadisPtyLetGoMark): IParadisPtyAttachment {
 		// **こぼれは「前回繋いだ以降」で見る。** 累積で見ると、一度でも上限を超えた端末は以後
 		// ずっと「こぼれた」と言い続け、実際には1文字も失っていない繋ぎ直しでも断りが出る。
 		// 毎回オオカミ少年になる方向の誤りで、断りそのものが読み飛ばされるようになる。
-		const attachment: IParadisPtyAttachment = {
+		const full: IParadisPtyAttachment = {
 			frames: this.scrollback.frames(),
 			dropped: this.scrollback.droppedSince(this.droppedMark),
 			written: this.scrollback.mark(),
 			epoch: this.epoch,
 		};
+		// 手を離していた側が戻ってきた（`since` がある）。差分で足りるなら、控え全体（最大 10MB）を送らずに差分だけ返す
+		const plan = since !== undefined ? paradisPlanPtyReattach(since, full) : undefined;
+		const attachment: IParadisPtyAttachment = plan?.kind === 'unchanged' ? { ...full, frames: [], sinceMark: true }
+			: plan?.kind === 'tail' ? { ...full, frames: [{ ...full.frames[full.frames.length - 1], data: plan.data }], sinceMark: true }
+				: full;
 		this.droppedMark = this.scrollback.mark();
 		this.attached = true;
 		// 見る側が代わったので、前の相手あての未確認は数え直す。持ち越すと、繋ぎ直した直後に

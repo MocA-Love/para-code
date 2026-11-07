@@ -160,6 +160,11 @@ export interface IParadisPtyAttachment {
 	 * （消した後に同じ量より多く書かれると、差分の計算が成り立ったように見える）。
 	 */
 	readonly epoch?: number;
+	/**
+	 * `frames` が、繋ぐときに渡した `since` より後の出力だけか（空なら離れている間に何も増えていない）。
+	 * 常駐が差分で足りると決めたときだけ立つ。古い常駐は `since` を知らないので、立てずに控え全体を返す。
+	 */
+	readonly sinceMark?: boolean;
 }
 
 /** 常駐が押し付けてくるもの。 */
@@ -238,7 +243,7 @@ export interface IParadisPtyHost {
 	 * 無音になる。逆に何も離さないと、消えた側が見ていた端末は「まだ見られている」ままになり、
 	 * 誰も ack しないので高水位で止まったうえ、引き取りからも飛ばされて**永久に戻らない**。
 	 */
-	attach(handle: number, viewer: string): Promise<IParadisPtyAttachment>;
+	attach(handle: number, viewer: string, since?: { readonly written: number; readonly epoch: number | undefined }): Promise<IParadisPtyAttachment>;
 	/**
 	 * 見るのをやめる。**pty は止まらない。**
 	 *

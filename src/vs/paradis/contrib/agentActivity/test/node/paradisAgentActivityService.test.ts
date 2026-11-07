@@ -107,6 +107,27 @@ suite('ParadisAgentActivityService', function () {
 		});
 	});
 
+	async function countListings(): Promise<{ count: () => number; request: { since: string; until: string; spaces: { key: string; name: string; roots: string[] }[] } }> {
+		const day = paradisActivityDayKey(new Date());
+		await fs.writeFile(join(claudeHome, 'projects', '-work-repo', 'a1.jsonl'), claudeLines('/work/repo/src', 'first', 'one', new Date()));
+		let listings = 0;
+		codexHomes = () => { listings++; return [codexHome]; };
+		return { count: () => listings, request: { since: day, until: day, spaces: [{ key: 'repo', name: 'repo', roots: ['/work/repo'] }] } };
+	}
+
+	test('lists the transcripts once for overlapping usage requests', async () => {
+		const { count, request } = await countListings();
+		await Promise.all([service.spaceUsage(request), service.spaceUsage(request), service.spaceUsage(request)]);
+		assert.strictEqual(count(), 1);
+	});
+
+	test('lists the transcripts again for a usage request after the previous one finished', async () => {
+		const { count, request } = await countListings();
+		await service.spaceUsage(request);
+		await service.spaceUsage(request);
+		assert.strictEqual(count(), 2);
+	});
+
 	// AI コストの「リポジトリ別」（Q537 の 13 A）: 同じ remote のクローンとワークツリーを 1 つに束ね、git の外はまとめる
 	test('groups the working folders of the conversations by repository', async () => {
 		const today = new Date();

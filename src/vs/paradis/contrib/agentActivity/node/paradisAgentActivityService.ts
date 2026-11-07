@@ -65,6 +65,8 @@ const MAX_INDEX_SEARCH_CATALOG_IDS = 5000;
 const DAY_MS = 86_400_000;
 /** 1回に扱うファイル数の上限（異常に多いときに shared process のメモリを食い潰さないため）。 */
 const MAX_FILES = 50_000;
+/** 重なった要求で、会話ログの列挙を使い回してよい古さ（要求が来た時刻から見て）。 */
+const LISTING_REUSE_MS = 2_000;
 /** 期間の上限（UI の最大は 90 日）。 */
 const MAX_RANGE_DAYS = 400;
 
@@ -129,6 +131,9 @@ export class ParadisAgentActivityService extends Disposable {
 	/** 集計が時間切れになったファイル（パス → そのときの中身の識別と、続けて時間切れになった回数）。 */
 	private readonly parseTimeouts = new Map<string, { readonly identity: string; readonly count: number }>();
 	private collecting: Promise<void> = Promise.resolve();
+	/** 直近の会話ログの列挙。重なった要求の間だけ持ち、要求ごとに全ファイルを lstat し直さない。 */
+	private lastListing: { readonly startedAt: number; readonly files: Promise<ITranscriptFile[]> } | undefined;
+	private pendingCollects = 0;
 	private indexUpdating: Promise<IParadisIndexUpdateResult | undefined> | undefined;
 	private indexDeleting: Promise<void> | undefined;
 	private reconciling: Promise<void> = Promise.resolve();
@@ -285,8 +290,17 @@ export class ParadisAgentActivityService extends Disposable {
 	 * 更新日時・inode が同じファイルは読み直さない（中身が変わっていないので、読み直しても結果は同じ）。
 	 */
 	private collect(sinceMs: number): Promise<{ summaries: IParadisActivityFileSummary[]; scannedFiles: number; failedFiles: number }> {
+		const requestedAt = Date.now();
+		this.pendingCollects++;
 		const run = async () => {
-			const files = await this.listTranscripts();
+			// 前の要求と重なって待っていたなら、要求の少し前（LISTING_REUSE_MS まで）からの列挙を使い回す。
+			// 要求が重なっていないとき（前の集計が終わった後に来た要求）は、毎回列挙し直す
+			let listing = this.lastListing;
+			if (listing === undefined || listing.startedAt < requestedAt - LISTING_REUSE_MS) {
+				listing = { startedAt: Date.now(), files: this.listTranscripts() };
+				this.lastListing = listing;
+			}
+			const files = await listing.files;
 			const present = new Set(files.map(file => file.path));
 			for (const path of [...this.cache.keys()]) {
 				if (!present.has(path)) {
@@ -347,7 +361,11 @@ export class ParadisAgentActivityService extends Disposable {
 			const summaries = [...inRange].sort((a, b) => a.mtimeMs - b.mtimeMs).map(file => this.cache.get(file.path)?.summary).filter((summary): summary is IParadisActivityFileSummary => summary !== undefined);
 			return { summaries, scannedFiles: inRange.length, failedFiles };
 		};
-		const next = this.collecting.then(run, run);
+		const next = this.collecting.then(run, run).finally(() => {
+			if (--this.pendingCollects === 0) {
+				this.lastListing = undefined;
+			}
+		});
 		this.collecting = next.then(() => undefined, () => undefined);
 		return next;
 	}

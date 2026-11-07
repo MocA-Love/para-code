@@ -190,7 +190,7 @@ suite('ParadisMobileCanvasModel', () => {
 	test('refreshes after attach and detach commands in channel order', async () => {
 		const channel = new RecordingMobileCanvasChannel();
 		const model = createModel(channel);
-		channel.queueSnapshot(EMPTY);
+		channel.queueSnapshot(WITH_ATTACHMENT);
 		channel.queueSnapshot(EMPTY);
 
 		await model.attach('pane-1', 'iphone', 'state-1');
@@ -202,5 +202,14 @@ suite('ParadisMobileCanvasModel', () => {
 			{ command: 'detach', arg: { paneToken: 'pane-1' } },
 			{ command: 'getSnapshot', arg: undefined },
 		]);
+	});
+
+	test('does not read the devices when a pane that was not attached closes and nobody is watching', async () => {
+		const channel = new RecordingMobileCanvasChannel();
+		const model = createModel(channel);
+
+		await model.detach('pane-2');
+
+		assert.deepStrictEqual(channel.calls, [{ command: 'detach', arg: { paneToken: 'pane-2' } }]);
 	});
 });

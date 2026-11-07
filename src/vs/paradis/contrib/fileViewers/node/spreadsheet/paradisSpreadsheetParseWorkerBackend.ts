@@ -34,7 +34,7 @@ export type ParadisSpreadsheetParseWorkerResult =
 	| { readonly kind: 'workbookJson'; readonly json: Uint8Array }
 	| { readonly kind: 'warm' }
 	| { readonly kind: 'error'; readonly message: string }
-	| { readonly kind: 'unavailable'; readonly reason: ParadisOfficeSemanticWorkerFailure };
+	| { readonly kind: 'unavailable'; readonly reason: ParadisOfficeSemanticWorkerFailure; /** 待ち行列で待ちすぎた `busy`（すぐに断ったのではない）。 */ readonly expired?: true };
 
 /**
  * 解析が投げた例外を、worker の返事にする。V8 の文字列の上限を超えた（シートの XML などが大きすぎて
@@ -61,7 +61,7 @@ export const PARADIS_SPREADSHEET_PARSE_WORKER_IDLE_MS = 5 * 60 * 1000;
  * 過ぎたら（worker のヒープの上限を超えたときと同じく）大きすぎるブックとして断る。
  */
 export const PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS = 10 * 60 * 1000;
-/** 待ち行列で待てる時間。過ぎたら本体で解析する。 */
+/** 待ち行列で待てる時間。過ぎたら 1 回だけ待ち行列へ入れ直し、それでも待ちすぎたら混んでいるとして断る（本体では解析しない）。 */
 export const PARADIS_SPREADSHEET_PARSE_QUEUE_DEADLINE_MS = 120_000;
 /** 待ち行列に置ける依頼の数（走っている 1 件は数えない）。 */
 export const PARADIS_SPREADSHEET_PARSE_QUEUE_LIMIT = 8;
@@ -98,6 +98,7 @@ export class ParadisSpreadsheetParseWorkerBackend extends Disposable {
 			// 締め切りで切れたのは、ヒープの上限で落ちた（大きいだけのブック）のと違って worker が返ってこなかったので、
 			// こちらの不具合の疑いとして送る。利用者には同じく大きすぎるブックとして断る。
 			onRunDeadline: () => reportFailure('spreadsheet-parse', 'deadline', 'run-deadline'),
+			queueExpired: () => ({ kind: 'unavailable', reason: 'busy', expired: true }),
 		}));
 	}
 
@@ -115,7 +116,18 @@ export class ParadisSpreadsheetParseWorkerBackend extends Disposable {
 		return () => createParadisOfficeSemanticWorker('spreadsheet-parse', workerPath, PARADIS_SPREADSHEET_PARSE_WORKER_RESOURCE_LIMITS);
 	}
 
-	parse(bytes: Uint8Array, imagePixelBudget: number | undefined, token: CancellationToken): Promise<ParadisSpreadsheetParseWorkerResult> {
+	async parse(bytes: Uint8Array, imagePixelBudget: number | undefined, token: CancellationToken): Promise<ParadisSpreadsheetParseWorkerResult> {
+		const first = await this.enqueueParse(bytes, imagePixelBudget, token);
+		// 待ち行列で待ちすぎたものは、前の重い解析が終わって空いていることがあるので 1 回だけ入れ直す。
+		// すぐに断った `busy`（待ち行列が埋まっていた）は入れ直さない
+		if (first.kind === 'unavailable' && first.reason === 'busy' && first.expired && !token.isCancellationRequested) {
+			const second = await this.enqueueParse(bytes, imagePixelBudget, token);
+			return second.kind === 'unavailable' && second.expired ? { kind: 'unavailable', reason: 'busy' } : second;
+		}
+		return first.kind === 'unavailable' && first.expired ? { kind: 'unavailable', reason: 'busy' } : first;
+	}
+
+	private enqueueParse(bytes: Uint8Array, imagePixelBudget: number | undefined, token: CancellationToken): Promise<ParadisSpreadsheetParseWorkerResult> {
 		return this.queue.run(bytes.byteLength, () => {
 			// 写してから移す。元のバイト列はメモリ不足の記録の鍵に使い、`Buffer` の共有の領域を移してしまうこともない。
 			const copy = ownedParadisOfficeBytes(bytes);
@@ -125,7 +137,7 @@ export class ParadisSpreadsheetParseWorkerBackend extends Disposable {
 
 	/**
 	 * worker を起動し、exceljs と jszip を読み込ませておく。worker が既に動いている、または温める依頼が走っている・
-	 * 待っているときは積まない（タブを素早く行き来して待ち行列を埋め、続く解析が `busy` で本体へ回らないように）。
+	 * 待っているときは積まない（タブを素早く行き来して待ち行列を埋め、続く解析が `busy` で断られないように）。
 	 */
 	warm(token: CancellationToken): Promise<ParadisSpreadsheetParseWorkerResult> {
 		if (this.warming) {

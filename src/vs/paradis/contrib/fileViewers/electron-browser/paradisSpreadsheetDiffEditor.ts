@@ -12,7 +12,7 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, isEqual } from '../../../../base/common/resources.js';
@@ -458,6 +458,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _currentDiffIdx = -1;
 	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
 	private _loadGeneration = 0;
+	/** 進行中の左右の読み込み・解析の取り消し。次の読み込み・入力を外したとき・閉じたときに取り消す。 */
+	private readonly _loadCancellation = this._register(new MutableDisposable());
 	private readonly _inputGeneration = new ParadisSpreadsheetOpenGeneration();
 	private _committedInput: IParadisSpreadsheetDiffCommittedInput | undefined;
 	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
@@ -960,11 +962,14 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			// (`resolveParadisSpreadsheetDiffSides`)。git 参照やリポジトリが見つからない場合もここに含まれうる。
 			// 左右の合計を大きさとして持つ。比較の重さは両方の合計で決まる。
 			let sourceBytes = 0;
+			// 前の読み込みの解析は待ち行列から外す（閉じた・開き直した差分の解析を残さない）
+			const loadCancellation = new CancellationTokenSource(token);
+			this._loadCancellation.value = toDisposable(() => loadCancellation.dispose(true));
 			// 左右の 2 冊を同じ画面に描くので、画像の画素の上限を半分ずつにする。
 			const loadSide = (resource: URI) => loadParadisSpreadsheetDiffSide(this._fileService, this._sharedProcessService, resource, totalBytes => {
 				sourceBytes += totalBytes;
 				this._probe.setBytes(sourceBytes);
-			}, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2);
+			}, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2, loadCancellation.token);
 			// 追加・削除されたファイルは片側の版にファイルが無い。それは失敗ではなく、空のブックとの差分として出す。
 			const sides = await Promise.all([loadSide(original), loadSide(modified)]);
 			const { original: origResult, modified: modResult } = resolveParadisSpreadsheetDiffSides(sides[0], sides[1]);
@@ -2060,6 +2065,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._probe.endOpen();
 		this._inputGeneration.invalidate();
 		this._loadGeneration++;
+		this._loadCancellation.clear();
 		this._inputDisposables.clear();
 		this._renderDisposables.clear();
 		this._tabsDisposables.clear();

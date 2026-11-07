@@ -7,7 +7,7 @@
 import { deepStrictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisCellData, IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
-import { packParadisWorkbookStyles, unpackParadisWorkbookStyles, type IParadisPackedWorkbookData } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
+import { packParadisWorkbookStyles, unpackParadisWorkbookStyles, unpackParadisWorkbookStylesInPlace, type IParadisPackedWorkbookData } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 
 /** Invented workbook: repeated styles, the same properties in another order, a merged cell and a theme. */
 function workbook(): IParadisWorkbookData {
@@ -54,5 +54,16 @@ suite('ParadisSpreadsheetStyleTable', () => {
 			plain: unpackParadisWorkbookStyles(plain) === plain,
 			broken: unpackParadisWorkbookStyles(broken).sheets[0].rows[0].cells.map(cell => cell.style),
 		}, { plain: true, broken: [{}, {}] });
+	});
+
+	test('unpacks in place the same workbook as the copying unpack, without copying the cells', () => {
+		const packed = packParadisWorkbookStyles(workbook());
+		const copied = unpackParadisWorkbookStyles(packParadisWorkbookStyles(workbook()));
+		const firstCell = packed.sheets[0].rows[0].cells[0];
+		const unpacked = unpackParadisWorkbookStylesInPlace(packed);
+		deepStrictEqual({
+			sameJson: JSON.stringify(unpacked) === JSON.stringify(copied),
+			sameObject: unpacked === (packed as unknown) && unpacked.sheets[0].rows[0].cells[0] === (firstCell as unknown),
+		}, { sameJson: true, sameObject: true });
 	});
 });

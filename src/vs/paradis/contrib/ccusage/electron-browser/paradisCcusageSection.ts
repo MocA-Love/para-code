@@ -35,7 +35,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { ParadisCcusageAgent } from '../common/paradisCcusage.js';
 import { paradisFormatTokens, paradisFormatUsd } from '../common/paradisCcusageFormat.js';
-import { FETCH_WINDOW_DAYS, IParadisCcusageDashboardData, IParadisCcusageDayData, IParadisCcusageModelSlice, ParadisCcusageClient } from './paradisCcusageClient.js';
+import { FETCH_WINDOW_DAYS, IParadisCcusageDashboardData, IParadisCcusageDayData, IParadisCcusageModelSlice, PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS, ParadisCcusageClient } from './paradisCcusageClient.js';
 
 const $ = dom.$;
 
@@ -287,7 +287,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 	private updateWarmLease(): void {
 		if (this.visible) {
-			this.warmLease.value ??= this.client.createDashboardWarmLease();
+			this.warmLease.value ??= this.client.createDashboardWarmLease(PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS);
 		} else {
 			this.warmLease.clear();
 		}
@@ -460,7 +460,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		}
 		void this.refreshRepos(bypassCache);
 		try {
-			this.data = await this.client.fetchDashboard(bypassCache);
+			this.data = await this.client.fetchDashboard(bypassCache, PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS);
 		} catch (error) {
 			this.lastError = error instanceof Error ? error.message : String(error);
 		} finally {
