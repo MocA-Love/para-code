@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { isMacintosh } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
@@ -30,8 +31,9 @@ suite('Paradis default settings', () => {
 	});
 
 	// macOS stable defaults to native menus upstream, which hide the theme colors and the fork's menu icons.
-	test('draws the in-app menus with the theme by default', () => {
+	// Other platforms keep upstream's default (inherit), so a native title bar keeps its native menu bar.
+	test('draws the in-app menus with the theme by default on macOS only', () => {
 		const overrides = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).getConfigurationDefaultsOverrides();
-		assert.strictEqual(overrides.get(MenuSettings.MenuStyle)?.value, MenuStyleConfiguration.CUSTOM);
+		assert.strictEqual(overrides.get(MenuSettings.MenuStyle)?.value, isMacintosh ? MenuStyleConfiguration.CUSTOM : undefined);
 	});
 });

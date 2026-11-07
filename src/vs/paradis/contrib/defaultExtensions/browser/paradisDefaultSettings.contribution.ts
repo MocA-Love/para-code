@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { MenuSettings, MenuStyleConfiguration } from '../../../../platform/window/common/window.js';
@@ -43,8 +44,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		'workbench.productIconTheme': 'bongocat',
 		// macOS の stable は upstream の既定が native で、右クリック・⌄・プルダウンの一覧が OS のメニューになり、テーマの色や
 		// Para Code のメニューのアイコン・赤字・色の丸が出ない。アプリの中のメニューをテーマで描く（Q575-2）。
-		// macOS の上のメニューバーは設定に関わらず native のまま（hasNativeMenu）。反映には再起動が要る
-		[MenuSettings.MenuStyle]: MenuStyleConfiguration.CUSTOM,
+		// macOS の上のメニューバーは設定に関わらず native のまま（hasNativeMenu）。反映には再起動が要る。
+		// Windows・Linux は upstream の既定（inherit）のまま。custom にするとタイトルバーが native の人のメニューバーまで自前の描画になる
+		...(isMacintosh ? { [MenuSettings.MenuStyle]: MenuStyleConfiguration.CUSTOM } : {}),
 		// ブランドのプライマリカラー統一（#09AFD9）。既定テーマ Houston は独自のミント緑/水色アクセントを持つため、
 		// 主要なアクセント色と、ステータスバーの通常/フォルダ未オープン背景をブランド色へ寄せる。
 		// Dark 2026 / Light 2026（Para Code のもう一つの既定系テーマ）はアクセント自体はテーマ側で調整済みなので
