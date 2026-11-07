@@ -33,9 +33,8 @@ import { linkKey } from '../../../../common/sessionLinks.js';
 import { getSessionApplication } from '../../../../common/sessionApplication.js';
 import { ChatAgentLocation, ChatConfiguration, ChatModeKind, ChatPermissionLevel, isChatPermissionLevel } from '../../../../../workbench/contrib/chat/common/constants.js';
 import { basename, dirname, isEqual } from '../../../../../base/common/resources.js';
-import { IAutomationSessionConfiguration, IChatMovedEvent, IDeleteChatOptions, IPreparedNewSession, ISessionChatMoveDestination, SessionMoveRefusedError, ISendRequestOptions, ISessionChangeEvent, ISessionConfigProvider, ISessionConfigurationSnapshot, ISessionModelPickerOptions, ISessionModelsSnapshot, ISessionsProvider, ISessionsProviderCreateSessionOptions, INestedChatFolderInfo, INestedChatWorkspace, INestedChatWorkspaceSupport, NestedChatWorkspaceError } from '../../../../services/sessions/common/sessionsProvider.js';
+import { IAutomationSessionConfiguration, IChatMovedEvent, IDeleteChatOptions, IPreparedNewSession, ISessionChatMoveDestination, SessionMoveRefusedError, ISendRequestOptions, ISessionChangeEvent, ISessionConfigProvider, ISessionConfigurationSnapshot, ISessionModelPickerOptions, ISessionModelsSnapshot, ISessionsProvider, ISessionsProviderCreateSessionOptions, INestedChatFolderInfo, INestedChatWorkspace, INestedChatWorkspaceSupport, NestedChatWorkspaceError, ICreateNewChatOptions } from '../../../../services/sessions/common/sessionsProvider.js';
 import { ISessionOptionGroup } from '../../../chat/browser/newSession.js';
-import { UNIFIED_WORKSPACE_PICKER_SETTING } from '../../../chat/common/constants.js';
 import { CancellationToken, CancellationTokenSource, cancelOnDispose } from '../../../../../base/common/cancellation.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { COPILOT_VENDOR_ID, ILanguageModelChatMetadataAndIdentifier, ILanguageModelsService } from '../../../../../workbench/contrib/chat/common/languageModels.js';
@@ -246,6 +245,10 @@ function isModelOptionGroup(group: IChatSessionProviderOptionGroup): boolean {
 
 function isRepositoriesOptionGroup(group: IChatSessionProviderOptionGroup): boolean {
 	return group.id === 'repositories';
+}
+
+function getSandboxSessionTitle(query: string, title?: string): string {
+	return (title || query.split('\n')[0]).trim().substring(0, 100) || localize('new session', "New Session");
 }
 
 /**
@@ -1202,10 +1205,6 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 			}));
 		}
 
-		this._register(Event.filter(
-			this.configurationService.onDidChangeConfiguration,
-			event => event.affectsConfiguration(UNIFIED_WORKSPACE_PICKER_SETTING),
-		)(() => this._onDidChangeSessionTypes.fire()));
 		this._register(this.configurationService.onDidChangeConfiguration(event => {
 			const sandboxChanged = event.affectsConfiguration(CloudSandboxEnabledSettingId) || event.affectsConfiguration(RemoteAgentHostsEnabledSettingId);
 			if (sandboxChanged || event.affectsConfiguration(ChatAIDisabledSettingId)) {
@@ -1289,14 +1288,13 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 	}
 
 	get browseActions(): readonly ISessionWorkspaceBrowseAction[] {
-		const useConsolidatedRemoteWorkspaces = this.configurationService.getValue<boolean>(UNIFIED_WORKSPACE_PICKER_SETTING);
 		const isSandbox = this.providerMode === 'sandbox';
 		const repositoryAction: ISessionWorkspaceBrowseAction = {
 			label: isSandbox
 				? localize('sandbox.chooseRepository', "Choose Repository...")
-				: useConsolidatedRemoteWorkspaces ? localize('workInRepository', "Work in Repository...") : localize('repository', "Repository..."),
+				: localize('workInRepository', "Work in Repository..."),
 			group: SESSION_WORKSPACE_GROUP_GITHUB,
-			icon: isSandbox || useConsolidatedRemoteWorkspaces ? Codicon.github : Codicon.library,
+			icon: Codicon.github,
 			providerId: this.id,
 			attachesContext: false,
 			supportsContextAttachment: !isSandbox,
@@ -1320,10 +1318,10 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 			{
 				label: localize('pullRequest', "Pull Request..."),
 				group: SESSION_WORKSPACE_GROUP_GITHUB,
-				icon: useConsolidatedRemoteWorkspaces ? Codicon.github : Codicon.gitPullRequest,
+				icon: Codicon.github,
 				providerId: this.id,
 				attachesContext: true,
-				run: workspace => this._browseForGitHubContext(OPEN_PULL_REQUEST_COMMAND, useConsolidatedRemoteWorkspaces ? Codicon.github : Codicon.gitPullRequest, workspace),
+				run: workspace => this._browseForGitHubContext(OPEN_PULL_REQUEST_COMMAND, Codicon.github, workspace),
 			},
 		];
 	}
@@ -1338,7 +1336,7 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 			return [CopilotCloudSessionType];
 		}
 		// Local folders can only host a Cloud session for the GitHub repository they track.
-		if (this.configurationService.getValue<boolean>(UNIFIED_WORKSPACE_PICKER_SETTING) && workspaceUri.scheme === Schemas.file) {
+		if (workspaceUri.scheme === Schemas.file) {
 			const gitRepository = this._getLocalGitRepository(workspaceUri);
 			gitRepository.resolveGitHubInfo?.();
 			if (gitRepository.gitHubInfo.get()) {
@@ -1949,6 +1947,8 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		if (this._sandboxSends.has(sessionId)) {
 			throw new Error(localize('sandbox.alreadyStarting', "A GitHub sandbox session is already being started. Wait for it to finish before sending another message."));
 		}
+		// The draft is already listed while sandbox preparation is pending.
+		session.setTitle(getSandboxSessionTitle(query));
 		if (this._preparedSandboxes.has(sessionId)) {
 			return { session: this._chatToSession(session) };
 		}
@@ -2027,7 +2027,7 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		}
 	}
 
-	async createNewChat(sessionId: string, _prompt?: string): Promise<IChat> {
+	async createNewChat(sessionId: string, _prompt?: string, _options?: ICreateNewChatOptions): Promise<IChat> {
 		const session = this._newSessions.get(sessionId);
 		if (!session) {
 			throw new Error(`[CopilotChatSessionsProvider] Session '${sessionId}' does not support multiple chats`);
@@ -2040,15 +2040,15 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		return newChat;
 	}
 
-	getNestedChatWorkspaceSupport(_sessionId: string, _reader: IReader | undefined): INestedChatWorkspaceSupport | undefined {
+	getNestedChatWorkspaceSupport(_sessionId: string, _chat: URI, _reader: IReader | undefined): INestedChatWorkspaceSupport | undefined {
 		return undefined;
 	}
 
-	async resolveNestedChatFolder(_sessionId: string, _folder: URI, _token: CancellationToken): Promise<INestedChatFolderInfo> {
+	async resolveNestedChatFolder(_sessionId: string, _chat: URI, _folder: URI, _token: CancellationToken): Promise<INestedChatFolderInfo> {
 		throw NestedChatWorkspaceError.notSupported();
 	}
 
-	async getNestedChatBranches(_sessionId: string, _folder: URI, _query: string, _token: CancellationToken): Promise<readonly string[]> {
+	async getNestedChatBranches(_sessionId: string, _chat: URI, _folder: URI, _query: string, _token: CancellationToken): Promise<readonly string[]> {
 		throw NestedChatWorkspaceError.notSupported();
 	}
 
@@ -2074,7 +2074,7 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		this._sandboxSends.add(session.sessionId);
 		const preparation = session.startPreparation();
 		const token = preparation.object;
-		session.setTitle((options.title || options.query.split('\n')[0]).trim().substring(0, 100) || localize('new session', "New Session"));
+		session.setTitle(getSandboxSessionTitle(options.query, options.title));
 		session.setStatus(SessionStatus.InProgress);
 		this._sessionCache.set(session.resource.toString(), session);
 		const placeholder = this._chatToSession(session);
@@ -2660,7 +2660,7 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		};
 	}
 
-	resolveWorkspace(uri: URI): ISessionWorkspace | undefined {
+	resolveWorkspace(uri: URI, options?: { readonly resolveMetadata?: boolean }): ISessionWorkspace | undefined {
 		if (this.providerMode === 'sandbox' && (uri.scheme !== GITHUB_REMOTE_FILE_SCHEME || uri.authority !== 'github' || !/^\/[^/]+\/[^/]+\/HEAD$/.test(uri.path) || uri.query || uri.fragment)) {
 			return undefined;
 		}
@@ -2672,7 +2672,8 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 			workingDirectory: uri,
 			name: basename(uri),
 			description: undefined,
-			gitRepository: uri.scheme === Schemas.file ? this._getLocalGitRepository(uri) : undefined,
+			gitRepository: uri.scheme === Schemas.file && (options?.resolveMetadata !== false || this._localGitRepositoryState.has(this.uriIdentityService.extUri.getComparisonKey(uri)))
+				? this._getLocalGitRepository(uri) : undefined,
 		};
 		return {
 			uri: uri,
