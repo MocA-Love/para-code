@@ -15,7 +15,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { URI } from '../../../../../base/common/uri.js';
 import { ConfirmResult, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
-import { IFileOpenOptions } from '../../../../../platform/files/common/files.js';
+import { IFileOpenOptions, IFileOverwriteOptions } from '../../../../../platform/files/common/files.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -77,6 +77,14 @@ suite('paradisRemoteHostsTransfer', () => {
 
 	/** 名前に `unreadable` を含むファイルだけ読めない（写している途中で失敗する）。 */
 	class PartlyUnreadableProvider extends InMemoryFileSystemProvider {
+		/** 立てると、一時名からの名前の変更が失敗する。 */
+		failRename = false;
+		override async rename(from: URI, to: URI, opts: IFileOverwriteOptions): Promise<void> {
+			if (this.failRename && from.path.includes('.paratransfer-')) {
+				throw new Error('EBUSY: resource busy');
+			}
+			return super.rename(from, to, opts);
+		}
 		override open(resource: URI, opts: IFileOpenOptions): Promise<number> {
 			if (!opts.create && resource.path.includes('unreadable')) {
 				return Promise.reject(new Error('EIO: i/o error'));
@@ -85,9 +93,11 @@ suite('paradisRemoteHostsTransfer', () => {
 		}
 	}
 
+	let currentProvider: PartlyUnreadableProvider;
+
 	async function createFileService(disposables: DisposableStore): Promise<FileService> {
 		const fileService = disposables.add(new FileService(new NullLogService()));
-		const provider = disposables.add(new PartlyUnreadableProvider());
+		const provider = currentProvider = disposables.add(new PartlyUnreadableProvider());
 		disposables.add(fileService.registerProvider(Schemas.file, provider));
 		return fileService;
 	}
@@ -181,6 +191,24 @@ suite('paradisRemoteHostsTransfer', () => {
 
 			const kept = await fileService.readFile(uri('/home/user/space/old.txt'));
 			deepStrictEqual({ kept: kept.value.toString(), entries: (await fileService.resolve(uri('/home/user'))).children?.map(child => child.name) }, { kept: 'old', entries: ['space'] });
+		});
+
+		test('keeps what was transferred under the temporary name and says where, when the replacement fails', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { services, fileService, fileDialogService, dialogService } = await setup(disposables);
+			await fileService.writeFile(uri('/remote/report.txt'), VSBuffer.fromString('new'));
+			await fileService.writeFile(uri('/home/user/report.txt'), VSBuffer.fromString('old'));
+			fileDialogService.saveResult = uri('/home/user/report.txt');
+			dialogService.setConfirmResult({ confirmed: true });
+			currentProvider.failRename = true;
+
+			const error = await paradisSaveToMachine(services, { uri: uri('/remote/report.txt'), name: 'report.txt', isDirectory: false }, uri('/home/user')).then(() => undefined, (failure: Error) => failure);
+
+			const temps = ((await fileService.resolve(uri('/home/user'))).children ?? []).filter(child => child.name.startsWith('.paratransfer-'));
+			deepStrictEqual({
+				saysWhere: temps.length === 1 && !!error?.message.includes(temps[0].name),
+				kept: temps.length === 1 ? (await fileService.readFile(temps[0].resource)).value.toString() : undefined,
+			}, { saysWhere: true, kept: 'new' });
 		});
 
 		test('replaces an existing file once the user confirms', async () => {

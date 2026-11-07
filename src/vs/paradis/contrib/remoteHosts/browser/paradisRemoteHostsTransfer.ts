@@ -71,7 +71,13 @@ async function copyReplacing(fileService: IFileService, source: URI, target: URI
 		await fileService.del(temp, { recursive: true, useTrash: false }).catch(() => undefined);
 		throw error;
 	}
-	await fileService.move(temp, target, true);
+	try {
+		await fileService.move(temp, target, true);
+	} catch (error) {
+		// 置き換え（送り先を消してから名前を変える）の途中で失敗した。写し終えた中身は一時名のまま残し、消さない
+		// （送り先が先に消えていることがあり、消すと何も残らない）。どこに残ったかを知らせる
+		throw new Error(localize('paraRemoteHosts.replaceFailed', "置き換えに失敗しました。転送した中身は {0} に残っています: {1}", basename(temp), error instanceof Error ? error.message : String(error)));
+	}
 }
 
 async function copyWithProgress(
@@ -186,12 +192,9 @@ export async function paradisCopyToDirectory(
 
 	// 既存チェック → 一括上書き確認。上書きを許すのは確認に出した名前だけ。確認を待つ間に別のアプリが
 	// 作った同名は overwrite=false のまま写すので、安全側で失敗する（確認していないものを消さない）
-	// 送り先のフォルダーを 1 回だけ読んで名前で調べる（1 件ずつ確かめると、SSH 先では件数ぶん往復を待つ）。
-	// 読めなければ 1 件ずつ確かめる
 	const existing = new Set<number>();
-	const listed = await services.fileService.resolve(targetDir).then(stat => new Set((stat.children ?? []).map(child => child.name)), () => undefined);
 	for (let index = 0; index < targets.length; index++) {
-		if (listed ? listed.has(basename(targets[index])) : await services.fileService.exists(targets[index])) {
+		if (await services.fileService.exists(targets[index])) {
 			existing.add(index);
 		}
 	}
