@@ -108,6 +108,12 @@ export interface IParadisCursorOverlayTuning {
 	 * （q.html Q574。最後の入力から数える。入力の知らせはページへ入力を届ける直前に送る）。
 	 */
 	readonly scrollInputMs: number;
+	/**
+	 * エージェントの入力の知らせの後、この時間（ms）の間に届いた isTrusted の入力だけをエージェントのものとみなす。
+	 * それより後の入力は、入力の窓の中でも利用者の操作として、その直後のスクロールを除く。main はホイールの知らせを
+	 * 150 ms、キーを 250 ms ごとに間引くので、それより少し長くする。
+	 */
+	readonly scrollInputSlackMs: number;
 	/** 擬似スクロールバーの太さ（px、Q574 の C）。 */
 	readonly scrollBarPx: number;
 	/** 擬似スクロールバーの溝がこれより短い入れ物には描かず、今の矢印に戻す（px）。 */
@@ -142,6 +148,7 @@ export const PARADIS_CURSOR_OVERLAY_TUNING: IParadisCursorOverlayTuning = Object
 	scrollUserMs: 800,
 	scrollLateMs: 150,
 	scrollInputMs: 400,
+	scrollInputSlackMs: 300,
 	scrollBarPx: 7,
 	scrollBarMinPx: 40,
 	scrollBarGlideMs: 260,
@@ -763,14 +770,20 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			var w = s && s.sw;
 			return !!(w && at >= w.since && at <= w.until);
 		}
-		/** どれかのカーソルの入力の窓が開いているか（利用者の操作と見分けられないホイール・キーを、除かずに拾う）。 */
-		function inputListening(at) {
+		/**
+		 * 't' に届いた isTrusted の入力（ホイール・キー・ポインタ）が、エージェントのものとみなせるか。エージェントの
+		 * ホイール・キーも isTrusted で届くので、どれかのカーソルの入力の知らせ（'last'）の直後 'scrollInputSlackMs' の
+		 * 間に届いたものだけをエージェントのものとし、それより後に届いたものは窓の中でも利用者の操作とみなす。
+		 * scroll_to は入力を送らないので、窓を開いた直後のほかは利用者の操作になる。
+		 */
+		function agentInput(t) {
 			var g = window[K];
 			if (!g) { return false; }
+			var slack = window[K3] ? window[K3].c.scrollInputSlackMs : c.scrollInputSlackMs;
 			var ids = Object.keys(g.cs);
 			for (var i = 0; i < ids.length; i++) {
-				var s = g.cs[ids[i]];
-				if (s && s.h && inputWatching(s, at)) { return true; }
+				var w = g.cs[ids[i]] && g.cs[ids[i]].h ? g.cs[ids[i]].sw : null;
+				if (w && t >= w.since - 50 && t <= w.last + slack && t <= w.until) { return true; }
 			}
 			return false;
 		}
@@ -785,10 +798,11 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			if (s.sw && now <= s.sw.until) {
 				s.sw.until = Math.max(s.sw.until, end);
 				s.sw.text = text;
+				s.sw.last = now;
 				return;
 			}
 			if (!s.watch) { scrollBaseline(); }
-			s.sw = { since: now, until: end, text: text };
+			s.sw = { since: now, until: end, text: text, last: now };
 		}
 		/**
 		 * スクリプトを始めたときの位置を覚え直す（文書と、上限までの要素のうち動かしてあるもの）。覚えていない要素は
@@ -846,7 +860,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 						}
 						run.x1 = p.x; run.y1 = p.y;
 						// エージェントのホイール・キーも isTrusted なので、入力の窓で動き始めたものは利用者の操作とみなさない
-						if (now - rec.user < rec.c.scrollUserMs && !inputListening(run.at)) { run.ignore = true; }
+						if (now - rec.user < rec.c.scrollUserMs && !agentInput(rec.user)) { run.ignore = true; }
 						if (!run.ignore) { liveBar(run); }
 						if (run.t) { clearTimeout(run.t); }
 						run.t = setTimeout(function () { settleScroll(rec, run); }, rec.c.scrollSettleMs);
@@ -878,7 +892,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			var cc = window[K3] ? window[K3].c : c;
 			var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
 			var de = doc.documentElement, se = doc.scrollingElement || de;
-			var l, t, w, h, g, size, view, rtl = false;
+			var l, t, w, h, g, size, view, rtl = false, r = null;
 			if (el === se || el === de || el === doc.body) {
 				if (!se) { return null; }
 				var std = doc.compatMode === 'CSS1Compat' && de;
@@ -886,7 +900,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 				g = Math.max(0, y ? vw - w : vh - h);
 				size = y ? se.scrollHeight : se.scrollWidth; view = y ? h : w;
 			} else {
-				var cs, r;
+				var cs;
 				try { cs = window.getComputedStyle(el); r = el.getBoundingClientRect(); } catch (e) { return null; }
 				var ov = y ? cs.overflowY : cs.overflowX;
 				if (ov !== 'auto' && ov !== 'scroll' && ov !== 'overlay') { return null; }
@@ -909,7 +923,8 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 				by = g > 0 ? t + h + (g - bw) / 2 : t + h - bw - 2;
 				if (by < 0 || by + bw > vh || l + w <= 0 || l >= vw) { return null; }
 			}
-			return { y: y, x: Math.round(bx), t: Math.round(by), len: len, tl: Math.max(20, len * view / size), max: size - view, bw: bw };
+			// 'ox'・'oy' は入れ物の外枠からの位置。表示中に入れ物ごと動いたときは、外枠を読むだけで付いていける（ページは null）
+			return { y: y, x: Math.round(bx), t: Math.round(by), len: len, tl: Math.max(20, len * view / size), max: size - view, bw: bw, ox: r ? bx - r.left : null, oy: r ? by - r.top : null };
 		}
 		/** つまみの位置（溝の頭からの px）。 */
 		function barPos(geo, v) { return geo.max > 0 ? (geo.len - geo.tl) * Math.max(0, Math.min(geo.max, v)) / geo.max : 0; }
@@ -959,7 +974,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 				if (!calm) { anim(root, [{ opacity: 0 }, { opacity: 1 }], { duration: 120, easing: 'ease' }); }
 				barTrack(s, b);
 			} else {
-				b.geo = { y: geo.y, x: geo.x, t: geo.t, len: b.geo.len, tl: b.geo.tl, max: b.geo.max, bw: b.geo.bw };
+				b.geo = { y: geo.y, x: geo.x, t: geo.t, len: b.geo.len, tl: b.geo.tl, max: b.geo.max, bw: b.geo.bw, ox: geo.ox, oy: geo.oy };
 				barPlace(b);
 			}
 			if (b.ft) { clearTimeout(b.ft); b.ft = 0; }
@@ -967,13 +982,21 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			if (to !== b.v) { void b.th.offsetWidth; barMove(b, to, calm ? 0 : cc.scrollBarGlideMs); }
 			return b;
 		}
-		/** 表示中は毎フレーム、入れ物の位置を読み直す。 */
+		/**
+		 * 表示中は毎フレーム、入れ物の外枠の位置だけを読み直す（overflow・枠線・向きは描き始めに読んだものを使う。
+		 * 画面に固定のページのバーは読み直さない）。
+		 */
 		function barTrack(s, b) {
 			var step = function () {
 				b.raf = 0;
 				if (s.bars === null || s.bars.indexOf(b) < 0) { return; }
-				var geo = b.el.isConnected ? barGeo(b.el, b.geo.y) : null;
-				if (geo && (geo.x !== b.geo.x || geo.t !== b.geo.t)) { b.geo.x = geo.x; b.geo.t = geo.t; barPlace(b); }
+				if (b.geo.ox === null) { return; }
+				var r = null;
+				try { r = b.el.isConnected ? b.el.getBoundingClientRect() : null; } catch (e) { }
+				if (r) {
+					var x = Math.round(r.left + b.geo.ox), t = Math.round(r.top + b.geo.oy);
+					if (x !== b.geo.x || t !== b.geo.t) { b.geo.x = x; b.geo.t = t; barPlace(b); }
+				}
 				b.raf = requestAnimationFrame(step);
 			};
 			b.raf = requestAnimationFrame(step);
