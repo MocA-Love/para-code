@@ -1304,10 +1304,11 @@ suite('ParadisSessionResume', () => {
 		assert.deepStrictEqual(sessions.map(session => [session.id, session.codexHome]), [['codex-session', secondHome]]);
 	});
 
-	test('does not move a conversation to the selected Codex home when that home does not have it', async () => {
+	test('marks a conversation the selected Codex home does not have, and links it there on request', async () => {
 		const secondHome = join(root, 'codex-home-2');
 		await fs.mkdir(join(secondHome, 'sessions'), { recursive: true });
-		await writeLines(join(codexSessions, 'rollout-codex-session.jsonl'), [
+		const codexPath = join(codexSessions, 'rollout-codex-session.jsonl');
+		await writeLines(codexPath, [
 			JSON.stringify({ type: 'session_meta', payload: { id: 'codex-session', cwd: workspace } }),
 			codexMessage('user', 'Codex fixture prompt'),
 		]);
@@ -1315,10 +1316,46 @@ suite('ParadisSessionResume', () => {
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
 		}, new NullLogService());
+		const request = { ...createListRequest(), preferredCodexHome: secondHome };
 
-		const sessions = await service.list({ ...createListRequest(), preferredCodexHome: secondHome });
+		const before = await service.list(request);
+		const linkedHome = await service.linkCodexSession(before[0].catalogId, secondHome);
+		const again = await service.linkCodexSession(before[0].catalogId, secondHome);
+		const after = await service.list(request);
+		const [original, linked] = await Promise.all([fs.stat(codexPath), fs.stat(join(secondHome, 'sessions', '2026', '08', '13', 'rollout-codex-session.jsonl'))]);
 
-		assert.deepStrictEqual(sessions.map(session => [session.id, session.codexHome]), [['codex-session', codexHome]]);
+		assert.deepStrictEqual({
+			before: before.map(session => [session.id, session.codexHome, session.otherCodexAccount]),
+			linkedHome,
+			again,
+			sameFile: original.ino === linked.ino,
+			after: after.map(session => [session.id, session.codexHome, session.otherCodexAccount]),
+		}, {
+			before: [['codex-session', codexHome, true]],
+			linkedHome: secondHome,
+			again: secondHome,
+			sameFile: true,
+			after: [['codex-session', secondHome, undefined]],
+		});
+	});
+
+	test('refuses to link a conversation over a different file in the selected Codex home', async () => {
+		const secondHome = join(root, 'codex-home-2');
+		const secondSessions = join(secondHome, 'sessions', '2026', '08', '13');
+		await fs.mkdir(secondSessions, { recursive: true });
+		await writeLines(join(codexSessions, 'rollout-codex-session.jsonl'), [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'codex-session', cwd: workspace } }),
+			codexMessage('user', 'Codex fixture prompt'),
+		]);
+		await writeLines(join(secondSessions, 'rollout-codex-session.jsonl'), [JSON.stringify({ type: 'session_meta', payload: { id: 'another', cwd: '/elsewhere' } })]);
+		const service = new ParadisSessionResumeService({
+			openCodeDatabases: async () => [],
+			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
+		}, new NullLogService());
+
+		const [session] = await service.list({ ...createListRequest(), preferredCodexHome: secondHome });
+
+		assert.deepStrictEqual(await service.linkCodexSession(session.catalogId, secondHome).then(() => 'linked', (error: NodeJS.ErrnoException) => error.code), 'EEXIST');
 	});
 
 	test('remembers the Codex home of a conversation that only another home has', async () => {

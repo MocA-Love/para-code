@@ -355,6 +355,11 @@ export interface IParadisCodexHome {
 	readonly signedIn: boolean;
 	/** id_token から読んだメールアドレス（表示用。検証はしない）。 */
 	readonly email?: string;
+	/**
+	 * Para Code が hook・MCP などの設定を書いてよいホームか（既定のホーム、Para Code が作った `~/.codex-<数字>`、
+	 * 設定で足したもの、一度でも選んだもの）。手で作った名前のホームは、選ぶまで false。古い版は送らない。
+	 */
+	readonly configurable?: boolean;
 }
 
 /** 全ウィンドウ共通の「新しく開くターミナルで使う Codex のホーム」。 */
@@ -370,6 +375,12 @@ export interface IParadisCodexAccountSelection {
 export interface IParadisCodexAccountsState {
 	readonly homes: readonly IParadisCodexHome[];
 	readonly selection: IParadisCodexAccountSelection;
+	/**
+	 * 今の選択のホーム（選んでいなければ既定のホーム）の絶対パスを1行だけ書いたファイル（選択を持つマシンの上の
+	 * パス）。ターミナルの Codex のランチャー（`resources/paradis/bin/codex`）が起動のたびに読み、開いた後に
+	 * 切り替えたターミナルでも今の選択で起動する。書けていなければ undefined。
+	 */
+	readonly launchHomeFile?: string;
 }
 
 /** 選択が指しているホーム。選択が無い・一覧に無いときは既定のホーム。 */

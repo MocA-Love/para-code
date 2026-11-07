@@ -35,6 +35,25 @@ if [ -z "$real_codex" ] || [ "$real_codex" = "$0" ]; then
 	exit 127
 fi
 
+# Follow the Codex account selected in Para Code at every start, not only when the terminal was
+# opened. Para Code writes the selected home (or the default home) to the file named in
+# PARA_CODE_CODEX_LAUNCH_HOME_FILE and records in PARA_CODE_CODEX_LAUNCH_HOME the CODEX_HOME it
+# put into this terminal (empty when none). Only when CODEX_HOME is still that value, so the user
+# has not set it by hand (`CODEX_HOME=... codex`, an export, or a session Codex itself started),
+# does the launcher switch CODEX_HOME to the home in the file.
+if [ -n "${PARA_CODE_CODEX_LAUNCH_HOME_FILE:-}" ] && [ -f "$PARA_CODE_CODEX_LAUNCH_HOME_FILE" ] \
+	&& [ "${CODEX_HOME-}" = "${PARA_CODE_CODEX_LAUNCH_HOME-}" ]; then
+	selected_codex_home=$(cat -- "$PARA_CODE_CODEX_LAUNCH_HOME_FILE" 2>/dev/null) || selected_codex_home=
+	case "$selected_codex_home" in
+		/*)
+			if [ -d "$selected_codex_home" ]; then
+				CODEX_HOME=$selected_codex_home
+				export CODEX_HOME
+			fi
+			;;
+	esac
+fi
+
 early_delegate=0
 user_no_daemon=0
 has_positional=0
