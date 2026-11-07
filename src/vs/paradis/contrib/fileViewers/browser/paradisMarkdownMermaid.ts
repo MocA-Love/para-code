@@ -102,7 +102,7 @@ export const PARADIS_MERMAID_ZOOM_STYLES = `
 
 /**
  * 図ごとの拡大の窓（Orca の `PanZoomImageDialog` と同じ操作: 縮小・拡大・画面に合わせる・PNG でコピー・閉じる、
- * ドラッグで移動、ホイールで拡大縮小）。窓はこのページの中に作り、Esc で閉じる。
+ * ドラッグで移動、ホイールで拡大縮小）。窓はこのページの中に作り、Esc で閉じる。Tab のフォーカスは窓のボタンの間で回す。
  *
  * ページの `html` には文書ごとの倍率（CSS zoom）が掛かっているので、窓にはその逆数を掛けて等倍で出す。
  * 写しの図は id を消さない（mermaid の図の中の `<style>` と矢印の印は、その id を起点に書かれている）。
@@ -146,7 +146,7 @@ stage.addEventListener('pointerdown',function(e){if(e.button!==0){return;}drag={
 stage.addEventListener('pointermove',function(e){if(!drag||drag.id!==e.pointerId){return;}x=drag.x+e.clientX-drag.px;y=drag.y+e.clientY-drag.py;fitted=false;apply();});
 function endDrag(e){if(drag&&drag.id===e.pointerId){drag=null;stage.classList.remove('dragging');}}
 stage.addEventListener('pointerup',endDrag);stage.addEventListener('pointercancel',endDrag);
-var onKey=function(e){if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();}else if((e.key==='+'||e.key==='=')&&!e.metaKey&&!e.ctrlKey){e.preventDefault();zoomCenter(STEP);}else if(e.key==='-'&&!e.metaKey&&!e.ctrlKey){e.preventDefault();zoomCenter(1/STEP);}else if(e.key==='0'&&!e.metaKey&&!e.ctrlKey){e.preventDefault();fit();}};
+var onKey=function(e){if(e.key==='Tab'){var f=[].slice.call(tools.querySelectorAll('button:not(:disabled)'));if(f.length===0){e.preventDefault();return;}var i=f.indexOf(document.activeElement);e.preventDefault();var n=i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length;f[n].focus();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();}else if((e.key==='+'||e.key==='=')&&!e.metaKey&&!e.ctrlKey){e.preventDefault();zoomCenter(STEP);}else if(e.key==='-'&&!e.metaKey&&!e.ctrlKey){e.preventDefault();zoomCenter(1/STEP);}else if(e.key==='0'&&!e.metaKey&&!e.ctrlKey){e.preventDefault();fit();}};
 document.addEventListener('keydown',onKey,true);
 document.body.appendChild(root);open={root:root,opener:opener,onKey:onKey,refit:function(){root.style.zoom=String(1/pageZoom());if(fitted){fit();}}};
 apply();fit();panel.focus({preventScroll:true});}

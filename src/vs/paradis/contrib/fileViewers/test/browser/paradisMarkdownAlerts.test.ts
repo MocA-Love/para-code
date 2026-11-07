@@ -34,7 +34,7 @@ suite('paradisMarkdownAlerts', () => {
 		return (await renderParadisMarkdownDocument(text, extensionService, languageService, options)).toString().trim();
 	}
 
-	test('draws the five GitHub alerts and leaves other quotes alone', async () => {
+	test('draws the five GitHub alerts only on the outermost quote and leaves other quotes alone', async () => {
 		const results: Record<string, string> = {};
 		const inputs: Record<string, string> = {
 			note: '> [!NOTE]\n> Body with *em* and [a link](https://example.com).',
@@ -47,6 +47,8 @@ suite('paradisMarkdownAlerts', () => {
 			unknownKind: '> [!DANGER]\n> Body',
 			inlineAfterMarker: '> [!NOTE]*em*',
 			plainQuote: '> Just a quote',
+			nestedQuote: '> > [!NOTE]\n> > Nested',
+			quoteInAlert: '> [!NOTE]\n> > [!TIP]\n> > Inner',
 		};
 		for (const [name, text] of Object.entries(inputs)) {
 			results[name] = await render(text);
@@ -62,6 +64,8 @@ suite('paradisMarkdownAlerts', () => {
 			unknownKind: '<blockquote>\n<p>[!DANGER]\nBody</p>\n</blockquote>',
 			inlineAfterMarker: '<blockquote>\n<p>[!NOTE]<em>em</em></p>\n</blockquote>',
 			plainQuote: '<blockquote>\n<p>Just a quote</p>\n</blockquote>',
+			nestedQuote: '<blockquote>\n<blockquote>\n<p>[!NOTE]\nNested</p>\n</blockquote>\n</blockquote>',
+			quoteInAlert: '<div class="paradis-markdown-alert paradis-markdown-alert-note" role="note">\n<p class="paradis-markdown-alert-title">Note</p>\n<blockquote>\n<p>[!TIP]\nInner</p>\n</blockquote>\n</div>',
 		});
 	});
 
