@@ -1,0 +1,53 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Icons and danger color in the HTML context menus (window.menuStyle: custom). Items get the
+ * `paradis-menu-icon` class from paradisDecorateMenuActions (upstream commands) or from fork menus that
+ * set it themselves; the fork's PARA-PATCH in menu.ts then puts the action class on the label.
+ *
+ * The glyph is drawn by the label's ::before with the codicon font. The label text keeps the menu font
+ * even when a fork menu also passes the `codicon` class (whose rule would switch the whole label to the
+ * icon font). Native menus are not HTML and ignore all of this.
+ */
+
+.monaco-menu .monaco-action-bar.vertical .action-label.paradis-menu-icon {
+	display: flex;
+	align-items: center;
+	font: inherit;
+	font-size: 12px;
+	line-height: 1;
+	text-align: start;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.monaco-menu .monaco-action-bar.vertical .action-label.paradis-menu-icon:not(.paradis-menu-color)::before {
+	flex: none;
+	width: var(--vscode-codiconFontSize, 16px);
+	margin-right: var(--vscode-spacing-size80);
+	font: normal normal normal 16px/1 codicon;
+	text-align: center;
+	opacity: 0.85;
+}
+
+/* In a menu that shows icons, give the labels without one (unlisted commands, submenus) an empty icon
+ * column of the same width so all labels start at the same place. */
+.monaco-menu .monaco-action-bar.vertical .actions-container:has(.paradis-menu-icon:not(.paradis-menu-color)) .action-label:not(.paradis-menu-icon):not(.separator)::before {
+	content: '';
+	display: inline-block;
+	width: calc(var(--vscode-codiconFontSize, 16px) + var(--vscode-spacing-size80));
+}
+
+.monaco-menu .monaco-action-bar.vertical .action-label.paradis-menu-danger,
+.monaco-menu .monaco-action-bar.vertical .action-label.paradis-menu-danger::before {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-menu .monaco-action-bar.vertical .action-item.disabled .action-label.paradis-menu-icon::before {
+	opacity: 0.4;
+}
