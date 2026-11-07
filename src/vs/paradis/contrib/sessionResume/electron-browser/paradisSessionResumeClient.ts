@@ -150,6 +150,21 @@ export class ParadisSessionResumeClient {
 		return channel.call<readonly IParadisResumeSession[]>('list', [request]);
 	}
 
+	/**
+	 * 選んでいる Codex のアカウントのホームに無い会話を、そのホームへリンクし、再開に使うホームを返す
+	 * （`IParadisResumeSession.otherCodexAccount`）。選択はウィンドウのマシンのホームを指すので、別のマシンの会話には
+	 * 選択を添えない（そのマシンの既定のホームへリンクする）。
+	 */
+	linkCodexSession(catalogId: string): Promise<string> {
+		const channel = this.catalogHost.get(catalogId);
+		if (!channel) {
+			return Promise.reject(new Error('Session is no longer available.'));
+		}
+		const onWindowHost = this.localCatalogIds.has(catalogId) === (this.remoteAgentService.getConnection() === null);
+		const preferredCodexHome = onWindowHost ? this.codexLaunchHomeService.getLaunchHome() : undefined;
+		return channel.call('linkCodexSession', [catalogId, preferredCodexHome]);
+	}
+
 	/** 会話ログの置き場所と最初の依頼の全文。 */
 	details(catalogId: string): Promise<IParadisResumeSessionDetails> {
 		const channel = this.catalogHost.get(catalogId);

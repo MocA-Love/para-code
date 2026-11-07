@@ -147,6 +147,8 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	private readonly sessions = this._register(new DisposableMap<string, ParadisAgentChatSession>());
 	private readonly chatModeInstances = new Set<number>();
 	private readonly overlays = new Set<ParadisAgentChatOverlay>();
+	/** {@link openChatWhenReady} の待ち。窓を閉じるときにまとめて外す。 */
+	private readonly pendingChatOpens = new Set<DisposableStore>();
 	private readonly drafts = new Map<string, string>();
 	private readonly histories = new Map<string, string[]>();
 	private readonly commandCache = new Map<string, { readonly at: number; readonly promise: Promise<readonly IParadisAgentChatCommand[]> }>();
@@ -242,6 +244,11 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		const safety = this._register(new IntervalTimer());
 		safety.cancelAndSet(() => this.refreshVisibleSessions(), VISIBLE_SAFETY_REFRESH_INTERVAL);
 		this._register(toDisposable(() => { void this.source.watchAgentChat(this.watcherId, []).catch(() => undefined); }));
+		this._register(toDisposable(() => {
+			for (const pending of [...this.pendingChatOpens]) {
+				pending.dispose();
+			}
+		}));
 		this.watchScheduler.schedule();
 	}
 
@@ -298,6 +305,50 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		if (instanceId !== undefined) {
 			this.toggle(instanceId);
 		}
+	}
+
+	async openChatWhenReady(instanceId: number, timeoutMs: number): Promise<boolean> {
+		if (!this.enabled) {
+			return false;
+		}
+		if (this.isAvailable(instanceId)) {
+			this.setChatMode(instanceId, true, this.isActiveInstance(instanceId));
+			return true;
+		}
+		const ready = await new Promise<boolean>(resolve => {
+			const store = new DisposableStore();
+			// 先に答えを確定させてから片付ける（片付けの「false で終える」は、確定後には効かない）
+			const finish = (value: boolean) => {
+				resolve(value);
+				store.dispose();
+			};
+			store.add(toDisposable(() => resolve(false)));
+			store.add(this.insightsService.onDidChange(() => {
+				if (this.isAvailable(instanceId)) {
+					finish(true);
+				}
+			}));
+			store.add(this.terminalService.onDidDisposeInstance(instance => {
+				if (instance.instanceId === instanceId) {
+					finish(false);
+				}
+			}));
+			const timer = setTimeout(() => finish(false), timeoutMs);
+			store.add(toDisposable(() => clearTimeout(timer)));
+			this.pendingChatOpens.add(store);
+			store.add(toDisposable(() => this.pendingChatOpens.delete(store)));
+		});
+		if (!ready || !this.enabled || this.terminalService.getInstanceFromId(instanceId) === undefined) {
+			return false;
+		}
+		// 待つ間に利用者が自分で切り替えていたら、そのままにする（setChatMode は同じ状態なら何もしない）。
+		// フォーカスは、そのタブが前に出ているときだけ入力欄へ移す（別の作業を横取りしない）。
+		this.setChatMode(instanceId, true, this.isActiveInstance(instanceId));
+		return true;
+	}
+
+	private isActiveInstance(instanceId: number): boolean {
+		return this.instanceIdOfGroup(this.editorGroupsService.activeGroup) === instanceId;
 	}
 
 	toggle(instanceId: number): void {

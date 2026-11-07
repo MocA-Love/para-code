@@ -38,7 +38,7 @@ import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js'
 import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { paradisManagedAgentHookCommand, paradisManagedAgentHookCommandWindows } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { onDidChangeParadisCodexHomes, paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { onDidChangeParadisCodexHomes, paradisCodexConfigHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
 	IParadisCodexHookListing,
 	IParadisCodexHookTrustGrantResult,
@@ -297,7 +297,7 @@ export interface IParadisCodexHookTrustBackend {
 export interface IParadisCodexHookTrustServiceOptions {
 	/**
 	 * 扱う CODEX_HOME の一覧。先頭が既定のホーム（`$CODEX_HOME`、無ければ `~/.codex`）。実物は
-	 * フェーズ2 の `paradisCodexHomes()`（既定のホーム、ログイン済みの `~/.codex-<数字>`、設定
+	 * `paradisCodexConfigHomes()`（既定のホーム、ログイン済みの `~/.codex-<数字>`、選んだことのあるホーム、設定
 	 * `paradis.limitsMonitor.codexHomes` で足したホーム）。hook を置く先と同じ一覧を見る。
 	 */
 	readonly listHomes: () => readonly string[];
@@ -642,7 +642,7 @@ ParadisSharedProcessContributions.register('codexHookTrust', ({ server, accessor
 		createParadisCodexHookTrustBackend(environmentService.userDataPath, () => shellEnv.getEnv(), logService),
 		// hook を置く先（paradisAgentHooksSetup.ts）と同じ一覧。アカウント用ホームは codexAccounts が
 		// 有効にするので、その登録より後に作る（paradis.sharedProcess.contribution.ts の並び）。
-		{ listHomes: () => paradisCodexHomes(), onDidChangeHomes: onDidChangeParadisCodexHomes },
+		{ listHomes: () => paradisCodexConfigHomes(), onDidChangeHomes: onDidChangeParadisCodexHomes },
 		() => configurationService.getValue(PARADIS_CODEX_HOOK_TRUST_SETTING),
 		Event.map(Event.filter(configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(PARADIS_CODEX_HOOK_TRUST_SETTING)), () => undefined),
 		logService,

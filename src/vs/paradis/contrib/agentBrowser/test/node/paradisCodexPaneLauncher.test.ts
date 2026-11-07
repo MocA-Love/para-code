@@ -335,4 +335,50 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 			await fs.rm(testRoot, { recursive: true, force: true });
 		}
 	});
+
+	// 開いた後に Codex のアカウントを切り替えたターミナルでも、起動のたびに今の選択（Para Code が書くファイル）を
+	// 読む。CODEX_HOME を利用者が自分で変えているとき（開いたときに Para Code が入れた値と違う）は変えない。
+	test('starts Codex with the account home selected now, unless CODEX_HOME was changed by hand', async () => {
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
+		try {
+			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
+			const fakeBin = join(testRoot, 'bin');
+			const recordPath = join(testRoot, 'homes.txt');
+			const selectionFile = join(testRoot, 'codex-launch-home');
+			const defaultHome = join(testRoot, '.codex');
+			const selectedHome = join(testRoot, '.codex-2');
+			const manualHome = join(testRoot, 'manual');
+			await fs.mkdir(fakeBin, { recursive: true });
+			await Promise.all([defaultHome, selectedHome, manualHome].map(home => fs.mkdir(home, { recursive: true })));
+			await fs.writeFile(join(fakeBin, 'codex'), `#!/bin/sh
+case " $* " in *" --version "*) exit 0;; esac
+printf '%s\\n' "\${CODEX_HOME-<unset>}" >> "$PARADIS_TEST_RECORD"
+`, { mode: 0o700 });
+			await fs.writeFile(selectionFile, selectedHome);
+			const run = async (env: Record<string, string>) => {
+				const base: Record<string, string | undefined> = { ...process.env };
+				delete base.CODEX_HOME;
+				delete base.PARA_CODE_CODEX_LAUNCH_HOME;
+				delete base.PARA_CODE_CODEX_LAUNCH_HOME_FILE;
+				await execFileAsync(launcherPath, ['exec', 'hello'], {
+					env: { ...base, PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`, PARADIS_TEST_RECORD: recordPath, ...env },
+					timeout: 15_000,
+				});
+			};
+			// 既定のホームで開いた（Para Code は何も入れていない）ターミナル
+			await run({ PARA_CODE_CODEX_LAUNCH_HOME_FILE: selectionFile, PARA_CODE_CODEX_LAUNCH_HOME: '' });
+			// 前の選択（既定のホーム）で開いたターミナル
+			await run({ PARA_CODE_CODEX_LAUNCH_HOME_FILE: selectionFile, PARA_CODE_CODEX_LAUNCH_HOME: defaultHome, CODEX_HOME: defaultHome });
+			// 利用者が自分で CODEX_HOME を変えた
+			await run({ PARA_CODE_CODEX_LAUNCH_HOME_FILE: selectionFile, PARA_CODE_CODEX_LAUNCH_HOME: defaultHome, CODEX_HOME: manualHome });
+			// 古い Para Code が開いたターミナル（目印なし）
+			await run({ CODEX_HOME: defaultHome });
+			// 選択のファイルが無い
+			await run({ PARA_CODE_CODEX_LAUNCH_HOME_FILE: join(testRoot, 'missing'), PARA_CODE_CODEX_LAUNCH_HOME: '' });
+			const homes = (await fs.readFile(recordPath, 'utf8')).split('\n').filter(line => line.length > 0);
+			assert.deepStrictEqual(homes, [selectedHome, selectedHome, manualHome, defaultHome, '<unset>']);
+		} finally {
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
 });

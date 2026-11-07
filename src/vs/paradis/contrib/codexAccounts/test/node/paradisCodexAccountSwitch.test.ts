@@ -84,6 +84,62 @@ suite('Paradis Codex account switching', () => {
 
 	const homesList = [['~/.codex', 'a@example.com', true], ['~/.codex-2', 'b@example.com', false], ['~/.codex-4', 'c@example.com', false]];
 
+	// ターミナルの Codex のランチャーは起動のたびにこのファイルを読む。選んだホーム、選んでいなければ既定のホームを書き、
+	// 選んだホームが消えたら既定のホームへ戻す。
+	test('writes the home terminals should start Codex with for the launcher', async () => {
+		const service = createService();
+		const file = (await service.getState()).launchHomeFile!;
+		const read = () => readFileSync(file, 'utf8');
+		const initial = read();
+		await service.selectHome(join(home, '.codex-2'));
+		const selected = read();
+		rmSync(join(home, '.codex-2', 'auth.json'));
+		await service.revalidate();
+		const signedOut = read();
+		await service.whenLinked();
+		service.dispose();
+		assert.deepStrictEqual({ file, initial, selected, signedOut }, {
+			file: join(stateDirectory, 'codex-launch-home'),
+			initial: join(home, '.codex'),
+			selected: join(home, '.codex-2'),
+			signedOut: join(home, '.codex'),
+		});
+	});
+
+	// 手で作った名前のホームは切り替え先には出すが、設定を書いてよい印は選んだときに初めて付き、再起動後も残る。
+	test('marks a hand-made home as configurable only after the user selects it', async () => {
+		mkdirSync(join(home, '.codex-work'), { recursive: true });
+		writeFileSync(join(home, '.codex-work', 'auth.json'), JSON.stringify({ tokens: { id_token: idToken('d@example.com'), account_id: 'work' } }));
+		const configurable = (state: IParadisCodexAccountsState) => state.homes.map(entry => [entry.label, entry.configurable]);
+		const first = createService();
+		const before = configurable(await first.getState());
+		await first.selectHome(join(home, '.codex-work'));
+		const afterSelect = configurable(await first.selectHome(undefined));
+		await first.whenLinked();
+		first.dispose();
+		const second = createService();
+		const afterRestart = configurable(await second.getState());
+		second.dispose();
+		const adopted = [['~/.codex', true], ['~/.codex-2', true], ['~/.codex-4', true], ['~/.codex-work', true]];
+		assert.deepStrictEqual({ before, afterSelect, afterRestart }, {
+			before: [['~/.codex', true], ['~/.codex-2', true], ['~/.codex-4', true], ['~/.codex-work', false]],
+			afterSelect: adopted,
+			afterRestart: adopted,
+		});
+	});
+
+	// 選んだホームを覚える前の版で選んだまま更新したときも、今選んでいるホームへは書く。
+	test('treats the selected home as configurable even when the stored selection predates remembering it', async () => {
+		mkdirSync(join(home, '.codex-work'), { recursive: true });
+		writeFileSync(join(home, '.codex-work', 'auth.json'), JSON.stringify({ tokens: { id_token: idToken('d@example.com'), account_id: 'work' } }));
+		mkdirSync(stateDirectory, { recursive: true });
+		writeFileSync(join(stateDirectory, 'codex-account-selection.json'), JSON.stringify({ version: 1, homePath: join(home, '.codex-work'), revision: 3 }));
+		const service = createService();
+		const state = await service.getState();
+		service.dispose();
+		assert.deepStrictEqual(state.homes.find(entry => entry.label === '~/.codex-work')?.configurable, true);
+	});
+
 	test('lists signed-in homes and keeps the selection across restarts for every window', async () => {
 		const first = createService();
 		const events: (string | undefined)[] = [];
