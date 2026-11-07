@@ -33,6 +33,55 @@
 
 export type AivisErrorKind = 'retryable' | 'fatal' | 'item-specific';
 
+/** 長さが分かった読み上げの再生の期限に足す余裕。 */
+const AIVIS_PLAY_DURATION_MARGIN_MS = 10_000;
+
+/** MPEG-1 / MPEG-2 Layer III のビットレート（kbps）。添え字はヘッダーの 4 ビット。 */
+const MP3_BITRATES_V1 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+const MP3_BITRATES_V2 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+
+/**
+ * 音声の長さ（ミリ秒）。WAV（RIFF の fmt と data）と、固定ビットレートの MP3（ID3 の後の最初のフレームの
+ * ビットレート。可変ビットレートの印 Xing・VBRI があれば分からない扱い）だけ求める。分からなければ undefined。
+ */
+export function paradisAudioDurationMs(audio: Buffer): number | undefined {
+	if (audio.length >= 12 && audio.toString('ascii', 0, 4) === 'RIFF' && audio.toString('ascii', 8, 12) === 'WAVE') {
+		let byteRate: number | undefined;
+		for (let offset = 12; offset + 8 <= audio.length;) {
+			const id = audio.toString('ascii', offset, offset + 4);
+			const size = audio.readUInt32LE(offset + 4);
+			if (id === 'fmt ' && offset + 20 <= audio.length) {
+				byteRate = audio.readUInt32LE(offset + 16);
+			} else if (id === 'data') {
+				return byteRate ? Math.round(Math.min(size, audio.length - offset - 8) / byteRate * 1000) : undefined;
+			}
+			offset += 8 + size + (size % 2);
+		}
+		return undefined;
+	}
+	let offset = 0;
+	if (audio.length >= 10 && audio.toString('ascii', 0, 3) === 'ID3') {
+		offset = 10 + ((audio[6] & 0x7f) << 21 | (audio[7] & 0x7f) << 14 | (audio[8] & 0x7f) << 7 | (audio[9] & 0x7f));
+	}
+	if (offset + 4 > audio.length || audio[offset] !== 0xff || (audio[offset + 1] & 0xe0) !== 0xe0) {
+		return undefined;
+	}
+	const version = (audio[offset + 1] >> 3) & 0x03; // 3: MPEG-1, 2: MPEG-2, 0: MPEG-2.5
+	const layer = (audio[offset + 1] >> 1) & 0x03; // 1: Layer III
+	if (layer !== 1 || version === 1) {
+		return undefined;
+	}
+	const kbps = (version === 3 ? MP3_BITRATES_V1 : MP3_BITRATES_V2)[audio[offset + 2] >> 4];
+	if (!kbps) {
+		return undefined;
+	}
+	const head = audio.toString('latin1', offset, Math.min(audio.length, offset + 200));
+	if (head.includes('Xing') || head.includes('VBRI')) {
+		return undefined;
+	}
+	return Math.round((audio.length - offset) * 8 / kbps);
+}
+
 export interface AivisRateLimit {
 	/** 現在のウィンドウで残っているリクエスト数（レスポンスヘッダー由来）。 */
 	readonly remaining: number;
@@ -147,10 +196,14 @@ export interface AudioSchedulerDeps {
 	 */
 	aivisPlaySafetyTimeoutMs?: number;
 	/**
-	 * 手元の再生（afplay 等）を止める。{@link aivisPlaySafetyTimeoutMs} を過ぎても終わらない再生をあきらめて次へ
-	 * 進むときに呼ぶ（止めないと、次の発話と声が重なる）。
+	 * 読み上げの手元の再生（afplay 等）を止める。音声の長さが分かっていて、長さ＋余裕を過ぎても終わらない再生を
+	 * あきらめるときに呼ぶ（止めないと、次の発話と声が重なる）。長さが分からないときは止めない。
 	 */
 	stopLocalPlayback?(): void;
+	/** 音声の長さ（ミリ秒）。分からなければ undefined。既定は {@link paradisAudioDurationMs}。 */
+	audioDurationMs?(audio: Buffer): number | undefined;
+	/** 長さが分かった再生の期限に足す余裕（既定 10 秒）。 */
+	aivisPlayDurationMarginMs?: number;
 	/**
 	 * Para Code が自分で声を鳴らす直前に、worker の再生 lock が空くのを待つ（重ねない）。{@link aivisPlaySafetyTimeoutMs}
 	 * の外で待つ（待ちが安全網の時間を食って、鳴らしている途中で次の声を重ねないように）。任意。
@@ -695,7 +748,10 @@ export class AudioScheduler {
 	 * タスクへ進める（正常完了時は必ずタイマーを clear するので正常系の挙動は変わらない）。
 	 */
 	private playWithSafetyTimeout(runner: AivisTaskRunner, audio: Buffer): Promise<void> {
-		const timeoutMs = this.deps.aivisPlaySafetyTimeoutMs ?? AIVIS_PLAY_SAFETY_TIMEOUT_MS;
+		// 長さが分かる音声は、長さ＋余裕までは待つ（30 秒より長い読み上げを途中で切らない）
+		const durationMs = (this.deps.audioDurationMs ?? paradisAudioDurationMs)(audio);
+		const baseTimeoutMs = this.deps.aivisPlaySafetyTimeoutMs ?? AIVIS_PLAY_SAFETY_TIMEOUT_MS;
+		const timeoutMs = durationMs === undefined ? baseTimeoutMs : Math.max(baseTimeoutMs, durationMs + (this.deps.aivisPlayDurationMarginMs ?? AIVIS_PLAY_DURATION_MARGIN_MS));
 		return new Promise<void>((resolve, reject) => {
 			let settled = false;
 			const clearSafetyTimer = () => {
@@ -709,8 +765,11 @@ export class AudioScheduler {
 				settled = true;
 				this.aivisPlaySafetyTimer = null;
 				this.deps.logWarn?.('[audio-scheduler] aivis playback did not finish within safety timeout; giving up and continuing');
-				// 鳴り続けているプレイヤーを止める（次の発話と重ねない）
-				this.deps.stopLocalPlayback?.();
+				// 長さを過ぎても鳴り続けている読み上げのプレイヤーを止める（次の発話と重ねない）。長さが分からないときは
+				// 正常な長い読み上げかもしれないので止めない（今までどおり、待つのをやめて次へ進むだけ）
+				if (durationMs !== undefined) {
+					this.deps.stopLocalPlayback?.();
+				}
 				// あきらめて次へ進む（item-specific 失敗ではないので握りつぶす）。
 				resolve();
 			}, timeoutMs);
