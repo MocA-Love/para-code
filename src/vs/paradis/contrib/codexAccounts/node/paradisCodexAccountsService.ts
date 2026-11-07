@@ -323,8 +323,18 @@ export class ParadisCodexAccountsService extends Disposable {
 	/** 一度でも選んだホームを、hook・MCP の設定を書く先（paradisCodexConfigHomes）へ知らせる。 */
 	private applyAdoptedHomes(): void {
 		if (this.options.homeDirectory === undefined) {
-			paradisSetAdoptedCodexHomes(this.selection.adoptedHomePaths ?? []);
+			paradisSetAdoptedCodexHomes(this.adoptedHomes());
 		}
+	}
+
+	/**
+	 * 設定を書いてよい、選んだことのあるホーム。今選んでいるホームも含める（選んだホームを覚える前の版で
+	 * 選んだまま更新したときも、そのホームへ書く）。
+	 */
+	private adoptedHomes(): readonly string[] {
+		const adopted = this.selection.adoptedHomePaths ?? [];
+		const selected = this.selection.homePath;
+		return selected !== undefined && !adopted.includes(selected) ? [...adopted, selected] : adopted;
 	}
 
 	private serializeSelection<T>(run: () => Promise<T>): Promise<T> {
@@ -419,7 +429,7 @@ export class ParadisCodexAccountsService extends Disposable {
 				signedIn,
 				email: signedIn ? (await this.readAuth(homePath)).email : undefined,
 				configurable: this.options.homeDirectory !== undefined
-					? paradisIsCodexConfigHome(homePath, { homeDirectory: this.options.homeDirectory, configured: this.options.configuredHomes, adopted: this.selection.adoptedHomePaths })
+					? paradisIsCodexConfigHome(homePath, { homeDirectory: this.options.homeDirectory, configured: this.options.configuredHomes, adopted: this.adoptedHomes() })
 					: paradisIsCodexConfigHome(homePath),
 			});
 		}

@@ -128,6 +128,18 @@ suite('Paradis Codex account switching', () => {
 		});
 	});
 
+	// 選んだホームを覚える前の版で選んだまま更新したときも、今選んでいるホームへは書く。
+	test('treats the selected home as configurable even when the stored selection predates remembering it', async () => {
+		mkdirSync(join(home, '.codex-work'), { recursive: true });
+		writeFileSync(join(home, '.codex-work', 'auth.json'), JSON.stringify({ tokens: { id_token: idToken('d@example.com'), account_id: 'work' } }));
+		mkdirSync(stateDirectory, { recursive: true });
+		writeFileSync(join(stateDirectory, 'codex-account-selection.json'), JSON.stringify({ version: 1, homePath: join(home, '.codex-work'), revision: 3 }));
+		const service = createService();
+		const state = await service.getState();
+		service.dispose();
+		assert.deepStrictEqual(state.homes.find(entry => entry.label === '~/.codex-work')?.configurable, true);
+	});
+
 	test('lists signed-in homes and keeps the selection across restarts for every window', async () => {
 		const first = createService();
 		const events: (string | undefined)[] = [];
