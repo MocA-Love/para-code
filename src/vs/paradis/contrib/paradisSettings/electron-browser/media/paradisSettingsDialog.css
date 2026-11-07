@@ -158,6 +158,7 @@
 .paradis-settings-area .psd-row-warning .codicon {
 	flex: none;
 	margin-top: 2px;
+	font-size: var(--vscode-codiconFontSize-compact);
 }
 
 /* allow-any-unicode-next-line */
@@ -181,6 +182,7 @@
 
 .paradis-settings-area .psd-row-restart .codicon {
 	flex: none;
+	font-size: var(--vscode-codiconFontSize-compact);
 }
 
 .paradis-settings-area .psd-row-restart-text {
