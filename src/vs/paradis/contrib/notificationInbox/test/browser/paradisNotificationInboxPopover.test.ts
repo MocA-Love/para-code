@@ -13,6 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { ParadisNotificationInboxPopover } from '../../browser/paradisNotificationInboxPopover.js';
 import { IParadisInboxEntry, IParadisInboxSnapshot, IParadisNotificationInboxService } from '../../common/paradisNotificationInbox.js';
@@ -54,6 +55,7 @@ suite('Paradis notification inbox popover', () => {
 			{} as IContextMenuService,
 			new TestConfigurationService(),
 			{} as ICommandService,
+			NullHoverService,
 		));
 
 		const rows = [...container.getElementsByClassName('pnip-row')] as HTMLElement[];
