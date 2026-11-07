@@ -26,13 +26,18 @@ export interface DetailColumnEntry {
 	readonly open: boolean;
 	/** 詳細の列を根まで戻す（何も開いていなければ何もしない）。 */
 	readonly popToTop: () => void;
+	/**
+	 * 詳細の列に出ているのがそのスペースのセッション 1 枚だけなら、その画面の引数（タブ・最新の印）だけを替えて
+	 * true を返す（作り直さない）。そうでなければ何もせず false。
+	 */
+	readonly showSession?: (spaceId: string, params: Readonly<Record<string, string>>) => boolean;
 }
 
 interface DetailColumnStore {
 	/** 最後が前面。2列でないときは空。 */
 	readonly entries: readonly DetailColumnEntry[];
 	/** 詳細の列を置く（前面に置く）。戻り値で外す。 */
-	attach(key: string, pcId: string, popToTop: () => void): () => void;
+	attach(key: string, pcId: string, popToTop: () => void, showSession?: DetailColumnEntry['showSession']): () => void;
 	/** その器が前面に来た（無ければ何もしない）。 */
 	bringToFront(key: string): void;
 	setOpen(key: string, open: boolean): void;
@@ -40,8 +45,8 @@ interface DetailColumnStore {
 
 export const useDetailColumn = create<DetailColumnStore>()((set, get) => ({
 	entries: [],
-	attach(key, pcId, popToTop) {
-		const entry: DetailColumnEntry = { key, pcId, open: false, popToTop };
+	attach(key, pcId, popToTop, showSession) {
+		const entry: DetailColumnEntry = { key, pcId, open: false, popToTop, ...(showSession !== undefined ? { showSession } : {}) };
 		set(state => ({ entries: [...state.entries.filter(item => item.key !== key), entry] }));
 		return () => {
 			// 同じ印で置き直された後なら、新しい方は外さない。
@@ -88,4 +93,15 @@ export function resetDetailColumnFor(pcId: string): void {
 	if (front !== undefined && front.pcId === pcId) {
 		front.popToTop();
 	}
+}
+
+/**
+ * 2列で前面の詳細の列がその PC のもので、同じスペースのセッションだけが出ていれば、その画面のタブと最新の印を
+ * 替えて true を返す（セッションの画面を作り直さないので、ターミナルの WebView・会話の位置・入力途中の文字が残る）。
+ * そうでなければ false（呼び出し側は {@link resetDetailColumnFor} してから開く）。
+ */
+export function showSessionInDetailColumn(pcId: string, spaceId: string, params: Readonly<Record<string, string>>): boolean {
+	const entries = useDetailColumn.getState().entries;
+	const front = entries[entries.length - 1];
+	return front !== undefined && front.pcId === pcId && front.showSession?.(spaceId, params) === true;
 }

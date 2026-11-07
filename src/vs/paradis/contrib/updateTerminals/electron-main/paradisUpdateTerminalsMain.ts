@@ -32,6 +32,7 @@ import { FocusMode } from '../../../../platform/native/common/native.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IParadisUpdateQuitGate, paradisSetUpdateQuitGate } from '../../../../platform/update/common/paradisUpdateQuitGate.js';
 import { IUpdateService, StateType } from '../../../../platform/update/common/update.js';
+import { ICodeWindow } from '../../../../platform/window/electron-main/window.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 import { paradisParseKeepTerminalsChoice } from '../../../common/paradisTerminalKeepPlan.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../../ptyDaemon/common/paradisPtyDaemonSettingKey.js';
@@ -48,6 +49,7 @@ import {
 	PARADIS_UPDATE_TERMINALS_MAIN_CHANNEL,
 	PARADIS_UPDATE_TERMINALS_WINDOW_CHANNEL,
 	paradisLocalTerminalsAcrossUpdate,
+	paradisMayUpdateWithoutAnswers,
 	paradisMergeUpdateReports,
 	paradisNextAfterStopPhase,
 	paradisPickConfirmWindow,
@@ -58,7 +60,11 @@ import {
 	paradisUpdateGroupCount,
 } from '../common/paradisUpdateTerminals.js';
 
-/** ウィンドウに聞くときの上限。答えないウィンドウは数に入れない（更新を止めない）。 */
+/**
+ * ウィンドウに聞くときの上限。口を持たないウィンドウは数に入れない（更新を止めない）。
+ * 接続先のウィンドウが期限までに答えなければ「あとで更新」にする（{@link paradisMayUpdateWithoutAnswers}）。
+ * ウィンドウの側は接続先への問い合わせをこれより短く切る（`paradisUpdateTerminals.contribution.ts`）。
+ */
 const COLLECT_TIMEOUT_MS = 4_000;
 /** 止める合図が届くのを待つ上限（ウィンドウごと）。 */
 const STOP_TIMEOUT_MS = 15_000;
@@ -127,15 +133,21 @@ class ParadisUpdateTerminalsMain extends Disposable implements IParadisUpdateQui
 			Promise.all(windows.map(async window => {
 				try {
 					const report = await raceTimeout(this.windowService(window.id).collect().then(value => ({ value })), COLLECT_TIMEOUT_MS);
-					return { window, answered: report !== undefined, report: report?.value };
+					return { window, answered: report !== undefined, timedOut: report === undefined, report: report?.value };
 				} catch (error) {
 					// Agent Sessions のウィンドウなど、この口を持たないウィンドウ。関わりが無い。
 					this.logService.trace(`[paradisUpdateTerminals] window ${window.id} did not answer`, error);
-					return { window, answered: false, report: undefined };
+					return { window, answered: false, timedOut: false, report: undefined };
 				}
 			})),
 			this.getLocalDaemon(),
 		]);
+		const timedOut = answers.filter(entry => entry.timedOut);
+		if (!paradisMayUpdateWithoutAnswers(timedOut.map(entry => ({ isRemote: entry.window.remoteAuthority !== undefined })))) {
+			this.logService.warn(`[paradisUpdateTerminals] ${timedOut.length} window(s) did not say in time which terminals the update would end; updating later`);
+			void this.tellUnansweredWindows(timedOut.map(entry => entry.window).filter(window => window.remoteAuthority !== undefined));
+			return false;
+		}
 		const answered = answers.filter(entry => entry.answered);
 		const summary = paradisMergeUpdateReports(answered.map(entry => entry.report).filter((report): report is IParadisUpdateWindowReport => report !== undefined), localDaemon);
 		if (!paradisShouldConfirmUpdate(summary)) {
@@ -169,6 +181,27 @@ class ParadisUpdateTerminalsMain extends Disposable implements IParadisUpdateQui
 		}
 		this.afterStop = 'waiting';
 		return true;
+	}
+
+	/**
+	 * 接続先のウィンドウが答えなかったので更新を見送ったことを知らせる。答えなかったウィンドウを前に出し、
+	 * その上に出す（どのウィンドウか分かるように）。接続先の名前は出さない（数だけ）。
+	 */
+	private async tellUnansweredWindows(windows: readonly ICodeWindow[]): Promise<void> {
+		const first = windows[0];
+		first?.focus({ mode: FocusMode.Force });
+		try {
+			await this.dialogMainService.showMessageBox({
+				type: 'info',
+				message: localize('paradis.updateTerminals.unanswered.title', "接続先のウィンドウから返事がなかったため、更新を見送りました"),
+				detail: windows.length > 1
+					? localize('paradis.updateTerminals.unanswered.detailMany', "前に出したウィンドウを含む {0} 個の接続先のウィンドウが、更新で終わるターミナルを時間内に答えませんでした。そのウィンドウを閉じるか、少し待ってからもう一度更新してください。", windows.length)
+					: localize('paradis.updateTerminals.unanswered.detailOne', "前に出した接続先のウィンドウが、更新で終わるターミナルを時間内に答えませんでした。そのウィンドウを閉じるか、少し待ってからもう一度更新してください。"),
+				buttons: [localize('paradis.updateTerminals.unanswered.ok', "OK")],
+			}, first?.win ?? undefined);
+		} catch (error) {
+			this.logService.warn('[paradisUpdateTerminals] could not tell that the update was postponed', error);
+		}
 	}
 
 	/** 「終わらせて更新」の後で更新が行われなかったとき。全ウィンドウの合図と控えを取り消す。 */

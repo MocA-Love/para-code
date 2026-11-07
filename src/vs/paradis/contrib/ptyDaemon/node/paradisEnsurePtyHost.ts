@@ -20,7 +20,7 @@
 import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import { createConnection } from 'net';
-import { timeout } from '../../../../base/common/async.js';
+import { raceTimeout, timeout } from '../../../../base/common/async.js';
 import { dirname, join } from '../../../../base/common/path.js';
 import { removeDangerousEnvVariables } from '../../../../base/common/processes.js';
 import { Promises } from '../../../../base/node/pfs.js';
@@ -37,6 +37,16 @@ import { IParadisPtyHost, PARADIS_PTY_HOST_CHANNEL, paradisPtyHostClientId, PARA
 /** 1回の接続試行を待つ上限。 */
 const CONNECT_TIMEOUT = 2_000;
 
+/**
+ * 繋いだ後の名乗り（台帳の読み・合言葉・hello）を待つ上限。
+ *
+ * 接続を受けるだけで答えない常駐（プロセスが固まっている）を待ち続けると、全ての端末の生成が
+ * ここで止まる（`paradisTerminalProcessFactory.ts` が繋ぎ終わるのを待つため）。
+ * 重い機械のコールドスタートや、更新の直後に全ウィンドウが一斉に繋ぎに来る場面でも越えないよう長めに取る
+ * （越えると、常駐に残した前の端末へ繋がらない）。
+ */
+const HANDSHAKE_TIMEOUT = 30_000;
+
 /** 起こしてから待つ上限。ここを過ぎたら常駐を諦めて、今までどおりアプリの中で動かす。 */
 const STARTUP_TIMEOUT = 10_000;
 
@@ -51,6 +61,8 @@ export interface IParadisEnsurePtyHostOptions {
 	/** 常駐として起動するための実行ファイルと引数。呼び出し側の形（Electron / 素の node）に依存する。 */
 	readonly launch: { readonly execPath: string; readonly args: readonly string[]; readonly env: { readonly [key: string]: string } };
 	readonly logService: ILogService;
+	/** 繋いだ後の名乗りを待つ上限（ミリ秒）。テストで短くする。既定は {@link HANDSHAKE_TIMEOUT}。 */
+	readonly handshakeTimeout?: number;
 }
 
 export interface IParadisPtyHostConnection {
@@ -77,10 +89,18 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 		return undefined;
 	}
 
-	const existing = await paradisConnect(paths);
+	const handshakeTimeout = options.handshakeTimeout ?? HANDSHAKE_TIMEOUT;
+	const existing = await paradisConnect(paths, handshakeTimeout);
 	if (existing.ok) {
 		logService.info(`[ParadisPtyHost] joined the daemon already serving ${paths.socketPath}`);
 		return existing.connection;
+	}
+	if (existing.failure === 'handshake-timeout') {
+		// 接続は受けるが答えない常駐が居る。新しく起こしても、その常駐は先客が応答する
+		// （接続を受ける）のを見て退くだけなので、待たずにアプリの中で動かす。
+		logService.error(`[ParadisPtyHost] the daemon at ${paths.socketPath} accepted the connection but did not answer in ${handshakeTimeout}ms; terminals will run in this process`);
+		reportParadisDiagnosticError('owned', 'pty-daemon', 'not-up:handshake-timeout', new Error('the daemon did not answer the handshake'), undefined, 'warning');
+		return undefined;
 	}
 
 	const daemon = await paradisSpawnDaemon(options);
@@ -92,7 +112,7 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 	while (Date.now() < deadline) {
 		await timeout(RETRY_INTERVAL);
 		attempts++;
-		const attempt = await paradisConnect(paths);
+		const attempt = await paradisConnect(paths, handshakeTimeout);
 		if (attempt.ok) {
 			logService.info(`[ParadisPtyHost] started a daemon at ${paths.socketPath}`);
 			return attempt.connection;
@@ -132,8 +152,9 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
  * - `refused-identity`: 合言葉で名乗れなかった
  * - `hello-failed`: 名乗った後の最初の問い合わせが失敗した
  * - `protocol-mismatch`: protocol の版が違った
+ * - `handshake-timeout`: 繋がったが、名乗り（台帳の読み・合言葉・hello）が上限までに終わらなかった
  */
-type ParadisPtyHostConnectFailure = 'no-socket' | 'refused' | 'timeout' | 'error' | 'no-record' | 'refused-identity' | 'hello-failed' | 'protocol-mismatch';
+type ParadisPtyHostConnectFailure = 'no-socket' | 'refused' | 'timeout' | 'error' | 'no-record' | 'refused-identity' | 'hello-failed' | 'protocol-mismatch' | 'handshake-timeout';
 
 /** 起こした常駐のプロセスの今の様子。 */
 export interface IParadisSpawnedDaemonState {
@@ -156,18 +177,36 @@ export interface IParadisSpawnedDaemon {
  * 繋げた時点でそのユーザーとして任意コード実行になる。置き場所の 0700 だけを頼りにせず、
  * 台帳にしか書かれていない合言葉で確かめる（旧い常駐と同じ扱い。**片方だけ薄くしない**）。
  */
-async function paradisConnect(paths: IParadisPtyHostPaths): Promise<{ readonly ok: true; readonly connection: IParadisPtyHostConnection } | { readonly ok: false; readonly failure: ParadisPtyHostConnectFailure; readonly errno?: string }> {
+async function paradisConnect(paths: IParadisPtyHostPaths, handshakeTimeout: number): Promise<{ readonly ok: true; readonly connection: IParadisPtyHostConnection } | { readonly ok: false; readonly failure: ParadisPtyHostConnectFailure; readonly errno?: string }> {
 	const opened = await paradisOpenSocket(paths.socketPath);
 	if (!opened.ok) {
 		return opened;
 	}
-	const socket = opened.socket;
 	const viewer = paradisPtyHostClientId();
-	const client = SocketClient.fromSocket(socket, viewer);
+	const client = SocketClient.fromSocket(opened.socket, viewer);
+	// 期限切れの後に名乗りの側も閉じに来るので、閉じるのは1回だけにする。
+	let closed = false;
+	const close = () => {
+		if (!closed) {
+			closed = true;
+			client.dispose();
+		}
+	};
+	// 名乗りの全体に期限を付ける。結果は入れ物のまま受け取る（下の `host` を解決値にしない理由と同じ）。
+	const result = await raceTimeout(paradisHandshake(paths, client, viewer, close), handshakeTimeout);
+	if (!result) {
+		// 遅れて届いた答えは捨てる。閉じると待っている呼び出しは失敗し、名乗りの側の catch で飲まれる。
+		close();
+		return { ok: false, failure: 'handshake-timeout' };
+	}
+	return result;
+}
+
+async function paradisHandshake(paths: IParadisPtyHostPaths, client: SocketClient<string>, viewer: string, close: () => void): Promise<{ readonly ok: true; readonly connection: IParadisPtyHostConnection } | { readonly ok: false; readonly failure: ParadisPtyHostConnectFailure }> {
 	const record = (await paradisReadDaemonRecords(paths.ledgerDir)).find(entry => entry.socketPath === paths.socketPath);
 	if (!record || !await paradisAuthenticateDaemon(client, record.token)) {
 		// 台帳がまだ無い（起こした直後）か、名乗れない相手。どちらも繋がない。
-		client.dispose();
+		close();
 		return { ok: false, failure: record ? 'refused-identity' : 'no-record' };
 	}
 	const host = ProxyChannel.toService<IParadisPtyHost>(client.getChannel(PARADIS_PTY_HOST_CHANNEL));
@@ -176,11 +215,11 @@ async function paradisConnect(paths: IParadisPtyHostPaths): Promise<{ readonly o
 		if (greeting.protocolVersion !== PARADIS_PTY_PROTOCOL_VERSION) {
 			// 名前で分けているので本来ここへは来ない。来たなら名前の付け方が壊れているので、
 			// **話を合わせようとせずに離れる**。
-			client.dispose();
+			close();
 			return { ok: false, failure: 'protocol-mismatch' };
 		}
 	} catch {
-		client.dispose();
+		close();
 		return { ok: false, failure: 'hello-failed' };
 	}
 	// **入れ物に入れて返す。** `IParadisPtyHost` は `ProxyChannel` の `Proxy` で、`then` にも

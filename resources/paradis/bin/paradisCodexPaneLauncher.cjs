@@ -78,6 +78,26 @@ function daemonOptOutArguments(real, pathEntries) {
 	}
 }
 
+/**
+ * Whether this Codex opens the agent command center (`codex agents`) on an embedded app server
+ * with `--no-daemon` (0.167 and later). 0.166 and older reject the flag there and hide it from
+ * `codex agents --help`, so the help text is what Codex is asked.
+ */
+function agentsRunEmbedded(real, pathEntries) {
+	try {
+		const help = childProcess.execFileSync(real.command, [...real.prefixArgs, 'agents', '--help'], {
+			env: childEnvironment(pathEntries, real.useOwnNode),
+			timeout: DAEMON_PROBE_TIMEOUT_MS,
+			stdio: ['ignore', 'pipe', 'ignore'],
+			windowsHide: true,
+			encoding: 'utf8',
+		});
+		return help.includes('--no-daemon');
+	} catch {
+		return false;
+	}
+}
+
 /** Runs the user's Codex for an interactive session, kept off the shared background server. */
 function runUnmanaged(real, pathEntries, args) {
 	runDelegated(real, pathEntries, [...daemonOptOutArguments(real, pathEntries), ...args]);
@@ -128,6 +148,9 @@ function classifyInvocation(args) {
 	}
 	if (firstPositional === undefined || TUI_COMMANDS.has(firstPositional)) {
 		return { kind: 'tui' };
+	}
+	if (firstPositional === 'agents') {
+		return { kind: 'delegated', agents: true };
 	}
 	return NON_INTERACTIVE_COMMANDS.has(firstPositional) ? { kind: 'delegated' } : { kind: 'tui' };
 }
@@ -256,8 +279,10 @@ function main() {
 		process.stdout.write(`${real.command}${os.EOL}`);
 		return;
 	}
-	if (classifyInvocation(args).kind === 'delegated') {
-		runDelegated(real, pathEntries, args);
+	const invocation = classifyInvocation(args);
+	if (invocation.kind === 'delegated') {
+		// Codex 0.167 and later open `codex agents` on an embedded app server, like the POSIX launcher
+		runDelegated(real, pathEntries, invocation.agents && agentsRunEmbedded(real, pathEntries) ? ['--no-daemon', ...args] : args);
 		return;
 	}
 	runUnmanaged(real, pathEntries, args);

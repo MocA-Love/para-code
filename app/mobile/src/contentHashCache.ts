@@ -6,7 +6,8 @@ export const CONTENT_HASH_ENCODING = 'content-hash-v1';
 /** 応答待ちリクエストも参照できる不変キャッシュエントリ。 */
 export interface ContentHashCacheEntry {
 	readonly hash: string;
-	readonly value: Readonly<Record<string, unknown>>;
+	/** 値の JSON。読み出すたびに parse して、呼び出し側が手を入れてもキャッシュが変わらないようにする。 */
+	readonly json: string;
 	readonly weight: number;
 }
 
@@ -23,10 +24,6 @@ export type ContentHashResolution =
 	| { readonly ok: false; readonly error: string };
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
-
-function cloneJsonObject(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
-	return JSON.parse(JSON.stringify(value)) as Readonly<Record<string, unknown>>;
-}
 
 /** read/xlsxのみを保持する上限付きメモリLRU。 */
 export class ContentHashResponseCache {
@@ -58,7 +55,11 @@ export class ContentHashResponseCache {
 		};
 	}
 
-	resolve(key: string, prepared: PreparedContentHashRequest, response: unknown): ContentHashResolution {
+	/**
+	 * `sourceLength` は応答の JSON の文字数（分かれば）。入る上限を超える大きさなら、値を JSON に直さずに済ませる
+	 * （大きなファイルほど直列化が重く、しかもキャッシュには入らない）。
+	 */
+	resolve(key: string, prepared: PreparedContentHashRequest, response: unknown, sourceLength?: number): ContentHashResolution {
 		if (response === null || typeof response !== 'object' || Array.isArray(response)) {
 			return { ok: false, error: 'invalid content hash response' };
 		}
@@ -68,7 +69,7 @@ export class ContentHashResponseCache {
 			if (typeof hash !== 'string' || !SHA256_HEX.test(hash) || prepared.cached === undefined || prepared.cached.hash !== hash) {
 				return { ok: false, error: 'content hash cache mismatch' };
 			}
-			const value = cloneJsonObject(prepared.cached.value) as Record<string, unknown>;
+			const value = JSON.parse(prepared.cached.json) as Record<string, unknown>;
 			if (typeof raw['id'] === 'string') {
 				value['id'] = raw['id'];
 			}
@@ -84,13 +85,15 @@ export class ContentHashResponseCache {
 		}
 		const value = { ...raw };
 		delete value['contentHash'];
-		const cachedValue = cloneJsonObject(value);
-		const weight = JSON.stringify(cachedValue).length * 2;
 		this.delete(key);
-		if (weight <= this.maxEntryBytes && weight <= this.maxBytes && this.maxEntries > 0) {
-			this.entries.set(key, { hash, value: cachedValue, weight });
-			this.totalWeight += weight;
-			this.evictToLimits();
+		if (this.maxEntries > 0 && !this.overLimit((sourceLength ?? 0) * 2)) {
+			const json = JSON.stringify(value);
+			const weight = json.length * 2;
+			if (!this.overLimit(weight)) {
+				this.entries.set(key, { hash, json, weight });
+				this.totalWeight += weight;
+				this.evictToLimits();
+			}
 		}
 		return { ok: true, value };
 	}
@@ -98,6 +101,10 @@ export class ContentHashResponseCache {
 	clear(): void {
 		this.entries.clear();
 		this.totalWeight = 0;
+	}
+
+	private overLimit(weight: number): boolean {
+		return weight > this.maxEntryBytes || weight > this.maxBytes;
 	}
 
 	private delete(key: string): void {

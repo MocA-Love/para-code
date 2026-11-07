@@ -40,7 +40,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { DEFAULT_MARKDOWN_STYLES } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
-import { renderParadisMarkdownDocument } from './paradisMarkdownDocumentRenderer.js';
+import { renderParadisMarkdownDocumentDeferred } from './paradisMarkdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
 import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
 import { PARADIS_VIEWER_BODY_ROOT_ID, paradisViewerBodySwapScript, type IParadisRenderedDocument } from '../common/paradisViewerBodySwap.js';
@@ -168,7 +168,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		const frontMatter = applyParadisFrontMatter(text, this._getFrontMatterStyle(resource));
 
 		// upstream の renderMarkdownDocument と同じ結果を、文書の大きさに比例する時間で返す（理由は同モジュールの冒頭）。
-		const rendered = await renderParadisMarkdownDocument(frontMatter.markdown, this._extensionService, this._languageService, {
+		// 色付けしたコードは消毒の後に差し込む（下の rewriteBody。理由は paradisMarkdownDocumentRenderer.ts の冒頭）。
+		const rendered = await renderParadisMarkdownDocumentDeferred(frontMatter.markdown, this._extensionService, this._languageService, {
 			allowRelativeMediaPaths: true,
 			allowRelativeLinkPaths: true,
 			markedExtensions: [markedMermaidExtension()],
@@ -179,13 +180,16 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		// 文書内アンカー（#見出し）の解決先を歪めるだけになるため。
 		const workspaceFolder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
 		const media = await inlineParadisMarkdownMedia(
-			rendered,
+			rendered.html,
 			resource,
 			workspaceFolder,
 			this._fileService,
 			token,
 			PARADIS_INLINE_MEDIA_LIMITS,
-			body => rewriteParadisMarkdownLinks(body, resource, workspaceFolder),
+			body => {
+				rendered.insertHighlightedCode(body);
+				rewriteParadisMarkdownLinks(body, resource, workspaceFolder);
+			},
 			this._mediaCache);
 
 		// 同じ webview の描き直しでは同じ nonce（本文だけを差し替えるとき、外側の CSP がそのまま使えるように）。

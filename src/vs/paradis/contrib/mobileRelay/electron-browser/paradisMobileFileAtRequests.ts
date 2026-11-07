@@ -21,6 +21,7 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { readParadisFileHead } from '../../../../platform/files/common/paradisReadFileHead.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { paradisEncodeNegotiatedBinaryFsResponse } from '../common/paradisMobileFileResponse.js';
@@ -106,7 +107,7 @@ registerParadisMobileRequestHandler('scm', 'fileAt', {
 				context.reply(side === 'worktree' ? { error: 'invalid path' } : { t: 'fileAt', missing: true });
 				return;
 			}
-			const content = await fileService.readFile(uri, { length: PARADIS_MOBILE_FILE_AT_LIMIT + 1 });
+			const content = await readParadisFileHead(fileService, uri, { length: PARADIS_MOBILE_FILE_AT_LIMIT + 1 });
 			if (content.value.byteLength > PARADIS_MOBILE_FILE_AT_LIMIT) {
 				context.reply({ error: localize('paradis.mobile.fileAt.tooLarge', "This file exceeds the transfer limit ({0} MB).", PARADIS_MOBILE_FILE_AT_LIMIT / 1024 / 1024) });
 				return;

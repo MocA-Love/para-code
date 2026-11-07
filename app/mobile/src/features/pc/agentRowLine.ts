@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { agentStatusKind, agentStatusLabel } from '../../agentStatus.js';
-import type { AgentChatState } from '../../store.js';
+import type { AgentChatMessage, AgentChatState } from '../../store.js';
 
 /**
  * PC の画面の行の3段目（Orca の WorktreeAgentRow: 状態の点・エージェントのロゴ・最後の一言・経過時間）に
@@ -56,7 +56,22 @@ type ChatLike = Pick<AgentChatState, 'messages'> & Partial<Pick<AgentChatState, 
 
 /** 会話の写しのうち、エージェントの最後の本文（考え中・ツールの結果は除く）。 */
 export function lastAssistantText(chat: ChatLike | undefined): string | undefined {
-	const messages = chat?.messages ?? [];
+	const messages = chat?.messages;
+	if (messages === undefined) {
+		return undefined;
+	}
+	// 同じ発言の並びなら前の答えを使う（{@link latestMessageAt} と同じ理由）
+	if (lastTextOf.has(messages)) {
+		return lastTextOf.get(messages);
+	}
+	const text = findLastAssistantText(messages);
+	lastTextOf.set(messages, text);
+	return text;
+}
+
+const lastTextOf = new WeakMap<readonly AgentChatMessage[], string | undefined>();
+
+function findLastAssistantText(messages: readonly AgentChatMessage[]): string | undefined {
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index];
 		// Para Code の知らせ（notice）はエージェントの発言ではない
@@ -70,14 +85,29 @@ export function lastAssistantText(chat: ChatLike | undefined): string | undefine
 	return undefined;
 }
 
-/** 会話の写しの中で一番新しい時刻（epoch ms）。無ければ undefined。 */
-export function lastChatActivityAt(chat: ChatLike | undefined): number | undefined {
+/**
+ * 発言の並び（配列）ごとの一番新しい時刻。行の購読は店が配り直すたびに走り、発言は最大 500 件あるので、
+ * 同じ配列は 1 回だけなめる（店は発言が増えない限り同じ配列を使い続ける）。
+ */
+const latestMessageAt = new WeakMap<readonly AgentChatMessage[], number | undefined>();
+
+function newestMessageAt(messages: readonly AgentChatMessage[]): number | undefined {
+	if (latestMessageAt.has(messages)) {
+		return latestMessageAt.get(messages);
+	}
 	let latest: number | undefined;
-	for (const message of chat?.messages ?? []) {
+	for (const message of messages) {
 		if (typeof message.ts === 'number' && Number.isFinite(message.ts) && (latest === undefined || message.ts > latest)) {
 			latest = message.ts;
 		}
 	}
+	latestMessageAt.set(messages, latest);
+	return latest;
+}
+
+/** 会話の写しの中で一番新しい時刻（epoch ms）。無ければ undefined。 */
+export function lastChatActivityAt(chat: ChatLike | undefined): number | undefined {
+	let latest = chat !== undefined ? newestMessageAt(chat.messages) : undefined;
 	const live = chat?.live?.updatedAt;
 	if (typeof live === 'number' && Number.isFinite(live) && (latest === undefined || live > latest)) {
 		latest = live;
