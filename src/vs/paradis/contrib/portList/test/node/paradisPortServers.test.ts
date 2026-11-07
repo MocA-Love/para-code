@@ -11,7 +11,7 @@ import type * as http from 'http';
 import { AddressInfo } from 'net';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisPortEntry, IParadisPortPageInfo, IParadisPortPageRequest } from '../../common/paradisPortList.js';
-import { ParadisPortPageProbeCache, ParadisPortServerDescriber, paradisAppRootFor, parseHtmlIconHref, parseHtmlTitle, parseLsofCwdOutput, parsePsCommOutput, probeHostForAddress, probePortPage } from '../../node/paradisPortServers.js';
+import { ParadisPortPageProbeCache, ParadisPortServerDescriber, parseHtmlIconHref, parseHtmlTitle, parseLsofCwdOutput, probeHostForAddress, probePortPage } from '../../node/paradisPortServers.js';
 
 suite('ParadisPortServers', () => {
 
@@ -105,35 +105,30 @@ suite('ParadisPortServers', () => {
 		assert.deepStrictEqual(probed, ['3:4000', '3:4000']);
 	});
 
-	test('adds working folders, drops Para Code\'s own processes, and reads each process once while cached', async () => {
+	test('adds working folders, drops only Para Code\'s own processes, and reads each process once while cached', async () => {
 		const reads: number[][] = [];
 		let now = 0;
 		const describer = new ParadisPortServerDescriber({
 			cacheMs: 2000,
 			now: () => now,
-			ownPids: [100],
-			appRoot: '/Applications/Para Code.app',
+			// 100 は main（CDP・MCP・hook の受け口）、101 は shared process。102 は拡張機能のホスト、103 はその子
+			ownPids: [100, 101],
 			homeDir: '/Users/u',
 			readCwds: async pids => { reads.push([...pids]); return new Map(pids.map(pid => [pid, `/work/${pid}`])); },
-			readExes: async pids => new Map(pids.map(pid => [pid, pid === 101 ? '/Applications/Para Code.app/Contents/Frameworks/Para Code Helper (Plugin).app/Contents/MacOS/Para Code Helper (Plugin)' : '/usr/local/bin/node'])),
 		});
-		const entries: IParadisPortEntry[] = [100, 101, 102].map(pid => ({ port: 3000 + pid, proto: 'TCP', pid, processName: 'p', address: '127.0.0.1', risky: false }));
+		const entries: IParadisPortEntry[] = [100, 101, 102, 103].map(pid => ({ port: 3000 + pid, proto: 'TCP', pid, processName: pid === 102 ? 'Para Code Helper (Plugin)' : 'p', address: '127.0.0.1', risky: false }));
 		const first = await describer.describe(entries, 1);
 		await describer.describe(entries, 2);
 		now = 5000;
 		await describer.describe(entries, 3);
 		assert.deepStrictEqual({
-			ports: first.entries.map(entry => [entry.port, entry.cwd]),
+			ports: first.entries.map(entry => [entry.port, entry.processName, entry.cwd]),
 			home: first.homeDir,
 			reads,
-			appRoots: [paradisAppRootFor('/Applications/Para Code.app/Contents/MacOS/Para Code'), paradisAppRootFor('/usr/share/para-code/para-code'), paradisAppRootFor('/usr/bin/node')],
-			ps: [...parsePsCommOutput('  101 /Applications/A.app/Contents/MacOS/A\n  102 /usr/local/bin/node\n').entries()],
 		}, {
-			ports: [[3102, '/work/102']],
+			ports: [[3102, 'Para Code Helper (Plugin)', '/work/102'], [3103, 'p', '/work/103']],
 			home: '/Users/u',
-			reads: [[100, 101, 102], [100, 101, 102]],
-			appRoots: ['/Applications/Para Code.app', '/usr/share/para-code', undefined],
-			ps: [[101, '/Applications/A.app/Contents/MacOS/A'], [102, '/usr/local/bin/node']],
+			reads: [[100, 101, 102, 103], [100, 101, 102, 103]],
 		});
 	});
 });
