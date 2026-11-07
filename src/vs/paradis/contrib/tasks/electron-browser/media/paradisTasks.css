@@ -7,6 +7,7 @@
 /* The Tasks editor tab (see paradisTasksEditor.ts). Layout follows Orca's task page; colors come from the theme. */
 
 .paradis-tasks {
+	container: paradis-tasks / inline-size;
 	box-sizing: border-box;
 	height: 100%;
 	overflow-y: auto;
@@ -35,6 +36,10 @@
 	height: 28px;
 	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
 	border-radius: 6px;
+}
+
+.paradis-tasks-grow {
+	flex: 1;
 }
 
 .paradis-tasks-chip {
@@ -170,11 +175,19 @@
 	text-align: left;
 }
 
-.paradis-tasks-table th.id { width: 72px; }
-.paradis-tasks-table th.assignees { width: 110px; }
-.paradis-tasks-table th.state { width: 100px; }
-.paradis-tasks-table th.updated { width: 110px; }
-.paradis-tasks-table th.actions { width: 40px; }
+.paradis-tasks-table th.id { width: 60px; }
+.paradis-tasks-table th.assignees { width: 84px; }
+.paradis-tasks-table th.state { width: 84px; }
+.paradis-tasks-table th.updated { width: 96px; }
+.paradis-tasks-table th.actions { width: 36px; }
+
+/* In a narrow editor group, give the title the room: drop the assignee and updated columns. */
+@container paradis-tasks (max-width: 560px) {
+	.paradis-tasks-table .assignees,
+	.paradis-tasks-table .updated {
+		display: none;
+	}
+}
 
 .paradis-tasks-table td {
 	padding: 8px 10px;
