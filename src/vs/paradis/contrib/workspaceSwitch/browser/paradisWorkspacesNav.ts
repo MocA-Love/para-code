@@ -37,7 +37,7 @@ interface IParadisWorkspacesNavItem {
 
 const NAV_ITEMS: readonly IParadisWorkspacesNavItem[] = [
 	{ id: 'search', icon: Codicon.search, label: localize('paradis.workspacesNav.search', "検索"), tooltip: localize('paradis.workspacesNav.searchTooltip', "スペース（リポジトリとワークツリー）を探して切り替える") },
-	{ id: 'taskBoard', icon: Codicon.tasklist, label: localize('paradis.workspacesNav.taskBoard', "タスク"), tooltip: localize('paradis.workspacesNav.taskBoardTooltip', "タスクボードを開く"), command: 'paradis.taskBoard.open' },
+	{ id: 'taskBoard', icon: Codicon.tasklist, label: localize('paradis.workspacesNav.taskBoard', "タスク"), tooltip: localize('paradis.workspacesNav.taskBoardTooltip', "タスク（GitHub の Issue・PR）を開く"), command: 'paradis.tasks.open' },
 	{ id: 'scheduledRuns', icon: Codicon.watch, label: localize('paradis.workspacesNav.scheduledRuns', "定期実行"), tooltip: localize('paradis.workspacesNav.scheduledRunsTooltip', "定期実行を開く"), command: 'paradis.openScheduledRuns' },
 	{ id: 'mobile', icon: Codicon.deviceMobile, label: localize('paradis.workspacesNav.mobile', "モバイル"), tooltip: localize('paradis.workspacesNav.mobileTooltip', "Para Code Mobile の接続とデバイスの管理"), command: 'paradis.mobile.showMenu' },
 ];

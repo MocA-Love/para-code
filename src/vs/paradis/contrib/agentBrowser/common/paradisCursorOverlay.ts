@@ -103,6 +103,23 @@ export interface IParadisCursorOverlayTuning {
 	 * 代入の scroll は次の描画で届くので、代入してすぐ返すスクリプトでは終わりの知らせの方が先に着くことがある。
 	 */
 	readonly scrollLateMs: number;
+	/**
+	 * エージェントのホイール・キー入力の後、この時間（ms）の間に動き始めたスクロールを、その入力のものとみなす
+	 * （q.html Q574。最後の入力から数える。入力の知らせはページへ入力を届ける直前に送る）。
+	 */
+	readonly scrollInputMs: number;
+	/**
+	 * エージェントの入力の知らせの後、この時間（ms）の間に届いた isTrusted の入力だけをエージェントのものとみなす。
+	 * それより後の入力は、入力の窓の中でも利用者の操作として、その直後のスクロールを除く。main はホイールの知らせを
+	 * 150 ms、キーを 250 ms ごとに間引くので、それより少し長くする。
+	 */
+	readonly scrollInputSlackMs: number;
+	/** 擬似スクロールバーの太さ（px、Q574 の C）。 */
+	readonly scrollBarPx: number;
+	/** 擬似スクロールバーの溝がこれより短い入れ物には描かず、今の矢印に戻す（px）。 */
+	readonly scrollBarMinPx: number;
+	/** 擬似スクロールバーのつまみが新しい位置へ追いつく時間（ms）。 */
+	readonly scrollBarGlideMs: number;
 }
 
 export const PARADIS_CURSOR_OVERLAY_TUNING: IParadisCursorOverlayTuning = Object.freeze({
@@ -130,6 +147,11 @@ export const PARADIS_CURSOR_OVERLAY_TUNING: IParadisCursorOverlayTuning = Object
 	scrollSettleMs: 220,
 	scrollUserMs: 800,
 	scrollLateMs: 150,
+	scrollInputMs: 400,
+	scrollInputSlackMs: 300,
+	scrollBarPx: 7,
+	scrollBarMinPx: 40,
+	scrollBarGlideMs: 260,
 });
 
 /**
@@ -237,10 +259,14 @@ export type ParadisCursorOverlayCommand =
 	/**
 	 * キー入力。いまフォーカスされている要素へカーソルを寄せ、名札に入力中と出して入力欄に枠を描く。
 	 * `key` は Enter・⌘K のような特別なキーの札（文字の入力では付けない）。
+	 * `scrollText` は、入力欄の外でのキーがページを動かしたときの名札（`{0}` に量が入る。q.html Q574）。
 	 */
-	| { readonly kind: 'focus'; readonly label: string; readonly texts: IParadisCursorTypingTexts; readonly key?: string }
-	/** ホイール。カーソルの横に向きの矢印を出す。 */
-	| { readonly kind: 'wheel'; readonly label: string; readonly dx: number; readonly dy: number; readonly text: string }
+	| { readonly kind: 'focus'; readonly label: string; readonly texts: IParadisCursorTypingTexts; readonly key?: string; readonly scrollText?: string }
+	/**
+	 * ホイール。名札に `text` を少し出し、動いた入れ物が止まったら擬似スクロールバーとそのつまみの横へ寄せた
+	 * カーソルに `scrollText`（`{0}` に量が入る）を出す（q.html Q574 の C）。
+	 */
+	| { readonly kind: 'wheel'; readonly label: string; readonly dx: number; readonly dy: number; readonly text: string; readonly scrollText?: string }
 	/**
 	 * 道具の状態（スクリプト実行中・待機中・押せなかった など）。`frames` があれば対象の要素へ寄せる
 	 * （入力を伴わない道具の対象。待たない）。
@@ -249,7 +275,7 @@ export type ParadisCursorOverlayCommand =
 	 * - `box`: 読み取り系の道具が見ている要素。薄い枠を少し出し、カーソルをそこへ寄せる（Q297 の 3）
 	 * - `transient`: 長く続く状態でも少し出して消す（ページ移動の後に出し直したときの「読み込み中」）
 	 * - `clickText`: evaluate_script の中のクリックへ寄せたときの名札（`script` のときだけ。Q297 の 4）
-	 * - `scrollText`: evaluate_script の中のスクロールの名札（`script` のときだけ。`{0}` に量が入る。Q301 の C）
+	 * - `scrollText`: 道具が動かしたスクロールの名札（`script` と `scroll` のとき。`{0}` に量が入る。Q301 の C・Q574）
 	 * - `direction`: scroll_to が探す向き（`scroll` のときだけ。向きの矢印を出す）
 	 * - `since`: スクリプトを始めた時刻（ms、`Date.now()`）。これより前のクリックへは寄せない
 	 * - `settle`: 片付けだけ（見えていないタブへの終わりの idle）。既にあるカーソルの状態・見張り・待機の輪を
@@ -635,7 +661,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			var id = typeof c.owner === 'string' && c.owner.length > 0 ? c.owner : '_';
 			var s = g.cs[id];
 			if (!s && create) {
-				s = g.cs[id] = { g: g, id: id, color: A, h: null, lf: null, lft: 0, alf: null, watch: false, wat: 0, since: 0, wend: 0, ct: '', sxt: '', cq: null, cqt: 0, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lm: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', mark: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, awo: null, atr: null, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
+				s = g.cs[id] = { g: g, id: id, color: A, h: null, lf: null, lft: 0, alf: null, watch: false, wat: 0, since: 0, wend: 0, ct: '', sxt: '', sw: null, bars: null, ll: false, sr: null, cq: null, cqt: 0, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lm: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', mark: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, awo: null, atr: null, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
 			}
 			return s || null;
 		}
@@ -715,8 +741,8 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			var ids = Object.keys(g.cs), only = null, count = 0;
 			for (var i = 0; i < ids.length; i++) {
 				var s = g.cs[ids[i]];
-				if (!s || !s.h || !(s.since > 0) || at < s.since) { continue; }
-				if (scrollWatching(s, at)) { only = s; count++; }
+				if (!s || !s.h) { continue; }
+				if (((s.since > 0) && at >= s.since && scrollWatching(s, at)) || inputWatching(s, at)) { only = s; count++; }
 			}
 			return count === 1 ? only : null;
 		}
@@ -732,9 +758,51 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			var ids = Object.keys(g.cs);
 			for (var i = 0; i < ids.length; i++) {
 				var s = g.cs[ids[i]];
-				if (s && s.h && scrollWatching(s, at)) { return true; }
+				if (s && s.h && (scrollWatching(s, at) || inputWatching(s, at))) { return true; }
 			}
 			return false;
+		}
+		/**
+		 * 'at' に動き始めたスクロールを、このカーソルのホイール・キー・scroll_to のものとみなせるか（q.html Q574）。
+		 * 窓は入力の知らせで開き、最後の入力から 'scrollInputMs'（scroll_to は道具が終わってから 'scrollLateMs'）で閉じる。
+		 */
+		function inputWatching(s, at) {
+			var w = s && s.sw;
+			return !!(w && at >= w.since && at <= w.until);
+		}
+		/**
+		 * 't' に届いた isTrusted の入力（ホイール・キー・ポインタ）が、エージェントのものとみなせるか。エージェントの
+		 * ホイール・キーも isTrusted で届くので、どれかのカーソルの入力の知らせ（'last'）の直後 'scrollInputSlackMs' の
+		 * 間に届いたものだけをエージェントのものとし、それより後に届いたものは窓の中でも利用者の操作とみなす。
+		 * scroll_to は入力を送らないので、窓を開いた直後のほかは利用者の操作になる。
+		 */
+		function agentInput(t) {
+			var g = window[K];
+			if (!g) { return false; }
+			var slack = window[K3] ? window[K3].c.scrollInputSlackMs : c.scrollInputSlackMs;
+			var ids = Object.keys(g.cs);
+			for (var i = 0; i < ids.length; i++) {
+				var w = g.cs[ids[i]] && g.cs[ids[i]].h ? g.cs[ids[i]].sw : null;
+				if (w && t >= w.since - 50 && t <= w.last + slack && t <= w.until) { return true; }
+			}
+			return false;
+		}
+		/**
+		 * 入力の窓を開く・延ばす（q.html Q574）。開くときだけ始めの位置を覚え直す（続く入力のたびに要素を数えない）。
+		 * 'text' はそのスクロールの名札（'{0}' に量）。'until' を省くと最後の入力から 'scrollInputMs'。
+		 */
+		function openInput(s, text, until) {
+			var now = Date.now();
+			var cc = window[K3] ? window[K3].c : c;
+			var end = until > 0 ? until : now + cc.scrollInputMs;
+			if (s.sw && now <= s.sw.until) {
+				s.sw.until = Math.max(s.sw.until, end);
+				s.sw.text = text;
+				s.sw.last = now;
+				return;
+			}
+			if (!s.watch) { scrollBaseline(); }
+			s.sw = { since: now, until: end, text: text, last: now };
 		}
 		/**
 		 * スクリプトを始めたときの位置を覚え直す（文書と、上限までの要素のうち動かしてあるもの）。覚えていない要素は
@@ -791,7 +859,9 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 							if (rec.runs.length > 16) { var old = rec.runs.shift(); if (old.t) { clearTimeout(old.t); } }
 						}
 						run.x1 = p.x; run.y1 = p.y;
-						if (now - rec.user < rec.c.scrollUserMs) { run.ignore = true; }
+						// エージェントのホイール・キーも isTrusted なので、入力の窓で動き始めたものは利用者の操作とみなさない
+						if (now - rec.user < rec.c.scrollUserMs && !agentInput(rec.user)) { run.ignore = true; }
+						if (!run.ignore) { liveBar(run); }
 						if (run.t) { clearTimeout(run.t); }
 						run.t = setTimeout(function () { settleScroll(rec, run); }, rec.c.scrollSettleMs);
 					} catch (err) { }
@@ -805,7 +875,167 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			var dx = run.x1 - run.x0, dy = run.y1 - run.y0;
 			if (run.ignore || (Math.abs(dx) < 1 && Math.abs(dy) < 1) || !run.el.isConnected) { return; }
 			var s = scrollOwner(run.at);
-			if (s && s.g.cs[s.id] === s) { follow(s, { el: run.el, dx: dx, dy: dy }); }
+			if (s && s.g.cs[s.id] === s) { follow(s, { el: run.el, dx: dx, dy: dy, x0: run.x0, y0: run.y0, text: scrollTextOf(s, run.at) }); }
+		}
+		/** そのスクロールの名札（'{0}' に量）。スクリプトの実行中ならスクリプトの、そうでなければ入力の窓のもの。 */
+		function scrollTextOf(s, at) {
+			if ((s.since > 0) && at >= s.since && scrollWatching(s, at)) { return s.sxt; }
+			return s.sw && inputWatching(s, at) ? s.sw.text : '';
+		}
+		/**
+		 * 擬似スクロールバーを描く場所（q.html Q574 の C）。本物のスクロールバーが出る位置（入れ物の内側の右端、
+		 * 横なら下端。本物の溝があればその上）に重ねる。描かずに今の矢印へ戻すもの（null）: overflow が
+		 * hidden・clip の入れ物（利用者はスクロールできない）、溝が短い入れ物、溝の端が画面の外、変形
+		 * （transform: scale など）で見た目の大きさが違う入れ物。'y' は縦か。
+		 */
+		function barGeo(el, y) {
+			var cc = window[K3] ? window[K3].c : c;
+			var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+			var de = doc.documentElement, se = doc.scrollingElement || de;
+			var l, t, w, h, g, size, view, rtl = false, r = null;
+			if (el === se || el === de || el === doc.body) {
+				if (!se) { return null; }
+				var std = doc.compatMode === 'CSS1Compat' && de;
+				l = 0; t = 0; w = std ? de.clientWidth : vw; h = std ? de.clientHeight : vh;
+				g = Math.max(0, y ? vw - w : vh - h);
+				size = y ? se.scrollHeight : se.scrollWidth; view = y ? h : w;
+			} else {
+				var cs;
+				try { cs = window.getComputedStyle(el); r = el.getBoundingClientRect(); } catch (e) { return null; }
+				var ov = y ? cs.overflowY : cs.overflowX;
+				if (ov !== 'auto' && ov !== 'scroll' && ov !== 'overlay') { return null; }
+				if (Math.abs(r.width - el.offsetWidth) > 1 || Math.abs(r.height - el.offsetHeight) > 1) { return null; }
+				l = r.left + el.clientLeft; t = r.top + el.clientTop; w = el.clientWidth; h = el.clientHeight;
+				g = y ? el.offsetWidth - el.clientWidth - el.clientLeft - (parseFloat(cs.borderRightWidth) || 0) : el.offsetHeight - el.clientHeight - el.clientTop - (parseFloat(cs.borderBottomWidth) || 0);
+				g = Math.max(0, g);
+				size = y ? el.scrollHeight : el.scrollWidth; view = y ? h : w;
+				rtl = y && cs.direction === 'rtl';
+			}
+			var len = (y ? h : w) - 4, bw = cc.scrollBarPx;
+			if (!(len >= cc.scrollBarMinPx) || !(size > view)) { return null; }
+			var bx, by;
+			if (y) {
+				bx = rtl ? (g > 0 ? l - g + (g - bw) / 2 : l + 2) : (g > 0 ? l + w + (g - bw) / 2 : l + w - bw - 2);
+				by = t + 2;
+				if (bx < 0 || bx + bw > vw || t + h <= 0 || t >= vh) { return null; }
+			} else {
+				bx = l + 2;
+				by = g > 0 ? t + h + (g - bw) / 2 : t + h - bw - 2;
+				if (by < 0 || by + bw > vh || l + w <= 0 || l >= vw) { return null; }
+			}
+			// 'ox'・'oy' は入れ物の外枠からの位置。表示中に入れ物ごと動いたときは、外枠を読むだけで付いていける（ページは null）
+			return { y: y, x: Math.round(bx), t: Math.round(by), len: len, tl: Math.max(20, len * view / size), max: size - view, bw: bw, ox: r ? bx - r.left : null, oy: r ? by - r.top : null };
+		}
+		/** つまみの位置（溝の頭からの px）。 */
+		function barPos(geo, v) { return geo.max > 0 ? (geo.len - geo.tl) * Math.max(0, Math.min(geo.max, v)) / geo.max : 0; }
+		function barPlace(b) {
+			var geo = b.geo;
+			sx(b.root, { left: geo.x + 'px', top: geo.t + 'px', width: (geo.y ? geo.bw : geo.len) + 'px', height: (geo.y ? geo.len : geo.bw) + 'px' });
+			sx(b.th, geo.y ? { width: geo.bw + 'px', height: geo.tl + 'px' } : { width: geo.tl + 'px', height: geo.bw + 'px' });
+		}
+		function barMove(b, v, ms) {
+			b.v = v;
+			var p = Math.round(barPos(b.geo, v) * 10) / 10;
+			sx(b.th, { transition: ms > 0 ? 'transform ' + ms + 'ms ease-out' : 'none', transform: b.geo.y ? 'translate3d(0,' + p + 'px,0)' : 'translate3d(' + p + 'px,0,0)' });
+		}
+		/**
+		 * この入れ物の擬似スクロールバーを出し、つまみを 'to' へ動かす（無ければ 'from' に置いてから）。描けなければ
+		 * null（呼び出し側が今の矢印に戻す）。表示中は毎フレーム位置を読み直す（入れ物ごとページが動いても付いていく）。
+		 * 長さは最初に読んだもので固定する（仮想リストで跳ばないように）。
+		 */
+		function barShow(s, el, y, from, to) {
+			if (!s.sr || !s.h || !s.h.isConnected) { return null; }
+			if (!s.bars) { s.bars = []; }
+			var b = null;
+			for (var i = 0; i < s.bars.length; i++) { if (s.bars[i].el === el) { b = s.bars[i]; break; } }
+			if (b && b.geo.y !== y) { barDrop(s, b); b = null; }
+			var geo = barGeo(el, y);
+			if (!geo) {
+				if (b) { barDrop(s, b); }
+				return null;
+			}
+			var cc = window[K3] ? window[K3].c : c;
+			if (!b) {
+				if (s.bars.length >= 4) { barDrop(s, s.bars[0]); }
+				var col = s.color;
+				var root = doc.createElement('div');
+				sx(root, { position: 'absolute', left: '0px', top: '0px', pointerEvents: 'none', opacity: '0' });
+				var tk = doc.createElement('div');
+				sx(tk, { position: 'absolute', left: '-1px', top: '-1px', right: '-1px', bottom: '-1px', borderRadius: '5px', background: col + '24' });
+				var th = doc.createElement('div');
+				sx(th, { position: 'absolute', left: '0px', top: '0px', borderRadius: '4px', background: col, opacity: '0.92', boxShadow: '0 0 0 1px rgba(255,255,255,0.95), 0 1px 4px rgba(0,0,0,0.25)' });
+				root.appendChild(tk); root.appendChild(th);
+				b = { el: el, root: root, th: th, geo: geo, v: from, ft: 0, raf: 0, fa: null };
+				s.sr.insertBefore(root, s.sr.firstChild);
+				s.bars.push(b);
+				barPlace(b);
+				barMove(b, from, 0);
+				sx(root, { opacity: '1' });
+				if (!calm) { anim(root, [{ opacity: 0 }, { opacity: 1 }], { duration: 120, easing: 'ease' }); }
+				barTrack(s, b);
+			} else {
+				b.geo = { y: geo.y, x: geo.x, t: geo.t, len: b.geo.len, tl: b.geo.tl, max: b.geo.max, bw: b.geo.bw, ox: geo.ox, oy: geo.oy };
+				barPlace(b);
+			}
+			if (b.ft) { clearTimeout(b.ft); b.ft = 0; }
+			if (b.fa) { stop(b.fa); b.fa = null; }
+			if (to !== b.v) { void b.th.offsetWidth; barMove(b, to, calm ? 0 : cc.scrollBarGlideMs); }
+			return b;
+		}
+		/**
+		 * 表示中は毎フレーム、入れ物の外枠の位置だけを読み直す（overflow・枠線・向きは描き始めに読んだものを使う。
+		 * 画面に固定のページのバーは読み直さない）。
+		 */
+		function barTrack(s, b) {
+			var step = function () {
+				b.raf = 0;
+				if (s.bars === null || s.bars.indexOf(b) < 0) { return; }
+				if (b.geo.ox === null) { return; }
+				var r = null;
+				try { r = b.el.isConnected ? b.el.getBoundingClientRect() : null; } catch (e) { }
+				if (r) {
+					var x = Math.round(r.left + b.geo.ox), t = Math.round(r.top + b.geo.oy);
+					if (x !== b.geo.x || t !== b.geo.t) { b.geo.x = x; b.geo.t = t; barPlace(b); }
+				}
+				b.raf = requestAnimationFrame(step);
+			};
+			b.raf = requestAnimationFrame(step);
+		}
+		/** 'ms' の後に薄くして消す。 */
+		function barFade(s, b, ms) {
+			if (b.ft) { clearTimeout(b.ft); }
+			b.ft = setTimeout(function () {
+				b.ft = 0;
+				b.fa = anim(b.root, [{ opacity: 1 }, { opacity: 0 }], { duration: calm ? 1 : 300, fill: 'forwards', easing: 'ease' });
+				b.ft = setTimeout(function () { b.ft = 0; barDrop(s, b); }, calm ? 10 : 320);
+			}, ms);
+		}
+		function barDrop(s, b) {
+			if (b.ft) { clearTimeout(b.ft); b.ft = 0; }
+			if (b.raf) { cancelAnimationFrame(b.raf); b.raf = 0; }
+			if (b.root.parentNode) { b.root.parentNode.removeChild(b.root); }
+			if (s.bars) { var i = s.bars.indexOf(b); if (i >= 0) { s.bars.splice(i, 1); } }
+		}
+		/**
+		 * 動いている途中のスクロールを、持ち主のカーソルの擬似スクロールバーに映す（q.html Q574 の「自動」。
+		 * 動き始めに前の位置から出し、つまみを追わせる）。止まった後の名札とカーソルは 'followNext' が出す。
+		 */
+		function liveBar(run) {
+			var dx = run.x1 - run.x0, dy = run.y1 - run.y0;
+			if (Math.abs(dx) < 1 && Math.abs(dy) < 1) { return; }
+			var s = scrollOwner(run.at);
+			if (!s || s.g.cs[s.id] !== s || s.g.hid) { return; }
+			var y = Math.abs(dy) >= Math.abs(dx);
+			var b = barShow(s, run.el, y, y ? run.y0 : run.x0, y ? run.y1 : run.x1);
+			// 止まった後に寄せられなかったとき（順番待ちがあふれた・利用者の操作に変わった）も残さない
+			var cc = window[K3] ? window[K3].c : c;
+			if (b) { barFade(s, b, cc.scrollSettleMs + cc.markMs); }
+		}
+		/** 名札をカーソルの左に出す（右端の擬似スクロールバーの横で、名札が画面の外へ出ないように）。 */
+		function labelLeft(s, on) {
+			if (!s.lb || !!s.ll === !!on) { return; }
+			s.ll = !!on;
+			sx(s.lb, on ? { left: 'auto', right: '16px', top: '12px' } : { left: '18px', right: 'auto', top: '22px' });
 		}
 		/** 量の大きい方の向き。 */
 		function arrowOf(dx, dy) {
@@ -860,19 +1090,32 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			while (s.cq && s.cq.length) {
 				var it = s.cq.shift();
 				var sc = typeof it.dx === 'number';
-				var p = sc ? edgeOf(it.el, it.dx, it.dy) : pointOf(it.el);
-				if (!p || !s.h || !s.h.isConnected || s.g.cs[s.id] !== s) { continue; }
+				if (!s.h || !s.h.isConnected || s.g.cs[s.id] !== s) { continue; }
 				var d = calm ? 0 : c.lookGlideMs;
+				if (sc) {
+					// 受け口から呼ばれると 'c' は文書で最初の命令のもの。調整値はいちばん新しい命令のものを使う
+					var cc = window[K3] ? window[K3].c : c;
+					var vy = Math.abs(it.dy) >= Math.abs(it.dx);
+					var amount = Math.round(vy ? Math.abs(it.dy) : Math.abs(it.dx));
+					// 擬似スクロールバーを出し、つまみの横へ寄せる（q.html Q574 の C）。描けない入れ物は今の矢印
+					var b = it.el.isConnected && !s.g.hid ? barShow(s, it.el, vy, vy ? it.y0 : it.x0, vy ? it.y0 + it.dy : it.x0 + it.dx) : null;
+					var bp = b ? barPoint(b) : null;
+					var p = bp || edgeOf(it.el, it.dx, it.dy);
+					if (!p) { continue; }
+					slide(s, p.x, p.y, d);
+					labelLeft(s, !!bp && b.geo.y);
+					reveal(s);
+					arm(s, c.idleMs);
+					if (b) { barFade(s, b, cc.markMs); } else { mark(s, arrowOf(it.dx, it.dy), s.color); }
+					if (it.text) { setStatus(s, it.text.replace('{0}', amount + 'px'), cc.markMs); }
+					s.cqt = setTimeout(function () { followNext(s); }, cc.scriptClickGapMs);
+					return;
+				}
+				var p = pointOf(it.el);
+				if (!p) { continue; }
 				slide(s, p.x, p.y, d);
 				reveal(s);
 				arm(s, c.idleMs);
-				if (sc) {
-					mark(s, arrowOf(it.dx, it.dy), s.color);
-					var amount = Math.round(Math.abs(it.dy) >= Math.abs(it.dx) ? Math.abs(it.dy) : Math.abs(it.dx));
-					if (s.sxt) { setStatus(s, s.sxt.replace('{0}', amount + 'px'), c.markMs); }
-					s.cqt = setTimeout(function () { followNext(s); }, c.scriptClickGapMs);
-					return;
-				}
 				if (s.ct) { setStatus(s, s.ct, c.markMs); }
 				if (!calm) {
 					anim(s.rp, [{ transform: 'scale(0.35)', opacity: 0.75 }, { transform: 'scale(1.6)', opacity: 0 }], { duration: c.rippleMs, delay: d, easing: 'cubic-bezier(0.2,0.7,0.3,1)' });
@@ -886,7 +1129,17 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 		 * 今いる点から真っすぐ寄せる（色に触らない）。受け口は最初に置いたコマンドの持ち主の色を覚えて
 		 * いるので、ほかの持ち主のカーソルを作り直す 'play' は使わない。
 		 */
+		/**
+		 * つまみの横の、カーソルの先端を置く点。縦なら左（体と名札がバーに重ならないよう、カーソルの幅だけ離す）、
+		 * 横なら上。
+		 */
+		function barPoint(b) {
+			var geo = b.geo, mid = barPos(geo, b.v) + geo.tl / 2;
+			if (geo.y) { return { x: Math.round(geo.x - ${Math.round(CURSOR_SIZE * 64 / 128) + 4}), y: Math.round(geo.t + mid) }; }
+			return { x: Math.round(geo.x + mid), y: Math.round(geo.t - ${CURSOR_SIZE}) };
+		}
 		function slide(s, x, y, dur) {
+			labelLeft(s, false);
 			var fx = s.x === null ? x : s.x, fy = s.x === null ? y : s.y;
 			if (s.am) {
 				try { var m = new DOMMatrixReadOnly(getComputedStyle(s.mv).transform); fx = m.m41; fy = m.m42; } catch (e) { }
@@ -1103,7 +1356,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			// 撮影のために隠している最中に作ったなら、作った時から隠す
 			if (s.g.hid) { sx(h, { display: 'none' }); }
 			s.color = A; s.mark = ''; s.t = '';
-			s.h = h; s.lm = lm; s.mv = mv; s.gl = gl; s.sq = sq; s.rp = rp; s.rg = rg; s.mk = mk; s.lb = lb; s.lt = lt; s.kb = kb; s.fr = fr; s.tr = tr; s.tl2 = tl; s.lf = lf;
+			s.h = h; s.sr = sr; s.bars = []; s.ll = false; s.lm = lm; s.mv = mv; s.gl = gl; s.sq = sq; s.rp = rp; s.rg = rg; s.mk = mk; s.lb = lb; s.lt = lt; s.kb = kb; s.fr = fr; s.tr = tr; s.tl2 = tl; s.lf = lf;
 		}
 		function anim(el, frames, opts) { try { return el.animate(frames, opts); } catch (e) { return null; } }
 		function stop(a) { if (a) { try { a.cancel(); } catch (e) { } } }
@@ -1121,7 +1374,8 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 		/** 1 つのカーソルを取り除く（ほかの持ち主のカーソルは残す）。 */
 		function kill(s) {
 			clearTimers(s);
-			s.cq = null; s.watch = false;
+			s.cq = null; s.watch = false; s.sw = null;
+			if (s.bars) { var bs = s.bars.slice(); for (var bi = 0; bi < bs.length; bi++) { barDrop(s, bs[bi]); } s.bars = null; }
 			if (s.h && s.h.parentNode) { s.h.parentNode.removeChild(s.h); }
 			if (s.g.cs[s.id] === s) { delete s.g.cs[s.id]; }
 			collapse(s.g);
@@ -1169,6 +1423,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 		 */
 		function play(s, frames, dur) {
 			if (!attachCursor(s)) { return; }
+			labelLeft(s, false);
 			var last = frames[frames.length - 1];
 			var fs = (calm || !(dur > 0) || frames.length < 2 || s.x === null) ? [{ x: last.x, y: last.y, r: last.r, o: 0 }, { x: last.x, y: last.y, r: last.r, o: 1 }] : frames;
 			var d = fs === frames ? dur : 1;
@@ -1275,6 +1530,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			var ss = gs ? gs.cs[typeof c.owner === 'string' && c.owner.length > 0 ? c.owner : '_'] : null;
 			if (!ss) { return 0; }
 			ss.sticky = ''; if (ss.watch) { ss.wend = Date.now(); } ss.watch = false;
+			if (ss.sw && ss.sw.tool) { ss.sw.until = Math.min(ss.sw.until, Date.now() + c.scrollLateMs); ss.sw.tool = false; }
 			if (ss.h) { setWaiting(ss, false); setStatus(ss, '', 0); }
 			return 0;
 		}
@@ -1305,6 +1561,8 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			}
 			if (c.kind === 'focus') {
 				var tt = typingTarget();
+				// 入力欄の外のキー（Space・PageDown・矢印など）はページを動かしうる（q.html Q574）
+				if (tt.kind === 'page' && typeof c.scrollText === 'string') { openInput(sm, c.scrollText, 0); }
 				// パスワード欄では、特別なキーの札も出さない（何を打ったかの手がかりになる）
 				if (c.key && tt.kind !== 'secret') { keyBadge(sm, c.key); }
 				if (!c.key || tt.kind !== 'page') {
@@ -1330,7 +1588,8 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 				return traits(false);
 			}
 			if (c.kind === 'wheel') {
-				mark(sm, arrowOf(c.dx, c.dy), A);
+				// 向きと量は、動いた入れ物が止まったときに擬似スクロールバーで出す（q.html Q574 の C）
+				if (typeof c.scrollText === 'string') { openInput(sm, c.scrollText, 0); } else { mark(sm, arrowOf(c.dx, c.dy), A); }
 				setStatus(sm, c.text, c.markMs);
 				reveal(sm); arm(sm, c.idleMs);
 				return traits(false);
@@ -1351,6 +1610,10 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 					sm.watch = true;
 					if (!was) { sm.since = c.since > 0 ? c.since : sm.wat; sm.wend = 0; scrollBaseline(); replay(sm); }
 				} else { if (sm.watch) { sm.wend = Date.now(); } sm.watch = false; }
+				// scroll_to は道具が終わるまで、その間に動き始めたスクロールを自分のものとみなす（q.html Q574）。
+				// 終わり（ほかの状態）が来たら、遅れて届く scroll のために 'scrollLateMs' だけ残す。
+				if (c.status === 'scroll' && typeof c.scrollText === 'string') { openInput(sm, c.scrollText, Date.now() + c.watchMs); sm.sw.tool = true; }
+				else if (sm.sw && sm.sw.tool) { sm.sw.until = Math.min(sm.sw.until, Date.now() + c.scrollLateMs); sm.sw.tool = false; }
 				if (c.status === 'idle') { sm.sticky = ''; setStatus(sm, '', 0); return traits(false); }
 				if (STICKY[c.status] && !c.transient) { sm.sticky = c.text; setStatus(sm, c.text, 0); return traits(false); }
 				if (c.status === 'failed') { mark(sm, '\\u2715', ${JSON.stringify(DANGER_COLOR)}); }

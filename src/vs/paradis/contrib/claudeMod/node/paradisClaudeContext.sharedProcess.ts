@@ -10,7 +10,7 @@
 // `paradis.sharedProcess.contribution.ts` から副作用 import で読み込まれる。REH には置かない（SSH 先のペインの mod も戻りトンネルで手元の shared process へ送ってくる）。
 // モバイル（paradisMobileAgentChat.ts）は同じプロセスの保存を `paradisClaudeContextStore()` で直接読む。
 
-import { promises as fs } from 'fs';
+import { mkdirSync, promises as fs, readFileSync, renameSync, writeFileSync } from 'fs';
 import { Event } from '../../../../base/common/event.js';
 import { DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import * as path from '../../../../base/common/path.js';
@@ -18,7 +18,7 @@ import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
-import { PARADIS_CLAUDE_CONTEXT_CHANNEL } from '../common/paradisClaudeContextBreakdown.js';
+import { PARADIS_CLAUDE_CONTEXT_CHANNEL, paradisAggregateClaudeContextPeriod } from '../common/paradisClaudeContextBreakdown.js';
 import { paradisClaudeModBridge } from './paradisClaudeModBridge.js';
 import { IParadisClaudeContextFiles, ParadisClaudeContextStore, paradisClaudeContextStore, paradisSetClaudeContextStore } from './paradisClaudeContextStore.js';
 
@@ -35,8 +35,15 @@ class ParadisClaudeContextChannel<TContext> implements IServerChannel<TContext> 
 
 	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		switch (command) {
-			case 'live':
-				return this.store.liveBreakdowns() as Promise<T>;
+			case 'period': {
+				// 期間の内訳（「AI コスト」の画面）。集計はここで済ませ、会話ごとの内訳は送らない
+				const from = Array.isArray(arg) && typeof arg[0] === 'number' && Number.isFinite(arg[0]) ? arg[0] : undefined;
+				const to = Array.isArray(arg) && typeof arg[1] === 'number' && Number.isFinite(arg[1]) ? arg[1] : undefined;
+				if (from === undefined || to === undefined) {
+					return Promise.reject(new Error('period takes [from, to]'));
+				}
+				return this.store.peaksBetween(from, to).then(({ peaks, since }) => paradisAggregateClaudeContextPeriod(peaks, since)) as Promise<T>;
+			}
 			case 'session': {
 				const sessionId = Array.isArray(arg) && typeof arg[0] === 'string' ? arg[0] : undefined;
 				return (sessionId !== undefined && sessionId.length <= 200 ? this.store.breakdownOf(sessionId) : Promise.resolve(undefined)) as Promise<T>;
@@ -66,6 +73,26 @@ function files(directory: string): IParadisClaudeContextFiles {
 			await fs.writeFile(temporary, text, 'utf8');
 			await fs.rename(temporary, file);
 		},
+		readSync: () => {
+			try {
+				// eslint-disable-next-line local/code-no-sync-fs -- プロセスの終わり（`exit`）だけで呼ぶ。そこでは非同期の I/O は終わりを待たれない
+				return readFileSync(file, 'utf8');
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+					return undefined;
+				}
+				throw error;
+			}
+		},
+		writeSync: text => {
+			// eslint-disable-next-line local/code-no-sync-fs -- プロセスの終わり（`exit`）だけで呼ぶ。そこでは非同期の I/O は終わりを待たれない
+			mkdirSync(directory, { recursive: true });
+			const temporary = `${file}.${process.pid}.tmp`;
+			// eslint-disable-next-line local/code-no-sync-fs -- プロセスの終わり（`exit`）だけで呼ぶ。そこでは非同期の I/O は終わりを待たれない
+			writeFileSync(temporary, text, 'utf8');
+			// eslint-disable-next-line local/code-no-sync-fs -- プロセスの終わり（`exit`）だけで呼ぶ。そこでは非同期の I/O は終わりを待たれない
+			renameSync(temporary, file);
+		},
 	};
 }
 
@@ -75,6 +102,10 @@ ParadisSharedProcessContributions.register(PARADIS_CLAUDE_CONTEXT_CHANNEL, ({ se
 	const disposables = new DisposableStore();
 	const store = disposables.add(new ParadisClaudeContextStore(files(directory), error => logService.warn('[paradisClaudeContext] could not read or write the saved context breakdowns', error)));
 	disposables.add(paradisClaudeModBridge.onEvent(event => store.observe(event)));
+	// 書き込みは 30 秒まとめるので、終わる前の分はプロセスの終わりに同期で書く（非同期の書き込みは終わりを待たれない）
+	const onExit = () => store.flushSync();
+	process.once('exit', onExit);
+	disposables.add(toDisposable(() => process.removeListener('exit', onExit)));
 	paradisSetClaudeContextStore(store);
 	disposables.add(toDisposable(() => {
 		if (paradisClaudeContextStore() === store) {
