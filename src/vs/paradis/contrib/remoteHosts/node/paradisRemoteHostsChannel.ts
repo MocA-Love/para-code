@@ -19,8 +19,8 @@
 import * as cp from 'child_process';
 import { promises as fsp } from 'fs';
 import * as os from 'os';
-import { dirname, isAbsolute, join } from '../../../../base/common/path.js';
-import { paradisSshIncludeFiles } from '../../../node/paradisSshIncludeFiles.js';
+import { join } from '../../../../base/common/path.js';
+import { paradisReadSshConfigFile, paradisResolveSshIncludePath, paradisSshIncludeFiles, PARADIS_SSH_INCLUDE_MAX_DEPTH } from '../../../node/paradisSshIncludeFiles.js';
 import { parseSSHConfigHostEntries, stripSSHComment } from '../../../../platform/agentHost/common/sshConfigParsing.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Event } from '../../../../base/common/event.js';
@@ -89,7 +89,7 @@ export class ParadisRemoteHostsSshService {
 		const configPath = join(os.homedir(), '.ssh', 'config');
 		try {
 			const content = await fsp.readFile(configPath, 'utf-8');
-			const hosts = await this.collectHosts(content, dirname(configPath), new Set<string>());
+			const hosts = await this.collectHosts(content, os.homedir(), new Set<string>([configPath]), 0);
 			// 同じ別名が本体と Include の両方に書いてあることは珍しくない。
 			// ツリーの identity が衝突するので、ここで一意にしておく
 			return [...new Set(hosts)];
@@ -100,7 +100,10 @@ export class ParadisRemoteHostsSshService {
 	}
 
 	/** Include をたどってホスト別名を集める (upstream の _parseSSHConfigHosts と同じ手順)。 */
-	private async collectHosts(content: string, configDir: string, seen: Set<string>): Promise<string[]> {
+	private async collectHosts(content: string, home: string, seen: Set<string>, depth: number): Promise<string[]> {
+		if (depth > PARADIS_SSH_INCLUDE_MAX_DEPTH) {
+			return [];
+		}
 		const hosts = [...parseSSHConfigHostEntries(content)];
 		for (const line of content.split('\n')) {
 			const trimmed = line.trim();
@@ -112,20 +115,18 @@ export class ParadisRemoteHostsSshService {
 				continue;
 			}
 			for (const rawPattern of stripSSHComment(includeMatch[1]).split(/\s+/).filter(Boolean)) {
-				const pattern = rawPattern.replace(/^~/, os.homedir());
-				const resolved = isAbsolute(pattern) ? pattern : join(configDir, pattern);
-				// `*`・`?` を含む Include（`~/.ssh/conf.d/*.conf` など）は合うファイルを全部読む（SFTP の接続と同じ解き方）
-				for (const file of await paradisSshIncludeFiles(resolved)) {
+				// 相対パスは OpenSSH と同じく ~/.ssh から解き、`*`・`?` を含む Include（`~/.ssh/conf.d/*.conf` など）は
+				// 合うファイルを全部読む（SFTP の接続と同じ解き方）
+				for (const file of await paradisSshIncludeFiles(paradisResolveSshIncludePath(rawPattern, home))) {
 					// 相互 Include で無限に潜らないよう、一度見たパスは辿らない
 					if (seen.has(file)) {
 						continue;
 					}
 					seen.add(file);
-					try {
-						const sub = await fsp.readFile(file, 'utf-8');
-						hosts.push(...await this.collectHosts(sub, dirname(file), seen));
-					} catch {
-						// 読めないファイルは黙って飛ばす (upstream と同じ)
+					// 読めない・大きすぎるファイルは黙って飛ばす (upstream と同じ)
+					const sub = await paradisReadSshConfigFile(file);
+					if (sub !== undefined) {
+						hosts.push(...await this.collectHosts(sub, home, seen, depth + 1));
 					}
 				}
 			}

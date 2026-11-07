@@ -22,8 +22,8 @@ import * as os from 'os';
 import type { AnyAuthMethod, AuthenticationType, BaseAgent, Client, ConnectConfig, ParsedKey, SFTPWrapper } from 'ssh2';
 import type { Duplex } from 'stream';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { isAbsolute, join } from '../../../../base/common/path.js';
-import { paradisSshIncludeFiles } from '../../../node/paradisSshIncludeFiles.js';
+import { join } from '../../../../base/common/path.js';
+import { paradisReadSshConfigFile, paradisResolveSshIncludePath, paradisSshIncludeFiles, PARADIS_SSH_INCLUDE_MAX_DEPTH } from '../../../node/paradisSshIncludeFiles.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { resolveSSHKnownHostsFiles } from '../../../../platform/agentHost/node/sshConfigPaths.js';
 import { matchKnownHosts, parseKnownHosts, readHostKeyType } from '../../../../platform/agentHost/node/sshKnownHosts.js';
@@ -78,15 +78,13 @@ function expandHome(path: string, home: string): string {
 }
 
 /** `~/.ssh/config` の Include を展開した行の並び（ssh が起動できないときの代わり）。 */
-async function readSshConfigLines(path: string, home: string, seen: Set<string>): Promise<string[]> {
-	if (seen.has(path) || seen.size > 64) {
+async function readSshConfigLines(path: string, home: string, seen: Set<string>, depth = 0): Promise<string[]> {
+	if (seen.has(path) || seen.size > 64 || depth > PARADIS_SSH_INCLUDE_MAX_DEPTH) {
 		return [];
 	}
 	seen.add(path);
-	let content: string;
-	try {
-		content = await fsp.readFile(path, 'utf-8');
-	} catch {
+	const content = await paradisReadSshConfigFile(path);
+	if (content === undefined) {
 		return [];
 	}
 	const lines: string[] = [];
@@ -97,10 +95,8 @@ async function readSshConfigLines(path: string, home: string, seen: Set<string>)
 			continue;
 		}
 		for (const raw of patterns) {
-			const expanded = expandHome(raw, home);
-			const resolved = isAbsolute(expanded) ? expanded : join(home, '.ssh', expanded);
-			for (const file of await paradisSshIncludeFiles(resolved)) {
-				lines.push(...await readSshConfigLines(file, home, seen));
+			for (const file of await paradisSshIncludeFiles(paradisResolveSshIncludePath(raw, home))) {
+				lines.push(...await readSshConfigLines(file, home, seen, depth + 1));
 			}
 		}
 	}
