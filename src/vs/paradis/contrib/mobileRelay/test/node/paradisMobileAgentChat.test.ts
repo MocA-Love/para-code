@@ -701,7 +701,7 @@ suite('ParadisMobileAgentChat', () => {
 			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-resumed' }]), true);
 			fireParadisAgentHookEvent({
 				token: 'pane-resumed', event: 'SessionStart', sessionId: 'resumed-session',
-				transcriptPath: remotePath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', at: Date.now(),
+				transcriptPath: remotePath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', payload: { source: 'resume' }, at: Date.now(),
 			});
 			await waitFor(() => access.tailers.has('pane-resumed'), 'the resumed session was not followed');
 
@@ -718,6 +718,56 @@ suite('ParadisMobileAgentChat', () => {
 			await waitFor(() => notified.length > 0, 'the question asked after the resume was not notified');
 			await new Promise(resolve => setTimeout(resolve, 50));
 			assert.deepStrictEqual(notified.map(text => text.includes('再開後の質問')), [true]);
+		} finally {
+			chat.dispose();
+			mirror.dispose();
+			await rm(userData, { recursive: true, force: true });
+		}
+	});
+
+	test('still notifies a new host conversation and the rest of a copy that continues, even if the window marks them as catching up', async () => {
+		// 印を受け付けるのは、再開した会話で手元に写しがまだ無いときだけ。新しい会話の最初の質問と、写しの途中から
+		// 続けるとき（再接続・再読み込み）の切れていた間の質問は鳴らす
+		const userData = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-resume-other-')));
+		const mirror = new ParadisRemoteTranscriptMirrorStore(userData, new NullLogService());
+		const notified: string[] = [];
+		const chat = new ParadisMobileAgentChat(
+			() => { }, () => { }, info => notified.push(info.text), new NullLogService(),
+			async () => true, () => { }, undefined, mirror,
+		);
+		const access = chat as unknown as { tailers: Map<string, unknown> };
+		const question = (id: string, text: string) => JSON.stringify({
+			type: 'assistant', uuid: `u-${id}`, timestamp: new Date().toISOString(),
+			message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'AskUserQuestion', input: { questions: [{ question: text, header: '確認', options: [{ label: 'はい' }] }] } }] },
+		}) + '\n';
+		const newPath = '/home/alice/.claude/projects/-srv-app/new-session.jsonl';
+		const continuedPath = '/home/alice/.claude/projects/-srv-app/continued-session.jsonl';
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-new' }, { terminalId: 2, token: 'pane-continued' }]), true);
+			fireParadisAgentHookEvent({
+				token: 'pane-new', event: 'SessionStart', sessionId: 'new-session',
+				transcriptPath: newPath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', payload: { source: 'startup' }, at: Date.now(),
+			});
+			// 再開した会話でも、手元に写しが既にある（前の接続で写した途中まで）
+			const continuedLocal = mirror.localPathForHookPath(continuedPath, 'pane-continued', 'ssh-remote-server')!;
+			await mkdir(join(continuedLocal, '..'), { recursive: true });
+			await writeFile(continuedLocal, question('toolu_before', '前に写した質問'));
+			fireParadisAgentHookEvent({
+				token: 'pane-continued', event: 'SessionStart', sessionId: 'continued-session',
+				transcriptPath: continuedPath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', payload: { source: 'resume' }, at: Date.now(),
+			});
+			await waitFor(() => access.tailers.has('pane-new') && access.tailers.has('pane-continued'), 'the sessions were not followed');
+
+			const encoder = new TextEncoder();
+			assert.strictEqual(await mirror.begin('window-a', newPath), 0);
+			await mirror.append('window-a', newPath, encoder.encode(question('toolu_first', '新しい会話の最初の質問')), true);
+			assert.ok(await mirror.begin('window-a', continuedPath) > 0);
+			await mirror.append('window-a', continuedPath, encoder.encode(question('toolu_gap', '切れていた間の質問')), true);
+
+			await waitFor(() => notified.length >= 2, 'the questions were not notified');
+			await new Promise(resolve => setTimeout(resolve, 50));
+			assert.deepStrictEqual(notified.map(text => text.includes('新しい会話の最初の質問') ? 'first' : text.includes('切れていた間の質問') ? 'gap' : text).sort(), ['first', 'gap']);
 		} finally {
 			chat.dispose();
 			mirror.dispose();
@@ -753,7 +803,7 @@ suite('ParadisMobileAgentChat', () => {
 			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
 			fireParadisAgentHookEvent({
 				token, event: 'SessionStart', sessionId: threadId,
-				transcriptPath: remotePath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', at: Date.now(),
+				transcriptPath: remotePath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', payload: { source: 'resume' }, at: Date.now(),
 			});
 			await waitFor(() => access.tailers.has(token), 'the resumed Codex session was not followed');
 

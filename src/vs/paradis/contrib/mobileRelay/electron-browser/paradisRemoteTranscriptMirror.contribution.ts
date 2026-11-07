@@ -177,9 +177,15 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 			return;
 		}
 		this.offsets.set(remotePath, offset);
-		// 担当を取った後の最初の読みで見た大きさまでは、接続先に既にあった分（過去の会話）として写す
+		// 手元に写しがまだ無ければ、担当を取った後の最初の読みで見た大きさまでを、接続先に既にあった分（過去の会話）として
+		// 印を付けて写す。印を受け付けるのは再開した会話だけ（台帳が決める）。写しの途中から続けるときは付けない
+		// （切れていた間の質問・ターンの終わりは鳴らす）
 		this.catchUpEnds.delete(remotePath);
-		this.pendingCatchUp.add(remotePath);
+		if (offset === 0) {
+			this.pendingCatchUp.add(remotePath);
+		} else {
+			this.pendingCatchUp.delete(remotePath);
+		}
 		let watcher: IDisposable;
 		try {
 			watcher = this.fileService.watch(uri);
@@ -197,6 +203,7 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 		this.tracked.delete(remotePath);
 		this.offsets.delete(remotePath);
 		this.catchUpEnds.delete(remotePath);
+		this.pendingCatchUp.delete(remotePath);
 	}
 
 	/** 同じファイルの読みが重ならないようにしつつ、続きを読む。 */

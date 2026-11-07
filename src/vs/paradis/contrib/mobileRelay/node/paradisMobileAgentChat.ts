@@ -9125,7 +9125,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		// SSH 接続先の hook が名乗るのは接続先のパスで、ここからは開けない。写し先のパスへ
 		// 読み替えて、以降はローカルの transcript と全く同じ経路に乗せる。写しがまだ無くても
 		// tailer はファイルの出現を待てるので、ここで足踏みする必要はない。
-		const transcriptPath = this.remoteTranscriptMirror?.localPathForHookPath(event.transcriptPath, event.token, event.remoteHostId) ?? event.transcriptPath;
+		// 再開した会話（SessionStart の source が resume）の写しは、過去の会話を先頭から追記で写す。その分は鳴らさない
+		const resumed = event.event === 'SessionStart' && str(event.payload?.source) === 'resume';
+		const transcriptPath = this.remoteTranscriptMirror?.localPathForHookPath(event.transcriptPath, event.token, event.remoteHostId, resumed) ?? event.transcriptPath;
 		if (transcriptPath !== event.transcriptPath) {
 			this.followRemoteSubagentTranscript(event);
 		}
