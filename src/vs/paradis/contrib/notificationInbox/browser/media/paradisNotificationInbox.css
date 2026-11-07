@@ -295,9 +295,14 @@
 	white-space: nowrap;
 }
 
-/* 許可待ち・質問は、待っている内容が要点なので本文を地の色にする。 */
+/* 許可待ち・質問は、待っている内容（コマンドなど）が要点なので、本文を地の色にして 2 行まで出す。 */
 .monaco-workbench .paradis-notification-inbox-popover .pnip-row:has(.pnip-kind) .pnip-message {
 	color: var(--vscode-foreground);
+	white-space: normal;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	word-break: break-word;
 }
 
 .monaco-workbench .paradis-notification-inbox-popover .pnip-note {
@@ -305,6 +310,7 @@
 }
 
 .monaco-workbench .paradis-notification-inbox-popover .pnip-row.closed .pnip-space,
+.monaco-workbench .paradis-notification-inbox-popover .pnip-row.closed .pnip-time,
 .monaco-workbench .paradis-notification-inbox-popover .pnip-row.closed .pnip-kind {
 	opacity: 0.6;
 }
