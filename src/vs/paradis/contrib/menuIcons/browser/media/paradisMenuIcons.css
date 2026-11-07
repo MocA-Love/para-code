@@ -35,9 +35,9 @@
 	opacity: 0.85;
 }
 
-/* In a menu that shows icons, give the labels without one (unlisted commands, submenus) an empty icon
+/* In a menu that shows glyph icons (not fork items that only carry the marker for their class), give the labels without one (unlisted commands, submenus) an empty icon
  * column of the same width so all labels start at the same place. */
-.monaco-menu .monaco-action-bar.vertical .actions-container:has(.paradis-menu-icon:not(.paradis-menu-color)) .action-label:not(.paradis-menu-icon):not(.separator)::before {
+.monaco-menu .monaco-action-bar.vertical .actions-container:has(.paradis-menu-icon[class*="codicon-"]:not(.paradis-menu-color)) .action-label:not(.paradis-menu-icon):not(.separator)::before {
 	content: '';
 	display: inline-block;
 	width: calc(var(--vscode-codiconFontSize, 16px) + var(--vscode-spacing-size80));
@@ -46,6 +46,12 @@
 .monaco-menu .monaco-action-bar.vertical .action-label.paradis-menu-danger,
 .monaco-menu .monaco-action-bar.vertical .action-label.paradis-menu-danger::before {
 	color: var(--vscode-errorForeground);
+}
+
+/* The selected row sits on the menu selection background; go back to the selection foreground there. */
+.monaco-menu .monaco-action-bar.vertical .action-item.focused .action-label.paradis-menu-danger,
+.monaco-menu .monaco-action-bar.vertical .action-item.focused .action-label.paradis-menu-danger::before {
+	color: inherit;
 }
 
 .monaco-menu .monaco-action-bar.vertical .action-item.disabled .action-label.paradis-menu-icon::before {
