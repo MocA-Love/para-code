@@ -880,41 +880,55 @@ export class ParadisSessionResumeService {
 				columns.has('source') ? 'source' : `'' AS source`,
 			].join(', ');
 			const archivedClause = !includeArchived && columns.has('archived') ? 'WHERE archived = 0' : '';
-			// 新しい順に 1 ページずつ読み、表示する上限に届いたら止める（全行を一度に JS へ読まない）
+			// 新しい順に 1 ページずつ読み、表示する上限に届いたら止める（全行を一度に JS へ読まない）。
+			// ページの間に Codex が会話を更新すると並びがずれて同じ会話が 2 回並ぶ・飛ぶので、読む間は 1 つの読み取りの
+			// トランザクションで同じ時点を見る（念のため id でも重ねない）
 			const statement = database.prepare(`SELECT ${select} FROM threads ${archivedClause} ORDER BY updated_at_value DESC, id DESC LIMIT ? OFFSET ?`);
+			const seenIds = new Set<string>();
 			let accepted = 0;
-			for (let offset = 0; accepted < MAX_SESSIONS; offset += CODEX_THREAD_PAGE) {
-				const rows = statement.all(CODEX_THREAD_PAGE, offset) as unknown[];
-				for (const value of rows) {
-					const row = record(value);
-					const id = string(row?.id);
-					const cwd = string(row?.cwd);
-					const rollout = string(row?.rollout_path);
-					const space = cwd ? this.matchSpace(spaceAliases, cwd) : undefined;
-					if (!id || !cwd || !rollout || !space || !isCodexRootSource(string(row?.source))) {
-						continue;
+			database.exec('BEGIN');
+			try {
+				for (let offset = 0; accepted < MAX_SESSIONS; offset += CODEX_THREAD_PAGE) {
+					const rows = statement.all(CODEX_THREAD_PAGE, offset) as unknown[];
+					for (const value of rows) {
+						const row = record(value);
+						const id = string(row?.id);
+						if (id !== undefined) {
+							if (seenIds.has(id)) {
+								continue;
+							}
+							seenIds.add(id);
+						}
+						const cwd = string(row?.cwd);
+						const rollout = string(row?.rollout_path);
+						const space = cwd ? this.matchSpace(spaceAliases, cwd) : undefined;
+						if (!id || !cwd || !rollout || !space || !isCodexRootSource(string(row?.source))) {
+							continue;
+						}
+						const homes = this.resolveAgentHomes(space.cwd);
+						const transcriptPath = paradisLocalAgentPath(homes, rollout);
+						// 古い Codex は差し込んだ文（`<environment_context>` 等）を title・最初の発言として state DB に残している
+						const userText = (value: unknown) => { const text = string(value); return text !== undefined && !paradisIsCodexInjectedText(text) ? text : undefined; };
+						const title = string(row?.name) ?? userText(row?.title) ?? userText(row?.first_user_message) ?? userText(row?.preview) ?? id;
+						const preview = userText(row?.preview) ?? userText(row?.first_user_message) ?? title;
+						this.addSession({
+							id, agent: 'codex', title: clipped(title, 160), preview: clipped(preview, 260), cwd: space.cwd,
+							spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
+							createdAt: number(row?.created_at_value), updatedAt: number(row?.updated_at_value) || Date.now(),
+							archived: number(row?.archived) === 1, empty: !string(row?.name) && !string(row?.title) && !string(row?.first_user_message) && !string(row?.preview), gitBranch: string(row?.git_branch),
+							...(resumeCodexHome !== undefined ? { codexHome: resumeCodexHome } : {}),
+						}, transcriptPath, codexHome, target);
+						accepted++;
+						if (accepted >= MAX_SESSIONS) {
+							break;
+						}
 					}
-					const homes = this.resolveAgentHomes(space.cwd);
-					const transcriptPath = paradisLocalAgentPath(homes, rollout);
-					// 古い Codex は差し込んだ文（`<environment_context>` 等）を title・最初の発言として state DB に残している
-					const userText = (value: unknown) => { const text = string(value); return text !== undefined && !paradisIsCodexInjectedText(text) ? text : undefined; };
-					const title = string(row?.name) ?? userText(row?.title) ?? userText(row?.first_user_message) ?? userText(row?.preview) ?? id;
-					const preview = userText(row?.preview) ?? userText(row?.first_user_message) ?? title;
-					this.addSession({
-						id, agent: 'codex', title: clipped(title, 160), preview: clipped(preview, 260), cwd: space.cwd,
-						spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
-						createdAt: number(row?.created_at_value), updatedAt: number(row?.updated_at_value) || Date.now(),
-						archived: number(row?.archived) === 1, empty: !string(row?.name) && !string(row?.title) && !string(row?.first_user_message) && !string(row?.preview), gitBranch: string(row?.git_branch),
-						...(resumeCodexHome !== undefined ? { codexHome: resumeCodexHome } : {}),
-					}, transcriptPath, codexHome, target);
-					accepted++;
-					if (accepted >= MAX_SESSIONS) {
+					if (rows.length < CODEX_THREAD_PAGE) {
 						break;
 					}
 				}
-				if (rows.length < CODEX_THREAD_PAGE) {
-					break;
-				}
+			} finally {
+				database.exec('COMMIT');
 			}
 			return true;
 		} catch (error) {
