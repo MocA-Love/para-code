@@ -35,7 +35,7 @@ import {
 	paradisIsRiskyPortAddress
 } from '../common/paradisPortList.js';
 import { executeParadisPortKillBatch } from '../common/paradisPortKillBatch.js';
-import { ParadisPortPageProbeCache, paradisHomeDir, readProcessCwds } from './paradisPortServers.js';
+import { ParadisPortPageProbeCache, ParadisPortServerDescriber } from './paradisPortServers.js';
 
 /** 短時間に何度も聞かれたときに、同じ結果を返してよい長さ。 */
 const SNAPSHOT_MAX_AGE_MS = 2000;
@@ -243,19 +243,14 @@ export class ParadisPortListService {
 		private readonly logService: ILogService,
 		private readonly collect: () => Promise<readonly IParadisPortEntry[]> = collectEntries,
 		private readonly signal: (pid: number) => void = pid => process.kill(pid, 'SIGTERM'),
-		private readonly readCwds: (pids: readonly number[]) => Promise<Map<number, string>> = readProcessCwds,
+		private readonly servers = new ParadisPortServerDescriber({ cacheMs: SNAPSHOT_MAX_AGE_MS }),
 		private readonly pages = new ParadisPortPageProbeCache(),
 	) { }
 
 	/** 内蔵ブラウザの新しいタブ用。待ち受けのポートに、持ち主のプロセスの作業フォルダを付けて返す。 */
 	async getServers(request: IParadisPortListRequest): Promise<IParadisPortServersSnapshot> {
 		const snapshot = await this.getSnapshot(request);
-		const cwds = await this.readCwds(snapshot.entries.map(entry => entry.pid));
-		return {
-			entries: snapshot.entries.map(entry => cwds.has(entry.pid) ? { ...entry, cwd: cwds.get(entry.pid) } : entry),
-			homeDir: paradisHomeDir(),
-			collectedAt: snapshot.collectedAt,
-		};
+		return this.servers.describe(snapshot.entries, snapshot.collectedAt);
 	}
 
 	/** 内蔵ブラウザの新しいタブ用。ページの題とアイコン（loopback へだけ読みに行く）。 */

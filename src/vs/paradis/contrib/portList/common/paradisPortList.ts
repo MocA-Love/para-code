@@ -50,6 +50,8 @@ export interface IParadisPortServersSnapshot {
 export interface IParadisPortPageRequest {
 	readonly port: number;
 	readonly address: string;
+	/** 待ち受けているプロセス。「ページでない」と分かったら、このプロセスが続く間は読み直さない。 */
+	readonly pid?: number;
 }
 
 export interface IParadisPortPageInfo {

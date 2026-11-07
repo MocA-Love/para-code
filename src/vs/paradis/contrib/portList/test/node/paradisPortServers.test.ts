@@ -10,8 +10,8 @@ import assert from 'assert';
 import type * as http from 'http';
 import { AddressInfo } from 'net';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisPortPageInfo, IParadisPortPageRequest } from '../../common/paradisPortList.js';
-import { ParadisPortPageProbeCache, parseHtmlIconHref, parseHtmlTitle, parseLsofCwdOutput, probeHostForAddress, probePortPage } from '../../node/paradisPortServers.js';
+import { IParadisPortEntry, IParadisPortPageInfo, IParadisPortPageRequest } from '../../common/paradisPortList.js';
+import { ParadisPortPageProbeCache, ParadisPortServerDescriber, paradisAppRootFor, parseHtmlIconHref, parseHtmlTitle, parseLsofCwdOutput, parsePsCommOutput, probeHostForAddress, probePortPage } from '../../node/paradisPortServers.js';
 
 suite('ParadisPortServers', () => {
 
@@ -84,5 +84,56 @@ suite('ParadisPortServers', () => {
 		now = 20_000;
 		await cache.probePages([{ port: 3000, address: '127.0.0.1' }]);
 		assert.deepStrictEqual({ returned: first.length, probed: probed.length, last: probed[probed.length - 1] }, { returned: 16, probed: 17, last: 3000 });
+	});
+
+	test('skips well-known non-HTTP ports and does not ask the same process again once it is not a page', async () => {
+		const probed: string[] = [];
+		let alive = true;
+		let now = 0;
+		const cache = new ParadisPortPageProbeCache(async (request: IParadisPortPageRequest): Promise<IParadisPortPageInfo> => {
+			probed.push(`${request.pid}:${request.port}`);
+			return { port: request.port, isPage: false, scheme: 'http' };
+		}, () => now, () => alive);
+		await cache.probePages([{ port: 5432, address: '127.0.0.1', pid: 1 }, { port: 6379, address: '127.0.0.1', pid: 2 }, { port: 4000, address: '127.0.0.1', pid: 3 }]);
+		// 覚えておく 15 秒を過ぎても、同じプロセスなら聞き直さない
+		now = 20_000;
+		await cache.probePages([{ port: 4000, address: '127.0.0.1', pid: 3 }]);
+		// プロセスが終われば、同じ番号の新しいサーバーとして聞き直す
+		alive = false;
+		now = 40_000;
+		await cache.probePages([{ port: 4000, address: '127.0.0.1', pid: 3 }]);
+		assert.deepStrictEqual(probed, ['3:4000', '3:4000']);
+	});
+
+	test('adds working folders, drops Para Code\'s own processes, and reads each process once while cached', async () => {
+		const reads: number[][] = [];
+		let now = 0;
+		const describer = new ParadisPortServerDescriber({
+			cacheMs: 2000,
+			now: () => now,
+			ownPids: [100],
+			appRoot: '/Applications/Para Code.app',
+			homeDir: '/Users/u',
+			readCwds: async pids => { reads.push([...pids]); return new Map(pids.map(pid => [pid, `/work/${pid}`])); },
+			readExes: async pids => new Map(pids.map(pid => [pid, pid === 101 ? '/Applications/Para Code.app/Contents/Frameworks/Para Code Helper (Plugin).app/Contents/MacOS/Para Code Helper (Plugin)' : '/usr/local/bin/node'])),
+		});
+		const entries: IParadisPortEntry[] = [100, 101, 102].map(pid => ({ port: 3000 + pid, proto: 'TCP', pid, processName: 'p', address: '127.0.0.1', risky: false }));
+		const first = await describer.describe(entries, 1);
+		await describer.describe(entries, 2);
+		now = 5000;
+		await describer.describe(entries, 3);
+		assert.deepStrictEqual({
+			ports: first.entries.map(entry => [entry.port, entry.cwd]),
+			home: first.homeDir,
+			reads,
+			appRoots: [paradisAppRootFor('/Applications/Para Code.app/Contents/MacOS/Para Code'), paradisAppRootFor('/usr/share/para-code/para-code'), paradisAppRootFor('/usr/bin/node')],
+			ps: [...parsePsCommOutput('  101 /Applications/A.app/Contents/MacOS/A\n  102 /usr/local/bin/node\n').entries()],
+		}, {
+			ports: [[3102, '/work/102']],
+			home: '/Users/u',
+			reads: [[100, 101, 102], [100, 101, 102]],
+			appRoots: ['/Applications/Para Code.app', '/usr/share/para-code', undefined],
+			ps: [[101, '/Applications/A.app/Contents/MacOS/A'], [102, '/usr/local/bin/node']],
+		});
 	});
 });
