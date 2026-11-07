@@ -67,7 +67,35 @@ export const ChatRowView = memo(function ChatRowView({ row, terminalKey, allTool
 		case 'team':
 			return <TeamCardRowView row={row} terminalKey={terminalKey} />;
 	}
-});
+}, (previous, next) => previous.terminalKey === next.terminalKey && previous.allToolsOpen === next.allToolsOpen && sameChatRow(previous.row, next.row));
+
+/**
+ * 行の中身が同じか。会話の行は組み直すたびに新しいオブジェクトになるので、参照ではなく 1 段下の値で比べる
+ * （発言のオブジェクトは店が使い回すので、変わっていなければ同じ参照のまま）。配列は要素ごとに比べる。
+ * 比べ切れない入れ子は「違う」として描き直す（描き損ねはしない）。
+ */
+function sameChatRow(a: ChatRow, b: ChatRow): boolean {
+	if (a === b) {
+		return true;
+	}
+	const left = a as unknown as Record<string, unknown>;
+	const right = b as unknown as Record<string, unknown>;
+	const keys = Object.keys(left);
+	if (keys.length !== Object.keys(right).length) {
+		return false;
+	}
+	for (const key of keys) {
+		const leftValue = left[key];
+		const rightValue = right[key];
+		if (Object.is(leftValue, rightValue)) {
+			continue;
+		}
+		if (!Array.isArray(leftValue) || !Array.isArray(rightValue) || leftValue.length !== rightValue.length || leftValue.some((item, index) => !Object.is(item, rightValue[index]))) {
+			return false;
+		}
+	}
+	return true;
+}
 
 function MessageRow({ message, terminalKey }: { message: AgentChatMessage; terminalKey: string }) {
 	const hasImages = (message.images?.length ?? 0) > 0;

@@ -134,6 +134,7 @@ export function MessageContextMenu({ text, markdown, speaker, style, previewRadi
 						fg={inplaceSelectForeground(markdown, theme.onBubble)}
 						onReady={() => setWebReady(true)}
 						onHeight={setWebHeight}
+						onGone={stop}
 					/>
 				</View>
 			) : null}

@@ -48,6 +48,11 @@ export function paradisSetWebContentsHeldByAgent(webContents: object, held: bool
 	}
 }
 
+/** エージェントがそのタブを今手にしているか（長く隠れたタブを休ませる対象から外すため）。 */
+export function paradisIsWebContentsHeldByAgent(webContents: object): boolean {
+	return heldByAgent.has(webContents);
+}
+
 /** 子タブ（`target=_blank`・`window.open`・中クリックで開いたタブ）→ 開いた元のタブ。 */
 const openerOf = new WeakMap<object, object>();
 /** エージェントが手にしている間に開かれた子タブ。元のタブが後で手放されても、由来は変わらない。 */

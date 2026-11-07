@@ -148,6 +148,43 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 	);
 });
 
+/** コードのハイライトを PC に同時に頼む数。コードの多い会話を開いた直後に、ブロックの数だけ一度に出さない。 */
+const HIGHLIGHT_CONCURRENCY = 3;
+let highlightRunning = 0;
+const highlightWaiting: (() => void)[] = [];
+
+/**
+ * ハイライトの要求を同時 {@link HIGHLIGHT_CONCURRENCY} 件までにして走らせる。順番を待っている間に要らなくなった
+ * （`wanted()` が false）ものは PC へ送らずに `undefined` で終える。
+ */
+function limitHighlight<T>(wanted: () => boolean, run: () => Promise<T>): Promise<T | undefined> {
+	return new Promise<T | undefined>((resolve, reject) => {
+		const start = () => {
+			if (!wanted()) {
+				resolve(undefined);
+				releaseHighlightSlot();
+				return;
+			}
+			Promise.resolve().then(run).then(resolve, reject).finally(releaseHighlightSlot);
+		};
+		if (highlightRunning < HIGHLIGHT_CONCURRENCY) {
+			highlightRunning++;
+			start();
+		} else {
+			highlightWaiting.push(start);
+		}
+	});
+}
+
+function releaseHighlightSlot(): void {
+	const next = highlightWaiting.shift();
+	if (next !== undefined) {
+		next();
+	} else {
+		highlightRunning--;
+	}
+}
+
 const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 	const selectable = useContext(SelectableContext);
 	const fsHighlight = useAppStore(s => s.fsHighlight);
@@ -181,7 +218,11 @@ const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?:
 		const delay = requestedOnceRef.current ? HIGHLIGHT_REQUEST_DELAY_MS : 0;
 		requestedOnceRef.current = true;
 		const timer = setTimeout(() => {
-			fsHighlight(text, lang).then(result => {
+			// 順番を待つ間に本文が伸びた・画面から外れたものは送らない
+			limitHighlight(() => !superseded && mountedRef.current, () => fsHighlight(text, lang)).then(result => {
+				if (result === undefined) {
+					return;
+				}
 				let parsed: HighlightData | null = null;
 				if (result.html !== undefined && result.css !== undefined) {
 					const lines = parseTokenizedHtml(result.html, result.css);

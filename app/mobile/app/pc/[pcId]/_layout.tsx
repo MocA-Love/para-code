@@ -1,8 +1,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRoute } from 'expo-router';
+import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRoute, type ErrorBoundaryProps } from 'expo-router';
+import { RouteErrorFallback } from '../../../src/components/routeErrorFallback.js';
 import { useAppStore } from '../../../src/appState.js';
 import { PcRouteContext } from '../../../src/features/pc/pcRouteContext.js';
 import { PcScreen } from '../../../src/features/pc/pcScreen.js';
@@ -24,6 +25,11 @@ import { colors } from '../../../src/theme.js';
  * 1列では戻ると PC の画面へ、2列では「エージェントが開かれていません」へ戻れるように。
  */
 export const unstable_settings = { initialRouteName: 'index' };
+
+/** PC の中の画面の描画中の例外を受け止める（受け止めないとアプリごと落ちる）。 */
+export function ErrorBoundary(props: ErrorBoundaryProps) {
+	return <RouteErrorFallback {...props} where="pc" />;
+}
 
 /**
  * PC の中の画面（`/pc/[pcId]/…`）の器。iPad を広い幅（`useIsRegularWidth()`。700pt 以上、2列から縮めた
@@ -83,10 +89,11 @@ export default function PcLayout() {
 	// 何も開いていないときは隠さない（隠すと右の「エージェントが開かれていません」だけになる）。
 	const canCollapse = regular && detailOpen;
 	const showSidebar = regular && (!collapsed || !detailOpen);
-	const toggle = () => {
+	// 左の列の PC の画面（memo）へ渡すので、境界をドラッグしている間も同じ関数のままにする
+	const toggle = useCallback(() => {
 		haptic('move');
 		setCollapsed(!collapsed);
-	};
+	}, [collapsed, setCollapsed]);
 	useShortcutSlot('sidebar', focused && canCollapse ? { toggle } : undefined);
 
 	if (pcId === undefined) {
@@ -115,6 +122,8 @@ export default function PcLayout() {
 						screenOptions={({ route }) => ({
 							headerShown: false,
 							contentStyle: { backgroundColor: colors.bg },
+							// 下に隠れた画面は描き直さない（前面へ戻ったときに追いつく）
+							freezeOnBlur: true,
 							// 2列では左の列の行を押すと右の中身が入れ替わる（押し進む動きは付けない。Orca と同じ）。
 							animation: regular && route.name === 'session/[spaceId]' ? 'none' : 'default',
 						})}

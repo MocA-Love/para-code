@@ -8,6 +8,7 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { CircleAlert, FileQuestion } from 'lucide-react-native';
 import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
 import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
+import { useWebViewRevival } from '../../components/webViewRevival.js';
 import { isFileViewerJavaScriptEnabled, isSearchableFileViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { haptic } from '../../haptics.js';
@@ -16,12 +17,12 @@ import { Button, EmptyState, useThemeColors } from '../../ui/index.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
 import { CenterSpinner } from './codeParts.js';
 import { buildFindScript, findTargetOf } from './fileFind.js';
-import { HTML_IMAGES_LOADER_SCRIPT, HtmlImageQueue, buildHtmlImageDeliverScript } from './htmlImages.js';
+import { HTML_IMAGES_LOADER_SCRIPT, HTML_IMAGES_RETRY_SCRIPT, HtmlImageQueue, buildHtmlImageDeliverScript } from './htmlImages.js';
 import { CODE_LINE_WINDOW, buildCodeHtml, buildMarkdownHtml, codeLineTotal, codePageStartOf, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
 import type { FileContent } from './useFileContent.js';
 import type { FileFindBinding } from './useFileFind.js';
 import { measureBuild, type FileViewerLoadTrace } from './fileViewerTiming.js';
-import { buildDocxHtml, buildImageHtml, fileExt } from './viewerHtml.js';
+import { buildImageHtml, buildSecureDocxHtml, fileExt } from './viewerHtml.js';
 
 /**
  * ファイルビューアの本文（Orca の MobileFilePreviewBody）。種類ごとの表示は旧ビューア
@@ -45,6 +46,7 @@ import { buildDocxHtml, buildImageHtml, fileExt } from './viewerHtml.js';
 export function NativeFileView({ data, ext, trace }: { data: string; ext: string; trace?: FileViewerLoadTrace }) {
 	const [uri, setUri] = useState<string | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
+	const revival = useWebViewRevival();
 	useEffect(() => {
 		let cancelled = false;
 		let written: string | undefined;
@@ -89,8 +91,10 @@ export function NativeFileView({ data, ext, trace }: { data: string; ext: string
 	}
 	return (
 		<WebView
+			key={revival.generation}
 			style={styles.web}
 			source={{ uri }}
+			onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 			originWhitelist={['file://']}
 			allowingReadAccessToURL={uri}
 			javaScriptEnabled={false}
@@ -125,11 +129,9 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 	}), [path, viewState]);
 	const initial = useRef(beginParadisOfficeRecovery(createParadisOfficeRecoveryState(), snapshot));
 	const recoveryState = useRef(initial.current.state);
-	const webviewRef = useRef<WebView>(null);
 	const lastInput = useRef({ html, snapshot });
 	const [generation, setGeneration] = useState(initial.current.state.generation);
 	const [webviewEpoch, setWebviewEpoch] = useState(0);
-	const [reloadEpoch, setReloadEpoch] = useState(0);
 	const [finalError, setFinalError] = useState(false);
 
 	const applyEffects = useCallback((effects: readonly ParadisOfficeRecoveryEffect[]) => {
@@ -139,12 +141,10 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 					setFinalError(false);
 					setGeneration(effect.generation);
 					break;
+				// `source={{ html }}` の WebView は reload() で about:blank に戻ってしまう（必ず空と判定される）ので、
+				// 読み直しも作り直しで行う
 				case 'remount':
 				case 'restore':
-					setFinalError(false);
-					setGeneration(effect.generation);
-					setReloadEpoch(value => value + 1);
-					break;
 				case 'recreate':
 					setFinalError(false);
 					setGeneration(effect.generation);
@@ -166,12 +166,6 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 		recoveryState.current = transition.state;
 		applyEffects(transition.effects);
 	}, [applyEffects, html, snapshot]);
-
-	useEffect(() => {
-		if (reloadEpoch > 0) {
-			webviewRef.current?.reload();
-		}
-	}, [reloadEpoch]);
 
 	const completeRender = (hasExpectedRoot: boolean) => {
 		const transition = reduceParadisOfficeRecovery(recoveryState.current, { type: 'rendered', generation, hasExpectedRoot });
@@ -217,19 +211,30 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 		var observer = new MutationObserver(check);
 		observer.observe(document.documentElement, { childList: true, subtree: true });
 		check();
-		setTimeout(function () { finish(!!document.querySelector(${JSON.stringify(expectedSelector)})); }, 2000);
+		// 2 秒で決める。ただし文書がまだ描いている途中（印 __paradisOfficeBusy）なら、上限まで待ち足す
+		var waited = 0;
+		var decide = function () {
+			if (!sent && window.__paradisOfficeBusy === true && waited < ${OFFICE_RENDER_MAX_WAIT_MS}) {
+				waited += 1000;
+				setTimeout(decide, 1000);
+				return;
+			}
+			finish(!!document.querySelector(${JSON.stringify(expectedSelector)}));
+		};
+		setTimeout(decide, 2000);
 		true;
 	})();`;
 
 	return (
 		<WebView
 			ref={view => {
-				webviewRef.current = view;
 				onWebViewRef?.(view);
 			}}
 			key={`${kind}:${webviewEpoch}`}
 			style={styles.web}
 			source={{ html }}
+			// iOS が中身のプロセスを落としたら作り直す（白紙のまま残さない）
+			onContentProcessDidTerminate={() => setWebviewEpoch(value => value + 1)}
 			originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 			javaScriptEnabled={javaScriptEnabled}
 			onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
@@ -252,6 +257,9 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 	);
 }
 
+
+/** 描いている途中の Office 文書を「空」と決めるまで待ち足す上限（ms。2 秒の後に足す分）。 */
+const OFFICE_RENDER_MAX_WAIT_MS = 60_000;
 
 export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectSheet, find }: {
 	path: string;
@@ -301,7 +309,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			return spreadsheetHtml !== undefined && officeNonce !== undefined ? secureMobileOfficeHtml(spreadsheetHtml, officeNonce) : undefined;
 		}
 		if (kind === 'docx') {
-			return binary !== undefined && officeNonce !== undefined ? secureMobileOfficeHtml(buildDocxHtml(binary), officeNonce) : undefined;
+			return binary !== undefined && officeNonce !== undefined ? buildSecureDocxHtml(binary, officeNonce) : undefined;
 		}
 		if (kind === 'image') {
 			return binary !== undefined ? buildImageHtml(binary, fileExt(name)) : undefined;
@@ -354,6 +362,11 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	// HTML から抜いた画像（fs.html-images.v1）。本文が替わる・閉じるたびにキューを作り直し、古いキューの結果は捨てる
 	const htmlImages = mode === 'render' && kind === 'html' ? content?.htmlImages : undefined;
 	const imageQueueRef = useRef<HtmlImageQueue | undefined>(undefined);
+	// 前のキューを作ったときの本文。本文が同じまま取り寄せ口だけが替わった（接続し直した）ら、ページは読み直されないので
+	// 取り損ねていた画像を頼み直させる
+	const imageQueueHtmlRef = useRef<string | undefined>(undefined);
+	const htmlRef = useRef(html);
+	htmlRef.current = html;
 	useEffect(() => {
 		if (htmlImages === undefined) {
 			return undefined;
@@ -366,6 +379,11 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			onStale: () => htmlImages.reload(),
 		});
 		imageQueueRef.current = queue;
+		const shownHtml = htmlRef.current;
+		if (imageQueueHtmlRef.current !== undefined && imageQueueHtmlRef.current === shownHtml) {
+			webRef.current?.injectJavaScript(HTML_IMAGES_RETRY_SCRIPT);
+		}
+		imageQueueHtmlRef.current = shownHtml;
 		return () => {
 			queue.dispose();
 			if (imageQueueRef.current === queue) {
@@ -373,6 +391,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			}
 		};
 	}, [htmlImages]);
+	const revival = useWebViewRevival();
 	const onViewMessage = (data: string) => {
 		if (imageQueueRef.current?.handleMessage(data) === true) {
 			return;
@@ -411,10 +430,11 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 		// 画像を取り寄せる本文は、取り寄せのスクリプトを最初から入れた WebView で開く（後から足すと次の読み込みまで効かない）
 		view = (
 			<WebView
-				key={htmlImages !== undefined ? 'html-images' : 'page'}
+				key={`${htmlImages !== undefined ? 'html-images' : 'page'}:${revival.generation}`}
 				ref={setWebRef}
 				style={styles.web}
 				source={{ html }}
+				onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 				originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 				javaScriptEnabled={allowJs}
 				onShouldStartLoadWithRequest={guardWebViewNavigation}

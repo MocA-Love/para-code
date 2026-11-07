@@ -86,6 +86,11 @@ export interface IParadisCdpGatewayDelegate {
 	noteInputRejection?(token: string, message: string): void;
 	/** このペインのエージェントの CDP 接続の数が変わった（フォーカス診断用。判定には使わない）。 */
 	noteAgentCdpConnections?(token: string, connections: number): void;
+	/**
+	 * この接続（ペイン、またはタブのスコープキー）でエージェントが命令を送った。共有中のタブの抑制を切り直すのに使う。
+	 * `targetId` は宛先のタブ（分かったとき）。
+	 */
+	noteAgentCdpCommand?(token: string, targetId?: string): void;
 	/** このペインの接続が共有中のタブへ `Emulation.setFocusEmulationEnabled` を送った（フォーカス診断用）。 */
 	noteFocusEmulation?(token: string, enabled: boolean): void;
 	/**
@@ -667,6 +672,7 @@ export class ParadisCdpGateway extends Disposable {
 			rawScreenshotCoordinator: this._rawScreenshotAuthorities.forAuthority(token),
 			networkActivity: this._networkActivity.forAuthority(token),
 			isCurrentLease,
+			noteClientCommand: targetId => this.delegate.noteAgentCdpCommand?.(token, targetId),
 			// フレームごとに呼ばれるので、同じ対象の間は同じ集合を返す（読むだけの ReadonlySet。毎回作り直さない）
 			boundTargetIds: () => isCurrentLease() ? boundTargets.ids(this.delegate.getBoundTargetId(token)) : EMPTY_BOUND_TARGET_IDS,
 			captureBoundPageScreenshot: async options => {

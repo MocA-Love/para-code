@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
-import { VSBuffer, encodeBase64 } from '../../../../../base/common/buffer.js';
+import { bufferToStream, VSBuffer, encodeBase64 } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
@@ -43,9 +43,9 @@ suite('ParadisMobileHtmlImageRequests', () => {
 		const services = new Map<unknown, unknown>([
 			[IFileService, {
 				stat: async () => ({ isDirectory: false, size: html.length }),
-				readFile: async (uri: URI) => {
+				readFileStream: async (uri: URI) => {
 					reads.push(uri.path);
-					return { value: VSBuffer.fromString(html) };
+					return { value: bufferToStream(VSBuffer.fromString(html)) };
 				},
 			}],
 		]);

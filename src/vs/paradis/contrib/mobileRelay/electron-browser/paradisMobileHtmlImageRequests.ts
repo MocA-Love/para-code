@@ -17,6 +17,7 @@
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
 import type { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { readParadisFileHead } from '../../../../platform/files/common/paradisReadFileHead.js';
 import { localize } from '../../../../nls.js';
 import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, paradisWithCancellableHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { PARADIS_MOBILE_HTML_IMAGE_MAX_COUNT, paradisSplitMobileHtmlImagesSliced } from '../common/paradisMobileHtmlImages.js';
@@ -104,7 +105,7 @@ function reread(fileService: IFileService, uri: URI, token: string): Promise<rea
 		if (stat.isDirectory || (stat.size ?? 0) > PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT) {
 			return undefined;
 		}
-		const content = await fileService.readFile(uri, { length: PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT }, cancellation);
+		const content = await readParadisFileHead(fileService, uri, { length: PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT }, cancellation);
 		const text = content.value.toString();
 		if (await tokenOf(text) !== token) {
 			return undefined;

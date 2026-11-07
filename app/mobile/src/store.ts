@@ -11,6 +11,7 @@
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeUtf8, decodeNotify, decodeNotifyControl, decodeNotifyDismissLog, decodeNotifyVisibility, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, encodeNotifyDismissSync, encodeNotifyVisibility, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
+import { SpeculativeAgentAttaches } from './speculativeAgentAttaches.js';
 import { FsRequestTimings } from './fsRequestTiming.js';
 import { terminalViewportEquals, type TerminalViewport } from './terminalViewport.js';
 import { isValidPresetDef } from './presets.js';
@@ -1306,8 +1307,21 @@ function parseAgentChatImages(value: unknown): AgentChatImage[] | undefined {
 }
 
 /** relay境界で受けたチャットメッセージ配列の、検証が必要な部分だけを差し替える。 */
+/**
+ * 届いた発言が描画で使う形をしているか（rev・text・role・kind）。型注釈は relay の境界では信用しない。
+ * text の無い発言が 1 件でも店に入ると、会話の画面が描画の途中で落ちる。
+ */
+function isAgentChatMessageShape(value: unknown): value is AgentChatMessage {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const raw = value as Record<string, unknown>;
+	return typeof raw['rev'] === 'number' && Number.isSafeInteger(raw['rev']) && typeof raw['text'] === 'string'
+		&& typeof raw['role'] === 'string' && typeof raw['kind'] === 'string';
+}
+
 function normalizeAgentChatMessages(value: AgentChatMessage[] | undefined): AgentChatMessage[] {
-	return (value ?? []).map(message => {
+	return (Array.isArray(value) ? value : []).filter(isAgentChatMessageShape).map(message => {
 		let normalized = message;
 		if (normalized?.compaction !== undefined) {
 			const compaction = parseAgentCompactionInfo(normalized.compaction);
@@ -1756,8 +1770,6 @@ export interface StoreState {
 	/** 結果不明になったmutation。新IDで自動再実行せずUIへ明示する。 */
 	terminalOperationIssue: string | undefined;
 	unknownTerminalOperationCount: number;
-	/** ターミナルID → 受信済み出力（末尾のみ保持）。 */
-	terminalOutput: Map<string, string>;
 	/** 受信した通知（新しい順、最大50件）。 */
 	notifications: NotifyPayload[];
 	/**
@@ -1801,7 +1813,6 @@ export function createEmptyStoreState(): StoreState {
 		updateRequired: undefined,
 		terminalOperationIssue: undefined,
 		unknownTerminalOperationCount: 0,
-		terminalOutput: new Map(),
 		notifications: [],
 		pushRegistered: undefined,
 		initializing: false,
@@ -1824,7 +1835,6 @@ const OPERATION_RUN_KEY = 'para.operationRun';
  */
 const AGENT_STALE_WATCHDOG_MS = 30_000;
 
-const MAX_TERM_BUFFER = 200_000;
 // --- ターミナル同期プロトコル（epoch/seq対応PC向け）の定数 ---
 // 受信文字数がこの閾値を超えるたびにACKを返す（PC側フロー制御の材料。本家
 // FlowControlConstants.CharCountAckSize と同値）。
@@ -2312,7 +2322,7 @@ export class MobileController {
 					this.cancelPendingAgentActions();
 					this.cancelPendingRequests();
 					agentChatsChanged = this.cancelStaleRendererRequests();
-				} else if (this.state.connection === 'online') {
+				} else if (this.state.connection === 'online' && this.client?.restartingForPc !== true) {
 					this.requestState();
 					this.sendSpeculativeAgentAttaches();
 				}
@@ -2439,6 +2449,7 @@ export class MobileController {
 			}
 			this.agentCommandCatalogTimers.clear();
 			this.termStreams.clear();
+			this.attachedTerminalKeys.clear();
 			this.operationOutboxKey = undefined;
 			this.operationOutboxScope = undefined;
 			this.outboxReplayEpoch = undefined;
@@ -2454,7 +2465,6 @@ export class MobileController {
 			this.state.updateRequired = undefined;
 			this.wireProtocolVersion = APP_PROTOCOL_VERSION;
 			this.refreshTerminalOperationIssue();
-			this.state.terminalOutput = new Map();
 			this.state.notifications = [];
 			this.pendingNotificationDismissals.clear();
 			this.notificationDismissalModes.clear();
@@ -2464,7 +2474,7 @@ export class MobileController {
 			this.state.browserFocus = undefined;
 			this.state.browserCursors = EMPTY_BROWSER_CURSORS;
 			this.state.agentChats = new Map();
-			this.emit({ term: true, notifications: true, agentChats: true });
+			this.emit({ notifications: true, agentChats: true });
 		} catch (error) {
 			// durable clearに失敗した場合は旧pairとcached stateを維持し、再試行できる状態へ戻す。
 			this.resetting = false;
@@ -2593,12 +2603,23 @@ export class MobileController {
 	 * 未接続なら即座に接続、'online' 表示中は生存確認する（フォアグラウンド復帰時用）。
 	 * `fromHeartbeat` は25秒おきの心拍から呼ぶとき（再試行の回数を戻さない）。
 	 */
+	/** 続けて呼ばれた ensureConnected（接続済み）を 1 回にまとめる幅（ms）。 */
+	private static readonly ONLINE_PROBE_COALESCE_MS = 1_000;
+	private lastOnlineProbeAt = 0;
+
 	ensureConnected(fromHeartbeat = false): void {
 		const client = this.client;
 		if (!client) {
 			return;
 		}
 		if (client.connectionState === 'online') {
+			// 前面に戻ったときは複数の経路（見える状態の知らせ・通知センターの突き合わせ）から同時に呼ばれる。
+			// 続けて呼ばれたら 1 回にまとめる（state 要求と生存確認を 2 回ずつ送らない）
+			const now = Date.now();
+			if (now - this.lastOnlineProbeAt < MobileController.ONLINE_PROBE_COALESCE_MS) {
+				return;
+			}
+			this.lastOnlineProbeAt = now;
 			// zombie検出: 応答が必ず返るstate要求を送り、無応答なら接続を作り直す
 			this.requestState();
 			client.probeLiveness();
@@ -2613,6 +2634,7 @@ export class MobileController {
 	 * seq欠落検出時・再接続時の再同期もこのメソッドで行う（新epochで取り直し）。
 	 */
 	attachTerminal(terminalKey: string): void {
+		this.attachedTerminalKeys.add(terminalKey);
 		const stream = this.ensureTermStream(terminalKey);
 		stream.epoch = ++this.termEpochCounter;
 		stream.lastSeq = undefined;
@@ -2628,6 +2650,7 @@ export class MobileController {
 	}
 
 	detachTerminal(terminalKey: string): void {
+		this.attachedTerminalKeys.delete(terminalKey);
 		// 開き直したら、また PC の幅を合わせてよい（PC も detach で戻された印を外す。W2-19）。
 		this.revokedViewportTerminals.delete(terminalKey);
 		// ストリーム状態は消さない（cache をタブ再訪時の即時再描画に使う）。
@@ -2665,10 +2688,21 @@ export class MobileController {
 		}
 	}
 
-	/** いまの申告を、購読中の全ターミナルへ送る（更新も同じ経路を通す）。PC で戻されたターミナルには送らない。 */
+	/**
+	 * attach しているターミナル（detach していないもの）。画面はターミナルの表示を隠したまま残すことがあり
+	 * （`terminalPane.tsx` の `shown`）、隠している間も表示はストリームを購読し続けるが、PC の購読は解いている。
+	 * 寸法の申告・繋がり直したときの attach し直しは、購読（listeners）ではなくこれで決める。
+	 */
+	private readonly attachedTerminalKeys = new Set<string>();
+
+	private wantsTerminal(terminalKey: string, stream: TermStreamState): boolean {
+		return stream.listeners.size > 0 && this.attachedTerminalKeys.has(terminalKey);
+	}
+
+	/** いまの申告を、attach 中の全ターミナルへ送る（更新も同じ経路を通す）。PC で戻されたターミナルには送らない。 */
 	private sendTerminalViewport(): void {
 		for (const [terminalKey, stream] of this.termStreams) {
-			if (stream.listeners.size > 0 && !this.revokedViewportTerminals.has(terminalKey)) {
+			if (this.wantsTerminal(terminalKey, stream) && !this.revokedViewportTerminals.has(terminalKey)) {
 				void this.sendTerm(terminalKey, { t: 'viewport', ...this.terminalViewportFields() });
 			}
 		}
@@ -3337,11 +3371,12 @@ export class MobileController {
 	}
 
 	private resumeLiveSessionSubscriptions(): void {
-		for (const terminalKey of this.attachedAgents.keys()) {
+		const resends = this.speculativeAgentAttaches.takeResends(this.attachedAgents.keys(), key => this.rendererTargetFor(key), key => this.attachedAgentTargets.get(key));
+		for (const terminalKey of resends) {
 			this.sendAgentAttach(terminalKey);
 		}
 		for (const [terminalKey, stream] of this.termStreams) {
-			if (stream.listeners.size > 0) {
+			if (this.wantsTerminal(terminalKey, stream)) {
 				this.attachTerminal(terminalKey);
 			}
 		}
@@ -3430,10 +3465,20 @@ export class MobileController {
 	 * 要求し、それが決まるのは state 受信時なので、先に送ると操作台帳の再送順が壊れる。
 	 */
 	private sendSpeculativeAgentAttaches(): void {
+		this.speculativeAgentAttaches.reset();
 		for (const terminalKey of this.attachedAgents.keys()) {
-			this.sendAgentAttach(terminalKey, true);
+			if (this.sendAgentAttach(terminalKey, true)) {
+				this.speculativeAgentAttaches.add(terminalKey);
+			}
 		}
 	}
+
+	/**
+	 * 今回の繋ぎ直しで先出しした attach（{@link sendSpeculativeAgentAttaches}）。state が届いた後の
+	 * {@link resumeLiveSessionSubscriptions} は、同じ PC のウィンドウ宛てに先出し済みのものを送り直さない
+	 * （送り直すと PC は先出しの分を捨てて同じ応答をもう一度作る。epoch が変わった直後なら全量の snapshot が 2 回届く）。
+	 */
+	private readonly speculativeAgentAttaches = new SpeculativeAgentAttaches();
 
 	/**
 	 * state 適用までの間に預かっていたフレームを、届いた順に流し直す。
@@ -4116,17 +4161,18 @@ export class MobileController {
 		}
 	}
 
-	private sendAgentAttach(terminalKey: string, speculative = false): void {
+	/** 送ったら true。 */
+	private sendAgentAttach(terminalKey: string, speculative = false): boolean {
 		if (!this.isLiveAvailable(speculative)) {
-			return;
+			return false;
 		}
 		const terminal = this.terminalForKey(terminalKey);
 		if (terminal === undefined) {
-			return;
+			return false;
 		}
 		const target = this.rendererTargetFor(terminalKey);
 		if (target === undefined) {
-			return;
+			return false;
 		}
 		this.attachedAgentTargets.set(terminalKey, target);
 		// 手元に同ターミナルの受信済み状態があれば epoch/afterRev を申告して差分だけ受け取る。
@@ -4143,6 +4189,7 @@ export class MobileController {
 			? { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), epoch: existing.epoch, afterRev: lastMessageRev, liveEncoding: AGENT_LIVE_APPEND_ENCODING, responseEncoding: JSON_GZIP_RESPONSE_ENCODING }
 			: { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), liveEncoding: AGENT_LIVE_APPEND_ENCODING, responseEncoding: JSON_GZIP_RESPONSE_ENCODING };
 		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
+		return this.client !== undefined;
 	}
 
 	private terminalForKey(terminalKey: string): WorkspaceState['terminals'][number] | undefined {
@@ -4338,7 +4385,7 @@ export class MobileController {
 				entry.reject(new PcReplyError(msg.error, typeof msg.code === 'string' ? msg.code : undefined));
 				timing?.finish(msg.id, 'error');
 			} else if (entry.contentHash !== undefined) {
-				const resolved = this.fsContentHashCache.resolve(entry.contentHash.key, entry.contentHash.prepared, msg);
+				const resolved = this.fsContentHashCache.resolve(entry.contentHash.key, entry.contentHash.prepared, msg, text.length);
 				timing?.mark('cache_resolve');
 				if (resolved.ok) {
 					entry.resolve(resolved.value);
@@ -5158,7 +5205,6 @@ export class MobileController {
 					// 版数が合わないPCから預かったぶんは適用先が無い。抱えたままにしない。
 					this.resumeFrames.clear();
 					this.state.workspace = undefined;
-					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
 					this.pendingAgentLiveResyncs.clear();
 					this.state.browserFrame = undefined;
@@ -5177,7 +5223,7 @@ export class MobileController {
 						stream.cache = undefined;
 						stream.rendererTarget = undefined;
 					}
-					this.emit({ term: true, agentChats: true, notifications: true });
+					this.emit({ agentChats: true, notifications: true });
 					return;
 				}
 				if (typeof incoming.desktopEpoch !== 'string' || typeof incoming.revision !== 'number' || typeof incoming.complete !== 'boolean'
@@ -5254,7 +5300,6 @@ export class MobileController {
 				this.refreshWarmLeaseTargets();
 				this.cancelStaleRendererRequests();
 				if (epochChanged) {
-					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
 					this.pendingAgentLiveResyncs.clear();
 					for (const stream of this.termStreams.values()) {
@@ -5277,13 +5322,8 @@ export class MobileController {
 					this.agentCommandCatalogTimers.clear();
 				}
 				// 切断中に exit 通知を取り逃したケースに備え、現存しないターミナルの
-				// terminalOutput / agentChats エントリを掃除する。
+				// agentChats エントリを掃除する。
 				const live = new Set(this.state.workspace.terminals.map(terminal => terminal.terminalKey));
-				for (const terminalKey of this.state.terminalOutput.keys()) {
-					if (!live.has(terminalKey)) {
-						this.state.terminalOutput.delete(terminalKey);
-					}
-				}
 				for (const terminalKey of this.state.agentChats.keys()) {
 					if (!live.has(terminalKey)) {
 						this.state.agentChats.delete(terminalKey);
@@ -5311,13 +5351,14 @@ export class MobileController {
 				for (const terminalKey of this.termStreams.keys()) {
 					if (!live.has(terminalKey)) {
 						this.termStreams.delete(terminalKey);
+						this.attachedTerminalKeys.delete(terminalKey);
 					}
 				}
-				// terminalOutput / agentChats は上の掃除でミューテートしうるため、常に新参照へ
+				// agentChats は上の掃除でミューテートしうるため、常に新参照へ
 				// 差し替える（掃除が空振りでも安全側に倒す）。workspace 本体は revision が毎回
 				// 進むので参照も毎回変わる。構造共有で据え置かれるのは配下の配列と要素なので、
 				// 購読側が「必要な部分だけを購読する」前提は今も変わらない。
-				this.emit({ term: true, agentChats: true });
+				this.emit({ agentChats: true });
 				this.reconcileTerminalOperationOutbox(incoming.desktopEpoch);
 				if (firstReadyState) {
 					this.resumeLiveSessionSubscriptions();
@@ -5325,7 +5366,7 @@ export class MobileController {
 				this.replayResumeFrames();
 				for (const [terminalKey, stream] of this.termStreams) {
 					const target = this.rendererTargetFor(terminalKey);
-					if (stream.listeners.size > 0 && target !== undefined && target !== stream.rendererTarget) {
+					if (this.wantsTerminal(terminalKey, stream) && target !== undefined && target !== stream.rendererTarget) {
 						this.attachTerminal(terminalKey);
 					}
 				}
@@ -5351,11 +5392,9 @@ export class MobileController {
 					if (!this.handleTermSyncData({ terminalKey: msg.terminalKey, data: msg.data, snapshot: msg.snapshot === true, epoch: msg.epoch, seq: msg.seq, cols: msg.cols, rows: msg.rows, unicode: msg.unicode })) {
 						return;
 					}
+					// 出力は購読しているターミナルの表示（TermView）へ handleTermSyncData が直接渡す。店には持たない
+					// （1 フレームごとに店全体を配り直すと、出力が多い間すべての画面の購読が走り続ける）。
 					appLinkMetrics.noteTermData(msg.data.length);
-					const prev = msg.snapshot ? '' : (this.state.terminalOutput.get(msg.terminalKey) ?? '');
-					const next = (prev + msg.data).slice(-MAX_TERM_BUFFER);
-					this.state.terminalOutput.set(msg.terminalKey, next);
-					this.emit({ term: true });
 				} else if (msg.t === 'viewport-revoked') {
 					this.handleTerminalViewportRevoked(msg.terminalKey);
 				} else if (msg.t === 'exit') {
@@ -5363,19 +5402,19 @@ export class MobileController {
 					if (stream === undefined || typeof msg.epoch !== 'number' || msg.epoch !== stream.epoch) {
 						return;
 					}
-					this.state.terminalOutput.delete(msg.terminalKey);
 					this.revokedViewportTerminals.delete(msg.terminalKey);
 					for (const listener of stream.listeners) {
 						listener({ kind: 'exit' });
 					}
 					this.termStreams.delete(msg.terminalKey);
+					this.attachedTerminalKeys.delete(msg.terminalKey);
 					// 閉じたターミナルは二度と再attachされないため、チャット履歴も掃除する。
 					// （放置すると agentChats に使い捨てターミナル分のチャットが蓄積し続ける）
 					this.state.agentChats.delete(msg.terminalKey);
 					this.attachedAgents.delete(msg.terminalKey);
 					this.attachedAgentTargets.delete(msg.terminalKey);
 					this.pendingAgentLiveResyncs.delete(msg.terminalKey);
-					this.emit({ term: true, agentChats: true });
+					this.emit({ agentChats: true });
 				}
 			} catch { /* ignore */ }
 		} else if (frame.ch === 'notify') {
@@ -5702,7 +5741,8 @@ export class MobileController {
 				this.state.agentChats.set(terminalKey, {
 					...kept,
 					rev: msg.rev ?? existing.rev,
-					messages: merged.slice(-500),
+					// 新しい発言が無い差分（ライブ本文・info だけ）では配列を作り直さない。会話の画面が行を組み直さずに済む
+					messages: fresh.length === 0 && existing.messages.length <= 500 ? existing.messages : merged.slice(-500),
 					syncedAt: Date.now(),
 					// 500 件で切ったら、前が省略されていることを示す（さかのぼって読む案内を出すため。レビュー M5）。切った分は
 					// 古い発言へ繰り入れられるように渡す（差分 1 回に 500 件を超える発言が載ると、差分自身の古い側も切れるため）。
@@ -5890,7 +5930,7 @@ export class MobileController {
 	}
 
 	/**
-	 * 状態変化を購読側へ通知する。terminalOutput / notifications / agentChats の3コレクションは
+	 * 状態変化を購読側へ通知する。notifications / agentChats の2コレクションは
 	 * ミューテートしても参照は変わらないため、明示的に新しい参照へ差し替えないと Zustand の
 	 * useShallow セレクタが変化を検知できない。逆に「毎回すべて new し直す」と、どのチャネルの
 	 * 更新でも全画面が再レンダーされてしまう（バッテリー・描画コスト）。
@@ -5903,7 +5943,7 @@ export class MobileController {
 	 * connection / pcOnline / workspace / browserFrame は常に丸ごと再代入されるスカラ相当なので、
 	 * this.state の現在値をそのまま渡せば参照比較が正しく働く（changed で管理する必要はない）。
 	 */
-	private emit(changed?: { term?: boolean; notifications?: boolean; agentChats?: boolean }): void {
+	private emit(changed?: { notifications?: boolean; agentChats?: boolean }): void {
 		const prev = this.lastEmitted;
 		const next: StoreState = {
 			connection: this.state.connection,
@@ -5923,7 +5963,6 @@ export class MobileController {
 			browserCursors: this.state.browserCursors,
 			initializing: this.state.initializing,
 			initError: this.state.initError,
-			terminalOutput: (!prev || changed?.term) ? new Map(this.state.terminalOutput) : prev.terminalOutput,
 			notifications: (!prev || changed?.notifications) ? [...this.state.notifications] : prev.notifications,
 			agentChats: (!prev || changed?.agentChats) ? new Map(this.state.agentChats) : prev.agentChats,
 		};

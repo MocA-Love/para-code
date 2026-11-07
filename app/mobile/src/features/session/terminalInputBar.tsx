@@ -26,7 +26,9 @@ const FIELD_SLOP = hitSlopToMinimum(CONTROL);
  *    PC へ届く（⌫ は 1 文字削除、改行は Enter）。日本語は変換を確定したときに届き、変換中の文字は
  *    送らない。送る分の計算は `liveInput.ts`（入力欄を PC のプロンプトへ写す）
  */
-export function TerminalInputBar({ live, liveResetKey, liveConnected, input, onChangeInput, onSubmit, submitting, enterless, onToggleEnterless, uploading, onAttachImage, onLiveText, onLiveKey, onLiveArrow }: {
+export function TerminalInputBar({ shown = true, live, liveResetKey, liveConnected, input, onChangeInput, onSubmit, submitting, enterless, onToggleEnterless, uploading, onAttachImage, onLiveText, onLiveKey, onLiveArrow }: {
+	/** このターミナルの表示が出ているか（既定 true）。隠れたら入力欄の焦点を外し、外付けキーボードの操作も受けない。 */
+	shown?: boolean;
 	live: boolean;
 	/**
 	 * 変わったらライブ入力の入力欄を空から作り直す（PC に届かなかった打鍵があった。Q144 A）。前の入力欄の文字は
@@ -54,9 +56,17 @@ export function TerminalInputBar({ live, liveResetKey, liveConnected, input, onC
 	onLiveArrow: (key: 'up' | 'down' | 'left' | 'right') => void;
 }) {
 	const liveRef = useRef<TextInput>(null);
+	const inputRef = useRef<TextInput>(null);
 	const [liveFocused, setLiveFocused] = useState(false);
+	// 隠れたターミナルへ打鍵を送らない（前は表示ごと外れて焦点も外れていた）
+	useEffect(() => {
+		if (!shown) {
+			inputRef.current?.blur();
+			liveRef.current?.blur();
+		}
+	}, [shown]);
 	// 外付けキーボードの ⌘↩（iPad）。送信ボタンと同じ（空なら Enter を送る）。
-	const focused = useIsFocused();
+	const focused = useIsFocused() && shown;
 	// ライブ入力中は、見えない入力欄の Return と同じ（持っている末尾を送って CR、入力欄を作り直す）。
 	const liveSubmitRef = useRef<(() => void) | undefined>(undefined);
 	useShortcutSlot('send', focused && !submitting ? {
@@ -229,6 +239,7 @@ export function TerminalInputBar({ live, liveResetKey, liveConnected, input, onC
 	return (
 		<View style={styles.bar}>
 			<TextInput
+				ref={inputRef}
 				style={styles.input}
 				value={input}
 				onChangeText={onChangeInput}
