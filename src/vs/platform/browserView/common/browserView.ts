@@ -280,9 +280,12 @@ export const enum BrowserViewPresentation {
 	Unlisted = 'unlisted',
 }
 
-export function getBrowserViewPopupAction(presentation: BrowserViewPresentation, url: string, hasRecentUserGesture: boolean): { action: 'integrated' | 'external' | 'deny'; consumeUserGesture: boolean } {
+export function getBrowserViewPopupAction(presentation: BrowserViewPresentation, url: string, hasRecentUserGesture: boolean, remoteNetwork = false): { action: 'integrated' | 'external' | 'deny'; consumeUserGesture: boolean } {
 	if (presentation === BrowserViewPresentation.Listed) {
 		return { action: 'integrated', consumeUserGesture: false };
+	}
+	if (remoteNetwork) {
+		return { action: 'deny', consumeUserGesture: hasRecentUserGesture };
 	}
 	if (hasRecentUserGesture && matchesSomeScheme(url, Schemas.http, Schemas.https)) {
 		return { action: 'external', consumeUserGesture: true };
@@ -502,8 +505,8 @@ export type IBrowserViewSessionOptions =
 		readonly network?: IBrowserViewNetwork;
 	}
 	| { readonly scope: BrowserViewStorageScope.Ephemeral; readonly network?: IBrowserViewNetwork }
-	// PARA-PATCH: variant carrying the opaque id of the named browser profile.
-	| { readonly scope: BrowserViewStorageScope.Profile; readonly profileId: string }
+	// PARA-PATCH: variant carrying the opaque id of the named browser profile. It never has a network (`network?: undefined` lets upstream read `request.network` across the union).
+	| { readonly scope: BrowserViewStorageScope.Profile; readonly profileId: string; readonly network?: undefined }
 	| {
 		readonly scope: BrowserViewStorageScope.Agent;
 		/** Views with the same affinity share one in-memory browser session. */
@@ -515,6 +518,11 @@ export type IBrowserViewSessionOptions =
 export function getBrowserViewSessionNetwork(options: IBrowserViewSessionOptions): IBrowserViewNetwork | undefined {
 	// PARA-PATCH: named browser profiles, like global storage, never use a remote network
 	return options.scope !== BrowserViewStorageScope.Global && options.scope !== BrowserViewStorageScope.Profile ? options.network : undefined;
+}
+
+/** The affinity requested by session options; only workspace and agent storage use one, and options without a scope keep theirs. */
+export function getBrowserViewSessionAffinity(options: { readonly scope?: BrowserViewStorageScope; readonly affinity?: string }): string | undefined {
+	return options.scope === BrowserViewStorageScope.Global || options.scope === BrowserViewStorageScope.Ephemeral ? undefined : options.affinity;
 }
 
 /** Keep only the network and affinity supported by the storage scope. */
