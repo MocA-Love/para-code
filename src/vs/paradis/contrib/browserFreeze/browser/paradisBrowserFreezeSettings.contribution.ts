@@ -20,9 +20,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	properties: {
 		[PARADIS_BROWSER_FREEZE_HIDDEN_TABS_SETTING]: {
 			type: 'boolean',
-			default: true,
+			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.browser.freezeHiddenTabs', "内蔵ブラウザで隠したタブは、30 分たつと一時停止して CPU を使わなくなり、表示すると再開します。ページは読み込み直さず、スクロール位置や入力中の文字もそのまま残ります。通知を許可したサイト、エージェントに渡しているタブ、音を鳴らしているタブ、ライブウィンドウに出ているタブは止めません。"),
+			markdownDescription: localize('paradis.browser.freezeHiddenTabs', "オンにすると、内蔵ブラウザで隠して 30 分たったタブの処理を止め、CPU を使わないようにします。タブを表示すると再開します。ページは読み込み直さず、スクロール位置や入力中の文字もそのまま残ります。止めている間はページの処理が進まないので、裏で処理を進めたいページや、サーバーとつなぎっぱなしにするページ（チャット・監視画面など）は、接続が切れることがあります。通知を許可したサイト、エージェントに渡しているタブ、音を鳴らしているタブ、ライブウィンドウに出ているタブは止めません。"),
 		}
 	}
 });
