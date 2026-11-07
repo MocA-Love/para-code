@@ -2,7 +2,8 @@
 
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet } from 'react-native';
-import { DarkTheme, Stack, ThemeProvider, useNavigationContainerRef, useRouter } from 'expo-router';
+import { DarkTheme, Stack, ThemeProvider, useNavigationContainerRef, useRouter, type ErrorBoundaryProps } from 'expo-router';
+import { RouteErrorFallback } from '../src/components/routeErrorFallback.js';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
 import * as Sentry from '@sentry/react-native';
@@ -38,6 +39,11 @@ import { useHapticPreference } from '../src/hapticPreference.js';
  * 戻る操作でアプリの外へ落ちずにホームへ戻れるように。
  */
 export const unstable_settings = { initialRouteName: 'index' };
+
+/** アプリ全体の描画中の例外を受け止める（受け止めないとアプリごと落ちる）。 */
+export function ErrorBoundary(props: ErrorBoundaryProps) {
+	return <RouteErrorFallback {...props} where="root" />;
+}
 
 /**
  * このアプリは常時ダークテーマのみ（ライトモード非対応）。expo-routerの既定テーマは

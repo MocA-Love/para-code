@@ -24,6 +24,7 @@ import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
+import { useWebViewRevival } from './webViewRevival.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useCloseOnAppLock } from '../appLock.js';
 import { lockedModalVisible } from '../appLockPolicy.js';
@@ -358,6 +359,7 @@ function buildImageHtml(base64: string, ext: string): string {
  * 数十MBのファイルでもJSスレッドをブロックしない）。
  */
 function NativeFileView({ data, ext }: { data: string; ext: string }) {
+	const revival = useWebViewRevival();
 	const [uri, setUri] = useState<string | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
 	useEffect(() => {
@@ -405,8 +407,10 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 	}
 	return (
 		<WebView
+			key={revival.generation}
 			style={styles.web}
 			source={{ uri }}
+			onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 			originWhitelist={['file://']}
 			allowingReadAccessToURL={uri}
 			javaScriptEnabled={false}
@@ -417,6 +421,7 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 
 
 export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, error, onClose }: FileViewerProps) {
+	const revival = useWebViewRevival();
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
 	// 変わったときに「fullScreenなのに上余白14pt」＝ヘッダーがステータスバーに潜る。
@@ -588,8 +593,10 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					// ペアリング済みワークスペースのHTMLはPC版と同様にスクリプト実行を許可する。
 					// スプレッドシート、Word、検索行ジャンプ付きコードビューも自前スクリプトを実行する。
 					<WebView
+						key={revival.generation}
 						style={styles.web}
 						source={{ html }}
+						onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 						originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 						javaScriptEnabled={allowJs}
 						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardWebViewNavigation}

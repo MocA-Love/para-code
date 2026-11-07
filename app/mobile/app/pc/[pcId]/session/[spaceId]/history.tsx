@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CircleAlert, History } from 'lucide-react-native';
 import { AGENT_RESUME_CAPABILITY, parseAgentPastSessionPage, type AgentPastSession } from '../../../../../src/agentSessions.js';
 import { sendPcRequest } from '../../../../../src/appState.js';
+import { useAgentSendLive } from '../../../../../src/agentSendQueue.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../src/features/code/codeParts.js';
 import { QueuedSendsBanner } from '../../../../../src/features/session/queuedSends.js';
 import { haptic } from '../../../../../src/haptics.js';
@@ -42,7 +43,11 @@ export default function AgentHistoryScreen() {
 	const requestSeq = useRef(0);
 	const pcId = route.pcId;
 	const spaceId = route.spaceId;
-	const ready = route.status === 'active' && route.spaceStatus === 'ready' && supported;
+	// つながっているかも見る（前面に戻った直後の繋ぎ直しの間に開くと、要求がすぐ失敗してそのまま残っていた）
+	const live = useAgentSendLive();
+	const ready = route.status === 'active' && route.spaceStatus === 'ready' && supported && live;
+	// 最後に読めた検索語。繋がり直しただけで同じ一覧を先頭から読み直さない（読み進めたページを消さない）
+	const loadedQuery = useRef<string | undefined>(undefined);
 
 	const load = useCallback((offset: number, search: string) => {
 		if (!ready || pcId === undefined || spaceId === undefined) {
@@ -58,6 +63,9 @@ export default function AgentHistoryScreen() {
 					return;
 				}
 				const page = parseAgentPastSessionPage(reply);
+				if (offset === 0) {
+					loadedQuery.current = search;
+				}
 				setSessions(previous => offset === 0 || previous === undefined ? page.sessions : [...previous, ...page.sessions]);
 				setNextOffset(page.nextOffset);
 				setError(undefined);
@@ -75,6 +83,9 @@ export default function AgentHistoryScreen() {
 	}, [ready, pcId, spaceId]);
 
 	useEffect(() => {
+		if (loadedQuery.current === query) {
+			return undefined;
+		}
 		const timer = setTimeout(() => load(0, query), query.length > 0 ? SEARCH_DEBOUNCE_MS : 0);
 		return () => clearTimeout(timer);
 	}, [load, query]);

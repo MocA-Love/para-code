@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRoute } from 'expo-router';
+import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRoute, type ErrorBoundaryProps } from 'expo-router';
+import { RouteErrorFallback } from '../../../src/components/routeErrorFallback.js';
 import { useAppStore } from '../../../src/appState.js';
 import { PcRouteContext } from '../../../src/features/pc/pcRouteContext.js';
 import { PcScreen } from '../../../src/features/pc/pcScreen.js';
@@ -24,6 +25,11 @@ import { colors } from '../../../src/theme.js';
  * 1列では戻ると PC の画面へ、2列では「エージェントが開かれていません」へ戻れるように。
  */
 export const unstable_settings = { initialRouteName: 'index' };
+
+/** PC の中の画面の描画中の例外を受け止める（受け止めないとアプリごと落ちる）。 */
+export function ErrorBoundary(props: ErrorBoundaryProps) {
+	return <RouteErrorFallback {...props} where="pc" />;
+}
 
 /**
  * PC の中の画面（`/pc/[pcId]/…`）の器。iPad を広い幅（`useIsRegularWidth()`。700pt 以上、2列から縮めた
