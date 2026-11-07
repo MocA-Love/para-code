@@ -874,8 +874,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 		let decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
 		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._pane.claimed || token.isCancellationRequested) {
 			// **何も走らせずに戻るので、見張りも解くこと。** 残すと、走っていない読み込みが
-			// 予算切れで時間切れ扱いになり、作り直しの梯子が空回りする。
-			this._probe.disarm();
+			// 予算切れで時間切れ扱いになり、作り直しの梯子が空回りする。自分の世代の見張りだけ解く
+			// （遅れて戻った前の文書の読み込みが、次の文書の見張りを解かないように）
+			this._probe.disarmFor(recoveryGeneration);
 			return;
 		}
 		let sanitizedDocument: Uint8Array | undefined;

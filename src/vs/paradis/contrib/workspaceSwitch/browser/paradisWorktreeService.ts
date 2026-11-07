@@ -21,6 +21,8 @@ import { paradisIsOrphanTerminalRevivalComplete } from './paradisTerminalEditorP
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisRegisterWorktreePresenceLookup, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { PARADIS_PINNED_WORKTREES_STORAGE_KEY, paradisParsePinnedWorktreeKeys, paradisRemoveStaleIds, paradisSerializePinnedWorktreeKeys } from '../common/paradisWorkspaceTreeState.js';
+import { ParadisCoalescedRun } from '../../../common/paradisCoalescedRun.js';
+import { paradisMapLimited } from '../../../common/paradisMapLimited.js';
 
 /**
  * 1リポジトリ分のスキャン結果。
@@ -111,6 +113,11 @@ export async function paradisDiscardScopeBeforeRemovingKnownWorktree(discardScop
  *   (OFF の場合は missing フラグ付きで残り、手動で removeKnownWorktree できる)
  * 既知リストは WORKSPACE スコープ storage に永続化する。
  */
+/** 1 つのリポジトリの worktree を同時に読む数。 */
+const WORKTREE_SCAN_PARALLEL = 8;
+/** 同時に走査するリポジトリの数（リポジトリごとにさらに {@link WORKTREE_SCAN_PARALLEL} 件まで読む）。 */
+const REPOSITORY_SCAN_PARALLEL = 4;
+
 export class ParadisWorktreeService extends Disposable implements IParadisWorktreeService {
 
 	declare readonly _serviceBrand: undefined;
@@ -136,6 +143,11 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	private readonly _watchers = this._register(new DisposableMap<string>());
 
 	private readonly _refreshScheduler = this._register(new RunOnceScheduler(() => this.refresh(), 500));
+	/**
+	 * refresh は 1 本ずつ走らせ、走っている間に来た分は終わった後の 1 回にまとめる（並べて走らせると、遅い走査の
+	 * 古い結果が後から新しい一覧を上書きする）。
+	 */
+	private readonly _refreshRun = new ParadisCoalescedRun(() => this.runRefresh());
 
 	/** 初回 refresh を終えたか。起動直後は端末の復元前なので missing の自動退役を見送る。 */
 	private _initialRefreshDone = false;
@@ -335,7 +347,11 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	 * (端末スコープの隔離マッピングが採用されないまま残り、その端末はスコープ無しになる)。
 	 * 購読側は失敗をログに出すだけで回復しないので、ここで必ず正常終了させる。
 	 */
-	private async refresh(): Promise<void> {
+	private refresh(): Promise<void> {
+		return this._refreshRun.trigger();
+	}
+
+	private async runRefresh(): Promise<void> {
 		try {
 			await this.doRefresh();
 		} catch (error) {
@@ -359,12 +375,15 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		let knownChanged = false;
 		const retiredStateKeys = new Set<string>();
 
-		for (const repository of repositories) {
-			const scan = await this.scanWorktrees(repository);
+		// リポジトリごとの走査とブランチ名の読み取りは、先にまとめて並べて待つ（接続先では 1 件ごとに往復する）
+		const reads = await paradisMapLimited(repositories, REPOSITORY_SCAN_PARALLEL, repository => Promise.all([this.scanWorktrees(repository), this.readRepositoryBranch(repository)]));
+		for (let index = 0; index < repositories.length; index++) {
+			const repository = repositories[index];
+			const [scan, repositoryBranch] = reads[index];
 			const scanned = scan.worktrees;
 			// .git を読めなかった回は、ブランチ名も「無い」ではなく「分からない」。前回の値を
 			// 引き継がないと、接続が不安定なあいだブランチ表示だけが点滅する
-			const branch = await this.readRepositoryBranch(repository) ?? (scan.complete ? undefined : this._branches.get(repository.id));
+			const branch = repositoryBranch ?? (scan.complete ? undefined : this._branches.get(repository.id));
 			if (branch !== undefined) {
 				branches.set(repository.id, branch);
 			}
@@ -550,10 +569,9 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		try {
 			const worktreesDir = joinPath(repository.uri, '.git', 'worktrees');
 			const stat = await this.fileService.resolve(worktreesDir);
-			for (const child of stat.children ?? []) {
-				if (!child.isDirectory) {
-					continue;
-				}
+			// worktree ごとの読み取り（gitdir・在処の確認・HEAD）は互いに関わらないので、件数を絞って並べる
+			// （1 件ずつ待つと、接続先では件数ぶん往復が積み重なる）。並びは元の順のまま
+			const scanned = await paradisMapLimited((stat.children ?? []).filter(child => child.isDirectory), WORKTREE_SCAN_PARALLEL, async (child): Promise<IParadisWorktree | undefined> => {
 				try {
 					// gitdir の中身は "<worktree>/.git"。末尾の /.git を落として作業ツリーパスを復元し、
 					// リポジトリと同じ名前空間 (WSL を UNC で開いている場合やリモート) へ写す。
@@ -565,19 +583,19 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 					if (!uri) {
 						// 破損した gitdir はそのまま埋めるとログ1行が肥大するので切り詰める
 						this.logService.warn(`[ParadisWorktreeService] Could not resolve a worktree path against ${child.resource.toString()}: ${gitdirContent.trim().slice(0, 200)}`);
-						continue;
+						return undefined;
 					}
 					const exists = await this.probeExists(uri);
 					if (exists === undefined) {
 						// 作業ツリーの在処を確かめられなかった。無いことにはできない
 						complete = false;
-						continue;
+						return undefined;
 					}
 					if (!exists) {
 						// prune 可能な残骸。git worktree prune 前は毎 refresh で通る正常な状態なので
 						// warn では騒がしすぎる。名前空間の取り違えを追うときだけ見られればよい
 						this.logService.trace(`[ParadisWorktreeService] Resolved worktree does not exist: ${uri.toString()}`);
-						continue;
+						return undefined;
 					}
 
 					let branch: string | undefined;
@@ -588,7 +606,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 						// HEAD 未書込みは branch なしで続行
 					}
 
-					result.push({ repositoryId: repository.id, name: basename(uri), branch, uri, gitDir: child.resource });
+					return { repositoryId: repository.id, name: basename(uri), branch, uri, gitDir: child.resource };
 				} catch (error) {
 					// worktree 作成直後で gitdir 未書込み等はスキップ (upstream 同様)。
 					// 「無い」以外の理由で読めなかったなら、この回の結果は当てにしない
@@ -596,7 +614,9 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 						complete = false;
 					}
 				}
-			}
+				return undefined;
+			});
+			result.push(...scanned.filter((worktree): worktree is IParadisWorktree => worktree !== undefined));
 		} catch (error) {
 			// .git/worktrees が存在しない (worktree なし)。それ以外は読めなかっただけ
 			if (!ParadisWorktreeService.isMissingError(error)) {
