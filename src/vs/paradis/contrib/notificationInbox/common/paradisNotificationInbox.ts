@@ -192,6 +192,17 @@ export function paradisInboxEntryLocation(entry: Pick<IParadisInboxRecordInput, 
 	return entry.tab ? `${space} ／ ${entry.tab}` : space;
 }
 
+/**
+ * 受信箱の行の 2 段目に出す「worktree ／ タブ」。スペース名は 1 段目に出すので含めない。
+ * worktree がスペース名と同じなら省く。どちらも無ければ undefined。
+ */
+export function paradisInboxEntryDetail(entry: Pick<IParadisInboxRecordInput, 'space' | 'worktree' | 'tab'>): string | undefined {
+	const worktree = entry.worktree && entry.worktree !== entry.space ? entry.worktree : undefined;
+	const parts = [worktree, entry.tab].filter((part): part is string => !!part);
+	// allow-any-unicode-next-line
+	return parts.length > 0 ? parts.join(' ／ ') : undefined;
+}
+
 /** 発言を OS 通知の本文用に1行・80字程度へ縮める。空なら undefined。 */
 export function paradisNotificationPreview(text: string | undefined, max = PARADIS_NOTIFICATION_PREVIEW_LENGTH): string | undefined {
 	if (text === undefined) {

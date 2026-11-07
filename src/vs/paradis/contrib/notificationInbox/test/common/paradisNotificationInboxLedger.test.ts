@@ -12,6 +12,7 @@ import {
 	IParadisInboxRecordInput,
 	paradisInboxAttentionEntries,
 	paradisInboxAttentionPaneCount,
+	paradisInboxEntryDetail,
 	paradisInboxEntryLocation,
 	paradisInboxHasRecorded,
 	paradisNotificationBody,
@@ -153,6 +154,11 @@ suite('Paradis notification inbox ledger', () => {
 			body: paradisNotificationBody('main', 'ビルドが通りました'),
 			bodyWithoutPreview: paradisNotificationBody('main', undefined),
 			location: paradisInboxEntryLocation({ space: 'api', worktree: 'fix-login', tab: 'claude' }),
+			details: [
+				paradisInboxEntryDetail({ space: 'api', worktree: 'fix-login', tab: 'claude' }),
+				paradisInboxEntryDetail({ space: 'api', worktree: 'api' }),
+				paradisInboxEntryDetail({ space: 'api' }),
+			],
 			attentionEntries: paradisInboxAttentionEntries(snapshot, 5).map(entry => entry.id),
 			windowCount: paradisInboxAttentionPaneCount(snapshot, new Set(['b'])),
 		}, {
@@ -161,6 +167,7 @@ suite('Paradis notification inbox ledger', () => {
 			body: 'main: ビルドが通りました',
 			bodyWithoutPreview: 'main',
 			location: 'api (fix-login) ／ claude',
+			details: ['fix-login ／ claude', undefined, undefined],
 			attentionEntries: ['3', '2'],
 			windowCount: 1,
 		});
