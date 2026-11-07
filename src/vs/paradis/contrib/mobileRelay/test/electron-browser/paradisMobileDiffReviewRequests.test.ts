@@ -317,6 +317,42 @@ suite('ParadisMobileDiffReviewRequests', () => {
 		});
 	});
 
+	test('does not stage a reviewed file rewritten after the mark with the same line counts (size and time kept in the mark)', async () => {
+		const status = ' M a.ts\n M b.ts\n M c.ts\n';
+		const numstat = '1\t1\ta.ts\0' + '1\t1\tb.ts\0' + '1\t1\tc.ts\0';
+		const git = new FakeGit(status, numstat, '', { status: 'M  b.ts\n M a.ts\n M c.ts\n', unstaged: '1\t1\ta.ts\0' + '1\t1\tc.ts\0', staged: '1\t1\tb.ts\0' });
+		const identities = new Map(paradisWithMobileLineCounts(paradisParseMobilePorcelainStatus(status), numstat, '').map(file => [file.path, paradisMobileDiffIdentity(file)]));
+		const files: Record<string, string> = { 'a.ts': 'seen\n', 'b.ts': 'kept\n', 'c.ts': 'gone soon\n' };
+		const sent: IReply[] = [];
+		const host = createHost(createServices(), sent, git, files);
+		dispatch(host, { t: 'reviewSet', id: '1', marks: ['a.ts', 'b.ts', 'c.ts'].map(path => ({ path, identity: identities.get(path) })) });
+		await flush();
+		// 確認した後に、行数を変えずに a.ts を書き換えた（識別は同じまま）。c.ts はステージのときに調べられない
+		files['a.ts'] = 'rewritten\n';
+		delete files['c.ts'];
+		dispatch(host, { t: 'reviewStage', id: '2', entries: ['a.ts', 'b.ts', 'c.ts'].map(path => ({ path, identity: identities.get(path) })) });
+		await flush();
+
+		const reply = sent.find(candidate => candidate.id === '2')!;
+		assert.deepStrictEqual({
+			add: git.calls.filter(call => call.startsWith('add')),
+			staged: reply.staged,
+			skipped: reply.skipped,
+			// 書き換えられた印は「確認後に変更あり」（識別が一致しない）に回り、調べられなかった印はそのまま
+			rewrittenMark: reply.marks!['a.ts'].identity !== identities.get('a.ts'),
+			unverifiedMark: reply.marks!['c.ts'].identity,
+			// アプリへは識別と時刻だけを送る
+			markKeys: Object.keys(sent[0].marks!['a.ts']).sort(),
+		}, {
+			add: ['add -- :(literal)b.ts'],
+			staged: ['b.ts'],
+			skipped: [{ path: 'a.ts', reason: 'changed' }, { path: 'c.ts', reason: 'unverified' }],
+			rewrittenMark: true,
+			unverifiedMark: identities.get('c.ts'),
+			markKeys: ['identity', 'reviewedAt'],
+		});
+	});
+
 	test('tells that it staged but could not verify when the host stops answering after git add, and keeps the mark', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const status = ' M a.ts\n';
 		const git = new FakeGit(status, '1\t0\ta.ts\0', '', { status: 'M  a.ts\n', unstaged: '', staged: '1\t0\ta.ts\0' });
@@ -352,6 +388,26 @@ suite('ParadisMobileDiffReviewRequests', () => {
 			reply: { error: PARADIS_MOBILE_HOST_NO_RESPONSE_MESSAGE, id: '2' },
 			add: [],
 		});
+	}));
+
+	test('stages the other files when the host does not answer the check of the marked size and time', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const status = ' M a.ts\n M b.ts\n';
+		const numstat = '1\t1\ta.ts\0' + '1\t1\tb.ts\0';
+		const git = new FakeGit(status, numstat, '', { status: 'M  b.ts\n M a.ts\n', unstaged: '1\t1\ta.ts\0', staged: '1\t1\tb.ts\0' });
+		const identities = new Map(paradisWithMobileLineCounts(paradisParseMobilePorcelainStatus(status), numstat, '').map(file => [file.path, paradisMobileDiffIdentity(file)]));
+		const services = createServices();
+		const sent: IReply[] = [];
+		const host = createHost(services, sent, git, { 'a.ts': 'seen\n' });
+		dispatch(host, { t: 'reviewSet', id: '1', marks: ['a.ts', 'b.ts'].map(path => ({ path, identity: identities.get(path) })) });
+		await timeout(0);
+		// ステージのときは接続先が stat に答えない
+		const fileService = services.get(IFileService) as object;
+		services.set(IFileService, { ...fileService, stat: () => new Promise<never>(() => { }) });
+		dispatch(host, { t: 'reviewStage', id: '2', entries: ['a.ts', 'b.ts'].map(path => ({ path, identity: identities.get(path) })) });
+		await timeout(20_000);
+
+		const reply = sent.find(candidate => candidate.id === '2')!;
+		assert.deepStrictEqual({ staged: reply.staged, skipped: reply.skipped }, { staged: ['b.ts'], skipped: [{ path: 'a.ts', reason: 'unverified' }] });
 	}));
 
 	test('does not report a rewritten new file as staged when it cannot be put back (no commit yet)', async () => {

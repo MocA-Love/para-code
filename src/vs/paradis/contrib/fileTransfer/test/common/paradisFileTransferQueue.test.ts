@@ -566,6 +566,50 @@ suite('Paradis file transfer - queue', () => {
 		});
 	});
 
+	test('a folder that disappeared before the run fails and keeps the target it was to replace', async () => {
+		const fileSystem = new FakeFileSystem();
+		fileSystem.addDirectory(REMOTE);
+		// 送り元のフォルダーは選んだ後に消えた。宛先には同名のファイルがあり、種類の違う置き換えを承認する
+		fileSystem.addFile(joinPath(REMOTE, 'dist'), 5);
+		const queue = createQueue(fileSystem);
+
+		await queue.enqueue(request([source('dist', true)]), async () => ({ action: 'overwrite', applyToAll: false }));
+		await settled(queue);
+
+		assert.deepStrictEqual({ removed: fileSystem.removed, kept: fileSystem.get(joinPath(REMOTE, 'dist'))?.isDirectory, state: queue.items[0].state }, {
+			removed: [],
+			kept: false,
+			state: 'error',
+		});
+	});
+
+	test('copies the files of one folder a few at a time, each through its own temporary name', async () => {
+		const fileSystem = new FakeFileSystem();
+		fileSystem.addDirectory(REMOTE);
+		fileSystem.addDirectory(joinPath(LOCAL, 'src'));
+		for (const name of ['a.ts', 'b.ts', 'c.ts', 'd.ts']) {
+			fileSystem.addFile(joinPath(LOCAL, 'src', name), 10);
+		}
+		fileSystem.hold = new DeferredPromise<void>();
+		const queue = createQueue(fileSystem);
+
+		await queue.enqueue(request([source('src', true)]), neverAsked);
+		// 1 件目を書いている間に、ほかのファイルも始まる
+		await fileSystem.whenStarted(3);
+		const startedWhileHeld = fileSystem.started;
+		fileSystem.hold.complete();
+		await settled(queue);
+
+		const contents = ['a.ts', 'b.ts', 'c.ts', 'd.ts'].map(name => fileSystem.get(joinPath(REMOTE, 'src', name))?.content);
+		assert.deepStrictEqual({
+			startedWhileHeld,
+			state: pick(queue.items[0]).state,
+			doneFiles: queue.items[0].doneFiles,
+			distinctTemps: new Set(contents.map(content => content?.split('#')[1])).size,
+			tempsLeft: fileSystem.tempsLeft(),
+		}, { startedWhileHeld: 3, state: 'done', doneFiles: 4, distinctTemps: 4, tempsLeft: [] });
+	});
+
 	test('a folder listed only up to the limit still sends what was listed and says it is incomplete', async () => {
 		const fileSystem = new FakeFileSystem();
 		fileSystem.addDirectory(REMOTE);

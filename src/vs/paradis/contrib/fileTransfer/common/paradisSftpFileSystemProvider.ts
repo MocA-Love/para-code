@@ -37,6 +37,7 @@ import {
 	IParadisSftpOpenResult,
 	paradisDescribeSftpFailure,
 	paradisSftpFailureReasonOf,
+	PARADIS_SFTP_MAX_IO,
 	PARADIS_SFTP_SCHEME,
 } from './paradisSftp.js';
 
@@ -169,7 +170,10 @@ export class ParadisSftpFileSystemProvider extends Disposable implements IFileSy
 	}
 
 	async write(fd: number, pos: number, data: Uint8Array, offset: number, length: number): Promise<number> {
-		return this.call<number>(this.handleHosts.get(fd) ?? '', 'write', [fd, pos, VSBuffer.wrap(data).slice(offset, offset + length)]);
+		// 受ける側の上限までを送り、書けた長さを返す（IFileService は残りを続けて書く）。読む側が書く側より速いと、
+		// 溜まった塊がつながって上限を超えることがある
+		const size = Math.min(length, PARADIS_SFTP_MAX_IO);
+		return this.call<number>(this.handleHosts.get(fd) ?? '', 'write', [fd, pos, VSBuffer.wrap(data).slice(offset, offset + size)]);
 	}
 
 	// --- 転送の画面の命令 -------------------------------------------------------------------------------
