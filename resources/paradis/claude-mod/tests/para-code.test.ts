@@ -581,6 +581,66 @@ describe('para-code mod', () => {
 		expect(events.map(({ at, ...event }) => event)).toEqual([{ type: 'measure', context: { window: 1_000_000, tokens: 142_800, percent: 14 } }]);
 	});
 
+	test('sends the context breakdown after a main turn ends, cut to the largest rows, and not after a subagent turn', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const clock = fakeParaCode(on, {}, recorded);
+		const asked: unknown[] = [];
+		on('session.usage', (_$, options) => {
+			asked.push(options);
+			return { value: {
+				startedAt: 1, rateLimits: [], cost: { usd: 0 },
+				context: {
+					window: 1_000_000,
+					breakdown: {
+						categories: [
+							{ name: 'Messages', tokens: 3_286, color: 'purple', isDeferred: false, kind: 'used' },
+							{ name: 'System tools (deferred)', tokens: 20_739, color: 'inactive', isDeferred: true, kind: 'deferred' },
+							{ name: 'Free space', tokens: 946_228, color: 'promptBorder', isDeferred: false, kind: 'free' },
+						],
+						totalTokens: 20_772, maxTokens: 1_000_000, rawMaxTokens: 1_000_000, percentage: 2, model: 'claude-opus-5-5',
+						gridRows: [[{ color: 'purple', isFilled: true }]],
+						memoryFiles: [{ path: '/repo/CLAUDE.md', type: 'Project', tokens: 5 }],
+						mcpTools: [
+							{ name: 'mcp__browser__click', serverName: 'browser', tokens: 300, isLoaded: true },
+							{ name: 'mcp__browser__type', serverName: 'browser', tokens: 200, isLoaded: false },
+							{ name: 'mcp__notes__read', serverName: 'notes', tokens: 100, isLoaded: true },
+						],
+						agents: [{ agentType: 'reviewer', source: 'userSettings', tokens: 80 }],
+						skills: { totalSkills: 1, includedSkills: 1, tokens: 40, skillFrontmatter: [{ name: 'deploy', source: 'plugin', pluginName: 'ops', tokens: 40 }] },
+					},
+				},
+			} };
+		});
+		on('session.cwd', () => ({ value: '/repo' }));
+		on('turn.complete', () => ({ text: '' }));
+		await startSession($);
+		await $.turn.complete({ turnId: 'child-1', agentId: 'a-child', reason: 'answer', isAborted: false, answer: 'done', durationMs: 1 });
+		await clock.settle();
+		const afterChild = asked.length;
+		await $.turn.complete({ turnId: 'main-1', reason: 'answer', isAborted: false, answer: 'done', durationMs: 1 });
+		await clock.settle();
+		const events = recorded.filter(entry => entry.op === 'event').flatMap(entry => entry.body.events as Json[]).filter(event => event.type === 'context');
+		expect({ afterChild, asked, events: events.map(({ at, ...event }) => event) }).toEqual({
+			afterChild: 0,
+			asked: [{ breakdown: 'summary' }],
+			events: [{
+				type: 'context',
+				context: {
+					totalTokens: 20_772, window: 1_000_000, percent: 2, model: 'claude-opus-5-5', cwd: '/repo',
+					categories: [
+						{ name: 'Messages', tokens: 3_286, kind: 'used' },
+						{ name: 'System tools (deferred)', tokens: 20_739, kind: 'deferred' },
+						{ name: 'Free space', tokens: 946_228, kind: 'free' },
+					],
+					memoryFiles: [{ name: '/repo/CLAUDE.md', tokens: 5, detail: 'Project' }],
+					mcpServers: [{ name: 'browser', tokens: 500, count: 2 }, { name: 'notes', tokens: 100, count: 1 }],
+					agents: [{ name: 'reviewer', tokens: 80, detail: 'userSettings' }],
+					skills: [{ name: 'deploy', tokens: 40, detail: 'ops' }],
+				},
+			}],
+		});
+	});
+
 	test('a subagent or teammate turn does not make the session busy and is not sent as the main turn', async ($, on) => {
 		const recorded: IRecorded[] = [];
 		const clock = fakeParaCode(on, { commands: () => ({ commands: [] }) }, recorded);

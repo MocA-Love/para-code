@@ -71,6 +71,19 @@ const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 export const PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE = -1;
 
 let mirrorRoots: readonly string[] = [];
+let catchUpEndLookup: ((localPath: string) => number | undefined) | undefined;
+
+/**
+ * 手元の写しのうち、接続先へ追いつくために写した（写し始めた時点で接続先に既にあった）部分の終わり（バイト位置）。
+ * 追いつく分を写していない・写しではない・台帳から外れたなら undefined。
+ *
+ * 写しは会話を先頭から追記で育てるので、読み手から見ると過去の行も追記に見える。この位置より前の行は、追記で
+ * 読んでも新しい出来事ではない（質問の通知・ターンの終わりを鳴らさない）。時刻で比べないのは、行の時刻が
+ * 接続先の時計で、手元の時計とずれていることがあるため。
+ */
+export function paradisRemoteTranscriptCatchUpEnd(localPath: string): number | undefined {
+	return catchUpEndLookup?.(localPath);
+}
 
 /**
  * 写しの置き場。{@link ParadisRemoteTranscriptMirrorStore} が作られるまでは空。
@@ -178,6 +191,15 @@ interface IMirrorEntry {
 	finishedAt?: number;
 	/** 同じファイルへの追記を直列化する。 */
 	chain: Promise<void>;
+	/** 追いつくために写した部分の終わり（{@link paradisRemoteTranscriptCatchUpEnd}）。 */
+	catchUpEnd?: number;
+	/** 会話を再開した（SessionStart の source が resume）hook で知ったか。 */
+	resumed?: boolean;
+	/**
+	 * 担当を取ったときに、追いつく分の印を受け付けると決めたか。再開した会話で、手元に写しがまだ無いときだけ。
+	 * 写しの途中から続ける（再接続・再読み込み）ときと新しい会話は、切れていた間・最初の出来事を鳴らす。
+	 */
+	catchUpAllowed?: boolean;
 }
 
 /**
@@ -201,11 +223,16 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		super();
 		this.root = join(userDataPath, MIRROR_DIR_NAME);
 		mirrorRoots = [this.root];
+		const lookup = (localPath: string) => this.catchUpEndFor(localPath);
+		catchUpEndLookup = lookup;
 		this._register({
 			dispose: () => {
 				this.disposed = true;
 				if (mirrorRoots.includes(this.root)) {
 					mirrorRoots = [];
+				}
+				if (catchUpEndLookup === lookup) {
+					catchUpEndLookup = undefined;
 				}
 			}
 		});
@@ -241,7 +268,7 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 	 * @param remoteHostId hook に付いていた接続先の印。これがあると、綴りが手元のホーム配下と
 	 * 重なっていても接続先のものとして写す（同名ホームの別マシンを取りこぼさないため）。
 	 */
-	localPathForHookPath(remotePath: string | undefined, token: string, remoteHostId?: string): string | undefined {
+	localPathForHookPath(remotePath: string | undefined, token: string, remoteHostId?: string, resumed = false): string | undefined {
 		if (this.disposed || !paradisIsRemoteAgentTranscriptPath(remotePath, remoteHostId)) {
 			return undefined;
 		}
@@ -250,6 +277,9 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			existing.notedAt = Date.now();
 			existing.token = token;
 			existing.finishedAt = undefined;
+			if (resumed) {
+				existing.resumed = true;
+			}
 			return existing.localPath;
 		}
 		const localPath = paradisRemoteTranscriptMirrorPathFor(this.root, remotePath, remoteHostId);
@@ -266,6 +296,7 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			token,
 			capped: false,
 			chain: Promise.resolve(),
+			...(resumed ? { resumed: true } : {}),
 		});
 		this.evictOverflow();
 		this.logService.info(`[paradisRemoteTranscript] following a transcript on the host: ${remotePath}`);
@@ -315,15 +346,26 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			// ウィンドウを開き直しても続きから写せるよう、実ファイルの大きさを正とする
 			const stat = await fs.stat(entry.localPath).catch(() => undefined);
 			entry.size = stat?.isFile() === true ? stat.size : 0;
+			entry.catchUpAllowed = entry.resumed === true && entry.size === 0;
 			return entry.size;
 		});
 	}
 
+	private catchUpEndFor(localPath: string): number | undefined {
+		for (const entry of this.entries.values()) {
+			if (entry.localPath === localPath) {
+				return entry.catchUpEnd;
+			}
+		}
+		return undefined;
+	}
+
 	/**
 	 * 接続先から読んだ続きを写しへ足す。
+	 * @param catchingUp 写し始めた時点で接続先に既にあった分（過去の会話）か。読み手はこの分の質問・ターンの終わりを鳴らさない
 	 * @returns 次に読む位置。担当を失った・上限に達したときは {@link PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE}
 	 */
-	async append(ownerId: string, remotePath: string, data: Uint8Array): Promise<number> {
+	async append(ownerId: string, remotePath: string, data: Uint8Array, catchingUp = false): Promise<number> {
 		const entry = this.entries.get(remotePath);
 		if (entry === undefined || entry.owner !== ownerId) {
 			return PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE;
@@ -347,6 +389,12 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			}
 			await fs.appendFile(entry.localPath, data);
 			entry.size += data.byteLength;
+			if (catchingUp && entry.catchUpAllowed === true) {
+				entry.catchUpEnd = entry.size;
+			} else {
+				// 追いつく分は先頭から続く分だけ。印の無い追記の後には印を受け付けない
+				entry.catchUpAllowed = false;
+			}
 			return entry.size;
 		});
 	}
@@ -368,6 +416,8 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			await fs.mkdir(dirname(entry.localPath), { recursive: true });
 			await fs.writeFile(entry.localPath, '');
 			entry.size = 0;
+			entry.catchUpEnd = undefined;
+			entry.catchUpAllowed = false;
 			return 0;
 		});
 	}

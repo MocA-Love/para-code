@@ -31,6 +31,7 @@ import { newParseSignals, paradisParseClaudeTranscriptLineForTest, parseClaudeLi
 import { ParadisAgentWorkflowTracker, paradisParseWorkflowJournalLine, paradisParseWorkflowResultFile } from '../../../agentChat/common/paradisAgentWorkflows.js';
 import { ParadisAgentTeamTracker } from '../../../agentChat/common/paradisAgentTeams.js';
 import { ParadisAgentSessionStatusTracker } from '../../../agentChat/common/paradisAgentSessionStatus.js';
+import { paradisParseClaudeContextBreakdown } from '../../../claudeMod/common/paradisClaudeContextBreakdown.js';
 import { ParadisMobileOperationLedger } from '../../node/paradisMobileOperationLedger.js';
 import { MobileSession, ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
 import { ParadisMobileTerminalRegistry } from '../../node/paradisMobileTerminalRegistry.js';
@@ -276,6 +277,29 @@ suite('ParadisMobileWireGolden', () => {
 		})!, 1760000044000);
 		tracker.applyJournal('wf_golden-2', [paradisParseWorkflowJournalLine(`{"type":"started","key":"v2:${'0'.repeat(64)}","agentId":"agolden03","label":"find:ssrf","phase":"Find"}`)!]);
 		assert.deepStrictEqual(tracker.snapshot(), delta.workflows);
+	});
+
+	test('agent: mod の内訳から PC が組み立てるコンテキストの内訳（agent.context-breakdown.v1）はゴールデンと同じ', function () {
+		type Message = Record<string, unknown>;
+		const golden = readGolden<{ toMobile: Message[] }>(this, 'agent.json');
+		const reply = golden.toMobile.find(message => message.t === 'context-breakdown') as Message;
+		// mod 1.5.0 が送る形（register.ts の contextPayload）。上限を超えた行・知らない項目は落ちる
+		const breakdown = paradisParseClaudeContextBreakdown({
+			totalTokens: 353900, window: 1000000, percent: 35.2, model: 'claude-opus-5-5', cwd: '/Users/example/repo', gridRows: [[{}]],
+			categories: [
+				{ name: 'Messages', tokens: 261100, kind: 'used' },
+				{ name: 'Memory files', tokens: 43700, kind: 'used' },
+				{ name: 'MCP tools (deferred)', tokens: 162400, kind: 'deferred' },
+				{ name: 'Autocompact buffer', tokens: 33000, kind: 'buffer' },
+				{ name: 'Free space', tokens: 610600, kind: 'free' },
+				{ name: 'Unknown', tokens: 1, kind: 'other' },
+			],
+			memoryFiles: [{ name: '/Users/example/.claude/CLAUDE.md', tokens: 4700, detail: 'User' }],
+			mcpServers: [{ name: 'para-browser', tokens: 17800, count: 12 }],
+			agents: [{ name: 'reviewer', tokens: 1600, detail: 'userSettings' }],
+			skills: [{ name: 'deploy', tokens: 900, detail: 'ops' }, { name: '', tokens: 1 }],
+		}, 'golden-session-1', 1760000090000);
+		assert.deepStrictEqual({ t: 'context-breakdown', id: 7, token: 'agent-token-1', requestId: reply.requestId, breakdown, live: true }, reply);
 	});
 
 	test('agent: PC が組み立てる会話の状態（agent.session-status.v1）はゴールデンと同じ', function () {

@@ -1247,6 +1247,80 @@ suite('ParadisSessionResume', () => {
 		assert.deepStrictEqual(sessions.map(session => [session.agent, session.id, session.codexHome]), [['codex', 'codex-session', codexHome]]);
 	});
 
+	test('keeps the hard-linked conversation of the selected Codex account home', async () => {
+		const secondHome = join(root, 'codex-home-2');
+		const secondSessions = join(secondHome, 'sessions', '2026', '08', '13');
+		await fs.mkdir(secondSessions, { recursive: true });
+		const codexPath = join(codexSessions, 'rollout-codex-session.jsonl');
+		await writeLines(codexPath, [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'codex-session', cwd: workspace } }),
+			codexMessage('user', 'Codex fixture prompt'),
+		]);
+		const linkedPath = join(secondSessions, 'rollout-codex-session.jsonl');
+		await fs.link(codexPath, linkedPath);
+		const service = new ParadisSessionResumeService({
+			openCodeDatabases: async () => [],
+			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
+		}, new NullLogService());
+
+		const selected = await service.list({ ...createListRequest(), preferredCodexHome: secondHome });
+		// 選んでいるホームが一覧に無い（消えた）・既定のホームを選んでいるときは、既定のホームのもの
+		const unknown = await service.list({ ...createListRequest(), preferredCodexHome: join(root, 'codex-home-9') });
+
+		assert.deepStrictEqual({
+			selected: selected.map(session => [session.id, session.codexHome]),
+			unknown: unknown.map(session => [session.id, session.codexHome]),
+		}, {
+			selected: [['codex-session', secondHome]],
+			unknown: [['codex-session', codexHome]],
+		});
+	});
+
+	test('resumes a hard-linked conversation in the selected Codex home even when that home\'s state DB does not list it', async () => {
+		const secondHome = join(root, 'codex-home-2');
+		const secondSessions = join(secondHome, 'sessions', '2026', '08', '13');
+		await fs.mkdir(secondSessions, { recursive: true });
+		const codexPath = join(codexSessions, 'rollout-codex-session.jsonl');
+		await writeLines(codexPath, [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'codex-session', cwd: workspace } }),
+			codexMessage('user', 'Codex fixture prompt'),
+		]);
+		await fs.link(codexPath, join(secondSessions, 'rollout-codex-session.jsonl'));
+		// 選んだホームの state DB は、リンクで入った会話を知らない
+		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		const database = new DatabaseSync(join(secondHome, 'state_1.sqlite'));
+		try {
+			database.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, rollout_path TEXT, updated_at INTEGER)');
+		} finally {
+			database.close();
+		}
+		const service = new ParadisSessionResumeService({
+			openCodeDatabases: async () => [],
+			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
+		}, new NullLogService());
+
+		const sessions = await service.list({ ...createListRequest(), preferredCodexHome: secondHome });
+
+		assert.deepStrictEqual(sessions.map(session => [session.id, session.codexHome]), [['codex-session', secondHome]]);
+	});
+
+	test('does not move a conversation to the selected Codex home when that home does not have it', async () => {
+		const secondHome = join(root, 'codex-home-2');
+		await fs.mkdir(join(secondHome, 'sessions'), { recursive: true });
+		await writeLines(join(codexSessions, 'rollout-codex-session.jsonl'), [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'codex-session', cwd: workspace } }),
+			codexMessage('user', 'Codex fixture prompt'),
+		]);
+		const service = new ParadisSessionResumeService({
+			openCodeDatabases: async () => [],
+			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
+		}, new NullLogService());
+
+		const sessions = await service.list({ ...createListRequest(), preferredCodexHome: secondHome });
+
+		assert.deepStrictEqual(sessions.map(session => [session.id, session.codexHome]), [['codex-session', codexHome]]);
+	});
+
 	test('remembers the Codex home of a conversation that only another home has', async () => {
 		const secondHome = join(root, 'codex-home-2');
 		const secondSessions = join(secondHome, 'sessions', '2026', '08', '13');

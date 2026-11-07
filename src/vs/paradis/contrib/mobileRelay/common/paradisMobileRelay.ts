@@ -433,8 +433,9 @@ export interface IParadisMobileRelayService {
 	 * 接続先から読んだ続きを写しへ足し、次に読む位置を得る。担当を失ったときは -1。
 	 * data はIPCの引数シリアライザがバイナリのまま運べるようトップレベル引数で渡す
 	 * （オブジェクトへネストするとJSON化されて中身が壊れる）。
+	 * catchingUp は、写し始めた時点で接続先に既にあった分（過去の会話）を写しているときに true。
 	 */
-	appendRemoteTranscriptMirror(ownerId: string, remotePath: string, data: VSBuffer): Promise<number>;
+	appendRemoteTranscriptMirror(ownerId: string, remotePath: string, data: VSBuffer, catchingUp?: boolean): Promise<number>;
 	/** 接続先のファイルが縮んだ（別セッションに置き換わった）とき、写しを捨てて 0 から取り直す。 */
 	resetRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number>;
 	/** ウィンドウが閉じる・接続先が変わるときに担当を空ける。 */
