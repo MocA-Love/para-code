@@ -33,6 +33,38 @@ export interface IParadisPortListSnapshot {
 	readonly collectedAt: number;
 }
 
+/** 内蔵ブラウザの新しいタブが使う、待ち受けのポートと持ち主のプロセスの作業フォルダ。 */
+export interface IParadisPortServerEntry extends IParadisPortEntry {
+	/** プロセスの作業フォルダ（cwd）。取れない OS（Windows）や権限の無いプロセスでは undefined。 */
+	readonly cwd?: string;
+}
+
+export interface IParadisPortServersSnapshot {
+	readonly entries: readonly IParadisPortServerEntry[];
+	/** ポートを集めたマシンのホームフォルダ。スペースのフォルダがホームそのものなら、作業フォルダで絞らないために使う。 */
+	readonly homeDir: string;
+	readonly collectedAt: number;
+}
+
+/** ページの題とアイコンを読みに行くポート。待ち受けのアドレスが loopback か全公開のものだけ読む。 */
+export interface IParadisPortPageRequest {
+	readonly port: number;
+	readonly address: string;
+}
+
+export interface IParadisPortPageInfo {
+	readonly port: number;
+	/** `GET /` が 2xx の HTML を返したか。false なら題もアイコンも無い。 */
+	readonly isPage: boolean;
+	readonly scheme: 'http' | 'https';
+	readonly title?: string;
+	/** 64 KB 以下のアイコンを data URL にしたもの。 */
+	readonly faviconDataUrl?: string;
+}
+
+/** 1 回の問い合わせで題を読みに行くポートの上限（新しいタブを開くたびに多数のサーバーへ要求を送らないため）。 */
+export const PARADIS_PORT_PAGE_PROBE_LIMIT = 16;
+
 export interface IParadisPortListRequest {
 	readonly force?: boolean;
 }

@@ -88,6 +88,7 @@ import './contrib/agentInsights/electron-browser/paradisAgentInsights.contributi
 import './contrib/browserLiveWindow/electron-browser/paradisBrowserLiveWindow.contribution.js';
 import './contrib/browserZoomIndicator/electron-browser/paradisBrowserZoomIndicator.contribution.js';
 import './contrib/browserViewport/electron-browser/paradisBrowserViewport.contribution.js';
+import './contrib/browserNewTab/electron-browser/paradisBrowserNewTab.contribution.js';
 import './contrib/browserDesignMode/electron-browser/paradisDesignMode.contribution.js';
 import './contrib/healthBeacon/electron-browser/paradisHealthBeacon.contribution.js';
 import './contrib/heapSnapshot/electron-browser/paradisHeapSnapshot.contribution.js';
