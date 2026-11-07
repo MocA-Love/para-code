@@ -545,7 +545,7 @@ export class ParadisTasksEditor extends EditorPane {
 		if (this.projects && this.projects.length === 0) {
 			return {
 				title: localize('paradis.tasks.empty.noProjects', "プロジェクトがありません"),
-				body: localize('paradis.tasks.empty.noProjectsBody', "選んだリポジトリにつながったプロジェクト、その持ち主のプロジェクト、自分のプロジェクトのどれもありませんでした。gh に project のスコープが無いときも読めません（`gh auth refresh -s read:project`）。"),
+				body: localize('paradis.tasks.empty.noProjectsBody', "選んだリポジトリにつながったプロジェクト、その持ち主のプロジェクト、自分のプロジェクトのどれもありませんでした。"),
 			};
 		}
 		if (!this.selectedProject || !this.selectedView) {
@@ -578,6 +578,8 @@ export class ParadisTasksEditor extends EditorPane {
 				return { title: localize('paradis.tasks.error.noGh', "GitHub CLI（gh）が見つかりません"), body: localize('paradis.tasks.error.noGhBody', "gh を入れて、ターミナルで `gh auth login` を実行してください。") };
 			case 'auth':
 				return { title: localize('paradis.tasks.error.auth', "gh が GitHub にログインしていません"), body: localize('paradis.tasks.error.authBody', "ターミナルで `gh auth login` を実行してから、更新を押してください。") };
+			case 'scope':
+				return { title: localize('paradis.tasks.error.scope', "gh に GitHub のプロジェクトを読む権限がありません"), body: localize('paradis.tasks.error.scopeBody', "ターミナルで `gh auth refresh -s read:project` を実行してから、更新を押してください。") };
 			case 'rate-limited':
 				return {
 					title: localize('paradis.tasks.error.rateLimited', "GitHub の API の上限に達しました"),

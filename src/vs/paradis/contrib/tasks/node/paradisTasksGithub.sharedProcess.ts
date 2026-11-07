@@ -202,7 +202,7 @@ const PROJECT_ITEMS_QUERY = `query($owner: String!, $number: Int!, $view: Int!, 
 				... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
 				... on ProjectV2ItemFieldIterationValue { title startDate duration field { ... on ProjectV2FieldCommon { name } } }
 				... on ProjectV2ItemFieldMilestoneValue { milestone { title } field { ... on ProjectV2FieldCommon { name } } }
-				... on ProjectV2ItemFieldPullRequestValue { pullRequests(first: 5) { nodes { number } } field { ... on ProjectV2FieldCommon { name } } }
+				... on ProjectV2ItemFieldPullRequestValue { pullRequests(first: 3) { nodes { number } } field { ... on ProjectV2FieldCommon { name } } }
 			} }
 		} }
 	} } }
@@ -375,7 +375,13 @@ interface ICacheEntry {
 
 /** GraphQL を 1 回投げた結果。`data` は応答の `data` をそのまま（形は呼び出し側が確かめる）。 */
 type GraphqlResponse<TData> =
-	| { readonly ok: true; readonly data: TData; readonly rateLimit?: IParadisTasksRateLimit }
+	| {
+		readonly ok: true;
+		readonly data: TData;
+		readonly rateLimit?: IParadisTasksRateLimit;
+		/** 応答に errors があった（data は一部だけのことがある）。呼び出し側が data が足りるかを見て、足りなければこれで失敗にする。 */
+		readonly partialError?: IParadisTasksError;
+	}
 	| { readonly ok: false; readonly error: IParadisTasksError };
 
 export class ParadisTasksGithubService extends Disposable implements IParadisTasksGithubService {
@@ -402,12 +408,13 @@ export class ParadisTasksGithubService extends Disposable implements IParadisTas
 		const after = typeof request.after === 'string' && request.after.length > 0 ? request.after : undefined;
 		return this.cached(JSON.stringify(['search', query, after ?? '']), PARADIS_TASKS_CACHE_TTL_MS, request.force === true, async (): Promise<ParadisTasksSearchResponse> => {
 			const response = await this.graphql<IGqlSearchData>(SEARCH_CALL_SITE, SEARCH_QUERY, { q: query, n: PARADIS_TASKS_PAGE_SIZE, after });
-			const search = response.ok ? response.data.search : undefined;
 			if (!response.ok) {
 				return response;
 			}
-			if (!search) {
-				return { ok: false, error: { kind: 'failed', message: 'GitHub returned no result' } };
+			// Issue・PR の検索は errors があれば（gh が失敗を返せば）失敗にする（一部だけの結果を正しい一覧に見せない）
+			const search = response.data.search;
+			if (response.partialError || !search) {
+				return { ok: false, error: response.partialError ?? { kind: 'failed', message: 'GitHub returned no result' } };
 			}
 			const items = (search.nodes ?? []).flatMap(node => {
 				const item = paradisTasksItemFromNode(node);
@@ -434,7 +441,12 @@ export class ParadisTasksGithubService extends Disposable implements IParadisTas
 			if (!response.ok) {
 				return response;
 			}
-			return { ok: true, result: { projects: paradisTasksProjectsFromData(response.data, repositories.length), fetchedAt: this.now(), rateLimit: response.rateLimit } };
+			const projects = paradisTasksProjectsFromData(response.data, repositories.length);
+			// 一部の持ち主（権限の無い組織など）が読めなくても、読めた分は出す。1 つも読めずに errors があるときだけ失敗にする
+			if (projects.length === 0 && response.partialError) {
+				return { ok: false, error: response.partialError };
+			}
+			return { ok: true, result: { projects, fetchedAt: this.now(), rateLimit: response.rateLimit } };
 		});
 	}
 
@@ -455,7 +467,11 @@ export class ParadisTasksGithubService extends Disposable implements IParadisTas
 			}
 			const result = paradisTasksProjectItemsFromData(response.data, request.view);
 			if (!result) {
-				return { ok: false, error: { kind: 'failed', message: 'GitHub returned no project or view' } };
+				return { ok: false, error: response.partialError ?? { kind: 'failed', message: 'GitHub returned no project or view' } };
+			}
+			// プロジェクトとビューが読めても、項目が読めなかったなら失敗にする（空のボードに見せない）
+			if (response.partialError && result.items.length === 0) {
+				return { ok: false, error: response.partialError };
 			}
 			return { ok: true, result: { ...result, fetchedAt: this.now(), rateLimit: response.rateLimit } };
 		});
@@ -535,8 +551,13 @@ export class ParadisTasksGithubService extends Disposable implements IParadisTas
 		}
 		const rateLimit = this.readRateLimit(parsed?.data?.rateLimit);
 		const errorText = [output.stderr, ...(parsed?.errors ?? []).map(error => `${error.type ?? ''} ${error.message ?? ''}`)].join('\n').trim();
-		// 一部の欄だけ読めない（権限の無い組織のプロジェクトなど）ときも data は返るので、data があれば使う
-		if (output.failed && !parsed?.data || !parsed?.data) {
+		// gh の project のスコープが無い。data があっても肝心の部分が空なので、専用の案内にする
+		if ((parsed?.errors ?? []).some(error => error.type === 'INSUFFICIENT_SCOPES') || /INSUFFICIENT_SCOPES|read:project/.test(output.stderr)) {
+			const message = paradisTruncateGithubErrorMessage(errorText);
+			this.record(callSite, startedAt, false, false, message);
+			return { ok: false, error: { kind: 'scope', message } };
+		}
+		if (!parsed?.data) {
 			const rateLimited = paradisIsGithubRateLimitMessage(errorText) || rateLimit?.remaining === 0;
 			const message = paradisTruncateGithubErrorMessage(errorText || 'GitHub returned no result');
 			this.record(callSite, startedAt, false, rateLimited, message);
@@ -548,11 +569,14 @@ export class ParadisTasksGithubService extends Disposable implements IParadisTas
 			this.logService.trace(`[ParadisTasks] ${callSite} failed: ${message}`);
 			return { ok: false, error: { kind: auth ? 'auth' : 'failed', message } };
 		}
-		this.record(callSite, startedAt, true, false, undefined);
+		// errors があっても data は返る（読めない組織のプロジェクト、見つからないビューなど）。足りるかは呼び出し側が決める
+		const partial = output.failed || (parsed.errors?.length ?? 0) > 0;
+		const partialMessage = partial ? paradisTruncateGithubErrorMessage(errorText || 'GitHub returned errors') : undefined;
+		this.record(callSite, startedAt, !partial, false, partialMessage);
 		if (rateLimit) {
 			this.rateLimitPause.noteRateLimits([{ resource: 'graphql', limit: rateLimit.limit, used: rateLimit.limit - rateLimit.remaining, remaining: rateLimit.remaining, resetAt: rateLimit.resetAt }]);
 		}
-		return { ok: true, data: parsed.data, rateLimit };
+		return { ok: true, data: parsed.data, rateLimit, partialError: partialMessage ? { kind: 'failed', message: partialMessage } : undefined };
 	}
 
 	private readRateLimit(value: IGqlRateLimit | undefined): IParadisTasksRateLimit | undefined {
