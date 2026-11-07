@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createHash } from 'crypto';
 import { URI } from '../../../../../base/common/uri.js';
@@ -55,9 +56,15 @@ class FakeHost implements IParadisPageOpsHost {
 		return this.owner;
 	}
 
+	/** Main calls that never answer (a page stuck in the debugger). */
+	readonly hangs = new Set<string>();
+
 	async callMain<T>(method: string, args: unknown[]): Promise<T> {
 		this.mainCalls.push({ method, args });
 		this.log.push(method);
+		if (this.hangs.has(method)) {
+			return new Promise<T>(() => { });
+		}
 		return this.mainResults.get(method) as T;
 	}
 
@@ -263,6 +270,23 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		assert.strictEqual(isError(result), false);
 		assert.deepStrictEqual(host.mainCalls[0].args.slice(1), [{ x: 40, y: 55, width: 20, height: 10 }, 2000]);
 	});
+
+	test('stops waiting for electron-main when the request is cancelled, so the tab is not held', async () => {
+		const host = new FakeHost();
+		host.hangs.add('addExactViewInitScript');
+		const ops = new ParadisBrowserPageOps(host);
+		const cancelled = new AbortController();
+		const running = ops.call({ ...createCall(), signal: cancelled.signal }, 'add_init_script', { source: 'window.__a = 1' });
+		cancelled.abort();
+		await assert.rejects(running, /cancelled/);
+	});
+
+	test('says how to check when electron-main does not answer in time, since the script may still be added', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const host = new FakeHost();
+		host.hangs.add('addExactViewInitScript');
+		const result = await new ParadisBrowserPageOps(host).call(createCall(), 'add_init_script', { source: 'window.__a = 1' });
+		assert.deepStrictEqual({ error: isError(result), check: textOf(result).includes('list_init_scripts') }, { error: true, check: true });
+	}));
 
 	test('add_init_script passes the checked script to electron-main and reminds to remove it', async () => {
 		const host = new FakeHost();

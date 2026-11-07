@@ -2986,7 +2986,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			reply({ error: `unsupported request: ${(msg as { t: string }).t}` });
 			return;
 		}
-		const uri = await this.resolveWorkspacePathReal(msg.ws, msg.path);
+		// パスの解決（realpath）も、失敗（一覧の後に消えたファイル）・応答なし（接続先）で返事を返す。
+		// 外で待つと、投げたときも止まったときもアプリへ何も返らない
+		let uri: URI | undefined;
+		try {
+			uri = await paradisWithHostDeadline(this.resolveWorkspacePathReal(msg.ws, msg.path), PARADIS_MOBILE_READ_DEADLINE_MS);
+		} catch (err) {
+			reply(paradisMobileHostErrorReply(err));
+			return;
+		}
 		timing?.mark('resolve_path');
 		if (!uri) {
 			reply({ error: `invalid path: ${msg.path}` });
