@@ -144,13 +144,15 @@ export class ParadisLayoutPresetEditorInput extends EditorInput implements IEdit
 	}
 
 	override async save(): Promise<EditorInput | undefined> {
-		const id = await this.presetService.savePreset(this._draft, this._target);
+		// 書いている間に続けて編集した分は保存していない。保存したのは呼んだ時点の下書きなので、それを基準にする
+		const saving = this._draft;
+		const id = await this.presetService.savePreset(saving, this._target);
 		// 保存した1件を **id で** 取り直して、以降の保存が同じ1件を置き換え続けるようにする。
 		// 新規保存のあとに _target が undefined のままだと2回目の保存でもう1件増えるが、
 		// ここを中身の照合で探すと、名前も形も同じ双子がいるときに他人の1件を掴んで
 		// 以後ずっとそちらを上書きしてしまう。
 		this._target = this.presetService.presets.find(preset => preset.id === id) ?? this._target;
-		this._savedFingerprint = paradisLayoutPresetFingerprint(this._draft);
+		this._savedFingerprint = paradisLayoutPresetFingerprint(saving);
 		this._onDidChangeDirty.fire();
 		return this;
 	}

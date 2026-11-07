@@ -52,6 +52,8 @@ import {
 } from '../common/paradisScheduledRuns.js';
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunReport } from '../common/paradisScheduledRunsSanitize.js';
 
+const STR_SAVE_FAILED = localize('paradis.scheduledRuns.error.saveFailed', "変更を保存できませんでした。ディスクの空きと権限を確かめてから、もう一度やり直してください。");
+
 /** transcript の置き場所からエージェントを見分ける（Claude は `projects/`、Codex は `sessions/` の rollout）。 */
 export function paradisAgentFromTranscriptPath(path: string | undefined): 'claude' | 'codex' | undefined {
 	if (path === undefined) {
@@ -250,6 +252,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			dailyLimit: draft.dailyLimit,
 		};
 		let definition: IParadisScheduledRunDefinition;
+		const id = existing?.id ?? generateUuid();
+		const lastBefore = this.lastEvaluatedAtOf(id);
+		let lastWritten: number | undefined;
 		if (existing) {
 			const { disabledReason: _cleared, ...rest } = existing;
 			definition = { ...rest, ...fields, updatedAt: now };
@@ -257,14 +262,22 @@ export class ParadisScheduledRunsService extends Disposable {
 			if (existing.schedule !== definition.schedule) {
 				// 時刻を変えたら、変える前の式で過ぎた時刻を新しい式で拾い直さない
 				this.lastEvaluatedAt[definition.id] = now;
+				lastWritten = now;
 			}
 		} else {
 			// 作成直後は必ず無効。利用者が中身を確かめてから自分で有効にする
-			definition = { id: generateUuid(), ...fields, enabled: false, createdAt: now, updatedAt: now };
+			definition = { id, ...fields, enabled: false, createdAt: now, updatedAt: now };
 			this.definitions.push(definition);
 			this.lastEvaluatedAt[definition.id] = now;
+			lastWritten = now;
 		}
-		this.commit();
+		const written = definition;
+		if (!await this.commitForUser(() => {
+			this.undoDefinition(id, written, existing);
+			this.undoLastEvaluatedAt(id, lastWritten, lastBefore);
+		})) {
+			return { ok: false, error: STR_SAVE_FAILED };
+		}
 		return { ok: true, definition };
 	}
 
@@ -279,15 +292,20 @@ export class ParadisScheduledRunsService extends Disposable {
 			// 押し直しでは判定の起点を動かさない（直前の時刻を黙って逃さないように）
 			return { ok: true, definition: existing };
 		}
+		const lastBefore = this.lastEvaluatedAtOf(id);
 		const { disabledReason: _cleared, ...rest } = existing;
 		const definition = { ...rest, enabled, updatedAt: now };
 		this.definitions = this.definitions.map(candidate => candidate.id === id ? definition : candidate);
 		// 有効にした時点より前の時刻は拾わない（無効だった間の時刻を「逃した」と扱わない）
 		this.lastEvaluatedAt[id] = now;
-		if (!enabled) {
-			this.cancelPending(id, 'disabled');
+		const cancelled = enabled ? [] : this.cancelPending(id, 'disabled');
+		if (!await this.commitForUser(() => {
+			this.undoDefinition(id, definition, existing);
+			this.undoLastEvaluatedAt(id, now, lastBefore);
+			this.undoCancelled(cancelled);
+		})) {
+			return { ok: false, error: STR_SAVE_FAILED };
 		}
-		this.commit();
 		return { ok: true, definition };
 	}
 
@@ -296,17 +314,37 @@ export class ParadisScheduledRunsService extends Disposable {
 		if (!this.definitions.some(definition => definition.id === id)) {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
 		}
-		this.cancelPending(id, 'deleted');
+		const index = this.definitions.findIndex(definition => definition.id === id);
+		const removedDefinition = this.definitions[index];
+		const lastBefore = this.lastEvaluatedAtOf(id);
+		const cancelled = this.cancelPending(id, 'deleted');
+		this.definitions = this.definitions.filter(definition => definition.id !== id);
+		// 終わった記録は消す。動いている記録は終わりの報告を受けるまで残し、次の整理で消す
+		const removedRuns = this.runs.filter(run => run.definitionId === id && !paradisIsActiveRunStatus(run.status));
+		this.runs = this.runs.filter(run => !removedRuns.includes(run));
+		delete this.lastEvaluatedAt[id];
+		if (!await this.commitForUser(() => {
+			// 消したものを足し戻すだけ（待つ間に入った別の変更は置き換えない）
+			if (!this.definitions.some(definition => definition.id === id)) {
+				const definitions = [...this.definitions];
+				definitions.splice(Math.min(index, definitions.length), 0, removedDefinition);
+				this.definitions = definitions;
+			}
+			const present = new Set(this.runs.map(run => run.id));
+			this.runs = [...this.runs, ...removedRuns.filter(run => !present.has(run.id))];
+			this.undoCancelled(cancelled);
+			if (lastBefore !== undefined && !Object.prototype.hasOwnProperty.call(this.lastEvaluatedAt, id)) {
+				this.lastEvaluatedAt[id] = lastBefore.value;
+			}
+		})) {
+			return { ok: false, error: STR_SAVE_FAILED };
+		}
+		// 動いている回を止めるのは、削除を書けた後（書けずに戻したのに止めてしまわないように）
 		for (const run of this.runs) {
 			if (run.definitionId === id && paradisIsActiveRunStatus(run.status) && run.claimedBy !== undefined) {
 				this._onDidRequestStop.fire({ runId: run.id, claimedBy: run.claimedBy });
 			}
 		}
-		this.definitions = this.definitions.filter(definition => definition.id !== id);
-		// 終わった記録は消す。動いている記録は終わりの報告を受けるまで残し、次の整理で消す
-		this.runs = this.runs.filter(run => run.definitionId !== id || paradisIsActiveRunStatus(run.status));
-		delete this.lastEvaluatedAt[id];
-		this.commit();
 		return { ok: true };
 	}
 
@@ -611,11 +649,19 @@ export class ParadisScheduledRunsService extends Disposable {
 		return { id: generateUuid(), definitionId: definition.id, trigger, status: 'skipped', reason, scheduledFor, createdAt: now, finishedAt: now };
 	}
 
-	private cancelPending(definitionId: string, reason: ParadisScheduledRunReason): void {
+	/** 開始待ちを取りやめにする。取りやめにした回の、前と後の記録を返す（書けなかったときに戻すため）。 */
+	private cancelPending(definitionId: string, reason: ParadisScheduledRunReason): { readonly before: IParadisScheduledRunRecord; readonly after: IParadisScheduledRunRecord }[] {
 		const now = this.clock.now();
-		this.runs = this.runs.map(run => run.definitionId === definitionId && run.status === 'pending'
-			? { ...run, status: 'cancelled', reason, finishedAt: now }
-			: run);
+		const cancelled: { readonly before: IParadisScheduledRunRecord; readonly after: IParadisScheduledRunRecord }[] = [];
+		this.runs = this.runs.map(run => {
+			if (run.definitionId !== definitionId || run.status !== 'pending') {
+				return run;
+			}
+			const after: IParadisScheduledRunRecord = { ...run, status: 'cancelled', reason, finishedAt: now };
+			cancelled.push({ before: run, after });
+			return after;
+		});
+		return cancelled;
 	}
 
 	private addRun(run: IParadisScheduledRunRecord): void {
@@ -638,6 +684,10 @@ export class ParadisScheduledRunsService extends Disposable {
 			}
 			return updated;
 		});
+		// 終わった実行（報告・生存報告切れ・時間切れ・取りやめのどれでも）のペインの対応は要らない
+		if (updated && !paradisIsActiveRunStatus(updated.status)) {
+			this.paneTokens.delete(runId);
+		}
 		return updated;
 	}
 
@@ -671,20 +721,72 @@ export class ParadisScheduledRunsService extends Disposable {
 	}
 
 	private commit(): void {
-		this.persist();
+		void this.persist();
 		this._onDidChange.fire();
 	}
 
-	private persist(): void {
+	/**
+	 * 利用者の操作（保存・有効/無効・削除）の書き込み。書き終わるまで待ち、書けたかを返す。
+	 * 書けなかったのに成功と返すと、ダイアログは下書きを捨て、再起動で無効にしたはずの定期実行が戻る。
+	 * メモリの中身は変えたまま（次に書けたときに残る）。
+	 */
+	private async commitForUser(undo: () => void): Promise<boolean> {
+		const saved = await this.persist();
+		if (saved) {
+			this._onDidChange.fire();
+		} else {
+			undo();
+		}
+		return saved;
+	}
+
+	private lastEvaluatedAtOf(id: string): { readonly value: number } | undefined {
+		return Object.prototype.hasOwnProperty.call(this.lastEvaluatedAt, id) ? { value: this.lastEvaluatedAt[id] } : undefined;
+	}
+
+	/** 書けなかった定義の変更を戻す。今の定義がこの操作で入れたもののまま（参照で同じ）のときだけ。 */
+	private undoDefinition(id: string, written: IParadisScheduledRunDefinition, previous: IParadisScheduledRunDefinition | undefined): void {
+		if (this.definitions.find(definition => definition.id === id) !== written) {
+			return;
+		}
+		this.definitions = previous
+			? this.definitions.map(definition => definition === written ? previous : definition)
+			: this.definitions.filter(definition => definition !== written);
+	}
+
+	/** 書けなかった判定の時刻を戻す。この操作で入れた値のままのときだけ（変えていなければ何もしない）。 */
+	private undoLastEvaluatedAt(id: string, written: number | undefined, previous: { readonly value: number } | undefined): void {
+		if (written === undefined || this.lastEvaluatedAt[id] !== written) {
+			return;
+		}
+		if (previous) {
+			this.lastEvaluatedAt[id] = previous.value;
+		} else {
+			delete this.lastEvaluatedAt[id];
+		}
+	}
+
+	/** 取りやめにした開始待ちを戻す。同じ回の今の記録が、取りやめにしたときのまま（参照で同じ）のときだけ。 */
+	private undoCancelled(cancelled: readonly { readonly before: IParadisScheduledRunRecord; readonly after: IParadisScheduledRunRecord }[]): void {
+		if (cancelled.length === 0) {
+			return;
+		}
+		this.runs = this.runs.map(run => cancelled.find(entry => entry.after === run)?.before ?? run);
+	}
+
+	/** 書き込みを列に足す。列は失敗しても止めない。返り値は、この書き込みが済んだか。 */
+	private persist(): Promise<boolean> {
 		const snapshot: IParadisScheduledRunsStoredState = {
 			version: 1,
 			definitions: this.definitions,
 			runs: this.runs,
 			lastEvaluatedAt: { ...this.lastEvaluatedAt },
 		};
-		this.writeChain = this.writeChain.then(() => this.store.write(snapshot)).catch(error => {
+		const write = this.writeChain.then(() => this.store.write(snapshot));
+		this.writeChain = write.catch(error => {
 			this.logService.error('[ParadisScheduledRuns] could not save the schedules', error);
 		});
+		return write.then(() => true, () => false);
 	}
 
 	/** 書き込みが済むのを待つ（テスト・終了時用）。 */

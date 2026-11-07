@@ -63,7 +63,7 @@ suite('ParadisScmInputScope', () => {
 			folders = [URI.file(`/repos/${to}`)];
 			didSwitch.fire(to);
 		};
-		return { spaceA, spaceB, switchTo };
+		return { spaceA, spaceB, switchTo, repositories };
 	}
 
 	test('a committed message does not come back after visiting another space', () => {
@@ -90,5 +90,20 @@ suite('ParadisScmInputScope', () => {
 		spaceB.value = '';
 		switchTo('a', 'b');
 		assert.deepStrictEqual({ a: spaceA.value, b: spaceB.value }, { a: '', b: 'feat: draft' });
+	});
+
+	test('keeps a draft waiting for its repository when the space is left before git registers it again', () => {
+		const { spaceB, switchTo, repositories } = createScope();
+		spaceB.value = 'feat: draft';
+		switchTo('b', 'a');
+		// B のリポジトリが SCM から外れ、戻っても git がまだ登録し直していないうちに、また A へ移る。
+		repositories.splice(repositories.indexOf(spaceB.repository), 1);
+		spaceB.value = '';
+		switchTo('a', 'b');
+		switchTo('b', 'a');
+		// 登録し直されてから B へ戻る。
+		repositories.push(spaceB.repository);
+		switchTo('a', 'b');
+		assert.strictEqual(spaceB.value, 'feat: draft');
 	});
 });
