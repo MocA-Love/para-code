@@ -11,7 +11,7 @@
 /* ここは見出しの行の検索欄と、右の本文。色は全て --vscode-* テーマトークン。 */
 
 .paradis-settings-area .codicon {
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .paradis-hub .psd-search {
@@ -20,12 +20,12 @@
 	min-width: 140px;
 	display: flex;
 	align-items: center;
-	gap: 6px;
+	gap: var(--vscode-spacing-size60);
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
 	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: 4px;
-	padding: 4px 8px;
+	border-radius: var(--vscode-cornerRadius-small);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
 }
 
 .paradis-hub .psd-search:focus-within {
@@ -42,13 +42,13 @@
 	padding: 0;
 	outline: none;
 	color: var(--vscode-input-foreground);
-	font-size: 12.5px;
+	font-size: var(--vscode-fontSize-body1);
 	font-family: inherit;
 }
 
 .paradis-hub .psd-autosave {
 	margin-left: auto;
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 	white-space: nowrap;
 }
@@ -58,20 +58,20 @@
 	min-width: 0;
 	min-height: 0;
 	overflow-y: auto;
-	padding: 16px 24px 32px;
+	padding: var(--vscode-spacing-size160) var(--vscode-spacing-size240) var(--vscode-spacing-size320);
 }
 
 /* ---------- sections / rows ---------- */
 
 .paradis-settings-area .psd-section-head {
-	font-size: 15px;
-	font-weight: 700;
+	font-size: var(--vscode-fontSize-heading2);
+	font-weight: var(--vscode-fontWeight-semiBold);
 	margin: 2px 0;
 }
 
 .paradis-settings-area .psd-group-head {
-	font-size: 11.5px;
-	font-weight: 600;
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
 	color: var(--vscode-descriptionForeground);
 	margin: 16px 0 2px;
 	padding-bottom: 4px;
@@ -79,17 +79,17 @@
 }
 
 .paradis-settings-area .psd-row-badge {
-	font-size: 10.5px;
+	font-size: var(--vscode-fontSize-label3);
 	font-weight: 400;
 	line-height: 16px;
-	padding: 0 6px;
-	border-radius: 8px;
+	padding: 0 var(--vscode-spacing-size60);
+	border-radius: var(--vscode-cornerRadius-circle);
 	border: 1px solid var(--vscode-descriptionForeground);
 	color: var(--vscode-descriptionForeground);
 }
 
 .paradis-settings-area .psd-section-desc {
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-descriptionForeground);
 	margin-bottom: 12px;
 	line-height: 1.6;
@@ -102,8 +102,8 @@
 .paradis-settings-area .psd-row {
 	display: flex;
 	align-items: center;
-	gap: 16px;
-	padding: 11px 4px;
+	gap: var(--vscode-spacing-size160);
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size40);
 	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 }
 
@@ -121,16 +121,16 @@
 }
 
 .paradis-settings-area .psd-row-label {
-	font-size: 13px;
-	font-weight: 600;
+	font-size: var(--vscode-fontSize-body1);
+	font-weight: var(--vscode-fontWeight-semiBold);
 	display: flex;
 	align-items: center;
-	gap: 7px;
+	gap: var(--vscode-spacing-size80);
 	flex-wrap: wrap;
 }
 
 .paradis-settings-area .psd-row-desc {
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
 	line-height: 1.6;
@@ -140,15 +140,15 @@
 .paradis-settings-area .psd-row-warning {
 	display: flex;
 	align-items: flex-start;
-	gap: 6px;
-	font-size: 11.5px;
+	gap: var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.6;
 	max-width: 520px;
 	margin-top: 6px;
-	padding: 6px 8px;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
 	color: var(--vscode-editorWarning-foreground);
 	border: 1px solid var(--vscode-editorWarning-foreground);
-	border-radius: 4px;
+	border-radius: var(--vscode-cornerRadius-small);
 }
 
 .paradis-settings-area .psd-row-warning.hidden {
@@ -165,14 +165,14 @@
 .paradis-settings-area .psd-row-restart {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	font-size: 11.5px;
+	gap: var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.6;
 	max-width: 520px;
 	margin-top: 6px;
-	padding: 4px 4px 4px 8px;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size40) var(--vscode-spacing-size40) var(--vscode-spacing-size80);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 4px;
+	border-radius: var(--vscode-cornerRadius-small);
 }
 
 .paradis-settings-area .psd-row-restart.hidden {
@@ -195,9 +195,9 @@
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
 	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: 5px;
-	padding: 4px 8px;
-	font-size: 12px;
+	border-radius: var(--vscode-cornerRadius-small);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
 	font-family: inherit;
 	outline: none;
 }
@@ -205,7 +205,7 @@
 .paradis-settings-area .psd-input {
 	width: 260px;
 	font-family: var(--monaco-monospace-font);
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-settings-area .psd-input:focus,
@@ -217,9 +217,9 @@
 	flex: none;
 	appearance: none;
 	border: none;
-	border-radius: 5px;
-	padding: 4px 13px;
-	font-size: 12px;
+	border-radius: var(--vscode-cornerRadius-small);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+	font-size: var(--vscode-fontSize-label1);
 	font-family: inherit;
 	cursor: pointer;
 	background: var(--vscode-button-secondaryBackground);
@@ -241,8 +241,8 @@
 }
 
 .paradis-settings-area .psd-search-empty {
-	padding: 24px 4px;
-	font-size: 12.5px;
+	padding: var(--vscode-spacing-size240) var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-body1);
 	color: var(--vscode-descriptionForeground);
 }
 
@@ -251,7 +251,7 @@
 .paradis-settings-area .psd-checks {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
-	gap: 6px 18px;
+	gap: var(--vscode-spacing-size60) var(--vscode-spacing-size200);
 	margin-top: 8px;
 	max-width: 520px;
 }
@@ -259,12 +259,12 @@
 .paradis-settings-area .psd-check {
 	display: flex;
 	align-items: center;
-	gap: 7px;
-	font-size: 12.5px;
+	gap: var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-body1);
 	cursor: pointer;
 }
 
 .paradis-settings-area .psd-check input {
 	margin: 0;
-	accent-color: var(--vscode-button-background);
+	accent-color: var(--vscode-focusBorder);
 }
