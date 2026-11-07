@@ -45,8 +45,33 @@ export function toBase64Url(bytes: Uint8Array): string {
 	return out;
 }
 
-/** data URI等で使うRFC 4648標準Base64（paddingあり）。 */
+/**
+ * {@link toBase64} が `btoa` に一度に渡すバイト数。3 の倍数にして、区切りの途中に `=` が入らないようにする。
+ * `String.fromCharCode.apply` の引数の数にもなるので、大きくしすぎない。
+ */
+const BASE64_CHUNK_BYTES = 3 * 8192;
+
+/**
+ * data URI等で使うRFC 4648標準Base64（paddingあり）。
+ *
+ * `btoa` がある環境（Hermes・Node・Workers）では区切りごとに `btoa` に任せる。1 バイトずつ JS で文字を足していくと、
+ * JIT の無い Hermes では 20 MiB のファイルで JS が数秒止まる。`btoa` が無ければ従来の純 JS の実装を使う。
+ */
 export function toBase64(bytes: Uint8Array): string {
+	const btoa = (globalThis as { readonly btoa?: (data: string) => string }).btoa;
+	if (typeof btoa !== 'function') {
+		return toBase64Portable(bytes);
+	}
+	const parts: string[] = [];
+	for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK_BYTES) {
+		const chunk = bytes.subarray(offset, offset + BASE64_CHUNK_BYTES);
+		parts.push(btoa(String.fromCharCode.apply(null, chunk as unknown as number[])));
+	}
+	return parts.join('');
+}
+
+/** {@link toBase64} の純 JS の実装（`btoa` の無い環境用。テストで `btoa` の経路と突き合わせる）。 */
+export function toBase64Portable(bytes: Uint8Array): string {
 	let out = '';
 	let i = 0;
 	for (; i + 2 < bytes.length; i += 3) {

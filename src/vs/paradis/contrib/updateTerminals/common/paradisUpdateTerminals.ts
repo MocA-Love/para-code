@@ -306,6 +306,18 @@ export function paradisMergeUpdateReports(
 	return { groups: result };
 }
 
+/**
+ * 問い合わせに期限までに答えなかったウィンドウがあるとき、それでも今すぐ更新してよいか。
+ *
+ * 接続先のウィンドウが答えないと、そこに取り残されるターミナルが分からない。終了の途中では
+ * 前に分かっていた値（`stranded`）で尋ねずに止めるので、確認なしで進めると黙って終わらせることになる。
+ * **分からないときは残す**（{@link paradisUpdateQuitEndsTerminals} と同じ）ため、「あとで更新」に倒す。
+ * この PC のウィンドウは、取り残されるもの（版で区切られた常駐）を main が自分で聞くので止めない。
+ */
+export function paradisMayUpdateWithoutAnswers(unanswered: readonly { readonly isRemote: boolean }[]): boolean {
+	return !unanswered.some(window => window.isRemote);
+}
+
 /** 確認を出すか。終わるものが1つも無ければ、今までどおり確認なしで更新する。 */
 export function paradisShouldConfirmUpdate(summary: IParadisUpdateTerminalSummary): boolean {
 	return summary.groups.some(group => paradisUpdateGroupCount(group) > 0);

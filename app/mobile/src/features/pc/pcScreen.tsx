@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Fragment, useCallback, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { useIsFocused, useNavigation, useRouter } from 'expo-router';
 import { Layers, SlidersHorizontal } from 'lucide-react-native';
@@ -82,7 +82,7 @@ type Sheet = 'filter' | 'sort' | 'group' | 'archive' | 'launch';
  *  - `page`: 1列（iPhone、狭い iPad）。詳細の列の根（`app/pc/[pcId]/index.tsx`）に全面で出し、行を押すと押し進む
  *  - `column`: iPad の2列の左の列（`app/pc/[pcId]/_layout.tsx`）。行を押すと右の列の中身を入れ替える
  */
-export function PcScreen({ placement, onCollapse }: {
+export const PcScreen = memo(function PcScreen({ placement, onCollapse }: {
 	placement: 'page' | 'column';
 	/** 渡すと見出しに「サイドバーを隠す」を出す（2列でセッションを開いているとき）。 */
 	onCollapse?: () => void;
@@ -392,7 +392,7 @@ export function PcScreen({ placement, onCollapse }: {
 			<RowActions pcId={pcId} target={menuTarget} onClose={() => setMenuKey(undefined)} />
 		</Screen>
 	);
-}
+});
 
 const styles = StyleSheet.create({
 	body: {

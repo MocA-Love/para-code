@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
-import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { bufferToStream, VSBuffer } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
@@ -42,7 +42,7 @@ interface IFakeFileOptions {
 }
 
 /**
- * realpath・stat・readFile だけを持つ fileService の代わり。`links` はシンボリックリンク（元 → 実体）、
+ * realpath・stat・readFileStream だけを持つ fileService の代わり。`links` はシンボリックリンク（元 → 実体）、
  * `files` は実在するファイルと大きさ。更新時刻は `mtimes`（既定 0）。読むと中身は 7 バイトの JPEG の頭。
  */
 function fakeFileService(files: Record<string, number>, links: Record<string, string> = {}, directories: readonly string[] = [UPLOADS.path], options: IFakeFileOptions = {}) {
@@ -63,14 +63,14 @@ function fakeFileService(files: Record<string, number>, links: Record<string, st
 			}
 			return { resource, name: resource.path, isFile: true, isDirectory: false, isSymbolicLink: false, size, mtime: mtimes[resource.path] ?? 0, ctime: 0, etag: '', readonly: false, locked: false, executable: false };
 		},
-		async readFile(resource: URI) {
+		async readFileStream(resource: URI) {
 			reads.push(resource.path);
 			if (options.failRead?.includes(resource.path)) {
 				throw new Error(`EACCES: ${resource.path}`);
 			}
 			options.onRead?.(resource.path, mtimes);
 			await options.readGate;
-			return { resource, value: VSBuffer.wrap(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3])), name: '', size: 7, mtime: 0, ctime: 0, etag: '', readonly: false, locked: false, executable: false };
+			return { resource, value: bufferToStream(VSBuffer.wrap(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]))), name: '', size: 7, mtime: 0, ctime: 0, etag: '', readonly: false, locked: false, executable: false };
 		},
 	};
 	return { service, reads };

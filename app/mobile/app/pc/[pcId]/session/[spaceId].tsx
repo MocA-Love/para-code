@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { useIsFocused, useRouter } from 'expo-router';
 import { ChevronRight, Ellipsis, Folder, GitBranch, NotebookPen, PanelLeftOpen, SquareTerminal, Unplug } from 'lucide-react-native';
@@ -128,6 +128,20 @@ export default function SessionScreen() {
 	// 開き方の設定を読み終えるまでペインを出さない（会話表示 → ターミナル表示の作り直しを避ける）。
 	const viewReady = useSessionViewReady();
 	const showChat = current !== undefined && current.agent === true && view === 'chat';
+	// ターミナルの表示は、最近見たものを隠したまま残す（タブ・会話⇄ターミナルを切り替えるたびに WebView と xterm を
+	// 作り直さない。戻ったときは PC の snapshot 1 回で描き直す）。先頭が今のもの。
+	const shownTerminalKey = current !== undefined && !showChat && (viewReady || current.agent !== true) ? current.terminalKey : undefined;
+	const [recentTerminalKeys, setRecentTerminalKeys] = useState<readonly string[]>([]);
+	// 閉じた（一覧から消えた）ターミナルは枠を空ける
+	const liveRecentKeys = recentTerminalKeys.filter(key => terminals.some(terminal => terminal.terminalKey === key));
+	if (shownTerminalKey !== undefined && liveRecentKeys[0] !== shownTerminalKey) {
+		setRecentTerminalKeys([shownTerminalKey, ...liveRecentKeys.filter(key => key !== shownTerminalKey)].slice(0, 1 + KEPT_TERMINAL_VIEWS));
+	} else if (liveRecentKeys.length !== recentTerminalKeys.length) {
+		setRecentTerminalKeys(liveRecentKeys);
+	}
+	const terminalDeck = recentTerminalKeys
+		.map(key => terminals.find(terminal => terminal.terminalKey === key))
+		.filter((terminal): terminal is SpaceTerminal => terminal !== undefined);
 
 	const openTab = (next: SessionTab | undefined, options: { latest?: boolean } = {}) => {
 		if (next?.kind === 'terminal') {
@@ -217,6 +231,9 @@ export default function SessionScreen() {
 	// 右のドック（iPad の2列で、この画面が 640pt 以上あるとき）。
 	const regular = useIsRegularWidth();
 	const [bodyWidth, setBodyWidth] = useState(0);
+	// 実際の幅。ドックを閉じている間は、ドックを出せるかが変わるときだけ state に入れる（iPad で左の列の境界を
+	// ドラッグしている間、この画面全体を毎フレーム描き直さないため）
+	const bodyWidthRef = useRef(0);
 	const dockable = canDockPanel(regular, bodyWidth);
 	const [dockPanel, setDockPanel] = useState<DockPanel | undefined>(undefined);
 	if (dockPanel !== undefined && bodyWidth > 0 && !dockable) {
@@ -234,6 +251,7 @@ export default function SessionScreen() {
 		}
 		haptic('move');
 		if (dockable) {
+			setBodyWidth(bodyWidthRef.current);
 			setDockPanel(current => (current === panel ? undefined : panel));
 			return;
 		}
@@ -242,11 +260,16 @@ export default function SessionScreen() {
 	// ドックから差分・ファイルへ進むときはドックを閉じる（詳細の列で押し進める決まり）。戻ってきたら同じドックを
 	// 開き直す（ファイルの一覧の開いていたフォルダや位置は `fileTreeStore.ts` に退避してあるので、そのまま戻る）。
 	const reopenDock = useRef<DockPanel | undefined>(undefined);
-	const dockNavigate = (href: RouteHref) => {
-		reopenDock.current = dockPanel;
+	const dockPanelRef = useRef(dockPanel);
+	dockPanelRef.current = dockPanel;
+	// ドックの部品へ渡すもの。毎回作り直すと、ドックの幅をドラッグしている間ドックの中身も毎フレーム描き直される
+	const dockNavigate = useCallback((href: RouteHref) => {
+		reopenDock.current = dockPanelRef.current;
 		setDockPanel(undefined);
 		router.push(href);
-	};
+	}, [router]);
+	const dockTarget = useMemo(() => (pcId !== undefined && spaceId !== undefined ? { pcId, spaceId } : undefined), [pcId, spaceId]);
+	const dockControls = useMemo(() => ({ close: () => setDockPanel(undefined), navigate: dockNavigate }), [dockNavigate]);
 	useEffect(() => {
 		if (!focused || reopenDock.current === undefined) {
 			return;
@@ -254,6 +277,7 @@ export default function SessionScreen() {
 		const panel = reopenDock.current;
 		reopenDock.current = undefined;
 		if (dockable) {
+			setBodyWidth(bodyWidthRef.current);
 			setDockPanel(panel);
 		}
 	}, [focused, dockable]);
@@ -354,9 +378,10 @@ export default function SessionScreen() {
 				if (!viewReady && tab.terminal.agent === true) {
 					return <View style={styles.center}><ActivityIndicator color={colors.textDim} /></View>;
 				}
+				// ターミナルの表示は下の terminalDeck が出す
 				return showChat
 					? <AgentChatPane key={tab.terminal.terminalKey} terminal={tab.terminal} latest={latest} active={focused} bottomInset={bottomInset} />
-					: <TerminalPane key={tab.terminal.terminalKey} terminal={tab.terminal} active={focused} keyboardVisible={keyboardVisible} bottomInset={bottomInset} />;
+					: null;
 		}
 	})();
 
@@ -414,16 +439,41 @@ export default function SessionScreen() {
 				) : null}
 			</ScreenHeader>
 			</View>
-			<View style={styles.row} onLayout={event => setBodyWidth(event.nativeEvent.layout.width)}>
-				<View style={styles.main}>{body}</View>
+			<View
+				style={styles.row}
+				onLayout={event => {
+					const width = event.nativeEvent.layout.width;
+					bodyWidthRef.current = width;
+					if (dockPanel !== undefined || bodyWidth === 0 || canDockPanel(regular, width) !== dockable) {
+						setBodyWidth(width);
+					}
+				}}
+			>
+				<View style={styles.main}>
+					{body}
+					{terminalDeck.map(terminal => {
+						const shown = terminal.terminalKey === shownTerminalKey && (route.status !== 'unknown' && route.spaceStatus !== 'missing' && tab.status === 'terminal');
+						return (
+							<View
+								key={terminal.terminalKey}
+								style={shown ? styles.fill : styles.keptTerminal}
+								pointerEvents={shown ? 'auto' : 'none'}
+								accessibilityElementsHidden={!shown}
+								importantForAccessibility={shown ? 'auto' : 'no-hide-descendants'}
+							>
+								<TerminalPane terminal={terminal} active={focused && shown} shown={shown} keyboardVisible={keyboardVisible} bottomInset={bottomInset} />
+							</View>
+						);
+					})}
+				</View>
 				{/* ドックの枠は常に置き、幅で出し入れする（本文の位置を変えないため）。 */}
 				<View style={[styles.dock, dockPanel !== undefined ? [styles.dockOpen, { width: dockWidth }] : undefined]}>
-					{dockPanel !== undefined && pcId !== undefined && spaceId !== undefined ? (
+					{dockPanel !== undefined && dockTarget !== undefined ? (
 						<SessionDock
 							key={dockPanel}
 							panel={dockPanel}
-							target={{ pcId, spaceId }}
-							dock={{ close: () => setDockPanel(undefined), navigate: dockNavigate }}
+							target={dockTarget}
+							dock={dockControls}
 						/>
 					) : null}
 				</View>
@@ -559,7 +609,18 @@ function TabMenu({ visible, item, pcId, phoneWidth, onToggleWidth, onShow, onRen
 	);
 }
 
+/** 今のもののほかに隠したまま残すターミナルの表示の数（q.html Q561。多いほど戻りが速く、記憶を使う）。 */
+const KEPT_TERMINAL_VIEWS = 2;
+
 const styles = StyleSheet.create({
+	keptTerminal: {
+		position: 'absolute',
+		top: 0,
+		right: 0,
+		bottom: 0,
+		left: 0,
+		opacity: 0,
+	},
 	fill: {
 		flex: 1,
 	},

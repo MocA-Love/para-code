@@ -18,6 +18,7 @@ import {
 	paradisIsUpdateQuitApproved,
 	paradisLocalTerminalsAcrossUpdate,
 	paradisMarkUpdateQuitApproved,
+	paradisMayUpdateWithoutAnswers,
 	paradisMergeKeptPaneTokens,
 	paradisMergeUpdateReports,
 	paradisNextAfterStopPhase,
@@ -97,6 +98,14 @@ suite('ParadisUpdateTerminals', () => {
 				['other', ['x'], 0],
 				['local', ['local'], 0],
 			]);
+		});
+
+		test('updates later when a remote window did not answer in time, since its terminals would end without asking', () => {
+			assert.deepStrictEqual([
+				paradisMayUpdateWithoutAnswers([]),
+				paradisMayUpdateWithoutAnswers([{ isRemote: false }]),
+				paradisMayUpdateWithoutAnswers([{ isRemote: false }, { isRemote: true }]),
+			], [true, true, false]);
 		});
 	});
 
