@@ -48,7 +48,7 @@ import { IParadisSlashCommand, PARADIS_CLAUDE_SETTING_VALUE_PATTERN, PARADIS_COM
 import { IParadisAgentActivityState, IParadisAgentAdvisorUpdate, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
-import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
+import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptCatchUpEnd, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudeAdvisorsEntries, paradisParseClaudePersistedActivityEntries, paradisParseCodexPersistedActivityEntries } from './paradisPersistedAgentActivity.js';
 import { ParadisTranscriptEntryWindows } from './paradisTranscriptEntryWindow.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
@@ -1917,7 +1917,7 @@ interface IParadisApprovalEntry {
 interface ITailerDelegate {
 	/**
 	 * 追記分のメッセージが確定した (差分push用)。
-	 * quiet は、デスクトップのチャット表示のためだけに入れた質問で、モバイルへの質問通知を出さない印。
+	 * quiet は、デスクトップのチャット表示のためだけに入れた質問で、モバイルへの質問通知を出さない印。SSH の写しが過去の会話を追記で届けている間の読みにも付ける。
 	 */
 	onDelta(messages: IParadisAgentChatMessage[], options?: { readonly quiet?: boolean }): void;
 	/** epoch が切り替わった (truncate検知・読み直し)。購読者へ全量スナップショットを送り直す。 */
@@ -1953,8 +1953,11 @@ interface ITailerDelegate {
 	 * そのときペインは作業中なので、終わりとしては扱わない。
 	 */
 	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted', errorCode?: string, startedAfter?: boolean): void;
-	/** rolloutに永続化されたCodex活動を順序どおりtrackerへ収束させる。 */
-	onCodexActivityTimeline(events: readonly ICodexTranscriptActivityEvent[]): void;
+	/**
+	 * rolloutに永続化されたCodex活動を順序どおりtrackerへ収束させる。`catchingUp` は SSH の写しが過去の会話を
+	 * 追記で届けている間の読み（ターンの始まり・終わりの合図は出さない）。
+	 */
+	onCodexActivityTimeline(events: readonly ICodexTranscriptActivityEvent[], catchingUp?: boolean): void;
 	/**
 	 * transcript にこの起動後の追記を観測した。
 	 * 「そのペインでエージェントが今も動いている」証拠として使う（内容は問わない）。
@@ -2058,6 +2061,11 @@ export const paradisSharedImageCacheForTest = sharedImageCache;
 class TranscriptTailer {
 	epoch = newEpoch();
 	rev = 0;
+	/**
+	 * SSH の写しが接続先へ追いつくために写した分（過去の会話）を読んでいる最中か。追記として読むが、
+	 * 質問の通知とターンの終わりは鳴らさない（{@link paradisRemoteTranscriptCatchUpEnd}）。
+	 */
+	private readingCatchUp = false;
 	readonly messages: IParadisAgentChatMessage[] = [];
 	/**
 	 * 切り詰めたツール出力の全文: rev → 全文。モバイルがステップを展開したときだけ
@@ -2624,13 +2632,22 @@ class TranscriptTailer {
 			if (stat.size === this.offset) {
 				return;
 			}
+			// SSH の写しが接続先へ追いつくために写した分は、過去の会話として読む（追いつく分とその後の分を
+			// 1 回の読みに混ぜない）
+			const catchUpEnd = paradisRemoteTranscriptCatchUpEnd(this.transcriptPath);
 			while (this.offset < stat.size) {
-				const length = Math.min(APPEND_READ_CHUNK_BYTES, stat.size - this.offset);
+				const catchingUp = catchUpEnd !== undefined && this.offset < catchUpEnd;
+				const length = Math.min(APPEND_READ_CHUNK_BYTES, stat.size - this.offset, catchingUp ? catchUpEnd - this.offset : Number.POSITIVE_INFINITY);
 				const buffer = Buffer.alloc(length);
 				const { bytesRead } = await handle.read(buffer, 0, length, this.offset);
 				if (bytesRead === 0) { break; }
 				this.offset += bytesRead;
-				this.consumeText(this.decoder.decode(buffer.subarray(0, bytesRead), { stream: true }), true);
+				this.readingCatchUp = catchingUp;
+				try {
+					this.consumeText(this.decoder.decode(buffer.subarray(0, bytesRead), { stream: true }), true);
+				} finally {
+					this.readingCatchUp = false;
+				}
 			}
 			if (!this.watcher) {
 				this.startWatching();
@@ -2926,7 +2943,7 @@ class TranscriptTailer {
 		this.messages.push(...added);
 		this.trimRing();
 		if (emitDelta) {
-			this.delegate.onDelta(added);
+			this.delegate.onDelta(added, this.readingCatchUp ? { quiet: true } : undefined);
 		}
 	}
 
@@ -3784,7 +3801,7 @@ class TranscriptTailer {
 		if (infoChanged) {
 			this.delegate.onInfo();
 		}
-		if (signals.codexActivityTimeline.length > 0) { this.delegate.onCodexActivityTimeline(signals.codexActivityTimeline); }
+		if (signals.codexActivityTimeline.length > 0) { this.delegate.onCodexActivityTimeline(signals.codexActivityTimeline, this.readingCatchUp); }
 		// 初回読み込み・読み直し（live でない）では知らせない。その後の snapshot が一覧を運ぶ。
 		this.monitorWatch.apply(signals.monitorSignals, live, signals.shellSignals);
 		if ((signals.workflowSignals.length > 0 || signals.shellSignals.length > 0) && this.workflows.apply(signals.workflowSignals, signals.shellSignals)) {
@@ -3795,7 +3812,8 @@ class TranscriptTailer {
 		}
 		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
-		if (live && signals.turnEnded !== undefined) {
+		// SSH の写しが過去の会話を追記で届ける間の task_complete も、過去のターンの終わり。
+		if (live && !this.readingCatchUp && signals.turnEnded !== undefined) {
 			// 時系列で、最後のターンの終わりより後にターンが始まっているか（終わりと次の始まりが 1 回の読み込みに入った）
 			const timeline = signals.codexActivityTimeline;
 			let lastEnd = -1;
@@ -3820,7 +3838,7 @@ class TranscriptTailer {
 			const added = this.asyncQuestions.addConfirmed(asked);
 			this.asyncQuestions.answer(signals.codexAsyncAnswered);
 			this.asyncQuestions.noteGone(new Set(signals.codexAsyncQuestions.slice(0, staleBefore).map(question => question.callId)));
-			this.emitAsyncQuestions(before, live ? added : []);
+			this.emitAsyncQuestions(before, live && !this.readingCatchUp ? added : []);
 		}
 	}
 
@@ -9170,7 +9188,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		// SSH 接続先の hook が名乗るのは接続先のパスで、ここからは開けない。写し先のパスへ
 		// 読み替えて、以降はローカルの transcript と全く同じ経路に乗せる。写しがまだ無くても
 		// tailer はファイルの出現を待てるので、ここで足踏みする必要はない。
-		const transcriptPath = this.remoteTranscriptMirror?.localPathForHookPath(event.transcriptPath, event.token, event.remoteHostId) ?? event.transcriptPath;
+		// 再開した会話（SessionStart の source が resume）の写しは、過去の会話を先頭から追記で写す。その分は鳴らさない
+		const resumed = event.event === 'SessionStart' && str(event.payload?.source) === 'resume';
+		const transcriptPath = this.remoteTranscriptMirror?.localPathForHookPath(event.transcriptPath, event.token, event.remoteHostId, resumed) ?? event.transcriptPath;
 		if (transcriptPath !== event.transcriptPath) {
 			this.followRemoteSubagentTranscript(event);
 		}
@@ -10066,7 +10086,8 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.refreshModQuestions(token);
 				}
 				// 質問の出現は購読の有無に関わらず通知へ流す（アプリを開いていないモバイルへの
-				// プッシュ供給源。onDelta はライブ追記でのみ呼ばれるため過去分の再通知はない）。
+				// プッシュ供給源）。onDelta は追記で読んだ分だけ呼ばれる。SSH の写しが過去の会話を
+				// 追記で届ける間は、tailer が quiet を付けて鳴らさない。
 				for (const message of options?.quiet === true ? [] : messages) {
 					if (message.kind !== 'question') {
 						continue;
@@ -10152,11 +10173,15 @@ export class ParadisMobileAgentChat extends Disposable {
 			onOpenCodeStreaming: text => this.updateOpenCodeStreaming(token, text),
 			isOpenCodeTurnActive: () => this.activeTurnTokens.has(token),
 			onAdvisors: messages => this.applyAdvisorMessages(token, messages),
-			onCodexActivityTimeline: events => {
+			onCodexActivityTimeline: (events, catchingUp) => {
 				const tracker = this.activityTracker(token);
 				let changed = false;
 				for (const event of events) {
 					if (event.type === 'turnStart') {
+						// SSH の写しが過去の会話を届けている間のターンの始まりは、今のペインの状態ではない
+						if (catchingUp === true) {
+							continue;
+						}
 						this.activeTurnTokens.add(token);
 						// 自動の continue を待つ間に始まったターンは、ユーザーが送ったもの。自動の送信を取りやめる
 						this.overloadContinue.onTurnStarted(token);
@@ -10169,6 +10194,11 @@ export class ParadisMobileAgentChat extends Disposable {
 					} else if (event.type === 'plan') {
 						changed = tracker.applyCodexPlan(event.steps, event.at) || changed;
 					} else {
+						if (catchingUp === true) {
+							// 過去のターンの終わり。ペインを確認待ちへ動かさない（完了の通知を鳴らさない）。一覧の記録だけ閉じる
+							changed = tracker.endTurn(event.at, event.reason) || changed;
+							continue;
+						}
 						this.activeTurnTokens.delete(token);
 						// 承認が残ったままの中断（承認の拒否）は完了ではない（直後の onTurnEnded がペインを idle へ移す）。
 						// ここで完了の合図を出すと、答えた時点で作業中へ戻っていたペインが確認待ち（review）へ移り、
