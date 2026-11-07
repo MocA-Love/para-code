@@ -444,7 +444,7 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 				throw new ParadisTaskBoardRemoteError('denied', 'only worktrees created by this task board session can be removed');
 			}
 		}
-		const plan = paradisTaskBoardRemoteGitPlan(dir, op);
+		const plan = paradisTaskBoardRemoteGitPlan(dir, op, kind === 'worktreeAdd' ? { parallelCheckout: await this.checkoutWorkersUnset(session, dir) } : undefined);
 		if (kind === 'push') {
 			await this.checkHostDefaultBranch(session, dir, (op as { branch: string }).branch);
 		}
@@ -464,6 +464,17 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 			}
 		}
 		return { ...result, stderr: paradisTaskBoardRemoteStripUrlCredentials(result.stderr) };
+	}
+
+	/**
+	 * 利用者が git の設定で `checkout.workers` を決めていないか（`git config --get` は未設定のとき終了コード 1）。
+	 * 決めていればその値に任せ、読めなかったときも git の既定のまま作る。
+	 */
+	private async checkoutWorkersUnset(session: ISession, dir: string): Promise<boolean> {
+		// execGit は signal での終了も終了コード 1 に寄せるので、ここは元の終了コードを見る。
+		// 時間切れ・signal で止まったときは読めなかった扱い（git の既定のまま作る。スペース側の作成と同じ）
+		const result = await this.enqueueGit(session, async () => this.spawnBounded('git', ['-C', dir, 'config', '--get', 'checkout.workers'], undefined, paradisTaskBoardRemoteEnv(await this.baseEnv()), this.timeouts.gitShortMs, undefined).promise);
+		return !result.timedOut && result.code === 1;
 	}
 
 	/**
