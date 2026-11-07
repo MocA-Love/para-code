@@ -36,6 +36,8 @@ suite('ParadisWorktreeGitService removeWorktree', () => {
 		await assert.rejects(service.removeWorktree({ repoPath: '/repo', worktreePath: '/repo-worktrees/missing', force: false }), /ワークツリーの削除が 10 分以内に終わらなかったため打ち切りました/);
 		assert.deepStrictEqual(calls.map(call => [call.args.slice(2).join(' '), call.timeout]), [
 			['worktree prune', 30_000],
+			// 持ち込みで作ったリンクの記録の場所（作業ツリーごとの git のフォルダ）を読む
+			['rev-parse --path-format=absolute --git-dir', 30_000],
 			['worktree remove /repo-worktrees/missing', 600_000],
 		]);
 	});

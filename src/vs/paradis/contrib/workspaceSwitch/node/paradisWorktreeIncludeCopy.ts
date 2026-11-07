@@ -13,7 +13,8 @@
 
 import { constants as fsConstants, promises as fs } from 'fs';
 import { dirname, join, relative, isAbsolute, sep } from '../../../../base/common/path.js';
-import { IParadisWorktreeIncludeConfig, IParadisWorktreeIncludeResult, IParadisWorktreeIncludeSkipped, PARADIS_WORKTREE_INCLUDE_FILE, PARADIS_WORKTREE_INCLUDE_MAX_COPY_BYTES, PARADIS_WORKTREE_INCLUDE_MAX_COPY_ENTRIES, PARADIS_WORKTREE_INCLUDE_MAX_FILE_BYTES, paradisParseWorktreeIncludeConfig, paradisParseWorktreeIncludeFile } from '../common/paradisWorktreeInclude.js';
+import { isWindows } from '../../../../base/common/platform.js';
+import { IParadisWorktreeIncludeConfig, IParadisWorktreeIncludeResult, IParadisWorktreeIncludeSkipped, PARADIS_WORKTREE_INCLUDE_FILE, PARADIS_WORKTREE_INCLUDE_MAX_COPY_BYTES, PARADIS_WORKTREE_INCLUDE_MAX_COPY_ENTRIES, PARADIS_WORKTREE_INCLUDE_MAX_FILE_BYTES, paradisNormalizeWorktreeIncludePath, paradisParseWorktreeIncludeConfig, paradisParseWorktreeIncludeFile } from '../common/paradisWorktreeInclude.js';
 import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
 
 /** 持ち込みが使う外の働き（テストから差し替える）。 */
@@ -24,6 +25,11 @@ export interface IParadisWorktreeIncludeHost {
 	readonly canLink: boolean;
 	/** フォルダのリンクの種類（Windows は管理者権限の要らない junction）。 */
 	readonly directoryLinkType: 'dir' | 'junction';
+	/**
+	 * 作ったリンクを書き留めるファイル（作業ツリーごとの git のフォルダの中）。削除の前に、ここに書いたリンクだけを外す。
+	 * undefined ならリンクを作らない（記録できないリンクは、削除のときに外せないため）。
+	 */
+	readonly linkRecordPath: string | undefined;
 	/** 写す量の上限（テストから小さくする）。 */
 	readonly maxCopyBytes?: number;
 	readonly maxCopyEntries?: number;
@@ -169,8 +175,8 @@ export async function paradisMaterializeWorktreeIncludes(repoPath: string, workt
 			if (await exists(target)) {
 				continue;
 			}
-			// 途中のフォルダがシンボリックリンクだと、元はリポジトリの外を読み、書き込み先はワークツリーの外へ書く
-			if (!isInside(repoReal, await fs.realpath(dirname(source))) || !isInside(worktreeReal, await realpathOfNearestExisting(dirname(target)))) {
+			// 途中のフォルダや元そのものがシンボリックリンクだと、元はリポジトリの外を読み、書き込み先はワークツリーの外へ書く
+			if (!isInside(repoReal, await fs.realpath(source)) || !isInside(worktreeReal, await realpathOfNearestExisting(dirname(target)))) {
 				skipped.push({ path, reason: 'outside' });
 				continue;
 			}
@@ -180,11 +186,13 @@ export async function paradisMaterializeWorktreeIncludes(repoPath: string, workt
 					skipped.push({ path, reason: 'notDirectory' });
 					continue;
 				}
-				if (!host.canLink) {
+				if (!host.canLink || host.linkRecordPath === undefined) {
 					skipped.push({ path, reason: 'unsupported' });
 					continue;
 				}
 				await fs.mkdir(dirname(target), { recursive: true });
+				// 記録を先に書く。リンクを作れて記録に失敗すると、削除のときに外せないリンクが残るため
+				await appendLinkRecord(host.linkRecordPath, { path, source, type: host.directoryLinkType });
 				await fs.symlink(source, target, host.directoryLinkType);
 				linked.push(path);
 				continue;
@@ -209,20 +217,74 @@ export async function paradisMaterializeWorktreeIncludes(repoPath: string, workt
 	return { copied, linked, skipped };
 }
 
+/** 作業ツリーごとの git のフォルダに置く、持ち込みで作ったリンクの記録のファイル名。 */
+export const PARADIS_WORKTREE_LINK_RECORD_FILE = 'paracode-shared-links.json';
+
+/** 持ち込みで作ったリンク 1 つ。 */
+export interface IParadisWorktreeLinkRecord {
+	/** 作業ツリーのルートからの相対パス。 */
+	readonly path: string;
+	/** リンク先（元のリポジトリの中のフォルダの絶対パス）。 */
+	readonly source: string;
+	readonly type: 'dir' | 'junction';
+}
+
+async function readLinkRecords(recordPath: string): Promise<IParadisWorktreeLinkRecord[]> {
+	try {
+		const parsed: unknown = JSON.parse(await fs.readFile(recordPath, 'utf8'));
+		return Array.isArray(parsed) ? parsed.filter((item): item is IParadisWorktreeLinkRecord => !!item && typeof item.path === 'string' && typeof item.source === 'string' && (item.type === 'dir' || item.type === 'junction')) : [];
+	} catch {
+		return [];
+	}
+}
+
+async function appendLinkRecord(recordPath: string, record: IParadisWorktreeLinkRecord): Promise<void> {
+	const records = (await readLinkRecords(recordPath)).filter(item => item.path !== record.path);
+	records.push(record);
+	await fs.writeFile(recordPath, JSON.stringify(records));
+}
+
+/** Windows の junction の readlink は長いパスの印（\\?\）を前に付けて返す。比べるときは落とす。 */
+function sameLinkTarget(actual: string, expected: string): boolean {
+	const normalize = (value: string) => value.replace(/^\\\\\?\\/, '').replace(/[\\/]+$/, '');
+	return isWindows ? normalize(actual).toLowerCase() === normalize(expected).toLowerCase() : normalize(actual) === normalize(expected);
+}
+
 /**
- * ワークツリーを消す前に、宣言でリンクしたフォルダのシンボリックリンクだけを外す（Orca の removeWorktreeSymlinks と同じ）。
+ * ワークツリーを消す前に、持ち込みで作ったリンクを外す（Orca の removeWorktreeSymlinks と同じ目的）。
  * `node_modules/` のようにフォルダとして無視している設定はリンクに当たらず、git がリンクを未追跡と見て削除を断るため。
- * 同じ名前の普通のファイル・フォルダには触らない。
+ * 外すのは記録にあり、今もシンボリックリンク（junction）で、記録と同じ先を指しているものだけ。宣言が後で変わっても
+ * 記録から外すので、前のリンクも残らない。同じ名前の普通のファイル・フォルダには触らない。外したものを返す
+ * （削除が断られたら {@link paradisRestoreWorktreeLinks} で戻す）。
  */
-export async function paradisUnlinkWorktreeSharedDirectories(worktreePath: string, sharedDirectories: readonly string[]): Promise<void> {
-	for (const path of sharedDirectories) {
-		const target = join(worktreePath, path);
+export async function paradisUnlinkRecordedWorktreeLinks(worktreePath: string, recordPath: string): Promise<IParadisWorktreeLinkRecord[]> {
+	const unlinked: IParadisWorktreeLinkRecord[] = [];
+	for (const record of await readLinkRecords(recordPath)) {
+		if (paradisNormalizeWorktreeIncludePath(record.path) !== record.path) {
+			continue;
+		}
+		const target = join(worktreePath, record.path);
 		try {
-			if ((await fs.lstat(target)).isSymbolicLink()) {
+			if ((await fs.lstat(target)).isSymbolicLink() && sameLinkTarget(await fs.readlink(target), record.source)) {
 				await fs.unlink(target);
+				unlinked.push(record);
 			}
 		} catch {
 			// 無いもの・外せないものは git の削除の側で扱う
+		}
+	}
+	return unlinked;
+}
+
+/** 外したリンクを作り直す（作業ツリーの削除が断られたとき）。作れないものは飛ばす。 */
+export async function paradisRestoreWorktreeLinks(worktreePath: string, records: readonly IParadisWorktreeLinkRecord[]): Promise<void> {
+	for (const record of records) {
+		try {
+			const target = join(worktreePath, record.path);
+			await fs.mkdir(dirname(target), { recursive: true });
+			await fs.symlink(record.source, target, record.type);
+		} catch {
+			// 既に在る・親が消えた
 		}
 	}
 }
