@@ -84,6 +84,8 @@ export interface IParadisBoundContext {
 	readonly rawScreenshotCoordinator: ParadisRawScreenshotCoordinator;
 	/** wait_until の network idle 用の、共有中のタブの通信の台帳（ペインごと）。無ければ数えない。 */
 	readonly networkActivity?: ParadisNetworkActivity;
+	/** エージェントがこの接続で命令を送った（共有中のタブを使っている合図。paradisAgentViewIdleThrottle.ts）。 */
+	noteClientCommand?(): void;
 	/**
 	 * バインド済みprimaryページのスクリーンショットを、electron-mainのupstream実装
 	 * `BrowserView.captureScreenshot()`（非表示時の回避策付き）へ委譲して撮る。
@@ -1770,6 +1772,7 @@ export function paradisProxyPageUpgrade(
 				closeBoth();
 				return;
 			}
+			ctx.noteClientCommand?.();
 			clientCommands.enqueue(data, bytes, '');
 		});
 		upstream.on('open', () => {
@@ -2805,6 +2808,7 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			// 命令はセッションごとに順に処理する。待つ命令（URL の確かめ・移動の応答待ち・入力の順番待ち）があっても、
 			// ほかのセッション（ほかのタブ・iframe）の命令は待たせない。壊れたフレームはセッション無しの列で扱う
+			ctx.noteClientCommand?.();
 			const sessionKey = parseClientCommand(data)?.sessionId ?? '';
 			clientCommands.enqueue(data, bytes, sessionKey);
 		});

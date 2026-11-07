@@ -31,7 +31,7 @@ class FakeTimer implements IParadisFreezeTimer {
 suite('ParadisBrowserViewFreezer', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function create(options: { visible?: boolean; audible?: boolean; held?: boolean; enabled?: boolean } = {}) {
+	function create(options: { visible?: boolean; audible?: boolean; held?: boolean; enabled?: boolean; notifications?: string } = {}) {
 		const disposables = store.add(new DisposableStore());
 		const commands: string[] = [];
 		const state = { visible: options.visible ?? true, audible: options.audible ?? false, held: options.held ?? false, enabled: options.enabled ?? true };
@@ -43,7 +43,9 @@ suite('ParadisBrowserViewFreezer', () => {
 			isCurrentlyAudible: () => state.audible,
 			isDevToolsOpened: () => false,
 			isBeingCaptured: () => false,
+			getURL: () => 'https://chat.example.com/room/1',
 		};
+		const captures = { lastAt: undefined as number | undefined, listener: undefined as ((view: object) => void) | undefined };
 		const view: IParadisFreezableBrowserView = {
 			webContents,
 			debugger: {
@@ -55,18 +57,22 @@ suite('ParadisBrowserViewFreezer', () => {
 			onDidChangeVisibility: onDidChangeVisibility.event,
 			onDidClose: onDidClose.event,
 			getState: () => ({ visible: state.visible }),
+			session: { permissions: { serialize: () => ({ origins: options.notifications ? { [options.notifications]: { notifications: 'allow' } } : {} }) } },
 		};
 		const timer = new FakeTimer();
 		const freezer = disposables.add(new ParadisBrowserViewFreezer(
 			{ onDidCreateBrowserView: onDidCreateBrowserView.event, tryGetBrowserView: () => view },
 			() => state.enabled, 1000, timer, () => state.held,
+			() => captures.lastAt,
+			listener => { captures.listener = listener; return () => captures.listener = undefined; },
+			() => 10_000_000,
 		));
 		onDidCreateBrowserView.fire({ info: { id: 'view-1' } });
 		const setVisible = (visible: boolean) => {
 			state.visible = visible;
 			onDidChangeVisibility.fire({ visible });
 		};
-		return { commands, state, timer, freezer, view, setVisible, close: () => onDidClose.fire() };
+		return { commands, state, timer, freezer, view, setVisible, close: () => onDidClose.fire(), captures };
 	}
 
 	test('freezes a tab hidden for the delay and makes it active again as soon as it is shown', async () => {
@@ -124,5 +130,34 @@ suite('ParadisBrowserViewFreezer', () => {
 		close();
 		timer.fireAll();
 		assert.deepStrictEqual({ commands, frozen: freezer.frozenCount }, { commands: ['Page.setWebLifecycleState frozen', 'Page.setWebLifecycleState active'], frozen: 0 });
+	});
+
+	test('does not freeze a tab whose site may show notifications, or a tab captured recently (live window tile), and wakes a frozen tab before a capture', async () => {
+		const notifying = create({ notifications: 'https://chat.example.com' });
+		notifying.setVisible(false);
+		notifying.timer.fireAll();
+		const watched = create();
+		watched.captures.lastAt = 10_000_000 - 60_000;
+		watched.setVisible(false);
+		watched.timer.fireAll();
+		const captured = create();
+		captured.setVisible(false);
+		captured.timer.fireAll();
+		await Promise.resolve();
+		captured.captures.listener?.(captured.view);
+		await Promise.resolve();
+		assert.deepStrictEqual({
+			notifying: notifying.commands,
+			watched: watched.commands,
+			captured: captured.commands,
+			capturedFrozen: captured.freezer.frozenCount,
+			capturedPending: captured.timer.pending.size,
+		}, {
+			notifying: [],
+			watched: [],
+			captured: ['Page.setWebLifecycleState frozen', 'Page.setWebLifecycleState active'],
+			capturedFrozen: 0,
+			capturedPending: 1,
+		});
 	});
 });
