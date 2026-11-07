@@ -473,6 +473,7 @@ suite('ParadisCcusageClient', () => {
 			{
 				project: 'newer',
 				rawProject: '-Users-user-github-newer',
+				sessionId: 'session-newer',
 				lastActivity: 1_785_290_400_000,
 				models: ['gpt-5'],
 				totalTokens: 28,
@@ -481,6 +482,7 @@ suite('ParadisCcusageClient', () => {
 			{
 				project: 'older',
 				rawProject: '-Users-user-github-older',
+				sessionId: 'session-older',
 				lastActivity: undefined,
 				models: ['claude-sonnet-4'],
 				totalTokens: 14,

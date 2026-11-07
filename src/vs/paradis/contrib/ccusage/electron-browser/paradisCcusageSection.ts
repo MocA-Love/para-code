@@ -30,11 +30,14 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { IParadisCostDay, IParadisRepoUsageResult, paradisActivityDayKey, paradisAllocateSpaceCosts } from '../../agentActivity/common/paradisAgentActivity.js';
 import { PARADIS_REPO_OUTSIDE_KEY } from '../../agentActivity/common/paradisRepoIdentity.js';
 import { ParadisAgentActivityClient } from '../../agentActivity/electron-browser/paradisAgentActivityClient.js';
+import { IParadisClaudeContextBreakdown } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
+import { ParadisClaudeContextClient } from '../../claudeMod/electron-browser/paradisClaudeContextClient.js';
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { ParadisCcusageAgent } from '../common/paradisCcusage.js';
 import { paradisFormatTokens, paradisFormatUsd } from '../common/paradisCcusageFormat.js';
+import { IParadisContextViewOptions, paradisRenderContextBreakdown, paradisRenderContextLiveCard } from './paradisCcusageContextView.js';
 import { FETCH_WINDOW_DAYS, IParadisCcusageDashboardData, IParadisCcusageDayData, IParadisCcusageModelSlice, PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS, ParadisCcusageClient } from './paradisCcusageClient.js';
 
 const $ = dom.$;
@@ -122,6 +125,18 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	private repoSequence = 0;
 	/** 中身（クローン・ワークツリー）を開いているリポジトリ。 */
 	private readonly expandedRepos = new Set<string>();
+	/** コンテキストの内訳（同梱の mod が取り、shared process が会話ごとに保存したもの）を取る先。 */
+	private readonly contextClient: ParadisClaudeContextClient;
+	/** 動いている会話の内訳。undefined は読み込み中。 */
+	private liveContext: IParadisClaudeContextBreakdown[] | undefined;
+	private liveContextError: string | undefined;
+	private liveContextSequence = 0;
+	/** 「最近のセッション」から開いた会話の保存した内訳（null は保存が無い）。 */
+	private readonly savedContext = new Map<string, IParadisClaudeContextBreakdown | null>();
+	/** 内訳を開いている会話（動いているセッションのカードと最近のセッションの表で共通）。 */
+	private readonly expandedContext = new Set<string>();
+	/** 見えている間だけ、内訳が変わったら取り直す。 */
+	private readonly contextListener = this._register(new MutableDisposable<IDisposable>());
 	private readonly warmLease = this._register(new MutableDisposable<IDisposable>());
 	private readonly bodyDisposables = this._register(new DisposableStore());
 	private readonly relayoutScheduler = this._register(new RunOnceScheduler(() => this.renderBody(), 100));
@@ -152,6 +167,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		super();
 		this.client = instantiationService.createInstance(ParadisCcusageClient);
 		this.activityClient = instantiationService.createInstance(ParadisAgentActivityClient);
+		this.contextClient = instantiationService.createInstance(ParadisClaudeContextClient);
 		this._register(this.themeService.onDidColorThemeChange(() => this.renderBody()));
 
 		this.element = $('.paradis-ccusage');
@@ -263,7 +279,65 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		this.updateWarmLease();
 		if (visible) {
 			this.ensureLoaded();
+			if (this.contextListener.value === undefined) {
+				this.contextListener.value = this.contextClient.onDidChange(() => this.loadLiveContext());
+				this.loadLiveContext();
+			}
+		} else {
+			this.contextListener.clear();
 		}
+	}
+
+	/** 動いている会話の内訳を取り直す（開いたとき・応答が終わって内訳が変わったとき）。 */
+	private loadLiveContext(): void {
+		const sequence = ++this.liveContextSequence;
+		this.contextClient.live().then(live => {
+			if (sequence !== this.liveContextSequence) {
+				return;
+			}
+			this.liveContext = live;
+			this.liveContextError = undefined;
+			for (const breakdown of live) {
+				// 開いている保存した内訳も新しいものに替える
+				if (this.savedContext.has(breakdown.sessionId)) {
+					this.savedContext.set(breakdown.sessionId, breakdown);
+				}
+			}
+			this.scheduleContextRender();
+		}, (error: unknown) => {
+			if (sequence !== this.liveContextSequence) {
+				return;
+			}
+			this.liveContextError = error instanceof Error ? error.message : String(error);
+			this.scheduleContextRender();
+		});
+	}
+
+	private scheduleContextRender(): void {
+		if (this.data) {
+			this.relayoutScheduler.schedule();
+		}
+	}
+
+	private toggleContext(sessionId: string): void {
+		if (!this.expandedContext.delete(sessionId)) {
+			this.expandedContext.add(sessionId);
+			// 動いている会話の内訳はカードが持っている。表の行でも開けるよう、保存したものも取っておく
+			if (!this.savedContext.has(sessionId)) {
+				this.contextClient.session(sessionId).then(breakdown => {
+					this.savedContext.set(sessionId, breakdown ?? null);
+					this.scheduleContextRender();
+				}, () => {
+					this.savedContext.set(sessionId, null);
+					this.scheduleContextRender();
+				});
+			}
+		}
+		this.renderBody();
+	}
+
+	private get contextViewOptions(): IParadisContextViewOptions {
+		return { palette: this.seriesPalette, otherColor: OTHER_COLOR, disposables: this.bodyDisposables };
 	}
 
 	/** まだ一度も取れていなければ初回取得を始める。取得中/取得済みなら何もしない。 */
@@ -582,6 +656,11 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		this.renderTokenTrend(dom.append(left, $('.paradis-ccusage-card')), buckets, granularity);
 		if (this.agentFilter === 'all' || this.agentFilter === 'claude') {
 			this.renderSessions(dom.append(left, $('.paradis-ccusage-card')), range);
+		}
+		if (this.agentFilter === 'all' || this.agentFilter === 'claude') {
+			// 今動いている Claude Code の会話のコンテキストの内訳（期間の集計とは混ぜない）
+			paradisRenderContextLiveCard(dom.append(right, $('.paradis-ccusage-card')), this.liveContext, this.liveContextError, this.expandedContext,
+				sessionId => this.toggleContext(sessionId), this.contextViewOptions);
 		}
 		this.renderModelBreakdown(dom.append(right, $('.paradis-ccusage-card')), totals);
 		this.renderRepos(dom.append(right, $('.paradis-ccusage-card')), range);
@@ -1176,6 +1255,37 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			dom.append(row, $('td.num')).textContent = paradisFormatTokens(session.totalTokens);
 			dom.append(row, $('td.num')).textContent = paradisFormatUsd(session.totalCost);
 			dom.append(row, $('td')).textContent = session.lastActivity !== undefined ? fromNow(session.lastActivity, true) : '—';
+			const sessionId = session.sessionId;
+			if (sessionId !== undefined) {
+				// 押すと、この会話で最後に取ったコンテキストの内訳を開く
+				const open = this.expandedContext.has(sessionId);
+				row.classList.add('expandable');
+				row.setAttribute('role', 'button');
+				row.tabIndex = 0;
+				row.setAttribute('aria-expanded', String(open));
+				row.title = localize('paradis.ccusage.sessions.openContext', "押すとコンテキストの内訳を開きます");
+				const toggle = () => this.toggleContext(sessionId);
+				this.bodyDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, toggle));
+				this.bodyDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						toggle();
+					}
+				}));
+				if (open) {
+					const detailRow = dom.append(tbody, $('tr.paradis-ccusage-context-detail'));
+					const cell = dom.append(detailRow, $('td')) as HTMLTableCellElement;
+					cell.colSpan = 5;
+					const saved = this.liveContext?.find(breakdown => breakdown.sessionId === sessionId) ?? this.savedContext.get(sessionId);
+					if (saved === undefined) {
+						dom.append(cell, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.context.loading', "読み込んでいます…");
+					} else if (saved === null) {
+						dom.append(cell, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.context.notSaved', "この会話の内訳は保存されていません。内訳は Para Code のターミナルの Claude Code で、この機能が入った後に応答が終わった会話だけ残ります。");
+					} else {
+						paradisRenderContextBreakdown(cell, saved, this.contextViewOptions);
+					}
+				}
+			}
 		}
 	}
 
