@@ -1097,7 +1097,7 @@
 	bottom: 1px;
 	font-size: 9px;
 	line-height: 9px;
-	font-weight: var(--vscode-fontWeight-bold, 700);
+	font-weight: var(--vscode-fontWeight-semiBold);
 	font-variant-numeric: tabular-nums;
 	color: var(--vscode-foreground);
 }
