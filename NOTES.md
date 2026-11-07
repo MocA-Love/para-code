@@ -629,9 +629,9 @@ tmux と同じ形の問題が Claude Code 2.1.289 の daemon にもあります�
 - イベント名・`$` の API・`tool.call` の AskUserQuestion の結果の形・`classic.PermissionRequest` の decision の形はリリース間で変わりうる。Claude Code を更新したら `claude plugin validate` / `claude plugin test`（写しで）と、`claude-mods-local-verification.html` の手順での実地確認（モバイルが先・PC が先の質問と承認、送信、サブエージェント）をやり直す
 - 写し先 `~/.para-code/claude-mod/<指紋>/` は 30 日以上使われていない別の指紋のフォルダを起動時に消す。使った時刻は mod のフォルダの外（`~/.para-code/claude-mod/.last-used/<指紋>`）に書く（フォルダの中へ書くと、動いている Claude Code が保存を検知して mod を読み直すため）。写すファイルは許可リスト（`.claude-plugin/plugin.json` と `hooks/` の下）で、`paradisClaudeModShipsFile()` と `build/gulpfile.vscode.ts` の glob をそろえておく
 
-SSH の接続先と Windows は今回入れていない。
+SSH の接続先は 2026-11-08 に入れた（q.html Q566-2）。Windows（手元・接続先とも）は入れていない。
 
-- SSH: mod は claude が動く機械で読まれるので、接続先へ写す必要がある。入れるなら `src/vs/paradis/contrib/agentBrowser/electron-browser/paradisRemoteAgentHooks.contribution.ts`（接続先に notify スクリプトとランチャーを置いているところ）で `~/.para-code/claude-mod/<指紋>/` を置き、`paradisPaneTokenService.ts` の `_getRemoteParaCodeDirectory()` で env を組む。戻り道は既存の `ssh -R`（`paradisRemoteAgentTunnel.ts`）と、接続先の PC ごとのポートファイル（`paradisRemoteHookSource.ts`）をそのまま使える。transcript の写し（2 秒）を待たずに済むので効果は大きいが、接続先の版の Claude Code と managed 設定を手元から確かめる方法を先に決める
+- SSH: 接続先へ hook 一式を置けたとき（`paradisRemoteAgentHooks.contribution.ts` の `install()`）に、同じ `ParadisClaudeModEnvironment` を接続先のホームで作り、手元の同梱の mod を接続先の `~/.para-code/claude-mod/<指紋>/` へ写す（REH には同梱していない。指紋・書き換えない・30 日の掃除は手元と同じ）。写せたら `paradisPaneTokenService.setRemoteClaudeMod()` に渡し、接続先で動くペインで、接続先のポートファイルを渡すときだけ `CLAUDE_CODE_PLUGIN_DIRS` に足す（区切りは `:`）。managed 設定と `claude --version` は接続先の REH のチャネル（`claudeMod/node/paradisRemoteClaudeMod.server.ts`）が接続先で確かめる。チャネルが無い古い REH・接続先が Windows・方針で禁じられていそうなときは渡さない。接続直後に写せなかったときは、60 秒後の次のペインで写し直す。mod の通信は hook と同じ接続先のポートファイル → `ssh -R` の戻り道で手元へ届き、受け口の `_classifyCaller` は `tunnel`（Para Code がその接続先へ張った `ssh -R` のプロセスそのもの）を状態を動かす便にも通す。接続先の会話ログは手元への写し（約 2 秒遅れ）なので、mod の行が写しより先に会話へ入る。そのため、写しにまだ来ていないツールの結果より mod の応答の行が前に並ぶことがある（同じ uuid の重複は起きない）。接続先の `CLAUDE_CONFIG_DIR` は REH のプロセスの環境変数だけを見る
 - Windows: 区切りが `;`、`curl` の有無、`$.http.fetch` の `socketPath` が使えるかを実機で確かめていない。入れるなら同じ `paradisPaneTokenService.ts` の分岐（いまは `!isWindows`）と区切り文字を変える。WSL の中で動く claude には env が届かない（今の hook と同じ）
 
 ## Codex の複数アカウント（切替とリセットクレジット、2026-09-27）

@@ -20,19 +20,22 @@
 // env の組み立ては PTY 起動の直前に同期で走るので、準備は先に非同期で済ませておき、済んでいない間に
 // 開いたペインには渡さない（そのペインは今までどおり hook・transcript・キーで動く）。
 //
-// 対象は macOS / Linux の手元のペインだけ。SSH の接続先と Windows は入れていない（NOTES.md「Claude Mods」）。
+// 対象は macOS / Linux の手元のペインと、SSH の接続先（macOS / Linux）のペイン。接続先へは、接続先のホームと
+// 確かめの口（IParadisClaudeModRemoteHost）を渡したものが写す（paradisRemoteAgentHooks.contribution.ts）。
+// Windows は入れていない（NOTES.md「Claude Mods」）。
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { isEqual, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, paradisAgentHooksEnabled } from '../../agentBrowser/common/paradisAgentHooks.js';
-import { PARADIS_CLAUDE_MOD_ENABLED_SETTING, PARADIS_CLAUDE_MOD_INSTALL_SEGMENTS, PARADIS_CLAUDE_MOD_SOURCE_SEGMENTS, PARADIS_CLAUDE_DRAFT_MOD_SEGMENT, PARADIS_CLAUDE_MOD_STALE_INSTALL_MS, paradisClaudeConfigDirProvider, paradisClaudeVersionProvider, paradisClaudeManagedSettingsBlockMods, paradisClaudeModShipsFile, paradisSupportsClaudeDraftMod, paradisOnDidSetClaudeConfigDirProvider } from '../common/paradisClaudeMod.js';
+import { PARADIS_CLAUDE_MOD_ENABLED_SETTING, PARADIS_CLAUDE_MOD_INSTALL_SEGMENTS, paradisClaudeManagedSettingsPaths, PARADIS_CLAUDE_MOD_SOURCE_SEGMENTS, PARADIS_CLAUDE_DRAFT_MOD_SEGMENT, PARADIS_CLAUDE_MOD_STALE_INSTALL_MS, paradisClaudeConfigDirProvider, paradisClaudeVersionProvider, paradisClaudeManagedSettingsBlockMods, paradisClaudeModShipsFile, paradisSupportsClaudeDraftMod, paradisOnDidSetClaudeConfigDirProvider } from '../common/paradisClaudeMod.js';
 
 /** 使っている指紋を記録し直す間隔（掃除は 30 日使われていないものが対象）。 */
 const MARK_USED_INTERVAL_MS = 24 * 60 * 60_000;
@@ -45,33 +48,34 @@ interface IPolicyCandidates {
 	readonly dropInDirectories: readonly URI[];
 }
 
-/** managed 設定を探す場所（Claude Code 2.1.288 が読む場所）。`remote-settings.json` は Claude Code の設定フォルダごとに 1 つ。 */
+/** managed 設定を探す場所（手元）。 */
 function managedSettingsCandidates(home: URI, claudeConfigDirs: readonly URI[]): IPolicyCandidates {
-	const user = home.path.split('/').filter(segment => segment.length > 0).pop();
-	const remoteSettings = claudeConfigDirs.map(directory => ({ uri: joinPath(directory, 'remote-settings.json'), format: 'json' as const }));
-	if (isMacintosh) {
-		const base = URI.file('/Library/Application Support/ClaudeCode');
-		return {
-			files: [
-				{ uri: joinPath(base, 'managed-settings.json'), format: 'json' },
-				{ uri: URI.file('/Library/Managed Preferences/com.anthropic.claudecode.plist'), format: 'plist' },
-				...(user !== undefined ? [{ uri: URI.file(`/Library/Managed Preferences/${user}/com.anthropic.claudecode.plist`), format: 'plist' as const }] : []),
-				...remoteSettings,
-			],
-			dropInDirectories: [joinPath(base, 'managed-settings.d')],
-		};
-	}
-	const base = URI.file('/etc/claude-code');
+	const { files, dropInDirectories } = paradisClaudeManagedSettingsPaths(isMacintosh, home.path, claudeConfigDirs.map(directory => directory.path));
 	return {
-		files: [{ uri: joinPath(base, 'managed-settings.json'), format: 'json' }, ...remoteSettings],
-		dropInDirectories: [joinPath(base, 'managed-settings.d')],
+		files: files.map(file => ({ uri: URI.file(file.path), format: file.format })),
+		dropInDirectories: dropInDirectories.map(directory => URI.file(directory)),
 	};
 }
+
+/**
+ * SSH の接続先へ写すときの、接続先の確かめの口（REH の paradisRemoteClaudeMod.server.ts）。手元の managed 設定と
+ * `claude --version` の代わりに使う。接続先の Claude Code は接続先の方針と版で動くため。
+ */
+export interface IParadisClaudeModRemoteHost {
+	/** 接続先の managed 設定が mod を禁じていそうか（聞けない・接続先が macOS / Linux でないときも true）。 */
+	blockedByPolicy(): Promise<boolean>;
+	/** 接続先の `claude --version` の出力（確かめられなければ undefined）。 */
+	claudeVersion(): Promise<string | undefined>;
+}
+
+/** 準備に失敗したとき、次のペインで準備をやり直すまでの間隔（接続直後の揺れで SSH の接続先へ写せなかったときなど）。 */
+const PREPARE_RETRY_MS = 60_000;
 
 export class ParadisClaudeModEnvironment extends Disposable {
 
 	/** 写し終えた mod のフォルダ（使ってよいときだけ入る）。 */
 	private installedDirectory: string | undefined;
+	private installedTarget: URI | undefined;
 	private blockedByPolicy = true;
 	private policyCheckedAt = 0;
 	private policyCheck: Promise<void> | undefined;
@@ -85,34 +89,54 @@ export class ParadisClaudeModEnvironment extends Disposable {
 	private draftSupported = false;
 	private draftCheckedAt = 0;
 	private draftCheck: Promise<void> | undefined;
-	/** 準備が済んだら解決する（テストと、準備の失敗を記録するため）。 */
-	readonly ready: Promise<void>;
+	/** 準備（やり直しているならそのやり直し）が済んだら解決する（テストと、準備の失敗を記録するため）。 */
+	get ready(): Promise<void> {
+		return this.preparing;
+	}
+	private preparing: Promise<void>;
 	private readonly now: () => number;
+	/** SSH の接続先へ写すときの確かめの口（手元なら undefined）。 */
+	private readonly remote: IParadisClaudeModRemoteHost | undefined;
+	/** 準備に失敗した時刻（やり直しの間隔を数える）。 */
+	private prepareFailedAt: number | undefined;
 
 	constructor(
 		/** 同梱の mod がある appRoot。手元で動く desktop のウィンドウだけが渡す。 */
 		private readonly appRoot: string | undefined,
 		private readonly userHome: () => Promise<URI>,
-		/** テスト用: いまの時刻と、動いている OS が Windows か。 */
-		options: { readonly now?: () => number; readonly windows?: boolean } | undefined,
+		/**
+		 * テスト用: いまの時刻と、動いている OS が Windows か。`remote` は SSH の接続先へ写すとき（`userHome` は接続先の
+		 * ホームを返す）。方針と版は接続先に聞く。
+		 */
+		options: { readonly now?: () => number; readonly windows?: boolean; readonly remote?: IParadisClaudeModRemoteHost } | undefined,
 		@IFileService private readonly fileService: IFileService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 		this.now = options?.now ?? Date.now;
+		this.remote = options?.remote;
+		// 手元が Windows なら、接続先へも写さない（手元の Windows は対象外。接続先が Windows かは接続先が確かめ、
+		// そのときは blockedByPolicy が true になる）
 		const windows = options?.windows ?? isWindows;
-		// shared process から Claude Code の設定フォルダ（CLAUDE_CONFIG_DIR）を教わったら、方針を読み直す
-		this._register(toDisposable(paradisOnDidSetClaudeConfigDirProvider(() => {
-			// 確かめ直すまでは渡さない（教わった設定フォルダで禁じられているかもしれない）
-			this.blockedByPolicy = true;
-			this.policyCheckedAt = 0;
-			this.policyGeneration++;
-			void this.checkPolicy();
-		})));
-		this.ready = this.appRoot !== undefined && !windows
-			? this.prepare().catch(error => this.logService.warn('[ParadisClaudeMod] could not prepare the Claude Code mod; Claude Code runs without it', error))
-			: Promise.resolve();
+		// shared process から Claude Code の設定フォルダ（CLAUDE_CONFIG_DIR）を教わったら、方針を読み直す（手元だけ）
+		if (this.remote === undefined) {
+			this._register(toDisposable(paradisOnDidSetClaudeConfigDirProvider(() => {
+				// 確かめ直すまでは渡さない（教わった設定フォルダで禁じられているかもしれない）
+				this.blockedByPolicy = true;
+				this.policyCheckedAt = 0;
+				this.policyGeneration++;
+				void this.checkPolicy();
+			})));
+		}
+		this.preparing = this.appRoot !== undefined && !windows ? this.tryPrepare() : Promise.resolve();
+	}
+
+	private tryPrepare(): Promise<void> {
+		return this.prepare().catch(error => {
+			this.prepareFailedAt = this.now();
+			this.logService.warn(`[ParadisClaudeMod] could not prepare the Claude Code mod${this.remote !== undefined ? ' on the SSH host' : ''}; Claude Code runs without it (will retry)`, error);
+		});
 	}
 
 	/**
@@ -121,15 +145,20 @@ export class ParadisClaudeModEnvironment extends Disposable {
 	 */
 	pluginDirectory(): string | undefined {
 		if (this.installedDirectory === undefined) {
+			if (this.prepareFailedAt !== undefined && this.now() - this.prepareFailedAt > PREPARE_RETRY_MS) {
+				// 次のペインのためにやり直す（このペインには渡さない）。失敗したら tryPrepare がまた時刻を入れる
+				this.prepareFailedAt = undefined;
+				this.preparing = this.tryPrepare();
+			}
 			return undefined;
 		}
 		if (this.now() - this.policyCheckedAt > POLICY_RECHECK_MS) {
 			// 次のペインのために読み直す（このペインは前回の結果で決める）
 			void this.checkPolicy();
 		}
-		if (this.installRoot !== undefined && this.now() - this.lastMarkedAt > MARK_USED_INTERVAL_MS) {
+		if (this.installRoot !== undefined && this.installedTarget !== undefined && this.now() - this.lastMarkedAt > MARK_USED_INTERVAL_MS) {
 			// 長く動かし続けている Para Code でも、使っている指紋が掃除されないように 1 日 1 回記録する
-			void this.markUsed(this.installRoot, URI.file(this.installedDirectory));
+			void this.markUsed(this.installRoot, this.installedTarget);
 		}
 		if (this.blockedByPolicy
 			|| !paradisAgentHooksEnabled(this.configurationService.getValue(PARADIS_AGENT_HOOKS_ENABLED_SETTING))
@@ -156,7 +185,8 @@ export class ParadisClaudeModEnvironment extends Disposable {
 	}
 
 	private checkDraftSupport(): Promise<void> {
-		const provider = paradisClaudeVersionProvider();
+		const remote = this.remote;
+		const provider = remote !== undefined ? () => remote.claudeVersion() : paradisClaudeVersionProvider();
 		if (provider === undefined) {
 			// 口が入る前（起動直後）。次のペインでまた確かめる
 			return Promise.resolve();
@@ -223,7 +253,9 @@ export class ParadisClaudeModEnvironment extends Disposable {
 				await this.fileService.writeFile(uri, file.content);
 			}
 		}
-		this.installedDirectory = target.fsPath;
+		// 接続先の URI（vscode-remote）の fsPath は手元の OS の流儀になりうるので、接続先は path（POSIX）を渡す
+		this.installedDirectory = target.scheme === Schemas.file ? target.fsPath : target.path;
+		this.installedTarget = target;
 		this.installRoot = installRoot;
 		this.hasDraftMod = files.some(file => file.path === `${PARADIS_CLAUDE_DRAFT_MOD_SEGMENT}/hooks/hooks.json`);
 		if (this.hasDraftMod) {
@@ -320,6 +352,9 @@ export class ParadisClaudeModEnvironment extends Disposable {
 	}
 
 	private async readPolicy(): Promise<boolean> {
+		if (this.remote !== undefined) {
+			return this.remote.blockedByPolicy();
+		}
 		const home = await this.userHome();
 		const { files, dropInDirectories } = managedSettingsCandidates(home, await this.claudeConfigDirs(home));
 		const candidates = [...files];
