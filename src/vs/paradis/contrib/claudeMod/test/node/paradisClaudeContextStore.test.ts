@@ -7,17 +7,22 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { createHash } from 'crypto';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisClaudeContextBreakdown, paradisParseClaudeContextBreakdown } from '../../common/paradisClaudeContextBreakdown.js';
+import { IParadisClaudeContextBreakdown, paradisParseClaudeContextBreakdown, paradisShortenContextBreakdownPaths } from '../../common/paradisClaudeContextBreakdown.js';
 import { ParadisClaudeContextStore } from '../../node/paradisClaudeContextStore.js';
 import { ParadisClaudeModBridge, ParadisClaudeModEvent } from '../../node/paradisClaudeModBridge.js';
 
-function breakdown(sessionId: string, at: number, totalTokens = 1_000): IParadisClaudeContextBreakdown {
+function breakdown(sessionId: string, at: number, totalTokens: number = 1_000): IParadisClaudeContextBreakdown {
 	return paradisParseClaudeContextBreakdown({ totalTokens, window: 1_000_000, categories: [{ name: 'Messages', tokens: totalTokens, kind: 'used' }] }, sessionId, at)!;
 }
 
-function context(token: string, sessionId: string, at: number): ParadisClaudeModEvent {
-	return { token, sessionId, at, type: 'context', breakdown: breakdown(sessionId, at) };
+function context(token: string, sessionId: string, at: number, totalTokens?: number): ParadisClaudeModEvent {
+	return { token, sessionId, at, type: 'context', breakdown: breakdown(sessionId, at, totalTokens) };
+}
+
+function owner(token: string): string {
+	return createHash('sha256').update(token).digest('hex').slice(0, 16);
 }
 
 suite('ParadisClaudeContextStore', () => {
@@ -41,24 +46,27 @@ suite('ParadisClaudeContextStore', () => {
 		store.observe(context('pane-a', 's3', 50));
 		store.observe({ token: 'pane-b', sessionId: 's2', at: 60, type: 'alive-changed', alive: false });
 		await store.flush();
-		const saved = JSON.parse(disk.state.text!) as { version: number; sessions: IParadisClaudeContextBreakdown[] };
+		const saved = JSON.parse(disk.state.text!) as { version: number; sessions: (IParadisClaudeContextBreakdown & { owner: string })[] };
 		assert.deepStrictEqual({
 			live: (await store.liveBreakdowns()).map(entry => entry.sessionId),
 			s1: (await store.breakdownOf('s1'))?.at,
-			saved: { version: saved.version, sessions: saved.sessions.map(entry => [entry.sessionId, entry.at]) },
+			saved: { version: saved.version, sessions: saved.sessions.map(entry => [entry.owner, entry.sessionId, entry.at]) },
+			tokenWritten: disk.state.text!.includes('pane-a'),
 			changes,
 			writes: disk.state.writes,
 		}, {
 			live: ['s3'],
 			s1: 20,
-			saved: { version: 1, sessions: [['s1', 20], ['s2', 30], ['s3', 50]] },
+			saved: { version: 1, sessions: [[owner('pane-a'), 's1', 20], [owner('pane-b'), 's2', 30], [owner('pane-a'), 's3', 50]] },
+			tokenWritten: false,
 			changes: 6,
 			writes: 1,
 		});
 	});
 
 	test('reads what was saved, drops what it cannot trust, and keeps a newer breakdown taken before reading', async () => {
-		const disk = files(JSON.stringify({ version: 1, sessions: [breakdown('old', 1), breakdown('s1', 2), { sessionId: '../bad', at: 3, totalTokens: 1, window: 1 }, { sessionId: 'nowindow', at: 4, totalTokens: 1 }] }));
+		const mine = owner('pane-a');
+		const disk = files(JSON.stringify({ version: 1, sessions: [{ owner: mine, ...breakdown('old', 1) }, { owner: mine, ...breakdown('s1', 2) }, { owner: mine, sessionId: '../bad', at: 3, totalTokens: 1, window: 1 }, { owner: mine, sessionId: 'nowindow', at: 4, totalTokens: 1 }, { ...breakdown('noowner', 5) }] }));
 		const store = disposables.add(new ParadisClaudeContextStore(disk.files, undefined, 60_000));
 		store.observe(context('pane-a', 's1', 99));
 		assert.deepStrictEqual({
@@ -66,7 +74,43 @@ suite('ParadisClaudeContextStore', () => {
 			s1: (await store.breakdownOf('s1'))?.at,
 			bad: await store.breakdownOf('../bad'),
 			nowindow: await store.breakdownOf('nowindow'),
-		}, { old: 1, s1: 99, bad: undefined, nowindow: undefined });
+			noowner: await store.breakdownOf('noowner'),
+		}, { old: 1, s1: 99, bad: undefined, nowindow: undefined, noowner: undefined });
+	});
+
+	test('another pane naming the same conversation does not overwrite or answer for the first pane', async () => {
+		const store = disposables.add(new ParadisClaudeContextStore(files().files, undefined, 60_000));
+		store.observe(context('pane-a', 's1', 10, 1_000));
+		store.observe(context('pane-b', 's1', 20, 9_000));
+		assert.deepStrictEqual({
+			paneA: (await store.breakdownOf('s1', 'pane-a'))?.totalTokens,
+			paneB: (await store.breakdownOf('s1', 'pane-b'))?.totalTokens,
+			paneC: await store.breakdownOf('s1', 'pane-c'),
+			newest: (await store.breakdownOf('s1'))?.totalTokens,
+		}, { paneA: 1_000, paneB: 9_000, paneC: undefined, newest: 9_000 });
+	});
+
+	test('a store disposed before it read its file keeps what was saved', async () => {
+		const mine = owner('pane-a');
+		const disk = files(JSON.stringify({ version: 1, sessions: [{ owner: mine, ...breakdown('old', 1) }] }));
+		const store = new ParadisClaudeContextStore(disk.files, undefined, 60_000);
+		store.observe(context('pane-a', 'new', 2));
+		store.dispose();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const saved = JSON.parse(disk.state.text!) as { sessions: IParadisClaudeContextBreakdown[] };
+		assert.deepStrictEqual(saved.sessions.map(entry => entry.sessionId), ['old', 'new']);
+	});
+
+	test('paths sent to the phone show the home as ~', () => {
+		const shortened = paradisShortenContextBreakdownPaths({
+			...breakdown('s1', 1), cwd: '/Users/example/repo',
+			memoryFiles: [{ name: '/Users/example/.claude/CLAUDE.md', tokens: 1 }, { name: '/home/remote/repo/CLAUDE.md', tokens: 1 }, { name: '/etc/claude-code/CLAUDE.md', tokens: 1 }],
+		}, '/Users/example/');
+		assert.deepStrictEqual({ cwd: shortened.cwd, files: shortened.memoryFiles.map(row => row.name) }, {
+			cwd: '~/repo',
+			files: ['~/.claude/CLAUDE.md', '~/repo/CLAUDE.md', '/etc/claude-code/CLAUDE.md'],
+		});
 	});
 
 	test('a broken file is left alone and the store starts empty', async () => {

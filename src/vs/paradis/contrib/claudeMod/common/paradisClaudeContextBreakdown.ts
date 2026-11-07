@@ -134,3 +134,24 @@ export function paradisParseClaudeContextBreakdown(value: unknown, sessionId: st
 		skills: rows(raw.skills, MAX_NAME_CHARS),
 	};
 }
+
+/**
+ * 絶対パスのホームを `~` に縮める（`home` 自身のほか、SSH 先のホームの形 `/Users/<name>`・`/home/<name>` も）。
+ * それ以外のパスはそのまま。
+ */
+function shortenHome(path: string, home: string): string {
+	const trimmedHome = home.replace(/[\\/]+$/, '');
+	if (trimmedHome.length > 0 && (path === trimmedHome || path.startsWith(`${trimmedHome}/`) || path.startsWith(`${trimmedHome}\\`))) {
+		return `~${path.slice(trimmedHome.length)}`;
+	}
+	return path.replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, '~');
+}
+
+/** モバイルへ送る前に、作業フォルダとメモリファイルのパスのホームを `~` に縮める（端末にユーザー名入りのパスを残さない）。 */
+export function paradisShortenContextBreakdownPaths(breakdown: IParadisClaudeContextBreakdown, home: string): IParadisClaudeContextBreakdown {
+	return {
+		...breakdown,
+		...(breakdown.cwd !== undefined ? { cwd: shortenHome(breakdown.cwd, home) } : {}),
+		memoryFiles: breakdown.memoryFiles.map(row => ({ ...row, name: shortenHome(row.name, home) })),
+	};
+}

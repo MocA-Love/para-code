@@ -261,7 +261,7 @@ export const ParadisMobileCapability = {
 	/**
 	 * agent の要求 `context-breakdown`（`id`・`token`・`requestId`）で、会話のコンテキストの内訳（`/context` と同じカテゴリ別・
 	 * メモリファイル別・MCP サーバー別・エージェント別・スキル別）を返す。同梱の Claude Mod が応答の終わりごとに取り、PC が会話ごとに
-	 * 最後の 1 件を保存したもの（`paradisClaudeContextStore.ts`）。取れないとき（Codex・SSH 先・まだ無い）は `reason` と `error`。
+	 * 最後の 1 件を保存したもの（`paradisClaudeContextStore.ts`。SSH 先のペインの mod も戻りトンネルで手元へ送る）。パスはホームを `~/` に縮める。取れないとき（Codex・まだ無い）は `reason` と `error`。
 	 * PC だけが広告する。アプリは広告している PC にだけ、セッションのシートのコンテキストの行から内訳へ進める。
 	 */
 	AgentContextBreakdown: 'agent.context-breakdown.v1',
