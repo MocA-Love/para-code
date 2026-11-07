@@ -29,6 +29,7 @@ import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/asy
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError, onUnexpectedError } from '../../../../base/common/errors.js';
 import { DisposableStore, IDisposable, IReference, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { paradisFollowModelReadonly } from './paradisModelReadonly.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Schemas } from '../../../../base/common/network.js';
@@ -160,6 +161,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _lastContentSignal: string = 'none';
 	private _codeEditor: ICodeEditor | undefined;
 	private readonly _modelRef = this._register(new MutableDisposable<IReference<IResolvedTextEditorModel>>());
+	/** ソース表示のエディタを、表示しているモデルの読み取り専用に合わせ続ける。 */
+	private readonly _modelReadonly = this._register(new MutableDisposable());
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private _currentResource: URI | undefined;
@@ -964,6 +967,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		}
 		this._modelRef.value = ref;
 		this._codeEditor.setModel(ref.object.textEditorModel);
+		const editor = this._codeEditor;
+		this._modelReadonly.value = paradisFollowModelReadonly(ref.object, options => editor.updateOptions(options));
 	}
 
 	override clearInput(): void {
@@ -977,6 +982,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._recoveryPolicy.reset();
 		this._currentResource = undefined;
 		this._codeEditor?.setModel(null);
+		this._modelReadonly.clear();
 		this._modelRef.clear();
 		// overlay の所有権を手放す（内容プロセスは webview レイヤー側で管理される）。
 		this._pane.release();
