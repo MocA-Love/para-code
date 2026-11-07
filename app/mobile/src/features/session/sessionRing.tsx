@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Text as SvgText } from 'react-native-svg';
 import { useRouter } from 'expo-router';
@@ -72,6 +72,15 @@ export function SessionRing({ terminalKey, status, working, monitors, shells, sh
 	// コンテキストの内訳（シェルの詳細と同じく、同じシートの中で進んで戻る）
 	const [contextOpen, setContextOpen] = useState(false);
 	const contextSupported = usePcCapability(PcCapability.AgentContextBreakdown);
+	// 内訳を問い合わせ直すのは、作業中から止まったとき（応答が終わり PC が取り直した後）だけ。生成中の使用率の変化では聞かない
+	const [finishedTurns, setFinishedTurns] = useState(0);
+	const wasWorking = useRef(working);
+	useEffect(() => {
+		if (wasWorking.current && !working) {
+			setFinishedTurns(count => count + 1);
+		}
+		wasWorking.current = working;
+	}, [working]);
 	const now = useSessionClock(status, working, open);
 	const ring = sessionRingModel(status, monitors, shells, now, working);
 	const detail = detailId !== undefined ? shells?.find(shell => shell.id === detailId) : undefined;
@@ -132,7 +141,7 @@ export function SessionRing({ terminalKey, status, working, monitors, shells, sh
 				{detail !== undefined && terminalKey !== undefined ? (
 					<ShellDetail terminalKey={terminalKey} shell={detail} access={shellsAccess} now={now} visible={open} />
 				) : contextOpen ? (
-					<ContextBreakdownView terminalKey={terminalKey} refreshKey={`${status?.context?.tokens ?? ''}:${status?.context?.percent ?? ''}`} />
+					<ContextBreakdownView terminalKey={terminalKey} refreshKey={String(finishedTurns)} />
 				) : (
 					<>
 						<Text style={[monitorStyles.section, styles.firstSection]}>このセッション</Text>
