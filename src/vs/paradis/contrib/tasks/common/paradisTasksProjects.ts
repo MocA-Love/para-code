@@ -308,3 +308,27 @@ export function paradisTasksRoadmap(items: readonly IParadisTasksProjectItem[], 
 		today: today !== undefined ? at(today) : undefined,
 	};
 }
+
+/**
+ * ロードマップの目盛りのうち、名前を出す月の番号（{@link IParadisTasksRoadmap.ticks} の添字）。月が多いと名前が重なるので、
+ * 12 か月までは毎月、36 か月までは四半期（1・4・7・10 月）、それより長いと 1 月だけにする。1 月はいつも出す。
+ * 両端の月は、幅が足りない（全体の 6% 未満）ときだけ外す（隣の月の名前と重なるため）。
+ */
+export function paradisTasksRoadmapLabelledTicks(ticks: readonly IParadisTasksRoadmapTick[]): number[] {
+	const monthOf = (tick: IParadisTasksRoadmapTick) => Number(tick.date.slice(5, 7));
+	const every = ticks.length <= 12 ? 1 : ticks.length <= 36 ? 3 : 12;
+	const result: number[] = [];
+	ticks.forEach((tick, index) => {
+		const month = monthOf(tick);
+		if ((month - 1) % every !== 0) {
+			return;
+		}
+		const width = (ticks[index + 1]?.at ?? 1) - tick.at;
+		const edge = index === 0 || index === ticks.length - 1;
+		if (edge && width < 0.06) {
+			return;
+		}
+		result.push(index);
+	});
+	return result;
+}
