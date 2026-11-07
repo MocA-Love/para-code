@@ -243,6 +243,23 @@ function paradisAgentMetricKind(type: string): 'snapshot' | 'history' | 'delta' 
 }
 
 const POLL_INTERVAL_MS = 1500;
+/**
+ * 読み始める前に書かれていた質問を通知しないときの余裕（時計のずれ・記録の書き遅れのぶん）。
+ * SSH の接続先の時計は手元と少しずれることがあるので、行の時刻と読み始めた時刻を厳密には比べない。
+ */
+const QUESTION_NOTIFY_PREDATES_MARGIN_MS = 2 * 60_000;
+
+/**
+ * 記録の行の時刻が、その記録を読み始める（tailer を作る）より前か。
+ *
+ * 読み始めた時点で記録がまだ手元に無いと、後から現れた中身は全部「追記」として読まれる。SSH の接続先の
+ * 会話を手元へ写すときがそれで、写しはまだ写していない会話（セッション履歴から再開した会話など）を
+ * 先頭から追記で育てるので、過去の質問がどれも今出たものとして通知されていた。追記で読んだ行でも、
+ * 時刻が読み始めより前なら新しい出来事ではない。時刻の無い行は今までどおり新しいものとして扱う。
+ */
+function paradisPredatesTranscriptTailer(ts: number | undefined, tailerCreatedAt: number): boolean {
+	return ts !== undefined && Number.isFinite(ts) && ts < tailerCreatedAt - QUESTION_NOTIFY_PREDATES_MARGIN_MS;
+}
 /** スラッシュコマンドの一覧を覚えておく時間（`/` を打つたびに求められる。デスクトップのチャット欄の COMMAND_CACHE_TTL と同じ考え方）。 */
 const COMMAND_CATALOG_CACHE_MS = 30_000;
 /** キーで送った Claude Code のスラッシュコマンドが断られたか（transcript の `Unknown command: /x`）を見張る上限（送った時刻から）。 */
@@ -377,7 +394,7 @@ const QUESTION_NOTIFY_COUNT_LIMIT = 400;
  * 「通知が届かない」の切り分けは、この内訳が無いと始まらない（浮上した回数だけを数えていても、
  * 出さなかったのか出したのに届かなかったのかが永久に分からない）。
  */
-type ParadisQuestionNotifyOutcome = 'dispatched' | 'no-terminal' | 'no-owner' | 'unauthorized' | 'owner-changed' | 'authorize-failed' | 'suppressed-group' | 'suppressed-content';
+type ParadisQuestionNotifyOutcome = 'dispatched' | 'no-terminal' | 'no-owner' | 'unauthorized' | 'owner-changed' | 'authorize-failed' | 'suppressed-group' | 'suppressed-content' | 'predates-tailer';
 
 /**
  * 群キーの抑制期限。1回の AskUserQuestion（質問N問）に対して鳴らすのは1度だけにする。
@@ -2029,6 +2046,8 @@ export const paradisSharedImageCacheForTest = sharedImageCache;
 class TranscriptTailer {
 	epoch = newEpoch();
 	rev = 0;
+	/** 読み始めた時刻。これより前に書かれた質問は、追記で読んでも通知しない（{@link paradisPredatesTranscriptTailer}）。 */
+	readonly createdAt = Date.now();
 	readonly messages: IParadisAgentChatMessage[] = [];
 	/**
 	 * 切り詰めたツール出力の全文: rev → 全文。モバイルがステップを展開したときだけ
@@ -10003,9 +10022,15 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.refreshModQuestions(token);
 				}
 				// 質問の出現は購読の有無に関わらず通知へ流す（アプリを開いていないモバイルへの
-				// プッシュ供給源。onDelta はライブ追記でのみ呼ばれるため過去分の再通知はない）。
+				// プッシュ供給源）。onDelta は追記で読んだ分だけ呼ばれるが、読み始めた時点で記録が
+				// 手元に無かったとき（SSH の写しが会話を先頭から写す間）は過去の質問も追記で届くので、
+				// 読み始めより前に書かれた質問は鳴らさない。
 				for (const message of options?.quiet === true ? [] : messages) {
 					if (message.kind !== 'question') {
+						continue;
+					}
+					if (paradisPredatesTranscriptTailer(message.ts, tailer.createdAt)) {
+						this.recordQuestionNotifyShape(token, message, 'predates-tailer');
 						continue;
 					}
 					if (terminalId === undefined) {
@@ -10064,8 +10089,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			onAsyncQuestions: (added, settledCalls) => {
 				this.pushAsyncQuestionsIfChanged(token);
 				this.scheduleDesktopInsightCheck();
-				if (added.length > 0) {
-					this.notifyAsyncQuestions(token, tailer, added);
+				// 読み始めより前に出た質問（SSH の写しが過去の会話を追記で届けた分）は鳴らさない
+				const fresh = added.filter(question => !paradisPredatesTranscriptTailer(question.at, tailer.createdAt));
+				if (fresh.length > 0) {
+					this.notifyAsyncQuestions(token, tailer, fresh);
 				}
 				// 台帳から離れた呼び出し（全部答えた・hook の失敗・読み直し・古いターン・上限）の質問の通知を片付ける
 				const interactionIds = settledCalls.map(paradisCodexAsyncNotifyInteractionId).filter((id): id is string => id !== undefined);

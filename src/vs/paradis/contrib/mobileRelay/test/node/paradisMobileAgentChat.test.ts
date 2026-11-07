@@ -674,6 +674,56 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
+	test('does not notify the past questions of a resumed host conversation while its copy is filled in', async () => {
+		// セッション履歴から再開した接続先の会話は、手元にまだ写しが無い。写しは会話を先頭から追記で育てるので、
+		// 過去の質問も追記として読まれる。読み始めより前に書かれた質問は鳴らさず、再開後に出た質問だけを鳴らす
+		const userData = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-resume-data-')));
+		const mirror = new ParadisRemoteTranscriptMirrorStore(userData, new NullLogService());
+		const notified: string[] = [];
+		const chat = new ParadisMobileAgentChat(
+			() => { }, () => { }, info => notified.push(info.text), new NullLogService(),
+			async () => true, () => { }, undefined, mirror,
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly messages: readonly { readonly kind: string }[] }> };
+		const remotePath = '/home/alice/.claude/projects/-srv-app/resumed-session.jsonl';
+		const question = (id: string, text: string, at: number) => JSON.stringify({
+			type: 'assistant', uuid: `u-${id}`, timestamp: new Date(at).toISOString(),
+			message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'AskUserQuestion', input: { questions: [{ question: text, header: '確認', options: [{ label: 'はい' }, { label: 'いいえ' }] }] } }] },
+		});
+		const answer = (id: string, at: number) => JSON.stringify({
+			type: 'user', uuid: `r-${id}`, timestamp: new Date(at).toISOString(),
+			message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'はい' }] },
+		});
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-resumed' }]), true);
+			fireParadisAgentHookEvent({
+				token: 'pane-resumed', event: 'SessionStart', sessionId: 'resumed-session',
+				transcriptPath: remotePath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', at: Date.now(),
+			});
+			await waitFor(() => access.tailers.has('pane-resumed'), 'the resumed session was not followed');
+
+			// 担当ウィンドウが接続先の会話を写す（過去の 2 問と、再開後の 1 問）
+			const dayAgo = Date.now() - 24 * 60 * 60_000;
+			const content = [
+				question('toolu_old1', '昨日の質問1', dayAgo), answer('toolu_old1', dayAgo + 1_000),
+				question('toolu_old2', '昨日の質問2', dayAgo + 2_000), answer('toolu_old2', dayAgo + 3_000),
+				question('toolu_new', '再開後の質問', Date.now()),
+			].join('\n') + '\n';
+			assert.strictEqual(await mirror.begin('window-a', remotePath), 0);
+			await mirror.append('window-a', remotePath, new TextEncoder().encode(content));
+
+			await waitFor(() => access.tailers.get('pane-resumed')?.messages.filter(message => message.kind === 'question').length === 3, 'the copied conversation was not read');
+			await waitFor(() => notified.length > 0, 'the question asked after the resume was not notified');
+			await new Promise(resolve => setTimeout(resolve, 50));
+			assert.deepStrictEqual(notified.map(text => text.includes('再開後の質問')), [true]);
+		} finally {
+			chat.dispose();
+			mirror.dispose();
+			await rm(userData, { recursive: true, force: true });
+		}
+	});
+
 	test('tracks Claude Code Monitors per epoch and stops them as an estimate when the session ends', async () => {
 		// tailer が transcript の Monitor の起動・出力を一覧に持ち、truncate（epoch の切り替え）で空にし、
 		// SessionEnd で動いているものを「停止（推定）」にする（TUI から止めた・プロセスが終わったときは印が残らないため）
