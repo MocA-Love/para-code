@@ -73,7 +73,7 @@ import type { IParadisOpenCodeMessage } from '../../sessionResume/node/paradisOp
 import { ParadisOpenCodeActionOutcome, paradisOpenCodeBridge } from '../../agentBrowser/node/paradisOpenCodeBridge.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { ParadisClaudeModBridge, paradisClaudeModBridge, paradisClaudeModWaitForPrevious, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
-import { IParadisClaudeContextBreakdown } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
+import { IParadisClaudeContextBreakdown, paradisShortenContextBreakdownPaths } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
 import { paradisClaudeContextStore } from '../../claudeMod/node/paradisClaudeContextStore.js';
 import { paradisClaudeDraftState, paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -214,7 +214,7 @@ type AgentOutbound =
 	| { t: 'tool-full'; id: number; requestId: string; rev: number; text?: string; error?: string }
 	/**
 	 * 会話のコンテキストの内訳（`agent.context-breakdown.v1`）。`breakdown` は最後に取れた 1 件（`at` が取った時刻）、`live` は
-	 * その会話がまだ動いているか。取れないときは `reason`（`agent`: Claude Code 以外、`remote`: SSH 先のペイン（今の PC は使わない。接続先でも mod が動くため）、`none`: まだ無い、
+	 * その会話がまだ動いているか。取れないときは `reason`（`agent`: Claude Code 以外、`remote`: 予約（今の PC は返さない。SSH 先のペインも mod が手元へ送るため）、`none`: まだ無い、
 	 * `unavailable`: ペインが分からない）と、そのまま出せる `error`。
 	 */
 	| { t: 'context-breakdown'; id: number; requestId: string; breakdown?: IParadisClaudeContextBreakdown; live?: boolean; reason?: ParadisContextBreakdownUnavailable; error?: string }
@@ -1028,7 +1028,7 @@ export type ParadisContextBreakdownUnavailable = 'agent' | 'remote' | 'none' | '
 export function paradisContextBreakdownMessage(reason: ParadisContextBreakdownUnavailable): string {
 	switch (reason) {
 		case 'agent': return 'Claude Code の会話でだけ取れます';
-		case 'remote': return 'SSH 先のペインでは取れません';
+		case 'remote': return 'このペインでは取れません';
 		case 'none': return 'まだありません（応答が終わると取れます）';
 		case 'unavailable': return '内訳を取得できません';
 	}
@@ -5179,11 +5179,6 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
-	 * ツール出力の全文取得。モバイルがステップを展開したときだけ呼ばれる。
-	 * transcript は読み直さず、tailer が切り詰め時に退避しておいた全文だけを返す
-	 * （読み直しは長大セッションで重く、rev の再現性も保証できないため）。
-	 */
-	/**
 	 * 会話のコンテキストの内訳（`agent.context-breakdown.v1`）。同梱の mod が応答の終わりごとに取り、shared process が会話ごとに
 	 * 最後の 1 件を保存している（paradisClaudeContextStore.ts）。ここは読むだけで、mod へ取りに行かない。
 	 */
@@ -5203,15 +5198,22 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const store = paradisClaudeContextStore();
 		const sessionId = session?.sessionId;
-		const breakdown = store !== undefined && sessionId !== undefined ? await store.breakdownOf(sessionId) : undefined;
+		// そのペインが送った内訳だけを返す（別のペインが同じ会話 ID を名乗っても混ざらない）
+		const breakdown = store !== undefined && sessionId !== undefined ? await store.breakdownOf(sessionId, token) : undefined;
 		// 待っている間に会話が替わったら、古い会話の内訳は返さない
 		if (breakdown === undefined || this.paneSessions.get(token)?.sessionId !== sessionId) {
 			fail('none');
 			return;
 		}
-		this.sendTo(mobileId, { t: 'context-breakdown', id: msg.id, requestId: msg.requestId, breakdown, live: store?.isLive(breakdown.sessionId) ?? false }, token);
+		// 絶対パスはホームを `~/` に縮めて送る（端末にユーザー名入りのパスを残さない）
+		this.sendTo(mobileId, { t: 'context-breakdown', id: msg.id, requestId: msg.requestId, breakdown: paradisShortenContextBreakdownPaths(breakdown, homedir()), live: store?.isLive(breakdown.sessionId) ?? false }, token);
 	}
 
+	/**
+	 * ツール出力の全文取得。モバイルがステップを展開したときだけ呼ばれる。
+	 * transcript は読み直さず、tailer が切り詰め時に退避しておいた全文だけを返す
+	 * （読み直しは長大セッションで重く、rev の再現性も保証できないため）。
+	 */
 	private handleToolFullRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'tool-full' }>): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;

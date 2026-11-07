@@ -13,7 +13,9 @@
 // - 件数は {@link MAX_SESSIONS}、ファイルの大きさは {@link MAX_FILE_CHARS} まで。超えたら古い会話から捨てる
 // - 書き込みはまとめて遅らせる（応答の終わりごとに書かない）。書きかけで落ちても前のファイルが残るよう、別名で書いてから置き換える
 // - 「動いている」会話は、mod が生きているペインの最後の会話（`bye`・`alive-changed` で外す）
+// - 鍵はペインと会話の組。別のペインが同じ会話 ID を名乗っても上書きできない。ペイントークンはファイルに書かず、指紋だけを書く
 
+import { createHash } from 'crypto';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IParadisClaudeContextBreakdown, paradisParseClaudeContextBreakdown } from '../common/paradisClaudeContextBreakdown.js';
@@ -25,6 +27,25 @@ const MAX_SESSIONS = 300;
 const MAX_FILE_CHARS = 4 * 1024 * 1024;
 const WRITE_DELAY_MS = 3_000;
 const FILE_VERSION = 1;
+
+/** 保存したペインの指紋の形。 */
+const OWNER_PATTERN = /^[0-9a-f]{16}$/;
+const SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
+
+interface IRecord {
+	/** 送ってきたペイン（ペイントークンの指紋）。 */
+	readonly owner: string;
+	readonly breakdown: IParadisClaudeContextBreakdown;
+}
+
+/** ペイントークンの指紋（ファイルにはトークンそのものを書かない）。 */
+function ownerOf(token: string): string {
+	return createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
+
+function keyOf(owner: string, sessionId: string): string {
+	return `${owner}\0${sessionId}`;
+}
 
 /** 保存先（テストでは差し替える）。 */
 export interface IParadisClaudeContextFiles {
@@ -39,9 +60,9 @@ export class ParadisClaudeContextStore extends Disposable {
 	/** 動いている会話か、保存した内訳が変わった。 */
 	readonly onDidChange: Event<void> = this._onDidChange.event;
 
-	/** 会話 → 最後の内訳（古い順に並ぶ。書き直すと末尾へ移る）。 */
-	private readonly sessions = new Map<string, IParadisClaudeContextBreakdown>();
-	/** ペイン → いま動いている会話。 */
+	/** ペインと会話の組 → 最後の内訳（古い順に並ぶ。書き直すと末尾へ移る）。 */
+	private readonly sessions = new Map<string, IRecord>();
+	/** ペイン → いま動いている会話の鍵。 */
 	private readonly live = new Map<string, string>();
 	private loaded: Promise<void> | undefined;
 	private writeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -60,9 +81,11 @@ export class ParadisClaudeContextStore extends Disposable {
 	observe(event: ParadisClaudeModEvent): void {
 		switch (event.type) {
 			case 'context': {
-				this.sessions.delete(event.sessionId);
-				this.sessions.set(event.sessionId, event.breakdown);
-				this.live.set(event.token, event.sessionId);
+				const owner = ownerOf(event.token);
+				const key = keyOf(owner, event.sessionId);
+				this.sessions.delete(key);
+				this.sessions.set(key, { owner, breakdown: event.breakdown });
+				this.live.set(event.token, key);
 				this.trim();
 				this.scheduleWrite();
 				this._onDidChange.fire();
@@ -83,25 +106,37 @@ export class ParadisClaudeContextStore extends Disposable {
 	async liveBreakdowns(): Promise<IParadisClaudeContextBreakdown[]> {
 		await this.ensureLoaded();
 		const result: IParadisClaudeContextBreakdown[] = [];
-		for (const sessionId of new Set(this.live.values())) {
-			const breakdown = this.sessions.get(sessionId);
-			if (breakdown !== undefined) {
-				result.push(breakdown);
+		for (const key of new Set(this.live.values())) {
+			const record = this.sessions.get(key);
+			if (record !== undefined) {
+				result.push(record.breakdown);
 			}
 		}
 		return result.sort((a, b) => b.at - a.at);
 	}
 
-	/** 会話の最後の内訳（保存したものを含む）。 */
-	async breakdownOf(sessionId: string): Promise<IParadisClaudeContextBreakdown | undefined> {
+	/**
+	 * 会話の最後の内訳（保存したものを含む）。`token` を渡すとそのペインが送ったものだけ、渡さなければ（「最近のセッション」の行。
+	 * 会話の ID しか分からない）その会話の内訳のうち一番新しいもの。
+	 */
+	async breakdownOf(sessionId: string, token?: string): Promise<IParadisClaudeContextBreakdown | undefined> {
 		await this.ensureLoaded();
-		return this.sessions.get(sessionId);
+		if (token !== undefined) {
+			return this.sessions.get(keyOf(ownerOf(token), sessionId))?.breakdown;
+		}
+		let newest: IParadisClaudeContextBreakdown | undefined;
+		for (const record of this.sessions.values()) {
+			if (record.breakdown.sessionId === sessionId && (newest === undefined || record.breakdown.at > newest.at)) {
+				newest = record.breakdown;
+			}
+		}
+		return newest;
 	}
 
-	/** その会話が動いているペインの会話か。 */
+	/** その会話がいま動いているペインの会話か。 */
 	isLive(sessionId: string): boolean {
-		for (const value of this.live.values()) {
-			if (value === sessionId) {
+		for (const key of this.live.values()) {
+			if (this.sessions.get(key)?.breakdown.sessionId === sessionId) {
 				return true;
 			}
 		}
@@ -126,13 +161,17 @@ export class ParadisClaudeContextStore extends Disposable {
 			this.writeTimer = undefined;
 		}
 		if (pending) {
-			void this.writing.then(() => this.writeNow());
+			// 読み込む前に書くと、保存してあった過去の内訳を上書きして失う
+			void this.writing.then(async () => {
+				await this.ensureLoaded();
+				await this.writeNow();
+			});
 		}
 		super.dispose();
 	}
 
 	private dropLive(token: string, sessionId: string): void {
-		if (this.live.get(token) === sessionId) {
+		if (this.live.get(token) === keyOf(ownerOf(token), sessionId)) {
 			this.live.delete(token);
 			this._onDidChange.fire();
 		}
@@ -167,17 +206,19 @@ export class ParadisClaudeContextStore extends Disposable {
 		const fresh = new Map(this.sessions);
 		this.sessions.clear();
 		for (const entry of entries.slice(-MAX_SESSIONS)) {
-			const raw = entry !== null && typeof entry === 'object' ? entry as { sessionId?: unknown; at?: unknown } : undefined;
-			const sessionId = typeof raw?.sessionId === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(raw.sessionId) ? raw.sessionId : undefined;
+			const raw = entry !== null && typeof entry === 'object' ? entry as { owner?: unknown; sessionId?: unknown; at?: unknown } : undefined;
+			const owner = typeof raw?.owner === 'string' && OWNER_PATTERN.test(raw.owner) ? raw.owner : undefined;
+			const sessionId = typeof raw?.sessionId === 'string' && SESSION_ID_PATTERN.test(raw.sessionId) ? raw.sessionId : undefined;
 			const at = typeof raw?.at === 'number' && Number.isFinite(raw.at) ? raw.at : undefined;
-			const breakdown = sessionId !== undefined && at !== undefined ? paradisParseClaudeContextBreakdown(entry, sessionId, at) : undefined;
-			if (breakdown !== undefined && !fresh.has(breakdown.sessionId)) {
-				this.sessions.delete(breakdown.sessionId);
-				this.sessions.set(breakdown.sessionId, breakdown);
+			const breakdown = owner !== undefined && sessionId !== undefined && at !== undefined ? paradisParseClaudeContextBreakdown(entry, sessionId, at) : undefined;
+			const key = owner !== undefined && breakdown !== undefined ? keyOf(owner, breakdown.sessionId) : undefined;
+			if (owner !== undefined && breakdown !== undefined && key !== undefined && !fresh.has(key)) {
+				this.sessions.delete(key);
+				this.sessions.set(key, { owner, breakdown });
 			}
 		}
-		for (const [sessionId, breakdown] of fresh) {
-			this.sessions.set(sessionId, breakdown);
+		for (const [key, record] of fresh) {
+			this.sessions.set(key, record);
 		}
 		this.trim();
 	}
@@ -216,8 +257,8 @@ export class ParadisClaudeContextStore extends Disposable {
 		// 大きすぎれば古い会話から捨てる（覚えている方も合わせる）
 		while (text.length > MAX_FILE_CHARS && sessions.length > 0) {
 			const drop = Math.max(1, Math.ceil(sessions.length / 10));
-			for (const breakdown of sessions.slice(0, drop)) {
-				this.sessions.delete(breakdown.sessionId);
+			for (const record of sessions.slice(0, drop)) {
+				this.sessions.delete(keyOf(record.owner, record.breakdown.sessionId));
 			}
 			sessions = sessions.slice(drop);
 			text = serialize(sessions);
@@ -230,8 +271,8 @@ export class ParadisClaudeContextStore extends Disposable {
 	}
 }
 
-function serialize(sessions: readonly IParadisClaudeContextBreakdown[]): string {
-	return JSON.stringify({ version: FILE_VERSION, sessions });
+function serialize(sessions: readonly IRecord[]): string {
+	return JSON.stringify({ version: FILE_VERSION, sessions: sessions.map(record => ({ owner: record.owner, ...record.breakdown })) });
 }
 
 let current: ParadisClaudeContextStore | undefined;
