@@ -88,10 +88,18 @@ export class WebContentsViewHost extends Disposable {
 		this._refreshOverlayObscured();
 	}
 
-	setVisible(visible: boolean): void {
+	/**
+	 * Shows or hides the page with its container. A hide waits a frame so the screenshot
+	 * placeholder can take over, unless `immediate`, because the container itself is
+	 * hidden and nothing would bridge that frame.
+	 */
+	setVisible(visible: boolean, immediate = false): void {
 		if (this._editorVisible !== visible) {
 			this._editorVisible = visible;
-			this._refresh();
+			this._refresh(false, immediate);
+		} else if (!visible && immediate) {
+			// A hide requested earlier in this frame still waits for that frame, so hide now.
+			this._refresh(false, true);
 		}
 	}
 
@@ -101,7 +109,7 @@ export class WebContentsViewHost extends Disposable {
 		// PARA-PATCH: bounds are now current, so a show we held back can go ahead.
 		if (this._showPendingLayout && !this._pushingBounds) {
 			this._showPendingLayout = false;
-			this._refresh(false, true);
+			this._refresh(false, false, true); // PARA-PATCH: boundsArePushed (third argument since upstream added hideImmediately)
 		}
 	}
 
@@ -201,7 +209,7 @@ export class WebContentsViewHost extends Disposable {
 	 * @param boundsArePushed the caller already pushed current bounds to main, so the page
 	 * can be shown without laying out again (PARA-PATCH).
 	 */
-	private _refresh(restartScreenshot = false, boundsArePushed = false): void { // PARA-PATCH: fork's optional boundsArePushed added after upstream's restartScreenshot
+	private _refresh(restartScreenshot = false, hideImmediately = false, boundsArePushed = false): void { // PARA-PATCH: fork's optional boundsArePushed added after upstream's restartScreenshot and hideImmediately
 		if (restartScreenshot) {
 			this._screenshotSequence++;
 		}
@@ -248,6 +256,10 @@ export class WebContentsViewHost extends Disposable {
 			this._showPendingLayout = false;
 			this._paradisCoverPlaceholder(false); // PARA-PATCH: put the placeholder back before the native view hides
 			void this._captureScreenshot();
+			if (hideImmediately) {
+				void this._model.setVisible(false);
+				return;
+			}
 			this.targetWindow.requestAnimationFrame(() => {
 				if (this._model && !this._shouldShowPage()) {
 					void this._model.setVisible(false);
