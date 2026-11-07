@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Text as SvgText } from 'react-native-svg';
 import { useRouter } from 'expo-router';
@@ -21,6 +21,8 @@ import {
 	type SessionSheetValue,
 } from '../../agentSessionStatus.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
+import { usePcCapability } from '../../hooks/usePcCapability.js';
+import { PcCapability } from '../../pcCompat.js';
 import { haptic } from '../../haptics.js';
 import { routes } from '../../routes.js';
 import { colors, space, type } from '../../theme.js';
@@ -28,6 +30,7 @@ import { BottomDrawer, Icon, iconSize } from '../../ui/index.js';
 import { useCodeSpace } from '../code/useCodeSpace.js';
 import { usePullRequest } from '../code/usePullRequest.js';
 import { SegmentSwitch, ShellDetail, ShellList } from './backgroundPill.js';
+import { ContextBreakdownView } from './contextBreakdownView.js';
 import { MonitorListContent, monitorStyles } from './monitorDrawer.js';
 
 /** 輪の見た目の大きさ（モデルのピルと同じ 28）。当たり判定は 44 に広げる。 */
@@ -53,6 +56,7 @@ const TONE: Record<RingTone, string> = {
  * - シートは上から「このセッション」（キャッシュの残り時間・hit / miss・コンテキスト・PR）と「動いているもの」（今のピルの
  *   シートと同じ一覧。シェルの行から同じシートの中で詳細へ進み、出力の末尾と停止を出す）
  * - 幅は 28pt で縮めない（`flexShrink: 0`）。モデルのピルの側が縮む
+ * - PC が `agent.context-breakdown.v1` を広告していれば、「コンテキスト」の行から同じシートの中で内訳へ進む（q.html Q565 案 A）
  */
 export function SessionRing({ terminalKey, status, working, monitors, shells, shellsAccess }: {
 	terminalKey: string | undefined;
@@ -65,6 +69,18 @@ export function SessionRing({ terminalKey, status, working, monitors, shells, sh
 	const [open, setOpen] = useState(false);
 	const [tab, setTab] = useState<BackgroundTab>('shells');
 	const [detailId, setDetailId] = useState<string | undefined>(undefined);
+	// コンテキストの内訳（シェルの詳細と同じく、同じシートの中で進んで戻る）
+	const [contextOpen, setContextOpen] = useState(false);
+	const contextSupported = usePcCapability(PcCapability.AgentContextBreakdown);
+	// 内訳を問い合わせ直すのは、作業中から止まったとき（応答が終わり PC が取り直した後）だけ。生成中の使用率の変化では聞かない
+	const [finishedTurns, setFinishedTurns] = useState(0);
+	const wasWorking = useRef(working);
+	useEffect(() => {
+		if (wasWorking.current && !working) {
+			setFinishedTurns(count => count + 1);
+		}
+		wasWorking.current = working;
+	}, [working]);
 	const now = useSessionClock(status, working, open);
 	const ring = sessionRingModel(status, monitors, shells, now, working);
 	const detail = detailId !== undefined ? shells?.find(shell => shell.id === detailId) : undefined;
@@ -79,6 +95,7 @@ export function SessionRing({ terminalKey, status, working, monitors, shells, sh
 					const runningShells = (shells ?? []).some(shell => shell.status === 'running');
 					setTab(runningShells || (monitors ?? []).length === 0 ? 'shells' : 'monitors');
 					setDetailId(undefined);
+					setContextOpen(false);
 					setOpen(true);
 				}}
 				accessibilityRole="button"
@@ -107,10 +124,10 @@ export function SessionRing({ terminalKey, status, working, monitors, shells, sh
 					) : null}
 				</Svg>
 			</Pressable>
-			<BottomDrawer visible={open} onClose={close} onAfterClose={() => setDetailId(undefined)} accessibilityLabel="セッションの状態と裏で動いているもの">
+			<BottomDrawer visible={open} onClose={close} onAfterClose={() => { setDetailId(undefined); setContextOpen(false); }} accessibilityLabel="セッションの状態と裏で動いているもの">
 				<View style={styles.head}>
-					{detail !== undefined ? (
-						<Pressable onPress={() => setDetailId(undefined)} hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)} style={styles.nav} accessibilityRole="button" accessibilityLabel="一覧に戻る">
+					{detail !== undefined || contextOpen ? (
+						<Pressable onPress={() => { setDetailId(undefined); setContextOpen(false); }} hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)} style={styles.nav} accessibilityRole="button" accessibilityLabel="一覧に戻る">
 							<Icon icon={ChevronLeft} size={iconSize.lg} color={colors.textDim} strokeWidth={2.2} />
 						</Pressable>
 					) : (
@@ -118,15 +135,17 @@ export function SessionRing({ terminalKey, status, working, monitors, shells, sh
 							<Icon icon={X} size={iconSize.lg} color={colors.textDim} strokeWidth={2.2} />
 						</Pressable>
 					)}
-					<Text style={styles.headTitle} accessibilityRole="header" numberOfLines={1}>{detail !== undefined ? 'シェル' : 'セッション'}</Text>
+					<Text style={styles.headTitle} accessibilityRole="header" numberOfLines={1}>{detail !== undefined ? 'シェル' : contextOpen ? 'コンテキスト' : 'セッション'}</Text>
 					<View style={styles.nav} />
 				</View>
 				{detail !== undefined && terminalKey !== undefined ? (
 					<ShellDetail terminalKey={terminalKey} shell={detail} access={shellsAccess} now={now} visible={open} />
+				) : contextOpen ? (
+					<ContextBreakdownView terminalKey={terminalKey} refreshKey={String(finishedTurns)} />
 				) : (
 					<>
 						<Text style={[monitorStyles.section, styles.firstSection]}>このセッション</Text>
-						<SessionSection status={status} working={working} now={now} open={open} onNavigate={close} />
+						<SessionSection status={status} working={working} now={now} open={open} onNavigate={close} onOpenContext={contextSupported ? () => { haptic('move'); setContextOpen(true); } : undefined} />
 						<Text style={monitorStyles.section}>動いているもの</Text>
 						<RunningSection terminalKey={terminalKey} monitors={monitors} shells={shells} shellsAccess={shellsAccess} tab={tab} onTab={setTab} now={now} open={open} onOpenShell={id => { haptic('move'); setDetailId(id); }} />
 					</>
@@ -162,7 +181,7 @@ function useSessionClock(status: AgentSessionStatus | undefined, working: boolea
 }
 
 /** 「このセッション」の節（キャッシュの残り時間・hit / miss・コンテキスト・PR）。取れない行も消さずに理由を灰色で出す。 */
-function SessionSection({ status, working, now, open, onNavigate }: { status: AgentSessionStatus | undefined; working: boolean; now: number; open: boolean; onNavigate: () => void }) {
+function SessionSection({ status, working, now, open, onNavigate, onOpenContext }: { status: AgentSessionStatus | undefined; working: boolean; now: number; open: boolean; onNavigate: () => void; onOpenContext: (() => void) | undefined }) {
 	const router = useRouter();
 	const space = useCodeSpace();
 	// PR は開いている間だけ取りに行く（スペースのソース管理と同じ経路。SSH のスペースは接続先の gh で調べる）
@@ -181,8 +200,8 @@ function SessionSection({ status, working, now, open, onNavigate }: { status: Ag
 		<View style={monitorStyles.group}>
 			<SheetRow label={cacheRowLabel(status)} value={cacheTimeValue(cacheTimeState(status, now, working))} />
 			<SheetRow divider label="hit / miss" value={hitMissValue(status)} />
-			<SheetRow divider label="コンテキスト" value={contextValue(status)} />
-			<SheetRow divider label="プルリクエスト" value={pr} onPress={openPullRequest} />
+			<SheetRow divider label="コンテキスト" value={contextValue(status)} onPress={onOpenContext} pressHint="内訳を開きます" />
+			<SheetRow divider label="プルリクエスト" value={pr} onPress={openPullRequest} pressHint="ソース管理を開きます" />
 		</View>
 	);
 }
@@ -222,7 +241,7 @@ function RunningSection({ terminalKey, monitors, shells, shellsAccess, tab, onTa
 	);
 }
 
-function SheetRow({ label, value, divider = false, onPress }: { label: string; value: SessionSheetValue; divider?: boolean; onPress?: (() => void) | undefined }) {
+function SheetRow({ label, value, divider = false, onPress, pressHint }: { label: string; value: SessionSheetValue; divider?: boolean; onPress?: (() => void) | undefined; pressHint?: string }) {
 	const color = value.tone === 'danger' ? colors.red : value.tone === 'warn' ? colors.yellow : value.dim === true ? colors.textMuted : colors.text;
 	const body = (
 		<>
@@ -236,7 +255,7 @@ function SheetRow({ label, value, divider = false, onPress }: { label: string; v
 			style={({ pressed }) => [styles.row, divider ? monitorStyles.rowDivider : undefined, pressed ? styles.pressed : undefined]}
 			onPress={onPress}
 			accessibilityRole="button"
-			accessibilityLabel={`${label}、${value.text}。押すとソース管理を開きます`}
+			accessibilityLabel={`${label}、${value.text}。押すと${pressHint ?? '開きます'}`}
 		>
 			{body}
 		</Pressable>
