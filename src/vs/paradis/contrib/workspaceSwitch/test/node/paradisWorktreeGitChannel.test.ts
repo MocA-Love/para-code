@@ -97,14 +97,41 @@ suite('ParadisWorktreeGitService', () => {
 			baseRef: 'main',
 		});
 
-		assert.deepStrictEqual(calls.map(call => call.command), ['git', 'git']);
+		// 偽の git は `config --get` にも成功で答える（＝利用者が checkout.workers を決めている）ので、-c は足さない
+		assert.deepStrictEqual(calls.map(call => call.command), ['git', 'git', 'git']);
 		assert.deepStrictEqual(calls.map(call => call.args), [
 			['-C', '/repo', 'worktree', 'prune'],
+			['-C', '/repo', 'config', '--get', 'checkout.workers'],
 			['-C', '/repo', 'worktree', 'add', '--no-track', '-b', 'feature-lfs', '/repo-worktrees/feature-lfs', 'main'],
 		]);
 		assert.strictEqual(calls[0].env?.PATH, '/opt/homebrew/bin:/usr/bin');
-		assert.strictEqual(calls[1].env?.PATH, '/opt/homebrew/bin:/usr/bin');
-		assert.strictEqual(calls[1].env?.PARADIS_TEST_ENV, 'shell');
+		assert.strictEqual(calls[2].env?.PATH, '/opt/homebrew/bin:/usr/bin');
+		assert.strictEqual(calls[2].env?.PARADIS_TEST_ENV, 'shell');
+	});
+
+	test('checks out a new worktree with one worker per core only when checkout.workers is unset', async () => {
+		// `git config --get` の終了コード: 1 は未設定、128 などは読めなかった（git の既定のまま作る）
+		const addArgsWhenConfigExits = async (configExitCode: number) => {
+			const added: string[][] = [];
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, ((_command: string, args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				if (args.includes('config')) {
+					queueMicrotask(() => callback(Object.assign(new Error(`exit ${configExitCode}`), { code: configExitCode }), '', ''));
+				} else {
+					if (args.includes('add')) {
+						added.push([...args]);
+					}
+					queueMicrotask(() => callback(null, '', ''));
+				}
+				return {} as cp.ChildProcess;
+			}) as typeof cp.execFile, async () => ({}));
+			await service.addWorktree({ repoPath: '/repo', worktreePath: '/repo-worktrees/x', newBranch: 'x', baseRef: 'main' });
+			return added;
+		};
+
+		assert.deepStrictEqual({ unset: await addArgsWhenConfigExits(1), unreadable: await addArgsWhenConfigExits(128) }, {
+			unset: [['-C', '/repo', '-c', 'checkout.workers=0', 'worktree', 'add', '--no-track', '-b', 'x', '/repo-worktrees/x', 'main']],
+			unreadable: [['-C', '/repo', 'worktree', 'add', '--no-track', '-b', 'x', '/repo-worktrees/x', 'main']],
+		});
 	});
 
 	test('falls back to the inherited process env when shell resolution fails', async () => {
@@ -130,7 +157,7 @@ suite('ParadisWorktreeGitService', () => {
 
 		assert.deepStrictEqual({ resolverCalls, paths: calls.map(call => call.env?.PATH) }, {
 			resolverCalls: 1,
-			paths: [process.env.PATH, process.env.PATH],
+			paths: [process.env.PATH, process.env.PATH, process.env.PATH],
 		});
 	});
 
@@ -177,7 +204,7 @@ suite('ParadisWorktreeGitService', () => {
 			},
 		);
 
-		// prune + add で execFile は2回呼ばれるが、シェル環境の解決は1回だけであるべき
+		// prune + config + add で execFile は3回呼ばれるが、シェル環境の解決は1回だけであるべき
 		await service.addWorktree({
 			repoPath: '/repo',
 			worktreePath: '/repo-worktrees/feature-lfs',
