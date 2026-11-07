@@ -228,6 +228,10 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 
 		try {
 			await pc.setRemoteDescription({ type: 'offer', sdp });
+			if (this.peers.get(mobileId) !== peer) {
+				// 待つ間に次の offer / stop で畳まれた。保留中の ICE は次のセッションのもの
+				return;
+			}
 			peer.remoteSet = true;
 			// answer前（arm往復＋getDisplayMediaの間）に届いていたICEをまとめて適用する
 			const queued = this.pendingIce.get(mobileId);
@@ -243,7 +247,10 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 		} catch (err) {
 			this.logService.warn('[paradisWebrtc] negotiation failed', err);
 			this.send(mobileId, { t: 'webrtc-error', id, error: String(err instanceof Error ? err.message : err), sid });
-			this.stopPeer(mobileId);
+			// 次の offer で畳まれた古いピアの失敗なら、新しいピアと待っている offer は止めない（自分のピアは畳まれ済み）
+			if (this.peers.get(mobileId) === peer) {
+				this.stopPeer(mobileId);
+			}
 		}
 	}
 

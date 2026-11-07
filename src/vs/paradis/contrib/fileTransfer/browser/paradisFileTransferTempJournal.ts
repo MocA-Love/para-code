@@ -12,7 +12,7 @@
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisTransferJournal } from './paradisFileTransferFileSystem.js';
@@ -92,7 +92,15 @@ export class ParadisTransferTempJournal extends Disposable implements IParadisTr
 				continue;
 			}
 			try {
-				if (await this.fileService.exists(uri)) {
+				// exists は失敗を「無い」にするので使わない（切れているだけで控えから外してしまう）。無いと確かに
+				// 分かったときだけ消さずに控えから外し、ほかの失敗は下の catch で次の機会に回す
+				const present = await this.fileService.stat(uri).then(() => true, error => {
+					if (toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND) {
+						return false;
+					}
+					throw error;
+				});
+				if (present) {
 					await this.fileService.del(uri, { useTrash: false });
 				}
 				this.write(paradisJournalRemove(this.read(), uri.toString()));

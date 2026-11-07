@@ -125,6 +125,12 @@ class ParadisQueueRow extends Disposable {
 	}
 
 	update(item: IParadisTransferItem): void {
+		// 終わった行（完了・失敗・取り消し）は、状態が変わるまで中身も変わらない。進み具合の通知のたびに
+		// 終わった行まで書き直さない（行が溜まるほど 1 回の描き直しが重くなる）
+		const finished = item.state === 'done' || item.state === 'error' || item.state === 'cancelled';
+		if (finished && this.item === item && this.renderedState === item.state) {
+			return;
+		}
 		this.item = item;
 		if (this.renderedState !== item.state) {
 			this.renderedState = item.state;
