@@ -100,7 +100,7 @@ class ParadisCleanGeneratedOutputsAction extends Action2 {
 			// allow-any-unicode-next-line
 			message: localize('paradis.generatedCleanup.confirm', "古い依存とビルド出力を {0} 件削除しますか？", candidates.length),
 			// allow-any-unicode-next-line
-			detail: localize('paradis.generatedCleanup.confirmDetail', "{0}\n\n{1} 日以上使っていないワークツリーの中で、{1} 日より前から変わっておらず、git が追跡していないものだけです（括弧の日数はフォルダの日付です）。元のリポジトリ・今開いているスペース・ロックされたワークツリー・リンク・入れ子のリポジトリは消しません。消したワークツリーでは、依存を入れ直すまでビルドや実行ができません。", lines.join('\n'), PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS),
+			detail: localize('paradis.generatedCleanup.confirmDetail', "{0}\n\n{1} 日以上使っていないワークツリーの中で、{1} 日より前から変わっておらず、git が追跡していないものだけです（括弧の日数はフォルダの日付です）。元のリポジトリ・この窓で開いているスペース・ロックされたワークツリー・リンク・入れ子のリポジトリ（奥まで確かめきれないものを含む）は消しません。消したワークツリーでは、依存を入れ直すまでビルドや実行ができません。", lines.join('\n'), PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS),
 			// allow-any-unicode-next-line
 			primaryButton: localize('paradis.generatedCleanup.confirmAction', "削除"),
 		});

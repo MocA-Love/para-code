@@ -70,11 +70,17 @@ async function packageRoots(worktree: string): Promise<string[][]> {
 	return roots;
 }
 
-/** 中に入れ子のリポジトリ（`.git`、または bare の形）があるか（Orca と同じ）。 */
+/** 入れ子のリポジトリを探す深さの上限。`node_modules` の奥まで全部は見ない。 */
+const NESTED_REPOSITORY_MAX_DEPTH = 32;
+
+/**
+ * 中に入れ子のリポジトリ（`.git`、または bare の形）があるか（Orca と同じ規則）。深さ {@link NESTED_REPOSITORY_MAX_DEPTH} で
+ * 打ち切り、打ち切ったときは「あるかもしれない」として true を返す（消さない側に倒す）。
+ */
 async function containsNestedRepository(root: string): Promise<boolean> {
-	const pending = [root];
+	const pending: { path: string; depth: number }[] = [{ path: root, depth: 0 }];
 	while (pending.length > 0) {
-		const path = pending.pop()!;
+		const { path, depth } = pending.pop()!;
 		if (!(await info(path))?.isDirectory()) {
 			return true;
 		}
@@ -85,7 +91,10 @@ async function containsNestedRepository(root: string): Promise<boolean> {
 		}
 		for (const entry of entries) {
 			if (entry.isDirectory()) {
-				pending.push(join(path, entry.name));
+				if (depth + 1 > NESTED_REPOSITORY_MAX_DEPTH) {
+					return true;
+				}
+				pending.push({ path: join(path, entry.name), depth: depth + 1 });
 			}
 		}
 	}

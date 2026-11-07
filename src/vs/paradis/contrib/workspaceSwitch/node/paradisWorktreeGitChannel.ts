@@ -1239,9 +1239,9 @@ export class ParadisWorktreeGitService {
 	}
 
 	/**
-	 * `git branch -d` で消し、消えなかったら（マージされていない）残したブランチとして返す。消えたかは文言でなく参照の有無で見る。
-	 * `-d` は元のリポジトリの今の HEAD（と追跡先）と比べるので、元のリポジトリが別のブランチにいる・pull していないと、
-	 * GitHub でマージ済みでも断る。そのときは Orca と同じく、先頭のコミットが origin の既定のブランチに含まれていれば消す。
+	 * マージ済みのブランチだけを消し、それ以外は残したブランチとして返す。マージ済みとは、先頭のコミットが元のリポジトリの
+	 * 今の HEAD か origin の既定のブランチ（Orca と同じく、元のリポジトリが別のブランチにいる・pull していない場合のため）に
+	 * 含まれること。squash でマージしたものは含まれないので残る。消えたかは文言でなく参照の有無で見る。
 	 */
 	private async deleteMergedBranch(repoPath: string, branch: string): Promise<IParadisRemoveWorktreeResult> {
 		const ref = `refs/heads/${branch}`;
@@ -1251,18 +1251,23 @@ export class ParadisWorktreeGitService {
 		} catch {
 			return {};
 		}
-		try {
-			await this.exec(['-C', paradisWslPathArg(repoPath), 'branch', '-d', '--', branch], undefined, { quiet: true });
-		} catch {
-			const originDefault = await this.originDefaultBranch(repoPath);
+		// `git branch -d` は追跡先にマージ済みでも通すので、`push -u` しただけの未マージのブランチまで消える。
+		// そこで -d は使わず、元のリポジトリの今の HEAD か origin の既定のブランチに先頭のコミットが含まれるときだけ消す
+		const originDefault = await this.originDefaultBranch(repoPath);
+		const targets = ['HEAD', ...(originDefault !== undefined ? [`refs/remotes/${originDefault}`] : [])];
+		for (const target of targets) {
 			try {
-				if (originDefault !== undefined) {
-					await this.exec(['-C', paradisWslPathArg(repoPath), 'merge-base', '--is-ancestor', sha, `refs/remotes/${originDefault}`], undefined, { quiet: true });
-					await this.exec(['-C', paradisWslPathArg(repoPath), 'branch', '-D', '--', branch], undefined, { quiet: true });
-				}
+				await this.exec(['-C', paradisWslPathArg(repoPath), 'merge-base', '--is-ancestor', sha, target], undefined, { quiet: true });
 			} catch {
-				// マージされていない。下で残っていることを確かめる
+				// 含まれていない（または比べられない）。次の比べ先へ
+				continue;
 			}
+			try {
+				await this.exec(['-C', paradisWslPathArg(repoPath), 'branch', '-D', '--', branch], undefined, { quiet: true });
+			} catch {
+				// 消せなかった。下で残っていることを確かめる
+			}
+			break;
 		}
 		try {
 			await this.readGit(repoPath, ['rev-parse', '--verify', '--quiet', ref]);
@@ -1353,7 +1358,7 @@ export class ParadisWorktreeGitService {
 	/**
 	 * 残したブランチを強制的に消す（`git branch -D`。G-07 の「残したブランチを確かめる」で選んだものだけ）。
 	 * 受け側でも、名前が `-` で始まらない・ローカルのブランチとして在る・どの作業ツリーでも開いていない・
-	 * 追跡先や既定のブランチでない、を確かめる。消せなかったものは `failed` に入れる。
+	 * `main`・`master`・origin の既定のブランチでない、を確かめる。消せなかったものは `failed` に入れる。
 	 */
 	async forceDeleteBranches(request: IParadisForceDeleteBranchesRequest<string>): Promise<IParadisForceDeleteBranchesResult> {
 		if (typeof request?.repoPath !== 'string' || request.repoPath.length === 0 || request.repoPath.startsWith('-') || !Array.isArray(request.branches)) {

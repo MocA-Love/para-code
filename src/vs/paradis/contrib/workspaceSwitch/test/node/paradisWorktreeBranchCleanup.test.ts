@@ -75,7 +75,7 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 		});
 	});
 
-	test('deletes pushed branches merged on the remote even when the main checkout is elsewhere', async () => {
+	test('deletes a branch merged on the remote even when the main checkout is elsewhere, but keeps a pushed unmerged one', async () => {
 		const remote = join(root, 'remote.git');
 		git(root, 'init', '-q', '--bare', '-b', 'main', remote);
 		git(repo, 'remote', 'add', 'origin', remote);
@@ -86,8 +86,8 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 			git(worktree, 'add', file);
 			git(worktree, 'commit', '-q', '-m', file);
 		};
-		// 追跡先を付けて push したもの（gh pr create の後の形。git の -d は追跡先に含まれていれば消す。コミットはリモートに残る）と、
-		// 付けずに push したもの（Para の --no-track のまま。origin の既定のブランチに含まれているので消す）
+		// 追跡先を付けて push しただけでマージしていないもの（gh pr create の後の形。git の -d なら追跡先と一致するので消してしまう）と、
+		// 付けずに push してリモートの main に入ったもの（Para の --no-track のまま）
 		const tracked = addWorktree('tracked', ['-b', 'feature/tracked']);
 		await commitIn(tracked, 'b.txt');
 		git(tracked, 'push', '-q', '-u', 'origin', 'feature/tracked');
@@ -98,13 +98,14 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 		git(remote, 'update-ref', 'refs/heads/main', 'refs/heads/feature/untracked');
 		git(repo, 'fetch', '-q', 'origin');
 		git(repo, 'switch', '-q', '-c', 'elsewhere');
+		const trackedSha = git(tracked, 'rev-parse', 'HEAD').trim();
 		const results = [
 			await service.removeWorktree({ repoPath: repo, worktreePath: tracked, force: false, deleteBranch: 'feature/tracked' }),
 			await service.removeWorktree({ repoPath: repo, worktreePath: untracked, force: false, deleteBranch: 'feature/untracked' }),
 		];
 		assert.deepStrictEqual({ results, branches: branches() }, {
-			results: [{ deletedBranch: 'feature/tracked' }, { deletedBranch: 'feature/untracked' }],
-			branches: ['elsewhere', 'main'],
+			results: [{ keptBranch: { name: 'feature/tracked', sha: trackedSha } }, { deletedBranch: 'feature/untracked' }],
+			branches: ['elsewhere', 'feature/tracked', 'main'],
 		});
 	});
 
