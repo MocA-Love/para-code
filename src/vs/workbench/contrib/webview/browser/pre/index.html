@@ -9,7 +9,7 @@
 		CSP, and every webview then stays blank without throwing. Kept honest by
 		src/vs/paradis/contrib/fileViewers/test/node/paradisWebviewServiceWorkerControl.test.ts. -->
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-9RGNGk0uEljGn4xbfJ/JtpgvcKp+InISiMcF27j6e4o=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'sha256-+vMe/RizJOSdlrhE78JomxSGUgBEPk6Or2I/04wxw4c=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -139,8 +139,13 @@
 				max-height: 100%;
 			}
 
-			a, a code {
+			a {
 				color: var(--vscode-textLink-foreground);
+			}
+
+			a code {
+				color: var(--vscode-textPreformat-foreground);
+				text-decoration: underline;
 			}
 
 			p > a {
@@ -168,6 +173,7 @@
 			}
 
 			pre code {
+				background-color: transparent;
 				padding: 0;
 			}
 

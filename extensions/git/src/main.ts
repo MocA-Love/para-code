@@ -182,6 +182,7 @@ async function warnAboutMissingGit(): Promise<void> {
 	const neverShowAgain = l10n.t('Don\'t Show Again');
 	const choice = await window.showWarningMessage(
 		l10n.t('Git not found. Install it or configure it using the "git.path" setting.'),
+		{ notificationId: 'git.missing' },
 		download,
 		neverShowAgain
 	);
@@ -284,6 +285,7 @@ async function checkGitv1(info: IGit): Promise<void> {
 
 	const choice = await window.showWarningMessage(
 		l10n.t('You seem to have git "{0}" installed. Code works best with git >= 2', info.version),
+		{ notificationId: 'git.legacyVersion' },
 		update,
 		neverShowAgain
 	);
@@ -311,6 +313,7 @@ async function checkGitWindows(info: IGit): Promise<void> {
 	const neverShowAgain = l10n.t('Don\'t Show Again');
 	const choice = await window.showWarningMessage(
 		l10n.t('There are known issues with the installed Git "{0}". Please update to Git >= 2.27 for the git features to work correctly.', info.version),
+		{ notificationId: 'git.windowsVersion' },
 		update,
 		neverShowAgain
 	);
