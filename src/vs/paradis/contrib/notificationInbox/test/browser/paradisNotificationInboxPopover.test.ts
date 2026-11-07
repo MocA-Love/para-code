@@ -62,16 +62,18 @@ suite('Paradis notification inbox popover', () => {
 		const rendered = rows.map(row => ({
 			classes: [...row.classList].filter(name => name !== 'pnip-row').sort(),
 			kind: text(row, 'pnip-kind'),
-			location: text(row, 'pnip-location'),
-			detail: text(row, 'pnip-message') ?? text(row, 'pnip-note'),
+			space: text(row, 'pnip-space'),
+			detail: text(row, 'pnip-detail'),
+			message: text(row, 'pnip-message') ?? text(row, 'pnip-note'),
 		}));
 		rows[0].click();
 		rows[1].click();
 
 		assert.deepStrictEqual({ rendered, calls }, {
 			rendered: [
-				{ classes: ['unread'], kind: '許可待ち', location: 'para-code ／ claude', detail: 'Bash: npm test -- auth' },
-				{ classes: ['closed'], kind: '完了', location: 'para-code (fix-login)', detail: 'このペインは閉じています' },
+				{ classes: ['unread'], kind: '許可待ち', space: 'para-code', detail: 'claude', message: 'Bash: npm test -- auth' },
+				// 「完了」は札にせず時刻の横に出す
+				{ classes: ['closed'], kind: undefined, space: 'para-code', detail: 'fix-login', message: 'このペインは閉じています' },
 			],
 			calls: ['close', 'reveal:2', 'read:1'],
 		});
