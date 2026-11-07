@@ -81,7 +81,8 @@ export interface IParadisTasksRateLimit {
 }
 
 /** 取得に失敗した理由。画面はこれで案内の文を選ぶ。 */
-export type ParadisTasksErrorKind = 'no-gh' | 'auth' | 'rate-limited' | 'timeout' | 'failed';
+/** `scope`: gh のトークンに要る権限（Projects は read:project）が無い。 */
+export type ParadisTasksErrorKind = 'no-gh' | 'auth' | 'scope' | 'rate-limited' | 'timeout' | 'failed';
 
 export interface IParadisTasksError {
 	readonly kind: ParadisTasksErrorKind;
@@ -90,11 +91,15 @@ export interface IParadisTasksError {
 	readonly retryAt?: number;
 }
 
-export type ParadisTasksSearchResponse =
-	| { readonly ok: true; readonly result: IParadisTasksSearchResult }
+/** 取得口の応答。失敗は例外にせず理由を返す（画面が案内の文を選べるように）。 */
+export type ParadisTasksResponse<T> =
+	| { readonly ok: true; readonly result: T }
 	| { readonly ok: false; readonly error: IParadisTasksError };
 
-export interface IParadisTasksGithubService {
+export type ParadisTasksSearchResponse = ParadisTasksResponse<IParadisTasksSearchResult>;
+
+/** Issue・PR の検索の口。プロジェクトの口を足したものは common/paradisTasksProjects.ts の IParadisTasksGithubService。 */
+export interface IParadisTasksSearchService {
 	search(request: IParadisTasksSearchRequest): Promise<ParadisTasksSearchResponse>;
 }
 
