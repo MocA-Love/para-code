@@ -12,7 +12,7 @@ import { $, append, EventHelper, addDisposableListener, EventType, getWindow, hi
 import { StandardKeyboardEvent } from '../../../../../base/browser/keyboardEvent.js';
 import { KeyCode } from '../../../../../base/common/keyCodes.js';
 import { localize } from '../../../../../nls.js';
-import { AgentSessionSection, getAgentSessionPullRequestContextValue, IAgentSession, IAgentSessionSection, IAgentSessionsModel, IMarshalledAgentSessionContext, isAgentSession, isAgentSessionChild, isAgentSessionSection, isAgentSessionShowLess, isAgentSessionShowMore } from './agentSessionsModel.js';
+import { AgentSessionRefreshReason, AgentSessionSection, getAgentSessionPullRequestContextValue, IAgentSession, IAgentSessionSection, IAgentSessionsModel, IMarshalledAgentSessionContext, isAgentSession, isAgentSessionChild, isAgentSessionSection, isAgentSessionShowLess, isAgentSessionShowMore } from './agentSessionsModel.js';
 import { AgentSessionChatRenderer, AgentSessionListItem, AgentSessionRenderer, AgentSessionsAccessibilityProvider, AgentSessionsCompressionDelegate, AgentSessionsDataSource, AgentSessionsDragAndDrop, AgentSessionsIdentityProvider, AgentSessionsKeyboardNavigationLabelProvider, AgentSessionsListDelegate, AgentSessionSectionRenderer, AgentSessionSectionLabels, AgentSessionShowLessRenderer, AgentSessionShowMoreRenderer, AgentSessionsSorter, getRepositoryName, IAgentSessionsFilter } from './agentSessionsViewer.js';
 import { AgentSessionsGrouping, AgentSessionsSorting } from './agentSessionsFilter.js';
 import { AgentSessionApprovalModel } from './agentSessionApprovalModel.js';
@@ -117,6 +117,7 @@ export class AgentSessionsControl extends Disposable implements IAgentSessionsCo
 	private focusedAgentSessionReadContextKey: IContextKey<boolean>;
 	private focusedAgentSessionTypeContextKey: IContextKey<string>;
 	private focusedAgentSessionChildContextKey: IContextKey<boolean>;
+	private focusedAgentSessionChildCanArchiveContextKey: IContextKey<boolean>;
 	private hasMultipleAgentSessionsSelectedContextKey: IContextKey<boolean>;
 
 	constructor(
@@ -141,6 +142,7 @@ export class AgentSessionsControl extends Disposable implements IAgentSessionsCo
 		this.focusedAgentSessionReadContextKey = ChatContextKeys.isReadAgentSession.bindTo(this.contextKeyService);
 		this.focusedAgentSessionTypeContextKey = ChatContextKeys.agentSessionType.bindTo(this.contextKeyService);
 		this.focusedAgentSessionChildContextKey = ChatContextKeys.isAgentSessionChild.bindTo(this.contextKeyService);
+		this.focusedAgentSessionChildCanArchiveContextKey = ChatContextKeys.agentSessionChildCanArchive.bindTo(this.contextKeyService);
 		this.hasMultipleAgentSessionsSelectedContextKey = ChatContextKeys.hasMultipleAgentSessionsSelected.bindTo(this.contextKeyService);
 		this.collapsedSessionResources = this.loadCollapsedSessionResources();
 
@@ -648,6 +650,7 @@ export class AgentSessionsControl extends Disposable implements IAgentSessionsCo
 				this.focusedAgentSessionReadContextKey.set(focused.isRead());
 				this.focusedAgentSessionTypeContextKey.set(focused.providerType);
 				this.focusedAgentSessionChildContextKey.set(isAgentSessionChild(focused));
+				this.focusedAgentSessionChildCanArchiveContextKey.set(focused.canArchive === true);
 				activeSessionResource.set(focused.resource, undefined);
 			} else {
 				this.focusedAgentSessionArchivedContextKey.reset();
@@ -655,6 +658,7 @@ export class AgentSessionsControl extends Disposable implements IAgentSessionsCo
 				this.focusedAgentSessionReadContextKey.reset();
 				this.focusedAgentSessionTypeContextKey.reset();
 				this.focusedAgentSessionChildContextKey.reset();
+				this.focusedAgentSessionChildCanArchiveContextKey.reset();
 				activeSessionResource.set(undefined, undefined);
 			}
 
@@ -792,6 +796,7 @@ export class AgentSessionsControl extends Disposable implements IAgentSessionsCo
 		contextOverlay.push([ChatContextKeys.isReadAgentSession.key, session.isRead()]);
 		contextOverlay.push([ChatContextKeys.agentSessionType.key, session.providerType]);
 		contextOverlay.push([ChatContextKeys.isAgentSessionChild.key, isAgentSessionChild(session)]);
+		contextOverlay.push([ChatContextKeys.agentSessionChildCanArchive.key, session.canArchive === true]);
 		contextOverlay.push([ChatContextKeys.agentSessionPullRequest.key, getAgentSessionPullRequestContextValue(session)]);
 
 		const menu = this.menuService.createMenu(isAgentSessionChild(session) ? AgentSessionChatContextMenu : MenuId.AgentSessionsContext, this.contextKeyService.createOverlay(contextOverlay));
@@ -863,8 +868,8 @@ export class AgentSessionsControl extends Disposable implements IAgentSessionsCo
 		}
 	}
 
-	refresh(): Promise<void> {
-		return this.agentSessionsService.model.resolve(undefined);
+	refresh(reason: AgentSessionRefreshReason = 'manual'): Promise<void> {
+		return this.agentSessionsService.model.resolve(undefined, undefined, reason);
 	}
 
 	collapseAllSections(): void {
