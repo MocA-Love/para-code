@@ -47,6 +47,11 @@ export interface IParadisAddWorktreeRequest<TPath extends string = ParadisHostPa
 	readonly newBranch: string;
 	/** 分岐元 ref（ブランチ名・タグ・SHA）。 */
 	readonly baseRef: string;
+	/**
+	 * 作った後に Claude Code のフォルダの信頼を済ませておくか（設定 `paradis.workspaceSwitch.trustClaudeFolder`）。
+	 * 設定は呼ぶ側（renderer）が読んで載せる。項目の無い依頼（古い版の呼び出し）では書かない。
+	 */
+	readonly trustClaudeFolder?: boolean;
 }
 
 /** 作業ツリーの未コミット差分の統計 (git diff HEAD --numstat の合算)。 */

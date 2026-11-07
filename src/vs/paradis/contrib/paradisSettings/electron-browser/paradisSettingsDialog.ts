@@ -358,6 +358,16 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	{
 		sectionId: 'psd-sec-space',
 		group: GROUP_SPACE_LOCATION,
+		key: 'paradis.workspaceSwitch.trustClaudeFolder',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.trustClaudeFolder', "Para が作ったスペースでは、Claude Code のフォルダの信頼を済ませておく"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.trustClaudeFolderDesc', "Claude Code の ~/.claude.json に、このスペースを信頼済みとして書きます。スペースを削除すると取り消します。"),
+		keywords: 'claude trust folder worktree space agent',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		group: GROUP_SPACE_LOCATION,
 		key: 'paradis.workspaceSwitch.cloneParentDirectory',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.cloneParentDir', "リポジトリのクローン先"),
