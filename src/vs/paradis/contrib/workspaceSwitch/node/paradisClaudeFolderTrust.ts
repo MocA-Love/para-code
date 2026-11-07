@@ -9,6 +9,11 @@
 // Para Code が作ったワークツリーで、Claude Code のフォルダの信頼の確認（「Is this a project you created or one you
 // trust?」）を前もって済ませる（Orca #23744 の src/main/claude/claude-folder-trust-file.ts と同じ方式）。
 //
+// ロックの形（`<file>.lock` を mkdir で作る proper-lockfile の方式）は、アカウントの切り替えが ~/.claude.json を書くときの
+// ロック（limitsMonitor/node/paradisClaudeLiveAuth.ts の paradisAcquireClaudeDirectoryLock）と同じ前提に立つ。どちらかで
+// Claude Code のロックの形が変わったと分かったら、両方を直すこと。違いは、あちらは 10 秒より古いロックを古いとみなして
+// 取り直すのに対し、こちらは前もって済ませるだけの書き込みなので、既にあるロックは古く見えても奪わずに諦める点。
+//
 // Claude Code は動いている間ずっと ~/.claude.json を書き換える。壊さないために次を守る:
 //  - Claude と同じロック（`<設定ファイル>.lock` のフォルダーを mkdir で作る。proper-lockfile の形）を取ってから書く。
 //    既にあるロックは古く見えても消さない・奪わない。数回待っても取れなければ書かない（今の「確認待ち」の検出に任せる）
@@ -207,7 +212,14 @@ function readConfigSync(configFile: string): ReadResult {
 }
 
 function writeReplacementSync(replacement: string, target: string, config: Record<string, unknown>): void {
-	fs.writeFileSync(replacement, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', flag: 'r+' });
+	const fd = fs.openSync(replacement, 'r+');
+	try {
+		fs.writeFileSync(fd, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8' });
+		// 名前の付け替えの前に中身をディスクへ書き切る（電源断で空の ~/.claude.json に置き換わらないように）
+		fs.fsyncSync(fd);
+	} finally {
+		fs.closeSync(fd);
+	}
 	fs.renameSync(replacement, target);
 }
 
