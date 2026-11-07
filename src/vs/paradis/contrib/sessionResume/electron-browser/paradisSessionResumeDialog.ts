@@ -1153,6 +1153,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 		if (session.otherCodexAccount !== true) {
 			return session.codexHome;
 		}
+		// 一覧は確認のダイアログより上に重なるので、尋ねている間だけ下げる（下げないとダイアログが一覧の裏に隠れる）。
+		this.backdrop.classList.add('behind-dialog');
 		const { result } = await this.dialogService.prompt<'selected' | 'previous'>({
 			type: Severity.Info,
 			message: localize('paradis.sessionResume.otherCodexAccount', "この会話は、選んでいる Codex のアカウントの履歴にありません"),
@@ -1162,7 +1164,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				{ label: localize('paradis.sessionResume.openWithPreviousAccount', "前のアカウントで開く"), run: () => 'previous' },
 			],
 			cancelButton: true,
-		});
+		}).finally(() => this.backdrop.classList.remove('behind-dialog'));
 		if (result === undefined) {
 			return null;
 		}
