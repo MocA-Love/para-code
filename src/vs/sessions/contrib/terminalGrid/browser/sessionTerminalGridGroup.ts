@@ -19,6 +19,7 @@ import { IShellLaunchConfig, ITerminalTabLayoutInfoById, TerminalLocation } from
 import { TerminalStatus } from '../../../../workbench/contrib/terminal/browser/terminalStatusList.js';
 import { addDisposableListener, getWindow } from '../../../../base/browser/dom.js';
 import { asArray } from '../../../../base/common/arrays.js';
+import { URI } from '../../../../base/common/uri.js';
 import { hasKey, isNumber, type SingleOrMany } from '../../../../base/common/types.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { Direction as GridDirection, GridNode, Sizing as GridSizing, isGridBranchNode, ISerializableView, ISerializedGrid, IViewSize, SerializableGrid } from '../../../../base/browser/ui/grid/grid.js';
@@ -678,13 +679,25 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 	 * places it in `direction` relative to `instance`, which must already belong to this group.
 	 * This is how `sessionTerminalGrid.contribution.ts` builds true 2D ("田の字") layouts.
 	 */
-	splitInDirection(instance: ITerminalInstance, direction: Direction): void {
+	splitInDirection(instance: ITerminalInstance, direction: Direction, shellLaunchConfig: IShellLaunchConfig = {}): void {
 		const referenceIndex = this._terminalInstances.indexOf(instance);
 		if (referenceIndex === -1) {
 			return;
 		}
 
-		const newInstance = this._terminalInstanceService.createInstance({}, TerminalLocation.Panel);
+		// Like `TerminalService._splitTerminal`, inherit the scheme and authority (local or remote)
+		// of the parent's cwd URI. Otherwise splitting a local terminal in an SSH window creates a
+		// remote terminal.
+		const config: IShellLaunchConfig = { ...shellLaunchConfig };
+		const parentCwd = instance.shellLaunchConfig.cwd;
+		if (typeof config.cwd !== 'object' && typeof parentCwd === 'object') {
+			let path = config.cwd || parentCwd.path;
+			if (parentCwd.authority && path && path[0] !== '/') {
+				path = '/' + path;
+			}
+			config.cwd = URI.from({ scheme: parentCwd.scheme, authority: parentCwd.authority, path });
+		}
+		const newInstance = this._terminalInstanceService.createInstance(config, TerminalLocation.Panel);
 		this._terminalInstances.splice(referenceIndex + 1, 0, newInstance);
 		this._initInstanceListeners(newInstance);
 
@@ -844,11 +857,20 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 		if (hasInvalidInstance) {
 			return;
 		}
+		// Keep the same terminal active: reordering shifts indices, and `_activeInstanceIndex` would
+		// otherwise point at whichever terminal now sits at the old index.
+		const active = this.activeInstance;
 		const insertIndex = position === 'before' ? index : index + 1;
 		this._terminalInstances.splice(insertIndex, 0, ...instances);
 		for (const item of instances) {
 			const originSourceGroupIndex = position === 'after' ? this._terminalInstances.indexOf(item) : this._terminalInstances.lastIndexOf(item);
 			this._terminalInstances.splice(originSourceGroupIndex, 1);
+		}
+		if (active) {
+			const activeIndex = this._terminalInstances.indexOf(active);
+			if (activeIndex !== -1) {
+				this._activeInstanceIndex = activeIndex;
+			}
 		}
 		// NOTE: unlike `TerminalGroup`, the visual position of each pane in the grid is left
 		// untouched here. A flat array index doesn't map onto a single well-defined location in a

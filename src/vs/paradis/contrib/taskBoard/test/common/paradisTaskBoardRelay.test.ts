@@ -337,6 +337,30 @@ suite('Paradis task board relay - window side', () => {
 		});
 	});
 
+	test('a step command stopped on the board while its confirmation is open never reaches the SSH host, even if allowed later', async () => {
+		const kept = `${WORKTREES}/kept`;
+		let answer: (value: 'once') => void = () => { };
+		const { sessions, reh, bridge } = await opened({ record: { worktrees: [{ dir: kept, branch: 'para/kept' }], branches: [] } });
+		const host = (sessions as unknown as { host: { confirmCommand: (request: IParadisTaskBoardRelayCommandConfirmation) => Promise<string> } }).host;
+		host.confirmCommand = () => new Promise(resolve => answer = resolve);
+		await sessions.handle({ sessionId: SESSION, op: { kind: 'runCommand', place: kept, runId: 'r1', command: 'npm test', step: { flowId: 'f', stepId: 's', source: 'team' } } });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		await sessions.handle({ sessionId: SESSION, op: { kind: 'cancelRun', runId: 'r1' } });
+		answer('once');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({
+			runs: reh.calls.filter(call => call.command === 'runCommand').length,
+			exits: bridge.calls.filter(call => call.command === 'relayEvent').map(call => (call.arg as { event: { runId: string; reason?: string; cancelled?: boolean } }).event).map(event => `${event.runId} ${event.reason} ${event.cancelled}`),
+		}, { runs: 0, exits: ['r1 cancelled true'] });
+	});
+
+	test('a worktree change keeps the remembered push approvals', async () => {
+		const { sessions, records } = await opened({ record: { worktrees: [], branches: ['para/7'], pushApproved: ['para/7'] } });
+		const dir = `${WORKTREES}/8-next`;
+		await sessions.handle({ sessionId: SESSION, op: { kind: 'git', place: ROOT, git: { kind: 'worktreeAdd', dir, branch: 'para/8-next', mode: 'new', base: { kind: 'remote', branch: 'main' } } } });
+		assert.deepStrictEqual(records.get(REPO.toString())?.pushApproved, ['para/7']);
+	});
+
 	test('a step command that the person does not approve never reaches the SSH host', async () => {
 		const kept = `${WORKTREES}/kept`;
 		const { sessions, reh, bridge } = await opened({ record: { worktrees: [{ dir: kept, branch: 'para/kept' }], branches: [] }, confirm: 'deny' });
