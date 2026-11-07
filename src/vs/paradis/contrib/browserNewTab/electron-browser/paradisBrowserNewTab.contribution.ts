@@ -214,7 +214,7 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 			// 題とアイコンは、このスペース → ほかのスペースの順に上限まで読む（Para Code の外のものは読まない）
 			const targets = [...groups.current, ...groups.otherSpaces].filter(server => !this._pages.has(server.port));
 			if (targets.length > 0) {
-				const pages = await this._client.probePages(targets.map(server => ({ port: server.port, address: server.address })));
+				const pages = await this._client.probePages(targets.map(server => ({ port: server.port, address: server.address, pid: server.pid })));
 				if (generation !== this._generation || this._store.isDisposed) {
 					return;
 				}
