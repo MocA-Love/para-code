@@ -200,25 +200,37 @@ export function paradisIsUntrackedFile(file: IParadisMobileStatusFile): boolean 
 }
 
 /**
- * 未追跡のファイルに大きさと時刻を足す（先頭から {@link PARADIS_MOBILE_UNTRACKED_STAT_LIMIT} 件まで）。
+ * 作業ツリー側を書き換えた追跡中のファイルか（`git add` すると status から大きさが消える側）。
+ * 行数が同じ書き換えを見分けるため、未追跡のファイルと同じく大きさと時刻を調べる。
+ */
+function paradisIsWorktreeModifiedFile(file: IParadisMobileStatusFile): boolean {
+	return file.y === 'M' && file.x !== 'U';
+}
+
+/**
+ * 未追跡のファイルと、作業ツリー側を書き換えた追跡中のファイルに、大きさと時刻を足す（合わせて先頭から
+ * {@link PARADIS_MOBILE_UNTRACKED_STAT_LIMIT} 件まで）。大きさと時刻は {@link paradisMobileDiffIdentity} に入るので、
+ * 確認した後に行数を変えずに書き換えても別の識別になる。
  * `stats` はパスの一覧をまとめて調べる（ルートの realpath を1回にまとめるため）。結果に無いもの（読めない・消えた）
  * と上限より後ろのものには付けない（大きさの無い未追跡のファイルは、確認済みのステージの対象にしない）。
  */
 export async function paradisWithUntrackedFileStats(files: readonly IParadisMobileStatusFile[], stats: (paths: readonly string[]) => Promise<ReadonlyMap<string, { readonly size: number; readonly mtime: number }>>): Promise<IParadisMobileStatusFile[]> {
-	const paths = files.filter(paradisIsUntrackedFile).slice(0, PARADIS_MOBILE_UNTRACKED_STAT_LIMIT).map(file => file.path);
+	const stattable = (file: IParadisMobileStatusFile) => paradisIsUntrackedFile(file) || paradisIsWorktreeModifiedFile(file);
+	const paths = files.filter(stattable).slice(0, PARADIS_MOBILE_UNTRACKED_STAT_LIMIT).map(file => file.path);
 	if (paths.length === 0) {
 		return [...files];
 	}
 	const found = await stats(paths).catch(() => new Map<string, { readonly size: number; readonly mtime: number }>());
 	return files.map(file => {
-		const stat = paradisIsUntrackedFile(file) ? found.get(file.path) : undefined;
+		const stat = stattable(file) ? found.get(file.path) : undefined;
 		return stat !== undefined ? { ...file, size: stat.size, mtime: stat.mtime } : file;
 	});
 }
 
 /**
  * `git add` の前後で、足した中身がスマホの見たものと同じだと言えるか（印をステージ後の識別へ付け替えてよいか）。
- * - 作業ツリー側だけの変更だったもの: ステージ後の行数が、前の作業ツリー側の行数と同じ
+ * - 作業ツリー側だけの変更だったもの: ステージ後の行数が、前の作業ツリー側の行数と同じ。前に大きさと時刻を
+ *   調べてあれば、足した後に調べ直したもの（`afterStat`）も同じ
  * - 未追跡だったもの: 新しく足された（`A `）うえで、足した後に調べ直した大きさと時刻（`afterStat`。追跡中になった
  *   ファイルの status には大きさが載らないので、呼び出し側が別に調べて渡す）が前と同じ
  * - 両側に変更があったもの（`MM` など）: 行数を足し合わせて比べられないので、付け替えない
@@ -232,7 +244,8 @@ export function paradisStagedConsistently(before: IParadisMobileStatusFile, afte
 		return after.x === 'A' && before.size !== undefined && before.mtime !== undefined && afterStat !== undefined && afterStat.size === before.size && afterStat.mtime === before.mtime;
 	}
 	if (before.x === ' ') {
-		return before.added !== undefined && before.removed !== undefined && after.stagedAdded === before.added && after.stagedRemoved === before.removed;
+		return before.added !== undefined && before.removed !== undefined && after.stagedAdded === before.added && after.stagedRemoved === before.removed
+			&& (before.size === undefined || before.mtime === undefined || (afterStat !== undefined && afterStat.size === before.size && afterStat.mtime === before.mtime));
 	}
 	return false;
 }
@@ -242,7 +255,7 @@ export function paradisStagedConsistently(before: IParadisMobileStatusFile, afte
  * 書き換えた。足したものを戻す）。{@link paradisStagedConsistently} と違い、確かめられないもの（両側に変更があった、
  * 行数や大きさが分からない、足した後に作業ツリー側がまた変わった未追跡のファイル）は違うと言わない。
  * - 作業ツリー側だけの変更だったもの: ステージ側の行数が、前の作業ツリー側の行数と違う（ステージ側の行数は、足した後の
- *   作業ツリーの変更に左右されない）
+ *   作業ツリーの変更に左右されない）。または、作業ツリー側に変更が残っていない（足したものと同じ）のに、大きさか時刻が前と違う
  * - 未追跡だったもの: 新しく足され、作業ツリー側に変更が残っていない（足したものと同じ）のに、大きさか時刻が前と違う
  */
 export function paradisStagedContentDiffers(before: IParadisMobileStatusFile, after: IParadisMobileStatusFile, afterStat?: { readonly size: number; readonly mtime: number }): boolean {
@@ -251,8 +264,11 @@ export function paradisStagedContentDiffers(before: IParadisMobileStatusFile, af
 			&& (afterStat.size !== before.size || afterStat.mtime !== before.mtime);
 	}
 	if (before.x === ' ') {
-		return before.added !== undefined && before.removed !== undefined && after.stagedAdded !== undefined && after.stagedRemoved !== undefined
+		const countsDiffer = before.added !== undefined && before.removed !== undefined && after.stagedAdded !== undefined && after.stagedRemoved !== undefined
 			&& (after.stagedAdded !== before.added || after.stagedRemoved !== before.removed);
+		const statDiffers = after.y === ' ' && before.size !== undefined && before.mtime !== undefined && afterStat !== undefined
+			&& (afterStat.size !== before.size || afterStat.mtime !== before.mtime);
+		return countsDiffer || statDiffers;
 	}
 	return false;
 }
@@ -269,8 +285,8 @@ function fnv1a(text: string, seed: number): string {
 
 /**
  * 変更1件の「中身」の識別（Orca の diffIdentity と同じ考え方）。状態・パス・元のパス・両側の行数（未追跡の
- * ファイルは大きさと時刻）から作るので、確認した後にエージェントが書き換えて行数が変われば別の値になる
- * （追跡中のファイルで行数が同じ書き換えは見分けられない）。
+ * ファイルと作業ツリー側を書き換えたファイルは大きさと時刻も）から作るので、確認した後にエージェントが書き換えれば
+ * 行数が同じでも別の値になる（大きさと時刻を調べる上限より後ろのファイルは、行数が同じ書き換えを見分けられない）。
  * ステージすると状態と行数の側が変わるので別の値になる（PC が確認済みのステージを行ったときは印を付け替える）。
  */
 export function paradisMobileDiffIdentity(file: IParadisMobileStatusFile): string {

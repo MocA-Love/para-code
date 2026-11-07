@@ -418,13 +418,14 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 				return;
 			}
 		}
-		// 未追跡だったファイルは足した後の status に大きさが載らない（追跡中になる）ので、調べ直して渡す
-		const wasUntracked = toStage.filter(path => byPath.get(path)?.x === '?');
+		// 足した後の status には大きさが載らない（未追跡だったものは追跡中になり、作業ツリー側の変更はステージ側へ移る）
+		// ので、前に大きさを調べてあったものは調べ直して渡す
+		const restat = toStage.filter(path => byPath.get(path)?.size !== undefined);
 		let after: IParadisMobileStatusFile[] | undefined;
 		let afterStats: ReadonlyMap<string, { readonly size: number; readonly mtime: number }>;
 		try {
 			after = await readStatusWithCounts(context, fileService, root);
-			afterStats = await paradisWithHostDeadline(paradisStatMobileWorkspaceFiles(fileService, root, wasUntracked), AFTER_STAT_DEADLINE_MS);
+			afterStats = await paradisWithHostDeadline(paradisStatMobileWorkspaceFiles(fileService, root, restat), AFTER_STAT_DEADLINE_MS);
 		} catch (error) {
 			// 足した後を読めないと、確かめていない中身を戻すことも印を付け替えることもできない。
 			// ステージしたことは伝え、PC で確かめてもらう（印は付け替えない）

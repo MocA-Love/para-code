@@ -625,4 +625,29 @@ suite('ParadisBrowserExtensionsMain', () => {
 		assert.deepStrictEqual({ leftover: await exists(leftover), kept: await exists(kept) }, { leftover: false, kept: true });
 		manager.dispose();
 	});
+
+	test('keeps the storage.sync data when the ledger cannot be read at start', async () => {
+		const synced = join(root, 'sync-storage', 'default', `${'a'.repeat(32)}.json`);
+		await fs.mkdir(join(root, 'sync-storage', 'default'), { recursive: true });
+		await fs.writeFile(synced, '{}');
+		// 壊れた台帳。空の台帳として扱っても、入れてある拡張機能の storage.sync を消してはいけない
+		await fs.writeFile(join(root, 'ledger.json'), '{"version":1,');
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		await manager.getState();
+		assert.strictEqual(await fs.stat(synced).then(() => true, () => false), true);
+		manager.dispose();
+	});
+
+	test('does not bring back an extension removed while it was being reloaded from its folder', async () => {
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		await writeExtension(join(root, 'source'), { manifest_version: 2, name: 'Sample', version: '1.0' });
+		const added = await manager.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		assert.ok(added.ok);
+		// 写している間に（別のウィンドウから）削除する
+		const reloading = manager.reloadUnpacked(added.extension.id);
+		await manager.remove(added.extension.id);
+		const reloaded = await reloading;
+		assert.deepStrictEqual({ ok: reloaded.ok, extensions: (await manager.getState()).extensions }, { ok: false, extensions: [] });
+		manager.dispose();
+	});
 });

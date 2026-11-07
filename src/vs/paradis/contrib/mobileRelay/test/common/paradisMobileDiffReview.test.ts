@@ -124,9 +124,17 @@ suite('ParadisMobileDiffReview', () => {
 			changed: paradisMobileDiffIdentity(withStats[0]!) !== paradisMobileDiffIdentity(rewritten[0]!),
 		}, {
 			files: [{ x: '?', y: '?', path: 'a.ts', size: 10, mtime: 5 }, { x: '?', y: '?', path: 'dir/' }, { x: ' ', y: 'M', path: 'b.ts' }],
-			asked: [['a.ts']],
+			// 作業ツリー側を書き換えた追跡中のファイルも調べる（ここでは読めなかったので付かない）
+			asked: [['a.ts', 'b.ts']],
 			changed: true,
 		});
+	});
+
+	test('a tracked file rewritten after review with the same line counts gets another identity', async () => {
+		const files = [{ x: ' ', y: 'M', path: 'a.ts', added: 3, removed: 1 }];
+		const reviewed = await paradisWithUntrackedFileStats(files, async () => new Map([['a.ts', { size: 40, mtime: 5 }]]));
+		const rewritten = await paradisWithUntrackedFileStats(files, async () => new Map([['a.ts', { size: 40, mtime: 6 }]]));
+		assert.notStrictEqual(paradisMobileDiffIdentity(reviewed[0]!), paradisMobileDiffIdentity(rewritten[0]!));
 	});
 
 	test('re-keys a mark after staging only when the staged content matches what was reviewed', () => {

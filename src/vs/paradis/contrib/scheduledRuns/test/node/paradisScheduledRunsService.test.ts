@@ -36,11 +36,17 @@ suite('ParadisScheduledRunsService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function setup(initial?: IParadisScheduledRunsStoredState, startAt = at(2026, 9, 25, 8, 0)) {
-		const state = { now: startAt, stored: initial, writes: 0 };
+		const state = { now: startAt, stored: initial, writes: 0, failWrites: false };
 		const hooks = disposables.add(new Emitter<IParadisScheduledRunHookEvent>());
 		const service = disposables.add(new ParadisScheduledRunsService({
 			read: async () => state.stored,
-			write: async value => { state.stored = value; state.writes++; },
+			write: async value => {
+				if (state.failWrites) {
+					throw new Error('ENOSPC');
+				}
+				state.stored = value;
+				state.writes++;
+			},
 		}, { now: () => state.now }, new NullLogService(), { startTimer: false, hookEvents: hooks.event }));
 		const requests: IParadisScheduledRunRequest[] = [];
 		const store = disposables.add(new DisposableStore());
@@ -62,6 +68,17 @@ suite('ParadisScheduledRunsService', () => {
 		const tooFrequent = await service.save({ ...DRAFT, schedule: '*/5 * * * *' });
 		const created = await service.save(DRAFT);
 		assert.deepStrictEqual({ tooFrequent: tooFrequent.ok, created: created.ok, enabled: created.definition?.enabled }, { tooFrequent: false, created: true, enabled: false });
+	});
+
+	test('reports a failure when a change by the user could not be written', async () => {
+		const { state, service } = setup();
+		await service.whenReady();
+		const id = await createEnabled(service);
+		state.failWrites = true;
+		const disabled = await service.setEnabled(id, false);
+		const saved = await service.save(DRAFT);
+		const deleted = await service.delete(id);
+		assert.deepStrictEqual([disabled.ok, saved.ok, deleted.ok, state.stored?.definitions.map(definition => definition.enabled)], [false, false, false, [true]]);
 	});
 
 	test('requests a run at the scheduled time, and a window claims it once', async () => {

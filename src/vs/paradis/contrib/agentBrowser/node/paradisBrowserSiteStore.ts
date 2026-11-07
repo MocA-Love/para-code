@@ -11,6 +11,7 @@
 // 2 つ（ステーブルとベータ）動いていても、書く直前に読み直して足し、互いの項目を消さない（同じ瞬間の書き込みは後勝ち）。
 
 import { promises as fs } from 'fs';
+import { basename } from '../../../../base/common/path.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 
 /** 1 つのファイルに持つ組（スペース × オリジン）の上限。古い組から消す。 */
@@ -56,8 +57,13 @@ export class ParadisBrowserSiteStore<T> {
 		}
 	}
 
-	/** 中身を読む。返す Map は呼んだ側で変えてよい（覚えている中身とは別の Map）。 */
-	private async load(): Promise<Map<string, T[]>> {
+	/**
+	 * 中身を読む。返す Map は呼んだ側で変えてよい（覚えている中身とは別の Map）。
+	 *
+	 * ファイルが無いときだけ空とみなす。読めない・形が壊れているときは、`forUpdate` なら投げる
+	 * （空とみなして書き戻すと、既存の全件を消す）。一覧を見るだけなら空として返す。どちらも覚えない。
+	 */
+	private async load(forUpdate: boolean = false): Promise<Map<string, T[]>> {
 		const stamp = await this.stamp();
 		if (stamp !== undefined && this.cached?.stamp === stamp) {
 			return new Map(this.cached.map);
@@ -67,7 +73,14 @@ export class ParadisBrowserSiteStore<T> {
 			const parsed: unknown = JSON.parse(await fs.readFile(this.filePath, 'utf8'));
 			const items = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)[this.field] : undefined;
 			map = new Map(Object.entries(typeof items === 'object' && items !== null ? items : {}).filter((entry): entry is [string, T[]] => Array.isArray(entry[1])));
-		} catch {
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT') {
+				this.cached = undefined;
+				if (forUpdate) {
+					throw new Error(`Could not read ${basename(this.filePath)}; it was left as it is. Fix or remove the file and try again.`);
+				}
+				return new Map();
+			}
 			map = new Map();
 		}
 		// 読んでいる間に書き換えられたかもしれないので、読む前の印で覚える（次は印が違うので読み直す）
@@ -98,7 +111,7 @@ export class ParadisBrowserSiteStore<T> {
 	update<R>(space: string, origin: string, change: (items: readonly T[]) => { readonly value: R; readonly items?: readonly T[] }): Promise<R> {
 		const key = ParadisBrowserSiteStore.key(space, origin);
 		const run = async () => {
-			const map = await this.load();
+			const map = await this.load(true);
 			const before = map.get(key) ?? [];
 			const { value, items } = change(before);
 			if (items !== undefined) {

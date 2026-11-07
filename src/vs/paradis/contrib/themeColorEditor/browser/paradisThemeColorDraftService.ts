@@ -294,8 +294,10 @@ export class ParadisThemeColorDraftService extends Disposable implements IParadi
 		const { writes, savedScoped } = plan;
 
 		// ユーザー設定を先に書いてからメモリ層を戻す（逆だと一瞬だけ元の色に戻って見える）。
+		// 書けなかったら（settings.json の書式の誤り・書き込めない）例外で受け、下書きを残したまま投げる。
+		// donotNotifyError が無いと、失敗は通知されるだけで resolve し、下書きを消して保存できたことになる。
 		for (const write of writes) {
-			await this.configurationService.updateValue(write.key, write.value, ConfigurationTarget.USER);
+			await this.configurationService.updateValue(write.key, write.value, {}, ConfigurationTarget.USER, { donotNotifyError: true });
 		}
 
 		// 保存した下書きだけを片付ける。保存中に値が変わった色・スコープは下書きとして残す。

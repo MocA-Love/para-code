@@ -34,6 +34,8 @@ export class ParadisScmInputScope extends Disposable implements IWorkbenchContri
 
 	/** 切り替え先リポジトリの復元待ちエントリ { SCMルートURI文字列 → テキスト } */
 	private _pendingRestore: Record<string, string> | undefined;
+	/** {@link _pendingRestore} がどのスペースの下書きか。 */
+	private _pendingRestoreKey: string | undefined;
 
 	constructor(
 		@ISCMService private readonly scmService: ISCMService,
@@ -63,10 +65,21 @@ export class ParadisScmInputScope extends Disposable implements IWorkbenchContri
 		// 切り替え直前なので、フォルダはまだ切り替え元のスペースのもの。待避中の別スペースの
 		// リポジトリは SCM に残っているので、ここで絞らないとその文字まで切り替え元の下書きになる。
 		const entries: Record<string, string> = {};
-		for (const repository of this.repositoriesInCurrentSpace()) {
+		const repositories = this.repositoriesInCurrentSpace();
+		for (const repository of repositories) {
 			const rootUri = repository.provider.rootUri;
 			if (rootUri && repository.input.value) {
 				entries[rootUri.toString()] = repository.input.value;
+			}
+		}
+		// Git 拡張がまだ登録し直していない（入力欄が無い）リポジトリの下書きは、復元待ちのまま引き継ぐ。
+		// ここで落とすと、登録される前にスペースを離れただけで下書きが消える。
+		if (this._pendingRestore && this._pendingRestoreKey === previousKey) {
+			const registered = new Set(repositories.map(repository => repository.provider.rootUri?.toString()));
+			for (const [root, value] of Object.entries(this._pendingRestore)) {
+				if (!registered.has(root) && entries[root] === undefined) {
+					entries[root] = value;
+				}
 			}
 		}
 
@@ -90,6 +103,7 @@ export class ParadisScmInputScope extends Disposable implements IWorkbenchContri
 
 	private beginRestore(targetKey: string): void {
 		this._pendingRestore = this.loadAll()[targetKey];
+		this._pendingRestoreKey = targetKey;
 		if (!this._pendingRestore) {
 			return;
 		}

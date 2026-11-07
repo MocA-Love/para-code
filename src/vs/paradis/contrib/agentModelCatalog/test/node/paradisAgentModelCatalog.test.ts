@@ -53,6 +53,21 @@ suite('ParadisAgentModelCatalogService', () => {
 
 	const ids = (catalogs: { agentId: string; models: readonly { id: string }[] }[]) => catalogs.map(catalog => `${catalog.agentId}:${catalog.models.map(model => model.id).join(',')}`);
 
+	test('Claude と Codex の一覧を並べて取っても、遅れて終わった書き込みでもう片方の結果を消さない', async () => {
+		const { state, backend } = setup();
+		// 先に始めた書き込みが、後から始めた書き込みより後に終わる
+		let writes = 0;
+		backend.writeCache = async cache => {
+			const snapshot = JSON.parse(JSON.stringify(cache));
+			if (writes++ === 0) {
+				await new Promise(resolve => setTimeout(resolve, 20));
+			}
+			state.cache = snapshot;
+		};
+		await new ParadisAgentModelCatalogService(backend, new NullLogService()).getCatalogs();
+		assert.deepStrictEqual(Object.keys(state.cache).sort(), ['claude', 'codex']);
+	});
+
 	test('版が同じ間は CLI に一覧を聞き直さず、版が変わったら取り直す。取れなければ前回の一覧を返す', async () => {
 		const { state, backend } = setup();
 		const first = await new ParadisAgentModelCatalogService(backend, new NullLogService()).getCatalogs();
