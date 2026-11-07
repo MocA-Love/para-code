@@ -313,6 +313,30 @@ suite('Paradis Cursor Overlay page script', () => {
 		}
 	});
 
+	test('inside the window of an agent wheel, a scroll right after a later input of the user is the user\'s', async () => {
+		const box = scrollBox();
+		// The agent's own wheel arrives within 20 ms of its notice; a later trusted input is the user's.
+		const quick: IParadisCursorOverlayTuning = { ...QUICK, scrollInputSlackMs: 20, scriptClickGapMs: 5 };
+		const scrolls = () => (mainWindow as unknown as Record<string, { user: number }>)[SCROLLS_KEY];
+		try {
+			run({ kind: 'move', x: 150, y: 80, label: 'Claude', durationMs: 0, frames: [{ x: 150, y: 80, r: 0, o: 1 }] }, quick);
+			run({ kind: 'wheel', label: 'Claude', dx: 0, dy: 120, text: 'Scroll', scrollText: 'Wheel {0}' }, quick);
+			// The agent's wheel (trusted, right after the notice): still the agent's.
+			scrolls().user = Date.now();
+			scrollBoxBy(box, 120);
+			await sleep(SETTLED_MS);
+			const agent = { t: pageState()!.t, value: pageState()!.bars?.[0]?.v };
+			// The user wheels later, while the window is still open: the bar and the name tag stay where the agent left them.
+			scrolls().user = Date.now();
+			scrollBoxBy(box, 60);
+			await sleep(SETTLED_MS);
+			const user = { t: pageState()!.t, value: pageState()!.bars?.[0]?.v };
+			assert.deepStrictEqual({ agent, user }, { agent: { t: 'Claude \u00b7 Wheel 120px', value: 120 }, user: { t: 'Claude \u00b7 Wheel 120px', value: 120 } });
+		} finally {
+			box.remove();
+		}
+	});
+
 	test('scrolls before the script, after it ended, or with two cursors watching are not followed, and none is even read while nobody watches', async () => {
 		const box = scrollBox();
 		const owner = (id: string) => ({ owner: id, color: '#d97757' });
