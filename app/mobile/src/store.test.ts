@@ -1408,6 +1408,31 @@ describe('MobileController', () => {
 		expect(afterFrame.notifications).toBe(beforeFrame.notifications);
 	});
 
+	it('drops agent messages that lack the fields the chat screen draws', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, s => { latest = s; });
+		const pcMuxP = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxP;
+		await flush();
+		const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
+		pcMux.send(Channels.State, enc(desktopState([{ id: 1, title: 'claude', agentToken: 'agent-1' }])));
+		await flush();
+		controller.attachAgent('terminal-1');
+		await flush();
+		const good = { rev: 1, role: 'assistant', kind: 'text', text: 'ok' };
+		pcMux.send(Channels.Agent, enc({ t: 'snapshot', id: 1, token: 'agent-1', agent: 'claude', epoch: 'e1', rev: 1, messages: [null, { rev: 2, role: 'assistant', kind: 'text' }, good] }));
+		await flush();
+		pcMux.send(Channels.Agent, enc({ t: 'delta', id: 1, token: 'agent-1', agent: 'claude', epoch: 'e1', rev: 3, messages: [{ rev: 2, role: 'assistant', text: 'no kind' }, { ...good, rev: 2, text: 'later' }] }));
+		await flush();
+		expect(latest?.agentChats.get('terminal-1')?.messages.map(message => message.text)).toEqual(['ok', 'later']);
+	});
+
 	it('routes voice clips and voice.stream.v1 parts to the voice handler without JSON-parsing binary chunks', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();

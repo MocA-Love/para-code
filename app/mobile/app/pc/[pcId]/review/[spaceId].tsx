@@ -8,6 +8,7 @@ import { CircleAlert, CircleCheck, CloudOff, FileX, List, MessageSquare } from '
 import { useAppStore } from '../../../../src/appState.js';
 import { parseUnifiedDiff, type DiffRow } from '../../../../src/components/diffParser.js';
 import { guardWebViewNavigation } from '../../../../src/components/webViewLinkGuard.js';
+import { useWebViewRevival } from '../../../../src/components/webViewRevival.js';
 import { isDiffViewerJavaScriptEnabled } from '../../../../src/components/webViewScriptPolicy.js';
 import { usePcCapability } from '../../../../src/hooks/usePcCapability.js';
 import { useIsRegularWidth } from '../../../../src/hooks/useSizeClass.js';
@@ -434,6 +435,7 @@ function DiffBody({ diff, path, rows, unavailable, notes, onLongPressRow, onPres
 	onLongPressRow: ((row: DiffRow & { newNo: number }) => void) | undefined;
 	onPressNote: (note: ReviewNote) => void;
 }) {
+	const revival = useWebViewRevival();
 	if (diff.error !== undefined) {
 		const office = diff.source === 'officeUnavailable';
 		return <EmptyState icon={office ? FileX : CircleAlert} title={office ? '差分を表示できません' : '差分を読み込めませんでした'} body={office ? '「開く」でファイルそのものを見られます。' : diff.error} />;
@@ -441,8 +443,10 @@ function DiffBody({ diff, path, rows, unavailable, notes, onLongPressRow, onPres
 	if (diff.html !== undefined) {
 		return (
 			<WebView
+				key={revival.generation}
 				style={styles.web}
 				source={{ html: diff.html }}
+				onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 				originWhitelist={['*']}
 				javaScriptEnabled={isDiffViewerJavaScriptEnabled('spreadsheet')}
 				onShouldStartLoadWithRequest={guardWebViewNavigation}
