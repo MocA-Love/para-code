@@ -992,3 +992,117 @@
 	flex-shrink: 1;
 	overflow: hidden;
 }
+
+/* allow-any-unicode-next-line */
+/* 一覧の上の Orca 風のナビ（検索・タスク・定期実行・モバイル）と「プロジェクト」の見出し (paradisWorkspacesNav.ts) */
+.paradis-workspaces-nav {
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+	padding: 4px 8px 2px;
+}
+
+.paradis-workspaces-nav-items {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.paradis-workspaces-nav-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 28px;
+	padding: 0 8px;
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+	cursor: pointer;
+	outline-offset: -1px;
+}
+
+.paradis-workspaces-nav-row .codicon {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-workspaces-nav-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* allow-any-unicode-next-line */
+/* 検索の行だけは入力欄に見えるよう薄く塗る (Orca と同じ) */
+.paradis-workspaces-nav-row.paradis-workspaces-nav-search {
+	height: 30px;
+	margin-bottom: 2px;
+	background-color: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-workspaces-nav-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-workspaces-nav-row:focus-visible,
+.paradis-workspaces-heading-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+}
+
+.paradis-workspaces-heading {
+	display: flex;
+	align-items: center;
+	height: 26px;
+	margin-top: 8px;
+	padding-left: 8px;
+	font-size: var(--vscode-fontSize-label2, 11px);
+	font-weight: var(--vscode-fontWeight-semiBold, 600);
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-workspaces-heading-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.paradis-workspaces-heading-actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.paradis-workspaces-heading-button {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	color: var(--vscode-icon-foreground);
+	cursor: pointer;
+}
+
+.paradis-workspaces-heading-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-workspaces-heading-bell-count {
+	position: absolute;
+	right: 0;
+	bottom: 1px;
+	font-size: 9px;
+	line-height: 9px;
+	font-weight: var(--vscode-fontWeight-semiBold);
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-foreground);
+}
+
+.paradis-workspaces-heading-bell.attention .codicon,
+.paradis-workspaces-heading-bell.attention .paradis-workspaces-heading-bell-count {
+	color: var(--vscode-charts-red, #ef4444);
+}
