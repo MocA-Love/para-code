@@ -37,5 +37,6 @@
 /* The card draws its own border now; the resize sash keeps its hover feedback but no permanent line. */
 .modern-ui .simple-find-part-wrapper:not(.browser-find-widget-wrapper *) > .simple-find-part > .monaco-sash {
 	border-left-color: transparent;
+	background-color: transparent;
 	border-radius: var(--vscode-cornerRadius-large) 0 0 var(--vscode-cornerRadius-large);
 }
