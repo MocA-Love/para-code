@@ -106,6 +106,28 @@ suite('Paradis Codex account switching', () => {
 		});
 	});
 
+	// 手で作った名前のホームは切り替え先には出すが、設定を書いてよい印は選んだときに初めて付き、再起動後も残る。
+	test('marks a hand-made home as configurable only after the user selects it', async () => {
+		mkdirSync(join(home, '.codex-work'), { recursive: true });
+		writeFileSync(join(home, '.codex-work', 'auth.json'), JSON.stringify({ tokens: { id_token: idToken('d@example.com'), account_id: 'work' } }));
+		const configurable = (state: IParadisCodexAccountsState) => state.homes.map(entry => [entry.label, entry.configurable]);
+		const first = createService();
+		const before = configurable(await first.getState());
+		await first.selectHome(join(home, '.codex-work'));
+		const afterSelect = configurable(await first.selectHome(undefined));
+		await first.whenLinked();
+		first.dispose();
+		const second = createService();
+		const afterRestart = configurable(await second.getState());
+		second.dispose();
+		const adopted = [['~/.codex', true], ['~/.codex-2', true], ['~/.codex-4', true], ['~/.codex-work', true]];
+		assert.deepStrictEqual({ before, afterSelect, afterRestart }, {
+			before: [['~/.codex', true], ['~/.codex-2', true], ['~/.codex-4', true], ['~/.codex-work', false]],
+			afterSelect: adopted,
+			afterRestart: adopted,
+		});
+	});
+
 	test('lists signed-in homes and keeps the selection across restarts for every window', async () => {
 		const first = createService();
 		const events: (string | undefined)[] = [];

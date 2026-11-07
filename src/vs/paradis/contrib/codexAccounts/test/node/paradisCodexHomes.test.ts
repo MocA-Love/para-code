@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisCodexHomeCandidates, paradisCodexHomes, paradisEachCodexHome, paradisIsWithinCodexHome, paradisNormalizeCodexHomePath } from '../../../agentBrowser/node/paradisAgentHome.js';
+import { paradisCodexConfigHomes, paradisCodexHomeCandidates, paradisCodexHomes, paradisEachCodexHome, paradisIsWithinCodexHome, paradisNormalizeCodexHomePath } from '../../../agentBrowser/node/paradisAgentHome.js';
 
 suite('Paradis Codex homes', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -53,6 +53,19 @@ suite('Paradis Codex homes', () => {
 			paradisNormalizeCodexHomePath('relative/path', home),
 			paradisNormalizeCodexHomePath(42, home),
 		], [join(home, 'work-codex'), join(home, 'work-codex'), undefined, undefined]);
+	});
+
+	// 手で作った名前のホーム（`cp -r ~/.codex ~/.codex-backup` の写しなど）は一覧には出すが、hook・MCP の設定を書くのは
+	// 既定のホーム・Para Code が作った `~/.codex-<数字>`・設定で足したもの・一度でも選んだものだけ。
+	test('writes settings only to homes Para Code created, configured or the user has selected', () => {
+		const configured = [join(home, 'work-codex')];
+		assert.deepStrictEqual({
+			notSelected: paradisCodexConfigHomes({ homeDirectory: home, configured }),
+			selected: paradisCodexConfigHomes({ homeDirectory: home, configured, adopted: [join(home, '.codex-backup')] }),
+		}, {
+			notSelected: [join(home, '.codex'), join(home, '.codex-2'), join(home, '.codex-10'), join(home, 'work-codex')],
+			selected: [join(home, '.codex'), join(home, '.codex-2'), join(home, '.codex-10'), join(home, '.codex-backup'), join(home, 'work-codex')],
+		});
 	});
 
 	// SSH の接続先などアカウント切替を有効にしていないプロセスでは、従来どおり既定のホームだけ。

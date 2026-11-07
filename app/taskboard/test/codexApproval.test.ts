@@ -106,7 +106,7 @@ describe('codex approval', () => {
 			linkRefused,
 		}).toEqual({ approved: [], backup: SERVER, linkRefused: true });
 	});
-	test('finds the Codex homes Para Code uses: CODEX_HOME, ~/.codex, ~/.codex-<name> (also as a link) and the configured ones', async () => {
+	test('finds the Codex homes Para Code uses: CODEX_HOME, ~/.codex, ~/.codex-<number> (also as a link) and the configured ones', async () => {
 		const home = mkdtempSync(path.join(os.tmpdir(), 'tb-codex-home-'));
 		const elsewhere = mkdtempSync(path.join(os.tmpdir(), 'tb-codex-env-'));
 		const configured = mkdtempSync(path.join(os.tmpdir(), 'tb-codex-conf-'));
@@ -133,8 +133,8 @@ describe('codex approval', () => {
 			relative: relative.map(f => path.relative(home, f)),
 			settings,
 		}).toEqual({
-			found: [path.relative(home, path.join(elsewhere, 'config.toml')), '.codex/config.toml', '.codex-2/config.toml', '.codex-5/config.toml', '.codex-backup/config.toml', path.relative(home, path.join(configured, 'config.toml'))],
-			relative: ['.codex/config.toml', '.codex-2/config.toml', '.codex-5/config.toml', '.codex-backup/config.toml'],
+			found: [path.relative(home, path.join(elsewhere, 'config.toml')), '.codex/config.toml', '.codex-2/config.toml', '.codex-5/config.toml', path.relative(home, path.join(configured, 'config.toml'))],
+			relative: ['.codex/config.toml', '.codex-2/config.toml', '.codex-5/config.toml'],
 			settings: ['~/work-codex'],
 		});
 	});

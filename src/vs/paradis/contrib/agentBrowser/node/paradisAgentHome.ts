@@ -17,7 +17,7 @@
 import * as fs from 'fs';
 import { homedir } from 'os';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
+import { basename, dirname, isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { IParadisWslAgentHome, paradisResolveWslAgentHome, paradisWslUncPathFrom } from '../../../common/paradisWslAgentHome.js';
 
 function resolveAgentHome(envVarName: string, fallbackDirName: string): string {
@@ -41,6 +41,12 @@ export function paradisCodexHome(): string {
  * `paradis.limitsMonitor.codexHomes` で足す。
  */
 const PARA_CODE_CODEX_HOME_PATTERN = /^\.codex-[\w.]+$/;
+/**
+ * Para Code（使用量パネルの「アカウントを追加」）が作るホームの名前。手で作った名前のホーム（`cp -r ~/.codex
+ * ~/.codex-backup` のような写しを含む）には、利用者が一度選ぶまで hook・MCP の設定を書かない
+ * （{@link paradisCodexConfigHomes}）。
+ */
+const PARA_CODE_CREATED_CODEX_HOME_PATTERN = /^\.codex-\d+$/;
 /** 走査結果を使い回す時間。hook のたびにホームディレクトリを読まないため。 */
 const CODEX_HOMES_CACHE_MS = 5_000;
 
@@ -51,6 +57,8 @@ const CODEX_HOMES_CACHE_MS = 5_000;
 let codexAccountHomesEnabled = false;
 /** 設定で足したホーム（正規化済み）。 */
 let configuredCodexHomes: readonly string[] = [];
+/** 利用者が一度でも切り替え先に選んだホーム（codexAccounts が覚えて渡す）。 */
+let adoptedCodexHomes: readonly string[] = [];
 let codexHomesCache: { readonly at: number; readonly key: string; readonly candidates: readonly string[]; readonly signedIn: readonly string[] } | undefined;
 /** 前回の走査で見つけたログイン済みのホーム。Para Code の外でログイン・ログアウトしたことに気付くため。 */
 let lastSignedInKey: string | undefined;
@@ -60,6 +68,8 @@ export interface IParadisCodexHomesOptions {
 	readonly homeDirectory?: string;
 	/** テスト用。`homeDirectory` と一緒に、設定で足したホームを渡す。 */
 	readonly configured?: readonly string[];
+	/** テスト用。`homeDirectory` と一緒に、利用者が選んだことのあるホームを渡す。 */
+	readonly adopted?: readonly string[];
 }
 
 const onDidChangeCodexHomesEmitter = new Emitter<void>();
@@ -94,6 +104,19 @@ export function paradisNormalizeCodexHomePath(raw: unknown, homeDirectory: strin
 	const trimmed = raw.trim();
 	const expanded = trimmed === '~' || trimmed.startsWith('~/') || trimmed.startsWith('~\\') ? join(homeDirectory, trimmed.slice(1)) : trimmed;
 	return isAbsolute(expanded) ? resolve(expanded) : undefined;
+}
+
+/**
+ * 利用者が一度でも切り替え先に選んだホームを差し替える（codexAccounts が呼ぶ）。変わっていれば
+ * {@link onDidChangeParadisCodexHomes} を知らせ、hook・MCP の設定をそのホームへも書かせる。
+ */
+export function paradisSetAdoptedCodexHomes(homes: readonly string[]): void {
+	const next = [...new Set(homes)].sort();
+	if (JSON.stringify(next) === JSON.stringify(adoptedCodexHomes)) {
+		return;
+	}
+	adoptedCodexHomes = next;
+	paradisNotifyCodexHomesChanged();
 }
 
 /** 設定で足したホームを差し替える（codexAccounts が設定の変更ごとに呼ぶ）。 */
@@ -169,12 +192,34 @@ function scanCodexHomes(options: IParadisCodexHomesOptions): { readonly primary:
  * 続くのはログイン済み（auth.json がある）のアカウント用ホーム。
  *
  * Codex のアカウントを切り替えると、新しく開いたターミナルの Codex は `CODEX_HOME=~/.codex-2` の
- * ように別のホームへ transcript・state DB・hooks.json を置く。transcript を読んでよい範囲、hook と
- * 設定の書き込み先、会話の探索は、既定のホーム1つではなくこの一覧を見ること。一覧を決めるのは
- * ここだけにする（codexAccounts もこれを使う）。
+ * ように別のホームへ transcript・state DB・hooks.json を置く。transcript を読んでよい範囲と会話の探索は、
+ * 既定のホーム1つではなくこの一覧を見ること。hook と設定の書き込み先は {@link paradisCodexConfigHomes}。
+ * 一覧を決めるのはここだけにする（codexAccounts もこれを使う）。
  */
 export function paradisCodexHomes(options: IParadisCodexHomesOptions = {}): readonly string[] {
 	return scanCodexHomes(options).signedIn;
+}
+
+/**
+ * {@link paradisCodexHomes} のうち、Para Code が hook・MCP・承認などの設定を書いてよいホーム。既定のホーム、
+ * Para Code が作った `~/.codex-<数字>`、設定で足したホーム、利用者が一度でも切り替え先に選んだホームだけ。
+ * 手で作った名前のホーム（バックアップの写しなど）は、一覧（使用量パネル・切り替え先）には出すが、選ぶまで書かない。
+ */
+export function paradisCodexConfigHomes(options: IParadisCodexHomesOptions = {}): readonly string[] {
+	return paradisCodexHomes(options).filter(homePath => paradisIsCodexConfigHome(homePath, options));
+}
+
+/** {@link paradisCodexConfigHomes} に入るホームか（ログインしているかは見ない）。 */
+export function paradisIsCodexConfigHome(homePath: string, options: IParadisCodexHomesOptions = {}): boolean {
+	const testing = options.homeDirectory !== undefined;
+	const home = options.homeDirectory ?? homedir();
+	const primary = testing ? join(home, '.codex') : paradisCodexHome();
+	const configured = testing ? (options.configured ?? []) : configuredCodexHomes;
+	const adopted = testing ? (options.adopted ?? []) : adoptedCodexHomes;
+	return homePath === primary
+		|| (dirname(homePath) === home && PARA_CODE_CREATED_CODEX_HOME_PATTERN.test(basename(homePath)))
+		|| configured.includes(homePath)
+		|| adopted.includes(homePath);
 }
 
 /**

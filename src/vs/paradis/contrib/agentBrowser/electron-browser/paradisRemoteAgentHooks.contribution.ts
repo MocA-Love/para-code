@@ -794,7 +794,8 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 /** 接続先の状態から、Codex のアカウント用ホーム（ログイン済みで、既定のホーム以外）のパスを取り出す。 */
 export function paradisCodexAccountHomePaths(state: IParadisCodexAccountsState): string[] {
-	return state.homes.filter(home => !home.isDefault && home.signedIn).map(home => home.homePath);
+	// 手で作った名前のホーム（バックアップの写しなど）には、選ぶまで書かない。古い REH は印を送らない（数字の名前だけを並べていた）。
+	return state.homes.filter(home => !home.isDefault && home.signedIn && home.configurable !== false).map(home => home.homePath);
 }
 
 function codexAccountHomesKey(state: IParadisCodexAccountsState): string {

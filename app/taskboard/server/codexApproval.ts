@@ -226,7 +226,7 @@ export function codexHomesFromSettings(text: string): unknown[] {
 /**
  * 書き足す候補の設定ファイル。Para Code はペインごとに Codex のアカウント（CODEX_HOME）を変えられるので、
  * Para Code が para-browser を入れるホームと同じものを見る: $CODEX_HOME、~/.codex、使用量パネルが作る
- * ~/.codex-<数字> と手で作った ~/.codex-<名前>（使用量パネルと同じ探し方）、設定 `paradis.limitsMonitor.codexHomes`。
+ * ~/.codex-<数字>（~/.codex-backup のように手で作ったものは含めない）、設定 `paradis.limitsMonitor.codexHomes`。
  * そのうち para-browser を登録しているものだけを返す。同じ実体（シンボリックリンク）は 1 つにまとめる。
  */
 export async function codexConfigCandidates(env: NodeJS.ProcessEnv = process.env, home = os.homedir(), configured?: readonly unknown[]): Promise<string[]> {
@@ -238,7 +238,7 @@ export async function codexConfigCandidates(env: NodeJS.ProcessEnv = process.env
 	dirs.push(path.join(home, '.codex'));
 	const entries = (await fs.readdir(home, { withFileTypes: true }).catch(() => [])).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 	for (const entry of entries) {
-		if (/^\.codex-[\w.]+$/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) {
+		if (/^\.codex-\d+$/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) {
 			dirs.push(path.join(home, entry.name));
 		}
 	}

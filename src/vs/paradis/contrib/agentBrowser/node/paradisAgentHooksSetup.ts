@@ -30,7 +30,7 @@ import { PARADIS_REMOTE_HOOK_PORTS_DIR_NAME } from '../common/paradisRemoteHookS
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES, PARADIS_AGENT_HOOK_SPOOL_MAX_FILES, PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS } from '../common/paradisAgentHookSpool.js';
-import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexHomeCandidates, paradisCodexHomes } from './paradisAgentHome.js';
+import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHomeCandidates } from './paradisAgentHome.js';
 
 /** 接続先の共有ポートファイルの隣にある、PC ごとのポートファイルの置き場。 */
 function paradisRemoteHookPortsDirectory(sharedPortFilePath: string): string {
@@ -790,7 +790,7 @@ export async function paradisRemoveAgentHooks(logService: ILogService | undefine
  * 既定のホームにだけ置くと切替後の Codex から状態が届かなくなる。
  */
 function paradisCodexHooksPaths(): string[] {
-	return paradisCodexHomes().map(home => join(home, 'hooks.json'));
+	return paradisCodexConfigHomes().map(home => join(home, 'hooks.json'));
 }
 
 /**

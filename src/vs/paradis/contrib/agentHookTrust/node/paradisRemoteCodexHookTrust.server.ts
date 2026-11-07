@@ -23,14 +23,14 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { RemoteAgentConnectionContext } from '../../../../platform/remote/common/remoteAgentEnvironment.js';
 import { ParadisServerContributions } from '../../../common/paradisProcessContributions.js';
 import { paradisManagedAgentHookCommand } from '../../agentBrowser/common/paradisAgentHooks.js';
-import { paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisCodexConfigHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { IParadisCodexHookTrustGrantResult, IParadisCodexHookTrustStatus, PARADIS_REMOTE_CODEX_HOOK_TRUST_CHANNEL } from '../common/paradisCodexHookTrust.js';
 import { paradisGrantCodexHookTrustFile, paradisInspectCodexHookTrustFile } from './paradisCodexHookTrustFile.js';
 
 /** hook を置く先と同じホーム（既定の `~/.codex`・`$CODEX_HOME`・ログイン済みのアカウント用ホーム）。 */
 function remoteCodexHomes(): string[] {
 	const homes: string[] = [];
-	for (const home of [join(homedir(), '.codex'), ...paradisCodexHomes()]) {
+	for (const home of [join(homedir(), '.codex'), ...paradisCodexConfigHomes()]) {
 		const normalized = normalize(home);
 		if (!homes.includes(normalized)) {
 			homes.push(normalized);

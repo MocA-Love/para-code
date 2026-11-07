@@ -355,6 +355,11 @@ export interface IParadisCodexHome {
 	readonly signedIn: boolean;
 	/** id_token から読んだメールアドレス（表示用。検証はしない）。 */
 	readonly email?: string;
+	/**
+	 * Para Code が hook・MCP などの設定を書いてよいホームか（既定のホーム、Para Code が作った `~/.codex-<数字>`、
+	 * 設定で足したもの、一度でも選んだもの）。手で作った名前のホームは、選ぶまで false。古い版は送らない。
+	 */
+	readonly configurable?: boolean;
 }
 
 /** 全ウィンドウ共通の「新しく開くターミナルで使う Codex のホーム」。 */
