@@ -34,11 +34,13 @@ export function paradisCodexHome(): string {
 }
 
 /**
- * Para Code がアカウントごとに作るホームの名前。使用量パネルの「アカウントを追加」が `~/.codex-2` から
- * 順に作る。`~/.codex-backup` のように手で作ったものは含めない（hook や設定を書きに行かないため）。
- * それ以外の場所は設定 `paradis.limitsMonitor.codexHomes` で足す。
+ * アカウント用ホームとして扱うホーム直下の名前。使用量パネルの「アカウントを追加」は `~/.codex-2` から
+ * 順に作るが、手で作った `~/.codex-work` のような名前も含める（使用量パネルの探し方
+ * `paradisLimitsMonitorChannel.ts` の `discoverCodexHomes` とそろえ、パネルに出るアカウントへ切り替えられる
+ * ようにする）。扱うのはログイン済み（auth.json がある）ものだけ。それ以外の場所は設定
+ * `paradis.limitsMonitor.codexHomes` で足す。
  */
-const PARA_CODE_CODEX_HOME_PATTERN = /^\.codex-\d+$/;
+const PARA_CODE_CODEX_HOME_PATTERN = /^\.codex-[\w.]+$/;
 /** 走査結果を使い回す時間。hook のたびにホームディレクトリを読まないため。 */
 const CODEX_HOMES_CACHE_MS = 5_000;
 

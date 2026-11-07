@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-07',
 		items: [
 			{
+				icon: 'swap-horizontal-outline',
+				title: '過去の会話を再開するとき、PC で選んでいる Codex のアカウントに無い会話なら、どちらのアカウントで開くかを選べるようにしました',
+				body: '前のアカウントで開くか、会話の履歴を選んでいるアカウントへつないで続けるかを選べます。',
+			},
+			{
 				icon: 'checkmark-done-outline',
 				title: '「確認済みをステージ」で、確認した後に書き換えられたファイルを足さないようにしました',
 				body: '行数が同じ書き換えも見分け、そのファイルは確認し直しが要る状態に戻します。PC が確かめられなかったファイルは、理由を分けて知らせます。',

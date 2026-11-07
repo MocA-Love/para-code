@@ -370,6 +370,12 @@ export interface IParadisCodexAccountSelection {
 export interface IParadisCodexAccountsState {
 	readonly homes: readonly IParadisCodexHome[];
 	readonly selection: IParadisCodexAccountSelection;
+	/**
+	 * 今の選択のホーム（選んでいなければ既定のホーム）の絶対パスを1行だけ書いたファイル（選択を持つマシンの上の
+	 * パス）。ターミナルの Codex のランチャー（`resources/paradis/bin/codex`）が起動のたびに読み、開いた後に
+	 * 切り替えたターミナルでも今の選択で起動する。書けていなければ undefined。
+	 */
+	readonly launchHomeFile?: string;
 }
 
 /** 選択が指しているホーム。選択が無い・一覧に無いときは既定のホーム。 */

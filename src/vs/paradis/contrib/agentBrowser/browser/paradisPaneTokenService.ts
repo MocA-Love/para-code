@@ -28,7 +28,7 @@ import { IParadisCodexPaneRuntime, paradisCreateTerminalPaneEnvironment, PARADIS
 import { paradisRemoteHookPortFilePath, paradisRemoteHookSourceId } from '../common/paradisRemoteHookSource.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
-import { IParadisCodexLaunchHomeService, paradisApplyCodexLaunchHome, PARADIS_CODEX_HOME_ENV_VAR, paradisTerminalRunsOnWindowHost } from '../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
+import { IParadisCodexLaunchHomeService, paradisApplyCodexLaunchHome, paradisApplyCodexLaunchHomeFollow, PARADIS_CODEX_HOME_ENV_VAR, paradisTerminalRunsOnWindowHost } from '../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
 import { paradisPrepareTerminalCloseCleanupEnv } from '../../terminalCloseCleanup/browser/paradisTerminalCloseCleanupEnv.js';
 import { ParadisClaudeModEnvironment } from '../../claudeMod/browser/paradisClaudeModEnvironment.js';
 import { paradisAddClaudePluginDir } from '../../claudeMod/common/paradisClaudeMod.js';
@@ -177,6 +177,10 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			? explicitCodexHome
 			: onWindowHost ? this.codexLaunchHomeService.getLaunchHome() : undefined;
 		shellLaunchConfig.env = paradisApplyCodexLaunchHome(shellLaunchConfig.env, codexHome);
+		// 開いた後に切り替えても、このターミナルで起動する Codex が今の選択を使うよう、ランチャーへ目印を渡す。
+		if (onWindowHost && !(typeof explicitCodexHome === 'string' && explicitCodexHome.length > 0)) {
+			shellLaunchConfig.env = paradisApplyCodexLaunchHomeFollow(shellLaunchConfig.env, this.codexLaunchHomeService.getLaunchHomeFile(), codexHome);
+		}
 		// Claude Code へ Para Code の mod を読ませる（ユーザーが設定している値の後ろへつなぐ）。手元のウィンドウの
 		// 手元のペインと、SSH のウィンドウの接続先のペイン（接続先へ写したもの。接続先のポートファイルを渡すときだけ）。
 		// 読ませられないとき（準備中・設定でオフ・組織の方針）は何も足さず、今までどおり動く。区切りは ':'
