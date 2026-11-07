@@ -548,19 +548,6 @@
 
 /* allow-any-unicode-next-line */
 /* コンテキストの内訳: 右の列の先頭の「動いているセッション」と、最近のセッションの行から開く保存した内訳。 */
-.paradis-ccusage-context-row {
-	display: grid;
-	grid-template-columns: 12px minmax(0, 1fr) 92px 40px;
-	align-items: center;
-	gap: 8px;
-	padding: 5px 4px;
-	font-size: 12px;
-	border-radius: 4px;
-	cursor: pointer;
-	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
-}
-
-.paradis-ccusage-context-row:hover,
 .paradis-ccusage tr.expandable:hover td {
 	background: var(--vscode-list-hoverBackground);
 }
@@ -569,45 +556,9 @@
 	cursor: pointer;
 }
 
-.paradis-ccusage-context-row:focus-visible,
 .paradis-ccusage tr.expandable:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
-}
-
-.paradis-ccusage-context-row .chevron {
-	color: var(--vscode-descriptionForeground);
-	font-size: 10px;
-}
-
-.paradis-ccusage-context-row .name {
-	color: var(--vscode-foreground);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.paradis-ccusage-context-row .track {
-	height: 8px;
-	border-radius: 4px;
-	overflow: hidden;
-	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
-}
-
-.paradis-ccusage-context-row .fill {
-	height: 100%;
-	border-radius: 4px;
-}
-
-.paradis-ccusage-context-row .val {
-	text-align: right;
-	color: var(--vscode-foreground);
-	font-variant-numeric: tabular-nums;
-}
-
-.paradis-ccusage-context-open {
-	padding: 6px 4px 10px 18px;
-	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
 }
 
 .paradis-ccusage-context-foot {
@@ -724,4 +675,43 @@
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	padding-top: 2px;
+}
+
+/* allow-any-unicode-next-line */
+/* 期間の内訳のカード: 何会話中何会話分か、会話以外の毎回かかる分、平均・最大・割合の列、項目ごとの会話の数。 */
+.paradis-ccusage-context-coverage {
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	margin: -4px 0 8px;
+}
+
+.paradis-ccusage-context-fixed {
+	display: flex;
+	justify-content: space-between;
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	padding: 4px 0;
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+	margin-bottom: 4px;
+}
+
+.paradis-ccusage-context-fixed .tokens {
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-ccusage-context-cat.wide {
+	grid-template-columns: 10px minmax(0, 1fr) 56px 56px 44px;
+}
+
+.paradis-ccusage-context-cat.heading {
+	font-size: 10.5px;
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+}
+
+.paradis-ccusage-context-cat.heading .tokens {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-ccusage-context-item.period {
+	grid-template-columns: minmax(0, 1fr) 64px 56px;
 }
