@@ -62,6 +62,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			description: localize('paradis.workspaceSwitch.worktreeRoot', "「新しいスペース（worktree）を作成」で worktree を作るベースディレクトリ（絶対パス）。配下に <リポジトリ名>/<ブランチ由来ディレクトリ名>/ が作られます。空の場合はリポジトリの隣の <リポジトリ名>-worktrees/ に作成します。")
 		},
+		'paradis.workspaceSwitch.trustClaudeFolder': {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.APPLICATION,
+			// allow-any-unicode-next-line
+			description: localize('paradis.workspaceSwitch.trustClaudeFolder', "Para Code が作ったスペース（worktree）を、Claude Code の設定ファイル（~/.claude.json）に信頼済みとして書きます。タスクボードなどで起動した Claude Code が、フォルダを信頼するかの確認で止まらなくなります。スペースを削除すると取り消します。")
+		},
 		'paradis.workspaceSwitch.defaultAgent': {
 			type: 'string',
 			default: '',
