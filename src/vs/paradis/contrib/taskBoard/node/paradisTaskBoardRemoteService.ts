@@ -444,7 +444,7 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 				throw new ParadisTaskBoardRemoteError('denied', 'only worktrees created by this task board session can be removed');
 			}
 		}
-		const plan = paradisTaskBoardRemoteGitPlan(dir, op);
+		const plan = paradisTaskBoardRemoteGitPlan(dir, op, kind === 'worktreeAdd' ? { parallelCheckout: await this.checkoutWorkersUnset(session, dir) } : undefined);
 		if (kind === 'push') {
 			await this.checkHostDefaultBranch(session, dir, (op as { branch: string }).branch);
 		}
@@ -464,6 +464,15 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 			}
 		}
 		return { ...result, stderr: paradisTaskBoardRemoteStripUrlCredentials(result.stderr) };
+	}
+
+	/**
+	 * 利用者が git の設定で `checkout.workers` を決めていないか（`git config --get` は未設定のとき終了コード 1）。
+	 * 決めていればその値に任せ、読めなかったときも git の既定のまま作る。
+	 */
+	private async checkoutWorkersUnset(session: ISession, dir: string): Promise<boolean> {
+		const result = await this.enqueueGit(session, () => this.execGit(['-C', dir, 'config', '--get', 'checkout.workers'], this.timeouts.gitShortMs));
+		return result.code === 1;
 	}
 
 	/**
