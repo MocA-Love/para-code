@@ -10,7 +10,7 @@ import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { importAMDNodeModule } from '../../../../../amdX.js';
 import { Dimension } from '../../../../../base/browser/dom.js';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
-import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { bufferToStream, VSBuffer } from '../../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { FileAccess, Schemas } from '../../../../../base/common/network.js';
@@ -393,16 +393,16 @@ suite('ParadisDocxFileEditor', () => {
 					dispose: () => onDidChange.dispose(),
 				};
 			},
-			readFile: async (resource: URI, options: { length?: number; limits?: { readonly size: number } }) => {
-				if (options.length !== 4) {
-					const etag = (options as { etag?: string }).etag;
-					if (fixtureOptions.etag !== undefined && etag === fixtureOptions.etag) {
-						documentReads.push('not modified');
-						throw new FileOperationError('not modified', FileOperationResult.FILE_NOT_MODIFIED_SINCE);
-					}
-					documentReads.push('read');
-					return { value: VSBuffer.wrap(defaultDocxPackage.slice()), etag: fixtureOptions.etag };
+			readFile: async (_resource: URI, options: { etag?: string; limits?: { readonly size: number } }) => {
+				if (fixtureOptions.etag !== undefined && options.etag === fixtureOptions.etag) {
+					documentReads.push('not modified');
+					throw new FileOperationError('not modified', FileOperationResult.FILE_NOT_MODIFIED_SINCE);
 				}
+				documentReads.push('read');
+				return { value: VSBuffer.wrap(defaultDocxPackage.slice()), etag: fixtureOptions.etag };
+			},
+			// 先頭の確認だけが流れで読む。
+			readFileStream: async (resource: URI, options: { length: number }) => {
 				readResources.push(resource.toString());
 				readOptions.push({ length: options.length });
 				const queue = queuedHeaders.get(resource.toString());
@@ -410,7 +410,7 @@ suite('ParadisDocxFileEditor', () => {
 				if (result instanceof Error) {
 					throw result;
 				}
-				return { value: result instanceof DeferredPromise ? await result.p : result };
+				return { value: bufferToStream(result instanceof DeferredPromise ? await result.p : result) };
 			},
 		} as unknown as IFileService;
 		const editor = disposables.add(new ParadisDocxFileEditor(
@@ -518,9 +518,9 @@ suite('ParadisDocxFileEditor', () => {
 	test('reads only the DOCX header and rejects empty and corrupt input', async () => {
 		const options: { length: number }[] = [];
 		const fileService = {
-			readFile: async (_resource: URI, readOptions: { length: number }) => {
+			readFileStream: async (_resource: URI, readOptions: { length: number }) => {
 				options.push(readOptions);
-				return { value: VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)) };
+				return { value: bufferToStream(VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04))) };
 			}
 		} as unknown as IFileService;
 

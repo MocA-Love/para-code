@@ -22,6 +22,7 @@ import { isAbsolute } from '../../../../base/common/path.js';
 import { isWindows, OperatingSystem } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
+import { ParadisProcessReadyResult, paradisProcessReadyTimeoutFor, paradisWaitForProcessReady } from '../../../common/paradisProcessReady.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -543,16 +544,29 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			// id も書かない——git で共有されるファイルに識別子を足すと、実装都合の差分が
 			// チーム全員のレビューに出てしまう。位置で識別する。
 			const { appliesTo: _appliesTo, id: _id, ...cleaned } = definition;
-			const parsed = await this._readPresetFileForUpdate(presetFile);
-			const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
-			const index = replace ? this._requirePresetIndex(list, replace) : -1;
-			if (index >= 0) {
-				list[index] = cleaned;
-			} else {
-				list.push(cleaned);
+			// 読んだ時の mtime と etag を付けて書く（`FileService` は両方あるときだけ比べる）。別のウィンドウが
+			// 間に保存していたら、読み直して1回だけやり直す（付けないと、先の保存の中身を黙って消す）。
+			for (let attempt = 0; ; attempt++) {
+				const read: { etag?: string; mtime?: number } = {};
+				const parsed = await this._readPresetFileForUpdate(presetFile, read);
+				const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
+				const index = replace ? this._requirePresetIndex(list, replace) : -1;
+				if (index >= 0) {
+					list[index] = cleaned;
+				} else {
+					list.push(cleaned);
+				}
+				parsed.presets = list;
+				try {
+					await this.fileService.writeFile(presetFile, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'), read.etag !== undefined ? { etag: read.etag, mtime: read.mtime } : undefined);
+					return;
+				} catch (error) {
+					if (attempt === 0 && error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_MODIFIED_SINCE) {
+						continue;
+					}
+					throw error;
+				}
 			}
-			parsed.presets = list;
-			await this.fileService.writeFile(presetFile, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
 		}
 	}
 
@@ -912,10 +926,15 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	 * （一時的な読み込みの失敗、編集途中の構文エラー）ときは例外にして書かない。空から書き出すと、
 	 * ファイルにあった他のプリセットや設定がすべて消える。
 	 */
-	private async _readPresetFileForUpdate(presetFile: URI): Promise<IParadisPresetFileContent> {
+	private async _readPresetFileForUpdate(presetFile: URI, read?: { etag?: string; mtime?: number }): Promise<IParadisPresetFileContent> {
 		let text: string;
 		try {
-			text = (await this.fileService.readFile(presetFile)).value.toString();
+			const content = await this.fileService.readFile(presetFile);
+			if (read) {
+				read.etag = content.etag;
+				read.mtime = content.mtime;
+			}
+			text = content.value.toString();
 		} catch (error) {
 			if (error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND) {
 				return {};
@@ -1469,8 +1488,10 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 
 	private async _waitForTerminalProcess(instance: ITerminalInstance): Promise<void> {
 		const startedAt = Date.now();
+		let result: ParadisProcessReadyResult;
 		try {
-			await instance.processReady;
+			// 起動に失敗した・閉じられた端末では processReady が解決しないので、期限つきで待つ。
+			result = await paradisWaitForProcessReady(instance, paradisProcessReadyTimeoutFor(this.environmentService.remoteAuthority));
 		} catch (error) {
 			reportParadisDiagnosticError('owned', 'terminal-preset', 'process-ready', error, {
 				duration_ms: Date.now() - startedAt,
@@ -1478,6 +1499,19 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				shell_kind: String(instance.shellType ?? 'unknown'),
 			});
 			throw error;
+		}
+		if (result === 'timeout') {
+			reportParadisDiagnosticError('owned', 'terminal-preset', 'process-ready-timeout', new Error('Terminal process did not start in time'), {
+				duration_ms: Date.now() - startedAt,
+				phase: 'startup',
+				shell_kind: String(instance.shellType ?? 'unknown'),
+			});
+		}
+		if (result !== 'ready') {
+			// 待てなければ残りのタスクを始めずに失敗として返す（呼び出し元が知らせる）。
+			throw new Error(result === 'disposed'
+				? localize('paradis.presets.terminalClosedBeforeStart', "ターミナルが起動する前に閉じられました。")
+				: localize('paradis.presets.terminalDidNotStart', "ターミナルが時間内に起動しなかったため、残りのコマンドを送りませんでした。ターミナルは開いたままです。"));
 		}
 		const duration = Date.now() - startedAt;
 		if (duration >= 5_000) {
