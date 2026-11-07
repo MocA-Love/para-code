@@ -1018,7 +1018,7 @@ export class ParadisWorktreeGitService {
 			return {};
 		}
 		// 消すブランチは、画面の値ではなく作業ツリーの今の HEAD から決める（中でブランチを切り替えていることがあるため）
-		const branchToDelete = request.deleteBranch === true ? await this.deletableWorktreeBranch(request.repoPath, request.worktreePath) : undefined;
+		const branchToDelete = typeof request.deleteBranch === 'string' ? await this.deletableWorktreeBranch(request.repoPath, request.worktreePath, request.deleteBranch) : undefined;
 		// ロック解除は取り消せない副作用で、しかも「消せるかどうか」とは独立している。
 		// remove が別の理由（ファイルを掴んでいるプロセス、権限、ネットワークボリューム等）で
 		// 失敗すると、削除できていないのに他セッションの保護だけが消えた状態になる。
@@ -1074,18 +1074,18 @@ export class ParadisWorktreeGitService {
 	}
 
 	/**
-	 * 作業ツリーを消すときに一緒に消してよいブランチ。次のときは undefined（消さない）:
-	 * detached HEAD、ほかの作業ツリー（元のリポジトリを含む）で開いている、追跡先がある（main などの共有のブランチ。
-	 * Para が作るブランチは `--no-track`）、`main`・`master`・origin の既定のブランチと同じ名前。
+	 * 作業ツリーを消すときに一緒に消してよいブランチ。確認で見せた名前（`expected`）と作業ツリーの今の HEAD が同じときだけ
+	 * 返す（中でブランチを切り替えていたら、見せていないブランチを消さない）。次のときも undefined（消さない）:
+	 * detached HEAD、ほかの作業ツリー（元のリポジトリを含む）で開いている、`main`・`master`・origin の既定のブランチと同じ名前。
 	 */
-	private async deletableWorktreeBranch(repoPath: string, worktreePath: string): Promise<string | undefined> {
+	private async deletableWorktreeBranch(repoPath: string, worktreePath: string, expected: string): Promise<string | undefined> {
 		let branch: string;
 		try {
 			branch = await this.readGit(worktreePath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
 		} catch {
 			return undefined;
 		}
-		return await this.isProtectedBranch(repoPath, branch, worktreePath) ? undefined : branch;
+		return branch !== expected || await this.isProtectedBranch(repoPath, branch, worktreePath) ? undefined : branch;
 	}
 
 	/** 消してはいけないブランチか（{@link deletableWorktreeBranch} の規則。`exceptWorktree` で開いているのは数えない）。 */
@@ -1093,18 +1093,8 @@ export class ParadisWorktreeGitService {
 		if (branch.length === 0 || branch.startsWith('-') || branch === 'main' || branch === 'master') {
 			return true;
 		}
-		try {
-			await this.readGit(repoPath, ['config', '--get', `branch.${branch}.remote`]);
+		if ((await this.originDefaultBranch(repoPath)) === `origin/${branch}`) {
 			return true;
-		} catch {
-			// 追跡先が無い
-		}
-		try {
-			if ((await this.readGit(repoPath, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])) === `origin/${branch}`) {
-				return true;
-			}
-		} catch {
-			// origin の既定のブランチが分からない
 		}
 		let list: string;
 		try {
@@ -1132,7 +1122,20 @@ export class ParadisWorktreeGitService {
 		return false;
 	}
 
-	/** `git branch -d` で消し、消えなかったら（マージされていない）残したブランチとして返す。消えたかは文言でなく参照の有無で見る。 */
+	/** origin の既定のブランチ（`origin/main` の形）。分からなければ undefined。 */
+	private async originDefaultBranch(repoPath: string): Promise<string | undefined> {
+		try {
+			return await this.readGit(repoPath, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * `git branch -d` で消し、消えなかったら（マージされていない）残したブランチとして返す。消えたかは文言でなく参照の有無で見る。
+	 * `-d` は元のリポジトリの今の HEAD（と追跡先）と比べるので、元のリポジトリが別のブランチにいる・pull していないと、
+	 * GitHub でマージ済みでも断る。そのときは Orca と同じく、先頭のコミットが origin の既定のブランチに含まれていれば消す。
+	 */
 	private async deleteMergedBranch(repoPath: string, branch: string): Promise<IParadisRemoveWorktreeResult> {
 		const ref = `refs/heads/${branch}`;
 		let sha: string;
@@ -1144,7 +1147,15 @@ export class ParadisWorktreeGitService {
 		try {
 			await this.exec(['-C', paradisWslPathArg(repoPath), 'branch', '-d', '--', branch], undefined, { quiet: true });
 		} catch {
-			// マージされていない。下で残っていることを確かめる
+			const originDefault = await this.originDefaultBranch(repoPath);
+			try {
+				if (originDefault !== undefined) {
+					await this.exec(['-C', paradisWslPathArg(repoPath), 'merge-base', '--is-ancestor', sha, `refs/remotes/${originDefault}`], undefined, { quiet: true });
+					await this.exec(['-C', paradisWslPathArg(repoPath), 'branch', '-D', '--', branch], undefined, { quiet: true });
+				}
+			} catch {
+				// マージされていない。下で残っていることを確かめる
+			}
 		}
 		try {
 			await this.readGit(repoPath, ['rev-parse', '--verify', '--quiet', ref]);
@@ -1156,7 +1167,8 @@ export class ParadisWorktreeGitService {
 
 	/**
 	 * ほかのワークツリーに残った、30 日より古い依存とビルド出力を探す（消さない。G-07、Orca #32331）。
-	 * 元のリポジトリ（一覧の先頭）・ロックされたもの・`excludePaths`（今のスペース）は見ない。WSL の中のリポジトリは扱わない。
+	 * 元のリポジトリ（一覧の先頭）・ロックされたもの・`excludePaths`（今のスペース）・30 日以内に使った（git の index が新しい）
+	 * ものは見ない。WSL の中のリポジトリは扱わない。
 	 */
 	async findGeneratedOutputs(request: IParadisFindGeneratedOutputsRequest<string>): Promise<IParadisGeneratedOutputCandidate[]> {
 		const worktrees = await this.cleanableWorktrees(request);
@@ -1194,11 +1206,24 @@ export class ParadisWorktreeGitService {
 				continue;
 			}
 			const resolved = await this.resolveWorktreePath(entry.path);
-			if (!paradisWorktreeListOverlaps(excluded, resolved, comparison)) {
+			if (!paradisWorktreeListOverlaps(excluded, resolved, comparison) && await this.isWorktreeIdle(entry.path)) {
 				result.push(entry.path);
 			}
 		}
 		return result;
+	}
+
+	/**
+	 * しばらく使っていない作業ツリーか。`node_modules` のフォルダの日付は中の一番上が増減したときしか変わらず、毎日使う作業ツリー
+	 * でも古く見えるので、作業ツリーごとの git の index（ステージ・切り替え・status で書き換わる）も 30 日より古いことを見る。
+	 */
+	private async isWorktreeIdle(worktreePath: string): Promise<boolean> {
+		try {
+			const gitDir = await this.readGit(worktreePath, ['rev-parse', '--path-format=absolute', '--git-dir']);
+			return (await fs.stat(join(gitDir, 'index'))).mtimeMs <= this.generatedOutputCutoff();
+		} catch {
+			return false;
+		}
 	}
 
 	private generatedCleanupHost(): IParadisGeneratedCleanupHost {

@@ -487,7 +487,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 						worktreePath: path(uri),
 						force: leftoverFolder,
 						allowLeftoverCleanup: leftoverFolder,
-						...(deleteBranch ? { deleteBranch: true } : {})
+						...(deleteBranch && branchName !== undefined ? { deleteBranch: branchName } : {})
 					};
 
 					// 削除は大きな作業ツリーで数分かかるので、実行中であることを見せる

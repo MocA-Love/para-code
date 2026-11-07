@@ -49,7 +49,7 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	test('removing a worktree deletes its merged branch, keeps an unmerged one, and leaves shared branches alone', async () => {
+	test('removing a worktree deletes its merged branch, keeps an unmerged one, and leaves other branches alone', async () => {
 		const merged = addWorktree('merged', ['-b', 'feature/merged']);
 		const unmerged = addWorktree('unmerged', ['-b', 'feature/unmerged']);
 		await fs.writeFile(join(unmerged, 'a.txt'), 'a');
@@ -57,22 +57,54 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 		git(unmerged, 'commit', '-q', '-m', 'work');
 		const unmergedSha = git(unmerged, 'rev-parse', 'HEAD').trim();
 		const detached = addWorktree('detached', ['--detach']);
-		// 追跡先のあるブランチ（共有のブランチ）は、マージ済みでも消さない
-		git(repo, 'branch', 'shared');
-		git(repo, 'config', 'branch.shared.remote', 'origin');
-		const tracking = addWorktree('tracking', [], 'shared');
+		// 確認で見せた後に中でブランチを切り替えたら、見せていないブランチは消さない
+		const switched = addWorktree('switched', ['-b', 'feature/shown']);
+		git(switched, 'switch', '-q', '-c', 'feature/other');
 		// 頼まなければ消さない
 		const notAsked = addWorktree('not-asked', ['-b', 'feature/not-asked']);
 
 		const results = [];
-		for (const worktreePath of [merged, unmerged, detached, tracking]) {
-			results.push(await service.removeWorktree({ repoPath: repo, worktreePath, force: false, deleteBranch: true }));
+		for (const [worktreePath, branch] of [[merged, 'feature/merged'], [unmerged, 'feature/unmerged'], [detached, 'HEAD'], [switched, 'feature/shown']]) {
+			results.push(await service.removeWorktree({ repoPath: repo, worktreePath, force: false, deleteBranch: branch }));
 		}
 		results.push(await service.removeWorktree({ repoPath: repo, worktreePath: notAsked, force: false }));
 
 		assert.deepStrictEqual({ results, branches: branches() }, {
 			results: [{ deletedBranch: 'feature/merged' }, { keptBranch: { name: 'feature/unmerged', sha: unmergedSha } }, {}, {}, {}],
-			branches: ['feature/not-asked', 'feature/unmerged', 'main', 'shared'],
+			branches: ['feature/not-asked', 'feature/other', 'feature/shown', 'feature/unmerged', 'main'],
+		});
+	});
+
+	test('deletes pushed branches merged on the remote even when the main checkout is elsewhere', async () => {
+		const remote = join(root, 'remote.git');
+		git(root, 'init', '-q', '--bare', '-b', 'main', remote);
+		git(repo, 'remote', 'add', 'origin', remote);
+		git(repo, 'push', '-q', '-u', 'origin', 'main');
+		git(repo, 'remote', 'set-head', 'origin', 'main');
+		const commitIn = async (worktree: string, file: string) => {
+			await fs.writeFile(join(worktree, file), file);
+			git(worktree, 'add', file);
+			git(worktree, 'commit', '-q', '-m', file);
+		};
+		// 追跡先を付けて push したもの（gh pr create の後の形。git の -d は追跡先に含まれていれば消す。コミットはリモートに残る）と、
+		// 付けずに push したもの（Para の --no-track のまま。origin の既定のブランチに含まれているので消す）
+		const tracked = addWorktree('tracked', ['-b', 'feature/tracked']);
+		await commitIn(tracked, 'b.txt');
+		git(tracked, 'push', '-q', '-u', 'origin', 'feature/tracked');
+		const untracked = addWorktree('untracked', ['-b', 'feature/untracked']);
+		await commitIn(untracked, 'c.txt');
+		git(untracked, 'push', '-q', 'origin', 'feature/untracked');
+		// リモートで main にマージされ、手元は fetch しただけ（元のリポジトリは別のブランチにいて、main も古い）
+		git(remote, 'update-ref', 'refs/heads/main', 'refs/heads/feature/untracked');
+		git(repo, 'fetch', '-q', 'origin');
+		git(repo, 'switch', '-q', '-c', 'elsewhere');
+		const results = [
+			await service.removeWorktree({ repoPath: repo, worktreePath: tracked, force: false, deleteBranch: 'feature/tracked' }),
+			await service.removeWorktree({ repoPath: repo, worktreePath: untracked, force: false, deleteBranch: 'feature/untracked' }),
+		];
+		assert.deepStrictEqual({ results, branches: branches() }, {
+			results: [{ deletedBranch: 'feature/tracked' }, { deletedBranch: 'feature/untracked' }],
+			branches: ['elsewhere', 'main'],
 		});
 	});
 
@@ -97,6 +129,7 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 		const stale = addWorktree('stale', ['-b', 'stale']);
 		const current = addWorktree('current', ['-b', 'current']);
 		const fresh = addWorktree('fresh', ['-b', 'fresh']);
+		const active = addWorktree('active', ['-b', 'active']);
 		await makeOutput(join(repo, 'node_modules'), old);
 		await makeOutput(join(stale, 'node_modules'), old);
 		await makeOutput(join(stale, 'out'), old);
@@ -104,9 +137,14 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 		await makeOutput(join(stale, 'dist'), old);
 		await makeOutput(join(current, 'node_modules'), old);
 		await makeOutput(join(fresh, 'node_modules'), Date.now() / 1000);
+		// node_modules のフォルダの日付は古くても、今日使っている作業ツリーは候補にしない
+		await makeOutput(join(active, 'node_modules'), old);
 		// リンクは辿らない
 		await fs.symlink(join(repo, 'node_modules'), join(fresh, 'out'));
 		await fs.utimes(join(stale, 'out'), old, old);
+		// 使っていない作業ツリーかは、作業ツリーごとの git の index の古さで見る（current・fresh は今日使った扱い）
+		await fs.utimes(join(repo, '.git', 'worktrees', 'stale', 'index'), old, old);
+		await fs.utimes(join(repo, '.git', 'worktrees', 'current', 'index'), old, old);
 
 		const candidates = await service.findGeneratedOutputs({ repoPath: repo, excludePaths: [current] });
 		const found = candidates.map(candidate => `${candidate.worktree.endsWith('stale') ? 'stale' : candidate.worktree}/${candidate.rel}`).sort();
