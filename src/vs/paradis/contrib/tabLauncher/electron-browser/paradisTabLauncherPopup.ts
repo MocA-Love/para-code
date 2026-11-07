@@ -53,7 +53,7 @@ import { PARADIS_AGENT_CHAT_ENABLED_SETTING } from '../../agentChat/common/parad
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { PARADIS_OPEN_SETTINGS_DIALOG_COMMAND_ID } from '../../paradisSettings/electron-browser/paradisSettingsDialog.contribution.js';
-import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentCommandTemplate, PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import {
@@ -61,9 +61,11 @@ import {
 	paradisMatchLauncherAgents,
 	paradisNormalizeLaunchChoice,
 	paradisParseStoredLaunchChoices,
+	paradisRestoreLaunchChoice,
 	paradisStoreLaunchChoice,
 	paradisTabLauncherAgents,
 	paradisTabLauncherEfforts,
+	paradisTabLauncherRoot,
 	paradisTabLauncherUrl,
 } from '../common/paradisTabLauncher.js';
 
@@ -181,6 +183,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisAgentChatService private readonly agentChatService: IParadisAgentChatService,
+		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 	) {
 		super();
 		this.window = dom.getWindow(host.anchor);
@@ -198,9 +201,10 @@ export class ParadisTabLauncherPopup extends Disposable {
 		this.searchInput.setAttribute('aria-label', STR_SEARCH);
 		this.rowsElement = dom.append(this.list, $('.paradis-tab-launcher-rows'));
 
+		// 前回の選択を引き継ぐ。ただし危ない権限（全許可など）は引き継がず、開くたびに危なくない既定へ戻す
 		const stored = paradisParseStoredLaunchChoices(this.storageService.get(PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY, StorageScope.PROFILE));
-		for (const [agentId, choice] of Object.entries(stored)) {
-			this.choices.set(agentId, choice);
+		for (const agent of this.agents()) {
+			this.choices.set(agent.id, paradisRestoreLaunchChoice(agent, stored[agent.id]));
 		}
 
 		this._register(dom.addDisposableListener(this.searchInput, 'input', () => this.renderRows()));
@@ -864,7 +868,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 	private async launch(agent: IParadisAgentCommandTemplate, mode: 'terminal' | 'chat', prompt: string): Promise<void> {
 		const choice = this.choiceFor(agent);
 		this.storageService.store(PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY, paradisStoreLaunchChoice(this.storageService.get(PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY, StorageScope.PROFILE), agent.id, choice), StorageScope.PROFILE, StorageTarget.MACHINE);
-		const rootUri = this.workspaceContextService.getWorkspace().folders[0]?.uri;
+		const rootUri = paradisTabLauncherRoot(this.workspaceSwitchService.activeStateKey, paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService), this.workspaceContextService.getWorkspace().folders[0]?.uri);
 		// 閉じた後でもサービスを使えるよう、先に手元へ取っておく（hide で dispose される）
 		const { instantiationService, workspaceSwitchService, agentChatService, notificationService } = this;
 		this.hide(false);
