@@ -53,6 +53,7 @@ import {
 	IParadisCodexResetCreditOffer,
 	IParadisCodexResetCredits,
 	ParadisCodexResetOutcome,
+	paradisCodexLaunchHomeFor,
 	paradisCodexResetCreditId,
 	paradisCodexResetOfferRevision,
 	paradisMapCodexBackendResetCredits
@@ -186,6 +187,7 @@ export class ParadisCodexAccountsService extends Disposable {
 	private readonly fetchImpl: typeof fetch;
 
 	private readonly selectionPath: string;
+	private readonly launchHomePath: string;
 	private readonly linkLedgerPath: string;
 	private selection: IStoredSelection = { revision: 0 };
 	/** 選択のファイルの読み直し（前のものが終わってから1本ずつ）。 */
@@ -210,6 +212,7 @@ export class ParadisCodexAccountsService extends Disposable {
 		this.fetchImpl = options.fetch ?? fetch;
 		this.ledger = new ParadisCodexResetCreditLedger(join(options.stateDirectory, 'codex-reset-credit-ledger.json'), this.now);
 		this.selectionPath = join(options.stateDirectory, 'codex-account-selection.json');
+		this.launchHomePath = join(options.stateDirectory, 'codex-launch-home');
 		this.linkLedgerPath = join(options.stateDirectory, 'codex-session-links.json');
 		if (!options.skipBackgroundWork) {
 			this._register(disposableTimeout(() => {
@@ -317,7 +320,7 @@ export class ParadisCodexAccountsService extends Disposable {
 	getState(): Promise<IParadisCodexAccountsState> {
 		return this.serializeSelection(async () => {
 			await this.resetMissingSelection();
-			const state = await this.buildState();
+			const state = await this.syncLaunchHomeFile(await this.buildState());
 			// 呼んだウィンドウはこの内容を持ったので、次の見直しで同じ内容を配り直さない。
 			this.lastStateKey = JSON.stringify(state);
 			return state;
@@ -328,7 +331,7 @@ export class ParadisCodexAccountsService extends Disposable {
 	revalidate(): Promise<void> {
 		return this.serializeSelection(async () => {
 			await this.resetMissingSelection();
-			const state = await this.buildState();
+			const state = await this.syncLaunchHomeFile(await this.buildState());
 			const key = JSON.stringify(state);
 			if (this.lastStateKey !== undefined && key !== this.lastStateKey) {
 				this._onDidChangeState.fire(state);
@@ -355,7 +358,7 @@ export class ParadisCodexAccountsService extends Disposable {
 			}
 			const previous = this.selection.homePath;
 			if (next === previous) {
-				return this.buildState();
+				return this.syncLaunchHomeFile(await this.buildState());
 			}
 			await this.writeSelection({ homePath: next, previousHomePath: previous, revision: this.selection.revision + 1, changedAt: this.now() });
 			// 切り替えた先で過去の会話を開けるよう、切替元と切替先の間でだけ会話ログをリンクし合う。
@@ -376,7 +379,7 @@ export class ParadisCodexAccountsService extends Disposable {
 	}
 
 	private async fireState(): Promise<IParadisCodexAccountsState> {
-		const state = await this.buildState();
+		const state = await this.syncLaunchHomeFile(await this.buildState());
 		this.lastStateKey = JSON.stringify(state);
 		this._onDidChangeState.fire(state);
 		return state;
@@ -399,6 +402,28 @@ export class ParadisCodexAccountsService extends Disposable {
 			});
 		}
 		return { homes, selection: { homePath: this.selection.homePath, revision: this.selection.revision, changedAt: this.selection.changedAt } };
+	}
+
+	/**
+	 * ランチャーが読むファイル（{@link IParadisCodexAccountsState.launchHomeFile}）を今の選択に合わせ、書けていれば
+	 * そのパスを状態に添える。中身は選んだホーム（ログイン済みのもの）か、選んでいなければ既定のホーム。
+	 */
+	private async syncLaunchHomeFile(state: IParadisCodexAccountsState): Promise<IParadisCodexAccountsState> {
+		const launchHome = paradisCodexLaunchHomeFor(state) ?? state.homes.find(home => home.isDefault)?.homePath;
+		if (launchHome === undefined) {
+			return state;
+		}
+		// 消された・古い版が書き換えたときにも直るよう、覚えた値ではなくファイルの中身と比べる。
+		const written = await fs.promises.readFile(this.launchHomePath, 'utf8').catch(() => undefined);
+		if (written !== launchHome) {
+			try {
+				await paradisWriteFileAtomic(this.launchHomePath, launchHome, { newFileMode: 0o600, createParentMode: 0o700, fallbackToInPlace: false });
+			} catch (error) {
+				this.options.logService.warn('[ParadisCodexAccounts] could not write the Codex launch home for the terminal launcher', error);
+				return state;
+			}
+		}
+		return { ...state, launchHomeFile: this.launchHomePath };
 	}
 
 	private async writeSelection(selection: IStoredSelection): Promise<void> {

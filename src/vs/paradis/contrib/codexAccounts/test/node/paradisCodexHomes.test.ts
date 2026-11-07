@@ -33,15 +33,15 @@ suite('Paradis Codex homes', () => {
 		rmSync(home, { recursive: true, force: true });
 	});
 
-	// 手で作った ~/.codex-backup には hook も設定も書かない。設定で足したホームは加える。
-	test('treats only Para Code account homes and configured homes as Codex homes, and only signed-in ones as accounts', () => {
+	// 手で作った ~/.codex-backup も、使用量パネルと同じくアカウント用ホームとして扱う。設定で足したホームも加える。
+	test('treats ~/.codex-<name> homes and configured homes as Codex homes, and only signed-in ones as accounts', () => {
 		const configured = [join(home, 'work-codex')];
 		assert.deepStrictEqual({
 			accounts: paradisCodexHomes({ homeDirectory: home, configured }),
 			candidates: paradisCodexHomeCandidates({ homeDirectory: home, configured }),
 		}, {
-			accounts: [join(home, '.codex'), join(home, '.codex-2'), join(home, '.codex-10'), join(home, 'work-codex')],
-			candidates: [join(home, '.codex'), join(home, '.codex-2'), join(home, '.codex-3'), join(home, '.codex-10'), join(home, 'work-codex')],
+			accounts: [join(home, '.codex'), join(home, '.codex-2'), join(home, '.codex-10'), join(home, '.codex-backup'), join(home, 'work-codex')],
+			candidates: [join(home, '.codex'), join(home, '.codex-2'), join(home, '.codex-3'), join(home, '.codex-10'), join(home, '.codex-backup'), join(home, 'work-codex')],
 		});
 	});
 
@@ -65,7 +65,7 @@ suite('Paradis Codex homes', () => {
 		const expanded = paradisEachCodexHome({ claude: join(home, '.claude'), codex: homes[0], codexHomes: homes, matchCwd: '/work' });
 		assert.deepStrictEqual({
 			inSecond: paradisIsWithinCodexHome(join(home, '.codex-2', 'sessions', 'rollout-a.jsonl'), homes),
-			outside: paradisIsWithinCodexHome(join(home, '.codex-backup', 'x.jsonl'), homes),
+			outside: paradisIsWithinCodexHome(join(home, 'work-codex', 'x.jsonl'), homes),
 			expanded: expanded.map(entry => entry.codex),
 		}, {
 			inSecond: true,

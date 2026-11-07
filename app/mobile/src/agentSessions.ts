@@ -60,9 +60,12 @@ export interface AgentPastSessionPreview {
 	readonly truncated: boolean;
 }
 
-/** 再開の結果。`running` は PC で既に開いていた（そのタブを開く）。`needs-trust` は PC でフォルダの信頼の確認が出ている。 */
+/**
+ * 再開の結果。`running` は PC で既に開いていた（そのタブを開く）。`needs-trust` は PC でフォルダの信頼の確認が出ている。
+ * `choose-account` は、PC で選んでいる Codex のアカウントに無い会話（`codexAccount: 'ask'` で送ったときだけ返る）。
+ */
 export interface AgentResumeResult {
-	readonly status: 'resumed' | 'running' | 'needs-trust' | 'duplicate';
+	readonly status: 'resumed' | 'running' | 'needs-trust' | 'duplicate' | 'choose-account';
 	readonly terminalKey?: string;
 	/** 依頼をエージェントへ渡せたか。 */
 	readonly delivered?: boolean;
@@ -135,7 +138,7 @@ export function parseAgentPastSessionPreview(reply: Record<string, unknown>): Ag
 /** `agentSessionResume` の返事を読む。 */
 export function parseAgentResumeResult(reply: Record<string, unknown>): AgentResumeResult | undefined {
 	const status = reply['status'];
-	if (status !== 'resumed' && status !== 'running' && status !== 'needs-trust' && status !== 'duplicate') {
+	if (status !== 'resumed' && status !== 'running' && status !== 'needs-trust' && status !== 'duplicate' && status !== 'choose-account') {
 		return undefined;
 	}
 	const terminalKey = str(reply['terminalKey'], 200);

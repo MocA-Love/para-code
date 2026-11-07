@@ -142,12 +142,18 @@ export function retryAgentSend(pcId: string, id: string): void {
  * 会話を再開して送る（利用者が「再開して送る」を押したとき・過去の会話の画面から送るとき）。PC は同じ ID の依頼を
  * 二度実行しないので、応答が届かず送り直しても再開は 1 回だけ。
  */
-export async function resumeAndSend(pcId: string, sourceId: string, key: string, prompt: string, requestId: string = newRequestId()): Promise<AgentResumeResult> {
+/**
+ * PC で選んでいる Codex のアカウントに無い会話をどう開くか。`ask` は該当すれば `choose-account` を返してもらう。
+ * 省くと前のアカウントで開く（預かった送信など、その場で選べないとき）。
+ */
+export type AgentResumeCodexAccount = 'ask' | 'selected' | 'previous';
+
+export async function resumeAndSend(pcId: string, sourceId: string, key: string, prompt: string, requestId: string = newRequestId(), codexAccount?: AgentResumeCodexAccount): Promise<AgentResumeResult> {
 	const ws = mobileSpaceIdFor(sourceId);
 	if (ws === undefined) {
 		throw new Error('このスペースは今の PC に見つかりません');
 	}
-	const reply = await sendPcRequest<Record<string, unknown>>(pcId, 'scm', { t: 'agentSessionResume', ws, key, prompt, requestId }, { timeoutMs: RESUME_TIMEOUT_MS });
+	const reply = await sendPcRequest<Record<string, unknown>>(pcId, 'scm', { t: 'agentSessionResume', ws, key, prompt, requestId, ...(codexAccount !== undefined ? { codexAccount } : {}) }, { timeoutMs: RESUME_TIMEOUT_MS });
 	const result = parseAgentResumeResult(reply);
 	if (result === undefined) {
 		throw new Error('PC からの応答が正しくありません');

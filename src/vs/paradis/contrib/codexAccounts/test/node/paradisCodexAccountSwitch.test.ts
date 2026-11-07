@@ -84,6 +84,28 @@ suite('Paradis Codex account switching', () => {
 
 	const homesList = [['~/.codex', 'a@example.com', true], ['~/.codex-2', 'b@example.com', false], ['~/.codex-4', 'c@example.com', false]];
 
+	// ターミナルの Codex のランチャーは起動のたびにこのファイルを読む。選んだホーム、選んでいなければ既定のホームを書き、
+	// 選んだホームが消えたら既定のホームへ戻す。
+	test('writes the home terminals should start Codex with for the launcher', async () => {
+		const service = createService();
+		const file = (await service.getState()).launchHomeFile!;
+		const read = () => readFileSync(file, 'utf8');
+		const initial = read();
+		await service.selectHome(join(home, '.codex-2'));
+		const selected = read();
+		rmSync(join(home, '.codex-2', 'auth.json'));
+		await service.revalidate();
+		const signedOut = read();
+		await service.whenLinked();
+		service.dispose();
+		assert.deepStrictEqual({ file, initial, selected, signedOut }, {
+			file: join(stateDirectory, 'codex-launch-home'),
+			initial: join(home, '.codex'),
+			selected: join(home, '.codex-2'),
+			signedOut: join(home, '.codex'),
+		});
+	});
+
 	test('lists signed-in homes and keeps the selection across restarts for every window', async () => {
 		const first = createService();
 		const events: (string | undefined)[] = [];

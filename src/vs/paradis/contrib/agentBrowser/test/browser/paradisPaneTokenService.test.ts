@@ -26,9 +26,10 @@ const PANE_TOKEN = '12345678-1234-4234-8234-123456789abc';
 const USER_DATA_PATH = '/tmp/para-code-user-data';
 const APP_ROOT = '/Applications/Para Code.app/Contents/Resources/app';
 
-function codexLaunchHomeStub(launchHome: string | undefined, recorded: Map<string, string | undefined> = new Map()): IParadisCodexLaunchHomeService {
+function codexLaunchHomeStub(launchHome: string | undefined, recorded: Map<string, string | undefined> = new Map(), launchHomeFile?: string): IParadisCodexLaunchHomeService {
 	return {
 		getLaunchHome: () => launchHome,
+		getLaunchHomeFile: () => launchHomeFile,
 		recordPaneHome: (token: string, homePath: string | undefined) => recorded.set(token, homePath),
 		forgetPaneHome: (token: string) => recorded.delete(token),
 	} as unknown as IParadisCodexLaunchHomeService;
@@ -39,15 +40,15 @@ function claudeModStub(directory?: string, draftDirectory?: string): IInstantiat
 	return { createInstance: () => ({ pluginDirectory: () => directory, draftPluginDirectory: () => draftDirectory, dispose: () => { } }) } as unknown as IInstantiationService;
 }
 
-function paneEnvironmentFor(options: { readonly launchHome?: string; readonly remoteAuthority?: string; readonly cwd?: URI; readonly recorded?: Map<string, string | undefined> } = {}): Record<string, string | null | undefined> {
+function paneEnvironmentFor(options: { readonly launchHome?: string; readonly launchHomeFile?: string; readonly env?: Record<string, string>; readonly remoteAuthority?: string; readonly cwd?: URI; readonly recorded?: Map<string, string | undefined> } = {}): Record<string, string | null | undefined> {
 	const service = new ParadisPaneTokenService(
 		{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
 		{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code`, remoteAuthority: options.remoteAuthority } as unknown as IWorkbenchEnvironmentService,
 		{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
-		codexLaunchHomeStub(options.launchHome, options.recorded),
+		codexLaunchHomeStub(options.launchHome, options.recorded, options.launchHomeFile),
 		claudeModStub(),
 	);
-	const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN, cwd: options.cwd } as IShellLaunchConfig;
+	const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN, cwd: options.cwd, ...(options.env !== undefined ? { env: options.env } : {}) } as IShellLaunchConfig;
 	try {
 		service.prepareShellLaunchConfig(shellLaunchConfig);
 	} finally {
@@ -143,6 +144,7 @@ suite('Paradis pane token service', () => {
 			{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
 			{
 				getLaunchHome: () => '/home/test/.codex-2',
+				getLaunchHomeFile: () => undefined,
 				recordPaneHome: (token: string, homePath: string | undefined) => recorded.push([token, homePath]),
 			} as unknown as IParadisCodexLaunchHomeService,
 			claudeModStub(),
@@ -218,6 +220,27 @@ suite('Paradis pane token service', () => {
 			remoteRecorded: '/home/test/.codex-2',
 			localInRemote: undefined,
 			localInRemoteRecorded: false,
+		});
+	});
+
+	// 開いた後に切り替えても、そのターミナルで起動する Codex が今の選択を使うよう、ランチャーへ選択のファイルと
+	// 開いたときに入れた CODEX_HOME（既定なら空）を渡す。会話をそのホームで再開するターミナル（呼び出し側が
+	// CODEX_HOME を決めたもの）と、別のマシンで動くターミナルには渡さない。
+	test('tells the Codex launcher where the current account selection is, except for terminals that pinned their home', () => {
+		const file = '/tmp/para-code-user-data/paradis/codexAccounts/codex-launch-home';
+		const markers = (env: Record<string, string | null | undefined>) => [env.PARA_CODE_CODEX_LAUNCH_HOME_FILE, env.PARA_CODE_CODEX_LAUNCH_HOME];
+		assert.deepStrictEqual({
+			selected: markers(paneEnvironmentFor({ launchHome: '/home/test/.codex-2', launchHomeFile: file })),
+			defaultHome: markers(paneEnvironmentFor({ launchHome: undefined, launchHomeFile: file })),
+			notSynced: markers(paneEnvironmentFor({ launchHome: undefined })),
+			pinned: markers(paneEnvironmentFor({ launchHome: '/home/test/.codex-2', launchHomeFile: file, env: { CODEX_HOME: '/home/test/.codex' } })),
+			localInRemote: markers(paneEnvironmentFor({ launchHome: '/home/test/.codex-2', launchHomeFile: file, remoteAuthority: 'ssh-remote+host', cwd: URI.file('/Users/test/project') })),
+		}, {
+			selected: [file, '/home/test/.codex-2'],
+			defaultHome: [file, ''],
+			notSynced: [undefined, undefined],
+			pinned: [undefined, undefined],
+			localInRemote: [undefined, undefined],
 		});
 	});
 
