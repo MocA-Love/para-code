@@ -81,7 +81,8 @@ export interface IParadisTasksRateLimit {
 }
 
 /** 取得に失敗した理由。画面はこれで案内の文を選ぶ。 */
-export type ParadisTasksErrorKind = 'no-gh' | 'auth' | 'rate-limited' | 'timeout' | 'failed';
+/** `scope`: gh のトークンに要る権限（Projects は read:project）が無い。 */
+export type ParadisTasksErrorKind = 'no-gh' | 'auth' | 'scope' | 'rate-limited' | 'timeout' | 'failed';
 
 export interface IParadisTasksError {
 	readonly kind: ParadisTasksErrorKind;

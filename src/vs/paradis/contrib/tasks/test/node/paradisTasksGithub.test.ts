@@ -183,4 +183,32 @@ suite('ParadisTasksGithubService', () => {
 		const query = paradisTasksProjectsQuery(['a/b', 'x") { evil }', 'c/d']);
 		assert.deepStrictEqual([query.includes('r0: repository(owner: "a", name: "b")'), query.includes('r1: repository(owner: "c", name: "d")'), query.includes('evil')], [true, true, false]);
 	});
+
+	// errors のある応答: 権限不足は専用の理由、検索は失敗、プロジェクトの一覧は読めた分を出し、何も無ければ失敗
+	test('handles GraphQL errors next to data', async () => {
+		const now = 1_000_000;
+		const outputs = [
+			{ stdout: JSON.stringify({ data: { viewer: { projectsV2: null } }, errors: [{ type: 'INSUFFICIENT_SCOPES', message: 'Your token has not been granted the required scopes' }] }), stderr: 'gh: Your token has not been granted the required scopes', failed: true, notFound: false },
+			{ stdout: JSON.stringify({ data: { search: { issueCount: 1, nodes: [] } }, errors: [{ type: 'NOT_FOUND', message: 'x' }] }), stderr: '', failed: true, notFound: false },
+			{ stdout: JSON.stringify({ data: { viewer: { projectsV2: { nodes: [{ number: 1, title: 'p', url: 'u', closed: false, owner: { login: 'me' }, views: { nodes: [] } }] } }, r0: null }, errors: [{ type: 'FORBIDDEN', message: 'org' }] }), stderr: '', failed: true, notFound: false },
+			{ stdout: JSON.stringify({ data: { viewer: { projectsV2: { nodes: [] } }, r0: null }, errors: [{ type: 'FORBIDDEN', message: 'org' }] }), stderr: '', failed: true, notFound: false },
+			{ stdout: JSON.stringify({ data: { repositoryOwner: { projectV2: { title: 't', url: 'u', view: null } } }, errors: [{ type: 'NOT_FOUND', message: 'no view' }] }), stderr: '', failed: true, notFound: false },
+		];
+		let index = 0;
+		const service = store.add(new ParadisTasksGithubService(async () => outputs[index++], new NullLogService(), new ParadisGithubRateLimitPause(() => now), () => now));
+		const results = [
+			await service.listProjects({ repositories: ['a/b'] }),
+			await service.search({ mode: 'issue', repositories: ['a/b'], query: '' }),
+			await service.listProjects({ repositories: ['a/c'] }),
+			await service.listProjects({ repositories: ['a/d'] }),
+			await service.projectItems({ owner: 'a', number: 1, view: 9 }),
+		];
+		assert.deepStrictEqual(results.map(result => result.ok ? 'ok' : `${result.error.kind}:${result.error.message.includes('NOT_FOUND') || result.error.message.includes('FORBIDDEN') || result.error.message.includes('scopes')}`), [
+			'scope:true',
+			'failed:true',
+			'ok',
+			'failed:true',
+			'failed:true',
+		]);
+	});
 });

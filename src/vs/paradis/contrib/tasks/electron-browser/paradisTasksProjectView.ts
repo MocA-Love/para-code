@@ -172,6 +172,10 @@ export function paradisTasksRenderProjectTable(container: HTMLElement, result: I
 /** ボード: 単一選択の欄（ビューの設定、無ければ Status）の選択肢ごとの列にカードを並べる。 */
 export function paradisTasksRenderProjectBoard(container: HTMLElement, result: IParadisTasksProjectItemsResult, store: DisposableStore, host: IParadisTasksProjectViewHost): void {
 	const field = paradisTasksBoardField(result.fields, result.columnField);
+	if (result.items.length < result.total) {
+		// 列の件数は読めた分だけ（続きを読むと増える）
+		dom.append(container, $('.paradis-tasks-note')).textContent = localize('paradis.tasks.board.partial', "全 {0} 件のうち {1} 件を読みました。列の件数は読めた分です。下の「続きを読む」で残りを読みます。", result.total, result.items.length);
+	}
 	const board = dom.append(container, $('.paradis-tasks-board'));
 	// カードに出す欄（列にした欄とタイトルは除く。多すぎると読めないので 3 つまで）
 	const cardFields = paradisTasksTableFields(result.fields).filter(other => other.name !== field?.name && other.dataType !== 'ASSIGNEES').slice(0, 3);
