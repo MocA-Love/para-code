@@ -21,6 +21,7 @@ export enum BrowserOverlayType {
 const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverlayType }> = [
 	{ className: 'monaco-menu-container', type: BrowserOverlayType.Menu },
 	{ className: 'action-list-submenu-panel', type: BrowserOverlayType.Menu },
+	{ className: 'monaco-select-box-dropdown-container', type: BrowserOverlayType.Menu }, // PARA-PATCH: custom-drawn select lists (window.menuStyle: custom is the fork default) must not open under the page
 	{ className: 'quick-input-widget', type: BrowserOverlayType.QuickInput },
 	{ className: 'monaco-hover', type: BrowserOverlayType.Hover },
 	{ className: 'editor-widget', type: BrowserOverlayType.Hover },
