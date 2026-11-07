@@ -13,9 +13,11 @@ import {
 	paradisMatchLauncherAgents,
 	paradisNormalizeLaunchChoice,
 	paradisParseStoredLaunchChoices,
+	paradisRestoreLaunchChoice,
 	paradisStoreLaunchChoice,
 	paradisTabLauncherAgents,
 	paradisTabLauncherEfforts,
+	paradisTabLauncherRoot,
 	paradisTabLauncherUrl,
 } from '../../common/paradisTabLauncher.js';
 
@@ -52,6 +54,31 @@ suite('paradisTabLauncher', () => {
 			effortNotOnModel: { modelId: 'gpt-6-luna', effortId: undefined, permissionId: 'default' },
 			noPermissions: { modelId: undefined, effortId: undefined, permissionId: undefined },
 		});
+	});
+
+	test('does not carry a dangerous permission over from the last launch', () => {
+		const dangerFirst: IParadisAgentCommandTemplate = { ...custom, permissions: [{ id: 'yolo', label: 'yolo', flag: '--yolo', danger: true }, { id: 'safe', label: 'safe', flag: '' }] };
+		assert.deepStrictEqual({
+			claudeSkip: paradisRestoreLaunchChoice(claude, { modelId: 'opus', effortId: 'high', permissionId: 'skip-permissions' }),
+			codexBypass: paradisRestoreLaunchChoice(codex, { permissionId: 'bypass' }),
+			codexFullAuto: paradisRestoreLaunchChoice(codex, { permissionId: 'full-auto' }),
+			dangerFirst: paradisRestoreLaunchChoice(dangerFirst, undefined),
+		}, {
+			claudeSkip: { modelId: 'opus', effortId: 'high', permissionId: 'default' },
+			codexBypass: { modelId: undefined, effortId: undefined, permissionId: 'default' },
+			codexFullAuto: { modelId: undefined, effortId: undefined, permissionId: 'full-auto' },
+			dangerFirst: { modelId: undefined, effortId: undefined, permissionId: 'safe' },
+		});
+	});
+
+	test('launches in the root of the current space, not the first workspace folder', () => {
+		const spaces = [{ space: 'repo-a', uri: '/a' }, { space: 'worktree:repo-a:feature', uri: '/a-worktrees/feature' }];
+		assert.deepStrictEqual([
+			paradisTabLauncherRoot('worktree:repo-a:feature', spaces, '/first'),
+			paradisTabLauncherRoot(undefined, spaces, '/first'),
+			paradisTabLauncherRoot('gone', spaces, '/first'),
+			paradisTabLauncherRoot(undefined, spaces, undefined),
+		], ['/a-worktrees/feature', '/first', '/first', undefined]);
 	});
 
 	test('efforts follow the model', () => {

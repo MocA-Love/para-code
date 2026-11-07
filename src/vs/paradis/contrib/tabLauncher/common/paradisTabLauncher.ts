@@ -106,6 +106,29 @@ export function paradisNormalizeLaunchChoice(template: IParadisAgentCommandTempl
 }
 
 /**
+ * 保存しておいた前回の選択から、ランチャーを開いたときの選択を作る。危ない権限（`danger`。全許可・全バイパス）は
+ * 引き継がず、毎回危なくない既定（危なくない先頭の選択肢）に戻す。開いている間に選び直した値はこの関数を通らない。
+ */
+export function paradisRestoreLaunchChoice(template: IParadisAgentCommandTemplate, stored: IParadisTabLauncherChoice | undefined): IParadisTabLauncherChoice {
+	const choice = paradisNormalizeLaunchChoice(template, stored);
+	const permissions = template.permissions ?? [];
+	if (!permissions.find(permission => permission.id === choice.permissionId)?.danger) {
+		return choice;
+	}
+	return { ...choice, permissionId: (permissions.find(permission => !permission.danger) ?? permissions[0])?.id };
+}
+
+/**
+ * エージェントを起動するフォルダ。スペースを使うウィンドウでは、今のスペースのルート（リポジトリ本体か worktree）を
+ * スペースの一覧から引く（複数フォルダのワークスペースでも、先頭のフォルダにずれない）。スペースを使っていない
+ * ウィンドウ（今のスペースが無い）か、一覧に見つからないときだけ、ワークスペースの先頭のフォルダを使う。
+ */
+export function paradisTabLauncherRoot<T>(activeStateKey: string | undefined, spaces: readonly { readonly space: string; readonly uri: T }[], firstFolder: T | undefined): T | undefined {
+	const active = activeStateKey !== undefined ? spaces.find(entry => entry.space === activeStateKey) : undefined;
+	return active?.uri ?? firstFolder;
+}
+
+/**
  * 検索欄の文字が URL（またはホスト名）なら、内蔵ブラウザで開く URL を返す。
  * `https://…` はそのまま、`localhost:3000` は http、`example.com/path` は https を補う。空白を含むものは URL と見なさない。
  */
