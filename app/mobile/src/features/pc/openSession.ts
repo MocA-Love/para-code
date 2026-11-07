@@ -53,8 +53,9 @@ export function openSession(router: Router, target: SessionTarget): void {
 		...(target.color !== undefined ? { color: target.color } : {}),
 	});
 	const latest = createAgentLatestEntryToken();
-	const tab = target.terminalKey !== undefined ? encodeSessionTab({ kind: 'terminal', terminalKey: target.terminalKey }) : '';
-	if (showSessionInDetailColumn(target.pcId, target.spaceId, { tab, latest })) {
+	// タブを指定しない（スペースの行）ときは今までどおり開き直す（既定のタブを選び直す）
+	if (target.terminalKey !== undefined
+		&& showSessionInDetailColumn(target.pcId, target.spaceId, { tab: encodeSessionTab({ kind: 'terminal', terminalKey: target.terminalKey }), latest })) {
 		return;
 	}
 	resetDetailColumnFor(target.pcId);
