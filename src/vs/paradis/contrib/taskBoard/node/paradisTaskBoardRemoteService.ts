@@ -471,8 +471,10 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 	 * 決めていればその値に任せ、読めなかったときも git の既定のまま作る。
 	 */
 	private async checkoutWorkersUnset(session: ISession, dir: string): Promise<boolean> {
-		const result = await this.enqueueGit(session, () => this.execGit(['-C', dir, 'config', '--get', 'checkout.workers'], this.timeouts.gitShortMs));
-		return result.code === 1;
+		// execGit は signal での終了も終了コード 1 に寄せるので、ここは元の終了コードを見る。
+		// 時間切れ・signal で止まったときは読めなかった扱い（git の既定のまま作る。スペース側の作成と同じ）
+		const result = await this.enqueueGit(session, async () => this.spawnBounded('git', ['-C', dir, 'config', '--get', 'checkout.workers'], undefined, paradisTaskBoardRemoteEnv(await this.baseEnv()), this.timeouts.gitShortMs, undefined).promise);
+		return !result.timedOut && result.code === 1;
 	}
 
 	/**
