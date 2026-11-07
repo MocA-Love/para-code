@@ -28,7 +28,7 @@ type Engine = EngineInterface;
 type Json = Record<string, unknown>;
 
 const MOD_PROTOCOL = '1';
-const MOD_VERSION = '1.4.4';
+const MOD_VERSION = '1.5.0';
 /**
  * What this mod can do beyond the first version, sent with every wait for commands (Para Code may have
  * restarted since hello): `commands.list` answers `commandList` with `$.command.list()`, `command.run` runs a
@@ -58,6 +58,14 @@ const MAX_ROW_CHARS = 256 * 1024;
 const MAX_WAIT_ROUNDS = 1_000;
 /** Tool calls remembered from tool.check to pair with the PermissionRequest that follows. */
 const MAX_REMEMBERED_ASKS = 64;
+/** Rows of each list of the context breakdown sent to Para Code (the largest ones). */
+const MAX_CONTEXT_ROWS = 20;
+/**
+ * After this many failed breakdowns in a row this module stops asking. An older Claude Code without `$.session.usage`
+ * throws at the call (checked on 2.1.316: an unknown `$` call is not refused when the module loads), and one that does
+ * not know `breakdown` answers without it.
+ */
+const MAX_CONTEXT_FAILURES = 3;
 
 interface IEndpoint {
 	readonly url: string;
@@ -103,6 +111,10 @@ let submitting = false;
 let submitGeneration = 0;
 /** A prompt submitted for Para Code, waiting for its row to learn the row's uuid. */
 let submitWatch: { readonly id: string; readonly text: string; uuid?: string } | undefined;
+/** A context breakdown is being taken. A turn that ends meanwhile does not ask again (dropped, never queued). */
+let contextInFlight = false;
+/** Breakdowns that failed in a row (see MAX_CONTEXT_FAILURES). */
+let contextFailures = 0;
 
 function str(value: unknown): string | undefined {
 	return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -121,6 +133,92 @@ function stableJson(value: unknown): string {
 		return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(',')}}`;
 	}
 	return JSON.stringify(value) ?? 'null';
+}
+
+function num(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+}
+
+function list(value: unknown): Json[] {
+	return Array.isArray(value) ? value.map(rec).filter((row): row is Json => row !== undefined) : [];
+}
+
+function largest<T extends { readonly tokens: number }>(rows: T[]): T[] {
+	return rows.sort((a, b) => b.tokens - a.tokens).slice(0, MAX_CONTEXT_ROWS);
+}
+
+/**
+ * The context breakdown `$.session.usage({ breakdown })` answers, cut to what Para Code shows: the categories, and the
+ * largest memory files, MCP servers (their tools added up), agents and skills. The grid of squares is left out.
+ */
+function contextPayload(breakdown: Json, cwd: string | undefined): Json | undefined {
+	const totalTokens = num(breakdown.totalTokens);
+	const window = num(breakdown.rawMaxTokens) ?? num(breakdown.maxTokens);
+	if (totalTokens === undefined || window === undefined || window === 0) {
+		return undefined;
+	}
+	const categories = list(breakdown.categories).flatMap(category => {
+		const name = str(category.name);
+		const tokens = num(category.tokens);
+		const kind = category.kind === 'used' || category.kind === 'deferred' || category.kind === 'buffer' || category.kind === 'free'
+			? category.kind : category.isDeferred === true ? 'deferred' : 'used';
+		return name !== undefined && tokens !== undefined ? [{ name, tokens, kind }] : [];
+	});
+	const servers = new Map<string, { name: string; tokens: number; count: number }>();
+	for (const tool of list(breakdown.mcpTools)) {
+		const name = str(tool.serverName) ?? 'MCP';
+		const server = servers.get(name) ?? { name, tokens: 0, count: 0 };
+		server.tokens += num(tool.tokens) ?? 0;
+		server.count++;
+		servers.set(name, server);
+	}
+	const row = (name: unknown, tokens: unknown, detail: unknown) => {
+		const rowName = str(name);
+		const rowTokens = num(tokens);
+		const rowDetail = str(detail);
+		return rowName !== undefined && rowTokens !== undefined ? [{ name: rowName, tokens: rowTokens, ...(rowDetail !== undefined ? { detail: rowDetail } : {}) }] : [];
+	};
+	const skills = rec(breakdown.skills);
+	return {
+		totalTokens, window,
+		...(num(breakdown.percentage) !== undefined ? { percent: num(breakdown.percentage) } : {}),
+		...(str(breakdown.model) !== undefined ? { model: str(breakdown.model) } : {}),
+		...(cwd !== undefined ? { cwd } : {}),
+		categories,
+		memoryFiles: largest(list(breakdown.memoryFiles).flatMap(file => row(file.path, file.tokens, file.type))),
+		mcpServers: largest([...servers.values()]),
+		agents: largest(list(breakdown.agents).flatMap(agent => row(agent.agentType, agent.tokens, agent.source))),
+		skills: largest(list(skills?.skillFrontmatter).flatMap(skill => row(skill.name, skill.tokens, skill.pluginName ?? skill.source))),
+	};
+}
+
+/**
+ * Takes the context breakdown once a main turn ended and sends it to Para Code (which keeps the last one of each
+ * conversation). Runs in the background: the turn's end never waits for it. Only one runs at a time; a turn that ends
+ * while one runs is dropped. `summary` answers from the last response's usage and local estimates (no token-count calls).
+ */
+async function sendContext($: Engine): Promise<void> {
+	if (contextInFlight || contextFailures >= MAX_CONTEXT_FAILURES || !active) {
+		return;
+	}
+	contextInFlight = true;
+	try {
+		const sessionId = await $.session.id();
+		const usage = await $.session.usage({ breakdown: 'summary' });
+		const breakdown = rec(rec(rec(usage)?.context)?.breakdown);
+		const cwd = await $.session.cwd().then(value => str(value), () => undefined);
+		const payload = breakdown !== undefined ? contextPayload(breakdown, cwd) : undefined;
+		if (payload === undefined) {
+			contextFailures++;
+			return;
+		}
+		contextFailures = 0;
+		emit($, { type: 'context', context: payload }, sessionId);
+	} catch {
+		contextFailures++;
+	} finally {
+		contextInFlight = false;
+	}
 }
 
 function curlQuote(value: string): string {
@@ -731,6 +829,10 @@ export const register: Register = on => {
 				mainBusy = false;
 			}
 			emit($, { type: 'turn.complete', turnId: e.turnId, reason: e.reason, aborted: e.isAborted, ...(e.agentId !== undefined ? { agentId: e.agentId } : {}) });
+			if (e.agentId === undefined) {
+				// The context breakdown for Para Code's usage screen and Para Code Mobile, in the background
+				void sendContext($);
+			}
 		}
 		return next(e);
 	});
