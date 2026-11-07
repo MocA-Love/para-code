@@ -44,6 +44,8 @@ import { IParadisPortPageInfo } from '../../portList/common/paradisPortList.js';
 import { ParadisPortListClient } from '../../portList/electron-browser/paradisPortListClient.js';
 import { IParadisBrowserScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces, paradisResolveSpaceInfo, paradisScopeRootPath, paradisSpaceInfoLabel } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisNewTabServer, IParadisNewTabServerGroups, IParadisNewTabSpace, paradisGroupNewTabServers, paradisNewTabServerAddress } from '../common/paradisBrowserNewTab.js';
+import { paradisBookmarkTiles, paradisRankFrequentPages } from '../common/paradisBrowserNewTabTiles.js';
+import { ParadisBrowserNewTabExtras } from './paradisBrowserNewTabExtras.js';
 
 const $ = dom.$;
 
@@ -65,6 +67,10 @@ const STR_OUTSIDE = localize('paradis.browserNewTab.outside', "Para Code の外"
 // allow-any-unicode-next-line
 const STR_SUGGESTION_GROUP = localize('paradis.browserNewTab.suggestionGroup', "このスペースのサーバー");
 // allow-any-unicode-next-line
+const STR_FREQUENT = localize('paradis.browserNewTab.frequent', "よく開くページ");
+// allow-any-unicode-next-line
+const STR_BOOKMARKS = localize('paradis.browserNewTab.bookmarks', "ブックマーク");
+// allow-any-unicode-next-line
 const STR_ROW_HOVER = localize('paradis.browserNewTab.rowHover', "このタブで開く（⌘ / Ctrl を押しながらで新しいタブ）");
 
 interface IServerView {
@@ -83,6 +89,9 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 
 	private _groups: IParadisNewTabServerGroups | undefined;
 	private _currentLabel = '';
+	private _currentRoot: URI | undefined;
+	private _forcePullRequest = false;
+	private readonly _extras: ParadisBrowserNewTabExtras;
 	private readonly _pages = new Map<number, IParadisPortPageInfo>();
 	private _othersOpen = false;
 	private _loading = false;
@@ -111,6 +120,7 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 	) {
 		super(editor);
 		this._client = instantiationService.createInstance(ParadisPortListClient);
+		this._extras = this._register(instantiationService.createInstance(ParadisBrowserNewTabExtras, () => this._renderPage()));
 		this._container = $('.paradis-browser-new-tab');
 		this._container.style.display = 'none';
 		this._widget = { location: BrowserWidgetLocation.ContentArea, element: this._container, order: WIDGET_ORDER };
@@ -163,13 +173,15 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 	// #region 一覧を集める
 
 	/** スペースの一覧と、このタブのスペース。スペースを管理しない窓では、ワークスペースのフォルダを 1 つのスペースとして扱う。 */
-	private _spaces(): { spaces: IParadisNewTabSpace[]; currentKey: string | undefined; currentLabel: string } {
+	private _spaces(): { spaces: IParadisNewTabSpace[]; currentKey: string | undefined; currentLabel: string; currentRoot: URI | undefined } {
 		const authority = this._remoteAgentService.getConnection()?.remoteAuthority;
 		if (this._workspaceSwitchService.isManagedWorkspaceWindow) {
 			const repositories = this._workspaceSwitchService.repositories;
 			const cache = new Map();
 			const spaces: IParadisNewTabSpace[] = [];
+			const roots = new Map<string, URI>();
 			for (const entry of paradisListSpaces(repositories, this._worktreeService)) {
+				roots.set(entry.space, entry.uri);
 				const rootPath = paradisScopeRootPath(entry.uri, authority);
 				if (rootPath === undefined) {
 					continue;
@@ -179,7 +191,7 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 			const model = this.editor.model;
 			const scope = model ? this._browserScopeService.resolveScope(model.id) : undefined;
 			const currentKey = scope?.kind === 'managed' ? scope.stateKey : this._workspaceSwitchService.activeStateKey;
-			return { spaces, currentKey, currentLabel: spaces.find(space => space.key === currentKey)?.label ?? '' };
+			return { spaces, currentKey, currentLabel: spaces.find(space => space.key === currentKey)?.label ?? '', currentRoot: currentKey !== undefined ? roots.get(currentKey) : undefined };
 		}
 		const spaces: IParadisNewTabSpace[] = [];
 		for (const folder of this._workspaceContextService.getWorkspace().folders) {
@@ -188,7 +200,7 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 				spaces.push({ key: 'window', label: folder.name, rootPath });
 			}
 		}
-		return { spaces, currentKey: spaces.length ? 'window' : undefined, currentLabel: spaces.length === 1 ? spaces[0].label : STR_THIS_WINDOW };
+		return { spaces, currentKey: spaces.length ? 'window' : undefined, currentLabel: spaces.length === 1 ? spaces[0].label : STR_THIS_WINDOW, currentRoot: this._workspaceContextService.getWorkspace().folders[0]?.uri };
 	}
 
 	private async _load(force: boolean): Promise<void> {
@@ -198,8 +210,11 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 		this._loading = true;
 		const generation = ++this._generation;
 		try {
+			const { spaces, currentKey, currentLabel, currentRoot } = this._spaces();
+			this._currentLabel = currentLabel;
+			this._currentRoot = currentRoot;
+			this._forcePullRequest = force;
 			const snapshot = await this._client.getServers(force);
-			const { spaces, currentKey, currentLabel } = this._spaces();
 			// 手元が Windows でも、SSH の接続先（Linux）のパスは大文字と小文字を区別する
 			const caseInsensitive = isWindows && !this._remoteAgentService.getConnection();
 			const groups = paradisGroupNewTabServers(snapshot.entries, spaces, currentKey, snapshot.homeDir, caseInsensitive);
@@ -207,7 +222,6 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 				return;
 			}
 			this._groups = groups;
-			this._currentLabel = currentLabel;
 			this._renderPage();
 			this._onDidChangeSuggestions.fire();
 
@@ -232,7 +246,11 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 				}
 			}
 		} catch {
-			// 古い接続先（このチャネルの口が無い）や、ポートを読めない環境。本家の案内のままにする
+			// 古い接続先（このチャネルの口が無い）や、ポートを読めない環境。サーバーの一覧は空のまま、ほかの部品は出す
+			if (generation === this._generation && !this._store.isDisposed && !this._groups) {
+				this._groups = { current: [], otherSpaces: [], outside: [] };
+				this._renderPage();
+			}
 		} finally {
 			this._loading = false;
 		}
@@ -288,6 +306,18 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 		}
 	}
 
+	/** PR・タイルの URL を開く。⌘ / Ctrl・中クリックなら裏の新しいタブ。 */
+	private _openUrl(url: string, inNewTab: boolean): void {
+		const input = this.editor.input;
+		if (inNewTab || !(input instanceof BrowserEditorInput)) {
+			void (async () => this._editorService.openEditor({ resource: BrowserViewUri.forId(generateUuid()), options: { pinned: true, inactive: true, viewState: { url } } }, await this._browserViewWorkbenchService.getPreferredGroup()))();
+			return;
+		}
+		if (!input.isDisposed()) {
+			input.navigate(url);
+		}
+	}
+
 	private async _getSuggestions(context: IBrowserUrlSuggestionContext, token: CancellationToken): Promise<readonly IBrowserUrlSuggestion[]> {
 		if (!this._groups) {
 			await this._load(false);
@@ -337,6 +367,8 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 		this._container.style.display = '';
 
 		const column = dom.append(this._container, $('.pbnt-column'));
+		const open = (url: string, inNewTab: boolean) => this._openUrl(url, inNewTab);
+		this._extras.renderImportCard(column, store);
 		const section = dom.append(column, $('section.pbnt-section'));
 		const caption = dom.append(section, $('.pbnt-caption'));
 		dom.append(caption, $('span.pbnt-caption-name')).textContent = STR_THIS_SPACE;
@@ -351,10 +383,19 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 		refresh.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		store.add(dom.addDisposableListener(refresh, dom.EventType.CLICK, () => void this._load(true)));
 
-		if (groups.current.length > 0) {
+		const pullRequest = this._extras.pullRequest(this._currentRoot, this._forcePullRequest);
+		this._forcePullRequest = false;
+		if (groups.current.length > 0 || pullRequest) {
 			const list = dom.append(section, $('.pbnt-list'));
 			for (const server of groups.current) {
 				this._renderRow(list, { server, page: this._pageOf(server) }, server.processName, store);
+			}
+			if (groups.current.length === 0) {
+				dom.append(list, $('.pbnt-empty')).textContent = STR_NONE;
+			}
+			if (pullRequest) {
+				dom.append(list, $('.pbnt-divider'));
+				this._extras.renderPullRequestRow(list, pullRequest, open, store);
 			}
 		} else {
 			dom.append(section, $('.pbnt-empty')).textContent = STR_NONE;
@@ -385,6 +426,16 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 				}
 			}
 		}
+		this._renderTiles(column, open, store);
+	}
+
+	private _renderTiles(column: HTMLElement, open: (url: string, inNewTab: boolean) => void, store: DisposableStore): void {
+		const history = this.editor.model?.history;
+		if (history) {
+			this._extras.renderTiles(column, STR_FREQUENT, paradisRankFrequentPages(history.entries.items), key => key ? history.favicons.get(key) : undefined, open, store);
+		}
+		const bookmarks = this._extras.bookmarks;
+		this._extras.renderTiles(column, STR_BOOKMARKS, paradisBookmarkTiles(bookmarks.nodes), key => bookmarks.getFavicon(key), open, store);
 	}
 
 	private _renderRow(list: HTMLElement, view: IServerView, context: string, store: DisposableStore): void {
