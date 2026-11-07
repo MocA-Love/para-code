@@ -73,6 +73,8 @@ import type { IParadisOpenCodeMessage } from '../../sessionResume/node/paradisOp
 import { ParadisOpenCodeActionOutcome, paradisOpenCodeBridge } from '../../agentBrowser/node/paradisOpenCodeBridge.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { ParadisClaudeModBridge, paradisClaudeModBridge, paradisClaudeModWaitForPrevious, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
+import { IParadisClaudeContextBreakdown, paradisShortenContextBreakdownPaths } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
+import { paradisClaudeContextStore } from '../../claudeMod/node/paradisClaudeContextStore.js';
 import { paradisClaudeDraftState, paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
@@ -194,6 +196,8 @@ type AgentInbound =
 	 * `cursor` が無ければ PC のメモリ（リング）から、あれば前回の返事の `cursor` の位置から記録ファイルを後ろへ読む。
 	 */
 	| { t: 'history'; id: number; token?: string; requestId: string; epoch: string; beforeRev: number; cursor?: string; limit?: number }
+	/** 会話のコンテキストの内訳（`agent.context-breakdown.v1`）。PC が保存した最後の 1 件を返す。 */
+	| { t: 'context-breakdown'; id: number; token?: string; requestId: string }
 	/** バックグラウンドのシェルの出力の末尾と停止（`agent.shells.v1`。paradisAgentShellOutput.ts）。 */
 	| ParadisAgentShellInbound;
 
@@ -208,6 +212,12 @@ type AgentOutbound =
 	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string; consumed?: boolean; late?: true }
 	| { t: 'activity-detail'; id: number; requestId: string; activityId: string; messages?: readonly IParadisAgentActivityDetailMessage[]; error?: string }
 	| { t: 'tool-full'; id: number; requestId: string; rev: number; text?: string; error?: string }
+	/**
+	 * 会話のコンテキストの内訳（`agent.context-breakdown.v1`）。`breakdown` は最後に取れた 1 件（`at` が取った時刻）、`live` は
+	 * その会話がまだ動いているか。取れないときは `reason`（`agent`: Claude Code 以外、`remote`: 予約（今の PC は返さない。SSH 先のペインも mod が手元へ送るため）、`none`: まだ無い、
+	 * `unavailable`: ペインが分からない）と、そのまま出せる `error`。
+	 */
+	| { t: 'context-breakdown'; id: number; requestId: string; breakdown?: IParadisClaudeContextBreakdown; live?: boolean; reason?: ParadisContextBreakdownUnavailable; error?: string }
 	| { t: 'tool-image'; id: number; requestId: string; rev: number; index: number; mediaType?: string; data?: string; error?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
 	/**
@@ -1011,6 +1021,24 @@ function isValidActivityDetailRequest(msg: AgentInboundCandidate): msg is AgentI
 		&& isValidControlRequest(msg);
 }
 
+/** 内訳を返せない理由（`agent.context-breakdown.v1`）。 */
+export type ParadisContextBreakdownUnavailable = 'agent' | 'remote' | 'none' | 'unavailable';
+
+/** 内訳を返せない理由の、モバイルにそのまま出せる文。 */
+export function paradisContextBreakdownMessage(reason: ParadisContextBreakdownUnavailable): string {
+	switch (reason) {
+		case 'agent': return 'Claude Code の会話でだけ取れます';
+		case 'remote': return 'このペインでは取れません';
+		case 'none': return 'まだありません（応答が終わると取れます）';
+		case 'unavailable': return '内訳を取得できません';
+	}
+}
+
+function isValidContextBreakdownRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'context-breakdown' }> {
+	return msg.t === 'context-breakdown' && Object.keys(msg).every(key => key === 't' || key === 'id' || key === 'token' || key === 'requestId')
+		&& isValidControlRequest(msg);
+}
+
 function isValidToolFullRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'tool-full' }> {
 	return msg.t === 'tool-full'
 		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
@@ -1056,6 +1084,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'settings-update': return isValidSettingsUpdateRequest(msg) ? msg : undefined;
 		case 'activity-detail': return isValidActivityDetailRequest(msg) ? msg : undefined;
 		case 'tool-full': return isValidToolFullRequest(msg) ? msg : undefined;
+		case 'context-breakdown': return isValidContextBreakdownRequest(msg) ? msg : undefined;
 		case 'tool-image': return isValidToolImageRequest(msg) ? msg : undefined;
 		case 'history': return isValidHistoryRequest(msg) ? msg : undefined;
 		case 'shell-output':
@@ -4979,6 +5008,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'tool-full':
 				this.handleToolFullRequest(mobileId, msg);
 				break;
+			case 'context-breakdown':
+				this.handleContextBreakdownRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] context breakdown failed', err));
+				break;
 			case 'tool-image':
 				this.handleToolImageRequest(mobileId, msg);
 				break;
@@ -5144,6 +5176,37 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.historyReads.delete(token);
 			await handle?.close().catch(() => { /* ignore */ });
 		}
+	}
+
+	/**
+	 * 会話のコンテキストの内訳（`agent.context-breakdown.v1`）。同梱の mod が応答の終わりごとに取り、shared process が会話ごとに
+	 * 最後の 1 件を保存している（paradisClaudeContextStore.ts）。ここは読むだけで、mod へ取りに行かない。
+	 */
+	private async handleContextBreakdownRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'context-breakdown' }>): Promise<void> {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const fail = (reason: ParadisContextBreakdownUnavailable): void => {
+			this.sendTo(mobileId, { t: 'context-breakdown', id: msg.id, requestId: msg.requestId, reason, error: paradisContextBreakdownMessage(reason) }, token ?? msg.token);
+		};
+		if (token === undefined || !this.hasSubscriber(token, mobileId)) {
+			fail('unavailable');
+			return;
+		}
+		const session = this.paneSessions.get(token);
+		if (session !== undefined && session.agent !== 'claude') {
+			fail('agent');
+			return;
+		}
+		const store = paradisClaudeContextStore();
+		const sessionId = session?.sessionId;
+		// そのペインが送った内訳だけを返す（別のペインが同じ会話 ID を名乗っても混ざらない）
+		const breakdown = store !== undefined && sessionId !== undefined ? await store.breakdownOf(sessionId, token) : undefined;
+		// 待っている間に会話が替わったら、古い会話の内訳は返さない
+		if (breakdown === undefined || this.paneSessions.get(token)?.sessionId !== sessionId) {
+			fail('none');
+			return;
+		}
+		// 絶対パスはホームを `~/` に縮めて送る（端末にユーザー名入りのパスを残さない）
+		this.sendTo(mobileId, { t: 'context-breakdown', id: msg.id, requestId: msg.requestId, breakdown: paradisShortenContextBreakdownPaths(breakdown, homedir()), live: store?.isLive(breakdown.sessionId) ?? false }, token);
 	}
 
 	/**
