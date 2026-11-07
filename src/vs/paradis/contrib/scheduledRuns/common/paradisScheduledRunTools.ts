@@ -38,7 +38,7 @@ export const PARADIS_SCHEDULED_RUN_TOOL_CREATE_WINDOW_MS = 60 * 60_000;
 export const PARADIS_SCHEDULED_RUN_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	{
 		name: PARADIS_CREATE_SCHEDULED_RUN_TOOL,
-		description: `Create a Para Code scheduled run: at the times of "schedule", Para Code starts an agent CLI with "prompt" in the repository of this terminal pane. It is created DISABLED: the user reviews it in Para Code (gear menu > 定期実行) and turns it on; tell the user to do that. Safety limits always apply: one run at a time, at most "daily_limit" automatic runs a day, at least ${PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES} minutes apart, each run stopped after 30 minutes. Optional "precheck_command" is a shell command run in the repository before each scheduled run; the agent starts only when it exits 0 (for example only when there is a new pull request), and its output is not passed to the agent. The agent uses its default model and permission; the user can change them.`,
+		description: `Create a Para Code scheduled run: at the times of "schedule", Para Code starts an agent CLI with "prompt" in the repository of this terminal pane. It is created DISABLED: the user reviews it in Para Code (gear menu > 定期実行) and turns it on; tell the user to do that. Safety limits always apply: one run at a time, at most "daily_limit" automatic runs a day, at least ${PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES} minutes apart, each run stopped after 30 minutes. Optional "precheck_command" is a shell command run in the repository before each scheduled run (sh on macOS and Linux, Command Prompt cmd.exe on Windows); the agent starts only when it exits 0 (for example only when there is a new pull request), and its output is not passed to the agent. The agent uses its default model and permission; the user can change them. Para Code marks it as created by an agent and shows the prompt and precheck_command to the user before the first enable.`,
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -49,7 +49,7 @@ export const PARADIS_SCHEDULED_RUN_TOOLS: readonly IParadisMcpToolDefinition[] =
 				target: { type: 'string', enum: ['repository', 'new_space'], description: '"repository" (default) runs in the main checkout of the repository; "new_space" creates a new worktree space for every run.' },
 				base_ref: { type: 'string', description: 'For "new_space": the branch to start from. Omit for the current branch.' },
 				daily_limit: { type: 'integer', minimum: 1, maximum: PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT, description: `Automatic runs allowed per day (default ${PARADIS_SCHEDULED_RUN_DEFAULT_DAILY_LIMIT}).` },
-				precheck_command: { type: 'string', description: `Shell command run before each scheduled run; the run starts only when it exits 0 (up to ${PARADIS_SCHEDULED_RUN_PRECHECK_MAX_COMMAND_LENGTH} characters). Only for repositories on this computer.` },
+				precheck_command: { type: 'string', description: `Shell command run before each scheduled run; the run starts only when it exits 0 (up to ${PARADIS_SCHEDULED_RUN_PRECHECK_MAX_COMMAND_LENGTH} characters). Runs with sh on macOS and Linux and with Command Prompt (cmd.exe) on Windows. Only for repositories in a local folder of this computer (not SSH, WSL or network folders).` },
 				precheck_timeout_seconds: { type: 'integer', minimum: 1, maximum: PARADIS_SCHEDULED_RUN_PRECHECK_MAX_TIMEOUT_SECONDS, description: `Time limit of precheck_command (default ${PARADIS_SCHEDULED_RUN_PRECHECK_DEFAULT_TIMEOUT_SECONDS}).` },
 			},
 			required: ['name', 'schedule', 'prompt'],

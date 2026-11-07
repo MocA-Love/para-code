@@ -278,7 +278,7 @@ export class ParadisScheduledRunsService extends Disposable {
 			}
 		} else {
 			// 作成直後は必ず無効。利用者が中身を確かめてから自分で有効にする
-			definition = withoutUndefinedPrecheck({ id, ...fields, enabled: false, createdAt: now, updatedAt: now });
+			definition = withoutUndefinedPrecheck({ id, ...fields, enabled: false, ...(draft.createdByAgent ? { createdByAgent: true, agentReviewPending: true } : {}), createdAt: now, updatedAt: now });
 			this.definitions.push(definition);
 			this.lastEvaluatedAt[definition.id] = now;
 			lastWritten = now;
@@ -305,8 +305,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			return { ok: true, definition: existing };
 		}
 		const lastBefore = this.lastEvaluatedAtOf(id);
-		const { disabledReason: _cleared, ...rest } = existing;
-		const definition = { ...rest, enabled, updatedAt: now };
+		const { disabledReason: _cleared, agentReviewPending: _reviewed, ...rest } = existing;
+		// エージェントが作ったものは、利用者が初めて有効にした時点で確かめ済みにする
+		const definition = { ...rest, enabled, updatedAt: now, ...(!enabled && existing.agentReviewPending ? { agentReviewPending: true } : {}) };
 		this.definitions = this.definitions.map(candidate => candidate.id === id ? definition : candidate);
 		// 有効にした時点より前の時刻は拾わない（無効だった間の時刻を「逃した」と扱わない）
 		this.lastEvaluatedAt[id] = now;
