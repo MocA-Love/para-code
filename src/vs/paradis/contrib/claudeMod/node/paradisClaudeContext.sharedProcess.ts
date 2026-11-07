@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // Claude Code のコンテキストの内訳の保存（paradisClaudeContextStore.ts）を shared process に置き、チャネルで答える。
-// `paradis.sharedProcess.contribution.ts` から副作用 import で読み込まれる。REH には置かない（mod は手元のペインだけで動く）。
+// `paradis.sharedProcess.contribution.ts` から副作用 import で読み込まれる。REH には置かない（SSH 先のペインの mod も戻りトンネルで手元の shared process へ送ってくる）。
 // モバイル（paradisMobileAgentChat.ts）は同じプロセスの保存を `paradisClaudeContextStore()` で直接読む。
 
 import { promises as fs } from 'fs';
