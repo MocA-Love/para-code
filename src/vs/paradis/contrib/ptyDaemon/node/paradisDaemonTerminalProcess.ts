@@ -410,10 +410,11 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	 *
 	 * 繋いだ時点の量も覚える。手を離して戻るときの差分の起点になる。
 	 */
-	private async attachInOrder(handle: number): Promise<IParadisPtyAttachment> {
+	private async attachInOrder(handle: number, since?: IParadisPtyLetGoMark): Promise<IParadisPtyAttachment> {
 		this.comingBack = [];
 		try {
-			const attachment = await this.host.attach(handle, this.viewer);
+			// `since` を渡すと、新しい常駐は差分で足りるときに差分だけを返す（古い常駐は無視して控え全体を返す）
+			const attachment = await (since !== undefined ? this.host.attach(handle, this.viewer, since) : this.host.attach(handle, this.viewer));
 			this.attachedWritten = attachment.written;
 			this.attachedEpoch = attachment.epoch;
 			this.receivedSinceAttach = 0;
@@ -493,7 +494,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		const mark = this.letGoMark;
 		let attachment: IParadisPtyAttachment;
 		try {
-			attachment = await this.attachInOrder(handle);
+			attachment = await this.attachInOrder(handle, mark);
 		} catch (error) {
 			await this.explainFailedComeBack(handle, error);
 			throw error;

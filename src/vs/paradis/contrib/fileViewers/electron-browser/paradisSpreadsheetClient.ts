@@ -17,7 +17,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_MAX_BYTES, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME, isParadisSpreadsheetCompoundFile } from '../common/paradisSpreadsheet.js';
+import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_BUSY_ERROR_NAME, PARADIS_SPREADSHEET_CHANNEL, PARADIS_SPREADSHEET_MAX_BYTES, PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME, isParadisSpreadsheetCompoundFile } from '../common/paradisSpreadsheet.js';
 import { describeParadisOfficeReadFailure, IParadisOfficeDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisOfficeDiffSides } from '../common/paradisOfficeDiffSide.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
 import { decodeParadisWorkbookJson, unpackParadisWorkbookStyles, type IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
@@ -39,10 +39,12 @@ export async function parseSpreadsheetResource(
 	onSourceBytes?: (totalBytes: number, content: VSBuffer) => void,
 	/** ブックで描く画像の画素の合計の上限。比較は左右で半分ずつ渡す。無ければ既定値。 */
 	imagePixelBudget?: number,
+	/** 取り消すと読み込みと、shared process の解析の待ち行列からも外れる。 */
+	token: CancellationToken = CancellationToken.None,
 ): Promise<IParadisWorkbookData> {
-	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } });
+	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } }, token);
 	onSourceBytes?.(content.value.byteLength, content.value);
-	return parseSpreadsheetContent(sharedProcessService, resource, content.value, imagePixelBudget);
+	return parseSpreadsheetContent(sharedProcessService, resource, content.value, imagePixelBudget, token);
 }
 
 /** ビューアが覚えておく 1 冊分。表示に使うブックと、後から変換・解析を頼むのに使う元のバイト列。 */
@@ -113,6 +115,9 @@ async function parseSpreadsheetContent(sharedProcessService: ISharedProcessServi
 	} catch (error) {
 		if (error instanceof Error && error.name === PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME) {
 			throw new ParadisSpreadsheetTooLargeError();
+		}
+		if (error instanceof Error && error.name === PARADIS_SPREADSHEET_BUSY_ERROR_NAME) {
+			throw new Error(localize('paradis.spreadsheet.busy', "ほかのブックの解析が混んでいるため、まだ開けません。少し待ってから開き直してください。"));
 		}
 		throw error;
 	}
@@ -276,6 +281,7 @@ export async function loadParadisSpreadsheetDiffSide(
 	resource: URI,
 	onSourceBytes?: (totalBytes: number) => void,
 	imagePixelBudget?: number,
+	token?: CancellationToken,
 ): Promise<IParadisSpreadsheetDiffSide> {
 	let readBytes: number | undefined;
 	try {
@@ -283,7 +289,7 @@ export async function loadParadisSpreadsheetDiffSide(
 			wb: await parseSpreadsheetResource(fileService, sharedProcessService, resource, totalBytes => {
 				readBytes = totalBytes;
 				onSourceBytes?.(totalBytes);
-			}, imagePixelBudget),
+			}, imagePixelBudget, token),
 		};
 	} catch (error) {
 		return { wb: { sheets: [] }, error, absent: isParadisSpreadsheetSideAbsent(resource, error, readBytes) };

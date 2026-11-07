@@ -90,6 +90,29 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 		]);
 	});
 
+	test('data of a long-lived request that is no longer counted does not reset the quiet time', () => {
+		let now = 0;
+		const activity = new ParadisNetworkActivity(() => now);
+		const connection = {};
+		activity.onEvent(connection, 'page', 'Network.requestWillBeSent', { requestId: 'sse', request: { url: 'https://example.com/events' } });
+		now = 40_000;
+		activity.onEvent(connection, 'page', 'Network.dataReceived', { requestId: 'sse' });
+		now = 41_000;
+		activity.onEvent(connection, 'page', 'Network.requestWillBeSent', { requestId: 'r', request: { url: 'https://example.com/r' } });
+		now = 41_500;
+		activity.onEvent(connection, 'page', 'Network.dataReceived', { requestId: 'r' });
+		now = 42_000;
+		const counted = activity.snapshot(30_000);
+		activity.onEvent(connection, 'page', 'Network.loadingFinished', { requestId: 'r' });
+		now = 44_000;
+		activity.onEvent(connection, 'page', 'Network.dataReceived', { requestId: 'sse' });
+		now = 45_000;
+		assert.deepStrictEqual([counted, activity.snapshot(30_000)], [
+			{ inflight: 1, quietMs: 500, pendingUrls: ['https://example.com/r'], longLived: 1 },
+			{ inflight: 0, quietMs: 3_000, pendingUrls: [], longLived: 1 },
+		]);
+	});
+
 	test('events of an iframe session belong to the tab that holds it', () => {
 		const parentOf = new Map<string, string | undefined>([['child', 'root'], ['grandchild', 'child']]);
 		const targetOf = new Map([['root', 'tab'], ['child', 'frame'], ['grandchild', 'worker']]);

@@ -184,10 +184,10 @@ suite('ParadisSpreadsheetChannel', () => {
 		}
 		channel.dispose();
 		deepStrictEqual({ outcomes, sent, parsedInProcess }, {
-			// 大きすぎるブック（limitExceeded）は本体で解析し直さずに断る。起動できない（failed）・混んでいる（busy）ときは本体で解析する。
-			outcomes: [{ relayed: true }, { name: 'Error', message: 'Cannot merge already merged cells' }, workbook, workbook, { name: 'ParadisSpreadsheetTooLarge', message: 'The workbook is too large to parse.' }, workbook],
+			// 大きすぎるブック（limitExceeded）と混んでいる（busy）ときは本体で解析し直さずに断る。起動できない（failed）ときは本体で解析する。
+			outcomes: [{ relayed: true }, { name: 'Error', message: 'Cannot merge already merged cells' }, workbook, { name: 'ParadisSpreadsheetBusy', message: 'The workbook parser is busy.' }, { name: 'ParadisSpreadsheetTooLarge', message: 'The workbook is too large to parse.' }, workbook],
 			sent: [['PK-1', 9], ['PK-2', 9], ['PK-3', 9], ['PK-4', 9], ['PK-5', 9]],
-			parsedInProcess: [base64('PK-3'), base64('PK-4'), base64('\xD0\xCF\x11\xE0-encrypted')],
+			parsedInProcess: [base64('PK-3'), base64('\xD0\xCF\x11\xE0-encrypted')],
 		});
 	});
 
