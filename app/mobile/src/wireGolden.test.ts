@@ -208,7 +208,17 @@ describe('wire golden (app side)', () => {
 		pcMux.send(Channels.State, encode(stateGolden.current));
 		await flush();
 		controller.setTerminalViewport({ cols: 54, rows: 28 });
-		controller.subscribeTerminal('terminal-key-1', () => { });
+		let screen = '';
+		let exited = false;
+		controller.subscribeTerminal('terminal-key-1', ev => {
+			if (ev.kind === 'snapshot') {
+				screen = ev.data ?? '';
+			} else if (ev.kind === 'data') {
+				screen += ev.data ?? '';
+			} else if (ev.kind === 'exit') {
+				exited = true;
+			}
+		});
 		controller.attachTerminal('terminal-key-1');
 		await flush();
 		const attach = sent.term!.find(message => message.t === 'attach');
@@ -217,10 +227,10 @@ describe('wire golden (app side)', () => {
 			pcMux.send(Channels.Terminal, encode(message.epoch !== undefined ? { ...message, epoch: attach?.epoch } : message));
 			await flush();
 			if (message.t === 'data') {
-				expect(latest()?.terminalOutput.get('terminal-key-1')).toContain(String(message.data));
+				expect(screen).toContain(String(message.data));
 			}
 		}
-		expect({ attach: shapeOf(attach), exited: latest()?.terminalOutput.has('terminal-key-1') }).toEqual({ attach: shapeOf(goldenAttach), exited: false });
+		expect({ attach: shapeOf(attach), exited }).toEqual({ attach: shapeOf(goldenAttach), exited: true });
 		controller.disconnect();
 	});
 

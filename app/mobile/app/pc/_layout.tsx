@@ -24,5 +24,5 @@ import { colors } from '../../src/theme.js';
  * （`src/features/links/runningPcLink.ts`）。
  */
 export default function PcStackLayout() {
-	return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />;
+	return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg }, freezeOnBlur: true }} />;
 }

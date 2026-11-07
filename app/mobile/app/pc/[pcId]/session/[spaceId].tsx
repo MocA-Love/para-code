@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { useIsFocused, useRouter } from 'expo-router';
 import { ChevronRight, Ellipsis, Folder, GitBranch, NotebookPen, PanelLeftOpen, SquareTerminal, Unplug } from 'lucide-react-native';
@@ -217,6 +217,9 @@ export default function SessionScreen() {
 	// 右のドック（iPad の2列で、この画面が 640pt 以上あるとき）。
 	const regular = useIsRegularWidth();
 	const [bodyWidth, setBodyWidth] = useState(0);
+	// 実際の幅。ドックを閉じている間は、ドックを出せるかが変わるときだけ state に入れる（iPad で左の列の境界を
+	// ドラッグしている間、この画面全体を毎フレーム描き直さないため）
+	const bodyWidthRef = useRef(0);
 	const dockable = canDockPanel(regular, bodyWidth);
 	const [dockPanel, setDockPanel] = useState<DockPanel | undefined>(undefined);
 	if (dockPanel !== undefined && bodyWidth > 0 && !dockable) {
@@ -234,6 +237,7 @@ export default function SessionScreen() {
 		}
 		haptic('move');
 		if (dockable) {
+			setBodyWidth(bodyWidthRef.current);
 			setDockPanel(current => (current === panel ? undefined : panel));
 			return;
 		}
@@ -242,11 +246,16 @@ export default function SessionScreen() {
 	// ドックから差分・ファイルへ進むときはドックを閉じる（詳細の列で押し進める決まり）。戻ってきたら同じドックを
 	// 開き直す（ファイルの一覧の開いていたフォルダや位置は `fileTreeStore.ts` に退避してあるので、そのまま戻る）。
 	const reopenDock = useRef<DockPanel | undefined>(undefined);
-	const dockNavigate = (href: RouteHref) => {
-		reopenDock.current = dockPanel;
+	const dockPanelRef = useRef(dockPanel);
+	dockPanelRef.current = dockPanel;
+	// ドックの部品へ渡すもの。毎回作り直すと、ドックの幅をドラッグしている間ドックの中身も毎フレーム描き直される
+	const dockNavigate = useCallback((href: RouteHref) => {
+		reopenDock.current = dockPanelRef.current;
 		setDockPanel(undefined);
 		router.push(href);
-	};
+	}, [router]);
+	const dockTarget = useMemo(() => (pcId !== undefined && spaceId !== undefined ? { pcId, spaceId } : undefined), [pcId, spaceId]);
+	const dockControls = useMemo(() => ({ close: () => setDockPanel(undefined), navigate: dockNavigate }), [dockNavigate]);
 	useEffect(() => {
 		if (!focused || reopenDock.current === undefined) {
 			return;
@@ -254,6 +263,7 @@ export default function SessionScreen() {
 		const panel = reopenDock.current;
 		reopenDock.current = undefined;
 		if (dockable) {
+			setBodyWidth(bodyWidthRef.current);
 			setDockPanel(panel);
 		}
 	}, [focused, dockable]);
@@ -414,16 +424,25 @@ export default function SessionScreen() {
 				) : null}
 			</ScreenHeader>
 			</View>
-			<View style={styles.row} onLayout={event => setBodyWidth(event.nativeEvent.layout.width)}>
+			<View
+				style={styles.row}
+				onLayout={event => {
+					const width = event.nativeEvent.layout.width;
+					bodyWidthRef.current = width;
+					if (dockPanel !== undefined || bodyWidth === 0 || canDockPanel(regular, width) !== dockable) {
+						setBodyWidth(width);
+					}
+				}}
+			>
 				<View style={styles.main}>{body}</View>
 				{/* ドックの枠は常に置き、幅で出し入れする（本文の位置を変えないため）。 */}
 				<View style={[styles.dock, dockPanel !== undefined ? [styles.dockOpen, { width: dockWidth }] : undefined]}>
-					{dockPanel !== undefined && pcId !== undefined && spaceId !== undefined ? (
+					{dockPanel !== undefined && dockTarget !== undefined ? (
 						<SessionDock
 							key={dockPanel}
 							panel={dockPanel}
-							target={{ pcId, spaceId }}
-							dock={{ close: () => setDockPanel(undefined), navigate: dockNavigate }}
+							target={dockTarget}
+							dock={dockControls}
 						/>
 					) : null}
 				</View>
