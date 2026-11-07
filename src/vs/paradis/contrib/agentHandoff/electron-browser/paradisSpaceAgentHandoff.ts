@@ -155,6 +155,8 @@ export function paradisPcDeliveryError(code: string, consumed: boolean | undefin
 			return localize('paradis.agentHandoff.error.timeout', "エージェントの起動に時間がかかっています。起動したかをターミナルで確かめてください（まだ送っていません）。");
 		case 'launched-not-ready':
 			return localize('paradis.agentHandoff.error.launchedNotReady', "新しいエージェントは起動しましたが、入力を待つ状態になったことを確かめられなかったため、まだ送っていません。ターミナルを確かめてから、もう一度送ってください。");
+		case 'trust-dialog':
+			return localize('paradis.agentHandoff.error.trustDialog', "起動したエージェントが、このフォルダを信頼するかを確かめています。ターミナルで答えてから、もう一度送ってください（まだ送っていません）。");
 		case 'no-agent':
 			return localize('paradis.agentHandoff.error.noAgent', "起動できるエージェントが設定されていません。設定の「paradis.workspaceSwitch.agents」を確かめてください。");
 		default:
