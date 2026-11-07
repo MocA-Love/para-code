@@ -14,6 +14,8 @@ import { PARADIS_BROWSER_FREEZE_AFTER_HIDDEN_MS } from '../common/paradisBrowser
 
 /** この時間の内にスクリーンショットを撮られたタブ（ライブウィンドウのタイルなど、誰かが見ているタブ）は止めない。 */
 const PARADIS_BROWSER_FREEZE_WATCHED_MS = 5 * 60_000;
+/** 隠れる瞬間にエディタが撮る 1 枚（代わりに出す絵）を「見ている」と取り違えないための猶予。 */
+const PARADIS_BROWSER_FREEZE_HIDE_CAPTURE_GRACE_MS = 10_000;
 
 /** 休ませる対象として見る BrowserView の部分（テストで偽物を渡せるように絞る）。 */
 export interface IParadisFreezableBrowserView {
@@ -64,6 +66,8 @@ export function paradisThawBrowserView(view: object): void {
 interface IViewState {
 	timer: unknown;
 	frozen: boolean;
+	/** 最後に隠れた時刻。隠れる瞬間の撮影（エディタの代わりの絵）は「見ている」に数えないために使う。 */
+	hiddenAt: number;
 	readonly store: DisposableStore;
 }
 
@@ -125,7 +129,7 @@ export class ParadisBrowserViewFreezer extends Disposable {
 			return;
 		}
 		const store = new DisposableStore();
-		const state: IViewState = { timer: undefined, frozen: false, store };
+		const state: IViewState = { timer: undefined, frozen: false, hiddenAt: this.now(), store };
 		this.views.set(view, state);
 		thawers.set(view, () => this.thaw(view, state));
 		store.add(view.onDidChangeVisibility(({ visible }) => {
@@ -134,6 +138,7 @@ export class ParadisBrowserViewFreezer extends Disposable {
 				state.timer = undefined;
 				this.thaw(view, state);
 			} else {
+				state.hiddenAt = this.now();
 				this.schedule(view, state);
 			}
 		}));
@@ -162,7 +167,7 @@ export class ParadisBrowserViewFreezer extends Disposable {
 			if (this.views.get(view) !== state || state.frozen) {
 				return;
 			}
-			if (!this.canFreeze(view)) {
+			if (!this.canFreeze(view, state)) {
 				// 今は止められない（エージェントが手にしている・音が鳴っている・設定がオフ）。隠れたままならまた見る
 				this.schedule(view, state);
 				return;
@@ -171,7 +176,7 @@ export class ParadisBrowserViewFreezer extends Disposable {
 		}, this.delayMs);
 	}
 
-	private canFreeze(view: IParadisFreezableBrowserView): boolean {
+	private canFreeze(view: IParadisFreezableBrowserView, state: IViewState): boolean {
 		try {
 			const webContents = view.webContents;
 			return this.isEnabled()
@@ -181,16 +186,19 @@ export class ParadisBrowserViewFreezer extends Disposable {
 				&& !webContents.isCurrentlyAudible()
 				&& !webContents.isDevToolsOpened()
 				&& !webContents.isBeingCaptured()
-				&& !this.isWatched(view)
+				&& !this.isWatched(view, state)
 				&& !this.allowsNotifications(view);
 		} catch {
 			return false;
 		}
 	}
 
-	private isWatched(view: IParadisFreezableBrowserView): boolean {
+	/** 隠れた後に撮られたタブか（ライブウィンドウのタイルなど）。隠れる瞬間に撮る 1 枚は数えない。 */
+	private isWatched(view: IParadisFreezableBrowserView, state: IViewState): boolean {
 		const capturedAt = this.lastCaptureAt(view);
-		return capturedAt !== undefined && this.now() - capturedAt < PARADIS_BROWSER_FREEZE_WATCHED_MS;
+		return capturedAt !== undefined
+			&& capturedAt > state.hiddenAt + PARADIS_BROWSER_FREEZE_HIDE_CAPTURE_GRACE_MS
+			&& this.now() - capturedAt < PARADIS_BROWSER_FREEZE_WATCHED_MS;
 	}
 
 	/** 通知を許可したサイトのタブか（隠したまま通知を待つ使い方を止めない）。 */

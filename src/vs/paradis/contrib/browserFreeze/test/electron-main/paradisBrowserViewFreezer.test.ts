@@ -31,7 +31,7 @@ class FakeTimer implements IParadisFreezeTimer {
 suite('ParadisBrowserViewFreezer', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function create(options: { visible?: boolean; audible?: boolean; held?: boolean; enabled?: boolean; notifications?: string } = {}) {
+	function create(options: { visible?: boolean; audible?: boolean; held?: boolean; enabled?: boolean; notifications?: string; now?: () => number } = {}) {
 		const disposables = store.add(new DisposableStore());
 		const commands: string[] = [];
 		const state = { visible: options.visible ?? true, audible: options.audible ?? false, held: options.held ?? false, enabled: options.enabled ?? true };
@@ -65,7 +65,7 @@ suite('ParadisBrowserViewFreezer', () => {
 			() => state.enabled, 1000, timer, () => state.held,
 			() => captures.lastAt,
 			listener => { captures.listener = listener; return () => captures.listener = undefined; },
-			() => 10_000_000,
+			options.now ?? (() => 10_000_000),
 		));
 		onDidCreateBrowserView.fire({ info: { id: 'view-1' } });
 		const setVisible = (visible: boolean) => {
@@ -136,9 +136,20 @@ suite('ParadisBrowserViewFreezer', () => {
 		const notifying = create({ notifications: 'https://chat.example.com' });
 		notifying.setVisible(false);
 		notifying.timer.fireAll();
-		const watched = create();
-		watched.captures.lastAt = 10_000_000 - 60_000;
+		const clock = { now: 10_000_000 };
+		const watched = create({ now: () => clock.now });
 		watched.setVisible(false);
+		watched.captures.lastAt = clock.now; // the editor's placeholder shot at the moment it hides does not count
+		clock.now += 30 * 60_000;
+		watched.timer.fireAll();
+		const hiddenShotOnly = watched.commands.length;
+		watched.captures.listener?.(watched.view);
+		await Promise.resolve();
+		watched.commands.length = 0;
+		watched.setVisible(true);
+		watched.setVisible(false);
+		watched.captures.lastAt = clock.now + 60_000; // a live window tile took it after it hid
+		clock.now += 120_000;
 		watched.timer.fireAll();
 		const captured = create();
 		captured.setVisible(false);
@@ -147,12 +158,14 @@ suite('ParadisBrowserViewFreezer', () => {
 		captured.captures.listener?.(captured.view);
 		await Promise.resolve();
 		assert.deepStrictEqual({
+			hiddenShotOnly,
 			notifying: notifying.commands,
 			watched: watched.commands,
 			captured: captured.commands,
 			capturedFrozen: captured.freezer.frozenCount,
 			capturedPending: captured.timer.pending.size,
 		}, {
+			hiddenShotOnly: 1,
 			notifying: [],
 			watched: [],
 			captured: ['Page.setWebLifecycleState frozen', 'Page.setWebLifecycleState active'],
