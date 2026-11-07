@@ -40,9 +40,19 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
-		version: '0.12.18',
-		date: '2026-10-28',
+		version: '0.12.19',
+		date: '2026-11-07',
 		items: [
+			{
+				icon: 'copy-outline',
+				title: '会話のコードブロックにコピーのボタンを付け、発言の文字をその場で範囲を選んでコピーできるようにしました',
+				body: 'ツールのファイルのカードからファイルを開けるようにし、引用・区切り線・入れ子の箇条書きも読みやすくしました。',
+			},
+			{
+				icon: 'ellipsis-horizontal-circle-outline',
+				title: '発言・ファイル・ソース管理・差分の行を長押しすると、操作のメニューが出るようになりました',
+				body: 'ファイル名や相対パス・絶対パス（SSH や Windows のスペースを含む）のコピー、リンクや差分の行の操作を選べます。コピーしたときの知らせもそろえました。',
+			},
 			{
 				icon: 'swap-horizontal-outline',
 				title: 'ターミナルのタブを行き来したときに、表示が出るまで待たなくなりました',
@@ -68,6 +78,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: '過去の会話とソース管理で、文字を打つたびに画面が引っかかるのを直しました',
 				body: '続きの依頼やコミットメッセージを打つたびに、会話や変更の一覧を全部描き直していました。iPad で列やドックの幅を変えるときの動きも軽くしました。',
 			},
+		],
+	},
+	{
+		version: '0.12.18',
+		date: '2026-10-28',
+		items: [
 			{
 				icon: 'help-circle-outline',
 				title: 'Codex が作業を止めずに出す質問に、モバイルから答えられるようになりました',
