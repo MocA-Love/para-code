@@ -96,7 +96,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	const prState = useAppStore(s => s.workspace?.workspaces.find(workspace => workspace.id === codeSpace.wsId)?.pr?.state);
 	const prUrl = useAppStore(s => s.workspace?.workspaces.find(workspace => workspace.id === codeSpace.wsId)?.pr?.url);
 
-	const entries = scmEntries(statusState.status);
+	const entries = useMemo(() => scmEntries(statusState.status), [statusState.status]);
 	const counts = statusState.status !== undefined ? scmCounts(entries) : undefined;
 	const branch = statusState.status?.branch ?? codeSpace.branch;
 	const branchSync = sync.enabled && statusState.status !== undefined ? branchSyncOf(statusState.status) : undefined;
@@ -214,11 +214,40 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	const menuOps = useMemo(() => contextMenuOps(), []);
 	const menuSheet = useContextMenuSheet();
 	const absolutePath = useAbsolutePathOption(codeSpace);
-	const scmFileMenu = (entry: ScmEntry, canStage: boolean) => buildScmFileMenu({ ...entry, absolute: absolutePath(entry.path) }, {
-		...menuOps,
-		openDiff: () => openReview(entry.path),
-		...(canStage ? { toggleStage: () => void toggleStage(entry) } : {}),
-	});
+	// 変更の一覧は、コミットメッセージを 1 文字打つたびに描き直さないよう、一覧と行の状態が変わったときだけ組み直す
+	// （変更が数百件あると引っかかる）。行の操作は最新の関数を呼ぶよう ref を通す
+	const rowActions = useRef({ openReview, toggleStage });
+	rowActions.current = { openReview, toggleStage };
+	const longPress = menuSheet.longPress;
+	const stageEnabled = stageFile.enabled;
+	const stagePending = stageFile.pending;
+	const live = codeSpace.live;
+	const noPc = codeSpace.pcId === undefined;
+	const changeRows = useMemo(() => groupScmEntries(entries).map(section => (
+		<View key={section.group}>
+			<GroupHeading title={section.title} count={section.entries.length} />
+			{section.entries.map(entry => {
+				const canStage = stageEnabled && entry.kind !== 'conflict';
+				const menuCanStage = canStage && live && !stagePending.has(entry.path);
+				const menu = buildScmFileMenu({ ...entry, absolute: absolutePath(entry.path) }, {
+					...menuOps,
+					openDiff: () => rowActions.current.openReview(entry.path),
+					...(menuCanStage ? { toggleStage: () => void rowActions.current.toggleStage(entry) } : {}),
+				});
+				return (
+					<ScmFileRow
+						key={entry.path}
+						entry={entry}
+						disabled={noPc}
+						onPress={() => rowActions.current.openReview(entry.path)}
+						{...(canStage ? { stage: { busy: stagePending.has(entry.path), disabled: !live, onPress: () => void rowActions.current.toggleStage(entry) } } : {})}
+						menu={menu}
+						onLongPress={longPress(menu)}
+					/>
+				);
+			})}
+		</View>
+	)), [entries, stageEnabled, stagePending, live, noPc, absolutePath, menuOps, longPress]);
 
 	const changesState = listBodyState({ data: statusState.status?.files, error: statusState.error, unavailable: codeSpace.unavailable });
 	const historyState = listBodyState({ data: history.log?.commits, error: history.error, unavailable: codeSpace.unavailable });
@@ -273,26 +302,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 									emptyIcon={CircleCheck}
 									onRetry={codeSpace.live ? refreshAll : undefined}
 								>
-									{groupScmEntries(entries).map(section => (
-										<View key={section.group}>
-											<GroupHeading title={section.title} count={section.entries.length} />
-											{section.entries.map(entry => {
-												const canStage = stageFile.enabled && entry.kind !== 'conflict';
-												const menu = scmFileMenu(entry, canStage && codeSpace.live && !stageFile.pending.has(entry.path));
-												return (
-													<ScmFileRow
-														key={entry.path}
-														entry={entry}
-														disabled={codeSpace.pcId === undefined}
-														onPress={() => openReview(entry.path)}
-														{...(canStage ? { stage: { busy: stageFile.pending.has(entry.path), disabled: !codeSpace.live, onPress: () => void toggleStage(entry) } } : {})}
-														menu={menu}
-														onLongPress={menuSheet.longPress(menu)}
-													/>
-												);
-											})}
-										</View>
-									))}
+									{changeRows}
 								</ListBody>
 							</>
 						) : shown === 'pr' ? (
