@@ -14,6 +14,7 @@ import {
 	AivisTaskRunner,
 	AudioScheduler,
 	AudioSchedulerDeps,
+	paradisAudioDurationMs,
 } from '../../node/paradisAudioScheduler.js';
 
 const EMPTY_AUDIO = Buffer.from('audio');
@@ -515,7 +516,8 @@ suite('AudioScheduler', () => {
 		const neverFinishes = new DeferredPromise<void>();
 		const playbackStarted = new DeferredPromise<void>();
 		const events: string[] = [];
-		const scheduler = track(createScheduler({ aivisPlaySafetyTimeoutMs: 25 }));
+		// 長さが分からない音声は、待つのをやめて次へ進むだけで、プレイヤーは止めない（正常な長い読み上げかもしれない）
+		const scheduler = track(createScheduler({ aivisPlaySafetyTimeoutMs: 25, stopLocalPlayback: () => events.push('stop-player') }));
 
 		scheduler.enqueueAivis({
 			async synthesize() {
@@ -542,6 +544,64 @@ suite('AudioScheduler', () => {
 			'synthesize:next',
 			'play:next',
 		]);
+	});
+
+	test('waits for the length of the audio plus a margin, and stops the voice player only when that has passed', async () => {
+		const clock = sinon.useFakeTimers();
+		const neverFinishes = new DeferredPromise<void>();
+		const playbackStarted = new DeferredPromise<void>();
+		const events: string[] = [];
+		const scheduler = track(createScheduler({
+			aivisPlaySafetyTimeoutMs: 25,
+			aivisPlayDurationMarginMs: 10,
+			// 30 秒の安全タイマーより長い読み上げ
+			audioDurationMs: () => 100,
+			stopLocalPlayback: () => events.push('stop-player'),
+		}));
+		scheduler.enqueueAivis({
+			async synthesize() {
+				return { audio: Buffer.from('long') };
+			},
+			play() {
+				events.push('play:long');
+				void playbackStarted.complete();
+				return neverFinishes.p;
+			},
+		});
+		scheduler.enqueueAivis(successfulRunner('next', events));
+		await playbackStarted.p;
+		clock.tick(50);
+		const beforeLength = [...events];
+		clock.tick(60);
+		await waitForIdle(scheduler);
+		assert.deepStrictEqual({ beforeLength, events }, {
+			beforeLength: ['play:long'],
+			events: ['play:long', 'stop-player', 'synthesize:next', 'play:next'],
+		});
+	});
+
+	test('reads the length of WAV and constant bit rate MP3 audio, and gives up on variable bit rate or unknown data', () => {
+		// 8 kHz・16 bit・mono（1 秒 = 16000 バイト）の WAV に 0.5 秒ぶんのデータ
+		const wav = Buffer.alloc(44 + 8000);
+		wav.write('RIFF', 0, 'ascii');
+		wav.writeUInt32LE(36 + 8000, 4);
+		wav.write('WAVE', 8, 'ascii');
+		wav.write('fmt ', 12, 'ascii');
+		wav.writeUInt32LE(16, 16);
+		wav.writeUInt16LE(1, 20);
+		wav.writeUInt16LE(1, 22);
+		wav.writeUInt32LE(8000, 24);
+		wav.writeUInt32LE(16000, 28);
+		wav.writeUInt16LE(2, 32);
+		wav.writeUInt16LE(16, 34);
+		wav.write('data', 36, 'ascii');
+		wav.writeUInt32LE(8000, 40);
+		// MPEG-1 Layer III・128 kbps のフレームの頭（16000 バイト = 1 秒）
+		const mp3 = Buffer.alloc(16000);
+		mp3.set([0xff, 0xfb, 0x90, 0x00], 0);
+		const vbr = Buffer.from(mp3);
+		vbr.write('Xing', 36, 'latin1');
+		assert.deepStrictEqual([paradisAudioDurationMs(wav), paradisAudioDurationMs(mp3), paradisAudioDurationMs(vbr), paradisAudioDurationMs(Buffer.from('stuck'))], [500, 1000, undefined, undefined]);
 	});
 
 	test('waits for the worker play lock outside the playback safety timeout, so a long wait does not cut the voice short (N-2)', async () => {

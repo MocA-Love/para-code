@@ -18,6 +18,7 @@
 // ここが投げたら、呼び出し側は従来の service worker 経路へ戻すこと。**最悪でも今までどおりに
 // 戻るだけ**、という形を保つ。
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -25,6 +26,23 @@ import { IRemoteAuthorityResolverService } from '../../../../platform/remote/com
 import { getRemoteTunnelGeneration, ITunnelService, RemoteTunnel } from '../../../../platform/tunnel/common/tunnel.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisPreviewMount, IParadisPreviewMountOptions, isParadisPreviewLoopbackHost, PARADIS_HTML_PREVIEW_CHANNEL } from '../common/paradisHtmlPreview.js';
+
+/**
+ * 載せる・転送を張るのを待つ上限。応答が無いまま待つと、HTML のプレビューは白紙のままで、白紙の見張りも
+ * 始まらない（見張りは描いた後に張る）。過ぎたら投げて、呼び出し側を従来の service worker 経路へ倒す。
+ */
+const PARADIS_PREVIEW_MOUNT_DEADLINE_MS = 10_000;
+const PARADIS_PREVIEW_TUNNEL_DEADLINE_MS = 15_000;
+
+/** 期限までに決着しなければ投げる。 */
+async function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+	let timedOut = false;
+	const result = await raceTimeout(promise, ms, () => timedOut = true);
+	if (timedOut) {
+		throw new Error(`The preview server did not ${what} in time`);
+	}
+	return result as T;
+}
 
 /** 載せた結果と、webview から実際に叩けるポート。 */
 export interface IParadisPreviewLocation {
@@ -38,8 +56,8 @@ export async function paradisMountLocalPreview(
 	directory: URI,
 	options?: IParadisPreviewMountOptions,
 ): Promise<IParadisPreviewLocation> {
-	const mount = await sharedProcessService.getChannel(PARADIS_HTML_PREVIEW_CHANNEL)
-		.call<IParadisPreviewMount>('mount', options ? [directory.fsPath, options] : [directory.fsPath]);
+	const mount = await withDeadline(sharedProcessService.getChannel(PARADIS_HTML_PREVIEW_CHANNEL)
+		.call<IParadisPreviewMount>('mount', options ? [directory.fsPath, options] : [directory.fsPath]), PARADIS_PREVIEW_MOUNT_DEADLINE_MS, 'mount the folder');
 	return { mount, port: mount.port };
 }
 
@@ -89,8 +107,8 @@ export class ParadisRemotePreviewMounter extends Disposable {
 		}
 		// リモート側では `path` がそのマシンのファイルパスになる。`fsPath` はこちらの OS の流儀で
 		// 変換してしまうので使わない（Windows から Linux へ繋いだときに壊れる）。
-		const mount = await connection.getChannel(PARADIS_HTML_PREVIEW_CHANNEL)
-			.call<IParadisPreviewMount>('mount', [directory.path]);
+		const mount = await withDeadline(connection.getChannel(PARADIS_HTML_PREVIEW_CHANNEL)
+			.call<IParadisPreviewMount>('mount', [directory.path]), PARADIS_PREVIEW_MOUNT_DEADLINE_MS, 'mount the folder');
 
 		let tunnelPromise = this._tunnels.get(mount.port);
 		if (!tunnelPromise) {
@@ -112,7 +130,8 @@ export class ParadisRemotePreviewMounter extends Disposable {
 			}
 		}
 
-		const tunnel = await tunnelPromise;
+		// 期限を過ぎても、遅れて張れた転送は台帳に残り、次の描画で使うかペインと一緒に閉じる
+		const tunnel = await withDeadline(tunnelPromise, PARADIS_PREVIEW_TUNNEL_DEADLINE_MS, 'forward the remote port');
 		return { mount, port: tunnel.tunnelLocalPort ?? portOfAddress(tunnel.localAddress) };
 	}
 
