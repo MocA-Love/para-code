@@ -39,8 +39,9 @@ import { IParadisSftpConnectorOptions, IParadisSftpSession, ParadisSftpConnectio
 /** 1 回の SFTP 要求の大きさ（OpenSSH が受け付ける大きさ）。 */
 const PARADIS_SFTP_CHUNK = 32 * 1024;
 /**
- * 開いたファイルの read / write / close 1 回を待つ上限。SSH の keepalive には答えるのに SFTP だけが答えない
- * 接続で、待ち続けないようにする（4 MiB を遅い回線で書いても収まる長さ）。過ぎたらその接続を捨てる。
+ * 開いたファイルの read / write / close で、進みが無いまま待つ上限。SSH の keepalive には答えるのに SFTP だけが
+ * 答えない接続で、待ち続けないようにする。32 KiB の要求が 1 つ返るたびに数え直すので、遅い回線の正常な転送は
+ * 落とさない。過ぎたらその接続を捨てる。
  */
 const PARADIS_SFTP_IO_TIMEOUT_MS = 120_000;
 /** 1 フォルダーの上限。 */
@@ -209,8 +210,9 @@ async function mapLimited<T, R>(items: readonly T[], limit: number, run: (item: 
 }
 
 interface IOpenHandle {
-	/** 開いたウィンドウ（チャネルの接続元）。ウィンドウが外れたらまとめて閉じる。 */
+	/** 開いたウィンドウ（チャネルの接続元）と、その接続の通し番号。接続が外れたらまとめて閉じる。 */
 	readonly owner: string;
+	readonly ownerConnection: number;
 	readonly alias: string;
 	readonly generation: number;
 	readonly handle: Buffer;
@@ -235,21 +237,28 @@ export class ParadisSftpService extends Disposable {
 	}
 
 	/**
-	 * 開いたファイルの 1 回の操作に期限を付ける。過ぎたらその世代の接続を捨てて（待っている要求も失敗する）、
-	 * 「繋がらない」として返す。
+	 * 開いたファイルの 1 回の操作を、進みが無いまま {@link ioTimeoutMs} 過ぎたら打ち切る。`run` に渡す `progress` を
+	 * 呼ぶたびに数え直す。打ち切ったらその世代の接続を捨てて（待っている要求も失敗する）、「繋がらない」として返す。
 	 */
-	private async withIoDeadline<T>(open: IOpenHandle, operation: Promise<T>): Promise<T> {
+	private async withIoDeadline<T>(open: IOpenHandle, run: (progress: () => void) => Promise<T>): Promise<T> {
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let expire: (() => void) | undefined;
+		const arm = () => {
+			clearTimeout(timer);
+			timer = setTimeout(() => expire?.(), this.ioTimeoutMs);
+		};
 		const deadline = new Promise<never>((_, reject) => {
-			timer = setTimeout(() => {
+			expire = () => {
 				this.pool.drop(open.alias, open.generation);
 				reject(createFileSystemProviderError(paradisSftpFailureMessage('unreachable'), FileSystemProviderErrorCode.Unavailable));
-			}, this.ioTimeoutMs);
+			};
 		});
+		arm();
 		try {
-			return await Promise.race([operation, deadline]);
+			return await Promise.race([run(arm), deadline]);
 		} finally {
 			clearTimeout(timer);
+			expire = undefined;
 		}
 	}
 
@@ -503,7 +512,7 @@ export class ParadisSftpService extends Disposable {
 			const flags = options.create ? (options.append ? 'a' : 'w') : 'r';
 			const handle = await call<Buffer>(callback => sftp.open(path, flags, callback));
 			const id = this.nextHandle++;
-			this.handles.set(id, { owner, alias, generation, handle, retained: this.pool.retainHandle(alias), pending: new Set() });
+			this.handles.set(id, { owner, ownerConnection: this.connections.get(owner) ?? 0, alias, generation, handle, retained: this.pool.retainHandle(alias), pending: new Set() });
 			return id;
 		});
 	}
@@ -528,10 +537,10 @@ export class ParadisSftpService extends Disposable {
 
 	async read(id: number, position: number, length: number): Promise<VSBuffer> {
 		const open = this.handleFor(id);
-		return this.track(open, this.withIoDeadline(open, this.doRead(open, position, length)));
+		return this.track(open, this.withIoDeadline(open, progress => this.doRead(open, position, length, progress)));
 	}
 
-	private async doRead(open: IOpenHandle, position: number, length: number): Promise<VSBuffer> {
+	private async doRead(open: IOpenHandle, position: number, length: number, progress: () => void): Promise<VSBuffer> {
 		const size = Math.max(0, Math.min(length, PARADIS_SFTP_MAX_IO));
 		try {
 			return await this.pool.use(open.alias, async ({ sftp }) => {
@@ -541,7 +550,14 @@ export class ParadisSftpService extends Disposable {
 					const buffer = Buffer.allocUnsafe(chunkLength);
 					chunks.push(new Promise<Buffer>((resolve, reject) => {
 						try {
-							sftp.read(open.handle, buffer, 0, chunkLength, position + offset, (error, bytesRead) => error ? reject(error) : resolve(buffer.subarray(0, bytesRead)));
+							sftp.read(open.handle, buffer, 0, chunkLength, position + offset, (error, bytesRead) => {
+								if (error) {
+									reject(error);
+								} else {
+									progress();
+									resolve(buffer.subarray(0, bytesRead));
+								}
+							});
 						} catch (error) {
 							reject(error);
 						}
@@ -565,10 +581,10 @@ export class ParadisSftpService extends Disposable {
 
 	async write(id: number, position: number, data: VSBuffer): Promise<number> {
 		const open = this.handleFor(id);
-		return this.track(open, this.withIoDeadline(open, this.doWrite(open, position, data)));
+		return this.track(open, this.withIoDeadline(open, progress => this.doWrite(open, position, data, progress)));
 	}
 
-	private async doWrite(open: IOpenHandle, position: number, data: VSBuffer): Promise<number> {
+	private async doWrite(open: IOpenHandle, position: number, data: VSBuffer, progress: () => void): Promise<number> {
 		const buffer = Buffer.from(data.buffer.buffer, data.buffer.byteOffset, data.byteLength);
 		if (buffer.length > PARADIS_SFTP_MAX_IO) {
 			throw createFileSystemProviderError('write too large', FileSystemProviderErrorCode.Unknown);
@@ -578,7 +594,7 @@ export class ParadisSftpService extends Disposable {
 				const writes: Promise<void>[] = [];
 				for (let offset = 0; offset < buffer.length; offset += PARADIS_SFTP_CHUNK) {
 					const chunkLength = Math.min(PARADIS_SFTP_CHUNK, buffer.length - offset);
-					writes.push(call<void>(callback => sftp.write(open.handle, buffer, offset, chunkLength, position + offset, callback)));
+					writes.push(call<void>(callback => sftp.write(open.handle, buffer, offset, chunkLength, position + offset, callback)).then(progress));
 				}
 				await Promise.all(writes);
 				return buffer.length;
@@ -598,7 +614,7 @@ export class ParadisSftpService extends Disposable {
 			// 書きかけの write を待ってから閉じる（閉じた後に残りが届くと、送り先が欠ける）
 			await Promise.allSettled([...open.pending]);
 			if (this.pool.isCurrent(open.alias, open.generation)) {
-				await this.withIoDeadline(open, this.pool.use(open.alias, ({ sftp }) => call<void>(callback => sftp.close(open.handle, callback))));
+				await this.withIoDeadline(open, () => this.pool.use(open.alias, ({ sftp }) => call<void>(callback => sftp.close(open.handle, callback))));
 			}
 		} catch (error) {
 			throw paradisToSftpProviderError(error);
@@ -607,12 +623,24 @@ export class ParadisSftpService extends Disposable {
 		}
 	}
 
+	/** 接続元ごとの、今の接続の通し番号。 */
+	private readonly connections = new Map<string, number>();
+	private nextConnection = 1;
+
+	/** ウィンドウ（接続元）が繋いだ。その接続の通し番号を返す（外れたときに {@link closeHandlesOf} へ渡す）。 */
+	connectionAdded(owner: string): number {
+		const connection = this.nextConnection++;
+		this.connections.set(owner, connection);
+		return connection;
+	}
+
 	/**
 	 * 開いたウィンドウが外れた（閉じた・再読み込みした）。そのウィンドウが開いたままのファイルを閉じる。
 	 * 閉じないと開いたままの数が減らず、使い終わった接続が保持時間で閉じなくなる。
 	 */
-	async closeHandlesOf(owner: string): Promise<void> {
-		const ids = [...this.handles].filter(([, open]) => open.owner === owner).map(([id]) => id);
+	async closeHandlesOf(owner: string, connection: number): Promise<void> {
+		// 同じ接続元の名前で繋ぎ直した（再読み込みした）ウィンドウのファイルは閉じない（後の通し番号）
+		const ids = [...this.handles].filter(([, open]) => open.owner === owner && open.ownerConnection <= connection).map(([id]) => id);
 		await Promise.allSettled(ids.map(id => this.close(id)));
 	}
 

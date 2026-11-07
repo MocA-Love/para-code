@@ -427,11 +427,17 @@ suite('Paradis file transfer - direct SSH (SFTP)', function () {
 			const service = createService(() => hostConfig(server));
 			service.setIdleMs(50);
 			const channel = new ParadisSftpChannel(service);
-			// 開いたまま閉じずにウィンドウが外れる
+			// 開いたまま閉じずにウィンドウが外れる。同じ名前で繋ぎ直した（再読み込みした）ウィンドウのファイルは閉じない
+			const first = service.connectionAdded('window:1');
 			await channel.call('window:1', 'openFile', [paradisSftpUri('para-test', '/home/left-open.txt'), { create: true }]);
-			await service.closeHandlesOf('window:1');
+			service.connectionAdded('window:1');
+			const reopened = await channel.call<number>('window:1', 'openFile', [paradisSftpUri('para-test', '/home/reopened.txt'), { create: true }]);
+			await service.closeHandlesOf('window:1', first);
 			await new Promise(resolve => setTimeout(resolve, 300));
-			assert.strictEqual(service.connectionCount, 0);
+			const whileReopenedIsOpen = service.connectionCount;
+			await channel.call('window:1', 'close', [reopened]);
+			await new Promise(resolve => setTimeout(resolve, 300));
+			assert.deepStrictEqual({ whileReopenedIsOpen, after: service.connectionCount }, { whileReopenedIsOpen: 1, after: 0 });
 		} finally {
 			await server.close();
 		}
