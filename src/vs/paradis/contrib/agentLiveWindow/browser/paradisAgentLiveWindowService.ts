@@ -22,6 +22,7 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 import { paradisApplyAuxiliaryWindowTransparency, paradisIsAuxiliaryWindowTransparencyActive } from '../../windowTransparency/browser/paradisAuxiliaryWindowTransparency.js';
 import { IParadisAuxiliaryWindowScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
+	IParadisAgentLiveEntry,
 	IParadisAgentLiveSummary,
 	IParadisAgentLiveViewState,
 	IParadisAgentLiveWindowService,
@@ -97,6 +98,10 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 
 	get summary(): IParadisAgentLiveSummary {
 		return this._summary;
+	}
+
+	get entries(): readonly IParadisAgentLiveEntry[] {
+		return this.model.entries;
 	}
 
 	async open(): Promise<void> {
