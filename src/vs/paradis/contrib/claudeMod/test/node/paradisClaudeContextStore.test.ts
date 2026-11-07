@@ -124,10 +124,12 @@ suite('ParadisClaudeContextStore', () => {
 
 	test('reads a saved peak, takes the last breakdown as the peak for older saves, and keeps a saved peak over a smaller fresh one', async () => {
 		const mine = owner('pane-a');
-		const disk = files(JSON.stringify({ version: 1, sessions: [
-			{ owner: mine, ...breakdown('old', 1, 2_000) },
-			{ owner: mine, ...breakdown('s1', 2, 1_000), peak: breakdown('s1', 1, 500_000) },
-		] }));
+		const disk = files(JSON.stringify({
+			version: 1, sessions: [
+				{ owner: mine, ...breakdown('old', 1, 2_000) },
+				{ owner: mine, ...breakdown('s1', 2, 1_000), peak: breakdown('s1', 1, 500_000) },
+			]
+		}));
 		const store = disposables.add(new ParadisClaudeContextStore(disk.files, undefined, 60_000));
 		store.observe(context('pane-a', 's1', 3, 7_000));
 		const period = await store.peaksBetween(0, 10);
