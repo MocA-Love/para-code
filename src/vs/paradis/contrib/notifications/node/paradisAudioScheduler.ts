@@ -147,6 +147,11 @@ export interface AudioSchedulerDeps {
 	 */
 	aivisPlaySafetyTimeoutMs?: number;
 	/**
+	 * 手元の再生（afplay 等）を止める。{@link aivisPlaySafetyTimeoutMs} を過ぎても終わらない再生をあきらめて次へ
+	 * 進むときに呼ぶ（止めないと、次の発話と声が重なる）。
+	 */
+	stopLocalPlayback?(): void;
+	/**
 	 * Para Code が自分で声を鳴らす直前に、worker の再生 lock が空くのを待つ（重ねない）。{@link aivisPlaySafetyTimeoutMs}
 	 * の外で待つ（待ちが安全網の時間を食って、鳴らしている途中で次の声を重ねないように）。任意。
 	 */
@@ -704,6 +709,8 @@ export class AudioScheduler {
 				settled = true;
 				this.aivisPlaySafetyTimer = null;
 				this.deps.logWarn?.('[audio-scheduler] aivis playback did not finish within safety timeout; giving up and continuing');
+				// 鳴り続けているプレイヤーを止める（次の発話と重ねない）
+				this.deps.stopLocalPlayback?.();
 				// あきらめて次へ進む（item-specific 失敗ではないので握りつぶす）。
 				resolve();
 			}, timeoutMs);

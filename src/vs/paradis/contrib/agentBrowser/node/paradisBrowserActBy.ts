@@ -25,6 +25,9 @@ import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, 
 import { PARADIS_BROWSER_ACT_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 
+/** 要求が切れて、残りの入力を送らなかったときの理由。 */
+const REQUEST_CANCELLED = 'the request was cancelled, so the rest of the input was not sent';
+
 /** 「探して操作する」ツールの名前。 */
 export const PARADIS_BROWSER_ACT_TOOL_NAME_SET: ReadonlySet<string> = new Set(PARADIS_BROWSER_ACT_TOOL_NAMES);
 
@@ -201,6 +204,17 @@ export class ParadisBrowserActBy {
 		return { ok: true, located, uids: locator.uids };
 	}
 
+	/**
+	 * 新しい押下・移動・文字入力を送る。要求が切れていたら（MCP の接続が閉じた）送らない。離す・キーを上げるは
+	 * 後始末なので、切れていても {@link send} で送る。
+	 */
+	private async begin(call: IParadisBrowserActCall, method: string, params: Record<string, unknown>): Promise<string | undefined> {
+		if (call.signal?.aborted) {
+			return REQUEST_CANCELLED;
+		}
+		return this.send(call, method, params);
+	}
+
 	private async send(call: IParadisBrowserActCall, method: string, params: Record<string, unknown>): Promise<string | undefined> {
 		const result = await call.dispatch(method, params);
 		if (!call.isCurrent()) {
@@ -212,12 +226,12 @@ export class ParadisBrowserActBy {
 	/** 押して離す。押せたのに離せなかったら、もう一度だけ離しに行く。 */
 	private async click(call: IParadisBrowserActCall, x: number, y: number, button: string, clickCount: number, modifiers: number): Promise<string | undefined> {
 		const base = { x, y, ...(modifiers !== 0 ? { modifiers } : {}) };
-		const moved = await this.send(call, 'Input.dispatchMouseEvent', { ...base, type: 'mouseMoved', button: 'none', buttons: 0 });
+		const moved = await this.begin(call, 'Input.dispatchMouseEvent', { ...base, type: 'mouseMoved', button: 'none', buttons: 0 });
 		if (moved !== undefined) {
 			return moved;
 		}
 		for (let count = 1; count <= clickCount; count++) {
-			const pressed = await this.send(call, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed', button, buttons: BUTTON_BITS[button], clickCount: count });
+			const pressed = await this.begin(call, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed', button, buttons: BUTTON_BITS[button], clickCount: count });
 			if (pressed !== undefined) {
 				return pressed;
 			}
@@ -367,7 +381,7 @@ export class ParadisBrowserActBy {
 					return error(`fill_by: the field did not take the keyboard focus, so nothing was typed. Check it with inspect_element. Element: ${JSON.stringify(located.element)}`);
 				}
 				const failure = value.length > 0
-					? await this.send(call, 'Input.insertText', { text: value })
+					? await this.begin(call, 'Input.insertText', { text: value })
 					: focus.value.empty === true ? undefined : await this.pressKey(call, 'Backspace', 'Backspace', 8);
 				if (failure !== undefined) {
 					return error(`fill_by focused the field but the text could not be entered: ${failure}`);
@@ -409,7 +423,7 @@ export class ParadisBrowserActBy {
 		const down = keyText !== undefined
 			? { type: 'keyDown', key, code, windowsVirtualKeyCode: keyCode, text: keyText, unmodifiedText: keyText }
 			: { type: 'rawKeyDown', key, code, windowsVirtualKeyCode: keyCode };
-		const pressed = await this.send(call, 'Input.dispatchKeyEvent', down);
+		const pressed = await this.begin(call, 'Input.dispatchKeyEvent', down);
 		if (pressed !== undefined) {
 			return pressed;
 		}
