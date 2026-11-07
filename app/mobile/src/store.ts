@@ -11,6 +11,7 @@
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeUtf8, decodeNotify, decodeNotifyControl, decodeNotifyDismissLog, decodeNotifyVisibility, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, encodeNotifyDismissSync, encodeNotifyVisibility, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
+import { SpeculativeAgentAttaches } from './speculativeAgentAttaches.js';
 import { FsRequestTimings } from './fsRequestTiming.js';
 import { terminalViewportEquals, type TerminalViewport } from './terminalViewport.js';
 import { isValidPresetDef } from './presets.js';
@@ -3356,13 +3357,8 @@ export class MobileController {
 	}
 
 	private resumeLiveSessionSubscriptions(): void {
-		const speculative = new Set(this.speculativeAgentAttaches);
-		this.speculativeAgentAttaches.clear();
-		for (const terminalKey of this.attachedAgents.keys()) {
-			const target = this.rendererTargetFor(terminalKey);
-			if (speculative.has(terminalKey) && target !== undefined && target === this.attachedAgentTargets.get(terminalKey)) {
-				continue;
-			}
+		const resends = this.speculativeAgentAttaches.takeResends(this.attachedAgents.keys(), key => this.rendererTargetFor(key), key => this.attachedAgentTargets.get(key));
+		for (const terminalKey of resends) {
 			this.sendAgentAttach(terminalKey);
 		}
 		for (const [terminalKey, stream] of this.termStreams) {
@@ -3455,7 +3451,7 @@ export class MobileController {
 	 * 要求し、それが決まるのは state 受信時なので、先に送ると操作台帳の再送順が壊れる。
 	 */
 	private sendSpeculativeAgentAttaches(): void {
-		this.speculativeAgentAttaches.clear();
+		this.speculativeAgentAttaches.reset();
 		for (const terminalKey of this.attachedAgents.keys()) {
 			if (this.sendAgentAttach(terminalKey, true)) {
 				this.speculativeAgentAttaches.add(terminalKey);
@@ -3468,7 +3464,7 @@ export class MobileController {
 	 * {@link resumeLiveSessionSubscriptions} は、同じ PC のウィンドウ宛てに先出し済みのものを送り直さない
 	 * （送り直すと PC は先出しの分を捨てて同じ応答をもう一度作る。epoch が変わった直後なら全量の snapshot が 2 回届く）。
 	 */
-	private readonly speculativeAgentAttaches = new Set<string>();
+	private readonly speculativeAgentAttaches = new SpeculativeAgentAttaches();
 
 	/**
 	 * state 適用までの間に預かっていたフレームを、届いた順に流し直す。
