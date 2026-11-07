@@ -117,4 +117,67 @@ suite('workspace lifecycle dialog', () => {
 			container.remove();
 		}
 	});
+
+	test('edits the paths to bring into new worktrees and saves them with the scripts', async () => {
+		const fileService = store.add(new FileService(new NullLogService()));
+		store.add(fileService.registerProvider('file', store.add(new InMemoryFileSystemProvider())));
+		await fileService.writeFile(URI.file('/repo/.paracode.json'), VSBuffer.fromString('{ "presets": [], "worktree": { "include": [".env", ".env.local"], "sharedDirectories": [".cache/models"] } }'));
+		await fileService.writeFile(URI.file('/repo/.worktreeinclude'), VSBuffer.fromString('# local\nconfig/secrets.json\n'));
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const accessor = {
+			get: (id: unknown) => id === IFileService ? fileService : id === ILayoutService ? { activeContainer: container } : id === IHoverService ? NullHoverService : undefined,
+		} as unknown as ServicesAccessor;
+		// 読み終え（.worktreeinclude は .paracode.json の後に読む）と書き終えを待つ
+		const includeRead = new DeferredPromise<void>();
+		const written = new DeferredPromise<void>();
+		const readFile = fileService.readFile.bind(fileService);
+		fileService.readFile = (async (...args: Parameters<typeof fileService.readFile>) => {
+			try {
+				return await readFile(...args);
+			} finally {
+				if (args[0].path.endsWith('.worktreeinclude')) {
+					includeRead.complete();
+				}
+			}
+		}) as typeof fileService.readFile;
+		const writeFile = fileService.writeFile.bind(fileService);
+		fileService.writeFile = (async (...args: Parameters<typeof fileService.writeFile>) => {
+			const result = await writeFile(...args);
+			written.complete();
+			return result;
+		}) as typeof fileService.writeFile;
+		try {
+			openParadisWorkspaceLifecycleDialog(accessor, { id: 'repo', name: 'repo', uri: URI.file('/repo') } satisfies IParadisWorkspaceRepository);
+			await includeRead.p;
+			await new Promise(resolve => setTimeout(resolve, 0));
+			const rows = () => [...container.querySelectorAll('.plc-include-row')].map(row => [...row.querySelectorAll('.plc-include-chip-label')].map(chip => chip.textContent));
+			const loaded = rows();
+			// 「写す」の .env.local を外し、「パスを追加」で config/app.json を足す。使えないパスは足さずに理由を出す
+			container.querySelectorAll<HTMLElement>('.plc-include-chip-remove')[1].click();
+			const add = (text: string) => {
+				container.querySelector<HTMLElement>('.plc-include-row .monaco-text-button')!.click();
+				const input = container.querySelector<HTMLInputElement>('.plc-include-row .plc-include-input')!;
+				input.value = text;
+				input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+			};
+			add('../secret');
+			const error = container.querySelector('.plc-error')!.textContent;
+			container.querySelector<HTMLInputElement>('.plc-include-row .plc-include-input')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			add('./config/app.json');
+			const edited = rows();
+			const note = container.querySelector<HTMLElement>('.plc-include-note:not([hidden])')?.textContent;
+			container.querySelector<HTMLElement>('.plc-footer > .monaco-text-button:not(.secondary)')!.click();
+			await written.p;
+			assert.deepStrictEqual({ loaded, error, edited, note, written: JSON.parse((await fileService.readFile(URI.file('/repo/.paracode.json'))).value.toString()) }, {
+				loaded: [['.env', '.env.local'], ['.cache/models']],
+				error: '「../secret」は使えません。リポジトリの中の相対パスを、* や ? を使わずに書いてください。',
+				edited: [['.env', 'config/app.json'], ['.cache/models']],
+				note: 'リポジトリの .worktreeinclude にある 1 件も写します。',
+				written: { presets: [], worktree: { include: ['.env', 'config/app.json'], sharedDirectories: ['.cache/models'] } },
+			});
+		} finally {
+			container.remove();
+		}
+	});
 });
