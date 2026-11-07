@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisPortServerEntry } from '../../../portList/common/paradisPortList.js';
-import { IParadisNewTabSpace, paradisGroupNewTabServers, paradisIsPathInside, paradisIsTooBroadRoot } from '../../common/paradisBrowserNewTab.js';
+import { IParadisNewTabSpace, paradisGroupNewTabServers, paradisIsPathInside, paradisIsTooBroadRoot, paradisTrimPullRequestCache } from '../../common/paradisBrowserNewTab.js';
 
 function entry(port: number, pid: number, cwd: string | undefined, processName = 'node'): IParadisPortServerEntry {
 	return { port, proto: 'TCP', pid, processName, address: '127.0.0.1', risky: false, cwd };
@@ -57,5 +57,16 @@ suite('ParadisBrowserNewTab - grouping servers', () => {
 			paradisIsTooBroadRoot('C:\\', ''),
 			paradisIsTooBroadRoot('/work/app', '/home/u'),
 		], [true, true, false, true, true, true, true, false]);
+	});
+
+	test('drops the oldest pull requests over the limit but keeps the ones being fetched', () => {
+		const cache = new Map([
+			['a', { at: 1, pending: false }],
+			['b', { at: 2, pending: true }],
+			['c', { at: 3, pending: false }],
+			['d', { at: 4, pending: false }],
+		]);
+		paradisTrimPullRequestCache(cache, 2);
+		assert.deepStrictEqual([...cache.keys()], ['b', 'd']);
 	});
 });

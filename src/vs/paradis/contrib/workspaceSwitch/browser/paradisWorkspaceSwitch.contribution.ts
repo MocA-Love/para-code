@@ -12,10 +12,9 @@ import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -500,17 +499,6 @@ Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViewWelcomeCon
 	content: localize({ key: 'paradis.workspaceSwitch.welcome', comment: ['{Locked="](command:paradis.workspaceSwitch.addRepository)"}'] }, "まだリポジトリが登録されていません。\n[リポジトリを追加](command:paradis.workspaceSwitch.addRepository)")
 });
 
-// ビュータイトルの「+」ボタン
-MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-	command: {
-		id: 'paradis.workspaceSwitch.addRepository',
-		title: localize2('paradis.workspaceSwitch.addRepositoryMenu', "リポジトリを追加..."),
-		icon: Codicon.add
-	},
-	when: ContextKeyExpr.equals('view', PARADIS_WORKSPACES_VIEW_ID),
-	group: 'navigation',
-	order: 1
-});
 
 // --- キーバインド (Superset 風のリポジトリ即時切り替え) ------------------------------------------
 // mac: ctrl+1..9 (primary) / ctrl+cmd+1..9 (secondary)。win/linux: ctrl+alt+1..9。
