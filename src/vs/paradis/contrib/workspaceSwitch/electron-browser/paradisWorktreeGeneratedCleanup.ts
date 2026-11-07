@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 「古い依存とビルド出力を掃除...」（Orca W3 の G-07、Orca #32331）。スペースの行の右クリックから、そのリポジトリの
-// ほかのワークツリーに残った 30 日より古い node_modules・out・dist・build を探し、何を消すかを確認に出してから消す。
+// ほかのワークツリー（30 日以上使っていないもの）に残った 30 日より古い node_modules・out・dist・build を探し、何を消すかを確認に出してから消す。
 // ワークツリーの削除とは別の操作（比較モックの案どおり）。探すのと消すのはリポジトリのあるマシンで行う。
 
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
@@ -85,7 +85,7 @@ class ParadisCleanGeneratedOutputsAction extends Action2 {
 		}
 		if (candidates.length === 0) {
 			// allow-any-unicode-next-line
-			notificationService.info(localize('paradis.generatedCleanup.none', "掃除できるものはありません。{0} 日より前から変わっていない node_modules・out・dist・build は、「{1}」のほかのワークツリーにありませんでした。", PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS, repository.name));
+			notificationService.info(localize('paradis.generatedCleanup.none', "掃除できるものはありません。「{1}」のほかのワークツリーのうち {0} 日以上使っていないものに、{0} 日より前から変わっていない node_modules・out・dist・build はありませんでした。", PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS, repository.name));
 			return;
 		}
 
@@ -100,7 +100,7 @@ class ParadisCleanGeneratedOutputsAction extends Action2 {
 			// allow-any-unicode-next-line
 			message: localize('paradis.generatedCleanup.confirm', "古い依存とビルド出力を {0} 件削除しますか？", candidates.length),
 			// allow-any-unicode-next-line
-			detail: localize('paradis.generatedCleanup.confirmDetail', "{0}\n\n{1} 日より前から変わっておらず、git が追跡していないものだけです。元のリポジトリ・今開いているスペース・ロックされたワークツリー・リンク・入れ子のリポジトリは消しません。消したワークツリーでは、依存を入れ直すまでビルドや実行ができません。", lines.join('\n'), PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS),
+			detail: localize('paradis.generatedCleanup.confirmDetail', "{0}\n\n{1} 日以上使っていないワークツリーの中で、{1} 日より前から変わっておらず、git が追跡していないものだけです（括弧の日数はフォルダの日付です）。元のリポジトリ・今開いているスペース・ロックされたワークツリー・リンク・入れ子のリポジトリは消しません。消したワークツリーでは、依存を入れ直すまでビルドや実行ができません。", lines.join('\n'), PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS),
 			// allow-any-unicode-next-line
 			primaryButton: localize('paradis.generatedCleanup.confirmAction', "削除"),
 		});

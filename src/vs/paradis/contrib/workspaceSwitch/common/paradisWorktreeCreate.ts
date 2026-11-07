@@ -168,12 +168,12 @@ export interface IParadisRemoveWorktreeRequest<TPath extends string = ParadisHos
 	 */
 	readonly allowLeftoverCleanup?: boolean;
 	/**
-	 * true の場合、作業ツリーを消せたら、その作業ツリーで開いていたブランチを `git branch -d` で消す（Orca W3 の G-07）。
-	 * `-d` なのでマージ済みのものしか消えない。git が断ったブランチは結果の `keptBranch` で返す。
-	 * 残骸の削除（allowLeftoverCleanup）と、detached HEAD・ほかの作業ツリーで開いているブランチ・追跡先のあるブランチ
-	 * （main などの共有のブランチ）には触らない。
+	 * 作業ツリーを消せたら一緒に消すブランチの名前（Orca W3 の G-07）。確認で見せた名前を渡し、作業ツリーの今の HEAD が
+	 * この名前のときだけ `git branch -d` で消す（マージ済みのものしか消えない）。git が断ったブランチは結果の `keptBranch` で返す。
+	 * 残骸の削除（allowLeftoverCleanup）と、detached HEAD・ほかの作業ツリーで開いているブランチ・`main`・`master`・
+	 * origin の既定のブランチには触らない。
 	 */
-	readonly deleteBranch?: boolean;
+	readonly deleteBranch?: string;
 }
 
 /** 残したブランチを強制的に消す依頼（`forceDeleteBranches`）。 */
