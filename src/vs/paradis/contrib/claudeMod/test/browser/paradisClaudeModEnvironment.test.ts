@@ -163,6 +163,24 @@ suite('ParadisClaudeModEnvironment', () => {
 		}, { directory: true, draft: true, copied: true, blocked: undefined, unknown: undefined });
 	});
 
+	test('puts no mod files on an SSH host whose policy forbids it or that is not macOS / Linux, and copies once the host allows it', async () => {
+		store.add(fileService.registerProvider('vscode-remote', store.add(new InMemoryFileSystemProvider())));
+		const remoteHome = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/home/remote' });
+		let now = Date.now();
+		let blocked = true;
+		const environment = store.add(new ParadisClaudeModEnvironment(APP_ROOT, async () => remoteHome, {
+			now: () => now,
+			remote: { blockedByPolicy: async () => blocked, claudeVersion: async () => '2.1.319 (Claude Code)' },
+		}, fileService, configuration, new NullLogService()));
+		await environment.ready;
+		const blockedCopy = await fileService.exists(joinPath(remoteHome, '.para-code', 'claude-mod'));
+		blocked = false;
+		now += 61_000;
+		const triggers = environment.pluginDirectory();
+		await environment.ready;
+		assert.deepStrictEqual({ blockedCopy, triggers, allowed: environment.pluginDirectory()?.startsWith('/home/remote/.para-code/claude-mod/') }, { blockedCopy: false, triggers: undefined, allowed: true });
+	});
+
 	test('tries the copy again for a later pane when it failed (for example right after connecting)', async () => {
 		let now = Date.now();
 		let failing = true;
