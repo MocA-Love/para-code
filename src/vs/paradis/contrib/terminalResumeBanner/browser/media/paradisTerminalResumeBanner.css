@@ -122,5 +122,6 @@
  * 検索欄はターミナルの要素の中、バナーは overflow guard の直下なので、:has で見る。
  */
 .monaco-workbench .terminal-overflow-guard.terminal-editor:has(.simple-find-part.visible) > .paradis-terminal-resume-banner {
-	top: var(--vscode-spacing-size400);
+	/* 検索欄は Modern UI では上に 4px 浮いた高さ 34px のカード（paradisFindWidget.css）。その下に 4px あける */
+	top: calc(var(--vscode-spacing-size400) + var(--vscode-spacing-size40));
 }
