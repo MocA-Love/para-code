@@ -502,7 +502,8 @@ export class ParadisTasksEditor extends EditorPane {
 		for (const label of item.labels) {
 			const chip = dom.append(context, $('span.paradis-tasks-label'));
 			chip.textContent = label.name;
-			chip.style.setProperty('--paradis-tasks-label-color', `#${label.color}`);
+			// ラベルの色は 16 進 6 桁に揃えてある（取得の口で確かめる）。枠だけ 55% の濃さで塗る
+			chip.style.borderColor = `#${label.color}8c`;
 		}
 
 		const assignees = dom.append(row, $('td.assignees'));

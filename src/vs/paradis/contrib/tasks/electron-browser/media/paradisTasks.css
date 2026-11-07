@@ -231,7 +231,7 @@
 
 .paradis-tasks-label {
 	padding: 0 7px;
-	border: 1px solid color-mix(in srgb, var(--paradis-tasks-label-color) 55%, transparent);
+	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
 	border-radius: 10px;
 	color: var(--vscode-foreground);
 	font-size: 11px;
