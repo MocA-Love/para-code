@@ -976,6 +976,48 @@
 .monaco-menu .paradis-color-pink::before { background-color: #ec4899; }
 .monaco-menu .paradis-color-slate::before { background-color: #64748b; }
 
+/* allow-any-unicode-next-line */
+/* HTML のメニューでは「色を設定」をサブメニューにせず、先頭に色の丸を横一列に並べる（Q575-8 案b）。
+ * 丸の項目だけ inline にして同じ行に流し、ほかの項目は今までどおり 1 行ずつ。文字は読み上げ用に残して見た目だけ隠す */
+.monaco-menu .monaco-action-bar.vertical .action-item:has(.paradis-menu-swatch) {
+	display: inline-flex;
+}
+
+.monaco-menu .monaco-action-bar.vertical .action-item:has(.paradis-menu-swatch) > .action-menu-item {
+	width: 22px;
+	margin: var(--vscode-spacing-size20) 0;
+	justify-content: center;
+}
+
+.monaco-menu .monaco-action-bar.vertical .action-item:has(.paradis-menu-swatch):first-child > .action-menu-item,
+.monaco-menu .monaco-action-bar.vertical .action-item:not(:has(.paradis-menu-swatch)) + .action-item:has(.paradis-menu-swatch) > .action-menu-item {
+	margin-left: var(--vscode-spacing-size80);
+}
+
+/* 今の色は輪で示すので、メニューのチェックは出さない（チェックの規則より強くする） */
+.monaco-menu .monaco-action-bar.vertical .action-item:has(.paradis-menu-swatch) > .action-menu-item .menu-item-check,
+.monaco-menu .monaco-action-bar.vertical .action-item:has(.paradis-menu-swatch) > .action-menu-item .keybinding {
+	display: none;
+}
+
+.monaco-menu .monaco-action-bar.vertical .action-label.paradis-menu-icon.paradis-menu-swatch {
+	flex: none;
+	padding: 0;
+	font-size: 0;
+}
+
+.monaco-menu .monaco-action-bar.vertical .action-label.paradis-menu-icon.paradis-menu-swatch::before {
+	width: 14px;
+	height: 14px;
+	margin: 0;
+}
+
+/* allow-any-unicode-next-line */
+/* 今の色は丸の外に輪を付ける（地の色ですき間をあけてから focusBorder の輪） */
+.monaco-menu .monaco-action-bar.vertical .action-menu-item.checked > .action-label.paradis-menu-icon.paradis-menu-swatch::before {
+	box-shadow: 0 0 0 2px var(--vscode-menu-background), 0 0 0 3px var(--vscode-focusBorder);
+}
+
 /* 幅が足りないときに、メタ段が黙って右から切り落とされるのを防ぐ。
  * spacer(flex:1) が先に潰れたあと、チップ側が縮まないと body の overflow:hidden で
  * 右寄せのぶん (差分・メモ) が省略記号も出ずに消える。行は60pxのままなので、
