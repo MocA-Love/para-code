@@ -224,6 +224,12 @@ export class ParadisClaudeModEnvironment extends Disposable {
 
 	private async prepare(): Promise<void> {
 		await this.checkPolicy();
+		if (this.remote !== undefined && this.blockedByPolicy) {
+			// 接続先の方針が禁じている・接続先が macOS / Linux でない・聞けない（古い REH）。接続先に mod のファイルを
+			// 置かない。方針は後から変わりうるので、次のペインでまた確かめる（PREPARE_RETRY_MS ごと）
+			this.prepareFailedAt = this.now();
+			return;
+		}
 		const appRoot = this.appRoot;
 		if (appRoot === undefined) {
 			return;
