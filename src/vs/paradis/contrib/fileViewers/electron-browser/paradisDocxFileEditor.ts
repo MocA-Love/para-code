@@ -26,6 +26,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { readParadisFileHead } from '../../../../platform/files/common/paradisReadFileHead.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ParadisOverlayWebviewPane } from '../browser/paradisOverlayWebviewPane.js';
@@ -271,7 +272,7 @@ export function isParadisDocxHeader(bytes: Uint8Array): boolean {
 
 export async function readParadisDocxHeader(fileService: IFileService, resource: URI): Promise<boolean | undefined> {
 	try {
-		return isParadisDocxHeader((await fileService.readFile(resource, { length: DOCX_HEADER_BYTES })).value.buffer);
+		return isParadisDocxHeader((await readParadisFileHead(fileService, resource, { length: DOCX_HEADER_BYTES })).value.buffer);
 	} catch {
 		return undefined;
 	}
