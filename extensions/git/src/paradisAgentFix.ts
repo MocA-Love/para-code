@@ -25,10 +25,11 @@ interface IParadisGitFailure {
 
 /**
  * 失敗の選択肢に「AI で直す」を足す。知らせだけの種類（空のコミットメッセージなど）には足さない。
- * `root` は失敗した操作のリポジトリ（本体が今のスペースのものか確かめる。分からなければ undefined）。
+ * `root` は失敗した操作のリポジトリ（本体が今のスペースのものか確かめる）。分からなければ足さない。
  */
 export function paradisAddAgentFixChoice(choices: Map<string, () => void>, type: 'error' | 'warning' | 'information', err: IParadisGitFailure, root: string | undefined): void {
-	if (type === 'information') {
+	// リポジトリの決まらない失敗（clone など）は、どのスペースの作業か確かめられないので出さない
+	if (type === 'information' || root === undefined) {
 		return;
 	}
 	const payload = {
@@ -37,7 +38,7 @@ export function paradisAddAgentFixChoice(choices: Map<string, () => void>, type:
 		stdout: typeof err.stdout === 'string' ? err.stdout : '',
 		errorCode: typeof err.gitErrorCode === 'string' ? err.gitErrorCode : undefined,
 		message: typeof err.message === 'string' ? err.message : String(err),
-		root: root !== undefined ? Uri.file(root).toString() : undefined,
+		root: Uri.file(root).toString(),
 	};
 	// allow-any-unicode-next-line
 	choices.set(l10n.t('AI で直す'), () => {

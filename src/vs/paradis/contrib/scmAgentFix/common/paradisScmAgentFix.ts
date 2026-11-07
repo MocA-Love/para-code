@@ -9,6 +9,7 @@
 // ソース管理の失敗（git の操作の失敗・マージの衝突）をエージェントに直してもらう依頼文（G-02）。
 // 出力の切り詰め・秘密の伏せ字・信頼できないデータの囲みは、スマホからのコミットの直し（W2-15）と同じ部品を使う。
 
+import { paradisRedactTextSecrets } from '../../../common/paradisSecretRedaction.js';
 import { paradisRedactMobileCommandOutputWithin } from '../../mobileRelay/common/paradisMobileOutputRedaction.js';
 import { PARADIS_MOBILE_COMMIT_OUTPUT_LIMIT, paradisFenceUntrusted } from '../../mobileRelay/common/paradisMobileScmSync.js';
 
@@ -70,7 +71,8 @@ export function paradisBuildScmFailurePrompt(failure: IParadisScmFailure): strin
 			? 'この作業ツリーで git のコミットが失敗しました。原因を直して、利用者が同じコミットをもう一度試せる状態にしてください。'
 			: 'この作業ツリーで git の操作が失敗しました。原因を調べて直し、利用者が同じ操作をもう一度試せる状態にしてください。',
 		'',
-		`- 失敗した操作: ${failure.args.length > 0 ? describeCommand(failure.args) : '（不明）'}`,
+		// 引数にも URL の資格情報や `-c http.extraHeader=Authorization: Bearer ...` が入りうるので伏せる
+		`- 失敗した操作: ${failure.args.length > 0 ? paradisRedactTextSecrets(describeCommand(failure.args)) : '（不明）'}`,
 		...(failure.errorCode ? [`- 失敗の種類: ${failure.errorCode}`] : []),
 		'',
 		'守ること:',
@@ -97,9 +99,10 @@ export function paradisBuildMergeConflictPrompt(files: readonly string[]): strin
 	return [
 		'この作業ツリーにマージの衝突が残っています。それぞれのファイルの衝突を、両方の変更の意図を確かめたうえで解いてください。',
 		'',
-		'衝突しているファイル:',
-		...(shown.length > 0 ? shown.map(file => `- ${file}`) : ['- （一覧を取れませんでした。git status から始めてください）']),
-		...(more > 0 ? [`- ほか ${more} 件`] : []),
+		// ファイル名はリポジトリから来るデータなので、囲みの中に置く
+		shown.length > 0
+			? paradisFenceUntrusted('衝突しているファイル', [...shown, ...(more > 0 ? [`ほか ${more} 件`] : [])].join('\n'))
+			: '衝突しているファイル: （一覧を取れませんでした。git status から始めてください）',
 		'',
 		'守ること:',
 		'- まず git status と、進行中の操作（merge・rebase・cherry-pick）を確かめる',

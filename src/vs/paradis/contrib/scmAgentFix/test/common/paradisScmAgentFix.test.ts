@@ -45,9 +45,15 @@ suite('paradisScmAgentFix', () => {
 		assert.deepStrictEqual([prompt.includes('- 失敗の種類: PushRejected'), prompt.includes('Can\'t push refs to remote.')], [true, true]);
 	});
 
+	test('failure prompt redacts secrets in the git arguments', () => {
+		const prompt = paradisBuildScmFailurePrompt({ args: ['-c', 'http.extraHeader=Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789', 'push', 'https://user:hunter2secret@example.com/repo.git'], stderr: 'denied', stdout: '', errorCode: undefined, message: '' });
+		const command = prompt.split('\n').find(line => line.startsWith('- 失敗した操作:')) ?? '';
+		assert.deepStrictEqual([command.includes('abcdefghijklmnopqrstuvwxyz0123456789'), command.includes('hunter2secret'), command.includes('push')], [false, false, true]);
+	});
+
 	test('conflict prompt lists files up to the limit', () => {
 		const files = Array.from({ length: PARADIS_SCM_CONFLICT_FILES_LIMIT + 2 }, (_, index) => `src/f${index}.ts`);
 		const lines = paradisBuildMergeConflictPrompt(files).split('\n');
-		assert.deepStrictEqual([lines.filter(line => line.startsWith('- src/')).length, lines.includes('- ほか 2 件'), paradisBuildMergeConflictPrompt([]).includes('git status から始めて')], [PARADIS_SCM_CONFLICT_FILES_LIMIT, true, true]);
+		assert.deepStrictEqual([lines.filter(line => line.startsWith('src/')).length, lines.includes('ほか 2 件'), lines.includes('```text'), paradisBuildMergeConflictPrompt([]).includes('git status から始めて')], [PARADIS_SCM_CONFLICT_FILES_LIMIT, true, true, true]);
 	});
 });
