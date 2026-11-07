@@ -11,6 +11,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { joinPath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { createFileSystemProviderError, FileSystemProviderErrorCode, IStat } from '../../../../../platform/files/common/files.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -102,5 +103,40 @@ suite('Paradis file transfer - temporary file journal', () => {
 		});
 
 		assert.deepStrictEqual({ removed, exists: await fileService.exists(temp) }, { removed: 0, exists: true });
+	});
+
+	test('keeps an entry it could not check because the connection is down, and cleans it up later', async () => {
+		let disconnected = true;
+		const provider = store.add(new class extends InMemoryFileSystemProvider {
+			override async stat(resource: URI): Promise<IStat> {
+				if (disconnected) {
+					throw createFileSystemProviderError('connection lost', FileSystemProviderErrorCode.Unavailable);
+				}
+				return super.stat(resource);
+			}
+		});
+		const fileService = store.add(new FileService(new NullLogService()));
+		store.add(fileService.registerProvider('file', provider));
+		const storage = store.add(new InMemoryStorageService());
+		const temp = joinPath(DIR, '.paratransfer-3-1-a-b');
+		disconnected = false;
+		await fileService.writeFile(temp, VSBuffer.fromString('partial'));
+		disconnected = true;
+		const writer = store.add(new ParadisTransferTempJournal(storage, fileService, new NullLogService()));
+		writer.add(temp);
+		writer.abandonOwn();
+
+		const cleaner = store.add(new ParadisTransferTempJournal(storage, fileService, new NullLogService()));
+		const whileDown = await cleaner.cleanup(() => true, noWait);
+		const keptWhileDown = paradisParseJournal(storage.get(PARADIS_FILE_TRANSFER_JOURNAL_KEY, StorageScope.APPLICATION)).map(entry => entry.uri);
+		disconnected = false;
+		const afterReconnect = await cleaner.cleanup(() => true, noWait);
+
+		assert.deepStrictEqual({ whileDown, keptWhileDown, afterReconnect, exists: await fileService.exists(temp) }, {
+			whileDown: 0,
+			keptWhileDown: [temp.toString()],
+			afterReconnect: 1,
+			exists: false,
+		});
 	});
 });

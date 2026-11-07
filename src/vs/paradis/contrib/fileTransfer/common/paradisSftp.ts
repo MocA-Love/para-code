@@ -23,6 +23,9 @@ export const PARADIS_SFTP_SCHEME = 'paradis-sftp';
 /** shared process に生やすチャネル。 */
 export const PARADIS_SFTP_CHANNEL = 'paradisSftp';
 
+/** 1 回の read / write で受け付ける上限。書く側はこれより大きい塊を分けて送る（受ける側は超えたら断る）。 */
+export const PARADIS_SFTP_MAX_IO = 4 * 1024 * 1024;
+
 /** 使い終わった接続を閉じるまでの秒数の設定。 */
 export const PARADIS_SFTP_IDLE_SETTING = 'paradis.fileTransfer.directConnectionIdleSeconds';
 export const PARADIS_SFTP_IDLE_DEFAULT_SECONDS = 300;

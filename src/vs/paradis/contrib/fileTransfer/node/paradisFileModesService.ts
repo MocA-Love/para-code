@@ -31,6 +31,7 @@ import {
 	IParadisFileModeListRequest,
 	paradisIsValidMode,
 	paradisRecursiveModeFor,
+	paradisTraversableDirectoryMode,
 	PARADIS_FILE_MODES_PROTOCOL_VERSION,
 } from '../common/paradisFileTransfer.js';
 
@@ -139,10 +140,30 @@ export class ParadisFileModesService {
 		if (rootStat.isSymbolicLink()) {
 			throw new Error(localize('paradis.fileTransfer.chmodLink', "リンクの権限は変更できません"));
 		}
-		await fsp.chmod(root, request.mode);
 		if (!request.recursive || !rootStat.isDirectory()) {
+			await fsp.chmod(root, request.mode);
 			return;
 		}
+		// フォルダーは辿れる権限にしておき、中を済ませてから（深い方から）選んだ値に直す
+		const fixups: { readonly path: string; readonly mode: number }[] = [];
+		const enter = async (path: string, mode: number) => {
+			const traversable = paradisTraversableDirectoryMode(mode);
+			await fsp.chmod(path, traversable);
+			if (traversable !== mode) {
+				fixups.push({ path, mode });
+			}
+		};
+		await enter(root, request.mode);
+		try {
+			await this.chmodChildren(root, request.mode, enter);
+		} finally {
+			for (const { path, mode } of fixups.reverse()) {
+				await fsp.chmod(path, mode).catch(() => undefined);
+			}
+		}
+	}
+
+	private async chmodChildren(root: string, selectedMode: number, enter: (path: string, mode: number) => Promise<void>): Promise<void> {
 		// 中は lstat で辿る。リンクの先へは進まず、リンク自体の権限も変えない（chmod はリンク先に効くため、
 		// 木の外のファイルを書き換えてしまう）
 		let visited = 0;
@@ -159,9 +180,12 @@ export class ParadisFileModesService {
 					continue;
 				}
 				const isDirectory = stat.isDirectory();
-				await fsp.chmod(path, paradisRecursiveModeFor(request.mode, isDirectory, stat.mode & 0o7777));
+				const mode = paradisRecursiveModeFor(selectedMode, isDirectory, stat.mode & 0o7777);
 				if (isDirectory) {
+					await enter(path, mode);
 					pending.push(path);
+				} else {
+					await fsp.chmod(path, mode);
 				}
 			}
 		}
