@@ -33,7 +33,8 @@
 import { paradisIsOpenCodeProgram } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { exec } from 'child_process';
 import { statSync } from 'fs';
-import { open } from 'fs/promises';
+import { open, readFile } from 'fs/promises';
+import { paradisCLocaleCommandLineFromProc, paradisParseProcStat, paradisReadProcChildren, paradisReadProcCommandLine } from '../../../../platform/terminal/node/paradisChildProcessList.js';
 import { promisify } from 'util';
 import { ParadisHookIdentityLoss } from '../common/paradisAgentHookDropLog.js';
 import { paradisClaudeConfigDir, paradisIsWithinCodexHome } from './paradisAgentHome.js';
@@ -76,9 +77,24 @@ export interface IParadisHookProcessInfo {
 	readonly command: string;
 }
 
+/**
+ * 判定に要るプロセス。プロセス表の取得はこれだけを読めばよい（全部を返してもよい）。判定が引く pid は、ここに
+ * 挙げた pid とその祖先、`descendantsOf` とその子孫に限られる。
+ */
+export interface IParadisHookSnapshotHint {
+	readonly pids: readonly number[];
+	readonly descendantsOf?: number;
+	/**
+	 * `descendantsOf` の子孫は、`pids[0]`（hook）の祖先にこれに当たる起動行があるときだけ要る（ペインの
+	 * `claude attach` を探すのは daemon の配下の hook だけ）。子孫を読むのはスレッドごとの子の一覧で重いので、
+	 * 要らなければ読まない。
+	 */
+	readonly descendantsOnlyUnder?: (command: string) => boolean;
+}
+
 /** プロセス表の取得（テストではfakeへ差し替える）。 */
 export interface IParadisHookProcessInspector {
-	snapshot(): Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined>;
+	snapshot(hint?: IParadisHookSnapshotHint): Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined>;
 	/** 直近に使ったプロセス表を取り始めた時刻（診断ログ用。分からなければ undefined）。 */
 	lastSnapshotAt?(): number | undefined;
 }
@@ -683,11 +699,100 @@ async function windowsProcessSnapshot(): Promise<ReadonlyMap<number, IParadisHoo
 	}
 }
 
-/** 既定のプロセス表取得（TTL付きキャッシュ。失敗キャッシュはしない）。 */
+/**
+ * Linux: 判定に要るプロセス（{@link IParadisHookSnapshotHint}）だけを /proc から読む。機械全体の `ps ax`
+ * （この機械で 900 本近く、1 回 37ms）を hook のたびに起こさない。startKey は stat の starttime（起動からの
+ * tick）で、ps の lstart とは形が違うが、同じ取り方どうしでしか比べない（/proc を使えるかは最初に 1 度決める）。
+ * /proc が読めないときは undefined。
+ */
+async function linuxProcSnapshot(hint: IParadisHookSnapshotHint): Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined> {
+	const readProc = (path: string) => readFile(path, 'utf8');
+	const result = new Map<number, IParadisHookProcessInfo>();
+	const missing = new Set<number>();
+	const visit = async (pid: number): Promise<IParadisHookProcessInfo | undefined> => {
+		const known = result.get(pid);
+		if (known !== undefined || missing.has(pid)) {
+			return known;
+		}
+		// 起動行は `LC_ALL=C` の ps と同じ見え方にする（非 ASCII は ?、制御文字は .）
+		const [stat, cmdline] = await Promise.all([readProc(`/proc/${pid}/stat`).catch(() => undefined), readFile(`/proc/${pid}/cmdline`).catch(() => undefined)]);
+		const parsed = stat === undefined || cmdline === undefined ? undefined : paradisParseProcStat(stat);
+		if (parsed === undefined || cmdline === undefined) {
+			missing.add(pid);
+			return undefined;
+		}
+		const info = { pid, ppid: parsed.ppid, startKey: parsed.startTime, command: paradisCLocaleCommandLineFromProc(cmdline, parsed.comm, parsed.state) };
+		result.set(pid, info);
+		return info;
+	};
+	let hookUnderMatch = false;
+	for (const [index, pid] of hint.pids.entries()) {
+		// 祖先は、祖先チェーン（MAX_ANCESTOR_DEPTH）とペインの子孫か（MAX_PANE_DESCENT_DEPTH）の深い方まで辿る
+		let current: number | undefined = pid;
+		for (let depth = 0; current !== undefined && current > 0 && depth <= MAX_PANE_DESCENT_DEPTH; depth++) {
+			const known: boolean = result.has(current);
+			const info: IParadisHookProcessInfo | undefined = await visit(current);
+			if (index === 0 && info !== undefined && hint.descendantsOnlyUnder?.(info.command)) {
+				hookUnderMatch = true;
+			}
+			current = known ? undefined : info?.ppid;
+		}
+	}
+	if (hint.descendantsOf !== undefined && await visit(hint.descendantsOf) !== undefined && (hint.descendantsOnlyUnder === undefined || hookUnderMatch)) {
+		// 祖先として読んだプロセス（ペインの中の hook の発信元など）の下も辿る
+		const descended = new Set([hint.descendantsOf]);
+		let level = [hint.descendantsOf];
+		for (let depth = 0; level.length > 0 && depth < MAX_PANE_DESCENT_DEPTH; depth++) {
+			const next: number[] = [];
+			for (const pid of level) {
+				const children = await paradisReadProcChildren(pid, readProc).catch(() => []);
+				for (const child of children) {
+					if (!descended.has(child) && await visit(child) !== undefined) {
+						descended.add(child);
+						next.push(child);
+					}
+				}
+			}
+			level = next;
+		}
+	}
+	return result.size > 0 ? result : undefined;
+}
+
+/** テスト用: Linux の部分表と、`ps ax` の全体の表。 */
+export const paradisHookProcessSnapshotsForTest = { linuxProcSnapshot, posixProcessSnapshot };
+
+/** この機械で /proc から判定に要るプロセスを読めるか（自分の stat と子の一覧が読めるか）。 */
+async function canUseLinuxProc(): Promise<boolean> {
+	if (process.platform !== 'linux') {
+		return false;
+	}
+	try {
+		await paradisReadProcChildren(process.pid, path => readFile(path, 'utf8'));
+		return await paradisReadProcCommandLine(process.pid, path => readFile(path, 'utf8')) !== undefined;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * 既定のプロセス表取得。Linux は判定に要るプロセスだけを /proc から毎回読む（軽いので控えない）。
+ * それ以外（と /proc が読めない Linux）は `ps ax` / CIM で全体を取り、TTL 付きで控える（失敗は控えない）。
+ */
 export class ParadisDefaultHookProcessInspector implements IParadisHookProcessInspector {
 	private cached: { at: number; value: Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined> } | undefined;
+	private useProc: Promise<boolean> | undefined;
+	private lastProcSnapshotAt: number | undefined;
 
-	snapshot(): Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined> {
+	async snapshot(hint?: IParadisHookSnapshotHint): Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined> {
+		if (hint !== undefined && await (this.useProc ??= canUseLinuxProc())) {
+			this.lastProcSnapshotAt = Date.now();
+			return linuxProcSnapshot(hint);
+		}
+		return this.fullSnapshot();
+	}
+
+	private fullSnapshot(): Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined> {
 		const now = Date.now();
 		if (this.cached !== undefined && now - this.cached.at < SNAPSHOT_TTL_MS) {
 			return this.cached.value;
@@ -704,7 +809,7 @@ export class ParadisDefaultHookProcessInspector implements IParadisHookProcessIn
 	}
 
 	lastSnapshotAt(): number | undefined {
-		return this.cached?.at;
+		return this.lastProcSnapshotAt ?? this.cached?.at;
 	}
 }
 
@@ -870,7 +975,7 @@ export class ParadisAgentHookOwnership {
 		if (hookPid === undefined) {
 			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind, 'no-pid', undefined, input);
 		}
-		const snapshot = await this.inspector.snapshot();
+		const snapshot = await this.inspector.snapshot(this.snapshotHint(hookPid, input.paneShellPid));
 		const snapshotAgeMs = this.snapshotAgeMs();
 		if (snapshot === undefined) {
 			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind, 'no-snapshot', snapshotAgeMs);
@@ -1150,6 +1255,23 @@ export class ParadisAgentHookOwnership {
 		return (eventKind === 'codex' || eventKind === 'opencode') && owner.agentKind === eventKind
 			&& hook.sessionSource !== undefined && CODEX_CONVERSATION_SWITCH_SOURCES.has(hook.sessionSource)
 			&& (owner.toolsInFlight?.length ?? 0) === 0;
+	}
+
+	/**
+	 * プロセス表から引く pid: hook とその祖先、Para Code 自身とその祖先、ペインのシェルとその子孫（`claude attach` を
+	 * 探す。hook が daemon の配下のときだけ）、所有者（生きているか）。所有者は表を待つ間に別の hook で替わりうるので、全ペインの分を挙げる。
+	 */
+	private snapshotHint(hookPid: number, paneShellPid: number | undefined): IParadisHookSnapshotHint {
+		const pids = [hookPid, this.selfPid];
+		for (const owner of this.owners.values()) {
+			if (owner.pid !== undefined) {
+				pids.push(owner.pid);
+			}
+			if (owner.attachedHost !== undefined) {
+				pids.push(owner.attachedHost.pid);
+			}
+		}
+		return paneShellPid !== undefined ? { pids: [...pids, paneShellPid], descendantsOf: paneShellPid, descendantsOnlyUnder: paradisIsClaudeBackgroundHostCommand } : { pids };
 	}
 
 	/** 直近に使ったプロセス表の控えの古さ（診断ログ用）。 */
