@@ -1072,6 +1072,8 @@ export class ParadisWorkspacesView extends ViewPane {
 	private promptCacheChips: ParadisPromptCacheChips | undefined;
 	/** ビュー上端の Orca 風のナビ（検索・タスク・定期実行・モバイル）と「プロジェクト」の見出し */
 	private nav: ParadisWorkspacesNav | undefined;
+	/** ナビの高さ。レイアウトのたびに測らないよう控え、行を隠した・戻したときだけ捨てる */
+	private navHeight: number | undefined;
 	/** ビュー下端に固定される「いま開いているスペースのメモ」欄 */
 	private notesPanel: ParadisSpaceNotesPanel | undefined;
 	/** メモ欄の高さが変わったときにツリーを再レイアウトするため、直近のレイアウト値を覚えておく */
@@ -1179,7 +1181,10 @@ export class ParadisWorkspacesView extends ViewPane {
 			onDidChangeAgentCounts: Event.any(this.agentStatusStore.onDidChangeAgentStatuses, this.createProgressStore.onDidChangeJobs, this.workspaceSwitchService.onDidChangeRepositories, this.worktreeService.onDidChangeWorktrees),
 			optionsActions: () => this.buildRowMetaSubmenuAction().actions.slice(),
 		}));
-		nav.setHeightChangeListener(() => this.relayout());
+		nav.setHeightChangeListener(() => {
+			this.navHeight = undefined;
+			this.relayout();
+		});
 		const treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list'));
 		// 明滅の位相合わせ。個々のドットではなくルート1箇所で受ける (行は使い回されるので、
 		// 要素ごとに張ると付け外しの管理が要る)。詳細は syncStatusBlinkPhase を参照。
@@ -1357,7 +1362,12 @@ export class ParadisWorkspacesView extends ViewPane {
 
 	/** ビューの高さをメモ欄とツリーへ配分する (layoutBody とメモ欄の高さ変更の共通処理)。 */
 	private layoutContents(height: number, width: number): void {
-		const navHeight = this.nav?.element.offsetHeight ?? 0;
+		if (this.navHeight === undefined && this.nav) {
+			// 見えていない間は 0 になるので控えない（次のレイアウトで測り直す）
+			const measured = this.nav.element.offsetHeight;
+			this.navHeight = measured > 0 ? measured : undefined;
+		}
+		const navHeight = this.navHeight ?? 0;
 		const notesHeight = this.notesPanel?.layout(Math.max(0, height - navHeight)) ?? 0;
 		this.tree?.layout(Math.max(0, height - navHeight - notesHeight), width);
 	}
