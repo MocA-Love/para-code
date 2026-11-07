@@ -105,11 +105,13 @@ suite('ParadisTasksGithubService', () => {
 		const service = store.add(new ParadisTasksGithubService(async args => {
 			queries.push(args.find(arg => arg.startsWith('query='))!);
 			return {
-				stdout: JSON.stringify({ data: {
-					viewer: { projectsV2: { nodes: [project('me', 1), project('org', 7)] } },
-					r0: { projectsV2: { nodes: [project('org', 7)] }, owner: { projectsV2: { nodes: [project('org', 3, true), project('org', 7)] } } },
-					rateLimit: { limit: 5000, remaining: 4999, resetAt: '2026-11-08T01:00:00Z' },
-				} }), stderr: '', failed: false, notFound: false,
+				stdout: JSON.stringify({
+					data: {
+						viewer: { projectsV2: { nodes: [project('me', 1), project('org', 7)] } },
+						r0: { projectsV2: { nodes: [project('org', 7)] }, owner: { projectsV2: { nodes: [project('org', 3, true), project('org', 7)] } } },
+						rateLimit: { limit: 5000, remaining: 4999, resetAt: '2026-11-08T01:00:00Z' },
+					}
+				}), stderr: '', failed: false, notFound: false,
 			};
 		}, new NullLogService(), new ParadisGithubRateLimitPause(() => now), () => now));
 		const first = await service.listProjects({ repositories: ['org/app'] });
@@ -137,19 +139,27 @@ suite('ParadisTasksGithubService', () => {
 		const service = store.add(new ParadisTasksGithubService(async args => {
 			variables.push(args.filter(arg => /^(owner|number|view|q|n)=/.test(arg)));
 			return {
-				stdout: JSON.stringify({ data: {
-					repositoryOwner: { projectV2: {
-						title: 'Roadmap', url: 'https://github.com/orgs/org/projects/7',
-						view: { number: 2, name: 'Board', layout: 'BOARD_LAYOUT', filter: 'is:open', fields: { nodes: [{ name: 'Title', dataType: 'TITLE' }, { name: 'Status', dataType: 'SINGLE_SELECT', options: [{ name: 'Todo', color: 'GRAY' }] }, { name: 'Due', dataType: 'DATE' }] }, verticalGroupByFields: { nodes: [{ name: 'Status' }] }, groupByFields: { nodes: [] } },
-						items: { totalCount: 3, pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [
-							{ id: 'i1', isArchived: false, content: { __typename: 'Issue', number: 5, title: 'fix', url: 'https://github.com/org/app/issues/5', state: 'OPEN', updatedAt: '2026-11-08T00:00:00Z', repository: { nameWithOwner: 'org/app' }, assignees: { nodes: [] }, labels: { nodes: [] } },
-								fieldValues: { nodes: [{ __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'Todo', color: 'GRAY', field: { name: 'Status' } }, { __typename: 'ProjectV2ItemFieldDateValue', date: '2026-11-20', field: { name: 'Due' } }, { __typename: 'ProjectV2ItemFieldUserValue' }] } },
-							{ id: 'i2', isArchived: false, content: { __typename: 'DraftIssue', title: 'idea', updatedAt: '2026-11-07T00:00:00Z', assignees: { nodes: [{ login: 'me' }] } }, fieldValues: { nodes: [] } },
-							{ id: 'i3', isArchived: true, content: { __typename: 'Issue', number: 6, title: 'old', url: 'u', state: 'CLOSED', updatedAt: '2026-11-01T00:00:00Z', repository: { nameWithOwner: 'org/app' } }, fieldValues: { nodes: [] } },
-						] },
-					} },
-					rateLimit: { limit: 5000, remaining: 4990, resetAt: '2026-11-08T01:00:00Z' },
-				} }), stderr: '', failed: false, notFound: false,
+				stdout: JSON.stringify({
+					data: {
+						repositoryOwner: {
+							projectV2: {
+								title: 'Roadmap', url: 'https://github.com/orgs/org/projects/7',
+								view: { number: 2, name: 'Board', layout: 'BOARD_LAYOUT', filter: 'is:open', fields: { nodes: [{ name: 'Title', dataType: 'TITLE' }, { name: 'Status', dataType: 'SINGLE_SELECT', options: [{ name: 'Todo', color: 'GRAY' }] }, { name: 'Due', dataType: 'DATE' }] }, verticalGroupByFields: { nodes: [{ name: 'Status' }] }, groupByFields: { nodes: [] } },
+								items: {
+									totalCount: 3, pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [
+										{
+											id: 'i1', isArchived: false, content: { __typename: 'Issue', number: 5, title: 'fix', url: 'https://github.com/org/app/issues/5', state: 'OPEN', updatedAt: '2026-11-08T00:00:00Z', repository: { nameWithOwner: 'org/app' }, assignees: { nodes: [] }, labels: { nodes: [] } },
+											fieldValues: { nodes: [{ __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'Todo', color: 'GRAY', field: { name: 'Status' } }, { __typename: 'ProjectV2ItemFieldDateValue', date: '2026-11-20', field: { name: 'Due' } }, { __typename: 'ProjectV2ItemFieldUserValue' }] }
+										},
+										{ id: 'i2', isArchived: false, content: { __typename: 'DraftIssue', title: 'idea', updatedAt: '2026-11-07T00:00:00Z', assignees: { nodes: [{ login: 'me' }] } }, fieldValues: { nodes: [] } },
+										{ id: 'i3', isArchived: true, content: { __typename: 'Issue', number: 6, title: 'old', url: 'u', state: 'CLOSED', updatedAt: '2026-11-01T00:00:00Z', repository: { nameWithOwner: 'org/app' } }, fieldValues: { nodes: [] } },
+									]
+								},
+							}
+						},
+						rateLimit: { limit: 5000, remaining: 4990, resetAt: '2026-11-08T01:00:00Z' },
+					}
+				}), stderr: '', failed: false, notFound: false,
 			};
 		}, new NullLogService(), new ParadisGithubRateLimitPause(() => now), () => now));
 		const response = await service.projectItems(paradisTasksCoerceProjectItemsRequest([{ owner: 'org', number: 7, view: 2, viewFilter: 'is:open', query: 'status:Todo' }][0]));
