@@ -21,6 +21,7 @@ import { getRemoteSourceActions, pickRemoteSource } from './remoteSource';
 import { RemoteSourceAction } from './typings/git-base';
 import { CloneManager } from './cloneManager';
 import { getSafeNotificationMessage } from './notification';
+import { paradisAddAgentFixChoice } from './paradisAgentFix'; // PARA-PATCH: "fix with AI" choice on git failures (Para Code).
 
 abstract class CheckoutCommandItem implements QuickPickItem {
 	abstract get label(): string;
@@ -5527,6 +5528,8 @@ export class CommandCenter {
 	private createCommand(id: string, key: string, method: Function, options: ScmCommandOptions): (...args: any[]) => any {
 		const result = (...args: any[]) => {
 			let result: Promise<any>;
+			// PARA-PATCH: remember the repository so the "fix with AI" choice can name it. See paradisAgentFix.ts.
+			let paradisRepositoryRoot: string | undefined;
 
 			if (!options.repository) {
 				result = Promise.resolve(method.apply(this, args));
@@ -5546,6 +5549,7 @@ export class CommandCenter {
 						return Promise.resolve();
 					}
 
+					paradisRepositoryRoot = repository.root; // PARA-PATCH: see paradisAgentFix.ts.
 					return Promise.resolve(method.apply(this, [repository, ...args.slice(1)]));
 				});
 			}
@@ -5672,6 +5676,9 @@ export class CommandCenter {
 					console.error(err);
 					return;
 				}
+
+				// PARA-PATCH: offer to hand the failure to the space's Claude Code / Codex. See paradisAgentFix.ts.
+				paradisAddAgentFixChoice(choices, type, err, paradisRepositoryRoot);
 
 				// We explicitly do not await this promise, because we do not
 				// want the command execution to be stuck waiting for the user
