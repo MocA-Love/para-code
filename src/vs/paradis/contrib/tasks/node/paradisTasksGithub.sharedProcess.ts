@@ -94,6 +94,8 @@ interface IGhOutput {
 	readonly stderr: string;
 	readonly failed: boolean;
 	readonly notFound: boolean;
+	/** 時間切れで止めた（{@link GH_TIMEOUT_MS}）。 */
+	readonly timedOut?: boolean;
 }
 
 /** gh を起動する口。テストでは差し替える。 */
@@ -206,6 +208,11 @@ export class ParadisTasksGithubService extends Disposable implements IParadisTas
 		if (output.notFound) {
 			return { ok: false, error: { kind: 'no-gh', message: 'gh is not installed' } };
 		}
+		if (output.timedOut) {
+			const message = `gh did not answer within ${GH_TIMEOUT_MS / 1000} seconds`;
+			this.record(startedAt, false, false, message);
+			return { ok: false, error: { kind: 'timeout', message } };
+		}
 
 		let parsed: IGqlSearchResponse | undefined;
 		try {
@@ -277,7 +284,9 @@ function createGhRunner(cachedShellEnv: ParadisCachedShellEnv): ParadisTasksGhRu
 				env: { ...env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' },
 			}, (err, stdout, stderr) => {
 				const notFound = (err as { code?: unknown } | null)?.code === 'ENOENT';
-				resolve({ stdout: stdout ?? '', stderr: stderr ?? (err?.message ?? ''), failed: Boolean(err), notFound });
+				// execFile の timeout で止めたときは killed が立つ（SIGKILL）
+				const timedOut = Boolean(err && (err as { killed?: boolean }).killed);
+				resolve({ stdout: stdout ?? '', stderr: stderr ?? (err?.message ?? ''), failed: Boolean(err), notFound, timedOut });
 			});
 		});
 	};

@@ -459,6 +459,8 @@ export class ParadisTasksEditor extends EditorPane {
 							? localize('paradis.tasks.error.rateLimitedAt', "{0} ごろに読み直せます。", new Date(this.error.retryAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }))
 							: localize('paradis.tasks.error.rateLimitedLater', "しばらくしてから更新を押してください。"),
 					};
+				case 'timeout':
+					return { title: localize('paradis.tasks.error.timeout', "GitHub からの応答が時間内に返りませんでした"), body: localize('paradis.tasks.error.timeoutBody', "gh が 30 秒たっても答えなかったので止めました。ネットワークを確かめて、更新を押してください。") };
 				default:
 					return { title: localize('paradis.tasks.error.failed', "読み込めませんでした"), body: this.error.message };
 			}
@@ -467,7 +469,13 @@ export class ParadisTasksEditor extends EditorPane {
 			return { title: localize('paradis.tasks.loadingTitle', "読み込んでいます"), body: '' };
 		}
 		if (this.items.length === 0 && this.fetchedAt !== undefined) {
-			return { title: localize('paradis.tasks.empty.noResult', "当てはまるものはありません"), body: localize('paradis.tasks.empty.noResultBody', "検索の文字列やフィルターを変えてみてください。") };
+			return {
+				title: localize('paradis.tasks.empty.noResult', "当てはまるものはありません"),
+				// SSH の窓では、リポジトリは接続先のものでも GitHub は手元の gh のアカウントで読むので、読めない非公開リポジトリは 0 件に見える
+				body: this.environmentService.remoteAuthority !== undefined
+					? localize('paradis.tasks.empty.noResultRemoteBody', "検索の文字列やフィルターを変えてみてください。この PC の gh のアカウントで読める範囲だけを出しています。")
+					: localize('paradis.tasks.empty.noResultBody', "検索の文字列やフィルターを変えてみてください。"),
+			};
 		}
 		return undefined;
 	}
