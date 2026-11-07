@@ -159,6 +159,52 @@ export function paradisClaudeModApprovalWaitMs(value: unknown): number {
 }
 
 /**
+ * Claude Code の managed 設定（組織の方針）を探す場所（Claude Code 2.1.288 が読む場所）。`remote-settings.json` は
+ * Claude Code の設定フォルダごとに 1 つ。手元は renderer（paradisClaudeModEnvironment.ts）、SSH の接続先は REH
+ * （paradisRemoteClaudeMod.server.ts）が、それぞれの機械のファイルを読む。パスは POSIX。
+ */
+export function paradisClaudeManagedSettingsPaths(macOS: boolean, home: string, claudeConfigDirs: readonly string[]): {
+	readonly files: readonly { readonly path: string; readonly format: 'json' | 'plist' }[];
+	readonly dropInDirectories: readonly string[];
+} {
+	const user = home.split('/').filter(segment => segment.length > 0).pop();
+	const remoteSettings = claudeConfigDirs.map(directory => ({ path: `${directory.replace(/\/+$/, '')}/remote-settings.json`, format: 'json' as const }));
+	if (macOS) {
+		const base = '/Library/Application Support/ClaudeCode';
+		return {
+			files: [
+				{ path: `${base}/managed-settings.json`, format: 'json' },
+				{ path: '/Library/Managed Preferences/com.anthropic.claudecode.plist', format: 'plist' },
+				...(user !== undefined ? [{ path: `/Library/Managed Preferences/${user}/com.anthropic.claudecode.plist`, format: 'plist' as const }] : []),
+				...remoteSettings,
+			],
+			dropInDirectories: [`${base}/managed-settings.d`],
+		};
+	}
+	return {
+		files: [{ path: '/etc/claude-code/managed-settings.json', format: 'json' }, ...remoteSettings],
+		dropInDirectories: ['/etc/claude-code/managed-settings.d'],
+	};
+}
+
+// ---- SSH の接続先（REH）で確かめること -------------------------------------------------------------
+//
+// SSH の接続先のペインで動く Claude Code は接続先の機械にあるので、版と組織の方針は接続先で確かめる
+// （paradisRemoteClaudeMod.server.ts）。このチャネルを持たない古い REH では、ウィンドウは mod を渡さない。
+
+/** 接続先（REH）の、Claude Code の mod を読ませてよいかを確かめるチャネル。 */
+export const PARADIS_REMOTE_CLAUDE_MOD_CHANNEL = 'paradisRemoteClaudeMod';
+
+/**
+ * 接続先の確かめの結果。`blockedByPolicy` は、接続先が macOS / Linux でない・managed 設定が mod を禁じていそう・
+ * 読めないときに true（渡さない側へ倒す）。`versionOutput` は接続先の `claude --version` の出力（確かめられなければ無い）。
+ */
+export interface IParadisRemoteClaudeModStatus {
+	readonly blockedByPolicy: boolean;
+	readonly versionOutput?: string;
+}
+
+/**
  * Claude Code の managed 設定（組織の方針）が mod の読み込みを禁じているか。
  *
  * `disableSideloadFlags` が立っていると、Claude Code は `CLAUDE_CODE_PLUGIN_DIRS` を見た時点で
