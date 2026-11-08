@@ -2231,7 +2231,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		const nextCwd = previous?.sessionId === sessionId ? (previous.cwd ?? cwd) : cwd;
 		// OpenCode の会話は、再開するもの（`opencode` か覚えた互換 CLI）が決まらなければ（null）再開できない会話として載せる
 		const resumeCli = agent !== 'opencode' ? undefined : cli === null ? null : cli ?? (previous?.sessionId === sessionId && previous.resumable === false ? null : previous?.cli ?? PARADIS_OPENCODE_COMMAND);
-		this._paneSessions.set(token, { agent, sessionId, ...(agent === 'opencode' ? (resumeCli === null ? { resumable: false as const } : { cli: resumeCli }) : {}), at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(remote ? { remote: true } : {}) });
+		// 会話の記録の場所（引き継ぎの依頼文に載せる）。同じ会話の間は、後の hook が持っていなければ前の値を使う
+		const nextTranscriptPath = agent === 'opencode' ? undefined : transcriptPath ?? (previous?.sessionId === sessionId ? previous.transcriptPath : undefined);
+		this._paneSessions.set(token, { agent, sessionId, ...(agent === 'opencode' ? (resumeCli === null ? { resumable: false as const } : { cli: resumeCli }) : {}), at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(nextTranscriptPath !== undefined ? { transcriptPath: nextTranscriptPath } : {}), ...(remote ? { remote: true } : {}) });
 	}
 
 	/**
