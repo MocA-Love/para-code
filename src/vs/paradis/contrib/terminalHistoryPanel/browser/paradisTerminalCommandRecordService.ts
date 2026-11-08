@@ -28,7 +28,7 @@ import { FileOperationError, FileOperationResult, FileSystemProviderCapabilities
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisTerminalHistoryProvider } from '../../terminalHistorySuggest/browser/paradisTerminalHistoryCompletion.contribution.js';
+import { ParadisTerminalHistoryOwner, paradisTerminalHistoryProvider } from '../../terminalHistorySuggest/browser/paradisTerminalHistoryCompletion.contribution.js';
 import { IParadisCommandRecord, PARADIS_COMMAND_RECORDS_FILE, paradisAppendCommandRecords, paradisParseCommandRecords, paradisPlanCommandRecordsWrite, paradisSerializeCommandRecord } from '../common/paradisTerminalCommandRecords.js';
 
 /** 読んだ記録を使い回す時間。 */
@@ -60,9 +60,12 @@ export interface IParadisTerminalCommandRecordService {
 	 * `directory`（シェルから見たスペースの履歴フォルダ）へ記録を 1 件足す。書くのは少し後。
 	 * undefined なら、スペースの履歴フォルダを持たないターミナルの共通の記録へ足す。
 	 */
-	record(directory: string | undefined, record: IParadisCommandRecord): void;
-	/** `directory` の記録（書いた順）。まだ書いていない分も含める。undefined は共通の記録。 */
-	read(directory: string | undefined, token: CancellationToken): Promise<readonly IParadisCommandRecord[]>;
+	record(directory: string | undefined, record: IParadisCommandRecord, owner?: ParadisTerminalHistoryOwner): void;
+	/**
+	 * `directory` の記録（書いた順）。まだ書いていない分も含める。undefined は共通の記録。
+	 * `owner` はそのシェルの端末（SSH の窓の手元の端末なら手元のファイルを読み書きする）。
+	 */
+	read(directory: string | undefined, token: CancellationToken, owner?: ParadisTerminalHistoryOwner): Promise<readonly IParadisCommandRecord[]>;
 }
 
 class DirectoryRecords extends Disposable {
@@ -74,7 +77,7 @@ class DirectoryRecords extends Disposable {
 	commonResource: URI | undefined;
 	readonly flushScheduler: RunOnceScheduler;
 
-	constructor(flush: () => void) {
+	constructor(flush: () => void, readonly directory: string | undefined, readonly owner: ParadisTerminalHistoryOwner | undefined) {
 		super();
 		this.flushScheduler = this._register(new RunOnceScheduler(flush, FLUSH_DELAY_MS));
 	}
@@ -93,17 +96,16 @@ export class ParadisTerminalCommandRecordService extends Disposable implements I
 		super();
 	}
 
-	record(directory: string | undefined, record: IParadisCommandRecord): void {
-		const state = this._state(directory ?? COMMON_KEY);
+	record(directory: string | undefined, record: IParadisCommandRecord, owner?: ParadisTerminalHistoryOwner): void {
+		const state = this._state(directory, owner);
 		state.pending.push(record);
 		state.flushScheduler.schedule();
 	}
 
-	async read(directory: string | undefined, token: CancellationToken): Promise<readonly IParadisCommandRecord[]> {
-		const key = directory ?? COMMON_KEY;
-		const state = this._state(key);
+	async read(directory: string | undefined, token: CancellationToken, owner?: ParadisTerminalHistoryOwner): Promise<readonly IParadisCommandRecord[]> {
+		const state = this._state(directory, owner);
 		if (state.cached === undefined || Date.now() - state.cached.readAt > READ_TTL_MS) {
-			const resource = await this._existingResource(key, state, token);
+			const resource = await this._existingResource(state, token);
 			if (resource === undefined || token.isCancellationRequested) {
 				return state.pending.slice();
 			}
@@ -114,10 +116,19 @@ export class ParadisTerminalCommandRecordService extends Disposable implements I
 		return state.pending.length > 0 ? state.cached.records.concat(state.pending) : state.cached.records;
 	}
 
-	private _state(key: string): DirectoryRecords {
+	/**
+	 * 記録の鍵。SSH の窓では、手元の端末と接続先の端末が同じパスを持ちうるので、端末の接続先で分ける。
+	 * 共通の記録は main プロセスが用意する 1 つのファイルなので分けない。
+	 */
+	private _key(directory: string | undefined, owner: ParadisTerminalHistoryOwner | undefined): string {
+		return directory === undefined ? COMMON_KEY : owner === undefined ? directory : `${owner.remoteAuthority ?? ''}\0${directory}`;
+	}
+
+	private _state(directory: string | undefined, owner: ParadisTerminalHistoryOwner | undefined): DirectoryRecords {
+		const key = this._key(directory, owner);
 		let state = this._directories.get(key);
 		if (!state) {
-			state = new DirectoryRecords(() => this._flush(key));
+			state = new DirectoryRecords(() => this._flush(key), directory, directory === undefined || owner === undefined ? undefined : { remoteAuthority: owner.remoteAuthority });
 			this._directories.set(key, state);
 		}
 		return state;
@@ -132,7 +143,7 @@ export class ParadisTerminalCommandRecordService extends Disposable implements I
 			const added = state.pending;
 			state.pending = [];
 			try {
-				const resource = await this._existingResource(key, state, CancellationToken.None);
+				const resource = await this._existingResource(state, CancellationToken.None);
 				if (resource === undefined) {
 					return;
 				}
@@ -175,14 +186,14 @@ export class ParadisTerminalCommandRecordService extends Disposable implements I
 	 * 記録のファイル。本人だけが読める形で既にあるものだけを返す（スペースのファイルはシェル統合が、
 	 * 共通のファイルは main プロセスが作る）。
 	 */
-	private async _existingResource(key: string, state: DirectoryRecords, token: CancellationToken): Promise<URI | undefined> {
-		if (key === COMMON_KEY) {
+	private async _existingResource(state: DirectoryRecords, token: CancellationToken): Promise<URI | undefined> {
+		if (state.directory === undefined) {
 			if (state.commonResource === undefined) {
 				state.commonResource = await commonRecordsFile?.();
 			}
 			return state.commonResource;
 		}
-		const folder = await paradisTerminalHistoryProvider()?.toResource(key, token);
+		const folder = await paradisTerminalHistoryProvider()?.toResource(state.directory, token, state.owner);
 		if (folder === undefined || token.isCancellationRequested) {
 			return undefined;
 		}
