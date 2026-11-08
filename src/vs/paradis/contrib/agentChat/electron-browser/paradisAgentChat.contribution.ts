@@ -49,7 +49,7 @@ import { IParadisAgentInsightsService } from '../../agentInsights/common/paradis
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
 import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisIsShellProcessName } from '../browser/paradisAgentChatInput.js';
-import { ParadisAgentChatSendKey, PARADIS_AGENT_CHAT_HISTORY_LIMIT } from '../browser/paradisAgentChatComposer.js';
+import { IParadisAgentChatDictation, IParadisAgentChatDictationTarget, ParadisAgentChatSendKey, PARADIS_AGENT_CHAT_HISTORY_LIMIT } from '../browser/paradisAgentChatComposer.js';
 import { IParadisAgentChatService } from '../browser/paradisAgentChatService.js';
 import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
@@ -57,6 +57,7 @@ import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
 import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
 import { paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
 import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
+import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
 import '../browser/media/paradisAgentChat.css';
 
 const PARADIS_AGENT_CHAT_TOGGLE_COMMAND = 'paradis.agentChat.toggle';
@@ -488,6 +489,10 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	getImage(token: string, epoch: string, rev: number, index: number): Promise<IParadisAgentChatImageData | undefined> {
 		return this.source.getAgentChatImage(token, epoch, rev, index);
+	}
+
+	createDictation(target: IParadisAgentChatDictationTarget): IParadisAgentChatDictation {
+		return this.instantiationService.createInstance(ParadisAgentChatDictation, target);
 	}
 
 	getCommands(token: string): Promise<readonly IParadisAgentChatCommand[]> {
