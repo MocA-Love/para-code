@@ -25,6 +25,7 @@
 import * as electron from 'electron';
 import type { WebContents } from 'electron';
 import { promises as fs } from 'fs';
+import { homedir } from 'os';
 import { join } from '../../../base/common/path.js';
 import { paraBrowserViewShrinkLayout } from '../common/paraBrowserViewShrinkLayout.js';
 
@@ -38,9 +39,18 @@ export const PARA_BROWSER_ZOOM_HELPER_EXTENSION_NAME = 'Para Code browser zoom';
 
 /** タブを切り離す口（テストで差し替える）。 */
 export interface IParaBrowserZoomIsolator {
-	/** そのタブの拡大率を、同じサイトのほかのタブから切り離す。切り離せたら true。 */
-	isolate(webContents: WebContents): Promise<boolean>;
+	/** そのタブの拡大率を、同じサイトのほかのタブから切り離す。切り離せたら true、切り離せなければ false か理由の文。 */
+	isolate(webContents: WebContents): Promise<boolean | string>;
 }
+
+/** 縮め方の分かれ道を main のログへ書く口（`browserViewEmulator.ts` の logService）。 */
+export interface IParaBrowserViewZoomLog {
+	trace(message: string): void;
+	info(message: string): void;
+	warn(message: string): void;
+}
+
+const LOG_PREFIX = '[ParaBrowserViewZoom]';
 
 /** 切り離しの結果。`stale` は、試している間に文書が替わって結果が今の文書に当てはまらないもの（失敗ではない）。 */
 type ParaIsolation = 'isolated' | 'failed' | 'stale';
@@ -62,6 +72,10 @@ interface IZoomState {
 	displayScaleFactor: number | undefined;
 	/** 画面の移動を見張っているウィンドウ。 */
 	watchedWindow: Electron.BaseWindow | undefined;
+	/** 分かれ道を書くログ（表示サイズを固定したときに emulator から受け取る）。 */
+	log: IParaBrowserViewZoomLog | undefined;
+	/** 最後に書いた縮め方の種類（種類が変わったときだけ書く。sash のドラッグで倍率だけ変わるときは書かない）。 */
+	loggedMode: string | undefined;
 }
 
 const states = new WeakMap<WebContents, IZoomState>();
@@ -84,7 +98,7 @@ function isolatorFor(webContents: WebContents): IParaBrowserZoomIsolator {
 function stateOf(webContents: WebContents): IZoomState {
 	let state = states.get(webContents);
 	if (!state) {
-		state = { user: 1, emulation: 1, isolated: false, isolating: undefined, generation: 0, onIsolated: undefined, displayScaleFactor: undefined, watchedWindow: undefined };
+		state = { user: 1, emulation: 1, isolated: false, isolating: undefined, generation: 0, onIsolated: undefined, displayScaleFactor: undefined, watchedWindow: undefined, log: undefined, loggedMode: undefined };
 		states.set(webContents, state);
 		const created = state;
 		// 文書が確定すると切り離しが外れる（エラーのページへの移動は did-navigate を出さず did-fail-load だけ）。ほかの受け手
@@ -145,22 +159,37 @@ function apply(webContents: WebContents, state: IZoomState): void {
 	});
 }
 
+/** 切り離しの結果をログへ書く（移動のたびに切り離し直すので、その都度 1 行）。 */
+function logIsolation(webContents: WebContents, state: IZoomState, result: true | string): void {
+	if (!state.log) {
+		return;
+	}
+	if (result === true) {
+		state.log.trace(`${LOG_PREFIX} tab ${webContents.id}: isolated its zoom from the site; a fixed size is shrunk by page zoom`);
+	} else {
+		state.log.warn(`${LOG_PREFIX} tab ${webContents.id}: could not isolate its zoom (${paraRedactPaths(result)}); a fixed size stays shrunk by the emulation scale, so clicks on rounded or overlapping cross-process iframes can miss`);
+	}
+}
+
 function isolate(webContents: WebContents, state: IZoomState): Promise<ParaIsolation> {
 	if (state.isolated) {
 		return Promise.resolve('isolated');
 	}
 	if (!state.isolating) {
 		const generation = state.generation;
-		const attempt: Promise<ParaIsolation> = isolatorFor(webContents).isolate(webContents).catch(() => false).then(isolated => {
+		const attempt: Promise<ParaIsolation> = isolatorFor(webContents).isolate(webContents).catch((error: unknown) => error instanceof Error ? error.message : String(error)).then(outcome => {
+			const isolated = outcome === true;
 			if (state.isolating !== attempt || state.generation !== generation) {
 				// 試している間に移動が始まった・文書が替わった
 				if (state.isolating === attempt) {
 					state.isolating = undefined;
 				}
+				state.log?.trace(`${LOG_PREFIX} tab ${webContents.id}: the page navigated while its zoom was being isolated; isolating it again`);
 				return 'stale';
 			}
 			state.isolating = undefined;
 			state.isolated = isolated;
+			logIsolation(webContents, state, isolated ? true : typeof outcome === 'string' ? outcome : 'the zoom helper did not settle');
 			if (isolated) {
 				state.onIsolated?.();
 			}
@@ -208,6 +237,17 @@ export interface IParaBrowserViewEmulationRequest {
 	readonly deviceScaleFactor: number | undefined;
 	/** 拡大率の形に切り替えられるようになったら呼ぶ（エミュレーションを当て直す）。 */
 	readonly onReady: () => void;
+	/** 縮め方の分かれ道を書くログ。 */
+	readonly log?: IParaBrowserViewZoomLog;
+}
+
+/** 選んだ縮め方をログへ書く（前と同じなら書かない）。 */
+function logMode(webContents: WebContents, state: IZoomState, kind: 'none' | 'emulation' | 'zoom', detail: string): void {
+	if (!state.log || state.loggedMode === kind) {
+		return;
+	}
+	state.loggedMode = kind;
+	state.log.info(`${LOG_PREFIX} tab ${webContents.id}: ${detail}`);
 }
 
 /**
@@ -218,12 +258,14 @@ export interface IParaBrowserViewEmulationRequest {
 export function paraBrowserViewEmulationParams(webContents: WebContents, request: IParaBrowserViewEmulationRequest): Electron.Parameters {
 	const state = stateOf(webContents);
 	state.onIsolated = request.onReady;
+	state.log = request.log ?? state.log;
 	const screenPosition = request.mobile ? 'mobile' as const : 'desktop' as const;
 	const size = { width: request.width, height: request.height };
 	const scaleByEmulation = (): Electron.Parameters => ({ screenPosition, screenSize: size, viewSize: size, deviceScaleFactor: request.deviceScaleFactor ?? 0, viewPosition: { x: 0, y: 0 }, scale: request.pageScale });
 	if (nearlyOne(request.pageScale)) {
 		// 縮める必要が無い（エディタが表示サイズ以上）。拡大率も使わない
 		paraSetBrowserViewEmulationZoom(webContents, 1);
+		logMode(webContents, state, 'none', 'not shrunk (the editor fits the fixed size)');
 		return scaleByEmulation();
 	}
 	if (!state.isolated) {
@@ -232,11 +274,13 @@ export function paraBrowserViewEmulationParams(webContents: WebContents, request
 			paraSetBrowserViewEmulationZoom(webContents, 1);
 		}
 		void isolate(webContents, state);
+		logMode(webContents, state, 'emulation', `${request.width}x${request.height} shrunk by the emulation scale ${request.pageScale.toFixed(3)} until the tab's zoom is isolated`);
 		return scaleByEmulation();
 	}
 	const { viewSize, zoom } = paraBrowserViewShrinkLayout(request.width, request.height, request.pageScale);
 	paraSetBrowserViewEmulationZoom(webContents, zoom);
 	const targetPixelRatio = request.deviceScaleFactor ?? watchDisplayScaleFactor(webContents, state);
+	logMode(webContents, state, 'zoom', `${request.width}x${request.height} shrunk by page zoom ${zoom.toFixed(3)} (view ${viewSize.width}x${viewSize.height}, devicePixelRatio ${targetPixelRatio})`);
 	return {
 		screenPosition,
 		screenSize: size,
@@ -331,7 +375,7 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 		return helper;
 	}
 
-	private page: Promise<WebContents | undefined> | undefined;
+	private page: Promise<IParaBrowserZoomHelperPage | undefined> | undefined;
 	/** 切り離したタブ（閉じたら外す。空になったらページを閉じる）。 */
 	private readonly tabs = new Set<WebContents>();
 	/** 切り離している最中の数（その間はページを閉じない）。 */
@@ -340,25 +384,48 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 	private unsupported = false;
 	/** 読み込んだ拡張機能の id（ページを閉じても拡張機能は読み込んだまま）。 */
 	private extensionId: string | undefined;
+	/** ページを開けなかった理由（ログに書く）。 */
+	private openFailure: string | undefined;
 
-	private constructor(private readonly session: Electron.Session) { }
+	constructor(
+		private readonly session: Electron.Session,
+		/** ページを開く口（テストで差し替える）。 */
+		private readonly openPageOverride?: () => Promise<IParaBrowserZoomHelperPage | undefined>,
+	) { }
 
-	async isolate(webContents: WebContents): Promise<boolean> {
+	async isolate(webContents: WebContents): Promise<boolean | string> {
 		if (this.unsupported) {
-			return false;
+			return 'extensions cannot be loaded in this session';
 		}
 		this.pending++;
 		let settled: unknown;
 		try {
-			this.page ??= this.open();
-			const page = await this.page;
-			if (!page || page.isDestroyed() || webContents.isDestroyed()) {
-				if (!page || page.isDestroyed()) {
-					this.page = undefined;
+			// 開いてあったページが壊れていた（拡張機能のプロセスが落ちた・外された）ときは、開き直して 1 回だけ試し直す
+			for (let attempt = 0; ; attempt++) {
+				const reused = this.page !== undefined;
+				const pagePromise = this.page ??= this.openPageOverride ? this.openPageOverride() : this.open();
+				const page = await pagePromise;
+				if (webContents.isDestroyed()) {
+					return 'the tab was closed';
 				}
-				return false;
+				if (!page || page.contents.isDestroyed()) {
+					this.dropPage(pagePromise, page);
+					if (reused && attempt === 0) {
+						continue;
+					}
+					return this.openFailure ?? 'the zoom helper page is not open';
+				}
+				try {
+					settled = await page.contents.executeJavaScript(`(async () => { if (typeof chrome === 'undefined' || !chrome.tabs || typeof chrome.tabs.setZoomSettings !== 'function') { return 'chrome.tabs.setZoomSettings is not available'; } try { await chrome.tabs.setZoomSettings(${webContents.id}, { mode: 'automatic', scope: 'per-tab' }); return true; } catch (error) { return 'chrome.tabs.setZoomSettings: ' + String(error && error.message || error); } })()`);
+					break;
+				} catch (error) {
+					this.dropPage(pagePromise, page);
+					if (attempt === 0) {
+						continue;
+					}
+					return `the zoom helper page failed: ${paraRedactPaths(error instanceof Error ? error.message : String(error))}`;
+				}
 			}
-			settled = await page.executeJavaScript(`chrome.tabs.setZoomSettings(${webContents.id}, { mode: 'automatic', scope: 'per-tab' }).then(() => true, () => false)`);
 		} finally {
 			this.pending--;
 		}
@@ -371,20 +438,25 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 				}
 			});
 		}
-		return settled === true;
+		return settled === true ? true : typeof settled === 'string' ? settled : 'the zoom helper returned no result';
+	}
+
+	/** 壊れたページを捨てる（次は開き直す）。 */
+	private dropPage(pagePromise: Promise<IParaBrowserZoomHelperPage | undefined>, page: IParaBrowserZoomHelperPage | undefined): void {
+		// 待っている間にほかの試みが開き直したページは外さない
+		if (this.page === pagePromise) {
+			this.page = undefined;
+		}
+		page?.dispose();
 	}
 
 	private close(): void {
 		const page = this.page;
 		this.page = undefined;
-		void page?.then(contents => {
-			if (contents && !contents.isDestroyed()) {
-				contents.close();
-			}
-		});
+		void page?.then(opened => opened?.dispose());
 	}
 
-	private async open(): Promise<WebContents | undefined> {
+	private async open(): Promise<IParaBrowserZoomHelperPage | undefined> {
 		if (this.extensionId === undefined) {
 			try {
 				const folder = join(electron.app.getPath('userData'), 'paradis-browser-zoom-helper');
@@ -394,18 +466,63 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 				this.extensionId = (await this.session.extensions.loadExtension(folder)).id;
 			} catch (error) {
 				// メモリだけのセッションは拡張機能を読み込めない。このセッションでは二度と試さない（ほかの失敗は次にまた試す）
-				if (/temporary session/i.test(error instanceof Error ? error.message : String(error))) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (/temporary session/i.test(message)) {
 					this.unsupported = true;
 				}
+				this.openFailure = `loading the zoom helper extension failed: ${paraRedactPaths(message)}`;
 				return undefined;
 			}
 		}
+		// View 本体を持ち続ける。webContents だけを持つと、どこにも付けていない View が GC で回収されて webContents も
+		// 壊れ、その後の切り離しがすべて失敗して、エミュレーションの scale に戻っていた（実測）
+		const view = new electron.WebContentsView({ webPreferences: { session: this.session, sandbox: true } });
+		const page: IParaBrowserZoomHelperPage = {
+			contents: view.webContents,
+			dispose: () => {
+				if (!view.webContents.isDestroyed()) {
+					view.webContents.close();
+				}
+			},
+		};
 		try {
-			const view = new electron.WebContentsView({ webPreferences: { session: this.session, sandbox: true } });
 			await view.webContents.loadURL(`chrome-extension://${this.extensionId}/zoom.html`);
-			return view.webContents;
-		} catch {
+			this.openFailure = undefined;
+			return page;
+		} catch (error) {
+			page.dispose();
+			this.openFailure = `opening the zoom helper page failed: ${paraRedactPaths(error instanceof Error ? error.message : String(error))}`;
 			return undefined;
 		}
 	}
+}
+
+/** ログに出す文から、利用者名を含みうるパス（userData・ホーム）を伏せる。 */
+function paraRedactPaths(message: string): string {
+	let redacted = message;
+	for (const [path, label] of [[safePath(() => electron.app.getPath('userData')), '<userData>'], [safePath(() => homedir()), '~']] as const) {
+		if (path && path.length > 1) {
+			redacted = redacted.split(path).join(label);
+		}
+	}
+	return redacted;
+}
+
+function safePath(read: () => string): string | undefined {
+	try {
+		return read();
+	} catch {
+		return undefined;
+	}
+}
+
+/** 切り離しに使うページ。`dispose` まで View 本体を持ち続ける。 */
+interface IParaBrowserZoomHelperPage {
+	readonly contents: Pick<WebContents, 'isDestroyed' | 'executeJavaScript'>;
+	dispose(): void;
+}
+
+/** テスト用: ページを開く口を差し替えた切り離しの口を作る。 */
+export function paraCreateBrowserZoomHelperForTest(openPage: () => Promise<{ readonly contents: Pick<WebContents, 'isDestroyed' | 'executeJavaScript'>; dispose(): void } | undefined>): IParaBrowserZoomIsolator {
+	return new ParaBrowserZoomHelper(undefined as unknown as Electron.Session, openPage);
 }

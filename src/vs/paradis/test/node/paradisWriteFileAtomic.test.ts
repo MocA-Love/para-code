@@ -15,7 +15,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../base/common/path.js';
 import { isWindows } from '../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { paradisMayWriteInPlaceAfterTempFailure, paradisWriteFileAtomic } from '../../node/paradisWriteFileAtomic.js';
+import { paradisMayWriteInPlaceAfterRenameFailure, paradisMayWriteInPlaceAfterTempFailure, paradisWriteFileAtomic, paradisWriteFileAtomicSync } from '../../node/paradisWriteFileAtomic.js';
 
 (isWindows ? suite.skip : suite)('Paradis atomic file write', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -61,6 +61,35 @@ import { paradisMayWriteInPlaceAfterTempFailure, paradisWriteFileAtomic } from '
 		assert.deepStrictEqual(
 			['EACCES', 'EPERM', 'EEXIST', 'ENAMETOOLONG', 'ENOSPC', 'EIO', 'EDQUOT'].map(value => paradisMayWriteInPlaceAfterTempFailure(code(value))),
 			[true, true, true, true, false, false, false],
+		);
+	});
+
+	test('the sync writer writes in place when the replace is briefly blocked, and otherwise throws and keeps the file', async () => {
+		const failingRename = (code: string) => () => { throw Object.assign(new Error(code), { code }); };
+		const busy = join(root, 'busy.json');
+		const full = join(root, 'full.json');
+		await fs.writeFile(busy, 'old');
+		await fs.writeFile(full, 'old');
+		paradisWriteFileAtomicSync(busy, 'new', failingRename('EBUSY'));
+		let thrown: string | undefined;
+		try {
+			paradisWriteFileAtomicSync(full, 'new', failingRename('EIO'));
+		} catch (error) {
+			thrown = (error as NodeJS.ErrnoException).code;
+		}
+		assert.deepStrictEqual({
+			busy: await fs.readFile(busy, 'utf8'),
+			full: await fs.readFile(full, 'utf8'),
+			thrown,
+			files: (await fs.readdir(root)).sort(),
+		}, { busy: 'new', full: 'old', thrown: 'EIO', files: ['busy.json', 'full.json'] });
+	});
+
+	test('falls back to writing in place after a failed replace only when another process briefly holds the file, not when the disk is full', () => {
+		const code = (value: string) => Object.assign(new Error(value), { code: value });
+		assert.deepStrictEqual(
+			['EPERM', 'EBUSY', 'EACCES', 'ENOSPC', 'EIO', 'EROFS', 'EXDEV'].map(value => paradisMayWriteInPlaceAfterRenameFailure(code(value))),
+			[true, true, true, false, false, false, false],
 		);
 	});
 });
