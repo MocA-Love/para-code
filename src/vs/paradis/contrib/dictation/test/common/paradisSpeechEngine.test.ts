@@ -32,8 +32,11 @@ suite('Paradis speech engine (common)', () => {
 		});
 	});
 
-	test('passes the upstream language through and leaves automatic to the helper', () => {
-		assert.deepStrictEqual(['ja-JP', 'auto', 'AUTO', '', undefined, ' en-US '].map(paradisSpeechHelperLocale), ['ja-JP', 'auto', 'auto', 'auto', 'auto', 'en-US']);
+	test('passes a well-formed upstream language through and leaves automatic and malformed values to the helper', () => {
+		assert.deepStrictEqual(
+			['ja-JP', 'zh-Hant-TW', 'auto', 'AUTO', '', undefined, ' en-US ', '--help', '-ja', 'ja_JP', 'ja-JP x', 'ja-', 'j'].map(paradisSpeechHelperLocale),
+			['ja-JP', 'zh-Hant-TW', 'auto', 'auto', 'auto', 'auto', 'en-US', 'auto', 'auto', 'auto', 'auto', 'auto', 'auto'],
+		);
 	});
 
 	test('reads the helper lines and skips anything malformed', () => {
