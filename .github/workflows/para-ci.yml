@@ -181,7 +181,7 @@ jobs:
         run: |
           set -o pipefail
           npm run test-node 2>&1 | tee "$RUNNER_TEMP/test-node.log"
-          grep -Eq '[0-9]+ passing' "$RUNNER_TEMP/test-node.log" || { echo "No passing tests reported by test-node" >&2; exit 1; }
+          grep -Eq '(^|[^0-9])[1-9][0-9]* passing' "$RUNNER_TEMP/test-node.log" || { echo "No passing tests reported by test-node" >&2; exit 1; }
 
   fork-workspace-tests:
     name: Para Code Fork Workspace (typecheck & test)
