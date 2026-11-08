@@ -17,7 +17,7 @@ import assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { suite, test } from 'node:test';
-import { PARADIS_SPEECH_EXECUTABLE, paradisSdkMajor } from '../../paradis/speech/buildHelper.ts';
+import { PARADIS_SPEECH_EXECUTABLE, paradisSdkMajor, paradisXcodeCandidates } from '../../paradis/speech/buildHelper.ts';
 
 const srcRoot = path.join(import.meta.dirname, '..', '..', '..', 'src');
 
@@ -51,21 +51,23 @@ suite('Para Code replaces the upstream speech recognition service', () => {
 
 	test('the build places the speech helper where the utility process looks for it', () => {
 		const engine = read('vs/paradis/contrib/dictation/common/paradisSpeechEngine.ts');
-		const lookup = read('vs/paradis/contrib/dictation/node/paradisSpeechEngineService.ts');
 		const workflow = fs.readFileSync(path.join(srcRoot, '..', '.github', 'workflows', 'para-release.yml'), 'utf-8');
 		assert.deepStrictEqual({
 			executable: /PARADIS_SPEECH_HELPER_EXECUTABLE = '(?<name>[^']+)'/.exec(engine)?.groups?.name,
-			packagedLookup: lookup.includes(`join(appRoot, '..', '..', 'Helpers', PARADIS_SPEECH_HELPER_EXECUTABLE)`),
-			developmentLookup: lookup.includes(`join(appRoot, '.build', 'paradis', 'speech', PARADIS_SPEECH_HELPER_EXECUTABLE)`),
+			packagedLookup: engine.includes(`join(appRoot, '..', '..', 'Helpers', PARADIS_SPEECH_HELPER_EXECUTABLE)`),
+			developmentLookup: engine.includes(`join(appRoot, '.build', 'paradis', 'speech', PARADIS_SPEECH_HELPER_EXECUTABLE)`),
 			// 署名（Code sign app）より前に入れる。後に入れると署名も公証もされない
 			embeddedBeforeSigning: workflow.indexOf('node build/paradis/speech/buildHelper.ts --embed') > 0 && workflow.indexOf('node build/paradis/speech/buildHelper.ts --embed') < workflow.indexOf('node build/darwin/sign.ts'),
 			sdkMajors: ['26.0', '15.5', '', 'x'].map(paradisSdkMajor),
+			// GitHub の macos-15 のランナーの /Applications（2026-10 の一覧）
+			xcodes: paradisXcodeCandidates(['Xcode.app', 'Xcode_16.4.app', 'Xcode_26.0.1.app', 'Xcode_26.10.app', 'Xcode_26.3.app', 'Xcode_26.1.1.app', 'Utilities']),
 		}, {
 			executable: PARADIS_SPEECH_EXECUTABLE,
 			packagedLookup: true,
 			developmentLookup: true,
 			embeddedBeforeSigning: true,
 			sdkMajors: [26, 15, 0, 0],
+			xcodes: ['Xcode_26.10.app', 'Xcode_26.3.app', 'Xcode_26.1.1.app', 'Xcode_26.0.1.app', 'Xcode_16.4.app', 'Xcode.app'],
 		});
 	});
 });

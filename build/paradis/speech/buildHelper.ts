@@ -65,6 +65,24 @@ function sdkVersion(env: NodeJS.ProcessEnv): string {
 	}
 }
 
+/**
+ * `/Applications` の Xcode を新しい順に並べる（`Xcode_26.3.app` → `Xcode_26.0.1.app` → `Xcode_16.4.app` → 版の無い `Xcode.app`）。
+ * GitHub の macOS のランナーは `Xcode_<版>.app` で何本も入れている（既定は `Xcode.app` の symlink）。
+ */
+export function paradisXcodeCandidates(names: readonly string[]): string[] {
+	const version = (name: string): number[] => /^Xcode[_-](?<version>[\d.]+)\.app$/.exec(name)?.groups?.version.split('.').map(Number) ?? [];
+	const newer = (a: number[], b: number[]): number => {
+		for (let index = 0; index < Math.max(a.length, b.length); index++) {
+			const difference = (b[index] ?? 0) - (a[index] ?? 0);
+			if (difference !== 0) {
+				return difference;
+			}
+		}
+		return 0;
+	};
+	return names.filter(name => /^Xcode.*\.app$/.test(name)).sort((a, b) => newer(version(a), version(b)) || a.localeCompare(b));
+}
+
 /** macOS 26 以上の SDK を持つ Xcode の環境変数。既定の Xcode で足りればそのまま、無ければ /Applications の Xcode を探す。 */
 function sdkEnvironment(log: (message: string) => void): NodeJS.ProcessEnv {
 	const current = sdkVersion(process.env);
@@ -72,7 +90,7 @@ function sdkEnvironment(log: (message: string) => void): NodeJS.ProcessEnv {
 		log(`macOS SDK ${current} (default Xcode)`);
 		return process.env;
 	}
-	const candidates = existsSync('/Applications') ? readdirSync('/Applications').filter(name => /^Xcode.*\.app$/.test(name)).sort().reverse() : [];
+	const candidates = existsSync('/Applications') ? paradisXcodeCandidates(readdirSync('/Applications')) : [];
 	for (const name of candidates) {
 		const developerDir = join('/Applications', name, 'Contents', 'Developer');
 		const env = { ...process.env, DEVELOPER_DIR: developerDir };
