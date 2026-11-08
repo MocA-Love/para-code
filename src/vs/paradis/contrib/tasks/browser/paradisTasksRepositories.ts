@@ -14,7 +14,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { paradisReadGitdirPointer, paradisReadOriginUrl } from '../../agentActivity/common/paradisRepoIdentity.js';
-import { paradisTasksGithubRepositoryFromRemote } from '../common/paradisTasks.js';
+import { paradisTasksApplyInsteadOf, paradisTasksGithubRepositoryFromRemote } from '../common/paradisTasks.js';
 
 export interface IParadisTasksRepository {
 	/** `owner/name`。 */
@@ -74,8 +74,10 @@ export async function paradisTasksResolveRepository(fileService: IFileService, f
 	if (!config) {
 		return undefined;
 	}
-	const origin = paradisReadOriginUrl(await readText(fileService, config) ?? '');
-	return origin ? paradisTasksGithubRepositoryFromRemote(origin) : undefined;
+	const text = await readText(fileService, config) ?? '';
+	const origin = paradisReadOriginUrl(text);
+	// `gh:owner/repo` のような短縮名は、同じ config の insteadOf で git が使う URL に戻してから読む
+	return origin ? paradisTasksGithubRepositoryFromRemote(paradisTasksApplyInsteadOf(origin, text)) : undefined;
 }
 
 /**
