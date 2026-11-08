@@ -23,7 +23,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { isNumber, isObject, isString } from '../../../../base/common/types.js';
 import { deepClone } from '../../../../base/common/objects.js';
 import { IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
-import { paradisImplicitTunnelSource, paradisMarkExplicitTunnelRecords, paradisTunnelsToRestore } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js'; // PARA-PATCH: see onTunnelOpened, restoreForwarded and storeForwarded
+import { paradisForwardExplicitly, paradisImplicitTunnelSource, paradisMarkExplicitTunnelRecords, paradisTunnelsToRestore } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js'; // PARA-PATCH: see onTunnelOpened, restoreForwarded, storeForwarded and forward
 
 const MISMATCH_LOCAL_PORT_COOLDOWN = 10 * 1000; // 10 seconds
 const TUNNELS_TO_RESTORE = 'remote.tunnels.toRestore';
@@ -704,7 +704,8 @@ export class TunnelModel extends Disposable {
 		if (!this.restoreComplete && this.environmentService.remoteAuthority) {
 			await Event.toPromise(this.onRestoreComplete.event);
 		}
-		return this.doForward(tunnelProperties, attributes);
+		// PARA-PATCH: an explicit forward of a port a preview or link opened turns it into a forwarded port that is restored (platform/tunnel/common/paradisTunnelRestorePolicy.ts)
+		return paradisForwardExplicitly(tunnelProperties.source ?? UserTunnelSource, UserTunnelSource, () => this.doForward(tunnelProperties, attributes), () => mapHasAddressLocalhostOrAllInterfaces(this.forwarded, tunnelProperties.remote.host, tunnelProperties.remote.port), () => { this._onForwardPort.fire(); return this.storeForwarded(); });
 	}
 
 	private async doForward(tunnelProperties: TunnelProperties, attributes?: Attributes | null): Promise<RemoteTunnel | string | undefined> {

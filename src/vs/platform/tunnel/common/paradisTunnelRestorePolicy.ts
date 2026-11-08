@@ -15,10 +15,13 @@ import { localize } from '../../../nls.js';
  * directly, and `TunnelModel` records them as "User Forwarded". Once restored nobody
  * closes them, so ephemeral ports pile up in the view.
  *
- * `tunnelModel.ts` calls into this file from three places (all marked PARA-PATCH):
+ * `tunnelModel.ts` calls into this file from four places (all marked PARA-PATCH):
  * - tunnels it did not open itself get {@link paradisImplicitTunnelSource}, which uses the
  *   extension kind. The model's restore only updates tunnels of that kind and never
  *   reopens them, so they work now and are gone the next time the window opens.
+ * - an explicit forward (`TunnelModel.forward`, reached through `IRemoteExplorerService.forward`)
+ *   goes through {@link paradisForwardExplicitly}, which turns an implicit tunnel on the same
+ *   port into a forwarded one.
  * - when saving, {@link paradisMarkExplicitTunnelRecords} marks the other records, so the
  *   restore can tell them from records saved before this change.
  * - before restoring, {@link paradisTunnelsToRestore} drops implicit records, and drops
@@ -121,4 +124,34 @@ export function paradisTunnelsToRestore<TKind, T extends { readonly remoteHost: 
 		}
 		return !paradisIsEphemeralPort(tunnel.remotePort) || isListening(tunnel.remoteHost, tunnel.remotePort);
 	});
+}
+
+/**
+ * Runs an explicit forward and, if the tunnel on that port is implicit afterwards, turns it
+ * into an explicit one so it is saved for restore.
+ *
+ * The model keeps the source of an existing tunnel when the same port is forwarded again
+ * (`mergeAttributesIntoExistingTunnel`), and that path saves nothing unless it reopens the
+ * tunnel, so the source is changed on the tunnel itself and `onPromoted` saves it.
+ *
+ * @param requestedSource the source the caller asked for; captured before `forward` runs,
+ * because the model may replace it with the existing tunnel's source.
+ * @param explicitSource used when the caller passed an implicit source (port reforwarding
+ * passes the row's own source).
+ */
+export async function paradisForwardExplicitly<TResult, TKind>(
+	requestedSource: IParadisTunnelSourceLike<TKind>,
+	explicitSource: IParadisTunnelSourceLike<TKind>,
+	forward: () => Promise<TResult>,
+	findTunnel: () => { source: IParadisTunnelSourceLike<TKind> } | undefined,
+	onPromoted: () => unknown
+): Promise<TResult> {
+	const source = paradisIsImplicitTunnelSource(requestedSource) ? explicitSource : requestedSource;
+	const result = await forward();
+	const tunnel = findTunnel();
+	if (tunnel && paradisIsImplicitTunnelSource(tunnel.source)) {
+		tunnel.source = source;
+		await onPromoted();
+	}
+	return result;
 }

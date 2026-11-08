@@ -21,7 +21,7 @@ import { ITunnelService, RemoteTunnel, TunnelPrivacyId } from '../../../../../pl
 import { IWorkspace, IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
 import { IExtensionService } from '../../../../../workbench/services/extensions/common/extensions.js';
-import { RestorableTunnel, TunnelModel, TunnelSource, UserTunnelSource } from '../../../../../workbench/services/remote/common/tunnelModel.js';
+import { RestorableTunnel, TunnelCloseReason, TunnelModel, TunnelSource, UserTunnelSource } from '../../../../../workbench/services/remote/common/tunnelModel.js';
 import { paradisImplicitTunnelSource, paradisIsImplicitTunnelSource, paradisMarkExplicitTunnelRecords, paradisTunnelsToRestore } from '../../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js';
 
 const authority = 'ssh-remote+example';
@@ -184,6 +184,32 @@ suite('paradisTunnelRestorePolicy', () => {
 				storedBefore: ['127.0.0.1:33355', 'localhost:21004', 'localhost:3000', 'localhost:40000'],
 				reopened: [21004, 40000, 21005],
 				storedAfter: ['localhost:21004', 'localhost:21005', 'localhost:40000'],
+			});
+		}));
+
+		test('forwarding a preview or link port from the Ports view makes it a forwarded port that is restored', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+			const storage = store.add(new InMemoryStorageService());
+			const first = createModel(storage);
+			await first.model.restoreForwarded();
+			first.tunnels.opened.fire(makeRemoteTunnel('127.0.0.1', 33355, 33355));
+			first.tunnels.opened.fire(makeRemoteTunnel('localhost', 3000, 3000));
+			await new Promise(resolve => setTimeout(resolve, 2000));
+			// The Ports view forwards the port the preview already uses.
+			await first.model.forward({ remote: { host: '127.0.0.1', port: 33355 } });
+			// Reforwarding a row (#787) closes it and forwards again with the row's own source.
+			const linkSource = first.model.forwarded.get('localhost:3000')!.source;
+			await first.model.close('localhost', 3000, TunnelCloseReason.Other);
+			await first.model.forward({ remote: { host: 'localhost', port: 3000 }, source: linkSource });
+			await new Promise(resolve => setTimeout(resolve, 2000));
+
+			const forwardedNow = Array.from(first.model.forwarded.values()).map(tunnel => `${tunnel.remotePort}:${TunnelSource[tunnel.source.source]}:${paradisIsImplicitTunnelSource(tunnel.source)}`).sort();
+			first.model.dispose();
+
+			const second = createModel(storage);
+			await second.model.restoreForwarded();
+			assert.deepStrictEqual({ forwardedNow, reopened: second.tunnels.openedPorts }, {
+				forwardedNow: ['3000:User:false', '33355:User:false'],
+				reopened: [33355, 3000],
 			});
 		}));
 
