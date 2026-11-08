@@ -2429,9 +2429,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			if (relative === undefined || relative.length === 0) {
 				return undefined;
 			}
-			// 接続先が返さないときは期限で打ち切り、根からの解決へ落とす
-			const resolved = await paradisWithHostDeadline(this.resolveWorkspacePathReal(ws, relative), PARADIS_MOBILE_READ_DEADLINE_MS);
-			if (resolved === undefined || (await paradisWithHostDeadline(this.fileService.stat(resolved), PARADIS_MOBILE_READ_DEADLINE_MS)).isDirectory) {
+			const resolved = await this.resolveWorkspacePathReal(ws, relative);
+			if (resolved === undefined || (await this.fileService.stat(resolved)).isDirectory) {
 				return undefined;
 			}
 			return relative;
@@ -2928,7 +2927,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				reply({ error: 'invalid file link' });
 				return;
 			}
-			try {
+			// 作業フォルダからの解決・stat・根からの解決のどれでも接続先が返さなければ、全体で 1 つの期限
+			// （PARADIS_MOBILE_READ_DEADLINE_MS）で打ち切る。段ごとに期限を付けると、最悪その数だけ待たせる
+			const resolveLink = async (): Promise<object> => {
 				const normalizeRelative = (input: string): string | undefined => {
 					const segments: string[] = [];
 					for (const segment of input.replace(/\\/g, '/').split('/')) {
@@ -2963,15 +2964,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						?? normalizeRelative(rawPath);
 				}
 				if (relativePath === undefined || relativePath.length === 0) {
-					reply({ error: 'file link is outside the workspace' });
-					return;
+					return { error: 'file link is outside the workspace' };
 				}
-				const uri = await paradisWithHostDeadline(this.resolveWorkspacePathReal(msg.ws, relativePath), PARADIS_MOBILE_READ_DEADLINE_MS);
-				if (uri === undefined || (await paradisWithHostDeadline(this.fileService.stat(uri), PARADIS_MOBILE_READ_DEADLINE_MS)).isDirectory) {
-					reply({ error: 'file link does not point to a file' });
-					return;
+				const uri = await this.resolveWorkspacePathReal(msg.ws, relativePath);
+				if (uri === undefined || (await this.fileService.stat(uri)).isDirectory) {
+					return { error: 'file link does not point to a file' };
 				}
-				reply({ t: 'resolveLink', path: relativePath });
+				return { t: 'resolveLink', path: relativePath };
+			};
+			try {
+				reply(await paradisWithHostDeadline(resolveLink(), PARADIS_MOBILE_READ_DEADLINE_MS));
 			} catch (err) {
 				// 接続先が応答しないときは「接続先が応答しません」（code: 'no-response'）を返す
 				reply(paradisIsMobileHostNoResponse(err) ? paradisMobileHostErrorReply(err) : { error: 'file link could not be resolved' });
