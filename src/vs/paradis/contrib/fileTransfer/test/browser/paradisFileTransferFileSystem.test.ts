@@ -58,6 +58,11 @@ class NoTempProvider extends InMemoryFileSystemProvider {
 class HeldWriteProvider extends InMemoryFileSystemProvider {
 	readonly writing = new DeferredPromise<void>();
 	readonly release = new DeferredPromise<void>();
+	/** 消す要求に答えない（SFTP が止まった接続の代わり）。 */
+	holdDeletes = false;
+	override delete(resource: URI, opts: Parameters<InMemoryFileSystemProvider['delete']>[1]): Promise<void> {
+		return this.holdDeletes ? new Promise(() => { }) : super.delete(resource, opts);
+	}
 	override async write(fd: number, pos: number, data: Uint8Array, offset: number, length: number): Promise<number> {
 		this.writing.complete();
 		await this.release.p;
@@ -341,7 +346,26 @@ suite('Paradis file transfer - IFileService adapter', () => {
 		target.release.complete();
 		const result = await copying;
 		cancellation.dispose();
+		// 取り消したコピーは一時ファイルの片付けを待たずに返るので、片付けが済むのを待ってから見る
+		await new Promise(resolve => setTimeout(resolve, 0));
 		assert.deepStrictEqual({ result, cancelledIo, left: await names(fileService, REMOTE_DIR) }, { result: 'rejected', cancelledIo: ['source', 'temp'], left: [] });
+	});
+
+	test('a cancelled copy does not wait for removing its temporary file, which stays in the journal for later', async () => {
+		const target = new HeldWriteProvider();
+		target.holdDeletes = true;
+		const { fileService, fileSystem, journal } = setup({ target });
+		const source = URI.file('/work/data.bin');
+		await fileService.writeFile(source, VSBuffer.fromString('abc'));
+		await fileService.createFolder(REMOTE_DIR);
+		const cancellation = new CancellationTokenSource();
+		const copying = fileSystem.copyFile(source, joinPath(REMOTE_DIR, 'data.bin'), options(true, () => { }, cancellation.token)).then(() => 'resolved', () => 'rejected');
+		await target.writing.p;
+		cancellation.cancel();
+		target.release.complete();
+		const result = await copying;
+		cancellation.dispose();
+		assert.deepStrictEqual({ result, journal }, { result: 'rejected', journal: ['+true'] });
 	});
 
 	test('removeForReplace removes a folder with its content', async () => {

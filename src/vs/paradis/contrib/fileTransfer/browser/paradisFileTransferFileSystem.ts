@@ -289,8 +289,14 @@ export class ParadisFileServiceTransferFileSystem implements IParadisTransferFil
 			}
 			return true;
 		} catch (error) {
+			if (options.token.isCancellationRequested) {
+				// 取り消したら一時ファイルの片付けを待たない（SFTP が答えない接続では、消す・確かめる要求も接続を捨てるまで
+				// 返らない）。消し損ねても控え（journal）に残り、後で片付く
+				void this.discardTemp(temp);
+				throw error;
+			}
 			await this.discardTemp(temp);
-			if (!options.token.isCancellationRequested && paradisClassifyTransferError(error) === 'permission' && !await this.stat(temp)) {
+			if (paradisClassifyTransferError(error) === 'permission' && !await this.stat(temp)) {
 				return false;
 			}
 			throw error;
@@ -318,7 +324,7 @@ export class ParadisFileServiceTransferFileSystem implements IParadisTransferFil
 	 */
 	private async replace(temp: URI, target: URI, overwrite: boolean, options: IParadisTransferCopyOptions): Promise<void> {
 		if (options.token.isCancellationRequested) {
-			await this.discardTemp(temp);
+			void this.discardTemp(temp);
 			throw new CancellationError();
 		}
 		// rename の上書きは、送り先がファイルでなければ中身ごと消すので、直前にもう一度確かめる
