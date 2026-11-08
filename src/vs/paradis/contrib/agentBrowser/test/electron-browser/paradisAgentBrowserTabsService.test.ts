@@ -278,6 +278,16 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		], ['cancelled', 'cancelled', 'unanswered', 'cancelled', 'recentlyDenied', 6]);
 	}));
 
+	test('counts the fast-answer guard from when a dialog actually appears, not from when it waited behind another dialog', () => runWithFakedTimers(fakedTimers, async () => {
+		// 1件目（別のペイン）が 3 秒出ている間、2件目は順番を待つ。2件目は出てから 100ms で押され（聞き直し）、次は 1500ms で押される
+		const { service, shown } = createService([{ button: 1, afterMs: 3000 }, { button: 1, afterMs: 100 }, { button: 1, afterMs: 1500 }]);
+		store.add(service);
+		const cts = store.add(new CancellationTokenSource());
+		const first = service.askApproval('other-pane-token', request, cts.token);
+		const second = service.askApproval('pane-token', request, cts.token);
+		assert.deepStrictEqual([await first, await second, shown.length, shown[2].detail?.endsWith('detail')], ['approve', 'approve', 3, true]);
+	}));
+
 	test('fast answers to dialogs shown one after another never turn later requests down without a dialog', () => runWithFakedTimers(fakedTimers, async () => {
 		const fast = { button: 1, afterMs: 100 };
 		const { service, shown } = createService([...Array.from({ length: 9 }, () => fast), { button: 1, afterMs: 1500 }]);
