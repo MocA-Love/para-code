@@ -711,9 +711,13 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			list.splice(this._requirePresetIndex(list, preset), 1);
 			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
 		} else if (preset.sourceUri) {
-			await this._updatePresetFile(preset.sourceUri, parsed => {
+			await this._updatePresetFile(preset.sourceUri, (parsed, retry) => {
 				const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
-				list.splice(this._requirePresetIndex(list, preset), 1);
+				const index = this._presetIndexForUpdate(list, preset, retry);
+				if (index < 0) {
+					return false;
+				}
+				list.splice(index, 1);
 				parsed.presets = list;
 				return true;
 			});
@@ -739,9 +743,12 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		if (!preset.sourceUri) {
 			return;
 		}
-		await this._updatePresetFile(preset.sourceUri, parsed => {
+		await this._updatePresetFile(preset.sourceUri, (parsed, retry) => {
 			const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
-			const index = this._requirePresetIndex(list, preset);
+			const index = this._presetIndexForUpdate(list, preset, retry);
+			if (index < 0) {
+				return false;
+			}
 			list[index] = { ...this._requireDefinitionAt(list, index), pinned };
 			parsed.presets = list;
 			return true;
@@ -922,13 +929,22 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	 * `.paracode.json` を読み、`mutate` で書き換えて書き戻す。読んだ時の mtime と etag を付けて書き
 	 * （`FileService` は両方あるときだけ比べる）、別のウィンドウが間に保存していたら読み直して 1 回だけ
 	 * やり直す。付けずに書くと、間に保存された中身を黙って消す。`mutate` は渡された中身から毎回
-	 * 位置を引き直すこと（やり直しでは別の中身が渡る）。false を返したら書かずに undefined を返す。
-	 * `firstRead` を渡すと 1 回目はそれを使う（先に全ファイルの対象を確かめてから書く一括の操作のため）。
+	 * 位置を引き直すこと（やり直しでは別の中身が渡り、`retry` が true になる）。false を返したら書かずに
+	 * undefined を返す。`firstRead` を渡すと 1 回目はそれを使う（先に全ファイルの対象を確かめてから書く
+	 * 一括の操作のため）。`silentReadFailure` なら、読めない（構文エラーを含む）ときは書かずに undefined を返す。
 	 */
-	private async _updatePresetFile(presetFile: URI, mutate: (parsed: IParadisPresetFileContent) => boolean, firstRead?: IParadisPresetFileRead): Promise<IParadisPresetFileContent | undefined> {
+	private async _updatePresetFile(presetFile: URI, mutate: (parsed: IParadisPresetFileContent, retry: boolean) => boolean, options?: { readonly firstRead?: IParadisPresetFileRead; readonly silentReadFailure?: boolean }): Promise<IParadisPresetFileContent | undefined> {
 		for (let attempt = 0; ; attempt++) {
-			const read = attempt === 0 && firstRead ? firstRead : await this._readPresetFileWithVersion(presetFile);
-			if (!mutate(read.parsed)) {
+			let read: IParadisPresetFileRead;
+			try {
+				read = attempt === 0 && options?.firstRead ? options.firstRead : await this._readPresetFileWithVersion(presetFile);
+			} catch (error) {
+				if (options?.silentReadFailure) {
+					return undefined;
+				}
+				throw error;
+			}
+			if (!mutate(read.parsed, attempt > 0)) {
 				return undefined;
 			}
 			try {
@@ -947,6 +963,15 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		const version: { etag?: string; mtime?: number } = {};
 		const parsed = await this._readPresetFileForUpdate(presetFile, version);
 		return { parsed, etag: version.etag, mtime: version.mtime };
+	}
+
+	/**
+	 * {@link _updatePresetFile} の `mutate` の中で対象の位置を引く。1 回目に見失ったら例外にするが、
+	 * やり直しで見失ったときは -1 を返す。間に保存した別のウィンドウが消したということなので、
+	 * 削除・ピン留め・フォルダ分けはその対象について何もしない。
+	 */
+	private _presetIndexForUpdate(list: readonly unknown[], preset: IParadisResolvedPreset, retry: boolean): number {
+		return retry ? paradisResolvePresetIndex(list, preset) : this._requirePresetIndex(list, preset);
 	}
 
 	/**
@@ -1028,14 +1053,18 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, userList, {}, ConfigurationTarget.USER, { donotNotifyError: false });
 		}
 		for (const plan of workspacePlans) {
-			const written = await this._updatePresetFile(plan.uri, parsed => {
+			const written = await this._updatePresetFile(plan.uri, (parsed, retry) => {
 				const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
-				for (const index of plan.targets.map(target => this._requirePresetIndex(list, target))) {
+				const indices = plan.targets.map(target => this._presetIndexForUpdate(list, target, retry)).filter(index => index >= 0);
+				if (indices.length === 0) {
+					return false;
+				}
+				for (const index of indices) {
 					list[index] = apply(this._requireDefinitionAt(list, index));
 				}
 				parsed.presets = list;
 				return true;
-			}, plan.read);
+			}, { firstRead: plan.read });
 			// _watchFolder の RunOnceScheduler（最大300ms）による再読込を待たず、この場でキャッシュを
 			// 書き込んだ内容に更新する——待つと、直後に this.presets / this.folders を読む呼び出し元
 			// （ゴースト空フォルダの掃除など）が古い内容のまま判定してしまう。
@@ -1079,14 +1108,18 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, userList, {}, ConfigurationTarget.USER, { donotNotifyError: false });
 		}
 		for (const plan of workspacePlans) {
-			const written = await this._updatePresetFile(plan.uri, parsed => {
+			const written = await this._updatePresetFile(plan.uri, (parsed, retry) => {
 				const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
-				for (const index of [...new Set(plan.targets.map(target => this._requirePresetIndex(list, target)))].sort((a, b) => b - a)) {
+				const indices = [...new Set(plan.targets.map(target => this._presetIndexForUpdate(list, target, retry)).filter(index => index >= 0))].sort((a, b) => b - a);
+				if (indices.length === 0) {
+					return false;
+				}
+				for (const index of indices) {
 					list.splice(index, 1);
 				}
 				parsed.presets = list;
 				return true;
-			}, plan.read);
+			}, { firstRead: plan.read });
 			// setPresetsFolder と同じ理由で、watcher の再読込（最大300ms）を待たずキャッシュを
 			// 直接更新する。呼び出し側（フォルダ削除の「中身ごと削除」等）がこの直後に
 			// this.presets / this.folders を読んで判定するため、待つと古い内容のまま見えてしまう。
@@ -1168,13 +1201,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			if (!folder.sourceUri) {
 				return;
 			}
-			// 読めない（構文エラーを含む）ときは黙って何もしない。
-			let firstRead: IParadisPresetFileRead;
-			try {
-				firstRead = await this._readPresetFileWithVersion(folder.sourceUri);
-			} catch {
-				return;
-			}
+			// 読めない（構文エラーを含む）ときは、やり直しの読み込みでも黙って何もしない。
 			const written = await this._updatePresetFile(folder.sourceUri, parsed => {
 				const list: unknown[] = Array.isArray(parsed.presetFolders) ? [...parsed.presetFolders] : [];
 				const current = list[folder.sourceIndex];
@@ -1184,7 +1211,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				list.splice(folder.sourceIndex, 1);
 				parsed.presetFolders = list;
 				return true;
-			}, firstRead);
+			}, { silentReadFailure: true });
 			if (!written) {
 				return;
 			}

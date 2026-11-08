@@ -33,7 +33,7 @@ suite('ParadisPresetService save', () => {
 	 * `.paracode.json` を 1 つだけ持つサービスを作る。`initial` を最初に読んだ直後に、
 	 * 別のウィンドウが `afterFirstRead` の中身へ保存したことにする。
 	 */
-	function createService(initial: object, afterFirstRead: object): { service: ParadisPresetService; file: { text: string; mtime: number } } {
+	function createService(initial: object, afterFirstRead: object | string): { service: ParadisPresetService; file: { text: string; mtime: number } } {
 		// 書くたびに mtime が進む。etag はその値で代用する。
 		const file = { text: JSON.stringify(initial), mtime: 1 };
 		let reads = 0;
@@ -49,7 +49,7 @@ suite('ParadisPresetService save', () => {
 					const content = upcastPartial<IFileContent>({ value: VSBuffer.fromString(file.text), etag: String(file.mtime), mtime: file.mtime });
 					if (++reads === 1) {
 						// 読んだ直後に、別のウィンドウが同じファイルへ保存する。
-						file.text = JSON.stringify(afterFirstRead);
+						file.text = typeof afterFirstRead === 'string' ? afterFirstRead : JSON.stringify(afterFirstRead);
 						file.mtime++;
 					}
 					return content;
@@ -147,5 +147,27 @@ suite('ParadisPresetService save', () => {
 		const { service, file } = createService(initial, afterOtherWindow);
 		await service.deleteFolder({ name: 'f', source: 'workspace', sourceUri: presetFile, sourceIndex: 0 });
 		assert.deepStrictEqual(JSON.parse(file.text), { presets: [...initial.presets, other], presetFolders: [] });
+	});
+
+	test('deleting, pinning or filing a preset another window deleted in the meantime does nothing', async () => {
+		const removed = { presets: [initial.presets[1]], presetFolders: ['f'] };
+		const results: object[] = [];
+		for (const run of [
+			(service: ParadisPresetService) => service.deletePreset(a),
+			(service: ParadisPresetService) => service.setPresetPinned(a, false),
+			(service: ParadisPresetService) => service.setPresetsFolder([a], 'x'),
+			(service: ParadisPresetService) => service.deletePresets([a]),
+		]) {
+			const { service, file } = createService(initial, removed);
+			await run(service);
+			results.push(JSON.parse(file.text));
+		}
+		assert.deepStrictEqual(results, [removed, removed, removed, removed]);
+	});
+
+	test('deleting a folder does nothing when the file another window saved cannot be read', async () => {
+		const { service, file } = createService(initial, '{ "presets": [');
+		await service.deleteFolder({ name: 'f', source: 'workspace', sourceUri: presetFile, sourceIndex: 0 });
+		assert.strictEqual(file.text, '{ "presets": [');
 	});
 });
