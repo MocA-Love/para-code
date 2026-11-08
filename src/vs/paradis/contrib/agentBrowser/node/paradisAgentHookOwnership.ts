@@ -37,6 +37,7 @@ import { open, readFile } from 'fs/promises';
 import { paradisCLocaleCommandLineFromProc, paradisParseProcStat, paradisReadProcChildren, paradisReadProcCommandLine } from '../../../../platform/terminal/node/paradisChildProcessList.js';
 import { promisify } from 'util';
 import { ParadisHookIdentityLoss } from '../common/paradisAgentHookDropLog.js';
+import { paradisCommandLineBypassesPermissions, paradisIsShellCommandLine } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { paradisClaudeConfigDir, paradisIsWithinCodexHome } from './paradisAgentHome.js';
 import { IParadisClaudeJob, paradisCachedClaudeJobsReader, paradisClaudeAttachNameQuery, paradisClaudeJobOwnsSession, paradisSelectClaudeJobByName } from './paradisClaudeJobNames.js';
 
@@ -99,7 +100,7 @@ export interface IParadisHookProcessInspector {
 	lastSnapshotAt?(): number | undefined;
 }
 
-interface IProcessIdentity {
+export interface IProcessIdentity {
 	readonly pid: number;
 	readonly startKey: string | undefined;
 }
@@ -953,6 +954,74 @@ export class ParadisAgentHookOwnership {
 			}
 		}
 		return result;
+	}
+
+	/**
+	 * 休止（G-03）のために止めるプロセスを決める。ペインの所有者が手元で pid ごと確かめられ、ペインのシェルの子孫で、
+	 * daemon の会話（`claude attach`）ではなく、配下にシェル（Bash ツールや裏で動かしているコマンド）が居ないときだけ。
+	 * 止めるのは所有者と、その配下のエージェントの本体（npm 版の codex のランチャーの下の本体など）。
+	 */
+	async resolveHibernationTargets(token: string, paneShellPid: number | undefined): Promise<
+		| { readonly ok: true; readonly targets: readonly IProcessIdentity[]; readonly bypass: boolean }
+		| { readonly ok: false; readonly reason: 'no-owner' | 'owner-not-alive' | 'daemon-hosted' | 'outside-pane' | 'background-shell' | 'no-snapshot' }> {
+		const owner = this.owners.get(token);
+		if (owner === undefined || owner.pid === undefined) {
+			return { ok: false, reason: 'no-owner' };
+		}
+		if (owner.attachedHost !== undefined) {
+			return { ok: false, reason: 'daemon-hosted' };
+		}
+		if (paneShellPid === undefined) {
+			return { ok: false, reason: 'outside-pane' };
+		}
+		const ownerPid = owner.pid;
+		const snapshot = await this.inspector.snapshot({ pids: [ownerPid, paneShellPid, this.selfPid], descendantsOf: ownerPid });
+		if (snapshot === undefined) {
+			return { ok: false, reason: 'no-snapshot' };
+		}
+		const current = this.owners.get(token);
+		if (current?.pid !== ownerPid || !this.isOwnerAlive(current, snapshot)) {
+			return { ok: false, reason: 'owner-not-alive' };
+		}
+		if (ownerPid === paneShellPid || !snapshot.has(paneShellPid) || !this.isDescendantOf(snapshot, ownerPid, paneShellPid)) {
+			return { ok: false, reason: 'outside-pane' };
+		}
+		// 所有者からペインのシェルまでの間に daemon や tmux が居れば、止めてもペインの会話は止まらない（別の会話を止めうる）
+		const chain = this.ancestorChain(snapshot, ownerPid);
+		const shellIndex = chain.findIndex(entry => entry.pid === paneShellPid);
+		if (chain.slice(0, shellIndex < 0 ? chain.length : shellIndex).some(entry => paradisIsClaudeBackgroundHostCommand(entry.command) || isTerminalMultiplexerCommand(entry.command))) {
+			return { ok: false, reason: 'daemon-hosted' };
+		}
+		const ownerProcess = snapshot.get(ownerPid)!;
+		const descendants = [...snapshot.values()].filter(entry => entry.pid !== ownerPid && this.isDescendantOf(snapshot, entry.pid, ownerPid));
+		const agents = [ownerProcess, ...descendants.filter(entry => paradisHookAgentKindFromCommandLine(entry.command) !== undefined)];
+		// エージェントが直に起こしたシェル（Bash ツール・裏で動かしているコマンド・Codex の exec）が居れば止めない。
+		// MCP の起動役の下のシェル（`npm exec` が挟む `sh -c`）は数えない（それで断ると MCP を使うペインがすべて休止できない）
+		const agentPids = new Set(agents.map(entry => entry.pid));
+		if (descendants.some(entry => entry.ppid !== undefined && agentPids.has(entry.ppid) && paradisIsShellCommandLine(entry.command))) {
+			return { ok: false, reason: 'background-shell' };
+		}
+		return {
+			ok: true,
+			targets: agents.map(entry => ({ pid: entry.pid, startKey: entry.startKey })),
+			bypass: agents.some(entry => paradisCommandLineBypassesPermissions(entry.command)),
+		};
+	}
+
+	/** 休止のために止めたプロセスのうち、まだ同じプロセスとして生きているもの。表が取れなければ undefined。 */
+	async aliveHibernationTargets(targets: readonly IProcessIdentity[]): Promise<readonly IProcessIdentity[] | undefined> {
+		if (targets.length === 0) {
+			return [];
+		}
+		const snapshot = await this.inspector.snapshot({ pids: targets.map(target => target.pid) });
+		if (snapshot === undefined) {
+			return undefined;
+		}
+		return targets.filter(target => {
+			const info = snapshot.get(target.pid);
+			// 開始時刻で同じプロセスだと確かめられたものだけ（pid の使い回しへ SIGKILL を送らない）
+			return info !== undefined && target.startKey !== undefined && info.startKey === target.startKey;
+		});
 	}
 
 	/** ペイン終了時に所有権を破棄する。 */

@@ -137,6 +137,14 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.notifyTerminalExit(this.rendererConnection, requireToken(args[0])) as Promise<T>;
 			}
+			// 休止（G-03）: 完了して放ってあるペインのエージェントを止める
+			case 'hibernatePane': {
+				const args = requireArgs(arg, 2);
+				if (typeof args[1] !== 'string' || args[1].length === 0 || args[1].length > 500) {
+					throw protocolError();
+				}
+				return this.service.hibernatePane(this.rendererConnection, requireToken(args[0]), args[1]) as Promise<T>;
+			}
 			case 'acknowledgePaneStatus': {
 				const args = requireArgs(arg, 1);
 				return this.service.acknowledgePaneStatus(this.rendererConnection, requireToken(args[0])) as Promise<T>;

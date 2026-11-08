@@ -17,7 +17,9 @@ import { promises as fs } from 'fs';
 import { Event } from '../../../../base/common/event.js';
 import { join } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
@@ -29,6 +31,9 @@ import {
 } from '../common/paradisScheduledRuns.js';
 import { paradisSanitizeScheduledRunDraft } from '../common/paradisScheduledRunsSanitize.js';
 import { IParadisScheduledRunsStore, IParadisScheduledRunsStoredState, ParadisScheduledRunsService } from './paradisScheduledRunsService.js';
+import { createParadisScheduledRunPrecheckRunner } from './paradisScheduledRunPrecheck.js';
+import { ParadisScheduledRunToolProvider } from './paradisScheduledRunToolProvider.js';
+import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 
 export class ParadisScheduledRunsChannel implements IServerChannel<string> {
@@ -74,6 +79,13 @@ export class ParadisScheduledRunsChannel implements IServerChannel<string> {
 				return this.service.heartbeat(ctx, ids) as Promise<T>;
 			}
 			case 'getPendingRequests': return this.service.getPendingRequests() as Promise<T>;
+			case 'runPrecheck': {
+				if (typeof args[1] !== 'boolean') {
+					throw new Error('Invalid argument for runPrecheck');
+				}
+				return this.service.runPrecheck(ctx, text(0), args[1]) as Promise<T>;
+			}
+			case 'testPrecheck': return this.service.testPrecheck(args[0], args[1]) as Promise<T>;
 		}
 		throw new Error(`Call not found: ${command}`);
 	}
@@ -104,7 +116,8 @@ function isStoredRun(value: unknown): value is IParadisScheduledRunRecord {
 		&& typeof value.status === 'string' && RUN_STATUSES.has(value.status)
 		&& typeof value.trigger === 'string' && RUN_TRIGGERS.has(value.trigger)
 		&& typeof value.createdAt === 'number' && Number.isFinite(value.createdAt)
-		&& optionalTime(value.scheduledFor) && optionalTime(value.startedAt) && optionalTime(value.finishedAt) && optionalTime(value.heartbeatAt);
+		&& optionalTime(value.scheduledFor) && optionalTime(value.startedAt) && optionalTime(value.finishedAt) && optionalTime(value.heartbeatAt)
+		&& (value.precheck === undefined || (isRecord(value.precheck) && typeof value.precheck.durationMs === 'number'));
 }
 
 /** 読んだ JSON を保存の形へ直す。形の違う項目は捨てる（1 件の破損で全部を失わない）。 */
@@ -129,8 +142,14 @@ export function paradisParseScheduledRunsState(raw: string): IParadisScheduledRu
 
 /** 定義の中身の指紋（書き込み時と読み込み時で比べる）。 */
 export function paradisScheduledRunDefinitionDigest(definition: IParadisScheduledRunDefinition): string {
-	const { id, name, enabled, schedule, target, agentId, modelId, effortId, permissionId, prompt, dailyLimit } = definition;
-	return createHash('sha256').update(JSON.stringify([id, name, enabled, schedule, target.kind, target.repositoryUri, target.repositoryName, target.baseRef ?? '', agentId, modelId ?? '', effortId ?? '', permissionId ?? '', prompt, dailyLimit])).digest('hex');
+	const { id, name, enabled, schedule, target, agentId, modelId, effortId, permissionId, prompt, dailyLimit, precheck } = definition;
+	const fields: unknown[] = [id, name, enabled, schedule, target.kind, target.repositoryUri, target.repositoryName, target.baseRef ?? '', agentId, modelId ?? '', effortId ?? '', permissionId ?? '', prompt, dailyLimit];
+	// 事前確認は時刻で走るシェルのコマンドなので、外で書き足された・書き換えられたものも見分ける。事前確認の無い定義は
+	// 前と同じ指紋のまま（足す前から有効だった定義を、更新しただけで無効に戻さないため）
+	if (precheck) {
+		fields.push('precheck', precheck.command, precheck.timeoutSeconds);
+	}
+	return createHash('sha256').update(JSON.stringify(fields)).digest('hex');
 }
 
 /**
@@ -216,7 +235,13 @@ export function createParadisScheduledRunsFileStore(userDataPath: string, writeF
 ParadisSharedProcessContributions.register('scheduledRuns', ({ server, accessor }) => {
 	const logService = accessor.get(ILogService);
 	const environmentService = accessor.get(INativeEnvironmentService);
-	const service = new ParadisScheduledRunsService(createParadisScheduledRunsFileStore(environmentService.userDataPath), { now: () => Date.now() }, logService, { hookEvents: onParadisAgentHookEvent });
+	// 事前確認は Dock から起動した Para Code でも `gh` などが見つかるよう、ログインシェルの環境で走らせる
+	const shellEnv = new ParadisCachedShellEnv(logService, 'ParadisScheduledRuns', createParadisShellEnvResolver(logService, accessor.get(IConfigurationService), environmentService.args));
+	const precheckRunner = createParadisScheduledRunPrecheckRunner(() => shellEnv.getEnv(), error => logService.trace('[ParadisScheduledRuns] failed to stop the precheck: ' + error));
+	const service = new ParadisScheduledRunsService(createParadisScheduledRunsFileStore(environmentService.userDataPath), { now: () => Date.now() }, logService, { hookEvents: onParadisAgentHookEvent, precheckRunner });
 	server.registerChannel(PARADIS_SCHEDULED_RUNS_CHANNEL, new ParadisScheduledRunsChannel(service));
 	return service;
 });
+
+// para-browser MCP の create_scheduled_run（作るのは無効の定期実行だけ）
+ParadisSharedProcessContributions.register('scheduledRunTools', () => paradisRegisterMcpToolProvider(new ParadisScheduledRunToolProvider()));
