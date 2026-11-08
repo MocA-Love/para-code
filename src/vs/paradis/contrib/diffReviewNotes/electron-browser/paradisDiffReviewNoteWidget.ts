@@ -18,9 +18,28 @@ import { ZoneWidget } from '../../../../editor/contrib/zoneWidget/browser/zoneWi
 import { localize } from '../../../../nls.js';
 import { IParadisDiffReviewNote, PARADIS_DIFF_REVIEW_NOTE_BODY_MAX } from '../common/paradisDiffReviewNotes.js';
 
+/** 欄の場所。`startLine` は範囲の最初の行、`side` は差分のどちら側か（770-RES）。 */
+interface IParadisDiffReviewNoteWidgetPlace {
+	readonly line: number;
+	readonly startLine?: number;
+	readonly side: 'modified' | 'original';
+}
+
 export type ParadisDiffReviewNoteWidgetMode =
-	| { readonly kind: 'draft'; readonly line: number }
-	| { readonly kind: 'note'; readonly line: number; readonly note: IParadisDiffReviewNote };
+	| IParadisDiffReviewNoteWidgetPlace & { readonly kind: 'draft' }
+	| IParadisDiffReviewNoteWidgetPlace & { readonly kind: 'note'; readonly note: IParadisDiffReviewNote };
+
+/** 欄の見出しの「12 行目」「2〜4 行目」「古い側 6 行目」。 */
+function placeLabel(place: IParadisDiffReviewNoteWidgetPlace): string {
+	if (place.side === 'original') {
+		return place.startLine !== undefined
+			? localize('paradis.diffReviewNotes.oldLines', "古い側 {0}〜{1} 行目", place.startLine, place.line)
+			: localize('paradis.diffReviewNotes.oldLine', "古い側 {0} 行目", place.line);
+	}
+	return place.startLine !== undefined
+		? localize('paradis.diffReviewNotes.lines', "{0}〜{1} 行目", place.startLine, place.line)
+		: localize('paradis.diffReviewNotes.line', "{0} 行目", place.line);
+}
 
 export class ParadisDiffReviewNoteWidget extends ZoneWidget {
 
@@ -46,7 +65,7 @@ export class ParadisDiffReviewNoteWidget extends ZoneWidget {
 		container.style.fontSize = `${fontInfo.fontSize}px`;
 		const card = append(container, $('.paradis-diff-review-note'));
 		const head = append(card, $('.paradis-diff-review-note-head'));
-		append(head, $('span.paradis-diff-review-note-line')).textContent = localize('paradis.diffReviewNotes.line', "{0} 行目", this.mode.line);
+		append(head, $('span.paradis-diff-review-note-line')).textContent = placeLabel(this.mode);
 
 		if (this.mode.kind === 'note') {
 			const note = this.mode.note;
@@ -64,7 +83,7 @@ export class ParadisDiffReviewNoteWidget extends ZoneWidget {
 		textarea.rows = 3;
 		textarea.maxLength = PARADIS_DIFF_REVIEW_NOTE_BODY_MAX;
 		textarea.placeholder = localize('paradis.diffReviewNotes.placeholder', "エージェントへのメモ（Enter で追加、Shift+Enter で改行、Esc で閉じる）");
-		textarea.setAttribute('aria-label', localize('paradis.diffReviewNotes.inputLabel', "{0} 行目へのメモ", this.mode.line));
+		textarea.setAttribute('aria-label', localize('paradis.diffReviewNotes.inputLabel', "{0}へのメモ", placeLabel(this.mode)));
 		this.textarea = textarea;
 		const actions = append(card, $('.paradis-diff-review-note-actions'));
 		const cancel = append(actions, $('button.paradis-diff-review-note-button.secondary')) as HTMLButtonElement;

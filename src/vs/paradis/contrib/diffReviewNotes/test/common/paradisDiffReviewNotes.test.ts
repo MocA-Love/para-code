@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisDiffReviewNote, paradisBuildDiffReviewNotesPrompt, paradisDiffReviewRelativePath, paradisMarkDiffReviewNotesSent, paradisParseDiffReviewNotes, paradisSerializeDiffReviewNotes } from '../../common/paradisDiffReviewNotes.js';
+import { IParadisDiffReviewNote, paradisBuildDiffReviewNotesPrompt, paradisDiffReviewNoteRange, paradisDiffReviewRelativePath, paradisMarkDiffReviewNotesSent, paradisParseDiffReviewNotes, paradisSerializeDiffReviewNotes } from '../../common/paradisDiffReviewNotes.js';
 
 function note(id: string, body: string, updatedAt = 1): IParadisDiffReviewNote {
 	return { id, path: 'src/app.ts', line: 9, lineText: 'return x;', body, createdAt: 1, updatedAt };
@@ -50,6 +50,43 @@ suite('paradisDiffReviewNotes', () => {
 			again: 1,
 			broken: 0,
 			sent: [99, undefined],
+		});
+	});
+
+	test('range and old-side notes: Orca-style Lines, old line with its text, and stored fields survive a round trip (770-RES)', () => {
+		const range: IParadisDiffReviewNote = { ...note('r', 'NaN check is done by the caller'), line: 4, startLine: 2, lineText: '  }' };
+		const old: IParadisDiffReviewNote = { ...note('o', 'keep this greeting'), line: 6, side: 'original', lineText: '  return `Hello, ${name}`;' };
+		const oldRange: IParadisDiffReviewNote = { ...old, id: 'o2', line: 7, startLine: 5 };
+		const raw = JSON.stringify({ space: [range, old, oldRange, { ...range, id: 'bad1', startLine: 4 }, { ...old, id: 'bad2', side: 'left' }] });
+		assert.deepStrictEqual({
+			prompt: paradisBuildDiffReviewNotesPrompt([
+				// 範囲のメモは最後の行を追いかけ、幅を保つ。古い側は付け直さない
+				{ note: range, currentLine: 6 },
+				{ note: range, currentLine: undefined },
+				{ note: old, currentLine: 99 },
+				{ note: oldRange, currentLine: 7 },
+			]).split('\n'),
+			parsed: paradisParseDiffReviewNotes(raw).get('space')?.map(n => [n.id, n.startLine, n.side]),
+			clamped: paradisDiffReviewNoteRange({ ...range, line: 10, startLine: 2 }, 3),
+		}, {
+			prompt: [
+				'File: src/app.ts',
+				'Lines: 4-6',
+				'User comment: "NaN check is done by the caller"',
+				'File: src/app.ts',
+				'Lines: 2-4 (the line changed after this note was written)',
+				'User comment: "NaN check is done by the caller"',
+				'File: src/app.ts',
+				'Old line: 6 (removed or changed by this diff)',
+				'Old text: "  return `Hello, ${name}`;"',
+				'User comment: "keep this greeting"',
+				'File: src/app.ts',
+				'Old lines: 5-7 (removed or changed by this diff)',
+				'Old text (line 7): "  return `Hello, ${name}`;"',
+				'User comment: "keep this greeting"',
+			],
+			parsed: [['r', 2, undefined], ['o', undefined, 'original'], ['o2', 5, 'original']],
+			clamped: { start: 1, end: 3 },
 		});
 	});
 
