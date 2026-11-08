@@ -33,7 +33,7 @@ import { TerminalLocation } from '../../../../platform/terminal/common/terminal.
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService, TerminalEditorLocation } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
+import { ACTIVE_GROUP, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import {
 	IParadisCopilotUtilityRequest,
 	IParadisCopilotUtilityResult,
@@ -400,6 +400,8 @@ export interface IParadisAgentLaunchInWorkspaceRequest {
 	 * エージェントや定期実行のように、利用者の入力の最中に起動しうる呼び出し元が使う。既定は従来どおり。
 	 */
 	readonly preserveFocus?: boolean;
+	/** `side` なら今のエディタグループの横（右）に開いて前に出す（ターミナルの右クリックの「別の Agent に引き継ぐ」）。`preserveFocus` とは併用しない。 */
+	readonly placement?: 'side';
 }
 
 /**
@@ -537,11 +539,17 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		await background.sendText(backgroundCommand, true);
 		return paradisDescribeLaunchedAgent(paneTokenService, background);
 	}
+	// 横に開くときは、作るときと開き切るときに同じ場所を渡す（1 回目で実際のグループへ書き換わる）
+	const sideLocation: TerminalEditorLocation | undefined = request.placement === 'side' ? { viewColumn: SIDE_GROUP } : undefined;
 	const instance = await terminalService.createTerminal({
 		cwd: request.rootUri,
-		location: TerminalLocation.Editor,
+		location: sideLocation ?? TerminalLocation.Editor,
 	});
-	if (request.stateKey !== undefined && request.stateKey !== switchService.activeStateKey) {
+	if (sideLocation !== undefined && request.stateKey !== undefined && request.stateKey === switchService.activeStateKey) {
+		// 今のスペースで横に開いて前に出す。createTerminal は openEditor の完了を待たないので、開き切ってから割り当てる
+		await paradisPlaceEditorTerminalInSpace({ terminalEditorService, terminalScopeService }, instance, request.stateKey, sideLocation);
+		terminalService.setActiveInstance(instance);
+	} else if (request.stateKey !== undefined && request.stateKey !== switchService.activeStateKey) {
 		// PC側で非表示のワークスペース向け: スコープを付け替えて即parkさせる（表示を乱さない）。
 		// エディタターミナルの park は persistentProcessId が確定していないと失敗するため
 		// PTY 起動を待ってから assign する。あわせて createTerminal は openEditor の完了を
@@ -580,6 +588,13 @@ export interface IParadisResumeAgentInWorkspaceRequest {
 	 * とき（W2-29）に使う。今の PC の画面を切り替えない。
 	 */
 	readonly preserveFocus?: boolean;
+	/**
+	 * `fork` なら CLI の分岐（Claude Code は `--resume <id> --fork-session`、Codex は `codex fork <id>`）で、同じ会話から
+	 * 分かれた新しい会話として始める。既定は `resume`。
+	 */
+	readonly mode?: 'resume' | 'fork';
+	/** `side` なら今のエディタグループの横（右）に開く（ターミナルの右クリックの「Agent セッションをフォーク」）。 */
+	readonly placement?: 'side';
 }
 
 /** 検証済みのセッションIDで、指定スペースのエディタターミナルへresumeコマンドを送る。 */
@@ -597,7 +612,9 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 		? request.codexHome
 		: undefined;
 	const preserveFocus = request.preserveFocus === true;
-	const location = preserveFocus ? paradisBackgroundEditorLocation() : TerminalLocation.Editor;
+	// 横に開くときは、作るときと開き切るときに同じ場所を渡す（1 回目で実際のグループへ書き換わるので、横のグループが 2 つできない）
+	const sideLocation: TerminalEditorLocation | undefined = !preserveFocus && request.placement === 'side' ? { viewColumn: SIDE_GROUP } : undefined;
+	const location = preserveFocus ? paradisBackgroundEditorLocation() : sideLocation ?? TerminalLocation.Editor;
 	const instance = await terminalService.createTerminal(wsl === undefined
 		? { cwd: request.rootUri, location, ...(codexHome !== undefined ? { config: { env: { CODEX_HOME: codexHome } } } : {}) }
 		: {
@@ -612,12 +629,12 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 	// createTerminal は Editor Terminal の openEditor 完了を待たない。スペース切り替え直後に
 	// setActiveInstance だけ行うと、切り替え先のエディタタブとして表示されないことがあるため、
 	// PTY とエディタの準備を明示的に待ってから対象スコープへ割り当てる。
-	await paradisPlaceEditorTerminalInSpace({ terminalEditorService, terminalScopeService }, instance, request.stateKey, preserveFocus ? paradisBackgroundEditorLocation() : undefined);
+	await paradisPlaceEditorTerminalInSpace({ terminalEditorService, terminalScopeService }, instance, request.stateKey, preserveFocus ? paradisBackgroundEditorLocation() : sideLocation);
 	if (!preserveFocus && request.stateKey === switchService.activeStateKey) {
 		terminalService.setActiveInstance(instance);
 	}
 	// IDは上のホワイトリストを通り、実行ファイルと引数位置も固定。シェル文字を含まない。
-	const command = paradisAgentResumeCommandLine(request.agent, request.sessionId, 'resume', { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli });
+	const command = paradisAgentResumeCommandLine(request.agent, request.sessionId, request.mode ?? 'resume', { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli });
 	if (command === undefined) {
 		throw new Error('Invalid agent session id.');
 	}
