@@ -41,6 +41,17 @@
 	color: var(--vscode-descriptionForeground);
 }
 
+.paradis-simulator-key-hint {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	text-align: end;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
 .paradis-simulator-actions {
 	display: flex;
 	gap: 4px;

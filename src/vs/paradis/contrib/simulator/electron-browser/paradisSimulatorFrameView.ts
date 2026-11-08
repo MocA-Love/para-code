@@ -30,6 +30,9 @@ import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 
 const $ = dom.$;
 
+/** Escape を続けて押したとみなす間隔。 */
+export const PARADIS_SIMULATOR_DOUBLE_ESCAPE_MS = 600;
+
 /** この間映像が届かなければ、流れが切れたとみなす（serve-sim は 1 秒ごとに送り直す）。 */
 export const PARADIS_SIMULATOR_STALL_MS = 5000;
 
@@ -67,6 +70,15 @@ export class ParadisSimulatorFrameView extends Disposable {
 	private readonly _onDidChangeFrameSize = this._register(new Emitter<IParadisSimulatorSize>());
 	/** 映像の画素数が変わった（回転・Duo の外と内の切り替え）。 */
 	readonly onDidChangeFrameSize = this._onDidChangeFrameSize.event;
+
+	private readonly _onDidDrawFrame = this._register(new Emitter<void>());
+	/** 1 枚を描き終えた。 */
+	readonly onDidDrawFrame = this._onDidDrawFrame.event;
+
+	private readonly _onDidRequestExit = this._register(new Emitter<void>());
+	/** Escape を続けて 2 回押した（フォーカスをシミュレータの外へ出したい）。 */
+	readonly onDidRequestExit = this._onDidRequestExit.event;
+	private _lastEscapeAt = 0;
 
 	private readonly _onDidFail = this._register(new Emitter<Error>());
 	readonly onDidFail = this._onDidFail.event;
@@ -174,6 +186,7 @@ export class ParadisSimulatorFrameView extends Disposable {
 			this._applySize();
 			this._onDidChangeFrameSize.fire(size);
 		}
+		this._onDidDrawFrame.fire();
 		if (this._subscription.value) {
 			this._client.ackFrame(this._udid).catch(error => this._onDidFail.fire(error instanceof Error ? error : new Error(String(error))));
 		}
@@ -270,6 +283,20 @@ export class ParadisSimulatorFrameView extends Disposable {
 
 	private _registerKeys(): void {
 		this._register(dom.addDisposableListener(this.element, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => {
+			// Tab・Escape もシミュレータへ送るので、キーボードだけで外へ出られるよう Escape を続けて 2 回で外へ出す
+			// （1 回目の Escape はシミュレータへ送る）
+			if (event.code === 'Escape' && !event.repeat && !event.metaKey && !event.ctrlKey) {
+				const now = Date.now();
+				if (now - this._lastEscapeAt < PARADIS_SIMULATOR_DOUBLE_ESCAPE_MS) {
+					this._lastEscapeAt = 0;
+					event.preventDefault();
+					event.stopPropagation();
+					this._releaseKeys();
+					this._onDidRequestExit.fire();
+					return;
+				}
+				this._lastEscapeAt = now;
+			}
 			if (!paradisSimulatorShouldSendKey(event)) {
 				return;
 			}

@@ -16,7 +16,7 @@
 //
 // 前からある fork チャネル（`registerParadis*` の直呼び）は、`sharedProcessMain.ts` に並んでいた
 // ものをそのままの順番で下の `registerParadisSharedProcessContributions` に移した。互いに値を
-// 渡し合うもの（notifications → agentBrowser → mobileCanvas / mobileRelay）があるので、
+// 渡し合うもの（notifications → agentBrowser → simulator（mobileCanvas を含む） / mobileRelay）があるので、
 // 並びを変えるときは渡している値の出どころを確かめる。
 
 import { DisposableStore, IDisposable } from '../base/common/lifecycle.js';
@@ -32,7 +32,7 @@ import { ParadisSharedProcessContributions } from './common/paradisProcessContri
 // 前からある fork チャネル（直呼びで登録するもの。下の関数の中で呼ぶ順番に並べてある）
 import { registerParadisAgentBrowser } from './contrib/agentBrowser/node/paradisAgentBrowserChannel.js';
 import { IParadisPlaywrightInvoker } from './contrib/agentBrowser/node/paradisAgentBrowserService.js';
-import { registerParadisMobileCanvas } from './contrib/mobileCanvas/node/paradisMobileCanvasChannel.js';
+import { registerParadisSimulator } from './contrib/simulator/node/paradisSimulator.sharedProcess.js';
 import { registerParadisNotifications } from './contrib/notifications/node/paradisNotificationsChannel.js';
 import { registerParadisAivisMuteBridge } from './contrib/notifications/node/paradisAivisMuteBridgeChannel.js';
 import { registerParadisSpreadsheet } from './contrib/fileViewers/node/paradisSpreadsheetChannel.js';
@@ -66,8 +66,6 @@ import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
 import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
 import './contrib/taskBoard/node/paradisTaskBoardBridge.sharedProcess.js';
 import './contrib/computerUse/node/paradisComputerUse.sharedProcess.js';
-// シミュレータ（serve-sim を組み込んだホストの子プロセスと、映像と入力のチャネル。設定がオフなら何も起こさない）
-import './contrib/simulator/node/paradisSimulator.sharedProcess.js';
 import './contrib/browserBookmarks/node/paradisBookmarkTools.sharedProcess.js';
 import './contrib/fileTransfer/node/paradisFileModes.sharedProcess.js';
 import './contrib/fileTransfer/node/paradisSftp.sharedProcess.js';
@@ -104,11 +102,14 @@ export function registerParadisSharedProcessContributions(server: IPCServer<stri
 		paradisNotifications,
 	));
 
-	// モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは上のMCPサーバーへ相乗りさせるため、
-	// エージェントCLI側に追加のMCP設定は要らない
-	store.add(registerParadisMobileCanvas(
+	// モバイル端末⇔ターミナルペインのアタッチ台帳と mobile_* のツール（上のMCPサーバーへ相乗りさせるため、
+	// エージェントCLI側に追加のMCP設定は要らない）、シミュレータの作り直し（serve-sim を組み込んだホストの子プロセス、
+	// 映像と入力のチャネル、mobile_fold）。設定 paradis.simulator.enabled がオフなら今の Mobile Canvas だけが動く
+	store.add(registerParadisSimulator(
 		server,
+		accessor.get(INativeEnvironmentService).userDataPath,
 		accessor.get(INativeEnvironmentService).builtinExtensionsPath,
+		accessor.get(IConfigurationService),
 		accessor.get(ILogService),
 		provider => paradisAgentBrowser.registerToolProvider(provider),
 	));
