@@ -355,6 +355,27 @@ export function pathLinkResolveOrder(viewerPath: string, link: Pick<ViewerPathLi
 	return order.filter((candidate, index): candidate is string => candidate !== undefined && order.indexOf(candidate) === index);
 }
 
+/**
+ * 見ているファイルの絶対パス（`fs.absolute-path.v1`）から、スペースの根の絶対パスを出す（`/` 区切りのときだけ）。
+ * 絶対パスの末尾が見ているファイルの相対パスで終わらない（シンボリックリンクなど）ときは undefined。
+ */
+export function spaceRootOf(absoluteViewerPath: string, viewerPath: string): string | undefined {
+	if (!absoluteViewerPath.startsWith('/') || viewerPath.length === 0 || !absoluteViewerPath.endsWith(`/${viewerPath}`)) {
+		return undefined;
+	}
+	const root = absoluteViewerPath.slice(0, absoluteViewerPath.length - viewerPath.length - 1);
+	return root.length > 0 ? root : '/';
+}
+
+/** `/` で始まる絶対パスが、スペースの根（{@link spaceRootOf}）の下に無いと分かるか。 */
+export function isOutsideSpaceRoot(path: string, root: string): boolean {
+	if (!path.startsWith('/')) {
+		return false;
+	}
+	const base = root.endsWith('/') ? root : `${root}/`;
+	return path !== root && !path.startsWith(base);
+}
+
 /** 開けなかった理由。PC の断りの文（`paradisMobileWorkspaceProvider.ts` の resolveLink）から読む。 */
 export type PathLinkFailure = 'outside' | 'missing';
 

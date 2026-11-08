@@ -17,11 +17,13 @@ import {
 	buildPathLinkCollectScript,
 	buildPathLinkMarkScript,
 	isHomePath,
+	isOutsideSpaceRoot,
 	parsePathLinkMessage,
 	pathLinkFailureOf,
 	pathLinkFailureText,
 	pathLinkResolveOrder,
 	pathLinksOf,
+	spaceRootOf,
 	type ViewerPathLink,
 } from './viewerPathLinks.js';
 
@@ -66,12 +68,32 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 	const fsResolveLink = useAppStore(s => s.fsResolveLink);
 	const absolutePath = useAbsolutePathOption({ pcId: space?.pcId, wsId: space?.wsId, live: space?.live ?? false });
 	const linksRef = useRef<readonly ViewerPathLink[]>([]);
+	// 候補は 1 回の読み込みで最初の 1 回だけ受ける（後から届いたもの＝ページのスクリプトによるすり替えは捨てる）。
+	// 集めるスクリプトを流した時点で立て、受けたら下ろす
+	const awaitingCandidatesRef = useRef(false);
+	// スペースの根の絶対パス（見ているファイルの絶対パスから出す。外の絶対パスを見分けるため。ファイルごとに 1 回だけ問い合わせる）
+	const rootRef = useRef<{ readonly viewerPath: string; readonly root: Promise<string | undefined> } | undefined>(undefined);
 	const spaceRef = useRef(space);
 	spaceRef.current = space;
 	const generation = useRef(0);
 	useEffect(() => () => { generation.current++; }, []);
 	const [menu, setMenu] = useState<ContextMenuSpec | undefined>();
 	const [menuVisible, setMenuVisible] = useState(false);
+
+	const spaceRoot = useCallback((viewerPath: string): Promise<string | undefined> => {
+		if (rootRef.current?.viewerPath === viewerPath) {
+			return rootRef.current.root;
+		}
+		const option = absolutePath(viewerPath);
+		const root = option.kind === 'available'
+			? option.load().then(absolute => spaceRootOf(absolute, viewerPath), () => undefined)
+			: Promise.resolve(undefined);
+		// 取れなかった（古い PC・つながっていない）ときは覚えず、次に押したときに問い合わせ直す
+		if (option.kind === 'available') {
+			rootRef.current = { viewerPath, root };
+		}
+		return root;
+	}, [absolutePath]);
 
 	const resolve = useCallback(async (link: ViewerPathLink): Promise<Resolution> => {
 		const current = spaceRef.current;
@@ -82,7 +104,8 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 			return { kind: 'failed', text: 'PC につながっていません' };
 		}
 		let failure = pathLinkFailureText('missing');
-		for (const candidate of pathLinkResolveOrder(current.viewerPath, link)) {
+		const order = pathLinkResolveOrder(current.viewerPath, link);
+		for (const candidate of order) {
 			try {
 				const resolved = await fsResolveLink(current.wsId, candidate);
 				return { kind: 'resolved', path: resolved.path };
@@ -94,8 +117,17 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 				failure = pathLinkFailureText(pathLinkFailureOf(error instanceof Error ? error.message : String(error)));
 			}
 		}
+		// `/` で始まる絶対パスが見つからなかったとき、スペースの根の下に無いと分かれば「外」と出す
+		// （PC は根の外の `/…` を根からの相対に読み直すので、断りの文からは見分けられない）
+		const [only] = order;
+		if (order.length === 1 && only !== undefined && only.startsWith('/')) {
+			const root = await spaceRoot(current.viewerPath);
+			if (root !== undefined && isOutsideSpaceRoot(only, root)) {
+				return { kind: 'failed', text: pathLinkFailureText('outside') };
+			}
+		}
 		return { kind: 'failed', text: failure };
-	}, [fsResolveLink]);
+	}, [fsResolveLink, spaceRoot]);
 
 	const openLink = useCallback((link: ViewerPathLink) => {
 		const ticket = ++generation.current;
@@ -133,6 +165,7 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 			return;
 		}
 		linksRef.current = [];
+		awaitingCandidatesRef.current = true;
 		webRef.current?.injectJavaScript(buildPathLinkCollectScript(token));
 	}, [enabled, token, webRef]);
 
@@ -145,6 +178,10 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 			return false;
 		}
 		if (message.op === 'candidates') {
+			if (!awaitingCandidatesRef.current) {
+				return true;
+			}
+			awaitingCandidatesRef.current = false;
 			const found = pathLinksOf(message.items);
 			linksRef.current = found.links;
 			if (found.marks.length > 0) {
