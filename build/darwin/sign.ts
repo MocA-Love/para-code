@@ -48,6 +48,8 @@ const infoPlistUsageDescriptions: Record<string, string> = {
 	NSCameraUsageDescription: 'An application in Visual Studio Code wants to use the Camera.',
 	NSAudioCaptureUsageDescription: 'An application in Visual Studio Code wants to use Audio Capture.',
 	NSLocalNetworkUsageDescription: 'The app uses your local network for DNS resolution and to connect to locally running services.',
+	// PARA-PATCH: Para Code's dictation runs macOS speech recognition in a child helper (Contents/Helpers/ParadisSpeech); if macOS asks for speech recognition access, it asks on behalf of the app and needs this description.
+	NSSpeechRecognitionUsageDescription: 'Para Code uses on-device speech recognition to turn your dictation into text.',
 };
 
 /**

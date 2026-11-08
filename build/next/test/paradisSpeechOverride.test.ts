@@ -17,6 +17,7 @@ import assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 import { suite, test } from 'node:test';
+import { PARADIS_SPEECH_EXECUTABLE, paradisSdkMajor } from '../../paradis/speech/buildHelper.ts';
 
 const srcRoot = path.join(import.meta.dirname, '..', '..', '..', 'src');
 
@@ -46,5 +47,25 @@ suite('Para Code replaces the upstream speech recognition service', () => {
 			// Foundry Local の部品へつながるものを読み込まない
 			foundryFree: !/localTranscriptionMain|foundry|dictationRuntime/i.test(replacement.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
 		}, { imported: true, registers: true, foundryFree: true });
+	});
+
+	test('the build places the speech helper where the utility process looks for it', () => {
+		const engine = read('vs/paradis/contrib/dictation/common/paradisSpeechEngine.ts');
+		const lookup = read('vs/paradis/contrib/dictation/node/paradisSpeechEngineService.ts');
+		const workflow = fs.readFileSync(path.join(srcRoot, '..', '.github', 'workflows', 'para-release.yml'), 'utf-8');
+		assert.deepStrictEqual({
+			executable: /PARADIS_SPEECH_HELPER_EXECUTABLE = '(?<name>[^']+)'/.exec(engine)?.groups?.name,
+			packagedLookup: lookup.includes(`join(appRoot, '..', '..', 'Helpers', PARADIS_SPEECH_HELPER_EXECUTABLE)`),
+			developmentLookup: lookup.includes(`join(appRoot, '.build', 'paradis', 'speech', PARADIS_SPEECH_HELPER_EXECUTABLE)`),
+			// 署名（Code sign app）より前に入れる。後に入れると署名も公証もされない
+			embeddedBeforeSigning: workflow.indexOf('node build/paradis/speech/buildHelper.ts --embed') > 0 && workflow.indexOf('node build/paradis/speech/buildHelper.ts --embed') < workflow.indexOf('node build/darwin/sign.ts'),
+			sdkMajors: ['26.0', '15.5', '', 'x'].map(paradisSdkMajor),
+		}, {
+			executable: PARADIS_SPEECH_EXECUTABLE,
+			packagedLookup: true,
+			developmentLookup: true,
+			embeddedBeforeSigning: true,
+			sdkMajors: [26, 15, 0, 0],
+		});
 	});
 });
