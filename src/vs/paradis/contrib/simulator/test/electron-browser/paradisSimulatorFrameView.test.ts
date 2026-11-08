@@ -144,6 +144,22 @@ suite('Paradis simulator: frame view', () => {
 		}
 	});
 
+	// Tab・Escape も端末へ送るので、Escape を続けて 2 回でフォーカスを外へ出す（1 回目は端末へ届く）
+	test('sends the first Escape and leaves on the second', () => {
+		const { client, view } = setup();
+		let exits = 0;
+		store.add(view.onDidRequestExit(() => exits++));
+		const press = (type: 'keydown' | 'keyup', code: string) => view.element.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true, cancelable: true }));
+		press('keydown', 'Escape');
+		press('keyup', 'Escape');
+		press('keydown', 'Escape');
+		press('keydown', 'Tab');
+		assert.deepStrictEqual({ exits, inputs: client.inputs }, {
+			exits: 1,
+			inputs: [{ kind: 'key', type: 'down', usage: 0x29 }, { kind: 'key', type: 'up', usage: 0x29 }, { kind: 'key', type: 'down', usage: 0x2b }],
+		});
+	});
+
 	test('serializes only the udid and the name, and refuses other data', () => {
 		const serializer = new ParadisSimulatorEditorInputSerializer();
 		const input = store.add(new ParadisSimulatorEditorInput(UDID, 'iPhone 17'));

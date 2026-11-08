@@ -35,7 +35,7 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSimulatorDevice, PARADIS_SIMULATOR_ENABLED_SETTING } from '../common/paradisSimulator.js';
-import { paradisSimulatorNextOrientation } from '../common/paradisSimulatorInput.js';
+import { paradisSimulatorNextOrientation, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 import { PARADIS_SIMULATOR_EDITOR_ID, ParadisSimulatorEditorInput } from './paradisSimulatorEditorInput.js';
 import { ParadisSimulatorFrameView } from './paradisSimulatorFrameView.js';
@@ -43,6 +43,7 @@ import { ParadisSimulatorFrameView } from './paradisSimulatorFrameView.js';
 const $ = dom.$;
 
 const DEVICE_HUB_POLL_MS = 5000;
+
 
 /** 帯の下に出す知らせの種類。 */
 type ParadisSimulatorNotice =
@@ -52,6 +53,7 @@ type ParadisSimulatorNotice =
 	| { readonly kind: 'missing' }
 	| { readonly kind: 'shutdown' }
 	| { readonly kind: 'booting' }
+	| { readonly kind: 'stalled' }
 	| { readonly kind: 'error'; readonly message: string };
 
 function errorMessage(error: unknown): string {
@@ -90,6 +92,9 @@ export class ParadisSimulatorEditor extends EditorPane {
 
 	private readonly _session = this._register(new MutableDisposable<ParadisSimulatorEditorSession>());
 	private readonly _deviceHubTimer = this._register(new IntervalTimer());
+	private readonly _stallRetry = this._register(new MutableDisposable());
+	private _stallCount = 0;
+	private _keyHint: HTMLElement | undefined;
 	private _noticeState: ParadisSimulatorNotice = { kind: 'none' };
 	private _lastDimension: dom.Dimension | undefined;
 
@@ -112,6 +117,8 @@ export class ParadisSimulatorEditor extends EditorPane {
 		const titles = dom.append(this._bar, $('.paradis-simulator-titles'));
 		this._title = dom.append(titles, $('span.paradis-simulator-title'));
 		this._subtitle = dom.append(titles, $('span.paradis-simulator-subtitle'));
+		this._keyHint = dom.append(this._bar, $('span.paradis-simulator-key-hint'));
+		this._keyHint.textContent = localize('paradis.simulator.keyHint', "キー入力は端末へ届きます。Esc を 2 回で外へ");
 		const actions = dom.append(this._bar, $('.paradis-simulator-actions'));
 		const button = (label: string, run: () => Promise<void>) => {
 			const created = this._register(new Button(actions, { ...defaultButtonStyles, secondary: true, small: true, title: label }));
@@ -131,7 +138,13 @@ export class ParadisSimulatorEditor extends EditorPane {
 		this._notice = dom.append(this._root, $('.paradis-simulator-notice'));
 		this._noticeText = dom.append(this._notice, $('span.paradis-simulator-notice-text'));
 		this._noticeAction = this._register(new Button(this._notice, { ...defaultButtonStyles }));
-		this._register(this._noticeAction.onDidClick(() => void this._boot()));
+		this._register(this._noticeAction.onDidClick(() => {
+			if (this._noticeState.kind === 'stalled') {
+				this._retryAfterStall();
+			} else {
+				void this._boot();
+			}
+		}));
 
 		this._stage = dom.append(this._root, $('.paradis-simulator-stage'));
 		this._renderNotice();
@@ -151,19 +164,35 @@ export class ParadisSimulatorEditor extends EditorPane {
 			this._relayout();
 			void this._readScreenConfig(session);
 		}));
-		session.add(session.frameView.onDidStall(() => {
-			session.frameView.stop();
-			void this._refresh(session);
-		}));
+		session.add(input.onDidRequestBoot(() => void this._bootIfRequested(session)));
+		session.add(session.frameView.onDidStall(() => this._onStall(session)));
+		session.add(session.frameView.onDidDrawFrame(() => this._stallCount = 0));
+		session.add(session.frameView.onDidRequestExit(() => this._buttons.rotate?.focus()));
 		session.add(session.frameView.onDidFail(error => this._setNotice({ kind: 'error', message: error.message })));
 		this._renderHeader();
 		this._relayout();
 		await this._refresh(session);
+		await this._bootIfRequested(session);
+	}
+
+	/** エージェントの要求を承認して開いたタブは、止まっていれば起動する（利用者が開いたタブは勝手に起動しない）。 */
+	private async _bootIfRequested(session: ParadisSimulatorEditorSession): Promise<void> {
+		if (this._session.value !== session || !session.input.takeBootRequest()) {
+			return;
+		}
+		if (!session.device) {
+			await this._refresh(session);
+		}
+		if (session.device && session.device.state === 'Shutdown') {
+			await this._boot();
+		}
 	}
 
 	override clearInput(): void {
 		// タブを閉じた・別のタブへ替えた: 映像の購読と Blob URL を放す
 		this._session.clear();
+		this._stallRetry.clear();
+		this._stallCount = 0;
 		this._deviceHubTimer.cancel();
 		super.clearInput();
 	}
@@ -236,6 +265,36 @@ export class ParadisSimulatorEditor extends EditorPane {
 		}
 	}
 
+	/**
+	 * 映像が途切れた。購読を止め、待ってから様子を読み直す（起動中なら購読し直す）。待ちは回目ごとに延ばし、
+	 * 使い切ったら「再試行」のボタンを出して止める。
+	 */
+	private _onStall(session: ParadisSimulatorEditorSession): void {
+		session.frameView.stop();
+		const delay = paradisSimulatorStallRetryDelay(this._stallCount);
+		this._stallCount++;
+		if (delay === undefined) {
+			this._setNotice({ kind: 'stalled' });
+			return;
+		}
+		const timer = setTimeout(() => {
+			if (this._session.value === session) {
+				void this._refresh(session);
+			}
+		}, delay);
+		this._stallRetry.value = { dispose: () => clearTimeout(timer) };
+	}
+
+	private _retryAfterStall(): void {
+		const session = this._session.value;
+		this._stallCount = 0;
+		this._stallRetry.clear();
+		if (session) {
+			this._setNotice({ kind: 'none' });
+			void this._refresh(session);
+		}
+	}
+
 	/** 端末の向きを読み直す（エージェントや Simulator.app で回されたときも、映像の回し方と入力の座標を合わせる）。 */
 	private async _readScreenConfig(session: ParadisSimulatorEditorSession): Promise<void> {
 		try {
@@ -281,13 +340,14 @@ export class ParadisSimulatorEditor extends EditorPane {
 				case 'shutdown': return localize('paradis.simulator.notice.shutdown', "この端末は起動していません。");
 				case 'booting': return localize('paradis.simulator.notice.booting', "起動しています…");
 				case 'error': return localize('paradis.simulator.notice.error', "シミュレータとつながりませんでした: {0}", notice.message);
+				case 'stalled': return localize('paradis.simulator.notice.stalled', "映像が届きません。端末の様子を何度か読み直しましたが戻りませんでした。");
 			}
 		})();
 		this._notice.style.display = notice.kind === 'none' ? 'none' : '';
 		this._noticeText.textContent = text;
-		const canBoot = notice.kind === 'shutdown';
-		this._noticeAction.element.style.display = canBoot ? '' : 'none';
-		this._noticeAction.label = localize('paradis.simulator.boot', "起動");
+		const action = notice.kind === 'shutdown' ? localize('paradis.simulator.boot', "起動") : notice.kind === 'stalled' ? localize('paradis.simulator.retry', "再試行") : undefined;
+		this._noticeAction.element.style.display = action ? '' : 'none';
+		this._noticeAction.label = action ?? '';
 	}
 
 	private _renderHeader(): void {

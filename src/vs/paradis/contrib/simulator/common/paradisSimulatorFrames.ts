@@ -20,6 +20,7 @@ import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULAT
 export const enum ParadisSimulatorFrameTag {
 	Touch = 0x03,
 	Button = 0x04,
+	MultiTouch = 0x05,
 	Key = 0x06,
 	Rotate = 0x07,
 	Fold = 0x0e,
@@ -50,6 +51,11 @@ export function paradisSimulatorTouchFrame(phase: ParadisSimulatorTouchPhase, x:
 		throw new Error(`Invalid touch edge: ${edge}`);
 	}
 	return frame(ParadisSimulatorFrameTag.Touch, edge ? { type: phase, x: clampUnit(x), y: clampUnit(y), edge } : { type: phase, x: clampUnit(x), y: clampUnit(y) });
+}
+
+/** 2 本指のタッチ（ピンチ）。座標はどちらも画面に対する 0〜1。 */
+export function paradisSimulatorMultiTouchFrame(phase: ParadisSimulatorTouchPhase, x1: number, y1: number, x2: number, y2: number): Uint8Array {
+	return frame(ParadisSimulatorFrameTag.MultiTouch, { type: phase, x1: clampUnit(x1), y1: clampUnit(y1), x2: clampUnit(x2), y2: clampUnit(y2) });
 }
 
 /** キー（キー 6）。`usage` は HID の keyboard page の usage。 */
