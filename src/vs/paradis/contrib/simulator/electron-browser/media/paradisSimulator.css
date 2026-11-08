@@ -87,6 +87,7 @@
 }
 
 .paradis-simulator-stage {
+	position: relative;
 	flex: 1 1 auto;
 	display: flex;
 	align-items: center;
@@ -116,4 +117,75 @@
 
 .paradis-simulator-frame:not([src]) {
 	visibility: hidden;
+}
+
+.paradis-simulator-fold {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex: 0 0 auto;
+}
+
+.paradis-simulator-fold-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.paradis-simulator-fold-label,
+.paradis-simulator-fold-status,
+.paradis-simulator-fold-angle {
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-simulator-fold-status {
+	margin-inline-start: auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-simulator-fold-poses {
+	display: flex;
+	gap: 4px;
+}
+
+.paradis-simulator-fold .monaco-button {
+	width: auto;
+	padding: 2px 8px;
+}
+
+.paradis-simulator-fold .monaco-button.checked {
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-simulator-fold-slider {
+	flex: 0 1 220px;
+	min-width: 80px;
+	accent-color: var(--vscode-focusBorder);
+}
+
+.paradis-simulator-fold-note {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: var(--vscode-cornerRadius-small);
+	background-color: var(--vscode-editorWidget-background);
+}
+
+.paradis-simulator-cover-mini {
+	position: absolute;
+	right: 12px;
+	bottom: 12px;
+	width: 18%;
+	max-width: 160px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: var(--vscode-cornerRadius-medium);
+	box-shadow: 0 0 6px var(--vscode-widget-shadow);
+	pointer-events: none;
 }

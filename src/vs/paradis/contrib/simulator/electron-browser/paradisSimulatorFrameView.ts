@@ -56,6 +56,8 @@ export class ParadisSimulatorFrameView extends Disposable {
 	/** 今 <img> に差している URL と、描き終えるのを待っている URL。 */
 	private _shownUrl: string | undefined;
 	private _pendingUrl: string | undefined;
+	private _shownBytes: Uint8Array | undefined;
+	private _pendingBytes: Uint8Array | undefined;
 	private _frameSize: IParadisSimulatorSize = { width: 0, height: 0 };
 	private _areaSize: IParadisSimulatorSize = { width: 0, height: 0 };
 	private _orientation: string | undefined;
@@ -112,6 +114,11 @@ export class ParadisSimulatorFrameView extends Disposable {
 		}));
 	}
 
+	/** 今映している 1 枚の JPEG（Duo の外の画面の小窓に、閉じていたときの最後の 1 枚を残すため）。 */
+	get currentFrame(): Uint8Array | undefined {
+		return this._shownBytes;
+	}
+
 	/** 購読しているか（テスト・診断用）。 */
 	get isStreaming(): boolean {
 		return !!this._subscription.value;
@@ -160,8 +167,9 @@ export class ParadisSimulatorFrameView extends Disposable {
 		if (this._subscription.value) {
 			this._stall.schedule();
 		}
-		const bytes = frame.jpeg.buffer;
-		const url = this._urls.create(new Blob([bytes.slice()], { type: 'image/jpeg' }));
+		const bytes = frame.jpeg.buffer.slice();
+		const url = this._urls.create(new Blob([bytes], { type: 'image/jpeg' }));
+		this._pendingBytes = bytes;
 		if (this._pendingUrl) {
 			// 描き終える前に次が来た（返事より先には来ないはずだが、念のため前の分を放す）
 			this._urls.revoke(this._pendingUrl);
@@ -180,6 +188,8 @@ export class ParadisSimulatorFrameView extends Disposable {
 			this._urls.revoke(this._shownUrl);
 		}
 		this._shownUrl = url;
+		this._shownBytes = this._pendingBytes;
+		this._pendingBytes = undefined;
 		const size = { width: this._image.naturalWidth, height: this._image.naturalHeight };
 		if (size.width !== this._frameSize.width || size.height !== this._frameSize.height) {
 			this._frameSize = size;
@@ -200,6 +210,8 @@ export class ParadisSimulatorFrameView extends Disposable {
 		}
 		this._pendingUrl = undefined;
 		this._shownUrl = undefined;
+		this._pendingBytes = undefined;
+		this._shownBytes = undefined;
 		this._image.removeAttribute('src');
 	}
 
