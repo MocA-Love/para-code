@@ -23,6 +23,7 @@ import { randomBytes } from 'crypto';
 import type { Session, ServiceWorkerMain } from 'electron';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { basename } from '../../../../base/common/path.js';
 import {
 	IParadisExtensionApiEvent,
 	PARADIS_EXTENSION_API_CALL_URL,
@@ -146,7 +147,17 @@ interface IExtensionContexts {
 interface ISessionState {
 	readonly session: ParadisApiSession;
 	readonly place: string;
+	/** worker のログの行に付ける、どのセッションかの印（{@link paradisWorkerLogSessionLabel}）。 */
+	readonly logLabel: string;
 	readonly extensions: Map<string, IExtensionContexts>;
+}
+
+/**
+ * worker のログの行に付けるセッションの印。同じ拡張機能が場所（既定・プロファイル）とセッション（保存先のフォルダ）ごとに
+ * 別の worker で動くので、管理画面でどれが出した行かを見分けられるようにする。保存先が無い（メモリだけの）セッションは `memory`。
+ */
+export function paradisWorkerLogSessionLabel(place: string, storagePath: string | null | undefined): string {
+	return `${place}/${storagePath ? basename(storagePath) : 'memory'}`;
 }
 
 /** イベントの宛先。`exceptConnection` の文脈には送らない（自分で届けた書き込みなど）。 */
@@ -277,7 +288,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 		if (existing) {
 			return toDisposable(() => { });
 		}
-		const state: ISessionState = { session, place, extensions: new Map() };
+		const state: ISessionState = { session, place, logLabel: paradisWorkerLogSessionLabel(place, session.storagePath), extensions: new Map() };
 		this._states.set(session, state);
 		const disposables = new DisposableStore();
 		session.protocol.handle(PARADIS_EXTENSION_API_SCHEME, request => this._states.get(session) === state ? this._handle(state, request) : Promise.resolve(refuse(403)));
@@ -512,7 +523,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 			lines = [];
 			this._workerLogs.set(id, lines);
 		}
-		lines.push({ seq: ++this._workerLogSeq, at: Date.now(), level, message: String(details.message).slice(0, MAX_WORKER_LOG_MESSAGE), ...(typeof details.sourceUrl === 'string' ? { source: details.sourceUrl } : {}) });
+		lines.push({ seq: ++this._workerLogSeq, at: Date.now(), level, message: String(details.message).slice(0, MAX_WORKER_LOG_MESSAGE), session: state.logLabel, ...(typeof details.sourceUrl === 'string' ? { source: details.sourceUrl } : {}) });
 		if (lines.length > MAX_WORKER_LOG_LINES) {
 			lines.splice(0, lines.length - MAX_WORKER_LOG_LINES);
 		}
