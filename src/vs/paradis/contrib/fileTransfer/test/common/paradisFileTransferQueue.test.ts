@@ -104,9 +104,26 @@ class FakeFileSystem implements IParadisTransferFileSystem {
 		return children.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
+	/** 作っている途中のフォルダーの数と、その最大。 */
+	creatingDirectories = 0;
+	maxCreatingDirectories = 0;
+	/** 親がまだ無いときに作ろうとしたフォルダー。 */
+	readonly createdBeforeParent: string[] = [];
+
 	async createDirectory(resource: URI): Promise<void> {
-		if (!this.get(resource)) {
-			this.addDirectory(resource);
+		this.creatingDirectories++;
+		this.maxCreatingDirectories = Math.max(this.maxCreatingDirectories, this.creatingDirectories);
+		try {
+			if (!this.get(dirname(resource))) {
+				this.createdBeforeParent.push(resource.path);
+			}
+			// 往復の待ちの代わり（並べて作っているかを数えるため、次のタスクまで返さない）
+			await new Promise(resolve => setTimeout(resolve, 0));
+			if (!this.get(resource)) {
+				this.addDirectory(resource);
+			}
+		} finally {
+			this.creatingDirectories--;
 		}
 	}
 
@@ -608,6 +625,29 @@ suite('Paradis file transfer - queue', () => {
 			distinctTemps: new Set(contents.map(content => content?.split('#')[1])).size,
 			tempsLeft: fileSystem.tempsLeft(),
 		}, { startedWhileHeld: 3, state: 'done', doneFiles: 4, distinctTemps: 4, tempsLeft: [] });
+	});
+
+	test('creates the folders of one depth a few at a time, and each folder only after its parent', async () => {
+		const fileSystem = new FakeFileSystem();
+		fileSystem.addDirectory(REMOTE);
+		fileSystem.addDirectory(joinPath(LOCAL, 'src'));
+		const names = ['a', 'b', 'c', 'd', 'e', 'f'];
+		for (const name of names) {
+			fileSystem.addDirectory(joinPath(LOCAL, 'src', name));
+			fileSystem.addDirectory(joinPath(LOCAL, 'src', name, 'inner'));
+			fileSystem.addFile(joinPath(LOCAL, 'src', name, 'inner', 'file.ts'), 10);
+		}
+		const queue = createQueue(fileSystem);
+
+		await queue.enqueue(request([source('src', true)]), neverAsked);
+		await settled(queue);
+
+		assert.deepStrictEqual({
+			state: pick(queue.items[0]).state,
+			maxCreatingDirectories: fileSystem.maxCreatingDirectories,
+			createdBeforeParent: fileSystem.createdBeforeParent,
+			created: names.filter(name => fileSystem.get(joinPath(REMOTE, 'src', name, 'inner', 'file.ts'))).length,
+		}, { state: 'done', maxCreatingDirectories: 4, createdBeforeParent: [], created: 6 });
 	});
 
 	test('a folder listed only up to the limit still sends what was listed and says it is incomplete', async () => {
