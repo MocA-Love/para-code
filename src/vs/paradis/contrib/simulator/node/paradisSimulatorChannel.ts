@@ -20,16 +20,10 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_ENABLED_SETTING, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_ENABLED_SETTING, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold, paradisSimulatorInputFrame } from '../common/paradisSimulatorFrames.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
-
-/** `frames` のイベントで送る 1 枚。 */
-export interface IParadisSimulatorFrameEvent {
-	readonly udid: string;
-	readonly jpeg: VSBuffer;
-}
 
 const MIN_FRAME_INTERVAL_MS = 1000 / 30;
 
@@ -147,6 +141,11 @@ export class ParadisSimulatorService extends Disposable {
 		return this._backend.boot(udid);
 	}
 
+	shutdown(udid: string): Promise<void> {
+		this.assertAvailable();
+		return this._backend.shutdown(udid);
+	}
+
 	getScreenConfig(udid: string): Promise<IParadisSimulatorScreenConfig> {
 		this.assertAvailable();
 		return this._backend.getScreenConfig(udid);
@@ -242,6 +241,8 @@ export class ParadisSimulatorChannel<TContext> implements IServerChannel<TContex
 				return await this._service.listDevices() as T;
 			case 'boot':
 				return await this._service.boot(requireUdidArg(arg)) as T;
+			case 'shutdown':
+				return await this._service.shutdown(requireUdidArg(arg)) as T;
 			case 'getScreenConfig':
 				return await this._service.getScreenConfig(requireUdidArg(arg)) as T;
 			case 'captureFrame':

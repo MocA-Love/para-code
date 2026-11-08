@@ -86,6 +86,16 @@ export class ParadisServeSimBackend extends Disposable {
 		await this._simctl(['bootstatus', udid], BOOT_TIMEOUT_MS);
 	}
 
+	/** 止める。もう止まっていれば何もしない。 */
+	async shutdown(udid: string): Promise<void> {
+		requireUdid(udid);
+		const devices = await this.listDevices();
+		if (devices.find(device => device.udid === udid)?.state === 'Shutdown') {
+			return;
+		}
+		await this._simctl(['shutdown', udid], 60_000);
+	}
+
 	/** Device Hub が入力を奪っているか。 */
 	async deviceHubActive(udid: string): Promise<boolean> {
 		requireUdid(udid);
