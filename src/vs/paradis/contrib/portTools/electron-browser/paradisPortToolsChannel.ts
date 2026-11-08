@@ -24,7 +24,7 @@ import { Attributes, CandidatePort, Tunnel, TunnelProperties, TunnelSource, User
 import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
-import { PARADIS_PORT_TOOLS_METHOD, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort } from '../common/paradisPortTools.js';
+import { PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT, PARADIS_PORT_TOOLS_METHOD, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort } from '../common/paradisPortTools.js';
 
 /** 確認のダイアログに並べる転送の行の上限。超えた分は「ほか N 件」にまとめる。 */
 const DIALOG_MAX_ROWS = 20;
@@ -127,7 +127,8 @@ export function paradisPortCleanUpTargets(mode: ParadisPortCleanUpMode, forwarde
 		if (!detectionKnown) {
 			return undefined;
 		}
-		return eligible.filter(tunnel => tunnel.source.source === TunnelSource.User && tunnel.hasRunningProcess !== true);
+		// 決まった番号（エフェメラル帯の外）はサーバーを止めているだけのことが多いので、stop_port_forward で明示したときだけ外す
+		return eligible.filter(tunnel => tunnel.source.source === TunnelSource.User && tunnel.hasRunningProcess !== true && tunnel.remotePort >= PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT);
 	}
 	// 拡張（HTML プレビューなど）の転送は持ち主が手元の番号を覚えているので、揃えない
 	return eligible.filter(tunnel => tunnel.source.source !== TunnelSource.Extension && tunnel.localPort !== undefined && tunnel.localPort !== tunnel.remotePort);
@@ -381,10 +382,10 @@ export class ParadisPortToolsChannel implements IServerChannel {
 			return ok({ mode: 'not_listening', dry_run: dryRun, count: targets.length, targets: rows, ...(dryRun && targets.length > 0 ? { hint: 'Call again with dry_run false to stop these after the user approves.' } : {}) });
 		}
 		const outcome = await this._ask(paneToken, {
-			messageTemplate: pane => localize('paradis.portTools.cleanUp.message', "{0} のエージェントが、SSH 先で listen していない転送を {1} 件停止しようとしています", pane, targets.length),
+			messageTemplate: pane => localize('paradis.portTools.cleanUp.message', "{0} のエージェントが、SSH 先で listen していないエフェメラル帯の転送を {1} 件停止しようとしています", pane, targets.length),
 			detail: [
 				...this._dialogRows(targets, tunnel => this._describe(tunnel)),
-				localize('paradis.portTools.cleanUp.effect', "どれも利用者（プレビューやリンクを含む）が張った転送で、今は SSH 先のプロセスが listen していません。サーバーを止めているだけのものも含まれます。"),
+				localize('paradis.portTools.cleanUp.effect', "どれも {0} 以上のエフェメラル帯の番号で、利用者（プレビューやリンクを含む）が張り、今は SSH 先のプロセスが listen していない転送です。{0} より下の決まった番号は対象にしていません。", PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT),
 			],
 			approveLabel: localize('paradis.portTools.cleanUp.approve', "{0} 件を停止", targets.length),
 			cooldownKey: APPROVAL_COOLDOWN_KEY,

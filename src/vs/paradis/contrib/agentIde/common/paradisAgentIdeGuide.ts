@@ -79,7 +79,7 @@ ${actions}
 When your terminal runs on an SSH host, these tools act on the port forwards of that Para Code window (its Ports panel). In a window that is not connected over SSH they only say so.
 
 - list_port_forwards: every forward with remote_port, local_address, local_port, local_matches_remote, source (user, auto, extension), listening and process. Reading needs no approval.
-- forward_port (remote_port, optional local_port), stop_port_forward (remote_port, one or a list), reforward_port (remote_port, align_local_port to make the local number equal the remote one) and clean_up_port_forwards (mode not_listening or mismatched, dry_run defaults to true) change forwards. Each change shows the user a dialog with what changes and how many; nothing changes unless the user approves. If the user declines, do not ask again; ask in the conversation.
+- forward_port (remote_port, optional local_port), stop_port_forward (remote_port, one or a list), reforward_port (remote_port, align_local_port to make the local number equal the remote one) and clean_up_port_forwards (mode not_listening or mismatched, dry_run defaults to true) change forwards. not_listening only stops unused forwards of remote ports 32768 or higher; fixed ports below that are stopped only when you name them in stop_port_forward. Each change shows the user a dialog with what changes and how many; nothing changes unless the user approves. If the user declines, do not ask again; ask in the conversation.
 - The local side always listens on 127.0.0.1 and the remote side is always localhost on the SSH host.
 - Changing a local port number breaks browser tabs that use the old address.
 

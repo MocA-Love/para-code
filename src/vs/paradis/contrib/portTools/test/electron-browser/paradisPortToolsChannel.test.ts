@@ -163,18 +163,40 @@ suite('ParadisPortToolsChannel', () => {
 		const window = sshWindow();
 		const { channel, dialogs } = setup(window, 'approve');
 		const dryRun = summary(await channel.handle(PANE, { op: 'cleanUp', mode: 'not_listening', dryRun: true })) as { count: number };
-		assert.strictEqual(dryRun.count, 2);
+		assert.strictEqual(dryRun.count, 1);
 		assert.strictEqual(dialogs.length, 0);
 		const cleaned = summary(await channel.handle(PANE, { op: 'cleanUp', mode: 'not_listening', dryRun: false }));
 		const forwarded = summary(await channel.handle(PANE, { op: 'forward', remotePort: 21040, localPort: 21040, label: 'api' }));
 		assert.deepStrictEqual({ cleaned, forwarded, calls: window.calls, dialogs }, {
-			cleaned: { mode: 'not_listening', stopped: [21004, 33355] },
+			cleaned: { mode: 'not_listening', stopped: [33355] },
 			forwarded: { forwarded: true, remote_port: 21040, local_address: '127.0.0.1:21040', local_port: 21040, local_port_taken: false },
-			calls: ['close 21004', 'close 33355', 'forward localhost:21040 -> 21040'],
+			calls: ['close 33355', 'forward localhost:21040 -> 21040'],
 			dialogs: [
-				['pane のエージェントが、SSH 先で listen していない転送を 2 件停止しようとしています', '21004 → localhost:65459', '33355 → localhost:33355', 'どれも利用者（プレビューやリンクを含む）が張った転送で、今は SSH 先のプロセスが listen していません。サーバーを止めているだけのものも含まれます。', '[2 件を停止]'],
+				['pane のエージェントが、SSH 先で listen していないエフェメラル帯の転送を 1 件停止しようとしています', '33355 → localhost:33355', 'どれも 32768 以上のエフェメラル帯の番号で、利用者（プレビューやリンクを含む）が張り、今は SSH 先のプロセスが listen していない転送です。32768 より下の決まった番号は対象にしていません。', '[1 件を停止]'],
 				['pane のエージェントが、SSH 先のポートを転送しようとしています', '転送: SSH 先の localhost:21040 → この Mac の 127.0.0.1:21040（1 件を追加）', 'ラベル: api', '手元の 21040 が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。', '[転送する]'],
 			],
+		});
+	});
+
+	test('cleans up only unused user forwards in the ephemeral range; fixed ports are stopped only by name', async () => {
+		const window = new FakeWindow(SSH, [
+			tunnel(21004, 65459),
+			tunnel(32767, 32767),
+			tunnel(32768, 32768),
+			tunnel(60605, 60605),
+			tunnel(40000, 40000, { listening: true }),
+			tunnel(45000, 45000, { source: TunnelSource.Auto }),
+			tunnel(50000, 50000, { source: TunnelSource.Extension }),
+		]);
+		const { channel } = setup(window, 'approve');
+		const dryRun = summary(await channel.handle(PANE, { op: 'cleanUp', mode: 'not_listening', dryRun: true })) as { targets: { remote_port: number }[] };
+		const cleaned = summary(await channel.handle(PANE, { op: 'cleanUp', mode: 'not_listening', dryRun: false }));
+		const stopped = summary(await channel.handle(PANE, { op: 'stop', remotePorts: [21004] }));
+		assert.deepStrictEqual({ targets: dryRun.targets.map(row => row.remote_port), cleaned, stopped, ledger: window.snapshot() }, {
+			targets: [32768, 60605],
+			cleaned: { mode: 'not_listening', stopped: [32768, 60605] },
+			stopped: { stopped: [21004] },
+			ledger: ['32767->32767', '40000->40000', '45000->45000', '50000->50000'],
 		});
 	});
 
