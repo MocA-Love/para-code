@@ -333,6 +333,7 @@ jobs:
       # of the app. Without it the app still works and dictation reports that the helper is missing, so this step
       # never fails the release, betas included. The first lines print which Xcode and SDK the runner has.
       - name: Build and embed the speech helper
+        id: speech_helper
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -342,6 +343,13 @@ jobs:
           node build/paradis/speech/buildHelper.ts --out .build/paradis/speech
           lipo .build/paradis/speech/ParadisSpeech -verify_arch arm64 x86_64
           node build/paradis/speech/buildHelper.ts --embed "$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app" --helper .build/paradis/speech/ParadisSpeech
+
+      # Leaves a marker that the publish job turns into one line of the GitHub Release body.
+      - name: Note a missing speech helper
+        if: ${{ steps.speech_helper.outcome == 'failure' }}
+        run: |
+          echo "::warning::The speech helper was not built or embedded; darwin-${{ matrix.arch }} ships without dictation (see the step above)"
+          echo "darwin-${{ matrix.arch }}" > speech-helper-missing.txt
 
       # sign.ts carries two PARA-PATCHes: empty entitlements for the Computer Use helper, and the speech recognition
       # usage description for the speech helper.
@@ -406,6 +414,14 @@ jobs:
           path: |
             darwin-${{ matrix.arch }}.zip
             darwin-${{ matrix.arch }}.zip.sha256
+          retention-days: 7
+
+      - name: Upload the missing speech helper marker
+        if: ${{ steps.speech_helper.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: speech-helper-missing-darwin-${{ matrix.arch }}
+          path: speech-helper-missing.txt
           retention-days: 7
 
   build-win32:
@@ -773,3 +789,11 @@ jobs:
             fi
           fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release-assets/*
+          # A darwin build that shipped without the speech helper (G-14) gets one line in the release body.
+          MISSING="$(cat artifacts/speech-helper-missing-darwin-*/speech-helper-missing.txt 2>/dev/null | sort | paste -sd ' ' - || true)"
+          if [ -n "$MISSING" ]; then
+            echo "::warning::Released without the speech helper: $MISSING"
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/release-body.md"
+            printf '\n> Dictation is unavailable in this build (%s): the macOS speech helper could not be built.\n' "$MISSING" >> "$RUNNER_TEMP/release-body.md"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release-body.md"
+          fi
