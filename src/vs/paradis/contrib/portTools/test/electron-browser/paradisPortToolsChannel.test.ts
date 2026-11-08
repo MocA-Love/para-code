@@ -45,6 +45,8 @@ class FakeWindow implements IParadisPortToolsWindow {
 	host: unknown = undefined;
 	detection: CandidatePort[] | undefined = [];
 	usedLocalPorts = new Set<number>();
+	/** 張り直しが失敗するポート。 */
+	readonly failingReforwards = new Set<number>();
 
 	constructor(readonly remoteAuthority: string | undefined, tunnels: readonly Tunnel[] = []) {
 		for (const item of tunnels) {
@@ -74,6 +76,9 @@ class FakeWindow implements IParadisPortToolsWindow {
 	async reforward(item: Tunnel, localPort?: number): Promise<string | undefined> {
 		const local = localPort ?? item.localPort!;
 		this.calls.push(`reforward ${item.remotePort} -> ${local}`);
+		if (this.failingReforwards.has(item.remotePort)) {
+			return 'the SSH connection refused it';
+		}
 		this.ledger.set(item.remotePort, tunnel(item.remotePort, local));
 		return undefined;
 	}
@@ -99,9 +104,11 @@ function summary(result: ParadisPortToolResult): unknown {
 }
 
 const CHANGES: readonly ParadisPortToolRequest[] = [
-	{ op: 'forward', remotePort: 21040, localPort: 21040 },
+	{ op: 'forward', items: [{ remotePort: 21040, localPort: 21040 }], batch: false },
 	{ op: 'stop', remotePorts: [21004, 33355] },
-	{ op: 'reforward', remotePort: 21004, alignLocalPort: true },
+	{ op: 'reforward', items: [{ remotePort: 21004, alignLocalPort: true }], batch: false },
+	{ op: 'forward', items: [{ remotePort: 21040, localPort: 21040 }, { remotePort: 21041, localPort: 21041 }], batch: true },
+	{ op: 'reforward', items: [{ remotePort: 21004, alignLocalPort: true }, { remotePort: 21021, alignLocalPort: true }], batch: true },
 	{ op: 'cleanUp', mode: 'not_listening', dryRun: false },
 	{ op: 'cleanUp', mode: 'mismatched', dryRun: false },
 ];
@@ -127,7 +134,7 @@ suite('ParadisPortToolsChannel', () => {
 			for (const request of CHANGES) {
 				results.push((await channel.handle(PANE, request)).ok);
 			}
-			assert.deepStrictEqual({ answer, results, calls: window.calls, ledger: window.snapshot(), dialogs: dialogs.length }, { answer, results: [false, false, false, false, false], calls: [], ledger: before, dialogs: CHANGES.length });
+			assert.deepStrictEqual({ answer, results, calls: window.calls, ledger: window.snapshot(), dialogs: dialogs.length }, { answer, results: CHANGES.map(() => false), calls: [], ledger: before, dialogs: CHANGES.length });
 		}
 	});
 
@@ -140,7 +147,7 @@ suite('ParadisPortToolsChannel', () => {
 				const result = await channel.handle(PANE, request);
 				results.push(result.ok ? 'ok' : result.error.startsWith('This terminal pane belongs to a Para Code window that is not connected over SSH') ? 'not ssh' : result.error);
 			}
-			assert.deepStrictEqual({ results, calls: window.calls, dialogs }, { results: ['not ssh', 'not ssh', 'not ssh', 'not ssh', 'not ssh', 'not ssh'], calls: [], dialogs: [] });
+			assert.deepStrictEqual({ results, calls: window.calls, dialogs }, { results: results.map(() => 'not ssh'), calls: [], dialogs: [] });
 		}
 	});
 
@@ -168,14 +175,14 @@ suite('ParadisPortToolsChannel', () => {
 		assert.strictEqual(dryRun.count, 1);
 		assert.strictEqual(dialogs.length, 0);
 		const cleaned = summary(await channel.handle(PANE, { op: 'cleanUp', mode: 'not_listening', dryRun: false }));
-		const forwarded = summary(await channel.handle(PANE, { op: 'forward', remotePort: 21040, localPort: 21040, label: 'api' }));
+		const forwarded = summary(await channel.handle(PANE, { op: 'forward', items: [{ remotePort: 21040, localPort: 21040, label: 'api' }], batch: false }));
 		assert.deepStrictEqual({ cleaned, forwarded, calls: window.calls, dialogs }, {
 			cleaned: { mode: 'not_listening', stopped: [33355] },
 			forwarded: { forwarded: true, remote_port: 21040, local_address: '127.0.0.1:21040', local_port: 21040, local_port_taken: false },
 			calls: ['close 33355', 'forward localhost:21040 -> 21040'],
 			dialogs: [
 				['pane のエージェントが、SSH 先で listen していないエフェメラル帯の転送を 1 件停止しようとしています', '33355 → localhost:33355', 'どれも 32768 以上のエフェメラル帯の番号で、利用者（プレビューやリンクを含む）が張り、今は SSH 先のプロセスが listen していない転送です。32768 より下の決まった番号は対象にしていません。', '[1 件を停止]'],
-				['pane のエージェントが、SSH 先のポートを転送しようとしています', '転送: SSH 先の localhost:21040 → この PC の 127.0.0.1:21040（1 件を追加）', 'ラベル: api', '手元の 21040 が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。', '[転送する]'],
+				['pane のエージェントが、SSH 先のポートの転送を 1 件追加しようとしています', 'SSH 先の localhost:21040 → この PC の 127.0.0.1:21040（api）', '手元の番号が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。', '[1 件を転送]'],
 			],
 		});
 	});
@@ -199,7 +206,7 @@ suite('ParadisPortToolsChannel', () => {
 		assert.deepStrictEqual({ targets: dryRun.targets.map(row => row.remote_port), cleaned, stopped, ledger: window.snapshot() }, {
 			targets: [32768, 60605, 55000],
 			cleaned: { mode: 'not_listening', stopped: [32768, 60605, 55000] },
-			stopped: { stopped: [21004] },
+			stopped: { results: [{ remote_port: 21004, ok: true, stopped: true }] },
 			ledger: ['32767->32767', '40000->40000', '45000->45000', '50000->50000', '56000->56000'],
 		});
 	});
@@ -208,18 +215,18 @@ suite('ParadisPortToolsChannel', () => {
 		const window = sshWindow();
 		window.usedLocalPorts.add(21021);
 		const { channel, dialogs } = setup(window, 'approve');
-		const inUse = await channel.handle(PANE, { op: 'reforward', remotePort: 21021, alignLocalPort: true });
-		const aligned = summary(await channel.handle(PANE, { op: 'reforward', remotePort: 21004, alignLocalPort: true }));
+		const inUse = await channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 21021, alignLocalPort: true }], batch: false });
+		const aligned = summary(await channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 21004, alignLocalPort: true }], batch: false }));
 		assert.deepStrictEqual({ inUse: inUse.ok, aligned, calls: window.calls, dialogs }, {
 			inUse: false,
 			aligned: { reforwarded: true, remote_port: 21004, local_address: 'localhost:21004', local_port: 21004, local_port_taken: false },
 			calls: ['reforward 21004 -> 21004'],
 			dialogs: [[
 				'pane のエージェントが、ポートの転送を 1 件張り直そうとしています',
-				'21004 → localhost:65459',
-				'手元の番号を 65459 から 21004 に変えます。65459 を開いているブラウザのタブは繋がらなくなります。',
+				'21004 → localhost:65459：手元の番号を 65459 から 21004 に変えます',
+				'手元の番号を変える転送は、元の番号を開いているブラウザのタブが繋がらなくなります。',
 				'張り直すときは、同じ SSH 先のほかの窓の同じポートの転送も一度まとめて閉じてから張り直します。',
-				'[張り直す]',
+				'[1 件を張り直す]',
 			]],
 		});
 	});
@@ -237,11 +244,105 @@ suite('ParadisPortToolsChannel', () => {
 		window.host = 'allInterfaces';
 		const { channel, dialogs } = setup(window, 'approve');
 		const results = [
-			await channel.handle(PANE, { op: 'forward', remotePort: 21040, localPort: 21040 }),
-			await channel.handle(PANE, { op: 'reforward', remotePort: 21004, alignLocalPort: false }),
+			await channel.handle(PANE, { op: 'forward', items: [{ remotePort: 21040, localPort: 21040 }], batch: false }),
+			await channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 21004, alignLocalPort: false }], batch: false }),
 			await channel.handle('someone-else', { op: 'list', includeDetected: false }),
 		].map(result => result.ok);
 		assert.deepStrictEqual({ results, calls: window.calls, dialogs: dialogs.length }, { results: [false, false, false], calls: [], dialogs: 0 });
+	});
+
+	test('asks once for several forwards, lists them in the dialog, and returns one result per port', async () => {
+		const window = sshWindow();
+		const { channel, dialogs } = setup(window, 'approve');
+		const forwarded = summary(await channel.handle(PANE, { op: 'forward', items: [{ remotePort: 21040, localPort: 21040 }, { remotePort: 21002, localPort: 21002 }, { remotePort: 21041, localPort: 31041, label: 'api' }], batch: true }));
+		const stopped = summary(await channel.handle(PANE, { op: 'stop', remotePorts: [21040, 21041, 40404] }));
+		assert.deepStrictEqual({ forwarded, stopped, calls: window.calls, dialogs }, {
+			forwarded: {
+				results: [
+					{ remote_port: 21040, ok: true, forwarded: true, local_address: '127.0.0.1:21040', local_port: 21040, local_port_taken: false },
+					{ remote_port: 21002, ok: true, already_forwarded: true, forward: { forwarded: true, remote_host: 'localhost', remote_port: 21002, local_address: 'localhost:21002', local_port: 21002, local_matches_remote: true, source: 'user', listening: true, process: 'node server.js', pid: 42, label: 'vite', protocol: 'http' }, hint: 'Nothing was changed. Use reforward_port with align_local_port to change its local port.' },
+					{ remote_port: 21041, ok: true, forwarded: true, local_address: '127.0.0.1:31041', local_port: 31041, local_port_taken: false },
+				],
+			},
+			stopped: {
+				results: [
+					{ remote_port: 21040, ok: true, stopped: true },
+					{ remote_port: 21041, ok: true, stopped: true },
+					{ remote_port: 40404, ok: false, error: 'not_forwarded' },
+				],
+			},
+			calls: ['forward localhost:21040 -> 21040', 'forward localhost:21041 -> 31041', 'close 21040', 'close 21041'],
+			dialogs: [
+				['pane のエージェントが、SSH 先のポートの転送を 2 件追加しようとしています', 'SSH 先の localhost:21040 → この PC の 127.0.0.1:21040', 'SSH 先の localhost:21041 → この PC の 127.0.0.1:31041（api）', '手元の番号が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。', '[2 件を転送]'],
+				['pane のエージェントが、ポートの転送を 2 件停止しようとしています', '21040 → localhost:21040', '21041 → localhost:31041', '停止すると、その手元のアドレスを開いているブラウザのタブは繋がらなくなります。', '[2 件を停止]'],
+			],
+		});
+	});
+
+	test('reforwards several forwards after one dialog and reports each, including the ones that failed', async () => {
+		const window = new FakeWindow(SSH, Array.from({ length: 23 }, (_, index) => tunnel(21100 + index, 65400 + index)));
+		window.usedLocalPorts.add(21101);
+		window.failingReforwards.add(21102);
+		const { channel, dialogs } = setup(window, 'approve');
+		const items = [...Array.from({ length: 23 }, (_, index) => ({ remotePort: 21100 + index, alignLocalPort: true })), { remotePort: 9999, alignLocalPort: false }];
+		const result = summary(await channel.handle(PANE, { op: 'reforward', items, batch: true })) as { results: { remote_port: number; ok: boolean; error?: string; local_port?: number }[] };
+		assert.deepStrictEqual({
+			results: result.results.slice(0, 4).map(row => [row.remote_port, row.ok, row.ok ? row.local_port : row.error?.slice(0, 30)]),
+			count: result.results.length,
+			last: [result.results[23].remote_port, result.results[23].ok],
+			aligned: result.results.filter(row => row.ok).length,
+			dialogs: dialogs.length,
+			title: dialogs[0][0],
+			more: dialogs[0][21],
+			approve: dialogs[0].at(-1),
+		}, {
+			results: [
+				[21100, true, 21100],
+				[21101, false, 'Local port 21101 on the user\'s'],
+				[21102, false, 'Para Code could not forward po'],
+				[21103, true, 21103],
+			],
+			count: 24,
+			last: [9999, false],
+			aligned: 21,
+			dialogs: 1,
+			title: 'pane のエージェントが、ポートの転送を 22 件張り直そうとしています',
+			more: 'ほか 2 件',
+			approve: '[22 件を張り直す]',
+		});
+	});
+
+	test('runs changes one at a time, so a second request asks only after the first dialog is answered', async () => {
+		const window = sshWindow();
+		const events: string[] = [];
+		let release: (() => void) | undefined;
+		const channel = new ParadisPortToolsChannel(window, token => token === PANE, async (_token, request) => {
+			events.push(`ask ${request.messageTemplate('pane')}`);
+			if (!release) {
+				await new Promise<void>(resolve => release = resolve);
+			}
+			events.push('answered');
+			return 'approve';
+		});
+		const first = channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 21004, alignLocalPort: true }], batch: false });
+		const second = channel.handle(PANE, { op: 'forward', items: [{ remotePort: 21040, localPort: 21040 }], batch: false });
+		const read = await channel.handle(PANE, { op: 'list', includeDetected: false });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const beforeRelease = [...events];
+		release!();
+		const results = [(await first).ok, (await second).ok, read.ok];
+		assert.deepStrictEqual({ beforeRelease, events, results }, {
+			beforeRelease: ['ask pane のエージェントが、ポートの転送を 1 件張り直そうとしています'],
+			events: ['ask pane のエージェントが、ポートの転送を 1 件張り直そうとしています', 'answered', 'ask pane のエージェントが、SSH 先のポートの転送を 1 件追加しようとしています', 'answered'],
+			results: [true, true, true],
+		});
+	});
+
+	test('tells the agent why it was turned down without a dialog, and to ask once for all ports', async () => {
+		const window = sshWindow();
+		const { channel } = setup(window, 'recentlyDenied');
+		const result = await channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 21004, alignLocalPort: true }], batch: false });
+		assert.deepStrictEqual(result.ok ? undefined : [result.error.includes('clicked "Deny"'), result.error.includes('"ports"'), result.error.includes('mode "mismatched"')], [true, true, true]);
 	});
 
 	test('recognizes loopback local addresses', () => {

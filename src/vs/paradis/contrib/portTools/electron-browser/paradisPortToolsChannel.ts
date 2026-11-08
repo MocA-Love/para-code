@@ -14,7 +14,12 @@
 // 承認を待つ間に台帳が変わりうるので、承認の後に台帳を読み直し、「見せた対象」で「今もある」ものだけを変える。
 // 手元の受け口は 127.0.0.1 だけにする（`remote.localPortHost` が allInterfaces の窓では張らない。張った後も確かめる）。
 // リモートのホストは localhost だけを扱う。
+//
+// 追加・外す・張り直すは 1 回の呼び出しで複数の転送を受け、ダイアログは 1 回だけ出し、結果は 1 件ずつ返す。
+// 変える操作は、この窓の中で 1 つずつ順に行う（並行で来ても、前の確認と転送が終わってから次の確認を出す）。
+// 重ねて出すと、閉じた直後に同じ位置へ出た次のダイアログへのクリックが速押しと判定されるため。
 
+import { Sequencer } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -26,7 +31,7 @@ import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { paradisDefaultCleanUpForwards, paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisPortLocalHostAllowed } from '../common/paradisPortSelection.js';
-import { PARADIS_PORT_TOOLS_METHOD, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort } from '../common/paradisPortTools.js';
+import { IParadisPortForwardItem, IParadisPortReforwardItem, PARADIS_PORT_TOOLS_MAX_BATCH, PARADIS_PORT_TOOLS_METHOD, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort, paradisPortToolRequestChanges } from '../common/paradisPortTools.js';
 
 /** 確認のダイアログに並べる転送の行の上限。超えた分は「ほか N 件」にまとめる。 */
 const DIALOG_MAX_ROWS = 20;
@@ -45,15 +50,23 @@ function otherWindowsNote(): string {
 	return localize('paradis.portTools.otherWindows', "張り直すときは、同じ SSH 先のほかの窓の同じポートの転送も一度まとめて閉じてから張り直します。");
 }
 
+/** 複数の転送を変えるなら 1 回にまとめるよう促す 1 文（断りに添える）。 */
+const BATCH_HINT = 'If you need several forwards changed, ask once with all of them in "ports" (one dialog for all of them) instead of one call per port; to make every mismatched local port equal to its remote port, use clean_up_port_forwards with mode "mismatched".';
+
 /** 承認以外の答えのときにエージェントへ返す英文。 */
 const REFUSALS: Readonly<Record<Exclude<ParadisAgentApprovalOutcome, 'approve' | 'alternative'> | 'timedOut', string>> = {
 	'denied': 'The user declined, so nothing was changed. Do not ask again for this; ask the user in the conversation if needed.',
-	'recentlyDenied': 'The user declined a port forwarding change a short while ago, so Para Code turned this one down without asking. Nothing was changed. Ask the user in the conversation.',
-	'busy': 'Another request from this terminal pane is waiting for the user. Nothing was changed. Wait for it to finish, then try again.',
-	'unanswered': 'Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Nothing was changed. Ask the user to click a button in the dialog, then ask again.',
+	'recentlyDenied': `Para Code turned this request down without showing a dialog, because the user clicked "Deny" on a port forwarding change from this terminal pane in the last 3 minutes. Nothing was changed. Ask the user in the conversation whether they still want the change. ${BATCH_HINT}`,
+	'busy': `Another request from this terminal pane is waiting for the user. Nothing was changed. Wait for it to finish, then try again. ${BATCH_HINT}`,
+	'unanswered': `Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Nothing was changed, and this does not count as a refusal. Ask the user to click a button in the dialog, then ask again. ${BATCH_HINT}`,
 	'cancelled': 'The request was cancelled before the user answered, so nothing was changed.',
 	'timedOut': 'The user did not answer the confirmation dialog in time, so nothing was changed. Ask the user in the conversation before asking again.',
 };
+
+/** まとめて頼まれた転送の、1 件ずつの結果。 */
+type ParadisPortItemResult =
+	| { readonly remote_port: number; readonly ok: true;[key: string]: unknown }
+	| { readonly remote_port: number; readonly ok: false; readonly error: string };
 
 /** ウィンドウの転送の台帳と操作のうち、道具が使う部分（テストでは差し替える）。 */
 export interface IParadisPortToolsWindow {
@@ -121,6 +134,24 @@ export function paradisPortCleanUpTargets(mode: ParadisPortCleanUpMode, forwarde
 	return paradisMismatchedForwards(forwarded);
 }
 
+function isForwardItem(value: unknown): value is IParadisPortForwardItem {
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	const item = value as Record<string, unknown>;
+	return paradisIsValidPort(item.remotePort) && paradisIsValidPort(item.localPort)
+		&& (item.label === undefined || typeof item.label === 'string')
+		&& (item.protocol === undefined || item.protocol === 'http' || item.protocol === 'https');
+}
+
+function isReforwardItem(value: unknown): value is IParadisPortReforwardItem {
+	return !!value && typeof value === 'object' && paradisIsValidPort((value as Record<string, unknown>).remotePort) && typeof (value as Record<string, unknown>).alignLocalPort === 'boolean';
+}
+
+function isBatch(items: unknown, isItem: (value: unknown) => boolean): boolean {
+	return Array.isArray(items) && items.length > 0 && items.length <= PARADIS_PORT_TOOLS_MAX_BATCH && items.every(isItem);
+}
+
 function isRequest(value: unknown): value is ParadisPortToolRequest {
 	if (!value || typeof value !== 'object') {
 		return false;
@@ -128,11 +159,9 @@ function isRequest(value: unknown): value is ParadisPortToolRequest {
 	const request = value as Record<string, unknown>;
 	switch (request.op) {
 		case 'list': return typeof request.includeDetected === 'boolean';
-		case 'forward': return paradisIsValidPort(request.remotePort) && paradisIsValidPort(request.localPort)
-			&& (request.label === undefined || typeof request.label === 'string')
-			&& (request.protocol === undefined || request.protocol === 'http' || request.protocol === 'https');
-		case 'stop': return Array.isArray(request.remotePorts) && request.remotePorts.length > 0 && request.remotePorts.every(paradisIsValidPort);
-		case 'reforward': return paradisIsValidPort(request.remotePort) && typeof request.alignLocalPort === 'boolean';
+		case 'forward': return isBatch(request.items, isForwardItem) && typeof request.batch === 'boolean';
+		case 'stop': return isBatch(request.remotePorts, paradisIsValidPort);
+		case 'reforward': return isBatch(request.items, isReforwardItem) && typeof request.batch === 'boolean';
 		case 'cleanUp': return (request.mode === 'not_listening' || request.mode === 'mismatched') && typeof request.dryRun === 'boolean';
 	}
 	return false;
@@ -140,6 +169,9 @@ function isRequest(value: unknown): value is ParadisPortToolRequest {
 
 /** ポートの転送の道具の要求を、この窓の転送の台帳へ当てる。 */
 export class ParadisPortToolsChannel implements IServerChannel {
+
+	/** 変える操作（確認と転送の変更）を 1 つずつ順に行う。 */
+	private readonly _changes = new Sequencer();
 
 	constructor(
 		private readonly _window: IParadisPortToolsWindow,
@@ -172,15 +204,23 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		if (authority === undefined || !authority.startsWith('ssh-remote+')) {
 			return fail(NOT_SSH_MESSAGE);
 		}
+		if (!paradisPortToolRequestChanges(request)) {
+			return this._run(paneToken, request, cancellation);
+		}
+		// 順番を待つ間に呼び出し元が取り消したら、ダイアログを出さない。台帳は順番が来てから読む
+		return this._changes.queue(() => cancellation.isCancellationRequested ? Promise.resolve(fail(REFUSALS.cancelled)) : this._run(paneToken, request, cancellation));
+	}
+
+	private async _run(paneToken: string, request: ParadisPortToolRequest, cancellation: CancellationToken): Promise<ParadisPortToolResult> {
 		switch (request.op) {
 			case 'list':
 				return this._list(request.includeDetected);
 			case 'forward':
-				return this._forward(paneToken, request.remotePort, request.localPort, request.label, request.protocol, cancellation);
+				return single(request.batch, await this._forward(paneToken, request.items, cancellation));
 			case 'stop':
 				return this._stop(paneToken, request.remotePorts, cancellation);
 			case 'reforward':
-				return this._reforward(paneToken, request.remotePort, request.alignLocalPort, cancellation);
+				return single(request.batch, await this._reforward(paneToken, request.items, cancellation));
 			case 'cleanUp':
 				return request.mode === 'not_listening'
 					? this._cleanUpNotListening(paneToken, request.dryRun, cancellation)
@@ -212,35 +252,57 @@ export class ParadisPortToolsChannel implements IServerChannel {
 
 	// --- 追加 ---
 
-	private async _forward(paneToken: string, remotePort: number, localPort: number, label: string | undefined, protocol: 'http' | 'https' | undefined, cancellation: CancellationToken): Promise<ParadisPortToolResult> {
-		const already = this._find(remotePort);
-		if (already) {
-			return ok({ already_forwarded: true, forward: rowOf(already, this._window.candidates() !== undefined), hint: 'Nothing was changed. Use reforward_port with align_local_port to change its local port.' });
+	private async _forward(paneToken: string, items: readonly IParadisPortForwardItem[], cancellation: CancellationToken): Promise<ParadisPortToolResult> {
+		const detectionKnown = () => this._window.candidates() !== undefined;
+		const results = new Map<number, ParadisPortItemResult>();
+		const targets: IParadisPortForwardItem[] = [];
+		for (const item of items) {
+			const already = this._find(item.remotePort);
+			if (already) {
+				results.set(item.remotePort, { remote_port: item.remotePort, ok: true, already_forwarded: true, forward: rowOf(already, detectionKnown()), hint: 'Nothing was changed. Use reforward_port with align_local_port to change its local port.' });
+			} else {
+				targets.push(item);
+			}
+		}
+		if (targets.length === 0) {
+			return ok({ results: items.map(item => results.get(item.remotePort)!) });
 		}
 		if (!this._localHostAllowed()) {
 			return fail(LOCAL_HOST_MESSAGE);
 		}
-		const safeLabel = paradisSanitizeDisplayText(label, DIALOG_TEXT_MAX_LENGTH);
 		const outcome = await this._ask(paneToken, {
-			messageTemplate: pane => localize('paradis.portTools.forward.message', "{0} のエージェントが、SSH 先のポートを転送しようとしています", pane),
+			messageTemplate: pane => localize('paradis.portTools.forward.message', "{0} のエージェントが、SSH 先のポートの転送を {1} 件追加しようとしています", pane, targets.length),
 			detail: [
-				localize('paradis.portTools.forward.ports', "転送: SSH 先の localhost:{0} → この PC の 127.0.0.1:{1}（1 件を追加）", remotePort, localPort),
-				...(safeLabel ? [localize('paradis.portTools.forward.label', "ラベル: {0}", safeLabel)] : []),
-				localize('paradis.portTools.forward.effect', "手元の {0} が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。", localPort),
+				...dialogRows(targets.map(item => {
+					const label = paradisSanitizeDisplayText(item.label, DIALOG_TEXT_MAX_LENGTH);
+					return label
+						? localize('paradis.portTools.forward.rowWithLabel', "SSH 先の localhost:{0} → この PC の 127.0.0.1:{1}（{2}）", item.remotePort, item.localPort, label)
+						: localize('paradis.portTools.forward.row', "SSH 先の localhost:{0} → この PC の 127.0.0.1:{1}", item.remotePort, item.localPort);
+				})),
+				localize('paradis.portTools.forward.effect', "手元の番号が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。"),
 			],
-			approveLabel: localize('paradis.portTools.forward.approve', "転送する"),
+			approveLabel: localize('paradis.portTools.forward.approve', "{0} 件を転送", targets.length),
 			cooldownKey: APPROVAL_COOLDOWN_KEY,
 		}, cancellation);
 		if (outcome !== 'approve') {
 			return fail(refusal(outcome));
 		}
+		// 1 本ずつ順に張り、1 本の失敗で残りを止めない
+		for (const item of targets) {
+			results.set(item.remotePort, await this._forwardOne(item));
+		}
+		return ok({ results: items.map(item => results.get(item.remotePort)!) });
+	}
+
+	private async _forwardOne(item: IParadisPortForwardItem): Promise<ParadisPortItemResult> {
+		const { remotePort, localPort, label, protocol } = item;
 		// 答えを待つ間に転送されていたら、張り直さない
 		const raced = this._find(remotePort);
 		if (raced) {
-			return ok({ already_forwarded: true, forward: rowOf(raced, this._window.candidates() !== undefined) });
+			return { remote_port: remotePort, ok: true, already_forwarded: true, forward: rowOf(raced, this._window.candidates() !== undefined) };
 		}
 		if (!this._localHostAllowed()) {
-			return fail(LOCAL_HOST_MESSAGE);
+			return { remote_port: remotePort, ok: false, error: LOCAL_HOST_MESSAGE };
 		}
 		const remote = { host: 'localhost', port: remotePort };
 		const attributes: Attributes | undefined = protocol !== undefined
@@ -248,20 +310,21 @@ export class ParadisPortToolsChannel implements IServerChannel {
 			: undefined;
 		const result = await this._window.forward({ remote, local: localPort, name: label, source: UserTunnelSource }, attributes);
 		if (!result || typeof result === 'string') {
-			return fail(`Para Code could not forward port ${remotePort}${typeof result === 'string' ? `: ${result}` : '.'}`);
+			return { remote_port: remotePort, ok: false, error: `Para Code could not forward port ${remotePort}${typeof result === 'string' ? `: ${result}` : '.'}` };
 		}
 		if (!paradisIsLoopbackLocalAddress(result.localAddress)) {
 			// 127.0.0.1 以外で受けてしまったら、すぐに閉じる（LAN から SSH 先のサーバーが見えないように）
 			await this._window.close(remote);
-			return fail(LOCAL_HOST_MESSAGE);
+			return { remote_port: remotePort, ok: false, error: LOCAL_HOST_MESSAGE };
 		}
-		return ok({
-			forwarded: true,
+		return {
 			remote_port: remotePort,
+			ok: true,
+			forwarded: true,
 			local_address: result.localAddress,
 			local_port: result.tunnelLocalPort ?? null,
 			local_port_taken: result.tunnelLocalPort !== localPort,
-		});
+		};
 	}
 
 	// --- 外す ---
@@ -286,7 +349,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const outcome = await this._ask(paneToken, {
 			messageTemplate: pane => localize('paradis.portTools.stop.message', "{0} のエージェントが、ポートの転送を {1} 件停止しようとしています", pane, targets.length),
 			detail: [
-				...this._dialogRows(targets, tunnel => this._describe(tunnel)),
+				...dialogRows(targets.map(tunnel => this._describe(tunnel))),
 				localize('paradis.portTools.stop.effect', "停止すると、その手元のアドレスを開いているブラウザのタブは繋がらなくなります。"),
 			],
 			approveLabel: localize('paradis.portTools.stop.approve', "{0} 件を停止", targets.length),
@@ -295,7 +358,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		if (outcome !== 'approve') {
 			return fail(refusal(outcome));
 		}
-		const stopped: number[] = [];
+		const stopped = new Set<number>();
 		for (const target of targets) {
 			// 見せた対象のうち、今も台帳にあるものだけを外す
 			if (this._find(target.remotePort) === undefined) {
@@ -303,59 +366,86 @@ export class ParadisPortToolsChannel implements IServerChannel {
 				continue;
 			}
 			await this._window.close({ host: target.remoteHost, port: target.remotePort });
-			stopped.push(target.remotePort);
+			stopped.add(target.remotePort);
 		}
-		return ok({ stopped, ...(notForwarded.length ? { not_forwarded: notForwarded } : {}), ...(notCloseable.length ? { not_closeable: notCloseable } : {}) });
+		return ok({
+			results: remotePorts.map((remotePort): ParadisPortItemResult => stopped.has(remotePort)
+				? { remote_port: remotePort, ok: true, stopped: true }
+				: { remote_port: remotePort, ok: false, error: notCloseable.includes(remotePort) ? 'not_closeable: provided by the remote environment' : 'not_forwarded' }),
+		});
 	}
 
 	// --- 張り直す ---
 
-	private async _reforward(paneToken: string, remotePort: number, align: boolean, cancellation: CancellationToken): Promise<ParadisPortToolResult> {
-		const tunnel = this._find(remotePort);
-		if (!tunnel) {
-			return fail(`Port ${remotePort} is not forwarded in this window. Call list_port_forwards for the current forwards, or forward_port to add it.`);
-		}
-		if (tunnel.closeable === false) {
-			return fail(`The forward of port ${remotePort} is provided by the remote environment and cannot be forwarded again.`);
-		}
+	private async _reforward(paneToken: string, items: readonly IParadisPortReforwardItem[], cancellation: CancellationToken): Promise<ParadisPortToolResult> {
 		if (!this._localHostAllowed()) {
 			return fail(LOCAL_HOST_MESSAGE);
 		}
-		const oldLocal = tunnel.localPort;
-		const changesLocal = align && oldLocal !== remotePort;
-		if (changesLocal && !await this._window.isLocalPortFree(remotePort)) {
-			return fail(localPortInUse(remotePort));
+		const results = new Map<number, ParadisPortItemResult>();
+		const targets: { readonly tunnel: Tunnel; readonly changesLocal: boolean }[] = [];
+		for (const item of items) {
+			const remotePort = item.remotePort;
+			const tunnel = this._find(remotePort);
+			if (!tunnel) {
+				results.set(remotePort, { remote_port: remotePort, ok: false, error: `Port ${remotePort} is not forwarded in this window. Call list_port_forwards for the current forwards, or forward_port to add it.` });
+				continue;
+			}
+			if (tunnel.closeable === false) {
+				results.set(remotePort, { remote_port: remotePort, ok: false, error: `The forward of port ${remotePort} is provided by the remote environment and cannot be forwarded again.` });
+				continue;
+			}
+			const changesLocal = item.alignLocalPort && tunnel.localPort !== remotePort;
+			if (changesLocal && !await this._window.isLocalPortFree(remotePort)) {
+				results.set(remotePort, { remote_port: remotePort, ok: false, error: localPortInUse(remotePort) });
+				continue;
+			}
+			targets.push({ tunnel, changesLocal });
 		}
+		const all = () => ok({ results: items.map(item => results.get(item.remotePort)!) });
+		if (targets.length === 0) {
+			return all();
+		}
+		const anyChangesLocal = targets.some(target => target.changesLocal);
 		const outcome = await this._ask(paneToken, {
-			messageTemplate: pane => localize('paradis.portTools.reforward.message', "{0} のエージェントが、ポートの転送を 1 件張り直そうとしています", pane),
+			messageTemplate: pane => localize('paradis.portTools.reforward.message', "{0} のエージェントが、ポートの転送を {1} 件張り直そうとしています", pane, targets.length),
 			detail: [
-				this._describe(tunnel),
-				changesLocal
-					? localize('paradis.portTools.reforward.align', "手元の番号を {0} から {1} に変えます。{0} を開いているブラウザのタブは繋がらなくなります。", oldLocal ?? '?', remotePort)
-					: localize('paradis.portTools.reforward.keep', "手元の番号は {0} のまま、転送を閉じて張り直します。", oldLocal ?? '?'),
+				...dialogRows(targets.map(({ tunnel, changesLocal }) => changesLocal
+					? localize('paradis.portTools.reforward.alignRow', "{0}：手元の番号を {1} から {2} に変えます", this._describe(tunnel), tunnel.localPort ?? '?', tunnel.remotePort)
+					: localize('paradis.portTools.reforward.keepRow', "{0}：手元の番号は {1} のまま", this._describe(tunnel), tunnel.localPort ?? '?'))),
+				...(anyChangesLocal ? [localize('paradis.portTools.reforward.alignEffect', "手元の番号を変える転送は、元の番号を開いているブラウザのタブが繋がらなくなります。")] : []),
 				otherWindowsNote(),
 			],
-			approveLabel: localize('paradis.portTools.reforward.approve', "張り直す"),
+			approveLabel: localize('paradis.portTools.reforward.approve', "{0} 件を張り直す", targets.length),
 			cooldownKey: APPROVAL_COOLDOWN_KEY,
 		}, cancellation);
 		if (outcome !== 'approve') {
 			return fail(refusal(outcome));
 		}
-		const current = this._find(remotePort);
-		if (!current) {
-			return fail(`Port ${remotePort} stopped being forwarded while the user was answering, so nothing was changed.`);
+		// 1 本ずつ順に（同じ SSH 先の shared process の転送をまとめて閉じる処理どうしを交差させない）。1 本の失敗で残りを止めない
+		for (const { tunnel, changesLocal } of targets) {
+			const remotePort = tunnel.remotePort;
+			const current = this._find(remotePort);
+			if (!current) {
+				results.set(remotePort, { remote_port: remotePort, ok: false, error: `Port ${remotePort} stopped being forwarded while the user was answering, so it was not changed.` });
+				continue;
+			}
+			if (changesLocal && current.localPort !== remotePort && !await this._window.isLocalPortFree(remotePort)) {
+				results.set(remotePort, { remote_port: remotePort, ok: false, error: localPortInUse(remotePort) });
+				continue;
+			}
+			const result = await this._realign(current, changesLocal ? remotePort : undefined);
+			results.set(remotePort, result.error
+				? { remote_port: remotePort, ok: false, error: result.error }
+				: {
+					remote_port: remotePort,
+					ok: true,
+					reforwarded: true,
+					local_address: result.after?.localAddress ?? null,
+					local_port: result.after?.localPort ?? null,
+					...(changesLocal ? { local_port_taken: result.after?.localPort !== remotePort } : {}),
+				});
 		}
-		const result = await this._realign(current, changesLocal ? remotePort : undefined);
-		if (result.error) {
-			return fail(result.error);
-		}
-		return ok({
-			reforwarded: true,
-			remote_port: remotePort,
-			local_address: result.after?.localAddress ?? null,
-			local_port: result.after?.localPort ?? null,
-			...(changesLocal ? { local_port_taken: result.after?.localPort !== remotePort } : {}),
-		});
+		return all();
 	}
 
 	// --- 片付け ---
@@ -372,7 +462,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const outcome = await this._ask(paneToken, {
 			messageTemplate: pane => localize('paradis.portTools.cleanUp.message', "{0} のエージェントが、SSH 先で listen していないエフェメラル帯の転送を {1} 件停止しようとしています", pane, targets.length),
 			detail: [
-				...this._dialogRows(targets, tunnel => this._describe(tunnel)),
+				...dialogRows(targets.map(tunnel => this._describe(tunnel))),
 				localize('paradis.portTools.cleanUp.effect', "どれも {0} 以上のエフェメラル帯の番号で、利用者（プレビューやリンクを含む）が張り、今は SSH 先のプロセスが listen していない転送です。{0} より下の決まった番号は対象にしていません。", PARADIS_EPHEMERAL_PORT_START),
 			],
 			approveLabel: localize('paradis.portTools.cleanUp.approve', "{0} 件を停止", targets.length),
@@ -424,7 +514,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const outcome = await this._ask(paneToken, {
 			messageTemplate: pane => localize('paradis.portTools.align.message', "{0} のエージェントが、手元の番号が違う転送 {1} 件を、番号を揃えて張り直そうとしています", pane, targets.length),
 			detail: [
-				...this._dialogRows(targets, tunnel => localize('paradis.portTools.align.row', "{0}: 手元 {1} → {2}", tunnel.remotePort, tunnel.localPort ?? '?', tunnel.remotePort)),
+				...dialogRows(targets.map(tunnel => localize('paradis.portTools.align.row', "{0}: 手元 {1} → {2}", tunnel.remotePort, tunnel.localPort ?? '?', tunnel.remotePort))),
 				...(inUse.length ? [localize('paradis.portTools.align.inUse', "手元の番号が使用中のため張り直さないもの: {0}", inUse.join(', '))] : []),
 				localize('paradis.portTools.align.effect', "張り直すと、元の手元の番号を開いているブラウザのタブは繋がらなくなります。"),
 				otherWindowsNote(),
@@ -491,14 +581,32 @@ export class ParadisPortToolsChannel implements IServerChannel {
 			? localize('paradis.portTools.rowWithLabel', "{0} → {1}（{2}）", tunnel.remotePort, address, label)
 			: localize('paradis.portTools.row', "{0} → {1}", tunnel.remotePort, address);
 	}
+}
 
-	private _dialogRows(targets: readonly Tunnel[], describe: (tunnel: Tunnel) => string): string[] {
-		const rows = targets.slice(0, DIALOG_MAX_ROWS).map(describe);
-		if (targets.length > DIALOG_MAX_ROWS) {
-			rows.push(localize('paradis.portTools.more', "ほか {0} 件", targets.length - DIALOG_MAX_ROWS));
-		}
-		return rows;
+/** ダイアログに並べる行。{@link DIALOG_MAX_ROWS} を超えた分は「ほか N 件」にまとめる。 */
+function dialogRows(rows: readonly string[]): string[] {
+	const shown = rows.slice(0, DIALOG_MAX_ROWS);
+	if (rows.length > DIALOG_MAX_ROWS) {
+		shown.push(localize('paradis.portTools.more', "ほか {0} 件", rows.length - DIALOG_MAX_ROWS));
 	}
+	return shown;
+}
+
+/**
+ * 1 件の引数で頼まれた（`ports` を使っていない）ときは、これまでどおり 1 件の形で返す
+ * （失敗ならその誤り、成功ならその 1 件の中身）。
+ */
+function single(batch: boolean, result: ParadisPortToolResult): ParadisPortToolResult {
+	if (batch || !result.ok) {
+		return result;
+	}
+	const [item] = (result.data as { readonly results: readonly ParadisPortItemResult[] }).results;
+	if (!item.ok) {
+		return fail(item.error);
+	}
+	const data: Record<string, unknown> = { ...item };
+	delete data.ok;
+	return ok(data);
 }
 
 function refusal(outcome: ParadisAgentApprovalOutcome | 'timedOut'): string {

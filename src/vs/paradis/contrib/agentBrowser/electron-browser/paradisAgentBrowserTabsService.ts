@@ -160,8 +160,9 @@ export type ParadisAgentApprovalChoice = 'approve' | 'alternative';
  * 承認の結果。承認以外は次のとおり:
  *  - denied: ユーザーが拒否した（拒否・Esc・閉じる）。しばらくは同じペインからの求めを自動で断る
  *  - cancelled: 呼び出し側が取り消した（締め切り・MCP の取り消し）
- *  - unanswered: 表示直後やショートカットでの承認が続き、確かな答えが得られなかった
- *  （表示したのに cancelled / unanswered で終わったのが続いたときも、拒否と同じくしばらく自動で断る）
+ *  - unanswered: 表示直後やショートカットでの承認が続き、確かな答えが得られなかった。拒否としては数えない
+ *  （続けて出したダイアログへの連続クリックで起きるので、後の求めを黙って断る理由にしない）
+ *  （表示したのに締め切りまで放置されたのが続いたときは、拒否と同じくしばらく自動で断る）
  *  - busy: 同じペインの別の求めがまだ答えを待っている
  *  - recentlyDenied: 同じペインの求めを少し前にユーザーが断った
  */
@@ -170,9 +171,9 @@ export type ParadisAgentApprovalOutcome = ParadisAgentApprovalChoice | 'denied' 
 /** 拒否の後、同じペインからの求めを自動で断る時間。承認疲れを誘う繰り返しを止める。 */
 const DENIAL_COOLDOWN_MS = 3 * 60_000;
 /**
- * 画面に出したダイアログが答えの無いまま終わった（締め切りまで放置された・速押しの打ち切り）のがこの回数
- * 続いたら、拒否と同じだけ自動で断る。放置されたダイアログを締め切りごとに出し直させないため。
- * 呼び出し元の取り消し（エージェント側で中断した）は数えない。
+ * 画面に出したダイアログが締め切りまで放置されたのがこの回数続いたら、拒否と同じだけ自動で断る。
+ * 放置されたダイアログを締め切りごとに出し直させないため。呼び出し元の取り消し（エージェント側で中断した）と、
+ * 速押しの打ち切り（unanswered。利用者は画面の前にいて押している）は数えない。
  */
 const UNANSWERED_COOLDOWN_STREAK = 2;
 /** 承認ダイアログが実際に画面に出たかを確かめる間隔。 */
@@ -1076,9 +1077,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			const { outcome, shown } = await this._approvalQueue.queue(() => cancellation.isCancellationRequested
 				? Promise.resolve({ outcome: 'cancelled' as const, shown: false })
 				: this._showApproval(token, request, cancellation));
-			// 放置された: 締め切りまで答えが無かった、または速押しの打ち切り。呼び出し元の取り消し（エージェント側で
-			// 中断した）は放置ではないので、数えも打ち消しもしない。
-			const ignored = outcome === 'unanswered' || (outcome === 'cancelled' && approvalDeadlines.get(cancellation)?.timedOut === true);
+			// 放置された: 締め切りまで答えが無かった。呼び出し元の取り消し（エージェント側で中断した）と速押しの
+			// 打ち切り（利用者は押している。続けて出たダイアログへの連続クリックで起きる）は放置ではないので、
+			// 数えも打ち消しもしない。自動の断りは、利用者が拒否したときと、放置が続いたときだけ。
+			const ignored = outcome === 'cancelled' && approvalDeadlines.get(cancellation)?.timedOut === true;
 			if (outcome === 'denied') {
 				this._unansweredStreak.delete(cooldownKey);
 				this._deniedUntil.set(cooldownKey, Date.now() + DENIAL_COOLDOWN_MS);
@@ -1093,7 +1095,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 						this._unansweredStreak.set(cooldownKey, streak);
 					}
 				}
-			} else if (outcome !== 'cancelled') {
+			} else if (outcome !== 'cancelled' && outcome !== 'unanswered') {
 				this._unansweredStreak.delete(cooldownKey);
 			}
 			return outcome;

@@ -250,9 +250,9 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		]);
 	}));
 
-	test('refuses the same pane for a while after shown dialogs were left unanswered twice in a row, not counting cancellations by the agent', () => runWithFakedTimers(fakedTimers, async () => {
+	test('refuses the same pane for a while after shown dialogs were left until the deadline twice in a row, not counting cancellations by the agent or fast answers', () => runWithFakedTimers(fakedTimers, async () => {
 		const fast = { button: 1, afterMs: 100 };
-		const { service, shown } = createService([{ button: 1, afterMs: 60_000 }, { button: 1, afterMs: 60_000 }, fast, fast, fast]);
+		const { service, shown } = createService([{ button: 1, afterMs: 60_000 }, { button: 1, afterMs: 60_000 }, fast, fast, fast, { button: 1, afterMs: 60_000 }]);
 		store.add(service);
 		// 締め切りまで放置された（1回目）
 		const expiring = store.add(new ParadisApprovalDeadline(undefined, 30_000));
@@ -263,15 +263,31 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		await timeout(200);
 		interrupted.cancel();
 		const cancelled = await pending;
-		// 速押しが続いて答えが得られなかった（2回目）
+		// 速押しが続いて答えが得られなかった（数えない。利用者は押している）
 		const live = store.add(new CancellationTokenSource());
+		const unanswered = await service.askApproval('pane-token', request, live.token);
+		// 締め切りまで放置された（2回目）
+		const expiringAgain = store.add(new ParadisApprovalDeadline(undefined, 30_000));
 		assert.deepStrictEqual([
 			expired,
 			cancelled,
-			await service.askApproval('pane-token', request, live.token),
+			unanswered,
+			await service.askApproval('pane-token', request, expiringAgain.token),
 			await service.askApproval('pane-token', request, live.token),
 			shown.length,
-		], ['cancelled', 'cancelled', 'unanswered', 'recentlyDenied', 5]);
+		], ['cancelled', 'cancelled', 'unanswered', 'cancelled', 'recentlyDenied', 6]);
+	}));
+
+	test('fast answers to dialogs shown one after another never turn later requests down without a dialog', () => runWithFakedTimers(fakedTimers, async () => {
+		const fast = { button: 1, afterMs: 100 };
+		const { service, shown } = createService([...Array.from({ length: 9 }, () => fast), { button: 1, afterMs: 1500 }]);
+		store.add(service);
+		const cts = store.add(new CancellationTokenSource());
+		const outcomes = [];
+		for (let index = 0; index < 4; index++) {
+			outcomes.push(await service.askApproval('pane-token', request, cts.token));
+		}
+		assert.deepStrictEqual([outcomes, shown.length], [['unanswered', 'unanswered', 'unanswered', 'approve'], 10]);
 	}));
 
 	(isMacintosh ? test : test.skip)('asks again when the approval was chosen with Cmd+D', () => runWithFakedTimers(fakedTimers, async () => {
