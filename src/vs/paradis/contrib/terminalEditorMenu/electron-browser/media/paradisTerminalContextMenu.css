@@ -1,0 +1,28 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * The terminal tab color swatches (Q592). The row layout and the dot come from the space color swatches
+ * (.paradis-menu-swatch / .paradis-menu-color in paradisWorkspaceSwitch.css); this only fills each dot with
+ * the theme's ANSI color, which is what upstream's "Change Color..." stores. The colors follow
+ * PARADIS_TERMINAL_TAB_COLORS in common/paradisTerminalContextMenu.ts.
+ */
+
+.monaco-menu .paradis-terminal-color-black::before { background-color: var(--vscode-terminal-ansiBlack); }
+.monaco-menu .paradis-terminal-color-red::before { background-color: var(--vscode-terminal-ansiRed); }
+.monaco-menu .paradis-terminal-color-green::before { background-color: var(--vscode-terminal-ansiGreen); }
+.monaco-menu .paradis-terminal-color-yellow::before { background-color: var(--vscode-terminal-ansiYellow); }
+.monaco-menu .paradis-terminal-color-blue::before { background-color: var(--vscode-terminal-ansiBlue); }
+.monaco-menu .paradis-terminal-color-magenta::before { background-color: var(--vscode-terminal-ansiMagenta); }
+.monaco-menu .paradis-terminal-color-cyan::before { background-color: var(--vscode-terminal-ansiCyan); }
+.monaco-menu .paradis-terminal-color-white::before { background-color: var(--vscode-terminal-ansiWhite); }
+
+/* Black and white can match the menu background; outline them so they stay visible. */
+.monaco-menu .paradis-terminal-color-black::before,
+.monaco-menu .paradis-terminal-color-white::before {
+	border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border));
+}

@@ -55,8 +55,8 @@
 /*
  * The width steps alone cannot keep room to drag the window: the AI limits rings grow with the number
  * of accounts. So paradisTitlebarFit.ts also measures the widest free span between the items and, while
- * it is under 40px, adds `paradis-fold-1` .. `paradis-fold-4`, which fold the same parts in the same
- * order as the width steps and then go further (3 and 4). Each width step rule below therefore also
+ * it is under 40px, adds `paradis-fold-1` .. `paradis-fold-5`, which fold the same parts in the same
+ * order as the width steps and then go further (3 to 5). Each width step rule below therefore also
  * matches its fold level.
  */
 
@@ -78,6 +78,16 @@
 /* Fold 4: the AI limits button keeps its logos and the rings that need attention (60% or more, or an error). */
 .monaco-workbench .part.titlebar > .titlebar-container.paradis-fold-4 > .titlebar-left > .paradis-limits-trigger > .paradis-limits-ring:not(.elevated, .high, .error) {
 	display: none;
+}
+
+/*
+ * Fold 5: narrow upstream's command center. Upstream sizes it at 38vw (up to 600px) and never shrinks
+ * it, so below about 800px it takes most of the title bar and leaves no room to drag the window even with
+ * folds 1-4. The search box keeps its icon and the start of the workspace name (the label already
+ * truncates). The AI limits logos stay.
+ */
+.monaco-workbench .part.titlebar > .titlebar-container.paradis-fold-5 > .titlebar-center > .window-title > .command-center .action-item.command-center-center {
+	width: max(160px, 24vw);
 }
 
 /* 1000px or less: hide the service chips that have nothing to report. */

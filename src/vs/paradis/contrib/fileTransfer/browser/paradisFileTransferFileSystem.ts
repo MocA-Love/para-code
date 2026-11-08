@@ -158,6 +158,11 @@ export interface IParadisTransferFileSystemOptions {
 	readonly lister?: ParadisTransferDirectoryLister;
 	readonly metadata?: IParadisTransferMetadata;
 	readonly journal?: IParadisTransferJournal;
+	/**
+	 * 取り消したコピーの読み書きを、プロバイダーの先まで取り消す（SFTP は shared process へ送った要求を取り消す）。
+	 * IFileService の読み書きを止めるだけでは、送った要求の答えを待ち続ける。
+	 */
+	readonly cancelIo?: (resource: URI) => void;
 }
 
 export class ParadisFileServiceTransferFileSystem implements IParadisTransferFileSystem {
@@ -284,8 +289,14 @@ export class ParadisFileServiceTransferFileSystem implements IParadisTransferFil
 			}
 			return true;
 		} catch (error) {
+			if (options.token.isCancellationRequested) {
+				// 取り消したら一時ファイルの片付けを待たない（SFTP が答えない接続では、消す・確かめる要求も接続を捨てるまで
+				// 返らない）。消し損ねても控え（journal）に残り、後で片付く
+				void this.discardTemp(temp);
+				throw error;
+			}
 			await this.discardTemp(temp);
-			if (!options.token.isCancellationRequested && paradisClassifyTransferError(error) === 'permission' && !await this.stat(temp)) {
+			if (paradisClassifyTransferError(error) === 'permission' && !await this.stat(temp)) {
 				return false;
 			}
 			throw error;
@@ -313,7 +324,7 @@ export class ParadisFileServiceTransferFileSystem implements IParadisTransferFil
 	 */
 	private async replace(temp: URI, target: URI, overwrite: boolean, options: IParadisTransferCopyOptions): Promise<void> {
 		if (options.token.isCancellationRequested) {
-			await this.discardTemp(temp);
+			void this.discardTemp(temp);
 			throw new CancellationError();
 		}
 		// rename の上書きは、送り先がファイルでなければ中身ごと消すので、直前にもう一度確かめる
@@ -374,6 +385,8 @@ export class ParadisFileServiceTransferFileSystem implements IParadisTransferFil
 		});
 		const counted = new ParadisWrittenBytesStream(forward, options.onBytes);
 		const cancelListener = token.onCancellationRequested(() => {
+			this.options.cancelIo?.(source);
+			this.options.cancelIo?.(destination);
 			sourceStream.destroy();
 			forward.error(new CancellationError());
 			forward.end();
