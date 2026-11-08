@@ -405,6 +405,49 @@ export function markdownPlainText(source: string): string {
 	return joinPlainBlocks(parseBlocks(source));
 }
 
+/** インラインの記号を外し、リンクは名前だけにした文字（行の補足など、1 行に要約して見せるとき）。 */
+function inlineLabelText(text: string): string {
+	return parseInline(text).map(token => token.kind === 'external' || token.kind === 'local' ? token.label : token.text).join('');
+}
+
+/**
+ * 発言の最初の中身を、記号の無い 1 つの文字にする（PC の画面の行の補足など、要約の 1 行に使う）。
+ * 見出しの `#`・強調の `**`・コードの `` ` ``・引用の `>` を落とし、リンクは名前だけにする（行き先は出さない）。
+ * 箇条書きは印を残す。コードの塊はその最初の行。中身の無いブロック（区切り線など）は飛ばす。
+ */
+export function markdownSummaryText(source: string): string | undefined {
+	const first = (blocks: readonly Block[]): string | undefined => {
+		for (const block of blocks) {
+			let text: string | undefined;
+			switch (block.kind) {
+				case 'para':
+				case 'heading':
+					text = inlineLabelText(block.text);
+					break;
+				case 'bullet':
+					text = `${block.marker} ${inlineLabelText(block.text)}`;
+					break;
+				case 'code':
+					text = block.text.split('\n').find(line => line.trim().length > 0);
+					break;
+				case 'table':
+					text = block.header.map(inlineLabelText).join(' ');
+					break;
+				case 'quote':
+					text = first(block.blocks);
+					break;
+				case 'rule':
+					break;
+			}
+			if (text !== undefined && text.trim().length > 0) {
+				return text;
+			}
+		}
+		return undefined;
+	};
+	return first(parseBlocks(source));
+}
+
 /** 本文の外のリンク（http・https）の行き先。同じものは 1 回だけ、{@link MAX_COPY_PARTS} まで。 */
 export function markdownExternalLinks(source: string): readonly { readonly label: string; readonly url: string }[] {
 	const links: { label: string; url: string }[] = [];

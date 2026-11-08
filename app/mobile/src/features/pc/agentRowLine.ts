@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { agentStatusKind, agentStatusLabel } from '../../agentStatus.js';
+import { markdownSummaryText } from '../../components/markdownParse.js';
 import type { AgentChatMessage, AgentChatState } from '../../store.js';
 
 /**
@@ -76,7 +77,8 @@ function findLastAssistantText(messages: readonly AgentChatMessage[]): string | 
 		const message = messages[index];
 		// Para Code の知らせ（notice）はエージェントの発言ではない
 		if (message !== undefined && message.role === 'assistant' && message.kind === 'text' && message.notice !== true) {
-			const line = firstLine(message.text);
+			// 発言は Markdown なので、記号（`**`・`` ` ``・`#`・リンクの行き先）を落としてから 1 行にする
+			const line = firstLine(markdownSummaryText(message.text));
 			if (line !== undefined) {
 				return line;
 			}
