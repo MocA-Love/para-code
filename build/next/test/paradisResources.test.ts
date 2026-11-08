@@ -26,6 +26,7 @@ suite('Para Code production resources', () => {
 			docxPreview: 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/',
 			mermaid: 'vs/paradis/contrib/fileViewers/browser/media/mermaid/',
 			chromeDevtoolsMcp: 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/',
+			serveSim: 'vs/paradis/contrib/simulator/node/media/serve-sim/',
 		};
 		const present = Object.fromEntries(Object.entries(groups).map(([name, prefix]) => [name, desktop.some(file => file.startsWith(prefix))]));
 		const serverWeb = await getResourcePaths(path.join(repoRoot, 'src'), 'server-web');
@@ -34,6 +35,34 @@ suite('Para Code production resources', () => {
 			{ present, leakedToServerWeb: serverWeb.filter(file => file.startsWith('vs/paradis/')) },
 			{ present: Object.fromEntries(Object.keys(groups).map(name => [name, true])), leakedToServerWeb: [] }
 		);
+	});
+
+	// The simulator host needs every file below (the Mach-O helpers have no extension, so `**/*.*` alone misses them)
+	test('ships the files the simulator host loads from the vendored serve-sim', async () => {
+		const prefix = 'vs/paradis/contrib/simulator/node/media/serve-sim/';
+		const desktop = await getResourcePaths(path.join(repoRoot, 'src'), 'desktop');
+		assert.deepStrictEqual(desktop.filter(file => file.startsWith(prefix) && !file.endsWith('.md')).map(file => file.slice(prefix.length)).sort(), [
+			'LICENSE',
+			'dist/middleware.js',
+			'dist/native/serve-sim-native.node',
+			'dist/simax/serve-sim-ax-settings',
+			'dist/simduo/serve-sim-duo-hid',
+			'package.json',
+		]);
+	});
+
+	test('keeps the executable bit of a copied resource', { skip: process.platform === 'win32' }, async t => {
+		const srcDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'paradis-resources-src-'));
+		const outDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'paradis-resources-out-'));
+		t.after(() => Promise.all([srcDir, outDir].map(dir => fs.promises.rm(dir, { recursive: true, force: true }))));
+		const file = 'vs/paradis/contrib/simulator/node/media/serve-sim/dist/simduo/serve-sim-duo-hid';
+		await fs.promises.mkdir(path.dirname(path.join(srcDir, file)), { recursive: true });
+		await fs.promises.writeFile(path.join(srcDir, file), 'not really mach-o');
+		await fs.promises.chmod(path.join(srcDir, file), 0o755);
+
+		await copyResources(srcDir, outDir, 'desktop', true);
+
+		assert.strictEqual(((await fs.promises.stat(path.join(outDir, file))).mode & 0o777).toString(8), '755');
 	});
 
 	test('copies vendored scripts byte-for-byte when minifying', async t => {
