@@ -994,10 +994,13 @@ export class ParadisAgentHookOwnership {
 		}
 		const ownerProcess = snapshot.get(ownerPid)!;
 		const descendants = [...snapshot.values()].filter(entry => entry.pid !== ownerPid && this.isDescendantOf(snapshot, entry.pid, ownerPid));
-		if (descendants.some(entry => paradisIsShellCommandLine(entry.command))) {
+		const agents = [ownerProcess, ...descendants.filter(entry => paradisHookAgentKindFromCommandLine(entry.command) !== undefined)];
+		// エージェントが直に起こしたシェル（Bash ツール・裏で動かしているコマンド・Codex の exec）が居れば止めない。
+		// MCP の起動役の下のシェル（`npm exec` が挟む `sh -c`）は数えない（それで断ると MCP を使うペインがすべて休止できない）
+		const agentPids = new Set(agents.map(entry => entry.pid));
+		if (descendants.some(entry => entry.ppid !== undefined && agentPids.has(entry.ppid) && paradisIsShellCommandLine(entry.command))) {
 			return { ok: false, reason: 'background-shell' };
 		}
-		const agents = [ownerProcess, ...descendants.filter(entry => paradisHookAgentKindFromCommandLine(entry.command) !== undefined)];
 		return {
 			ok: true,
 			targets: agents.map(entry => ({ pid: entry.pid, startKey: entry.startKey })),

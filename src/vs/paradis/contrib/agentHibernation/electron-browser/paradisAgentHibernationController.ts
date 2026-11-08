@@ -68,6 +68,11 @@ export class ParadisAgentHibernationController extends Disposable {
 	private readonly retryAfter = new Map<string, number>();
 	/** 止めている最中・再開している最中のタブ。 */
 	private readonly busy = new Set<number>();
+	/**
+	 * 画面に出ている間に一度自動で起こそうとしたタブ。送れなかった（入力欄が空でない等）タブへ、毎分コマンドを打ち込まない。
+	 * 画面から外れたら外し、次に前へ来たときにもう一度だけ試す。それまでは帯の「再開」を押してもらう。
+	 */
+	private readonly autoWakeTried = new Set<number>();
 	/** タブ → 最後にログへ出した、休止しない理由（同じ理由を毎分出さない）。 */
 	private readonly lastSkip = new Map<number, ParadisHibernationSkipReason>();
 	private snapshot: IParadisAgentStatusSnapshot | undefined;
@@ -129,6 +134,7 @@ export class ParadisAgentHibernationController extends Disposable {
 			this.activity.delete(instance.instanceId);
 			this.lastSkip.delete(instance.instanceId);
 			this.busy.delete(instance.instanceId);
+			this.autoWakeTried.delete(instance.instanceId);
 			paradisForgetRemoteTerminalViewing(instance.instanceId);
 			store.deleteAndDispose(instance.instanceId);
 		});
@@ -166,11 +172,17 @@ export class ParadisAgentHibernationController extends Disposable {
 				activity.lastVisibleAt = now;
 			}
 		}
+		for (const instanceId of [...this.autoWakeTried]) {
+			if (!visible.has(instanceId)) {
+				this.autoWakeTried.delete(instanceId);
+			}
+		}
 		if (!paradisIsWorkbenchWindowFocused()) {
 			return;
 		}
 		for (const instanceId of visible) {
-			if (this.host.isHibernated(instanceId)) {
+			if (this.host.isHibernated(instanceId) && !this.autoWakeTried.has(instanceId)) {
+				this.autoWakeTried.add(instanceId);
 				this.wake(instanceId, 'visible');
 			}
 		}
@@ -180,6 +192,14 @@ export class ParadisAgentHibernationController extends Disposable {
 
 	private wake(instanceId: number, reason: 'visible' | 'mobile'): void {
 		if (!this.host.isHibernated(instanceId) || this.busy.has(instanceId)) {
+			return;
+		}
+		// 同じ会話を別のタブ（会話の履歴・スマホの「終わった会話を再開」）で続けているなら、ここでは再開しない（同じ会話を 2 か所で動かさない）
+		const sessionId = this.host.ledgerSessionId(instanceId);
+		const token = this.paneTokenService.getTokenForInstance(instanceId);
+		if (sessionId !== undefined && (this.snapshot?.paneSessions ?? []).some(session => session.sessionId === sessionId && session.token !== token)) {
+			this.host.unmarkHibernated(instanceId);
+			this.logService.info(`${LOG} not waking terminal ${instanceId}: the conversation is already running in another terminal; removed the hibernation mark`);
 			return;
 		}
 		this.busy.add(instanceId);
@@ -197,8 +217,8 @@ export class ParadisAgentHibernationController extends Disposable {
 
 	private async runTick(): Promise<void> {
 		try {
-			// 起動の直後から画面に出ている休止中のタブ（再起動をまたいだもの）は、見えている変化の知らせが来ないので、ここでも起こす。
-			// 設定をオフにした後も、休止したままのタブは起こす
+			// 起動の直後から画面に出ている休止中のタブ（再起動をまたいだもの）は、見えている変化の知らせが来ないので、ここでも起こす
+			// （画面に出ている間に 1 回だけ。autoWakeTried）。設定をオフにした後も、休止したままのタブは起こす
 			this.onVisibilityChanged();
 			if (this.enabled() && this.environmentService.remoteAuthority === undefined && this.snapshot !== undefined) {
 				await this.planAndHibernate(this.snapshot);

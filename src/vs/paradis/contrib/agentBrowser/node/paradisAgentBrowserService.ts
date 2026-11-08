@@ -5257,7 +5257,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentHibernation] sent SIGTERM to the agent of pane ${this._tokenFingerprint(token)} (${sent.length} process(es))`));
 		await this._hibernationGrace();
-		const alive = await this._hookOwnership.aliveHibernationTargets(sent);
+		// macOS のプロセス表は控え（数秒の TTL）から返ることがあり、SIGTERM の前の表で「生きている」と読みうる。
+		// 今も居るかは信号 0 で確かめ、居るものだけを開始時刻で同じプロセスか照らす（SIGKILL を余計に送らない）
+		const alive = await this._hookOwnership.aliveHibernationTargets(sent.filter(target => this._isProcessAlive(target.pid)));
 		let killed = false;
 		for (const target of alive ?? []) {
 			try {
@@ -5280,6 +5282,16 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** 休止で止めるプロセスへ信号を送る（テストは差し替える）。 */
 	private _signalProcess(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void {
 		process.kill(pid, signal);
+	}
+
+	/** プロセスが今も居るか（テストは差し替える）。 */
+	private _isProcessAlive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	/** SIGTERM の後に待つ（テストは差し替える）。 */
