@@ -30,6 +30,7 @@ import { ParadisServeSimDeviceHost } from './paradisServeSimDeviceHost.js';
 import { ParadisSimulatorChannel, ParadisSimulatorService } from './paradisSimulatorChannel.js';
 import { ParadisSimulatorFoldToolProvider } from './paradisSimulatorFoldTool.js';
 import { ParadisSimulatorHostProcess } from './paradisSimulatorHostProcess.js';
+import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 
 export interface IParadisSimulatorRegistration extends IDisposable {
 	/** Mobile Canvas の台帳（端末⇔ペイン）。 */
@@ -52,7 +53,8 @@ export function registerParadisSimulator(
 	const host = store.add(new ParadisSimulatorHostProcess({ userDataPath, logService }));
 	const backend = store.add(new ParadisServeSimBackend(host, logService));
 	const deviceHost = new ParadisServeSimDeviceHost(backend, logService);
-	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService));
+	const deviceHub = new ParadisSimulatorDeviceHub();
+	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService, deviceHub));
 	server.registerChannel(PARADIS_SIMULATOR_CHANNEL, new ParadisSimulatorChannel<string>(service));
 
 	// モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは para-browser の MCP サーバーへ相乗りさせるため、
@@ -60,7 +62,7 @@ export function registerParadisSimulator(
 	const { service: ledger, deviceOps } = registerParadisMobileCanvas(server, builtinExtensionsPath, logService, registerToolProvider,
 		mobileCanvas => new ParadisMobileHostRouter(mobileCanvas, deviceHost, useServeSim, logService));
 	store.add(ledger);
-	const fold = new ParadisSimulatorFoldToolProvider(ledger, backend, deviceHost, deviceId => deviceOps.forgetScreenSize(deviceId), useServeSim, logService);
+	const fold = new ParadisSimulatorFoldToolProvider(ledger, backend, deviceHost, deviceId => deviceOps.forgetScreenSize(deviceId), useServeSim, logService, deviceHub);
 	store.add(paradisRegisterMcpToolProvider(fold));
 
 	// 設定を切り替えたら: オフならホストを止める。どちらでも、新しい一覧に無い端末の割り当てを外す

@@ -56,6 +56,8 @@ class FakeClient implements IParadisSimulatorClient {
 	captureFrame(): Promise<VSBuffer> { throw new Error('not used'); }
 	fold(): Promise<{ ok: boolean }> { throw new Error('not used'); }
 	deviceHubActive(): Promise<boolean> { throw new Error('not used'); }
+	deviceHubRunning(): Promise<boolean> { throw new Error('not used'); }
+	openDeviceHub(): Promise<void> { throw new Error('not used'); }
 }
 
 class FakeUrls implements IParadisSimulatorObjectUrls {

@@ -20,6 +20,7 @@ import { IParadisMobileDeviceLedger } from '../../mobileCanvas/node/paradisMobil
 import { ParadisSimulatorFold } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold } from '../common/paradisSimulatorFrames.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
+import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 import { ParadisServeSimDeviceHost, paradisServeSimActiveDisplay, paradisServeSimUdidOf } from './paradisServeSimDeviceHost.js';
 
 export const PARADIS_SIMULATOR_FOLD_TOOL: IParadisMcpToolDefinition = {
@@ -60,6 +61,7 @@ export class ParadisSimulatorFoldToolProvider implements IParadisMcpToolProvider
 		private readonly _forgetScreenSize: (deviceId: string) => void,
 		private readonly _isEnabled: () => boolean,
 		private readonly _logService: ILogService | undefined,
+		private readonly _deviceHub?: Pick<ParadisSimulatorDeviceHub, 'isRunning'>,
 	) { }
 
 	listTools(): readonly IParadisMcpToolDefinition[] {
@@ -102,7 +104,11 @@ export class ParadisSimulatorFoldToolProvider implements IParadisMcpToolProvider
 		}
 		const accepted = await this._backend.fold(udid, fold);
 		if (!accepted) {
-			return errorResult('The simulator did not accept the fold. Device Hub (Xcode > Open Developer Tool > Device Hub) must be running; ask the user to open it, then try again.');
+			// 開閉は Device Hub が起動していないと断られる（Xcode 27.2 で実測）。エージェントからは起動しない
+			const running = await this._deviceHub?.isRunning().catch(() => undefined);
+			return errorResult(running === false
+				? 'Device Hub is not running, and folding needs it. Ask the user to start it: the "Start Device Hub" button in the simulator tab of Para Code, or Xcode > Open Developer Tool > Device Hub. Then try again.'
+				: 'The simulator did not accept the fold. Device Hub (Xcode > Open Developer Tool > Device Hub) must be running; ask the user to open it (the simulator tab of Para Code has a button), then try again.');
 		}
 		this._host.forgetDisplay(attachment.deviceId);
 		this._forgetScreenSize(attachment.deviceId);

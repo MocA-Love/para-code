@@ -35,7 +35,8 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSimulatorDevice, PARADIS_SIMULATOR_ENABLED_SETTING } from '../common/paradisSimulator.js';
-import { paradisSimulatorNextOrientation, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
+import { paradisSimulatorDuoPanel, paradisSimulatorNextOrientation, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
+import { ParadisSimulatorFoldBar, ParadisSimulatorFoldRequest } from './paradisSimulatorFoldBar.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 import { PARADIS_SIMULATOR_EDITOR_ID, ParadisSimulatorEditorInput } from './paradisSimulatorEditorInput.js';
 import { ParadisSimulatorFrameView } from './paradisSimulatorFrameView.js';
@@ -64,10 +65,57 @@ function errorMessage(error: unknown): string {
 class ParadisSimulatorEditorSession extends DisposableStore {
 	device: IParadisSimulatorDevice | undefined;
 	readonly frameView: ParadisSimulatorFrameView;
+	/** 折りたたみの端末の、最後に読んだ様子（折りたたみでなければ undefined）。 */
+	fold: { hingeDegrees: number; activeDisplay: 'cover' | 'inner' } | undefined;
+	deviceHubRunning: boolean | undefined;
+	folding = false;
+	foldError: string | undefined;
+	/** 外の画面が映っていたときの最後の 1 枚（内の画面のときに小窓へ出す）。 */
+	coverFrame: Uint8Array | undefined;
+	readonly coverMini: HTMLImageElement;
+	private _coverUrl: string | undefined;
 
 	constructor(readonly input: ParadisSimulatorEditorInput, stage: HTMLElement, client: IParadisSimulatorClient) {
 		super();
 		this.frameView = this.add(new ParadisSimulatorFrameView(stage, input.udid, client));
+		this.coverMini = dom.append(stage, $<HTMLImageElement>('img.paradis-simulator-cover-mini'));
+		this.coverMini.alt = localize('paradis.simulator.coverMiniAlt', "外の画面（閉じていたときの最後の画面）");
+		this.coverMini.style.display = 'none';
+		this.add({
+			dispose: () => {
+				this._revokeCover();
+				this.coverMini.remove();
+			}
+		});
+	}
+
+	/** 内の画面を映していて、外の画面の 1 枚があるときだけ小窓に出す。 */
+	renderCoverMini(): void {
+		const show = this.fold?.activeDisplay === 'inner' && !!this.coverFrame;
+		if (!show) {
+			this.coverMini.style.display = 'none';
+			this._revokeCover();
+			return;
+		}
+		if (!this._coverUrl) {
+			this._coverUrl = URL.createObjectURL(new Blob([this.coverFrame!.slice()], { type: 'image/jpeg' }));
+			this.coverMini.src = this._coverUrl;
+		}
+		this.coverMini.style.display = '';
+	}
+
+	/** 外の画面の 1 枚を差し替えた（小窓の画像を作り直す）。 */
+	setCoverFrame(frame: Uint8Array): void {
+		this.coverFrame = frame;
+		this._revokeCover();
+	}
+
+	private _revokeCover(): void {
+		if (this._coverUrl) {
+			URL.revokeObjectURL(this._coverUrl);
+			this._coverUrl = undefined;
+			this.coverMini.removeAttribute('src');
+		}
 	}
 
 	get booted(): boolean {
@@ -95,6 +143,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 	private readonly _stallRetry = this._register(new MutableDisposable());
 	private _stallCount = 0;
 	private _keyHint: HTMLElement | undefined;
+	private _foldBar: ParadisSimulatorFoldBar | undefined;
 	private _noticeState: ParadisSimulatorNotice = { kind: 'none' };
 	private _lastDimension: dom.Dimension | undefined;
 
@@ -131,6 +180,10 @@ export class ParadisSimulatorEditor extends EditorPane {
 		this._buttons.save = button(localize('paradis.simulator.save', "保存"), () => this._saveScreenshot());
 		this._buttons.power = button(localize('paradis.simulator.shutdown', "停止"), () => this._togglePower());
 
+		this._foldBar = this._register(new ParadisSimulatorFoldBar(this._root));
+		this._register(this._foldBar.onDidRequestFold(request => void this._fold(request)));
+		this._register(this._foldBar.onDidRequestDeviceHub(() => void this._openDeviceHub()));
+
 		this._deviceHub = dom.append(this._root, $('.paradis-simulator-device-hub'));
 		this._deviceHub.textContent = localize('paradis.simulator.deviceHub', "Device Hub がこの端末の入力を使っています。タップやキーが届かないときは Device Hub を閉じてください。");
 		this._deviceHub.style.display = 'none';
@@ -166,7 +219,13 @@ export class ParadisSimulatorEditor extends EditorPane {
 		}));
 		session.add(input.onDidRequestBoot(() => void this._bootIfRequested(session)));
 		session.add(session.frameView.onDidStall(() => this._onStall(session)));
-		session.add(session.frameView.onDidDrawFrame(() => this._stallCount = 0));
+		session.add(session.frameView.onDidDrawFrame(() => {
+			this._stallCount = 0;
+			// 外の画面を映している間の 1 枚を覚えておき、内の画面に替わったら小窓に出す
+			if (session.fold?.activeDisplay === 'cover' && session.frameView.currentFrame) {
+				session.setCoverFrame(session.frameView.currentFrame);
+			}
+		}));
 		session.add(session.frameView.onDidRequestExit(() => this._buttons.rotate?.focus()));
 		session.add(session.frameView.onDidFail(error => this._setNotice({ kind: 'error', message: error.message })));
 		this._renderHeader();
@@ -191,6 +250,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 	override clearInput(): void {
 		// タブを閉じた・別のタブへ替えた: 映像の購読と Blob URL を放す
 		this._session.clear();
+		this._foldBar?.update(undefined);
 		this._stallRetry.clear();
 		this._stallCount = 0;
 		this._deviceHubTimer.cancel();
@@ -301,9 +361,65 @@ export class ParadisSimulatorEditor extends EditorPane {
 			const config = await this._client.getScreenConfig(session.input.udid);
 			if (this._session.value === session) {
 				session.frameView.setScreenConfig(config);
+				const panel = paradisSimulatorDuoPanel(config);
+				const wasFoldable = !!session.fold;
+				session.fold = config.hingeDegrees !== undefined && panel ? { hingeDegrees: config.hingeDegrees, activeDisplay: panel } : undefined;
+				if (session.fold && (!wasFoldable || session.deviceHubRunning === undefined)) {
+					session.deviceHubRunning = await this._client.deviceHubRunning().catch(() => undefined);
+				}
+				this._renderFold(session);
 			}
 		} catch {
 			// 映像の流れが始まる前は無いことがある。次の読み直しで合わせる
+		}
+	}
+
+	private _renderFold(session: ParadisSimulatorEditorSession): void {
+		if (this._session.value !== session) {
+			return;
+		}
+		this._foldBar?.update(session.fold ? { ...session.fold, deviceHubRunning: session.deviceHubRunning, busy: session.folding, error: session.foldError } : undefined);
+		session.renderCoverMini();
+		this._relayout();
+	}
+
+	private async _fold(request: ParadisSimulatorFoldRequest): Promise<void> {
+		const session = this._session.value;
+		if (!session?.fold || session.folding) {
+			return;
+		}
+		session.folding = true;
+		session.foldError = undefined;
+		this._renderFold(session);
+		try {
+			const { ok } = await this._client.fold(session.input.udid, request.kind === 'pose' ? { pose: request.pose } : { hinge: request.hinge });
+			if (!ok) {
+				// 開閉は Device Hub が起動していないと断られる（Mac で実測）。起動しているか読み直して、案内を出す
+				session.deviceHubRunning = await this._client.deviceHubRunning().catch(() => undefined);
+				session.foldError = session.deviceHubRunning === false
+					? localize('paradis.simulator.fold.refusedNoHub', "開閉できませんでした。Device Hub が起動していません。「Device Hub を起動」を押してから、もう一度試してください。")
+					: localize('paradis.simulator.fold.refused', "開閉できませんでした。Xcode の Device Hub が起動しているか確かめてから、もう一度試してください。");
+			}
+		} catch (error) {
+			session.foldError = localize('paradis.simulator.fold.failed', "開閉に失敗しました: {0}", errorMessage(error));
+		} finally {
+			session.folding = false;
+		}
+		await this._readScreenConfig(session);
+		this._renderFold(session);
+	}
+
+	private async _openDeviceHub(): Promise<void> {
+		const session = this._session.value;
+		try {
+			await this._client.openDeviceHub();
+		} catch (error) {
+			this._notificationService.error(localize('paradis.simulator.deviceHub.openFailed', "Device Hub を起動できませんでした: {0}", errorMessage(error)));
+		}
+		if (session) {
+			session.deviceHubRunning = await this._client.deviceHubRunning().catch(() => undefined);
+			session.foldError = undefined;
+			this._renderFold(session);
 		}
 	}
 
@@ -317,6 +433,14 @@ export class ParadisSimulatorEditor extends EditorPane {
 		if (this._session.value === session && this._deviceHub) {
 			this._deviceHub.style.display = active ? '' : 'none';
 			this._relayout();
+		}
+		// 折りたたみの端末なら、Device Hub が起動しているかも読み直す（開閉のバーの案内のため）
+		if (this._session.value === session && session.fold) {
+			const running = await this._client.deviceHubRunning().catch(() => undefined);
+			if (running !== session.deviceHubRunning) {
+				session.deviceHubRunning = running;
+				this._renderFold(session);
+			}
 		}
 	}
 
