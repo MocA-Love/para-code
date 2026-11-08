@@ -327,7 +327,24 @@ jobs:
         if: ${{ steps.embed_computer_use_helper.outcome == 'failure' }}
         run: rm -rf "$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app/Contents/Helpers/Para Code Computer Use.app"
 
-      # sign.ts carries one PARA-PATCH: it gives the Computer Use helper empty entitlements.
+      # Dictation speech helper (G-14): a universal plain executable built with swiftc against the macOS 26 SDK
+      # (buildHelper.ts uses an Xcode 26 from /Applications when the default Xcode is older, for this build only).
+      # It goes into Contents/Helpers before "Code sign app", which signs it with the app, and is notarized as part
+      # of the app. Without it the app still works and dictation reports that the helper is missing, so this step
+      # never fails the release, betas included. The first lines print which Xcode and SDK the runner has.
+      - name: Build and embed the speech helper
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          xcodebuild -version || true
+          xcrun --sdk macosx --show-sdk-version || true
+          ls -d /Applications/Xcode*.app || true
+          node build/paradis/speech/buildHelper.ts --out .build/paradis/speech
+          lipo .build/paradis/speech/ParadisSpeech -verify_arch arm64 x86_64
+          node build/paradis/speech/buildHelper.ts --embed "$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app" --helper .build/paradis/speech/ParadisSpeech
+
+      # sign.ts carries two PARA-PATCHes: empty entitlements for the Computer Use helper, and the speech recognition
+      # usage description for the speech helper.
       - name: Code sign app (build/darwin/sign.ts, reused as-is — see CLAUDE.md)
         env:
           AGENT_TEMPDIRECTORY: ${{ runner.temp }}
