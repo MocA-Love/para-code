@@ -12,7 +12,9 @@
 //  - 映像は見えている間だけ購読する。見えなくなったら外す（端末のセッションはホストに残る）
 //  - 復元したタブは、端末が落ちていれば「起動」のボタンを出し、勝手に起動しない
 //  - Device Hub が入力を奪っているときは注意を出す（見えている間だけ 5 秒ごとに確かめる。向きもこのとき読み直す）
-//  - 映像が途切れたら（端末が止まった・ホストが落ちた・設定がオフになった）、様子を読み直して購読し直すか理由を出す
+//  - 映像が途切れたら（端末が止まった・ホストが起きない・流れが切れた）、すぐに理由と「再試行」を出し、裏で間を
+//    延ばしながら様子を読み直して購読し直す。知らせを消すのは 1 枚描けたときだけ（読み直しのたびに消すと、
+//    使い切るまでの約 100 秒、黒いまま何も出なかった）
 
 import './media/paradisSimulator.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -35,7 +37,7 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSimulatorDevice } from '../common/paradisSimulator.js';
-import { paradisSimulatorDuoPanel, paradisSimulatorNextOrientation, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
+import { paradisSimulatorDuoPanel, paradisSimulatorNextOrientation, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
 import { ParadisSimulatorFoldBar, ParadisSimulatorFoldRequest } from './paradisSimulatorFoldBar.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 import { PARADIS_SIMULATOR_EDITOR_ID, ParadisSimulatorEditorInput } from './paradisSimulatorEditorInput.js';
@@ -53,7 +55,7 @@ type ParadisSimulatorNotice =
 	| { readonly kind: 'missing' }
 	| { readonly kind: 'shutdown' }
 	| { readonly kind: 'booting' }
-	| { readonly kind: 'stalled' }
+	| { readonly kind: 'stalled'; readonly reason?: string }
 	| { readonly kind: 'error'; readonly message: string };
 
 function errorMessage(error: unknown): string {
@@ -219,9 +221,12 @@ export class ParadisSimulatorEditor extends EditorPane {
 			void this._readScreenConfig(session);
 		}));
 		session.add(input.onDidRequestBoot(() => void this._bootIfRequested(session)));
-		session.add(session.frameView.onDidStall(() => this._onStall(session)));
+		session.add(session.frameView.onDidStall(reason => this._onStall(session, reason)));
 		session.add(session.frameView.onDidDrawFrame(() => {
 			this._stallCount = 0;
+			if (this._noticeState.kind === 'stalled') {
+				this._setNotice({ kind: 'none' });
+			}
 			// 外の画面を映している間の 1 枚を覚えておき、内の画面に替わったら小窓に出す
 			if (session.fold?.activeDisplay === 'cover' && session.frameView.currentFrame) {
 				session.setCoverFrame(session.frameView.currentFrame);
@@ -293,7 +298,9 @@ export class ParadisSimulatorEditor extends EditorPane {
 			if (session.device) {
 				session.input.setDeviceName(session.device.name);
 			}
-			this._setNotice(!session.device ? { kind: 'missing' } : session.booted ? { kind: 'none' } : session.device.state === 'Booting' ? { kind: 'booting' } : { kind: 'shutdown' });
+			// 起動しているなら、映像が届かない知らせは残す（消すのは 1 枚描けたとき）
+			const streaming: ParadisSimulatorNotice = this._noticeState.kind === 'stalled' ? this._noticeState : { kind: 'none' };
+			this._setNotice(!session.device ? { kind: 'missing' } : session.booted ? streaming : session.device.state === 'Booting' ? { kind: 'booting' } : { kind: 'shutdown' });
 		} catch (error) {
 			if (this._session.value === session) {
 				this._setNotice({ kind: 'error', message: errorMessage(error) });
@@ -327,15 +334,25 @@ export class ParadisSimulatorEditor extends EditorPane {
 	}
 
 	/**
-	 * 映像が途切れた。購読を止め、待ってから様子を読み直す（起動中なら購読し直す）。待ちは回目ごとに延ばし、
-	 * 使い切ったら「再試行」のボタンを出して止める。
+	 * 映像が途切れた。購読を止め、すぐに理由と「再試行」を出す。理由は shared process から届いたもの、無ければ
+	 * ホストが起きない理由（`getStatus`）。裏では待ってから様子を読み直し（起動中なら購読し直す）、待ちは回目ごとに
+	 * 延ばして、使い切ったら止める（「再試行」で数え直す）。
 	 */
-	private _onStall(session: ParadisSimulatorEditorSession): void {
+	private _onStall(session: ParadisSimulatorEditorSession, streamReason: string | undefined): void {
 		session.frameView.stop();
+		const reason = paradisSimulatorStallReason(streamReason, undefined);
+		this._setNotice({ kind: 'stalled', reason });
+		if (!reason) {
+			void this._client.getStatus().then(status => {
+				const hostError = paradisSimulatorStallReason(undefined, status.hostError);
+				if (hostError && this._session.value === session && this._noticeState.kind === 'stalled' && !this._noticeState.reason) {
+					this._setNotice({ kind: 'stalled', reason: hostError });
+				}
+			}, () => undefined);
+		}
 		const delay = paradisSimulatorStallRetryDelay(this._stallCount);
 		this._stallCount++;
 		if (delay === undefined) {
-			this._setNotice({ kind: 'stalled' });
 			return;
 		}
 		const timer = setTimeout(() => {
@@ -474,7 +491,9 @@ export class ParadisSimulatorEditor extends EditorPane {
 				case 'shutdown': return localize('paradis.simulator.notice.shutdown', "この端末は起動していません。");
 				case 'booting': return localize('paradis.simulator.notice.booting', "起動しています…");
 				case 'error': return localize('paradis.simulator.notice.error', "シミュレータとつながりませんでした: {0}", notice.message);
-				case 'stalled': return localize('paradis.simulator.notice.stalled', "映像が届きません。端末の様子を何度か読み直しましたが戻りませんでした。");
+				case 'stalled': return notice.reason
+					? localize('paradis.simulator.notice.stalledReason', "映像が届きません: {0}", notice.reason)
+					: localize('paradis.simulator.notice.stalledNoReason', "映像が届きません。シミュレータのホストから映像が来ていません。");
 			}
 		})();
 		this._notice.style.display = notice.kind === 'none' ? 'none' : '';

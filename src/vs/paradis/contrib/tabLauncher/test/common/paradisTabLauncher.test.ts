@@ -16,6 +16,7 @@ import {
 	paradisRestoreLaunchChoice,
 	paradisStoreLaunchChoice,
 	paradisTabLauncherAgents,
+	paradisTabLauncherDevices,
 	paradisTabLauncherEfforts,
 	paradisTabLauncherRoot,
 	paradisTabLauncherUrl,
@@ -111,6 +112,30 @@ suite('paradisTabLauncher', () => {
 			combo: [{ agentId: 'claude', modelId: 'opus', effortId: 'high' }, { agentId: 'claude', modelId: 'opusplan', effortId: 'high' }],
 			lunaUltra: [],
 			effortOnly: [],
+		});
+	});
+
+	// 「シミュレータを開く ›」: 起動している iOS と動いている Android だけ。iOS は macOS だけ（Android は全 OS）
+	test('lists running devices for the simulator submenu and keeps iOS to macOS', () => {
+		const ios = [
+			{ udid: 'A1B2C3D4-0000-1111-2222-333344445555', name: 'iPhone 18 Pro', runtime: 'iOS 27.2', state: 'Booted' as const },
+			{ udid: 'A1B2C3D4-0000-1111-2222-333344446666', name: 'iPad Pro', runtime: 'iOS 27.2', state: 'Shutdown' as const },
+		];
+		const android = [
+			{ serial: 'emulator-5554', name: 'Pixel 9', runtime: '', state: 'device' },
+			{ serial: 'emulator-5556', name: 'Pixel 8', runtime: 'Android 15', state: 'offline' },
+		];
+		assert.deepStrictEqual({
+			mac: paradisTabLauncherDevices(ios, android, true),
+			other: paradisTabLauncherDevices(ios, android, false),
+			none: paradisTabLauncherDevices([], [], true),
+		}, {
+			mac: [
+				{ kind: 'ios', id: 'A1B2C3D4-0000-1111-2222-333344445555', name: 'iPhone 18 Pro', runtime: 'iOS 27.2' },
+				{ kind: 'android', id: 'emulator-5554', name: 'Pixel 9', runtime: 'Android' },
+			],
+			other: [{ kind: 'android', id: 'emulator-5554', name: 'Pixel 9', runtime: 'Android' }],
+			none: [],
 		});
 	});
 });

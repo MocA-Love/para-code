@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisSimulatorDuoPanel, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
+import { paradisSimulatorDuoPanel, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
 
 suite('Paradis simulator: human input', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -99,5 +99,20 @@ suite('Paradis simulator: human input', () => {
 			paradisSimulatorDuoPanel({ width: 1000, height: 1000, hingeDegrees: 30 }),
 			paradisSimulatorDuoPanel({ width: 1206, height: 2622 }),
 		], ['inner', 'cover', 'cover', undefined]);
+	});
+
+	// 映像が届かない知らせの理由: 流れが終わった理由、ホストが起きない理由の順。どちらも無ければ汎用の文（undefined）
+	test('picks the stream reason first, then the host error', () => {
+		assert.deepStrictEqual([
+			paradisSimulatorStallReason('The simulator host answered 404 for the video stream', 'host down'),
+			paradisSimulatorStallReason(undefined, 'The simulator host did not become ready in time'),
+			paradisSimulatorStallReason('  ', ''),
+			paradisSimulatorStallReason(undefined, undefined),
+		], [
+			'The simulator host answered 404 for the video stream',
+			'The simulator host did not become ready in time',
+			undefined,
+			undefined,
+		]);
 	});
 });

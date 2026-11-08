@@ -9,6 +9,7 @@
 // タブの「＋」の横の ⌄ から開くランチャー本体（Q570 の案 A: 一覧の横に起動パネル）。
 //
 // 左の一覧に、検索欄・新しいターミナル（› で upstream のプロファイルの一覧）・新しいブラウザのタブ・
+// シミュレータを開く（› で起動している iOS のシミュレータと動いている Android。行を押すと全部の端末の一覧）・
 // 新しい Markdown・新しいファイル（› で拡張機能が `file/newFile` に足した項目）・エージェント・
 // エージェントの設定を並べる。エージェントの行を押すと横に起動パネルを出し、モデル・エフォート・権限・
 // 最初の指示を選んで「ターミナルで起動」か「チャットで起動」する。行を押しただけでは起動しない（Q570 の 4）。
@@ -24,7 +25,7 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
-import { IAction, Separator, SubmenuAction } from '../../../../base/common/actions.js';
+import { IAction, Separator, SubmenuAction, toAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
@@ -52,6 +53,8 @@ import { IParadisAgentChatService } from '../../agentChat/browser/paradisAgentCh
 import { PARADIS_AGENT_CHAT_ENABLED_SETTING } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
+import { IParadisSimulatorClient } from '../../simulator/electron-browser/paradisSimulatorClient.js';
+import { PARADIS_SIMULATOR_OPEN_ANDROID_COMMAND_ID, PARADIS_SIMULATOR_OPEN_COMMAND_ID } from '../../simulator/electron-browser/paradisSimulatorScreenOpener.js';
 import { PARADIS_OPEN_SETTINGS_DIALOG_COMMAND_ID } from '../../paradisSettings/electron-browser/paradisSettingsDialog.contribution.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentCommandTemplate, PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
@@ -63,7 +66,9 @@ import {
 	paradisParseStoredLaunchChoices,
 	paradisRestoreLaunchChoice,
 	paradisStoreLaunchChoice,
+	IParadisTabLauncherDevice,
 	paradisTabLauncherAgents,
+	paradisTabLauncherDevices,
 	paradisTabLauncherEfforts,
 	paradisTabLauncherRoot,
 	paradisTabLauncherUrl,
@@ -85,6 +90,11 @@ const STR_SEARCH = localize('paradis.tabLauncher.search', "タブ・エージェ
 const STR_NEW_TERMINAL = localize('paradis.tabLauncher.newTerminal', "新しいターミナル");
 const STR_NEW_TERMINAL_MORE = localize('paradis.tabLauncher.newTerminalMore', "プロファイルと分割");
 const STR_NEW_BROWSER = localize('paradis.tabLauncher.newBrowser', "新しいブラウザのタブ");
+const STR_OPEN_SIMULATOR = localize('paradis.tabLauncher.openSimulator', "シミュレータを開く");
+const STR_OPEN_SIMULATOR_MORE = localize('paradis.tabLauncher.openSimulatorMore', "起動している端末");
+const STR_ALL_DEVICES = localize('paradis.tabLauncher.allDevices', "すべての端末…");
+const STR_NO_RUNNING_DEVICE = localize('paradis.tabLauncher.noRunningDevice', "起動している端末はありません");
+const STR_DEVICE_LABEL = (name: string, runtime: string) => localize('paradis.tabLauncher.deviceLabel', "{0}（{1}）", name, runtime);
 const STR_NEW_MARKDOWN = localize('paradis.tabLauncher.newMarkdown', "新しい Markdown");
 const STR_UNTITLED = localize('paradis.tabLauncher.untitled', "無題");
 const STR_NEW_FILE = localize('paradis.tabLauncher.newFile', "新しいファイル…");
@@ -164,6 +174,8 @@ export class ParadisTabLauncherPopup extends Disposable {
 	private sideToLeft = true;
 	private readonly choices = new Map<string, IParadisTabLauncherChoice>();
 	private hidden = false;
+	/** 「シミュレータを開く ›」に並べる端末（開いたときに取り始める。手元の shared process から）。 */
+	private readonly devices: Promise<readonly IParadisTabLauncherDevice[]>;
 
 	constructor(
 		private readonly host: IParadisTabLauncherHost,
@@ -184,9 +196,15 @@ export class ParadisTabLauncherPopup extends Disposable {
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisAgentChatService private readonly agentChatService: IParadisAgentChatService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
+		@IParadisSimulatorClient simulatorClient: IParadisSimulatorClient,
 	) {
 		super();
 		this.window = dom.getWindow(host.anchor);
+		// › を開いたときに待たせないよう、先に取り始める。iOS のシミュレータは macOS だけ（Android は全 OS）
+		this.devices = Promise.all([
+			isMacintosh ? simulatorClient.listDevices().catch(() => []) : Promise.resolve([]),
+			simulatorClient.listAndroidDevices().catch(() => []),
+		]).then(([ios, android]) => paradisTabLauncherDevices(ios, android, isMacintosh));
 		// .monaco-workbench の内側に置く（CSS のセレクタとテーマの変数をそこから効かせる。プリセットのポップアップと同じ）
 		const container = host.anchor.closest<HTMLElement>('.monaco-workbench') ?? this.window.document.body;
 		this.list = dom.append(container, $('.paradis-tab-launcher.paradis-overlay-popover'));
@@ -316,6 +334,8 @@ export class ParadisTabLauncherPopup extends Disposable {
 		const terminalRow = this.addRow(this.rowsElement, this.rows, { icon: Codicon.terminal, label: STR_NEW_TERMINAL, hasSide: true, hoverOpens: true }, () => this.run(() => this.host.runPrimary()), row => this.openActionSide(1, row, this.terminalActions(this.renderStore)));
 		terminalRow.element.setAttribute('aria-description', STR_NEW_TERMINAL_MORE);
 		this.addRow(this.rowsElement, this.rows, { icon: Codicon.globe, label: STR_NEW_BROWSER }, () => this.run(() => this.commandService.executeCommand(BrowserViewCommandId.Open)));
+		const simulatorRow = this.addRow(this.rowsElement, this.rows, { icon: Codicon.deviceMobile, label: STR_OPEN_SIMULATOR, hasSide: true, hoverOpens: true }, () => this.run(() => this.commandService.executeCommand(PARADIS_SIMULATOR_OPEN_COMMAND_ID)), row => void this.openSimulatorSide(row));
+		simulatorRow.element.setAttribute('aria-description', STR_OPEN_SIMULATOR_MORE);
 		this.addRow(this.rowsElement, this.rows, { icon: Codicon.newFile, label: STR_NEW_MARKDOWN, description: STR_UNTITLED }, () => this.run(() => this.commandService.executeCommand(NEW_UNTITLED_FILE_COMMAND_ID, { languageId: 'markdown' })));
 		const newFileActions = this.newFileActions();
 		if (newFileActions.length > 0) {
@@ -353,6 +373,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 		const fixed: { label: string; icon: ThemeIcon; run: () => unknown }[] = [
 			{ label: STR_NEW_TERMINAL, icon: Codicon.terminal, run: () => this.host.runPrimary() },
 			{ label: STR_NEW_BROWSER, icon: Codicon.globe, run: () => this.commandService.executeCommand(BrowserViewCommandId.Open) },
+			{ label: STR_OPEN_SIMULATOR, icon: Codicon.deviceMobile, run: () => this.commandService.executeCommand(PARADIS_SIMULATOR_OPEN_COMMAND_ID) },
 			{ label: STR_NEW_MARKDOWN, icon: Codicon.newFile, run: () => this.commandService.executeCommand(NEW_UNTITLED_FILE_COMMAND_ID, { languageId: 'markdown' }) },
 			{ label: STR_AGENT_SETTINGS, icon: Codicon.gear, run: () => this.commandService.executeCommand(PARADIS_OPEN_SETTINGS_DIALOG_COMMAND_ID, SETTINGS_AGENT_SECTION_ID) },
 		];
@@ -598,6 +619,34 @@ export class ParadisTabLauncherPopup extends Disposable {
 			defaultProfileName = this.terminalProfileResolverService.defaultProfileName;
 		}
 		return getTerminalActionBarArgs({ viewColumn: ACTIVE_GROUP }, this.terminalProfileService.availableProfiles, defaultProfileName ?? '', this.terminalProfileService.contributedProfiles, this.terminalService, dropdownMenu, store).dropdownMenuActions;
+	}
+
+	/**
+	 * 「シミュレータを開く ›」: 起動している端末を並べ、最後に「すべての端末…」（止まっている端末も選べる一覧）。
+	 * 端末の一覧は開いたときに取り始めたものを待つ。届く前にランチャーが閉じた・別の行の › が開いたなら出さない。
+	 * キーボード（→・Enter）で開いたなら、届いたときに先頭の行へフォーカスを移す。
+	 */
+	private async openSimulatorSide(row: HTMLElement): Promise<void> {
+		const devices = await this.devices;
+		if (this.hidden || !row.isConnected || (this.sides.length > 0 && this.sides[0].ownerRow !== row)) {
+			return;
+		}
+		const actions: IAction[] = devices.map(device => toAction({
+			id: `paradis.tabLauncher.device.${device.kind}.${device.id}`,
+			label: STR_DEVICE_LABEL(device.name, device.runtime),
+			// 行を押したときに this.run で包まれる（閉じてから実行する）ので、ここではコマンドを呼ぶだけ
+			run: () => this.commandService.executeCommand(device.kind === 'ios' ? PARADIS_SIMULATOR_OPEN_COMMAND_ID : PARADIS_SIMULATOR_OPEN_ANDROID_COMMAND_ID, device.id),
+		}));
+		if (actions.length === 0) {
+			actions.push(toAction({ id: 'paradis.tabLauncher.device.none', label: STR_NO_RUNNING_DEVICE, enabled: false, run: () => { } }));
+		}
+		actions.push(new Separator());
+		actions.push(toAction({ id: 'paradis.tabLauncher.device.all', label: STR_ALL_DEVICES, run: () => this.commandService.executeCommand(PARADIS_SIMULATOR_OPEN_COMMAND_ID) }));
+		const focused = this.window.document.activeElement === row;
+		this.openActionSide(1, row, actions);
+		if (focused) {
+			this.focusSide(1);
+		}
 	}
 
 	/** 拡張機能が `file/newFile` に足した「新しいファイル」の項目。 */
