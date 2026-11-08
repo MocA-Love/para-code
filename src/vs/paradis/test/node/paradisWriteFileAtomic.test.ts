@@ -15,7 +15,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../base/common/path.js';
 import { isWindows } from '../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { paradisMayWriteInPlaceAfterTempFailure, paradisWriteFileAtomic } from '../../node/paradisWriteFileAtomic.js';
+import { paradisMayWriteInPlaceAfterRenameFailure, paradisMayWriteInPlaceAfterTempFailure, paradisWriteFileAtomic } from '../../node/paradisWriteFileAtomic.js';
 
 (isWindows ? suite.skip : suite)('Paradis atomic file write', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -61,6 +61,14 @@ import { paradisMayWriteInPlaceAfterTempFailure, paradisWriteFileAtomic } from '
 		assert.deepStrictEqual(
 			['EACCES', 'EPERM', 'EEXIST', 'ENAMETOOLONG', 'ENOSPC', 'EIO', 'EDQUOT'].map(value => paradisMayWriteInPlaceAfterTempFailure(code(value))),
 			[true, true, true, true, false, false, false],
+		);
+	});
+
+	test('falls back to writing in place after a failed replace only when another process briefly holds the file, not when the disk is full', () => {
+		const code = (value: string) => Object.assign(new Error(value), { code: value });
+		assert.deepStrictEqual(
+			['EPERM', 'EBUSY', 'EACCES', 'ENOSPC', 'EIO', 'EROFS', 'EXDEV'].map(value => paradisMayWriteInPlaceAfterRenameFailure(code(value))),
+			[true, true, true, false, false, false, false],
 		);
 	});
 });

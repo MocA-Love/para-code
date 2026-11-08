@@ -31,6 +31,7 @@ import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { isEqual, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -256,7 +257,7 @@ export class ParadisClaudeModEnvironment extends Disposable {
 				same = false;
 			}
 			if (!same) {
-				await this.fileService.writeFile(uri, file.content);
+				await this.replaceFile(uri, file.content);
 			}
 		}
 		// 接続先の URI（vscode-remote）の fsPath は手元の OS の流儀になりうるので、接続先は path（POSIX）を渡す
@@ -270,6 +271,21 @@ export class ParadisClaudeModEnvironment extends Disposable {
 		await this.markUsed(installRoot, target);
 		this.logService.info(`[ParadisClaudeMod] the Claude Code mod is ready at ${target.fsPath}${this.blockedByPolicy ? ' (not loaded: managed settings forbid plugin folders)' : ''}`);
 		await this.removeStaleInstalls(installRoot, target);
+	}
+
+	/**
+	 * 隣の一時名へ書いてから置き換える。同じ接続先へ 2 つの窓が同時に初めて写しても、claude が書きかけの
+	 * ファイルを読まないようにする（接続先の provider が atomic な書き込みを持たない場合もあるので move で置き換える）。
+	 */
+	private async replaceFile(uri: URI, content: VSBuffer): Promise<void> {
+		const temporary = uri.with({ path: `${uri.path}.${generateUuid()}.paratmp` });
+		try {
+			await this.fileService.writeFile(temporary, content);
+			await this.fileService.move(temporary, uri, true);
+		} catch (error) {
+			await this.fileService.del(temporary).catch(() => undefined);
+			throw error;
+		}
 	}
 
 	/**

@@ -173,6 +173,17 @@ export function paradisMayWriteInPlaceAfterTempFailure(error: unknown): boolean 
 	return code === 'EACCES' || code === 'EPERM' || code === 'EEXIST' || code === 'ENAMETOOLONG';
 }
 
+/**
+ * 置き換え（rename）に失敗したとき、その場へ書く道へ落ちてよいか。
+ *
+ * Windows でほかのプロセスが一時的に握っている（ウイルス対策・同期ソフト・エディタ）ときの EPERM・EBUSY・EACCES だけ
+ * 落ちてよい。容量不足・I/O エラー・読み取り専用のファイルシステムなどは、その場へ書いても途中で失敗して元のファイルを壊すので落ちない。
+ */
+export function paradisMayWriteInPlaceAfterRenameFailure(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+}
+
 export interface IParadisWriteFileAtomicOptions {
 	/** 新しく作るときの権限（既定 0o600）。既にあるファイルは元の権限を保つ。 */
 	readonly newFileMode?: number;
@@ -185,6 +196,7 @@ export interface IParadisWriteFileAtomicOptions {
 	readonly beforeReplace?: () => Promise<void>;
 	/**
 	 * 置き換え（rename）が通らないとき（Windows で相手が開いたままなど）、その場へ直接書く（既定）。
+	 * 落ちるのは {@link paradisMayWriteInPlaceAfterRenameFailure} が許すコードのときだけ。
 	 * false なら例外にする（中途半端に書くより、書かない方が安全な認証情報や設定）。
 	 */
 	readonly fallbackToInPlace?: boolean;
@@ -249,7 +261,7 @@ export async function paradisWriteFileAtomic(path: string, content: Buffer | str
 		try {
 			await pfs.rename(temporary, target, WINDOWS_RENAME_RETRY_MS);
 		} catch (error) {
-			if (options.fallbackToInPlace === false) {
+			if (options.fallbackToInPlace === false || !paradisMayWriteInPlaceAfterRenameFailure(error)) {
 				throw error;
 			}
 			await fs.writeFile(target, data);
