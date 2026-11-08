@@ -18,6 +18,7 @@
 // 大きさに書き換えたもの、更新時刻を戻すツールで書いたもの）は、前の結果が出る。開いている間の変更は
 // ファイルの見張りが知らせるので、ビューアはそのとき覚えた分を捨てる（{@link ParadisOfficeOpenCache.delete}）。
 
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -188,15 +189,19 @@ export type ParadisOfficeOpenRead<T> =
 /**
  * ファイルを読む。覚えている etag を渡し、変わっていなければ中身を読まずに覚えた値を返す。
  * 読み直したときは、呼び出し側が解析してから `cache.set(resource, content.etag, …)` で覚える。
+ * `token` で読みを止めたときは、覚えた値を消さずに投げる（ファイルが読めなくなったわけではない）。
  */
-export async function readParadisOfficeFile<T>(fileService: Pick<IFileService, 'readFile'>, resource: URI, cache: ParadisOfficeOpenCache<T>, maxBytes: number): Promise<ParadisOfficeOpenRead<T>> {
+export async function readParadisOfficeFile<T>(fileService: Pick<IFileService, 'readFile'>, resource: URI, cache: ParadisOfficeOpenCache<T>, maxBytes: number, token?: CancellationToken): Promise<ParadisOfficeOpenRead<T>> {
 	const cached = cache.get(resource);
 	try {
-		const content = await fileService.readFile(resource, { etag: cached?.etag, limits: { size: maxBytes } });
+		const content = await fileService.readFile(resource, { etag: cached?.etag, limits: { size: maxBytes } }, token);
 		return { kind: 'read', content };
 	} catch (error) {
 		if (cached && toFileOperationResult(error) === FileOperationResult.FILE_NOT_MODIFIED_SINCE) {
 			return { kind: 'cached', value: cached.value };
+		}
+		if (token?.isCancellationRequested) {
+			throw error;
 		}
 		// 読めなくなった（消えた・大きくなりすぎた）ファイルの前の結果は、もう使わない。
 		cache.delete(resource);

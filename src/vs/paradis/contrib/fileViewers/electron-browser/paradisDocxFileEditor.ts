@@ -870,9 +870,21 @@ export class ParadisDocxFileEditor extends EditorPane {
 			allowScripts: true,
 			localResourceRoots: this._localResourceRoots(resource)
 		};
+		// ヘッダーの検査と etag 付きの本文読みを並べて出す（SSH 先で往復を直列に 2 回しない）。本文読みの失敗は
+		// ここでは投げず、表示すると決まってから下で扱う（.docx でないと分かった文書の読み失敗は問わない）。
+		// 表示しないと決まったら（.docx でない・古い・取り消された）本文の読みを止める。
+		const bodyRead = new CancellationTokenSource(token);
+		const reading = readParadisOfficeFile(this._fileService, resource, DOCX_OPEN_CACHE, PARADIS_DOCX_MAX_BYTES, bodyRead.token).then(
+			read => ({ read, error: undefined }),
+			(error: unknown) => ({ read: undefined, error }),
+		).finally(() => bodyRead.dispose());
 		const isValid = await readParadisDocxHeader(this._fileService, resource);
 		let decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
+		if (decision !== 'viewer') {
+			bodyRead.cancel();
+		}
 		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._pane.claimed || token.isCancellationRequested) {
+			bodyRead.cancel();
 			// **何も走らせずに戻るので、見張りも解くこと。** 残すと、走っていない読み込みが
 			// 予算切れで時間切れ扱いになり、作り直しの梯子が空回りする。自分の世代の見張りだけ解く
 			// （遅れて戻った前の文書の読み込みが、次の文書の見張りを解かないように）
@@ -888,7 +900,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (decision === 'viewer') {
 			try {
 				// 同じ文書を前に消毒していて、ファイルが変わっていなければ、覚えた結果を使う。
-				const read = await readParadisOfficeFile(this._fileService, resource, DOCX_OPEN_CACHE, PARADIS_DOCX_MAX_BYTES);
+				const { read, error: readError } = await reading;
+				if (read === undefined) {
+					throw readError;
+				}
 				let document: IParadisDocxOpenCacheValue;
 				if (reuseShown && read.kind === 'cached' && generation === this._renderGeneration && inputEpoch === this._inputEpoch && this._pane.claimed
 					&& this._reuseShownDocument(resource, webview, read.value, inputEpoch, recoveryGeneration)) {
