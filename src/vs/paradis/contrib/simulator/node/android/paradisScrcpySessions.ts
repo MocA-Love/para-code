@@ -18,8 +18,9 @@ import { ParadisScrcpySession, IParadisScrcpySessionOptions } from './paradisScr
 const IDLE_MS = 30_000;
 
 interface IEntry {
-	readonly session: ParadisScrcpySession;
-	readonly started: Promise<ParadisScrcpySession>;
+	/** options を待ち終えるまでは undefined。 */
+	session: ParadisScrcpySession | undefined;
+	started: Promise<ParadisScrcpySession>;
 	users: number;
 	idleTimer: ReturnType<typeof setTimeout> | undefined;
 	endListener?: IDisposable;
@@ -43,7 +44,7 @@ export class ParadisScrcpySessions extends Disposable {
 					clearTimeout(entry.idleTimer);
 				}
 				entry.endListener?.dispose();
-				entry.session.dispose();
+				entry.session?.dispose();
 			}
 			this._entries.clear();
 		}));
@@ -52,19 +53,29 @@ export class ParadisScrcpySessions extends Disposable {
 	/** その端末の通話を使い始める。返した IDisposable を dispose したら使い終わり。 */
 	async acquire(serial: string): Promise<{ readonly session: ParadisScrcpySession; readonly lease: IDisposable }> {
 		let entry = this._entries.get(serial);
-		if (entry?.session.ended) {
+		if (entry?.session?.ended) {
 			this._drop(serial, entry);
 			entry = undefined;
 		}
 		if (!entry) {
-			const options = await this._options(serial);
-			const session = new ParadisScrcpySession({ ...options, serial }, this._logService);
-			const created: IEntry = { session, started: session.start().then(() => session), users: 0, idleTimer: undefined };
-			created.endListener = session.onDidEnd(() => {
-				if (this._entries.get(serial) === created) {
-					this._drop(serial, created);
+			// 台帳へは await の前に入れる（初めての 2 件が重なっても、通話を 2 つ立てないように）。
+			// options を待つのも、通話を始めるのも started の中で行う
+			const created: IEntry = { session: undefined, started: undefined!, users: 0, idleTimer: undefined };
+			created.started = (async () => {
+				const options = await this._options(serial);
+				if (this._entries.get(serial) !== created) {
+					throw new Error('The Android connection was closed before it started');
 				}
-			});
+				const session = new ParadisScrcpySession({ ...options, serial }, this._logService);
+				created.session = session;
+				created.endListener = session.onDidEnd(() => {
+					if (this._entries.get(serial) === created) {
+						this._drop(serial, created);
+					}
+				});
+				await session.start();
+				return session;
+			})();
 			created.started.catch(() => {
 				if (this._entries.get(serial) === created) {
 					this._drop(serial, created);
@@ -116,6 +127,6 @@ export class ParadisScrcpySessions extends Disposable {
 			this._entries.delete(serial);
 		}
 		entry.endListener?.dispose();
-		entry.session.dispose();
+		entry.session?.dispose();
 	}
 }

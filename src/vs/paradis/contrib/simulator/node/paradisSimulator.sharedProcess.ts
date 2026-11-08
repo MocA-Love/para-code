@@ -34,6 +34,8 @@ import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 import { ParadisAdbDeviceHost } from './android/paradisAdbDeviceHost.js';
 import { ParadisScrcpySessions } from './android/paradisScrcpySessions.js';
 import { PARADIS_SCRCPY_SERVER_JAR } from './android/paradisScrcpyDist.js';
+import { ParadisScrcpyReverseFileRecord } from './android/paradisScrcpyReverseRecord.js';
+import { join } from '../../../../base/common/path.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { promises as fs } from 'fs';
 
@@ -65,10 +67,13 @@ export function registerParadisSimulator(
 		exists: async path => (await fs.stat(path).catch(() => undefined))?.isFile() === true,
 		scrcpy: { use: (serial, run) => scrcpy!.use(serial, run) },
 	}, logService);
+	// Para Code が作った adb reverse の記録（途中で落ちて残った reverse を、次に始めるときに外すため）
+	const reverseRecord = new ParadisScrcpyReverseFileRecord(join(userDataPath, 'paradis-simulator', 'scrcpy-reverses.json'));
 	scrcpy = store.add(new ParadisScrcpySessions(async () => ({
 		adbPath: await android.adbPath(),
 		serverJar: FileAccess.asFileUri(PARADIS_SCRCPY_SERVER_JAR).fsPath,
 		adb: (args, timeoutMs) => android.run(args, timeoutMs),
+		reverseRecord,
 	}), logService));
 	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService, deviceHub, { adb: android, scrcpy }));
 	server.registerChannel(PARADIS_SIMULATOR_CHANNEL, new ParadisSimulatorChannel<string>(service));
