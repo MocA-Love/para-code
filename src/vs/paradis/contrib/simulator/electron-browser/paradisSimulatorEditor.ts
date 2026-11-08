@@ -11,7 +11,8 @@
 //
 //  - 映像は見えている間だけ購読する。見えなくなったら外す（端末のセッションはホストに残る）
 //  - 復元したタブは、端末が落ちていれば「起動」のボタンを出し、勝手に起動しない
-//  - Device Hub が入力を奪っているときは注意を出す（見えている間だけ 5 秒ごとに確かめる）
+//  - Device Hub が入力を奪っているときは注意を出す（見えている間だけ 5 秒ごとに確かめる。向きもこのとき読み直す）
+//  - 映像が途切れたら（端末が止まった・ホストが落ちた・設定がオフになった）、様子を読み直して購読し直すか理由を出す
 
 import './media/paradisSimulator.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -146,7 +147,14 @@ export class ParadisSimulatorEditor extends EditorPane {
 		}
 		const session = new ParadisSimulatorEditorSession(input, this._stage, this._client);
 		this._session.value = session;
-		session.add(session.frameView.onDidChangeFrameSize(() => this._relayout()));
+		session.add(session.frameView.onDidChangeFrameSize(() => {
+			this._relayout();
+			void this._readScreenConfig(session);
+		}));
+		session.add(session.frameView.onDidStall(() => {
+			session.frameView.stop();
+			void this._refresh(session);
+		}));
 		session.add(session.frameView.onDidFail(error => this._setNotice({ kind: 'error', message: error.message })));
 		this._renderHeader();
 		this._relayout();
@@ -216,11 +224,27 @@ export class ParadisSimulatorEditor extends EditorPane {
 		}
 		if (this.isVisible() && session.booted) {
 			session.frameView.start();
-			this._deviceHubTimer.cancelAndSet(() => void this._checkDeviceHub(session), DEVICE_HUB_POLL_MS);
+			this._deviceHubTimer.cancelAndSet(() => {
+				void this._checkDeviceHub(session);
+				void this._readScreenConfig(session);
+			}, DEVICE_HUB_POLL_MS);
 			void this._checkDeviceHub(session);
+			void this._readScreenConfig(session);
 		} else {
 			session.frameView.stop();
 			this._deviceHubTimer.cancel();
+		}
+	}
+
+	/** 端末の向きを読み直す（エージェントや Simulator.app で回されたときも、映像の回し方と入力の座標を合わせる）。 */
+	private async _readScreenConfig(session: ParadisSimulatorEditorSession): Promise<void> {
+		try {
+			const config = await this._client.getScreenConfig(session.input.udid);
+			if (this._session.value === session) {
+				session.frameView.setScreenConfig(config);
+			}
+		} catch {
+			// 映像の流れが始まる前は無いことがある。次の読み直しで合わせる
 		}
 	}
 
@@ -304,6 +328,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 		const session = this._requireBooted();
 		const config = await this._client.getScreenConfig(session.input.udid);
 		await this._client.sendInput(session.input.udid, { kind: 'rotate', orientation: paradisSimulatorNextOrientation(config.orientation) });
+		await this._readScreenConfig(session);
 	}
 
 	private async _press(button: string): Promise<void> {

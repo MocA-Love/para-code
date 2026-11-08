@@ -7,6 +7,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // シミュレータのエディタのペインで、人の入力を serve-sim の形に直すための純関数。
+//
+// 向きの扱い（映像の回し方・画面の上の位置から端末の向きの座標への直し方・下端のホームのジェスチャーの印）は、
+// serve-sim 0.1.49 の `src/client/simulator/orientation.ts`（Apache-2.0, Copyright 2026 Evan Bacon）の
+// `streamDisplayGeometry`・`rawPointForDisplayPoint`・`rawEdgeForDisplayEdge`・`homeIndicatorEdge` に合わせて書き直した。
+// serve-sim の MJPEG は端末の向きのまま流れてくる（横に回しても、生の映像が縦のままのことがある）ので、
+// 表示は CSS で回し、入力は回した分を戻して送る。
 
 import { ParadisSimulatorOrientation } from './paradisSimulator.js';
 
@@ -92,4 +98,84 @@ export function paradisSimulatorShouldSendKey(event: { readonly metaKey: boolean
 		return false;
 	}
 	return paradisSimulatorHidUsage(event.code) !== undefined;
+}
+
+/** 映している画面の大きさと向き（serve-sim の config）。 */
+export interface IParadisSimulatorOrientedSize extends IParadisSimulatorSize {
+	readonly orientation?: string;
+}
+
+/** 映像の表示の仕方。 */
+export interface IParadisSimulatorDisplayGeometry {
+	/** 表示する大きさ（横向きなら幅が長い方）。 */
+	readonly display: IParadisSimulatorSize;
+	/** 映像を CSS で回す角度（0・90・-90・180）。 */
+	readonly rotationDegrees: number;
+	/** 入力を端末の向きへ戻すときの向き。回していなければ undefined。 */
+	readonly inputOrientation: ParadisSimulatorOrientation | undefined;
+}
+
+function rotationForOrientation(orientation: string | undefined): number {
+	switch (orientation) {
+		case 'landscape_left': return 90;
+		case 'landscape_right': return -90;
+		case 'portrait_upside_down': return 180;
+		default: return 0;
+	}
+}
+
+/**
+ * 生の映像の大きさ（`frame`）と端末の向きから、表示の仕方を決める。180° と、横向きなのに生の映像が縦のときだけ
+ * CSS で回す（生の映像がもう横なら回さない）。
+ */
+export function paradisSimulatorDisplayGeometry(frame: IParadisSimulatorOrientedSize): IParadisSimulatorDisplayGeometry {
+	const rotation = rotationForOrientation(frame.orientation);
+	const sideways = Math.abs(rotation) === 90;
+	const rawLandscape = frame.width > frame.height;
+	const needsRotation = rotation === 180 || (sideways && !rawLandscape);
+	const landscape = sideways || rawLandscape;
+	const long = Math.max(frame.width, frame.height);
+	const short = Math.min(frame.width, frame.height);
+	return {
+		display: landscape ? { width: long, height: short } : { width: short, height: long },
+		rotationDegrees: needsRotation ? rotation : 0,
+		inputOrientation: needsRotation ? frame.orientation as ParadisSimulatorOrientation : undefined,
+	};
+}
+
+/** 表示の上の 0〜1 の位置を、端末の向き（生の映像）の 0〜1 へ戻す。 */
+export function paradisSimulatorRawPoint(orientation: ParadisSimulatorOrientation | undefined, x: number, y: number): { readonly x: number; readonly y: number } {
+	switch (orientation) {
+		case 'landscape_left': return { x: y, y: 1 - x };
+		case 'landscape_right': return { x: 1 - y, y: x };
+		case 'portrait_upside_down': return { x: 1 - x, y: 1 - y };
+		default: return { x, y };
+	}
+}
+
+/** HID のタッチの端の印（serve-sim と同じ値）。 */
+export const enum ParadisSimulatorTouchEdge {
+	None = 0,
+	Left = 1,
+	Top = 2,
+	Bottom = 3,
+	Right = 4,
+}
+
+/** 下端のこの割合より下で始まったドラッグを、ホームへ戻るジェスチャーとして印を付ける（serve-sim と同じ）。 */
+const HOME_INDICATOR_BAND = 0.93;
+
+/**
+ * 表示の上で `y` から始まったタッチに付ける端の印（端末の向きへ戻した値）。下端の帯の外なら None。
+ */
+export function paradisSimulatorTouchEdge(orientation: ParadisSimulatorOrientation | undefined, displayY: number): ParadisSimulatorTouchEdge {
+	if (displayY < HOME_INDICATOR_BAND) {
+		return ParadisSimulatorTouchEdge.None;
+	}
+	switch (orientation) {
+		case 'landscape_left': return ParadisSimulatorTouchEdge.Right;
+		case 'landscape_right': return ParadisSimulatorTouchEdge.Left;
+		case 'portrait_upside_down': return ParadisSimulatorTouchEdge.Top;
+		default: return ParadisSimulatorTouchEdge.Bottom;
+	}
 }

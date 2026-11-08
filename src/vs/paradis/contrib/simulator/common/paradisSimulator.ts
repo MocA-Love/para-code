@@ -106,7 +106,7 @@ export const PARADIS_SIMULATOR_ORIENTATIONS: readonly ParadisSimulatorOrientatio
  * フレームにする（`paradisSimulatorInputFrame`）。座標は画面の幅・高さに対する 0〜1。
  */
 export type ParadisSimulatorInput =
-	| { readonly kind: 'touch'; readonly phase: 'begin' | 'move' | 'end'; readonly x: number; readonly y: number }
+	| { readonly kind: 'touch'; readonly phase: 'begin' | 'move' | 'end'; readonly x: number; readonly y: number; /** 端の印（下端のホームのジェスチャーなど）。 */ readonly edge?: number }
 	| { readonly kind: 'key'; readonly type: 'down' | 'up'; readonly usage: number }
 	| { readonly kind: 'button'; readonly button: string }
 	| { readonly kind: 'rotate'; readonly orientation: ParadisSimulatorOrientation };
