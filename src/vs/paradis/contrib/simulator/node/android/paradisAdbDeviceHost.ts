@@ -68,16 +68,24 @@ export interface IParadisAdbDeviceHostOptions {
 	readonly env?: { readonly [name: string]: string | undefined };
 	readonly platform?: NodeJS.Platform;
 	readonly home?: string;
+	readonly now?: () => number;
 }
+
+/** 起動を頼んでから、起動しきって adb に出てくるまでを待つ時間（その間は 2 つ目を立てない）。 */
+const AVD_BOOT_GRACE_MS = 3 * 60 * 1000;
 
 export class ParadisAdbDeviceHost {
 
 	private readonly _exec: ParadisAdbExec;
 	private readonly _launch: ParadisAdbLaunch;
+	private readonly _now: () => number;
+	/** 起動を頼んだ AVD と、その時刻（起動の途中にもう一度頼まれても、2 つ目を立てないため）。 */
+	private readonly _booting = new Map<string, number>();
 
 	constructor(private readonly _options: IParadisAdbDeviceHostOptions, private readonly _logService: ILogService) {
 		this._exec = _options.exec ?? realExec;
 		this._launch = _options.launch ?? realLaunch;
+		this._now = _options.now ?? Date.now;
 	}
 
 	/** この端末の id をこちらで受け持つか。 */
@@ -169,7 +177,10 @@ export class ParadisAdbDeviceHost {
 		throw new Error(`The Android emulator "${avd}" is not running. Ask the user to start it (approving the request in Para Code starts it).`);
 	}
 
-	/** AVD を起動する（承認したとき。起動を待たない）。動いていれば何もしない。 */
+	/**
+	 * AVD を起動する（承認したとき。起動を待たない）。動いていれば何もしない。名前が `emulator -list-avds` に無ければ断る。
+	 * 起動を頼んでから {@link AVD_BOOT_GRACE_MS} の間にもう一度頼まれても、2 つ目のエミュレータは立てない。
+	 */
 	async bootAvd(deviceId: string): Promise<void> {
 		const avd = paradisAndroidAvdOf(deviceId);
 		if (!avd) {
@@ -178,10 +189,19 @@ export class ParadisAdbDeviceHost {
 		if (await this._serialOf(deviceId).then(() => true, () => false)) {
 			return;
 		}
+		const startedAt = this._booting.get(avd);
+		if (startedAt !== undefined && this._now() - startedAt < AVD_BOOT_GRACE_MS) {
+			return;
+		}
 		const emulator = await this._emulatorPath();
 		if (!emulator) {
 			throw new Error('Para Code could not find the Android emulator next to adb (emulator/emulator in the Android SDK).');
 		}
+		const avds = paradisParseAvdList(String(await this._exec(emulator, ['-list-avds'], { timeoutMs: 10_000 })));
+		if (!avds.includes(avd)) {
+			throw new Error(`There is no Android Virtual Device named "${avd}". Create it in Android Studio, or pick one from mobile_list_devices.`);
+		}
+		this._booting.set(avd, this._now());
 		this._launch(emulator, ['-avd', avd]);
 		this._logService.info('[paradis-simulator] started an Android emulator');
 	}

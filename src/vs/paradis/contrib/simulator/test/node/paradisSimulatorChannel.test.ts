@@ -49,28 +49,31 @@ suite('Paradis simulator: video relay in the shared process', () => {
 		assert.deepStrictEqual({ whileOpen, afterFirst, afterLast: open, received, openedWhileDisabled: open }, { whileOpen: 1, afterFirst: 1, afterLast: 0, received: [3], openedWhileDisabled: 0 });
 	});
 
-	// 設定を切り替えると iOS を受け持つ仕組みが替わる。iOS のシミュレータの割り当てのうち新しい一覧に無いものを外す（取れなければ iOS の分をすべて）。Android は触らない
-	test('detaches iOS simulator panes the new list does not have after the setting changes, and leaves the others alone', async () => {
+	// 設定を切り替えると iOS と Android を受け持つ仕組みが替わる。新しい一覧に無い割り当てを外す（Android は Android を確かに読めた一覧のときだけ。一覧が取れなければ iOS の分をすべて）。ほかは触らない
+	test('detaches iOS simulator and Android panes the new list does not have after the setting changes, and leaves the others alone', async () => {
 		const attachment = (paneToken: string, deviceId: string): IParadisMobileAttachment => ({ paneToken, deviceId, deviceName: deviceId, stateKey: undefined, attachedAt: 0 });
-		const run = async (devices: IParadisMobileDevice[] | Error) => {
-			const attachments = [attachment('pane-ios', `ios:core-simulator:${UDID}`), attachment('pane-gone', 'ios:core-simulator:B0000000-0000-0000-0000-000000000000'), attachment('pane-android', 'android:emulator-5554')];
+		const run = async (devices: IParadisMobileDevice[] | Error, androidListed = false) => {
+			const attachments = [attachment('pane-ios', `ios:core-simulator:${UDID}`), attachment('pane-gone', 'ios:core-simulator:B0000000-0000-0000-0000-000000000000'), attachment('pane-android', 'android:emulator-5554'), attachment('pane-other', 'web:thing')];
 			const detached: string[] = [];
 			const dropped = await paradisDropUnreachableAttachments({
 				listAttachments: () => attachments,
 				listDevices: async () => { if (devices instanceof Error) { throw devices; } return devices; },
 				detach: token => detached.push(token),
-			}, new NullLogService());
+			}, new NullLogService(), () => androidListed);
 			return { dropped, detached };
 		};
 		const device = (id: string): IParadisMobileDevice => ({ id, name: id, platform: id.split(':')[0], state: 'booted', isRunning: true });
 		assert.deepStrictEqual({
-			listed: await run([device(`ios:core-simulator:${UDID}`), device('android:emulator-5554')]),
-			// Mobile Canvas が再起動中などで失敗すると、振り分けは iOS だけの一覧を返す。Android の割り当ては外さない
-			canvasFailed: await run([device(`ios:core-simulator:${UDID}`)]),
+			listed: await run([device(`ios:core-simulator:${UDID}`), device('android:emulator-5554')], true),
+			// Mobile Canvas の id（`android:emulator-5554`）は新しい仕組みの一覧（`android:serial:`）に無いので外す
+			idChanged: await run([device(`ios:core-simulator:${UDID}`), device('android:serial:emulator-5554')], true),
+			// adb や Mobile Canvas が再起動中などで失敗すると、振り分けは iOS だけの一覧を返す。Android の割り当ては外さない
+			androidNotListed: await run([device(`ios:core-simulator:${UDID}`)], false),
 			failed: await run(new Error('no host')),
 		}, {
 			listed: { dropped: 1, detached: ['pane-gone'] },
-			canvasFailed: { dropped: 1, detached: ['pane-gone'] },
+			idChanged: { dropped: 2, detached: ['pane-gone', 'pane-android'] },
+			androidNotListed: { dropped: 1, detached: ['pane-gone'] },
 			failed: { dropped: 2, detached: ['pane-ios', 'pane-gone'] },
 		});
 	});
