@@ -87,6 +87,7 @@ import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.
 import './contrib/codexAccounts/electron-browser/paradisCodexAccounts.contribution.js';
 import './contrib/agentLiveWindow/electron-browser/paradisAgentLiveWindow.contribution.js';
 import './contrib/agentInsights/electron-browser/paradisAgentInsights.contribution.js';
+import './contrib/agentInsights/electron-browser/paradisContextUsage.contribution.js';
 import './contrib/browserLiveWindow/electron-browser/paradisBrowserLiveWindow.contribution.js';
 import './contrib/browserZoomIndicator/electron-browser/paradisBrowserZoomIndicator.contribution.js';
 import './contrib/browserViewport/electron-browser/paradisBrowserViewport.contribution.js';

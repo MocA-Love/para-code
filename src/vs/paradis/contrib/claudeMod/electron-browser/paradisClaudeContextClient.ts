@@ -34,6 +34,11 @@ export class ParadisClaudeContextClient {
 		return this.channel.call('period', [from, to]);
 	}
 
+	/** ペイン（ペイントークン）がいま動かしている会話の最後の内訳。無ければ undefined。 */
+	pane(token: string): Promise<IParadisClaudeContextBreakdown | undefined> {
+		return this.channel.call('pane', [token]);
+	}
+
 	/** 会話の最後の内訳（保存したもの）。無ければ undefined。 */
 	session(sessionId: string): Promise<IParadisClaudeContextBreakdown | undefined> {
 		return this.channel.call('session', [sessionId]);

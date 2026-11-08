@@ -52,6 +52,29 @@ export interface IParadisAgentPromptCache {
 	readonly ttlMs: number;
 }
 
+/**
+ * コンテキストの使用率（モバイルの agent.session-status.v1 の `context` と同じ値）。Claude は Claude Mod の
+ * `session.measure`、無ければ transcript の最後のリクエストの入力。Codex は rollout の `token_count`（TUI と同じ数え方）。
+ */
+export interface IParadisAgentPaneContext {
+	/** 使っているトークン（Codex は TUI と同じ数え方の使用量）。 */
+	readonly tokens?: number;
+	readonly window: number;
+	/** 0〜100 の整数。 */
+	readonly percent: number;
+	/** `mod`: Claude Mod の `session.measure`、`transcript`: transcript / rollout の usage。 */
+	readonly source: 'mod' | 'transcript';
+}
+
+/** プロンプトキャッシュの hit / miss の集計（会話の開き直しで数え直す）。 */
+export interface IParadisAgentPaneCacheSummary {
+	readonly requests: number;
+	readonly hits: number;
+	readonly misses: number;
+	/** 0〜1（小数 3 桁）。入力が 0 なら省く。 */
+	readonly hitRatio?: number;
+}
+
 /** ペイン1つ分の様子。 */
 export interface IParadisAgentPaneInsight {
 	readonly token: string;
@@ -62,6 +85,12 @@ export interface IParadisAgentPaneInsight {
 	readonly lastMessage?: { readonly text: string; readonly at?: number };
 	readonly interaction?: IParadisAgentPaneInteraction;
 	readonly promptCache?: IParadisAgentPromptCache;
+	/** コンテキストの使用率。リクエストがまだ無ければ省く。 */
+	readonly context?: IParadisAgentPaneContext;
+	/** キャッシュの hit / miss。リクエストがまだ無ければ省く。 */
+	readonly cacheSummary?: IParadisAgentPaneCacheSummary;
+	/** 会話のモデル（transcript / rollout の記録）。 */
+	readonly model?: string;
 }
 
 /**
