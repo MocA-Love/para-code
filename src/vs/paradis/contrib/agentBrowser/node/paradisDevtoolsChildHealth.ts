@@ -16,6 +16,7 @@
 //   - 標準エラーは秘密を含みうるので、V8 が落ちるときに書く行から数値と固定の語だけを抜く
 
 import { execFile } from 'child_process';
+import { randomInt } from 'crypto';
 
 /** 作り直しの目安。どれか 1 つを超えたら、次の合間に作り直す。 */
 export interface IParadisDevtoolsRecycleLimits {
@@ -131,8 +132,13 @@ const FILE_UID = /(?<prefix>\buid=)(?<uid>\d+_\d+)(?![\w.])/g;
 /** そのキーで覚えておく、前に出した印の数（これより古い印の uid は普通の文字列として渡り、vendored が見つけられずに断る）。 */
 export const PARADIS_UID_TAG_HISTORY = 8;
 
+/** 0 以上 1 未満の乱数（`Math.random` と同じ形。暗号の乱数から作る）。 */
+function paradisCryptoRandom(): number {
+	return randomInt(2 ** 32) / 2 ** 32;
+}
+
 /** 子プロセスの印を作る（そのキーで前に出した印とは必ず変える）。 */
-export function paradisNewUidTag(used: readonly string[], random: () => number = Math.random): string {
+export function paradisNewUidTag(used: readonly string[], random: () => number = paradisCryptoRandom): string {
 	const letters = 'abcdefghijklmnopqrstuvwxyz';
 	const alphabet = letters + '0123456789';
 	for (; ;) {

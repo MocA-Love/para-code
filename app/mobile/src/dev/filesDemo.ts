@@ -2,13 +2,16 @@
 
 import { useAppStore } from '../appState.js';
 import { PcCapability } from '../pcCompat.js';
-import type { FsListResult, FsReadResult, ScmStatusResult, SpaceNoteResult, SpaceNoteSetOptions } from '../store.js';
+import type { FsListResult, FsReadResult, FsResolveLinkResult, ScmStatusResult, SpaceNoteResult, SpaceNoteSetOptions } from '../store.js';
 
 /**
  * 開発ビルド専用: ファイルの一覧（Git の色・無視の印）・メモ・差分の画面を、PC とつながっていないシミュレータで
  * 確かめるための見本。`globalThis.__paraDev.demo()` の後に `__paraDev.filesDemo()` を呼ぶ（`src/devProbe.tsx`）。
  *
  * ストアの fs / scm の要求を差し替え、スペース「para-code」に架空のファイルと変更とメモを出す。データはすべて架空。
+ * ファイルの中身（`fsRead`）は Markdown・HTML の見本も返し、中のパスを押したときの解決（`fsResolveLink`）も見本のファイルの中で
+ * 答える（無いファイルは PC と同じ断りの文で断る）。差し替えた後、ストアの要求が見本のものになったかを確かめ、
+ * なっていなければ警告する（ストアの形が変わって差し替えが届かなくなったときに気付けるように）。
  * `fileAt`・`wordDiff`・アイコンのテーマは汎用の要求（`sendPcRequest`）で送るので差し替えられない。見本ではそれらの
  * capability を広告せず、古い PC と同じ見え方（作業ツリーの中身の表示・lucide のアイコン）になる。
  */
@@ -26,7 +29,8 @@ const FILES: Readonly<Record<string, DemoFile>> = {
 	'src/app/view.tsx': { content: 'export function View() {\n\treturn null;\n}\n' },
 	'src/old/keep.ts': { content: 'export const keep = 1;\n' },
 	'src/conflict.ts': { content: '<<<<<<< HEAD\nconst a = 1;\n=======\nconst a = 2;\n>>>>>>> feat\n' },
-	'docs/guide.md': { content: '# ガイド\n\nまだ追跡していない文書です。\n' },
+	'docs/guide.md': { content: '# ガイド\n\nまだ追跡していない文書です。\n\n- 入口は `src/app/main.ts:2` を見てください\n- 画面は src/app/view.tsx にあります\n- 見本の外: `/etc/hosts`・`src/missing.ts`\n' },
+	'docs/preview.html': { content: '<!DOCTYPE html><html><body><h1>プレビューの見本</h1><p>入口は <code>src/app/main.ts</code>、設定は package.json です。</p><p>無いファイル: src/missing.ts</p></body></html>\n' },
 	'node_modules/lodash/index.js': { content: 'module.exports = {};\n' },
 	'assets/logo.svg': { content: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="6" fill="#a78bfa"/></svg>' },
 };
@@ -84,12 +88,29 @@ export function installFilesDemo(): void {
 		return;
 	}
 	const delay = <T>(value: T, ms = 120) => new Promise<T>(resolve => setTimeout(() => resolve(value), ms));
+	const fsRead = async (_ws: string, path: string): Promise<FsReadResult> => {
+		const file = FILES[path];
+		if (file === undefined) {
+			throw new Error(`見本にこのファイルはありません: ${path}`);
+		}
+		return delay({ content: file.content, truncated: false, size: file.content.length });
+	};
 	useAppStore.setState({
 		workspace: { ...workspace, capabilities: [...(workspace.capabilities ?? []), PcCapability.NoteCas, PcCapability.FsIgnored, PcCapability.NoteTaskOps] },
 		fsList: async (_ws: string, path: string) => delay(listOf(path)),
 		scmStatus: async () => delay(STATUS),
 		scmDiff: async (_ws: string, path?: string) => delay({ diff: path !== undefined ? DIFFS[path] ?? '' : '' }),
-		fsRead: async (_ws: string, path: string): Promise<FsReadResult> => delay({ content: FILES[path]?.content ?? '', truncated: false, size: FILES[path]?.content.length ?? 0 }),
+		fsRead,
+		fsResolveLink: async (_ws: string, path: string): Promise<FsResolveLinkResult> => {
+			const relative = path.replace(/^\.\//, '');
+			if (path.startsWith('/') || relative.startsWith('../')) {
+				throw new Error('the path is outside the workspace');
+			}
+			if (FILES[relative] === undefined && !Object.keys(FILES).some(file => file.startsWith(`${relative}/`))) {
+				throw new Error('not found');
+			}
+			return delay({ path: relative });
+		},
 		noteGet: async (ws: string): Promise<SpaceNoteResult> => delay({ ws, text: note, updatedAt: noteVersion }),
 		// アプリは op を送るときも、当てた後の全文を `text` に入れて送る（古い PC 向け）ので、見本はそれをそのまま使う
 		noteSet: async (ws: string, text: string, _options?: SpaceNoteSetOptions): Promise<SpaceNoteResult> => {
@@ -98,4 +119,7 @@ export function installFilesDemo(): void {
 			return delay({ ws, text: note, updatedAt: noteVersion });
 		},
 	});
+	if (useAppStore.getState().fsRead !== fsRead) {
+		console.warn('[para-dev] filesDemo: the store did not take the demo fsRead');
+	}
 }

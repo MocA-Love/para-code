@@ -15,11 +15,13 @@ import { Event } from '../../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { IPCServer, IServerChannel } from '../../../../../base/parts/ipc/common/ipc.js';
-import { PARADIS_WORD_SEMANTIC_CHANNEL, type IParadisWordAnalysisResult, type IParadisWordComparisonResult } from '../../common/word/paradisWordSemanticSummary.js';
+import { PARADIS_WORD_SEMANTIC_CHANNEL, type IParadisWordAnalysisResult, type IParadisWordComparisonResult, type IParadisWordRenderableObjectsResult } from '../../common/word/paradisWordSemanticSummary.js';
 
 /** チャネルが使うサービスの形（テストで差し替えられるように）。 */
 export interface IParadisWordSemanticBackend {
 	analyze(bytes: Uint8Array, token: CancellationToken): Promise<IParadisWordAnalysisResult>;
+	/** 本文の上に重ねる描画対象を取り出す。 */
+	extractObjects(bytes: Uint8Array, token: CancellationToken): Promise<IParadisWordRenderableObjectsResult>;
 	compare(original: Uint8Array, modified: Uint8Array, token: CancellationToken): Promise<IParadisWordComparisonResult>;
 }
 
@@ -67,6 +69,13 @@ export class ParadisWordSemanticChannel implements IServerChannel<string>, IDisp
 					return Promise.resolve(invalidArgument as T);
 				}
 				return this.getBackend().then(backend => backend.analyze(bytes, cancellationToken)) as Promise<T>;
+			}
+			case 'objects': {
+				const bytes = bytesArgument(args[0]);
+				if (!bytes) {
+					return Promise.resolve(invalidArgument as T);
+				}
+				return this.getBackend().then(backend => backend.extractObjects(bytes, cancellationToken)) as Promise<T>;
 			}
 			case 'compare': {
 				const original = bytesArgument(args[0]);

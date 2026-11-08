@@ -60,6 +60,219 @@
 	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
 }
 
+/* ---------- context usage ring in the editor terminal (paradisContextUsageBadge.ts) ----------
+ *
+ * Sits right next to the browser-share dot (right: 6px, 16px wide), where the prompt cache countdown used to be; the
+ * countdown moves to the left of it while the ring is shown. The ring stays for as long as the agent runs while the
+ * countdown comes and goes every turn, so the ring next to the dot keeps the corner from shifting. Fixed width with the
+ * content pushed right, so the countdown's position does not depend on the percentage.
+ */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge {
+	position: absolute;
+	top: 4px;
+	right: 26px;
+	width: 48px;
+	height: 16px;
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 3px;
+	padding: 0 3px;
+	border-radius: var(--vscode-cornerRadius-small);
+	font-size: var(--paradis-chip-font-size);
+	font-variant-numeric: tabular-nums;
+	line-height: 16px;
+	color: var(--vscode-descriptionForeground);
+	background-color: color-mix(in srgb, var(--vscode-terminal-background, var(--vscode-editor-background)) 80%, transparent);
+	z-index: 35;
+	cursor: pointer;
+	pointer-events: auto;
+	user-select: none;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge.hidden {
+	display: none;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor:has(> .paradis-context-usage-badge:not(.hidden)) .paradis-prompt-cache-badge {
+	right: 76px;
+}
+
+/* Same as the countdown: step aside for the find widget, follow the chat header while the agent chat is shown. */
+.monaco-workbench .terminal-overflow-guard.terminal-editor:not(.paradis-agent-chat-active):has(.simple-find-part.visible) .paradis-context-usage-badge {
+	display: none;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-agent-chat-active .paradis-context-usage-badge {
+	top: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge,
+.monaco-workbench.hc-light .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge {
+	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge .paradis-context-usage-ring {
+	width: 12px;
+	height: 12px;
+	flex: none;
+}
+
+.paradis-context-usage-ring .track {
+	fill: none;
+	stroke: var(--vscode-disabledForeground);
+	stroke-width: 5;
+	opacity: 0.6;
+}
+
+.paradis-context-usage-ring .arc {
+	fill: none;
+	stroke: var(--vscode-icon-foreground);
+	stroke-width: 5;
+	stroke-linecap: round;
+	transform: rotate(-90deg);
+	transform-origin: center;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge.warning {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge.warning .arc {
+	stroke: var(--vscode-editorWarning-foreground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge.error {
+	color: var(--vscode-editorError-foreground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge.error .arc {
+	stroke: var(--vscode-editorError-foreground);
+}
+
+/* ---------- context breakdown popover (paradisContextUsage.contribution.ts, inside the workbench hover) ---------- */
+.paradis-context-usage-details {
+	width: 300px;
+	max-height: min(520px, 70vh);
+	overflow-y: auto;
+	padding: var(--vscode-spacing-size20) 0;
+	font-size: var(--paradis-chip-font-size);
+}
+
+.paradis-context-usage-details:focus {
+	outline: none;
+}
+
+.paradis-context-usage-header,
+.paradis-context-usage-summary,
+.paradis-context-usage-value,
+.paradis-context-usage-foot {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.paradis-context-usage-header .title {
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.paradis-context-usage-header .model,
+.paradis-context-usage-summary .tokens,
+.paradis-context-usage-value .value,
+.paradis-context-usage-foot,
+.paradis-context-usage-hint {
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-context-usage-header .model {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-context-usage-bar {
+	display: flex;
+	height: 9px;
+	border-radius: 5px;
+	overflow: hidden;
+	margin: 5px 0 6px;
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.paradis-context-usage-bar > span {
+	display: block;
+	height: 100%;
+	background: var(--vscode-charts-blue);
+}
+
+.paradis-context-usage-value {
+	padding: 1px 0;
+}
+
+.paradis-context-usage-hint {
+	margin-top: var(--vscode-spacing-size40);
+}
+
+.paradis-context-usage-foot {
+	margin-top: var(--vscode-spacing-size80);
+	padding-top: var(--vscode-spacing-size40);
+	border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+}
+
+.paradis-context-usage-link {
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+/* The breakdown lists open and close from their heading. */
+.paradis-context-usage-details details.paradis-ccusage-context-section > summary {
+	cursor: pointer;
+	list-style: none;
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+.paradis-context-usage-details details.paradis-ccusage-context-section > summary::-webkit-details-marker {
+	display: none;
+}
+
+.paradis-context-usage-details details.paradis-ccusage-context-section > summary .title::before {
+	content: '\203A';
+	display: inline-block;
+	width: 12px;
+	transition: transform 0.1s;
+}
+
+.paradis-context-usage-details details.paradis-ccusage-context-section[open] > summary .title::before {
+	transform: rotate(90deg);
+}
+
+.paradis-context-usage-details details.paradis-ccusage-context-section > summary:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-context-usage-details details.paradis-ccusage-context-section > summary:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-context-usage-details details.paradis-ccusage-context-section > .paradis-ccusage-context-item,
+.paradis-context-usage-details details.paradis-ccusage-context-section > .paradis-ccusage-context-more {
+	padding-left: 12px;
+}
+
 /* ---------- prompt cache countdown in the Workspaces row meta (paradisPromptCacheChips.ts) ---------- */
 .monaco-workbench .paradis-workspaces-list .paradis-worktree-meta > .paradis-worktree-prompt-cache {
 	display: flex;

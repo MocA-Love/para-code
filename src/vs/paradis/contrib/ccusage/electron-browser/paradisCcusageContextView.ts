@@ -12,6 +12,7 @@
 // 内訳は同梱の mod が応答の終わりごとに取り、shared process が会話ごとに最後の 1 件を保存している
 // （src/vs/paradis/contrib/claudeMod/node/paradisClaudeContextStore.ts）。描くだけで、取りに行くのは呼び出し側。
 
+import './media/paradisCcusage.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -42,7 +43,7 @@ export interface IParadisContextViewOptions {
 	readonly disposables: DisposableStore;
 }
 
-function categoryColor(name: string, options: IParadisContextViewOptions): string {
+function categoryColor(name: string, options: Pick<IParadisContextViewOptions, 'palette' | 'otherColor'>): string {
 	const index = CATEGORY_COLOR_INDEX[name];
 	return index !== undefined && index >= 0 ? options.palette[index % options.palette.length] : options.otherColor;
 }
@@ -170,7 +171,12 @@ export function paradisRenderContextBreakdown(container: HTMLElement, breakdown:
 	const head = dom.append(container, $('.paradis-ccusage-context-head'));
 	dom.append(head, $('span.total')).textContent = localize('paradis.ccusage.context.total', "{0}%（{1} / {2}）", breakdown.percent, paradisFormatTokens(breakdown.totalTokens), paradisFormatTokens(breakdown.window));
 	dom.append(head, $('span.at')).textContent = localize('paradis.ccusage.context.at', "取得: {0}", fromNow(breakdown.at, true));
+	paradisRenderContextCategories(container, breakdown, options);
+	paradisRenderContextRowGroups(container, breakdown, false);
+}
 
+/** 内訳のカテゴリの帯と、カテゴリごとの行（使用率に数える分は多い順、ほかは薄く）。 */
+export function paradisRenderContextCategories(container: HTMLElement, breakdown: IParadisClaudeContextBreakdown, options: Pick<IParadisContextViewOptions, 'palette' | 'otherColor'>): void {
 	const counted = breakdown.categories.filter(category => category.kind === 'used' && category.tokens > 0);
 	const buffer = breakdown.categories.filter(category => category.kind === 'buffer' && category.tokens > 0);
 	const stack = dom.append(container, $('.paradis-ccusage-context-stack'));
@@ -203,31 +209,59 @@ export function paradisRenderContextBreakdown(container: HTMLElement, breakdown:
 	for (const category of breakdown.categories.filter(entry => entry.kind !== 'used' && entry.tokens > 0)) {
 		appendCategory(category.name, category.tokens, undefined, true);
 	}
-
-	appendRows(container, localize('paradis.ccusage.context.memoryFiles', "メモリファイル"), breakdown.memoryFiles, row => row.name);
-	appendRows(container, localize('paradis.ccusage.context.mcpServers', "MCP サーバー"), breakdown.mcpServers, row => row.count !== undefined
-		? localize('paradis.ccusage.context.mcpServer', "{0}（ツール {1}）", row.name, row.count)
-		: row.name);
-	appendRows(container, localize('paradis.ccusage.context.agents', "カスタムエージェント"), breakdown.agents, row => row.name);
-	appendRows(container, localize('paradis.ccusage.context.skills', "スキル"), breakdown.skills, row => row.name);
 }
 
-function appendRows(container: HTMLElement, title: string, rows: readonly IParadisClaudeContextRow[], label: (row: IParadisClaudeContextRow) => string): void {
+/**
+ * メモリファイル・MCP サーバー・カスタムエージェント・スキルの一覧。`collapsible` なら見出しで開閉し（最初は閉じている）、
+ * 開くと保存してある行をすべて出す。そうでなければ見出しの下に上位 {@link SHOWN_ROWS} 行と「ほか N 件」。
+ */
+export function paradisRenderContextRowGroups(container: HTMLElement, breakdown: IParadisClaudeContextBreakdown, collapsible: boolean, isOpen?: (group: string) => boolean): void {
+	const groups: [string, string, readonly IParadisClaudeContextRow[], (row: IParadisClaudeContextRow) => string][] = [
+		['mcpServers', localize('paradis.ccusage.context.mcpServers', "MCP サーバー"), breakdown.mcpServers, row => row.count !== undefined
+			? localize('paradis.ccusage.context.mcpServer', "{0}（ツール {1}）", row.name, row.count)
+			: row.name],
+		['memoryFiles', localize('paradis.ccusage.context.memoryFiles', "メモリファイル"), breakdown.memoryFiles, row => row.name],
+		['agents', localize('paradis.ccusage.context.agents', "カスタムエージェント"), breakdown.agents, row => row.name],
+		['skills', localize('paradis.ccusage.context.skills', "スキル"), breakdown.skills, row => row.name],
+	];
+	// AI コストの画面は今までどおりメモリファイルを先に出す
+	if (!collapsible) {
+		[groups[0], groups[1]] = [groups[1], groups[0]];
+	}
+	for (const [group, title, rows, label] of groups) {
+		appendRows(container, group, title, rows, label, collapsible, isOpen?.(group) ?? false);
+	}
+}
+
+function appendRows(container: HTMLElement, group: string, title: string, rows: readonly IParadisClaudeContextRow[], label: (row: IParadisClaudeContextRow) => string, collapsible: boolean, open: boolean): void {
 	if (rows.length === 0) {
 		return;
 	}
-	const section = dom.append(container, $('.paradis-ccusage-context-section'));
-	const heading = dom.append(section, $('.heading'));
-	dom.append(heading, $('span')).textContent = title;
-	dom.append(heading, $('span.total')).textContent = paradisFormatTokens(rows.reduce((sum, row) => sum + row.tokens, 0));
-	for (const row of rows.slice(0, SHOWN_ROWS)) {
+	const total = paradisFormatTokens(rows.reduce((sum, row) => sum + row.tokens, 0));
+	let section: HTMLElement;
+	if (collapsible) {
+		const details = dom.append(container, $<HTMLDetailsElement>('details.paradis-ccusage-context-section.collapsible'));
+		details.dataset.group = group;
+		details.open = open;
+		const summary = dom.append(details, $('summary.heading'));
+		dom.append(summary, $('span.title')).textContent = title;
+		dom.append(summary, $('span.total')).textContent = localize('paradis.ccusage.context.groupCount', "{0} 件 · {1}", rows.length, total);
+		section = details;
+	} else {
+		section = dom.append(container, $('.paradis-ccusage-context-section'));
+		const heading = dom.append(section, $('.heading'));
+		dom.append(heading, $('span')).textContent = title;
+		dom.append(heading, $('span.total')).textContent = total;
+	}
+	const shown = collapsible ? rows : rows.slice(0, SHOWN_ROWS);
+	for (const row of shown) {
 		const line = dom.append(section, $('.paradis-ccusage-context-item'));
 		const name = dom.append(line, $('span.name'));
 		name.textContent = label(row);
 		name.title = row.detail !== undefined ? `${row.name}\n${row.detail}` : row.name;
 		dom.append(line, $('span.tokens')).textContent = paradisFormatTokens(row.tokens);
 	}
-	if (rows.length > SHOWN_ROWS) {
-		dom.append(section, $('.paradis-ccusage-context-more')).textContent = localize('paradis.ccusage.context.more', "ほか {0} 件", rows.length - SHOWN_ROWS);
+	if (rows.length > shown.length) {
+		dom.append(section, $('.paradis-ccusage-context-more')).textContent = localize('paradis.ccusage.context.more', "ほか {0} 件", rows.length - shown.length);
 	}
 }

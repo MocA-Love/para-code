@@ -142,6 +142,8 @@ suite('ParadisMobileFileIconTheme', () => {
 		const ok = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><defs><linearGradient id="a"/></defs><path fill="url(#a)" d="M0 0h16v16z"/><use href="#a"/></svg>';
 		assert.deepStrictEqual([
 			paradisSanitizeMobileIconSvg(`<?xml version="1.0"?><!-- c -->${ok}`),
+			// 消すと前後がつながってできる新しいコメントも消す
+			paradisSanitizeMobileIconSvg(`<!<!---->-- c -->${ok}`),
 			paradisSanitizeMobileIconSvg('<svg><script>alert(1)</script></svg>'),
 			paradisSanitizeMobileIconSvg('<svg onload="x()"></svg>'),
 			paradisSanitizeMobileIconSvg('<svg><image href="https://example.com/a.png"/></svg>'),
@@ -150,7 +152,7 @@ suite('ParadisMobileFileIconTheme', () => {
 			paradisSanitizeMobileIconSvg('<svg><foreignObject/></svg>'),
 			paradisSanitizeMobileIconSvg('<html></html>'),
 			paradisSanitizeMobileIconSvg(`<svg>${'x'.repeat(70_000)}</svg>`),
-		], [ok, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+		], [ok, ok, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
 	});
 
 	test('SVG の検査は実体参照・CSS のエスケープ・アニメーションでのすり抜けも捨てる', () => {

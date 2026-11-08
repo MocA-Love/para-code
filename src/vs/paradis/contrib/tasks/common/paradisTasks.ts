@@ -139,6 +139,31 @@ export function paradisTasksIsRepositoryName(value: string): boolean {
 }
 
 /**
+ * git の config の `[url "<base>"] insteadOf = <短縮名>` を当てて、remote の URL を git が実際に使う URL にする
+ * （`gh:owner/repo` のような短縮名で origin を書いているリポジトリのため）。git と同じく、前方一致する短縮名のうち
+ * いちばん長いものを使う。`[include]`・`[includeIf]` の先と、ほかの config（`~/.gitconfig` など）は読まない。
+ */
+export function paradisTasksApplyInsteadOf(url: string, config: string): string {
+	let base: string | undefined;
+	let best: { readonly prefix: string; readonly base: string } | undefined;
+	for (const raw of config.split(/\r?\n/)) {
+		const line = raw.trim();
+		if (line.startsWith('[')) {
+			base = /^\[\s*url\s+"(?<base>(?:[^"\\]|\\.)*)"\s*\]$/i.exec(line)?.groups?.base.replace(/\\(.)/g, '$1');
+			continue;
+		}
+		if (base === undefined) {
+			continue;
+		}
+		const prefix = /^insteadof\s*=\s*(?<prefix>.+)$/i.exec(line)?.groups?.prefix.trim().replace(/^"(.*)"$/, '$1');
+		if (prefix && url.startsWith(prefix) && (!best || prefix.length > best.prefix.length)) {
+			best = { prefix, base };
+		}
+	}
+	return best ? best.base + url.slice(best.prefix.length) : url;
+}
+
+/**
  * git の remote の URL から github.com の `owner/name` を取る。github.com 以外（GitHub Enterprise・GitLab など）と
  * 読めない形は undefined。大文字小文字は remote に書いてあるまま残す（GitHub は区別しないが、画面ではこの表記を出す）。
  */

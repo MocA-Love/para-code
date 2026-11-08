@@ -246,6 +246,39 @@ describe('GitHubClient: 伏せ字', () => {
 	});
 });
 
+describe('GitHubClient: 本文の画像', () => {
+	test('リポジトリの画像は contents API へトークン付きで、GitHub の画像置き場は同じ URL へトークン無しで読み、ほかは読まない', async () => {
+		const calls: { url: string; auth?: string; accept?: string }[] = [];
+		const fetchLike: FetchLike = async (url, init) => {
+			calls.push({ url, auth: init.headers['authorization'], accept: init.headers['accept'] });
+			return { status: 200, headers: headers({ 'content-type': 'image/png' }), text: async () => '', arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+		};
+		const client = new GitHubClient({ token: async () => 't', fetch: fetchLike });
+		// 実際の置き場の URL の形（署名・JWT のクエリを含む）は、一字も変えずに送る
+		const kept = [
+			'https://private-user-images.githubusercontent.com/1234/56789-0a1b2c3d-4e5f-6789-abcd-ef0123456789.png?jwt=eyJhbGciOiJIUzI1NiJ9.eyJyZXBvIjoxfQ.c2lnbmF0dXJl',
+			'https://user-images.githubusercontent.com/1234/56789-0a1b2c3d.gif',
+			'https://avatars.githubusercontent.com/u/1234?s=80&v=4',
+			'https://camo.githubusercontent.com/0123abcd/68747470733a2f2f6578616d706c652e636f6d2f612e706e67',
+			'https://objects.githubusercontent.com/github-production-user-asset-6210df/1234/5678-uuid.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA%2F20260101%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=abc123',
+		];
+		const refused = ['https://example.com/a.png', 'http://avatars.githubusercontent.com/u/1', 'https://avatars.githubusercontent.com/u/1;x', 'https://avatars.githubusercontent.com/u/%2e%2e%2fsecret', 'https://avatars.githubusercontent.com/', 'not a url'];
+		const types: (string | undefined)[] = [];
+		for (const raw of ['https://github.com/o/r/raw/main/docs/a.png', ...kept, 'https://user:secret@user-images.githubusercontent.com:8443/1234/5678.png#top', ...refused]) {
+			types.push((await client.fetchImage(raw))?.type);
+		}
+		expect({ calls, types }).toEqual({
+			calls: [
+				{ url: 'https://api.github.com/repos/o/r/contents/docs/a.png?ref=main', auth: 'Bearer t', accept: 'application/vnd.github.raw' },
+				...kept.map(url => ({ url, auth: undefined, accept: undefined })),
+				// ユーザー情報・ポート・# 以降は送らない
+				{ url: 'https://user-images.githubusercontent.com/1234/5678.png', auth: undefined, accept: undefined },
+			],
+			types: ['image/png', ...kept.map(() => 'image/png'), 'image/png', ...refused.map(() => undefined)],
+		});
+	});
+});
+
 describe('GitHubClient: PR', () => {
 	test('PR は持ち主付きの head で探し、既定のブランチへドラフトで作り、既にあれば（422）それを使う', async () => {
 		let created = false;

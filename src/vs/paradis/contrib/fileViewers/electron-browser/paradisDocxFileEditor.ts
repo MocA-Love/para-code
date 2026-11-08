@@ -41,6 +41,7 @@ import { IEditorGroup } from '../../../../workbench/services/editor/common/edito
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { extractParadisWordRenderableObjects } from '../common/word/paradisWordRenderableExtractor.js';
+import type { ParadisWordRenderableObject } from '../common/word/paradisWordRenderableObjects.js';
 import { readWordRenderablePackageParts } from '../browser/word/paradisWordPackageParts.js';
 import { buildParadisWordOverlayItems } from './word/paradisWordObjectOverlayHtml.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
@@ -66,11 +67,11 @@ import { escape } from '../../../../base/common/strings.js';
 import { localize } from '../../../../nls.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordStoryLabel, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordNavigationTarget, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
 import { EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS, paradisWordPackageExclusions, renderWordSemanticRibbon, summarizeParadisWordBlockedParts, wordSemanticFailureMessage, type ParadisWordPackageExclusions, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
-import { analyzeParadisWordDocument } from './word/paradisWordSemanticClient.js';
+import { analyzeParadisWordDocument, extractParadisWordRenderableObjectsInWorker } from './word/paradisWordSemanticClient.js';
 import { PARADIS_WORD_ANCHOR_RUNTIME, PARADIS_WORD_ANCHOR_STYLE } from './word/paradisWordAnchorRuntime.js';
 import { alignParadisWordParagraphs, type IParadisWordParagraphOutline } from '../common/word/paradisWordRenderOutline.js';
 import { ParadisOfficeSemanticSearch } from '../common/paradisOfficeSearch.js';
-import type { IParadisWordAnalysis, IParadisWordAnalysisResult } from '../common/word/paradisWordSemanticSummary.js';
+import type { IParadisWordAnalysis, IParadisWordAnalysisResult, IParadisWordRenderableObjectsResult } from '../common/word/paradisWordSemanticSummary.js';
 import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
@@ -276,6 +277,21 @@ export async function readParadisDocxHeader(fileService: IFileService, resource:
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Word の worker で図形を取り出した結果から、次にすることを決める。`worker`: その結果を使う。`none`: 図形を出さない
+ * （上限を超える文書。renderer で取り出すとウィンドウが固まる）。`cancelled`: 取り消された。`renderer`: worker を使えなかった
+ * （つながらない・落ちた・混んでいる・期限切れ）ので renderer で取り出す。
+ */
+export function paradisWordObjectsAfterWorker(result: IParadisWordRenderableObjectsResult | undefined, cancelled: boolean): 'worker' | 'none' | 'cancelled' | 'renderer' {
+	if (result?.ok) {
+		return 'worker';
+	}
+	if (cancelled || result?.code === 'cancelled') {
+		return 'cancelled';
+	}
+	return result?.code === 'tooLarge' ? 'none' : 'renderer';
 }
 
 export type ParadisDocxRenderDecision = 'rejected' | 'viewer' | 'stale';
@@ -1368,8 +1384,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	/**
 	 * docx-preview が描かない図形(グラフ・SmartArt・図形・テキストボックス)を SVG にして webview へ送る。
 	 *
-	 * 本文の表示より後に走らせる。zip の再展開と XML 走査はレンダラのメインスレッドで動くので、
-	 * 表示の前に待つと、悪意あるファイル1つでウィンドウ全体が固まる。
+	 * 本文の表示より後に走らせる。zip の再展開と XML 走査は shared process の worker で行う（{@link _extractWordObjects}）が、
+	 * worker を使えないときはレンダラのメインスレッドで動くので、表示の前に待つと、悪意あるファイル1つでウィンドウ全体が固まる。
 	 * 送る直前に世代を確認し、別の文書へ切り替わっていたら捨てる。
 	 * 送り終えた（送るものが無かった・作れなかったも含む）なら `true`。途中で別の表示へ移ったら `false`。
 	 */
@@ -1377,12 +1393,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const isCurrent = () => generation === this._renderGeneration && inputEpoch === this._inputEpoch
 			&& this._pane.claimed && !token.isCancellationRequested;
 		try {
-			const parts = await readWordRenderablePackageParts(bytes, token);
-			if (parts.size === 0 || !isCurrent()) {
-				return isCurrent();
-			}
-			const objects = extractParadisWordRenderableObjects({ parts, token });
-			if (objects.length === 0 || !isCurrent()) {
+			const objects = await this._extractWordObjects(bytes, token);
+			if (objects === undefined || objects.length === 0 || !isCurrent()) {
 				return isCurrent();
 			}
 			// 表示中の文書とは別の切り離した Document 上で組み立て、本文の DOM に触れないようにする。
@@ -1397,6 +1409,22 @@ export class ParadisDocxFileEditor extends EditorPane {
 			// 図形が出ないだけで本文の表示には影響しないので、黙って諦める。
 			return isCurrent();
 		}
+	}
+
+	/**
+	 * 本文の上に重ねる描画対象を取り出す。zip の展開と XML の走査は重いので、shared process の Word の worker で行い、
+	 * renderer のメインスレッドを塞がない。worker を使えないとき（つながらない・落ちた・混んでいる）だけ、ここで取り出す。
+	 * 取り消されたら undefined。
+	 */
+	private async _extractWordObjects(bytes: Uint8Array, token: CancellationToken): Promise<readonly ParadisWordRenderableObject[] | undefined> {
+		const result = await extractParadisWordRenderableObjectsInWorker(this._sharedProcessService, bytes, token).catch(() => undefined);
+		switch (paradisWordObjectsAfterWorker(result, token.isCancellationRequested)) {
+			case 'worker': return result?.ok ? result.objects : [];
+			case 'none': return [];
+			case 'cancelled': return undefined;
+		}
+		const parts = await readWordRenderablePackageParts(bytes, token);
+		return parts.size === 0 ? [] : extractParadisWordRenderableObjects({ parts, token });
 	}
 
 	/**

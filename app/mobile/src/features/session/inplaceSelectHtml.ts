@@ -15,7 +15,7 @@ import { viewerScriptCspMeta } from '../code/fileFind.js';
  *   （ファイルのビューアの `buildMarkdownHtml` は marked で読むのでブロックの切れ方が違い、字も 15/24 で大きい）
  * - 発言から来た文字は、すべて `escapeHtml` を通して要素の中身にだけ置く（属性には入れない。`escapeHtml` は引用符を
  *   変えないため）。リンクは `href` を持たない色付きの文字にして、押しても遷移しない
- * - スクリプトは nonce 付きの 1 つだけ（`viewerScriptCspMeta`）。高さを知らせることと、押した点の単語を選ぶことだけをする
+ * - スクリプトは nonce 付きの 1 つだけ（`viewerScriptCspMeta`）。高さを知らせることと、押した点の単語（無ければ全体）を選ぶこと・押し続けた点の単語を選ぶことだけをする
  * - 発言は `segments` の並びで受ける。今は押した発言 1 つだけを渡すが、「画面の発言をまとめて」に広げるときは
  *   ここに並べれば発言をまたいで選べる
  */
@@ -52,7 +52,7 @@ export interface InplaceSelectPoint {
 	readonly y: number;
 }
 
-/** WebView から届く知らせ。`ready` は描き終えた（単語も選んだ）、`height` は中身の高さが変わった。 */
+/** WebView から届く知らせ。`ready` は描き終えた（まだ選ばない）、`height` は中身の高さが変わった。 */
 export interface InplaceSelectMessage {
 	readonly kind: 'ready' | 'height';
 	readonly height: number;
@@ -230,6 +230,12 @@ function segmentHtml(segment: InplaceSelectSegment, look: InplaceSelectLook, met
 	return `<div class="seg">${blocksHtml(parseBlocks(segment.text), look, metrics)}</div>`;
 }
 
+/**
+ * iOS の文字（RN の Text）のタブの間隔（pt。`NSParagraphStyle` の既定のタブ位置は 28pt おき）。CSS の既定（8 文字）だと
+ * コードの字下げが広がるので、同じ間隔にする。
+ */
+const NATIVE_TAB_INTERVAL = 28;
+
 /** 数を CSS・スクリプトに置ける形にする（数でなければ 0）。 */
 function num(value: number): string {
 	return Number.isFinite(value) ? String(Math.round(value * 100) / 100) : '0';
@@ -266,14 +272,15 @@ function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
 	.io { display: flex; align-items: center; gap: ${num(spacing(6))}px; padding: ${num(spacing(5))}px 8px; background: rgba(255,255,255,0.035); border-bottom: ${hair}; -webkit-user-select: none; user-select: none; }
 	.iol { flex: 1; min-width: 0; color: ${colors.textDim}; font-size: ${num(font(type.badge))}px; line-height: normal; font-weight: 800; letter-spacing: ${num(0.9 * look.scale.layout)}px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.ioa { min-height: 20px; box-sizing: border-box; display: flex; align-items: center; border: ${hair}; border-radius: 6px; padding: ${num(spacing(2))}px 7px; color: ${colors.textDim}; font-size: ${num(font(type.badge))}px; line-height: normal; }
-	.cc { overflow-x: auto; }
-	.ct { display: inline-block; min-width: 100%; box-sizing: border-box; padding: ${num(spacing(8))}px; color: ${colors.text}; font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.caption))}px; line-height: ${num(font(16))}px; white-space: pre; }
+	.cc { overflow-x: auto; display: flex; }
+	.ct { flex: none; min-width: 100%; tab-size: ${num(NATIVE_TAB_INTERVAL)}px; box-sizing: border-box; padding: ${num(spacing(8))}px; color: ${colors.text}; font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.caption))}px; line-height: ${num(font(16))}px; white-space: pre; }
 	.tw { border: 1px solid ${colors.border}; border-radius: 6px; overflow-x: auto; margin: ${num(spacing(2))}px 0; }
 	table { border-collapse: collapse; table-layout: fixed; border-spacing: 0; }
 	tr + tr > th, tr + tr > td { border-top: ${hair}; }
 	tr.hd { background: ${tint(colors.idle, alpha.wash)}; }
 	tr.alt { background: ${tint(colors.idle, alpha.faint)}; }
-	th, td { box-sizing: border-box; padding: ${num(spacing(5))}px 7px; font-size: ${num(font(type.meta))}px; line-height: ${num(font(17))}px; text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: break-word; }
+	/* セルの字は会話の表と同じ本文の大きさ（RN の表は、セルの中の字に本文の字の形が当たって 14/20 で描かれている） */
+	th, td { box-sizing: border-box; padding: ${num(spacing(5))}px 7px; font-size: ${num(font(type.body))}px; line-height: ${num(font(20))}px; text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: break-word; }
 	th + th, td + td { border-left: ${hair}; }
 	th { font-weight: 700; }
 	.ac { text-align: center; }
@@ -288,20 +295,48 @@ function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
 `;
 }
 
+/** 押し続けたとみなすまでの時間（ms）と、指が動いたとみなす距離（px）。OS の長押しの選択が届かなかったときの代わり。 */
+const HOLD_MS = 500;
+const HOLD_SLOP = 10;
+
 /**
- * 高さを知らせ、押した点の単語を選ぶスクリプト。押した点が無ければ何も選ばない（つまみが出ないときは、
- * 差し替えた後にもう一度長押しして選ぶ）。
+ * 高さを知らせ、選ぶための関数を置くスクリプト。
+ *
+ * - 読み込んだ時点では選ばない。透明で first responder でもない WebView で選ぶと、WebKit は DOM の選択だけを持ち、
+ *   つまみも OS のメニューも出さない（その後の長押しも効かなくなることがある）。呼び出し側が見せて
+ *   `requestFocus()` した後に {@link inplaceSelectStartScript} で `__paraSelectStart` を呼ぶ
+ * - 押した点の単語を選ぶ。押した点が無い・字の上でないときは発言の全体を選ぶ（入ったら必ず何かが選ばれているように）。
+ *   呼び出し側は first responder になるのが遅れたときのために数回呼ぶので、2 回目からは何も選ばれていないときだけ選ぶ
+ * - 押し続けたら（{@link HOLD_MS}）その点の単語を選ぶ。OS の長押しの選択が先に選んでいたら何もしない。
+ *   `touchcancel` では止めない（OS の長押しが認識されると、ページへの触れは取り消されるため）
  */
 function selectScript(point: InplaceSelectPoint | undefined): string {
 	const at = point !== undefined ? `[${num(point.x)},${num(point.y)}]` : 'null';
 	return `(function(){
 var root=document.getElementById('m');
 function post(kind){try{window.ReactNativeWebView.postMessage(JSON.stringify({type:kind,height:Math.ceil(root.getBoundingClientRect().height)}));}catch(e){}}
-function selectAt(p){if(!p||!document.caretRangeFromPoint){return;}var r=document.caretRangeFromPoint(p[0],p[1]);if(!r||!root.contains(r.startContainer)){return;}var s=window.getSelection();if(!s){return;}s.removeAllRanges();s.addRange(r);if(s.modify){s.modify('move','backward','word');s.modify('extend','forward','word');}}
+function word(s){if(s.modify){s.modify('move','backward','word');s.modify('extend','forward','word');}}
+function selectAt(p){var s=window.getSelection();if(!s){return false;}if(p&&document.caretRangeFromPoint){var r=document.caretRangeFromPoint(p[0],p[1]);if(r&&root.contains(r.startContainer)&&r.startContainer.nodeType===3){s.removeAllRanges();s.addRange(r);word(s);if(!s.isCollapsed){return true;}}}return false;}
+function selectAll(){var s=window.getSelection();if(s){s.removeAllRanges();s.selectAllChildren(root);}}
+var started=false;
+window.__paraSelectStart=function(){try{var s=window.getSelection();if(started&&s&&!s.isCollapsed){return;}started=true;if(!selectAt(${at})){selectAll();}}catch(e){}};
+var hold=null,from=null;
+function stopHold(){if(hold!==null){clearTimeout(hold);hold=null;}}
+document.addEventListener('touchstart',function(e){stopHold();if(e.touches.length!==1){return;}var t=e.touches[0];from=[t.clientX,t.clientY];hold=setTimeout(function(){hold=null;try{var s=window.getSelection();if(s&&s.isCollapsed){selectAt(from);}}catch(x){}},${HOLD_MS});},{passive:true});
+document.addEventListener('touchmove',function(e){var t=e.touches[0];if(from&&t&&Math.abs(t.clientX-from[0])+Math.abs(t.clientY-from[1])>${HOLD_SLOP}){stopHold();}},{passive:true});
+document.addEventListener('touchend',stopHold,{passive:true});
 var done=false;
-function ready(){if(done){return;}done=true;try{selectAt(${at});}catch(e){}post('ready');if(window.ResizeObserver){new ResizeObserver(function(){post('height');}).observe(root);}}
+function ready(){if(done){return;}done=true;post('ready');if(window.ResizeObserver){new ResizeObserver(function(){post('height');}).observe(root);}}
 if(document.readyState==='complete'){ready();}else{window.addEventListener('load',ready);}
 })();`;
+}
+
+/**
+ * 見せて `requestFocus()` した後に WebView へ流す文（`injectJavaScript`）。押した点の単語か発言の全体を選ぶ。
+ * 発言の文字は含まない（押した点は HTML の nonce 付きのスクリプトが持つ）。
+ */
+export function inplaceSelectStartScript(): string {
+	return 'window.__paraSelectStart&&window.__paraSelectStart();true;';
 }
 
 /** 差し替える WebView の HTML。`nonce` は `createMobileOfficeNonce()` で作り、HTML を作るたびに新しくする。 */

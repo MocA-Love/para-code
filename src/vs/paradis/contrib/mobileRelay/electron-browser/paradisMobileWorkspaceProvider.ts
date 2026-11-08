@@ -2328,7 +2328,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} else if (msg.t === 'xlsxDiff') {
 				// Excel差分: HEAD(git:スキーマ、git拡張のFSプロバイダ経由) vs 作業ツリーを
 				// PC版差分ビューアと同じ計算・描画でHTML化して返す。
-				const modified = await this.resolveWorkspacePathReal(msg.ws, msg.path);
+				const modified = await paradisWithHostDeadline(this.resolveWorkspacePathReal(msg.ws, msg.path), PARADIS_MOBILE_READ_DEADLINE_MS);
 				if (!modified) {
 					reply({ error: `invalid path: ${msg.path}` });
 					return;
@@ -2927,7 +2927,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				reply({ error: 'invalid file link' });
 				return;
 			}
-			try {
+			// 作業フォルダからの解決・stat・根からの解決のどれでも接続先が返さなければ、全体で 1 つの期限
+			// （PARADIS_MOBILE_READ_DEADLINE_MS）で打ち切る。段ごとに期限を付けると、最悪その数だけ待たせる
+			const resolveLink = async (): Promise<object> => {
 				const normalizeRelative = (input: string): string | undefined => {
 					const segments: string[] = [];
 					for (const segment of input.replace(/\\/g, '/').split('/')) {
@@ -2962,17 +2964,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						?? normalizeRelative(rawPath);
 				}
 				if (relativePath === undefined || relativePath.length === 0) {
-					reply({ error: 'file link is outside the workspace' });
-					return;
+					return { error: 'file link is outside the workspace' };
 				}
 				const uri = await this.resolveWorkspacePathReal(msg.ws, relativePath);
 				if (uri === undefined || (await this.fileService.stat(uri)).isDirectory) {
-					reply({ error: 'file link does not point to a file' });
-					return;
+					return { error: 'file link does not point to a file' };
 				}
-				reply({ t: 'resolveLink', path: relativePath });
-			} catch {
-				reply({ error: 'file link could not be resolved' });
+				return { t: 'resolveLink', path: relativePath };
+			};
+			try {
+				reply(await paradisWithHostDeadline(resolveLink(), PARADIS_MOBILE_READ_DEADLINE_MS));
+			} catch (err) {
+				// 接続先が応答しないときは「接続先が応答しません」（code: 'no-response'）を返す
+				reply(paradisIsMobileHostNoResponse(err) ? paradisMobileHostErrorReply(err) : { error: 'file link could not be resolved' });
 			}
 			return;
 		}

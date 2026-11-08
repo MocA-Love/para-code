@@ -19,6 +19,7 @@ import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
 import { useAgentActions } from '../../hooks/useAgentActions.js';
 import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
+import { useToastAnchorView } from '../../ui/toastAnchor.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../../pendingAgentMessages.js';
@@ -35,7 +36,8 @@ import { paradisCodexAsyncNotifyInteractionId } from '../../../../../src/vs/para
 import { isAsyncQuestionHidden, useAsyncQuestionDrafts } from '../../asyncQuestionDrafts.js';
 import { pinnedCardMaxHeight, PinnedCardScrollContext, type PinnedCardScroll } from './pinnedCard.js';
 import { withQuestionOutcomes } from './questionOutcomes.js';
-import { ChatChromeRow, CompactingRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
+import { ChatChromeRow, CompactingRow, InplaceSelectBar, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
+import { useInplaceSelectNotice, useInplaceSelectNoticeHost } from './inplaceSelectNotice.js';
 import { useQuickReplies } from '../settings/quickRepliesStore.js';
 import { ChatList, type ChatListHandle } from './chatList.js';
 import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
@@ -306,6 +308,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	const pinnedHasPreview = pinned !== undefined && (pinned.type === 'question' ? [pinned.m] : pinned.msgs).some(questionHasPreview);
 	// キーボードが出ているとき（質問へのメモの入力など）はカードの上限を下げ、入力欄をカードの中で見える位置へ送る
 	const keyboardCoverage = useKeyboardCoverage();
+	// お知らせ（コピーした・範囲を選んでいる）を、クイック返信の帯から下の塊に重ねず、そのすぐ上に出す（ui/toastAnchor.ts）
+	const toastAnchor = useToastAnchorView(active, keyboardCoverage);
 	const { height: windowHeight } = useWindowDimensions();
 	const cardMaxHeight = pinnedCardMaxHeight(pinnedHasPreview ? PINNED_PREVIEW_CARD_MAX_HEIGHT : PINNED_CARD_MAX_HEIGHT, windowHeight, keyboardCoverage);
 	const cardScrollRef = useRef<ScrollView>(null);
@@ -394,6 +398,9 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			))}
 		</View>
 	) : undefined;
+	// その場で範囲を選んでいる間は、クイック返信の帯の位置にお知らせの帯を置く（一覧に重ねない。inplaceSelectNotice.ts）
+	useInplaceSelectNoticeHost(active);
+	const selectNotice = useInplaceSelectNotice(s => s.notice);
 	const showQuickReplies = shouldShowQuickReplies({
 		agentStatus: terminal.agentStatus,
 		working,
@@ -426,7 +433,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						allToolsOpen={allToolsOpen}
 					/>
 				)}
-				<View style={[styles.bottom, column]}>
+				<View ref={toastAnchor.ref} collapsable={false} onLayout={toastAnchor.onLayout} style={[styles.bottom, column]}>
 					{card !== undefined || asyncCard !== undefined ? (
 						<ScrollView ref={cardScrollRef} style={[styles.cardScroll, { maxHeight: cardMaxHeight }]} contentContainerStyle={styles.cardContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 							<View ref={cardContentRef} collapsable={false}>
@@ -437,7 +444,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 							</View>
 						</ScrollView>
 					) : null}
-					{showQuickReplies ? <QuickReplies onPick={pickQuickReply} /> : null}
+					{selectNotice !== undefined ? <InplaceSelectBar notice={selectNotice} /> : showQuickReplies ? <QuickReplies onPick={pickQuickReply} /> : null}
 					<QueuedSendsBanner pcId={activePcId} terminalKey={terminalKey} />
 					{/* コンテキストを圧縮している最中（PreCompact から区切りの行が届くまで。モックの A6-2）。圧縮していなければ何も描かない */}
 					{chatReady ? <CompactingRow activity={chat?.activity} messages={messages} /> : null}

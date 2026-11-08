@@ -47,30 +47,42 @@ import { IParadisSkillHost, paradisDeleteSkill, paradisInstallSkill, paradisList
 		await fs.writeFile(join(dir, 'SKILL.md'), `---\nname: ${name}\n---\n`);
 	}
 
-	test('shows a skills folder that links to another one only once, and reads it only once', async () => {
+	test('shows a skills folder that links to another one only once, and reads it and its real path only once', async () => {
 		const { fileService, claude, agents } = services(store.add(new DisposableStore()));
 		await writeSkill(join(home, '.agents', 'skills', 'foo'), 'foo');
 		await fs.mkdir(join(home, '.claude'), { recursive: true });
 		await fs.symlink(join(home, '.agents', 'skills'), join(home, '.claude', 'skills'));
 		const resolved: string[] = [];
+		const realpaths: string[] = [];
+		// 一覧のために読んだフォルダ・実体を取ったフォルダだけを数える（SKILL.md や各スキルのフォルダは数えない）
+		const isRoot = (resource: URI) => resource.fsPath === agents.uri.fsPath || resource.fsPath === claude.uri.fsPath;
 		const counting = new Proxy(fileService, {
 			get: (target, key) => key === 'resolve'
 				? (resource: URI, options?: IResolveMetadataFileOptions) => {
-					// 一覧のために読んだフォルダだけを数える（SKILL.md を読むときの確認は数えない）
-					if (resource.fsPath === agents.uri.fsPath || resource.fsPath === claude.uri.fsPath) {
+					if (isRoot(resource)) {
 						resolved.push(resource.fsPath);
 					}
 					return target.resolve(resource, options);
 				}
-				: Reflect.get(target, key),
+				: key === 'realpath'
+					? (resource: URI) => {
+						if (isRoot(resource)) {
+							realpaths.push(resource.fsPath);
+						}
+						return target.realpath(resource);
+					}
+					: Reflect.get(target, key),
 		});
 		const listings = await paradisListSkillRoots(counting, [agents, claude]);
 		assert.deepStrictEqual({
 			listings: listings.map(listing => [listing.root.provider, listing.skills.length, listing.aliasOf]),
 			resolved,
+			realpaths,
 		}, {
 			listings: [['agents', 1, undefined], ['claude', 0, agents.id]],
 			resolved: [agents.uri.fsPath],
+			// フォルダごとに 1 回だけ取る
+			realpaths: [agents.uri.fsPath, claude.uri.fsPath],
 		});
 	});
 

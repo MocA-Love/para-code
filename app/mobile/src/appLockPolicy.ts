@@ -58,6 +58,47 @@ export function foregroundAction(state: AuthGateState, hiddenAt: number | undefi
 }
 
 /**
+ * 認証の UI を出せずに失敗したか（`authenticateAsync` の `error`）。iOS の LocalAuthentication の -1000
+ * （「UI activation timed out」。起動の途中・前面でない間に頼んだ）、-1004（`notInteractive`）、システム・アプリの取り消し。
+ * ユーザーが自分で取り消した（`user_cancel`）・失敗した（`authentication_failed`）ものは含まない。
+ */
+export function isAuthUiUnavailable(error: string | undefined): boolean {
+	if (error === undefined) {
+		return false;
+	}
+	return error === 'system_cancel' || error === 'app_cancel' || /^unknown: -100[04]\b/.test(error);
+}
+
+/** 認証に失敗した直後に、認証の UI が閉じて前面へ戻った知らせでもう一度始めないための時間（ms）。 */
+export const AUTH_FAILURE_SETTLE_MS = 1500;
+/** UI を出せずに失敗したとき、前面にいるのを確かめてから 1 回だけやり直すまでの待ち（ms）。 */
+export const AUTH_UI_RETRY_DELAY_MS = 700;
+
+/** ロック中に前面へ戻ったとき（または UI を出せずに失敗したとき）にすること。 */
+export type LockedRetryAction =
+	/** 認証を始める。 */
+	| 'authenticate'
+	/** 少し待ってから 1 回だけやり直す（UI を出せなかった）。 */
+	| 'retryLater'
+	/** 何もしない（ユーザーが取り消した直後など。「ロック解除」のボタンで始める）。 */
+	| 'none';
+
+/**
+ * ロック中に、直前の失敗（`lastFailure`）を踏まえてすることを決める。失敗の直後（{@link AUTH_FAILURE_SETTLE_MS} 以内）に
+ * すぐ認証し直すと、閉じかけの認証の UI と重なる（iPhone のシミュレータでは、UI を出せずに失敗した 60ms 後にアプリが
+ * 落ちた）。UI を出せなかった失敗は、待ってから 1 回だけやり直す。ユーザーの取り消しはやり直さない。
+ */
+export function lockedRetryAction(lastFailure: { readonly at: number; readonly error: string | undefined } | undefined, uiRetried: boolean, now: number): LockedRetryAction {
+	if (lastFailure === undefined) {
+		return 'authenticate';
+	}
+	if (isAuthUiUnavailable(lastFailure.error)) {
+		return uiRetried ? 'none' : 'retryLater';
+	}
+	return now - lastFailure.at > AUTH_FAILURE_SETTLE_MS ? 'authenticate' : 'none';
+}
+
+/**
  * RN の `Modal` に渡す `visible`。`Modal` はネイティブで最前面に出てロック画面より上に来るため、
  * ロック中は必ず落とす。
  */

@@ -103,6 +103,11 @@ const PARADIS_ENTRY_POINTS: readonly { readonly entry: string; readonly lists: r
 		lists: ['desktopEntryPoints'],
 	},
 	{
+		// shared process が bootstrap-fork（VSCODE_ESM_ENTRYPOINT）で起こすシミュレータのホスト。手元だけで動くのでサーバーには入れない
+		entry: 'vs/paradis/contrib/simulator/node/paradisSimulatorHostMain',
+		lists: ['desktopEntryPoints'],
+	},
+	{
 		// 音声入力の認識の utility process（upstream の localTranscriptionMain の代わり。renderer が moduleId で起動する）
 		entry: 'vs/paradis/contrib/dictation/node/paradisSpeechEngineMain',
 		lists: ['desktopEntryPoints'],

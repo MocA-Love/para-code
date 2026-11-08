@@ -26,7 +26,7 @@ function isWordRun(request: unknown): request is ParadisWordSemanticWorkerRun {
 		return false;
 	}
 	const value = request as { readonly op?: unknown; readonly bytes?: unknown; readonly original?: unknown; readonly modified?: unknown };
-	return value.op === 'analyze' ? value.bytes instanceof Uint8Array
+	return value.op === 'analyze' || value.op === 'objects' ? value.bytes instanceof Uint8Array
 		: value.op === 'compare' ? value.original instanceof Uint8Array && value.modified instanceof Uint8Array
 			: false;
 }
@@ -42,7 +42,9 @@ runParadisWorkerLoop<ParadisWordSemanticWorkerRun, ParadisWordSemanticWorkerResu
 		const onUnexpectedError = (error: unknown) => { cause = paradisOfficeWorkerFailureKind(error); };
 		const result = request.op === 'analyze'
 			? await service.analyze(request.bytes, token, onUnexpectedError)
-			: await service.compare(request.original, request.modified, token, onUnexpectedError);
+			: request.op === 'objects'
+				? await service.extractObjects(request.bytes, token, onUnexpectedError)
+				: await service.compare(request.original, request.modified, token, onUnexpectedError);
 		return { result, ...(cause ? { cause } : {}) };
 	},
 });
