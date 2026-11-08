@@ -59,7 +59,7 @@ import { registerParadisPortList } from './contrib/portList/node/paradisPortList
 import './contrib/limitsMonitor/node/paradisClaudeAccounts.contribution.js';
 import './contrib/codexAccounts/node/paradisCodexAccountsChannel.js';
 import './contrib/agentHookTrust/node/paradisCodexHookTrust.js';
-import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.js';
+import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.sharedProcess.js';
 import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
 import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
 import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';

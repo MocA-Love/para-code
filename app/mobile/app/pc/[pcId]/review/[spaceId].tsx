@@ -284,10 +284,11 @@ export default function ReviewScreen() {
 			return;
 		}
 		setAgentsRequested(true);
-		useAppStore.getState().worktreeForm({ agentsOnly: true })
+		// このスペースを開いている PC の画面に聞く（SSH のスペースなら接続先のエージェントの定義になる）
+		useAppStore.getState().worktreeForm({ agentsOnly: true, ...(codeSpace.wsId !== undefined ? { ws: codeSpace.wsId } : {}) })
 			.then(result => setAgents(result.agents))
 			.catch(() => undefined);
-	}, [notesOpen, agentsRequested, notes.enabled]);
+	}, [notesOpen, agentsRequested, notes.enabled, codeSpace.wsId]);
 
 	const notesPanel = (
 		<ReviewNotesPanel
