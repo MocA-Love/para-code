@@ -29,6 +29,7 @@ import { IEditorGroupsService } from '../../../../workbench/services/editor/comm
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisSimulatorDevice, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_ENABLED_SETTING, PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paradisIsSimulatorUdid, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
+import { paradisAndroidAvdOf } from '../common/paradisAndroid.js';
 import { ParadisSimulatorEditor } from './paradisSimulatorEditor.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -103,11 +104,16 @@ CommandsRegistry.registerCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, asy
 	if (!isMacintosh || configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) !== true || typeof paneToken !== 'string' || typeof deviceId !== 'string') {
 		return;
 	}
+	const client = accessor.get(IParadisSimulatorClient);
+	const notificationService = accessor.get(INotificationService);
 	const udid = paradisSimulatorUdidOfDeviceId(deviceId);
 	if (!udid) {
+		// 起動していない Android の AVD なら起動する（画面のタブは ⑥b で開く）
+		if (paradisAndroidAvdOf(deviceId)) {
+			await client.bootAndroid(deviceId).catch(error => notificationService.error(localize('paradis.simulator.android.bootFailed', "Android のエミュレータを起動できませんでした: {0}", error instanceof Error ? error.message : String(error))));
+		}
 		return;
 	}
-	const client = accessor.get(IParadisSimulatorClient);
 	const editorService = accessor.get(IEditorService);
 	const editorGroupsService = accessor.get(IEditorGroupsService);
 	const paneInstanceId = accessor.get(IParadisPaneTokenService).getInstanceForToken(paneToken);
