@@ -46,12 +46,16 @@ suite('ParadisSharedTunnelsService', () => {
 		return tunnel;
 	}
 
-	/** Whether something accepts TCP connections on the tunnel's local port. */
+	/**
+	 * Whether the tunnel's local port is taken, judged by trying to listen on it ourselves.
+	 * (Connecting is not a reliable probe here: the tunnel accepts and then resets at once,
+	 * because nothing in these tests can reach a remote.)
+	 */
 	function isListening(tunnel: RemoteTunnel): Promise<boolean> {
 		return new Promise(resolve => {
-			const client = net.createConnection({ host: '127.0.0.1', port: tunnel.tunnelLocalPort! });
-			client.on('connect', () => { client.destroy(); resolve(true); });
-			client.on('error', () => resolve(false));
+			const probe = net.createServer();
+			probe.once('error', () => resolve(true));
+			probe.listen(tunnel.tunnelLocalPort!, '127.0.0.1', () => probe.close(() => resolve(false)));
 		});
 	}
 
