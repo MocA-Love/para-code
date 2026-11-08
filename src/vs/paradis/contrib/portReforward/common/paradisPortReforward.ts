@@ -40,21 +40,36 @@ export function isParadisPortReforwardCloseRequest(value: unknown): value is IPa
 }
 
 /**
- * 窓の開いているワークスペース（`INativeHostService.getWindows()` の `workspace`）から、その窓の接続先を取り出す。
- * フォルダーかワークスペースのファイルが SSH 先（`vscode-remote`）にあれば、その authority が窓の接続先になる。
- * 空の窓や手元のフォルダーなど、ワークスペースから分からないときは undefined。
+ * 窓の開いているワークスペースから分かる、その窓の接続先。
+ * - `remote`: フォルダーかワークスペースのファイルが SSH 先（`vscode-remote`）にある。`authority` がその窓の接続先
+ * - `local`: 手元のフォルダー・ワークスペースを開いている（SSH の窓ではない）
+ * - `unknown`: フォルダーを開いていない空の窓。SSH の空の窓か手元の空の窓かは、ワークスペースからは分からない
  */
-export function paradisWorkspaceRemoteAuthority(workspace: unknown): string | undefined {
+export type ParadisWindowRemote =
+	| { readonly kind: 'remote'; readonly authority: string }
+	| { readonly kind: 'local' }
+	| { readonly kind: 'unknown' };
+
+/**
+ * 窓の開いているワークスペース（`INativeHostService.getWindows()` の `workspace`）から、その窓の接続先を判じる。
+ *
+ * `getWindows()` が返す窓の情報（`IOpenedMainWindow`）には接続先（remoteAuthority）が無いので、
+ * ワークスペースの場所から読む。そのため空の窓は `unknown` になる。
+ */
+export function paradisWindowRemoteOfWorkspace(workspace: unknown): ParadisWindowRemote {
 	if (!workspace || typeof workspace !== 'object') {
-		return undefined;
+		return { kind: 'unknown' };
 	}
 	const { uri, configPath } = workspace as { uri?: UriComponents; configPath?: UriComponents };
 	const location = uri ?? configPath;
 	if (!location || typeof location !== 'object' || typeof location.scheme !== 'string') {
-		return undefined;
+		return { kind: 'unknown' };
 	}
 	const resource = URI.revive(location);
-	return resource.scheme === Schemas.vscodeRemote && resource.authority ? resource.authority : undefined;
+	if (resource.scheme === Schemas.vscodeRemote && resource.authority) {
+		return { kind: 'remote', authority: resource.authority };
+	}
+	return { kind: 'local' };
 }
 
 /** shared process の接続の ctx（`window:<id>`）から窓の id を取り出す。窓でなければ undefined。 */

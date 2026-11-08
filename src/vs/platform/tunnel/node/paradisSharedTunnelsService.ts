@@ -5,6 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { disposableTimeout } from '../../../base/common/async.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { ILogService } from '../../log/common/log.js';
@@ -16,13 +17,21 @@ import { ISharedTunnelsService, ITunnelProvider, RemoteTunnel } from '../common/
 import { TunnelService } from './tunnelService.js';
 
 /**
+ * How long references of a force-closed tunnel wait for the next tunnel to the same host and port.
+ * The reforward that closed it forwards again within milliseconds; if it never does (the forward
+ * failed, or the window closed in between), the references are dropped so that a later forward of
+ * the port does not start with references nobody will release.
+ */
+export const PARADIS_CARRIED_REFERENCES_TIMEOUT_MS = 30_000;
+
+/**
  * References of a force-closed tunnel that the next tunnel to the same host and port takes over.
  */
 interface IParadisCarriedReferences {
-	/** How many leases of other windows were still open when the tunnel was closed. */
-	readonly count: number;
+	/** How many leases of other windows are still open. */
+	count: number;
 	/** The generations those leases were handed out under. */
-	readonly generations: readonly object[];
+	readonly generations: Set<object>;
 }
 
 /**
@@ -34,13 +43,32 @@ interface IParadisCarriedReferences {
  * although handed out under the closed tunnel's generation, count it down when they are released.
  * The tunnel therefore stays up while any of those windows still holds the port, and closes once
  * the last one lets go, as if it had never been closed.
+ *
+ * Until the next tunnel arrives, a lease that is released counts the kept references down instead,
+ * and the kept references are dropped after {@link PARADIS_CARRIED_REFERENCES_TIMEOUT_MS}.
+ *
+ * Relies on upstream's `BaseTunnelService.retainOrCreateTunnel` putting a new entry into the ledger
+ * synchronously, before it returns (see the upstream merge checklist in NOTES.md).
  */
 export class ParadisNodeTunnelService extends TunnelService {
 
 	/** References waiting for the next tunnel, keyed by `host:port`. */
 	private readonly _carried = new Map<string, IParadisCarriedReferences>();
+	/** Drops each entry of {@link _carried} once it has waited too long. */
+	private readonly _carriedTimeouts = this._register(new DisposableMap<string>());
 	/** Lease generation of a closed tunnel → generation of the tunnel that took its references over. */
 	private readonly _successors = new WeakMap<object, object>();
+
+	constructor(
+		private readonly _carriedTimeoutMs: number,
+		remoteSocketFactoryService: IRemoteSocketFactoryService,
+		logService: ILogService,
+		signService: ISignService,
+		productService: IProductService,
+		configurationService: IConfigurationService,
+	) {
+		super(remoteSocketFactoryService, logService, signService, productService, configurationService);
+	}
 
 	/** Whether some references are still waiting for the next tunnel. */
 	get hasCarriedReferences(): boolean {
@@ -57,24 +85,49 @@ export class ParadisNodeTunnelService extends TunnelService {
 			return;
 		}
 		const key = carriedKey(remoteHost, remotePort);
-		const earlier = this._carried.get(key);
-		if (entry.refcount > 0) {
+		const kept = entry.refcount > 0;
+		if (kept) {
 			// Recorded before closing: the close event fires inside `closeTunnel`, and the owner
 			// must already see these references so it does not dispose this service.
-			this._carried.set(key, {
-				count: entry.refcount + (earlier?.count ?? 0),
-				generations: [entry.generation, ...(earlier?.generations ?? [])],
-			});
+			this._keep(key, entry.refcount, entry.generation);
 		}
 		await this.closeTunnel(remoteHost, remotePort);
-		if (this.getTunnelFromMap(remoteHost, remotePort) === entry) {
+		if (kept && this.getTunnelFromMap(remoteHost, remotePort) === entry) {
 			// `closeTunnel` looks the host up exactly and missed an alias of it: nothing was closed.
-			if (earlier) {
-				this._carried.set(key, earlier);
-			} else {
-				this._carried.delete(key);
-			}
+			this._release(key, entry.refcount);
 		}
+	}
+
+	private _keep(key: string, count: number, generation: object): void {
+		const carried = this._carried.get(key);
+		if (carried) {
+			carried.count += count;
+			carried.generations.add(generation);
+		} else {
+			this._carried.set(key, { count, generations: new Set([generation]) });
+		}
+		this._carriedTimeouts.set(key, disposableTimeout(() => this._drop(key), this._carriedTimeoutMs));
+	}
+
+	/**
+	 * Takes `count` references back out of what is kept for `key`. The generations stay until the
+	 * whole record is dropped: leases of one generation are not counted apart, and a later lease of
+	 * the same generation must still be recognised.
+	 */
+	private _release(key: string, count: number): void {
+		const carried = this._carried.get(key);
+		if (!carried) {
+			return;
+		}
+		carried.count -= count;
+		if (carried.count <= 0) {
+			this._drop(key);
+		}
+	}
+
+	private _drop(key: string): void {
+		this._carried.delete(key);
+		this._carriedTimeouts.deleteAndDispose(key);
 	}
 
 	protected override retainOrCreateTunnel(addressOrTunnelProvider: IAddressProvider | ITunnelProvider, remoteHost: string, remotePort: number, localHost: string, localPort: number | undefined, elevateIfNeeded: boolean, privacy?: string, protocol?: string): Promise<RemoteTunnel | string | undefined> | undefined {
@@ -84,7 +137,7 @@ export class ParadisNodeTunnelService extends TunnelService {
 		const carried = this._carried.get(key);
 		const entry = this.getTunnelFromMap(remoteHost, remotePort);
 		if (!existed && carried && entry) {
-			this._carried.delete(key);
+			this._drop(key);
 			entry.refcount += carried.count;
 			for (const generation of carried.generations) {
 				this._successors.set(generation, entry.generation);
@@ -94,15 +147,36 @@ export class ParadisNodeTunnelService extends TunnelService {
 	}
 
 	protected override isLeaseOfEntry(entryGeneration: object, leaseGeneration: object): boolean {
-		// Follow the chain, since a tunnel can be reforwarded more than once.
-		let generation: object | undefined = leaseGeneration;
-		while (generation) {
+		for (const generation of this._generationChain(leaseGeneration)) {
 			if (generation === entryGeneration) {
 				return true;
 			}
-			generation = this._successors.get(generation);
 		}
 		return false;
+	}
+
+	protected override onStaleLeaseReleased(remoteHost: string, remotePort: number, leaseGeneration: object): void {
+		// A window let go of a force-closed tunnel before the next one took its reference over.
+		const key = carriedKey(remoteHost, remotePort);
+		const carried = this._carried.get(key);
+		if (!carried) {
+			return;
+		}
+		for (const generation of this._generationChain(leaseGeneration)) {
+			if (carried.generations.has(generation)) {
+				this._release(key, 1);
+				return;
+			}
+		}
+	}
+
+	/** The lease's generation followed by those that took its references over, since a tunnel can be reforwarded more than once. */
+	private *_generationChain(leaseGeneration: object): Iterable<object> {
+		let generation: object | undefined = leaseGeneration;
+		while (generation) {
+			yield generation;
+			generation = this._successors.get(generation);
+		}
 	}
 }
 
@@ -130,6 +204,8 @@ function carriedKey(remoteHost: string, remotePort: number): string {
 export class ParadisSharedTunnelsService extends Disposable implements ISharedTunnelsService {
 	declare readonly _serviceBrand: undefined;
 	private readonly _tunnelServices = new Map<string, ParadisNodeTunnelService>();
+	/** How long a force-closed tunnel's references wait for the next tunnel. Tests shorten it. */
+	carriedReferencesTimeoutMs = PARADIS_CARRIED_REFERENCES_TIMEOUT_MS;
 	/** Each authority's tunnel service together with its close listener. */
 	private readonly _tunnelServiceStores = this._register(new DisposableMap<string, DisposableStore>());
 
@@ -147,7 +223,7 @@ export class ParadisSharedTunnelsService extends Disposable implements ISharedTu
 		this.logService.trace(`ForwardedPorts: (SharedTunnelService) openTunnel request for ${remoteHost}:${remotePort} on local port ${localPort}.`);
 		if (!this._tunnelServices.has(authority)) {
 			const store = new DisposableStore();
-			const tunnelService = store.add(new ParadisNodeTunnelService(this.remoteSocketFactoryService, this.logService, this.signService, this.productService, this.configurationService));
+			const tunnelService = store.add(new ParadisNodeTunnelService(this.carriedReferencesTimeoutMs, this.remoteSocketFactoryService, this.logService, this.signService, this.productService, this.configurationService));
 			this._tunnelServices.set(authority, tunnelService);
 			this._tunnelServiceStores.set(authority, store);
 			store.add(tunnelService.onTunnelClosed(async () => {

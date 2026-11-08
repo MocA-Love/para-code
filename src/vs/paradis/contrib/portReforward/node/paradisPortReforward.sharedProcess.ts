@@ -13,7 +13,7 @@ import { INativeHostService } from '../../../../platform/native/common/native.js
 import { ISharedTunnelsService } from '../../../../platform/tunnel/common/tunnel.js';
 import { ParadisSharedTunnelsService } from '../../../../platform/tunnel/node/paradisSharedTunnelsService.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
-import { isParadisPortReforwardCloseRequest, PARADIS_PORT_REFORWARD_CHANNEL, PARADIS_PORT_REFORWARD_FORCE_CLOSE, paradisWindowIdOfContext, paradisWorkspaceRemoteAuthority } from '../common/paradisPortReforward.js';
+import { isParadisPortReforwardCloseRequest, PARADIS_PORT_REFORWARD_CHANNEL, PARADIS_PORT_REFORWARD_FORCE_CLOSE, paradisWindowIdOfContext, paradisWindowRemoteOfWorkspace } from '../common/paradisPortReforward.js';
 
 /** 呼んだ窓が開いているワークスペースを引くところ。`INativeHostService.getWindows` のうち、使う部分だけ。 */
 export interface IParadisWindowWorkspaces {
@@ -31,9 +31,11 @@ export class ParadisPortReforwardChannel<TContext> implements IServerChannel<TCo
 
 	/**
 	 * 送られた接続先が、呼んだ窓のものか確かめる。別の SSH 先の転送を、関係の無い窓から閉じさせない。
-	 * 窓のワークスペースが SSH 先にあれば、その authority と一致しなければ断る。空の SSH の窓のように
-	 * ワークスペースから接続先が分からない窓は、確かめようがないので通す（閉じるのは転送だけで、
-	 * 張り直しで戻る）。
+	 *
+	 * `getWindows()` の窓の情報には接続先（remoteAuthority）が無いので、窓が開いているワークスペースの場所で判じる。
+	 * SSH 先のワークスペースならその authority と一致するときだけ、手元のワークスペースなら断る。フォルダーを
+	 * 開いていない空の窓は、SSH の空の窓か手元の空の窓か分からないので通す（手元の窓の「張り直す」は接続先が
+	 * 無いのでここを呼ばない。閉じるのは転送だけで、張り直しで戻る）。
 	 */
 	private async _isCallersAuthority(ctx: TContext, authority: string): Promise<boolean> {
 		const windowId = paradisWindowIdOfContext(ctx);
@@ -44,8 +46,12 @@ export class ParadisPortReforwardChannel<TContext> implements IServerChannel<TCo
 		if (!window) {
 			return false;
 		}
-		const windowAuthority = paradisWorkspaceRemoteAuthority(window.workspace);
-		return windowAuthority === undefined || windowAuthority === authority;
+		const remote = paradisWindowRemoteOfWorkspace(window.workspace);
+		switch (remote.kind) {
+			case 'remote': return remote.authority === authority;
+			case 'local': return false;
+			case 'unknown': return true;
+		}
 	}
 
 	listen<T>(_ctx: TContext, event: string): Event<T> {

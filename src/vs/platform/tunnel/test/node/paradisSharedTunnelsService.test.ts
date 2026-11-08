@@ -113,6 +113,53 @@ suite('ParadisSharedTunnelsService', () => {
 		}
 	});
 
+	test('kept references expire when the reforward never forwards again, so a later forward is not inflated', async () => {
+		const service = createService();
+		service.carriedReferencesTimeoutMs = 10;
+		try {
+			const windowA = await open(service);
+			const windowB = await open(service);
+			await windowA.dispose();
+			await service.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+
+			// The reforward's forward failed (or its window closed): nothing takes window B's reference.
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+
+			const later = await open(service);
+			await later.dispose();
+			const listeningAfterLaterLetGo = await isListening(later);
+			await windowB.dispose();
+
+			assert.strictEqual(listeningAfterLaterLetGo, false);
+		} finally {
+			service.dispose();
+		}
+	});
+
+	test('a lease returned between the forced close and the next forward counts the kept references down', async () => {
+		const service = createService();
+		try {
+			const windowA = await open(service);
+			const windowB = await open(service);
+			await windowA.dispose();
+			await service.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+
+			// Window B lets go before window A forwards again.
+			await windowB.dispose();
+			const reforwarded = await open(service);
+			const listeningAfterReforward = await isListening(reforwarded);
+			await reforwarded.dispose();
+			const listeningAfterALetGo = await isListening(reforwarded);
+
+			assert.deepStrictEqual(
+				{ listeningAfterReforward, listeningAfterALetGo },
+				{ listeningAfterReforward: true, listeningAfterALetGo: false }
+			);
+		} finally {
+			service.dispose();
+		}
+	});
+
 	test('a forced close for an unknown remote does nothing', async () => {
 		const service = createService();
 		try {
