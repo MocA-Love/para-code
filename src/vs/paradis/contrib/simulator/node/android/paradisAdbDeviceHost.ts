@@ -21,7 +21,7 @@ import { execFile, spawn } from 'child_process';
 import { homedir } from 'os';
 import { dirname, join } from '../../../../../base/common/path.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { paradisAdbCandidates } from '../../../mobileCanvas/node/paradisMobileDeviceCommands.js';
+import { paradisAdbCandidates } from '../../node/paradisMobileDeviceCommands.js';
 import { IParadisSimulatorAxSnapshot, paradisFindSimulatorAx, paradisPickSimulatorAxTarget } from '../../common/paradisSimulatorAx.js';
 import { PARADIS_SCRCPY_AGENT_POINTER_BASE, ParadisScrcpyTouchAction, paradisScrcpyTouch } from '../../common/paradisScrcpy.js';
 import { ParadisScrcpySession } from './paradisScrcpySession.js';
@@ -435,23 +435,33 @@ const PASTE_SETTLE_MS = 500;
  */
 export async function paradisPasteKeepingClipboard(session: Pick<ParadisScrcpySession, 'getClipboard' | 'setClipboard'>, text: string, sleep: (ms: number) => Promise<void>): Promise<{ readonly method: 'paste'; readonly clipboardRestored: boolean; readonly note?: string }> {
 	const previous = await session.getClipboard().catch(() => undefined);
-	await session.setClipboard(text, true);
-	await sleep(PASTE_SETTLE_MS);
+	let pasteError: unknown;
+	try {
+		await session.setClipboard(text, true);
+		await sleep(PASTE_SETTLE_MS);
+	} catch (error) {
+		// 貼る側の返事（ACK）が来なくても、端末のクリップボードは書き換わっているかもしれない。戻しは必ず試す
+		pasteError = error;
+	}
+	let restored: boolean;
+	let note: string | undefined;
 	if (previous === undefined) {
 		// 空だった・読めなかった。エージェントの文を残さないよう空にしておく
+		restored = false;
 		const cleared = await session.setClipboard('', false).then(() => true, () => false);
-		return {
-			method: 'paste',
-			clipboardRestored: false,
-			note: cleared
-				? 'Para Code could not read the device clipboard before pasting (it may have been empty), so it cleared the clipboard afterwards instead of restoring it.'
-				: 'Para Code could not read the device clipboard before pasting and could not clear it afterwards: the device clipboard now holds the typed text.',
-		};
+		note = cleared
+			? 'Para Code could not read the device clipboard before pasting (it may have been empty), so it cleared the clipboard afterwards instead of restoring it.'
+			: 'Para Code could not read the device clipboard before pasting and could not clear it afterwards: the device clipboard may now hold the typed text.';
+	} else {
+		restored = await session.setClipboard(previous, false).then(() => true, () => false);
+		note = restored ? undefined : 'Para Code could not put the previous device clipboard back after pasting: the device clipboard may now hold the typed text.';
 	}
-	const restored = await session.setClipboard(previous, false).then(() => true, () => false);
-	return restored
-		? { method: 'paste', clipboardRestored: true }
-		: { method: 'paste', clipboardRestored: false, note: 'Para Code could not put the previous device clipboard back after pasting: the device clipboard now holds the typed text.' };
+	if (pasteError !== undefined) {
+		// 貼れたかは分からない。戻しの結果を添えて、貼れなかったこととして返す
+		const reason = pasteError instanceof Error ? pasteError.message : String(pasteError);
+		throw new Error(`${reason}${restored ? ' The previous device clipboard was put back.' : note ? ` ${note}` : ''}`);
+	}
+	return restored ? { method: 'paste', clipboardRestored: true } : { method: 'paste', clipboardRestored: false, ...(note ? { note } : {}) };
 }
 
 function requireNumber(body: Record<string, unknown>, name: string): number {

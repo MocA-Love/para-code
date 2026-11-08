@@ -19,7 +19,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
+import { IParadisMobileCanvasModel } from '../electron-browser/paradisMobileCanvasModel.js';
 import { ParadisSimulatorEditorInput, paradisDeviceAssignedTerminals, paradisSimulatorAssignedTerminals } from './paradisSimulatorEditorInput.js';
 import { ParadisAndroidEditorInput } from './paradisAndroidEditorInput.js';
 

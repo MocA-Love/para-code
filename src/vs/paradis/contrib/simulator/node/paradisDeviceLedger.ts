@@ -27,8 +27,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay } from '../common/paradisMobileCanvas.js';
 import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
-import { ParadisMobileCanvasUnavailableError } from './paradisMobileCanvasHostClient.js';
-import { IParadisMobileDeviceLedger, IParadisMobileHostRequester } from './paradisMobileDeviceOpsToolProvider.js';
+import { IParadisMobileDeviceLedger, IParadisMobileHostRequester } from './paradisSimulatorDeviceOps.js';
 
 /** MCPツールが返す標準形。`isError` を立てるとエージェント側で失敗として扱われる。 */
 interface IToolResult {
@@ -314,9 +313,6 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		try {
 			return await this._callTool(paneToken, name, record, signal);
 		} catch (error) {
-			if (error instanceof ParadisMobileCanvasUnavailableError) {
-				return errorResult(`${toMessage(error)} Mobile Canvas needs Xcode for iOS simulators, or the Android SDK (emulator/adb on PATH) for Android emulators.`);
-			}
 			return errorResult(toMessage(error));
 		}
 	}

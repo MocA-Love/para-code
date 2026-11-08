@@ -6,13 +6,12 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// shared process にシミュレータを立ち上げる。`paradis.sharedProcess.contribution.ts` から、前の
-// `registerParadisMobileCanvas(...)` の直呼びの代わりに呼ぶ（agentBrowser の `registerToolProvider` を値で受け取るため、
-// 登録口ではなく直呼び。設計書 1 節）。
+// shared process にシミュレータを立ち上げる。`paradis.sharedProcess.contribution.ts` から直呼びする
+// （agentBrowser の `registerToolProvider` を値で受け取るため、登録口ではなく直呼び。設計書 1 節）。
 //
-//  - Mobile Canvas の台帳と mobile_* の 17 本は今のまま。ホストへの要求を振り分けで包み、設定がオンで macOS なら
-//    iOS のシミュレータを serve-sim へ回す（paradisMobileHostRouter.ts。q.html Q585 の ③、案A）
-//  - mobile_fold を足す（設定がオンのときだけ一覧に出る）
+//  - 端末の台帳（端末⇔ペイン）と mobile_* の 17 本。端末の口は振り分け（paradisSimulatorDeviceRouter.ts）で、
+//    iOS のシミュレータは serve-sim、Android は利用者の adb（⑦ で Mobile Canvas を外した）
+//  - mobile_fold
 //  - renderer のエディタのペインが使う映像と入力のチャネル
 
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -21,10 +20,10 @@ import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
-import { registerParadisMobileCanvas } from '../../mobileCanvas/node/paradisMobileCanvasChannel.js';
-import { ParadisMobileCanvasService } from '../../mobileCanvas/node/paradisMobileCanvasService.js';
+import { registerParadisDeviceLedger } from './paradisDeviceLedgerChannel.js';
+import { ParadisMobileCanvasService } from './paradisDeviceLedger.js';
 import { PARADIS_SIMULATOR_CHANNEL, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_ENABLED_SETTING } from '../common/paradisSimulator.js';
-import { ParadisMobileHostRouter } from './paradisMobileHostRouter.js';
+import { ParadisSimulatorDeviceRouter } from './paradisSimulatorDeviceRouter.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { ParadisServeSimDeviceHost } from './paradisServeSimDeviceHost.js';
 import { ParadisSimulatorChannel, ParadisSimulatorService } from './paradisSimulatorChannel.js';
@@ -47,7 +46,6 @@ export interface IParadisSimulatorRegistration extends IDisposable {
 export function registerParadisSimulator(
 	server: IPCServer<string>,
 	userDataPath: string,
-	builtinExtensionsPath: string,
 	configurationService: IConfigurationService,
 	logService: ILogService,
 	registerToolProvider: (provider: ParadisMobileCanvasService) => void,
@@ -80,13 +78,9 @@ export function registerParadisSimulator(
 
 	// モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは para-browser の MCP サーバーへ相乗りさせるため、
 	// エージェントCLI側に追加のMCP設定は要らない
-	let router: ParadisMobileHostRouter | undefined;
-	const { service: ledger, deviceOps } = registerParadisMobileCanvas(server, builtinExtensionsPath, logService, registerToolProvider,
-		mobileCanvas => {
-			router = new ParadisMobileHostRouter(mobileCanvas, deviceHost, useServeSim, logService, android);
-			return router;
-		});
-	ledger.setListNotice(() => router?.androidNotice);
+	const router = new ParadisSimulatorDeviceRouter(deviceHost, android, useServeSim, useServeSim, logService);
+	const { service: ledger, deviceOps } = registerParadisDeviceLedger(server, router, logService, registerToolProvider);
+	ledger.setListNotice(() => isEnabled() ? router.androidNotice : `The simulator is turned off (${PARADIS_SIMULATOR_ENABLED_SETTING}).`);
 	store.add(ledger);
 	const fold = new ParadisSimulatorFoldToolProvider(ledger, backend, deviceHost, deviceId => deviceOps.forgetScreenSize(deviceId), useServeSim, logService, deviceHub);
 	store.add(paradisRegisterMcpToolProvider(fold));
@@ -100,7 +94,7 @@ export function registerParadisSimulator(
 		if (!isEnabled()) {
 			void service.stopHost();
 		}
-		void paradisDropUnreachableAttachments(ledger, logService, () => router?.androidListed ?? false);
+		void paradisDropUnreachableAttachments(ledger, logService, () => router.androidNotice === undefined);
 	}));
 	return { ledger, dispose: () => store.dispose() };
 }

@@ -18,7 +18,7 @@ import { ParadisServeSimBackend } from '../../node/paradisServeSimBackend.js';
 import { ParadisSimulatorService } from '../../node/paradisSimulatorChannel.js';
 import { IParadisSimulatorHostConnection } from '../../node/paradisSimulatorHostProcess.js';
 import { paradisDropUnreachableAttachments } from '../../node/paradisSimulator.sharedProcess.js';
-import { IParadisMobileAttachment, IParadisMobileDevice } from '../../../mobileCanvas/common/paradisMobileCanvas.js';
+import { IParadisMobileAttachment, IParadisMobileDevice } from '../../common/paradisMobileCanvas.js';
 
 const UDID = 'A1B2C3D4-0000-1111-2222-333344445555';
 

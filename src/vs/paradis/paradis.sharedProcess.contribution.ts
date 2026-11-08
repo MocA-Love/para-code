@@ -16,7 +16,7 @@
 //
 // 前からある fork チャネル（`registerParadis*` の直呼び）は、`sharedProcessMain.ts` に並んでいた
 // ものをそのままの順番で下の `registerParadisSharedProcessContributions` に移した。互いに値を
-// 渡し合うもの（notifications → agentBrowser → simulator（mobileCanvas を含む） / mobileRelay）があるので、
+// 渡し合うもの（notifications → agentBrowser → simulator / mobileRelay）があるので、
 // 並びを変えるときは渡している値の出どころを確かめる。
 
 import { DisposableStore, IDisposable } from '../base/common/lifecycle.js';
@@ -108,7 +108,6 @@ export function registerParadisSharedProcessContributions(server: IPCServer<stri
 	store.add(registerParadisSimulator(
 		server,
 		accessor.get(INativeEnvironmentService).userDataPath,
-		accessor.get(INativeEnvironmentService).builtinExtensionsPath,
 		accessor.get(IConfigurationService),
 		accessor.get(ILogService),
 		provider => paradisAgentBrowser.registerToolProvider(provider),
