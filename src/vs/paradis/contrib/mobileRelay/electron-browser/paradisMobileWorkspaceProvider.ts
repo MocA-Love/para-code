@@ -80,7 +80,7 @@ import { ParadisMobileFileTiming } from '../common/paradisMobileFileTiming.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import type { ParadisCodexAutoContinuePhase } from '../common/paradisCodexOverloadContinue.js';
 import { ParadisCodexAutoContinueWindow, paradisReadCodexAutoContinueRequest } from './paradisCodexAutoContinueWindow.js';
-import { PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeConfigModelCommand, paradisClaudeModelAlias, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
+import { PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeConfigModelCommand, paradisClaudeModelAlias, paradisClaudeModelNotListedMessage, paradisFindListedClaudeModel, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
 import { paradisDecodeMobileAgentAction } from '../common/paradisMobileAgentAction.js';
 
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
@@ -1757,9 +1757,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					if (!outcome.executed) {
 						throw new Error('Claude setting session changed before submission');
 					}
+				} else if (msg.setting === 'model') {
+					// 別名でないモデル（`claude-mythos-5-1` など版付きの id。`/config` は別名しか受け付けない）は、PC が CLI から
+					// 取ったモデルの一覧に載っているものだけを `/model <id>` で送り、確認（Switch model?）に Enter を送るガードで切り替える
+					const claude = (await this.getWorktreeCreateForm({ agentsOnly: true })).agents.find(agent => agent.id === 'claude');
+					const listed = paradisFindListedClaudeModel(msg.value, claude?.models ?? []);
+					if (listed === undefined) {
+						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotListedMessage(msg.value));
+						return;
+					}
+					await this.modelSwitchGuard.execute(instance, `/model ${listed}`, validate);
 				} else {
-					// effort（`/effort <段階>` は会話の途中だと「Change effort level?」を出すことがある）と、別名でないモデルの ID
-					// （`/config` は別名しか受け付けない）は、今までどおり確認に Enter を送るガードで切り替える
+					// effort（`/effort <段階>` は会話の途中だと「Change effort level?」を出すことがある）は、今までどおり確認に Enter を送るガードで切り替える
 					await this.modelSwitchGuard.execute(instance, `/${msg.setting} ${msg.value}`, validate);
 				}
 				if (!(await this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId))) {

@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_CLAUDE_SETTING_VALUE_PATTERN, paradisClaudeModelSwitch, paradisCodexComposerHoldsCommand, paradisParseSlashCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../../common/paradisAgentSlashCommand.js';
+import { PARADIS_CLAUDE_SETTING_VALUE_PATTERN, paradisClaudeModelSwitch, paradisFindListedClaudeModel, paradisCodexComposerHoldsCommand, paradisParseSlashCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../../common/paradisAgentSlashCommand.js';
 
 suite('ParadisAgentSlashCommand', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -96,17 +96,25 @@ suite('ParadisAgentSlashCommand', () => {
 		});
 	});
 
-	test('switches the model with /config model=<alias> for /model <alias>, and refuses a value that is not an alias', () => {
+	test('switches the model with /config model=<alias> for /model <alias>, hands a pinned id to the setting action, and refuses a malformed value', () => {
 		assert.deepStrictEqual({
 			switched: ['/model sonnet', '  /model Opus[1M] ', '/model default'].map(paradisClaudeModelSwitch),
-			refused: ['/model claude-sonnet-5-5', '/model sonnet please'].map(paradisClaudeModelSwitch),
+			setting: ['/model claude-mythos-5-1', '/model claude-opus-4-8[1m]'].map(paradisClaudeModelSwitch),
+			refused: ['/model sonnet please', '/model opus;rm'].map(paradisClaudeModelSwitch),
 			untouched: ['/model', '/models sonnet', 'use /model sonnet', '/effort high'].map(paradisClaudeModelSwitch),
 			values: ['sonnet', 'opus[1m]', 'claude-opus-5-5', 'opus[1m] x', 'opus;rm'].map(value => PARADIS_CLAUDE_SETTING_VALUE_PATTERN.test(value)),
 		}, {
 			switched: [{ kind: 'switch', text: '/config model=sonnet' }, { kind: 'switch', text: '/config model=opus[1m]' }, { kind: 'switch', text: '/config model=default' }],
-			refused: [{ kind: 'not-alias', value: 'claude-sonnet-5-5' }, { kind: 'not-alias', value: 'sonnet please' }],
+			setting: [{ kind: 'setting', value: 'claude-mythos-5-1' }, { kind: 'setting', value: 'claude-opus-4-8[1m]' }],
+			refused: [{ kind: 'not-alias', value: 'sonnet please' }, { kind: 'not-alias', value: 'opus;rm' }],
 			untouched: [undefined, undefined, undefined, undefined],
 			values: [true, true, true, false, false],
 		});
+	});
+
+	test('switches only to a model the PC lists (its id or the id an alias resolves to)', () => {
+		const models = [{ id: 'opus', resolvedModel: 'claude-opus-5-5' }, { id: 'claude-mythos-5-1', resolvedModel: 'claude-mythos-5-1' }, { id: 'sonnet' }];
+		assert.deepStrictEqual(['claude-mythos-5-1', 'Claude-Mythos-5-1', 'claude-opus-5-5', 'claude-mythos-5', 'claude-opus-4-8', ''].map(value => paradisFindListedClaudeModel(value, models)),
+			['claude-mythos-5-1', 'claude-mythos-5-1', 'claude-opus-5-5', undefined, undefined, undefined]);
 	});
 });

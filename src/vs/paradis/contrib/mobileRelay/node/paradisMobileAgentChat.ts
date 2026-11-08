@@ -5420,8 +5420,13 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		// `/model <別名>`（古いアプリは打った文のまま送ってくる）は、確認の画面を出さない `/config model=<別名>` にして送る。
-		// 別名でなければ送らない（`/model <値>` は確認の画面を出し、`/config` は断る）
+		// 版付きの id（`/config` は受け付けない）は設定の変更に回す（PC がモデルの一覧に載っているかを確かめ、確認に答えるガードで送る）。
+		// 形の違う値は送らない
 		const modelSwitch = session.agent === 'claude' ? paradisClaudeModelSwitch(msg.text) : undefined;
+		if (modelSwitch?.kind === 'setting') {
+			this.handleClaudeSettingAction(mobileId, { t: 'action/claudeSetting', id: msg.id, ...(msg.token !== undefined ? { token: msg.token } : {}), requestId: msg.requestId, epoch: msg.epoch, setting: 'model', value: modelSwitch.value });
+			return;
+		}
 		if (modelSwitch?.kind === 'not-alias') {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_SLASH_COMMAND_REJECTED_CODE, message: paradisClaudeModelNotAliasMessage(modelSwitch.value) }, token);
 			return;
