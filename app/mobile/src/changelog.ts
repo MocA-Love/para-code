@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-07',
 		items: [
 			{
+				icon: 'phone-portrait-outline',
+				title: '「範囲を選んでコピー…」のお知らせを、クイック返信の帯の位置に帯で出し、選んでいる発言に重ならないようにしました',
+				body: 'ファイルのビューアは、表示の幅を書いていない HTML を端末の幅で描き、文字が小さくなりすぎないようにしました。',
+			},
+			{
 				icon: 'lock-open-outline',
 				title: '起動直後の Face ID が出せなかったとき、続けて認証し直さず、少し待って 1 回だけやり直すようにしました',
 				body: '取り消した直後にもう一度 Face ID が出ることもなくなり、「ロック解除」のボタンで始められます。ファイルのビューアは、色を指定していない HTML を白い地に黒い文字で表示します。',
