@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { isWeb } from '../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { IParadisWarmLeaseLimits, IParadisWarmLeaseScheduler, ParadisWarmLeaseController, ParadisWarmLeaseTracker, PARADIS_WARM_LEASE_DURATION_MS, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS, type ParadisWarmLeaseTargetValue } from '../../common/paradisWarmLease.js';
 
@@ -41,6 +42,24 @@ class CustomPrototypeTarget {
 	readonly cost = 1;
 }
 
+
+/**
+ * Records unhandled promise rejections until the returned function is called. Browsers report them
+ * as an `unhandledrejection` event and Node.js as a `process` event, so this test runs in both.
+ */
+function captureUnhandledRejections(reasons: unknown[]): () => void {
+	if (isWeb) {
+		const onBrowserUnhandledRejection = (event: PromiseRejectionEvent) => {
+			reasons.push(event.reason);
+			event.preventDefault();
+		};
+		globalThis.addEventListener('unhandledrejection', onBrowserUnhandledRejection);
+		return () => globalThis.removeEventListener('unhandledrejection', onBrowserUnhandledRejection);
+	}
+	const onUnhandledRejection = (reason: unknown) => reasons.push(reason);
+	process.on('unhandledRejection', onUnhandledRejection);
+	return () => process.off('unhandledRejection', onUnhandledRejection);
+}
 suite('ParadisWarmLeaseTracker', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -485,11 +504,7 @@ suite('ParadisWarmLeaseController', () => {
 
 	test('contains rejected acquire, renew, and release callbacks without unhandled rejections', async () => {
 		const rejectionReasons: unknown[] = [];
-		const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-			rejectionReasons.push(event.reason);
-			event.preventDefault();
-		};
-		globalThis.addEventListener('unhandledrejection', onUnhandledRejection);
+		const stopCapturing = captureUnhandledRejections(rejectionReasons);
 		const acquireScheduler = new TestScheduler();
 		const rejectedAcquire = store.add(new ParadisWarmLeaseController(
 			async () => { throw new Error('acquire failed'); },
@@ -520,17 +535,13 @@ suite('ParadisWarmLeaseController', () => {
 
 			assert.deepStrictEqual([scheduler.delays, rejectionReasons], [[PARADIS_WARM_LEASE_RENEW_INTERVAL_MS, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS], []]);
 		} finally {
-			globalThis.removeEventListener('unhandledrejection', onUnhandledRejection);
+			stopCapturing();
 		}
 	});
 
 	test('contains rejected acquire, renew, and release callbacks across a macrotask before later reconciliation', async () => {
 		const rejectionReasons: unknown[] = [];
-		const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-			rejectionReasons.push(event.reason);
-			event.preventDefault();
-		};
-		globalThis.addEventListener('unhandledrejection', onUnhandledRejection);
+		const stopCapturing = captureUnhandledRejections(rejectionReasons);
 		try {
 			const acquireScheduler = new TestScheduler();
 			const acquireOperations: string[] = [];
@@ -615,7 +626,7 @@ suite('ParadisWarmLeaseController', () => {
 				'acquire:release-second',
 			], []]);
 		} finally {
-			globalThis.removeEventListener('unhandledrejection', onUnhandledRejection);
+			stopCapturing();
 		}
 	});
 
