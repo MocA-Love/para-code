@@ -216,6 +216,10 @@ export class ParadisSimulatorEditor extends EditorPane {
 		}
 		const session = new ParadisSimulatorEditorSession(input, this._stage, this._client);
 		this._session.value = session;
+		// 同じペインで別の端末のタブへ替えた: 前の端末の途切れの知らせと読み直しを持ち越さない
+		this._stallRetry.clear();
+		this._stallCount = 0;
+		this._setNotice({ kind: 'none' });
 		session.add(session.frameView.onDidChangeFrameSize(() => {
 			this._relayout();
 			void this._readScreenConfig(session);
