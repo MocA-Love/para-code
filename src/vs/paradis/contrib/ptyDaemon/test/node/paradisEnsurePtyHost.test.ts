@@ -20,7 +20,9 @@ import { join } from '../../../../../base/common/path.js';
 import { serve } from '../../../../../base/parts/ipc/node/ipc.net.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { paradisEnsurePtyHost, paradisPtyHostDaemonEnv, paradisSpawnDaemon } from '../../node/paradisEnsurePtyHost.js';
+import { paradisEnsurePtyHost, paradisHandshakeTimeoutFor, paradisPtyHostDaemonEnv, paradisSpawnDaemon, paradisUnresponsiveMarkFile } from '../../node/paradisEnsurePtyHost.js';
+import { ParadisPtyDaemonAuth } from '../../node/paradisPtyDaemonAuth.js';
+import { PARADIS_PTY_HOST_CHANNEL, PARADIS_PTY_PROTOCOL_VERSION } from '../../common/paradisPtyProtocol.js';
 import { PARADIS_PTY_DAEMON_AUTH_CHANNEL } from '../../common/paradisPtyDaemonControl.js';
 import { paradisDaemonRecordFile, paradisWriteDaemonRecord } from '../../node/paradisPtyDaemonLedger.js';
 
@@ -37,6 +39,17 @@ suite('ParadisEnsurePtyHost', () => {
 			// 接続先で付けると bootstrap-esm が 'fs' を Electron 専用の 'node:original-fs' へ向け、常駐が起きない。
 			{ local: ['1', 'somewhere'], remote: [undefined, 'somewhere'] },
 		);
+	});
+
+	test('前の起動で答えなかった常駐（pid と起動時刻が同じ）だけ短く待つ。起こし直された常駐はいつもどおり待つ', () => {
+		const record = { pid: 42, startedAt: 1000 };
+		assert.deepStrictEqual({
+			noMark: paradisHandshakeTimeoutFor(record, undefined, 30_000, 5_000),
+			sameDaemon: paradisHandshakeTimeoutFor(record, { pid: 42, startedAt: 1000 }, 30_000, 5_000),
+			restarted: paradisHandshakeTimeoutFor(record, { pid: 42, startedAt: 999 }, 30_000, 5_000),
+			otherPid: paradisHandshakeTimeoutFor(record, { pid: 43, startedAt: 1000 }, 30_000, 5_000),
+			noRecord: paradisHandshakeTimeoutFor(undefined, { pid: 42, startedAt: 1000 }, 30_000, 5_000),
+		}, { noMark: 30_000, sameDaemon: 5_000, restarted: 30_000, otherPid: 30_000, noRecord: 30_000 });
 	});
 
 	test('親の生死を見て自分を殺す仕掛けは外す。外さないと常駐にならない', () => {
@@ -133,6 +146,59 @@ suite('ParadisEnsurePtyHost handshake', () => {
 				handshakeTimeout: 200,
 			});
 			assert.strictEqual(connection, undefined);
+		} finally {
+			server.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+	test('答えなかった常駐は殺さずに印を残し、次の起動からは短く待つ。答えたら印を消していつもどおり待つ', async function () {
+		this.timeout(20_000);
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-ensure-pty-host-'));
+		const socketPath = join(dir, 'pty.sock');
+		const paths = { socketPath, ledgerDir: dir, ledgerFile: join(dir, 'ledger.json'), socketPathTooLong: false };
+		const auth = new ParadisPtyDaemonAuth('token');
+		// 固まった常駐の代わり。`stuck` のあいだは名乗り（合言葉）に答えない
+		let stuck = true;
+		const server = await serve(socketPath);
+		server.registerChannel(PARADIS_PTY_DAEMON_AUTH_CHANNEL, {
+			call: <T>(_ctx: string, command: string, arg?: unknown): Promise<T> => {
+				const [nonce, proof] = arg as [string, string];
+				return (stuck ? new Promise(() => { }) : command === 'authenticate' ? auth.authenticate(nonce, proof) : Promise.reject(new Error(command))) as Promise<T>;
+			},
+			listen: () => Event.None,
+		});
+		server.registerChannel(PARADIS_PTY_HOST_CHANNEL, {
+			call: <T>(_ctx: string, command: string): Promise<T> => (command === 'hello' ? Promise.resolve({ protocolVersion: PARADIS_PTY_PROTOCOL_VERSION }) : Promise.reject(new Error(command))) as Promise<T>,
+			listen: () => Event.None,
+		});
+		const ensure = () => paradisEnsurePtyHost({
+			paths,
+			// 起こしには行かない（行ったら落ちる実行ファイル）
+			launch: { execPath: join(dir, 'missing-executable'), args: [], env: {} },
+			logService: new NullLogService(),
+			handshakeTimeout: 1_500,
+			unresponsiveHandshakeTimeout: 100,
+		});
+		const markFile = paradisUnresponsiveMarkFile(paths);
+		const readMark = () => fs.readFile(markFile, 'utf8').then(raw => JSON.parse(raw), () => undefined);
+		try {
+			await paradisWriteDaemonRecord(paradisDaemonRecordFile(dir, 'test'), { pid: process.pid, socketPath, buildId: 'test', buildKey: 'test', startedAt: 1234, token: 'token' });
+			const first = await ensure();
+			const markAfterFirst = await readMark();
+			const startedAt = Date.now();
+			const second = await ensure();
+			const secondWaitedShort = Date.now() - startedAt < 1_000;
+			stuck = false;
+			const third = await ensure();
+			third?.client.dispose();
+			assert.deepStrictEqual({ first, markAfterFirst, second, secondWaitedShort, joined: !!third, markAfterJoin: await readMark() }, {
+				first: undefined,
+				markAfterFirst: { pid: process.pid, startedAt: 1234 },
+				second: undefined,
+				secondWaitedShort: true,
+				joined: true,
+				markAfterJoin: undefined,
+			});
 		} finally {
 			server.dispose();
 			await fs.rm(dir, { recursive: true, force: true });

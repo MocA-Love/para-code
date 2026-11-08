@@ -19,6 +19,8 @@ export interface FileTreeSearchState {
 	readonly open: boolean;
 	readonly query: string;
 	readonly mode: FilesSearchMode;
+	/** フォルダの長押しの「このフォルダを検索」で絞っているフォルダ（根からの相対）。`undefined` はスペース全体。 */
+	readonly dir?: string | undefined;
 }
 
 export interface FileTreeSnapshot {

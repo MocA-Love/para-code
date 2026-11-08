@@ -9,7 +9,7 @@
 export type ContextMenuIcon =
 	| 'copy' | 'markdown' | 'paragraph' | 'code' | 'select' | 'share'
 	| 'name' | 'path' | 'absolutePath' | 'open' | 'diff' | 'stage' | 'unstage'
-	| 'hash' | 'subject' | 'browser' | 'note' | 'line';
+	| 'hash' | 'subject' | 'browser' | 'note' | 'line' | 'quote' | 'search';
 
 /** メニュー1項目。`children` があれば入れ子（1段だけ）。 */
 export interface ContextMenuAction {

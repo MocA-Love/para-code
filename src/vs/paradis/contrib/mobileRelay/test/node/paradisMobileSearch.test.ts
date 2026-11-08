@@ -6,10 +6,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { paradisSpawnRg } from '../../node/paradisMobileSearch.js';
+import { paradisSearchFiles, paradisSearchText, paradisSpawnRg } from '../../node/paradisMobileSearch.js';
 
 /**
  * Node stands in for ripgrep so the test controls what goes to stdout, stderr and when it exits.
@@ -34,6 +36,27 @@ suite('ParadisMobileSearch', () => {
 			delete process.env.ELECTRON_RUN_AS_NODE;
 		} else {
 			process.env.ELECTRON_RUN_AS_NODE = previousRunAsNode;
+		}
+	});
+
+	test('searching inside a folder returns workspace-relative paths from that folder only', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'paradis-search-dir-'));
+		mkdirSync(join(root, 'src', 'app'), { recursive: true });
+		mkdirSync(join(root, 'docs'));
+		writeFileSync(join(root, 'src', 'app', 'main.ts'), 'needle\n');
+		writeFileSync(join(root, 'docs', 'main.md'), 'needle\n');
+		try {
+			const log = new NullLogService();
+			const files = await paradisSearchFiles(root, 'main', 10, log, 'src');
+			const text = await paradisSearchText(root, 'needle', 10, log, 'src/');
+			const outside = await paradisSearchFiles(root, 'main', 10, log, '../');
+			assert.deepStrictEqual({ files, text, outside }, {
+				files: { files: ['src/app/main.ts'], truncated: false },
+				text: { matches: [{ path: 'src/app/main.ts', line: 1, text: 'needle' }], truncated: false },
+				outside: { files: [], truncated: false },
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 

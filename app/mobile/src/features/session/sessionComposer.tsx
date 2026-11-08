@@ -5,7 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
 import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus, Info, Keyboard, Monitor } from 'lucide-react-native';
-import { appendQuickReply, quickReplyTapAction } from '../../agentConversationUx.js';
+import { appendQuickReply, quickReplyTapAction, quoteReplyText } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
 import { ComposerAttachmentChips } from '../../components/attachmentChips.js';
@@ -56,6 +56,8 @@ export interface SessionComposerHandle {
 	 * （送信ボタンと同じ道を通る）。書きかけ・添付があるとき、送れない状態のときは `insertText` と同じく足すだけ。
 	 */
 	pickQuickReply(text: string, sendOnTap: boolean): void;
+	/** 「引用して返信」。発言を `> ` 付きで書きかけの後ろへ足す（送信もフォーカスもしない。`quoteReplyText`）。 */
+	quoteReply(text: string): void;
 	focus(): void;
 }
 
@@ -536,6 +538,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				useParaToast.getState().show({ key: 'quick-reply-not-sent', text: '送らずに入力欄に入れました', icon: 'information-circle-outline', tone: 'info' }, 2_000);
 			}
 		},
+		quoteReply: (text: string) => replaceActiveInput(quoteReplyText(inputRef.current, text)),
 		focus: () => nativeInputRef.current?.focus(),
 	}), [replaceActiveInput]);
 

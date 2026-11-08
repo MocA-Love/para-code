@@ -452,8 +452,9 @@ interface AppState extends StoreState {
 	fsPdf(ws: string, path: string): Promise<FsPdfResult>;
 	fsDocx(ws: string, path: string): Promise<FsDocxResult>;
 	fsMedia(ws: string, path: string): Promise<FsMediaResult>;
-	fsFind(ws: string, query: string): Promise<FsFindResult>;
-	fsGrep(ws: string, query: string): Promise<FsGrepResult>;
+	/** `dir` はフォルダで絞るとき（fs.find-dir.v1 の PC だけ）。 */
+	fsFind(ws: string, query: string, dir?: string): Promise<FsFindResult>;
+	fsGrep(ws: string, query: string, dir?: string): Promise<FsGrepResult>;
 	/** `ws` を渡すとそのスペースの PC 画面（SSH 接続中なら接続先）の置き場へ上げる。 */
 	fsUpload(name: string, dataBase64: string, ws?: string): Promise<FsUploadResult>;
 	/** コード断片のシンタックスハイライト（PCの現行テーマ）。 */
@@ -2547,16 +2548,16 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.fsMedia(ws, path);
 	},
 
-	fsFind(ws: string, query: string) {
+	fsFind(ws: string, query: string, dir?: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
-		return controller.fsFind(ws, query);
+		return controller.fsFind(ws, query, dir);
 	},
 
-	fsGrep(ws: string, query: string) {
+	fsGrep(ws: string, query: string, dir?: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
-		return controller.fsGrep(ws, query);
+		return controller.fsGrep(ws, query, dir);
 	},
 
 	fsUpload(name: string, dataBase64: string, ws?: string) {

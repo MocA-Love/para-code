@@ -44,6 +44,16 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-07',
 		items: [
 			{
+				icon: 'return-up-back-outline',
+				title: '発言を長押しして「引用して返信」を押すと、その発言を引用した形で入力欄に入るようにしました',
+				body: '過去の会話の発言も長押しでコピーや範囲の選択ができます。差分レビューの見出しのパスを長押しすると、パスのコピーやファイルを開く操作が出ます。',
+			},
+			{
+				icon: 'search-outline',
+				title: 'ファイル一覧のフォルダを長押しして「このフォルダを検索」を押すと、そのフォルダの中だけを検索できるようにしました',
+				body: 'PC の Para Code を更新すると使えます。',
+			},
+			{
 				icon: 'swap-horizontal-outline',
 				title: '会話の途中で、Mythos 5.1 のように版を固定したモデルにも切り替えられるようにしました',
 				body: 'モデルのシートで選ぶほか、入力欄に「/model claude-mythos-5-1」と打っても切り替わります。PC の Claude Code のモデルの一覧に無い名前は送りません。',

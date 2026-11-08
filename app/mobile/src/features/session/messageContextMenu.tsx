@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { StyleSheet, View, type GestureResponderEvent, type StyleProp, type ViewStyle } from 'react-native';
 import { ContextMenu, nativeContextMenuAvailable } from '../../components/contextMenu.js';
 import { contextMenuOps } from '../../components/copyActions.js';
@@ -10,6 +10,7 @@ import { inplaceSelectMinHeight, localPressPoint, type InplaceSelectPoint, type 
 import { hideInplaceSelectNotice, showInplaceSelectNotice } from './inplaceSelectNotice.js';
 import { beginInplaceSelect, isHoldCancel } from './inplaceSelectSession.js';
 import { InplaceSelectWebView, inplaceSelectForeground } from './inplaceSelectView.js';
+import { ChatQuoteContext } from './chatQuote.js';
 import { buildMessageMenu } from './messageMenu.js';
 
 /**
@@ -40,10 +41,12 @@ interface Selecting {
  * 範囲を選べるようにする（Q551 案 4。`inplaceSelectView.tsx`）。元の表示は隠すだけで外さないので、行の高さは変わらず、
  * 中のコードの色付けなども描き直さない。お知らせ（会話ではクイック返信の帯の位置に置く帯。`inplaceSelectNotice.ts`）の「完了」か、外を押すと元に戻す（`inplaceSelectSession.ts`）。
  */
-export function MessageContextMenu({ text, markdown, speaker, style, previewRadius, previewBackground, children }: {
+export function MessageContextMenu({ text, markdown, plain = 'bubble', speaker, style, previewRadius, previewBackground, children }: {
 	/** 発言の元の文字（エージェントは Markdown）。 */
 	text: string;
 	markdown: boolean;
+	/** Markdown でない発言の字（範囲を選ぶ表示をそろえる）。会話の吹き出しは `bubble`、過去の会話の一覧は `body`。 */
+	plain?: 'bubble' | 'body';
 	/** 範囲を選んでいる間のお知らせに出す、誰の発言か。 */
 	speaker: string;
 	style?: StyleProp<ViewStyle>;
@@ -77,7 +80,7 @@ export function MessageContextMenu({ text, markdown, speaker, style, previewRadi
 
 	/** 押した点と元の表示の高さを測って写しを作る。 */
 	const snapshot = useCallback((source: string, isMarkdown: boolean, done: (value: Selecting) => void) => {
-		const make = (point: InplaceSelectPoint | undefined, nativeHeight: number | undefined): Selecting => ({ segments: [{ text: source, markdown: isMarkdown }], point, nativeHeight });
+		const make = (point: InplaceSelectPoint | undefined, nativeHeight: number | undefined): Selecting => ({ segments: [{ text: source, markdown: isMarkdown, plain }], point, nativeHeight });
 		const view = wrapRef.current;
 		if (view === null) {
 			done(make(undefined, undefined));
@@ -86,7 +89,7 @@ export function MessageContextMenu({ text, markdown, speaker, style, previewRadi
 		view.measure((_x, _y, width, height, pageX, pageY) => {
 			done(make(localPressPoint(lastTouch.current, { pageX, pageY, width, height }, Date.now()), Number.isFinite(height) ? height : undefined));
 		});
-	}, []);
+	}, [plain]);
 
 	const start = useCallback((source: string, isMarkdown: boolean) => {
 		// メニューが出たときに用意しておいた表示が同じ本文なら、そのまま使う（WebView を作り直さない）
@@ -150,9 +153,12 @@ export function MessageContextMenu({ text, markdown, speaker, style, previewRadi
 		};
 	}, [selecting, speaker, stop]);
 
+	const quote = useContext(ChatQuoteContext);
 	const menu = useMemo(
-		() => nativeContextMenuAvailable && text.trim().length > 0 ? buildMessageMenu({ text, markdown }, { ...contextMenuOps(), selectRange: () => start(text, markdown) }) : undefined,
-		[text, markdown, start],
+		() => nativeContextMenuAvailable && text.trim().length > 0
+			? buildMessageMenu({ text, markdown }, { ...contextMenuOps(), selectRange: () => start(text, markdown), ...(quote !== undefined ? { quoteReply: () => quote(text) } : {}) })
+			: undefined,
+		[text, markdown, start, quote],
 	);
 	const recordTouch = useCallback((event: GestureResponderEvent) => {
 		const { pageX, pageY } = event.nativeEvent;
@@ -198,7 +204,7 @@ export function MessageContextMenu({ text, markdown, speaker, style, previewRadi
 						active={selecting !== undefined}
 						segments={shown.segments}
 						point={shown.point}
-						fg={inplaceSelectForeground(markdown, theme.onBubble)}
+						fg={inplaceSelectForeground(markdown || plain === 'body', theme.onBubble)}
 						onReady={() => setWebReady(true)}
 						onHeight={setWebHeight}
 						onGone={stop}
