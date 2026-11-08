@@ -31,6 +31,8 @@ import { ParadisSimulatorChannel, ParadisSimulatorService } from './paradisSimul
 import { ParadisSimulatorFoldToolProvider } from './paradisSimulatorFoldTool.js';
 import { ParadisSimulatorHostProcess } from './paradisSimulatorHostProcess.js';
 import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
+import { ParadisAdbDeviceHost } from './android/paradisAdbDeviceHost.js';
+import { promises as fs } from 'fs';
 
 export interface IParadisSimulatorRegistration extends IDisposable {
 	/** Mobile Canvas の台帳（端末⇔ペイン）。 */
@@ -54,13 +56,20 @@ export function registerParadisSimulator(
 	const backend = store.add(new ParadisServeSimBackend(host, logService));
 	const deviceHost = new ParadisServeSimDeviceHost(backend, logService);
 	const deviceHub = new ParadisSimulatorDeviceHub();
-	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService, deviceHub));
+	// Android は利用者の adb（⑥a。adb は同梱しない）
+	const android = new ParadisAdbDeviceHost({ exists: async path => (await fs.stat(path).catch(() => undefined))?.isFile() === true }, logService);
+	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService, deviceHub, android));
 	server.registerChannel(PARADIS_SIMULATOR_CHANNEL, new ParadisSimulatorChannel<string>(service));
 
 	// モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは para-browser の MCP サーバーへ相乗りさせるため、
 	// エージェントCLI側に追加のMCP設定は要らない
+	let router: ParadisMobileHostRouter | undefined;
 	const { service: ledger, deviceOps } = registerParadisMobileCanvas(server, builtinExtensionsPath, logService, registerToolProvider,
-		mobileCanvas => new ParadisMobileHostRouter(mobileCanvas, deviceHost, useServeSim, logService));
+		mobileCanvas => {
+			router = new ParadisMobileHostRouter(mobileCanvas, deviceHost, useServeSim, logService, android);
+			return router;
+		});
+	ledger.setListNotice(() => router?.androidNotice);
 	store.add(ledger);
 	const fold = new ParadisSimulatorFoldToolProvider(ledger, backend, deviceHost, deviceId => deviceOps.forgetScreenSize(deviceId), useServeSim, logService, deviceHub);
 	store.add(paradisRegisterMcpToolProvider(fold));
@@ -74,19 +83,22 @@ export function registerParadisSimulator(
 		if (!isEnabled()) {
 			void service.stopHost();
 		}
-		void paradisDropUnreachableAttachments(ledger, logService);
+		void paradisDropUnreachableAttachments(ledger, logService, () => router?.androidListed ?? false);
 	}));
 	return { ledger, dispose: () => store.dispose() };
 }
 
 /**
- * シミュレータの設定を切り替えたとき、iOS のシミュレータ（`ios:core-simulator:`）の割り当てのうち、今の一覧に無いものを
- * 外す。一覧を取れなければ iOS のシミュレータの割り当てをすべて外す（受け持つ仕組みが替わり、操作できるかが確かめ
- * られないため）。Android など iOS のシミュレータでない割り当ては、受け持つ仕組みが替わらないので触らない
- * （振り分けは Mobile Canvas が失敗しても iOS だけの一覧を返すので、一覧に無いことは消えた証拠にならない）。
+ * シミュレータの設定を切り替えたとき、受け持つ仕組みが替わる端末（iOS のシミュレータ `ios:core-simulator:` と
+ * Android `android:`）の割り当てのうち、今の一覧に無いものを外す（Mobile Canvas と新しい仕組みで id の形が違いうるので、
+ * 残すと「Unknown mobile device」のまま握り続ける）。
+ *  - 一覧を取れなければ、iOS のシミュレータの割り当てをすべて外す（操作できるかが確かめられないため）。Android は外さない
+ *  - Android は、直前の一覧で Android を確かに読めたとき（`androidListed`）だけ見る。振り分けは adb や Mobile Canvas が
+ *    失敗しても残りの一覧を返すので、読めなかった一覧に無いことは消えた証拠にならない
+ *  - それ以外の割り当ては触らない
  * 外したペインの数を返す。
  */
-export async function paradisDropUnreachableAttachments(ledger: Pick<ParadisMobileCanvasService, 'listAttachments' | 'listDevices' | 'detach'>, logService: ILogService): Promise<number> {
+export async function paradisDropUnreachableAttachments(ledger: Pick<ParadisMobileCanvasService, 'listAttachments' | 'listDevices' | 'detach'>, logService: ILogService, androidListed: () => boolean = () => false): Promise<number> {
 	let known: ReadonlySet<string> | undefined;
 	try {
 		known = new Set((await ledger.listDevices()).map(device => device.id));
@@ -95,10 +107,12 @@ export async function paradisDropUnreachableAttachments(ledger: Pick<ParadisMobi
 	}
 	let dropped = 0;
 	for (const attachment of ledger.listAttachments()) {
-		if (!attachment.deviceId.startsWith(PARADIS_SIMULATOR_DEVICE_ID_PREFIX)) {
-			continue;
-		}
-		if (!known || !known.has(attachment.deviceId)) {
+		const ios = attachment.deviceId.startsWith(PARADIS_SIMULATOR_DEVICE_ID_PREFIX);
+		const androidDevice = attachment.deviceId.startsWith('android:');
+		const unreachable = ios
+			? !known || !known.has(attachment.deviceId)
+			: androidDevice && !!known && androidListed() && !known.has(attachment.deviceId);
+		if (unreachable) {
 			ledger.detach(attachment.paneToken);
 			dropped++;
 		}

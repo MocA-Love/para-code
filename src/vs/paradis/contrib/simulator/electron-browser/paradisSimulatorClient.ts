@@ -29,6 +29,8 @@ export interface IParadisSimulatorClient {
 	sendInput(udid: string, input: ParadisSimulatorInput): Promise<void>;
 	fold(udid: string, fold: { readonly pose: string } | { readonly hinge: number }): Promise<{ readonly ok: boolean }>;
 	deviceHubActive(udid: string): Promise<boolean>;
+	/** 起動していない Android の AVD（`android:avd:<name>`）を起動する。 */
+	bootAndroid(deviceId: string): Promise<void>;
 	/** Device Hub のアプリが起動しているか（iPhone Duo の開閉の前提）。 */
 	deviceHubRunning(): Promise<boolean>;
 	/** Device Hub を裏で起動する。 */
@@ -74,6 +76,9 @@ export class ParadisSimulatorChannelClient implements IParadisSimulatorClient {
 	}
 	deviceHubRunning(): Promise<boolean> {
 		return this._channel.call('deviceHubRunning');
+	}
+	bootAndroid(deviceId: string): Promise<void> {
+		return this._channel.call('bootAndroid', { deviceId });
 	}
 	openDeviceHub(): Promise<void> {
 		return this._channel.call('openDeviceHub');

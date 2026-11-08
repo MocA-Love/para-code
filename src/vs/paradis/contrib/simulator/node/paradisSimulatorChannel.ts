@@ -25,6 +25,7 @@ import { paradisParseSimulatorFold, paradisSimulatorInputFrame } from '../common
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
 import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
+import { ParadisAdbDeviceHost } from './android/paradisAdbDeviceHost.js';
 
 const MIN_FRAME_INTERVAL_MS = 1000 / 30;
 
@@ -114,6 +115,7 @@ export class ParadisSimulatorService extends Disposable {
 		private readonly _supported: boolean,
 		private readonly _logService: ILogService,
 		private readonly _deviceHub: Pick<ParadisSimulatorDeviceHub, 'isRunning' | 'open'> = new ParadisSimulatorDeviceHub(),
+		private readonly _android?: Pick<ParadisAdbDeviceHost, 'bootAvd'>,
 	) {
 		super();
 		this._register({ dispose: () => { for (const relay of this._relays.values()) { relay.dispose(); } this._relays.clear(); } });
@@ -166,6 +168,12 @@ export class ParadisSimulatorService extends Disposable {
 	async fold(udid: string, fold: unknown): Promise<{ ok: boolean }> {
 		this.assertAvailable();
 		return { ok: await this._backend.fold(udid, paradisParseSimulatorFold(fold)) };
+	}
+
+	/** 起動していない Android の AVD を起動する（エージェントの要求を承認したとき。起動しきるのは待たない）。 */
+	async bootAndroid(deviceId: string): Promise<void> {
+		this.assertAvailable();
+		await this._android?.bootAvd(deviceId);
 	}
 
 	/** Device Hub のアプリが起動しているか（開閉の前提）。 */
@@ -265,6 +273,13 @@ export class ParadisSimulatorChannel<TContext> implements IServerChannel<TContex
 				return await this._service.sendInput(requireUdidArg(arg), argField(arg, 'input')) as T;
 			case 'fold':
 				return await this._service.fold(requireUdidArg(arg), argField(arg, 'fold')) as T;
+			case 'bootAndroid': {
+				const deviceId = argField(arg, 'deviceId');
+				if (typeof deviceId !== 'string') {
+					throw new Error('Protocol error: "deviceId" must be a string');
+				}
+				return await this._service.bootAndroid(deviceId) as T;
+			}
 			case 'deviceHubRunning':
 				return await this._service.deviceHubRunning() as T;
 			case 'openDeviceHub':

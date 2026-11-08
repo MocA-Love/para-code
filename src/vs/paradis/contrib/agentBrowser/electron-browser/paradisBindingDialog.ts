@@ -1020,11 +1020,17 @@ export class ParadisBindingDialog extends Disposable {
 			if (this.mobileCanvasModel.loading) {
 				empty.textContent = STR_DEVICES_LOADING;
 			} else {
-				empty.textContent = snapshot.unavailableReason
-					? `${STR_DEVICES_EMPTY}\n\n${snapshot.unavailableReason}`
+				const reason = snapshot.unavailableReason ?? snapshot.notice;
+				empty.textContent = reason
+					? `${STR_DEVICES_EMPTY}\n\n${reason}`
 					: STR_DEVICES_EMPTY;
 			}
 			return;
+		}
+
+		// 一部の端末を出せなかった理由（adb が無いので Android が出ない、など）は、端末があっても見せる
+		if (snapshot.notice) {
+			dom.append(list, $('.pbd-scope-note')).textContent = snapshot.notice;
 		}
 
 		const panes = this.bindingModel.getPanes();
