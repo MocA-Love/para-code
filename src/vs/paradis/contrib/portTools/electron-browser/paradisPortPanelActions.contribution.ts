@@ -235,7 +235,6 @@ registerAction2(class extends Action2 {
 			checkable: true,
 			...(others > 0 ? { note: localize('paradis.portPanel.cleanUp.otherWindows', "この SSH 先の別の窓が {0} 個開いています。そちらでも外さないと、そちらの窓の保存で戻ります。", others) } : {}),
 			primaryLabel: count => localize('paradis.portPanel.cleanUp.run', "{0} 件を外す", count),
-			danger: true,
 		});
 		if (!answer) {
 			return;
