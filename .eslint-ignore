@@ -68,6 +68,8 @@ src/vs/paradis/contrib/fileViewers/browser/media/mermaid/**
 src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**
 # PARA-PATCH: vendored serve-sim 0.1.49 (Apache-2.0), see the folder's README.md
 src/vs/paradis/contrib/simulator/node/media/serve-sim/**
+# PARA-PATCH: vendored scrcpy-server v5.0.1 (Apache-2.0), see the folder's README.md
+src/vs/paradis/contrib/simulator/node/media/scrcpy/**
 # PARA-PATCH: vendored cursor-motion (Cua, MIT), see the folder's README.md
 src/vs/paradis/contrib/agentBrowser/common/cursorMotion/**
 # PARA-PATCH: fork projects outside the VS Code sources (the app/ pnpm workspace and the Cloudflare update Worker). They have their own type check and tests in Para CI (fork-workspace-tests); VS Code's rules (Microsoft header, nls) do not apply to them

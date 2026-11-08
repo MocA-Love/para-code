@@ -32,6 +32,9 @@ import { ParadisSimulatorFoldToolProvider } from './paradisSimulatorFoldTool.js'
 import { ParadisSimulatorHostProcess } from './paradisSimulatorHostProcess.js';
 import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 import { ParadisAdbDeviceHost } from './android/paradisAdbDeviceHost.js';
+import { ParadisScrcpySessions } from './android/paradisScrcpySessions.js';
+import { PARADIS_SCRCPY_SERVER_JAR } from './android/paradisScrcpyDist.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import { promises as fs } from 'fs';
 
 export interface IParadisSimulatorRegistration extends IDisposable {
@@ -56,9 +59,18 @@ export function registerParadisSimulator(
 	const backend = store.add(new ParadisServeSimBackend(host, logService));
 	const deviceHost = new ParadisServeSimDeviceHost(backend, logService);
 	const deviceHub = new ParadisSimulatorDeviceHub();
-	// Android は利用者の adb（⑥a。adb は同梱しない）
-	const android = new ParadisAdbDeviceHost({ exists: async path => (await fs.stat(path).catch(() => undefined))?.isFile() === true }, logService);
-	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService, deviceHub, android));
+	// Android は利用者の adb（⑥a。adb は同梱しない）と、同梱した scrcpy-server（⑥b。映像・ペインの入力・2 本指・日本語）
+	let scrcpy: ParadisScrcpySessions | undefined = undefined;
+	const android = new ParadisAdbDeviceHost({
+		exists: async path => (await fs.stat(path).catch(() => undefined))?.isFile() === true,
+		scrcpy: { use: (serial, run) => scrcpy!.use(serial, run) },
+	}, logService);
+	scrcpy = store.add(new ParadisScrcpySessions(async () => ({
+		adbPath: await android.adbPath(),
+		serverJar: FileAccess.asFileUri(PARADIS_SCRCPY_SERVER_JAR).fsPath,
+		adb: (args, timeoutMs) => android.run(args, timeoutMs),
+	}), logService));
+	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService, deviceHub, { adb: android, scrcpy }));
 	server.registerChannel(PARADIS_SIMULATOR_CHANNEL, new ParadisSimulatorChannel<string>(service));
 
 	// モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは para-browser の MCP サーバーへ相乗りさせるため、
