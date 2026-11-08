@@ -12,6 +12,8 @@
 // （serve-sim のミドルウェアを組み込み、Unix ソケットだけで待ち受ける。macOS だけ）、と renderer。
 // ここには純粋な値と関数だけを置く（どのプロセスからも読めるように）。
 
+import { VSBuffer } from '../../../../base/common/buffer.js';
+
 /** renderer ⇔ shared process のチャネル名。 */
 export const PARADIS_SIMULATOR_CHANNEL = 'paradisSimulator';
 
@@ -73,6 +75,12 @@ export interface IParadisSimulatorStatus {
 	readonly hostRunning: boolean;
 	/** ホストが起動できなかった・落ち続けているときの理由。 */
 	readonly hostError?: string;
+}
+
+/** チャネルの `frames` のイベントで届く 1 枚（受け取ったら `ackFrame` を返す）。 */
+export interface IParadisSimulatorFrameEvent {
+	readonly udid: string;
+	readonly jpeg: VSBuffer;
 }
 
 // --- 開閉（iPhone Duo） ---
