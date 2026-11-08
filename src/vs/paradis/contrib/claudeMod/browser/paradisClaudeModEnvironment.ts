@@ -36,6 +36,11 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, paradisAgentHooksEnabled } from '../../agentBrowser/common/paradisAgentHooks.js';
+
+/** {@link ParadisClaudeModEnvironment.replaceFile} の一時名の形。 */
+const STALE_TEMPORARY_FILE_NAME = /^.+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.paratmp$/;
+/** これより古い一時名は、書いていた窓が途中で止まった残りとみなして消す。 */
+const STALE_TEMPORARY_FILE_MS = 10 * 60 * 1000;
 import { PARADIS_CLAUDE_MOD_ENABLED_SETTING, PARADIS_CLAUDE_MOD_INSTALL_SEGMENTS, paradisClaudeManagedSettingsPaths, PARADIS_CLAUDE_MOD_SOURCE_SEGMENTS, PARADIS_CLAUDE_DRAFT_MOD_SEGMENT, PARADIS_CLAUDE_MOD_STALE_INSTALL_MS, paradisClaudeConfigDirProvider, paradisClaudeVersionProvider, paradisClaudeManagedSettingsBlockMods, paradisClaudeModShipsFile, paradisSupportsClaudeDraftMod, paradisOnDidSetClaudeConfigDirProvider } from '../common/paradisClaudeMod.js';
 
 /** 使っている指紋を記録し直す間隔（掃除は 30 日使われていないものが対象）。 */
@@ -248,6 +253,7 @@ export class ParadisClaudeModEnvironment extends Disposable {
 		}
 		const installRoot = joinPath(await this.userHome(), ...PARADIS_CLAUDE_MOD_INSTALL_SEGMENTS);
 		const target = joinPath(installRoot, sha.digest().slice(0, 16));
+		await this.removeStaleTemporaryFiles(target, files);
 		for (const file of files) {
 			const uri = joinPath(target, ...file.path.split('/'));
 			let same = false;
@@ -285,6 +291,27 @@ export class ParadisClaudeModEnvironment extends Disposable {
 		} catch (error) {
 			await this.fileService.del(temporary).catch(() => undefined);
 			throw error;
+		}
+	}
+
+	/**
+	 * 前に {@link replaceFile} が途中で止まって残した一時名（`<名前>.<uuid>.paratmp`）を消す。見るのは mod のフォルダの中の、
+	 * 写すファイルがあるフォルダだけ。ほかの窓が今まさに書いている一時名を消さないよう、古いもの（{@link STALE_TEMPORARY_FILE_MS}）だけ。
+	 */
+	private async removeStaleTemporaryFiles(target: URI, files: readonly { readonly path: string }[]): Promise<void> {
+		const folders = new Set(files.map(file => file.path.split('/').slice(0, -1).join('/')));
+		for (const folder of folders) {
+			try {
+				const stat = await this.fileService.resolve(folder ? joinPath(target, ...folder.split('/')) : target, { resolveMetadata: true });
+				for (const child of stat.children ?? []) {
+					if (child.isFile && STALE_TEMPORARY_FILE_NAME.test(child.name) && this.now() - child.mtime > STALE_TEMPORARY_FILE_MS) {
+						await this.fileService.del(child.resource);
+					}
+				}
+			} catch (error) {
+				// まだ写していないフォルダ、または消せなかった。次に写すときにまた見る
+				this.logService.trace('[ParadisClaudeMod] could not tidy up temporary files in the Claude Code mod copy', error);
+			}
 		}
 	}
 

@@ -103,14 +103,16 @@ function removeQuietlySync(filePath: string): void {
  *   `rename` はディレクトリの権限で通ってしまい、読み取り専用の意図を黙って破るため
  * - ハードリンク（リンク数が2以上）は、差し替えると片方だけが新しい中身になるので、その場へ書く
  * - 一時ファイルを作れない（ディレクトリに書き込めない等）ときや `rename` が通らないとき（Windows で
- *   他のプロセスが開いている等）は、一時ファイルを消してこれまでどおりその場へ書く。原子的でなく
- *   なるだけで、設定が置けないよりはよい
+ *   他のプロセスが開いている等。EPERM・EBUSY・EACCES だけ）は、一時ファイルを消してこれまでどおりその場へ書く。
+ *   原子的でなくなるだけで、設定が置けないよりはよい。それ以外の rename の失敗は投げる
  * - ただし一時ファイルへの書き込みが容量不足・I/O エラーで失敗したときは、その場へ書かずに投げる
  *   （同じ理由でその場への書き込みも途中で失敗し、元のファイルを空・書きかけにするため）
  *
  * 所有者・ACL・拡張属性は一時ファイルへ引き継がない（NOTES.md の hook の節を参照）。
+ *
+ * @param renameFile テスト用。既定は `renameSync`。
  */
-export function paradisWriteFileAtomicSync(filePath: string, content: string): void {
+export function paradisWriteFileAtomicSync(filePath: string, content: string, renameFile: (from: string, to: string) => void = renameSync): void {
 	const target = resolveWriteTargetSync(filePath);
 	let stat: Stats | undefined;
 	try {
@@ -153,9 +155,12 @@ export function paradisWriteFileAtomicSync(filePath: string, content: string): v
 	}
 	try {
 		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
-		renameSync(temp, target);
-	} catch {
+		renameFile(temp, target);
+	} catch (error) {
 		removeQuietlySync(temp);
+		if (!paradisMayWriteInPlaceAfterRenameFailure(error)) {
+			throw error;
+		}
 		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		writeFileSync(target, content);
 	}
