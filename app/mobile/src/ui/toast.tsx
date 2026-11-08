@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { useAppLocked } from '../appLock.js';
@@ -10,9 +10,11 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
 import { haptic } from '../haptics.js';
 import { colors, radius, space, type } from '../theme.js';
 import { useThemeColors } from './themeColorsStore.js';
+import { toastPlacement, useToastAnchor } from './toastAnchor.js';
 
 /**
  * 一時的なお知らせ（モックの `.toast`）。画面の下寄りに浮かぶ小さな札で、数秒で消える。
+ * 下に帯（クイック返信・入力欄）を持つ画面では、その帯のすぐ上に出す（帯に重ねない。`toastAnchor.ts`）。
  *
  * 出すのは既存のストア（`src/paraToast.ts` の `useParaToast().show(...)`）で、表示はルートに1つだけ置く
  * {@link ToastHost} が受け持つ。画面から直接この部品を描かない。
@@ -67,25 +69,27 @@ function usePcSwitchToast(): void {
 /** 出入りの時間（ms。モックの `tin` は 0.2 秒）。 */
 const IN_MS = 200;
 const OUT_MS = 160;
-/** 下からの位置（pt。モックの `bottom:196px` から、ホームインジケーターの 34 を引いた値）。 */
-const BOTTOM_GAP = 162;
 
 /** お知らせを出す唯一の場所。ルートレイアウト（`app/_layout.tsx`）に1つだけ置く。 */
 export function ToastHost() {
 	usePcSwitchToast();
-	return <ToastLayer />;
+	return <ToastLayer followAnchor />;
 }
 
 /**
  * RN の `Modal` の中で出したお知らせを見せる層（ファイルのビューアなど）。ルートの {@link ToastHost} は Modal の下に隠れるので、
  * Modal の木の中にこれを 1 つ置く。中身は同じストアを読むだけで、PC の切り替えの知らせは出さない（ルートが受け持つ）。
+ * Modal は下の画面の帯を覆うので、帯の手がかり（`toastAnchor.ts`）は使わない。
  */
 export function ModalToastHost() {
-	return <ToastLayer />;
+	return <ToastLayer followAnchor={false} />;
 }
 
-function ToastLayer() {
+function ToastLayer({ followAnchor }: { followAnchor: boolean }) {
 	const insets = useStableInsets();
+	const window = useWindowDimensions();
+	const anchor = useToastAnchor(s => s.rect);
+	const placement = toastPlacement(followAnchor ? anchor : undefined, window, insets.bottom);
 	const { current, hide } = useParaToast(useShallow(s => ({ current: s.current, hide: s.hide })));
 	// ロック中は出さない（画面はロック画面の下に残るので、ここで止める）。
 	const locked = useAppLocked();
@@ -117,7 +121,7 @@ function ToastLayer() {
 	}
 	const translateY = anim.interpolate({ inputRange: [0, 1], outputRange: [6, 0] });
 	return (
-		<View style={[styles.host, { bottom: insets.bottom + BOTTOM_GAP }]} pointerEvents={current !== undefined && shown.action !== undefined ? 'box-none' : 'none'}>
+		<View style={[styles.host, placement.width !== undefined ? { left: placement.left, width: placement.width, right: undefined } : null, { bottom: placement.bottom }]} pointerEvents={current !== undefined && shown.action !== undefined ? 'box-none' : 'none'}>
 			<Animated.View style={{ opacity: anim, transform: [{ translateY }] }}>
 				<Toast
 					toast={shown}

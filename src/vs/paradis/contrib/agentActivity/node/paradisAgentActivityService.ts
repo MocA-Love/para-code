@@ -300,7 +300,17 @@ export class ParadisAgentActivityService extends Disposable {
 				listing = { startedAt: Date.now(), files: this.listTranscripts() };
 				this.lastListing = listing;
 			}
-			const files = await listing.files;
+			let files: ITranscriptFile[];
+			try {
+				files = await listing.files;
+			} catch (error) {
+				// 失敗した列挙を使い回させない（重なって待っていた要求まで同じ失敗を受ける）。要求は順に処理するので、
+				// 次の要求はここを抜けた後に始まり、列挙し直す
+				if (this.lastListing === listing) {
+					this.lastListing = undefined;
+				}
+				throw error;
+			}
 			const present = new Set(files.map(file => file.path));
 			for (const path of [...this.cache.keys()]) {
 				if (!present.has(path)) {

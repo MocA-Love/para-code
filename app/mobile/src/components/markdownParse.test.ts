@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { markdownCopyParts, markdownPlainText, parseBlocks } from './markdownParse.js';
+import { markdownCopyParts, markdownExternalLinks, markdownPlainText, parseBlocks, parseInline } from './markdownParse.js';
 
 describe('parseBlocks', () => {
 	it('reads quotes, rules and nested bullets instead of leaving the marks in the text', () => {
@@ -113,5 +113,50 @@ describe('markdownCopyParts', () => {
 			],
 			codes: [{ label: 'bash · npm test -- login', text: 'npm test -- login\nnpm run lint' }],
 		});
+	});
+});
+
+describe('parseInline bare URLs', () => {
+	it('links a bare URL like a Markdown link and stops at Japanese text, punctuation and unbalanced brackets', () => {
+		expect([
+			parseInline('見て https://example.com/docs'),
+			parseInline('https://example.com/docsを見て'),
+			parseInline('URL は https://example.com/a。'),
+			parseInline('（https://example.com/a）と (https://example.com/b) と https://en.wikipedia.org/wiki/A_(B).'),
+			parseInline('<https://example.com/x>'),
+		]).toEqual([
+			[{ kind: 'text', text: '見て ' }, { kind: 'external', label: 'https://example.com/docs', url: 'https://example.com/docs' }],
+			[{ kind: 'external', label: 'https://example.com/docs', url: 'https://example.com/docs' }, { kind: 'text', text: 'を見て' }],
+			[{ kind: 'text', text: 'URL は ' }, { kind: 'external', label: 'https://example.com/a', url: 'https://example.com/a' }, { kind: 'text', text: '。' }],
+			[
+				{ kind: 'text', text: '（' },
+				{ kind: 'external', label: 'https://example.com/a', url: 'https://example.com/a' },
+				{ kind: 'text', text: '）と (' },
+				{ kind: 'external', label: 'https://example.com/b', url: 'https://example.com/b' },
+				{ kind: 'text', text: ') と ' },
+				{ kind: 'external', label: 'https://en.wikipedia.org/wiki/A_(B)', url: 'https://en.wikipedia.org/wiki/A_(B)' },
+				{ kind: 'text', text: '.' },
+			],
+			[{ kind: 'external', label: 'https://example.com/x', url: 'https://example.com/x' }],
+		]);
+	});
+
+	it('does not link URLs in code, inside a Markdown link, glued to a word or without a host', () => {
+		expect([
+			parseInline('`https://example.com/a` を実行'),
+			parseInline('[資料](https://example.com/a)'),
+			parseInline('xhttps://example.com/a'),
+			parseInline('https:// だけ'),
+		]).toEqual([
+			[{ kind: 'code', text: 'https://example.com/a' }, { kind: 'text', text: ' を実行' }],
+			[{ kind: 'external', label: '資料', url: 'https://example.com/a' }],
+			[{ kind: 'text', text: 'xhttps://example.com/a' }],
+			[{ kind: 'text', text: 'https:// だけ' }],
+		]);
+		expect(markdownExternalLinks('前\n\n```\ncurl https://example.com/api\n```\n\n後 https://example.com/docs')).toEqual([{ label: 'https://example.com/docs', url: 'https://example.com/docs' }]);
+	});
+
+	it('copies a bare URL once in the plain text', () => {
+		expect(markdownPlainText('見て https://example.com/docs')).toBe('見て https://example.com/docs');
 	});
 });

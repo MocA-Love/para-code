@@ -17,7 +17,7 @@ import { PARADIS_MOBILE_CANVAS_CHANNEL } from '../common/paradisMobileCanvas.js'
 import { ParadisMobileCanvasHostClient } from './paradisMobileCanvasHostClient.js';
 import { ParadisMobileCanvasService } from './paradisMobileCanvasService.js';
 import { ParadisMobileDeviceCommands } from './paradisMobileDeviceCommands.js';
-import { ParadisMobileDeviceOpsToolProvider } from './paradisMobileDeviceOpsToolProvider.js';
+import { IParadisMobileHostRequester, ParadisMobileDeviceOpsToolProvider } from './paradisMobileDeviceOpsToolProvider.js';
 
 export class ParadisMobileCanvasChannel implements IServerChannel<string> {
 
@@ -62,8 +62,10 @@ export function registerParadisMobileCanvas(
 	builtinExtensionsPath: string,
 	logService: ILogService,
 	registerToolProvider: (provider: ParadisMobileCanvasService) => void,
-): ParadisMobileCanvasService {
-	const hostClient = new ParadisMobileCanvasHostClient(builtinExtensionsPath, logService);
+	// シミュレータの作り直し（③）: ホストへの要求を、iOS は serve-sim へ回す振り分けで包む（simulator/node/paradisSimulator.sharedProcess.ts）
+	wrapHost?: (hostClient: IParadisMobileHostRequester) => IParadisMobileHostRequester,
+): { readonly service: ParadisMobileCanvasService; readonly deviceOps: ParadisMobileDeviceOpsToolProvider } {
+	const hostClient: IParadisMobileHostRequester = wrapHost ? wrapHost(new ParadisMobileCanvasHostClient(builtinExtensionsPath, logService)) : new ParadisMobileCanvasHostClient(builtinExtensionsPath, logService);
 	const service = new ParadisMobileCanvasService(hostClient, logService);
 	server.registerChannel(PARADIS_MOBILE_CANVAS_CHANNEL, new ParadisMobileCanvasChannel(service));
 	registerToolProvider(service);
@@ -71,7 +73,7 @@ export function registerParadisMobileCanvas(
 	// 台帳（service）とホストへの接続（hostClient）はここにしか無いので、ここで組み立てる
 	const deviceOps = new ParadisMobileDeviceOpsToolProvider(service, hostClient, new ParadisMobileDeviceCommands(), logService);
 	service.own(paradisRegisterMcpToolProvider(deviceOps));
-	return service;
+	return { service, deviceOps };
 }
 
 function requireObject(arg: unknown): Record<string, unknown> {

@@ -5,6 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  expo-local-authentication@57.0.0:
+    hash: e634c7dadefe052a09de661ed62961207d80ab4b0e3c2643f1eb9d865503e986
+    path: patches/expo-local-authentication@57.0.0.patch
   react-native@0.86.0:
     hash: 5adbea2356161c09df8709b74302c75e87b79d99fe1a2d571c724612af235902
     path: patches/react-native@0.86.0.patch
@@ -50,7 +53,7 @@ importers:
         version: 57.0.2(expo@57.0.4)
       expo-local-authentication:
         specifier: ~57.0.0
-        version: 57.0.0(expo@57.0.4)
+        version: 57.0.0(patch_hash=e634c7dadefe052a09de661ed62961207d80ab4b0e3c2643f1eb9d865503e986)(expo@57.0.4)
       expo-media-library:
         specifier: ~57.0.1
         version: 57.0.5(expo@57.0.4)(react-native@0.86.0(patch_hash=5adbea2356161c09df8709b74302c75e87b79d99fe1a2d571c724612af235902)(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))
@@ -6902,7 +6905,7 @@ snapshots:
       - expo
       - supports-color
 
-  expo-local-authentication@57.0.0(expo@57.0.4):
+  expo-local-authentication@57.0.0(patch_hash=e634c7dadefe052a09de661ed62961207d80ab4b0e3c2643f1eb9d865503e986)(expo@57.0.4):
     dependencies:
       expo: 57.0.4(9723afc4e9c84289252044c2402280a3)
       invariant: 2.2.4

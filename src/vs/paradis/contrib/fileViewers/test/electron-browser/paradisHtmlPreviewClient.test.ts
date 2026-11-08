@@ -10,6 +10,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IRemoteAuthorityResolverService } from '../../../../../platform/remote/common/remoteAuthorityResolver.js';
 import { getRemoteTunnelGeneration, ITunnelService, RemoteTunnel } from '../../../../../platform/tunnel/common/tunnel.js';
+import { IAddressProvider } from '../../../../../platform/remote/common/remoteAgentConnection.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
@@ -92,6 +93,53 @@ suite('ParadisRemotePreviewMounter', () => {
 		fixture.mounter.dispose();
 		await Promise.resolve();
 		assert.strictEqual(fixture.disposeCount(), 1);
+	});
+
+	test('resolves the forwarding address again each time it is asked, so a reconnect is followed', async () => {
+		const store = disposables.add(new DisposableStore());
+		const tunnelClosed = store.add(new Emitter<{ host: string; port: number; generation?: object }>());
+		let resolutions = 0;
+		let addressProvider: IAddressProvider | undefined;
+		const agent = {
+			getConnection: () => ({
+				remoteAuthority: 'ssh-remote+box',
+				getChannel: () => ({
+					call: async () => ({ port: 56789, token: '0123456789abcdef0123456789abcdef' }),
+					listen: () => { throw new Error('not used'); },
+				}),
+			}),
+		} as unknown as IRemoteAgentService;
+		// Every resolution hands out a new local port, the way an SSH reconnect does.
+		const resolver = {
+			resolveAuthority: async () => ({
+				authority: {
+					authority: 'ssh-remote+box',
+					connectTo: { host: '127.0.0.1', port: 40000 + ++resolutions },
+					connectionToken: undefined,
+				},
+			}),
+		} as unknown as IRemoteAuthorityResolverService;
+		const tunnelService = {
+			onTunnelClosed: tunnelClosed.event,
+			openTunnel: async (provider: IAddressProvider) => {
+				addressProvider = provider;
+				return {
+					tunnelRemotePort: 56789,
+					tunnelRemoteHost: '127.0.0.1',
+					tunnelLocalPort: 45678,
+					localAddress: '127.0.0.1:45678',
+					privacy: 'private',
+					dispose: async () => { },
+				} as RemoteTunnel;
+			},
+		} as unknown as ITunnelService;
+		const mounter = store.add(new ParadisRemotePreviewMounter(agent, resolver, tunnelService));
+
+		await mounter.mount(resource);
+		const first = await addressProvider!.getAddress();
+		const second = await addressProvider!.getAddress();
+
+		assert.deepStrictEqual([first.connectTo, second.connectTo], [{ host: '127.0.0.1', port: 40001 }, { host: '127.0.0.1', port: 40002 }]);
 	});
 
 	test('keeps a new mounter tunnel when an older generation closes on the same port', async () => {

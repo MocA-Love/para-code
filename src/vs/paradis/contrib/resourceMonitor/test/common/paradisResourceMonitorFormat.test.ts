@@ -22,6 +22,8 @@ suite('ParadisResourceMonitorFormat', () => {
 			paradisFormatMemory(1_048_576),
 			paradisFormatMemory(1_073_741_823),
 			paradisFormatMemory(1_073_741_824),
+			paradisFormatMemory(1_099_511_627_775),
+			paradisFormatMemory(2_000_398_934_016),
 		], [
 			'1 KB',
 			'1 KB',
@@ -29,6 +31,8 @@ suite('ParadisResourceMonitorFormat', () => {
 			'1.0 MB',
 			'1024.0 MB',
 			'1.00 GB',
+			'1024.00 GB',
+			'1.82 TB',
 		]);
 	});
 

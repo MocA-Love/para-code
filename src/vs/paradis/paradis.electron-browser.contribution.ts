@@ -38,6 +38,8 @@ import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
 import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasLifecycle.contribution.js';
 // エージェントの「この端末を使いたい」を承認ダイアログで受ける（B13）
 import './contrib/mobileCanvas/electron-browser/paradisMobileDeviceRequest.contribution.js';
+// シミュレータの作り直し（q.html Q585）: エディタのペイン・タブの復元・「シミュレータを開く」・開発用のコマンド
+import './contrib/simulator/electron-browser/paradisSimulator.contribution.js';
 import './contrib/browserButton/electron-browser/paradisOpenBrowserButton.contribution.js';
 import './contrib/layoutPresets/electron-browser/paradisLayoutPresets.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationTrigger.contribution.js';
@@ -87,6 +89,7 @@ import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.
 import './contrib/codexAccounts/electron-browser/paradisCodexAccounts.contribution.js';
 import './contrib/agentLiveWindow/electron-browser/paradisAgentLiveWindow.contribution.js';
 import './contrib/agentInsights/electron-browser/paradisAgentInsights.contribution.js';
+import './contrib/agentInsights/electron-browser/paradisContextUsage.contribution.js';
 import './contrib/browserLiveWindow/electron-browser/paradisBrowserLiveWindow.contribution.js';
 import './contrib/browserZoomIndicator/electron-browser/paradisBrowserZoomIndicator.contribution.js';
 import './contrib/browserViewport/electron-browser/paradisBrowserViewport.contribution.js';
@@ -145,3 +148,5 @@ import './contrib/crossJump/electron-browser/paradisCrossJump.contribution.js';
 import './contrib/scmAgentFix/electron-browser/paradisScmAgentFix.contribution.js';
 // G-01: 差分の行にメモを付け、まとめて今のスペースのエージェントへ送る
 import './contrib/diffReviewNotes/electron-browser/paradisDiffReviewNotes.contribution.js';
+// ポートパネルの「張り直す」（SSH の窓で転送が一覧に残ったまま繋がらなくなったときの逃げ道）
+import './contrib/portReforward/electron-browser/paradisPortReforward.contribution.js';
