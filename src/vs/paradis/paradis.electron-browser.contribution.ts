@@ -137,6 +137,7 @@ import './contrib/computerUse/electron-browser/paradisComputerUseApproval.contri
 import './contrib/computerUse/electron-browser/paradisComputerUseStatus.contribution.js';
 import './contrib/agentTabTitle/electron-browser/paradisClaudeTabTitlePin.contribution.js';
 import './contrib/editorDownload/electron-browser/paradisEditorDownload.contribution.js';
+import './contrib/tabId/electron-browser/paradisTabId.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisWorkspacesNativeWindowActivity.js';
 // Q570: the editor tab strip's "+ ⌄" opens the fork's launcher (terminal, browser, Markdown, agents)
 import './contrib/tabLauncher/electron-browser/paradisTabLauncher.contribution.js';
