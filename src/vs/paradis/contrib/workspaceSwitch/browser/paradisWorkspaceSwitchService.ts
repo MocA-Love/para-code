@@ -1710,13 +1710,18 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					const longTasksBefore = tracked?.snapshot();
 					const framesTracked = ParadisWorkspaceSwitchService.LONG_FRAME_PHASES.has(name) ? phaseLongTasks.frames : undefined;
 					const longFramesBefore = framesTracked?.snapshot();
+					// 入れ子の段階が終わったら外側の段階へ戻す。戻さないと外側の途中で止まったときに
+					// 止まった切り替えのログが「段階の合間」と出る。
+					const outerPhase = liveProgress.phase;
+					const outerPhaseStartedAt = liveProgress.phaseStartedAt;
 					liveProgress.phase = name;
 					liveProgress.phaseStartedAt = startedAt;
 					try {
 						return await run();
 					} finally {
 						phaseMs[name] = Date.now() - startedAt;
-						liveProgress.phase = undefined;
+						liveProgress.phase = outerPhase;
+						liveProgress.phaseStartedAt = outerPhaseStartedAt;
 						const longTasksAfter = tracked?.snapshot();
 						if (longTasksBefore !== undefined && longTasksAfter !== undefined) {
 							phaseLongTaskMs[name] = Math.max(0, longTasksAfter.totalMs - longTasksBefore.totalMs);
@@ -2186,7 +2191,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					}
 					const mainLoop = mainLoopWindow?.then(id => id === undefined ? undefined : mainLoadProbe?.endWindow(id)).catch(() => undefined);
 					const switchTotalMs = Date.now() - switchStartedAt;
-					this.logSlowSwitch({
+					this.logSlowSwitch(() => ({
 						queuedMs: Math.max(0, switchStartedAt - requestedAt),
 						totalMs: switchTotalMs,
 						completed,
@@ -2198,7 +2203,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						fileEvents: switchEventCounts.fileEvents,
 						configEvents: switchEventCounts.configEvents,
 						lastDeleteAgoMs: this.lastDeleteAgoMs(requestedAt),
-					});
+					}));
 					void this.recordSwitchPhasesWithMainLoad({
 						startedAt: switchStartedAt,
 						totalMs: switchTotalMs,
@@ -2307,9 +2312,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	/**
 	 * 遅かった切り替え（クリックから終わるまで 2 秒超）を、ウィンドウのログに 1 行で残す。
 	 * Sentry が上限で使えない間も原因を追えるようにするため。投げない。
+	 * 記録の組み立て（ファイル IPC の集計など）も投げうるので、ここの try の中で行う。
 	 */
-	private logSlowSwitch(sample: IParadisSlowSwitchSample): void {
+	private logSlowSwitch(buildSample: () => IParadisSlowSwitchSample): void {
 		try {
+			const sample = buildSample();
 			if (paradisShouldLogSlowSwitch(sample)) {
 				this.logService.warn(paradisFormatSlowSwitchLog(sample));
 			}
