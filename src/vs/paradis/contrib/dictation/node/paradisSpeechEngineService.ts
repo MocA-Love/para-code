@@ -13,12 +13,11 @@
 import type { Readable, Writable } from 'stream';
 import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
-import { join } from '../../../../base/common/path.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILocalTranscriptionModelStatus, ILocalTranscriptionResult, LocalTranscriptionModelState } from '../../../../platform/localTranscription/common/localTranscription.js';
-import { IParadisSpeechEngine, IParadisSpeechHelperMessage, PARADIS_SPEECH_HELPER_EXECUTABLE, paradisParseSpeechHelperLine, ParadisSpeechErrorCode, paradisSpeechErrorCode, paradisSpeechErrorMessage } from '../common/paradisSpeechEngine.js';
+import { IParadisSpeechEngine, IParadisSpeechHelperMessage, paradisParseSpeechHelperLine, paradisSpeechHelperCandidates, ParadisSpeechErrorCode, paradisSpeechErrorCode, paradisSpeechErrorMessage } from '../common/paradisSpeechEngine.js';
 
 /** 起動した補助プログラム（child_process の ChildProcess のうち使う分。テストで差し替える）。 */
 export interface IParadisSpeechHelperProcess {
@@ -42,17 +41,6 @@ export interface IParadisSpeechEngineHost {
 const DEFAULT_STOP_TIMEOUT_MS = 10_000;
 /** 失敗の説明に添える標準エラーの末尾の長さ。 */
 const STDERR_TAIL_LENGTH = 2000;
-
-/**
- * 補助プログラムの置き場所の候補。配布版は `<Para Code.app>/Contents/Resources/app` の 2 つ上の `Helpers`、
- * 開発中は `node build/paradis/speech/buildHelper.ts` の出力先（`.build/paradis/speech`）。
- */
-export function paradisSpeechHelperCandidates(appRoot: string, isDevelopment: boolean): string[] {
-	return [
-		join(appRoot, '..', '..', 'Helpers', PARADIS_SPEECH_HELPER_EXECUTABLE),
-		...(isDevelopment ? [join(appRoot, '.build', 'paradis', 'speech', PARADIS_SPEECH_HELPER_EXECUTABLE)] : []),
-	];
-}
 
 /** 実際に使う host。 */
 export function createParadisSpeechEngineHost(platform: NodeJS.Platform, appRoot: string, isDevelopment: boolean): IParadisSpeechEngineHost {
