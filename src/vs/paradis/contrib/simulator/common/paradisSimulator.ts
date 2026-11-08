@@ -12,6 +12,8 @@
 // （serve-sim のミドルウェアを組み込み、Unix ソケットだけで待ち受ける。macOS だけ）、と renderer。
 // ここには純粋な値と関数だけを置く（どのプロセスからも読めるように）。
 
+import { VSBuffer } from '../../../../base/common/buffer.js';
+
 /** renderer ⇔ shared process のチャネル名。 */
 export const PARADIS_SIMULATOR_CHANNEL = 'paradisSimulator';
 
@@ -75,6 +77,12 @@ export interface IParadisSimulatorStatus {
 	readonly hostError?: string;
 }
 
+/** チャネルの `frames` のイベントで届く 1 枚（受け取ったら `ackFrame` を返す）。 */
+export interface IParadisSimulatorFrameEvent {
+	readonly udid: string;
+	readonly jpeg: VSBuffer;
+}
+
 // --- 開閉（iPhone Duo） ---
 
 export type ParadisSimulatorPose = 'closed' | 'book' | 'open';
@@ -98,7 +106,7 @@ export const PARADIS_SIMULATOR_ORIENTATIONS: readonly ParadisSimulatorOrientatio
  * フレームにする（`paradisSimulatorInputFrame`）。座標は画面の幅・高さに対する 0〜1。
  */
 export type ParadisSimulatorInput =
-	| { readonly kind: 'touch'; readonly phase: 'begin' | 'move' | 'end'; readonly x: number; readonly y: number }
+	| { readonly kind: 'touch'; readonly phase: 'begin' | 'move' | 'end'; readonly x: number; readonly y: number; /** 端の印（下端のホームのジェスチャーなど）。 */ readonly edge?: number }
 	| { readonly kind: 'key'; readonly type: 'down' | 'up'; readonly usage: number }
 	| { readonly kind: 'button'; readonly button: string }
 	| { readonly kind: 'rotate'; readonly orientation: ParadisSimulatorOrientation };

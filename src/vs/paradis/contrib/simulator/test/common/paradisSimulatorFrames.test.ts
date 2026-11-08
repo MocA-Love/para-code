@@ -43,6 +43,7 @@ suite('Paradis simulator: frames', () => {
 	test('builds the input frames serve-sim reads', () => {
 		assert.deepStrictEqual([
 			paradisSimulatorInputFrame({ kind: 'touch', phase: 'begin', x: 0.25, y: 1.5 }),
+			paradisSimulatorInputFrame({ kind: 'touch', phase: 'move', x: 0.5, y: 0.97, edge: 3 }),
 			paradisSimulatorInputFrame({ kind: 'key', type: 'down', usage: 4 }),
 			paradisSimulatorInputFrame({ kind: 'button', button: 'home' }),
 			paradisSimulatorInputFrame({ kind: 'button', button: 'volumeUp' }),
@@ -51,6 +52,7 @@ suite('Paradis simulator: frames', () => {
 			paradisSimulatorFoldFrame({ kind: 'hinge', hinge: 90 }),
 		].map(decode), [
 			[0x03, { type: 'begin', x: 0.25, y: 1 }],
+			[0x03, { type: 'move', x: 0.5, y: 0.97, edge: 3 }],
 			[0x06, { type: 'down', usage: 4 }],
 			[0x04, { button: 'home' }],
 			[0x04, { button: 'volume_up', page: 0x0c, usage: 0xe9, phase: 'press' }],
@@ -65,6 +67,7 @@ suite('Paradis simulator: frames', () => {
 			() => paradisSimulatorInputFrame(undefined),
 			() => paradisSimulatorInputFrame({ kind: 'touch', phase: 'tap', x: 0, y: 0 }),
 			() => paradisSimulatorInputFrame({ kind: 'touch', phase: 'begin', x: Number.NaN, y: 0 }),
+			() => paradisSimulatorInputFrame({ kind: 'touch', phase: 'begin', x: 0, y: 0, edge: 9 }),
 			() => paradisSimulatorInputFrame({ kind: 'key', type: 'down', usage: 1.5 }),
 			() => paradisSimulatorInputFrame({ kind: 'button', button: 'back' }),
 			() => paradisSimulatorInputFrame({ kind: 'rotate', orientation: 'sideways' }),

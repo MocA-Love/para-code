@@ -45,8 +45,11 @@ function clampUnit(value: number): number {
 }
 
 /** タッチ（タッチ 3）。`x`・`y` は画面の幅・高さに対する 0〜1。 */
-export function paradisSimulatorTouchFrame(phase: ParadisSimulatorTouchPhase, x: number, y: number): Uint8Array {
-	return frame(ParadisSimulatorFrameTag.Touch, { type: phase, x: clampUnit(x), y: clampUnit(y) });
+export function paradisSimulatorTouchFrame(phase: ParadisSimulatorTouchPhase, x: number, y: number, edge = 0): Uint8Array {
+	if (!Number.isInteger(edge) || edge < 0 || edge > 4) {
+		throw new Error(`Invalid touch edge: ${edge}`);
+	}
+	return frame(ParadisSimulatorFrameTag.Touch, edge ? { type: phase, x: clampUnit(x), y: clampUnit(y), edge } : { type: phase, x: clampUnit(x), y: clampUnit(y) });
 }
 
 /** キー（キー 6）。`usage` は HID の keyboard page の usage。 */
@@ -90,10 +93,10 @@ export function paradisSimulatorInputFrame(input: unknown): Uint8Array {
 	const record = input as Record<string, unknown>;
 	switch (record.kind) {
 		case 'touch':
-			if ((record.phase !== 'begin' && record.phase !== 'move' && record.phase !== 'end') || typeof record.x !== 'number' || typeof record.y !== 'number') {
+			if ((record.phase !== 'begin' && record.phase !== 'move' && record.phase !== 'end') || typeof record.x !== 'number' || typeof record.y !== 'number' || (record.edge !== undefined && typeof record.edge !== 'number')) {
 				break;
 			}
-			return paradisSimulatorTouchFrame(record.phase, record.x, record.y);
+			return paradisSimulatorTouchFrame(record.phase, record.x, record.y, record.edge);
 		case 'key':
 			if ((record.type !== 'down' && record.type !== 'up') || typeof record.usage !== 'number') {
 				break;
