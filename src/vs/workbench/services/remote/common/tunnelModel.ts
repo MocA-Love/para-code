@@ -23,6 +23,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { isNumber, isObject, isString } from '../../../../base/common/types.js';
 import { deepClone } from '../../../../base/common/objects.js';
 import { IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { paradisImplicitTunnelSource, paradisTunnelsToRestore } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js'; // PARA-PATCH: see onTunnelOpened and restoreForwarded
 
 const MISMATCH_LOCAL_PORT_COOLDOWN = 10 * 1000; // 10 seconds
 const TUNNELS_TO_RESTORE = 'remote.tunnels.toRestore';
@@ -494,7 +495,8 @@ export class TunnelModel extends Disposable {
 					hasRunningProcess: !!matchingCandidate,
 					pid: matchingCandidate?.pid,
 					privacy: tunnel.privacy,
-					source: UserTunnelSource,
+					// PARA-PATCH: a tunnel the Ports view did not open (preview, link, OAuth redirect) is kept for this session but not restored (platform/tunnel/common/paradisTunnelRestorePolicy.ts)
+					source: paradisImplicitTunnelSource(TunnelSource.Extension),
 				});
 			}
 			await this.storeForwarded();
@@ -593,7 +595,8 @@ export class TunnelModel extends Disposable {
 		if (this.configurationService.getValue('remote.restoreForwardedPorts')) {
 			const tunnelRestoreValue = await this.tunnelRestoreValue;
 			if (tunnelRestoreValue && (tunnelRestoreValue !== this.knownPortsRestoreValue)) {
-				const tunnels = <RestorableTunnel[] | undefined>JSON.parse(tunnelRestoreValue) ?? [];
+				// PARA-PATCH: skip implicit tunnels and stale ephemeral ports instead of reopening them every time (platform/tunnel/common/paradisTunnelRestorePolicy.ts)
+				const tunnels = paradisTunnelsToRestore(<RestorableTunnel[] | undefined>JSON.parse(tunnelRestoreValue) ?? [], TunnelSource.Extension, (host, port) => !!mapHasAddressLocalhostOrAllInterfaces(this._candidates ?? new Map(), host, port));
 				this.logService.trace(`ForwardedPorts: (TunnelModel) restoring ports ${tunnels.map(tunnel => tunnel.remotePort).join(', ')}`);
 				for (const tunnel of tunnels) {
 					const alreadyForwarded = mapHasAddressLocalhostOrAllInterfaces(this.detected, tunnel.remoteHost, tunnel.remotePort);
