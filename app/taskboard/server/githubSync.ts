@@ -395,6 +395,37 @@ export class GitHubSync {
 		this.options.onState();
 	}
 
+	/**
+	 * Issue を番号で読む（Para Code の「タスク」の画面から載せるとき）。1 回の問い合わせにまとめ、読めない番号
+	 * （無い・閉じている・PR だった・権限が無い）は外す。名前の形がおかしいものは問い合わせに入れない。
+	 */
+	async fetchIssues(issues: readonly { readonly owner: string; readonly repo: string; readonly number: number }[]): Promise<(ITaskBoardIntakeItem & { pr?: ITaskBoardPrRef })[]> {
+		const valid = issues.filter(issue => NAME_RE.test(issue.owner) && NAME_RE.test(issue.repo) && Number.isInteger(issue.number) && issue.number > 0).slice(0, 20);
+		if (!valid.length) {
+			return [];
+		}
+		const vars: Record<string, unknown> = {};
+		const parts: string[] = [];
+		valid.forEach((issue, i) => {
+			vars[`o${i}`] = issue.owner;
+			vars[`r${i}`] = issue.repo;
+			vars[`n${i}`] = issue.number;
+			parts.push(`i${i}: repository(owner: $o${i}, name: $r${i}) { issue(number: $n${i}) { ...IssueLite } }`);
+		});
+		const decl = valid.map((_, i) => `$o${i}: String!, $r${i}: String!, $n${i}: Int!`).join(', ');
+		const data = await this.options.client.graphql<Record<string, { issue: IGqlIssueLite | null } | IGqlRate>>(
+			`${PR_LITE}${ISSUE_LITE}
+			query(${decl}) { ${parts.join('\n')} ${RATE} }`,
+			vars,
+		);
+		this.state.graphql = rate(data.rateLimit as IGqlRate);
+		this.options.onState();
+		return valid.flatMap((_, i) => {
+			const node = (data[`i${i}`] as { issue: IGqlIssueLite | null } | undefined)?.issue;
+			return node && node.state === 'OPEN' ? [mapIssue(node)] : [];
+		});
+	}
+
 	private async cached<T>(key: string, load: () => Promise<T>): Promise<T> {
 		const hit = this.detailCache.get(key);
 		if (hit && Date.now() - hit.at < DETAIL_TTL) {
