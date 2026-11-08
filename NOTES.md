@@ -2136,6 +2136,13 @@ iPad対応で実際に手で当てた設定:
 - 向きは開発ビルドの `__paraDev.orientation(true|false)`（`requestGeometryUpdate`）で変えられるが、アプリを起動し直した後は「The current windowing mode does not allow for programmatic changes to interface orientation」で断られることがある。そのときは縦の幅を `__paraDev.setWidth(834)` で代用した
 - 外付けキーボードのキーをシミュレータへ送る手段が無かった（DeviceHub の操作は画面の自動操作が要る）ので、開発ビルドの `__paraDev.fireKey(id)` で「登録した UIKeyCommand をレスポンダチェーン経由で送る」ことで確かめた。`__paraDev.keyCommands()` で登録されているものと、いまのファーストレスポンダが読める
 
+Mac での実測で分かった注意（2026-11-08、#806・#808 の確認時）:
+
+- 署名: `CODE_SIGNING_ALLOWED=NO` でシミュレータ用に作ると、実行ファイルに `__TEXT,__entitlements` が入らない。そのため SecureStore が失敗し続け、ロック画面から進めない。後から `codesign -s - --entitlements` を当てると、起動が `FBSOpenApplicationServiceErrorDomain` code=3 で失敗する。`CODE_SIGN_IDENTITY=-` で差分ビルドすると直る
+- Metro: ワークツリーで `git checkout` しても変更を拾わず、古い JS を配ることがある。`expo start --clear` で直る。8081 は Para Code が使うので、別のポートで立てる。CDP は Origin をそのポートに合わせないと 401 になる
+- Device Hub: 終了すると、起動中のシミュレータがすべて止まる。ハードウェアキーボード無しで試すときは、Device Hub を立ち上げずに `xcrun simctl boot` だけで起動する。キーボードありで試すときだけ `open -g` で立ち上げる
+- Face ID: シミュレータを起動し直すと登録が外れる。`notifyutil -s com.apple.BiometricKit.enrollmentChanged 1` と `-p` で登録し直す。照合の `com.apple.BiometricKit_Sim.pearl.match` は、アプリの認証の画面が出てから送る（画面より先に送ると効かない）
+
 開発用（`__DEV__` のときだけ）: ペアリングの無いシミュレータでは、Metro の CDP から `globalThis.__paraDev.demo()` で見本のデータ（`src/dev/demoData.ts`）を入れ、`__paraDev.setWidth(600)` でアプリの幅を狭めて 1列を確かめる（`src/dev/devWidthFrame.tsx`。`setWidth(undefined)` で戻す）。
 
 ### ウィンドウアプリの左上の操作ボタンを見出しが避ける（2026-09-27）

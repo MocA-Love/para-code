@@ -279,7 +279,8 @@ function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
 	tr + tr > th, tr + tr > td { border-top: ${hair}; }
 	tr.hd { background: ${tint(colors.idle, alpha.wash)}; }
 	tr.alt { background: ${tint(colors.idle, alpha.faint)}; }
-	th, td { box-sizing: border-box; padding: ${num(spacing(5))}px 7px; font-size: ${num(font(type.meta))}px; line-height: ${num(font(17))}px; text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: break-word; }
+	/* セルの字は会話の表と同じ本文の大きさ（RN の表は、セルの中の字に本文の字の形が当たって 14/20 で描かれている） */
+	th, td { box-sizing: border-box; padding: ${num(spacing(5))}px 7px; font-size: ${num(font(type.body))}px; line-height: ${num(font(20))}px; text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: break-word; }
 	th + th, td + td { border-left: ${hair}; }
 	th { font-weight: 700; }
 	.ac { text-align: center; }

@@ -37,6 +37,11 @@ describe('buildInplaceSelectHtml', () => {
 		].join(''));
 	});
 
+	it('draws table cells at the body size the chat table actually shows (14/20), so rows below do not move', () => {
+		const html = buildInplaceSelectHtml([{ text: '| a |\n|---|\n| 1 |', markdown: true }], LOOK, NONCE);
+		expect(html).toContain('th, td { box-sizing: border-box; padding: 5px 7px; font-size: 14px; line-height: 20px;');
+	});
+
 	it('escapes message text and never turns links into navigable elements', () => {
 		const html = buildInplaceSelectHtml([{ text: '<script>alert(1)</script> [x" onclick="y](https://example.com/?a=<b>) & `<i>`', markdown: true }], LOOK, NONCE);
 		expect(bodyOf(html)).toBe('<div class="seg"><div class="p">&lt;script&gt;alert(1)&lt;/script&gt; <span class="a">x" onclick="y</span> &amp; <span class="ic">&lt;i&gt;</span></div></div>');
