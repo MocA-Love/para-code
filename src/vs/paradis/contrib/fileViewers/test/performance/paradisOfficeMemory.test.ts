@@ -25,6 +25,8 @@ class LifecycleWorker implements IOfficeWorker {
 	cancelled(requestId: string): void { this.messageEmitter.fire({ kind: 'cancelled', requestId }); }
 }
 
+// The regular unit test runners skip this suite because they do not expose gc. Run it by hand with:
+// node --expose-gc test/unit/node/index.js --runGlob 'vs/paradis/contrib/fileViewers/test/performance/paradisOfficeMemory.test.js'
 suite('ParadisOfficeMemory', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 	test('releases real worker, handle, and cache lifecycle state before three forced GCs', async function () {
