@@ -138,7 +138,7 @@ jobs:
   unit-tests:
     name: Unit Tests (Node.js)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -169,8 +169,19 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # test/unit/node/index.js loads the tests from out/, so without this step no
+      # test file was found and the job stayed green while running 0 tests. Same transpile
+      # step as upstream pr-linux-test.yml (esbuild, no type check: Typecheck & Hygiene covers it).
+      - name: Transpile client
+        run: npm run gulp transpile-client-esbuild
+
+      # Fail when mocha did not report any passing test (e.g. out/ missing or a loader error
+      # that stops mocha before it starts), instead of exiting 0 with nothing run.
       - name: Run unit tests (node.js)
-        run: npm run test-node
+        run: |
+          set -o pipefail
+          npm run test-node 2>&1 | tee "$RUNNER_TEMP/test-node.log"
+          grep -Eq '(^|[^0-9])[1-9][0-9]* passing' "$RUNNER_TEMP/test-node.log" || { echo "No passing tests reported by test-node" >&2; exit 1; }
 
   fork-workspace-tests:
     name: Para Code Fork Workspace (typecheck & test)
