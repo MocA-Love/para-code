@@ -81,7 +81,11 @@ const LAUNCH_TIMEOUT_MS = 45_000;
 /** 送り先。 */
 export type ParadisAgentPromptTarget =
 	| { readonly kind: 'terminal'; readonly terminalKey: string }
-	| { readonly kind: 'launch'; readonly agent: string }
+	/**
+	 * 指定のエージェントを新しく起動する。`placement: 'side'` は PC の利用者が自分で選んだ操作（ターミナルの右クリックの
+	 * 引き継ぎ）だけが渡す: 横のグループに開いて前に出す。無ければ、利用者の操作を乱さないよう裏のタブで開く。
+	 */
+	| { readonly kind: 'launch'; readonly agent: string; readonly placement?: 'side' }
 	/** そのスペースで入力を待っているエージェントへ。エージェントがいなければ既定のエージェントを起動（Q114 A / Q15-2）。 */
 	| { readonly kind: 'auto' }
 	/** 既定のエージェントを新しく起動する。 */
@@ -208,11 +212,12 @@ async function sendToInstance(services: IParadisAgentPromptServices, instance: I
 	return { ok: true, via: 'terminal', title: instance.title };
 }
 
-async function launch(services: IParadisAgentPromptServices, ws: string, root: URI, prompt: string, agentId: string, pushState: () => void): Promise<ParadisAgentPromptOutcome> {
+async function launch(services: IParadisAgentPromptServices, ws: string, root: URI, prompt: string, agentId: string, pushState: () => void, placement?: 'side'): Promise<ParadisAgentPromptOutcome> {
 	let launched: Promise<IParadisLaunchedAgentTerminal>;
 	try {
-		// 利用者が PC で作業している最中に前へ出さない（エージェントの IDE 操作や定期実行と同じ扱い）
-		launched = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId, prompt, preserveFocus: true });
+		// 利用者が PC で作業している最中に前へ出さない（エージェントの IDE 操作や定期実行と同じ扱い）。
+		// 利用者が自分で選んだ操作（placement）だけは、横に開いて前に出す
+		launched = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId, prompt, ...(placement !== undefined ? { placement } : { preserveFocus: true }) });
 		// 起動が返ってこなくても送信中の印が外れるよう、待つ時間に上限を付ける（後から失敗しても未処理の例外にしない）
 		launched.catch(() => undefined);
 		if (await raceTimeout(launched.then(() => true), LAUNCH_TIMEOUT_MS) !== true) {
@@ -222,7 +227,7 @@ async function launch(services: IParadisAgentPromptServices, ws: string, root: U
 		if (error instanceof ParadisAgentPromptQuotingError) {
 			// シェルの種類が分からず、バックスラッシュを含む依頼文を起動のコマンドに安全に載せられない。
 			// 依頼文を渡さずに起動し、エージェントが入力を待つようになってから貼り付けで渡す（シェルを通さない）
-			return launchThenPaste(services, ws, root, prompt, agentId, pushState);
+			return launchThenPaste(services, ws, root, prompt, agentId, pushState, placement);
 		}
 		throw error;
 	}
@@ -240,9 +245,9 @@ const PASTE_AFTER_LAUNCH_BUDGET_MS = 55_000;
 const PASTE_AFTER_LAUNCH_POLL_MS = 500;
 
 /** 依頼文を渡さずにエージェントを起動し、入力を待つようになったら貼り付けて送る。 */
-async function launchThenPaste(services: IParadisAgentPromptServices, ws: string, root: URI, prompt: string, agentId: string, pushState: () => void): Promise<ParadisAgentPromptOutcome> {
+async function launchThenPaste(services: IParadisAgentPromptServices, ws: string, root: URI, prompt: string, agentId: string, pushState: () => void, placement?: 'side'): Promise<ParadisAgentPromptOutcome> {
 	const deadline = Date.now() + PASTE_AFTER_LAUNCH_BUDGET_MS;
-	const launched = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId, preserveFocus: true });
+	const launched = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId, ...(placement !== undefined ? { placement } : { preserveFocus: true }) });
 	launched.catch(() => undefined);
 	const terminal = await raceTimeout(launched, Math.min(LAUNCH_TIMEOUT_MS, PASTE_AFTER_LAUNCH_BUDGET_MS));
 	if (terminal === undefined) {
@@ -293,7 +298,7 @@ export async function paradisDeliverAgentPrompt(services: IParadisAgentPromptSer
 		return sendToInstance(services, instance, ws, prompt, find);
 	}
 	if (target.kind === 'launch') {
-		return launch(services, ws, root, prompt, target.agent, pushState);
+		return launch(services, ws, root, prompt, target.agent, pushState, target.placement);
 	}
 	if (target.kind === 'auto') {
 		const agents = instances().filter(instance => isInSpaceAgent(services, instance, ws));

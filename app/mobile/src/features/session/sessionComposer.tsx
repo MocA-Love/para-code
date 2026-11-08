@@ -5,7 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
 import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus, Info, Keyboard, Monitor } from 'lucide-react-native';
-import { appendQuickReply, quickReplyTapAction } from '../../agentConversationUx.js';
+import { appendQuickReply, quickReplyTapAction, quoteReplyText } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
 import { ComposerAttachmentChips } from '../../components/attachmentChips.js';
@@ -56,6 +56,8 @@ export interface SessionComposerHandle {
 	 * （送信ボタンと同じ道を通る）。書きかけ・添付があるとき、送れない状態のときは `insertText` と同じく足すだけ。
 	 */
 	pickQuickReply(text: string, sendOnTap: boolean): void;
+	/** 「引用して返信」。発言を `> ` 付きで書きかけの後ろへ足す（送信もフォーカスもしない。`quoteReplyText`）。 */
+	quoteReply(text: string): void;
 	focus(): void;
 }
 
@@ -424,7 +426,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	submitRef.current = submit;
 	const quickSendBlockedRef = useRef<(text: string) => boolean>(() => true);
 
-	/** 設定の変更（`/model <別名>`・`/effort <段階>`）。断られたら文を入力欄へ戻し、理由を上に出す。 */
+	/** 設定の変更（`/model <別名・版付きの id>`・`/effort <段階>`）。断られたら文を入力欄へ戻し、理由を上に出す。 */
 	const applySetting = (setting: 'model' | 'effort', value: string, text: string) => {
 		clearActiveInput();
 		setSlashError(undefined);
@@ -461,14 +463,14 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				}
 				return;
 			case 'model-switch':
-				applySetting('model', intercept.alias, text);
+				applySetting('model', intercept.model, text);
 				return;
 			case 'effort-switch':
 				applySetting('effort', intercept.level, text);
 				return;
 			case 'model-not-alias':
 				haptic('warning');
-				setSlashError({ message: `「${intercept.value}」はモデルの別名ではないので送りませんでした。default・sonnet・opus・haiku・fable・best・opusplan（[1m] 付きも可）のどれかを指定するか、シートで選んでください`, terminal: false, sheet: true });
+				setSlashError({ message: `「${intercept.value}」はモデルの名前として送れないので送りませんでした。default・sonnet・opus・haiku・fable・best・opusplan（[1m] 付きも可）か、シートにある id（claude-mythos-5-1 など）を指定してください`, terminal: false, sheet: true });
 				return;
 			case 'usage':
 				clearActiveInput();
@@ -536,6 +538,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				useParaToast.getState().show({ key: 'quick-reply-not-sent', text: '送らずに入力欄に入れました', icon: 'information-circle-outline', tone: 'info' }, 2_000);
 			}
 		},
+		quoteReply: (text: string) => replaceActiveInput(quoteReplyText(inputRef.current, text)),
 		focus: () => nativeInputRef.current?.focus(),
 	}), [replaceActiveInput]);
 

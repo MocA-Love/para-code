@@ -26,6 +26,8 @@ export interface InplaceSelectSegment {
 	readonly text: string;
 	/** Markdown として描くか（自分の発言は false。吹き出しの字で、そのまま描く）。 */
 	readonly markdown: boolean;
+	/** Markdown でない発言の字。既定は吹き出しの字（`bubble`）。過去の会話の自分の発言は本文の字（`body`）。 */
+	readonly plain?: 'bubble' | 'body';
 }
 
 /** 会話の描画に合わせるための値（画面の側で集めて渡す）。 */
@@ -225,7 +227,7 @@ function blocksHtml(blocks: readonly Block[], look: InplaceSelectLook, metrics: 
 
 function segmentHtml(segment: InplaceSelectSegment, look: InplaceSelectLook, metrics: Metrics): string {
 	if (!segment.markdown) {
-		return `<div class="seg"><div class="u">${escapeHtml(segment.text)}</div></div>`;
+		return `<div class="seg"><div class="${segment.plain === 'body' ? 'p' : 'u'}">${escapeHtml(segment.text)}</div></div>`;
 	}
 	return `<div class="seg">${blocksHtml(parseBlocks(segment.text), look, metrics)}</div>`;
 }

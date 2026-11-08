@@ -1179,7 +1179,7 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		});
 	}));
 
-	test('closes an open panel with Esc only after the mod says it is open, and switches the model by /config for /model <alias>', () => withHarness(async harness => {
+	test('closes an open panel with Esc only after the mod says it is open, and switches the model by /config for /model <alias> and by the setting action for a pinned id', () => withHarness(async harness => {
 		harness.hook('Stop');
 		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
 		const features = ['commands.list', 'command.run', 'prompt.dialog'];
@@ -1209,31 +1209,41 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		harness.inbound({ t: 'action/closePanel', requestId: 'close-1', epoch });
 		await answer({ ok: true, dialog: true });
 		await waitFor(() => harness.actions.some(action => action.t === 'action/closePanel'), 'the Esc did not go to the window');
+		// ウィンドウが受け取った（受け取るまでは、キーで打つ次の操作が待たされる）
+		const closeClaim = harness.chat.claimSendMessageAction('mobile-1', 'close-1', harness.token, epoch, 1, 'window-session');
 		// もう閉じていれば打たない
 		harness.inbound({ t: 'action/closePanel', requestId: 'close-2', epoch });
 		await answer({ ok: true, dialog: false });
 		const closedAlready = await resultOf('close-2');
 
-		// `/model <別名>` は確認を出さない `/config model=<別名>` で、別名でなければ送らない
+		// `/model <別名>` は確認を出さない `/config model=<別名>` で（カタログは見ない）、版付きの id は設定の変更として所有ウィンドウへ回し
+		// （カタログとの照合はウィンドウが行う）、形の違う値は送らない
 		harness.inbound({ t: 'action/sendMessage', requestId: 'model-alias', epoch, text: '/model Sonnet' });
 		await answer({ ok: true, dialog: false });
 		await answer({ ok: true });
 		const switched = await resultOf('model-alias');
-		harness.inbound({ t: 'action/sendMessage', requestId: 'model-id', epoch, text: '/model claude-sonnet-5-5' });
-		const notAlias = await resultOf('model-id');
+		harness.inbound({ t: 'action/sendMessage', requestId: 'model-id', epoch, text: '/model claude-mythos-5-1' });
+		await answer({ ok: true, dialog: false });
+		await waitFor(() => harness.actions.some(action => action.t === 'action/claudeSetting'), 'the pinned id did not go to the window');
+		const pinned = harness.actions.filter(action => action.t === 'action/claudeSetting').map(action => ({ requestId: action.requestId, setting: action.setting, value: action.value }));
+		harness.inbound({ t: 'action/sendMessage', requestId: 'model-bad', epoch, text: '/model sonnet please' });
+		const notAlias = await resultOf('model-bad');
 
 		assert.deepStrictEqual({
-			blocked, closedAlready, switched, notAlias, handed,
+			blocked, closeClaim, closedAlready, switched, pinned, notAlias, handed,
 			escapes: harness.actions.filter(action => action.t === 'action/closePanel').map(action => action.requestId),
 			panels: harness.sent.filter(message => message.t === 'delta' && message.panel !== undefined).map(message => message.panel === null ? null : Object.keys(message.panel as object).sort()),
 		}, {
 			blocked: [{ status: 'rejected', code: 'panel-open' }],
+			closeClaim: 'claimed',
 			closedAlready: [{ status: 'accepted', code: 'already-closed' }],
 			switched: [{ status: 'accepted', code: undefined }],
+			pinned: [{ requestId: 'model-id', setting: 'model', value: 'claude-mythos-5-1' }],
 			notAlias: [{ status: 'rejected', code: 'unknown-command' }],
 			handed: [
 				{ kind: 'dialogCheck' }, { kind: 'dialogCheck' }, { kind: 'dialogCheck' },
 				{ kind: 'dialogCheck' }, { kind: 'commandRun', command: 'config', args: 'model=sonnet' },
+				{ kind: 'dialogCheck' },
 			],
 			escapes: ['close-1'],
 			panels: [['since'], null],

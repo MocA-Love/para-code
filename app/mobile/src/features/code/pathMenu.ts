@@ -23,13 +23,28 @@ export type AbsolutePathOption =
 export const ABSOLUTE_PATH_UNSUPPORTED_HINT = 'PC の Para Code を更新すると使えます';
 const ABSOLUTE_PATH_OFFLINE_HINT = 'PC につながると使えます';
 
-/** ファイル・フォルダの行（ファイル一覧のツリー・名前の検索の結果）。 */
-export function buildFileMenu(input: { readonly path: string; readonly dir: boolean; readonly absolute?: AbsolutePathOption }, ops: ContextMenuOps & { readonly open?: () => void }): ContextMenuSpec {
+/**
+ * フォルダの「このフォルダを検索」の状態。PC が `fs.find-dir.v1` を広告していなければ `supported: false`（薄くして
+ * 「PC の Para Code を更新すると使えます」と添える）。
+ */
+export interface FolderSearchOption {
+	readonly supported: boolean;
+	readonly run: () => void;
+}
+
+/** ファイル・フォルダの行（ファイル一覧のツリー・名前の検索の結果）。`searchIn` はフォルダのときだけ使う。 */
+export function buildFileMenu(input: { readonly path: string; readonly dir: boolean; readonly absolute?: AbsolutePathOption; readonly searchIn?: FolderSearchOption }, ops: ContextMenuOps & { readonly open?: () => void }): ContextMenuSpec {
 	const actions: ContextMenuAction[] = [...pathCopyActions(input.path, ops, input.absolute)];
 	if (ops.open !== undefined) {
 		actions.push({ id: 'open', title: input.dir ? '開く' : 'ファイルを開く', icon: 'open', startsSection: true, onSelect: ops.open });
 	}
-	actions.push({ id: 'share', title: '共有…', icon: 'share', startsSection: ops.open === undefined, onSelect: () => ops.share(input.path) });
+	const searchIn = input.dir ? input.searchIn : undefined;
+	if (searchIn !== undefined) {
+		actions.push(searchIn.supported
+			? { id: 'search-dir', title: 'このフォルダを検索', icon: 'search', startsSection: ops.open === undefined, onSelect: searchIn.run }
+			: { id: 'search-dir', title: 'このフォルダを検索', icon: 'search', startsSection: ops.open === undefined, disabled: true, subtitle: ABSOLUTE_PATH_UNSUPPORTED_HINT });
+	}
+	actions.push({ id: 'share', title: '共有…', icon: 'share', startsSection: ops.open === undefined && searchIn === undefined, onSelect: () => ops.share(input.path) });
 	return { title: input.path, actions };
 }
 

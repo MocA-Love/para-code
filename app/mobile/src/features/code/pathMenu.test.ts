@@ -66,6 +66,26 @@ describe('pathMenu', () => {
 		});
 	});
 
+	it('offers a folder search on folders, greyed out when the PC cannot scope the search', () => {
+		const { ops } = recorder();
+		const searched: string[] = [];
+		const menu = buildFileMenu({ path: 'src/app', dir: true, searchIn: { supported: true, run: () => searched.push('src/app') } }, ops);
+		select(menu, 'search-dir');
+		const old = buildFileMenu({ path: 'src/app', dir: true, searchIn: { supported: false, run: () => searched.push('never') } }, ops);
+		const file = buildFileMenu({ path: 'a.ts', dir: false, searchIn: { supported: true, run: () => searched.push('never') } }, ops);
+		expect({
+			menu: (shape(menu) as { actions: unknown[] }).actions.slice(2),
+			old: (shape(old) as { actions: unknown[] }).actions[2],
+			file: (shape(file) as { actions: { id: string }[] }).actions.map(action => action.id),
+			searched,
+		}).toEqual({
+			menu: [{ id: 'search-dir', title: 'このフォルダを検索', section: true }, { id: 'share', title: '共有…' }],
+			old: { id: 'search-dir', title: 'このフォルダを検索', subtitle: 'PC の Para Code を更新すると使えます', disabled: true, section: true },
+			file: ['copy-name', 'copy-relative', 'share'],
+			searched: ['src/app'],
+		});
+	});
+
 	it('offers diff and the right stage direction on source control rows', () => {
 		const { ops } = recorder();
 		const toggled: string[] = [];

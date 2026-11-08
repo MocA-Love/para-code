@@ -80,7 +80,7 @@ import { ParadisMobileFileTiming } from '../common/paradisMobileFileTiming.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import type { ParadisCodexAutoContinuePhase } from '../common/paradisCodexOverloadContinue.js';
 import { ParadisCodexAutoContinueWindow, paradisReadCodexAutoContinueRequest } from './paradisCodexAutoContinueWindow.js';
-import { PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeConfigModelCommand, paradisClaudeModelAlias, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
+import { PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeConfigModelCommand, paradisClaudeModelAlias, paradisClaudeModelNotListedMessage, paradisFindListedClaudeModel, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
 import { paradisDecodeMobileAgentAction } from '../common/paradisMobileAgentAction.js';
 
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
@@ -96,6 +96,7 @@ import { IParadisAgentQuestionKeyCheck, paradisCodexMobileApprovalKeys, paradisC
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisClaudeResumeScreenPrompt, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
+import { paradisIsInSearchDir, paradisSanitizeSearchDir } from '../common/paradisRemoteSearch.js';
 import { paradisResolveMobileUploadHome } from './paradisMobileUploadHome.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
@@ -515,8 +516,9 @@ type FsInbound =
 	| { t: 'pdf'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'docx'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'media'; id: string; ws: string; path: string; responseEncoding?: string }
-	| { t: 'find'; id: string; ws: string; query: string }
-	| { t: 'grep'; id: string; ws: string; query: string }
+	// dir: 検索をこのフォルダ（根からの相対）の中に絞る（fs.find-dir.v1 の PC だけに付けてくる）
+	| { t: 'find'; id: string; ws: string; query: string; dir?: string }
+	| { t: 'grep'; id: string; ws: string; query: string; dir?: string }
 	| { t: 'upload'; id: string; name: string; data: string | Uint8Array; base64Length?: number }
 	| { t: 'usage'; id: string; bypassCache?: boolean }
 	// PARA-PATCH: RTK節約データのモバイル配信（PC版のRTKダッシュボードと同じデータ）
@@ -775,8 +777,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly validateAgentAction: (mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number) => Promise<boolean>,
 		// search対象がどのマシンにあるかは呼び出し元（paradisRemoteSearchHostResolver）が
 		// root の scheme/authority から解決する。
-		private readonly searchFiles: (root: URI, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
-		private readonly searchText: (root: URI, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
+		private readonly searchFiles: (root: URI, query: string, maxResults: number, dir?: string) => Promise<{ files: string[]; truncated: boolean }>,
+		private readonly searchText: (root: URI, query: string, maxResults: number, dir?: string) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
 		setUsageWarmLease: (ownerId: string, active: boolean) => Promise<void>,
 		// PARA-PATCH: RTK節約データのモバイル配信。実体は rtk のバックエンド(接続中は接続先の REH)
@@ -1757,9 +1759,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					if (!outcome.executed) {
 						throw new Error('Claude setting session changed before submission');
 					}
+				} else if (msg.setting === 'model') {
+					// 別名でないモデル（`claude-mythos-5-1` など版付きの id。`/config` は別名しか受け付けない）は、PC が CLI から
+					// 取ったモデルの一覧に載っているものだけを `/model <id>` で送り、確認（Switch model?）に Enter を送るガードで切り替える
+					const claude = (await this.getWorktreeCreateForm({ agentsOnly: true })).agents.find(agent => agent.id === 'claude');
+					const listed = paradisFindListedClaudeModel(msg.value, claude?.models ?? []);
+					if (listed === undefined) {
+						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotListedMessage(msg.value));
+						return;
+					}
+					await this.modelSwitchGuard.execute(instance, `/model ${listed}`, validate);
 				} else {
-					// effort（`/effort <段階>` は会話の途中だと「Change effort level?」を出すことがある）と、別名でないモデルの ID
-					// （`/config` は別名しか受け付けない）は、今までどおり確認に Enter を送るガードで切り替える
+					// effort（`/effort <段階>` は会話の途中だと「Change effort level?」を出すことがある）は、今までどおり確認に Enter を送るガードで切り替える
 					await this.modelSwitchGuard.execute(instance, `/${msg.setting} ${msg.value}`, validate);
 				}
 				if (!(await this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId))) {
@@ -2907,12 +2918,27 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				return;
 			}
 			try {
+				// フォルダで絞るとき（fs.find-dir.v1）: 形を検めたうえで、realpath でスペースの中の既存のフォルダか確かめる
+				// （シンボリックリンクでスペースの外へ出るフォルダは断る）。古い REH が絞らずに返しても、ここで中だけに落とす
+				let dir: string | undefined;
+				if (msg.dir !== undefined) {
+					dir = paradisSanitizeSearchDir(msg.dir);
+					const real = dir !== undefined ? await paradisWithHostDeadline(this.resolveWorkspacePathReal(msg.ws, dir), PARADIS_MOBILE_READ_DEADLINE_MS) : undefined;
+					const isDirectory = real !== undefined && (await paradisWithHostDeadline(this.fileService.stat(real), PARADIS_MOBILE_READ_DEADLINE_MS)).isDirectory;
+					if (dir === undefined || !isDirectory) {
+						reply({ error: `invalid path: ${String(msg.dir)}` });
+						return;
+					}
+				}
+				const scope = dir;
 				if (msg.t === 'find') {
-					const result = await this.searchFiles(root, msg.query, 100);
-					reply({ t: 'find', files: result.files, truncated: result.truncated });
+					const result = await this.searchFiles(root, msg.query, 100, scope);
+					const files = scope !== undefined ? result.files.filter(path => paradisIsInSearchDir(path, scope)) : result.files;
+					reply({ t: 'find', files, truncated: result.truncated });
 				} else {
-					const result = await this.searchText(root, msg.query, 200);
-					reply({ t: 'grep', matches: result.matches, truncated: result.truncated });
+					const result = await this.searchText(root, msg.query, 200, scope);
+					const matches = scope !== undefined ? result.matches.filter(match => paradisIsInSearchDir(match.path, scope)) : result.matches;
+					reply({ t: 'grep', matches, truncated: result.truncated });
 				}
 			} catch (err) {
 				reply({ error: String(err) });

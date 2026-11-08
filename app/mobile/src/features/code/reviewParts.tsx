@@ -82,7 +82,7 @@ export function ReviewSummary({ reviewed, total, synced, position, filter, onFil
 }
 
 /** いま見ているファイル（状態の札・パス・増減・確認済みの印）。 */
-export function ReviewFileSummary({ entry, path, stats, state, stage }: {
+export function ReviewFileSummary({ entry, path, stats, state, stage, menu }: {
 	entry: ScmEntry | undefined;
 	path: string;
 	stats: { readonly add: number; readonly del: number } | undefined;
@@ -90,7 +90,10 @@ export function ReviewFileSummary({ entry, path, stats, state, stage }: {
 	state: ParadisMobileReviewState;
 	/** ファイルごとのステージ（PC が扱えるときだけ。Orca W2-15）。 */
 	stage?: { readonly busy: boolean; readonly disabled: boolean; readonly onPress: () => void };
+	/** 見出しのパスの長押しのメニュー（名前・相対パス・絶対パスのコピー、ファイルを開く、共有。`buildFileMenu`）。 */
+	menu?: ContextMenuSpec;
 }) {
+	const menuSheet = useContextMenuSheet();
 	const parts = [
 		entry?.staged === true ? 'ステージ済み' : undefined,
 		entry?.meta.label,
@@ -99,10 +102,14 @@ export function ReviewFileSummary({ entry, path, stats, state, stage }: {
 	return (
 		<View style={styles.fileSummary}>
 			{entry !== undefined ? <ChangeBadge symbol={entry.meta.symbol} color={entry.meta.color} /> : null}
-			<View style={styles.fileSummaryCol}>
-				<Text style={styles.fileSummaryPath} numberOfLines={2}>{path}</Text>
-				{parts.length > 0 ? <Text style={styles.fileSummarySub} numberOfLines={1}>{parts.join(' · ')}</Text> : null}
-			</View>
+			{menuSheet.sheet}
+			{/* 見出しのパスを長押しでメニュー（ネイティブのメニューが無いビルドではシート）。menu が無くても同じ形で包む */}
+			<ContextMenu menu={menu} style={styles.fileSummaryCol}>
+				<Pressable onLongPress={menuSheet.longPress(menu)} disabled={menu === undefined} accessibilityHint={menu !== undefined ? '長押しでパスのメニューを開きます' : undefined}>
+					<Text style={styles.fileSummaryPath} numberOfLines={2}>{path}</Text>
+					{parts.length > 0 ? <Text style={styles.fileSummarySub} numberOfLines={1}>{parts.join(' · ')}</Text> : null}
+				</Pressable>
+			</ContextMenu>
 			{state === 'reviewed' ? <Text style={styles.reviewedMark}>確認済み</Text> : null}
 			{state === 'changed' ? <Text style={styles.changedMark}>確認後に変更あり</Text> : null}
 			{stage !== undefined && entry !== undefined ? <StageToggle staged={entry.staged} busy={stage.busy} disabled={stage.disabled} onPress={stage.onPress} path={path} /> : null}

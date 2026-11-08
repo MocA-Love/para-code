@@ -10,9 +10,9 @@ import { markdownCopyParts, markdownExternalLinks, markdownPlainText } from '../
  *   「コードを選んでコピー」・「URL を（選んで）コピー」（本文にリンクがあるとき）・「範囲を選んでコピー…」（その場で範囲を選ぶ。`messageContextMenu.tsx`）・「共有…」
  * - 自分の発言: 「テキストをコピー」・「範囲を選んでコピー…」・「共有…」（本文はそのまま写す）
  *
- * 「引用して返信」は入れていない（入力欄が書きかけを読み直す口を持たないため。PR 本文の残課題）。
+ * 「引用して返信」（`ops.quoteReply`）は、入力欄のある会話の画面だけで出す（`chatQuote.ts`）。先頭の区切りの前に置く。
  */
-export function buildMessageMenu(input: { readonly text: string; readonly markdown: boolean }, ops: ContextMenuOps & { selectRange(): void }): ContextMenuSpec {
+export function buildMessageMenu(input: { readonly text: string; readonly markdown: boolean }, ops: ContextMenuOps & { selectRange(): void; readonly quoteReply?: () => void }): ContextMenuSpec {
 	const actions: ContextMenuAction[] = [];
 	if (!input.markdown) {
 		actions.push(copyAction(ops, { id: 'copy', title: 'テキストをコピー', icon: 'copy', text: input.text, toast: 'テキストをコピーしました' }));
@@ -53,6 +53,9 @@ export function buildMessageMenu(input: { readonly text: string; readonly markdo
 				children: links.map((link, index) => copyAction(ops, { id: `link:${index}`, title: link.label === link.url ? link.url : link.label, subtitle: link.url, text: link.url, toast: 'URL をコピーしました' })),
 			});
 		}
+	}
+	if (ops.quoteReply !== undefined) {
+		actions.push({ id: 'quote', title: '引用して返信', icon: 'quote', startsSection: true, onSelect: ops.quoteReply });
 	}
 	actions.push({ id: 'select', title: '範囲を選んでコピー…', icon: 'select', startsSection: true, onSelect: ops.selectRange });
 	actions.push({ id: 'share', title: '共有…', icon: 'share', onSelect: () => ops.share(input.markdown ? markdownPlainText(input.text) : input.text) });
