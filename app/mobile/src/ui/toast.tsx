@@ -72,11 +72,23 @@ const BOTTOM_GAP = 162;
 
 /** お知らせを出す唯一の場所。ルートレイアウト（`app/_layout.tsx`）に1つだけ置く。 */
 export function ToastHost() {
+	usePcSwitchToast();
+	return <ToastLayer />;
+}
+
+/**
+ * RN の `Modal` の中で出したお知らせを見せる層（ファイルのビューアなど）。ルートの {@link ToastHost} は Modal の下に隠れるので、
+ * Modal の木の中にこれを 1 つ置く。中身は同じストアを読むだけで、PC の切り替えの知らせは出さない（ルートが受け持つ）。
+ */
+export function ModalToastHost() {
+	return <ToastLayer />;
+}
+
+function ToastLayer() {
 	const insets = useStableInsets();
 	const { current, hide } = useParaToast(useShallow(s => ({ current: s.current, hide: s.hide })));
 	// ロック中は出さない（画面はロック画面の下に残るので、ここで止める）。
 	const locked = useAppLocked();
-	usePcSwitchToast();
 	const anim = useRef(new Animated.Value(0)).current;
 	// 消える動きの間も中身を描き続けるため、消え切るまで直前の内容を持つ。
 	const [shown, setShown] = useState<ParaToast | undefined>(current);

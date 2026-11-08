@@ -117,6 +117,35 @@ export function buildToolFileMenu(input: { readonly path: string }, ops: Context
 	};
 }
 
+/**
+ * ファイルビューアの Markdown・HTML の中に書かれたパス（`viewerPathLinks.ts`）。スペースの中のファイルへ解決できたら
+ * ファイルの一覧の行と同じ「名前・相対パス・絶対パスをコピー」と「ファイルを開く」。解決できなければ、書いてあるままの
+ * パス（行番号は除く）を写すだけにして、開けない理由を「ファイルを開く」の補足に出す。
+ */
+export function buildViewerPathLinkMenu(
+	input: { readonly written: string; readonly path: string; readonly resolved?: string; readonly absolute?: AbsolutePathOption; readonly failure?: string },
+	ops: ContextMenuOps & { readonly open: () => void },
+): ContextMenuSpec {
+	if (input.resolved !== undefined) {
+		return {
+			title: input.written,
+			actions: [
+				...pathCopyActions(input.resolved, ops, input.absolute),
+				{ id: 'open', title: 'ファイルを開く', icon: 'open', startsSection: true, onSelect: ops.open },
+			],
+		};
+	}
+	const name = baseName(input.path.replace(/\\/g, '/')) || input.path;
+	return {
+		title: input.written,
+		actions: [
+			copyAction(ops, { id: 'copy-name', title: '名前をコピー', subtitle: name, icon: 'name', text: name, toast: '名前をコピーしました' }),
+			copyAction(ops, { id: 'copy-path', title: 'パスをコピー', subtitle: input.path, icon: 'path', text: input.path, toast: 'パスをコピーしました' }),
+			{ id: 'open', title: 'ファイルを開く', icon: 'open', startsSection: true, disabled: true, ...(input.failure !== undefined ? { subtitle: input.failure } : {}) },
+		],
+	};
+}
+
 /** 名前・相対パス（・絶対パス）のコピー（どの行でも先頭に並べる）。 */
 function pathCopyActions(path: string, ops: ContextMenuOps, absolute: AbsolutePathOption | undefined): ContextMenuAction[] {
 	const name = baseName(path) || path;

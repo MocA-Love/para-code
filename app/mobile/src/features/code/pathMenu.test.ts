@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { ContextMenuAction, ContextMenuOps, ContextMenuSpec } from '../../components/contextMenuModel.js';
-import { buildCommitFileMenu, buildCommitMenu, buildDiffLineMenu, buildFileMenu, buildScmFileMenu, buildToolFileMenu } from './pathMenu.js';
+import { buildCommitFileMenu, buildCommitMenu, buildDiffLineMenu, buildFileMenu, buildScmFileMenu, buildToolFileMenu, buildViewerPathLinkMenu } from './pathMenu.js';
 
 /** 記録するだけの道具。 */
 function recorder(canCopy = true): { ops: ContextMenuOps; log: string[] } {
@@ -135,5 +135,34 @@ describe('pathMenu', () => {
 		await Promise.resolve();
 		await Promise.resolve();
 		expect({ asked, log }).toEqual({ asked: 1, log: ['copy later /home/example/src/a.ts / 絶対パスをコピーしました'] });
+	});
+});
+
+describe('buildViewerPathLinkMenu', () => {
+	it('offers the same copies as file rows once the path resolves, and only the written path otherwise', () => {
+		const { ops } = recorder();
+		const open = () => { };
+		expect([
+			shape(buildViewerPathLinkMenu({ written: 'src/app.ts:12', path: 'src/app.ts', resolved: 'src/app.ts', absolute: { kind: 'unsupported' } }, { ...ops, open })),
+			shape(buildViewerPathLinkMenu({ written: '~/notes/todo.md', path: '~/notes/todo.md', failure: 'スペースの外のファイルは開けません' }, { ...ops, open })),
+		]).toEqual([
+			{
+				title: 'src/app.ts:12',
+				actions: [
+					{ id: 'copy-name', title: '名前をコピー', subtitle: 'app.ts' },
+					{ id: 'copy-relative', title: '相対パスをコピー', subtitle: 'src/app.ts' },
+					{ id: 'copy-absolute', title: '絶対パスをコピー', subtitle: 'PC の Para Code を更新すると使えます', disabled: true },
+					{ id: 'open', title: 'ファイルを開く', section: true },
+				],
+			},
+			{
+				title: '~/notes/todo.md',
+				actions: [
+					{ id: 'copy-name', title: '名前をコピー', subtitle: 'todo.md' },
+					{ id: 'copy-path', title: 'パスをコピー', subtitle: '~/notes/todo.md' },
+					{ id: 'open', title: 'ファイルを開く', subtitle: 'スペースの外のファイルは開けません', disabled: true, section: true },
+				],
+			},
+		]);
 	});
 });
