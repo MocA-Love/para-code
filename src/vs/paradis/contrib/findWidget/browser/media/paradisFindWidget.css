@@ -18,8 +18,19 @@
  * Remove this file when upstream redesigns SimpleFindWidget.
  */
 
+/*
+ * The wrapper clips its content (overflow: hidden, which keeps the slide-out animation hidden), so the
+ * card's shadow (--vscode-shadow-lg, 12px blur) was cut off above the card. Make room for the shadow
+ * above the card and move the wrapper up by the same amount, so the card stays where it was.
+ */
 .modern-ui .simple-find-part-wrapper:not(.browser-find-widget-wrapper *) {
-	padding-top: var(--vscode-spacing-size40);
+	padding-top: calc(var(--vscode-spacing-size40) + var(--vscode-spacing-size120));
+	margin-top: calc(-1 * var(--vscode-spacing-size120));
+}
+
+/* Slide the hidden card up by the extra room too, so it still ends outside the clip. */
+.modern-ui .simple-find-part-wrapper:not(.browser-find-widget-wrapper *) > .simple-find-part:not(.visible-transition) {
+	top: calc(-45px - var(--vscode-spacing-size120));
 }
 
 .modern-ui .simple-find-part-wrapper:not(.browser-find-widget-wrapper *) > .simple-find-part {
