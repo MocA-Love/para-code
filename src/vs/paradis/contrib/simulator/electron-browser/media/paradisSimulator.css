@@ -1,0 +1,108 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+.paradis-simulator-editor {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	color: var(--vscode-foreground);
+	background-color: var(--vscode-editor-background);
+}
+
+.paradis-simulator-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 6px 12px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	flex: 0 0 auto;
+}
+
+.paradis-simulator-titles {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.paradis-simulator-title {
+	font-weight: var(--vscode-fontWeight-semiBold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-simulator-subtitle {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-simulator-actions {
+	display: flex;
+	gap: 4px;
+	flex: 0 0 auto;
+}
+
+.paradis-simulator-actions .monaco-button {
+	width: auto;
+	padding: 2px 8px;
+}
+
+.paradis-simulator-notice,
+.paradis-simulator-device-hub {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 8px 12px 0;
+	padding: 6px 10px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: var(--vscode-cornerRadius-small);
+	background-color: var(--vscode-editorWidget-background);
+	flex: 0 0 auto;
+}
+
+.paradis-simulator-device-hub {
+	border-color: var(--vscode-inputValidation-warningBorder);
+	background-color: var(--vscode-inputValidation-warningBackground);
+}
+
+.paradis-simulator-notice .monaco-button {
+	width: auto;
+	padding: 2px 10px;
+}
+
+.paradis-simulator-stage {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.paradis-simulator-screen {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	outline: none;
+}
+
+.paradis-simulator-screen:focus-visible .paradis-simulator-frame {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+.paradis-simulator-frame {
+	display: block;
+	box-shadow: 0 0 8px var(--vscode-widget-shadow);
+	user-select: none;
+	touch-action: none;
+}
+
+.paradis-simulator-frame:not([src]) {
+	visibility: hidden;
+}
