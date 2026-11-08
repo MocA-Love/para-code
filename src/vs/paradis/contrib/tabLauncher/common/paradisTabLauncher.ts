@@ -9,6 +9,8 @@
 // タブの「＋」の横の ⌄ から開くランチャー（Q570、Orca の新しいタブのメニュー相当）の、画面を持たない部分。
 // どのエージェントを並べるか、前回の選択の読み直し、検索欄の文字からの絞り込みを純関数で持つ。
 
+import { IParadisAndroidDeviceSummary } from '../../simulator/common/paradisAndroid.js';
+import { IParadisSimulatorDevice } from '../../simulator/common/paradisSimulator.js';
 import { IParadisAgentCommandTemplate, IParadisAgentLaunchOptions } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 /**
@@ -197,4 +199,47 @@ export function paradisMatchLauncherAgents(templates: readonly IParadisAgentComm
 		}
 	}
 	return matches.slice(0, limit);
+}
+
+/** 「シミュレータを開く ›」のサブメニューに並べる 1 台。 */
+export interface IParadisTabLauncherDevice {
+	readonly kind: 'ios' | 'android';
+	/** iOS は udid、Android は serial（そのまま「シミュレータを開く」のコマンドへ渡す）。 */
+	readonly id: string;
+	readonly name: string;
+	readonly runtime: string;
+}
+
+/**
+ * 「シミュレータを開く ›」に並べる端末。Xcode の端末は数十台あるのが普通なので、すぐ映せるもの
+ * （起動している iOS のシミュレータと、動いている Android）だけにする。止まっている端末は「すべての端末…」の一覧から開く。
+ * iOS のシミュレータは macOS だけ（`iosSupported` が false なら iOS を出さない。Android は全 OS）。
+ */
+export function paradisTabLauncherDevices(ios: readonly IParadisSimulatorDevice[], android: readonly IParadisAndroidDeviceSummary[], iosSupported: boolean): readonly IParadisTabLauncherDevice[] {
+	return [
+		...(iosSupported ? ios.filter(device => device.state === 'Booted').map(device => ({ kind: 'ios' as const, id: device.udid, name: device.name, runtime: device.runtime })) : []),
+		...android.filter(device => device.state === 'device').map(device => ({ kind: 'android' as const, id: device.serial, name: device.name, runtime: device.runtime || 'Android' })),
+	];
+}
+
+/** 「シミュレータを開く ›」の端末の一覧を覚えておく時間。 */
+export const PARADIS_TAB_LAUNCHER_DEVICE_CACHE_MS = 30_000;
+
+/**
+ * 「シミュレータを開く ›」の端末の一覧の短いキャッシュ。一覧は › を開いたときに初めて取る（⌄ を開くたびに
+ * `xcrun simctl` と `adb devices` を起こさない。adb は Android を使わない人の手元でもサーバーを起こすため）。
+ * 取っている最中に開き直したときは、同じ取り出しを待つ。
+ */
+export class ParadisTabLauncherDeviceCache<T> {
+
+	private _entry: { readonly at: number; readonly value: Promise<T> } | undefined;
+
+	constructor(private readonly _ttlMs = PARADIS_TAB_LAUNCHER_DEVICE_CACHE_MS) { }
+
+	get(load: () => Promise<T>, now: number): Promise<T> {
+		if (!this._entry || now - this._entry.at >= this._ttlMs) {
+			this._entry = { at: now, value: load() };
+		}
+		return this._entry.value;
+	}
 }

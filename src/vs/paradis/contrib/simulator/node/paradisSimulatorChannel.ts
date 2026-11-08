@@ -13,13 +13,15 @@
 // 映像は `frames` のイベントで 1 枚ずつ送る。送るのは「1 枚まで先行、追いつかなければ最新の 1 枚だけ」:
 // 受け取った側が `ackFrame` を呼ぶまで次は送らず、その間に届いた分は最新の 1 枚だけを残す。上限は 30fps。
 // 購読する窓が居なくなったら映像の流れを止める（端末のセッションはホストに残る）。
+// 流れが終わったら（ホストが起きない・serve-sim が断った・切れた）、理由を `ended` のイベントで購読している窓へ送る
+// （ログにだけ残すと、ペインは黒いまま理由が分からない）。窓は購読を外して、様子を読み直してから購読し直す。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, ParadisSimulatorStreamEvent, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold, paradisSimulatorInputFrame } from '../common/paradisSimulatorFrames.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
@@ -34,8 +36,8 @@ const MIN_FRAME_INTERVAL_MS = 1000 / 30;
 /** 1 台ぶんの映像の中継。最初の購読で流れを開き、最後の購読が外れたら閉じる。 */
 class ParadisSimulatorFrameRelay extends Disposable {
 
-	private readonly _onFrame: Emitter<IParadisSimulatorFrameEvent>;
-	readonly onFrame: Event<IParadisSimulatorFrameEvent>;
+	private readonly _onFrame: Emitter<ParadisSimulatorStreamEvent>;
+	readonly onFrame: Event<ParadisSimulatorStreamEvent>;
 
 	private _stream: IDisposable | undefined;
 	private _inFlight = false;
@@ -49,7 +51,7 @@ class ParadisSimulatorFrameRelay extends Disposable {
 		private readonly _logService: ILogService,
 	) {
 		super();
-		this._onFrame = this._register(new Emitter<IParadisSimulatorFrameEvent>({
+		this._onFrame = this._register(new Emitter<ParadisSimulatorStreamEvent>({
 			onWillAddFirstListener: () => this._open(),
 			onDidRemoveLastListener: () => this._close(),
 		}));
@@ -67,10 +69,12 @@ class ParadisSimulatorFrameRelay extends Disposable {
 			this._pending = jpeg;
 			this._flush();
 		}, error => {
-			this._stream = undefined;
 			if (error) {
 				this._logService.warn(`[paradis-simulator] video stream ended: ${error.message}`);
 			}
+			// 待っている 1 枚と返事の待ちを捨て、次の購読で開き直せるようにしてから知らせる
+			this._close();
+			this._onFrame.fire({ kind: 'ended', udid: this._udid, ...(error ? { reason: error.message } : {}) });
 		});
 	}
 
@@ -101,7 +105,7 @@ class ParadisSimulatorFrameRelay extends Disposable {
 		this._pending = undefined;
 		this._inFlight = true;
 		this._lastSentAt = Date.now();
-		this._onFrame.fire({ udid: this._udid, jpeg: VSBuffer.wrap(jpeg) });
+		this._onFrame.fire({ kind: 'frame', udid: this._udid, jpeg: VSBuffer.wrap(jpeg) });
 	}
 }
 
@@ -314,7 +318,7 @@ export class ParadisSimulatorService extends Disposable {
 	}
 
 	/** 使えないときは何も届かないイベントを返す（`listen` の中で投げると shared process の未処理の例外になるため）。 */
-	onFrames(udid: string): Event<IParadisSimulatorFrameEvent> {
+	onFrames(udid: string): Event<ParadisSimulatorStreamEvent> {
 		try {
 			this.assertAvailable();
 		} catch (error) {
