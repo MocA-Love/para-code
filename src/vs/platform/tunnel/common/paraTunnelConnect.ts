@@ -47,7 +47,8 @@ export interface IParaTunnelProtocol {
  * The trade-off is deliberate: a request made mid-reconnect that used to succeed
  * after a long wait is now reset instead. That is the behaviour we want here —
  * the alternative is the connection that never answers and never errors, which is
- * what this exists to remove. *
+ * what this exists to remove.
+ *
  * {@link paraConnectTunnelWithRetry} softens this by trying once more after a timeout,
  * so a request is reset only when two attempts in a row run out of time.
  */
