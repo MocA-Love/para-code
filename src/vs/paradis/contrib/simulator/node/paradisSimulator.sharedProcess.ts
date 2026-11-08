@@ -23,7 +23,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { registerParadisMobileCanvas } from '../../mobileCanvas/node/paradisMobileCanvasChannel.js';
 import { ParadisMobileCanvasService } from '../../mobileCanvas/node/paradisMobileCanvasService.js';
-import { PARADIS_SIMULATOR_CHANNEL, PARADIS_SIMULATOR_ENABLED_SETTING } from '../common/paradisSimulator.js';
+import { PARADIS_SIMULATOR_CHANNEL, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_ENABLED_SETTING } from '../common/paradisSimulator.js';
 import { ParadisMobileHostRouter } from './paradisMobileHostRouter.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { ParadisServeSimDeviceHost } from './paradisServeSimDeviceHost.js';
@@ -63,11 +63,46 @@ export function registerParadisSimulator(
 	const fold = new ParadisSimulatorFoldToolProvider(ledger, backend, deviceHost, deviceId => deviceOps.forgetScreenSize(deviceId), useServeSim, logService);
 	store.add(paradisRegisterMcpToolProvider(fold));
 
-	// 設定をオフにしたら、動いているホストを止める
+	// 設定を切り替えたら: オフならホストを止める。どちらでも、新しい一覧に無い端末の割り当てを外す
+	// （iOS を受け持つ仕組みが替わるので、もう操作できない端末をペインに握らせたままにしない）
 	store.add(configurationService.onDidChangeConfiguration(event => {
-		if (event.affectsConfiguration(PARADIS_SIMULATOR_ENABLED_SETTING) && !isEnabled()) {
+		if (!event.affectsConfiguration(PARADIS_SIMULATOR_ENABLED_SETTING)) {
+			return;
+		}
+		if (!isEnabled()) {
 			void service.stopHost();
 		}
+		void paradisDropUnreachableAttachments(ledger, logService);
 	}));
 	return { ledger, dispose: () => store.dispose() };
+}
+
+/**
+ * シミュレータの設定を切り替えたとき、iOS のシミュレータ（`ios:core-simulator:`）の割り当てのうち、今の一覧に無いものを
+ * 外す。一覧を取れなければ iOS のシミュレータの割り当てをすべて外す（受け持つ仕組みが替わり、操作できるかが確かめ
+ * られないため）。Android など iOS のシミュレータでない割り当ては、受け持つ仕組みが替わらないので触らない
+ * （振り分けは Mobile Canvas が失敗しても iOS だけの一覧を返すので、一覧に無いことは消えた証拠にならない）。
+ * 外したペインの数を返す。
+ */
+export async function paradisDropUnreachableAttachments(ledger: Pick<ParadisMobileCanvasService, 'listAttachments' | 'listDevices' | 'detach'>, logService: ILogService): Promise<number> {
+	let known: ReadonlySet<string> | undefined;
+	try {
+		known = new Set((await ledger.listDevices()).map(device => device.id));
+	} catch (error) {
+		logService.warn('[paradis-simulator] could not list devices after the simulator setting changed', error);
+	}
+	let dropped = 0;
+	for (const attachment of ledger.listAttachments()) {
+		if (!attachment.deviceId.startsWith(PARADIS_SIMULATOR_DEVICE_ID_PREFIX)) {
+			continue;
+		}
+		if (!known || !known.has(attachment.deviceId)) {
+			ledger.detach(attachment.paneToken);
+			dropped++;
+		}
+	}
+	if (dropped) {
+		logService.info(`[paradis-simulator] detached ${dropped} pane(s) from devices that are no longer listed after the simulator setting changed`);
+	}
+	return dropped;
 }

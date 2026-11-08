@@ -17,7 +17,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { EditorInputCapabilities, IEditorSerializer, IUntypedEditorInput } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
+import { IParadisMobileAttachment } from '../../mobileCanvas/common/paradisMobileCanvas.js';
+import { PARADIS_SIMULATOR_DEVICE_ID_PREFIX, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
 
 export const PARADIS_SIMULATOR_EDITOR_ID = 'paradis.editor.simulator';
 export const PARADIS_SIMULATOR_INPUT_TYPE_ID = 'paradis.input.simulator';
@@ -39,6 +40,21 @@ export class ParadisSimulatorEditorInput extends EditorInput {
 
 	get deviceName(): string {
 		return this._deviceName;
+	}
+
+	private _assignedTerminals: readonly string[] = [];
+
+	/** その端末を割り当てたターミナルの名前（タブの名前に添える。paradisSimulatorTabLabels.contribution.ts）。 */
+	get assignedTerminals(): readonly string[] {
+		return this._assignedTerminals;
+	}
+
+	setAssignedTerminals(names: readonly string[]): void {
+		if (names.length === this._assignedTerminals.length && names.every((name, index) => name === this._assignedTerminals[index])) {
+			return;
+		}
+		this._assignedTerminals = [...names];
+		this._onDidChangeLabel.fire();
 	}
 
 	private _bootRequested = false;
@@ -79,7 +95,13 @@ export class ParadisSimulatorEditorInput extends EditorInput {
 	}
 
 	override getName(): string {
-		return this._deviceName || localize('paradis.simulator.inputName', "シミュレータ");
+		return paradisSimulatorTabName(this._deviceName || localize('paradis.simulator.inputName', "シミュレータ"), this._assignedTerminals);
+	}
+
+	override getTitle(): string {
+		return this._assignedTerminals.length
+			? localize('paradis.simulator.inputTitleAssigned', "{0}（{1} が操作できます）", this._deviceName, this._assignedTerminals.join('、'))
+			: this.getName();
 	}
 
 	override getIcon(): ThemeIcon {
@@ -92,6 +114,17 @@ export class ParadisSimulatorEditorInput extends EditorInput {
 		}
 		return other instanceof ParadisSimulatorEditorInput && other.udid === this.udid;
 	}
+}
+
+/** その端末を割り当てたペインのターミナルの名前（台帳の順。名前が分からないペインは落とす）。 */
+export function paradisSimulatorAssignedTerminals(udid: string, attachments: readonly IParadisMobileAttachment[], terminalName: (paneToken: string) => string | undefined): string[] {
+	const deviceId = `${PARADIS_SIMULATOR_DEVICE_ID_PREFIX}${udid}`;
+	return attachments.filter(attachment => attachment.deviceId === deviceId).map(attachment => terminalName(attachment.paneToken)).filter((name): name is string => !!name);
+}
+
+/** タブの名前: 端末の名前と、割り当てたターミナルの名前（無ければ端末の名前だけ）。 */
+export function paradisSimulatorTabName(deviceName: string, terminals: readonly string[]): string {
+	return terminals.length ? localize('paradis.simulator.tabName', "{0} · {1}", deviceName, terminals.join('、')) : deviceName;
 }
 
 interface ISerializedSimulatorInput {

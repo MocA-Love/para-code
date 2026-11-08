@@ -43,6 +43,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
+import { paradisSimulatorScreenOpener } from '../../simulator/electron-browser/paradisSimulatorScreenOpener.js';
 import { ParadisBindingDialog } from './paradisBindingDialog.js';
 import { PARADIS_ACTIVE_PAGE_SHARED, ParadisBrowserShareStateFeature } from './paradisBrowserShareState.js';
 import { closeAllBrowserSharePopovers, ParadisBrowserShareActionViewItem } from './paradisBrowserShareButton.js';
@@ -117,6 +118,8 @@ async function openBindingDialog(
 	const instantiationService = accessor.get(IInstantiationService);
 	const logService = accessor.get(ILogService);
 
+	// accessor は await の前にしか使えない
+	const deviceScreenOpener = paradisSimulatorScreenOpener(accessor);
 	const result = await resolvePage(accessor);
 	if (!result.page) {
 		reportDialogPageMiss(logService, entry, result.miss);
@@ -128,7 +131,7 @@ async function openBindingDialog(
 	openActiveDialog(() => instantiationService.createInstance(
 		ParadisBindingDialog,
 		model,
-		instanceId !== undefined ? { selectInstanceId: instanceId } : undefined,
+		{ selectInstanceId: instanceId, deviceScreenOpener },
 	));
 }
 
@@ -144,9 +147,10 @@ function openPaneBindingDialog(accessor: ServicesAccessor, instanceId?: number):
  * モバイル端末のアタッチだけを目的にダイアログを開く。ブラウザページを1枚も開いていなくても
  * 端末タブへ入れるよう、ページを解決せずに開く点が openBindingDialog との違い。
  */
-function openMobileDeviceDialog(accessor: ServicesAccessor): void {
+function openMobileDeviceDialog(accessor: ServicesAccessor, focusDeviceId?: string): void {
 	const instantiationService = accessor.get(IInstantiationService);
-	openActiveDialog(() => instantiationService.createInstance(ParadisBindingDialog, undefined, undefined));
+	const deviceScreenOpener = paradisSimulatorScreenOpener(accessor);
+	openActiveDialog(() => instantiationService.createInstance(ParadisBindingDialog, undefined, { focusDeviceId, deviceScreenOpener }));
 }
 
 // --- コマンドパレット ---
@@ -163,8 +167,9 @@ class ParadisOpenMobileDeviceDialogAction extends Action2 {
 		});
 	}
 
-	run(accessor: ServicesAccessor): void {
-		openMobileDeviceDialog(accessor);
+	// 引数に端末の id を渡すと、その端末の渡し先ペインの一覧を開いた状態で出す（シミュレータのタブの右クリック「ターミナルに割り当てる…」）
+	run(accessor: ServicesAccessor, deviceId?: unknown): void {
+		openMobileDeviceDialog(accessor, typeof deviceId === 'string' && deviceId ? deviceId : undefined);
 	}
 }
 
