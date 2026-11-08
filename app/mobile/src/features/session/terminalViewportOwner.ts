@@ -8,21 +8,33 @@
 export interface TerminalViewportOwnership<T> {
 	/** このペインの申告を出す（持ち主になる）。 */
 	claim(owner: object, viewport: T | undefined): void;
-	/** このペインが持ち主なら申告を取り下げる。 */
+	/** このペインの申告を外す。今の持ち主だったら、残っている中で最後に申告したペインの申告に戻す（無ければ取り下げる）。 */
 	release(owner: object): void;
 }
 
 export function createTerminalViewportOwnership<T>(apply: (viewport: T | undefined) => void): TerminalViewportOwnership<T> {
-	let current: object | undefined;
+	// 申告を出したペインを出した順に持つ。最後の 1 つの申告が今 PC へ出ている申告
+	const owners: { readonly owner: object; readonly viewport: T | undefined }[] = [];
+	const indexOf = (owner: object) => owners.findIndex(entry => entry.owner === owner);
 	return {
 		claim(owner, viewport) {
-			current = owner;
+			const index = indexOf(owner);
+			if (index !== -1) {
+				owners.splice(index, 1);
+			}
+			owners.push({ owner, viewport });
 			apply(viewport);
 		},
 		release(owner) {
-			if (current === owner) {
-				current = undefined;
-				apply(undefined);
+			const index = indexOf(owner);
+			if (index === -1) {
+				return;
+			}
+			const wasCurrent = index === owners.length - 1;
+			owners.splice(index, 1);
+			if (wasCurrent) {
+				// まだ出ている別のペインがあれば、その申告に戻す
+				apply(owners.at(-1)?.viewport);
 			}
 		},
 	};
