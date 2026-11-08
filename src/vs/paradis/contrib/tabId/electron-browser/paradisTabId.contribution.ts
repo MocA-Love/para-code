@@ -18,7 +18,6 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { MultipleEditorsSelectedInGroupContext, ResourceContextKey } from '../../../../workbench/common/contextkeys.js';
 import { EditorResourceAccessor, IEditorCommandsContext, isEditorCommandsContext, SideBySideEditor } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
@@ -62,14 +61,13 @@ registerAction2(class ParadisCopyTabIdAction extends Action2 {
 	override async run(accessor: ServicesAccessor, _resource?: unknown, context?: unknown): Promise<void> {
 		const editorGroupsService = accessor.get(IEditorGroupsService);
 		const paneTokenService = accessor.get(IParadisPaneTokenService);
-		const workspaceContextService = accessor.get(IWorkspaceContextService);
 		const clipboardService = accessor.get(IClipboardService);
 		const notificationService = accessor.get(INotificationService);
 
 		const commandsContext: IEditorCommandsContext | undefined = isEditorCommandsContext(context) ? context : undefined;
 		const group = commandsContext ? editorGroupsService.getGroup(commandsContext.groupId) : editorGroupsService.activeGroup;
 		const editor = group && commandsContext?.editorIndex !== undefined ? group.getEditorByIndex(commandsContext.editorIndex) : group?.activeEditor ?? undefined;
-		const id = editor ? tabIdOf(editor, paneTokenService, workspaceContextService) : undefined;
+		const id = editor ? tabIdOf(editor, paneTokenService) : undefined;
 		const line = id ? paradisFormatTabId(id) : undefined;
 		if (!line) {
 			notificationService.info(localize('paradis.tabId.unavailable', "このタブにはエージェントが指せる ID がありません。"));
@@ -81,7 +79,7 @@ registerAction2(class ParadisCopyTabIdAction extends Action2 {
 });
 
 /** 右クリックしたタブの ID。エディタの型で種類を決める。 */
-function tabIdOf(editor: EditorInput, paneTokenService: IParadisPaneTokenService, workspaceContextService: IWorkspaceContextService): IParadisTabId | undefined {
+function tabIdOf(editor: EditorInput, paneTokenService: IParadisPaneTokenService): IParadisTabId | undefined {
 	if (editor instanceof TerminalEditorInput) {
 		const instanceId = editor.terminalInstance?.instanceId;
 		const token = instanceId !== undefined ? paneTokenService.getTokenForInstance(instanceId) : undefined;
@@ -105,6 +103,6 @@ function tabIdOf(editor: EditorInput, paneTokenService: IParadisPaneTokenService
 	if (!resource) {
 		return undefined;
 	}
-	const path = paradisTabIdFilePath(resource, workspaceContextService.getWorkspaceFolder(resource)?.uri);
+	const path = paradisTabIdFilePath(resource);
 	return path !== undefined ? { kind: 'file', value: path } : undefined;
 }
