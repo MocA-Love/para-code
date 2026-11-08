@@ -69,11 +69,13 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
+	/** このエージェントのスペース（そのスペースを開いている PC の画面から Claude のモデルの一覧を取る）。 */
+	ws?: string;
 	readOnly?: boolean;
 	onClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<AgentMessageSendResult>;
 	onRequestCodexCatalog: () => void;
 	onUpdateCodexSettings: (model: string, effort: string) => void;
-}>(function ModelPill({ agent, model, effort, modelControl, readOnly = false, onClaudeSetting, onRequestCodexCatalog, onUpdateCodexSettings }, ref) {
+}>(function ModelPill({ agent, model, effort, modelControl, ws, readOnly = false, onClaudeSetting, onRequestCodexCatalog, onUpdateCodexSettings }, ref) {
 	const theme = useThemeColors();
 	const [open, setOpen] = useState(false);
 	const [page, setPage] = useState<DrawerPage>('pick');
@@ -120,7 +122,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 		}
 	}, [codexUpdatePending, modelControl?.errorMessage, modelControl?.status, open]);
 
-	const claudeCatalog = useClaudeModelOptions(agent);
+	const claudeCatalog = useClaudeModelOptions(agent, ws);
 	const codexModels = modelControl?.models ?? [];
 	const options: readonly ModelOption[] = agent === 'codex'
 		? codexModels.map(option => ({

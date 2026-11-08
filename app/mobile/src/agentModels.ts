@@ -77,6 +77,14 @@ export function claudeModelDisplayName(model: string): string | undefined {
 }
 
 /**
+ * PC から取った Claude のモデル一覧を覚えておく鍵。一覧は PC の画面ごとに違う（SSH の画面は接続先の CLI から取る）ので、
+ * スペースが分かるときは PC とスペースの組で覚える。同じ PC の手元のスペースと SSH のスペースで一覧を混ぜないため。
+ */
+export function claudeModelCatalogKey(pcId: string, ws: string | undefined): string {
+	return ws !== undefined && ws.length > 0 ? `${pcId}\n${ws}` : pcId;
+}
+
+/**
  * PCから届いたエージェント定義から、Claudeのモデル候補を作る。使えなければ undefined（固定表を使う）。
  *
  * 使うのは、PCがインストール済みの Claude Code から一覧を取れたとき（候補に正式ID `resolvedModel` が
