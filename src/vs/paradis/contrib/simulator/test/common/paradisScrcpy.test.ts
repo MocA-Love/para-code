@@ -10,7 +10,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisScrcpyTouchAction, ParadisScrcpyVideoParser, paradisAndroidInputMessages, paradisH264CodecString, paradisScrcpyKeycode, paradisScrcpyResetVideo, paradisScrcpyScid, paradisScrcpyServerArgs, paradisScrcpySetClipboard, paradisScrcpyText, paradisScrcpyTouch } from '../../common/paradisScrcpy.js';
+import { ParadisScrcpyDeviceMessageParser, ParadisScrcpyTouchAction, ParadisScrcpyVideoParser, paradisScrcpyGetClipboard, paradisAndroidInputMessages, paradisH264CodecString, paradisScrcpyKeycode, paradisScrcpyResetVideo, paradisScrcpyScid, paradisScrcpyServerArgs, paradisScrcpySetClipboard, paradisScrcpyText, paradisScrcpyTouch } from '../../common/paradisScrcpy.js';
 
 function hex(bytes: Uint8Array): string {
 	return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
@@ -121,5 +121,19 @@ suite('Paradis simulator: scrcpy protocol', () => {
 		});
 		assert.throws(() => paradisAndroidInputMessages({ kind: 'shell', command: 'ls' }, size, keycode));
 		assert.throws(() => paradisAndroidInputMessages({ kind: 'button', button: 'nope' }, size, keycode));
+	});
+
+	// 端末から操作のソケットに届く知らせ（scrcpy の app/src/device_msg.c と同じ並び）。1 バイトずつでも読めること
+	test('reads clipboard and acknowledgement messages from the control socket', () => {
+		const text = new TextEncoder().encode('こんにちは');
+		const stream = concat(new Uint8Array([0]), u32(text.length), text, new Uint8Array([1, 0, 0, 0, 0, 0, 0, 0, 7]));
+		const parser = new ParadisScrcpyDeviceMessageParser();
+		const messages = [...stream].flatMap(byte => parser.push(new Uint8Array([byte])));
+		assert.deepStrictEqual({ messages, get: hex(paradisScrcpyGetClipboard()), set: hex(paradisScrcpySetClipboard('a', false, 5)) }, {
+			messages: [{ kind: 'clipboard', text: 'こんにちは' }, { kind: 'ackClipboard', sequence: 7n }],
+			get: '0800',
+			set: '09' + '0000000000000005' + '00' + '00000001' + '61',
+		});
+		assert.throws(() => new ParadisScrcpyDeviceMessageParser().push(new Uint8Array([9])));
 	});
 });

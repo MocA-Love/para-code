@@ -131,6 +131,7 @@ const enum ParadisScrcpyControlType {
 	InjectText = 1,
 	InjectTouch = 2,
 	BackOrScreenOn = 4,
+	GetClipboard = 8,
 	SetClipboard = 9,
 	ResetVideo = 17,
 }
@@ -207,6 +208,82 @@ export function paradisScrcpySetClipboard(text: string, paste: boolean, sequence
 	bytes.set(utf8, 14);
 	return bytes;
 }
+
+/** 端末のクリップボードの中身を求める（返事は操作のソケットに `clipboard` で届く。空なら返事は来ない）。 */
+export function paradisScrcpyGetClipboard(): Uint8Array {
+	// copy_key は NONE（コピーやカットのキーは押さない）
+	return new Uint8Array([ParadisScrcpyControlType.GetClipboard, 0]);
+}
+
+/** 端末から操作のソケットに届くもの。 */
+export type ParadisScrcpyDeviceMessage =
+	| { readonly kind: 'clipboard'; readonly text: string }
+	| { readonly kind: 'ackClipboard'; readonly sequence: bigint }
+	| { readonly kind: 'uhidOutput' };
+
+/** 1 つの知らせの上限（クリップボードの上限と同じ 256KiB）。 */
+const MAX_DEVICE_MESSAGE_BYTES = 1 << 18;
+
+/** 操作のソケットに端末から届く流れを読む（scrcpy の app/src/device_msg.c と同じ並び）。形が違えば投げる。 */
+export class ParadisScrcpyDeviceMessageParser {
+
+	private _buffer = new Uint8Array(0);
+
+	push(chunk: Uint8Array): ParadisScrcpyDeviceMessage[] {
+		const merged = new Uint8Array(this._buffer.length + chunk.length);
+		merged.set(this._buffer, 0);
+		merged.set(chunk, this._buffer.length);
+		this._buffer = merged;
+		const messages: ParadisScrcpyDeviceMessage[] = [];
+		for (; ;) {
+			if (this._buffer.length < 1) {
+				return messages;
+			}
+			const view = new DataView(this._buffer.buffer, this._buffer.byteOffset, this._buffer.byteLength);
+			switch (this._buffer[0]) {
+				case 0: {
+					if (this._buffer.length < 5) {
+						return messages;
+					}
+					const length = view.getUint32(1);
+					if (length > MAX_DEVICE_MESSAGE_BYTES) {
+						throw new Error(`scrcpy sent a clipboard of ${length} bytes`);
+					}
+					if (this._buffer.length < 5 + length) {
+						return messages;
+					}
+					messages.push({ kind: 'clipboard', text: new TextDecoder().decode(this._buffer.subarray(5, 5 + length)) });
+					this._buffer = this._buffer.slice(5 + length);
+					break;
+				}
+				case 1:
+					if (this._buffer.length < 9) {
+						return messages;
+					}
+					messages.push({ kind: 'ackClipboard', sequence: view.getBigUint64(1) });
+					this._buffer = this._buffer.slice(9);
+					break;
+				case 2: {
+					if (this._buffer.length < 5) {
+						return messages;
+					}
+					const size = view.getUint16(3);
+					if (this._buffer.length < 5 + size) {
+						return messages;
+					}
+					messages.push({ kind: 'uhidOutput' });
+					this._buffer = this._buffer.slice(5 + size);
+					break;
+				}
+				default:
+					throw new Error(`scrcpy sent an unknown device message ${this._buffer[0]}`);
+			}
+		}
+	}
+}
+
+/** エージェントの指の pointer の id の最初（人の指は 0。エージェントの指 n は この値 + n にして重ねない）。 */
+export const PARADIS_SCRCPY_AGENT_POINTER_BASE = 100;
 
 /** 次の key frame を求める（映像の復号が崩れたとき）。 */
 export function paradisScrcpyResetVideo(): Uint8Array {

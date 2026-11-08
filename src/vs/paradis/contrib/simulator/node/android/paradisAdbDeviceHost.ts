@@ -23,7 +23,8 @@ import { dirname, join } from '../../../../../base/common/path.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { paradisAdbCandidates } from '../../../mobileCanvas/node/paradisMobileDeviceCommands.js';
 import { IParadisSimulatorAxSnapshot, paradisFindSimulatorAx, paradisPickSimulatorAxTarget } from '../../common/paradisSimulatorAx.js';
-import { ParadisScrcpyTouchAction, paradisScrcpySetClipboard, paradisScrcpyTouch } from '../../common/paradisScrcpy.js';
+import { PARADIS_SCRCPY_AGENT_POINTER_BASE, ParadisScrcpyTouchAction, paradisScrcpyTouch } from '../../common/paradisScrcpy.js';
+import { ParadisScrcpySession } from './paradisScrcpySession.js';
 import { ParadisScrcpySessions } from './paradisScrcpySessions.js';
 import { IParadisAdbDevice, PARADIS_ANDROID_AVD_PREFIX, PARADIS_ANDROID_SERIAL_PREFIX, paradisAdbInputText, paradisAndroidAvdOf, paradisAndroidButtonNames, paradisAndroidKeycode, paradisAndroidOrientationName, paradisAndroidRotation, paradisAndroidSerialOf, paradisFilterLogcat, paradisNormalizeUiautomator, paradisParseAdbDevices, paradisParseAvdList, paradisParseSurfaceOrientation, paradisParseWmDensity, paradisParseWmSize } from '../../common/paradisAndroid.js';
 
@@ -72,6 +73,7 @@ export interface IParadisAdbDeviceHostOptions {
 	readonly platform?: NodeJS.Platform;
 	readonly home?: string;
 	readonly now?: () => number;
+	readonly sleep?: (ms: number) => Promise<void>;
 	/** scrcpy の通話（2 本指・日本語の入力）。無ければ断る。 */
 	readonly scrcpy?: Pick<ParadisScrcpySessions, 'use'>;
 }
@@ -87,6 +89,7 @@ export class ParadisAdbDeviceHost {
 	private readonly _exec: ParadisAdbExec;
 	private readonly _launch: ParadisAdbLaunch;
 	private readonly _now: () => number;
+	private readonly _sleep: (ms: number) => Promise<void>;
 	/** 起動を頼んだ AVD と、その時刻（起動の途中にもう一度頼まれても、2 つ目を立てないため）。 */
 	private readonly _booting = new Map<string, number>();
 	/** ピンチの間に覚えておく画面の大きさ。 */
@@ -96,6 +99,7 @@ export class ParadisAdbDeviceHost {
 		this._exec = _options.exec ?? realExec;
 		this._launch = _options.launch ?? realLaunch;
 		this._now = _options.now ?? Date.now;
+		this._sleep = _options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
 	}
 
 	/** この端末の id をこちらで受け持つか。 */
@@ -272,8 +276,7 @@ export class ParadisAdbDeviceHost {
 				if (!this._options.scrcpy) {
 					throw new Error('This Android device can only be typed into with ASCII characters (adb input text). Type the rest from the device, or use English text.');
 				}
-				await this._options.scrcpy.use(serial, session => session.send(paradisScrcpySetClipboard(text, true)));
-				return undefined;
+				return this._options.scrcpy.use(serial, session => paradisPasteKeepingClipboard(session, text, this._sleep));
 			}
 			case 'POST /input/button': {
 				const keycode = typeof args.button === 'string' ? paradisAndroidKeycode(args.button) : undefined;
@@ -390,6 +393,8 @@ export class ParadisAdbDeviceHost {
 		if (fingerId === undefined || action === undefined) {
 			throw new Error('Touches need "fingerId" (0 to 9) and "phase" (down, move or up).');
 		}
+		// 人の指（ペイン。pointer の id 0）と重ならない id にする
+		const pointerId = PARADIS_SCRCPY_AGENT_POINTER_BASE + fingerId;
 		// 指の 1 動きごとに adb で画面の大きさを読むと遅いので、少しの間だけ覚えた値を使う
 		const cached = this._touchDisplays.get(serial);
 		const display = cached && this._now() - cached.at < TOUCH_DISPLAY_CACHE_MS ? cached.display : await this._display(serial);
@@ -401,7 +406,7 @@ export class ParadisAdbDeviceHost {
 			if (!size) {
 				throw new Error('The Android device has not sent its screen size yet. Try again in a moment.');
 			}
-			await session.send(paradisScrcpyTouch(action, fingerId, x * size.width / display.pixelWidth, y * size.height / display.pixelHeight, size.width, size.height));
+			await session.send(paradisScrcpyTouch(action, pointerId, x * size.width / display.pixelWidth, y * size.height / display.pixelHeight, size.width, size.height));
 		});
 		return undefined;
 	}
@@ -418,6 +423,35 @@ export class ParadisAdbDeviceHost {
 		const kept = lines.slice(-limit);
 		return { seconds, lines: kept, truncated: lines.length > kept.length };
 	}
+}
+
+/** 貼り付けのキーは端末で非同期に処理されるので、返事の後にクリップボードを戻すまで待つ時間。 */
+const PASTE_SETTLE_MS = 500;
+
+/**
+ * 利用者のクリップボードを残したまま文字を貼る（MEDIUM: 端末のクリップボードを黙って置き換えない）。
+ * 先に今の中身を読み、エージェントの文を写して貼り、端末の返事と貼り付けの処理を待ってから元に戻す。
+ * 読めない・戻せないときは、返り値の `note` にその旨を書く（mobile_type_text の結果に出る）。
+ */
+export async function paradisPasteKeepingClipboard(session: Pick<ParadisScrcpySession, 'getClipboard' | 'setClipboard'>, text: string, sleep: (ms: number) => Promise<void>): Promise<{ readonly method: 'paste'; readonly clipboardRestored: boolean; readonly note?: string }> {
+	const previous = await session.getClipboard().catch(() => undefined);
+	await session.setClipboard(text, true);
+	await sleep(PASTE_SETTLE_MS);
+	if (previous === undefined) {
+		// 空だった・読めなかった。エージェントの文を残さないよう空にしておく
+		const cleared = await session.setClipboard('', false).then(() => true, () => false);
+		return {
+			method: 'paste',
+			clipboardRestored: false,
+			note: cleared
+				? 'Para Code could not read the device clipboard before pasting (it may have been empty), so it cleared the clipboard afterwards instead of restoring it.'
+				: 'Para Code could not read the device clipboard before pasting and could not clear it afterwards: the device clipboard now holds the typed text.',
+		};
+	}
+	const restored = await session.setClipboard(previous, false).then(() => true, () => false);
+	return restored
+		? { method: 'paste', clipboardRestored: true }
+		: { method: 'paste', clipboardRestored: false, note: 'Para Code could not put the previous device clipboard back after pasting: the device clipboard now holds the typed text.' };
 }
 
 function requireNumber(body: Record<string, unknown>, name: string): number {

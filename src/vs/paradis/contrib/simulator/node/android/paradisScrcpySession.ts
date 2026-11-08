@@ -22,7 +22,7 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import type { AddressInfo, Server, Socket } from 'net';
-import { PARADIS_SCRCPY_DEVICE_PATH, ParadisScrcpyVideoEvent, ParadisScrcpyVideoParser, paradisScrcpyResetVideo, paradisScrcpyScid, paradisScrcpyServerArgs } from '../../common/paradisScrcpy.js';
+import { PARADIS_SCRCPY_DEVICE_PATH, ParadisScrcpyDeviceMessageParser, ParadisScrcpyVideoEvent, ParadisScrcpyVideoParser, paradisScrcpyGetClipboard, paradisScrcpyResetVideo, paradisScrcpyScid, paradisScrcpyServerArgs, paradisScrcpySetClipboard } from '../../common/paradisScrcpy.js';
 
 /** adb を呼ぶ口（終わりを待つもの）。 */
 export type ParadisScrcpyAdb = (args: readonly string[], timeoutMs: number) => Promise<string>;
@@ -45,7 +45,22 @@ export interface IParadisScrcpySessionOptions {
 	readonly connectTimeoutMs?: number;
 	/** 待ち受けを作る口（テストで差し替える）。 */
 	readonly createServer?: () => Promise<Server>;
+	/**
+	 * Para Code が作った adb reverse の印（scid）の記録。始める前に、記録にある古い reverse（前に Para Code が途中で
+	 * 落ちて残ったもの）を外す。利用者自身の scrcpy の reverse（同じ `localabstract:scrcpy_` の形）には触れない。
+	 */
+	readonly reverseRecord?: IParadisScrcpyReverseRecord;
 }
+
+/** Para Code が作った adb reverse の印（scid）の記録。 */
+export interface IParadisScrcpyReverseRecord {
+	list(serial: string): Promise<readonly string[]>;
+	add(serial: string, scid: string): Promise<void>;
+	remove(serial: string, scid: string): Promise<void>;
+}
+
+/** クリップボードの返事を待つ時間。 */
+const CLIPBOARD_TIMEOUT_MS = 3000;
 
 const CONNECT_TIMEOUT_MS = 15_000;
 
@@ -73,6 +88,9 @@ export class ParadisScrcpySession extends Disposable {
 	/** 最後の config の包み（後から購読した renderer にも先に渡す。SPS・PPS が無いと復号できない）。 */
 	private _config: Uint8Array | undefined;
 	private _ended = false;
+	private _sequence = 0n;
+	private readonly _ackWaiters = new Map<bigint, () => void>();
+	private readonly _clipboardWaiters: ((text: string) => void)[] = [];
 
 	constructor(private readonly _options: IParadisScrcpySessionOptions, private readonly _logService: ILogService) {
 		super();
@@ -108,11 +126,15 @@ export class ParadisScrcpySession extends Disposable {
 
 	private async _start(): Promise<void> {
 		const { serial, adb } = this._options;
+		await this._removeStaleReverses();
 		await adb(['-s', serial, 'push', this._options.serverJar, PARADIS_SCRCPY_DEVICE_PATH], 60_000);
 		const listener = await (this._options.createServer ?? createLoopbackServer)();
 		const port = (listener.address() as AddressInfo).port;
 		this._scid = paradisScrcpyScid(randomBytes(4).readUInt32BE(0) / 0xffffffff);
-		const socketName = `localabstract:scrcpy_${this._scid}`;
+		const scid = this._scid;
+		const socketName = `localabstract:scrcpy_${scid}`;
+		// 作る前に記録する（作った直後に Para Code が落ちても、次に始めるときに外せるように）
+		await this._options.reverseRecord?.add(serial, scid).catch(() => undefined);
 		try {
 			await adb(['-s', serial, 'reverse', socketName, `tcp:${port}`], 15_000);
 			const sockets = this._acceptTwo(listener);
@@ -125,12 +147,38 @@ export class ParadisScrcpySession extends Disposable {
 			this._control = control;
 		} finally {
 			listener.close();
-			void adb(['-s', serial, 'reverse', '--remove', socketName], 15_000).catch(() => undefined);
+			void adb(['-s', serial, 'reverse', '--remove', socketName], 15_000)
+				.then(() => this._options.reverseRecord?.remove(serial, scid))
+				.catch(() => undefined);
 		}
 		this._readVideo(this._video);
-		this._control.on('data', () => { /* 端末からの知らせ（クリップボードなど）は使わない */ });
+		this._readControl(this._control);
 		this._control.once('close', () => this._stop(new Error('The scrcpy control socket closed')));
 		this._control.on('error', error => this._logService.trace('[paradis-simulator] scrcpy control socket error', error));
+	}
+
+	/** 記録にある古い reverse（Para Code が作ったまま残ったもの）を外す。外せなくても始めるのは止めない。 */
+	private async _removeStaleReverses(): Promise<void> {
+		const record = this._options.reverseRecord;
+		if (!record) {
+			return;
+		}
+		const { serial, adb } = this._options;
+		const owned = new Set(await record.list(serial).catch(() => []));
+		if (owned.size === 0) {
+			return;
+		}
+		const listed = await adb(['-s', serial, 'reverse', '--list'], 15_000).catch(() => '');
+		for (const match of listed.matchAll(/localabstract:scrcpy_(?<scid>[0-9a-f]{8})\b/g)) {
+			const scid = match.groups!.scid;
+			if (owned.has(scid)) {
+				await adb(['-s', serial, 'reverse', '--remove', `localabstract:scrcpy_${scid}`], 15_000).catch(() => undefined);
+			}
+		}
+		// 一覧に無いものも含め、記録は空にする（もう端末に無い）
+		for (const scid of owned) {
+			await record.remove(serial, scid).catch(() => undefined);
+		}
 	}
 
 	/** 決まった 2 本（映像・操作の順）を受ける。それ以上は受けない。時間内に来なければ投げる。 */
@@ -194,6 +242,72 @@ export class ParadisScrcpySession extends Disposable {
 		});
 		video.once('close', () => this._stop(new Error('The scrcpy video socket closed')));
 		video.on('error', error => this._logService.trace('[paradis-simulator] scrcpy video socket error', error));
+	}
+
+	private _readControl(control: Socket): void {
+		const parser = new ParadisScrcpyDeviceMessageParser();
+		control.on('data', (chunk: Buffer) => {
+			let messages;
+			try {
+				messages = parser.push(new Uint8Array(chunk));
+			} catch (error) {
+				this._stop(error instanceof Error ? error : new Error(String(error)));
+				return;
+			}
+			for (const message of messages) {
+				if (message.kind === 'ackClipboard') {
+					const waiter = this._ackWaiters.get(message.sequence);
+					this._ackWaiters.delete(message.sequence);
+					waiter?.();
+				} else if (message.kind === 'clipboard') {
+					this._clipboardWaiters.shift()?.(message.text);
+				}
+			}
+		});
+	}
+
+	/**
+	 * 端末のクリップボードの中身を読む。空・読めないとき（端末は返事をしない）は、待ちきって undefined。
+	 */
+	async getClipboard(timeoutMs = CLIPBOARD_TIMEOUT_MS): Promise<string | undefined> {
+		let waiter: ((text: string) => void) | undefined;
+		const answer = new Promise<string | undefined>(resolve => {
+			const timer = setTimeout(() => {
+				const index = this._clipboardWaiters.indexOf(waiter!);
+				if (index >= 0) {
+					this._clipboardWaiters.splice(index, 1);
+				}
+				resolve(undefined);
+			}, timeoutMs);
+			waiter = text => {
+				clearTimeout(timer);
+				resolve(text);
+			};
+			this._clipboardWaiters.push(waiter);
+		});
+		await this.send(paradisScrcpyGetClipboard());
+		return answer;
+	}
+
+	/**
+	 * 端末のクリップボードを書き、`paste` なら貼り付けのキーも押す。端末の受け取りの返事（ACK）を待つ。
+	 * 返事が来なければ投げる。貼り付けのキーは端末で非同期に処理されるので、返事の後も少し待ってから次へ進むこと。
+	 */
+	async setClipboard(text: string, paste: boolean, timeoutMs = CLIPBOARD_TIMEOUT_MS): Promise<void> {
+		const sequence = ++this._sequence;
+		const acknowledged = new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this._ackWaiters.delete(sequence);
+				reject(new Error('The Android device did not confirm the clipboard change in time'));
+			}, timeoutMs);
+			this._ackWaiters.set(sequence, () => {
+				clearTimeout(timer);
+				resolve();
+			});
+		});
+		acknowledged.catch(() => undefined);
+		await this.send(paradisScrcpySetClipboard(text, paste, Number(sequence)));
+		await acknowledged;
 	}
 
 	/** 操作のメッセージを送る（paradisScrcpy.ts で組み立てたもの）。 */
