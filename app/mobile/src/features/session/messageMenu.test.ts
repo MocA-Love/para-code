@@ -52,4 +52,10 @@ describe('buildMessageMenu', () => {
 		expect(tree(buildMessageMenu({ text: '[資料](https://example.com/a) を見て', markdown: true }, ops))).toEqual(['テキストをコピー', 'Markdown のままコピー', 'URL をコピー', '範囲を選んでコピー…', '共有…']);
 		expect(tree(buildMessageMenu({ text: '[a](https://example.com/a)\n\n[b](https://example.com/b)', markdown: true }, ops))).toEqual(['テキストをコピー', 'Markdown のままコピー', { '段落を選んでコピー': ['a (https://example.com/a)', 'b (https://example.com/b)'] }, { 'URL を選んでコピー': ['a', 'b'] }, '範囲を選んでコピー…', '共有…']);
 	});
+
+	it('lists a bare URL in the message the same way as a Markdown link', () => {
+		const ops = { canCopy: true, copyLater: () => undefined, copy: () => undefined, share: () => undefined, selectRange: () => undefined };
+		const menu = buildMessageMenu({ text: '詳しくは https://example.com/docs を見て', markdown: true }, ops);
+		expect([tree(menu), findContextMenuAction(menu.actions, 'link:0')?.subtitle]).toEqual([['テキストをコピー', 'URL をコピー', '範囲を選んでコピー…', '共有…'], 'https://example.com/docs']);
+	});
 });
