@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native';
-import { ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Minus, Plus, Sparkles, X } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText, Folder, GitBranch, GitCommitHorizontal, GitPullRequest, Minus, Plus, Sparkles, X } from 'lucide-react-native';
 import type { ParadisMobileSyncOperation } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
 import { ContextMenu, useContextMenuSheet, type ContextMenuSpec } from '../../components/contextMenu.js';
 import { contextMenuOps } from '../../components/copyActions.js';
@@ -15,7 +15,7 @@ import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { formatRelativeTime } from '../../time.js';
 import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import type { CommitAction, ScmCounts, ScmEntry } from './scmModel.js';
-import { splitPath } from './scmModel.js';
+import { isScmFolderPath, splitPath } from './scmModel.js';
 import type { AgentHandoffResult, CommitFailureView, ScmSyncSummary } from './scmSync.js';
 import type { CommitFiles } from './useScmData.js';
 import { SHORT_HASH_LENGTH, buildCommitFileMenu, buildCommitMenu, type AbsolutePathOption } from './pathMenu.js';
@@ -122,7 +122,7 @@ export function ScmFileRow({ entry, disabled, onPress, stage, menu, onLongPress 
 				accessibilityHint="差分を開きます"
 			>
 				<Text style={[styles.symbol, { color: entry.meta.color }]}>{entry.meta.symbol}</Text>
-				<Icon icon={FileText} size={iconSize.md} color={colors.textDim} />
+				<Icon icon={isScmFolderPath(entry.path) ? Folder : FileText} size={iconSize.md} color={colors.textDim} />
 				<View style={styles.fileCol}>
 					<Text style={styles.fileName} numberOfLines={1}>{name}</Text>
 					<Text style={styles.fileSub} numberOfLines={1}>{dir.length > 0 ? `${dir} · ${entry.meta.label}` : entry.meta.label}</Text>
