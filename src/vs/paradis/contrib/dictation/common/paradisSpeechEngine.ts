@@ -167,10 +167,11 @@ export function paradisSpeechErrorMessage(code: ParadisSpeechErrorCode, detail?:
 /**
  * upstream の `language`（`ja-JP` などの BCP 47 か `auto`）を、補助プログラムの `--locale` に渡す値にする。
  * SpeechTranscriber には言語の自動判定が無いので、`auto` と空は OS の言語に任せる（補助プログラムが決める）。
+ * 補助プログラムの引数になるので、BCP 47 の形（`ja`・`ja-JP`・`zh-Hant-TW` など）でないもの（`-` で始まるものを含む）も `auto` に倒す。
  */
 export function paradisSpeechHelperLocale(language: string | undefined): string {
-	const value = language?.trim();
-	return value && value.toLowerCase() !== 'auto' ? value : 'auto';
+	const value = language?.trim() ?? '';
+	return /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(value) && value.toLowerCase() !== 'auto' ? value : 'auto';
 }
 
 /** utility process の中の認識エンジン（renderer は IPC で呼ぶ）。upstream の口のうち、Para が使う分だけ。 */
