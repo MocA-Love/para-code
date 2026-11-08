@@ -33,6 +33,7 @@ suite('ParadisPortReforwardChannel', () => {
 			{ id: 1, workspace: { id: 'a', uri: URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+box', path: '/home/user/project' }) } },
 			{ id: 2, workspace: { id: 'b', configPath: URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+other', path: '/home/user/x.code-workspace' }).toJSON() } },
 			{ id: 3, workspace: { id: 'empty' } },
+			{ id: 4, workspace: { id: 'c', uri: URI.file('/home/user/local-project') } },
 		],
 	};
 
@@ -55,6 +56,7 @@ suite('ParadisPortReforwardChannel', () => {
 				ownRemoteFromWorkspaceFile: await callFrom('window:2', 'ssh-remote+other'),
 				emptyWindow: await callFrom('window:3', 'ssh-remote+box'),
 				unknownWindow: await callFrom('window:9', 'ssh-remote+box'),
+				localWindow: await callFrom('window:4', 'ssh-remote+box'),
 				notAWindow: await callFrom('main', 'ssh-remote+box'),
 			},
 			{
@@ -63,6 +65,7 @@ suite('ParadisPortReforwardChannel', () => {
 				ownRemoteFromWorkspaceFile: 'ssh-remote+other localhost:3000',
 				emptyWindow: 'ssh-remote+box localhost:3000',
 				unknownWindow: 'refused: The remote is not the one of the calling window',
+				localWindow: 'refused: The remote is not the one of the calling window',
 				notAWindow: 'refused: The remote is not the one of the calling window',
 			}
 		);
