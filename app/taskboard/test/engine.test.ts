@@ -68,18 +68,20 @@ function intake(n: number, extra: object = {}) {
 }
 
 describe('TaskBoardEngine', () => {
-	// Para Code の「タスク」の画面から載せた Issue は、取り込みの一覧に無くても未着手のまま残り、手で外せる
+	// Para Code の「タスク」の画面から載せた Issue は、取り込みの一覧に無くても未着手のまま残り、閉じたら外れ、手で外せる
 	test('keeps issues picked from the Tasks page through the intake', () => {
 		const { engine } = setup();
 		engine.syncIntake([intake(1)]);
 		const ids = engine.addIssues([intake(1, { assignees: [] }), intake(5, { assignees: [] })]);
 		engine.syncIntake([intake(2)]);
 		const kept = engine.listTasks(t => `${t.id}:${t.picked === true}`).sort();
+		const dropped = engine.dropClosedPickedIssues(['gh:o/r#1'], []);
 		engine.removeTask('gh:o/r#5');
-		expect({ ids, kept, afterRemove: engine.listTasks(t => t.id).sort(), refusedForIntake: (() => { try { engine.removeTask('gh:o/r#2'); return 'removed'; } catch { return 'refused'; } })() }).toEqual({
+		expect({ ids, kept, dropped, afterRemove: engine.listTasks(t => t.id).sort(), refusedForIntake: (() => { try { engine.removeTask('gh:o/r#2'); return 'removed'; } catch { return 'refused'; } })() }).toEqual({
 			ids: ['gh:o/r#1', 'gh:o/r#5'],
 			kept: ['gh:o/r#1:true', 'gh:o/r#2:false', 'gh:o/r#5:true'],
-			afterRemove: ['gh:o/r#1', 'gh:o/r#2'],
+			dropped: 1,
+			afterRemove: ['gh:o/r#2'],
 			refusedForIntake: 'refused',
 		});
 	});

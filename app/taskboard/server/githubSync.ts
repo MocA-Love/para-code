@@ -249,6 +249,14 @@ export class GitHubSync {
 					engine.reportPullRequest(`gh:${item.issue.owner}/${item.issue.repo}#${item.issue.number}`.toLowerCase(), item.pr);
 				}
 			}
+			// 「タスク」の画面から載せた未着手の Issue は取り込みの一覧に入らないので、閉じたかをここで確かめて外す（あるときだけ 1 回）
+			const key = (issue: { owner: string; repo: string; number: number }) => `gh:${issue.owner}/${issue.repo}#${issue.number}`.toLowerCase();
+			const listed = new Set(items.map(item => key(item.issue)));
+			const picked = engine.getTasks().filter(task => task.picked && task.step === TASK_BOARD_TODO && task.issue && !listed.has(task.id)).slice(0, 20);
+			if (picked.length) {
+				const open = await this.fetchIssues(picked.map(task => task.issue!));
+				result.removed += engine.dropClosedPickedIssues(picked.map(task => task.id), open.map(item => key(item.issue)));
+			}
 			this.set({ mode: 'ok', error: undefined, lastSyncAt: Date.now(), sourceLabel: label });
 			this.options.onSynced?.(result);
 			await this.refreshPullRequests();

@@ -751,7 +751,7 @@ export class ParadisTasksEditor extends EditorPane {
 		}
 		if (result.ok) {
 			if (result.taskIds.length === 0 || result.missing > 0) {
-				this.notificationService.warn(localize('paradis.tasks.addToBoard.missing', "#{0} は載せられませんでした（閉じているか、読めませんでした）。", number));
+				this.notificationService.warn(localize('paradis.tasks.addToBoard.missing', "#{0} は載せられませんでした（閉じているか、読めませんでした）。ボードはこの PC の gh のアカウントで読める範囲の Issue だけを載せられます。", number));
 				return;
 			}
 			if (!start) {

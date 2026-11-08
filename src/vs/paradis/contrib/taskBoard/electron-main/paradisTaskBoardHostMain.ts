@@ -335,8 +335,8 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 				existing.restore();
 			}
 			if (hash) {
-				// 鍵は最初の読み込みで画面が覚えているので、行き先だけを変えて読み直す
-				void existing.loadURL(`http://127.0.0.1:${running.port}/${hash}`);
+				// 読み直さずに画面の行き先（hash）だけを変える。画面は hashchange でそのタスクを開く（開いているダイアログや入力は残る）
+				void existing.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch(error => this.logService.warn(`[ParadisTaskBoardHost] ${error.message}`));
 			}
 			existing.show();
 			existing.focus();
