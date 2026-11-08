@@ -6,7 +6,7 @@ import { MAX_BULLET_DEPTH, parseBlocks, parseInline, type Block, type InlineToke
 import type { HighlightData } from '../../components/codeHighlightCache.js';
 import { alpha, colors, mono, tint, type } from '../../theme.js';
 import { escapeHtml } from '../code/fileViewerModel.js';
-import { viewerScriptCspMeta } from '../code/fileFind.js';
+import { viewerScriptContentSecurityPolicy } from '../code/fileFind.js';
 
 /**
  * その場で範囲を選ぶ（Q551 案 4）ときに、発言の表示と差し替える WebView の HTML。RN を持たない純関数。
@@ -16,7 +16,7 @@ import { viewerScriptCspMeta } from '../code/fileFind.js';
  *   （ファイルのビューアの `buildMarkdownHtml` は marked で読むのでブロックの切れ方が違い、字も 15/24 で大きい）
  * - 発言から来た文字は、すべて `escapeHtml` を通して要素の中身にだけ置く（属性には入れない。`escapeHtml` は引用符を
  *   変えないため）。リンクは `href` を持たない色付きの文字にして、押しても遷移しない
- * - スクリプトは nonce 付きの 1 つだけ（`viewerScriptCspMeta`）。高さを知らせることと、押した点の単語（無ければ全体）を選ぶこと・押し続けた点の単語を選ぶことだけをする
+ * - CSP は既定ですべて止め、nonce 付きのスクリプト 1 つと style だけを開ける（{@link inplaceSelectContentSecurityPolicy}）。スクリプトは高さを知らせることと、押した点の単語（無ければ全体）を選ぶこと・押し続けた点の単語を選ぶことだけをする
  * - 発言は `segments` の並びで受ける。押した発言 1 つだけのとき（発言の上に重ねる）と、前後の発言をまとめて並べるとき
  *   （会話の一覧の上に重ねて中でスクロールする。`crossSelect.tsx`。{@link InplaceSelectScrollLayout}）がある
  * - コードは、会話の描画が PC から取ってある色付け（`codeHighlightCache.ts`）があればその色と地の色で描く
@@ -291,9 +291,26 @@ function cssColor(value: string, fallback: string): string {
 	return safeColor(value) ?? fallback;
 }
 
-/** {@link cssColor} と同じ検査。通らない値は `undefined`（色を付けない）。 */
-function safeColor(value: string): string | undefined {
-	return /^[#\w\s(),.%-]{1,64}$/.test(value) ? value : undefined;
+/**
+ * {@link cssColor} と同じ検査。通らない値は `undefined`（色を付けない）。PC から届く色（コードの色付け）も通るので、
+ * 色の形だけを許す: `#` の 16 進（3〜8 桁）、`rgb()`・`rgba()`・`hsl()`・`hsla()`（中は数・`%`・`.`・`,`・空白・`/` だけ）、
+ * 英字だけの色の名前。`url(`・`var(`・`expression` など、読み込みや計算になる形は弾く。
+ */
+export function safeColor(value: string): string | undefined {
+	const color = value.trim();
+	if (color.length === 0 || color.length > 64 || /url\(|var\(|expression/i.test(color)) {
+		return undefined;
+	}
+	return /^#[\da-f]{3,8}$/i.test(color) || /^(?:rgba?|hsla?)\([\d\s.,%/]+\)$/i.test(color) || /^[a-z]+$/i.test(color) ? color : undefined;
+}
+
+/**
+ * 範囲を選ぶ表示の CSP。既定はすべて止め（`default-src 'none'`）、要るものだけを開ける: nonce 付きのスクリプト 1 つと、
+ * `<style>` と要素の `style` 属性（色・寸法）。画像・フォント・通信は使わないので開けない。残りの指定はファイルのビューアと同じ
+ * （`viewerScriptContentSecurityPolicy`。nonce の形もそこで検める）。
+ */
+export function inplaceSelectContentSecurityPolicy(nonce: string): string {
+	return `default-src 'none'; style-src 'unsafe-inline'; ${viewerScriptContentSecurityPolicy(nonce)}`;
 }
 
 function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
@@ -408,7 +425,7 @@ export function buildInplaceSelectHtml(segments: readonly InplaceSelectSegment[]
 	const root = layout !== undefined
 		? `<div id="m" class="across" style="padding:${num(Math.max(0, layout.pad))}px 0;margin-left:${num(Math.max(0, layout.left))}px;width:${num(Math.max(1, layout.width))}px">`
 		: '<div id="m">';
-	return `<!DOCTYPE html><html><head>${viewerScriptCspMeta(nonce)}
+	return `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="${inplaceSelectContentSecurityPolicy(nonce)}">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>${styleSheet(look, metrics)}</style>
 </head><body>${root}${body}</div><script nonce="${nonce}">${selectScript(point, layout)}</script></body></html>`;
