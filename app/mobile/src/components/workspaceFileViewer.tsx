@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import type { FsReadResult } from '../store.js';
@@ -27,8 +27,40 @@ function currentRendererTarget(ws: string): string | undefined {
 		: undefined;
 }
 
-/** ワークスペース内のファイル種別に応じた取得処理とフルスクリーン表示をまとめる。 */
+/**
+ * ワークスペース内のファイル種別に応じた取得処理とフルスクリーン表示をまとめる。
+ *
+ * Markdown・HTML の中に書かれたパスを押すと、同じビューアの中で開いたファイルを積む（`useViewerPathLinks.tsx`）。
+ * 積んでいる間の「戻る」は 1 つ前のファイルへ戻り（ラベルはそのファイルの名前）、最初のファイルで閉じる。
+ */
 export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }: WorkspaceFileViewerProps) {
+	const origin = `${ws}\0${path}\0${focusLine ?? ''}`;
+	const [stack, setStack] = useState<{ readonly origin: string; readonly entries: readonly { readonly path: string; readonly line?: number }[] }>({ origin, entries: [] });
+	const entries = stack.origin === origin ? stack.entries : [];
+	if (stack.origin !== origin) {
+		setStack({ origin, entries: [] });
+	}
+	const top = entries[entries.length - 1];
+	const previous = entries.length > 1 ? entries[entries.length - 2]?.path : path;
+	const openPath = useCallback((target: string, line: number | undefined) => {
+		setStack(current => ({ origin, entries: [...(current.origin === origin ? current.entries : []), { path: target, ...(line !== undefined ? { line } : {}) }] }));
+	}, [origin]);
+	const back = useCallback(() => {
+		setStack(current => ({ origin, entries: current.entries.slice(0, -1) }));
+	}, [origin]);
+	return (
+		<WorkspaceFileViewerContent
+			ws={ws}
+			path={top?.path ?? path}
+			focusLine={top !== undefined ? top.line : focusLine}
+			backLabel={top !== undefined ? (previous?.split('/').pop() ?? previous) : backLabel}
+			onClose={top !== undefined ? back : onClose}
+			onOpenPath={openPath}
+		/>
+	);
+}
+
+function WorkspaceFileViewerContent({ ws, path, focusLine, backLabel, onClose, onOpenPath }: WorkspaceFileViewerProps & { onOpenPath: (path: string, line: number | undefined) => void }) {
 	const { fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
 		fsRead: s.fsRead,
 		fsXlsx: s.fsXlsx,
@@ -46,6 +78,8 @@ export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }:
 		? `${workspace.desktopEpoch}:${selectedRenderer.windowId}:${selectedRenderer.rendererGeneration}`
 		: undefined;
 	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
+	const activePcId = useAppStore(s => s.activePcId);
+	const pathLinks = useMemo(() => ({ pcId: activePcId, wsId: ws, live, viewerPath: path, open: onOpenPath }), [activePcId, ws, live, path, onOpenPath]);
 	const [result, setResult] = useState<FsReadResult | undefined>();
 	const [xlsx, setXlsx] = useState<{ html?: string; sheets?: string[]; sheet?: number } | undefined>();
 	const [pdf, setPdf] = useState<string | undefined>();
@@ -145,6 +179,7 @@ export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }:
 			focusLine={focusLine}
 			backLabel={backLabel}
 			error={error}
+			pathLinks={pathLinks}
 			onClose={onClose}
 		/>
 	);

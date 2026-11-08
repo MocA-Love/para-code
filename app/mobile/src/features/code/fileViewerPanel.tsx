@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useIsFocused, useNavigation, useRouter } from 'expo-router';
 import { CloudOff, Code, Eye, Search, X } from 'lucide-react-native';
@@ -9,7 +9,7 @@ import { colors, space } from '../../theme.js';
 import { EmptyState, HeaderButton, Screen, ScreenHeader } from '../../ui/index.js';
 import { codeCacheKey, useCodeCache } from './codeCache.js';
 import { OfflineBanner, SpaceGateBody } from './codeParts.js';
-import { folderHref } from './codeRoutes.js';
+import { fileViewerHref, folderHref } from './codeRoutes.js';
 import { findTargetOf } from './fileFind.js';
 import { FileFindBar } from './fileFindBar.js';
 import { FileViewerBody } from './fileViewerBody.js';
@@ -19,6 +19,7 @@ import { DIR_VIEW, FILE_VIEW, canToggleSource, defaultViewerMode, viewerBreadcru
 import type { CodeSpace } from './useCodeSpace.js';
 import { useFileContent } from './useFileContent.js';
 import { useFileFind } from './useFileFind.js';
+import type { ViewerPathLinkSpace } from './useViewerPathLinks.js';
 
 /**
  * ファイルビューア（Orca の MobileFilePreviewScreen。モックの「ファイルビューア（README.md）」）。
@@ -68,6 +69,20 @@ export function FileViewerPanel({ codeSpace, path, focusLine }: { codeSpace: Cod
 		router.replace(folderHref(pcId, spaceId, target));
 	};
 
+	// 本文に書かれたパスを押したら、同じスペースのビューアを上に積む（戻るで元のファイルへ）
+	const { pcId: linkPcId, spaceId: linkSpaceId, wsId: linkWsId, live } = codeSpace;
+	const pathLinks = useMemo<ViewerPathLinkSpace>(() => ({
+		pcId: linkPcId,
+		wsId: linkWsId,
+		live,
+		viewerPath: path,
+		open: (target: string, line: number | undefined) => {
+			if (linkPcId !== undefined && linkSpaceId !== undefined) {
+				router.push(fileViewerHref(linkPcId, linkSpaceId, target, line));
+			}
+		},
+	}), [linkPcId, linkSpaceId, linkWsId, live, path, router]);
+
 	const waiting = content === undefined && codeSpace.unavailable !== undefined;
 	return (
 		<Screen>
@@ -102,7 +117,7 @@ export function FileViewerPanel({ codeSpace, path, focusLine }: { codeSpace: Cod
 					{waiting ? (
 						<EmptyState icon={CloudOff} title="ファイルを読み込めません" body={`${codeSpace.unavailable ?? ''}。つながると読み込みます。`} />
 					) : (
-						<FileViewerBody path={path} kind={kind} mode={mode} content={content} focusLine={focusLine} onSelectSheet={selectSheet} find={find.binding} />
+						<FileViewerBody path={path} kind={kind} mode={mode} content={content} focusLine={focusLine} onSelectSheet={selectSheet} find={find.binding} pathLinks={pathLinks} />
 					)}
 				</View>
 			</SpaceGateBody>

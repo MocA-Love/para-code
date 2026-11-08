@@ -21,6 +21,7 @@ import { HTML_IMAGES_LOADER_SCRIPT, HTML_IMAGES_RETRY_SCRIPT, HtmlImageQueue, bu
 import { CODE_LINE_WINDOW, buildCodeHtml, buildMarkdownHtml, codeLineTotal, codePageStartOf, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
 import type { FileContent } from './useFileContent.js';
 import type { FileFindBinding } from './useFileFind.js';
+import { useViewerPathLinks, type ViewerPathLinkSpace } from './useViewerPathLinks.js';
 import { measureBuild, type FileViewerLoadTrace } from './fileViewerTiming.js';
 import { buildImageHtml, buildSecureDocxHtml, fileExt } from './viewerHtml.js';
 
@@ -261,7 +262,7 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 /** 描いている途中の Office 文書を「空」と決めるまで待ち足す上限（ms。2 秒の後に足す分）。 */
 const OFFICE_RENDER_MAX_WAIT_MS = 60_000;
 
-export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectSheet, find }: {
+export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectSheet, find, pathLinks }: {
 	path: string;
 	kind: ViewerKind;
 	mode: ViewerMode;
@@ -273,6 +274,11 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	 * 有効にし、コードと Markdown には自分のスクリプトだけを許す CSP を付ける。渡さなければ今までどおり。
 	 */
 	find?: FileFindBinding;
+	/**
+	 * Markdown・HTML のプレビューの中に書かれたパスを押して開く・長押しでコピーする（`useViewerPathLinks.tsx`）。
+	 * Markdown はスクリプトを有効にしている（`find` を渡した）ときだけ効く。
+	 */
+	pathLinks?: ViewerPathLinkSpace;
 }) {
 	const name = path.split('/').pop() ?? path;
 	const officeKind = kind === 'spreadsheet' || kind === 'docx';
@@ -358,6 +364,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	const onViewLoadEnd = () => {
 		trace?.loadEnded();
 		find?.onViewLoaded();
+		links.onLoadEnd();
 	};
 	// HTML から抜いた画像（fs.html-images.v1）。本文が替わる・閉じるたびにキューを作り直し、古いキューの結果は捨てる
 	const htmlImages = mode === 'render' && kind === 'html' ? content?.htmlImages : undefined;
@@ -392,8 +399,11 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 		};
 	}, [htmlImages]);
 	const revival = useWebViewRevival();
+	// パスのリンクは、スクリプトが動く Markdown・HTML のプレビューだけ（HTML はもともと動く。Markdown は検索のときだけ）
+	const pathLinkView = mode === 'render' && (kind === 'html' || (kind === 'markdown' && searchable));
+	const links = useViewerPathLinks(pathLinkView ? pathLinks : undefined, webRef);
 	const onViewMessage = (data: string) => {
-		if (imageQueueRef.current?.handleMessage(data) === true) {
+		if (imageQueueRef.current?.handleMessage(data) === true || links.onMessage(data)) {
 			return;
 		}
 		find?.onMessage(data);
@@ -441,7 +451,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 				onLoadStart={trace?.loadStarted}
 				onLoadEnd={onViewLoadEnd}
 				{...(htmlImages !== undefined ? { injectedJavaScriptBeforeContentLoaded: HTML_IMAGES_LOADER_SCRIPT } : {})}
-				{...(find !== undefined || htmlImages !== undefined ? { onMessage: (event: { nativeEvent: { data: string } }) => onViewMessage(event.nativeEvent.data) } : {})}
+				{...(find !== undefined || htmlImages !== undefined || (pathLinkView && pathLinks !== undefined) ? { onMessage: (event: { nativeEvent: { data: string } }) => onViewMessage(event.nativeEvent.data) } : {})}
 			/>
 		);
 	} else {
@@ -480,6 +490,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 					<Button variant="secondary" size="sm" label="続きを表示" disabled={pageStart + CODE_LINE_WINDOW >= totalLines} onPress={() => setPage({ key: pageKey, start: pageStart + CODE_LINE_WINDOW })} />
 				</View>
 			) : null}
+			{links.sheet}
 		</View>
 	);
 }
