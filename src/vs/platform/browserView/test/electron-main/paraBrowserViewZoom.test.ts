@@ -9,7 +9,7 @@ import assert from 'assert';
 import { EventEmitter } from 'events';
 import type { WebContents } from 'electron';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { paraBrowserViewEmulationParams, paraBrowserViewScalesByZoom, paraSetBrowserViewEmulationZoom, paraSetBrowserViewUserZoom, paraSetBrowserZoomIsolatorForTest } from '../../electron-main/paraBrowserViewZoom.js';
+import { paraBrowserViewEmulationParams, paraBrowserViewScalesByZoom, paraSetBrowserViewEmulationZoom, paraSetBrowserViewUserZoom, paraCreateBrowserZoomHelperForTest, paraSetBrowserZoomIsolatorForTest } from '../../electron-main/paraBrowserViewZoom.js';
 
 /** A tab whose zoom is either per site (shared by every tab on it) or, once isolated, its own until the next navigation. */
 class FakeTab extends EventEmitter {
@@ -182,6 +182,35 @@ suite('paraBrowserViewZoom', () => {
 			scalesByZoom: true,
 			newCalls: 0,
 			params: 1,
+		});
+	});
+	test('the zoom helper opens its page again when the page it kept was destroyed, and reports why it could not isolate', async () => {
+		const opened: { destroyed: boolean; disposed: boolean }[] = [];
+		let openWorks = true;
+		const helper = paraCreateBrowserZoomHelperForTest(async () => {
+			if (!openWorks) {
+				return undefined;
+			}
+			const page = { destroyed: false, disposed: false };
+			opened.push(page);
+			return {
+				contents: { isDestroyed: () => page.destroyed, executeJavaScript: async () => true } as unknown as Pick<WebContents, 'isDestroyed' | 'executeJavaScript'>,
+				dispose: () => { page.disposed = true; },
+			};
+		});
+		const tab = new FakeTab() as unknown as WebContents;
+		const first = await helper.isolate(tab);
+		// the page went away between two navigations (garbage collected view, crashed extension process)
+		opened[0].destroyed = true;
+		const second = await helper.isolate(tab);
+		opened[1].destroyed = true;
+		openWorks = false;
+		const third = await helper.isolate(tab);
+		assert.deepStrictEqual({ first, second, third, pages: opened }, {
+			first: true,
+			second: true,
+			third: 'the zoom helper page is not open',
+			pages: [{ destroyed: true, disposed: true }, { destroyed: true, disposed: true }],
 		});
 	});
 });
