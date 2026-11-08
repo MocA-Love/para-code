@@ -14,6 +14,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { paradisReadGitdirPointer, paradisReadOriginUrl } from '../../agentActivity/common/paradisRepoIdentity.js';
+import { paradisMapLimited } from '../../../common/paradisMapLimited.js';
 import { paradisTasksApplyInsteadOf, paradisTasksGithubRepositoryFromRemote } from '../common/paradisTasks.js';
 
 export interface IParadisTasksRepository {
@@ -99,12 +100,16 @@ export async function paradisTasksResolveRepository(fileService: IFileService, f
 	return origin ? paradisTasksGithubRepositoryFromRemote(paradisTasksApplyInsteadOf(origin, text)) : undefined;
 }
 
+/** リポジトリを同時に解く数（git の起動とファイルの読みの数）。 */
+const PARADIS_TASKS_RESOLVE_PARALLEL = 4;
+
 /**
  * スペースの並びから、github.com のリポジトリを重ねずに集める（大文字小文字は区別しない。先に見つけたスペースの表記を使う）。
  * 読めないもの・github.com 以外のものは黙って外す。
  */
 export async function paradisTasksResolveRepositories(fileService: IFileService, sources: readonly IParadisTasksRepositorySource[], readOrigin?: ParadisTasksOriginReader): Promise<IParadisTasksRepository[]> {
-	const resolved = await Promise.all(sources.map(async source => ({ source, name: await paradisTasksResolveRepository(fileService, source.uri, readOrigin) })));
+	// スペースが多いと、一覧を作るたびに git を何十本も同時に起動するので、同時に解く数を絞る
+	const resolved = await paradisMapLimited(sources, PARADIS_TASKS_RESOLVE_PARALLEL, async source => ({ source, name: await paradisTasksResolveRepository(fileService, source.uri, readOrigin) }));
 	const seen = new Set<string>();
 	const repositories: IParadisTasksRepository[] = [];
 	for (const { source, name } of resolved) {
