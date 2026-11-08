@@ -89,6 +89,11 @@ export function scmCounts(entries: readonly ScmEntry[]): ScmCounts {
 	return { unstaged: entries.length - stagedOnly, staged: stagedOnly + partial, total: entries.length };
 }
 
+/** git が返したパスがフォルダか（未追跡のフォルダは `docs/` のように末尾が `/`）。 */
+export function isScmFolderPath(path: string): boolean {
+	return path.endsWith('/');
+}
+
 /**
  * パスをファイル名と、それを含むフォルダに分ける（フォルダが無ければ空文字）。git は未追跡のフォルダを
  * `docs/` のように末尾の `/` 付きで返すので、分ける前に末尾の `/` を落とす（落とさないと名前が空になる）。
