@@ -31,6 +31,8 @@ import { ParadisSimulatorChannel, ParadisSimulatorService } from './paradisSimul
 import { ParadisSimulatorFoldToolProvider } from './paradisSimulatorFoldTool.js';
 import { ParadisSimulatorHostProcess } from './paradisSimulatorHostProcess.js';
 import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
+import { ParadisAdbDeviceHost } from './android/paradisAdbDeviceHost.js';
+import { promises as fs } from 'fs';
 
 export interface IParadisSimulatorRegistration extends IDisposable {
 	/** Mobile Canvas の台帳（端末⇔ペイン）。 */
@@ -54,13 +56,15 @@ export function registerParadisSimulator(
 	const backend = store.add(new ParadisServeSimBackend(host, logService));
 	const deviceHost = new ParadisServeSimDeviceHost(backend, logService);
 	const deviceHub = new ParadisSimulatorDeviceHub();
-	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService, deviceHub));
+	// Android は利用者の adb（⑥a。adb は同梱しない）
+	const android = new ParadisAdbDeviceHost({ exists: async path => (await fs.stat(path).catch(() => undefined))?.isFile() === true }, logService);
+	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService, deviceHub, android));
 	server.registerChannel(PARADIS_SIMULATOR_CHANNEL, new ParadisSimulatorChannel<string>(service));
 
 	// モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは para-browser の MCP サーバーへ相乗りさせるため、
 	// エージェントCLI側に追加のMCP設定は要らない
 	const { service: ledger, deviceOps } = registerParadisMobileCanvas(server, builtinExtensionsPath, logService, registerToolProvider,
-		mobileCanvas => new ParadisMobileHostRouter(mobileCanvas, deviceHost, useServeSim, logService));
+		mobileCanvas => new ParadisMobileHostRouter(mobileCanvas, deviceHost, useServeSim, logService, android));
 	store.add(ledger);
 	const fold = new ParadisSimulatorFoldToolProvider(ledger, backend, deviceHost, deviceId => deviceOps.forgetScreenSize(deviceId), useServeSim, logService, deviceHub);
 	store.add(paradisRegisterMcpToolProvider(fold));
