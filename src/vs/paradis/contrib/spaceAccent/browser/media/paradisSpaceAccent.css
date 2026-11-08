@@ -51,3 +51,15 @@
 .modern-ui-tabs.monaco-workbench:not(.modern-ui-connected-editor-tabs):not(:is(.hc-black, .hc-light)) .part.editor .editor-group-container:not(.active) .tabs-container > .tab.active:not(.multi-selected) > .tab-fill::before {
 	background-color: var(--paradis-space-accent-unfocused, var(--modern-ui-editor-tab-current-border-top));
 }
+
+/*
+ * Modern UI のつながったタブ (connected、`modernUIEditorTabStyle: connected`) で複数選択したタブの上端の線も
+ * スペースの色にする。upstream (connectedEditorTabs.css) は複数選択のタブに `--modern-ui-connected-tab-top-accent`
+ * を `tab.selectedBorderTop` で入れ、上端の線をこの変数で描く。その変数だけを差し替える。
+ * upstream のセレクタに `.tab` を 1 つ重ねて詳細度を上げ、読み込み順に関係なく勝たせる。
+ * 単独選択のアクティブなタブ (`.multi-selected` が付かない) と、ハイコントラストのテーマには当てない。
+ * スペースに色が無いときは `--paradis-space-accent` が無いので、upstream どおりテーマの色に戻る。
+ */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.tab.selected.multi-selected:not(.connected-tab-upper-row):where(:not(.dirty-border-top)) {
+	--modern-ui-connected-tab-top-accent: var(--paradis-space-accent, var(--vscode-tab-selectedBorderTop, var(--tab-border-top-color)));
+}
