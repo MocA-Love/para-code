@@ -118,6 +118,7 @@ registerAction2(class extends Action2 {
 				group: '3_forward',
 				order: 2,
 				when: ContextKeyExpr.and(
+					RemoteNameContext.notEqualsTo(''),
 					ContextKeyExpr.equals(TUNNEL_TYPE_KEY, TunnelType.Forwarded),
 					ContextKeyExpr.equals(TUNNEL_VIEW_MULTI_SELECTION_KEY, undefined),
 				),
