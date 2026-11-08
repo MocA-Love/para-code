@@ -25,6 +25,7 @@ import { PromptInputState } from '../../../../../platform/terminal/common/capabi
 import { ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisAgentStatusStore } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_TERMINAL_AGENT_RUNNING, ParadisTerminalContextMenuContribution } from '../../electron-browser/paradisTerminalContextMenu.contribution.js';
+import '../../electron-browser/paradisTerminalAgentSession.contribution.js';
 
 suite('Paradis terminal context menu (menus)', () => {
 
@@ -57,7 +58,7 @@ suite('Paradis terminal context menu (menus)', () => {
 			shell: menuIds(MenuId.TerminalInstanceContext, editorTerminal),
 		}, {
 			agent: [
-				['paradis.terminal.sendSelectionToAgent', 'paradis.terminal.copyContext', 'paradis.agentChat.toggle (disabled)'],
+				['paradis.terminal.sendSelectionToAgent', 'paradis.terminal.handOffAgentSession', 'paradis.terminal.forkAgentSession (disabled)', 'paradis.terminal.copyContext', 'paradis.agentChat.toggle (disabled)'],
 				['workbench.action.terminal.splitOrCreate', 'paradis.terminal.splitEditorDown', 'workbench.action.terminal.new'],
 				['workbench.action.terminal.copySelection', 'workbench.action.terminal.copySelectionAsHtml', 'workbench.action.terminal.paste', 'workbench.action.terminal.selectAll'],
 				['workbench.action.terminal.clear', 'paradis.terminal.resetInputModes'],
@@ -78,7 +79,7 @@ suite('Paradis terminal context menu (menus)', () => {
 
 	test('keeps the editor-only items out of the panel terminal', () => {
 		const ids = menuIds(MenuId.TerminalInstanceContext, { activeEditor: 'terminalEditor', terminalProcessSupported: true, terminalIsOpen: true, paradisTerminalAgentRunning: true }).flat();
-		assert.deepStrictEqual(ids.filter(id => id.startsWith('paradis.')), ['paradis.terminal.sendSelectionToAgent (disabled)', 'paradis.terminal.copyContext', 'paradis.terminal.resetInputModes']);
+		assert.deepStrictEqual(ids.filter(id => id.startsWith('paradis.')), ['paradis.terminal.sendSelectionToAgent (disabled)', 'paradis.terminal.handOffAgentSession', 'paradis.terminal.forkAgentSession (disabled)', 'paradis.terminal.copyContext', 'paradis.terminal.resetInputModes']);
 	});
 
 	test('adds the split submenu and the color submenu to terminal tabs only', () => {
