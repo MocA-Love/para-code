@@ -368,7 +368,8 @@ jobs:
       - name: Pre-notarize the serve-sim helpers
         id: serve_sim
         continue-on-error: true
-        timeout-minutes: 25
+        # A slow Apple queue only costs the simulator (the build then ships without it), so give up early.
+        timeout-minutes: 12
         env:
           CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -400,7 +401,7 @@ jobs:
           (cd "$WORK" && ditto -c -k . "$RUNNER_TEMP/serve-sim-helpers.zip")
           SUBMIT_JSON="$(xcrun notarytool submit "$RUNNER_TEMP/serve-sim-helpers.zip" \
             --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 20m --output-format json)"
+            --wait --timeout 10m --output-format json)"
           echo "$SUBMIT_JSON"
           SUBMISSION_ID="$(node -p 'JSON.parse(process.argv[1]).id' "$SUBMIT_JSON")"
           SUBMISSION_STATUS="$(node -p 'JSON.parse(process.argv[1]).status' "$SUBMIT_JSON")"
@@ -411,14 +412,14 @@ jobs:
             exit 1
           fi
 
-      # serve-sim, step 2 of 2 on failure: take the Mach-O files out of the package and leave a marker that the publish
-      # job turns into one line of the GitHub Release body. The simulator host then reports that serve-sim is missing.
-      - name: Remove the serve-sim helpers that were not notarized
+      # serve-sim, step 2 of 2 on failure: take the whole serve-sim folder (middleware, package.json and the Mach-O
+      # files) out of the package, so nothing half-present gets loaded, and leave a marker that the publish job turns
+      # into one line of the GitHub Release body. The simulator then reports that serve-sim is not in this build.
+      - name: Remove serve-sim when its helpers were not notarized
         if: ${{ steps.serve_sim.outcome == 'failure' }}
         run: |
           set -euo pipefail
-          DIST="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app/Contents/Resources/app/out/vs/paradis/contrib/simulator/node/media/serve-sim/dist"
-          rm -f "$DIST/native/serve-sim-native.node" "$DIST/simduo/serve-sim-duo-hid" "$DIST/simax/serve-sim-ax-settings"
+          rm -rf "$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app/Contents/Resources/app/out/vs/paradis/contrib/simulator/node/media/serve-sim"
           echo "darwin-${{ matrix.arch }}" > serve-sim-missing.txt
 
       # sign.ts carries three PARA-PATCHes: empty entitlements for the Computer Use helper, the speech helper and the

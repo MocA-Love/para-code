@@ -237,4 +237,12 @@ async function scratchDir(name: string): Promise<string> {
 			await new Promise<void>(resolve => server.close(() => resolve()));
 		}
 	});
+
+	// 配布のときに serve-sim を外した版: 子を起こさず、その理由を返す
+	test('reports a build without serve-sim instead of starting a host', async () => {
+		let spawned = 0;
+		const host = store.add(new ParadisSimulatorHostProcess({ userDataPath: await scratchDir('noServeSim'), logService: new NullLogService(), socketParentDir: await scratchDir('noServeSimSockets'), serveSimDir: join(SCRATCH_ROOT, 'missing-serve-sim'), spawnChild: () => { spawned++; throw new Error('must not spawn'); } }));
+		const refused = await host.ensure().then(() => 'started', error => error instanceof Error ? error.message : String(error));
+		assert.deepStrictEqual({ spawned, refused, lastError: host.lastError }, { spawned: 0, refused: 'serve-sim is not included in this build of Para Code', lastError: 'serve-sim is not included in this build of Para Code' });
+	});
 });
