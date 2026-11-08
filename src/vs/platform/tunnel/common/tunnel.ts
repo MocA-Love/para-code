@@ -440,11 +440,18 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 				const existingHost = this._tunnels.get(tunnel.tunnelRemoteHost);
 				if (existingHost) {
 					const existing = existingHost.get(tunnel.tunnelRemotePort);
-					if (existing) {
+					// PARA-PATCH: only count down the entry this lease belongs to. After a forced close
+					// (Para Code's "Reforward" in the shared process) a newer entry can sit on the same
+					// host and port, and a stale lease released later must not close it.
+					if (existing && this.isLeaseOfEntry(existing.generation, generation)) {
 						existing.refcount--;
 						await this.tryDisposeTunnel(tunnel.tunnelRemoteHost, tunnel.tunnelRemotePort, existing);
+						// PARA-PATCH: the lease counted down its entry; the hook below is for leases that did not
+						return;
 					}
 				}
+				// PARA-PATCH: tell a subclass that this lease no longer has an entry to count down
+				this.onStaleLeaseReleased(tunnel.tunnelRemoteHost, tunnel.tunnelRemotePort, generation);
 			}
 		};
 		// PARA-PATCH: Returned leases must retain their entry generation even if a
@@ -452,6 +459,18 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 		remoteTunnelGenerations.set(lease, generation);
 		return lease;
 	}
+
+	// PARA-PATCH: whether a lease of `leaseGeneration` counts toward the entry of `entryGeneration`. A
+	// subclass that hands an older entry's references over to a newer one (Para Code's "Reforward")
+	// widens this so those references still count down the newer entry when they are released.
+	protected isLeaseOfEntry(entryGeneration: object, leaseGeneration: object): boolean {
+		return entryGeneration === leaseGeneration;
+	}
+
+	// PARA-PATCH: a lease was released while no entry of its generation is in the ledger (its tunnel
+	// was closed under it). Nothing to do here; Para Code's "Reforward" uses it to drop references
+	// it is keeping for the next tunnel.
+	protected onStaleLeaseReleased(_remoteHost: string, _remotePort: number, _leaseGeneration: object): void { }
 
 	// PARA-PATCH: take the whole TunnelEntry (renamed from tunnel to entry) so the close event can carry its generation
 	private async tryDisposeTunnel(remoteHost: string, remotePort: number, entry: TunnelEntry): Promise<void> {
