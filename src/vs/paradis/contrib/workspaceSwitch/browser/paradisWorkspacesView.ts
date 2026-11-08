@@ -1966,6 +1966,23 @@ export class ParadisWorkspacesView extends ViewPane {
 				// browser 層のこのビューからは ID 経由で呼ぶ (web ビルドでは未登録のため no-op)
 				() => this.commandService.executeCommand('paradis.workspaceSwitch.configureLifecycleScripts', repository.id)
 			),
+			// ワークツリーの削除で残したブランチと、古い依存・ビルド出力の掃除（Orca W3 の G-07）。コマンド実体は electron-browser 層
+			new Action(
+				'paradis.workspaceSwitch.reviewKeptBranches',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.reviewKeptBranchesContext', "残したブランチを確かめる..."),
+				'paradis-menu-icon codicon codicon-git-branch',
+				true,
+				() => this.commandService.executeCommand('paradis.workspaceSwitch.reviewKeptBranches', repository.id)
+			),
+			new Action(
+				'paradis.workspaceSwitch.cleanGeneratedOutputs',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.cleanGeneratedOutputsContext', "古い依存とビルド出力を掃除..."),
+				'paradis-menu-icon codicon codicon-clear-all',
+				true,
+				() => this.commandService.executeCommand('paradis.workspaceSwitch.cleanGeneratedOutputs', repository.id)
+			),
 			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.removeFromList',
