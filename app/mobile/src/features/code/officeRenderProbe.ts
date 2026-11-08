@@ -19,7 +19,7 @@ const OFFICE_RENDER_TICK_MS = 1_000;
 const OFFICE_RENDER_TIMER_LAG_MS = 1_000;
 
 /**
- * Office の WebView に差し込む、描画が済んだか（期待する要素があるか）を PC 側の復旧の判定へ知らせるスクリプト。
+ * Office の WebView に差し込む、描画が済んだか（期待する要素があるか）をアプリ側の復旧の判定（`completeRender`）へ知らせるスクリプト。
  * 2 秒で決めるが、文書が描いている途中（印 `__paradisOfficeBusy`）なら上限まで待ち足す。ただし `#content` が
  * 変わり始めてから {@link OFFICE_RENDER_STALL_MS} の間変わらなければ、止まったとみなして待ち足さない。
  */
