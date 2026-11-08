@@ -221,3 +221,25 @@ export function paradisTabLauncherDevices(ios: readonly IParadisSimulatorDevice[
 		...android.filter(device => device.state === 'device').map(device => ({ kind: 'android' as const, id: device.serial, name: device.name, runtime: device.runtime || 'Android' })),
 	];
 }
+
+/** 「シミュレータを開く ›」の端末の一覧を覚えておく時間。 */
+export const PARADIS_TAB_LAUNCHER_DEVICE_CACHE_MS = 30_000;
+
+/**
+ * 「シミュレータを開く ›」の端末の一覧の短いキャッシュ。一覧は › を開いたときに初めて取る（⌄ を開くたびに
+ * `xcrun simctl` と `adb devices` を起こさない。adb は Android を使わない人の手元でもサーバーを起こすため）。
+ * 取っている最中に開き直したときは、同じ取り出しを待つ。
+ */
+export class ParadisTabLauncherDeviceCache<T> {
+
+	private _entry: { readonly at: number; readonly value: Promise<T> } | undefined;
+
+	constructor(private readonly _ttlMs = PARADIS_TAB_LAUNCHER_DEVICE_CACHE_MS) { }
+
+	get(load: () => Promise<T>, now: number): Promise<T> {
+		if (!this._entry || now - this._entry.at >= this._ttlMs) {
+			this._entry = { at: now, value: load() };
+		}
+		return this._entry.value;
+	}
+}

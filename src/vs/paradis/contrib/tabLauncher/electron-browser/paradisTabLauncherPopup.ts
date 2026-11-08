@@ -67,6 +67,7 @@ import {
 	paradisRestoreLaunchChoice,
 	paradisStoreLaunchChoice,
 	IParadisTabLauncherDevice,
+	ParadisTabLauncherDeviceCache,
 	paradisTabLauncherAgents,
 	paradisTabLauncherDevices,
 	paradisTabLauncherEfforts,
@@ -75,6 +76,9 @@ import {
 } from '../common/paradisTabLauncher.js';
 
 const $ = dom.$;
+
+/** 「シミュレータを開く ›」の端末の一覧（ランチャーを開き直しても 30 秒は取り直さない）。 */
+const deviceCache = new ParadisTabLauncherDeviceCache<readonly IParadisTabLauncherDevice[]>();
 
 /** 開いているタブを検索で出す件数（Orca と同じ 4 件）。 */
 const OPEN_EDITOR_RESULT_LIMIT = 4;
@@ -174,8 +178,6 @@ export class ParadisTabLauncherPopup extends Disposable {
 	private sideToLeft = true;
 	private readonly choices = new Map<string, IParadisTabLauncherChoice>();
 	private hidden = false;
-	/** 「シミュレータを開く ›」に並べる端末（開いたときに取り始める。手元の shared process から）。 */
-	private readonly devices: Promise<readonly IParadisTabLauncherDevice[]>;
 
 	constructor(
 		private readonly host: IParadisTabLauncherHost,
@@ -196,15 +198,10 @@ export class ParadisTabLauncherPopup extends Disposable {
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisAgentChatService private readonly agentChatService: IParadisAgentChatService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
-		@IParadisSimulatorClient simulatorClient: IParadisSimulatorClient,
+		@IParadisSimulatorClient private readonly simulatorClient: IParadisSimulatorClient,
 	) {
 		super();
 		this.window = dom.getWindow(host.anchor);
-		// › を開いたときに待たせないよう、先に取り始める。iOS のシミュレータは macOS だけ（Android は全 OS）
-		this.devices = Promise.all([
-			isMacintosh ? simulatorClient.listDevices().catch(() => []) : Promise.resolve([]),
-			simulatorClient.listAndroidDevices().catch(() => []),
-		]).then(([ios, android]) => paradisTabLauncherDevices(ios, android, isMacintosh));
 		// .monaco-workbench の内側に置く（CSS のセレクタとテーマの変数をそこから効かせる。プリセットのポップアップと同じ）
 		const container = host.anchor.closest<HTMLElement>('.monaco-workbench') ?? this.window.document.body;
 		this.list = dom.append(container, $('.paradis-tab-launcher.paradis-overlay-popover'));
@@ -623,11 +620,18 @@ export class ParadisTabLauncherPopup extends Disposable {
 
 	/**
 	 * 「シミュレータを開く ›」: 起動している端末を並べ、最後に「すべての端末…」（止まっている端末も選べる一覧）。
-	 * 端末の一覧は開いたときに取り始めたものを待つ。届く前にランチャーが閉じた・別の行の › が開いたなら出さない。
+	 * 端末の一覧は › を開いたときに取る（手元の shared process から。30 秒は覚えておく）。iOS のシミュレータは
+	 * macOS だけ（Android は全 OS）。届く前にランチャーが閉じた・別の行の › が開いたなら出さない。
 	 * キーボード（→・Enter）で開いたなら、届いたときに先頭の行へフォーカスを移す。
 	 */
 	private async openSimulatorSide(row: HTMLElement): Promise<void> {
-		const devices = await this.devices;
+		const devices = await deviceCache.get(async () => {
+			const [ios, android] = await Promise.all([
+				isMacintosh ? this.simulatorClient.listDevices().catch(() => []) : Promise.resolve([]),
+				this.simulatorClient.listAndroidDevices().catch(() => []),
+			]);
+			return paradisTabLauncherDevices(ios, android, isMacintosh);
+		}, Date.now());
 		if (this.hidden || !row.isConnected || (this.sides.length > 0 && this.sides[0].ownerRow !== row)) {
 			return;
 		}

@@ -19,7 +19,9 @@
 // 接続元の確認（`context.classifyCaller()`）は、要求・インストール・起動・権限の付与だけに掛ける。
 // 回転とジェスチャーは既存の mobile_tap などと同じく、利用者がその端末をそのペインへ渡した後の画面の操作
 // なので、トークンだけで動かす（tmux・WSL・採用した Codex app-server では確認を通らないため）。
-// SSH の接続先のペイン（`tunnel`）は、要求・インストール・起動・権限の付与を断る（既存の方針が無いため）。
+// SSH の接続先のペイン（`tunnel`）は、端末の要求だけを受ける（q.html の案 B。シミュレータは手元の Mac の機能で、
+// 要求は必ず Mac の窓の承認ダイアログを通るため）。インストール・起動・権限の付与は断る（.app が接続先にあり、
+// 入れたアプリは Mac の権限で動くため）。
 //
 // インストールは毎回、別に承認を取る。入れたアプリは Para Code の権限で動き、エージェントのサンドボックス
 // （作業フォルダの制限）の外に出られるため。起動は入っているアプリを動かすだけなので承認しない。
@@ -102,7 +104,7 @@ const realSleep: ParadisMobileSleep = (ms, signal) => new Promise<void>(resolve 
 
 const NO_DEVICE_ATTACHED_MESSAGE = 'No mobile device is attached to this terminal pane. Call mobile_request_device to ask the user for one (or ask them to attach it from Para Code), then try again.';
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it does not attach devices, install or launch apps, or grant permissions for it. This happens inside tmux, screen, zellij, WSL or a container. Ask the user to do it from Para Code; screen tools such as mobile_tap keep working on a device already attached to this pane.';
-const SSH_REFUSED_MESSAGE = 'This terminal pane runs on an SSH host. Para Code does not let an agent on an SSH host request a device on this computer, install apps, launch apps or grant permissions there. Ask the user to do it on this computer.';
+const SSH_REFUSED_MESSAGE = 'This terminal pane runs on an SSH host. Para Code does not let an agent on an SSH host install apps, launch apps or grant permissions on a device on this computer. Ask the user to do it on this computer. mobile_request_device still works: the user approves it in Para Code.';
 const REQUEST_TIMEOUT_MESSAGE = 'The user did not answer in time. Ask the user in the conversation before asking again.';
 const REQUEST_CANCELLED_MESSAGE = 'The request was cancelled before the user answered.';
 const INSTALL_DENIED_MESSAGE = 'The user declined to install this app. Do not try again straight away: Para Code turns down installs from this pane onto this device for a few minutes.';
@@ -220,10 +222,14 @@ export const PARADIS_MOBILE_DEVICE_OPS_TOOLS: readonly IParadisMcpToolDefinition
 const TOOL_NAMES: ReadonlySet<string> = new Set(PARADIS_MOBILE_DEVICE_OPS_TOOLS.map(tool => tool.name));
 
 /**
- * 接続元を確かめるツール（端末の割り当て・アプリの操作）。`unverified` と SSH の接続先（`tunnel`）は断る。
+ * 接続元を確かめるツール（端末の割り当て・アプリの操作）。`unverified` は断る。SSH の接続先（`tunnel`）は
+ * {@link SSH_ALLOWED_TOOLS} だけ受ける。
  * ここに無いツール（回転・ジェスチャー）は画面の操作なので、既存の mobile_tap などと同じくトークンだけで動く。
  */
 const CALLER_CHECKED_TOOLS: ReadonlySet<string> = new Set(['mobile_request_device', 'mobile_install_app', 'mobile_launch_app', 'mobile_grant_permission']);
+
+/** SSH の接続先のペインからも受けるツール。端末の要求は必ず Mac の窓の承認ダイアログを通る。 */
+const SSH_ALLOWED_TOOLS: ReadonlySet<string> = new Set(['mobile_request_device']);
 
 interface IToolResult {
 	content: { type: 'text'; text: string }[];
@@ -281,7 +287,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 				if (caller === 'unverified') {
 					return errorResult(CALLER_UNVERIFIED_MESSAGE);
 				}
-				if (caller === 'tunnel') {
+				if (caller === 'tunnel' && !SSH_ALLOWED_TOOLS.has(name)) {
 					return errorResult(SSH_REFUSED_MESSAGE);
 				}
 			}

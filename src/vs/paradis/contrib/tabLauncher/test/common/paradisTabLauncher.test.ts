@@ -15,6 +15,7 @@ import {
 	paradisParseStoredLaunchChoices,
 	paradisRestoreLaunchChoice,
 	paradisStoreLaunchChoice,
+	ParadisTabLauncherDeviceCache,
 	paradisTabLauncherAgents,
 	paradisTabLauncherDevices,
 	paradisTabLauncherEfforts,
@@ -137,5 +138,14 @@ suite('paradisTabLauncher', () => {
 			other: [{ kind: 'android', id: 'emulator-5554', name: 'Pixel 9', runtime: 'Android' }],
 			none: [],
 		});
+	});
+
+	// 一覧は › を開いたときに取り、30 秒は取り直さない（⌄ を開くたびに simctl・adb を起こさない）
+	test('keeps the device list for a short while', async () => {
+		const cache = new ParadisTabLauncherDeviceCache<number>(30_000);
+		let loads = 0;
+		const load = async () => ++loads;
+		const values = [await cache.get(load, 0), await cache.get(load, 29_999), await cache.get(load, 30_000), await cache.get(load, 30_001)];
+		assert.deepStrictEqual({ values, loads }, { values: [1, 1, 2, 2], loads: 2 });
 	});
 });
