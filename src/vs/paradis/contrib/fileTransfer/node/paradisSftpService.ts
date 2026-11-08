@@ -243,7 +243,12 @@ export class ParadisSftpService extends Disposable {
 	private async withIoDeadline<T>(open: IOpenHandle, run: (progress: () => void) => Promise<T>): Promise<T> {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let expire: (() => void) | undefined;
+		// 決まった後に遅れて届いた応答が progress を呼んでも、タイマーを作り直さない。
+		let settled = false;
 		const arm = () => {
+			if (settled) {
+				return;
+			}
 			clearTimeout(timer);
 			timer = setTimeout(() => expire?.(), this.ioTimeoutMs);
 		};
@@ -257,6 +262,7 @@ export class ParadisSftpService extends Disposable {
 		try {
 			return await Promise.race([run(arm), deadline]);
 		} finally {
+			settled = true;
 			clearTimeout(timer);
 			expire = undefined;
 		}

@@ -211,4 +211,23 @@ suite('ParadisClaudeModEnvironment', () => {
 		const remaining = ((await fileService.resolve(joinPath(HOME, '.para-code', 'claude-mod'))).children ?? []).filter(child => /^[0-9a-f]{16}$/.test(child.name)).map(child => child.resource.fsPath);
 		assert.deepStrictEqual(remaining, [current]);
 	});
+
+	test('removes temporary files an interrupted copy left in the mod folder once they are old, and keeps recent ones', async () => {
+		const first = create();
+		await first.ready;
+		const hooks = URI.file(`${first.pluginDirectory()!}/hooks`);
+		await fileService.writeFile(joinPath(hooks, 'register.ts.0b6c1a2e-3f4d-4e5a-9b8c-7d6e5f4a3b2c.paratmp'), VSBuffer.fromString('half'));
+		await fileService.writeFile(joinPath(hooks, 'notes.paratmp'), VSBuffer.fromString('not ours'));
+		const soon = create({ now: () => Date.now() + 60_000 });
+		await soon.ready;
+		const kept = await listInstalled();
+		const later = create({ now: () => Date.now() + 11 * 60_000 });
+		await later.ready;
+		const tidied = await listInstalled();
+		const temporary = (files: string[]) => files.filter(file => file.endsWith('.paratmp'));
+		assert.deepStrictEqual({ kept: temporary(kept), tidied: temporary(tidied) }, {
+			kept: ['hooks/notes.paratmp', 'hooks/register.ts.0b6c1a2e-3f4d-4e5a-9b8c-7d6e5f4a3b2c.paratmp'],
+			tidied: ['hooks/notes.paratmp'],
+		});
+	});
 });
