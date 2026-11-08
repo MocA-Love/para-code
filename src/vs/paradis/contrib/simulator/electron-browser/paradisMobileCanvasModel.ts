@@ -9,7 +9,7 @@
 // アタッチUI（バインディングダイアログの「モバイル端末」タブ）が使う renderer 側のモデル。
 // shared process の台帳へIPCで話し、端末一覧とアタッチ状況をキャッシュする。
 //
-// 端末一覧は Mobile Canvas ホストの起動を伴うことがあり安くないので、ダイアログが
+// 端末一覧は serve-sim のホストの起動や adb の呼び出しを伴うことがあり安くないので、ダイアログが
 // 開いている間だけ `beginPolling()` で定期取得し、閉じたら止める。
 
 import { IntervalTimer } from '../../../../base/common/async.js';
@@ -125,7 +125,7 @@ export class ParadisMobileCanvasModel extends Disposable implements IParadisMobi
 	async detach(paneToken: string): Promise<void> {
 		// 写しているかを知っているのは shared process の台帳なので、外すのは毎回頼む。読み直す（端末の一覧を取りに
 		// 行き、ホストを起動しうる）のは、画面が見ているか、そのペインがアタッチされていたときだけ
-		// （Mobile Canvas を使っていないときに、ターミナルを閉じるたびにホストを起こさない）
+		// （シミュレータを使っていないときに、ターミナルを閉じるたびにホストを起こさない）
 		const wasAttached = this.snapshot.attachments.some(attachment => attachment.paneToken === paneToken);
 		await this.sharedProcessService.getChannel(PARADIS_MOBILE_CANVAS_CHANNEL).call<void>('detach', { paneToken });
 		if (wasAttached || this._pollers > 0) {

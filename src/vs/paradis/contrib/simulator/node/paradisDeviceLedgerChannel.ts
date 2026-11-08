@@ -14,10 +14,9 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { PARADIS_MOBILE_CANVAS_CHANNEL } from '../common/paradisMobileCanvas.js';
-import { ParadisMobileCanvasHostClient } from './paradisMobileCanvasHostClient.js';
-import { ParadisMobileCanvasService } from './paradisMobileCanvasService.js';
+import { ParadisMobileCanvasService } from './paradisDeviceLedger.js';
 import { ParadisMobileDeviceCommands } from './paradisMobileDeviceCommands.js';
-import { IParadisMobileHostRequester, ParadisMobileDeviceOpsToolProvider } from './paradisMobileDeviceOpsToolProvider.js';
+import { IParadisMobileHostRequester, ParadisMobileDeviceOpsToolProvider } from './paradisSimulatorDeviceOps.js';
 
 export class ParadisMobileCanvasChannel implements IServerChannel<string> {
 
@@ -51,27 +50,25 @@ export class ParadisMobileCanvasChannel implements IServerChannel<string> {
 }
 
 /**
- * shared process で Mobile Canvas 連携を立ち上げる。
+ * shared process で端末の台帳（端末⇔ペイン）と mobile_* のツールを立ち上げる。`host` は端末の口
+ * （paradisSimulatorDeviceRouter.ts。iOS は serve-sim、Android は adb）。
  *
  * `registerToolProvider` には ParadisAgentBrowserService の同名メソッドを渡す。こうすることで
  * モバイル用ツールが既存のMCPエンドポイント（エージェントCLIが既に登録している para-browser）へ
- * 相乗りし、ユーザー側のMCP設定追加が不要になる。
+ * 相乗りし、ユーザー側のMCP設定追加が不要になる。renderer とのチャネル名（paradisMobileCanvas）と
+ * モデルの形は、共有ダイアログの「モバイル端末」タブを変えないために前のまま残す。
  */
-export function registerParadisMobileCanvas(
+export function registerParadisDeviceLedger(
 	server: IPCServer<string>,
-	builtinExtensionsPath: string,
+	host: IParadisMobileHostRequester,
 	logService: ILogService,
 	registerToolProvider: (provider: ParadisMobileCanvasService) => void,
-	// シミュレータの作り直し（③）: ホストへの要求を、iOS は serve-sim へ回す振り分けで包む（simulator/node/paradisSimulator.sharedProcess.ts）
-	wrapHost?: (hostClient: IParadisMobileHostRequester) => IParadisMobileHostRequester,
 ): { readonly service: ParadisMobileCanvasService; readonly deviceOps: ParadisMobileDeviceOpsToolProvider } {
-	const hostClient: IParadisMobileHostRequester = wrapHost ? wrapHost(new ParadisMobileCanvasHostClient(builtinExtensionsPath, logService)) : new ParadisMobileCanvasHostClient(builtinExtensionsPath, logService);
-	const service = new ParadisMobileCanvasService(hostClient, logService);
+	const service = new ParadisMobileCanvasService(host, logService);
 	server.registerChannel(PARADIS_MOBILE_CANVAS_CHANNEL, new ParadisMobileCanvasChannel(service));
 	registerToolProvider(service);
-	// 端末の要求・回転・ジェスチャー・アプリの操作（B13）は別のプロバイダにして、登録口から足す。
-	// 台帳（service）とホストへの接続（hostClient）はここにしか無いので、ここで組み立てる
-	const deviceOps = new ParadisMobileDeviceOpsToolProvider(service, hostClient, new ParadisMobileDeviceCommands(), logService);
+	// 端末の要求・回転・ジェスチャー・アプリの操作（B13）は別のプロバイダにして、登録口から足す
+	const deviceOps = new ParadisMobileDeviceOpsToolProvider(service, host, new ParadisMobileDeviceCommands(), logService);
 	service.own(paradisRegisterMcpToolProvider(deviceOps));
 	return { service, deviceOps };
 }

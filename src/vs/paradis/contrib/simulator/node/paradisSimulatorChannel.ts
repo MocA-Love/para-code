@@ -8,8 +8,7 @@
 
 // renderer ⇔ shared process のシミュレータのチャネル（映像と入力の受け渡しの口）。登録は `paradisSimulator.sharedProcess.ts`。
 //
-// 設定 `paradis.simulator.enabled` がオフのとき・macOS でないときは、`getStatus` 以外の呼び出しを断り、
-// ホストも起こさない（q.html Q585 の D2: Mobile Canvas を外すまでは今の Mobile Canvas と mobile_* がそのまま動く）。
+// macOS でないときは、`getStatus` 以外の iOS の呼び出しを断り、ホストも起こさない。
 //
 // 映像は `frames` のイベントで 1 枚ずつ送る。送るのは「1 枚まで先行、追いつかなければ最新の 1 枚だけ」:
 // 受け取った側が `ackFrame` を呼ぶまで次は送らず、その間に届いた分は最新の 1 枚だけを残す。上限は 30fps。
@@ -20,7 +19,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_ENABLED_SETTING, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold, paradisSimulatorInputFrame } from '../common/paradisSimulatorFrames.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
@@ -185,7 +184,6 @@ export class ParadisSimulatorService extends Disposable {
 	constructor(
 		private readonly _host: IParadisSimulatorHostProvider & { stop(): Promise<void> },
 		private readonly _backend: ParadisServeSimBackend,
-		private readonly _isEnabled: () => boolean,
 		private readonly _supported: boolean,
 		private readonly _logService: ILogService,
 		private readonly _deviceHub: Pick<ParadisSimulatorDeviceHub, 'isRunning' | 'open'> = new ParadisSimulatorDeviceHub(),
@@ -197,16 +195,13 @@ export class ParadisSimulatorService extends Disposable {
 	}
 
 	getStatus(): IParadisSimulatorStatus {
-		return { enabled: this._isEnabled(), supported: this._supported, hostRunning: this._host.isRunning, hostError: this._host.lastError };
+		return { supported: this._supported, hostRunning: this._host.isRunning, hostError: this._host.lastError };
 	}
 
-	/** 使えないときは理由を投げる。 */
+	/** iOS のシミュレータ（serve-sim のホスト）を使えないときは理由を投げる。Android の呼び出しは全 OS で使う（Q588）。 */
 	assertAvailable(): void {
 		if (!this._supported) {
 			throw new Error('The iOS simulator is only available on macOS');
-		}
-		if (!this._isEnabled()) {
-			throw new Error(`The simulator is turned off (${PARADIS_SIMULATOR_ENABLED_SETTING})`);
 		}
 	}
 
@@ -247,13 +242,11 @@ export class ParadisSimulatorService extends Disposable {
 
 	/** 起動していない Android の AVD を起動する（エージェントの要求を承認したとき。起動しきるのは待たない）。 */
 	async bootAndroid(deviceId: string): Promise<void> {
-		this.assertAvailable();
 		await this._android?.adb.bootAvd(deviceId);
 	}
 
 	/** Android の端末の一覧（エディタのタブを開くため。adb が無ければ空）。 */
 	async listAndroidDevices(): Promise<IParadisAndroidDeviceSummary[]> {
-		this.assertAvailable();
 		const entries = await this._android?.adb.listDevices().catch(() => []) ?? [];
 		return entries.flatMap(entry => {
 			const record = entry as Record<string, unknown>;
@@ -266,7 +259,6 @@ export class ParadisSimulatorService extends Disposable {
 	onAndroidVideo(serial: string): Event<ParadisAndroidVideoWire> {
 		const scrcpy = this._android?.scrcpy;
 		try {
-			this.assertAvailable();
 			if (!scrcpy || !paradisAndroidSerialOf(`${PARADIS_ANDROID_SERIAL_PREFIX}${serial}`)) {
 				throw new Error('Android video is not available');
 			}
@@ -284,7 +276,6 @@ export class ParadisSimulatorService extends Disposable {
 
 	/** ペインからの Android の人の入力（scrcpy の操作のソケット）。 */
 	async androidInput(serial: string, input: unknown): Promise<void> {
-		this.assertAvailable();
 		const scrcpy = this._android?.scrcpy;
 		if (!scrcpy || !paradisAndroidSerialOf(`${PARADIS_ANDROID_SERIAL_PREFIX}${serial}`)) {
 			throw new Error('Android input is not available');
@@ -302,7 +293,6 @@ export class ParadisSimulatorService extends Disposable {
 
 	/** 次の key frame を求める（renderer の復号が崩れたとき）。 */
 	async androidResetVideo(serial: string): Promise<void> {
-		this.assertAvailable();
 		await this._android?.scrcpy?.use(serial, session => session.resetVideo());
 	}
 

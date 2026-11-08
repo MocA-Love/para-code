@@ -14,10 +14,9 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileDevice } from '../../common/paradisMobileCanvas.js';
 import { paradisDeviceHeldByAnotherPane } from '../../common/paradisMobileDeviceOps.js';
-import { ParadisMobileCanvasHostClient } from '../../node/paradisMobileCanvasHostClient.js';
-import { ParadisMobileCanvasService } from '../../node/paradisMobileCanvasService.js';
+import { ParadisMobileCanvasService } from '../../node/paradisDeviceLedger.js';
 import { IParadisMobileCommandResult, IParadisMobileFileProbe, IParadisMobileStagingFs, ParadisMobileDeviceCommands, paradisAdbCandidates, paradisNodeMobileFileProbe, paradisNodeMobileStagingFs } from '../../node/paradisMobileDeviceCommands.js';
-import { IParadisMobileDeviceLedger, ParadisMobileDeviceOpsToolProvider } from '../../node/paradisMobileDeviceOpsToolProvider.js';
+import { IParadisMobileDeviceLedger, IParadisMobileHostRequester, ParadisMobileDeviceOpsToolProvider } from '../../node/paradisSimulatorDeviceOps.js';
 
 const PANE = 'pane-a';
 const OTHER_PANE = 'pane-b';
@@ -656,7 +655,7 @@ suite('ParadisMobileCanvasService screen tools', () => {
 					? [{ id: 'ios:iphone', udid: IOS_UDID, name: 'iPhone 17', platform: 'iOS', state: 'Booted' }, { id: 'ios:alias', udid: IOS_UDID, name: 'iPhone 17 (alias)', platform: 'iOS', state: 'Booted' }]
 					: {};
 			},
-		} as unknown as ParadisMobileCanvasHostClient;
+		} as unknown as IParadisMobileHostRequester;
 		const service = store.add(new ParadisMobileCanvasService(hostClient, new NullLogService()));
 		await service.attach(PANE, 'ios:iphone', undefined);
 		const tap = await service.callTool(PANE, 'mobile_tap', { x: 1, y: 2 }) as { isError?: boolean };

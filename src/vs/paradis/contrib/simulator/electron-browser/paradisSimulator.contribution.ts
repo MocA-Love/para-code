@@ -7,8 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // シミュレータのエディタのペイン・タブの復元・コマンド「シミュレータを開く」を登録する
-// （paradis.electron-browser.contribution.ts から読む）。設定 paradis.simulator.enabled がオフの間、
-// コマンドはパレットに出ない。復元したタブはペインの中でオフであることを知らせる。
+// （paradis.electron-browser.contribution.ts から読む）。
 
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -16,8 +15,6 @@ import { URI } from '../../../../base/common/uri.js';
 import { ResourceContextKey } from '../../../../workbench/common/contextkeys.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { IsMacContext } from '../../../../platform/contextkey/common/contextkeys.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -27,7 +24,7 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IParadisSimulatorDevice, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_ENABLED_SETTING, PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paradisIsSimulatorUdid, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paradisIsSimulatorUdid, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 import { IParadisAndroidDeviceSummary, paradisAndroidAvdOf, paradisAndroidSerialOf } from '../common/paradisAndroid.js';
 import { ParadisAndroidEditor } from './paradisAndroidEditor.js';
@@ -67,7 +64,6 @@ registerAction2(class ParadisOpenSimulatorAction extends Action2 {
 			id: PARADIS_SIMULATOR_OPEN_COMMAND_ID,
 			title: localize2('paradis.simulator.open', "シミュレータを開く"),
 			category: localize2('paradis.category', "Para Code"),
-			precondition: ContextKeyExpr.and(IsMacContext, ContextKeyExpr.equals(`config.${PARADIS_SIMULATOR_ENABLED_SETTING}`, true)),
 			f1: true,
 		});
 	}
@@ -80,12 +76,15 @@ registerAction2(class ParadisOpenSimulatorAction extends Action2 {
 		const editorGroupsService = accessor.get(IEditorGroupsService);
 		const configurationService = accessor.get(IConfigurationService);
 
-		let devices: IParadisSimulatorDevice[];
-		try {
-			devices = await client.listDevices();
-		} catch (error) {
-			notificationService.error(localize('paradis.simulator.open.listFailed', "シミュレータの一覧を取れませんでした: {0}", error instanceof Error ? error.message : String(error)));
-			return;
+		// iOS のシミュレータは macOS だけ（Android は全 OS）
+		let devices: IParadisSimulatorDevice[] = [];
+		if (isMacintosh) {
+			try {
+				devices = await client.listDevices();
+			} catch (error) {
+				notificationService.error(localize('paradis.simulator.open.listFailed', "シミュレータの一覧を取れませんでした: {0}", error instanceof Error ? error.message : String(error)));
+				return;
+			}
 		}
 		const device = typeof udid === 'string' ? devices.find(candidate => candidate.udid === udid) : undefined;
 		if (device) {
@@ -121,11 +120,11 @@ registerAction2(class ParadisOpenSimulatorAction extends Action2 {
 	}
 });
 
-// エージェントの端末の要求を承認したとき（mobileCanvas/electron-browser/paradisMobileDeviceRequest.contribution.ts から）。
-// 新しい仕組みのシミュレータなら、その画面をペインのターミナルの右に開き、止まっていれば起動する。
+// エージェントの端末の要求を承認したとき（paradisMobileDeviceRequest.contribution.ts から）。
+// その端末の画面をペインのターミナルの右に開き、止まっていれば起動する。
 CommandsRegistry.registerCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, async (accessor, paneToken: unknown, deviceId: unknown) => {
 	const configurationService = accessor.get(IConfigurationService);
-	if (!isMacintosh || configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) !== true || typeof paneToken !== 'string' || typeof deviceId !== 'string') {
+	if (typeof paneToken !== 'string' || typeof deviceId !== 'string') {
 		return;
 	}
 	const client = accessor.get(IParadisSimulatorClient);
@@ -141,7 +140,7 @@ CommandsRegistry.registerCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, asy
 		await paradisOpenAndroidEditor(serial, name, editorService, editorGroupsService, configurationService, { paneInstanceId });
 		return;
 	}
-	if (!udid) {
+	if (!udid || !isMacintosh) {
 		// 起動していない Android の AVD なら起動する（起動した後の画面は「シミュレータを開く」か共有ダイアログから開く）
 		if (paradisAndroidAvdOf(deviceId)) {
 			await client.bootAndroid(deviceId).catch(error => notificationService.error(localize('paradis.simulator.android.bootFailed', "Android のエミュレータを起動できませんでした: {0}", error instanceof Error ? error.message : String(error))));
@@ -187,7 +186,7 @@ registerAction2(class ParadisAssignSimulatorToTerminalAction extends Action2 {
 /** Android の端末の画面をタブに開く（共有ダイアログの「画面を開く」から。引数は serial）。 */
 CommandsRegistry.registerCommand(PARADIS_SIMULATOR_OPEN_ANDROID_COMMAND_ID, async (accessor, serial: unknown) => {
 	const configurationService = accessor.get(IConfigurationService);
-	if (!isMacintosh || configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) !== true || typeof serial !== 'string' || !paradisAndroidSerialOf(`android:serial:${serial}`)) {
+	if (typeof serial !== 'string' || !paradisAndroidSerialOf(`android:serial:${serial}`)) {
 		return;
 	}
 	const client = accessor.get(IParadisSimulatorClient);
