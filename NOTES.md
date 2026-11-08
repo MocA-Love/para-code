@@ -2142,6 +2142,7 @@ Mac での実測で分かった注意（2026-11-08、#806・#808 の確認時）
 - Metro: ワークツリーで `git checkout` しても変更を拾わず、古い JS を配ることがある。`expo start --clear` で直る。8081 は Para Code が使うので、別のポートで立てる。CDP は Origin をそのポートに合わせないと 401 になる
 - Device Hub: 終了すると、起動中のシミュレータがすべて止まる。ハードウェアキーボード無しで試すときは、Device Hub を立ち上げずに `xcrun simctl boot` だけで起動する。キーボードありで試すときだけ `open -g` で立ち上げる
 - Face ID: シミュレータを起動し直すと登録が外れる。`notifyutil -s com.apple.BiometricKit.enrollmentChanged 1` と `-p` で登録し直す。照合の `com.apple.BiometricKit_Sim.pearl.match` は、アプリの認証の画面が出てから送る（画面より先に送ると効かない）
+- Metro のポート: Para Code の SSH の窓は、SSH 先のポート（例 8095・8097）を手元の 127.0.0.1 へ自動で転送する。手元で同じ番号の Metro を立てると、IPv4 の 127.0.0.1 は Para Code の転送に、IPv6 は Metro に向く。Metro は、誰も使っていない番号で立てる
 
 開発用（`__DEV__` のときだけ）: ペアリングの無いシミュレータでは、Metro の CDP から `globalThis.__paraDev.demo()` で見本のデータ（`src/dev/demoData.ts`）を入れ、`__paraDev.setWidth(600)` でアプリの幅を狭めて 1列を確かめる（`src/dev/devWidthFrame.tsx`。`setWidth(undefined)` で戻す）。
 
