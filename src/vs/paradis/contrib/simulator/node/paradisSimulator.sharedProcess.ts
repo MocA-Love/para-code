@@ -49,6 +49,7 @@ export function registerParadisSimulator(
 	registerToolProvider: (provider: ParadisMobileCanvasService) => void,
 ): IParadisSimulatorRegistration {
 	const store = new DisposableStore();
+	// iOS のシミュレータ（serve-sim のホスト・Device Hub）は macOS だけ。Android（adb・scrcpy）は全 OS（Q588）
 	const useServeSim = () => isMacintosh;
 
 	// ホストはここでは起こさない（最初の要求で起こす）。macOS 以外でも作るだけなら何も起きない
@@ -75,7 +76,7 @@ export function registerParadisSimulator(
 
 	// モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは para-browser の MCP サーバーへ相乗りさせるため、
 	// エージェントCLI側に追加のMCP設定は要らない
-	const router = new ParadisSimulatorDeviceRouter(deviceHost, android, useServeSim, useServeSim, logService);
+	const router = new ParadisSimulatorDeviceRouter(deviceHost, android, useServeSim, () => true, logService);
 	const { service: ledger, deviceOps } = registerParadisDeviceLedger(server, router, logService, registerToolProvider);
 	ledger.setListNotice(() => router.androidNotice);
 	store.add(ledger);
