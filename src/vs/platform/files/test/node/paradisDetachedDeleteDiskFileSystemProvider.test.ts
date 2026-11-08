@@ -24,12 +24,15 @@ import { ParadisDetachedDeleteDiskFileSystemProvider, paradisSpawnRemove } from 
 
 	let root: string;
 	let dataPath: string;
+	let tempRoot: string;
 	let removed: string[];
 
 	setup(async () => {
 		root = getRandomTestPath(tmpdir(), 'vsctests', 'paradisdetacheddelete');
 		dataPath = join(root, 'data');
+		tempRoot = join(root, 'tmp');
 		removed = [];
+		await promises.mkdir(tempRoot, { recursive: true });
 		await promises.mkdir(join(root, 'work', 'big', 'nested'), { recursive: true });
 		await promises.writeFile(join(root, 'work', 'big', 'nested', 'a.js'), 'a');
 		await promises.writeFile(join(root, 'work', 'single.txt'), 's');
@@ -47,7 +50,7 @@ import { ParadisDetachedDeleteDiskFileSystemProvider, paradisSpawnRemove } from 
 	}
 
 	function create(spawnRemove: (path: string) => Promise<number | null>, data: string | undefined = dataPath): ParadisDetachedDeleteDiskFileSystemProvider {
-		return store.add(new ParadisDetachedDeleteDiskFileSystemProvider(new NullLogService(), data, spawnRemove));
+		return store.add(new ParadisDetachedDeleteDiskFileSystemProvider(new NullLogService(), data, spawnRemove, tempRoot));
 	}
 
 	test('moves a folder deleted with its contents into the data folder and removes it in another process without waiting', async () => {
@@ -108,19 +111,46 @@ import { ParadisDetachedDeleteDiskFileSystemProvider, paradisSpawnRemove } from 
 		assert.deepStrictEqual({ removed, singleExists: existsSync(join(root, 'work', 'single.txt')) }, { removed: [], singleExists: false });
 	});
 
-	test('removes leftovers of an earlier server in the data folder, and nothing else, when it starts', async () => {
+	test('removes leftovers of an earlier server in the data folder and the temp folder, and nothing else, when it starts', async () => {
 		const trash = join(dataPath, 'paradisDeleting');
 		await promises.mkdir(join(trash, '.para-deleting-left', 'x'), { recursive: true });
+		await promises.mkdir(join(tempRoot, '.para-deleting-temp', 'x'), { recursive: true });
 		await promises.writeFile(join(trash, 'unrelated.txt'), 'u');
+		await promises.writeFile(join(tempRoot, 'unrelated.txt'), 'u');
 		const done = new DeferredPromise<void>();
 		create(async path => {
 			removed.push(path);
 			await promises.rm(path, { recursive: true, force: true });
+			if (removed.length === 2) {
+				done.complete();
+			}
+			return 0;
+		});
+		await done.p;
+		assert.deepStrictEqual({
+			removed,
+			unrelated: [existsSync(join(trash, 'unrelated.txt')), existsSync(join(tempRoot, 'unrelated.txt'))],
+		}, {
+			removed: [join(trash, '.para-deleting-left'), join(tempRoot, '.para-deleting-temp')],
+			unrelated: [true, true],
+		});
+	});
+
+	test('keeps removing the other leftovers when one cannot be removed', async () => {
+		const trash = join(dataPath, 'paradisDeleting');
+		await promises.mkdir(join(trash, '.para-deleting-left'), { recursive: true });
+		await promises.mkdir(join(tempRoot, '.para-deleting-temp'), { recursive: true });
+		const done = new DeferredPromise<void>();
+		create(async path => {
+			removed.push(path);
+			if (removed.length === 1) {
+				throw new Error('spawn failed');
+			}
 			done.complete();
 			return 0;
 		});
 		await done.p;
-		assert.deepStrictEqual({ removed, unrelated: existsSync(join(trash, 'unrelated.txt')) }, { removed: [join(trash, '.para-deleting-left')], unrelated: true });
+		assert.deepStrictEqual(removed, [join(trash, '.para-deleting-left'), join(tempRoot, '.para-deleting-temp')]);
 	});
 
 	test('removes a folder with rm in a child process', async () => {
