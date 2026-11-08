@@ -123,7 +123,7 @@ export class BrowserViewEmulator extends Disposable {
 		// scale makes Chromium misroute clicks on rounded or overlapping cross-process iframes (paraBrowserViewZoom.ts)
 		const params: Electron.Parameters = paraBrowserViewEmulationParams(this.browser.webContents, {
 			width: w, height: h, pageScale: s * z, mobile, deviceScaleFactor: this._device.deviceScaleFactor,
-			onReady: () => { this._lastApplied = undefined; this._reapply(); },
+			onReady: () => { this._lastApplied = undefined; this._reapply(); }, log: this.logService,
 		});
 
 		// There's a bug where `screenPosition: 'mobile'` doesn't apply scaling correctly on the first call of enabling emulation,
