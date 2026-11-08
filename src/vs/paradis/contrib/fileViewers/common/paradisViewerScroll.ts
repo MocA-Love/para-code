@@ -15,6 +15,8 @@
 // 基盤が位置を当てるのは webview の初回表示だけで、同じ webview に別の文書を書き込んだときは
 // 前の文書の位置を引き継いでしまう。そのため文書の末尾にスクロールを戻すスクリプトを入れる。
 
+import { paradisScriptStringLiteral } from '../../../common/paradisScriptLiteral.js';
+
 /** ビューアの view state（EditorMemento に保存する形）。 */
 export interface IParadisViewerScrollState {
 	/** `window.scrollY / document.body.clientHeight`。 */
@@ -66,6 +68,6 @@ export function paradisScrollRestoreScript(progress: number, nonce?: string): st
  */
 export function paradisFindHighlightScript(nonce?: string): string {
 	const nonceAttribute = nonce ? ` nonce="${nonce}"` : '';
-	const styleNonce = nonce ? `s.setAttribute('nonce',${JSON.stringify(nonce)});` : '';
+	const styleNonce = nonce ? `s.setAttribute('nonce',${paradisScriptStringLiteral(nonce)});` : '';
 	return `<script${nonceAttribute}>(function(){try{var s=document.createElement('style');${styleNonce}s.textContent='::selection{background-color:var(--vscode-editor-findMatchHighlightBackground,rgba(234,92,0,.33))!important;}';function update(){if(document.hasFocus()){if(s.parentNode){s.parentNode.removeChild(s);}}else if(!s.parentNode){(document.head||document.documentElement).appendChild(s);}}window.addEventListener('focus',update);window.addEventListener('blur',update);update();}catch(err){}})();</script>`;
 }
