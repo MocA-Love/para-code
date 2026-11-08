@@ -426,6 +426,49 @@ suite('ParadisBrowserPageOpsController', () => {
 		await flush();
 	});
 
+	test('a network step that never answers stops holding up the next one after its deadline', async () => {
+		const controller = new ParadisBrowserPageOpsController(undefined, undefined, undefined, undefined, 20);
+		const target = createTarget();
+		let calls = 0;
+		// 最初の Network.enable だけ返事が来ない
+		target.replyGate = method => method === 'Network.enable' && ++calls === 1 ? new Promise<void>(() => { }) : undefined;
+		const stuck = await controller.apply(target, OWNER, 3, { rules: rules([{ url_pattern: '*/ads/*', action: 'block' }]) });
+		await flush();
+		const next = await controller.apply(target, OWNER, 3, { rules: rules([{ url_pattern: '*/ads/*', action: 'block' }]) });
+		const session = target.sessions[0];
+		assert.deepStrictEqual({
+			stuck: stuck.ok ? 'ok' : stuck.reason,
+			next: next.ok ? 'ok' : next.reason,
+			enabled: [session.networkEnabled, session.cacheDisabled, session.bypassServiceWorker, session.fetchEnabled],
+		}, { stuck: 'failed', next: 'ok', enabled: [true, true, true, true] });
+		controller.releaseTarget(target);
+		await flush();
+	});
+
+	test('releasing the tab while a setup is being sent undoes it once, after the setup, with nothing enabled afterwards', async () => {
+		const controller = new ParadisBrowserPageOpsController();
+		const target = createTarget();
+		let reply: () => void = () => { };
+		const held = new Promise<void>(resolve => reply = resolve);
+		target.replyGate = method => method === 'Network.enable' ? held : undefined;
+		const applying = controller.apply(target, OWNER, 3, { rules: rules([{ url_pattern: '*/ads/*', action: 'block' }]) });
+		await flush();
+		// 有効化の途中（Network.enable の返事待ち）でタブを手放す
+		controller.releaseTarget(target);
+		await flush();
+		reply();
+		await applying;
+		await flush();
+		const session = target.sessions[0];
+		assert.deepStrictEqual({
+			commands: session.commands.map(command => command.method),
+			leftovers: target.hasLeftovers(),
+		}, {
+			commands: ['Network.enable', 'Fetch.disable', 'Network.setExtraHTTPHeaders', 'Network.setCacheDisabled', 'Network.setBypassServiceWorker', 'Network.disable'],
+			leftovers: false,
+		});
+	});
+
 	test('overrides on a profile tab go away when another tab opens in the same profile', async () => {
 		const controller = new ParadisBrowserPageOpsController();
 		const profile = new FakeStorage();
