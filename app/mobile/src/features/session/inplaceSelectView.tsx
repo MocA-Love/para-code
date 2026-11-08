@@ -17,10 +17,10 @@ import { buildInplaceSelectHtml, inplaceSelectStartScript, parseInplaceSelectMes
 const READY_AFTER_LOAD_MS = 300;
 
 /**
- * 見せてから選ぶまでの待ち（ms）。透明を外した描画と first responder になるのを待ってから選ぶ
+ * 見せてから選ぶまでの待ち（ms）。透明を外した描画と first responder になるのを待ってから選び、遅れたときのために数回やり直す
  * （先に選ぶと WebKit はつまみも OS のメニューも出さない。`inplaceSelectHtml.ts` の selectScript）。
  */
-const SELECT_AFTER_SHOW_MS = 60;
+const SELECT_ATTEMPTS_MS = [30, 200, 500] as const;
 
 /**
  * 発言の表示の上に重ねる、範囲を選ぶための WebView（Q551 案 4）。重ねる位置と大きさは呼び出し側
@@ -33,7 +33,12 @@ const SELECT_AFTER_SHOW_MS = 60;
  * - `segments` と `point` は差し替えを始めたときの写しを渡すこと。変わると HTML を作り直して選択が消える
  * - WebView の編集メニューに `menuItems` を足さない（足すと react-native-webview が OS の項目を全部消す）
  */
-export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight, onGone }: {
+export function InplaceSelectWebView({ active, segments, point, fg, onReady, onHeight, onGone }: {
+	/**
+	 * 選んでいる間か。false の間は見えないまま読み込んでおく（長押しのメニューが出た時点で用意し、押されたら同じ
+	 * WebView を見せる。WebView の起動に数秒かかることがあるため）。
+	 */
+	active: boolean;
 	segments: readonly InplaceSelectSegment[];
 	point: InplaceSelectPoint | undefined;
 	/** 本文の色。 */
@@ -69,17 +74,18 @@ export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight, o
 			callbacks.current.onReady();
 		}
 	};
-	// 見せた後に、first responder にしてから選ぶ（1 回だけ。HTML を作り直さないので選び直さない）
+	// 見せた後に、first responder にしてから選ぶ。first responder になるのが遅れたときのために数回やり直す
+	// （ページは 2 回目からは何も選ばれていないときだけ選び直す。選び直したものを消さない）
 	useEffect(() => {
-		if (!ready) {
+		if (!ready || !active) {
 			return undefined;
 		}
-		const timer = setTimeout(() => {
+		const timers = SELECT_ATTEMPTS_MS.map(delay => setTimeout(() => {
 			webRef.current?.requestFocus();
 			webRef.current?.injectJavaScript(inplaceSelectStartScript());
-		}, SELECT_AFTER_SHOW_MS);
-		return () => clearTimeout(timer);
-	}, [ready]);
+		}, delay));
+		return () => timers.forEach(clearTimeout);
+	}, [ready, active]);
 	// 読み込んだのにスクリプトが知らせてこないときも、選べるように出す（高さは元の表示のまま）
 	const loadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	useEffect(() => () => clearTimeout(loadTimer.current), []);
@@ -100,7 +106,7 @@ export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight, o
 	};
 
 	return (
-		<View style={[styles.fill, ready ? null : styles.pending]}>
+		<View style={[styles.fill, ready && active ? null : styles.pending]}>
 			<WebView
 				ref={webRef}
 				style={styles.web}

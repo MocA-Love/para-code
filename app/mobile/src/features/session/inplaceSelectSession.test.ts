@@ -2,7 +2,7 @@
 
 import type { GestureResponderEvent } from 'react-native';
 import { describe, expect, it } from 'vitest';
-import { beginInplaceSelect, isOutsideTap, observeInplaceSelectTouchEnd, observeInplaceSelectTouchStart } from './inplaceSelectSession.js';
+import { beginInplaceSelect, isHoldCancel, isOutsideTap, observeInplaceSelectTouchEnd, observeInplaceSelectTouchStart } from './inplaceSelectSession.js';
 
 function touch(pageX: number, pageY: number, timestamp: number): GestureResponderEvent {
 	return { nativeEvent: { pageX, pageY, timestamp, touches: [] } } as unknown as GestureResponderEvent;
@@ -17,6 +17,19 @@ describe('isOutsideTap', () => {
 			isOutsideTap(start, { pageX: 100, pageY: 100, at: 900 }),
 			isOutsideTap(undefined, { pageX: 100, pageY: 100, at: 10 }),
 		]).toEqual([true, false, false, false]);
+	});
+});
+
+describe('isHoldCancel', () => {
+	it('prepares the select view only when the menu took a still, held touch, not when a scroll took it', () => {
+		const start = { pageX: 10, pageY: 10, at: 0 };
+		expect([
+			isHoldCancel(start, undefined, 500),
+			isHoldCancel(start, { pageX: 14, pageY: 12 }, 500),
+			isHoldCancel(start, { pageX: 10, pageY: 40 }, 500),
+			isHoldCancel(start, undefined, 120),
+			isHoldCancel(undefined, undefined, 500),
+		]).toEqual([true, true, false, false, false]);
 	});
 });
 
