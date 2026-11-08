@@ -14,7 +14,8 @@
 // （【要確認】Mobile Canvas の Android の id と同じ形か。Mac で確かめる）。AVD の id を割り当てたペインは、
 // そのエミュレータが起動したら、その serial へ回す（`adb -s <serial> emu avd name` で見分ける）。
 // 座標の単位はポイント（画素 ÷ density/160）。adb の input は画素を受けるので掛け直して送る。
-// 2 本指のピンチは adb の input ではできないので断る（⑥b で scrcpy の control に替える）。
+// 2 本指のピンチと、ASCII でない文字（日本語など）は、同梱した scrcpy-server の操作のソケットで送る（⑥b。
+// paradisScrcpySessions.ts）。scrcpy を使えないときは断る文を返す。
 
 import { execFile, spawn } from 'child_process';
 import { homedir } from 'os';
@@ -22,6 +23,9 @@ import { dirname, join } from '../../../../../base/common/path.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { paradisAdbCandidates } from '../../../mobileCanvas/node/paradisMobileDeviceCommands.js';
 import { IParadisSimulatorAxSnapshot, paradisFindSimulatorAx, paradisPickSimulatorAxTarget } from '../../common/paradisSimulatorAx.js';
+import { PARADIS_SCRCPY_AGENT_POINTER_BASE, ParadisScrcpyTouchAction, paradisScrcpyTouch } from '../../common/paradisScrcpy.js';
+import { ParadisScrcpySession } from './paradisScrcpySession.js';
+import { ParadisScrcpySessions } from './paradisScrcpySessions.js';
 import { IParadisAdbDevice, PARADIS_ANDROID_AVD_PREFIX, PARADIS_ANDROID_SERIAL_PREFIX, paradisAdbInputText, paradisAndroidAvdOf, paradisAndroidButtonNames, paradisAndroidKeycode, paradisAndroidOrientationName, paradisAndroidRotation, paradisAndroidSerialOf, paradisFilterLogcat, paradisNormalizeUiautomator, paradisParseAdbDevices, paradisParseAvdList, paradisParseSurfaceOrientation, paradisParseWmDensity, paradisParseWmSize } from '../../common/paradisAndroid.js';
 
 /** adb・emulator を呼ぶ口（テストで差し替える）。`binary` なら stdout を bytes で返す。 */
@@ -69,7 +73,13 @@ export interface IParadisAdbDeviceHostOptions {
 	readonly platform?: NodeJS.Platform;
 	readonly home?: string;
 	readonly now?: () => number;
+	readonly sleep?: (ms: number) => Promise<void>;
+	/** scrcpy の通話（2 本指・日本語の入力）。無ければ断る。 */
+	readonly scrcpy?: Pick<ParadisScrcpySessions, 'use'>;
 }
+
+/** ピンチの指の動きの間、画面の大きさを覚えておく時間。 */
+const TOUCH_DISPLAY_CACHE_MS = 3000;
 
 /** 起動を頼んでから、起動しきって adb に出てくるまでを待つ時間（その間は 2 つ目を立てない）。 */
 const AVD_BOOT_GRACE_MS = 3 * 60 * 1000;
@@ -79,13 +89,17 @@ export class ParadisAdbDeviceHost {
 	private readonly _exec: ParadisAdbExec;
 	private readonly _launch: ParadisAdbLaunch;
 	private readonly _now: () => number;
+	private readonly _sleep: (ms: number) => Promise<void>;
 	/** 起動を頼んだ AVD と、その時刻（起動の途中にもう一度頼まれても、2 つ目を立てないため）。 */
 	private readonly _booting = new Map<string, number>();
+	/** ピンチの間に覚えておく画面の大きさ。 */
+	private readonly _touchDisplays = new Map<string, { readonly display: IAndroidDisplay; readonly at: number }>();
 
 	constructor(private readonly _options: IParadisAdbDeviceHostOptions, private readonly _logService: ILogService) {
 		this._exec = _options.exec ?? realExec;
 		this._launch = _options.launch ?? realLaunch;
 		this._now = _options.now ?? Date.now;
+		this._sleep = _options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
 	}
 
 	/** この端末の id をこちらで受け持つか。 */
@@ -101,6 +115,11 @@ export class ParadisAdbDeviceHost {
 			}
 		}
 		throw new Error(PARADIS_ADB_NOT_FOUND);
+	}
+
+	/** adb を呼ぶ（scrcpy の通話が push・reverse に使う）。 */
+	run(args: readonly string[], timeoutMs: number): Promise<string> {
+		return this._adb(args, timeoutMs);
 	}
 
 	private async _adb(args: readonly string[], timeoutMs = 20_000): Promise<string> {
@@ -245,14 +264,19 @@ export class ParadisAdbDeviceHost {
 			}
 			case 'POST /input/text': {
 				const text = typeof args.text === 'string' ? args.text : '';
-				const escaped = text ? paradisAdbInputText(text) : undefined;
-				if (escaped === undefined) {
-					throw new Error(text
-						? 'This Android device can only be typed into with ASCII characters for now (adb input text). Type the rest from the device, or use English text.'
-						: '"text" must be a non-empty string.');
+				if (!text) {
+					throw new Error('"text" must be a non-empty string.');
 				}
-				await this._shell(serial, ['input', 'text', escaped], 30_000);
-				return undefined;
+				const escaped = paradisAdbInputText(text);
+				if (escaped !== undefined) {
+					await this._shell(serial, ['input', 'text', escaped], 30_000);
+					return undefined;
+				}
+				// 日本語などは adb の input では打てないので、端末のクリップボードへ写して貼る（scrcpy）
+				if (!this._options.scrcpy) {
+					throw new Error('This Android device can only be typed into with ASCII characters (adb input text). Type the rest from the device, or use English text.');
+				}
+				return this._options.scrcpy.use(serial, session => paradisPasteKeepingClipboard(session, text, this._sleep));
 			}
 			case 'POST /input/button': {
 				const keycode = typeof args.button === 'string' ? paradisAndroidKeycode(args.button) : undefined;
@@ -272,7 +296,7 @@ export class ParadisAdbDeviceHost {
 				return undefined;
 			}
 			case 'POST /input/touch':
-				throw new Error('Two-finger gestures (pinch) are not available on Android in this version of Para Code.');
+				return this._touch(serial, args);
 			case 'GET /log':
 				return this._readLog(serial, query);
 			default:
@@ -356,6 +380,37 @@ export class ParadisAdbDeviceHost {
 		}
 	}
 
+	/**
+	 * 指 1 本ずつ来るタッチ（ピンチ）を scrcpy のタッチにする。座標はポイント → 画面の画素 → scrcpy の映像の画素
+	 * （server は今の映像の大きさで送ったタッチだけを受ける）。指の番号をそのまま pointer の id にする。
+	 */
+	private async _touch(serial: string, args: Record<string, unknown>): Promise<unknown> {
+		if (!this._options.scrcpy) {
+			throw new Error('Two-finger gestures (pinch) are not available on this Android device.');
+		}
+		const fingerId = typeof args.fingerId === 'number' && Number.isInteger(args.fingerId) && args.fingerId >= 0 && args.fingerId < 10 ? args.fingerId : undefined;
+		const action = args.phase === 'down' ? ParadisScrcpyTouchAction.Down : args.phase === 'move' ? ParadisScrcpyTouchAction.Move : args.phase === 'up' ? ParadisScrcpyTouchAction.Up : undefined;
+		if (fingerId === undefined || action === undefined) {
+			throw new Error('Touches need "fingerId" (0 to 9) and "phase" (down, move or up).');
+		}
+		// 人の指（ペイン。pointer の id 0）と重ならない id にする
+		const pointerId = PARADIS_SCRCPY_AGENT_POINTER_BASE + fingerId;
+		// 指の 1 動きごとに adb で画面の大きさを読むと遅いので、少しの間だけ覚えた値を使う
+		const cached = this._touchDisplays.get(serial);
+		const display = cached && this._now() - cached.at < TOUCH_DISPLAY_CACHE_MS ? cached.display : await this._display(serial);
+		this._touchDisplays.set(serial, { display, at: cached && cached.display === display ? cached.at : this._now() });
+		const x = requireNumber(args, 'x') * display.scale;
+		const y = requireNumber(args, 'y') * display.scale;
+		await this._options.scrcpy.use(serial, async session => {
+			const size = session.size;
+			if (!size) {
+				throw new Error('The Android device has not sent its screen size yet. Try again in a moment.');
+			}
+			await session.send(paradisScrcpyTouch(action, pointerId, x * size.width / display.pixelWidth, y * size.height / display.pixelHeight, size.width, size.height));
+		});
+		return undefined;
+	}
+
 	private async _readLog(serial: string, query: URLSearchParams): Promise<unknown> {
 		const seconds = Math.max(1, Math.min(3600, Math.round(Number(query.get('seconds')) || 60)));
 		const limit = Math.max(1, Math.min(500, Math.round(Number(query.get('limit')) || 500)));
@@ -368,6 +423,35 @@ export class ParadisAdbDeviceHost {
 		const kept = lines.slice(-limit);
 		return { seconds, lines: kept, truncated: lines.length > kept.length };
 	}
+}
+
+/** 貼り付けのキーは端末で非同期に処理されるので、返事の後にクリップボードを戻すまで待つ時間。 */
+const PASTE_SETTLE_MS = 500;
+
+/**
+ * 利用者のクリップボードを残したまま文字を貼る（MEDIUM: 端末のクリップボードを黙って置き換えない）。
+ * 先に今の中身を読み、エージェントの文を写して貼り、端末の返事と貼り付けの処理を待ってから元に戻す。
+ * 読めない・戻せないときは、返り値の `note` にその旨を書く（mobile_type_text の結果に出る）。
+ */
+export async function paradisPasteKeepingClipboard(session: Pick<ParadisScrcpySession, 'getClipboard' | 'setClipboard'>, text: string, sleep: (ms: number) => Promise<void>): Promise<{ readonly method: 'paste'; readonly clipboardRestored: boolean; readonly note?: string }> {
+	const previous = await session.getClipboard().catch(() => undefined);
+	await session.setClipboard(text, true);
+	await sleep(PASTE_SETTLE_MS);
+	if (previous === undefined) {
+		// 空だった・読めなかった。エージェントの文を残さないよう空にしておく
+		const cleared = await session.setClipboard('', false).then(() => true, () => false);
+		return {
+			method: 'paste',
+			clipboardRestored: false,
+			note: cleared
+				? 'Para Code could not read the device clipboard before pasting (it may have been empty), so it cleared the clipboard afterwards instead of restoring it.'
+				: 'Para Code could not read the device clipboard before pasting and could not clear it afterwards: the device clipboard now holds the typed text.',
+		};
+	}
+	const restored = await session.setClipboard(previous, false).then(() => true, () => false);
+	return restored
+		? { method: 'paste', clipboardRestored: true }
+		: { method: 'paste', clipboardRestored: false, note: 'Para Code could not put the previous device clipboard back after pasting: the device clipboard now holds the typed text.' };
 }
 
 function requireNumber(body: Record<string, unknown>, name: string): number {

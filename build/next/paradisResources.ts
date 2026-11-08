@@ -39,6 +39,9 @@ export const paradisDesktopResourcePatterns: readonly string[] = [
 	'vs/paradis/contrib/simulator/node/media/serve-sim/LICENSE',
 	'vs/paradis/contrib/simulator/node/media/serve-sim/dist/simduo/serve-sim-duo-hid',
 	'vs/paradis/contrib/simulator/node/media/serve-sim/dist/simax/serve-sim-ax-settings',
+	// Vendored scrcpy-server the shared process pushes to Android devices (a jar, not Mach-O: no signing), plus its LICENSE
+	'vs/paradis/contrib/simulator/node/media/scrcpy/*.jar',
+	'vs/paradis/contrib/simulator/node/media/scrcpy/LICENSE',
 ];
 
 /**

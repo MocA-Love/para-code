@@ -27,6 +27,7 @@ suite('Para Code production resources', () => {
 			mermaid: 'vs/paradis/contrib/fileViewers/browser/media/mermaid/',
 			chromeDevtoolsMcp: 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/',
 			serveSim: 'vs/paradis/contrib/simulator/node/media/serve-sim/',
+			scrcpy: 'vs/paradis/contrib/simulator/node/media/scrcpy/',
 		};
 		const present = Object.fromEntries(Object.entries(groups).map(([name, prefix]) => [name, desktop.some(file => file.startsWith(prefix))]));
 		const serverWeb = await getResourcePaths(path.join(repoRoot, 'src'), 'server-web');

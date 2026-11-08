@@ -14,9 +14,12 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { PARADIS_SIMULATOR_ENABLED_SETTING, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
+import { paradisAndroidSerialOf } from '../common/paradisAndroid.js';
 
 /** コマンド「シミュレータを開く」（paradisSimulator.contribution.ts）。引数は udid。 */
 export const PARADIS_SIMULATOR_OPEN_COMMAND_ID = 'paradis.simulator.open';
+/** Android の端末の画面をタブに開くコマンド（引数は serial）。 */
+export const PARADIS_SIMULATOR_OPEN_ANDROID_COMMAND_ID = 'paradis.simulator.openAndroid';
 
 /**
  * 端末の id から、その画面を開く関数を返す。開けない端末（Android・設定がオフ・macOS 以外）なら undefined。
@@ -26,7 +29,14 @@ export function paradisSimulatorScreenOpener(accessor: ServicesAccessor): (devic
 	const configurationService = accessor.get(IConfigurationService);
 	const commandService = accessor.get(ICommandService);
 	return deviceId => {
-		const udid = isMacintosh && configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) === true ? paradisSimulatorUdidOfDeviceId(deviceId) : undefined;
-		return udid ? () => void commandService.executeCommand(PARADIS_SIMULATOR_OPEN_COMMAND_ID, udid) : undefined;
+		if (!isMacintosh || configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) !== true) {
+			return undefined;
+		}
+		const udid = paradisSimulatorUdidOfDeviceId(deviceId);
+		if (udid) {
+			return () => void commandService.executeCommand(PARADIS_SIMULATOR_OPEN_COMMAND_ID, udid);
+		}
+		const serial = paradisAndroidSerialOf(deviceId);
+		return serial ? () => void commandService.executeCommand(PARADIS_SIMULATOR_OPEN_ANDROID_COMMAND_ID, serial) : undefined;
 	};
 }
