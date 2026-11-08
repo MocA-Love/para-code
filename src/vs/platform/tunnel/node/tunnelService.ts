@@ -19,8 +19,8 @@ import { IAddressProvider, IConnectionOptions, connectRemoteAgentTunnel } from '
 import { IRemoteSocketFactoryService } from '../../remote/common/remoteSocketFactoryService.js';
 import { ISignService } from '../../sign/common/sign.js';
 import { AbstractTunnelService, ISharedTunnelsService, ITunnelProvider, ITunnelService, RemoteTunnel, TunnelPrivacyId, isAllInterfaces, isLocalhost, isPortPrivileged, isTunnelProvider } from '../common/tunnel.js';
-// PARA-PATCH: bound the remote agent tunnel handshake so a wedged remote cannot hang an already-accepted local socket forever
-import { paraConnectTunnelWithTimeout } from '../common/paraTunnelConnect.js';
+// PARA-PATCH: bound the remote agent tunnel handshake so a wedged remote cannot hang an already-accepted local socket forever (retried once after a timeout)
+import { paraConnectTunnelWithRetry } from '../common/paraTunnelConnect.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
 
 async function createRemoteTunnel(options: IConnectionOptions, defaultTunnelHost: string, tunnelRemoteHost: string, tunnelRemotePort: number, tunnelLocalPort?: number): Promise<RemoteTunnel> {
@@ -120,8 +120,8 @@ export class NodeRemoteTunnel extends Disposable implements RemoteTunnel {
 		localSocket.pause();
 
 		const tunnelRemoteHost = (isLocalhost(this.tunnelRemoteHost) || isAllInterfaces(this.tunnelRemoteHost)) ? 'localhost' : this.tunnelRemoteHost;
-		// PARA-PATCH: bound the handshake. `connectRemoteAgentTunnel` waits forever for the remote agent's control message, so a wedged remote would hang here with the local socket already accepted.
-		const protocol = await paraConnectTunnelWithTimeout(
+		// PARA-PATCH: bound the handshake. `connectRemoteAgentTunnel` waits forever for the remote agent's control message, so a wedged remote would hang here with the local socket already accepted. A timeout is retried once so that a remote that is only slow (or mid-reconnect) is not reset.
+		const protocol = await paraConnectTunnelWithRetry(
 			() => connectRemoteAgentTunnel(this._options, tunnelRemoteHost, this.tunnelRemotePort),
 			`${tunnelRemoteHost}:${this.tunnelRemotePort}`,
 			this._options.logService

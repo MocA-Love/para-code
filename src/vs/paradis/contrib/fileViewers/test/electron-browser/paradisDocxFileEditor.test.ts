@@ -718,6 +718,27 @@ suite('ParadisDocxFileEditor', () => {
 			});
 		});
 
+		test('starts reading the document while the header check is still in flight, instead of one after the other', async () => {
+			const fixture = createDocxEditorFixture({ etag: 'v1' });
+			const resource = URI.file('/workspace/parallel.docx');
+			const header = new DeferredPromise<VSBuffer>();
+			fixture.queueHeader(resource, header);
+			try {
+				await fixture.editor.setInput(fixture.createInput(resource), undefined, Object.create(null), CancellationToken.None);
+				await timeout(0);
+				const whileHeaderPending = fixture.documentReads();
+				await header.complete(VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)));
+				await fixture.settleCurrentRender();
+				deepStrictEqual({ whileHeaderPending, afterHeader: fixture.documentReads(), html: fixture.snapshot().htmlDocuments }, {
+					whileHeaderPending: ['read'],
+					afterHeader: ['read'],
+					html: ['viewer'],
+				});
+			} finally {
+				await header.complete(VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)));
+			}
+		});
+
 		test('does not revive an editor when setInput is called after disposal', async () => {
 			const fixture = createDocxEditorFixture();
 			const resource = URI.file('/workspace/document.docx');

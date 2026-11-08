@@ -124,4 +124,44 @@ suite('Tunnel', () => {
 			await service.dispose();
 		}
 	});
+
+	// PARA-PATCH: regression test for the fork's forced close ("Reforward"): a lease that outlived a forced close must not count down the newer entry.
+	test('a stale lease released after a forced close leaves the newer tunnel open', async () => {
+		let secondDisposed = 0;
+		const firstTunnel: RemoteTunnel = {
+			tunnelRemoteHost: '127.0.0.1', tunnelRemotePort: 56789,
+			localAddress: '127.0.0.1:45678', privacy: 'private',
+			dispose: async () => { },
+		};
+		const secondTunnel: RemoteTunnel = {
+			tunnelRemoteHost: '127.0.0.1', tunnelRemotePort: 56789,
+			localAddress: '127.0.0.1:45678', privacy: 'private',
+			dispose: async () => { secondDisposed++; },
+		};
+		let opened = 0;
+		const service = new TestTunnelService(new NullLogService(), new TestConfigurationService());
+		const provider = service.setTunnelProvider({
+			forwardPort: () => Promise.resolve([firstTunnel, secondTunnel][opened++]),
+		});
+		try {
+			// Another window still holds this lease when the tunnel is closed for everyone.
+			const staleLease = await service.openTunnel(undefined, '127.0.0.1', 56789);
+			assert.ok(staleLease && typeof staleLease !== 'string');
+			await service.closeTunnel('127.0.0.1', 56789);
+			const freshLease = await service.openTunnel(undefined, '127.0.0.1', 56789);
+			assert.ok(freshLease && typeof freshLease !== 'string');
+
+			await staleLease.dispose();
+			const afterStaleRelease = { secondDisposed, tunnels: (await service.tunnels).length };
+			await freshLease.dispose();
+
+			assert.deepStrictEqual(
+				{ afterStaleRelease, afterFreshRelease: { secondDisposed, tunnels: (await service.tunnels).length } },
+				{ afterStaleRelease: { secondDisposed: 0, tunnels: 1 }, afterFreshRelease: { secondDisposed: 1, tunnels: 0 } }
+			);
+		} finally {
+			provider.dispose();
+			await service.dispose();
+		}
+	});
 });
