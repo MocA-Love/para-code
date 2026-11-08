@@ -2,6 +2,7 @@
 
 import ExpoModulesCore
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 /**
  * RN の子を包み、長押し（iPad ではポインタの右クリックも）で iOS 標準のコンテキストメニューを出すビュー。
@@ -12,6 +13,11 @@ import UIKit
  * - ＋メニュー（`para-plus-menu`）と違い、**前面にボタンを置かない**。タップは RN の子がそのまま受ける
  *   （行を押すとビューアが開く、などの今の動きを変えない）。長押しが認識されると RN のタッチは取り消される
  * - メニューは開くたびにそのときの props から作る（`items` が後から変わっても古い中身を出さない）
+ * - 長押しの間とメニューを閉じた直後に、長押しを始めたときと違う入力欄が first responder を取ったら外す
+ *   （iPad のソフトウェアキーボードで、発言を長押しするとメニューと同時に入力欄のキーボードが出て、メニューを隠していた。
+ *   メニューの提示・後片付けで UIKit が覚えていた入力欄を first responder に戻していると見ている）。長押しの前から
+ *   入力欄を使っていた（キーボードが出ていた）ときは、その入力欄は外さない。閉じた後に新しい触れが来たら
+ *   （ユーザーが自分で入力欄を押した）、その時点で見張りを終える（外すのは UIKit が戻した分だけにする）
  * - 選ばれた項目は、**メニューが閉じ切ってから** `onSelect` で知らせる。閉じる途中に JS がモーダル
  *   （「範囲を選んでコピー…」のシートなど）を出すと、提示がぶつかって出ないことがあるため
  *   （アプリの ActionSheet も同じ理由で閉じ切ってから処理を呼ぶ）
@@ -53,6 +59,14 @@ final class ParaContextMenuView: ExpoView, UIContextMenuInteractionDelegate {
 	/** メニューが出ている間に選ばれた項目（閉じ切ってから知らせる）。 */
 	private var pendingSelection: String?
 	private var menuVisible = false
+	/** 長押しを始めたときの first responder（これ以外の入力欄が途中で取ったら外す）。 */
+	private weak var responderAtPress: UIResponder?
+	/** 入力欄に取られないように見張っている間の、キーボードの知らせの受け口。 */
+	private var keyboardObserver: NSObjectProtocol?
+	/** 見張りを終える予約（重ねて始めたら前の予約は効かせない）。 */
+	private var focusGuardSerial = 0
+	/** 閉じた後の見張りの間だけ窓に付ける、触れを見るだけの受け口（新しい触れが来たら見張りを終える）。 */
+	private var touchWatcher: ParaContextMenuTouchWatcher?
 
 	required init(appContext: AppContext? = nil) {
 		super.init(appContext: appContext)
@@ -82,6 +96,7 @@ final class ParaContextMenuView: ExpoView, UIContextMenuInteractionDelegate {
 		guard !items.isEmpty else {
 			return nil
 		}
+		beginFocusGuard()
 		return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
 			self?.buildMenu()
 		}
@@ -103,6 +118,10 @@ final class ParaContextMenuView: ExpoView, UIContextMenuInteractionDelegate {
 
 	func contextMenuInteraction(_ interaction: UIContextMenuInteraction, willDisplayMenuFor configuration: UIContextMenuConfiguration, animator: UIContextMenuInteractionAnimating?) {
 		menuVisible = true
+		releaseStolenFocus()
+		animator?.addCompletion { [weak self] in
+			self?.releaseStolenFocus()
+		}
 	}
 
 	func contextMenuInteraction(_ interaction: UIContextMenuInteraction, willEndFor configuration: UIContextMenuConfiguration, animator: UIContextMenuInteractionAnimating?) {
@@ -111,6 +130,10 @@ final class ParaContextMenuView: ExpoView, UIContextMenuInteractionDelegate {
 				return
 			}
 			self.menuVisible = false
+			// 閉じた後に UIKit が入力欄へ戻したものも外し、少し待ってから見張りを終える
+			self.releaseStolenFocus()
+			self.watchNextTouch()
+			self.endFocusGuard(after: Self.focusGuardTail)
 			if let id = self.pendingSelection {
 				self.pendingSelection = nil
 				self.onSelect(["id": id])
@@ -120,6 +143,96 @@ final class ParaContextMenuView: ExpoView, UIContextMenuInteractionDelegate {
 			animator.addCompletion(finish)
 		} else {
 			finish()
+		}
+	}
+
+	// MARK: Focus guard
+
+	/** 閉じ切った後も見張る時間（秒）。UIKit が first responder を戻すのは閉じる動きの後になることがある。 */
+	private static let focusGuardTail: TimeInterval = 0.6
+	/** メニューが出ないまま終わったとき（長押しを途中でやめた）に見張りを終えるまでの時間（秒）。 */
+	private static let focusGuardIdle: TimeInterval = 3
+
+	private func beginFocusGuard() {
+		responderAtPress = ParaContextMenuResponderProbe.current()
+		if keyboardObserver == nil {
+			keyboardObserver = NotificationCenter.default.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main) { [weak self] _ in
+				self?.releaseStolenFocus()
+			}
+		}
+		endFocusGuard(after: Self.focusGuardIdle)
+	}
+
+	private func endFocusGuard(after delay: TimeInterval) {
+		focusGuardSerial += 1
+		let serial = focusGuardSerial
+		DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+			guard let self, self.focusGuardSerial == serial, !self.menuVisible else {
+				return
+			}
+			self.stopFocusGuard()
+		}
+	}
+
+	private func stopFocusGuard() {
+		if let keyboardObserver {
+			NotificationCenter.default.removeObserver(keyboardObserver)
+		}
+		keyboardObserver = nil
+		responderAtPress = nil
+		removeTouchWatcher()
+	}
+
+	/** 閉じた後の見張りの間、窓に来た新しい触れで見張りを終える（触れは取らない・遅らせない）。 */
+	private func watchNextTouch() {
+		removeTouchWatcher()
+		guard let window else {
+			return
+		}
+		let watcher = ParaContextMenuTouchWatcher { [weak self] in
+			guard let self, !self.menuVisible else {
+				return
+			}
+			// 見張りはすぐ止める（入力欄が first responder になるのは触れの後）。受け口を外すのは、触れの処理の中で
+			// 自分を外さないように次の回にする
+			self.focusGuardSerial += 1
+			if let observer = self.keyboardObserver {
+				NotificationCenter.default.removeObserver(observer)
+			}
+			self.keyboardObserver = nil
+			self.responderAtPress = nil
+			DispatchQueue.main.async { [weak self] in
+				self?.removeTouchWatcher()
+			}
+		}
+		window.addGestureRecognizer(watcher)
+		touchWatcher = watcher
+	}
+
+	private func removeTouchWatcher() {
+		if let touchWatcher {
+			touchWatcher.view?.removeGestureRecognizer(touchWatcher)
+		}
+		touchWatcher = nil
+	}
+
+	/**
+	 * 長押しを始めたときと違う入力欄が first responder なら外す。外すのは RN の TextInput の実体（UITextField・UITextView）
+	 * だけ。WKWebView は外さない（「範囲を選んでコピー…」は閉じた直後に選ぶ表示の WebView を first responder にするため）。
+	 */
+	private func releaseStolenFocus() {
+		guard keyboardObserver != nil, let current = ParaContextMenuResponderProbe.current(), current !== responderAtPress, current is UITextField || current is UITextView else {
+			return
+		}
+		current.resignFirstResponder()
+	}
+
+	deinit {
+		if let keyboardObserver {
+			NotificationCenter.default.removeObserver(keyboardObserver)
+		}
+		if let touchWatcher {
+			touchWatcher.view?.removeGestureRecognizer(touchWatcher)
 		}
 	}
 
@@ -195,5 +308,53 @@ final class ParaContextMenuView: ExpoView, UIContextMenuInteractionDelegate {
 
 	private func image(named name: String) -> UIImage? {
 		name.isEmpty ? nil : UIImage(systemName: name)
+	}
+}
+
+/**
+ * 触れの始まりを知らせるだけの受け口。触れを取り消さず・遅らせず、知らせたらすぐ失敗して、ほかの受け口
+ * （RN の触れ・入力欄・スクロール）の邪魔をしない。
+ */
+final class ParaContextMenuTouchWatcher: UIGestureRecognizer, UIGestureRecognizerDelegate {
+	private let onTouch: () -> Void
+
+	init(onTouch: @escaping () -> Void) {
+		self.onTouch = onTouch
+		super.init(target: nil, action: nil)
+		cancelsTouchesInView = false
+		delaysTouchesBegan = false
+		delaysTouchesEnded = false
+		delegate = self
+	}
+
+	override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+		super.touchesBegan(touches, with: event)
+		onTouch()
+		state = .failed
+	}
+
+	override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool {
+		false
+	}
+
+	func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+		true
+	}
+}
+
+/** いまの first responder を公開 API だけで調べる（`sendAction(_:to: nil ...)` は first responder へ届く）。 */
+enum ParaContextMenuResponderProbe {
+	fileprivate static weak var found: UIResponder?
+
+	static func current() -> UIResponder? {
+		found = nil
+		UIApplication.shared.sendAction(#selector(UIResponder.paraContextMenuCaptureFirstResponder(_:)), to: nil, from: nil, for: nil)
+		return found
+	}
+}
+
+extension UIResponder {
+	@objc func paraContextMenuCaptureFirstResponder(_ sender: Any?) {
+		ParaContextMenuResponderProbe.found = self
 	}
 }

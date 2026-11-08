@@ -230,6 +230,12 @@ function segmentHtml(segment: InplaceSelectSegment, look: InplaceSelectLook, met
 	return `<div class="seg">${blocksHtml(parseBlocks(segment.text), look, metrics)}</div>`;
 }
 
+/**
+ * iOS の文字（RN の Text）のタブの間隔（pt。`NSParagraphStyle` の既定のタブ位置は 28pt おき）。CSS の既定（8 文字）だと
+ * コードの字下げが広がるので、同じ間隔にする。
+ */
+const NATIVE_TAB_INTERVAL = 28;
+
 /** 数を CSS・スクリプトに置ける形にする（数でなければ 0）。 */
 function num(value: number): string {
 	return Number.isFinite(value) ? String(Math.round(value * 100) / 100) : '0';
@@ -266,8 +272,8 @@ function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
 	.io { display: flex; align-items: center; gap: ${num(spacing(6))}px; padding: ${num(spacing(5))}px 8px; background: rgba(255,255,255,0.035); border-bottom: ${hair}; -webkit-user-select: none; user-select: none; }
 	.iol { flex: 1; min-width: 0; color: ${colors.textDim}; font-size: ${num(font(type.badge))}px; line-height: normal; font-weight: 800; letter-spacing: ${num(0.9 * look.scale.layout)}px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.ioa { min-height: 20px; box-sizing: border-box; display: flex; align-items: center; border: ${hair}; border-radius: 6px; padding: ${num(spacing(2))}px 7px; color: ${colors.textDim}; font-size: ${num(font(type.badge))}px; line-height: normal; }
-	.cc { overflow-x: auto; }
-	.ct { display: inline-block; min-width: 100%; box-sizing: border-box; padding: ${num(spacing(8))}px; color: ${colors.text}; font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.caption))}px; line-height: ${num(font(16))}px; white-space: pre; }
+	.cc { overflow-x: auto; display: flex; }
+	.ct { flex: none; min-width: 100%; tab-size: ${num(NATIVE_TAB_INTERVAL)}px; box-sizing: border-box; padding: ${num(spacing(8))}px; color: ${colors.text}; font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.caption))}px; line-height: ${num(font(16))}px; white-space: pre; }
 	.tw { border: 1px solid ${colors.border}; border-radius: 6px; overflow-x: auto; margin: ${num(spacing(2))}px 0; }
 	table { border-collapse: collapse; table-layout: fixed; border-spacing: 0; }
 	tr + tr > th, tr + tr > td { border-top: ${hair}; }
@@ -298,7 +304,8 @@ const HOLD_SLOP = 10;
  * - 読み込んだ時点では選ばない。透明で first responder でもない WebView で選ぶと、WebKit は DOM の選択だけを持ち、
  *   つまみも OS のメニューも出さない（その後の長押しも効かなくなることがある）。呼び出し側が見せて
  *   `requestFocus()` した後に {@link inplaceSelectStartScript} で `__paraSelectStart` を呼ぶ
- * - 押した点の単語を選ぶ。押した点が無い・字の上でないときは発言の全体を選ぶ（入ったら必ず何かが選ばれているように）
+ * - 押した点の単語を選ぶ。押した点が無い・字の上でないときは発言の全体を選ぶ（入ったら必ず何かが選ばれているように）。
+ *   呼び出し側は first responder になるのが遅れたときのために数回呼ぶので、2 回目からは何も選ばれていないときだけ選ぶ
  * - 押し続けたら（{@link HOLD_MS}）その点の単語を選ぶ。OS の長押しの選択が先に選んでいたら何もしない。
  *   `touchcancel` では止めない（OS の長押しが認識されると、ページへの触れは取り消されるため）
  */
@@ -310,7 +317,8 @@ function post(kind){try{window.ReactNativeWebView.postMessage(JSON.stringify({ty
 function word(s){if(s.modify){s.modify('move','backward','word');s.modify('extend','forward','word');}}
 function selectAt(p){var s=window.getSelection();if(!s){return false;}if(p&&document.caretRangeFromPoint){var r=document.caretRangeFromPoint(p[0],p[1]);if(r&&root.contains(r.startContainer)&&r.startContainer.nodeType===3){s.removeAllRanges();s.addRange(r);word(s);if(!s.isCollapsed){return true;}}}return false;}
 function selectAll(){var s=window.getSelection();if(s){s.removeAllRanges();s.selectAllChildren(root);}}
-window.__paraSelectStart=function(){try{if(!selectAt(${at})){selectAll();}}catch(e){}};
+var started=false;
+window.__paraSelectStart=function(){try{var s=window.getSelection();if(started&&s&&!s.isCollapsed){return;}started=true;if(!selectAt(${at})){selectAll();}}catch(e){}};
 var hold=null,from=null;
 function stopHold(){if(hold!==null){clearTimeout(hold);hold=null;}}
 document.addEventListener('touchstart',function(e){stopHold();if(e.touches.length!==1){return;}var t=e.touches[0];from=[t.clientX,t.clientY];hold=setTimeout(function(){hold=null;try{var s=window.getSelection();if(s&&s.isCollapsed){selectAt(from);}}catch(x){}},${HOLD_MS});},{passive:true});

@@ -5,7 +5,7 @@ import { ScrollView, StyleSheet, Switch, Text, View, type RefreshControlProps, t
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import { colors, space, type } from '../../theme.js';
-import { Screen, ScreenHeader, SectionHeader } from '../../ui/index.js';
+import { Screen, ScreenHeader, SectionHeader, useThemeColors } from '../../ui/index.js';
 
 /**
  * 設定まわりの画面の骨組み（モックの `.set` / `.settop` / `.gh` / `.gd` / `.sw`）。
@@ -74,7 +74,8 @@ export function GroupGap() {
 }
 
 /**
- * 設定の切り替え（モックの `.sw`: オフは一段明るい面、オンは補足の灰、つまみは本文の白）。
+ * 設定の切り替え（モックの `.sw`: オフは一段明るい面、オンはアクセントの色（設定 → 色の「選択の印・リンク」）、つまみは本文の白）。
+ * オンを補足の灰にしていたころは、オンとオフの差が小さく見分けにくかった。
  * 触覚はアプリからは鳴らさない（iOS の Switch が自分で鳴らすので、重ねると二重になる）。
  */
 export function SettingsSwitch({ value, onValueChange, disabled = false, accessibilityLabel, accessibilityHint }: {
@@ -85,6 +86,7 @@ export function SettingsSwitch({ value, onValueChange, disabled = false, accessi
 	/** VoiceOver が名前の後に読む補足（切れない理由など）。 */
 	accessibilityHint?: string;
 }) {
+	const theme = useThemeColors();
 	return (
 		<Switch
 			value={value}
@@ -92,7 +94,7 @@ export function SettingsSwitch({ value, onValueChange, disabled = false, accessi
 				onValueChange(next);
 			}}
 			disabled={disabled}
-			trackColor={{ false: colors.raised, true: colors.textDim }}
+			trackColor={{ false: colors.raised, true: theme.accent }}
 			ios_backgroundColor={colors.raised}
 			thumbColor={colors.text}
 			accessibilityLabel={accessibilityLabel}
