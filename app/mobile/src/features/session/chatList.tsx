@@ -14,6 +14,7 @@ import { useChatStyles } from '../../ui/chatTextScale.js';
 import { Icon } from '../../ui/index.js';
 import { ChatRowView } from './chatItems.js';
 import { chatRowKey, type ChatRow } from './chatRows.js';
+import { ChatRowKeyContext, useCrossSelect } from './crossSelect.js';
 
 /** 一覧の上端からこの距離に入ったら古い発言を読み込む（W2-30。Orca と同じ 60pt）。 */
 const LOAD_OLDER_THRESHOLD = 60;
@@ -44,6 +45,9 @@ export const ChatList = forwardRef<ChatListHandle, {
 	allToolsOpen: boolean;
 }>(function ChatList({ rows, epoch, terminalKey, latest, history, onLoadOlder, allToolsOpen }, ref) {
 	const listRef = useRef<FlatList<ChatRow>>(null);
+	const rootRef = useRef<View>(null);
+	// 前後の発言をまとめて選ぶ（crossSelect.tsx）。一覧の上に重ねる
+	const crossSelect = useCrossSelect(rows, epoch, rootRef);
 	const column = useContentColumnStyle();
 	// 会話の文字サイズ（設定 → チャット UI）は空の状態の文字にもかける。「最新へ」のボタンは操作の部品なので変えない。
 	const textStyles = useChatStyles(styles);
@@ -156,11 +160,15 @@ export const ChatList = forwardRef<ChatListHandle, {
 
 	// 行の描き方は同じ関数のまま渡す（毎回作ると、一覧を描き直すたびに載っている全部のセルが描き直される）
 	const keyExtractor = useCallback((row: ChatRow) => chatRowKey(row, epoch), [epoch]);
-	const renderItem = useCallback(({ item }: { item: ChatRow }) => <ChatRowView row={item} terminalKey={terminalKey} allToolsOpen={allToolsOpen} />, [terminalKey, allToolsOpen]);
+	const renderItem = useCallback(({ item }: { item: ChatRow }) => (
+		<ChatRowKeyContext.Provider value={chatRowKey(item, epoch)}>
+			<ChatRowView row={item} terminalKey={terminalKey} allToolsOpen={allToolsOpen} />
+		</ChatRowKeyContext.Provider>
+	), [terminalKey, allToolsOpen, epoch]);
 
 	return (
-		<View style={styles.root}>
-			<FlatList
+		<View ref={rootRef} collapsable={false} style={styles.root}>
+			{crossSelect.provider(<FlatList
 				ref={listRef}
 				style={revealed ? styles.shown : styles.hidden}
 				pointerEvents={revealed ? 'auto' : 'none'}
@@ -187,7 +195,7 @@ export const ChatList = forwardRef<ChatListHandle, {
 				onMomentumScrollEnd={() => scrollState.endMomentum()}
 				scrollEventThrottle={32}
 				onLayout={onLayout}
-			/>
+			/>)}
 			{!sticky ? (
 				<Pressable
 					style={styles.jump}
@@ -199,6 +207,7 @@ export const ChatList = forwardRef<ChatListHandle, {
 					{newCount > 0 ? <Text style={styles.jumpText}>{newCount > 99 ? '99+' : String(newCount)}</Text> : null}
 				</Pressable>
 			) : null}
+			{crossSelect.overlay}
 		</View>
 	);
 });

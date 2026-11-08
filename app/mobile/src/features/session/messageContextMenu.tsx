@@ -4,20 +4,14 @@ import { useCallback, useContext, useEffect, useMemo, useRef, useState, type Rea
 import { StyleSheet, View, type GestureResponderEvent, type StyleProp, type ViewStyle } from 'react-native';
 import { ContextMenu, nativeContextMenuAvailable } from '../../components/contextMenu.js';
 import { contextMenuOps } from '../../components/copyActions.js';
-import { useParaToast } from '../../paraToast.js';
 import { useThemeColors } from '../../ui/index.js';
 import { inplaceSelectMinHeight, localPressPoint, type InplaceSelectPoint, type InplaceSelectSegment } from './inplaceSelectHtml.js';
-import { hideInplaceSelectNotice, showInplaceSelectNotice } from './inplaceSelectNotice.js';
-import { beginInplaceSelect, isHoldCancel } from './inplaceSelectSession.js';
+import { useInplaceSelectChrome } from './inplaceSelectChrome.js';
+import { isHoldCancel } from './inplaceSelectSession.js';
 import { InplaceSelectWebView, inplaceSelectForeground } from './inplaceSelectView.js';
 import { ChatQuoteContext } from './chatQuote.js';
+import { ChatRowKeyContext, CrossSelectContext } from './crossSelect.js';
 import { buildMessageMenu } from './messageMenu.js';
-
-/**
- * 差し替えている間に出すお知らせの目印。差し替えるたびに変える（別の発言で始め直したとき、前の発言の後片付けが
- * 新しいお知らせを消さないように。自分が出したものだけを消す）。
- */
-let selectToastSerial = 0;
 
 /**
  * 長押しでメニューが出てから、この時間のうちに「範囲を選んでコピー…」が押されなければ、用意しておいた WebView を外す（ms）。
@@ -120,45 +114,25 @@ export function MessageContextMenu({ text, markdown, plain = 'bubble', speaker, 
 	}, [warm, selecting]);
 
 	// 差し替えている間: 画面に 1 つだけにし、外を押したら戻す。お知らせと「完了」を出す
-	useEffect(() => {
-		if (selecting === undefined) {
-			return;
-		}
-		const end = beginInplaceSelect({
-			close: stop,
-			contains: (pageX, pageY, done) => {
-				const view = wrapRef.current;
-				if (view === null) {
-					done(false);
-					return;
-				}
-				view.measure((_x, _y, width, height, left, top) => {
-					done(pageX >= left && pageX <= left + width && pageY >= top && pageY <= top + height);
-				});
-			},
-		});
-		const toastKey = `inplace-select:${++selectToastSerial}`;
-		// 会話の画面では、クイック返信の帯の位置に帯で出す（浮かぶお知らせは選んでいる発言とつまみに重なる）。帯を置けない
-		// 画面では浮かぶお知らせ
-		if (!showInplaceSelectNotice({ key: toastKey, speaker, done: stop })) {
-			useParaToast.getState().show({ key: toastKey, text: '範囲を選んでコピー', sub: `${speaker}・外を押すと元に戻ります`, icon: 'text-outline', tone: 'info', action: { label: '完了', onPress: stop } });
-		}
-		return () => {
-			end();
-			hideInplaceSelectNotice(toastKey);
-			const current = useParaToast.getState();
-			if (current.current?.key === toastKey) {
-				current.hide();
-			}
-		};
-	}, [selecting, speaker, stop]);
+	useInplaceSelectChrome(selecting !== undefined, speaker, stop, wrapRef);
 
 	const quote = useContext(ChatQuoteContext);
+	// 会話の一覧の中の発言だけ: 前後の発言もまとめて選ぶ（crossSelect.tsx）
+	const rowKey = useContext(ChatRowKeyContext);
+	const startAcross = useContext(CrossSelectContext);
+	const selectAcross = useMemo(() => rowKey !== undefined && startAcross !== undefined
+		? () => wrapRef.current?.measure((_x, _y, width, height, pageX, pageY) => startAcross(rowKey, { pageX, pageY, width, height }, lastTouch.current))
+		: undefined, [rowKey, startAcross]);
 	const menu = useMemo(
 		() => nativeContextMenuAvailable && text.trim().length > 0
-			? buildMessageMenu({ text, markdown }, { ...contextMenuOps(), selectRange: () => start(text, markdown), ...(quote !== undefined ? { quoteReply: () => quote(text) } : {}) })
+			? buildMessageMenu({ text, markdown }, {
+				...contextMenuOps(),
+				selectRange: () => start(text, markdown),
+				...(quote !== undefined ? { quoteReply: () => quote(text) } : {}),
+				...(selectAcross !== undefined ? { selectAcross } : {}),
+			})
 			: undefined,
-		[text, markdown, start, quote],
+		[text, markdown, start, quote, selectAcross],
 	);
 	const recordTouch = useCallback((event: GestureResponderEvent) => {
 		const { pageX, pageY } = event.nativeEvent;

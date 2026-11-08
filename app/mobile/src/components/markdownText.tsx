@@ -24,60 +24,10 @@ import { HorizontalScrollFade } from './horizontalScrollFade.js';
 import { localFileTargetKey, useLocalFileOpener } from './localFileOpener.js';
 import { MAX_BULLET_DEPTH, parseBlocks, parseInline, type Block, type InlineToken } from './markdownParse.js';
 import { BULLET_INDENT, tableColumnWidths } from './markdownLayout.js';
+import { codeHighlightKey, highlightCache, HIGHLIGHT_CACHE_LIMIT, parseTokenizedHtml, type HighlightData } from './codeHighlightCache.js';
 
-// ---- コードブロックのPCテーマハイライト -------------------------------------------------------
+// ---- コードブロックのPCテーマハイライト（色付けの読み方とキャッシュは `codeHighlightCache.ts`）-------------------
 
-/** 色付きテキスト片。1行 = HighlightRun[]。 */
-interface HighlightRun { text: string; color?: string; italic?: boolean; bold?: boolean }
-interface HighlightData { lines: HighlightRun[][]; bg?: string; fg?: string }
-
-/**
- * PCから届いた `.monaco-tokenized-source` HTML（span.mtkN と <br/> のみ、< > & エスケープ）と
- * カラーマップCSS（`.mtkN { color: ... }`）をネイティブText用の色付きラン列へ変換する。
- * 期待形式から外れた場合は undefined（プレーン表示のまま）。
- */
-function parseTokenizedHtml(html: string, css: string): HighlightRun[][] | undefined {
-	const inner = /^<div[^>]*>([\s\S]*)<\/div>$/.exec(html.trim())?.[1];
-	if (inner === undefined) {
-		return undefined;
-	}
-	const colorByClass = new Map<string, string>();
-	for (const rule of css.matchAll(/\.(mtk\d+)\s*\{\s*color:\s*([^;}]+);/g)) {
-		const className = rule[1];
-		const color = rule[2];
-		if (className !== undefined && color !== undefined) {
-			colorByClass.set(className, color.trim());
-		}
-	}
-	const unescape = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-	let currentLine: HighlightRun[] = [];
-	const lines: HighlightRun[][] = [currentLine];
-	const tokenPattern = /<span class="([^"]*)">([\s\S]*?)<\/span>|<br\/?>|([^<]+)/g;
-	for (const m of inner.matchAll(tokenPattern)) {
-		if (m[0].startsWith('<br')) {
-			currentLine = [];
-			lines.push(currentLine);
-			continue;
-		}
-		if (m[1] !== undefined) {
-			const classes = m[1].split(/\s+/);
-			const colorClass = classes.find(c => /^mtk\d+$/.test(c));
-			currentLine.push({
-				text: unescape(m[2] ?? ''),
-				...(colorClass !== undefined && colorByClass.has(colorClass) ? { color: colorByClass.get(colorClass) } : {}),
-				...(classes.includes('mtki') ? { italic: true } : {}),
-				...(classes.includes('mtkb') ? { bold: true } : {}),
-			});
-		} else if (m[3] !== undefined && m[3].length > 0) {
-			currentLine.push({ text: unescape(m[3]) });
-		}
-	}
-	return lines;
-}
-
-/** ハイライト結果のメモリキャッシュ（同一コード片の再取得を避ける）。null = 取得失敗（再試行しない）。 */
-const highlightCache = new Map<string, HighlightData | null>();
-const HIGHLIGHT_CACHE_LIMIT = 120;
 /**
  * ハイライト要求を投げるまでの静止待ち。
  *
@@ -194,7 +144,7 @@ const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?:
 	const fsHighlight = useAppStore(s => s.fsHighlight);
 	const styles = useChatStyles(baseStyles);
 	const [wrap, setWrap] = useState(false);
-	const cacheKey = `${lang ?? ''} ${text}`;
+	const cacheKey = codeHighlightKey(text, lang);
 	// 結果は「どの内容に対するものか」と一緒に持つ。紐づけずに持つと、ストリーミングで本文が
 	// 伸びた後も前の（短い）ハイライト行を描き続け、ブロックの高さが実際の内容とずれたまま
 	// 固まって遅れて塊で跳ねる（会話の追従が引っかかる原因）。

@@ -49,6 +49,39 @@ describe('buildInplaceSelectHtml', () => {
 		expect(html.match(/<script/g)).toHaveLength(1);
 	});
 
+	it('colors code from the highlight the chat already has, and drops colors that could break out of the attribute', () => {
+		const look: InplaceSelectLook = {
+			...LOOK,
+			codeHighlight: (text, lang) => text === 'const a = 1;' && lang === 'ts'
+				? { bg: '#1e1e1e', fg: '#d4d4d4', lines: [[{ text: 'const', color: '#569cd6', bold: true }, { text: ' a = ' }, { text: '1', color: 'red;" onload="x' }, { text: ';', italic: true }]] }
+				: undefined,
+		};
+		const html = buildInplaceSelectHtml([{ text: '```ts\nconst a = 1;\n```\n\n```\n<plain>\n```', markdown: true }], look, NONCE);
+		expect(bodyOf(html)).toBe([
+			'<div class="seg">',
+			'<div class="cb" style="background:#1e1e1e"><div class="io"><span class="iol">ts</span><span class="ioa">折り返し</span><span class="ioa">コピー</span></div>',
+			'<div class="cc"><div class="ct" style="color:#d4d4d4"><span class="cbd" style="color:#569cd6">const</span> a = 1<span class="ci">;</span></div></div></div>',
+			'<div class="cb"><div class="io"><span class="iol">コード</span><span class="ioa">折り返し</span><span class="ioa">コピー</span></div><div class="cc"><div class="ct">&lt;plain&gt;</div></div></div>',
+			'</div>',
+		].join(''));
+	});
+
+	it('lays several messages out to scroll, with labels that are not copied, and scrolls the pressed one into its old place', () => {
+		const html = buildInplaceSelectHtml(
+			[{ text: '前の発言', markdown: false, label: 'あなた' }, { text: '押した発言', markdown: true, label: 'エージェント' }],
+			LOOK, NONCE, { x: 10, y: 20 }, { anchor: 1, top: 120.5, left: 16, width: 343, pad: 600 },
+		);
+		expect({
+			body: /<\/style>\n<\/head><body>(?<body>[\s\S]*)<script/.exec(html)?.groups?.body,
+			place: html.includes('var lay=[1,120.5];'),
+			label: html.includes('.sp {') && /\.sp \{[^}]*user-select: none/.test(html),
+		}).toEqual({
+			body: '<div id="m" class="across" style="padding:600px 0;margin-left:16px;width:343px"><div class="seg"><div class="sp">あなた</div><div class="u">前の発言</div></div><div class="seg"><div class="sp">エージェント</div><div class="p">押した発言</div></div></div>',
+			place: true,
+			label: true,
+		});
+	});
+
 	it('draws a user message as plain bubble text', () => {
 		const html = buildInplaceSelectHtml([{ text: '**そのまま**\n<b>', markdown: false }], LOOK, NONCE);
 		expect(bodyOf(html)).toBe('<div class="seg"><div class="u">**そのまま**\n&lt;b&gt;</div></div>');
