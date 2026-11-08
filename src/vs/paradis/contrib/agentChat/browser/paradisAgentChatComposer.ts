@@ -15,7 +15,7 @@ import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
@@ -33,6 +33,25 @@ export interface IParadisAgentChatComposerHost {
 	setDraft(token: string, text: string): void;
 	getHistory(token: string): readonly string[];
 	getCommands(token: string): Promise<readonly IParadisAgentChatCommand[]>;
+	/** 音声入力のマイクを入力欄に付ける（デスクトップだけ。無ければマイクを出さない）。 */
+	createDictation?(target: IParadisAgentChatDictationTarget): IParadisAgentChatDictation;
+}
+
+/** 音声入力のマイクが入力欄に求めるもの。 */
+export interface IParadisAgentChatDictationTarget {
+	/** マイクのボタンを置く場所（送信ボタンの左）。 */
+	readonly container: HTMLElement;
+	readonly textarea: HTMLTextAreaElement;
+	/** 書き起こしで入力欄の文を変えた（下書き・送信ボタン・高さを合わせる）。 */
+	didEdit(): void;
+	/** 入力欄の上に短い注記を出す。undefined で元の表示に戻す。 */
+	showNotice(message: string | undefined): void;
+}
+
+/** 入力欄に付いた音声入力。 */
+export interface IParadisAgentChatDictation extends IDisposable {
+	/** 書き起こしを止め、以後の文を入力欄へ入れない（送信・ペインの切り替えの前に呼ぶ）。 */
+	detach(): void;
 }
 
 /** 送信履歴の上限（ペインごと）。 */
@@ -51,6 +70,7 @@ export class ParadisAgentChatComposer extends Disposable {
 	readonly element: HTMLElement;
 	private readonly textarea: HTMLTextAreaElement;
 	private readonly sendButton: Button;
+	private readonly dictation: IParadisAgentChatDictation | undefined;
 	/** 作業中だけ出す短い注記（送った文は終わってから読まれる）。入力中も見えるよう placeholder とは別に置く。 */
 	private readonly busyNote: HTMLElement;
 	private readonly notice: HTMLElement;
@@ -89,6 +109,7 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.textarea.setAttribute('aria-label', localize('paradisAgentChat.inputAria', "エージェントへのメッセージ"));
 		const footer = append(box, $('.paradis-agent-chat-composer-footer'));
 		this.busyNote = append(footer, $('span.paradis-agent-chat-composer-busy'));
+		const dictationSlot = append(footer, $('span.paradis-agent-chat-dictation'));
 		this.sendButton = this._register(new Button(footer, { ...defaultButtonStyles }));
 		this.sendButton.element.classList.add('paradis-agent-chat-send');
 		this.sendButton.label = localize('paradisAgentChat.send', "送信");
@@ -106,6 +127,12 @@ export class ParadisAgentChatComposer extends Disposable {
 			blurTimer.value = disposableTimeout(() => this.hideSlashMenu(), 150);
 		}));
 		this._register(this.sendButton.onDidClick(() => this.submit()));
+		this.dictation = host.createDictation ? this._register(host.createDictation({
+			container: dictationSlot,
+			textarea: this.textarea,
+			didEdit: () => this.onInput(),
+			showNotice: message => this.showNotice(message ?? this.blockedReason),
+		})) : undefined;
 		this.updateHint();
 		this.updateSendState();
 	}
@@ -115,6 +142,7 @@ export class ParadisAgentChatComposer extends Disposable {
 		if (this.token === token) {
 			return;
 		}
+		this.dictation?.detach();
 		if (this.token !== undefined) {
 			this.host.setDraft(this.token, this.textarea.value);
 		}
@@ -334,6 +362,7 @@ export class ParadisAgentChatComposer extends Disposable {
 			return;
 		}
 		this.hideSlashMenu();
+		this.dictation?.detach();
 		this._onDidSubmit.fire(text);
 	}
 

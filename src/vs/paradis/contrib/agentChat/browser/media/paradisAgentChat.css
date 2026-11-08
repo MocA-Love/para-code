@@ -902,6 +902,43 @@
 	font-size: var(--vscode-fontSize-label2);
 }
 
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-dictation {
+	display: flex;
+	flex: none;
+}
+
+/* 音声入力のマイク。送信ボタンの左に置く、枠の無いアイコンのボタン。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-mic {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--vscode-spacing-size20);
+	color: var(--vscode-icon-foreground);
+	background: none;
+	border: var(--vscode-strokeThickness) solid transparent;
+	border-radius: var(--vscode-cornerRadius-medium);
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-mic:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-mic:focus-visible {
+	border-color: var(--vscode-focusBorder);
+	outline: none;
+}
+
+/* 聞き取り中は止めるボタンになる。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-mic.active {
+	color: var(--vscode-errorForeground);
+}
+
+/* この OS では使えない（押すと理由を出す）。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-mic.unavailable {
+	color: var(--vscode-disabledForeground);
+}
+
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-menu {
 	position: absolute;
 	left: 50%;
