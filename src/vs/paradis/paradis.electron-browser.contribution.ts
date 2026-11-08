@@ -145,3 +145,5 @@ import './contrib/crossJump/electron-browser/paradisCrossJump.contribution.js';
 import './contrib/scmAgentFix/electron-browser/paradisScmAgentFix.contribution.js';
 // G-01: 差分の行にメモを付け、まとめて今のスペースのエージェントへ送る
 import './contrib/diffReviewNotes/electron-browser/paradisDiffReviewNotes.contribution.js';
+// ポートパネルの「張り直す」（SSH の窓で転送が一覧に残ったまま繋がらなくなったときの逃げ道）
+import './contrib/portReforward/electron-browser/paradisPortReforward.contribution.js';

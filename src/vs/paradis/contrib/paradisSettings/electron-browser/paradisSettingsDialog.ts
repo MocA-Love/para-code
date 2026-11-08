@@ -1486,7 +1486,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		key: 'paradis.resourceMonitor.titleBar.memoryFormat',
 		label: paradisResourceTitleBarFormatTitle('memory'),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.resourceMonitorFormat.memory', "タイトルバーに割合・使用量 / 全体・使用量・空きのどれで出すかを選びます。右クリックでも選べ、ホバーにはいつも詳しい数字が出ます。"),
+		description: localize('paradis.settings.resourceMonitorFormat.memory', "メモリをタイトルバーに割合・使用量 / 全体・使用量・空きのどれで出すかを選びます。右クリックでも選べ、ホバーにはいつも詳しい数字が出ます。"),
 		keywords: 'resource monitor titlebar format percent used total free gb memory ram',
 	},
 	{
@@ -1495,7 +1495,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		key: 'paradis.resourceMonitor.titleBar.diskFormat',
 		label: paradisResourceTitleBarFormatTitle('disk'),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.resourceMonitorFormat.disk', "タイトルバーに割合・使用量 / 全体・使用量・空きのどれで出すかを選びます。右クリックでも選べ、ホバーにはいつも詳しい数字が出ます。"),
+		description: localize('paradis.settings.resourceMonitorFormat.disk', "ディスクをタイトルバーに割合・使用量 / 全体・使用量・空きのどれで出すかを選びます。右クリックでも選べ、ホバーにはいつも詳しい数字が出ます。"),
 		keywords: 'resource monitor titlebar format percent used total free gb disk storage',
 	},
 	{
@@ -1504,7 +1504,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		key: 'paradis.resourceMonitor.titleBar.swapFormat',
 		label: paradisResourceTitleBarFormatTitle('swap'),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.resourceMonitorFormat.swap', "タイトルバーに割合・使用量 / 全体・使用量・空きのどれで出すかを選びます。右クリックでも選べ、ホバーにはいつも詳しい数字が出ます。"),
+		description: localize('paradis.settings.resourceMonitorFormat.swap', "スワップをタイトルバーに割合・使用量 / 全体・使用量・空きのどれで出すかを選びます。右クリックでも選べ、ホバーにはいつも詳しい数字が出ます。"),
 		keywords: 'resource monitor titlebar format percent used total free gb swap',
 	},
 	{

@@ -146,9 +146,11 @@ export class ParadisRemotePreviewMounter extends Disposable {
 	}
 
 	private async _openTunnel(authority: string, remotePort: number): Promise<RemoteTunnel> {
-		const resolved = await this._remoteAuthorityResolverService.resolveAuthority(authority);
+		// 宛先は覚え込まず、聞かれるたびに解決し直す。SSH の再接続のたびに手元の口（乱数のポート）が変わり、
+		// 転送はそのたびに宛先を聞き直す（`SharedProcessTunnel._updateAddress`）ので、最初の宛先を返し続けると
+		// 再接続の後はこのプレビューの転送が二度と繋がらない。ポートパネルの転送（`tunnelModel.ts`）と同じ形。
 		const tunnelOrError = await this._tunnelService.openTunnel(
-			{ getAddress: async () => resolved.authority },
+			{ getAddress: async () => (await this._remoteAuthorityResolverService.resolveAuthority(authority)).authority },
 			'127.0.0.1',
 			remotePort,
 			// **手元側の bind 先を明示する。** 省くと `remote.localPortHost` の設定次第で
