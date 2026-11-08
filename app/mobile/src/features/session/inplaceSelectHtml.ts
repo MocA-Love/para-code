@@ -360,6 +360,7 @@ const HOLD_SLOP = 10;
  *   つまみも OS のメニューも出さない（その後の長押しも効かなくなることがある）。呼び出し側が見せて
  *   `requestFocus()` した後に {@link inplaceSelectStartScript} で `__paraSelectStart` を呼ぶ
  * - 押した点の単語を選ぶ。押した点が無い・字の上でないときは発言の全体を選ぶ（入ったら必ず何かが選ばれているように）。
+ *   前後の発言をまとめて並べたときは、押した発言の本文だけ（見出しを除く）を選ぶ
  *   呼び出し側は first responder になるのが遅れたときのために数回呼ぶので、2 回目からは何も選ばれていないときだけ選ぶ
  * - 押し続けたら（{@link HOLD_MS}）その点の単語を選ぶ。OS の長押しの選択が先に選んでいたら何もしない。
  *   `touchcancel` では止めない（OS の長押しが認識されると、ページへの触れは取り消されるため）
@@ -373,7 +374,7 @@ var root=document.getElementById('m');
 function post(kind){try{window.ReactNativeWebView.postMessage(JSON.stringify({type:kind,height:Math.ceil(root.getBoundingClientRect().height)}));}catch(e){}}
 function word(s){if(s.modify){s.modify('move','backward','word');s.modify('extend','forward','word');}}
 function selectAt(p){var s=window.getSelection();if(!s){return false;}if(p&&document.caretRangeFromPoint){var r=document.caretRangeFromPoint(p[0],p[1]);if(r&&root.contains(r.startContainer)&&r.startContainer.nodeType===3){s.removeAllRanges();s.addRange(r);word(s);if(!s.isCollapsed){return true;}}}return false;}
-function selectAll(){var s=window.getSelection();if(s){s.removeAllRanges();s.selectAllChildren(root);}}
+function selectAll(){var s=window.getSelection();if(!s){return;}s.removeAllRanges();var el=lay?root.querySelectorAll('.seg')[lay[0]]:null;if(el){var sp=el.querySelector('.sp');var r=document.createRange();if(sp&&sp.nextElementSibling){r.setStartBefore(sp.nextElementSibling);}else{r.setStart(el,0);}r.setEnd(el,el.childNodes.length);s.addRange(r);return;}s.selectAllChildren(root);}
 var started=false;
 window.__paraSelectStart=function(){try{var s=window.getSelection();if(started&&s&&!s.isCollapsed){return;}started=true;if(!selectAt(${at})){selectAll();}}catch(e){}};
 var hold=null,from=null;
