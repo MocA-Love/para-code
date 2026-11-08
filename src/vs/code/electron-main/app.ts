@@ -62,7 +62,7 @@ import { ISandboxHelperMainService } from '../../platform/sandbox/electron-main/
 import { SandboxHelperService } from '../../platform/sandbox/node/sandboxHelper.js';
 import { LOCAL_FILE_SYSTEM_CHANNEL_NAME } from '../../platform/files/common/diskFileSystemProviderClient.js';
 import { IFileService } from '../../platform/files/common/files.js';
-import { DiskFileSystemProviderChannel } from '../../platform/files/electron-main/diskFileSystemProviderServer.js';
+import { ParadisDetachedDeleteDiskFileSystemProviderChannel } from '../../platform/files/electron-main/paradisDetachedDeleteDiskFileSystemProviderChannel.js'; // PARA-PATCH: see Local Files below
 import { DiskFileSystemProvider } from '../../platform/files/node/diskFileSystemProvider.js';
 import { SyncDescriptor } from '../../platform/instantiation/common/descriptors.js';
 import { IInstantiationService, ServicesAccessor } from '../../platform/instantiation/common/instantiation.js';
@@ -1442,7 +1442,7 @@ export class CodeApplication extends Disposable {
 		// Local Files
 		const diskFileSystemProvider = this.fileService.getProvider(Schemas.file);
 		assertType(diskFileSystemProvider instanceof DiskFileSystemProvider);
-		const fileSystemProviderChannel = disposables.add(new DiskFileSystemProviderChannel(diskFileSystemProvider, this.logService, this.environmentMainService));
+		const fileSystemProviderChannel = disposables.add(new ParadisDetachedDeleteDiskFileSystemProviderChannel(diskFileSystemProvider, this.logService, this.environmentMainService)); // PARA-PATCH: folders a window deletes for good are removed outside the main process so its other file calls do not queue behind it
 		mainProcessElectronServer.registerChannel(LOCAL_FILE_SYSTEM_CHANNEL_NAME, fileSystemProviderChannel);
 		sharedProcessClient.then(client => client.registerChannel(LOCAL_FILE_SYSTEM_CHANNEL_NAME, fileSystemProviderChannel));
 
