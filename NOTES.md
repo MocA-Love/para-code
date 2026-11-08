@@ -2455,10 +2455,21 @@ upstream のディクテーションは Foundry Local のネイティブ部品�
 
 残しているものは 2 つで、どちらも内蔵の部品が無くても役に立つ。
 
-- `contrib/dictation/browser/paradisDictationAvailability.contribution.ts` は `dictation.enabled` の既定を false にする。upstream の既定 true のままだと、マイクのボタン・コマンド・キーが出て、押すと約 775MB のモデルを `user-data/chatDictationModels` に落とした後に `Foundry Local transcription stream stalled for 60000ms` で失敗する（2026-09-27 実機で確認）。settings.json で自分で true にした人は対象外。Agent Sessions ウィンドウはこの集約ファイルを読み込まないので既定 true のまま
+- `contrib/dictation/browser/paradisDictationAvailability.contribution.ts` は `dictation.enabled` の既定を false にする（2026-11-08 から Windows・Linux だけ。Mac は下の「音声入力の認識の差し替え」で動くので upstream の既定 true のまま）。upstream の Foundry Local のままだと、マイクのボタン・コマンド・キーが出て、押すと約 775MB のモデルを `user-data/chatDictationModels` に落とした後に `Foundry Local transcription stream stalled for 60000ms` で失敗する（2026-09-27 実機で確認）。settings.json で自分で true にした人は対象外。Agent Sessions ウィンドウはこの集約ファイルを読み込まないので既定 true のまま
 - `notifications/electron-browser/paradisDictationAudioHold.contribution.ts` は音声入力の間の読み上げを止める。拡張機能や開発版の音声入力でも働く（下の段落）
 
 音声入力の間は Para Code の読み上げを止める（`notifications/electron-browser/paradisDictationAudioHold.contribution.ts`、音声入力を配布していなくても拡張機能や開発版の音声入力で働く）。shared process の `AudioScheduler.setHeld` が、再生中の afplay 等を止め、通知音を捨て、新しい発話を溜めて終わってから読む。止めるのはどれか1つのウィンドウでも音声入力中のとき（接続ごとに持ち、接続が切れたら外す。ウィンドウは起動時に自分の状態を送り直し、音声入力中は状態が動くたびに送り直す）。上限はウィンドウごとに 10 分で、過ぎたウィンドウだけを外す（モデルの初回ダウンロード中や、upstream のセッション数が戻らなかったときに通知が鳴らなくなり続けないため）。**Agent Sessions ウィンドウの音声入力では止まらない。** この仕組みは通常ウィンドウの集約ファイルからしか読み込まれず、Sessions ウィンドウのチャット入力にマイクが出るかは【要確認】（出るなら Sessions 側からも読み込む）。**外部の aivis-mcp は止めていない。** 止める口（`aivis --mute`）がおやすみモードと共有で、解除のときにおやすみモードのミュートやユーザー自身のミュートまで解いてしまうため。
+
+### 音声入力の認識の差し替え（G-14、2026-11-08、Q578）
+
+upstream の音声入力の画面（チャットの入力・エディタ・ターミナル）とマイクの取り込み（PCM16・モノラル・16kHz）はそのまま使い、認識の中身の `ILocalTranscriptionService` だけを `contrib/dictation/electron-browser/paradisLocalTranscriptionService.ts` に差し替えた。upstream の登録（`workbench.desktop.main.ts` の `localTranscriptionService.js`）より後に Para の集約から `registerSingleton` するので後勝ちになる（`workbench.ts` は登録の順に `serviceCollection.set` する）。差し替え先は Foundry Local の部品・`product.dictationRuntime`・`localTranscriptionMain` を一切使わない。
+
+- 認識は Para の utility process（`contrib/dictation/node/paradisSpeechEngineMain.ts`、`build/next/index.ts` の `desktopEntryPoints` に PARA-PATCH で載せてある）が、1 回の音声入力ごとに Swift の補助プログラム `ParadisSpeech`（macOS 26 の SpeechAnalyzer。`contrib/dictation/native/macos/`）を起動して行う。PCM は標準入力、結果は標準出力の JSON の行（約束は `common/paradisSpeechEngine.ts` の冒頭）
+- 補助プログラムは配布版では `Contents/Helpers/ParadisSpeech`、開発中は `node build/paradis/speech/buildHelper.ts` の出力（`.build/paradis/speech/ParadisSpeech`）を使う。ビルドには macOS 26 の SDK（Xcode 26）が要る。CI は「Build and embed the speech helper」の段で入れ、署名はアプリと一緒（`build/darwin/sign.ts`）。失敗してもリリースは止めない
+- `isSupported` は macOS 26（Darwin 25）以上の Mac だけ true。古い Mac・Windows・Linux では upstream のマイクは出ず、Para のチャット表示のマイクを押すと使えない理由を出す
+- 失敗の `errorCode` に `network`・`notFound` を使わない（upstream はこの 2 つで Foundry のモデルの取り込みへ誘導する）
+
+**upstream 取り込み時に確認すること**: `src/vs/platform/localTranscription/common/localTranscription.ts` の口（1.141.1 でも `start` の引数が増えた）と、`chatSpeechToTextService.ts` の `_startLocalSession`・`_handleModelStatus`・`_failModelSession` の呼び方。`build/next/test/paradisSpeechOverride.test.ts` が `workbench.desktop.main.ts` の import の順を見張る（順が入れ替わると、エラー無しで Foundry Local に戻る）。
 
 ## タイトルバーの fork 部品は、タイトルバー自身の幅で段階的に畳む（titlebarFit、2026-09-28）
 
