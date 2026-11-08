@@ -24,8 +24,8 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { RemoteNameContext } from '../../../../workbench/common/contextkeys.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IRemoteExplorerService, TUNNEL_VIEW_ID, TunnelType } from '../../../../workbench/services/remote/common/remoteExplorerService.js';
-import { mapHasAddressLocalhostOrAllInterfaces, Tunnel, TunnelCloseReason, TunnelProperties } from '../../../../workbench/services/remote/common/tunnelModel.js';
-import { IParadisPortReforwardCloseRequest, PARADIS_PORT_REFORWARD_CHANNEL, PARADIS_PORT_REFORWARD_FORCE_CLOSE } from '../common/paradisPortReforward.js';
+import { mapHasAddressLocalhostOrAllInterfaces } from '../../../../workbench/services/remote/common/tunnelModel.js';
+import { IParadisReforwardServices, paradisReforwardTunnel } from './paradisPortReforwardTunnel.js';
 
 // upstream の tunnelView.ts は行の種類と複数選択のコンテキストキーを export していないので、名前で書く
 const TUNNEL_TYPE_KEY = 'tunnelType';
@@ -46,16 +46,12 @@ function isTunnelRow(value: unknown): value is IParadisTunnelRow {
 	return typeof row.tunnelType === 'string' && typeof row.remoteHost === 'string' && typeof row.remotePort === 'number';
 }
 
-/** 張り直しに使うサービス。`ServicesAccessor` は `await` の後では使えないので、先に取り出しておく。 */
-interface IParadisReforwardServices {
-	readonly remoteExplorerService: IRemoteExplorerService;
-	readonly sharedProcessService: ISharedProcessService;
-	readonly authority: string | undefined;
-	readonly logService: ILogService;
+/** 張り直しと、その結果の知らせに使うサービス。`ServicesAccessor` は `await` の後では使えないので、先に取り出しておく。 */
+interface IParadisReforwardActionServices extends IParadisReforwardServices {
 	readonly notificationService: INotificationService;
 }
 
-function getReforwardServices(accessor: ServicesAccessor): IParadisReforwardServices {
+function getReforwardServices(accessor: ServicesAccessor): IParadisReforwardActionServices {
 	return {
 		remoteExplorerService: accessor.get(IRemoteExplorerService),
 		sharedProcessService: accessor.get(ISharedProcessService),
@@ -63,38 +59,6 @@ function getReforwardServices(accessor: ServicesAccessor): IParadisReforwardServ
 		logService: accessor.get(ILogService),
 		notificationService: accessor.get(INotificationService),
 	};
-}
-
-/** 1 本を張り直す。張れたら undefined、張れなければ理由を返す。 */
-async function reforwardTunnel({ remoteExplorerService, sharedProcessService, authority, logService }: IParadisReforwardServices, tunnel: Tunnel): Promise<string | undefined> {
-	const remote = { host: tunnel.remoteHost, port: tunnel.remotePort };
-	const properties: TunnelProperties = {
-		remote,
-		local: tunnel.localPort,
-		name: tunnel.name,
-		source: tunnel.source,
-		privacy: tunnel.privacy,
-	};
-
-	await remoteExplorerService.close(remote, TunnelCloseReason.Other);
-	if (authority) {
-		const request: IParadisPortReforwardCloseRequest = { authority, remoteHost: remote.host, remotePort: remote.port };
-		try {
-			await sharedProcessService.getChannel(PARADIS_PORT_REFORWARD_CHANNEL).call<boolean>(PARADIS_PORT_REFORWARD_FORCE_CLOSE, request);
-		} catch (err) {
-			// 閉じられなくても、この窓の分は転送し直す（別の窓が参照を持っていなければそれで戻る）
-			logService.warn(`[ParadisPortReforward] Could not close the shared tunnel to ${remote.host}:${remote.port} for every window:`, err);
-		}
-	}
-
-	const result = await remoteExplorerService.forward(properties);
-	if (!result) {
-		return localize('paradisPortReforward.noTunnel', "転送を作れませんでした");
-	}
-	if (typeof result === 'string') {
-		return result;
-	}
-	return undefined;
 }
 
 /** 張り直せなかったものをまとめて知らせる。 */
@@ -135,7 +99,7 @@ registerAction2(class extends Action2 {
 		if (!tunnel) {
 			return;
 		}
-		const failure = await reforwardTunnel(services, tunnel);
+		const failure = await paradisReforwardTunnel(services, tunnel);
 		notifyFailures(services.notificationService, failure ? [`${tunnel.remotePort}: ${failure}`] : []);
 	}
 });
@@ -164,7 +128,7 @@ registerAction2(class extends Action2 {
 		// 1 本ずつ順に。並べると、同じ SSH 先の shared process の転送をまとめて閉じる処理どうしが交差する
 		for (const tunnel of tunnels) {
 			try {
-				const failure = await reforwardTunnel(services, tunnel);
+				const failure = await paradisReforwardTunnel(services, tunnel);
 				if (failure) {
 					failures.push(`${tunnel.remotePort}: ${failure}`);
 				}
