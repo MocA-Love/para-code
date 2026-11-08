@@ -311,19 +311,19 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(mobileId, requestId, token, epoch, terminalId) => withWindowLease(lease => this.service.continueAgentInteraction(mobileId, requestId, token, epoch, terminalId, lease)),
 			(mobileId, requestId, token, outcome) => withWindowLease(lease => this.service.finalizeAgentInteraction(mobileId, requestId, token, outcome, lease)),
 			(mobileId, requestId, token, epoch, terminalId) => withWindowLease(lease => this.service.validateAgentAction(mobileId, requestId, token, epoch, terminalId, lease)),
-			(root, query, maxResults) => {
+			(root, query, maxResults, dir) => {
 				const host = searchHostResolver(root);
 				if (!host) {
 					return Promise.reject(new Error('This workspace is not reachable from this window.'));
 				}
-				return host.channel.call<{ files: string[]; truncated: boolean }>('searchFiles', [host.path(root), query, maxResults]);
+				return host.channel.call<{ files: string[]; truncated: boolean }>('searchFiles', [host.path(root), query, maxResults, ...(dir !== undefined ? [dir] : [])]);
 			},
-			(root, query, maxResults) => {
+			(root, query, maxResults, dir) => {
 				const host = searchHostResolver(root);
 				if (!host) {
 					return Promise.reject(new Error('This workspace is not reachable from this window.'));
 				}
-				return host.channel.call<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>('searchText', [host.path(root), query, maxResults]);
+				return host.channel.call<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>('searchText', [host.path(root), query, maxResults, ...(dir !== undefined ? [dir] : [])]);
 			},
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
 			(ownerId, active) => ccusageClient.setDashboardWarmLease(ownerId, active),

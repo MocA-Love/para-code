@@ -14,7 +14,9 @@ import { useContextMenuSheet, type ContextMenuSpec } from '../../components/cont
 import { useCodeCache } from './codeCache.js';
 import { CenterSpinner, OfflineBanner, SpaceGateBody, useReadableColumn } from './codeParts.js';
 import { fileViewerHref } from './codeRoutes.js';
-import { FilesSearchBar, FindResultRow, GrepResultRow, TreeRowView } from './filesParts.js';
+import { FilesSearchBar, FilesSearchScope, FindResultRow, GrepResultRow, TreeRowView } from './filesParts.js';
+import { usePcCapability } from '../../hooks/usePcCapability.js';
+import { PcCapability } from '../../pcCompat.js';
 import { buildFileDecorationIndex, fileDecorationOf } from './fileDecorations.js';
 import type { TreeRow } from './fileTree.js';
 import { saveTreeScroll, treeScroll } from './fileTreeStore.js';
@@ -25,6 +27,9 @@ import type { CodeSpace } from './useCodeSpace.js';
 import { useFileSearch, type FileSearchState } from './useFileSearch.js';
 import { useFileTree } from './useFileTree.js';
 import { useScmStatus } from './useScmData.js';
+
+/** 「このフォルダを検索」から開いた検索欄にフォーカスするまでの待ち（ms）。長押しのメニューの見張り（閉じた後 0.6 秒）より後にする。 */
+const MENU_SEARCH_FOCUS_DELAY_MS = 700;
 
 /**
  * ファイルのツリー（Orca の MobileFileExplorerPanel）。見出しの右の虫めがねで検索欄を出し、
@@ -40,9 +45,12 @@ import { useScmStatus } from './useScmData.js';
 export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpace; reveal: string | undefined; dock?: PanelDock }) {
 	const router = useRouter();
 	const tree = useFileTree(codeSpace, reveal);
-	const { open: searchOpen, query, mode } = tree.search;
+	const { open: searchOpen, query, mode, dir: searchDir } = tree.search;
 	const { setSearch } = tree;
-	const search = useFileSearch(codeSpace, searchOpen ? query : '', mode);
+	// フォルダで絞る検索（「このフォルダを検索」）。広告していない PC には絞りを送らない（全体を検索して誤解させない）
+	const canSearchDir = usePcCapability(PcCapability.FsFindDir);
+	const scopedDir = canSearchDir ? searchDir : undefined;
+	const search = useFileSearch(codeSpace, searchOpen ? query : '', mode, scopedDir);
 	const insets = useStableInsets();
 	const column = useReadableColumn();
 	const listRef = useRef<FlatList<TreeRow>>(null);
@@ -72,7 +80,7 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 	useFocusEffect(useCallback(() => {
 		const pending = useCodeCache.getState().takeReveal(key);
 		if (pending !== undefined) {
-			setSearch({ open: false, query: '' });
+			setSearch({ open: false, query: '', dir: undefined });
 			revealInTree(pending);
 		}
 	}, [key, revealInTree, setSearch]));
@@ -103,7 +111,8 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 	};
 
 	const toggleSearch = () => {
-		setSearch({ open: !searchOpen, query: '' });
+		setSearchFromMenu(false);
+		setSearch({ open: !searchOpen, query: '', dir: undefined });
 	};
 
 	const refresh = () => {
@@ -115,7 +124,12 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 	const menuOps = useMemo(() => contextMenuOps(), []);
 	const menuSheet = useContextMenuSheet();
 	const absolutePath = useAbsolutePathOption(codeSpace);
-	const fileMenu = (path: string, dir: boolean, line?: number) => buildFileMenu({ path, dir, absolute: absolutePath(path) }, { ...menuOps, ...(dir ? {} : { open: () => openFile(path, line) }) });
+	// 「このフォルダを検索」から開いた検索欄は、フォーカスを遅らせる（メニューの見張りにキーボードを閉じられないように）
+	const [searchFromMenu, setSearchFromMenu] = useState(false);
+	const fileMenu = (path: string, dir: boolean, line?: number) => buildFileMenu(
+		{ path, dir, absolute: absolutePath(path), ...(dir ? { searchIn: { supported: canSearchDir, run: () => { setSearchFromMenu(true); setSearch({ open: true, query: '', dir: path }); } } } : {}) },
+		{ ...menuOps, ...(dir ? {} : { open: () => openFile(path, line) }) },
+	);
 	const grepMenu = (match: { readonly path: string; readonly line: number; readonly text: string }) => buildGrepMatchMenu({ ...match, absolute: absolutePath(match.path) }, { ...menuOps, open: () => openFile(match.path, match.line) });
 
 	const searching = searchOpen && query.trim().length > 0;
@@ -128,7 +142,9 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 				{...(dock !== undefined ? { safeTop: false, backIcon: X, backLabel: 'ファイルを閉じる', onBack: dock.close } : {})}
 				right={<HeaderButton icon={searchOpen ? X : Search} label={searchOpen ? '検索を閉じる' : 'ファイルを検索'} onPress={toggleSearch} active={searchOpen} />}
 			>
-				{searchOpen ? <FilesSearchBar mode={mode} initialQuery={query} onChangeMode={next => setSearch({ mode: next })} onChangeQuery={next => setSearch({ query: next })} editable={codeSpace.live} /> : null}
+				{/* 絞るフォルダが替わったら入力欄を作り直す（uncontrolled なので、前の文字が残らないように） */}
+				{searchOpen ? <FilesSearchBar key={scopedDir ?? ''} {...(searchFromMenu ? { focusDelayMs: MENU_SEARCH_FOCUS_DELAY_MS } : {})} mode={mode} initialQuery={query} onChangeMode={next => setSearch({ mode: next })} onChangeQuery={next => setSearch({ query: next })} editable={codeSpace.live} /> : null}
+				{searchOpen && scopedDir !== undefined ? <FilesSearchScope dir={scopedDir} onClear={() => setSearch({ dir: undefined })} /> : null}
 			</ScreenHeader>
 			<SpaceGateBody gate={codeSpace.gate}>
 				<View style={styles.body}>

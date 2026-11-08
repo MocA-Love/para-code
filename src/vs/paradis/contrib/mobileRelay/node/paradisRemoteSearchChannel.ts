@@ -21,12 +21,12 @@ import { paradisSearchFiles, paradisSearchText } from './paradisMobileSearch.js'
 export class ParadisRemoteSearchService {
 	constructor(private readonly logService: ILogService) { }
 
-	searchFiles(rootPath: string, query: string, maxResults: number): Promise<IParadisFileSearchResult> {
-		return paradisSearchFiles(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService);
+	searchFiles(rootPath: string, query: string, maxResults: number, dir?: string): Promise<IParadisFileSearchResult> {
+		return paradisSearchFiles(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService, dir);
 	}
 
-	searchText(rootPath: string, query: string, maxResults: number): Promise<IParadisTextSearchResult> {
-		return paradisSearchText(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService);
+	searchText(rootPath: string, query: string, maxResults: number, dir?: string): Promise<IParadisTextSearchResult> {
+		return paradisSearchText(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService, dir);
 	}
 }
 
@@ -42,9 +42,11 @@ export class ParadisRemoteSearchChannel<TContext = string> implements IServerCha
 		const rootPath = typeof args[0] === 'string' ? args[0] : '';
 		const query = typeof args[1] === 'string' ? args[1] : '';
 		const maxResults = typeof args[2] === 'number' ? args[2] : 0;
+		// 4 つ目はフォルダで絞るとき（fs.find-dir.v1）。文字でなければ絞らない（古い呼び出し側）
+		const dir = typeof args[3] === 'string' ? args[3] : undefined;
 		switch (command) {
-			case 'searchFiles': return this.service.searchFiles(rootPath, query, maxResults) as Promise<T>;
-			case 'searchText': return this.service.searchText(rootPath, query, maxResults) as Promise<T>;
+			case 'searchFiles': return this.service.searchFiles(rootPath, query, maxResults, dir) as Promise<T>;
+			case 'searchText': return this.service.searchText(rootPath, query, maxResults, dir) as Promise<T>;
 			default: throw new Error(`Method not found: ${command}`);
 		}
 	}

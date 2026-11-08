@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { ContextMenu, useContextMenuSheet } from './contextMenu.js';
 
 vi.mock('react-native', () => ({ View: 'View' }));
-vi.mock('lucide-react-native', () => ({ AlignLeft: 'AlignLeft', Code: 'Code', Copy: 'Copy', ExternalLink: 'ExternalLink', FileDiff: 'FileDiff', FileText: 'FileText', Folder: 'Folder', HardDrive: 'HardDrive', Hash: 'Hash', Minus: 'Minus', PencilLine: 'PencilLine', Plus: 'Plus', Share: 'Share', TextCursorInput: 'TextCursorInput', Type: 'Type' }));
+vi.mock('lucide-react-native', () => ({ AlignLeft: 'AlignLeft', Code: 'Code', Copy: 'Copy', ExternalLink: 'ExternalLink', FileDiff: 'FileDiff', FileText: 'FileText', Folder: 'Folder', HardDrive: 'HardDrive', Hash: 'Hash', Minus: 'Minus', PencilLine: 'PencilLine', Plus: 'Plus', Quote: 'Quote', Search: 'Search', Share: 'Share', TextCursorInput: 'TextCursorInput', Type: 'Type' }));
 // ネイティブの部品が入っていない古いビルド
 vi.mock('../../modules/para-context-menu/index.js', () => ({ ParaContextMenuView: undefined }));
 vi.mock('../ui/index.js', () => ({ ActionSheet: 'ActionSheet' }));
