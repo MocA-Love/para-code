@@ -148,6 +148,8 @@ export interface IParadisWorktreeCreateFlowResult extends IParadisHeadlessWorktr
 	readonly worktree: IParadisWorktree;
 	/** エージェントを起動したターミナル。エージェントを起動しなかった・起動前に失敗した場合は undefined。 */
 	readonly agent?: IParadisLaunchedAgentTerminal;
+	/** `warning` のうち、宣言したファイルの持ち込み（G-06）の分。持ち込みだけが失敗したときに専用の文を出すため。 */
+	readonly includeWarning?: string;
 }
 
 /**
@@ -840,7 +842,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 		});
 	} catch (error) {
 		logService.error('[ParadisWorktreeHeadlessCreate] post-create steps failed', error);
-		return { name: displayName, branch, warning: [includeWarning, toErrorMessage(error)].filter(part => part !== undefined).join('\n'), worktree: createdWorktree, ...(launchedAgent ? { agent: launchedAgent } : {}) };
+		return { name: displayName, branch, warning: [includeWarning, toErrorMessage(error)].filter(part => part !== undefined).join('\n'), worktree: createdWorktree, ...(launchedAgent ? { agent: launchedAgent } : {}), ...(includeWarning !== undefined ? { includeWarning } : {}) };
 	}
-	return { name: displayName, branch, worktree: createdWorktree, ...(includeWarning !== undefined ? { warning: includeWarning } : {}), ...(launchedAgent ? { agent: launchedAgent } : {}) };
+	return { name: displayName, branch, worktree: createdWorktree, ...(includeWarning !== undefined ? { warning: includeWarning, includeWarning } : {}), ...(launchedAgent ? { agent: launchedAgent } : {}) };
 }

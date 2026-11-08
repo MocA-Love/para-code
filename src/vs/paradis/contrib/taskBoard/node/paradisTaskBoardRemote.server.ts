@@ -16,11 +16,15 @@ import { ParadisServerContributions } from '../../../common/paradisProcessContri
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_TASK_BOARD_REMOTE_CHANNEL } from '../common/paradisTaskBoardRemote.js';
 import { ParadisTaskBoardRemoteChannel, ParadisTaskBoardRemoteService } from './paradisTaskBoardRemoteService.js';
+import { paradisTaskBoardWorktreeIncludes } from './paradisTaskBoardWorktreeIncludes.js';
+import { ParadisWorktreeGitService } from '../../workspaceSwitch/node/paradisWorktreeGitChannel.js';
 
 ParadisServerContributions.register('taskBoardRemote', ({ server, accessor }) => {
 	const logService = accessor.get(ILogService);
 	const shellEnv = new ParadisCachedShellEnv(logService, 'ParadisTaskBoardRemote', createParadisShellEnvResolver(logService), Date.now, reportParadisShellEnvDiagnosticError);
-	const service = new ParadisTaskBoardRemoteService(logService, () => shellEnv.getEnv());
+	// ボードのワークツリーへの持ち込み（762-RES）は、スペースの作成と同じ口で行う
+	const includes = paradisTaskBoardWorktreeIncludes(new ParadisWorktreeGitService(logService), logService);
+	const service = new ParadisTaskBoardRemoteService(logService, () => shellEnv.getEnv(), undefined, undefined, undefined, undefined, undefined, undefined, includes);
 	server.registerChannel(PARADIS_TASK_BOARD_REMOTE_CHANNEL, new ParadisTaskBoardRemoteChannel<RemoteAgentConnectionContext>(service));
 	return service;
 });

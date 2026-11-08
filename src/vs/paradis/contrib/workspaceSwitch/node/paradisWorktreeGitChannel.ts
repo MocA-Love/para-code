@@ -43,7 +43,7 @@ import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspac
 import { IParadisFindGeneratedOutputsRequest, IParadisGeneratedOutputCandidate, IParadisRemoveGeneratedOutputsRequest, IParadisRemoveGeneratedOutputsResult, PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS } from '../common/paradisWorktreeGeneratedCleanup.js';
 import { IParadisGeneratedCleanupHost, paradisFindGeneratedOutputs, paradisRemoveGeneratedOutputs } from './paradisWorktreeGeneratedCleanup.js';
 import { IParadisCopyWorktreeIncludesRequest, IParadisWorktreeIncludeResult } from '../common/paradisWorktreeInclude.js';
-import { PARADIS_WORKTREE_LINK_RECORD_FILE, paradisMaterializeWorktreeIncludes, paradisReadWorktreeIncludeDeclarations, paradisRestoreWorktreeLinks, paradisUnlinkRecordedWorktreeLinks } from './paradisWorktreeIncludeCopy.js';
+import { IParadisWorktreeLinkRecord, PARADIS_WORKTREE_LINK_RECORD_FILE, paradisLiveRecordedWorktreeLinkPaths, paradisMaterializeWorktreeIncludes, paradisReadWorktreeIncludeDeclarations, paradisRestoreWorktreeLinks, paradisUnlinkRecordedWorktreeLinks } from './paradisWorktreeIncludeCopy.js';
 import { PARADIS_GIT_NETWORK_SUBCOMMANDS, paradisRestrictedGitArgsError } from '../common/paradisGitRestrictedArgs.js';
 import { PARADIS_PR_DETAIL_FIELDS, PARADIS_PR_FAILED_LOG_JOBS, ParadisPullRequestLookup, paradisParseGhPullRequestDetail, paradisPickMergeMethod, paradisTailFailedJobLog } from '../../mobileRelay/common/paradisMobilePullRequest.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
@@ -1115,6 +1115,55 @@ export class ParadisWorktreeGitService {
 			return worktreeCommon.length > 0 && worktreeCommon === repoCommon && worktreeGitDir !== worktreeCommon && prefix === '';
 		} catch {
 			return false;
+		}
+	}
+
+	/**
+	 * 持ち込みで作り、今も記録と同じ先を指しているリンクの、作業ツリーのルートからの相対パス（タスクボードの返却で、
+	 * 未コミットの変更の確かめから外すため）。記録が読めなければ空。
+	 */
+	async worktreeIncludeLinkPaths(worktreePath: string): Promise<string[]> {
+		const recordPath = await this.worktreeLinkRecordPath(worktreePath);
+		return recordPath === undefined ? [] : paradisLiveRecordedWorktreeLinkPaths(worktreePath, recordPath);
+	}
+
+	/** 持ち込みで作ったリンクを外す（削除の前）。外したものを返し、削除が断られたら {@link restoreWorktreeIncludeLinks} で戻す。 */
+	async unlinkWorktreeIncludeLinks(worktreePath: string): Promise<IParadisWorktreeLinkRecord[]> {
+		const recordPath = await this.worktreeLinkRecordPath(worktreePath);
+		return recordPath === undefined ? [] : paradisUnlinkRecordedWorktreeLinks(worktreePath, recordPath);
+	}
+
+	restoreWorktreeIncludeLinks(worktreePath: string, records: readonly IParadisWorktreeLinkRecord[]): Promise<void> {
+		return paradisRestoreWorktreeLinks(worktreePath, records);
+	}
+
+	/**
+	 * タスクボードの返却（762-RES）。持ち込みのリンクを外し、未コミットの変更が無ければ `--force` 無しで作業ツリーを消す。
+	 * 変更があるとき・git が断ったときは、外したリンクを作り直して残す。消すのは、そのリポジトリの追加のワークツリーだけ。
+	 */
+	async releaseCleanWorktree(request: IParadisCopyWorktreeIncludesRequest<string>): Promise<'removed' | 'dirty' | 'failed'> {
+		for (const value of [request?.repoPath, request?.worktreePath]) {
+			if (typeof value !== 'string' || value.length === 0 || value.startsWith('-')) {
+				throw new Error(`Invalid argument: ${String(value)}`);
+			}
+		}
+		if (!await this.isLinkedWorktreeOf(request.repoPath, request.worktreePath)) {
+			throw new Error(`Not a worktree of the repository: ${request.worktreePath}`);
+		}
+		const unlinked = await this.unlinkWorktreeIncludeLinks(request.worktreePath);
+		try {
+			// 貸し出し中の作業場所でも走るので index.lock を取らない（ボードの isDirty と同じ）
+			const status = await this.exec(['-C', paradisWslPathArg(request.worktreePath), '--no-optional-locks', 'status', '--porcelain']);
+			if (status.trim().length > 0) {
+				await paradisRestoreWorktreeLinks(request.worktreePath, unlinked);
+				return 'dirty';
+			}
+			await this.exec(['-C', paradisWslPathArg(request.repoPath), 'worktree', 'remove', paradisWslPathArg(request.worktreePath)], undefined, { timeout: PARADIS_WORKTREE_REMOVE_TIMEOUT_MS });
+			return 'removed';
+		} catch (error) {
+			this.logService.warn('[ParadisWorktreeGit] could not release a task board worktree', String(error));
+			await paradisRestoreWorktreeLinks(request.worktreePath, unlinked);
+			return 'failed';
 		}
 	}
 
