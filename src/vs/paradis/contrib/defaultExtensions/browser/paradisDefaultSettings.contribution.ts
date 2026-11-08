@@ -141,6 +141,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// upstream 1.143 で既定が false→true になり、GitHub に未サインインだとようこそページの「Agents window」の
 		// ボタンが「Sign in to GitHub」に置き換わるようになった。Para Code では 1.142（paracode-171）までと同じ表示に戻す。
 		'chat.welcomePage.signIn.enabled': false,
+		// SSH 等の窓で、自動で転送したポートが 20 本を超えると upstream は `remote.autoForwardPortsSource` を
+		// process から hybrid へ書き換える。hybrid は検出から一度でも外れたポートを閉じたまま張り直さないため、
+		// 負荷で検出が揺れただけでポートパネルから行が消えて戻らなくなる。ポートの多い開発機ではすぐ超えるので、切り替えを止める。
+		'remote.autoForwardPortsFallback': 0,
 		'gitlens.showWhatsNewAfterUpgrades': false,
 		'go.showWelcome': false,
 		'dependi.extras.silenceUpdateMessages': true,
