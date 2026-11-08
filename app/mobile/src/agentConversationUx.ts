@@ -9,7 +9,7 @@ import type { AgentInteraction } from './store.js';
  * エージェント会話画面（app/agent.tsx）の導線の判定。画面から切り離してテストするための純関数群。
  */
 
-/** 作業を終えたエージェントへの短い返信。押すと入力欄へ入る（送信はしない）。 */
+/** 作業を終えたエージェントへの短い返信の既定。押したときの扱いは `quickReplyTapAction`。 */
 export const QUICK_REPLIES: readonly string[] = ['続けて', 'テストも実行して', '変更点を要約して'];
 
 /**
@@ -37,6 +37,28 @@ export function appendQuickReply(current: string, reply: string): string {
 		return reply;
 	}
 	return /\s$/.test(current) ? current + reply : `${current} ${reply}`;
+}
+
+/**
+ * クイック返信を押したときにすること。`send` は入力欄に入れてそのまま送る、`insert` は入力欄に足すだけ。
+ *
+ * 設定の「押したらすぐ送る」がオンでも、書きかけ（文字・添付）があるときは足すだけにする（未完成の文を送らない）。
+ * 送信ボタンを押せない状態（送信中・PC の画面が開いている・回答の入力中）でも足すだけにして、送るかは利用者に任せる。
+ */
+export function quickReplyTapAction(state: {
+	/** 設定の「押したらすぐ送る」。 */
+	readonly sendOnTap: boolean;
+	/** いまの入力欄の文字。 */
+	readonly draft: string;
+	/** 入力欄に付けている添付の数（アップロード中・失敗も含む）。 */
+	readonly attachmentCount: number;
+	/** 送信ボタンが押せない（送信中・PC の画面が開いている・回答の入力中など）。 */
+	readonly sendBlocked: boolean;
+}): 'send' | 'insert' {
+	if (!state.sendOnTap || state.sendBlocked || state.draft.trim().length > 0 || state.attachmentCount > 0) {
+		return 'insert';
+	}
+	return 'send';
 }
 
 /** 会話の1行のうち、質問カードにあたるものの最小限の形。 */

@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-07',
 		items: [
 			{
+				icon: 'send-outline',
+				title: 'クイック返信を押したら、そのまま送れるようにしました',
+				body: '設定 →「クイック返信」の「押したらすぐ送る」をオンにすると使えます。書きかけがあるときは今までどおり入力欄の後ろに足すだけで、送りません。',
+			},
+			{
 				icon: 'swap-horizontal-outline',
 				title: '過去の会話を再開するとき、PC で選んでいる Codex のアカウントに無い会話なら、どちらのアカウントで開くかを選べるようにしました',
 				body: '前のアカウントで開くか、会話の履歴を選んでいるアカウントへつないで続けるかを選べます。',
