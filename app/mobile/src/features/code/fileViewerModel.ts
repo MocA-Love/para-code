@@ -83,6 +83,32 @@ export function canToggleSource(kind: ViewerKind): boolean {
 
 export type ViewerMode = 'render' | 'code';
 
+/** viewport の meta が無い HTML に補う meta（ブラウザの既定の幅 980 の縮小表示にしない）。 */
+const DEFAULT_VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1">';
+
+/**
+ * HTML のプレビューに viewport の meta を補う。ページが自分で書いていれば（`<meta name="viewport" …>`）そのまま返す。
+ * 補う場所は `<head>` の直後、無ければ `<html>` の直後、どちらも無ければ先頭（`<!DOCTYPE>` があればその後）。
+ */
+export function withDefaultViewport(html: string): string {
+	if (/<meta\b[^>]*\bname\s*=\s*["']?viewport\b/i.test(html)) {
+		return html;
+	}
+	const head = /<head\b[^>]*>/i.exec(html);
+	if (head !== null) {
+		const at = head.index + head[0].length;
+		return html.slice(0, at) + DEFAULT_VIEWPORT_META + html.slice(at);
+	}
+	const root = /<html\b[^>]*>/i.exec(html);
+	if (root !== null) {
+		const at = root.index + root[0].length;
+		return `${html.slice(0, at)}<head>${DEFAULT_VIEWPORT_META}</head>${html.slice(at)}`;
+	}
+	const doctype = /^\s*<!doctype[^>]*>/i.exec(html);
+	const at = doctype !== null ? doctype[0].length : 0;
+	return html.slice(0, at) + DEFAULT_VIEWPORT_META + html.slice(at);
+}
+
 /** 色を指定していない HTML を描くときの地（ブラウザと同じ白。文字の既定は黒）。 */
 export const HTML_PAGE_CANVAS = '#ffffff';
 

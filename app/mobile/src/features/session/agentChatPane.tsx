@@ -36,7 +36,8 @@ import { paradisCodexAsyncNotifyInteractionId } from '../../../../../src/vs/para
 import { isAsyncQuestionHidden, useAsyncQuestionDrafts } from '../../asyncQuestionDrafts.js';
 import { pinnedCardMaxHeight, PinnedCardScrollContext, type PinnedCardScroll } from './pinnedCard.js';
 import { withQuestionOutcomes } from './questionOutcomes.js';
-import { ChatChromeRow, CompactingRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
+import { ChatChromeRow, CompactingRow, InplaceSelectBar, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
+import { useInplaceSelectNotice, useInplaceSelectNoticeHost } from './inplaceSelectNotice.js';
 import { useQuickReplies } from '../settings/quickRepliesStore.js';
 import { ChatList, type ChatListHandle } from './chatList.js';
 import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
@@ -397,6 +398,9 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			))}
 		</View>
 	) : undefined;
+	// その場で範囲を選んでいる間は、クイック返信の帯の位置にお知らせの帯を置く（一覧に重ねない。inplaceSelectNotice.ts）
+	useInplaceSelectNoticeHost(active);
+	const selectNotice = useInplaceSelectNotice(s => s.notice);
 	const showQuickReplies = shouldShowQuickReplies({
 		agentStatus: terminal.agentStatus,
 		working,
@@ -440,7 +444,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 							</View>
 						</ScrollView>
 					) : null}
-					{showQuickReplies ? <QuickReplies onPick={pickQuickReply} /> : null}
+					{selectNotice !== undefined ? <InplaceSelectBar notice={selectNotice} /> : showQuickReplies ? <QuickReplies onPick={pickQuickReply} /> : null}
 					<QueuedSendsBanner pcId={activePcId} terminalKey={terminalKey} />
 					{/* コンテキストを圧縮している最中（PreCompact から区切りの行が届くまで。モックの A6-2）。圧縮していなければ何も描かない */}
 					{chatReady ? <CompactingRow activity={chat?.activity} messages={messages} /> : null}

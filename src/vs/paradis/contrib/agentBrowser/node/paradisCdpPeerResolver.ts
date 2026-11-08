@@ -53,7 +53,7 @@ const CLASSIFY_MAX_ATTEMPTS = 4;
  * Node の `exec` の `timeout` は使わない。機械の負荷が高く、このプロセスが CPU を待たされている間に
  * コマンドが終わると、待ちが明けたときに時計（timers）が終わりの知らせ（I/O）より先に回り、終わっている
  * コマンドを時間切れとして扱う（呼び出し元を確かめられず断っていた）。時計が鳴ったら、終わりの知らせを
- * 読む機会を 2 巡与えてから止める。
+ * 読む機会を 2 巡与えてから止める。その時点で子が終わっていれば、出力を読み切るまで 1 回だけ待ち直す。
  * `exec` の時間切れはシェルだけを止め、`lsof … || true` の lsof のような子を残す（やり直すたびに増える）。
  * POSIX では別のプロセスグループで起こし、グループごと止める。
  */
@@ -100,13 +100,20 @@ export function paradisExecWithTimeout(command: string, timeoutMs: number, maxBu
 		});
 		child.on('error', error => finish(error));
 		child.on('close', (code, signal) => finish(code === 0 ? undefined : new Error(`exited with ${code ?? signal}`)));
-		timer = setTimeout(() => setImmediate(() => setImmediate(() => {
+		const onTimeout = (extended: boolean) => setImmediate(() => setImmediate(() => {
 			if (settled) {
+				return;
+			}
+			// Linux では子の終了（exit）が先に届き、標準出力の終わり（end / close）は数巡後になる。
+			// 終わっている子は 1 回だけ同じ長さを待ち直し、出力を読み切らせる。
+			if (!extended && (child.exitCode !== null || child.signalCode !== null)) {
+				timer = setTimeout(() => onTimeout(true), timeoutMs);
 				return;
 			}
 			stop();
 			finish(new Error(`timed out after ${timeoutMs} ms`));
-		})), timeoutMs);
+		}));
+		timer = setTimeout(() => onTimeout(false), timeoutMs);
 	});
 }
 

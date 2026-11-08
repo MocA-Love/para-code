@@ -132,7 +132,7 @@ suite('ParadisChildProcessTreeTracker', () => {
 		clock.tick(60_000);
 
 		assert.strictEqual(treeKill.callCount, 1);
-		assert.deepStrictEqual(treeKill.firstCall.args, [123, true]);
+		assert.deepStrictEqual([...treeKill.firstCall.args.slice(0, 2), typeof treeKill.firstCall.args[2]], [123, true, 'function']);
 		assert.strictEqual(fixture.kill.callCount, 0);
 		assert.strictEqual(execution.timedOut, true);
 	});
@@ -147,7 +147,7 @@ suite('ParadisChildProcessTreeTracker', () => {
 		await Promise.resolve();
 
 		assert.strictEqual(treeKill.callCount, 1);
-		assert.deepStrictEqual(treeKill.firstCall.args, [123, true]);
+		assert.deepStrictEqual([...treeKill.firstCall.args.slice(0, 2), typeof treeKill.firstCall.args[2]], [123, true, 'function']);
 		assert.strictEqual(reporter.callCount, 1);
 		assert.strictEqual(fixture.kill.callCount, 1);
 	});
@@ -160,7 +160,7 @@ suite('ParadisChildProcessTreeTracker', () => {
 		assert.doesNotThrow(() => paradisKillChildProcessTree(fixture.process, reporter, terminationOptions('win32', treeKill)));
 
 		assert.strictEqual(treeKill.callCount, 1);
-		assert.deepStrictEqual(treeKill.firstCall.args, [123, true]);
+		assert.deepStrictEqual([...treeKill.firstCall.args.slice(0, 2), typeof treeKill.firstCall.args[2]], [123, true, 'function']);
 		assert.strictEqual(reporter.callCount, 1);
 		assert.strictEqual(fixture.kill.callCount, 1);
 	});
@@ -220,7 +220,7 @@ suite('ParadisChildProcessTreeTracker', () => {
 		tracker.dispose();
 
 		assert.strictEqual(treeKill.callCount, 1);
-		assert.deepStrictEqual(treeKill.firstCall.args, [123, true]);
+		assert.deepStrictEqual([...treeKill.firstCall.args.slice(0, 2), typeof treeKill.firstCall.args[2]], [123, true, 'function']);
 		assert.strictEqual(fixture.kill.callCount, 0);
 		assert.strictEqual(clock.countTimers(), 0);
 	});
