@@ -1,0 +1,96 @@
+# PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+#
+# Builds the dictation speech helper (src/vs/paradis/contrib/dictation/native/macos) on GitHub's macOS runners
+# without waiting for a release: swiftc for arm64 and x86_64, lipo, then `ParadisSpeech check`. It uses no
+# secrets, signs nothing (ad-hoc only) and publishes nothing, so running it from a branch is safe.
+#
+# - macos-15: the runner para-release.yml builds on. Its default Xcode is 16.4, so the helper uses Xcode 26.3 the
+#   same way the release step does. `check` must answer "unsupported" (macOS 15 cannot run SpeechAnalyzer) and
+#   must not crash: that is the "starts on older macOS" check.
+# - macos-26: the default Xcode is 26.x. `check` prints what the runner's macOS 26 offers (SpeechTranscriber,
+#   the ja-JP assets); a VM may not run SpeechTranscriber, so the values are reported, not asserted.
+name: Para speech helper
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/vs/paradis/contrib/dictation/native/macos/**'
+      - 'build/paradis/speech/**'
+      - '.github/workflows/para-speech-helper.yml'
+
+concurrency:
+  group: para-speech-helper-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            developer_dir: /Applications/Xcode_26.3.app/Contents/Developer
+            expect_check: unsupported
+          - runner: macos-26
+            developer_dir: /Applications/Xcode.app/Contents/Developer
+            expect_check: check
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Show Xcode and SDK
+        env:
+          DEVELOPER_DIR: ${{ matrix.developer_dir }}
+        run: |
+          sw_vers
+          xcodebuild -version || true
+          xcrun --sdk macosx --show-sdk-version || true
+          ls -d /Applications/Xcode*.app || true
+
+      - name: Build the speech helper
+        env:
+          DEVELOPER_DIR: ${{ matrix.developer_dir }}
+        run: node build/paradis/speech/buildHelper.ts --out .build/paradis/speech
+
+      - name: Verify both architectures
+        run: |
+          set -euo pipefail
+          lipo .build/paradis/speech/ParadisSpeech -verify_arch arm64 x86_64
+          lipo -info .build/paradis/speech/ParadisSpeech
+          otool -l .build/paradis/speech/ParadisSpeech | grep -A4 LC_BUILD_VERSION | head -10
+
+      - name: Run check
+        env:
+          EXPECT: ${{ matrix.expect_check }}
+        run: |
+          set -uo pipefail
+          # macOS 15 exits 3 with "unsupported"; keep the exit code instead of stopping the step (bash -e).
+          STATUS=0
+          OUTPUT="$(.build/paradis/speech/ParadisSpeech check --locale ja-JP)" || STATUS=$?
+          echo "exit=$STATUS"
+          echo "$OUTPUT"
+          TYPE="$(node -p 'const m = JSON.parse(process.argv[1]); m.type === "error" ? m.code : m.type' "$OUTPUT")"
+          if [ "$TYPE" != "$EXPECT" ]; then
+            echo "::error::ParadisSpeech check answered '$TYPE' (exit $STATUS), expected '$EXPECT'"
+            exit 1
+          fi
+          {
+            echo "### ${{ matrix.runner }}"
+            echo '```json'
+            echo "$OUTPUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

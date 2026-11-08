@@ -47,6 +47,7 @@ import './contrib/notifications/electron-browser/paradisAivisMuteSync.contributi
 import './contrib/notifications/electron-browser/paradisAgentDictionarySync.contribution.js';
 import './contrib/notifications/electron-browser/paradisDictationAudioHold.contribution.js';
 import './contrib/dictation/browser/paradisDictationAvailability.contribution.js';
+import './contrib/dictation/electron-browser/paradisLocalTranscriptionService.js';
 import './contrib/notificationInbox/electron-browser/paradisNotificationInbox.contribution.js';
 import './contrib/menuBar/browser/paradisMenuBarSettings.contribution.js';
 import './contrib/menuBar/electron-browser/paradisMenuBarFeed.contribution.js';

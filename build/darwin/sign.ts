@@ -20,7 +20,8 @@ function getElectronVersion(): string {
 
 function getEntitlementsForFile(filePath: string): string {
 	// PARA-PATCH: the Para Code Computer Use helper gets empty entitlements (Accessibility and Screen Recording come from TCC, not entitlements).
-	if (filePath.includes('/Para Code Computer Use.app')) {
+	// PARA-PATCH: so does the dictation speech helper (it reads PCM from stdin and never opens the microphone itself).
+	if (filePath.includes('/Para Code Computer Use.app') || filePath.endsWith('/Contents/Helpers/ParadisSpeech')) {
 		return path.join(baseDir, 'paradis', 'computerUse', 'paradis-computer-use-entitlements.plist');
 	}
 	if (filePath.includes(' Helper (GPU).app')) {
@@ -48,6 +49,8 @@ const infoPlistUsageDescriptions: Record<string, string> = {
 	NSCameraUsageDescription: 'An application in Visual Studio Code wants to use the Camera.',
 	NSAudioCaptureUsageDescription: 'An application in Visual Studio Code wants to use Audio Capture.',
 	NSLocalNetworkUsageDescription: 'The app uses your local network for DNS resolution and to connect to locally running services.',
+	// PARA-PATCH: Para Code's dictation runs macOS speech recognition in a child helper (Contents/Helpers/ParadisSpeech); if macOS asks for speech recognition access, it asks on behalf of the app and needs this description.
+	NSSpeechRecognitionUsageDescription: 'Para Code uses on-device speech recognition to turn your dictation into text.',
 };
 
 /**

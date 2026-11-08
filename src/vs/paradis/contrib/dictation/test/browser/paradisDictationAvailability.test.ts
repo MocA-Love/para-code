@@ -12,13 +12,18 @@ import { paradisDictationDefaultOverrides } from '../../browser/paradisDictation
 suite('Paradis dictation availability', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('turns dictation off by default only when the build has no runtime download source', () => {
+	test('turns dictation off by default only off the Mac when the build has no runtime download source', () => {
+		const runtime = { dictationRuntime: { version: '1.2.3', urlTemplate: 'https://example.com/{target}.tgz' } };
 		assert.deepStrictEqual({
-			withoutRuntime: paradisDictationDefaultOverrides({}),
-			withRuntime: paradisDictationDefaultOverrides({ dictationRuntime: { version: '1.2.3', urlTemplate: 'https://example.com/{target}.tgz' } }),
+			withoutRuntime: paradisDictationDefaultOverrides({}, false),
+			withRuntime: paradisDictationDefaultOverrides(runtime, false),
+			macWithoutRuntime: paradisDictationDefaultOverrides({}, true),
+			macWithRuntime: paradisDictationDefaultOverrides(runtime, true),
 		}, {
 			withoutRuntime: { 'dictation.enabled': false },
 			withRuntime: undefined,
+			macWithoutRuntime: undefined,
+			macWithRuntime: undefined,
 		});
 	});
 });
