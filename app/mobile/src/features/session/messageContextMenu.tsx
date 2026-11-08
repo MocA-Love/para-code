@@ -32,7 +32,7 @@ interface Selecting {
  *
  * メニューの「範囲を選んでコピー…」を押すと、別の画面を開かずに、この発言の表示の上へ同じ見た目の WebView を重ねて
  * 範囲を選べるようにする（Q551 案 4。`inplaceSelectView.tsx`）。元の表示は隠すだけで外さないので、行の高さは変わらず、
- * 中のコードの色付けなども描き直さない。上のお知らせの「完了」か、外を押すと元に戻す（`inplaceSelectSession.ts`）。
+ * 中のコードの色付けなども描き直さない。お知らせ（会話ではクイック返信の帯のすぐ上。`ui/toastAnchor.ts`）の「完了」か、外を押すと元に戻す（`inplaceSelectSession.ts`）。
  */
 export function MessageContextMenu({ text, markdown, speaker, style, previewRadius, previewBackground, children }: {
 	/** 発言の元の文字（エージェントは Markdown）。 */
@@ -75,7 +75,7 @@ export function MessageContextMenu({ text, markdown, speaker, style, previewRadi
 		});
 	}, []);
 
-	// 差し替えている間: 画面に 1 つだけにし、外を押したら戻す。上にお知らせと「完了」を出す
+	// 差し替えている間: 画面に 1 つだけにし、外を押したら戻す。お知らせと「完了」を出す
 	useEffect(() => {
 		if (selecting === undefined) {
 			return;

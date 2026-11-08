@@ -19,6 +19,7 @@ import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
 import { useAgentActions } from '../../hooks/useAgentActions.js';
 import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
+import { useToastAnchorView } from '../../ui/toastAnchor.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../../pendingAgentMessages.js';
@@ -306,6 +307,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	const pinnedHasPreview = pinned !== undefined && (pinned.type === 'question' ? [pinned.m] : pinned.msgs).some(questionHasPreview);
 	// キーボードが出ているとき（質問へのメモの入力など）はカードの上限を下げ、入力欄をカードの中で見える位置へ送る
 	const keyboardCoverage = useKeyboardCoverage();
+	// お知らせ（コピーした・範囲を選んでいる）を、クイック返信の帯から下の塊に重ねず、そのすぐ上に出す（ui/toastAnchor.ts）
+	const toastAnchor = useToastAnchorView(active, keyboardCoverage);
 	const { height: windowHeight } = useWindowDimensions();
 	const cardMaxHeight = pinnedCardMaxHeight(pinnedHasPreview ? PINNED_PREVIEW_CARD_MAX_HEIGHT : PINNED_CARD_MAX_HEIGHT, windowHeight, keyboardCoverage);
 	const cardScrollRef = useRef<ScrollView>(null);
@@ -426,7 +429,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						allToolsOpen={allToolsOpen}
 					/>
 				)}
-				<View style={[styles.bottom, column]}>
+				<View ref={toastAnchor.ref} collapsable={false} onLayout={toastAnchor.onLayout} style={[styles.bottom, column]}>
 					{card !== undefined || asyncCard !== undefined ? (
 						<ScrollView ref={cardScrollRef} style={[styles.cardScroll, { maxHeight: cardMaxHeight }]} contentContainerStyle={styles.cardContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 							<View ref={cardContentRef} collapsable={false}>

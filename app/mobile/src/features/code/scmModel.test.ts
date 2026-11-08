@@ -63,6 +63,14 @@ describe('splitPath', () => {
 		expect(splitPath('src/auth/session.ts')).toEqual({ name: 'session.ts', dir: 'src/auth' });
 		expect(splitPath('README.md')).toEqual({ name: 'README.md', dir: '' });
 	});
+
+	it('drops the trailing slash git gives untracked folders before taking the name', () => {
+		expect([splitPath('docs/'), splitPath('app/mobile/assets/'), splitPath('/')]).toEqual([
+			{ name: 'docs', dir: '' },
+			{ name: 'assets', dir: 'app/mobile' },
+			{ name: '', dir: '' },
+		]);
+	});
 });
 
 describe('commitAction', () => {
