@@ -15,6 +15,7 @@ import { IParadisResourceUsage } from './paradisResourceMonitor.js';
 const KB = 1024;
 const MB = KB * 1024;
 const GB = MB * 1024;
+const TB = GB * 1024;
 
 export function paradisFormatMemory(bytes: number): string {
 	if (bytes < MB) {
@@ -23,7 +24,10 @@ export function paradisFormatMemory(bytes: number): string {
 	if (bytes < GB) {
 		return `${(bytes / MB).toFixed(1)} MB`;
 	}
-	return `${(bytes / GB).toFixed(2)} GB`;
+	if (bytes < TB) {
+		return `${(bytes / GB).toFixed(2)} GB`;
+	}
+	return `${(bytes / TB).toFixed(2)} TB`;
 }
 
 export function paradisFormatCpu(percent: number): string {
