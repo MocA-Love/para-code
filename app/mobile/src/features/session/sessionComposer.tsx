@@ -5,7 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
 import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus, Info, Keyboard, Monitor } from 'lucide-react-native';
-import { appendQuickReply } from '../../agentConversationUx.js';
+import { appendQuickReply, quickReplyTapAction } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
 import { ComposerAttachmentChips } from '../../components/attachmentChips.js';
@@ -50,6 +50,11 @@ const ROUND_SLOP = hitSlopToMinimum(ROUND, ROUND);
 export interface SessionComposerHandle {
 	/** クイック返信などの文字を入力欄へ入れる（書きかけがあれば後ろへ足す。送信はしない）。 */
 	insertText(text: string): void;
+	/**
+	 * クイック返信を押したとき。「押したらすぐ送る」（`sendOnTap`）がオンで入力欄が空なら、入れてそのまま送る
+	 * （送信ボタンと同じ道を通る）。書きかけ・添付があるとき、送れない状態のときは `insertText` と同じく足すだけ。
+	 */
+	pickQuickReply(text: string, sendOnTap: boolean): void;
 	focus(): void;
 }
 
@@ -410,6 +415,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	// 確認のダイアログから送り直すときは、その時点の submit を呼ぶ
 	const submitRef = useRef(submit);
 	submitRef.current = submit;
+	const quickSendBlockedRef = useRef<(text: string) => boolean>(() => true);
 
 	/** 設定の変更（`/model <別名>`・`/effort <段階>`）。断られたら文を入力欄へ戻し、理由を上に出す。 */
 	const applySetting = (setting: 'model' | 'effort', value: string, text: string) => {
@@ -505,6 +511,18 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 
 	useImperativeHandle(ref, () => ({
 		insertText: (text: string) => replaceActiveInput(appendQuickReply(inputRef.current, text)),
+		pickQuickReply: (text: string, sendOnTap: boolean) => {
+			const action = quickReplyTapAction({
+				sendOnTap,
+				draft: inputRef.current,
+				attachmentCount: composerAttachmentsOf(attachmentKeyOf(draftKeyRef.current, answeringRef.current)).length,
+				sendBlocked: quickSendBlockedRef.current(text),
+			});
+			replaceActiveInput(appendQuickReply(inputRef.current, text));
+			if (action === 'send') {
+				submitRef.current();
+			}
+		},
 		focus: () => nativeInputRef.current?.focus(),
 	}), [replaceActiveInput]);
 
@@ -613,6 +631,10 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	// PC で画面が開いている間は送らない（送ると画面に打ち込まれる）。回答の入力は承認・質問の画面へ向けたものなので止めない
 	const panelOpen = panel !== undefined && panel.since !== dismissedPanelSince && !answering;
 	const sendDisabled = submitting || !(sendable || hasReadyAttachments) || attachmentState.kind === 'uploading' || codexSlashCatalogPending || (answering && answerRefreshing) || panelOpen;
+	// クイック返信をそのまま送れない状態（送信ボタンと同じ条件のうち、入力欄の中身に依らないもの。中身は押した時点で
+	// `quickReplyTapAction` が見る）。Codex の一覧の取得待ちは、`/` で始まる返信のときだけ止める
+	quickSendBlockedRef.current = (text: string) => submitting || answering || panelOpen
+		|| (agent === 'codex' && /^\/\S/.test(text) && commandCatalog?.status === 'loading' && commandCatalog.commands.length === 0);
 	// 外付けキーボードの ⌘↩（iPad）。送信ボタンと同じ条件で送る。
 	const focused = useIsFocused();
 	useShortcutSlot('send', focused ? { send: () => { if (!sendDisabled) { haptic('commit'); submit(); } } } : undefined);
