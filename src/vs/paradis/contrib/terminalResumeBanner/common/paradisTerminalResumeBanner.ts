@@ -58,6 +58,14 @@ export interface IParadisResumeHibernation {
 	readonly bypass?: true;
 }
 
+/**
+ * 休止の印の付いた会話について届いた hook の会話の控えが、止める前のものか（印を残す）。止めた後の hook（再開した、
+ * または印を付けた後に止める前に Para Code が落ちてエージェントが生き残っていた）なら、印を外して普段の会話に戻す。
+ */
+export function paradisIsHookFromBeforeHibernation(entry: IParadisResumeLedgerEntry, session: { readonly sessionId: string; readonly at: number }): boolean {
+	return entry.hibernated !== undefined && entry.sessionId === session.sessionId && session.at <= entry.hibernated.at;
+}
+
 function parseHibernation(value: unknown): IParadisResumeHibernation | undefined {
 	if (typeof value !== 'object' || value === null) {
 		return undefined;

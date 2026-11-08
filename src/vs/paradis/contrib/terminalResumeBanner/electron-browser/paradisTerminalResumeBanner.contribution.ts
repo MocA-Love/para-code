@@ -43,7 +43,7 @@ import { paradisChangeDirectoryCommand } from '../../workspaceSwitch/common/para
 import { paradisIsAtEmptyPrompt } from '../../terminalPromptInput/browser/paradisPromptInputEmpty.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../browser/paradisTerminalResumeBannerView.js';
 import { IParadisAgentHibernationHost, ParadisAgentHibernationController, ParadisHibernationResumeOutcome } from '../../agentHibernation/electron-browser/paradisAgentHibernationController.js';
-import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
+import { IParadisResumeLedgerEntry, paradisIsHookFromBeforeHibernation, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
 
 const LEDGER_STORAGE_KEY = 'paradis.terminal.resumeSessions';
 /** 台帳の書き出しをまとめる間隔。hook はツールを使うたびに届くので、毎回は書かない。 */
@@ -143,7 +143,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			}
 			const previous = this._ledger.get(key);
 			// 休止で止めた会話の、止める前の hook の名残り。再開して hook が届く（時刻が止めた後になる）までは休止のまま
-			if (previous?.hibernated !== undefined && previous.sessionId === session.sessionId && session.at <= previous.hibernated.at) {
+			if (previous !== undefined && paradisIsHookFromBeforeHibernation(previous, session)) {
 				continue;
 			}
 			const title = (instance === undefined ? undefined : paradisResumeTitleFromTab(instance.title))
@@ -287,14 +287,16 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			const token = this.ledgerKeyForInstance(instance.instanceId);
 			const entry = token === undefined ? undefined : this._restoredLedger.get(token);
 			// 休止（G-03）で止めたまま再起動をまたいだタブは、シェルが生き残っていても（常駐ターミナル）エージェントは止めてある
-			const hibernated = entry?.hibernated !== undefined;
+			// 印を付けた後、止める前に落ちた場合は、エージェントが生きていて hook が届くと印が外れる（onSnapshot）。外れていれば休止の帯は出さない
+			const current = token === undefined ? undefined : this._ledger.get(token);
+			const hibernated = entry?.hibernated !== undefined && current?.hibernated !== undefined;
 			if (instance.isDisposed || !(hibernated || restartedAfterFailedAttach || paradisRestoredShellWasRestarted(previousPid, instance.processId, adopted))) {
 				return;
 			}
-			if (token === undefined || entry === undefined || this._ledger.get(token)?.sessionId !== entry.sessionId) {
+			if (token === undefined || entry === undefined || current?.sessionId !== entry.sessionId) {
 				return;
 			}
-			this._offers.set(instance.instanceId, { token, entry });
+			this._offers.set(instance.instanceId, { token, entry: hibernated ? current : entry });
 			this._onDidChange.fire(instance.instanceId);
 		}, error => this.logService.trace('[paradisTerminalResumeBanner] a restored terminal never became ready', error));
 	}

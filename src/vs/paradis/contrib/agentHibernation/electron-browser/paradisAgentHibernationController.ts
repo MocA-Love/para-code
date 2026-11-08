@@ -26,10 +26,11 @@ import { IHostService } from '../../../../workbench/services/host/browser/host.j
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusSnapshot, PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
+import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
 import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL, paradisTaskBoardTerminalId } from '../../taskBoard/common/paradisTaskBoardBridge.js';
 import { paradisIsWorkbenchWindowFocused } from '../../workspaceSwitch/browser/paradisWindowFocus.js';
 import { paradisForgetRemoteTerminalViewing, paradisIsRemoteTerminalViewing, paradisLastRemoteTerminalViewAt, paradisSetHibernationWakeHandler } from '../browser/paradisAgentHibernationRemoteViews.js';
-import { IParadisHibernationPaneFacts, PARADIS_AGENT_HIBERNATION_ENABLED_SETTING, PARADIS_AGENT_HIBERNATION_IDLE_MINUTES_SETTING, PARADIS_AGENT_HIBERNATION_RETRY_MS, PARADIS_AGENT_HIBERNATION_TICK_MS, ParadisHibernationSkipReason, paradisAgentHibernationIdleMs, paradisHibernationVerdict, paradisIsUserTypedInput, paradisNextPendingDraft, paradisParseHibernationResult } from '../common/paradisAgentHibernation.js';
+import { IParadisHibernationPaneFacts, PARADIS_AGENT_HIBERNATION_ENABLED_SETTING, PARADIS_AGENT_HIBERNATION_IDLE_MINUTES_SETTING, PARADIS_AGENT_HIBERNATION_RETRY_MS, PARADIS_AGENT_HIBERNATION_TICK_MS, ParadisComposerState, ParadisHibernationSkipReason, paradisAgentHibernationIdleMs, paradisClaudeComposerState, paradisHibernationVerdict, paradisIsUserTypedInput, paradisNextPendingDraft, paradisParseHibernationResult } from '../common/paradisAgentHibernation.js';
 
 const LOG = '[ParadisAgentHibernation]';
 
@@ -272,6 +273,7 @@ export class ParadisAgentHibernationController extends Disposable {
 				lastVisibleAt: activity.lastVisibleAt,
 				lastInputAt: activity.lastInputAt,
 				pendingDraft: activity.pendingDraft,
+				composer: session === undefined ? 'unknown' : this.composerState(instance, session.agent),
 				remoteViewing: paradisIsRemoteTerminalViewing(instance.instanceId),
 				lastRemoteViewAt: paradisLastRemoteTerminalViewAt(instance.instanceId),
 				retryAfter: this.retryAfter.get(token),
@@ -295,13 +297,25 @@ export class ParadisAgentHibernationController extends Disposable {
 		}
 	}
 
+	/**
+	 * 画面のエージェントの入力欄が空か。スマホや sendText で入った文、再起動の前からの文は入力の記録に残らないので画面で見る。
+	 * 画面を読めない（xterm がまだ無い・入力欄が見つからない）ときは `unknown`（止めない）。
+	 */
+	private composerState(instance: ITerminalInstance, agent: 'claude' | 'codex'): ParadisComposerState {
+		const buffer = instance.xterm?.raw.buffer.active;
+		if (buffer === undefined) {
+			return 'unknown';
+		}
+		return agent === 'claude' ? paradisClaudeComposerState(buffer) : paradisCodexComposerState(buffer);
+	}
+
 	/** 休止しない理由は、休止の候補になりうる理由が変わったときだけ trace に出す。 */
 	private noteSkip(instanceId: number, reason: ParadisHibernationSkipReason): void {
 		if (this.lastSkip.get(instanceId) === reason) {
 			return;
 		}
 		this.lastSkip.set(instanceId, reason);
-		if (reason === 'task-board' || reason === 'draft' || reason === 'remote-viewing' || reason === 'quiet' || reason === 'awaiting-user' || reason === 'completion-unknown') {
+		if (reason === 'task-board' || reason === 'draft' || reason === 'composer-text' || reason === 'composer-unknown' || reason === 'remote-viewing' || reason === 'quiet' || reason === 'awaiting-user' || reason === 'completion-unknown') {
 			this.logService.info(`${LOG} not hibernating terminal ${instanceId}: ${reason}`);
 		} else {
 			this.logService.trace(`${LOG} not hibernating terminal ${instanceId}: ${reason}`);

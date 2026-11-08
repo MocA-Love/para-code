@@ -72,6 +72,8 @@ export interface IParadisHibernationPaneFacts {
 	readonly lastInputAt: number | undefined;
 	/** 送っていない打ちかけの入力がありうる（最後の入力が Enter で終わっていない）。 */
 	readonly pendingDraft: boolean;
+	/** 画面のエージェントの入力欄（スマホ・ほかから送った文、再起動の前からの文も見える）。読めなければ `unknown`。 */
+	readonly composer: ParadisComposerState;
 	/** いまスマホがこのターミナルを開いている。 */
 	readonly remoteViewing: boolean;
 	/** 最後にスマホが見ていた時刻。 */
@@ -84,7 +86,7 @@ export interface IParadisHibernationPaneFacts {
 export type ParadisHibernationSkipReason =
 	| 'not-editor-area' | 'remote' | 'task-board' | 'hibernated' | 'busy'
 	| 'working' | 'permission' | 'question' | 'quiet' | 'awaiting-user' | 'replayed-prompt'
-	| 'no-session' | 'completion-unknown' | 'visible' | 'remote-viewing' | 'draft' | 'retry-later';
+	| 'no-session' | 'completion-unknown' | 'visible' | 'remote-viewing' | 'draft' | 'composer-text' | 'composer-unknown' | 'retry-later';
 
 export type ParadisHibernationVerdict =
 	| { readonly kind: 'hibernate' }
@@ -139,6 +141,9 @@ export function paradisHibernationVerdict(facts: IParadisHibernationPaneFacts, n
 	if (facts.pendingDraft) {
 		return skip('draft');
 	}
+	if (facts.composer !== 'empty') {
+		return skip(facts.composer === 'text' ? 'composer-text' : 'composer-unknown');
+	}
 	if (facts.retryAfter !== undefined && now < facts.retryAfter) {
 		return skip('retry-later');
 	}
@@ -154,10 +159,70 @@ export function paradisHibernationVerdict(facts: IParadisHibernationPaneFacts, n
  * Enter で終わる入力は送ったものとみなす。それ以外（文字・Backspace・Ctrl+C など）は打ちかけとみなす。
  */
 export function paradisNextPendingDraft(previous: boolean, data: string): boolean {
-	if (data.length === 0 || data.startsWith('\x1b')) {
+	if (data.length === 0) {
+		return previous;
+	}
+	// 貼り付け（bracketed paste の `ESC [200~`）は文字の入力。貼り付けの後に Enter が無ければ打ちかけ
+	if (data.startsWith('\x1b[200~')) {
+		return !/[\r\n]$/.test(data);
+	}
+	if (data.startsWith('\x1b')) {
 		return previous;
 	}
 	return !/[\r\n]$/.test(data);
+}
+
+/** 画面のエージェントの入力欄の状態。 */
+export type ParadisComposerState = 'empty' | 'text' | 'unknown';
+
+/** {@link paradisClaudeComposerState} が読む画面（xterm の buffer と同じ形の一部）。 */
+export interface IParadisHibernationComposerBuffer {
+	readonly length: number;
+	getLine(y: number): {
+		readonly length: number;
+		translateToString(trimRight?: boolean): string;
+		getCell(x: number): { getChars(): string; isDim(): number } | undefined;
+	} | undefined;
+}
+
+/** Claude Code の入力欄を探す、画面の下からの行数。 */
+const CLAUDE_COMPOSER_SEARCH_LINES = 40;
+/** 入力欄を囲む横線の行。 */
+const CLAUDE_RULE_LINE = /^\s*[─━]{8,}\s*$/;
+
+/**
+ * Claude Code の入力欄が空か。下から、横線の下の `❯` で始まる行（選択肢の `❯ 1.` は除く）を入力欄の始まりとみなし、
+ * 次の横線（無ければ画面の下端）の手前までに、薄く（dim）ない文字があれば書きかけ。案内の文（placeholder）は薄く描かれる
+ * 前提で、薄くない案内が出る版では書きかけと読む（止めない側）。入力欄が見つからなければ `unknown`。
+ */
+export function paradisClaudeComposerState(buffer: IParadisHibernationComposerBuffer): ParadisComposerState {
+	const bottom = buffer.length - 1;
+	for (let y = bottom; y >= Math.max(1, bottom - CLAUDE_COMPOSER_SEARCH_LINES); y--) {
+		const line = buffer.getLine(y);
+		const text = line?.translateToString(true) ?? '';
+		if (line === undefined || !/^\s*❯(?!\s*\d+[.)])/.test(text) || !CLAUDE_RULE_LINE.test(buffer.getLine(y - 1)?.translateToString(true) ?? '')) {
+			continue;
+		}
+		const start = text.indexOf('❯');
+		for (let row = y; row <= bottom; row++) {
+			const current = row === y ? line : buffer.getLine(row);
+			if (current === undefined) {
+				continue;
+			}
+			if (row > y && CLAUDE_RULE_LINE.test(current.translateToString(true))) {
+				break;
+			}
+			for (let x = row === y ? start + 1 : 0; x < current.length; x++) {
+				const cell = current.getCell(x);
+				const chars = cell?.getChars() ?? '';
+				if (chars.trim().length > 0 && cell !== undefined && cell.isDim() === 0) {
+					return 'text';
+				}
+			}
+		}
+		return 'empty';
+	}
+	return 'unknown';
 }
 
 /** 入力が利用者の打鍵か（端末の自動応答・フォーカスの知らせは数えない）。 */
