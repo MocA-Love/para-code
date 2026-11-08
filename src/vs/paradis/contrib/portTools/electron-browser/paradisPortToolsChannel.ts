@@ -24,6 +24,7 @@ import { Attributes, CandidatePort, Tunnel, TunnelProperties, TunnelSource, User
 import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
+import { paradisDefaultCleanUpForwards, paradisMismatchedForwards } from '../common/paradisPortSelection.js';
 import { PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT, PARADIS_PORT_TOOLS_METHOD, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort } from '../common/paradisPortTools.js';
 
 /** 確認のダイアログに並べる転送の行の上限。超えた分は「ほか N 件」にまとめる。 */
@@ -125,18 +126,15 @@ function rowOf(tunnel: Tunnel, detectionKnown: boolean): object {
 	};
 }
 
-/** 片付けの対象を選ぶ。`not_listening` は検出の結果が無ければ undefined（全部が動いていないように見えるため）。 */
+/**
+ * 片付けの対象を選ぶ。`not_listening` は検出の結果が無ければ undefined（全部が動いていないように見えるため）。
+ * 決め方はポートパネルの「動いていない転送を外す...」の既定のチェックと同じ（paradisPortSelection.ts）。
+ */
 export function paradisPortCleanUpTargets(mode: ParadisPortCleanUpMode, forwarded: readonly Tunnel[], detectionKnown: boolean): readonly Tunnel[] | undefined {
-	const eligible = forwarded.filter(tunnel => tunnel.closeable !== false && isLocalhost(tunnel.remoteHost));
 	if (mode === 'not_listening') {
-		if (!detectionKnown) {
-			return undefined;
-		}
-		// 決まった番号（エフェメラル帯の外）はサーバーを止めているだけのことが多いので、stop_port_forward で明示したときだけ外す
-		return eligible.filter(tunnel => tunnel.source.source === TunnelSource.User && tunnel.hasRunningProcess !== true && tunnel.remotePort >= PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT);
+		return detectionKnown ? paradisDefaultCleanUpForwards(forwarded) : undefined;
 	}
-	// 拡張（HTML プレビューなど）の転送は持ち主が手元の番号を覚えているので、揃えない
-	return eligible.filter(tunnel => tunnel.source.source !== TunnelSource.Extension && tunnel.localPort !== undefined && tunnel.localPort !== tunnel.remotePort);
+	return paradisMismatchedForwards(forwarded);
 }
 
 function isRequest(value: unknown): value is ParadisPortToolRequest {
