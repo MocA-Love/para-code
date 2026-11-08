@@ -29,6 +29,14 @@ export function paradisAndroidAvdOf(deviceId: string): string | undefined {
 	return name && AVD_NAME.test(name) && !name.startsWith('-') ? name : undefined;
 }
 
+/** エディタのタブを開くための Android の端末（チャネルの `listAndroidDevices`）。 */
+export interface IParadisAndroidDeviceSummary {
+	readonly serial: string;
+	readonly name: string;
+	readonly runtime: string;
+	readonly state: string;
+}
+
 /** `adb devices -l` の 1 台。 */
 export interface IParadisAdbDevice {
 	readonly serial: string;

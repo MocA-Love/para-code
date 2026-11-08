@@ -17,7 +17,7 @@ const SDK = '/Users/example/Library/Android/sdk';
 const ADB = `${SDK}/platform-tools/adb`;
 const EMULATOR = `${SDK}/emulator/emulator`;
 
-function setup(options: { files?: string[]; running?: boolean; now?: () => number } = {}) {
+function setup(options: { files?: string[]; running?: boolean; now?: () => number; scrcpy?: ConstructorParameters<typeof ParadisAdbDeviceHost>[0]['scrcpy'] } = {}) {
 	const calls: string[] = [];
 	const launched: string[] = [];
 	const files = new Set(options.files ?? [ADB, EMULATOR]);
@@ -27,6 +27,7 @@ function setup(options: { files?: string[]; running?: boolean; now?: () => numbe
 		platform: 'darwin',
 		home: '/Users/example',
 		now: options.now,
+		scrcpy: options.scrcpy,
 		exists: async path => files.has(path),
 		launch: (file, args) => launched.push([file, ...args].join(' ')),
 		exec: async (file, args) => {
@@ -126,5 +127,22 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 	test('explains how to install adb when it is missing', async () => {
 		const { host } = setup({ files: [] });
 		assert.deepStrictEqual(await host.listDevices().then(() => 'listed', (error: Error) => error.message), PARADIS_ADB_NOT_FOUND);
+	});
+
+	// 2 本指と日本語は scrcpy の操作のソケットで送る（⑥b）。座標はポイント → 画面の画素 → scrcpy の映像の画素
+	test('sends pinches and non-ASCII text through scrcpy', async () => {
+		const sent: string[] = [];
+		const { host } = setup({
+			scrcpy: {
+				use: async (serial, run) => run({ size: { width: 540, height: 1200 }, send: async (message: Uint8Array) => { sent.push(`${serial} ${Buffer.from(message).toString('hex')}`); } } as never),
+			},
+		});
+		await host.request('POST', `/api/v1/devices/${SERIAL_ID}/input/touch`, { x: 100, y: 200, phase: 'down', fingerId: 1 });
+		await host.request('POST', `/api/v1/devices/${SERIAL_ID}/input/text`, { text: 'あ' });
+		assert.deepStrictEqual(sent, [
+			// 100pt x 3 = 300px → 映像は半分なので 150、200pt → 600px → 300
+			`emulator-5554 0200${'0000000000000001'}${'00000096'}${'0000012c'}${'021c'}${'04b0'}ffff${'00000000'}${'00000000'}`,
+			`emulator-5554 09${'0000000000000000'}01${'00000003'}e38182`,
+		]);
 	});
 });

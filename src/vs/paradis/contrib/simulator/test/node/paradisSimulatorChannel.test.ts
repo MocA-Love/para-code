@@ -9,6 +9,8 @@
 // 窓を閉じると、その窓の IPC の購読は shared process 側で外れる。最後の購読が外れたら映像の流れを閉じること。
 
 import assert from 'assert';
+import { Emitter } from '../../../../../base/common/event.js';
+import { ParadisAndroidVideoWire, ParadisScrcpyVideoEvent } from '../../common/paradisScrcpy.js';
 import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -75,6 +77,40 @@ suite('Paradis simulator: video relay in the shared process', () => {
 			idChanged: { dropped: 2, detached: ['pane-gone', 'pane-android'] },
 			androidNotListed: { dropped: 1, detached: ['pane-gone'] },
 			failed: { dropped: 2, detached: ['pane-ios', 'pane-gone'] },
+		});
+	});
+
+	// Android の映像（⑥b）: 最初の購読で scrcpy の通話を使い始め、今の大きさと config を先に渡し、最後の購読が外れたら手放す
+	test('relays Android video from the scrcpy session and releases it when the last window stops watching', async () => {
+		const video = store.add(new Emitter<ParadisScrcpyVideoEvent>());
+		const ended = store.add(new Emitter<Error | undefined>());
+		let leases = 0;
+		const resets: string[] = [];
+		const session = { size: { width: 1080, height: 2400 }, config: new Uint8Array([7]), onVideo: video.event, onDidEnd: ended.event, resetVideo: async () => { resets.push('reset'); } };
+		const scrcpy = {
+			acquire: async () => {
+				leases++;
+				return { session: session as never, lease: { dispose: () => leases-- } };
+			},
+			use: async () => { throw new Error('not used'); },
+		};
+		const host = { ensure: async (): Promise<IParadisSimulatorHostConnection> => ({ socketPath: '', token: '' }), isRunning: false, lastError: undefined, stop: async () => { } };
+		const service = store.add(new ParadisSimulatorService(host, {} as ParadisServeSimBackend, () => true, true, new NullLogService(), undefined, { adb: { bootAvd: async () => { }, listDevices: async () => [] }, scrcpy }));
+		const received: string[] = [];
+		const describe = (message: ParadisAndroidVideoWire) => message.kind === 'size' ? `size ${message.width}x${message.height}` : message.kind === 'config' ? `config ${message.data.byteLength}` : message.kind === 'frame' ? `frame ${message.key}` : 'ended';
+		const listener = service.onAndroidVideo('emulator-5554')(message => received.push(describe(message)));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		video.fire({ kind: 'frame', data: new Uint8Array([1]), key: true, pts: 1 });
+		const whileWatching = leases;
+		listener.dispose();
+		const refused: string[] = [];
+		service.onAndroidVideo('-bad')(() => refused.push('x')).dispose();
+		assert.deepStrictEqual({ received, resets, whileWatching, afterLast: leases, refused }, {
+			received: ['size 1080x2400', 'config 1', 'frame true'],
+			resets: ['reset'],
+			whileWatching: 1,
+			afterLast: 0,
+			refused: [],
 		});
 	});
 });
