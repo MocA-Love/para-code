@@ -13,7 +13,7 @@
 
 import './media/paradisTasks.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { toAction } from '../../../../base/common/actions.js';
+import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -22,6 +22,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -35,6 +36,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
+import { IParadisTaskBoardHostService } from '../../taskBoard/common/paradisTaskBoardHost.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisTasksRepository, paradisTasksResolveRepositories } from '../browser/paradisTasksRepositories.js';
 import {
@@ -185,6 +187,8 @@ export class ParadisTasksEditor extends EditorPane {
 		@IContextMenuService private readonly contextMenuService: IContextMenuService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IParadisTaskBoardHostService private readonly taskBoardHost: IParadisTaskBoardHostService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super(PARADIS_TASKS_EDITOR_ID, group, telemetryService, themeService, tasksStorage);
 		this.github = ProxyChannel.toService<IParadisTasksGithubService>(sharedProcessService.getChannel(PARADIS_TASKS_GITHUB_CHANNEL));
@@ -721,6 +725,58 @@ export class ParadisTasksEditor extends EditorPane {
 		}
 	}
 
+	/** 開いている Issue の行に出す「タスクボードへ」の操作（PR・下書き・閉じた Issue には出さない）。 */
+	private boardActions(repository: string | undefined, number: number | undefined): IAction[] {
+		if (!repository || !number) {
+			return [];
+		}
+		return [
+			toAction({ id: 'paradis.tasks.addToBoard', label: localize('paradis.tasks.addToBoard', "タスクボードの未着手に載せる"), run: () => this.addToBoard(repository, number, false) }),
+			toAction({ id: 'paradis.tasks.addToBoardAndStart', label: localize('paradis.tasks.addToBoardAndStart', "タスクボードに載せて着手する..."), run: () => this.addToBoard(repository, number, true) }),
+			new Separator(),
+		];
+	}
+
+	/**
+	 * Issue をタスクボードの未着手に載せる。ボードが動いていなければ、この窓のスペースでボードを開いて（接続口の確認を含む）
+	 * から載せる。`start` なら載せたタスクをボードの窓で開く（エージェントと最初の指示はボードの着手の画面で選ぶ）。
+	 */
+	private async addToBoard(repository: string, number: number, start: boolean): Promise<void> {
+		const [owner, repo] = repository.split('/');
+		const request = { issues: [{ owner, repo, number }] };
+		let result = await this.taskBoardHost.addIssues(request, start);
+		if (!result.ok && result.reason === 'not-running') {
+			await this.commandService.executeCommand(PARADIS_TASK_BOARD_OPEN_COMMAND_ID);
+			result = await this.taskBoardHost.addIssues(request, start);
+		}
+		if (result.ok) {
+			if (result.taskIds.length === 0 || result.missing > 0) {
+				this.notificationService.warn(localize('paradis.tasks.addToBoard.missing', "#{0} は載せられませんでした（閉じているか、読めませんでした）。", number));
+				return;
+			}
+			if (!start) {
+				this.notificationService.prompt(Severity.Info, localize('paradis.tasks.addToBoard.done', "#{0} をタスクボードの未着手に載せました。", number), [{
+					label: localize('paradis.tasks.openTaskBoard', "タスクボードを開く"),
+					run: () => void this.commandService.executeCommand(PARADIS_TASK_BOARD_OPEN_COMMAND_ID),
+				}]);
+			}
+			return;
+		}
+		switch (result.reason) {
+			case 'not-running':
+				// ボードを開かなかった（接続口の確認をやめた・フォルダが無い等）。開く処理が理由を出している
+				return;
+			case 'other-repo':
+				this.notificationService.warn(localize('paradis.tasks.addToBoard.otherRepo', "タスクボードは {0} の台帳で動いています。{1} の Issue を載せるには、ボードの上のメニューで {1} に切り替えてください。", result.repo ?? '', repository));
+				return;
+			case 'no-github':
+				this.notificationService.warn(localize('paradis.tasks.addToBoard.noGithub', "タスクボードが GitHub につながっていないので、Issue を載せられません。"));
+				return;
+			default:
+				this.notificationService.error(localize('paradis.tasks.addToBoard.failed', "タスクボードに載せられませんでした: {0}", result.message ?? ''));
+		}
+	}
+
 	private openProjectItem(item: IParadisTasksProjectItem): void {
 		if (item.url) {
 			void this.openerService.open(URI.parse(item.url), { openExternal: true });
@@ -732,6 +788,7 @@ export class ParadisTasksEditor extends EditorPane {
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => anchor,
 			getActions: () => url ? [
+				...this.boardActions(item.kind === 'issue' && item.state === 'OPEN' ? item.repository : undefined, item.number),
 				toAction({ id: 'paradis.tasks.openOnGithub', label: localize('paradis.tasks.openOnGithub', "GitHub で開く"), run: () => this.openProjectItem(item) }),
 				toAction({ id: 'paradis.tasks.copyUrl', label: localize('paradis.tasks.copyUrl', "URL をコピー"), run: () => this.clipboardService.writeText(url) }),
 			] : [
@@ -792,6 +849,9 @@ export class ParadisTasksEditor extends EditorPane {
 		updated.title = isNaN(time) ? '' : new Date(time).toLocaleString();
 
 		const actions = dom.append(row, $('td.actions'));
+		if (item.kind === 'issue' && item.state === 'OPEN') {
+			this.iconButton(actions, Codicon.add, localize('paradis.tasks.addToBoard', "タスクボードの未着手に載せる"), () => void this.addToBoard(item.repository, item.number, false), '', this.rowDisposables);
+		}
 		this.iconButton(actions, Codicon.ellipsis, localize('paradis.tasks.rowActions', "操作"), event => this.showRowMenu(item, event), '', this.rowDisposables);
 
 		this.rowDisposables.add(dom.addDisposableListener(row, 'click', event => {
@@ -814,6 +874,7 @@ export class ParadisTasksEditor extends EditorPane {
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => event.target as HTMLElement,
 			getActions: () => [
+				...this.boardActions(item.kind === 'issue' && item.state === 'OPEN' ? item.repository : undefined, item.number),
 				toAction({ id: 'paradis.tasks.openOnGithub', label: localize('paradis.tasks.openOnGithub', "GitHub で開く"), run: () => this.openItem(item) }),
 				toAction({ id: 'paradis.tasks.copyUrl', label: localize('paradis.tasks.copyUrl', "URL をコピー"), run: () => this.clipboardService.writeText(item.url) }),
 			],

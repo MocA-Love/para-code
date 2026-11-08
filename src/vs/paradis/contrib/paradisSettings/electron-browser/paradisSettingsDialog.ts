@@ -538,8 +538,8 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		group: GROUP_TITLEBAR,
 		key: 'paradis.taskBoard.titleBar.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.taskBoardTitleBar', "タイトルバーに「タスクボード」ボタンを表示"),
-		keywords: 'task board taskboard kanban titlebar',
+		label: localize('paradis.settings.taskBoardTitleBar', "タイトルバーに「タスク」ボタンを表示"),
+		keywords: 'task board taskboard kanban tasks issues titlebar',
 	},
 	{
 		sectionId: 'psd-sec-agent',
