@@ -257,7 +257,8 @@ export class NodeExtHostTunnelService extends ExtHostTunnelService {
 		const connections: { socket: number; ip: string; port: number }[] = loadListeningPorts(tcp, tcp6);
 
 		const procSockets: string = await (new Promise(resolve => {
-			exec('ls -l /proc/[0-9]*/fd/[0-9]* | grep socket:', (error, stdout, stderr) => {
+			// PARA-PATCH: raise exec's 1 MiB default output cap. On a busy machine (about 1,000 processes) this listing is already over 1.5 MB; the cut-off output loses the owner of every socket past the limit, and those ports silently drop out of auto forwarding.
+			exec('ls -l /proc/[0-9]*/fd/[0-9]* | grep socket:', { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
 				resolve(stdout);
 			});
 		}));
