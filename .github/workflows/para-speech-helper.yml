@@ -78,8 +78,9 @@ jobs:
           EXPECT: ${{ matrix.expect_check }}
         run: |
           set -uo pipefail
-          OUTPUT="$(.build/paradis/speech/ParadisSpeech check --locale ja-JP)"
-          STATUS=$?
+          # macOS 15 exits 3 with "unsupported"; keep the exit code instead of stopping the step (bash -e).
+          STATUS=0
+          OUTPUT="$(.build/paradis/speech/ParadisSpeech check --locale ja-JP)" || STATUS=$?
           echo "exit=$STATUS"
           echo "$OUTPUT"
           TYPE="$(node -p 'const m = JSON.parse(process.argv[1]); m.type === "error" ? m.code : m.type' "$OUTPUT")"
