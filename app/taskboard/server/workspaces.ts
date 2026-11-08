@@ -144,6 +144,29 @@ async function switchTo(cwd: string, branch: string): Promise<void> {
 	await git(cwd, ['switch', '--no-track', '-c', branch, await defaultBase(cwd)]);
 }
 
+/**
+ * 持ち込みの宣言（`.worktreeinclude`、`.paracode.json` の `worktree`）がありそうか。Para Code につながらず持ち込めなかったとき、
+ * 宣言の無いリポジトリでまで毎回知らせないために使う（中身の検査は Para Code がする。ここは有無の見当だけ）。
+ */
+export async function mayDeclareIncludes(repoPath: string): Promise<boolean> {
+	if (existsSync(path.join(repoPath, '.worktreeinclude'))) {
+		return true;
+	}
+	const config = await fs.readFile(path.join(repoPath, '.paracode.json'), 'utf8').catch(() => '');
+	return /"worktree"\s*:/.test(config);
+}
+
+/**
+ * 新しいワークツリーへの持ち込み（`.paracode.json` の `worktree`・`.worktreeinclude`）と、その片付け。Para Code の接続口
+ * （スペースの作成と同じ規則）で行う。Para Code につながらないボードには無い。
+ */
+export interface IWorktreeIncludePort {
+	/** 作った直後に持ち込む。持ち込めなかったものがあれば、経過に出す 1 行。 */
+	copy(repoPath: string, worktreePath: string): Promise<string | undefined>;
+	/** 持ち込みのリンクを外して、未コミットの変更が無ければ消す（残すときはリンクを作り直す）。 */
+	release(repoPath: string, worktreePath: string): Promise<'removed' | 'dirty' | 'failed'>;
+}
+
 export class GitWorkspaces implements ITaskBoardWorkspacePort {
 	/** 止めた後（別のリポジトリで開き直した後など）は、作業場所に触らない。 */
 	private stopped = false;
@@ -156,7 +179,13 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 	private fetchedThrough = 0;
 
 	/** @param fetch テスト用。本体の fetch を差し替える（同時に走る本数を数えるため）。 */
-	constructor(private readonly repoPath: string, private readonly worktreeRoot: string, private readonly fetch: (cwd: string, args?: readonly string[]) => Promise<string> = gitFetch) { }
+	constructor(
+		private readonly repoPath: string,
+		private readonly worktreeRoot: string,
+		private readonly fetch: (cwd: string, args?: readonly string[]) => Promise<string> = gitFetch,
+		/** 新しいワークツリーへの持ち込み。無ければ持ち込まない。 */
+		private readonly includes?: IWorktreeIncludePort,
+	) { }
 
 	/** 以後の準備と返却を断り、進行中のものが終わるのを待つ（最大 waitMs）。 */
 	async stop(waitMs = 30000): Promise<void> {
@@ -201,7 +230,7 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 		});
 	}
 
-	prepare(task: ITaskBoardTask, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string }> {
+	prepare(task: ITaskBoardTask, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string; warning?: string }> {
 		return this.track(() => this.prepareNow(task.id, slot, branch));
 	}
 
@@ -209,7 +238,7 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 		return this.track(() => this.releaseNow(task, slot));
 	}
 
-	private async prepareNow(taskId: string, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string }> {
+	private async prepareNow(taskId: string, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string; warning?: string }> {
 		if (slot.kind === 'worktree') {
 			const ticket = ++this.prepareTickets;
 			return this.inRepoQueue(() => this.prepareWorktree(branch, ticket));
@@ -227,7 +256,7 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 		return { branch, path: slot.path };
 	}
 
-	private async prepareWorktree(branch: string, ticket: number): Promise<{ branch: string; path: string }> {
+	private async prepareWorktree(branch: string, ticket: number): Promise<{ branch: string; path: string; warning?: string }> {
 		const dir = this.worktreeDir(branch);
 		// 同時に始めたタスクは並んで待つ。前のタスクの fetch が並んだ後に終わっていれば、その結果を使う。
 		// --prune: リモートで消えたブランチの参照を残すと、名前が衝突する（para/1 と para/1/x）ブランチを取れなくなる
@@ -252,7 +281,9 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 			await git(this.repoPath, ['worktree', 'add', '--no-track', '-b', branch, dir, await defaultBase(this.repoPath)]);
 		}
 		await excludeBoardFiles(dir);
-		return { branch, path: dir };
+		// 宣言した .env などを持ち込む（スペースの作成と同じ）。失敗しても作業は止めず、経過に 1 行出す
+		const warning = await this.includes?.copy(this.repoPath, dir).catch(async (err: Error) => await mayDeclareIncludes(this.repoPath) ? `宣言したファイルを新しいワークツリーへ持ち込めませんでした: ${err.message}` : undefined);
+		return { branch, path: dir, ...(warning ? { warning } : {}) };
 	}
 
 	private async releaseNow(task: ITaskBoardTask, slot: ITaskBoardSlot): Promise<void> {
@@ -267,7 +298,18 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 		if (slot.kind === 'worktree') {
 			const dir = slot.path || (task.branch ? this.worktreeDir(task.branch) : '');
 			// 消すのはボードが作ったワークツリーだけ。未コミットの変更があれば残す（--force は使わない）
-			if (dir && existsSync(dir) && task.branch && await this.isWorktreeOf(dir, task.branch) && !(await isDirty(dir))) {
+			if (!dir || !existsSync(dir) || !task.branch || !await this.isWorktreeOf(dir, task.branch)) {
+				return;
+			}
+			const includes = this.includes;
+			if (includes) {
+				// 持ち込みのリンクは git が未追跡と見るので、Para Code に外してから確かめて消してもらう（残すときは作り直す）
+				const outcome = await this.inRepoQueue(() => includes.release(this.repoPath, dir)).catch(() => undefined);
+				if (outcome !== undefined) {
+					return;
+				}
+			}
+			if (!(await isDirty(dir))) {
 				await this.inRepoQueue(() => git(this.repoPath, ['worktree', 'remove', dir]));
 			}
 			return;
