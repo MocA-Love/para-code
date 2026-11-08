@@ -50,6 +50,11 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 
 	private readonly hoverDecorations: IEditorDecorationsCollection;
 	private hoverLine: number | undefined;
+	/**
+	 * 「+」を出したときに選んでいた行の範囲。行番号を押すとエディタが押した行を選び直してから mousedown を知らせるので、
+	 * 押したときの選択ではなく、出したときの選択で範囲のメモにする（770-RES）。
+	 */
+	private hoverSelection: { readonly start: number; readonly end: number } | undefined;
 	private readonly draft = this._register(new MutableDisposable<ParadisDiffReviewNoteWidget>());
 	private readonly noteWidgets = this._register(new DisposableStore());
 	/** 書いたメモの欄を出しているか（ふつうのエディタではリスナを張るだけで何も描かない）。 */
@@ -154,6 +159,7 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 			return;
 		}
 		this.hoverLine = line;
+		this.hoverSelection = paradisDiffReviewSelectedLines(this.editor);
 		this.hoverDecorations.set([{
 			range: new Range(line, 1, line, 1),
 			options: {
@@ -175,7 +181,7 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 		e.event.preventDefault();
 		e.event.stopPropagation();
 		// 行を選んだまま押したら、選んだ範囲のメモにする（押した行が範囲に入っているときだけ）
-		const range = paradisDiffReviewSelectedLines(this.editor);
+		const range = this.hoverSelection;
 		if (range && range.start < range.end && line >= range.start && line <= range.end) {
 			this.openDraft(range.end, range.start);
 			return;
@@ -186,6 +192,7 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 	private clearHover(): void {
 		if (this.hoverLine !== undefined) {
 			this.hoverLine = undefined;
+			this.hoverSelection = undefined;
 			this.hoverDecorations.clear();
 		}
 	}
