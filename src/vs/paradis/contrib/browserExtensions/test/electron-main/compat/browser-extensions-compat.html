@@ -18,6 +18,11 @@ th { background: #f6f8fa; }
 .ng { color: #cf222e; font-weight: 600; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; padding: 0 3px; }
 .summary td { text-align: center; font-size: 15px; }
+.table-scroll { overflow-x: auto; margin: 8px 0 16px; }
+.table-scroll table { margin: 0; }
+.results td:nth-child(1), .results td:nth-child(3), .results td:nth-child(5), .results td:nth-child(6), .results td:nth-child(7), .results td:nth-child(8), .results th { white-space: nowrap; }
+.results td:nth-child(2) { min-width: 16em; }
+.results td:nth-child(4) { min-width: 28em; }
 </style>
 </head>
 <body>
@@ -42,7 +47,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 </div>
 
 <h2>拡張機能ごとの結果</h2>
-<table>
+<div class="table-scroll"><table class="results">
 <tr><th>区分</th><th>拡張機能</th><th>結果</th><th>理由</th><th>版</th><th>worker</th><th>content script</th><th>ポップアップ</th></tr>
 <tr><td>パスワード管理</td><td>1Password – Password Manager<br><span class="muted"><code>aeblfdkhhhdcdjpifhhbdiojplfjncoa</code></span></td><td class="ok">動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>この状態ではポップアップを出さず、ボタンを押すと拡張機能が自分で処理します（action.setPopup で外しています。ログインの前など）<br><span class="muted">2026-11-05: アカウントの無い状態では、1Password は action.setPopup でポップアップを外し、ボタンを押すと歓迎のタブを開く。そのためこの表の確かめでは、サインイン済みのときにポップアップが回り続ける件（Mac の報告）は確かめられない。ポップアップを強制で開くと、アカウントの無い状態では鍵の画面が出た。デスクトップアプリのホストが答えないときは「Loading…」（デスクトップアプリへつないでいる表示）が出る</span></td><td>8.12.44.33</td><td>running</td><td>ran</td><td>none (onClicked)</td></tr>
 <tr><td>パスワード管理</td><td>Bitwarden Password Manager<br><span class="muted"><code>nngceckbapebfimnlniiiahkandclblb</code></span></td><td class="ok">動く</td><td>サイドパネル（chrome.sidePanel）は、内蔵ブラウザのタブの右に出ます（拡張機能のメニューの「サイドパネルを開く」か、拡張機能が決めたボタンの動き）<br>既定のサイドパネルのページ（sidepanel-disabled.html）は、拡張機能が置いた中身の無いページでした（エラーは無し）。拡張機能が chrome.sidePanel.setOptions でページを替えてから開くもの、とみなしました</td><td>2026.10.2</td><td>running</td><td>ran</td><td>rendered</td></tr>
@@ -76,7 +81,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <tr><td>Orca で不可だったもの</td><td>Momentum<br><span class="muted"><code>laookkfknpbbblfpciffpaejjkokdgca</code></span></td><td class="ok">動く</td><td>新しいタブのページ（chrome_url_overrides.newtab）は、内蔵ブラウザの新しいタブで開きます（Para Code のエディタの新しいタブは置き換えません）<br>無い API（任意の権限など。主な働きには関わらない見込みです）: bookmarks、sessions、topSites、scripting、alarms、search<br>content script は決まったサイト（GitHub など）だけのものなので、試験用のページでは動かないのが正しいです（そのサイトでは手で確かめます）</td><td>2.27.9</td><td>running</td><td>did not run</td><td>none</td></tr>
 <tr><td>その他</td><td>Google Keep Chrome Extension<br><span class="muted"><code>lpcaedmchfhocbbapmcbpinfpgnhiddi</code></span></td><td class="partial">一部動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません</td><td>4.26441.540.1</td><td>running</td><td>none</td><td>none</td></tr>
 <tr><td>AI</td><td>Claude<br><span class="muted"><code>fcoeoabgfenejglbffodgkkbkcdhcgfn</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>ページへのデバッガーの接続（chrome.debugger）は、拡張機能の管理で「デバッガーの接続を許可」をオンにすると使えます（既定はオフ。エージェントのタブと共有中のタブにはつながりません）<br><span class="muted">2026-11-02 に拡張機能のページから確かめた: タブのグループ（tabs.group・tabGroups.update・tabs.query の groupId）は動く（グループは拡張機能ごとのメモリ上の台帳で、画面には出ない）。chrome.offscreen と chrome.alarms は Electron が元から持ち、worker が offscreen の文書と alarm を作った。「デバッガーの接続を許可」をオンにすると、chrome.debugger で利用者のタブにつながり、Runtime.evaluate・Page.captureScreenshot・Input.dispatchMouseEvent・Input.insertText が動き、Page.frameNavigated が届いた（送れる命令と届くイベントは Claude が使うものの許可リストだけ。ページ本体以外の world・frame は見せない。Claude が使う Emulation.setFocusEmulationEnabled は断るが、Claude は失敗しても続ける）。tabs.create の chrome://newtab は空のタブとして開く。chrome.identity.launchWebAuthFlow は断る形だが、Claude が使うのは保存したサインインの静かな更新だけで、最初のサインインは claude.ai のタブから拡張機能の oauth_callback.html へ戻る道（推測。Mac で確かめる）。ボタンを押してサイドパネルが出るか・ページの操作のツールが通して動くかは Mac で確かめる</span></td><td>1.0.105</td><td>running</td><td>ran</td><td>none</td></tr>
-</table>
+</table></div>
 
 <h2>この確かめで見つけて直したもの</h2>
 <table>
