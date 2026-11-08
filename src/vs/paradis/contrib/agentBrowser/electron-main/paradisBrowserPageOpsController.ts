@@ -104,6 +104,11 @@ const AUTH_ANSWER_WINDOW_MS = 60_000;
 const MAX_OWNER_WATERMARKS = 4096;
 /** PDF を作るのを待つ上限。 */
 const PDF_TIMEOUT_MS = 60_000;
+/**
+ * ネットワークの上書きの送信の鎖（`runNetwork`）の 1 つの仕事を待つ上限。CDP が返さない仕事があっても、
+ * 後ろの仕事（次の持ち主の設定・戻し）へ詰まりを伝えない。入力の送信の上限（10 秒）に揃える。
+ */
+const NETWORK_STEP_TIMEOUT_MS = 10_000;
 /** 上書きに使うセッションの Network のバッファ（本文を読むことは無いので小さくする）。 */
 const NETWORK_BUFFER_BYTES = 1024 * 1024;
 
@@ -134,6 +139,11 @@ interface ITargetSession {
 	readonly store: DisposableStore;
 	networkEnabled: boolean;
 	fetchEnabled: boolean;
+	/**
+	 * ネットワークの上書きを有効にする・戻す CDP 送信の鎖（{@link ParadisBrowserPageOpsController.runNetwork}）。
+	 * 共有を解いたときの戻しと、次の持ち主の設定が交互に届かないよう、1 つずつ順に送る。
+	 */
+	networkChain: Promise<void>;
 	overlayEnabled: boolean;
 	/** add_init_script のために Page を有効にした。 */
 	pageEnabled: boolean;
@@ -228,6 +238,8 @@ export class ParadisBrowserPageOpsController {
 		private readonly onDidChangeInitScripts: (target: IParadisPageOpsTarget, count: number) => void = () => { },
 		/** 本文を持っておく量の合計の上限（テストで小さくする）。 */
 		private readonly sourceBudget: number = PARADIS_INIT_SCRIPT_SOURCE_BUDGET,
+		/** ネットワークの上書きの送信の 1 つの仕事を待つ上限（テストで短くする）。 */
+		private readonly networkStepTimeoutMs: number = NETWORK_STEP_TIMEOUT_MS,
 	) { }
 
 	/** 台帳を書き換え、本数が変わったら知らせる。 */
@@ -588,7 +600,7 @@ export class ParadisBrowserPageOpsController {
 				session.dispose();
 				throw new Error('The tab was released while attaching.');
 			}
-			const entry: ITargetSession = { session, store: new DisposableStore(), networkEnabled: false, fetchEnabled: false, overlayEnabled: false, pageEnabled: false };
+			const entry: ITargetSession = { session, store: new DisposableStore(), networkEnabled: false, fetchEnabled: false, networkChain: Promise.resolve(), overlayEnabled: false, pageEnabled: false };
 			entry.store.add(session.onEvent(event => this.onEvent(target, session, event)));
 			entry.store.add(session.onClose(() => {
 				if (this.targetSessions.get(target) !== entry) {
@@ -650,20 +662,28 @@ export class ParadisBrowserPageOpsController {
 		const scripts = (this.initScripts.get(target) ?? []).filter(script => script.session === entry.session).map(script => script.identifier);
 		this.setInitScripts(target, undefined);
 		const commands = [
-			...(entry.networkEnabled || entry.fetchEnabled ? NETWORK_TEARDOWN_COMMANDS : []),
 			...(entry.overlayEnabled ? OVERLAY_TEARDOWN_COMMANDS : []),
 			...scripts.map(identifier => ['Page.removeScriptToEvaluateOnNewDocument', { identifier }] as const),
 			...(entry.pageEnabled ? [['Page.disable', {}] as const] : []),
 		];
-		entry.networkEnabled = false;
-		entry.fetchEnabled = false;
 		entry.overlayEnabled = false;
 		entry.pageEnabled = false;
+		// ネットワークの戻しは鎖の後ろに繋ぐ（鎖の中で待っている有効化や戻しと交互に届かないように）。
+		// 鎖の中の有効化は、手放したときに state が disposed になっているので何も送らない
+		await this.runNetwork(entry, async () => {
+			if (!entry.networkEnabled && !entry.fetchEnabled) {
+				return;
+			}
+			entry.networkEnabled = false;
+			entry.fetchEnabled = false;
+			await this.sendTeardown(target, entry.session, NETWORK_TEARDOWN_COMMANDS);
+		}).catch(() => undefined);
 		await this.sendTeardown(target, entry.session, commands);
 	}
 
 	private async teardownAndDispose(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
-		await this.teardown(target, entry);
+		// 鎖が詰まっていても、セッションは手放す
+		await raceTimeout(this.teardown(target, entry), this.networkStepTimeoutMs);
 		entry.store.dispose();
 		try {
 			entry.session.dispose();
@@ -774,6 +794,12 @@ export class ParadisBrowserPageOpsController {
 			return;
 		}
 		const entry = await this.ensureTargetSession(target);
+		// 前の戻し（共有を解いたときの resetNetwork など）が送り終わってから有効にする
+		await this.runNetwork(entry, () => this.enableNetwork(target, state, entry, needsHeaders));
+	}
+
+	/** {@link syncNetwork} の送信部分。{@link runNetwork} の鎖の中で呼ぶ。 */
+	private async enableNetwork(target: IParadisPageOpsTarget, state: IViewState, entry: ITargetSession, needsHeaders: boolean): Promise<void> {
 		if (state.disposed) {
 			return;
 		}
@@ -811,6 +837,7 @@ export class ParadisBrowserPageOpsController {
 	/**
 	 * 共有が解かれた後に届いたネットワークの上書きを戻す。セッションが既に手放されたとき、
 	 * 次の共有の上書きが同じセッションで Network / Fetch を使っているときは触らない。
+	 * {@link enableNetwork} から、つまり {@link runNetwork} の鎖の中で呼ぶ（鎖に繋ぎ直すと自分を待って止まる）。
 	 */
 	private async undoAbandonedNetwork(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
 		if (this.targetSessions.get(target) !== entry) {
@@ -828,12 +855,40 @@ export class ParadisBrowserPageOpsController {
 	/** このタブで有効にしたネットワークの上書きを戻す（セッションは次の上書きとハイライトのために残す）。 */
 	private async resetNetwork(target: IParadisPageOpsTarget): Promise<void> {
 		const entry = this.targetSessions.get(target);
-		if (!entry || (!entry.networkEnabled && !entry.fetchEnabled)) {
+		if (!entry) {
 			return;
 		}
-		entry.networkEnabled = false;
-		entry.fetchEnabled = false;
-		await this.sendTeardown(target, entry.session, NETWORK_TEARDOWN_COMMANDS);
+		await this.runNetwork(entry, async () => {
+			if (!entry.networkEnabled && !entry.fetchEnabled) {
+				return;
+			}
+			entry.networkEnabled = false;
+			entry.fetchEnabled = false;
+			await this.sendTeardown(target, entry.session, NETWORK_TEARDOWN_COMMANDS);
+		});
+	}
+
+	/**
+	 * ネットワークの上書きの送信を、そのセッションの鎖の後ろに繋いで順に走らせる。前が失敗しても後は走る。
+	 * 1 つの仕事は {@link networkStepTimeoutMs} で待つのをやめ（呼び出し側へは失敗として返す）、次の仕事へ進む。
+	 */
+	private runNetwork(entry: ITargetSession, work: () => Promise<void>): Promise<void> {
+		const run = entry.networkChain.then(() => this.withNetworkDeadline(work()));
+		entry.networkChain = run.then(() => undefined, () => undefined);
+		return run;
+	}
+
+	private withNetworkDeadline(work: Promise<void>): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error('The browser tab did not answer the network override change in time.')), this.networkStepTimeoutMs);
+			work.then(() => {
+				clearTimeout(timer);
+				resolve();
+			}, error => {
+				clearTimeout(timer);
+				reject(error);
+			});
+		});
 	}
 
 	private onEvent(target: IParadisPageOpsTarget, session: ICDPConnection, event: CDPEvent): void {

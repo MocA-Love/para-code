@@ -7,6 +7,7 @@ import { contextMenuOps } from '../../components/copyActions.js';
 import { useParaToast } from '../../paraToast.js';
 import { useThemeColors } from '../../ui/index.js';
 import { inplaceSelectMinHeight, localPressPoint, type InplaceSelectPoint, type InplaceSelectSegment } from './inplaceSelectHtml.js';
+import { hideInplaceSelectNotice, showInplaceSelectNotice } from './inplaceSelectNotice.js';
 import { beginInplaceSelect, isHoldCancel } from './inplaceSelectSession.js';
 import { InplaceSelectWebView, inplaceSelectForeground } from './inplaceSelectView.js';
 import { buildMessageMenu } from './messageMenu.js';
@@ -37,7 +38,7 @@ interface Selecting {
  *
  * メニューの「範囲を選んでコピー…」を押すと、別の画面を開かずに、この発言の表示の上へ同じ見た目の WebView を重ねて
  * 範囲を選べるようにする（Q551 案 4。`inplaceSelectView.tsx`）。元の表示は隠すだけで外さないので、行の高さは変わらず、
- * 中のコードの色付けなども描き直さない。お知らせ（会話ではクイック返信の帯のすぐ上。`ui/toastAnchor.ts`）の「完了」か、外を押すと元に戻す（`inplaceSelectSession.ts`）。
+ * 中のコードの色付けなども描き直さない。お知らせ（会話ではクイック返信の帯の位置に置く帯。`inplaceSelectNotice.ts`）の「完了」か、外を押すと元に戻す（`inplaceSelectSession.ts`）。
  */
 export function MessageContextMenu({ text, markdown, speaker, style, previewRadius, previewBackground, children }: {
 	/** 発言の元の文字（エージェントは Markdown）。 */
@@ -134,9 +135,14 @@ export function MessageContextMenu({ text, markdown, speaker, style, previewRadi
 			},
 		});
 		const toastKey = `inplace-select:${++selectToastSerial}`;
-		useParaToast.getState().show({ key: toastKey, text: '範囲を選んでコピー', sub: `${speaker}・外を押すと元に戻ります`, icon: 'text-outline', tone: 'info', action: { label: '完了', onPress: stop } });
+		// 会話の画面では、クイック返信の帯の位置に帯で出す（浮かぶお知らせは選んでいる発言とつまみに重なる）。帯を置けない
+		// 画面では浮かぶお知らせ
+		if (!showInplaceSelectNotice({ key: toastKey, speaker, done: stop })) {
+			useParaToast.getState().show({ key: toastKey, text: '範囲を選んでコピー', sub: `${speaker}・外を押すと元に戻ります`, icon: 'text-outline', tone: 'info', action: { label: '完了', onPress: stop } });
+		}
 		return () => {
 			end();
+			hideInplaceSelectNotice(toastKey);
 			const current = useParaToast.getState();
 			if (current.current?.key === toastKey) {
 				current.hide();
