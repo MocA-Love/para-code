@@ -1,0 +1,3 @@
+# PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+# The repository .gitignore ignores every "dist" folder; the vendored serve-sim keeps its published dist/ layout (see README.md).
+!dist/

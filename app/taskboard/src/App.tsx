@@ -315,7 +315,7 @@ function Shell({ snapshot, theme, setTheme }: { snapshot: ITaskBoardSnapshot; th
 					return true;
 				}
 				const hay = [task.title, task.issue ? `#${task.issue.number}` : '', task.branch ?? '', task.agent ?? '', ...task.labels.map(l => l.name), task.pr ? `#${task.pr.number}` : ''].join(' ').toLowerCase();
-				return q.split(/\s+/).every(word => hay.includes(word.replace(/^#/, '#')));
+				return q.split(/\s+/).every(word => hay.includes(word));
 			},
 		};
 	}, [snapshot, route, query, onlyMine, go, toast]);

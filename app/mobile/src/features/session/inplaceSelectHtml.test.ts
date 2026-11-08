@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { NEUTRAL_CHAT_TEXT_SCALE } from '../../chatTextScale.js';
-import { buildInplaceSelectHtml, inplaceSelectMinHeight, localPressPoint, parseInplaceSelectMessage, type InplaceSelectLook } from './inplaceSelectHtml.js';
+import { buildInplaceSelectHtml, inplaceSelectMinHeight, inplaceSelectStartScript, localPressPoint, parseInplaceSelectMessage, type InplaceSelectLook } from './inplaceSelectHtml.js';
 
 const NONCE = 'abcdefghijklmnop0123';
 const LOOK: InplaceSelectLook = {
@@ -37,6 +37,11 @@ describe('buildInplaceSelectHtml', () => {
 		].join(''));
 	});
 
+	it('draws table cells at the body size the chat table actually shows (14/20), so rows below do not move', () => {
+		const html = buildInplaceSelectHtml([{ text: '| a |\n|---|\n| 1 |', markdown: true }], LOOK, NONCE);
+		expect(html).toContain('th, td { box-sizing: border-box; padding: 5px 7px; font-size: 14px; line-height: 20px;');
+	});
+
 	it('escapes message text and never turns links into navigable elements', () => {
 		const html = buildInplaceSelectHtml([{ text: '<script>alert(1)</script> [x" onclick="y](https://example.com/?a=<b>) & `<i>`', markdown: true }], LOOK, NONCE);
 		expect(bodyOf(html)).toBe('<div class="seg"><div class="p">&lt;script&gt;alert(1)&lt;/script&gt; <span class="a">x" onclick="y</span> &amp; <span class="ic">&lt;i&gt;</span></div></div>');
@@ -61,6 +66,19 @@ describe('buildInplaceSelectHtml', () => {
 		expect(html).toContain('selectAt([12.34,5])');
 		expect(buildInplaceSelectHtml([{ text: 'a', markdown: true }], LOOK, NONCE)).toContain('selectAt(null)');
 		expect(() => buildInplaceSelectHtml([{ text: 'a', markdown: true }], LOOK, 'bad nonce"')).toThrow();
+	});
+
+	it('waits to select until the caller has shown and focused the web view, then selects the word or the whole message', () => {
+		const html = buildInplaceSelectHtml([{ text: 'a', markdown: true }], LOOK, NONCE, { x: 1, y: 2 });
+		const ready = html.slice(html.indexOf('function ready()'));
+		expect([
+			ready.slice(0, ready.indexOf('}', ready.indexOf('post('))).includes('selectAt'),
+			html.includes('if(started&&s&&!s.isCollapsed){return;}started=true;if(!selectAt([1,2])){selectAll();}'),
+			html.includes('tab-size: 28px'),
+			html.includes("document.addEventListener('touchstart'"),
+			html.includes("addEventListener('touchcancel'"),
+			inplaceSelectStartScript(),
+		]).toEqual([false, true, true, true, false, 'window.__paraSelectStart&&window.__paraSelectStart();true;']);
 	});
 
 	it('matches the chat sizes, including the OS text size and the chat text size setting', () => {

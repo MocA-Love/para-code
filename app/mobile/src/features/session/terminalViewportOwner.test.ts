@@ -18,4 +18,17 @@ describe('terminalViewportOwner', () => {
 		ownership.release(b);
 		expect(applied).toEqual(['a', 'b', undefined]);
 	});
+
+	test('when the later pane goes away first, the pane still shown gets its viewport back', () => {
+		const applied: (string | undefined)[] = [];
+		const ownership = createTerminalViewportOwnership<string>(viewport => applied.push(viewport));
+		const a = {};
+		const b = {};
+		ownership.claim(a, 'a');
+		ownership.claim(b, 'b');
+		// 後から出た B が先に隠れても、まだ出ている A の申告に戻す
+		ownership.release(b);
+		ownership.release(a);
+		expect(applied).toEqual(['a', 'b', 'a', undefined]);
+	});
 });

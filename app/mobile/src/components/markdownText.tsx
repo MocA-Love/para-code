@@ -151,7 +151,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 /** コードのハイライトを PC に同時に頼む数。コードの多い会話を開いた直後に、ブロックの数だけ一度に出さない。 */
 const HIGHLIGHT_CONCURRENCY = 3;
 let highlightRunning = 0;
-const highlightWaiting: (() => void)[] = [];
+const highlightWaiting: (() => boolean)[] = [];
 
 /**
  * ハイライトの要求を同時 {@link HIGHLIGHT_CONCURRENCY} 件までにして走らせる。順番を待っている間に要らなくなった
@@ -159,30 +159,34 @@ const highlightWaiting: (() => void)[] = [];
  */
 function limitHighlight<T>(wanted: () => boolean, run: () => Promise<T>): Promise<T | undefined> {
 	return new Promise<T | undefined>((resolve, reject) => {
-		const start = () => {
+		// 走らせたら true、要らなくなっていて走らせなかったら false（枠は呼び出し側が次へ回す）
+		const start = (): boolean => {
 			if (!wanted()) {
 				resolve(undefined);
-				releaseHighlightSlot();
-				return;
+				return false;
 			}
 			Promise.resolve().then(run).then(resolve, reject).finally(releaseHighlightSlot);
+			return true;
 		};
 		if (highlightRunning < HIGHLIGHT_CONCURRENCY) {
 			highlightRunning++;
-			start();
+			if (!start()) {
+				releaseHighlightSlot();
+			}
 		} else {
 			highlightWaiting.push(start);
 		}
 	});
 }
 
+/** 空いた枠を、待っている中で実際に走る 1 件へ渡す。走るものが無ければ枠を返す（再帰せずに順に見る）。 */
 function releaseHighlightSlot(): void {
-	const next = highlightWaiting.shift();
-	if (next !== undefined) {
-		next();
-	} else {
-		highlightRunning--;
+	for (let next = highlightWaiting.shift(); next !== undefined; next = highlightWaiting.shift()) {
+		if (next()) {
+			return;
+		}
 	}
+	highlightRunning--;
 }
 
 const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?: string }) {

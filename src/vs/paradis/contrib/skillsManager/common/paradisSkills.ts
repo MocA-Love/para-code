@@ -17,12 +17,14 @@
 // `src/shared/skill-deletion-eligibility.ts`（消してよいものの条件）を参考にした。Orca は
 // パッケージ形式・symlink での配置・journal を持つが、ここでは「フォルダをそのまま写す」だけにする。
 
+import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { basename, dirname, extUri, extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { FileOperationResult, FileSystemProviderCapabilities, IFileService, IFileStat, toFileOperationResult } from '../../../../platform/files/common/files.js';
+import { readParadisFileHead } from '../../../../platform/files/common/paradisReadFileHead.js';
 import { paradisMapLimited } from '../../../common/paradisMapLimited.js';
 
 /** スキルを読むエージェント。 */
@@ -230,9 +232,10 @@ const SKILL_READ_PARALLEL = 8;
 
 async function readSkill(fileService: IFileService, root: IParadisSkillRoot, child: IFileStat, bundled: boolean): Promise<IParadisSkill | undefined> {
 	const skillFile = joinPath(child.resource, 'SKILL.md');
-	// SKILL.md と実体の場所は互いに関わらないので並べて待つ
+	// SKILL.md と実体の場所は互いに関わらないので並べて待つ。`readFile` は `length` を渡しても全体を読むので、
+	// 先頭だけを読む `readParadisFileHead` を使う
 	const [content, real] = await Promise.all([
-		fileService.readFile(skillFile, { length: SKILL_FILE_READ_LIMIT }).then(read => read.value.toString(), () => undefined),
+		readParadisFileHead(fileService, skillFile, { length: SKILL_FILE_READ_LIMIT }).then(read => read.value.toString(), () => undefined),
 		realpathOf(fileService, child.resource),
 	]);
 	if (content === undefined) {
@@ -254,8 +257,11 @@ async function readSkill(fileService: IFileService, root: IParadisSkillRoot, chi
 	};
 }
 
-/** 1 つのフォルダのスキルを読む。フォルダが無ければ `exists: false`。 */
-export async function paradisListSkills(fileService: IFileService, root: IParadisSkillRoot): Promise<IParadisSkillRootListing> {
+/**
+ * 1 つのフォルダのスキルを読む。フォルダが無ければ `exists: false`。
+ * `knownRealUri` は先に取ったフォルダの実体の場所。渡せば取り直さない（接続先では 1 回ごとに往復する）。
+ */
+export async function paradisListSkills(fileService: IFileService, root: IParadisSkillRoot, knownRealUri?: URI): Promise<IParadisSkillRootListing> {
 	let stat: IFileStat;
 	try {
 		stat = await fileService.resolve(root.uri, { resolveMetadata: true });
@@ -288,8 +294,36 @@ export async function paradisListSkills(fileService: IFileService, root: IParadi
 	const read = await paradisMapLimited(own, SKILL_READ_PARALLEL, child => readSkill(fileService, root, child, false));
 	skills.push(...read.filter((skill): skill is IParadisSkill => skill !== undefined));
 	skills.sort((a, b) => a.name.localeCompare(b.name));
-	const realUri = await realpathOf(fileService, root.uri);
+	const realUri = knownRealUri ?? await realpathOf(fileService, root.uri);
 	return { root, exists: true, skills, ...(realUri ? { realUri } : {}) };
+}
+
+/**
+ * 全部のフォルダのスキルを読む。先にフォルダごとの実体の場所だけを取り、実体が同じフォルダは最初の 1 つだけ
+ * 中身を読む（後の方は {@link paradisDedupeSkillListings} と同じく `aliasOf` を付けた空の一覧にする）。
+ * 全部を読んでからまとめると、リンクで同じ実体を指すフォルダの中身を 2 回読む。読めなかったフォルダは
+ * `exists: false` と `error` にして、ほかのフォルダは読み続ける。
+ */
+export async function paradisListSkillRoots(fileService: IFileService, roots: readonly IParadisSkillRoot[]): Promise<IParadisSkillRootListing[]> {
+	const reals = await Promise.all(roots.map(root => realpathOf(fileService, root.uri)));
+	const firstByKey = new Map<string, Promise<IParadisSkillRootListing>>();
+	const listings = roots.map((root, index): Promise<IParadisSkillRootListing> => {
+		const real = reals[index];
+		const list = () => paradisListSkills(fileService, root, real).catch((error): IParadisSkillRootListing => ({ root, exists: false, skills: [], error: toErrorMessage(error) }));
+		if (!real) {
+			return list();
+		}
+		const key = locationKey(real);
+		const first = firstByKey.get(key);
+		if (first) {
+			return first.then((listing): IParadisSkillRootListing => listing.exists ? { root, exists: true, skills: [], realUri: real, aliasOf: listing.root.id } : { ...listing, root });
+		}
+		// 先に取った実体の場所を渡すので、まとめる判定はその場所で揃う
+		const own = list();
+		firstByKey.set(key, own);
+		return own;
+	});
+	return paradisDedupeSkillListings(await Promise.all(listings));
 }
 
 /**
@@ -316,7 +350,7 @@ export function paradisDedupeSkillListings(listings: readonly IParadisSkillRootL
 
 /** SKILL.md の中身（画面に出す分だけ）。 */
 export async function paradisReadSkillFile(fileService: IFileService, skill: IParadisSkill): Promise<{ readonly text: string; readonly truncated: boolean }> {
-	const content = await fileService.readFile(skill.skillFile, { length: PARADIS_SKILL_FILE_DISPLAY_LIMIT + 1 });
+	const content = await readParadisFileHead(fileService, skill.skillFile, { length: PARADIS_SKILL_FILE_DISPLAY_LIMIT + 1 });
 	const truncated = content.value.byteLength > PARADIS_SKILL_FILE_DISPLAY_LIMIT;
 	return { text: (truncated ? content.value.slice(0, PARADIS_SKILL_FILE_DISPLAY_LIMIT) : content.value).toString(), truncated };
 }

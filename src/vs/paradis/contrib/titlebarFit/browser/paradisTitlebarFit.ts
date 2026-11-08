@@ -82,7 +82,13 @@ class ParadisTitlebarFit extends Disposable {
 		// 変化は次のフレームで 1 回にまとめる (幅が前と同じなら測り直しも飛ばす。updateFoldLevel)
 		const mutationObserver = new targetWindow.MutationObserver(() => this.scheduleUpdate());
 		this._register(toDisposable(() => mutationObserver.disconnect()));
-		mutationObserver.observe(leftContent, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class'] });
+		const contentChanges: MutationObserverInit = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class'] };
+		mutationObserver.observe(leftContent, contentChanges);
+		// 右側 (通知の件数・アカウントなど) が広がってもドラッグの空きは減るので、同じく測り直す
+		const rightContent = this.childWithClass(rootContainer, 'titlebar-right');
+		if (rightContent) {
+			mutationObserver.observe(rightContent, contentChanges);
+		}
 	}
 
 	private scheduleUpdate(): void {
@@ -152,10 +158,14 @@ class ParadisTitlebarFit extends Disposable {
 		this.options?.onDidMeasureFold?.();
 	}
 
-	/** 畳む段の答えを変えうるもの: 外枠の幅、メニューバーの表示、左側の子の数・class・幅 (今の段のまま)。 */
+	/** 畳む段の答えを変えうるもの: 外枠の幅、メニューバーの表示、左側と右側の子の数・class・幅 (今の段のまま)。 */
 	private foldSignature(): string {
 		const parts = [String(this.rootContainer.clientWidth), String(this.rootContainer.classList.contains(MENUBAR_VISIBLE_CLASS))];
 		for (const child of this.leftContent.children) {
+			parts.push(`${child.className}:${(child as HTMLElement).offsetWidth}`);
+		}
+		parts.push('right');
+		for (const child of this.childWithClass(this.rootContainer, 'titlebar-right')?.children ?? []) {
 			parts.push(`${child.className}:${(child as HTMLElement).offsetWidth}`);
 		}
 		return parts.join('|');

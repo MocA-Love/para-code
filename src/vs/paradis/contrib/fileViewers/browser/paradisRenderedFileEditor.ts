@@ -207,6 +207,18 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _scroll: { readonly resource: URI; readonly progress: number } | undefined;
 	// watcher・claim・モード切替から始まった描画が逆順で完了しても、最後に開始した結果だけを反映する。
 	private _renderGeneration = 0;
+	/**
+	 * UI イベント・保存の通知からの描き直しを重ねないための印（{@link _renderResourceInBackground}）。描いている間に来た
+	 * 頼みは `_renderAgain` に覚え、描き終えてから {@link _renderAgainAfter}（今の入力の描き直しの予約）で最新の内容を描く。
+	 * 印は入力ごと（`_renderInput` の世代）に持つ。前の入力の描画が返らない（接続先の読みが詰まるなど）ままでも、
+	 * 次の入力の描き直しを止めないため。
+	 */
+	private _renderInput = 0;
+	private _renderingInput: number | undefined;
+	private _renderAgain = false;
+	/** 覚えた頼みの中に、同一内容の抑止を外した頼み（テーマの変更・{@link requestRerender}）があったか。 */
+	private _renderAgainInvalidates = false;
+	private _renderAgainAfter: ((lastRenderMs: number) => void) | undefined;
 
 	constructor(
 		id: string,
@@ -312,8 +324,10 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		if (this.input !== input || !this.group.contains(input)) {
 			return;
 		}
+		// 最初の位置（index）は渡さない。開いた後にタブを動かしていると、開き直しで元の位置へ戻ってしまう。
+		const { index: _index, ...rest } = options ?? {};
 		this.group.openEditor(input, {
-			...options,
+			...rest,
 			pinned: this.group.isPinned(input),
 			preserveFocus: true,
 			activation: EditorActivation.PRESERVE,
@@ -454,6 +468,11 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		};
 		// 同じ URI の入力を設定し直す経路でも、旧入力から継続中の描画を無効化する。
 		this._renderGeneration++;
+		// 重ね防止の印も入力ごとに戻す（前の入力の描画が返らなくても、この入力の描き直しは止めない）。
+		this._renderInput++;
+		this._renderingInput = undefined;
+		this._renderAgain = false;
+		this._renderAgainInvalidates = false;
 		// ペインは別のファイルを開くときも使い回されるので、前のファイルの失敗回数を持ち越さない。
 		this._recoveryPolicy.reset();
 		this._currentResource = resource;
@@ -475,32 +494,23 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._inputDisposables.value = store;
 		let initialViewApplied = false;
 		let rerenderAfterInitial = false;
-		// 保存の通知からの描き直しは重ねない。描いている間に来た通知は覚えておき、描き終えてから最新の内容で
-		// もう一度描く（最後の内容は必ず描く）。
-		let rendering = false;
-		let renderAgain = false;
+		// 保存の通知からの描き直しは、可視の切り替え・テーマの変更などからの描き直しと同じ入口で重ねない。
+		// 描いている間に来た頼みは覚えておき、描き終えてから最新の内容でもう一度描く（最後の内容は必ず描く）。
 		let lastRenderMs = 0;
 		const rerender = () => {
 			if (!isEqual(this._currentResource, resource) || !this._pane.claimed || this._mode !== 'rendered') {
 				return;
 			}
-			if (rendering) {
-				renderAgain = true;
-				return;
-			}
-			rendering = true;
-			const startedAt = Date.now();
-			// renderResource が送るべき失敗は自分で送る（_renderResourceInBackground と同じ扱い）。
-			this.renderResource(resource, CancellationToken.None).catch(() => { /* reported by renderResource when needed */ }).finally(() => {
-				rendering = false;
-				lastRenderMs = Date.now() - startedAt;
-				if (renderAgain && !store.isDisposed) {
-					renderAgain = false;
-					rerenderScheduler.schedule(paradisViewerRerenderDelay(lastRenderMs));
-				}
-			});
+			this._renderResourceInBackground(resource);
 		};
 		const rerenderScheduler = store.add(new RunOnceScheduler(rerender, PARADIS_VIEWER_RERENDER_MIN_DELAY_MS));
+		this._renderAgainAfter = renderMs => {
+			lastRenderMs = renderMs;
+			if (!store.isDisposed) {
+				scheduleRerender(rerenderScheduler);
+			}
+		};
+		store.add(toDisposable(() => this._renderAgainAfter = undefined));
 		// watch エラーはワークスペース全体から連続して届く場合があるため、通常の変更通知より長く抑制する。
 		const watchRecoveryScheduler = store.add(new RunOnceScheduler(rerender, 1000));
 		const scheduleRerender = (scheduler: RunOnceScheduler) => {
@@ -800,11 +810,37 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		}
 	}
 
-	/** UI イベント由来の再描画。失敗時は現在の HTML を保持し、未処理の Promise を残さない。 */
+	/**
+	 * UI イベント・保存の通知由来の再描画。失敗時は現在の HTML を保持し、未処理の Promise を残さない。
+	 * 描いている最中なら「もう一度描く」印だけ立て、描き終えてから今の入力の描き直しの予約に回す。
+	 */
 	private _renderResourceInBackground(resource: URI): void {
+		const renderInput = this._renderInput;
+		if (this._renderingInput === renderInput) {
+			this._renderAgain = true;
+			// 抑止を外した頼みは、描いている最中の描画が古い内容で抑止の印を付け直すので、描き終えてから外し直す
+			this._renderAgainInvalidates ||= this._renderedSource === undefined;
+			return;
+		}
+		this._renderingInput = renderInput;
+		const startedAt = Date.now();
 		// renderResource が送るべき失敗は自分で送り、ファイルが無い場合は意図して送らない。
 		// ここで onUnexpectedError へ流すと、その区別を無視して unhandled-error として二重に届く。
-		this.renderResource(resource, CancellationToken.None).catch(() => { /* reported by renderResource when needed */ });
+		this.renderResource(resource, CancellationToken.None).catch(() => { /* reported by renderResource when needed */ }).finally(() => {
+			if (this._renderingInput !== renderInput) {
+				return; // 入力が変わった後に返った前の入力の描画。今の入力の印には触らない
+			}
+			this._renderingInput = undefined;
+			if (this._renderAgain) {
+				this._renderAgain = false;
+				if (this._renderAgainInvalidates) {
+					this._renderAgainInvalidates = false;
+					this._renderedSource = undefined;
+					this._swappableBody = undefined;
+				}
+				this._renderAgainAfter?.(Date.now() - startedAt);
+			}
+		});
 	}
 
 	/** 表示モード切替の失敗を扱う。送るかどうかは {@link paradisShouldReportViewModeError}。 */

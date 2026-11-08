@@ -260,7 +260,7 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 			timestamp: command.timestamp,
 			duration: command.duration,
 		};
-		this._recordService.record(directory, record);
+		this._recordService.record(directory, record, this._ctx.instance);
 	}
 
 	// #region open / close
@@ -438,8 +438,8 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		try {
 			const [sources, spaceRecords, home] = await Promise.all([
 				provider?.getHistorySources(this._ctx.instance, token),
-				this._recordService.read(directory, token),
-				provider?.home(token),
+				this._recordService.read(directory, token, this._ctx.instance),
+				provider?.home(token, this._ctx.instance),
 			]);
 			if (token.isCancellationRequested) {
 				return;
@@ -501,7 +501,7 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 	private async _loadOtherSpaces(directory: string, token: CancellationToken): Promise<{ readonly records: readonly IParadisCommandRecord[]; readonly lists: readonly (readonly string[])[] }> {
 		const provider = paradisTerminalHistoryProvider();
 		const root = paradisSpaceHistoryRoot();
-		const rootResource = root === undefined ? undefined : await provider?.toResource(root, token);
+		const rootResource = root === undefined ? undefined : await provider?.toResource(root, token, this._ctx.instance);
 		const common = await this._recordService.read(undefined, token);
 		if (!provider || root === undefined || rootResource === undefined || token.isCancellationRequested) {
 			return { records: common, lists: [] };
@@ -525,8 +525,8 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 				return undefined;
 			}
 			const [records, list] = await Promise.all([
-				this._recordService.read(shellPath, token),
-				shell !== undefined ? provider.readHistoryFile(`${shellPath}/${shell}_history`, shell, token) : Promise.resolve(undefined),
+				this._recordService.read(shellPath, token, this._ctx.instance),
+				shell !== undefined ? provider.readHistoryFile(`${shellPath}/${shell}_history`, shell, token, this._ctx.instance) : Promise.resolve(undefined),
 			]);
 			return { records, list: list ?? [] };
 		});

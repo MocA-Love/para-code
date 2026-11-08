@@ -125,7 +125,7 @@ suite('ParadisTitlebarFit', () => {
 		item('t-a', 60, left);
 		item('t-b', 100, left);
 		const last = item('t-c', 120, left);
-		item('t-right', 100, right);
+		const rightItem = item('t-right', 100, right);
 
 		const observers: TestResizeObserver[] = [];
 		const fit = createParadisTitlebarFit(root, left, {
@@ -158,12 +158,24 @@ suite('ParadisTitlebarFit', () => {
 			await flushMutations();
 			observers[0].fire();
 			const none = folds();
+			// 右側の子 (通知の件数など) が広がると、外枠の幅が同じでも測り直して段を上げる
+			last.style.width = '140px';
+			rightItem.style.width = '40px';
+			await flushMutations();
+			observers[0].fire();
+			const rightNarrow = folds();
+			rightItem.style.width = '100px';
+			rightItem.textContent = '3';
+			await flushMutations();
+			const rightGrew = folds();
 			fit.dispose();
-			assert.deepStrictEqual({ oneLevel, twoLevels, allLevels, none, afterDispose: folds() }, {
+			assert.deepStrictEqual({ oneLevel, twoLevels, allLevels, none, rightNarrow, rightGrew, afterDispose: folds() }, {
 				oneLevel: 'paradis-fold-1',
 				twoLevels: 'paradis-fold-1 paradis-fold-2',
 				allLevels: 'paradis-fold-1 paradis-fold-2 paradis-fold-3 paradis-fold-4',
 				none: '',
+				rightNarrow: '',
+				rightGrew: 'paradis-fold-1',
 				afterDispose: '',
 			});
 		} finally {

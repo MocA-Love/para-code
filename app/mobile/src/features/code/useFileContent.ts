@@ -10,6 +10,7 @@ import { PcCapability } from '../../pcCompat.js';
 import { viewerFetchOf, viewerKindOf, wantsHighlight, type ViewerMode } from './fileViewerModel.js';
 import { FileViewerLoadTrace } from './fileViewerTiming.js';
 import { errorMessage } from './scmModel.js';
+import { binaryReplyOf, textReplyOf, xlsxReplyOf } from './viewerReply.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
 /** 読み直したテキストが前と同じか。 */
@@ -129,23 +130,24 @@ export function useFileContent(space: CodeSpace, path: string, mode: ViewerMode)
 			switch (fetchKind) {
 				case 'xlsx': {
 					// 読み直すときは、選んでいたシートを読む（先頭のシートへ戻さない）
-					const response = await fsXlsx(wsId, path, previous?.value.xlsx?.sheet);
+					const response = xlsxReplyOf(await fsXlsx(wsId, path, previous?.value.xlsx?.sheet));
 					return { response, value: { xlsx: { html: response.html, sheets: response.sheets, sheet: response.sheet } } };
 				}
 				case 'pdf': {
 					const response = await fsPdf(wsId, path);
-					return { response, value: { binary: response.data } };
+					return { response, value: { binary: binaryReplyOf(response) } };
 				}
 				case 'docx': {
 					const response = await fsDocx(wsId, path);
-					return { response, value: { binary: response.data } };
+					return { response, value: { binary: binaryReplyOf(response) } };
 				}
 				case 'media': {
 					const response = await fsMedia(wsId, path);
-					return { response, value: { binary: response.data } };
+					return { response, value: { binary: binaryReplyOf(response) } };
 				}
 				case 'text': {
-					const response = await fsRead(wsId, path, highlight, splitHtmlImages);
+					// 応答が無い・形が違うときは、ふつうの「開けませんでした」にする（viewerReply.ts）
+					const response = textReplyOf(await fsRead(wsId, path, highlight, splitHtmlImages));
 					const images = response.htmlImages;
 					if (images === undefined || !splitHtmlImages) {
 						return { response, value: { text: response } };
