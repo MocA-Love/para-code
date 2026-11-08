@@ -99,6 +99,22 @@ function saveSpace(storage: IStorageService, store: Map<string, IParadisMobileRe
 	return saved;
 }
 
+/**
+ * 「確認後に変更あり」へ回した印だけを保存する（応答はしない）。ステージが途中で失敗して早く返るときも、
+ * 確認した後に書き換えられたと分かったファイルの印は付け替えておく（次に開いたとき「確認済み」と見せない）。
+ */
+function saveRewrittenMarks(storage: IStorageService, ws: string, rewritten: ReadonlyMap<string, string>): void {
+	if (rewritten.size === 0) {
+		return;
+	}
+	const store = paradisReadMobileReviewStore(storage);
+	const space = paradisMobileReviewSpace(store, ws);
+	const next = paradisMarkMobileReviewRewritten(space, rewritten);
+	if (next !== space) {
+		saveSpace(storage, store, ws, next);
+	}
+}
+
 /** そのスペースの記録を変えて保存し、応答する（同期で読んでから書く）。`update` が undefined を返したら `error` で応答。 */
 function updateSpace(storage: IStorageService, ws: string, context: IParadisMobileRequestContext, update: (space: IParadisMobileReviewSpace) => IParadisMobileReviewSpace | undefined, error: string, extra: object = {}): void {
 	const store = paradisReadMobileReviewStore(storage);
@@ -129,29 +145,37 @@ const STAGED_UNVERIFIED = { error: 'ステージしましたが、確かめら�
 /** 行を追いかけるために読むファイルの上限。これより大きいファイルのメモは「古い」と判定しない。 */
 const LOCATE_FILE_SIZE_LIMIT = 2 * 1024 * 1024;
 
+/** 行を追いかけるために同時に読むファイルの数。 */
+const LOCATE_PARALLEL_FILES = 6;
+
 /**
  * メモの行がいま作業ツリーのファイルのどこにあるか。`'unknown'` は読めなかった（大きすぎるなど）ので判定しない。
  * ファイルが無い（削除された）ときは undefined（古いメモ）。
  */
 async function locateNotes(notes: readonly IParadisMobileReviewNote[], context: IParadisMobileRequestContext, fileService: IFileService): Promise<Map<string, number | undefined | 'unknown'>> {
-	const linesByPath = new Map<string, readonly string[] | undefined | 'unknown'>();
-	for (const path of new Set(notes.map(note => note.path))) {
+	const readLines = async (path: string): Promise<readonly string[] | undefined | 'unknown'> => {
 		const uri = await context.resolvePath(path);
 		if (uri === undefined) {
-			linesByPath.set(path, undefined);
-			continue;
+			return undefined;
 		}
 		try {
 			const stat = await fileService.stat(uri);
 			if (stat.isDirectory || stat.size > LOCATE_FILE_SIZE_LIMIT) {
-				linesByPath.set(path, 'unknown');
-				continue;
+				return 'unknown';
 			}
 			const content = await fileService.readFile(uri, { limits: { size: LOCATE_FILE_SIZE_LIMIT } });
-			linesByPath.set(path, content.value.toString().split('\n').map(line => line.endsWith('\r') ? line.slice(0, -1) : line));
+			return content.value.toString().split('\n').map(line => line.endsWith('\r') ? line.slice(0, -1) : line);
 		} catch {
-			linesByPath.set(path, undefined);
+			return undefined;
 		}
+	};
+	// SSH 先では 1 ファイルごとに往復が 3 回あるので、ファイルを数件ずつ並べて読む
+	const linesByPath = new Map<string, readonly string[] | undefined | 'unknown'>();
+	const paths = [...new Set(notes.map(note => note.path))];
+	for (let start = 0; start < paths.length; start += LOCATE_PARALLEL_FILES) {
+		const batch = paths.slice(start, start + LOCATE_PARALLEL_FILES);
+		const results = await Promise.all(batch.map(readLines));
+		batch.forEach((path, index) => linesByPath.set(path, results[index]));
 	}
 	const located = new Map<string, number | undefined | 'unknown'>();
 	for (const note of notes) {
@@ -457,6 +481,7 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 			// `:(literal)` でパスの記法（`*` や先頭の `:` など）を読ませず、書いたとおりの名前だけを足す
 			const added = await context.runGit(['add', '--', ...toStage.map(path => `:(literal)${path}`)]);
 			if (added.code !== 0) {
+				saveRewrittenMarks(storage, ws, rewritten);
 				context.reply({ error: added.stderr.trim() || 'git add failed' });
 				return;
 			}
@@ -470,7 +495,9 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 			afterStats = await paradisWithHostDeadline(paradisStatMobileWorkspaceFiles(fileService, root, wasUntracked), AFTER_STAT_DEADLINE_MS);
 		} catch (error) {
 			// 足した後を読めないと、確かめていない中身を戻すことも印を付け替えることもできない。
-			// ステージしたことは伝え、PC で確かめてもらう（印は付け替えない）
+			// ステージしたことは伝え、PC で確かめてもらう（足したファイルの印は付け替えない。確認後に変更ありと
+			// 分かっているファイルの印だけ付け替える）
+			saveRewrittenMarks(storage, ws, rewritten);
 			if (paradisIsMobileHostNoResponse(error) && toStage.length > 0) {
 				context.reply(STAGED_UNVERIFIED);
 				return;
@@ -489,6 +516,7 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 			if (restored?.code !== 0) {
 				// 戻せなかった（まだコミットの無いリポジトリでは HEAD が無く `restore --staged` が失敗する）。確かめていない
 				// 中身がステージに残っているので、ステージできたとは返さない
+				saveRewrittenMarks(storage, ws, rewritten);
 				context.reply({ error: '確認した後に書き換えられたファイルをステージしてしまい、元に戻せませんでした。PC でステージを確かめてください。', code: 'restore-failed' });
 				return;
 			}
