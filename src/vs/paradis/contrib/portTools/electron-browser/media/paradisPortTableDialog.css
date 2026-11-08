@@ -1,0 +1,164 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments) */
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * ポートパネルの「…」から開く表のダイアログ（paradisPortTableDialog.ts）。箱は共通の S 段（paradisModal.css）で、幅だけ 560 に広げる。
+ * 見出しの帯・本文・下端の帯は「残したブランチを確かめる」のダイアログ（paradisWorktreeBranchCleanup.css）と同じ段で書く。
+ */
+
+.monaco-workbench .paradis-port-dialog-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.5);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	/* workbench のモーダルダイアログ（monaco-dialog-modal-block, z-index 2575）より下に置く（paradisCreateWorktreeDialog.css と同じ） */
+	z-index: 2570;
+}
+
+.monaco-workbench .paradis-port-dialog.paradis-modal-s {
+	width: 560px;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-header {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 35px;
+	padding: 0 var(--vscode-spacing-size80) 0 var(--vscode-spacing-size160);
+	flex: none;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--paradis-modal-body-top) var(--vscode-spacing-size160) var(--vscode-spacing-size160);
+	min-height: 0;
+	overflow: auto;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-description,
+.monaco-workbench .paradis-port-dialog .ppd-note {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-box {
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-medium);
+	min-height: 0;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-head {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-count {
+	margin-left: auto;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-scroll {
+	max-height: 320px;
+	overflow: auto;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-table th {
+	position: sticky;
+	top: 0;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-descriptionForeground);
+	font-weight: var(--vscode-fontWeight-regular);
+	text-align: left;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-table th,
+.monaco-workbench .paradis-port-dialog .ppd-table td {
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 240px;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-table tbody tr:last-child td {
+	border-bottom: none;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-check-cell {
+	width: 20px;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-disabled td {
+	color: var(--vscode-disabledForeground);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-tone-warn {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-tone-new {
+	color: var(--vscode-textLink-foreground);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-tone-error {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-disabled .ppd-tone-error {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-tone-dim {
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-option {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160);
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	flex: none;
+}
+
+.monaco-workbench .paradis-port-dialog .ppd-footer > .monaco-text-button {
+	width: auto;
+}
