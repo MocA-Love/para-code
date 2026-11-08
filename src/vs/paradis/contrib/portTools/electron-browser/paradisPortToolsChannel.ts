@@ -19,13 +19,14 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
+import { PARADIS_EPHEMERAL_PORT_START } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js';
 import { isLocalhost, RemoteTunnel, TunnelProtocol } from '../../../../platform/tunnel/common/tunnel.js';
 import { Attributes, CandidatePort, Tunnel, TunnelProperties, TunnelSource, UserTunnelSource } from '../../../../workbench/services/remote/common/tunnelModel.js';
 import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { paradisDefaultCleanUpForwards, paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisPortLocalHostAllowed } from '../common/paradisPortSelection.js';
-import { PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT, PARADIS_PORT_TOOLS_METHOD, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort } from '../common/paradisPortTools.js';
+import { PARADIS_PORT_TOOLS_METHOD, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort } from '../common/paradisPortTools.js';
 
 /** 確認のダイアログに並べる転送の行の上限。超えた分は「ほか N 件」にまとめる。 */
 const DIALOG_MAX_ROWS = 20;
@@ -372,7 +373,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 			messageTemplate: pane => localize('paradis.portTools.cleanUp.message', "{0} のエージェントが、SSH 先で listen していないエフェメラル帯の転送を {1} 件停止しようとしています", pane, targets.length),
 			detail: [
 				...this._dialogRows(targets, tunnel => this._describe(tunnel)),
-				localize('paradis.portTools.cleanUp.effect', "どれも {0} 以上のエフェメラル帯の番号で、利用者（プレビューやリンクを含む）が張り、今は SSH 先のプロセスが listen していない転送です。{0} より下の決まった番号は対象にしていません。", PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT),
+				localize('paradis.portTools.cleanUp.effect', "どれも {0} 以上のエフェメラル帯の番号で、利用者（プレビューやリンクを含む）が張り、今は SSH 先のプロセスが listen していない転送です。{0} より下の決まった番号は対象にしていません。", PARADIS_EPHEMERAL_PORT_START),
 			],
 			approveLabel: localize('paradis.portTools.cleanUp.approve', "{0} 件を停止", targets.length),
 			cooldownKey: APPROVAL_COOLDOWN_KEY,
