@@ -457,9 +457,10 @@ export async function paradisPasteKeepingClipboard(session: Pick<ParadisScrcpySe
 		note = restored ? undefined : 'Para Code could not put the previous device clipboard back after pasting: the device clipboard may now hold the typed text.';
 	}
 	if (pasteError !== undefined) {
-		// 貼れたかは分からない。戻しの結果を添えて、貼れなかったこととして返す
-		const reason = pasteError instanceof Error ? pasteError.message : String(pasteError);
-		throw new Error(`${reason}${restored ? ' The previous device clipboard was put back.' : note ? ` ${note}` : ''}`);
+		// 貼れたかは分からない（返事だけが遅れて、実際は貼れていることがある）。打ち直して文が二重にならないよう、
+		// 画面を確かめてから打ち直すよう添える。戻しの結果も添える
+		const reason = (pasteError instanceof Error ? pasteError.message : String(pasteError)).replace(/\.$/, '');
+		throw new Error(`${reason}. The text may still have been pasted on the device: check the screen (mobile_ui_snapshot or mobile_screenshot) before typing it again.${restored ? ' The previous device clipboard was put back.' : note ? ` ${note}` : ''}`);
 	}
 	return restored ? { method: 'paste', clipboardRestored: true } : { method: 'paste', clipboardRestored: false, ...(note ? { note } : {}) };
 }

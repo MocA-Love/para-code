@@ -363,8 +363,8 @@ jobs:
       # app" then signs the files inside the package the same way (sign.ts PARA-PATCH).
       # Like the speech helper, this never fails the release, betas included: on any failure the next step takes
       # the three files out of the package (so the notarization of the app is not affected) and the publish job
-      # adds one line to the release body. The simulator stays behind paradis.simulator.enabled (default off) until
-      # Mobile Canvas is removed, so a build without it loses nothing users rely on.
+      # adds one line to the release body. A build without them has no iOS simulator (Mobile Canvas was removed and
+      # the setting with it), while Android devices keep working through adb and scrcpy.
       - name: Pre-notarize the serve-sim helpers
         id: serve_sim
         continue-on-error: true

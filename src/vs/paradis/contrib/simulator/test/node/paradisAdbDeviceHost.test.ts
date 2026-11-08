@@ -191,7 +191,7 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 		}, 'あ', async () => { }).then(() => 'pasted', (error: Error) => error.message);
 		assert.deepStrictEqual({ calls, timedOut }, {
 			calls: ['paste あ', 'set user text'],
-			timedOut: 'The Android device did not confirm the clipboard change in time The previous device clipboard was put back.',
+			timedOut: 'The Android device did not confirm the clipboard change in time. The text may still have been pasted on the device: check the screen (mobile_ui_snapshot or mobile_screenshot) before typing it again. The previous device clipboard was put back.',
 		});
 	});
 });
