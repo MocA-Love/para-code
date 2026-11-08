@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisTasksBuildSearchQuery, paradisTasksGithubRepositoryFromRemote, paradisTasksHasQualifier, paradisTasksToggleQualifier, paradisTasksTokenize } from '../../common/paradisTasks.js';
+import { paradisTasksApplyInsteadOf, paradisTasksBuildSearchQuery, paradisTasksGithubRepositoryFromRemote, paradisTasksHasQualifier, paradisTasksToggleQualifier, paradisTasksTokenize } from '../../common/paradisTasks.js';
 
 suite('ParadisTasks', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -31,6 +31,31 @@ suite('ParadisTasks', () => {
 			undefined,
 			undefined,
 			undefined,
+		]);
+	});
+
+	// 短縮名の origin は、同じ config の insteadOf（前方一致のいちばん長いもの）で git が使う URL に戻してから読む
+	test('reads a shorthand origin through insteadOf in the same config', () => {
+		const config = [
+			'[remote "origin"]',
+			'\turl = gh:MocA-Love/Para-Code',
+			'[url "git@github.com:"]',
+			'\tinsteadOf = gh:',
+			'[url "https://github.com/work-org/"]',
+			'\tinsteadOf = gh:work/',
+			'[url "https://gitlab.com/"]',
+			'\tinsteadOf = gl:',
+		].join('\n');
+		assert.deepStrictEqual([
+			'gh:MocA-Love/Para-Code',
+			'gh:work/repo',
+			'gl:owner/repo',
+			'git@github.com:owner/repo.git',
+		].map(url => paradisTasksGithubRepositoryFromRemote(paradisTasksApplyInsteadOf(url, config))), [
+			'MocA-Love/Para-Code',
+			'work-org/repo',
+			undefined,
+			'owner/repo',
 		]);
 	});
 

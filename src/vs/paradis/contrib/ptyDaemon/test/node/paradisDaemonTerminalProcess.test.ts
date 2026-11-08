@@ -295,6 +295,33 @@ suite('ParadisDaemonTerminalProcess', () => {
 		assert.deepStrictEqual({ detached }, { detached: [1] });
 	});
 
+	// TERM-12: 常駐との接続が切れて確認の知らせが断られても、unhandled rejection にしない
+	test('常駐が確認の知らせを断っても、unhandled rejection にしない', async () => {
+		const { host, process } = create();
+		await process.start();
+		const acknowledged: number[] = [];
+		(host as unknown as { acknowledge(handle: number, charCount: number): Promise<void> }).acknowledge = async (_handle, charCount) => {
+			acknowledged.push(charCount);
+			throw new Error('daemon connection closed');
+		};
+
+		// 実行環境（node・Electron の renderer）のどちらでも拾えるよう、両方の口で受ける
+		const unhandled: unknown[] = [];
+		const onNodeRejection = (reason: unknown) => unhandled.push(reason);
+		const onWindowRejection = (event: PromiseRejectionEvent) => unhandled.push(event.reason);
+		globalThis.process.on('unhandledRejection', onNodeRejection);
+		globalThis.addEventListener?.('unhandledrejection', onWindowRejection);
+		try {
+			process.acknowledgeDataEvent(42);
+			await timeout(10);
+		} finally {
+			globalThis.process.off('unhandledRejection', onNodeRejection);
+			globalThis.removeEventListener?.('unhandledrejection', onWindowRejection);
+		}
+
+		assert.deepStrictEqual({ acknowledged, unhandled }, { acknowledged: [42], unhandled: [] });
+	});
+
 	test('終了が来なくても、終わったことは必ず伝える', async () => {
 		const { process } = create();
 		await process.start();

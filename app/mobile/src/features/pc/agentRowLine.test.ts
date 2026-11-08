@@ -28,6 +28,21 @@ describe('行の3段目の一文', () => {
 		expect(agentRowLine({ agent: true, agentStatus: 'review' }, chat)).toEqual({ text: '最初の行', emphasized: true, at: 3_000 });
 	});
 
+	test('発言の Markdown の記号を落とし、リンクは名前だけにする', () => {
+		const texts = [
+			'手順は [ビルドの手引き](https://example.com/build) を見て',
+			'## **まとめ**: `npm test` が通りました',
+			'> 引用の [a.ts](src/a.ts) です',
+			'---\n\n- 1 つ目',
+		];
+		expect(texts.map(text => lastAssistantText({ messages: [message(1, 'assistant', 'text', text)] }))).toEqual([
+			'手順は ビルドの手引き を見て',
+			'まとめ: npm test が通りました',
+			'引用の a.ts です',
+			'• 1 つ目',
+		]);
+	});
+
 	test('Para Code の知らせ（送れませんでした）はエージェントの発言に数えない', () => {
 		const chat = { messages: [message(1, 'assistant', 'text', '終わりました'), { ...message(2, 'assistant', 'text', '送れませんでした: 続けて'), notice: true }] };
 		expect(lastAssistantText(chat)).toBe('終わりました');

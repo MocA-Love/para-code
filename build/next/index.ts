@@ -149,6 +149,8 @@ const desktopEntryPoints = [
 	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain',
 	// PARA-PATCH: worker thread the shared process starts to read downloaded xlsx files for the read_download tool (agentBrowser)
 	'vs/paradis/contrib/agentBrowser/node/paradisBrowserDownloadWorkbookWorkerMain',
+	// PARA-PATCH: the simulator host the shared process starts through bootstrap-fork (VSCODE_ESM_ENTRYPOINT, src/vs/paradis/contrib/simulator)
+	'vs/paradis/contrib/simulator/node/paradisSimulatorHostMain',
 ];
 
 const codeEntryPoints = [

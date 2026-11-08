@@ -353,6 +353,38 @@ suite('ParadisMobileDiffReviewRequests', () => {
 		});
 	});
 
+	test('moves the mark of a file rewritten after review to "changed" even when git add fails', async () => {
+		const status = ' M a.ts\n M b.ts\n';
+		const numstat = '1\t1\ta.ts\0' + '1\t1\tb.ts\0';
+		const git = new FakeGit(status, numstat, '');
+		git.failing.add('add');
+		const identities = new Map(paradisWithMobileLineCounts(paradisParseMobilePorcelainStatus(status), numstat, '').map(file => [file.path, paradisMobileDiffIdentity(file)]));
+		const files: Record<string, string> = { 'a.ts': 'seen\n', 'b.ts': 'kept\n' };
+		const services = createServices();
+		const sent: IReply[] = [];
+		const host = createHost(services, sent, git, files);
+		dispatch(host, { t: 'reviewSet', id: '1', marks: ['a.ts', 'b.ts'].map(path => ({ path, identity: identities.get(path) })) });
+		await flush();
+		// 確認した後に、行数を変えずに a.ts を書き換えた。b.ts を足す git add は失敗する
+		files['a.ts'] = 'rewritten\n';
+		dispatch(host, { t: 'reviewStage', id: '2', entries: ['a.ts', 'b.ts'].map(path => ({ path, identity: identities.get(path) })) });
+		await flush();
+
+		const reply = sent.find(candidate => candidate.id === '2')!;
+		const marks = JSON.parse((services.get(IStorageService) as IStorageService).get(PARADIS_MOBILE_REVIEW_STORAGE_KEY, StorageScope.WORKSPACE)!).repo.marks;
+		assert.deepStrictEqual({
+			add: git.calls.filter(call => call.startsWith('add')),
+			error: reply.error,
+			rewrittenMark: marks['a.ts'].identity !== identities.get('a.ts'),
+			keptMark: marks['b.ts'].identity === identities.get('b.ts'),
+		}, {
+			add: ['add -- :(literal)b.ts'],
+			error: 'fatal: could not resolve HEAD',
+			rewrittenMark: true,
+			keptMark: true,
+		});
+	});
+
 	test('tells that it staged but could not verify when the host stops answering after git add, and keeps the mark', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const status = ' M a.ts\n';
 		const git = new FakeGit(status, '1\t0\ta.ts\0', '', { status: 'M  a.ts\n', unstaged: '', staged: '1\t0\ta.ts\0' });

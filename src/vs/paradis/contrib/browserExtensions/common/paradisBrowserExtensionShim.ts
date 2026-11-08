@@ -849,6 +849,11 @@ export function paradisInstallInertApis(context: 'page' | 'worker' | 'content-sc
 		for (const api of apis) {
 			let target: unknown = api;
 			for (const key of namespace.split('.')) {
+				// 名前は下の呼び出しの決まった文字列だけ。それでも Object.prototype などへは書かない（文字列のまま注入するので、ここに直接書く）
+				if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+					target = undefined;
+					break;
+				}
 				const parent: ApiObject = isObject(target) ? target : {};
 				let next = parent[key];
 				if (!isObject(next) && !options.existingOnly) {

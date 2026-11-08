@@ -89,10 +89,20 @@ export function scmCounts(entries: readonly ScmEntry[]): ScmCounts {
 	return { unstaged: entries.length - stagedOnly, staged: stagedOnly + partial, total: entries.length };
 }
 
-/** パスをファイル名と、それを含むフォルダに分ける（フォルダが無ければ空文字）。 */
+/** git が返したパスがフォルダか（未追跡のフォルダは `docs/` のように末尾が `/`）。 */
+export function isScmFolderPath(path: string): boolean {
+	return path.endsWith('/');
+}
+
+/**
+ * パスをファイル名と、それを含むフォルダに分ける（フォルダが無ければ空文字）。git は未追跡のフォルダを
+ * `docs/` のように末尾の `/` 付きで返すので、分ける前に末尾の `/` を落とす（落とさないと名前が空になる）。
+ */
 export function splitPath(path: string): { readonly name: string; readonly dir: string } {
-	const at = path.lastIndexOf('/');
-	return at < 0 ? { name: path, dir: '' } : { name: path.slice(at + 1), dir: path.slice(0, at) };
+	const trimmed = path.replace(/\/+$/, '');
+	const target = trimmed.length > 0 ? trimmed : path;
+	const at = target.lastIndexOf('/');
+	return at < 0 ? { name: target, dir: '' } : { name: target.slice(at + 1), dir: target.slice(0, at) };
 }
 
 /**

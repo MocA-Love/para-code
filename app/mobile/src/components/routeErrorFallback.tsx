@@ -4,6 +4,8 @@ import { useEffect } from 'react';
 import { StyleSheet, View } from 'react-native';
 import type { ErrorBoundaryProps } from 'expo-router';
 import { CircleAlert } from 'lucide-react-native';
+import { useStableInsets } from '../hooks/useStableInsets.js';
+import { useWindowControlsInset } from '../ipad/windowControls.js';
 import { reportMobileDiagnosticError } from '../mobileDiagnostics.js';
 import { colors } from '../theme.js';
 import { EmptyState } from '../ui/index.js';
@@ -17,8 +19,11 @@ export function RouteErrorFallback({ error, retry, where }: ErrorBoundaryProps &
 	useEffect(() => {
 		reportMobileDiagnosticError('navigation', 'route-render', error, { safe_where: where });
 	}, [error, where]);
+	// 自前の見出しを持たない全面の画面なので、上端のセーフエリアと iPad のウィンドウ操作ボタン（左上）を自分で避ける
+	const insets = useStableInsets();
+	const controlsInset = useWindowControlsInset();
 	return (
-		<View style={styles.root}>
+		<View style={[styles.root, { paddingTop: insets.top, paddingLeft: controlsInset }]}>
 			<EmptyState
 				icon={CircleAlert}
 				title="画面を表示できませんでした"

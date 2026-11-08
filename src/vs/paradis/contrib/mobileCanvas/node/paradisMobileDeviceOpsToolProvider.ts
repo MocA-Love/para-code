@@ -264,6 +264,11 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		return PARADIS_MOBILE_DEVICE_OPS_TOOLS;
 	}
 
+	/** 覚えた画面の大きさを捨てる（mobile_fold で開閉した後。simulator/node/paradisSimulatorFoldTool.ts）。 */
+	forgetScreenSize(deviceId: string): void {
+		this._screenSizes.delete(deviceId);
+	}
+
 	async callTool(paneToken: string, name: string, args: unknown, signal?: AbortSignal, context?: IParadisMcpToolCallContext): Promise<unknown | undefined> {
 		if (!TOOL_NAMES.has(name)) {
 			return undefined;

@@ -113,3 +113,11 @@ paths-ignore:
   - '**/*.test.mts'
   - '**/*.test.ts'
   - '**/*.test.tsx'
+  # PARA-PATCH: vendored third-party bundles shipped by Para Code (the same folders as the vendored PARA-PATCH list in build/filters.ts).
+  # chrome-devtools-mcp/build/src/*.js carries PARA-PATCH edits, so only its bundled third_party/ folder is ignored.
+  - 'src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/third_party/**'
+  - 'src/vs/paradis/contrib/simulator/node/media/serve-sim/dist/**'
+  - 'src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/**'
+  - 'src/vs/paradis/contrib/fileViewers/browser/media/mermaid/**'
+  - 'src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**'
+  - 'src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**'
