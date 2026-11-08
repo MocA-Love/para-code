@@ -18,6 +18,7 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { Button } from './button.js';
 import { EmptyState } from './emptyState.js';
 import { ViewerHeader } from './viewerHeader.js';
+import { ModalToastHost } from '../ui/toast.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { haptic } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
@@ -62,6 +63,11 @@ interface FileViewerProps {
 	 * 渡すと Markdown のプレビューも、自分のスクリプトだけを許す CSP を付けてスクリプトを有効にする。
 	 */
 	pathLinks?: ViewerPathLinkSpace;
+	/**
+	 * 見出しの戻るだけで呼ぶ処理（パスから開いたファイルを積んでいるときに 1 つ前へ戻る）。無ければ `onClose`。
+	 * シートを下へ払って閉じたときは、積んだものごと `onClose` で閉じる（見た目と状態をずらさない）。
+	 */
+	onBack?: () => void;
 	onClose: () => void;
 }
 
@@ -430,7 +436,7 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 }
 
 
-export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, error, pathLinks, onClose }: FileViewerProps) {
+export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, error, pathLinks, onBack, onClose }: FileViewerProps) {
 	const revival = useWebViewRevival();
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
@@ -569,7 +575,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					title={path}
 					top={headerTop}
 					backLabel={backLabel}
-					onClose={onClose}
+					onClose={onBack ?? onClose}
 					// 左がプレビュー（差分ビューアと同じ並び・同じ語）。右は「元の文字列」なのでソース。
 					segment={kind === 'markdown' || kind === 'html' ? { options: MODE_OPTIONS, value: mode, onChange: setMode } : undefined}
 					expandable={presentedAsSheet}
@@ -632,6 +638,8 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					</View>
 				)}
 				{links.sheet}
+				{/* パスのリンクの「コピーしました」「見つかりません」をこの Modal の上に出す（ルートのお知らせは Modal の下に隠れる） */}
+				{pathLinks !== undefined ? <ModalToastHost /> : null}
 			</View>
 		</Modal>
 	);

@@ -31,7 +31,7 @@ function currentRendererTarget(ws: string): string | undefined {
  * ワークスペース内のファイル種別に応じた取得処理とフルスクリーン表示をまとめる。
  *
  * Markdown・HTML の中に書かれたパスを押すと、同じビューアの中で開いたファイルを積む（`useViewerPathLinks.tsx`）。
- * 積んでいる間の「戻る」は 1 つ前のファイルへ戻り（ラベルはそのファイルの名前）、最初のファイルで閉じる。
+ * 積んでいる間、見出しの「戻る」は 1 つ前のファイルへ戻る（ラベルはそのファイルの名前）。シートを下へ払うと全部閉じる。
  */
 export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }: WorkspaceFileViewerProps) {
 	const origin = `${ws}\0${path}\0${focusLine ?? ''}`;
@@ -54,13 +54,14 @@ export function WorkspaceFileViewer({ ws, path, focusLine, backLabel, onClose }:
 			path={top?.path ?? path}
 			focusLine={top !== undefined ? top.line : focusLine}
 			backLabel={top !== undefined ? (previous?.split('/').pop() ?? previous) : backLabel}
-			onClose={top !== undefined ? back : onClose}
+			{...(top !== undefined ? { onBack: back } : {})}
+			onClose={onClose}
 			onOpenPath={openPath}
 		/>
 	);
 }
 
-function WorkspaceFileViewerContent({ ws, path, focusLine, backLabel, onClose, onOpenPath }: WorkspaceFileViewerProps & { onOpenPath: (path: string, line: number | undefined) => void }) {
+function WorkspaceFileViewerContent({ ws, path, focusLine, backLabel, onBack, onClose, onOpenPath }: WorkspaceFileViewerProps & { onBack?: () => void; onOpenPath: (path: string, line: number | undefined) => void }) {
 	const { fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
 		fsRead: s.fsRead,
 		fsXlsx: s.fsXlsx,
@@ -180,6 +181,7 @@ function WorkspaceFileViewerContent({ ws, path, focusLine, backLabel, onClose, o
 			backLabel={backLabel}
 			error={error}
 			pathLinks={pathLinks}
+			{...(onBack !== undefined ? { onBack } : {})}
 			onClose={onClose}
 		/>
 	);

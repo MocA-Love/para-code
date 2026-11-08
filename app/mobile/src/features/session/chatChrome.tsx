@@ -200,7 +200,8 @@ export function QuickReplies({ onPick }: { onPick: (text: string) => void }) {
 					hitSlop={REPLY_SLOP}
 					style={({ pressed }) => [styles.reply, pressed ? styles.replyPressed : undefined]}
 					accessibilityRole="button"
-					accessibilityLabel={sendOnTap ? `「${reply}」を送信` : `「${reply}」を入力欄に入れる`}
+					accessibilityLabel={sendOnTap ? `「${reply}」を送信（入力欄が空のとき）` : `「${reply}」を入力欄に入れる`}
+					{...(sendOnTap ? { accessibilityHint: '書きかけがあるときは送らずに入力欄の後ろに足します' } : {})}
 				>
 					<Text style={styles.replyText} numberOfLines={1}>{reply}</Text>
 				</Pressable>
