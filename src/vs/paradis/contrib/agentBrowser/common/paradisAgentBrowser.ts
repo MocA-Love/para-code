@@ -1079,11 +1079,6 @@ export interface IParadisAgentPaneSession {
 	readonly sessionId: string;
 	/** hook が最後に報告した作業ディレクトリ。 */
 	readonly cwd?: string;
-	/**
-	 * hook が報告した会話の記録（transcript）のパス。会話が動いているマシンのパス（`remote` なら接続先のパス）。
-	 * 別のエージェントへ引き継ぐときに依頼文へ載せる。OpenCode には付けない（データベースの場所のため）。
-	 */
-	readonly transcriptPath?: string;
 	/** 最後に hook を受けた時刻 (epoch ms)。 */
 	readonly at: number;
 	/** 接続先（SSH 先など）で動いている会話。手元の会話には付かない。 */

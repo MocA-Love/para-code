@@ -14,7 +14,8 @@
 //   会話を始めたフォルダで起動する（違うフォルダだと Claude Code は会話をそのフォルダのプロジェクトへ複製するため）。
 // - 引き継ぎ: 元と違う種類の設定済みエージェントを選び、今のスペースで起動して依頼文を渡す（paradisDeliverAgentPrompt の
 //   launch。利用者が選んだ操作なので、フォークと同じく右のグループに開いて前に出す）。依頼文には会話の記録のパスを渡す。受け取るエージェントの側で読めないパス（手元と接続先がまたがるなど）なら、
-//   画面の末尾を上限付きで入れる（paradisAgentSessionHandoff.ts）。
+//   画面の末尾を上限付きで入れる（paradisAgentSessionHandoff.ts）。記録のパスは状態スナップショットに載せず、押したときに
+//   shared process へそのペインの分だけ聞く。
 
 import { addDisposableListener, EventType, onDidRegisterWindow } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
@@ -33,12 +34,13 @@ import { createDecorator, IInstantiationService, ServicesAccessor } from '../../
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { paradisResolveWslAgentHome } from '../../../common/paradisWslAgentHome.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { IParadisAgentPaneSession } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentPaneSession, PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { paradisPcDeliveryError, paradisSpaceAgentHandoffServices } from '../../agentHandoff/electron-browser/paradisSpaceAgentHandoff.js';
 import { paradisDeliverAgentPrompt } from '../../mobileRelay/electron-browser/paradisMobileAgentPromptDelivery.js';
@@ -66,6 +68,8 @@ export interface IParadisTerminalAgentSessionService {
 	readonly _serviceBrand: undefined;
 	/** そのターミナルで動いている会話。hook が来ていなければ undefined。 */
 	getSession(instance: ITerminalInstance): IParadisAgentPaneSession | undefined;
+	/** そのターミナルで動いている会話の記録のパス（shared process に 1 件だけ聞く）。分からなければ undefined。 */
+	getTranscriptPath(instance: ITerminalInstance): Promise<string | undefined>;
 }
 
 class ParadisTerminalAgentSessionService extends Disposable implements IParadisTerminalAgentSessionService {
@@ -80,6 +84,7 @@ class ParadisTerminalAgentSessionService extends Disposable implements IParadisT
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IContextKeyService contextKeyService: IContextKeyService,
+		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 	) {
 		super();
 		this.canFork = PARADIS_TERMINAL_AGENT_CAN_FORK.bindTo(contextKeyService);
@@ -100,6 +105,20 @@ class ParadisTerminalAgentSessionService extends Disposable implements IParadisT
 	getSession(instance: ITerminalInstance): IParadisAgentPaneSession | undefined {
 		const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
 		return token === undefined ? undefined : this.sessions.get(token);
+	}
+
+	async getTranscriptPath(instance: ITerminalInstance): Promise<string | undefined> {
+		const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+		if (token === undefined) {
+			return undefined;
+		}
+		try {
+			const path = await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<string | undefined>('getPaneTranscriptPath', [token]);
+			return typeof path === 'string' ? path : undefined;
+		} catch {
+			// 古い shared process には無い。記録のパスなしで（画面の末尾で）引き継ぐ
+			return undefined;
+		}
 	}
 
 	private update(): void {
@@ -227,7 +246,7 @@ registerAction2(class extends Action2 {
 		}
 		const windowRemote = environmentService.remoteAuthority !== undefined;
 		const transcriptPath = paradisReadableTranscriptPath({
-			transcriptPath: session?.transcriptPath,
+			transcriptPath: session === undefined ? undefined : await sessionService.getTranscriptPath(instance),
 			sessionRemote: session?.remote === true,
 			windowRemote,
 			// 新しいエージェントは今のスペースで動く。手元の Windows で WSL のスペースなら WSL の中（POSIX のパス）

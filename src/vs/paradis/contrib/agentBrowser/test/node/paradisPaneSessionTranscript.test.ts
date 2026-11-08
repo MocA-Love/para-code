@@ -14,30 +14,38 @@ suite('Paradis pane session transcript', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('keeps the transcript path of the conversation for the hand-off, and drops it when the conversation changes', () => {
-		// _recordPaneSession は _paneSessions だけを読み書きする
-		const host = { _paneSessions: new Map<string, unknown>() };
+	test('keeps the transcript path of the conversation for the hand-off and drops it when the conversation changes', async () => {
+		// _recordPaneSession は _paneSessions だけを、getPaneTranscriptPath はそれと呼んだ窓のペインだけを読む
+		const host = {
+			_paneSessions: new Map<string, object>(),
+			_currentEligibleTokens: () => new Set(['pane', 'open']),
+		};
 		const record = Reflect.get(ParadisAgentBrowserService.prototype, '_recordPaneSession') as (this: typeof host, ...args: unknown[]) => void;
-		const transcript = (token: string) => (host._paneSessions.get(token) as { transcriptPath?: string } | undefined)?.transcriptPath;
-		const steps: Record<string, string | undefined> = {};
+		const getPath = Reflect.get(ParadisAgentBrowserService.prototype, 'getPaneTranscriptPath') as (this: typeof host, connection: object, token: string) => Promise<string | undefined>;
+		const transcript = (token: string) => getPath.call(host, {}, token);
+		const steps: Record<string, unknown> = {};
 
 		record.call(host, 'pane', 'SessionStart', 's1', '/Users/example/.claude/projects/app/s1.jsonl', '/Users/example/app', false);
-		steps.started = transcript('pane');
+		steps.started = await transcript('pane');
 		// 後の hook が記録のパスを持っていなくても、同じ会話の間は残す
 		record.call(host, 'pane', 'PostToolUse', 's1', undefined, '/Users/example/app', false);
-		steps.laterHookWithoutPath = transcript('pane');
+		steps.laterHookWithoutPath = await transcript('pane');
 		// 別の会話（/clear など）になったら、前の会話の記録は渡さない
 		record.call(host, 'pane', 'SessionStart', 's2', undefined, '/Users/example/app', false);
-		steps.otherConversation = transcript('pane');
-		// OpenCode はデータベースの場所なので載せない
+		steps.otherConversation = await transcript('pane');
+		// OpenCode はデータベースの場所なので控えない
 		record.call(host, 'open', 'SessionStart', 'ses_1', '/Users/example/opencode.db#ses_1', '/Users/example/app', false, 'opencode', 'opencode');
-		steps.openCode = transcript('open');
+		steps.openCode = await transcript('open');
+		// 呼んだ窓のペインでなければ答えない
+		record.call(host, 'other', 'SessionStart', 's3', '/Users/example/.claude/projects/app/s3.jsonl', '/Users/example/app', false);
+		steps.otherWindow = await transcript('other');
 
 		assert.deepStrictEqual(steps, {
 			started: '/Users/example/.claude/projects/app/s1.jsonl',
 			laterHookWithoutPath: '/Users/example/.claude/projects/app/s1.jsonl',
 			otherConversation: undefined,
 			openCode: undefined,
+			otherWindow: undefined,
 		});
 	});
 });
