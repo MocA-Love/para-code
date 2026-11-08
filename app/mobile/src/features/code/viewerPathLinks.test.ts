@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { PATH_LINK_LIMITS, buildPathLinkCollectScript, buildPathLinkMarkScript, isProsePath, parsePathLinkMessage, pathLinkFailureOf, pathLinkResolveOrder, pathLinksOf, type PathLinkCandidate } from './viewerPathLinks.js';
+import { PATH_LINK_LIMITS, buildPathLinkCollectScript, buildPathLinkMarkScript, isOutsideSpaceRoot, isProsePath, parsePathLinkMessage, pathLinkFailureOf, pathLinkResolveOrder, pathLinksOf, spaceRootOf, type PathLinkCandidate } from './viewerPathLinks.js';
 
 describe('pathLinksOf', () => {
 	it('marks local links, whole-path code and strict prose paths only', () => {
@@ -96,6 +96,21 @@ describe('parsePathLinkMessage', () => {
 			undefined,
 			undefined,
 		]);
+	});
+});
+
+describe('spaceRootOf and isOutsideSpaceRoot', () => {
+	it('derives the space root from the viewed file and tells absolute paths outside it', () => {
+		const root = spaceRootOf('/home/example/repo/docs/report.md', 'docs/report.md');
+		expect([
+			root,
+			spaceRootOf('/home/example/other/report.md', 'docs/report.md'),
+			spaceRootOf('C:\\repo\\report.md', 'report.md'),
+			isOutsideSpaceRoot('/var/log/app', '/home/example/repo'),
+			isOutsideSpaceRoot('/home/example/repo2/a.ts', '/home/example/repo'),
+			isOutsideSpaceRoot('/home/example/repo/src/a.ts', '/home/example/repo'),
+			isOutsideSpaceRoot('src/a.ts', '/home/example/repo'),
+		]).toEqual(['/home/example/repo', undefined, undefined, true, true, false, false]);
 	});
 });
 
