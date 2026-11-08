@@ -16,6 +16,7 @@
 import type { SFTPWrapper, Stats } from 'ssh2';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationError } from '../../../../base/common/errors.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { posix } from '../../../../base/common/path.js';
@@ -240,7 +241,10 @@ export class ParadisSftpService extends Disposable {
 	 * 開いたファイルの 1 回の操作を、進みが無いまま {@link ioTimeoutMs} 過ぎたら打ち切る。`run` に渡す `progress` を
 	 * 呼ぶたびに数え直す。打ち切ったらその世代の接続を捨てて（待っている要求も失敗する）、「繋がらない」として返す。
 	 */
-	private async withIoDeadline<T>(open: IOpenHandle, run: (progress: () => void) => Promise<T>): Promise<T> {
+	private async withIoDeadline<T>(open: IOpenHandle, run: (progress: () => void) => Promise<T>, token: CancellationToken = CancellationToken.None): Promise<T> {
+		if (token.isCancellationRequested) {
+			throw new CancellationError();
+		}
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let expire: (() => void) | undefined;
 		// 決まった後に遅れて届いた応答が progress を呼んでも、タイマーを作り直さない。
@@ -259,12 +263,23 @@ export class ParadisSftpService extends Disposable {
 			};
 		});
 		arm();
-		try {
-			return await Promise.race([run(arm), deadline]);
-		} finally {
+		const guarded = Promise.race([run(arm), deadline]).finally(() => {
 			settled = true;
 			clearTimeout(timer);
 			expire = undefined;
+		});
+		// 呼ぶ側（転送の取り消し）が取り消したら、答えを待たずに返す。送った SFTP の要求は取り戻せないので、期限は
+		// そのまま残す（答えないままなら接続を捨てる。取り消しで期限まで外すと、接続が使用中のまま残り続ける）。
+		// close はこの答えを待たずに進む（pending から外れるため）
+		guarded.catch(() => undefined);
+		let cancelListener: IDisposable | undefined;
+		const cancelled = new Promise<never>((_, reject) => {
+			cancelListener = token.onCancellationRequested(() => reject(new CancellationError()));
+		});
+		try {
+			return await Promise.race([guarded, cancelled]);
+		} finally {
+			cancelListener?.dispose();
 		}
 	}
 
@@ -541,9 +556,9 @@ export class ParadisSftpService extends Disposable {
 		return operation;
 	}
 
-	async read(id: number, position: number, length: number): Promise<VSBuffer> {
+	async read(id: number, position: number, length: number, token?: CancellationToken): Promise<VSBuffer> {
 		const open = this.handleFor(id);
-		return this.track(open, this.withIoDeadline(open, progress => this.doRead(open, position, length, progress)));
+		return this.track(open, this.withIoDeadline(open, progress => this.doRead(open, position, length, progress), token));
 	}
 
 	private async doRead(open: IOpenHandle, position: number, length: number, progress: () => void): Promise<VSBuffer> {
@@ -585,9 +600,9 @@ export class ParadisSftpService extends Disposable {
 		}
 	}
 
-	async write(id: number, position: number, data: VSBuffer): Promise<number> {
+	async write(id: number, position: number, data: VSBuffer, token?: CancellationToken): Promise<number> {
 		const open = this.handleFor(id);
-		return this.track(open, this.withIoDeadline(open, progress => this.doWrite(open, position, data, progress)));
+		return this.track(open, this.withIoDeadline(open, progress => this.doWrite(open, position, data, progress), token));
 	}
 
 	private async doWrite(open: IOpenHandle, position: number, data: VSBuffer, progress: () => void): Promise<number> {
@@ -668,7 +683,7 @@ export class ParadisSftpChannel implements IServerChannel<string> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(ctx: string, command: string, arg?: unknown, _token?: CancellationToken): Promise<T> {
+	call<T>(ctx: string, command: string, arg?: unknown, token?: CancellationToken): Promise<T> {
 		const args = (Array.isArray(arg) ? arg : []) as unknown[];
 		switch (command) {
 			case 'configure': {
@@ -689,8 +704,8 @@ export class ParadisSftpChannel implements IServerChannel<string> {
 			case 'posixRename': return this.service.posixRename(args[0] as UriComponents, args[1] as UriComponents) as Promise<T>;
 			case 'chmod': return this.service.chmod(args[0] as UriComponents, Number(args[1]), !!args[2]) as Promise<T>;
 			case 'openFile': return this.service.openFile(args[0] as UriComponents, { create: !!(args[1] as { create?: boolean } | undefined)?.create, append: !!(args[1] as { append?: boolean } | undefined)?.append }, ctx) as Promise<T>;
-			case 'read': return this.service.read(Number(args[0]), Number(args[1]), Number(args[2])) as Promise<T>;
-			case 'write': return this.service.write(Number(args[0]), Number(args[1]), args[2] as VSBuffer) as Promise<T>;
+			case 'read': return this.service.read(Number(args[0]), Number(args[1]), Number(args[2]), token) as Promise<T>;
+			case 'write': return this.service.write(Number(args[0]), Number(args[1]), args[2] as VSBuffer, token) as Promise<T>;
 			case 'close': return this.service.close(Number(args[0])) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
