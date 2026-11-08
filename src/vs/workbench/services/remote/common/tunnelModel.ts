@@ -23,7 +23,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { isNumber, isObject, isString } from '../../../../base/common/types.js';
 import { deepClone } from '../../../../base/common/objects.js';
 import { IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
-import { paradisImplicitTunnelSource, paradisTunnelsToRestore } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js'; // PARA-PATCH: see onTunnelOpened and restoreForwarded
+import { paradisImplicitTunnelSource, paradisMarkExplicitTunnelRecords, paradisTunnelsToRestore } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js'; // PARA-PATCH: see onTunnelOpened, restoreForwarded and storeForwarded
 
 const MISMATCH_LOCAL_PORT_COOLDOWN = 10 * 1000; // 10 seconds
 const TUNNELS_TO_RESTORE = 'remote.tunnels.toRestore';
@@ -661,6 +661,8 @@ export class TunnelModel extends Disposable {
 					source: tunnel.source,
 				};
 			});
+			// PARA-PATCH: mark records saved from now on, so the restore can tell them from records saved before Para Code stopped restoring implicit tunnels (platform/tunnel/common/paradisTunnelRestorePolicy.ts)
+			paradisMarkExplicitTunnelRecords(restorableTunnels);
 			let valueToStore: string | undefined;
 			if (forwarded.length > 0) {
 				valueToStore = JSON.stringify(restorableTunnels);
