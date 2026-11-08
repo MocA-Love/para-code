@@ -21,6 +21,7 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { join } from '../../../../base/common/path.js';
 import { localize } from '../../../../nls.js';
 import { ILocalTranscriptionModelStatus, ILocalTranscriptionResult } from '../../../../platform/localTranscription/common/localTranscription.js';
 
@@ -36,8 +37,19 @@ export const PARADIS_SPEECH_HELPER_EXECUTABLE = 'ParadisSpeech';
 /** SpeechAnalyzer（SpeechTranscriber / DictationTranscriber）が使える最低の Darwin の版（macOS 26 = Darwin 25）。 */
 export const PARADIS_SPEECH_MIN_DARWIN_MAJOR = 25;
 
-/** この機械で Para の音声入力が使えるか。使えないときはその理由。 */
-export type ParadisSpeechEngineAvailability = 'available' | 'macOSTooOld' | 'unsupportedPlatform';
+/** この機械で Para の音声入力が使えるか。使えないときはその理由（`helperMissing` は起動時に補助プログラムが見つからなかったとき）。 */
+export type ParadisSpeechEngineAvailability = 'available' | 'macOSTooOld' | 'unsupportedPlatform' | 'helperMissing';
+
+/**
+ * 補助プログラムの置き場所の候補。配布版は `<Para Code.app>/Contents/Resources/app` の 2 つ上の `Helpers`、
+ * 開発中は `node build/paradis/speech/buildHelper.ts` の出力先（`.build/paradis/speech`）。
+ */
+export function paradisSpeechHelperCandidates(appRoot: string, isDevelopment: boolean): string[] {
+	return [
+		join(appRoot, '..', '..', 'Helpers', PARADIS_SPEECH_HELPER_EXECUTABLE),
+		...(isDevelopment ? [join(appRoot, '.build', 'paradis', 'speech', PARADIS_SPEECH_HELPER_EXECUTABLE)] : []),
+	];
+}
 
 /** 機械の種類と OS の版（Darwin のカーネルの版。例 `25.0.0`）から、Para の音声入力が使えるか。 */
 export function paradisSpeechEngineAvailability(platform: string, osRelease: string): ParadisSpeechEngineAvailability {
@@ -57,6 +69,8 @@ export function paradisSpeechEngineUnavailableMessage(availability: ParadisSpeec
 			return localize('paradisSpeech.macOSTooOld', "音声入力は macOS 26 以降の Mac で使えます。この Mac の macOS では使えません。");
 		case 'unsupportedPlatform':
 			return localize('paradisSpeech.unsupportedPlatform', "音声入力はいまは macOS 26 以降の Mac だけで使えます。Windows・Linux は今後の更新で対応します。");
+		case 'helperMissing':
+			return localize('paradisSpeech.helperMissing', "この Para Code には音声認識の補助プログラムが入っていないため、音声入力を使えません。更新を待つか、配布元に知らせてください。");
 	}
 }
 
