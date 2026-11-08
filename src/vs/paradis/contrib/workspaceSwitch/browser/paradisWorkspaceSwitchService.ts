@@ -1636,6 +1636,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					ParadisWorkspaceSwitchService.SWITCH_SLOT_TIMEOUT_MS,
 				);
 				if (this._activeSwitchBodies.size > 0) {
+					// 待っている間に追い越された回は、失敗にせず黙って抜ける。押した本人はもう別の
+					// スペースを選んでおり、ここで投げると選んでいない行き先の失敗が通知に出る。
+					// **待ちは省かないこと。** 待つ前に抜けると、最後の要求が待ち始める時刻が早まり、
+					// 最後の要求が諦めるまでの時間（待ちの上限）が短くなる。
+					if (coalesceGeneration !== undefined && coalesceGeneration !== this._coalesceGeneration) {
+						this.logService.trace(`[ParadisWorkspaceSwitch] Skipping superseded switch to ${stateKey}; the previous switch is still running`);
+						return;
+					}
 					throw new Error('The previous space switch is still running');
 				}
 				// 待っている間にシャットダウンが始まっていることがある。**必ず取り直す。**

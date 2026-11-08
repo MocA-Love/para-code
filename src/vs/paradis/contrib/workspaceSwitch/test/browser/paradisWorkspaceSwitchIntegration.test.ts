@@ -846,6 +846,50 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 1 回目が 60 秒の締め切りを超えて止まると、追い越された回は前の本体を最大 60 秒待つ。
+	// 待ちが切れたとき、選んでいない行き先の「まだ前の切り替えが動いている」失敗を出さずに抜ける。
+	test('lets a superseded switch give up quietly when the previous switch outlives its wait', () => runWithFakedTimers({ maxTaskCount: 10_000 }, async () => {
+		const testDisposables = new DisposableStore();
+		const firstUpdateStarted = new DeferredPromise<void>();
+		const timeline: string[] = [];
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b', 'space-c', 'space-d'],
+				testDisposables,
+				async (phase, uri, updateIndex) => {
+					timeline.push(`update:${uri.path}:${phase}`);
+					if (phase === 'start' && updateIndex === 0) {
+						firstUpdateStarted.complete();
+						await timeout(150_000);
+					}
+				}
+			);
+
+			const firstSwitch = harness.workspaceSwitchService.switchRepository('space-b', { coalesce: true });
+			await firstUpdateStarted.p;
+			const supersededSwitch = harness.workspaceSwitchService.switchRepository('space-c', { coalesce: true });
+			const lastSwitch = harness.workspaceSwitchService.switchRepository('space-d', { coalesce: true });
+			const switchResults = await Promise.allSettled([firstSwitch, supersededSwitch, lastSwitch]);
+
+			assert.deepStrictEqual({
+				switchResults: switchResults.map(result => result.status),
+				timeline,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+			}, {
+				switchResults: ['fulfilled', 'fulfilled', 'fulfilled'],
+				timeline: [
+					'update:/workspace-b:start',
+					'update:/workspace-b:end',
+					'update:/workspace-d:start',
+					'update:/workspace-d:end',
+				],
+				activeStateKey: 'space-d',
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	}));
+
 	test('never skips an internal switch that a caller depends on completing', async () => {
 		const testDisposables = new DisposableStore();
 		const firstUpdateStarted = new DeferredPromise<void>();
