@@ -26,6 +26,7 @@ import { ITerminalInstance, ITerminalService } from '../../../../../workbench/co
 import { IParadisAgentStatusStore } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_TERMINAL_AGENT_RUNNING, ParadisTerminalContextMenuContribution } from '../../electron-browser/paradisTerminalContextMenu.contribution.js';
 import '../../electron-browser/paradisTerminalAgentSession.contribution.js';
+import { paradisParseAgentPromptTarget } from '../../../mobileRelay/electron-browser/paradisMobileAgentPromptDelivery.js';
 
 suite('Paradis terminal context menu (menus)', () => {
 
@@ -125,5 +126,10 @@ suite('Paradis terminal context menu (menus)', () => {
 		mainWindow.document.body.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
 
 		assert.deepStrictEqual({ whileRunning, beforeRightClick, afterRightClick: running() }, { whileRunning: true, beforeRightClick: true, afterRightClick: false });
+	});
+
+	test('keeps a foreground launch to the right-click hand-off: a target from the phone cannot ask for it', () => {
+		// 横に開いて前に出すのは、PC の利用者が右クリックで選んだ引き継ぎだけ。スマホなどから届く送り先は読み取りで落とす
+		assert.deepStrictEqual(paradisParseAgentPromptTarget({ agent: 'codex', placement: 'side' }), { kind: 'launch', agent: 'codex' });
 	});
 });
