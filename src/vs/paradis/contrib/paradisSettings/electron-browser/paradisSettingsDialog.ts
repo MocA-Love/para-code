@@ -38,7 +38,6 @@ import { paradisHubNavCaption, paradisHubNavItem, ParadisHubScrollSpy } from '..
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
-import { PARADIS_SIMULATOR_ENABLED_SETTING } from '../../simulator/common/paradisSimulator.js';
 import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { PARADIS_BROWSER_HOME_PAGE_SETTING, PARADIS_BROWSER_IMPORT_LOGINS_COMMAND_ID, PARADIS_BROWSER_SITE_PERMISSIONS_COMMAND_ID } from '../../browserSettings/common/paradisBrowserSettings.js';
@@ -1346,17 +1345,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.snapshotDiffDesc', "エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。"),
 		keywords: 'agent browser experimental snapshot diff changes',
 	},
-	{
-		sectionId: 'psd-sec-browser',
-		experimental: true,
-		group: GROUP_BROWSER_EXPERIMENTAL,
-		key: PARADIS_SIMULATOR_ENABLED_SETTING,
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.simulatorEnabled', "新しい iOS シミュレータの仕組みを使う（開発中）"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.simulatorEnabledDesc', "（開発中・Mac だけ）作り直し中のシミュレータの仕組みを試せるようにします。今はまだ画面には何も増えず、今のモバイルのサイドバーとエージェントの操作はそのまま動きます。"),
-		keywords: 'simulator ios iphone mobile serve-sim experimental',
-	},
+
 	// --- ファイルビューア ---
 	{
 		sectionId: 'psd-sec-office',

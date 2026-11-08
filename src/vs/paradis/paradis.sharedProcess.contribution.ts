@@ -104,11 +104,10 @@ export function registerParadisSharedProcessContributions(server: IPCServer<stri
 
 	// モバイル端末⇔ターミナルペインのアタッチ台帳と mobile_* のツール（上のMCPサーバーへ相乗りさせるため、
 	// エージェントCLI側に追加のMCP設定は要らない）、シミュレータの作り直し（serve-sim を組み込んだホストの子プロセス、
-	// 映像と入力のチャネル、mobile_fold）。設定 paradis.simulator.enabled がオフなら今の Mobile Canvas だけが動く
+	// 映像と入力のチャネル、mobile_fold）
 	store.add(registerParadisSimulator(
 		server,
 		accessor.get(INativeEnvironmentService).userDataPath,
-		accessor.get(IConfigurationService),
 		accessor.get(ILogService),
 		provider => paradisAgentBrowser.registerToolProvider(provider),
 	));
