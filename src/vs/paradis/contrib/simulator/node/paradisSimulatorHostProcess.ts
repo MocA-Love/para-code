@@ -66,6 +66,8 @@ const READY_TIMEOUT_MS = 20_000;
 const CRASH_WINDOW_MS = 60_000;
 const MAX_CRASHES_IN_WINDOW = 3;
 const STOP_GRACE_MS = 3_000;
+/** 起動に失敗したときの理由に添える、ホストの stderr の行の数。 */
+const STDERR_TAIL_LINES = 20;
 
 /**
  * 自分だけが触れるフォルダを用意する。在れば、シンボリックリンクでないこと・持ち主が自分であることを
@@ -264,13 +266,19 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 
 		const env: NodeJS.ProcessEnv = {
 			...process.env,
-			ELECTRON_RUN_AS_NODE: '1',
 			VSCODE_ESM_ENTRYPOINT: PARADIS_SIMULATOR_HOST_ENTRY,
 			VSCODE_PARENT_PID: String(process.pid),
 			TMPDIR: this._stateDir,
 			TMP: this._stateDir,
 			TEMP: this._stateDir,
 		};
+		// ELECTRON_RUN_AS_NODE は Electron の上でだけ付ける。素の Node（CI の node 単体テストの mocha）で付けると、
+		// bootstrap-esm が Electron だと思って `fs` を Electron にしか無い `original-fs` へ向け、ホストが読み込みで落ちる
+		if (process.versions.electron) {
+			env.ELECTRON_RUN_AS_NODE = '1';
+		} else {
+			delete env.ELECTRON_RUN_AS_NODE;
+		}
 		// serve-sim はこれを token の既定にする。渡した token だけを使わせる
 		delete env.SERVE_SIM_AUTH_TOKEN;
 		delete env.SERVE_SIM_DEVICE_SET;
@@ -286,10 +294,16 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 		const child = spawnChild(this._options.execPath ?? process.execPath, [bootstrapPath, marker], { env, stdio: ['pipe', 'pipe', 'pipe'] });
 		void this._writeRecord({ pid: child.pid ?? 0, marker });
 
+		// 準備できる前に落ちた・待ちきれなかったときに理由へ添えるため、stderr の終わりの数行を取っておく
+		const stderrTail: string[] = [];
 		child.stderr?.on('data', (chunk: Buffer) => {
 			for (const line of chunk.toString('utf8').split('\n')) {
 				if (line.trim()) {
 					this._options.logService.info(`[paradis-simulator] host: ${line.trim()}`);
+					stderrTail.push(line.trim());
+					if (stderrTail.length > STDERR_TAIL_LINES) {
+						stderrTail.shift();
+					}
 				}
 			}
 		});
@@ -298,10 +312,11 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 		try {
 			await this._waitForReady(child, handshake);
 		} catch (error) {
-			this._lastError = error instanceof Error ? error.message : String(error);
-			this._crashes.push(Date.now());
 			await this._stopChild(child);
-			throw error;
+			const reason = error instanceof Error ? error.message : String(error);
+			this._lastError = stderrTail.length ? `${reason}; host stderr: ${stderrTail.join(' | ')}` : reason;
+			this._crashes.push(Date.now());
+			throw new Error(this._lastError);
 		}
 
 		const running: IRunningHost = { child, connection: handshake };
