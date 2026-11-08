@@ -122,6 +122,9 @@ export class ParadisAndroidEditor extends EditorPane {
 		session.add(session.view.onDidEnd(reason => this._onLost(session, reason)));
 		session.add(session.view.onDidStall(() => this._onLost(session, undefined)));
 		session.add(session.view.onDidRequestExit(() => this._back?.focus()));
+		session.add(session.view.onDidFail(error => this._setNotice(localize('paradis.android.decodeFailed', "映像の表示に失敗しました（読み直しています）: {0}", error.message))));
+		// 復号できない（この codec を扱えない・続けて失敗した）: 自動では読み直さず、理由と「再試行」を出す
+		session.add(session.view.onDidGiveUp(reason => this._setNotice(localize('paradis.android.gaveUp', "Android の端末の映像を表示できません: {0}", reason), true)));
 		session.add(input.onDidChangeLabel(() => this._renderHeader()));
 		this._renderHeader();
 		this._setNotice(undefined);

@@ -30,10 +30,19 @@ const $ = dom.$;
 /** 復号の待ちがこれを超えたら、次の key frame まで捨てる。 */
 const MAX_DECODE_QUEUE = 8;
 
-/** WebCodecs の VideoDecoder を作る口（テストで差し替える）。 */
-export type ParadisVideoDecoderFactory = (init: VideoDecoderInit) => VideoDecoder;
+/** 続けてこの回数だけ（1 枚も描けないまま）復号に失敗したら、やめて知らせる（失敗と key frame の求めを繰り返さない）。 */
+const MAX_DECODE_FAILURES = 3;
 
-const realDecoder: ParadisVideoDecoderFactory = init => new VideoDecoder(init);
+/** WebCodecs の VideoDecoder を作る口と、その設定で復号できるかを確かめる口（テストで差し替える）。 */
+export interface IParadisVideoDecoders {
+	create(init: VideoDecoderInit): VideoDecoder;
+	isSupported(config: VideoDecoderConfig): Promise<boolean>;
+}
+
+const realDecoders: IParadisVideoDecoders = {
+	create: init => new VideoDecoder(init),
+	isSupported: async config => (await VideoDecoder.isConfigSupported(config)).supported === true,
+};
 
 export class ParadisAndroidVideoView extends Disposable {
 
@@ -63,12 +72,19 @@ export class ParadisAndroidVideoView extends Disposable {
 	readonly onDidRequestExit = this._onDidRequestExit.event;
 	private readonly _onDidFail = this._register(new Emitter<Error>());
 	readonly onDidFail = this._onDidFail.event;
+	private readonly _onDidGiveUp = this._register(new Emitter<string>());
+	/** 復号できない（この codec を扱えない・続けて失敗した）ので映すのをやめた。理由を添える。 */
+	readonly onDidGiveUp = this._onDidGiveUp.event;
+	private _failures = 0;
+	/** 確かめ終えた codec と、その答え。 */
+	private _supported: { readonly codec: string; readonly supported: Promise<boolean> } | undefined;
+	private _gaveUp = false;
 
 	constructor(
 		container: HTMLElement,
 		private readonly _serial: string,
 		private readonly _client: IParadisSimulatorClient,
-		private readonly _createDecoder: ParadisVideoDecoderFactory = realDecoder,
+		private readonly _decoders: IParadisVideoDecoders = realDecoders,
 	) {
 		super();
 		this.element = dom.append(container, $('.paradis-simulator-screen'));
@@ -97,7 +113,14 @@ export class ParadisAndroidVideoView extends Disposable {
 		store.add(toDisposable(() => this._stall.cancel()));
 		this._subscription.value = store;
 		this._waitingForKey = true;
+		this._failures = 0;
+		this._gaveUp = false;
 		this._stall.schedule();
+	}
+
+	/** 復号器が開いているか（テスト用）。 */
+	get decoderOpen(): boolean {
+		return !!this._decoder && this._decoder.state !== 'closed';
 	}
 
 	stop(): void {
@@ -137,14 +160,21 @@ export class ParadisAndroidVideoView extends Disposable {
 				return;
 			}
 			case 'frame':
-				this._stall.schedule();
-				this._decode(message.data.buffer, message.key, message.pts);
+				void this._decode(message.data.buffer, message.key, message.pts);
 				return;
 			case 'ended':
 				this._closeDecoder();
 				this._onDidEnd.fire(message.reason);
 				return;
 		}
+	}
+
+	/** その codec を復号できるか（codec ごとに 1 回だけ確かめる）。 */
+	private _isSupported(codec: string): Promise<boolean> {
+		if (this._supported?.codec !== codec) {
+			this._supported = { codec, supported: this._decoders.isSupported({ codec, optimizeForLatency: true }).catch(() => false) };
+		}
+		return this._supported.supported;
 	}
 
 	private _ensureDecoder(): VideoDecoder | undefined {
@@ -154,21 +184,20 @@ export class ParadisAndroidVideoView extends Disposable {
 		if (!this._codec) {
 			return undefined;
 		}
-		const decoder = this._createDecoder({
+		const decoder = this._decoders.create({
 			output: frame => {
 				try {
 					const context = this._canvas.getContext('2d');
 					context?.drawImage(frame, 0, 0, this._canvas.width || frame.displayWidth, this._canvas.height || frame.displayHeight);
+					this._failures = 0;
+					// 途切れの見張りは、届いたときではなく描けたときに延ばす（届いても描けなければ途切れとみなす）
+					this._stall.schedule();
 					this._onDidDrawFrame.fire();
 				} finally {
 					frame.close();
 				}
 			},
-			error: error => {
-				this._onDidFail.fire(error instanceof Error ? error : new Error(String(error)));
-				this._closeDecoder();
-				this._requestKeyFrame();
-			},
+			error: error => this._onDecodeError(error),
 		});
 		// description を渡さないと Annex B として読む
 		decoder.configure({ codec: this._codec, optimizeForLatency: true });
@@ -177,8 +206,35 @@ export class ParadisAndroidVideoView extends Disposable {
 		return decoder;
 	}
 
-	private _decode(data: Uint8Array, key: boolean, pts: number): void {
-		if (this._waitingForKey && !key) {
+	private _onDecodeError(error: unknown): void {
+		this._onDidFail.fire(error instanceof Error ? error : new Error(String(error)));
+		this._closeDecoder();
+		this._failures++;
+		if (this._failures >= MAX_DECODE_FAILURES) {
+			this._giveUp(error instanceof Error ? error.message : String(error));
+			return;
+		}
+		this._requestKeyFrame();
+	}
+
+	private _giveUp(reason: string): void {
+		if (this._gaveUp) {
+			return;
+		}
+		this._gaveUp = true;
+		this.stop();
+		this._onDidGiveUp.fire(reason);
+	}
+
+	private async _decode(data: Uint8Array, key: boolean, pts: number): Promise<void> {
+		if (this._gaveUp || (this._waitingForKey && !key)) {
+			return;
+		}
+		if (!this._decoder && this._codec && !await this._isSupported(this._codec)) {
+			this._giveUp(`This window cannot decode ${this._codec} video (WebCodecs).`);
+			return;
+		}
+		if (this._gaveUp || !this._subscription.value) {
 			return;
 		}
 		const decoder = this._ensureDecoder();
@@ -201,9 +257,7 @@ export class ParadisAndroidVideoView extends Disposable {
 			decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: pts, data: payload }));
 			this._waitingForKey = false;
 		} catch (error) {
-			this._onDidFail.fire(error instanceof Error ? error : new Error(String(error)));
-			this._closeDecoder();
-			this._requestKeyFrame();
+			this._onDecodeError(error);
 		}
 	}
 
