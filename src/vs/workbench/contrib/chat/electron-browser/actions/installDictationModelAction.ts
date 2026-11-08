@@ -23,6 +23,7 @@ export function registerInstallDictationModelAction(): void {
 	const enabled = ContextKeyExpr.and(
 		ChatContextKeys.enabled,
 		ContextKeyExpr.equals('config.dictation.enabled', true),
+		ContextKeyExpr.equals('isSessionsWindow', true), // PARA-PATCH: Para Code replaces the Foundry model with the OS speech recognizer in normal windows, so there is no model to install there
 	);
 
 	registerAction2(class InstallDictationModelAction extends Action2 {
