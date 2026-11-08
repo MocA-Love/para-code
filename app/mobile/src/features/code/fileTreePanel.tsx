@@ -136,7 +136,8 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 				{...(dock !== undefined ? { safeTop: false, backIcon: X, backLabel: 'ファイルを閉じる', onBack: dock.close } : {})}
 				right={<HeaderButton icon={searchOpen ? X : Search} label={searchOpen ? '検索を閉じる' : 'ファイルを検索'} onPress={toggleSearch} active={searchOpen} />}
 			>
-				{searchOpen ? <FilesSearchBar mode={mode} initialQuery={query} onChangeMode={next => setSearch({ mode: next })} onChangeQuery={next => setSearch({ query: next })} editable={codeSpace.live} /> : null}
+				{/* 絞るフォルダが替わったら入力欄を作り直す（uncontrolled なので、前の文字が残らないように） */}
+				{searchOpen ? <FilesSearchBar key={scopedDir ?? ''} mode={mode} initialQuery={query} onChangeMode={next => setSearch({ mode: next })} onChangeQuery={next => setSearch({ query: next })} editable={codeSpace.live} /> : null}
 				{searchOpen && scopedDir !== undefined ? <FilesSearchScope dir={scopedDir} onClear={() => setSearch({ dir: undefined })} /> : null}
 			</ScreenHeader>
 			<SpaceGateBody gate={codeSpace.gate}>
