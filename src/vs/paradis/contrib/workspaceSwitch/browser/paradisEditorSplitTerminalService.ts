@@ -14,7 +14,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IParadisEditorSplitTerminalService } from '../../../../workbench/services/editor/common/paradisEditorSplitTerminalService.js';
+import { IParadisEditorSplitTerminalService, IParadisOpenTerminalInGroupOptions } from '../../../../workbench/services/editor/common/paradisEditorSplitTerminalService.js';
 
 export { IParadisEditorSplitTerminalService } from '../../../../workbench/services/editor/common/paradisEditorSplitTerminalService.js';
 
@@ -32,8 +32,8 @@ export class ParadisEditorSplitTerminalService extends Disposable implements IPa
 		super();
 	}
 
-	async openTerminalInGroup(group: IEditorGroup): Promise<void> {
-		if (!this.configurationService.getValue<boolean>(PARADIS_OPEN_TERMINAL_ON_SPLIT_SETTING)) {
+	async openTerminalInGroup(group: IEditorGroup, options?: IParadisOpenTerminalInGroupOptions): Promise<void> {
+		if (options?.force !== true && !this.configurationService.getValue<boolean>(PARADIS_OPEN_TERMINAL_ON_SPLIT_SETTING)) {
 			return;
 		}
 
@@ -55,6 +55,7 @@ export class ParadisEditorSplitTerminalService extends Disposable implements IPa
 				// so the split-only exact object identity cannot be preserved on that path. Use the
 				// resolved built-in default shell instead of rejecting the user's split operation.
 				skipContributedProfileCheck: true,
+				...(options?.cwd !== undefined ? { cwd: options.cwd } : {}),
 			});
 			this.assertGroupIsExact(group, groupDisposed);
 			await this.terminalService.focusInstance(instance);
