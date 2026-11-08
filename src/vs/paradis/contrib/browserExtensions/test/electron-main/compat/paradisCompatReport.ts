@@ -210,6 +210,11 @@ th { background: #f6f8fa; }
 .ng { color: #cf222e; font-weight: 600; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; padding: 0 3px; }
 .summary td { text-align: center; font-size: 15px; }
+.table-scroll { overflow-x: auto; margin: 8px 0 16px; }
+.table-scroll table { margin: 0; }
+.results td:nth-child(1), .results td:nth-child(3), .results td:nth-child(5), .results td:nth-child(6), .results td:nth-child(7), .results td:nth-child(8), .results th { white-space: nowrap; }
+.results td:nth-child(2) { min-width: 16em; }
+.results td:nth-child(4) { min-width: 28em; }
 </style>
 </head>
 <body>
@@ -234,10 +239,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 </div>
 
 <h2>拡張機能ごとの結果</h2>
-<table>
+<div class="table-scroll"><table class="results">
 <tr><th>区分</th><th>拡張機能</th><th>結果</th><th>理由</th><th>版</th><th>worker</th><th>content script</th><th>ポップアップ</th></tr>
 ${rows.map(({ result, status, reasons }) => `<tr><td>${escape(result.category)}</td><td>${escape(result.name ?? result.label)}<br><span class="muted"><code>${escape(result.id)}</code></span></td><td class="${status}">${STATUS_LABELS[status]}</td><td>${reasons.map(escape).join('<br>')}${notes[result.id] ? `<br><span class="muted">${escape(notes[result.id])}</span>` : ''}</td><td>${cell(result.version)}</td><td>${cell(result.worker)}</td><td>${cell(result.contentScript)}</td><td>${cell(result.popup)}</td></tr>`).join('\n')}
-</table>
+</table></div>
 
 <h2>この確かめで見つけて直したもの</h2>
 <table>
