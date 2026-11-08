@@ -8,7 +8,7 @@ import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
 import { alpha, colors, withAlpha } from '../../theme.js';
 import { useChatTextScale } from '../../ui/chatTextScale.js';
 import { useThemeColors } from '../../ui/index.js';
-import { buildInplaceSelectHtml, parseInplaceSelectMessage, type InplaceSelectPoint, type InplaceSelectSegment } from './inplaceSelectHtml.js';
+import { buildInplaceSelectHtml, inplaceSelectStartScript, parseInplaceSelectMessage, type InplaceSelectPoint, type InplaceSelectSegment } from './inplaceSelectHtml.js';
 
 /**
  * 読み込みを終えた後、スクリプトが「描き終えた」を知らせてこないときに、それでも出すまでの待ち（ms）。
@@ -17,15 +17,28 @@ import { buildInplaceSelectHtml, parseInplaceSelectMessage, type InplaceSelectPo
 const READY_AFTER_LOAD_MS = 300;
 
 /**
+ * 見せてから選ぶまでの待ち（ms）。透明を外した描画と first responder になるのを待ってから選び、遅れたときのために数回やり直す
+ * （先に選ぶと WebKit はつまみも OS のメニューも出さない。`inplaceSelectHtml.ts` の selectScript）。
+ */
+const SELECT_ATTEMPTS_MS = [30, 200, 500] as const;
+
+/**
  * 発言の表示の上に重ねる、範囲を選ぶための WebView（Q551 案 4）。重ねる位置と大きさは呼び出し側
  * （`MessageContextMenu`）が決める。OS のつまみ・選択の色・編集メニュー（コピー・すべてを選択・共有）をそのまま使う。
  *
  * - 描き終えるまでは透明にしておき（下の元の表示が見えたまま）、描き終えたら `onReady` を呼ぶ。呼び出し側はそこで
  *   元の表示を隠す（差し替えのちらつきを抑える）
+ * - 見せた後に WebView を first responder にして（`requestFocus()`。入力欄のキーボードは閉じる）、押した点の単語か
+ *   発言の全体を選ぶ。入った時点でつまみと OS のメニューが出ているように
  * - `segments` と `point` は差し替えを始めたときの写しを渡すこと。変わると HTML を作り直して選択が消える
  * - WebView の編集メニューに `menuItems` を足さない（足すと react-native-webview が OS の項目を全部消す）
  */
-export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight, onGone }: {
+export function InplaceSelectWebView({ active, segments, point, fg, onReady, onHeight, onGone }: {
+	/**
+	 * 選んでいる間か。false の間は見えないまま読み込んでおく（長押しのメニューが出た時点で用意し、押されたら同じ
+	 * WebView を見せる。WebView の起動に数秒かかることがあるため）。
+	 */
+	active: boolean;
 	segments: readonly InplaceSelectSegment[];
 	point: InplaceSelectPoint | undefined;
 	/** 本文の色。 */
@@ -41,6 +54,7 @@ export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight, o
 	const { fontScale } = useWindowDimensions();
 	const [ready, setReady] = useState(false);
 	const readyRef = useRef(false);
+	const webRef = useRef<WebView>(null);
 	const callbacks = useRef({ onReady, onHeight });
 	callbacks.current = { onReady, onHeight };
 	const html = useMemo(() => buildInplaceSelectHtml(segments, {
@@ -60,6 +74,18 @@ export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight, o
 			callbacks.current.onReady();
 		}
 	};
+	// 見せた後に、first responder にしてから選ぶ。first responder になるのが遅れたときのために数回やり直す
+	// （ページは 2 回目からは何も選ばれていないときだけ選び直す。選び直したものを消さない）
+	useEffect(() => {
+		if (!ready || !active) {
+			return undefined;
+		}
+		const timers = SELECT_ATTEMPTS_MS.map(delay => setTimeout(() => {
+			webRef.current?.requestFocus();
+			webRef.current?.injectJavaScript(inplaceSelectStartScript());
+		}, delay));
+		return () => timers.forEach(clearTimeout);
+	}, [ready, active]);
 	// 読み込んだのにスクリプトが知らせてこないときも、選べるように出す（高さは元の表示のまま）
 	const loadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	useEffect(() => () => clearTimeout(loadTimer.current), []);
@@ -80,8 +106,9 @@ export function InplaceSelectWebView({ segments, point, fg, onReady, onHeight, o
 	};
 
 	return (
-		<View style={[styles.fill, ready ? null : styles.pending]}>
+		<View style={[styles.fill, ready && active ? null : styles.pending]}>
 			<WebView
+				ref={webRef}
 				style={styles.web}
 				containerStyle={styles.web}
 				source={{ html }}

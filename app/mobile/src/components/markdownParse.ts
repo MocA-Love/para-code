@@ -259,6 +259,45 @@ function markdownLinkAt(text: string, start: number): { end: number; label: stri
 }
 
 /** インライン記法を安全な描画トークンへ分解する。 */
+/** 素の URL に使える字（ASCII だけ。`https://example.com/docsを見て` は日本語の手前で切る）。 */
+const BARE_URL = /https?:\/\/[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+/iy;
+/** 素の URL の末尾から外す記号（文の区切り・閉じ引用符・強調の記号）。 */
+const BARE_URL_TRAILING = /[.,;:!?'"*_]$/;
+
+/**
+ * `start` から始まる素の URL（http・https）を読む。前の字が英数字のとき（`xhttps://` など）は URL にしない。
+ * 末尾の句読点と、対になっていない `)` `]` は URL に含めない（`（https://a.example/x）` の閉じ括弧など）。
+ */
+function bareUrlAt(text: string, start: number): { end: number; url: string } | undefined {
+	if (start > 0 && /[A-Za-z0-9]/.test(text.charAt(start - 1))) {
+		return undefined;
+	}
+	BARE_URL.lastIndex = start;
+	const match = BARE_URL.exec(text);
+	if (match === null) {
+		return undefined;
+	}
+	let url = match[0];
+	for (;;) {
+		if (BARE_URL_TRAILING.test(url)) {
+			url = url.slice(0, -1);
+			continue;
+		}
+		const last = url.charAt(url.length - 1);
+		const open = last === ')' ? '(' : last === ']' ? '[' : undefined;
+		if (open !== undefined && url.split(open).length <= url.split(last).length - 1) {
+			url = url.slice(0, -1);
+			continue;
+		}
+		break;
+	}
+	// 「https://」の後に行き先が無いものは URL にしない
+	if (!/^https?:\/\/[A-Za-z0-9]/i.test(url)) {
+		return undefined;
+	}
+	return { end: start + url.length, url };
+}
+
 export function parseInline(text: string): InlineToken[] {
 	const tokens: InlineToken[] = [];
 	let plain = '';
@@ -288,6 +327,19 @@ export function parseInline(text: string): InlineToken[] {
 				if (target !== undefined) {
 					flush(); tokens.push({ kind: 'local', label: link.label, target }); i = link.end; continue;
 				}
+			}
+		}
+		// 素の URL も `[文字](URL)` と同じ外のリンクにする（押すと開く・長押しでコピー・メニューの「URL をコピー」）。
+		// コードの中（`…` とコードの塊）はここに来ないのでリンクにならない
+		if (text[i] === 'h' || text[i] === 'H') {
+			const bare = bareUrlAt(text, i);
+			if (bare !== undefined) {
+				// `<https://…>` の山括弧は外す
+				const angled = plain.endsWith('<') && text[bare.end] === '>';
+				if (angled) {
+					plain = plain.slice(0, -1);
+				}
+				flush(); tokens.push({ kind: 'external', label: bare.url, url: bare.url }); i = bare.end + (angled ? 1 : 0); continue;
 			}
 		}
 		plain += text.charAt(i);
@@ -351,6 +403,49 @@ function joinPlainBlocks(blocks: readonly Block[]): string {
 /** Markdown の記号（`**`、`` ` ``、`#`、`>`、`|` など）を外した文字。 */
 export function markdownPlainText(source: string): string {
 	return joinPlainBlocks(parseBlocks(source));
+}
+
+/** インラインの記号を外し、リンクは名前だけにした文字（行の補足など、1 行に要約して見せるとき）。 */
+function inlineLabelText(text: string): string {
+	return parseInline(text).map(token => token.kind === 'external' || token.kind === 'local' ? token.label : token.text).join('');
+}
+
+/**
+ * 発言の最初の中身を、記号の無い 1 つの文字にする（PC の画面の行の補足など、要約の 1 行に使う）。
+ * 見出しの `#`・強調の `**`・コードの `` ` ``・引用の `>` を落とし、リンクは名前だけにする（行き先は出さない）。
+ * 箇条書きは印を残す。コードの塊はその最初の行。中身の無いブロック（区切り線など）は飛ばす。
+ */
+export function markdownSummaryText(source: string): string | undefined {
+	const first = (blocks: readonly Block[]): string | undefined => {
+		for (const block of blocks) {
+			let text: string | undefined;
+			switch (block.kind) {
+				case 'para':
+				case 'heading':
+					text = inlineLabelText(block.text);
+					break;
+				case 'bullet':
+					text = `${block.marker} ${inlineLabelText(block.text)}`;
+					break;
+				case 'code':
+					text = block.text.split('\n').find(line => line.trim().length > 0);
+					break;
+				case 'table':
+					text = block.header.map(inlineLabelText).join(' ');
+					break;
+				case 'quote':
+					text = first(block.blocks);
+					break;
+				case 'rule':
+					break;
+			}
+			if (text !== undefined && text.trim().length > 0) {
+				return text;
+			}
+		}
+		return undefined;
+	};
+	return first(parseBlocks(source));
 }
 
 /** 本文の外のリンク（http・https）の行き先。同じものは 1 回だけ、{@link MAX_COPY_PARTS} まで。 */

@@ -14,6 +14,8 @@
 // - aria-hidden の中（Para Code のカーソルの演出など）の変化は数えない
 // - 見えない要素・script / style などは報告しない。文字は 1 行 160 字で切る
 
+import { paradisScriptStringLiteral } from '../../../common/paradisScriptLiteral.js';
+
 /** 記録を始める関数の本体（`rec` を作って window に置く）。`N` は記録の名前、`NAV` は遷移の後に作り直したか。 */
 const INSTALL_BODY = String.raw`
 	const SKIP = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE', 'HEAD', 'TITLE']);
@@ -63,7 +65,7 @@ const INSTALL_BODY = String.raw`
 
 /** 記録を始め、今の URL とタイトルを返す。 */
 export function paradisObserveInstallFunction(name: string): string {
-	return `() => { const N = ${JSON.stringify(name)}; const NAV = false; ${INSTALL_BODY} return { url: location.href, title: document.title }; }`;
+	return `() => { const N = ${paradisScriptStringLiteral(name)}; const NAV = false; ${INSTALL_BODY} return { url: location.href, title: document.title }; }`;
 }
 
 /**
@@ -73,7 +75,7 @@ export function paradisObserveInstallFunction(name: string): string {
  */
 export function paradisObserveReadFunction(name: string): string {
 	return `() => {
-	const N = ${JSON.stringify(name)};
+	const N = ${paradisScriptStringLiteral(name)};
 	let navigated = false;
 	if (!window[N]) { navigated = true; const NAV = true; ${INSTALL_BODY} }
 	const rec = window[N];
@@ -86,7 +88,7 @@ export function paradisObserveReadFunction(name: string): string {
 /** 記録を止めて、増えた・変わった・消えた要素を行にして返す（記録は消す）。 */
 export function paradisObserveCollectFunction(name: string, maxLines: number): string {
 	return `() => {
-	const N = ${JSON.stringify(name)};
+	const N = ${paradisScriptStringLiteral(name)};
 	const rec = window[N];
 	if (!rec) { return { missing: true, url: location.href, title: document.title }; }
 	rec.mo.disconnect();

@@ -345,6 +345,7 @@ export class ParadisClaudeModBridge {
 	private longPolls = 0;
 	private presence: () => ParadisClaudeModPresence = () => 'off';
 	private approvalWaitMs: () => number = () => 0;
+	private paneTokenOwner: (connection: object, token: string) => boolean = () => false;
 	private sweepTimer: ReturnType<typeof setInterval> | undefined;
 
 	constructor(private readonly now: () => number = Date.now) { }
@@ -357,6 +358,20 @@ export class ParadisClaudeModBridge {
 	/** モバイルの承認を待つ上限（ParadisAgentBrowserService が設定から入れる）。 */
 	setApprovalWait(approvalWaitMs: () => number): void {
 		this.approvalWaitMs = approvalWaitMs;
+	}
+
+	/** そのレンダラーの接続がペイントークンの今の持ち主かを確かめる口（ParadisAgentBrowserService が入れる）。 */
+	setPaneTokenOwner(isOwner: (connection: object, token: string) => boolean): void {
+		this.paneTokenOwner = isOwner;
+	}
+
+	/** そのレンダラーの接続がペイントークンの今の持ち主か。確かめる口が無ければ持ち主とみなさない。 */
+	isPaneTokenOwner(connection: object, token: string): boolean {
+		try {
+			return this.paneTokenOwner(connection, token);
+		} catch {
+			return false;
+		}
 	}
 
 	dispose(): void {

@@ -98,6 +98,30 @@ suite('ParadisHostResources', () => {
 		});
 	});
 
+	test('shares the answer of a query still in flight with an overlapping read instead of dropping the disk', async () => {
+		let answer: (() => void) | undefined;
+		let statfsCalls = 0;
+		const ops = {
+			statfs: () => {
+				statfsCalls++;
+				return new Promise<{ bsize: number; blocks: number; bavail: number }>(resolve => {
+					answer = () => resolve({ bsize: 4096, blocks: 10, bavail: 5 });
+				});
+			},
+			stat: async () => ({ dev: 9 }),
+			timeoutMs: 5_000,
+		};
+		const path = '/paradis-test-overlapping-read';
+
+		// 進行中の収集と強制更新が重なる
+		const collecting = paradisReadDiskVolumes([path], ops);
+		const forced = paradisReadDiskVolumes([path], ops);
+		answer!();
+		const [first, second] = await Promise.all([collecting, forced]);
+
+		assert.deepStrictEqual({ first: first.length, second: second.length, statfsCalls }, { first: 1, second: 1, statfsCalls: 1 });
+	});
+
 	test('keeps waiting for an unanswered statfs even when stat fails right away', async () => {
 		let answer: (() => void) | undefined;
 		let statfsCalls = 0;

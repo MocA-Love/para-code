@@ -13,7 +13,7 @@
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import type { IParadisWordAnalysisResult, IParadisWordComparisonResult } from '../../common/word/paradisWordSemanticSummary.js';
+import type { IParadisWordAnalysisResult, IParadisWordComparisonResult, IParadisWordRenderableObjectsResult } from '../../common/word/paradisWordSemanticSummary.js';
 import { ownedParadisOfficeBytes, ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorker, type IParadisOfficeSemanticWorkerTimers } from '../office/paradisOfficeSemanticWorkerQueue.js';
 import { createParadisOfficeSemanticWorker } from '../office/paradisOfficeWorkerDiagnostics.js';
 import type { IParadisWordSemanticBackend } from './paradisWordSemanticChannel.js';
@@ -74,6 +74,13 @@ export class ParadisWordSemanticWorkerBackend extends Disposable implements IPar
 			const copy = ownedParadisOfficeBytes(bytes);
 			return { request: { op: 'analyze', bytes: copy }, transfer: [copy.buffer as ArrayBuffer] };
 		}, token, { runDeadlineMs: PARADIS_WORD_SEMANTIC_ANALYZE_DEADLINE_MS, memoryKeys: [bytes] }) as Promise<IParadisWordAnalysisResult>;
+	}
+
+	extractObjects(bytes: Uint8Array, token: CancellationToken): Promise<IParadisWordRenderableObjectsResult> {
+		return this.queue.run(bytes.byteLength, () => {
+			const copy = ownedParadisOfficeBytes(bytes);
+			return { request: { op: 'objects', bytes: copy }, transfer: [copy.buffer as ArrayBuffer] };
+		}, token, { runDeadlineMs: PARADIS_WORD_SEMANTIC_ANALYZE_DEADLINE_MS, memoryKeys: [bytes] }) as Promise<IParadisWordRenderableObjectsResult>;
 	}
 
 	compare(original: Uint8Array, modified: Uint8Array, token: CancellationToken): Promise<IParadisWordComparisonResult> {

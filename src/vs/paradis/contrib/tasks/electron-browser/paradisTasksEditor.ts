@@ -38,7 +38,11 @@ import { IEditorGroup } from '../../../../workbench/services/editor/common/edito
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IParadisTaskBoardHostService } from '../../taskBoard/common/paradisTaskBoardHost.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisTasksRepository, paradisTasksResolveRepositories } from '../browser/paradisTasksRepositories.js';
+import { IParadisTasksRepository, ParadisTasksOriginReader, paradisTasksResolveRepositories } from '../browser/paradisTasksRepositories.js';
+import { IParadisWorktreeGitCommandResult, PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
+import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { raceTimeout } from '../../../../base/common/async.js';
 import {
 	IParadisTasksError,
 	IParadisTasksItem,
@@ -51,6 +55,9 @@ import {
 } from '../common/paradisTasks.js';
 import { IParadisTasksGithubService, IParadisTasksProject, IParadisTasksProjectItem, IParadisTasksProjectItemsResult, IParadisTasksProjectView } from '../common/paradisTasksProjects.js';
 import { PARADIS_TASKS_EDITOR_ID } from './paradisTasksEditorInput.js';
+
+/** git に origin を解かせるのを待つ上限。過ぎたら `.git/config` の読みに戻す。 */
+const ORIGIN_READ_TIMEOUT_MS = 5_000;
 import { paradisTasksRenderProjectBoard, paradisTasksRenderProjectRoadmap, paradisTasksRenderProjectTable } from './paradisTasksProjectView.js';
 
 const $ = dom.$;
@@ -124,6 +131,8 @@ export class ParadisTasksEditor extends EditorPane {
 	static readonly ID = PARADIS_TASKS_EDITOR_ID;
 
 	private readonly github: IParadisTasksGithubService;
+	/** フォルダのあるマシン（SSH なら接続先）の git に origin を解かせる（{@link ParadisTasksOriginReader}）。 */
+	private readonly readOrigin: ParadisTasksOriginReader;
 
 	private root!: HTMLElement;
 	private sourceChip!: HTMLElement;
@@ -189,9 +198,20 @@ export class ParadisTasksEditor extends EditorPane {
 		@ICommandService private readonly commandService: ICommandService,
 		@IParadisTaskBoardHostService private readonly taskBoardHost: IParadisTaskBoardHostService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super(PARADIS_TASKS_EDITOR_ID, group, telemetryService, themeService, tasksStorage);
 		this.github = ProxyChannel.toService<IParadisTasksGithubService>(sharedProcessService.getChannel(PARADIS_TASKS_GITHUB_CHANNEL));
+		const resolveGitHost = instantiationService.invokeFunction(accessor => paradisChannelHostResolver(accessor, PARADIS_WORKTREE_GIT_CHANNEL, 'reject'));
+		this.readOrigin = async folder => {
+			const host = resolveGitHost(folder);
+			if (!host) {
+				return undefined;
+			}
+			// 返事が来ない（つながらない接続先）ときは、.git/config の読みに戻す
+			const result = await raceTimeout(host.channel.call<IParadisWorktreeGitCommandResult>('runGit', [host.path(folder), ['remote', 'get-url', 'origin']]), ORIGIN_READ_TIMEOUT_MS);
+			return result?.code === 0 ? result.stdout.trim() || undefined : undefined;
+		};
 		const storedMode = tasksStorage.get(STORAGE_MODE, StorageScope.WORKSPACE);
 		this.mode = storedMode === 'pr' || storedMode === 'project' ? storedMode : 'issue';
 		for (const mode of ['issue', 'pr'] as const) {
@@ -323,7 +343,7 @@ export class ParadisTasksEditor extends EditorPane {
 			...this.switchService.repositories.map(repo => ({ name: repo.name, uri: repo.uri })),
 			...this.contextService.getWorkspace().folders.map(folder => ({ name: folder.name, uri: folder.uri })),
 		];
-		const repositories = await paradisTasksResolveRepositories(this.fileService, sources);
+		const repositories = await paradisTasksResolveRepositories(this.fileService, sources, this.readOrigin);
 		if (generation !== this.repositoryGeneration) {
 			return;
 		}

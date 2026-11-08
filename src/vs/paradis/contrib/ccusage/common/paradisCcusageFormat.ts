@@ -8,6 +8,15 @@
 
 // 金額とトークン数の表示の整形。AI コストのタブと、スペース別の使用量のタブで共有する。
 
+/**
+ * カテゴリカルパレット(モデル系列・コンテキストの内訳のカテゴリ)。ダーク面/ライト面それぞれで検証済みの固定順。
+ * 順序自体が色覚多様性対策(隣接ΔE最大化)なので並べ替えないこと。
+ */
+export const PARADIS_CCUSAGE_SERIES_DARK: readonly string[] = ['#3987e5', '#199e70', '#c98500', '#9085e9', '#e66767', '#d95926', '#d55181', '#008300'];
+export const PARADIS_CCUSAGE_SERIES_LIGHT: readonly string[] = ['#2a78d6', '#1baf7a', '#eda100', '#4a3aa7', '#e34948', '#eb6834', '#e87ba4', '#008300'];
+/** 「その他」に畳んだ系列のニュートラル色。 */
+export const PARADIS_CCUSAGE_OTHER_COLOR = '#898781';
+
 /** `$12.34`（1000 ドル以上は整数でカンマ区切り）。 */
 export function paradisFormatUsd(value: number): string {
 	if (value >= 1000) {

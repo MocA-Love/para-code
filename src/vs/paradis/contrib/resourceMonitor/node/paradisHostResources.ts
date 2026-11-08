@@ -107,28 +107,32 @@ const DEFAULT_DISK_QUERY_OPS: IParadisDiskQueryOps = { statfs, stat, timeoutMs: 
  * まだ返っていない照会（パスごと）。`paradisWithTimeout` は待つのをやめるだけで、照会そのものは libuv の
  * threadpool を掴んだまま残る。返事をしないマウントへ収集のたびに新しく照会を出すと、溜まった照会が
  * threadpool を埋め、そのプロセスのファイルの読み書きが全部遅くなる。前の照会が返るまでは、そのパスに
- * 次を出さない（読めなかったパスと同じく、その回は捨てる）。
+ * 次を出さず、前の照会の答えを同じ時間だけ待って使い回す（強制更新が進行中の収集と重なっても、ディスクが
+ * 結果から落ちないように）。
  */
-const pendingDiskQueries = new Set<string>();
+type ParadisDiskAnswer = readonly [Awaited<ReturnType<IParadisDiskQueryOps['statfs']>>, Awaited<ReturnType<IParadisDiskQueryOps['stat']>>];
+const pendingDiskQueries = new Map<string, Promise<ParadisDiskAnswer>>();
 
-function queryDisk(path: string, ops: IParadisDiskQueryOps): Promise<readonly [Awaited<ReturnType<IParadisDiskQueryOps['statfs']>>, Awaited<ReturnType<IParadisDiskQueryOps['stat']>>] | undefined> {
-	if (pendingDiskQueries.has(path)) {
-		return Promise.resolve(undefined);
+function queryDisk(path: string, ops: IParadisDiskQueryOps): Promise<ParadisDiskAnswer | undefined> {
+	const pending = pendingDiskQueries.get(path);
+	if (pending !== undefined) {
+		return paradisWithTimeout(pending, ops.timeoutMs);
 	}
 	const statfsQuery = ops.statfs(path);
 	const statQuery = ops.stat(path);
-	pendingDiskQueries.add(path);
+	const query = Promise.all([statfsQuery, statQuery] as const);
+	pendingDiskQueries.set(path, query);
 	// 記録を消すのは 2 つとも返ってから。`Promise.all` は片方が失敗した時点で決まるので、それを待つと
 	// `stat` だけすぐ失敗して `statfs` が返らないマウントで、返らない `statfs` が収集のたびに増える。
 	void Promise.allSettled([statfsQuery, statQuery]).then(() => { pendingDiskQueries.delete(path); });
-	return paradisWithTimeout(Promise.all([statfsQuery, statQuery] as const), ops.timeoutMs);
+	return paradisWithTimeout(query, ops.timeoutMs);
 }
 
 /**
  * 指定パスが載っているボリュームの容量を読む。同じボリュームを指すパスは1件にまとめる
  * （判定にはデバイスID `Stats.dev` を使う。容量が同じ別ボリューム——同型の外付け2台や
  * 同サイズのパーティション——を1件に潰さないため）。
- * 読めなかったパス・時間内に応答しなかったパス・前の照会がまだ返っていないパスは黙って捨てる
+ * 読めなかったパス・時間内に応答しなかったパス（前の照会を待った場合も含む）は黙って捨てる
  * （取り外し済みのworktree等）。
  */
 export async function paradisReadDiskVolumes(paths: readonly string[], ops: IParadisDiskQueryOps = DEFAULT_DISK_QUERY_OPS): Promise<IParadisHostDiskVolume[]> {

@@ -90,6 +90,21 @@ suite('ParadisClaudeContextStore', () => {
 		}, { paneA: 1_000, paneB: 9_000, paneC: undefined, newest: 9_000 });
 	});
 
+	test('a pane answers only with the conversation it is running now, and nothing once that conversation ended', async () => {
+		const store = disposables.add(new ParadisClaudeContextStore(files().files, undefined, 60_000));
+		store.observe(context('pane-a', 's1', 10, 1_000));
+		store.observe(context('pane-b', 's1', 20, 9_000));
+		store.observe(context('pane-a', 's2', 30, 2_000));
+		store.observe(context('pane-c', 's3', 40, 3_000));
+		store.observe({ token: 'pane-c', sessionId: 's3', at: 50, type: 'bye' });
+		assert.deepStrictEqual({
+			paneA: (await store.breakdownForPane('pane-a'))?.sessionId,
+			paneB: (await store.breakdownForPane('pane-b'))?.totalTokens,
+			paneC: await store.breakdownForPane('pane-c'),
+			unknown: await store.breakdownForPane('pane-d'),
+		}, { paneA: 's2', paneB: 9_000, paneC: undefined, unknown: undefined });
+	});
+
 	test('a store disposed before it read its file keeps what was saved', async () => {
 		const mine = owner('pane-a');
 		const disk = files(JSON.stringify({ version: 1, sessions: [{ owner: mine, ...breakdown('old', 1) }] }));

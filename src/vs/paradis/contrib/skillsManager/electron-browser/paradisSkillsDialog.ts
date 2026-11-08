@@ -33,10 +33,9 @@ import {
 	IParadisSkill,
 	IParadisSkillRoot,
 	IParadisSkillRootListing,
-	paradisDedupeSkillListings,
 	paradisDeleteSkill,
 	paradisInstallSkill,
-	paradisListSkills,
+	paradisListSkillRoots,
 	paradisReadSkillFile,
 	paradisSkillDeleteBlocker,
 	paradisSkillDeleteUsesTrash,
@@ -153,11 +152,11 @@ export class ParadisSkillsDialog extends Disposable {
 				switchService: this.switchService,
 				logService: this.logService,
 			});
-			const listings = await Promise.all(roots.map(root => paradisListSkills(this.fileService, root).catch(error => ({ root, exists: false, skills: [], error: toErrorMessage(error) }))));
+			const listings = await paradisListSkillRoots(this.fileService, roots);
 			if (this._store.isDisposed) {
 				return;
 			}
-			this.listings = paradisDedupeSkillListings(listings);
+			this.listings = listings;
 			if (!this.listings.some(listing => listing.root.id === this.selectedRootId)) {
 				this.selectedRootId = (this.listings.find(listing => listing.skills.length > 0) ?? this.listings[0])?.root.id;
 			}
