@@ -25,7 +25,8 @@ concurrency:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: vscode-large-runners-ubuntu-8-core
+    # PARA-PATCH: the fork has no vscode-large-runners pool; use the GitHub-hosted runner as upstream did up to 1.144.0
+    runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
