@@ -142,6 +142,8 @@ export const indentationFilter = Object.freeze<string[]>([
 	'!src/vs/paradis/contrib/fileViewers/browser/media/mermaid/**',
 	// PARA-PATCH: vendored chrome-devtools-mcp spawned per-pane by the para-browser MCP server (see the folder's README.md)
 	'!src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**',
+	// PARA-PATCH: vendored serve-sim 0.1.49 (Apache-2.0) loaded by the simulator host process (see the folder's README.md)
+	'!src/vs/paradis/contrib/simulator/node/media/serve-sim/**',
 	// PARA-PATCH: vendored cursor-motion (Cua, MIT) used to plan the agent cursor's path (see the folder's README.md)
 	'!src/vs/paradis/contrib/agentBrowser/common/cursorMotion/**',
 
@@ -259,6 +261,8 @@ export const copyrightFilter = Object.freeze<string[]>([
 	'!src/vs/paradis/contrib/fileViewers/browser/media/mermaid/**',
 	// PARA-PATCH: vendored chrome-devtools-mcp spawned per-pane by the para-browser MCP server (see the folder's README.md)
 	'!src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**',
+	// PARA-PATCH: vendored serve-sim 0.1.49 (Apache-2.0) loaded by the simulator host process (see the folder's README.md)
+	'!src/vs/paradis/contrib/simulator/node/media/serve-sim/**',
 	// PARA-PATCH: vendored cursor-motion (Cua, MIT) used to plan the agent cursor's path (see the folder's README.md)
 	'!src/vs/paradis/contrib/agentBrowser/common/cursorMotion/**',
 
