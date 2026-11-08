@@ -356,13 +356,95 @@ jobs:
           echo "::warning::The speech helper was not built or embedded; darwin-${{ matrix.arch }} ships without dictation (see the step above)"
           echo "darwin-${{ matrix.arch }}" > speech-helper-missing.txt
 
-      # sign.ts carries two PARA-PATCHes: empty entitlements for the Computer Use helper, and the speech recognition
-      # usage description for the speech helper.
+      # serve-sim (the iOS simulator host, q.html Q585), step 1 of 2. The vendored serve-sim 0.1.49 ships under
+      # out/ (build/next/paradisResources.ts) with three Mach-O files: serve-sim-native.node, serve-sim-duo-hid and
+      # serve-sim-ax-settings. Sign copies of them alone with the release identity (hardened runtime, timestamp,
+      # empty entitlements) and notarize them by themselves, so a rejection shows up here with its log. "Code sign
+      # app" then signs the files inside the package the same way (sign.ts PARA-PATCH).
+      # Like the speech helper, this never fails the release, betas included: on any failure the next step takes
+      # the three files out of the package (so the notarization of the app is not affected) and the publish job
+      # adds one line to the release body. The simulator stays behind paradis.simulator.enabled (default off) until
+      # Mobile Canvas is removed, so a build without it loses nothing users rely on.
+      - name: Pre-notarize the serve-sim helpers
+        id: serve_sim
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          DIST="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app/Contents/Resources/app/out/vs/paradis/contrib/simulator/node/media/serve-sim/dist"
+          WORK="$RUNNER_TEMP/serve-sim-notarize"
+          rm -rf "$WORK"
+          for FILE in native/serve-sim-native.node simduo/serve-sim-duo-hid simax/serve-sim-ax-settings; do
+            if [ ! -f "$DIST/$FILE" ]; then
+              echo "::warning::serve-sim $FILE is not in the package"
+              exit 1
+            fi
+            # Both architectures must be present: the same files ship in the x64 and the arm64 package.
+            lipo "$DIST/$FILE" -verify_arch arm64 x86_64
+            mkdir -p "$WORK/$(dirname "$FILE")"
+            cp -p "$DIST/$FILE" "$WORK/$FILE"
+            codesign --force --options runtime --timestamp \
+              --entitlements build/paradis/computerUse/paradis-computer-use-entitlements.plist \
+              --keychain "$RUNNER_TEMP/buildagent.keychain" --sign "$CODESIGN_IDENTITY" "$WORK/$FILE"
+            codesign --verify --strict --verbose=2 "$WORK/$FILE"
+          done
+          # The host copies the folder and sets the bits itself when they are lost (paradisServeSimDist.ts), but say so here.
+          for FILE in simduo/serve-sim-duo-hid simax/serve-sim-ax-settings; do
+            [ -x "$DIST/$FILE" ] || echo "::warning::serve-sim $FILE lost its executable bit in the package"
+          done
+          (cd "$WORK" && ditto -c -k . "$RUNNER_TEMP/serve-sim-helpers.zip")
+          SUBMIT_JSON="$(xcrun notarytool submit "$RUNNER_TEMP/serve-sim-helpers.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 20m --output-format json)"
+          echo "$SUBMIT_JSON"
+          SUBMISSION_ID="$(node -p 'JSON.parse(process.argv[1]).id' "$SUBMIT_JSON")"
+          SUBMISSION_STATUS="$(node -p 'JSON.parse(process.argv[1]).status' "$SUBMIT_JSON")"
+          if [ "$SUBMISSION_STATUS" != "Accepted" ]; then
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+            echo "::warning::serve-sim helpers were not notarized (status $SUBMISSION_STATUS); shipping without the simulator"
+            exit 1
+          fi
+
+      # serve-sim, step 2 of 2 on failure: take the Mach-O files out of the package and leave a marker that the publish
+      # job turns into one line of the GitHub Release body. The simulator host then reports that serve-sim is missing.
+      - name: Remove the serve-sim helpers that were not notarized
+        if: ${{ steps.serve_sim.outcome == 'failure' }}
+        run: |
+          set -euo pipefail
+          DIST="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app/Contents/Resources/app/out/vs/paradis/contrib/simulator/node/media/serve-sim/dist"
+          rm -f "$DIST/native/serve-sim-native.node" "$DIST/simduo/serve-sim-duo-hid" "$DIST/simax/serve-sim-ax-settings"
+          echo "darwin-${{ matrix.arch }}" > serve-sim-missing.txt
+
+      # sign.ts carries three PARA-PATCHes: empty entitlements for the Computer Use helper, the speech helper and the
+      # serve-sim Mach-O files, and the speech recognition usage description for the speech helper.
       - name: Code sign app (build/darwin/sign.ts, reused as-is — see CLAUDE.md)
         env:
           AGENT_TEMPDIRECTORY: ${{ runner.temp }}
           CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
         run: node build/darwin/sign.ts "$(dirname "$GITHUB_WORKSPACE")"
+
+      # serve-sim: the three Mach-O files in the signed package carry the Developer ID signature with the hardened
+      # runtime (the host process loads serve-sim-native.node, and the Helper has library validation on). A miss
+      # here would also fail the notarization of the app, so it fails the job with a clearer message.
+      - name: Verify the serve-sim helpers are signed
+        if: ${{ steps.serve_sim.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          DIST="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app/Contents/Resources/app/out/vs/paradis/contrib/simulator/node/media/serve-sim/dist"
+          for FILE in native/serve-sim-native.node simduo/serve-sim-duo-hid simax/serve-sim-ax-settings; do
+            INFO="$(codesign -dv --verbose=4 "$DIST/$FILE" 2>&1)"
+            echo "$INFO" | grep -E '^(Authority|TeamIdentifier|CodeDirectory)' || true
+            if ! echo "$INFO" | grep -q '^Authority=Developer ID Application' || ! echo "$INFO" | grep -q 'flags=.*runtime'; then
+              echo "::error::serve-sim $FILE is not signed with Developer ID and the hardened runtime"
+              exit 1
+            fi
+          done
 
       - name: Zip signed app
         run: |
@@ -419,6 +501,14 @@ jobs:
           path: |
             darwin-${{ matrix.arch }}.zip
             darwin-${{ matrix.arch }}.zip.sha256
+          retention-days: 7
+
+      - name: Upload the missing serve-sim marker
+        if: ${{ steps.serve_sim.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: serve-sim-missing-darwin-${{ matrix.arch }}
+          path: serve-sim-missing.txt
           retention-days: 7
 
       - name: Upload the missing speech helper marker
@@ -800,5 +890,13 @@ jobs:
             echo "::warning::Released without the speech helper: $MISSING"
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/release-body.md"
             printf '\n> Dictation is unavailable in this build (%s): the macOS speech helper could not be built.\n' "$MISSING" >> "$RUNNER_TEMP/release-body.md"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release-body.md"
+          fi
+          # A darwin build that shipped without the serve-sim helpers (q.html Q585) gets one line in the release body.
+          SIM_MISSING="$(cat artifacts/serve-sim-missing-darwin-*/serve-sim-missing.txt 2>/dev/null | sort | paste -sd ' ' - || true)"
+          if [ -n "$SIM_MISSING" ]; then
+            echo "::warning::Released without the serve-sim helpers: $SIM_MISSING"
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$RUNNER_TEMP/release-body.md"
+            printf '\n> The new iOS simulator (in development, off by default) is unavailable in this build (%s): its helpers were not notarized.\n' "$SIM_MISSING" >> "$RUNNER_TEMP/release-body.md"
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release-body.md"
           fi
