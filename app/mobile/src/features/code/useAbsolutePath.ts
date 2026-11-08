@@ -21,7 +21,7 @@ const ABSOLUTE_PATH_TIMEOUT_MS = 15_000;
  * - 補足は、スペースのウィンドウが SSH などの接続先なら「接続先 〈名前〉 のパス」、手元なら「PC 上のパス」
  * - 古い PC は項目を薄くして「PC の Para Code を更新すると使えます」、つながっていなければ「PC につながると使えます」
  */
-export function useAbsolutePathOption(codeSpace: CodeSpace): (path: string) => AbsolutePathOption {
+export function useAbsolutePathOption(codeSpace: Pick<CodeSpace, 'pcId' | 'wsId' | 'live'>): (path: string) => AbsolutePathOption {
 	const { pcId, wsId } = codeSpace;
 	const { supported, remoteLabel } = useAppStore(useShallow(s => {
 		const space = wsId !== undefined ? s.workspace?.workspaces.find(candidate => candidate.id === wsId) : undefined;

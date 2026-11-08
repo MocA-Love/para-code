@@ -18,6 +18,7 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { Button } from './button.js';
 import { EmptyState } from './emptyState.js';
 import { ViewerHeader } from './viewerHeader.js';
+import { ModalToastHost } from '../ui/toast.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { haptic } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
@@ -30,6 +31,8 @@ import { useCloseOnAppLock } from '../appLock.js';
 import { lockedModalVisible } from '../appLockPolicy.js';
 import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
 import { MobileOfficeWebView } from '../features/code/fileViewerBody.js';
+import { viewerScriptCspMeta } from '../features/code/fileFind.js';
+import { useViewerPathLinks, type ViewerPathLinkSpace } from '../features/code/useViewerPathLinks.js';
 
 interface FileViewerProps {
 	path: string;
@@ -55,6 +58,16 @@ interface FileViewerProps {
 	backLabel?: string;
 	/** 読み込みに失敗した理由。指定時は本文の代わりに失敗の表示を出す。 */
 	error?: string;
+	/**
+	 * Markdown・HTML のプレビューの中に書かれたパスを押して開く・長押しでコピーする（`useViewerPathLinks.tsx`）。
+	 * 渡すと Markdown のプレビューも、自分のスクリプトだけを許す CSP を付けてスクリプトを有効にする。
+	 */
+	pathLinks?: ViewerPathLinkSpace;
+	/**
+	 * 見出しの戻るだけで呼ぶ処理（パスから開いたファイルを積んでいるときに 1 つ前へ戻る）。無ければ `onClose`。
+	 * シートを下へ払って閉じたときは、積んだものごと `onClose` で閉じる（見た目と状態をずらさない）。
+	 */
+	onBack?: () => void;
 	onClose: () => void;
 }
 
@@ -130,12 +143,15 @@ function buildCodeHtml(result: FsReadResult, focusLine?: number): string {
 </head><body>${body}${focusScript}</body></html>`;
 }
 
-/** markdown のレンダーHTML（PCテーマの背景/前景に合わせた読みやすいスタイル）。DiffViewのレンダーモードと共用。 */
-export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 'fg'>): string {
+/**
+ * markdown のレンダーHTML（PCテーマの背景/前景に合わせた読みやすいスタイル）。DiffViewのレンダーモードと共用。
+ * `nonce` を渡すと、本文に混ざった生の HTML のスクリプトを止める CSP を `<head>` の先頭に置く（スクリプトを有効にするとき用）。
+ */
+export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 'fg'>, nonce?: string): string {
 	const bg = result.bg ?? '#1e1e1e';
 	const fg = result.fg ?? '#d4d4d4';
 	const rendered = marked.parse(result.content, { async: false });
-	return `<!DOCTYPE html><html><head>
+	return `<!DOCTYPE html><html><head>${nonce !== undefined ? viewerScriptCspMeta(nonce) : ''}
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 	body { margin: 0; padding: 16px; background: ${bg}; color: ${fg}; font-family: -apple-system, sans-serif; font-size: 15px; line-height: 1.65; word-wrap: break-word; }
@@ -420,7 +436,7 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 }
 
 
-export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, error, onClose }: FileViewerProps) {
+export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, error, pathLinks, onBack, onClose }: FileViewerProps) {
 	const revival = useWebViewRevival();
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
@@ -480,7 +496,19 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 		);
 	}), []);
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
-	const [mode, setMode] = useState<ViewMode>(kind === 'other' || focusLine !== undefined ? 'code' : 'render');
+	const initialMode: ViewMode = kind === 'other' || focusLine !== undefined ? 'code' : 'render';
+	const [mode, setMode] = useState<ViewMode>(initialMode);
+	// 本文のパスから別のファイルへ移ったら（`pathLinks`）、そのファイルの既定の表示に戻す
+	const [modePath, setModePath] = useState(path);
+	if (modePath !== path) {
+		setModePath(path);
+		setMode(initialMode);
+	}
+	const pathLinkView = pathLinks !== undefined && mode === 'render' && (kind === 'markdown' || kind === 'html');
+	// Markdown のプレビューでパスのリンクを動かすときだけ、CSP の nonce を付けてスクリプトを有効にする
+	const markdownNonce = useMemo(() => (pathLinkView && kind === 'markdown' ? createMobileOfficeNonce() : undefined), [pathLinkView, kind, result]);
+	const webRef = useRef<WebView | null>(null);
+	const links = useViewerPathLinks(pathLinkView ? pathLinks : undefined, webRef);
 
 	const html = useMemo(() => {
 		if (kind === 'spreadsheet') {
@@ -517,12 +545,12 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 			return result.content;
 		}
 		if (mode === 'render' && kind === 'markdown') {
-			return buildMarkdownHtml(result);
+			return buildMarkdownHtml(result, markdownNonce);
 		}
 		return buildCodeHtml(result, focusLine);
-	}, [result, spreadsheetHtml, docxData, mediaData, mode, kind, focusLine, name, officeNonce]);
+	}, [result, spreadsheetHtml, docxData, mediaData, mode, kind, focusLine, name, officeNonce, markdownNonce]);
 
-	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine);
+	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine) || (markdownNonce !== undefined && mode === 'render' && kind === 'markdown');
 	const hasOfficeRenderPayload = (kind === 'spreadsheet' && spreadsheetHtml !== undefined) || (kind === 'docx' && docxData !== undefined);
 	const officeViewState = useMemo(() => ({
 		mode,
@@ -547,7 +575,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					title={path}
 					top={headerTop}
 					backLabel={backLabel}
-					onClose={onClose}
+					onClose={onBack ?? onClose}
 					// 左がプレビュー（差分ビューアと同じ並び・同じ語）。右は「元の文字列」なのでソース。
 					segment={kind === 'markdown' || kind === 'html' ? { options: MODE_OPTIONS, value: mode, onChange: setMode } : undefined}
 					expandable={presentedAsSheet}
@@ -594,12 +622,14 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					// スプレッドシート、Word、検索行ジャンプ付きコードビューも自前スクリプトを実行する。
 					<WebView
 						key={revival.generation}
+						ref={webRef}
 						style={styles.web}
 						source={{ html }}
 						onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 						originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 						javaScriptEnabled={allowJs}
 						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardWebViewNavigation}
+						{...(pathLinkView ? { onLoadEnd: links.onLoadEnd, onMessage: (event: { nativeEvent: { data: string } }) => { links.onMessage(event.nativeEvent.data); } } : {})}
 					/>
 				) : (
 					<View style={styles.loadingBox}>
@@ -607,6 +637,9 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						<Text style={styles.dim}>読み込み中…</Text>
 					</View>
 				)}
+				{links.sheet}
+				{/* パスのリンクの「コピーしました」「見つかりません」をこの Modal の上に出す（ルートのお知らせは Modal の下に隠れる） */}
+				{pathLinks !== undefined ? <ModalToastHost /> : null}
 			</View>
 		</Modal>
 	);

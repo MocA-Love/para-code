@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-07',
 		items: [
 			{
+				icon: 'document-text-outline',
+				title: 'Markdown や HTML のプレビューに書かれたファイルのパスを、押して開けるようにしました',
+				body: '点線の下線が付いたパスを押すと同じスペースのビューアで開き、長押しで名前・相対パス・絶対パスをコピーできます。スペースの外のファイルは開かず、コピーだけできます。',
+			},
+			{
 				icon: 'send-outline',
 				title: 'クイック返信を押したら、そのまま送れるようにしました',
 				body: '設定 →「クイック返信」の「押したらすぐ送る」をオンにすると使えます。書きかけがあるときは今までどおり入力欄の後ろに足すだけで、送りません。',
