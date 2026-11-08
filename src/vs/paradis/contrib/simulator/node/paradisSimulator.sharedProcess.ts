@@ -78,8 +78,10 @@ export function registerParadisSimulator(
 }
 
 /**
- * 今の一覧に無い端末の割り当てを外す（シミュレータの設定を切り替えたとき）。一覧を取れなければ、iOS のシミュレータ
- * （`ios:core-simulator:`）の割り当てだけを外す（受け持つ仕組みが替わり、操作できるかが確かめられないため）。
+ * シミュレータの設定を切り替えたとき、iOS のシミュレータ（`ios:core-simulator:`）の割り当てのうち、今の一覧に無いものを
+ * 外す。一覧を取れなければ iOS のシミュレータの割り当てをすべて外す（受け持つ仕組みが替わり、操作できるかが確かめ
+ * られないため）。Android など iOS のシミュレータでない割り当ては、受け持つ仕組みが替わらないので触らない
+ * （振り分けは Mobile Canvas が失敗しても iOS だけの一覧を返すので、一覧に無いことは消えた証拠にならない）。
  * 外したペインの数を返す。
  */
 export async function paradisDropUnreachableAttachments(ledger: Pick<ParadisMobileCanvasService, 'listAttachments' | 'listDevices' | 'detach'>, logService: ILogService): Promise<number> {
@@ -91,8 +93,10 @@ export async function paradisDropUnreachableAttachments(ledger: Pick<ParadisMobi
 	}
 	let dropped = 0;
 	for (const attachment of ledger.listAttachments()) {
-		const unreachable = known ? !known.has(attachment.deviceId) : attachment.deviceId.startsWith(PARADIS_SIMULATOR_DEVICE_ID_PREFIX);
-		if (unreachable) {
+		if (!attachment.deviceId.startsWith(PARADIS_SIMULATOR_DEVICE_ID_PREFIX)) {
+			continue;
+		}
+		if (!known || !known.has(attachment.deviceId)) {
 			ledger.detach(attachment.paneToken);
 			dropped++;
 		}
