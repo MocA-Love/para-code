@@ -16,6 +16,7 @@
 // 変える操作は毎回、利用者の確認のダイアログで承認されたときだけ行う（q.html の Q590-1、案 2）。
 // 手元の受け口は 127.0.0.1 だけ、リモートのホストは localhost だけにする。
 
+import { PARADIS_EPHEMERAL_PORT_START } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js';
 import { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 
 /** 呼び出し元ペインのウィンドウが shared process へ登録するチャネル（shared process は所有するウィンドウだけへ送る）。 */
@@ -37,12 +38,6 @@ export const PARADIS_PORT_TOOLS_CHANGE_TIMEOUT_MS = 180_000;
 export const PARADIS_PORT_TOOLS_MAX_STOP_PORTS = 100;
 /** ラベルの上限。 */
 export const PARADIS_PORT_TOOLS_LABEL_MAX_LENGTH = 80;
-
-/**
- * 片付け（not_listening）で外す対象の下限。これ以上のリモートの番号（エフェメラル帯）だけを対象にする。
- * 21004 のような決まった番号はサーバーを止めているだけのことが多いので、stop_port_forward で明示したときだけ外す（設計 5 章）。
- */
-export const PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT = 32768;
 
 export type ParadisPortCleanUpMode = 'not_listening' | 'mismatched';
 export type ParadisPortProtocol = 'http' | 'https';
@@ -115,7 +110,7 @@ export const PARADIS_PORT_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	},
 	{
 		name: PARADIS_CLEAN_UP_PORT_FORWARDS_TOOL,
-		description: `Clean up the port forwards of this SSH window. mode "not_listening" (default) stops only the forwards in the ephemeral range (remote port ${PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT} or higher) that the user (or a preview, link or tool) made and whose remote port no process listens on any more. Forwards of fixed ports below ${PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT} (for example 21004) are never stopped here, even when nothing listens on them; stop them with stop_port_forward by naming them. mode "mismatched" forwards again, with the local port number equal to the remote one, every forward whose numbers differ (skipping those whose local port is in use). With dry_run true (the default) it only returns the forwards it would change; call it again with dry_run false to change them. ${CONFIRM_NOTE} ${SSH_ONLY_NOTE}`,
+		description: `Clean up the port forwards of this SSH window. mode "not_listening" (default) stops only the forwards in the ephemeral range (remote port ${PARADIS_EPHEMERAL_PORT_START} or higher) that the user (or a preview, link or tool) made and whose remote port no process listens on any more. Forwards of fixed ports below ${PARADIS_EPHEMERAL_PORT_START} (for example 21004) are never stopped here, even when nothing listens on them; stop them with stop_port_forward by naming them. mode "mismatched" forwards again, with the local port number equal to the remote one, every forward whose numbers differ (skipping those whose local port is in use). With dry_run true (the default) it only returns the forwards it would change; call it again with dry_run false to change them. ${CONFIRM_NOTE} ${SSH_ONLY_NOTE}`,
 		inputSchema: {
 			type: 'object',
 			properties: {
