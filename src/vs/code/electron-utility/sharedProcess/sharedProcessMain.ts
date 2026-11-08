@@ -81,7 +81,8 @@ import { ActiveWindowManager } from '../../../platform/windows/node/windowTracke
 import { ISignService } from '../../../platform/sign/common/sign.js';
 import { SignService } from '../../../platform/sign/node/signService.js';
 import { ISharedTunnelsService } from '../../../platform/tunnel/common/tunnel.js';
-import { SharedTunnelsService } from '../../../platform/tunnel/node/tunnelService.js';
+// PARA-PATCH: the fork's ISharedTunnelsService (replaces upstream's SharedTunnelsService below)
+import { ParadisSharedTunnelsService } from '../../../platform/tunnel/node/paradisSharedTunnelsService.js';
 import { ipcSharedProcessTunnelChannelName, ISharedProcessTunnelService } from '../../../platform/remote/common/sharedProcessTunnelService.js';
 import { SharedProcessTunnelService } from '../../../platform/tunnel/node/sharedProcessTunnelService.js';
 import { IUriIdentityService } from '../../../platform/uriIdentity/common/uriIdentity.js';
@@ -420,7 +421,8 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		const remoteSocketFactoryService = new RemoteSocketFactoryService();
 		services.set(IRemoteSocketFactoryService, remoteSocketFactoryService);
 		remoteSocketFactoryService.register(RemoteConnectionType.WebSocket, nodeSocketFactory);
-		services.set(ISharedTunnelsService, new SyncDescriptor(SharedTunnelsService));
+		// PARA-PATCH: the fork copy of SharedTunnelsService that can also close a tunnel for every window (Ports view "Reforward")
+		services.set(ISharedTunnelsService, new SyncDescriptor(ParadisSharedTunnelsService));
 		services.set(ISharedProcessTunnelService, new SyncDescriptor(SharedProcessTunnelService));
 
 		// Remote Tunnel
