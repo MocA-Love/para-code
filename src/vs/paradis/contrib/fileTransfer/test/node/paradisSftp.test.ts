@@ -16,6 +16,7 @@ import * as os from 'os';
 import type { ParsedKey, Server, SFTPWrapper } from 'ssh2';
 import { VSBuffer, bufferToStream, newWriteableBufferStream } from '../../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { isCancellationError } from '../../../../../base/common/errors.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { join, posix } from '../../../../../base/common/path.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -73,6 +74,9 @@ function generateKeys(ssh2: IServerModule): { private: string; public: string } 
 }
 
 /** 一時フォルダーを根にした SFTP（OpenSSH と同じく rename は上書きしない。posix-rename は無い）。 */
+/** テストのサーバーの書き込みを止める（答えない）。 */
+const paradisTestSftpStall = { writes: false };
+
 function serveSftp(ssh2: IServerModule, sftp: SFTPWrapper, root: string): void {
 	const { STATUS_CODE } = ssh2.utils.sftp;
 	const server = sftp as unknown as {
@@ -126,6 +130,10 @@ function serveSftp(ssh2: IServerModule, sftp: SFTPWrapper, root: string): void {
 		}
 	}));
 	server.on('WRITE', (id: number, handle: Buffer, offset: number, data: Buffer) => guard(id, () => {
+		if (paradisTestSftpStall.writes) {
+			// SSH には答えるのに SFTP の書き込みだけ答えないサーバーの代わり
+			return;
+		}
 		fs.writeSync(fromHandle(handle)!.fd!, data, 0, data.length, offset);
 		server.status(id, STATUS_CODE.OK);
 	}));
@@ -305,7 +313,7 @@ suite('Paradis file transfer - direct SSH (SFTP)', function () {
 	function createFileService(service: ParadisSftpService): { fileService: FileService; provider: ParadisSftpFileSystemProvider } {
 		const channel = new ParadisSftpChannel(service);
 		const client: IChannel = {
-			call: <T>(command: string, arg?: unknown) => channel.call<T>('', command, arg),
+			call: <T>(command: string, arg?: unknown, token?: CancellationToken) => channel.call<T>('', command, arg, token),
 			listen: () => { throw new Error('no events'); },
 		};
 		const provider = disposables.add(new ParadisSftpFileSystemProvider(client));
@@ -397,6 +405,41 @@ suite('Paradis file transfer - direct SSH (SFTP)', function () {
 			await new Promise(resolve => setTimeout(resolve, 300));
 			assert.strictEqual(service.connectionCount, 0);
 		} finally {
+			await server.close();
+		}
+	});
+
+	test('取り消すと、SFTP が答えない書き込みを待たずに返り、閉じるのも待たない。答えない接続は期限で捨てる', async () => {
+		const server = await startServer(ssh2, root, parsedUserKey, 'publickey');
+		try {
+			fs.writeFileSync(join(tmp, 'known_hosts'), `[127.0.0.1]:${server.port} ${server.hostPublicKey}\n`);
+			// 答えない書き込みは、取り消した後も期限で接続ごと捨てる（ここでは 400 ms）
+			const service = disposables.add(new ParadisSftpService({ logService: new NullLogService(), environment, resolveHost: async () => hostConfig(server), handshakeTimeoutMs: 10_000, ioTimeoutMs: 400 }));
+			service.setIdleMs(50);
+			const { provider } = createFileService(service);
+			provider.allowHost('para-test');
+			const temp = paradisSftpUri('para-test', '/home/.paratransfer-stalled');
+
+			const fd = await provider.open(temp, { create: true, unlock: false });
+			paradisTestSftpStall.writes = true;
+			const data = new Uint8Array(64 * 1024);
+			const writing = provider.write(fd, 0, data, 0, data.byteLength);
+			await new Promise(resolve => setTimeout(resolve, 100));
+			provider.cancelIo(temp);
+			const startedAt = Date.now();
+			const cancelled = await writing.then(() => false, error => isCancellationError(error));
+			const returnedQuickly = Date.now() - startedAt < 200;
+			// 取り消した後の要求もすぐに失敗する
+			const laterCancelled = await provider.write(fd, 0, data, 0, data.byteLength).then(() => false, error => isCancellationError(error));
+			await provider.close(fd);
+			paradisTestSftpStall.writes = false;
+
+			const closedQuickly = Date.now() - startedAt < 300;
+
+			await new Promise(resolve => setTimeout(resolve, 800));
+			assert.deepStrictEqual({ cancelled, returnedQuickly, laterCancelled, closedQuickly, connections: service.connectionCount }, { cancelled: true, returnedQuickly: true, laterCancelled: true, closedQuickly: true, connections: 0 });
+		} finally {
+			paradisTestSftpStall.writes = false;
 			await server.close();
 		}
 	});
