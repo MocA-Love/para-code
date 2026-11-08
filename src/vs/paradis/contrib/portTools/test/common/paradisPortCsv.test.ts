@@ -9,12 +9,13 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { paradisImplicitTunnelSource } from '../../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js';
 import { TunnelProtocol } from '../../../../../platform/tunnel/common/tunnel.js';
 import { Tunnel, TunnelSource } from '../../../../../workbench/services/remote/common/tunnelModel.js';
 import { PARADIS_PORT_CSV_COLUMNS, paradisParseCsv, paradisPortCsvExportRows, paradisPortCsvLocalPortsToCheck, paradisPortCsvPlan, paradisPortCsvRead, paradisPortCsvSerialize } from '../../common/paradisPortCsv.js';
-import { paradisDefaultCleanUpForwards, paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisNotListeningUserForwards, paradisPortLocalHostAllowed } from '../../common/paradisPortSelection.js';
+import { paradisDefaultCleanUpForwards, paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisNotListeningForwards, paradisPortLocalHostAllowed } from '../../common/paradisPortSelection.js';
 
-function tunnel(remotePort: number, localPort: number, options: { readonly source?: TunnelSource; readonly listening?: boolean; readonly name?: string; readonly host?: string } = {}): Tunnel {
+function tunnel(remotePort: number, localPort: number, options: { readonly source?: TunnelSource; readonly implicit?: boolean; readonly listening?: boolean; readonly name?: string; readonly host?: string } = {}): Tunnel {
 	return {
 		remoteHost: options.host ?? 'localhost',
 		remotePort,
@@ -28,7 +29,7 @@ function tunnel(remotePort: number, localPort: number, options: { readonly sourc
 		runningProcess: options.listening ? 'node "server.js", --port=1' : undefined,
 		hasRunningProcess: options.listening === true,
 		pid: undefined,
-		source: { source: options.source ?? TunnelSource.User, description: 'User Forwarded' },
+		source: options.implicit ? paradisImplicitTunnelSource(TunnelSource.Extension) : { source: options.source ?? TunnelSource.User, description: 'User Forwarded' },
 	};
 }
 
@@ -106,14 +107,18 @@ suite('ParadisPortCsv', () => {
 			tunnel(45000, 45000, { source: TunnelSource.Auto }),
 			tunnel(50000, 50001, { source: TunnelSource.Extension }),
 			tunnel(51000, 51000, { host: '10.0.0.5' }),
+			tunnel(33400, 33400, { implicit: true }),
+			tunnel(33401, 33401, { implicit: true, listening: true }),
+			tunnel(21099, 21099, { implicit: true }),
+			tunnel(46000, 46001, { implicit: true }),
 		];
 		assert.deepStrictEqual({
-			notListening: paradisNotListeningUserForwards(forwarded).map(item => item.remotePort),
+			notListening: paradisNotListeningForwards(forwarded).map(item => item.remotePort),
 			defaults: paradisDefaultCleanUpForwards(forwarded).map(item => item.remotePort),
 			mismatched: paradisMismatchedForwards(forwarded).map(item => item.remotePort),
 		}, {
-			notListening: [21004, 33355, 32767],
-			defaults: [33355],
+			notListening: [21004, 33355, 32767, 33400, 21099, 46000],
+			defaults: [33355, 33400, 46000],
 			mismatched: [21004],
 		});
 	});

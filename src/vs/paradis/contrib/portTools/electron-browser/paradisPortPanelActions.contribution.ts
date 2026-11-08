@@ -36,6 +36,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IRemoteExplorerService, TUNNEL_VIEW_ID } from '../../../../workbench/services/remote/common/remoteExplorerService.js';
 import { Attributes, Tunnel, TunnelCloseReason, UserTunnelSource } from '../../../../workbench/services/remote/common/tunnelModel.js';
+import { PARADIS_EPHEMERAL_PORT_START, paradisIsEphemeralPort } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js';
 import { isLocalhost, TunnelProtocol } from '../../../../platform/tunnel/common/tunnel.js';
 import { paradisWindowRemoteOfWorkspace } from '../../portReforward/common/paradisPortReforward.js';
 import { IParadisReforwardServices, paradisReforwardTunnel } from '../../portReforward/electron-browser/paradisPortReforwardTunnel.js';
@@ -52,8 +53,7 @@ import {
 	paradisPortCsvRead,
 	paradisPortCsvSerialize,
 } from '../common/paradisPortCsv.js';
-import { paradisIsEphemeralPort, paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisNotListeningUserForwards, paradisPortLocalHostAllowed } from '../common/paradisPortSelection.js';
-import { PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT } from '../common/paradisPortTools.js';
+import { paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisNotListeningForwards, paradisPortLocalHostAllowed } from '../common/paradisPortSelection.js';
 import { IParadisPortDialogRow, ParadisPortDialogTone, paradisShowPortTableDialog } from './paradisPortTableDialog.js';
 
 /** 「転送をすべて張り直す」（portReforward）と同じ群に続けて並べる。 */
@@ -254,7 +254,7 @@ registerAction2(class extends Action2 {
 			services.notificationService.info(localize('paradis.portPanel.cleanUp.noDetection', "この窓はまだ SSH 先で listen しているポートを検出していないため、動いていない転送を判定できません（設定 remote.autoForwardPortsSource が output のときなど）。"));
 			return;
 		}
-		const targets = paradisNotListeningUserForwards(forwardedOf(services)).sort((a, b) => a.remotePort - b.remotePort);
+		const targets = paradisNotListeningForwards(forwardedOf(services)).sort((a, b) => a.remotePort - b.remotePort);
 		if (targets.length === 0) {
 			services.notificationService.info(localize('paradis.portPanel.cleanUp.none', "SSH 先で listen していない転送はありません。"));
 			return;
@@ -262,7 +262,7 @@ registerAction2(class extends Action2 {
 		const others = await otherWindowsOfSameRemote(services);
 		const answer = await paradisShowPortTableDialog(services.layoutService, {
 			title: localize('paradis.portPanel.cleanUp.title', "動いていない転送を外す"),
-			description: localize('paradis.portPanel.cleanUp.description', "SSH 先で listen していない転送 {0} 件。{1} より下の決まった番号はチェックを外しています。", targets.length, PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT),
+			description: localize('paradis.portPanel.cleanUp.description', "SSH 先で listen していない転送 {0} 件。{1} より下の決まった番号はチェックを外しています。", targets.length, PARADIS_EPHEMERAL_PORT_START),
 			columns: [localize('paradis.portPanel.column.remote', "リモート"), localize('paradis.portPanel.column.local', "手元"), localize('paradis.portPanel.column.source', "配信元")],
 			rows: targets.map(tunnel => ({ cells: [String(tunnel.remotePort), tunnel.localAddress, tunnel.source.description], checked: paradisIsEphemeralPort(tunnel.remotePort) })),
 			checkable: true,
