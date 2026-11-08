@@ -158,6 +158,11 @@ export interface IParadisTransferFileSystemOptions {
 	readonly lister?: ParadisTransferDirectoryLister;
 	readonly metadata?: IParadisTransferMetadata;
 	readonly journal?: IParadisTransferJournal;
+	/**
+	 * 取り消したコピーの読み書きを、プロバイダーの先まで取り消す（SFTP は shared process へ送った要求を取り消す）。
+	 * IFileService の読み書きを止めるだけでは、送った要求の答えを待ち続ける。
+	 */
+	readonly cancelIo?: (resource: URI) => void;
 }
 
 export class ParadisFileServiceTransferFileSystem implements IParadisTransferFileSystem {
@@ -374,6 +379,8 @@ export class ParadisFileServiceTransferFileSystem implements IParadisTransferFil
 		});
 		const counted = new ParadisWrittenBytesStream(forward, options.onBytes);
 		const cancelListener = token.onCancellationRequested(() => {
+			this.options.cancelIo?.(source);
+			this.options.cancelIo?.(destination);
 			sourceStream.destroy();
 			forward.error(new CancellationError());
 			forward.end();

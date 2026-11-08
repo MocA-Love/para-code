@@ -8,6 +8,7 @@
 
 import assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { basename, joinPath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -53,6 +54,22 @@ class NoTempProvider extends InMemoryFileSystemProvider {
 	}
 }
 
+/** 書き込みを止めておける接続先（書いている途中に取り消すため）。 */
+class HeldWriteProvider extends InMemoryFileSystemProvider {
+	readonly writing = new DeferredPromise<void>();
+	readonly release = new DeferredPromise<void>();
+	override async write(fd: number, pos: number, data: Uint8Array, offset: number, length: number): Promise<number> {
+		this.writing.complete();
+		await this.release.p;
+		return super.write(fd, pos, data, offset, length);
+	}
+	override async writeFile(resource: URI, content: Uint8Array, opts: Parameters<InMemoryFileSystemProvider['writeFile']>[2]): Promise<void> {
+		this.writing.complete();
+		await this.release.p;
+		return super.writeFile(resource, content, opts);
+	}
+}
+
 /** 権限のチャネルの代わり。送り先（vscode-remote）と送り元（file）の情報を差し替えられ、chmod と rename を記録する。 */
 class FakeMetadata implements IParadisTransferMetadata {
 	/** 送り先の情報。`undefined` は「古い REH で読めない」、Error は一時的な失敗。 */
@@ -91,7 +108,7 @@ suite('Paradis file transfer - IFileService adapter', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(providers: { source?: InMemoryFileSystemProvider; target?: InMemoryFileSystemProvider } = {}) {
+	function setup(providers: { source?: InMemoryFileSystemProvider; target?: InMemoryFileSystemProvider } = {}, cancelIo?: (resource: URI) => void) {
 		const fileService = store.add(new FileService(new NullLogService()));
 		store.add(fileService.registerProvider('file', store.add(providers.source ?? new InMemoryFileSystemProvider())));
 		store.add(fileService.registerProvider('vscode-remote', store.add(providers.target ?? new InMemoryFileSystemProvider())));
@@ -100,6 +117,7 @@ suite('Paradis file transfer - IFileService adapter', () => {
 		const fileSystem = new ParadisFileServiceTransferFileSystem(fileService, {
 			metadata,
 			journal: { add: uri => journal.push(`+${paradisIsTransferTempName(basename(uri))}`), remove: uri => journal.push(`-${paradisIsTransferTempName(basename(uri))}`) },
+			cancelIo,
 		});
 		return { fileService, fileSystem, metadata, journal };
 	}
@@ -307,6 +325,23 @@ suite('Paradis file transfer - IFileService adapter', () => {
 		const result = await fileSystem.copyFile(source, joinPath(REMOTE_DIR, 'data.bin'), options(true, () => { }, cancellation.token)).then(() => 'resolved', () => 'rejected');
 		cancellation.dispose();
 		assert.deepStrictEqual({ result, left: await names(fileService, REMOTE_DIR) }, { result: 'rejected', left: [] });
+	});
+
+	test('cancelling while writing cancels the requests already sent for the source and the temporary file', async () => {
+		const target = new HeldWriteProvider();
+		const cancelledIo: string[] = [];
+		const { fileService, fileSystem } = setup({ target }, resource => cancelledIo.push(resource.scheme === 'file' ? 'source' : paradisIsTransferTempName(basename(resource)) ? 'temp' : basename(resource)));
+		const source = URI.file('/work/data.bin');
+		await fileService.writeFile(source, VSBuffer.fromString('abc'));
+		await fileService.createFolder(REMOTE_DIR);
+		const cancellation = new CancellationTokenSource();
+		const copying = fileSystem.copyFile(source, joinPath(REMOTE_DIR, 'data.bin'), options(true, () => { }, cancellation.token)).then(() => 'resolved', () => 'rejected');
+		await target.writing.p;
+		cancellation.cancel();
+		target.release.complete();
+		const result = await copying;
+		cancellation.dispose();
+		assert.deepStrictEqual({ result, cancelledIo, left: await names(fileService, REMOTE_DIR) }, { result: 'rejected', cancelledIo: ['source', 'temp'], left: [] });
 	});
 
 	test('removeForReplace removes a folder with its content', async () => {
