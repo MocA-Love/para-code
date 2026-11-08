@@ -29,6 +29,10 @@ export interface IParadisSimulatorClient {
 	sendInput(udid: string, input: ParadisSimulatorInput): Promise<void>;
 	fold(udid: string, fold: { readonly pose: string } | { readonly hinge: number }): Promise<{ readonly ok: boolean }>;
 	deviceHubActive(udid: string): Promise<boolean>;
+	/** Device Hub のアプリが起動しているか（iPhone Duo の開閉の前提）。 */
+	deviceHubRunning(): Promise<boolean>;
+	/** Device Hub を裏で起動する。 */
+	openDeviceHub(): Promise<void>;
 	/** 映像の購読。最後の購読が外れると shared process は流れを止める。届いた 1 枚ごとに {@link ackFrame} を呼ぶこと。 */
 	onFrames(udid: string): Event<IParadisSimulatorFrameEvent>;
 	ackFrame(udid: string): Promise<void>;
@@ -67,6 +71,12 @@ export class ParadisSimulatorChannelClient implements IParadisSimulatorClient {
 	}
 	deviceHubActive(udid: string): Promise<boolean> {
 		return this._channel.call('deviceHubActive', { udid });
+	}
+	deviceHubRunning(): Promise<boolean> {
+		return this._channel.call('deviceHubRunning');
+	}
+	openDeviceHub(): Promise<void> {
+		return this._channel.call('openDeviceHub');
 	}
 	onFrames(udid: string): Event<IParadisSimulatorFrameEvent> {
 		return this._channel.listen('frames', { udid });

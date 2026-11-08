@@ -272,10 +272,10 @@ suite('Paradis simulator: mobile_fold', () => {
 		});
 	});
 
-	function provider(attachment: IParadisMobileAttachment | undefined, enabled = true) {
+	function provider(attachment: IParadisMobileAttachment | undefined, enabled = true, deviceHubRunning = true) {
 		const { host, backend } = setup();
 		const forgotten: string[] = [];
-		const fold = new ParadisSimulatorFoldToolProvider({ getAttachment: () => attachment }, backend as unknown as ParadisServeSimBackend, host, id => forgotten.push(id), () => enabled, undefined);
+		const fold = new ParadisSimulatorFoldToolProvider({ getAttachment: () => attachment }, backend as unknown as ParadisServeSimBackend, host, id => forgotten.push(id), () => enabled, undefined, { isRunning: async () => deviceHubRunning });
 		return { fold, backend, forgotten };
 	}
 	const attachment: IParadisMobileAttachment = { paneToken: 'pane-a', deviceId: ID, deviceName: 'iPhone Duo', stateKey: undefined, attachedAt: 0 };
@@ -292,6 +292,11 @@ suite('Paradis simulator: mobile_fold', () => {
 		refusedDuo.backend.config = { width: 2007, height: 2853, orientation: 'portrait', hingeDegrees: 180 };
 		refusedDuo.backend.foldAccepted = false;
 		const refused = textOf(await refusedDuo.fold.callTool('pane-a', 'mobile_fold', { pose: 'book' }));
+		// Device Hub が起動していないと断られる（Mac で実測）。起動の案内を返す（エージェントからは起動しない）
+		const noHubDuo = provider(attachment, true, false);
+		noHubDuo.backend.config = { width: 2007, height: 2853, orientation: 'portrait', hingeDegrees: 180 };
+		noHubDuo.backend.foldAccepted = false;
+		const noHub = textOf(await noHubDuo.fold.callTool('pane-a', 'mobile_fold', { pose: 'book' }));
 		const none = textOf(await provider(undefined).fold.callTool('pane-a', 'mobile_fold', { pose: 'open' }));
 		const off = provider(attachment, false);
 		assert.deepStrictEqual({
@@ -300,6 +305,7 @@ suite('Paradis simulator: mobile_fold', () => {
 			both: both.isError,
 			notFoldable: [notFoldable.isError, notFoldable.content[0].text.includes('not a foldable')],
 			refused: [refused.isError, refused.content[0].text.includes('Device Hub')],
+			noHub: [noHub.isError, noHub.content[0].text.startsWith('Device Hub is not running')],
 			none: [none.isError, none.content[0].text.includes('No mobile device is attached')],
 			hiddenWhenOff: off.fold.listTools().length,
 			otherTool: await duo.fold.callTool('pane-a', 'mobile_tap', {}),
@@ -310,6 +316,7 @@ suite('Paradis simulator: mobile_fold', () => {
 			both: true,
 			notFoldable: [true, true],
 			refused: [true, true],
+			noHub: [true, true],
 			none: [true, true],
 			hiddenWhenOff: 0,
 			otherTool: undefined,
