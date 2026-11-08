@@ -48,6 +48,9 @@ export interface IParaTunnelProtocol {
  * after a long wait is now reset instead. That is the behaviour we want here —
  * the alternative is the connection that never answers and never errors, which is
  * what this exists to remove.
+ *
+ * {@link paraConnectTunnelWithRetry} softens this by trying once more after a timeout,
+ * so a request is reset only when two attempts in a row run out of time.
  */
 export const PARA_TUNNEL_CONNECT_TIMEOUT = 20_000;
 
@@ -111,6 +114,37 @@ export function paraConnectTunnelWithTimeout<T extends IParaTunnelProtocol>(
 			reject(err);
 		});
 	});
+}
+
+/**
+ * {@link paraConnectTunnelWithTimeout}, retried once when the first attempt times out.
+ *
+ * The usual reason the handshake runs out of time is a remote under load or a management
+ * connection that is being re-established, and both tend to clear within seconds. Giving up
+ * after a single attempt turns every connection made during that window into a reset, so the
+ * forwarded port looks dead for as long as the load lasts. One more attempt is made with a fresh
+ * `connect()` call, which also asks the address provider again and so picks up the address a
+ * reconnect has just published. Only a timeout is retried: any other failure means the remote
+ * answered and refused, and trying again would only delay the error.
+ *
+ * The retry is bounded to one so that a remote that never answers still ends in a reset after
+ * at most twice the timeout, instead of reintroducing the connection that never answers.
+ */
+export async function paraConnectTunnelWithRetry<T extends IParaTunnelProtocol>(
+	connect: () => Promise<T>,
+	target: string,
+	logService: ILogService,
+	timeoutMs: number = PARA_TUNNEL_CONNECT_TIMEOUT
+): Promise<T> {
+	try {
+		return await paraConnectTunnelWithTimeout(connect, target, logService, timeoutMs);
+	} catch (err) {
+		if (!(err instanceof ParaTunnelConnectTimeoutError)) {
+			throw err;
+		}
+		logService.warn(`[ParaTunnel] Retrying the tunnel to ${target} once after the first attempt timed out.`);
+		return paraConnectTunnelWithTimeout(connect, target, logService, timeoutMs);
+	}
 }
 
 /**

@@ -16,7 +16,7 @@ import { NullLogService } from '../../../log/common/log.js';
 import { IAddress, IConnectionOptions } from '../../../remote/common/remoteAgentConnection.js';
 import { IRemoteSocketFactoryService } from '../../../remote/common/remoteSocketFactoryService.js';
 import { IMessage, ISignService } from '../../../sign/common/sign.js';
-import { IParaTunnelProtocol, ParaTunnelConnectTimeoutError, paraConnectTunnelWithTimeout } from '../../common/paraTunnelConnect.js';
+import { IParaTunnelProtocol, ParaTunnelConnectTimeoutError, paraConnectTunnelWithRetry, paraConnectTunnelWithTimeout } from '../../common/paraTunnelConnect.js';
 import { NodeRemoteTunnel } from '../../node/tunnelService.js';
 
 /**
@@ -94,6 +94,49 @@ suite('paraConnectTunnelWithTimeout', () => {
 
 		pending.error(new Error('remote refused, eventually'));
 		await pending.p.then(() => undefined, () => undefined);
+	});
+});
+
+suite('paraConnectTunnelWithRetry', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const logService = new NullLogService();
+
+	test('retries once after a timeout and returns the second attempt', async () => {
+		const late = new DeferredPromise<RecordingProtocol>();
+		const second = new RecordingProtocol();
+		const attempts: Promise<RecordingProtocol>[] = [late.p, Promise.resolve(second)];
+		let calls = 0;
+		const result = await paraConnectTunnelWithRetry(() => attempts[calls++], 'localhost:3000', logService, 1);
+
+		// The first attempt arriving after its timeout is closed, not handed out.
+		const first = new RecordingProtocol();
+		late.complete(first);
+		await late.p;
+		await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+		assert.deepStrictEqual(
+			{ calls, result: result === second, secondDisposed: second.disposed, firstDisposed: first.disposed },
+			{ calls: 2, result: true, secondDisposed: false, firstDisposed: true }
+		);
+	});
+
+	test('rejects with the timeout when the retry times out too', async () => {
+		let calls = 0;
+		const err = await paraConnectTunnelWithRetry(() => { calls++; return new DeferredPromise<RecordingProtocol>().p; }, 'localhost:3000', logService, 1)
+			.then(() => undefined, e => e);
+
+		assert.deepStrictEqual({ calls, timedOut: err instanceof ParaTunnelConnectTimeoutError }, { calls: 2, timedOut: true });
+	});
+
+	test('does not retry a failure that is not a timeout', async () => {
+		const failure = new Error('remote refused');
+		let calls = 0;
+		const err = await paraConnectTunnelWithRetry(() => { calls++; return Promise.reject(failure); }, 'localhost:3000', logService, 5000)
+			.then(() => undefined, e => e);
+
+		assert.deepStrictEqual({ calls, same: err === failure }, { calls: 1, same: true });
 	});
 });
 
