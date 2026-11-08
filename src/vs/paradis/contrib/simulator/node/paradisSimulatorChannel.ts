@@ -24,6 +24,7 @@ import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulator
 import { paradisParseSimulatorFold, paradisSimulatorInputFrame } from '../common/paradisSimulatorFrames.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
+import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 
 const MIN_FRAME_INTERVAL_MS = 1000 / 30;
 
@@ -112,6 +113,7 @@ export class ParadisSimulatorService extends Disposable {
 		private readonly _isEnabled: () => boolean,
 		private readonly _supported: boolean,
 		private readonly _logService: ILogService,
+		private readonly _deviceHub: Pick<ParadisSimulatorDeviceHub, 'isRunning' | 'open'> = new ParadisSimulatorDeviceHub(),
 	) {
 		super();
 		this._register({ dispose: () => { for (const relay of this._relays.values()) { relay.dispose(); } this._relays.clear(); } });
@@ -164,6 +166,18 @@ export class ParadisSimulatorService extends Disposable {
 	async fold(udid: string, fold: unknown): Promise<{ ok: boolean }> {
 		this.assertAvailable();
 		return { ok: await this._backend.fold(udid, paradisParseSimulatorFold(fold)) };
+	}
+
+	/** Device Hub のアプリが起動しているか（開閉の前提）。 */
+	deviceHubRunning(): Promise<boolean> {
+		this.assertAvailable();
+		return this._deviceHub.isRunning();
+	}
+
+	/** Device Hub を裏で起動する（利用者がペインのボタンを押したとき）。 */
+	openDeviceHub(): Promise<void> {
+		this.assertAvailable();
+		return this._deviceHub.open();
 	}
 
 	deviceHubActive(udid: string): Promise<boolean> {
@@ -251,6 +265,10 @@ export class ParadisSimulatorChannel<TContext> implements IServerChannel<TContex
 				return await this._service.sendInput(requireUdidArg(arg), argField(arg, 'input')) as T;
 			case 'fold':
 				return await this._service.fold(requireUdidArg(arg), argField(arg, 'fold')) as T;
+			case 'deviceHubRunning':
+				return await this._service.deviceHubRunning() as T;
+			case 'openDeviceHub':
+				return await this._service.openDeviceHub() as T;
 			case 'deviceHubActive':
 				return await this._service.deviceHubActive(requireUdidArg(arg)) as T;
 			case 'ackFrame':
