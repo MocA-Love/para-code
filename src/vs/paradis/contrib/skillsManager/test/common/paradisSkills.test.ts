@@ -12,12 +12,13 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IFileService, IReadFileOptions, IResolveMetadataFileOptions } from '../../../../../platform/files/common/files.js';
+import { IFileService, IReadFileStreamOptions, IResolveMetadataFileOptions } from '../../../../../platform/files/common/files.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import {
 	IParadisSkillHost,
+	PARADIS_SKILL_FILE_DISPLAY_LIMIT,
 	paradisDeleteSkill,
 	paradisInstallSkill,
 	paradisIsSafeSkillFolderName,
@@ -98,12 +99,12 @@ suite('paradisSkills', () => {
 		const counting = {
 			resolve: (resource: URI, options?: IResolveMetadataFileOptions) => fileService.resolve(resource, options),
 			realpath: (resource: URI) => fileService.realpath(resource),
-			readFile: async (resource: URI, options?: IReadFileOptions) => {
+			readFileStream: async (resource: URI, options?: IReadFileStreamOptions) => {
 				reads.now++;
 				reads.max = Math.max(reads.max, reads.now);
 				try {
 					await new Promise(resolve => setTimeout(resolve, 5));
-					return await fileService.readFile(resource, options);
+					return await fileService.readFileStream(resource, options);
 				} finally {
 					reads.now--;
 				}
@@ -111,6 +112,19 @@ suite('paradisSkills', () => {
 		} as Partial<IFileService> as IFileService;
 		const listing = await paradisListSkills(counting, claude);
 		assert.deepStrictEqual({ skills: listing.skills.map(skill => skill.name), overlapped: reads.max > 1 }, { skills: ['a', 'b', 'c', 'd', 'e'], overlapped: true });
+	});
+
+	test('reads only the head of SKILL.md, not the whole file', async () => {
+		const { fileService, write } = setup(store.add(new DisposableStore()));
+		const [claude] = paradisPlanSkillRoots({ host: LOCAL, projects: [] });
+		await write(joinPath(claude.uri, 'big', 'SKILL.md'), '---\nname: big\n---\n' + 'x'.repeat(PARADIS_SKILL_FILE_DISPLAY_LIMIT));
+		// readFile は length を渡しても全体を読むので、使ったら落とす
+		const headOnly = new Proxy(fileService, {
+			get: (target, key) => key === 'readFile' ? () => Promise.reject(new Error('readFile reads the whole file')) : Reflect.get(target, key),
+		});
+		const [skill] = (await paradisListSkills(headOnly, claude)).skills;
+		const { text, truncated } = await paradisReadSkillFile(headOnly, skill);
+		assert.deepStrictEqual({ name: skill.name, length: text.length, truncated }, { name: 'big', length: PARADIS_SKILL_FILE_DISPLAY_LIMIT, truncated: true });
 	});
 
 	test('installs a skill onto another host and refuses to overwrite without consent', async () => {
