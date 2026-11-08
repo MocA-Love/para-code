@@ -9,6 +9,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisExactBrowserViewDescriptor, IParadisPaneBinding } from '../../common/paradisAgentBrowser.js';
 import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
+import { ParadisCodexFrontSessions } from '../../common/paradisCodexFrontSession.js';
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler, paradisBindingMatchesGeneration, paradisBindingsForMissingPages, paradisBrowserViewIdsWereRemoved } from '../../common/paradisBrowserBindingLifecycle.js';
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
@@ -746,6 +747,7 @@ function createServiceFixture(generation: number): {
 		_userTurnStarts: new Map<string, number>(),
 		_announcedReviews: new Map<string, { turn: number; certain: boolean }>(),
 		_paneSessions: new Map(),
+		_codexFrontSessions: new ParadisCodexFrontSessions(),
 		_activityApprovalTokens: new Set(),
 		_elicitationWaits: new Map(),
 		_awaitingUserTokens: new Set<string>(),
