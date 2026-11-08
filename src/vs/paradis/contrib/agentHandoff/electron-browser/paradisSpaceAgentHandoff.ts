@@ -18,6 +18,7 @@ import { isLinux } from '../../../../base/common/platform.js';
 import { extUri, extUriIgnorePathCase } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
@@ -34,6 +35,7 @@ export interface IParadisSpaceAgentHandoffServices extends IParadisAgentPromptSe
 	readonly quickInputService: IQuickInputService;
 	readonly notificationService: INotificationService;
 	readonly worktreeService: IParadisWorktreeService;
+	readonly clipboardService: IClipboardService;
 }
 
 /** `accessor` は await の前でしか使えないので、処理の先頭で呼ぶ。 */
@@ -43,6 +45,7 @@ export function paradisSpaceAgentHandoffServices(accessor: ServicesAccessor): IP
 		quickInputService: accessor.get(IQuickInputService),
 		notificationService: accessor.get(INotificationService),
 		worktreeService: accessor.get(IParadisWorktreeService),
+		clipboardService: accessor.get(IClipboardService),
 	};
 }
 
@@ -117,7 +120,12 @@ export async function paradisHandOffToSpaceAgent(services: IParadisSpaceAgentHan
 	}
 	const outcome = await paradisDeliverAgentPrompt(services, ws, space.uri, request.prompt, picked.target, () => { });
 	if (!outcome.ok) {
-		notificationService.notify({ severity: Severity.Warning, message: outcome.error });
+		// 届ける処理の文はスマホ向けの言い回し（「PC で確かめて」など）なので、PC では code から言い直す。
+		// 送れなかった依頼文は、手で貼れるようにコピーの口を付ける
+		notificationService.prompt(Severity.Warning, paradisPcDeliveryError(outcome.code, outcome.consumed) ?? outcome.error, [{
+			label: localize('paradis.agentHandoff.copyPrompt', "送る内容をコピー"),
+			run: () => services.clipboardService.writeText(request.prompt),
+		}]);
 		return false;
 	}
 	notificationService.notify({
@@ -127,4 +135,31 @@ export async function paradisHandOffToSpaceAgent(services: IParadisSpaceAgentHan
 			: localize('paradis.agentHandoff.sent', "「{0}」へ送りました。", outcome.title ?? ''),
 	});
 	return true;
+}
+
+/** 届ける処理の失敗（`code`）を PC の利用者向けの文にする。知らない code は undefined（元の文を出す）。 */
+export function paradisPcDeliveryError(code: string, consumed: boolean | undefined): string | undefined {
+	switch (code) {
+		case 'not-agent':
+			return localize('paradis.agentHandoff.error.notAgent', "選んだターミナルではエージェントが動いていません。");
+		case 'busy':
+			return localize('paradis.agentHandoff.error.busy', "エージェントが作業中か、許可や質問への答えを待っています。終わってから送るか、新しいエージェントで送ってください。");
+		case 'parked':
+		case 'not-running':
+			return localize('paradis.agentHandoff.error.notReady', "選んだターミナルでエージェントが入力を待っていることを確かめられませんでした。ターミナルを開いて確かめるか、新しいエージェントで送ってください。");
+		case 'changed':
+			return consumed
+				? localize('paradis.agentHandoff.error.changedPasted', "貼り付けた後にエージェントの状態が変わったため、送信（Enter）はしていません。ターミナルの入力欄を確かめてください。")
+				: localize('paradis.agentHandoff.error.changed', "送る直前にエージェントの状態が変わったため、送っていません。");
+		case 'timeout':
+			return localize('paradis.agentHandoff.error.timeout', "エージェントの起動に時間がかかっています。起動したかをターミナルで確かめてください（まだ送っていません）。");
+		case 'launched-not-ready':
+			return localize('paradis.agentHandoff.error.launchedNotReady', "新しいエージェントは起動しましたが、入力を待つ状態になったことを確かめられなかったため、まだ送っていません。ターミナルを確かめてから、もう一度送ってください。");
+		case 'trust-dialog':
+			return localize('paradis.agentHandoff.error.trustDialog', "起動したエージェントが、このフォルダを信頼するかを確かめています。ターミナルで答えてから、もう一度送ってください（まだ送っていません）。");
+		case 'no-agent':
+			return localize('paradis.agentHandoff.error.noAgent', "起動できるエージェントが設定されていません。設定の「paradis.workspaceSwitch.agents」を確かめてください。");
+		default:
+			return undefined;
+	}
 }
