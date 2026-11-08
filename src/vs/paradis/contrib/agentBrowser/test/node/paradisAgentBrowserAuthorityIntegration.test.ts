@@ -27,6 +27,7 @@ import { paradisOpenCodeCliRegistry } from '../../node/paradisOpenCodeCliRegistr
 import { ParadisAgentHookOwnership } from '../../node/paradisAgentHookOwnership.js';
 import { ParadisCodexFrontSessions } from '../../common/paradisCodexFrontSession.js';
 import { PARADIS_CODEX_COMMAND_CENTER_HOOKS, PARADIS_CODEX_COMMAND_CENTER_SESSIONS } from './paradisCodexCommandCenterHooksFixture.js';
+import { PARADIS_CODEX_SUBAGENT_HOOKS, PARADIS_CODEX_SUBAGENT_SESSIONS } from './paradisCodexSubagentHooksFixture.js';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
@@ -961,6 +962,51 @@ suite('ParadisAgentBrowser authority integration', () => {
 					'SessionStart:B', 'UserPromptSubmit:B', 'Stop:B',
 					'SessionStart:OLD', 'UserPromptSubmit:OLD', 'Stop:OLD',
 					'UserPromptSubmit:A', 'Stop:A',
+				],
+			});
+		} finally {
+			listener.dispose();
+		}
+	});
+
+	// Codex 0.167.0 の子エージェントの hook（実物の記録: paradisCodexSubagentHooksFixture.ts）。子の hook は親の会話の
+	// session_id で届くので、子の UserPromptSubmit も含めてペインの会話は親のまま動かない。
+	test('a Codex pane stays on the parent conversation while a sub-agent runs (recorded on 0.167.0)', async () => {
+		const { send, paneSession, status } = await codexPaneFixture();
+		const names: Readonly<Record<string, string>> = { [PARADIS_CODEX_SUBAGENT_SESSIONS.PARENT]: 'parent', [PARADIS_CODEX_SUBAGENT_SESSIONS.CHILD]: 'child' };
+		const published: string[] = [];
+		const listener = onParadisAgentHookEvent(event => {
+			if (event.token === 'codex-switch') {
+				published.push(`${event.event}:${names[event.sessionId ?? ''] ?? '?'}`);
+			}
+		});
+		try {
+			const steps: string[] = [];
+			for (const hook of PARADIS_CODEX_SUBAGENT_HOOKS) {
+				await send('codex-switch', 200, hook.event, hook.payload);
+				steps.push(`${hook.from} ${hook.event} pane=${names[(await paneSession('codex-switch')) ?? ''] ?? 'none'} ${await status('codex-switch')}`);
+			}
+			assert.deepStrictEqual({ steps, published }, {
+				steps: [
+					'parent SessionStart pane=parent idle',
+					'parent UserPromptSubmit pane=parent working',
+					'parent PreToolUse pane=parent working',
+					'parent PostToolUse pane=parent working',
+					'child-boundary SubagentStart pane=parent working',
+					// the sub-agent's first message arrives as a UserPromptSubmit with the parent's session_id
+					'child UserPromptSubmit pane=parent working',
+					'parent PreToolUse pane=parent working',
+					'child PreToolUse pane=parent working',
+					'child PostToolUse pane=parent working',
+					// the sub-agent ends with SubagentStop, not Stop: the pane keeps working until the parent's Stop
+					'child-boundary SubagentStop pane=parent working',
+					'parent PostToolUse pane=parent working',
+					'parent Stop pane=parent review',
+				],
+				published: [
+					'SessionStart:parent', 'UserPromptSubmit:parent', 'PreToolUse:parent', 'PostToolUse:parent',
+					'SubagentStart:parent', 'UserPromptSubmit:parent', 'PreToolUse:parent', 'PreToolUse:parent', 'PostToolUse:parent',
+					'SubagentStop:parent', 'PostToolUse:parent', 'Stop:parent',
 				],
 			});
 		} finally {
