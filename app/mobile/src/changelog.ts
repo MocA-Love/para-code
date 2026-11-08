@@ -59,6 +59,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: 'モデルのシートで選ぶほか、入力欄に「/model claude-mythos-5-1」と打っても切り替わります。PC の Claude Code のモデルの一覧に無い名前は送りません。',
 			},
 			{
+				icon: 'server-outline',
+				title: 'SSH で繋いだ先のスペースでは、モデルのシートに繋いだ先の Claude Code で選べるモデルが並ぶようにしました',
+				body: '同じ PC の手元のスペースと SSH のスペースで、モデルの一覧が混ざらなくなります。PC の Para Code を更新すると使えます。',
+			},
+			{
 				icon: 'phone-portrait-outline',
 				title: '「範囲を選んでコピー…」のお知らせを、クイック返信の帯の位置に帯で出し、選んでいる発言に重ならないようにしました',
 				body: 'ファイルのビューアは、表示の幅を書いていない HTML を端末の幅で描き、文字が小さくなりすぎないようにしました。',

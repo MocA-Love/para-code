@@ -21,10 +21,10 @@ import { Event } from '../../../../base/common/event.js';
 import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
-import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { IParadisRunAgentCliOptions, IParadisRunAgentCliResult, paradisDetachedAgentCliEnv, paradisResolveAgentCli, paradisRunAgentCli } from '../../../node/paradisAgentCli.js';
 import { ParadisCodexRpcMethodNotFoundError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
@@ -34,7 +34,6 @@ import {
 	IParadisAgentModelCatalog,
 	IParadisClaudeEffortSettings,
 	IParadisDiscoveredModel,
-	PARADIS_AGENT_MODEL_CATALOG_CHANNEL,
 	PARADIS_CLAUDE_MODEL_LIST_ARGS,
 	PARADIS_CLAUDE_MODEL_LIST_STDIN,
 	PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG,
@@ -187,15 +186,15 @@ function publicCatalog(entry: ICachedCatalog): IParadisAgentModelCatalog {
 	return { agentId: entry.agentId, cliVersion: entry.cliVersion, models: entry.models, fetchedAt: entry.fetchedAt };
 }
 
-export class ParadisAgentModelCatalogChannel implements IServerChannel<string> {
+export class ParadisAgentModelCatalogChannel<TContext = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisAgentModelCatalogService) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: string, command: string): Promise<T> {
+	call<T>(_ctx: TContext, command: string): Promise<T> {
 		if (command === 'getCatalogs') {
 			return this.service.getCatalogs() as Promise<T>;
 		}
@@ -363,11 +362,16 @@ export function createParadisAgentModelCatalogBackend(userDataPath: string, getE
 	};
 }
 
-ParadisSharedProcessContributions.register('agentModelCatalog', ({ server, accessor }) => {
+/**
+ * このプロセスのマシンにある CLI から一覧を取るチャネルを作る。手元（shared process）と SSH の接続先（REH）の
+ * 両方の登録口から呼ぶ。キャッシュはそのプロセスのユーザーデータに置き、PATH はそのマシンのログインシェルから取る。
+ * `accessor` は登録口の中で同期的に使うこと。
+ */
+export function paradisCreateAgentModelCatalogChannel<TContext>(accessor: ServicesAccessor): ParadisAgentModelCatalogChannel<TContext> {
 	const logService = accessor.get(ILogService);
 	const configurationService = accessor.get(IConfigurationService);
 	const environmentService = accessor.get(INativeEnvironmentService);
 	const shellEnv = new ParadisCachedShellEnv(logService, 'ParadisAgentModelCatalog', createParadisShellEnvResolver(logService, configurationService, environmentService.args));
 	const service = new ParadisAgentModelCatalogService(createParadisAgentModelCatalogBackend(environmentService.userDataPath, () => shellEnv.getEnv(), logService), logService);
-	server.registerChannel(PARADIS_AGENT_MODEL_CATALOG_CHANNEL, new ParadisAgentModelCatalogChannel(service));
-});
+	return new ParadisAgentModelCatalogChannel<TContext>(service);
+}

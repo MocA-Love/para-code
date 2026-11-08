@@ -2,15 +2,17 @@
 
 import { useCallback, useSyncExternalStore } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { agentModelOptions, claudeModelOptionsFromAgents, type AgentModelOption } from '../agentModels.js';
+import { agentModelOptions, claudeModelCatalogKey, claudeModelOptionsFromAgents, type AgentModelOption } from '../agentModels.js';
 import { useAppStore } from '../appState.js';
 
 /**
  * チャットのモデル選択で使う Claude の候補。PC がインストール済みの Claude Code から取った一覧を
- * `worktreeForm`（agentsOnly）で取り、PC ごとに覚えておく。取れるまでと取れないときは固定表を使う。
+ * `worktreeForm`（agentsOnly）で取り、PC とスペースの組ごとに覚えておく（`claudeModelCatalogKey`）。スペースを渡すと
+ * そのスペースを開いている PC の画面に聞くので、SSH のスペースでは接続先の Claude Code の一覧になる。
+ * 取れるまでと取れないときは固定表を使う。
  *
  * PC 側も CLI を起こすのは版が変わったときだけだが、ここでも取りに行くのはシートを開いたときだけにし、
- * 同じ PC へは 5 分に1回までにする（旧 PC は agentsOnly を知らずリポジトリごとの git まで動かすため）。
+ * 同じ PC のスペースへは 5 分に1回までにする（旧 PC は agentsOnly を知らずリポジトリごとの git まで動かすため）。
  * 使える一覧が来なかったとき（PC が CLI から取り直している途中など）だけは 30 秒で聞き直す。
  */
 
@@ -37,34 +39,35 @@ function getVersion(): number {
 	return version;
 }
 
-function publish(pcId: string, entry: CatalogEntry): void {
-	catalogs.set(pcId, entry);
+function publish(key: string, entry: CatalogEntry): void {
+	catalogs.set(key, entry);
 	version++;
 	for (const listener of [...listeners]) {
 		listener();
 	}
 }
 
-export function useClaudeModelOptions(agent: string | undefined): { readonly options: readonly AgentModelOption[]; readonly request: () => void } {
+export function useClaudeModelOptions(agent: string | undefined, ws?: string): { readonly options: readonly AgentModelOption[]; readonly request: () => void } {
 	const { pcId, worktreeForm } = useAppStore(useShallow(s => ({ pcId: s.activePcId, worktreeForm: s.worktreeForm })));
 	useSyncExternalStore(subscribe, getVersion);
-	const entry = pcId !== undefined ? catalogs.get(pcId) : undefined;
+	const key = pcId !== undefined ? claudeModelCatalogKey(pcId, ws) : undefined;
+	const entry = key !== undefined ? catalogs.get(key) : undefined;
 	const request = useCallback(() => {
-		if (agent !== 'claude' || pcId === undefined || inFlight.has(pcId)) {
+		if (agent !== 'claude' || key === undefined || inFlight.has(key)) {
 			return;
 		}
-		const current = catalogs.get(pcId);
+		const current = catalogs.get(key);
 		if (current !== undefined && Date.now() - current.fetchedAt < (current.options !== undefined ? REFRESH_INTERVAL_MS : RETRY_INTERVAL_MS)) {
 			return;
 		}
-		inFlight.add(pcId);
-		worktreeForm({ agentsOnly: true }).then(result => {
-			publish(pcId, { fetchedAt: Date.now(), options: claudeModelOptionsFromAgents(result.agents) });
+		inFlight.add(key);
+		worktreeForm({ agentsOnly: true, ...(ws !== undefined && ws.length > 0 ? { ws } : {}) }).then(result => {
+			publish(key, { fetchedAt: Date.now(), options: claudeModelOptionsFromAgents(result.agents) });
 		}, () => {
 			// 取れなければ固定表のまま。次にシートを開いたときに取り直す
 		}).finally(() => {
-			inFlight.delete(pcId);
+			inFlight.delete(key);
 		});
-	}, [agent, pcId, worktreeForm]);
+	}, [agent, key, ws, worktreeForm]);
 	return { options: agentModelOptions(agent, agent === 'claude' ? entry?.options : undefined), request };
 }
