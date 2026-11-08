@@ -18,7 +18,13 @@ import { ContextKeyValue } from '../../../../../platform/contextkey/common/conte
 import { MockKeybindingService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
 import { InMemoryStorageService } from '../../../../../platform/storage/common/storage.js';
 import { setupTerminalMenus } from '../../../../../workbench/contrib/terminal/browser/terminalMenus.js';
-import '../../electron-browser/paradisTerminalContextMenu.contribution.js';
+import { mainWindow } from '../../../../../base/browser/window.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { TerminalCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
+import { PromptInputState } from '../../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
+import { ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { IParadisAgentStatusStore } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { PARADIS_TERMINAL_AGENT_RUNNING, ParadisTerminalContextMenuContribution } from '../../electron-browser/paradisTerminalContextMenu.contribution.js';
 
 suite('Paradis terminal context menu (menus)', () => {
 
@@ -87,5 +93,36 @@ suite('Paradis terminal context menu (menus)', () => {
 			],
 			file: [],
 		});
+	});
+
+	test('hides the agent section on the next right-click after the agent exits, without waiting for an event', () => {
+		// claude が動いている最中のターミナル。hook の実績はある
+		const state = { executingCommand: 'claude' as string | undefined, prompt: PromptInputState.Execute };
+		const commandDetection = {
+			get executingCommand() { return state.executingCommand; },
+			promptInputModel: { get state() { return state.prompt; }, onDidStartInput: Event.None },
+			onCommandExecuted: Event.None,
+		};
+		const instance = { instanceId: 7, capabilities: { get: (capability: TerminalCapability) => capability === TerminalCapability.CommandDetection ? commandDetection : undefined } } as unknown as ITerminalInstance;
+		const multiplexer = { event: Event.None, dispose: () => { } };
+		const activeChanged = store.add(new Emitter<ITerminalInstance | undefined>());
+		const terminalService = {
+			activeInstance: instance,
+			onDidChangeActiveInstance: activeChanged.event,
+			createOnInstanceCapabilityEvent: () => multiplexer,
+		} as unknown as ITerminalService;
+		const agentStatusStore = { onDidChangeAgentStatuses: Event.None, isAgentInstance: (id: number) => id === 7 } as unknown as IParadisAgentStatusStore;
+		const contextKeyService = store.add(new ContextKeyService(new TestConfigurationService()));
+		store.add(new ParadisTerminalContextMenuContribution(terminalService, agentStatusStore, contextKeyService));
+		const running = () => contextKeyService.getContextKeyValue<boolean>(PARADIS_TERMINAL_AGENT_RUNNING.key);
+		const whileRunning = running();
+
+		// `exit` でシェルへ戻った。知らせは来ない（取りこぼした）まま、右クリックする
+		state.executingCommand = undefined;
+		state.prompt = PromptInputState.Input;
+		const beforeRightClick = running();
+		mainWindow.document.body.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+
+		assert.deepStrictEqual({ whileRunning, beforeRightClick, afterRightClick: running() }, { whileRunning: true, beforeRightClick: true, afterRightClick: false });
 	});
 });
