@@ -29,8 +29,8 @@ import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultS
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
-import { IParadisMobileAttachment } from '../../mobileCanvas/common/paradisMobileCanvas.js';
-import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
+import { IParadisMobileAttachment } from '../../simulator/common/paradisMobileCanvas.js';
+import { IParadisMobileCanvasModel } from '../../simulator/electron-browser/paradisMobileCanvasModel.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { setParadisHoveredPaneInstanceId } from '../browser/paradisPaneIndicator.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';

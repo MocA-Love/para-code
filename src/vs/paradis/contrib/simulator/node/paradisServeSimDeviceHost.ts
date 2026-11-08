@@ -6,9 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// iOS のシミュレータについて、Mobile Canvas ホストの REST（`/api/v1/devices/...`）と同じ道に、serve-sim と simctl で
-// 答える（q.html Q585 の ③、案A）。mobile_* の 17 本のツールは今のまま（paradisMobileCanvasService.ts・
-// paradisMobileDeviceOpsToolProvider.ts）で、ホストへの要求だけが paradisMobileHostRouter.ts でこちらへ回る。
+// iOS のシミュレータについて、端末の口（`/api/v1/devices/...` の道。もとは Mobile Canvas ホストの REST の形）に、
+// serve-sim と simctl で答える（q.html Q585 の ③、案A）。mobile_* の 17 本のツール（paradisDeviceLedger.ts・
+// paradisSimulatorDeviceOps.ts）の端末への要求が、振り分け（paradisSimulatorDeviceRouter.ts）でこちらへ回る。
 //
 // 端末の id と項目は Mobile Canvas の iOS の端末と同じ形（`ios:core-simulator:<udid>`、platform は `ios`、state は
 // `booted` のように小文字。2026-11-08 に Mac の mobile_list_devices で確かめた）。
@@ -23,7 +23,7 @@ import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_ORIENTATIONS, ParadisSimulatorOrientation, paradisResolveSimulatorButton, paradisSimulatorButtonNames, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
 import { paradisFindSimulatorAx, paradisMarkTypedSimulatorField, paradisNormalizeSimulatorAx, paradisPickSimulatorAxTarget, paradisSimulatorFieldValues, IParadisSimulatorAxSnapshot } from '../common/paradisSimulatorAx.js';
-import { paradisPngSize } from '../../mobileCanvas/common/paradisMobileDeviceOps.js';
+import { paradisPngSize } from '../common/paradisMobileDeviceOps.js';
 import { paradisSimulatorButtonFrame, paradisSimulatorKeyFrame, paradisSimulatorMultiTouchFrame, paradisSimulatorRotateFrame, paradisSimulatorTouchFrame } from '../common/paradisSimulatorFrames.js';
 import { paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';

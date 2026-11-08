@@ -34,10 +34,10 @@ import './contrib/workspaceSwitch/electron-browser/paradisAgentStatus.contributi
 import './contrib/workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisAddRepositoryFlow.contribution.js';
 // モバイル端末⇔ターミナルペインのアタッチUIが使うモデル（registerSingletonを起動時に確実に走らせる）
-import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
-import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasLifecycle.contribution.js';
+import './contrib/simulator/electron-browser/paradisMobileCanvasModel.js';
+import './contrib/simulator/electron-browser/paradisMobileCanvasLifecycle.contribution.js';
 // エージェントの「この端末を使いたい」を承認ダイアログで受ける（B13）
-import './contrib/mobileCanvas/electron-browser/paradisMobileDeviceRequest.contribution.js';
+import './contrib/simulator/electron-browser/paradisMobileDeviceRequest.contribution.js';
 // シミュレータの作り直し（q.html Q585）: エディタのペイン・タブの復元・「シミュレータを開く」・開発用のコマンド
 import './contrib/simulator/electron-browser/paradisSimulator.contribution.js';
 import './contrib/browserButton/electron-browser/paradisOpenBrowserButton.contribution.js';

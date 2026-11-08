@@ -73,7 +73,5 @@ import './contrib/terminalSpaceHistory/browser/paradisTerminalSpaceHistory.contr
 import './contrib/terminalTabStatus/browser/paradisTerminalTabStatus.contribution.js';
 import './contrib/agentChat/browser/paradisAgentChatSettings.contribution.js';
 import './contrib/computerUse/browser/paradisComputerUseSettings.contribution.js';
-// シミュレータの作り直し（q.html Q585）の設定。既定オフ
-import './contrib/simulator/browser/paradisSimulatorSettings.contribution.js';
 import './contrib/taskBoard/browser/paradisTaskBoardSettings.contribution.js';
 import './contrib/findWidget/browser/paradisFindWidget.contribution.js';

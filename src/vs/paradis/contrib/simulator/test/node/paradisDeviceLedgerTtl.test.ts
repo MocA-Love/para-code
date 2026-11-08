@@ -7,8 +7,8 @@ import assert from 'assert';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ParadisMobileCanvasHostClient } from '../../node/paradisMobileCanvasHostClient.js';
-import { ParadisMobileCanvasService } from '../../node/paradisMobileCanvasService.js';
+import { ParadisMobileCanvasService } from '../../node/paradisDeviceLedger.js';
+import { IParadisMobileHostRequester } from '../../node/paradisSimulatorDeviceOps.js';
 
 const IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
@@ -18,8 +18,8 @@ suite('ParadisMobileCanvasService attachment ledger TTL', () => {
 
 	teardown(() => sinon.restore());
 
-	function fakeHostClient(devices: readonly { id: string }[] = [{ id: 'device-1' }]): ParadisMobileCanvasHostClient {
-		return { request: async () => devices } as unknown as ParadisMobileCanvasHostClient;
+	function fakeHostClient(devices: readonly { id: string }[] = [{ id: 'device-1' }]): IParadisMobileHostRequester {
+		return { request: async () => devices } as unknown as IParadisMobileHostRequester;
 	}
 
 	function createService(devices?: readonly { id: string }[]): ParadisMobileCanvasService {

@@ -27,8 +27,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay } from '../common/paradisMobileCanvas.js';
 import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
-import { ParadisMobileCanvasUnavailableError } from './paradisMobileCanvasHostClient.js';
-import { IParadisMobileDeviceLedger, IParadisMobileHostRequester } from './paradisMobileDeviceOpsToolProvider.js';
+import { IParadisMobileDeviceLedger, IParadisMobileHostRequester } from './paradisSimulatorDeviceOps.js';
 
 /** MCPツールが返す標準形。`isError` を立てるとエージェント側で失敗として扱われる。 */
 interface IToolResult {
@@ -314,9 +313,6 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		try {
 			return await this._callTool(paneToken, name, record, signal);
 		} catch (error) {
-			if (error instanceof ParadisMobileCanvasUnavailableError) {
-				return errorResult(`${toMessage(error)} Mobile Canvas needs Xcode for iOS simulators, or the Android SDK (emulator/adb on PATH) for Android emulators.`);
-			}
 			return errorResult(toMessage(error));
 		}
 	}
@@ -390,18 +386,21 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 			}
 			case 'mobile_type_text': {
 				const text = requireString(args, 'text');
-				await this._hostClient.request('POST', `/api/v1/devices/${id}/input/text`, { text }, signal);
+				// 入れ方の知らせ（例: 端末のクリップボードを戻せなかった。シミュレータの作り直し ⑥b）があれば結果に添える
+				const typedResponse = await this._hostClient.request('POST', `/api/v1/devices/${id}/input/text`, { text }, signal);
+				const typedNote = typedResponse && typeof typedResponse === 'object' && typeof (typedResponse as { note?: unknown }).note === 'string' ? (typedResponse as { note: string }).note : undefined;
 				// IMEが打った文字を別物へ変換していることがある（英字を打ったつもりでかなになる等）。
 				// 呼び出し側がもう1往復しなくても気づけるよう、入力欄の実際の値を読み返して返す。
 				const focused = await this._readFocusedValue(id, signal);
 				if (focused === undefined) {
-					return textResult(`Typed ${text.length} characters into ${attachment.deviceName}. Could not read the field back to confirm what it now contains.`);
+					return textResult(`Typed ${text.length} characters into ${attachment.deviceName}. Could not read the field back to confirm what it now contains.${typedNote ? ` ${typedNote}` : ''}`);
 				}
 				return jsonResult({
 					typed: text,
 					fieldValue: focused.value,
 					fieldLabel: focused.label,
 					matchesWhatWasTyped: focused.value === text,
+					...(typedNote ? { note: typedNote } : {}),
 				});
 			}
 			case 'mobile_press_button': {

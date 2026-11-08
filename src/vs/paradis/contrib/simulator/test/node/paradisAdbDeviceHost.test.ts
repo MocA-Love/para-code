@@ -11,13 +11,13 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { PARADIS_ADB_NOT_FOUND, ParadisAdbDeviceHost } from '../../node/android/paradisAdbDeviceHost.js';
+import { PARADIS_ADB_NOT_FOUND, ParadisAdbDeviceHost, paradisPasteKeepingClipboard } from '../../node/android/paradisAdbDeviceHost.js';
 
 const SDK = '/Users/example/Library/Android/sdk';
 const ADB = `${SDK}/platform-tools/adb`;
 const EMULATOR = `${SDK}/emulator/emulator`;
 
-function setup(options: { files?: string[]; running?: boolean; now?: () => number } = {}) {
+function setup(options: { files?: string[]; running?: boolean; now?: () => number; sleep?: (ms: number) => Promise<void>; scrcpy?: ConstructorParameters<typeof ParadisAdbDeviceHost>[0]['scrcpy'] } = {}) {
 	const calls: string[] = [];
 	const launched: string[] = [];
 	const files = new Set(options.files ?? [ADB, EMULATOR]);
@@ -27,6 +27,8 @@ function setup(options: { files?: string[]; running?: boolean; now?: () => numbe
 		platform: 'darwin',
 		home: '/Users/example',
 		now: options.now,
+		scrcpy: options.scrcpy,
+		sleep: options.sleep,
 		exists: async path => files.has(path),
 		launch: (file, args) => launched.push([file, ...args].join(' ')),
 		exec: async (file, args) => {
@@ -126,5 +128,70 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 	test('explains how to install adb when it is missing', async () => {
 		const { host } = setup({ files: [] });
 		assert.deepStrictEqual(await host.listDevices().then(() => 'listed', (error: Error) => error.message), PARADIS_ADB_NOT_FOUND);
+	});
+
+	// 2 本指と日本語は scrcpy の操作のソケットで送る（⑥b）。座標はポイント → 画面の画素 → scrcpy の映像の画素
+	test('sends pinches and non-ASCII text through scrcpy', async () => {
+		const sent: string[] = [];
+		const clipboard: string[] = [];
+		const { host } = setup({
+			sleep: async () => { },
+			scrcpy: {
+				use: async (serial, run) => run({
+					size: { width: 540, height: 1200 },
+					send: async (message: Uint8Array) => { sent.push(`${serial} ${Buffer.from(message).toString('hex')}`); },
+					getClipboard: async () => 'user text',
+					setClipboard: async (text: string, paste: boolean) => { clipboard.push(`${paste ? 'paste' : 'set'} ${text}`); },
+				} as never),
+			},
+		});
+		await host.request('POST', `/api/v1/devices/${SERIAL_ID}/input/touch`, { x: 100, y: 200, phase: 'down', fingerId: 1 });
+		const typed = await host.request('POST', `/api/v1/devices/${SERIAL_ID}/input/text`, { text: 'あ' });
+		assert.deepStrictEqual({ sent, clipboard, typed }, {
+			sent: [
+				// エージェントの指は人の指（0）と重ならない id（100 + 指の番号）。100pt x 3 = 300px → 映像は半分なので 150、200pt → 600px → 300
+				`emulator-5554 0200${'0000000000000065'}${'00000096'}${'0000012c'}${'021c'}${'04b0'}ffff${'00000000'}${'00000000'}`,
+			],
+			// 利用者のクリップボードを読んでから貼り、貼り終わったら戻す
+			clipboard: ['paste あ', 'set user text'],
+			typed: { method: 'paste', clipboardRestored: true },
+		});
+	});
+
+	// クリップボードが読めない（空）・戻せないときは黙らず、mobile_type_text の結果に出す知らせを返す
+	test('says when the device clipboard could not be kept', async () => {
+		const run = async (previous: string | undefined, restoreFails: boolean) => {
+			const calls: string[] = [];
+			const result = await paradisPasteKeepingClipboard({
+				getClipboard: async () => previous,
+				setClipboard: async (text: string, paste: boolean) => {
+					calls.push(`${paste ? 'paste' : 'set'} ${text}`);
+					if (!paste && restoreFails) {
+						throw new Error('no ack');
+					}
+				},
+			}, 'あ', async () => { });
+			return { calls, restored: result.clipboardRestored, note: result.note?.slice(0, 40) };
+		};
+		assert.deepStrictEqual({ empty: await run(undefined, false), failed: await run('user text', true) }, {
+			empty: { calls: ['paste あ', 'set '], restored: false, note: 'Para Code could not read the device clip' },
+			failed: { calls: ['paste あ', 'set user text'], restored: false, note: 'Para Code could not put the previous dev' },
+		});
+
+		// 貼る側の返事（ACK）が時間切れでも、戻しは試し、その結果を添えて失敗として返す
+		const calls: string[] = [];
+		const timedOut = await paradisPasteKeepingClipboard({
+			getClipboard: async () => 'user text',
+			setClipboard: async (text: string, paste: boolean) => {
+				calls.push(`${paste ? 'paste' : 'set'} ${text}`);
+				if (paste) {
+					throw new Error('The Android device did not confirm the clipboard change in time');
+				}
+			},
+		}, 'あ', async () => { }).then(() => 'pasted', (error: Error) => error.message);
+		assert.deepStrictEqual({ calls, timedOut }, {
+			calls: ['paste あ', 'set user text'],
+			timedOut: 'The Android device did not confirm the clipboard change in time. The text may still have been pasted on the device: check the screen (mobile_ui_snapshot or mobile_screenshot) before typing it again. The previous device clipboard was put back.',
+		});
 	});
 });
