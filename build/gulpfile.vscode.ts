@@ -40,6 +40,8 @@ import { generateNodeCompileCache, shouldGenerateNodeCompileCache } from './lib/
 import { shouldGenerateParadisNodeCompileCache } from './lib/paradisNodeCompileCache.ts';
 // PARA-PATCH: Computer Use helper app, embedded into Contents/Helpers of local macOS packages (see build/paradis/computerUse/embedHelper.ts).
 import { paradisComputerUseHelperPackageTask } from './paradis/computerUse/embedHelper.ts';
+// PARA-PATCH: dictation speech helper, embedded into Contents/Helpers of local macOS packages (see build/paradis/speech/buildHelper.ts).
+import { paradisSpeechHelperPackageTask } from './paradis/speech/buildHelper.ts';
 // PARA-PATCH: Sentry release name stamped into product.json (see build/lib/paradisReleaseChannel.ts).
 import { getParadisSentryReleaseFromEnv } from './lib/paradisReleaseChannel.ts';
 
@@ -721,7 +723,9 @@ BUILD_TARGETS.forEach(buildTarget => {
 			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
 			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName),
 			// PARA-PATCH: build and embed the Computer Use helper (macOS local builds only; CI uses its own steps, failures only warn).
-			paradisComputerUseHelperPackageTask(platform, path.join(buildRoot, destinationFolderName, `${product.nameLong}.app`))
+			paradisComputerUseHelperPackageTask(platform, path.join(buildRoot, destinationFolderName, `${product.nameLong}.app`)),
+			// PARA-PATCH: build and embed the dictation speech helper (macOS local builds only; CI uses its own steps, failures only warn).
+			paradisSpeechHelperPackageTask(platform, path.join(buildRoot, destinationFolderName, `${product.nameLong}.app`))
 		];
 
 		if (platform === 'win32') {
