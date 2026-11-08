@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { appendQuickReply, nextAttentionAgent, pinnedQuestionIndex, quickReplyTapAction, shouldShowQuickReplies } from './agentConversationUx.js';
+import { appendQuickReply, nextAttentionAgent, pinnedQuestionIndex, QUOTE_REPLY_LIMIT, quickReplyTapAction, quoteReplyText, shouldShowQuickReplies } from './agentConversationUx.js';
 
 describe('shouldShowQuickReplies', () => {
 	const base = { agentStatus: 'done', working: false, hasPinnedCard: false, chatReady: true, answering: false };
@@ -94,5 +94,24 @@ describe('nextAttentionAgent', () => {
 	it('reports nothing when no other agent is waiting', () => {
 		expect(nextAttentionAgent([terminals[2]!], 'c')).toEqual({ count: 0, next: undefined });
 		expect(nextAttentionAgent(undefined, 'c')).toEqual({ count: 0, next: undefined });
+	});
+});
+
+describe('quoteReplyText', () => {
+	it('quotes each line and keeps the draft in front', () => {
+		expect([
+			quoteReplyText('', '一行目\r\n\n三行目'),
+			quoteReplyText('書きかけ  ', 'ok'),
+			quoteReplyText('そのまま', '   '),
+		]).toStrictEqual([
+			'> 一行目\n>\n> 三行目\n\n',
+			'書きかけ\n\n> ok\n\n',
+			'そのまま',
+		]);
+	});
+
+	it('clips long messages', () => {
+		const text = quoteReplyText('', 'あ'.repeat(QUOTE_REPLY_LIMIT + 5));
+		expect(text).toBe(`> ${'あ'.repeat(QUOTE_REPLY_LIMIT)}…\n\n`);
 	});
 });

@@ -39,6 +39,9 @@ import { useReviewMarksController } from '../../../../src/features/code/useRevie
 import { useReviewNotesController } from '../../../../src/features/code/useReviewNotes.js';
 import { useScmStatus } from '../../../../src/features/code/useScmData.js';
 import { useStageFile } from '../../../../src/features/code/useScmSync.js';
+import { contextMenuOps } from '../../../../src/components/copyActions.js';
+import { buildFileMenu } from '../../../../src/features/code/pathMenu.js';
+import { useAbsolutePathOption } from '../../../../src/features/code/useAbsolutePath.js';
 
 /**
  * 差分レビュー（`/pc/[pcId]/review/[spaceId]?path=…`）。Orca の MobileDiffReview に合わせ、
@@ -148,6 +151,12 @@ export default function ReviewScreen() {
 			router.push(fileViewerHref(codeSpace.pcId, codeSpace.spaceId, path));
 		}
 	};
+
+	// 見出しのパスの長押しのメニュー（消したファイルは「ファイルを開く」を出さない）
+	const absolutePath = useAbsolutePathOption(codeSpace);
+	const pathMenu = path !== undefined
+		? buildFileMenu({ path, dir: false, absolute: absolutePath(path) }, { ...contextMenuOps(), ...(canOpenWorkingFile(entry) ? { open: openFile } : {}) })
+		: undefined;
 
 	const openNotes = () => {
 		// 送っていないメモを選んでおく（送った後にまた開いたときは、そのとき未送信のものを選び直す）
@@ -346,6 +355,7 @@ export default function ReviewScreen() {
 								path={path}
 								stats={stats}
 								state={reviewState}
+								menu={pathMenu}
 								{...(stageFile.enabled && entry !== undefined && entry.kind !== 'conflict'
 									? { stage: { busy: stageFile.pending.has(entry.path) || staging, disabled: !codeSpace.live, onPress: () => void toggleStageCurrent() } }
 									: {})}
