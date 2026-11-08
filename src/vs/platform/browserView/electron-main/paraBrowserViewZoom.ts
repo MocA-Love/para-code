@@ -25,6 +25,7 @@
 import * as electron from 'electron';
 import type { WebContents } from 'electron';
 import { promises as fs } from 'fs';
+import { homedir } from 'os';
 import { join } from '../../../base/common/path.js';
 import { paraBrowserViewShrinkLayout } from '../common/paraBrowserViewShrinkLayout.js';
 
@@ -44,6 +45,7 @@ export interface IParaBrowserZoomIsolator {
 
 /** 縮め方の分かれ道を main のログへ書く口（`browserViewEmulator.ts` の logService）。 */
 export interface IParaBrowserViewZoomLog {
+	trace(message: string): void;
 	info(message: string): void;
 	warn(message: string): void;
 }
@@ -72,7 +74,7 @@ interface IZoomState {
 	watchedWindow: Electron.BaseWindow | undefined;
 	/** 分かれ道を書くログ（表示サイズを固定したときに emulator から受け取る）。 */
 	log: IParaBrowserViewZoomLog | undefined;
-	/** 最後に書いた縮め方（同じものを続けて書かない。リサイズのたびに呼ばれるため）。 */
+	/** 最後に書いた縮め方の種類（種類が変わったときだけ書く。sash のドラッグで倍率だけ変わるときは書かない）。 */
 	loggedMode: string | undefined;
 }
 
@@ -163,9 +165,9 @@ function logIsolation(webContents: WebContents, state: IZoomState, result: true 
 		return;
 	}
 	if (result === true) {
-		state.log.info(`${LOG_PREFIX} tab ${webContents.id}: isolated its zoom from the site; a fixed size is shrunk by page zoom`);
+		state.log.trace(`${LOG_PREFIX} tab ${webContents.id}: isolated its zoom from the site; a fixed size is shrunk by page zoom`);
 	} else {
-		state.log.warn(`${LOG_PREFIX} tab ${webContents.id}: could not isolate its zoom (${result}); a fixed size stays shrunk by the emulation scale, so clicks on rounded or overlapping cross-process iframes can miss`);
+		state.log.warn(`${LOG_PREFIX} tab ${webContents.id}: could not isolate its zoom (${paraRedactPaths(result)}); a fixed size stays shrunk by the emulation scale, so clicks on rounded or overlapping cross-process iframes can miss`);
 	}
 }
 
@@ -182,7 +184,7 @@ function isolate(webContents: WebContents, state: IZoomState): Promise<ParaIsola
 				if (state.isolating === attempt) {
 					state.isolating = undefined;
 				}
-				state.log?.info(`${LOG_PREFIX} tab ${webContents.id}: the page navigated while its zoom was being isolated; isolating it again`);
+				state.log?.trace(`${LOG_PREFIX} tab ${webContents.id}: the page navigated while its zoom was being isolated; isolating it again`);
 				return 'stale';
 			}
 			state.isolating = undefined;
@@ -240,12 +242,12 @@ export interface IParaBrowserViewEmulationRequest {
 }
 
 /** 選んだ縮め方をログへ書く（前と同じなら書かない）。 */
-function logMode(webContents: WebContents, state: IZoomState, mode: string): void {
-	if (!state.log || state.loggedMode === mode) {
+function logMode(webContents: WebContents, state: IZoomState, kind: 'none' | 'emulation' | 'zoom', detail: string): void {
+	if (!state.log || state.loggedMode === kind) {
 		return;
 	}
-	state.loggedMode = mode;
-	state.log.info(`${LOG_PREFIX} tab ${webContents.id}: ${mode}`);
+	state.loggedMode = kind;
+	state.log.info(`${LOG_PREFIX} tab ${webContents.id}: ${detail}`);
 }
 
 /**
@@ -263,7 +265,7 @@ export function paraBrowserViewEmulationParams(webContents: WebContents, request
 	if (nearlyOne(request.pageScale)) {
 		// 縮める必要が無い（エディタが表示サイズ以上）。拡大率も使わない
 		paraSetBrowserViewEmulationZoom(webContents, 1);
-		logMode(webContents, state, 'not shrunk (the editor fits the fixed size)');
+		logMode(webContents, state, 'none', 'not shrunk (the editor fits the fixed size)');
 		return scaleByEmulation();
 	}
 	if (!state.isolated) {
@@ -272,13 +274,13 @@ export function paraBrowserViewEmulationParams(webContents: WebContents, request
 			paraSetBrowserViewEmulationZoom(webContents, 1);
 		}
 		void isolate(webContents, state);
-		logMode(webContents, state, `${request.width}x${request.height} shrunk by the emulation scale ${request.pageScale.toFixed(3)} until the tab's zoom is isolated`);
+		logMode(webContents, state, 'emulation', `${request.width}x${request.height} shrunk by the emulation scale ${request.pageScale.toFixed(3)} until the tab's zoom is isolated`);
 		return scaleByEmulation();
 	}
 	const { viewSize, zoom } = paraBrowserViewShrinkLayout(request.width, request.height, request.pageScale);
 	paraSetBrowserViewEmulationZoom(webContents, zoom);
 	const targetPixelRatio = request.deviceScaleFactor ?? watchDisplayScaleFactor(webContents, state);
-	logMode(webContents, state, `${request.width}x${request.height} shrunk by page zoom ${zoom.toFixed(3)} (view ${viewSize.width}x${viewSize.height}, devicePixelRatio ${targetPixelRatio})`);
+	logMode(webContents, state, 'zoom', `${request.width}x${request.height} shrunk by page zoom ${zoom.toFixed(3)} (view ${viewSize.width}x${viewSize.height}, devicePixelRatio ${targetPixelRatio})`);
 	return {
 		screenPosition,
 		screenSize: size,
@@ -401,13 +403,13 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 			// 開いてあったページが壊れていた（拡張機能のプロセスが落ちた・外された）ときは、開き直して 1 回だけ試し直す
 			for (let attempt = 0; ; attempt++) {
 				const reused = this.page !== undefined;
-				this.page ??= this.openPageOverride ? this.openPageOverride() : this.open();
-				const page = await this.page;
+				const pagePromise = this.page ??= this.openPageOverride ? this.openPageOverride() : this.open();
+				const page = await pagePromise;
 				if (webContents.isDestroyed()) {
 					return 'the tab was closed';
 				}
 				if (!page || page.contents.isDestroyed()) {
-					this.dropPage(page);
+					this.dropPage(pagePromise, page);
 					if (reused && attempt === 0) {
 						continue;
 					}
@@ -417,11 +419,11 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 					settled = await page.contents.executeJavaScript(`(async () => { if (typeof chrome === 'undefined' || !chrome.tabs || typeof chrome.tabs.setZoomSettings !== 'function') { return 'chrome.tabs.setZoomSettings is not available'; } try { await chrome.tabs.setZoomSettings(${webContents.id}, { mode: 'automatic', scope: 'per-tab' }); return true; } catch (error) { return 'chrome.tabs.setZoomSettings: ' + String(error && error.message || error); } })()`);
 					break;
 				} catch (error) {
-					this.dropPage(page);
+					this.dropPage(pagePromise, page);
 					if (attempt === 0) {
 						continue;
 					}
-					return `the zoom helper page failed: ${error instanceof Error ? error.message : String(error)}`;
+					return `the zoom helper page failed: ${paraRedactPaths(error instanceof Error ? error.message : String(error))}`;
 				}
 			}
 		} finally {
@@ -440,8 +442,11 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 	}
 
 	/** 壊れたページを捨てる（次は開き直す）。 */
-	private dropPage(page: IParaBrowserZoomHelperPage | undefined): void {
-		this.page = undefined;
+	private dropPage(pagePromise: Promise<IParaBrowserZoomHelperPage | undefined>, page: IParaBrowserZoomHelperPage | undefined): void {
+		// 待っている間にほかの試みが開き直したページは外さない
+		if (this.page === pagePromise) {
+			this.page = undefined;
+		}
 		page?.dispose();
 	}
 
@@ -465,7 +470,7 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 				if (/temporary session/i.test(message)) {
 					this.unsupported = true;
 				}
-				this.openFailure = `loading the zoom helper extension failed: ${message}`;
+				this.openFailure = `loading the zoom helper extension failed: ${paraRedactPaths(message)}`;
 				return undefined;
 			}
 		}
@@ -486,9 +491,28 @@ class ParaBrowserZoomHelper implements IParaBrowserZoomIsolator {
 			return page;
 		} catch (error) {
 			page.dispose();
-			this.openFailure = `opening the zoom helper page failed: ${error instanceof Error ? error.message : String(error)}`;
+			this.openFailure = `opening the zoom helper page failed: ${paraRedactPaths(error instanceof Error ? error.message : String(error))}`;
 			return undefined;
 		}
+	}
+}
+
+/** ログに出す文から、利用者名を含みうるパス（userData・ホーム）を伏せる。 */
+function paraRedactPaths(message: string): string {
+	let redacted = message;
+	for (const [path, label] of [[safePath(() => electron.app.getPath('userData')), '<userData>'], [safePath(() => homedir()), '~']] as const) {
+		if (path && path.length > 1) {
+			redacted = redacted.split(path).join(label);
+		}
+	}
+	return redacted;
+}
+
+function safePath(read: () => string): string | undefined {
+	try {
+		return read();
+	} catch {
+		return undefined;
 	}
 }
 
