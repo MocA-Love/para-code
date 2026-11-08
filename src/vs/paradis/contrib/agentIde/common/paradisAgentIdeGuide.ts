@@ -11,13 +11,14 @@
 // ガイドの本文を実行中のアプリが返すので、アプリとガイドの版がずれない。
 // 文面はエージェントが読むので英語にする（既存の MCP ツールの説明と同じ）。
 
+import { PARADIS_TAB_ID_PREFIX } from '../../tabId/common/paradisTabId.js';
 import { PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE, PARADIS_AGENT_IDE_MAX_CREATED_PER_CALLER, PARADIS_AGENT_IDE_MAX_SPACES_PER_CALLER, PARADIS_AGENT_IDE_TOOL_GUIDE } from './paradisAgentIde.js';
 
 /**
  * MCP の `initialize` の `instructions` に足す短い説明。CLI は接続のたびに読むので短く保つ。
  * ブラウザ共有の説明はサーバー（ParadisAgentBrowserService）自身が先頭に置く。
  */
-export const PARADIS_AGENT_IDE_SERVER_INSTRUCTIONS = `IDE tools let you list spaces (repositories and git worktrees) and terminals, read another terminal's screen, wait for another agent, send it input, launch Claude Code / Codex, and create worktree spaces. Call ${PARADIS_AGENT_IDE_TOOL_GUIDE} once before using them. If a terminal waits for a person (a permission, a question, or a menu such as Codex's "Implement this plan?"), tell the user instead of answering it. In an SSH window, list_port_forwards and the other port forwarding tools manage that window's port forwards; every change asks the user first.`;
+export const PARADIS_AGENT_IDE_SERVER_INSTRUCTIONS = `IDE tools let you list spaces (repositories and git worktrees) and terminals, read another terminal's screen, wait for another agent, send it input, launch Claude Code / Codex, and create worktree spaces. Call ${PARADIS_AGENT_IDE_TOOL_GUIDE} once before using them. If a terminal waits for a person (a permission, a question, or a menu such as Codex's "Implement this plan?"), tell the user instead of answering it. In an SSH window, list_port_forwards and the other port forwarding tools manage that window's port forwards; every change asks the user first. A pasted line "${PARADIS_TAB_ID_PREFIX} <kind>:<value>" names a Para Code editor tab; the guide says which tool takes it.`;
 
 /** 「ガイドを読む」ツールが返す本文（Markdown）。 */
 export function paradisAgentIdeGuide(state: { readonly actionsEnabled: boolean; readonly actionScope: 'space' | 'window'; readonly readOtherSpaces: boolean; readonly shellCommands: boolean }): string {
@@ -50,6 +51,15 @@ ${actions}
 - Terminals are addressed by the "id" from list_terminals (like "t_1a2b3c4d5e6f"). Never guess ids or use titles.
 - Spaces are addressed by the "space" key from list_spaces. Omitting "space" means your own space.
 - Your own pane has "self": true. You cannot send input to yourself.
+
+## Tab ids the user pastes
+
+The user can copy a line like "${PARADIS_TAB_ID_PREFIX} terminal:t_1a2b3c4d5e6f" from the context menu of an editor tab and paste it to you. It only names the tab: the usual permission rules above still decide what you may do with it.
+
+- terminal:<id> - the terminal "id" for read_terminal, wait_for_terminal, send_terminal_input and send_terminal_key. If list_terminals does not show it, it is outside what you may read.
+- browser:<tabId> - pass it as tab_id to the browser tools (tabId for select_browser_tab). It works only for tabs list_browser_tabs shows (shared with this pane or opened by you); for another user tab, call request_browser_page and let the user share it.
+- simulator:<device id> - the device id from mobile_list_devices. If mobile_get_attached_device does not show it, call mobile_request_device with that id; the user approves.
+- file:<path> - a file path, relative to the root folder of the space it was copied from (absolute when it starts with / or a drive letter). Read it with your own tools; preview_file needs an absolute path.
 
 ## Hand a task to a new agent
 
