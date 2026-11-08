@@ -57,18 +57,21 @@ export class ParadisDetachedDeleteDiskFileSystemProvider extends DiskFileSystemP
 	 * @param dataPath サーバーのデータのフォルダ。その下の `paradisDeleting` を退避場所の第一候補にする
 	 * （作業フォルダと同じファイルシステムであることが多く、エクスプローラーや git に見えない）。
 	 * @param spawnRemove テスト用。既定は `rm -rf` の子プロセス。
+	 * @param tempRoot テスト用。第二候補の退避場所。既定は OS の一時フォルダ。
 	 */
 	constructor(
 		logService: ILogService,
 		dataPath: string | undefined,
 		private readonly spawnRemove: (path: string) => Promise<number | null> = paradisSpawnRemove,
+		private readonly tempRoot: string = tmpdir(),
 	) {
 		super(logService);
 		const trashRoot = this.trashRoot = dataPath === undefined ? undefined : join(dataPath, 'paradisDeleting');
 
 		if (!isWindows && trashRoot !== undefined) {
 			// 前回、消し終わる前にサーバーが止まった残りを片付ける。サーバーの起動を待たせない。
-			this.removeLeftovers(trashRoot).catch(error => this.logService.trace('[ParadisDetachedDelete] Could not clean up leftovers', error));
+			// 退避場所のうち、データのフォルダと一時フォルダの直下を見る（消す対象の隣へ退避した分は場所の控えが無いので拾えない）。
+			this.removeLeftovers([trashRoot, tempRoot]).catch(error => this.logService.trace('[ParadisDetachedDelete] Could not clean up leftovers', error));
 		}
 	}
 
@@ -138,7 +141,7 @@ export class ParadisDetachedDeleteDiskFileSystemProvider extends DiskFileSystemP
 				// 作れなければ使わない
 			}
 		}
-		targets.push(join(tmpdir(), name));
+		targets.push(join(this.tempRoot, name));
 		targets.push(join(dirname(filePath), name));
 		return targets;
 	}
@@ -152,16 +155,25 @@ export class ParadisDetachedDeleteDiskFileSystemProvider extends DiskFileSystemP
 		}
 	}
 
-	private async removeLeftovers(trashRoot: string): Promise<void> {
-		let names: string[];
-		try {
-			names = await promises.readdir(trashRoot);
-		} catch {
-			return; // まだ一度も使っていない
-		}
-		for (const name of names) {
-			if (name.startsWith(DELETING_PREFIX)) {
-				await this.spawnRemove(join(trashRoot, name));
+	private async removeLeftovers(roots: readonly string[]): Promise<void> {
+		for (const root of roots) {
+			let names: string[];
+			try {
+				names = await promises.readdir(root);
+			} catch {
+				continue; // まだ一度も使っていない
+			}
+			for (const name of names) {
+				if (!name.startsWith(DELETING_PREFIX)) {
+					continue;
+				}
+				const leftover = join(root, name);
+				try {
+					await this.spawnRemove(leftover);
+				} catch (error) {
+					// 1 件消せなくても残りは消す
+					this.logService.trace(`[ParadisDetachedDelete] Could not clean up a leftover: ${leftover}`, error);
+				}
 			}
 		}
 	}
