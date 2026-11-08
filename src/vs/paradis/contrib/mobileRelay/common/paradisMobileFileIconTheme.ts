@@ -293,12 +293,20 @@ export function paradisSanitizeMobileIconSvg(svg: string): string | undefined {
 	if (/<!ENTITY/i.test(svg)) {
 		return undefined;
 	}
-	const cleaned = svg
+	let cleaned = svg
 		.replace(/^﻿/, '')
 		.replace(/<\?xml[\s\S]*?\?>/gi, '')
-		.replace(/<!DOCTYPE[^>]*>/gi, '')
-		.replace(/<!--[\s\S]*?-->/g, '')
-		.trim();
+		.replace(/<!DOCTYPE[^>]*>/gi, '');
+	// コメントを消すと前後がつながって新しいコメントができる（`<!<!---->-- -->` など）ので、変わらなくなるまで消す（多くて 8 回。
+	// 残ったものも下の検査を通る）。このファイルはアプリも読むので、補助を import せずにここへ書く
+	for (let round = 0; round < 8; round++) {
+		const next = cleaned.replace(/<!--[\s\S]*?-->/g, '');
+		if (next === cleaned) {
+			break;
+		}
+		cleaned = next;
+	}
+	cleaned = cleaned.trim();
 	if (!/^<svg[\s>]/i.test(cleaned) || !/<\/svg>$/i.test(cleaned)) {
 		return undefined;
 	}
