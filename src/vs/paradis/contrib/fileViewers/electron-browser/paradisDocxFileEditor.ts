@@ -71,7 +71,7 @@ import { analyzeParadisWordDocument, extractParadisWordRenderableObjectsInWorker
 import { PARADIS_WORD_ANCHOR_RUNTIME, PARADIS_WORD_ANCHOR_STYLE } from './word/paradisWordAnchorRuntime.js';
 import { alignParadisWordParagraphs, type IParadisWordParagraphOutline } from '../common/word/paradisWordRenderOutline.js';
 import { ParadisOfficeSemanticSearch } from '../common/paradisOfficeSearch.js';
-import type { IParadisWordAnalysis, IParadisWordAnalysisResult } from '../common/word/paradisWordSemanticSummary.js';
+import type { IParadisWordAnalysis, IParadisWordAnalysisResult, IParadisWordRenderableObjectsResult } from '../common/word/paradisWordSemanticSummary.js';
 import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
@@ -277,6 +277,21 @@ export async function readParadisDocxHeader(fileService: IFileService, resource:
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Word の worker で図形を取り出した結果から、次にすることを決める。`worker`: その結果を使う。`none`: 図形を出さない
+ * （上限を超える文書。renderer で取り出すとウィンドウが固まる）。`cancelled`: 取り消された。`renderer`: worker を使えなかった
+ * （つながらない・落ちた・混んでいる・期限切れ）ので renderer で取り出す。
+ */
+export function paradisWordObjectsAfterWorker(result: IParadisWordRenderableObjectsResult | undefined, cancelled: boolean): 'worker' | 'none' | 'cancelled' | 'renderer' {
+	if (result?.ok) {
+		return 'worker';
+	}
+	if (cancelled || result?.code === 'cancelled') {
+		return 'cancelled';
+	}
+	return result?.code === 'tooLarge' ? 'none' : 'renderer';
 }
 
 export type ParadisDocxRenderDecision = 'rejected' | 'viewer' | 'stale';
@@ -1403,11 +1418,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 */
 	private async _extractWordObjects(bytes: Uint8Array, token: CancellationToken): Promise<readonly ParadisWordRenderableObject[] | undefined> {
 		const result = await extractParadisWordRenderableObjectsInWorker(this._sharedProcessService, bytes, token).catch(() => undefined);
-		if (result?.ok) {
-			return result.objects;
-		}
-		if (token.isCancellationRequested || result?.code === 'cancelled') {
-			return undefined;
+		switch (paradisWordObjectsAfterWorker(result, token.isCancellationRequested)) {
+			case 'worker': return result?.ok ? result.objects : [];
+			case 'none': return [];
+			case 'cancelled': return undefined;
 		}
 		const parts = await readWordRenderablePackageParts(bytes, token);
 		return parts.size === 0 ? [] : extractParadisWordRenderableObjects({ parts, token });
