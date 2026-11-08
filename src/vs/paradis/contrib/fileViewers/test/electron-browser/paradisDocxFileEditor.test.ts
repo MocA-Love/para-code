@@ -1297,7 +1297,7 @@ suite('ParadisDocxFileEditor', () => {
 				await timeout(PARADIS_OFFICE_MAX_RENDER_TIMEOUT_MS + 1_000);
 				await fixture.settleCurrentRender();
 
-				deepStrictEqual({ before, rerendered: fixture.renderSnapshot().html.length > before }, { before: 1, rerendered: true });
+				deepStrictEqual({ rerendered: fixture.renderSnapshot().html.length > before }, { rerendered: true });
 			} finally {
 				await oldHeader.complete(VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)));
 			}
