@@ -11,12 +11,12 @@
 //
 //  - 端末は引数に取らず、必ず台帳からそのペインの割り当てを引く（ほかのペインの端末は触れない。#801 の LOW3）
 //  - 画面の操作の側（mobile_rotate と同じ）なので、接続元の確認は掛けずトークンだけで動く。SSH の接続先のペインからも使える
-//  - 新しい仕組み（設定 paradis.simulator.enabled）がオフのときは一覧に出さない
+//  - iOS のシミュレータを使えない（macOS でない）ときは一覧に出さない
 //  - serve-sim の開閉は Device Hub が起動していないと断られる（Xcode 27.2 の Mac で実測）。断られたらその旨を返す
 
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
-import { IParadisMobileDeviceLedger } from '../../mobileCanvas/node/paradisMobileDeviceOpsToolProvider.js';
+import { IParadisMobileDeviceLedger } from '../node/paradisSimulatorDeviceOps.js';
 import { ParadisSimulatorFold } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold } from '../common/paradisSimulatorFrames.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';

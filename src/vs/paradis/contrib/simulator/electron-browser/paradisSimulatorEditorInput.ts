@@ -17,7 +17,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { EditorInputCapabilities, IEditorSerializer, IUntypedEditorInput } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { IParadisMobileAttachment } from '../../mobileCanvas/common/paradisMobileCanvas.js';
+import { IParadisMobileAttachment } from '../common/paradisMobileCanvas.js';
 import { PARADIS_SIMULATOR_DEVICE_ID_PREFIX, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
 
 export const PARADIS_SIMULATOR_EDITOR_ID = 'paradis.editor.simulator';

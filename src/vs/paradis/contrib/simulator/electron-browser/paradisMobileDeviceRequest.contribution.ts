@@ -30,7 +30,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID } from '../../simulator/common/paradisSimulator.js';
+import { PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID } from '../common/paradisSimulator.js';
 import { PARADIS_AGENT_APPROVAL_DEADLINE_MS, paradisSanitizeAgentPageRequestReason, paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, IParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';

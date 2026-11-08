@@ -12,10 +12,9 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisMobileAttachment } from '../../../mobileCanvas/common/paradisMobileCanvas.js';
-import { IParadisMobileHostRequester } from '../../../mobileCanvas/node/paradisMobileDeviceOpsToolProvider.js';
+import { IParadisMobileAttachment } from '../../common/paradisMobileCanvas.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, ParadisSimulatorFold } from '../../common/paradisSimulator.js';
-import { ParadisMobileHostRouter } from '../../node/paradisMobileHostRouter.js';
+import { ParadisSimulatorDeviceRouter } from '../../node/paradisSimulatorDeviceRouter.js';
 import { ParadisServeSimBackend } from '../../node/paradisServeSimBackend.js';
 import { ParadisServeSimDeviceHost } from '../../node/paradisServeSimDeviceHost.js';
 import { PARADIS_SIMULATOR_FOLD_TOOL, ParadisSimulatorFoldToolProvider } from '../../node/paradisSimulatorFoldTool.js';
@@ -202,27 +201,6 @@ suite('Paradis simulator: serve-sim answers the Mobile Canvas REST for iOS', () 
 suite('Paradis simulator: routing the mobile tools per device', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	function fakeCanvas(list: unknown[] | Error) {
-		const calls: string[] = [];
-		const canvas: IParadisMobileHostRequester = {
-			async request(method, path) {
-				calls.push(`${method} ${path}`);
-				if (path === '/api/v1/devices') {
-					if (list instanceof Error) {
-						throw list;
-					}
-					return list;
-				}
-				return 'from-canvas';
-			},
-			async requestBinary(path) {
-				calls.push(`BINARY ${path}`);
-				return new Uint8Array();
-			},
-		};
-		return { canvas, calls };
-	}
-	const IOS_CANVAS = { id: 'ios:core-simulator:B0000000-0000-0000-0000-000000000000', platform: 'ios', name: 'iPhone 16' };
 	const ANDROID = { id: 'android:serial:emulator-5554', platform: 'android', name: 'Pixel 9' };
 
 	function fakeAdb(list: unknown[] | Error) {
@@ -249,44 +227,35 @@ suite('Paradis simulator: routing the mobile tools per device', () => {
 		};
 	}
 
-	test('sends everything to Mobile Canvas while the setting is off', async () => {
+	// iOS を serve-sim、Android を adb が受け持つ。片方が使えなくても、もう片方は出る（Mobile Canvas は ⑦ で外した）
+	test('lists iOS from serve-sim and Android from adb, and refuses devices nobody owns', async () => {
 		const { host } = setup();
-		const { canvas, calls } = fakeCanvas([IOS_CANVAS, ANDROID]);
 		const { adb, calls: adbCalls } = fakeAdb([ANDROID]);
-		const router = new ParadisMobileHostRouter(canvas, host, () => false, new NullLogService(), adb);
-		assert.deepStrictEqual({ list: await router.request('GET', '/api/v1/devices'), one: await router.request('GET', PATH), calls, adbCalls }, {
-			list: [IOS_CANVAS, ANDROID],
-			one: 'from-canvas',
-			calls: ['GET /api/v1/devices', `GET ${PATH}`],
-			adbCalls: [],
-		});
-	});
-
-	// オンの間は iOS を serve-sim、Android を adb が受け持ち、Mobile Canvas は使わない。片方が使えなくても、もう片方は出る
-	test('lists iOS from serve-sim and Android from adb while the setting is on, without Mobile Canvas', async () => {
-		const { host } = setup();
-		const { canvas, calls } = fakeCanvas([IOS_CANVAS, ANDROID]);
-		const { adb, calls: adbCalls } = fakeAdb([ANDROID]);
-		const router = new ParadisMobileHostRouter(canvas, host, () => true, new NullLogService(), adb);
+		const router = new ParadisSimulatorDeviceRouter(host, adb, () => true, () => true, new NullLogService());
 		const list = await router.request('GET', '/api/v1/devices') as { id: string }[];
 		const androidCall = await router.request('POST', '/api/v1/devices/android%3Aserial%3Aemulator-5554/input/tap', { x: 1, y: 1 });
 		const unknown = await router.request('GET', '/api/v1/devices/other%3Athing').then(() => 'accepted', () => 'refused');
 		const { adb: noAdb } = fakeAdb(new Error('Para Code could not find adb.'));
-		const noAdbRouter = new ParadisMobileHostRouter(canvas, host, () => true, new NullLogService(), noAdb);
+		const noAdbRouter = new ParadisSimulatorDeviceRouter(host, noAdb, () => true, () => true, new NullLogService());
 		const iosOnly = await noAdbRouter.request('GET', '/api/v1/devices') as { id: string }[];
-		// adb が無いときは、一覧は iOS だけ返し、入れ方の説明を知らせとして持つ（mobile_list_devices と共有ダイアログに出る）
-		assert.deepStrictEqual({ notice: [router.androidNotice, noAdbRouter.androidNotice], listed: [router.androidListed, noAdbRouter.androidListed] }, {
-			notice: [undefined, 'Android devices are not listed: Para Code could not find adb.'],
-			listed: [true, false],
-		});
-		assert.deepStrictEqual({ list: list.map(entry => entry.id), androidCall, unknown, canvasCalls: calls, adbCalls, iosOnly: iosOnly.map(entry => entry.id) }, {
+		assert.deepStrictEqual({ list: list.map(entry => entry.id), androidCall, unknown, adbCalls, iosOnly: iosOnly.map(entry => entry.id), notice: [router.androidNotice, noAdbRouter.androidNotice] }, {
 			list: [ID, ANDROID.id],
 			androidCall: 'from-adb',
 			unknown: 'refused',
-			canvasCalls: [],
 			adbCalls: ['POST /api/v1/devices/android%3Aserial%3Aemulator-5554/input/tap'],
 			iosOnly: [ID],
+			notice: [undefined, 'Android devices are not listed: Para Code could not find adb.'],
 		});
+	});
+
+	// macOS 以外では iOS を出さない（serve-sim は macOS だけ）。Android だけを出す
+	test('leaves iOS out where it is not available', async () => {
+		const { host } = setup();
+		const { adb } = fakeAdb([ANDROID]);
+		const router = new ParadisSimulatorDeviceRouter(host, adb, () => false, () => true, new NullLogService());
+		const list = await router.request('GET', '/api/v1/devices') as { id: string }[];
+		const ios = await router.request('GET', PATH).then(() => 'accepted', () => 'refused');
+		assert.deepStrictEqual({ list: list.map(entry => entry.id), ios }, { list: [ANDROID.id], ios: 'refused' });
 	});
 });
 

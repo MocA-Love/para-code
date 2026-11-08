@@ -34,7 +34,7 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IParadisSimulatorDevice, PARADIS_SIMULATOR_ENABLED_SETTING } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice } from '../common/paradisSimulator.js';
 import { paradisSimulatorDuoPanel, paradisSimulatorNextOrientation, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
 import { ParadisSimulatorFoldBar, ParadisSimulatorFoldRequest } from './paradisSimulatorFoldBar.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
@@ -49,7 +49,6 @@ const DEVICE_HUB_POLL_MS = 5000;
 /** 帯の下に出す知らせの種類。 */
 type ParadisSimulatorNotice =
 	| { readonly kind: 'none' }
-	| { readonly kind: 'disabled' }
 	| { readonly kind: 'unsupported' }
 	| { readonly kind: 'missing' }
 	| { readonly kind: 'shutdown' }
@@ -281,9 +280,9 @@ export class ParadisSimulatorEditor extends EditorPane {
 			if (this._session.value !== session) {
 				return;
 			}
-			if (!status.supported || !status.enabled) {
+			if (!status.supported) {
 				session.device = undefined;
-				this._setNotice({ kind: status.supported ? 'disabled' : 'unsupported' });
+				this._setNotice({ kind: 'unsupported' });
 				return;
 			}
 			const devices = await this._client.listDevices();
@@ -470,7 +469,6 @@ export class ParadisSimulatorEditor extends EditorPane {
 		const text = (() => {
 			switch (notice.kind) {
 				case 'none': return '';
-				case 'disabled': return localize('paradis.simulator.notice.disabled', "シミュレータの新しい仕組みはオフです（設定 {0}）。", PARADIS_SIMULATOR_ENABLED_SETTING);
 				case 'unsupported': return localize('paradis.simulator.notice.unsupported', "iOS のシミュレータは macOS でだけ使えます。");
 				case 'missing': return localize('paradis.simulator.notice.missing', "この端末が見つかりません。Xcode で消された可能性があります。");
 				case 'shutdown': return localize('paradis.simulator.notice.shutdown', "この端末は起動していません。");
