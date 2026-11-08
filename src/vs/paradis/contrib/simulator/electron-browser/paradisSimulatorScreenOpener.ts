@@ -7,13 +7,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 共有ダイアログの「モバイル端末」タブの「画面を開く」（q.html Q585 の ④）。新しい仕組みのシミュレータ
-// （設定がオンの macOS の `ios:core-simulator:<udid>`）だけ、その画面をエディタのタブに開ける。
+// （macOS の `ios:core-simulator:<udid>`）と Android の端末だけ、その画面をエディタのタブに開ける。
 
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { PARADIS_SIMULATOR_ENABLED_SETTING, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
+import { paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
 import { paradisAndroidSerialOf } from '../common/paradisAndroid.js';
 
 /** コマンド「シミュレータを開く」（paradisSimulator.contribution.ts）。引数は udid。 */
@@ -22,14 +21,13 @@ export const PARADIS_SIMULATOR_OPEN_COMMAND_ID = 'paradis.simulator.open';
 export const PARADIS_SIMULATOR_OPEN_ANDROID_COMMAND_ID = 'paradis.simulator.openAndroid';
 
 /**
- * 端末の id から、その画面を開く関数を返す。開けない端末（Android・設定がオフ・macOS 以外）なら undefined。
+ * 端末の id から、その画面を開く関数を返す。開けない端末（macOS 以外）なら undefined。
  * `accessor` はこの関数の中でだけ使う（返した関数は後から呼んでよい）。
  */
 export function paradisSimulatorScreenOpener(accessor: ServicesAccessor): (deviceId: string) => (() => void) | undefined {
-	const configurationService = accessor.get(IConfigurationService);
 	const commandService = accessor.get(ICommandService);
 	return deviceId => {
-		if (!isMacintosh || configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) !== true) {
+		if (!isMacintosh) {
 			return undefined;
 		}
 		const udid = paradisSimulatorUdidOfDeviceId(deviceId);

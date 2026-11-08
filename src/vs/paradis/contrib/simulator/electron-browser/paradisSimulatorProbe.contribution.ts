@@ -23,7 +23,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
-import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_CHANNEL, PARADIS_SIMULATOR_ENABLED_SETTING, ParadisSimulatorInput } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_CHANNEL, ParadisSimulatorInput } from '../common/paradisSimulator.js';
 
 const PARADIS_SIMULATOR_PROBE_COMMAND_ID = 'paradis.simulator.probeFoundation';
 
@@ -55,10 +55,8 @@ registerAction2(class extends Action2 {
 		const environmentService = accessor.get(INativeWorkbenchEnvironmentService);
 
 		const status = await channel.call<IParadisSimulatorStatus>('getStatus');
-		if (!status.supported || !status.enabled) {
-			notificationService.warn(status.supported
-				? localize('paradis.simulator.probe.disabled', "設定 {0} をオンにしてから実行してください。", PARADIS_SIMULATOR_ENABLED_SETTING)
-				: localize('paradis.simulator.probe.unsupported', "iOS のシミュレータは macOS でだけ使えます。"));
+		if (!status.supported) {
+			notificationService.warn(localize('paradis.simulator.probe.unsupported', "iOS のシミュレータは macOS でだけ使えます。"));
 			return;
 		}
 
