@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { paradisImplicitTunnelSource } from '../../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js';
 import { RemoteTunnel, TunnelProtocol } from '../../../../../platform/tunnel/common/tunnel.js';
 import { CandidatePort, Tunnel, TunnelProperties, TunnelSource } from '../../../../../workbench/services/remote/common/tunnelModel.js';
 import { ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
@@ -19,7 +20,7 @@ import { IParadisPortToolsWindow, ParadisPortToolsChannel } from '../../electron
 const PANE = 'pane-token';
 const SSH = 'ssh-remote+devbox';
 
-function tunnel(remotePort: number, localPort: number, options: { readonly source?: TunnelSource; readonly listening?: boolean; readonly name?: string; readonly closeable?: boolean } = {}): Tunnel {
+function tunnel(remotePort: number, localPort: number, options: { readonly source?: TunnelSource; readonly implicit?: boolean; readonly listening?: boolean; readonly name?: string; readonly closeable?: boolean } = {}): Tunnel {
 	return {
 		remoteHost: 'localhost',
 		remotePort,
@@ -33,7 +34,7 @@ function tunnel(remotePort: number, localPort: number, options: { readonly sourc
 		runningProcess: options.listening ? 'node server.js' : undefined,
 		hasRunningProcess: options.listening === true,
 		pid: options.listening ? 42 : undefined,
-		source: { source: options.source ?? TunnelSource.User, description: 'User Forwarded' },
+		source: options.implicit ? paradisImplicitTunnelSource(TunnelSource.Extension) : { source: options.source ?? TunnelSource.User, description: 'User Forwarded' },
 	};
 }
 
@@ -179,7 +180,7 @@ suite('ParadisPortToolsChannel', () => {
 		});
 	});
 
-	test('cleans up only unused user forwards in the ephemeral range; fixed ports are stopped only by name', async () => {
+	test('cleans up only unused user and preview forwards in the ephemeral range; fixed ports are stopped only by name', async () => {
 		const window = new FakeWindow(SSH, [
 			tunnel(21004, 65459),
 			tunnel(32767, 32767),
@@ -188,16 +189,18 @@ suite('ParadisPortToolsChannel', () => {
 			tunnel(40000, 40000, { listening: true }),
 			tunnel(45000, 45000, { source: TunnelSource.Auto }),
 			tunnel(50000, 50000, { source: TunnelSource.Extension }),
+			tunnel(55000, 55000, { implicit: true }),
+			tunnel(56000, 56000, { implicit: true, listening: true }),
 		]);
 		const { channel } = setup(window, 'approve');
 		const dryRun = summary(await channel.handle(PANE, { op: 'cleanUp', mode: 'not_listening', dryRun: true })) as { targets: { remote_port: number }[] };
 		const cleaned = summary(await channel.handle(PANE, { op: 'cleanUp', mode: 'not_listening', dryRun: false }));
 		const stopped = summary(await channel.handle(PANE, { op: 'stop', remotePorts: [21004] }));
 		assert.deepStrictEqual({ targets: dryRun.targets.map(row => row.remote_port), cleaned, stopped, ledger: window.snapshot() }, {
-			targets: [32768, 60605],
-			cleaned: { mode: 'not_listening', stopped: [32768, 60605] },
+			targets: [32768, 60605, 55000],
+			cleaned: { mode: 'not_listening', stopped: [32768, 60605, 55000] },
 			stopped: { stopped: [21004] },
-			ledger: ['32767->32767', '40000->40000', '45000->45000', '50000->50000'],
+			ledger: ['32767->32767', '40000->40000', '45000->45000', '50000->50000', '56000->56000'],
 		});
 	});
 
