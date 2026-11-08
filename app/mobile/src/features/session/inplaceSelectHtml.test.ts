@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { NEUTRAL_CHAT_TEXT_SCALE } from '../../chatTextScale.js';
-import { buildInplaceSelectHtml, inplaceSelectMinHeight, localPressPoint, parseInplaceSelectMessage, type InplaceSelectLook } from './inplaceSelectHtml.js';
+import { buildInplaceSelectHtml, inplaceSelectMinHeight, inplaceSelectStartScript, localPressPoint, parseInplaceSelectMessage, type InplaceSelectLook } from './inplaceSelectHtml.js';
 
 const NONCE = 'abcdefghijklmnop0123';
 const LOOK: InplaceSelectLook = {
@@ -61,6 +61,18 @@ describe('buildInplaceSelectHtml', () => {
 		expect(html).toContain('selectAt([12.34,5])');
 		expect(buildInplaceSelectHtml([{ text: 'a', markdown: true }], LOOK, NONCE)).toContain('selectAt(null)');
 		expect(() => buildInplaceSelectHtml([{ text: 'a', markdown: true }], LOOK, 'bad nonce"')).toThrow();
+	});
+
+	it('waits to select until the caller has shown and focused the web view, then selects the word or the whole message', () => {
+		const html = buildInplaceSelectHtml([{ text: 'a', markdown: true }], LOOK, NONCE, { x: 1, y: 2 });
+		const ready = html.slice(html.indexOf('function ready()'));
+		expect([
+			ready.slice(0, ready.indexOf('}', ready.indexOf('post('))).includes('selectAt'),
+			html.includes('window.__paraSelectStart=function(){try{if(!selectAt([1,2])){selectAll();}}catch(e){}};'),
+			html.includes("document.addEventListener('touchstart'"),
+			html.includes("addEventListener('touchcancel'"),
+			inplaceSelectStartScript(),
+		]).toEqual([false, true, true, false, 'window.__paraSelectStart&&window.__paraSelectStart();true;']);
 	});
 
 	it('matches the chat sizes, including the OS text size and the chat text size setting', () => {
