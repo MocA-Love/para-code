@@ -38,6 +38,11 @@ const NOT_SSH_MESSAGE = 'This terminal pane belongs to a Para Code window that i
 const LOCAL_HOST_MESSAGE = 'Para Code only opens port forwards that listen on 127.0.0.1, but this window is set to listen on all network interfaces (the user setting "remote.localPortHost" is "allInterfaces"). Nothing was changed. Ask the user to forward the port from the Ports panel.';
 const NOT_DETECTED_MESSAGE = 'This window has not detected which remote ports have a listening process yet (for example "remote.autoForwardPortsSource" is "output"), so Para Code cannot tell which forwards are unused and does not clean them up. Nothing was changed.';
 
+/** 張り直しの確認に添える 1 文（portReforward の張り直しは shared process で全部の窓の分をまとめて閉じる）。 */
+function otherWindowsNote(): string {
+	return localize('paradis.portTools.otherWindows', "張り直すときは、同じ SSH 先のほかの窓の同じポートの転送も一度まとめて閉じてから張り直します。");
+}
+
 /** 承認以外の答えのときにエージェントへ返す英文。 */
 const REFUSALS: Readonly<Record<Exclude<ParadisAgentApprovalOutcome, 'approve' | 'alternative'> | 'timedOut', string>> = {
 	'denied': 'The user declined, so nothing was changed. Do not ask again for this; ask the user in the conversation if needed.',
@@ -237,7 +242,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const outcome = await this._ask(paneToken, {
 			messageTemplate: pane => localize('paradis.portTools.forward.message', "{0} のエージェントが、SSH 先のポートを転送しようとしています", pane),
 			detail: [
-				localize('paradis.portTools.forward.ports', "転送: SSH 先の localhost:{0} → この Mac の 127.0.0.1:{1}（1 件を追加）", remotePort, localPort),
+				localize('paradis.portTools.forward.ports', "転送: SSH 先の localhost:{0} → この PC の 127.0.0.1:{1}（1 件を追加）", remotePort, localPort),
 				...(safeLabel ? [localize('paradis.portTools.forward.label', "ラベル: {0}", safeLabel)] : []),
 				localize('paradis.portTools.forward.effect', "手元の {0} が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。", localPort),
 			],
@@ -346,6 +351,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 				changesLocal
 					? localize('paradis.portTools.reforward.align', "手元の番号を {0} から {1} に変えます。{0} を開いているブラウザのタブは繋がらなくなります。", oldLocal ?? '?', remotePort)
 					: localize('paradis.portTools.reforward.keep', "手元の番号は {0} のまま、転送を閉じて張り直します。", oldLocal ?? '?'),
+				otherWindowsNote(),
 			],
 			approveLabel: localize('paradis.portTools.reforward.approve', "張り直す"),
 			cooldownKey: APPROVAL_COOLDOWN_KEY,
@@ -439,6 +445,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 				...this._dialogRows(targets, tunnel => localize('paradis.portTools.align.row', "{0}: 手元 {1} → {2}", tunnel.remotePort, tunnel.localPort ?? '?', tunnel.remotePort)),
 				...(inUse.length ? [localize('paradis.portTools.align.inUse', "手元の番号が使用中のため張り直さないもの: {0}", inUse.join(', '))] : []),
 				localize('paradis.portTools.align.effect', "張り直すと、元の手元の番号を開いているブラウザのタブは繋がらなくなります。"),
+				otherWindowsNote(),
 			],
 			approveLabel: localize('paradis.portTools.align.approve', "{0} 件を張り直す", targets.length),
 			cooldownKey: APPROVAL_COOLDOWN_KEY,

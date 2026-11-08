@@ -173,7 +173,7 @@ suite('ParadisPortToolsChannel', () => {
 			calls: ['close 33355', 'forward localhost:21040 -> 21040'],
 			dialogs: [
 				['pane のエージェントが、SSH 先で listen していないエフェメラル帯の転送を 1 件停止しようとしています', '33355 → localhost:33355', 'どれも 32768 以上のエフェメラル帯の番号で、利用者（プレビューやリンクを含む）が張り、今は SSH 先のプロセスが listen していない転送です。32768 より下の決まった番号は対象にしていません。', '[1 件を停止]'],
-				['pane のエージェントが、SSH 先のポートを転送しようとしています', '転送: SSH 先の localhost:21040 → この Mac の 127.0.0.1:21040（1 件を追加）', 'ラベル: api', '手元の 21040 が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。', '[転送する]'],
+				['pane のエージェントが、SSH 先のポートを転送しようとしています', '転送: SSH 先の localhost:21040 → この PC の 127.0.0.1:21040（1 件を追加）', 'ラベル: api', '手元の 21040 が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。', '[転送する]'],
 			],
 		});
 	});
@@ -206,11 +206,17 @@ suite('ParadisPortToolsChannel', () => {
 		const { channel, dialogs } = setup(window, 'approve');
 		const inUse = await channel.handle(PANE, { op: 'reforward', remotePort: 21021, alignLocalPort: true });
 		const aligned = summary(await channel.handle(PANE, { op: 'reforward', remotePort: 21004, alignLocalPort: true }));
-		assert.deepStrictEqual({ inUse: inUse.ok, aligned, calls: window.calls, dialogs: dialogs.length }, {
+		assert.deepStrictEqual({ inUse: inUse.ok, aligned, calls: window.calls, dialogs }, {
 			inUse: false,
 			aligned: { reforwarded: true, remote_port: 21004, local_address: 'localhost:21004', local_port: 21004, local_port_taken: false },
 			calls: ['reforward 21004 -> 21004'],
-			dialogs: 1,
+			dialogs: [[
+				'pane のエージェントが、ポートの転送を 1 件張り直そうとしています',
+				'21004 → localhost:65459',
+				'手元の番号を 65459 から 21004 に変えます。65459 を開いているブラウザのタブは繋がらなくなります。',
+				'張り直すときは、同じ SSH 先のほかの窓の同じポートの転送も一度まとめて閉じてから張り直します。',
+				'[張り直す]',
+			]],
 		});
 	});
 
