@@ -24,9 +24,12 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IParadisSimulatorDevice, PARADIS_SIMULATOR_ENABLED_SETTING } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, PARADIS_SIMULATOR_ENABLED_SETTING, PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 import { ParadisSimulatorEditor } from './paradisSimulatorEditor.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
+import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { PARADIS_SIMULATOR_EDITOR_ID, PARADIS_SIMULATOR_INPUT_TYPE_ID, ParadisSimulatorEditorInput, ParadisSimulatorEditorInputSerializer } from './paradisSimulatorEditorInput.js';
 import { paradisOpenSimulatorEditor } from './paradisSimulatorPlacement.js';
 import './paradisSimulatorProbe.contribution.js';
@@ -89,4 +92,24 @@ registerAction2(class ParadisOpenSimulatorAction extends Action2 {
 			await paradisOpenSimulatorEditor(device.udid, device.name, editorService, editorGroupsService, configurationService);
 		}
 	}
+});
+
+// エージェントの端末の要求を承認したとき（mobileCanvas/electron-browser/paradisMobileDeviceRequest.contribution.ts から）。
+// 新しい仕組みのシミュレータなら、その画面をペインのターミナルの右に開き、止まっていれば起動する。
+CommandsRegistry.registerCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, async (accessor, paneToken: unknown, deviceId: unknown) => {
+	const configurationService = accessor.get(IConfigurationService);
+	if (!isMacintosh || configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) !== true || typeof paneToken !== 'string' || typeof deviceId !== 'string') {
+		return;
+	}
+	const udid = paradisSimulatorUdidOfDeviceId(deviceId);
+	if (!udid) {
+		return;
+	}
+	const client = accessor.get(IParadisSimulatorClient);
+	const editorService = accessor.get(IEditorService);
+	const editorGroupsService = accessor.get(IEditorGroupsService);
+	const paneInstanceId = accessor.get(IParadisPaneTokenService).getInstanceForToken(paneToken);
+	const device = (await client.listDevices().catch(() => [])).find(candidate => candidate.udid === udid);
+	const input = await paradisOpenSimulatorEditor(udid, device?.name ?? '', editorService, editorGroupsService, configurationService, { paneInstanceId });
+	input.requestBoot();
 });

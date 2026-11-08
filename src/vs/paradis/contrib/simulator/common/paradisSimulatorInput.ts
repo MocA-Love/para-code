@@ -179,3 +179,85 @@ export function paradisSimulatorTouchEdge(orientation: ParadisSimulatorOrientati
 		default: return ParadisSimulatorTouchEdge.Bottom;
 	}
 }
+
+/**
+ * 映像が途切れたときに読み直すまでの待ち（回目ごと）。これを使い切ったら止めて「再試行」のボタンを出す
+ * （端末が起動中のまま映像だけ出ないときに、止める・始めるを繰り返さないように）。
+ */
+export const PARADIS_SIMULATOR_STALL_RETRY_DELAYS_MS: readonly number[] = [5000, 10_000, 20_000, 40_000];
+
+/** `attempt` 回目（0 から）の途切れのあと、読み直すまでの待ち。使い切っていれば undefined（止める）。 */
+export function paradisSimulatorStallRetryDelay(attempt: number): number | undefined {
+	return PARADIS_SIMULATOR_STALL_RETRY_DELAYS_MS[attempt];
+}
+
+/** 1 文字ぶんのキーの押し方（US 配列）。 */
+export interface IParadisSimulatorKeystroke {
+	readonly usage: number;
+	readonly shift: boolean;
+}
+
+const SHIFTED_DIGITS = ')!@#$%^&*(';
+const SYMBOL_KEYS: { readonly [char: string]: readonly [code: string, shift: boolean] } = {
+	' ': ['Space', false], '\n': ['Enter', false], '\t': ['Tab', false],
+	'-': ['Minus', false], '_': ['Minus', true], '=': ['Equal', false], '+': ['Equal', true],
+	'[': ['BracketLeft', false], '{': ['BracketLeft', true], ']': ['BracketRight', false], '}': ['BracketRight', true],
+	'\\': ['Backslash', false], '|': ['Backslash', true], ';': ['Semicolon', false], ':': ['Semicolon', true],
+	'\'': ['Quote', false], '"': ['Quote', true], '`': ['Backquote', false], '~': ['Backquote', true],
+	',': ['Comma', false], '<': ['Comma', true], '.': ['Period', false], '>': ['Period', true],
+	'/': ['Slash', false], '?': ['Slash', true],
+};
+
+/**
+ * 文字列を、HID のキーで打てる押し方の並びにする（シミュレータのハードウェアキーボードは US 配列）。
+ * キーで打てない文字（日本語など）が 1 つでもあれば undefined（呼び出し側は貼り付けで入れる）。
+ */
+export function paradisSimulatorKeystrokes(input: string): IParadisSimulatorKeystroke[] | undefined {
+	const strokes: IParadisSimulatorKeystroke[] = [];
+	for (const char of input) {
+		let code: string | undefined;
+		let shift = false;
+		if (/^[a-z]$/.test(char)) {
+			code = `Key${char.toUpperCase()}`;
+		} else if (/^[A-Z]$/.test(char)) {
+			code = `Key${char}`;
+			shift = true;
+		} else if (/^[0-9]$/.test(char)) {
+			code = `Digit${char}`;
+		} else if (SHIFTED_DIGITS.includes(char)) {
+			code = `Digit${SHIFTED_DIGITS.indexOf(char)}`;
+			shift = true;
+		} else if (Object.prototype.hasOwnProperty.call(SYMBOL_KEYS, char)) {
+			[code, shift] = SYMBOL_KEYS[char];
+		}
+		const usage = code ? paradisSimulatorHidUsage(code) : undefined;
+		if (usage === undefined) {
+			return undefined;
+		}
+		strokes.push({ usage, shift });
+	}
+	return strokes;
+}
+
+/** iPhone Duo の外と内の画面の画素数（serve-sim 0.1.49 の device-pose.ts の DUO_COVER_SIZE・DUO_INNER_SIZE）。 */
+const DUO_COVER_LONG_SIDE = 2034;
+const DUO_INNER_LONG_SIDE = 2853;
+
+/**
+ * 映している画面（外 cover / 内 inner）を、映像の大きさから決める。大きさが Duo のどちらでもなければ、開き具合
+ * （90° より閉じていれば外）で推定する。折りたたみでなければ undefined。
+ * iOS 27.2 では閉じても内のまま映ることがある（Mac で実測）ので、開き具合だけでは決めない。
+ */
+export function paradisSimulatorDuoPanel(config: { readonly width: number; readonly height: number; readonly hingeDegrees?: number }): 'cover' | 'inner' | undefined {
+	if (config.hingeDegrees === undefined) {
+		return undefined;
+	}
+	const long = Math.max(config.width, config.height);
+	if (Math.abs(long - DUO_INNER_LONG_SIDE) <= 2) {
+		return 'inner';
+	}
+	if (Math.abs(long - DUO_COVER_LONG_SIDE) <= 2) {
+		return 'cover';
+	}
+	return config.hingeDegrees < 90 ? 'cover' : 'inner';
+}

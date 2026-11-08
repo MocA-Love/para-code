@@ -6,35 +6,68 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// shared process にシミュレータのチャネルを登録する（`paradis.sharedProcess.contribution.ts` の登録口から読む）。
-// ③ で台帳と MCP のツールを持たせるときは、agentBrowser の `registerToolProvider` を値で受け取る必要があるので、
-// `registerParadisMobileCanvas(...)` の直呼びをここの登録へまとめ直す（設計書 1 節）。
+// shared process にシミュレータを立ち上げる。`paradis.sharedProcess.contribution.ts` から、前の
+// `registerParadisMobileCanvas(...)` の直呼びの代わりに呼ぶ（agentBrowser の `registerToolProvider` を値で受け取るため、
+// 登録口ではなく直呼び。設計書 1 節）。
+//
+//  - Mobile Canvas の台帳と mobile_* の 17 本は今のまま。ホストへの要求を振り分けで包み、設定がオンで macOS なら
+//    iOS のシミュレータを serve-sim へ回す（paradisMobileHostRouter.ts。q.html Q585 の ③、案A）
+//  - mobile_fold を足す（設定がオンのときだけ一覧に出る）
+//  - renderer のエディタのペインが使う映像と入力のチャネル
 
+import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
+import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
+import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { registerParadisMobileCanvas } from '../../mobileCanvas/node/paradisMobileCanvasChannel.js';
+import { ParadisMobileCanvasService } from '../../mobileCanvas/node/paradisMobileCanvasService.js';
 import { PARADIS_SIMULATOR_CHANNEL, PARADIS_SIMULATOR_ENABLED_SETTING } from '../common/paradisSimulator.js';
+import { ParadisMobileHostRouter } from './paradisMobileHostRouter.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
+import { ParadisServeSimDeviceHost } from './paradisServeSimDeviceHost.js';
 import { ParadisSimulatorChannel, ParadisSimulatorService } from './paradisSimulatorChannel.js';
+import { ParadisSimulatorFoldToolProvider } from './paradisSimulatorFoldTool.js';
 import { ParadisSimulatorHostProcess } from './paradisSimulatorHostProcess.js';
 
-ParadisSharedProcessContributions.register(PARADIS_SIMULATOR_CHANNEL, ({ server, accessor }) => {
-	const logService = accessor.get(ILogService);
-	const configurationService = accessor.get(IConfigurationService);
-	const userDataPath = accessor.get(INativeEnvironmentService).userDataPath;
+export interface IParadisSimulatorRegistration extends IDisposable {
+	/** Mobile Canvas の台帳（端末⇔ペイン）。 */
+	readonly ledger: ParadisMobileCanvasService;
+}
+
+export function registerParadisSimulator(
+	server: IPCServer<string>,
+	userDataPath: string,
+	builtinExtensionsPath: string,
+	configurationService: IConfigurationService,
+	logService: ILogService,
+	registerToolProvider: (provider: ParadisMobileCanvasService) => void,
+): IParadisSimulatorRegistration {
+	const store = new DisposableStore();
+	const isEnabled = () => configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) === true;
+	const useServeSim = () => isMacintosh && isEnabled();
+
 	// ホストはここでは起こさない（最初の要求で起こす）。macOS 以外でも作るだけなら何も起きない
-	const host = new ParadisSimulatorHostProcess({ userDataPath, logService });
-	const backend = new ParadisServeSimBackend(host, logService);
-	const service = new ParadisSimulatorService(host, backend, () => configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) === true, isMacintosh, logService);
-	const store = [host, backend, service];
+	const host = store.add(new ParadisSimulatorHostProcess({ userDataPath, logService }));
+	const backend = store.add(new ParadisServeSimBackend(host, logService));
+	const deviceHost = new ParadisServeSimDeviceHost(backend, logService);
+	const service = store.add(new ParadisSimulatorService(host, backend, isEnabled, isMacintosh, logService));
+	server.registerChannel(PARADIS_SIMULATOR_CHANNEL, new ParadisSimulatorChannel<string>(service));
+
+	// モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは para-browser の MCP サーバーへ相乗りさせるため、
+	// エージェントCLI側に追加のMCP設定は要らない
+	const { service: ledger, deviceOps } = registerParadisMobileCanvas(server, builtinExtensionsPath, logService, registerToolProvider,
+		mobileCanvas => new ParadisMobileHostRouter(mobileCanvas, deviceHost, useServeSim, logService));
+	store.add(ledger);
+	const fold = new ParadisSimulatorFoldToolProvider(ledger, backend, deviceHost, deviceId => deviceOps.forgetScreenSize(deviceId), useServeSim, logService);
+	store.add(paradisRegisterMcpToolProvider(fold));
+
 	// 設定をオフにしたら、動いているホストを止める
-	const listener = configurationService.onDidChangeConfiguration(event => {
-		if (event.affectsConfiguration(PARADIS_SIMULATOR_ENABLED_SETTING) && configurationService.getValue<boolean>(PARADIS_SIMULATOR_ENABLED_SETTING) !== true) {
+	store.add(configurationService.onDidChangeConfiguration(event => {
+		if (event.affectsConfiguration(PARADIS_SIMULATOR_ENABLED_SETTING) && !isEnabled()) {
 			void service.stopHost();
 		}
-	});
-	server.registerChannel(PARADIS_SIMULATOR_CHANNEL, new ParadisSimulatorChannel<string>(service));
-	return { dispose: () => { listener.dispose(); for (const disposable of store.reverse()) { disposable.dispose(); } } };
-});
+	}));
+	return { ledger, dispose: () => store.dispose() };
+}

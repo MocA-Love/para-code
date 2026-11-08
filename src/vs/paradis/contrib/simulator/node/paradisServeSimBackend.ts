@@ -114,18 +114,28 @@ export class ParadisServeSimBackend extends Disposable {
 		});
 	}
 
-	/** 映している画面の大きさと向き。 */
-	async getScreenConfig(udid: string): Promise<IParadisSimulatorScreenConfig> {
-		const res = await this._get(`/helper/${requireUdid(udid)}/config`);
+	private async _getJson(path: string, what: string): Promise<unknown> {
+		const res = await this._get(path);
 		const chunks: Buffer[] = [];
 		for await (const chunk of res) {
 			chunks.push(chunk as Buffer);
 		}
 		const body = Buffer.concat(chunks).toString('utf8');
 		if (res.statusCode !== 200) {
-			throw new Error(`The simulator host answered ${res.statusCode} for the screen config: ${body.slice(0, 200)}`);
+			const retry = res.statusCode === 503 ? ' It may still be starting; try again in a moment.' : '';
+			throw new Error(`The simulator host answered ${res.statusCode} for the ${what}: ${body.slice(0, 200)}.${retry}`);
 		}
-		const config = paradisParseSimulatorScreenConfig(JSON.parse(body));
+		return JSON.parse(body);
+	}
+
+	/** アクセシビリティの木（serve-sim の `axDescribe` の生の形）。 */
+	getAccessibilityTree(udid: string): Promise<unknown> {
+		return this._getJson(`/helper/${requireUdid(udid)}/ax`, 'accessibility tree');
+	}
+
+	/** 映している画面の大きさと向き。 */
+	async getScreenConfig(udid: string): Promise<IParadisSimulatorScreenConfig> {
+		const config = paradisParseSimulatorScreenConfig(await this._getJson(`/helper/${requireUdid(udid)}/config`, 'screen config'));
 		if (!config) {
 			throw new Error('The simulator host returned an unexpected screen config');
 		}
