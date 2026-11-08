@@ -33,6 +33,12 @@ export const paradisDesktopResourcePatterns: readonly string[] = [
 	'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**/*.*',
 	'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**/LICENSE*',
 	'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**/THIRD_PARTY_NOTICES',
+	// Vendored serve-sim the simulator host process loads (middleware, package.json and the .node addon), plus the
+	// two extension-less Mach-O helpers and the LICENSE, which `**/*.*` does not match
+	'vs/paradis/contrib/simulator/node/media/serve-sim/**/*.*',
+	'vs/paradis/contrib/simulator/node/media/serve-sim/LICENSE',
+	'vs/paradis/contrib/simulator/node/media/serve-sim/dist/simduo/serve-sim-duo-hid',
+	'vs/paradis/contrib/simulator/node/media/serve-sim/dist/simax/serve-sim-ax-settings',
 ];
 
 /**
@@ -51,6 +57,8 @@ const paradisVerbatimResourcePrefixes: readonly string[] = [
 	'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/',
 	'vs/paradis/contrib/fileViewers/browser/media/mermaid/',
 	'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/',
+	// serve-sim's middleware.js is an ESM bundle with a sourceMappingURL to a map that is not vendored
+	'vs/paradis/contrib/simulator/node/media/serve-sim/',
 ];
 
 /**

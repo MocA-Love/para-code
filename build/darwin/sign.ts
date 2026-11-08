@@ -21,7 +21,8 @@ function getElectronVersion(): string {
 function getEntitlementsForFile(filePath: string): string {
 	// PARA-PATCH: the Para Code Computer Use helper gets empty entitlements (Accessibility and Screen Recording come from TCC, not entitlements).
 	// PARA-PATCH: so does the dictation speech helper (it reads PCM from stdin and never opens the microphone itself).
-	if (filePath.includes('/Para Code Computer Use.app') || filePath.endsWith('/Contents/Helpers/ParadisSpeech')) {
+	// PARA-PATCH: and the vendored serve-sim Mach-O files the simulator host loads and spawns (src/vs/paradis/contrib/simulator).
+	if (filePath.includes('/Para Code Computer Use.app') || filePath.endsWith('/Contents/Helpers/ParadisSpeech') || filePath.includes('/vs/paradis/contrib/simulator/node/media/serve-sim/dist/')) {
 		return path.join(baseDir, 'paradis', 'computerUse', 'paradis-computer-use-entitlements.plist');
 	}
 	if (filePath.includes(' Helper (GPU).app')) {

@@ -27,6 +27,7 @@ import { FileAccess } from '../../../../base/common/network.js';
 import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisSimulatorHostHandshake, PARADIS_SIMULATOR_HOST_ENTRY, PARADIS_SIMULATOR_HOST_MARKER, PARADIS_SIMULATOR_HOST_READY } from '../common/paradisSimulator.js';
+import { PARADIS_SERVE_SIM_DIR, PARADIS_SERVE_SIM_MIDDLEWARE } from './paradisServeSimDist.js';
 
 /** ホストへつなぐのに要るもの。 */
 export interface IParadisSimulatorHostConnection {
@@ -55,6 +56,8 @@ export interface IParadisSimulatorHostProcessOptions {
 	readonly bootstrapPath?: string;
 	/** 準備できた印を待つ時間。 */
 	readonly readyTimeoutMs?: number;
+	/** 同梱した serve-sim のフォルダ（テスト用。既定は `out/` の中の同梱の場所）。 */
+	readonly serveSimDir?: string;
 }
 
 /** macOS の `sockaddr_un.sun_path` の大きさ（終端の NUL を含む）。 */
@@ -227,6 +230,15 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 	}
 
 	private async _start(): Promise<IParadisSimulatorHostConnection> {
+		// 配布のときに公証が通らなかった版は serve-sim のフォルダごと外してある（para-release.yml）。
+		// 落ちる子を起こして「落ち続ける」に数えず、ここで理由をはっきり返す
+		const serveSimDir = this._options.serveSimDir ?? FileAccess.asFileUri(PARADIS_SERVE_SIM_DIR).fsPath;
+		try {
+			await fs.access(join(serveSimDir, PARADIS_SERVE_SIM_MIDDLEWARE));
+		} catch {
+			this._lastError = 'serve-sim is not included in this build of Para Code';
+			throw new Error(this._lastError);
+		}
 		if (this._recentCrashes(Date.now()) >= MAX_CRASHES_IN_WINDOW) {
 			throw new Error(`The simulator host stopped ${MAX_CRASHES_IN_WINDOW} times within a minute; not restarting it for now (${this._lastError ?? 'no reason recorded'})`);
 		}
