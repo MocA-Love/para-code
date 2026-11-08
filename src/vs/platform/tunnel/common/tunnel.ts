@@ -440,7 +440,10 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 				const existingHost = this._tunnels.get(tunnel.tunnelRemoteHost);
 				if (existingHost) {
 					const existing = existingHost.get(tunnel.tunnelRemotePort);
-					if (existing) {
+					// PARA-PATCH: only count down the entry this lease came from. After a forced close
+					// (Para Code's "Reforward" in the shared process) a newer entry can sit on the same
+					// host and port, and a stale lease released later must not close it.
+					if (existing && existing.generation === generation) {
 						existing.refcount--;
 						await this.tryDisposeTunnel(tunnel.tunnelRemoteHost, tunnel.tunnelRemotePort, existing);
 					}
