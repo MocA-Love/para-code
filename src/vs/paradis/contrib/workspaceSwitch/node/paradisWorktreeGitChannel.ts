@@ -36,10 +36,12 @@ import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradi
 import { IParadisGithubCallResource, paradisGithubCallSiteFromArgs, paradisGithubResourceFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
 import { PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_CLOSED_ISSUE_MAX_AGE_MS, paradisCoerceGithubStatusMaxAge, ParadisGithubLookupCache } from '../common/paradisGithubLookupCache.js';
-import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, ParadisDiffStatFailure, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisWorktreeListOverlaps, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, ParadisDiffStatFailure, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRemoveWorktreeResult, IParadisForceDeleteBranchesRequest, IParadisForceDeleteBranchesResult, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisWorktreeListOverlaps, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine, paradisRedactCloneLogText } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
+import { IParadisFindGeneratedOutputsRequest, IParadisGeneratedOutputCandidate, IParadisRemoveGeneratedOutputsRequest, IParadisRemoveGeneratedOutputsResult, PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS } from '../common/paradisWorktreeGeneratedCleanup.js';
+import { IParadisGeneratedCleanupHost, paradisFindGeneratedOutputs, paradisRemoveGeneratedOutputs } from './paradisWorktreeGeneratedCleanup.js';
 import { IParadisCopyWorktreeIncludesRequest, IParadisWorktreeIncludeResult } from '../common/paradisWorktreeInclude.js';
 import { PARADIS_WORKTREE_LINK_RECORD_FILE, paradisMaterializeWorktreeIncludes, paradisReadWorktreeIncludeDeclarations, paradisRestoreWorktreeLinks, paradisUnlinkRecordedWorktreeLinks } from './paradisWorktreeIncludeCopy.js';
 import { PARADIS_GIT_NETWORK_SUBCOMMANDS, paradisRestrictedGitArgsError } from '../common/paradisGitRestrictedArgs.js';
@@ -349,6 +351,8 @@ export class ParadisWorktreeGitService {
 				}
 			});
 			if (options?.input !== undefined) {
+				// git が読む前に終わる（起動できない・時間切れ）と書き込みが EPIPE になる。失敗は上の callback で伝わる
+				child.stdin?.on('error', () => { });
 				child.stdin?.end(options.input);
 			}
 		});
@@ -1136,7 +1140,7 @@ export class ParadisWorktreeGitService {
 	 * {@link IParadisRemoveWorktreeRequest<string>.unlock}）。`-f` を2つ渡す代わりに unlock を挟むのは、
 	 * ロックの解除という取り消せない操作を、呼び出し側がユーザーの同意を得た場合だけに限るため。
 	 */
-	async removeWorktree(request: IParadisRemoveWorktreeRequest<string>): Promise<void> {
+	async removeWorktree(request: IParadisRemoveWorktreeRequest<string>): Promise<IParadisRemoveWorktreeResult> {
 		// IPC 境界の防御: 位置引数が git のオプションとして解釈されないことを保証する
 		if (typeof request.worktreePath !== 'string' || request.worktreePath.length === 0 || request.worktreePath.startsWith('-')) {
 			throw new Error(`Invalid argument: ${String(request.worktreePath)}`);
@@ -1158,7 +1162,7 @@ export class ParadisWorktreeGitService {
 				throw new Error(localize('paradis.worktree.notLeftoverFolder', "「{0}」は削除の途中で残ったフォルダーではないため、削除しませんでした（ワークツリーとして使われているか、ほかのワークツリーやリポジトリと重なっています）。一覧を読み直してから、もう一度お試しください。", request.worktreePath));
 			}
 			await fs.rm(request.worktreePath, { recursive: true, force: true, maxRetries: 3 });
-			return;
+			return {};
 		}
 		// ロック解除は取り消せない副作用で、しかも「消せるかどうか」とは独立している。
 		// remove が別の理由（ファイルを掴んでいるプロセス、権限、ネットワークボリューム等）で
@@ -1179,11 +1183,13 @@ export class ParadisWorktreeGitService {
 				// ロックされていなかった場合も失敗するので、ここでは中断しない（remove 側で判断する）
 			}
 		}
-		// 順番は、信頼の控え（Claude Code・Codex）を読む → 共有のリンクを外す → git worktree remove → 成功したら信頼を取り消す／失敗したら
-		// リンクを作り直す（信頼は残す）。Para Code が書いた Claude Code の信頼の控えは管理フォルダーにあり、削除で
-		// 消えるので最初に読む（G-04）
+		// 順番は、信頼の控え（Claude Code・Codex）を読む → 消すブランチを決める → 共有のリンクを外す → git worktree remove →
+		// 失敗したらリンクを作り直して投げる（信頼は残す）／成功したら Claude Code、Codex の順に信頼を取り消し、ブランチを消して
+		// 結果を返す。Para Code が書いた Claude Code の信頼の控えは管理フォルダーにあり、削除で消えるので最初に読む（G-04）
 		const claudeTrust = await paradisReadClaudeTrustMarker(request.worktreePath);
 		const codexTrust = await paradisReadCodexTrustMarker(request.worktreePath);
+		// 消すブランチは、画面の値ではなく作業ツリーの今の HEAD から決める（中でブランチを切り替えていることがあるため）
+		const branchToDelete = typeof request.deleteBranch === 'string' ? await this.deletableWorktreeBranch(request.repoPath, request.worktreePath, request.deleteBranch) : undefined;
 		// 持ち込みで作ったリンクは、git が未追跡と見て削除を断るので先に外す（G-06。リンク先の中身には触らない）。
 		// 外すのは作成のときに記録したものだけで、今の宣言は見ない（宣言を変えた後でも前のリンクを外すため）。
 		// 削除が断られたら作り直す（断られた作業ツリーからリンクだけが消えないように）
@@ -1233,6 +1239,216 @@ export class ParadisWorktreeGitService {
 				this.logService.warn('[ParadisWorktreeGit] could not revoke the Codex folder trust of a removed worktree', String(error));
 			}
 		}
+		return branchToDelete === undefined ? {} : this.deleteMergedBranch(request.repoPath, branchToDelete);
+	}
+
+	/** `git rev-parse` を読み、最後の改行を落とす。 */
+	private async readGit(path: string, args: string[]): Promise<string> {
+		return (await this.exec(['-C', paradisWslPathArg(path), ...args], undefined, { quiet: true })).replace(/\r?\n$/, '');
+	}
+
+	/**
+	 * 作業ツリーを消すときに一緒に消してよいブランチ。確認で見せた名前（`expected`）と作業ツリーの今の HEAD が同じときだけ
+	 * 返す（中でブランチを切り替えていたら、見せていないブランチを消さない）。次のときも undefined（消さない）:
+	 * detached HEAD、ほかの作業ツリー（元のリポジトリを含む）で開いている、`main`・`master`・origin の既定のブランチと同じ名前。
+	 */
+	private async deletableWorktreeBranch(repoPath: string, worktreePath: string, expected: string): Promise<string | undefined> {
+		let branch: string;
+		try {
+			branch = await this.readGit(worktreePath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+		} catch {
+			return undefined;
+		}
+		return branch !== expected || await this.isProtectedBranch(repoPath, branch, worktreePath) ? undefined : branch;
+	}
+
+	/** 消してはいけないブランチか（{@link deletableWorktreeBranch} の規則。`exceptWorktree` で開いているのは数えない）。 */
+	private async isProtectedBranch(repoPath: string, branch: string, exceptWorktree: string | undefined): Promise<boolean> {
+		if (branch.length === 0 || branch.startsWith('-') || branch === 'main' || branch === 'master') {
+			return true;
+		}
+		if ((await this.originDefaultBranch(repoPath)) === `origin/${branch}`) {
+			return true;
+		}
+		let list: string;
+		try {
+			list = await this.exec(['-C', paradisWslPathArg(repoPath), 'worktree', 'list', '--porcelain', '-z'], undefined, { quiet: true });
+		} catch {
+			// 開いているかが分からないなら消さない
+			return true;
+		}
+		const except = exceptWorktree === undefined ? undefined : await this.readGit(exceptWorktree, ['rev-parse', '--path-format=absolute', '--git-dir']).catch(() => undefined);
+		for (const record of list.split('\0\0')) {
+			const fields = record.split('\0');
+			if (!fields.includes(`branch refs/heads/${branch}`)) {
+				continue;
+			}
+			const path = fields.find(field => field.startsWith('worktree '))?.slice('worktree '.length);
+			if (except === undefined || path === undefined) {
+				return true;
+			}
+			// 消そうとしている作業ツリー自身で開いているのは数えない（git の一覧のパスと名前空間が違いうるので git のフォルダで比べる）
+			const gitDir = await this.readGit(path, ['rev-parse', '--path-format=absolute', '--git-dir']).catch(() => undefined);
+			if (gitDir !== except) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** origin の既定のブランチ（`origin/main` の形）。分からなければ undefined。 */
+	private async originDefaultBranch(repoPath: string): Promise<string | undefined> {
+		try {
+			return await this.readGit(repoPath, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * マージ済みのブランチだけを消し、それ以外は残したブランチとして返す。マージ済みとは、先頭のコミットが元のリポジトリの
+	 * 今の HEAD か origin の既定のブランチ（Orca と同じく、元のリポジトリが別のブランチにいる・pull していない場合のため）に
+	 * 含まれること。squash でマージしたものは含まれないので残る。消えたかは文言でなく参照の有無で見る。
+	 */
+	private async deleteMergedBranch(repoPath: string, branch: string): Promise<IParadisRemoveWorktreeResult> {
+		const ref = `refs/heads/${branch}`;
+		let sha: string;
+		try {
+			sha = await this.readGit(repoPath, ['rev-parse', '--verify', '--quiet', ref]);
+		} catch {
+			return {};
+		}
+		// `git branch -d` は追跡先にマージ済みでも通すので、`push -u` しただけの未マージのブランチまで消える。
+		// そこで -d は使わず、元のリポジトリの今の HEAD か origin の既定のブランチに先頭のコミットが含まれるときだけ消す
+		const originDefault = await this.originDefaultBranch(repoPath);
+		const targets = ['HEAD', ...(originDefault !== undefined ? [`refs/remotes/${originDefault}`] : [])];
+		for (const target of targets) {
+			try {
+				await this.exec(['-C', paradisWslPathArg(repoPath), 'merge-base', '--is-ancestor', sha, target], undefined, { quiet: true });
+			} catch {
+				// 含まれていない（または比べられない）。次の比べ先へ
+				continue;
+			}
+			try {
+				await this.exec(['-C', paradisWslPathArg(repoPath), 'branch', '-D', '--', branch], undefined, { quiet: true });
+			} catch {
+				// 消せなかった。下で残っていることを確かめる
+			}
+			break;
+		}
+		try {
+			await this.readGit(repoPath, ['rev-parse', '--verify', '--quiet', ref]);
+			return { keptBranch: { name: branch, sha } };
+		} catch {
+			return { deletedBranch: branch };
+		}
+	}
+
+	/**
+	 * ほかのワークツリーに残った、30 日より古い依存とビルド出力を探す（消さない。G-07、Orca #32331）。
+	 * 元のリポジトリ（一覧の先頭）・ロックされたもの・`excludePaths`（今のスペース）・30 日以内に使った（git の index が新しい）
+	 * ものは見ない。WSL の中のリポジトリは扱わない。
+	 */
+	async findGeneratedOutputs(request: IParadisFindGeneratedOutputsRequest<string>): Promise<IParadisGeneratedOutputCandidate[]> {
+		const worktrees = await this.cleanableWorktrees(request);
+		return paradisFindGeneratedOutputs(worktrees, this.generatedOutputCutoff(), this.generatedCleanupHost());
+	}
+
+	/** {@link findGeneratedOutputs} の候補を消す。ワークツリーの一覧を読み直し、候補を 1 つずつ測り直してから消す。 */
+	async removeGeneratedOutputs(request: IParadisRemoveGeneratedOutputsRequest<string>): Promise<IParadisRemoveGeneratedOutputsResult> {
+		if (!Array.isArray(request?.candidates)) {
+			throw new Error('Invalid argument');
+		}
+		const worktrees = await this.cleanableWorktrees(request);
+		return paradisRemoveGeneratedOutputs(request.candidates, worktrees, this.generatedOutputCutoff(), this.generatedCleanupHost());
+	}
+
+	private generatedOutputCutoff(): number {
+		return Date.now() - PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS * 86_400_000;
+	}
+
+	/** 掃除してよいワークツリー（git の一覧の 2 つ目以降で、ロックされておらず、`excludePaths` と重ならないもの）。 */
+	private async cleanableWorktrees(request: IParadisFindGeneratedOutputsRequest<string>): Promise<string[]> {
+		if (typeof request?.repoPath !== 'string' || request.repoPath.length === 0 || request.repoPath.startsWith('-') || !Array.isArray(request.excludePaths)) {
+			throw new Error('Invalid argument');
+		}
+		if (this.isWindowsHost && paradisParseWslUncPath(request.repoPath) !== undefined) {
+			return [];
+		}
+		const output = await this.exec(['-C', paradisWslPathArg(request.repoPath), 'worktree', 'list', '--porcelain', '-z']);
+		const comparison = { ignoreCase: !isLinux, backslashIsSeparator: isWindows };
+		const repository = await this.resolveWorktreePath(request.repoPath);
+		const excluded = [{ path: repository }, ...await Promise.all(request.excludePaths.filter((path): path is string => typeof path === 'string').map(async path => ({ path: await this.resolveWorktreePath(path) })))];
+		const result: string[] = [];
+		for (const entry of paradisParseWorktreeListPorcelain(output).slice(1)) {
+			if (entry.locked) {
+				continue;
+			}
+			const resolved = await this.resolveWorktreePath(entry.path);
+			if (!paradisWorktreeListOverlaps(excluded, resolved, comparison) && await this.isWorktreeIdle(entry.path)) {
+				result.push(entry.path);
+			}
+		}
+		return result;
+	}
+
+	/**
+	 * しばらく使っていない作業ツリーか。`node_modules` のフォルダの日付は中の一番上が増減したときしか変わらず、毎日使う作業ツリー
+	 * でも古く見えるので、作業ツリーごとの git の index（ステージ・切り替え・status で書き換わる）も 30 日より古いことを見る。
+	 */
+	private async isWorktreeIdle(worktreePath: string): Promise<boolean> {
+		try {
+			const gitDir = await this.readGit(worktreePath, ['rev-parse', '--path-format=absolute', '--git-dir']);
+			return (await fs.stat(join(gitDir, 'index'))).mtimeMs <= this.generatedOutputCutoff();
+		} catch {
+			return false;
+		}
+	}
+
+	private generatedCleanupHost(): IParadisGeneratedCleanupHost {
+		return {
+			isIgnoredAndUntracked: async (worktree, rel) => {
+				try {
+					const tracked = await this.exec(['-C', paradisWslPathArg(worktree), '--literal-pathspecs', 'ls-files', '--cached', '-z', '--', rel], undefined, { quiet: true });
+					if (tracked.length > 0) {
+						return false;
+					}
+					await this.exec(['-C', paradisWslPathArg(worktree), 'check-ignore', '-q', '--', `${rel}/`], undefined, { quiet: true });
+					return true;
+				} catch {
+					return false;
+				}
+			},
+		};
+	}
+
+	/**
+	 * 残したブランチを強制的に消す（`git branch -D`。G-07 の「残したブランチを確かめる」で選んだものだけ）。
+	 * 受け側でも、名前が `-` で始まらない・ローカルのブランチとして在る・どの作業ツリーでも開いていない・
+	 * `main`・`master`・origin の既定のブランチでない、を確かめる。消せなかったものは `failed` に入れる。
+	 */
+	async forceDeleteBranches(request: IParadisForceDeleteBranchesRequest<string>): Promise<IParadisForceDeleteBranchesResult> {
+		if (typeof request?.repoPath !== 'string' || request.repoPath.length === 0 || request.repoPath.startsWith('-') || !Array.isArray(request.branches)) {
+			throw new Error('Invalid argument');
+		}
+		const deleted: string[] = [];
+		const failed: string[] = [];
+		for (const branch of request.branches) {
+			if (typeof branch !== 'string') {
+				continue;
+			}
+			try {
+				if (await this.isProtectedBranch(request.repoPath, branch, undefined)) {
+					throw new Error('protected');
+				}
+				await this.readGit(request.repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+				await this.exec(['-C', paradisWslPathArg(request.repoPath), 'branch', '-D', '--', branch]);
+				deleted.push(branch);
+			} catch {
+				failed.push(branch);
+			}
+		}
+		return { deleted, failed };
 	}
 
 	/**
@@ -1707,6 +1923,9 @@ export class ParadisWorktreeGitChannel<TContext extends ParadisCloneOwner = stri
 			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
 			case 'getPrStatus': return this.service.getPrStatus(String(args[0]), paradisCoerceGithubStatusMaxAge(args[1])) as Promise<T>;
 			case 'getIssueStatuses': return this.service.getIssueStatuses(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : [], paradisCoerceGithubStatusMaxAge(args[2])) as Promise<T>;
+			case 'findGeneratedOutputs': return this.service.findGeneratedOutputs(args[0] as IParadisFindGeneratedOutputsRequest<string>) as Promise<T>;
+			case 'removeGeneratedOutputs': return this.service.removeGeneratedOutputs(args[0] as IParadisRemoveGeneratedOutputsRequest<string>) as Promise<T>;
+			case 'forceDeleteBranches': return this.service.forceDeleteBranches(args[0] as IParadisForceDeleteBranchesRequest<string>) as Promise<T>;
 			case 'copyWorktreeIncludes': return this.service.copyWorktreeIncludes(args[0] as IParadisCopyWorktreeIncludesRequest<string>) as Promise<T>;
 			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest<string>) as Promise<T>;
 			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery<string>) as Promise<T>;

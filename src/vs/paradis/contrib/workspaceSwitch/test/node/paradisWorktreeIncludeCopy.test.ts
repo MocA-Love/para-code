@@ -113,18 +113,24 @@ import { IParadisWorktreeIncludeHost, paradisMaterializeWorktreeIncludes, paradi
 		const afterUnlink = (await fs.readdir(worktree)).sort();
 		// 削除が断られたら作り直す
 		await paradisRestoreWorktreeLinks(worktree, unlinked);
+		// 作業ツリーが消えた後は作り直さない（消えたフォルダを mkdir で作らない）
+		const gone = join(root, 'repo-worktrees', 'gone');
+		await paradisRestoreWorktreeLinks(gone, unlinked);
+		const goneRecreated = await fs.access(gone).then(() => true, () => false);
 
 		assert.deepStrictEqual({
 			declarations,
 			unlinked: unlinked.map(record => record.path),
 			afterUnlink,
 			restored: await fs.readlink(join(worktree, '.cache', 'models')),
+			goneRecreated,
 			modelsKept: await fs.readFile(join(repo, '.cache', 'models', 'm.bin'), 'utf8'),
 		}, {
 			declarations: { include: ['.env', 'config/secrets.json'], sharedDirectories: ['.cache/models', 'node_modules'] },
 			unlinked: ['.cache/models'],
 			afterUnlink: ['.cache', '.env', 'config', 'mine', 'node_modules'],
 			restored: join(repo, '.cache', 'models'),
+			goneRecreated: false,
 			modelsKept: 'model',
 		});
 	});

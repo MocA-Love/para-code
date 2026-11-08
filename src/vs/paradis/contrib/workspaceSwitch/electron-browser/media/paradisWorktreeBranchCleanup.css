@@ -1,0 +1,126 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments) */
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * 残したブランチを確かめるダイアログ（paradisWorktreeBranchCleanup.ts）。箱は共通の S 段（paradisModal.css）。
+ * 見出しの帯・本文・下端の帯は Setup / Teardown のダイアログ（paradisWorkspaceLifecycleDialog.css）と同じ段で書く。
+ */
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-header {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 35px;
+	padding: 0 var(--vscode-spacing-size80) 0 var(--vscode-spacing-size160);
+	flex: none;
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--paradis-modal-body-top) var(--vscode-spacing-size160) var(--vscode-spacing-size160);
+	min-height: 0;
+	overflow: auto;
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-description {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-box {
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: var(--vscode-cornerRadius-medium);
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-head {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-count {
+	margin-left: auto;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-list {
+	max-height: 320px;
+	overflow: auto;
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-row + .pkb-row {
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-row-text {
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-branch {
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-meta,
+.monaco-workbench .paradis-kept-branches-dialog .pkb-reason {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-reason {
+	margin-left: auto;
+	flex: none;
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-error {
+	color: var(--vscode-errorForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-error:empty {
+	display: none;
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160);
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	flex: none;
+}
+
+.monaco-workbench .paradis-kept-branches-dialog .pkb-footer > .monaco-text-button {
+	width: auto;
+}

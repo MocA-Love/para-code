@@ -276,12 +276,20 @@ export async function paradisUnlinkRecordedWorktreeLinks(worktreePath: string, r
 	return unlinked;
 }
 
-/** 外したリンクを作り直す（作業ツリーの削除が断られたとき）。作れないものは飛ばす。 */
+/**
+ * 外したリンクを作り直す（作業ツリーの削除が断られたとき）。作業ツリーのルートとリンクの親のフォルダがまだ在るときだけ戻す
+ * （途中まで消えた作業ツリーに、消えたフォルダを作り直さない）。作れないものは飛ばす。
+ */
 export async function paradisRestoreWorktreeLinks(worktreePath: string, records: readonly IParadisWorktreeLinkRecord[]): Promise<void> {
+	if (!(await fs.lstat(worktreePath).catch(() => undefined))?.isDirectory()) {
+		return;
+	}
 	for (const record of records) {
 		try {
 			const target = join(worktreePath, record.path);
-			await fs.mkdir(dirname(target), { recursive: true });
+			if (!(await fs.lstat(dirname(target))).isDirectory()) {
+				continue;
+			}
 			await fs.symlink(record.source, target, record.type);
 		} catch {
 			// 既に在る・親が消えた

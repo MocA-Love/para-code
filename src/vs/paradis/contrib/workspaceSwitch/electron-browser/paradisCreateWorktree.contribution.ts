@@ -28,7 +28,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_GET_DIFF_STATS_COMMAND_ID, PARADIS_REMOVE_WORKTREE_COMMAND_ID, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
+import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRemoveWorktreeResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
 import { paradisGithubStatusMaxAge } from '../common/paradisGithubLookupCache.js';
 import { ParadisScopeRetirementPreparation } from '../common/paradisEditorScope.js';
@@ -37,6 +37,8 @@ import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.j
 import { paradisIsLifecycleScriptApproved, paradisPrefersTeardown, paradisReadWorkspaceLifecycleConfig, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisCollectPerWorktree, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
+import './paradisWorktreeGeneratedCleanup.js';
+import { paradisNotifyKeptBranch, paradisPrefersBranchDeletion, paradisRecordKeptBranch, paradisRememberBranchDeletionChoice } from './paradisWorktreeBranchCleanup.js';
 import { IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
 
@@ -314,6 +316,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		const instantiationService = accessor.get(IInstantiationService);
 		const fileService = accessor.get(IFileService);
 		const storageService = accessor.get(IStorageService);
+		const commandService = accessor.get(ICommandService);
 
 		// executeCommand 経由で渡ってくる URI が復元済みでない可能性に備えて revive する
 		const uri = URI.isUri(worktree.uri) ? worktree.uri : URI.revive(worktree.uri);
@@ -350,6 +353,15 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				? localize('paradis.workspaceSwitch.removeWorktreeTeardownDetailWithTimeout', "\n\n削除の前に実行できる teardown スクリプト（最長 {1} 分で打ち切り）:\n{0}", teardown.script, teardown.timeoutMinutes)
 				// allow-any-unicode-next-line
 				: localize('paradis.workspaceSwitch.removeWorktreeTeardownDetail', "\n\n削除の前に実行できる teardown スクリプト:\n{0}", teardown.script);
+		// ブランチも消すか（G-07）。消すのは node 側で作業ツリーの今の HEAD から決め、`git branch -d` なのでマージ済みだけ。
+		// 確認のチェックボックスは 1 つしか持てないので、teardown のあるリポジトリでは teardown のチェックを優先し、
+		// ブランチは前回の選択（既定は消す）に従うことを本文に 1 行書く。
+		const branchName = leftoverFolder ? undefined : worktree.branch;
+		const prefersBranchDeletion = paradisPrefersBranchDeletion(storageService, repository.uri);
+		const branchDetail = teardown !== undefined && branchName !== undefined && prefersBranchDeletion
+			// allow-any-unicode-next-line
+			? localize('paradis.workspaceSwitch.removeWorktreeBranchDetail', "\n\nマージ済みなら、ブランチ「{0}」も削除します。", branchName)
+			: '';
 		const { confirmed, checkboxChecked } = await dialogService.confirm({
 			type: 'warning',
 			// allow-any-unicode-next-line
@@ -364,7 +376,8 @@ class ParadisRemoveWorktreeAction extends Action2 {
 					? localize('paradis.workspaceSwitch.removeLeftoverFolderDetail', "パス: {0}\n\n途中で止まった削除で残ったフォルダーを、中身ごと削除します。git はこのフォルダーをもうワークツリーとして扱っていません。", uri.fsPath)
 					// allow-any-unicode-next-line
 					: localize('paradis.workspaceSwitch.removeWorktreeDetail', "パス: {0}\n\nディスク上の作業ツリーを削除します。未コミットの変更は失われます。", uri.fsPath))
-				+ teardownDetail,
+				+ teardownDetail
+				+ branchDetail,
 			// allow-any-unicode-next-line
 			primaryButton: localize('paradis.workspaceSwitch.removeWorktreeConfirmAction', "削除"),
 			...(teardown !== undefined ? {
@@ -376,10 +389,20 @@ class ParadisRemoveWorktreeAction extends Action2 {
 					// 承認済みなら、そのリポジトリでの前回の選択に従う。
 					checked: paradisIsLifecycleScriptApproved(storageService, repository.uri, 'teardown', teardown) && paradisPrefersTeardown(storageService, repository.uri)
 				}
+			} : branchName !== undefined ? {
+				checkbox: {
+					// allow-any-unicode-next-line
+					label: localize('paradis.workspaceSwitch.removeWorktreeDeleteBranch', "ブランチ「{0}」も削除する（マージ済みのときだけ）", branchName),
+					checked: prefersBranchDeletion
+				}
 			} : {})
 		});
 		if (!confirmed) {
 			return;
+		}
+		const deleteBranch = branchName !== undefined && (teardown === undefined ? checkboxChecked === true : prefersBranchDeletion);
+		if (teardown === undefined && branchName !== undefined) {
+			paradisRememberBranchDeletionChoice(storageService, repository.uri, deleteBranch);
 		}
 		// チェックを入れたまま削除したことを、表示したスクリプトの実行の承認として扱う（別の承認ダイアログを重ねない）。
 		const runTeardownScript = teardown === undefined || checkboxChecked === true;
@@ -470,19 +493,21 @@ class ParadisRemoveWorktreeAction extends Action2 {
 						repoPath: path(repository.uri),
 						worktreePath: path(uri),
 						force: leftoverFolder,
-						allowLeftoverCleanup: leftoverFolder
+						allowLeftoverCleanup: leftoverFolder,
+						...(deleteBranch && branchName !== undefined ? { deleteBranch: branchName } : {})
 					};
 
 					// 削除は大きな作業ツリーで数分かかるので、実行中であることを見せる
-					const withRemovalProgress = (task: () => Promise<unknown>) => progressService.withProgress({
+					const withRemovalProgress = <T>(task: () => Promise<T>) => progressService.withProgress<T>({
 						location: ProgressLocation.Notification,
 						// allow-any-unicode-next-line
 						title: localize('paradis.workspaceSwitch.removeWorktreeProgress', "ワークツリー「{0}」を削除しています…", worktree.name),
 					}, task);
 
 					let removedFromDisk = false;
+					let removal: IParadisRemoveWorktreeResult | undefined;
 					try {
-						await withRemovalProgress(() => channel.call('removeWorktree', [removeRequest]));
+						removal = await withRemovalProgress(() => channel.call<IParadisRemoveWorktreeResult>('removeWorktree', [removeRequest]));
 						removedFromDisk = true;
 					} catch (error) {
 						// 失敗の理由は2種類あり、求めるべき同意も違う。
@@ -528,7 +553,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 							return;
 						}
 						try {
-							await withRemovalProgress(() => channel.call('removeWorktree', [{ ...removeRequest, force: true, unlock: lock.locked }]));
+							removal = await withRemovalProgress(() => channel.call<IParadisRemoveWorktreeResult>('removeWorktree', [{ ...removeRequest, force: true, unlock: lock.locked }]));
 							removedFromDisk = true;
 						} catch (forceError) {
 							logService.error('[ParadisRemoveWorktree] force removal failed', forceError);
@@ -547,6 +572,12 @@ class ParadisRemoveWorktreeAction extends Action2 {
 					// git worktree remove は .git/worktrees/<name> のメタデータも消すため watcher 経由で
 					// いずれ一覧が更新されるが、既知リストから即座に外して反映を早める
 					scopeRetired = await worktreeService.removeKnownWorktree({ ...worktree, uri });
+					// git がマージされていないとして消さなかったブランチは、台帳に残して知らせる（古い接続先は結果を返さない）
+					const kept = removal?.keptBranch;
+					if (kept !== undefined) {
+						paradisRecordKeptBranch(storageService, repository.uri, kept);
+						paradisNotifyKeptBranch(notificationService, commandService, repository, worktree.name, kept.name);
+					}
 				},
 			});
 		} catch (error) {
