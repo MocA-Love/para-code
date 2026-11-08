@@ -20,7 +20,8 @@ import { ITerminalService } from '../../../../workbench/contrib/terminal/browser
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
-import { ParadisSimulatorEditorInput, paradisSimulatorAssignedTerminals } from './paradisSimulatorEditorInput.js';
+import { ParadisSimulatorEditorInput, paradisDeviceAssignedTerminals, paradisSimulatorAssignedTerminals } from './paradisSimulatorEditorInput.js';
+import { ParadisAndroidEditorInput } from './paradisAndroidEditorInput.js';
 
 class ParadisSimulatorTabLabelsContribution extends Disposable implements IWorkbenchContribution {
 
@@ -43,13 +44,13 @@ class ParadisSimulatorTabLabelsContribution extends Disposable implements IWorkb
 		this._update();
 	}
 
-	private _simulatorInputs(): ParadisSimulatorEditorInput[] {
-		return this._editorService.editors.filter((editor): editor is ParadisSimulatorEditorInput => editor instanceof ParadisSimulatorEditorInput);
+	private _simulatorInputs(): (ParadisSimulatorEditorInput | ParadisAndroidEditorInput)[] {
+		return this._editorService.editors.filter((editor): editor is ParadisSimulatorEditorInput | ParadisAndroidEditorInput => editor instanceof ParadisSimulatorEditorInput || editor instanceof ParadisAndroidEditorInput);
 	}
 
 	private _update(): void {
 		const inputs = this._simulatorInputs();
-		const visible = this._editorService.visibleEditors.some(editor => editor instanceof ParadisSimulatorEditorInput);
+		const visible = this._editorService.visibleEditors.some(editor => editor instanceof ParadisSimulatorEditorInput || editor instanceof ParadisAndroidEditorInput);
 		if (!visible) {
 			this._polling.clear();
 		} else if (!this._polling.value) {
@@ -63,7 +64,9 @@ class ParadisSimulatorTabLabelsContribution extends Disposable implements IWorkb
 			return instanceId === undefined ? undefined : this._terminalService.getInstanceFromId(instanceId)?.title;
 		};
 		for (const input of inputs) {
-			input.setAssignedTerminals(paradisSimulatorAssignedTerminals(input.udid, this._model.snapshot.attachments, terminalName));
+			input.setAssignedTerminals(input instanceof ParadisAndroidEditorInput
+				? paradisDeviceAssignedTerminals(input.deviceId, this._model.snapshot.attachments, terminalName)
+				: paradisSimulatorAssignedTerminals(input.udid, this._model.snapshot.attachments, terminalName));
 		}
 	}
 }

@@ -144,6 +144,8 @@ export const indentationFilter = Object.freeze<string[]>([
 	'!src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**',
 	// PARA-PATCH: vendored serve-sim 0.1.49 (Apache-2.0) loaded by the simulator host process (see the folder's README.md)
 	'!src/vs/paradis/contrib/simulator/node/media/serve-sim/**',
+	// PARA-PATCH: vendored scrcpy-server v5.0.1 (Apache-2.0) pushed to Android devices (see the folder's README.md)
+	'!src/vs/paradis/contrib/simulator/node/media/scrcpy/**',
 	// PARA-PATCH: vendored cursor-motion (Cua, MIT) used to plan the agent cursor's path (see the folder's README.md)
 	'!src/vs/paradis/contrib/agentBrowser/common/cursorMotion/**',
 
@@ -263,6 +265,8 @@ export const copyrightFilter = Object.freeze<string[]>([
 	'!src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**',
 	// PARA-PATCH: vendored serve-sim 0.1.49 (Apache-2.0) loaded by the simulator host process (see the folder's README.md)
 	'!src/vs/paradis/contrib/simulator/node/media/serve-sim/**',
+	// PARA-PATCH: vendored scrcpy-server v5.0.1 (Apache-2.0) pushed to Android devices (see the folder's README.md)
+	'!src/vs/paradis/contrib/simulator/node/media/scrcpy/**',
 	// PARA-PATCH: vendored cursor-motion (Cua, MIT) used to plan the agent cursor's path (see the folder's README.md)
 	'!src/vs/paradis/contrib/agentBrowser/common/cursorMotion/**',
 

@@ -17,7 +17,7 @@
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_ENABLED_SETTING, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
@@ -26,6 +26,9 @@ import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
 import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 import { ParadisAdbDeviceHost } from './android/paradisAdbDeviceHost.js';
+import { ParadisScrcpySessions } from './android/paradisScrcpySessions.js';
+import { IParadisAndroidDeviceSummary, PARADIS_ANDROID_SERIAL_PREFIX, paradisAndroidKeycode, paradisAndroidSerialOf } from '../common/paradisAndroid.js';
+import { ParadisAndroidVideoWire, paradisAndroidInputMessages } from '../common/paradisScrcpy.js';
 
 const MIN_FRAME_INTERVAL_MS = 1000 / 30;
 
@@ -103,10 +106,81 @@ class ParadisSimulatorFrameRelay extends Disposable {
 	}
 }
 
+/** Android の 1 台ぶんの映像の中継。最初の購読で scrcpy の通話を使い始め、最後の購読が外れたら使い終わる。 */
+class ParadisAndroidVideoRelay extends Disposable {
+
+	private readonly _onMessage: Emitter<ParadisAndroidVideoWire>;
+	readonly onMessage: Event<ParadisAndroidVideoWire>;
+	private readonly _lease = this._register(new MutableDisposable());
+	private _generation = 0;
+
+	constructor(
+		private readonly _serial: string,
+		private readonly _sessions: Pick<ParadisScrcpySessions, 'acquire'>,
+		private readonly _logService: ILogService,
+	) {
+		super();
+		this._onMessage = this._register(new Emitter<ParadisAndroidVideoWire>({
+			onWillAddFirstListener: () => void this._open(),
+			onDidRemoveLastListener: () => this._close(),
+		}));
+		this.onMessage = this._onMessage.event;
+	}
+
+	private async _open(): Promise<void> {
+		const generation = ++this._generation;
+		try {
+			const { session, lease } = await this._sessions.acquire(this._serial);
+			if (generation !== this._generation) {
+				lease.dispose();
+				return;
+			}
+			const store = new DisposableStore();
+			store.add(lease);
+			// 後から購読しても復号できるよう、今の大きさと最後の config（SPS・PPS）を先に渡し、key frame を求める
+			if (session.size) {
+				this._onMessage.fire({ serial: this._serial, kind: 'size', width: session.size.width, height: session.size.height });
+			}
+			if (session.config) {
+				this._onMessage.fire({ serial: this._serial, kind: 'config', data: VSBuffer.wrap(session.config) });
+			}
+			void session.resetVideo().catch(() => undefined);
+			store.add(session.onVideo(event => {
+				if (event.kind === 'session') {
+					this._onMessage.fire({ serial: this._serial, kind: 'size', width: event.width, height: event.height });
+				} else if (event.kind === 'config') {
+					this._onMessage.fire({ serial: this._serial, kind: 'config', data: VSBuffer.wrap(event.data) });
+				} else if (event.kind === 'frame') {
+					this._onMessage.fire({ serial: this._serial, kind: 'frame', data: VSBuffer.wrap(event.data), key: event.key, pts: event.pts });
+				}
+			}));
+			store.add(session.onDidEnd(error => this._onMessage.fire({ serial: this._serial, kind: 'ended', ...(error ? { reason: error.message } : {}) })));
+			this._lease.value = store;
+		} catch (error) {
+			if (generation === this._generation) {
+				this._logService.warn(`[paradis-simulator] could not start scrcpy: ${error instanceof Error ? error.message : String(error)}`);
+				this._onMessage.fire({ serial: this._serial, kind: 'ended', reason: error instanceof Error ? error.message : String(error) });
+			}
+		}
+	}
+
+	private _close(): void {
+		this._generation++;
+		this._lease.clear();
+	}
+}
+
+/** Android の受け持ち（⑥a の adb・⑥b の scrcpy）。 */
+export interface IParadisSimulatorAndroid {
+	readonly adb: Pick<ParadisAdbDeviceHost, 'bootAvd' | 'listDevices'>;
+	readonly scrcpy?: Pick<ParadisScrcpySessions, 'acquire' | 'use'>;
+}
+
 /** チャネルの中身。テストからも使う。 */
 export class ParadisSimulatorService extends Disposable {
 
 	private readonly _relays = new Map<string, ParadisSimulatorFrameRelay>();
+	private readonly _androidRelays = new Map<string, ParadisAndroidVideoRelay>();
 
 	constructor(
 		private readonly _host: IParadisSimulatorHostProvider & { stop(): Promise<void> },
@@ -115,10 +189,11 @@ export class ParadisSimulatorService extends Disposable {
 		private readonly _supported: boolean,
 		private readonly _logService: ILogService,
 		private readonly _deviceHub: Pick<ParadisSimulatorDeviceHub, 'isRunning' | 'open'> = new ParadisSimulatorDeviceHub(),
-		private readonly _android?: Pick<ParadisAdbDeviceHost, 'bootAvd'>,
+		private readonly _android?: IParadisSimulatorAndroid,
 	) {
 		super();
 		this._register({ dispose: () => { for (const relay of this._relays.values()) { relay.dispose(); } this._relays.clear(); } });
+		this._register({ dispose: () => { for (const relay of this._androidRelays.values()) { relay.dispose(); } this._androidRelays.clear(); } });
 	}
 
 	getStatus(): IParadisSimulatorStatus {
@@ -173,7 +248,62 @@ export class ParadisSimulatorService extends Disposable {
 	/** 起動していない Android の AVD を起動する（エージェントの要求を承認したとき。起動しきるのは待たない）。 */
 	async bootAndroid(deviceId: string): Promise<void> {
 		this.assertAvailable();
-		await this._android?.bootAvd(deviceId);
+		await this._android?.adb.bootAvd(deviceId);
+	}
+
+	/** Android の端末の一覧（エディタのタブを開くため。adb が無ければ空）。 */
+	async listAndroidDevices(): Promise<IParadisAndroidDeviceSummary[]> {
+		this.assertAvailable();
+		const entries = await this._android?.adb.listDevices().catch(() => []) ?? [];
+		return entries.flatMap(entry => {
+			const record = entry as Record<string, unknown>;
+			const serial = typeof record.id === 'string' ? paradisAndroidSerialOf(record.id) : undefined;
+			return serial ? [{ serial, name: typeof record.name === 'string' ? record.name : serial, runtime: typeof record.runtimeName === 'string' ? record.runtimeName : '', state: typeof record.state === 'string' ? record.state : '' }] : [];
+		});
+	}
+
+	/** Android の映像（scrcpy）の購読。使えないときは何も届かないイベント。 */
+	onAndroidVideo(serial: string): Event<ParadisAndroidVideoWire> {
+		const scrcpy = this._android?.scrcpy;
+		try {
+			this.assertAvailable();
+			if (!scrcpy || !paradisAndroidSerialOf(`${PARADIS_ANDROID_SERIAL_PREFIX}${serial}`)) {
+				throw new Error('Android video is not available');
+			}
+		} catch (error) {
+			this._logService.warn(`[paradis-simulator] refused an Android video subscription: ${error instanceof Error ? error.message : String(error)}`);
+			return Event.None;
+		}
+		let relay = this._androidRelays.get(serial);
+		if (!relay) {
+			relay = new ParadisAndroidVideoRelay(serial, scrcpy, this._logService);
+			this._androidRelays.set(serial, relay);
+		}
+		return relay.onMessage;
+	}
+
+	/** ペインからの Android の人の入力（scrcpy の操作のソケット）。 */
+	async androidInput(serial: string, input: unknown): Promise<void> {
+		this.assertAvailable();
+		const scrcpy = this._android?.scrcpy;
+		if (!scrcpy || !paradisAndroidSerialOf(`${PARADIS_ANDROID_SERIAL_PREFIX}${serial}`)) {
+			throw new Error('Android input is not available');
+		}
+		await scrcpy.use(serial, async session => {
+			const size = session.size;
+			if (!size) {
+				throw new Error('The Android device has not sent its screen size yet');
+			}
+			for (const message of paradisAndroidInputMessages(input, size, paradisAndroidKeycode)) {
+				await session.send(message);
+			}
+		});
+	}
+
+	/** 次の key frame を求める（renderer の復号が崩れたとき）。 */
+	async androidResetVideo(serial: string): Promise<void> {
+		this.assertAvailable();
+		await this._android?.scrcpy?.use(serial, session => session.resetVideo());
 	}
 
 	/** Device Hub のアプリが起動しているか（開閉の前提）。 */
@@ -238,6 +368,14 @@ function requireUdidArg(arg: unknown): string {
 	return udid;
 }
 
+function requireSerialArg(arg: unknown): string {
+	const serial = argField(arg, 'serial');
+	if (typeof serial !== 'string' || !paradisAndroidSerialOf(`${PARADIS_ANDROID_SERIAL_PREFIX}${serial}`)) {
+		throw new Error('Protocol error: "serial" must be an Android serial');
+	}
+	return serial;
+}
+
 function argField(arg: unknown, name: string): unknown {
 	return arg && typeof arg === 'object' ? (arg as Record<string, unknown>)[name] : undefined;
 }
@@ -250,6 +388,8 @@ export class ParadisSimulatorChannel<TContext> implements IServerChannel<TContex
 		switch (event) {
 			case 'frames':
 				return this._service.onFrames(requireUdidArg(arg)) as Event<T>;
+			case 'androidVideo':
+				return this._service.onAndroidVideo(requireSerialArg(arg)) as Event<T>;
 			default:
 				throw new Error(`Event not found: ${event}`);
 		}
@@ -280,6 +420,12 @@ export class ParadisSimulatorChannel<TContext> implements IServerChannel<TContex
 				}
 				return await this._service.bootAndroid(deviceId) as T;
 			}
+			case 'listAndroidDevices':
+				return await this._service.listAndroidDevices() as T;
+			case 'androidInput':
+				return await this._service.androidInput(requireSerialArg(arg), argField(arg, 'input')) as T;
+			case 'androidResetVideo':
+				return await this._service.androidResetVideo(requireSerialArg(arg)) as T;
 			case 'deviceHubRunning':
 				return await this._service.deviceHubRunning() as T;
 			case 'openDeviceHub':

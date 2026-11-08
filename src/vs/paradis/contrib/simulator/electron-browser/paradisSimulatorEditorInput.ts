@@ -116,10 +116,14 @@ export class ParadisSimulatorEditorInput extends EditorInput {
 	}
 }
 
-/** その端末を割り当てたペインのターミナルの名前（台帳の順。名前が分からないペインは落とす）。 */
-export function paradisSimulatorAssignedTerminals(udid: string, attachments: readonly IParadisMobileAttachment[], terminalName: (paneToken: string) => string | undefined): string[] {
-	const deviceId = `${PARADIS_SIMULATOR_DEVICE_ID_PREFIX}${udid}`;
+/** その端末（mobile_* のツールでの id）を割り当てたペインのターミナルの名前（台帳の順。名前が分からないペインは落とす）。 */
+export function paradisDeviceAssignedTerminals(deviceId: string, attachments: readonly IParadisMobileAttachment[], terminalName: (paneToken: string) => string | undefined): string[] {
 	return attachments.filter(attachment => attachment.deviceId === deviceId).map(attachment => terminalName(attachment.paneToken)).filter((name): name is string => !!name);
+}
+
+/** iOS のシミュレータ（udid）を割り当てたペインのターミナルの名前。 */
+export function paradisSimulatorAssignedTerminals(udid: string, attachments: readonly IParadisMobileAttachment[], terminalName: (paneToken: string) => string | undefined): string[] {
+	return paradisDeviceAssignedTerminals(`${PARADIS_SIMULATOR_DEVICE_ID_PREFIX}${udid}`, attachments, terminalName);
 }
 
 /** タブの名前: 端末の名前と、割り当てたターミナルの名前（無ければ端末の名前だけ）。 */
