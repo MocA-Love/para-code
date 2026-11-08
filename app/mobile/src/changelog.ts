@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-07',
 		items: [
 			{
+				icon: 'alert-circle-outline',
+				title: '描画が止まった Word の文書を、1 分ほど待たずに数秒で「表示できない」と知らせるようにしました',
+				body: '画面の表示に失敗したときの案内も、iPhone の画面上端や iPad のウィンドウの操作ボタンに重ならないようにしました。',
+			},
+			{
 				icon: 'document-text-outline',
 				title: 'Markdown や HTML のプレビューに書かれたファイルのパスを、押して開けるようにしました',
 				body: '点線の下線が付いたパスを押すと同じスペースのビューアで開き、長押しで名前・相対パス・絶対パスをコピーできます。スペースの外のファイルは開かず、コピーだけできます。',

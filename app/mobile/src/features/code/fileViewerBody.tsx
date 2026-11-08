@@ -209,13 +209,16 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 			window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'paradisOfficeRecovery', generation: ${generation}, hasExpectedRoot: present }));
 		};
 		var check = function () { if (document.querySelector(${JSON.stringify(expectedSelector)})) { finish(true); } };
-		var observer = new MutationObserver(check);
+		// 最後に DOM が変わった時刻。一度も変わらない文書でも、ここから数えて止まったと分かるよう始めた時刻で置く
+		var lastChange = Date.now();
+		var observer = new MutationObserver(function () { lastChange = Date.now(); check(); });
 		observer.observe(document.documentElement, { childList: true, subtree: true });
 		check();
-		// 2 秒で決める。ただし文書がまだ描いている途中（印 __paradisOfficeBusy）なら、上限まで待ち足す
+		// 2 秒で決める。ただし文書がまだ描いている途中（印 __paradisOfficeBusy）なら、上限まで待ち足す。
+		// 描いている途中でも DOM が一定の間変わらなければ、止まったとみなして待ち足さない
 		var waited = 0;
 		var decide = function () {
-			if (!sent && window.__paradisOfficeBusy === true && waited < ${OFFICE_RENDER_MAX_WAIT_MS}) {
+			if (!sent && window.__paradisOfficeBusy === true && waited < ${OFFICE_RENDER_MAX_WAIT_MS} && Date.now() - lastChange < ${OFFICE_RENDER_STALL_MS}) {
 				waited += 1000;
 				setTimeout(decide, 1000);
 				return;
@@ -261,6 +264,9 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 
 /** 描いている途中の Office 文書を「空」と決めるまで待ち足す上限（ms。2 秒の後に足す分）。 */
 const OFFICE_RENDER_MAX_WAIT_MS = 60_000;
+
+/** 描いている途中の印があっても、DOM がこの間（ms）変わらなければ描画が止まったとみなす。 */
+const OFFICE_RENDER_STALL_MS = 5_000;
 
 export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectSheet, find, pathLinks }: {
 	path: string;
