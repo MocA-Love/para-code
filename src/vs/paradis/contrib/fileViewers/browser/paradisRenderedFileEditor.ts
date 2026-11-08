@@ -210,8 +210,11 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	/**
 	 * UI イベント・保存の通知からの描き直しを重ねないための印（{@link _renderResourceInBackground}）。描いている間に来た
 	 * 頼みは `_renderAgain` に覚え、描き終えてから {@link _renderAgainAfter}（今の入力の描き直しの予約）で最新の内容を描く。
+	 * 印は入力ごと（`_renderInput` の世代）に持つ。前の入力の描画が返らない（接続先の読みが詰まるなど）ままでも、
+	 * 次の入力の描き直しを止めないため。
 	 */
-	private _rendering = false;
+	private _renderInput = 0;
+	private _renderingInput: number | undefined;
 	private _renderAgain = false;
 	/** 覚えた頼みの中に、同一内容の抑止を外した頼み（テーマの変更・{@link requestRerender}）があったか。 */
 	private _renderAgainInvalidates = false;
@@ -465,6 +468,11 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		};
 		// 同じ URI の入力を設定し直す経路でも、旧入力から継続中の描画を無効化する。
 		this._renderGeneration++;
+		// 重ね防止の印も入力ごとに戻す（前の入力の描画が返らなくても、この入力の描き直しは止めない）。
+		this._renderInput++;
+		this._renderingInput = undefined;
+		this._renderAgain = false;
+		this._renderAgainInvalidates = false;
 		// ペインは別のファイルを開くときも使い回されるので、前のファイルの失敗回数を持ち越さない。
 		this._recoveryPolicy.reset();
 		this._currentResource = resource;
@@ -499,7 +507,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._renderAgainAfter = renderMs => {
 			lastRenderMs = renderMs;
 			if (!store.isDisposed) {
-				rerenderScheduler.schedule(paradisViewerRerenderDelay(lastRenderMs));
+				scheduleRerender(rerenderScheduler);
 			}
 		};
 		store.add(toDisposable(() => this._renderAgainAfter = undefined));
@@ -807,18 +815,22 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	 * 描いている最中なら「もう一度描く」印だけ立て、描き終えてから今の入力の描き直しの予約に回す。
 	 */
 	private _renderResourceInBackground(resource: URI): void {
-		if (this._rendering) {
+		const renderInput = this._renderInput;
+		if (this._renderingInput === renderInput) {
 			this._renderAgain = true;
 			// 抑止を外した頼みは、描いている最中の描画が古い内容で抑止の印を付け直すので、描き終えてから外し直す
 			this._renderAgainInvalidates ||= this._renderedSource === undefined;
 			return;
 		}
-		this._rendering = true;
+		this._renderingInput = renderInput;
 		const startedAt = Date.now();
 		// renderResource が送るべき失敗は自分で送り、ファイルが無い場合は意図して送らない。
 		// ここで onUnexpectedError へ流すと、その区別を無視して unhandled-error として二重に届く。
 		this.renderResource(resource, CancellationToken.None).catch(() => { /* reported by renderResource when needed */ }).finally(() => {
-			this._rendering = false;
+			if (this._renderingInput !== renderInput) {
+				return; // 入力が変わった後に返った前の入力の描画。今の入力の印には触らない
+			}
+			this._renderingInput = undefined;
 			if (this._renderAgain) {
 				this._renderAgain = false;
 				if (this._renderAgainInvalidates) {
