@@ -48,6 +48,11 @@ class ParadisClaudeContextChannel<TContext> implements IServerChannel<TContext> 
 				const sessionId = Array.isArray(arg) && typeof arg[0] === 'string' ? arg[0] : undefined;
 				return (sessionId !== undefined && sessionId.length <= 200 ? this.store.breakdownOf(sessionId) : Promise.resolve(undefined)) as Promise<T>;
 			}
+			case 'pane': {
+				// ペイン（ペイントークン）がいま動かしている会話の最後の内訳。別のペインの内訳は返さない
+				const token = Array.isArray(arg) && typeof arg[0] === 'string' ? arg[0] : undefined;
+				return (token !== undefined && token.length > 0 && token.length <= 200 ? this.store.breakdownForPane(token) : Promise.resolve(undefined)) as Promise<T>;
+			}
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
