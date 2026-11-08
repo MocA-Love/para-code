@@ -22,7 +22,7 @@ import { IWorkspace, IWorkspaceContextService } from '../../../../../platform/wo
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
 import { IExtensionService } from '../../../../../workbench/services/extensions/common/extensions.js';
 import { RestorableTunnel, TunnelModel, TunnelSource, UserTunnelSource } from '../../../../../workbench/services/remote/common/tunnelModel.js';
-import { paradisImplicitTunnelSource, paradisIsImplicitTunnelSource, paradisTunnelsToRestore } from '../../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js';
+import { paradisImplicitTunnelSource, paradisIsImplicitTunnelSource, paradisMarkExplicitTunnelRecords, paradisTunnelsToRestore } from '../../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js';
 
 const authority = 'ssh-remote+example';
 
@@ -66,6 +66,23 @@ suite('paradisTunnelRestorePolicy', () => {
 			summary(paradisTunnelsToRestore(tunnels, TunnelSource.Extension, (host, port) => listening.has(`${host}:${port}`))),
 			['localhost:21004', 'localhost:47000', 'localhost:50000', 'localhost:8080']
 		);
+	});
+
+	test('records saved after this change are restored whatever their port', () => {
+		const saved = [
+			record('localhost', 41000, UserTunnelSource),
+			record('localhost', 21004, UserTunnelSource),
+			record('127.0.0.1', 33355, paradisImplicitTunnelSource(TunnelSource.Extension)),
+		];
+		paradisMarkExplicitTunnelRecords(saved);
+		const stored = JSON.parse(JSON.stringify(saved)) as RestorableTunnel[];
+		assert.deepStrictEqual({
+			marked: stored.map(tunnel => `${tunnel.remotePort}:${(tunnel as { paradisExplicit?: boolean }).paradisExplicit === true}`),
+			restored: summary(paradisTunnelsToRestore(stored, TunnelSource.Extension, () => false)),
+		}, {
+			marked: ['41000:true', '21004:true', '33355:false'],
+			restored: ['localhost:21004', 'localhost:41000'],
+		});
 	});
 
 	test('the implicit source survives a round trip through the stored JSON', () => {
@@ -138,11 +155,17 @@ suite('paradisTunnelRestorePolicy', () => {
 			return value ? summary(JSON.parse(value) as RestorableTunnel[]) : [];
 		}
 
-		test('a forwarded port is restored, a preview or link tunnel is not', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		function unmarkedPorts(storage: InMemoryStorageService): number[] {
+			const value = storage.get(restoreKey, StorageScope.PROFILE);
+			return value ? (JSON.parse(value) as (RestorableTunnel & { paradisExplicit?: boolean })[]).filter(tunnel => tunnel.paradisExplicit !== true).map(tunnel => tunnel.remotePort) : [];
+		}
+
+		test('a forwarded port is restored even if it is ephemeral, a preview or link tunnel is not', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 			const storage = store.add(new InMemoryStorageService());
 			const first = createModel(storage);
 			await first.model.restoreForwarded();
 			await first.model.forward({ remote: { host: 'localhost', port: 21004 } });
+			await first.model.forward({ remote: { host: 'localhost', port: 40000 } }); // forwarded by hand, not listening
 			first.tunnels.opened.fire(makeRemoteTunnel('127.0.0.1', 33355, 33355));
 			first.tunnels.opened.fire(makeRemoteTunnel('localhost', 3000, 3000));
 			await new Promise(resolve => setTimeout(resolve, 2000));
@@ -157,14 +180,14 @@ suite('paradisTunnelRestorePolicy', () => {
 			await new Promise(resolve => setTimeout(resolve, 2000));
 
 			assert.deepStrictEqual({ forwardedNow, storedBefore, reopened: second.tunnels.openedPorts, storedAfter: storedPorts(storage) }, {
-				forwardedNow: ['21004:User', '3000:Extension', '33355:Extension'],
-				storedBefore: ['127.0.0.1:33355', 'localhost:21004', 'localhost:3000'],
-				reopened: [21004, 21005],
-				storedAfter: ['localhost:21004', 'localhost:21005'],
+				forwardedNow: ['21004:User', '3000:Extension', '33355:Extension', '40000:User'],
+				storedBefore: ['127.0.0.1:33355', 'localhost:21004', 'localhost:3000', 'localhost:40000'],
+				reopened: [21004, 40000, 21005],
+				storedAfter: ['localhost:21004', 'localhost:21005', 'localhost:40000'],
 			});
 		}));
 
-		test('old records: fixed ports are restored, ephemeral ports are not and fall out on the next save', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		test('old records: fixed ports are restored, ephemeral ports are not and fall out on the next save, which marks the rest', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 			const storage = store.add(new InMemoryStorageService());
 			// What a window saved before this change: every tunnel as "User Forwarded".
 			storage.store(restoreKey, JSON.stringify([
@@ -179,9 +202,10 @@ suite('paradisTunnelRestorePolicy', () => {
 			await reopened.model.forward({ remote: { host: 'localhost', port: 21005 } });
 			await new Promise(resolve => setTimeout(resolve, 2000));
 
-			assert.deepStrictEqual({ reopened: reopened.tunnels.openedPorts, stored: storedPorts(storage) }, {
+			assert.deepStrictEqual({ reopened: reopened.tunnels.openedPorts, stored: storedPorts(storage), unmarkedAfter: unmarkedPorts(storage) }, {
 				reopened: [21004, 3000, 21005],
 				stored: ['localhost:21004', 'localhost:21005', 'localhost:3000'],
+				unmarkedAfter: [],
 			});
 		}));
 	});

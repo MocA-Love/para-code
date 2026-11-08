@@ -15,13 +15,16 @@ import { localize } from '../../../nls.js';
  * directly, and `TunnelModel` records them as "User Forwarded". Once restored nobody
  * closes them, so ephemeral ports pile up in the view.
  *
- * `tunnelModel.ts` calls into this file from two places (both marked PARA-PATCH):
+ * `tunnelModel.ts` calls into this file from three places (all marked PARA-PATCH):
  * - tunnels it did not open itself get {@link paradisImplicitTunnelSource}, which uses the
  *   extension kind. The model's restore only updates tunnels of that kind and never
  *   reopens them, so they work now and are gone the next time the window opens.
- * - before restoring, {@link paradisTunnelsToRestore} drops implicit records and records
- *   of ephemeral remote ports that are not known to be listening (records saved before
- *   this change cannot tell an implicit tunnel from a forwarded one).
+ * - when saving, {@link paradisMarkExplicitTunnelRecords} marks the other records, so the
+ *   restore can tell them from records saved before this change.
+ * - before restoring, {@link paradisTunnelsToRestore} drops implicit records, and drops
+ *   unmarked (old) records of ephemeral remote ports that are not known to be listening.
+ *   Old records cannot tell an implicit tunnel from a forwarded one; once the window saves
+ *   again, every record it keeps is marked, so this cleanup happens once.
  *
  * Tunnels forwarded through `IRemoteExplorerService.forward` (the Ports view, CSV import,
  * MCP tools, port reforwarding) keep their kind and are restored as before.
@@ -72,15 +75,34 @@ export function paradisIsEphemeralPort(port: number): boolean {
 }
 
 /**
+ * Marker on a stored record saved by a Para Code that records implicit tunnels with
+ * {@link paradisImplicitTunnelSource}.
+ */
+interface IParadisMarkedTunnelRecord {
+	paradisExplicit?: boolean;
+}
+
+/**
+ * Marks the records about to be saved, except implicit ones. Mutates the records.
+ */
+export function paradisMarkExplicitTunnelRecords(records: readonly { readonly source: IParadisTunnelSourceLike<unknown> }[]): void {
+	for (const record of records) {
+		if (!paradisIsImplicitTunnelSource(record.source)) {
+			(record as IParadisMarkedTunnelRecord).paradisExplicit = true;
+		}
+	}
+}
+
+/**
  * Picks the stored tunnel records the window should restore.
  *
  * - Records of implicit tunnels are dropped. Dropping them (instead of letting the model
  *   keep them as unrestored extension tunnels) also keeps their old local port from being
  *   reused when the same remote port is forwarded later.
- * - Records of other kinds whose remote port is ephemeral are dropped unless the remote
- *   port is known to be listening. An ephemeral port belongs to one run of a process, and
- *   records saved before this change mark preview and link tunnels as "User Forwarded".
- *   Fixed ports such as 21004 or 3000 are always restored.
+ * - Marked records (saved after this change) are restored whatever their port.
+ * - Unmarked records saved before this change mark preview and link tunnels as "User
+ *   Forwarded", so those whose remote port is ephemeral are dropped unless the remote
+ *   port is known to be listening. Fixed ports such as 21004 or 3000 are restored.
  * - Extension records are left to the model, which only updates them.
  *
  * Dropped records disappear from storage the next time the model saves its tunnels.
@@ -94,7 +116,7 @@ export function paradisTunnelsToRestore<TKind, T extends { readonly remoteHost: 
 		if (paradisIsImplicitTunnelSource(tunnel.source)) {
 			return false;
 		}
-		if (tunnel.source.source === extensionKind) {
+		if (tunnel.source.source === extensionKind || (tunnel as IParadisMarkedTunnelRecord).paradisExplicit === true) {
 			return true;
 		}
 		return !paradisIsEphemeralPort(tunnel.remotePort) || isListening(tunnel.remoteHost, tunnel.remotePort);
