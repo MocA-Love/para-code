@@ -8,6 +8,7 @@
 
 import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { NullOpenerService } from '../../../../../platform/opener/test/common/nullOpenerService.js';
+import { timeout } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -402,6 +403,72 @@ suite('ParadisHtmlFileEditor', () => {
 			{ file: '', restoreTo: undefined, initialScrollProgress: 0 },
 			{ file: 'index', restoreTo: 0.25, initialScrollProgress: 0.25 },
 		]);
+	});
+
+	test('draws a saved file of the next input again even while a re-render of the previous input never returns', async () => {
+		const first = URI.file('/workspace/site/index.html');
+		const second = URI.file('/workspace/site/other.html');
+		const pages: string[] = [];
+		const webview = {
+			contentOptions: {},
+			onFatalError: Event.None,
+			onDidScroll: Event.None,
+			onDidClickLink: Event.None,
+			setHtml: (html: string) => {
+				const page = /<p>([^<]*)<\/p>/.exec(html)?.[1];
+				if (page) {
+					pages.push(page);
+				}
+			},
+			focus: () => { },
+			dispose: () => { },
+			claim: () => { },
+			release: () => { },
+			setAnchorElement: () => { },
+			container: document.createElement('div'),
+			postMessage: async () => true,
+		} as unknown as IOverlayWebview;
+		let firstReads = 0;
+		let secondVersion = 1;
+		const textFileService = {
+			read: (resource: URI) => {
+				if (resource.path.endsWith('other.html')) {
+					return Promise.resolve({ value: `<p>other v${secondVersion}</p>` });
+				}
+				// 2 回目からの読み（描き直し）は返らない（接続先の読みが詰まった）
+				return ++firstReads === 1 ? Promise.resolve({ value: '<p>index</p>' }) : new Promise<never>(() => { });
+			},
+		} as unknown as ITextFileService;
+		const changes = disposables.add(new Emitter<URI>());
+		const fileService = {
+			createWatcher: (resource: URI) => ({
+				onDidChange: (listener: (event: { contains(uri: URI): boolean }) => void) => changes.event(changed => {
+					if (changed.toString() === resource.toString()) {
+						listener({ contains: uri => uri.toString() === resource.toString() });
+					}
+				}),
+				dispose: () => { },
+			}),
+			onDidWatchError: Event.None,
+		} as unknown as IFileService;
+		const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
+		const editor = createProductionEditor({ createWebviewOverlay: () => webview } as unknown as IWebviewService, textFileService, fileService);
+		const firstInput = disposables.add(new ParadisHtmlFileInput(first, textFileService, workingCopyService));
+		const secondInput = disposables.add(new ParadisHtmlFileInput(second, textFileService, workingCopyService));
+		const context = Object.create(null);
+		editor.create(document.createElement('div'));
+
+		await editor.setInput(firstInput, undefined, context, CancellationToken.None);
+		// 見えるようになると描き直す。この描き直しは返らないまま残る
+		editor.setVisible(true);
+		await timeout(0);
+		const stuckReads = firstReads;
+		await editor.setInput(secondInput, undefined, context, CancellationToken.None);
+		secondVersion = 2;
+		changes.fire(second);
+		await timeout(300);
+
+		deepStrictEqual({ stuckReads, pages }, { stuckReads: 2, pages: ['index', 'other v1', 'other v2'] });
 	});
 
 	test('sends the page again when it was left before the webview confirmed showing it', async () => {
