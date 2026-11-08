@@ -16,7 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, ParadisSimulatorInput } from '../../common/paradisSimulator.js';
 import { IParadisSimulatorClient } from '../../electron-browser/paradisSimulatorClient.js';
 import { IParadisSimulatorObjectUrls, PARADIS_SIMULATOR_STALL_MS, ParadisSimulatorFrameView } from '../../electron-browser/paradisSimulatorFrameView.js';
-import { ParadisSimulatorEditorInput, ParadisSimulatorEditorInputSerializer } from '../../electron-browser/paradisSimulatorEditorInput.js';
+import { ParadisSimulatorEditorInput, ParadisSimulatorEditorInputSerializer, paradisSimulatorAssignedTerminals } from '../../electron-browser/paradisSimulatorEditorInput.js';
 
 const UDID = 'A1B2C3D4-0000-1111-2222-333344445555';
 
@@ -175,5 +175,22 @@ suite('Paradis simulator: frame view', () => {
 			restored: { udid: UDID, name: 'iPhone 17', resource: `paradis-simulator:/${UDID}`, matches: true },
 			invalid: [undefined, undefined],
 		});
+	});
+
+	// タブの名前に、その端末を割り当てたターミナルの名前を添える（台帳を端末の id で引くだけ）
+	test('names the tab after the device and the terminals it is assigned to', () => {
+		const attachments = [
+			{ paneToken: 'pane-a', deviceId: `ios:core-simulator:${UDID}`, deviceName: 'iPhone 17', stateKey: undefined, attachedAt: 0 },
+			{ paneToken: 'pane-b', deviceId: 'android:emulator-5554', deviceName: 'Pixel 9', stateKey: undefined, attachedAt: 0 },
+			{ paneToken: 'pane-gone', deviceId: `ios:core-simulator:${UDID}`, deviceName: 'iPhone 17', stateKey: undefined, attachedAt: 0 },
+		];
+		const names = paradisSimulatorAssignedTerminals(UDID, attachments, token => token === 'pane-a' ? 'claude' : undefined);
+		const input = store.add(new ParadisSimulatorEditorInput(UDID, 'iPhone 17'));
+		let labelChanges = 0;
+		store.add(input.onDidChangeLabel(() => labelChanges++));
+		const before = input.getName();
+		input.setAssignedTerminals(names);
+		input.setAssignedTerminals(names);
+		assert.deepStrictEqual({ names, before, after: input.getName(), labelChanges }, { names: ['claude'], before: 'iPhone 17', after: 'iPhone 17 · claude', labelChanges: 1 });
 	});
 });
