@@ -593,6 +593,18 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		harness.provider.dispose();
 	});
 
+	test('maps a space history path to this machine for a local terminal in an SSH window, and to the host for a remote one', async () => {
+		const harness = createHarness({ shellType: PosixShellType.Bash, remoteAuthority: 'authority' });
+		const path = '/home/test/.para-code/history/space-1';
+		const resources = await Promise.all([
+			harness.provider.toResource(path, CancellationToken.None, { remoteAuthority: undefined }),
+			harness.provider.toResource(path, CancellationToken.None, { remoteAuthority: 'authority' }),
+			harness.provider.toResource(path, CancellationToken.None),
+		]);
+		assert.deepStrictEqual(resources.map(resource => resource?.scheme), ['file', 'vscode-remote', 'vscode-remote']);
+		harness.provider.dispose();
+	});
+
 	test('retries location resolution after a transient environment failure', async () => {
 		let attempts = 0;
 		const harness = createHarness({
