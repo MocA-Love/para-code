@@ -16,7 +16,7 @@ import { spawn } from 'child_process';
 import { isWindows } from '../../../../base/common/platform.js';
 import { rgDiskPath } from '../../../../base/node/ripgrep.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisFileSearchResult, IParadisTextSearchMatch, IParadisTextSearchResult } from '../common/paradisRemoteSearch.js';
+import { IParadisFileSearchResult, IParadisTextSearchMatch, IParadisTextSearchResult, paradisSanitizeSearchDir } from '../common/paradisRemoteSearch.js';
 
 const SEARCH_TIMEOUT_MS = 15_000;
 /** searchFiles で走査するファイル一覧の上限 (巨大リポジトリの防波堤)。 */
@@ -95,10 +95,12 @@ export function paradisSpawnRg(rgPath: string, args: string[], cwd: string, onLi
 /**
  * ファイル名 (相対パス部分一致) 検索。ランク: ファイル名の前方一致 > ファイル名の部分一致 >
  * パスの部分一致、同ランクはパスが短い順 (VS CodeのQuick Openに近い体感を狙う)。
+ * `dir`（根からの相対のフォルダ。`fs.find-dir.v1`）を渡すと、その中だけを探す。返すパスは根からの相対のまま。
  */
-export async function paradisSearchFiles(rootPath: string, query: string, maxResults: number, logService: ILogService): Promise<IParadisFileSearchResult> {
+export async function paradisSearchFiles(rootPath: string, query: string, maxResults: number, logService: ILogService, dir?: string): Promise<IParadisFileSearchResult> {
 	const needle = query.trim().toLowerCase();
-	if (needle.length === 0) {
+	const scope = dir !== undefined ? paradisSanitizeSearchDir(dir) : undefined;
+	if (needle.length === 0 || (dir !== undefined && scope === undefined)) {
 		return { files: [], truncated: false };
 	}
 	const rgPath = await rgDiskPath();
@@ -107,7 +109,7 @@ export async function paradisSearchFiles(rootPath: string, query: string, maxRes
 	let scanned = 0;
 	let scanTruncated = false;
 
-	const timedOut = await paradisSpawnRg(rgPath, [...COMMON_ARGS, '--files'], rootPath, line => {
+	const timedOut = await paradisSpawnRg(rgPath, [...COMMON_ARGS, '--files', ...(scope !== undefined ? ['--', scope] : [])], rootPath, line => {
 		const path = normalizeRgPath(line.trim());
 		if (path.length === 0) {
 			return;
@@ -142,8 +144,9 @@ export async function paradisSearchFiles(rootPath: string, query: string, maxRes
  * テキスト全文検索 (リテラル一致・スマートケース)。`rg --json` のmatchイベントをパースする
  * (path:line:text の自前分割はパスにコロンを含むケースで壊れるため使わない)。
  */
-export async function paradisSearchText(rootPath: string, query: string, maxResults: number, logService: ILogService): Promise<IParadisTextSearchResult> {
-	if (query.trim().length === 0) {
+export async function paradisSearchText(rootPath: string, query: string, maxResults: number, logService: ILogService, dir?: string): Promise<IParadisTextSearchResult> {
+	const scope = dir !== undefined ? paradisSanitizeSearchDir(dir) : undefined;
+	if (query.trim().length === 0 || (dir !== undefined && scope === undefined)) {
 		return { matches: [], truncated: false };
 	}
 	const rgPath = await rgDiskPath();
@@ -159,7 +162,7 @@ export async function paradisSearchText(rootPath: string, query: string, maxResu
 		'--max-columns', String(PREVIEW_TEXT_LIMIT * 4),
 		'--max-count', '20', // 1ファイルあたりの上限 (単一ファイルで結果が埋まるのを防ぐ)
 		'-e', query,
-		'--', '.',
+		'--', scope ?? '.',
 	];
 
 	const timedOut = await paradisSpawnRg(rgPath, args, rootPath, line => {

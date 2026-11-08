@@ -4746,14 +4746,14 @@ export class MobileController {
 		return this.request<FsUploadResult>('fs', { t: 'upload', name, data: dataBase64, ...(ws !== undefined ? { ws } : {}) }, 120_000, binaryEncoder);
 	}
 
-	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。 */
-	fsFind(ws: string, query: string): Promise<FsFindResult> {
-		return this.request<FsFindResult>('fs', { t: 'find', ws, query });
+	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。`dir` はフォルダで絞るとき（fs.find-dir.v1 の PC だけ）。 */
+	fsFind(ws: string, query: string, dir?: string): Promise<FsFindResult> {
+		return this.request<FsFindResult>('fs', { t: 'find', ws, query, ...(dir !== undefined ? { dir } : {}) });
 	}
 
-	/** テキスト全文検索（ワークスペース全体、PC側ripgrep）。 */
-	fsGrep(ws: string, query: string): Promise<FsGrepResult> {
-		return this.request<FsGrepResult>('fs', { t: 'grep', ws, query });
+	/** テキスト全文検索（ワークスペース全体、PC側ripgrep）。`dir` はフォルダで絞るとき（fs.find-dir.v1 の PC だけ）。 */
+	fsGrep(ws: string, query: string, dir?: string): Promise<FsGrepResult> {
+		return this.request<FsGrepResult>('fs', { t: 'grep', ws, query, ...(dir !== undefined ? { dir } : {}) });
 	}
 
 	/** xlsx の差分(HEAD vs 作業ツリー)をPC側でレンダリングした静的HTMLを取得する。 */
