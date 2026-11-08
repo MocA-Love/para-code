@@ -1153,6 +1153,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		}));
 		// Claude Code の mod（Claude Mods）がモバイルの承認を待つ上限（paradisClaudeModBridge.ts）。
 		paradisClaudeModBridge.setApprovalWait(() => paradisClaudeModApprovalWaitMs(configurationService?.getValue(PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING)));
+		// コンテキストの内訳をペイン単位で返す口（paradisClaudeContext.sharedProcess.ts）が、呼んだウィンドウのペインかを確かめる
+		paradisClaudeModBridge.setPaneTokenOwner((connection, token) => this._isEligibleToken(connection, token));
+		this._register(toDisposable(() => paradisClaudeModBridge.setPaneTokenOwner(() => false)));
 		this._register(registerParadisAgentPaneActivityGuard(token => this.captureIngressLease(token) !== undefined));
 		this._register(onParadisAgentTurnStarted(({ token, cwd, at }) => {
 			const ingressLease = this.captureIngressLease(token);

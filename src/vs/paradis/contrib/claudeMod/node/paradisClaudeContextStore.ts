@@ -162,6 +162,16 @@ export class ParadisClaudeContextStore extends Disposable {
 		return newest;
 	}
 
+	/**
+	 * そのペインがいま動かしている会話の最後の内訳（エディタのターミナル右上のポップオーバー）。そのペインが送ったものだけで、
+	 * 会話が終わった（`bye`）・mod が途絶えたペインは undefined。
+	 */
+	async breakdownForPane(token: string): Promise<IParadisClaudeContextBreakdown | undefined> {
+		await this.ensureLoaded();
+		const key = this.live.get(token);
+		return key !== undefined ? this.sessions.get(key)?.breakdown : undefined;
+	}
+
 	/** その会話がいま動いているペインの会話か。 */
 	isLive(sessionId: string): boolean {
 		for (const key of this.live.values()) {

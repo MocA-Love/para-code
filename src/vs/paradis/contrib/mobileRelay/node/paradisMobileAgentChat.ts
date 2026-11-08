@@ -7364,6 +7364,8 @@ export class ParadisMobileAgentChat extends Disposable {
 				const tailer = this.tailers.get(token);
 				if (tailer !== undefined && tailer.transcriptPath === session.transcriptPath && tailer.sessionStatus.applyMeasure({ window: event.window, ...(event.tokens !== undefined ? { tokens: event.tokens } : {}), ...(event.percent !== undefined ? { percent: event.percent } : {}) })) {
 					this.pushSessionStatusIfChanged(token);
+					// エディタのターミナル右上の使用率も、10 秒の取り直しを待たずに進める
+					this.scheduleDesktopInsightCheck();
 				}
 				return;
 			}
@@ -8034,6 +8036,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const interaction = this.desktopInteractions.get(token) ?? (tailer !== undefined ? this.desktopInteractionFromTailer(token, tailer) : undefined);
 		const promptCache = session.agent === 'claude' ? tailer?.promptCache : undefined;
+		// 右上のコンテキストの使用率（モバイルの sessionStatus と同じ値）。キャッシュの期限は promptCache で足りるので、
+		// 秒ごとに変わる値は載せない（変わるたびに窓へ知らせが飛ぶため）
+		const status = tailer !== undefined && session.agent !== 'opencode' ? tailer.sessionStatus.snapshot(tailer.model !== undefined ? { model: tailer.model } : {}) : undefined;
+		const context = status?.context;
+		const cacheSummary = status?.cache !== undefined
+			? { requests: status.cache.requests, hits: status.cache.hits, misses: status.cache.misses, ...(status.cache.hitRatio !== undefined ? { hitRatio: status.cache.hitRatio } : {}) }
+			: undefined;
+		const model = session.agent !== 'opencode' ? tailer?.model : undefined;
 		return {
 			token,
 			agent: session.agent,
@@ -8041,6 +8051,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			...(lastMessage !== undefined ? { lastMessage } : {}),
 			...(interaction !== undefined ? { interaction } : {}),
 			...(promptCache !== undefined ? { promptCache } : {}),
+			...(context !== undefined ? { context: { ...(context.tokens !== undefined ? { tokens: context.tokens } : {}), window: context.window, percent: context.percent, source: context.source } } : {}),
+			...(cacheSummary !== undefined ? { cacheSummary } : {}),
+			...(model !== undefined ? { model } : {}),
 		};
 	}
 
@@ -10194,7 +10207,11 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...this.monitorsField(token, tailer) });
 				}
 			},
-			onSessionStatus: () => this.pushSessionStatusIfChanged(token),
+			onSessionStatus: () => {
+				this.pushSessionStatusIfChanged(token);
+				// エディタのターミナル右上の使用率（Codex の token_count はメッセージを伴わないので、onDelta だけでは知らせが出ない）
+				this.scheduleDesktopInsightCheck();
+			},
 			onAsyncQuestions: (added, settledCalls) => {
 				this.pushAsyncQuestionsIfChanged(token);
 				this.scheduleDesktopInsightCheck();
