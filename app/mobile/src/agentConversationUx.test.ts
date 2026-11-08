@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { appendQuickReply, nextAttentionAgent, pinnedQuestionIndex, shouldShowQuickReplies } from './agentConversationUx.js';
+import { appendQuickReply, nextAttentionAgent, pinnedQuestionIndex, quickReplyTapAction, shouldShowQuickReplies } from './agentConversationUx.js';
 
 describe('shouldShowQuickReplies', () => {
 	const base = { agentStatus: 'done', working: false, hasPinnedCard: false, chatReady: true, answering: false };
@@ -28,6 +28,21 @@ describe('appendQuickReply', () => {
 		expect(appendQuickReply('  ', '続けて')).toBe('続けて');
 		expect(appendQuickReply('ありがとう', '続けて')).toBe('ありがとう 続けて');
 		expect(appendQuickReply('ありがとう\n', '続けて')).toBe('ありがとう\n続けて');
+	});
+});
+
+describe('quickReplyTapAction', () => {
+	const base = { sendOnTap: true, draft: '', attachmentCount: 0, sendBlocked: false };
+
+	it('sends only when the setting is on and nothing else is in the composer', () => {
+		expect([
+			quickReplyTapAction(base),
+			quickReplyTapAction({ ...base, draft: '  \n' }),
+			quickReplyTapAction({ ...base, sendOnTap: false }),
+			quickReplyTapAction({ ...base, draft: 'ここも' }),
+			quickReplyTapAction({ ...base, attachmentCount: 1 }),
+			quickReplyTapAction({ ...base, sendBlocked: true }),
+		]).toEqual(['send', 'send', 'insert', 'insert', 'insert', 'insert']);
 	});
 });
 
