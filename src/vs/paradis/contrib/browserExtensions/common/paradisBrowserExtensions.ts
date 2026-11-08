@@ -508,6 +508,8 @@ export interface IParadisWorkerLogLine {
 	readonly message: string;
 	/** 出したスクリプトの URL（読めなければ undefined）。 */
 	readonly source?: string;
+	/** 出した worker のセッション（`<場所>/<保存先のフォルダ名>`。同じ拡張機能でもセッションごとに別の worker が動く）。 */
+	readonly session?: string;
 }
 
 /** 背景の処理の DevTools を開いた結果。 */
