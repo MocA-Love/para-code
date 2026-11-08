@@ -34,6 +34,11 @@ export interface IParadisSimulatorAxNode {
 	readonly children: IParadisSimulatorAxNode[];
 	/** 要素の上限で子を落としたとき。 */
 	readonly truncated?: true;
+	/**
+	 * 入力中の欄とみなしたもの。serve-sim の木にはフォーカスの印が無いので、mobile_type_text の前後で値が
+	 * 変わった欄に付ける（{@link paradisMarkTypedSimulatorField}）。
+	 */
+	readonly focused?: true;
 }
 
 export interface IParadisSimulatorAxSnapshot {
@@ -227,4 +232,40 @@ export function paradisPickSimulatorAxTarget(matches: readonly IParadisSimulator
 		}
 	}
 	return best;
+}
+
+/** 欄（field）の値を、位置と識別子で引けるように集める（mobile_type_text の前の値を覚えるため）。 */
+export function paradisSimulatorFieldValues(snapshot: IParadisSimulatorAxSnapshot): Map<string, string> {
+	const values = new Map<string, string>();
+	const visit = (node: IParadisSimulatorAxNode) => {
+		if (node.role === 'field') {
+			values.set(fieldKey(node), node.value);
+		}
+		node.children.forEach(visit);
+	};
+	visit(snapshot.root);
+	return values;
+}
+
+function fieldKey(node: IParadisSimulatorAxNode): string {
+	return `${node.identifier ?? ''}|${Math.round(node.frame.x)},${Math.round(node.frame.y)},${Math.round(node.frame.width)},${Math.round(node.frame.height)}`;
+}
+
+/**
+ * 文字を入れる前の欄の値（`before`）と比べて、値が変わった最初の欄に `focused` を付けた木を返す。
+ * 変わった欄が無ければそのまま返す。
+ */
+export function paradisMarkTypedSimulatorField(snapshot: IParadisSimulatorAxSnapshot, before: ReadonlyMap<string, string>): IParadisSimulatorAxSnapshot {
+	let marked = false;
+	const visit = (node: IParadisSimulatorAxNode): IParadisSimulatorAxNode => {
+		const children = node.children.map(visit);
+		const changed = !marked && node.role === 'field' && before.has(fieldKey(node)) && before.get(fieldKey(node)) !== node.value;
+		if (changed) {
+			marked = true;
+		}
+		return changed ? { ...node, children, focused: true } : children.some((child, index) => child !== node.children[index]) ? { ...node, children } : node;
+	};
+	// 子から先に見るので、入れ子の欄では内側が先に印を受ける
+	const root = visit(snapshot.root);
+	return root === snapshot.root ? snapshot : { ...snapshot, root };
 }
