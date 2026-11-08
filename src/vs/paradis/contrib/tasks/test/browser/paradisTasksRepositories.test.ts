@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { paradisTasksResolveRepository } from '../../browser/paradisTasksRepositories.js';
+import { paradisTasksResolveRepositories, paradisTasksResolveRepository } from '../../browser/paradisTasksRepositories.js';
 
 suite('ParadisTasksRepositories', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -35,5 +35,25 @@ suite('ParadisTasksRepositories', () => {
 			// .git の無いフォルダは git に聞かない（親のリポジトリの origin を拾わない）
 			paradisTasksResolveRepository(fileService, plain, async () => 'git@github.com:owner/parent.git'),
 		]), ['owner/from-git', 'owner/from-config', 'owner/from-config', 'owner/from-config', undefined]);
+	});
+
+	// スペースが多くても、git は同時に 4 本までしか起動しない
+	test('asks git for at most four folders at a time', async () => {
+		const fileService = store.add(new FileService(new NullLogService()));
+		store.add(fileService.registerProvider('file', store.add(new InMemoryFileSystemProvider())));
+		const sources = [];
+		for (let index = 0; index < 10; index++) {
+			await fileService.writeFile(URI.file(`/work/repo${index}/.git/config`), VSBuffer.fromString(''));
+			sources.push({ name: `repo${index}`, uri: URI.file(`/work/repo${index}`) });
+		}
+		let running = 0;
+		let most = 0;
+		const repositories = await paradisTasksResolveRepositories(fileService, sources, async folder => {
+			most = Math.max(most, ++running);
+			await new Promise(resolve => setTimeout(resolve, 1));
+			running--;
+			return `git@github.com:owner/${folder.path.split('/').pop()}.git`;
+		});
+		assert.deepStrictEqual({ most, count: repositories.length }, { most: 4, count: 10 });
 	});
 });
