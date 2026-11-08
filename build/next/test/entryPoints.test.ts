@@ -102,6 +102,11 @@ const PARADIS_ENTRY_POINTS: readonly { readonly entry: string; readonly lists: r
 		entry: 'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain',
 		lists: ['desktopEntryPoints'],
 	},
+	{
+		// 音声入力の認識の utility process（upstream の localTranscriptionMain の代わり。renderer が moduleId で起動する）
+		entry: 'vs/paradis/contrib/dictation/node/paradisSpeechEngineMain',
+		lists: ['desktopEntryPoints'],
+	},
 ];
 
 suite('Para Code entry points ship in the esbuild bundle', () => {

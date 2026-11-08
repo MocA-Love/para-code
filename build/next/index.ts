@@ -116,6 +116,8 @@ const desktopEntryPoints = [
 	'vs/workbench/contrib/debug/node/telemetryApp',
 	'vs/platform/files/node/watcher/watcherMain',
 	'vs/platform/localTranscription/node/localTranscriptionMain',
+	// PARA-PATCH: Para Code's speech recognition utility process, which replaces localTranscriptionMain in normal windows (src/vs/paradis/contrib/dictation)
+	'vs/paradis/contrib/dictation/node/paradisSpeechEngineMain',
 	'vs/platform/terminal/node/ptyHostMain',
 	// PARA-PATCH: pipes a window's message port to the pty daemon that outlives the app
 	'vs/paradis/contrib/ptyDaemon/node/paradisPtyDaemonBridgeMain',
