@@ -49,7 +49,7 @@ import {
 } from '../common/paradisTasks.js';
 import { IParadisTasksGithubService, IParadisTasksProject, IParadisTasksProjectItem, IParadisTasksProjectItemsResult, IParadisTasksProjectView } from '../common/paradisTasksProjects.js';
 import { PARADIS_TASKS_EDITOR_ID } from './paradisTasksEditorInput.js';
-import { paradisTasksRenderProjectBoard, paradisTasksRenderProjectTable } from './paradisTasksProjectView.js';
+import { paradisTasksRenderProjectBoard, paradisTasksRenderProjectRoadmap, paradisTasksRenderProjectTable } from './paradisTasksProjectView.js';
 
 const $ = dom.$;
 
@@ -505,8 +505,13 @@ export class ParadisTasksEditor extends EditorPane {
 			if (this.projectResult.view.layout === 'BOARD_LAYOUT') {
 				paradisTasksRenderProjectBoard(this.projectHost, this.projectResult, this.rowDisposables, host);
 			} else {
+				const today = new Date();
+				const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+				if (this.projectResult.view.layout === 'ROADMAP_LAYOUT' && paradisTasksRenderProjectRoadmap(this.projectHost, this.projectResult, this.rowDisposables, host, todayIso)) {
+					return;
+				}
 				if (this.projectResult.view.layout === 'ROADMAP_LAYOUT') {
-					dom.append(this.projectHost, $('.paradis-tasks-note')).textContent = localize('paradis.tasks.roadmapAsTable', "ロードマップのビューは、今は表で出しています。");
+					dom.append(this.projectHost, $('.paradis-tasks-note')).textContent = localize('paradis.tasks.roadmapNoDates', "このビューには日付・繰り返しの欄が無いので、表で出しています。");
 				}
 				paradisTasksRenderProjectTable(this.projectHost, this.projectResult, this.rowDisposables, host);
 			}

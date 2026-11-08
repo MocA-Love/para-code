@@ -44,6 +44,37 @@ export interface IParadisResumeLedgerEntry {
 	readonly title?: string;
 	/** 最後に動いていた時刻 (epoch ms)。 */
 	readonly at: number;
+	/** 休止（G-03）で止めた会話。タブへ戻ると自動で再開する。 */
+	readonly hibernated?: IParadisResumeHibernation;
+}
+
+/** 休止で止めたときの控え。 */
+export interface IParadisResumeHibernation {
+	/** 止めた時刻 (epoch ms)。これより後の hook はまた動き出した会話のもの。 */
+	readonly at: number;
+	/** ターンが終わった時刻（帯に「〜前に完了」と出す）。 */
+	readonly completedAt: number;
+	/** 止めたプロセスが権限の確認を省いて動いていた（再開も同じにする）。 */
+	readonly bypass?: true;
+}
+
+/**
+ * 休止の印の付いた会話について届いた hook の会話の控えが、止める前のものか（印を残す）。止めた後の hook（再開した、
+ * または印を付けた後に止める前に Para Code が落ちてエージェントが生き残っていた）なら、印を外して普段の会話に戻す。
+ */
+export function paradisIsHookFromBeforeHibernation(entry: IParadisResumeLedgerEntry, session: { readonly sessionId: string; readonly at: number }): boolean {
+	return entry.hibernated !== undefined && entry.sessionId === session.sessionId && session.at <= entry.hibernated.at;
+}
+
+function parseHibernation(value: unknown): IParadisResumeHibernation | undefined {
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const { at, completedAt, bypass } = value as Record<string, unknown>;
+	if (typeof at !== 'number' || !Number.isFinite(at) || typeof completedAt !== 'number' || !Number.isFinite(completedAt)) {
+		return undefined;
+	}
+	return { at, completedAt, ...(bypass === true ? { bypass: true as const } : {}) };
 }
 
 /** 台帳の上限。古いものから捨てる。 */
@@ -74,7 +105,7 @@ export function paradisParseResumeLedger(raw: string | undefined, now: number): 
 		if (typeof item !== 'object' || item === null) {
 			continue;
 		}
-		const { token, agent, sessionId, cwd, title, at, cli } = item as Record<string, unknown>;
+		const { token, agent, sessionId, cwd, title, at, cli, hibernated } = item as Record<string, unknown>;
 		if (typeof token !== 'string' || token.length === 0 || token.length > 200
 			|| !isAgent(agent)
 			|| typeof sessionId !== 'string' || !PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)
@@ -89,6 +120,7 @@ export function paradisParseResumeLedger(raw: string | undefined, now: number): 
 			at,
 			...(typeof cwd === 'string' && cwd.length > 0 ? { cwd } : {}),
 			...(typeof title === 'string' && title.length > 0 ? { title: title.slice(0, 200) } : {}),
+			...(parseHibernation(hibernated) !== undefined ? { hibernated: parseHibernation(hibernated) } : {}),
 		});
 	}
 	return paradisTrimResumeLedger(result, now);

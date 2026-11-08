@@ -43,6 +43,7 @@ import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/par
 import { PARADIS_BROWSER_HOME_PAGE_SETTING, PARADIS_BROWSER_IMPORT_LOGINS_COMMAND_ID, PARADIS_BROWSER_SITE_PERMISSIONS_COMMAND_ID } from '../../browserSettings/common/paradisBrowserSettings.js';
 import { paradisResourceTitleBarFormatTitle, paradisResourceTitleBarItemLabel } from '../../resourceMonitor/common/paradisResourceTitleBar.js';
 import { PARADIS_TRANSPARENCY_ENABLED_KEY, paradisTransparencyRestartPending } from '../../windowTransparency/common/paradisTransparency.js';
+import { PARADIS_AGENT_HIBERNATION_ENABLED_SETTING, PARADIS_AGENT_HIBERNATION_IDLE_MINUTES_SETTING } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import {
 	PARADIS_MENU_BAR_INCLUDE_REMOTE_SETTING,
 	PARADIS_MENU_BAR_MENU_USAGE_SETTING,
@@ -360,10 +361,10 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		group: GROUP_SPACE_LOCATION,
 		key: 'paradis.workspaceSwitch.trustClaudeFolder',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.trustClaudeFolder', "Para が作ったスペースでは、Claude Code のフォルダの信頼を済ませておく"),
+		label: localize('paradis.settings.trustClaudeFolder', "Para が作ったスペースでは、エージェントのフォルダの信頼を済ませておく"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.trustClaudeFolderDesc', "Claude Code の ~/.claude.json に、このスペースを信頼済みとして書きます。スペースを削除すると取り消します。"),
-		keywords: 'claude trust folder worktree space agent',
+		description: localize('paradis.settings.trustClaudeFolderDesc', "Claude Code の ~/.claude.json と Codex の config.toml に、このスペースを信頼済みとして書きます。スペースを削除すると取り消します。"),
+		keywords: 'claude codex trust folder worktree space agent',
 	},
 	{
 		sectionId: 'psd-sec-space',
@@ -524,6 +525,42 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.codexAutoContinueDesc', "Codex がサーバーの混み合いで止まったとき（「Selected model is at capacity」など）、少し待ってから自動で continue を送ります。3 回続けても止まるときはやめて知らせます。"),
 		keywords: 'codex capacity overloaded continue retry auto',
+	},
+	{
+		sectionId: 'psd-sec-agent',
+		group: GROUP_AGENT_VIEW,
+		experimental: true,
+		key: PARADIS_AGENT_HIBERNATION_ENABLED_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentHibernation', "終わったエージェントを休止する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentHibernationDesc', "作業を終えて放ってある Claude Code・Codex を止めてメモリを空けます。タブはそのまま残り、タブを開くと同じ会話で自動的に再開します。許可待ち・質問中のものは止めません。"),
+		keywords: 'agent hibernation sleep hibernate idle stop memory resume claude codex',
+	},
+	{
+		sectionId: 'psd-sec-agent',
+		group: GROUP_AGENT_VIEW,
+		experimental: true,
+		key: PARADIS_AGENT_HIBERNATION_IDLE_MINUTES_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentHibernationIdle', "休止までの時間"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentHibernationIdleDesc', "作業を終えてから休止するまで。タブを見たり入力したりすると、そこから数え直します。上の項目がオンのときだけ有効です。"),
+		keywords: 'agent hibernation sleep idle minutes timeout',
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 5, label: localize('paradis.settings.agentHibernationIdle5', "5分") },
+			// allow-any-unicode-next-line
+			{ value: 15, label: localize('paradis.settings.agentHibernationIdle15', "15分") },
+			// allow-any-unicode-next-line
+			{ value: 30, label: localize('paradis.settings.agentHibernationIdle30', "30分（既定）") },
+			// allow-any-unicode-next-line
+			{ value: 60, label: localize('paradis.settings.agentHibernationIdle60', "60分") },
+			// allow-any-unicode-next-line
+			{ value: 120, label: localize('paradis.settings.agentHibernationIdle120', "2時間") },
+			// allow-any-unicode-next-line
+			{ value: 480, label: localize('paradis.settings.agentHibernationIdle480', "8時間") },
+		],
 	},
 	{
 		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,

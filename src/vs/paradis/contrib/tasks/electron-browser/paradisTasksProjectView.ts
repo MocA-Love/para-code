@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 「タスク」の画面の「プロジェクト」（GitHub Projects v2）の項目を描く部分。GitHub のビューの種類に合わせ、
-// テーブル（欄を列にした表）とボード（単一選択の欄で分けた列）を描く。ロードマップは表で出す（次の版で描く）。
+// テーブル（欄を列にした表）、ボード（単一選択の欄で分けた列）、ロードマップ（日付の欄で横に伸ばした帯）を描く。
 // 取得はしない（画面の ParadisTasksEditor が読んだ結果を渡す）。
 
 import * as dom from '../../../../base/browser/dom.js';
@@ -21,10 +21,15 @@ import {
 	IParadisTasksProjectItemsResult,
 	paradisTasksBoardColumns,
 	paradisTasksBoardField,
+	paradisTasksRoadmap,
+	paradisTasksRoadmapLabelledTicks,
 	paradisTasksTableFields,
 } from '../common/paradisTasksProjects.js';
 
 const $ = dom.$;
+
+/** ロードマップの名前の列の幅（media/paradisTasks.css の .paradis-tasks-roadmap-row と同じ値）。 */
+const ROADMAP_NAME_COLUMN_PX = 240;
 
 export interface IParadisTasksProjectViewHost {
 	/** 項目を開く（GitHub で開く。下書きは URL が無いので何もしない）。 */
@@ -177,8 +182,8 @@ export function paradisTasksRenderProjectBoard(container: HTMLElement, result: I
 		dom.append(container, $('.paradis-tasks-note')).textContent = localize('paradis.tasks.board.partial', "全 {0} 件のうち {1} 件を読みました。列の件数は読めた分です。下の「続きを読む」で残りを読みます。", result.total, result.items.length);
 	}
 	const board = dom.append(container, $('.paradis-tasks-board'));
-	// カードに出す欄（列にした欄とタイトルは除く。多すぎると読めないので 3 つまで）
-	const cardFields = paradisTasksTableFields(result.fields).filter(other => other.name !== field?.name && other.dataType !== 'ASSIGNEES').slice(0, 3);
+	// カードに出す欄（列にした欄・タイトル・担当者とラベル（カードに別に出す）は除く。多すぎると読めないので 3 つまで）
+	const cardFields = paradisTasksTableFields(result.fields).filter(other => other.name !== field?.name && other.dataType !== 'ASSIGNEES' && other.dataType !== 'LABELS').slice(0, 3);
 	for (const column of paradisTasksBoardColumns(result.items, field)) {
 		const columnElement = dom.append(board, $('.paradis-tasks-board-column'));
 		const header = dom.append(columnElement, $('.paradis-tasks-board-header'));
@@ -208,4 +213,80 @@ export function paradisTasksRenderProjectBoard(container: HTMLElement, result: I
 			bindOpen(store, card, item, host);
 		}
 	}
+}
+
+function shortDate(iso: string): string {
+	return `${Number(iso.slice(5, 7))}/${Number(iso.slice(8, 10))}`;
+}
+
+/**
+ * ロードマップ: 左に項目の名前、右に月の目盛りと期間の帯。日付の欄が無いビューは false を返す（呼び出し側が表で出す）。
+ * `todayIso` は今日の日付（`YYYY-MM-DD`）。
+ */
+export function paradisTasksRenderProjectRoadmap(container: HTMLElement, result: IParadisTasksProjectItemsResult, store: DisposableStore, host: IParadisTasksProjectViewHost, todayIso: string): boolean {
+	const fieldNames = new Set(result.fields.map(field => field.name));
+	const roadmap = paradisTasksRoadmap(result.items, [...result.fields, ...(result.dateFields ?? []).filter(field => !fieldNames.has(field.name))], todayIso);
+	if (!roadmap) {
+		return false;
+	}
+	const field = paradisTasksBoardField(result.fields, result.columnField);
+	const percent = (value: number) => `${(Math.min(1, Math.max(0, value)) * 100).toFixed(3)}%`;
+	const firstTick = roadmap.ticks[0]?.date;
+	const lastTick = roadmap.ticks[roadmap.ticks.length - 1]?.date;
+	const yearMonth = (iso: string) => localize('paradis.tasks.roadmap.yearMonth', "{0}年{1}月", iso.slice(0, 4), Number(iso.slice(5, 7)));
+	const note = dom.append(container, $('.paradis-tasks-note'));
+	dom.append(note, $('span')).textContent = roadmap.startField === roadmap.endField
+		? localize('paradis.tasks.roadmap.oneField', "「{0}」の欄で並べています。", roadmap.startField)
+		: localize('paradis.tasks.roadmap.twoFields', "「{0}」から「{1}」までの期間で並べています。", roadmap.startField, roadmap.endField);
+	if (firstTick && lastTick) {
+		dom.append(note, $('span')).textContent = localize('paradis.tasks.roadmap.range', "表示は {0}〜{1} です。", yearMonth(firstTick), yearMonth(lastTick));
+	}
+	const grid = dom.append(container, $('.paradis-tasks-roadmap'));
+	const head = dom.append(grid, $('.paradis-tasks-roadmap-row.head'));
+	dom.append(head, $('.paradis-tasks-roadmap-name'));
+	const scale = dom.append(head, $('.paradis-tasks-roadmap-track'));
+	for (const index of paradisTasksRoadmapLabelledTicks(roadmap.ticks)) {
+		const tick = roadmap.ticks[index];
+		const label = dom.append(scale, $('span.paradis-tasks-roadmap-tick'));
+		label.style.left = percent(tick.at);
+		label.style.maxWidth = percent((roadmap.ticks[index + 1]?.at ?? 1) - tick.at);
+		// 年は見出しの文に出すので、目盛りは 1 月だけ年を付ける
+		label.textContent = tick.date.slice(5, 7) === '01'
+			? yearMonth(tick.date)
+			: localize('paradis.tasks.roadmap.month', "{0}月", Number(tick.date.slice(5, 7)));
+	}
+	for (const row of roadmap.rows) {
+		const line = dom.append(grid, $('.paradis-tasks-roadmap-row.paradis-tasks-item'));
+		const name = dom.append(line, $('.paradis-tasks-roadmap-name'));
+		dom.append(name, $('span.paradis-tasks-roadmap-ref')).textContent = itemReference(row.item);
+		dom.append(name, $('span.paradis-tasks-roadmap-title')).textContent = row.item.title;
+		const track = dom.append(line, $('.paradis-tasks-roadmap-track'));
+		for (const tick of roadmap.ticks) {
+			dom.append(track, $('span.paradis-tasks-roadmap-grid')).style.left = percent(tick.at);
+		}
+		const bar = dom.append(track, $('span.paradis-tasks-roadmap-bar'));
+		bar.style.left = percent(row.from);
+		bar.style.width = `max(6px, ${percent(row.to - row.from)})`;
+		const status = field ? row.item.values[field.name] : undefined;
+		bar.style.backgroundColor = optionColor(status?.color);
+		const period = row.startDate === row.endDate ? shortDate(row.startDate) : `${shortDate(row.startDate)} – ${shortDate(row.endDate)}`;
+		bar.title = status ? `${period} · ${status.text}` : period;
+		line.title = `${row.item.title}\n${bar.title}`;
+		bindOpen(store, line, row.item, host);
+	}
+	// 今日の線は表全体に 1 本だけ（名前の列は 240px の固定幅。CSS の grid-template-columns と揃える）
+	if (roadmap.today !== undefined && roadmap.today >= 0 && roadmap.today <= 1) {
+		dom.append(grid, $('span.paradis-tasks-roadmap-today')).style.left = `calc(${ROADMAP_NAME_COLUMN_PX}px + (100% - ${ROADMAP_NAME_COLUMN_PX}px) * ${roadmap.today.toFixed(5)})`;
+	}
+	if (roadmap.undated.length > 0) {
+		dom.append(container, $('.paradis-tasks-roadmap-undated-title')).textContent = localize('paradis.tasks.roadmap.undated', "日付の無い項目（{0} 件）", roadmap.undated.length);
+		const list = dom.append(container, $('.paradis-tasks-roadmap-undated'));
+		for (const item of roadmap.undated) {
+			const entry = dom.append(list, $('.paradis-tasks-roadmap-undated-item'));
+			dom.append(entry, $('span.paradis-tasks-roadmap-ref')).textContent = itemReference(item);
+			dom.append(entry, $('span')).textContent = item.title;
+			bindOpen(store, entry, item, host);
+		}
+	}
+	return true;
 }
