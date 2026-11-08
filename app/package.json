@@ -8,7 +8,8 @@
 	},
 	"pnpm": {
 		"patchedDependencies": {
-			"react-native@0.86.0": "patches/react-native@0.86.0.patch"
+			"react-native@0.86.0": "patches/react-native@0.86.0.patch",
+			"expo-local-authentication@57.0.0": "patches/expo-local-authentication@57.0.0.patch"
 		}
 	}
 }

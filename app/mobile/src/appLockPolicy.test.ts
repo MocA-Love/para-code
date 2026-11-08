@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { canLockDevice, foregroundAction, isAppLocked, lockedContentProps, lockedModalVisible, REAUTH_GRACE_MS, shouldRelock } from './appLockPolicy.js';
+import { AUTH_FAILURE_SETTLE_MS, canLockDevice, foregroundAction, isAppLocked, isAuthUiUnavailable, lockedContentProps, lockedModalVisible, lockedRetryAction, REAUTH_GRACE_MS, shouldRelock } from './appLockPolicy.js';
 
 const MOBILE_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -86,5 +86,23 @@ describe('app lock policy', () => {
 			.filter(path => /\bAlert\.(?:alert|prompt)\(/.test(readFileSync(path, 'utf8')))
 			.map(path => relative(MOBILE_ROOT, path));
 		expect(offenders).toEqual([]);
+	});
+});
+
+describe('UI を出せなかった認証の失敗', () => {
+	it('-1000・-1004・システムの取り消しを、UI を出せなかった失敗とみなす（ユーザーの取り消しは含めない）', () => {
+		expect(['unknown: -1000, UI activation timed out', 'unknown: -1004, not interactive', 'system_cancel', 'app_cancel', 'user_cancel', 'authentication_failed', 'unknown: -10000, x', undefined].map(isAuthUiUnavailable))
+			.toEqual([true, true, true, true, false, false, false, false]);
+	});
+
+	it('失敗の直後には認証し直さず、UI を出せなかった失敗だけ 1 回待ってやり直す', () => {
+		const at = 10_000;
+		expect([
+			lockedRetryAction(undefined, false, at),
+			lockedRetryAction({ at, error: 'unknown: -1000, UI activation timed out' }, false, at + 60),
+			lockedRetryAction({ at, error: 'unknown: -1000, UI activation timed out' }, true, at + 60),
+			lockedRetryAction({ at, error: 'user_cancel' }, false, at + 60),
+			lockedRetryAction({ at, error: 'user_cancel' }, false, at + AUTH_FAILURE_SETTLE_MS + 1),
+		]).toEqual(['authenticate', 'retryLater', 'none', 'none', 'authenticate']);
 	});
 });

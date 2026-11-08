@@ -83,6 +83,18 @@ export function canToggleSource(kind: ViewerKind): boolean {
 
 export type ViewerMode = 'render' | 'code';
 
+/** 色を指定していない HTML を描くときの地（ブラウザと同じ白。文字の既定は黒）。 */
+export const HTML_PAGE_CANVAS = '#ffffff';
+
+/**
+ * WebView の地の色。HTML のプレビューだけはブラウザと同じ白にする（ページが `background` を指定していなければ透けて見える
+ * 地なので、暗い地のままだと既定の黒い文字が読めない。ページが指定していればそれが上に描かれる）。それ以外は
+ * `undefined`（呼び出し側の暗い地のまま。開いた瞬間に白く光らせない）。
+ */
+export function viewerCanvasColor(kind: ViewerKind, mode: ViewerMode): string | undefined {
+	return kind === 'html' && mode === 'render' ? HTML_PAGE_CANVAS : undefined;
+}
+
 /** 開いたときの表示。文書は読める形、検索の一致行から開いたときは行が分かるソース。 */
 export function defaultViewerMode(kind: ViewerKind, focusLine: number | undefined): ViewerMode {
 	return kind === 'other' || focusLine !== undefined ? 'code' : 'render';
