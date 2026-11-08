@@ -15,7 +15,7 @@ import { viewerScriptCspMeta } from '../code/fileFind.js';
  *   （ファイルのビューアの `buildMarkdownHtml` は marked で読むのでブロックの切れ方が違い、字も 15/24 で大きい）
  * - 発言から来た文字は、すべて `escapeHtml` を通して要素の中身にだけ置く（属性には入れない。`escapeHtml` は引用符を
  *   変えないため）。リンクは `href` を持たない色付きの文字にして、押しても遷移しない
- * - スクリプトは nonce 付きの 1 つだけ（`viewerScriptCspMeta`）。高さを知らせることと、押した点の単語を選ぶことだけをする
+ * - スクリプトは nonce 付きの 1 つだけ（`viewerScriptCspMeta`）。高さを知らせることと、押した点の単語（無ければ全体）を選ぶこと・押し続けた点の単語を選ぶことだけをする
  * - 発言は `segments` の並びで受ける。今は押した発言 1 つだけを渡すが、「画面の発言をまとめて」に広げるときは
  *   ここに並べれば発言をまたいで選べる
  */
@@ -52,7 +52,7 @@ export interface InplaceSelectPoint {
 	readonly y: number;
 }
 
-/** WebView から届く知らせ。`ready` は描き終えた（単語も選んだ）、`height` は中身の高さが変わった。 */
+/** WebView から届く知らせ。`ready` は描き終えた（まだ選ばない）、`height` は中身の高さが変わった。 */
 export interface InplaceSelectMessage {
 	readonly kind: 'ready' | 'height';
 	readonly height: number;
@@ -288,20 +288,46 @@ function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
 `;
 }
 
+/** 押し続けたとみなすまでの時間（ms）と、指が動いたとみなす距離（px）。OS の長押しの選択が届かなかったときの代わり。 */
+const HOLD_MS = 500;
+const HOLD_SLOP = 10;
+
 /**
- * 高さを知らせ、押した点の単語を選ぶスクリプト。押した点が無ければ何も選ばない（つまみが出ないときは、
- * 差し替えた後にもう一度長押しして選ぶ）。
+ * 高さを知らせ、選ぶための関数を置くスクリプト。
+ *
+ * - 読み込んだ時点では選ばない。透明で first responder でもない WebView で選ぶと、WebKit は DOM の選択だけを持ち、
+ *   つまみも OS のメニューも出さない（その後の長押しも効かなくなることがある）。呼び出し側が見せて
+ *   `requestFocus()` した後に {@link inplaceSelectStartScript} で `__paraSelectStart` を呼ぶ
+ * - 押した点の単語を選ぶ。押した点が無い・字の上でないときは発言の全体を選ぶ（入ったら必ず何かが選ばれているように）
+ * - 押し続けたら（{@link HOLD_MS}）その点の単語を選ぶ。OS の長押しの選択が先に選んでいたら何もしない。
+ *   `touchcancel` では止めない（OS の長押しが認識されると、ページへの触れは取り消されるため）
  */
 function selectScript(point: InplaceSelectPoint | undefined): string {
 	const at = point !== undefined ? `[${num(point.x)},${num(point.y)}]` : 'null';
 	return `(function(){
 var root=document.getElementById('m');
 function post(kind){try{window.ReactNativeWebView.postMessage(JSON.stringify({type:kind,height:Math.ceil(root.getBoundingClientRect().height)}));}catch(e){}}
-function selectAt(p){if(!p||!document.caretRangeFromPoint){return;}var r=document.caretRangeFromPoint(p[0],p[1]);if(!r||!root.contains(r.startContainer)){return;}var s=window.getSelection();if(!s){return;}s.removeAllRanges();s.addRange(r);if(s.modify){s.modify('move','backward','word');s.modify('extend','forward','word');}}
+function word(s){if(s.modify){s.modify('move','backward','word');s.modify('extend','forward','word');}}
+function selectAt(p){var s=window.getSelection();if(!s){return false;}if(p&&document.caretRangeFromPoint){var r=document.caretRangeFromPoint(p[0],p[1]);if(r&&root.contains(r.startContainer)&&r.startContainer.nodeType===3){s.removeAllRanges();s.addRange(r);word(s);if(!s.isCollapsed){return true;}}}return false;}
+function selectAll(){var s=window.getSelection();if(s){s.removeAllRanges();s.selectAllChildren(root);}}
+window.__paraSelectStart=function(){try{if(!selectAt(${at})){selectAll();}}catch(e){}};
+var hold=null,from=null;
+function stopHold(){if(hold!==null){clearTimeout(hold);hold=null;}}
+document.addEventListener('touchstart',function(e){stopHold();if(e.touches.length!==1){return;}var t=e.touches[0];from=[t.clientX,t.clientY];hold=setTimeout(function(){hold=null;try{var s=window.getSelection();if(s&&s.isCollapsed){selectAt(from);}}catch(x){}},${HOLD_MS});},{passive:true});
+document.addEventListener('touchmove',function(e){var t=e.touches[0];if(from&&t&&Math.abs(t.clientX-from[0])+Math.abs(t.clientY-from[1])>${HOLD_SLOP}){stopHold();}},{passive:true});
+document.addEventListener('touchend',stopHold,{passive:true});
 var done=false;
-function ready(){if(done){return;}done=true;try{selectAt(${at});}catch(e){}post('ready');if(window.ResizeObserver){new ResizeObserver(function(){post('height');}).observe(root);}}
+function ready(){if(done){return;}done=true;post('ready');if(window.ResizeObserver){new ResizeObserver(function(){post('height');}).observe(root);}}
 if(document.readyState==='complete'){ready();}else{window.addEventListener('load',ready);}
 })();`;
+}
+
+/**
+ * 見せて `requestFocus()` した後に WebView へ流す文（`injectJavaScript`）。押した点の単語か発言の全体を選ぶ。
+ * 発言の文字は含まない（押した点は HTML の nonce 付きのスクリプトが持つ）。
+ */
+export function inplaceSelectStartScript(): string {
+	return 'window.__paraSelectStart&&window.__paraSelectStart();true;';
 }
 
 /** 差し替える WebView の HTML。`nonce` は `createMobileOfficeNonce()` で作り、HTML を作るたびに新しくする。 */
