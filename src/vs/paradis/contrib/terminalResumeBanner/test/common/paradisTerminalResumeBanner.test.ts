@@ -10,7 +10,7 @@ import assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/runWithFakedTimers.js';
-import { PARADIS_RESUME_LEDGER_TTL_MS, ParadisResumeBannerChoice, paradisResumeBannerChoiceCommand, paradisResumeBannerLayout, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
+import { PARADIS_RESUME_LEDGER_TTL_MS, ParadisResumeBannerChoice, paradisIsHookFromBeforeHibernation, paradisResumeBannerChoiceCommand, paradisResumeBannerLayout, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
 
 suite('paradisTerminalResumeBanner', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -146,6 +146,18 @@ suite('paradisTerminalResumeBanner', () => {
 			{ agent: 'claude', sessionId: 'session-a', at: now - 10, hibernated: { at: now - 5, completedAt: now - 100, bypass: true } },
 			{ agent: 'codex', sessionId: 'session-b', at: now - 10 },
 		]);
+	});
+
+	// 休止の印を付けた後、止める前に Para Code が落ちた: 再起動の後、生き残ったエージェントの hook（印より後）が届けば印を外す
+	test('a hook that arrives after the hibernation mark (resumed, or the agent survived a crash before it was stopped) clears the mark', () => {
+		const marked = { agent: 'claude' as const, sessionId: 'session-a', at: 100, hibernated: { at: 200, completedAt: 90 } };
+		assert.deepStrictEqual({
+			hookBeforeMark: paradisIsHookFromBeforeHibernation(marked, { sessionId: 'session-a', at: 150 }),
+			hookAtMark: paradisIsHookFromBeforeHibernation(marked, { sessionId: 'session-a', at: 200 }),
+			hookAfterRestart: paradisIsHookFromBeforeHibernation(marked, { sessionId: 'session-a', at: 5_000 }),
+			otherConversation: paradisIsHookFromBeforeHibernation(marked, { sessionId: 'session-b', at: 150 }),
+			notMarked: paradisIsHookFromBeforeHibernation({ ...marked, hibernated: undefined }, { sessionId: 'session-a', at: 150 }),
+		}, { hookBeforeMark: true, hookAtMark: true, hookAfterRestart: false, otherConversation: false, notMarked: false });
 	});
 
 	test('reads the conversation name and the Codex thread id from the tab title', () => {
