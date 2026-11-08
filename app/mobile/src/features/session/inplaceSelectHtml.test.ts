@@ -74,10 +74,13 @@ describe('buildInplaceSelectHtml', () => {
 		expect({
 			body: /<\/style>\n<\/head><body>(?<body>[\s\S]*)<script/.exec(html)?.groups?.body,
 			place: html.includes('var lay=[1,120.5];'),
+			// 押した点が取れないとき（iPad の右クリックなど）は、並べた全部ではなく押した発言の本文だけを選ぶ
+			fallback: html.includes("var el=lay?root.querySelectorAll('.seg')[lay[0]]:null;"),
 			label: html.includes('.sp {') && /\.sp \{[^}]*user-select: none/.test(html),
 		}).toEqual({
 			body: '<div id="m" class="across" style="padding:600px 0;margin-left:16px;width:343px"><div class="seg"><div class="sp">あなた</div><div class="u">前の発言</div></div><div class="seg"><div class="sp">エージェント</div><div class="p">押した発言</div></div></div>',
 			place: true,
+			fallback: true,
 			label: true,
 		});
 	});
