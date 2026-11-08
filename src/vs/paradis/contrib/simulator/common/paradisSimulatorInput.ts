@@ -238,3 +238,26 @@ export function paradisSimulatorKeystrokes(input: string): IParadisSimulatorKeys
 	}
 	return strokes;
 }
+
+/** iPhone Duo の外と内の画面の画素数（serve-sim 0.1.49 の device-pose.ts の DUO_COVER_SIZE・DUO_INNER_SIZE）。 */
+const DUO_COVER_LONG_SIDE = 2034;
+const DUO_INNER_LONG_SIDE = 2853;
+
+/**
+ * 映している画面（外 cover / 内 inner）を、映像の大きさから決める。大きさが Duo のどちらでもなければ、開き具合
+ * （90° より閉じていれば外）で推定する。折りたたみでなければ undefined。
+ * iOS 27.2 では閉じても内のまま映ることがある（Mac で実測）ので、開き具合だけでは決めない。
+ */
+export function paradisSimulatorDuoPanel(config: { readonly width: number; readonly height: number; readonly hingeDegrees?: number }): 'cover' | 'inner' | undefined {
+	if (config.hingeDegrees === undefined) {
+		return undefined;
+	}
+	const long = Math.max(config.width, config.height);
+	if (Math.abs(long - DUO_INNER_LONG_SIDE) <= 2) {
+		return 'inner';
+	}
+	if (Math.abs(long - DUO_COVER_LONG_SIDE) <= 2) {
+		return 'cover';
+	}
+	return config.hingeDegrees < 90 ? 'cover' : 'inner';
+}

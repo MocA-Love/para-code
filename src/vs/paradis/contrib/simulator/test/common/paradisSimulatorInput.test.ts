@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
+import { paradisSimulatorDuoPanel, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
 
 suite('Paradis simulator: human input', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -90,5 +90,14 @@ suite('Paradis simulator: human input', () => {
 	// 途切れたら 5・10・20・40 秒待って読み直し、使い切ったら止める（止める・始めるを繰り返さない）
 	test('backs off before re-reading a stalled stream and then gives up', () => {
 		assert.deepStrictEqual([0, 1, 2, 3, 4].map(paradisSimulatorStallRetryDelay), [5000, 10_000, 20_000, 40_000, undefined]);
+	});
+
+	test('tells the Duo cover and inner screens apart by the frame size before the hinge', () => {
+		assert.deepStrictEqual([
+			paradisSimulatorDuoPanel({ width: 2007, height: 2853, hingeDegrees: 0 }),
+			paradisSimulatorDuoPanel({ width: 1398, height: 2034, hingeDegrees: 180 }),
+			paradisSimulatorDuoPanel({ width: 1000, height: 1000, hingeDegrees: 30 }),
+			paradisSimulatorDuoPanel({ width: 1206, height: 2622 }),
+		], ['inner', 'cover', 'cover', undefined]);
 	});
 });

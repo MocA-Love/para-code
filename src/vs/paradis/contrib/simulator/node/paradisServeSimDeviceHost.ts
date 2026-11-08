@@ -17,11 +17,15 @@
 // 端末の向きへ戻して送る（paradisSimulatorInput.ts の向きの扱い）。
 
 import { execFile } from 'child_process';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_ORIENTATIONS, ParadisSimulatorOrientation, paradisResolveSimulatorButton, paradisSimulatorButtonNames, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
-import { paradisFindSimulatorAx, paradisNormalizeSimulatorAx, paradisPickSimulatorAxTarget, IParadisSimulatorAxSnapshot } from '../common/paradisSimulatorAx.js';
+import { paradisFindSimulatorAx, paradisMarkTypedSimulatorField, paradisNormalizeSimulatorAx, paradisPickSimulatorAxTarget, paradisSimulatorFieldValues, IParadisSimulatorAxSnapshot } from '../common/paradisSimulatorAx.js';
+import { paradisPngSize } from '../../mobileCanvas/common/paradisMobileDeviceOps.js';
 import { paradisSimulatorButtonFrame, paradisSimulatorKeyFrame, paradisSimulatorMultiTouchFrame, paradisSimulatorRotateFrame, paradisSimulatorTouchFrame } from '../common/paradisSimulatorFrames.js';
-import { paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
+import { paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 
 export const PARADIS_SERVE_SIM_DEVICE_PREFIX = PARADIS_SIMULATOR_DEVICE_ID_PREFIX;
@@ -45,6 +49,25 @@ const realSimctl: ParadisServeSimSimctl = (args, options) => new Promise((resolv
 	}
 });
 
+/**
+ * スクリーンショット（PNG）を取る。simctl は専用の一時フォルダのファイルへ書かせ、読んだら消す
+ * （serve-sim 自身もファイルへ書く。標準出力への書き出しには頼らない）。
+ */
+export type ParadisServeSimScreenshot = (udid: string) => Promise<Uint8Array>;
+
+function realScreenshot(simctl: ParadisServeSimSimctl): ParadisServeSimScreenshot {
+	return async udid => {
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-simulator-shot-'));
+		try {
+			const file = join(dir, 'screen.png');
+			await simctl(['io', udid, 'screenshot', '--type=png', file], { timeoutMs: 30_000 });
+			return new Uint8Array(await fs.readFile(file));
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	};
+}
+
 export type ParadisServeSimSleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 const realSleep: ParadisServeSimSleep = (ms, signal) => new Promise<void>(resolve => {
@@ -63,6 +86,16 @@ interface IServeSimDisplay {
 	readonly pixelHeight: number;
 	readonly scale: number;
 	readonly orientation: string;
+}
+
+/** 測ったときの serve-sim の映像の大きさと向き。これが変わったら（どこから回されても）測り直す。 */
+interface IMeasuredDisplay {
+	readonly display: IServeSimDisplay;
+	readonly measuredWith: string;
+}
+
+function configKey(config: IParadisSimulatorScreenConfig): string {
+	return `${config.width}x${config.height}:${config.orientation}`;
 }
 
 const TAP_SECONDS = 0.05;
@@ -92,7 +125,10 @@ function hyphenOrientation(orientation: string): string {
 export class ParadisServeSimDeviceHost {
 
 	/** 端末ごとに最後に測った画面の大きさ（一覧の `display` に載せる。回転・開閉で捨てる）。 */
-	private readonly _displays = new Map<string, IServeSimDisplay>();
+	private readonly _displays = new Map<string, IMeasuredDisplay>();
+	/** mobile_type_text の前の欄の値（次の GET /ui で、値が変わった欄に focused を付ける）。 */
+	private readonly _typedFields = new Map<string, Map<string, string>>();
+	private readonly _screenshot: ParadisServeSimScreenshot;
 	/** 2 本指の入力の、指ごとの今の位置（Mobile Canvas の `input/touch` は 1 本ずつ来る）。 */
 	private readonly _fingers = new Map<string, Map<number, { x: number; y: number }>>();
 
@@ -101,7 +137,10 @@ export class ParadisServeSimDeviceHost {
 		private readonly _logService: ILogService,
 		private readonly _simctl: ParadisServeSimSimctl = realSimctl,
 		private readonly _sleep: ParadisServeSimSleep = realSleep,
-	) { }
+		screenshot?: ParadisServeSimScreenshot,
+	) {
+		this._screenshot = screenshot ?? realScreenshot(this._simctl);
+	}
 
 	/** この端末の id をこちらで受け持つか。 */
 	owns(deviceId: string): boolean {
@@ -121,7 +160,7 @@ export class ParadisServeSimDeviceHost {
 
 	private _describe(device: IParadisSimulatorDevice): Record<string, unknown> {
 		const id = `${PARADIS_SERVE_SIM_DEVICE_PREFIX}${device.udid}`;
-		const display = this._displays.get(id);
+		const display = this._displays.get(id)?.display;
 		return {
 			id,
 			udid: device.udid,
@@ -141,8 +180,12 @@ export class ParadisServeSimDeviceHost {
 				return this._describeOne(deviceId, udid);
 			case 'GET /display':
 				return this._display(deviceId, udid, true);
-			case 'GET /ui':
-				return this._snapshot(udid);
+			case 'GET /ui': {
+				const snapshot = await this._snapshot(udid);
+				const before = this._typedFields.get(udid);
+				this._typedFields.delete(udid);
+				return before ? paradisMarkTypedSimulatorField(snapshot, before) : snapshot;
+			}
 			case 'POST /ui/find':
 				return paradisFindSimulatorAx(await this._snapshot(udid), this._query(args));
 			case 'POST /ui/tap':
@@ -173,8 +216,10 @@ export class ParadisServeSimDeviceHost {
 		if (rest !== '/screenshot') {
 			throw new Error(`The new iOS simulator does not support GET ${rest} as binary.`);
 		}
-		const png = await this._simctl(['io', udid, 'screenshot', '--type=png', '-'], { timeoutMs: 30_000, binary: true });
-		return typeof png === 'string' ? new TextEncoder().encode(png) : png;
+		const png = await this._screenshot(udid);
+		// mobile_screenshot はこの後の一覧から画面の大きさを読むので、ここで測っておく（同じ 1 枚から scale を出す）
+		await this._display(this._parse(path).deviceId, udid, true, png).catch(error => this._logService.trace('[paradis-simulator] could not measure the screen after a screenshot', error));
+		return png;
 	}
 
 	private _parse(path: string): { deviceId: string; udid: string; rest: string; query: URLSearchParams } {
@@ -205,36 +250,39 @@ export class ParadisServeSimDeviceHost {
 			...this._describe(device),
 			...(display ? { display } : {}),
 			foldable,
-			...(foldable ? { hingeDegrees: config!.hingeDegrees, activeDisplay: config!.hingeDegrees! < 90 ? 'cover' : 'inner' } : {}),
+			...(foldable ? { hingeDegrees: config!.hingeDegrees, activeDisplay: paradisSimulatorDuoPanel(config!) } : {}),
 		};
 	}
 
 	/**
-	 * 画面の大きさ。ポイントはアクセシビリティの木の画面、画素は serve-sim の映像の大きさ（端末の向きのまま）。
-	 * `scale` は長い辺どうしの比（2 か 3 に丸める前の値を小数 1 桁で）。
+	 * 画面の大きさ。ポイントはアクセシビリティの木の画面、画素は simctl のスクリーンショット（mobile_screenshot が返す
+	 * 画像と同じもの）。`scale` は長い辺どうしの比を整数に丸めたもの（mobile_gesture などはスクリーンショットの画素を
+	 * この値で割ってポイントにするので、画像と合っていなければならない。serve-sim の映像は小さく流れることがあるので使わない）。
+	 * 覚えた値は、serve-sim の映像の大きさか向きが変わったら（ペインや Simulator.app で回したときも）測り直す。
 	 */
-	private async _display(deviceId: string, udid: string, fresh: boolean): Promise<IServeSimDisplay> {
+	private async _display(deviceId: string, udid: string, fresh: boolean, screenshot?: Uint8Array): Promise<IServeSimDisplay> {
+		const config = await this._backend.getScreenConfig(udid);
 		const remembered = fresh ? undefined : this._displays.get(deviceId);
-		if (remembered) {
-			return remembered;
+		if (remembered && remembered.measuredWith === configKey(config)) {
+			return remembered.display;
 		}
-		const [config, snapshot] = await Promise.all([this._backend.getScreenConfig(udid), this._snapshot(udid)]);
-		const geometry = paradisSimulatorDisplayGeometry(config);
+		const [snapshot, png] = await Promise.all([this._snapshot(udid), screenshot ?? this._screenshot(udid)]);
+		const pixels = paradisPngSize(png);
 		const pointWidth = snapshot.screen.width;
 		const pointHeight = snapshot.screen.height;
-		if (pointWidth <= 0 || pointHeight <= 0) {
+		if (pointWidth <= 0 || pointHeight <= 0 || !pixels) {
 			throw new Error('The simulator did not report its screen size yet. Try again in a moment.');
 		}
-		const scale = Math.round(Math.max(config.width, config.height) / Math.max(pointWidth, pointHeight) * 10) / 10;
+		const scale = Math.max(1, Math.round(Math.max(pixels.width, pixels.height) / Math.max(pointWidth, pointHeight)));
 		const display: IServeSimDisplay = {
 			pointWidth,
 			pointHeight,
-			pixelWidth: geometry.display.width,
-			pixelHeight: geometry.display.height,
-			scale: scale > 0 ? scale : 1,
+			pixelWidth: pixels.width,
+			pixelHeight: pixels.height,
+			scale,
 			orientation: hyphenOrientation(config.orientation),
 		};
-		this._displays.set(deviceId, display);
+		this._displays.set(deviceId, { display, measuredWith: configKey(config) });
 		return display;
 	}
 
@@ -306,6 +354,11 @@ export class ParadisServeSimDeviceHost {
 	private async _typeText(udid: string, text: string): Promise<unknown> {
 		if (!text) {
 			throw new Error('"text" must be a non-empty string.');
+		}
+		// 打つ前の欄の値を覚えておき、次の GET /ui（mobile_type_text の読み返し）で値が変わった欄を入力中とみなす
+		const before = await this._snapshot(udid).then(paradisSimulatorFieldValues, () => undefined);
+		if (before) {
+			this._typedFields.set(udid, before);
 		}
 		const strokes = paradisSimulatorKeystrokes(text);
 		if (strokes) {
@@ -389,7 +442,7 @@ export class ParadisServeSimDeviceHost {
 	}
 }
 
-/** テストと開閉のツールが使う、端末の向きの名前（serve-sim の `config` から）。 */
+/** 映している画面（外 cover / 内 inner）。折りたたみでなければ undefined。 */
 export function paradisServeSimActiveDisplay(config: IParadisSimulatorScreenConfig): 'cover' | 'inner' | undefined {
-	return config.hingeDegrees === undefined ? undefined : config.hingeDegrees < 90 ? 'cover' : 'inner';
+	return paradisSimulatorDuoPanel(config);
 }

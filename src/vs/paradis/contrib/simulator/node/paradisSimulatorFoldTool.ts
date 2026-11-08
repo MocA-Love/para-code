@@ -108,10 +108,14 @@ export class ParadisSimulatorFoldToolProvider implements IParadisMcpToolProvider
 		this._forgetScreenSize(attachment.deviceId);
 		const after = await this._backend.getScreenConfig(udid);
 		const display = await this._host.request('GET', `/api/v1/devices/${encodeURIComponent(attachment.deviceId)}/display`, undefined).catch(() => undefined) as { pointWidth?: number; pointHeight?: number; scale?: number } | undefined;
+		const activeDisplay = paradisServeSimActiveDisplay(after) ?? null;
+		const expected = after.hingeDegrees === undefined ? undefined : after.hingeDegrees < 90 ? 'cover' : 'inner';
 		const result = {
 			hingeDegrees: after.hingeDegrees ?? null,
-			activeDisplay: paradisServeSimActiveDisplay(after) ?? null,
+			activeDisplay,
 			screen: display?.pointWidth ? { pointWidth: display.pointWidth, pointHeight: display.pointHeight, scale: display.scale } : null,
+			// iOS 27.2 では閉じても内の画面のまま映ることがある（Mac で実測）。映っている画面は映像の大きさで決めている
+			...(expected && activeDisplay && expected !== activeDisplay ? { note: `The hinge moved, but the simulator still shows the ${activeDisplay} screen. Coordinates follow the screen that is showing.` } : {}),
 		};
 		this._logService?.info(`[paradis-simulator] folded a simulator to ${fold.kind === 'pose' ? fold.pose : `${fold.hinge} degrees`}`);
 		return { content: [{ type: 'text', text: JSON.stringify(result, undefined, 2) }], structuredContent: result };
