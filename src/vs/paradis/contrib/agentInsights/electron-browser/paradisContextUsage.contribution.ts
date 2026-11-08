@@ -16,6 +16,7 @@
 // - Codex は内訳を記録しないので、全体の量とキャッシュの hit 率だけ
 
 import * as dom from '../../../../base/browser/dom.js';
+import { AnchorAlignment } from '../../../../base/browser/ui/contextview/contextview.js';
 import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { Emitter } from '../../../../base/common/event.js';
@@ -32,13 +33,25 @@ import { PARADIS_CCUSAGE_OTHER_COLOR, PARADIS_CCUSAGE_SERIES_DARK, PARADIS_CCUSA
 import { paradisRenderContextCategories, paradisRenderContextRowGroups } from '../../ccusage/electron-browser/paradisCcusageContextView.js';
 import { IParadisClaudeContextBreakdown } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
 import { ParadisClaudeContextClient } from '../../claudeMod/electron-browser/paradisClaudeContextClient.js';
-import { createParadisContextUsageBadge, IParadisContextUsageBadgeHost, IParadisContextUsageReading } from '../browser/paradisContextUsageBadge.js';
+import { createParadisContextUsageBadge, IParadisContextUsageBadgeHost, IParadisContextUsageReading, paradisContextUsagePopoverSize } from '../browser/paradisContextUsageBadge.js';
 import { IParadisAgentInsightsService, IParadisAgentPaneInsight } from '../common/paradisAgentInsights.js';
 
 const $ = dom.$;
 
 /** 「AI コスト」の画面を開くコマンド（paradisCcusage.contribution.ts）。 */
 const SHOW_COST_DASHBOARD_COMMAND_ID = 'paradis.ccusage.showDashboard';
+
+/**
+ * 固定で開く fork のポップオーバーに付ける印（paradisFocusRing.css）。本家の固定ホバーの外枠の外に重なる
+ * outline を消し、キーボードのフォーカスは外枠の色で 1 本に出す。
+ */
+const POPOVER_HOVER_CLASS = 'paradis-popover-hover';
+
+/**
+ * 輪は右端にあるので、ホバーの右端を輪の右端にそろえて左向きに開く（既定の中央寄せだと右隣のエディタのグループへ
+ * はみ出す）。1 行のホバーと内訳のポップオーバーで共通。
+ */
+const HOVER_POSITION = { hoverPosition: HoverPosition.BELOW, anchorAlignment: AnchorAlignment.RIGHT };
 
 /** 使用率を出すペイン（Claude・Codex で、リクエストが 1 回以上ある）の様子。 */
 type ParadisContextPaneInsight = IParadisAgentPaneInsight & { readonly agent: 'claude' | 'codex'; readonly context: NonNullable<IParadisAgentPaneInsight['context']> };
@@ -96,7 +109,7 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 		return this.hoverService.setupDelayedHover(element, () => ({
 			content: content(),
 			appearance: { showPointer: true, compact: true },
-			position: { hoverPosition: HoverPosition.BELOW },
+			position: HOVER_POSITION,
 		}));
 	}
 
@@ -134,6 +147,7 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 			if (closed) {
 				return;
 			}
+			this.fitDetails(root, element);
 			const current = contextPane(this.insightsService.getForInstance(instanceId)) ?? pane;
 			// 描き直すたびに、前の描画のリスナーを外す
 			const renderStore = new DisposableStore();
@@ -162,7 +176,8 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 			target: element,
 			persistence: { hideOnHover: false, sticky: true },
 			appearance: { showPointer: true, compact: true },
-			position: { hoverPosition: HoverPosition.BELOW },
+			position: HOVER_POSITION,
+			additionalClasses: [POPOVER_HOVER_CLASS],
 			trapFocus: true,
 			// 閉じたら購読を外す
 			onDidHide: close,
@@ -170,6 +185,20 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 		if (widget === undefined) {
 			close();
 		}
+	}
+
+	/**
+	 * 内訳をエディタのターミナルの中に収める。幅は輪の右端からターミナルの左端まで、高さはターミナルの下端までに抑え、
+	 * 入りきらない分は中でスクロールする。描き直すたびに測り直す（開いたまま分割や幅の変更があっても追う）。
+	 */
+	private fitDetails(root: HTMLElement, anchor: HTMLElement): void {
+		const frame = anchor.closest('.terminal-overflow-guard') ?? anchor.parentElement;
+		if (!frame) {
+			return;
+		}
+		const size = paradisContextUsagePopoverSize(anchor.getBoundingClientRect(), frame.getBoundingClientRect());
+		root.style.width = `${size.width}px`;
+		root.style.maxHeight = `${size.maxHeight}px`;
 	}
 
 	private renderDetails(root: HTMLElement, pane: ParadisContextPaneInsight, breakdown: IParadisClaudeContextBreakdown | undefined, openGroups: ReadonlySet<string>, disposables: DisposableStore): void {

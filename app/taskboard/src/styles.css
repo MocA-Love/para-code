@@ -343,7 +343,7 @@ kbd { font: 11px var(--mono); color: var(--faint); border: 1px solid var(--line-
 
 .card { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 11px; cursor: pointer; box-shadow: var(--shadow); transition: border-color .12s, background .12s; outline: none; text-align: left; width: 100%; }
 .card:hover { background: var(--card-hover); border-color: var(--line-strong); }
-.card:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-weak), var(--shadow); }
+.card:focus-visible { border-color: var(--accent); }
 .card.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
 .card.need { border-color: var(--red-line); }
 .card.need.amber { border-color: var(--amber-line); }
