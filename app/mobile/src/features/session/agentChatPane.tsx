@@ -55,6 +55,9 @@ const PINNED_CARD_MAX_HEIGHT = 380;
 /** preview のある質問のカードの高さの上限（選んだ選択肢の下に preview の枠が開くぶん高くする）。 */
 const PINNED_PREVIEW_CARD_MAX_HEIGHT = 480;
 
+/** 「引用して返信」の後に入力欄へフォーカスするまでの待ち（ms）。長押しのメニューの見張り（閉じた後 0.6 秒）より後にする。 */
+const QUOTE_FOCUS_DELAY_MS = 700;
+
 /**
  * エージェントのタブの会話表示（Orca の MobileNativeChatView）。
  *
@@ -328,8 +331,16 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	// 「押したらすぐ送る」は押した時点の設定を読む（設定を変えても会話画面を描き直さない）
 	const pickQuickReply = useCallback((text: string) => composerRef.current?.pickQuickReply(text, useQuickReplies.getState().sendOnTap), []);
 	const scrollToLatest = useCallback(() => listRef.current?.scrollToLatest(), []);
-	// 発言のメニューの「引用して返信」。質問への答えを書いている間は出さない（答えの欄へ引用を混ぜない）
-	const quoteReply = useCallback((text: string) => composerRef.current?.quoteReply(text), []);
+	// 発言のメニューの「引用して返信」。質問への答えを書いている間は出さない（答えの欄へ引用を混ぜない）。
+	// フォーカスは少し遅らせる: 長押しのメニューは閉じた後 0.6 秒、長押しの前と違う入力欄が first responder になると
+	// キーボードを閉じる（para-context-menu の focusGuardTail。iPad でメニューにキーボードが重なる対策）
+	const quoteFocusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	useEffect(() => () => clearTimeout(quoteFocusTimer.current), []);
+	const quoteReply = useCallback((text: string) => {
+		composerRef.current?.quoteReply(text);
+		clearTimeout(quoteFocusTimer.current);
+		quoteFocusTimer.current = setTimeout(() => composerRef.current?.focus(), QUOTE_FOCUS_DELAY_MS);
+	}, []);
 	const [allToolsOpen, setAllToolsOpen] = useState(false);
 
 	const card = approval !== undefined ? (

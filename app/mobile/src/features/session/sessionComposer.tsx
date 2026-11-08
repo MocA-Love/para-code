@@ -56,7 +56,7 @@ export interface SessionComposerHandle {
 	 * （送信ボタンと同じ道を通る）。書きかけ・添付があるとき、送れない状態のときは `insertText` と同じく足すだけ。
 	 */
 	pickQuickReply(text: string, sendOnTap: boolean): void;
-	/** 「引用して返信」。発言を `> ` 付きで書きかけの後ろへ足し、入力欄にフォーカスする（送信はしない。`quoteReplyText`）。 */
+	/** 「引用して返信」。発言を `> ` 付きで書きかけの後ろへ足す（送信もフォーカスもしない。`quoteReplyText`）。 */
 	quoteReply(text: string): void;
 	focus(): void;
 }
@@ -538,10 +538,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				useParaToast.getState().show({ key: 'quick-reply-not-sent', text: '送らずに入力欄に入れました', icon: 'information-circle-outline', tone: 'info' }, 2_000);
 			}
 		},
-		quoteReply: (text: string) => {
-			replaceActiveInput(quoteReplyText(inputRef.current, text));
-			nativeInputRef.current?.focus();
-		},
+		quoteReply: (text: string) => replaceActiveInput(quoteReplyText(inputRef.current, text)),
 		focus: () => nativeInputRef.current?.focus(),
 	}), [replaceActiveInput]);
 
