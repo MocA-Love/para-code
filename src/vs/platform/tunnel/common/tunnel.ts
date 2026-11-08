@@ -440,10 +440,10 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 				const existingHost = this._tunnels.get(tunnel.tunnelRemoteHost);
 				if (existingHost) {
 					const existing = existingHost.get(tunnel.tunnelRemotePort);
-					// PARA-PATCH: only count down the entry this lease came from. After a forced close
+					// PARA-PATCH: only count down the entry this lease belongs to. After a forced close
 					// (Para Code's "Reforward" in the shared process) a newer entry can sit on the same
 					// host and port, and a stale lease released later must not close it.
-					if (existing && existing.generation === generation) {
+					if (existing && this.isLeaseOfEntry(existing.generation, generation)) {
 						existing.refcount--;
 						await this.tryDisposeTunnel(tunnel.tunnelRemoteHost, tunnel.tunnelRemotePort, existing);
 					}
@@ -454,6 +454,13 @@ export abstract class AbstractTunnelService extends Disposable implements ITunne
 		// provider later reuses the same RemoteTunnel object for a new entry.
 		remoteTunnelGenerations.set(lease, generation);
 		return lease;
+	}
+
+	// PARA-PATCH: whether a lease of `leaseGeneration` counts toward the entry of `entryGeneration`. A
+	// subclass that hands an older entry's references over to a newer one (Para Code's "Reforward")
+	// widens this so those references still count down the newer entry when they are released.
+	protected isLeaseOfEntry(entryGeneration: object, leaseGeneration: object): boolean {
+		return entryGeneration === leaseGeneration;
 	}
 
 	// PARA-PATCH: take the whole TunnelEntry (renamed from tunnel to entry) so the close event can carry its generation

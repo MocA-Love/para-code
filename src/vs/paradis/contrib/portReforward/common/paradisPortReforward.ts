@@ -6,6 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { Schemas } from '../../../../base/common/network.js';
+import { URI, UriComponents } from '../../../../base/common/uri.js';
+
 // ポートパネルの「張り直す」が shared process に頼むことの取り決め。
 //
 // shared process の転送は SSH 先とリモートのポートごとに 1 本で、同じポートを転送した窓どうしで
@@ -34,4 +37,31 @@ export function isParadisPortReforwardCloseRequest(value: unknown): value is IPa
 	return typeof request.authority === 'string' && request.authority.length > 0
 		&& typeof request.remoteHost === 'string' && request.remoteHost.length > 0
 		&& typeof request.remotePort === 'number' && Number.isInteger(request.remotePort) && request.remotePort > 0 && request.remotePort <= 65535;
+}
+
+/**
+ * 窓の開いているワークスペース（`INativeHostService.getWindows()` の `workspace`）から、その窓の接続先を取り出す。
+ * フォルダーかワークスペースのファイルが SSH 先（`vscode-remote`）にあれば、その authority が窓の接続先になる。
+ * 空の窓や手元のフォルダーなど、ワークスペースから分からないときは undefined。
+ */
+export function paradisWorkspaceRemoteAuthority(workspace: unknown): string | undefined {
+	if (!workspace || typeof workspace !== 'object') {
+		return undefined;
+	}
+	const { uri, configPath } = workspace as { uri?: UriComponents; configPath?: UriComponents };
+	const location = uri ?? configPath;
+	if (!location || typeof location !== 'object' || typeof location.scheme !== 'string') {
+		return undefined;
+	}
+	const resource = URI.revive(location);
+	return resource.scheme === Schemas.vscodeRemote && resource.authority ? resource.authority : undefined;
+}
+
+/** shared process の接続の ctx（`window:<id>`）から窓の id を取り出す。窓でなければ undefined。 */
+export function paradisWindowIdOfContext(ctx: unknown): number | undefined {
+	if (typeof ctx !== 'string') {
+		return undefined;
+	}
+	const match = /^window:(?<id>\d+)$/.exec(ctx);
+	return match?.groups ? Number(match.groups.id) : undefined;
 }

@@ -86,6 +86,33 @@ suite('ParadisSharedTunnelsService', () => {
 		}
 	});
 
+	test('the reforwarded tunnel keeps the other window\'s reference: it stays after A lets go and closes after B does', async () => {
+		const service = createService();
+		try {
+			const windowA = await open(service);
+			const windowB = await open(service);
+
+			// Window A reforwards: it releases its own lease, closes the tunnel for everyone, forwards again.
+			await windowA.dispose();
+			await service.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+			const reforwarded = await open(service);
+			const listeningAfterReforward = await isListening(reforwarded);
+
+			await reforwarded.dispose();
+			const listeningAfterALetGo = await isListening(reforwarded);
+
+			await windowB.dispose();
+			const listeningAfterBLetGo = await isListening(reforwarded);
+
+			assert.deepStrictEqual(
+				{ listeningAfterReforward, listeningAfterALetGo, listeningAfterBLetGo },
+				{ listeningAfterReforward: true, listeningAfterALetGo: true, listeningAfterBLetGo: false }
+			);
+		} finally {
+			service.dispose();
+		}
+	});
+
 	test('a forced close for an unknown remote does nothing', async () => {
 		const service = createService();
 		try {
