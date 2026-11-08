@@ -134,6 +134,11 @@ interface ITargetSession {
 	readonly store: DisposableStore;
 	networkEnabled: boolean;
 	fetchEnabled: boolean;
+	/**
+	 * ネットワークの上書きを有効にする・戻す CDP 送信の鎖（{@link ParadisBrowserPageOpsController.runNetwork}）。
+	 * 共有を解いたときの戻しと、次の持ち主の設定が交互に届かないよう、1 つずつ順に送る。
+	 */
+	networkChain: Promise<void>;
 	overlayEnabled: boolean;
 	/** add_init_script のために Page を有効にした。 */
 	pageEnabled: boolean;
@@ -588,7 +593,7 @@ export class ParadisBrowserPageOpsController {
 				session.dispose();
 				throw new Error('The tab was released while attaching.');
 			}
-			const entry: ITargetSession = { session, store: new DisposableStore(), networkEnabled: false, fetchEnabled: false, overlayEnabled: false, pageEnabled: false };
+			const entry: ITargetSession = { session, store: new DisposableStore(), networkEnabled: false, fetchEnabled: false, networkChain: Promise.resolve(), overlayEnabled: false, pageEnabled: false };
 			entry.store.add(session.onEvent(event => this.onEvent(target, session, event)));
 			entry.store.add(session.onClose(() => {
 				if (this.targetSessions.get(target) !== entry) {
@@ -774,6 +779,12 @@ export class ParadisBrowserPageOpsController {
 			return;
 		}
 		const entry = await this.ensureTargetSession(target);
+		// 前の戻し（共有を解いたときの resetNetwork など）が送り終わってから有効にする
+		await this.runNetwork(entry, () => this.enableNetwork(target, state, entry, needsHeaders));
+	}
+
+	/** {@link syncNetwork} の送信部分。{@link runNetwork} の鎖の中で呼ぶ。 */
+	private async enableNetwork(target: IParadisPageOpsTarget, state: IViewState, entry: ITargetSession, needsHeaders: boolean): Promise<void> {
 		if (state.disposed) {
 			return;
 		}
@@ -811,6 +822,7 @@ export class ParadisBrowserPageOpsController {
 	/**
 	 * 共有が解かれた後に届いたネットワークの上書きを戻す。セッションが既に手放されたとき、
 	 * 次の共有の上書きが同じセッションで Network / Fetch を使っているときは触らない。
+	 * {@link enableNetwork} から、つまり {@link runNetwork} の鎖の中で呼ぶ（鎖に繋ぎ直すと自分を待って止まる）。
 	 */
 	private async undoAbandonedNetwork(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
 		if (this.targetSessions.get(target) !== entry) {
@@ -828,12 +840,24 @@ export class ParadisBrowserPageOpsController {
 	/** このタブで有効にしたネットワークの上書きを戻す（セッションは次の上書きとハイライトのために残す）。 */
 	private async resetNetwork(target: IParadisPageOpsTarget): Promise<void> {
 		const entry = this.targetSessions.get(target);
-		if (!entry || (!entry.networkEnabled && !entry.fetchEnabled)) {
+		if (!entry) {
 			return;
 		}
-		entry.networkEnabled = false;
-		entry.fetchEnabled = false;
-		await this.sendTeardown(target, entry.session, NETWORK_TEARDOWN_COMMANDS);
+		await this.runNetwork(entry, async () => {
+			if (!entry.networkEnabled && !entry.fetchEnabled) {
+				return;
+			}
+			entry.networkEnabled = false;
+			entry.fetchEnabled = false;
+			await this.sendTeardown(target, entry.session, NETWORK_TEARDOWN_COMMANDS);
+		});
+	}
+
+	/** ネットワークの上書きの送信を、そのセッションの鎖の後ろに繋いで順に走らせる。前が失敗しても後は走る。 */
+	private runNetwork(entry: ITargetSession, work: () => Promise<void>): Promise<void> {
+		const run = entry.networkChain.then(work);
+		entry.networkChain = run.then(() => undefined, () => undefined);
+		return run;
 	}
 
 	private onEvent(target: IParadisPageOpsTarget, session: ICDPConnection, event: CDPEvent): void {

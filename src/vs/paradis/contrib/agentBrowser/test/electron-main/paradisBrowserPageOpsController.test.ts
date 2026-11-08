@@ -393,6 +393,39 @@ suite('ParadisBrowserPageOpsController', () => {
 		await flush();
 	});
 
+	test('a new pane\'s overrides set while the previous sharing is still being undone arrive after the undo, not mixed into it', async () => {
+		const controller = new ParadisBrowserPageOpsController();
+		const target = createTarget();
+		await controller.apply(target, OWNER, 3, { rules: rules([{ url_pattern: '*/ads/*', action: 'block' }]) });
+		const session = target.sessions[0];
+		let reply: () => void = () => { };
+		const held = new Promise<void>(resolve => reply = resolve);
+		// 共有を解いたときの戻しの最初の命令の返事を止め、その間に次の持ち主が設定する
+		session.replyGate = method => method === 'Fetch.disable' ? held : undefined;
+		const before = session.commands.length;
+		controller.releaseOwner(OWNER, 4);
+		await flush();
+		const applying = controller.apply(target, OTHER_OWNER, 9, { rules: rules([{ url_pattern: '*/track/*', action: 'block' }]) });
+		await flush();
+		reply();
+		const result = await applying;
+		await flush();
+		assert.deepStrictEqual({
+			result: result.ok ? 'ok' : result.reason,
+			commands: session.commands.slice(before).map(command => command.method),
+			bypassed: [session.cacheDisabled, session.bypassServiceWorker, session.networkEnabled, session.fetchEnabled],
+		}, {
+			result: 'ok',
+			commands: [
+				'Fetch.disable', 'Network.setExtraHTTPHeaders', 'Network.setCacheDisabled', 'Network.setBypassServiceWorker', 'Network.disable',
+				'Network.enable', 'Network.setCacheDisabled', 'Network.setBypassServiceWorker', 'Fetch.enable',
+			],
+			bypassed: [true, true, true, true],
+		});
+		controller.releaseTarget(target);
+		await flush();
+	});
+
 	test('overrides on a profile tab go away when another tab opens in the same profile', async () => {
 		const controller = new ParadisBrowserPageOpsController();
 		const profile = new FakeStorage();

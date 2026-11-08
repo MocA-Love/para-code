@@ -553,12 +553,13 @@ suite('ParadisBrowserExtensionApi', () => {
 			assert.deepStrictEqual({
 				afterFailure,
 				afterReason: changes,
-				log: host.workerLog(ID).map(line => [line.level, line.message]),
+				log: host.workerLog(ID).map(line => [line.level, line.message, line.session]),
 				running: host.isWorkerRunning(ID),
 			}, {
 				afterFailure: 1,
 				afterReason: 2,
-				log: [['info', 'booting'], ['error', 'Uncaught Error: boom']],
+				// どのセッションの worker が出した行かの印（場所/保存先のフォルダ名）が付く
+				log: [['info', 'booting', 'default/session'], ['error', 'Uncaught Error: boom', 'default/session']],
 				running: false,
 			});
 		} finally {
