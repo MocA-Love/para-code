@@ -29,6 +29,7 @@ import { ILocalTranscriptionService } from '../../../../platform/localTranscript
 import { ChatSpeechToTextState, IChatSpeechToTextService } from '../../../../workbench/contrib/chat/browser/speechToText/chatSpeechToTextService.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { paradisSpeechEngineAvailability, paradisSpeechEngineUnavailableMessage } from '../../dictation/common/paradisSpeechEngine.js';
+import { ParadisLocalTranscriptionService } from '../../dictation/electron-browser/paradisLocalTranscriptionService.js';
 import { IParadisAgentChatDictation, IParadisAgentChatDictationTarget } from '../browser/paradisAgentChatComposer.js';
 
 const DICTATION_ENABLED_SETTING = 'dictation.enabled';
@@ -85,7 +86,6 @@ export class ParadisAgentChatTranscriptRegion {
 export class ParadisAgentChatDictation extends Disposable implements IParadisAgentChatDictation {
 
 	private readonly button: HTMLButtonElement;
-	private readonly unavailableMessage: string | undefined;
 	private readonly session = this._register(new DisposableStore());
 	private readonly region: ParadisAgentChatTranscriptRegion;
 	/** この入力欄が今の音声入力の持ち主か。 */
@@ -97,11 +97,10 @@ export class ParadisAgentChatDictation extends Disposable implements IParadisAge
 		@IChatSpeechToTextService private readonly speechToTextService: IChatSpeechToTextService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IHoverService hoverService: IHoverService,
-		@ILocalTranscriptionService localTranscriptionService: ILocalTranscriptionService,
-		@INativeWorkbenchEnvironmentService environmentService: INativeWorkbenchEnvironmentService,
+		@ILocalTranscriptionService private readonly localTranscriptionService: ILocalTranscriptionService,
+		@INativeWorkbenchEnvironmentService private readonly environmentService: INativeWorkbenchEnvironmentService,
 	) {
 		super();
-		this.unavailableMessage = localTranscriptionService.isSupported ? undefined : paradisSpeechEngineUnavailableMessage(paradisSpeechEngineAvailability(platform, environmentService.os.release));
 		this.region = new ParadisAgentChatTranscriptRegion(target.textarea);
 		this.button = append(target.container, $('button.paradis-agent-chat-mic')) as HTMLButtonElement;
 		this.button.type = 'button';
@@ -141,6 +140,18 @@ export class ParadisAgentChatDictation extends Disposable implements IParadisAge
 	override dispose(): void {
 		this.detach();
 		super.dispose();
+	}
+
+	/** 使えない理由。補助プログラムの有無は起動の後に分かるので、そのつど聞く。 */
+	private get unavailableMessage(): string | undefined {
+		const service = this.localTranscriptionService;
+		if (service.isSupported) {
+			return undefined;
+		}
+		if (service instanceof ParadisLocalTranscriptionService) {
+			return service.unavailableMessage;
+		}
+		return paradisSpeechEngineUnavailableMessage(paradisSpeechEngineAvailability(platform, this.environmentService.os.release));
 	}
 
 	private label(): string {

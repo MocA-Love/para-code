@@ -13,7 +13,8 @@ import { join } from '../../../../../base/common/path.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ILocalTranscriptionModelStatus, ILocalTranscriptionResult } from '../../../../../platform/localTranscription/common/localTranscription.js';
-import { IParadisSpeechHelperProcess, ParadisSpeechEngine, paradisSpeechHelperCandidates } from '../../node/paradisSpeechEngineService.js';
+import { paradisSpeechHelperCandidates } from '../../common/paradisSpeechEngine.js';
+import { IParadisSpeechHelperProcess, ParadisSpeechEngine } from '../../node/paradisSpeechEngineService.js';
 
 /** 補助プログラムの代わり。標準出力へ行を書き、標準入力に届いたものを溜める。 */
 class FakeHelper extends EventEmitter implements IParadisSpeechHelperProcess {
