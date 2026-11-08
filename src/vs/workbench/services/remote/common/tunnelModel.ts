@@ -23,6 +23,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { isNumber, isObject, isString } from '../../../../base/common/types.js';
 import { deepClone } from '../../../../base/common/objects.js';
 import { IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { paradisForwardExplicitly, paradisImplicitTunnelSource, paradisMarkExplicitTunnelRecords, paradisTunnelsToRestore } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js'; // PARA-PATCH: see onTunnelOpened, restoreForwarded, storeForwarded and forward
 
 const MISMATCH_LOCAL_PORT_COOLDOWN = 10 * 1000; // 10 seconds
 const TUNNELS_TO_RESTORE = 'remote.tunnels.toRestore';
@@ -494,7 +495,8 @@ export class TunnelModel extends Disposable {
 					hasRunningProcess: !!matchingCandidate,
 					pid: matchingCandidate?.pid,
 					privacy: tunnel.privacy,
-					source: UserTunnelSource,
+					// PARA-PATCH: a tunnel the Ports view did not open (preview, link, OAuth redirect) is kept for this session but not restored (platform/tunnel/common/paradisTunnelRestorePolicy.ts)
+					source: paradisImplicitTunnelSource(TunnelSource.Extension),
 				});
 			}
 			await this.storeForwarded();
@@ -593,7 +595,8 @@ export class TunnelModel extends Disposable {
 		if (this.configurationService.getValue('remote.restoreForwardedPorts')) {
 			const tunnelRestoreValue = await this.tunnelRestoreValue;
 			if (tunnelRestoreValue && (tunnelRestoreValue !== this.knownPortsRestoreValue)) {
-				const tunnels = <RestorableTunnel[] | undefined>JSON.parse(tunnelRestoreValue) ?? [];
+				// PARA-PATCH: skip implicit tunnels and stale ephemeral ports instead of reopening them every time (platform/tunnel/common/paradisTunnelRestorePolicy.ts)
+				const tunnels = paradisTunnelsToRestore(<RestorableTunnel[] | undefined>JSON.parse(tunnelRestoreValue) ?? [], TunnelSource.Extension, (host, port) => !!mapHasAddressLocalhostOrAllInterfaces(this._candidates ?? new Map(), host, port));
 				this.logService.trace(`ForwardedPorts: (TunnelModel) restoring ports ${tunnels.map(tunnel => tunnel.remotePort).join(', ')}`);
 				for (const tunnel of tunnels) {
 					const alreadyForwarded = mapHasAddressLocalhostOrAllInterfaces(this.detected, tunnel.remoteHost, tunnel.remotePort);
@@ -658,6 +661,8 @@ export class TunnelModel extends Disposable {
 					source: tunnel.source,
 				};
 			});
+			// PARA-PATCH: mark records saved from now on, so the restore can tell them from records saved before Para Code stopped restoring implicit tunnels (platform/tunnel/common/paradisTunnelRestorePolicy.ts)
+			paradisMarkExplicitTunnelRecords(restorableTunnels);
 			let valueToStore: string | undefined;
 			if (forwarded.length > 0) {
 				valueToStore = JSON.stringify(restorableTunnels);
@@ -699,7 +704,8 @@ export class TunnelModel extends Disposable {
 		if (!this.restoreComplete && this.environmentService.remoteAuthority) {
 			await Event.toPromise(this.onRestoreComplete.event);
 		}
-		return this.doForward(tunnelProperties, attributes);
+		// PARA-PATCH: an explicit forward of a port a preview or link opened turns it into a forwarded port that is restored (platform/tunnel/common/paradisTunnelRestorePolicy.ts)
+		return paradisForwardExplicitly(tunnelProperties.source ?? UserTunnelSource, UserTunnelSource, () => this.doForward(tunnelProperties, attributes), () => mapHasAddressLocalhostOrAllInterfaces(this.forwarded, tunnelProperties.remote.host, tunnelProperties.remote.port), () => { this._onForwardPort.fire(); return this.storeForwarded(); });
 	}
 
 	private async doForward(tunnelProperties: TunnelProperties, attributes?: Attributes | null): Promise<RemoteTunnel | string | undefined> {
