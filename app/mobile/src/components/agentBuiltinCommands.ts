@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { paradisClaudeModelAlias } from '../../../../src/vs/paradis/contrib/mobileRelay/common/paradisClaudeModelAliases.js';
+import { paradisClaudeModelValue } from '../../../../src/vs/paradis/contrib/mobileRelay/common/paradisClaudeModelAliases.js';
 import type { AgentSlashCommand } from './agentSlashCommands.js';
 
 /**
@@ -87,8 +87,9 @@ export function agentBuiltinCommandBadge(agent: string | undefined, command: Age
 /**
  * 送る前に入力欄が引き受ける操作（送らない・送り方を変える・確かめる）。undefined はそのまま送る。
  * - `model-sheet` / `effort-sheet`: 引数の無い `/model`・`/effort`。シートを開く
- * - `model-switch`: `/model <別名>`。確認を出さない経路（ピルと同じ）でモデルを変える
- * - `model-not-alias`: `/model <別名でない値>`。送らずに案内する（`/config` は別名しか受け付けず、`/model <値>` は確認の画面を出す）
+ * - `model-switch`: `/model <別名>`・`/model <版付きの id>`。シートと同じ経路でモデルを変える（版付きの id は、PC のモデルの一覧に
+ *   載っていなければ PC が断る）
+ * - `model-not-alias`: `/model <形の違う値>`（余計な語・記号）。送らずに案内する
  * - `effort-switch`: `/effort <段階>`。ピルと同じ経路で effort を変える
  * - `usage` / `status`: この端末で開く
  * - `confirm-panel`: PC で画面が開くコマンド。送る前に確かめる（候補から選んだものは確かめない）
@@ -97,7 +98,7 @@ export function agentBuiltinCommandBadge(agent: string | undefined, command: Age
 export type AgentComposerIntercept =
 	| { readonly kind: 'model-sheet' }
 	| { readonly kind: 'effort-sheet' }
-	| { readonly kind: 'model-switch'; readonly alias: string }
+	| { readonly kind: 'model-switch'; readonly model: string }
 	| { readonly kind: 'model-not-alias'; readonly value: string }
 	| { readonly kind: 'effort-switch'; readonly level: string }
 	| { readonly kind: 'usage' }
@@ -134,8 +135,8 @@ export function agentComposerIntercept(text: string, agent: string | undefined, 
 			if (slash.args.length === 0) {
 				return { kind: 'model-sheet' };
 			}
-			const alias = paradisClaudeModelAlias(slash.args);
-			return alias !== undefined ? { kind: 'model-switch', alias } : { kind: 'model-not-alias', value: slash.args.slice(0, 100) };
+			const model = paradisClaudeModelValue(slash.args);
+			return model !== undefined ? { kind: 'model-switch', model: model.value } : { kind: 'model-not-alias', value: slash.args.slice(0, 100) };
 		}
 		case 'effort-sheet': {
 			if (slash.args.length === 0) {
