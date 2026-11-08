@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { agentModelOptions, claudeModelDisplayName, claudeModelOptionsFromAgents, matchAgentModel } from './agentModels.js';
+import { agentModelOptions, claudeModelCatalogKey, claudeModelDisplayName, claudeModelOptionsFromAgents, matchAgentModel } from './agentModels.js';
 import type { WorktreeAgentDef } from './store.js';
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -63,6 +63,20 @@ describe('Claude のモデル候補', () => {
 			fixed: ['Opus 5.5', 'Fable 5.1', 'Haiku 5.5', undefined, undefined, 'Opus 5.5', 'Opus 5.5', undefined],
 			pc: ['Opus 5.5', 'Opus 5', 'Haiku 4.5', 'Fable 5.1'],
 			names: ['Opus 5.5', 'Fable 5', 'Haiku 4.5', 'Mythos 5.1', undefined],
+		});
+	});
+
+	test('モデルの一覧はスペースが分かれば PC とスペースの組で覚え、手元と SSH のスペースで混ぜない', () => {
+		expect({
+			local: claudeModelCatalogKey('pc-1', 'ws-local'),
+			ssh: claudeModelCatalogKey('pc-1', 'ws-ssh'),
+			noSpace: claudeModelCatalogKey('pc-1', undefined),
+			empty: claudeModelCatalogKey('pc-1', ''),
+		}).toEqual({
+			local: 'pc-1\nws-local',
+			ssh: 'pc-1\nws-ssh',
+			noSpace: 'pc-1',
+			empty: 'pc-1',
 		});
 	});
 });

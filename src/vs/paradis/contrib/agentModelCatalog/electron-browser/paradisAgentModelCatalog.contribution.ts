@@ -6,8 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// インストール済みの CLI から取ったモデル一覧を shared process から受け取り、新しいスペースの
-// 作成（ダイアログ・モバイルからの作成）の候補へ反映する。
+// インストール済みの CLI から取ったモデル一覧を受け取り、新しいスペースの作成（ダイアログ・モバイルからの作成）の
+// 候補へ反映する。手元のウィンドウは shared process（手元の CLI）から、SSH のウィンドウは接続先の REH（接続先の CLI）
+// から取る。SSH のウィンドウではエージェントが接続先で動くので、手元の CLI の一覧では版が合わない。一覧のチャネルを
+// 持たない古い REH では、手元の一覧に戻さず、別名だけの固定の候補を使う（どの版の CLI でも通るため）。
 //
 // 起動したときと、作成ダイアログを開くたびに取り直す（shared process は 60 秒は同じ結果を返し、
 // CLI を起こすのは版が変わったときだけ）。利用者が `paradis.workspaceSwitch.agents` を自分で
@@ -15,6 +17,7 @@
 // 起こす理由が無い）。既定と違う行がある間はダイアログに「設定で固定中」と出し、既定へ戻す操作をここで受け持つ。
 
 import { Emitter } from '../../../../base/common/event.js';
+import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { equals } from '../../../../base/common/objects.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
@@ -26,6 +29,8 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IPreferencesService } from '../../../../workbench/services/preferences/common/preferences.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { paradisIsUnknownChannelError } from '../../fileTransfer/common/paradisFileTransfer.js';
 import { IParadisAgentCommandTemplate } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import {
 	IParadisAgentModelCatalog,
@@ -41,7 +46,7 @@ import {
 	paradisResolveAgentTemplates,
 } from '../common/paradisAgentModelCatalog.js';
 
-class ParadisAgentModelCatalogService extends Disposable implements IParadisAgentModelCatalogService {
+export class ParadisAgentModelCatalogService extends Disposable implements IParadisAgentModelCatalogService {
 
 	declare readonly _serviceBrand: undefined;
 
@@ -50,6 +55,8 @@ class ParadisAgentModelCatalogService extends Disposable implements IParadisAgen
 
 	private catalogs: readonly IParadisAgentModelCatalog[] = [];
 	private inFlight = false;
+	/** 接続先が一覧のチャネルを持たない古い REH だと分かった（ウィンドウが生きている間は変わらない）。 */
+	private remoteUnsupported = false;
 
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -57,6 +64,7 @@ class ParadisAgentModelCatalogService extends Disposable implements IParadisAgen
 		@IDialogService private readonly dialogService: IDialogService,
 		@IPreferencesService private readonly preferencesService: IPreferencesService,
 		@ILogService private readonly logService: ILogService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
@@ -162,22 +170,38 @@ class ParadisAgentModelCatalogService extends Disposable implements IParadisAgen
 		return localize('paradis.agentModelCatalog.resetBlocked', "{0} に書かれた一覧は Para Code からは消せません。その場所で消してください。", names.join(', '));
 	}
 
+	private setCatalogs(catalogs: readonly IParadisAgentModelCatalog[]): void {
+		// 取れた日時だけが違う同じ一覧では、開いているダイアログを組み直さない
+		const strip = (list: readonly IParadisAgentModelCatalog[]) => list.map(catalog => ({ ...catalog, fetchedAt: 0 }));
+		if (!equals(strip(catalogs), strip(this.catalogs))) {
+			this.catalogs = catalogs;
+			this._onDidChange.fire();
+		}
+	}
+
 	refresh(): void {
-		if (this.inFlight || !paradisAgentListUsesCatalog(this.configurationService)) {
+		if (this.inFlight || this.remoteUnsupported || !paradisAgentListUsesCatalog(this.configurationService)) {
 			return;
 		}
 		this.inFlight = true;
-		this.sharedProcessService.getChannel(PARADIS_AGENT_MODEL_CATALOG_CHANNEL).call<IParadisAgentModelCatalog[]>('getCatalogs').then(catalogs => {
+		const remote = this.remoteAgentService.getConnection();
+		// SSH のウィンドウでは、エージェントを起動する接続先の CLI に聞く
+		const channel: IChannel = remote !== null ? remote.getChannel(PARADIS_AGENT_MODEL_CATALOG_CHANNEL) : this.sharedProcessService.getChannel(PARADIS_AGENT_MODEL_CATALOG_CHANNEL);
+		channel.call<IParadisAgentModelCatalog[]>('getCatalogs').then(catalogs => {
 			if (this._store.isDisposed) {
 				return;
 			}
-			// 取れた日時だけが違う同じ一覧では、開いているダイアログを組み直さない
-			const strip = (list: readonly IParadisAgentModelCatalog[]) => list.map(catalog => ({ ...catalog, fetchedAt: 0 }));
-			if (!equals(strip(catalogs), strip(this.catalogs))) {
-				this.catalogs = catalogs;
-				this._onDidChange.fire();
-			}
+			this.setCatalogs(catalogs);
 		}, error => {
+			if (remote !== null && paradisIsUnknownChannelError(error)) {
+				// 古い REH。手元の CLI の一覧は接続先の版と合わないので使わず、別名だけの固定の候補にする
+				this.remoteUnsupported = true;
+				this.logService.info('[ParadisAgentModelCatalog] the remote server cannot list models (older server); using the built-in model aliases');
+				if (!this._store.isDisposed) {
+					this.setCatalogs([]);
+				}
+				return;
+			}
 			this.logService.warn('[ParadisAgentModelCatalog] could not read the model lists; keeping the current candidates', error);
 		}).finally(() => {
 			this.inFlight = false;

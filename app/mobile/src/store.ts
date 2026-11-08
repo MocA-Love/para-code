@@ -4625,9 +4625,11 @@ export class MobileController {
 	/**
 	 * worktree（スペース）作成フォームの材料（リポジトリ一覧・ブランチ・エージェント定義）。
 	 * agentsOnly はエージェント定義だけでよいとき（PCはリポジトリごとの git を動かさず repos を空で返す。旧PCは無視して全部返す）。
+	 * ws を渡すと、そのスペースを開いている PC の画面に聞く（SSH の画面なら接続先の CLI から取ったモデルの一覧が返る）。
+	 * 渡さなければ、応答できる最初の画面に聞く。
 	 */
-	worktreeForm(options?: { agentsOnly?: boolean }): Promise<WorktreeFormResult> {
-		return this.request<WorktreeFormResult>('scm', { t: 'worktreeForm', ...(options?.agentsOnly === true ? { agentsOnly: true } : {}) });
+	worktreeForm(options?: { agentsOnly?: boolean; ws?: string }): Promise<WorktreeFormResult> {
+		return this.request<WorktreeFormResult>('scm', { t: 'worktreeForm', ...(options?.agentsOnly === true ? { agentsOnly: true } : {}), ...(options?.ws !== undefined ? { ws: options.ws } : {}) });
 	}
 
 	/**
