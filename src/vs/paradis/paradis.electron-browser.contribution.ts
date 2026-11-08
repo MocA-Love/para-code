@@ -152,3 +152,5 @@ import './contrib/diffReviewNotes/electron-browser/paradisDiffReviewNotes.contri
 import './contrib/portReforward/electron-browser/paradisPortReforward.contribution.js';
 // para-browser MCP のポートの転送の道具（SSH の窓の転送の一覧・追加・停止・張り直し・片付け。変える操作は毎回確認）
 import './contrib/portTools/electron-browser/paradisPortTools.contribution.js';
+// ポートパネルの「…」: 番号を揃えて張り直す・動いていない転送を外す・CSV の書き出しと取り込み
+import './contrib/portTools/electron-browser/paradisPortPanelActions.contribution.js';

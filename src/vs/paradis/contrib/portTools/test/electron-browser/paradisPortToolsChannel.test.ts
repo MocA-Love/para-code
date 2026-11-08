@@ -13,7 +13,8 @@ import { RemoteTunnel, TunnelProtocol } from '../../../../../platform/tunnel/com
 import { CandidatePort, Tunnel, TunnelProperties, TunnelSource } from '../../../../../workbench/services/remote/common/tunnelModel.js';
 import { ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisPortToolRequest, ParadisPortToolResult } from '../../common/paradisPortTools.js';
-import { IParadisPortToolsWindow, ParadisPortToolsChannel, paradisIsLoopbackLocalAddress } from '../../electron-browser/paradisPortToolsChannel.js';
+import { paradisIsLoopbackLocalAddress } from '../../common/paradisPortSelection.js';
+import { IParadisPortToolsWindow, ParadisPortToolsChannel } from '../../electron-browser/paradisPortToolsChannel.js';
 
 const PANE = 'pane-token';
 const SSH = 'ssh-remote+devbox';
