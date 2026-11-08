@@ -171,6 +171,11 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 			lister: resource => this.listForTransfer(resource),
 			metadata: this.createMetadata(),
 			journal: this.journal,
+			cancelIo: resource => {
+				if (resource.scheme === PARADIS_SFTP_SCHEME) {
+					this.sftp.cancelIo(resource);
+				}
+			},
 		});
 		this.queue = this._register(new ParadisTransferQueue({
 			fileSystem,

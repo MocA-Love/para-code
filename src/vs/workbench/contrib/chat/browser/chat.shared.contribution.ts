@@ -384,10 +384,10 @@ configurationRegistry.registerConfiguration({
 				nls.localize('dictation.model.mai.label', "MAI — Cloud"),
 			],
 			markdownEnumDescriptions: [
-				nls.localize('dictation.model.nemotronMultilingual', "NVIDIA Nemotron 3.5 multilingual streaming RNN-T, run on-device through Microsoft Foundry Local. Works offline; no audio leaves the device. Automatic language selection follows the Voice Mode language setting; when that setting is Automatic, dictation uses the configured display language when supported, then the system or browser locale, with model detection as a fallback. Downloaded on first use and cached on disk."),
+				nls.localize('dictation.model.onDevice.paradis', "On-device transcription. Works offline; no audio leaves the device. Automatic language selection follows the Voice Mode language setting; when that setting is Automatic, dictation uses the configured display language when supported, then the system locale."), // PARA-PATCH: Para Code transcribes with the OS speech recognizer in normal windows, so do not name Foundry Local or a download
 				nls.localize('dictation.model.mai', "Cloud transcription through the same Microsoft AI voice service used by Voice Mode. Requires a network connection and GitHub sign-in; audio is streamed to the service."),
 			],
-			markdownDescription: nls.localize('dictation.model', "The model used for dictation. On-device models download on first use and run locally through Microsoft Foundry Local; the cloud option streams audio to the Microsoft AI voice service. On the web, user and default on-device selections use cloud transcription because local transcription is unsupported. If policy requires on-device transcription, dictation is unavailable on the web."),
+			markdownDescription: nls.localize('dictation.model.paradis', "The model used for dictation. The on-device option transcribes on this device and works offline; the cloud option streams audio to the Microsoft AI voice service. On the web, user and default on-device selections use cloud transcription because local transcription is unsupported. If policy requires on-device transcription, dictation is unavailable on the web."), // PARA-PATCH: Para Code transcribes with the OS speech recognizer in normal windows, so do not name Foundry Local or a download
 			default: isWeb ? DICTATION_MAI_MODEL_ID : DEFAULT_LOCAL_TRANSCRIPTION_MODEL,
 			tags: ['experimental'],
 			experiment: { mode: 'auto' },
