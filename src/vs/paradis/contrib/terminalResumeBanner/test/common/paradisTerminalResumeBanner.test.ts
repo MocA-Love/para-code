@@ -134,6 +134,20 @@ suite('paradisTerminalResumeBanner', () => {
 		});
 	});
 
+	// 休止（G-03）の印は再起動をまたいで残す。形の崩れた印は捨て、会話の控えは残す
+	test('round-trips the hibernation mark and drops a broken one without losing the conversation', () => {
+		const now = 1_000_000;
+		const raw = JSON.stringify([
+			{ token: paradisResumeLedgerKey('a'), agent: 'claude', sessionId: 'session-a', at: now - 10, hibernated: { at: now - 5, completedAt: now - 100, bypass: true } },
+			{ token: paradisResumeLedgerKey('b'), agent: 'codex', sessionId: 'session-b', at: now - 10, hibernated: { at: 'soon', completedAt: now } },
+		]);
+		const parsed = paradisParseResumeLedger(paradisSerializeResumeLedger(paradisParseResumeLedger(raw, now)), now);
+		assert.deepStrictEqual([...parsed.values()], [
+			{ agent: 'claude', sessionId: 'session-a', at: now - 10, hibernated: { at: now - 5, completedAt: now - 100, bypass: true } },
+			{ agent: 'codex', sessionId: 'session-b', at: now - 10 },
+		]);
+	});
+
 	test('reads the conversation name and the Codex thread id from the tab title', () => {
 		assert.deepStrictEqual({
 			claudeWorking: paradisResumeTitleFromTab('⠐ Fix the login check'),

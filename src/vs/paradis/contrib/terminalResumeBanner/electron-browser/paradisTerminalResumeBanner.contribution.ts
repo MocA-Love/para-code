@@ -23,6 +23,7 @@ import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -41,6 +42,7 @@ import { paradisWasTerminalShellRestarted } from '../../workspaceSwitch/common/p
 import { paradisChangeDirectoryCommand } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
 import { paradisIsAtEmptyPrompt } from '../../terminalPromptInput/browser/paradisPromptInputEmpty.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../browser/paradisTerminalResumeBannerView.js';
+import { IParadisAgentHibernationHost, ParadisAgentHibernationController, ParadisHibernationResumeOutcome } from '../../agentHibernation/electron-browser/paradisAgentHibernationController.js';
 import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
 
 const LEDGER_STORAGE_KEY = 'paradis.terminal.resumeSessions';
@@ -49,7 +51,7 @@ const PERSIST_DELAY_MS = 2_000;
 /** 今のフォルダを尋ねる上限。答えなければ「分からない」として扱う。 */
 const CWD_QUERY_TIMEOUT_MS = 2_000;
 
-class ParadisTerminalResumeBannerContribution extends Disposable implements IWorkbenchContribution, IParadisResumeBannerHost {
+class ParadisTerminalResumeBannerContribution extends Disposable implements IWorkbenchContribution, IParadisResumeBannerHost, IParadisAgentHibernationHost {
 	static readonly ID = 'workbench.contrib.paradisTerminalResumeBanner';
 
 	/** 書き側。今動いている会話で更新し続ける。 */
@@ -83,6 +85,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 		const now = Date.now();
@@ -105,7 +108,8 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			if (restoredAt !== undefined && data.timestamp < restoredAt) {
 				return;
 			}
-			if (!this._shuttingDown && paradisInteractiveAgentCommand(data.command) !== undefined) {
+			// 休止（G-03）で止めたエージェントの終わりも、会話を終えたのではない（台帳に残して、戻ったときに再開する）
+			if (!this._shuttingDown && paradisInteractiveAgentCommand(data.command) !== undefined && !this.isHibernated(instance.instanceId)) {
 				this.forgetInstance(instance);
 			}
 		}));
@@ -117,6 +121,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		for (const instance of this.terminalService.instances) {
 			this.considerRestoredInstance(instance);
 		}
+		this._register(instantiationService.createInstance(ParadisAgentHibernationController, this));
 	}
 
 	// --- 台帳 ------------------------------------------------------------------
@@ -137,6 +142,10 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 				continue;
 			}
 			const previous = this._ledger.get(key);
+			// 休止で止めた会話の、止める前の hook の名残り。再開して hook が届く（時刻が止めた後になる）までは休止のまま
+			if (previous?.hibernated !== undefined && previous.sessionId === session.sessionId && session.at <= previous.hibernated.at) {
+				continue;
+			}
 			const title = (instance === undefined ? undefined : paradisResumeTitleFromTab(instance.title))
 				?? (previous?.sessionId === session.sessionId ? previous.title : undefined);
 			this.upsert(key, {
@@ -187,6 +196,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		if (previous !== undefined
 			&& previous.agent === entry.agent && previous.sessionId === entry.sessionId
 			&& previous.cwd === entry.cwd && previous.title === entry.title
+			&& previous.hibernated === entry.hibernated
 			&& entry.at - previous.at < 60_000) {
 			return;
 		}
@@ -274,11 +284,13 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		const previousPid = attach?.pid;
 		const adopted = attach?.paradisAdopted === true;
 		void instance.processReady.then(() => {
-			if (instance.isDisposed || !(restartedAfterFailedAttach || paradisRestoredShellWasRestarted(previousPid, instance.processId, adopted))) {
-				return;
-			}
 			const token = this.ledgerKeyForInstance(instance.instanceId);
 			const entry = token === undefined ? undefined : this._restoredLedger.get(token);
+			// 休止（G-03）で止めたまま再起動をまたいだタブは、シェルが生き残っていても（常駐ターミナル）エージェントは止めてある
+			const hibernated = entry?.hibernated !== undefined;
+			if (instance.isDisposed || !(hibernated || restartedAfterFailedAttach || paradisRestoredShellWasRestarted(previousPid, instance.processId, adopted))) {
+				return;
+			}
 			if (token === undefined || entry === undefined || this._ledger.get(token)?.sessionId !== entry.sessionId) {
 				return;
 			}
@@ -300,13 +312,96 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	}
 
 	resume(instanceId: number, dangerouslyBypassPermissions?: boolean): void {
+		void this.runResume(instanceId, dangerouslyBypassPermissions === true, { quiet: false, focus: true });
+	}
+
+	private async runResume(instanceId: number, dangerouslyBypassPermissions: boolean, options: { readonly quiet: boolean; readonly focus: boolean }): Promise<ParadisHibernationResumeOutcome> {
 		if (this._resuming.has(instanceId)) {
-			return;
+			return 'busy';
 		}
 		this._resuming.add(instanceId);
-		void this.resumeInConversationFolder(instanceId, dangerouslyBypassPermissions === true).catch(error => {
+		try {
+			return await this.resumeInConversationFolder(instanceId, dangerouslyBypassPermissions, options);
+		} catch (error) {
 			this.logService.error('[paradisTerminalResumeBanner] could not resume the conversation', error);
-		}).finally(() => this._resuming.delete(instanceId));
+			return 'failed';
+		} finally {
+			this._resuming.delete(instanceId);
+		}
+	}
+
+	// --- 休止（G-03）のホスト ---------------------------------------------------------------
+
+	ledgerSessionId(instanceId: number): string | undefined {
+		const token = this.ledgerKeyForInstance(instanceId);
+		return token === undefined ? undefined : this._ledger.get(token)?.sessionId;
+	}
+
+	isHibernated(instanceId: number): boolean {
+		const token = this.ledgerKeyForInstance(instanceId);
+		return token !== undefined && this._ledger.get(token)?.hibernated !== undefined;
+	}
+
+	markHibernated(instanceId: number, sessionId: string, completedAt: number): boolean {
+		const token = this.ledgerKeyForInstance(instanceId);
+		const entry = token === undefined ? undefined : this._ledger.get(token);
+		if (token === undefined || entry === undefined || entry.sessionId !== sessionId) {
+			return false;
+		}
+		const marked = { ...entry, hibernated: { at: Date.now(), completedAt } };
+		this._ledger.set(token, marked);
+		this._dirtyTokens.add(token);
+		// 止めている間に Para Code が終わっても印が残るよう、すぐ書く
+		this.persist();
+		this._offers.set(instanceId, { token, entry: marked });
+		this._onDidChange.fire(instanceId);
+		return true;
+	}
+
+	setHibernatedBypass(instanceId: number, bypass: boolean): void {
+		const token = this.ledgerKeyForInstance(instanceId);
+		const entry = token === undefined ? undefined : this._ledger.get(token);
+		if (token === undefined || entry?.hibernated === undefined || !bypass) {
+			return;
+		}
+		const marked = { ...entry, hibernated: { ...entry.hibernated, bypass: true as const } };
+		this._ledger.set(token, marked);
+		this._dirtyTokens.add(token);
+		this.persist();
+		if (this._offers.get(instanceId)?.token === token) {
+			this._offers.set(instanceId, { token, entry: marked });
+			this._onDidChange.fire(instanceId);
+		}
+	}
+
+	unmarkHibernated(instanceId: number): void {
+		const token = this.ledgerKeyForInstance(instanceId);
+		const entry = token === undefined ? undefined : this._ledger.get(token);
+		if (token !== undefined && entry?.hibernated !== undefined) {
+			this.clearHibernation(token, entry);
+		}
+		this.withdrawOffer(instanceId);
+	}
+
+	async resumeHibernated(instanceId: number, focus: boolean): Promise<ParadisHibernationResumeOutcome> {
+		const token = this.ledgerKeyForInstance(instanceId);
+		const entry = token === undefined ? undefined : this._ledger.get(token);
+		if (entry?.hibernated === undefined) {
+			return 'no-offer';
+		}
+		if (this._offers.get(instanceId)?.entry.sessionId !== entry.sessionId) {
+			this._offers.set(instanceId, { token: token!, entry });
+			this._onDidChange.fire(instanceId);
+		}
+		return this.runResume(instanceId, entry.hibernated.bypass === true, { quiet: true, focus });
+	}
+
+	/** 休止の印を外す（会話の控えは残す。再開したエージェントが終われば、いつもどおり台帳から消える）。 */
+	private clearHibernation(token: string, entry: IParadisResumeLedgerEntry): void {
+		const { hibernated: _hibernated, ...rest } = entry;
+		this._ledger.set(token, rest);
+		this._dirtyTokens.add(token);
+		this._persistScheduler.schedule();
 	}
 
 	/**
@@ -319,64 +414,79 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	 * 再開する方法（分岐と同じ）は取らない。元のタブが空のシェルとして残り、同じ会話のタブが2つに
 	 * 見えるため。
 	 */
-	private async resumeInConversationFolder(instanceId: number, dangerouslyBypassPermissions: boolean): Promise<void> {
+	private async resumeInConversationFolder(instanceId: number, dangerouslyBypassPermissions: boolean, options: { readonly quiet: boolean; readonly focus: boolean }): Promise<ParadisHibernationResumeOutcome> {
 		const offer = this._offers.get(instanceId);
 		const instance = this.terminalService.instances.find(candidate => candidate.instanceId === instanceId);
 		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'resume', dangerouslyBypassPermissions, offer.entry.cli);
 		if (offer === undefined || instance === undefined || command === undefined) {
-			return;
+			return 'no-offer';
 		}
+		// 休止から自動で起こすとき（quiet）は知らせを出さない。帯が残り、押せば同じ確かめ方で知らせる
+		const notify = (severity: 'info' | 'warn', message: string): void => {
+			if (!options.quiet) {
+				this.notificationService[severity](message);
+			}
+		};
 		// コマンドと Enter を送るので、シェルが入力を待っていて入力欄が空のときだけにする。別の
 		// プログラム（ssh 先のシェル、vim など）が前面に居ると、そちらへ入ってしまう。
 		const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
 		if (commandDetection === undefined) {
 			// シェル統合が無いと、前面で何が動いているかも入力欄の中身も分からない。自動では送らず、
 			// 自分で打つコマンドを案内する（ID のコピーはバナーから行える）。
-			this.notificationService.info(localize('paradis.resumeBanner.noShellIntegration', "このターミナルではシェルの状態が分からないため、自動では再開しません。シェルのプロンプトで次のコマンドを実行してください: {0}", command));
-			return;
+			notify('info', localize('paradis.resumeBanner.noShellIntegration', "このターミナルではシェルの状態が分からないため、自動では再開しません。シェルのプロンプトで次のコマンドを実行してください: {0}", command));
+			return 'no-shell-integration';
 		}
 		if (!this.isAtEmptyPrompt(commandDetection)) {
-			this.notificationService.info(localize('paradis.resumeBanner.notAtPrompt', "シェルが入力を待っていて入力欄が空のときに押してください。いま動いているプログラムを終えるか、入力欄を空にしてからもう一度押します。"));
-			return;
+			notify('info', localize('paradis.resumeBanner.notAtPrompt', "シェルが入力を待っていて入力欄が空のときに押してください。いま動いているプログラムを終えるか、入力欄を空にしてからもう一度押します。"));
+			return 'not-at-prompt';
 		}
 		const recordedCwd = offer.entry.cwd;
 		const currentCwd = await raceTimeout(instance.getSpeculativeCwd().catch(() => undefined), CWD_QUERY_TIMEOUT_MS);
 		if (recordedCwd !== undefined && paradisResumeNeedsFolderChange(recordedCwd, currentCwd)) {
 			const exists = await this.fileService.stat(this.toCwdUri(recordedCwd)).then(stat => stat.isDirectory, () => false);
 			if (!exists) {
-				this.notificationService.warn(localize('paradis.resumeBanner.folderMissing', "会話を始めたフォルダ {0} が見つからないため、再開しません。別のフォルダで再開すると、会話がそのフォルダのプロジェクトへ複製されます。", recordedCwd));
-				return;
+				notify('warn', localize('paradis.resumeBanner.folderMissing', "会話を始めたフォルダ {0} が見つからないため、再開しません。別のフォルダで再開すると、会話がそのフォルダのプロジェクトへ複製されます。", recordedCwd));
+				return 'folder-missing';
 			}
 			const changeDirectory = paradisChangeDirectoryCommand(instance.shellType, recordedCwd);
 			if (changeDirectory === undefined) {
 				// 引用の仕方が分からないシェルへ自動で `cd` を送ると、パスの一部が別の意味に取られうる。
-				this.notificationService.warn(localize('paradis.resumeBanner.unknownShell', "このシェルでは会話を始めたフォルダ {0} へ自動で移れないため、再開しません。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
-				return;
+				notify('warn', localize('paradis.resumeBanner.unknownShell', "このシェルでは会話を始めたフォルダ {0} へ自動で移れないため、再開しません。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
+				return 'unknown-shell';
 			}
 			const outcome = instance.isDisposed || !this.isAtEmptyPrompt(commandDetection)
 				? 'failed'
 				: await this.changeDirectory(instance, commandDetection, changeDirectory, recordedCwd);
 			if (outcome === 'typed') {
 				// `cd` の最中に打たれた文字に再開コマンドをつなげると、Enter を押していないのに実行される。
-				this.notificationService.info(localize('paradis.resumeBanner.typedDuringMove', "会話を始めたフォルダへ移りましたが、その間に入力された文字があるため再開していません。入力欄を空にしてから、もう一度押してください。"));
-				return;
+				notify('info', localize('paradis.resumeBanner.typedDuringMove', "会話を始めたフォルダへ移りましたが、その間に入力された文字があるため再開していません。入力欄を空にしてから、もう一度押してください。"));
+				return 'typed';
 			}
 			if (outcome !== 'moved') {
-				this.notificationService.warn(localize('paradis.resumeBanner.folderChangeFailed', "会話を始めたフォルダ {0} へ移れなかったため、再開を取りやめました。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
-				return;
+				notify('warn', localize('paradis.resumeBanner.folderChangeFailed', "会話を始めたフォルダ {0} へ移れなかったため、再開を取りやめました。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
+				return 'folder-change-failed';
 			}
 		}
 		if (instance.isDisposed || this._offers.get(instanceId) !== offer) {
-			return;
+			return 'no-offer';
 		}
 		// `cd` を待っている間に打ち始めた文字や、動き出したプログラムがあれば、そこへ混ぜない。
 		if (!this.isAtEmptyPrompt(commandDetection)) {
-			this.notificationService.info(localize('paradis.resumeBanner.notAtPromptAfterMove', "会話を始めたフォルダへ移りましたが、入力欄が空でないため再開していません。入力欄を空にしてから、もう一度押してください。"));
-			return;
+			notify('info', localize('paradis.resumeBanner.notAtPromptAfterMove', "会話を始めたフォルダへ移りましたが、入力欄が空でないため再開していません。入力欄を空にしてから、もう一度押してください。"));
+			return 'not-at-prompt';
 		}
 		this.withdrawOffer(instanceId);
+		// 休止から再開したら印を外す（会話がまた動き出す。再開に失敗してもシェルに理由が出る）
+		const token = this.ledgerKeyForInstance(instanceId);
+		const current = token === undefined ? undefined : this._ledger.get(token);
+		if (token !== undefined && current?.hibernated !== undefined) {
+			this.clearHibernation(token, current);
+		}
 		void instance.sendText(command, true);
-		instance.focus();
+		if (options.focus) {
+			instance.focus();
+		}
+		return 'sent';
 	}
 
 	private isAtEmptyPrompt(commandDetection: ICommandDetectionCapability): boolean {

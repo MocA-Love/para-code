@@ -99,6 +99,7 @@ function createFixture(): {
 		_pendingBindPreparations: 0,
 		_ingressLeaseStates: new WeakMap<object, object>(),
 		_terminalExitedTokens: new Set<string>(),
+		_hibernatingTokens: new Map<string, number>(),
 		_paneShells: new Map(),
 		_paneRemoteAuthorities: new Map(),
 		_remotePaneWindows: new Map(),
