@@ -10,7 +10,9 @@
 // upstream の sessions/contrib/agentFeedback は Agent Sessions ウィンドウ専用で送り先が Copilot のチャットなので使わない。
 // 既定のキーは付けない（Orca の Mod+Shift+A は Linux・Windows でブロックコメントと重なる）。
 
+import { $, append } from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { EditorContributionInstantiation, registerEditorContribution } from '../../../../editor/browser/editorExtensions.js';
@@ -18,20 +20,31 @@ import { ICodeEditorService } from '../../../../editor/browser/services/codeEdit
 import { EditorContextKeys } from '../../../../editor/common/editorContextKeys.js';
 import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { IAccessibilityService } from '../../../../platform/accessibility/common/accessibility.js';
+import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
+import { IMenuEntryActionViewItemOptions, MenuEntryActionViewItem } from '../../../../platform/actions/browser/menuEntryActionViewItem.js';
+import { Action2, MenuId, MenuItemAction, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
-import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
+import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { TextCompareEditorActiveContext } from '../../../../workbench/common/contextkeys.js';
 import { paradisHandOffToSpaceAgent, paradisSpaceAgentHandoffServices } from '../../agentHandoff/electron-browser/paradisSpaceAgentHandoff.js';
 import { paradisLocateReviewNoteLine } from '../../mobileRelay/common/paradisMobileDiffReview.js';
 import { paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisDiffReviewNote, IParadisDiffReviewNoteToSend, paradisBuildDiffReviewNotesPrompt } from '../common/paradisDiffReviewNotes.js';
-import { PARADIS_DIFF_REVIEW_NOTES_CONTROLLER_ID, ParadisDiffReviewNotesController } from './paradisDiffReviewNotesController.js';
+import { PARADIS_DIFF_REVIEW_NOTES_CONTROLLER_ID, ParadisDiffReviewNotesController, paradisDiffReviewSelectedLines } from './paradisDiffReviewNotesController.js';
 import { IParadisDiffReviewNotesService, ParadisDiffReviewUnsentCountContext } from './paradisDiffReviewNotesService.js';
 
 registerEditorContribution(PARADIS_DIFF_REVIEW_NOTES_CONTROLLER_ID, ParadisDiffReviewNotesController, EditorContributionInstantiation.AfterFirstRender);
+
+const SEND_COMMAND_ID = 'paradis.diffReviewNotes.send';
+const IN_DIFF_SIDE = ContextKeyExpr.and(EditorContextKeys.inDiffEditor, ContextKeyExpr.or(ContextKeyExpr.has('isInDiffRightEditor'), ContextKeyExpr.has('isInDiffLeftEditor')));
 
 function focusedEditor(codeEditorService: ICodeEditorService): ICodeEditor | null {
 	return codeEditorService.getFocusedCodeEditor() ?? codeEditorService.getActiveCodeEditor();
@@ -44,9 +57,9 @@ registerAction2(class extends Action2 {
 			title: localize2('paradis.diffReviewNotes.addAtCursor', "この行に AI メモを書く"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: true,
-			// メモを書けるのは新しい側（右・インライン表示ではその 1 枚）だけ
-			precondition: ContextKeyExpr.and(EditorContextKeys.inDiffEditor, ContextKeyExpr.has('isInDiffRightEditor')),
-			menu: { id: MenuId.EditorContext, group: '1_paradis', order: 1, when: ContextKeyExpr.and(EditorContextKeys.inDiffEditor, ContextKeyExpr.has('isInDiffRightEditor')) },
+			// 新しい側（右・インライン表示ではその 1 枚）と、横並びの表示の古い側（左）で書ける（770-RES）
+			precondition: IN_DIFF_SIDE,
+			menu: { id: MenuId.EditorContext, group: '1_paradis', order: 1, when: IN_DIFF_SIDE },
 		});
 	}
 
@@ -54,7 +67,9 @@ registerAction2(class extends Action2 {
 		const editor = focusedEditor(accessor.get(ICodeEditorService));
 		const line = editor?.getPosition()?.lineNumber;
 		if (editor && line !== undefined) {
-			ParadisDiffReviewNotesController.get(editor)?.openDraft(line);
+			// 行を選んでいれば、選んだ範囲のメモにする
+			const range = paradisDiffReviewSelectedLines(editor);
+			ParadisDiffReviewNotesController.get(editor)?.openDraft(range && range.start < range.end ? range.end : line, range && range.start < range.end ? range.start : undefined);
 		}
 	}
 });
@@ -64,7 +79,7 @@ type SendChoice = IQuickPickItem & { readonly choice: 'unsent' | 'file' | 'copy'
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
-			id: 'paradis.diffReviewNotes.send',
+			id: SEND_COMMAND_ID,
 			title: localize2('paradis.diffReviewNotes.send', "AI メモを送る..."),
 			category: localize2('paradis.category', "Para Code"),
 			icon: Codicon.commentDiscussion,
@@ -127,6 +142,11 @@ registerAction2(class extends Action2 {
 		const toSend: IParadisDiffReviewNoteToSend[] = [];
 		const lineCache = new Map<string, ((line: number) => string | undefined) | undefined>();
 		for (const note of selected) {
+			// 古い側の行は今のファイルに無いので付け直さない（書いたときの番号と中身を送る）
+			if (note.side === 'original') {
+				toSend.push({ note, currentLine: note.line });
+				continue;
+			}
 			if (!lineCache.has(note.path)) {
 				lineCache.set(note.path, await readLines(textModelService, joinPath(space.uri, note.path)));
 			}
@@ -164,3 +184,63 @@ async function readLines(textModelService: ITextModelService, resource: ReturnTy
 		return undefined;
 	}
 }
+
+/**
+ * 差分エディタの見出しの「AI メモを送る」に、今のスペースの未送信の数を添える（770-RES、案 A）。ボタンの見た目と押したときの
+ * 動きは今のまま（MenuEntryActionViewItem）で、横に数の札を足すだけ。ソース管理の見出しは本家の作りで見た目を差し替えられない
+ * ので、アイコンのまま。
+ */
+class ParadisDiffReviewNotesCountViewItem extends MenuEntryActionViewItem {
+
+	private badge: HTMLElement | undefined;
+
+	constructor(
+		action: MenuItemAction,
+		options: IMenuEntryActionViewItemOptions | undefined,
+		@IParadisDiffReviewNotesService private readonly notesService: IParadisDiffReviewNotesService,
+		@IKeybindingService keybindingService: IKeybindingService,
+		@INotificationService notificationService: INotificationService,
+		@IContextKeyService contextKeyService: IContextKeyService,
+		@IThemeService themeService: IThemeService,
+		@IContextMenuService contextMenuService: IContextMenuService,
+		@IAccessibilityService accessibilityService: IAccessibilityService,
+	) {
+		super(action, options, keybindingService, notificationService, contextKeyService, themeService, contextMenuService, accessibilityService);
+		this._register(this.notesService.onDidChange(() => this.updateBadge()));
+		this._register(this.notesService.onDidChangeActiveSpace(() => this.updateBadge()));
+	}
+
+	override render(container: HTMLElement): void {
+		super.render(container);
+		container.classList.add('paradis-diff-review-send-item');
+		this.badge = append(container, $('span.paradis-diff-review-send-count'));
+		this.badge.setAttribute('aria-hidden', 'true');
+		this.updateBadge();
+	}
+
+	private updateBadge(): void {
+		if (!this.badge) {
+			return;
+		}
+		const count = this.notesService.unsentCountOfActiveSpace();
+		this.badge.textContent = count > 0 ? String(count) : '';
+		this.badge.classList.toggle('hidden', count === 0);
+	}
+}
+
+class ParadisDiffReviewNotesCountContribution extends Disposable implements IWorkbenchContribution {
+
+	static readonly ID = 'workbench.contrib.paradisDiffReviewNotesCount';
+
+	constructor(
+		@IActionViewItemService actionViewItemService: IActionViewItemService,
+		@IInstantiationService instantiationService: IInstantiationService,
+	) {
+		super();
+		this._register(actionViewItemService.register(MenuId.EditorTitle, SEND_COMMAND_ID, (action, options) =>
+			action instanceof MenuItemAction ? instantiationService.createInstance(ParadisDiffReviewNotesCountViewItem, action, { hoverDelegate: options.hoverDelegate }) : undefined));
+	}
+}
+
+// 見た目の登録は、見出しが最初に描かれる前に済ませる（タブのランチャーと同じ）
+registerWorkbenchContribution2(ParadisDiffReviewNotesCountContribution.ID, ParadisDiffReviewNotesCountContribution, WorkbenchPhase.BlockStartup);

@@ -25,7 +25,7 @@ import { localize } from '../../../../nls.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { paradisLocateReviewNoteLine } from '../../mobileRelay/common/paradisMobileDiffReview.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { PARADIS_DIFF_REVIEW_MAX_NOTES, paradisDiffReviewRelativePath } from '../common/paradisDiffReviewNotes.js';
+import { PARADIS_DIFF_REVIEW_MAX_NOTES, paradisDiffReviewNoteRange, paradisDiffReviewRelativePath } from '../common/paradisDiffReviewNotes.js';
 import { IParadisDiffReviewNotesService } from './paradisDiffReviewNotesService.js';
 import { ParadisDiffReviewNoteWidget } from './paradisDiffReviewNoteWidget.js';
 
@@ -38,6 +38,8 @@ export interface IParadisDiffReviewTarget {
 	readonly stateKey: string;
 	/** スペースのルートからのパス（`/` 区切り）。 */
 	readonly path: string;
+	/** 古い側（差分の左）のエディタなら 'original'（770-RES）。 */
+	readonly side: 'modified' | 'original';
 }
 
 export class ParadisDiffReviewNotesController extends Disposable implements IEditorContribution {
@@ -80,10 +82,16 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 		this.renderNotes();
 	}
 
-	/** この差分エディタのファイルがメモの対象なら、そのスペースとパス。 */
+	/**
+	 * この差分エディタのファイルがメモの対象なら、そのスペースとパス。古い側（左）のエディタも対象にする。パスは新しい側の
+	 * ファイルから求める（古い側は `git:` の URI などで、名前を変えたファイルでは元の名前になるため）。
+	 */
 	resolveTarget(): IParadisDiffReviewTarget | undefined {
-		const model = this.editor.getModel();
-		if (!model || !this.codeEditorService.listDiffEditors().some(diffEditor => diffEditor.getModifiedEditor() === this.editor)) {
+		const diffEditor = this.codeEditorService.listDiffEditors().find(candidate => candidate.getModifiedEditor() === this.editor || candidate.getOriginalEditor() === this.editor);
+		const side = diffEditor?.getOriginalEditor() === this.editor ? 'original' : 'modified';
+		// インライン表示では古い側の行が飾り（view zone）なので、左のエディタは隠れていて対象にならない
+		const model = side === 'original' && diffEditor?.renderSideBySide === false ? null : diffEditor?.getModifiedEditor().getModel();
+		if (!diffEditor || !model || !this.editor.getModel()) {
 			return undefined;
 		}
 		const stateKey = this.switchService.activeStateKey;
@@ -92,30 +100,34 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 			return undefined;
 		}
 		const path = paradisDiffReviewRelativePath(space.uri.path, model.uri.path, space.uri.scheme === 'file' && !isLinux);
-		return path === undefined ? undefined : { stateKey, path };
+		return path === undefined ? undefined : { stateKey, path, side };
 	}
 
-	/** `line` の下にメモの欄を開く（右クリックの「この行に AI メモを書く」と「+」から）。 */
-	openDraft(line: number): void {
+	/**
+	 * `line` の下にメモの欄を開く（右クリックの「この行に AI メモを書く」と「+」から）。`startLine` があれば、
+	 * `startLine`〜`line` の範囲のメモにする（770-RES）。
+	 */
+	openDraft(line: number, startLine?: number): void {
 		const target = this.resolveTarget();
 		const model = this.editor.getModel();
 		if (!target || !model) {
-			this.notificationService.notify({ severity: Severity.Info, message: localize('paradis.diffReviewNotes.notTarget', "AI メモは、今のスペースのファイルの差分エディタ（新しい側）で書けます。") });
+			this.notificationService.notify({ severity: Severity.Info, message: localize('paradis.diffReviewNotes.notTarget', "AI メモは、今のスペースのファイルの差分エディタで書けます。古い側に書けるのは横並びの表示のときだけです。") });
 			return;
 		}
+		const start = startLine !== undefined && startLine >= 1 && startLine < line ? startLine : undefined;
 		if (this.notesService.getNotes(target.stateKey).length >= PARADIS_DIFF_REVIEW_MAX_NOTES) {
 			this.notificationService.notify({ severity: Severity.Warning, message: localize('paradis.diffReviewNotes.full', "メモが {0} 件に達しました。送るか消してから書いてください。", PARADIS_DIFF_REVIEW_MAX_NOTES) });
 			return;
 		}
 		this.clearHover();
-		const widget = new ParadisDiffReviewNoteWidget(this.editor, { kind: 'draft', line });
+		const widget = new ParadisDiffReviewNoteWidget(this.editor, { kind: 'draft', line, startLine: start, side: target.side });
 		this.draft.value = widget;
 		widget.onDidCancel(() => {
 			this.draft.clear();
 			this.editor.focus();
 		});
 		widget.onDidSubmit(body => {
-			this.notesService.add(target.stateKey, { path: target.path, line, lineText: model.getLineContent(line), body });
+			this.notesService.add(target.stateKey, { path: target.path, line, startLine: start, side: target.side === 'original' ? 'original' : undefined, lineText: model.getLineContent(line), body });
 			this.draft.clear();
 			this.editor.focus();
 		});
@@ -162,6 +174,12 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 		}
 		e.event.preventDefault();
 		e.event.stopPropagation();
+		// 行を選んだまま押したら、選んだ範囲のメモにする（押した行が範囲に入っているときだけ）
+		const range = paradisDiffReviewSelectedLines(this.editor);
+		if (range && range.start < range.end && line >= range.start && line <= range.end) {
+			this.openDraft(range.end, range.start);
+			return;
+		}
 		this.openDraft(line);
 	}
 
@@ -176,7 +194,7 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 	private renderNotes(): void {
 		const target = this.resolveTarget();
 		const model = this.editor.getModel();
-		const notes = target && model ? this.notesService.getNotes(target.stateKey).filter(note => note.path === target.path) : [];
+		const notes = target && model ? this.notesService.getNotes(target.stateKey).filter(note => note.path === target.path && (note.side ?? 'modified') === target.side) : [];
 		if (notes.length === 0 && !this.rendered) {
 			return;
 		}
@@ -187,11 +205,25 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 		}
 		for (const note of notes) {
 			const line = locateLine(model, note.line, note.lineText) ?? Math.min(note.line, model.getLineCount());
-			const widget = this.noteWidgets.add(new ParadisDiffReviewNoteWidget(this.editor, { kind: 'note', line, note }));
+			const range = paradisDiffReviewNoteRange(note, line);
+			const widget = this.noteWidgets.add(new ParadisDiffReviewNoteWidget(this.editor, { kind: 'note', line, startLine: range.start < range.end ? range.start : undefined, side: target.side, note }));
 			this.noteWidgets.add(widget.onDidDelete(() => this.notesService.remove(target.stateKey, new Set([note.id]))));
 			widget.show({ lineNumber: line, column: 1 }, 2);
 		}
 	}
+}
+
+/**
+ * エディタで選んでいる行の範囲（選択が無ければ undefined）。行の頭で終わる選択（行を下までドラッグしたとき）は、その行を
+ * 含めない（Orca と同じ）。
+ */
+export function paradisDiffReviewSelectedLines(editor: ICodeEditor): { readonly start: number; readonly end: number } | undefined {
+	const selection = editor.getSelection();
+	if (!selection || selection.isEmpty()) {
+		return undefined;
+	}
+	const end = selection.endColumn === 1 && selection.endLineNumber > selection.startLineNumber ? selection.endLineNumber - 1 : selection.endLineNumber;
+	return { start: selection.startLineNumber, end };
 }
 
 function locateLine(model: ITextModel, line: number, lineText: string): number | undefined {
