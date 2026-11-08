@@ -12,7 +12,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TunnelProtocol } from '../../../../../platform/tunnel/common/tunnel.js';
 import { Tunnel, TunnelSource } from '../../../../../workbench/services/remote/common/tunnelModel.js';
 import { PARADIS_PORT_CSV_COLUMNS, paradisParseCsv, paradisPortCsvExportRows, paradisPortCsvLocalPortsToCheck, paradisPortCsvPlan, paradisPortCsvRead, paradisPortCsvSerialize } from '../../common/paradisPortCsv.js';
-import { paradisDefaultCleanUpForwards, paradisMismatchedForwards, paradisNotListeningUserForwards } from '../../common/paradisPortSelection.js';
+import { paradisDefaultCleanUpForwards, paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisNotListeningUserForwards, paradisPortLocalHostAllowed } from '../../common/paradisPortSelection.js';
 
 function tunnel(remotePort: number, localPort: number, options: { readonly source?: TunnelSource; readonly listening?: boolean; readonly name?: string; readonly host?: string } = {}): Tunnel {
 	return {
@@ -37,7 +37,7 @@ suite('ParadisPortCsv', () => {
 
 	test('writes a BOM, CRLF and quotes, and reads its own output back', () => {
 		const text = paradisPortCsvSerialize(PARADIS_PORT_CSV_COLUMNS, paradisPortCsvExportRows([tunnel(21004, 65459), tunnel(21002, 21002, { listening: true, name: 'vite, dev' })], true));
-		assert.ok(text.startsWith('﻿remote_host,remote_port,local_port,label,protocol,source,local_address,listening,process\r\n'));
+		assert.ok(text.startsWith('\uFEFFremote_host,remote_port,local_port,label,protocol,source,local_address,listening,process\r\n'));
 		assert.deepStrictEqual(paradisParseCsv(text).slice(1).map(row => row.cells), [
 			['localhost', '21002', '21002', 'vite, dev', 'http', 'user', 'localhost:21002', 'true', 'node "server.js", --port=1'],
 			['localhost', '21004', '65459', '', 'http', 'user', 'localhost:65459', 'false', ''],
@@ -50,8 +50,18 @@ suite('ParadisPortCsv', () => {
 		assert.deepStrictEqual(paradisParseCsv('a,b\r\n"x\ny",1\r\n\r\nz,2').map(row => [row.line, row.cells]), [[1, ['a', 'b']], [2, ['x\ny', '1']], [5, ['z', '2']]]);
 	});
 
-	test('keeps spreadsheet formulas from running', () => {
-		assert.strictEqual(paradisPortCsvSerialize(['label'], [['=HYPERLINK("x")']]), '﻿label\r\n"\'=HYPERLINK(""x"")"\r\n');
+	test('keeps spreadsheet formulas from running, and reads the label back unchanged', () => {
+		const text = paradisPortCsvSerialize(['remote_port', 'label'], [['21004', '=HYPERLINK("x")'], ['21005', '-dev']]);
+		assert.strictEqual(text, '\uFEFFremote_port,label\r\n21004,"\'=HYPERLINK(""x"")"\r\n21005,\'-dev\r\n');
+		const read = paradisPortCsvRead(text);
+		assert.deepStrictEqual(read.ok && read.rows.map(row => row.kind === 'entry' ? row.label : row.error), ['=HYPERLINK("x")', '-dev']);
+	});
+
+	test('opens forwards only on 127.0.0.1', () => {
+		assert.deepStrictEqual({
+			hosts: [undefined, '', 'localhost', 'allInterfaces'].map(paradisPortLocalHostAllowed),
+			addresses: ['127.0.0.1:21004', 'localhost:65459', '[::1]:3000', 'http://127.0.0.1:8080/', '0.0.0.0:21004', '192.168.1.5:21004'].map(paradisIsLoopbackLocalAddress),
+		}, { hosts: [true, true, true, false], addresses: [true, true, true, true, false, false] });
 	});
 
 	test('checks each row and judges it against the current forwards', () => {

@@ -41,3 +41,28 @@ export function paradisDefaultCleanUpForwards(forwarded: readonly Tunnel[]): Tun
 export function paradisMismatchedForwards(forwarded: readonly Tunnel[]): Tunnel[] {
 	return forwarded.filter(tunnel => closeableLocalhost(tunnel) && tunnel.source.source !== TunnelSource.Extension && tunnel.localPort !== undefined && tunnel.localPort !== tunnel.remotePort);
 }
+
+/**
+ * 設定 `remote.localPortHost` の値が、手元の受け口を 127.0.0.1 にするものか（未設定・localhost）。allInterfaces の窓では
+ * 0.0.0.0 で受けてしまい、SSH 先のサーバーが LAN から見えるので、道具・CSV の取り込み・番号の揃え直しでは張らない。
+ */
+export function paradisPortLocalHostAllowed(value: unknown): boolean {
+	return value === undefined || value === null || value === '' || value === 'localhost';
+}
+
+/** 手元のアドレス（`127.0.0.1:21004`・`localhost:21004`・`[::1]:21004`・URL）がループバックか。張った後の確かめに使う。 */
+export function paradisIsLoopbackLocalAddress(address: string): boolean {
+	let host: string;
+	if (address.includes('://')) {
+		try {
+			host = new URL(address).hostname;
+		} catch {
+			return false;
+		}
+	} else {
+		const match = /^(?<host>\[[^\]]+\]|[^:]+|[0-9a-fA-F:]+?)(?::\d+)?$/.exec(address);
+		host = match?.groups?.host ?? '';
+	}
+	host = host.replace(/^\[|\]$/g, '');
+	return isLocalhost(host) || /^127(?:\.\d{1,3}){3}$/.test(host);
+}

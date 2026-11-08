@@ -26,12 +26,17 @@ export const PARADIS_PORT_CSV_REASON_COLUMN = 'reason';
 /** 取り込む行の上限（大きすぎるファイルで画面と転送が詰まらないように）。 */
 export const PARADIS_PORT_CSV_MAX_ROWS = 1_000;
 
-const BOM = '﻿';
+const BOM = '\uFEFF';
 
 /** 1 つの値を CSV のセルにする（カンマ・引用符・改行を含むものだけ囲む。先頭が = + - @ の値は表計算の式にならないよう ' を付ける）。 */
 function cell(value: string): string {
 	const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
 	return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+}
+
+/** 書き出しで式を防ぐために付けた先頭の `'` を 1 つ外す（往復で値が揃うように）。 */
+export function paradisPortCsvUnescapeFormula(value: string): string {
+	return /^'[=+\-@\t\r]/.test(value) ? value.slice(1) : value;
 }
 
 /** 行の並びを CSV の文字列にする（BOM 付き、CRLF）。 */
@@ -154,7 +159,7 @@ export function paradisPortCsvRead(text: string): ParadisPortCsvReadResult {
 	const protocolAt = index('protocol');
 	const body = table.slice(1, 1 + PARADIS_PORT_CSV_MAX_ROWS);
 	const rows = body.map(({ line, cells }): ParadisPortCsvRow => {
-		const read = (at: number) => at >= 0 ? (cells[at] ?? '').trim() : '';
+		const read = (at: number) => at >= 0 ? paradisPortCsvUnescapeFormula((cells[at] ?? '').trim()) : '';
 		const remoteText = read(remotePortAt);
 		const localText = read(localPortAt);
 		const fail = (error: ParadisPortCsvRowError): ParadisPortCsvRow => ({ line, cells, kind: 'error', error, remoteText, localText });
