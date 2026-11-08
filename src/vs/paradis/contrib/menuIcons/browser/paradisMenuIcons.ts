@@ -12,6 +12,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { TerminalCommandId } from '../../../../workbench/contrib/terminal/common/terminal.js';
 import { CLOSE_EDITOR_COMMAND_ID, CLOSE_EDITORS_IN_GROUP_COMMAND_ID, CLOSE_EDITORS_TO_THE_RIGHT_COMMAND_ID, CLOSE_OTHER_EDITORS_IN_GROUP_COMMAND_ID, CLOSE_SAVED_EDITORS_COMMAND_ID, COPY_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, MOVE_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, PIN_EDITOR_COMMAND_ID, SPLIT_EDITOR, SPLIT_EDITOR_DOWN, SPLIT_EDITOR_LEFT, SPLIT_EDITOR_RIGHT, SPLIT_EDITOR_UP, UNPIN_EDITOR_COMMAND_ID } from '../../../../workbench/browser/parts/editor/editorCommands.js';
 import { COPY_PATH_COMMAND_ID, COPY_RELATIVE_PATH_COMMAND_ID } from '../../../../workbench/contrib/files/browser/fileConstants.js';
+import { PARADIS_TERMINAL_TAB_COLORS, PARADIS_TERMINAL_TAB_COLOR_SUBMENU_ID, paradisTerminalTabColorClass, paradisTerminalTabColorCommandId } from '../../terminalEditorMenu/common/paradisTerminalContextMenu.js';
 
 /**
  * The marker class the fork's PARA-PATCH in `src/vs/base/browser/ui/menu/menu.ts` looks for. Only menu
@@ -69,9 +70,29 @@ const ICONS: ReadonlyMap<string, IParadisMenuIcon> = new Map<string, IParadisMen
 	[SPLIT_EDITOR_DOWN, { icon: Codicon.splitVertical }],
 	[MOVE_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, { icon: Codicon.emptyWindow }],
 	[COPY_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, { icon: Codicon.emptyWindow }],
+	// terminal (fork, Q592)
+	['paradis.terminal.splitEditorRight', { icon: Codicon.splitHorizontal }],
+	['paradis.terminal.splitEditorDown', { icon: Codicon.splitVertical }],
+	['paradis.terminal.resetInputModes', { icon: Codicon.discard }],
+	['paradis.terminal.copyContext', { icon: Codicon.copy }],
+	['paradis.terminal.sendSelectionToAgent', { icon: Codicon.send }],
+	['paradis.terminal.handOffAgentSession', { icon: Codicon.arrowSwap }],
+	['paradis.terminal.forkAgentSession', { icon: Codicon.repoForked }],
+	['paradis.agentChat.toggle', { icon: Codicon.commentDiscussion }],
+	['paradis.editor.copyTabId', { icon: Codicon.symbolKey }],
 	// editor text
 	['editor.action.clipboardCopyAction', { icon: Codicon.copy }],
 	['editor.action.clipboardPasteAction', { icon: Codicon.clippy }],
+]);
+
+/**
+ * Submenus that HTML menus open inline as a row of color swatches (the native menu keeps the submenu with
+ * the color names, as it cannot draw them). Maps the submenu item id to the swatch class of each command.
+ */
+const SWATCH_SUBMENUS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
+	[`submenuitem.${PARADIS_TERMINAL_TAB_COLOR_SUBMENU_ID}`, new Map(
+		[...PARADIS_TERMINAL_TAB_COLORS.map(color => color.key), 'none'].map(key => [paradisTerminalTabColorCommandId(key), paradisTerminalTabColorClass(key)])
+	)],
 ]);
 
 /** The icon and danger state for a command, or undefined when the fork has none for it. */
@@ -86,9 +107,13 @@ export function paradisMenuIconFor(commandId: string): IParadisMenuIcon | undefi
  * marker class (fork menus that set their own icons) are returned as they are.
  */
 export function paradisDecorateMenuActions(actions: readonly IAction[]): IAction[] {
-	return actions.map(action => {
+	return actions.flatMap(action => {
 		if (action instanceof Separator) {
 			return action;
+		}
+		const swatches = action instanceof SubmenuAction ? SWATCH_SUBMENUS.get(action.id) : undefined;
+		if (swatches !== undefined) {
+			return paradisSwatchActions((action as SubmenuAction).actions, swatches);
 		}
 		if (action instanceof SubmenuAction) {
 			const children = paradisDecorateMenuActions(action.actions);
@@ -106,5 +131,18 @@ export function paradisDecorateMenuActions(actions: readonly IAction[]): IAction
 			classes.push(PARADIS_MENU_DANGER_CLASS);
 		}
 		return Object.create(action, { class: { value: classes.join(' ') } }) as IAction;
+	});
+}
+
+/** Opens a swatch submenu inline: its commands become a row of color dots (paradisMenuIcons.css), in order. */
+function paradisSwatchActions(children: readonly IAction[], swatches: ReadonlyMap<string, string>): IAction[] {
+	return children.flatMap(child => {
+		const swatch = swatches.get(child.id);
+		if (child instanceof Separator || swatch === undefined) {
+			return [];
+		}
+		const classes = [PARADIS_MENU_ICON_CLASS, 'paradis-menu-color', 'paradis-menu-swatch', swatch];
+		// The dot hides the label, so keep the color name as the tooltip.
+		return [Object.create(child, { class: { value: classes.join(' ') }, tooltip: { value: child.tooltip || child.label } }) as IAction];
 	});
 }

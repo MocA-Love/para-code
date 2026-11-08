@@ -172,11 +172,68 @@ suite('ParadisTitlebarFit', () => {
 			assert.deepStrictEqual({ oneLevel, twoLevels, allLevels, none, rightNarrow, rightGrew, afterDispose: folds() }, {
 				oneLevel: 'paradis-fold-1',
 				twoLevels: 'paradis-fold-1 paradis-fold-2',
-				allLevels: 'paradis-fold-1 paradis-fold-2 paradis-fold-3 paradis-fold-4',
+				allLevels: 'paradis-fold-1 paradis-fold-2 paradis-fold-3 paradis-fold-4 paradis-fold-5',
 				none: '',
 				rightNarrow: '',
 				rightGrew: 'paradis-fold-1',
 				afterDispose: '',
+			});
+		} finally {
+			fit.dispose();
+			root.remove();
+			style.remove();
+		}
+	});
+
+	test('narrows the command center as the last fold, when folding the fork widgets still leaves no room to drag the window', async () => {
+		const doc = mainWindow.document;
+		const style = doc.createElement('style');
+		// 本物の規則は paradisTitlebarFit.css の fold 5 (38vw → max(160px, 24vw))。ここでは段の数え方と、縮めた幅を空きに数えることだけを見る
+		style.textContent = '.t-root.paradis-fold-5 .command-center { width: 140px !important; }';
+		doc.head.appendChild(style);
+		const root = doc.createElement('div');
+		root.className = 't-root';
+		root.style.cssText = 'display: flex; width: 600px; height: 30px;';
+		const left = doc.createElement('div');
+		left.style.cssText = 'display: flex; width: 300px; flex: none;';
+		const center = doc.createElement('div');
+		center.className = 'titlebar-center';
+		center.style.cssText = 'display: flex; width: 200px; flex: none;';
+		const windowTitle = doc.createElement('div');
+		windowTitle.className = 'window-title';
+		const commandCenter = doc.createElement('div');
+		commandCenter.className = 'command-center';
+		commandCenter.style.cssText = 'width: 200px;';
+		windowTitle.appendChild(commandCenter);
+		center.appendChild(windowTitle);
+		const right = doc.createElement('div');
+		right.className = 'titlebar-right';
+		right.style.cssText = 'display: flex; width: 100px; flex: none;';
+		root.append(left, center, right);
+		doc.body.appendChild(root);
+		// 畳めない部品 (利用リミットのロゴなど) で左右が埋まっている。コマンドセンターとの空きは 10px と 0px
+		for (const [parent, width] of [[left, 290], [right, 100]] as const) {
+			const element = doc.createElement('div');
+			element.style.cssText = `width: ${width}px; flex: none;`;
+			parent.appendChild(element);
+		}
+
+		const observers: TestResizeObserver[] = [];
+		const fit = createParadisTitlebarFit(root, left, {
+			scheduleFrame,
+			resizeObserverCtor: class extends TestResizeObserver {
+				constructor(callback: ResizeObserverCallback) {
+					super(callback);
+					observers.push(this);
+				}
+			}
+		});
+		try {
+			observers[0].fire();
+			const folds = [...root.classList].filter(name => name.startsWith('paradis-fold-')).sort().join(' ');
+			assert.deepStrictEqual({ folds, commandCenterWidth: commandCenter.getBoundingClientRect().width }, {
+				folds: 'paradis-fold-1 paradis-fold-2 paradis-fold-3 paradis-fold-4 paradis-fold-5',
+				commandCenterWidth: 140,
 			});
 		} finally {
 			fit.dispose();

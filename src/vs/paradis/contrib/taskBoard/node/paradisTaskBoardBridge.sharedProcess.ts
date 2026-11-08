@@ -16,7 +16,7 @@
 import { promises as fs } from 'fs';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
-import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -41,6 +41,8 @@ import { ParadisTaskBoardBoardAuth } from './paradisTaskBoardBoardAuth.js';
 import { ParadisTaskBoardBridgeServer } from './paradisTaskBoardBridgeServer.js';
 import { ParadisTaskBoardRelayRouter } from './paradisTaskBoardRelayRouter.js';
 import { IParadisTaskBoardWindowRouter, ParadisTaskBoardBridgeService } from './paradisTaskBoardBridgeService.js';
+import { paradisTaskBoardWorktreeIncludes } from './paradisTaskBoardWorktreeIncludes.js';
+import { ParadisWorktreeGitService } from '../../workspaceSwitch/node/paradisWorktreeGitChannel.js';
 
 /** ウィンドウが呼ぶチャネル。ctx（`window:N`）で受け持ちを確かめる。 */
 class ParadisTaskBoardBridgeChannel implements IServerChannel<string> {
@@ -122,12 +124,16 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 
 	const audit = new ParadisTaskBoardAuditLog(join(environmentService.userDataPath, 'paradis', 'taskBoardRelay'), logService);
 	const relay = new ParadisTaskBoardRelayRouter(createWindowRouter(server), audit, logService, Date.now, (keyHash, event) => service.emitRelay(keyHash, event));
+	// 手元のボードのワークツリーへの持ち込み（762-RES）。スペースの作成と同じ口（ログインシェルの PATH の git）で行う
+	const worktreeGit = new ParadisWorktreeGitService(logService, configurationService, environmentService.args);
+	store.add(toDisposable(() => worktreeGit.dispose()));
 	const service = store.add(new ParadisTaskBoardBridgeService(createWindowRouter(server), {
 		directoryExists,
 		ignorePathCase: isMacintosh || isWindows,
 		newId: generateUuid,
 		relaySessionWindow: (sessionId, keyHash) => relay.windowOf(sessionId, keyHash),
 		onRelayLaunch: (request, outcome, reason) => relay.auditLaunch(request.relaySessionId ?? '', request.agent, request.repoPath, outcome, reason),
+		worktreeIncludes: paradisTaskBoardWorktreeIncludes(worktreeGit, logService),
 	}, logService));
 	// ボード用のツールは、設定がオンのときだけ para-browser に出す（使わない人のエージェントに説明を載せない）
 	const toolProvider = store.add(new MutableDisposable());
