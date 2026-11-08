@@ -1057,6 +1057,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			send('claude-switch', pid, event, { session_id: 'claude-hib', transcript_path: '/Users/example/.claude/projects/work/claude-hib.jsonl', cwd: '/Users/example/work', ...extra });
 		const signals: string[] = [];
 		Reflect.set(fixture.service, '_signalProcess', (pid: number, signal: string) => signals.push(`${signal} ${pid}`));
+		Reflect.set(fixture.service, '_isProcessAlive', (pid: number) => processes.has(pid));
 		// 止められた Claude Code は終わり際に SessionEnd を送ってから終わる
 		Reflect.set(fixture.service, '_hibernationGrace', async () => {
 			await claude(201, 'SessionEnd', { reason: 'other' });
@@ -1080,6 +1081,9 @@ suite('ParadisAgentBrowser authority integration', () => {
 			processes.set(301, { pid: 301, ppid: 201, command: '/bin/zsh -c sleep 600', startKey: 'bg' });
 			observed.push(`background command: ${JSON.stringify(await fixture.service.hibernatePane(connection, 'claude-switch', 'claude-hib'))}`);
 			processes.delete(301);
+			// MCP の起動役（npm exec）の下のシェルは裏のコマンドではない
+			processes.set(401, { pid: 401, ppid: 201, command: 'npm exec aivis-mcp@latest', startKey: 'npm' });
+			processes.set(402, { pid: 402, ppid: 401, command: 'sh -c aivis-mcp', startKey: 'mcp' });
 			published.length = 0;
 			observed.push(`idle: ${JSON.stringify(await fixture.service.hibernatePane(connection, 'claude-switch', 'claude-hib'))}`);
 			observed.push(`after: status=${await status('claude-switch')} session=${await paneSession('claude-switch') ?? 'none'} published=${published.join(',') || 'none'} signals=${signals.join(',')}`);
