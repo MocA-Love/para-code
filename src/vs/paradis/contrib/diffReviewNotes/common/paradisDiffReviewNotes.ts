@@ -26,9 +26,13 @@ export interface IParadisDiffReviewNote {
 	readonly id: string;
 	/** スペースのルートからのパス（`/` 区切り）。 */
 	readonly path: string;
-	/** 書いたときの新しい側の行番号（1 から）。 */
+	/** 書いたときの行番号（1 から）。範囲のメモでは範囲の最後の行（欄はこの行の下に出す）。 */
 	readonly line: number;
-	/** 書いたときのその行の中身。行が上下に動いても中身で追いかける。 */
+	/** 範囲のメモの最初の行（`line` より小さい）。1 行のメモには無い（770-RES）。 */
+	readonly startLine?: number;
+	/** 古い側（差分の左、消した・変えた前の行）へのメモ。新しい側のメモには無い（770-RES）。 */
+	readonly side?: 'original';
+	/** 書いたときのその行（範囲では `line` の行）の中身。行が上下に動いても中身で追いかける。 */
 	readonly lineText: string;
 	readonly body: string;
 	readonly createdAt: number;
@@ -51,7 +55,9 @@ function isNote(value: unknown): value is IParadisDiffReviewNote {
 		&& typeof note.lineText === 'string' && note.lineText.length <= PARADIS_DIFF_REVIEW_NOTE_LINE_TEXT_MAX
 		&& typeof note.body === 'string' && note.body.trim().length > 0 && note.body.length <= PARADIS_DIFF_REVIEW_NOTE_BODY_MAX
 		&& typeof note.createdAt === 'number' && typeof note.updatedAt === 'number'
-		&& (note.sentAt === undefined || typeof note.sentAt === 'number');
+		&& (note.sentAt === undefined || typeof note.sentAt === 'number')
+		&& (note.startLine === undefined || (typeof note.startLine === 'number' && Number.isInteger(note.startLine) && note.startLine >= 1 && note.startLine < note.line))
+		&& (note.side === undefined || note.side === 'original');
 }
 
 /** 保存された文字列を読む。壊れた項目は捨てる。 */
@@ -90,24 +96,43 @@ export function paradisSerializeDiffReviewNotes(store: ParadisDiffReviewNotesSto
 	return JSON.stringify(Object.fromEntries(entries));
 }
 
-/** 送るメモ 1 件と、今の行（見つからなければ undefined）。 */
+/** 送るメモ 1 件と、今の行（範囲では最後の行。見つからなければ undefined。古い側のメモは付け直さない）。 */
 export interface IParadisDiffReviewNoteToSend {
 	readonly note: IParadisDiffReviewNote;
 	readonly currentLine: number | undefined;
 }
 
 /**
- * エージェントへ送る文。Orca と同じ形（`File:` / `Line:` / `User comment:`）にする。コメントは JSON の文字列として
- * 書く（`"` と改行がエスケープされ、1 件が必ず 3 行に収まる）。行が見つからなくなったメモは、書いたときの行番号に
- * そう書き添える。
+ * メモの今の範囲。範囲のメモは最後の行（`line`）を中身で追いかけ、幅はそのまま保つ（最初の行が 1 より前に出ないように詰める）。
+ */
+export function paradisDiffReviewNoteRange(note: IParadisDiffReviewNote, currentLine: number): { readonly start: number; readonly end: number } {
+	return { start: note.startLine === undefined ? currentLine : Math.max(1, currentLine - (note.line - note.startLine)), end: currentLine };
+}
+
+function lineLabel(prefix: 'Line' | 'Old line', range: { readonly start: number; readonly end: number }): string {
+	return range.start === range.end ? `${prefix}: ${range.end}` : `${prefix}s: ${range.start}-${range.end}`;
+}
+
+/**
+ * エージェントへ送る文。Orca と同じ形（`File:` / `Line:` または範囲の `Lines: a-b` / `User comment:`）にする。コメントは
+ * JSON の文字列として書く（`"` と改行がエスケープされ、各行が 1 行に収まる）。行が見つからなくなったメモは、書いたときの
+ * 行番号にそう書き添える。古い側のメモは今のファイルに無い行なので、`Old line` と、その行の中身（`Old text`）を添える。
  */
 export function paradisBuildDiffReviewNotesPrompt(notes: readonly IParadisDiffReviewNoteToSend[]): string {
-	return notes.map(({ note, currentLine }) => [
-		`File: ${quotePathIfNeeded(note.path)}`,
-		currentLine !== undefined ? `Line: ${currentLine}` : `Line: ${note.line} (the line changed after this note was written)`,
+	return notes.map(({ note, currentLine }) => {
+		const lines = [`File: ${quotePathIfNeeded(note.path)}`];
+		if (note.side === 'original') {
+			const range = paradisDiffReviewNoteRange(note, note.line);
+			lines.push(`${lineLabel('Old line', range)} (removed or changed by this diff)`);
+			// 範囲では、保存している最後の行の中身だけを添える
+			lines.push(`${range.start === range.end ? 'Old text' : `Old text (line ${range.end})`}: ${JSON.stringify(paradisRedactTextSecrets(note.lineText))}`);
+		} else {
+			lines.push(currentLine !== undefined ? lineLabel('Line', paradisDiffReviewNoteRange(note, currentLine)) : `${lineLabel('Line', paradisDiffReviewNoteRange(note, note.line))} (the line changed after this note was written)`);
+		}
 		// メモには利用者が貼ったトークンなどが混ざりうるので、通知や受信箱と同じ規則で伏せる
-		`User comment: ${JSON.stringify(paradisRedactTextSecrets(note.body.trim()))}`,
-	].join('\n')).join('\n');
+		lines.push(`User comment: ${JSON.stringify(paradisRedactTextSecrets(note.body.trim()))}`);
+		return lines.join('\n');
+	}).join('\n');
 }
 
 /**

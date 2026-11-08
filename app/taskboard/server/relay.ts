@@ -33,6 +33,8 @@ export interface IRelayGitResult {
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly timedOut: boolean;
+	/** `worktreeAdd` の後、宣言したファイルを持ち込めなかったときの 1 行（新しい Para Code の接続先だけが付ける）。 */
+	readonly warning?: string;
 }
 
 type Rev = { readonly kind: 'head' } | { readonly kind: 'local' | 'remote'; readonly branch: string };
@@ -86,12 +88,17 @@ export class RelayClient {
 
 	/** git を走らせ、失敗なら投げる（workspaces.ts の git() と同じ使い方）。 */
 	async gitOk(place: string, op: Record<string, unknown>): Promise<string> {
+		return (await this.gitChecked(place, op)).stdout.trim();
+	}
+
+	/** {@link gitOk} と同じく失敗なら投げ、結果をまるごと返す（`worktreeAdd` の warning を読むため）。 */
+	async gitChecked(place: string, op: Record<string, unknown>): Promise<IRelayGitResult> {
 		const result = await this.git(place, op);
 		if (result.code !== 0) {
 			// stderr は git の失敗の理由だけを短く載せる（中身のファイルは含まない）
 			throw new Error(`git ${String(op.kind)}: ${(result.stderr || `exit ${result.code}`).trim().split('\n').slice(-3).join(' ')}`);
 		}
-		return result.stdout.trim();
+		return result;
 	}
 
 	/** `.para/` の中とフローの定義だけを読める。無ければ undefined。 */
@@ -186,7 +193,7 @@ export class RemoteWorkspaces implements ITaskBoardWorkspacePort {
 		return { kind: 'remote', branch: this.info.defaultBranch ?? 'main' };
 	}
 
-	prepare(task: ITaskBoardTask, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string }> {
+	prepare(task: ITaskBoardTask, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string; warning?: string }> {
 		if (slot.kind !== 'worktree') {
 			return Promise.reject(new TaskBoardWorkspaceError(RELAY_UNSUPPORTED));
 		}
@@ -208,11 +215,12 @@ export class RemoteWorkspaces implements ITaskBoardWorkspacePort {
 				return { branch, path: dir };
 			}
 			const mode = await this.exists({ kind: 'local', branch }) ? 'existing' : await this.exists({ kind: 'remote', branch }) ? 'track' : 'new';
-			await this.relay.gitOk(this.info.root, { kind: 'worktreeAdd', dir, branch, mode, ...(mode === 'new' ? { base: this.base() } : {}) });
+			// 接続先は作った直後に宣言したファイル（.env など）を持ち込み、持ち込めなかったものを warning で返す
+			const added = await this.relay.gitChecked(this.info.root, { kind: 'worktreeAdd', dir, branch, mode, ...(mode === 'new' ? { base: this.base() } : {}) });
 			this.known.add(dir);
 			await this.relay.excludeBoardDir(dir);
 			await this.relay.resetBoardDir(dir, task.id).catch(() => undefined);
-			return { branch, path: dir };
+			return { branch, path: dir, ...(added.warning ? { warning: added.warning } : {}) };
 		});
 	}
 

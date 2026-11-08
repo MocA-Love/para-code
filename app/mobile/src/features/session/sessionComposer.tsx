@@ -426,7 +426,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	submitRef.current = submit;
 	const quickSendBlockedRef = useRef<(text: string) => boolean>(() => true);
 
-	/** 設定の変更（`/model <別名>`・`/effort <段階>`）。断られたら文を入力欄へ戻し、理由を上に出す。 */
+	/** 設定の変更（`/model <別名・版付きの id>`・`/effort <段階>`）。断られたら文を入力欄へ戻し、理由を上に出す。 */
 	const applySetting = (setting: 'model' | 'effort', value: string, text: string) => {
 		clearActiveInput();
 		setSlashError(undefined);
@@ -463,14 +463,14 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				}
 				return;
 			case 'model-switch':
-				applySetting('model', intercept.alias, text);
+				applySetting('model', intercept.model, text);
 				return;
 			case 'effort-switch':
 				applySetting('effort', intercept.level, text);
 				return;
 			case 'model-not-alias':
 				haptic('warning');
-				setSlashError({ message: `「${intercept.value}」はモデルの別名ではないので送りませんでした。default・sonnet・opus・haiku・fable・best・opusplan（[1m] 付きも可）のどれかを指定するか、シートで選んでください`, terminal: false, sheet: true });
+				setSlashError({ message: `「${intercept.value}」はモデルの名前として送れないので送りませんでした。default・sonnet・opus・haiku・fable・best・opusplan（[1m] 付きも可）か、シートにある id（claude-mythos-5-1 など）を指定してください`, terminal: false, sheet: true });
 				return;
 			case 'usage':
 				clearActiveInput();

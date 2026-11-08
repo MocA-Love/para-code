@@ -138,6 +138,10 @@ import './contrib/computerUse/electron-browser/paradisComputerUseStatus.contribu
 import './contrib/agentTabTitle/electron-browser/paradisClaudeTabTitlePin.contribution.js';
 import './contrib/editorDownload/electron-browser/paradisEditorDownload.contribution.js';
 import './contrib/tabId/electron-browser/paradisTabId.contribution.js';
+// Q592: ターミナルの本文とタブの右クリックの項目（エージェントの節・下に分割・リセット・タブの色の丸など）
+import './contrib/terminalEditorMenu/electron-browser/paradisTerminalContextMenu.contribution.js';
+// Q592-5: ターミナルの右クリックの「別の Agent に引き継ぐ」「Agent セッションをフォーク」
+import './contrib/terminalEditorMenu/electron-browser/paradisTerminalAgentSession.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisWorkspacesNativeWindowActivity.js';
 // Q570: the editor tab strip's "+ ⌄" opens the fork's launcher (terminal, browser, Markdown, agents)
 import './contrib/tabLauncher/electron-browser/paradisTabLauncher.contribution.js';

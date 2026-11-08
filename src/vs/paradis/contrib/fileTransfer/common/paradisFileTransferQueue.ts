@@ -30,6 +30,7 @@ import { dirname, extUri, isEqualOrParent, joinPath } from '../../../../base/com
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { FileOperationError, FileOperationResult } from '../../../../platform/files/common/files.js';
+import { paradisMapLimited } from '../../../common/paradisMapLimited.js';
 import { paradisNumberedName } from './paradisFileTransferListing.js';
 import {
 	IParadisConflictDecision,
@@ -65,6 +66,8 @@ export interface IParadisTransferQueueOptions {
 
 /** 1 つのフォルダーの転送で、同時に写すファイルの数。 */
 const PARADIS_TRANSFER_FILE_PARALLEL = 3;
+/** 1 つのフォルダーの転送で、同じ深さのフォルダーを同時に作る数（親は必ず子より先に作る）。 */
+const PARADIS_TRANSFER_FOLDER_PARALLEL = 4;
 /** 速度を計る窓。これより古い標本は捨てる。 */
 const SPEED_WINDOW_MS = 5000;
 /** 速度を出し始めるまでの最短の経過時間。 */
@@ -104,7 +107,8 @@ interface IPlannedItem {
 }
 
 interface IScanPlan {
-	readonly directories: URI[];
+	/** 送り先に作るフォルダー。浅い順（同じ深さはまとめて並べて作れる）。 */
+	readonly directories: Array<{ readonly target: URI; readonly depth: number }>;
 	readonly files: Array<{ readonly source: URI; readonly target: URI; readonly size: number }>;
 	readonly skipped: number;
 	/** 一覧が上限で打ち切られたフォルダーの数。 */
@@ -592,7 +596,7 @@ export class ParadisTransferQueue extends Disposable {
 
 	/** 写すものを洗い出す。フォルダーは 1 階層ごとに 1 回だけ一覧を読む（大きさも一緒に取る）。 */
 	private async scan(item: IParadisTransferItem, token: CancellationToken): Promise<IScanPlan> {
-		const directories: URI[] = [];
+		const directories: Array<{ readonly target: URI; readonly depth: number }> = [];
 		const files: Array<{ source: URI; target: URI; size: number }> = [];
 		let skipped = 0;
 		if (!item.isDirectory) {
@@ -612,9 +616,9 @@ export class ParadisTransferQueue extends Disposable {
 			throw new FileOperationError(localize('paradis.fileTransfer.error.sourceMissing', "{0} が見つかりません", item.name), FileOperationResult.FILE_NOT_FOUND);
 		}
 		let truncatedFolders = 0;
-		const pending: Array<{ source: URI; target: URI }> = [{ source: item.source, target: item.target }];
+		const pending: Array<{ source: URI; target: URI; depth: number }> = [{ source: item.source, target: item.target, depth: 0 }];
 		while (pending.length && !token.isCancellationRequested) {
-			const { source, target } = pending.shift()!;
+			const { source, target, depth } = pending.shift()!;
 			let children;
 			try {
 				const listed = await this.listChildren(source);
@@ -631,14 +635,14 @@ export class ParadisTransferQueue extends Disposable {
 				throw error;
 			}
 			// 読めたフォルダーだけを送り先に作る
-			directories.push(target);
+			directories.push({ target, depth });
 			for (const child of children) {
 				const childTarget = joinPath(target, child.name);
 				if (child.directoryLink || child.special) {
 					// フォルダーを指すリンクは辿らず、ソケット・FIFO・壊れたリンクは読まない（読むと止まりうる）
 					skipped++;
 				} else if (child.isDirectory) {
-					pending.push({ source: child.resource, target: childTarget });
+					pending.push({ source: child.resource, target: childTarget, depth: depth + 1 });
 				} else {
 					files.push({ source: child.resource, target: childTarget, size: child.size });
 				}
@@ -661,11 +665,26 @@ export class ParadisTransferQueue extends Disposable {
 
 	/** 写す。最後まで済んだら true（最後の 1 件の置き換えの途中で取り消されても、置き換えが済んでいれば true）。 */
 	private async copyAll(entry: IEntry, plan: IScanPlan, token: CancellationToken, runId: string): Promise<boolean> {
-		for (const directory of plan.directories) {
+		// フォルダーは深さごとに作る。同じ深さのものは親がもう作ってあるので、上限つきで並べる（SSH の先では
+		// 1 件ごとに確かめて作る往復があり、1 件ずつ待つと件数ぶん積み重なる）。失敗したら新しく始めずに、走っている分を待って投げる
+		for (let start = 0; start < plan.directories.length;) {
 			if (token.isCancellationRequested) {
 				return false;
 			}
-			await this.fileSystem.createDirectory(directory);
+			const depth = plan.directories[start].depth;
+			let end = start;
+			while (end < plan.directories.length && plan.directories[end].depth === depth) {
+				end++;
+			}
+			await paradisMapLimited(plan.directories.slice(start, end), PARADIS_TRANSFER_FOLDER_PARALLEL, async directory => {
+				if (!token.isCancellationRequested) {
+					await this.fileSystem.createDirectory(directory.target);
+				}
+			});
+			start = end;
+		}
+		if (token.isCancellationRequested) {
+			return false;
 		}
 		// フォルダーは全部作ってあるので、ファイルは上限つきで並べて写す（1 件ずつ待つと、小さいファイルの多い
 		// フォルダーでは往復の待ちが件数ぶん積み重なる）。止めるべき失敗が出たら、新しく始めずに走っている分を待つ

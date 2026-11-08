@@ -9,6 +9,7 @@
 // タスクボードの SSH 中継の、接続先（REH）のチャネル（q.html Q472 = A）。`paradis.server.contribution.ts` から
 // 副作用 import で読み込まれる。呼ぶのは手元のウィンドウだけで、ウィンドウ側はまだ無い（設計書の PR 2 で足す）。
 
+import { combinedDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { RemoteAgentConnectionContext } from '../../../../platform/remote/common/remoteAgentEnvironment.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
@@ -16,11 +17,15 @@ import { ParadisServerContributions } from '../../../common/paradisProcessContri
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_TASK_BOARD_REMOTE_CHANNEL } from '../common/paradisTaskBoardRemote.js';
 import { ParadisTaskBoardRemoteChannel, ParadisTaskBoardRemoteService } from './paradisTaskBoardRemoteService.js';
+import { paradisTaskBoardWorktreeIncludes } from './paradisTaskBoardWorktreeIncludes.js';
+import { ParadisWorktreeGitService } from '../../workspaceSwitch/node/paradisWorktreeGitChannel.js';
 
 ParadisServerContributions.register('taskBoardRemote', ({ server, accessor }) => {
 	const logService = accessor.get(ILogService);
 	const shellEnv = new ParadisCachedShellEnv(logService, 'ParadisTaskBoardRemote', createParadisShellEnvResolver(logService), Date.now, reportParadisShellEnvDiagnosticError);
-	const service = new ParadisTaskBoardRemoteService(logService, () => shellEnv.getEnv());
+	// ボードのワークツリーへの持ち込み（762-RES）は、スペースの作成と同じ口で行う
+	const worktreeGit = new ParadisWorktreeGitService(logService);
+	const service = new ParadisTaskBoardRemoteService(logService, () => shellEnv.getEnv(), undefined, undefined, undefined, undefined, undefined, undefined, paradisTaskBoardWorktreeIncludes(worktreeGit, logService));
 	server.registerChannel(PARADIS_TASK_BOARD_REMOTE_CHANNEL, new ParadisTaskBoardRemoteChannel<RemoteAgentConnectionContext>(service));
-	return service;
+	return combinedDisposable(service, toDisposable(() => worktreeGit.dispose()));
 });

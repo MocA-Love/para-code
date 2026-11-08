@@ -19,7 +19,9 @@
 //
 // ペイントークンはボードへ出さない（ID はトークンのハッシュ）。
 
+import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { isAbsolute } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import type { IParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
@@ -59,6 +61,7 @@ import {
 	paradisTaskBoardTerminalId,
 	paradisTaskBoardToolDetail,
 } from '../common/paradisTaskBoardBridge.js';
+import type { IParadisTaskBoardWorktreeIncludes } from './paradisTaskBoardWorktreeIncludes.js';
 
 /** ウィンドウへの振り分け（shared process の IPCServer を包む。テストでは差し替える）。 */
 export interface IParadisTaskBoardWindowRouter {
@@ -83,6 +86,8 @@ export interface IParadisTaskBoardBridgeOptions {
 	readonly replyTimeoutMs?: number;
 	/** ウィンドウとの接続が切れてから、そのウィンドウのターミナルを終わったとみなすまで（再読み込みを待つ）。 */
 	readonly disconnectGraceMs?: number;
+	/** 手元のボードが作ったワークツリーへの持ち込みと返却（762-RES）。無ければ口を出さない。 */
+	readonly worktreeIncludes?: IParadisTaskBoardWorktreeIncludes;
 }
 
 /** SSE の受け手のボード。 */
@@ -226,8 +231,10 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			}
 			case 'POST /v1/close': return this.close(body);
 			case 'POST /v1/reply': return this.reply(body);
+			case 'POST /v1/worktree-includes': return this.worktreeIncludes(body, 'copy');
+			case 'POST /v1/worktree-release': return this.worktreeIncludes(body, 'release');
 		}
-		const known = ['/v1/health', '/v1/terminals', '/v1/screen', '/v1/events', '/v1/launch', '/v1/send', '/v1/key', '/v1/answer', '/v1/close', '/v1/reply'];
+		const known = ['/v1/health', '/v1/terminals', '/v1/screen', '/v1/events', '/v1/launch', '/v1/send', '/v1/key', '/v1/answer', '/v1/close', '/v1/reply', '/v1/worktree-includes', '/v1/worktree-release'];
 		return known.includes(pathname) ? { status: 405, body: { error: 'method-not-allowed' } } : error('not-found');
 	}
 
@@ -251,6 +258,10 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		if (route === 'POST /v1/launch') {
 			return record.relaySessionId === undefined ? forbidden('A task board for an SSH window can start agents only on the SSH host.') : undefined;
 		}
+		if (route === 'POST /v1/worktree-includes' || route === 'POST /v1/worktree-release') {
+			// SSH のボードのワークツリーは接続先の REH が持ち込む。手元のパスには触らせない
+			return forbidden('A task board for an SSH window manages its worktrees on the SSH host.');
+		}
 		let terminal: unknown;
 		if (route === 'GET /v1/screen') {
 			terminal = query.get('terminal');
@@ -263,6 +274,31 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		}
 		const entry = typeof terminal === 'string' ? this.terminals.get(terminal) : undefined;
 		return entry && entry.relaySessionId === undefined ? forbidden('A task board for an SSH window can use only the terminals it started on the SSH host.') : undefined;
+	}
+
+	/**
+	 * 手元のボードが作ったワークツリーへの持ち込み（`copy`）と返却（`release`）。パスは絶対パスだけ受け、作業ツリーが
+	 * そのリポジトリの追加のワークツリーかは ParadisWorktreeGitService が git に聞いて確かめる。
+	 */
+	private async worktreeIncludes(body: unknown, operation: 'copy' | 'release'): Promise<IParadisTaskBoardHttpResponse> {
+		const includes = this.options.worktreeIncludes;
+		if (!includes) {
+			return error('not-found');
+		}
+		const record = body && typeof body === 'object' ? body as Record<string, unknown> : {};
+		const { repoPath, worktreePath } = record;
+		if (typeof repoPath !== 'string' || typeof worktreePath !== 'string' || !isAbsolute(repoPath) || !isAbsolute(worktreePath) || repoPath.length > 4096 || worktreePath.length > 4096) {
+			return error('invalid', 'repoPath and worktreePath must be absolute paths.');
+		}
+		try {
+			if (operation === 'copy') {
+				const warning = await includes.copy(repoPath, worktreePath);
+				return ok(warning !== undefined ? { ok: true, warning } : { ok: true });
+			}
+			return ok({ ok: true, result: await includes.release(repoPath, worktreePath) });
+		} catch (err) {
+			return error('failed', toErrorMessage(err));
+		}
 	}
 
 	private async health(remoteBoard = false): Promise<IParadisTaskBoardHttpResponse> {
