@@ -870,6 +870,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 			allowScripts: true,
 			localResourceRoots: this._localResourceRoots(resource)
 		};
+		// ヘッダーの検査と etag 付きの本文読みを並べて出す（SSH 先で往復を直列に 2 回しない）。本文読みの失敗は
+		// ここでは投げず、表示すると決まってから下で扱う（.docx でないと分かった文書の読み失敗は問わない）。
+		const reading = readParadisOfficeFile(this._fileService, resource, DOCX_OPEN_CACHE, PARADIS_DOCX_MAX_BYTES).then(
+			read => ({ read, error: undefined }),
+			(error: unknown) => ({ read: undefined, error }),
+		);
 		const isValid = await readParadisDocxHeader(this._fileService, resource);
 		let decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
 		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._pane.claimed || token.isCancellationRequested) {
@@ -888,7 +894,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (decision === 'viewer') {
 			try {
 				// 同じ文書を前に消毒していて、ファイルが変わっていなければ、覚えた結果を使う。
-				const read = await readParadisOfficeFile(this._fileService, resource, DOCX_OPEN_CACHE, PARADIS_DOCX_MAX_BYTES);
+				const { read, error: readError } = await reading;
+				if (read === undefined) {
+					throw readError;
+				}
 				let document: IParadisDocxOpenCacheValue;
 				if (reuseShown && read.kind === 'cached' && generation === this._renderGeneration && inputEpoch === this._inputEpoch && this._pane.claimed
 					&& this._reuseShownDocument(resource, webview, read.value, inputEpoch, recoveryGeneration)) {
