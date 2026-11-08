@@ -20,6 +20,7 @@ import { basename, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -51,7 +52,7 @@ import {
 	paradisPortCsvRead,
 	paradisPortCsvSerialize,
 } from '../common/paradisPortCsv.js';
-import { paradisIsEphemeralPort, paradisMismatchedForwards, paradisNotListeningUserForwards } from '../common/paradisPortSelection.js';
+import { paradisIsEphemeralPort, paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisNotListeningUserForwards, paradisPortLocalHostAllowed } from '../common/paradisPortSelection.js';
 import { PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT } from '../common/paradisPortTools.js';
 import { IParadisPortDialogRow, ParadisPortDialogTone, paradisShowPortTableDialog } from './paradisPortTableDialog.js';
 
@@ -69,6 +70,7 @@ interface IParadisPortPanelServices extends IParadisReforwardServices {
 	readonly fileDialogService: IFileDialogService;
 	readonly fileService: IFileService;
 	readonly pathService: IPathService;
+	readonly configurationService: IConfigurationService;
 }
 
 function getServices(accessor: ServicesAccessor): IParadisPortPanelServices {
@@ -83,6 +85,7 @@ function getServices(accessor: ServicesAccessor): IParadisPortPanelServices {
 		fileDialogService: accessor.get(IFileDialogService),
 		fileService: accessor.get(IFileService),
 		pathService: accessor.get(IPathService),
+		configurationService: accessor.get(IConfigurationService),
 	};
 }
 
@@ -117,14 +120,40 @@ async function otherWindowsOfSameRemote(services: IParadisPortPanelServices): Pr
 	}
 }
 
+/** 手元の受け口が 127.0.0.1 になる窓か（para-browser MCP の道具と同じ確かめ）。 */
+function localHostAllowed(services: IParadisPortPanelServices): boolean {
+	return paradisPortLocalHostAllowed(services.configurationService.getValue('remote.localPortHost'));
+}
+
+function localHostRefusal(): string {
+	return localize('paradis.portPanel.localHostRefused', "この窓は手元のすべてのネットワークで受ける設定（remote.localPortHost が allInterfaces）のため、転送を張りません。Para Code がここで張るのは 127.0.0.1 で受ける転送だけです。");
+}
+
+/** 張った後、手元が 127.0.0.1 で受けていなければすぐ閉じて理由を返す（LAN から SSH 先のサーバーが見えないように）。 */
+async function closeIfNotLoopback(services: IParadisPortPanelServices, remotePort: number): Promise<string | undefined> {
+	const after = findForward(services, remotePort);
+	if (after && !paradisIsLoopbackLocalAddress(after.localAddress)) {
+		await services.remoteExplorerService.close({ host: after.remoteHost, port: after.remotePort }, TunnelCloseReason.User);
+		return localHostRefusal();
+	}
+	return undefined;
+}
+
 /** 1 本を、手元の番号を `localPort` にして張り直す。張れた番号が違えば理由を返す（元の番号には戻さない）。 */
 async function alignForward(services: IParadisPortPanelServices, tunnel: Tunnel, localPort: number): Promise<string | undefined> {
+	if (!localHostAllowed(services)) {
+		return localHostRefusal();
+	}
 	if (!await services.nativeHostService.isPortFree(localPort)) {
 		return localize('paradis.portPanel.localInUse', "手元の {0} が使用中", localPort);
 	}
 	const failure = await paradisReforwardTunnel(services, tunnel, localPort);
 	if (failure) {
 		return failure;
+	}
+	const notLoopback = await closeIfNotLoopback(services, tunnel.remotePort);
+	if (notLoopback) {
+		return notLoopback;
 	}
 	const after = findForward(services, tunnel.remotePort);
 	if (after?.localPort !== localPort) {
@@ -155,6 +184,10 @@ registerAction2(class extends Action2 {
 
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const services = getServices(accessor);
+		if (!localHostAllowed(services)) {
+			services.notificationService.warn(localHostRefusal());
+			return;
+		}
 		const targets = paradisMismatchedForwards(forwardedOf(services)).sort((a, b) => a.remotePort - b.remotePort);
 		if (targets.length === 0) {
 			services.notificationService.info(localize('paradis.portPanel.align.none', "手元とリモートの番号が違う転送はありません。"));
@@ -342,6 +375,9 @@ function localText(item: IParadisPortCsvPlanRow): string {
 
 /** 追加の 1 行を張る。手元の番号が取れなければ閉じて理由を返す（黙って別の番号にしない）。 */
 async function forwardRow(services: IParadisPortPanelServices, remotePort: number, localPort: number, label: string | undefined, protocol: 'http' | 'https' | undefined): Promise<string | undefined> {
+	if (!localHostAllowed(services)) {
+		return localHostRefusal();
+	}
 	if (findForward(services, remotePort)) {
 		return localize('paradis.portPanel.csv.alreadyForwarded', "取り込みの間に転送された");
 	}
@@ -352,6 +388,10 @@ async function forwardRow(services: IParadisPortPanelServices, remotePort: numbe
 	const result = await services.remoteExplorerService.forward({ remote, local: localPort, name: label, source: UserTunnelSource }, attributes);
 	if (!result || typeof result === 'string') {
 		return result || localize('paradis.portPanel.csv.noTunnel', "転送を作れなかった");
+	}
+	if (!paradisIsLoopbackLocalAddress(result.localAddress)) {
+		await services.remoteExplorerService.close(remote, TunnelCloseReason.User);
+		return localHostRefusal();
 	}
 	if (result.tunnelLocalPort !== localPort) {
 		await services.remoteExplorerService.close(remote, TunnelCloseReason.User);
@@ -373,6 +413,11 @@ registerAction2(class extends Action2 {
 
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const services = getServices(accessor);
+		if (!localHostAllowed(services)) {
+			// 外から受け取った CSV で、多数の転送を 0.0.0.0 で開けてしまわないように
+			services.notificationService.warn(localHostRefusal());
+			return;
+		}
 		const picked = await services.fileDialogService.showOpenDialog({
 			title: localize('paradis.portPanel.import.openTitle', "取り込む CSV"),
 			canSelectFiles: true,

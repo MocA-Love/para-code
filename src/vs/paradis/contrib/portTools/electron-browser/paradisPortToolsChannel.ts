@@ -24,7 +24,7 @@ import { Attributes, CandidatePort, Tunnel, TunnelProperties, TunnelSource, User
 import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
-import { paradisDefaultCleanUpForwards, paradisMismatchedForwards } from '../common/paradisPortSelection.js';
+import { paradisDefaultCleanUpForwards, paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisPortLocalHostAllowed } from '../common/paradisPortSelection.js';
 import { PARADIS_PORT_TOOLS_EPHEMERAL_MIN_PORT, PARADIS_PORT_TOOLS_METHOD, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort } from '../common/paradisPortTools.js';
 
 /** 確認のダイアログに並べる転送の行の上限。超えた分は「ほか N 件」にまとめる。 */
@@ -89,23 +89,6 @@ function sourceName(source: TunnelSource): 'user' | 'auto' | 'extension' {
 		case TunnelSource.Extension: return 'extension';
 		default: return 'user';
 	}
-}
-
-/** 手元のアドレス（`127.0.0.1:21004`・`localhost:21004`・`[::1]:21004`・URL）がループバックか。 */
-export function paradisIsLoopbackLocalAddress(address: string): boolean {
-	let host: string;
-	if (address.includes('://')) {
-		try {
-			host = new URL(address).hostname;
-		} catch {
-			return false;
-		}
-	} else {
-		const match = /^(?<host>\[[^\]]+\]|[^:]+|[0-9a-fA-F:]+?)(?::\d+)?$/.exec(address);
-		host = match?.groups?.host ?? '';
-	}
-	host = host.replace(/^\[|\]$/g, '');
-	return isLocalhost(host) || /^127(?:\.\d{1,3}){3}$/.test(host);
 }
 
 /** 一覧の 1 行。 */
@@ -497,8 +480,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 	}
 
 	private _localHostAllowed(): boolean {
-		const value = this._window.localPortHost();
-		return value === undefined || value === null || value === '' || value === 'localhost';
+		return paradisPortLocalHostAllowed(this._window.localPortHost());
 	}
 
 	private _describe(tunnel: Tunnel): string {
