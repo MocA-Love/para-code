@@ -17,10 +17,9 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
-import { ParadisMobileCanvasHostClient } from '../../../mobileCanvas/node/paradisMobileCanvasHostClient.js';
-import { ParadisMobileCanvasService } from '../../../mobileCanvas/node/paradisMobileCanvasService.js';
-import { ParadisMobileDeviceCommands } from '../../../mobileCanvas/node/paradisMobileDeviceCommands.js';
-import { ParadisMobileDeviceOpsToolProvider } from '../../../mobileCanvas/node/paradisMobileDeviceOpsToolProvider.js';
+import { ParadisMobileCanvasService } from '../../node/paradisDeviceLedger.js';
+import { ParadisMobileDeviceCommands } from '../../node/paradisMobileDeviceCommands.js';
+import { IParadisMobileHostRequester, ParadisMobileDeviceOpsToolProvider } from '../../node/paradisSimulatorDeviceOps.js';
 
 const OBJECT = 'object';
 
@@ -183,7 +182,7 @@ suite('Paradis simulator: the mobile_* tool names and arguments stay fixed', () 
 
 	/** 今エージェントへ出している mobile_* のツール（③ で変えてよいのはこの関数の中だけ）。 */
 	function currentMobileTools(): readonly IParadisMcpToolDefinition[] {
-		const hostClient = { request: async () => [] } as unknown as ParadisMobileCanvasHostClient;
+		const hostClient = { request: async () => [] } as unknown as IParadisMobileHostRequester;
 		const ledger = store.add(new ParadisMobileCanvasService(hostClient, new NullLogService()));
 		const deviceOps = new ParadisMobileDeviceOpsToolProvider(ledger, hostClient, new ParadisMobileDeviceCommands(), undefined);
 		return [...ledger.listTools(), ...deviceOps.listTools()];

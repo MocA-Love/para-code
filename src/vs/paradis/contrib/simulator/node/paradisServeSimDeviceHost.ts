@@ -23,7 +23,7 @@ import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_ORIENTATIONS, ParadisSimulatorOrientation, paradisResolveSimulatorButton, paradisSimulatorButtonNames, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
 import { paradisFindSimulatorAx, paradisMarkTypedSimulatorField, paradisNormalizeSimulatorAx, paradisPickSimulatorAxTarget, paradisSimulatorFieldValues, IParadisSimulatorAxSnapshot } from '../common/paradisSimulatorAx.js';
-import { paradisPngSize } from '../../mobileCanvas/common/paradisMobileDeviceOps.js';
+import { paradisPngSize } from '../common/paradisMobileDeviceOps.js';
 import { paradisSimulatorButtonFrame, paradisSimulatorKeyFrame, paradisSimulatorMultiTouchFrame, paradisSimulatorRotateFrame, paradisSimulatorTouchFrame } from '../common/paradisSimulatorFrames.js';
 import { paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';

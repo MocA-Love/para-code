@@ -16,7 +16,7 @@
 
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
-import { IParadisMobileDeviceLedger } from '../../mobileCanvas/node/paradisMobileDeviceOpsToolProvider.js';
+import { IParadisMobileDeviceLedger } from '../node/paradisSimulatorDeviceOps.js';
 import { ParadisSimulatorFold } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold } from '../common/paradisSimulatorFrames.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';

@@ -177,5 +177,21 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 			empty: { calls: ['paste あ', 'set '], restored: false, note: 'Para Code could not read the device clip' },
 			failed: { calls: ['paste あ', 'set user text'], restored: false, note: 'Para Code could not put the previous dev' },
 		});
+
+		// 貼る側の返事（ACK）が時間切れでも、戻しは試し、その結果を添えて失敗として返す
+		const calls: string[] = [];
+		const timedOut = await paradisPasteKeepingClipboard({
+			getClipboard: async () => 'user text',
+			setClipboard: async (text: string, paste: boolean) => {
+				calls.push(`${paste ? 'paste' : 'set'} ${text}`);
+				if (paste) {
+					throw new Error('The Android device did not confirm the clipboard change in time');
+				}
+			},
+		}, 'あ', async () => { }).then(() => 'pasted', (error: Error) => error.message);
+		assert.deepStrictEqual({ calls, timedOut }, {
+			calls: ['paste あ', 'set user text'],
+			timedOut: 'The Android device did not confirm the clipboard change in time The previous device clipboard was put back.',
+		});
 	});
 });

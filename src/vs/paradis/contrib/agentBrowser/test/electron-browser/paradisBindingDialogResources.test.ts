@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IBrowserViewModel } from '../../../../../workbench/contrib/browserView/common/browserView.js';
-import { IParadisMobileCanvasModel } from '../../../mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
+import { IParadisMobileCanvasModel } from '../../../simulator/electron-browser/paradisMobileCanvasModel.js';
 import { IParadisTerminalScopeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { onDidChangeParadisHoveredPane, setParadisHoveredPaneInstanceId } from '../../browser/paradisPaneIndicator.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
