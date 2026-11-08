@@ -128,6 +128,20 @@ suite('ParadisAgentActivityService', function () {
 		assert.strictEqual(count(), 2);
 	});
 
+	test('lists the transcripts again for overlapping usage requests when the shared listing failed', async () => {
+		const { count, request } = await countListings();
+		const listed = codexHomes;
+		codexHomes = () => {
+			const homes = listed();
+			if (count() === 1) {
+				throw new Error('listing failed');
+			}
+			return homes;
+		};
+		const results = await Promise.allSettled([service.spaceUsage(request), service.spaceUsage(request), service.spaceUsage(request)]);
+		assert.deepStrictEqual({ results: results.map(result => result.status), listings: count() }, { results: ['rejected', 'fulfilled', 'fulfilled'], listings: 2 });
+	});
+
 	// AI コストの「リポジトリ別」（Q537 の 13 A）: 同じ remote のクローンとワークツリーを 1 つに束ね、git の外はまとめる
 	test('groups the working folders of the conversations by repository', async () => {
 		const today = new Date();
