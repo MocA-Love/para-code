@@ -11,6 +11,7 @@
 
 import {
 	IParadisScheduledRunDraft,
+	IParadisScheduledRunPrecheck,
 	IParadisScheduledRunReport,
 	IParadisScheduledRunSpace,
 	IParadisScheduledRunTarget,
@@ -22,7 +23,7 @@ const REPORT_STATUSES: ReadonlySet<string> = new Set(['running', 'needsAttention
 const REASONS: ReadonlySet<string> = new Set<ParadisScheduledRunReason>([
 	'dailyLimit', 'overlap', 'globalConcurrency', 'globalDailyLimit', 'tooSoon', 'missedTooOld', 'noWindowTooOld', 'disabled', 'deleted', 'appRestarted',
 	'timeoutWhileWaiting', 'timeoutNoStatus', 'timeout', 'terminalClosed', 'windowClosed', 'userStopped',
-	'repositoryMissing', 'launchFailed', 'heartbeatLost',
+	'repositoryMissing', 'launchFailed', 'heartbeatLost', 'precheckFailed', 'precheckUntrusted',
 ]);
 
 /** 記録に残す詳細文の上限。 */
@@ -52,6 +53,17 @@ function sanitizeTarget(value: unknown): IParadisScheduledRunTarget | undefined 
 	return { kind, repositoryUri, repositoryName, ...(baseRef !== undefined ? { baseRef } : {}) };
 }
 
+/** 事前確認の形。無し（undefined・null）なら undefined、形が違えば false。中身の妥当性は検証で見る。 */
+export function paradisSanitizeScheduledRunPrecheckShape(value: unknown): IParadisScheduledRunPrecheck | undefined | false {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (!isRecord(value) || typeof value.command !== 'string' || value.command.length > MAX_TEXT_LENGTH || typeof value.timeoutSeconds !== 'number') {
+		return false;
+	}
+	return { command: value.command, timeoutSeconds: value.timeoutSeconds };
+}
+
 /** 画面から届いた下書き。形が違えば undefined（中身の妥当性は `paradisValidateScheduledRunDraft` で見る）。 */
 export function paradisSanitizeScheduledRunDraft(value: unknown): IParadisScheduledRunDraft | undefined {
 	if (!isRecord(value)) {
@@ -63,13 +75,16 @@ export function paradisSanitizeScheduledRunDraft(value: unknown): IParadisSchedu
 	const effortId = optionalString(value.effortId);
 	const permissionId = optionalString(value.permissionId);
 	const target = sanitizeTarget(value.target);
+	const precheck = paradisSanitizeScheduledRunPrecheckShape(value.precheck);
+	const createdByAgent = value.createdByAgent;
 	if (typeof name !== 'string' || name.length > MAX_TEXT_LENGTH
 		|| typeof schedule !== 'string' || schedule.length > 200
 		|| typeof agentId !== 'string' || agentId.length > MAX_ID_LENGTH
 		|| typeof prompt !== 'string' || prompt.length > MAX_TEXT_LENGTH
 		|| typeof dailyLimit !== 'number'
 		|| id === false || modelId === false || effortId === false || permissionId === false
-		|| !target) {
+		|| !target || precheck === false
+		|| (createdByAgent !== undefined && typeof createdByAgent !== 'boolean')) {
 		return undefined;
 	}
 	return {
@@ -78,6 +93,8 @@ export function paradisSanitizeScheduledRunDraft(value: unknown): IParadisSchedu
 		...(modelId !== undefined ? { modelId } : {}),
 		...(effortId !== undefined ? { effortId } : {}),
 		...(permissionId !== undefined ? { permissionId } : {}),
+		...(precheck !== undefined ? { precheck } : {}),
+		...(createdByAgent === true ? { createdByAgent } : {}),
 	};
 }
 

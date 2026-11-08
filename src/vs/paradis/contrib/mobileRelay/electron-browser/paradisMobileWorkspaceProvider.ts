@@ -103,6 +103,7 @@ import type { ParadisOfficeSourceDescriptor } from '../../fileViewers/common/par
 import { paradisIsQuietReplayedPane } from '../../agentBrowser/browser/paradisQuietReplayedPanes.js';
 import { ParadisMobileEchoTracker } from '../common/paradisMobileLinkMetrics.js';
 import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsRecorder.js';
+import { paradisNoteRemoteTerminalViewing } from '../../agentHibernation/browser/paradisAgentHibernationRemoteViews.js';
 
 /** Codex の入力欄に残った文字の印を持つ上限（PC で消した後に確かめる機会が無くても、いつまでも断り続けない）。 */
 const CODEX_COMPOSER_RESIDUE_MAX_MS = 10 * 60_000;
@@ -1560,6 +1561,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		this.termSyncStates.clear();
 		this.attachedTerminals.clearAndDisposeAll();
+		for (const id of this.terminalSubscribers.keys()) {
+			paradisNoteRemoteTerminalViewing(id, false);
+		}
 		this.terminalSubscribers.clear();
 		// 購読が全部無くなったので、PC で戻された印（W2-19）も外す。
 		this.termViewportRevoked.clear();
@@ -3229,6 +3233,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					this.terminalSubscribers.set(id, subscribers);
 				}
 				subscribers.add(mobileId);
+				// スマホが見ている間は休止（G-03）させない。休止中なら、ここで起こす（同じ会話で再開する）
+				paradisNoteRemoteTerminalViewing(id, true);
 				// epoch付きattach（同期プロトコル対応クライアント）は世代状態を作り直す。
 				this.clearTermSync(subscriptionKey);
 				this.termSyncStates.delete(subscriptionKey);
@@ -3280,6 +3286,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					}
 					this.attachedTerminals.deleteAndDispose(id);
 					this.terminalSubscribers.delete(id);
+					paradisNoteRemoteTerminalViewing(id, false);
 					// 終了しても instance が生き続ける経路がある（waitOnExit 付きの端末、
 					// タスクの再実行など）。台帳から消すだけだと、その端末は細い override を
 					// 抱えたまま二度と解除されないため、必ず解除してから消す。
@@ -3300,6 +3307,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				if (subscribers?.size === 0) {
 					this.attachedTerminals.deleteAndDispose(id);
 					this.terminalSubscribers.delete(id);
+					paradisNoteRemoteTerminalViewing(id, false);
 				}
 				// 開き直したら縮めてよい（W2-19。PC で戻された印はここで外す）。
 				this.termViewportRevoked.delete(subscriptionKey);

@@ -738,6 +738,7 @@ function createServiceFixture(generation: number): {
 		_faultedTokens: new Set<string>(),
 		_quarantinedTokenState: new Map(),
 		_terminalExitedTokens: new Set(),
+		_hibernatingTokens: new Map<string, number>(),
 		_paneShells: paneShells,
 		_paneRemoteAuthorities: new Map(),
 		_remotePaneWindows: new Map(),

@@ -154,6 +154,7 @@ function createFixture(): {
 		_faultedTokens: faultedTokens,
 		_quarantinedTokenState: quarantinedTokenState,
 		_terminalExitedTokens: new Set<string>(),
+		_hibernatingTokens: new Map<string, number>(),
 		_paneShells: paneShells,
 		_paneRemoteAuthorities: new Map<string, string>(),
 		_remotePaneWindows: new Map<string, string>(),
@@ -1041,6 +1042,68 @@ suite('ParadisAgentBrowser authority integration', () => {
 			'B on screen asks: permission B',
 			'background A stops after B was sent: working B',
 		]);
+	});
+
+	// 休止（G-03）: 完了して放ってあるペインのエージェントだけを止め、止めた所有者の SessionEnd は完了（review）にも
+	// hook のバスにも流さない（見終えたペインに緑の点・通知・読み上げを出さない）。再開の SessionStart からは普段どおり。
+	test('hibernating a finished pane stops only its agent and drops the SessionEnd it sends while stopping', async () => {
+		const { fixture, connection, send, status, paneSession } = await codexPaneFixture();
+		const processes = new Map([
+			[101, { pid: 101, ppid: 1, command: 'zsh', startKey: 'shell-claude' }],
+			[201, { pid: 201, ppid: 101, command: 'claude --dangerously-skip-permissions', startKey: 'claude' }],
+		]);
+		Reflect.set(fixture.service, '_hookOwnership', new ParadisAgentHookOwnership({ snapshot: async () => new Map(processes) }));
+		const claude = (pid: number, event: string, extra: Readonly<Record<string, unknown>> = {}) =>
+			send('claude-switch', pid, event, { session_id: 'claude-hib', transcript_path: '/Users/example/.claude/projects/work/claude-hib.jsonl', cwd: '/Users/example/work', ...extra });
+		const signals: string[] = [];
+		Reflect.set(fixture.service, '_signalProcess', (pid: number, signal: string) => signals.push(`${signal} ${pid}`));
+		Reflect.set(fixture.service, '_isProcessAlive', (pid: number) => processes.has(pid));
+		// 止められた Claude Code は終わり際に SessionEnd を送ってから終わる
+		Reflect.set(fixture.service, '_hibernationGrace', async () => {
+			await claude(201, 'SessionEnd', { reason: 'other' });
+			processes.delete(201);
+		});
+		const published: string[] = [];
+		const listener = onParadisAgentHookEvent(event => {
+			if (event.token === 'claude-switch') {
+				published.push(event.event);
+			}
+		});
+		try {
+			const observed: string[] = [];
+			await claude(201, 'SessionStart', { source: 'startup' });
+			await claude(201, 'UserPromptSubmit', { prompt: 'work' });
+			observed.push(`while working: ${JSON.stringify(await fixture.service.hibernatePane(connection, 'claude-switch', 'claude-hib'))}`);
+			await claude(201, 'Stop');
+			// 見終えた（idle）ペインを止める
+			await fixture.service.acknowledgePaneStatus(connection, 'claude-switch');
+			observed.push(`other conversation: ${JSON.stringify(await fixture.service.hibernatePane(connection, 'claude-switch', 'another'))}`);
+			processes.set(301, { pid: 301, ppid: 201, command: '/bin/zsh -c sleep 600', startKey: 'bg' });
+			observed.push(`background command: ${JSON.stringify(await fixture.service.hibernatePane(connection, 'claude-switch', 'claude-hib'))}`);
+			processes.delete(301);
+			// MCP の起動役（npm exec）の下のシェルは裏のコマンドではない
+			processes.set(401, { pid: 401, ppid: 201, command: 'npm exec aivis-mcp@latest', startKey: 'npm' });
+			processes.set(402, { pid: 402, ppid: 401, command: 'sh -c aivis-mcp', startKey: 'mcp' });
+			published.length = 0;
+			observed.push(`idle: ${JSON.stringify(await fixture.service.hibernatePane(connection, 'claude-switch', 'claude-hib'))}`);
+			observed.push(`after: status=${await status('claude-switch')} session=${await paneSession('claude-switch') ?? 'none'} published=${published.join(',') || 'none'} signals=${signals.join(',')}`);
+			// 再開した Claude Code
+			processes.set(202, { pid: 202, ppid: 101, command: 'claude --resume claude-hib', startKey: 'claude-2' });
+			await claude(202, 'SessionStart', { source: 'resume' });
+			await claude(202, 'UserPromptSubmit', { prompt: 'more' });
+			await claude(202, 'Stop');
+			observed.push(`resumed: status=${await status('claude-switch')} session=${await paneSession('claude-switch') ?? 'none'} published=${published.join(',')}`);
+			assert.deepStrictEqual(observed, [
+				'while working: {"ok":false,"reason":"status-changed"}',
+				'other conversation: {"ok":false,"reason":"session-changed"}',
+				'background command: {"ok":false,"reason":"background-shell"}',
+				'idle: {"ok":true,"bypass":true,"killed":false}',
+				'after: status=idle session=none published=none signals=SIGTERM 201',
+				'resumed: status=review session=claude-hib published=SessionStart,UserPromptSubmit,Stop',
+			]);
+		} finally {
+			listener.dispose();
+		}
 	});
 
 	// MCP サーバーが入力を求めている間（Claude Code の Elicitation hook）は許可待ち。決着（ElicitationResult）で

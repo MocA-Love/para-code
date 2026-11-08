@@ -19,6 +19,7 @@ import type * as http from 'http';
 import type { Socket } from 'net';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { promises as fsPromises, writeFileSync } from 'fs';
+import { timeout } from '../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -47,6 +48,7 @@ import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGRO
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisHookAgentKind, ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
+import { PARADIS_AGENT_HIBERNATION_HOOK_SUPPRESS_MS, PARADIS_AGENT_HIBERNATION_KILL_GRACE_MS, ParadisHibernationResult } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { ParadisCodexFrontSessions } from '../common/paradisCodexFrontSession.js';
 import { paradisOpenCodeBridge } from './paradisOpenCodeBridge.js';
 import { IParadisOpenCodeCliDatabase, paradisNormalizeOpenCodeCliAuthority, paradisOpenCodeCliRegistry, paradisResolveProcessExecutable, paradisVerifyOpenCodeCliProcess } from './paradisOpenCodeCliRegistry.js';
@@ -814,6 +816,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ために renderer へ渡す。SessionEnd（会話を終えた）と TerminalExit（ペインが消えた）で消す。
 	 */
 	private readonly _paneSessions = new Map<string, Omit<IParadisAgentPaneSession, 'token'>>();
+	/**
+	 * 休止（G-03）で止めているペイン → 印の期限。止めた所有者は終わり際に SessionEnd を送り、それは完了（review）に
+	 * 読み替わって緑の点・通知・読み上げを出してしまう。期限までは、このペインの終わりの hook を状態にも hook の
+	 * バスにも流さない。次の SessionStart（再開）で外す。
+	 */
+	private readonly _hibernatingTokens = new Map<string, number>();
 	/**
 	 * Codex のペインで画面に出ている会話と、裏の会話の承認待ち。command center（0.167.0 から）で切り替えた裏の会話の
 	 * hook も同じペインのトークンで届くので、ペインの会話・状態・hook のバスへは表の会話の hook だけを通す。
@@ -4819,6 +4827,21 @@ export class ParadisAgentBrowserService extends Disposable {
 					return;
 				}
 			}
+			// 休止（G-03）で止めたペインの終わりの hook（SessionEnd は完了に読み替わる）は、状態にも hook のバスにも流さない。
+			// 緑の点・モバイルのプッシュ・読み上げを出さないため。再開（SessionStart）が来たら印を外し、そこからは普段どおり。
+			if (eventType && eventType !== 'TerminalExit' && this._isHibernating(token)) {
+				if (eventType === 'SessionStart' || eventType === 'UserPromptSubmit') {
+					this._hibernatingTokens.delete(token);
+				} else {
+					if (eventType === 'SessionEnd') {
+						this._paneSessions.delete(token);
+					}
+					this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentHibernation] dropped ${eventType} from the stopped agent of pane ${this._tokenFingerprint(token)}`));
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ ok: true, hibernating: true }));
+					return;
+				}
+			}
 			// Codex の command center（0.167.0 から）で裏へ回した会話の hook は、同じプロセス・同じペインのトークンで届く。
 			// ペインの会話の記録・状態・hook のバス（モバイルの会話の張り替え）には通さない。承認待ちだけを覚えて、ペインを
 			// 「待っている」として出す（listPaneStatuses）。表の会話は利用者が表でしか起こせない hook で決める（paradisCodexFrontSession.ts）
@@ -5061,6 +5084,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const generation = this._deleteActiveBinding(token);
 		this._bindingAuthority.recordBindingMutation(token, undefined);
 		this._terminalExitedTokens.add(token);
+		this._hibernatingTokens.delete(token);
 		this._cleanupTokenLocalState(token, generation, true);
 		this._hookOwnership.clear(token);
 		this._runNonThrowingCleanup('terminal-exit-hook', () => fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: Date.now() }));
@@ -5176,6 +5200,114 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (entry && entry.status === 'review') {
 			this._paneStatuses.delete(token);
 			this._runNonThrowingCleanup('pane-acknowledgement', () => this._onDidAcknowledgePane.fire(token));
+		}
+		return true;
+	}
+
+	/**
+	 * 休止（G-03）: ペインのエージェントのプロセスを止める。シェルとタブは残り、会話は CLI 側に残る。
+	 * ウィンドウ側が「完了して放ってある」と判断したペインについて、ここでもう一度確かめる（会話が同じ・
+	 * 作業中や許可待ちでない・手元のペイン・所有者を pid で確かめられる・配下に裏のコマンドが無い）。
+	 * 止める前に「休止の最中」の印を付け、止めた所有者が送る SessionEnd（完了に読み替わる）で緑の点・
+	 * 通知・読み上げが出ないようにする（{@link _hibernatingTokens}）。
+	 */
+	async hibernatePane(connection: object, token: string, sessionId: string): Promise<ParadisHibernationResult> {
+		if (!this._isEligibleToken(connection, token) || typeof sessionId !== 'string') {
+			return { ok: false, reason: 'not-eligible' };
+		}
+		const pane = this._paneShells.get(token);
+		if (pane?.remoteAuthority !== undefined || this._paneRemoteAuthorities.has(token)) {
+			return { ok: false, reason: 'remote' };
+		}
+		const session = this._paneSessions.get(token);
+		if (session === undefined) {
+			return { ok: false, reason: 'no-session' };
+		}
+		if (session.sessionId !== sessionId || session.remote === true || (session.agent !== 'claude' && session.agent !== 'codex')) {
+			return { ok: false, reason: 'session-changed' };
+		}
+		const status = this._paneStatuses.get(token)?.status;
+		if (status !== undefined && status !== 'review') {
+			return { ok: false, reason: 'status-changed' };
+		}
+		if (this._awaitingUserTokens.has(token) || this._replayedPrompts.has(token)) {
+			return { ok: false, reason: 'awaiting-user' };
+		}
+		const resolved = await this._hookOwnership.resolveHibernationTargets(token, pane?.shellPid);
+		if (!resolved.ok) {
+			return resolved;
+		}
+		// プロセス表を待つ間に状態が動いた（次のターンが始まった・許可を求めた）なら止めない
+		const after = this._paneStatuses.get(token)?.status;
+		if ((after !== undefined && after !== 'review') || this._paneSessions.get(token)?.sessionId !== sessionId) {
+			return { ok: false, reason: 'status-changed' };
+		}
+		this._hibernatingTokens.set(token, Date.now() + PARADIS_AGENT_HIBERNATION_HOOK_SUPPRESS_MS);
+		const sent = resolved.targets.filter(target => {
+			try {
+				this._signalProcess(target.pid, 'SIGTERM');
+				return true;
+			} catch {
+				return false;
+			}
+		});
+		if (sent.length === 0) {
+			this._hibernatingTokens.delete(token);
+			return { ok: false, reason: 'kill-failed' };
+		}
+		this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentHibernation] sent SIGTERM to the agent of pane ${this._tokenFingerprint(token)} (${sent.length} process(es))`));
+		await this._hibernationGrace();
+		// macOS のプロセス表は控え（数秒の TTL）から返ることがあり、SIGTERM の前の表で「生きている」と読みうる。
+		// 今も居るかは信号 0 で確かめ、居るものだけを開始時刻で同じプロセスか照らす（SIGKILL を余計に送らない）
+		const alive = await this._hookOwnership.aliveHibernationTargets(sent.filter(target => this._isProcessAlive(target.pid)));
+		let killed = false;
+		for (const target of alive ?? []) {
+			try {
+				this._signalProcess(target.pid, 'SIGKILL');
+				killed = true;
+			} catch {
+				// もう終わっていた
+			}
+		}
+		if (killed) {
+			this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentHibernation] the agent of pane ${this._tokenFingerprint(token)} ignored SIGTERM; sent SIGKILL`));
+		}
+		// 止めた会話はもうペインで動いていない（再開の手がかりはウィンドウの台帳に残してある）
+		if (this._paneSessions.get(token)?.sessionId === sessionId) {
+			this._paneSessions.delete(token);
+		}
+		return { ok: true, bypass: resolved.bypass, killed };
+	}
+
+	/** 休止で止めるプロセスへ信号を送る（テストは差し替える）。 */
+	private _signalProcess(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void {
+		process.kill(pid, signal);
+	}
+
+	/** プロセスが今も居るか（テストは差し替える）。 */
+	private _isProcessAlive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** SIGTERM の後に待つ（テストは差し替える）。 */
+	private _hibernationGrace(): Promise<void> {
+		return timeout(PARADIS_AGENT_HIBERNATION_KILL_GRACE_MS);
+	}
+
+	/** 休止の最中のペインか。期限を過ぎた印は外す。 */
+	private _isHibernating(token: string): boolean {
+		const until = this._hibernatingTokens.get(token);
+		if (until === undefined) {
+			return false;
+		}
+		if (Date.now() > until) {
+			this._hibernatingTokens.delete(token);
+			return false;
 		}
 		return true;
 	}

@@ -1,0 +1,98 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* 差分エディタの行番号の「+」（upstream の agentFeedback と同じく行番号の位置に重ねる） */
+.monaco-editor .line-numbers.paradis-diff-review-glyph {
+	cursor: pointer;
+	z-index: 10;
+}
+
+.monaco-editor .line-numbers.paradis-diff-review-glyph.line-hover::before {
+	content: '\ea60';
+	font-family: codicon;
+	font-size: var(--vscode-codiconFontSize);
+	position: absolute;
+	inset: 0;
+	z-index: 10;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--vscode-editorGutter-commentGlyphForeground);
+	background-color: var(--vscode-editorGutter-commentRangeForeground);
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+.monaco-editor .paradis-diff-review-note-zone .zone-widget-container {
+	background-color: var(--vscode-editorWidget-background);
+}
+
+.monaco-editor .paradis-diff-review-note {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 6px 10px;
+	color: var(--vscode-foreground);
+}
+
+.monaco-editor .paradis-diff-review-note-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.monaco-editor .paradis-diff-review-note-line {
+	color: var(--vscode-descriptionForeground);
+	flex: 1;
+}
+
+.monaco-editor .paradis-diff-review-note-sent {
+	color: var(--vscode-charts-green);
+}
+
+.monaco-editor .paradis-diff-review-note-body {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.monaco-editor .paradis-diff-review-note-input {
+	resize: none;
+	width: 100%;
+	box-sizing: border-box;
+	padding: 4px 6px;
+	font-family: inherit;
+	font-size: inherit;
+	color: var(--vscode-input-foreground);
+	background-color: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border);
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+.monaco-editor .paradis-diff-review-note-input:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-editor .paradis-diff-review-note-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+}
+
+.monaco-editor .paradis-diff-review-note-button {
+	padding: 2px 10px;
+	cursor: pointer;
+	color: var(--vscode-button-foreground);
+	background-color: var(--vscode-button-background);
+	border: 1px solid var(--vscode-button-background);
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+.monaco-editor .paradis-diff-review-note-button.secondary {
+	color: var(--vscode-button-secondaryForeground);
+	background-color: var(--vscode-button-secondaryBackground);
+	border-color: var(--vscode-button-secondaryBackground);
+}
