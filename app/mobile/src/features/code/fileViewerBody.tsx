@@ -23,6 +23,7 @@ import type { FileContent } from './useFileContent.js';
 import type { FileFindBinding } from './useFileFind.js';
 import { useViewerPathLinks, type ViewerPathLinkSpace } from './useViewerPathLinks.js';
 import { measureBuild, type FileViewerLoadTrace } from './fileViewerTiming.js';
+import { buildOfficeRenderProbe } from './officeRenderProbe.js';
 import { buildImageHtml, buildSecureDocxHtml, fileExt } from './viewerHtml.js';
 
 /**
@@ -200,31 +201,7 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 	const expectedSelector = kind === 'docx'
 		? '.docx-wrapper > section.docx'
 		: 'table, [role="grid"], .paradis-spreadsheet-virtual-host';
-	const probe = `(function () {
-		var sent = false;
-		var finish = function (present) {
-			if (sent) { return; }
-			sent = true;
-			observer.disconnect();
-			window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'paradisOfficeRecovery', generation: ${generation}, hasExpectedRoot: present }));
-		};
-		var check = function () { if (document.querySelector(${JSON.stringify(expectedSelector)})) { finish(true); } };
-		var observer = new MutationObserver(check);
-		observer.observe(document.documentElement, { childList: true, subtree: true });
-		check();
-		// 2 秒で決める。ただし文書がまだ描いている途中（印 __paradisOfficeBusy）なら、上限まで待ち足す
-		var waited = 0;
-		var decide = function () {
-			if (!sent && window.__paradisOfficeBusy === true && waited < ${OFFICE_RENDER_MAX_WAIT_MS}) {
-				waited += 1000;
-				setTimeout(decide, 1000);
-				return;
-			}
-			finish(!!document.querySelector(${JSON.stringify(expectedSelector)}));
-		};
-		setTimeout(decide, 2000);
-		true;
-	})();`;
+	const probe = buildOfficeRenderProbe(generation, expectedSelector);
 
 	return (
 		<WebView
@@ -258,9 +235,6 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 	);
 }
 
-
-/** 描いている途中の Office 文書を「空」と決めるまで待ち足す上限（ms。2 秒の後に足す分）。 */
-const OFFICE_RENDER_MAX_WAIT_MS = 60_000;
 
 export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectSheet, find, pathLinks }: {
 	path: string;
