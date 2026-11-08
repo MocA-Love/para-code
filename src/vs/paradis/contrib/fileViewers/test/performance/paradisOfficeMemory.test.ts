@@ -27,9 +27,12 @@ class LifecycleWorker implements IOfficeWorker {
 
 suite('ParadisOfficeMemory', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
-	test('releases real worker, handle, and cache lifecycle state before three forced GCs', async () => {
+	test('releases real worker, handle, and cache lifecycle state before three forced GCs', async function () {
 		const forceGc = (globalThis as typeof globalThis & { readonly gc?: () => void }).gc;
-		strictEqual(typeof forceGc, 'function', 'run this harness with --expose-gc');
+		if (typeof forceGc !== 'function') {
+			// The forced GCs need --expose-gc, which the regular unit test runners do not pass
+			this.skip();
+		}
 		const baseline = process.memoryUsage().heapUsed;
 		const accountant = new OfficeMemoryAccountant(64 * 1024 * 1024);
 		let random = 0;
