@@ -1,0 +1,37 @@
+diff --git a/ios/LocalAuthenticationModule.swift b/ios/LocalAuthenticationModule.swift
+index d6da1906cd8af0d1f83d49e9bf63e7e4dbe3aead..c6dd5293ccbdc8832b1020e82edddeb2f6cf4f5d 100644
+--- a/ios/LocalAuthenticationModule.swift
++++ b/ios/LocalAuthenticationModule.swift
+@@ -99,18 +99,23 @@ public class LocalAuthenticationModule: Module {
+         }
+       }
+ 
++      // PARA-PATCH: keep the LAContext alive until evaluatePolicy calls back. The context was only a local
++      // variable, so it could be released while LocalAuthentication still used it (the app crashed with
++      // SIGSEGV right after a failed prompt, LAError -1000, on the iOS 27.2 simulator).
+       context.evaluatePolicy(policyForAuth, localizedReason: reason ?? "") { success, error in
+-        var err: String?
++        withExtendedLifetime(context) {
++          var err: String?
+ 
+-        if let error = error as? NSError {
+-          err = convertErrorCode(error: error)
+-        }
++          if let error = error as? NSError {
++            err = convertErrorCode(error: error)
++          }
+ 
+-        return promise.resolve([
+-          "success": success,
+-          "error": err as Any,
+-          "warning": warningMessage as Any
+-        ])
++          promise.resolve([
++            "success": success,
++            "error": err as Any,
++            "warning": warningMessage as Any
++          ])
++        }
+       }
+     }
+   }

@@ -18,7 +18,7 @@ import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reducePar
 import { CenterSpinner } from './codeParts.js';
 import { buildFindScript, findTargetOf } from './fileFind.js';
 import { HTML_IMAGES_LOADER_SCRIPT, HTML_IMAGES_RETRY_SCRIPT, HtmlImageQueue, buildHtmlImageDeliverScript } from './htmlImages.js';
-import { CODE_LINE_WINDOW, buildCodeHtml, buildMarkdownHtml, codeLineTotal, codePageStartOf, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
+import { CODE_LINE_WINDOW, buildCodeHtml, buildMarkdownHtml, codeLineTotal, codePageStartOf, viewerCanvasColor, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
 import type { FileContent } from './useFileContent.js';
 import type { FileFindBinding } from './useFileFind.js';
 import { useViewerPathLinks, type ViewerPathLinkSpace } from './useViewerPathLinks.js';
@@ -411,12 +411,14 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			/>
 		);
 	} else if (html !== undefined) {
+		const canvasColor = viewerCanvasColor(kind, mode);
 		// 画像を取り寄せる本文は、取り寄せのスクリプトを最初から入れた WebView で開く（後から足すと次の読み込みまで効かない）
 		view = (
 			<WebView
 				key={`${htmlImages !== undefined ? 'html-images' : 'page'}:${revival.generation}`}
 				ref={setWebRef}
-				style={styles.web}
+				// 色を指定していない HTML はブラウザと同じ白い地に描く（viewerCanvasColor）
+				style={[styles.web, canvasColor !== undefined ? { backgroundColor: canvasColor } : null]}
 				source={{ html }}
 				onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 				originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
