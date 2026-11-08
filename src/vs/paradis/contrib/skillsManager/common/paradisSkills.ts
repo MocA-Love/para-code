@@ -257,8 +257,11 @@ async function readSkill(fileService: IFileService, root: IParadisSkillRoot, chi
 	};
 }
 
-/** 1 つのフォルダのスキルを読む。フォルダが無ければ `exists: false`。 */
-export async function paradisListSkills(fileService: IFileService, root: IParadisSkillRoot): Promise<IParadisSkillRootListing> {
+/**
+ * 1 つのフォルダのスキルを読む。フォルダが無ければ `exists: false`。
+ * `knownRealUri` は先に取ったフォルダの実体の場所。渡せば取り直さない（接続先では 1 回ごとに往復する）。
+ */
+export async function paradisListSkills(fileService: IFileService, root: IParadisSkillRoot, knownRealUri?: URI): Promise<IParadisSkillRootListing> {
 	let stat: IFileStat;
 	try {
 		stat = await fileService.resolve(root.uri, { resolveMetadata: true });
@@ -291,7 +294,7 @@ export async function paradisListSkills(fileService: IFileService, root: IParadi
 	const read = await paradisMapLimited(own, SKILL_READ_PARALLEL, child => readSkill(fileService, root, child, false));
 	skills.push(...read.filter((skill): skill is IParadisSkill => skill !== undefined));
 	skills.sort((a, b) => a.name.localeCompare(b.name));
-	const realUri = await realpathOf(fileService, root.uri);
+	const realUri = knownRealUri ?? await realpathOf(fileService, root.uri);
 	return { root, exists: true, skills, ...(realUri ? { realUri } : {}) };
 }
 
@@ -305,8 +308,8 @@ export async function paradisListSkillRoots(fileService: IFileService, roots: re
 	const reals = await Promise.all(roots.map(root => realpathOf(fileService, root.uri)));
 	const firstByKey = new Map<string, Promise<IParadisSkillRootListing>>();
 	const listings = roots.map((root, index): Promise<IParadisSkillRootListing> => {
-		const list = () => paradisListSkills(fileService, root).catch((error): IParadisSkillRootListing => ({ root, exists: false, skills: [], error: toErrorMessage(error) }));
 		const real = reals[index];
+		const list = () => paradisListSkills(fileService, root, real).catch((error): IParadisSkillRootListing => ({ root, exists: false, skills: [], error: toErrorMessage(error) }));
 		if (!real) {
 			return list();
 		}
@@ -315,8 +318,8 @@ export async function paradisListSkillRoots(fileService: IFileService, roots: re
 		if (first) {
 			return first.then((listing): IParadisSkillRootListing => listing.exists ? { root, exists: true, skills: [], realUri: real, aliasOf: listing.root.id } : { ...listing, root });
 		}
-		// まとめる判定を先に取った実体の場所で揃える（読み終えた時に取り直した場所が違っても、後の方を別物にしない）
-		const own = list().then(listing => listing.exists ? { ...listing, realUri: real } : listing);
+		// 先に取った実体の場所を渡すので、まとめる判定はその場所で揃う
+		const own = list();
 		firstByKey.set(key, own);
 		return own;
 	});
