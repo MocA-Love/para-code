@@ -31,7 +31,7 @@ import { ParadisAndroidEditorInput } from '../../simulator/electron-browser/para
 import { PARADIS_SIMULATOR_SCHEME, ParadisSimulatorEditorInput } from '../../simulator/electron-browser/paradisSimulatorEditorInput.js';
 import { IParadisTabId, paradisFormatTabId, paradisTabIdFilePath } from '../common/paradisTabId.js';
 
-const PARADIS_COPY_TAB_ID_COMMAND_ID = 'paradis.editor.copyTabId';
+export const PARADIS_COPY_TAB_ID_COMMAND_ID = 'paradis.editor.copyTabId';
 
 registerAction2(class ParadisCopyTabIdAction extends Action2 {
 	constructor() {
