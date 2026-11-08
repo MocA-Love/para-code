@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View, type StyleProp, type TextStyle } from 'react-native';
-import { ChevronDown, ChevronRight, Search } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, Folder, Search, X } from 'lucide-react-native';
 import { ContextMenu, type ContextMenuSpec } from '../../components/contextMenu.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { BreadcrumbItem } from '../../filesBreadcrumb.js';
@@ -158,6 +158,24 @@ export function FilesSearchBar({ mode, initialQuery = '', onChangeMode, onChange
 					);
 				})}
 			</View>
+		</View>
+	);
+}
+
+/** 検索をフォルダで絞っている間の帯（「このフォルダを検索」）。× で絞りを外してスペース全体に戻す。 */
+export function FilesSearchScope({ dir, onClear }: { dir: string; onClear: () => void }) {
+	return (
+		<View style={styles.scope}>
+			<Icon icon={Folder} size={iconSize.sm} color={colors.textMuted} />
+			<Text style={styles.scopeText} numberOfLines={1} ellipsizeMode="head">{`${dir}/ の中を検索`}</Text>
+			<Pressable
+				onPress={() => { haptic('tick'); onClear(); }}
+				hitSlop={hitSlopToMinimum(iconSize.sm)}
+				accessibilityRole="button"
+				accessibilityLabel="フォルダの絞り込みを外す"
+			>
+				<Icon icon={X} size={iconSize.sm} color={colors.textDim} />
+			</Pressable>
 		</View>
 	);
 }
@@ -334,6 +352,20 @@ const styles = StyleSheet.create({
 		fontSize: type.meta,
 		fontWeight: '600',
 		color: colors.text,
+	},
+	scope: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		paddingHorizontal: space.md,
+		paddingBottom: space.sm,
+	},
+	scopeText: {
+		flex: 1,
+		minWidth: 0,
+		fontSize: type.meta,
+		color: colors.textDim,
+		fontFamily: monoFamily,
 	},
 	searchBar: {
 		flexDirection: 'row',

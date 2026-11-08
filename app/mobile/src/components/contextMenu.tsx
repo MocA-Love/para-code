@@ -5,7 +5,7 @@ import { View, type StyleProp, type ViewStyle } from 'react-native';
 import { ParaContextMenuView, type ParaContextMenuItem } from '../../modules/para-context-menu/index.js';
 import { haptic } from '../haptics.js';
 import { colors, radius } from '../theme.js';
-import { AlignLeft, Code, Copy, ExternalLink, FileDiff, FileText, Folder, HardDrive, Hash, Minus, PencilLine, Plus, Share, TextCursorInput, Type } from 'lucide-react-native';
+import { AlignLeft, Code, Copy, ExternalLink, FileDiff, FileText, Folder, HardDrive, Hash, Minus, PencilLine, Plus, Quote, Search, Share, TextCursorInput, Type } from 'lucide-react-native';
 import { ActionSheet, type ActionSheetAction, type LucideIcon } from '../ui/index.js';
 import { findContextMenuAction, type ContextMenuAction, type ContextMenuIcon, type ContextMenuSpec } from './contextMenuModel.js';
 
@@ -41,6 +41,8 @@ const ICONS: Readonly<Record<ContextMenuIcon, { readonly systemImage: string; re
 	browser: { systemImage: 'safari', icon: ExternalLink },
 	note: { systemImage: 'square.and.pencil', icon: PencilLine },
 	line: { systemImage: 'text.alignleft', icon: AlignLeft },
+	quote: { systemImage: 'arrowshape.turn.up.left', icon: Quote },
+	search: { systemImage: 'magnifyingglass', icon: Search },
 };
 
 /** ネイティブのメニューが使えるビルドか（iOS でモジュールが入っている）。 */

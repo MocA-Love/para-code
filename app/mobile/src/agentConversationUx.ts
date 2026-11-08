@@ -39,6 +39,25 @@ export function appendQuickReply(current: string, reply: string): string {
 	return /\s$/.test(current) ? current + reply : `${current} ${reply}`;
 }
 
+/** 引用する本文の上限（字）。長い発言を丸ごと入れて入力欄を埋めないように、越えた分は「…」にする。 */
+export const QUOTE_REPLY_LIMIT = 1_200;
+
+/**
+ * 「引用して返信」で入力欄に入れる文。発言の各行の頭に `> ` を付け、書きかけがあればその後ろに空行を挟んで足す
+ * （書きかけは消さない）。引用の後には空行を置き、続けて返信を書けるようにする。本文が空なら書きかけをそのまま返す。
+ */
+export function quoteReplyText(current: string, quoted: string): string {
+	const body = quoted.replace(/\r\n?/g, '\n').trim();
+	if (body.length === 0) {
+		return current;
+	}
+	const chars = Array.from(body);
+	const clipped = chars.length > QUOTE_REPLY_LIMIT ? `${chars.slice(0, QUOTE_REPLY_LIMIT).join('').trimEnd()}…` : body;
+	const quote = clipped.split('\n').map(line => line.length > 0 ? `> ${line}` : '>').join('\n');
+	const head = current.trimEnd();
+	return `${head.length > 0 ? `${head}\n\n` : ''}${quote}\n\n`;
+}
+
 /**
  * クイック返信を押したときにすること。`send` は入力欄に入れてそのまま送る、`insert` は入力欄に足すだけ。
  *

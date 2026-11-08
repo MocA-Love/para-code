@@ -7,7 +7,7 @@ import { ContextMenu, useContextMenuSheet } from './contextMenu.js';
 import type { ContextMenuSpec } from './contextMenuModel.js';
 
 vi.mock('react-native', () => ({ View: 'View' }));
-vi.mock('lucide-react-native', () => ({ AlignLeft: 'AlignLeft', Code: 'Code', Copy: 'Copy', ExternalLink: 'ExternalLink', FileDiff: 'FileDiff', FileText: 'FileText', Folder: 'Folder', HardDrive: 'HardDrive', Hash: 'Hash', Minus: 'Minus', PencilLine: 'PencilLine', Plus: 'Plus', Share: 'Share', TextCursorInput: 'TextCursorInput', Type: 'Type' }));
+vi.mock('lucide-react-native', () => ({ AlignLeft: 'AlignLeft', Code: 'Code', Copy: 'Copy', ExternalLink: 'ExternalLink', FileDiff: 'FileDiff', FileText: 'FileText', Folder: 'Folder', HardDrive: 'HardDrive', Hash: 'Hash', Minus: 'Minus', PencilLine: 'PencilLine', Plus: 'Plus', Quote: 'Quote', Search: 'Search', Share: 'Share', TextCursorInput: 'TextCursorInput', Type: 'Type' }));
 vi.mock('../../modules/para-context-menu/index.js', () => ({ ParaContextMenuView: 'ParaContextMenuView' }));
 vi.mock('../ui/index.js', () => ({ ActionSheet: 'ActionSheet' }));
 vi.mock('../haptics.js', () => ({ haptic: vi.fn() }));

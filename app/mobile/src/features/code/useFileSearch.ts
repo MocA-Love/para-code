@@ -19,12 +19,13 @@ export interface FileSearchState {
 }
 
 /**
- * スペース全体の検索（PC 側の ripgrep。旧 `src/components/filesPanel.tsx` と同じ処理）。
+ * スペース全体の検索（PC 側の ripgrep。旧 `src/components/filesPanel.tsx` と同じ処理）。`dir` を渡すとそのフォルダの中だけ
+ * （fs.find-dir.v1。広告していない PC には渡さないこと）。
  *  - `name`: 全階層の相対パスに対する部分一致（.gitignore を尊重、ランク順）
  *  - `text`: 全文検索（スマートケース・リテラル一致、行のプレビュー付き）
  * 最後に出した条件の応答だけを反映する。
  */
-export function useFileSearch(space: CodeSpace, query: string, mode: FilesSearchMode): FileSearchState {
+export function useFileSearch(space: CodeSpace, query: string, mode: FilesSearchMode, dir?: string): FileSearchState {
 	const fsFind = useAppStore(s => s.fsFind);
 	const fsGrep = useAppStore(s => s.fsGrep);
 	const [find, setFind] = useState<FsFindResult | undefined>(undefined);
@@ -49,14 +50,14 @@ export function useFileSearch(space: CodeSpace, query: string, mode: FilesSearch
 		const current = () => genRef.current === gen && currentRendererTarget(wsId) === rendererTarget;
 		const timer = setTimeout(() => {
 			const request = mode === 'name'
-				? fsFind(wsId, needle).then(result => { if (current()) { setFind(result); } })
-				: fsGrep(wsId, needle).then(result => { if (current()) { setGrep(result); } });
+				? fsFind(wsId, needle, dir).then(result => { if (current()) { setFind(result); } })
+				: fsGrep(wsId, needle, dir).then(result => { if (current()) { setGrep(result); } });
 			request
 				.catch((e: unknown) => { if (current()) { setError(errorMessage(e)); } })
 				.finally(() => { if (current()) { setSearching(false); } });
 		}, SEARCH_DEBOUNCE_MS);
 		return () => clearTimeout(timer);
-	}, [needle, mode, wsId, rendererTarget, fsFind, fsGrep, attempt]);
+	}, [needle, mode, dir, wsId, rendererTarget, fsFind, fsGrep, attempt]);
 
 	return { find, grep, searching, error, retry: () => setAttempt(count => count + 1) };
 }

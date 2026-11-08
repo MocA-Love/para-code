@@ -14,7 +14,9 @@ import { useContextMenuSheet, type ContextMenuSpec } from '../../components/cont
 import { useCodeCache } from './codeCache.js';
 import { CenterSpinner, OfflineBanner, SpaceGateBody, useReadableColumn } from './codeParts.js';
 import { fileViewerHref } from './codeRoutes.js';
-import { FilesSearchBar, FindResultRow, GrepResultRow, TreeRowView } from './filesParts.js';
+import { FilesSearchBar, FilesSearchScope, FindResultRow, GrepResultRow, TreeRowView } from './filesParts.js';
+import { usePcCapability } from '../../hooks/usePcCapability.js';
+import { PcCapability } from '../../pcCompat.js';
 import { buildFileDecorationIndex, fileDecorationOf } from './fileDecorations.js';
 import type { TreeRow } from './fileTree.js';
 import { saveTreeScroll, treeScroll } from './fileTreeStore.js';
@@ -40,9 +42,12 @@ import { useScmStatus } from './useScmData.js';
 export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpace; reveal: string | undefined; dock?: PanelDock }) {
 	const router = useRouter();
 	const tree = useFileTree(codeSpace, reveal);
-	const { open: searchOpen, query, mode } = tree.search;
+	const { open: searchOpen, query, mode, dir: searchDir } = tree.search;
 	const { setSearch } = tree;
-	const search = useFileSearch(codeSpace, searchOpen ? query : '', mode);
+	// フォルダで絞る検索（「このフォルダを検索」）。広告していない PC には絞りを送らない（全体を検索して誤解させない）
+	const canSearchDir = usePcCapability(PcCapability.FsFindDir);
+	const scopedDir = canSearchDir ? searchDir : undefined;
+	const search = useFileSearch(codeSpace, searchOpen ? query : '', mode, scopedDir);
 	const insets = useStableInsets();
 	const column = useReadableColumn();
 	const listRef = useRef<FlatList<TreeRow>>(null);
@@ -72,7 +77,7 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 	useFocusEffect(useCallback(() => {
 		const pending = useCodeCache.getState().takeReveal(key);
 		if (pending !== undefined) {
-			setSearch({ open: false, query: '' });
+			setSearch({ open: false, query: '', dir: undefined });
 			revealInTree(pending);
 		}
 	}, [key, revealInTree, setSearch]));
@@ -103,7 +108,7 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 	};
 
 	const toggleSearch = () => {
-		setSearch({ open: !searchOpen, query: '' });
+		setSearch({ open: !searchOpen, query: '', dir: undefined });
 	};
 
 	const refresh = () => {
@@ -115,7 +120,10 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 	const menuOps = useMemo(() => contextMenuOps(), []);
 	const menuSheet = useContextMenuSheet();
 	const absolutePath = useAbsolutePathOption(codeSpace);
-	const fileMenu = (path: string, dir: boolean, line?: number) => buildFileMenu({ path, dir, absolute: absolutePath(path) }, { ...menuOps, ...(dir ? {} : { open: () => openFile(path, line) }) });
+	const fileMenu = (path: string, dir: boolean, line?: number) => buildFileMenu(
+		{ path, dir, absolute: absolutePath(path), ...(dir ? { searchIn: { supported: canSearchDir, run: () => setSearch({ open: true, query: '', dir: path }) } } : {}) },
+		{ ...menuOps, ...(dir ? {} : { open: () => openFile(path, line) }) },
+	);
 	const grepMenu = (match: { readonly path: string; readonly line: number; readonly text: string }) => buildGrepMatchMenu({ ...match, absolute: absolutePath(match.path) }, { ...menuOps, open: () => openFile(match.path, match.line) });
 
 	const searching = searchOpen && query.trim().length > 0;
@@ -129,6 +137,7 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 				right={<HeaderButton icon={searchOpen ? X : Search} label={searchOpen ? '検索を閉じる' : 'ファイルを検索'} onPress={toggleSearch} active={searchOpen} />}
 			>
 				{searchOpen ? <FilesSearchBar mode={mode} initialQuery={query} onChangeMode={next => setSearch({ mode: next })} onChangeQuery={next => setSearch({ query: next })} editable={codeSpace.live} /> : null}
+				{searchOpen && scopedDir !== undefined ? <FilesSearchScope dir={scopedDir} onClear={() => setSearch({ dir: undefined })} /> : null}
 			</ScreenHeader>
 			<SpaceGateBody gate={codeSpace.gate}>
 				<View style={styles.body}>
