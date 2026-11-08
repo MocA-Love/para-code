@@ -75,6 +75,27 @@ const IMAGE_EXT: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg',
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const IMAGE_CACHE_BYTES = 80 * 1024 * 1024;
 
+/**
+ * GitHub の画像置き場から読む URL を作り直す（置き場でない・パスの形が違うなら undefined）。
+ * 送り先のホストは {@link PUBLIC_IMAGE_HOSTS} にある文字列をそのまま使い、受け取った URL からはパスとクエリだけを続ける
+ * （ユーザー情報・ポート・`#` 以降は付けない）。パスの区切りは、置き場の画像の URL に出る文字（英数字と `-._~`）だけを受け付ける。
+ */
+function publicImageUrl(url: URL): string | undefined {
+	const host = [...PUBLIC_IMAGE_HOSTS].find(candidate => candidate === url.hostname);
+	if (host === undefined) {
+		return undefined;
+	}
+	const segments: string[] = [];
+	for (const segment of url.pathname.slice(1).split('/')) {
+		if (!/^[\w.~-]+$/.test(segment)) {
+			return undefined;
+		}
+		// 受け付けた文字は符号化しても変わらない（送るパスは受け取ったものと同じ）
+		segments.push(encodeURIComponent(segment));
+	}
+	return `https://${host}/${segments.join('/')}${url.search ? `?${url.search.slice(1)}` : ''}`;
+}
+
 interface ICached {
 	readonly etag: string;
 	readonly body: unknown;
@@ -449,7 +470,7 @@ export class GitHubClient {
 
 	/**
 	 * Issue や PR の本文にある画像を取ってくる。リポジトリの中の画像（github.com/o/r/raw/… など）は
-	 * contents API にトークンを付けて読み、GitHub の画像置き場はそのまま読む。それ以外の場所は読まない。
+	 * contents API にトークンを付けて読み、GitHub の画像置き場はトークンを付けずに読む（{@link publicImageUrl}）。それ以外の場所は読まない。
 	 */
 	async fetchImage(raw: string): Promise<{ type: string; body: Buffer } | undefined> {
 		const hit = this.images.get(raw);
@@ -485,8 +506,12 @@ export class GitHubClient {
 					result = { type, body };
 				}
 			}
-		} else if (PUBLIC_IMAGE_HOSTS.has(url.hostname)) {
-			const res = await this.fetchImpl(url.toString(), { method: 'GET', headers: { 'user-agent': 'para-code-taskboard' }, redirect: 'follow' });
+		} else {
+			const target = publicImageUrl(url);
+			if (!target) {
+				return undefined;
+			}
+			const res = await this.fetchImpl(target, { method: 'GET', headers: { 'user-agent': 'para-code-taskboard' }, redirect: 'follow' });
 			const type = (res.headers.get('content-type') ?? '').split(';')[0].trim();
 			if (res.status === 200 && type.startsWith('image/') && res.arrayBuffer) {
 				const body = Buffer.from(await res.arrayBuffer());

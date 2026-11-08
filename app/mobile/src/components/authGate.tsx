@@ -23,7 +23,7 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import { colors, type } from '../theme.js';
 import { AppLockContext } from '../appLock.js';
 import { onAppReauthenticationRequest, setAppLockedNow } from '../appLockState.js';
-import { canLockDevice, foregroundAction, isAppLocked, lockedContentProps, type AuthGateState } from '../appLockPolicy.js';
+import { AUTH_UI_RETRY_DELAY_MS, canLockDevice, foregroundAction, isAppLocked, isAuthUiUnavailable, lockedContentProps, lockedRetryAction, type AuthGateState } from '../appLockPolicy.js';
 import { Button } from './button.js';
 
 type GateState = AuthGateState;
@@ -37,13 +37,32 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 	// 認証試行の世代。authenticateAsync が resolve しないまま次の試行が始まった場合に、
 	// 古い試行の結果で state を上書きしないためのガード。
 	const attemptRef = useRef(0);
+	/**
+	 * 直前の失敗（時刻と `authenticateAsync` の `error`）。失敗の直後に認証の UI が閉じて前面へ戻った知らせで、
+	 * すぐ認証し直さないために使う（appLockPolicy.ts の lockedRetryAction）。
+	 */
+	const lastFailureRef = useRef<{ readonly at: number; readonly error: string | undefined } | undefined>(undefined);
+	/** UI を出せずに失敗したときのやり直しを、もう使ったか（1 回だけ）。成功か「ロック解除」のボタンで戻す。 */
+	const uiRetriedRef = useRef(false);
+	const uiRetryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	useEffect(() => () => clearTimeout(uiRetryTimer.current), []);
 
 	const authenticate = useCallback(async () => {
 		if (stateRef.current === 'authenticating') {
 			return;
 		}
+		clearTimeout(uiRetryTimer.current);
 		const attempt = ++attemptRef.current;
 		setState('authenticating');
+		const failed = (error: string | undefined) => {
+			lastFailureRef.current = { at: Date.now(), error };
+			setState('locked');
+			// UI を出せなかった（起動の途中・前面でない）。前面にいれば少し待って 1 回だけやり直す。前面でなければ、
+			// 前面へ戻った知らせでやり直す
+			if (isAuthUiUnavailable(error) && !uiRetriedRef.current && AppState.currentState === 'active') {
+				scheduleUiRetryRef.current();
+			}
+		};
 		try {
 			// 生体を登録していなくても、パスコードがあればそれで解除させる（authenticateAsync は既定でパスコードへ回す）
 			const lockable = canLockDevice(await LocalAuthentication.getEnrolledLevelAsync());
@@ -61,17 +80,41 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 				cancelLabel: 'キャンセル',
 			});
 			if (attempt === attemptRef.current) {
-				setState(result.success ? 'unlocked' : 'locked');
 				if (result.success) {
+					lastFailureRef.current = undefined;
+					uiRetriedRef.current = false;
+					setState('unlocked');
 					onUnlock?.();
+				} else {
+					failed(result.error);
 				}
 			}
 		} catch {
 			if (attempt === attemptRef.current) {
-				setState('locked');
+				failed(undefined);
 			}
 		}
 	}, [onUnlock]);
+
+	/** UI を出せずに失敗した後、少し待ってから 1 回だけやり直す（前面にいてロック中のときだけ）。 */
+	const scheduleUiRetry = () => {
+		uiRetriedRef.current = true;
+		clearTimeout(uiRetryTimer.current);
+		uiRetryTimer.current = setTimeout(() => {
+			if (stateRef.current === 'locked' && AppState.currentState === 'active') {
+				void authenticate();
+			}
+		}, AUTH_UI_RETRY_DELAY_MS);
+	};
+	const scheduleUiRetryRef = useRef(scheduleUiRetry);
+	scheduleUiRetryRef.current = scheduleUiRetry;
+
+	/** 「ロック解除」のボタン。やり直しの回数と直前の失敗を忘れて始める。 */
+	const authenticateByUser = useCallback(() => {
+		lastFailureRef.current = undefined;
+		uiRetriedRef.current = false;
+		void authenticate();
+	}, [authenticate]);
 
 	// 通知のボタン（許可・拒否・返信）は送る前に Face ID を通す（notificationActionRunner.ts）。再認証の猶予の間でも認証し直す。
 	useEffect(() => onAppReauthenticationRequest(() => {
@@ -81,7 +124,18 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 	}), [authenticate]);
 
 	useEffect(() => {
-		void authenticate();
+		// 起動の途中（まだ前面でない）に頼むと、iOS は認証の UI を出せずに -1000 で失敗する。前面のときだけすぐ始め、
+		// そうでなければ前面へ戻った知らせ（下の 'active'）で始める。知らせが来ないときのために少し待っても始める
+		let startTimer: ReturnType<typeof setTimeout> | undefined;
+		if (AppState.currentState === 'active') {
+			void authenticate();
+		} else {
+			startTimer = setTimeout(() => {
+				if (stateRef.current === 'locked' && lastFailureRef.current === undefined && attemptRef.current === 0) {
+					void authenticate();
+				}
+			}, AUTH_UI_RETRY_DELAY_MS * 2);
+		}
 		let stuckTimer: ReturnType<typeof setTimeout> | undefined;
 		const sub = AppState.addEventListener('change', next => {
 			if (next === 'background') {
@@ -95,7 +149,15 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 				if (stateRef.current === 'unlocked' && action === 'authenticate') {
 					hiddenAtRef.current = undefined;
 				}
-				if (action === 'authenticate') {
+				if (action === 'authenticate' && stateRef.current === 'locked') {
+					// 失敗の直後（認証の UI が閉じて戻った知らせ）にすぐ始めない。UI を出せなかった失敗は待って 1 回だけやり直す
+					const retry = lockedRetryAction(lastFailureRef.current, uiRetriedRef.current, Date.now());
+					if (retry === 'authenticate') {
+						void authenticate();
+					} else if (retry === 'retryLater') {
+						scheduleUiRetryRef.current();
+					}
+				} else if (action === 'authenticate') {
 					void authenticate();
 				} else if (action === 'watchStuck') {
 					// 'authenticating' のまま復帰した場合、システムキャンセル等で
@@ -111,7 +173,7 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 				}
 			}
 		});
-		return () => { sub.remove(); clearTimeout(stuckTimer); };
+		return () => { sub.remove(); clearTimeout(stuckTimer); clearTimeout(startTimer); };
 	}, [authenticate]);
 
 	const locked = isAppLocked(state);
@@ -160,7 +222,7 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 					<Ionicons name="lock-closed-outline" size={44} color={colors.textDim} />
 					<Text style={styles.title}>Para Code はロックされています</Text>
 					{state === 'locked' ? (
-						<Button label="ロック解除" variant="primary" accessibilityLabel="ロック解除" onPress={() => { void authenticate(); }} />
+						<Button label="ロック解除" variant="primary" accessibilityLabel="ロック解除" onPress={authenticateByUser} />
 					) : (
 						<Text style={styles.dim}>認証中…</Text>
 					)}

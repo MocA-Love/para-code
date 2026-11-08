@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { codeSpaceGate, rendererTargetOf, type SpaceLinkInput } from './spaceLink.js';
-import { SCM_NO_RESPONSE_MESSAGE, commitAction, groupScmEntries, listBodyState, orderedScmEntries, scmCounts, scmEntries, scmEntry, scmErrorText, shouldAutoRetryScmStatus, splitPath } from './scmModel.js';
+import { SCM_NO_RESPONSE_MESSAGE, commitAction, groupScmEntries, listBodyState, orderedScmEntries, scmCounts, scmEntries, isScmFolderPath, scmEntry, scmErrorText, shouldAutoRetryScmStatus, splitPath } from './scmModel.js';
 
 describe('scmEntry', () => {
 	it('未追跡・ステージ済み・変更に振り分ける', () => {
@@ -62,6 +62,20 @@ describe('splitPath', () => {
 	it('ファイル名とフォルダに分ける', () => {
 		expect(splitPath('src/auth/session.ts')).toEqual({ name: 'session.ts', dir: 'src/auth' });
 		expect(splitPath('README.md')).toEqual({ name: 'README.md', dir: '' });
+	});
+
+	it('drops the trailing slash git gives untracked folders before taking the name', () => {
+		expect([splitPath('docs/'), splitPath('app/mobile/assets/'), splitPath('/')]).toEqual([
+			{ name: 'docs', dir: '' },
+			{ name: 'assets', dir: 'app/mobile' },
+			{ name: '', dir: '' },
+		]);
+	});
+});
+
+describe('isScmFolderPath', () => {
+	it('treats the trailing slash git gives untracked folders as a folder', () => {
+		expect(['docs/', 'app/mobile/assets/', 'docs', 'README.md'].map(isScmFolderPath)).toEqual([true, true, false, false]);
 	});
 });
 

@@ -27,13 +27,14 @@ import { ITextFileService } from '../../../../../workbench/services/textfile/com
 import { IWorkingCopyService } from '../../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
-import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
+import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, paradisWordObjectsAfterWorker, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
 import { buildParadisDocxDiffHtml } from '../../electron-browser/paradisDocxDiffWebview.js';
 import { sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/word/paradisDocxSanitize.js';
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
 import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { paradisEmptyDocxBytes } from '../../common/paradisOfficeDiffSide.js';
 import { PARADIS_WEBVIEW_HOST_MESSAGE_CHECK } from '../../common/paradisWebviewHostMessage.js';
+import { PARADIS_OFFICE_MAX_RENDER_TIMEOUT_MS } from '../../common/paradisOfficeWatchdog.js';
 
 interface IDocxEditorSnapshot {
 	readonly watcherResources: readonly string[];
@@ -540,6 +541,18 @@ suite('ParadisDocxFileEditor', () => {
 			getParadisDocxRenderDecision(false, resource, otherResource, 1, 1),
 			getParadisDocxRenderDecision(false, resource, resource, 1, 2),
 		], ['rejected', 'viewer', 'viewer', 'stale', 'stale']);
+	});
+
+	// 上限を超える文書を worker が断ったときは、renderer でも取り出さない（重い文書でウィンドウを固めない）
+	test('draws no objects for a document the worker refused as too large, and extracts in the renderer only when the worker could not be used', () => {
+		deepStrictEqual([
+			paradisWordObjectsAfterWorker({ ok: true, objects: [] }, false),
+			paradisWordObjectsAfterWorker({ ok: false, code: 'tooLarge' }, false),
+			paradisWordObjectsAfterWorker({ ok: false, code: 'cancelled' }, false),
+			paradisWordObjectsAfterWorker(undefined, true),
+			paradisWordObjectsAfterWorker({ ok: false, code: 'busy' }, false),
+			paradisWordObjectsAfterWorker(undefined, false),
+		], ['worker', 'none', 'cancelled', 'cancelled', 'renderer', 'renderer']);
 	});
 
 	suite('input adoption epoch', () => {
@@ -1297,6 +1310,31 @@ suite('ParadisDocxFileEditor', () => {
 				await newHeader.complete(VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)));
 			}
 		});
+
+		// FVU-09: 遅れて戻った前の文書の読み込みは、次の文書の見張りを解かない。解くと、次の文書の描き終わりが
+		// 来ないままでも時間切れにならず、描き直しが走らない
+		test('keeps watching resource B when the header read of resource A returns late', () => runWithFakedTimers({ useFakeTimers: true, maxTaskCount: 10_000 }, async () => {
+			const fixture = createDocxEditorFixture({ messages: true });
+			const resourceA = URI.file('/workspace/a.docx');
+			const resourceB = URI.file('/workspace/b.docx');
+			const oldHeader = new DeferredPromise<VSBuffer>();
+			fixture.queueHeader(resourceA, oldHeader);
+			try {
+				await fixture.editor.setInput(fixture.createInput(resourceA), undefined, Object.create(null), CancellationToken.None);
+				await fixture.editor.setInput(fixture.createInput(resourceB), undefined, Object.create(null), CancellationToken.None);
+				await fixture.settleCurrentRender();
+				await oldHeader.complete(VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)));
+				await fixture.settleCurrentRender();
+				const before = fixture.renderSnapshot().html.length;
+				// B のページは描き終わりを知らせない。見張りが残っていれば時間切れで描き直す
+				await timeout(PARADIS_OFFICE_MAX_RENDER_TIMEOUT_MS + 1_000);
+				await fixture.settleCurrentRender();
+
+				deepStrictEqual({ rerendered: fixture.renderSnapshot().html.length > before }, { rerendered: true });
+			} finally {
+				await oldHeader.complete(VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)));
+			}
+		}));
 
 		test('does not publish resolved or rejected preflights after disposal', async () => {
 			const resource = URI.file('/workspace/document.docx');

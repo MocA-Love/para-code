@@ -71,4 +71,9 @@ export interface IParadisMobileCanvasSnapshot {
 	 * UI はこれをそのまま出して、ユーザーが次に何をすればよいか分かるようにする。
 	 */
 	readonly unavailableReason?: string;
+	/**
+	 * 一覧は取れたが、一部の端末を出せなかった理由（例: adb が無いので Android が出ない。シミュレータの作り直し ⑥a）。
+	 * 端末があっても UI に出す。
+	 */
+	readonly notice?: string;
 }

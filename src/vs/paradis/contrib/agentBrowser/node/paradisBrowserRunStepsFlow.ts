@@ -26,6 +26,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { PARADIS_RUN_STEPS_ALLOWED_TOOLS } from './paradisBrowserRunSteps.js';
 import { paradisNormalizeLegacyToolArguments } from './paradisToolArgumentAliases.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { paradisScriptStringLiteral } from '../../../common/paradisScriptLiteral.js';
 
 /** 実行する手順（ループの中の繰り返しを含む）の合計の上限。 */
 export const PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED = 200;
@@ -581,15 +582,15 @@ class FlowRun {
 
 function conditionPredicate(condition: Condition): string {
 	if (condition.kind === 'url_includes') {
-		return `() => location.href.includes(${JSON.stringify(condition.value)})`;
+		return `() => location.href.includes(${paradisScriptStringLiteral(condition.value)})`;
 	}
 	if (condition.kind === 'value_not_empty' || condition.kind === 'value_equals') {
 		// セレクタと値は JSON の文字列として、式の位置にだけ入れる（コードとしては読まれない）
 		// 値を持つ入力の部品だけを見る（li・button・option・meter・progress・output・data も value を持つが、入力欄ではない）
-		const read = `const element = document.querySelector(${JSON.stringify(condition.selector)}); const value = element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement ? element.value : undefined;`;
+		const read = `const element = document.querySelector(${paradisScriptStringLiteral(condition.selector)}); const value = element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement ? element.value : undefined;`;
 		return condition.kind === 'value_not_empty'
 			? `() => { ${read} return value !== undefined && value !== ''; }`
-			: `() => { ${read} return value === ${JSON.stringify(condition.expected)}; }`;
+			: `() => { ${read} return value === ${paradisScriptStringLiteral(condition.expected)}; }`;
 	}
 	return condition.kind === 'predicate' ? condition.value : '() => false';
 }

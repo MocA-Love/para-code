@@ -23,6 +23,26 @@ function safeUrl(url: string): string | undefined {
 	}
 }
 
+/** HTML のコメント。 */
+const HTML_COMMENT = /<!--[\s\S]*?-->/g;
+/** 表示しない HTML のコメントとタグ。 */
+const HTML_COMMENT_OR_TAG = /<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>/g;
+
+/**
+ * 合うところを消す。消すと前後がつながって新しいコメントやタグができる（`<!<!---->-- -->` など）ので、
+ * 変わらなくなるまで繰り返す（細工された本文で時間を使いすぎないよう、多くて 8 回）。
+ */
+function removeAll(text: string, pattern: RegExp): string {
+	for (let round = 0; round < 8; round++) {
+		const next = text.replace(pattern, '');
+		if (next === text) {
+			break;
+		}
+		text = next;
+	}
+	return text;
+}
+
 const INLINE = /(`+)([\s\S]*?[^`])\1(?!`)|!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|(?<![\w*])\*([^*\n]+)\*(?![\w*])|(?<![\w_])_([^_\n]+)_(?![\w_])|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])|<img\s[^>]*src="([^"]+)"[^>]*>|<br\s*\/?>|(?<![\w/])@([A-Za-z0-9-]{1,39})(?![\w-])|(?<![\w/&])#(\d{1,7})(?!\w)/g;
 
 /** 読めない画像（非公開リポジトリの添付など）は、壊れた画像の代わりにリンクを出す。 */
@@ -42,7 +62,7 @@ function inline(text: string, ctx: IContext, keyBase: string): ReactNode[] {
 	const key = () => `${keyBase}-${k++}`;
 	const plain = (s: string) => {
 		// HTML のタグは表示しない（コメント・details など）
-		const cleaned = s.replace(/<!--[\s\S]*?-->/g, '').replace(/<\/?[a-zA-Z][^>]*>/g, '');
+		const cleaned = removeAll(s, HTML_COMMENT_OR_TAG);
 		if (cleaned) {
 			out.push(cleaned);
 		}
@@ -97,7 +117,7 @@ function cells(line: string): string[] {
 }
 
 export function parseBlocks(source: string): Block[] {
-	const lines = source.replace(/\r\n?/g, '\n').replace(/<!--[\s\S]*?-->/g, '').split('\n');
+	const lines = removeAll(source.replace(/\r\n?/g, '\n'), HTML_COMMENT).split('\n');
 	const blocks: Block[] = [];
 	let i = 0;
 	while (i < lines.length) {

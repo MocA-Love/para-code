@@ -43,6 +43,8 @@ vi.mock('react-native', () => ({
 		add: (value: unknown) => value,
 	},
 	AppState: {
+		// 前面で起動した（AuthGate は前面のときだけ起動直後に認証を始める）
+		currentState: 'active',
 		addEventListener: (_event: string, listener: (next: string) => void) => {
 			harness.appStateListeners.push(listener);
 			return { remove: () => harness.appStateListeners.splice(harness.appStateListeners.indexOf(listener), 1) };

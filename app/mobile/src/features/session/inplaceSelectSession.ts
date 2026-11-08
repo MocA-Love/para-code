@@ -39,6 +39,21 @@ export function beginInplaceSelect(session: InplaceSelectSession): () => void {
 const TAP_SLOP = 10;
 const TAP_MAX_MS = 600;
 
+/** 長押しのメニューが触れを取り消したとみなす、押していた時間の下限（ms）。 */
+const HOLD_MIN_MS = 300;
+
+/**
+ * 触れが取り消されたとき、それが長押しのメニューによるものか（指がほとんど動かず、しばらく押していた）。
+ * スクロールに取られた取り消し（指が動いている・すぐ取り消された）では、選ぶ表示の用意を始めない。
+ */
+export function isHoldCancel(start: { readonly pageX: number; readonly pageY: number; readonly at: number } | undefined, last: { readonly pageX: number; readonly pageY: number } | undefined, at: number): boolean {
+	if (start === undefined) {
+		return false;
+	}
+	const point = last ?? start;
+	return Math.hypot(point.pageX - start.pageX, point.pageY - start.pageY) <= TAP_SLOP && at - start.at >= HOLD_MIN_MS;
+}
+
 /** 触れた始めと終わりから、押したとみなせるか。 */
 export function isOutsideTap(start: { readonly pageX: number; readonly pageY: number; readonly at: number } | undefined, end: { readonly pageX: number; readonly pageY: number; readonly at: number }): boolean {
 	if (start === undefined) {

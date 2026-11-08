@@ -36,23 +36,20 @@ import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { ParadisCcusageAgent, paradisCcusageAgentForModel } from '../common/paradisCcusage.js';
-import { paradisFormatTokens, paradisFormatUsd } from '../common/paradisCcusageFormat.js';
+import { PARADIS_CCUSAGE_OTHER_COLOR, PARADIS_CCUSAGE_SERIES_DARK, PARADIS_CCUSAGE_SERIES_LIGHT, paradisFormatTokens, paradisFormatUsd } from '../common/paradisCcusageFormat.js';
 import { IParadisContextViewOptions, paradisRenderContextBreakdown, paradisRenderContextPeriodCard } from './paradisCcusageContextView.js';
 import { FETCH_WINDOW_DAYS, IParadisCcusageDashboardData, IParadisCcusageDayData, IParadisCcusageModelSlice, PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS, ParadisCcusageClient } from './paradisCcusageClient.js';
 
 const $ = dom.$;
 
-/**
- * カテゴリカルパレット(モデル系列)。ダーク面/ライト面それぞれで検証済みの固定順。
- * 順序自体が色覚多様性対策(隣接ΔE最大化)なので並べ替えないこと。
- */
-const SERIES_DARK = ['#3987e5', '#199e70', '#c98500', '#9085e9', '#e66767', '#d95926', '#d55181', '#008300'];
-const SERIES_LIGHT = ['#2a78d6', '#1baf7a', '#eda100', '#4a3aa7', '#e34948', '#eb6834', '#e87ba4', '#008300'];
+/** カテゴリカルパレット(モデル系列)。並べ替えないこと（paradisCcusageFormat.ts）。 */
+const SERIES_DARK = PARADIS_CCUSAGE_SERIES_DARK;
+const SERIES_LIGHT = PARADIS_CCUSAGE_SERIES_LIGHT;
 /** プロジェクト別(量の軸)用の順次パレット(濃い=大きい)。 */
 const SEQ_DARK = ['#184f95', '#256abf', '#3987e5', '#6da7ec', '#9ec5f4'];
 const SEQ_LIGHT = ['#0d366b', '#184f95', '#256abf', '#3987e5', '#86b6ef'];
 /** 「その他」に畳んだ系列のニュートラル色。 */
-const OTHER_COLOR = '#898781';
+const OTHER_COLOR = PARADIS_CCUSAGE_OTHER_COLOR;
 
 /** 積み上げ対象のモデル数上限(超過分は「その他」へ畳む)。 */
 const MAX_MODEL_SERIES = 7;
@@ -623,7 +620,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		return type === ColorScheme.LIGHT || type === ColorScheme.HIGH_CONTRAST_LIGHT;
 	}
 
-	private get seriesPalette(): string[] {
+	private get seriesPalette(): readonly string[] {
 		return this.isLightTheme ? SERIES_LIGHT : SERIES_DARK;
 	}
 

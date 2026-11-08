@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FoldVertical } from 'lucide-react-native';
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FoldVertical, TextCursorInput } from 'lucide-react-native';
 import { formatToolName } from '../../agentToolMeta.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { haptic } from '../../haptics.js';
@@ -12,8 +12,9 @@ import type { PendingAgentMessage } from '../../pendingAgentMessages.js';
 import type { AgentActivityState, AgentChatMessage, AgentLiveState } from '../../store.js';
 import { runningCompactionSince } from './compaction.js';
 import { alpha, colors, radius, space, squircle, tint, type } from '../../theme.js';
-import { BottomDrawer, DrawerCaption, DrawerTitle, Icon, iconSize } from '../../ui/index.js';
+import { BottomDrawer, DrawerCaption, DrawerTitle, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { advisorLiveLabel, isAdvisorLive } from './advisor.js';
+import type { InplaceSelectNotice } from './inplaceSelectNotice.js';
 import { displaySentText } from '../../asyncQuestions.js';
 
 /** 行の中の小さな操作（見た目 28）。当たり判定は 44 に広げる。 */
@@ -210,6 +211,32 @@ export function QuickReplies({ onPick }: { onPick: (text: string) => void }) {
 	);
 }
 
+/**
+ * その場で範囲を選んでいる間に、クイック返信の帯の位置へ置く帯（`inplaceSelectNotice.ts`）。高さはクイック返信の帯と
+ * 同じ（チップ 32 + 上下 6）にして、差し替えても一覧の高さが変わらないようにする。
+ */
+export function InplaceSelectBar({ notice }: { notice: InplaceSelectNotice }) {
+	const theme = useThemeColors();
+	return (
+		<View style={styles.selectBar} accessibilityLiveRegion="polite">
+			<Icon icon={TextCursorInput} size={iconSize.md} color={theme.accent} />
+			<Text style={styles.selectBarText} numberOfLines={1}>
+				<Text style={styles.selectBarTitle}>範囲を選んでコピー</Text>
+				{`  ${notice.speaker}・外を押すと元に戻ります`}
+			</Text>
+			<Pressable
+				onPress={() => { haptic('commit'); notice.done(); }}
+				hitSlop={REPLY_SLOP}
+				style={({ pressed }) => [styles.reply, pressed ? styles.replyPressed : undefined]}
+				accessibilityRole="button"
+				accessibilityLabel="範囲の選択を終える"
+			>
+				<Text style={[styles.replyText, styles.selectBarDone, { color: theme.accent }]}>完了</Text>
+			</Pressable>
+		</View>
+	);
+}
+
 /** クイック返信のチップ（見た目 32。スクロールの内側で上下 6 ずつ広げる）。 */
 const REPLY_HEIGHT = 32;
 const REPLY_SLOP = { top: 6, bottom: 6, left: 0, right: 0 };
@@ -330,6 +357,26 @@ const styles = StyleSheet.create({
 	},
 	repliesScroll: {
 		flexGrow: 0,
+	},
+	selectBar: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		paddingHorizontal: space.lg,
+		paddingVertical: 6,
+	},
+	selectBarText: {
+		flex: 1,
+		minWidth: 0,
+		fontSize: type.meta,
+		color: colors.textDim,
+	},
+	selectBarTitle: {
+		color: colors.text,
+		fontWeight: '600',
+	},
+	selectBarDone: {
+		fontWeight: '600',
 	},
 	replies: {
 		gap: space.sm,

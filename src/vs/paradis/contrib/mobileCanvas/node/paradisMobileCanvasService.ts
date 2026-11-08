@@ -27,8 +27,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay } from '../common/paradisMobileCanvas.js';
 import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
-import { ParadisMobileCanvasHostClient, ParadisMobileCanvasUnavailableError } from './paradisMobileCanvasHostClient.js';
-import { IParadisMobileDeviceLedger } from './paradisMobileDeviceOpsToolProvider.js';
+import { ParadisMobileCanvasUnavailableError } from './paradisMobileCanvasHostClient.js';
+import { IParadisMobileDeviceLedger, IParadisMobileHostRequester } from './paradisMobileDeviceOpsToolProvider.js';
 
 /** MCPツールが返す標準形。`isError` を立てるとエージェント側で失敗として扱われる。 */
 interface IToolResult {
@@ -172,7 +172,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	private readonly _attachments = new Map<string, ILedgerEntry>();
 
 	constructor(
-		private readonly _hostClient: ParadisMobileCanvasHostClient,
+		// シミュレータの作り直し（③）で、iOS を serve-sim へ回す振り分け（simulator/node/paradisMobileHostRouter.ts）も受ける
+		private readonly _hostClient: IParadisMobileHostRequester,
 		private readonly _logService: ILogService,
 	) {
 		super();
@@ -207,7 +208,9 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	async getSnapshot(signal?: AbortSignal): Promise<IParadisMobileCanvasSnapshot> {
 		const attachments = [...this._attachments.values()].map(entry => entry.attachment);
 		try {
-			return { devices: await this._listDevices(signal), attachments };
+			const devices = await this._listDevices(signal);
+			const notice = this._listNotice?.();
+			return { devices, attachments, ...(notice ? { notice } : {}) };
 		} catch (error) {
 			return { devices: [], attachments, unavailableReason: toMessage(error) };
 		}
@@ -279,6 +282,16 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		return this._listDevices(signal);
 	}
 
+	private _listNotice: (() => string | undefined) | undefined;
+
+	/**
+	 * 一覧に添える知らせを返す関数を渡す（シミュレータの作り直し ⑥a: adb が無いので Android を出せないときの入れ方の説明）。
+	 * mobile_list_devices の結果と、共有ダイアログの端末の一覧に出す。
+	 */
+	setListNotice(notice: () => string | undefined): void {
+		this._listNotice = notice;
+	}
+
 	/** このサービスと寿命をそろえる後始末（別のプロバイダの登録など）を預かる。 */
 	own(disposable: IDisposable): void {
 		this._register(disposable);
@@ -312,6 +325,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		if (name === 'mobile_list_devices') {
 			const devices = await this._listDevices(signal);
 			const attached = this._attachments.get(paneToken)?.attachment;
+			const notice = this._listNotice?.();
 			this._touchLedgerEntry(paneToken);
 			return jsonResult({
 				// ほかのペインが使っている端末は mobile_request_device で要求できないので、選ぶ前に分かるようにする
@@ -324,6 +338,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 				hint: attached
 					? undefined
 					: 'No device is attached to this terminal pane. Call mobile_request_device with the id or name of a device no other pane is using: the user approves it in Para Code. The user can also attach one from the "Mobile Devices" tab of the sharing dialog.',
+				...(notice ? { notice } : {}),
 			});
 		}
 
