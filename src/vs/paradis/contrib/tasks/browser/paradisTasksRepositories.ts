@@ -68,11 +68,30 @@ async function gitConfigOf(fileService: IFileService, folder: URI): Promise<URI 
 	return joinPath(commondir ? resolvePath(gitdir, commondir) : gitdir, 'config');
 }
 
-/** 1 つのフォルダの origin が github.com を指していれば、その `owner/name`。 */
-export async function paradisTasksResolveRepository(fileService: IFileService, folder: URI): Promise<string | undefined> {
+/**
+ * フォルダの origin を、git に解かせて読む（`git remote get-url origin`。insteadOf・include・`~/.gitconfig` まで当てた URL）。
+ * 読めない（git を呼べない古い接続先・git が無い・origin が無い）ときは undefined。
+ */
+export type ParadisTasksOriginReader = (folder: URI) => Promise<string | undefined>;
+
+/**
+ * 1 つのフォルダの origin が github.com を指していれば、その `owner/name`。`readOrigin` があれば git に解かせた URL を使い、
+ * 読めなければ `.git/config` の字面（同じ config の insteadOf だけ当てる）に戻す。
+ */
+export async function paradisTasksResolveRepository(fileService: IFileService, folder: URI, readOrigin?: ParadisTasksOriginReader): Promise<string | undefined> {
 	const config = await gitConfigOf(fileService, folder);
 	if (!config) {
 		return undefined;
+	}
+	if (readOrigin) {
+		try {
+			const url = await readOrigin(folder);
+			if (url) {
+				return paradisTasksGithubRepositoryFromRemote(url);
+			}
+		} catch {
+			// 下の .git/config の読みに戻す
+		}
 	}
 	const text = await readText(fileService, config) ?? '';
 	const origin = paradisReadOriginUrl(text);
@@ -84,8 +103,8 @@ export async function paradisTasksResolveRepository(fileService: IFileService, f
  * スペースの並びから、github.com のリポジトリを重ねずに集める（大文字小文字は区別しない。先に見つけたスペースの表記を使う）。
  * 読めないもの・github.com 以外のものは黙って外す。
  */
-export async function paradisTasksResolveRepositories(fileService: IFileService, sources: readonly IParadisTasksRepositorySource[]): Promise<IParadisTasksRepository[]> {
-	const resolved = await Promise.all(sources.map(async source => ({ source, name: await paradisTasksResolveRepository(fileService, source.uri) })));
+export async function paradisTasksResolveRepositories(fileService: IFileService, sources: readonly IParadisTasksRepositorySource[], readOrigin?: ParadisTasksOriginReader): Promise<IParadisTasksRepository[]> {
+	const resolved = await Promise.all(sources.map(async source => ({ source, name: await paradisTasksResolveRepository(fileService, source.uri, readOrigin) })));
 	const seen = new Set<string>();
 	const repositories: IParadisTasksRepository[] = [];
 	for (const { source, name } of resolved) {
