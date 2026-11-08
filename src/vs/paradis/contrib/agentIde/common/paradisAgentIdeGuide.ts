@@ -59,7 +59,7 @@ The user can copy a line like "${PARADIS_TAB_ID_PREFIX} terminal:t_1a2b3c4d5e6f"
 - terminal:<id> - the terminal "id" for read_terminal, wait_for_terminal, send_terminal_input and send_terminal_key. If list_terminals does not show it, it is outside what you may read.
 - browser:<tabId> - pass it as tab_id to the browser tools (tabId for select_browser_tab). It works only for tabs list_browser_tabs shows (shared with this pane or opened by you); for another user tab, call request_browser_page and let the user share it.
 - simulator:<device id> - the device id from mobile_list_devices. If mobile_get_attached_device does not show it, call mobile_request_device with that id; the user approves.
-- file:<path> - a file path, relative to the root folder of the space it was copied from (absolute when it starts with / or a drive letter). Read it with your own tools; preview_file needs an absolute path.
+- file:<path> - the absolute path of the file (in an SSH window, the path on the SSH host). Read it with your own tools, or pass it to preview_file.
 
 ## Hand a task to a new agent
 

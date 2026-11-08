@@ -22,7 +22,7 @@ suite('Paradis tab id', () => {
 			{ kind: 'browser', value: '0f8c2e1a-7d3b-4c5e-9a6f-1b2c3d4e5f60' },
 			{ kind: 'simulator', value: 'ios:core-simulator:6B1E0E2A-3C4D-4E5F-8A9B-0C1D2E3F4A5B' },
 			{ kind: 'simulator', value: 'android:serial:emulator-5554' },
-			{ kind: 'file', value: 'src/my file.ts' },
+			{ kind: 'file', value: '/Users/example/app/src/my file.ts' },
 		] as const;
 		const lines = ids.map(id => paradisFormatTabId(id));
 		assert.deepStrictEqual({
@@ -34,7 +34,7 @@ suite('Paradis tab id', () => {
 				'paraTabId: browser:0f8c2e1a-7d3b-4c5e-9a6f-1b2c3d4e5f60',
 				'paraTabId: simulator:ios:core-simulator:6B1E0E2A-3C4D-4E5F-8A9B-0C1D2E3F4A5B',
 				'paraTabId: simulator:android:serial:emulator-5554',
-				'paraTabId: file:src/my file.ts',
+				'paraTabId: file:/Users/example/app/src/my file.ts',
 			],
 			parsed: ids,
 		});
@@ -58,21 +58,16 @@ suite('Paradis tab id', () => {
 		});
 	});
 
-	test('file tabs: relative inside the space folder, absolute outside it, nothing for paths that are not on disk', () => {
-		const folder = URI.file('/Users/example/app');
-		const remoteFolder = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+dev', path: '/home/example/app' });
+	test('file tabs: always the absolute path (the SSH host path in an SSH window), nothing for paths that are not on disk', () => {
+		const local = URI.file('/Users/example/app/src/a.ts');
 		assert.deepStrictEqual({
-			inside: paradisTabIdFilePath(URI.file('/Users/example/app/src/a.ts'), folder),
-			outside: paradisTabIdFilePath(URI.file('/Users/example/other/b.ts'), undefined),
-			remoteInside: paradisTabIdFilePath(URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+dev', path: '/home/example/app/server.ts' }), remoteFolder),
-			remoteOutside: paradisTabIdFilePath(URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+dev', path: '/etc/hosts' }), undefined),
-			untitled: paradisTabIdFilePath(URI.from({ scheme: 'untitled', path: 'Untitled-1' }), undefined),
-			git: paradisTabIdFilePath(URI.from({ scheme: 'git', path: '/Users/example/app/src/a.ts' }), folder),
+			local: paradisTabIdFilePath(local),
+			remote: paradisTabIdFilePath(URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+dev', path: '/home/example/app/server.ts' })),
+			untitled: paradisTabIdFilePath(URI.from({ scheme: 'untitled', path: 'Untitled-1' })),
+			git: paradisTabIdFilePath(URI.from({ scheme: 'git', path: '/Users/example/app/src/a.ts' })),
 		}, {
-			inside: 'src/a.ts',
-			outside: URI.file('/Users/example/other/b.ts').fsPath,
-			remoteInside: 'server.ts',
-			remoteOutside: '/etc/hosts',
+			local: local.fsPath,
+			remote: '/home/example/app/server.ts',
 			untitled: undefined,
 			git: undefined,
 		});

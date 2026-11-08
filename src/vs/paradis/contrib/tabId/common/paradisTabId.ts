@@ -12,10 +12,10 @@
 //  - terminal: list_terminals の id（ペイントークンのハッシュ。トークンそのものは載せない）
 //  - browser: list_browser_tabs の tabId（ブラウザビューの ID）
 //  - simulator: mobile_list_devices の id（`ios:core-simulator:<udid>`・`android:serial:<serial>`）
-//  - file: スペースのフォルダから見た相対パス（フォルダの外なら絶対パス）
+//  - file: 絶対パス（SSH の窓では接続先の絶対パス）。相対パスは別のワークツリーのエージェントに貼ると
+//    同じ名前の別のファイルを指すので使わない
 
 import { Schemas } from '../../../../base/common/network.js';
-import { isEqualOrParent, relativePath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 
 /** 行の頭。 */
@@ -52,17 +52,14 @@ export function paradisParseTabId(text: string): IParadisTabId | undefined {
 
 /**
  * ファイルのタブの値。ディスク上のファイル（手元の `file`、SSH の窓の接続先の `vscode-remote`）だけを指せる。
- * スペースのフォルダの中なら相対パス、外なら絶対パス。untitled などパスで指せないものは undefined。
+ * いつも絶対パス（接続先のファイルは接続先の絶対パス）。untitled などパスで指せないものは undefined。
  */
-export function paradisTabIdFilePath(resource: URI, folder: URI | undefined): string | undefined {
-	if (resource.scheme !== Schemas.file && resource.scheme !== Schemas.vscodeRemote) {
-		return undefined;
+export function paradisTabIdFilePath(resource: URI): string | undefined {
+	if (resource.scheme === Schemas.file) {
+		return resource.fsPath;
 	}
-	if (folder && folder.scheme === resource.scheme && folder.authority === resource.authority && isEqualOrParent(resource, folder)) {
-		const relative = relativePath(folder, resource);
-		if (relative) {
-			return relative;
-		}
+	if (resource.scheme === Schemas.vscodeRemote) {
+		return resource.path;
 	}
-	return resource.scheme === Schemas.file ? resource.fsPath : resource.path;
+	return undefined;
 }
