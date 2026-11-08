@@ -272,7 +272,13 @@ suite('Paradis simulator: routing the mobile tools per device', () => {
 		const androidCall = await router.request('POST', '/api/v1/devices/android%3Aserial%3Aemulator-5554/input/tap', { x: 1, y: 1 });
 		const unknown = await router.request('GET', '/api/v1/devices/other%3Athing').then(() => 'accepted', () => 'refused');
 		const { adb: noAdb } = fakeAdb(new Error('Para Code could not find adb.'));
-		const iosOnly = await new ParadisMobileHostRouter(canvas, host, () => true, new NullLogService(), noAdb).request('GET', '/api/v1/devices') as { id: string }[];
+		const noAdbRouter = new ParadisMobileHostRouter(canvas, host, () => true, new NullLogService(), noAdb);
+		const iosOnly = await noAdbRouter.request('GET', '/api/v1/devices') as { id: string }[];
+		// adb が無いときは、一覧は iOS だけ返し、入れ方の説明を知らせとして持つ（mobile_list_devices と共有ダイアログに出る）
+		assert.deepStrictEqual({ notice: [router.androidNotice, noAdbRouter.androidNotice], listed: [router.androidListed, noAdbRouter.androidListed] }, {
+			notice: [undefined, 'Android devices are not listed: Para Code could not find adb.'],
+			listed: [true, false],
+		});
 		assert.deepStrictEqual({ list: list.map(entry => entry.id), androidCall, unknown, canvasCalls: calls, adbCalls, iosOnly: iosOnly.map(entry => entry.id) }, {
 			list: [ID, ANDROID.id],
 			androidCall: 'from-adb',

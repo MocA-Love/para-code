@@ -17,7 +17,7 @@ const SDK = '/Users/example/Library/Android/sdk';
 const ADB = `${SDK}/platform-tools/adb`;
 const EMULATOR = `${SDK}/emulator/emulator`;
 
-function setup(options: { files?: string[]; running?: boolean } = {}) {
+function setup(options: { files?: string[]; running?: boolean; now?: () => number } = {}) {
 	const calls: string[] = [];
 	const launched: string[] = [];
 	const files = new Set(options.files ?? [ADB, EMULATOR]);
@@ -26,6 +26,7 @@ function setup(options: { files?: string[]; running?: boolean } = {}) {
 		env: {},
 		platform: 'darwin',
 		home: '/Users/example',
+		now: options.now,
 		exists: async path => files.has(path),
 		launch: (file, args) => launched.push([file, ...args].join(' ')),
 		exec: async (file, args) => {
@@ -109,11 +110,16 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 		const stopped = setup({ running: false });
 		const notRunning = await stopped.host.request('POST', '/api/v1/devices/android%3Aavd%3APixel_9_API_36/input/tap', { x: 1, y: 1 }).then(() => 'tapped', (error: Error) => error.message.includes('is not running'));
 		await stopped.host.bootAvd('android:avd:Pixel_9_API_36');
-		assert.deepStrictEqual({ png: [...png], screencap: runningSetup.calls.filter(call => call.includes('screencap')), notRunning, launched: stopped.launched }, {
+		// 起動の途中にもう一度承認されても、2 つ目のエミュレータは立てない
+		await stopped.host.bootAvd('android:avd:Pixel_9_API_36');
+		// `-list-avds` に無い名前は起動しない
+		const unknownAvd = await stopped.host.bootAvd('android:avd:Not_There').then(() => 'started', (error: Error) => error.message.includes('no Android Virtual Device'));
+		assert.deepStrictEqual({ png: [...png], screencap: runningSetup.calls.filter(call => call.includes('screencap')), notRunning, launched: stopped.launched, unknownAvd }, {
 			png: [0x89, 0x50],
 			screencap: ['adb -s emulator-5554 exec-out screencap -p'],
 			notRunning: true,
 			launched: [`${EMULATOR} -avd Pixel_9_API_36`],
+			unknownAvd: true,
 		});
 	});
 

@@ -35,6 +35,19 @@ function deviceIdOf(path: string): string | undefined {
 
 export class ParadisMobileHostRouter implements IParadisMobileHostRequester {
 
+	private _androidNotice: string | undefined;
+	private _androidListed = false;
+
+	/** 直前の一覧で Android を出せなかった理由（adb が無いなど）。出せていれば undefined。 */
+	get androidNotice(): string | undefined {
+		return this._androidNotice;
+	}
+
+	/** 直前の一覧で Android の端末を確かに読めたか（読めなかった一覧を、端末が消えた証拠にしないため）。 */
+	get androidListed(): boolean {
+		return this._androidListed;
+	}
+
 	constructor(
 		private readonly _mobileCanvas: IParadisMobileHostRequester,
 		private readonly _serveSim: ParadisServeSimDeviceHost,
@@ -47,7 +60,16 @@ export class ParadisMobileHostRouter implements IParadisMobileHostRequester {
 
 	async request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
 		if (!this._useServeSim()) {
-			return this._mobileCanvas.request(method, path, body, signal);
+			const result = this._mobileCanvas.request(method, path, body, signal);
+			if (method === 'GET' && path === DEVICES_PATH) {
+				this._androidNotice = undefined;
+				this._androidListed = false;
+				return result.then(value => {
+					this._androidListed = true;
+					return value;
+				});
+			}
+			return result;
 		}
 		if (method === 'GET' && path === DEVICES_PATH) {
 			return this._listDevices();
@@ -84,8 +106,13 @@ export class ParadisMobileHostRouter implements IParadisMobileHostRequester {
 		if (serveSim.status === 'rejected') {
 			this._logService.warn('[paradis-simulator] could not list the iOS simulators', serveSim.reason);
 		}
+		this._androidListed = android.status === 'fulfilled';
+		// adb が無い（Android SDK を入れていない）だけのことが多い。iOS は serve-sim で出せるので一覧は返し、
+		// 理由は一覧の知らせ（mobile_list_devices の notice・共有ダイアログ）で利用者と LLM に見せる
+		this._androidNotice = android.status === 'rejected'
+			? `Android devices are not listed: ${android.reason instanceof Error ? android.reason.message : String(android.reason)}`
+			: undefined;
 		if (android.status === 'rejected') {
-			// adb が無い（Android SDK を入れていない）だけのことが多い。iOS は serve-sim で出せる
 			this._logService.trace('[paradis-simulator] could not list Android devices with adb', android.reason);
 		}
 		return [...(serveSim.status === 'fulfilled' ? serveSim.value : []), ...(android.status === 'fulfilled' ? android.value : [])];
