@@ -150,3 +150,5 @@ import './contrib/scmAgentFix/electron-browser/paradisScmAgentFix.contribution.j
 import './contrib/diffReviewNotes/electron-browser/paradisDiffReviewNotes.contribution.js';
 // ポートパネルの「張り直す」（SSH の窓で転送が一覧に残ったまま繋がらなくなったときの逃げ道）
 import './contrib/portReforward/electron-browser/paradisPortReforward.contribution.js';
+// para-browser MCP のポートの転送の道具（SSH の窓の転送の一覧・追加・停止・張り直し・片付け。変える操作は毎回確認）
+import './contrib/portTools/electron-browser/paradisPortTools.contribution.js';
