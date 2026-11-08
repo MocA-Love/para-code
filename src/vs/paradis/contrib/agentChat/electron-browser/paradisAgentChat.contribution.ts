@@ -60,10 +60,10 @@ import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCod
 import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
 import '../browser/media/paradisAgentChat.css';
 
-const PARADIS_AGENT_CHAT_TOGGLE_COMMAND = 'paradis.agentChat.toggle';
+export const PARADIS_AGENT_CHAT_TOGGLE_COMMAND = 'paradis.agentChat.toggle';
 
 /** そのグループで選んでいるターミナルタブで、エージェントの会話が確定している（チャットに切り替えられる）。 */
-const PARADIS_AGENT_CHAT_AVAILABLE = new RawContextKey<boolean>('paradisAgentChatAvailable', false, localize('paradisAgentChat.contextAvailable', "選んでいるターミナルタブをチャット表示に切り替えられるか"));
+export const PARADIS_AGENT_CHAT_AVAILABLE = new RawContextKey<boolean>('paradisAgentChatAvailable', false, localize('paradisAgentChat.contextAvailable', "選んでいるターミナルタブをチャット表示に切り替えられるか"));
 /** そのグループで選んでいるターミナルタブが、チャット表示になっている。 */
 const PARADIS_AGENT_CHAT_ACTIVE = new RawContextKey<boolean>('paradisAgentChatActive', false, localize('paradisAgentChat.contextActive', "選んでいるターミナルタブがチャット表示か"));
 

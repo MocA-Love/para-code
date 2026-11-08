@@ -10,6 +10,7 @@ import { Action, IAction, Separator, SubmenuAction } from '../../../../../base/c
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TerminalCommandId } from '../../../../../workbench/contrib/terminal/common/terminal.js';
 import { paradisDecorateMenuActions } from '../../browser/paradisMenuIcons.js';
+import { PARADIS_TERMINAL_TAB_COLOR_SUBMENU_ID, paradisTerminalTabColorCommandId } from '../../../terminalEditorMenu/common/paradisTerminalContextMenu.js';
 
 suite('Paradis menu icons', () => {
 
@@ -50,5 +51,18 @@ suite('Paradis menu icons', () => {
 			originalClass: '',
 			runs: [TerminalCommandId.CopySelection],
 		});
+	});
+
+	test('opens the terminal tab color submenu inline as a row of swatches', () => {
+		const make = (key: string) => store.add(new Action(paradisTerminalTabColorCommandId(key), key, undefined, true));
+		const colors = new SubmenuAction(`submenuitem.${PARADIS_TERMINAL_TAB_COLOR_SUBMENU_ID}`, 'Tab Color', [make('red'), new Separator(), make('none')]);
+		const decorated = paradisDecorateMenuActions([new Separator(), colors, new Separator()]);
+
+		assert.deepStrictEqual(decorated.map(action => ({ id: action.id, class: action.class, tooltip: action.tooltip })), [
+			{ id: Separator.ID, class: 'separator', tooltip: '' },
+			{ id: 'paradis.terminal.tabColor.red', class: 'paradis-menu-icon paradis-menu-color paradis-menu-swatch paradis-terminal-color-red', tooltip: 'red' },
+			{ id: 'paradis.terminal.tabColor.none', class: 'paradis-menu-icon paradis-menu-color paradis-menu-swatch paradis-color-default', tooltip: 'none' },
+			{ id: Separator.ID, class: 'separator', tooltip: '' },
+		]);
 	});
 });
