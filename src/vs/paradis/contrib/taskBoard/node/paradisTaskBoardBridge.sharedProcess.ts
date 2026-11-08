@@ -41,6 +41,8 @@ import { ParadisTaskBoardBoardAuth } from './paradisTaskBoardBoardAuth.js';
 import { ParadisTaskBoardBridgeServer } from './paradisTaskBoardBridgeServer.js';
 import { ParadisTaskBoardRelayRouter } from './paradisTaskBoardRelayRouter.js';
 import { IParadisTaskBoardWindowRouter, ParadisTaskBoardBridgeService } from './paradisTaskBoardBridgeService.js';
+import { paradisTaskBoardWorktreeIncludes } from './paradisTaskBoardWorktreeIncludes.js';
+import { ParadisWorktreeGitService } from '../../workspaceSwitch/node/paradisWorktreeGitChannel.js';
 
 /** ウィンドウが呼ぶチャネル。ctx（`window:N`）で受け持ちを確かめる。 */
 class ParadisTaskBoardBridgeChannel implements IServerChannel<string> {
@@ -128,6 +130,8 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 		newId: generateUuid,
 		relaySessionWindow: (sessionId, keyHash) => relay.windowOf(sessionId, keyHash),
 		onRelayLaunch: (request, outcome, reason) => relay.auditLaunch(request.relaySessionId ?? '', request.agent, request.repoPath, outcome, reason),
+		// 手元のボードのワークツリーへの持ち込み（762-RES）。スペースの作成と同じ口（ログインシェルの PATH の git）で行う
+		worktreeIncludes: paradisTaskBoardWorktreeIncludes(new ParadisWorktreeGitService(logService, configurationService, environmentService.args), logService),
 	}, logService));
 	// ボード用のツールは、設定がオンのときだけ para-browser に出す（使わない人のエージェントに説明を載せない）
 	const toolProvider = store.add(new MutableDisposable());

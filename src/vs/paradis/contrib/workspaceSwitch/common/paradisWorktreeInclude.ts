@@ -190,3 +190,16 @@ export function paradisSummarizeWorktreeIncludeFailure(message: string): string 
 	// allow-any-unicode-next-line
 	return localize('paradis.worktreeInclude.failed', "宣言したファイルを新しいスペースへ持ち込めませんでした: {0}", message);
 }
+
+/**
+ * `git status --porcelain` の出力から、持ち込みで作ったリンク（`linkPaths`、作業ツリーのルートからの相対パス）の未追跡の行を外す。
+ * `node_modules/` のようなフォルダとしての無視はリンクに当たらず、git がリンクを未追跡と見るため（タスクボードの返却、762-RES）。
+ * 引用された名前（`"a b"`）の行は外さない（残すと「未コミットの変更がある」側に倒れるだけで、消しすぎない）。
+ */
+export function paradisPorcelainWithoutIncludeLinks(porcelain: string, linkPaths: readonly string[]): string {
+	if (linkPaths.length === 0) {
+		return porcelain;
+	}
+	const links = new Set(linkPaths);
+	return porcelain.split('\n').filter(line => !(line.startsWith('?? ') && links.has(line.slice(3).replace(/\/$/, '')))).join('\n');
+}

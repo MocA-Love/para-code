@@ -16,6 +16,8 @@ import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisTaskBoardRemoteService } from '../../node/paradisTaskBoardRemoteService.js';
+import { IParadisTaskBoardWorktreeIncludes, paradisTaskBoardWorktreeIncludes } from '../../node/paradisTaskBoardWorktreeIncludes.js';
+import { ParadisWorktreeGitService } from '../../../workspaceSwitch/node/paradisWorktreeGitChannel.js';
 
 const SESSION = 'session-0123456789abcdef';
 
@@ -53,14 +55,14 @@ async function exists(path: string): Promise<boolean> {
 	let hangGit: boolean;
 	const baseEnv = { ...process.env, VSCODE_IPC_HOOK_CLI: '/tmp/cli.sock', PARA_CODE_PANE_TOKEN: 'pane-secret', PARADIS_PTY_DAEMON_BUILD_KEY: 'daemon-secret', GIT_DIR: '/nonexistent/.git', NODE_OPTIONS: '--require /nonexistent.js', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
 
-	function createService(timeouts?: Partial<ConstructorParameters<typeof ParadisTaskBoardRemoteService>[2]>, afterCheck?: (stage: 'write' | 'reset') => Promise<void>): ParadisTaskBoardRemoteService {
+	function createService(timeouts?: Partial<ConstructorParameters<typeof ParadisTaskBoardRemoteService>[2]>, afterCheck?: (stage: 'write' | 'reset') => Promise<void>, includes?: IParadisTaskBoardWorktreeIncludes): ParadisTaskBoardRemoteService {
 		const spawn = ((file: string, args: readonly string[], options: cp.SpawnOptions) => hangGit && file === 'git'
 			? cp.spawn('/bin/sh', ['-c', 'sleep 30'], options)
 			: cp.spawn(file, [...args], options)) as typeof cp.spawn;
 		return new ParadisTaskBoardRemoteService(new NullLogService(), async () => baseEnv, {
 			gitShortMs: 10_000, gitLongMs: 10_000, commandMs: 10_000, killGraceMs: 500, closeGraceMs: 200, heartbeatExpiryMs: 120_000,
 			...timeouts,
-		}, () => now, spawn, process.getuid?.(), false, afterCheck);
+		}, () => now, spawn, process.getuid?.(), false, afterCheck, includes);
 	}
 
 	setup(async () => {
@@ -278,6 +280,38 @@ async function exists(path: string): Promise<boolean> {
 		await fsp.unlink(join(dir, 'b.txt'));
 		assert.strictEqual((await service.git(SESSION, repo, { kind: 'worktreeRemove', dir })).code, 0);
 		assert.strictEqual(await outcome(service.git(SESSION, dir, { kind: 'status' })), 'denied');
+	});
+
+	test('a new worktree gets the declared files, its shared-folder link is not counted as a change, and removal unlinks it first (762-RES)', async () => {
+		await fsp.mkdir(join(repo, 'models'));
+		await fsp.writeFile(join(repo, 'models', 'm.bin'), 'model');
+		await fsp.writeFile(join(repo, '.env'), 'TOKEN=1');
+		await fsp.writeFile(join(repo, '.gitignore'), '.env\nmodels/\n');
+		await fsp.writeFile(join(repo, '.paracode.json'), '{ "worktree": { "include": [".env", "a.txt"], "sharedDirectories": ["models"] } }');
+		git(repo, 'add', '.gitignore', '.paracode.json');
+		git(repo, 'commit', '--quiet', '-m', 'declare');
+		const includes = paradisTaskBoardWorktreeIncludes(new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, cp.execFile, async () => ({ ...process.env })), new NullLogService());
+		const withIncludes = createService(undefined, undefined, includes);
+		try {
+			const session = 'session-include-0123456789';
+			await withIncludes.openSession(session, repo, worktrees);
+			const dir = join(worktrees, '5-env');
+			const added = await withIncludes.git(session, repo, { kind: 'worktreeAdd', dir, branch: 'para/5-env', mode: 'new', base: { kind: 'local', branch: 'main' } });
+			const env = await fsp.readFile(join(dir, '.env'), 'utf8');
+			const status = (await withIncludes.git(session, dir, { kind: 'status' })).stdout.trim();
+			const removed = await withIncludes.git(session, repo, { kind: 'worktreeRemove', dir });
+			assert.deepStrictEqual({
+				code: added.code,
+				warning: added.warning?.includes('a.txt'),
+				env,
+				status,
+				removed: removed.code,
+				gone: await fsp.access(dir).then(() => false, () => true),
+				modelsKept: await fsp.readFile(join(repo, 'models', 'm.bin'), 'utf8'),
+			}, { code: 0, warning: true, env: 'TOKEN=1', status: '', removed: 0, gone: true, modelsKept: 'model' });
+		} finally {
+			withIncludes.dispose();
+		}
 	});
 
 	test('a later session adopts worktrees made earlier only under the worktree folder of the same repository', async () => {

@@ -13,6 +13,7 @@ class FakePorts implements ITaskBoardAgentPort, ITaskBoardRunPort, ITaskBoardWor
 	failPrepare: Error | undefined;
 	hold: { resolve: () => void; reject: (e: Error) => void }[] = [];
 	holdPrepare = false;
+	prepareWarning: string | undefined;
 	startStep(task: ITaskBoardTask, step: ITaskBoardStep, prompt: string): void {
 		this.calls.push(`start:${task.id}:${step.id}`);
 		this.prompts.push(prompt);
@@ -37,7 +38,7 @@ class FakePorts implements ITaskBoardAgentPort, ITaskBoardRunPort, ITaskBoardWor
 	}
 	prepare(task: ITaskBoardTask, slot: ITaskBoardSlot, branch: string) {
 		this.calls.push(`prepare:${task.id}:${slot.id}`);
-		const result = { branch, path: slot.kind === 'worktree' ? `/tmp/${branch}` : undefined };
+		const result = { branch, path: slot.kind === 'worktree' ? `/tmp/${branch}` : undefined, ...(this.prepareWarning ? { warning: this.prepareWarning } : {}) };
 		if (this.holdPrepare) {
 			return new Promise<typeof result>((resolve, reject) => this.hold.push({ resolve: () => resolve(result), reject }));
 		}
@@ -297,6 +298,19 @@ describe('TaskBoardEngine', () => {
 		engine.start(id2, { agent: 'claude' });
 		await flush();
 		expect(engine.getTask(id2)).toMatchObject({ status: 'failed', error: 'dirty', place: undefined });
+	});
+
+	test('a warning from preparing the place goes into the activity feed and the step still starts', async () => {
+		const { engine, ports } = setup();
+		ports.prepareWarning = '新しいスペースへ持ち込めなかったもの: .env（git が無視していない）';
+		const id = engine.addTask({ title: 'T' });
+		engine.start(id, { agent: 'claude' });
+		await flush();
+		const task = engine.getTask(id)!;
+		expect({ status: task.status, warned: task.activities.filter(a => a.detail === 'workspace').map(a => `${a.kind}:${a.label}`) }).toEqual({
+			status: 'working',
+			warned: ['system:新しいスペースへ持ち込めなかったもの: .env（git が無視していない）'],
+		});
 	});
 
 	test('syncIntake adds, updates and removes only untouched todo tasks', () => {
