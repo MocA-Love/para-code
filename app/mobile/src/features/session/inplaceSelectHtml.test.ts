@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { NEUTRAL_CHAT_TEXT_SCALE } from '../../chatTextScale.js';
-import { buildInplaceSelectHtml, inplaceSelectMinHeight, inplaceSelectStartScript, localPressPoint, parseInplaceSelectMessage, type InplaceSelectLook } from './inplaceSelectHtml.js';
+import { buildInplaceSelectHtml, inplaceSelectContentSecurityPolicy, inplaceSelectMinHeight, safeColor, inplaceSelectStartScript, localPressPoint, parseInplaceSelectMessage, type InplaceSelectLook } from './inplaceSelectHtml.js';
 
 const NONCE = 'abcdefghijklmnop0123';
 const LOOK: InplaceSelectLook = {
@@ -64,6 +64,25 @@ describe('buildInplaceSelectHtml', () => {
 			'<div class="cb"><div class="io"><span class="iol">コード</span><span class="ioa">折り返し</span><span class="ioa">コピー</span></div><div class="cc"><div class="ct">&lt;plain&gt;</div></div></div>',
 			'</div>',
 		].join(''));
+	});
+
+	it('accepts only color shapes, never url(), var() or expression', () => {
+		const inputs = ['#569cd6', '#FFF', '#11223344', 'rgb(1, 2, 3)', 'rgba(59,130,246,0.12)', 'hsl(210 50% 40% / 0.5)', 'red', ' #abc ',
+			'url(x)', 'URL(https://e.com/a.png)', 'var(--x)', 'expression(alert(1))', 'Expression', 'red;" onload="x', 'rgb(url(x))', 'calc(1px)', '#12', 'image-set(a)', ''];
+		expect(inputs.map(safeColor)).toEqual(['#569cd6', '#FFF', '#11223344', 'rgb(1, 2, 3)', 'rgba(59,130,246,0.12)', 'hsl(210 50% 40% / 0.5)', 'red', '#abc',
+			undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+		const html = buildInplaceSelectHtml([{ text: '```ts\na\n```', markdown: true }], { ...LOOK, codeHighlight: () => ({ bg: 'url(https://e.com/x.png)', fg: 'var(--x)', lines: [[{ text: 'a', color: 'expression(1)' }]] }) }, NONCE);
+		expect(html).not.toMatch(/url\(|var\(|expression/);
+	});
+
+	it('blocks everything by default and opens only the nonce script and inline styles', () => {
+		const html = buildInplaceSelectHtml([{ text: 'a', markdown: true }], LOOK, NONCE);
+		const csp = inplaceSelectContentSecurityPolicy(NONCE);
+		expect({ csp, inHead: html.startsWith(`<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}">`) }).toEqual({
+			csp: `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${NONCE}'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'`,
+			inHead: true,
+		});
+		expect(() => inplaceSelectContentSecurityPolicy('bad nonce"')).toThrow();
 	});
 
 	it('lays several messages out to scroll, with labels that are not copied, and scrolls the pressed one into its old place', () => {
