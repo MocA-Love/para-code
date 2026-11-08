@@ -13,7 +13,7 @@
 //   確認を省く分岐は出さない）。会話 ID と作業フォルダは hook が報告した会話（状態スナップショットの paneSessions）から取る。
 //   会話を始めたフォルダで起動する（違うフォルダだと Claude Code は会話をそのフォルダのプロジェクトへ複製するため）。
 // - 引き継ぎ: 元と違う種類の設定済みエージェントを選び、今のスペースで起動して依頼文を渡す（paradisDeliverAgentPrompt の
-//   launch）。依頼文には会話の記録のパスを渡す。受け取るエージェントの側で読めないパス（手元と接続先がまたがるなど）なら、
+//   launch。利用者が選んだ操作なので、フォークと同じく右のグループに開いて前に出す）。依頼文には会話の記録のパスを渡す。受け取るエージェントの側で読めないパス（手元と接続先がまたがるなど）なら、
 //   画面の末尾を上限付きで入れる（paradisAgentSessionHandoff.ts）。
 
 import { addDisposableListener, EventType, onDidRegisterWindow } from '../../../../base/browser/dom.js';
@@ -246,7 +246,7 @@ registerAction2(class extends Action2 {
 			notificationService.info(localize('paradis.terminal.handoffNoContext', "引き継ぐ会話の記録も画面の内容も見つかりませんでした。"));
 			return;
 		}
-		const outcome = await paradisDeliverAgentPrompt(services, ws, space.uri, prompt, { kind: 'launch', agent: picked.agentId }, () => { });
+		const outcome = await paradisDeliverAgentPrompt(services, ws, space.uri, prompt, { kind: 'launch', agent: picked.agentId, placement: 'side' }, () => { });
 		if (!outcome.ok) {
 			notificationService.prompt(Severity.Warning, paradisPcDeliveryError(outcome.code, outcome.consumed) ?? outcome.error, [{
 				label: localize('paradis.terminal.handoffCopy', "引き継ぎの依頼文をコピー"),
@@ -254,6 +254,6 @@ registerAction2(class extends Action2 {
 			}]);
 			return;
 		}
-		notificationService.info(localize('paradis.terminal.handoffDone', "{0} の会話を {1} に引き継ぎました（新しいタブで起動しています）。", paradisHandoffAgentLabel(session?.agent) ?? instance.title, picked.label));
+		notificationService.info(localize('paradis.terminal.handoffDone', "{0} の会話を {1} に引き継ぎました（右の新しいタブで起動しています）。", paradisHandoffAgentLabel(session?.agent) ?? instance.title, picked.label));
 	}
 });
