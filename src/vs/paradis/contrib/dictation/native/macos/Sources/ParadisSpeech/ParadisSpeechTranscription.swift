@@ -181,6 +181,12 @@ enum ParadisSpeechAssets {
 	}
 }
 
+/// How many buffers may wait for the analyzer. The renderer sends 4096-sample chunks (about 0.26 s of 16 kHz PCM16),
+/// so this holds about 20 minutes, the longest dictation upstream allows, in at most about 80 MiB (a read is at most
+/// 16 KiB). Past it, older audio is kept and newer audio is dropped, so the start of what was said survives a slow
+/// first download.
+let paradisAudioBacklogLimit = 4_800
+
 /// Reads PCM from stdin on its own thread, so audio sent while the assets download waits in the stream.
 enum ParadisStandardInput {
 	static func start(format: AVAudioFormat, into input: AsyncStream<AVAudioPCMBuffer>.Continuation) {
@@ -232,8 +238,9 @@ enum ParadisSpeechTranscription {
 			output.error("audio", "could not describe the input audio format")
 			return 1
 		}
-		// Unbounded so audio fed while the model loads waits here instead of being dropped.
-		let (audio, audioInput) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self)
+		// Audio fed while the assets download or the model loads waits here instead of being dropped, up to a bound
+		// (see paradisAudioBacklogLimit) so a long download cannot grow the helper without limit.
+		let (audio, audioInput) = AsyncStream.makeStream(of: AVAudioPCMBuffer.self, bufferingPolicy: .bufferingOldest(paradisAudioBacklogLimit))
 		ParadisStandardInput.start(format: inputFormat, into: audioInput)
 		do {
 			guard let locale = await ParadisTranscriber.supportedLocale(for: identifier) else {
@@ -298,7 +305,7 @@ enum ParadisSpeechTranscription {
 		}
 
 		let collector = transcriber.collect(onText: onText)
-		let (analyzerStream, analyzerInput) = AsyncStream.makeStream(of: AnalyzerInput.self)
+		let (analyzerStream, analyzerInput) = AsyncStream.makeStream(of: AnalyzerInput.self, bufferingPolicy: .bufferingOldest(paradisAudioBacklogLimit))
 		let analyzer = SpeechAnalyzer(modules: [transcriber.module])
 		do {
 			try await analyzer.start(inputSequence: analyzerStream)
