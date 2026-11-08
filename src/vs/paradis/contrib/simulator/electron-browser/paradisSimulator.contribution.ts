@@ -11,7 +11,10 @@
 // コマンドはパレットに出ない。復元したタブはペインの中でオフであることを知らせる。
 
 import { localize, localize2 } from '../../../../nls.js';
-import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { URI } from '../../../../base/common/uri.js';
+import { ResourceContextKey } from '../../../../workbench/common/contextkeys.js';
+import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IsMacContext } from '../../../../platform/contextkey/common/contextkeys.js';
@@ -24,18 +27,17 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IParadisSimulatorDevice, PARADIS_SIMULATOR_ENABLED_SETTING, PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_ENABLED_SETTING, PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paradisIsSimulatorUdid, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 import { ParadisSimulatorEditor } from './paradisSimulatorEditor.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
-import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { PARADIS_SIMULATOR_EDITOR_ID, PARADIS_SIMULATOR_INPUT_TYPE_ID, ParadisSimulatorEditorInput, ParadisSimulatorEditorInputSerializer } from './paradisSimulatorEditorInput.js';
+import { PARADIS_SIMULATOR_EDITOR_ID, PARADIS_SIMULATOR_INPUT_TYPE_ID, PARADIS_SIMULATOR_SCHEME, ParadisSimulatorEditorInput, ParadisSimulatorEditorInputSerializer } from './paradisSimulatorEditorInput.js';
 import { paradisOpenSimulatorEditor } from './paradisSimulatorPlacement.js';
 import './paradisSimulatorProbe.contribution.js';
+import './paradisSimulatorTabLabels.contribution.js';
 
-/** コマンド「シミュレータを開く」。引数に udid を渡すと選ばずにその端末を開く。 */
-export const PARADIS_SIMULATOR_OPEN_COMMAND_ID = 'paradis.simulator.open';
+import { PARADIS_SIMULATOR_OPEN_COMMAND_ID } from './paradisSimulatorScreenOpener.js';
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(ParadisSimulatorEditor, PARADIS_SIMULATOR_EDITOR_ID, localize('paradis.simulator.editorName', "シミュレータ")),
@@ -112,4 +114,26 @@ CommandsRegistry.registerCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, asy
 	const device = (await client.listDevices().catch(() => [])).find(candidate => candidate.udid === udid);
 	const input = await paradisOpenSimulatorEditor(udid, device?.name ?? '', editorService, editorGroupsService, configurationService, { paneInstanceId });
 	input.requestBoot();
+});
+
+/** タブの右クリック「ターミナルに割り当てる…」: 共有ダイアログの「モバイル端末」タブを、この端末の渡し先ペインの一覧を開いて出す。 */
+registerAction2(class ParadisAssignSimulatorToTerminalAction extends Action2 {
+	constructor() {
+		super({
+			id: 'paradis.simulator.assignToTerminal',
+			title: localize2('paradis.simulator.assignToTerminal', "ターミナルに割り当てる…"),
+			category: localize2('paradis.category', "Para Code"),
+			f1: false,
+			menu: [{ id: MenuId.EditorTitleContext, when: ResourceContextKey.Scheme.isEqualTo(PARADIS_SIMULATOR_SCHEME), group: '1_paradis', order: 1 }],
+		});
+	}
+
+	override async run(accessor: ServicesAccessor, resource?: unknown): Promise<void> {
+		const active = accessor.get(IEditorService).activeEditor;
+		const fromResource = URI.isUri(resource) && resource.scheme === PARADIS_SIMULATOR_SCHEME ? resource.path.replace(/^\//, '') : undefined;
+		const udid = fromResource ?? (active instanceof ParadisSimulatorEditorInput ? active.udid : undefined);
+		if (udid && paradisIsSimulatorUdid(udid)) {
+			await accessor.get(ICommandService).executeCommand('paradis.mobileCanvas.openAttachDialog', `${PARADIS_SIMULATOR_DEVICE_ID_PREFIX}${udid}`);
+		}
+	}
 });

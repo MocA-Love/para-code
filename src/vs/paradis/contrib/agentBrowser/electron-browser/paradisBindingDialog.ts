@@ -195,6 +195,8 @@ const STR_BTN_CHOOSE_PANES = localize('paradis.bindingDialog.btnChoosePanes', "�
 // allow-any-unicode-next-line
 const STR_BTN_CLOSE_PANES = localize('paradis.bindingDialog.btnClosePanes', "閉じる");
 // allow-any-unicode-next-line
+const STR_BTN_OPEN_SIMULATOR = localize('paradis.bindingDialog.btnOpenSimulator', "画面を開く");
+// allow-any-unicode-next-line
 const STR_DEVICES_PICK_PANE = localize('paradis.bindingDialog.devicesPickPane', "この端末を渡すターミナルペインを選んでください（同じ端末を複数のペインへ同時に渡せます）");
 // allow-any-unicode-next-line
 const STR_DEVICES_NO_PANE = localize('paradis.bindingDialog.devicesNoPane', "アタッチできるターミナルペインがありません。新しいターミナルでエージェントCLIを起動してください。");
@@ -237,6 +239,13 @@ export interface IParadisBindingDialogOptions {
 	 * 現在は未使用。API互換のためフィールドは維持する。
 	 */
 	readonly selectInstanceId?: number;
+	/** モバイル端末のタブで、この端末の渡し先ペインの一覧を開いた状態で出す。 */
+	readonly focusDeviceId?: string;
+	/**
+	 * その端末の画面をエディタのタブに開けるなら、開く関数を返す（新しい仕組みのシミュレータ。
+	 * simulator/electron-browser/paradisSimulator.contribution.ts）。開けなければ undefined。
+	 */
+	readonly deviceScreenOpener?: (deviceId: string) => (() => void) | undefined;
 }
 
 /**
@@ -260,6 +269,7 @@ export class ParadisBindingDialog extends Disposable {
 	private readonly _setupStates = new Map<ParadisMcpCli, IParadisSetupState>();
 	/** 「アタッチ」を押して渡し先ペインの一覧を開いている端末（開いていなければ undefined）。 */
 	private _attachTargetDeviceId: string | undefined;
+	private readonly _deviceScreenOpener: ((deviceId: string) => (() => void) | undefined) | undefined;
 
 	/** 共有の確認に出す、拡張機能についての知らせ（無ければ undefined）。 */
 	private _extensionWarning: string | undefined;
@@ -276,7 +286,7 @@ export class ParadisBindingDialog extends Disposable {
 		private readonly pageModel: IBrowserViewModel | undefined,
 		// 呼び出し元ペインの識別に使われていたが、行内アクションUIでは選択の概念がないため未使用。
 		// API互換のため引数は維持する。
-		_options: IParadisBindingDialogOptions | undefined,
+		options: IParadisBindingDialogOptions | undefined,
 		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
 		@ILayoutService layoutService: ILayoutService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
@@ -286,6 +296,8 @@ export class ParadisBindingDialog extends Disposable {
 		@IParadisBrowserExtensionsService browserExtensionsService: IParadisBrowserExtensionsService,
 	) {
 		super();
+		this._attachTargetDeviceId = options?.focusDeviceId;
+		this._deviceScreenOpener = options?.deviceScreenOpener;
 
 		// このページに、ページの中身を読み書きできる拡張機能が入っていれば共有の前に知らせる（D4）
 		// 答えが返るまでは共有のスイッチを押せない（知らせを見ないまま共有させない）。問い合わせは 1 秒で
@@ -1033,6 +1045,18 @@ export class ParadisBindingDialog extends Disposable {
 				? STR_DEVICE_UNATTACHED
 				: strDeviceAttachedTo(attached.map(entry => this._attachmentPaneLabel(entry, panes)).join('、'));
 			dom.append(main, $('.pbd-row-sub')).textContent = device.runtime ? `${device.runtime} · ${status}` : status;
+
+			// 新しい仕組みのシミュレータ（設定がオンの macOS）は、その画面をエディタのタブに開ける
+			const openScreen = this._deviceScreenOpener?.(device.id);
+			if (openScreen) {
+				const open = this._renderDisposables.add(new Button(row, { ...defaultButtonStyles, secondary: true }));
+				open.element.classList.add('pbd-small', 'pbd-row-btn');
+				open.label = STR_BTN_OPEN_SIMULATOR;
+				this._renderDisposables.add(open.onDidClick(() => {
+					openScreen();
+					this.close();
+				}));
+			}
 
 			// アタッチも解除も渡し先ペインごとの操作なので、行のボタンはペイン一覧の開閉に徹する。
 			const button = this._renderDisposables.add(new Button(row, { ...defaultButtonStyles, secondary: true }));
