@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View, type StyleProp, type TextStyle } from 'react-native';
 import { ChevronDown, ChevronRight, Folder, Search, X } from 'lucide-react-native';
 import { ContextMenu, type ContextMenuSpec } from '../../components/contextMenu.js';
@@ -113,21 +113,37 @@ const SEARCH_MODES: readonly { readonly key: FilesSearchMode; readonly label: st
  * 検索欄（モックの `.searchbar`）。`ScreenHeader` の children に置く。入力は uncontrolled
  * （打ちながら親を描き直しても、欄の中身とカーソルが揺れないように）。
  */
-export function FilesSearchBar({ mode, initialQuery = '', onChangeMode, onChangeQuery, editable }: {
+export function FilesSearchBar({ mode, initialQuery = '', onChangeMode, onChangeQuery, editable, focusDelayMs }: {
 	mode: FilesSearchMode;
+	/**
+	 * 開いたときのフォーカスを遅らせる（ms）。長押しのメニュー（「このフォルダを検索」）から開いたとき用。メニューは閉じた後
+	 * 0.6 秒、長押しの前と違う入力欄が first responder になるとキーボードを閉じる（para-context-menu の focusGuardTail）。
+	 */
+	focusDelayMs?: number;
 	/** 開いたときに入れておく文字（退避しておいた検索を戻すとき）。 */
 	initialQuery?: string;
 	onChangeMode: (mode: FilesSearchMode) => void;
 	onChangeQuery: (query: string) => void;
 	editable: boolean;
 }) {
+	const inputRef = useRef<TextInput>(null);
+	useEffect(() => {
+		if (focusDelayMs === undefined || initialQuery.length > 0) {
+			return undefined;
+		}
+		const timer = setTimeout(() => inputRef.current?.focus(), focusDelayMs);
+		return () => clearTimeout(timer);
+		// 開いたときに 1 回だけ
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
 	return (
 		<View style={styles.searchBar}>
 			<View style={styles.field}>
 				<Icon icon={Search} size={iconSize.sm} color={colors.textMuted} />
 				<TextInput
+					ref={inputRef}
 					style={styles.input}
-					autoFocus={initialQuery.length === 0}
+					autoFocus={initialQuery.length === 0 && focusDelayMs === undefined}
 					defaultValue={initialQuery}
 					onChangeText={onChangeQuery}
 					placeholder={mode === 'name' ? 'ファイル名で検索…' : 'ファイルの内容を検索…'}

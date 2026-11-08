@@ -28,6 +28,9 @@ import { useFileSearch, type FileSearchState } from './useFileSearch.js';
 import { useFileTree } from './useFileTree.js';
 import { useScmStatus } from './useScmData.js';
 
+/** 「このフォルダを検索」から開いた検索欄にフォーカスするまでの待ち（ms）。長押しのメニューの見張り（閉じた後 0.6 秒）より後にする。 */
+const MENU_SEARCH_FOCUS_DELAY_MS = 700;
+
 /**
  * ファイルのツリー（Orca の MobileFileExplorerPanel）。見出しの右の虫めがねで検索欄を出し、
  * 名前（全階層のパス）か内容（全文）で探す。ファイルを押すとビューアへ進む。
@@ -108,6 +111,7 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 	};
 
 	const toggleSearch = () => {
+		setSearchFromMenu(false);
 		setSearch({ open: !searchOpen, query: '', dir: undefined });
 	};
 
@@ -120,8 +124,10 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 	const menuOps = useMemo(() => contextMenuOps(), []);
 	const menuSheet = useContextMenuSheet();
 	const absolutePath = useAbsolutePathOption(codeSpace);
+	// 「このフォルダを検索」から開いた検索欄は、フォーカスを遅らせる（メニューの見張りにキーボードを閉じられないように）
+	const [searchFromMenu, setSearchFromMenu] = useState(false);
 	const fileMenu = (path: string, dir: boolean, line?: number) => buildFileMenu(
-		{ path, dir, absolute: absolutePath(path), ...(dir ? { searchIn: { supported: canSearchDir, run: () => setSearch({ open: true, query: '', dir: path }) } } : {}) },
+		{ path, dir, absolute: absolutePath(path), ...(dir ? { searchIn: { supported: canSearchDir, run: () => { setSearchFromMenu(true); setSearch({ open: true, query: '', dir: path }); } } } : {}) },
 		{ ...menuOps, ...(dir ? {} : { open: () => openFile(path, line) }) },
 	);
 	const grepMenu = (match: { readonly path: string; readonly line: number; readonly text: string }) => buildGrepMatchMenu({ ...match, absolute: absolutePath(match.path) }, { ...menuOps, open: () => openFile(match.path, match.line) });
@@ -137,7 +143,7 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 				right={<HeaderButton icon={searchOpen ? X : Search} label={searchOpen ? '検索を閉じる' : 'ファイルを検索'} onPress={toggleSearch} active={searchOpen} />}
 			>
 				{/* 絞るフォルダが替わったら入力欄を作り直す（uncontrolled なので、前の文字が残らないように） */}
-				{searchOpen ? <FilesSearchBar key={scopedDir ?? ''} mode={mode} initialQuery={query} onChangeMode={next => setSearch({ mode: next })} onChangeQuery={next => setSearch({ query: next })} editable={codeSpace.live} /> : null}
+				{searchOpen ? <FilesSearchBar key={scopedDir ?? ''} {...(searchFromMenu ? { focusDelayMs: MENU_SEARCH_FOCUS_DELAY_MS } : {})} mode={mode} initialQuery={query} onChangeMode={next => setSearch({ mode: next })} onChangeQuery={next => setSearch({ query: next })} editable={codeSpace.live} /> : null}
 				{searchOpen && scopedDir !== undefined ? <FilesSearchScope dir={scopedDir} onClear={() => setSearch({ dir: undefined })} /> : null}
 			</ScreenHeader>
 			<SpaceGateBody gate={codeSpace.gate}>
