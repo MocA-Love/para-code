@@ -16,10 +16,11 @@ import { join } from '../../../../../base/common/path.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IResolveMetadataFileOptions } from '../../../../../platform/files/common/files.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { DiskFileSystemProvider } from '../../../../../platform/files/node/diskFileSystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisSkillHost, paradisDedupeSkillListings, paradisDeleteSkill, paradisInstallSkill, paradisListSkills, paradisPlanSkillRoots } from '../../common/paradisSkills.js';
+import { IParadisSkillHost, paradisDeleteSkill, paradisInstallSkill, paradisListSkillRoots, paradisListSkills, paradisPlanSkillRoots } from '../../common/paradisSkills.js';
 
 (isWindows ? suite.skip : suite)('paradisSkills on disk', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -46,16 +47,31 @@ import { IParadisSkillHost, paradisDedupeSkillListings, paradisDeleteSkill, para
 		await fs.writeFile(join(dir, 'SKILL.md'), `---\nname: ${name}\n---\n`);
 	}
 
-	test('shows a skills folder that links to another one only once', async () => {
+	test('shows a skills folder that links to another one only once, and reads it only once', async () => {
 		const { fileService, claude, agents } = services(store.add(new DisposableStore()));
 		await writeSkill(join(home, '.agents', 'skills', 'foo'), 'foo');
 		await fs.mkdir(join(home, '.claude'), { recursive: true });
 		await fs.symlink(join(home, '.agents', 'skills'), join(home, '.claude', 'skills'));
-		const listings = paradisDedupeSkillListings([
-			await paradisListSkills(fileService, agents),
-			await paradisListSkills(fileService, claude),
-		]);
-		assert.deepStrictEqual(listings.map(listing => [listing.root.provider, listing.skills.length, listing.aliasOf]), [['agents', 1, undefined], ['claude', 0, agents.id]]);
+		const resolved: string[] = [];
+		const counting = new Proxy(fileService, {
+			get: (target, key) => key === 'resolve'
+				? (resource: URI, options?: IResolveMetadataFileOptions) => {
+					// 一覧のために読んだフォルダだけを数える（SKILL.md を読むときの確認は数えない）
+					if (resource.fsPath === agents.uri.fsPath || resource.fsPath === claude.uri.fsPath) {
+						resolved.push(resource.fsPath);
+					}
+					return target.resolve(resource, options);
+				}
+				: Reflect.get(target, key),
+		});
+		const listings = await paradisListSkillRoots(counting, [agents, claude]);
+		assert.deepStrictEqual({
+			listings: listings.map(listing => [listing.root.provider, listing.skills.length, listing.aliasOf]),
+			resolved,
+		}, {
+			listings: [['agents', 1, undefined], ['claude', 0, agents.id]],
+			resolved: [agents.uri.fsPath],
+		});
 	});
 
 	test('installs the contents of a linked skill, and refuses skills that contain links', async () => {
