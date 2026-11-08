@@ -120,8 +120,8 @@ registerAction2(class ParadisOpenSimulatorAction extends Action2 {
 	}
 });
 
-// エージェントの端末の要求を承認したとき（mobileCanvas/electron-browser/paradisMobileDeviceRequest.contribution.ts から）。
-// 新しい仕組みのシミュレータなら、その画面をペインのターミナルの右に開き、止まっていれば起動する。
+// エージェントの端末の要求を承認したとき（paradisMobileDeviceRequest.contribution.ts から）。
+// その端末の画面をペインのターミナルの右に開き、止まっていれば起動する。
 CommandsRegistry.registerCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, async (accessor, paneToken: unknown, deviceId: unknown) => {
 	const configurationService = accessor.get(IConfigurationService);
 	if (typeof paneToken !== 'string' || typeof deviceId !== 'string') {
