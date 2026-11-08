@@ -96,7 +96,7 @@ const processSupported = ContextKeyExpr.or(TerminalContextKeys.processSupported,
  * 右クリックしたターミナル。本文のメニューは `InstanceContext`（instanceId）、タブのメニューは
  * ターミナルの URI を渡す。どちらも無ければアクティブなターミナル。
  */
-function paradisTargetInstance(terminalService: ITerminalService, arg: unknown): ITerminalInstance | undefined {
+export function paradisTargetInstance(terminalService: ITerminalService, arg: unknown): ITerminalInstance | undefined {
 	if (typeof arg === 'object' && arg !== null && typeof (arg as { instanceId?: unknown }).instanceId === 'number') {
 		return terminalService.getInstanceFromId((arg as { instanceId: number }).instanceId);
 	}

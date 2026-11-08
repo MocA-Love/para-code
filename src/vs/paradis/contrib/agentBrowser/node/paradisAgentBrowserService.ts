@@ -815,7 +815,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ペインで動いている会話（hook の session_id）。再起動後に復元したタブから前の会話を続ける
 	 * ために renderer へ渡す。SessionEnd（会話を終えた）と TerminalExit（ペインが消えた）で消す。
 	 */
-	private readonly _paneSessions = new Map<string, Omit<IParadisAgentPaneSession, 'token'>>();
+	/**
+	 * 各ペインで動いている会話。`transcriptPath`（会話の記録のパス）は、ターミナルの右クリックの「別の Agent に引き継ぐ」だけが
+	 * {@link getPaneTranscriptPath} で 1 件ずつ引く。手元のパスをほかへ広げないよう、状態スナップショットには載せない。
+	 */
+	private readonly _paneSessions = new Map<string, Omit<IParadisAgentPaneSession, 'token'> & { readonly transcriptPath?: string }>();
 	/**
 	 * 休止（G-03）で止めているペイン → 印の期限。止めた所有者は終わり際に SessionEnd を送り、それは完了（review）に
 	 * 読み替わって緑の点・通知・読み上げを出してしまう。期限までは、このペインの終わりの hook を状態にも hook の
@@ -2231,7 +2235,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		const nextCwd = previous?.sessionId === sessionId ? (previous.cwd ?? cwd) : cwd;
 		// OpenCode の会話は、再開するもの（`opencode` か覚えた互換 CLI）が決まらなければ（null）再開できない会話として載せる
 		const resumeCli = agent !== 'opencode' ? undefined : cli === null ? null : cli ?? (previous?.sessionId === sessionId && previous.resumable === false ? null : previous?.cli ?? PARADIS_OPENCODE_COMMAND);
-		this._paneSessions.set(token, { agent, sessionId, ...(agent === 'opencode' ? (resumeCli === null ? { resumable: false as const } : { cli: resumeCli }) : {}), at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(remote ? { remote: true } : {}) });
+		// 会話の記録の場所（引き継ぎに使う。スナップショットには載せない）。同じ会話の間は、後の hook が持っていなければ前の値を使う。
+		// OpenCode は記録ではなくデータベースの場所なので控えない
+		const nextTranscriptPath = agent === 'opencode' ? undefined : transcriptPath ?? (previous?.sessionId === sessionId ? previous.transcriptPath : undefined);
+		this._paneSessions.set(token, { agent, sessionId, ...(agent === 'opencode' ? (resumeCli === null ? { resumable: false as const } : { cli: resumeCli }) : {}), at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(nextTranscriptPath !== undefined ? { transcriptPath: nextTranscriptPath } : {}), ...(remote ? { remote: true } : {}) });
 	}
 
 	/**
@@ -5124,6 +5131,17 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/** workbench の共有producer用: statusとhook実績を同じowner同期点で返す。 */
+	/**
+	 * 呼んだ窓のペインで今動いている会話の記録のパス（ターミナルの右クリックの「別の Agent に引き継ぐ」）。
+	 * その窓のペインでない、会話が終わった・変わった、記録の場所が分からないときは undefined。
+	 */
+	async getPaneTranscriptPath(connection: object, token: string): Promise<string | undefined> {
+		if (!this._currentEligibleTokens(connection).has(token)) {
+			return undefined;
+		}
+		return this._paneSessions.get(token)?.transcriptPath;
+	}
+
 	async listAgentStatusSnapshot(connection: object): Promise<IParadisAgentStatusSnapshot> {
 		const eligibleTokens = this._currentEligibleTokens(connection);
 		this._sweepStalePaneStatuses(eligibleTokens);
@@ -5146,7 +5164,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			.map(entry => Object.freeze({ token: entry.token, issueUrls: Object.freeze(entry.issueUrls) }));
 		const paneSessions = [...this._paneSessions]
 			.filter(([token]) => eligibleTokens.has(token))
-			.map(([token, session]) => Object.freeze({ token, ...session }));
+			.map(([token, { transcriptPath: _transcriptPath, ...session }]) => Object.freeze({ token, ...session }));
 		const openCodeCommands = paradisOpenCodeCliRegistry.allCommands();
 		// 次の状態が付いたペインは、もう「止まって待っている」ではない
 		for (const token of [...this._awaitingUserTokens]) {
