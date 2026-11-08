@@ -40,19 +40,20 @@ export async function paradisOpenSimulatorEditor(udid: string, name: string, edi
 	if (placement?.kind === 'split') {
 		const base = groups.find(group => group.id === placement.besideGroupId)!;
 		const split = editorGroupsService.getPart(base).addGroup(base, GroupDirection.RIGHT);
-		await openInto(editorService, editorGroupsService, input, split, false);
+		await openInto(editorService, editorGroupsService, input, split, false, true);
 		return;
 	}
 	const group = (placement ? groups.find(candidate => candidate.id === placement.groupId) : undefined) ?? editorGroupsService.activeGroup;
 	// 利用者がコマンドで開いたので、ターミナルしか無いグループでも前に出す（エージェントの要求で開くとき（③）は裏）
-	await openInto(editorService, editorGroupsService, input, group, false);
+	await openInto(editorService, editorGroupsService, input, group, false, false);
 }
 
-async function openInto(editorService: IEditorService, editorGroupsService: IEditorGroupsService, input: ParadisSimulatorEditorInput, group: IEditorGroup, inactive: boolean): Promise<void> {
+/** `createdGroup` は、開くために分割して作ったグループか（開けなかったら、作ったグループだけを消す）。 */
+async function openInto(editorService: IEditorService, editorGroupsService: IEditorGroupsService, input: ParadisSimulatorEditorInput, group: IEditorGroup, inactive: boolean, createdGroup: boolean): Promise<void> {
 	try {
 		await editorService.openEditor(input, { pinned: true, inactive, activation: inactive ? EditorActivation.PRESERVE : undefined }, group);
 	} finally {
-		if (group.isEmpty && editorGroupsService.groups.length > 1) {
+		if (createdGroup && group.isEmpty) {
 			editorGroupsService.getPart(group).removeGroup(group);
 		}
 	}

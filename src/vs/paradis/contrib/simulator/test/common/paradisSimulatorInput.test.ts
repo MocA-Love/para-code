@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorShouldSendKey } from '../../common/paradisSimulatorInput.js';
+import { paradisSimulatorDisplayGeometry, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
 
 suite('Paradis simulator: human input', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -48,6 +48,32 @@ suite('Paradis simulator: human input', () => {
 		}, {
 			usages: [0x04, 0x1d, 0x1e, 0x27, 0x28, 0x2a, 0x2c, 0x52, 0xe1, undefined],
 			send: [true, false, false, false, false],
+		});
+	});
+
+	// serve-sim の参照のクライアント（src/client/simulator/orientation.ts）と同じ: 生の映像が縦のまま横に回したときと 180° だけ CSS で回し、
+	// 入力は回した分を戻す。下端で始まるドラッグには、向きに合わせたホームの端の印を付ける
+	test('rotates the picture like the serve-sim client and maps taps and the home edge back to the device', () => {
+		const portraitRaw = { width: 1206, height: 2622 };
+		assert.deepStrictEqual({
+			portrait: paradisSimulatorDisplayGeometry({ ...portraitRaw, orientation: 'portrait' }),
+			leftRawPortrait: paradisSimulatorDisplayGeometry({ ...portraitRaw, orientation: 'landscape_left' }),
+			leftRawLandscape: paradisSimulatorDisplayGeometry({ width: 2622, height: 1206, orientation: 'landscape_left' }),
+			upsideDown: paradisSimulatorDisplayGeometry({ ...portraitRaw, orientation: 'portrait_upside_down' }),
+			points: [
+				paradisSimulatorRawPoint(undefined, 0.2, 0.3),
+				paradisSimulatorRawPoint('landscape_left', 0.2, 0.3),
+				paradisSimulatorRawPoint('landscape_right', 0.2, 0.3),
+				paradisSimulatorRawPoint('portrait_upside_down', 0.2, 0.3),
+			],
+			edges: [paradisSimulatorTouchEdge(undefined, 0.5), paradisSimulatorTouchEdge(undefined, 0.95), paradisSimulatorTouchEdge('landscape_left', 0.95), paradisSimulatorTouchEdge('landscape_right', 0.95), paradisSimulatorTouchEdge('portrait_upside_down', 0.95)],
+		}, {
+			portrait: { display: { width: 1206, height: 2622 }, rotationDegrees: 0, inputOrientation: undefined },
+			leftRawPortrait: { display: { width: 2622, height: 1206 }, rotationDegrees: 90, inputOrientation: 'landscape_left' },
+			leftRawLandscape: { display: { width: 2622, height: 1206 }, rotationDegrees: 0, inputOrientation: undefined },
+			upsideDown: { display: { width: 1206, height: 2622 }, rotationDegrees: 180, inputOrientation: 'portrait_upside_down' },
+			points: [{ x: 0.2, y: 0.3 }, { x: 0.3, y: 0.8 }, { x: 0.7, y: 0.2 }, { x: 0.8, y: 0.7 }],
+			edges: [0, 3, 4, 1, 2],
 		});
 	});
 });
