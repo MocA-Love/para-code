@@ -102,7 +102,8 @@ export function useTaskActions() {
 		if (url) {
 			items.push({ separator: true, label: '' }, { label: 'GitHub で開く', icon: 'ext', run: () => window.open(url, '_blank', 'noopener') });
 		}
-		if (task.source !== 'github' && (task.step === 'todo' || task.step === 'done')) {
+		// 取り込みで入った Issue は取り込みが外す。Para Code の「タスク」の画面から載せた未着手の Issue は手で外せる
+		if (task.source !== 'github' && (task.step === 'todo' || task.step === 'done') || task.picked && task.step === 'todo') {
 			items.push({ separator: true, label: '' }, { label: 'ボードから消す', icon: 'trash', danger: true, run: () => app.showDialog(<ConfirmDialog title="ボードから消しますか" body={task.title} ok="消す" danger onOk={() => app.call('removeTask', { taskId: task.id })} />) });
 		}
 		return items;

@@ -21,6 +21,7 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../platform
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService, registerMainProcessRemoteService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -40,6 +41,8 @@ import { IParadisTaskBoardRelaySessionsService } from './paradisTaskBoardRelaySe
 registerMainProcessRemoteService(IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL);
 
 const OPEN_COMMAND_ID = 'paradis.taskBoard.open';
+/** 「タスク」の画面を開くコマンド（tasks/electron-browser/paradisTasksEditorInput.ts）。taskBoard から tasks を import しないよう文字列で持つ。 */
+const TASKS_OPEN_COMMAND_ID = 'paradis.tasks.open';
 const STOP_COMMAND_ID = 'paradis.taskBoard.stop';
 const TITLE_BAR_SETTING_ID = 'paradis.taskBoard.titleBar.enabled';
 
@@ -53,7 +56,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			// allow-any-unicode-next-line
-			description: localize('paradis.taskBoard.titleBarSetting', "タイトルバーに「タスクボード」ボタンを表示するかどうかを制御します。"),
+			description: localize('paradis.taskBoard.titleBarSetting', "タイトルバーに「タスク」ボタン（「タスク」の画面を開く）を表示するかどうかを制御します。"),
 		},
 	},
 });
@@ -236,9 +239,9 @@ class ParadisToggleTaskBoardTitleBarAction extends ToggleTitleBarConfigAction {
 		super(
 			TITLE_BAR_SETTING_ID,
 			// allow-any-unicode-next-line
-			localize('paradis.taskBoard.toggleTitleBar', "タスクボード"),
+			localize('paradis.taskBoard.toggleTitleBar', "タスク"),
 			// allow-any-unicode-next-line
-			localize('paradis.taskBoard.toggleTitleBarDescription', "タイトルバーの「タスクボード」ボタンの表示を切り替えます"),
+			localize('paradis.taskBoard.toggleTitleBarDescription', "タイトルバーの「タスク」ボタンの表示を切り替えます"),
 			7.5,
 			IsSessionsWindowContext.toNegated(),
 		);
@@ -255,8 +258,14 @@ class ParadisTaskBoardTitleBarWidget extends BaseActionViewItem {
 		action: IAction,
 		options: IBaseActionViewItemOptions | undefined,
 		@IHoverService private readonly hoverService: IHoverService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super(undefined, action, options);
+	}
+
+	/** タスクボードへの入口は「タスク」の画面に揃える（ボードの窓はその画面の「タスクボードを開く」から開く）。 */
+	override onClick(): void {
+		void this.commandService.executeCommand(TASKS_OPEN_COMMAND_ID);
 	}
 
 	override render(container: HTMLElement): void {
@@ -265,10 +274,12 @@ class ParadisTaskBoardTitleBarWidget extends BaseActionViewItem {
 		container.setAttribute('role', 'button');
 		append(container, $('span.paradis-agent-live-titlebar-icon.paradis-task-board-titlebar-icon')).setAttribute('aria-hidden', 'true');
 		// allow-any-unicode-next-line
-		const label = localize('paradis.taskBoard.titleBarLabel', "タスクボード");
+		const label = localize('paradis.taskBoard.titleBarTasksLabel', "タスク");
 		append(container, $('span.paradis-agent-live-titlebar-label')).textContent = label;
 		container.setAttribute('aria-label', label);
-		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), container, label));
+		// allow-any-unicode-next-line
+		const hover = localize('paradis.taskBoard.titleBarTasksHover', "タスク（GitHub の Issue・PR・プロジェクト）を開く。タスクボードはこの画面から開きます");
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), container, hover));
 	}
 }
 

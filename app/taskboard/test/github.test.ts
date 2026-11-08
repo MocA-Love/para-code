@@ -196,6 +196,33 @@ describe('GitHubClient: トークン', () => {
 	});
 });
 
+describe('GitHubSync: 「タスク」の画面から載せた Issue', () => {
+	test('取り込みのたびに閉じたかを 1 回だけ確かめ、閉じたものは未着手から外す', async () => {
+		const rate = { remaining: 4999, limit: 5000, resetAt: '2030-01-01T00:00:00Z', cost: 1 };
+		const issue = (number: number, state: string) => ({ number, title: `t${number}`, url: `https://github.com/o/r/issues/${number}`, state, repository: { owner: { login: 'o' }, name: 'r' }, assignees: { nodes: [] }, labels: { nodes: [] }, closedByPullRequestsReferences: { nodes: [] } });
+		const { fetchLike, calls } = fakeFetch((_url, init) => {
+			const query: string = JSON.parse(init.body!).query;
+			if (query.includes('viewer')) {
+				return ok({ viewer: { login: 'me' } });
+			}
+			if (query.includes('search(')) {
+				return ok({ search: { issueCount: 0, nodes: [] }, rateLimit: rate });
+			}
+			return ok({ i0: { issue: issue(7, 'OPEN') }, i1: { issue: issue(8, 'CLOSED') }, rateLimit: rate });
+		});
+		const client = new GitHubClient({ token: async () => 'token-a', fetch: fetchLike });
+		const engine = new TaskBoardEngine({ clock: Date.now, newId: () => 'x', agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner: { run() { }, cancel() { } }, workspaces: { prepare: () => Promise.resolve({}), release: () => Promise.resolve() } } as unknown as ConstructorParameters<typeof TaskBoardEngine>[0]);
+		engine.setFlows([{ ...TASK_BOARD_DEFAULT_FLOW, intake: { source: 'github-issues', owner: 'o', repo: 'r' } }], TASK_BOARD_DEFAULT_FLOW.id, true);
+		const sync = new GitHubSync({ client, engine, repo: { owner: 'o', repo: 'r' }, onState: () => undefined, intervalMs: 1e9, prIntervalMs: 1e9 });
+		engine.addIssues((await sync.fetchIssues([{ owner: 'o', repo: 'r', number: 7 }, { owner: 'o', repo: 'r', number: 8 }])).map(({ pr: _pr, ...item }) => item));
+		engine.addIssues([{ issue: { owner: 'o', repo: 'r', number: 8, url: 'u' }, title: 't8', labels: [], assignees: [] }]);
+		await sync.start();
+		sync.dispose();
+		const checks = calls.map(c => JSON.parse(c.body!)).filter(b => b.query.includes('issue(number'));
+		expect({ tasks: engine.listTasks(t => t.id).sort(), checks: checks.length }).toEqual({ tasks: ['gh:o/r#7'], checks: 2 });
+	});
+});
+
 describe('GitHubClient: 伏せ字', () => {
 	afterEach(() => vi.restoreAllMocks());
 
