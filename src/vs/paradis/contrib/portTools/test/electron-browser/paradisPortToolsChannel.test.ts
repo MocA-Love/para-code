@@ -307,7 +307,7 @@ suite('ParadisPortToolsChannel', () => {
 			aligned: 21,
 			dialogs: 1,
 			title: 'pane のエージェントが、ポートの転送を 22 件張り直そうとしています',
-			more: 'ほか 2 件',
+			more: 'ほか 2 件: 21121, 21122',
 			approve: '[22 件を張り直す]',
 		});
 	});

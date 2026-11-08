@@ -278,7 +278,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 					return label
 						? localize('paradis.portTools.forward.rowWithLabel', "SSH 先の localhost:{0} → この PC の 127.0.0.1:{1}（{2}）", item.remotePort, item.localPort, label)
 						: localize('paradis.portTools.forward.row', "SSH 先の localhost:{0} → この PC の 127.0.0.1:{1}", item.remotePort, item.localPort);
-				})),
+				}), targets.map(item => item.remotePort)),
 				localize('paradis.portTools.forward.effect', "手元の番号が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。"),
 			],
 			approveLabel: localize('paradis.portTools.forward.approve', "{0} 件を転送", targets.length),
@@ -349,7 +349,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const outcome = await this._ask(paneToken, {
 			messageTemplate: pane => localize('paradis.portTools.stop.message', "{0} のエージェントが、ポートの転送を {1} 件停止しようとしています", pane, targets.length),
 			detail: [
-				...dialogRows(targets.map(tunnel => this._describe(tunnel))),
+				...dialogRows(targets.map(tunnel => this._describe(tunnel)), targets.map(tunnel => tunnel.remotePort)),
 				localize('paradis.portTools.stop.effect', "停止すると、その手元のアドレスを開いているブラウザのタブは繋がらなくなります。"),
 			],
 			approveLabel: localize('paradis.portTools.stop.approve', "{0} 件を停止", targets.length),
@@ -411,7 +411,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 			detail: [
 				...dialogRows(targets.map(({ tunnel, changesLocal }) => changesLocal
 					? localize('paradis.portTools.reforward.alignRow', "{0}：手元の番号を {1} から {2} に変えます", this._describe(tunnel), tunnel.localPort ?? '?', tunnel.remotePort)
-					: localize('paradis.portTools.reforward.keepRow', "{0}：手元の番号は {1} のまま", this._describe(tunnel), tunnel.localPort ?? '?'))),
+					: localize('paradis.portTools.reforward.keepRow', "{0}：手元の番号は {1} のまま", this._describe(tunnel), tunnel.localPort ?? '?')), targets.map(({ tunnel }) => tunnel.remotePort)),
 				...(anyChangesLocal ? [localize('paradis.portTools.reforward.alignEffect', "手元の番号を変える転送は、元の番号を開いているブラウザのタブが繋がらなくなります。")] : []),
 				otherWindowsNote(),
 			],
@@ -462,7 +462,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const outcome = await this._ask(paneToken, {
 			messageTemplate: pane => localize('paradis.portTools.cleanUp.message', "{0} のエージェントが、SSH 先で listen していないエフェメラル帯の転送を {1} 件停止しようとしています", pane, targets.length),
 			detail: [
-				...dialogRows(targets.map(tunnel => this._describe(tunnel))),
+				...dialogRows(targets.map(tunnel => this._describe(tunnel)), targets.map(tunnel => tunnel.remotePort)),
 				localize('paradis.portTools.cleanUp.effect', "どれも {0} 以上のエフェメラル帯の番号で、利用者（プレビューやリンクを含む）が張り、今は SSH 先のプロセスが listen していない転送です。{0} より下の決まった番号は対象にしていません。", PARADIS_EPHEMERAL_PORT_START),
 			],
 			approveLabel: localize('paradis.portTools.cleanUp.approve', "{0} 件を停止", targets.length),
@@ -514,7 +514,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const outcome = await this._ask(paneToken, {
 			messageTemplate: pane => localize('paradis.portTools.align.message', "{0} のエージェントが、手元の番号が違う転送 {1} 件を、番号を揃えて張り直そうとしています", pane, targets.length),
 			detail: [
-				...dialogRows(targets.map(tunnel => localize('paradis.portTools.align.row', "{0}: 手元 {1} → {2}", tunnel.remotePort, tunnel.localPort ?? '?', tunnel.remotePort))),
+				...dialogRows(targets.map(tunnel => localize('paradis.portTools.align.row', "{0}: 手元 {1} → {2}", tunnel.remotePort, tunnel.localPort ?? '?', tunnel.remotePort)), targets.map(tunnel => tunnel.remotePort)),
 				...(inUse.length ? [localize('paradis.portTools.align.inUse', "手元の番号が使用中のため張り直さないもの: {0}", inUse.join(', '))] : []),
 				localize('paradis.portTools.align.effect', "張り直すと、元の手元の番号を開いているブラウザのタブは繋がらなくなります。"),
 				otherWindowsNote(),
@@ -583,11 +583,15 @@ export class ParadisPortToolsChannel implements IServerChannel {
 	}
 }
 
-/** ダイアログに並べる行。{@link DIALOG_MAX_ROWS} を超えた分は「ほか N 件」にまとめる。 */
-function dialogRows(rows: readonly string[]): string[] {
+/**
+ * ダイアログに並べる行（`rows[i]` は `ports[i]` の転送の行）。{@link DIALOG_MAX_ROWS} を超えた分は 1 行に
+ * まとめるが、番号は全部見せる（中身を見ないまま承認させない）。長い行はダイアログの本文が折り返し、
+ * 高すぎればスクロールする（upstream の dialog.css の `.dialog-message-container` と `.dialog-message-detail`）。
+ */
+function dialogRows(rows: readonly string[], ports: readonly number[]): string[] {
 	const shown = rows.slice(0, DIALOG_MAX_ROWS);
 	if (rows.length > DIALOG_MAX_ROWS) {
-		shown.push(localize('paradis.portTools.more', "ほか {0} 件", rows.length - DIALOG_MAX_ROWS));
+		shown.push(localize('paradis.portTools.more', "ほか {0} 件: {1}", rows.length - DIALOG_MAX_ROWS, ports.slice(DIALOG_MAX_ROWS).join(', ')));
 	}
 	return shown;
 }
