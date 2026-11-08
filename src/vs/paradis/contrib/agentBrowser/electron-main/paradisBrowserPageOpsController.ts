@@ -104,6 +104,11 @@ const AUTH_ANSWER_WINDOW_MS = 60_000;
 const MAX_OWNER_WATERMARKS = 4096;
 /** PDF を作るのを待つ上限。 */
 const PDF_TIMEOUT_MS = 60_000;
+/**
+ * ネットワークの上書きの送信の鎖（`runNetwork`）の 1 つの仕事を待つ上限。CDP が返さない仕事があっても、
+ * 後ろの仕事（次の持ち主の設定・戻し）へ詰まりを伝えない。入力の送信の上限（10 秒）に揃える。
+ */
+const NETWORK_STEP_TIMEOUT_MS = 10_000;
 /** 上書きに使うセッションの Network のバッファ（本文を読むことは無いので小さくする）。 */
 const NETWORK_BUFFER_BYTES = 1024 * 1024;
 
@@ -233,6 +238,8 @@ export class ParadisBrowserPageOpsController {
 		private readonly onDidChangeInitScripts: (target: IParadisPageOpsTarget, count: number) => void = () => { },
 		/** 本文を持っておく量の合計の上限（テストで小さくする）。 */
 		private readonly sourceBudget: number = PARADIS_INIT_SCRIPT_SOURCE_BUDGET,
+		/** ネットワークの上書きの送信の 1 つの仕事を待つ上限（テストで短くする）。 */
+		private readonly networkStepTimeoutMs: number = NETWORK_STEP_TIMEOUT_MS,
 	) { }
 
 	/** 台帳を書き換え、本数が変わったら知らせる。 */
@@ -655,20 +662,28 @@ export class ParadisBrowserPageOpsController {
 		const scripts = (this.initScripts.get(target) ?? []).filter(script => script.session === entry.session).map(script => script.identifier);
 		this.setInitScripts(target, undefined);
 		const commands = [
-			...(entry.networkEnabled || entry.fetchEnabled ? NETWORK_TEARDOWN_COMMANDS : []),
 			...(entry.overlayEnabled ? OVERLAY_TEARDOWN_COMMANDS : []),
 			...scripts.map(identifier => ['Page.removeScriptToEvaluateOnNewDocument', { identifier }] as const),
 			...(entry.pageEnabled ? [['Page.disable', {}] as const] : []),
 		];
-		entry.networkEnabled = false;
-		entry.fetchEnabled = false;
 		entry.overlayEnabled = false;
 		entry.pageEnabled = false;
+		// ネットワークの戻しは鎖の後ろに繋ぐ（鎖の中で待っている有効化や戻しと交互に届かないように）。
+		// 鎖の中の有効化は、手放したときに state が disposed になっているので何も送らない
+		await this.runNetwork(entry, async () => {
+			if (!entry.networkEnabled && !entry.fetchEnabled) {
+				return;
+			}
+			entry.networkEnabled = false;
+			entry.fetchEnabled = false;
+			await this.sendTeardown(target, entry.session, NETWORK_TEARDOWN_COMMANDS);
+		}).catch(() => undefined);
 		await this.sendTeardown(target, entry.session, commands);
 	}
 
 	private async teardownAndDispose(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
-		await this.teardown(target, entry);
+		// 鎖が詰まっていても、セッションは手放す
+		await raceTimeout(this.teardown(target, entry), this.networkStepTimeoutMs);
 		entry.store.dispose();
 		try {
 			entry.session.dispose();
@@ -853,11 +868,27 @@ export class ParadisBrowserPageOpsController {
 		});
 	}
 
-	/** ネットワークの上書きの送信を、そのセッションの鎖の後ろに繋いで順に走らせる。前が失敗しても後は走る。 */
+	/**
+	 * ネットワークの上書きの送信を、そのセッションの鎖の後ろに繋いで順に走らせる。前が失敗しても後は走る。
+	 * 1 つの仕事は {@link networkStepTimeoutMs} で待つのをやめ（呼び出し側へは失敗として返す）、次の仕事へ進む。
+	 */
 	private runNetwork(entry: ITargetSession, work: () => Promise<void>): Promise<void> {
-		const run = entry.networkChain.then(work);
+		const run = entry.networkChain.then(() => this.withNetworkDeadline(work()));
 		entry.networkChain = run.then(() => undefined, () => undefined);
 		return run;
+	}
+
+	private withNetworkDeadline(work: Promise<void>): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error('The browser tab did not answer the network override change in time.')), this.networkStepTimeoutMs);
+			work.then(() => {
+				clearTimeout(timer);
+				resolve();
+			}, error => {
+				clearTimeout(timer);
+				reject(error);
+			});
+		});
 	}
 
 	private onEvent(target: IParadisPageOpsTarget, session: ICDPConnection, event: CDPEvent): void {
