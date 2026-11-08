@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ITaskBoardSlot, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardWorkspaceError } from '@engine/paradisTaskBoardEngine.js';
-import { GitWorkspaces, gitFetch, inspectClones } from '../server/workspaces.js';
+import { GitWorkspaces, gitFetch, inspectClones, type IWorktreeIncludePort } from '../server/workspaces.js';
 
 // 本物の git を何度も起こすので、マシンが混んでいると既定の 5 秒（準備は 10 秒）に収まらない
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
@@ -117,6 +117,42 @@ describe('GitWorkspaces', () => {
 		rmSync(path.join(first.path, 'c.txt'));
 		await ws.release(task('para/3-z'), wtSlot);
 		expect(existsSync(first.path)).toBe(false);
+	});
+
+	test('ワークツリー: 作った直後に Para Code へ持ち込みを頼んで持ち込めなかったものを返し、返却も Para Code に任せる', async () => {
+		const calls: string[] = [];
+		const includes: IWorktreeIncludePort = {
+			copy: async (repoPath, worktreePath) => {
+				calls.push(`copy ${path.relative(root, repoPath)} ${path.relative(root, worktreePath)}`);
+				return '新しいスペースへ持ち込めなかったもの: config/local.json（git が無視していない）';
+			},
+			release: async (repoPath, worktreePath) => {
+				calls.push(`release ${path.relative(root, repoPath)} ${path.relative(root, worktreePath)}`);
+				return 'dirty';
+			},
+		};
+		const ws = new GitWorkspaces(main, path.join(root, 'wt'), undefined, includes);
+		const wtSlot: ITaskBoardSlot = { id: 'wt:t1', name: '4-env', path: '', kind: 'worktree' };
+		const prepared = await ws.prepare(task(), wtSlot, 'para/4-env');
+		// Para Code が残すと答えたら、ボードは自分では消さない
+		await ws.release(task('para/4-env'), wtSlot);
+		expect({ warning: prepared.warning, calls, kept: existsSync(prepared.path) }).toEqual({
+			warning: '新しいスペースへ持ち込めなかったもの: config/local.json（git が無視していない）',
+			calls: [`copy repo ${path.join('wt', '4-env')}`, `release repo ${path.join('wt', '4-env')}`],
+			kept: true,
+		});
+	});
+
+	test('ワークツリー: Para Code に頼めないとき、宣言の無いリポジトリでは何も知らせず、自分で片付ける', async () => {
+		const unreachable: IWorktreeIncludePort = {
+			copy: async () => { throw new Error('Para Code につながりません'); },
+			release: async () => { throw new Error('Para Code につながりません'); },
+		};
+		const ws = new GitWorkspaces(main, path.join(root, 'wt'), undefined, unreachable);
+		const wtSlot: ITaskBoardSlot = { id: 'wt:t1', name: '5-x', path: '', kind: 'worktree' };
+		const prepared = await ws.prepare(task(), wtSlot, 'para/5-x');
+		await ws.release(task('para/5-x'), wtSlot);
+		expect({ warning: prepared.warning, removed: !existsSync(prepared.path) }).toEqual({ warning: undefined, removed: true });
 	});
 
 	test('ワークツリー: 同時に始めたタスクの作業場所は全部でき、本体の fetch は 1 本ずつで、まとめて 1 回で済む', async () => {

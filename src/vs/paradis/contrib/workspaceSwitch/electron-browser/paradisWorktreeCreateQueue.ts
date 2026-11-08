@@ -181,7 +181,7 @@ export class ParadisWorktreeCreateQueueService extends Disposable implements IPa
 					},
 				},
 			});
-			this._notifyFinished(result.name, result.worktree, result.warning);
+			this._notifyFinished(result.name, result.worktree, result.warning, result.includeWarning);
 		} catch (error) {
 			this.logService.error('[ParadisWorktreeCreateQueue] create failed', error);
 			this._notifyFailed(job, error);
@@ -192,17 +192,21 @@ export class ParadisWorktreeCreateQueueService extends Disposable implements IPa
 		}
 	}
 
-	private _notifyFinished(name: string, worktree: IParadisWorktree, warning: string | undefined): void {
+	private _notifyFinished(name: string, worktree: IParadisWorktree, warning: string | undefined, includeWarning: string | undefined): void {
 		const switchAction = new Action('paradis.createQueue.switch', STR_SWITCH_ACTION, undefined, true, async () => {
 			await this.switchService.switchToWorktree(worktree);
 		});
 		this.notificationService.notify({
 			severity: warning ? Severity.Warning : Severity.Info,
-			message: warning
+			message: warning && warning === includeWarning
+				// 持ち込み（G-06）だけが失敗したときは、セットアップの失敗と読めない文にする（762-RES）
 				// allow-any-unicode-next-line
-				? localize('paradis.createQueue.doneWithWarning', "スペース「{0}」は作成されましたが、その後のセットアップに失敗しました: {1}", name, warning)
-				// allow-any-unicode-next-line
-				: localize('paradis.createQueue.done', "スペース「{0}」の準備ができました", name),
+				? localize('paradis.createQueue.doneWithIncludeWarning', "スペース「{0}」は作成されました。{1}", name, warning)
+				: warning
+					// allow-any-unicode-next-line
+					? localize('paradis.createQueue.doneWithWarning', "スペース「{0}」は作成されましたが、その後のセットアップに失敗しました: {1}", name, warning)
+					// allow-any-unicode-next-line
+					: localize('paradis.createQueue.done', "スペース「{0}」の準備ができました", name),
 			actions: { primary: [switchAction] },
 		});
 	}

@@ -7,6 +7,7 @@ import path from 'node:path';
 import type { ITaskBoardQuestion, ITaskBoardStep, ITaskBoardTask, TaskBoardAgentKind } from '@engine/paradisTaskBoard.js';
 import type { ITaskBoardAgentPort, ITaskBoardArtifactInput, TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import type { TaskBoardArtifactKind } from '@engine/paradisTaskBoard.js';
+import type { IWorktreeIncludePort } from './workspaces.js';
 
 /*
  * 本物の Claude Code / Codex を、Para Code 本体のボード用の口（bridge）を通して動かす。
@@ -373,6 +374,8 @@ const STALL_CONFIRM_MS = 6_000;
 
 /** 状態の取りこぼしを直すために、Para Code のターミナルの一覧と突き合わせる間隔。 */
 const RECONCILE_MS = 15_000;
+/** 持ち込み（合わせて 2 GiB まで写す）と返却を待つ上限。 */
+const WORKTREE_INCLUDE_TIMEOUT_MS = 10 * 60_000;
 /** 送ってからこの間は突き合わせない（hook が届いて Para Code の状態が作業中に変わるまでの猶予）。 */
 const RECONCILE_SETTLE_MS = 10_000;
 
@@ -412,6 +415,23 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 	}
 
 	private reconcileTimer: NodeJS.Timeout | undefined;
+
+	/** 手元のボードのワークツリーへの持ち込みと返却を、接続口（スペースの作成と同じ規則）に頼む口。 */
+	worktreeIncludes(): IWorktreeIncludePort {
+		return {
+			copy: async (repoPath, worktreePath) => {
+				const warning = (await this.client.request<{ warning?: unknown }>('POST', '/v1/worktree-includes', { repoPath, worktreePath }, WORKTREE_INCLUDE_TIMEOUT_MS)).warning;
+				return typeof warning === 'string' && warning.length > 0 ? warning : undefined;
+			},
+			release: async (repoPath, worktreePath) => {
+				const result = (await this.client.request<{ result?: unknown }>('POST', '/v1/worktree-release', { repoPath, worktreePath }, WORKTREE_INCLUDE_TIMEOUT_MS)).result;
+				if (result !== 'removed' && result !== 'dirty' && result !== 'failed') {
+					throw new Error('unexpected worktree release result');
+				}
+				return result;
+			},
+		};
+	}
 
 	start(): void {
 		this.client.start();
