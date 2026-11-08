@@ -27,7 +27,7 @@ import { ITextFileService } from '../../../../../workbench/services/textfile/com
 import { IWorkingCopyService } from '../../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
-import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
+import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, paradisWordObjectsAfterWorker, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
 import { buildParadisDocxDiffHtml } from '../../electron-browser/paradisDocxDiffWebview.js';
 import { sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/word/paradisDocxSanitize.js';
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
@@ -541,6 +541,18 @@ suite('ParadisDocxFileEditor', () => {
 			getParadisDocxRenderDecision(false, resource, otherResource, 1, 1),
 			getParadisDocxRenderDecision(false, resource, resource, 1, 2),
 		], ['rejected', 'viewer', 'viewer', 'stale', 'stale']);
+	});
+
+	// 上限を超える文書を worker が断ったときは、renderer でも取り出さない（重い文書でウィンドウを固めない）
+	test('draws no objects for a document the worker refused as too large, and extracts in the renderer only when the worker could not be used', () => {
+		deepStrictEqual([
+			paradisWordObjectsAfterWorker({ ok: true, objects: [] }, false),
+			paradisWordObjectsAfterWorker({ ok: false, code: 'tooLarge' }, false),
+			paradisWordObjectsAfterWorker({ ok: false, code: 'cancelled' }, false),
+			paradisWordObjectsAfterWorker(undefined, true),
+			paradisWordObjectsAfterWorker({ ok: false, code: 'busy' }, false),
+			paradisWordObjectsAfterWorker(undefined, false),
+		], ['worker', 'none', 'cancelled', 'cancelled', 'renderer', 'renderer']);
 	});
 
 	suite('input adoption epoch', () => {

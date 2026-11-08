@@ -12,10 +12,15 @@
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import type { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
-import { PARADIS_WORD_SEMANTIC_CHANNEL, type IParadisWordAnalysisResult, type IParadisWordComparisonResult } from '../../common/word/paradisWordSemanticSummary.js';
+import { PARADIS_WORD_SEMANTIC_CHANNEL, type IParadisWordAnalysisResult, type IParadisWordComparisonResult, type IParadisWordRenderableObjectsResult } from '../../common/word/paradisWordSemanticSummary.js';
 
 export function analyzeParadisWordDocument(sharedProcessService: ISharedProcessService, bytes: Uint8Array, token: CancellationToken): Promise<IParadisWordAnalysisResult> {
 	return sharedProcessService.getChannel(PARADIS_WORD_SEMANTIC_CHANNEL).call<IParadisWordAnalysisResult>('analyze', [VSBuffer.wrap(bytes)], token);
+}
+
+/** 本文の上に重ねる描画対象を、shared process の Word の worker で取り出す。 */
+export function extractParadisWordRenderableObjectsInWorker(sharedProcessService: ISharedProcessService, bytes: Uint8Array, token: CancellationToken): Promise<IParadisWordRenderableObjectsResult> {
+	return sharedProcessService.getChannel(PARADIS_WORD_SEMANTIC_CHANNEL).call<IParadisWordRenderableObjectsResult>('objects', [VSBuffer.wrap(bytes)], token);
 }
 
 export function compareParadisWordDocuments(sharedProcessService: ISharedProcessService, original: Uint8Array, modified: Uint8Array, token: CancellationToken): Promise<IParadisWordComparisonResult> {

@@ -181,6 +181,29 @@ suite('ParadisWordSemanticService', () => {
 		});
 	});
 
+	test('extracts the objects drawn over the body in the worker, and treats a package it cannot open as having none', async () => {
+		const service = new ParadisWordSemanticService();
+		const cancelled = new CancellationTokenSource();
+		cancelled.cancel();
+		// DrawingML のテキストボックス 1 つ（docx-preview が描かないので、上に重ねる対象になる）
+		const drawing = `<w:document xmlns:w="${wordNamespace}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><w:body><w:p><w:r><w:drawing><wp:inline><wp:extent cx="2743200" cy="1828800"/><wp:docPr id="1" name="Box"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:txbx><w:txbxContent><w:p><w:r><w:t>Stamp</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>`;
+		const withTextbox = await buildOpcFixture({
+			parts: [['/word/document.xml', drawing, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']],
+			relationships: [{ id: 'rIdRoot', type: officeDocumentRelationship, target: 'word/document.xml' }],
+		});
+		const [objects, broken, stopped] = await Promise.all([
+			service.extractObjects(withTextbox, CancellationToken.None),
+			service.extractObjects(new Uint8Array([1, 2, 3, 4]), CancellationToken.None),
+			service.extractObjects(await wordFixture(), cancelled.token),
+		]);
+		cancelled.dispose();
+		deepStrictEqual({
+			objects: objects.ok ? objects.objects.map(object => object.kind) : objects.code,
+			broken,
+			stopped,
+		}, { objects: ['textbox'], broken: { ok: true, objects: [] }, stopped: { ok: false, code: 'cancelled' } });
+	});
+
 	test('reports unsupported, invalid, and cancelled inputs as sanitized codes', async () => {
 		const service = new ParadisWordSemanticService();
 		const spreadsheet = await buildOpcFixture({
@@ -323,10 +346,15 @@ suite('ParadisWordSemanticService', () => {
 				seen.push(`compare:${original.byteLength}:${modified.byteLength}`);
 				return { ok: false, code: 'failed' } satisfies IParadisWordComparisonResult;
 			},
+			extractObjects: async (bytes, token) => {
+				seen.push(`objects:${bytes.byteLength}:${token === CancellationToken.None}`);
+				return { ok: true, objects: [] };
+			},
 		}));
 		await channel.call('', 'analyze', [VSBuffer.fromString('abc')]);
+		await channel.call('', 'objects', [VSBuffer.fromString('abcde')]);
 		await channel.call('', 'compare', [VSBuffer.fromString('ab'), VSBuffer.fromString('abcd')]);
 		const invalid = await channel.call<IParadisWordAnalysisResult>('', 'analyze', ['not bytes']);
-		deepStrictEqual({ seen, invalid }, { seen: ['analyze:3:true', 'compare:2:4'], invalid: { ok: false, code: 'invalid' } });
+		deepStrictEqual({ seen, invalid }, { seen: ['analyze:3:true', 'objects:5:true', 'compare:2:4'], invalid: { ok: false, code: 'invalid' } });
 	});
 });

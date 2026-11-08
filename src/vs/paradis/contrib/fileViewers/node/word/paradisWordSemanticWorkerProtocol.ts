@@ -8,15 +8,16 @@
 
 // shared process ⇔ Word 解析 worker の間でやり取りするメッセージの形。
 
-import type { IParadisWordAnalysisResult, IParadisWordComparisonResult } from '../../common/word/paradisWordSemanticSummary.js';
+import type { IParadisWordAnalysisResult, IParadisWordComparisonResult, IParadisWordRenderableObjectsResult } from '../../common/word/paradisWordSemanticSummary.js';
 import type { IParadisOfficeSemanticWorkerReply, ParadisOfficeSemanticWorkerMessage } from '../office/paradisOfficeSemanticWorkerQueue.js';
 
 /** 1 件の依頼の中身（共通の待ち行列の `run` に載せる）。 */
 export type ParadisWordSemanticWorkerRun =
 	| { readonly op: 'analyze'; readonly bytes: Uint8Array }
+	| { readonly op: 'objects'; readonly bytes: Uint8Array }
 	| { readonly op: 'compare'; readonly original: Uint8Array; readonly modified: Uint8Array };
 
-export type ParadisWordSemanticWorkerResult = IParadisWordAnalysisResult | IParadisWordComparisonResult;
+export type ParadisWordSemanticWorkerResult = IParadisWordAnalysisResult | IParadisWordComparisonResult | IParadisWordRenderableObjectsResult;
 
 /** shared process → worker。 */
 export type ParadisWordSemanticWorkerRequest = ParadisOfficeSemanticWorkerMessage<ParadisWordSemanticWorkerRun>;

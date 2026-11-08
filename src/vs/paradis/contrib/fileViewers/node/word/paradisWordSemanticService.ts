@@ -26,11 +26,14 @@ import {
 	type IParadisWordAnalysisResult,
 	type IParadisWordChangeTarget,
 	type IParadisWordComparisonResult,
+	type IParadisWordRenderableObjectsResult,
 	type IParadisWordSemanticFailure,
 	type ParadisWordSemanticFailureCode,
 	type ParadisWordSemanticFormat,
 } from '../../common/word/paradisWordSemanticSummary.js';
 import { createParadisOfficeNodeArchive } from '../office/paradisOfficeNodeArchive.js';
+import { extractParadisWordRenderableObjects } from '../../common/word/paradisWordRenderableExtractor.js';
+import { readParadisWordRenderableParts } from '../../common/word/paradisWordRenderableParts.js';
 import { parseWordSemanticNode } from './paradisWordNodeAdapter.js';
 
 const profile = PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal;
@@ -149,6 +152,33 @@ export class ParadisWordSemanticService {
 				return failureOf(error, onUnexpectedError);
 			}
 		})();
+	}
+
+	/**
+	 * 本文の上に重ねる描画対象を取り出す（renderer のメインスレッドで zip の展開と XML の走査をしないため、worker で行う）。
+	 * 壊れた包みは「描ける対象なし」（空の配列）。`onUnexpectedError` は {@link analyze} と同じ。
+	 */
+	async extractObjects(bytes: Uint8Array, token: CancellationToken = CancellationToken.None, onUnexpectedError?: (error: unknown) => void): Promise<IParadisWordRenderableObjectsResult> {
+		if (!(bytes instanceof Uint8Array)) {
+			return failure('invalid');
+		}
+		if (bytes.byteLength > PARADIS_WORD_SEMANTIC_MAX_BYTES) {
+			return failure('tooLarge');
+		}
+		if (token.isCancellationRequested) {
+			return failure('cancelled');
+		}
+		try {
+			const parts = await readParadisWordRenderableParts(await createParadisOfficeNodeArchive(bytes), token);
+			return { ok: true, objects: parts.size === 0 ? [] : extractParadisWordRenderableObjects({ parts, token }) };
+		} catch (error) {
+			// 開けない包み（壊れている・zip でない）は、renderer で取り出すときと同じく「描ける対象なし」。
+			// 取り消しは失敗として返す（renderer が取り出し直さないように）
+			if (error instanceof ParadisOfficePackageError && error.code !== 'cancelled') {
+				return { ok: true, objects: [] };
+			}
+			return failureOf(error, onUnexpectedError);
+		}
 	}
 
 	/** `onUnexpectedError` は {@link analyze} と同じ。 */
