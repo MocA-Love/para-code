@@ -27,6 +27,7 @@ import { agentBuiltinCommandBadge, agentComposerIntercept, agentPanelLabel, clau
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
+import { useParaToast } from '../../paraToast.js';
 import type { AgentMonitor } from '../../agentMonitors.js';
 import type { AgentShell, AgentShellsAccess } from '../../agentShells.js';
 import { AGENT_COMPOSER_NOT_EMPTY_CODE, AGENT_PANEL_OPEN_CODE, AGENT_SLASH_COMMAND_REJECTED_CODE, type AgentCommandCatalogState, type AgentSlashRejection, type AgentCommandOption, type AgentMessageSendResult, type AgentModelControlState, type AgentPanel, type AgentPcDraft, type FsUploadResult } from '../../store.js';
@@ -177,7 +178,13 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	const handleInterceptRef = useRef<(intercept: AgentComposerIntercept, text: string) => void>(() => { });
 	const panelSupportedRef = useRef(panelSupported);
 	panelSupportedRef.current = panelSupported;
-	const [submitting, setSubmitting] = useState(false);
+	const [submitting, setSubmittingState] = useState(false);
+	// 送信中の印。state は描き直すまで古い値が見えるので、続けて押された送信（送信ボタンとクイック返信）はこちらで止める
+	const submittingRef = useRef(false);
+	const setSubmitting = useCallback((value: boolean) => {
+		submittingRef.current = value;
+		setSubmittingState(value);
+	}, []);
 	const answering = answerTarget !== undefined;
 	const answeringRef = useRef(answering);
 	answeringRef.current = answering;
@@ -199,7 +206,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		setSlashQuery(agentSlashQuery(inputRef.current));
 		setSlashLead(inputRef.current.startsWith('/'));
 		setSlashError(undefined);
-	}, [draftKey]);
+	}, [draftKey, setSubmitting]);
 	// `/` を打つたびに（入力が `/` で始まったときに）一覧を求め直す。PC 側で短く覚えているので、打ち直しても重くない
 	useEffect(() => {
 		if (slashLead && !answeringRef.current && terminalKey !== undefined && agent !== undefined) {
@@ -286,7 +293,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	}, [answering]);
 
 	const submit = useCallback(() => {
-		if (submitting) {
+		if (submittingRef.current) {
 			return;
 		}
 		const text = inputRef.current;
@@ -411,7 +418,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				setSubmitting(false);
 			}
 		});
-	}, [submitting, draftKey, clearActiveInput, replaceActiveInput, sendText, onAfterSubmit, agent, commandCatalog?.commands, answerTarget, answerRefreshing]);
+	}, [setSubmitting, draftKey, clearActiveInput, replaceActiveInput, sendText, onAfterSubmit, agent, commandCatalog?.commands, answerTarget, answerRefreshing]);
 	// 確認のダイアログから送り直すときは、その時点の submit を呼ぶ
 	const submitRef = useRef(submit);
 	submitRef.current = submit;
@@ -521,6 +528,12 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			replaceActiveInput(appendQuickReply(inputRef.current, text));
 			if (action === 'send') {
 				submitRef.current();
+			}
+			// 「押したらすぐ送る」なのに送らなかった（書きかけ・添付がある、送れない状態、入力欄が引き受けたコマンドなど）ときは、
+			// 入力欄に残したことを知らせる（送ったなら入力欄は空になっている）
+			if (sendOnTap && inputRef.current.trim().length > 0) {
+				haptic('warning');
+				useParaToast.getState().show({ key: 'quick-reply-not-sent', text: '送らずに入力欄に入れました', icon: 'information-circle-outline', tone: 'info' }, 2_000);
 			}
 		},
 		focus: () => nativeInputRef.current?.focus(),
@@ -633,7 +646,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	const sendDisabled = submitting || !(sendable || hasReadyAttachments) || attachmentState.kind === 'uploading' || codexSlashCatalogPending || (answering && answerRefreshing) || panelOpen;
 	// クイック返信をそのまま送れない状態（送信ボタンと同じ条件のうち、入力欄の中身に依らないもの。中身は押した時点で
 	// `quickReplyTapAction` が見る）。Codex の一覧の取得待ちは、`/` で始まる返信のときだけ止める
-	quickSendBlockedRef.current = (text: string) => submitting || answering || panelOpen
+	quickSendBlockedRef.current = (text: string) => submittingRef.current || answering || panelOpen
 		|| (agent === 'codex' && /^\/\S/.test(text) && commandCatalog?.status === 'loading' && commandCatalog.commands.length === 0);
 	// 外付けキーボードの ⌘↩（iPad）。送信ボタンと同じ条件で送る。
 	const focused = useIsFocused();

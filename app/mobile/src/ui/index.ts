@@ -50,4 +50,4 @@ export {
 	type ThemeColors,
 } from './themeColors.js';
 export { useThemeColorStore, useThemeColors } from './themeColorsStore.js';
-export { Toast, ToastHost } from './toast.js';
+export { ModalToastHost, Toast, ToastHost } from './toast.js';

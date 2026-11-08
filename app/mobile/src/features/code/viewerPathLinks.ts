@@ -267,7 +267,7 @@ function wholeTextPath(text: string): LocalFileTarget | undefined {
 
 /**
  * 集めた候補のうちパスのものと、その印の場所。印は {@link PATH_LINK_LIMITS.marks} 個まで。
- * - `a`: href が http(s)・`#`・`mailto:` などでなく、ファイルの行き先として読めるもの（`parseLocalFileTarget`）
+ * - `a`: href が http(s)・`#`・`?`・`mailto:` などでなく、ファイルの行き先として読めるもの（`parseLocalFileTarget`）
  * - `code`: 文字の全体が 1 つのパスのもの
  * - `text`: 地の文の中の、{@link isProsePath} を満たすパス（URL の一部は `findTerminalLinks` が外す）
  */
@@ -284,7 +284,8 @@ export function pathLinksOf(candidates: readonly PathLinkCandidate[]): { readonl
 			break;
 		}
 		if (candidate.k === 'a') {
-			const target = /^\s*$/.test(candidate.t) ? undefined : parseLocalFileTarget(candidate.t);
+			// 空と、問い合わせだけの href（`?tab=2`。ページ自身の動き）は外す
+			const target = /^\s*(?:\?|$)/.test(candidate.t) ? undefined : parseLocalFileTarget(candidate.t);
 			if (target !== undefined) {
 				push(candidate, candidate.t.trim(), target);
 			}

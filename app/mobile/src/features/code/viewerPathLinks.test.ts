@@ -10,6 +10,7 @@ describe('pathLinksOf', () => {
 			{ i: 1, k: 'a', t: 'https://example.com/a.md' },
 			{ i: 2, k: 'a', t: '#section' },
 			{ i: 3, k: 'a', t: 'mailto:someone@example.com' },
+			{ i: 8, k: 'a', t: '?tab=2' },
 			{ i: 4, k: 'code', t: 'src/app.ts:12' },
 			{ i: 5, k: 'code', t: 'npm run build' },
 			{ i: 6, k: 'code', t: 'README.md' },
