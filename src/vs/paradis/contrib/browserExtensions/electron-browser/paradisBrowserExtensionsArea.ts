@@ -738,7 +738,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
 		for (const line of lines) {
 			const row = dom.append(log, $(`.pbe-log-line.is-${line.level}`));
-			row.textContent = `[${formatLogTime(line.at)}] ${line.message}`;
+			row.textContent = line.session ? `[${formatLogTime(line.at)}] [${line.session}] ${line.message}` : `[${formatLogTime(line.at)}] ${line.message}`;
 			if (line.source) {
 				row.title = line.source;
 			}
