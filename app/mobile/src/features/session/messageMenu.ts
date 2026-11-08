@@ -11,8 +11,9 @@ import { markdownCopyParts, markdownExternalLinks, markdownPlainText } from '../
  * - 自分の発言: 「テキストをコピー」・「範囲を選んでコピー…」・「共有…」（本文はそのまま写す）
  *
  * 「引用して返信」（`ops.quoteReply`）は、入力欄のある会話の画面だけで出す（`chatQuote.ts`）。先頭の区切りの前に置く。
+ * 「前後の発言もまとめて選ぶ…」（`ops.selectAcross`）は、会話の一覧の中の発言だけで出す（`crossSelect.tsx`）。
  */
-export function buildMessageMenu(input: { readonly text: string; readonly markdown: boolean }, ops: ContextMenuOps & { selectRange(): void; readonly quoteReply?: () => void }): ContextMenuSpec {
+export function buildMessageMenu(input: { readonly text: string; readonly markdown: boolean }, ops: ContextMenuOps & { selectRange(): void; readonly quoteReply?: () => void; readonly selectAcross?: () => void }): ContextMenuSpec {
 	const actions: ContextMenuAction[] = [];
 	if (!input.markdown) {
 		actions.push(copyAction(ops, { id: 'copy', title: 'テキストをコピー', icon: 'copy', text: input.text, toast: 'テキストをコピーしました' }));
@@ -58,6 +59,9 @@ export function buildMessageMenu(input: { readonly text: string; readonly markdo
 		actions.push({ id: 'quote', title: '引用して返信', icon: 'quote', startsSection: true, onSelect: ops.quoteReply });
 	}
 	actions.push({ id: 'select', title: '範囲を選んでコピー…', icon: 'select', startsSection: true, onSelect: ops.selectRange });
+	if (ops.selectAcross !== undefined) {
+		actions.push({ id: 'select-across', title: '前後の発言もまとめて選ぶ…', icon: 'select', onSelect: ops.selectAcross });
+	}
 	actions.push({ id: 'share', title: '共有…', icon: 'share', onSelect: () => ops.share(input.markdown ? markdownPlainText(input.text) : input.text) });
 	return { actions };
 }

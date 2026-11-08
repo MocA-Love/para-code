@@ -3,6 +3,7 @@
 import { scaleChatSize, type ChatTextScale } from '../../chatTextScale.js';
 import { BULLET_INDENT, tableColumnWidths } from '../../components/markdownLayout.js';
 import { MAX_BULLET_DEPTH, parseBlocks, parseInline, type Block, type InlineToken } from '../../components/markdownParse.js';
+import type { HighlightData } from '../../components/codeHighlightCache.js';
 import { alpha, colors, mono, tint, type } from '../../theme.js';
 import { escapeHtml } from '../code/fileViewerModel.js';
 import { viewerScriptCspMeta } from '../code/fileFind.js';
@@ -16,8 +17,9 @@ import { viewerScriptCspMeta } from '../code/fileFind.js';
  * - 発言から来た文字は、すべて `escapeHtml` を通して要素の中身にだけ置く（属性には入れない。`escapeHtml` は引用符を
  *   変えないため）。リンクは `href` を持たない色付きの文字にして、押しても遷移しない
  * - スクリプトは nonce 付きの 1 つだけ（`viewerScriptCspMeta`）。高さを知らせることと、押した点の単語（無ければ全体）を選ぶこと・押し続けた点の単語を選ぶことだけをする
- * - 発言は `segments` の並びで受ける。今は押した発言 1 つだけを渡すが、「画面の発言をまとめて」に広げるときは
- *   ここに並べれば発言をまたいで選べる
+ * - 発言は `segments` の並びで受ける。押した発言 1 つだけのとき（発言の上に重ねる）と、前後の発言をまとめて並べるとき
+ *   （会話の一覧の上に重ねて中でスクロールする。`crossSelect.tsx`。{@link InplaceSelectScrollLayout}）がある
+ * - コードは、会話の描画が PC から取ってある色付け（`codeHighlightCache.ts`）があればその色と地の色で描く
  */
 
 /** 差し替える発言 1 つ。 */
@@ -28,6 +30,24 @@ export interface InplaceSelectSegment {
 	readonly markdown: boolean;
 	/** Markdown でない発言の字。既定は吹き出しの字（`bubble`）。過去の会話の自分の発言は本文の字（`body`）。 */
 	readonly plain?: 'bubble' | 'body';
+	/** 発言の前に出す見出し（誰の発言か。前後の発言をまとめて選ぶとき）。選べない（写すときに入らない）。 */
+	readonly label?: string;
+}
+
+/**
+ * 前後の発言をまとめて選ぶとき（会話の一覧の上に重ね、WebView の中でスクロールする）の置き方。押した発言
+ * （`anchor` 番目の発言）が、重ねる前と同じ位置に来るようにスクロールして見せる。値はすべて WebView の左上からの pt。
+ */
+export interface InplaceSelectScrollLayout {
+	/** 押した発言の `segments` の中の番号。 */
+	readonly anchor: number;
+	/** 押した発言の上端の、重ねる前の位置（縦）。 */
+	readonly top: number;
+	/** 発言の列の左端と幅（会話の一覧の列にそろえる）。 */
+	readonly left: number;
+	readonly width: number;
+	/** 上下に足す余白（一覧の高さ）。端の発言でも、押した発言を元の位置までスクロールできるように。 */
+	readonly pad: number;
 }
 
 /** 会話の描画に合わせるための値（画面の側で集めて渡す）。 */
@@ -46,6 +66,8 @@ export interface InplaceSelectLook {
 	readonly accentWash: string;
 	/** 選んだ範囲の色。 */
 	readonly selection: string;
+	/** コードブロックの色付けを引く（会話の描画が取ってあるもの。無ければ色を付けない）。 */
+	readonly codeHighlight?: (text: string, lang: string | undefined) => HighlightData | undefined;
 }
 
 /** 押した点（WebView の左上からの pt）。ここの単語を選んだ状態で開く。 */
@@ -204,7 +226,7 @@ function blocksHtml(blocks: readonly Block[], look: InplaceSelectLook, metrics: 
 		switch (block.kind) {
 			case 'code':
 				// 見出しの帯（言語名と「折り返し」「コピー」）は会話と同じ高さで描くだけで、選べない・押せない
-				return `<div class="cb"><div class="io"><span class="iol">${escapeHtml(block.lang ?? 'コード')}</span><span class="ioa">折り返し</span><span class="ioa">コピー</span></div><div class="cc"><div class="ct">${escapeHtml(block.text)}</div></div></div>`;
+				return codeBlockHtml(block.text, block.lang, look.codeHighlight?.(block.text, block.lang));
 			case 'heading':
 				return `<div class="p h${block.level === 1 ? ' h1' : ''}">${inlineHtml(parseInline(block.text))}</div>`;
 			case 'bullet': {
@@ -225,11 +247,32 @@ function blocksHtml(blocks: readonly Block[], look: InplaceSelectLook, metrics: 
 	}).join('');
 }
 
-function segmentHtml(segment: InplaceSelectSegment, look: InplaceSelectLook, metrics: Metrics): string {
-	if (!segment.markdown) {
-		return `<div class="seg"><div class="${segment.plain === 'body' ? 'p' : 'u'}">${escapeHtml(segment.text)}</div></div>`;
+/**
+ * コードブロック。色付けがあれば、行ごとの色の片を span にして、PC のテーマの地の色・字の色で描く（会話の描画と同じ）。
+ * 色は {@link cssColor} を通したものだけを属性に置く（引用符や `;` を含む値は捨てて色を付けない）。字は `escapeHtml` を通す。
+ */
+function codeBlockHtml(text: string, lang: string | undefined, highlight: HighlightData | undefined): string {
+	const head = `<div class="io"><span class="iol">${escapeHtml(lang ?? 'コード')}</span><span class="ioa">折り返し</span><span class="ioa">コピー</span></div>`;
+	if (highlight === undefined) {
+		return `<div class="cb">${head}<div class="cc"><div class="ct">${escapeHtml(text)}</div></div></div>`;
 	}
-	return `<div class="seg">${blocksHtml(parseBlocks(segment.text), look, metrics)}</div>`;
+	const bg = highlight.bg !== undefined ? safeColor(highlight.bg) : undefined;
+	const fg = highlight.fg !== undefined ? safeColor(highlight.fg) : undefined;
+	const lines = highlight.lines.map(line => line.map(run => {
+		const color = run.color !== undefined ? safeColor(run.color) : undefined;
+		const classes = [run.italic === true ? 'ci' : '', run.bold === true ? 'cbd' : ''].filter(name => name.length > 0).join(' ');
+		const attrs = `${classes.length > 0 ? ` class="${classes}"` : ''}${color !== undefined ? ` style="color:${color}"` : ''}`;
+		return attrs.length > 0 ? `<span${attrs}>${escapeHtml(run.text)}</span>` : escapeHtml(run.text);
+	}).join('')).join('\n');
+	return `<div class="cb"${bg !== undefined ? ` style="background:${bg}"` : ''}>${head}<div class="cc"><div class="ct"${fg !== undefined ? ` style="color:${fg}"` : ''}>${lines}</div></div></div>`;
+}
+
+function segmentHtml(segment: InplaceSelectSegment, look: InplaceSelectLook, metrics: Metrics): string {
+	const label = segment.label !== undefined ? `<div class="sp">${escapeHtml(segment.label)}</div>` : '';
+	if (!segment.markdown) {
+		return `<div class="seg">${label}<div class="${segment.plain === 'body' ? 'p' : 'u'}">${escapeHtml(segment.text)}</div></div>`;
+	}
+	return `<div class="seg">${label}${blocksHtml(parseBlocks(segment.text), look, metrics)}</div>`;
 }
 
 /**
@@ -245,7 +288,12 @@ function num(value: number): string {
 
 /** 色を CSS に置ける形にする（`#rrggbb` / `rgba(...)` など、記号の少ない値だけを通す）。 */
 function cssColor(value: string, fallback: string): string {
-	return /^[#\w\s(),.%-]{1,64}$/.test(value) ? value : fallback;
+	return safeColor(value) ?? fallback;
+}
+
+/** {@link cssColor} と同じ検査。通らない値は `undefined`（色を付けない）。 */
+function safeColor(value: string): string | undefined {
+	return /^[#\w\s(),.%-]{1,64}$/.test(value) ? value : undefined;
 }
 
 function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
@@ -293,6 +341,10 @@ function styleSheet(look: InplaceSelectLook, metrics: Metrics): string {
 	.fl { font-size: ${num(font(type.body))}px; line-height: normal; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.fp { color: ${colors.textDim}; font-family: ${mono.ios}, ui-monospace, monospace; font-size: ${num(font(type.badge))}px; line-height: ${num(font(14))}px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 	.fv { width: ${num(layout(18))}px; flex: none; }
+	.ci { font-style: italic; }
+	.cbd { font-weight: 700; }
+	.sp { color: ${colors.textDim}; font-size: ${num(font(type.caption))}px; line-height: ${num(font(16))}px; font-weight: 600; -webkit-user-select: none; user-select: none; }
+	#m.across { gap: ${num(spacing(14))}px; box-sizing: border-box; }
 	.u { font-size: ${num(font(type.chat))}px; line-height: ${num(font(23))}px; font-weight: 500; white-space: pre-wrap; overflow-wrap: break-word; }
 `;
 }
@@ -312,8 +364,10 @@ const HOLD_SLOP = 10;
  * - 押し続けたら（{@link HOLD_MS}）その点の単語を選ぶ。OS の長押しの選択が先に選んでいたら何もしない。
  *   `touchcancel` では止めない（OS の長押しが認識されると、ページへの触れは取り消されるため）
  */
-function selectScript(point: InplaceSelectPoint | undefined): string {
+function selectScript(point: InplaceSelectPoint | undefined, layout: InplaceSelectScrollLayout | undefined): string {
 	const at = point !== undefined ? `[${num(point.x)},${num(point.y)}]` : 'null';
+	// 前後の発言をまとめて選ぶとき: 押した発言の番号と、元の上端の位置。描き終えたらそこへスクロールしてから知らせる
+	const place = layout !== undefined ? `[${Math.max(0, Math.floor(layout.anchor))},${num(layout.top)}]` : 'null';
 	return `(function(){
 var root=document.getElementById('m');
 function post(kind){try{window.ReactNativeWebView.postMessage(JSON.stringify({type:kind,height:Math.ceil(root.getBoundingClientRect().height)}));}catch(e){}}
@@ -327,8 +381,10 @@ function stopHold(){if(hold!==null){clearTimeout(hold);hold=null;}}
 document.addEventListener('touchstart',function(e){stopHold();if(e.touches.length!==1){return;}var t=e.touches[0];from=[t.clientX,t.clientY];hold=setTimeout(function(){hold=null;try{var s=window.getSelection();if(s&&s.isCollapsed){selectAt(from);}}catch(x){}},${HOLD_MS});},{passive:true});
 document.addEventListener('touchmove',function(e){var t=e.touches[0];if(from&&t&&Math.abs(t.clientX-from[0])+Math.abs(t.clientY-from[1])>${HOLD_SLOP}){stopHold();}},{passive:true});
 document.addEventListener('touchend',stopHold,{passive:true});
+var lay=${place};
+function placeAnchor(){if(!lay){return;}var el=root.querySelectorAll('.seg')[lay[0]];if(!el){return;}var sp=el.querySelector('.sp');var t=sp&&sp.nextElementSibling?sp.nextElementSibling:el;window.scrollTo(0,Math.max(0,t.getBoundingClientRect().top+window.scrollY-lay[1]));}
 var done=false;
-function ready(){if(done){return;}done=true;post('ready');if(window.ResizeObserver){new ResizeObserver(function(){post('height');}).observe(root);}}
+function ready(){if(done){return;}done=true;try{placeAnchor();}catch(e){}post('ready');if(window.ResizeObserver){new ResizeObserver(function(){post('height');}).observe(root);}}
 if(document.readyState==='complete'){ready();}else{window.addEventListener('load',ready);}
 })();`;
 }
@@ -341,12 +397,18 @@ export function inplaceSelectStartScript(): string {
 	return 'window.__paraSelectStart&&window.__paraSelectStart();true;';
 }
 
-/** 差し替える WebView の HTML。`nonce` は `createMobileOfficeNonce()` で作り、HTML を作るたびに新しくする。 */
-export function buildInplaceSelectHtml(segments: readonly InplaceSelectSegment[], look: InplaceSelectLook, nonce: string, point?: InplaceSelectPoint): string {
+/**
+ * 差し替える WebView の HTML。`nonce` は `createMobileOfficeNonce()` で作り、HTML を作るたびに新しくする。
+ * `layout` を渡すと、前後の発言をまとめて選ぶ形（中でスクロールし、押した発言を元の位置に合わせる）にする。
+ */
+export function buildInplaceSelectHtml(segments: readonly InplaceSelectSegment[], look: InplaceSelectLook, nonce: string, point?: InplaceSelectPoint, layout?: InplaceSelectScrollLayout): string {
 	const metrics = metricsOf(look);
 	const body = segments.map(segment => segmentHtml(segment, look, metrics)).join('');
+	const root = layout !== undefined
+		? `<div id="m" class="across" style="padding:${num(Math.max(0, layout.pad))}px 0;margin-left:${num(Math.max(0, layout.left))}px;width:${num(Math.max(1, layout.width))}px">`
+		: '<div id="m">';
 	return `<!DOCTYPE html><html><head>${viewerScriptCspMeta(nonce)}
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <style>${styleSheet(look, metrics)}</style>
-</head><body><div id="m">${body}</div><script nonce="${nonce}">${selectScript(point)}</script></body></html>`;
+</head><body>${root}${body}</div><script nonce="${nonce}">${selectScript(point, layout)}</script></body></html>`;
 }

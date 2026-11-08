@@ -55,6 +55,14 @@ describe('buildMessageMenu', () => {
 		expect({ tree: tree(menu), quoted }).toEqual({ tree: ['テキストをコピー', '引用して返信', '範囲を選んでコピー…', '共有…'], quoted: 1 });
 	});
 
+	it('offers selecting across messages right after range select inside the chat list', () => {
+		let across = 0;
+		const ops = { canCopy: true, copyLater: () => undefined, copy: () => undefined, share: () => undefined, selectRange: () => undefined };
+		const menu = buildMessageMenu({ text: '了解です', markdown: true }, { ...ops, selectAcross: () => { across++; } });
+		findContextMenuAction(menu.actions, 'select-across')?.onSelect?.();
+		expect({ tree: tree(menu), across }).toEqual({ tree: ['テキストをコピー', '範囲を選んでコピー…', '前後の発言もまとめて選ぶ…', '共有…'], across: 1 });
+	});
+
 	it('lists the link URLs so they can be copied even though the message menu takes the long press', () => {
 		const ops = { canCopy: true, copyLater: () => undefined, copy: () => undefined, share: () => undefined, selectRange: () => undefined };
 		expect(tree(buildMessageMenu({ text: '[資料](https://example.com/a) を見て', markdown: true }, ops))).toEqual(['テキストをコピー', 'Markdown のままコピー', 'URL をコピー', '範囲を選んでコピー…', '共有…']);
