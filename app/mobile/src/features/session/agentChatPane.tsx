@@ -36,6 +36,7 @@ import { isAsyncQuestionHidden, useAsyncQuestionDrafts } from '../../asyncQuesti
 import { pinnedCardMaxHeight, PinnedCardScrollContext, type PinnedCardScroll } from './pinnedCard.js';
 import { withQuestionOutcomes } from './questionOutcomes.js';
 import { ChatChromeRow, CompactingRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
+import { useQuickReplies } from '../settings/quickRepliesStore.js';
 import { ChatList, type ChatListHandle } from './chatList.js';
 import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
 import { paneShells } from '../../agentWorkflows.js';
@@ -319,7 +320,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			target.measureLayout(content, (_x, y) => cardScrollRef.current?.scrollTo({ y: Math.max(0, y - space.sm), animated: true }), () => { });
 		},
 	}), []);
-	const insertQuickReply = useCallback((text: string) => composerRef.current?.insertText(text), []);
+	// 「押したらすぐ送る」は押した時点の設定を読む（設定を変えても会話画面を描き直さない）
+	const pickQuickReply = useCallback((text: string) => composerRef.current?.pickQuickReply(text, useQuickReplies.getState().sendOnTap), []);
 	const scrollToLatest = useCallback(() => listRef.current?.scrollToLatest(), []);
 	const [allToolsOpen, setAllToolsOpen] = useState(false);
 
@@ -435,7 +437,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 							</View>
 						</ScrollView>
 					) : null}
-					{showQuickReplies ? <QuickReplies onPick={insertQuickReply} /> : null}
+					{showQuickReplies ? <QuickReplies onPick={pickQuickReply} /> : null}
 					<QueuedSendsBanner pcId={activePcId} terminalKey={terminalKey} />
 					{/* コンテキストを圧縮している最中（PreCompact から区切りの行が届くまで。モックの A6-2）。圧縮していなければ何も描かない */}
 					{chatReady ? <CompactingRow activity={chat?.activity} messages={messages} /> : null}

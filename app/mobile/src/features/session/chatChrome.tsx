@@ -7,7 +7,7 @@ import { formatToolName } from '../../agentToolMeta.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { haptic } from '../../haptics.js';
 import { useAppIsActive } from '../../hooks/useAppIsActive.js';
-import { useQuickReplyList } from '../settings/quickRepliesStore.js';
+import { useQuickReplies, useQuickReplyList } from '../settings/quickRepliesStore.js';
 import type { PendingAgentMessage } from '../../pendingAgentMessages.js';
 import type { AgentActivityState, AgentChatMessage, AgentLiveState } from '../../store.js';
 import { runningCompactionSince } from './compaction.js';
@@ -171,13 +171,15 @@ export function PendingMessagesDrawer({ visible, messages, onClose }: {
 /**
  * 作業を終えたエージェントへの短い返信。一覧は設定の「クイック返信」で変えられる（既定は
  * 旧部品 `components/agentQuickReplies.tsx` と同じ文言）。0件にしたら行ごと出さない。
- * 押すと入力欄へ入るだけで送信はしない。出すかどうかは既存の `shouldShowQuickReplies`。
+ * 押すと入力欄へ入る。設定の「押したらすぐ送る」がオンなら、入力欄が空のときはそのまま送る（`quickReplyTapAction`）。
+ * 出すかどうかは既存の `shouldShowQuickReplies`。
  *
  * 左右の余白は会話の本文（`chatItems` の行の `space.lg`）に揃える。先頭のチップの左端を
  * 画面の縁に寄せすぎない。
  */
 export function QuickReplies({ onPick }: { onPick: (text: string) => void }) {
 	const replies = useQuickReplyList();
+	const sendOnTap = useQuickReplies(s => s.sendOnTap);
 	// 読み込む前（既定をちらっと見せない）と、0件にしたときは行ごと出さない。
 	if (replies === undefined || replies.length === 0) {
 		return null;
@@ -198,7 +200,7 @@ export function QuickReplies({ onPick }: { onPick: (text: string) => void }) {
 					hitSlop={REPLY_SLOP}
 					style={({ pressed }) => [styles.reply, pressed ? styles.replyPressed : undefined]}
 					accessibilityRole="button"
-					accessibilityLabel={`「${reply}」を入力欄に入れる`}
+					accessibilityLabel={sendOnTap ? `「${reply}」を送信` : `「${reply}」を入力欄に入れる`}
 				>
 					<Text style={styles.replyText} numberOfLines={1}>{reply}</Text>
 				</Pressable>

@@ -20,7 +20,7 @@ import {
 	updateQuickReply,
 } from '../../src/features/settings/quickReplies.js';
 import { useQuickReplies, useQuickReplyList } from '../../src/features/settings/quickRepliesStore.js';
-import { GroupGap, GroupHeader, GroupNote, SettingsScreen } from '../../src/features/settings/settingsScaffold.js';
+import { GroupGap, GroupHeader, GroupNote, SettingsScreen, SettingsSwitch } from '../../src/features/settings/settingsScaffold.js';
 
 type EditorMode = 'add' | 'edit';
 
@@ -34,7 +34,8 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
 
 /**
  * クイック返信（`/settings/quick-replies`。モックには無い）。会話画面の入力欄の上に出る短い返信の
- * 一覧を、追加・編集・削除・並び替えできる。この端末の中だけの設定で、PC へは送らない。
+ * 一覧を、追加・編集・削除・並び替えできる。押したらすぐ送るか（既定はオフ）もここで選ぶ。
+ * この端末の中だけの設定で、PC へは送らない。
  *
  * 行を押すと操作のシート（編集・上へ・下へ・削除）が出る。上限は `quickReplies.ts`（8件・1件40文字）。
  */
@@ -42,6 +43,8 @@ export default function QuickRepliesSettingsScreen() {
 	const replies = useQuickReplyList();
 	const save = useQuickReplies(s => s.save);
 	const reset = useQuickReplies(s => s.reset);
+	const sendOnTap = useQuickReplies(s => s.sendOnTap);
+	const setSendOnTap = useQuickReplies(s => s.setSendOnTap);
 
 	/** 操作の対象の行（シートを閉じる途中も見出しが変わらないように、閉じても残す）。 */
 	const [target, setTarget] = useState(0);
@@ -92,7 +95,9 @@ export default function QuickRepliesSettingsScreen() {
 					<TextInputDrawer
 						visible={editorOpen}
 						title={editorMode === 'add' ? '返信を追加' : '返信を編集'}
-						message={`${QUICK_REPLY_MAX_LENGTH} 文字まで。押すと入力欄に入ります（送信はしません）。`}
+						message={sendOnTap
+							? `${QUICK_REPLY_MAX_LENGTH} 文字まで。入力欄が空なら、押すとそのまま送ります。`
+							: `${QUICK_REPLY_MAX_LENGTH} 文字まで。押すと入力欄に入ります（送信はしません）。`}
 						defaultValue={editorMode === 'edit' ? targetText : ''}
 						placeholder="例: 続けて"
 						submitLabel={editorMode === 'add' ? '追加' : '保存'}
@@ -124,8 +129,28 @@ export default function QuickRepliesSettingsScreen() {
 				</>
 			)}
 		>
-			<GroupHeader title="返信" first />
-			<GroupNote>会話画面の入力欄の上に出る短い返信です。押すと入力欄に入り、送信はしません。書きかけがあれば後ろに足します。</GroupNote>
+			<GroupHeader title="押したとき" first />
+			<ListGroup>
+				<ListRow
+					label="押したらすぐ送る"
+					trailing={(
+						<SettingsSwitch
+							value={sendOnTap}
+							disabled={replies === undefined}
+							onValueChange={value => { setSendOnTap(value).catch(showSaveFailed); }}
+							accessibilityLabel="クイック返信を押したらすぐ送る"
+						/>
+					)}
+				/>
+			</ListGroup>
+			<GroupNote after>
+				{sendOnTap
+					? '入力欄が空なら、押した返信をそのまま送ります。書きかけや添付があるときは送らずに後ろへ足すので、続きを書いてから送ってください。'
+					: '押すと入力欄に入り、送信はしません。書きかけがあれば後ろに足します。'}
+			</GroupNote>
+
+			<GroupHeader title="返信" />
+			<GroupNote>会話画面の入力欄の上に出る短い返信です。エージェントが作業を終えて待っているときだけ出ます。</GroupNote>
 			{replies === undefined ? (
 				<View style={styles.loading}><ActivityIndicator color={colors.textDim} /></View>
 			) : (
