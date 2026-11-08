@@ -46,6 +46,8 @@ import {
 	paradisTaskBoardRemoteIsWritablePath,
 	paradisTaskBoardRemoteSegments,
 } from '../common/paradisTaskBoardRemote.js';
+import { paradisPorcelainWithoutIncludeLinks } from '../../workspaceSwitch/common/paradisWorktreeInclude.js';
+import { IParadisTaskBoardWorktreeIncludes } from './paradisTaskBoardWorktreeIncludes.js';
 
 /** 打ち切り時間（テストから差し替える）。 */
 export interface IParadisTaskBoardRemoteTimeouts {
@@ -73,6 +75,8 @@ export interface IParadisTaskBoardRemoteGitResult {
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly timedOut: boolean;
+	/** `worktreeAdd` の後、宣言したファイルを持ち込めなかったときの 1 行（762-RES。古い REH は付けない）。 */
+	readonly warning?: string;
 }
 
 export interface IParadisTaskBoardRemoteRunResult {
@@ -242,6 +246,8 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 		sweep = true,
 		/** ファイルを確かめた後、書き換え・削除の直前に呼ぶ。すり替えを試すテストからのみ差し替える。 */
 		private readonly afterCheck: (stage: 'write' | 'reset') => Promise<void> = async () => { },
+		/** 作ったワークツリーへの持ち込み（762-RES）。無ければ持ち込まない。 */
+		private readonly worktreeIncludes?: IParadisTaskBoardWorktreeIncludes,
 	) {
 		super();
 		if (sweep) {
@@ -448,7 +454,17 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 		if (kind === 'push') {
 			await this.checkHostDefaultBranch(session, dir, (op as { branch: string }).branch);
 		}
-		const result = await this.enqueueGit(session, () => this.execGit(plan.args, plan.network || plan.hooks ? this.timeouts.gitLongMs : this.timeouts.gitShortMs));
+		// 持ち込みで作ったリンクは、git が未追跡と見て削除を断るので先に外す（断られたら作り直す。スペースの削除と同じ）
+		const unlinked = kind === 'worktreeRemove' && worktreeDir !== undefined && this.worktreeIncludes ? await this.worktreeIncludes.unlink(worktreeDir).catch(() => []) : [];
+		let result = await this.enqueueGit(session, () => this.execGit(plan.args, plan.network || plan.hooks ? this.timeouts.gitLongMs : this.timeouts.gitShortMs));
+		if (unlinked.length > 0 && result.code !== 0 && worktreeDir !== undefined) {
+			await this.worktreeIncludes?.restore(worktreeDir, unlinked).catch(() => undefined);
+		}
+		// ボードの返却は status が空のときだけ消すので、作ったワークツリーでは持ち込みのリンクを未追跡に数えない
+		if (kind === 'status' && result.code === 0 && this.worktreeIncludes && session.createdWorktrees.has(dir)) {
+			const links = await this.worktreeIncludes.linkPaths(dir).catch(() => []);
+			result = { ...result, stdout: paradisPorcelainWithoutIncludeLinks(result.stdout, links) };
+		}
 		// URL の利用者の部分（トークン）を、ボードへ渡る出力から外す
 		if (kind === 'remoteUrl') {
 			return { ...result, stdout: paradisTaskBoardRemoteStripUrlCredentials(result.stdout), stderr: paradisTaskBoardRemoteStripUrlCredentials(result.stderr) };
@@ -458,6 +474,11 @@ export class ParadisTaskBoardRemoteService extends Disposable {
 				const created = await this.checkOwnedDirectory(worktreeDir);
 				session.createdWorktrees.add(created);
 				session.places.add(created);
+				// 宣言した .env などを持ち込む（762-RES）。失敗しても作成は止めず、1 行で返す
+				const warning = await this.worktreeIncludes?.copy(dir, created).catch(() => undefined);
+				if (warning !== undefined) {
+					result = { ...result, warning };
+				}
 			} else {
 				session.createdWorktrees.delete(worktreeDir);
 				session.places.delete(worktreeDir);

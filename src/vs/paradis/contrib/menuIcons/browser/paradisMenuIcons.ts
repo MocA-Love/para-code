@@ -76,6 +76,8 @@ const ICONS: ReadonlyMap<string, IParadisMenuIcon> = new Map<string, IParadisMen
 	['paradis.terminal.resetInputModes', { icon: Codicon.discard }],
 	['paradis.terminal.copyContext', { icon: Codicon.copy }],
 	['paradis.terminal.sendSelectionToAgent', { icon: Codicon.send }],
+	['paradis.terminal.handOffAgentSession', { icon: Codicon.arrowSwap }],
+	['paradis.terminal.forkAgentSession', { icon: Codicon.repoForked }],
 	['paradis.agentChat.toggle', { icon: Codicon.commentDiscussion }],
 	['paradis.editor.copyTabId', { icon: Codicon.symbolKey }],
 	// editor text

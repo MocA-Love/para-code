@@ -12,6 +12,7 @@ import { MarkdownText } from '../../../../../../src/components/markdownText.js';
 import { ChatTextScaleProvider, useChatTextScaleFor } from '../../../../../../src/ui/chatTextScale.js';
 import { useParaToast } from '../../../../../../src/paraToast.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../../src/features/code/codeParts.js';
+import { MessageContextMenu, chatTextSelectable } from '../../../../../../src/features/session/messageContextMenu.js';
 import { QueuedSendsBanner } from '../../../../../../src/features/session/queuedSends.js';
 import { haptic } from '../../../../../../src/haptics.js';
 import { paraAlert } from '../../../../../../src/paraAlert.js';
@@ -217,7 +218,10 @@ const HistoryMessages = memo(function HistoryMessages({ preview, chatFontSize, c
 			{preview.messages.map((message, index) => (
 				<View key={index} style={[textStyles.message, message.role === 'user' ? styles.user : undefined]}>
 					<Text style={textStyles.role}>{message.role === 'user' ? 'あなた' : session.agent === 'opencode' ? 'OpenCode' : session.agent === 'codex' ? 'Codex' : 'Claude Code'}{message.ts !== undefined ? ` · ${formatRelativeTime(message.ts, now)}` : ''}</Text>
-					{message.role === 'assistant' ? <MarkdownText text={message.text} /> : <Text style={textStyles.text} selectable>{message.text}</Text>}
+					{/* 長押しで会話と同じ発言のメニュー（コピー・範囲を選んでコピー・共有）。ここには入力欄への引用は無い */}
+					<MessageContextMenu text={message.text} markdown={message.role === 'assistant'} plain="body" speaker={message.role === 'user' ? '自分の発言' : 'エージェントの発言'}>
+						{message.role === 'assistant' ? <MarkdownText text={message.text} selectable={chatTextSelectable} /> : <Text style={textStyles.text} selectable={chatTextSelectable}>{message.text}</Text>}
+					</MessageContextMenu>
 				</View>
 			))}
 		</ScrollView>

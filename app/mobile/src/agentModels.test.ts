@@ -58,11 +58,11 @@ describe('Claude のモデル候補', () => {
 		expect({
 			fixed: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-haiku-5-5', 'claude-opus-5', 'claude-fable-5', 'opus', 'claude-opus-5-5[1m]', undefined].map(model => match(model)),
 			pc: ['claude-opus-5-5', 'claude-opus-5', 'claude-haiku-4-5-20251001', 'claude-fable-5-1'].map(model => match(model, pcOptions)),
-			names: ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5-20251001', 'gpt-5.5'].map(claudeModelDisplayName),
+			names: ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-mythos-5-1', 'gpt-5.5'].map(claudeModelDisplayName),
 		}).toEqual({
 			fixed: ['Opus 5.5', 'Fable 5.1', 'Haiku 5.5', undefined, undefined, 'Opus 5.5', 'Opus 5.5', undefined],
 			pc: ['Opus 5.5', 'Opus 5', 'Haiku 4.5', 'Fable 5.1'],
-			names: ['Opus 5.5', 'Fable 5', 'Haiku 4.5', undefined],
+			names: ['Opus 5.5', 'Fable 5', 'Haiku 4.5', 'Mythos 5.1', undefined],
 		});
 	});
 });

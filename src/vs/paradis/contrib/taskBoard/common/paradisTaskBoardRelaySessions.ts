@@ -598,12 +598,14 @@ export class ParadisTaskBoardRelaySessions extends Disposable {
 	}
 
 	private async git(session: IRelaySession, channel: IChannel, place: string, git: Readonly<Record<string, unknown>>): Promise<unknown> {
-		const result = await channel.call<{ readonly code: number; readonly stdout: string; readonly stderr: string; readonly timedOut: boolean }>('git', [session.sessionId, place, git]);
+		const result = await channel.call<{ readonly code: number; readonly stdout: string; readonly stderr: string; readonly timedOut: boolean; readonly warning?: unknown }>('git', [session.sessionId, place, git]);
 		if (result.code === 0) {
 			this.remember(session, git);
 		}
 		// URL の利用者の部分（トークン）は REH でも外しているが、古い REH や取りこぼしに備えて窓でも、出力の全体から外す
-		return { code: result.code, stdout: paradisTaskBoardRemoteStripUrlCredentials(result.stdout), stderr: paradisTaskBoardRemoteStripUrlCredentials(result.stderr), timedOut: result.timedOut };
+		// warning: ワークツリーへ持ち込めなかったものの 1 行（762-RES。古い REH は付けない）。画面に出すので長さを抑える
+		const warning = typeof result.warning === 'string' && result.warning.length > 0 ? result.warning.slice(0, 2000) : undefined;
+		return { code: result.code, stdout: paradisTaskBoardRemoteStripUrlCredentials(result.stdout), stderr: paradisTaskBoardRemoteStripUrlCredentials(result.stderr), timedOut: result.timedOut, ...(warning !== undefined ? { warning } : {}) };
 	}
 
 	/** 作った・外したワークツリーと、作ったブランチを、手元の記録に残す。 */

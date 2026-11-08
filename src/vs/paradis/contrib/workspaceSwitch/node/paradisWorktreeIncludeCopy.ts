@@ -277,6 +277,28 @@ export async function paradisUnlinkRecordedWorktreeLinks(worktreePath: string, r
 }
 
 /**
+ * 記録にあり、今もシンボリックリンク（junction）で記録と同じ先を指しているリンクの相対パス（{@link paradisUnlinkRecordedWorktreeLinks}
+ * が外す対象と同じ）。`git status` の未追跡から持ち込みのリンクを外すために使う。
+ */
+export async function paradisLiveRecordedWorktreeLinkPaths(worktreePath: string, recordPath: string): Promise<string[]> {
+	const paths: string[] = [];
+	for (const record of await readLinkRecords(recordPath)) {
+		if (paradisNormalizeWorktreeIncludePath(record.path) !== record.path) {
+			continue;
+		}
+		const target = join(worktreePath, record.path);
+		try {
+			if ((await fs.lstat(target)).isSymbolicLink() && sameLinkTarget(await fs.readlink(target), record.source)) {
+				paths.push(record.path);
+			}
+		} catch {
+			// 無いもの
+		}
+	}
+	return paths;
+}
+
+/**
  * 外したリンクを作り直す（作業ツリーの削除が断られたとき）。作業ツリーのルートとリンクの親のフォルダがまだ在るときだけ戻す
  * （途中まで消えた作業ツリーに、消えたフォルダを作り直さない）。作れないものは飛ばす。
  */

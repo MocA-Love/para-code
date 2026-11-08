@@ -16,6 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import * as cp from 'child_process';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.js';
+import { paradisPorcelainWithoutIncludeLinks } from '../../common/paradisWorktreeInclude.js';
 import { IParadisWorktreeIncludeHost, paradisMaterializeWorktreeIncludes, paradisReadWorktreeIncludeDeclarations, paradisRestoreWorktreeLinks, paradisUnlinkRecordedWorktreeLinks } from '../../node/paradisWorktreeIncludeCopy.js';
 
 (isWindows ? suite.skip : suite)('Paradis worktree include copy', () => {
@@ -169,6 +170,43 @@ import { IParadisWorktreeIncludeHost, paradisMaterializeWorktreeIncludes, paradi
 			refusals: ['refused', 'refused'],
 			refusedRemoval: 'refused',
 			linkAfterRefusal: join(repo, '.cache', 'models'),
+			removed: true,
+			modelsKept: 'model',
+		});
+	});
+
+	test('task board release: unlinks the shared folder, keeps a dirty worktree with the link back, then removes a clean one (762-RES)', async () => {
+		const git = (cwd: string, ...args: string[]) => cp.execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'pipe' }).toString();
+		await fs.rm(worktree, { recursive: true, force: true });
+		await fs.mkdir(join(repo, 'models'));
+		await fs.writeFile(join(repo, 'models', 'm.bin'), 'model');
+		// `models/` はフォルダとしての無視なので、ワークツリーのリンクには当たらず未追跡に見える
+		await fs.writeFile(join(repo, '.gitignore'), '.env\nmodels/\n');
+		await fs.writeFile(join(repo, '.paracode.json'), '{ "worktree": { "include": [".env"], "sharedDirectories": ["models"] } }');
+		git(repo, 'init', '-q', '-b', 'main');
+		git(repo, 'add', '.gitignore', '.paracode.json', 'README.md');
+		git(repo, 'commit', '-q', '-m', 'init');
+		git(repo, 'worktree', 'add', '-q', '-b', 'feature', worktree);
+		const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, cp.execFile, async () => ({ ...process.env }));
+		await service.copyWorktreeIncludes({ repoPath: repo, worktreePath: worktree });
+
+		const rawStatus = git(worktree, 'status', '--porcelain');
+		const links = await service.worktreeIncludeLinkPaths(worktree);
+		await fs.writeFile(join(worktree, 'untracked.txt'), '');
+		const dirty = await service.releaseCleanWorktree({ repoPath: repo, worktreePath: worktree });
+		const linkAfterDirty = await fs.readlink(join(worktree, 'models'));
+		await fs.unlink(join(worktree, 'untracked.txt'));
+		const notWorktree = await service.releaseCleanWorktree({ repoPath: repo, worktreePath: repo }).then(() => 'released', () => 'refused');
+		const clean = await service.releaseCleanWorktree({ repoPath: repo, worktreePath: worktree });
+
+		assert.deepStrictEqual({ rawStatus, filtered: paradisPorcelainWithoutIncludeLinks(rawStatus.trimEnd(), links), links, dirty, linkAfterDirty, notWorktree, clean, removed: await fs.access(worktree).then(() => false, () => true), modelsKept: await fs.readFile(join(repo, 'models', 'm.bin'), 'utf8') }, {
+			rawStatus: '?? models\n',
+			filtered: '',
+			links: ['models'],
+			dirty: 'dirty',
+			linkAfterDirty: join(repo, 'models'),
+			notWorktree: 'refused',
+			clean: 'removed',
 			removed: true,
 			modelsKept: 'model',
 		});

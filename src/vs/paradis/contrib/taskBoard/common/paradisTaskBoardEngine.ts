@@ -91,7 +91,8 @@ export class TaskBoardWorkspaceError extends Error {
 
 export interface ITaskBoardWorkspacePort {
 	/** 借りた作業場所を、ブランチ `branch` で使える状態にする（リモートに同名のブランチがあればそれを追う）。 */
-	prepare(task: ITaskBoardTask, slot: ITaskBoardSlot, branch: string): Promise<{ readonly branch: string; readonly path?: string }>;
+	/** `warning` は、作業場所は用意できたが一部がうまくいかなかったときの 1 行（宣言したファイルの持ち込みなど。経過に出す）。 */
+	prepare(task: ITaskBoardTask, slot: ITaskBoardSlot, branch: string): Promise<{ readonly branch: string; readonly path?: string; readonly warning?: string }>;
 	/** 返した作業場所を片付ける（ワークツリーなら消す）。失敗しても台帳は返却済みとして扱う。 */
 	release(task: ITaskBoardTask, slot: ITaskBoardSlot): Promise<void>;
 }
@@ -1350,6 +1351,9 @@ export class TaskBoardEngine {
 			current.branch = result.branch;
 			if (slot.kind === 'worktree' && result.path) {
 				this.worktreeSlots.set(current.id, { ...slot, path: result.path });
+			}
+			if (result.warning) {
+				this.activity(current, 'system', clip(result.warning, 1000), 'workspace');
 			}
 			this.launch(current, step, input);
 			this.changed();

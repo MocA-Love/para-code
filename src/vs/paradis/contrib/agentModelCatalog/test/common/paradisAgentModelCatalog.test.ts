@@ -115,6 +115,8 @@ suite('ParadisAgentModelCatalog', () => {
 			]),
 			// 2.1.283 は Fable を版付きの id でしか出さなかった
 			oldClaude: ids('claude', [model('opus', 'claude-opus-5-5'), model('claude-fable-5-1', 'claude-fable-5-1'), model('claude-fable-5', 'claude-fable-5'), model('custom-model')]),
+			// Mythos は別名が無く、/model の More models に版付きの id で並ぶ
+			mythos: ids('claude', [model('opus', 'claude-opus-5-5'), model('claude-mythos-5-1', 'claude-mythos-5-1'), model('claude-mythos-5', 'claude-mythos-5'), model('claude-opus-4-8', 'claude-opus-4-8')]),
 			// codex-cli 0.160.0 の model/list（2026-10-08）。gpt-5.6 には後継が示されない
 			codex: ids('codex', [
 				model('gpt-6.1-sol'), model('gpt-6-astra'), model('gpt-6-sol'), model('gpt-6-luna'),
@@ -124,6 +126,7 @@ suite('ParadisAgentModelCatalog', () => {
 		}, {
 			claude: ['opus', 'fable', 'sonnet', 'haiku'],
 			oldClaude: ['opus', 'claude-fable-5-1', 'custom-model'],
+			mythos: ['opus', 'claude-mythos-5-1'],
 			codex: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'custom'],
 			allOld: ['gpt-5.5'],
 		});

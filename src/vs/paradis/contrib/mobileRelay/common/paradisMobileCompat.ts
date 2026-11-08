@@ -259,6 +259,12 @@ export const ParadisMobileCapability = {
 	 */
 	FsAbsolutePath: 'fs.absolute-path.v1',
 	/**
+	 * fs の `find`・`grep` の省略できる `dir`（スペースの根からの相対のフォルダ）。その中だけを探す（ripgrep に絞り込み先として渡す）。
+	 * フォルダは realpath でスペースの中にあることを確かめ、外へ出るシンボリックリンク・`..`・絶対パスは断る。返すパスは根からの相対のまま。
+	 * PC だけが広告する。アプリはフォルダの長押しのメニューの「このフォルダを検索」を、広告している PC でだけ押せるようにする。
+	 */
+	FsFindDir: 'fs.find-dir.v1',
+	/**
 	 * agent の要求 `context-breakdown`（`id`・`token`・`requestId`）で、会話のコンテキストの内訳（`/context` と同じカテゴリ別・
 	 * メモリファイル別・MCP サーバー別・エージェント別・スキル別）を返す。同梱の Claude Mod が応答の終わりごとに取り、PC が会話ごとに
 	 * 最後の 1 件を保存したもの（`paradisClaudeContextStore.ts`。SSH 先のペインの mod も戻りトンネルで手元へ送る）。パスはホームを `~/` に縮める。取れないとき（Codex・まだ無い）は `reason` と `error`。
@@ -327,6 +333,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentAsyncQuestions,
 	ParadisMobileCapability.FsAbsolutePath,
 	ParadisMobileCapability.AgentContextBreakdown,
+	ParadisMobileCapability.FsFindDir,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
