@@ -72,6 +72,17 @@ suite('ParadisMobileHtmlImages', () => {
 		], [undefined, 1, undefined]);
 	});
 
+	test('treats --!> as the end of a comment, as browsers do', () => {
+		const inside = pngDataUrl(320, 200);
+		const after = pngDataUrl(640, 400);
+		const html = `<!-- <img src="${inside}"> --!><p><img src="${after}"></p><!-- -->`;
+
+		assert.deepStrictEqual(paradisSplitMobileHtmlImages(html), {
+			images: [after],
+			html: html.replace(`<img src="${after}">`, `<img data-paradis-img="0" src="${placeholder(640, 400)}">`),
+		});
+	});
+
 	test('scans once and stops at an unclosed comment, raw text element or tag', async () => {
 		const image = pngDataUrl(320, 240);
 		const lead = `<p><img src="${image}"></p>`;

@@ -158,7 +158,8 @@ function* splitSteps(html: string): Generator<void, IParadisMobileHtmlImageSplit
 	return { html: out.join(''), images };
 }
 
-const COMMENT_END = /-->/;
+/** コメントの閉じ（ブラウザは `--!>` でも閉じる）。 */
+const COMMENT_END = /--!?>/;
 /** 閉じを探す 1 回分の長さ。近くの閉じは短く探して見つけ、遠いときは 16 倍ずつ広げる（最大で 1 MiB ごとに手を離す）。 */
 const SEARCH_WINDOW_FIRST = 4 * 1024;
 const SEARCH_WINDOW_MAX = 1024 * 1024;
