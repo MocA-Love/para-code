@@ -538,6 +538,26 @@ export class TaskBoardEngine {
 	}
 
 	/**
+	 * 「タスク」の画面から載せた未着手の Issue（picked）のうち、`openIds` に無いもの（GitHub で閉じた・消えた・読めなくなった）を外す。
+	 * `checkedIds` は確かめた Issue のタスクの id（確かめていないものは外さない）。外した数を返す。
+	 */
+	dropClosedPickedIssues(checkedIds: readonly string[], openIds: readonly string[]): number {
+		const open = new Set(openIds);
+		let removed = 0;
+		for (const id of checkedIds) {
+			const task = this.tasks.get(id);
+			if (task?.picked && task.step === TASK_BOARD_TODO && !open.has(id)) {
+				this.forget(id);
+				removed++;
+			}
+		}
+		if (removed) {
+			this.changed();
+		}
+		return removed;
+	}
+
+	/**
 	 * 取り込み元の一覧を台帳へ反映する。新しいものは未着手で足し、既にあるものは中身だけ更新する。
 	 * `complete` のときだけ、一覧から消えた未着手のものを外す（件数の上限で打ち切った一覧では外さない）。
 	 */
