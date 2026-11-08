@@ -216,6 +216,34 @@ async function scratchDir(name: string): Promise<string> {
 		assert.deepStrictEqual({ spawned, refused, running: host.isRunning }, { spawned: 3, refused: 'refused', running: false });
 	});
 
+	// 準備できる前に落ちたホストの stderr を理由に添える（ログを捨てる環境でも、なぜ起きなかったかが分かる）
+	test('says what the host printed to stderr when it exits before it is ready', async () => {
+		const spawnChild: ParadisSimulatorSpawn = () => {
+			const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; pid: number; exitCode: number | null; signalCode: null; kill(): boolean };
+			child.stdin = new PassThrough();
+			child.stdout = new PassThrough();
+			child.stderr = new PassThrough();
+			child.pid = 100100;
+			child.exitCode = null;
+			child.signalCode = null;
+			child.kill = () => true;
+			child.stdin.once('data', () => {
+				child.stderr.write('first line\n\nError: cannot load the entry\n');
+				setTimeout(() => {
+					child.exitCode = 1;
+					child.emit('exit', 1, null);
+				}, 5);
+			});
+			return child as unknown as ChildProcess;
+		};
+		const host = store.add(new ParadisSimulatorHostProcess({ userDataPath: await scratchDir('noisy'), logService: new NullLogService(), socketParentDir: await scratchDir('noisySockets'), spawnChild, bootstrapPath: 'bootstrap-fork' }));
+		const reason = await host.ensure().then(() => 'started', error => error instanceof Error ? error.message : String(error));
+		assert.deepStrictEqual({ reason, lastError: host.lastError }, {
+			reason: 'The simulator host exited before it was ready (code 1, signal none); host stderr: first line | Error: cannot load the entry',
+			lastError: 'The simulator host exited before it was ready (code 1, signal none); host stderr: first line | Error: cannot load the entry',
+		});
+	});
+
 	// 前のホストが残したソケット（誰も待ち受けていないもの）だけを消し、生きているソケットと名前の違うファイルには触れない
 	test('removes only the dead sockets left by earlier hosts', async () => {
 		const dir = await scratchDir('staleSockets');

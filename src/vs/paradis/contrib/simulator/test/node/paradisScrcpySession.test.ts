@@ -62,21 +62,36 @@ function fakeDevice(reverseList = ''): { device: IFakeDevice; options: Omit<Cons
 					await new Promise(resolve => video.once('connect', resolve));
 					const control = connect(port, '127.0.0.1');
 					await new Promise(resolve => control.once('connect', resolve));
+					// TCP は送った単位を保たない（素の Node では続けて送った 2 通が 1 回の data に来る）。
+					// 届いた分をためて、操作の形を 1 通ずつ読む
+					let pending = Buffer.alloc(0);
 					control.on('data', chunk => {
 						device.control.push(chunk);
-						// 端末の server の返事: クリップボードを求められたら中身を、書いたら ACK（sequence）を返す
-						if (chunk[0] === 8) {
-							const text = Buffer.from('user text');
-							const reply = Buffer.alloc(5 + text.length);
-							reply[0] = 0;
-							reply.writeUInt32BE(text.length, 1);
-							text.copy(reply, 5);
-							control.write(reply);
-						} else if (chunk[0] === 9) {
-							const ack = Buffer.alloc(9);
-							ack[0] = 1;
-							chunk.copy(ack, 1, 1, 9);
-							control.write(ack);
+						pending = Buffer.concat([pending, chunk]);
+						while (pending.length) {
+							const type = pending[0];
+							// 映像の作り直し（17）は 1 バイト、クリップボードを求める（8）は 2 バイト、
+							// 書く（9）は 種類 1 + sequence 8 + 貼る 1 + 長さ 4 + 文字
+							const length = type === 17 ? 1 : type === 8 ? 2 : type === 9 && pending.length >= 14 ? 14 + pending.readUInt32BE(10) : undefined;
+							if (length === undefined || pending.length < length) {
+								break;
+							}
+							const message = pending.subarray(0, length);
+							pending = pending.subarray(length);
+							// 端末の server の返事: クリップボードを求められたら中身を、書いたら ACK（sequence）を返す
+							if (type === 8) {
+								const text = Buffer.from('user text');
+								const reply = Buffer.alloc(5 + text.length);
+								reply[0] = 0;
+								reply.writeUInt32BE(text.length, 1);
+								text.copy(reply, 5);
+								control.write(reply);
+							} else if (type === 9) {
+								const ack = Buffer.alloc(9);
+								ack[0] = 1;
+								message.copy(ack, 1, 1, 9);
+								control.write(ack);
+							}
 						}
 					});
 					device.sockets.push(video, control);
