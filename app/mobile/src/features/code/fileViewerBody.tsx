@@ -18,7 +18,7 @@ import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reducePar
 import { CenterSpinner } from './codeParts.js';
 import { buildFindScript, findTargetOf } from './fileFind.js';
 import { HTML_IMAGES_LOADER_SCRIPT, HTML_IMAGES_RETRY_SCRIPT, HtmlImageQueue, buildHtmlImageDeliverScript } from './htmlImages.js';
-import { CODE_LINE_WINDOW, buildCodeHtml, buildMarkdownHtml, codeLineTotal, codePageStartOf, viewerCanvasColor, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
+import { CODE_LINE_WINDOW, buildCodeHtml, buildMarkdownHtml, codeLineTotal, codePageStartOf, viewerCanvasColor, withDefaultViewport, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
 import type { FileContent } from './useFileContent.js';
 import type { FileFindBinding } from './useFileFind.js';
 import { useViewerPathLinks, type ViewerPathLinkSpace } from './useViewerPathLinks.js';
@@ -298,7 +298,8 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			return undefined;
 		}
 		if (mode === 'render' && kind === 'html') {
-			return text.content;
+			// viewport の meta が無いページは、ブラウザの既定（幅 980 の縮小表示）にせず端末の幅で描く
+			return withDefaultViewport(text.content);
 		}
 		if (mode === 'render' && kind === 'markdown') {
 			return buildMarkdownHtml(text, theme, viewerNonce);
