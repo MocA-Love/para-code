@@ -27,10 +27,8 @@ export const PARADIS_SIMULATOR_OPEN_ANDROID_COMMAND_ID = 'paradis.simulator.open
 export function paradisSimulatorScreenOpener(accessor: ServicesAccessor): (deviceId: string) => (() => void) | undefined {
 	const commandService = accessor.get(ICommandService);
 	return deviceId => {
-		if (!isMacintosh) {
-			return undefined;
-		}
-		const udid = paradisSimulatorUdidOfDeviceId(deviceId);
+		// iOS のシミュレータは macOS だけ。Android は全 OS（Q588）
+		const udid = isMacintosh ? paradisSimulatorUdidOfDeviceId(deviceId) : undefined;
 		if (udid) {
 			return () => void commandService.executeCommand(PARADIS_SIMULATOR_OPEN_COMMAND_ID, udid);
 		}

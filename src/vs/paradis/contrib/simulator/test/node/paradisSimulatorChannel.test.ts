@@ -83,4 +83,21 @@ suite('Paradis simulator: video relay in the shared process', () => {
 			refused: [],
 		});
 	});
+
+	// Android（adb・scrcpy）は全 OS で使う。iOS（serve-sim）を使えない OS でも Android の呼び出しは断らない（Q588）
+	test('serves Android calls where the iOS simulator is not supported', async () => {
+		const booted: string[] = [];
+		const host = { ensure: async (): Promise<IParadisSimulatorHostConnection> => ({ socketPath: '', token: '' }), isRunning: false, lastError: undefined, stop: async () => { } };
+		const service = store.add(new ParadisSimulatorService(host, {} as ParadisServeSimBackend, false, new NullLogService(), undefined, {
+			adb: { bootAvd: async (deviceId: string) => { booted.push(deviceId); }, listDevices: async () => [{ id: 'android:serial:emulator-5554', name: 'Pixel 9', runtimeName: 'Android 16', state: 'device' }] },
+		}));
+		await service.bootAndroid('android:avd:Pixel_9');
+		const devices = await service.listAndroidDevices();
+		const ios = await Promise.resolve().then(() => service.listDevices()).then(() => 'listed', (error: Error) => error.message);
+		assert.deepStrictEqual({ booted, devices, ios }, {
+			booted: ['android:avd:Pixel_9'],
+			devices: [{ serial: 'emulator-5554', name: 'Pixel 9', runtime: 'Android 16', state: 'device' }],
+			ios: 'The iOS simulator is only available on macOS',
+		});
+	});
 });
