@@ -8,7 +8,8 @@ import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
 import { alpha, colors, withAlpha } from '../../theme.js';
 import { useChatTextScale } from '../../ui/chatTextScale.js';
 import { useThemeColors } from '../../ui/index.js';
-import { buildInplaceSelectHtml, inplaceSelectStartScript, parseInplaceSelectMessage, type InplaceSelectPoint, type InplaceSelectSegment } from './inplaceSelectHtml.js';
+import { peekCodeHighlight } from '../../components/codeHighlightCache.js';
+import { buildInplaceSelectHtml, inplaceSelectStartScript, parseInplaceSelectMessage, type InplaceSelectPoint, type InplaceSelectScrollLayout, type InplaceSelectSegment } from './inplaceSelectHtml.js';
 
 /**
  * 読み込みを終えた後、スクリプトが「描き終えた」を知らせてこないときに、それでも出すまでの待ち（ms）。
@@ -33,7 +34,7 @@ const SELECT_ATTEMPTS_MS = [30, 200, 500] as const;
  * - `segments` と `point` は差し替えを始めたときの写しを渡すこと。変わると HTML を作り直して選択が消える
  * - WebView の編集メニューに `menuItems` を足さない（足すと react-native-webview が OS の項目を全部消す）
  */
-export function InplaceSelectWebView({ active, segments, point, fg, onReady, onHeight, onGone }: {
+export function InplaceSelectWebView({ active, segments, point, layout, fg, onReady, onHeight, onGone }: {
 	/**
 	 * 選んでいる間か。false の間は見えないまま読み込んでおく（長押しのメニューが出た時点で用意し、押されたら同じ
 	 * WebView を見せる。WebView の起動に数秒かかることがあるため）。
@@ -41,6 +42,11 @@ export function InplaceSelectWebView({ active, segments, point, fg, onReady, onH
 	active: boolean;
 	segments: readonly InplaceSelectSegment[];
 	point: InplaceSelectPoint | undefined;
+	/**
+	 * 前後の発言をまとめて選ぶとき（`crossSelect.tsx`）。中で縦にスクロールでき、押した発言を元の位置に合わせて見せる。
+	 * 無いときは発言 1 つの上に重ね、中ではスクロールしない（高さは `onHeight` で呼び出し側が合わせる）。差し替えを始めたときの写しを渡すこと。
+	 */
+	layout?: InplaceSelectScrollLayout;
 	/** 本文の色。 */
 	fg: string;
 	onReady: () => void;
@@ -65,7 +71,9 @@ export function InplaceSelectWebView({ active, segments, point, fg, onReady, onH
 		accent: theme.accent,
 		accentWash: theme.accentWash,
 		selection: withAlpha(theme.accent, alpha.line) ?? theme.accent,
-	}, createMobileOfficeNonce(), point), [segments, point, fg, scale, fontScale, theme.accent, theme.accentWash]);
+		// コードは会話の描画が PC から取ってある色で描く（新しく PC へは頼まない）
+		codeHighlight: peekCodeHighlight,
+	}, createMobileOfficeNonce(), point, layout), [segments, point, layout, fg, scale, fontScale, theme.accent, theme.accentWash]);
 
 	const markReady = () => {
 		if (!readyRef.current) {
@@ -118,10 +126,11 @@ export function InplaceSelectWebView({ active, segments, point, fg, onReady, onH
 				onLoadEnd={onLoadEnd}
 				onContentProcessDidTerminate={() => onGone?.()}
 				onShouldStartLoadWithRequest={guardWebViewNavigation}
-				// 縦のスクロールは会話の一覧に任せる（中身の高さまで WebView を伸ばすので、中でスクロールしない）
-				scrollEnabled={false}
+				// 発言 1 つのときは、縦のスクロールは会話の一覧に任せる（中身の高さまで WebView を伸ばすので、中でスクロールしない）。
+				// 前後の発言をまとめて選ぶときは、一覧の上に重ねて中でスクロールする
+				scrollEnabled={layout !== undefined}
 				bounces={false}
-				showsVerticalScrollIndicator={false}
+				showsVerticalScrollIndicator={layout !== undefined}
 				showsHorizontalScrollIndicator={false}
 				automaticallyAdjustContentInsets={false}
 				contentInsetAdjustmentBehavior="never"

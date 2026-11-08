@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { NEUTRAL_CHAT_TEXT_SCALE } from '../../chatTextScale.js';
-import { buildInplaceSelectHtml, inplaceSelectMinHeight, inplaceSelectStartScript, localPressPoint, parseInplaceSelectMessage, type InplaceSelectLook } from './inplaceSelectHtml.js';
+import { buildInplaceSelectHtml, inplaceSelectContentSecurityPolicy, inplaceSelectMinHeight, safeColor, inplaceSelectStartScript, localPressPoint, parseInplaceSelectMessage, type InplaceSelectLook } from './inplaceSelectHtml.js';
 
 const NONCE = 'abcdefghijklmnop0123';
 const LOOK: InplaceSelectLook = {
@@ -47,6 +47,61 @@ describe('buildInplaceSelectHtml', () => {
 		expect(bodyOf(html)).toBe('<div class="seg"><div class="p">&lt;script&gt;alert(1)&lt;/script&gt; <span class="a">x" onclick="y</span> &amp; <span class="ic">&lt;i&gt;</span></div></div>');
 		expect(html).not.toContain('href');
 		expect(html.match(/<script/g)).toHaveLength(1);
+	});
+
+	it('colors code from the highlight the chat already has, and drops colors that could break out of the attribute', () => {
+		const look: InplaceSelectLook = {
+			...LOOK,
+			codeHighlight: (text, lang) => text === 'const a = 1;' && lang === 'ts'
+				? { bg: '#1e1e1e', fg: '#d4d4d4', lines: [[{ text: 'const', color: '#569cd6', bold: true }, { text: ' a = ' }, { text: '1', color: 'red;" onload="x' }, { text: ';', italic: true }]] }
+				: undefined,
+		};
+		const html = buildInplaceSelectHtml([{ text: '```ts\nconst a = 1;\n```\n\n```\n<plain>\n```', markdown: true }], look, NONCE);
+		expect(bodyOf(html)).toBe([
+			'<div class="seg">',
+			'<div class="cb" style="background:#1e1e1e"><div class="io"><span class="iol">ts</span><span class="ioa">折り返し</span><span class="ioa">コピー</span></div>',
+			'<div class="cc"><div class="ct" style="color:#d4d4d4"><span class="cbd" style="color:#569cd6">const</span> a = 1<span class="ci">;</span></div></div></div>',
+			'<div class="cb"><div class="io"><span class="iol">コード</span><span class="ioa">折り返し</span><span class="ioa">コピー</span></div><div class="cc"><div class="ct">&lt;plain&gt;</div></div></div>',
+			'</div>',
+		].join(''));
+	});
+
+	it('accepts only color shapes, never url(), var() or expression', () => {
+		const inputs = ['#569cd6', '#FFF', '#11223344', 'rgb(1, 2, 3)', 'rgba(59,130,246,0.12)', 'hsl(210 50% 40% / 0.5)', 'red', ' #abc ',
+			'url(x)', 'URL(https://e.com/a.png)', 'var(--x)', 'expression(alert(1))', 'Expression', 'red;" onload="x', 'rgb(url(x))', 'calc(1px)', '#12', 'image-set(a)', ''];
+		expect(inputs.map(safeColor)).toEqual(['#569cd6', '#FFF', '#11223344', 'rgb(1, 2, 3)', 'rgba(59,130,246,0.12)', 'hsl(210 50% 40% / 0.5)', 'red', '#abc',
+			undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+		const html = buildInplaceSelectHtml([{ text: '```ts\na\n```', markdown: true }], { ...LOOK, codeHighlight: () => ({ bg: 'url(https://e.com/x.png)', fg: 'var(--x)', lines: [[{ text: 'a', color: 'expression(1)' }]] }) }, NONCE);
+		expect(html).not.toMatch(/url\(|var\(|expression/);
+	});
+
+	it('blocks everything by default and opens only the nonce script and inline styles', () => {
+		const html = buildInplaceSelectHtml([{ text: 'a', markdown: true }], LOOK, NONCE);
+		const csp = inplaceSelectContentSecurityPolicy(NONCE);
+		expect({ csp, inHead: html.startsWith(`<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}">`) }).toEqual({
+			csp: `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${NONCE}'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'`,
+			inHead: true,
+		});
+		expect(() => inplaceSelectContentSecurityPolicy('bad nonce"')).toThrow();
+	});
+
+	it('lays several messages out to scroll, with labels that are not copied, and scrolls the pressed one into its old place', () => {
+		const html = buildInplaceSelectHtml(
+			[{ text: '前の発言', markdown: false, label: 'あなた' }, { text: '押した発言', markdown: true, label: 'エージェント' }],
+			LOOK, NONCE, { x: 10, y: 20 }, { anchor: 1, top: 120.5, left: 16, width: 343, pad: 600 },
+		);
+		expect({
+			body: /<\/style>\n<\/head><body>(?<body>[\s\S]*)<script/.exec(html)?.groups?.body,
+			place: html.includes('var lay=[1,120.5];'),
+			// 押した点が取れないとき（iPad の右クリックなど）は、並べた全部ではなく押した発言の本文だけを選ぶ
+			fallback: html.includes("var el=lay?root.querySelectorAll('.seg')[lay[0]]:null;"),
+			label: html.includes('.sp {') && /\.sp \{[^}]*user-select: none/.test(html),
+		}).toEqual({
+			body: '<div id="m" class="across" style="padding:600px 0;margin-left:16px;width:343px"><div class="seg"><div class="sp">あなた</div><div class="u">前の発言</div></div><div class="seg"><div class="sp">エージェント</div><div class="p">押した発言</div></div></div>',
+			place: true,
+			fallback: true,
+			label: true,
+		});
 	});
 
 	it('draws a user message as plain bubble text', () => {
