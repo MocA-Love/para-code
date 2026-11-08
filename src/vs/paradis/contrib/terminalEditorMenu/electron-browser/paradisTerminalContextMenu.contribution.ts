@@ -20,7 +20,10 @@
 // どちらも右クリックしたターミナルを引数から引く（タブはアクティブとは限らない）。
 
 import './media/paradisTerminalContextMenu.css';
+import { addDisposableListener, EventType, onDidRegisterWindow } from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -346,8 +349,16 @@ for (const [index, color] of [...PARADIS_TERMINAL_TAB_COLORS, { colorId: undefin
 	});
 }
 
-/** {@link PARADIS_TERMINAL_AGENT_RUNNING} を、アクティブなターミナルに合わせて保つ。 */
-class ParadisTerminalContextMenuContribution extends Disposable implements IWorkbenchContribution {
+/**
+ * {@link PARADIS_TERMINAL_AGENT_RUNNING} を、アクティブなターミナルに合わせて保つ。
+ *
+ * 本当に効くのはメニューを開く直前の判定。右クリックの `contextmenu` を捕捉の段階で受け、ターミナルが
+ * メニューの項目を組み立てる前に決め直す（右クリックの mousedown でそのターミナルがアクティブになった後）。
+ * エージェントを `exit` した直後は、コマンドの終わりの知らせの時点ではまだプロンプトが入力待ちになって
+ * おらず、hook の実績も残るので、イベントで決めた値だけでは節が出たままになる。
+ * イベントでの見直しは、コマンドパレットなど右クリック以外から条件を見る場合のため。
+ */
+export class ParadisTerminalContextMenuContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisTerminalContextMenu';
 
@@ -360,16 +371,20 @@ class ParadisTerminalContextMenuContribution extends Disposable implements IWork
 	) {
 		super();
 		this.agentRunning = PARADIS_TERMINAL_AGENT_RUNNING.bindTo(contextKeyService);
+		this._register(Event.runAndSubscribe(onDidRegisterWindow, ({ window, disposables }) => {
+			disposables.add(addDisposableListener(window, EventType.CONTEXT_MENU, () => this.update(), true));
+		}, { window: mainWindow, disposables: this._store }));
 		this._register(this.terminalService.onDidChangeActiveInstance(() => this.update()));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.update()));
 		const executed = this._register(this.terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandExecuted));
 		this._register(executed.event(() => this.update()));
-		const finished = this._register(this.terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandFinished));
-		this._register(finished.event(() => this.update()));
+		const promptStarted = this._register(this.terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.promptInputModel.onDidStartInput));
+		this._register(promptStarted.event(() => this.update()));
 		this.update();
 	}
 
-	private update(): void {
+	/** 今のアクティブなターミナルで決め直す。 */
+	update(): void {
 		const instance = this.terminalService.activeInstance;
 		if (instance === undefined) {
 			this.agentRunning.set(false);
