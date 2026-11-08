@@ -68,11 +68,12 @@ describe('buildInplaceSelectHtml', () => {
 		const ready = html.slice(html.indexOf('function ready()'));
 		expect([
 			ready.slice(0, ready.indexOf('}', ready.indexOf('post('))).includes('selectAt'),
-			html.includes('window.__paraSelectStart=function(){try{if(!selectAt([1,2])){selectAll();}}catch(e){}};'),
+			html.includes('if(started&&s&&!s.isCollapsed){return;}started=true;if(!selectAt([1,2])){selectAll();}'),
+			html.includes('tab-size: 28px'),
 			html.includes("document.addEventListener('touchstart'"),
 			html.includes("addEventListener('touchcancel'"),
 			inplaceSelectStartScript(),
-		]).toEqual([false, true, true, false, 'window.__paraSelectStart&&window.__paraSelectStart();true;']);
+		]).toEqual([false, true, true, true, false, 'window.__paraSelectStart&&window.__paraSelectStart();true;']);
 	});
 
 	it('matches the chat sizes, including the OS text size and the chat text size setting', () => {
