@@ -504,6 +504,60 @@ export class TaskBoardEngine {
 	}
 
 	/**
+	 * Para Code の「タスク」の画面から選んだ Issue を未着手に載せる（{@link ITaskBoardTask.picked} の印を付け、取り込みで外さない）。
+	 * 既に台帳にあるものは中身を新しくして印を付けるだけ。返すのは Issue ごとのタスクの id（並びは渡した順）。
+	 * ファイルへ移した完了タスクも、選び直されたので作り直す。
+	 */
+	addIssues(items: readonly ITaskBoardIntakeItem[]): string[] {
+		const ids: string[] = [];
+		for (const item of items) {
+			const id = issueKey(item.issue);
+			ids.push(id);
+			const existing = this.tasks.get(id);
+			const meta = {
+				title: clip(item.title, 300),
+				issue: item.issue,
+				labels: [...item.labels],
+				assignees: [...item.assignees],
+				avatars: item.avatars ?? existing?.avatars,
+				body: item.body !== undefined ? clip(item.body) : existing?.body,
+				picked: true,
+			};
+			if (existing) {
+				Object.assign(existing, meta);
+				existing.updatedAt = this.now();
+			} else {
+				this.archivedIds.delete(id);
+				this.create('github', id, item.title, meta);
+			}
+		}
+		if (ids.length) {
+			this.changed();
+		}
+		return ids;
+	}
+
+	/**
+	 * 「タスク」の画面から載せた未着手の Issue（picked）のうち、`openIds` に無いもの（GitHub で閉じた・消えた・読めなくなった）を外す。
+	 * `checkedIds` は確かめた Issue のタスクの id（確かめていないものは外さない）。外した数を返す。
+	 */
+	dropClosedPickedIssues(checkedIds: readonly string[], openIds: readonly string[]): number {
+		const open = new Set(openIds);
+		let removed = 0;
+		for (const id of checkedIds) {
+			const task = this.tasks.get(id);
+			if (task?.picked && task.step === TASK_BOARD_TODO && !open.has(id)) {
+				this.forget(id);
+				removed++;
+			}
+		}
+		if (removed) {
+			this.changed();
+		}
+		return removed;
+	}
+
+	/**
 	 * 取り込み元の一覧を台帳へ反映する。新しいものは未着手で足し、既にあるものは中身だけ更新する。
 	 * `complete` のときだけ、一覧から消えた未着手のものを外す（件数の上限で打ち切った一覧では外さない）。
 	 */
@@ -544,7 +598,7 @@ export class TaskBoardEngine {
 		}
 		if (complete) {
 			for (const task of [...this.tasks.values()]) {
-				if (task.source === 'github' && task.step === TASK_BOARD_TODO && !seen.has(task.id)) {
+				if (task.source === 'github' && task.step === TASK_BOARD_TODO && !seen.has(task.id) && !task.picked) {
 					this.forget(task.id);
 					removed++;
 				}
@@ -561,7 +615,8 @@ export class TaskBoardEngine {
 		if (task.step !== TASK_BOARD_TODO && task.step !== TASK_BOARD_DONE) {
 			throw new TaskBoardError('invalid-state', 'cancel the task before removing it');
 		}
-		if (task.source === 'github' && task.step === TASK_BOARD_TODO) {
+		// 取り込みで入った Issue は取り込みが外す。「タスク」の画面から載せたもの（picked）は手で外せる
+		if (task.source === 'github' && task.step === TASK_BOARD_TODO && !task.picked) {
 			throw new TaskBoardError('invalid-state', 'tasks from GitHub are removed by the intake');
 		}
 		this.forget(taskId);

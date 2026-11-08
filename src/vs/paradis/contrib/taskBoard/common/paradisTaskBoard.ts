@@ -230,6 +230,10 @@ export interface ITaskBoardTask {
 	readonly projectStatus?: string;
 	/** Projects の項目の id（書き戻しに使う）。 */
 	readonly projectItemId?: string;
+	/**
+	 * Para Code の「タスク」の画面から載せた Issue。取り込み元の一覧（担当が自分の Issue など）に無くても、未着手のまま外さない。
+	 */
+	readonly picked?: boolean;
 	/** 軸の欄の、GitHub 側の今の値。 */
 	readonly projectStage?: string;
 	readonly assignees: readonly string[];
@@ -631,3 +635,16 @@ export class TaskBoardError extends Error {
 		this.name = 'TaskBoardError';
 	}
 }
+
+/** Para Code の「タスク」の画面からボードへ Issue を載せる要求（本体 → ボードのサーバー、IPC）。 */
+export interface ITaskBoardAddIssuesRequest {
+	readonly issues: readonly { readonly owner: string; readonly repo: string; readonly number: number }[];
+}
+
+/**
+ * Issue を載せた結果。`missing` は読めなかった（無い・閉じている・PR だった）数。
+ * 失敗: `other-repo` はボードが別のリポジトリで動いている（`repo` にボードのリポジトリ）、`no-github` は GitHub につないでいない。
+ */
+export type TaskBoardAddIssuesResult =
+	| { readonly ok: true; readonly taskIds: readonly string[]; readonly missing: number }
+	| { readonly ok: false; readonly reason: 'other-repo' | 'no-github' | 'not-running' | 'failed'; readonly repo?: string; readonly message?: string };

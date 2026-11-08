@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import type { ITaskBoardAddIssuesRequest, TaskBoardAddIssuesResult } from './paradisTaskBoard.js';
 
 /*
  * 同梱のタスクボードを開く口（main プロセス）。ボードのサーバー（resources/paradis/taskboard/server/main.mjs）を
@@ -45,6 +46,11 @@ export interface IParadisTaskBoardHost {
 	startRemote(target: IParadisTaskBoardRemoteTarget): Promise<ParadisTaskBoardOpenResult>;
 	/** startRemote で起こしたボードの起動を待ち、そのウィンドウを出す。 */
 	openRemote(sessionId: string): Promise<ParadisTaskBoardOpenResult>;
+	/**
+	 * 動いているボードの未着手に Issue を載せる（Para Code の「タスク」の画面から）。`focus` なら載せた後にボードの窓を出し、
+	 * 最初のタスクを開く（そこから着手する）。ボードが動いていなければ `not-running`。
+	 */
+	addIssues(request: ITaskBoardAddIssuesRequest, focus: boolean): Promise<TaskBoardAddIssuesResult>;
 	/** ボードのサーバーとウィンドウを止める。 */
 	stop(): Promise<void>;
 }
@@ -76,7 +82,8 @@ export interface IParadisTaskBoardHostService extends IParadisTaskBoardHost {
 /** サーバーとの IPC（app/taskboard/server/main.ts の `--embedded`）。 */
 export type ParadisTaskBoardServerMessage =
 	| { readonly type: 'ready'; readonly port: number; readonly repo: string | undefined }
-	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string };
+	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string }
+	| { readonly type: 'add-issues-result'; readonly requestId: string; readonly result: TaskBoardAddIssuesResult };
 
 /** 同梱のボードが優先して使うポート（手で起動するボードの既定 4870 と分ける。画面の設定はポートごとに残る）。 */
 export const PARADIS_TASK_BOARD_EMBEDDED_PORT = 4871;

@@ -22,10 +22,13 @@ import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-m
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE } from '../common/paradisTaskBoardBridge.js';
+import type { ITaskBoardAddIssuesRequest, TaskBoardAddIssuesResult } from '../common/paradisTaskBoard.js';
 import { IParadisTaskBoardHost, IParadisTaskBoardRemoteTarget, PARADIS_TASK_BOARD_EMBEDDED_PORT, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult, ParadisTaskBoardServerMessage, paradisTaskBoardIsRemoteTarget } from '../common/paradisTaskBoardHost.js';
 
 /** サーバーが起動の合図を返すまで待つ時間（GitHub の認証と台帳の読み込みが先に走る）。 */
 const READY_TIMEOUT_MS = 60_000;
+/** Issue を載せる要求の返事を待つ時間（GitHub から Issue を読む 1 回分）。 */
+const ADD_ISSUES_TIMEOUT_MS = 30_000;
 /** 止めるときに SIGTERM の後で待つ時間（台帳を書き終えるまで）。過ぎたら SIGKILL。 */
 const STOP_GRACE_MS = 5_000;
 
@@ -131,6 +134,38 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		this.showWindow(running);
 		// 既に動いているボードを開き直したときも、同じ pid と鍵を返す（窓が shared process へ登録し直す）
 		return running.child.pid !== undefined ? { ok: true, board: { pid: running.child.pid, key: running.boardKey, ...(running.remote ? { remote: true } : {}) } } : { ok: true };
+	}
+
+	async addIssues(request: ITaskBoardAddIssuesRequest, focus: boolean): Promise<TaskBoardAddIssuesResult> {
+		const running = this.running;
+		if (!running || this.quitting) {
+			return { ok: false, reason: 'not-running' };
+		}
+		const issues = Array.isArray(request?.issues) ? request.issues.slice(0, 20) : [];
+		const requestId = randomBytes(12).toString('base64url');
+		const result = await new Promise<TaskBoardAddIssuesResult>(resolve => {
+			const timer = setTimeout(() => finish({ ok: false, reason: 'failed', message: 'the task board did not answer in time' }), ADD_ISSUES_TIMEOUT_MS);
+			const onMessage = (message: ParadisTaskBoardServerMessage) => {
+				if (message?.type === 'add-issues-result' && message.requestId === requestId) {
+					finish(message.result);
+				}
+			};
+			const onExit = () => finish({ ok: false, reason: 'not-running' });
+			const finish = (value: TaskBoardAddIssuesResult) => {
+				clearTimeout(timer);
+				running.child.off('message', onMessage);
+				running.child.off('exit', onExit);
+				resolve(value);
+			};
+			running.child.on('message', onMessage);
+			running.child.once('exit', onExit);
+			running.child.send({ type: 'add-issues', requestId, request: { issues } }, error => error && finish({ ok: false, reason: 'failed', message: error.message }));
+		});
+		if (result.ok && focus && this.running === running) {
+			const [taskId] = result.taskIds;
+			this.showWindow(running, taskId ? `#/board/task/${encodeURIComponent(taskId)}` : undefined);
+		}
+		return result;
 	}
 
 	/**
@@ -292,11 +327,16 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		return result;
 	}
 
-	private showWindow(running: IRunningBoard): void {
+	/** ボードの窓を出す。`hash` は画面の行き先（`#/board/task/<id>` など。開いている窓でも、そこへ移す）。 */
+	private showWindow(running: IRunningBoard, hash?: string): void {
 		const existing = this.window;
 		if (existing && !existing.isDestroyed()) {
 			if (existing.isMinimized()) {
 				existing.restore();
+			}
+			if (hash) {
+				// 読み直さずに画面の行き先（hash）だけを変える。画面は hashchange でそのタスクを開く（開いているダイアログや入力は残る）
+				void existing.webContents.executeJavaScript(`location.hash = ${JSON.stringify(hash)}`).catch(error => this.logService.warn(`[ParadisTaskBoardHost] ${error.message}`));
 			}
 			existing.show();
 			existing.focus();
@@ -365,7 +405,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 				contents.reload();
 			}
 		});
-		void window.loadURL(`${origin}/?token=${encodeURIComponent(running.token)}`);
+		void window.loadURL(`${origin}/?token=${encodeURIComponent(running.token)}${hash ?? ''}`);
 	}
 
 	/**
@@ -437,6 +477,19 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 	}
 }
 
+/** 窓から届いた「Issue を載せる」の値を、形を確かめて揃える（数は 20 件まで）。 */
+export function paradisTaskBoardCoerceAddIssues(value: unknown): ITaskBoardAddIssuesRequest {
+	const list = (value as { issues?: unknown } | undefined)?.issues;
+	const name = /^[A-Za-z0-9._-]{1,100}$/;
+	const issues = Array.isArray(list) ? list.flatMap(entry => {
+		const { owner, repo, number } = (entry ?? {}) as { owner?: unknown; repo?: unknown; number?: unknown };
+		return typeof owner === 'string' && name.test(owner) && typeof repo === 'string' && name.test(repo) && typeof number === 'number' && Number.isInteger(number) && number > 0
+			? [{ owner, repo, number }]
+			: [];
+	}).slice(0, 20) : [];
+	return { issues };
+}
+
 interface IParadisTaskBoardHostChannelHost {
 	registerChannel(channelName: string, channel: IServerChannel<string>): void;
 }
@@ -445,11 +498,12 @@ interface IParadisTaskBoardHostChannelHost {
 export function paradisRegisterTaskBoardHost(channelHost: IParadisTaskBoardHostChannelHost, configurationService: IConfigurationService, environmentMainService: IEnvironmentMainService, lifecycleMainService: ILifecycleMainService, logService: ILogService): IDisposable {
 	const store = new DisposableStore();
 	const host = store.add(new ParadisTaskBoardHost(configurationService, environmentMainService, lifecycleMainService, logService));
-	// 画面から呼べるのは open と stop だけにする（ProxyChannel はクラスのほかのメソッドも呼べてしまう）
+	// 画面から呼べるのはここに並べたものだけにする（ProxyChannel はクラスのほかのメソッドも呼べてしまう）
 	const surface: IParadisTaskBoardHost = {
 		open: repoPath => typeof repoPath === 'string' && repoPath.length > 0 ? host.open(repoPath) : Promise.resolve({ ok: false, reason: 'start-failed', message: 'invalid repository path' }),
 		startRemote: target => paradisTaskBoardIsRemoteTarget(target) ? host.startRemote(target) : Promise.resolve({ ok: false, reason: 'start-failed', message: 'invalid remote target' }),
 		openRemote: sessionId => typeof sessionId === 'string' ? host.openRemote(sessionId) : Promise.resolve({ ok: false, reason: 'start-failed', message: 'invalid session' }),
+		addIssues: (request, focus) => host.addIssues(paradisTaskBoardCoerceAddIssues(request), focus === true),
 		stop: () => host.stop(),
 	};
 	channelHost.registerChannel(PARADIS_TASK_BOARD_HOST_CHANNEL, ProxyChannel.fromService(surface, store));

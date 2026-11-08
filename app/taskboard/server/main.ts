@@ -8,7 +8,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { ITaskBoardArtifact, ITaskBoardFlow, ITaskBoardPrRef, ITaskBoardPullDetail, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardAddIssuesRequest, ITaskBoardArtifact, ITaskBoardFlow, ITaskBoardPrRef, ITaskBoardPullDetail, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardAddIssuesResult, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
 import { TaskBoardError } from '@engine/paradisTaskBoard.js';
 import { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { parseTaskBoardFlow } from '@engine/paradisTaskBoardFlow.js';
@@ -147,7 +147,8 @@ const { values: args } = parseArgs({
 /** Para Code（親）とのやりとり。`--embedded` のときだけ使う。 */
 type EmbeddedMessage =
 	| { readonly type: 'ready'; readonly port: number; readonly repo: string | undefined }
-	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string };
+	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string }
+	| { readonly type: 'add-issues-result'; readonly requestId: string; readonly result: TaskBoardAddIssuesResult };
 
 // Para Code は Electron を Node として動かして（ELECTRON_RUN_AS_NODE）このサーバーを起こす。消さないと、工程のコマンド
 // （Electron を起動するテストなど）にも渡って Node として動いてしまう。Electron は起動のときしかこれを読まない
@@ -162,6 +163,9 @@ function tellParent(message: EmbeddedMessage, sent?: () => void): void {
 		sent?.();
 	}
 }
+
+/** 今動いているボードへ Issue を載せる処理（main() が開くたびに差し替える）。Para Code の「タスク」の画面から IPC で届く。 */
+let addIssuesCurrent: ((request: ITaskBoardAddIssuesRequest) => Promise<TaskBoardAddIssuesResult>) | undefined;
 
 /** 今動いているボードを止める処理（main() が開くたびに差し替える）。Para Code との IPC が切れたら呼ぶ。 */
 let stopCurrent: (() => void) | undefined;
@@ -439,6 +443,25 @@ async function main(restart?: IRestart): Promise<void> {
 		onState: broadcastSoon,
 		onSynced: r => { if (r.added || r.removed) { send({ type: 'notice', notice: { id: randomBytes(4).toString('hex'), kind: 'synced', at: Date.now(), detail: `${r.added}/${r.updated}/${r.removed}` } }); } },
 	}) : undefined;
+
+	addIssuesCurrent = async request => {
+		if (!sync || !remote) {
+			return { ok: false, reason: 'no-github' };
+		}
+		// ボードは 1 つのリポジトリの台帳なので、ほかのリポジトリの Issue は載せない（窓が切り替えを案内する）
+		const same = (value: string, expected: string) => value.toLowerCase() === expected.toLowerCase();
+		if (request.issues.some(issue => !same(issue.owner, remote.owner) || !same(issue.repo, remote.repo))) {
+			return { ok: false, reason: 'other-repo', repo: `${remote.owner}/${remote.repo}` };
+		}
+		const items = await sync.fetchIssues(request.issues);
+		const taskIds = engine.addIssues(items);
+		items.forEach((item, index) => {
+			if (item.pr) {
+				engine.reportPullRequest(taskIds[index], item.pr);
+			}
+		});
+		return { ok: true, taskIds, missing: request.issues.length - items.length };
+	};
 
 	// Codex の設定の許可の有無（起動時と、書き足したとき・1 分ごとに読み直す）
 	// まだ常に許可になっていない Codex の設定（CODEX_HOME ごと）と、足りないツール
@@ -1172,6 +1195,22 @@ async function main(restart?: IRestart): Promise<void> {
 	stopCurrent = onSignal;
 }
 
+/** 本体から届いた「Issue を載せる」の値を確かめて今のボードへ渡し、結果を返す。 */
+async function handleAddIssues(requestId: string, raw: unknown): Promise<void> {
+	const list = (raw as { issues?: unknown } | undefined)?.issues;
+	const issues = Array.isArray(list) ? list.flatMap(entry => {
+		const { owner, repo, number } = (entry ?? {}) as { owner?: unknown; repo?: unknown; number?: unknown };
+		return typeof owner === 'string' && typeof repo === 'string' && typeof number === 'number' ? [{ owner, repo, number }] : [];
+	}).slice(0, 20) : [];
+	let result: TaskBoardAddIssuesResult;
+	try {
+		result = addIssuesCurrent ? await addIssuesCurrent({ issues }) : { ok: false, reason: 'not-running' };
+	} catch (err) {
+		result = { ok: false, reason: 'failed', message: (err as Error).message?.slice(0, 500) };
+	}
+	tellParent({ type: 'add-issues-result', requestId, result });
+}
+
 async function start(): Promise<void> {
 	if (args.embedded) {
 		if (!process.send) {
@@ -1189,6 +1228,10 @@ async function start(): Promise<void> {
 			if (type === 'relay-session' && typeof sessionId === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(sessionId)) {
 				currentRelaySessionId = sessionId;
 				currentRelay?.setSession(sessionId);
+			}
+			const { requestId, request } = (message ?? {}) as { requestId?: unknown; request?: unknown };
+			if (type === 'add-issues' && typeof requestId === 'string' && requestId.length <= 64) {
+				void handleAddIssues(requestId, request);
 			}
 		});
 	}
