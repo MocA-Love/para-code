@@ -14,6 +14,8 @@ import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IParadisAndroidDeviceSummary } from '../common/paradisAndroid.js';
+import { ParadisAndroidInput, ParadisAndroidVideoWire } from '../common/paradisScrcpy.js';
 import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_CHANNEL, ParadisSimulatorInput } from '../common/paradisSimulator.js';
 
 export const IParadisSimulatorClient = createDecorator<IParadisSimulatorClient>('paradisSimulatorClient');
@@ -29,6 +31,14 @@ export interface IParadisSimulatorClient {
 	sendInput(udid: string, input: ParadisSimulatorInput): Promise<void>;
 	fold(udid: string, fold: { readonly pose: string } | { readonly hinge: number }): Promise<{ readonly ok: boolean }>;
 	deviceHubActive(udid: string): Promise<boolean>;
+	/** Android の端末の一覧（adb で動いているもの・起動していない AVD）。adb が無ければ空。 */
+	listAndroidDevices(): Promise<IParadisAndroidDeviceSummary[]>;
+	/** Android の映像（scrcpy の H.264）の購読。最後の購読が外れると shared process は通話を手放す。 */
+	onAndroidVideo(serial: string): Event<ParadisAndroidVideoWire>;
+	/** ペインからの Android の人の入力。 */
+	androidInput(serial: string, input: ParadisAndroidInput): Promise<void>;
+	/** 次の key frame を求める（復号が崩れたとき）。 */
+	androidResetVideo(serial: string): Promise<void>;
 	/** 起動していない Android の AVD（`android:avd:<name>`）を起動する。 */
 	bootAndroid(deviceId: string): Promise<void>;
 	/** Device Hub のアプリが起動しているか（iPhone Duo の開閉の前提）。 */
@@ -79,6 +89,18 @@ export class ParadisSimulatorChannelClient implements IParadisSimulatorClient {
 	}
 	bootAndroid(deviceId: string): Promise<void> {
 		return this._channel.call('bootAndroid', { deviceId });
+	}
+	listAndroidDevices(): Promise<IParadisAndroidDeviceSummary[]> {
+		return this._channel.call('listAndroidDevices');
+	}
+	onAndroidVideo(serial: string): Event<ParadisAndroidVideoWire> {
+		return this._channel.listen('androidVideo', { serial });
+	}
+	androidInput(serial: string, input: ParadisAndroidInput): Promise<void> {
+		return this._channel.call('androidInput', { serial, input });
+	}
+	androidResetVideo(serial: string): Promise<void> {
+		return this._channel.call('androidResetVideo', { serial });
 	}
 	openDeviceHub(): Promise<void> {
 		return this._channel.call('openDeviceHub');

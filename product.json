@@ -113,23 +113,6 @@
 				},
 				"publisherDisplayName": "jeanp413"
 			}
-		},
-		{
-			"name": "mobile-canvas-vscode",
-			"version": "0.1.16",
-			"sha256": "80fb7cb88975f8b55e20dc5680b70714468f3f6ffa6fe971d9824f660211ed5c",
-			"repo": "https://github.com/Redth/mobile-canvas-ghcp",
-			"vsix": "resources/paradis/builtin/mobile-canvas-vscode-0.1.16.vsix",
-			"metadata": {
-				"id": "e6de95f7-8c3f-41a1-8673-74ca7a1ba199",
-				"publisherId": {
-					"publisherId": "54446c77-046f-4499-9d6c-17a74655a411",
-					"publisherName": "redth",
-					"displayName": "Redth",
-					"flags": "verified"
-				},
-				"publisherDisplayName": "Redth"
-			}
 		}
 	],
 	"extensionEnabledApiProposals": {

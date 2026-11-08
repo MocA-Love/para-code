@@ -10,7 +10,7 @@
 //
 //  - mobile_request_device: 端末を「エージェントが要求 → 利用者が承認」で割り当てる（Q71 の回答 A）。
 //    承認ダイアログはページ共有の承認と同じもの（renderer の IParadisAgentBrowserTabsService.askApproval）を使う
-//  - mobile_rotate / mobile_gesture: 回転・スワイプ（向きの指定）・長押し・ピンチ。Mobile Canvas ホストへの入力
+//  - mobile_rotate / mobile_gesture: 回転・スワイプ（向きの指定）・長押し・ピンチ。端末の口（serve-sim・adb）への入力
 //  - mobile_install_app / mobile_launch_app / mobile_grant_permission: `xcrun simctl` / `adb` を引数配列で呼ぶ
 //
 // どのツールも端末の ID を引数に取らず、そのペインに割り当てられた端末だけを台帳から引く
@@ -70,7 +70,7 @@ export interface IParadisMobileDeviceLedger {
 	attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal): Promise<IParadisMobileAttachment | undefined>;
 }
 
-/** Mobile Canvas ホストの REST（ParadisMobileCanvasHostClient が満たす）。 */
+/** 端末の口（`/api/v1/devices/...` の道。paradisSimulatorDeviceRouter.ts が満たす。もとは Mobile Canvas ホストの REST の形）。 */
 export interface IParadisMobileHostRequester {
 	request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown>;
 	requestBinary(path: string, signal?: AbortSignal): Promise<Uint8Array>;
@@ -363,7 +363,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		return jsonResult({ attached: true, approved: true, device: describeDevice(device), replaced: current ? current.deviceName : undefined });
 	}
 
-	// --- 画面の入力（Mobile Canvas ホスト） ---
+	// --- 画面の入力（端末の口） ---
 
 	private async _rotate(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
 		const orientation = paradisNormalizeOrientation(args.orientation);

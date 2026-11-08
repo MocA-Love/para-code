@@ -18,12 +18,6 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 export const PARADIS_SIMULATOR_CHANNEL = 'paradisSimulator';
 
 /**
- * 新しい仕組みを使うかの設定（q.html Q585 の D2: Mobile Canvas を外すまでは既定オフ）。
- * オフの間は、shared process はホストを起こさず、チャネルの呼び出しを断る。
- */
-export const PARADIS_SIMULATOR_ENABLED_SETTING = 'paradis.simulator.enabled';
-
-/**
  * エージェントの端末の要求を承認したときに renderer で呼ぶコマンド（引数はペインのトークンと端末の id）。
  * その端末が新しい仕組みのシミュレータなら、画面をペインのターミナルの右に開き、止まっていれば起動する。
  */
@@ -74,8 +68,6 @@ export interface IParadisSimulatorScreenConfig {
 
 /** チャネルの `getStatus` の答え。 */
 export interface IParadisSimulatorStatus {
-	/** 設定でオンか。 */
-	readonly enabled: boolean;
 	/** この OS で動くか（iOS のシミュレータは macOS だけ）。 */
 	readonly supported: boolean;
 	readonly hostRunning: boolean;

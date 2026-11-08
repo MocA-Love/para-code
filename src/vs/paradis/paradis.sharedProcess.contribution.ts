@@ -16,7 +16,7 @@
 //
 // 前からある fork チャネル（`registerParadis*` の直呼び）は、`sharedProcessMain.ts` に並んでいた
 // ものをそのままの順番で下の `registerParadisSharedProcessContributions` に移した。互いに値を
-// 渡し合うもの（notifications → agentBrowser → simulator（mobileCanvas を含む） / mobileRelay）があるので、
+// 渡し合うもの（notifications → agentBrowser → simulator / mobileRelay）があるので、
 // 並びを変えるときは渡している値の出どころを確かめる。
 
 import { DisposableStore, IDisposable } from '../base/common/lifecycle.js';
@@ -104,12 +104,10 @@ export function registerParadisSharedProcessContributions(server: IPCServer<stri
 
 	// モバイル端末⇔ターミナルペインのアタッチ台帳と mobile_* のツール（上のMCPサーバーへ相乗りさせるため、
 	// エージェントCLI側に追加のMCP設定は要らない）、シミュレータの作り直し（serve-sim を組み込んだホストの子プロセス、
-	// 映像と入力のチャネル、mobile_fold）。設定 paradis.simulator.enabled がオフなら今の Mobile Canvas だけが動く
+	// 映像と入力のチャネル、mobile_fold）
 	store.add(registerParadisSimulator(
 		server,
 		accessor.get(INativeEnvironmentService).userDataPath,
-		accessor.get(INativeEnvironmentService).builtinExtensionsPath,
-		accessor.get(IConfigurationService),
 		accessor.get(ILogService),
 		provider => paradisAgentBrowser.registerToolProvider(provider),
 	));

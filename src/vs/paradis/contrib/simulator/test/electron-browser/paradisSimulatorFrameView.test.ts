@@ -59,6 +59,10 @@ class FakeClient implements IParadisSimulatorClient {
 	deviceHubRunning(): Promise<boolean> { throw new Error('not used'); }
 	openDeviceHub(): Promise<void> { throw new Error('not used'); }
 	bootAndroid(): Promise<void> { throw new Error('not used'); }
+	listAndroidDevices(): Promise<never[]> { throw new Error('not used'); }
+	onAndroidVideo(): BaseEvent<never> { throw new Error('not used'); }
+	androidInput(): Promise<void> { throw new Error('not used'); }
+	androidResetVideo(): Promise<void> { throw new Error('not used'); }
 }
 
 class FakeUrls implements IParadisSimulatorObjectUrls {
