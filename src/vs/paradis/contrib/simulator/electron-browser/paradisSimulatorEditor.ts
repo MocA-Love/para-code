@@ -70,6 +70,8 @@ class ParadisSimulatorEditorSession extends DisposableStore {
 	deviceHubRunning: boolean | undefined;
 	folding = false;
 	foldError: string | undefined;
+	/** 開閉の最中に来た求めのうち最後の 1 つ（スライダーを離した値など。終わった後に送り直す）。 */
+	pendingFold: ParadisSimulatorFoldRequest | undefined;
 	/** 外の画面が映っていたときの最後の 1 枚（内の画面のときに小窓へ出す）。 */
 	coverFrame: Uint8Array | undefined;
 	readonly coverMini: HTMLImageElement;
@@ -385,7 +387,12 @@ export class ParadisSimulatorEditor extends EditorPane {
 
 	private async _fold(request: ParadisSimulatorFoldRequest): Promise<void> {
 		const session = this._session.value;
-		if (!session?.fold || session.folding) {
+		if (!session?.fold) {
+			return;
+		}
+		if (session.folding) {
+			// 最中に来た値は捨てずに、最後の 1 つだけ覚えて終わった後に送る
+			session.pendingFold = request;
 			return;
 		}
 		session.folding = true;
@@ -407,6 +414,11 @@ export class ParadisSimulatorEditor extends EditorPane {
 		}
 		await this._readScreenConfig(session);
 		this._renderFold(session);
+		const next = session.pendingFold;
+		session.pendingFold = undefined;
+		if (next && this._session.value === session) {
+			await this._fold(next);
+		}
 	}
 
 	private async _openDeviceHub(): Promise<void> {
