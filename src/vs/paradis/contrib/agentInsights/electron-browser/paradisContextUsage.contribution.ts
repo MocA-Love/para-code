@@ -16,7 +16,6 @@
 // - Codex は内訳を記録しないので、全体の量とキャッシュの hit 率だけ
 
 import * as dom from '../../../../base/browser/dom.js';
-import { IHoverWidget } from '../../../../base/browser/ui/hover/hover.js';
 import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { Emitter } from '../../../../base/common/event.js';
@@ -109,6 +108,7 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 		const store = new DisposableStore();
 		this.details.value = store;
 		const root = $('.paradis-context-usage-details');
+		const rendered = store.add(new MutableDisposable<DisposableStore>());
 		// 開いていた一覧は、描き直しても開いたままにする（toggle は泳がないので捕まえる側で受ける）
 		const openGroups = new Set<string>();
 		store.add(dom.addDisposableListener(root, 'toggle', e => {
@@ -124,32 +124,29 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 		let breakdown: IParadisClaudeContextBreakdown | undefined;
 		let fetching = 0;
 		let closed = false;
-		// 固定ホバーは表示の後で決まる（中身は表示の前に描いて大きさを決める）
-		const shown: { widget?: IHoverWidget } = {};
-		const isClosed = () => {
-			if (!closed && shown.widget?.isDisposed) {
-				closed = true;
-				// 閉じた後の知らせで購読を外す（固定ホバーは閉じたことを知らせない）
-				if (this.details.value === store) {
-					this.details.clear();
-				}
+		const close = () => {
+			closed = true;
+			if (this.details.value === store) {
+				this.details.clear();
 			}
-			return closed;
 		};
 		const render = () => {
-			if (isClosed()) {
+			if (closed) {
 				return;
 			}
 			const current = contextPane(this.insightsService.getForInstance(instanceId)) ?? pane;
-			this.renderDetails(root, current, current.agent === 'claude' ? breakdown : undefined, openGroups);
+			// 描き直すたびに、前の描画のリスナーを外す
+			const renderStore = new DisposableStore();
+			rendered.value = renderStore;
+			this.renderDetails(root, current, current.agent === 'claude' ? breakdown : undefined, openGroups, renderStore);
 		};
 		const fetch = async () => {
-			if (pane.agent !== 'claude' || isClosed()) {
+			if (pane.agent !== 'claude' || closed) {
 				return;
 			}
 			const generation = ++fetching;
 			const next = await this.client.pane(pane.token).catch(() => undefined);
-			if (generation === fetching) {
+			if (generation === fetching && !closed) {
 				breakdown = next;
 				render();
 			}
@@ -160,20 +157,22 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 		if (pane.agent === 'claude') {
 			store.add(this.client.onDidChange(() => void fetch()));
 		}
-		shown.widget = this.hoverService.showInstantHover({
+		const widget = this.hoverService.showInstantHover({
 			content: root,
 			target: element,
 			persistence: { hideOnHover: false, sticky: true },
 			appearance: { showPointer: true, compact: true },
 			position: { hoverPosition: HoverPosition.BELOW },
 			trapFocus: true,
+			// 閉じたら購読を外す
+			onDidHide: close,
 		}, true);
-		if (shown.widget === undefined) {
-			this.details.clear();
+		if (widget === undefined) {
+			close();
 		}
 	}
 
-	private renderDetails(root: HTMLElement, pane: ParadisContextPaneInsight, breakdown: IParadisClaudeContextBreakdown | undefined, openGroups: ReadonlySet<string>): void {
+	private renderDetails(root: HTMLElement, pane: ParadisContextPaneInsight, breakdown: IParadisClaudeContextBreakdown | undefined, openGroups: ReadonlySet<string>, disposables: DisposableStore): void {
 		dom.clearNode(root);
 
 		const header = dom.append(root, $('.paradis-context-usage-header'));
@@ -201,12 +200,12 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 				this.hoverService.hideHover(true);
 				void this.commandService.executeCommand(SHOW_COST_DASHBOARD_COMMAND_ID);
 			};
-			link.addEventListener('click', openCost);
-			link.addEventListener('keydown', e => {
+			disposables.add(dom.addDisposableListener(link, dom.EventType.CLICK, openCost));
+			disposables.add(dom.addDisposableListener(link, dom.EventType.KEY_DOWN, e => {
 				if (e.key === 'Enter' || e.key === ' ') {
 					openCost(e);
 				}
-			});
+			}));
 			return;
 		}
 

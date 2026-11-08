@@ -24,7 +24,11 @@ import { IParadisClaudeContextFiles, ParadisClaudeContextStore, paradisClaudeCon
 
 class ParadisClaudeContextChannel<TContext> implements IServerChannel<TContext> {
 
-	constructor(private readonly store: ParadisClaudeContextStore) { }
+	/**
+	 * @param connection 呼んだレンダラーの接続（接続ごとに登録したチャネルだけが持つ）。`pane` はこの接続がペイントークンの今の持ち主の
+	 * ときだけ答える（agentBrowser の `_isEligibleToken` と同じ確かめ方）。接続の無いチャネルでは `pane` に答えない
+	 */
+	constructor(private readonly store: ParadisClaudeContextStore, private readonly connection?: object) { }
 
 	listen<T>(_ctx: TContext, event: string): Event<T> {
 		if (event === 'onDidChange') {
@@ -51,7 +55,9 @@ class ParadisClaudeContextChannel<TContext> implements IServerChannel<TContext> 
 			case 'pane': {
 				// ペイン（ペイントークン）がいま動かしている会話の最後の内訳。別のペインの内訳は返さない
 				const token = Array.isArray(arg) && typeof arg[0] === 'string' ? arg[0] : undefined;
-				return (token !== undefined && token.length > 0 && token.length <= 200 ? this.store.breakdownForPane(token) : Promise.resolve(undefined)) as Promise<T>;
+				const owned = token !== undefined && token.length > 0 && token.length <= 200
+					&& this.connection !== undefined && paradisClaudeModBridge.isPaneTokenOwner(this.connection, token);
+				return (owned ? this.store.breakdownForPane(token) : Promise.resolve(undefined)) as Promise<T>;
 			}
 			default:
 				throw new Error(`Method not found: ${command}`);
@@ -118,5 +124,13 @@ ParadisSharedProcessContributions.register(PARADIS_CLAUDE_CONTEXT_CHANNEL, ({ se
 		}
 	}));
 	server.registerChannel(PARADIS_CLAUDE_CONTEXT_CHANNEL, new ParadisClaudeContextChannel<string>(store));
+	// 接続ごとのチャネルで上書きし、`pane` を呼んだレンダラーを見分ける（agentBrowser の installRendererConnectionChannels と同じ形）
+	const registerConnection = (connection: (typeof server.connections)[number]) => {
+		connection.channelServer.registerChannel(PARADIS_CLAUDE_CONTEXT_CHANNEL, new ParadisClaudeContextChannel<string>(store, connection));
+	};
+	for (const connection of server.connections) {
+		registerConnection(connection);
+	}
+	disposables.add(server.onDidAddConnection(registerConnection));
 	return disposables;
 });
