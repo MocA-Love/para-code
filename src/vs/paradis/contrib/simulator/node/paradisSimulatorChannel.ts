@@ -172,8 +172,14 @@ export class ParadisSimulatorService extends Disposable {
 		return this._backend.deviceHubActive(udid);
 	}
 
+	/** 使えないときは何も届かないイベントを返す（`listen` の中で投げると shared process の未処理の例外になるため）。 */
 	onFrames(udid: string): Event<IParadisSimulatorFrameEvent> {
-		this.assertAvailable();
+		try {
+			this.assertAvailable();
+		} catch (error) {
+			this._logService.warn(`[paradis-simulator] refused a video subscription: ${error instanceof Error ? error.message : String(error)}`);
+			return Event.None;
+		}
 		return this._relay(udid).onFrame;
 	}
 

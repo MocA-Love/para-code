@@ -11,6 +11,9 @@
 // （端末のセッションは作れないので、通った要求は serve-sim の「No serve-sim device」の 404 になる）。
 
 import assert from 'assert';
+import type { ChildProcess } from 'child_process';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import { randomBytes } from 'crypto';
 import { promises as fs, readdirSync, readFileSync, readlinkSync } from 'fs';
 import type { IncomingMessage } from 'http';
@@ -21,8 +24,9 @@ import { join } from '../../../../../base/common/path.js';
 import { isLinux, isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { PARADIS_SIMULATOR_HOST_READY } from '../../common/paradisSimulator.js';
 import { PARADIS_SERVE_SIM_DIR, PARADIS_SERVE_SIM_MIDDLEWARE } from '../../node/paradisServeSimDist.js';
-import { paradisEnsurePrivateDir, ParadisSimulatorHostProcess } from '../../node/paradisSimulatorHostProcess.js';
+import { paradisEnsurePrivateDir, ParadisSimulatorHostProcess, ParadisSimulatorSpawn } from '../../node/paradisSimulatorHostProcess.js';
 
 const UDID = 'A1B2C3D4-0000-1111-2222-333344445555';
 
@@ -177,5 +181,38 @@ async function scratchDir(name: string): Promise<string> {
 		} finally {
 			child.stdin.end();
 		}
+	});
+
+	// 落ち続けるホストを起こし直し続けない: 60 秒の間に 3 回落ちたら、4 回目は起こさずに理由を返す
+	test('stops restarting a host that keeps exiting', async () => {
+		let spawned = 0;
+		const spawnChild: ParadisSimulatorSpawn = () => {
+			spawned++;
+			const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; pid: number; exitCode: number | null; signalCode: null; kill(): boolean };
+			child.stdin = new PassThrough();
+			child.stdout = new PassThrough();
+			child.stderr = new PassThrough();
+			child.pid = 100000 + spawned;
+			child.exitCode = null;
+			child.signalCode = null;
+			child.kill = () => true;
+			// 準備できた印を出した直後に落ちる
+			child.stdin.once('data', () => {
+				child.stdout.write(`${PARADIS_SIMULATOR_HOST_READY}\n`);
+				setTimeout(() => {
+					child.exitCode = 1;
+					child.emit('exit', 1, null);
+				}, 5);
+			});
+			return child as unknown as ChildProcess;
+		};
+		const host = store.add(new ParadisSimulatorHostProcess({ userDataPath: await scratchDir('crashing'), logService: new NullLogService(), socketParentDir: await scratchDir('crashingSockets'), spawnChild, bootstrapPath: 'bootstrap-fork' }));
+		const exited = () => new Promise<void>(resolve => setTimeout(resolve, 30));
+		for (let i = 0; i < 3; i++) {
+			await host.ensure();
+			await exited();
+		}
+		const refused = await host.ensure().then(() => 'started', error => error instanceof Error && error.message.includes('3 times within a minute') ? 'refused' : String(error));
+		assert.deepStrictEqual({ spawned, refused, running: host.isRunning }, { spawned: 3, refused: 'refused', running: false });
 	});
 });

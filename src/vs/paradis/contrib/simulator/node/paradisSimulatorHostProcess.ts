@@ -306,7 +306,8 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 		if (!Number.isInteger(record.pid) || record.pid <= 1 || record.pid === process.pid || record.marker !== paradisSimulatorHostMarker(this._stateDir)) {
 			return;
 		}
-		const args = await new Promise<string | undefined>(resolve => execFile('ps', ['-o', 'args=', '-p', String(record.pid)], { timeout: 5000 }, (error, stdout) => resolve(error ? undefined : stdout)));
+		const args = await new Promise<string | undefined>(resolve => execFile('ps', ['-ww', '-o', 'args=', '-p', String(record.pid)], { timeout: 5000 }, (error, stdout) => resolve(error ? undefined : stdout)));
+		// macOS の ps は `-ww` が無いと行を切り、末尾の印が落ちる。
 		// 専用フォルダのパスは空白を含みうる（`Application Support`）ので、語に分けずに含むかで見る
 		if (!args || !args.includes(record.marker)) {
 			return;
