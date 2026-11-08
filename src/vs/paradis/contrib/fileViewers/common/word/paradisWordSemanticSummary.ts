@@ -21,6 +21,7 @@ import type {
 import type { ParadisOfficeSearchField, ParadisOfficeSearchItem } from '../paradisOfficeSearch.js';
 import { buildParadisWordRenderOutline, type IParadisWordRenderOutline } from './paradisWordRenderOutline.js';
 import type { ParadisWordDocument, ParadisWordNode, ParadisWordStory, ParadisWordStoryKind } from './paradisWordSemantic.js';
+import type { ParadisWordRenderableObject } from './paradisWordRenderableObjects.js';
 
 /** shared process の Word 解析チャネル名。 */
 export const PARADIS_WORD_SEMANTIC_CHANNEL = 'paradisWordSemantic';
@@ -83,6 +84,14 @@ export interface IParadisWordSemanticFailure {
 }
 
 export type IParadisWordAnalysisResult = IParadisWordAnalysis | IParadisWordSemanticFailure;
+
+/** 本文の上に重ねる描画対象（図形・グラフ・SmartArt など）を、shared process の Word の worker で取り出した結果。 */
+export interface IParadisWordRenderableObjects {
+	readonly ok: true;
+	readonly objects: readonly ParadisWordRenderableObject[];
+}
+
+export type IParadisWordRenderableObjectsResult = IParadisWordRenderableObjects | IParadisWordSemanticFailure;
 
 /** 2 つの版を意味モデルで比べた結果。 */
 export interface IParadisWordComparison {
