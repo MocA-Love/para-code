@@ -76,6 +76,9 @@ export interface IParadisTerminalHistorySources {
 let activeProvider: ParadisTerminalHistoryCompletionProvider | undefined;
 
 /** 登録中の履歴の提供元（履歴の一覧から読むため）。 */
+/** 履歴の場所を決める端末（SSH の窓で、手元の端末か接続先の端末か）。端末そのものを抱えないよう、要る欄だけ。 */
+export type ParadisTerminalHistoryOwner = Pick<ITerminalInstance, 'remoteAuthority'>;
+
 export function paradisTerminalHistoryProvider(): ParadisTerminalHistoryCompletionProvider | undefined {
 	return activeProvider;
 }
@@ -230,10 +233,10 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 
 	/**
 	 * スペースの履歴フォルダにある、別のスペースの履歴ファイル（zsh・bash）を読む。`path` はシェルから
-	 * 見たパス。補完と同じキャッシュを使う。
+	 * 見たパス。補完と同じキャッシュを使う。`owner` はそのシェルの端末（SSH の窓の手元の端末なら手元で読む）。
 	 */
-	async readHistoryFile(path: string, shellType: PosixShellType.Bash | PosixShellType.Zsh, token: CancellationToken): Promise<readonly string[] | undefined> {
-		const resource = await this.toResource(path, token);
+	async readHistoryFile(path: string, shellType: PosixShellType.Bash | PosixShellType.Zsh, token: CancellationToken, owner?: ParadisTerminalHistoryOwner): Promise<readonly string[] | undefined> {
+		const resource = await this.toResource(path, token, owner);
 		if (resource === undefined || this._isDisposed || token.isCancellationRequested) {
 			return undefined;
 		}
@@ -242,18 +245,21 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		return result.kind === 'completed' ? result.value?.commands : undefined;
 	}
 
-	/** シェルから見たパスを、このウィンドウから読み書きできる URI にする（接続先なら接続先のファイル）。 */
-	async toResource(path: string, token: CancellationToken): Promise<URI | undefined> {
-		const locationResult = await this._location.get(token);
+	/**
+	 * シェルから見たパスを、このウィンドウから読み書きできる URI にする（接続先なら接続先のファイル）。
+	 * `owner` を渡すと、その端末から見た場所にする（SSH の窓の手元の端末なら手元のファイル）。
+	 */
+	async toResource(path: string, token: CancellationToken, owner?: ParadisTerminalHistoryOwner): Promise<URI | undefined> {
+		const locationResult = await this._locationFor(owner).get(token);
 		if (this._isDisposed || token.isCancellationRequested || locationResult.kind === 'cancelled' || !locationResult.value) {
 			return undefined;
 		}
 		return URI.from({ scheme: locationResult.value.scheme, authority: locationResult.value.authority, path: URI.file(path).path });
 	}
 
-	/** 履歴を読むときのホーム（cwd を `~` で縮めるため）。 */
-	async home(token: CancellationToken): Promise<string | undefined> {
-		const locationResult = await this._location.get(token);
+	/** 履歴を読むときのホーム（cwd を `~` で縮めるため）。`owner` は {@link toResource} と同じ。 */
+	async home(token: CancellationToken, owner?: ParadisTerminalHistoryOwner): Promise<string | undefined> {
+		const locationResult = await this._locationFor(owner).get(token);
 		return locationResult.kind === 'completed' ? locationResult.value?.home : undefined;
 	}
 
@@ -316,7 +322,7 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 	 * その端末のシェルが動いている側の履歴の場所。SSH のウィンドウでも、手元の端末（remoteAuthority の無いもの）は
 	 * この PC の履歴を読む（ウィンドウの場所で読むと、接続先の履歴を手元の端末に出す）。
 	 */
-	private _locationFor(instance: ITerminalInstance | undefined): ParadisTerminalHistorySharedValue<IParadisTerminalHistoryLocation> {
+	private _locationFor(instance: ParadisTerminalHistoryOwner | undefined): ParadisTerminalHistorySharedValue<IParadisTerminalHistoryLocation> {
 		return instance !== undefined && !instance.remoteAuthority && this._remoteAgentService.getConnection() ? this._localLocation : this._location;
 	}
 
