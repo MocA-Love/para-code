@@ -11,6 +11,7 @@
 // 同じ窓で同じ端末のタブは 1 枚にする（開き直しは前に出すだけ）。
 
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -38,6 +39,23 @@ export class ParadisSimulatorEditorInput extends EditorInput {
 
 	get deviceName(): string {
 		return this._deviceName;
+	}
+
+	private _bootRequested = false;
+	private readonly _onDidRequestBoot = this._register(new Emitter<void>());
+	/** 開いた直後に、止まっていれば起動してほしい（エージェントの要求を承認したとき）。 */
+	readonly onDidRequestBoot = this._onDidRequestBoot.event;
+
+	requestBoot(): void {
+		this._bootRequested = true;
+		this._onDidRequestBoot.fire();
+	}
+
+	/** 起動の求めを受け取る（1 回だけ true）。 */
+	takeBootRequest(): boolean {
+		const requested = this._bootRequested;
+		this._bootRequested = false;
+		return requested;
 	}
 
 	/** 一覧から名前を読み直したとき（名前を変えた端末など）。 */

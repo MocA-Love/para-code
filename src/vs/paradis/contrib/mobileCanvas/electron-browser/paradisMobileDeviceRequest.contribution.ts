@@ -29,6 +29,8 @@ import { localize } from '../../../../nls.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID } from '../../simulator/common/paradisSimulator.js';
 import { PARADIS_AGENT_APPROVAL_DEADLINE_MS, paradisSanitizeAgentPageRequestReason, paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, IParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -62,6 +64,8 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		private readonly _terminalScopes: Pick<IParadisTerminalScopeService, 'getStateKeyForInstance'>,
 		private readonly _now: () => number = Date.now,
 		private readonly _deadlineMs: number = PARADIS_AGENT_APPROVAL_DEADLINE_MS,
+		/** 端末の要求を承認したとき（シミュレータの作り直し ③: その端末の画面をペインのターミナルの右に開く）。 */
+		private readonly _onDidApproveDevice?: (paneToken: string, deviceId: string) => void,
 	) { }
 
 	/** ペイン → 端末の要求を最後に拒否された時刻。 */
@@ -119,6 +123,10 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		}, cancellation);
 		if (answer.outcome === 'denied' && typeof token === 'string') {
 			this._lastDeviceDenial.set(token, this._now());
+		}
+		const deviceId = text(prompt, 'deviceId');
+		if (answer.outcome === 'approved' && typeof token === 'string' && deviceId) {
+			this._onDidApproveDevice?.(token, deviceId);
 		}
 		return answer;
 	}
@@ -215,9 +223,13 @@ class ParadisMobileDeviceRequestContribution extends Disposable implements IWork
 		@IParadisAgentBrowserTabsService approvals: IParadisAgentBrowserTabsService,
 		@IParadisPaneTokenService paneTokens: IParadisPaneTokenService,
 		@IParadisTerminalScopeService terminalScopes: IParadisTerminalScopeService,
+		@ICommandService commandService: ICommandService,
 	) {
 		super();
-		sharedProcessService.registerChannel(PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL, new ParadisMobileDeviceRequestChannel(approvals, paneTokens, terminalScopes));
+		// 承認した端末がシミュレータ（新しい仕組み）なら、その画面を開く（simulator/electron-browser/paradisSimulator.contribution.ts。
+		// 設定がオフ・Android なら何もしない）
+		const openSimulator = (paneToken: string, deviceId: string) => void commandService.executeCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paneToken, deviceId).catch(() => undefined);
+		sharedProcessService.registerChannel(PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL, new ParadisMobileDeviceRequestChannel(approvals, paneTokens, terminalScopes, Date.now, PARADIS_AGENT_APPROVAL_DEADLINE_MS, openSimulator));
 	}
 }
 

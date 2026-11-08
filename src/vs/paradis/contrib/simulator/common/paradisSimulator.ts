@@ -23,6 +23,12 @@ export const PARADIS_SIMULATOR_CHANNEL = 'paradisSimulator';
  */
 export const PARADIS_SIMULATOR_ENABLED_SETTING = 'paradis.simulator.enabled';
 
+/**
+ * エージェントの端末の要求を承認したときに renderer で呼ぶコマンド（引数はペインのトークンと端末の id）。
+ * その端末が新しい仕組みのシミュレータなら、画面をペインのターミナルの右に開き、止まっていれば起動する。
+ */
+export const PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID = 'paradis.simulator.openForPane';
+
 /** ホストの子プロセスの入口（`bootstrap-fork` が `VSCODE_ESM_ENTRYPOINT` で読む）。 */
 export const PARADIS_SIMULATOR_HOST_ENTRY = 'vs/paradis/contrib/simulator/node/paradisSimulatorHostMain';
 
@@ -171,6 +177,21 @@ const SIMULATOR_UDID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F
 /** simctl の UDID の形か。 */
 export function paradisIsSimulatorUdid(value: string): boolean {
 	return SIMULATOR_UDID.test(value);
+}
+
+/**
+ * mobile_* のツールでの iOS のシミュレータの端末の id の頭（Mobile Canvas と同じ形 `ios:core-simulator:<udid>`。
+ * 2026-11-08 に Mac の mobile_list_devices で確かめた）。
+ */
+export const PARADIS_SIMULATOR_DEVICE_ID_PREFIX = 'ios:core-simulator:';
+
+/** `ios:core-simulator:<udid>` の udid。形が違えば undefined。 */
+export function paradisSimulatorUdidOfDeviceId(deviceId: string): string | undefined {
+	if (!deviceId.startsWith(PARADIS_SIMULATOR_DEVICE_ID_PREFIX)) {
+		return undefined;
+	}
+	const udid = deviceId.slice(PARADIS_SIMULATOR_DEVICE_ID_PREFIX.length);
+	return paradisIsSimulatorUdid(udid) ? udid : undefined;
 }
 
 /**

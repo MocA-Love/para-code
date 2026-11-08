@@ -27,8 +27,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay } from '../common/paradisMobileCanvas.js';
 import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
-import { ParadisMobileCanvasHostClient, ParadisMobileCanvasUnavailableError } from './paradisMobileCanvasHostClient.js';
-import { IParadisMobileDeviceLedger } from './paradisMobileDeviceOpsToolProvider.js';
+import { ParadisMobileCanvasUnavailableError } from './paradisMobileCanvasHostClient.js';
+import { IParadisMobileDeviceLedger, IParadisMobileHostRequester } from './paradisMobileDeviceOpsToolProvider.js';
 
 /** MCPツールが返す標準形。`isError` を立てるとエージェント側で失敗として扱われる。 */
 interface IToolResult {
@@ -172,7 +172,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	private readonly _attachments = new Map<string, ILedgerEntry>();
 
 	constructor(
-		private readonly _hostClient: ParadisMobileCanvasHostClient,
+		// シミュレータの作り直し（③）で、iOS を serve-sim へ回す振り分け（simulator/node/paradisMobileHostRouter.ts）も受ける
+		private readonly _hostClient: IParadisMobileHostRequester,
 		private readonly _logService: ILogService,
 	) {
 		super();
