@@ -96,3 +96,29 @@
 	background-color: var(--vscode-button-secondaryBackground);
 	border-color: var(--vscode-button-secondaryBackground);
 }
+
+/* 差分エディタの見出しの「AI メモを送る」に添える未送信の数（770-RES） */
+.paradis-diff-review-send-item {
+	display: flex;
+	align-items: center;
+}
+
+.paradis-diff-review-send-count {
+	min-width: 14px;
+	height: 14px;
+	margin: 0 4px 0 -2px;
+	padding: 0 4px;
+	box-sizing: border-box;
+	border-radius: 7px;
+	font-size: 9px;
+	font-weight: 600;
+	line-height: 14px;
+	text-align: center;
+	color: var(--vscode-badge-foreground);
+	background-color: var(--vscode-badge-background);
+	pointer-events: none;
+}
+
+.paradis-diff-review-send-count.hidden {
+	display: none;
+}
