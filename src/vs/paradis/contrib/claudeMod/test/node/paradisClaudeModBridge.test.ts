@@ -43,6 +43,18 @@ suite('ParadisClaudeModBridge', () => {
 		bridge.dispose();
 	});
 
+	test('a renderer connection owns a pane token only when the owner check says so, and never without one', () => {
+		const windowA = {};
+		const windowB = {};
+		const before = bridge.isPaneTokenOwner(windowA, 'pane-a');
+		bridge.setPaneTokenOwner((connection, token) => connection === windowA && token === 'pane-a');
+		const checked = [bridge.isPaneTokenOwner(windowA, 'pane-a'), bridge.isPaneTokenOwner(windowB, 'pane-a'), bridge.isPaneTokenOwner(windowA, 'pane-b')];
+		bridge.setPaneTokenOwner(() => {
+			throw new Error('authority faulted');
+		});
+		assert.deepStrictEqual({ before, checked, faulted: bridge.isPaneTokenOwner(windowA, 'pane-a') }, { before: false, checked: [true, false, false], faulted: false });
+	});
+
 	const verifyCaller = async () => {
 		verifications++;
 		return callerVerified;
