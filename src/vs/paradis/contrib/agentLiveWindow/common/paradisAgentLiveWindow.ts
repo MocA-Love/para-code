@@ -92,6 +92,11 @@ export interface IParadisAgentLiveWindowService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeSummary: Event<void>;
 	readonly summary: IParadisAgentLiveSummary;
+	/**
+	 * 全スペースで動いているエージェント端末の一覧（ウィンドウを開いていなくても更新している）。
+	 * `since` は状態が変わった時刻なので、横断ジャンプ（crossJump）は「N 分前」の表示にこれを使う。
+	 */
+	readonly entries: readonly IParadisAgentLiveEntry[];
 	/** 開いていなければ開き、開いていれば前面に出す。 */
 	open(): Promise<void>;
 	/** 開いていれば閉じる。開いていなければ何もしない。 */

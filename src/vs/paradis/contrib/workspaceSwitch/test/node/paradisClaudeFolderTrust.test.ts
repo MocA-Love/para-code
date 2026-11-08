@@ -167,15 +167,19 @@ suite('paradisClaudeFolderTrust', () => {
 		assert.deepStrictEqual({ outcomes, projects: Object.keys((await readJson(configFile)).projects as object).sort() }, { outcomes: ['granted', 'granted'], projects: [a, b].sort() });
 	}));
 
-	test('the git service trusts a worktree it created only when asked, and revokes it after git removes the worktree', () => withSandbox(async ({ root, configDir, configFile, worktree }) => {
+	test('the git service trusts a worktree it created only when asked, for Claude Code and Codex, and revokes it after git removes the worktree', () => withSandbox(async ({ root, configDir, configFile, worktree }) => {
 		await fs.writeFile(configFile, JSON.stringify({ projects: {} }));
+		// 本物の ~/.codex* は読ませない（一時フォルダの CODEX_HOME だけを渡す）
+		const codexHome = join(root, 'codex-home');
+		await fs.mkdir(codexHome);
+		await fs.writeFile(join(codexHome, 'config.toml'), 'model = "x"\n');
 		const calls: string[] = [];
 		const execFile = ((_command: string, args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
 			calls.push(args.slice(2).join(' '));
 			queueMicrotask(() => callback(null, '', ''));
 			return {} as cp.ChildProcess;
 		}) as typeof cp.execFile;
-		const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({ CLAUDE_CONFIG_DIR: configDir }));
+		const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({ CLAUDE_CONFIG_DIR: configDir }), undefined, undefined, undefined, undefined, undefined, () => [codexHome]);
 		try {
 			const asked = await worktree('asked');
 			const notAsked = await worktree('not-asked');
@@ -183,9 +187,15 @@ suite('paradisClaudeFolderTrust', () => {
 			await service.addWorktree({ repoPath: join(root, 'repo'), worktreePath: notAsked, newBranch: 'not-asked', baseRef: 'main' });
 			const afterAdd = Object.keys((await readJson(configFile)).projects as object);
 			const hasMarker = await fs.stat(join(root, 'repo', '.git', 'worktrees', 'asked', PARADIS_CLAUDE_TRUST_MARKER_FILE)).then(() => true, () => false);
+			const codexAfterAdd = await fs.readFile(join(codexHome, 'config.toml'), 'utf8');
 			await service.removeWorktree({ repoPath: join(root, 'repo'), worktreePath: asked, force: false });
-			assert.deepStrictEqual({ afterAdd, hasMarker, afterRemove: (await readJson(configFile)).projects, removed: calls.filter(call => call.startsWith('worktree remove')) }, {
-				afterAdd: [asked], hasMarker: true, afterRemove: {}, removed: [`worktree remove ${asked}`],
+			assert.deepStrictEqual({
+				afterAdd, hasMarker, codexAfterAdd, afterRemove: (await readJson(configFile)).projects,
+				codexAfterRemove: await fs.readFile(join(codexHome, 'config.toml'), 'utf8'),
+				removed: calls.filter(call => call.startsWith('worktree remove')),
+			}, {
+				afterAdd: [asked], hasMarker: true, codexAfterAdd: `model = "x"\n\n[projects."${asked}"]\ntrust_level = "trusted"\n`,
+				afterRemove: {}, codexAfterRemove: 'model = "x"\n', removed: [`worktree remove ${asked}`],
 			});
 		} finally {
 			service.dispose();

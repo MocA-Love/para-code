@@ -468,6 +468,19 @@ suite('ParadisMobileDiffReviewRequests', () => {
 		], [true, false, false]);
 	});
 
+	test('does not hand a request to a pane showing a startup trust confirmation, so the Enter after the paste cannot answer it', () => {
+		const claudeTrust = ['  Do you trust the files in this folder?', '', '  /work/repo', '', '  ❯ Yes, proceed', '    No, exit', '', '  Enter to confirm · Esc to exit'].join('\n');
+		const codexTrust = ['> Do you trust the contents of this directory? Working with untrusted contents comes with higher risk.', '', '› 1. Yes, continue', '  2. No, quit', '', '  Press enter to continue'].join('\n');
+		const pressEnter = ['  Welcome to Codex', '', '  Press enter to continue'].join('\n');
+		const ready = ['╭────────────╮', '│ > Try "fix lint errors" │', '╰────────────╯', '  ? for shortcuts'].join('\n');
+		assert.deepStrictEqual([
+			paradisPromptDeliveryScreenShowsPrompt(claudeTrust, 'claude'),
+			paradisPromptDeliveryScreenShowsPrompt(codexTrust, 'codex'),
+			paradisPromptDeliveryScreenShowsPrompt(pressEnter, undefined),
+			paradisPromptDeliveryScreenShowsPrompt(ready, 'claude'),
+		], [true, true, true, false]);
+	});
+
 	test('strips terminal control characters from the request, refuses a second send in flight, and does not mark notes edited meanwhile as sent', async () => {
 		const services = createServices();
 		const sent: IReply[] = [];
