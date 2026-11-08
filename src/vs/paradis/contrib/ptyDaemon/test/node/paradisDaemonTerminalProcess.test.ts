@@ -295,6 +295,23 @@ suite('ParadisDaemonTerminalProcess', () => {
 		assert.deepStrictEqual({ detached }, { detached: [1] });
 	});
 
+	// TERM-12: 常駐との接続が切れて確認の知らせが断られても、unhandled rejection にしない
+	// （テストの実行環境は、unhandled rejection が起きたテストを落とす）
+	test('常駐が確認の知らせを断っても、unhandled rejection にしない', async () => {
+		const { host, process } = create();
+		await process.start();
+		const acknowledged: number[] = [];
+		(host as unknown as { acknowledge(handle: number, charCount: number): Promise<void> }).acknowledge = async (_handle, charCount) => {
+			acknowledged.push(charCount);
+			throw new Error('daemon connection closed');
+		};
+
+		process.acknowledgeDataEvent(42);
+		await timeout(10);
+
+		assert.deepStrictEqual({ acknowledged }, { acknowledged: [42] });
+	});
+
 	test('終了が来なくても、終わったことは必ず伝える', async () => {
 		const { process } = create();
 		await process.start();
