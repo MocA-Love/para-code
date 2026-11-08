@@ -66,6 +66,8 @@ import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
 import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
 import './contrib/taskBoard/node/paradisTaskBoardBridge.sharedProcess.js';
 import './contrib/computerUse/node/paradisComputerUse.sharedProcess.js';
+// シミュレータ（serve-sim を組み込んだホストの子プロセスと、映像と入力のチャネル。設定がオフなら何も起こさない）
+import './contrib/simulator/node/paradisSimulator.sharedProcess.js';
 import './contrib/browserBookmarks/node/paradisBookmarkTools.sharedProcess.js';
 import './contrib/fileTransfer/node/paradisFileModes.sharedProcess.js';
 import './contrib/fileTransfer/node/paradisSftp.sharedProcess.js';
