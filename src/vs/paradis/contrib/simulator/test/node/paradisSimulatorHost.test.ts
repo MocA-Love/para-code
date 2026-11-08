@@ -26,7 +26,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { PARADIS_SIMULATOR_HOST_READY } from '../../common/paradisSimulator.js';
 import { PARADIS_SERVE_SIM_DIR, PARADIS_SERVE_SIM_MIDDLEWARE } from '../../node/paradisServeSimDist.js';
-import { paradisEnsurePrivateDir, ParadisSimulatorHostProcess, ParadisSimulatorSpawn } from '../../node/paradisSimulatorHostProcess.js';
+import { paradisEnsurePrivateDir, paradisRemoveStaleSimulatorSockets, ParadisSimulatorHostProcess, ParadisSimulatorSpawn } from '../../node/paradisSimulatorHostProcess.js';
 
 const UDID = 'A1B2C3D4-0000-1111-2222-333344445555';
 
@@ -214,5 +214,27 @@ async function scratchDir(name: string): Promise<string> {
 		}
 		const refused = await host.ensure().then(() => 'started', error => error instanceof Error && error.message.includes('3 times within a minute') ? 'refused' : String(error));
 		assert.deepStrictEqual({ spawned, refused, running: host.isRunning }, { spawned: 3, refused: 'refused', running: false });
+	});
+
+	// 前のホストが残したソケット（誰も待ち受けていないもの）だけを消し、生きているソケットと名前の違うファイルには触れない
+	test('removes only the dead sockets left by earlier hosts', async () => {
+		const dir = await scratchDir('staleSockets');
+		const dead = join(dir, 'pcsim-0000dead.sock');
+		const live = join(dir, 'pcsim-0000beef.sock');
+		const other = join(dir, 'notes.txt');
+		// 待ち受けたまま終わるプロセスは、ソケットのファイルを残す（kill -9 されたホストと同じ）
+		const { spawn } = await import('child_process');
+		const child = spawn(process.execPath, ['-e', `require('net').createServer().listen(${JSON.stringify(dead)}, () => process.exit(0))`], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'ignore' });
+		await new Promise(resolve => child.once('exit', resolve));
+		const { createServer } = await import('net');
+		const server = createServer();
+		await new Promise<void>(resolve => server.listen(live, resolve));
+		await fs.writeFile(other, 'keep');
+		try {
+			const removed = await paradisRemoveStaleSimulatorSockets(dir);
+			assert.deepStrictEqual({ removed, left: (await fs.readdir(dir)).sort() }, { removed: 1, left: ['notes.txt', 'pcsim-0000beef.sock'] });
+		} finally {
+			await new Promise<void>(resolve => server.close(() => resolve()));
+		}
 	});
 });

@@ -83,6 +83,54 @@ export async function paradisEnsurePrivateDir(path: string): Promise<string> {
 	return path;
 }
 
+const SOCKET_NAME = /^pcsim-[0-9a-f]{8}\.sock$/;
+
+/** そのソケットで誰かが待ち受けているか（つながれば生きている）。 */
+async function socketIsLive(path: string): Promise<boolean> {
+	const { connect } = await import('net');
+	return new Promise(resolve => {
+		const socket = connect(path);
+		const done = (live: boolean) => {
+			clearTimeout(timer);
+			socket.destroy();
+			resolve(live);
+		};
+		const timer = setTimeout(() => done(true), 1000);
+		socket.once('connect', () => done(true));
+		socket.once('error', (error: NodeJS.ErrnoException) => done(error.code !== 'ECONNREFUSED' && error.code !== 'ENOENT'));
+	});
+}
+
+/**
+ * ソケットのフォルダ（{@link paradisEnsurePrivateDir} で用意した 0700 のもの）から、前のホストが残した
+ * `pcsim-*.sock` を消す。消すのは、名前が合い、ソケットで、持ち主が自分で、誰も待ち受けていないものだけ
+ * （同じ利用者の別の Para Code（開発版と配布版など）が同じフォルダを使っていても、生きているソケットには触れない）。
+ * 消した数を返す。
+ */
+export async function paradisRemoveStaleSimulatorSockets(socketDir: string): Promise<number> {
+	let removed = 0;
+	for (const name of await fs.readdir(socketDir)) {
+		if (!SOCKET_NAME.test(name)) {
+			continue;
+		}
+		const path = join(socketDir, name);
+		try {
+			const stat = await fs.lstat(path);
+			if (!stat.isSocket() || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
+				continue;
+			}
+			if (await socketIsLive(path)) {
+				continue;
+			}
+			await fs.unlink(path);
+			removed++;
+		} catch {
+			// 調べている間に消えた・消せない。次の起動でまた試す
+		}
+	}
+	return removed;
+}
+
 /** ホストの argv に付ける印（専用フォルダごと）。 */
 export function paradisSimulatorHostMarker(stateDir: string): string {
 	return `${PARADIS_SIMULATOR_HOST_MARKER}=${stateDir}`;
@@ -191,6 +239,10 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 
 		const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
 		const socketDir = await paradisEnsurePrivateDir(join(this._options.socketParentDir ?? tmpdir(), `pcsim-${uid}`));
+		const removed = await paradisRemoveStaleSimulatorSockets(socketDir);
+		if (removed) {
+			this._options.logService.info(`[paradis-simulator] removed ${removed} socket(s) left over by earlier hosts`);
+		}
 		const socketPath = join(socketDir, `pcsim-${randomBytes(4).toString('hex')}.sock`);
 		if (Buffer.byteLength(socketPath) >= SUN_PATH_MAX) {
 			throw new Error(`The simulator host socket path is too long (${Buffer.byteLength(socketPath)} bytes): ${socketPath}`);
