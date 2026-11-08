@@ -6,13 +6,14 @@ const builtIn = (name: string): AgentSlashCommand => ({ name, insertText: `/${na
 const commands: AgentSlashCommand[] = [builtIn('model'), builtIn('effort'), builtIn('config'), builtIn('usage'), builtIn('context'), builtIn('compact')];
 
 describe('agentComposerIntercept', () => {
-	it('opens the sheet for a bare /model or /effort and switches with an alias, without sending to the PC', () => {
+	it('opens the sheet for a bare /model or /effort and switches with an alias or a pinned model id, without sending the text to the PC', () => {
 		expect([
-			'/model', '  /Model  ', '/effort', '/model sonnet', '/model Opus[1M]', '/model claude-sonnet-5-5', '/effort high', '/effort turbo',
+			'/model', '  /Model  ', '/effort', '/model sonnet', '/model Opus[1M]', '/model claude-mythos-5-1', '/model sonnet please', '/model opus;rm', '/effort high', '/effort turbo',
 		].map(text => agentComposerIntercept(text, 'claude', commands))).toEqual([
 			{ kind: 'model-sheet' }, { kind: 'model-sheet' }, { kind: 'effort-sheet' },
-			{ kind: 'model-switch', alias: 'sonnet' }, { kind: 'model-switch', alias: 'opus[1m]' },
-			{ kind: 'model-not-alias', value: 'claude-sonnet-5-5' },
+			{ kind: 'model-switch', model: 'sonnet' }, { kind: 'model-switch', model: 'opus[1m]' },
+			{ kind: 'model-switch', model: 'claude-mythos-5-1' },
+			{ kind: 'model-not-alias', value: 'sonnet please' }, { kind: 'model-not-alias', value: 'opus;rm' },
 			{ kind: 'effort-switch', level: 'high' }, undefined,
 		]);
 	});
