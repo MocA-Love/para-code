@@ -75,3 +75,4 @@ import './contrib/agentChat/browser/paradisAgentChatSettings.contribution.js';
 import './contrib/computerUse/browser/paradisComputerUseSettings.contribution.js';
 import './contrib/taskBoard/browser/paradisTaskBoardSettings.contribution.js';
 import './contrib/findWidget/browser/paradisFindWidget.contribution.js';
+import './contrib/quickInputPosition/browser/paradisQuickInputPosition.contribution.js';
