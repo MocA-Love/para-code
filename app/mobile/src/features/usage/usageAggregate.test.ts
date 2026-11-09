@@ -10,6 +10,7 @@ import {
 	accountMergeKey,
 	aggregateAccounts,
 	aggregateGithubAccounts,
+	aggregateHiddenAccounts,
 	buildUsageEntries,
 	entryKindLabel,
 	entryTitle,
@@ -236,6 +237,26 @@ describe('aggregateAccounts', () => {
 	it('PC が前回の値を返した（stale）ものは古い値として扱う', () => {
 		const result = entries([pc('a')], { 'pc:a': { limits: { value: limits([account({ email: 'u@x' })], [], { stale: true }), at: NOW, receivedAt: NOW } } });
 		expect(aggregateAccounts(result, 'claude', NOW)[0]!.old).toBe(true);
+	});
+
+	it('どれか1台の PC でも隠したアカウントは、ほかの PC で見えていても出さず、隠したものは PC をまたいで1つに束ねる', () => {
+		const hiddenOnA = { provider: 'claude' as const, id: 'para-claude:h', email: 'H@x' };
+		const result = entries([pc('a'), pc('b'), pc('c')], {
+			'pc:a': { limits: { value: { ...limits([account({ email: 'u@x' })]), claude: { accounts: [account({ email: 'u@x' })], hiddenAccounts: [hiddenOnA] } }, at: NOW, receivedAt: NOW } },
+			// B は同じアカウントを隠していない（古い PC も hiddenAccounts を送らない）
+			'pc:b': { limits: { value: limits([account({ email: 'h@x' }), account({ id: 'k', email: 'k@x' })]), at: NOW, receivedAt: NOW } },
+			'pc:c': { limits: { value: { ...limits([]), claude: { accounts: [], hiddenAccounts: [{ ...hiddenOnA, id: 'claude-live' }, { provider: 'claude', id: 'x' }] } }, at: NOW, receivedAt: NOW } },
+		});
+		expect({
+			shown: aggregateAccounts(result, 'claude', NOW).map(item => item.key),
+			hidden: aggregateHiddenAccounts(result, 'claude').map(item => item.key),
+			codexHidden: aggregateHiddenAccounts(result, 'codex'),
+		}).toEqual({
+			shown: ['claude|email:u@x|org:', 'claude|email:k@x|org:'],
+			// メールの無いものは束ねずに出どころごと
+			hidden: ['claude|email:h@x|org:', 'claude|source:pc:c|x'],
+			codexHidden: [],
+		});
 	});
 });
 

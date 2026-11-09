@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisMobileLimitsAccount, paradisMobileLimitsClaudeFromLocal } from '../../common/paradisMobileLimitsScope.js';
+import { paradisMobileLimitsAccount, paradisMobileLimitsClaudeFromLocal, paradisMobileLimitsSnapshot } from '../../common/paradisMobileLimitsScope.js';
 
 suite('paradisMobileLimitsClaudeFromLocal', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -60,6 +60,53 @@ suite('paradisMobileLimitsAccount', () => {
 			held: { ...base, status: 'unavailable', unavailableReason: 'not_fetched', statusDetail: 'shared with claude-swap', previousWindows: { fiveHour: window, scoped: [window] }, previousFetchedAt: 1 },
 			rateLimited: { ...base, status: 'unavailable', unavailableReason: 'rate_limited' },
 			nothing: { ...base, status: 'relogin_required' },
+		});
+	});
+});
+
+suite('paradisMobileLimitsSnapshot', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	// PC の使用量のパネルで隠したアカウントは accounts から除き、名前を出すための項目だけを hiddenAccounts で送る。
+	// 古いアプリは hiddenAccounts を読まないので、隠したアカウントが単に出なくなる。
+	test('moves the accounts hidden on the PC out of accounts and sends only their names', () => {
+		const window = { usedPercent: 30, resetsAt: 5 };
+		const snapshot = {
+			fetchedAt: 10,
+			claude: {
+				accounts: [
+					{ provider: 'claude', id: 'para-claude:a', email: 'a@example.com', organizationName: 'Org', status: 'ok', fiveHour: window },
+					{ provider: 'claude', id: 'para-claude:b', email: 'b@example.com', status: 'ok', fiveHour: window },
+				],
+			},
+			codex: {
+				accounts: [
+					{ provider: 'codex', id: '/home/example/.codex-2', email: 'c@example.com', homeLabel: '~/.codex-2', accountId: 'hash', status: 'ok', sevenDay: window },
+				],
+				sourceError: 'none',
+			},
+		} as const;
+		const hidden = new Map<string, string | undefined>([
+			['para-claude:a', 'a@example.com'],
+			['/home/example/.codex-2', undefined],
+		]);
+		assert.deepStrictEqual({
+			withHidden: paradisMobileLimitsSnapshot(snapshot, hidden),
+			nothingHidden: paradisMobileLimitsSnapshot(snapshot),
+		}, {
+			withHidden: {
+				fetchedAt: 10,
+				claude: {
+					accounts: [{ provider: 'claude', id: 'para-claude:b', email: 'b@example.com', status: 'ok', fiveHour: window }],
+					hiddenAccounts: [{ provider: 'claude', id: 'para-claude:a', email: 'a@example.com', organizationName: 'Org' }],
+				},
+				codex: {
+					accounts: [],
+					sourceError: 'none',
+					hiddenAccounts: [{ provider: 'codex', id: '/home/example/.codex-2', email: 'c@example.com', accountId: 'hash', homeLabel: '~/.codex-2' }],
+				},
+			},
+			nothingHidden: snapshot,
 		});
 	});
 });
