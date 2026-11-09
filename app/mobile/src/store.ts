@@ -726,8 +726,16 @@ export interface RateLimitAccount {
 	/** `previousWindows` を取った時刻（epoch ms。旧PCでは未配信）。 */
 	previousFetchedAt?: number;
 }
+/**
+ * PC の使用量のパネルで隠したアカウント（名前を出すのと、ほかの PC と束ねるための項目だけ）。
+ * PC側 IParadisMobileLimitsHiddenAccount と同形。
+ */
+export type RateLimitHiddenAccount = Pick<RateLimitAccount, 'provider' | 'id' | 'email' | 'organizationName' | 'accountId' | 'homeLabel'>;
 export interface RateLimitProviderSnapshot {
+	/** PC で隠したアカウントは含まない（PC が除いて送る）。 */
 	accounts: RateLimitAccount[];
+	/** PC で隠したアカウント（隠したものが無い PC・旧PCでは未配信）。 */
+	hiddenAccounts?: RateLimitHiddenAccount[];
 	sourceError?: string;
 	cswapMissing?: boolean;
 	/**

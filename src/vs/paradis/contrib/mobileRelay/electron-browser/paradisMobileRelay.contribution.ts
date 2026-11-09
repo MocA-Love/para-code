@@ -52,6 +52,9 @@ import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcus
 import { ParadisRtkClient } from '../../rtk/electron-browser/paradisRtkClient.js';
 import { ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser/paradisLimitsMonitorClient.js';
 import { PARADIS_CODEX_MOBILE_RESET_READ_DEADLINE_MS, ParadisCodexMobileLimitsFields } from '../../codexAccounts/electron-browser/paradisCodexMobileLimitsFields.js';
+import { paradisReadLimitsHiddenAccounts } from '../../limitsMonitor/common/paradisLimitsHiddenAccounts.js';
+import { paradisMobileLimitsSnapshot } from '../common/paradisMobileLimitsScope.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ParadisGithubMetricsClient } from '../../githubMetrics/electron-browser/paradisGithubMetricsClient.js';
 import { ParadisResourceMonitorClient } from '../../resourceMonitor/electron-browser/paradisResourceMonitorClient.js';
 import { ParadisSpaceDiskClient } from '../../spaceDisk/electron-browser/paradisSpaceDiskClient.js';
@@ -156,6 +159,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@ILabelService private readonly labelService: ILabelService,
 		@IChatService chatService: IChatService,
+		@IStorageService storageService: IStorageService,
 	) {
 		super();
 		// モバイルがオンラインの間は、隠れたウィンドウでもモバイルの要求の処理を間引かせない
@@ -327,8 +331,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
 			(ownerId, active) => ccusageClient.setDashboardWarmLease(ownerId, active),
 			bypassCache => rtkClient.fetchDashboard(bypassCache),
-			// SSH のウィンドウの Claude は、接続先のいまのログインだけ（スマホは表示するだけで切り替えない）
-			(bypassCache, claudeFromLocal) => limitsClient.getSnapshot(bypassCache, claudeFromLocal, true).then(snapshot => codexLimitsFields.addTo(snapshot)),
+			// SSH のウィンドウの Claude は、接続先のいまのログインだけ（スマホは表示するだけで切り替えない）。
+			// PC の使用量のパネルで隠したアカウントは、送るたびに台帳を読んで除く（パネルと同じ判定）
+			async (bypassCache, claudeFromLocal) => paradisMobileLimitsSnapshot(
+				await codexLimitsFields.addTo(await limitsClient.getSnapshot(bypassCache, claudeFromLocal, true)),
+				paradisReadLimitsHiddenAccounts(storageService),
+			),
 			bypassCache => githubClient.getSnapshot(bypassCache),
 			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理
 			options => instantiationService.invokeFunction(paradisGetWorktreeCreateForm, options),

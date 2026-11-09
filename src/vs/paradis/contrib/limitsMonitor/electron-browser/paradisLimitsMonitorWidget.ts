@@ -41,6 +41,7 @@ import {
 	ParadisLimitsSeverity
 } from '../common/paradisLimitsMonitor.js';
 import { PARADIS_CLAUDE_HOST_ACCOUNT_ID } from '../common/paradisClaudeAccounts.js';
+import { PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY, paradisIsLimitsAccountHidden, paradisReadLimitsHiddenAccounts, paradisStoreLimitsHiddenAccounts } from '../common/paradisLimitsHiddenAccounts.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient, PARADIS_LIMITS_OPEN_PANEL_COMMAND_ID, PARADIS_LIMITS_SETTING_ENABLED } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsMonitorPanelOptions, ParadisLimitsMonitorPanel } from './paradisLimitsMonitorPanel.js';
@@ -58,9 +59,6 @@ const IDLE_POLL_INTERVAL_MS = 120_000;
 
 /** claude-swap からの移行の案内（通知）を出したか。1回だけ出す。 */
 const PARADIS_LIMITS_CLAUDE_LEGACY_NOTICE_STORAGE_KEY = 'paradis.limitsMonitor.claudeLegacyNoticeShown';
-
-/** 「一覧から隠した」アカウントID(account.id)の配列をJSONで保持するストレージキー。 */
-const PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY = 'paradis.limitsMonitor.hiddenAccountIds';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const RING_RADIUS = 8;
@@ -125,16 +123,11 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	private refreshRequested = false;
 	private readonly removingHomes = new Set<string>();
 	/**
-	 * 一覧から個別に隠したアカウントの台帳。真の保持者はここ(永続化もここ)。
-	 *
-	 * account.id だけをキーにしない: Codexのidはホームの絶対パスで、削除された分は次の
-	 * アカウント追加で別のアカウントに再割り当てされ得る(node/paradisLimitsMonitorChannel.ts)。
-	 * Claude の登録していないいまのログインは常に 'claude-live' で、ログインし直すと別の
-	 * アカウントを指す。
-	 * 非表示にした時点のemailも一緒に持ち、一致するときだけ非表示を適用することで、
-	 * 「同じidだが中身は別アカウント」になった行を自動的に復帰させる。
+	 * 一覧から個別に隠したアカウントの台帳。書き換えるのはここだけ(永続化もここ)。
+	 * メニューバーとモバイルへ送る使用量は、同じ台帳をストレージから読んで隠す
+	 * (common/paradisLimitsHiddenAccounts.ts。id と email で照らす理由もそちら)。
 	 */
-	private readonly hiddenAccounts = new Map<string, string | undefined>();
+	private hiddenAccounts = new Map<string, string | undefined>();
 
 	constructor(
 		container: HTMLElement,
@@ -223,61 +216,16 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	}
 
 	private loadHiddenAccountIds(): void {
-		// 外部変更(他ウィンドウの書き込み)を取り込む再読み込みでも呼ぶため、まず現在の内容を捨てる。
-		this.hiddenAccounts.clear();
-		const raw = this.storageService.get(PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY, StorageScope.PROFILE);
-		if (!raw) {
-			return;
-		}
-		try {
-			const entries: unknown = JSON.parse(raw);
-			if (Array.isArray(entries)) {
-				for (const entry of entries) {
-					if (typeof entry === 'string') {
-						// 旧形式(id文字列のみ)からの移行。emailは分からないのでundefinedのまま扱う。
-						this.hiddenAccounts.set(entry, undefined);
-					} else if (entry && typeof entry === 'object' && typeof entry.id === 'string') {
-						this.hiddenAccounts.set(entry.id, typeof entry.email === 'string' ? entry.email : undefined);
-					}
-				}
-			}
-		} catch {
-			// 壊れた値は無視する(全アカウント表示側に倒す。非表示状態を失うだけで実害はない)
-		}
+		// 外部変更(他ウィンドウの書き込み)を取り込む再読み込みでも呼ぶため、現在の内容は読み直した値で置き換える。
+		this.hiddenAccounts = paradisReadLimitsHiddenAccounts(this.storageService);
 	}
 
 	private saveHiddenAccountIds(): void {
-		// Codexの account.id はホームの絶対パス(例: /Users/<user>/.codex-2)で、マシン固有。
-		// StorageTarget.USERはSettings Syncの対象になるため、他マシンでは無関係な非表示設定
-		// やゴミが乗ってしまう。MACHINEにして同期対象から外す。
-		const entries = [...this.hiddenAccounts.entries()].map(([id, email]) => ({ id, email }));
-		this.storageService.store(
-			PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY,
-			JSON.stringify(entries),
-			StorageScope.PROFILE,
-			StorageTarget.MACHINE,
-		);
+		paradisStoreLimitsHiddenAccounts(this.storageService, this.hiddenAccounts);
 	}
 
-	/**
-	 * account.id が非表示にした時点と同じアカウントを指しているか。
-	 *
-	 * id(ホームパス/スロット番号)は削除→再利用で別アカウントに割り当てられ得るため、
-	 * 非表示にした時点のemailと食い違ったら「もう同じアカウントではない」とみなし、
-	 * 台帳から明示的に消さなくても自動的に非表示を解く。
-	 *
-	 * ただし両方のemailが分かっているときだけ不一致を見る: node/paradisLimitsMonitorChannel.ts
-	 * の fetchCodexAccount は auth.json が読めない('error')・アクセストークンが無い
-	 * ('no_credentials')場合、同じidのままemailを載せずに返す。片方(または両方)が
-	 * undefinedなだけで「別アカウントになった」と誤判定すると、トークン読み取りが
-	 * 一時的にこけただけ・ログアウトしただけで、隠していたはずの行が勝手に復活する。
-	 */
 	private isAccountHidden(account: IParadisLimitsAccount): boolean {
-		if (!this.hiddenAccounts.has(account.id)) {
-			return false;
-		}
-		const hiddenEmail = this.hiddenAccounts.get(account.id);
-		return hiddenEmail === undefined || account.email === undefined || hiddenEmail === account.email;
+		return paradisIsLimitsAccountHidden(this.hiddenAccounts, account);
 	}
 
 	/** パネル(削除ボタンの隣の目アイコン)・非表示中リスト双方から呼ばれる、非表示状態の唯一の変更点。 */
