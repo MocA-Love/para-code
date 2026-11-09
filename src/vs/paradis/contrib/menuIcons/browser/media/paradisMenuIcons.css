@@ -15,11 +15,24 @@
  * icon font). Native menus are not HTML and ignore all of this.
  */
 
+/*
+ * The menu's own CSS (menu.ts getMenuWidgetCSS) is a style element added after this file and sets every
+ * label to `display: inline-block; font-size: inherit` at the same specificity (0,5,0), so the flex row
+ * above would lose: the glyph then sits on the text baseline, above the text's middle. The `.action-item`
+ * step makes this win. A fork menu that also passes the `codicon` class gets actionbar.css's
+ * `.action-item .codicon { width: 16px; height: 16px }`; the label then counts as 16px wide when the menu
+ * sizes itself and long labels are cut at the menu's right edge. Size the label by its text instead.
+ */
+.monaco-menu .monaco-action-bar.vertical .action-item .action-label.paradis-menu-icon {
+	display: flex;
+	width: auto;
+	height: auto;
+}
+
 .monaco-menu .monaco-action-bar.vertical .action-label.paradis-menu-icon {
 	display: flex;
 	align-items: center;
 	font: inherit;
-	font-size: 12px;
 	line-height: 1;
 	text-align: start;
 	user-select: none;
