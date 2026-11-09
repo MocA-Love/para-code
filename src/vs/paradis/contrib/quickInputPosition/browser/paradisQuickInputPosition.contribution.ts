@@ -11,8 +11,10 @@
 // タイトルバーのコマンドセンターを既定で消すのは paradisDefaultSettings.contribution.ts。
 
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { ParadisQuickInputLook } from './paradisQuickInputLook.js';
 import { ParadisQuickInputPosition } from './paradisQuickInputPosition.js';
 import { ParadisQuickInputScrim } from './paradisQuickInputScrim.js';
 
 registerWorkbenchContribution2(ParadisQuickInputPosition.ID, ParadisQuickInputPosition, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(ParadisQuickInputScrim.ID, ParadisQuickInputScrim, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(ParadisQuickInputLook.ID, ParadisQuickInputLook, WorkbenchPhase.AfterRestored);

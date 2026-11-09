@@ -278,7 +278,8 @@ class QuickInputItemDelegate implements IListVirtualDelegate<IQuickPickElement> 
 		if (element instanceof QuickPickSeparatorElement) {
 			return 30;
 		}
-		return element.saneDetail ? 44 : 22;
+		// PARA-PATCH: Para Code's UI kit (Q600) uses 28px rows in the palette (the kit's modal row) instead of 22.
+		return element.saneDetail ? 44 : 28;
 	}
 
 	getTemplateId(element: IQuickPickElement): string {
