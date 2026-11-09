@@ -96,6 +96,17 @@ function isFileNode(node: unknown): node is IFileNode {
 	return !!node && (node as IFileNode).kind === 'file';
 }
 
+/** The file or folder of a row that is still on disk: not deleted files, not repository or message rows. */
+function existingUriOf(node: Node | undefined): Uri | undefined {
+	if (isFileNode(node)) {
+		return isDeleted(node.entry.change) ? undefined : node.entry.change.uri;
+	}
+	if (node?.kind === 'folder') {
+		return Uri.file(path.join(node.repository.root, node.relativePath));
+	}
+	return undefined;
+}
+
 /**
  * Order used when sorting by status. Files whose content changed come first, because those are
  * what a reviewer actually reads; pure additions and deletions are skimmed.
@@ -298,7 +309,13 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 			commands.registerCommand('git.paraBranchDiffRevealFileInOS.mac', (node?: Node) => this.revealFile(node, 'revealFileInOS')),
 			commands.registerCommand('git.paraBranchDiffRevealFileInOS.windows', (node?: Node) => this.revealFile(node, 'revealFileInOS')),
 			commands.registerCommand('git.paraBranchDiffCopyPath', (node?: Node) => this.copyPath(node, false)),
-			commands.registerCommand('git.paraBranchDiffCopyRelativePath', (node?: Node) => this.copyPath(node, true))
+			commands.registerCommand('git.paraBranchDiffCopyRelativePath', (node?: Node) => this.copyPath(node, true)),
+			// The entries every file menu of Para Code shares (Q599). The workbench commands take the
+			// URIs, because a tree row reaches the workbench only as an opaque handle.
+			commands.registerCommand('git.paraBranchDiffOpenToSide', (node?: Node) => this.forward(node, 'paradis.files.openToSide')),
+			commands.registerCommand('git.paraBranchDiffOpenInTerminal', (node?: Node) => this.forward(node, 'paradis.files.openInEditorTerminal')),
+			commands.registerCommand('git.paraBranchDiffDownload', (node?: Node) => this.forward(node, 'paradis.files.download')),
+			commands.registerCommand('git.paraBranchDiffSendToAgent', (node?: Node) => this.forward(node, 'paradis.files.sendToAgent'))
 		);
 	}
 
@@ -684,21 +701,32 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 
 	/** The file as it is on disk now. The menu hides these entries for deleted files. */
 	private async revealFile(node: Node | undefined, command: 'revealInExplorer' | 'revealFileInOS'): Promise<void> {
-		if (!isFileNode(node) || isDeleted(node.entry.change)) {
+		const uri = existingUriOf(node);
+		if (!uri) {
 			return;
 		}
 
-		await commands.executeCommand(command, node.entry.change.uri);
+		await commands.executeCommand(command, uri);
 	}
 
 	/** The relative path is from the repository root, which is what the row shows. */
 	private async copyPath(node: Node | undefined, relative: boolean): Promise<void> {
-		if (!isFileNode(node)) {
+		if (isFileNode(node)) {
+			const { entry } = node;
+			await env.clipboard.writeText(relative ? entry.relativePath : entry.change.uri.fsPath);
+		} else if (node?.kind === 'folder') {
+			await env.clipboard.writeText(relative ? node.relativePath : path.join(node.repository.root, node.relativePath));
+		}
+	}
+
+	/** Hands the row's file or folder to a Para Code workbench command (deleted files have nothing on disk). */
+	private async forward(node: Node | undefined, command: string): Promise<void> {
+		const uri = existingUriOf(node);
+		if (!uri) {
 			return;
 		}
 
-		const { entry } = node;
-		await env.clipboard.writeText(relative ? entry.relativePath : entry.change.uri.fsPath);
+		await commands.executeCommand(command, [uri]);
 	}
 
 	private async openAllChanges(node?: Node): Promise<void> {

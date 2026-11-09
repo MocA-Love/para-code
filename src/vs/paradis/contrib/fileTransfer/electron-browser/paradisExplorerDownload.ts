@@ -37,7 +37,7 @@ import { IParadisFileTransferService } from './paradisFileTransferService.js';
 /** まとめてダウンロードで前回選んだ保存先のフォルダー（upstream の 1 件ずつの記憶とは別に持つ）。 */
 const PARADIS_BATCH_DOWNLOAD_PATH_KEY = 'paradis.explorer.batchDownloadPath';
 
-class ParadisBatchDownload {
+export class ParadisBatchDownload {
 
 	constructor(
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
