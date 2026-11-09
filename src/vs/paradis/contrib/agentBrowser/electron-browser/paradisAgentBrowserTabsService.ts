@@ -28,7 +28,6 @@
 // 再読み込みすると忘れ、それまでエージェントが開いていたタブは普通のタブとして残る（エージェントは
 // もう閉じられない）。安全側に倒れるだけなので、永続化はしていない。
 
-import './media/paradisAgentApproval.css';
 import { raceCancellation, raceTimeout, Sequencer } from '../../../../base/common/async.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';

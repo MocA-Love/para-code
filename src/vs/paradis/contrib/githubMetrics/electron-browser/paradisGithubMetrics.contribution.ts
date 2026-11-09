@@ -17,6 +17,7 @@ import { $, getWindow } from '../../../../base/browser/dom.js';
 import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -299,6 +300,8 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 			return undefined;
 		}
 		store.add(toDisposable(() => hover.dispose()));
+		// 固定のホバーはモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に残さない）
+		store.add(paradisCloseWhenModalOpens(popover.element, () => this.onPopoverHidden(store)));
 
 		return store;
 	}
