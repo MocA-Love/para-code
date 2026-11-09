@@ -14,9 +14,10 @@
 //  - hex-color: a hard-coded hex color instead of a theme color (--vscode-*, the fork's --vscode-paradis-*).
 // Violations already in the tree when the guard was added are listed in paradis-ui-baseline.json (file -> rule,
 // selector and declaration -> count), so only new ones fail. A finding is matched by its selector and declaration,
-// not by its line, so unrelated edits do not break the build. After fixing listed ones, shrink the list with
-// `node build/lib/stylelint/paradisUiRules.ts --update-baseline` (it only lists what is in the tree, so do not run it
-// to accept a new violation).
+// not by its line, so unrelated edits do not break the build. Editing the selector or declaration of a listed rule (or
+// renaming its file) shows up as a new finding: then, and after fixing listed ones, run
+// `node build/lib/stylelint/paradisUiRules.ts --update-baseline` and check that the JSON diff only replaces or removes
+// entries. Never run it to accept a new violation.
 
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
@@ -39,6 +40,8 @@ const PARADIS_CSS = /^src\/vs\/paradis\/.+\.css$/;
 const VENDORED = /^src\/vs\/paradis\/contrib\/browserExtensions\/electron-main\/media\//;
 export const PARADIS_FOCUS_RULES_FILE = 'src/vs/paradis/contrib/focusRing/browser/media/paradisFocusRing.css';
 const BASELINE_FILE = path.join(import.meta.dirname, 'paradis-ui-baseline.json');
+/** Listed findings are matched by selector and declaration, so editing them shows up as a new finding. */
+const BASELINE_HINT = 'If you only changed the selector or declaration of a rule already listed in build/lib/stylelint/paradis-ui-baseline.json (or renamed its file), run `node build/lib/stylelint/paradisUiRules.ts --update-baseline` and check that the JSON diff only replaces entries without adding any';
 
 const RE_Z_INDEX = /^z-index\s*:\s*(?<value>.+?)\s*(?:!important)?$/i;
 const RE_FONT_SIZE_PX = /^font-size\s*:\s*(?<px>[\d.]+)px/i;
@@ -146,7 +149,7 @@ export function reportParadisUiRules(relativePath: string, contents: string, rep
 			allowed.set(finding.key, left - 1);
 			continue;
 		}
-		report(`${file}(${finding.line},1): [paradis-ui ${finding.rule}] ${finding.message}`);
+		report(`${file}(${finding.line},1): [paradis-ui ${finding.rule}] ${finding.message}. ${BASELINE_HINT}`);
 		errors++;
 	}
 	return errors;

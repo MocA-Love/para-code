@@ -10,6 +10,7 @@ import { suite, test } from 'node:test';
 import { buildParadisUiBaseline, findParadisUiViolations, PARADIS_FOCUS_RULES_FILE, reportParadisUiRules } from '../stylelint/paradisUiRules.ts';
 
 const FILE = 'src/vs/paradis/contrib/example/browser/media/paradisExample.css';
+const HINT = 'If you only changed the selector or declaration of a rule already listed in build/lib/stylelint/paradis-ui-baseline.json (or renamed its file), run `node build/lib/stylelint/paradisUiRules.ts --update-baseline` and check that the JSON diff only replaces entries without adding any';
 
 const CSS = [
 	'/* z-index: 9999; #ffffff :focus in a comment */',
@@ -57,8 +58,8 @@ suite('Paradis UI kit stylelint rules', () => {
 		assert.deepStrictEqual({ counts, reported }, {
 			counts: [0, 2],
 			reported: [
-				`${FILE}(13,1): [paradis-ui z-index] z-index 2600: use a layer variable (--paradis-z-*, table in src/vs/paradis/browser/paradisModal.ts); only 0 to 3 may be written as numbers`,
-				`${FILE}(14,1): [paradis-ui z-index] z-index 2600: use a layer variable (--paradis-z-*, table in src/vs/paradis/browser/paradisModal.ts); only 0 to 3 may be written as numbers`,
+				`${FILE}(13,1): [paradis-ui z-index] z-index 2600: use a layer variable (--paradis-z-*, table in src/vs/paradis/browser/paradisModal.ts); only 0 to 3 may be written as numbers. ${HINT}`,
+				`${FILE}(14,1): [paradis-ui z-index] z-index 2600: use a layer variable (--paradis-z-*, table in src/vs/paradis/browser/paradisModal.ts); only 0 to 3 may be written as numbers. ${HINT}`,
 			],
 		});
 	});
