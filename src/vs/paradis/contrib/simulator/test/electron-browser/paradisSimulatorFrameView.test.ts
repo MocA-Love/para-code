@@ -15,7 +15,7 @@ import { Emitter, Event as BaseEvent } from '../../../../../base/common/event.js
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, ParadisSimulatorInput, ParadisSimulatorStreamEvent } from '../../common/paradisSimulator.js';
 import { IParadisSimulatorClient } from '../../electron-browser/paradisSimulatorClient.js';
-import { IParadisSimulatorObjectUrls, PARADIS_SIMULATOR_STALL_MS, ParadisSimulatorFrameView } from '../../electron-browser/paradisSimulatorFrameView.js';
+import { IParadisSimulatorObjectUrls, IParadisSimulatorStall, PARADIS_SIMULATOR_STALL_MS, ParadisSimulatorFrameView } from '../../electron-browser/paradisSimulatorFrameView.js';
 import { ParadisSimulatorEditorInput, ParadisSimulatorEditorInputSerializer, paradisSimulatorAssignedTerminals } from '../../electron-browser/paradisSimulatorEditorInput.js';
 
 const UDID = 'A1B2C3D4-0000-1111-2222-333344445555';
@@ -39,8 +39,8 @@ class FakeClient implements IParadisSimulatorClient {
 	fire(): void {
 		this._frames.fire({ kind: 'frame', udid: UDID, jpeg: VSBuffer.fromString('jpeg') });
 	}
-	end(reason?: string): void {
-		this._frames.fire({ kind: 'ended', udid: UDID, ...(reason ? { reason } : {}) });
+	end(reason?: string, captureNotStarted?: boolean): void {
+		this._frames.fire({ kind: 'ended', udid: UDID, ...(reason ? { reason } : {}), ...(captureNotStarted ? { captureNotStarted } : {}) });
 	}
 	onFrames(): BaseEvent<ParadisSimulatorStreamEvent> {
 		return this._frames.event;
@@ -163,9 +163,9 @@ suite('Paradis simulator: frame view', () => {
 		const clock = sinon.useFakeTimers();
 		try {
 			const { client, view, loaded, failed, urls, image } = setup();
-			const stalls: (string | undefined)[] = [];
+			const stalls: IParadisSimulatorStall[] = [];
 			let drawn = 0;
-			store.add(view.onDidStall(reason => stalls.push(reason)));
+			store.add(view.onDidStall(stall => stalls.push(stall)));
 			store.add(view.onDidDrawFrame(() => drawn++));
 			view.start();
 			client.fire();
@@ -176,13 +176,52 @@ suite('Paradis simulator: frame view', () => {
 				client.fire();
 				failed();
 			}
-			const afterBroken = { stalls: stalls.length, undecodable: stalls[0] !== undefined, drawn, acks: client.acks, liveUrls: urls.live.size, keepsLastFrame: image.getAttribute('src') === shown };
+			const afterBroken = { stalls: stalls.length, undecodable: stalls[0]?.reason !== undefined, drawn, acks: client.acks, liveUrls: urls.live.size, keepsLastFrame: image.getAttribute('src') === shown };
 			view.stop();
 			view.start();
 			client.end('The simulator host did not become ready in time');
+			// 映像の要求に応答の頭が返らなかった（取り込みが始まらない）ときは、その印も渡す
+			view.stop();
+			view.start();
+			client.end('The simulator host did not start capturing within 15 seconds', true);
 			assert.deepStrictEqual({ afterBroken, ended: stalls.slice(1) }, {
 				afterBroken: { stalls: 1, undecodable: true, drawn: 1, acks: 7, liveUrls: 1, keepsLastFrame: true },
-				ended: ['The simulator host did not become ready in time'],
+				ended: [
+					{ reason: 'The simulator host did not become ready in time', captureNotStarted: false },
+					{ reason: 'The simulator host did not start capturing within 15 seconds', captureNotStarted: true },
+				],
+			});
+		} finally {
+			clock.restore();
+		}
+	});
+
+	// 最初の 1 枚までは 5 秒で購読を切らない（切ると shared process の 15 秒の「取り込みが始まらない」が毎回取り消され、
+	// ペインに届かなかった）。5 秒では待っている知らせだけ出す。描けた後の途切れは今までどおり 5 秒
+	test('keeps waiting for the first frame so the capture-not-started reason can arrive', () => {
+		const clock = sinon.useFakeTimers();
+		try {
+			const { client, view, loaded } = setup();
+			const stalls: IParadisSimulatorStall[] = [];
+			let waits = 0;
+			store.add(view.onDidStall(stall => stalls.push(stall)));
+			store.add(view.onDidWait(() => waits++));
+			view.start();
+			clock.tick(PARADIS_SIMULATOR_STALL_MS + 1000);
+			const afterFiveSeconds = { listeners: client.listeners, waits, stalls: stalls.length };
+			clock.tick(10_000);
+			client.end('The simulator host did not start capturing within 15 s', true);
+			const notStarted = [...stalls];
+			view.stop();
+			view.start();
+			client.fire();
+			loaded();
+			clock.tick(PARADIS_SIMULATOR_STALL_MS + 1);
+			assert.deepStrictEqual({ afterFiveSeconds, notStarted, afterDrawnSilence: stalls.length, waits }, {
+				afterFiveSeconds: { listeners: 1, waits: 1, stalls: 0 },
+				notStarted: [{ reason: 'The simulator host did not start capturing within 15 s', captureNotStarted: true }],
+				afterDrawnSilence: 2,
+				waits: 1,
 			});
 		} finally {
 			clock.restore();

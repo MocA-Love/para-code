@@ -51,7 +51,7 @@ suite('ParadisPortToolProvider', () => {
 			requests: [
 				{ channel: 'paradisPortTools', args: ['pane', { op: 'list', includeDetected: false }], timeoutMs: undefined },
 				{ channel: 'paradisPortTools', args: ['pane', { op: 'stop', remotePorts: [21004] }], timeoutMs: 180_000 },
-				{ channel: 'paradisPortTools', args: ['pane', { op: 'forward', remotePort: 21004, localPort: 21004 }], timeoutMs: 180_000 },
+				{ channel: 'paradisPortTools', args: ['pane', { op: 'forward', items: [{ remotePort: 21004, localPort: 21004 }], batch: false }], timeoutMs: 180_000 },
 			],
 		});
 	});

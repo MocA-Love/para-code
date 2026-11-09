@@ -90,7 +90,15 @@ export interface IParadisSimulatorStreamEndEvent {
 	readonly kind: 'ended';
 	readonly udid: string;
 	readonly reason?: string;
+	/** ホストが映像の要求に応答の頭を返さなかった（serve-sim の端末の取り込みが始まらない）。 */
+	readonly captureNotStarted?: boolean;
 }
+
+/**
+ * 映像の要求に、ホストが応答の頭を返すまで待つ時間。serve-sim は端末の取り込みを始めてから頭を返すので、
+ * 取り込みの開始が戻ってこないと要求は黙ったまま残る（paracode-183 の黒い画面）。
+ */
+export const PARADIS_SIMULATOR_CAPTURE_START_TIMEOUT_MS = 15_000;
 
 /** チャネルの `frames` のイベント。 */
 export type ParadisSimulatorStreamEvent = IParadisSimulatorFrameEvent | IParadisSimulatorStreamEndEvent;
