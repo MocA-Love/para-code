@@ -9,10 +9,11 @@
 	z-index: 2600;
 	border-radius: 8px;
 	overflow: hidden;
-	background-color: var(--vscode-editorWidget-background);
-	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
-	box-shadow: 0 8px 26px var(--vscode-widget-shadow);
-	color: var(--vscode-foreground);
+	/* Same surface as the context menu opened from the status bar (menu.background, menu.border, the menu's shadow). */
+	background-color: var(--vscode-menu-background);
+	border: 1px solid var(--vscode-menu-border);
+	box-shadow: var(--vscode-shadow-lg, 0 0 12px var(--vscode-widget-shadow));
+	color: var(--vscode-menu-foreground);
 	font-size: 12px;
 	outline: none;
 }
