@@ -6,6 +6,39 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /*
+	The one file for focus rules in Para Code's own UI (UI kit stage 0, Q596). Focus shows as one outline, only for
+	keyboard focus, in the theme color paradis.focus (--vscode-paradis-focus, vs/paradis/common/paradisColors.ts); to
+	change the color, change that default only. Parts do not write :focus rules of their own and do not change
+	border-color or box-shadow on focus (that is how the double lines happened). build/lib/stylelint/paradisUiRules.ts
+	rejects :focus selectors in other src/vs/paradis CSS files; the ones written before this rule are listed in its
+	baseline and move here as their screens are rebuilt with the kit's parts.
+
+	A part opts in with one marker class:
+	- paradis-focus-ring: outline outside the part (buttons, switches, drop-downs)
+	- paradis-focus-ring-inset: outline inside the part, so the next row or the surface edge does not cut it (rows, tabs)
+	- paradis-focus-ring-within: outline on a field's frame while the input inside it has focus (the input draws none)
+*/
+html .monaco-workbench .paradis-focus-ring:focus-visible {
+	outline: var(--paradis-focus-width) solid var(--vscode-paradis-focus);
+	outline-offset: var(--paradis-focus-offset);
+}
+
+html .monaco-workbench .paradis-focus-ring-inset:focus-visible {
+	outline: var(--paradis-focus-width) solid var(--vscode-paradis-focus);
+	outline-offset: calc(var(--paradis-focus-width) * -1);
+}
+
+html .monaco-workbench .paradis-focus-ring-within:focus-within {
+	outline: var(--paradis-focus-width) solid var(--vscode-paradis-focus);
+	outline-offset: -1px;
+}
+
+/* (0,3,2) beats the workbench's input[type="text"]:focus outline (0,3,1, src/vs/workbench/browser/media/style.css). */
+html .monaco-workbench .paradis-focus-ring-within :is(input, textarea):focus {
+	outline: none;
+}
+
+/*
 	paradisFocusRing.ts adds .paradis-pointer-focus to a focused element inside Para Code's own UI when the
 	focus did not come from the keyboard (and to fork dialog roots, role="dialog", that focus themselves to
 	receive Escape). It is not added in high contrast themes.
@@ -31,7 +64,7 @@ html .monaco-workbench:not(.hc-black):not(.hc-light) .monaco-hover.workbench-hov
 }
 
 html .monaco-workbench:not(.hc-black):not(.hc-light) .monaco-hover.workbench-hover.paradis-popover-hover:is(:focus-visible, :has(:focus-visible)) {
-	border-color: var(--vscode-focusBorder);
+	border-color: var(--vscode-paradis-focus);
 }
 
 /*

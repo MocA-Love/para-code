@@ -157,7 +157,7 @@
 	padding: var(--paradis-popover-list-top) var(--vscode-spacing-size40) var(--vscode-spacing-size40);
 }
 
-/* Two-line rows (name / how it is shared), paradisDensity.css. */
+/* Two-line rows (name / how it is shared), paradisTokens.css. */
 .monaco-workbench .paradis-browser-share-popover .pbs-row {
 	display: flex;
 	align-items: center;

@@ -120,7 +120,7 @@
 	display: none;
 }
 
-/* The shared popover shape: header 30px with icon buttons, two-line rows (paradisDensity.css). */
+/* The shared popover shape: header 30px with icon buttons, two-line rows (paradisTokens.css). */
 .monaco-workbench .paradis-browser-downloads-popover .pbd-header {
 	display: flex;
 	align-items: center;
