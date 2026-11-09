@@ -151,55 +151,127 @@ function sizedValue(item: ParadisResourceTitleBarSizedItem, latest: IParadisSyst
 	}
 }
 
-/** 選んだ出し方の値の文字。大きさが分からなければ割合に戻す（割合も無ければ undefined）。 */
-function formatSized(value: IParadisSizedValue, format: ParadisResourceTitleBarFormat): string | undefined {
-	const { used, total } = value;
-	if (format !== 'percent' && used !== undefined && total !== undefined) {
-		switch (format) {
-			case 'usedOfTotal': return paradisFormatTitleBarUsedOfTotal(Math.min(used, total), total);
-			case 'used': return paradisFormatTitleBarSize(used);
-			case 'free': return localize('paradis.resourceMonitor.titleBar.free', "{0} 空き", paradisFormatTitleBarSize(Math.max(0, total - used)));
-		}
-	}
-	return value.percent !== undefined ? paradisFormatSystemUsageValue(value.percent, 'percent') : undefined;
+/**
+ * タイトルバーの 1 つの値と、その値の箱に確保しておく一番広い文字（`reserve`）。数字の桁が変わっても
+ * （9% → 10% → 100%）箱の幅が変わらず、右に並ぶ部品が動かないようにする（箱の幅は CSS で
+ * max(値, reserve) になる。paradisResourceMonitor.css の `.paradis-resource-monitor-trigger-value`）。
+ */
+export interface IParadisResourceTitleBarValue {
+	readonly value: string;
+	readonly reserve: string;
 }
 
-function compactRate(bytesPerSecond: number): string {
-	// タイトルバーでは「/s」を省いて短くする（3.1 MB/s → 3.1MB）。
-	return paradisFormatRate(bytesPerSecond).replace(/\s?\/s$/, '').replace(' ', '');
+/** 割合の一番広い値（100%）。 */
+const PERCENT_RESERVE = paradisFormatSystemUsageValue(100, 'percent');
+
+/**
+ * 単位の決まっていない大きさ・毎秒の量の一番広い数字。数字は 3 桁まで（1000〜1023 の間だけ 4 桁になるが、
+ * そこまで確保すると普段の隙間が 1 桁ぶん広がるので、その間だけ箱が広がるのを許す）。
+ */
+const NUMBER_RESERVE = '999';
+
+/** 単位に MB を使う（GB・TB・KB より広い M で確保する）。 */
+const SIZE_RESERVE = `${NUMBER_RESERVE} MB`;
+
+function percentValue(percent: number | undefined): IParadisResourceTitleBarValue {
+	return { value: paradisFormatSystemUsageValue(percent, 'percent'), reserve: PERCENT_RESERVE };
+}
+
+function freeText(size: string): string {
+	return localize('paradis.resourceMonitor.titleBar.free', "{0} 空き", size);
 }
 
 /**
- * タイトルバーに出す文字。選ばれた項目を「 · 」でつなぐ。CPU とメモリは値が無いと「--」、ほかの項目は値が
- * 無いとき（その OS で取れない・スワップの無いマシン）はその項目ごと出さない。接続先の名前は SSH のウィンドウ
- * （`remoteLabel` があるとき）だけ。何も選ばれていなければ空文字（アイコンだけになる）。
+ * 「使用量 / 全体」の一番広い文字。全体と単位は変わらないので実際の値を使い、使用量は全体の整数部の桁数
+ * （小数の 9.9 も入るよう 3 桁以上）を確保する（`412 / 460 GB` → `000 / 460 GB`）。
  */
-export function paradisResourceTitleBarText(
+function usedOfTotalReserve(total: number): string {
+	const unit = sizeUnitOf(Math.max(0, total));
+	const totalText = formatSizeIn(total, unit);
+	const digits = Math.max(NUMBER_RESERVE.length, totalText.split('.')[0].length);
+	return `${'0'.repeat(digits)} / ${totalText} ${unit.name}`;
+}
+
+/** 選んだ出し方の値の文字。大きさが分からなければ割合に戻す（割合も無ければ undefined）。 */
+function formatSized(value: IParadisSizedValue, format: ParadisResourceTitleBarFormat): IParadisResourceTitleBarValue | undefined {
+	const { used, total } = value;
+	if (format !== 'percent' && used !== undefined && total !== undefined) {
+		switch (format) {
+			case 'usedOfTotal': return { value: paradisFormatTitleBarUsedOfTotal(Math.min(used, total), total), reserve: usedOfTotalReserve(total) };
+			case 'used': return { value: paradisFormatTitleBarSize(used), reserve: SIZE_RESERVE };
+			case 'free': return { value: freeText(paradisFormatTitleBarSize(Math.max(0, total - used))), reserve: freeText(SIZE_RESERVE) };
+		}
+	}
+	return value.percent !== undefined ? percentValue(value.percent) : undefined;
+}
+
+function compactRate(bytesPerSecond: number): IParadisResourceTitleBarValue {
+	// タイトルバーでは「/s」を省いて短くする（3.1 MB/s → 3.1MB）。
+	return { value: paradisFormatRate(bytesPerSecond).replace(/\s?\/s$/, '').replace(' ', ''), reserve: `${NUMBER_RESERVE}MB` };
+}
+
+/** タイトルバーの 1 項目（`CPU 44%`）と、その中の値（出てくる順）。 */
+export interface IParadisResourceTitleBarPart {
+	readonly text: string;
+	readonly values: readonly IParadisResourceTitleBarValue[];
+}
+
+/** 項目の文字を、値の前後の文字と値に分ける（値は {@link IParadisResourceTitleBarPart.values} の順に探す）。 */
+export function paradisSplitResourceTitleBarPart(part: IParadisResourceTitleBarPart): (string | IParadisResourceTitleBarValue)[] {
+	const pieces: (string | IParadisResourceTitleBarValue)[] = [];
+	let cursor = 0;
+	for (const value of part.values) {
+		const index = part.text.indexOf(value.value, cursor);
+		if (index < 0) {
+			continue;
+		}
+		if (index > cursor) {
+			pieces.push(part.text.slice(cursor, index));
+		}
+		pieces.push(value);
+		cursor = index + value.value.length;
+	}
+	if (cursor < part.text.length) {
+		pieces.push(part.text.slice(cursor));
+	}
+	return pieces;
+}
+
+/**
+ * タイトルバーに出す項目。CPU とメモリは値が無いと「--」、ほかの項目は値が無いとき（その OS で取れない・
+ * スワップの無いマシン）はその項目ごと出さない。接続先の名前は SSH のウィンドウ（`remoteLabel` があるとき）
+ * だけ。何も選ばれていなければ空（アイコンだけになる）。
+ */
+export function paradisResourceTitleBarParts(
 	isOn: (item: ParadisResourceTitleBarItem) => boolean,
 	latest: IParadisSystemUsageSample,
 	machine: ParadisTitleBarMachine | undefined,
 	remoteLabel: string | undefined,
 	formatOf: (item: ParadisResourceTitleBarSizedItem) => ParadisResourceTitleBarFormat = () => 'percent',
-): string {
-	const parts: string[] = [];
+): IParadisResourceTitleBarPart[] {
+	const parts: IParadisResourceTitleBarPart[] = [];
 	if (remoteLabel !== undefined && isOn('machineName')) {
-		parts.push(remoteLabel);
+		parts.push({ text: remoteLabel, values: [] });
 	}
 	for (const item of PARADIS_RESOURCE_TITLE_BAR_ITEMS) {
 		if (!isOn(item)) {
 			continue;
 		}
 		switch (item) {
-			case 'cpu':
-				parts.push(localize('paradis.resourceMonitor.titleBar.cpu', "CPU {0}", paradisFormatSystemUsageValue(latest.cpu, 'percent')));
+			case 'cpu': {
+				const value = percentValue(latest.cpu);
+				parts.push({ text: localize('paradis.resourceMonitor.titleBar.cpu', "CPU {0}", value.value), values: [value] });
 				break;
-			case 'memory':
-				parts.push(localize('paradis.resourceMonitor.titleBar.memory', "RAM {0}", formatSized(sizedValue('memory', latest, machine), formatOf('memory')) ?? '--'));
+			}
+			case 'memory': {
+				const value = formatSized(sizedValue('memory', latest, machine), formatOf('memory')) ?? percentValue(undefined);
+				parts.push({ text: localize('paradis.resourceMonitor.titleBar.memory', "RAM {0}", value.value), values: [value] });
 				break;
+			}
 			case 'disk': {
 				const value = formatSized(sizedValue('disk', latest, machine), formatOf('disk'));
 				if (value !== undefined) {
-					parts.push(localize('paradis.resourceMonitor.titleBar.disk', "DISK {0}", value));
+					parts.push({ text: localize('paradis.resourceMonitor.titleBar.disk', "DISK {0}", value.value), values: [value] });
 				}
 				break;
 			}
@@ -208,23 +280,41 @@ export function paradisResourceTitleBarText(
 				const swap = sizedValue('swap', latest, machine);
 				const value = swap.total !== undefined ? formatSized(swap, formatOf('swap')) : undefined;
 				if (value !== undefined) {
-					parts.push(localize('paradis.resourceMonitor.titleBar.swap', "SWAP {0}", value));
+					parts.push({ text: localize('paradis.resourceMonitor.titleBar.swap', "SWAP {0}", value.value), values: [value] });
 				}
 				break;
 			}
 			case 'diskIo':
 				if (latest.diskRead !== undefined && latest.diskWrite !== undefined) {
-					parts.push(localize('paradis.resourceMonitor.titleBar.diskIo', "R {0} W {1}", compactRate(latest.diskRead), compactRate(latest.diskWrite)));
+					const read = compactRate(latest.diskRead);
+					const write = compactRate(latest.diskWrite);
+					parts.push({ text: localize('paradis.resourceMonitor.titleBar.diskIo', "R {0} W {1}", read.value, write.value), values: [read, write] });
 				}
 				break;
 			case 'network':
 				if (latest.netRx !== undefined && latest.netTx !== undefined) {
-					parts.push(localize('paradis.resourceMonitor.titleBar.network', "↓{0} ↑{1}", compactRate(latest.netRx), compactRate(latest.netTx)));
+					const rx = compactRate(latest.netRx);
+					const tx = compactRate(latest.netTx);
+					parts.push({ text: localize('paradis.resourceMonitor.titleBar.network', "↓{0} ↑{1}", rx.value, tx.value), values: [rx, tx] });
 				}
 				break;
 		}
 	}
-	return parts.join(' · ');
+	return parts;
+}
+
+/** タイトルバーの項目をつなぐ文字。 */
+export const PARADIS_RESOURCE_TITLE_BAR_SEPARATOR = ' · ';
+
+/** タイトルバーに出す文字（{@link paradisResourceTitleBarParts} を「 · 」でつないだもの）。 */
+export function paradisResourceTitleBarText(
+	isOn: (item: ParadisResourceTitleBarItem) => boolean,
+	latest: IParadisSystemUsageSample,
+	machine: ParadisTitleBarMachine | undefined,
+	remoteLabel: string | undefined,
+	formatOf: (item: ParadisResourceTitleBarSizedItem) => ParadisResourceTitleBarFormat = () => 'percent',
+): string {
+	return paradisResourceTitleBarParts(isOn, latest, machine, remoteLabel, formatOf).map(part => part.text).join(PARADIS_RESOURCE_TITLE_BAR_SEPARATOR);
 }
 
 /**
