@@ -21,12 +21,23 @@ const FIT_STEPS = [1400, 1200, 1000] as const;
  * ドラッグできる空きが {@link MIN_DRAG_GAP} に満たないあいだ、`paradis-fold-1` から順に足していく。
  * 段の中身は CSS (paradisTitlebarFit.css) にあり、どれも幅の段と同じ「優先度の低い順」:
  * 1 エージェント一覧・ブラウザ一覧の文字、2 使用率の文字、3 知らせの無いサービスの項目、4 利用リミットの余裕のある輪、
- * 5 upstream のコマンドセンターの幅 (38vw のまま縮まないので、800px 以下では 1〜4 を畳んでも空かない。利用リミットのロゴは残す)
+ * 5 upstream のコマンドセンターの幅 (38vw のまま縮まないので、800px 以下では 1〜4 を畳んでも空かない。利用リミットのロゴは残す。
+ *   Para Code はコマンドセンターを既定で出さないので、出している人にだけ効く)
+ *
+ * コマンドセンターの代わりにウィンドウのタイトルの文字 (ワークスペースの名前と SSH のホスト) が中央に出ているときは、
+ * その文字が省略記号で切れているあいだも畳む。文字は掴んで窓を動かせる面なので空きの計算には入れないが、
+ * upstream の配置では左右の部品が先に場所を取り、文字だけが縮むため。
  */
 const FOLD_LEVELS = 5;
 
 /** タイトルバーに残す、ドラッグできるひと続きの空きの幅 (px)。 */
 const MIN_DRAG_GAP = 40;
+
+/**
+ * 中央のタイトルの文字を読めるようにするために畳む上限の幅 (px)。これより長いタイトル (利用者が window.title に
+ * エディタの名前などを足したとき) は、この幅まで見えていれば畳まない。ワークスペースの名前と「[SSH: ホスト]」が収まる幅。
+ */
+const MAX_TITLE_WIDTH = 360;
 
 /** カスタムメニューバーがタイトルバー左側に見えているあいだ付けるクラス。 */
 const MENUBAR_VISIBLE_CLASS = 'paradis-fit-menubar-visible';
@@ -47,7 +58,7 @@ export function createParadisTitlebarFit(rootContainer: HTMLElement, leftContent
 
 /**
  * タイトルバーに fork が足した部品 (左: CPU/RAM・リミット・サービス状態・ポート、右: エージェント一覧・
- * ブラウザ一覧) を、狭いウィンドウでも中央のコマンドセンターに重ねないための状態をクラスで出す。
+ * ブラウザ一覧) を、狭いウィンドウでも中央のコマンドセンター (またはタイトルの文字) に重ねないための状態をクラスで出す。
  *
  * - 幅はウィンドウのメディアクエリではなくタイトルバー自身の幅で測る。ズームアウトするとタイトルバーは
  *   `counter-zoom` で等倍に戻して描かれ、ウィンドウの CSS px とタイトルバー内の px がずれるため
@@ -89,6 +100,11 @@ class ParadisTitlebarFit extends Disposable {
 		const rightContent = this.childWithClass(rootContainer, 'titlebar-right');
 		if (rightContent) {
 			mutationObserver.observe(rightContent, contentChanges);
+		}
+		// 中央のタイトルの文字が変わると、読めるのに要る幅も変わる (titleShortfall)
+		const centerContent = this.childWithClass(rootContainer, 'titlebar-center');
+		if (centerContent) {
+			mutationObserver.observe(centerContent, contentChanges);
 		}
 	}
 
@@ -151,7 +167,7 @@ class ParadisTitlebarFit extends Disposable {
 		}
 		this.setFoldLevel(0);
 		if (!this.rootContainer.classList.contains(MENUBAR_VISIBLE_CLASS)) {
-			for (let level = 1; level <= FOLD_LEVELS && this.largestDragGap() < MIN_DRAG_GAP; level++) {
+			for (let level = 1; level <= FOLD_LEVELS && (this.largestDragGap() < MIN_DRAG_GAP || this.titleShortfall() > 0); level++) {
 				this.setFoldLevel(level);
 			}
 		}
@@ -159,9 +175,9 @@ class ParadisTitlebarFit extends Disposable {
 		this.options?.onDidMeasureFold?.();
 	}
 
-	/** 畳む段の答えを変えうるもの: 外枠の幅、メニューバーの表示、左側と右側の子の数・class・幅 (今の段のまま)。 */
+	/** 畳む段の答えを変えうるもの: 外枠の幅、メニューバーの表示、中央のタイトルの文字の幅、左側と右側の子の数・class・幅 (今の段のまま)。 */
 	private foldSignature(): string {
-		const parts = [String(this.rootContainer.clientWidth), String(this.rootContainer.classList.contains(MENUBAR_VISIBLE_CLASS))];
+		const parts = [String(this.rootContainer.clientWidth), String(this.rootContainer.classList.contains(MENUBAR_VISIBLE_CLASS)), String(this.textTitle()?.scrollWidth ?? 0)];
 		for (const child of this.leftContent.children) {
 			parts.push(`${child.className}:${(child as HTMLElement).offsetWidth}`);
 		}
@@ -219,6 +235,30 @@ class ParadisTitlebarFit extends Disposable {
 			cursor = Math.max(cursor, span.end);
 		}
 		return Math.max(largest, end - cursor);
+	}
+
+	/**
+	 * 中央のタイトルの文字が読めるまでに足りない幅 (px)。省略記号で切れていなければ 0。
+	 * {@link MAX_TITLE_WIDTH} より長いタイトルは、その幅まで見えていれば足りているとみなす。
+	 * scrollWidth と clientWidth は別々に整数へ丸められ、切れていなくても 1px ずれることがあるので、その分は数えない。
+	 */
+	private titleShortfall(): number {
+		const title = this.textTitle();
+		if (!title) {
+			return 0;
+		}
+		const shortfall = Math.min(title.scrollWidth, MAX_TITLE_WIDTH) - title.clientWidth;
+		return shortfall > 1 ? shortfall : 0;
+	}
+
+	/** 中央に出ているタイトルの文字の要素。コマンドセンターを出しているとき・文字が無いとき (ネイティブのタイトルバー) は無い。 */
+	private textTitle(): HTMLElement | undefined {
+		const center = this.childWithClass(this.rootContainer, 'titlebar-center');
+		const windowTitle = center && this.childWithClass(center, 'window-title');
+		if (!windowTitle || windowTitle.childElementCount > 0 || !windowTitle.textContent) {
+			return undefined;
+		}
+		return windowTitle;
 	}
 
 	private childWithClass(parent: HTMLElement, className: string): HTMLElement | undefined {

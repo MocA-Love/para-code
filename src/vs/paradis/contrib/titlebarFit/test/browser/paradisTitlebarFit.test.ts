@@ -242,6 +242,84 @@ suite('ParadisTitlebarFit', () => {
 		}
 	});
 
+	test('without the command center, folds while the window title text in the center is cut off, and measures again when the title changes', async () => {
+		const doc = mainWindow.document;
+		const style = doc.createElement('style');
+		// 段ごとに隠す部品 (本物の規則は paradisTitlebarFit.css)。中央の文字は upstream と同じく縮んで省略記号になる
+		style.textContent = '.t-root.paradis-fold-1 .t-a, .t-root.paradis-fold-2 .t-b { display: none; }';
+		doc.head.appendChild(style);
+		const root = doc.createElement('div');
+		root.className = 't-root';
+		root.style.cssText = 'display: flex; height: 30px; font: 10px monospace;';
+		const left = doc.createElement('div');
+		left.style.cssText = 'display: flex; flex: none;';
+		const center = doc.createElement('div');
+		center.className = 'titlebar-center';
+		center.style.cssText = 'display: flex; flex: 0 1 auto; min-width: 0;';
+		const windowTitle = doc.createElement('div');
+		windowTitle.className = 'window-title';
+		windowTitle.style.cssText = 'flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;';
+		windowTitle.textContent = 'para (Workspace) [SSH: host]';
+		center.appendChild(windowTitle);
+		const right = doc.createElement('div');
+		right.className = 'titlebar-right';
+		right.style.cssText = 'display: flex; flex: none;';
+		root.append(left, center, right);
+		doc.body.appendChild(root);
+		for (const [className, width, parent] of [['t-a', 100, left], ['t-b', 100, left], ['t-right', 50, right]] as const) {
+			const element = doc.createElement('div');
+			element.className = className;
+			element.style.cssText = `width: ${width}px; flex: none;`;
+			parent.appendChild(element);
+		}
+		const titleWidth = windowTitle.scrollWidth;
+
+		const observers: TestResizeObserver[] = [];
+		const fit = createParadisTitlebarFit(root, left, {
+			scheduleFrame,
+			resizeObserverCtor: class extends TestResizeObserver {
+				constructor(callback: ResizeObserverCallback) {
+					super(callback);
+					observers.push(this);
+				}
+			}
+		});
+		const folds = () => [...root.classList].filter(name => name.startsWith('paradis-fold-')).sort().join(' ');
+		const resize = (width: number) => {
+			root.style.width = `${width}px`;
+			observers[0].fire();
+			return folds();
+		};
+		try {
+			// 文字が収まる幅では畳まない (空きの計算に文字は入れないので、ドラッグの空きは足りている)
+			const fits = resize(250 + titleWidth + 10);
+			// 文字が 50px 切れる → 1 段 (t-a の 100px) 畳めば収まる
+			const cutOff = resize(250 + titleWidth - 50);
+			// 窓の幅は同じまま、タイトルが 1 段では収まらないほど長くなった → 2 段まで
+			windowTitle.textContent = 'para (Workspace) [SSH: host] - Para Code';
+			await flushMutations();
+			const longerTitle = folds();
+			// コマンドセンターを出しているあいだは、文字の長さでは畳まない
+			windowTitle.textContent = '';
+			const commandCenter = doc.createElement('div');
+			commandCenter.className = 'command-center';
+			commandCenter.style.cssText = 'width: 10px;';
+			windowTitle.appendChild(commandCenter);
+			await flushMutations();
+			const withCommandCenter = folds();
+			assert.deepStrictEqual({ fits, cutOff, longerTitle, withCommandCenter }, {
+				fits: '',
+				cutOff: 'paradis-fold-1',
+				longerTitle: 'paradis-fold-1 paradis-fold-2',
+				withCommandCenter: '',
+			});
+		} finally {
+			fit.dispose();
+			root.remove();
+			style.remove();
+		}
+	});
+
 	test('measures the fold again once per frame, and not at all while the title bar keeps its widths (the CPU/RAM text changes every second)', async () => {
 		const doc = mainWindow.document;
 		const root = doc.createElement('div');

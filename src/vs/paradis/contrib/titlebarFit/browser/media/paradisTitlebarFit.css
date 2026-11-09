@@ -84,7 +84,8 @@
  * Fold 5: narrow upstream's command center. Upstream sizes it at 38vw (up to 600px) and never shrinks
  * it, so below about 800px it takes most of the title bar and leaves no room to drag the window even with
  * folds 1-4. The search box keeps its icon and the start of the workspace name (the label already
- * truncates). The AI limits logos stay.
+ * truncates). The AI limits logos stay. Para Code hides the command center by default, so this only applies to
+ * people who turn it back on; without it, paradisTitlebarFit.ts folds 1-5 while the centered window title is cut off.
  */
 .monaco-workbench .part.titlebar > .titlebar-container.paradis-fold-5 > .titlebar-center > .window-title > .command-center .action-item.command-center-center {
 	width: max(160px, 24vw);

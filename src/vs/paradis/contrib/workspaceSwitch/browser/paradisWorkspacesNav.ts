@@ -31,12 +31,12 @@ interface IParadisWorkspacesNavItem {
 	readonly icon: ThemeIcon;
 	readonly label: string;
 	readonly tooltip: string;
-	/** 押したときに動かすコマンド。無ければ delegate.openSearch を呼ぶ（検索の行） */
+	/** 押したときに動かすコマンド。無ければ検索の行（{@link ParadisWorkspacesNav.openSearch}） */
 	readonly command?: string;
 }
 
 const NAV_ITEMS: readonly IParadisWorkspacesNavItem[] = [
-	{ id: 'search', icon: Codicon.search, label: localize('paradis.workspacesNav.search', "検索"), tooltip: localize('paradis.workspacesNav.searchTooltip', "スペース（リポジトリとワークツリー）を探して切り替える") },
+	{ id: 'search', icon: Codicon.search, label: localize('paradis.workspacesNav.search', "検索"), tooltip: localize('paradis.workspacesNav.searchTooltip', "エージェント・タブ・スペースを探して移動する") },
 	{ id: 'taskBoard', icon: Codicon.tasklist, label: localize('paradis.workspacesNav.taskBoard', "タスク"), tooltip: localize('paradis.workspacesNav.taskBoardTooltip', "タスク（GitHub の Issue・PR）を開く"), command: 'paradis.tasks.open' },
 	{ id: 'scheduledRuns', icon: Codicon.watch, label: localize('paradis.workspacesNav.scheduledRuns', "定期実行"), tooltip: localize('paradis.workspacesNav.scheduledRunsTooltip', "定期実行を開く"), command: 'paradis.openScheduledRuns' },
 	{ id: 'mobile', icon: Codicon.deviceMobile, label: localize('paradis.workspacesNav.mobile', "モバイル"), tooltip: localize('paradis.workspacesNav.mobileTooltip', "Para Code Mobile の接続とデバイスの管理"), command: 'paradis.mobile.showMenu' },
@@ -45,10 +45,12 @@ const NAV_ITEMS: readonly IParadisWorkspacesNavItem[] = [
 const ADD_REPOSITORY_COMMAND = 'paradis.workspaceSwitch.addRepository';
 const CREATE_WORKTREE_COMMAND = 'paradis.workspaceSwitch.createWorktree';
 const OPEN_AGENT_LIST_COMMAND = 'paradis.agentLiveWindow.open';
+/** 検索の行で開く、エージェント・今のスペースのタブ・スペースをまとめて探すパレット（Q593。デスクトップだけにある） */
+const CROSS_JUMP_COMMAND = 'paradis.crossJump.open';
 
 /** ナビと見出しが一覧のビューから受け取るもの。 */
 export interface IParadisWorkspacesNavDelegate {
-	/** 検索の行を押したとき */
+	/** 検索の行を押したとき、エージェント・タブ・スペースをまとめて探すパレットが無い環境（Web）で代わりに開くもの */
 	openSearch(): void;
 	/** 見出しのベルに出す数。attention は許可待ち・質問、working は作業中の数 */
 	agentCounts(): { readonly attention: number; readonly working: number };
@@ -163,7 +165,7 @@ export class ParadisWorkspacesNav extends Disposable {
 			DOM.append(row, DOM.$(ThemeIcon.asCSSSelector(item.icon)));
 			DOM.append(row, DOM.$('span.paradis-workspaces-nav-label')).textContent = item.label;
 			this.rowDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), row, item.tooltip));
-			const run = () => item.command ? this.runIfRegistered(item.command) : this.delegate.openSearch();
+			const run = () => item.command ? this.runIfRegistered(item.command) : this.openSearch();
 			this.rowDisposables.add(DOM.addDisposableListener(row, DOM.EventType.CLICK, run));
 			this.rowDisposables.add(DOM.addDisposableListener(row, DOM.EventType.KEY_DOWN, e => {
 				const event = new StandardKeyboardEvent(e);
@@ -231,6 +233,15 @@ export class ParadisWorkspacesNav extends Disposable {
 		this.bellCount.textContent = count > 99 ? '99+' : count > 0 ? String(count) : '';
 		this.bellButton.classList.toggle('attention', attention > 0);
 		this.bellIcon.className = ThemeIcon.asClassName(attention > 0 ? Codicon.bellDot : Codicon.bell);
+	}
+
+	/** 検索の行: 画面の中央寄りに出るパレット（エージェント・タブ・スペースへ移動...）の入口。無い環境ではスペースだけを探す */
+	private openSearch(): void {
+		if (CommandsRegistry.getCommand(CROSS_JUMP_COMMAND)) {
+			void this.commandService.executeCommand(CROSS_JUMP_COMMAND);
+		} else {
+			this.delegate.openSearch();
+		}
 	}
 
 	private runIfRegistered(command: string): void {

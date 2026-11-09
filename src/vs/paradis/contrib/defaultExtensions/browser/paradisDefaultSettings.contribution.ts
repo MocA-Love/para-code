@@ -6,10 +6,15 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { isMacintosh } from '../../../../base/common/platform.js';
+import { isMacintosh, isNative } from '../../../../base/common/platform.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { MenuSettings, MenuStyleConfiguration } from '../../../../platform/window/common/window.js';
+
+/** macOS（デスクトップ）のウィンドウのタイトル。upstream の既定から先頭のエディタの名前を外したもの。 */
+export const PARADIS_WINDOW_TITLE_MAC = '${rootName}${separator}${profileName}';
+/** macOS 以外のウィンドウのタイトル。upstream の既定から先頭の変更の印とエディタの名前を外したもの。 */
+export const PARADIS_WINDOW_TITLE = '${rootName}${separator}${profileName}${separator}${appName}';
 
 // Para Code が全ユーザーへ配布するデフォルト設定。
 // 拡張機能の `contributes.configurationDefaults` と同じ仕組み（設定の "default" レイヤーへの注入）なので、
@@ -47,6 +52,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// macOS の上のメニューバーは設定に関わらず native のまま（hasNativeMenu）。反映には再起動が要る。
 		// Windows・Linux は upstream の既定（inherit）のまま。custom にするとタイトルバーが native の人のメニューバーまで自前の描画になる
 		...(isMacintosh ? { [MenuSettings.MenuStyle]: MenuStyleConfiguration.CUSTOM } : {}),
+		// コマンドパレットなどは画面の上から 25% に出す（paradisQuickInputPosition.ts、Q593）ので、タイトルバー中央の
+		// 検索欄（コマンドセンター）は既定で出さない。タイトルバーは 35px から 30px になり、中央にはウィンドウのタイトルの文字が出る。
+		// コマンドパレットのキー（Cmd/Ctrl+Shift+P・Cmd/Ctrl+P）はそのまま使え、サイドバーの「検索」も入口になる。
+		'window.commandCenter': false,
+		// 中央の文字は、コマンドセンターが出していたワークスペースの名前を先頭にする（upstream の既定はエディタの名前が先で、
+		// 狭い窓では後ろの名前から切れる）。SSH 等の窓では ${rootName} 自体に「[SSH: ホスト]」が付く（拡張が登録する
+		// workspaceSuffix）ので、${remoteName} を足すとホストが二重に出る。macOS 以外は upstream と同じくアプリ名も付ける
+		'window.title': isMacintosh && isNative ? PARADIS_WINDOW_TITLE_MAC : PARADIS_WINDOW_TITLE,
 		// ブランドのプライマリカラー統一（#09AFD9）。既定テーマ Houston は独自のミント緑/水色アクセントを持つため、
 		// 主要なアクセント色と、ステータスバーの通常/フォルダ未オープン背景をブランド色へ寄せる。
 		// Dark 2026 / Light 2026（Para Code のもう一つの既定系テーマ）はアクセント自体はテーマ側で調整済みなので
