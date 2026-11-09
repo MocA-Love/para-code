@@ -80,6 +80,19 @@ const ICONS: ReadonlyMap<string, IParadisMenuIcon> = new Map<string, IParadisMen
 	['paradis.terminal.forkAgentSession', { icon: Codicon.repoForked }],
 	['paradis.agentChat.toggle', { icon: Codicon.commentDiscussion }],
 	['paradis.editor.copyTabId', { icon: Codicon.symbolKey }],
+	// file entries shared by every file menu (fork, Q599; the `.terminalLink` ids are the terminal's file link)
+	...(['', '.terminalLink'] as const).flatMap(suffix => ([
+		[`paradis.files.openToSide${suffix}`, { icon: Codicon.splitHorizontal }],
+		[`paradis.files.revealInExplorer${suffix}`, { icon: Codicon.eye }],
+		[`paradis.files.revealInOS${suffix}`, { icon: Codicon.folderOpened }],
+		[`paradis.files.openInEditorTerminal${suffix}`, { icon: Codicon.terminal }],
+		[`paradis.files.copyPath${suffix}`, { icon: Codicon.link }],
+		[`paradis.files.copyRelativePath${suffix}`, { icon: Codicon.link }],
+		[`paradis.files.download${suffix}`, { icon: Codicon.cloudDownload }],
+		[`paradis.files.sendToAgent${suffix}`, { icon: Codicon.send }],
+	] satisfies [string, IParadisMenuIcon][])),
+	['paradis.files.open.terminalLink', { icon: Codicon.goToFile }],
+	['paradis.editor.download', { icon: Codicon.cloudDownload }],
 	// editor text
 	['editor.action.clipboardCopyAction', { icon: Codicon.copy }],
 	['editor.action.clipboardPasteAction', { icon: Codicon.clippy }],

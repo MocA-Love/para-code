@@ -29,10 +29,18 @@ export const PARADIS_EDITOR_DOWNLOAD_WHEN = ContextKeyExpr.and(
 	ParadisTabIsDiffContext.negate(),
 );
 
+/**
+ * 差分のタブで出す条件（Q599）: 変更後の側（タブの `resourceScheme` は変更後の側の値）が接続先のファイルで、
+ * 未保存の変更が無いもの。ステージ済みの差分のように変更後の側も git: のものは出さない。
+ */
+export const PARADIS_EDITOR_DIFF_DOWNLOAD_WHEN = ContextKeyExpr.and(
+	ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeRemote),
+	ActiveEditorDirtyContext.negate(),
+	ParadisTabIsDiffContext,
+);
+
 /** 右クリックしたタブの様子（落としてよいかの判断に使う分だけ）。 */
 export interface IParadisEditorDownloadTab {
-	/** 差分・左右に並べたエディタのタブか。 */
-	readonly sideBySide: boolean;
 	readonly dirty: boolean;
 }
 
@@ -44,11 +52,11 @@ export interface IParadisEditorDownloadSource {
 }
 
 /**
- * 落とすファイル。接続先のファイルのタブで、差分でも未保存の変更があるタブでもないときだけ返す
- * （メニューの条件でも外しているが、コマンドとして直接呼ばれたときのために押されたときにも確かめる）。
+ * 落とすファイル。接続先のファイルのタブで、未保存の変更が無いときだけ返す。差分のタブでは変更後の側のファイル
+ * （`resource` に変更後の側を渡す）。メニューの条件でも外しているが、コマンドとして直接呼ばれたときのために押されたときにも確かめる。
  */
 export function paradisEditorDownloadSource(resource: URI | undefined, tab: IParadisEditorDownloadTab | undefined): IParadisEditorDownloadSource | undefined {
-	if (!resource || resource.scheme !== Schemas.vscodeRemote || !tab || tab.sideBySide || tab.dirty) {
+	if (!resource || resource.scheme !== Schemas.vscodeRemote || !tab || tab.dirty) {
 		return undefined;
 	}
 	return { resource, name: basename(resource), isDirectory: false };

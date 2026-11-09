@@ -11,7 +11,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IContext } from '../../../../../platform/contextkey/common/contextkey.js';
 import { paradisIsDiffTab } from '../../../../../workbench/services/editor/common/paradisTabContextKeys.js';
-import { PARADIS_EDITOR_DOWNLOAD_WHEN, paradisEditorDownloadSource } from '../../common/paradisEditorDownload.js';
+import { PARADIS_EDITOR_DIFF_DOWNLOAD_WHEN, PARADIS_EDITOR_DOWNLOAD_WHEN, paradisEditorDownloadSource } from '../../common/paradisEditorDownload.js';
 
 function context(values: Record<string, unknown>): IContext {
 	return { getValue: <T>(key: string) => values[key] as T };
@@ -31,18 +31,24 @@ suite('Paradis editor download', () => {
 		);
 	});
 
-	test('downloads the file of the clicked tab, never a diff, an unsaved tab or a local file', () => {
-		const saved = { sideBySide: false, dirty: false };
+	test('the diff tab shows its own entry only when the modified side is a saved file of the remote host', () => {
+		const cases: Array<[string, boolean, boolean]> = [['vscode-remote', false, true], ['vscode-remote', true, true], ['vscode-remote', false, false], ['git', false, true], ['file', false, true]];
+		assert.deepStrictEqual(
+			cases.map(([scheme, dirty, diff]) => PARADIS_EDITOR_DIFF_DOWNLOAD_WHEN?.evaluate(context({ resourceScheme: scheme, activeEditorIsDirty: dirty, paradisTabIsDiff: diff }))),
+			[true, false, false, false, false],
+		);
+	});
+
+	test('downloads the file of the clicked tab (the modified side of a diff), never an unsaved tab or a local file', () => {
+		const saved = { dirty: false };
 		assert.deepStrictEqual({
 			remote: paradisEditorDownloadSource(REMOTE, saved),
-			diff: paradisEditorDownloadSource(REMOTE, { sideBySide: true, dirty: false }),
-			dirty: paradisEditorDownloadSource(REMOTE, { sideBySide: false, dirty: true }),
+			dirty: paradisEditorDownloadSource(REMOTE, { dirty: true }),
 			local: paradisEditorDownloadSource(URI.file('/Users/example/app/server.ts'), saved),
 			noResource: paradisEditorDownloadSource(undefined, saved),
 			noTab: paradisEditorDownloadSource(REMOTE, undefined),
 		}, {
 			remote: { resource: REMOTE, name: 'server.ts', isDirectory: false },
-			diff: undefined,
 			dirty: undefined,
 			local: undefined,
 			noResource: undefined,

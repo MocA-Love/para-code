@@ -7,10 +7,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { isIMenuItem, MenuId, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
 import { IContext } from '../../../../../platform/contextkey/common/contextkey.js';
-import { paradisHttpUrlFromTerminalLinkText, ParadisTerminalLinkCommandId, paradisTrackTerminalLinkAtMouse } from '../../browser/paradisTerminalLinkMenu.contribution.js';
+import { paradisFileLinkFromTerminalLink, paradisHttpUrlFromTerminalLinkText, ParadisTerminalLinkCommandId, paradisTrackTerminalLinkAtMouse } from '../../browser/paradisTerminalLinkMenu.contribution.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 
 function context(values: Record<string, unknown>): IContext {
@@ -36,6 +37,30 @@ suite('ParadisTerminalLinkMenu', () => {
 			'http://localhost:5173/',
 			'HTTPS://EXAMPLE.COM',
 			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
+
+	test('treats only links that upstream resolved to a file or folder as file links', () => {
+		const file = URI.file('/home/example/app/src/index.ts');
+		const folder = URI.file('/home/example/app/src');
+		assert.deepStrictEqual([
+			paradisFileLinkFromTerminalLink({ uri: file, type: 'LocalFile' }),
+			paradisFileLinkFromTerminalLink({ uri: folder, type: 'LocalFolderInWorkspace' }),
+			paradisFileLinkFromTerminalLink({ uri: folder, type: 'LocalFolderOutsideWorkspace' }),
+			paradisFileLinkFromTerminalLink({ uri: undefined, type: 'Search' }),
+			paradisFileLinkFromTerminalLink({ uri: URI.parse('https://example.com/'), type: 'Url' }),
+			paradisFileLinkFromTerminalLink({ uri: URI.parse('https://example.com/'), type: 'LocalFile' }),
+			paradisFileLinkFromTerminalLink({ text: 'src/index.ts' }),
+			paradisFileLinkFromTerminalLink(undefined),
+		], [
+			{ resource: file, isDirectory: false },
+			{ resource: folder, isDirectory: true },
+			{ resource: folder, isDirectory: true },
 			undefined,
 			undefined,
 			undefined,

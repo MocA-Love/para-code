@@ -1036,6 +1036,26 @@
         "category": "Git"
       },
       {
+        "command": "git.paraBranchDiffOpenToSide",
+        "title": "%command.paraBranchDiffOpenToSide%",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffOpenInTerminal",
+        "title": "%command.paraBranchDiffOpenInTerminal%",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffDownload",
+        "title": "%command.paraBranchDiffDownload%",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffSendToAgent",
+        "title": "%command.paraBranchDiffSendToAgent%",
+        "category": "Git"
+      },
+      {
         "command": "git.paraBranchDiffSetViewModeTree",
         "title": "%command.paraBranchDiffSetViewModeTree%",
         "icon": "$(list-tree)",
@@ -1861,6 +1881,22 @@
           "when": "false"
         },
         {
+          "command": "git.paraBranchDiffOpenToSide",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffOpenInTerminal",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffDownload",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffSendToAgent",
+          "when": "false"
+        },
+        {
           "command": "git.paraBranchDiffSetViewModeTree",
           "when": "false"
         },
@@ -2112,34 +2148,54 @@
           "group": "navigation@2"
         },
         {
+          "command": "git.paraBranchDiffOpenToSide",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "group": "navigation@3"
+        },
+        {
           "command": "git.paraBranchDiffRevealFileInOS.linux",
-          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile && remoteName == '' && isLinux",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiff(File|Folder)$/ && remoteName == '' && isLinux",
           "group": "2_view@1"
         },
         {
           "command": "git.paraBranchDiffRevealFileInOS.mac",
-          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile && remoteName == '' && isMac",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiff(File|Folder)$/ && remoteName == '' && isMac",
           "group": "2_view@1"
         },
         {
           "command": "git.paraBranchDiffRevealFileInOS.windows",
-          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile && remoteName == '' && isWindows",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiff(File|Folder)$/ && remoteName == '' && isWindows",
           "group": "2_view@1"
         },
         {
           "command": "git.paraBranchDiffRevealInExplorer",
-          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiff(File|Folder)$/",
           "group": "2_view@2"
         },
         {
+          "command": "git.paraBranchDiffOpenInTerminal",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiff(File|Folder)$/",
+          "group": "2_view@3"
+        },
+        {
           "command": "git.paraBranchDiffCopyPath",
-          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiffFile/",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiff(File|Folder)/",
           "group": "3_copy@1"
         },
         {
           "command": "git.paraBranchDiffCopyRelativePath",
-          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiffFile/",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiff(File|Folder)/",
           "group": "3_copy@2"
+        },
+        {
+          "command": "git.paraBranchDiffDownload",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiff(File|Folder)$/ && remoteName != ''",
+          "group": "4_download@1"
+        },
+        {
+          "command": "git.paraBranchDiffSendToAgent",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "group": "5_agent@1"
         },
         {
           "command": "git.paraBranchDiffViewAll",

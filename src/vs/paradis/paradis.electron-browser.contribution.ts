@@ -160,3 +160,5 @@ import './contrib/portReforward/electron-browser/paradisPortReforward.contributi
 import './contrib/portTools/electron-browser/paradisPortTools.contribution.js';
 // ポートパネルの「…」: 番号を揃えて張り直す・動いていない転送を外す・CSV の書き出しと取り込み
 import './contrib/portTools/electron-browser/paradisPortPanelActions.contribution.js';
+// Q599: ファイル・フォルダの右クリックの共通の項目（ダウンロード・パスのコピー・ターミナルで開く・エージェントへ送る など）を足りない場所に足す
+import './contrib/fileMenus/electron-browser/paradisFileMenus.contribution.js';
