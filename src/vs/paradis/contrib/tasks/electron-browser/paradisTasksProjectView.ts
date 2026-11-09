@@ -161,7 +161,7 @@ export function paradisTasksRenderProjectTable(container: HTMLElement, result: I
 	dom.append(head, $('th.actions'));
 	const body = dom.append(table, $('tbody'));
 	for (const item of result.items) {
-		const row = dom.append(body, $('tr.paradis-tasks-item'));
+		const row = dom.append(body, $('tr.paradis-tasks-item.paradis-focus-subtle'));
 		appendTitle(dom.append(row, $('td.title')), item);
 		for (const field of fields) {
 			appendFieldValue(dom.append(row, $('td.field')), item, field);
@@ -193,7 +193,7 @@ export function paradisTasksRenderProjectBoard(container: HTMLElement, result: I
 		dom.append(header, $('span.paradis-tasks-board-count')).textContent = String(column.items.length);
 		const cards = dom.append(columnElement, $('.paradis-tasks-board-cards'));
 		for (const item of column.items) {
-			const card = dom.append(cards, $('.paradis-tasks-card'));
+			const card = dom.append(cards, $('.paradis-tasks-card.paradis-focus-subtle'));
 			const top = dom.append(card, $('.paradis-tasks-card-top'));
 			dom.append(top, $('span.paradis-tasks-card-ref')).textContent = itemReference(item);
 			menuButton(store, top, item, host);
@@ -256,7 +256,7 @@ export function paradisTasksRenderProjectRoadmap(container: HTMLElement, result:
 			: localize('paradis.tasks.roadmap.month', "{0}月", Number(tick.date.slice(5, 7)));
 	}
 	for (const row of roadmap.rows) {
-		const line = dom.append(grid, $('.paradis-tasks-roadmap-row.paradis-tasks-item'));
+		const line = dom.append(grid, $('.paradis-tasks-roadmap-row.paradis-tasks-item.paradis-focus-subtle'));
 		const name = dom.append(line, $('.paradis-tasks-roadmap-name'));
 		dom.append(name, $('span.paradis-tasks-roadmap-ref')).textContent = itemReference(row.item);
 		dom.append(name, $('span.paradis-tasks-roadmap-title')).textContent = row.item.title;

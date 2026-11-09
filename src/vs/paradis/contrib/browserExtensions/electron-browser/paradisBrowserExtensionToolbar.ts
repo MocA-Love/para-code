@@ -514,7 +514,7 @@ class ParadisBrowserExtensionButtonViewItem extends BaseActionViewItem {
 		if (!this.element) {
 			return;
 		}
-		this.element.classList.add('paradis-browser-extension-button');
+		this.element.classList.add('paradis-browser-extension-button', 'paradis-focus-ring-inset');
 		const live: ILiveItem = { extensionId: this._extensionId, editor: () => asBrowserEditor(this._context), element: () => this.element };
 		liveItems.add(live);
 		this._register(toDisposable(() => liveItems.delete(live)));
@@ -682,7 +682,7 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 	) {
 		super();
 		this._container = layoutService.getContainer(dom.getWindow(anchor));
-		this._element = $('.paradis-browser-extensions-popover.paradis-overlay-popover');
+		this._element = $('.paradis-browser-extensions-popover.paradis-focus-none.paradis-overlay-popover');
 		this._element.tabIndex = -1;
 		this._element.setAttribute('role', 'dialog');
 		const title = localize('paradis.browserExtensions.popover.title', "拡張機能");

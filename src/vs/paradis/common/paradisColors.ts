@@ -46,6 +46,9 @@ registerColor('paradis.primaryHover', 'button.hoverBackground', localize('paradi
 registerColor('paradis.primaryForeground', 'button.foreground', localize('paradis.color.primaryForeground', "Para Code の部品: 主のボタンの文字。"));
 // フォーカスの枠の色はこの 1 つだけを通す（paradisFocusRing.css）。色を替えるときは既定値のここだけを直す。
 registerColor('paradis.focus', 'focusBorder', localize('paradis.color.focus', "Para Code の部品: キーボードのフォーカスの枠。"));
+// 押しても出る灰色の枠（案 C）: 文字の入力欄・検索欄・リストの行。既定は本家の補助の文字の色で、Houston と Light 2026 の
+// 正確な値（#7d8394・#8a8f99）は paradisDefaultSettings.contribution.ts のテーマごとの上書きで入れる。ハイコントラストは本家の枠のまま。
+registerColor('paradis.focusSubtle', { dark: 'descriptionForeground', light: 'descriptionForeground', hcDark: 'focusBorder', hcLight: 'focusBorder' }, localize('paradis.color.focusSubtle', "Para Code の部品: 文字の入力欄・検索欄・リストの行のフォーカスの枠（マウスで押したときも出る）。"));
 registerColor('paradis.danger', 'errorForeground', localize('paradis.color.danger', "Para Code の部品: 危険・失敗。"));
 registerColor('paradis.warning', 'editorWarning.foreground', localize('paradis.color.warning', "Para Code の部品: 警告・要対応。"));
 registerColor('paradis.success', 'testing.iconPassed', localize('paradis.color.success', "Para Code の部品: 成功。"));

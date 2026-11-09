@@ -53,7 +53,7 @@ export abstract class ParadisProfileModal extends Disposable {
 		this._previouslyFocused = dom.isHTMLElement(active) ? active : undefined;
 
 		this._backdrop = $('.paradis-browser-profile-backdrop.paradis-modal-backdrop');
-		const modal = $('.paradis-browser-profile-modal');
+		const modal = $('.paradis-browser-profile-modal.paradis-focus-none');
 		this._modal = modal;
 		this._backdrop.appendChild(modal);
 
@@ -129,7 +129,7 @@ export abstract class ParadisProfileModal extends Disposable {
 	}
 
 	protected appendButton(label: string, kind: 'primary' | 'secondary' | 'danger', run: () => void): HTMLButtonElement {
-		const button = dom.append(this.footer, $(`button.pbpm-btn.${kind}`)) as HTMLButtonElement;
+		const button = dom.append(this.footer, $(`button.pbpm-btn.paradis-focus-ring.${kind}`)) as HTMLButtonElement;
 		button.type = 'button';
 		button.textContent = label;
 		this._footerFocusables.push(button);
@@ -311,7 +311,7 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 	}
 
 	private _appendRowAction(parent: HTMLElement, icon: ThemeIcon, label: string, run: () => void): void {
-		const button = dom.append(parent, $('button.pbpm-row-action')) as HTMLButtonElement;
+		const button = dom.append(parent, $('button.pbpm-row-action.paradis-focus-ring-inset')) as HTMLButtonElement;
 		button.type = 'button';
 		button.title = label;
 		button.setAttribute('aria-label', label);
@@ -390,12 +390,12 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 			this.contentFocusables.splice(confirmFocusableStart, 2);
 			this.focusModal();
 		};
-		const cancelButton = dom.append(actions, $('button.pbpm-btn.secondary')) as HTMLButtonElement;
+		const cancelButton = dom.append(actions, $('button.pbpm-btn.paradis-focus-ring.secondary')) as HTMLButtonElement;
 		cancelButton.type = 'button';
 		cancelButton.textContent = localize('paradis.browserProfiles.manage.confirmCancel', "キャンセル");
 		this.contentFocusables.push(cancelButton);
 		this._renderStore.add(dom.addDisposableListener(cancelButton, dom.EventType.CLICK, dismiss));
-		const confirmButton = dom.append(actions, $('button.pbpm-btn.danger')) as HTMLButtonElement;
+		const confirmButton = dom.append(actions, $('button.pbpm-btn.paradis-focus-ring.danger')) as HTMLButtonElement;
 		confirmButton.type = 'button';
 		confirmButton.textContent = confirmLabel;
 		this.contentFocusables.push(confirmButton);
@@ -440,7 +440,7 @@ class ParadisCreateProfileDialog extends ParadisProfileModal {
 		dom.append(this.body, $('label.pbpm-label.pbpm-label-spaced')).textContent = localize('paradis.browserProfiles.create.color', "識別カラー");
 		const swatchRow = dom.append(this.body, $('.pbpm-swatches'));
 		for (const color of PARADIS_BROWSER_PROFILE_COLORS) {
-			const swatch = dom.append(swatchRow, $('button.pbpm-swatch')) as HTMLButtonElement;
+			const swatch = dom.append(swatchRow, $('button.pbpm-swatch.paradis-focus-ring')) as HTMLButtonElement;
 			swatch.type = 'button';
 			swatch.style.backgroundColor = color;
 			swatch.setAttribute('aria-label', color);

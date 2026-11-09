@@ -86,7 +86,7 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 	) {
 		super();
 
-		this.element = append(container, $('.paradis-browser-live-pop'));
+		this.element = append(container, $('.paradis-browser-live-pop.paradis-focus-none'));
 		this.element.tabIndex = -1;
 		this.element.setAttribute('role', 'dialog');
 		this.element.setAttribute('aria-label', localize('paradis.browserLive.settings', "表示と並び"));
@@ -98,7 +98,7 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 		sortList.setAttribute('role', 'radiogroup');
 		sortList.setAttribute('aria-label', localize('paradis.browserLive.sortLabel', "並び替え"));
 		for (const sort of Object.keys(SORT_LABELS) as ParadisBrowserLiveSort[]) {
-			const button = append(sortList, $('button.paradis-browser-live-pop-item'));
+			const button = append(sortList, $('button.paradis-browser-live-pop-item.paradis-focus-ring-inset'));
 			button.setAttribute('role', 'radio');
 			append(button, $('span.paradis-browser-live-pop-check.codicon.codicon-check'));
 			append(button, $('span')).textContent = SORT_LABELS[sort];
@@ -121,7 +121,7 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 		this.separator();
 		const hiddenRow = append(this.element, $('.paradis-browser-live-pop-row'));
 		this.hiddenText = append(hiddenRow, $('span.paradis-browser-live-pop-key'));
-		this.restoreHiddenButton = append(hiddenRow, $('button.paradis-browser-live-chip'));
+		this.restoreHiddenButton = append(hiddenRow, $('button.paradis-browser-live-chip.paradis-focus-ring-inset'));
 		this.restoreHiddenButton.textContent = localize('paradis.browserLive.restoreHidden', "すべて戻す");
 		this._register(addDisposableListener(this.restoreHiddenButton, EventType.CLICK, () => {
 			this.viewState.hidden = [];
@@ -236,7 +236,7 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 		this.spaceButtons.clear();
 		clearNode(this.spaceList);
 		for (const [key, label] of options) {
-			const button = append(this.spaceList, $('button.paradis-browser-live-pop-item'));
+			const button = append(this.spaceList, $('button.paradis-browser-live-pop-item.paradis-focus-ring-inset'));
 			button.setAttribute('role', 'checkbox');
 			append(button, $('span.paradis-browser-live-pop-check.codicon.codicon-check'));
 			append(button, $('span')).textContent = label;
@@ -256,7 +256,7 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 			}));
 			this.spaceButtons.set(key, button);
 		}
-		const all = append(this.spaceList, $('button.paradis-browser-live-pop-item'));
+		const all = append(this.spaceList, $('button.paradis-browser-live-pop-item.paradis-focus-ring-inset'));
 		all.setAttribute('role', 'checkbox');
 		append(all, $('span.paradis-browser-live-pop-check.codicon.codicon-check'));
 		append(all, $('span')).textContent = localize('paradis.browserLive.selectAllSpaces', "すべてのスペース");
@@ -303,7 +303,7 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 
 	/** セグメントの1つ。ラベルがそのまま見えているので、同じ文字列のホバーは張らない。 */
 	private segButton(parent: HTMLElement, label: string, run: () => void): HTMLElement {
-		const button = append(parent, $('button'));
+		const button = append(parent, $('button.paradis-focus-ring-inset'));
 		button.setAttribute('role', 'radio');
 		button.textContent = label;
 		this._register(addDisposableListener(button, EventType.CLICK, run));

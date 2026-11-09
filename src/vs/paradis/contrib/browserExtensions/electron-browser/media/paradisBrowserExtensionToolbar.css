@@ -35,11 +35,6 @@
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
-.monaco-workbench .paradis-browser-extension-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .monaco-workbench .paradis-browser-extension-button .paradis-browser-extension-icon {
 	width: 16px;
 	height: 16px;
@@ -165,11 +160,6 @@
 .monaco-workbench .paradis-browser-extensions-popover button.pbx-icon-button.codicon,
 .monaco-workbench .paradis-browser-extensions-popover button.pbx-icon-button.codicon::before {
 	font: normal normal normal 16px/1 codicon;
-}
-
-.monaco-workbench .paradis-browser-extensions-popover button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .monaco-workbench .paradis-browser-extensions-popover button[disabled] {

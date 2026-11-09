@@ -43,7 +43,7 @@ export class ParadisSwitch extends Disposable {
 
 	constructor(parent: HTMLElement, options: IParadisSwitchOptions) {
 		super();
-		this.element = append(parent, $<HTMLButtonElement>('button.paradis-switch'));
+		this.element = append(parent, $<HTMLButtonElement>('button.paradis-switch.paradis-focus-ring'));
 		this.element.type = 'button';
 		this.element.setAttribute('role', 'switch');
 		if (options.ariaLabel) {

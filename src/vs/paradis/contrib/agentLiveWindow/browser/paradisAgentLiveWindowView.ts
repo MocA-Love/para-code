@@ -232,7 +232,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		// --- ツールバー (1段) -------------------------------------------------------------
 		const toolbar = append(root, $('.paradis-agent-live-toolbar'));
 		for (const status of PARADIS_AGENT_LIVE_STATUS_ORDER) {
-			const chip = append(toolbar, $(`button.paradis-agent-live-chip.status-${status}`));
+			const chip = append(toolbar, $(`button.paradis-agent-live-chip.paradis-focus-ring-inset.status-${status}`));
 			append(chip, $(`span.paradis-agent-live-dot.${status}`));
 			append(chip, $('span.label')).textContent = STATUS_LABELS[status];
 			this.statusChipCounts.set(status, append(chip, $('span.count')));
@@ -240,7 +240,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			this.statusChips.set(status, chip);
 		}
 		append(toolbar, $('span.paradis-agent-live-sep'));
-		this.attentionChip = append(toolbar, $('button.paradis-agent-live-chip'));
+		this.attentionChip = append(toolbar, $('button.paradis-agent-live-chip.paradis-focus-ring-inset'));
 		this.attentionChip.textContent = localize('paradis.agentLive.attentionOnly', "要対応のみ");
 		this.registerHover(this.attentionChip, localize('paradis.agentLive.attentionOnlyHint', "許可待ち・質問中だけに絞り込む"));
 		this._register(addDisposableListener(this.attentionChip, EventType.CLICK, () => this.toggleAttentionOnly()));
@@ -252,7 +252,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		layoutSeg.setAttribute('role', 'group');
 		layoutSeg.setAttribute('aria-label', localize('paradis.agentLive.layout', "表示の切り替え"));
 		for (const layout of PARADIS_AGENT_LIVE_LAYOUTS) {
-			const button = append(layoutSeg, $('button'));
+			const button = append(layoutSeg, $('button.paradis-focus-ring-inset'));
 			button.textContent = LAYOUT_LABELS[layout];
 			this.registerHover(button, LAYOUT_HINTS[layout]);
 			this._register(addDisposableListener(button, EventType.CLICK, () => this.setLayout(layout)));
@@ -472,7 +472,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		}
 
 		const disposables = new DisposableStore();
-		const root = $('.paradis-agent-live-tile');
+		const root = $('.paradis-agent-live-tile.paradis-focus-ring-inset');
 		root.tabIndex = 0;
 
 		// 見出しは1行だけ。名前・経過時間・状態を横に並べ、タイルの面積を端末へ回す。
@@ -490,7 +490,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		const title = append(head, $('.paradis-agent-live-tile-title.paradis-agent-live-grow'));
 		// 見出しは幅次第で切り詰められる。全文を読む手段を残す。
 		const titleHover = disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), title, ''));
-		const browserButton = append(head, $('button.paradis-agent-live-browser-button.codicon.codicon-plug'));
+		const browserButton = append(head, $('button.paradis-agent-live-browser-button.paradis-focus-ring-inset.codicon.codicon-plug'));
 		const browserHover = disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), browserButton, ''));
 		disposables.add(addDisposableListener(browserButton, EventType.CLICK, event => {
 			event.stopPropagation();
@@ -802,14 +802,14 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	// ------------------------------------------------------------------ 部品
 
 	private createIconButton(parent: HTMLElement, codicon: string, label: string): HTMLElement {
-		const button = append(parent, $(`button.paradis-agent-live-icon-button.codicon.codicon-${codicon}`));
+		const button = append(parent, $(`button.paradis-agent-live-icon-button.paradis-focus-ring-inset.codicon.codicon-${codicon}`));
 		button.setAttribute('aria-label', label);
 		this.registerHover(button, label);
 		return button;
 	}
 
 	private createMiniButton(parent: HTMLElement, codicon: string, label: string, disposables: DisposableStore): HTMLElement {
-		const button = append(parent, $(`button.paradis-agent-live-mini-button.codicon.codicon-${codicon}`));
+		const button = append(parent, $(`button.paradis-agent-live-mini-button.paradis-focus-ring-inset.codicon.codicon-${codicon}`));
 		button.setAttribute('aria-label', label);
 		disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), button, label));
 		return button;

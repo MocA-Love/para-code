@@ -104,7 +104,7 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 	) {
 		super(editor);
 
-		this._element = $('button.paradis-browser-viewport-chip');
+		this._element = $('button.paradis-browser-viewport-chip.paradis-focus-ring-inset');
 		this._element.setAttribute('aria-haspopup', 'listbox');
 		this._element.setAttribute('aria-expanded', 'false');
 		this._nameElement = dom.append(this._element, $('span.pbv-chip-name'));

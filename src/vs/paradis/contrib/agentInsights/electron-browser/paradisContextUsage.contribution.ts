@@ -120,7 +120,7 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 		}
 		const store = new DisposableStore();
 		this.details.value = store;
-		const root = $('.paradis-context-usage-details');
+		const root = $('.paradis-context-usage-details.paradis-focus-none');
 		const rendered = store.add(new MutableDisposable<DisposableStore>());
 		// 開いていた一覧は、描き直しても開いたままにする（toggle は泳がないので捕まえる側で受ける）
 		const openGroups = new Set<string>();

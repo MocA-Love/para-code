@@ -428,14 +428,6 @@
 	margin-left: var(--vscode-spacing-size200);
 }
 
-/*
- * 開閉した行は作り直した後もフォーカスを保つ（キーボードで続けて開閉できるように）。枠はワークベンチの
- * `button:focus` が出すので、マウスで押したとき（:focus-visible でないとき）だけ消す。
- */
-.monaco-workbench .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:focus:not(:focus-visible) {
-	outline: none;
-}
-
 .monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:hover:not(:focus-visible),
 .monaco-workbench.hc-light .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:hover:not(:focus-visible) {
 	outline: var(--vscode-strokeThickness) dashed var(--vscode-contrastActiveBorder);
@@ -758,11 +750,6 @@
 	font: inherit;
 }
 
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-other-input:focus {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 /* ---- 生成中の吹き出し ---- */
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live {
@@ -865,10 +852,6 @@
 	border-radius: var(--vscode-cornerRadius-large);
 }
 
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-box:focus-within {
-	border-color: var(--vscode-focusBorder);
-}
-
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-input {
 	width: 100%;
 	min-height: 20px;
@@ -922,11 +905,6 @@
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-mic:hover {
 	background-color: var(--vscode-toolbar-hoverBackground);
-}
-
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-mic:focus-visible {
-	border-color: var(--vscode-focusBorder);
-	outline: none;
 }
 
 /* 聞き取り中は止めるボタンになる。 */
@@ -1010,10 +988,6 @@
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-sign {
 	-webkit-user-select: none;
 	user-select: none;
-}
-
-.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-agent-chat:focus {
-	outline: none;
 }
 
 .monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-item.selected,

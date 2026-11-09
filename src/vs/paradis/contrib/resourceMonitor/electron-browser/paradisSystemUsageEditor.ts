@@ -70,7 +70,7 @@ export class ParadisSystemUsageEditor extends EditorPane {
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
-		this.root = dom.append(parent, $('.paradis-sysusage-editor'));
+		this.root = dom.append(parent, $('.paradis-sysusage-editor.paradis-focus-none'));
 		const header = dom.append(this.root, $('.paradis-sysusage-editor-header'));
 		const titles = dom.append(header, $('.paradis-sysusage-editor-titles'));
 		dom.append(titles, $('h2.paradis-sysusage-editor-title')).textContent = localize('paradis.systemUsage.title', "システムの使用率");

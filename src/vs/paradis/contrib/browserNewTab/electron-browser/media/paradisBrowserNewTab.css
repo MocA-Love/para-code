@@ -258,12 +258,6 @@
 	background-color: var(--vscode-button-secondaryHoverBackground);
 }
 
-.browser-root .paradis-browser-new-tab .pbnt-button:focus-visible,
-.browser-root .paradis-browser-new-tab .pbnt-tile:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 /* Frequently visited pages and bookmarks. */
 .browser-root .paradis-browser-new-tab .pbnt-tiles {
 	display: grid;

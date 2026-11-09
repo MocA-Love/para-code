@@ -174,7 +174,7 @@ class ParadisQueueRow extends Disposable {
 		this.actionStore.clear();
 		dom.clearNode(this.actions);
 		const action = (icon: ThemeIcon, label: string, run: () => void) => {
-			const button = dom.append(this.actions, $<HTMLButtonElement>('button.para-ft-qbutton'));
+			const button = dom.append(this.actions, $<HTMLButtonElement>('button.para-ft-qbutton.paradis-focus-ring-inset'));
 			button.type = 'button';
 			button.title = label;
 			button.setAttribute('aria-label', `${label}: ${this.item.name}`);
@@ -275,7 +275,7 @@ export class ParadisFileTransferQueueView extends Disposable {
 	}
 
 	private toolButton(parent: HTMLElement, icon: ThemeIcon, label: string, run: () => void): HTMLButtonElement {
-		const button = dom.append(parent, $<HTMLButtonElement>('button.para-ft-qbutton'));
+		const button = dom.append(parent, $<HTMLButtonElement>('button.para-ft-qbutton.paradis-focus-ring-inset'));
 		button.type = 'button';
 		if (label) {
 			button.title = label;

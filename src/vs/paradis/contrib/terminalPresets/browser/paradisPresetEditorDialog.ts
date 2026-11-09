@@ -661,7 +661,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		// --- ボディ: 左ナビ + 右コンテンツ ---
 		const body = dom.append(this._dialog, $('.ppe-body'));
 		this._navEl = dom.append(body, $('.ppe-nav'));
-		const search = dom.append(this._navEl, $('.ppe-search'));
+		const search = dom.append(this._navEl, $('.ppe-search.paradis-focus-subtle-within'));
 		dom.append(search, $(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		this._searchInput = dom.append(search, $('input.ppe-search-input')) as HTMLInputElement;
 		this._searchInput.type = 'text';
@@ -1419,7 +1419,7 @@ class ParadisPresetEditorDialog extends Disposable {
 	 * 判定は一覧全体で行う。{@link _wireListDragAndDrop}）。
 	 */
 	private _appendGrip(row: HTMLElement, item: ParadisPresetMoveItem, label: string, enabled: boolean): void {
-		const grip = dom.append(row, $('span.ppe-grip'));
+		const grip = dom.append(row, $('span.ppe-grip.paradis-focus-ring-inset'));
 		grip.tabIndex = 0;
 		// allow-any-unicode-next-line
 		grip.textContent = '⋮⋮';

@@ -141,7 +141,7 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 		this.element.classList.add('paradis-browser-share-item');
 
 		// 本体（ダイアログを開く）。ツールバーの中のタブで止まる所はここ 1 つ
-		const main = this._main = dom.append(this.element, $('span.paradis-browser-share-main'));
+		const main = this._main = dom.append(this.element, $('span.paradis-browser-share-main.paradis-focus-ring-inset'));
 		main.tabIndex = 0;
 		main.role = 'button';
 		main.setAttribute('aria-haspopup', 'dialog');
@@ -150,7 +150,7 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 		this._badge.setAttribute('aria-hidden', 'true');
 
 		// ▾（一覧を開く）。共有があるときだけ出す。本体から右の矢印で移る
-		const listButton = this._listButton = dom.append(this.element, $(`span.paradis-browser-share-list-button${ThemeIcon.asCSSSelector(Codicon.chevronDown)}`));
+		const listButton = this._listButton = dom.append(this.element, $(`span.paradis-browser-share-list-button.paradis-focus-ring-inset${ThemeIcon.asCSSSelector(Codicon.chevronDown)}`));
 		listButton.tabIndex = -1;
 		listButton.role = 'button';
 		listButton.setAttribute('aria-haspopup', 'dialog');
@@ -365,7 +365,7 @@ class ParadisBrowserSharePopover extends Disposable {
 	) {
 		super();
 		this._container = layoutService.getContainer(dom.getWindow(_anchor));
-		this._element = $('.paradis-browser-share-popover.paradis-overlay-popover');
+		this._element = $('.paradis-browser-share-popover.paradis-focus-none.paradis-overlay-popover');
 		this._element.tabIndex = -1;
 		this._element.setAttribute('role', 'dialog');
 		const title = localize('paradis.shareButton.popoverTitle', "このページを使えるペイン");

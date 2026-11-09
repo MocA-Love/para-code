@@ -15,6 +15,10 @@
 // その間だけ枠を消す。fork の画面の中にある本家の部品（検索の小窓・一覧など）にも効く。CSS の接頭辞の属性セレクタ（[class*=" paradis-"]）は、どこかのクラスが変わるたびに
 // 画面全体のスタイルを計算し直させるので hygiene が禁じている。判定は JS の classList で行い、CSS は
 // 固定の印のクラスだけを見る。
+//
+// フォーカスの枠の案 C（2026-11-09）: 文字の入力欄・検索欄・リストの行は、押しても出る灰色の枠（paradis.focusSubtle）にする。
+// 部品は CSS の印のクラス（paradis-focus-subtle 等）で選ぶが、印の無い文字の入力欄（fork の画面の中の本家の InputBox など）も、
+// フォーカスの間だけ paradis-text-focus を付けて灰色にする。
 
 import { addDisposableListener, EventType, isHTMLElement, isHTMLInputElement, isHTMLTextAreaElement } from '../../../../base/browser/dom.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -22,11 +26,19 @@ import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.
 /** マウスなど、キーボード以外で入ったフォーカスの間だけ付く印。 */
 export const PARADIS_POINTER_FOCUS_CLASS = 'paradis-pointer-focus';
 
+/** fork の画面の中の文字の入力欄に、フォーカスの間だけ付く印（灰色の枠）。 */
+export const PARADIS_TEXT_FOCUS_CLASS = 'paradis-text-focus';
+
+/** 押しても出る灰色の枠の印。マウスで入っても消さない。 */
+const PARADIS_FOCUS_SUBTLE_CLASS = 'paradis-focus-subtle';
+
+const MARKER_CLASSES = new Set([PARADIS_POINTER_FOCUS_CLASS, PARADIS_TEXT_FOCUS_CLASS]);
+
 const FORK_CLASS_PREFIXES = ['paradis-', 'para-'];
 
 function isForkElement(element: Element): boolean {
 	for (const name of element.classList) {
-		if (name !== PARADIS_POINTER_FOCUS_CLASS && FORK_CLASS_PREFIXES.some(prefix => name.startsWith(prefix))) {
+		if (!MARKER_CLASSES.has(name) && FORK_CLASS_PREFIXES.some(prefix => name.startsWith(prefix))) {
 			return true;
 		}
 	}
@@ -76,7 +88,7 @@ function isHighContrast(element: Element): boolean {
 
 /** フォーカスが入った要素に印を付けるか。 */
 function shouldQuietFocus(element: Element): boolean {
-	if (isHighContrast(element) || isTextEntry(element) || !isInsideForkUi(element)) {
+	if (isHighContrast(element) || isTextEntry(element) || element.classList.contains(PARADIS_FOCUS_SUBTLE_CLASS) || !isInsideForkUi(element)) {
 		return false;
 	}
 	return isForkDialogRoot(element) || !element.matches(':focus-visible');
@@ -92,11 +104,12 @@ export function installParadisFocusQuieting(targetWindow: Window): IDisposable {
 		}
 		// 付けるだけでなく外しもする（前のフォーカスの印が残っていると、キーボードで戻ったときに枠が出ない）。
 		target.classList.toggle(PARADIS_POINTER_FOCUS_CLASS, shouldQuietFocus(target));
+		target.classList.toggle(PARADIS_TEXT_FOCUS_CLASS, isTextEntry(target) && isInsideForkUi(target));
 	}, true));
 	store.add(addDisposableListener(targetWindow.document, EventType.FOCUS_OUT, event => {
 		const target = event.target;
 		if (isHTMLElement(target)) {
-			target.classList.remove(PARADIS_POINTER_FOCUS_CLASS);
+			target.classList.remove(PARADIS_POINTER_FOCUS_CLASS, PARADIS_TEXT_FOCUS_CLASS);
 		}
 	}, true));
 	return store;

@@ -102,7 +102,7 @@ export class ParadisAgentChatDictation extends Disposable implements IParadisAge
 	) {
 		super();
 		this.region = new ParadisAgentChatTranscriptRegion(target.textarea);
-		this.button = append(target.container, $('button.paradis-agent-chat-mic')) as HTMLButtonElement;
+		this.button = append(target.container, $('button.paradis-agent-chat-mic.paradis-focus-ring-inset')) as HTMLButtonElement;
 		this.button.type = 'button';
 		this._register(hoverService.setupDelayedHover(this.button, () => ({ content: this.label() })));
 		this._register(addDisposableListener(this.button, EventType.CLICK, () => this.toggle()));

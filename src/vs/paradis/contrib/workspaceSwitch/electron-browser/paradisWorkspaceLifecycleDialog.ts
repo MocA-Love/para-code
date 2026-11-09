@@ -189,7 +189,7 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		const body = dom.append(this._dialog, $('.plc-body'));
 		const description = dom.append(body, $('.plc-description'));
 		dom.append(description, $('span')).textContent = STR_DESCRIPTION;
-		const details = dom.append(description, $('span.plc-details'));
+		const details = dom.append(description, $('span.plc-details.paradis-focus-ring'));
 		details.textContent = STR_DETAILS;
 		details.tabIndex = 0;
 		details.setAttribute('role', 'button');
@@ -421,7 +421,7 @@ class ParadisIncludePathList extends Disposable {
 		for (const path of this._paths) {
 			const chip = dom.append(this._items, $('span.plc-include-chip'));
 			dom.append(chip, $('span.plc-include-chip-label')).textContent = path;
-			const remove = dom.append(chip, $('button.plc-include-chip-remove')) as HTMLButtonElement;
+			const remove = dom.append(chip, $('button.plc-include-chip-remove.paradis-focus-ring-inset')) as HTMLButtonElement;
 			remove.type = 'button';
 			remove.classList.add(...ThemeIcon.asClassNameArray(Codicon.close));
 			// allow-any-unicode-next-line

@@ -52,12 +52,6 @@
 	cursor: default;
 }
 
-/* Keyboard focus only; after a mouse click the frame is removed by contrib/focusRing. */
-.monaco-workbench .paradis-switch:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 2px;
-}
-
 /*
 	High contrast themes leave the button backgrounds empty, so on and off would differ only by the knob
 	position. Off: contrastBorder frame and a foreground knob. On: contrastActiveBorder frame and knob.

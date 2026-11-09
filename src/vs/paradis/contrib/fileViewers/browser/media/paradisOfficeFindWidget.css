@@ -46,15 +46,6 @@
 	border-radius: var(--vscode-cornerRadius-small);
 }
 
-.paradis-office-find-widget .paradis-office-find-input:focus-within {
-	border-color: var(--vscode-focusBorder);
-}
-
-/* The box shows the focus. The workbench input[type="search"]:focus outline (0,3,1) would draw a second frame inside it. */
-.monaco-workbench .paradis-office-find-widget .paradis-office-find-input > input:focus {
-	outline: none;
-}
-
 .paradis-office-find-widget .paradis-office-find-input > input {
 	flex: 1 1 auto;
 	min-width: 0;

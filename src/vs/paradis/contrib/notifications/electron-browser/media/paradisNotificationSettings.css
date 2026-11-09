@@ -30,11 +30,6 @@
 	padding: 4px 8px;
 }
 
-.paradis-hub .pns-search:focus-within {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 /* 検索欄の input は設定行向けの幅広ルールを打ち消してインライン表示にする。 */
 .paradis-hub .pns-search input {
 	flex: 1;
@@ -263,22 +258,6 @@
 .paradis-notif-nested-dialog textarea {
 	resize: vertical;
 	min-height: 44px;
-}
-
-.paradis-notif-area input:focus,
-.paradis-notif-area select:focus,
-.paradis-notif-area textarea:focus,
-.paradis-notif-nested-dialog input:focus,
-.paradis-notif-nested-dialog select:focus,
-.paradis-notif-nested-dialog textarea:focus {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
-/* 検索欄の input は枠側の :focus-within 輪郭に任せるため、上の汎用 input:focus（同特異度で
- * 後から定義されており outline: none に勝てなかった）より特異度を上げて打ち消す。 */
-.paradis-hub .pns-search input:focus {
-	outline: none;
 }
 
 .paradis-notif-area input[type="range"],

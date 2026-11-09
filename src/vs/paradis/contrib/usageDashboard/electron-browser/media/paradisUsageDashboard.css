@@ -123,10 +123,6 @@
 	outline: none;
 }
 
-.paradis-usage-area .pud-input:focus {
-	border-color: var(--vscode-focusBorder);
-}
-
 .paradis-usage-area .pud-settings-footer {
 	margin-top: 16px;
 }
@@ -159,6 +155,3 @@
 	outline: none;
 }
 
-.paradis-usage-area .pud-select:focus {
-	border-color: var(--vscode-focusBorder);
-}
