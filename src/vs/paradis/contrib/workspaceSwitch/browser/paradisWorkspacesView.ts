@@ -52,6 +52,8 @@ import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_GET_DIFF_STATS_COMMAND_ID, PARADIS_WORKSPACE_COLORS, paradisSortAgentStatuses, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
+import { IParadisWorkspaceSection, IParadisWorkspaceSectionsService, PARADIS_UNCATEGORIZED_SECTION_KEY } from '../common/paradisWorkspaceSections.js';
+import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisWorkspacesNav } from './paradisWorkspacesNav.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
@@ -104,7 +106,47 @@ interface ICreatingSpaceElement {
  */
 type IPinnedKeepElement = IParadisWorktree & { readonly paradisPinnedKeep: true };
 
-type WorkspaceTreeElement = IParadisWorkspaceRepository | IParadisWorktree | ICreatingSpaceElement;
+/**
+ * セクションの見出し（Q601 案 A）。リポジトリと同じ最上位の兄弟行として並べ、字下げを増やさない。
+ * ツリーの上では子を持たない開閉できる行にして（collapsible: true）、←→・Space・aria-expanded は
+ * ツリーの既製の動きに任せる。開閉したら中のリポジトリの行を updateTree が出し入れする。
+ */
+interface ISectionHeaderElement {
+	readonly paradisSectionHeader: true;
+	/** undefined = 未分類（名前の変更・削除はできず、開閉だけできる） */
+	readonly section: IParadisWorkspaceSection | undefined;
+	/** 開閉の台帳の鍵。セクションの id か PARADIS_UNCATEGORIZED_SECTION_KEY、作りかけは SECTION_DRAFT_KEY */
+	readonly key: string;
+	readonly repositories: readonly IParadisWorkspaceRepository[];
+	/** 一覧の先頭の行（上の区切り線を引かない） */
+	readonly first: boolean;
+}
+
+/** 空のセクションの下に出す「ここへプロジェクトをドラッグ」の行（ドロップ先）。 */
+interface ISectionEmptyElement {
+	readonly paradisSectionEmpty: string;
+}
+
+/** 「新しいセクション」でその場の入力欄を出している間だけ並ぶ、まだ台帳に無い見出しの鍵。 */
+const SECTION_DRAFT_KEY = 'paradis-section-draft';
+
+/** 見出しの高さ（paradisTokens.css の --paradis-height-lg）と、空のセクションの案内の行（--paradis-height-md）。 */
+const PARADIS_SECTION_HEADER_HEIGHT = 32;
+const PARADIS_SECTION_EMPTY_HEIGHT = 28;
+
+type WorkspaceTreeElement = IParadisWorkspaceRepository | IParadisWorktree | ICreatingSpaceElement | ISectionHeaderElement | ISectionEmptyElement;
+
+function isSectionHeader(element: WorkspaceTreeElement): element is ISectionHeaderElement {
+	return (element as ISectionHeaderElement).paradisSectionHeader === true;
+}
+
+function isSectionEmpty(element: WorkspaceTreeElement): element is ISectionEmptyElement {
+	return typeof (element as ISectionEmptyElement).paradisSectionEmpty === 'string';
+}
+
+function isRepository(element: WorkspaceTreeElement): element is IParadisWorkspaceRepository {
+	return !isCreating(element) && !isWorktree(element) && !isSectionHeader(element) && !isSectionEmpty(element);
+}
 
 function isPinnedKeep(element: WorkspaceTreeElement): element is IPinnedKeepElement {
 	return (element as IPinnedKeepElement).paradisPinnedKeep === true;
@@ -116,6 +158,13 @@ function isCreating(element: WorkspaceTreeElement): element is ICreatingSpaceEle
 
 function isWorktree(element: WorkspaceTreeElement): element is IParadisWorktree {
 	return !isCreating(element) && (element as IParadisWorktree).repositoryId !== undefined;
+}
+
+// allow-any-unicode-next-line
+const STR_UNCATEGORIZED = localize('paradis.workspaceSections.uncategorized', "未分類");
+
+function sectionHeaderLabel(element: ISectionHeaderElement): string {
+	return element.section?.name ?? (element.key === SECTION_DRAFT_KEY ? '' : STR_UNCATEGORIZED);
 }
 
 // allow-any-unicode-next-line
@@ -475,6 +524,12 @@ class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement
 	constructor(private readonly getWorktreeHeight: (worktree: IParadisWorktree) => number) { }
 
 	getHeight(element: WorkspaceTreeElement): number {
+		if (isSectionHeader(element)) {
+			return PARADIS_SECTION_HEADER_HEIGHT;
+		}
+		if (isSectionEmpty(element)) {
+			return PARADIS_SECTION_EMPTY_HEIGHT;
+		}
 		// リポジトリ行は純粋なグルーピング見出し (main checkout も worktree 行として
 		// 子要素に含まれる)。worktree 行・作成中行は名前の下に2段目を重ねる表示のため高くする
 		if (isWorktree(element)) {
@@ -485,6 +540,12 @@ class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement
 	}
 
 	getTemplateId(element: WorkspaceTreeElement): string {
+		if (isSectionHeader(element)) {
+			return SectionHeaderRenderer.TEMPLATE_ID;
+		}
+		if (isSectionEmpty(element)) {
+			return SectionEmptyRenderer.TEMPLATE_ID;
+		}
 		if (isCreating(element)) {
 			return CreatingSpaceRenderer.TEMPLATE_ID;
 		}
@@ -549,6 +610,8 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 		/** 配下スペースのエージェント状態をまとめたもの (折りたたみ中の要約に使う) */
 		private readonly getRepositoryBreakdown: (repository: IParadisWorkspaceRepository) => readonly ParadisAgentStatus[],
 		private readonly hoverService: IHoverService,
+		/** セクションの見出しの直下の行か（見出しの区切り線と二重にならないよう、上の線を引かない） */
+		private readonly isFirstInSection: (repository: IParadisWorkspaceRepository) => boolean,
 	) { }
 
 	renderTemplate(container: HTMLElement): IRepositoryTemplateData {
@@ -570,6 +633,7 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 		const repository = node.element;
 		templateData.name.textContent = repository.name;
 		templateData.count.textContent = String(node.children.length);
+		templateData.row.classList.toggle('paradis-section-first-repository', this.isFirstInSection(repository));
 
 		// 接続先のスペースかどうか。手元のものには何も足さない（大半はこちらなので、
 		// 印を付けるのは「いつもと違う方」だけにする）
@@ -610,6 +674,200 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 		templateData.actionBar.dispose();
 		templateData.templateDisposables.dispose();
 	}
+}
+
+interface ISectionHeaderTemplateData {
+	readonly row: HTMLElement;
+	readonly dot: HTMLElement;
+	readonly name: HTMLElement;
+	readonly renameBox: HTMLElement;
+	readonly input: HTMLInputElement;
+	readonly count: HTMLElement;
+	readonly attention: ParadisCountBadge;
+	readonly attentionHover: IManagedHover;
+	readonly more: HTMLElement;
+	/** リスナーが今の行を引くための入れ物（テンプレートは使い回される） */
+	readonly context: { element?: ISectionHeaderElement; renamingKey?: string };
+	readonly templateDisposables: DisposableStore;
+}
+
+/** 見出しの行が呼び返す口（ビューが実装する）。 */
+interface ISectionHeaderDelegate {
+	/** 中の要対応（許可待ち・質問）の数。閉じているときだけ見出しに出す */
+	attentionCount(element: ISectionHeaderElement): number;
+	isRenaming(element: ISectionHeaderElement): boolean;
+	/** 名前の欄を閉じる。value が undefined なら取り消し。restoreFocus は Enter・Escape のとき（欄から外れたときは false） */
+	endRename(value: string | undefined, restoreFocus: boolean): void;
+	/** 名前の欄に入力のフォーカスが入った・外れた（入っている間は一覧を描き直さない） */
+	setRenameFocused(focused: boolean): void;
+	showMenu(element: ISectionHeaderElement, anchor: HTMLElement): void;
+	/** 見出しのダブルクリックで名前を変える */
+	startRename(element: ISectionHeaderElement): void;
+}
+
+/**
+ * セクションの見出し（Q601 案 A）: 開閉の矢印（ツリーの twistie）・色の点・名前・件数・閉じたときの要対応の数・「…」。
+ * 左端の色の線はプロジェクトの色なので、見出しには引かない（Q601-3）。
+ */
+class SectionHeaderRenderer implements ITreeRenderer<ISectionHeaderElement, FuzzyScore, ISectionHeaderTemplateData> {
+
+	static readonly TEMPLATE_ID = 'paradisSectionHeader';
+	readonly templateId = SectionHeaderRenderer.TEMPLATE_ID;
+
+	constructor(
+		private readonly delegate: ISectionHeaderDelegate,
+		private readonly hoverService: IHoverService,
+	) { }
+
+	renderTemplate(container: HTMLElement): ISectionHeaderTemplateData {
+		const templateDisposables = new DisposableStore();
+		const context: { element?: ISectionHeaderElement; renamingKey?: string } = {};
+		const row = DOM.append(container, DOM.$('.paradis-section-row'));
+		const dot = DOM.append(row, DOM.$('span.paradis-section-dot'));
+		dot.setAttribute('aria-hidden', 'true');
+		const name = DOM.append(row, DOM.$('span.paradis-section-name'));
+		// その場の名前の欄。枠は土台のフォーカスの決まり（paradisFocusRing.css）で描く
+		const renameBox = DOM.append(row, DOM.$('.paradis-section-rename.paradis-focus-ring-within.hidden'));
+		const input = DOM.append(renameBox, DOM.$<HTMLInputElement>('input'));
+		input.type = 'text';
+		input.spellcheck = false;
+		// allow-any-unicode-next-line
+		const inputLabel = localize('paradis.workspaceSections.nameInput', "セクションの名前");
+		input.placeholder = inputLabel;
+		input.setAttribute('aria-label', inputLabel);
+		const finish = (value: string | undefined, restoreFocus: boolean) => {
+			if (context.renamingKey === undefined) {
+				return;
+			}
+			// 先に外す。確定で一覧が描き直されると欄が外れて blur が来るが、そこで二度目を確定させない
+			context.renamingKey = undefined;
+			this.delegate.endRename(value, restoreFocus);
+		};
+		templateDisposables.add(DOM.addDisposableListener(input, DOM.EventType.KEY_DOWN, (event: KeyboardEvent) => {
+			// 矢印・Space・Enter をツリーの操作（移動・開閉・切り替え）に渡さない
+			event.stopPropagation();
+			// 日本語の変換を確定する Enter は名前の確定にしない
+			if (event.isComposing || event.keyCode === 229) {
+				return;
+			}
+			if (event.key === 'Enter') {
+				event.preventDefault();
+				finish(input.value, true);
+			} else if (event.key === 'Escape') {
+				event.preventDefault();
+				finish(undefined, true);
+			}
+		}));
+		templateDisposables.add(DOM.addDisposableListener(input, DOM.EventType.FOCUS, () => this.delegate.setRenameFocused(true)));
+		templateDisposables.add(DOM.addDisposableListener(input, DOM.EventType.BLUR, () => {
+			this.delegate.setRenameFocused(false);
+			finish(input.value, false);
+		}));
+		// 欄の中のクリックを、行の選択・開閉・ドラッグに渡さない
+		for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK, DOM.EventType.DBLCLICK]) {
+			templateDisposables.add(DOM.addDisposableListener(input, eventType, event => event.stopPropagation()));
+		}
+		// ダブルクリックで名前を変える。開閉は 1 打目（open）と 2 打目（ツリーの既製のダブルクリック）で 2 回起きて元に戻る
+		templateDisposables.add(DOM.addDisposableListener(row, DOM.EventType.DBLCLICK, () => {
+			if (context.element?.section && context.renamingKey === undefined) {
+				this.delegate.startRename(context.element);
+			}
+		}));
+		const count = DOM.append(row, DOM.$('span.paradis-section-count'));
+		const attention = new ParadisCountBadge(row, 'inline');
+		attention.element.classList.add('paradis-section-attention');
+		const attentionHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), attention.element, ''));
+		// 「…」。リポジトリの行の「…」と同じく、ホバーとフォーカスのときだけ見える
+		const more = DOM.append(row, DOM.$('.paradis-section-more'));
+		more.setAttribute('role', 'button');
+		more.tabIndex = -1;
+		more.setAttribute('aria-haspopup', 'true');
+		// allow-any-unicode-next-line
+		const moreLabel = localize('paradis.workspaceSections.more', "セクションの操作");
+		more.setAttribute('aria-label', moreLabel);
+		DOM.append(more, DOM.$(ThemeIcon.asCSSSelector(Codicon.ellipsis)));
+		templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), more, moreLabel));
+		for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK]) {
+			templateDisposables.add(DOM.addDisposableListener(more, eventType, event => {
+				if (!context.element) {
+					return;
+				}
+				DOM.EventHelper.stop(event, true);
+				if (eventType === DOM.EventType.CLICK) {
+					this.delegate.showMenu(context.element, more);
+				}
+			}));
+		}
+		return { row, dot, name, renameBox, input, count, attention, attentionHover, more, context, templateDisposables };
+	}
+
+	renderElement(node: ITreeNode<ISectionHeaderElement, FuzzyScore>, _index: number, templateData: ISectionHeaderTemplateData): void {
+		const element = node.element;
+		templateData.context.element = element;
+		// 左端の線はプロジェクトの色。見出しの行には引かない（行の器は使い回されるので毎回消す）
+		templateData.row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--paradis-workspace-color', 'transparent');
+		templateData.row.classList.toggle('paradis-section-first', element.first);
+		templateData.row.classList.toggle('paradis-section-uncategorized', element.section === undefined);
+
+		const colorHex = paradisWorkspaceColorHex(element.section?.color);
+		templateData.dot.classList.toggle('hidden', colorHex === undefined);
+		templateData.dot.style.backgroundColor = colorHex ?? '';
+
+		const label = sectionHeaderLabel(element);
+		templateData.name.textContent = label;
+		templateData.count.textContent = String(element.repositories.length);
+
+		const attention = node.collapsed ? this.delegate.attentionCount(element) : 0;
+		templateData.attention.update(attention, 'attention');
+		// allow-any-unicode-next-line
+		templateData.attentionHover.update(attention > 0 ? localize('paradis.workspaceSections.attention', "要対応 {0} 件", attention) : '');
+
+		// 名前の変更・削除ができるのは自分で作ったセクションだけ（未分類は開閉だけ）
+		templateData.more.classList.toggle('hidden', element.section === undefined);
+
+		const renaming = this.delegate.isRenaming(element);
+		templateData.name.classList.toggle('hidden', renaming);
+		templateData.count.classList.toggle('hidden', renaming);
+		templateData.renameBox.classList.toggle('hidden', !renaming);
+		if (renaming && templateData.context.renamingKey !== element.key) {
+			templateData.context.renamingKey = element.key;
+			templateData.input.value = label;
+			const input = templateData.input;
+			// 行が DOM に入ってから欄へフォーカスを移す
+			DOM.getWindow(input).setTimeout(() => {
+				if (templateData.context.renamingKey === element.key) {
+					input.focus();
+					input.select();
+				}
+			}, 0);
+		} else if (!renaming) {
+			templateData.context.renamingKey = undefined;
+		}
+	}
+
+	disposeTemplate(templateData: ISectionHeaderTemplateData): void {
+		templateData.templateDisposables.dispose();
+	}
+}
+
+/** 空のセクションの「ここへプロジェクトをドラッグ」の行。 */
+class SectionEmptyRenderer implements ITreeRenderer<ISectionEmptyElement, FuzzyScore, HTMLElement> {
+
+	static readonly TEMPLATE_ID = 'paradisSectionEmpty';
+	readonly templateId = SectionEmptyRenderer.TEMPLATE_ID;
+
+	renderTemplate(container: HTMLElement): HTMLElement {
+		const row = DOM.append(container, DOM.$('.paradis-section-empty'));
+		// allow-any-unicode-next-line
+		row.textContent = localize('paradis.workspaceSections.emptyDrop', "ここへプロジェクトをドラッグ");
+		return row;
+	}
+
+	renderElement(_node: ITreeNode<ISectionEmptyElement, FuzzyScore>, _index: number, row: HTMLElement): void {
+		row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--paradis-workspace-color', 'transparent');
+	}
+
+	disposeTemplate(): void { }
 }
 
 class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IWorktreeTemplateData> {
@@ -922,7 +1180,9 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 
 /**
  * ツリーのドラッグ&ドロップ並び替え (案B)。
- * - リポジトリ行同士: reorderRepositories で並べ替え
+ * - リポジトリ行同士: 並べ替え。セクションをまたいだら所属も変える (Q601)
+ * - リポジトリ行をセクションの見出し・空のセクションの案内の行へ: そのセクションの最後へ移す
+ * - セクションの見出し同士: セクションの並べ替え (未分類・作りかけは動かさない)
  * - worktree 行同士: 同一リポジトリ内でのみ setWorktreeOrder で並べ替え
  * - main checkout (isMainCheckout) 行・「作成中」(isCreating) 行はドラッグ不可・ドロップ先不可
  *   (main checkout は常に先頭固定を維持する)
@@ -931,13 +1191,16 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElement> {
 
 	constructor(
-		private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		private readonly worktreeService: IParadisWorktreeService,
+		private readonly sectionsService: IParadisWorkspaceSectionsService,
 	) { }
 
 	getDragURI(element: WorkspaceTreeElement): string | null {
+		if (isSectionHeader(element)) {
+			return element.section ? `section:${element.section.id}` : null;
+		}
 		// 折りたたみ中の控え行は実体の写しなので、並び替えの対象にしない
-		if (isCreating(element) || isPinnedKeep(element)) {
+		if (isSectionEmpty(element) || isCreating(element) || isPinnedKeep(element)) {
 			return null;
 		}
 		if (isWorktree(element)) {
@@ -949,12 +1212,21 @@ class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElem
 
 	getDragLabel(elements: WorkspaceTreeElement[]): string | undefined {
 		const element = elements[0];
-		return element && !isCreating(element) ? element.name : undefined;
+		if (!element || isCreating(element) || isSectionEmpty(element)) {
+			return undefined;
+		}
+		return isSectionHeader(element) ? sectionHeaderLabel(element) : element.name;
 	}
 
 	onDragOver(data: IDragAndDropData, targetElement: WorkspaceTreeElement | undefined, targetIndex: number | undefined, targetSector: ListViewTargetSector | undefined): boolean | ITreeDragOverReaction {
 		const dragged = this.singleDragged(data);
-		if (!dragged || !targetElement || !this.isSameKindReorderTarget(dragged, targetElement)) {
+		if (!dragged || !targetElement) {
+			return false;
+		}
+		if (this.intoSectionTarget(dragged, targetElement) !== null) {
+			return { accept: true, effect: { type: ListDragOverEffectType.Move, position: ListDragOverEffectPosition.Over }, feedback: [targetIndex ?? -1] };
+		}
+		if (!this.isSameKindReorderTarget(dragged, targetElement)) {
 			return false;
 		}
 		const placeAfter = targetSector === ListViewTargetSector.CENTER_BOTTOM || targetSector === ListViewTargetSector.BOTTOM;
@@ -964,10 +1236,25 @@ class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElem
 
 	drop(data: IDragAndDropData, targetElement: WorkspaceTreeElement | undefined, _targetIndex: number | undefined, targetSector: ListViewTargetSector | undefined): void {
 		const dragged = this.singleDragged(data);
-		if (!dragged || !targetElement || !this.isSameKindReorderTarget(dragged, targetElement)) {
+		if (!dragged || !targetElement) {
+			return;
+		}
+		const intoSection = this.intoSectionTarget(dragged, targetElement);
+		if (intoSection !== null && isRepository(dragged)) {
+			this.sectionsService.moveRepositoryToSection(dragged.id, intoSection);
+			return;
+		}
+		if (!this.isSameKindReorderTarget(dragged, targetElement)) {
 			return;
 		}
 		const placeAfter = targetSector === ListViewTargetSector.CENTER_BOTTOM || targetSector === ListViewTargetSector.BOTTOM;
+
+		if (isSectionHeader(dragged) && isSectionHeader(targetElement)) {
+			if (dragged.section && targetElement.section) {
+				this.sectionsService.reorderSection(dragged.section.id, targetElement.section.id, placeAfter);
+			}
+			return;
+		}
 
 		if (isWorktree(dragged) && isWorktree(targetElement)) {
 			const siblings = this.worktreeService.getWorktrees(dragged.repositoryId);
@@ -979,19 +1266,16 @@ class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElem
 			return;
 		}
 
-		if (!isWorktree(dragged) && !isCreating(targetElement) && !isWorktree(targetElement)) {
-			const ids = this.workspaceSwitchService.repositories.map(repository => repository.id);
-			const reordered = paradisReorderByDrop(ids, dragged.id, targetElement.id, placeAfter);
-			if (reordered) {
-				this.workspaceSwitchService.reorderRepositories(reordered);
-			}
+		if (isRepository(dragged) && isRepository(targetElement)) {
+			// 落とした先のリポジトリと同じセクションへ入れ、その前（後）へ置く。セクションが 0 個なら並べ替えだけ
+			this.sectionsService.moveRepositoryToSection(dragged.id, this.sectionsService.sectionOf(targetElement.id), { repositoryId: targetElement.id, after: placeAfter });
 		}
 	}
 
 	dispose(): void { }
 
 	/** 単一要素のドラッグのみ扱う (複数選択の並び替えは非対応)。 */
-	private singleDragged(data: IDragAndDropData): IParadisWorkspaceRepository | IParadisWorktree | undefined {
+	private singleDragged(data: IDragAndDropData): IParadisWorkspaceRepository | IParadisWorktree | ISectionHeaderElement | undefined {
 		if (!(data instanceof ElementsDragAndDropData)) {
 			return undefined;
 		}
@@ -1000,24 +1284,44 @@ class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElem
 			return undefined;
 		}
 		const dragged = elements[0];
-		if (isCreating(dragged) || (isWorktree(dragged) && dragged.isMainCheckout)) {
+		if (isCreating(dragged) || isSectionEmpty(dragged) || (isSectionHeader(dragged) && !dragged.section) || (isWorktree(dragged) && dragged.isMainCheckout)) {
 			return undefined;
 		}
 		return dragged;
 	}
 
 	/**
-	 * dragged と target が同じ階層で並べ替え可能か。worktree は同一リポジトリ内、かつ
-	 * main checkout / 作成中行を除く実 worktree のみ。リポジトリはリポジトリ行同士のみ。
+	 * リポジトリを見出し・空のセクションの案内の行へ落とすときの行き先（セクションの id、未分類は undefined）。
+	 * 「中へ入れる」落とし方でなければ null。
 	 */
-	private isSameKindReorderTarget(dragged: IParadisWorkspaceRepository | IParadisWorktree, target: WorkspaceTreeElement): boolean {
+	private intoSectionTarget(dragged: IParadisWorkspaceRepository | IParadisWorktree | ISectionHeaderElement, target: WorkspaceTreeElement): string | undefined | null {
+		if (!isRepository(dragged)) {
+			return null;
+		}
+		if (isSectionEmpty(target)) {
+			return target.paradisSectionEmpty;
+		}
+		if (isSectionHeader(target) && target.key !== SECTION_DRAFT_KEY) {
+			return target.section?.id;
+		}
+		return null;
+	}
+
+	/**
+	 * dragged と target が同じ階層で並べ替え可能か。worktree は同一リポジトリ内、かつ
+	 * main checkout / 作成中行を除く実 worktree のみ。リポジトリはリポジトリ行同士、セクションは見出し同士のみ。
+	 */
+	private isSameKindReorderTarget(dragged: IParadisWorkspaceRepository | IParadisWorktree | ISectionHeaderElement, target: WorkspaceTreeElement): boolean {
 		if (isPinnedKeep(target)) {
 			return false;
+		}
+		if (isSectionHeader(dragged)) {
+			return isSectionHeader(target) && target.section !== undefined && target.section.id !== dragged.section?.id;
 		}
 		if (isWorktree(dragged)) {
 			return isWorktree(target) && !target.isMainCheckout && target.repositoryId === dragged.repositoryId;
 		}
-		return !isCreating(target) && !isWorktree(target);
+		return isRepository(target);
 	}
 }
 
@@ -1079,6 +1383,17 @@ export class ParadisWorkspacesView extends ViewPane {
 	private notesPanel: ParadisSpaceNotesPanel | undefined;
 	/** メモ欄の高さが変わったときにツリーを再レイアウトするため、直近のレイアウト値を覚えておく */
 	private lastLayout: { height: number; width: number } | undefined;
+	/**
+	 * その場で名前を入れている見出し（key は SECTION_DRAFT_KEY かセクションの id）。作りかけは台帳に入れず、
+	 * 確定したときに作る（取り消したら何も書かない）。repositoryId は「新しいセクションへ移す」の元のリポジトリ。
+	 */
+	private renamingSection: { readonly key: string; readonly repositoryId?: string } | undefined;
+	/** 名前の欄にフォーカスがある間は一覧を描き直さない（エージェントの状態で数秒ごとに描き直すと欄が消えるため） */
+	private renameInputFocused = false;
+	/** セクションの見出しの直下にあるリポジトリ（見出しの区切り線と二重にしない）。updateTree が作る */
+	private readonly sectionFirstRepositoryIds = new Set<string>();
+	/** 今の一覧の見出し（鍵 → 要素）。名前の変更の後に行へフォーカスを戻すのに使う */
+	private readonly sectionHeaders = new Map<string, ISectionHeaderElement>();
 
 	constructor(
 		options: IViewPaneOptions,
@@ -1105,6 +1420,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		@IParadisAgentInsightsService private readonly agentInsightsService: IParadisAgentInsightsService,
 		@IFileService fileService: IFileService,
 		@IParadisWorkspacesWindowActivity windowActivity: IParadisWorkspacesWindowActivity,
+		@IParadisWorkspaceSectionsService private readonly sectionsService: IParadisWorkspaceSectionsService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -1148,6 +1464,8 @@ export class ParadisWorkspacesView extends ViewPane {
 		this._updateTreeScheduler = this._register(new RunOnceScheduler(() => this.updateTree(), 0));
 
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
+		// セクションの台帳・開閉。開閉はツリーの開閉の通知の中から来るので、次のタスクで組み直す
+		this._register(this.sectionsService.onDidChange(() => this._updateTreeScheduler.schedule()));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
 		// 切り替えの開始・終了。チェックを行き先へ前倒しし、進行中の行にスピナーを出すため、
 		// 完了 (onDidSwitchScope) を待たずにここでも描き直す
@@ -1180,7 +1498,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			openSearch: () => this.pickSpace(),
 			agentCounts: () => this.agentCounts(),
 			onDidChangeAgentCounts: Event.any(this.agentStatusStore.onDidChangeAgentStatuses, this.createProgressStore.onDidChangeJobs, this.workspaceSwitchService.onDidChangeRepositories, this.worktreeService.onDidChangeWorktrees),
-			optionsActions: () => this.buildRowMetaSubmenuAction().actions.slice(),
+			optionsActions: () => [...this.buildRowMetaSubmenuAction().actions, new Separator(), this.newSectionAction()],
 		}));
 		nav.setHeightChangeListener(() => {
 			this.navHeight = undefined;
@@ -1217,8 +1535,24 @@ export class ParadisWorkspacesView extends ViewPane {
 		const repositoryRenderer = new RepositoryRenderer(
 			repository => this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', repository.id),
 			repository => this.repositoryBreakdown(repository),
-			this.hoverService
+			this.hoverService,
+			repository => this.sectionFirstRepositoryIds.has(repository.id)
 		);
+		const sectionHeaderRenderer = new SectionHeaderRenderer({
+			attentionCount: element => this.sectionAttentionCount(element),
+			isRenaming: element => this.renamingSection?.key === element.key,
+			endRename: (value, restoreFocus) => this.endSectionRename(value, restoreFocus),
+			setRenameFocused: focused => { this.renameInputFocused = focused; },
+			showMenu: (element, anchor) => this.contextMenuService.showContextMenu({
+				getAnchor: () => anchor,
+				getActions: () => this.buildSectionContextMenuActions(element),
+			}),
+			startRename: element => {
+				if (element.section) {
+					this.startSectionRename(element.section.id);
+				}
+			},
+		}, this.hoverService);
 		const worktreeRenderer = new WorktreeRenderer(
 			// 切り替えの最中は行き先を「今ここ」として見せる。activeStateKey は folders が
 			// 入れ替わるまで切り替え元を指したままなので、そのまま使うと**遅い切り替えの間ずっと
@@ -1256,24 +1590,33 @@ export class ParadisWorkspacesView extends ViewPane {
 			'ParadisWorkspaces',
 			treeContainer,
 			new WorkspaceTreeDelegate(worktree => paradisWorktreeRowHeight(this.rowMeta, this.worktreeMetaPresence(worktree))),
-			[repositoryRenderer, worktreeRenderer, creatingRenderer],
+			[repositoryRenderer, worktreeRenderer, creatingRenderer, sectionHeaderRenderer, new SectionEmptyRenderer()],
 			{
 				identityProvider: {
-					getId: (element: WorkspaceTreeElement) => isCreating(element)
-						? `creating:${element.creatingJob.id}`
-						// ピン留めの控え行は、折りたたまれた子として隠れている実体と同時に存在するため別IDにする
-						: isPinnedKeep(element) ? `pinnedKeep:${worktreeStateKeyFor(element)}`
-							: isWorktree(element) ? `worktree:${worktreeStateKeyFor(element)}` : `repo:${element.id}`
+					getId: (element: WorkspaceTreeElement) => isSectionHeader(element) ? `section:${element.key}`
+						: isSectionEmpty(element) ? `sectionEmpty:${element.paradisSectionEmpty}`
+							: isCreating(element)
+								? `creating:${element.creatingJob.id}`
+								// ピン留めの控え行は、折りたたまれた子として隠れている実体と同時に存在するため別IDにする
+								: isPinnedKeep(element) ? `pinnedKeep:${worktreeStateKeyFor(element)}`
+									: isWorktree(element) ? `worktree:${worktreeStateKeyFor(element)}` : `repo:${element.id}`
 				},
 				horizontalScrolling: false,
 				// ドラッグ&ドロップ並び替え (案B)。リポジトリ同士・同一リポジトリ内 worktree 同士のみ許可
-				dnd: new ParadisWorkspacesDragAndDrop(this.workspaceSwitchService, this.worktreeService),
+				dnd: new ParadisWorkspacesDragAndDrop(this.worktreeService, this.sectionsService),
 				// worktree 行本体のクリックは「切り替え」専用にし、リポジトリ見出しの開閉は
 				// 左端の chevron でのみ行う (見出し行本体のクリックは何もしない)
 				expandOnlyOnTwistieClick: true,
 				accessibilityProvider: {
 					// 左のアイコンが種類だけになった（51 A）ので、エージェントの様子は名前の後ろに要約して読み上げる
 					getAriaLabel: (element: WorkspaceTreeElement) => {
+						if (isSectionHeader(element)) {
+							return this.sectionAriaLabel(element);
+						}
+						if (isSectionEmpty(element)) {
+							// allow-any-unicode-next-line
+							return localize('paradis.workspaceSections.emptyDrop', "ここへプロジェクトをドラッグ");
+						}
 						if (isCreating(element)) {
 							return creatingElementLabel(element);
 						}
@@ -1289,15 +1632,40 @@ export class ParadisWorkspacesView extends ViewPane {
 		// (main checkout も worktree 行として子要素に含まれ、そちらのクリックで切り替わる)
 		this._register(this.tree.onDidOpen(e => {
 			const element = e.element;
+			if (element && isSectionHeader(element)) {
+				this.openSectionHeader(element, e.browserEvent);
+				return;
+			}
 			if (!element || !isWorktree(element)) {
 				return;
 			}
 			this.openWorktree(element);
 		}));
 
+		// 見出しで F2 を押すと、その場で名前を変える（←→・Space の開閉はツリーの既製の動き）
+		this._register(this.tree.onKeyDown(e => {
+			if (e.key !== 'F2' || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) {
+				return;
+			}
+			const focused = this.tree?.getFocus()[0];
+			if (focused && isSectionHeader(focused) && focused.section) {
+				DOM.EventHelper.stop(e, true);
+				this.startSectionRename(focused.section.id);
+			}
+		}));
+
 		this._register(this.tree.onContextMenu(e => {
 			const element = e.element;
-			if (!element || isCreating(element)) {
+			if (!element || isCreating(element) || isSectionEmpty(element)) {
+				return;
+			}
+			if (isSectionHeader(element)) {
+				if (element.key !== SECTION_DRAFT_KEY) {
+					this.contextMenuService.showContextMenu({
+						getAnchor: () => e.anchor,
+						getActions: () => this.buildSectionContextMenuActions(element),
+					});
+				}
 				return;
 			}
 			this.contextMenuService.showContextMenu({
@@ -1310,7 +1678,14 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		this._register(this.tree.onDidChangeCollapseState(e => {
 			const element = e.node.element;
-			if (!element || isCreating(element)) {
+			if (!element || isCreating(element) || isSectionEmpty(element)) {
+				return;
+			}
+			// セクションの開閉は collapsedRepositories.v1 に混ぜない（あちらは描き直しで今のリポジトリに無い id を刈る）
+			if (isSectionHeader(element)) {
+				if (element.key !== SECTION_DRAFT_KEY) {
+					this.sectionsService.setCollapsed(element.key, e.node.collapsed);
+				}
 				return;
 			}
 			if (this._collapsedRepositoryState.recordTreeCollapse(element, e.node.collapsed)) {
@@ -1394,7 +1769,8 @@ export class ParadisWorkspacesView extends ViewPane {
 		interface ISpacePickItem extends IQuickPickItem { readonly worktree: IParadisWorktree }
 		const items: (ISpacePickItem | IQuickPickSeparator)[] = [];
 		const activeKey = this.workspaceSwitchService.activeStateKey;
-		for (const repository of this.workspaceSwitchService.repositories) {
+		// 一覧と同じ順（セクションの順）。閉じたセクションの中のスペースも出す
+		for (const repository of this.sectionsService.orderedRepositories()) {
 			items.push({ type: 'separator', label: repository.name });
 			const mainCheckout: IParadisWorktree = {
 				repositoryId: repository.id,
@@ -1685,49 +2061,57 @@ export class ParadisWorkspacesView extends ViewPane {
 		if (!this.tree) {
 			return;
 		}
+		// その場の名前の欄に入力中は描き直さない（行が作り直されると欄が消える）。確定・取り消しのときにまとめて描く
+		if (this.renamingSection && this.renameInputFocused) {
+			return;
+		}
 
 		const repositoryIds = new Set(this.workspaceSwitchService.repositories.map(repository => repository.id));
 		this._collapsedRepositoryState.removeStaleRepositories(repositoryIds);
 
 		const elements: IObjectTreeElement<WorkspaceTreeElement>[] = [];
-		for (const repository of this.workspaceSwitchService.repositories) {
-			const worktrees = this.worktreeService.getWorktrees(repository.id);
-			// リポジトリ行は純粋なグルーピング見出しにしたため、main checkout (リポジトリ本体) も
-			// worktree 行として先頭に混ぜ込む。これにより「今開いているのはどれか」の表示・切り替え・
-			// diff統計バッジがすべて worktree 行側のロジックだけで完結する
-			const mainCheckout: IParadisWorktree = {
-				repositoryId: repository.id,
-				name: STR_MAIN_CHECKOUT_NAME,
-				branch: this.worktreeService.getRepositoryBranch(repository.id),
-				uri: repository.uri,
-				isMainCheckout: true
+		this.sectionFirstRepositoryIds.clear();
+		this.sectionHeaders.clear();
+		const drafting = this.renamingSection?.key === SECTION_DRAFT_KEY;
+		const groups = this.sectionsService.groups();
+		if (this.sectionsService.state.sections.length === 0 && !drafting) {
+			// セクションが 0 個なら見出しを 1 つも出さない（今までと全く同じ一覧）
+			for (const repository of this.workspaceSwitchService.repositories) {
+				this.pushRepositoryElements(elements, repository);
+			}
+		} else {
+			const pushHeader = (section: IParadisWorkspaceSection | undefined, key: string, repositories: readonly IParadisWorkspaceRepository[], collapsed: boolean) => {
+				const header: ISectionHeaderElement = { paradisSectionHeader: true, section, key, repositories, first: elements.length === 0 };
+				this.sectionHeaders.set(key, header);
+				elements.push({ element: header, collapsible: true, collapsed });
 			};
-			// バックグラウンド作成中のジョブは「作成中」プレースホルダ行として末尾に混ぜ込む。
-			// `git worktree add` が済んだジョブは実体の行が既に一覧にあるため、同じ名前の行が
-			// 2つ並ばないようここでは出さず、工程は実体の行の2段目に出す (pendingStageFor)
-			const creatingJobs: ICreatingSpaceElement[] = this.createProgressStore.jobs
-				.filter(job => job.repositoryId === repository.id && job.stateKey === undefined)
-				.map(job => ({ creatingJob: job }));
-			const children: WorkspaceTreeElement[] = [mainCheckout, ...worktrees, ...creatingJobs];
-			const collapsed = this._collapsedRepositoryState.isRepositoryCollapsed(repository.id);
-			elements.push({
-				element: repository,
-				children: children.map(worktree => ({ element: worktree })),
-				collapsible: true,
-				collapsed: collapsed
-					? ObjectTreeElementCollapseState.PreserveOrCollapsed
-					: ObjectTreeElementCollapseState.PreserveOrExpanded
-			});
-
-			// 折りたたみ中はピン留めした行だけをリポジトリ行の直後に残す。ツリーの折りたたみは
-			// 子を一律に隠すため、控えを兄弟 (ルート要素) として差し込む
-			if (collapsed) {
-				for (const worktree of [mainCheckout, ...worktrees]) {
-					if (this.worktreeService.isPinned(worktreeStateKeyFor(worktree))) {
-						const keep: IPinnedKeepElement = { ...worktree, paradisPinnedKeep: true };
-						elements.push({ element: keep });
-					}
+			for (const group of groups) {
+				// 作りかけの見出しは、今あるセクションの後・未分類の前に並べる
+				if (group.section === undefined && drafting) {
+					pushHeader(undefined, SECTION_DRAFT_KEY, [], false);
 				}
+				const key = group.section?.id ?? PARADIS_UNCATEGORIZED_SECTION_KEY;
+				const collapsed = this.sectionsService.isCollapsed(key);
+				pushHeader(group.section, key, group.repositories, collapsed);
+				if (collapsed) {
+					// 閉じたセクションでも、ピン留めした行は控えとして見出しの直下に残す（リポジトリを閉じたときと同じ考え方）
+					for (const repository of group.repositories) {
+						elements.push(...this.pinnedKeepElements(repository));
+					}
+					continue;
+				}
+				if (group.section && group.repositories.length === 0) {
+					elements.push({ element: { paradisSectionEmpty: group.section.id } });
+				}
+				group.repositories.forEach((repository, index) => {
+					if (index === 0) {
+						this.sectionFirstRepositoryIds.add(repository.id);
+					}
+					this.pushRepositoryElements(elements, repository);
+				});
+			}
+			if (drafting && !this.sectionHeaders.has(SECTION_DRAFT_KEY)) {
+				pushHeader(undefined, SECTION_DRAFT_KEY, [], false);
 			}
 		}
 		// 高さ (delegate) と中身 (renderer) が同じ判定を読むよう、setChildren の前に作り直す。
@@ -1739,6 +2123,142 @@ export class ParadisWorkspacesView extends ViewPane {
 			.filter((element): element is IParadisWorktree => isWorktree(element)));
 		this.tree.setChildren(null, elements);
 		this._onDidChangeViewWelcomeState.fire();
+	}
+
+	/** main checkout の合成行。リポジトリ行は純粋なグルーピング見出しなので、本体も worktree 行として並べる */
+	private mainCheckoutOf(repository: IParadisWorkspaceRepository): IParadisWorktree {
+		return {
+			repositoryId: repository.id,
+			name: STR_MAIN_CHECKOUT_NAME,
+			branch: this.worktreeService.getRepositoryBranch(repository.id),
+			uri: repository.uri,
+			isMainCheckout: true
+		};
+	}
+
+	/** ピン留めした行の控え（折りたたんだリポジトリ・セクションの下に、ルート要素として残す）。 */
+	private pinnedKeepElements(repository: IParadisWorkspaceRepository): IObjectTreeElement<WorkspaceTreeElement>[] {
+		const keeps: IObjectTreeElement<WorkspaceTreeElement>[] = [];
+		for (const worktree of [this.mainCheckoutOf(repository), ...this.worktreeService.getWorktrees(repository.id)]) {
+			if (this.worktreeService.isPinned(worktreeStateKeyFor(worktree))) {
+				const keep: IPinnedKeepElement = { ...worktree, paradisPinnedKeep: true };
+				keeps.push({ element: keep });
+			}
+		}
+		return keeps;
+	}
+
+	/** リポジトリの見出しと、その子（main checkout・worktree・作成中）、折りたたみ中ならピン留めの控えを積む。 */
+	private pushRepositoryElements(elements: IObjectTreeElement<WorkspaceTreeElement>[], repository: IParadisWorkspaceRepository): void {
+		const worktrees = this.worktreeService.getWorktrees(repository.id);
+		// リポジトリ行は純粋なグルーピング見出しにしたため、main checkout (リポジトリ本体) も
+		// worktree 行として先頭に混ぜ込む。これにより「今開いているのはどれか」の表示・切り替え・
+		// diff統計バッジがすべて worktree 行側のロジックだけで完結する
+		const mainCheckout = this.mainCheckoutOf(repository);
+		// バックグラウンド作成中のジョブは「作成中」プレースホルダ行として末尾に混ぜ込む。
+		// `git worktree add` が済んだジョブは実体の行が既に一覧にあるため、同じ名前の行が
+		// 2つ並ばないようここでは出さず、工程は実体の行の2段目に出す (pendingStageFor)
+		const creatingJobs: ICreatingSpaceElement[] = this.createProgressStore.jobs
+			.filter(job => job.repositoryId === repository.id && job.stateKey === undefined)
+			.map(job => ({ creatingJob: job }));
+		const children: WorkspaceTreeElement[] = [mainCheckout, ...worktrees, ...creatingJobs];
+		const collapsed = this._collapsedRepositoryState.isRepositoryCollapsed(repository.id);
+		elements.push({
+			element: repository,
+			children: children.map(worktree => ({ element: worktree })),
+			collapsible: true,
+			collapsed: collapsed
+				? ObjectTreeElementCollapseState.PreserveOrCollapsed
+				: ObjectTreeElementCollapseState.PreserveOrExpanded
+		});
+
+		// 折りたたみ中はピン留めした行だけをリポジトリ行の直後に残す。ツリーの折りたたみは
+		// 子を一律に隠すため、控えを兄弟 (ルート要素) として差し込む
+		if (collapsed) {
+			elements.push(...this.pinnedKeepElements(repository));
+		}
+	}
+
+	/** セクションの中の要対応（許可待ち・質問）の数。見出しのベル（agentCounts）と同じ数え方。 */
+	private sectionAttentionCount(element: ISectionHeaderElement): number {
+		let attention = 0;
+		for (const repository of element.repositories) {
+			for (const status of this.repositoryBreakdown(repository)) {
+				if (status === 'permission' || status === 'question') {
+					attention++;
+				}
+			}
+		}
+		return attention;
+	}
+
+	/** 見出しの読み上げ。開閉は aria-expanded（ツリー）が持つので、名前・件数・閉じたときの要対応を読む。 */
+	private sectionAriaLabel(element: ISectionHeaderElement): string {
+		const label = sectionHeaderLabel(element);
+		const attention = this.sectionsService.isCollapsed(element.key) ? this.sectionAttentionCount(element) : 0;
+		return attention > 0
+			// allow-any-unicode-next-line
+			? localize('paradis.workspaceSections.ariaLabelAttention', "{0}、プロジェクト {1} 件、要対応 {2} 件", label, element.repositories.length, attention)
+			// allow-any-unicode-next-line
+			: localize('paradis.workspaceSections.ariaLabel', "{0}、プロジェクト {1} 件", label, element.repositories.length);
+	}
+
+	/**
+	 * 見出しのクリック・Enter で開閉する。矢印（twistie）の上とダブルクリックの 2 打目はツリーが自分で開閉するので、
+	 * ここでは何もしない（ダブルクリックの名前の変更は SectionHeaderRenderer の dblclick が受ける）。
+	 */
+	private openSectionHeader(element: ISectionHeaderElement, browserEvent: UIEvent | undefined): void {
+		if (!this.tree || element.key === SECTION_DRAFT_KEY) {
+			return;
+		}
+		const target = browserEvent?.target;
+		if (DOM.isHTMLElement(target) && target.closest('.monaco-tl-twistie')) {
+			return;
+		}
+		if (browserEvent?.type === 'dblclick' || (DOM.isMouseEvent(browserEvent) && browserEvent.detail > 1)) {
+			return;
+		}
+		this.tree.toggleCollapsed(element);
+	}
+
+	/** その場の名前の欄を出す。key が undefined なら新しいセクションの作りかけ（repositoryId があれば確定時にそこへ移す）。 */
+	private startSectionRename(key: string | undefined, repositoryId?: string): void {
+		if (!this.tree) {
+			return;
+		}
+		this.renamingSection = { key: key ?? SECTION_DRAFT_KEY, repositoryId };
+		this.renameInputFocused = false;
+		this.updateTree();
+		const header = this.sectionHeaders.get(this.renamingSection.key);
+		if (header) {
+			this.tree.reveal(header);
+			this.tree.setFocus([header]);
+		}
+	}
+
+	private endSectionRename(value: string | undefined, restoreFocus: boolean): void {
+		const renaming = this.renamingSection;
+		if (!renaming) {
+			return;
+		}
+		this.renamingSection = undefined;
+		this.renameInputFocused = false;
+		let key: string | undefined = renaming.key;
+		if (value !== undefined) {
+			if (renaming.key === SECTION_DRAFT_KEY) {
+				key = this.sectionsService.createSection(value, renaming.repositoryId);
+			} else {
+				this.sectionsService.renameSection(renaming.key, value);
+			}
+		}
+		this.updateTree();
+		const header = key !== undefined ? this.sectionHeaders.get(key) : undefined;
+		if (restoreFocus && this.tree) {
+			this.tree.domFocus();
+			if (header) {
+				this.tree.setFocus([header]);
+			}
+		}
 	}
 
 	/**
@@ -1842,29 +2362,13 @@ export class ParadisWorkspacesView extends ViewPane {
 		this.worktreeService.setPinned(stateKey, !this.worktreeService.isPinned(stateKey));
 	}
 
-	/** リポジトリ一覧内での対象リポジトリの位置。存在しなければ -1。 */
-	private repositorySiblingIndex(repository: IParadisWorkspaceRepository): { repositories: readonly IParadisWorkspaceRepository[]; index: number } {
-		const repositories = this.workspaceSwitchService.repositories;
-		const index = repositories.findIndex(candidate => candidate.id === repository.id);
-		return { repositories, index };
-	}
-
-	/** 隣接するリポジトリと表示順を入れ替える (Move Up/Down)。 */
-	private moveRepository(repository: IParadisWorkspaceRepository, direction: -1 | 1): void {
-		const { repositories, index } = this.repositorySiblingIndex(repository);
-		const reordered = paradisSwapAdjacent(repositories.map(candidate => candidate.id), index, direction);
-		if (reordered) {
-			this.workspaceSwitchService.reorderRepositories(reordered);
-		}
-	}
-
 	/**
 	 * 「色を設定」サブメニュー。12色 + Default を縦並びで出し、現在色にチェックを付ける。
 	 * 色ドットは Action の cssClass (paradis-color-*) 経由で media/paradisWorkspaceSwitch.css が
 	 * 描画する。HTML コンテキストメニュー (window.menuStyle: custom) のみ色が見える —
 	 * ネイティブメニューでは以前と同様に CSS が効かないため色名のみ表示される。
 	 */
-	private buildColorSubmenuActions(repository: IParadisWorkspaceRepository, swatches = false): IAction[] {
+	private buildColorSubmenuActions(currentColor: string | undefined, setColor: (color: string | undefined) => unknown, swatches = false): IAction[] {
 		const swatchClass = swatches ? ' paradis-menu-swatch' : '';
 		const colorActions = PARADIS_WORKSPACE_COLORS.map(color => {
 			const action = new Action(
@@ -1872,9 +2376,9 @@ export class ParadisWorkspacesView extends ViewPane {
 				colorLabel(color.id),
 				`paradis-menu-icon paradis-menu-color paradis-color-${color.id}${swatchClass}`,
 				true,
-				() => this.workspaceSwitchService.setRepositoryColor(repository.id, color.id)
+				() => setColor(color.id)
 			);
-			action.checked = repository.color === color.id;
+			action.checked = currentColor === color.id;
 			return action;
 		});
 		const defaultAction = new Action(
@@ -1882,17 +2386,125 @@ export class ParadisWorkspacesView extends ViewPane {
 			localize('paradis.workspaceSwitch.colorDefault', "既定"),
 			`paradis-menu-icon paradis-menu-color paradis-color-default${swatchClass}`,
 			true,
-			() => this.workspaceSwitchService.setRepositoryColor(repository.id, undefined)
+			() => setColor(undefined)
 		);
 		// パレット外の colorId (削済みID等) が残っている場合は Default 側にチェックを置く
-		defaultAction.checked = repository.color === undefined ||
-			!PARADIS_WORKSPACE_COLORS.some(color => color.id === repository.color);
+		defaultAction.checked = currentColor === undefined ||
+			!PARADIS_WORKSPACE_COLORS.some(color => color.id === currentColor);
 		// 横一列の丸では区切りを挟まず、既定（破線の丸）を末尾に並べる
 		return swatches ? [...colorActions, defaultAction] : [...colorActions, new Separator(), defaultAction];
 	}
 
+	/** 色の選び方（HTML のメニューでは丸の横一列、ネイティブのメニューでは名前の縦並びのサブメニュー）。 */
+	private buildColorActions(currentColor: string | undefined, setColor: (color: string | undefined) => unknown): IAction[] {
+		return hasNativeContextMenu(this.configurationService)
+			? [new SubmenuAction(
+				'paradis.workspaceSwitch.setColor',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.setColorPick', "色を設定"),
+				this.buildColorSubmenuActions(currentColor, setColor)
+			)]
+			: [...this.buildColorSubmenuActions(currentColor, setColor, true), new Separator()];
+	}
+
+	/** 「新しいセクション...」。repositoryId があれば、作ったセクションへそのリポジトリを移す。 */
+	private newSectionAction(repositoryId?: string): IAction {
+		return new Action(
+			'paradis.workspaceSections.new',
+			// allow-any-unicode-next-line
+			localize('paradis.workspaceSections.new', "新しいセクション..."),
+			'paradis-menu-icon codicon codicon-new-folder',
+			true,
+			() => this.startSectionRename(undefined, repositoryId)
+		);
+	}
+
+	/** リポジトリの「セクションへ移動」。各セクション・未分類（今の所属にチェック）と「新しいセクション...」。 */
+	private buildMoveToSectionAction(repository: IParadisWorkspaceRepository): SubmenuAction {
+		const current = this.sectionsService.sectionOf(repository.id);
+		const sections = this.sectionsService.state.sections;
+		const targets: IAction[] = sections.map(section => {
+			const action = new Action(
+				`paradis.workspaceSections.moveTo.${section.id}`,
+				section.name,
+				undefined,
+				true,
+				() => this.sectionsService.moveRepositoryToSection(repository.id, section.id)
+			);
+			action.checked = current === section.id;
+			return action;
+		});
+		if (sections.length > 0) {
+			const uncategorized = new Action(
+				'paradis.workspaceSections.moveTo.uncategorized',
+				STR_UNCATEGORIZED,
+				undefined,
+				true,
+				() => this.sectionsService.moveRepositoryToSection(repository.id, undefined)
+			);
+			uncategorized.checked = current === undefined;
+			targets.push(uncategorized, new Separator());
+		}
+		targets.push(this.newSectionAction(repository.id));
+		return new SubmenuAction(
+			'paradis.workspaceSections.moveTo',
+			// allow-any-unicode-next-line
+			localize('paradis.workspaceSections.moveTo', "セクションへ移動"),
+			targets
+		);
+	}
+
+	/** セクションの見出しの右クリックと「…」。未分類は「新しいセクション...」だけ。 */
+	private buildSectionContextMenuActions(element: ISectionHeaderElement): IAction[] {
+		const section = element.section;
+		if (!section) {
+			return [this.newSectionAction()];
+		}
+		const sections = this.sectionsService.state.sections;
+		const index = sections.findIndex(candidate => candidate.id === section.id);
+		return [
+			new Action(
+				'paradis.workspaceSections.rename',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSections.rename', "名前を変更"),
+				'paradis-menu-icon codicon codicon-edit',
+				true,
+				() => this.startSectionRename(section.id)
+			),
+			new Separator(),
+			// 色は名前の前の点にだけ使う（左端の線はプロジェクトの色のまま、Q601-3）
+			...this.buildColorActions(section.color, color => this.sectionsService.setSectionColor(section.id, color)),
+			new Action(
+				'paradis.workspaceSections.moveUp',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
+				'paradis-menu-icon codicon codicon-arrow-up',
+				index > 0,
+				() => this.sectionsService.moveSection(section.id, -1)
+			),
+			new Action(
+				'paradis.workspaceSections.moveDown',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
+				'paradis-menu-icon codicon codicon-arrow-down',
+				index >= 0 && index < sections.length - 1,
+				() => this.sectionsService.moveSection(section.id, 1)
+			),
+			new Separator(),
+			this.newSectionAction(),
+			new Separator(),
+			new Action(
+				'paradis.workspaceSections.remove',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSections.remove', "セクションを削除（中のプロジェクトは未分類へ）"),
+				'paradis-menu-icon codicon codicon-trash paradis-menu-danger',
+				true,
+				() => this.sectionsService.removeSection(section.id)
+			),
+		];
+	}
+
 	private buildRepositoryContextMenuActions(repository: IParadisWorkspaceRepository): IAction[] {
-		const { repositories, index } = this.repositorySiblingIndex(repository);
 		return [
 			new Action(
 				'paradis.workspaceSwitch.createWorktreeContext',
@@ -1907,14 +2519,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			// 色選択。HTML のメニュー（window.menuStyle: custom）では先頭に色の丸を横一列に並べ（Q575-8 案b、
 			// paradisWorkspaceSwitch.css の .paradis-menu-swatch）、ネイティブのメニューでは丸を描けないので
 			// 今までどおり色の名前の縦並びのサブメニュー (buildColorSubmenuActions 参照) にする
-			...(hasNativeContextMenu(this.configurationService)
-				? [new SubmenuAction(
-					'paradis.workspaceSwitch.setColor',
-					// allow-any-unicode-next-line
-					localize('paradis.workspaceSwitch.setColorPick', "色を設定"),
-					this.buildColorSubmenuActions(repository)
-				)]
-				: [...this.buildColorSubmenuActions(repository, true), new Separator()]),
+			...this.buildColorActions(repository.color, color => this.workspaceSwitchService.setRepositoryColor(repository.id, color)),
 			new Action(
 				'paradis.workspaceSwitch.rename',
 				// allow-any-unicode-next-line
@@ -1923,22 +2528,25 @@ export class ParadisWorkspacesView extends ViewPane {
 				true,
 				() => this.promptRename(repository)
 			),
+			// ドラッグの代わりにキーボードでも移せるように、所属先をここでも選べる
+			this.buildMoveToSectionAction(repository),
 			new Separator(),
+			// 上へ・下へは同じセクションの中だけで動かす（境目を越えると台帳だけが動いて見た目が変わらない）
 			new Action(
 				'paradis.workspaceSwitch.repository.moveUp',
 				// allow-any-unicode-next-line
 				localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
 				'paradis-menu-icon codicon codicon-arrow-up',
-				index > 0,
-				() => this.moveRepository(repository, -1)
+				this.sectionsService.canMoveRepositoryWithinSection(repository.id, -1),
+				() => this.sectionsService.moveRepositoryWithinSection(repository.id, -1)
 			),
 			new Action(
 				'paradis.workspaceSwitch.repository.moveDown',
 				// allow-any-unicode-next-line
 				localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
 				'paradis-menu-icon codicon codicon-arrow-down',
-				index >= 0 && index < repositories.length - 1,
-				() => this.moveRepository(repository, 1)
+				this.sectionsService.canMoveRepositoryWithinSection(repository.id, 1),
+				() => this.sectionsService.moveRepositoryWithinSection(repository.id, 1)
 			),
 			new Separator(),
 			new Action(
