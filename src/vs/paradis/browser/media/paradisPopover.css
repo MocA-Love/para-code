@@ -1,0 +1,39 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The pop-up of Para Code's UI kit (stage 3, Q600, paradisPopover.ts): a small surface in a context view under the
+	button that opened it. The popup surface (paradis.popup), a subtle line, the inner radius and the medium shadow;
+	a header line and a body. Its layer is the context view's (2575), so it opens above fork modals.
+*/
+
+.monaco-workbench .paradis-popover {
+	box-sizing: border-box;
+	min-width: 240px;
+	max-width: min(360px, calc(100vw - 8px));
+	margin-top: var(--vscode-spacing-size40);
+	color: var(--vscode-paradis-text);
+	background: var(--vscode-paradis-popup);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	box-shadow: var(--vscode-shadow-lg);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.monaco-workbench .paradis-popover-head {
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	border-bottom: var(--paradis-popover-header-border);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-popover-body {
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120) var(--vscode-spacing-size120);
+}

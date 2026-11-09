@@ -207,7 +207,7 @@ suite('Paradis UI parts', () => {
 		});
 	});
 
-	test('modal size tiers: S follows the content, M has a fixed height, L uses the usage dashboard size', () => {
+	test('modal size tiers: S follows the content, M is 720 with a fixed height, L uses the usage dashboard size', () => {
 		const make = (size: ParadisModalSize) => {
 			const box = mainWindow.document.createElement('div');
 			box.classList.add(...paradisModalClasses(size));
@@ -227,7 +227,7 @@ suite('Paradis UI parts', () => {
 		}));
 		assert.deepStrictEqual(actual, [
 			{ className: 'paradis-modal paradis-modal-s paradis-focus-none', width: px(Math.min(480, 94 * vw)), height: '0px', maxHeight: px(88 * vh) },
-			{ className: 'paradis-modal paradis-modal-m paradis-focus-none', width: px(Math.min(880, 94 * vw)), height: px(Math.min(clamp(520, 72 * vh, 820), 92 * vh)), maxHeight: px(92 * vh) },
+			{ className: 'paradis-modal paradis-modal-m paradis-focus-none', width: px(Math.min(720, 94 * vw)), height: px(Math.min(clamp(520, 72 * vh, 820), 92 * vh)), maxHeight: px(92 * vh) },
 			{ className: 'paradis-modal paradis-modal-l paradis-focus-none', width: px(Math.min(clamp(1040, 78 * vw, 2000), 95 * vw)), height: px(Math.min(clamp(726, 88 * vh, 1400), 92 * vh)), maxHeight: px(92 * vh) },
 		]);
 	});

@@ -48,7 +48,7 @@ suite('ParadisMobilePairingDialog', () => {
 		container.remove();
 		assert.deepStrictEqual({ before, copied, after }, {
 			before: {
-				classes: ['paradis-mobile-pairing-dialog', 'paradis-modal', 'paradis-modal-s'],
+				classes: ['paradis-mobile-pairing-dialog', 'paradis-modal', 'paradis-modal-s', 'paradis-focus-none'],
 				title: ['モバイルデバイスを接続'],
 				steps: ['Para Code Mobile で「QR を読み取る」を開く', 'この QR を読み取る', '両方に出る 6 桁のコードが同じか確かめて承認する'],
 				remainingStartsWith: true,

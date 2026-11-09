@@ -478,7 +478,7 @@ suite('Paradis DND actual surfaces', () => {
 							// Para Code のプルダウン（paradisSelect.ts）。中は本家の SelectBox の <select>
 							tag: 'span', className: 'paradis-select select-container', text: '', children: [
 								{
-									tag: 'select', className: 'monaco-select-box pns-select', text: '', children: [
+									tag: 'select', className: 'monaco-select-box paradis-focus-ring pns-select', text: '', children: [
 										// 選択肢は common の PARADIS_DO_NOT_DISTURB_DURATIONS 順（ステータスバーと共通）
 										{ tag: 'option', className: '', text: '30分', children: [] },
 										{ tag: 'option', className: '', text: '1時間', children: [] },
@@ -516,7 +516,7 @@ suite('Paradis DND actual surfaces', () => {
 						{
 							tag: 'span', className: 'paradis-select select-container', text: '', children: [
 								{
-									tag: 'select', className: 'monaco-select-box pns-select', text: '', children: [
+									tag: 'select', className: 'monaco-select-box paradis-focus-ring pns-select', text: '', children: [
 										{ tag: 'option', className: '', text: '30分', children: [] },
 										{ tag: 'option', className: '', text: '1時間', children: [] },
 										{ tag: 'option', className: '', text: '朝まで（7:00）', children: [] },

@@ -5,17 +5,21 @@
 
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
-/* Size tiers of Para Code's modal boxes (paradisModal.ts). */
+/*
+	Size tiers of Para Code's modal boxes (paradisModal.ts) and the kit's dialog surface (UI kit stage 3, Q600): the
+	floating surface (paradis.overlay), a subtle line, the outer radius and the large shadow. The parts inside a box
+	(the 52px header bar, the scrolling body, the footer bar) are the paradis-modal-head / -body / -foot classes below.
+*/
 
 .monaco-workbench .paradis-modal {
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
-	background: var(--vscode-editor-background);
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: var(--vscode-cornerRadius-large);
+	background: var(--vscode-paradis-overlay);
+	color: var(--vscode-paradis-text);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-outer);
 	box-shadow: var(--vscode-shadow-xl);
 	font-size: var(--vscode-fontSize-body1);
 }
@@ -27,9 +31,9 @@
 	max-height: 88vh;
 }
 
-/* M: work in context. Fixed height so switching views inside does not resize the box. */
+/* M: work in context (Q600: 720, so M and L differ clearly). Fixed height so switching views inside does not resize the box. */
 .monaco-workbench .paradis-modal.paradis-modal-m {
-	width: 880px;
+	width: 720px;
 	max-width: 94vw;
 	height: clamp(520px, 72vh, 820px);
 	max-height: 92vh;
@@ -41,4 +45,67 @@
 	max-width: 95vw;
 	height: clamp(726px, 88vh, 1400px);
 	max-height: 92vh;
+}
+
+/* ---------- inside a box ---------- */
+
+/* The header bar: the title on the left, the box's actions and the close button (28px icon button) on the right. */
+.monaco-workbench .paradis-modal-head {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	flex: none;
+	gap: var(--vscode-spacing-size80);
+	min-height: 52px;
+	padding: 0 var(--vscode-spacing-size120) 0 var(--vscode-spacing-size200);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+.monaco-workbench .paradis-modal-head > .paradis-modal-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench .paradis-modal-head > .paradis-modal-actions {
+	display: flex;
+	align-items: center;
+	flex: none;
+	gap: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .paradis-modal-body {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size200) var(--vscode-spacing-size160);
+}
+
+/* The footer bar: notes on the left, buttons on the right (the primary one last). */
+.monaco-workbench .paradis-modal-foot {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	flex: none;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size200);
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+/* Narrow window: the title gives way to the actions; text buttons in the header may show only their icon. */
+@media (max-width: 760px) {
+	.monaco-workbench .paradis-modal-head {
+		padding-left: var(--vscode-spacing-size120);
+	}
+
+	.monaco-workbench .paradis-modal-head .paradis-modal-compact > span:not(.codicon) {
+		display: none;
+	}
 }
