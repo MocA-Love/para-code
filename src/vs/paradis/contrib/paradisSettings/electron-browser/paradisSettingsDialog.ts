@@ -1795,6 +1795,23 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-window',
+		group: GROUP_WINDOW_LOOK,
+		// 本家の設定をそのまま書き換える（同じ意味の fork の設定は作らない）
+		key: 'workbench.editor.tabActionLocation',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.tabActionLocation', "タブの閉じるボタン（×）の位置"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.tabActionLocationDesc', "「左」にすると、ターミナルやファイルのタブの × をタブの左端に置きます。タブを 1 行に並べているときだけ効きます。"),
+		keywords: 'tab close button left right position editor terminal tabActionLocation',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			left: localize('paradis.settings.tabActionLocationLeft', "左"),
+			// allow-any-unicode-next-line
+			right: localize('paradis.settings.tabActionLocationRight', "右（既定）"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-window',
 		group: GROUP_WINDOW_BEHAVIOR,
 		key: 'paradis.editor.openTerminalOnSplit',
 		// allow-any-unicode-next-line
