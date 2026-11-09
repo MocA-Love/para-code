@@ -14,7 +14,7 @@ import { ParadisAndroidVideoWire, ParadisScrcpyVideoEvent } from '../../common/p
 import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ParadisServeSimBackend } from '../../node/paradisServeSimBackend.js';
+import { ParadisServeSimBackend, ParadisSimulatorCaptureNotStartedError } from '../../node/paradisServeSimBackend.js';
 import { ParadisSimulatorService } from '../../node/paradisSimulatorChannel.js';
 import { ParadisSimulatorStreamEvent } from '../../common/paradisSimulator.js';
 import { IParadisSimulatorHostConnection } from '../../node/paradisSimulatorHostProcess.js';
@@ -72,11 +72,16 @@ suite('Paradis simulator: video relay in the shared process', () => {
 		const second = service.onFrames(UDID)(message => received.push(message));
 		end?.();
 		second.dispose();
+		// 映像の要求に応答の頭が返らなかった（取り込みが始まらない）ときは、その印を付けて送る
+		const third = service.onFrames(UDID)(message => received.push(message));
+		end?.(new ParadisSimulatorCaptureNotStartedError(UDID, 15_000));
+		third.dispose();
 		assert.deepStrictEqual({ opened, received }, {
-			opened: 2,
+			opened: 3,
 			received: [
 				{ kind: 'ended', udid: UDID, reason: 'The simulator host did not become ready in time' },
 				{ kind: 'ended', udid: UDID },
+				{ kind: 'ended', udid: UDID, reason: `The simulator host did not start capturing ${UDID} within 15 s`, captureNotStarted: true },
 			],
 		});
 	});

@@ -34,6 +34,56 @@ export interface IParadisSimulatorHostServerOptions {
 	readonly token: string;
 	readonly middleware: IParadisSimulatorMiddleware;
 	readonly onError?: (message: string, error?: unknown) => void;
+	/** 段ごとの記録（映像の要求の受け・頭・最初の 1 枚・終わり、入力の upgrade）。ホストでは stderr へ出す。 */
+	readonly onLog?: (message: string) => void;
+	/** 映像の要求に頭を返さないまま、この時間が過ぎたら記録する（既定 10 秒）。 */
+	readonly slowHeadersMs?: number;
+}
+
+/** 映像の要求（流れ続ける応答）。これだけは段ごとに記録する（ほかの要求は遅い・失敗したときだけ）。 */
+const STREAM_ENDPOINTS: ReadonlySet<string> = new Set(['stream.mjpeg', 'stream.avcc']);
+/** 映像以外の要求で、これより遅ければ記録する。 */
+const SLOW_REQUEST_MS = 2000;
+
+/**
+ * 1 つの要求の段を記録する（paracode-183 で、取り込みが始まらず映像の要求が黙ったまま残ったときに、どの段で
+ * 止まったかがログに残らなかったため）。映像の要求は「受けた・頭を返した・最初の 1 枚・閉じた」と、頭を返さない
+ * まま {@link IParadisSimulatorHostServerOptions.slowHeadersMs} が過ぎたことを残す。映像以外は遅いか 400 以上のときだけ。
+ */
+function traceRequest(res: ServerResponse, endpoint: string, udid: string, log: (message: string) => void, slowHeadersMs: number): void {
+	const started = Date.now();
+	const stream = STREAM_ENDPOINTS.has(endpoint);
+	const label = `${endpoint} ${udid}`;
+	let status: number | undefined;
+	let firstWrite = false;
+	if (stream) {
+		log(`${label}: received`);
+	}
+	const slow = stream ? setTimeout(() => log(`${label}: no answer after ${slowHeadersMs} ms (the device session has not started capturing)`), slowHeadersMs) : undefined;
+	const writeHead = res.writeHead;
+	res.writeHead = function (this: ServerResponse, ...args: Parameters<ServerResponse['writeHead']>) {
+		status = args[0];
+		clearTimeout(slow);
+		if (stream) {
+			log(`${label}: answered ${status} after ${Date.now() - started} ms`);
+		}
+		return writeHead.apply(this, args);
+	} as ServerResponse['writeHead'];
+	const write = res.write;
+	res.write = function (this: ServerResponse, ...args: Parameters<ServerResponse['write']>) {
+		if (stream && !firstWrite) {
+			firstWrite = true;
+			log(`${label}: first frame after ${Date.now() - started} ms`);
+		}
+		return write.apply(this, args);
+	} as ServerResponse['write'];
+	res.once('close', () => {
+		clearTimeout(slow);
+		const took = Date.now() - started;
+		if (stream || took > SLOW_REQUEST_MS || (status ?? res.statusCode) >= 400) {
+			log(`${label}: closed after ${took} ms (status ${status ?? (res.headersSent ? res.statusCode : 'none')})`);
+		}
+	});
 }
 
 export interface IParadisSimulatorHostServer {
@@ -85,6 +135,9 @@ export async function paradisStartSimulatorHostServer(options: IParadisSimulator
 		}
 		// クエリを落とした形に直してから渡す（`?device=` で別の端末へ向け直させない）
 		req.url = route.url;
+		if (options.onLog) {
+			traceRequest(res, route.endpoint, route.udid, options.onLog, options.slowHeadersMs ?? 10_000);
+		}
 		middleware(req, res, async () => sendStatus(res, 404)).catch(error => {
 			options.onError?.(`request ${route.endpoint} failed`, error);
 			sendStatus(res, 500);
@@ -101,6 +154,8 @@ export async function paradisStartSimulatorHostServer(options: IParadisSimulator
 			return;
 		}
 		req.url = route.url;
+		options.onLog?.(`ws ${route.udid}: upgrade`);
+		socket.once('close', () => options.onLog?.(`ws ${route.udid}: closed`));
 		try {
 			middleware.handleUpgrade(req, socket, head);
 		} catch (error) {

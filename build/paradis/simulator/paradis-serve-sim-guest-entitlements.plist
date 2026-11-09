@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. -->
+<!--
+	Entitlements for the two vendored serve-sim helpers that run inside the iOS simulator
+	(dist/simduo/serve-sim-duo-hid and dist/simax/serve-sim-ax-settings, Mach-O platform iOS Simulator).
+	`xcrun simctl spawn` starts them with DYLD_ROOT_PATH pointing at the simulator runtime. With the hardened
+	runtime, dyld drops DYLD_* variables unless this entitlement is present, and the helper aborts with
+	"DYLD_ROOT_PATH not set for simulator program" (paracode-183). The hardened runtime stays on for notarization.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+</dict>
+</plist>

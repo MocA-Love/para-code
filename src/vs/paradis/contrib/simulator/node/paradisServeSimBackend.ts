@@ -18,7 +18,7 @@ import type { IncomingMessage } from 'http';
 import type * as WsTypes from 'ws';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, paradisIsSimulatorUdid, ParadisSimulatorFold } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULATOR_CAPTURE_START_TIMEOUT_MS, paradisIsSimulatorUdid, ParadisSimulatorFold } from '../common/paradisSimulator.js';
 import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorHostMessage, paradisParseSimulatorScreenConfig, paradisSimulatorFoldFrame, ParadisMjpegSplitter } from '../common/paradisSimulatorFrames.js';
 import { IParadisSimulatorHostConnection, IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
 
@@ -38,6 +38,17 @@ const realSimctl: ParadisSimctlRunner = (args, timeoutMs) => new Promise((resolv
 const FOLD_ACK_TIMEOUT_MS = 10_000;
 const FRAME_TIMEOUT_MS = 15_000;
 const BOOT_TIMEOUT_MS = 180_000;
+
+/**
+ * 映像の要求に、ホストが {@link PARADIS_SIMULATOR_CAPTURE_START_TIMEOUT_MS} の間、応答の頭を返さなかった。
+ * serve-sim は端末の取り込みを始めてから頭を返すので、取り込みが始まっていない。
+ */
+export class ParadisSimulatorCaptureNotStartedError extends Error {
+	constructor(udid: string, waitedMs: number) {
+		super(`The simulator host did not start capturing ${udid} within ${Math.ceil(waitedMs / 1000)} s`);
+		this.name = 'ParadisSimulatorCaptureNotStartedError';
+	}
+}
 
 function requireUdid(udid: string): string {
 	if (!paradisIsSimulatorUdid(udid)) {
@@ -62,6 +73,7 @@ export class ParadisServeSimBackend extends Disposable {
 		private readonly _host: IParadisSimulatorHostProvider,
 		private readonly _logService: ILogService,
 		private readonly _simctl: ParadisSimctlRunner = realSimctl,
+		private readonly _captureStartTimeoutMs = PARADIS_SIMULATOR_CAPTURE_START_TIMEOUT_MS,
 	) {
 		super();
 		this._register(toDisposable(() => {
@@ -104,11 +116,11 @@ export class ParadisServeSimBackend extends Disposable {
 
 	// --- ホスト（HTTP） ---
 
-	private async _get(path: string): Promise<IncomingMessage> {
+	private async _get(path: string, signal?: AbortSignal): Promise<IncomingMessage> {
 		const connection = await this._host.ensure();
 		const { request } = await import('http');
 		return new Promise((resolve, reject) => {
-			const req = request({ socketPath: connection.socketPath, path, method: 'GET', headers: { Authorization: `Bearer ${connection.token}` } }, resolve);
+			const req = request({ socketPath: connection.socketPath, path, method: 'GET', headers: { Authorization: `Bearer ${connection.token}` }, signal }, resolve);
 			req.once('error', reject);
 			req.end();
 		});
@@ -145,23 +157,42 @@ export class ParadisServeSimBackend extends Disposable {
 	/**
 	 * 映像を購読する。届いた JPEG を 1 枚ずつ `onFrame` へ渡す。止めるには返り値を dispose する。
 	 * 流れが切れたら `onEnd` を呼ぶ（呼び出し側が購読し直すか決める）。
+	 *
+	 * ホストが応答の頭を返すまでの時間に期限を置く（serve-sim は端末の取り込みを始めてから頭を返すので、取り込みが
+	 * 戻ってこないと要求は黙ったまま残り、ペインは黒いまま理由も出なかった。paracode-183）。期限が切れたら要求を捨て、
+	 * {@link ParadisSimulatorCaptureNotStartedError} で終える。段ごと（送った・頭が来た・最初の 1 枚・終わり）に
+	 * ログを残し、再発したときにどこで止まったか分かるようにする。
 	 */
 	subscribeFrames(udid: string, onFrame: (jpeg: Uint8Array) => void, onEnd: (error?: Error) => void): IDisposable {
 		requireUdid(udid);
 		let disposed = false;
 		let response: IncomingMessage | undefined;
+		const abort = new AbortController();
+		const started = Date.now();
+		let frames = 0;
 		const end = (error?: Error) => {
+			clearTimeout(headerTimer);
 			if (!disposed) {
 				disposed = true;
+				this._logService.info(`[paradis-simulator] video ${udid}: ended after ${Date.now() - started} ms, ${frames} frame(s)${error ? `: ${error.message}` : ''}`);
 				onEnd(error);
 			}
 		};
-		this._get(`/helper/${udid}/stream.mjpeg`).then(res => {
+		const headerTimer = setTimeout(() => {
+			const error = new ParadisSimulatorCaptureNotStartedError(udid, this._captureStartTimeoutMs);
+			this._logService.warn(`[paradis-simulator] video ${udid}: ${error.message}`);
+			end(error);
+			abort.abort();
+		}, this._captureStartTimeoutMs);
+		this._logService.info(`[paradis-simulator] video ${udid}: requested`);
+		this._get(`/helper/${udid}/stream.mjpeg`, abort.signal).then(res => {
+			clearTimeout(headerTimer);
 			response = res;
 			if (disposed) {
 				res.destroy();
 				return;
 			}
+			this._logService.info(`[paradis-simulator] video ${udid}: host answered ${res.statusCode} after ${Date.now() - started} ms`);
 			if (res.statusCode !== 200) {
 				res.resume();
 				end(new Error(`The simulator host answered ${res.statusCode} for the video stream`));
@@ -173,6 +204,9 @@ export class ParadisServeSimBackend extends Disposable {
 					return;
 				}
 				for (const jpeg of splitter.push(chunk)) {
+					if (frames++ === 0) {
+						this._logService.info(`[paradis-simulator] video ${udid}: first frame after ${Date.now() - started} ms`);
+					}
 					onFrame(jpeg);
 				}
 			});
@@ -180,7 +214,9 @@ export class ParadisServeSimBackend extends Disposable {
 			res.once('error', error => end(error));
 		}, error => end(error));
 		return toDisposable(() => {
+			clearTimeout(headerTimer);
 			disposed = true;
+			abort.abort();
 			response?.destroy();
 		});
 	}

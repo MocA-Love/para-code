@@ -55,7 +55,7 @@ type ParadisSimulatorNotice =
 	| { readonly kind: 'missing' }
 	| { readonly kind: 'shutdown' }
 	| { readonly kind: 'booting' }
-	| { readonly kind: 'stalled'; readonly reason?: string }
+	| { readonly kind: 'stalled'; readonly reason?: string; readonly captureNotStarted?: boolean }
 	| { readonly kind: 'error'; readonly message: string };
 
 function errorMessage(error: unknown): string {
@@ -225,7 +225,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 			void this._readScreenConfig(session);
 		}));
 		session.add(input.onDidRequestBoot(() => void this._bootIfRequested(session)));
-		session.add(session.frameView.onDidStall(reason => this._onStall(session, reason)));
+		session.add(session.frameView.onDidStall(stall => this._onStall(session, stall.reason, stall.captureNotStarted === true)));
 		session.add(session.frameView.onDidDrawFrame(() => {
 			this._stallCount = 0;
 			if (this._noticeState.kind === 'stalled') {
@@ -342,10 +342,10 @@ export class ParadisSimulatorEditor extends EditorPane {
 	 * ホストが起きない理由（`getStatus`）。裏では待ってから様子を読み直し（起動中なら購読し直す）、待ちは回目ごとに
 	 * 延ばして、使い切ったら止める（「再試行」で数え直す）。
 	 */
-	private _onStall(session: ParadisSimulatorEditorSession, streamReason: string | undefined): void {
+	private _onStall(session: ParadisSimulatorEditorSession, streamReason: string | undefined, captureNotStarted = false): void {
 		session.frameView.stop();
 		const reason = paradisSimulatorStallReason(streamReason, undefined);
-		this._setNotice({ kind: 'stalled', reason });
+		this._setNotice({ kind: 'stalled', reason, captureNotStarted });
 		if (!reason) {
 			void this._client.getStatus().then(status => {
 				const hostError = paradisSimulatorStallReason(undefined, status.hostError);
@@ -495,9 +495,11 @@ export class ParadisSimulatorEditor extends EditorPane {
 				case 'shutdown': return localize('paradis.simulator.notice.shutdown', "この端末は起動していません。");
 				case 'booting': return localize('paradis.simulator.notice.booting', "起動しています…");
 				case 'error': return localize('paradis.simulator.notice.error', "シミュレータとつながりませんでした: {0}", notice.message);
-				case 'stalled': return notice.reason
-					? localize('paradis.simulator.notice.stalledReason', "映像が届きません: {0}", notice.reason)
-					: localize('paradis.simulator.notice.stalledNoReason', "映像が届きません。シミュレータのホストから映像が来ていません。");
+				case 'stalled': return notice.captureNotStarted
+					? localize('paradis.simulator.notice.captureNotStarted', "端末の取り込みが始まりません。シミュレータのホストが、この端末の映像を始めませんでした。「再試行」で直らないときは Para Code を終了して開き直してください。")
+					: notice.reason
+						? localize('paradis.simulator.notice.stalledReason', "映像が届きません: {0}", notice.reason)
+						: localize('paradis.simulator.notice.stalledNoReason', "映像が届きません。シミュレータのホストから映像が来ていません。");
 			}
 		})();
 		this._notice.style.display = notice.kind === 'none' ? 'none' : '';

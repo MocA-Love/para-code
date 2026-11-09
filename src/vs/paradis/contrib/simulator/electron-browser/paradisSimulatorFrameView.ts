@@ -39,6 +39,13 @@ export const PARADIS_SIMULATOR_DOUBLE_ESCAPE_MS = 600;
 /** この間映像が届かなければ、流れが切れたとみなす（serve-sim は 1 秒ごとに送り直す）。 */
 export const PARADIS_SIMULATOR_STALL_MS = 5000;
 
+/** 映像が描けないときに知らせるもの。 */
+export interface IParadisSimulatorStall {
+	readonly reason?: string;
+	/** ホストが端末の取り込みを始めなかった（映像の要求に応答の頭が返らなかった）。 */
+	readonly captureNotStarted?: boolean;
+}
+
 /** Blob URL を作る・放す口（テストで差し替える）。 */
 export interface IParadisSimulatorObjectUrls {
 	create(blob: Blob): string;
@@ -70,7 +77,7 @@ export class ParadisSimulatorFrameView extends Disposable {
 	/** 最後に届いた 1 枚を <img> が描けなかった。 */
 	private _lastFrameUndecodable = false;
 
-	private readonly _onDidStall = this._register(new Emitter<string | undefined>());
+	private readonly _onDidStall = this._register(new Emitter<IParadisSimulatorStall>());
 	/** 購読しているのに映像が描けない（流れが切れた）。分かっていれば理由を渡す。 */
 	readonly onDidStall = this._onDidStall.event;
 
@@ -109,7 +116,7 @@ export class ParadisSimulatorFrameView extends Disposable {
 		this._image.alt = '';
 		this._register(dom.addDisposableListener(this._image, 'load', () => this._onImageLoaded()));
 		this._register(dom.addDisposableListener(this._image, 'error', () => this._onImageFailed()));
-		this._stall = this._register(new RunOnceScheduler(() => this._onDidStall.fire(this._lastFrameUndecodable ? localize('paradis.simulator.undecodable', "届いた映像を表示できませんでした。") : undefined), PARADIS_SIMULATOR_STALL_MS));
+		this._stall = this._register(new RunOnceScheduler(() => this._onDidStall.fire({ reason: this._lastFrameUndecodable ? localize('paradis.simulator.undecodable', "届いた映像を表示できませんでした。") : undefined }), PARADIS_SIMULATOR_STALL_MS));
 		this._registerPointer();
 		this._registerKeys();
 		this._register(toDisposable(() => {
@@ -174,7 +181,7 @@ export class ParadisSimulatorFrameView extends Disposable {
 			// shared process で流れが終わった。途切れの判定を待たずに理由を知らせる
 			if (this._subscription.value) {
 				this._stall.cancel();
-				this._onDidStall.fire(message.reason);
+				this._onDidStall.fire({ reason: message.reason, captureNotStarted: message.captureNotStarted === true });
 			}
 			return;
 		}
