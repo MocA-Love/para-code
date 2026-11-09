@@ -12,15 +12,14 @@
 
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { MultipleEditorsSelectedInGroupContext } from '../../../../workbench/common/contextkeys.js';
 import { EditorResourceAccessor, IEditorCommandsContext, isEditorCommandsContext, SideBySideEditor } from '../../../../workbench/common/editor.js';
 import { FileDownload } from '../../../../workbench/contrib/files/browser/fileImportExport.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { paradisIsDiffTab } from '../../../../workbench/services/editor/common/paradisTabContextKeys.js';
-import { PARADIS_EDITOR_DOWNLOAD_COMMAND_ID, PARADIS_EDITOR_DOWNLOAD_WHEN, paradisEditorDownloadSource } from '../common/paradisEditorDownload.js';
+import { PARADIS_EDITOR_DIFF_DOWNLOAD_WHEN, PARADIS_EDITOR_DOWNLOAD_COMMAND_ID, PARADIS_EDITOR_DOWNLOAD_WHEN, paradisEditorDownloadSource } from '../common/paradisEditorDownload.js';
 
 registerAction2(class ParadisEditorDownloadAction extends Action2 {
 	constructor() {
@@ -49,9 +48,10 @@ registerAction2(class ParadisEditorDownloadAction extends Action2 {
 		const group = commandsContext ? editorGroupsService.getGroup(commandsContext.groupId) : undefined;
 		const editor = group && commandsContext?.editorIndex !== undefined ? group.getEditorByIndex(commandsContext.editorIndex) : group?.activeEditor ?? undefined;
 		const target = URI.isUri(resource) ? resource : EditorResourceAccessor.getOriginalUri(editor, { supportSideBySide: SideBySideEditor.PRIMARY });
-		const source = paradisEditorDownloadSource(target, editor ? { sideBySide: paradisIsDiffTab(editor), dirty: editor.isDirty() } : undefined);
+		// 差分のタブでは、target は変更後の側（タブの右クリックが渡す PRIMARY の側）
+		const source = paradisEditorDownloadSource(target, editor ? { dirty: editor.isDirty() } : undefined);
 		if (!source) {
-			notificationService.info(localize('paradis.editorDownload.unavailable', "差分のタブや未保存の変更があるタブはダウンロードできません。ファイルのタブを保存してから選んでください。"));
+			notificationService.info(localize('paradis.editorDownload.unavailable', "未保存の変更があるタブや、接続先のファイルではないタブはダウンロードできません。保存してから選んでください。"));
 			return;
 		}
 		try {
@@ -60,4 +60,16 @@ registerAction2(class ParadisEditorDownloadAction extends Action2 {
 			notificationService.error(error);
 		}
 	}
+});
+
+// 差分のタブ: 変更後の側のファイルを落とす（Q599）。同じコマンドを、差分のタブだけ名前を変えて出す
+MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
+	command: {
+		id: PARADIS_EDITOR_DOWNLOAD_COMMAND_ID,
+		title: localize('paradis.editorDownload.downloadModified', "ダウンロード...（変更後のファイル）"),
+		precondition: MultipleEditorsSelectedInGroupContext.negate(),
+	},
+	group: '2_files',
+	order: 2,
+	when: PARADIS_EDITOR_DIFF_DOWNLOAD_WHEN,
 });
