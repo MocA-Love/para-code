@@ -6,8 +6,8 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /* Scheduled runs modal (gear menu). Shell mirrors the usage dashboard dialog (left nav + body).
- * Stacking: kept below the workbench modal dialog layer (2575) so that IDialogService confirmations
- * (custom dialog style) render above this modal. Toasts (2545) stay below it, so feedback is shown inline.
+ * Stacking: the shared fork modal layer (paradis-modal-backdrop, the table in vs/paradis/browser/paradisModal.ts), below
+ * the workbench dialog layer (2575) so that IDialogService confirmations (custom dialog style) render above this modal.
  * Every rule is scoped under .monaco-workbench .paradis-scheduled-runs to win over workbench-wide rules. */
 
 .monaco-workbench .paradis-scheduled-runs-backdrop {
@@ -17,7 +17,6 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	z-index: 2570;
 }
 
 .monaco-workbench .paradis-scheduled-runs {

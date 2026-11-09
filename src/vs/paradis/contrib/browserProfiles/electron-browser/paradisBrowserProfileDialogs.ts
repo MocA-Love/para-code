@@ -52,7 +52,7 @@ export abstract class ParadisProfileModal extends Disposable {
 		const active = dom.getActiveElement();
 		this._previouslyFocused = dom.isHTMLElement(active) ? active : undefined;
 
-		this._backdrop = $('.paradis-browser-profile-backdrop');
+		this._backdrop = $('.paradis-browser-profile-backdrop.paradis-modal-backdrop');
 		const modal = $('.paradis-browser-profile-modal');
 		this._modal = modal;
 		this._backdrop.appendChild(modal);

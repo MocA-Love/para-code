@@ -6,7 +6,6 @@
 
 .paradis-pty-daemon-popover {
 	position: absolute;
-	z-index: 2600;
 	border-radius: 8px;
 	overflow: hidden;
 	/* Same surface as the context menu opened from the status bar (menu.background, menu.border, the menu's shadow). */

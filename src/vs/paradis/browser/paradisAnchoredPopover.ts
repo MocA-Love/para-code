@@ -11,11 +11,15 @@
 // どの条件で閉じるかは小窓ごとに違う（ツールバーの一覧は窓の blur では閉じない、など）ので、呼び出し側が選ぶ。
 // 外側かどうかは contains() だけで見る。`instanceof Node` は補助ウィンドウで realm が違って false になり得るので
 // 使わない（その場合「外側」と誤判定して閉じてしまう）。
+//
+// 小窓の重なりの段はモーダルより上（paradisModal.ts の表）なので、fork のモーダルが開いたら必ず閉じる
+// （{@link paradisCloseWhenModalOpens}。{@link paradisWatchPopoverDismiss} は常にこれを含む）。
 
 import * as dom from '../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../base/browser/keyboardEvent.js';
 import { KeyCode } from '../../base/common/keyCodes.js';
-import { DisposableStore, IDisposable } from '../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../base/common/lifecycle.js';
+import { PARADIS_MODAL_BACKDROP_CLASS } from './paradisModal.js';
 
 export interface IParadisPopoverDismissOptions {
 	/** 小窓の要素。この中の押下・スクロール・フォーカスは「内側」。 */
@@ -69,7 +73,40 @@ export function paradisWatchPopoverDismiss(targetWindow: Window, options: IParad
 	if (options.closeOnBlur) {
 		store.add(dom.addDisposableListener(targetWindow, dom.EventType.BLUR, () => options.close()));
 	}
+	store.add(paradisCloseWhenModalOpens(options.element, options.close));
 	return store;
+}
+
+/**
+ * 小窓より下の段にある幕。fork のモーダル（{@link PARADIS_MODAL_BACKDROP_CLASS}）と、本家のモーダルのエディタ
+ * （設定エディタなど、2540）。どちらも作業領域の直下に入る。
+ */
+const MODAL_BLOCK_CLASSES = [PARADIS_MODAL_BACKDROP_CLASS, 'monaco-modal-editor-block'];
+
+/**
+ * モーダル（{@link MODAL_BLOCK_CLASSES}）が同じ作業領域に開いたら、小窓を閉じる。
+ * 小窓の段（`--paradis-z-popover`）はモーダルの段（`--paradis-z-modal`）より上なので、開いたまま残すと幕の上に浮く。
+ * キーやコマンドでモーダルを開いたとき、小窓の項目からモーダルを開いたとき、モーダルが自分から開いたときのどれでも閉じる。
+ * 小窓を作業領域（`.monaco-workbench`）の中へ入れた後に呼ぶ。小窓より後に開いた小窓・メニュー・確認では閉じない。
+ */
+export function paradisCloseWhenModalOpens(element: HTMLElement, close: () => void): IDisposable {
+	const container = element.closest<HTMLElement>('.monaco-workbench');
+	if (!container) {
+		return Disposable.None;
+	}
+	// モーダルの幕は作業領域の直下に入る（layoutService.activeContainer.appendChild）ので、直下の出入りだけを見る。
+	const observer = new (dom.getWindow(container).MutationObserver)(records => {
+		for (const record of records) {
+			for (const node of record.addedNodes) {
+				if (dom.isHTMLElement(node) && MODAL_BLOCK_CLASSES.some(className => node.classList.contains(className))) {
+					close();
+					return;
+				}
+			}
+		}
+	});
+	observer.observe(container, { childList: true });
+	return toDisposable(() => observer.disconnect());
 }
 
 /** 小窓の 1 行。 */

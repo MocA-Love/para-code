@@ -10,7 +10,6 @@
 .monaco-workbench .paradis-tab-launcher,
 .monaco-workbench .paradis-tab-launcher-side {
 	position: fixed;
-	z-index: 2550;
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;

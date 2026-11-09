@@ -101,10 +101,8 @@
 	2. Extensions list (marked paradis-overlay-popover so the native view pauses)
 	============================================================ */
 
-/* z-index stays below the workbench modal layer (2575), same tier as the share and downloads lists. */
 .monaco-workbench .paradis-browser-extensions-popover {
 	position: absolute;
-	z-index: 2550;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;

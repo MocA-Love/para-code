@@ -60,8 +60,10 @@ suite('preset editor dialog: row actions', () => {
 			assert.deepStrictEqual({
 				rows,
 				menuItems,
-				// モーダル（z-index 2600）の上に出す（2575 + layer）
-				menuAboveModal: 2575 + (menu?.layer ?? 0) > 2600,
+				// 幕は fork のモーダルの段の印を持ち、メニューは layer を渡さずに本家のコンテキストビューの層へ出る
+				// （どちらの段も paradisModal.ts の表。コンテキストビューはモーダルより上）
+				menuLayer: menu?.layer,
+				backdropOnModalLayer: container.querySelector('.paradis-preset-editor-backdrop')?.classList.contains('paradis-modal-backdrop'),
 				hints: container.querySelector('.ppe-nav-hint') === null,
 			}, {
 				rows: [
@@ -69,7 +71,8 @@ suite('preset editor dialog: row actions', () => {
 					{ name: 'X', chips: ['リポジトリ'], buttons: ['実行', 'X のその他の操作'] },
 				],
 				menuItems: ['編集', '複製', '-', '上へ移動（一番上です）', '下へ移動（保存先（ユーザー設定 / .paracode.json）を跨いでは移せません）', '-', '削除...'],
-				menuAboveModal: true,
+				menuLayer: undefined,
+				backdropOnModalLayer: true,
 				hints: true,
 			});
 		} finally {

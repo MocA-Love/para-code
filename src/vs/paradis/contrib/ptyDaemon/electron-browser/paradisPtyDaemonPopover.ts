@@ -19,6 +19,7 @@
 import './media/paradisPtyDaemon.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import Severity from '../../../../base/common/severity.js';
 import { localize } from '../../../../nls.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -79,6 +80,8 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		this.element.style.width = `${POPOVER_WIDTH}px`;
 		this.element.tabIndex = -1;
 		layoutService.activeContainer.appendChild(this.element);
+		// 小窓はモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に浮かせない）
+		this._register(paradisCloseWhenModalOpens(this.element, () => this.options.onClose()));
 		this.render();
 		this.signature = this.computeSignature();
 		this.reposition();

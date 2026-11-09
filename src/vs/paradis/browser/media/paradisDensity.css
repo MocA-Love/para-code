@@ -27,4 +27,38 @@
 	--paradis-chip-font-size: var(--vscode-fontSize-label2);
 	/* Space between a small (S) modal's header and its first line. */
 	--paradis-modal-body-top: var(--vscode-spacing-size160);
+
+	/*
+	 * Stacking layers of the fork's floating parts, slotted between the upstream layers (the table and the reasons are in
+	 * paradisModal.ts). Upstream, for reference: title bar 2500, modal editor 2540, toasts and notification center 2545,
+	 * quick input 2550, dialogs and context views (menus, drop-down lists) 2575, hovers 2576. Part CSS never writes a
+	 * number above 3: it puts the shared marker class on the element (rules below) or reads one of these variables.
+	 */
+	/* Backdrop and box of every fork modal. Upstream menus, drop-downs, quick input, dialogs, hovers and toasts open above it. */
+	--paradis-z-modal: 2542;
+	/* A box opened from inside an open modal (dictionary editors in the notification settings ...). */
+	--paradis-z-modal-nested: 2543;
+	/* Anchored popovers that are not context views yet (title bar panels, browser toolbar drop-downs, tab launcher,
+		terminal preset folders, pty daemon). Above toasts; they close when a fork modal opens (paradisCloseWhenModalOpens). */
+	--paradis-z-popover: 2546;
+	/* Reserved for the dimming layer under the centered quick input (Q593): above the popovers, under quick input. */
+	--paradis-z-scrim: 2548;
+	/* Temporary whole-window inspection overlays (theme colors: pick from the screen). They outline any part, so they
+		sit above every upstream layer, like upstream's screencast overlay (100000). */
+	--paradis-z-inspect: 100000;
+}
+
+/* Every fork modal backdrop carries the marker class `paradis-modal-backdrop` (it also keeps the built-in browser's
+	native view from painting over the modal, overlayManager.ts), so its layer is set here, once. */
+.monaco-workbench .paradis-modal-backdrop {
+	z-index: var(--paradis-z-modal);
+}
+
+.monaco-workbench .paradis-modal-backdrop.paradis-modal-backdrop-nested {
+	z-index: var(--paradis-z-modal-nested);
+}
+
+/* Same for the shared popover marker `paradis-overlay-popover` (overlayManager.ts). */
+.monaco-workbench .paradis-overlay-popover {
+	z-index: var(--paradis-z-popover);
 }

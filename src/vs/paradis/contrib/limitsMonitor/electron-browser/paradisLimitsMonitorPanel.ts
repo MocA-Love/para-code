@@ -32,6 +32,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { Action } from '../../../../base/common/actions.js';
@@ -164,6 +165,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 
 		layoutService.activeContainer.appendChild(this.element);
 		this.reposition();
+		// 小窓はモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に浮かせない）
+		this._register(paradisCloseWhenModalOpens(this.element, () => this.options.onClose()));
 
 		this._register(dom.addDisposableListener(dom.getActiveWindow(), 'resize', () => this.reposition()));
 		this._register(dom.addDisposableListener(dom.getActiveWindow(), 'mousedown', e => this.onWindowMouseDown(e), true));
