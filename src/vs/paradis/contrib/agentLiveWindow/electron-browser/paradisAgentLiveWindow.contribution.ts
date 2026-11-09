@@ -9,7 +9,6 @@
 import '../browser/media/paradisAgentLiveWindow.css';
 import '../browser/paradisAgentLiveWindowService.js';
 import '../browser/paradisAgentLiveWindowKeybindings.js';
-import { $, append } from '../../../../base/browser/dom.js';
 import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IAction } from '../../../../base/common/actions.js';
@@ -25,6 +24,8 @@ import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '.
 import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ToggleTitleBarConfigAction } from '../../../../workbench/browser/parts/titlebar/titlebarActions.js';
+import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
+import { renderParadisActionButton } from '../../../browser/paradisActionButton.js';
 import { IParadisAgentLiveWindowService } from '../common/paradisAgentLiveWindow.js';
 
 const OPEN_COMMAND_ID = 'paradis.agentLiveWindow.open';
@@ -87,12 +88,12 @@ class ParadisToggleAgentLiveTitleBarAction extends ToggleTitleBarConfigAction {
 }
 
 /**
- * タイトルバーのボタン本体。アイコン + ラベル + 稼働数バッジ。
- * 要対応 (許可待ち・質問中) が居る間はバッジの数と色をそちらへ切り替える。
+ * タイトルバーのボタン本体。UI キットの素のボタン（アイコン + ラベル + 数のバッジ、paradisActionButton.ts）。
+ * 数は要対応 (許可待ち・質問中) が居る間はその件数を警告の色で、居なければ稼働中の件数を色なしで出す。
  */
 class ParadisAgentLiveTitleBarWidget extends BaseActionViewItem {
 
-	private badge: HTMLElement | undefined;
+	private count: ParadisCountBadge | undefined;
 
 	constructor(
 		action: IAction,
@@ -106,22 +107,17 @@ class ParadisAgentLiveTitleBarWidget extends BaseActionViewItem {
 	override render(container: HTMLElement): void {
 		super.render(container);
 
-		container.classList.add('paradis-agent-live-titlebar-widget');
+		container.classList.add('paradis-titlebar-button', 'paradis-agent-live-titlebar-widget');
 		container.setAttribute('role', 'button');
-
-		append(container, $('span.paradis-agent-live-titlebar-icon')).setAttribute('aria-hidden', 'true');
-		append(container, $('span.paradis-agent-live-titlebar-label')).textContent = this.action.label;
-		this.badge = append(container, $('span.paradis-agent-live-titlebar-badge'));
+		this.count = renderParadisActionButton(container, { icon: 'paradis-agent-live-titlebar-icon', label: this.action.label, count: true }).count;
 
 		const hover = this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), container, ''));
 		const update = () => {
 			const summary = this.liveWindowService.summary;
-			const badge = this.badge;
-			if (badge) {
-				const count = summary.attention > 0 ? summary.attention : summary.active;
-				badge.textContent = count > 0 ? String(count) : '';
-				badge.classList.toggle('hidden', count === 0);
-				badge.classList.toggle('attention', summary.attention > 0);
+			if (summary.attention > 0) {
+				this.count?.update(summary.attention, 'attention');
+			} else {
+				this.count?.update(summary.active, 'plain');
 			}
 			container.setAttribute('aria-label', this.hoverText(summary.active, summary.attention));
 			hover.update(this.hoverText(summary.active, summary.attention));

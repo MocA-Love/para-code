@@ -9,13 +9,12 @@
 // タイトルバーのベル（未読数ならぬ「要対応のペイン数」のバッジ付き）と、受信箱を開くコマンド。
 // ベルは「エージェント一覧」「ブラウザ一覧」の右に並ぶ。
 
-import { $, append, getActiveWindow, getWindow } from '../../../../base/browser/dom.js';
+import { getActiveWindow, getWindow } from '../../../../base/browser/dom.js';
 import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -25,6 +24,8 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { ToggleTitleBarConfigAction } from '../../../../workbench/browser/parts/titlebar/titlebarActions.js';
 import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { renderParadisActionButton } from '../../../browser/paradisActionButton.js';
+import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
 import { ParadisNotificationInboxPopover } from '../browser/paradisNotificationInboxPopover.js';
 import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_INBOX_TITLE_BAR_SETTING } from '../common/paradisNotificationInbox.js';
 
@@ -141,11 +142,13 @@ class ParadisNotificationInboxPopoverController extends Disposable {
 	}
 }
 
-/** タイトルバーのベル本体。アイコン + 要対応のペイン数のバッジ。 */
+/**
+ * タイトルバーのベル本体。UI キットのアイコンのボタン（paradisActionButton.ts）。数は「人の対応を待っているペイン」の
+ * 数なので、要対応の意味の警告の色で右上に重ねる（10 件から 9+。重ねるのでベルの幅は数で変わらない）。
+ */
 class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
 
-	private badge: HTMLElement | undefined;
-	private icon: HTMLElement | undefined;
+	private count: ParadisCountBadge | undefined;
 
 	constructor(
 		action: IAction,
@@ -160,27 +163,19 @@ class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
 	override render(container: HTMLElement): void {
 		super.render(container);
 
-		container.classList.add('paradis-notification-inbox-titlebar-widget');
+		container.classList.add('paradis-titlebar-button', 'paradis-notification-inbox-titlebar-widget');
 		container.setAttribute('role', 'button');
 		container.setAttribute('aria-haspopup', 'dialog');
 		container.setAttribute('aria-expanded', 'false');
-		this.icon = append(container, $('span'));
-		this.icon.setAttribute('aria-hidden', 'true');
-		this.badge = append(container, $('span.paradis-notification-inbox-badge'));
+		this.count = renderParadisActionButton(container, { icon: Codicon.bell, count: true }).count;
 		this.controller.addAnchor(container);
 		this._register({ dispose: () => this.controller.removeAnchor(container) });
 
 		const hover = this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), container, ''));
 		const update = () => {
 			const { attentionPaneCount, unreadCount } = this.inboxService.snapshot;
-			if (this.icon) {
-				this.icon.className = ThemeIcon.asClassName(attentionPaneCount > 0 ? Codicon.bellDot : Codicon.bell);
-			}
-			if (this.badge) {
-				// 2桁以上は「9+」で頭打ちにして、ベルの幅を変えない（正確な数はホバーに出る）
-				this.badge.textContent = attentionPaneCount > 9 ? '9+' : attentionPaneCount > 0 ? String(attentionPaneCount) : '';
-				this.badge.classList.toggle('hidden', attentionPaneCount === 0);
-			}
+			// 正確な数はホバーと読み上げの名前に出る
+			this.count?.update(attentionPaneCount, 'attention');
 			const text = this.hoverText(attentionPaneCount, unreadCount);
 			container.setAttribute('aria-label', text);
 			hover.update(text);
