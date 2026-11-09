@@ -7,80 +7,13 @@
 
 /* ---------------------------------------------------------------- タイトルバーのボタン */
 
-/* 隣の「エージェント一覧」(paradisAgentLiveWindow.css) と作法を揃える: アイコンだけでは
- * 「四角を並べたグリッド」調の意匠が近く見分けづらいという指摘があったため、ラベルは
- * ホバー展開ではなく常時表示にしている。件数バッジも閉じているときから出す。 */
-.monaco-workbench .paradis-browser-live-titlebar-widget {
-	display: inline-flex;
-	align-items: center;
-	/* Same steps as the upstream title bar actions and the other Para Code title bar items:
-		22px tall, 16px icon, small corner radius, the title bar's own (active / inactive) foreground. */
-	height: 22px;
-	padding: var(--paradis-titlebar-item-padding);
-	border-radius: var(--vscode-cornerRadius-small);
-	cursor: pointer;
-	color: inherit;
-	-webkit-app-region: no-drag;
-	white-space: nowrap;
-}
-
-.monaco-workbench .paradis-browser-live-titlebar-widget:hover,
-.monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible {
-	background-color: var(--vscode-toolbar-hoverBackground);
-	outline: none;
-}
-
-.monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
-/* 小さなタイルが並んだ格子。ページを並べて見る盤を表す */
-.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-icon {
-	width: 16px;
-	height: 16px;
-	flex: 0 0 auto;
-	background-color: currentColor;
+/*
+ * ボタンの枠・文字・数のバッジは UI キットの素のボタン (paradisActionButton.ts)、タイトルバーでの色と狭い幅での
+ * 畳み方は titlebarFit/browser/media/paradisTitlebarFit.css。ここはアイコンの形だけ。
+ * 小さなタイルが並んだ格子。ページを並べて見る盤を表す。
+ */
+.monaco-workbench .paradis-titlebar-button > .paradis-action-button-icon.paradis-browser-live-titlebar-icon {
 	-webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1.5 2.5h5.5v5H1.5zm7.5 0h5.5v5H9zM1.5 8.5H7v5H1.5zm7.5 0h5.5v5H9z'/></svg>");
-	-webkit-mask-repeat: no-repeat;
-	-webkit-mask-position: center center;
-	-webkit-mask-size: contain;
-}
-
-.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label {
-	display: inline-block;
-	margin-left: var(--vscode-spacing-size40);
-	color: inherit;
-	font: inherit;
-	overflow: hidden;
-	white-space: nowrap;
-}
-
-.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-badge {
-	/* One count badge for every title bar item (same as the notification inbox bell). */
-	min-width: 16px;
-	box-sizing: border-box;
-	height: 16px;
-	margin-left: var(--vscode-spacing-size40);
-	padding: 0 var(--vscode-spacing-size40);
-	border-radius: var(--vscode-cornerRadius-circle);
-	font-size: var(--paradis-chip-font-size);
-	font-weight: var(--vscode-fontWeight-semiBold);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	background-color: var(--vscode-activityBarBadge-background);
-	color: var(--vscode-activityBarBadge-foreground);
-}
-
-.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-badge.hidden {
-	display: none;
-}
-
-/* 共有中のページがあるときだけ色を変える。「エージェントが掴んでいる」ことの合図。 */
-.monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-badge.shared {
-	background-color: var(--vscode-charts-blue, #3794ff);
-	color: var(--vscode-editor-background);
 }
 
 /* ---------------------------------------------------------------- ウィンドウ本体 */

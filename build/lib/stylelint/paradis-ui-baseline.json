@@ -47,9 +47,6 @@
 		"hex-color | .paradis-agent-live-window .paradis-agent-live-summary-kind | color: var(--vscode-charts-red, #ef4444)": 1
 	},
 	"src/vs/paradis/contrib/agentLiveWindow/browser/media/paradisAgentLiveWindow.css": {
-		"focus | .monaco-workbench .paradis-agent-live-titlebar-widget:hover, .monaco-workbench .paradis-agent-live-titlebar-widget:focus-visible | ": 1,
-		"focus | .monaco-workbench .paradis-agent-live-titlebar-widget:focus-visible | ": 1,
-		"hex-color | .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-badge.attention | background-color: var(--vscode-charts-yellow, #cca700)": 1,
 		"focus | .paradis-agent-live-chip:focus-visible, .paradis-agent-live-icon-button:focus-visible, .paradis-agent-live-mini-button:focus-visible, .paradis-agent-live-seg button:focus-visible | ": 1,
 		"focus | .paradis-agent-live-number:focus | ": 1,
 		"codicon-size | .paradis-agent-live-icon-button.codicon, .paradis-agent-live-mini-button.codicon, .paradis-agent-live-drag-handle.codicon | font-size: 14px": 1,
@@ -102,9 +99,6 @@
 		"focus | .monaco-workbench .paradis-browser-extensions-popover .pbx-row:hover .pbx-icon-button, .monaco-workbench .paradis-browser-extensions-popover .pbx-row:focus-within .pbx-icon-button, .monaco-workbench .paradis-browser-extensions-popover .pbx-row .pbx-icon-button.is-pinned | ": 1
 	},
 	"src/vs/paradis/contrib/browserLiveWindow/electron-browser/media/paradisBrowserLiveWindow.css": {
-		"focus | .monaco-workbench .paradis-browser-live-titlebar-widget:hover, .monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible | ": 1,
-		"focus | .monaco-workbench .paradis-browser-live-titlebar-widget:focus-visible | ": 1,
-		"hex-color | .monaco-workbench .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-badge.shared | background-color: var(--vscode-charts-blue, #3794ff)": 1,
 		"focus | .paradis-browser-live-chip:focus-visible, .paradis-browser-live-icon-button:focus-visible, .paradis-browser-live-mini-button:focus-visible, .paradis-browser-live-shot:focus-visible, .paradis-browser-live-pop-item:focus-visible, .paradis-browser-live-pop-seg button:focus-visible | ": 1,
 		"codicon-size | .paradis-browser-live-icon-button.codicon | font-size: 14px": 1,
 		"focus | .paradis-browser-live-link:focus-visible | ": 1,
@@ -318,7 +312,6 @@
 		"z-index | .monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-mobile-viewport-banner, .monaco-workbench .terminal-wrapper > .paradis-mobile-viewport-banner | z-index: 35": 1
 	},
 	"src/vs/paradis/contrib/notificationInbox/browser/media/paradisNotificationInbox.css": {
-		"focus | .monaco-workbench .paradis-notification-inbox-titlebar-widget:focus-visible | ": 1,
 		"focus | .monaco-workbench .paradis-notification-inbox-popover[tabindex= ]:focus | ": 1,
 		"focus | .monaco-workbench .paradis-notification-inbox-popover .pnip-row:focus-visible | ": 1
 	},

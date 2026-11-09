@@ -60,8 +60,8 @@
  * matches its fold level.
  */
 
-/* 1400px or less (or fold 1): the agent list and browser list buttons become icon-only. */
-.monaco-workbench .part.titlebar > .titlebar-container:is(.paradis-fit-1400, .paradis-fold-1) :is(.paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label, .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label) {
+/* 1400px or less (or fold 1): the agent list, tasks and browser list buttons become icon-only (the count stays). */
+.monaco-workbench .part.titlebar > .titlebar-container:is(.paradis-fit-1400, .paradis-fold-1) .paradis-titlebar-button > .paradis-action-button-label {
 	display: none;
 }
 
@@ -94,4 +94,37 @@
 /* 1000px or less: hide the service chips that have nothing to report. */
 .monaco-workbench .part.titlebar > .titlebar-container.paradis-fit-1000 > .titlebar-left > .paradis-service-status-trigger:has(> .paradis-service-status-dot:is(.ok, .unknown)) {
 	display: none;
+}
+
+/* ---------- 3. the fork's title bar buttons ---------- */
+
+/*
+ * Agent list, tasks, browser list and the notification bell (MenuId.TitleBarAdjacentCenter) are UI kit ghost / icon
+ * buttons, 24px with the control radius (paradisActionButton.ts, paradisButton.css). In the title bar they take the
+ * title bar's own (active / inactive) foreground instead of the kit's text color, and the count over the bell is cut
+ * off by a rim in the title bar's background.
+ */
+.monaco-workbench .part.titlebar .paradis-button.paradis-titlebar-button {
+	color: inherit;
+	-webkit-app-region: no-drag;
+}
+
+/* The bell while its popover is open. */
+.monaco-workbench .part.titlebar .paradis-button.paradis-titlebar-button.open {
+	background-color: var(--vscode-paradis-fillHover);
+}
+
+.monaco-workbench .part.titlebar .paradis-titlebar-button > .paradis-action-button-icon:not(.codicon) {
+	background-color: currentColor;
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center center;
+	-webkit-mask-size: contain;
+}
+
+.monaco-workbench .part.titlebar .paradis-titlebar-button > .paradis-count.paradis-count-overlay {
+	box-shadow: 0 0 0 2px var(--vscode-titleBar-activeBackground);
+}
+
+.monaco-workbench .part.titlebar.inactive .paradis-titlebar-button > .paradis-count.paradis-count-overlay {
+	box-shadow: 0 0 0 2px var(--vscode-titleBar-inactiveBackground);
 }

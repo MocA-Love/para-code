@@ -7,7 +7,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import '../browser/media/paradisTaskBoardEntry.css';
-import { $, append } from '../../../../base/browser/dom.js';
 import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IAction } from '../../../../base/common/actions.js';
@@ -33,6 +32,7 @@ import { ToggleTitleBarConfigAction } from '../../../../workbench/browser/parts/
 import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { renderParadisActionButton } from '../../../browser/paradisActionButton.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL, PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING } from '../common/paradisTaskBoardBridge.js';
 import { IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult } from '../common/paradisTaskBoardHost.js';
@@ -249,7 +249,7 @@ class ParadisToggleTaskBoardTitleBarAction extends ToggleTitleBarConfigAction {
 }
 
 /**
- * タイトルバーのボタン。見た目は「エージェント一覧」のクラスをそのまま使い、アイコンだけ差し替える。
+ * タイトルバーのボタン。UI キットの素のボタン（paradisActionButton.ts）で、「エージェント一覧」と同じ見た目。
  * 人の判断待ちの件数のバッジは次の段で出す（今は空のまま）。
  */
 class ParadisTaskBoardTitleBarWidget extends BaseActionViewItem {
@@ -270,12 +270,11 @@ class ParadisTaskBoardTitleBarWidget extends BaseActionViewItem {
 
 	override render(container: HTMLElement): void {
 		super.render(container);
-		container.classList.add('paradis-agent-live-titlebar-widget', 'paradis-task-board-titlebar-widget');
+		container.classList.add('paradis-titlebar-button', 'paradis-task-board-titlebar-widget');
 		container.setAttribute('role', 'button');
-		append(container, $('span.paradis-agent-live-titlebar-icon.paradis-task-board-titlebar-icon')).setAttribute('aria-hidden', 'true');
 		// allow-any-unicode-next-line
 		const label = localize('paradis.taskBoard.titleBarTasksLabel', "タスク");
-		append(container, $('span.paradis-agent-live-titlebar-label')).textContent = label;
+		renderParadisActionButton(container, { icon: 'paradis-task-board-titlebar-icon', label });
 		container.setAttribute('aria-label', label);
 		// allow-any-unicode-next-line
 		const hover = localize('paradis.taskBoard.titleBarTasksHover', "タスク（GitHub の Issue・PR・プロジェクト）を開く。タスクボードはこの画面から開きます");
