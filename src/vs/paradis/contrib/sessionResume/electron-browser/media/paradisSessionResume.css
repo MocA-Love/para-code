@@ -52,7 +52,7 @@
 
 .paradis-session-resume {
 	flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
-	background: var(--vscode-editor-background); color: var(--vscode-editor-foreground);
+	background: var(--vscode-editor-background); color: var(--vscode-foreground);
 }
 /* 左: フィルタナビ(旧 toolbar のフィルタ群をここへ移設) */
 .paradis-session-resume .paradis-session-resume-nav {
@@ -105,7 +105,7 @@
 	background: transparent; color: var(--vscode-descriptionForeground); font-size: 11px;
 }
 .paradis-session-resume .fchip:hover { background: var(--vscode-list-hoverBackground); }
-.paradis-session-resume .fchip.on { border-color: transparent; background: color-mix(in srgb, var(--vscode-focusBorder) 30%, transparent); color: var(--vscode-editor-foreground); }
+.paradis-session-resume .fchip.on { border-color: transparent; background: color-mix(in srgb, var(--vscode-focusBorder) 30%, transparent); color: var(--vscode-foreground); }
 .paradis-session-resume .paradis-session-resume-check { display: flex; align-items: center; gap: 6px; margin: 6px 12px 0; font-size: 12px; white-space: nowrap; cursor: pointer; }
 .paradis-session-resume .rail-footer {
 	position: sticky; bottom: 0; display: flex; flex-direction: column; gap: 7px; margin-top: auto;
@@ -168,7 +168,7 @@
 .paradis-session-resume .row-time { flex: none; font-size: 11px; color: var(--vscode-descriptionForeground); }
 .paradis-session-resume .row-preview { margin: 6px 0 7px 25px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); }
 .paradis-session-resume .row-preview .row-speaker { margin-right: 4px; font-size: 11px; color: var(--vscode-descriptionForeground); }
-.paradis-session-resume .row-preview .row-text { color: var(--vscode-editor-foreground); opacity: .82; }
+.paradis-session-resume .row-preview .row-text { color: var(--vscode-foreground); opacity: .82; }
 .paradis-session-resume .row-match-info { display: flex; align-items: center; gap: 8px; margin: -1px 0 7px 25px; font-size: 10px; color: var(--vscode-descriptionForeground); }
 .paradis-session-resume .row-match-info .match-source { color: var(--vscode-charts-yellow); }
 .paradis-session-resume .row-match-info .match-count { padding: 1px 6px; border-radius: 9px; background: color-mix(in srgb, var(--vscode-charts-yellow) 13%, transparent); }
@@ -282,11 +282,7 @@
 	font-size: 12px; color: var(--vscode-descriptionForeground);
 }
 .paradis-session-resume .paradis-session-resume-listbar .listbar-field { display: inline-flex; align-items: center; gap: 6px; }
-.paradis-session-resume .paradis-session-resume-listbar select {
-	height: 22px; padding: 0 4px; border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 4px;
-	background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); font-family: inherit; font-size: 12px;
-}
-.paradis-session-resume .paradis-session-resume-listbar select:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.paradis-session-resume .paradis-session-resume-listbar .monaco-select-box { height: 22px; }
 .paradis-session-resume .paradis-session-resume-listbar .listbar-check { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; }
 .paradis-session-resume .paradis-session-resume-listbar .listbar-spacer { flex: 1; }
 .paradis-session-resume .paradis-session-index-status { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; white-space: nowrap; }

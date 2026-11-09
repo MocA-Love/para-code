@@ -26,12 +26,14 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { paradisCanUseWindowTransparency } from '../../../../platform/window/common/paradisWindowTransparency.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 import { paradisToggleChecked, paradisToggleValue } from '../common/paradisSettingsToggle.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, PARADIS_HUB_CLOSE_AFTER_COMMAND, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
 import { paradisHubNavCaption, paradisHubNavItem, ParadisHubScrollSpy } from '../../paradisHub/electron-browser/paradisHubNav.js';
@@ -1933,6 +1935,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@INativeWorkbenchEnvironmentService private readonly environmentService: INativeWorkbenchEnvironmentService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 		this._register(paradisMarkSettingsDialogOpen());
@@ -2188,33 +2191,20 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		}
 
 		if (spec.choices) {
-			const select = dom.append(row, $('select.psd-select')) as HTMLSelectElement;
-			for (const choice of spec.choices) {
-				const option = dom.append(select, $('option')) as HTMLOptionElement;
-				option.value = String(choice.value);
-				option.textContent = choice.label;
-			}
+			const choices = spec.choices.map(choice => ({ value: String(choice.value), label: choice.label }));
+			const select = this._register(new ParadisSelect(row, this.contextViewService, choices, undefined, { ariaLabel: spec.label, className: 'psd-select' }));
 			// 用意した刻み (不透明度の 96% など) に載らない値が既に入っていることがある。
 			// そのまま黙って別の値を選んだ状態にすると、開いただけで設定が変わったように
 			// 見えるので、実際の値を選択肢へ足して選んでおく。差し替え式にして増殖させない。
-			let extraOption: HTMLOptionElement | undefined;
 			const sync = () => {
 				const current = String(this.configurationService.getValue(key) ?? '');
-				const known = spec.choices?.some(choice => String(choice.value) === current) ?? false;
-				extraOption?.remove();
-				extraOption = undefined;
-				if (!known) {
-					extraOption = dom.append(select, $('option')) as HTMLOptionElement;
-					extraOption.value = current;
-					extraOption.textContent = current;
-				}
-				select.value = current;
-				select.disabled = !this._isRegistered(key);
+				const known = choices.some(choice => choice.value === current);
+				select.setOptions(known ? choices : [...choices, { value: current, label: current }], current);
+				select.enabled = this._isRegistered(key);
 			};
 			sync();
 			this._refreshers.push(sync);
-			this._register(dom.addDisposableListener(select, 'change', () => {
-				const raw = select.value;
+			this._register(select.onDidChange(raw => {
 				const numeric = Number(raw);
 				void this._write(key, Number.isFinite(numeric) && raw.trim() !== '' ? numeric : raw);
 			}));

@@ -506,6 +506,7 @@ function createDialogStubs(client: TestResumeClient, indexSearch?: (query: strin
 			Object.create(null),
 			storage,
 			{ prompt: async () => ({ result: undefined }) } as unknown as IDialogService,
+			Object.create(null),
 		);
 		dialogs.push(dialog);
 		return dialog;

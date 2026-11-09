@@ -14,6 +14,7 @@ import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
@@ -45,6 +46,7 @@ async function openDialog(root: HTMLElement, state: IParadisScheduledRunsState, 
 		upcastPartial<IConfigurationService>({}),
 		new NullLogService(),
 		upcastPartial<IWorkspaceTrustManagementService>({}),
+		upcastPartial<IContextViewService>({}),
 	);
 	await timeout(0);
 	return dialog;

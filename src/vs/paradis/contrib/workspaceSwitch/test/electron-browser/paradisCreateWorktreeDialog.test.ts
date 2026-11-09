@@ -63,6 +63,7 @@ suite('create worktree dialog: setup switch', () => {
 			storage,
 			{ enqueue: (request: IParadisHeadlessWorktreeRequest) => { enqueued.push(request); } } as unknown as IParadisWorktreeCreateQueueService,
 			{ onDidChange: Event.None, refresh: () => { }, getAgentTemplates: () => [], isFixedBySettings: () => false } as unknown as IParadisAgentModelCatalogService,
+			Object.create(null),
 			'repo',
 			undefined,
 		);

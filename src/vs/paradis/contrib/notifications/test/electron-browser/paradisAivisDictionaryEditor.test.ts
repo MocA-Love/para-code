@@ -34,7 +34,7 @@ suite('ParadisAivisDictionaryEditor', () => {
 		});
 		const layoutService = upcastPartial<ILayoutService>({ activeContainer: root });
 		const open = async () => {
-			const dialog = new ParadisDictionaryEditorDialog(layoutService, sharedProcessService, 'dictionary-1', 'key', () => { });
+			const dialog = new ParadisDictionaryEditorDialog(layoutService, sharedProcessService, 'dictionary-1', 'key', () => { }, Object.create(null));
 			await timeout(0);
 			return dialog;
 		};

@@ -23,6 +23,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { EditorMarkdownCodeBlockRenderer } from '../../../../editor/browser/widget/markdownRenderer/browser/editorMarkdownCodeBlockRenderer.js';
 import { localize } from '../../../../nls.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
@@ -30,6 +31,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import Severity from '../../../../base/common/severity.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { IChatOutputRendererService } from '../../../../workbench/contrib/chat/browser/chatOutputItemRenderer.js';
 import { ParadisSessionIndexController } from '../../agentActivity/electron-browser/paradisSessionIndexController.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -142,6 +144,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		@IChatOutputRendererService private readonly chatOutputRendererService: IChatOutputRendererService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IDialogService private readonly dialogService: IDialogService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisSessionResumeClient);
@@ -403,16 +406,10 @@ export class ParadisSessionResumeDialog extends Disposable {
 		}
 
 		const addSelect = <T extends string>(label: string, values: readonly T[], current: T, text: (value: T) => string, onChange: (value: T) => void) => {
-			const wrap = dom.append(this.listBar!, $('label.listbar-field'));
+			const wrap = dom.append(this.listBar!, $('span.listbar-field'));
 			dom.append(wrap, $('span.listbar-label')).textContent = label;
-			const select = dom.append(wrap, $('select')) as HTMLSelectElement;
-			for (const value of values) {
-				const option = dom.append(select, $('option')) as HTMLOptionElement;
-				option.value = value;
-				option.textContent = text(value);
-			}
-			select.value = current;
-			this._register(dom.addDisposableListener(select, dom.EventType.CHANGE, () => onChange(select.value as T)));
+			const select = this._register(new ParadisSelect(wrap, this.contextViewService, values.map(value => ({ value, label: text(value) })), current, { ariaLabel: label }));
+			this._register(select.onDidChange(value => onChange(value as T)));
 		};
 		addSelect<ParadisResumeSortOrder>(localize('paradis.sessionResume.sortLabel', "並び"), ['updated', 'created', 'title'], this.listOptions.sort, paradisResumeSortLabel,
 			sort => this.setListOptions({ ...this.listOptions, sort }));

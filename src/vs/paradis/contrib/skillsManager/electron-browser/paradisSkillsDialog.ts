@@ -21,6 +21,7 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
@@ -46,6 +47,7 @@ import {
 } from '../common/paradisSkills.js';
 import { paradisResolveSkillRoots } from './paradisSkillRoots.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 
 const $ = dom.$;
 
@@ -74,6 +76,7 @@ export class ParadisSkillsDialog extends Disposable {
 		@ILabelService private readonly labelService: ILabelService,
 		@IParadisWorkspaceSwitchService private readonly switchService: IParadisWorkspaceSwitchService,
 		@ILogService private readonly logService: ILogService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 		this.backdrop = $('.paradis-skills-backdrop.paradis-modal-backdrop');
@@ -305,13 +308,11 @@ export class ParadisSkillsDialog extends Disposable {
 			.map(listing => listing.root)
 			.filter(root => paradisSkillInstallBlocker(skill, root) === undefined);
 		if (targets.length > 0) {
-			dom.append(actions, $('span.psk-muted')).textContent = localize('paradis.skills.installTo', "導入先");
-			const select = dom.append(actions, $('select.psk-select')) as HTMLSelectElement;
-			for (const root of targets) {
-				const option = dom.append(select, $('option')) as HTMLOptionElement;
-				option.value = root.id;
-				option.textContent = `${root.host.label} · ${paradisSkillRootLabel(root)}`;
-			}
+			const installTo = localize('paradis.skills.installTo', "導入先");
+			dom.append(actions, $('span.psk-muted')).textContent = installTo;
+			const select = this.contentDisposables.add(new ParadisSelect(actions, this.contextViewService,
+				targets.map(root => ({ value: root.id, label: `${root.host.label} · ${paradisSkillRootLabel(root)}` })), undefined,
+				{ ariaLabel: installTo, className: 'psk-select' }));
 			const install = this.button(actions, localize('paradis.skills.install', "導入…"), 'primary', Codicon.cloudDownload);
 			this.contentDisposables.add(dom.addDisposableListener(install, 'click', () => {
 				const target = targets.find(root => root.id === select.value);

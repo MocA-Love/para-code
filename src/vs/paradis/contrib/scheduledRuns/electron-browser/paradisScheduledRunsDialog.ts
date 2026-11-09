@@ -21,6 +21,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -67,6 +68,7 @@ import { IParadisScheduledRunsClient } from './paradisScheduledRunsClient.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
 import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
 const $ = dom.$;
@@ -277,6 +279,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ILogService private readonly logService: ILogService,
 		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 		this.backdrop = $('.paradis-scheduled-runs-backdrop.paradis-modal-backdrop');
@@ -828,13 +831,13 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			['weekly', localize('paradis.scheduledRuns.kind.weekly', "毎週")],
 			['hourly', localize('paradis.scheduledRuns.kind.hourly', "数時間ごと")],
 			['cron', localize('paradis.scheduledRuns.kind.cron', "cron 式")],
-		], values.scheduleKind);
-		const dayOfWeek = this.select(scheduleLine, [1, 2, 3, 4, 5, 6, 0].map(day => [String(day), paradisDayOfWeekLabel(day)] as [string, string]), String(values.dayOfWeek));
+		], values.scheduleKind, localize('paradis.scheduledRuns.aria.kind', "スケジュールの種類"));
+		const dayOfWeek = this.select(scheduleLine, [1, 2, 3, 4, 5, 6, 0].map(day => [String(day), paradisDayOfWeekLabel(day)] as [string, string]), String(values.dayOfWeek), localize('paradis.scheduledRuns.aria.dayOfWeek', "曜日"));
 		const time = this.input(scheduleLine, values.time);
 		time.type = 'time';
 		const everyHours = this.select(scheduleLine, [1, 2, 3, 4, 6, 8, 12].map(hours => [String(hours), hours === 1
 			? localize('paradis.scheduledRuns.everyHour', "1 時間ごと")
-			: localize('paradis.scheduledRuns.everyHours', "{0} 時間ごと", hours)] as [string, string]), String(values.everyHours));
+			: localize('paradis.scheduledRuns.everyHours', "{0} 時間ごと", hours)] as [string, string]), String(values.everyHours), localize('paradis.scheduledRuns.aria.everyHours', "間隔"));
 		const minuteLabel = dom.append(scheduleLine, $('span.psr-muted'));
 		minuteLabel.textContent = localize('paradis.scheduledRuns.atMinute', "の");
 		const minute = this.input(scheduleLine, String(values.minute));
@@ -856,11 +859,11 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		if (values.repositoryUri && !repositories.some(([uri]) => uri === values.repositoryUri)) {
 			repositories.unshift([values.repositoryUri, localize('paradis.scheduledRuns.repositoryNotHere', "{0}（このウィンドウに無し）", values.repositoryName)]);
 		}
-		const repository = this.select(targetLine, repositories, values.repositoryUri);
+		const repository = this.select(targetLine, repositories, values.repositoryUri, localize('paradis.scheduledRuns.aria.repository', "リポジトリ"));
 		const targetKind = this.select(targetLine, [
 			['repository', localize('paradis.scheduledRuns.target.repository', "リポジトリ本体で実行")],
 			['newSpace', localize('paradis.scheduledRuns.target.newSpace', "毎回新しいスペースを作る")],
-		], values.targetKind);
+		], values.targetKind, localize('paradis.scheduledRuns.aria.targetKind', "実行のしかた"));
 		const baseRefLine = dom.append(targetCell, $('.psr-inline'));
 		dom.append(baseRefLine, $('span.psr-muted')).textContent = localize('paradis.scheduledRuns.baseRef', "元のブランチ");
 		const baseRef = this.input(baseRefLine, values.baseRef);
@@ -871,10 +874,10 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const agentCell = this.formRow(form, localize('paradis.scheduledRuns.field.agent', "エージェント"));
 		const agentLine = dom.append(agentCell, $('.psr-inline'));
 		const agents = this.agents();
-		const agent = this.select(agentLine, agents.map(candidate => [candidate.id, candidate.label] as [string, string]), values.agentId);
-		const model = this.select(agentLine, [], values.modelId);
-		const effort = this.select(agentLine, [], values.effortId);
-		const permission = this.select(agentLine, [], values.permissionId);
+		const agent = this.select(agentLine, agents.map(candidate => [candidate.id, candidate.label] as [string, string]), values.agentId, localize('paradis.scheduledRuns.aria.agent', "エージェント"));
+		const model = this.select(agentLine, [], values.modelId, localize('paradis.scheduledRuns.aria.model', "モデル"));
+		const effort = this.select(agentLine, [], values.effortId, localize('paradis.scheduledRuns.aria.effort', "エフォート"));
+		const permission = this.select(agentLine, [], values.permissionId, localize('paradis.scheduledRuns.aria.permission', "権限"));
 		const permissionHint = dom.append(agentCell, $('.psr-muted'));
 		// settings.json を開くときはこのダイアログを閉じる（開いたエディタが背面に隠れないように）
 		this.contentDisposables.add(paradisAppendAgentListLockNotice(agentCell, this.modelCatalogService, () => this.dispose()));
@@ -894,8 +897,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		precheckInput.placeholder = localize('paradis.scheduledRuns.precheckPlaceholder', "例: test -n \"$(gh pr list --search 'review-requested:@me' --json number -q '.[0].number')\"（Windows ではコマンドプロンプトで実行）");
 		this.contentDisposables.add(dom.addDisposableListener(precheckInput, 'input', () => { values.precheckCommand = precheckInput.value; update(); }));
 		const precheckLine = dom.append(precheckCell, $('.psr-inline'));
-		const precheckTimeout = this.select(precheckLine, PARADIS_SCHEDULED_RUN_PRECHECK_TIMEOUT_CHOICES.map(seconds => [String(seconds), precheckTimeoutLabel(seconds)] as [string, string]), String(values.precheckTimeoutSeconds));
-		this.contentDisposables.add(dom.addDisposableListener(precheckTimeout, 'change', () => { values.precheckTimeoutSeconds = Number(precheckTimeout.value); update(); }));
+		const precheckTimeout = this.select(precheckLine, PARADIS_SCHEDULED_RUN_PRECHECK_TIMEOUT_CHOICES.map(seconds => [String(seconds), precheckTimeoutLabel(seconds)] as [string, string]), String(values.precheckTimeoutSeconds), localize('paradis.scheduledRuns.aria.precheckTimeout', "事前確認の時間切れ"));
+		this.contentDisposables.add(precheckTimeout.onDidChange(() => { values.precheckTimeoutSeconds = Number(precheckTimeout.value); update(); }));
 		const precheckTry = this.button(precheckLine, localize('paradis.scheduledRuns.precheckTry', "試す"), 'secondary', Codicon.play);
 		dom.append(precheckCell, $('.psr-muted')).textContent = localize('paradis.scheduledRuns.precheckNote', "コマンドが 0 で終わったときだけエージェントを起動します。0 以外・時間切れなら、その回は見送ります。手動の「今すぐ実行」では走らせません。出力はエージェントには渡しません。リポジトリのフォルダで、macOS・Linux ではログインシェルの環境の sh、Windows ではコマンドプロンプト（cmd.exe）で実行します。");
 		const precheckResult = dom.append(precheckCell, $('pre.psr-prompt.psr-mono'));
@@ -920,13 +923,13 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const fillAgentOptions = () => {
 			const template = agents.find(candidate => candidate.id === values.agentId);
 			this.fillSelect(model, [['', localize('paradis.scheduledRuns.defaultModel', "既定のモデル")], ...(template?.models ?? []).map(option => [option.id, option.label ?? option.id] as [string, string])], values.modelId);
-			model.style.display = template?.models?.length ? '' : 'none';
+			model.element.style.display = template?.models?.length ? '' : 'none';
 			const modelOption = template?.models?.find(option => option.id === values.modelId);
 			const effortIds = (modelOption?.efforts ?? template?.efforts?.map(option => option.id) ?? []);
 			this.fillSelect(effort, [['', localize('paradis.scheduledRuns.defaultEffort', "既定のエフォート")], ...effortIds.map(id => [id, id] as [string, string])], values.effortId);
-			effort.style.display = effortIds.length ? '' : 'none';
+			effort.element.style.display = effortIds.length ? '' : 'none';
 			this.fillSelect(permission, (template?.permissions ?? []).map(option => [option.id, option.label] as [string, string]), values.permissionId || template?.permissions?.[0]?.id || '');
-			permission.style.display = template?.permissions?.length ? '' : 'none';
+			permission.element.style.display = template?.permissions?.length ? '' : 'none';
 			values.modelId = model.value;
 			values.effortId = effort.value;
 			values.permissionId = permission.value === template?.permissions?.[0]?.id ? '' : permission.value;
@@ -935,8 +938,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const update = () => {
 			const showTime = values.scheduleKind === 'daily' || values.scheduleKind === 'weekdays' || values.scheduleKind === 'weekly';
 			time.style.display = showTime ? '' : 'none';
-			dayOfWeek.style.display = values.scheduleKind === 'weekly' ? '' : 'none';
-			for (const element of [everyHours, minuteLabel, minute, minuteSuffix]) {
+			dayOfWeek.element.style.display = values.scheduleKind === 'weekly' ? '' : 'none';
+			for (const element of [everyHours.element, minuteLabel, minute, minuteSuffix]) {
 				element.style.display = values.scheduleKind === 'hourly' ? '' : 'none';
 			}
 			cron.style.display = values.scheduleKind === 'cron' ? '' : 'none';
@@ -967,20 +970,20 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			precheckTry.disabled = values.precheckCommand.trim().length === 0;
 		};
 
-		this.contentDisposables.add(dom.addDisposableListener(kind, 'change', () => { values.scheduleKind = kind.value as ScheduleKind; update(); }));
-		this.contentDisposables.add(dom.addDisposableListener(dayOfWeek, 'change', () => { values.dayOfWeek = Number(dayOfWeek.value); update(); }));
+		this.contentDisposables.add(kind.onDidChange(() => { values.scheduleKind = kind.value as ScheduleKind; update(); }));
+		this.contentDisposables.add(dayOfWeek.onDidChange(() => { values.dayOfWeek = Number(dayOfWeek.value); update(); }));
 		this.contentDisposables.add(dom.addDisposableListener(time, 'input', () => { values.time = time.value; update(); }));
-		this.contentDisposables.add(dom.addDisposableListener(everyHours, 'change', () => { values.everyHours = Number(everyHours.value); update(); }));
+		this.contentDisposables.add(everyHours.onDidChange(() => { values.everyHours = Number(everyHours.value); update(); }));
 		this.contentDisposables.add(dom.addDisposableListener(minute, 'input', () => { values.minute = Number(minute.value) || 0; update(); }));
 		this.contentDisposables.add(dom.addDisposableListener(cron, 'input', () => { values.cron = cron.value; update(); }));
-		this.contentDisposables.add(dom.addDisposableListener(repository, 'change', () => {
+		this.contentDisposables.add(repository.onDidChange(() => {
 			values.repositoryUri = repository.value;
 			values.repositoryName = this.switchService.repositories.find(candidate => candidate.uri.toString() === repository.value)?.name ?? values.repositoryName;
 			update();
 		}));
-		this.contentDisposables.add(dom.addDisposableListener(targetKind, 'change', () => { values.targetKind = targetKind.value as ParadisScheduledRunTargetKind; update(); }));
+		this.contentDisposables.add(targetKind.onDidChange(() => { values.targetKind = targetKind.value as ParadisScheduledRunTargetKind; update(); }));
 		this.contentDisposables.add(dom.addDisposableListener(baseRef, 'input', () => { values.baseRef = baseRef.value; }));
-		this.contentDisposables.add(dom.addDisposableListener(agent, 'change', () => {
+		this.contentDisposables.add(agent.onDidChange(() => {
 			values.agentId = agent.value;
 			values.modelId = '';
 			values.effortId = '';
@@ -988,9 +991,9 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			fillAgentOptions();
 			update();
 		}));
-		this.contentDisposables.add(dom.addDisposableListener(model, 'change', () => { values.modelId = model.value; values.effortId = ''; fillAgentOptions(); update(); }));
-		this.contentDisposables.add(dom.addDisposableListener(effort, 'change', () => { values.effortId = effort.value; }));
-		this.contentDisposables.add(dom.addDisposableListener(permission, 'change', () => {
+		this.contentDisposables.add(model.onDidChange(() => { values.modelId = model.value; values.effortId = ''; fillAgentOptions(); update(); }));
+		this.contentDisposables.add(effort.onDidChange(() => { values.effortId = effort.value; }));
+		this.contentDisposables.add(permission.onDidChange(() => {
 			const template = agents.find(candidate => candidate.id === values.agentId);
 			values.permissionId = permission.value === template?.permissions?.[0]?.id ? '' : permission.value;
 			update();
@@ -1072,22 +1075,15 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		return input;
 	}
 
-	private select(container: HTMLElement, options: readonly (readonly [string, string])[], value: string): HTMLSelectElement {
-		const select = dom.append(container, $('select.psr-select')) as HTMLSelectElement;
-		this.fillSelect(select, options, value);
+	private select(container: HTMLElement, options: readonly (readonly [string, string])[], value: string, ariaLabel: string): ParadisSelect {
+		const select = this.contentDisposables.add(new ParadisSelect(container, this.contextViewService, options.map(([id, label]) => ({ value: id, label })), value, { ariaLabel, className: 'psr-select' }));
+		// 描いた一覧で選んでも form の change は来ないので、下書きの印はここで付ける
+		this.contentDisposables.add(select.onDidChange(() => { this.editingDirty = true; }));
 		return select;
 	}
 
-	private fillSelect(select: HTMLSelectElement, options: readonly (readonly [string, string])[], value: string): void {
-		dom.clearNode(select);
-		for (const [id, label] of options) {
-			const option = dom.append(select, $('option')) as HTMLOptionElement;
-			option.value = id;
-			option.textContent = label;
-		}
-		if (options.some(([id]) => id === value)) {
-			select.value = value;
-		}
+	private fillSelect(select: ParadisSelect, options: readonly (readonly [string, string])[], value: string): void {
+		select.setOptions(options.map(([id, label]) => ({ value: id, label })), value);
 	}
 
 	private button(container: HTMLElement, label: string, kind: 'primary' | 'secondary', icon?: ThemeIcon): HTMLButtonElement {

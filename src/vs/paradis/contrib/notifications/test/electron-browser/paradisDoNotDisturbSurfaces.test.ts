@@ -11,6 +11,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IAuxiliaryStatusbarPart, IStatusbarEntryContainer } from '../../../../../workbench/browser/parts/statusbar/statusbarPart.js';
 import {
@@ -288,6 +289,9 @@ function statusProperties(properties: IStatusbarEntry): IStatusbarEntry {
 	};
 }
 
+/** プルダウンの一覧は開かないので、コンテキストビューは使われない。 */
+const nullContextViewService = Object.create(null) as IContextViewService;
+
 function createContainer(title: string): HTMLElement {
 	const document = mainWindow.document.implementation.createHTMLDocument(title);
 	return document.createElement('div');
@@ -319,7 +323,7 @@ suite('Paradis DND actual surfaces', () => {
 		const statusbar = store.add(new TestStatusbarService());
 		const offStatus = store.add(new TestStatusContribution(statusbar, offSettings));
 		const offContainer = createContainer('DND OFF');
-		const offSection = store.add(new TestSection(offContainer, offSettings));
+		const offSection = store.add(new TestSection(offContainer, offSettings, nullContextViewService));
 		assert.deepStrictEqual({
 			statusAdds: statusbar.adds.length,
 			settingsReads: offSettings.getDoNotDisturbReadCount,
@@ -332,7 +336,7 @@ suite('Paradis DND actual surfaces', () => {
 		const timedSettings = store.add(new TestSettingsService({ enabled: true, until: clock + 90_000 }, () => clock));
 		const timedStatusbar = store.add(new TestStatusbarService());
 		store.add(new TestStatusContribution(timedStatusbar, timedSettings));
-		store.add(new TestSection(createContainer('DND timed'), timedSettings));
+		store.add(new TestSection(createContainer('DND timed'), timedSettings, nullContextViewService));
 		assert.deepStrictEqual({
 			statusAdds: timedStatusbar.adds.length,
 			settingsReads: timedSettings.getDoNotDisturbReadCount,
@@ -410,7 +414,7 @@ suite('Paradis DND actual surfaces', () => {
 
 		const settings = store.add(new TestSettingsService({ enabled: false, until: undefined }, () => clock));
 		const container = createContainer('DND section snapshots');
-		store.add(new TestSection(container, settings));
+		store.add(new TestSection(container, settings, nullContextViewService));
 		const off = normalizeDndDom(container);
 		settings.setState({ enabled: true, until: undefined });
 		settings.fireDedicated(false);
@@ -469,12 +473,17 @@ suite('Paradis DND actual surfaces', () => {
 							],
 						},
 						{
-							tag: 'select', className: 'pns-select', text: '', children: [
-								// 選択肢は common の PARADIS_DO_NOT_DISTURB_DURATIONS 順（ステータスバーと共通）
-								{ tag: 'option', className: '', text: '30分', children: [] },
-								{ tag: 'option', className: '', text: '1時間', children: [] },
-								{ tag: 'option', className: '', text: '朝まで（7:00）', children: [] },
-								{ tag: 'option', className: '', text: '自分でオフにするまで', children: [] },
+							// Para Code のプルダウン（paradisSelect.ts）。中は本家の SelectBox の <select>
+							tag: 'span', className: 'paradis-select select-container', text: '', children: [
+								{
+									tag: 'select', className: 'monaco-select-box pns-select', text: '', children: [
+										// 選択肢は common の PARADIS_DO_NOT_DISTURB_DURATIONS 順（ステータスバーと共通）
+										{ tag: 'option', className: '', text: '30分', children: [] },
+										{ tag: 'option', className: '', text: '1時間', children: [] },
+										{ tag: 'option', className: '', text: '朝まで（7:00）', children: [] },
+										{ tag: 'option', className: '', text: '自分でオフにするまで', children: [] },
+									],
+								},
 							],
 						},
 					],
@@ -503,11 +512,15 @@ suite('Paradis DND actual surfaces', () => {
 							],
 						},
 						{
-							tag: 'select', className: 'pns-select', text: '', children: [
-								{ tag: 'option', className: '', text: '30分', children: [] },
-								{ tag: 'option', className: '', text: '1時間', children: [] },
-								{ tag: 'option', className: '', text: '朝まで（7:00）', children: [] },
-								{ tag: 'option', className: '', text: '自分でオフにするまで', children: [] },
+							tag: 'span', className: 'paradis-select select-container', text: '', children: [
+								{
+									tag: 'select', className: 'monaco-select-box pns-select', text: '', children: [
+										{ tag: 'option', className: '', text: '30分', children: [] },
+										{ tag: 'option', className: '', text: '1時間', children: [] },
+										{ tag: 'option', className: '', text: '朝まで（7:00）', children: [] },
+										{ tag: 'option', className: '', text: '自分でオフにするまで', children: [] },
+									],
+								},
 							],
 						},
 					],
@@ -553,7 +566,7 @@ suite('Paradis DND actual surfaces', () => {
 
 		const settings = store.add(new TestSettingsService({ enabled: true, until: clock + 90_000 }, () => clock));
 		const container = createContainer('DND duration match');
-		store.add(new TestSection(container, settings));
+		store.add(new TestSection(container, settings, nullContextViewService));
 		const readSelectValue = () => (container.querySelector('select') as HTMLSelectElement).value;
 
 		// どの時限とも一致しない until は先頭の時限選択肢へフォールバックする
@@ -606,7 +619,7 @@ suite('Paradis DND actual surfaces', () => {
 			const statusbar = store.add(new TestStatusbarService());
 			store.add(new TestStatusContribution(statusbar, settings));
 			const container = createContainer('DND idle');
-			store.add(new TestSection(container, settings));
+			store.add(new TestSection(container, settings, nullContextViewService));
 			const toggle = container.querySelector('button.paradis-switch');
 			const initialReads = settings.getDoNotDisturbReadCount;
 			manualTimer.advanceBy(600_000);
@@ -637,7 +650,7 @@ suite('Paradis DND actual surfaces', () => {
 		const statusbar = store.add(new TestStatusbarService());
 		store.add(new TestStatusContribution(statusbar, settings));
 		const container = createContainer('DND deadline');
-		store.add(new TestSection(container, settings));
+		store.add(new TestSection(container, settings, nullContextViewService));
 		const timeline: object[] = [];
 		const capture = (at: number) => timeline.push({
 			at,
@@ -699,7 +712,7 @@ suite('Paradis DND actual surfaces', () => {
 			const statusbar = store.add(new TestStatusbarService());
 			store.add(new TestStatusContribution(statusbar, settings));
 			const container = createContainer(`DND timed to ${transition.name}`);
-			store.add(new TestSection(container, settings));
+			store.add(new TestSection(container, settings, nullContextViewService));
 			const capturedCallbackIds = [...manualTimer.capturedCallbackIds];
 			assert.deepStrictEqual({ pending: manualTimer.pendingCount, pendingDelays: manualTimer.pendingDelays() }, {
 				pending: 2,
@@ -764,7 +777,7 @@ suite('Paradis DND actual surfaces', () => {
 		const statusbar = store.add(new TestStatusbarService());
 		store.add(new TestStatusContribution(statusbar, settings));
 		const container = createContainer('DND rearm');
-		store.add(new TestSection(container, settings));
+		store.add(new TestSection(container, settings, nullContextViewService));
 		const oldCallbackIds = [...manualTimer.capturedCallbackIds];
 		settings.setState({ enabled: true, until: 31_000 });
 		settings.fireDedicated(true);
@@ -819,7 +832,7 @@ suite('Paradis DND actual surfaces', () => {
 		const statusbar = store.add(new TestStatusbarService());
 		store.add(new TestStatusContribution(statusbar, settings));
 		const container = createContainer('DND sleep');
-		store.add(new TestSection(container, settings));
+		store.add(new TestSection(container, settings, nullContextViewService));
 		const initialCallbacks = [...manualTimer.capturedCallbackIds];
 		clock = 101_000;
 		for (const callbackId of initialCallbacks) {
@@ -852,7 +865,7 @@ suite('Paradis DND actual surfaces', () => {
 		const statusbar = store.add(new TestStatusbarService());
 		const status = store.add(new TestStatusContribution(statusbar, settings));
 		const container = createContainer('DND disposed section');
-		const section = store.add(new TestSection(container, settings));
+		const section = store.add(new TestSection(container, settings, nullContextViewService));
 		const capturedCallbackIds = [...manualTimer.capturedCallbackIds];
 		const oldToggle = container.querySelector('button.paradis-switch');
 		status.dispose();
@@ -888,7 +901,7 @@ suite('Paradis DND actual surfaces', () => {
 
 		settings.setState({ enabled: true, until: clock + 30_000 });
 		const reopenedContainer = createContainer('DND reopened section');
-		store.add(new TestSection(reopenedContainer, settings));
+		store.add(new TestSection(reopenedContainer, settings, nullContextViewService));
 		assert.deepStrictEqual({
 			pending: manualTimer.pendingCount,
 			readDelta: settings.getDoNotDisturbReadCount - beforeLateWork.reads,

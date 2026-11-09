@@ -47,7 +47,7 @@ suite('Paradis voice gain section', () => {
 		} as unknown as IParadisNotificationsSettingsService;
 		const dialog = { confirm: async () => ({ confirmed: true }) } as unknown as IDialogService;
 		const notifications = { info: () => undefined, warn: () => undefined, error: () => undefined } as unknown as INotificationService;
-		store.add(new ParadisVoiceGainSection(container, sharedProcess, settings, dialog, {} as IFileDialogService, notifications));
+		store.add(new ParadisVoiceGainSection(container, sharedProcess, settings, dialog, {} as IFileDialogService, notifications, Object.create(null)));
 		return container;
 	}
 

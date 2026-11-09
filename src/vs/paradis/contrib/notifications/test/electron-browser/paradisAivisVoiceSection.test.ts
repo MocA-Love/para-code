@@ -126,9 +126,9 @@ suite('Paradis voice section API key fields', () => {
 		const sharedProcess = { getChannel: () => channel } as unknown as ISharedProcessService;
 		const logService: ILogService = new NullLogService();
 		const instantiation = {
-			createInstance: (ctor: new (...args: unknown[]) => unknown, ...args: unknown[]) => new ctor(...args, sharedProcess, settings, logService),
+			createInstance: (ctor: new (...args: unknown[]) => unknown, ...args: unknown[]) => new ctor(...args, sharedProcess, settings, logService, Object.create(null)),
 		} as unknown as IInstantiationService;
-		store.add(new ParadisAivisVoiceSection(container, sharedProcess, settings, logService, instantiation));
+		store.add(new ParadisAivisVoiceSection(container, sharedProcess, settings, logService, instantiation, Object.create(null)));
 		return container;
 	}
 

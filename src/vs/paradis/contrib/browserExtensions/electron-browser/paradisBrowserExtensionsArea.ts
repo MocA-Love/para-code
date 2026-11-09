@@ -19,8 +19,10 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
 import { paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
@@ -140,7 +142,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 
 	private readonly _mainService: IParadisBrowserExtensionsMainService;
 	private readonly _noticeElement: HTMLElement;
-	private readonly _profileSelect: HTMLSelectElement;
+	private readonly _profileSelect: ParadisSelect;
 	private readonly _listElement: HTMLElement;
 	private readonly _detailElement: HTMLElement;
 	private readonly _messageElement: HTMLElement;
@@ -176,6 +178,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
+		@IContextViewService contextViewService: IContextViewService,
 	) {
 		super();
 		this._mainService = ProxyChannel.toService<IParadisBrowserExtensionsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL));
@@ -211,10 +214,11 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		this._noticeElement = dom.append(body, $('.pbe-notice'));
 
 		const profileRow = dom.append(body, $('label.pbe-profile'));
-		dom.append(profileRow, $('span')).textContent = localize('paradis.browserExtensions.profile', "有効にする場所");
-		this._profileSelect = dom.append(profileRow, $<HTMLSelectElement>('select.pbe-select'));
-		this._register(dom.addDisposableListener(this._profileSelect, 'change', () => {
-			this._profile = this._profileSelect.value;
+		const profileLabel = localize('paradis.browserExtensions.profile', "有効にする場所");
+		dom.append(profileRow, $('span')).textContent = profileLabel;
+		this._profileSelect = this._register(new ParadisSelect(profileRow, contextViewService, [], undefined, { ariaLabel: profileLabel, className: 'pbe-select' }));
+		this._register(this._profileSelect.onDidChange(value => {
+			this._profile = value;
 			this._render();
 		}));
 
@@ -292,7 +296,6 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	}
 
 	private _renderProfiles(): void {
-		dom.clearNode(this._profileSelect);
 		const options: Array<[string, string]> = [
 			[PARADIS_DEFAULT_EXTENSION_PROFILE, localize('paradis.browserExtensions.profile.default', "既定（通常のタブ・ワークスペースのタブ）")],
 			...this.profilesService.list().map((profile): [string, string] => [paradisNamedExtensionProfile(profile.id), localize('paradis.browserExtensions.profile.named', "プロファイル「{0}」", profile.name)]),
@@ -300,12 +303,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		if (!options.some(([key]) => key === this._profile)) {
 			this._profile = PARADIS_DEFAULT_EXTENSION_PROFILE;
 		}
-		for (const [key, label] of options) {
-			const option = dom.append(this._profileSelect, $<HTMLOptionElement>('option'));
-			option.value = key;
-			option.textContent = label;
-		}
-		this._profileSelect.value = this._profile;
+		this._profileSelect.setOptions(options.map(([key, label]) => ({ value: key, label })), this._profile);
 		this._render();
 	}
 
@@ -804,7 +802,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			return;
 		}
 		const place = this._profile;
-		const label = this._profileSelect.selectedOptions[0]?.textContent ?? place;
+		const label = this._profileSelect.values.find(option => option.value === place)?.label ?? place;
 		this._showMessage(localize('paradis.browserExtensions.store.downloading', "Chrome ウェブストアから落として、署名を確かめています…"), false);
 		await this._run(async () => {
 			const result = await this._mainService.addFromWebStore(input, place, label);

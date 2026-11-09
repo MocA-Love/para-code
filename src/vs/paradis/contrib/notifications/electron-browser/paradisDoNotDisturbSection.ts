@@ -13,9 +13,11 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IParadisDoNotDisturbState, IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { paradisCreateDoNotDisturbRefreshController, paradisFormatDoNotDisturbRemaining, PARADIS_DO_NOT_DISTURB_DURATIONS, ParadisDoNotDisturbRefreshControllerFactory } from '../common/paradisDoNotDisturb.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
 const $ = dom.$;
@@ -53,6 +55,7 @@ export class ParadisDoNotDisturbSection extends Disposable {
 	constructor(
 		private readonly container: HTMLElement,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 
@@ -98,19 +101,16 @@ export class ParadisDoNotDisturbSection extends Disposable {
 			? localize('paradis.dnd.section.remainingHint', "あと{0}で自動的に解除されます。", remaining)
 			: STR_MANUAL_HINT;
 
-		const select = dom.append(row, $('select.pns-select')) as HTMLSelectElement;
-		select.style.width = '190px';
-		for (const duration of PARADIS_DO_NOT_DISTURB_DURATIONS) {
-			const option = dom.append(select, $('option')) as HTMLOptionElement;
-			option.value = duration.id;
-			option.textContent = duration.label;
-		}
 		// select の選択状態は _matchDurationId で「自分でオフにするまで」を含む全ての選択肢に一律反映する
 		// （until 未設定なら manual、時限3つは許容差内の一致で判定）。時限の残り時間は選択のたびに
 		// 減っていくため、select 自体ではなく左の残り時間 hint で別途示す。
-		select.value = this._matchDurationId(state.until, renderNow);
-		this._renderDisposables.add(dom.addDisposableListener(select, 'change', () => {
-			const duration = PARADIS_DO_NOT_DISTURB_DURATIONS.find(d => d.id === select.value);
+		const select = this._renderDisposables.add(new ParadisSelect(row, this.contextViewService,
+			PARADIS_DO_NOT_DISTURB_DURATIONS.map(duration => ({ value: duration.id, label: duration.label })),
+			this._matchDurationId(state.until, renderNow),
+			{ ariaLabel: STR_DURATION_LABEL, className: 'pns-select' }));
+		select.element.style.width = '190px';
+		this._renderDisposables.add(select.onDidChange(value => {
+			const duration = PARADIS_DO_NOT_DISTURB_DURATIONS.find(d => d.id === value);
 			if (duration) {
 				const until = duration.resolveUntil(Date.now());
 				this._rememberedDurationSelection = until === undefined ? undefined : { until, id: duration.id };

@@ -20,9 +20,11 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import {
 	IParadisFolderOption,
 	PARADIS_FOLDER_COLOR_PRESETS,
@@ -162,29 +164,25 @@ export class ParadisEditBookmarkDialog extends ParadisBookmarkModal {
 
 	private readonly _nameInput: HTMLInputElement;
 	private readonly _urlInput: HTMLInputElement;
-	private readonly _folderSelect: HTMLSelectElement;
+	private readonly _folderSelect: ParadisSelect;
 	private readonly _errorElement: HTMLElement;
 
 	constructor(
 		private readonly options: IParadisBookmarkDialogOptions,
 		@ILayoutService layoutService: ILayoutService,
+		@IContextViewService contextViewService: IContextViewService,
 	) {
 		super(options.dialogTitle, localize('paradis.bookmarks.dialog.save', "保存"), layoutService);
 
 		this._nameInput = this.appendTextInput(localize('paradis.bookmarks.dialog.name', "名前"), options.initial.title);
 		this._urlInput = this.appendTextInput(localize('paradis.bookmarks.dialog.url', "URL"), options.initial.url, 'https://example.com');
 
-		const folderField = this.appendField(localize('paradis.bookmarks.dialog.folder', "フォルダ"));
-		this._folderSelect = dom.append(folderField, $('select.pbm-select')) as HTMLSelectElement;
-		const rootOption = dom.append(this._folderSelect, $('option')) as HTMLOptionElement;
-		rootOption.value = '';
-		rootOption.textContent = localize('paradis.bookmarks.dialog.rootFolder', "ブックマークバー");
-		for (const folder of options.folderOptions) {
-			const option = dom.append(this._folderSelect, $('option')) as HTMLOptionElement;
-			option.value = folder.id;
-			option.textContent = folder.label;
-		}
-		this._folderSelect.value = options.initial.folderId ?? '';
+		const folderLabel = localize('paradis.bookmarks.dialog.folder', "フォルダ");
+		const folderField = this.appendField(folderLabel);
+		this._folderSelect = this._register(new ParadisSelect(folderField, contextViewService, [
+			{ value: '', label: localize('paradis.bookmarks.dialog.rootFolder', "ブックマークバー") },
+			...options.folderOptions.map(folder => ({ value: folder.id, label: folder.label })),
+		], options.initial.folderId ?? '', { ariaLabel: folderLabel, className: 'pbm-select' }));
 
 		this._errorElement = dom.append(this.body, $('.pbm-error'));
 		this._errorElement.style.display = 'none';
