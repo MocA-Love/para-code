@@ -58,7 +58,7 @@
 	white-space: nowrap;
 }
 
-/* The list: a popover of the shared shape (header 30px, two-line rows from paradisDensity.css). */
+/* The list: a popover of the shared shape (header 30px, two-line rows from paradisTokens.css). */
 .monaco-workbench .paradis-page-scripts-details {
 	width: 480px;
 	max-width: calc(100vw - 32px);

@@ -6,14 +6,38 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /*
- * Shared sizes of the fork's own parts that have no upstream counterpart (two-line rows, popover
- * headers, title bar items with text, menu rows, chips, the top of a small modal's body). Upstream
- * steps (22px rows, 2-4px gaps, 10px text) made these parts too dense, so they read these variables
- * instead. Declared on .monaco-workbench, where the --vscode-* sizes and colors they refer to are
- * declared (workbenchThemeService), so every part that can read those tokens can read these too.
- * Loaded once through contrib/density (paradis.common.contribution.ts); the upstream tokens (baseSizes.ts) stay as is.
+ * The foundation of Para Code's own UI kit (stage 0, Q596): the one place for the fork's sizes, motion and stacking
+ * layers. Colors are not here: they are theme colors registered as paradis.* (vs/paradis/common/paradisColors.ts),
+ * read as --vscode-paradis-*. Part and screen CSS reads these variables and the upstream --vscode-* tokens only, and
+ * does not declare variables of its own. New names go into build/lib/stylelint/vscode-known-variables.json ("others").
+ * Declared on .monaco-workbench, where the --vscode-* sizes and colors they refer to are declared
+ * (workbenchThemeService), so every part that can read those tokens can read these too.
+ * Loaded once through contrib/tokens (paradis.common.contribution.ts); the upstream tokens (baseSizes.ts) stay as is.
  */
 .monaco-workbench {
+	/* Corner radius steps: controls (buttons, inputs, rows), inner surfaces (cards, popovers, toasts), floating
+		surfaces (dialogs, palettes). */
+	--paradis-radius-control: 6px;
+	--paradis-radius-inner: 8px;
+	--paradis-radius-outer: 12px;
+	/* Control heights: small, standard (also a row in a modal), input field. The 22px sidebar rows stay upstream's. */
+	--paradis-height-sm: 24px;
+	--paradis-height-md: 28px;
+	--paradis-height-lg: 32px;
+	/* Motion: surfaces enter decelerating and leave accelerating, shorter, so the next action is not held up. */
+	--paradis-motion-enter: 160ms;
+	--paradis-motion-exit: 100ms;
+	--paradis-ease-enter: cubic-bezier(.16, 1, .3, 1);
+	--paradis-ease-exit: cubic-bezier(.4, 0, 1, 1);
+	/* Keyboard focus ring: one outline (paradisFocusRing.css draws it in --vscode-paradis-focus). */
+	--paradis-focus-width: 2px;
+	--paradis-focus-offset: 2px;
+
+	/*
+	 * Shared sizes of the fork's own parts that have no upstream counterpart (two-line rows, popover headers, title bar
+	 * items with text, menu rows, chips, the top of a small modal's body). Upstream steps (22px rows, 2-4px gaps, 10px
+	 * text) made these parts too dense, so they read these variables instead (Q544).
+	 */
 	/* A row with a title and a description below it (share popover, downloads, page scripts, ringtones). */
 	--paradis-row-two-line: 44px;
 	/* The line under an anchored popover's header, and the gap between it and the first row. */
@@ -22,7 +46,7 @@
 	/* Title bar items that show text (CPU/RAM, AI limits, ports, agent / browser lists ...). Icon-only items keep 3px. */
 	--paradis-titlebar-item-padding: 0 5px;
 	/* Rows of the fork's popup menus (terminal presets). */
-	--paradis-menu-row: 24px;
+	--paradis-menu-row: var(--paradis-height-sm);
 	/* Text of chips, pills and count badges. */
 	--paradis-chip-font-size: var(--vscode-fontSize-label2);
 	/* Space between a small (S) modal's header and its first line. */
@@ -61,4 +85,10 @@
 /* Same for the shared popover marker `paradis-overlay-popover` (overlayManager.ts). */
 .monaco-workbench .paradis-overlay-popover {
 	z-index: var(--paradis-z-popover);
+}
+
+/* workbench.reduceMotion (or the OS setting with "auto"): surfaces appear and leave without movement. */
+.monaco-workbench.monaco-reduce-motion {
+	--paradis-motion-enter: 0ms;
+	--paradis-motion-exit: 0ms;
 }

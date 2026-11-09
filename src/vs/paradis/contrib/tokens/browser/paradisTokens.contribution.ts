@@ -6,8 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// fork の部品が共有する寸法（2 段の行・ポップオーバーの見出し・タイトルバーの文字の項目・メニューの行・チップの文字・
-// S の箱の本文の上）と、fork の浮く部品の重なりの段（モーダル・小窓・画面から拾う覆い）の CSS 変数を読み込む。
-// 値は vs/paradis/browser/media/paradisDensity.css の 1 か所にある（段の表は vs/paradis/browser/paradisModal.ts）。
+// UI キットの土台（段 0、Q596）を読み込む。寸法（角丸・高さ）・動き・フォーカスの枠の太さ・重なりの段と、fork の部品が
+// 共有する寸法（2 段の行・ポップオーバーの見出しなど）は vs/paradis/browser/media/paradisTokens.css の 1 か所、
+// 色は paradis.* のテーマの色（vs/paradis/common/paradisColors.ts）にある。重なりの段の表は vs/paradis/browser/paradisModal.ts。
 
-import '../../../browser/media/paradisDensity.css';
+import '../../../browser/media/paradisTokens.css';
+import '../../../common/paradisColors.js';

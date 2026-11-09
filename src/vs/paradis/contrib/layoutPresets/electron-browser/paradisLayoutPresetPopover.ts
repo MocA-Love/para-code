@@ -21,6 +21,7 @@ import { IAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IContextViewService, IOpenContextView } from '../../../../platform/contextview/browser/contextView.js';
@@ -103,6 +104,8 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 		render: (container: HTMLElement): IDisposable => {
 			const disposables = new DisposableStore();
 			const popover = dom.append(container, $('.paradis-layout-popover.paradis-overlay-popover'));
+			// コンテキストビューはモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に残さない）
+			disposables.add(paradisCloseWhenModalOpens(popover, () => contextViewService.hideContextView()));
 
 			// allow-any-unicode-next-line
 			dom.append(popover, $('.paradis-layout-popover-title')).textContent = localize('paradis.layoutPresets.popover.title', "レイアウトプリセットを適用");

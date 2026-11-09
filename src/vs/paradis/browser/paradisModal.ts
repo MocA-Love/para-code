@@ -17,7 +17,7 @@
 //
 // ## 重なりの段（z-index）の表（Q596・Q594、2026-11-09）
 //
-// fork の浮く部品の段は、本家の層の隙間にこの表の値だけで置く。値は media/paradisDensity.css の
+// fork の浮く部品の段は、本家の層の隙間にこの表の値だけで置く。値は media/paradisTokens.css の
 // `--paradis-z-*` の 1 か所にあり、部品の CSS には 4 以上の数字を書かない（局所の重なりの 1〜3 だけ）。
 //
 // | 値 | 持ち主 | 中身 |
@@ -42,7 +42,7 @@
 import './media/paradisModal.css';
 
 /**
- * fork のモーダルの幕に必ず付ける印。重なりの段（`--paradis-z-modal`、paradisDensity.css）と、内蔵ブラウザの
+ * fork のモーダルの幕に必ず付ける印。重なりの段（`--paradis-z-modal`、paradisTokens.css）と、内蔵ブラウザの
  * ネイティブのビューがモーダルの前に出ないための印（overlayManager.ts の一覧に登録済み）を兼ねる。
  * 小窓はこの印の付いた要素が作業領域に入ったら閉じる。
  */
