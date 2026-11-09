@@ -193,7 +193,7 @@
 /* translucent layer shows through; `!important` outranks the inline style. The editors listed in */
 /* :not(:has(...)) keep the opaque inline editorBackground (see the comments below). The Para Code */
 /* spreadsheet editor (Excel viewer) is excluded so its sheet backdrop keeps today's opaque rendering. */
-.monaco-workbench.paradis-transparent .part.editor .editor-container:not(:has(.paradis-image-viewer, [id^="webview-editor-element-"], .paradis-file-viewer-editor:not(.active), .paradis-spreadsheet, .paradis-spreadsheet-diff, .paradis-csv-viewer.paradis-csv-table-mode, .settings-editor, .keybindings-editor, .extension-editor, .profiles-editor)) {
+.monaco-workbench.paradis-transparent .part.editor .editor-container:not(:has(.paradis-image-viewer, [id^="webview-editor-element-"], .paradis-file-viewer-editor:not(.active), .paradis-spreadsheet, .paradis-spreadsheet-diff, .paradis-csv-viewer.paradis-csv-table-mode, .settings-editor, .keybindings-editor, .extension-editor, .profiles-editor, .paradis-layout-preset-editor)) {
 	background-color: transparent !important;
 }
 
@@ -210,9 +210,27 @@
 	header and row-number panes must stay opaque to hide the cells scrolling underneath). Its Text mode is
 	a regular code editor and stays translucent like other text editors. */
 
-/* Settings-like full-page editors (settings / keyboard shortcuts / extension details / profiles)
-	are excluded above so they keep the opaque inline editorBackground: these pages are dense
-	configuration UIs where desktop show-through hurts readability, unlike code editors. */
+/* Settings-like full-page editors (settings / keyboard shortcuts / extension details / profiles, and the
+	Para Code layout preset editor) are excluded above so they keep the opaque inline editorBackground: these
+	pages are dense configuration UIs where desktop show-through hurts readability, unlike code editors. */
+
+/* Para Code's own strips inside translucent editors paint the editor (or side bar) color as an opaque
+	background of their own, so in a transparent window only these strips stayed solid: the file viewers'
+	toolbar (Markdown / HTML / CSV / PDF / Excel / Word), the built-in browser's address bar, bookmark bar
+	and extension side panel, and the task list's filter panel. Clear them so the part's single translucent
+	layer shows through, as the agent chat view does (paradisAgentChat.css). The browser's address bar is
+	upstream's (browser.css) and is cleared with the bookmark bar right below it so the two read as one
+	strip. The browser's new tab page stays opaque: it covers upstream's welcome placeholder, which is
+	page content and paints the editor color itself, so a clear new tab page would show the placeholder's
+	text through it. The surfaces are listed here, next to the exclusions above, so what stays opaque and
+	what turns translucent can be read in one place. */
+.monaco-workbench.paradis-transparent .paradis-viewer-toolbar,
+.monaco-workbench.paradis-transparent .browser-root .browser-navbar,
+.monaco-workbench.paradis-transparent .browser-root .paradis-bookmark-bar,
+.monaco-workbench.paradis-transparent .browser-container-wrapper > .paradis-side-panel,
+.monaco-workbench.paradis-transparent .paradis-tasks-panel {
+	background-color: transparent;
+}
 
 /* Terminal (xterm). Under window transparency the xterm theme background alpha is dropped to 0 while */
 /* the RGB is kept (see xtermTerminal.ts PARA-PATCH), so the GPU surface itself renders see-through; */
