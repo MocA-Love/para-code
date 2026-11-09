@@ -1124,3 +1124,124 @@
 .paradis-workspaces-heading-bell.attention .paradis-workspaces-heading-bell-count {
 	color: var(--vscode-charts-red);
 }
+
+/* allow-any-unicode-next-line */
+/* セクションの見出し（Q601 案 A）。リポジトリと同じ最上位の行なので字下げは増やさない。
+ * 文字は小さめ・補助の色にして、中のリポジトリの名前（太字・本文の色）より一段引いて見せる。
+ * 区切りの線はリポジトリの見出しと同じ panel.border。一覧の先頭の見出しと、見出しの直下のリポジトリは線を引かない
+ * （行は仮想化で絶対配置なので、隣のセレクタではなくレンダラがクラスで知らせる）。 */
+.paradis-workspaces-list .paradis-section-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 100%;
+	min-width: 0;
+	padding: 0 12px 0 4px;
+	box-sizing: border-box;
+	border-top: 1px solid var(--vscode-panel-border, transparent);
+	font-size: var(--vscode-fontSize-label2);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-workspaces-list .paradis-section-row.paradis-section-first,
+.paradis-workspaces-list .paradis-workspace-row.paradis-section-first-repository {
+	border-top-color: transparent;
+}
+
+/* allow-any-unicode-next-line */
+/* セクションの色は名前の前の点だけ（左端の線はプロジェクトの色のまま）。色はレンダラが塗る */
+.paradis-workspaces-list .paradis-section-dot {
+	flex: none;
+	width: 8px;
+	height: 8px;
+	border-radius: var(--vscode-cornerRadius-circle);
+}
+
+.paradis-workspaces-list .paradis-section-name {
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-workspaces-list .paradis-section-count {
+	flex: none;
+	font-weight: var(--vscode-fontWeight-regular);
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-paradis-textFaint);
+}
+
+.paradis-workspaces-list :is(.paradis-section-dot, .paradis-section-name, .paradis-section-count, .paradis-section-rename, .paradis-section-more).hidden {
+	display: none;
+}
+
+/* allow-any-unicode-next-line */
+/* 閉じたときの要対応の数（ParadisCountBadge）。右へ寄せ、「…」はその後ろに並べる */
+.paradis-workspaces-list .paradis-section-attention {
+	margin-left: auto;
+}
+
+.paradis-workspaces-list .paradis-section-more {
+	display: none;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	width: 22px;
+	height: 22px;
+	margin-left: auto;
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--vscode-icon-foreground);
+	cursor: pointer;
+}
+
+.paradis-workspaces-list .paradis-section-attention:not(.hidden) ~ .paradis-section-more {
+	margin-left: 0;
+}
+
+.paradis-workspaces-list .monaco-tl-row:hover .paradis-section-more:not(.hidden),
+.paradis-workspaces-list .monaco-list-row.focused .paradis-section-more:not(.hidden) {
+	display: flex;
+}
+
+.paradis-workspaces-list .paradis-section-more:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+/* allow-any-unicode-next-line */
+/* その場の名前の欄。枠のフォーカスの印は paradisFocusRing.css（灰の paradis-focus-subtle-within）が描く */
+.paradis-workspaces-list .paradis-section-rename {
+	flex: 1;
+	min-width: 0;
+	height: var(--paradis-height-sm);
+	border-radius: var(--paradis-radius-control);
+}
+
+.paradis-workspaces-list .paradis-section-rename > input {
+	width: 100%;
+	height: 100%;
+	padding: 0 6px;
+	box-sizing: border-box;
+	border: 1px solid var(--vscode-paradis-line);
+	border-radius: var(--paradis-radius-control);
+	background-color: var(--vscode-paradis-sunken);
+	color: var(--vscode-paradis-textStrong);
+	font: inherit;
+	font-weight: var(--vscode-fontWeight-regular);
+}
+
+.paradis-workspaces-list .paradis-section-rename > input::placeholder {
+	color: var(--vscode-paradis-textFaint);
+}
+
+/* allow-any-unicode-next-line */
+/* 空のセクションの下の「ここへプロジェクトをドラッグ」（ドロップ先）。文字の頭を見出しの名前に揃える */
+.paradis-workspaces-list .paradis-section-empty {
+	display: flex;
+	align-items: center;
+	height: 100%;
+	padding-left: 4px;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textFaint);
+	cursor: default;
+}

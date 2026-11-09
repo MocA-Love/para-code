@@ -46,6 +46,7 @@ import { PARADIS_DEFAULT_WORKTREE_ROW_META, PARADIS_WORKTREE_META_IDS, PARADIS_W
 import { PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID } from '../common/paradisRepositoryClone.js';
 import { paradisWorkspaceSwitchCommandId, paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
 import { IParadisWorktreeCreateProgressStore } from '../common/paradisWorktreeCreate.js';
+import { IParadisWorkspaceSectionsService, paradisRelativeRepository } from '../common/paradisWorkspaceSections.js';
 import { ParadisAgentStatusStore } from './paradisAgentStatusStore.js';
 import { ParadisWorktreeCreateProgressStore } from './paradisWorktreeCreateProgressStore.js';
 import { ParadisAuxiliaryWindowScopeService } from './paradisAuxiliaryWindowScopeService.js';
@@ -55,6 +56,7 @@ import { ParadisEditorScopeService } from './paradisEditorScopeService.js';
 import { ParadisSpaceNotesService } from './paradisSpaceNotesService.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
 import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
+import { ParadisWorkspaceSectionsService } from './paradisWorkspaceSectionsService.js';
 import { ParadisWorktreeService } from './paradisWorktreeService.js';
 import './paradisTerminalScope.contribution.js';
 import './paradisUnattributedTerminals.contribution.js';
@@ -70,6 +72,7 @@ registerSingleton(IParadisAgentStatusStore, ParadisAgentStatusStore, Instantiati
 registerSingleton(IParadisWorktreeCreateProgressStore, ParadisWorktreeCreateProgressStore, InstantiationType.Delayed);
 registerSingleton(IParadisEditorSplitTerminalService, ParadisEditorSplitTerminalService, InstantiationType.Delayed);
 registerSingleton(IParadisSpaceNotesService, ParadisSpaceNotesService, InstantiationType.Delayed);
+registerSingleton(IParadisWorkspaceSectionsService, ParadisWorkspaceSectionsService, InstantiationType.Delayed);
 
 class ParadisEditorScopeStarter implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisEditorScopeStarter';
@@ -519,7 +522,8 @@ for (let index = 1; index <= 9; index++) {
 
 		async run(accessor: ServicesAccessor): Promise<void> {
 			const service = accessor.get(IParadisWorkspaceSwitchService);
-			const repository = service.repositories[index - 1];
+			// 番号は一覧に出る順（セクションの順）で数える
+			const repository = accessor.get(IParadisWorkspaceSectionsService).orderedRepositories()[index - 1];
 			if (repository) {
 				// ユーザー起点の切り替えは連打を畳み込む (中間スペースを経由しない)。
 				await service.switchRepository(repository.id, { coalesce: true });
@@ -530,15 +534,13 @@ for (let index = 1; index <= 9; index++) {
 
 async function switchRelative(accessor: ServicesAccessor, delta: number): Promise<void> {
 	const service = accessor.get(IParadisWorkspaceSwitchService);
-	const repositories = service.repositories;
-	if (repositories.length === 0) {
+	// 一覧に出る順（セクションの順、その中は台帳の順）に回る。閉じたセクションの中も開かずに通る（Q601-4）
+	const next = paradisRelativeRepository(accessor.get(IParadisWorkspaceSectionsService).orderedRepositories(), service.activeRepository?.id, delta);
+	if (!next) {
 		return;
 	}
-
-	const activeIndex = repositories.findIndex(repository => repository.id === service.activeRepository?.id);
-	const nextIndex = activeIndex === -1 ? 0 : (activeIndex + delta + repositories.length) % repositories.length;
 	// ユーザー起点の切り替えは連打を畳み込む (中間スペースを経由しない)。
-	await service.switchRepository(repositories[nextIndex].id, { coalesce: true });
+	await service.switchRepository(next.id, { coalesce: true });
 }
 
 registerAction2(class extends Action2 {
