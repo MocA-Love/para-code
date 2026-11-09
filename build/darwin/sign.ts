@@ -19,6 +19,10 @@ function getElectronVersion(): string {
 }
 
 function getEntitlementsForFile(filePath: string): string {
+	// PARA-PATCH: the two vendored serve-sim helpers that run inside the iOS simulator keep DYLD_* through the hardened runtime (simctl spawn sets DYLD_ROOT_PATH; without it they abort).
+	if (/\/vs\/paradis\/contrib\/simulator\/node\/media\/serve-sim\/dist\/(simduo\/serve-sim-duo-hid|simax\/serve-sim-ax-settings)$/.test(filePath)) {
+		return path.join(baseDir, 'paradis', 'simulator', 'paradis-serve-sim-guest-entitlements.plist');
+	}
 	// PARA-PATCH: the Para Code Computer Use helper gets empty entitlements (Accessibility and Screen Recording come from TCC, not entitlements).
 	// PARA-PATCH: so does the dictation speech helper (it reads PCM from stdin and never opens the microphone itself).
 	// PARA-PATCH: and the vendored serve-sim Mach-O files the simulator host loads and spawns (src/vs/paradis/contrib/simulator).

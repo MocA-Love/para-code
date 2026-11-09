@@ -359,7 +359,9 @@ jobs:
       # serve-sim (the iOS simulator host, q.html Q585), step 1 of 2. The vendored serve-sim 0.1.49 ships under
       # out/ (build/next/paradisResources.ts) with three Mach-O files: serve-sim-native.node, serve-sim-duo-hid and
       # serve-sim-ax-settings. Sign copies of them alone with the release identity (hardened runtime, timestamp,
-      # empty entitlements) and notarize them by themselves, so a rejection shows up here with its log. "Code sign
+      # empty entitlements for the .node; the two helpers that run inside the iOS simulator get
+      # build/paradis/simulator/paradis-serve-sim-guest-entitlements.plist, which lets DYLD_ROOT_PATH from
+      # `simctl spawn` through the hardened runtime, or they abort) and notarize them by themselves, so a rejection shows up here with its log. "Code sign
       # app" then signs the files inside the package the same way (sign.ts PARA-PATCH).
       # Like the speech helper, this never fails the release, betas included: on any failure the next step takes
       # the three files out of the package (so the notarization of the app is not affected) and the publish job
@@ -389,8 +391,12 @@ jobs:
             lipo "$DIST/$FILE" -verify_arch arm64 x86_64
             mkdir -p "$WORK/$(dirname "$FILE")"
             cp -p "$DIST/$FILE" "$WORK/$FILE"
+            ENTITLEMENTS=build/paradis/computerUse/paradis-computer-use-entitlements.plist
+            case "$FILE" in
+              simduo/serve-sim-duo-hid|simax/serve-sim-ax-settings) ENTITLEMENTS=build/paradis/simulator/paradis-serve-sim-guest-entitlements.plist ;;
+            esac
             codesign --force --options runtime --timestamp \
-              --entitlements build/paradis/computerUse/paradis-computer-use-entitlements.plist \
+              --entitlements "$ENTITLEMENTS" \
               --keychain "$RUNNER_TEMP/buildagent.keychain" --sign "$CODESIGN_IDENTITY" "$WORK/$FILE"
             codesign --verify --strict --verbose=2 "$WORK/$FILE"
           done
@@ -432,7 +438,9 @@ jobs:
 
       # serve-sim: the three Mach-O files in the signed package carry the Developer ID signature with the hardened
       # runtime (the host process loads serve-sim-native.node, and the Helper has library validation on). A miss
-      # here would also fail the notarization of the app, so it fails the job with a clearer message.
+      # here would also fail the notarization of the app, so it fails the job with a clearer message. The two helpers
+      # that run inside the iOS simulator must also carry allow-dyld-environment-variables (paracode-183: without it
+      # the Duo helper aborted with "DYLD_ROOT_PATH not set for simulator program").
       - name: Verify the serve-sim helpers are signed
         if: ${{ steps.serve_sim.outcome == 'success' }}
         run: |
@@ -443,6 +451,13 @@ jobs:
             echo "$INFO" | grep -E '^(Authority|TeamIdentifier|CodeDirectory)' || true
             if ! echo "$INFO" | grep -q '^Authority=Developer ID Application' || ! echo "$INFO" | grep -q 'flags=.*runtime'; then
               echo "::error::serve-sim $FILE is not signed with Developer ID and the hardened runtime"
+              exit 1
+            fi
+          done
+          for FILE in simduo/serve-sim-duo-hid simax/serve-sim-ax-settings; do
+            ENTITLEMENTS_XML="$(codesign -d --entitlements - --xml "$DIST/$FILE" 2>/dev/null || true)"
+            if [[ "$ENTITLEMENTS_XML" != *com.apple.security.cs.allow-dyld-environment-variables* ]]; then
+              echo "::error::serve-sim $FILE is missing com.apple.security.cs.allow-dyld-environment-variables"
               exit 1
             fi
           done

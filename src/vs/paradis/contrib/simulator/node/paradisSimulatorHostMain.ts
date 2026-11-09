@@ -88,7 +88,8 @@ async function main(): Promise<void> {
 		// 起こさないよう、無いパスを渡しておく
 		serveSimBin: join(tmpdir(), 'serve-sim-cli-is-not-used'),
 	});
-	const server = await paradisStartSimulatorHostServer({ socketPath: handshake.socketPath, token: handshake.token, middleware, onError: log });
+	// 段ごとの記録は stderr へ出す（shared process がそのままログに残す）
+	const server = await paradisStartSimulatorHostServer({ socketPath: handshake.socketPath, token: handshake.token, middleware, onError: log, onLog: message => log(message) });
 
 	let closing = false;
 	const shutdown = (reason: string) => {

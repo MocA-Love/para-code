@@ -17,6 +17,9 @@
 //    「起動していない端末の helper」の pid を止めるので、利用者の serve-sim や Orca と共有しない。
 //  - 落ちたら次の要求で起こし直す。60 秒の間に 3 回落ちたら、その間は起こさずに理由を返す。
 //  - 前回のホストの止め残しは、pid の記録を見て、argv に印と専用フォルダがあるものだけを止める。
+//  - 準備できた後のホストの stdout もログへ流す（serve-sim のネイティブの `[capture] …` と `console.log` は stdout に
+//    出る。捨てていたため、paracode-183 で取り込みが始まらなかったときにログが 1 行も残らなかった）。1 分に
+//    {@link STDOUT_LINES_PER_MINUTE} 行までにし、超えた分は数だけ残す。
 
 import { ChildProcess, execFile, spawn } from 'child_process';
 import { randomBytes } from 'crypto';
@@ -68,6 +71,8 @@ const MAX_CRASHES_IN_WINDOW = 3;
 const STOP_GRACE_MS = 3_000;
 /** 起動に失敗したときの理由に添える、ホストの stderr の行の数。 */
 const STDERR_TAIL_LINES = 20;
+/** 準備できた後のホストの stdout をログへ流す行の数（1 分あたり）。 */
+const STDOUT_LINES_PER_MINUTE = 60;
 
 /**
  * 自分だけが触れるフォルダを用意する。在れば、シンボリックリンクでないこと・持ち主が自分であることを
@@ -322,6 +327,7 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 		const running: IRunningHost = { child, connection: handshake };
 		this._running = running;
 		this._lastError = undefined;
+		this._forwardStdout(child);
 		child.once('exit', (code, signal) => {
 			if (this._running === running) {
 				this._running = undefined;
@@ -332,6 +338,43 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 		});
 		this._options.logService.info(`[paradis-simulator] host started (pid ${child.pid})`);
 		return handshake;
+	}
+
+	/** 準備できた後のホストの stdout を、行ごとにログへ流す（1 分に {@link STDOUT_LINES_PER_MINUTE} 行まで）。 */
+	private _forwardStdout(child: ChildProcess): void {
+		let partial = '';
+		let windowStart = Date.now();
+		let logged = 0;
+		let dropped = 0;
+		child.stdout?.on('data', (chunk: Buffer) => {
+			const lines = (partial + chunk.toString('utf8')).split('\n');
+			partial = lines.pop() ?? '';
+			if (partial.length > 4096) {
+				lines.push(partial);
+				partial = '';
+			}
+			for (const raw of lines) {
+				const line = raw.trim();
+				if (!line) {
+					continue;
+				}
+				const now = Date.now();
+				if (now - windowStart >= 60_000) {
+					if (dropped) {
+						this._options.logService.info(`[paradis-simulator] host stdout: ${dropped} more line(s) were not logged`);
+					}
+					windowStart = now;
+					logged = 0;
+					dropped = 0;
+				}
+				if (logged < STDOUT_LINES_PER_MINUTE) {
+					logged++;
+					this._options.logService.info(`[paradis-simulator] host stdout: ${line}`);
+				} else {
+					dropped++;
+				}
+			}
+		});
 	}
 
 	private _waitForReady(child: ChildProcess, handshake: IParadisSimulatorHostHandshake): Promise<void> {
