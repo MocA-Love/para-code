@@ -20,6 +20,7 @@ import { ProviderUsageSection, UsageBigValue, UsageRow, UsageRowTitle, UsageSect
 import { accountNumbers, formatUsd, ratioPercent, recentDailyAverage, usageFootNote, withEmailMaskNote } from '../../../src/features/settings/usageSummary.js';
 import {
 	aggregateAccounts,
+	aggregateHiddenAccounts,
 	entryTitle,
 	hasAnyLimits,
 	isOldValue,
@@ -154,6 +155,8 @@ function UsageAllView() {
 
 	const claude = aggregateAccounts(entries, 'claude', now);
 	const codex = aggregateAccounts(entries, 'codex', now);
+	const hiddenClaude = aggregateHiddenAccounts(entries, 'claude');
+	const hiddenCodex = aggregateHiddenAccounts(entries, 'codex');
 	const anyLimits = hasAnyLimits(entries);
 	const cost = summarizeCost(entries, now);
 	const github = summarizeGithub(entries, now);
@@ -165,7 +168,8 @@ function UsageAllView() {
 	const subtitle = `${scopeCountLabel(entries)}の合計${onlineCount < entries.length ? `（オフライン ${entries.length - onlineCount}）` : ''}`;
 	const costValues = Object.fromEntries(cost.rows.map(row => [row.key, { value: row.today !== undefined ? formatUsd(row.today) : undefined, at: row.at }]));
 	const emailMasked = useUsageEmailMask(s => s.masked);
-	const numbers = emailMasked ? accountNumbers([...claude, ...codex].map(item => item.account)) : undefined;
+	// 隠したアカウントの番号は、見えているアカウントの後ろに振る（見えているアカウントの番号はホームと同じ）
+	const numbers = emailMasked ? accountNumbers([...claude, ...codex, ...hiddenClaude, ...hiddenCodex].map(item => item.account)) : undefined;
 	const nothing = !anyOnline && entries.every(entry => entry.values.limits === undefined && entry.values.cost === undefined && entry.values.github === undefined && entry.values.voice === undefined);
 
 	return (
@@ -184,8 +188,8 @@ function UsageAllView() {
 				<>
 					<AggregatedFetchNotes items={fetchNoteItems(overview, 'limits')} now={now} />
 					<ProviderColumns
-						claude={layout => <AggregatedProviderSection provider="claude" title="Claude" accounts={claude} emptySnapshot={latestProviderSnapshot(entries, 'claude')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips numbers={numbers} {...layout} />}
-						codex={layout => <AggregatedProviderSection provider="codex" title="Codex" accounts={codex} emptySnapshot={latestProviderSnapshot(entries, 'codex')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips numbers={numbers} {...layout} />}
+						claude={layout => <AggregatedProviderSection provider="claude" title="Claude" accounts={claude} hidden={hiddenClaude} emptySnapshot={latestProviderSnapshot(entries, 'claude')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips numbers={numbers} {...layout} />}
+						codex={layout => <AggregatedProviderSection provider="codex" title="Codex" accounts={codex} hidden={hiddenCodex} emptySnapshot={latestProviderSnapshot(entries, 'codex')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips numbers={numbers} {...layout} />}
 					/>
 
 					<AggregatedFetchNotes items={fetchNoteItems(overview, 'cost')} now={now} />
@@ -321,6 +325,9 @@ function UsageSourceView() {
 			...[...aggregateAccounts(overview.entries, 'claude', now), ...aggregateAccounts(overview.entries, 'codex', now)].map(item => item.account),
 			...(limits?.value.claude?.accounts ?? []),
 			...(limits?.value.codex?.accounts ?? []),
+			...[...aggregateHiddenAccounts(overview.entries, 'claude'), ...aggregateHiddenAccounts(overview.entries, 'codex')].map(item => item.account),
+			...(limits?.value.claude?.hiddenAccounts ?? []),
+			...(limits?.value.codex?.hiddenAccounts ?? []),
 		])
 		: undefined;
 	const staleNote = (value: { value: { stale?: boolean }; at: number } | undefined) => (value?.value.stale === true ? value.at : undefined);

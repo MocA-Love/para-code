@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { IParadisLimitsAccount, IParadisLimitsProviderSnapshot, IParadisLimitsSnapshot, IParadisLimitsWindow, paradisLimitsPreviousValue } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
+import { ParadisLimitsHiddenAccounts, paradisIsLimitsAccountHidden } from '../../limitsMonitor/common/paradisLimitsHiddenAccounts.js';
 
 /** モバイルの `limits` の問い合わせのうち、Claude の出どころを決めるのに使う項目。 */
 export interface IParadisMobileLimitsRequestTarget {
@@ -48,9 +49,24 @@ export interface IParadisMobileLimitsAccount extends IParadisLimitsAccount {
 	readonly previousFetchedAt?: number;
 }
 
+/**
+ * PC の使用量のパネルで隠したアカウント。アプリが「非表示中のアカウント」に名前を出し、ほかの PC と束ねる
+ * ためだけの項目で、使用率は送らない。
+ */
+export type IParadisMobileLimitsHiddenAccount = Pick<IParadisLimitsAccount, 'provider' | 'id' | 'email' | 'organizationName' | 'accountId' | 'homeLabel'>;
+
+export interface IParadisMobileLimitsProviderSnapshot extends Omit<IParadisLimitsProviderSnapshot, 'accounts'> {
+	readonly accounts: readonly IParadisMobileLimitsAccount[];
+	/**
+	 * PC で隠したアカウント（`accounts` からは除いてある）。隠したものが無ければ項目ごと無い。任意項目なので、
+	 * 古いアプリは読まず、隠したアカウントが単に出なくなる。
+	 */
+	readonly hiddenAccounts?: readonly IParadisMobileLimitsHiddenAccount[];
+}
+
 export interface IParadisMobileLimitsSnapshot extends Omit<IParadisLimitsSnapshot, 'claude' | 'codex'> {
-	readonly claude: Omit<IParadisLimitsProviderSnapshot, 'accounts'> & { readonly accounts: readonly IParadisMobileLimitsAccount[] };
-	readonly codex: Omit<IParadisLimitsProviderSnapshot, 'accounts'> & { readonly accounts: readonly IParadisMobileLimitsAccount[] };
+	readonly claude: IParadisMobileLimitsProviderSnapshot;
+	readonly codex: IParadisMobileLimitsProviderSnapshot;
 }
 
 /**
@@ -83,11 +99,39 @@ export function paradisMobileLimitsAccount(account: IParadisLimitsAccount): IPar
 	};
 }
 
-/** モバイルへ送る使用量（{@link paradisMobileLimitsAccount} を両方のプロバイダに当てる）。 */
-export function paradisMobileLimitsSnapshot(snapshot: IParadisLimitsSnapshot): IParadisMobileLimitsSnapshot {
+function paradisMobileLimitsHiddenAccount(account: IParadisLimitsAccount): IParadisMobileLimitsHiddenAccount {
+	const { provider, id, email, organizationName, accountId, homeLabel } = account;
+	return {
+		provider,
+		id,
+		...(email !== undefined ? { email } : {}),
+		...(organizationName !== undefined ? { organizationName } : {}),
+		...(accountId !== undefined ? { accountId } : {}),
+		...(homeLabel !== undefined ? { homeLabel } : {}),
+	};
+}
+
+function paradisMobileLimitsProvider(provider: IParadisLimitsProviderSnapshot, hidden: ParadisLimitsHiddenAccounts): IParadisMobileLimitsProviderSnapshot {
+	const visible: IParadisMobileLimitsAccount[] = [];
+	const hiddenAccounts: IParadisMobileLimitsHiddenAccount[] = [];
+	for (const account of provider.accounts) {
+		if (paradisIsLimitsAccountHidden(hidden, account)) {
+			hiddenAccounts.push(paradisMobileLimitsHiddenAccount(account));
+		} else {
+			visible.push(paradisMobileLimitsAccount(account));
+		}
+	}
+	return { ...provider, accounts: visible, ...(hiddenAccounts.length > 0 ? { hiddenAccounts } : {}) };
+}
+
+/**
+ * モバイルへ送る使用量（{@link paradisMobileLimitsAccount} を両方のプロバイダに当てる）。PC の使用量のパネルで
+ * 隠したアカウント（`hidden`）は `accounts` から除き、`hiddenAccounts` へ移す。
+ */
+export function paradisMobileLimitsSnapshot(snapshot: IParadisLimitsSnapshot, hidden: ParadisLimitsHiddenAccounts = new Map()): IParadisMobileLimitsSnapshot {
 	return {
 		...snapshot,
-		claude: { ...snapshot.claude, accounts: snapshot.claude.accounts.map(paradisMobileLimitsAccount) },
-		codex: { ...snapshot.codex, accounts: snapshot.codex.accounts.map(paradisMobileLimitsAccount) },
+		claude: paradisMobileLimitsProvider(snapshot.claude, hidden),
+		codex: paradisMobileLimitsProvider(snapshot.codex, hidden),
 	};
 }

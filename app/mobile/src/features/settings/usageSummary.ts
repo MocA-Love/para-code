@@ -17,7 +17,10 @@ import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits
  */
 export type AccountNumbers = ReadonlyMap<string, number>;
 
-function accountNumberKey(account: RateLimitAccount): string {
+/** 見出しを決めるのに使う項目（PC で隠したアカウントもこれだけは持つ）。 */
+type AccountNameFields = Pick<RateLimitAccount, 'provider' | 'id' | 'email' | 'homeLabel'>;
+
+function accountNumberKey(account: AccountNameFields): string {
 	return `${account.provider}|${(account.email ?? account.homeLabel ?? account.id).trim().toLowerCase()}`;
 }
 
@@ -26,7 +29,7 @@ function accountNumberKey(account: RateLimitAccount): string {
  * 同じ番号にする（Codex の同じメールの別ワークスペースも同じ番号）。ホームと使用量の画面で同じアカウントが同じ番号に
  * なるよう、画面の並べ替えの前の、束ねた全アカウントの順で渡す。PC の番号とは揃えない。
  */
-export function accountNumbers(accounts: readonly RateLimitAccount[]): AccountNumbers {
+export function accountNumbers(accounts: readonly AccountNameFields[]): AccountNumbers {
 	const numbers = new Map<string, number>();
 	const counts = { claude: 0, codex: 0 };
 	for (const account of accounts) {
@@ -42,7 +45,7 @@ export function accountNumbers(accounts: readonly RateLimitAccount[]): AccountNu
  * アカウントの見出し（メール → ホームの呼び名 → ID の順）。`numbers` を渡すと「Claude 1」「Codex 2」のように番号で出す
  * （番号の無いアカウントもメールは出さず provider の名前だけにする）。
  */
-export function accountName(account: RateLimitAccount, numbers?: AccountNumbers): string {
+export function accountName(account: AccountNameFields, numbers?: AccountNumbers): string {
 	if (numbers !== undefined) {
 		const provider = account.provider === 'claude' ? 'Claude' : 'Codex';
 		const number = numbers.get(accountNumberKey(account));

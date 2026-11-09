@@ -10,6 +10,7 @@ import {
 	accountMergeKey,
 	aggregateAccounts,
 	aggregateGithubAccounts,
+	aggregateHiddenAccounts,
 	buildUsageEntries,
 	entryKindLabel,
 	entryTitle,
@@ -237,6 +238,26 @@ describe('aggregateAccounts', () => {
 		const result = entries([pc('a')], { 'pc:a': { limits: { value: limits([account({ email: 'u@x' })], [], { stale: true }), at: NOW, receivedAt: NOW } } });
 		expect(aggregateAccounts(result, 'claude', NOW)[0]!.old).toBe(true);
 	});
+
+	it('どれか1台の PC でも隠したアカウントは、ほかの PC で見えていても出さず、隠したものは PC をまたいで1つに束ねる', () => {
+		const hiddenOnA = { provider: 'claude' as const, id: 'para-claude:h', email: 'H@x' };
+		const result = entries([pc('a'), pc('b'), pc('c')], {
+			'pc:a': { limits: { value: { ...limits([account({ email: 'u@x' })]), claude: { accounts: [account({ email: 'u@x' })], hiddenAccounts: [hiddenOnA] } }, at: NOW, receivedAt: NOW } },
+			// B は同じアカウントを隠していない（古い PC も hiddenAccounts を送らない）
+			'pc:b': { limits: { value: limits([account({ email: 'h@x' }), account({ id: 'k', email: 'k@x' })]), at: NOW, receivedAt: NOW } },
+			'pc:c': { limits: { value: { ...limits([]), claude: { accounts: [], hiddenAccounts: [{ ...hiddenOnA, id: 'claude-live' }, { provider: 'claude', id: 'x' }] } }, at: NOW, receivedAt: NOW } },
+		});
+		expect({
+			shown: aggregateAccounts(result, 'claude', NOW).map(item => item.key),
+			hidden: aggregateHiddenAccounts(result, 'claude').map(item => item.key),
+			codexHidden: aggregateHiddenAccounts(result, 'codex'),
+		}).toEqual({
+			shown: ['claude|email:u@x|org:', 'claude|email:k@x|org:'],
+			// メールの無いものは束ねずに出どころごと
+			hidden: ['claude|email:h@x|org:', 'claude|source:pc:c|x'],
+			codexHidden: [],
+		});
+	});
 });
 
 describe('homeAccounts', () => {
@@ -446,6 +467,13 @@ describe('取得の失敗', () => {
 
 describe('usageCache', () => {
 	const KEY = new Uint8Array(32).fill(7);
+
+	it('PC で隠したアカウント（hiddenAccounts）も控えに残す（オフラインの PC が隠した分を合計から外し続けるため）', () => {
+		const value = { ...limits([]), claude: { accounts: [], hiddenAccounts: [{ provider: 'claude' as const, id: 'para-claude:h', email: 'h@x' }] } };
+		const record = { kind: 'pc' as const, pcId: 'a', pcName: 'A', values: { limits: { value, at: NOW, receivedAt: NOW } } };
+		const opened = openUsageRecord(KEY, sealUsageRecord(KEY, 'pc:a', record, NOW), 'a', NOW);
+		expect(opened?.record.values.limits?.value.claude.hiddenAccounts).toEqual([{ provider: 'claude', id: 'para-claude:h', email: 'h@x' }]);
+	});
 
 	it('7日を過ぎた値を落とし、値が残らなければ出どころごと落とす', () => {
 		const record = { kind: 'pc' as const, pcId: 'a', pcName: 'A', values: { cost: { value: dashboard([{ date: TODAY, cost: 1 }]), at: NOW - HOUR, receivedAt: NOW }, rtk: { value: rtk([], 1), at: NOW - USAGE_CACHE_TTL_MS - 1 } } };
