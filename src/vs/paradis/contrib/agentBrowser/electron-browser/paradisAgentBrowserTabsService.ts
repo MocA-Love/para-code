@@ -1048,8 +1048,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	/**
 	 * 承認ダイアログ。ワークベンチ内のダイアログ（custom）にしているのは、締め切りで閉じられるように
 	 * するため（ネイティブのシートは取り消せない）と、内蔵ブラウザの上に確実に出すため
-	 * （`monaco-dialog-modal-block` は overlayManager に登録済み）。fork の自前ダイアログ（z-index 2600〜2800）
-	 * が開いていてもその裏に隠れないよう、このダイアログの層だけ上げてある（media/paradisAgentApproval.css）。
+	 * （`monaco-dialog-modal-block` は overlayManager に登録済み）。fork の自前のモーダルはどれもワークベンチの
+	 * ダイアログの層より下（vs/paradis/browser/paradisModal.ts の表）なので、開いていてもその裏に隠れない。
 	 */
 	approvalBlock(token: string, cooldownKey?: string): 'recentlyDenied' | 'busy' | undefined {
 		const deniedUntil = this._deniedUntil.get(cooldownKey !== undefined ? `${token}\n${cooldownKey}` : token);

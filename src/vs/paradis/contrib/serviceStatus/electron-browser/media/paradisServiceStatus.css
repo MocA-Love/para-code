@@ -94,7 +94,6 @@
 
 .paradis-service-status-popover {
 	position: fixed;
-	z-index: 2500;
 	background: var(--vscode-editorWidget-background);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
 	border-radius: var(--vscode-cornerRadius-medium);

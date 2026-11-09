@@ -500,7 +500,7 @@
 	top: 0;
 	left: 50%;
 	transform: translateX(-50%);
-	z-index: 100000;
+	z-index: calc(var(--paradis-z-inspect) + 1);
 	padding: 4px 14px;
 	border-radius: 0 0 6px 6px;
 	background: var(--vscode-editorWarning-foreground, #bf8803);
@@ -512,7 +512,7 @@
 
 .paradis-tce-screen-highlight {
 	position: fixed;
-	z-index: 99999;
+	z-index: var(--paradis-z-inspect);
 	outline: 2px solid var(--vscode-editorWarning-foreground, #bf8803);
 	outline-offset: -2px;
 	pointer-events: none;
@@ -520,7 +520,7 @@
 
 .paradis-tce-screen-panel {
 	position: fixed;
-	z-index: 100001;
+	z-index: calc(var(--paradis-z-inspect) + 2);
 	width: 320px;
 	padding: 8px 10px;
 	border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-widget-border, transparent));

@@ -1403,7 +1403,12 @@
 		"--paradis-titlebar-item-padding",
 		"--paradis-transparency-opacity",
 		"--paradis-viewer-toolbar-height",
-		"--paradis-workspace-color"
+		"--paradis-workspace-color",
+		"--paradis-z-inspect",
+		"--paradis-z-modal",
+		"--paradis-z-modal-nested",
+		"--paradis-z-popover",
+		"--paradis-z-scrim"
 	],
 	"sizes": [
 		"--segmented-icon-toggle-cell-radius",

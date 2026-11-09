@@ -70,7 +70,7 @@ export class ParadisLimitsSetupDialog extends Disposable {
 	) {
 		super();
 
-		this.overlay = $('.paradis-limits-setup-overlay');
+		this.overlay = $('.paradis-limits-setup-overlay.paradis-modal-backdrop');
 		const dialog = dom.append(this.overlay, $('.paradis-limits-setup'));
 		dialog.tabIndex = -1;
 

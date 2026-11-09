@@ -93,7 +93,6 @@
 
 .paradis-resource-monitor-panel {
 	position: fixed;
-	z-index: 2500;
 	width: 420px;
 	max-height: 80vh;
 	display: flex;

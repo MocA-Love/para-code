@@ -30,6 +30,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
+import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -207,6 +208,8 @@ export class ParadisTabLauncherPopup extends Disposable {
 		this.list = dom.append(container, $('.paradis-tab-launcher.paradis-overlay-popover'));
 		this.list.setAttribute('role', 'menu');
 		this._register(toDisposable(() => this.list.remove()));
+		// 小窓はモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に浮かせない）
+		this._register(paradisCloseWhenModalOpens(this.list, () => this.hide(false)));
 
 		const search = dom.append(this.list, $('.paradis-tab-launcher-search'));
 		dom.append(search, $(ThemeIcon.asCSSSelector(Codicon.search)));

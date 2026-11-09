@@ -138,7 +138,7 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 	) {
 		super();
 
-		this._backdrop = $('.paradis-create-worktree-backdrop');
+		this._backdrop = $('.paradis-create-worktree-backdrop.paradis-modal-backdrop');
 		this._dialog = $('.paradis-workspace-lifecycle-dialog');
 		this._dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		this._dialog.setAttribute('role', 'dialog');

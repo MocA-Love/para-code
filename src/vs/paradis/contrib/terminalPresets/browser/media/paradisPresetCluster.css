@@ -216,7 +216,6 @@
 	background: var(--vscode-editorWidget-background);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	box-shadow: var(--vscode-shadow-xl, 0 4px 14px rgba(0, 0, 0, 0.4));
-	z-index: 2000;
 }
 
 .monaco-workbench .paradis-preset-cluster-popup-item {

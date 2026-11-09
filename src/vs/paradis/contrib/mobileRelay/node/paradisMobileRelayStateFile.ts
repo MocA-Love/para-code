@@ -32,6 +32,53 @@ export interface IParadisRelayPairedMobile {
 	 * 捨てられる。旧キーは**書かず**、旧アプリから受け取ったときの読み取りだけに使う。
 	 */
 	notifyPrefs?: { agentDone?: boolean; agentQuestion?: boolean; pcFocusQuiet?: boolean; suppressWhenPcFocused?: boolean; includeContent?: boolean };
+	/**
+	 * PC 側で付けた別名（「モバイル」のタブの「名前を変更」）。`name`（端末が名乗った名前）は書き換えない
+	 * （同じ名前の重なりを避ける連番と、名前での解除の照合が `name` を使うため）。無ければ `name` を出す。
+	 */
+	alias?: string;
+	/** ペアリングした時刻（epoch ms）。この項目を足す前にペアリングした端末には無い（「不明」と出す）。 */
+	pairedAt?: number;
+	/**
+	 * 最後にこの PC と繋がっていた時刻（epoch ms）。繋がったときと切れたときに更新し、書き込みは間引く
+	 * （`paradisShouldPersistMobileLastSeen`）。項目を足す前の台帳には無い。
+	 */
+	lastSeenAt?: number;
+}
+
+/**
+ * 後から足した端末の項目（`alias`・`pairedAt`・`lastSeenAt`）の形を確かめ、違うものだけ捨てる。
+ * 台帳全体を壊れている扱いにすると退避して全端末のペアリングが外れるので、ここでは項目単位で直す。
+ */
+function sanitizePairedMobile(mobile: IParadisRelayPairedMobile): IParadisRelayPairedMobile {
+	const record = mobile as unknown as Record<string, unknown>;
+	const validAlias = record.alias === undefined || (typeof record.alias === 'string' && record.alias.trim().length > 0);
+	const validTime = (key: 'pairedAt' | 'lastSeenAt') => record[key] === undefined || (typeof record[key] === 'number' && Number.isFinite(record[key]) && record[key] > 0);
+	if (validAlias && validTime('pairedAt') && validTime('lastSeenAt')) {
+		return mobile;
+	}
+	const sanitized = { ...mobile };
+	if (!validAlias) {
+		delete sanitized.alias;
+	}
+	if (!validTime('pairedAt')) {
+		delete sanitized.pairedAt;
+	}
+	if (!validTime('lastSeenAt')) {
+		delete sanitized.lastSeenAt;
+	}
+	return sanitized;
+}
+
+/** 最終接続の時刻をディスクへ書く間隔の下限。繋がる・切れるを繰り返すアプリで台帳を書き続けないため。 */
+export const PARADIS_MOBILE_LAST_SEEN_PERSIST_INTERVAL_MS = 10 * 60_000;
+
+/**
+ * 最終接続の時刻を今ディスクへ書くか。前に書いてから {@link PARADIS_MOBILE_LAST_SEEN_PERSIST_INTERVAL_MS} 経つまでは
+ * メモリの値だけを進める（表示はメモリの値を使うので、この間の誤差は再起動したときだけ出る）。
+ */
+export function paradisShouldPersistMobileLastSeen(lastPersistedAt: number | undefined, now: number): boolean {
+	return lastPersistedAt === undefined || now - lastPersistedAt >= PARADIS_MOBILE_LAST_SEEN_PERSIST_INTERVAL_MS || now < lastPersistedAt;
 }
 
 export interface IParadisRelayPersistedState {
@@ -92,7 +139,7 @@ export function paradisParseRelayState(raw: string): IParadisRelayPersistedState
 		&& (identity.pkcs8 === undefined || isString(identity.pkcs8)))) {
 		return undefined;
 	}
-	return { ...parsed, mobiles: mobiles as IParadisRelayPairedMobile[], device: device as IParadisRelayPersistedState['device'], identity: identity as IParadisRelayPersistedState['identity'] };
+	return { ...parsed, mobiles: (mobiles as IParadisRelayPairedMobile[]).map(sanitizePairedMobile), device: device as IParadisRelayPersistedState['device'], identity: identity as IParadisRelayPersistedState['identity'] };
 }
 
 /** 台帳を読む。「まだ無い」「読めない」「壊れている」を分けて返す。 */

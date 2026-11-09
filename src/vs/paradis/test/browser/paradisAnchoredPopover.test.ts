@@ -9,8 +9,9 @@
 import assert from 'assert';
 import { StandardKeyboardEvent } from '../../../base/browser/keyboardEvent.js';
 import { mainWindow } from '../../../base/browser/window.js';
+import { timeout } from '../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { IParadisPopoverRow, ParadisPopoverRows, paradisWatchPopoverDismiss } from '../../browser/paradisAnchoredPopover.js';
+import { IParadisPopoverRow, ParadisPopoverRows, paradisCloseWhenModalOpens, paradisWatchPopoverDismiss } from '../../browser/paradisAnchoredPopover.js';
 
 suite('Paradis anchored popover', () => {
 
@@ -68,6 +69,28 @@ suite('Paradis anchored popover', () => {
 		const toAnchor = closes;
 		element.dispatchEvent(new FocusEvent('focusout', { relatedTarget: outside }));
 		assert.deepStrictEqual([toAnchor, closes], [0, 1]);
+	});
+
+	// 小窓の段はモーダルより上なので、モーダルの幕（fork のモーダル・本家のモーダルのエディタ）が作業領域に入ったら閉じる
+	test('closes when a modal backdrop enters the workbench, but not for menus or other popovers', async () => {
+		const workbench = make('div');
+		workbench.classList.add('monaco-workbench');
+		const popover = make('div', workbench);
+		const closes: string[] = [];
+		let last = '';
+		const watch = paradisCloseWhenModalOpens(popover, () => closes.push(last));
+		const add = async (name: string, className: string) => {
+			last = name;
+			make('div', workbench).className = className;
+			await timeout(0);
+		};
+		await add('context view', 'context-view');
+		await add('other popover', 'paradis-tab-launcher paradis-overlay-popover');
+		await add('fork modal', 'paradis-hub-backdrop paradis-modal-backdrop');
+		await add('modal editor', 'monaco-modal-editor-block');
+		watch.dispose();
+		await add('after dispose', 'paradis-skills-backdrop paradis-modal-backdrop');
+		assert.deepStrictEqual(closes, ['fork modal', 'modal editor']);
 	});
 
 	test('rows move with the keys, wrap at the ends, run on Enter and Space, and Esc closes', () => {

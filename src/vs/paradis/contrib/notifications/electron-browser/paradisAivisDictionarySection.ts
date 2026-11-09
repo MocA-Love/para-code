@@ -348,7 +348,7 @@ export class ParadisCreateDictionaryDialog extends Disposable {
 	) {
 		super();
 
-		this._backdrop = $('.paradis-notif-nested-backdrop');
+		this._backdrop = $('.paradis-notif-nested-backdrop.paradis-modal-backdrop.paradis-modal-backdrop-nested');
 		const dialog = $('.paradis-notif-nested-dialog');
 		this._backdrop.appendChild(dialog);
 
@@ -519,7 +519,7 @@ export class ParadisDictionaryEditorDialog extends Disposable {
 	) {
 		super();
 
-		this._backdrop = $('.paradis-notif-nested-backdrop');
+		this._backdrop = $('.paradis-notif-nested-backdrop.paradis-modal-backdrop.paradis-modal-backdrop-nested');
 		const dialog = $('.paradis-notif-nested-dialog.wide');
 		// 辞書の編集は段 M の箱（Q537 の 43 A）
 		dialog.classList.add(...paradisModalClasses(ParadisModalSize.Medium));

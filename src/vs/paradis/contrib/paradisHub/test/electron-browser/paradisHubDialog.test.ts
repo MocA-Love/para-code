@@ -172,12 +172,12 @@ suite('ParadisHubDialog', () => {
 		const instantiationService = store.add(new TestInstantiationService());
 		instantiationService.stub(ILayoutService, { activeContainer: container } as Partial<ILayoutService>);
 		instantiationService.stub(ILogService, new NullLogService());
-		// 開いている間は、本家のダイアログと通知を器より上に出すための印が作業領域に付く
+		// 幕には fork のモーダルの段の印が付く（本家のメニュー・確認・通知が器の上に出る段。paradisModal.ts の表）
 		const marked: boolean[] = [];
 		const openAndClose = (area: ParadisHubAreaId, section?: string) => {
 			created.clear();
 			instantiationService.invokeFunction(accessor => paradisOpenHub(accessor, area, section));
-			marked.push(container.classList.contains('paradis-hub-open'));
+			marked.push(container.querySelector('.paradis-hub-backdrop')?.classList.contains('paradis-modal-backdrop') ?? false);
 			const calls = [...created.values()].map(view => [...view.calls]);
 			container.querySelector<HTMLButtonElement>('.phub-close')!.click();
 			return calls;
@@ -188,14 +188,14 @@ suite('ParadisHubDialog', () => {
 			openAndClose(ParadisHubAreaId.Settings, 'psd-sec-menubar'),
 			openAndClose(ParadisHubAreaId.Usage),
 			openAndClose(ParadisHubAreaId.Usage),
-			{ open: marked, afterClose: container.classList.contains('paradis-hub-open'), dialogs: container.querySelectorAll('.paradis-hub').length },
+			{ open: marked, afterClose: container.querySelectorAll('.paradis-modal-backdrop').length, dialogs: container.querySelectorAll('.paradis-hub').length },
 		], [
 			[['visible:true', 'reveal:psd-sec-agent']],
 			[['visible:true', 'reveal:saved-settings', 'restore:saved-settings:40']],
 			[['visible:true', 'reveal:psd-sec-menubar']],
 			[['visible:true', 'reveal:']],
 			[['visible:true', 'reveal:saved-usage', 'restore:saved-usage:40']],
-			{ open: [true, true, true, true, true], afterClose: false, dialogs: 0 },
+			{ open: [true, true, true, true, true], afterClose: 0, dialogs: 0 },
 		]);
 	});
 
