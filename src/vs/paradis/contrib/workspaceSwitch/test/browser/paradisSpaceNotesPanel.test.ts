@@ -122,10 +122,14 @@ suite('ParadisSpaceNotesPanel', () => {
 		panel.setSpace('worktree:a', 'a', undefined);
 		scrollToBottom(body);
 
+		const inputFocused: boolean[] = [];
 		const editLine = (lineIndex: number, key: 'Enter' | 'Escape', value?: string) => {
 			checkAt(body, lineIndex).parentElement!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
 			contextMenu.run('paradis.spaceNotes.task.edit');
 			const input = body.getElementsByClassName('paradis-space-notes-task-input')[0] as HTMLTextAreaElement;
+			// 別の行のチェックボックスにフォーカスがあっても、開いた入力欄がフォーカスを持つ
+			// (チェックボックスへ戻すと、ウィンドウが前面にあるときは blur で編集がその場で閉じる)
+			inputFocused.push(body.ownerDocument.activeElement === input);
 			if (value !== undefined) {
 				input.value = value;
 			}
@@ -137,10 +141,12 @@ suite('ParadisSpaceNotesPanel', () => {
 			committed: editLine(TASK_COUNT - 2, 'Enter', 'renamed'),
 			cancelled: editLine(TASK_COUNT - 3, 'Escape'),
 			line: notes.read('worktree:a').split('\n')[TASK_COUNT - 2],
+			inputFocused,
 		}, {
 			committed: 'renamed',
 			cancelled: `task ${TASK_COUNT - 3}`,
 			line: '- [ ] renamed',
+			inputFocused: [true, true],
 		});
 	});
 

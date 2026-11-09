@@ -529,7 +529,12 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	}
 
 	private restoreScrollAndFocus(scrollTop: number, focusedTask: IFocusedTask | undefined): void {
-		if (focusedTask !== undefined) {
+		// 描き直しの中で入力欄 (1行編集・「やることを追加」) が自分でフォーカスを取ったときは、前の
+		// チェックボックスへ戻さない。戻すと入力欄の blur で1行編集がその場で確定して閉じてしまう
+		// (別の行のチェックボックスにフォーカスがある状態で「この項目を編集」を選んだとき)
+		const renderedFocus = this.bodyElement.ownerDocument.activeElement;
+		const inputTookFocus = DOM.isHTMLElement(renderedFocus) && renderedFocus !== this.bodyElement && this.bodyElement.contains(renderedFocus);
+		if (focusedTask !== undefined && !inputTookFocus) {
 			// キーボードで続けて操作できるようにフォーカスを戻す。位置は下で書き戻すのでここでは動かさない
 			this.findTaskCheck(focusedTask)?.focus({ preventScroll: true });
 		}
