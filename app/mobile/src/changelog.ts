@@ -40,14 +40,20 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
-		version: '0.12.19',
-		date: '2026-11-07',
+		version: '0.12.20',
+		date: '2026-11-09',
 		items: [
 			{
 				icon: 'eye-off-outline',
 				title: 'PC の「AI 利用リミット」で隠したアカウントは、使用量の画面・ホーム・ウィジェットにも出さないようにしました',
 				body: '使用量の画面では「非表示中のアカウント」に畳んで名前だけを出します。表示に戻すのは PC から。PC の Para Code を更新すると使えます。',
 			},
+		],
+	},
+	{
+		version: '0.12.19',
+		date: '2026-11-07',
+		items: [
 			{
 				icon: 'albums-outline',
 				title: '発言を長押しして「前後の発言もまとめて選ぶ…」を押すと、いくつもの発言をまたいで範囲を選んでコピーできるようにしました',
