@@ -1,0 +1,37 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The progress bar of Para Code's UI kit (stage 4, Q600, paradisProgress.ts): 4px, a neutral track, the accent fill;
+	the warning or danger color only when a person needs to look. A fill color passed by the screen (a chart's series
+	color) is written inline by paradisProgress.ts.
+*/
+
+.monaco-workbench .paradis-progress {
+	height: 4px;
+	overflow: hidden;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: var(--vscode-paradis-fillNeutral);
+}
+
+.monaco-workbench .paradis-progress > .paradis-progress-fill {
+	height: 100%;
+	border-radius: inherit;
+	background: var(--vscode-paradis-accent);
+}
+
+.monaco-workbench .paradis-progress.warning > .paradis-progress-fill {
+	background: var(--vscode-paradis-warning);
+}
+
+.monaco-workbench .paradis-progress.danger > .paradis-progress-fill {
+	background: var(--vscode-paradis-danger);
+}
+
+.monaco-workbench.monaco-enable-motion .paradis-progress > .paradis-progress-fill {
+	transition: width var(--paradis-motion-enter) var(--paradis-ease-enter);
+}

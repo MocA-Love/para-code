@@ -23,6 +23,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { PARADIS_TABS_CLASS, paradisTabClasses } from '../../../browser/paradisTabs.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisHubAreaContainers, IParadisHubAreaDescriptor, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, ParadisHubAreaId, paradisHubAreas } from './paradisHub.js';
 import { paradisHubFocusNavItem, paradisHubNavItems } from './paradisHubNav.js';
@@ -88,7 +89,9 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 
 		const header = dom.append(this.modal, $('.phub-header'));
 		dom.append(header, $('h2')).textContent = STR_TITLE;
+		// UI キットの段 4（Q600）: 上段の切り替えは下線のタブ。キーと役目はここのまま
 		const areaSeg = dom.append(header, $('.phub-areas'));
+		areaSeg.classList.add(PARADIS_TABS_CLASS);
 		areaSeg.setAttribute('role', 'tablist');
 		areaSeg.setAttribute('aria-label', STR_AREAS_ARIA);
 		const headerSlots = dom.append(header, $('.phub-header-slots'));
@@ -103,6 +106,7 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 		const bodies = dom.append(this.modal, $('.phub-bodies'));
 		for (const descriptor of paradisHubAreas()) {
 			const button = dom.append(areaSeg, $('button')) as HTMLButtonElement;
+			button.classList.add(...paradisTabClasses());
 			button.type = 'button';
 			button.setAttribute('role', 'tab');
 			button.id = `${idPrefix}-tab-${descriptor.id}`;

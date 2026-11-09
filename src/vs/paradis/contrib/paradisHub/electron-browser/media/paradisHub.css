@@ -44,36 +44,14 @@
 	flex: none;
 }
 
+/* The area switch is the kit's tabs (paradisTabs.css), as high as the header bar so the line sits on its bottom edge. */
 .paradis-hub .phub-areas {
-	display: flex;
 	flex: none;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 5px;
-	overflow: hidden;
+	align-self: stretch;
 }
 
-.paradis-hub .phub-areas button {
-	background: transparent;
-	border: none;
-	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
-	font-family: inherit;
-	padding: 4px 12px;
-	cursor: pointer;
-}
-
-.paradis-hub .phub-areas button:last-child {
-	border-right: none;
-}
-
-.paradis-hub .phub-areas button.checked {
-	background: var(--vscode-inputOption-activeBackground);
-	color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
-}
-
-.paradis-hub .phub-areas button:not(.checked):hover {
-	background: var(--vscode-toolbar-hoverBackground);
+.paradis-hub .phub-areas > .paradis-tab {
+	height: auto;
 }
 
 /* The open area's own header controls (search box, refresh button) sit between the switch and the close button. */
@@ -111,38 +89,40 @@
 .paradis-hub .phub-nav {
 	width: 212px;
 	flex: none;
-	background: var(--vscode-sideBar-background);
-	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	padding: 8px 6px;
+	background: var(--vscode-paradis-surface);
+	border-right: 1px solid var(--vscode-paradis-lineSubtle);
+	padding: var(--vscode-spacing-size80);
 	overflow-y: auto;
 }
 
 .paradis-hub .phub-nav-caption {
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: 0.06em;
-	color: var(--vscode-descriptionForeground);
-	padding: 9px 10px 3px;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size80) var(--vscode-spacing-size40);
 }
 
+/* A list row of the kit (28px, control radius); the chosen one on the selection fill. */
 .paradis-hub .phub-nav-item {
+	box-sizing: border-box;
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	padding: 6px 10px;
-	border-radius: 6px;
+	gap: var(--vscode-spacing-size80);
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size80);
+	border-radius: var(--paradis-radius-control);
 	cursor: pointer;
-	font-size: 12.5px;
+	font-size: var(--vscode-fontSize-body1);
+	color: var(--vscode-paradis-text);
 	outline: none;
 }
 
 .paradis-hub .phub-nav-item:hover {
-	background: var(--vscode-list-hoverBackground);
+	background: var(--vscode-paradis-fillHover);
 }
 
 .paradis-hub .phub-nav-item.active {
-	background: var(--vscode-list-activeSelectionBackground);
-	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+	background: var(--vscode-paradis-fillSelected);
+	color: var(--vscode-paradis-textStrong);
 }
 
 .paradis-hub .phub-nav-item.hidden,
@@ -152,7 +132,8 @@
 
 .paradis-hub .phub-nav-icon {
 	flex: none;
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-hub .phub-nav-label {
@@ -165,8 +146,8 @@
 
 .paradis-hub .phub-nav-chip {
 	flex: none;
-	font-size: 10.5px;
-	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-hub .phub-nav-chip:empty {
@@ -175,8 +156,8 @@
 
 .paradis-hub .phub-nav-external {
 	flex: none;
-	font-size: 12px;
-	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-codiconFontSize-compact);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-hub .phub-content {
@@ -202,17 +183,17 @@
 		display: none;
 	}
 
+	/* Header buttons marked compact (paradisModal.ts PARADIS_MODAL_COMPACT_CLASS) show only their icon. */
+	.paradis-hub .phub-header .paradis-modal-compact > span:not(.codicon) {
+		display: none;
+	}
+
 	.paradis-hub .phub-areas {
 		order: 3;
 		flex: 1 1 100%;
+		align-self: auto;
 		min-width: 0;
-		overflow-x: auto;
-		scrollbar-width: none;
-	}
-
-	.paradis-hub .phub-areas button {
-		flex: none;
-		white-space: nowrap;
+		height: var(--paradis-height-lg);
 	}
 
 	.paradis-hub .phub-body {

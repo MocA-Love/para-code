@@ -23,7 +23,8 @@
 	width: auto;
 	max-width: 100%;
 	height: var(--paradis-height-md);
-	padding: 0 var(--vscode-spacing-size60) 0 var(--vscode-spacing-size100);
+	/* Room on the right for the chevron the workbench draws over the select (style.css .select-container::after). */
+	padding: 0 var(--vscode-spacing-size240) 0 var(--vscode-spacing-size100);
 	font: inherit;
 	font-size: var(--vscode-fontSize-body1);
 	border-radius: var(--paradis-radius-control);

@@ -9,31 +9,12 @@
 	paradisHub.css; this file only styles the area's refresh button, its panes and the shared-settings pane. Each
 	dashboard pane keeps its own CSS. */
 
+/* The refresh button is the kit's small ghost button (paradisButton.css), at the right end of the header row. */
 .paradis-hub .pud-refresh {
 	margin-left: auto;
-	flex: none;
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	appearance: none;
-	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
-	border-radius: 5px;
-	background: transparent;
-	color: var(--vscode-foreground);
-	padding: 4px 12px;
-	font-size: 12px;
-	font-family: inherit;
-	cursor: pointer;
 }
 
-.paradis-hub .pud-refresh:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-hub .pud-refresh .codicon {
-	font-size: var(--vscode-codiconFontSize);
-}
-
+/* allow-any-unicode-next-line */
 /* パネルは1枚だけ見せる。中身（各ダッシュボード）は自前でスクロールを持つので、
  * ここは高さを渡すだけにして二重スクロールを作らない。 */
 .paradis-usage-area .pud-pane {

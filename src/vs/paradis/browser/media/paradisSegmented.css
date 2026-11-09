@@ -1,0 +1,55 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The segmented control of Para Code's UI kit (stage 4, Q600, paradisSegmented.ts): a sunken 28px group, the chosen
+	button raised on the popup surface. Keyboard focus is the inset blue ring (paradisFocusRing.css).
+*/
+
+.monaco-workbench .paradis-seg {
+	box-sizing: border-box;
+	display: inline-flex;
+	gap: 2px;
+	flex: none;
+	max-width: 100%;
+	height: var(--paradis-height-md);
+	padding: 2px;
+	overflow-x: auto;
+	scrollbar-width: none;
+	background: var(--vscode-paradis-sunken);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-control);
+}
+
+.monaco-workbench .paradis-seg > button {
+	flex: none;
+	padding: 0 var(--vscode-spacing-size100);
+	border: none;
+	border-radius: calc(var(--paradis-radius-control) - 2px);
+	background: transparent;
+	color: var(--vscode-paradis-textMuted);
+	font: inherit;
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-seg > button:not(:disabled):hover {
+	color: var(--vscode-paradis-textStrong);
+	background: var(--vscode-paradis-fillHover);
+}
+
+.monaco-workbench .paradis-seg > button[aria-pressed="true"] {
+	color: var(--vscode-paradis-textStrong);
+	background: var(--vscode-paradis-popup);
+	box-shadow: var(--vscode-shadow-sm);
+}
+
+.monaco-workbench .paradis-seg > button:disabled {
+	opacity: 0.45;
+	cursor: default;
+}

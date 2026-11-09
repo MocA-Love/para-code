@@ -1,0 +1,90 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	Cards and tables of Para Code's UI kit (stage 4, Q600, paradisCard.ts).
+	Card: the raised surface, a subtle line, the inner radius; a label (12), a big number (heading1, 26) and a note (11).
+	Table: 28px rows, headers in the muted color and regular weight, numbers right aligned with tabular digits, lines
+	only between rows; the hovered row on the hover fill, the chosen row on the selection fill.
+*/
+
+.monaco-workbench .paradis-card {
+	box-sizing: border-box;
+	min-width: 0;
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size160);
+	background: var(--vscode-paradis-raised);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+}
+
+.monaco-workbench .paradis-card-label {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-card-value {
+	font-size: var(--vscode-fontSize-heading1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	line-height: 32px;
+	color: var(--vscode-paradis-textStrong);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .paradis-card-note {
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .paradis-table th {
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size80);
+	text-align: left;
+	font-weight: var(--vscode-fontWeight-regular);
+	color: var(--vscode-paradis-textMuted);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-table td {
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size80);
+	color: var(--vscode-paradis-text);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+.monaco-workbench .paradis-table tbody tr:last-child td {
+	border-bottom: none;
+}
+
+.monaco-workbench .paradis-table tbody tr:hover td {
+	background: var(--vscode-paradis-fillHover);
+}
+
+.monaco-workbench .paradis-table tbody tr.selected td {
+	background: var(--vscode-paradis-fillSelected);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench .paradis-table :is(th, td).num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}

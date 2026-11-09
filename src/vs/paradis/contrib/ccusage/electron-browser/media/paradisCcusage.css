@@ -23,55 +23,26 @@
 
 /* ---- toolbar (filters) ---- */
 
+/* UI kit stage 4 (Q600): the period segmented control and four drop-downs on one line (two in a narrow body). */
 .paradis-ccusage-toolbar {
 	flex: none;
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: var(--vscode-spacing-size80);
 	flex-wrap: wrap;
-	padding: 10px 20px 8px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size240) var(--vscode-spacing-size80);
 }
 
-.paradis-ccusage-seg {
-	display: flex;
-	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	border-radius: 5px;
-	overflow: hidden;
+.paradis-ccusage-toolbar > .paradis-select > select {
+	max-width: 220px;
 }
 
-.paradis-ccusage-seg button {
-	background: transparent;
-	border: none;
-	border-right: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
-	font-family: inherit;
-	padding: 4px 11px;
-	cursor: pointer;
-}
 
-.paradis-ccusage-seg button:last-child {
-	border-right: none;
-}
 
-.paradis-ccusage-seg button.checked {
-	background: var(--vscode-inputOption-activeBackground);
-	color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
-}
 
-.paradis-ccusage-seg button:not(.checked):hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
 
-.paradis-ccusage-seg button:disabled {
-	opacity: 0.4;
-	cursor: not-allowed;
-}
 
-.paradis-ccusage-seg button:disabled:hover {
-	background: transparent;
-}
+
 
 .paradis-ccusage-toolbar-spacer {
 	flex: 1;
@@ -104,58 +75,24 @@
 	color: var(--vscode-descriptionForeground);
 }
 
-.paradis-ccusage-custom-range button {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-	border: none;
-	border-radius: 4px;
-	font-size: 12px;
-	font-family: inherit;
-	padding: 4px 10px;
-	cursor: pointer;
-}
 
-.paradis-ccusage-custom-range button:hover {
-	background: var(--vscode-button-hoverBackground);
-}
 
 .paradis-ccusage-updated {
-	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
+	color: var(--vscode-paradis-textFaint);
+	font-size: var(--vscode-fontSize-label2);
+	white-space: nowrap;
 }
 
-.paradis-ccusage-refresh {
-	display: flex;
-	align-items: center;
-	gap: 5px;
-	background: transparent;
-	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	border-radius: 5px;
-	color: var(--vscode-foreground);
-	font-size: 12px;
-	font-family: inherit;
-	padding: 4px 10px;
-	cursor: pointer;
-}
 
-.paradis-ccusage-refresh:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
 
-.paradis-ccusage-refresh .codicon.spin {
-	animation: paradis-ccusage-spin 1s linear infinite;
-}
 
-@keyframes paradis-ccusage-spin {
-	to { transform: rotate(360deg); }
-}
 
 /* ---- scrollable body ---- */
 
 .paradis-ccusage-body {
 	flex: 1;
 	overflow-y: auto;
-	padding: 16px 20px 28px;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size240) var(--vscode-spacing-size400);
 }
 
 .paradis-ccusage-body.stale {
@@ -175,18 +112,20 @@
 }
 
 .paradis-ccusage-note {
-	color: var(--vscode-descriptionForeground);
-	font-size: 11.5px;
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
 	margin-bottom: 10px;
 }
 
 /* ---- cards & grids ---- */
 
+/* The kit's card (paradisCard.css): raised surface, subtle line, inner radius. */
 .paradis-ccusage-card {
-	background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	border-radius: 8px;
-	padding: 13px 16px;
+	box-sizing: border-box;
+	background: var(--vscode-paradis-raised);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size160);
 	min-width: 0;
 }
 
@@ -235,76 +174,82 @@
 /* ---- stat tiles ---- */
 
 .paradis-ccusage-stat-label {
-	font-size: 12px;
-	color: var(--vscode-descriptionForeground);
-	margin-bottom: 5px;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	margin-bottom: var(--vscode-spacing-size40);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
+/* The four numbers share one size (heading1, 26), the first one included. */
 .paradis-ccusage-stat-value {
-	font-size: 25px;
-	font-weight: 600;
-	letter-spacing: -0.01em;
+	font-size: var(--vscode-fontSize-heading1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	line-height: 32px;
+	color: var(--vscode-paradis-textStrong);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
-.paradis-ccusage-stat-value.hero {
-	font-size: 37px;
-}
 
 .paradis-ccusage-stat-value .unit {
-	font-size: 13px;
-	font-weight: 400;
-	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-regular);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-ccusage-stat-sub {
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
-	margin-top: 4px;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+	margin-top: var(--vscode-spacing-size40);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 /* ---- 5h block card ---- */
 
 .paradis-ccusage-block {
 	display: grid;
-	grid-template-columns: 1fr auto auto auto;
-	gap: 24px;
+	grid-template-columns: minmax(0, 1fr) auto auto auto;
+	gap: var(--vscode-spacing-size240);
 	align-items: center;
-	margin-bottom: 12px;
+	margin-bottom: var(--vscode-spacing-size120);
+}
+
+.paradis-ccusage-block .paradis-progress {
+	margin-top: var(--vscode-spacing-size60);
 }
 
 @container paradis-ccusage-panel (max-width: 900px) {
 	.paradis-ccusage-block { grid-template-columns: 1fr; gap: 10px; }
 }
 
-.paradis-ccusage-meter-track {
-	height: 9px;
-	border-radius: 5px;
-	overflow: hidden;
-}
 
-.paradis-ccusage-meter-fill {
-	height: 100%;
-	border-radius: 5px;
-}
 
 .paradis-ccusage-meter-scale {
 	display: flex;
 	justify-content: space-between;
-	color: var(--vscode-descriptionForeground);
-	font-size: 10.5px;
-	margin-top: 4px;
+	color: var(--vscode-paradis-textFaint);
+	font-size: var(--vscode-fontSize-label2);
+	margin-top: var(--vscode-spacing-size40);
 	font-variant-numeric: tabular-nums;
 }
 
 .paradis-ccusage-block-kv .k {
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+	white-space: nowrap;
 }
 
 .paradis-ccusage-block-kv .v {
-	font-size: 16px;
-	font-weight: 600;
+	font-size: var(--vscode-fontSize-heading2);
+	font-weight: var(--vscode-fontWeight-semiBold);
 	margin-top: 2px;
+	color: var(--vscode-paradis-textStrong);
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 }
@@ -312,15 +257,16 @@
 /* ---- chart cards ---- */
 
 .paradis-ccusage-card h3 {
-	font-size: 13px;
-	font-weight: 600;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
 	margin: 0 0 2px;
 }
 
 .paradis-ccusage-card .desc {
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
-	margin-bottom: 10px;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	margin-bottom: var(--vscode-spacing-size120);
 }
 
 .paradis-ccusage-legend {
@@ -334,8 +280,8 @@
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-ccusage-legend .swatch {
@@ -401,9 +347,13 @@
 	text-overflow: ellipsis;
 }
 
+/* The model bars are the kit's 4px progress shape (the series color stays the chart's). */
 .paradis-ccusage-hbar-row .track {
-	height: 12px;
+	height: 4px;
 	position: relative;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: var(--vscode-paradis-fillNeutral);
+	overflow: hidden;
 }
 
 .paradis-ccusage-hbar-row .bar {
@@ -411,7 +361,7 @@
 	left: 0;
 	top: 0;
 	height: 100%;
-	border-radius: 0 4px 4px 0;
+	border-radius: inherit;
 	min-width: 2px;
 }
 
