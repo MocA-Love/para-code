@@ -216,7 +216,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		const profileRow = dom.append(body, $('label.pbe-profile'));
 		const profileLabel = localize('paradis.browserExtensions.profile', "有効にする場所");
 		dom.append(profileRow, $('span')).textContent = profileLabel;
-		this._profileSelect = this._register(new ParadisSelect(profileRow, contextViewService, [], undefined, { ariaLabel: profileLabel, className: 'pbe-select' }));
+		this._profileSelect = this._register(new ParadisSelect(profileRow, contextViewService, this.configurationService, [], undefined, { ariaLabel: profileLabel, className: 'pbe-select' }));
 		this._register(this._profileSelect.onDidChange(value => {
 			this._profile = value;
 			this._render();

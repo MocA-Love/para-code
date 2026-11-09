@@ -13,6 +13,7 @@ import { Separator } from '../../../../../base/common/actions.js';
 import { Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IContextMenuService, IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
@@ -44,6 +45,7 @@ suite('preset editor dialog: row actions', () => {
 			[IContextMenuService, contextMenuService],
 			[IHoverService, NullHoverService],
 			[IContextViewService, {}],
+			[IConfigurationService, { getValue: () => undefined }],
 		]);
 		const accessor = { get: (id: unknown) => services.get(id) } as unknown as ServicesAccessor;
 		try {

@@ -10,6 +10,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IParadisAivisDictionaryDetail } from '../../common/paradisNotifications.js';
@@ -34,7 +35,7 @@ suite('ParadisAivisDictionaryEditor', () => {
 		});
 		const layoutService = upcastPartial<ILayoutService>({ activeContainer: root });
 		const open = async () => {
-			const dialog = new ParadisDictionaryEditorDialog(layoutService, sharedProcessService, 'dictionary-1', 'key', () => { }, Object.create(null));
+			const dialog = new ParadisDictionaryEditorDialog(layoutService, sharedProcessService, 'dictionary-1', 'key', () => { }, Object.create(null), { getValue: () => undefined } as unknown as IConfigurationService);
 			await timeout(0);
 			return dialog;
 		};

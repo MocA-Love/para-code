@@ -23,6 +23,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { EditorMarkdownCodeBlockRenderer } from '../../../../editor/browser/widget/markdownRenderer/browser/editorMarkdownCodeBlockRenderer.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -145,6 +146,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		@IStorageService private readonly storageService: IStorageService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisSessionResumeClient);
@@ -408,7 +410,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		const addSelect = <T extends string>(label: string, values: readonly T[], current: T, text: (value: T) => string, onChange: (value: T) => void) => {
 			const wrap = dom.append(this.listBar!, $('span.listbar-field'));
 			dom.append(wrap, $('span.listbar-label')).textContent = label;
-			const select = this._register(new ParadisSelect(wrap, this.contextViewService, values.map(value => ({ value, label: text(value) })), current, { ariaLabel: label }));
+			const select = this._register(new ParadisSelect(wrap, this.contextViewService, this.configurationService, values.map(value => ({ value, label: text(value) })), current, { ariaLabel: label }));
 			this._register(select.onDidChange(value => onChange(value as T)));
 		};
 		addSelect<ParadisResumeSortOrder>(localize('paradis.sessionResume.sortLabel', "並び"), ['updated', 'created', 'title'], this.listOptions.sort, paradisResumeSortLabel,

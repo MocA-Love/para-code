@@ -398,10 +398,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const optionRow = dom.append(this._agentOptionsEl, $('.pcw-d-agent-sub'));
 		this._modelGroup = dom.append(optionRow, $('label.pcw-d-sub-field'));
 		dom.append(this._modelGroup, $('span.pcw-d-sub-label')).textContent = STR_MODEL_LABEL;
-		this._modelSelect = this._register(new ParadisSelect(this._modelGroup, this.contextViewService, [], undefined, { ariaLabel: STR_MODEL_LABEL, className: 'pcw-d-sub-select' }));
+		this._modelSelect = this._register(new ParadisSelect(this._modelGroup, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_MODEL_LABEL, className: 'pcw-d-sub-select' }));
 		this._effortGroup = dom.append(optionRow, $('label.pcw-d-sub-field'));
 		dom.append(this._effortGroup, $('span.pcw-d-sub-label')).textContent = STR_EFFORT_LABEL;
-		this._effortSelect = this._register(new ParadisSelect(this._effortGroup, this.contextViewService, [], undefined, { ariaLabel: STR_EFFORT_LABEL, className: 'pcw-d-sub-select' }));
+		this._effortSelect = this._register(new ParadisSelect(this._effortGroup, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_EFFORT_LABEL, className: 'pcw-d-sub-select' }));
 		this._permissionRow = dom.append(this._agentOptionsEl, $('.pcw-d-perm-line'));
 		this._permissionSeg = dom.append(this._permissionRow, $('.pcw-seg'));
 		this._permissionSeg.setAttribute('role', 'radiogroup');
@@ -418,13 +418,13 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const repoRow = dom.append(advGrid, $('label.pcw-d-adv-row'));
 		dom.append(repoRow, $('span.pcw-d-adv-label')).textContent = STR_BASE_REPO_LABEL;
 		const initialRepoId = preselectedRepositoryId ?? this.switchService.activeRepository?.id;
-		this._repoSelect = this._register(new ParadisSelect(repoRow, this.contextViewService,
+		this._repoSelect = this._register(new ParadisSelect(repoRow, this.contextViewService, this.configurationService,
 			this.switchService.repositories.map(repository => ({ value: repository.id, label: repository.name })),
 			initialRepoId, { ariaLabel: STR_BASE_REPO_LABEL, className: 'pcw-d-adv-select' }));
 
 		const branchRow = dom.append(advGrid, $('label.pcw-d-adv-row'));
 		dom.append(branchRow, $('span.pcw-d-adv-label')).textContent = STR_BASE_BRANCH_LABEL;
-		this._branchSelect = this._register(new ParadisSelect(branchRow, this.contextViewService, [], undefined, { ariaLabel: STR_BASE_BRANCH_LABEL, className: 'pcw-d-adv-select pcw-branch-select' }));
+		this._branchSelect = this._register(new ParadisSelect(branchRow, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_BASE_BRANCH_LABEL, className: 'pcw-d-adv-select pcw-branch-select' }));
 
 		// setup スクリプトの実行トグル（リポジトリに setupScript がある場合のみ表示）
 		this._setupRow = dom.append(advGrid, $('.pcw-d-adv-row.pcw-setup-row'));

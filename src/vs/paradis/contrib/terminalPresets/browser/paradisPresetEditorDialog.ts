@@ -43,6 +43,7 @@ import { Codicon, getAllCodicons } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextMenuService, IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -517,6 +518,7 @@ export function openParadisPresetEditorDialog(accessor: ServicesAccessor): void 
 		accessor.get(IContextMenuService),
 		accessor.get(IHoverService),
 		accessor.get(IContextViewService),
+		accessor.get(IConfigurationService),
 	);
 }
 
@@ -594,6 +596,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		private readonly contextMenuService: IContextMenuService,
 		private readonly hoverService: IHoverService,
 		private readonly contextViewService: IContextViewService,
+		private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -2156,7 +2159,7 @@ class ParadisPresetEditorDialog extends Disposable {
 
 		// 種別（実行 / 入力欄に入れるだけ / エージェント向け）。種別で意味を持たない行は隠す。
 		const actionField = field(STR_ACTION);
-		const actionSelect = this._viewStore.add(new ParadisSelect(actionField, this.contextViewService,
+		const actionSelect = this._viewStore.add(new ParadisSelect(actionField, this.contextViewService, this.configurationService,
 			ACTION_LABELS.map(({ action, label }) => ({ value: action, label })),
 			editing ? paradisPresetAction(editing) : 'run',
 			{ ariaLabel: STR_ACTION }));
@@ -2235,7 +2238,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			renderTasks();
 		}));
 
-		const layoutSelect = this._viewStore.add(new ParadisSelect(field(STR_LAYOUT), this.contextViewService,
+		const layoutSelect = this._viewStore.add(new ParadisSelect(field(STR_LAYOUT), this.contextViewService, this.configurationService,
 			LAYOUT_LABELS.map(({ layout, label }) => ({ value: layout, label })),
 			editing ? paradisGetPresetTasks(editing).layout : 'tabs',
 			{ ariaLabel: STR_LAYOUT }));

@@ -801,7 +801,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		if (!volumeOptions.some(option => option.value === String(volume))) {
 			volumeOptions.push({ value: String(volume), label: `${volume}%` });
 		}
-		const volumeSelect = this._renderDisposables.add(new ParadisSelect(volumeRow, this.contextViewService, volumeOptions, String(volume), { ariaLabel: STR_VOLUME_LABEL }));
+		const volumeSelect = this._renderDisposables.add(new ParadisSelect(volumeRow, this.contextViewService, this.configurationService, volumeOptions, String(volume), { ariaLabel: STR_VOLUME_LABEL }));
 		volumeSelect.element.style.width = '170px';
 		volumeSelect.element.style.flexShrink = '0';
 		this._renderDisposables.add(volumeSelect.onDidChange(value => {

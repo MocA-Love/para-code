@@ -20,6 +20,7 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
@@ -76,6 +77,7 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILayoutService layoutService: ILayoutService,
 		@IContextViewService private readonly _contextViewService: IContextViewService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super(localize('paradis.loginImport.title', "他のブラウザから取り込む"), Codicon.signIn, layoutService);
 		this._mainService = ProxyChannel.toService<IParadisBrowserLoginImportMainService>(
@@ -143,7 +145,7 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		}
 
 		dom.append(this._sourceRow, $('label.pbpm-label')).textContent = localize('paradis.loginImport.source', "取り込み元");
-		const browserSelect = this._sourceStore.add(new ParadisSelect(this._sourceRow, this._contextViewService,
+		const browserSelect = this._sourceStore.add(new ParadisSelect(this._sourceRow, this._contextViewService, this._configurationService,
 			this._browsers.map(browser => ({ value: browser.id, label: browser.label })), this._selectedBrowserId,
 			{ ariaLabel: localize('paradis.loginImport.sourceBrowser', "取り込み元のブラウザ"), className: 'pbpm-select' }));
 		this._sourceFocusables.push(browserSelect.focusableElement);
@@ -157,7 +159,7 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 
 		const profiles = this._currentBrowser()?.profiles ?? [];
 		if (profiles.length > 0) {
-			const profileSelect = this._sourceStore.add(new ParadisSelect(this._sourceRow, this._contextViewService,
+			const profileSelect = this._sourceStore.add(new ParadisSelect(this._sourceRow, this._contextViewService, this._configurationService,
 				profiles.map(profile => ({ value: profile.directory, label: profile.label })), this._selectedSourceDir,
 				{ ariaLabel: localize('paradis.loginImport.sourceProfile', "取り込み元のプロファイル"), className: 'pbpm-select' }));
 			this._sourceFocusables.push(profileSelect.focusableElement);
@@ -365,7 +367,7 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		if (this._destinationProfileId === undefined || !profiles.some(profile => profile.id === this._destinationProfileId)) {
 			this._destinationProfileId = profiles[0].id;
 		}
-		const select = this._destStore.add(new ParadisSelect(this._destinationRow, this._contextViewService,
+		const select = this._destStore.add(new ParadisSelect(this._destinationRow, this._contextViewService, this._configurationService,
 			profiles.map(profile => ({ value: profile.id, label: profile.name })), this._destinationProfileId,
 			{ ariaLabel: localize('paradis.loginImport.destination', "取り込み先のプロファイル"), className: 'pbpm-select' }));
 		this._destFocusables.push(select.focusableElement);

@@ -13,6 +13,7 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IParadisDoNotDisturbState, IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { paradisCreateDoNotDisturbRefreshController, paradisFormatDoNotDisturbRemaining, PARADIS_DO_NOT_DISTURB_DURATIONS, ParadisDoNotDisturbRefreshControllerFactory } from '../common/paradisDoNotDisturb.js';
@@ -56,6 +57,7 @@ export class ParadisDoNotDisturbSection extends Disposable {
 		private readonly container: HTMLElement,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -104,7 +106,7 @@ export class ParadisDoNotDisturbSection extends Disposable {
 		// select の選択状態は _matchDurationId で「自分でオフにするまで」を含む全ての選択肢に一律反映する
 		// （until 未設定なら manual、時限3つは許容差内の一致で判定）。時限の残り時間は選択のたびに
 		// 減っていくため、select 自体ではなく左の残り時間 hint で別途示す。
-		const select = this._renderDisposables.add(new ParadisSelect(row, this.contextViewService,
+		const select = this._renderDisposables.add(new ParadisSelect(row, this.contextViewService, this.configurationService,
 			PARADIS_DO_NOT_DISTURB_DURATIONS.map(duration => ({ value: duration.id, label: duration.label })),
 			this._matchDurationId(state.until, renderNow),
 			{ ariaLabel: STR_DURATION_LABEL, className: 'pns-select' }));

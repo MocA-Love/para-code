@@ -1076,7 +1076,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	}
 
 	private select(container: HTMLElement, options: readonly (readonly [string, string])[], value: string, ariaLabel: string): ParadisSelect {
-		const select = this.contentDisposables.add(new ParadisSelect(container, this.contextViewService, options.map(([id, label]) => ({ value: id, label })), value, { ariaLabel, className: 'psr-select' }));
+		const select = this.contentDisposables.add(new ParadisSelect(container, this.contextViewService, this.configurationService, options.map(([id, label]) => ({ value: id, label })), value, { ariaLabel, className: 'psr-select' }));
 		// 描いた一覧で選んでも form の change は来ないので、下書きの印はここで付ける
 		this.contentDisposables.add(select.onDidChange(() => { this.editingDirty = true; }));
 		return select;

@@ -18,6 +18,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -154,6 +155,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		const sampleHost: IParadisElevenLabsSampleHost = {
@@ -613,7 +615,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 		const field = dom.append(parent, $('.setting-row'));
 		const main = dom.append(field, $('.sr-main'));
 		dom.append(main, $('.sr-label')).textContent = STR_DICTIONARY_LABEL;
-		const select = this._renderDisposables.add(new ParadisSelect(field, this.contextViewService, [{ value: '', label: STR_DICTIONARY_NONE }], '', { ariaLabel: STR_DICTIONARY_LABEL }));
+		const select = this._renderDisposables.add(new ParadisSelect(field, this.contextViewService, this.configurationService, [{ value: '', label: STR_DICTIONARY_NONE }], '', { ariaLabel: STR_DICTIONARY_LABEL }));
 		select.element.style.width = '230px';
 		select.enabled = !!settings.apiKey;
 

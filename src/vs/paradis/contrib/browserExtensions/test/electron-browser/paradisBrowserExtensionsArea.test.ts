@@ -43,7 +43,7 @@ suite('ParadisBrowserExtensionsArea', () => {
 		instantiationService.stub(IMainProcessService, { getChannel: () => channel } as Partial<IMainProcessService>);
 		instantiationService.stub(IParadisBrowserProfilesService, { list: () => [], onDidChangeProfiles: Event.None } as Partial<IParadisBrowserProfilesService>);
 		instantiationService.stub(IFileDialogService, {});
-		instantiationService.stub(IConfigurationService, {});
+		instantiationService.stub(IConfigurationService, { getValue: () => undefined } as Partial<IConfigurationService>);
 		instantiationService.stub(INativeHostService, {});
 		instantiationService.stub(IParadisAgentBrowserBindingModel, { bindings: [] } as Partial<IParadisAgentBrowserBindingModel>);
 		instantiationService.stub(IContextViewService, {});

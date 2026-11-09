@@ -20,6 +20,7 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
@@ -171,6 +172,7 @@ export class ParadisEditBookmarkDialog extends ParadisBookmarkModal {
 		private readonly options: IParadisBookmarkDialogOptions,
 		@ILayoutService layoutService: ILayoutService,
 		@IContextViewService contextViewService: IContextViewService,
+		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super(options.dialogTitle, localize('paradis.bookmarks.dialog.save', "保存"), layoutService);
 
@@ -179,7 +181,7 @@ export class ParadisEditBookmarkDialog extends ParadisBookmarkModal {
 
 		const folderLabel = localize('paradis.bookmarks.dialog.folder', "フォルダ");
 		const folderField = this.appendField(folderLabel);
-		this._folderSelect = this._register(new ParadisSelect(folderField, contextViewService, [
+		this._folderSelect = this._register(new ParadisSelect(folderField, contextViewService, configurationService, [
 			{ value: '', label: localize('paradis.bookmarks.dialog.rootFolder', "ブックマークバー") },
 			...options.folderOptions.map(folder => ({ value: folder.id, label: folder.label })),
 		], options.initial.folderId ?? '', { ariaLabel: folderLabel, className: 'pbm-select' }));

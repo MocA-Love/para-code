@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { mainWindow } from '../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
+import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
 import { IContextViewDelegate, IContextViewService } from '../../../platform/contextview/browser/contextView.js';
 import { PARADIS_MODAL_POPUP_LAYER, ParadisSelect } from '../../browser/paradisSelect.js';
 
@@ -27,8 +28,9 @@ suite('ParadisSelect', () => {
 			hideContextView: () => { },
 			layout: () => { },
 		} as unknown as IContextViewService;
+		const configurationService = { getValue: () => undefined } as unknown as IConfigurationService;
 		try {
-			const select = store.add(new ParadisSelect(container, contextViewService, [
+			const select = store.add(new ParadisSelect(container, contextViewService, configurationService, [
 				{ value: 'updated', label: '更新順' },
 				{ value: 'created', label: '作成順' },
 			], 'created', { ariaLabel: '並び', className: 'my-select' }));

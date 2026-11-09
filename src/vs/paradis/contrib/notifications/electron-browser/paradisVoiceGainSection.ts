@@ -17,6 +17,7 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { Schemas } from '../../../../base/common/network.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -147,6 +148,7 @@ export class ParadisVoiceGainSection extends Disposable {
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this._render();
@@ -276,7 +278,7 @@ export class ParadisVoiceGainSection extends Disposable {
 		importBtn.textContent = STR_IMPORT;
 		importBtn.disabled = this._busy;
 		dom.append(toolbar, $('span.sr-desc')).textContent = STR_IMPORT_MODE;
-		const mode = this._renderDisposables.add(new ParadisSelect(toolbar, this.contextViewService,
+		const mode = this._renderDisposables.add(new ParadisSelect(toolbar, this.contextViewService, this.configurationService,
 			[{ value: 'keep', label: STR_IMPORT_KEEP }, { value: 'overwrite', label: STR_IMPORT_OVERWRITE }],
 			this._overwrite ? 'overwrite' : 'keep', { ariaLabel: STR_IMPORT_MODE }));
 		this._renderReload(toolbar);

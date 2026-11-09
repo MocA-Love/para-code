@@ -15,6 +15,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -95,6 +96,7 @@ export class ParadisElevenLabsVoiceFields {
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 		@ILogService private readonly logService: ILogService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		this._tuning = new ParadisElevenLabsVoiceTuningFields(isDisposed, sharedProcessService, settingsService);
 	}
@@ -261,7 +263,7 @@ export class ParadisElevenLabsVoiceFields {
 		dom.append(main, $('.sr-desc')).textContent = STR_MODEL_DESC;
 		const errorEl = dom.append(main, $('.pns-uuid-hint'));
 		const current = settings.elevenLabsModelId || PARADIS_ELEVENLABS_DEFAULT_MODEL_ID;
-		const select = disposables.add(new ParadisSelect(field, this.contextViewService, [], undefined, { ariaLabel: STR_MODEL_LABEL }));
+		const select = disposables.add(new ParadisSelect(field, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_MODEL_LABEL }));
 		select.element.style.width = '230px';
 		this._populateModels(select, [], current);
 		select.enabled = !!apiKey;
@@ -306,7 +308,7 @@ export class ParadisElevenLabsVoiceFields {
 		const field = dom.append(parent, $('.setting-row'));
 		const main = dom.append(field, $('.sr-main'));
 		dom.append(main, $('.sr-label')).textContent = STR_DICTIONARY_LABEL;
-		const select = disposables.add(new ParadisSelect(field, this.contextViewService, [], undefined, { ariaLabel: STR_DICTIONARY_LABEL }));
+		const select = disposables.add(new ParadisSelect(field, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_DICTIONARY_LABEL }));
 		select.element.style.width = '230px';
 		select.enabled = !!apiKey;
 		const populate = (list: readonly IParadisElevenLabsDictionaryListItem[], loaded: boolean) => {

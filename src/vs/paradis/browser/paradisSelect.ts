@@ -7,7 +7,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // Para Code の画面で使うプルダウン。OS の素の `<select>` の一覧ではなく、本家の SelectBox（設定エディタと同じ、
-// テーマの色で描く一覧）で開く。macOS では SelectBox の既定が OS の一覧なので、`useCustomDrawn` で常に描く側にする。
+// テーマの色で描く一覧）で開く。macOS では SelectBox の既定が OS の一覧なので、本家の自動化のダイアログと同じく
+// `window.menuStyle` に従う（既定の custom では描いた一覧、native に戻した人には OS の一覧）。設定は作るときに読むので、
+// 変えたらモーダルを開き直したときに反映される。
 //
 // キーボード（↑↓・Enter・Esc・文字で選ぶ）と読み上げの名前は SelectBox が持つ。名前は `ariaLabel` で必ず渡す
 // （`<label>` で包んでも、描いた一覧の側には届かない）。
@@ -20,8 +22,10 @@ import { $, append } from '../../base/browser/dom.js';
 import { ISelectOptionItem, SelectBox } from '../../base/browser/ui/selectBox/selectBox.js';
 import { Emitter, Event } from '../../base/common/event.js';
 import { Disposable } from '../../base/common/lifecycle.js';
+import { IConfigurationService } from '../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../platform/contextview/browser/contextView.js';
 import { defaultSelectBoxStyles } from '../../platform/theme/browser/defaultStyles.js';
+import { hasNativeContextMenu } from '../../platform/window/common/window.js';
 
 /**
  * fork のモーダルの中から開くメニュー・プルダウンの一覧に渡す layer。本家のコンテキストビューの z-index は
@@ -60,13 +64,13 @@ export class ParadisSelect extends Disposable {
 	/** 利用者が選んだ値。 */
 	readonly onDidChange: Event<string> = this._onDidChange.event;
 
-	constructor(parent: HTMLElement, contextViewService: IContextViewService, options: readonly IParadisSelectOption[], value: string | undefined, selectOptions: IParadisSelectOptions) {
+	constructor(parent: HTMLElement, contextViewService: IContextViewService, configurationService: IConfigurationService, options: readonly IParadisSelectOption[], value: string | undefined, selectOptions: IParadisSelectOptions) {
 		super();
 		this.options = options;
 		this.current = this.pick(value);
 		this.element = append(parent, $('span.paradis-select'));
 		this.selectBox = this._register(new SelectBox(this.toItems(options), this.indexOf(this.current), contextViewService, defaultSelectBoxStyles, {
-			useCustomDrawn: true,
+			useCustomDrawn: !hasNativeContextMenu(configurationService),
 			ariaLabel: selectOptions.ariaLabel,
 			contextViewLayer: PARADIS_MODAL_POPUP_LAYER,
 		}));
