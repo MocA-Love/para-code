@@ -55,7 +55,9 @@ export function paradisBuildViewportMarginMenu(state: IParadisViewportMarginMenu
 
 	const sizeActions: IAction[] = state.sizes.map((size, index) => toAction({
 		id: `paradis.browserViewport.margin.size.${index}`,
-		label: localize('paradis.browserViewport.margin.sizeLabel', "{0}  {1}", size.name, paradisFormatViewportDimensions(size.width, size.height)),
+		label: size.mobile
+			? localize('paradis.browserViewport.margin.sizeLabelMobile', "{0}  {1}・モバイル", size.name, paradisFormatViewportDimensions(size.width, size.height))
+			: localize('paradis.browserViewport.margin.sizeLabel', "{0}  {1}", size.name, paradisFormatViewportDimensions(size.width, size.height)),
 		checked: !current.fit && current.name === size.name,
 		run: () => handlers.onSelectSize(size),
 	}));

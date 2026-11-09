@@ -88,7 +88,7 @@ suite('ParadisBrowserViewportMargin', () => {
 		const calls: string[] = [];
 		const actions = paradisBuildViewportMarginMenu({
 			current: { fit: false, name: 'フル HD', width: 1920, height: 1080, mobile: false },
-			sizes: [{ name: 'ノート PC', width: 1366, height: 768 }, { name: 'フル HD', width: 1920, height: 1080 }],
+			sizes: [{ name: 'ノート PC', width: 1366, height: 768 }, { name: 'フル HD', width: 1920, height: 1080 }, { name: 'iPhone 15', width: 390, height: 844, mobile: true }],
 			scale: undefined,
 			effectiveScale: 0.8,
 			pageReady: true,
@@ -114,7 +114,7 @@ suite('ParadisBrowserViewportMargin', () => {
 
 		assert.deepStrictEqual({ menu: actions.map(describe), calls }, {
 			menu: [
-				{ label: 'ページの大きさ', items: ['ノート PC  1366×768', 'フル HD  1920×1080 [x]', '---', 'エディタに合わせる（大きさを決めない）'] },
+				{ label: 'ページの大きさ', items: ['ノート PC  1366×768', 'フル HD  1920×1080 [x]', 'iPhone 15  390×844・モバイル', '---', 'エディタに合わせる（大きさを決めない）'] },
 				{ label: '表示の倍率', items: ['自動（80%） [x]', '---', '50%', '75%', '100%', '125%', '150%', '200%'] },
 				'縦横を入れ替える',
 				'---',
@@ -122,7 +122,7 @@ suite('ParadisBrowserViewportMargin', () => {
 				'再読み込み',
 				'開発者ツール',
 			],
-			calls: ['size ノート PC', 'size フル HD', 'fit', 'scale undefined', 'scale 0.5', 'scale 0.75', 'scale 1', 'scale 1.25', 'scale 1.5', 'scale 2', 'swap', 'markup', 'reload', 'devtools'],
+			calls: ['size ノート PC', 'size フル HD', 'size iPhone 15', 'fit', 'scale undefined', 'scale 0.5', 'scale 0.75', 'scale 1', 'scale 1.25', 'scale 1.5', 'scale 2', 'swap', 'markup', 'reload', 'devtools'],
 		});
 	});
 });
