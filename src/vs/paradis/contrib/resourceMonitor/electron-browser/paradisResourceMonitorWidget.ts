@@ -39,7 +39,7 @@ import { ParadisResourceMonitorClient } from './paradisResourceMonitorClient.js'
 import { IParadisResourceMonitorPanelOptions, ParadisResourceMonitorPanel } from './paradisResourceMonitorPanel.js';
 import { IParadisSystemUsageModel, IParadisSystemUsageView, ParadisSystemUsageMachineId } from './paradisSystemUsageModel.js';
 import { PARADIS_SYSTEM_USAGE_OPEN_COMMAND_ID } from './paradisSystemUsageEditorInput.js';
-import { PARADIS_RESOURCE_TITLE_BAR_FORMATS, PARADIS_RESOURCE_TITLE_BAR_ITEMS, PARADIS_RESOURCE_TITLE_BAR_SIZED_ITEMS, ParadisResourceTitleBarFormat, ParadisResourceTitleBarItem, ParadisResourceTitleBarSizedItem, paradisParseResourceTitleBarFormat, paradisResourceTitleBarDetail, paradisResourceTitleBarFormatLabel, paradisResourceTitleBarFormatSettingKey, paradisResourceTitleBarFormatTitle, paradisResourceTitleBarItemLabel, paradisResourceTitleBarSettingKey, paradisResourceTitleBarText } from '../common/paradisResourceTitleBar.js';
+import { PARADIS_RESOURCE_TITLE_BAR_FORMATS, PARADIS_RESOURCE_TITLE_BAR_ITEMS, PARADIS_RESOURCE_TITLE_BAR_SIZED_ITEMS, ParadisResourceTitleBarFormat, ParadisResourceTitleBarItem, ParadisResourceTitleBarSizedItem, paradisParseResourceTitleBarFormat, paradisResourceTitleBarDetail, paradisResourceTitleBarFormatLabel, paradisResourceTitleBarFormatSettingKey, paradisResourceTitleBarFormatTitle, paradisResourceTitleBarItemLabel, paradisResourceTitleBarSettingKey, paradisResourceTitleBarText, paradisResourceTitleBarParts, paradisSplitResourceTitleBarPart, PARADIS_RESOURCE_TITLE_BAR_SEPARATOR, IParadisResourceTitleBarPart } from '../common/paradisResourceTitleBar.js';
 
 const $ = dom.$;
 
@@ -372,14 +372,37 @@ export class ParadisResourceMonitorWidget extends Disposable {
 			return;
 		}
 		const formatOf = (item: ParadisResourceTitleBarSizedItem) => this.formatOf(item);
-		const text = paradisResourceTitleBarText(item => this.isItemOn(item), latest, view.machine, view.machineId === 'remote' ? view.label : undefined, formatOf);
-		this.textElement.textContent = text;
-		this.textElement.style.display = text ? '' : 'none';
+		const parts = paradisResourceTitleBarParts(item => this.isItemOn(item), latest, view.machine, view.machineId === 'remote' ? view.label : undefined, formatOf);
+		this.renderParts(parts);
+		this.textElement.style.display = parts.length ? '' : 'none';
 		this.hoverText = paradisResourceTitleBarDetail(latest, view.machine, view.label);
 		const values = paradisResourceTitleBarText(item => item !== 'machineName' && this.isItemOn(item), latest, view.machine, undefined, formatOf);
 		this.button.setAttribute('aria-label', values
 			? localize('paradis.resourceMonitor.triggerAriaUsage', "{0} の使用率: {1}", view.label, values)
 			: localize('paradis.resourceMonitor.triggerAriaNoItems', "{0} の使用率", view.label));
+	}
+
+	/**
+	 * 項目を「 · 」でつないで描く。値は 1 つずつ箱に入れ、箱には一番広い値（100% など）の幅を確保する
+	 * （`data-reserve` を CSS の見えない疑似要素で重ねる）ので、桁が変わっても右に並ぶ部品が動かない。
+	 * 疑似要素は textContent に入らないので、要素の文字は今までどおりつないだ文字のまま。
+	 */
+	private renderParts(parts: readonly IParadisResourceTitleBarPart[]): void {
+		const nodes: (Node | string)[] = [];
+		parts.forEach((part, index) => {
+			if (index > 0) {
+				nodes.push(PARADIS_RESOURCE_TITLE_BAR_SEPARATOR);
+			}
+			for (const piece of paradisSplitResourceTitleBarPart(part)) {
+				if (typeof piece === 'string') {
+					nodes.push(piece);
+				} else {
+					const box = $('span.paradis-resource-monitor-trigger-value', { 'data-reserve': piece.reserve }, $('span', undefined, piece.value));
+					nodes.push(box);
+				}
+			}
+		});
+		dom.reset(this.textElement, ...nodes);
 	}
 
 	private updateTriggerText(snapshot: IParadisResourceMonitorSnapshot): void {

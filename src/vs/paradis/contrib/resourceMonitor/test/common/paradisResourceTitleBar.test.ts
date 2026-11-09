@@ -9,7 +9,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisSystemUsageSample } from '../../common/paradisSystemUsage.js';
-import { ParadisResourceTitleBarFormat, ParadisResourceTitleBarItem, ParadisResourceTitleBarSizedItem, paradisFormatTitleBarSize, paradisFormatTitleBarUsedOfTotal, paradisParseResourceTitleBarFormat, paradisResourceTitleBarDetail, paradisResourceTitleBarText } from '../../common/paradisResourceTitleBar.js';
+import { ParadisResourceTitleBarFormat, ParadisResourceTitleBarItem, ParadisResourceTitleBarSizedItem, paradisFormatTitleBarSize, paradisFormatTitleBarUsedOfTotal, paradisParseResourceTitleBarFormat, paradisResourceTitleBarDetail, paradisResourceTitleBarParts, paradisResourceTitleBarText, paradisSplitResourceTitleBarPart } from '../../common/paradisResourceTitleBar.js';
 
 const MB = 1024 ** 2;
 const GB = 1024 ** 3;
@@ -62,6 +62,22 @@ suite('ParadisResourceTitleBar', () => {
 				'ディスク: 412.00 GB / 460.00 GB を使用（90%）・空き 48.00 GB',
 				'スワップ: 0 KB / 2.00 GB を使用（0%）・空き 2.00 GB',
 			],
+		});
+	});
+
+	// 値ごとに一番広い値（reserve）を持ち、桁が変わっても箱の幅が変わらない。文字は値の前後と値に分けられる
+	test('gives each value the widest text to reserve so the width does not follow the digits', () => {
+		const items = new Set<ParadisResourceTitleBarItem>(['machineName', 'cpu', 'memory', 'disk', 'swap', 'network']);
+		const machine = { memTotal: 64 * GB, diskTotal: 460 * GB, swapTotal: 2 * GB };
+		const formats = { memory: 'usedOfTotal', disk: 'free', swap: 'percent' } as const;
+		const parts = (cpu: number | undefined) => paradisResourceTitleBarParts(item => items.has(item), { t: 1, cpu, mem: 27, memUsed: 17.3 * GB, disk: 89.6, diskUsed: 412 * GB, swapUsed: 0, netRx: 3.1 * MB, netTx: 0 }, machine, 'dev-server', item => formats[item]);
+		const describe = (cpu: number | undefined) => parts(cpu).map(part => paradisSplitResourceTitleBarPart(part).map(piece => typeof piece === 'string' ? piece : `[${piece.value}|${piece.reserve}]`).join(''));
+		assert.deepStrictEqual({
+			cpu: [undefined, 0, 9, 10, 100].map(cpu => describe(cpu)[1]),
+			others: describe(44),
+		}, {
+			cpu: ['CPU [--|100%]', 'CPU [0%|100%]', 'CPU [9%|100%]', 'CPU [10%|100%]', 'CPU [100%|100%]'],
+			others: ['dev-server', 'CPU [44%|100%]', 'RAM [17 / 64 GB|000 / 64 GB]', 'DISK [48 GB 空き|999 MB 空き]', 'SWAP [0%|100%]', '↓[3.1MB|999MB] ↑[0B|999MB]'],
 		});
 	});
 });
