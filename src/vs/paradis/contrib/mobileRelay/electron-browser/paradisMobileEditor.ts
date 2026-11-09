@@ -544,6 +544,8 @@ export class ParadisMobileEditor extends EditorPane {
 
 	/** 設定の文字の欄。打鍵ごとには書かず、Enter かフォーカスが外れたときに書く。Escape で今の値へ戻す。 */
 	private textInput(parent: HTMLElement, labelledBy: string, placeholder: string, read: () => string, write: (value: string) => Promise<void>): HTMLInputElement {
+		// 欄の枠は土台のフォーカスの決まり（paradisFocusRing.css）で描く。値の列は欄だけを包むので、枠は欄に重なる
+		parent.classList.add('paradis-focus-ring-within');
 		const input = dom.append(parent, $<HTMLInputElement>('input.paradis-mobile-input'));
 		input.type = 'text';
 		input.spellcheck = false;
