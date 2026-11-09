@@ -66,7 +66,7 @@
 	height: 22px;
 	padding: 0 8px;
 	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-	border-radius: 11px;
+	border-radius: 12px;
 	color: var(--vscode-descriptionForeground);
 	font-size: 12px;
 }
@@ -460,10 +460,10 @@
 
 .paradis-mobile-input {
 	width: 240px;
-	height: 26px;
-	padding: 0 8px;
+	height: 32px;
+	padding: 0 10px;
 	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border)));
-	border-radius: 4px;
+	border-radius: 6px;
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
 	font: inherit;
