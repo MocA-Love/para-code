@@ -16,6 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisServeSimBackend } from '../../node/paradisServeSimBackend.js';
 import { ParadisSimulatorService } from '../../node/paradisSimulatorChannel.js';
+import { ParadisSimulatorStreamEvent } from '../../common/paradisSimulator.js';
 import { IParadisSimulatorHostConnection } from '../../node/paradisSimulatorHostProcess.js';
 
 const UDID = 'A1B2C3D4-0000-1111-2222-333344445555';
@@ -36,7 +37,7 @@ suite('Paradis simulator: video relay in the shared process', () => {
 		const host = { ensure: async (): Promise<IParadisSimulatorHostConnection> => ({ socketPath: '', token: '' }), isRunning: false, lastError: undefined, stop: async () => { } };
 		const service = store.add(new ParadisSimulatorService(host, backend, true, new NullLogService()));
 		const received: number[] = [];
-		const first = service.onFrames(UDID)(frame => received.push(frame.jpeg.byteLength));
+		const first = service.onFrames(UDID)(message => received.push(message.kind === 'frame' ? message.jpeg.byteLength : -1));
 		const second = service.onFrames(UDID)(() => { });
 		emit?.(new Uint8Array(3));
 		const whileOpen = open;
@@ -48,6 +49,36 @@ suite('Paradis simulator: video relay in the shared process', () => {
 		const unsupported = unsupportedService.onFrames(UDID)(() => { });
 		unsupported.dispose();
 		assert.deepStrictEqual({ whileOpen, afterFirst, afterLast: open, received, openedWhileUnsupported: open }, { whileOpen: 1, afterFirst: 1, afterLast: 0, received: [3], openedWhileUnsupported: 0 });
+	});
+
+	// ホストが起きない・serve-sim が断ったときは、ログだけでなく購読している窓へ理由を送る（ペインが黒いまま黙らない）。
+	// 次の購読では流れを開き直す
+	test('tells the subscribers why the stream ended and reopens it for the next subscriber', async () => {
+		let opened = 0;
+		let end: ((error?: Error) => void) | undefined;
+		const backend = {
+			subscribeFrames(_udid: string, _onFrame: (jpeg: Uint8Array) => void, onEnd: (error?: Error) => void): IDisposable {
+				opened++;
+				end = onEnd;
+				return toDisposable(() => { });
+			},
+		} as unknown as ParadisServeSimBackend;
+		const host = { ensure: async (): Promise<IParadisSimulatorHostConnection> => ({ socketPath: '', token: '' }), isRunning: false, lastError: undefined, stop: async () => { } };
+		const service = store.add(new ParadisSimulatorService(host, backend, true, new NullLogService()));
+		const received: ParadisSimulatorStreamEvent[] = [];
+		const first = service.onFrames(UDID)(message => received.push(message));
+		end?.(new Error('The simulator host did not become ready in time'));
+		first.dispose();
+		const second = service.onFrames(UDID)(message => received.push(message));
+		end?.();
+		second.dispose();
+		assert.deepStrictEqual({ opened, received }, {
+			opened: 2,
+			received: [
+				{ kind: 'ended', udid: UDID, reason: 'The simulator host did not become ready in time' },
+				{ kind: 'ended', udid: UDID },
+			],
+		});
 	});
 
 	// Android の映像（⑥b）: 最初の購読で scrcpy の通話を使い始め、今の大きさと config を先に渡し、最後の購読が外れたら手放す

@@ -266,7 +266,7 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		});
 	});
 
-	test('request: refuses devices used by another pane (also under another id), SSH panes, unverified callers and unapproved answers without attaching', async () => {
+	test('request: refuses devices used by another pane (also under another id), unverified callers and unapproved answers without attaching', async () => {
 		const outcomes: Record<string, { isError: boolean; windowCalls: number; attached: boolean; body?: string }> = {};
 		const run = async (label: string, options: ISetupOptions, prepare?: (ledger: FakeLedger) => void, device = 'ios:iphone', keepBody = false) => {
 			const { ledger, windowCalls, call } = setup(options);
@@ -276,7 +276,6 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		};
 		await run('usedByOtherPane', {}, ledger => ledger.give(OTHER_PANE, IPHONE));
 		await run('sameSerialOtherId', {}, ledger => ledger.give(OTHER_PANE, PIXEL), 'android:serial:emulator-5554');
-		await run('tunnel', { caller: 'tunnel' });
 		await run('unverified', { caller: 'unverified' });
 		await run('denied', { answer: { outcome: 'denied' } });
 		await run('recentlyDenied', { answer: { outcome: 'recentlyDenied' } });
@@ -287,7 +286,6 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		assert.deepStrictEqual(outcomes, {
 			usedByOtherPane: { isError: true, windowCalls: 0, attached: false },
 			sameSerialOtherId: { isError: true, windowCalls: 0, attached: false },
-			tunnel: { isError: true, windowCalls: 0, attached: false },
 			unverified: { isError: true, windowCalls: 0, attached: false },
 			denied: { isError: false, windowCalls: 1, attached: false },
 			recentlyDenied: { isError: true, windowCalls: 1, attached: false },
@@ -531,6 +529,32 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			refused: [true, 0, ['precheckInstall']],
 			busy: [true, 0],
 			parallel: [false, true, 1],
+		});
+	});
+
+	// SSH の接続先のペイン（q.html の案 B）: 端末の要求だけは受け、必ず Mac の窓の承認ダイアログを通す。
+	// 承認すれば割り当て、拒否すれば何も変えない。インストール・起動・権限の付与は今までどおり断る
+	test('request from an SSH pane goes through the approval dialog: approved attaches, denied changes nothing', async () => {
+		const outcome = async (answer: unknown) => {
+			const { ledger, windowCalls, call } = setup({ caller: 'tunnel', answer });
+			const result = await call('mobile_request_device', { device: 'ios:iphone' });
+			return { isError: result.isError, dialogs: windowCalls.map(request => request.method), attached: ledger.getAttachment(PANE)?.deviceId };
+		};
+		const ssh = setup({ caller: 'tunnel' });
+		ssh.ledger.give(PANE, IPHONE);
+		assert.deepStrictEqual({
+			approved: await outcome({ outcome: 'approved', stateKey: 'space-1' }),
+			denied: await outcome({ outcome: 'denied' }),
+			stillRefused: [
+				(await ssh.call('mobile_install_app', { path: '/Users/example/Build/My.app' })).isError,
+				(await ssh.call('mobile_launch_app', { appId: 'com.example.myapp' })).isError,
+				(await ssh.call('mobile_grant_permission', { appId: 'com.example.myapp', permission: 'camera' })).isError,
+				ssh.windowCalls.length + ssh.runner.runs.length,
+			],
+		}, {
+			approved: { isError: false, dialogs: ['requestDevice'], attached: 'ios:iphone' },
+			denied: { isError: false, dialogs: ['requestDevice'], attached: undefined },
+			stillRefused: [true, true, true, 0],
 		});
 	});
 

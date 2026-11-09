@@ -77,9 +77,23 @@ export interface IParadisSimulatorStatus {
 
 /** チャネルの `frames` のイベントで届く 1 枚（受け取ったら `ackFrame` を返す）。 */
 export interface IParadisSimulatorFrameEvent {
+	readonly kind: 'frame';
 	readonly udid: string;
 	readonly jpeg: VSBuffer;
 }
+
+/**
+ * 映像の流れが shared process 側で終わった（ホストが起きない・serve-sim が断った・流れが切れた）。
+ * 理由はログにだけ残すと画面が黒いまま何も分からないので、購読している窓へも送る。
+ */
+export interface IParadisSimulatorStreamEndEvent {
+	readonly kind: 'ended';
+	readonly udid: string;
+	readonly reason?: string;
+}
+
+/** チャネルの `frames` のイベント。 */
+export type ParadisSimulatorStreamEvent = IParadisSimulatorFrameEvent | IParadisSimulatorStreamEndEvent;
 
 // --- 開閉（iPhone Duo） ---
 

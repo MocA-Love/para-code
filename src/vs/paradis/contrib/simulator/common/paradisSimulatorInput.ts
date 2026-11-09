@@ -191,6 +191,14 @@ export function paradisSimulatorStallRetryDelay(attempt: number): number | undef
 	return PARADIS_SIMULATOR_STALL_RETRY_DELAYS_MS[attempt];
 }
 
+/**
+ * 映像が届かないときに知らせへ出す理由を選ぶ。流れが終わった理由（shared process から届いたもの）、
+ * ホストが起きない理由（`getStatus` の `hostError`）の順に使い、どちらも無ければ undefined（汎用の文を出す）。
+ */
+export function paradisSimulatorStallReason(streamReason: string | undefined, hostError: string | undefined): string | undefined {
+	return streamReason?.trim() || hostError?.trim() || undefined;
+}
+
 /** 1 文字ぶんのキーの押し方（US 配列）。 */
 export interface IParadisSimulatorKeystroke {
 	readonly usage: number;

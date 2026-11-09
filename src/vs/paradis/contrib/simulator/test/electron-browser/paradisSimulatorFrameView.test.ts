@@ -13,7 +13,7 @@ import * as sinon from 'sinon';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { Emitter, Event as BaseEvent } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, ParadisSimulatorInput } from '../../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, ParadisSimulatorInput, ParadisSimulatorStreamEvent } from '../../common/paradisSimulator.js';
 import { IParadisSimulatorClient } from '../../electron-browser/paradisSimulatorClient.js';
 import { IParadisSimulatorObjectUrls, PARADIS_SIMULATOR_STALL_MS, ParadisSimulatorFrameView } from '../../electron-browser/paradisSimulatorFrameView.js';
 import { ParadisSimulatorEditorInput, ParadisSimulatorEditorInputSerializer, paradisSimulatorAssignedTerminals } from '../../electron-browser/paradisSimulatorEditorInput.js';
@@ -25,10 +25,10 @@ class FakeClient implements IParadisSimulatorClient {
 	listeners = 0;
 	acks = 0;
 	readonly inputs: ParadisSimulatorInput[] = [];
-	private readonly _frames: Emitter<IParadisSimulatorFrameEvent>;
+	private readonly _frames: Emitter<ParadisSimulatorStreamEvent>;
 
 	constructor() {
-		this._frames = new Emitter<IParadisSimulatorFrameEvent>({
+		this._frames = new Emitter<ParadisSimulatorStreamEvent>({
 			onWillAddFirstListener: () => this.listeners++,
 			onDidRemoveLastListener: () => this.listeners--,
 		});
@@ -37,9 +37,12 @@ class FakeClient implements IParadisSimulatorClient {
 		this._frames.dispose();
 	}
 	fire(): void {
-		this._frames.fire({ udid: UDID, jpeg: VSBuffer.fromString('jpeg') });
+		this._frames.fire({ kind: 'frame', udid: UDID, jpeg: VSBuffer.fromString('jpeg') });
 	}
-	onFrames(): BaseEvent<IParadisSimulatorFrameEvent> {
+	end(reason?: string): void {
+		this._frames.fire({ kind: 'ended', udid: UDID, ...(reason ? { reason } : {}) });
+	}
+	onFrames(): BaseEvent<ParadisSimulatorStreamEvent> {
 		return this._frames.event;
 	}
 	async ackFrame(): Promise<void> {
@@ -91,7 +94,9 @@ suite('Paradis simulator: frame view', () => {
 		store.add({ dispose: () => view.dispose() });
 		/** 届いた 1 枚を <img> が描き終えたことにする。 */
 		const loaded = () => image.dispatchEvent(new Event('load'));
-		return { client, urls, view, image, loaded, container };
+		/** 届いた 1 枚を <img> が描けなかったことにする。 */
+		const failed = () => image.dispatchEvent(new Event('error'));
+		return { client, urls, view, image, loaded, failed, container };
 	}
 
 	test('keeps one Blob URL on screen, acknowledges each drawn frame, and stops when hidden', () => {
@@ -133,12 +138,13 @@ suite('Paradis simulator: frame view', () => {
 	test('reports a stalled stream when no frame arrives for a while', () => {
 		const clock = sinon.useFakeTimers();
 		try {
-			const { client, view } = setup();
+			const { client, view, loaded } = setup();
 			let stalls = 0;
 			store.add(view.onDidStall(() => stalls++));
 			view.start();
 			clock.tick(PARADIS_SIMULATOR_STALL_MS - 1000);
 			client.fire();
+			loaded();
 			clock.tick(PARADIS_SIMULATOR_STALL_MS - 1000);
 			const whileFrames = stalls;
 			clock.tick(2000);
@@ -146,6 +152,38 @@ suite('Paradis simulator: frame view', () => {
 			view.stop();
 			clock.tick(PARADIS_SIMULATOR_STALL_MS * 2);
 			assert.deepStrictEqual({ whileFrames, afterSilence, afterStop: stalls }, { whileFrames: 0, afterSilence: 1, afterStop: 1 });
+		} finally {
+			clock.restore();
+		}
+	});
+
+	// 壊れた 1 枚が届き続けても、描けた数に数えない（数えると途切れの判定が延び続け、黒いまま何も出ない）。
+	// 返事は返し、前の 1 枚を出したままにする。shared process から流れの終わりが届いたら、待たずに理由を知らせる
+	test('does not count undecodable frames as drawn and reports why the stream ended', () => {
+		const clock = sinon.useFakeTimers();
+		try {
+			const { client, view, loaded, failed, urls, image } = setup();
+			const stalls: (string | undefined)[] = [];
+			let drawn = 0;
+			store.add(view.onDidStall(reason => stalls.push(reason)));
+			store.add(view.onDidDrawFrame(() => drawn++));
+			view.start();
+			client.fire();
+			loaded();
+			const shown = image.getAttribute('src');
+			for (let i = 0; i < 6; i++) {
+				clock.tick(1000);
+				client.fire();
+				failed();
+			}
+			const afterBroken = { stalls: stalls.length, undecodable: stalls[0] !== undefined, drawn, acks: client.acks, liveUrls: urls.live.size, keepsLastFrame: image.getAttribute('src') === shown };
+			view.stop();
+			view.start();
+			client.end('The simulator host did not become ready in time');
+			assert.deepStrictEqual({ afterBroken, ended: stalls.slice(1) }, {
+				afterBroken: { stalls: 1, undecodable: true, drawn: 1, acks: 7, liveUrls: 1, keepsLastFrame: true },
+				ended: ['The simulator host did not become ready in time'],
+			});
 		} finally {
 			clock.restore();
 		}

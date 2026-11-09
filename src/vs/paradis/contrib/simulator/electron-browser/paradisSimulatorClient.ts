@@ -7,6 +7,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // renderer から shared process のシミュレータのチャネル（node/paradisSimulatorChannel.ts）を呼ぶ口。
+//
+// シミュレータ（simctl・serve-sim のホスト・映像・入力・adb）は、この窓を表示している手元の機械の機能なので、
+// SSH などのリモートの窓でも必ず手元の shared process のチャネルを使う（接続先の REH には Xcode も simctl も無い）。
+// リモートのチャネル（IRemoteAgentService）へは振らない。
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
@@ -16,7 +20,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisAndroidDeviceSummary } from '../common/paradisAndroid.js';
 import { ParadisAndroidInput, ParadisAndroidVideoWire } from '../common/paradisScrcpy.js';
-import { IParadisSimulatorDevice, IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_CHANNEL, ParadisSimulatorInput } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_CHANNEL, ParadisSimulatorInput, ParadisSimulatorStreamEvent } from '../common/paradisSimulator.js';
 
 export const IParadisSimulatorClient = createDecorator<IParadisSimulatorClient>('paradisSimulatorClient');
 
@@ -45,8 +49,11 @@ export interface IParadisSimulatorClient {
 	deviceHubRunning(): Promise<boolean>;
 	/** Device Hub を裏で起動する。 */
 	openDeviceHub(): Promise<void>;
-	/** 映像の購読。最後の購読が外れると shared process は流れを止める。届いた 1 枚ごとに {@link ackFrame} を呼ぶこと。 */
-	onFrames(udid: string): Event<IParadisSimulatorFrameEvent>;
+	/**
+	 * 映像の購読。最後の購読が外れると shared process は流れを止める。届いた 1 枚ごとに {@link ackFrame} を呼ぶこと。
+	 * 流れが終わったら `ended`（理由つき）が届く。
+	 */
+	onFrames(udid: string): Event<ParadisSimulatorStreamEvent>;
 	ackFrame(udid: string): Promise<void>;
 }
 
@@ -105,7 +112,7 @@ export class ParadisSimulatorChannelClient implements IParadisSimulatorClient {
 	openDeviceHub(): Promise<void> {
 		return this._channel.call('openDeviceHub');
 	}
-	onFrames(udid: string): Event<IParadisSimulatorFrameEvent> {
+	onFrames(udid: string): Event<ParadisSimulatorStreamEvent> {
 		return this._channel.listen('frames', { udid });
 	}
 	ackFrame(udid: string): Promise<void> {
@@ -113,7 +120,8 @@ export class ParadisSimulatorChannelClient implements IParadisSimulatorClient {
 	}
 }
 
-class ParadisSimulatorClient extends ParadisSimulatorChannelClient {
+/** 手元の shared process のチャネルを使う実装（リモートの窓でも同じ。SSH の窓を模したテストから直接作る）。 */
+export class ParadisSimulatorClient extends ParadisSimulatorChannelClient {
 	constructor(@ISharedProcessService sharedProcessService: ISharedProcessService) {
 		super(sharedProcessService.getChannel(PARADIS_SIMULATOR_CHANNEL));
 	}
