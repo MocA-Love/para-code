@@ -40,6 +40,40 @@ export function paradisContextUsageSeverity(percent: number): ParadisContextUsag
 	return percent >= WARNING_PERCENT ? 'warning' : 'normal';
 }
 
+/** ポップオーバーの外枠（上下左右の線 1px ずつ）と、中身の左右の余白（compact のホバーの 8px ずつ）。 */
+const POPOVER_CHROME_WIDTH = 2 + 16;
+/** ポップオーバーの外枠・中身の上下の余白（2px ずつ）・三角のポインタ（3px）。 */
+const POPOVER_CHROME_HEIGHT = 2 + 4 + 3;
+/** ターミナルの縁から空ける量。 */
+const POPOVER_EDGE_MARGIN = 4;
+const POPOVER_PREFERRED_WIDTH = 300;
+const POPOVER_PREFERRED_MAX_HEIGHT = 520;
+const POPOVER_MIN_HEIGHT = 60;
+
+/** 画面上の矩形のうち、ポップオーバーの大きさを決めるのに使う辺。 */
+export interface IParadisContextUsageRect {
+	readonly left: number;
+	readonly right: number;
+	readonly bottom: number;
+}
+
+/** ポップオーバーの中身の幅と高さの上限（px）。 */
+export interface IParadisContextUsagePopoverSize {
+	readonly width: number;
+	readonly maxHeight: number;
+}
+
+/**
+ * 内訳のポップオーバーを、輪の右端にそろえて左向きに開いたとき、ターミナル（`frame`）の中に収まる中身の大きさ。
+ * 幅は既定の 300px か、輪の右端からターミナルの左端までの残りの狭いほう。高さは輪の下からターミナルの下端まで。
+ * 低すぎるターミナルでは中身が読めなくなるので、高さだけは最低限を残す。
+ */
+export function paradisContextUsagePopoverSize(anchor: IParadisContextUsageRect, frame: IParadisContextUsageRect): IParadisContextUsagePopoverSize {
+	const width = Math.min(POPOVER_PREFERRED_WIDTH, anchor.right - frame.left - POPOVER_EDGE_MARGIN - POPOVER_CHROME_WIDTH);
+	const maxHeight = Math.min(POPOVER_PREFERRED_MAX_HEIGHT, frame.bottom - anchor.bottom - POPOVER_EDGE_MARGIN - POPOVER_CHROME_HEIGHT);
+	return { width: Math.max(0, Math.floor(width)), maxHeight: Math.max(POPOVER_MIN_HEIGHT, Math.floor(maxHeight)) };
+}
+
 /** 1 ペイン分の使用率。 */
 export interface IParadisContextUsageReading {
 	/** 0〜100 の整数。 */

@@ -819,9 +819,11 @@
 	border-color: var(--vscode-foreground);
 }
 
-.paradis-space-notes-check:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
+/* allow-any-unicode-next-line */
+/* キーボードのフォーカスは枠線の色で出す（枠の外に outline を足すと二重線になる）。本家の [tabindex]:focus (0,3,0) にも勝つ詳細度にする */
+.monaco-workbench .paradis-space-notes-task .paradis-space-notes-check:focus-visible {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
 }
 
 /* allow-any-unicode-next-line */

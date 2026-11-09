@@ -16,3 +16,41 @@
 html .monaco-workbench .paradis-pointer-focus:focus {
 	outline: none;
 }
+
+/*
+	Pinned popovers that Para Code opens through the workbench hover (persistence.sticky, additionalClasses
+	paradis-popover-hover): the hover container is "locked" and src/vs/platform/hover/browser/hover.css draws an
+	outline outside the hover's own 1px border, which reads as a double line (focusBorder while focus is inside).
+	The hover element itself also gets the workbench [tabindex]:focus outline. Keep the border only and show
+	keyboard focus by its color, as upstream does for the chat context usage details. High contrast themes
+	keep upstream's outline.
+*/
+html .monaco-workbench:not(.hc-black):not(.hc-light) .workbench-hover-container.locked > .monaco-hover.workbench-hover.paradis-popover-hover,
+html .monaco-workbench:not(.hc-black):not(.hc-light) .monaco-hover.workbench-hover.paradis-popover-hover:focus {
+	outline: none;
+}
+
+html .monaco-workbench:not(.hc-black):not(.hc-light) .monaco-hover.workbench-hover.paradis-popover-hover:is(:focus-visible, :has(:focus-visible)) {
+	border-color: var(--vscode-focusBorder);
+}
+
+/*
+	The same popovers use the context menu's surface (menu.background, menu.border, menu.foreground) instead
+	of the hover's, so a popover opened from the terminal looks like the menu opened from the same place.
+	With the frosted glass the hover's own glass layer takes the menu's glass colour; with window transparency
+	as well, paradisWindowTransparency.css follows what the menu shows there.
+*/
+html .monaco-workbench .monaco-hover.workbench-hover.paradis-popover-hover {
+	background: var(--vscode-menu-background);
+	border-color: var(--vscode-menu-border);
+	color: var(--vscode-menu-foreground);
+}
+
+@supports (backdrop-filter: blur(12px)) and (background-color: color-mix(in srgb, black 92%, transparent)) {
+	@media (prefers-reduced-transparency: no-preference) and (forced-colors: none) {
+		.monaco-workbench.modern-ui-frosted-glass:not(.hc-black):not(.hc-light) .monaco-hover.workbench-hover.paradis-popover-hover {
+			--modern-ui-glass-background: var(--modern-ui-glass-menu-background);
+			background: transparent;
+		}
+	}
+}

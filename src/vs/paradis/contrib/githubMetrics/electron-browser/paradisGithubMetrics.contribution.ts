@@ -288,6 +288,8 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 			// （trapFocus を省くと、閉じたときに元の要素へフォーカスが戻らない）。
 			persistence: { sticky: true },
 			trapFocus: true,
+			// 固定のホバーの外枠に outline が重なって二重線になるのを 1 本にする（paradisFocusRing.css）
+			additionalClasses: ['paradis-popover-hover'],
 			onDidHide: () => this.onPopoverHidden(store),
 		}, true /* focus */);
 		if (!hover) {

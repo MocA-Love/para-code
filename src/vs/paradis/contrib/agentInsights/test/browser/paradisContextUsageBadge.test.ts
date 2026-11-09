@@ -10,13 +10,29 @@ import assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { createParadisContextUsageBadge, IParadisContextUsageReading, paradisContextUsageSeverity } from '../../browser/paradisContextUsageBadge.js';
+import { createParadisContextUsageBadge, IParadisContextUsageReading, paradisContextUsagePopoverSize, paradisContextUsageSeverity } from '../../browser/paradisContextUsageBadge.js';
 
 suite('ParadisContextUsageBadge', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('turns yellow at 75% and red at 90%', () => {
 		assert.deepStrictEqual([0, 74, 75, 89, 90, 100].map(paradisContextUsageSeverity), ['normal', 'normal', 'warning', 'warning', 'error', 'error']);
+	});
+
+	test('keeps the details popover inside the terminal: full size when wide, narrower and shorter when the terminal is small', () => {
+		// 輪は右上（右端から 26px、上から 4px、幅 48px・高さ 16px）
+		const terminal = (width: number, height: number) => ({ frame: { left: 100, right: 100 + width, bottom: 50 + height }, anchor: { left: 100 + width - 74, right: 100 + width - 26, bottom: 70 } });
+		const size = (width: number, height: number) => { const { anchor, frame } = terminal(width, height); return paradisContextUsagePopoverSize(anchor, frame); };
+		assert.deepStrictEqual([size(900, 800), size(260, 800), size(900, 200), size(120, 60)], [
+			// 広いとき: 既定の 300px と 520px
+			{ width: 300, maxHeight: 520 },
+			// 狭いとき: 輪の右端からターミナルの左端までに収める（260 - 26 - 余白 4 - 外枠と左右の余白 18）
+			{ width: 212, maxHeight: 520 },
+			// 低いとき: 輪の下からターミナルの下端まで（250 - 70 - 余白 4 - 外枠・上下の余白・ポインタ 9）
+			{ width: 300, maxHeight: 167 },
+			// とても小さいとき: 幅は残りに合わせ、高さは最低限を残す
+			{ width: 72, maxHeight: 60 },
+		]);
 	});
 
 	test('shows the percentage of the current pane only, changes color with it, hides when gone and opens the details on click', () => {
