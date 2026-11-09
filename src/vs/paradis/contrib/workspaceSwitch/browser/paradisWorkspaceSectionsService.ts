@@ -12,7 +12,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisSectionGroup, IParadisWorkspaceSections, IParadisWorkspaceSectionsService, paradisAddSection, paradisAssignRepository, paradisGroupRepositoriesBySection, paradisLedgerOrderAfterMove, paradisLedgerOrderAfterSwapInSection, paradisMoveSection, paradisNormalizeSectionName, paradisOrderRepositoriesBySection, paradisParseCollapsedSections, paradisParseWorkspaceSections, paradisRemoveSection, paradisRenameSection, paradisReorderSectionByDrop, paradisSectionOf, paradisSectionOrderedIds, paradisSerializeCollapsedSections, paradisSerializeWorkspaceSections, paradisSetSectionColor, PARADIS_WORKSPACE_SECTIONS_COLLAPSED_STORAGE_KEY, PARADIS_WORKSPACE_SECTIONS_STORAGE_KEY } from '../common/paradisWorkspaceSections.js';
+import { IParadisSectionGroup, IParadisWorkspaceSections, IParadisWorkspaceSectionsService, paradisAddSection, paradisAssignRepository, paradisGroupRepositoriesBySection, paradisLedgerOrderAfterMove, paradisLedgerOrderAfterSwapInSection, paradisMoveSection, paradisNormalizeSectionName, paradisOrderRepositoriesBySection, paradisParseCollapsedSections, paradisParseWorkspaceSections, paradisPruneAssignments, paradisRemoveSection, paradisRenameSection, paradisReorderSectionByDrop, paradisSectionOf, paradisSectionOrderedIds, paradisSerializeCollapsedSections, paradisSerializeWorkspaceSections, paradisSetSectionColor, PARADIS_WORKSPACE_SECTIONS_COLLAPSED_STORAGE_KEY, PARADIS_WORKSPACE_SECTIONS_STORAGE_KEY } from '../common/paradisWorkspaceSections.js';
 
 export class ParadisWorkspaceSectionsService extends Disposable implements IParadisWorkspaceSectionsService {
 
@@ -22,7 +22,13 @@ export class ParadisWorkspaceSectionsService extends Disposable implements IPara
 	readonly onDidChange = this._onDidChange.event;
 
 	private _state: IParadisWorkspaceSections;
-	private readonly _collapsed: Set<string>;
+	private _collapsed: Set<string>;
+	/**
+	 * 自分が書いた値。同じワークスペースを開いたほかの窓が書いたときは読み直すが、自分の書き込みの通知では
+	 * 読み直さない（paradisSpaceNotesService と同じ）。
+	 */
+	private lastWrittenSections: string | undefined;
+	private lastWrittenCollapsed: string | undefined;
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
@@ -32,6 +38,24 @@ export class ParadisWorkspaceSectionsService extends Disposable implements IPara
 		super();
 		this._state = paradisParseWorkspaceSections(this.storageService.get(PARADIS_WORKSPACE_SECTIONS_STORAGE_KEY, StorageScope.WORKSPACE));
 		this._collapsed = paradisParseCollapsedSections(this.storageService.get(PARADIS_WORKSPACE_SECTIONS_COLLAPSED_STORAGE_KEY, StorageScope.WORKSPACE));
+		// 同じワークスペースを 2 つの窓で開いているとき、ほかの窓の変更を読み直す。読み直さないと、
+		// こちらの古い状態を次の書き込みで書き戻し、先の窓の変更を消してしまう
+		this._register(this.storageService.onDidChangeValue(StorageScope.WORKSPACE, PARADIS_WORKSPACE_SECTIONS_STORAGE_KEY, this._store)(() => {
+			const raw = this.storageService.get(PARADIS_WORKSPACE_SECTIONS_STORAGE_KEY, StorageScope.WORKSPACE);
+			if (raw === this.lastWrittenSections) {
+				return;
+			}
+			this._state = paradisParseWorkspaceSections(raw);
+			this._onDidChange.fire();
+		}));
+		this._register(this.storageService.onDidChangeValue(StorageScope.WORKSPACE, PARADIS_WORKSPACE_SECTIONS_COLLAPSED_STORAGE_KEY, this._store)(() => {
+			const raw = this.storageService.get(PARADIS_WORKSPACE_SECTIONS_COLLAPSED_STORAGE_KEY, StorageScope.WORKSPACE);
+			if (raw === this.lastWrittenCollapsed) {
+				return;
+			}
+			this._collapsed = paradisParseCollapsedSections(raw);
+			this._onDidChange.fire();
+		}));
 	}
 
 	get state(): IParadisWorkspaceSections {
@@ -143,12 +167,16 @@ export class ParadisWorkspaceSectionsService extends Disposable implements IPara
 		if (!next) {
 			return;
 		}
+		// 一覧から消えたプロジェクトの割り当ては、書くときに刈る（溜まると上限で新しい割り当てが断られる）。
+		// 一覧が空のとき（読み込み前など）は刈らない
+		next = paradisPruneAssignments(next, this.ledgerIds());
 		const serialized = paradisSerializeWorkspaceSections(next);
 		if (serialized === undefined) {
 			this.logService.warn('[ParadisWorkspaceSections] Refused to persist oversized sections');
 			return;
 		}
 		this._state = next;
+		this.lastWrittenSections = serialized;
 		this.storageService.store(PARADIS_WORKSPACE_SECTIONS_STORAGE_KEY, serialized, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 		this._onDidChange.fire();
 		this.alignLedger(moved
@@ -162,6 +190,8 @@ export class ParadisWorkspaceSectionsService extends Disposable implements IPara
 	}
 
 	private storeCollapsed(): void {
-		this.storageService.store(PARADIS_WORKSPACE_SECTIONS_COLLAPSED_STORAGE_KEY, paradisSerializeCollapsedSections(this._collapsed), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		const serialized = paradisSerializeCollapsedSections(this._collapsed);
+		this.lastWrittenCollapsed = serialized;
+		this.storageService.store(PARADIS_WORKSPACE_SECTIONS_COLLAPSED_STORAGE_KEY, serialized, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 }

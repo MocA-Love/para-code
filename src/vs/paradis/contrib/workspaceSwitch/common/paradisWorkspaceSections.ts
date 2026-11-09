@@ -46,7 +46,7 @@ export interface IParadisWorkspaceSection {
 
 export interface IParadisWorkspaceSections {
 	readonly sections: readonly IParadisWorkspaceSection[];
-	/** リポジトリ id → セクション id。今の一覧に無いリポジトリの id も消さずに持つ（描画で無視する） */
+	/** リポジトリ id → セクション id。読むときは今の一覧に無い id も残し（描画で無視する）、書くときに刈る（paradisPruneAssignments） */
 	readonly assignments: ReadonlyMap<string, string>;
 }
 
@@ -219,6 +219,21 @@ export function paradisSectionOrderedIds(ledgerIds: readonly string[], state: IP
 }
 
 // --- 変更（どれも新しい状態を返す。変わらなければ undefined） -----------------------------------
+
+/**
+ * 今の一覧に無いリポジトリの割り当てを捨てる。liveRepositoryIds が空（一覧を読む前など）なら何も捨てない。
+ * 捨てるものが無ければ同じ state を返す。
+ */
+export function paradisPruneAssignments(state: IParadisWorkspaceSections, liveRepositoryIds: readonly string[]): IParadisWorkspaceSections {
+	if (liveRepositoryIds.length === 0) {
+		return state;
+	}
+	const live = new Set(liveRepositoryIds);
+	if ([...state.assignments.keys()].every(id => live.has(id))) {
+		return state;
+	}
+	return { sections: state.sections, assignments: new Map([...state.assignments].filter(([repositoryId]) => live.has(repositoryId))) };
+}
 
 export function paradisAddSection(state: IParadisWorkspaceSections, section: IParadisWorkspaceSection): IParadisWorkspaceSections | undefined {
 	if (state.sections.length >= MAX_SECTIONS || state.sections.some(candidate => candidate.id === section.id)) {

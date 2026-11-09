@@ -7,7 +7,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisWorkspaceSections, paradisAddSection, paradisAssignRepository, paradisGroupRepositoriesBySection, paradisLedgerOrderAfterMove, paradisLedgerOrderAfterSwapInSection, paradisMoveSection, paradisOrderRepositoriesBySection, paradisParseCollapsedSections, paradisParseWorkspaceSections, paradisRelativeRepository, paradisRemoveSection, paradisRenameSection, paradisReorderSectionByDrop, paradisSectionOrderedIds, paradisSerializeCollapsedSections, paradisSerializeWorkspaceSections, paradisSetSectionColor, PARADIS_EMPTY_WORKSPACE_SECTIONS } from '../../common/paradisWorkspaceSections.js';
+import { IParadisWorkspaceSections, paradisAddSection, paradisAssignRepository, paradisGroupRepositoriesBySection, paradisLedgerOrderAfterMove, paradisLedgerOrderAfterSwapInSection, paradisMoveSection, paradisOrderRepositoriesBySection, paradisParseCollapsedSections, paradisParseWorkspaceSections, paradisPruneAssignments, paradisRelativeRepository, paradisRemoveSection, paradisRenameSection, paradisReorderSectionByDrop, paradisSectionOrderedIds, paradisSerializeCollapsedSections, paradisSerializeWorkspaceSections, paradisSetSectionColor, PARADIS_EMPTY_WORKSPACE_SECTIONS } from '../../common/paradisWorkspaceSections.js';
 
 const repos = ['a', 'b', 'c', 'd', 'e'].map(id => ({ id }));
 
@@ -142,6 +142,15 @@ suite('ParadisWorkspaceSections', () => {
 			undefined,
 			undefined,
 		]);
+	});
+
+	test('prunes assignments of projects that left the list, but not while the list is empty', () => {
+		const sections = state([{ id: 'work', name: 'Work' }], { a: 'work', gone: 'work' });
+		assert.deepStrictEqual([
+			[...paradisPruneAssignments(sections, ['a', 'b']).assignments],
+			paradisPruneAssignments(sections, []) === sections,
+			paradisPruneAssignments(sections, ['a', 'gone']) === sections,
+		], [[['a', 'work']], true, true]);
 	});
 
 	test('move up and down stay inside the section', () => {
