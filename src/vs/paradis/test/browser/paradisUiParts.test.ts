@@ -10,11 +10,18 @@ import assert from 'assert';
 import { mainWindow } from '../../../base/browser/window.js';
 import { AppResourcePath, FileAccess } from '../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
+import { Codicon } from '../../../base/common/codicons.js';
+import { renderParadisActionButton } from '../../browser/paradisActionButton.js';
+import { createParadisChip, createParadisStatusDot, ParadisCountBadge, paradisCountLabel } from '../../browser/paradisBadges.js';
+import { ParadisButton } from '../../browser/paradisButton.js';
 import { ParadisModalSize, paradisModalClasses } from '../../browser/paradisModal.js';
 import { ParadisSwitch } from '../../browser/paradisSwitch.js';
 
 // 寸法を computed style で確かめるため、部品の CSS を link で読み込んで読み込み終わりを待つ。
 const STYLESHEETS: AppResourcePath[] = [
+	'vs/paradis/browser/media/paradisTokens.css',
+	'vs/paradis/browser/media/paradisButton.css',
+	'vs/paradis/browser/media/paradisBadges.css',
 	'vs/paradis/browser/media/paradisSwitch.css',
 	'vs/paradis/browser/media/paradisModal.css',
 ];
@@ -143,5 +150,151 @@ suite('Paradis UI parts', () => {
 			{ className: 'paradis-modal paradis-modal-m', width: px(Math.min(880, 94 * vw)), height: px(Math.min(clamp(520, 72 * vh, 820), 92 * vh)), maxHeight: px(92 * vh) },
 			{ className: 'paradis-modal paradis-modal-l', width: px(Math.min(clamp(1040, 78 * vw, 2000), 95 * vw)), height: px(Math.min(clamp(726, 88 * vh, 1400), 92 * vh)), maxHeight: px(92 * vh) },
 		]);
+	});
+
+	test('count label: hidden at zero, 99+ beside text, 9+ over an icon', () => {
+		const counts = [0, -1, Number.NaN, 1, 9, 10, 99, 100, 140];
+		assert.deepStrictEqual({
+			inline: counts.map(count => paradisCountLabel(count, 'inline')),
+			overlay: counts.map(count => paradisCountLabel(count, 'overlay')),
+		}, {
+			inline: [undefined, undefined, undefined, '1', '9', '10', '99', '99+', '99+'],
+			overlay: [undefined, undefined, undefined, '1', '9', '9+', '9+', '9+', '9+'],
+		});
+	});
+
+	test('count badge: color only when a person needs to look; plain counts are not filled', () => {
+		workbench.style.setProperty('--vscode-paradis-warning', 'rgb(251, 194, 59)');
+		workbench.style.setProperty('--vscode-paradis-danger', 'rgb(244, 88, 126)');
+		workbench.style.setProperty('--vscode-paradis-textMuted', 'rgb(150, 150, 150)');
+		workbench.style.setProperty('--vscode-paradis-canvas', 'rgb(23, 25, 30)');
+		const badge = new ParadisCountBadge(workbench, 'inline');
+		const read = () => {
+			const style = mainWindow.getComputedStyle(badge.element);
+			return { text: badge.element.textContent, display: style.display, color: style.color, background: style.backgroundColor, height: style.height };
+		};
+		const zero = read();
+		badge.update(3, 'plain');
+		const plain = read();
+		badge.update(2, 'attention');
+		const attention = read();
+		badge.update(140, 'error');
+		const error = read();
+		assert.deepStrictEqual({ hidden: badge.element.getAttribute('aria-hidden'), zero: zero.display, plain, attention, error }, {
+			hidden: 'true',
+			zero: 'none',
+			plain: { text: '3', display: 'inline-flex', color: 'rgb(150, 150, 150)', background: 'rgba(0, 0, 0, 0)', height: '16px' },
+			attention: { text: '2', display: 'inline-flex', color: 'rgb(23, 25, 30)', background: 'rgb(251, 194, 59)', height: '16px' },
+			error: { text: '99+', display: 'inline-flex', color: 'rgb(23, 25, 30)', background: 'rgb(244, 88, 126)', height: '16px' },
+		});
+	});
+
+	test('button: the upstream Button DOM and keys, the kit classes, and no inline colors', () => {
+		const button = store.add(new ParadisButton(workbench, { kind: 'primary', label: '保存' }));
+		let clicks = 0;
+		store.add(button.onDidClick(() => clicks++));
+		button.element.dispatchEvent(new MouseEvent('mouseover'));
+		button.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13 }));
+		button.element.click();
+		button.enabled = false;
+		button.element.click();
+		assert.deepStrictEqual({
+			tag: button.element.tagName,
+			role: button.element.getAttribute('role'),
+			tabIndex: button.element.tabIndex,
+			className: button.element.className,
+			text: button.element.textContent,
+			inlineStyle: button.element.style.backgroundColor + button.element.style.color + button.element.style.border,
+			clicks,
+		}, {
+			tag: 'A',
+			role: 'button',
+			tabIndex: 0,
+			className: 'monaco-button paradis-button paradis-button-primary paradis-focus-ring monaco-text-button disabled',
+			text: '保存',
+			inlineStyle: '',
+			clicks: 2,
+		});
+	});
+
+	test('button: 28px standard, 24px small, square icon buttons, radius 6', () => {
+		const measure = (button: ParadisButton) => {
+			const box = button.element.getBoundingClientRect();
+			return { height: box.height, radius: mainWindow.getComputedStyle(button.element).borderTopLeftRadius, square: box.width === box.height };
+		};
+		const kinds = {
+			primary: measure(store.add(new ParadisButton(workbench, { kind: 'primary', label: 'Save' }))),
+			secondary: measure(store.add(new ParadisButton(workbench, { kind: 'secondary', label: 'Cancel' }))),
+			ghost: measure(store.add(new ParadisButton(workbench, { kind: 'ghost', label: 'Details', small: true }))),
+			danger: measure(store.add(new ParadisButton(workbench, { kind: 'danger', label: 'Delete' }))),
+			icon: measure(store.add(new ParadisButton(workbench, { kind: 'icon', icon: Codicon.refresh, ariaLabel: 'Refresh' }))),
+			iconSmall: measure(store.add(new ParadisButton(workbench, { kind: 'icon', icon: Codicon.close, ariaLabel: 'Close', small: true }))),
+		};
+		assert.deepStrictEqual(kinds, {
+			primary: { height: 28, radius: '6px', square: false },
+			secondary: { height: 28, radius: '6px', square: false },
+			ghost: { height: 24, radius: '6px', square: false },
+			danger: { height: 28, radius: '6px', square: false },
+			icon: { height: 28, radius: '6px', square: true },
+			iconSmall: { height: 24, radius: '6px', square: true },
+		});
+	});
+
+	test('action button: an ActionBar item drawn as a 24px kit button, the count beside the label or over the icon', () => {
+		const textItem = mainWindow.document.createElement('li');
+		const iconItem = mainWindow.document.createElement('li');
+		workbench.append(textItem, iconItem);
+		const text = renderParadisActionButton(textItem, { icon: 'paradis-test-icon', label: 'エージェント一覧', count: true });
+		const icon = renderParadisActionButton(iconItem, { icon: Codicon.bell, count: true });
+		text.count?.update(3, 'plain');
+		icon.count?.update(12, 'attention');
+		const box = (element: HTMLElement) => ({ width: Math.round(element.getBoundingClientRect().width), height: element.getBoundingClientRect().height });
+		assert.deepStrictEqual({
+			textClass: textItem.className,
+			iconClass: iconItem.className,
+			textCount: [text.count?.element.className, text.count?.element.textContent],
+			iconCount: [icon.count?.element.className, icon.count?.element.textContent],
+			iconBox: box(iconItem),
+			textHeight: box(textItem).height,
+			overlayHeight: box(icon.count!.element).height,
+			label: text.label?.textContent,
+			hasNoInnerButton: textItem.querySelector('a, button') === null && iconItem.querySelector('a, button') === null,
+		}, {
+			textClass: 'paradis-button paradis-button-ghost paradis-focus-ring paradis-button-small paradis-action-button',
+			iconClass: 'paradis-button paradis-button-icon paradis-focus-ring paradis-button-small paradis-action-button',
+			textCount: ['paradis-count', '3'],
+			iconCount: ['paradis-count paradis-count-overlay attention', '9+'],
+			iconBox: { width: 24, height: 24 },
+			textHeight: 24,
+			overlayHeight: 14,
+			label: 'エージェント一覧',
+			hasNoInnerButton: true,
+		});
+	});
+
+	test('a 390px window: long Japanese labels in buttons, chips and status dots are cut, nothing overflows', () => {
+		const frame = mainWindow.document.createElement('div');
+		frame.style.cssText = 'width: 390px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;';
+		workbench.appendChild(frame);
+		const long = 'ワークツリーのフォルダとブランチをまとめて削除してから、元のスペースへ戻ります';
+		const button = store.add(new ParadisButton(frame, { kind: 'secondary', label: long }));
+		const chip = createParadisChip(frame, long, 'warning');
+		const status = createParadisStatusDot(frame, long, 'running');
+		const row = mainWindow.document.createElement('div');
+		row.style.cssText = 'display: flex; gap: 4px; min-width: 0; max-width: 100%;';
+		frame.appendChild(row);
+		for (let i = 0; i < 6; i++) {
+			createParadisChip(row, `チップの長い名前 ${i}`, 'neutral');
+		}
+		const frameRight = frame.getBoundingClientRect().right;
+		const fits = (element: HTMLElement) => element.getBoundingClientRect().right <= frameRight + 0.5;
+		assert.deepStrictEqual({
+			scrollWidth: frame.scrollWidth <= 390,
+			button: fits(button.element),
+			chip: fits(chip),
+			status: fits(status),
+			row: Array.from(row.children).every(child => fits(child as HTMLElement)),
+			chipHeight: chip.getBoundingClientRect().height,
+		}, { scrollWidth: true, button: true, chip: true, status: true, row: true, chipHeight: 20 });
 	});
 });
