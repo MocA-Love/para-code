@@ -19,6 +19,8 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { ParadisModalSize, paradisModalClasses } from '../../../browser/paradisModal.js';
@@ -64,9 +66,9 @@ export interface IParadisPortDialogResult {
 }
 
 /** 表のダイアログを開き、実行が押されたら選んだ行を返す。閉じたら undefined。 */
-export function paradisShowPortTableDialog(layoutService: ILayoutService, options: IParadisPortDialogOptions): Promise<IParadisPortDialogResult | undefined> {
+export function paradisShowPortTableDialog(layoutService: ILayoutService, hoverService: IHoverService, options: IParadisPortDialogOptions): Promise<IParadisPortDialogResult | undefined> {
 	return new Promise(resolve => {
-		const dialog = new ParadisPortTableDialog(layoutService, options, resolve);
+		const dialog = new ParadisPortTableDialog(layoutService, hoverService, options, resolve);
 		dialog.open();
 	});
 }
@@ -84,6 +86,7 @@ class ParadisPortTableDialog extends Disposable {
 
 	constructor(
 		private readonly layoutService: ILayoutService,
+		private readonly hoverService: IHoverService,
 		private readonly options: IParadisPortDialogOptions,
 		private readonly resolve: (result: IParadisPortDialogResult | undefined) => void,
 	) {
@@ -199,6 +202,8 @@ class ParadisPortTableDialog extends Disposable {
 			row.cells.forEach((text, cellIndex) => {
 				const td = dom.append(tr, $('td'));
 				td.textContent = text;
+				// セルは幅 240px で切れる（長いコマンドなど）ので、全文をホバーで出す
+				rowStore.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), td, text));
 				if (cellIndex === row.cells.length - 1 && row.tone) {
 					td.classList.add(`ppd-tone-${row.tone}`);
 				}

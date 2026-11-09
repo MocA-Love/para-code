@@ -216,8 +216,8 @@
 	transition: width 0.3s ease;
 }
 
-.paradis-resource-monitor-panel .prm-share-bar-fill.elevated { background: #f59e0b; opacity: 0.85; }
-.paradis-resource-monitor-panel .prm-share-bar-fill.high { background: #ef4444; opacity: 0.85; }
+.paradis-resource-monitor-panel .prm-share-bar-fill.elevated { background: var(--vscode-paradis-warning); opacity: 0.85; }
+.paradis-resource-monitor-panel .prm-share-bar-fill.high { background: var(--vscode-paradis-danger); opacity: 0.85; }
 
 .paradis-resource-monitor-panel .prm-body {
 	flex: 1;
@@ -362,8 +362,8 @@
 	border-radius: 50%;
 }
 
-.paradis-resource-monitor-panel .prm-severity-dot.elevated { background: #f59e0b; }
-.paradis-resource-monitor-panel .prm-severity-dot.high { background: #ef4444; }
+.paradis-resource-monitor-panel .prm-severity-dot.elevated { background: var(--vscode-paradis-warning); }
+.paradis-resource-monitor-panel .prm-severity-dot.high { background: var(--vscode-paradis-danger); }
 
 .paradis-resource-monitor-panel .prm-section-divider {
 	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));

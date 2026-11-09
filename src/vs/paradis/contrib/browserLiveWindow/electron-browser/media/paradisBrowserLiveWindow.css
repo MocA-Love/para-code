@@ -114,7 +114,7 @@
 }
 
 .paradis-browser-live-icon-button.codicon {
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .paradis-browser-live-icon-button:hover {
@@ -248,7 +248,7 @@
 
 /* エージェントへ共有中。ページ側に出るカーソル演出と同じ「掴まれている」合図。 */
 .paradis-browser-live-tile.shared {
-	box-shadow: 0 0 0 1px var(--vscode-charts-blue, #3794ff), 0 2px 12px rgba(0, 0, 0, 0.2);
+	box-shadow: 0 0 0 1px var(--vscode-charts-blue), 0 2px 12px rgba(0, 0, 0, 0.2);
 }
 
 .paradis-browser-live-tile-head {
@@ -329,7 +329,7 @@
 }
 
 .paradis-browser-live-mini-button.codicon {
-	font-size: 13px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .paradis-browser-live-mini-button:hover {
@@ -456,18 +456,18 @@
 
 .paradis-browser-live-tag.shared,
 .paradis-browser-live-chip .paradis-browser-live-dot.shared {
-	color: var(--vscode-charts-blue, #3794ff);
-	border-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 50%, var(--vscode-editorWidget-border));
+	color: var(--vscode-charts-blue);
+	border-color: color-mix(in srgb, var(--vscode-charts-blue) 50%, var(--vscode-editorWidget-border));
 }
 
 .paradis-browser-live-chip .paradis-browser-live-dot.shared {
-	background-color: var(--vscode-charts-blue, #3794ff);
+	background-color: var(--vscode-charts-blue);
 	border: 0;
 }
 
 .paradis-browser-live-tag.loading {
-	color: var(--vscode-charts-yellow, #cca700);
-	border-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 45%, var(--vscode-editorWidget-border));
+	color: var(--vscode-charts-yellow);
+	border-color: color-mix(in srgb, var(--vscode-charts-yellow) 45%, var(--vscode-editorWidget-border));
 }
 
 .paradis-browser-live-tag.loading .paradis-browser-live-dot {
@@ -480,8 +480,8 @@
 }
 
 .paradis-browser-live-tag.error {
-	color: var(--vscode-charts-red, #f14c4c);
-	border-color: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 45%, var(--vscode-editorWidget-border));
+	color: var(--vscode-charts-red);
+	border-color: color-mix(in srgb, var(--vscode-charts-red) 45%, var(--vscode-editorWidget-border));
 }
 
 @keyframes paradis-browser-live-pulse {
@@ -542,7 +542,7 @@
 	height: 26px;
 	box-sizing: border-box;
 	border-radius: 50%;
-	border: 2px solid var(--vscode-charts-blue, #3794ff);
+	border: 2px solid var(--vscode-charts-blue);
 	opacity: 0;
 }
 

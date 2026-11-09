@@ -154,7 +154,7 @@
 
 /* 危険な権限モード（全許可/全バイパス）の選択中は赤系ハイライトで明示する */
 .paradis-create-worktree-dialog .pcw-seg-btn.active.pcw-seg-danger {
-	background: var(--vscode-inputValidation-errorBorder, #8e3d3d);
+	background: var(--vscode-inputValidation-errorBorder);
 	color: var(--vscode-button-foreground);
 }
 
@@ -458,7 +458,7 @@
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-agent-icon .codicon {
-	font-size: 13px;
+	font-size: var(--vscode-codiconFontSize-compact);
 }
 
 /* --- エージェント詳細オプション --- */

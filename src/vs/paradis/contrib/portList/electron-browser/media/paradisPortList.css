@@ -117,7 +117,7 @@
 
 .paradis-port-list-panel .ppl-search-box .codicon {
 	opacity: 0.6;
-	font-size: 13px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .paradis-port-list-panel .ppl-filters {
@@ -132,20 +132,20 @@
 	font-size: 11px;
 	padding: 3px 9px;
 	border-radius: 12px;
-	background: rgba(128, 128, 128, 0.16);
+	background: color-mix(in srgb, var(--vscode-paradis-textMuted) 16%, transparent);
 	border: 1px solid transparent;
 	cursor: pointer;
 	color: inherit;
 }
 
 .paradis-port-list-panel .ppl-chip:hover {
-	background: rgba(128, 128, 128, 0.26);
+	background: color-mix(in srgb, var(--vscode-paradis-textMuted) 26%, transparent);
 }
 
 .paradis-port-list-panel .ppl-chip.on {
-	background: var(--vscode-button-background, #0e639c);
-	border-color: var(--vscode-button-background, #0e639c);
-	color: var(--vscode-button-foreground, #ffffff);
+	background: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
 }
 
 .paradis-port-list-panel .ppl-list {
@@ -158,7 +158,7 @@
 	align-items: center;
 	gap: 10px;
 	padding: 6px 14px;
-	border-bottom: 1px solid rgba(128, 128, 128, 0.09);
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-paradis-textMuted) 9%, transparent);
 }
 
 .paradis-port-list-panel .ppl-row:last-child {
@@ -170,7 +170,7 @@
 }
 
 .paradis-port-list-panel .ppl-row.risky {
-	background: rgba(239, 68, 68, 0.06);
+	background: color-mix(in srgb, var(--vscode-paradis-danger) 6%, transparent);
 }
 
 .paradis-port-list-panel .ppl-dot {
@@ -178,11 +178,11 @@
 	height: 6px;
 	border-radius: 50%;
 	flex: none;
-	background: #2ea043;
+	background: var(--vscode-paradis-success);
 }
 
 .paradis-port-list-panel .ppl-dot.risky {
-	background: #ef4444;
+	background: var(--vscode-paradis-danger);
 }
 
 .paradis-port-list-panel .ppl-port {
@@ -204,9 +204,9 @@
 .paradis-port-list-panel .ppl-risk-badge {
 	font-size: 9px;
 	font-weight: 700;
-	color: #ef4444;
-	background: rgba(239, 68, 68, 0.15);
-	border: 1px solid rgba(239, 68, 68, 0.35);
+	color: var(--vscode-paradis-danger);
+	background: color-mix(in srgb, var(--vscode-paradis-danger) 15%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-paradis-danger) 35%, transparent);
 	border-radius: 4px;
 	padding: 0 4px;
 	line-height: 1.5;
@@ -242,12 +242,12 @@
 }
 
 .paradis-port-list-panel .ppl-kill-btn .codicon {
-	font-size: 13px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .paradis-port-list-panel .ppl-kill-btn:hover {
-	background: rgba(239, 68, 68, 0.18);
-	color: #ef4444;
+	background: color-mix(in srgb, var(--vscode-paradis-danger) 18%, transparent);
+	color: var(--vscode-paradis-danger);
 }
 
 .paradis-port-list-panel .ppl-kill-btn:disabled {
@@ -288,12 +288,12 @@
 }
 
 .paradis-port-list-panel .ppl-fbtn.danger {
-	color: #ef4444;
+	color: var(--vscode-paradis-danger);
 	margin-left: auto;
 }
 
 .paradis-port-list-panel .ppl-fbtn.danger:hover {
-	background: rgba(239, 68, 68, 0.14);
+	background: color-mix(in srgb, var(--vscode-paradis-danger) 14%, transparent);
 }
 
 .paradis-port-list-panel .ppl-fbtn:disabled {

@@ -147,8 +147,8 @@
 }
 
 .monaco-workbench .para-ut-button.danger {
-	background: var(--vscode-statusBarItem-errorBackground, #cf222e);
-	color: var(--vscode-statusBarItem-errorForeground, #ffffff);
+	background: var(--vscode-statusBarItem-errorBackground);
+	color: var(--vscode-statusBarItem-errorForeground);
 }
 
 .monaco-workbench .para-ut-button.danger:hover {

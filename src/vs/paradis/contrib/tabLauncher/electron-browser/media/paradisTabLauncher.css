@@ -60,7 +60,7 @@
 
 .monaco-workbench .paradis-tab-launcher-search .codicon {
 	flex: none;
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize);
 	color: var(--vscode-input-placeholderForeground);
 }
 

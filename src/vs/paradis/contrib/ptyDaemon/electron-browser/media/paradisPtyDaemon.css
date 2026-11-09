@@ -62,7 +62,7 @@
 	width: 7px;
 	height: 7px;
 	border-radius: 50%;
-	background-color: var(--vscode-charts-green, #89d185);
+	background-color: var(--vscode-charts-green);
 }
 
 .paradis-pty-daemon-popover .ppd-state.ppd-bad .ppd-dot {

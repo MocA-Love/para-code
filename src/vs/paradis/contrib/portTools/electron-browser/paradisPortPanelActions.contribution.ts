@@ -26,6 +26,7 @@ import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
@@ -67,6 +68,7 @@ interface IParadisPortPanelServices extends IParadisReforwardServices {
 	readonly notificationService: INotificationService;
 	readonly nativeHostService: INativeHostService;
 	readonly layoutService: ILayoutService;
+	readonly hoverService: IHoverService;
 	readonly fileDialogService: IFileDialogService;
 	readonly fileService: IFileService;
 	readonly pathService: IPathService;
@@ -82,6 +84,7 @@ function getServices(accessor: ServicesAccessor): IParadisPortPanelServices {
 		notificationService: accessor.get(INotificationService),
 		nativeHostService: accessor.get(INativeHostService),
 		layoutService: accessor.get(ILayoutService),
+		hoverService: accessor.get(IHoverService),
 		fileDialogService: accessor.get(IFileDialogService),
 		fileService: accessor.get(IFileService),
 		pathService: accessor.get(IPathService),
@@ -200,7 +203,7 @@ registerAction2(class extends Action2 {
 			checked: free[index],
 			disabled: !free[index],
 		}));
-		const answer = await paradisShowPortTableDialog(services.layoutService, {
+		const answer = await paradisShowPortTableDialog(services.layoutService, services.hoverService, {
 			title: localize('paradis.portPanel.align.title', "番号を揃えて張り直す"),
 			description: localize('paradis.portPanel.align.description', "手元とリモートの番号が違う転送 {0} 件。張り直すと、元の手元の番号を開いているブラウザのタブは繋がらなくなります。同じ SSH 先のほかの窓の同じポートの転送も一度まとめて閉じてから張り直します。", targets.length),
 			columns: [localize('paradis.portPanel.column.remote', "リモート"), localize('paradis.portPanel.column.local', "手元"), localize('paradis.portPanel.column.state', "状態")],
@@ -260,7 +263,7 @@ registerAction2(class extends Action2 {
 			return;
 		}
 		const others = await otherWindowsOfSameRemote(services);
-		const answer = await paradisShowPortTableDialog(services.layoutService, {
+		const answer = await paradisShowPortTableDialog(services.layoutService, services.hoverService, {
 			title: localize('paradis.portPanel.cleanUp.title', "動いていない転送を外す"),
 			description: localize('paradis.portPanel.cleanUp.description', "SSH 先で listen していない転送 {0} 件。{1} より下の決まった番号はチェックを外しています。", targets.length, PARADIS_EPHEMERAL_PORT_START),
 			columns: [localize('paradis.portPanel.column.remote', "リモート"), localize('paradis.portPanel.column.local', "手元"), localize('paradis.portPanel.column.source', "配信元")],
@@ -457,7 +460,7 @@ registerAction2(class extends Action2 {
 		const plan = paradisPortCsvPlan(read.rows, forwarded, inUse);
 		const adds = plan.filter(item => item.verdict.kind === 'add');
 		const realigns = plan.filter(item => item.verdict.kind === 'mismatch' && !item.verdict.localInUse);
-		const answer = await paradisShowPortTableDialog(services.layoutService, {
+		const answer = await paradisShowPortTableDialog(services.layoutService, services.hoverService, {
 			title: localize('paradis.portPanel.import.title', "CSV から取り込む: {0}（{1} 行）", basename(file), read.rows.length),
 			...(read.truncated ? { description: localize('paradis.portPanel.import.truncated', "先頭の {0} 行だけを取り込みます。", PARADIS_PORT_CSV_MAX_ROWS) } : {}),
 			columns: [localize('paradis.portPanel.column.line', "行"), localize('paradis.portPanel.column.remote', "リモート"), localize('paradis.portPanel.column.local', "手元"), localize('paradis.portPanel.column.verdict', "判定")],

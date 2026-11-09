@@ -94,7 +94,7 @@
 }
 
 .monaco-workbench .paradis-scheduled-runs .psr-button .codicon {
-	font-size: 13px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .monaco-workbench .paradis-scheduled-runs .psr-button.primary {

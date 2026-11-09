@@ -31,7 +31,7 @@
 }
 
 .paradis-hub .pud-refresh .codicon {
-	font-size: 13px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 /* パネルは1枚だけ見せる。中身（各ダッシュボード）は自前でスクロールを持つので、

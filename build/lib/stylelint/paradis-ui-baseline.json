@@ -41,37 +41,23 @@
 		"focus | .paradis-context-usage-details details.paradis-ccusage-context-section > summary:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/agentLiveWindow/browser/media/paradisAgentLiveBoard.css": {
-		"hex-color | .paradis-agent-live-window .paradis-agent-live-card.attention | border-color: var(--vscode-charts-yellow, #cca700)": 1,
 		"focus | .paradis-agent-live-window .paradis-agent-live-card:focus, .paradis-agent-live-window .paradis-agent-live-list-row:focus | ": 1,
-		"focus | .paradis-agent-live-window .paradis-agent-live-card:focus-visible, .paradis-agent-live-window .paradis-agent-live-list-row:focus-visible | ": 1,
-		"hex-color | .paradis-agent-live-window .paradis-agent-live-summary-kind | color: var(--vscode-charts-red, #ef4444)": 1
+		"focus | .paradis-agent-live-window .paradis-agent-live-card:focus-visible, .paradis-agent-live-window .paradis-agent-live-list-row:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/agentLiveWindow/browser/media/paradisAgentLiveWindow.css": {
 		"focus | .paradis-agent-live-chip:focus-visible, .paradis-agent-live-icon-button:focus-visible, .paradis-agent-live-mini-button:focus-visible, .paradis-agent-live-seg button:focus-visible | ": 1,
 		"focus | .paradis-agent-live-number:focus | ": 1,
-		"codicon-size | .paradis-agent-live-icon-button.codicon, .paradis-agent-live-mini-button.codicon, .paradis-agent-live-drag-handle.codicon | font-size: 14px": 1,
-		"hex-color | .paradis-agent-live-dot.working | background-color: var(--vscode-charts-yellow, #cca700)": 1,
-		"hex-color | .paradis-agent-live-dot.permission, .paradis-agent-live-dot.question | background-color: var(--vscode-charts-red, #ef4444)": 1,
-		"hex-color | .paradis-agent-live-dot.review | background-color: var(--vscode-charts-green, #22c55e)": 1,
-		"hex-color | .paradis-agent-live-badge.working | color: var(--vscode-charts-yellow, #cca700)": 1,
-		"hex-color | .paradis-agent-live-badge.permission, .paradis-agent-live-badge.question | color: var(--vscode-charts-red, #ef4444)": 1,
-		"hex-color | .paradis-agent-live-badge.review | color: var(--vscode-charts-green, #22c55e)": 1,
 		"z-index | .paradis-agent-live-group-head | z-index: 5": 1,
-		"hex-color | .paradis-agent-live-tile.attention | box-shadow: 0 0 0 1px var(--vscode-charts-yellow, #cca700), 0 2px 10px rgba(0, 0, 0, 0.18)": 1,
 		"focus | .paradis-agent-live-tile:focus-visible | ": 1,
 		"focus | .paradis-agent-live-tile:has(.paradis-agent-live-term:focus-within) | ": 1,
 		"z-index | .paradis-agent-live-insert-line | z-index: 5": 1,
-		"hex-color | .paradis-agent-live-browser-button | color: var(--vscode-charts-blue, #3794ff)": 1,
-		"codicon-size | .paradis-agent-live-browser-button.codicon | font-size: 13px": 1,
 		"focus | .paradis-agent-live-browser-button:focus-visible | ": 1,
-		"hex-color | .paradis-agent-live-tile-readonly | color: var(--vscode-charts-yellow, #cca700)": 1,
 		"focus | .paradis-agent-live-tile:hover .paradis-agent-live-tile-actions, .paradis-agent-live-tile:focus-within .paradis-agent-live-tile-actions | ": 1,
 		"z-index | .paradis-agent-live-pop | z-index: 50": 1,
 		"focus | .paradis-agent-live-pop-item:focus-visible | ": 1,
 		"focus | .monaco-workbench .paradis-agent-live-pop[tabindex= ]:focus, .monaco-workbench .paradis-agent-live-pop[tabindex= ]:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/browserBookmarks/electron-browser/media/paradisBookmarkBar.css": {
-		"codicon-size | .browser-root .paradis-bookmark-item-icon .codicon | font-size: 14px": 1,
 		"focus | .monaco-workbench .paradis-bookmark-dialog[tabindex= ]:focus | ": 1,
 		"focus | .paradis-bookmark-dialog .pbm-input:focus, .paradis-bookmark-dialog .pbm-select:focus | ": 1,
 		"focus | .paradis-bookmark-dialog .pbm-icon-option:focus-visible, .paradis-bookmark-dialog .pbm-color-swatch:focus-visible | ": 1
@@ -100,22 +86,11 @@
 	},
 	"src/vs/paradis/contrib/browserLiveWindow/electron-browser/media/paradisBrowserLiveWindow.css": {
 		"focus | .paradis-browser-live-chip:focus-visible, .paradis-browser-live-icon-button:focus-visible, .paradis-browser-live-mini-button:focus-visible, .paradis-browser-live-shot:focus-visible, .paradis-browser-live-pop-item:focus-visible, .paradis-browser-live-pop-seg button:focus-visible | ": 1,
-		"codicon-size | .paradis-browser-live-icon-button.codicon | font-size: 14px": 1,
 		"focus | .paradis-browser-live-link:focus-visible | ": 1,
-		"hex-color | .paradis-browser-live-tile.shared | box-shadow: 0 0 0 1px var(--vscode-charts-blue, #3794ff), 0 2px 12px rgba(0, 0, 0, 0.2)": 1,
 		"focus | .paradis-browser-live-tile:hover .paradis-browser-live-tile-actions, .paradis-browser-live-tile:focus-within .paradis-browser-live-tile-actions | ": 1,
-		"codicon-size | .paradis-browser-live-mini-button.codicon | font-size: 13px": 1,
 		"hex-color | .paradis-browser-live-paused | color: #ffffff": 1,
-		"hex-color | .paradis-browser-live-tag.shared, .paradis-browser-live-chip .paradis-browser-live-dot.shared | color: var(--vscode-charts-blue, #3794ff)": 1,
-		"hex-color | .paradis-browser-live-tag.shared, .paradis-browser-live-chip .paradis-browser-live-dot.shared | border-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 50%, var(--vscode-editorWidget-border))": 1,
-		"hex-color | .paradis-browser-live-chip .paradis-browser-live-dot.shared | background-color: var(--vscode-charts-blue, #3794ff)": 1,
-		"hex-color | .paradis-browser-live-tag.loading | color: var(--vscode-charts-yellow, #cca700)": 1,
-		"hex-color | .paradis-browser-live-tag.loading | border-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 45%, var(--vscode-editorWidget-border))": 1,
-		"hex-color | .paradis-browser-live-tag.error | color: var(--vscode-charts-red, #f14c4c)": 1,
-		"hex-color | .paradis-browser-live-tag.error | border-color: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 45%, var(--vscode-editorWidget-border))": 1,
 		"z-index | .paradis-browser-live-cursor | z-index: 6": 1,
 		"hex-color | .paradis-browser-live-cursor-arrow | background-color: #ffffff": 1,
-		"hex-color | .paradis-browser-live-cursor-ripple | border: 2px solid var(--vscode-charts-blue, #3794ff)": 1,
 		"z-index | .paradis-browser-live-shot-mark | z-index: 7": 1,
 		"z-index | .paradis-browser-live-pop | z-index: 50": 1,
 		"focus | .paradis-browser-live-pop:focus-visible | ": 1,
@@ -159,7 +134,6 @@
 		"focus | .monaco-editor .paradis-diff-review-note-input:focus | ": 1
 	},
 	"src/vs/paradis/contrib/fileTransfer/electron-browser/media/paradisFileTransfer.css": {
-		"hex-color | .monaco-workbench .para-ft-hdot.connected | background: var(--vscode-testing-iconPassed, #3fb950)": 1,
 		"focus | .monaco-workbench .para-ft-actions:focus-visible | ": 1,
 		"focus | .monaco-workbench .para-ft-nav-button:focus-visible, .monaco-workbench .para-ft-qbutton:focus-visible, .monaco-workbench .para-ft-crumb:focus-visible | ": 1,
 		"focus | .monaco-workbench .para-ft-table .monaco-table-th:focus-visible | ": 1,
@@ -290,22 +264,9 @@
 		"focus | .paradis-limits-panel .plm-account-toggle:focus-visible | ": 1,
 		"focus | .paradis-limits-panel .plm-account:hover .plm-account-icon-btn, .paradis-limits-panel .plm-account:focus-within .plm-account-icon-btn, .paradis-limits-panel .plm-account-icon-btn:focus-visible | ": 1,
 		"focus | .paradis-limits-panel .plm-account-icon-btn:focus-visible | ": 1,
-		"hex-color | .paradis-limits-setup .pls-btn | background: var(--vscode-button-secondaryBackground, #313131)": 1,
-		"hex-color | .paradis-limits-panel .plm-relogin-btn:hover, .paradis-limits-panel .plm-card-action-btn:hover:not(:disabled), .paradis-limits-setup .pls-btn:hover | background: var(--vscode-button-secondaryHoverBackground, #3c3c3c)": 1,
 		"focus | .paradis-limits-panel .plm-card-action-link:focus-visible | ": 1,
-		"hex-color | .paradis-limits-panel .plm-card-action-link.soon, .paradis-limits-panel .plm-card-action-note.soon | color: var(--vscode-editorWarning-foreground, #f59e0b)": 1,
-		"hex-color | .paradis-limits-panel .plm-reset-expiry.soon .plm-reset-expiry-when | color: var(--vscode-editorWarning-foreground, #f59e0b)": 1,
 		"focus | .paradis-limits-panel .plm-icon-btn:focus-visible | ": 1,
 		"focus | .monaco-workbench .paradis-limits-setup[tabindex= ]:focus | ": 1,
-		"hex-color | .paradis-limits-setup .pls-step.done .pls-step-num | background: #2ea043": 1,
-		"hex-color | .paradis-limits-setup .pls-step.done .pls-step-num | color: #ffffff": 1,
-		"hex-color | .paradis-limits-setup .pls-step.now .pls-step-num | background: var(--vscode-button-background, #0e639c)": 1,
-		"hex-color | .paradis-limits-setup .pls-step.now .pls-step-num | color: var(--vscode-button-foreground, #ffffff)": 1,
-		"hex-color | .paradis-limits-setup .pls-error | color: var(--vscode-errorForeground, #ef4444)": 1,
-		"hex-color | .paradis-limits-setup .pls-btn.primary | background: var(--vscode-button-background, #0e639c)": 1,
-		"hex-color | .paradis-limits-setup .pls-btn.primary | border-color: var(--vscode-button-background, #0e639c)": 1,
-		"hex-color | .paradis-limits-setup .pls-btn.primary | color: var(--vscode-button-foreground, #ffffff)": 1,
-		"hex-color | .paradis-limits-setup .pls-btn.primary:hover | background: var(--vscode-button-hoverBackground, #1177bb)": 1,
 		"focus | .monaco-workbench .paradis-limits-panel[tabindex= ]:focus, .monaco-workbench .paradis-limits-panel[tabindex= ]:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/mobileRelay/browser/media/paradisMobileViewportBanner.css": {
@@ -316,7 +277,6 @@
 		"focus | .monaco-workbench .paradis-notification-inbox-popover .pnip-row:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/notifications/electron-browser/media/paradisNotificationSettings.css": {
-		"codicon-size | .paradis-notif-area .codicon | font-size: 14px": 1,
 		"focus | .paradis-hub .pns-search:focus-within | ": 1,
 		"z-index | .paradis-notif-area .pns-section.disabled-veil::after | z-index: 5": 1,
 		"focus | .paradis-notif-area input:focus, .paradis-notif-area select:focus, .paradis-notif-area textarea:focus, .paradis-notif-nested-dialog input:focus, .paradis-notif-nested-dialog select:focus, .paradis-notif-nested-dialog textarea:focus | ": 1,
@@ -335,40 +295,17 @@
 		"z-index | .paradis-port-list-trigger | z-index: 2500": 1,
 		"focus | .paradis-port-list-panel .ppl-search-box:focus-within | ": 1,
 		"focus | .monaco-workbench .paradis-port-list-panel .ppl-search-box input:focus | ": 1,
-		"codicon-size | .paradis-port-list-panel .ppl-search-box .codicon | font-size: 13px": 1,
-		"hex-color | .paradis-port-list-panel .ppl-chip.on | background: var(--vscode-button-background, #0e639c)": 1,
-		"hex-color | .paradis-port-list-panel .ppl-chip.on | border-color: var(--vscode-button-background, #0e639c)": 1,
-		"hex-color | .paradis-port-list-panel .ppl-chip.on | color: var(--vscode-button-foreground, #ffffff)": 1,
-		"hex-color | .paradis-port-list-panel .ppl-dot | background: #2ea043": 1,
-		"hex-color | .paradis-port-list-panel .ppl-dot.risky | background: #ef4444": 1,
-		"hex-color | .paradis-port-list-panel .ppl-risk-badge | color: #ef4444": 1,
-		"codicon-size | .paradis-port-list-panel .ppl-kill-btn .codicon | font-size: 13px": 1,
-		"hex-color | .paradis-port-list-panel .ppl-kill-btn:hover | color: #ef4444": 1,
-		"hex-color | .paradis-port-list-panel .ppl-fbtn.danger | color: #ef4444": 1,
 		"focus | .monaco-workbench .paradis-port-list-panel:focus, .monaco-workbench .paradis-port-list-panel:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/ptyDaemon/electron-browser/media/paradisPtyDaemon.css": {
-		"hex-color | .paradis-pty-daemon-popover .ppd-dot | background-color: var(--vscode-charts-green, #89d185)": 1,
 		"focus | .paradis-pty-daemon-popover .ppd-button:focus-visible | ": 1,
 		"focus | .monaco-workbench .paradis-pty-daemon-popover[tabindex= ]:focus, .monaco-workbench .paradis-pty-daemon-popover[tabindex= ]:focus-visible | ": 1
-	},
-	"src/vs/paradis/contrib/releaseNotes/electron-browser/media/changelogModal.css": {
-		"hex-color | .paradis-hub .para-cl-tag-available | color: var(--vscode-badge-foreground, #ffffff)": 1,
-		"hex-color | .paradis-changelog-area .para-cl-btn | background: var(--vscode-button-secondaryBackground, #313131)": 1,
-		"hex-color | .paradis-changelog-area .para-cl-btn:hover | background: var(--vscode-button-secondaryHoverBackground, #3c3c3c)": 1
-	},
-	"src/vs/paradis/contrib/remoteHosts/browser/media/paradisRemoteHosts.css": {
-		"hex-color | .para-rh-icon.dir | color: #c09553": 1
 	},
 	"src/vs/paradis/contrib/resourceMonitor/browser/media/paradisSystemUsageChart.css": {
 		"focus | .paradis-sysusage-segment-button:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/resourceMonitor/electron-browser/media/paradisResourceMonitor.css": {
 		"z-index | .paradis-resource-monitor-trigger | z-index: 2500": 1,
-		"hex-color | .paradis-resource-monitor-panel .prm-share-bar-fill.elevated | background: #f59e0b": 1,
-		"hex-color | .paradis-resource-monitor-panel .prm-share-bar-fill.high | background: #ef4444": 1,
-		"hex-color | .paradis-resource-monitor-panel .prm-severity-dot.elevated | background: #f59e0b": 1,
-		"hex-color | .paradis-resource-monitor-panel .prm-severity-dot.high | background: #ef4444": 1,
 		"focus | .monaco-workbench .paradis-resource-monitor-panel[tabindex= ]:focus, .monaco-workbench .paradis-resource-monitor-panel[tabindex= ]:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/resourceMonitor/electron-browser/media/paradisSystemUsageEditor.css": {
@@ -379,17 +316,11 @@
 	},
 	"src/vs/paradis/contrib/scheduledRuns/electron-browser/media/paradisScheduledRuns.css": {
 		"focus | .monaco-workbench .paradis-scheduled-runs:focus | ": 1,
-		"codicon-size | .monaco-workbench .paradis-scheduled-runs .psr-button .codicon | font-size: 13px": 1,
 		"focus | .monaco-workbench .paradis-scheduled-runs .psr-button:focus-visible, .monaco-workbench .paradis-scheduled-runs .psr-nav-item:focus-visible | ": 1,
 		"focus | .monaco-workbench .paradis-scheduled-runs .psr-input:focus, .monaco-workbench .paradis-scheduled-runs .psr-select:focus, .monaco-workbench .paradis-scheduled-runs .psr-textarea:focus | ": 1
 	},
 	"src/vs/paradis/contrib/serviceStatus/electron-browser/media/paradisServiceStatus.css": {
 		"z-index | .paradis-service-status-trigger | z-index: 2500": 1,
-		"hex-color | .paradis-service-status-dot.ok | background: #2ea043": 1,
-		"hex-color | .paradis-service-status-dot.minor | background: #f0b429": 1,
-		"hex-color | .paradis-service-status-dot.major | background: #ef4444": 1,
-		"hex-color | .paradis-service-status-dot.maintenance | background: #58a6ff": 1,
-		"hex-color | .paradis-service-status-dot.unknown | background: #8b8b8b": 1,
 		"focus | .monaco-workbench .paradis-service-status-popover[tabindex= ]:focus, .monaco-workbench .paradis-service-status-popover[tabindex= ]:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/sessionResume/electron-browser/media/paradisSessionResume.css": {
@@ -410,7 +341,6 @@
 	},
 	"src/vs/paradis/contrib/skillsManager/electron-browser/media/paradisSkills.css": {
 		"focus | .monaco-workbench .paradis-skills:focus | ": 1,
-		"codicon-size | .monaco-workbench .paradis-skills .psk-button .codicon | font-size: 13px": 1,
 		"focus | .monaco-workbench .paradis-skills .psk-button:focus-visible, .monaco-workbench .paradis-skills .psk-nav-item:focus-visible | ": 1,
 		"focus | .monaco-workbench .paradis-skills .psk-row:focus-visible | ": 1,
 		"focus | .monaco-workbench .paradis-skills .psk-select:focus | ": 1
@@ -421,7 +351,6 @@
 	},
 	"src/vs/paradis/contrib/tabLauncher/electron-browser/media/paradisTabLauncher.css": {
 		"focus | .monaco-workbench .paradis-tab-launcher-search:focus-within | ": 1,
-		"codicon-size | .monaco-workbench .paradis-tab-launcher-search .codicon | font-size: 14px": 1,
 		"focus | .monaco-workbench .paradis-tab-launcher-search input[type= ]:focus | ": 1,
 		"focus | .monaco-workbench .paradis-tab-launcher-row:hover, .monaco-workbench .paradis-tab-launcher-row:focus-visible, .monaco-workbench .paradis-tab-launcher-row:focus | ": 1,
 		"hex-color | .monaco-workbench .paradis-tab-launcher-icon.claude | color: #D97757": 1,
@@ -459,9 +388,6 @@
 		"z-index | .monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner | z-index: 35": 1,
 		"focus | .monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-close:focus-visible | ": 1
 	},
-	"src/vs/paradis/contrib/terminalTabStatus/browser/media/paradisTerminalTabStatus.css": {
-		"hex-color | .monaco-workbench.file-icons-enabled .monaco-icon-label.terminal-tab.paradis-terminal-tab-waiting[class*= ]::before | color: var(--vscode-charts-red, #ef4444) !important": 1
-	},
 	"src/vs/paradis/contrib/themeColorEditor/browser/media/paradisThemeColorEditor.css": {
 		"focus | .paradis-tce-tab:focus-visible, .paradis-tce-chip:focus-visible, .paradis-tce-item:focus-visible | ": 1,
 		"focus | .paradis-tce-input:focus | ": 1,
@@ -470,23 +396,15 @@
 		"hex-color | .paradis-tce-picker-sv-handle | border: 2px solid #fff": 1,
 		"hex-color | .paradis-tce-picker-hue | background: linear-gradient(to bottom, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)": 1,
 		"hex-color | .paradis-tce-picker-strip-handle | border: 1px solid #fff": 1,
-		"focus | .paradis-tce-picker-sv:focus-visible, .paradis-tce-picker-strip:focus-visible | ": 1,
-		"hex-color | .paradis-tce-screen-banner | background: var(--vscode-editorWarning-foreground, #bf8803)": 1,
-		"hex-color | .paradis-tce-screen-banner | color: var(--vscode-editor-background, #1e1e1e)": 1,
-		"hex-color | .paradis-tce-screen-highlight | outline: 2px solid var(--vscode-editorWarning-foreground, #bf8803)": 1,
-		"hex-color | .paradis-tce-screen-panel | background: var(--vscode-editorHoverWidget-background, #252526)": 1,
-		"hex-color | .paradis-tce-screen-panel | color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground, #cccccc))": 1
+		"focus | .paradis-tce-picker-sv:focus-visible, .paradis-tce-picker-strip:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/unfocusedDimming/electron-browser/media/paradisUnfocusedDimming.css": {
 		"focus | .monaco-workbench[data-paradis-window-inactive] .pane-body.integrated-terminal:not(:focus-within) .tabs-container, .monaco-workbench[data-paradis-window-inactive] .pane-body.integrated-terminal .terminal-wrapper:not(:focus-within), .monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .monaco-editor, .monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .breadcrumbs-below-tabs, .monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .terminal-wrapper, .monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .settings-editor, .monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .keybindings-editor, .monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .monaco-editor-pane-placeholder, .monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .gettingStartedContainer | ": 1
 	},
 	"src/vs/paradis/contrib/updateTerminals/electron-browser/media/paradisUpdateTerminals.css": {
-		"hex-color | .monaco-workbench .para-ut-button.danger | background: var(--vscode-statusBarItem-errorBackground, #cf222e)": 1,
-		"hex-color | .monaco-workbench .para-ut-button.danger | color: var(--vscode-statusBarItem-errorForeground, #ffffff)": 1,
 		"focus | .monaco-workbench .para-ut-button:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/usageDashboard/electron-browser/media/paradisUsageDashboard.css": {
-		"codicon-size | .paradis-hub .pud-refresh .codicon | font-size: 13px": 1,
 		"focus | .paradis-usage-area .pud-input:focus | ": 1,
 		"focus | .paradis-usage-area .pud-select:focus | ": 1
 	},
@@ -494,17 +412,10 @@
 		"hex-color | .monaco-workbench.paradis-transparent .part.statusbar | background-color: color-mix(in srgb, var(--paradis-statusbar-bg, var(--vscode-statusBar-background, var(--vscode-editor-background))) 44%, #727290) !important": 1
 	},
 	"src/vs/paradis/contrib/workspaceSwitch/browser/media/paradisWorkspaceSwitch.css": {
-		"hex-color | .paradis-workspaces-list .paradis-status-working | color: var(--vscode-charts-yellow, #cca700)": 1,
-		"hex-color | .paradis-workspaces-list .paradis-status-review | color: var(--vscode-charts-green, #22c55e)": 1,
-		"hex-color | .paradis-workspaces-list .paradis-status-permission | color: var(--vscode-charts-red, #ef4444)": 1,
-		"hex-color | .paradis-workspaces-list .paradis-workspace-remote | color: var(--vscode-textLink-foreground, #09afd9)": 1,
-		"hex-color | .monaco-workbench .paradis-workspaces-list .paradis-workspace-remote.codicon | color: var(--vscode-textLink-foreground, #09afd9)": 1,
 		"hex-color | .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-open | --paradis-pr-color: #3fb950": 1,
 		"hex-color | .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-draft | --paradis-pr-color: #8b949e": 1,
 		"hex-color | .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-merged | --paradis-pr-color: #a371f7": 1,
 		"hex-color | .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-closed | --paradis-pr-color: #f85149": 1,
-		"hex-color | .paradis-workspaces-list .paradis-worktree-diff-added:not(:empty) | color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043)": 1,
-		"hex-color | .paradis-workspaces-list .paradis-worktree-diff-removed:not(:empty) | color: var(--vscode-gitDecoration-deletedResourceForeground, #e5534b)": 1,
 		"focus | .paradis-space-notes-header:focus-visible | ": 1,
 		"focus | .monaco-workbench .paradis-space-notes-task .paradis-space-notes-check:focus-visible | ": 1,
 		"focus | .paradis-space-notes-add:hover, .paradis-space-notes-add:focus-within | ": 1,
@@ -522,14 +433,11 @@
 		"hex-color | .monaco-menu .paradis-color-purple::before | background-color: #a855f7": 1,
 		"hex-color | .monaco-menu .paradis-color-pink::before | background-color: #ec4899": 1,
 		"hex-color | .monaco-menu .paradis-color-slate::before | background-color: #64748b": 1,
-		"focus | .paradis-workspaces-nav-row:focus-visible, .paradis-workspaces-heading-button:focus-visible | ": 1,
-		"hex-color | .paradis-workspaces-heading-bell.attention .codicon, .paradis-workspaces-heading-bell.attention .paradis-workspaces-heading-bell-count | color: var(--vscode-charts-red, #ef4444)": 1
+		"focus | .paradis-workspaces-nav-row:focus-visible, .paradis-workspaces-heading-button:focus-visible | ": 1
 	},
 	"src/vs/paradis/contrib/workspaceSwitch/electron-browser/media/paradisCreateWorktreeDialog.css": {
 		"focus | .paradis-create-worktree-dialog .pcw-input:focus, .paradis-create-worktree-dialog .pcw-prompt:focus, .paradis-create-worktree-dialog .pcw-select:focus | ": 1,
-		"hex-color | .paradis-create-worktree-dialog .pcw-seg-btn.active.pcw-seg-danger | background: var(--vscode-inputValidation-errorBorder, #8e3d3d)": 1,
 		"focus | .paradis-create-worktree-dialog.pcw-d .pcw-d-input:focus, .paradis-create-worktree-dialog.pcw-d .pcw-d-area:focus | ": 1,
-		"codicon-size | .paradis-create-worktree-dialog.pcw-d .pcw-d-agent-icon .codicon | font-size: 13px": 1,
 		"focus | .paradis-create-worktree-dialog.pcw-d .pcw-d-sub-select:focus | ": 1,
 		"focus | .paradis-create-worktree-dialog.pcw-d .pcw-d-adv-select:focus | ": 1
 	},
