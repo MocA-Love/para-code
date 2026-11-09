@@ -197,3 +197,61 @@
 	flex-direction: column;
 	overflow: hidden;
 }
+
+/* ---------- narrow window (UI kit, Q600) ---------- */
+
+/* Below 760px the 212px nav would leave the body a column of a few characters: the area switch takes its own line,
+	and the nav becomes a strip above the body that scrolls sideways. Only the layout changes; the parts stay. */
+@media (max-width: 760px) {
+	.paradis-hub .phub-header {
+		flex-wrap: wrap;
+		row-gap: var(--vscode-spacing-size80);
+		padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	}
+
+	.paradis-hub .phub-header h2 {
+		display: none;
+	}
+
+	.paradis-hub .phub-areas {
+		order: 3;
+		flex: 1 1 100%;
+		min-width: 0;
+		overflow-x: auto;
+		scrollbar-width: none;
+	}
+
+	.paradis-hub .phub-areas button {
+		flex: none;
+		white-space: nowrap;
+	}
+
+	.paradis-hub .phub-body {
+		flex-direction: column;
+	}
+
+	.paradis-hub .phub-nav {
+		display: flex;
+		align-items: center;
+		gap: var(--vscode-spacing-size40);
+		width: auto;
+		padding: var(--vscode-spacing-size60);
+		overflow-x: auto;
+		overflow-y: hidden;
+		border-right: none;
+		border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+		scrollbar-width: thin;
+	}
+
+	.paradis-hub .phub-nav-caption {
+		display: none;
+	}
+
+	.paradis-hub .phub-nav-item {
+		flex: none;
+	}
+
+	.paradis-hub .phub-nav-label {
+		overflow: visible;
+	}
+}

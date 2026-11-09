@@ -1,0 +1,65 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The text field of Para Code's UI kit (stage 2, Q600, paradisInputField.ts): a frame 32px high (28px small) on the
+	sunken surface with the input line, strong under the pointer. Upstream's InputBox sits inside without colors of its
+	own; the gray focus ring is paradisFocusRing.css (paradis-focus-subtle-within), never a border color change.
+*/
+
+.monaco-workbench .paradis-field {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	height: var(--paradis-height-lg);
+	padding: 0 var(--vscode-spacing-size100);
+	background: var(--vscode-paradis-sunken);
+	color: var(--vscode-paradis-textStrong);
+	border: 1px solid var(--vscode-paradis-line);
+	border-radius: var(--paradis-radius-control);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.monaco-workbench .paradis-field.paradis-field-small {
+	height: var(--paradis-height-md);
+}
+
+.monaco-workbench .paradis-field:not(.disabled):hover {
+	border-color: var(--vscode-paradis-lineStrong);
+}
+
+.monaco-workbench .paradis-field.disabled {
+	opacity: 0.45;
+}
+
+.monaco-workbench .paradis-field > .codicon {
+	flex: none;
+	color: var(--vscode-paradis-textFaint);
+}
+
+/* Upstream's InputBox inside: it fills the frame, its own 1px transparent border stays (written inline). */
+.monaco-workbench .paradis-field > .monaco-inputbox {
+	flex: 1;
+	min-width: 0;
+	height: 100%;
+	border-radius: 0;
+}
+
+.monaco-workbench .paradis-field > .monaco-inputbox > .ibwrapper {
+	height: 100%;
+}
+
+.monaco-workbench .paradis-field > .monaco-inputbox > .ibwrapper > .input {
+	padding: 0;
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.monaco-workbench .paradis-field > .monaco-inputbox > .ibwrapper > .input::placeholder {
+	color: var(--vscode-paradis-textFaint);
+}

@@ -14,6 +14,8 @@ import { Codicon } from '../../../base/common/codicons.js';
 import { renderParadisActionButton } from '../../browser/paradisActionButton.js';
 import { createParadisChip, createParadisStatusDot, ParadisCountBadge, paradisCountLabel } from '../../browser/paradisBadges.js';
 import { ParadisButton } from '../../browser/paradisButton.js';
+import { ParadisCheck } from '../../browser/paradisCheck.js';
+import { ParadisInputField } from '../../browser/paradisInputField.js';
 import { ParadisModalSize, paradisModalClasses } from '../../browser/paradisModal.js';
 import { ParadisSwitch } from '../../browser/paradisSwitch.js';
 
@@ -23,6 +25,8 @@ const STYLESHEETS: AppResourcePath[] = [
 	'vs/paradis/browser/media/paradisButton.css',
 	'vs/paradis/browser/media/paradisBadges.css',
 	'vs/paradis/browser/media/paradisSwitch.css',
+	'vs/paradis/browser/media/paradisInputField.css',
+	'vs/paradis/browser/media/paradisCheck.css',
 	'vs/paradis/browser/media/paradisModal.css',
 ];
 
@@ -94,7 +98,7 @@ suite('Paradis UI parts', () => {
 		});
 	});
 
-	test('switch: 36x20 with a 16px knob that moves to the right when on; dimmed when disabled', () => {
+	test('switch: 32x18 with a 14px knob that moves to the right when on; dimmed when disabled', () => {
 		const off = store.add(new ParadisSwitch(workbench, { checked: false }));
 		const on = store.add(new ParadisSwitch(workbench, { checked: true, disabled: true }));
 		const measure = (toggle: ParadisSwitch) => {
@@ -103,8 +107,8 @@ suite('Paradis UI parts', () => {
 			return { width: box.width, height: box.height, knob: `${knob.width} ${knob.height}`, knobLeft: knob.left, opacity: mainWindow.getComputedStyle(toggle.element).opacity };
 		};
 		assert.deepStrictEqual({ off: measure(off), on: measure(on) }, {
-			off: { width: 36, height: 20, knob: '16px 16px', knobLeft: '1px', opacity: '1' },
-			on: { width: 36, height: 20, knob: '16px 16px', knobLeft: '17px', opacity: '0.4' },
+			off: { width: 32, height: 18, knob: '14px 14px', knobLeft: '1px', opacity: '1' },
+			on: { width: 32, height: 18, knob: '14px 14px', knobLeft: '15px', opacity: '0.4' },
 		});
 	});
 
@@ -124,6 +128,82 @@ suite('Paradis UI parts', () => {
 		assert.deepStrictEqual({ off: colors(off), on: colors(on) }, {
 			off: { frame: 'rgb(111, 195, 223)', knob: 'rgb(255, 255, 255)' },
 			on: { frame: 'rgb(243, 133, 24)', knob: 'rgb(243, 133, 24)' },
+		});
+	});
+
+	test('input field: the upstream InputBox inside a 32px frame (28px small), no inline colors, a gray focus frame', () => {
+		const field = store.add(new ParadisInputField(workbench, { ariaLabel: '検索', placeholder: '設定を検索', icon: Codicon.search, value: 'abc' }));
+		const small = store.add(new ParadisInputField(workbench, { ariaLabel: 'パス', small: true }));
+		const changes: string[] = [];
+		store.add(field.onDidChange(value => changes.push(value)));
+		field.inputElement.value = 'abcd';
+		field.inputElement.dispatchEvent(new Event('input'));
+		small.enabled = false;
+		const inputBox = field.element.querySelector<HTMLElement>('.monaco-inputbox')!;
+		assert.deepStrictEqual({
+			className: field.element.className,
+			icon: field.element.firstElementChild?.getAttribute('aria-hidden'),
+			ariaLabel: field.inputElement.getAttribute('aria-label'),
+			placeholder: field.inputElement.placeholder,
+			value: field.value,
+			changes,
+			inlineColors: inputBox.style.backgroundColor + inputBox.style.color,
+			heights: [field.element.getBoundingClientRect().height, small.element.getBoundingClientRect().height],
+			radius: mainWindow.getComputedStyle(field.element).borderTopLeftRadius,
+			smallDisabled: [small.enabled, small.inputElement.disabled, small.element.classList.contains('disabled')],
+		}, {
+			className: 'paradis-field paradis-focus-subtle-within',
+			icon: 'true',
+			ariaLabel: '検索',
+			placeholder: '設定を検索',
+			value: 'abcd',
+			changes: ['abcd'],
+			inlineColors: '',
+			heights: [32, 28],
+			radius: '6px',
+			smallDisabled: [false, true, true],
+		});
+	});
+
+	test('check: the upstream Checkbox (role, keys, aria) as a 16px box; the label toggles it too; no inline colors', () => {
+		const check = store.add(new ParadisCheck(workbench, { label: 'メニューに出す', checked: false }));
+		const changes: boolean[] = [];
+		store.add(check.onDidChange(checked => changes.push(checked)));
+		const box = check.focusableElement;
+		const snapshot = () => ({ checked: check.checked, aria: box.getAttribute('aria-checked') });
+		box.click();
+		const afterBox = snapshot();
+		box.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', keyCode: 32 }));
+		const afterSpace = snapshot();
+		check.labelElement.click();
+		const afterLabel = snapshot();
+		check.checked = false;
+		const afterSetter = snapshot();
+		check.enabled = false;
+		check.labelElement.click();
+		const whileDisabled = snapshot();
+		const rect = box.getBoundingClientRect();
+		assert.deepStrictEqual({
+			role: box.getAttribute('role'),
+			label: box.getAttribute('aria-label'),
+			tabIndex: box.tabIndex,
+			focusRing: box.classList.contains('paradis-focus-ring'),
+			size: [rect.width, rect.height],
+			inlineColors: box.style.backgroundColor + box.style.color + box.style.borderColor,
+			afterBox, afterSpace, afterLabel, afterSetter, whileDisabled, changes,
+		}, {
+			role: 'checkbox',
+			label: 'メニューに出す',
+			tabIndex: -1,
+			focusRing: true,
+			size: [16, 16],
+			inlineColors: '',
+			afterBox: { checked: true, aria: 'true' },
+			afterSpace: { checked: false, aria: 'false' },
+			afterLabel: { checked: true, aria: 'true' },
+			afterSetter: { checked: false, aria: 'false' },
+			whileDisabled: { checked: false, aria: 'false' },
+			changes: [true, false, true],
 		});
 	});
 

@@ -16,6 +16,15 @@
 //
 // 一覧は本家のコンテキストビュー（2575）に出る。fork のモーダルはその下の段（paradisModal.ts の表）なので、
 // layer を渡さなくてもモーダルの上に出る。
+//
+// 包んでいる本家のファイル（upstream を取り込むときは、ここの差分の「キー・フォーカス・読み上げ」を読む）:
+//  - src/vs/base/browser/ui/selectBox/selectBox.ts（描いた一覧か OS の一覧かを選ぶ入口）
+//  - src/vs/base/browser/ui/selectBox/selectBoxCustom.ts（閉じた `<select>` に色を inline の style で書く。一覧の行の
+//    高さ 22 は仮想化の前提の定数なので変えない）
+//  - src/vs/base/browser/ui/selectBox/selectBoxNative.ts（同じく閉じた `<select>` に inline の色）
+// 閉じた状態の見た目は UI キットの段 2（Q600、paradisSelect.css）。本家は閉じた `<select>` の色（地・文字・枠）を
+// render のときに 1 度だけ inline の style で書き、それが CSS（ポインタを重ねたときの枠など）に勝つので、render の直後に
+// 外す。色そのものは渡しておく（一覧の枠は「閉じた側の地と枠がある」ときだけ本家が描くため）。
 
 import './media/paradisSelect.css';
 import { $, append } from '../../base/browser/dom.js';
@@ -25,7 +34,20 @@ import { Disposable } from '../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../platform/contextview/browser/contextView.js';
 import { defaultSelectBoxStyles } from '../../platform/theme/browser/defaultStyles.js';
+import { asCssVariable } from '../../platform/theme/common/colorUtils.js';
 import { hasNativeContextMenu } from '../../platform/window/common/window.js';
+
+/**
+ * キットの色の役目。閉じた `<select>` の分は render の後で inline から外し、paradisSelect.css が描く。
+ * 一覧の地はキットのポップアップの面、枠は閉じた側と同じ入力欄の線（本家が一覧の `<style>` に書く）。
+ */
+const PARADIS_SELECT_BOX_STYLES = {
+	...defaultSelectBoxStyles,
+	selectBackground: asCssVariable('paradis.sunken'),
+	selectForeground: asCssVariable('paradis.textStrong'),
+	selectBorder: asCssVariable('paradis.line'),
+	selectListBackground: asCssVariable('paradis.popup'),
+};
 
 /** プルダウンの 1 項目。 */
 export interface IParadisSelectOption {
@@ -67,13 +89,19 @@ export class ParadisSelect extends Disposable {
 		this.shown = resolved.shown;
 		this.current = resolved.current;
 		this.element = append(parent, $('span.paradis-select'));
-		this.selectBox = this._register(new SelectBox(this.toItems(this.shown), this.indexOf(this.current), contextViewService, defaultSelectBoxStyles, {
+		this.selectBox = this._register(new SelectBox(this.toItems(this.shown), this.indexOf(this.current), contextViewService, PARADIS_SELECT_BOX_STYLES, {
 			useCustomDrawn: !hasNativeContextMenu(configurationService),
 			ariaLabel: selectOptions.ariaLabel,
 		}));
 		this.selectBox.render(this.element);
 		// SelectBox は render で入れ物の直下に `<select>` を置く
 		this.nativeSelect = Array.from(this.element.children).find((child): child is HTMLSelectElement => child.tagName === 'SELECT');
+		// 閉じた `<select>` の inline の色を外し、paradisSelect.css に任せる（本家は render のときにしか書かない）
+		this.nativeSelect?.style.removeProperty('background-color');
+		this.nativeSelect?.style.removeProperty('color');
+		this.nativeSelect?.style.removeProperty('border-color');
+		// キーボードのフォーカスはキットの青い枠（paradisFocusRing.css）。マウスで押したときは出さない
+		this.nativeSelect?.classList.add('paradis-focus-ring');
 		if (selectOptions.className) {
 			this.nativeSelect?.classList.add(...selectOptions.className.split(' ').filter(name => name.length > 0));
 		}
