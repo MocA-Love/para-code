@@ -8,6 +8,7 @@
 import * as assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '../../../../common/paradisAgentLogoPaths.js';
 import { IParadisCursorOverlayTuning, PARADIS_CURSOR_OVERLAY_MISSING, PARADIS_CURSOR_OVERLAY_TUNING, ParadisCursorOverlayOwnedCommand, paradisBuildCursorOverlayCall, paradisBuildCursorOverlayScript } from '../../common/paradisCursorOverlay.js';
 
 /** The generated script keeps its state on the window under this key (the isolated world in the app). */
@@ -21,6 +22,12 @@ interface IPageState {
 	readonly mv: HTMLElement | null;
 	readonly lf: HTMLElement | null;
 	readonly mk: HTMLElement | null;
+	/** The name tag, the CLI mark at its start, and the waiting ring inside it. */
+	readonly lb: HTMLElement | null;
+	readonly lm: HTMLElement | null;
+	readonly rg: HTMLElement | null;
+	/** The arrow (rotates with the motion). */
+	readonly gl: HTMLElement | null;
 	readonly t: string;
 	readonly x: number | null;
 	readonly y: number | null;
@@ -418,5 +425,52 @@ suite('Paradis Cursor Overlay page script', () => {
 		const names = Object.keys(cursors).sort().map(id => [id, cursors[id].t, cursors[id].h?.isConnected]);
 		run({ kind: 'remove' });
 		assert.deepStrictEqual({ names, after: pageGlobal() }, { names: [['aaaaaaaa', 'Claude', true], ['bbbbbbbb', 'Codex', true]], after: undefined });
+	});
+
+	test('the name tag shows the Claude and Codex logos of the usage panel, keeps the letter for other CLIs, and nothing without a mark', () => {
+		const owners = [['aaaaaaaa', 'C'], ['bbbbbbbb', 'X'], ['cccccccc', 'O'], ['dddddddd', '']];
+		for (const [owner, mark] of owners) {
+			run({ kind: 'move', x: 10, y: 10, label: 'Agent', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }], owner, color: '#5b8cff', mark });
+		}
+		const cursors = pageGlobal()!.cs;
+		const marks = owners.map(([owner]) => {
+			const lm = cursors[owner].lm!;
+			return { logo: lm.querySelector('path')?.getAttribute('d') ?? null, text: lm.textContent, display: lm.style.display };
+		});
+		assert.deepStrictEqual(marks, [
+			{ logo: PARADIS_CLAUDE_LOGO_PATH, text: '', display: 'inline-flex' },
+			{ logo: PARADIS_CODEX_LOGO_PATH, text: '', display: 'inline-flex' },
+			{ logo: null, text: 'O', display: 'inline-flex' },
+			{ logo: null, text: '', display: 'none' },
+		]);
+	});
+
+	test('waiting turns the ring inside the name tag after the mark without dimming the arrow, and the next input stops it', () => {
+		run({ kind: 'move', x: 40, y: 40, label: 'Claude', durationMs: 0, frames: [{ x: 40, y: 40, r: 0, o: 1 }], mark: 'C' });
+		run({ kind: 'status', label: 'Claude', status: 'waiting', text: 'Waiting' });
+		const s = pageState()!;
+		const waiting = { inTag: s.rg?.parentElement === s.lb, after: s.rg?.previousElementSibling === s.lm, ring: s.rg?.style.display, arrow: s.gl ? mainWindow.getComputedStyle(s.gl).opacity : null };
+		run({ kind: 'move', x: 60, y: 40, label: 'Claude', durationMs: 0, frames: [{ x: 60, y: 40, r: 0, o: 1 }], mark: 'C' });
+		assert.deepStrictEqual({ waiting, done: s.rg?.style.display }, { waiting: { inTag: true, after: true, ring: 'inline-block', arrow: '1' }, done: 'none' });
+	});
+
+	test('near the right and bottom edges the name tag moves to the inner side of the tip, and comes back away from them', () => {
+		const width = Math.min(mainWindow.innerWidth, mainWindow.document.documentElement.clientWidth);
+		const height = Math.min(mainWindow.innerHeight, mainWindow.document.documentElement.clientHeight);
+		const at = (x: number, y: number) => {
+			run({ kind: 'move', x, y, label: 'Claude', durationMs: 0, frames: [{ x, y, r: 0, o: 1 }], mark: 'C' });
+			const lb = pageState()!.lb!;
+			return [lb.style.left, lb.style.right, lb.style.top, lb.style.bottom];
+		};
+		const corner = at(width - 5, height - 5);
+		const right = at(width - 5, 40);
+		const bottom = at(40, height - 5);
+		const middle = at(40, 40);
+		assert.deepStrictEqual({ corner, right, bottom, middle }, {
+			corner: ['auto', '10px', 'auto', '6px'],
+			right: ['auto', '10px', '22px', 'auto'],
+			bottom: ['18px', 'auto', 'auto', '6px'],
+			middle: ['18px', 'auto', '22px', 'auto'],
+		});
 	});
 });
