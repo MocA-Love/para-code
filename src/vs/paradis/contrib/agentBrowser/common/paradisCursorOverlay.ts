@@ -31,6 +31,7 @@
 // electron-main側から明示的に `remove` を送る。
 
 import type { IParadisCursorKeyframe } from './paradisCursorMotion.js';
+import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '../../../common/paradisAgentLogoPaths.js';
 
 /** カーソル演出の見た目・時間まわりの調整値。 */
 export interface IParadisCursorOverlayTuning {
@@ -356,7 +357,7 @@ export interface IParadisCursorOwner {
 	readonly id: string;
 	/** 名札の名前（LLM が `set_cursor_label` で決めたもの、無ければ「Claude」「Codex 2」など）。 */
 	readonly name: string;
-	/** 名前の左に Para Code が描く CLI の印（C・X）。分からなければ空。 */
+	/** 名前の左に Para Code が描く CLI の印（C・X・O）。名札では C・X を Claude・Codex のロゴで描く。分からなければ空。 */
 	readonly mark: string;
 	/** カーソルと名札の色（#rrggbb）。 */
 	readonly color: string;
@@ -503,6 +504,12 @@ const DANGER_COLOR = '#cf222e';
  * cursor-motion の矢印（Cua Driver のカーソル、./cursorMotion/README.md と同じ取得元の `render.ts` の
  * `CURSOR_PATH`）。128 の正方形の上で、先端（クリックの点）が (55, 30)。
  */
+/**
+ * 名札に出す CLI のマーク（持ち主の印 → 使用量の表示と同じロゴのパス、viewBox 0 0 600 600）。
+ * ここに無い印（OpenCode の O など）は今までどおり文字の丸で出す。
+ */
+const LOGO_PATHS: Readonly<Record<string, string>> = { C: PARADIS_CLAUDE_LOGO_PATH, X: PARADIS_CODEX_LOGO_PATH };
+
 const CURSOR_PATH = 'M55 30 C48 28 42 33 43 41 C43 41 64 98 64 98 C67 106 73 106 77 99 C77 99 86 79 86 79 C88 75 91 72 95 70 C95 70 108 63 108 63 C115 59 114 53 107 50 C107 50 55 30 55 30 Z';
 /** 画面での大きさ（px、Cua Driver の表示の大きさ）。 */
 const CURSOR_SIZE = 42;
@@ -630,6 +637,8 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 		// 色は持ち主ごと（main が決める）。形の違う値は使わずアクセントに戻す
 		var A = typeof c.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(c.color) ? c.color : ${JSON.stringify(ACCENT_COLOR)};
 		var SVGNS = 'http://www.w3.org/2000/svg';
+		/** 名札の CLI のマーク（印 → ロゴのパス）。 */
+		var LOGOS = ${JSON.stringify(LOGO_PATHS)};
 		var doc = document;
 		if (!doc) { return 0; }
 		var calm = false;
@@ -661,7 +670,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			var id = typeof c.owner === 'string' && c.owner.length > 0 ? c.owner : '_';
 			var s = g.cs[id];
 			if (!s && create) {
-				s = g.cs[id] = { g: g, id: id, color: A, h: null, lf: null, lft: 0, alf: null, watch: false, wat: 0, since: 0, wend: 0, ct: '', sxt: '', sw: null, bars: null, ll: false, sr: null, cq: null, cqt: 0, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lm: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', mark: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, awo: null, atr: null, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
+				s = g.cs[id] = { g: g, id: id, color: A, h: null, lf: null, lft: 0, alf: null, watch: false, wat: 0, since: 0, wend: 0, ct: '', sxt: '', sw: null, bars: null, ll: false, lp: '', sr: null, cq: null, cqt: 0, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lm: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', mark: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, atr: null, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
 			}
 			return s || null;
 		}
@@ -1035,7 +1044,36 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 		function labelLeft(s, on) {
 			if (!s.lb || !!s.ll === !!on) { return; }
 			s.ll = !!on;
-			sx(s.lb, on ? { left: 'auto', right: '16px', top: '12px' } : { left: '18px', right: 'auto', top: '22px' });
+			fitLabel(s);
+		}
+		/**
+		 * 名札の置き場所。擬似スクロールバーの横（'ll'）を優先し、それ以外は画面の右端・下端で切れないよう
+		 * 先端の左・上へ逃がす（q.html Q598 の 2）。style は置き場所が変わったときだけ書く。
+		 */
+		function fitLabel(s) {
+			if (!s.lb) { return; }
+			var key = 'll';
+			if (!s.ll) {
+				key = '';
+				var w = s.lb.offsetWidth, hh = s.lb.offsetHeight;
+				// 撮影のために隠している間などは測れないので、前の置き場所のままにする（スクロールバーの横からは既定へ戻す）
+				if (!(w > 0) || s.x === null) {
+					if (s.lp !== 'll') { return; }
+				} else {
+					var de = doc.documentElement;
+					var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+					if (de && de.clientWidth > 0) { vw = Math.min(vw, de.clientWidth); }
+					if (de && de.clientHeight > 0) { vh = Math.min(vh, de.clientHeight); }
+					if (s.x + 18 + w > vw - 2 && s.x - 10 - w >= 0) { key += 'x'; }
+					if (s.y + 22 + hh > vh - 2) { key += 'y'; }
+				}
+			}
+			if (s.lp === key) { return; }
+			s.lp = key;
+			var fx = key.indexOf('x') >= 0, fy = key.indexOf('y') >= 0;
+			sx(s.lb, key === 'll'
+				? { left: 'auto', right: '16px', top: '12px', bottom: 'auto' }
+				: { left: fx ? 'auto' : '18px', right: fx ? '10px' : 'auto', top: fy ? 'auto' : '22px', bottom: fy ? '6px' : 'auto' });
 		}
 		/** 量の大きい方の向き。 */
 		function arrowOf(dx, dy) {
@@ -1309,12 +1347,6 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 				position: 'absolute', left: '-18px', top: '-18px', width: '36px', height: '36px',
 				boxSizing: 'border-box', borderRadius: '50%', border: '2px solid ' + A, opacity: '0'
 			});
-			// 待機中の輪（回る）
-			var rg = doc.createElement('div');
-			sx(rg, {
-				position: 'absolute', left: '-15px', top: '-15px', width: '30px', height: '30px',
-				boxSizing: 'border-box', borderRadius: '50%', border: '2px solid ' + A, borderTopColor: 'transparent', opacity: '0'
-			});
 			// 矢印。先端（クリックの点）が 'gl' の原点に来るよう、cursor-motion の 128 の正方形をずらして置く。
 			var gl = doc.createElement('div');
 			sx(gl, { position: 'absolute', left: '0px', top: '0px', width: '0px', height: '0px' });
@@ -1341,22 +1373,27 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 				padding: '2px 7px', borderRadius: '5px', whiteSpace: 'nowrap',
 				boxShadow: '0 2px 6px rgba(0,0,0,0.25)'
 			});
-			// CLI の印（C・X）。Para Code が描き、名前を決める LLM は変えられない
+			// CLI の印。Claude・Codex はロゴ、ほかは文字の丸（setLabel）。Para Code が描き、名前を決める LLM は変えられない
 			var lm = doc.createElement('span');
-			sx(lm, { display: 'none', minWidth: '13px', height: '13px', borderRadius: '50%', background: 'rgba(255,255,255,0.28)', font: '700 9px/13px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', textAlign: 'center' });
+			sx(lm, { display: 'none', flex: 'none', alignItems: 'center', justifyContent: 'center', minWidth: '13px', height: '13px', borderRadius: '50%', background: 'rgba(255,255,255,0.28)', font: '700 9px/13px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', textAlign: 'center' });
+			// 待機中の輪（q.html Q598 の A）。先端から離して名札の中で回す。動きを減らす設定では 3/4 の輪のまま止める
+			var rg = doc.createElement('span');
+			sx(rg, { display: 'none', flex: 'none', width: '9px', height: '9px', boxSizing: 'border-box', borderRadius: '50%', border: '1.5px solid rgba(255,255,255,0.95)', borderTopColor: 'transparent' });
 			var lt = doc.createElement('span');
 			var kb = doc.createElement('span');
 			sx(kb, {
 				display: 'none', padding: '0px 5px', borderRadius: '3px', background: 'rgba(255,255,255,0.22)',
 				border: '1px solid rgba(255,255,255,0.45)', font: '600 10px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace'
 			});
-			lb.appendChild(lm); lb.appendChild(lt); lb.appendChild(kb);
-			mv.appendChild(rp); mv.appendChild(rg); mv.appendChild(gl); mv.appendChild(mk); mv.appendChild(lb);
+			lb.appendChild(lm); lb.appendChild(rg); lb.appendChild(lt); lb.appendChild(kb);
+			mv.appendChild(rp); mv.appendChild(gl); mv.appendChild(mk); mv.appendChild(lb);
 			sr.appendChild(lf); sr.appendChild(fr); sr.appendChild(tr); sr.appendChild(mv);
 			// 撮影のために隠している最中に作ったなら、作った時から隠す
 			if (s.g.hid) { sx(h, { display: 'none' }); }
 			s.color = A; s.mark = ''; s.t = '';
-			s.h = h; s.sr = sr; s.bars = []; s.ll = false; s.lm = lm; s.mv = mv; s.gl = gl; s.sq = sq; s.rp = rp; s.rg = rg; s.mk = mk; s.lb = lb; s.lt = lt; s.kb = kb; s.fr = fr; s.tr = tr; s.tl2 = tl; s.lf = lf;
+			s.h = h; s.sr = sr; s.bars = []; s.ll = false; s.lp = ''; s.lm = lm; s.mv = mv; s.gl = gl; s.sq = sq; s.rp = rp; s.rg = rg; s.mk = mk; s.lb = lb; s.lt = lt; s.kb = kb; s.fr = fr; s.tr = tr; s.tl2 = tl; s.lf = lf;
+			// 待機中に作り直した（持ち主の色が変わった）なら、新しい名札でも輪を回す
+			if (s.wt) { s.wt = false; setWaiting(s, true); }
 		}
 		function anim(el, frames, opts) { try { return el.animate(frames, opts); } catch (e) { return null; } }
 		function stop(a) { if (a) { try { a.cancel(); } catch (e) { } } }
@@ -1438,6 +1475,7 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 				} catch (e) { }
 			}
 			s.x = last.x; s.y = last.y; s.r = last.r;
+			fitLabel(s);
 			stop(s.am); stop(s.ag);
 			s.am = anim(s.mv, fs.map(function (f) { return { transform: 'translate3d(' + f.x + 'px,' + f.y + 'px,0)', offset: f.o }; }), { duration: d, fill: 'forwards', easing: 'linear' });
 			s.ag = anim(s.gl, fs.map(function (f) { return { transform: 'rotate(' + f.r + 'deg)', offset: f.o }; }), { duration: d, fill: 'forwards', easing: 'linear' });
@@ -1454,11 +1492,27 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 		function render(s) {
 			if (!s.lt) { return; }
 			var text = s.st ? s.name + ' \\u00b7 ' + s.st : s.name;
-			if (s.t !== text) { s.t = text; s.lt.textContent = text; }
+			if (s.t !== text) { s.t = text; s.lt.textContent = text; fitLabel(s); }
 		}
 		function setLabel(s, label) {
 			var mk = typeof c.mark === 'string' ? c.mark.slice(0, 2) : '';
-			if (s.lm && s.mark !== mk) { s.mark = mk; s.lm.textContent = mk; sx(s.lm, { display: mk ? 'inline-block' : 'none' }); }
+			if (s.lm && s.mark !== mk) {
+				s.mark = mk;
+				s.lm.textContent = '';
+				var lp = Object.prototype.hasOwnProperty.call(LOGOS, mk) ? LOGOS[mk] : '';
+				if (lp) {
+					// 使用量の表示と同じロゴ（グリフだけ、地の丸なし）
+					var lg = sv('svg', { viewBox: '0 0 600 600', width: '11', height: '11', 'aria-hidden': 'true' });
+					sx(lg, { display: 'block' });
+					lg.appendChild(sv('path', { d: lp, fill: '#ffffff' }));
+					s.lm.appendChild(lg);
+					sx(s.lm, { display: 'inline-flex', minWidth: '0px', background: 'none' });
+				} else {
+					s.lm.textContent = mk;
+					sx(s.lm, { display: mk ? 'inline-flex' : 'none', minWidth: '13px', background: 'rgba(255,255,255,0.28)' });
+				}
+				fitLabel(s);
+			}
 			s.name = label; if (!s.st && s.sticky) { s.st = s.sticky; } render(s); }
 		/** 状態を出す。'ms' があればその後に消す（長く続く状態は次の状態まで残す）。 */
 		function setStatus(s, text, ms) {
@@ -1467,18 +1521,19 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			render(s);
 			if (ms > 0) { s.stt = setTimeout(function () { s.stt = 0; s.st = s.sticky || ''; render(s); }, ms); }
 		}
-		/** 待機中: カーソルを薄くして輪を回す。 */
+		/** 待機中: 名札の中で輪を回す（矢印は薄くしない。q.html Q598 の 3）。 */
 		function setWaiting(s, on) {
 			if (!!s.wt === !!on) { return; }
 			s.wt = !!on;
-			stop(s.aw); stop(s.awo); s.aw = null; s.awo = null;
+			stop(s.aw); s.aw = null;
+			if (!s.rg) { return; }
 			if (on) {
-				sx(s.rg, { opacity: '1' });
+				sx(s.rg, { display: 'inline-block' });
 				if (!calm) { s.aw = anim(s.rg, [{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }], { duration: 900, iterations: Infinity }); }
-				s.awo = anim(s.gl, [{ opacity: 0.5 }, { opacity: 0.5 }], { duration: 1, fill: 'forwards' });
 			} else {
-				sx(s.rg, { opacity: '0' });
+				sx(s.rg, { display: 'none' });
 			}
+			fitLabel(s);
 		}
 		/** 印（✕・矢印）を少し出す。 */
 		function mark(s, glyph, color) {
@@ -1492,7 +1547,8 @@ const PARADIS_CURSOR_OVERLAY_BODY = `function (c) {
 			if (s.kbt) { clearTimeout(s.kbt); s.kbt = 0; }
 			s.kb.textContent = key;
 			sx(s.kb, { display: '' });
-			s.kbt = setTimeout(function () { s.kbt = 0; sx(s.kb, { display: 'none' }); }, c.keyMs);
+			fitLabel(s);
+			s.kbt = setTimeout(function () { s.kbt = 0; sx(s.kb, { display: 'none' }); fitLabel(s); }, c.keyMs);
 		}
 		/** 入力欄の枠。打つのが止まったら消す。 */
 		function fieldFrame(s, r) {
