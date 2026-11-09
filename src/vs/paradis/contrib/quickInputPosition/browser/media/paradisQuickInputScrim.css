@@ -1,0 +1,28 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * The dimming layer under the centered quick input (paradisQuickInputScrim.ts, Q593). It also carries the fork's modal
+ * marker class, which puts it on the modal layer (paradisTokens.css); this rule is more specific and moves it up to its
+ * reserved layer, right under quick input and above the title bar popovers.
+ */
+.monaco-workbench .paradis-modal-backdrop.paradis-quick-input-scrim {
+	position: absolute;
+	inset: 0;
+	z-index: var(--paradis-z-scrim);
+	background: var(--vscode-paradis-scrim);
+	/* Electron keeps the title bar's drag region under any element unless it opts out, so a press there would move the
+		window instead of closing the palette. */
+	-webkit-app-region: no-drag;
+	animation: paradis-quick-input-scrim-in var(--paradis-motion-enter) var(--paradis-ease-enter);
+}
+
+@keyframes paradis-quick-input-scrim-in {
+	from {
+		opacity: 0;
+	}
+}

@@ -15,11 +15,16 @@ import { ILayoutService } from '../../../../../platform/layout/browser/layoutSer
 import { IQuickInput, IQuickInputService, QuickInputAlignment } from '../../../../../platform/quickinput/common/quickInput.js';
 import { InMemoryStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { PARADIS_QUICK_INPUT_CENTERED_STORAGE_KEY, ParadisQuickInputPosition } from '../../browser/paradisQuickInputPosition.js';
+import { ParadisQuickInputScrim } from '../../browser/paradisQuickInputScrim.js';
+import { mainWindow } from '../../../../../base/browser/window.js';
 
-/** upstream の QuickInputService のうち、位置の移し替えが使う所だけ。setAlignment は anchored のとき何もしない (upstream と同じ)。 */
+/** upstream の QuickInputService のうち、位置の移し替えと幕が使う所だけ。setAlignment は anchored のとき何もしない (upstream と同じ)。 */
 class TestQuickInputService {
 	private readonly showEmitter = new Emitter<void>();
 	readonly onShow = this.showEmitter.event;
+	private readonly hideEmitter = new Emitter<void>();
+	readonly onHide = this.hideEmitter.event;
+	cancelled = 0;
 	readonly alignment = observableValue<QuickInputAlignment>('alignment', 'top');
 	currentQuickInput: Partial<IQuickInput> | undefined;
 	readonly calls: string[] = [];
@@ -39,8 +44,19 @@ class TestQuickInputService {
 		this.showEmitter.fire();
 	}
 
+	fireHide(): void {
+		this.hideEmitter.fire();
+	}
+
+	async cancel(): Promise<void> {
+		this.cancelled++;
+		this.currentQuickInput = undefined;
+		this.hideEmitter.fire();
+	}
+
 	dispose(): void {
 		this.showEmitter.dispose();
+		this.hideEmitter.dispose();
 	}
 }
 
@@ -71,7 +87,7 @@ suite('ParadisQuickInputPosition', () => {
 			// 上 → 中央。2 回目に開いても呼ばない
 			fromTop: run(quickInput => {
 				quickInput.show({});
-				quickInput.show({}, 'top');
+				quickInput.show({});
 			}),
 			// 利用者が動かした位置は触らず、印だけ付ける
 			userMoved: run(quickInput => quickInput.show({}, 'custom')),
@@ -96,5 +112,63 @@ suite('ParadisQuickInputPosition', () => {
 			auxiliaryWindow: { calls: [], alignment: 'top', marked: false },
 			alreadyMoved: { calls: [], alignment: 'top', marked: true },
 		});
+	});
+});
+
+suite('ParadisQuickInputScrim', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('dims the window under a centered quick input only, and a press on it closes the quick input without reaching what is underneath', async () => {
+		const disposables = new DisposableStore();
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		try {
+			const quickInput = disposables.add(new TestQuickInputService());
+			disposables.add(new ParadisQuickInputScrim(quickInput as Partial<IQuickInputService> as IQuickInputService, { activeContainer: container } as Partial<ILayoutService> as ILayoutService));
+			const scrims = () => [...container.children].map(element => element.className);
+			const hide = () => {
+				quickInput.currentQuickInput = undefined;
+				quickInput.fireHide();
+			};
+
+			quickInput.show({});
+			const shown = scrims();
+			quickInput.show({ title: 'next' });
+			const replaced = scrims();
+			hide();
+			const hidden = scrims();
+			quickInput.show({ anchor: { x: 1, y: 1 } });
+			const anchored = scrims();
+			quickInput.show({ ignoreFocusOut: true });
+			const ignoreFocusOut = scrims();
+
+			// 押す → 閉じる。離すまで幕は残り、click は幕で止まる
+			quickInput.show({});
+			const scrim = container.firstElementChild as HTMLElement;
+			let clicksBelow = 0;
+			const onBodyClick = () => clicksBelow++;
+			mainWindow.document.body.addEventListener('click', onBodyClick);
+			scrim.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+			const whilePressed = { scrims: scrims(), cancelled: quickInput.cancelled };
+			scrim.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+			scrim.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+			await new Promise(resolve => setTimeout(resolve, 0));
+			mainWindow.document.body.removeEventListener('click', onBodyClick);
+
+			assert.deepStrictEqual({ shown, replaced, hidden, anchored, ignoreFocusOut, whilePressed, released: scrims(), clicksBelow }, {
+				shown: ['paradis-quick-input-scrim paradis-modal-backdrop'],
+				replaced: ['paradis-quick-input-scrim paradis-modal-backdrop'],
+				hidden: [],
+				anchored: [],
+				ignoreFocusOut: [],
+				whilePressed: { scrims: ['paradis-quick-input-scrim paradis-modal-backdrop'], cancelled: 1 },
+				released: [],
+				clicksBelow: 0,
+			});
+		} finally {
+			disposables.dispose();
+			container.remove();
+		}
 	});
 });

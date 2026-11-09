@@ -250,7 +250,7 @@ suite('ParadisTitlebarFit', () => {
 		doc.head.appendChild(style);
 		const root = doc.createElement('div');
 		root.className = 't-root';
-		root.style.cssText = 'display: flex; height: 30px; font: 10px monospace;';
+		root.style.cssText = 'display: flex; justify-content: space-between; height: 30px; font: 10px monospace;';
 		const left = doc.createElement('div');
 		left.style.cssText = 'display: flex; flex: none;';
 		const center = doc.createElement('div');
@@ -266,7 +266,8 @@ suite('ParadisTitlebarFit', () => {
 		right.style.cssText = 'display: flex; flex: none;';
 		root.append(left, center, right);
 		doc.body.appendChild(root);
-		for (const [className, width, parent] of [['t-a', 100, left], ['t-b', 100, left], ['t-right', 50, right]] as const) {
+		// 左端には畳まない部品 (ポートの一覧など) が残る
+		for (const [className, width, parent] of [['t-fixed', 20, left], ['t-a', 100, left], ['t-b', 100, left], ['t-right', 50, right]] as const) {
 			const element = doc.createElement('div');
 			element.className = className;
 			element.style.cssText = `width: ${width}px; flex: none;`;
@@ -292,9 +293,9 @@ suite('ParadisTitlebarFit', () => {
 		};
 		try {
 			// 文字が収まる幅では畳まない (空きの計算に文字は入れないので、ドラッグの空きは足りている)
-			const fits = resize(250 + titleWidth + 10);
+			const fits = resize(270 + titleWidth + 10);
 			// 文字が 50px 切れる → 1 段 (t-a の 100px) 畳めば収まる
-			const cutOff = resize(250 + titleWidth - 50);
+			const cutOff = resize(270 + titleWidth - 50);
 			// 窓の幅は同じまま、タイトルが 1 段では収まらないほど長くなった → 2 段まで
 			windowTitle.textContent = 'para (Workspace) [SSH: host] - Para Code';
 			await flushMutations();
