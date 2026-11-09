@@ -1,0 +1,163 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The space details dialog (paradisSpaceDetailsDialog.ts, UI kit Q600): the kit's M box with a label, a field and
+	one line of help per item, the linked work as rows, the note as a multi-line field, and the footer bar.
+*/
+
+.paradis-space-details-backdrop {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--vscode-paradis-scrim);
+}
+
+.paradis-space-details .psdd-subtitle {
+	margin: var(--vscode-spacing-size80) 0 var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-space-details .psdd-label {
+	display: block;
+	margin: var(--vscode-spacing-size160) 0 var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-space-details .psdd-help {
+	margin-top: var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-space-details .psdd-help.error,
+.paradis-space-details .psdd-help.psdd-alert {
+	color: var(--vscode-paradis-danger);
+}
+
+.paradis-space-details .psdd-help[hidden] {
+	display: none;
+}
+
+.paradis-space-details .psdd-section-head {
+	display: flex;
+	align-items: baseline;
+	gap: var(--vscode-spacing-size80);
+}
+
+/* Counts are not filled (no need to act). */
+.paradis-space-details .psdd-count {
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-space-details .psdd-linked {
+	display: flex;
+	flex-direction: column;
+	padding: var(--vscode-spacing-size40);
+	background: var(--vscode-paradis-raised);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+}
+
+.paradis-space-details .psdd-linked-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size80);
+	border: none;
+	border-radius: var(--paradis-radius-control);
+	background: transparent;
+	color: var(--vscode-paradis-text);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.paradis-space-details .psdd-linked-row:hover {
+	background: var(--vscode-paradis-fillHover);
+}
+
+.paradis-space-details .psdd-linked-row > .codicon {
+	flex: none;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-space-details .psdd-linked-number {
+	flex: none;
+	color: var(--vscode-paradis-textMuted);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-space-details .psdd-linked-title {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-space-details .psdd-empty {
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+/* The note: a multi-line field in the kit's field frame (paradisInputField.css). */
+.monaco-workbench .paradis-space-details .paradis-field.psdd-note {
+	height: auto;
+	align-items: stretch;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+}
+
+.paradis-space-details .psdd-note > textarea {
+	flex: 1;
+	min-width: 0;
+	min-height: 120px;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 20px;
+	resize: vertical;
+}
+
+.paradis-space-details .psdd-note > textarea::placeholder {
+	color: var(--vscode-paradis-textFaint);
+}
+
+.paradis-space-details .psdd-foot-note {
+	flex: 1;
+	min-width: 0;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
+}
+
+.paradis-space-details .paradis-modal-foot > .paradis-chip[hidden] {
+	display: none;
+}
+
+/* A narrow window: the footer note goes, the buttons stay. */
+@media (max-width: 760px) {
+	.paradis-space-details .psdd-foot-note {
+		display: none;
+	}
+
+	.paradis-space-details .paradis-modal-foot > .paradis-chip {
+		margin-right: auto;
+	}
+}
