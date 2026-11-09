@@ -51,13 +51,12 @@ import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/pa
 import { paradisPickNotifyInstance } from '../common/paradisNotifySource.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
-import { paradisMobileLimitsClaudeFromLocal, paradisMobileLimitsSnapshot } from '../common/paradisMobileLimitsScope.js';
+import { IParadisMobileLimitsSnapshot, paradisMobileLimitsClaudeFromLocal } from '../common/paradisMobileLimitsScope.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 // PARA-PATCH: RTK節約データのモバイル配信
 import { localize } from '../../../../nls.js';
 import { isParadisRtkNotFoundError } from '../../rtk/common/paradisRtk.js';
 import { IParadisRtkDashboardData } from '../../rtk/electron-browser/paradisRtkClient.js';
-import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { IParadisResourceMonitorMobileReport } from '../../resourceMonitor/common/paradisResourceMonitor.js';
 import { IParadisSpaceDiskResult } from '../../spaceDisk/common/paradisSpaceDisk.js';
@@ -784,8 +783,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// PARA-PATCH: RTK節約データのモバイル配信。実体は rtk のバックエンド(接続中は接続先の REH)
 		private readonly fetchRtkSavings: (bypassCache: boolean) => Promise<IParadisRtkDashboardData>,
 		// AIリミット(Rate Limit)スナップショット。実体は limitsMonitor のクライアント。claudeFromLocal は
-		// SSH のウィンドウでも Claude を手元のアカウントで返す（paradisMobileLimitsClaudeFromLocal）
-		private readonly fetchLimitsSnapshot: (bypassCache: boolean, claudeFromLocal: boolean) => Promise<IParadisLimitsSnapshot>,
+		// SSH のウィンドウでも Claude を手元のアカウントで返す（paradisMobileLimitsClaudeFromLocal）。
+		// 返す値はモバイルへ送る形（paradisMobileLimitsSnapshot。PC で隠したアカウントは除いてある）
+		private readonly fetchLimitsSnapshot: (bypassCache: boolean, claudeFromLocal: boolean) => Promise<IParadisMobileLimitsSnapshot>,
 		// GitHub API利用状況。実体は githubMetrics の shared process バックエンド（PC版と同じクライアント）
 		private readonly fetchGithubMetrics: (bypassCache: boolean) => Promise<IParadisGithubMetricsSnapshot>,
 		// worktree（スペース）作成。実体は paradisWorktreeHeadlessCreate.ts（contribution側で
@@ -2856,7 +2856,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (msg.t === 'limits') {
 			try {
 				const data = await paradisWithHostDeadline(this.fetchLimitsSnapshot(!!msg.bypassCache, paradisMobileLimitsClaudeFromLocal(msg)), PARADIS_MOBILE_USAGE_DEADLINE_MS);
-				reply({ t: 'limits', data: paradisMobileLimitsSnapshot(data) });
+				reply({ t: 'limits', data });
 			} catch (err) {
 				reply(paradisMobileUsageErrorReply(err));
 			}

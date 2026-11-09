@@ -234,11 +234,6 @@
 	background: var(--vscode-button-secondaryHoverBackground);
 }
 
-.monaco-workbench .para-ft-actions:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}
-
 /* back / forward / up / breadcrumbs */
 .monaco-workbench .para-ft-nav {
 	height: 26px;
@@ -274,13 +269,6 @@
 .monaco-workbench .para-ft-nav-button:disabled {
 	opacity: 0.4;
 	cursor: default;
-}
-
-.monaco-workbench .para-ft-nav-button:focus-visible,
-.monaco-workbench .para-ft-qbutton:focus-visible,
-.monaco-workbench .para-ft-crumb:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .monaco-workbench .para-ft-crumbs {
@@ -373,11 +361,6 @@
 .monaco-workbench .para-ft-table .monaco-table-th.right {
 	justify-content: flex-end;
 	padding-right: 10px;
-}
-
-.monaco-workbench .para-ft-table .monaco-table-th:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .monaco-workbench .para-ft-table .para-ft-sort-arrow {
@@ -677,11 +660,6 @@
 	cursor: default;
 }
 
-.monaco-workbench .para-ft-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}
-
 /* ---------- transfer queue ---------- */
 
 .monaco-workbench .para-ft-queue {
@@ -901,10 +879,6 @@
 	border-radius: 4px;
 	padding: 3px 7px;
 	outline: none;
-}
-
-.monaco-workbench .para-ft-octal-input:focus {
-	border-color: var(--vscode-focusBorder);
 }
 
 .monaco-workbench .para-ft-octal-input.invalid {

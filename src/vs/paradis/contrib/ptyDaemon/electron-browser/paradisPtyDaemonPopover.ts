@@ -76,7 +76,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		super();
 		this.status = options.status;
 
-		this.element = $('.paradis-pty-daemon-popover.paradis-overlay-popover');
+		this.element = $('.paradis-pty-daemon-popover.paradis-overlay-popover.paradis-focus-none');
 		this.element.style.width = `${POPOVER_WIDTH}px`;
 		this.element.tabIndex = -1;
 		layoutService.activeContainer.appendChild(this.element);
@@ -305,7 +305,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	}
 
 	private appendButton(parent: HTMLElement, label: string, mini: boolean, run: () => unknown): void {
-		const button = dom.append(parent, $(mini ? 'button.ppd-button.ppd-mini' : 'button.ppd-button'));
+		const button = dom.append(parent, $(mini ? 'button.ppd-button.ppd-mini.paradis-focus-ring-inset' : 'button.ppd-button.paradis-focus-ring-inset'));
 		button.textContent = label;
 		this.bodyListeners.add(dom.addDisposableListener(button, 'click', e => {
 			e.preventDefault();

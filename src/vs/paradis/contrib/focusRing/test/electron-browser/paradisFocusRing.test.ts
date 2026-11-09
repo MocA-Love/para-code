@@ -17,7 +17,7 @@ import { installParadisFocusQuieting, PARADIS_POINTER_FOCUS_CLASS } from '../../
 // 本家の workbench の規則（src/vs/workbench/browser/media/style.css の Keyboard Focus Indication Styles）と同じもの。
 // テストの画面には読み込まれないので、ここで同じ規則を足す。fork の画面の CSS が使うテーマの色も入れる
 // （未定義の var() を含む outline は無効になり、枠が無いように見えてしまう）。
-const WORKBENCH_FOCUS_RULE = `.monaco-workbench { --vscode-focusBorder: red; } .monaco-workbench [tabindex="0"]:focus, .monaco-workbench [tabindex="-1"]:focus, .monaco-workbench select:focus, .monaco-workbench button:focus, .monaco-workbench input[type="text"]:focus, .monaco-workbench input[type="checkbox"]:focus { outline-width: 1px; outline-style: solid; outline-offset: -1px; outline-color: red; }`;
+const WORKBENCH_FOCUS_RULE = `.monaco-workbench { --vscode-focusBorder: red; --vscode-paradis-focus: rgb(0, 0, 255); --vscode-paradis-focusSubtle: rgb(128, 128, 128); --paradis-focus-width: 2px; --paradis-focus-offset: 2px; } .monaco-workbench [tabindex="0"]:focus, .monaco-workbench [tabindex="-1"]:focus, .monaco-workbench select:focus, .monaco-workbench button:focus, .monaco-workbench input[type="text"]:focus, .monaco-workbench input[type="checkbox"]:focus { outline-width: 1px; outline-style: solid; outline-offset: -1px; outline-color: red; }`;
 
 // 読み込む CSS: この機能の規則と、確かめる fork の画面の実物の CSS（自前のフォーカスの規則と一緒に効くかを見る）。
 const STYLESHEETS: AppResourcePath[] = [
@@ -164,12 +164,12 @@ suite('Paradis focus ring', () => {
 			'<div class="ppe-row-actions"><button class="ppe-btn" type="button" id="ppeRun">run</button><button class="ppe-btn ppe-btn-danger" type="button" id="ppeDelete">delete</button></div></div>',
 			'<input class="ppe-input" type="text" id="ppeInput"></div>',
 			// 統合のモーダルの設定の領域（paradisSettingsDialog.ts のスイッチとボタン）
-			'<div class="paradis-hub" tabindex="-1" id="settings"><div class="paradis-settings-area"><button class="paradis-switch" type="button" role="switch" aria-checked="false" id="psdToggle"></button><button class="psd-btn" type="button" id="psdButton">open</button>',
+			'<div class="paradis-hub paradis-focus-none" tabindex="-1" id="settings"><div class="paradis-settings-area"><button class="paradis-switch" type="button" role="switch" aria-checked="false" id="psdToggle"></button><button class="psd-btn" type="button" id="psdButton">open</button>',
 			'<select class="psd-select" id="psdSelect"><option>a</option></select></div></div>',
 			// タイトルバーの資源表示（paradisResourceMonitorWidget.ts。本家のタイトルバーの中に置かれる）
 			'<div class="part titlebar"><div class="titlebar-container"><button class="paradis-resource-monitor-trigger" type="button" id="rmTrigger">CPU 97%</button></div></div>',
 			// 統合のモーダルの使用量の領域（器の左のナビと、paradisCcusageSection.ts の期間の切り替え）
-			'<div class="paradis-hub" tabindex="-1" id="usage"><div class="phub-nav-item" role="button" tabindex="0" id="pudNav">cost</div>',
+			'<div class="paradis-hub paradis-focus-none" tabindex="-1" id="usage"><div class="phub-nav-item" role="button" tabindex="0" id="pudNav">cost</div>',
 			'<div class="paradis-ccusage-seg"><button type="button" id="ccSeg">90d</button></div></div>',
 		].join(''));
 
@@ -199,6 +199,40 @@ suite('Paradis focus ring', () => {
 				ppeInput: 'solid',
 			},
 			containers: { settings: 'none', usage: 'none' },
+		});
+	});
+
+	test('focus plan C: text fields, frames and rows show a gray ring also after a mouse click, the blue ring only for the keyboard, one line each', () => {
+		make([
+			// 印の無い文字の入力欄（fork の画面の中の本家の InputBox など）
+			'<div class="paradis-panel"><input type="text" id="plainText"></div>',
+			// 外枠が描く検索欄（設定・プリセットなど）。中の入力欄は枠を描かない
+			'<div class="psd-search paradis-focus-subtle-within" id="frame"><input type="text" id="framedText"></div>',
+			// 一覧の行
+			'<div class="pnip-row paradis-focus-subtle" tabindex="0" id="row">row</div>',
+			// 青の枠の部品と、Esc を受けるだけの入れ物
+			'<div class="paradis-pop paradis-focus-none" tabindex="-1" id="popover"><button class="ppd-button paradis-focus-ring-inset" type="button" id="blueButton">go</button></div>',
+		].join(''));
+
+		const ring = (id: string, focused: string, focusVisible: boolean) => {
+			const element = mainWindow.document.getElementById(focused)!;
+			element.blur();
+			element.focus({ focusVisible } as FocusOptions);
+			const style = mainWindow.getComputedStyle(mainWindow.document.getElementById(id)!);
+			return style.outlineStyle === 'none' ? 'none' : `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`;
+		};
+		assert.deepStrictEqual({
+			plainText: [ring('plainText', 'plainText', false), ring('plainText', 'plainText', true)],
+			frame: [ring('frame', 'framedText', false), ring('framedText', 'framedText', false)],
+			row: [ring('row', 'row', false), ring('row', 'row', true)],
+			popover: [ring('popover', 'popover', true)],
+			blueButton: [ring('blueButton', 'blueButton', false), ring('blueButton', 'blueButton', true)],
+		}, {
+			plainText: ['solid 1px rgb(128, 128, 128)', 'solid 1px rgb(128, 128, 128)'],
+			frame: ['solid 1px rgb(128, 128, 128)', 'none'],
+			row: ['solid 1px rgb(128, 128, 128)', 'solid 1px rgb(128, 128, 128)'],
+			popover: ['none'],
+			blueButton: ['none', 'solid 2px rgb(0, 0, 255)'],
 		});
 	});
 });

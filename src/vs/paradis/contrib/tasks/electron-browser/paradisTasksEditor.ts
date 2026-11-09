@@ -239,7 +239,7 @@ export class ParadisTasksEditor extends EditorPane {
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
-		this.root = dom.append(parent, $('.paradis-tasks'));
+		this.root = dom.append(parent, $('.paradis-tasks.paradis-focus-none'));
 		this.root.tabIndex = -1;
 
 		const sourceRow = dom.append(this.root, $('.paradis-tasks-row'));
@@ -266,7 +266,7 @@ export class ParadisTasksEditor extends EditorPane {
 		this.projectButton = this.button(this.projectRow, '', () => void this.pickProject(), 'paradis-tasks-combo');
 		const searchRow = dom.append(panel, $('.paradis-tasks-row'));
 		this.filterButton = this.button(searchRow, localize('paradis.tasks.filter', "フィルター"), () => this.showFilterMenu(), 'paradis-tasks-pill', Codicon.filter);
-		const search = dom.append(searchRow, $('.paradis-tasks-search'));
+		const search = dom.append(searchRow, $('.paradis-tasks-search.paradis-focus-subtle-within'));
 		search.append(...this.icon(Codicon.search));
 		this.searchInput = dom.append(search, $<HTMLInputElement>('input'));
 		this.searchInput.type = 'text';
@@ -818,7 +818,7 @@ export class ParadisTasksEditor extends EditorPane {
 	}
 
 	private renderRow(item: IParadisTasksItem): void {
-		const row = dom.append(this.tableBody, $('tr.paradis-tasks-item'));
+		const row = dom.append(this.tableBody, $('tr.paradis-tasks-item.paradis-focus-subtle'));
 		row.tabIndex = 0;
 		dom.append(row, $('td.id')).textContent = `#${item.number}`;
 

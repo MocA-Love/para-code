@@ -57,12 +57,6 @@
 	outline: none;
 }
 
-.paradis-create-worktree-dialog .pcw-input:focus,
-.paradis-create-worktree-dialog .pcw-prompt:focus,
-.paradis-create-worktree-dialog .pcw-select:focus {
-	border-color: var(--vscode-focusBorder);
-}
-
 .paradis-create-worktree-dialog .pcw-name {
 	flex: 1;
 }
@@ -380,12 +374,6 @@
 	outline: none;
 }
 
-.paradis-create-worktree-dialog.pcw-d .pcw-d-input:focus,
-.paradis-create-worktree-dialog.pcw-d .pcw-d-area:focus {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-create-worktree-dialog.pcw-d .pcw-d-area {
 	resize: vertical;
 	min-height: 64px;
@@ -496,10 +484,6 @@
 	outline: none;
 }
 
-.paradis-create-worktree-dialog.pcw-d .pcw-d-sub-select:focus {
-	border-color: var(--vscode-focusBorder);
-}
-
 .paradis-create-worktree-dialog.pcw-d .pcw-d-perm-line {
 	display: flex;
 	align-items: center;
@@ -579,10 +563,6 @@
 	font-family: inherit;
 	font-size: 12px;
 	outline: none;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-adv-select:focus {
-	border-color: var(--vscode-focusBorder);
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-branch-select {

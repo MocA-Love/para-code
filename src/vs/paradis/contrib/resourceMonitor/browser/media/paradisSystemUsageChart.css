@@ -175,11 +175,6 @@
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-.paradis-sysusage-segment-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-sysusage-segment-button.selected {
 	background: var(--vscode-button-background);
 	color: var(--vscode-button-foreground);

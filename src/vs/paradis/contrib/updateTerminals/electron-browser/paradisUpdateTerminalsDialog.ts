@@ -146,10 +146,10 @@ export function paradisShowUpdateTerminalsDialog(container: HTMLElement, summary
 		}
 
 		const buttons = dom.append(modal, $('.para-ut-buttons'));
-		const later = dom.append(buttons, $<HTMLButtonElement>('button.para-ut-button.secondary'));
+		const later = dom.append(buttons, $<HTMLButtonElement>('button.para-ut-button.paradis-focus-ring.secondary'));
 		later.type = 'button';
 		later.textContent = localize('paradis.updateTerminals.later', "あとで更新");
-		const update = dom.append(buttons, $<HTMLButtonElement>('button.para-ut-button.danger'));
+		const update = dom.append(buttons, $<HTMLButtonElement>('button.para-ut-button.paradis-focus-ring.danger'));
 		update.type = 'button';
 		update.textContent = localize('paradis.updateTerminals.update', "終わらせて更新");
 		store.add(dom.addDisposableListener(later, 'click', () => finish('later')));

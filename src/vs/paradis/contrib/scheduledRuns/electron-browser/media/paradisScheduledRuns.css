@@ -36,10 +36,6 @@
 	outline: none;
 }
 
-.monaco-workbench .paradis-scheduled-runs:focus {
-	outline: none !important;
-}
-
 /* ---------- header ---------- */
 
 .monaco-workbench .paradis-scheduled-runs .psr-header {
@@ -118,12 +114,6 @@
 .monaco-workbench .paradis-scheduled-runs .psr-button:disabled {
 	opacity: 0.5;
 	cursor: default;
-}
-
-.monaco-workbench .paradis-scheduled-runs .psr-button:focus-visible,
-.monaco-workbench .paradis-scheduled-runs .psr-nav-item:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
 }
 
 /* ---------- body ---------- */
@@ -582,12 +572,6 @@
 .monaco-workbench .paradis-scheduled-runs .psr-textarea.psr-mono {
 	font-family: var(--monaco-monospace-font);
 	line-height: 1.5;
-}
-
-.monaco-workbench .paradis-scheduled-runs .psr-input:focus,
-.monaco-workbench .paradis-scheduled-runs .psr-select:focus,
-.monaco-workbench .paradis-scheduled-runs .psr-textarea:focus {
-	border-color: var(--vscode-focusBorder);
 }
 
 .monaco-workbench .paradis-scheduled-runs .psr-form-error {

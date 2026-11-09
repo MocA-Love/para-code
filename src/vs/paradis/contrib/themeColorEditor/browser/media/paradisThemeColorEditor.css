@@ -47,13 +47,6 @@
 	border-bottom-color: var(--vscode-focusBorder);
 }
 
-.paradis-tce-tab:focus-visible,
-.paradis-tce-chip:focus-visible,
-.paradis-tce-item:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-tce-body {
 	flex: 1;
 	display: flex;
@@ -97,11 +90,6 @@
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
 	font: inherit;
-}
-
-.paradis-tce-input:focus {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .paradis-tce-search {
@@ -377,12 +365,6 @@
 	border-radius: 2px;
 	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
 	pointer-events: none;
-}
-
-.paradis-tce-picker-sv:focus-visible,
-.paradis-tce-picker-strip:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 2px;
 }
 
 .paradis-tce-picker-fields {

@@ -119,7 +119,7 @@ export class ParadisCsvTableView extends Disposable {
 	constructor(parent: HTMLElement, private readonly _options: ParadisCsvTableViewOptions) {
 		super();
 		this.element = dom.append(parent, dom.$('.paradis-csv-table'));
-		this._host = dom.append(this.element, dom.$('.paradis-csv-grid'));
+		this._host = dom.append(this.element, dom.$('.paradis-csv-grid.paradis-focus-none'));
 		this._findWidget = this._register(new ParadisOfficeFindWidget(this.element, {
 			search: this._searchProvider,
 			onNavigate: result => this._navigateToMatch(result),

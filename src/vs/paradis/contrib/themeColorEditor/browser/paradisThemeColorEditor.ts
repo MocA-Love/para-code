@@ -74,7 +74,7 @@ export class ParadisThemeColorEditor extends EditorPane {
 			['syntax', localize('paradis.themeColors.tab.syntax', "シンタックスの色")],
 		];
 		for (const [tab, label] of tabLabels) {
-			const button = dom.append(tabs, $<HTMLButtonElement>('button.paradis-tce-tab', { type: 'button', role: 'tab' }, label));
+			const button = dom.append(tabs, $<HTMLButtonElement>('button.paradis-tce-tab.paradis-focus-ring-inset', { type: 'button', role: 'tab' }, label));
 			store.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.showTab(tab)));
 			this.tabButtons.set(tab, button);
 		}

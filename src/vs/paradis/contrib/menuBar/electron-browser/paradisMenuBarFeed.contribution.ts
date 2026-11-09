@@ -27,6 +27,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ILabelService } from '../../../../platform/label/common/label.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
+import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -34,6 +35,7 @@ import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { paradisSelectedCodexHome } from '../../codexAccounts/common/paradisCodexAccounts.js';
 import { ParadisCodexAccountsClient } from '../../codexAccounts/electron-browser/paradisCodexAccountsClient.js';
+import { PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY, paradisLimitsWithoutHidden, paradisReadLimitsHiddenAccounts } from '../../limitsMonitor/common/paradisLimitsHiddenAccounts.js';
 import { PARADIS_LIMITS_OPEN_PANEL_COMMAND_ID, ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser/paradisLimitsMonitorClient.js';
 import { IParadisNotificationInboxService } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { PARADIS_OPEN_SETTINGS_DIALOG_COMMAND_ID } from '../../paradisSettings/electron-browser/paradisSettingsDialog.contribution.js';
@@ -95,6 +97,7 @@ class ParadisMenuBarFeed extends Disposable implements IWorkbenchContribution {
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IMainProcessService mainProcessService: IMainProcessService,
 		@ILogService private readonly logService: ILogService,
+		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
 		this.channel = mainProcessService.getChannel(PARADIS_MENU_BAR_CHANNEL);
@@ -122,6 +125,12 @@ class ParadisMenuBarFeed extends Disposable implements IWorkbenchContribution {
 			}
 		}));
 		this._register(this.channel.listen<ParadisMenuBarRequest>('onDidRequest')(request => this.handleRequest(request)));
+		// 使用量のパネルでアカウントを隠したら（別のウィンドウで隠しても）、次の周回を待たずに出し直す
+		this._register(this.storageService.onDidChangeValue(StorageScope.PROFILE, PARADIS_LIMITS_HIDDEN_ACCOUNTS_STORAGE_KEY, this._store)(() => {
+			if (this.usageTimer.value) {
+				void this.fetchUsage();
+			}
+		}));
 		this.updateTimers();
 		this.sendScheduler.schedule();
 	}
@@ -178,7 +187,8 @@ class ParadisMenuBarFeed extends Disposable implements IWorkbenchContribution {
 			this.usage = {
 				...source,
 				fetchedAt: Date.now(),
-				accounts: paradisMenuBarAccountsFromLimits(snapshot, source.key, source.remote, selectedCodexHome),
+				// 使用量のパネルで隠したアカウントは、メニューバーにも出さない（パネルと同じ台帳・同じ判定）
+				accounts: paradisMenuBarAccountsFromLimits(paradisLimitsWithoutHidden(snapshot, paradisReadLimitsHiddenAccounts(this.storageService)), source.key, source.remote, selectedCodexHome),
 			};
 			this.sendScheduler.schedule();
 		} catch (error) {

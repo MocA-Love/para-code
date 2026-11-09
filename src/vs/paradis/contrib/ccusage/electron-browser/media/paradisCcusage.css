@@ -556,11 +556,6 @@
 	cursor: pointer;
 }
 
-.paradis-ccusage tr.expandable:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-ccusage-context-foot {
 	margin: 8px 0 0;
 }

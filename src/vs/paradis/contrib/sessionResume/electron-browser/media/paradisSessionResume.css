@@ -31,9 +31,6 @@
 	/* 段階の切り替えはウィンドウ幅ではなくダイアログ自身の幅で見る。上の寸法を変えても連動する。 */
 	container-type: inline-size; container-name: paradis-session-resume;
 }
-/* モーダルは Escape を拾うため tabindex=-1 でフォーカスを受ける。workbench 全体の
- * [tabindex="-1"]:focus ルールが枠を描いてしまうので打ち消す(通知設定ダイアログと同じ)。 */
-.monaco-workbench .paradis-session-resume-modal:focus { outline: none !important; }
 .paradis-session-resume-modal-header {
 	flex: none; display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px 0 16px;
 	border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background);
@@ -44,7 +41,6 @@
 	border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--vscode-icon-foreground);
 }
 .paradis-session-resume-modal-close:hover { background: var(--vscode-toolbar-hoverBackground); }
-.paradis-session-resume-modal-close:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 
 .paradis-session-resume {
 	flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
@@ -88,11 +84,6 @@
 }
 .paradis-session-resume .nav-item:hover { background: var(--vscode-list-hoverBackground); }
 .paradis-session-resume .nav-item.on { background: color-mix(in srgb, var(--vscode-focusBorder) 28%, transparent); }
-.paradis-session-resume .nav-item:focus-visible,
-.paradis-session-resume .nav-twistie:focus-visible,
-.paradis-session-resume .fchip:focus-visible,
-.paradis-session-resume .paradis-session-resume-refresh:focus-visible,
-.paradis-session-resume .paradis-session-resume-rail-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .paradis-session-resume .nav-item .nav-label { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .paradis-session-resume .nav-item .nav-count { flex: none; margin-left: auto; font-size: 10.5px; color: var(--vscode-descriptionForeground); }
 .paradis-session-resume .chip-row { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px 10px; }
@@ -132,7 +123,6 @@
 	border: 1px solid var(--vscode-input-border, transparent); border-radius: 5px;
 	background: var(--vscode-input-background); color: var(--vscode-input-foreground);
 }
-.paradis-session-resume .paradis-session-resume-search:focus-within input { border-color: var(--vscode-focusBorder); }
 /* 中央ヘッダー右端: ナビ開閉トグルと更新。狭い幅で左ナビが折りたたまれても操作できるようにする。 */
 .paradis-session-resume .search-head-actions { flex: none; display: flex; align-items: center; gap: 5px; }
 .paradis-session-resume .search-head-actions .paradis-session-resume-refresh,

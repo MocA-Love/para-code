@@ -155,7 +155,3 @@
 	filter: brightness(0.92);
 }
 
-.monaco-workbench .para-ut-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}

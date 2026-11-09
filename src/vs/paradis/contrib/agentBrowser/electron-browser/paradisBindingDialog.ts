@@ -519,7 +519,7 @@ export class ParadisBindingDialog extends Disposable {
 			dom.append(this._nav, $('.pbd-nav-cap')).textContent = STR_NAV_CAP_PAGES;
 			for (const page of pages) {
 				const isCurrent = this.pageModel !== undefined && page.pageId === this.pageModel.id;
-				const item = dom.append(this._nav, $('.pbd-nav-item'));
+				const item = dom.append(this._nav, $('.pbd-nav-item.paradis-focus-ring-inset'));
 				if (!isCurrent) {
 					item.classList.add('static');
 				} else if (this._activeTab === 'panes') {
@@ -572,7 +572,7 @@ export class ParadisBindingDialog extends Disposable {
 		badge?: { readonly text: string; readonly className: string; readonly title?: string },
 		warnBadge?: { readonly text: string; readonly className: string; readonly title?: string },
 	): void {
-		const item = dom.append(this._nav, $('.pbd-nav-item'));
+		const item = dom.append(this._nav, $('.pbd-nav-item.paradis-focus-ring-inset'));
 		item.classList.toggle('active', tab === this._activeTab);
 		dom.append(item, $('span.pbd-nav-label')).textContent = label;
 		const badgeInfo = warnBadge ?? badge;
@@ -677,7 +677,7 @@ export class ParadisBindingDialog extends Disposable {
 			warning.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
 			dom.append(warning, $('span.pbd-extension-warning-text')).textContent = this._extensionWarning;
 		}
-		const search = dom.append(this._body, $('.pbd-list-search'));
+		const search = dom.append(this._body, $('.pbd-list-search.paradis-focus-subtle-within'));
 		search.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		const input = dom.append(search, $('input')) as HTMLInputElement;
 		input.type = 'text';
@@ -703,7 +703,7 @@ export class ParadisBindingDialog extends Disposable {
 		}
 		const note = dom.append(this._body, $('.pbd-mcp-note'));
 		dom.append(note, $('span')).textContent = strMcpNote(count);
-		const link = dom.append(note, $<HTMLButtonElement>('button.pbd-link'));
+		const link = dom.append(note, $<HTMLButtonElement>('button.pbd-link.paradis-focus-ring'));
 		link.type = 'button';
 		link.textContent = STR_MCP_NOTE_LINK;
 		this._renderDisposables.add(dom.addDisposableListener(link, 'click', () => this._tabController.setActiveTab('mcp')));
@@ -729,7 +729,7 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _renderPaneRow(pane: IParadisPaneDescriptor): HTMLElement {
-		const row = $('.pbd-pane-row');
+		const row = $('.pbd-pane-row.paradis-focus-subtle');
 		const boundHere = this._isSharedHere(pane);
 
 		const dotClass = (pane.binding || pane.mcpConnected) ? 'green' : 'amber';
@@ -1039,7 +1039,7 @@ export class ParadisBindingDialog extends Disposable {
 			// ここは配列で受ける。
 			const attached = snapshot.attachments.filter(entry => entry.deviceId === device.id);
 
-			const row = dom.append(list, $('.pbd-pane-row'));
+			const row = dom.append(list, $('.pbd-pane-row.paradis-focus-subtle'));
 			const main = dom.append(row, $('.pbd-row-main'));
 			const title = dom.append(main, $('.pbd-row-title'));
 			dom.append(title, $('span')).textContent = device.name;
@@ -1104,7 +1104,7 @@ export class ParadisBindingDialog extends Disposable {
 			const current = attachments.find(entry => entry.paneToken === pane.token);
 			const holdsThisDevice = current?.deviceId === deviceId;
 
-			const row = dom.append(list, $('.pbd-pane-row'));
+			const row = dom.append(list, $('.pbd-pane-row.paradis-focus-subtle'));
 			const main = dom.append(row, $('.pbd-row-main'));
 			dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
 			// 1ペイン1台なので、別の端末を持っているペインへ渡すと入れ替わる。何が外れるかを先に見せる。

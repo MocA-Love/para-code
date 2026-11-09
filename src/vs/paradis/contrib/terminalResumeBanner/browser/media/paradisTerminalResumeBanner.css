@@ -67,11 +67,6 @@
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
-.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-close:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-detail {
 	color: var(--vscode-descriptionForeground);
 	overflow: hidden;

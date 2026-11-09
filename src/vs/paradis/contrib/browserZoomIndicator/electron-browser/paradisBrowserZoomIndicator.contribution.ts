@@ -87,7 +87,7 @@ export class ParadisBrowserZoomIndicator extends BrowserEditorContribution {
 			'−',
 			support => support.zoomOut(),
 		);
-		this.valueButton = append(this.element, $<HTMLButtonElement>('button.paradis-browser-zoom-value'));
+		this.valueButton = append(this.element, $<HTMLButtonElement>('button.paradis-browser-zoom-value.paradis-focus-ring-inset'));
 		this.valueHover = this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.valueButton, ''));
 		this._register(addDisposableListener(this.valueButton, EventType.CLICK, () => {
 			this.run(support => support.resetZoom());
@@ -138,7 +138,7 @@ export class ParadisBrowserZoomIndicator extends BrowserEditorContribution {
 	}
 
 	private createButton(label: string, atEndLabel: string, glyph: string, action: (support: BrowserEditorZoomSupport) => Promise<void>): IStepButton {
-		const element = append(this.element, $<HTMLButtonElement>('button.paradis-browser-zoom-step'));
+		const element = append(this.element, $<HTMLButtonElement>('button.paradis-browser-zoom-step.paradis-focus-ring-inset'));
 		element.textContent = glyph;
 		const hover = this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), element, label));
 		this._register(addDisposableListener(element, EventType.CLICK, () => {

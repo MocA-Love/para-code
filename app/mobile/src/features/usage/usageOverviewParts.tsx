@@ -8,7 +8,7 @@ import { alpha, colors, radius, space, type } from '../../theme.js';
 import { formatRelativeTime } from '../../time.js';
 import { updatedAtLabel } from '../../usageFormat.js';
 import { Icon, Meter, MeterRow, iconSize } from '../../ui/index.js';
-import { AccountRow, UnavailableAccountsGroup, UsageRow, UsageRowTitle, UsageSection, UsageSeparator } from '../settings/usageSections.js';
+import { AccountRow, HiddenAccountsGroup, UnavailableAccountsGroup, UsageRow, UsageRowTitle, UsageSection, UsageSeparator } from '../settings/usageSections.js';
 import { accountName, hasPreviousValue, providerEmptyMessage, type AccountNumbers } from '../settings/usageSummary.js';
 import { DetailMessage } from '../settings/usageDetailParts.js';
 import {
@@ -18,6 +18,7 @@ import {
 	staleOf,
 	usageErrorText,
 	type AggregatedAccount,
+	type AggregatedHiddenAccount,
 	type SeenOn,
 	type UsageEntry,
 	type UsageKind,
@@ -80,10 +81,12 @@ export function SeenOnChips({ chips }: { chips: readonly SeenOn[] }) {
  * Claude / Codex の束（全 PC の合計）。アカウントごとに1行で、見えている PC をチップで添える。
  * `showChips` は PC が2台以上のときだけ（1台なら PC の名前は要らない）。
  */
-export function AggregatedProviderSection({ provider, title, accounts, emptySnapshot, anyLimits, loading, now, showChips, expandResets = false, metersPerRow = 2, numbers }: {
+export function AggregatedProviderSection({ provider, title, accounts, hidden = [], emptySnapshot, anyLimits, loading, now, showChips, expandResets = false, metersPerRow = 2, numbers }: {
 	provider: 'claude' | 'codex';
 	title: string;
 	accounts: readonly AggregatedAccount[];
+	/** どれかの PC で隠したアカウント（`accounts` には入らない。「非表示中のアカウント」に畳んで出す）。 */
+	hidden?: readonly AggregatedHiddenAccount[];
 	/** アカウントが1つも無いときの説明に使うスナップショット。 */
 	emptySnapshot: RateLimitProviderSnapshot | undefined;
 	/** どこかの PC から上限を1度でも取れたか（「読み込み中」と「アカウントが無い」を分ける）。 */
@@ -118,7 +121,7 @@ export function AggregatedProviderSection({ provider, title, accounts, emptySnap
 		<UsageSection title={title} logo={<ProviderLogo provider={provider} size={iconSize.sm} />}>
 			{!anyLimits ? (
 				<UsageRow><UsageRowTitle title={loading ? '取得しています…' : 'まだ取得していません'} /></UsageRow>
-			) : accounts.length === 0 ? (
+			) : accounts.length === 0 && hidden.length === 0 ? (
 				<UsageRow><UsageRowTitle title="アカウントがありません" hint={emptySnapshot !== undefined ? providerEmptyMessage(emptySnapshot) : undefined} /></UsageRow>
 			) : (
 				<>
@@ -136,6 +139,7 @@ export function AggregatedProviderSection({ provider, title, accounts, emptySnap
 							</Fragment>
 						))}
 					</UnavailableAccountsGroup>
+					<HiddenAccountsGroup names={hidden.map(item => accountName(item.account, numbers))} separated={accounts.length > 0} />
 				</>
 			)}
 		</UsageSection>

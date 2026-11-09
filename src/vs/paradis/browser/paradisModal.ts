@@ -54,7 +54,10 @@ export const enum ParadisModalSize {
 	Large = 'l',
 }
 
-/** モーダルの箱に付けるクラス。`$('.my-dialog')` の要素に `classList.add(...paradisModalClasses(ParadisModalSize.Medium))` で付ける。 */
+/**
+ * モーダルの箱に付けるクラス。`$('.my-dialog')` の要素に `classList.add(...paradisModalClasses(ParadisModalSize.Medium))` で付ける。
+ * 箱は Esc を受けるためにだけフォーカスするので、箱そのものには枠を出さない（`paradis-focus-none`、paradisFocusRing.css）。
+ */
 export function paradisModalClasses(size: ParadisModalSize): readonly string[] {
-	return ['paradis-modal', `paradis-modal-${size}`];
+	return ['paradis-modal', `paradis-modal-${size}`, 'paradis-focus-none'];
 }

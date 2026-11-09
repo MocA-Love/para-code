@@ -29,11 +29,6 @@
 	color: var(--vscode-editor-foreground);
 }
 
-/* The active cell carries the focus outline; the scroll container itself does not need one. */
-.monaco-workbench .paradis-csv-table .paradis-csv-grid:focus {
-	outline: none;
-}
-
 .paradis-csv-grid .paradis-spreadsheet-virtual-pane-top,
 .paradis-csv-grid .paradis-spreadsheet-virtual-pane-left,
 .paradis-csv-grid .paradis-spreadsheet-virtual-pane-corner {

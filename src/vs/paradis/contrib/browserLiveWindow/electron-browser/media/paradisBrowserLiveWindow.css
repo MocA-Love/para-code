@@ -83,16 +83,6 @@
 	font-variant-numeric: tabular-nums;
 }
 
-.paradis-browser-live-chip:focus-visible,
-.paradis-browser-live-icon-button:focus-visible,
-.paradis-browser-live-mini-button:focus-visible,
-.paradis-browser-live-shot:focus-visible,
-.paradis-browser-live-pop-item:focus-visible,
-.paradis-browser-live-pop-seg button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-browser-live-tool-label {
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
@@ -153,11 +143,6 @@
 	font-size: 11px;
 	cursor: pointer;
 	text-decoration: underline;
-}
-
-.paradis-browser-live-link:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
 }
 
 /* ---------------------------------------------------------------- タイルの壁 */
@@ -602,10 +587,6 @@
 	box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
 }
 
-.paradis-browser-live-pop:focus-visible {
-	outline: none;
-}
-
 .paradis-browser-live-pop-head {
 	font-size: 11px;
 	font-weight: 600;
@@ -750,12 +731,3 @@
 	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
 }
 
-/* パネル本体は tabIndex=-1 にして Esc / クリック外しの受け口にしているだけなので、
-	フォーカスリングは見せない。workbench の `.monaco-workbench [tabindex="-1"]:focus`
-	(vs/workbench/browser/media/style.css) が focusBorder のアウトラインを描くため、
-	詳細度で上回って打ち消す（クラス単独の `outline: none` では負け、同点の 0,3,0 では
-	CSS の読み込み順で勝ち負けが変わるため `[tabindex="-1"]` を足して 0,4,0 にする）。 */
-.monaco-workbench .paradis-browser-live-pop[tabindex="-1"]:focus,
-.monaco-workbench .paradis-browser-live-pop[tabindex="-1"]:focus-visible {
-	outline: none;
-}

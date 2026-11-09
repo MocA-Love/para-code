@@ -37,7 +37,7 @@ export interface IParadisHubNavItem {
 
 /** ナビの項目。押したときの動きは呼び出し側が `element` に付ける。 */
 export function paradisHubNavItem(nav: HTMLElement, label: string, options: IParadisHubNavItemOptions = {}): IParadisHubNavItem {
-	const element = dom.append(nav, $('.phub-nav-item'));
+	const element = dom.append(nav, $('.phub-nav-item.paradis-focus-ring-inset'));
 	element.setAttribute('role', 'button');
 	// Tab で止まるのは選んでいる項目だけ（ほかへは上下の矢印で移る。器の paradisHubDialog.ts）
 	element.tabIndex = -1;

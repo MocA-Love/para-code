@@ -159,18 +159,18 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 
 		// --- ツールバー -------------------------------------------------------------------
 		const toolbar = append(root, $('.paradis-browser-live-toolbar'));
-		this.allChip = append(toolbar, $('button.paradis-browser-live-chip'));
+		this.allChip = append(toolbar, $('button.paradis-browser-live-chip.paradis-focus-ring-inset'));
 		append(this.allChip, $('span')).textContent = localize('paradis.browserLive.filter.all', "すべて");
 		this.allChipCount = append(this.allChip, $('span.count'));
 		this._register(addDisposableListener(this.allChip, EventType.CLICK, () => this.clearFilters()));
 
-		this.sharedChip = append(toolbar, $('button.paradis-browser-live-chip'));
+		this.sharedChip = append(toolbar, $('button.paradis-browser-live-chip.paradis-focus-ring-inset'));
 		append(this.sharedChip, $('span.paradis-browser-live-dot.shared'));
 		append(this.sharedChip, $('span')).textContent = localize('paradis.browserLive.filter.shared', "共有中");
 		this.sharedChipCount = append(this.sharedChip, $('span.count'));
 		this._register(addDisposableListener(this.sharedChip, EventType.CLICK, () => this.toggleSharedOnly()));
 
-		this.activeSpaceChip = append(toolbar, $('button.paradis-browser-live-chip'));
+		this.activeSpaceChip = append(toolbar, $('button.paradis-browser-live-chip.paradis-focus-ring-inset'));
 		append(this.activeSpaceChip, $('span')).textContent = localize('paradis.browserLive.filter.activeSpace', "このスペースのみ");
 		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.activeSpaceChip,
 			localize('paradis.browserLive.filter.activeSpaceHint', "いま開いているスペースのページだけに絞り込む")));
@@ -178,7 +178,7 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 
 		append(toolbar, $('span.paradis-browser-live-grow'));
 		this.countText = append(toolbar, $('span.paradis-browser-live-tool-label'));
-		this.settingsButton = append(toolbar, $('button.paradis-browser-live-icon-button.codicon.codicon-settings-gear'));
+		this.settingsButton = append(toolbar, $('button.paradis-browser-live-icon-button.paradis-focus-ring-inset.codicon.codicon-settings-gear'));
 		this.settingsButton.setAttribute('aria-label', localize('paradis.browserLive.settings', "表示と並び"));
 		this.settingsButton.setAttribute('aria-haspopup', 'true');
 		this.settingsButton.setAttribute('aria-expanded', 'false');
@@ -188,7 +188,7 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		// --- 絞り込み状況 ----------------------------------------------------------------
 		this.filterBar = append(root, $('.paradis-browser-live-filterbar'));
 		this.filterBarText = append(this.filterBar, $('span.paradis-browser-live-grow'));
-		const clearButton = append(this.filterBar, $('button.paradis-browser-live-link'));
+		const clearButton = append(this.filterBar, $('button.paradis-browser-live-link.paradis-focus-ring'));
 		clearButton.textContent = localize('paradis.browserLive.clearFilters', "絞り込みを解除");
 		this._register(addDisposableListener(clearButton, EventType.CLICK, () => this.clearFilters()));
 
@@ -370,7 +370,7 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 			this.model.close(entry.viewId).catch(onUnexpectedError);
 		}));
 
-		const shot = append(root, $('button.paradis-browser-live-shot'));
+		const shot = append(root, $('button.paradis-browser-live-shot.paradis-focus-ring-inset'));
 		const thumbnail = disposables.add(new ParadisBrowserLiveThumbnail(
 			shot,
 			() => this.model.getViewModel(entry.viewId),
@@ -753,7 +753,7 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 	// ------------------------------------------------------------------ 部品
 
 	private createMiniButton(parent: HTMLElement, codicon: string, label: string, disposables: DisposableStore): HTMLElement {
-		const button = append(parent, $(`button.paradis-browser-live-mini-button.codicon.codicon-${codicon}`));
+		const button = append(parent, $(`button.paradis-browser-live-mini-button.paradis-focus-ring-inset.codicon.codicon-${codicon}`));
 		button.setAttribute('aria-label', label);
 		disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), button, label));
 		return button;

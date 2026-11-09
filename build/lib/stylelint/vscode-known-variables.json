@@ -647,6 +647,7 @@
 		"--vscode-paradis-fillNeutral",
 		"--vscode-paradis-fillSelected",
 		"--vscode-paradis-focus",
+		"--vscode-paradis-focusSubtle",
 		"--vscode-paradis-line",
 		"--vscode-paradis-lineStrong",
 		"--vscode-paradis-lineSubtle",

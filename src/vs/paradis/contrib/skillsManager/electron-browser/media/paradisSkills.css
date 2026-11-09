@@ -36,10 +36,6 @@
 	outline: none;
 }
 
-.monaco-workbench .paradis-skills:focus {
-	outline: none !important;
-}
-
 .monaco-workbench .paradis-skills .psk-header {
 	padding: 12px 18px;
 	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
@@ -136,18 +132,6 @@
 .monaco-workbench .paradis-skills .psk-button:disabled {
 	opacity: 0.5;
 	cursor: default;
-}
-
-.monaco-workbench .paradis-skills .psk-button:focus-visible,
-.monaco-workbench .paradis-skills .psk-nav-item:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}
-
-/* Rows fill a list with overflow: hidden, so draw the focus ring inside the row. */
-.monaco-workbench .paradis-skills .psk-row:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .monaco-workbench .paradis-skills .psk-body {
@@ -386,10 +370,6 @@
 	font-size: 12px;
 	font-family: inherit;
 	outline: none;
-}
-
-.monaco-workbench .paradis-skills .psk-select:focus {
-	border-color: var(--vscode-focusBorder);
 }
 
 .monaco-workbench .paradis-skills .psk-file {

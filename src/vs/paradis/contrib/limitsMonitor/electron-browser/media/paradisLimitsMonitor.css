@@ -253,11 +253,6 @@
 	color: var(--vscode-descriptionForeground);
 }
 
-.paradis-limits-panel .plm-account-toggle:focus-visible {
-	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}
-
 /* バッジ・アイコンボタンをまとめて右寄せする列。高さをここで20pxに揃えることで、
 	角丸バッジ(padding由来の高さ)とアイコンボタン(width/height固定)が align-items:center
 	だけでは微妙にずれて見える問題を避ける。 */
@@ -340,11 +335,6 @@
 
 .paradis-limits-panel .plm-account-icon-btn:hover {
 	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-limits-panel .plm-account-icon-btn:focus-visible {
-	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 /* 5時間/7日/モデル別枠の複数行を1つのgridにまとめる。行ごとに.plm-meterがgridを
@@ -618,12 +608,6 @@
 	text-decoration: underline;
 }
 
-.paradis-limits-panel .plm-card-action-link:focus-visible {
-	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-	border-radius: var(--vscode-cornerRadius-small, 4px);
-}
-
 /* 次に切れる期限が今日・明日のときの1行。 */
 .paradis-limits-panel .plm-card-action-link.soon,
 .paradis-limits-panel .plm-card-action-note.soon {
@@ -746,11 +730,6 @@
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-.paradis-limits-panel .plm-icon-btn:focus-visible {
-	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 /* allow-any-unicode-next-line */
 /* メールを番号にしている間（押された状態）。 */
 .paradis-limits-panel .plm-mask-btn.on {
@@ -786,12 +765,6 @@
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.5));
 	color: var(--vscode-foreground);
 	font-size: 12px;
-	outline: none;
-}
-
-/* The dialog takes focus itself (tabindex="-1") for Escape handling. Keep the workbench's focus outline
-	(`.monaco-workbench [tabindex="-1"]:focus`) off its frame; the controls inside still show it. */
-.monaco-workbench .paradis-limits-setup[tabindex="-1"]:focus {
 	outline: none;
 }
 
@@ -930,12 +903,3 @@
 	cursor: default;
 }
 
-/* パネル本体は tabIndex=-1 にして Esc / クリック外しの受け口にしているだけなので、
-	フォーカスリングは見せない。workbench の `.monaco-workbench [tabindex="-1"]:focus`
-	(vs/workbench/browser/media/style.css) が focusBorder のアウトラインを描くため、
-	詳細度で上回って打ち消す（クラス単独の `outline: none` では負け、同点の 0,3,0 では
-	CSS の読み込み順で勝ち負けが変わるため `[tabindex="-1"]` を足して 0,4,0 にする）。 */
-.monaco-workbench .paradis-limits-panel[tabindex="-1"]:focus,
-.monaco-workbench .paradis-limits-panel[tabindex="-1"]:focus-visible {
-	outline: none;
-}

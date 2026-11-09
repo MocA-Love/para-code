@@ -75,7 +75,7 @@ export function paradisCreateButton(container: HTMLElement, label: string, store
 
 /** 絞り込みのチップ（押し込み状態を持つ小さなボタン）。 */
 export function paradisCreateChip(container: HTMLElement, label: string, store: DisposableStore, onClick: () => void): HTMLButtonElement {
-	const chip = dom.append(container, $<HTMLButtonElement>('button.paradis-tce-chip', { type: 'button' }, label));
+	const chip = dom.append(container, $<HTMLButtonElement>('button.paradis-tce-chip.paradis-focus-ring-inset', { type: 'button' }, label));
 	store.add(dom.addDisposableListener(chip, dom.EventType.CLICK, onClick));
 	return chip;
 }
