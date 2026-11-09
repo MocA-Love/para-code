@@ -7,7 +7,7 @@
 
 import * as assert from 'assert';
 import * as sinon from 'sinon';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event as BaseEvent } from '../../../../../base/common/event.js';
 import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
@@ -18,6 +18,7 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService } from '../../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
+import { PARADIS_CLAUDE_CONTEXT_CHANNEL } from '../../../claudeMod/common/paradisClaudeContextBreakdown.js';
 import {
 	ParadisCcusageWarmLeasePayload,
 	ParadisCcusageWarmTarget,
@@ -187,7 +188,10 @@ function createHarness(values: Readonly<Record<string, unknown>> = {}): ITestCcu
 	const channel = new TestCcusageChannel();
 	const configuration = new TestCcusageConfigurationService(values);
 	const instantiationService = new TestInstantiationService();
-	instantiationService.set(ISharedProcessService, { getChannel: () => channel } as unknown as ISharedProcessService);
+	// セクションはコンテキストの内訳を別の口（変更の購読と期間の取得）で聞く。ここでは内訳を返さない口を渡し、
+	// 使用量の口の呼び出しの記録に混ぜない
+	const contextChannel = { listen: () => BaseEvent.None, call: () => new Promise(() => { }) };
+	instantiationService.set(ISharedProcessService, { getChannel: (name: string) => name === PARADIS_CLAUDE_CONTEXT_CHANNEL ? contextChannel : channel } as unknown as ISharedProcessService);
 	instantiationService.set(IConfigurationService, configuration as unknown as IConfigurationService);
 	instantiationService.set(IRemoteAgentService, { getConnection: () => null } as unknown as IRemoteAgentService);
 	// 描画本体は ParadisCcusageSection へ移り、テーマ購読も含めて createInstance で組み立てられる
@@ -290,7 +294,6 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 			{ kind: 'daily', options: { since: '20260519' } },
 			{ kind: 'blocks', options: {} },
 			{ kind: 'session', options: { since: '20260519' } },
-			{ kind: 'projects', options: { since: '20260519' } },
 		]);
 
 		section.setVisible(false);
@@ -409,7 +412,7 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		assert.strictEqual(harness.channel.activeLeases.size, 2);
 		assert.deepStrictEqual([...harness.channel.activeLeases.values()].map(targetOptions).sort((left, right) => left.length - right.length), [
 			[{ since: '20260816' }],
-			[{ since: '20260519' }, {}, { since: '20260519' }, { since: '20260519' }],
+			[{ since: '20260519' }, {}, { since: '20260519' }],
 		]);
 
 		harness.configuration.setValue(PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH, ' /custom/ccusage ');
@@ -419,7 +422,6 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 			[
 				{ executablePath: '/custom/ccusage', since: '20260519' },
 				{ executablePath: '/custom/ccusage' },
-				{ executablePath: '/custom/ccusage', since: '20260519' },
 				{ executablePath: '/custom/ccusage', since: '20260519' },
 			],
 		]);
@@ -431,7 +433,6 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 			[
 				{ executablePath: '/custom/ccusage', since: '20260520' },
 				{ executablePath: '/custom/ccusage' },
-				{ executablePath: '/custom/ccusage', since: '20260520' },
 				{ executablePath: '/custom/ccusage', since: '20260520' },
 			],
 		]);
