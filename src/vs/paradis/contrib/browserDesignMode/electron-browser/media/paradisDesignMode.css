@@ -178,12 +178,6 @@
 	cursor: default;
 }
 
-.monaco-workbench .browser-root .paradis-design-tray button:focus-visible,
-.monaco-workbench .browser-root .paradis-markup-overlay button:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}
-
 /* ---- Markup overlay ---- */
 
 /*

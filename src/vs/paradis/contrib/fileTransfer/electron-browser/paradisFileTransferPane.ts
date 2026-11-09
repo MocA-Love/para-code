@@ -161,7 +161,7 @@ export class ParadisFileTransferPane extends Disposable {
 			ariaLabel: localize('paradis.fileTransfer.filterAria', "{0} の一覧を名前で絞り込む", this.transferService.sideLabel(this.side)),
 			inputBoxStyles: defaultInputBoxStyles,
 		}));
-		const actionsButton = dom.append(head, $<HTMLButtonElement>('button.para-ft-actions'));
+		const actionsButton = dom.append(head, $<HTMLButtonElement>('button.para-ft-actions.paradis-focus-ring'));
 		actionsButton.type = 'button';
 		actionsButton.setAttribute('aria-haspopup', 'true');
 		dom.append(actionsButton, $('span')).textContent = localize('paradis.fileTransfer.actions', "操作");
@@ -478,7 +478,7 @@ export class ParadisFileTransferPane extends Disposable {
 			if (index > 0) {
 				dom.append(crumbs, $(`span.para-ft-crumb-sep${ThemeIcon.asCSSSelector(Codicon.chevronRight)}`));
 			}
-			const button = dom.append(crumbs, $<HTMLButtonElement>('button.para-ft-crumb'));
+			const button = dom.append(crumbs, $<HTMLButtonElement>('button.para-ft-crumb.paradis-focus-ring-inset'));
 			button.type = 'button';
 			button.textContent = index === 0 ? '/' : basename(segment);
 			button.title = segment.path;
@@ -534,7 +534,7 @@ export class ParadisFileTransferPane extends Disposable {
 			: this.listError === 'notFound'
 				? localize('paradis.fileTransfer.listNotFound', "フォルダーが見つかりません")
 				: localize('paradis.fileTransfer.listFailed', "一覧を読めませんでした: {0}", this.listErrorDetail);
-		const up = dom.append(this.message, $<HTMLButtonElement>('button.para-ft-button.secondary'));
+		const up = dom.append(this.message, $<HTMLButtonElement>('button.para-ft-button.paradis-focus-ring.secondary'));
 		up.type = 'button';
 		up.textContent = localize('paradis.fileTransfer.goUp', "上のフォルダーへ");
 		this.messageStore.add(dom.addDisposableListener(up, 'click', () => void this.goUp()));
@@ -572,11 +572,11 @@ export class ParadisFileTransferPane extends Disposable {
 			const row = dom.append(list, $('.para-ft-hostrow'));
 			dom.append(row, $(`span${ThemeIcon.asCSSSelector(Codicon.server)}`));
 			dom.append(row, $('span.para-ft-hostname')).textContent = alias;
-			const direct = dom.append(row, $<HTMLButtonElement>('button.para-ft-button.primary'));
+			const direct = dom.append(row, $<HTMLButtonElement>('button.para-ft-button.paradis-focus-ring.primary'));
 			direct.type = 'button';
 			direct.textContent = localize('paradis.fileTransfer.openDirect', "接続せずに開く");
 			direct.title = localize('paradis.fileTransfer.openDirectTitle', "このウィンドウのまま、SSH で {0} のファイルを直接読み書きします", alias);
-			const connect = dom.append(row, $<HTMLButtonElement>('button.para-ft-button.secondary'));
+			const connect = dom.append(row, $<HTMLButtonElement>('button.para-ft-button.paradis-focus-ring.secondary'));
 			connect.type = 'button';
 			connect.textContent = localize('paradis.fileTransfer.connect', "接続して開く");
 			const status = dom.append(row, $('.para-ft-hoststatus'));
@@ -664,7 +664,7 @@ export class ParadisFileTransferPane extends Disposable {
 	}
 
 	private navButton(parent: HTMLElement, icon: ThemeIcon, label: string, run: () => void): HTMLButtonElement {
-		const button = dom.append(parent, $<HTMLButtonElement>('button.para-ft-nav-button'));
+		const button = dom.append(parent, $<HTMLButtonElement>('button.para-ft-nav-button.paradis-focus-ring-inset'));
 		button.type = 'button';
 		button.setAttribute('aria-label', label);
 		button.title = label;

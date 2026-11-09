@@ -100,13 +100,14 @@ export function ProviderUsageSection({ provider, title, snapshot, now, loading, 
 	numbers?: AccountNumbers;
 }) {
 	const accounts = snapshot?.accounts ?? [];
+	const hidden = snapshot?.hiddenAccounts ?? [];
 	const remoteHost = snapshot?.remoteHost;
 	const { shown, unavailable } = splitUnavailable(accounts, account => account, remoteHost);
 	return (
 		<UsageSection title={title} logo={<ProviderLogo provider={provider} size={iconSize.sm} />} dimmed={dimmed}>
 			{snapshot === undefined ? (
 				<UsageRow><UsageRowTitle title={loading ? '取得しています…' : 'まだ取得していません'} /></UsageRow>
-			) : accounts.length === 0 ? (
+			) : accounts.length === 0 && hidden.length === 0 ? (
 				<UsageRow><UsageRowTitle title="アカウントがありません" hint={providerEmptyMessage(snapshot)} /></UsageRow>
 			) : (
 				<>
@@ -124,6 +125,7 @@ export function ProviderUsageSection({ provider, title, snapshot, now, loading, 
 							</Fragment>
 						))}
 					</UnavailableAccountsGroup>
+					<HiddenAccountsGroup names={hidden.map(account => accountName(account, numbers))} separated={accounts.length > 0} />
 				</>
 			)}
 		</UsageSection>
@@ -156,11 +158,44 @@ export function UnavailableAccountsGroup({ names, separated, children }: {
 	separated: boolean;
 	children: ReactNode;
 }) {
+	return (
+		<FoldedAccountsGroup title={`取得できていないアカウント ${names.length} 件`} names={names} separated={separated} openHint="それぞれの理由を開きます">
+			{children}
+		</FoldedAccountsGroup>
+	);
+}
+
+/**
+ * PC の使用量のパネルで隠したアカウントを畳んだ1行（「非表示中のアカウント 2 件」とメールの並び）。押すと、
+ * 表示に戻すのは PC からという説明を開く（モバイルは表示だけ）。1件も無ければ何も出さない。
+ */
+export function HiddenAccountsGroup({ names, separated }: {
+	names: readonly string[];
+	/** 上にほかのアカウントの行があり、区切り線が要る。 */
+	separated: boolean;
+}) {
+	return (
+		<FoldedAccountsGroup title={`非表示中のアカウント ${names.length} 件`} names={names} separated={separated} openHint="説明を開きます">
+			<UsageRow>
+				<Text style={styles.rowHint}>PC の「AI 利用リミット」で隠したアカウントです。表示に戻すときは PC で操作してください。</Text>
+			</UsageRow>
+		</FoldedAccountsGroup>
+	);
+}
+
+/** アカウントを畳んだ1行の共通部分（見出しとメールの並び。押すと `children` を開く）。 */
+function FoldedAccountsGroup({ title, names, separated, openHint, children }: {
+	title: string;
+	names: readonly string[];
+	separated: boolean;
+	/** 閉じているときの読み上げの補足。 */
+	openHint: string;
+	children: ReactNode;
+}) {
 	const [open, setOpen] = useState(false);
 	if (names.length === 0) {
 		return null;
 	}
-	const title = `取得できていないアカウント ${names.length} 件`;
 	return (
 		<>
 			{separated ? <UsageSeparator /> : null}
@@ -170,7 +205,7 @@ export function UnavailableAccountsGroup({ names, separated, children }: {
 				accessibilityRole="button"
 				accessibilityState={{ expanded: open }}
 				accessibilityLabel={`${title}、${names.join('、')}`}
-				accessibilityHint={open ? '説明を閉じます' : 'それぞれの理由を開きます'}
+				accessibilityHint={open ? '説明を閉じます' : openHint}
 			>
 				<View style={styles.row}>
 					<View style={styles.main}>

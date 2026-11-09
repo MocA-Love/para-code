@@ -54,11 +54,6 @@
 	color: var(--vscode-foreground);
 }
 
-.monaco-workbench .paradis-browser-zoom-stepper > button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 /* ± は詰まったときに先に諦める。数字だけでも「いま何倍か」は伝わる。 */
 .monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-step {
 	width: 20px;

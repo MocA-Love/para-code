@@ -108,7 +108,7 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 	) {
 		super(editor);
 		this.surface = ProxyChannel.toService<IParadisAgentPageScriptsSurface>(mainProcessService.getChannel(PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL));
-		this.chip = $<HTMLButtonElement>('button.paradis-page-scripts-chip');
+		this.chip = $<HTMLButtonElement>('button.paradis-page-scripts-chip.paradis-focus-ring-inset');
 		this.chip.type = 'button';
 		this.chip.style.display = 'none';
 		this.chip.setAttribute('aria-haspopup', 'dialog');
@@ -267,7 +267,7 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 
 	/** 一行のアイコンのボタン（ホバーで説明）。 */
 	private iconButton(parent: HTMLElement, icon: ThemeIcon, label: string, store: DisposableStore, run: (() => void) | undefined): HTMLButtonElement {
-		const button = append(parent, $<HTMLButtonElement>(`button.paradis-page-scripts-icon-button${ThemeIcon.asCSSSelector(icon)}`));
+		const button = append(parent, $<HTMLButtonElement>(`button.paradis-page-scripts-icon-button.paradis-focus-ring-inset${ThemeIcon.asCSSSelector(icon)}`));
 		button.type = 'button';
 		button.setAttribute('aria-label', label);
 		store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), button, label));

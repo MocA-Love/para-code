@@ -97,17 +97,6 @@
 	border-color: var(--vscode-charts-yellow, #cca700);
 }
 
-.paradis-agent-live-window .paradis-agent-live-card:focus,
-.paradis-agent-live-window .paradis-agent-live-list-row:focus {
-	outline: none;
-}
-
-.paradis-agent-live-window .paradis-agent-live-card:focus-visible,
-.paradis-agent-live-window .paradis-agent-live-list-row:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 /* Space colour: the same thin band the tile header carries, here along the card edge. */
 .paradis-agent-live-window .paradis-agent-live-card-spacebar {
 	position: absolute;

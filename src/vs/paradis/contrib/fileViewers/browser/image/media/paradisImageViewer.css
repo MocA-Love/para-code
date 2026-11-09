@@ -21,10 +21,6 @@
 	color: var(--vscode-editor-foreground);
 }
 
-.paradis-image-viewer:focus {
-	outline: none !important;
-}
-
 .paradis-image-viewer.container.image {
 	padding: 0;
 	display: flex;

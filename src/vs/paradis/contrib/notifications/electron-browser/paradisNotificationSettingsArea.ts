@@ -282,7 +282,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		this._player = this._register(this.instantiationService.createInstance(ParadisNotificationSoundPlayer));
 
 		// ---------- 見出しの行（検索ボックス + 自動保存フラッシュ） ----------
-		const searchBox = dom.append(containers.header, $('.pns-search'));
+		const searchBox = dom.append(containers.header, $('.pns-search.paradis-focus-subtle-within'));
 		searchBox.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		this._searchInput = dom.append(searchBox, $('input')) as HTMLInputElement;
 		this._searchInput.type = 'text';

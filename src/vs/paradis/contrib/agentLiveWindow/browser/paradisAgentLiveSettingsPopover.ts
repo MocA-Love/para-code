@@ -95,7 +95,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 	) {
 		super();
 
-		this.element = append(container, $('.paradis-agent-live-pop'));
+		this.element = append(container, $('.paradis-agent-live-pop.paradis-focus-none'));
 		this.element.tabIndex = -1;
 		this.element.setAttribute('role', 'dialog');
 		this.element.setAttribute('aria-label', localize('paradis.agentLive.settings', "表示と並び"));
@@ -105,7 +105,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		this.section(localize('paradis.agentLive.sortLabel', "並び替え"));
 		const sortList = append(this.element, $('.paradis-agent-live-pop-list'));
 		for (const sort of Object.keys(SORT_LABELS) as ParadisAgentLiveSort[]) {
-			const button = append(sortList, $('button.paradis-agent-live-pop-item'));
+			const button = append(sortList, $('button.paradis-agent-live-pop-item.paradis-focus-ring-inset'));
 			append(button, $('span.paradis-agent-live-pop-check.codicon.codicon-check'));
 			append(button, $('span')).textContent = SORT_LABELS[sort];
 			this._register(addDisposableListener(button, EventType.CLICK, () => {
@@ -115,7 +115,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 			this.sortButtons.set(sort, button);
 		}
 		const directionRow = append(this.element, $('.paradis-agent-live-pop-row'));
-		this.directionButton = append(directionRow, $('button.paradis-agent-live-chip'));
+		this.directionButton = append(directionRow, $('button.paradis-agent-live-chip.paradis-focus-ring-inset'));
 		this._register(addDisposableListener(this.directionButton, EventType.CLICK, () => {
 			this.viewState.sortDesc = !this.viewState.sortDesc;
 			this.host.commit();
@@ -133,7 +133,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		const columnsRow = this.labelledRow(localize('paradis.agentLive.columnsLabel', "列"));
 		const columnsSeg = append(columnsRow, $('.paradis-agent-live-seg'));
 		for (let columns = PARADIS_AGENT_LIVE_MIN_COLUMNS; columns <= PARADIS_AGENT_LIVE_MAX_COLUMNS; columns++) {
-			const button = append(columnsSeg, $('button'));
+			const button = append(columnsSeg, $('button.paradis-focus-ring-inset'));
 			button.textContent = String(columns);
 			const value = columns;
 			this._register(addDisposableListener(button, EventType.CLICK, () => {
@@ -207,7 +207,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		const groupRow = this.labelledRow(localize('paradis.agentLive.groupLabel', "グループ"));
 		const groupSeg = append(groupRow, $('.paradis-agent-live-seg'));
 		for (const group of ['none', 'space', 'status'] as const) {
-			const button = append(groupSeg, $('button'));
+			const button = append(groupSeg, $('button.paradis-focus-ring-inset'));
 			button.textContent = GROUP_LABELS[group];
 			this._register(addDisposableListener(button, EventType.CLICK, () => {
 				this.viewState.group = group;
@@ -345,7 +345,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		this.spaceButtons.clear();
 		clearNode(this.spaceList);
 		for (const [key, label] of options) {
-			const button = append(this.spaceList, $('button.paradis-agent-live-pop-item'));
+			const button = append(this.spaceList, $('button.paradis-agent-live-pop-item.paradis-focus-ring-inset'));
 			append(button, $('span.paradis-agent-live-pop-check.codicon.codicon-check'));
 			append(button, $('span')).textContent = label;
 			this.spaceDisposables.add(addDisposableListener(button, EventType.CLICK, () => {
@@ -364,7 +364,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 			}));
 			this.spaceButtons.set(key, button);
 		}
-		const all = append(this.spaceList, $('button.paradis-agent-live-pop-item'));
+		const all = append(this.spaceList, $('button.paradis-agent-live-pop-item.paradis-focus-ring-inset'));
 		append(all, $('span.paradis-agent-live-pop-check.codicon.codicon-check'));
 		append(all, $('span')).textContent = localize('paradis.agentLive.selectAllSpaces', "すべてのスペース");
 		this.spaceDisposables.add(addDisposableListener(all, EventType.CLICK, () => {
@@ -391,7 +391,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 	}
 
 	private segButton(parent: HTMLElement, label: string, hover: string, run: () => void): HTMLElement {
-		const button = append(parent, $('button'));
+		const button = append(parent, $('button.paradis-focus-ring-inset'));
 		button.textContent = label;
 		this.registerHover(button, hover);
 		this._register(addDisposableListener(button, EventType.CLICK, run));

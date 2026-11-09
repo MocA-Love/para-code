@@ -95,11 +95,6 @@
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-context-usage-badge.hidden {
 	display: none;
 }
@@ -167,10 +162,6 @@
 	overflow-y: auto;
 	padding: var(--vscode-spacing-size20) 0;
 	font-size: var(--paradis-chip-font-size);
-}
-
-.paradis-context-usage-details:focus {
-	outline: none;
 }
 
 .paradis-context-usage-header,
@@ -261,11 +252,6 @@
 
 .paradis-context-usage-details details.paradis-ccusage-context-section > summary:hover {
 	background-color: var(--vscode-list-hoverBackground);
-}
-
-.paradis-context-usage-details details.paradis-ccusage-context-section > summary:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .paradis-context-usage-details details.paradis-ccusage-context-section > .paradis-ccusage-context-item,

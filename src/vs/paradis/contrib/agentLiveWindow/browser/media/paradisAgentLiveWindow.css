@@ -82,14 +82,6 @@
 	color: var(--vscode-foreground);
 }
 
-.paradis-agent-live-chip:focus-visible,
-.paradis-agent-live-icon-button:focus-visible,
-.paradis-agent-live-mini-button:focus-visible,
-.paradis-agent-live-seg button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-agent-live-chip.checked {
 	background-color: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.1));
 	color: var(--vscode-foreground);
@@ -143,11 +135,6 @@
 	font-family: inherit;
 	font-size: 11.5px;
 	font-variant-numeric: tabular-nums;
-}
-
-.paradis-agent-live-number:focus {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .paradis-agent-live-number:disabled {
@@ -385,20 +372,11 @@
 	opacity: 0.35;
 }
 
-/* 手動並び替え中のドロップ先はカード全体のハイライトではなく、隣に挿入する位置を示す縦線
-	(.paradis-agent-live-insert-line、壁に1本だけ置いて JS が位置を動かす) で示す。掴んでいない
-	カードの枠が光る見た目を無くすため、drop-target のハイライトはここでは持たない。 */
-
-.paradis-agent-live-tile:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 /* ホイールの行き先が端末になっているタイル (端末そのものを掴んでいる状態)。壁が動かない理由が
 	分かるよう枠で示す。box-shadow ではなく outline を使うのは、要対応 (attention) の黄色枠と
 	同じ詳細度で後勝ちになり、それを消してしまうため。 */
 .paradis-agent-live-tile:has(.paradis-agent-live-term:focus-within) {
-	outline: 1px solid var(--vscode-focusBorder);
+	outline: 1px solid var(--vscode-paradis-focusSubtle);
 	outline-offset: -1px;
 }
 
@@ -524,11 +502,6 @@
 
 .paradis-agent-live-browser-button:hover {
 	background-color: var(--vscode-list-hoverBackground);
-}
-
-.paradis-agent-live-browser-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .paradis-agent-live-browser-button.hidden {
@@ -730,11 +703,6 @@
 	background-color: var(--vscode-list-hoverBackground);
 }
 
-.paradis-agent-live-pop-item:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-agent-live-pop-check {
 	flex: 0 0 14px;
 	font-size: 13px;
@@ -833,12 +801,3 @@
 	-webkit-app-region: no-drag;
 }
 
-/* パネル本体は tabIndex=-1 にして Esc / クリック外しの受け口にしているだけなので、
-	フォーカスリングは見せない。workbench の `.monaco-workbench [tabindex="-1"]:focus`
-	(vs/workbench/browser/media/style.css) が focusBorder のアウトラインを描くため、
-	詳細度で上回って打ち消す（クラス単独の `outline: none` では負け、同点の 0,3,0 では
-	CSS の読み込み順で勝ち負けが変わるため `[tabindex="-1"]` を足して 0,4,0 にする）。 */
-.monaco-workbench .paradis-agent-live-pop[tabindex="-1"]:focus,
-.monaco-workbench .paradis-agent-live-pop[tabindex="-1"]:focus-visible {
-	outline: none;
-}

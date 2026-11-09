@@ -114,7 +114,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				// Houston の list.hoverBackground は editorWidget.background と同じ #343841 で、ポップオーバーの中の行に
 				// マウスを乗せても色が変わらない
 				'list.hoverBackground': '#ffffff0f',
-				'list.focusBackground': '#09AFD933'
+				'list.focusBackground': '#09AFD933',
+				// 文字の入力欄・検索欄・リストの行の、押しても出る灰色のフォーカスの枠（paradisColors.ts の paradis.focusSubtle）
+				'paradis.focusSubtle': '#7d8394'
 			},
 			'[Dark 2026]': {
 				'statusBar.background': '#09AFD9',
@@ -133,7 +135,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'statusBar.background': '#0598BD',
 				'statusBar.foreground': '#FFFFFF',
 				'statusBar.noFolderBackground': '#0598BD',
-				'statusBar.noFolderForeground': '#FFFFFF'
+				'statusBar.noFolderForeground': '#FFFFFF',
+				'paradis.focusSubtle': '#8a8f99'
 			}
 		},
 		// 注: `github.copilot.chat.commitMessageGeneration.instructions` はここ（defaultレイヤー）では

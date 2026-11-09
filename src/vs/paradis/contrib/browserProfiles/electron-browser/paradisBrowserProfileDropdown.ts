@@ -106,7 +106,7 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 
 		// 開いたボタンのウィンドウに置く（補助ウィンドウのボタンから開いたとき、別の窓に出ないように）
 		this._container = layoutService.getContainer(dom.getWindow(options.anchor));
-		this._element = $('.paradis-browser-profile-dropdown.paradis-overlay-popover');
+		this._element = $('.paradis-browser-profile-dropdown.paradis-focus-none.paradis-overlay-popover');
 		this._element.tabIndex = -1;
 		this._listElement = dom.append(this._element, $('.pbp-list'));
 		this._listElement.setAttribute('role', 'listbox');
@@ -227,7 +227,7 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 	}
 
 	private _appendActionRow(parent: HTMLElement, icon: ThemeIcon, label: string, run: () => void): void {
-		const element = dom.append(parent, $('button.pbp-row.pbp-action'));
+		const element = dom.append(parent, $('button.pbp-row.paradis-focus-none.pbp-action'));
 		// 作成／管理は「選ぶ対象」ではなく操作なので、listbox の option にはしない
 		// （role="option" なのに aria-selected を持たない行を作らない）。フッターは
 		// listbox の外側にあり、キーボードでの移動だけ行と同じ扱いにしている。
@@ -247,7 +247,7 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 		/** この行をスペースの既定にするときの対象。ピンを出さない行では undefined。 */
 		readonly pinTarget?: ParadisSpaceDefaultTarget;
 	}): IDropdownRow {
-		const element = dom.append(this._listElement, $('.pbp-row'));
+		const element = dom.append(this._listElement, $('.pbp-row.paradis-focus-none'));
 		element.classList.toggle('is-selected', descriptor.selected);
 		element.classList.toggle('is-stale', descriptor.stale);
 		const spaceDefault = this.options.spaceDefault;

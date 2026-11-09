@@ -111,15 +111,6 @@
 	flex-shrink: 0;
 }
 
-.paradis-preset-editor-dialog .ppe-search:focus-within {
-	border-color: var(--vscode-focusBorder);
-}
-
-/* The box shows the focus. The workbench input[type="text"]:focus outline (0,3,1) would draw a second frame inside it. */
-.monaco-workbench .paradis-preset-editor-dialog .ppe-search-input:focus {
-	outline: none;
-}
-
 .paradis-preset-editor-dialog .ppe-search-input {
 	flex: 1;
 	min-width: 0;
@@ -355,11 +346,6 @@
 
 .paradis-preset-editor-dialog .ppe-grip:hover {
 	color: var(--vscode-foreground);
-}
-
-.paradis-preset-editor-dialog .ppe-grip:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	border-radius: 3px;
 }
 
 .paradis-preset-editor-dialog .ppe-row-icon {
@@ -611,10 +597,6 @@
 	height: 28px;
 	padding: 0 8px;
 	font-size: 13px;
-}
-
-.paradis-preset-editor-dialog .ppe-input:focus {
-	border-color: var(--vscode-focusBorder);
 }
 
 /* 同名のプリセットがある状態。エラーではない（そのまま保存してよい）ので警告色にとどめる。 */

@@ -99,7 +99,7 @@ export interface IParadisContextUsageBadgeHost {
  */
 export function createParadisContextUsageBadge(container: HTMLElement, host: IParadisContextUsageBadgeHost): IParadisEditorTerminalOverlay {
 	const store = new DisposableStore();
-	const element = append(container, $('.paradis-context-usage-badge.hidden'));
+	const element = append(container, $('.paradis-context-usage-badge.paradis-focus-ring-inset.hidden'));
 	element.setAttribute('role', 'button');
 	element.tabIndex = 0;
 	const ring = document.createElementNS(SVG_NS, 'svg');

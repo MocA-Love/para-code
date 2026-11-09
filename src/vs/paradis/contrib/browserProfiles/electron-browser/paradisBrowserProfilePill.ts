@@ -82,7 +82,7 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 	) {
 		super(editor);
 
-		this._element = $('button.paradis-browser-profile-pill');
+		this._element = $('button.paradis-browser-profile-pill.paradis-focus-ring-inset');
 		this._element.setAttribute('aria-haspopup', 'listbox');
 		this._element.setAttribute('aria-expanded', 'false');
 		this._dotElement = dom.append(this._element, $('.pbp-pill-dot'));

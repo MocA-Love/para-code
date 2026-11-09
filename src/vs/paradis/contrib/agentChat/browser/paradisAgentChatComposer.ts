@@ -102,7 +102,7 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.slashMenu.style.display = 'none';
 		this.notice = append(this.element, $('.paradis-agent-chat-composer-notice'));
 		this.notice.setAttribute('aria-live', 'polite');
-		const box = append(this.element, $('.paradis-agent-chat-composer-box'));
+		const box = append(this.element, $('.paradis-agent-chat-composer-box.paradis-focus-subtle-within'));
 		this.textarea = append(box, $('textarea.paradis-agent-chat-input')) as HTMLTextAreaElement;
 		this.textarea.rows = 1;
 		this.textarea.spellcheck = false;

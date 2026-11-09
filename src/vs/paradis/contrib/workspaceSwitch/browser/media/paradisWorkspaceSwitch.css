@@ -637,11 +637,6 @@
 	background-color: var(--vscode-list-hoverBackground);
 }
 
-.paradis-space-notes-header:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-space-notes-title {
 	font-size: 11px;
 	font-weight: 700;
@@ -820,13 +815,6 @@
 }
 
 /* allow-any-unicode-next-line */
-/* キーボードのフォーカスは枠線の色で出す（枠の外に outline を足すと二重線になる）。本家の [tabindex]:focus (0,3,0) にも勝つ詳細度にする */
-.monaco-workbench .paradis-space-notes-task .paradis-space-notes-check:focus-visible {
-	outline: none;
-	border-color: var(--vscode-focusBorder);
-}
-
-/* allow-any-unicode-next-line */
 /* upstream の `.monaco-workbench .codicon[class*="codicon-"] { font-size: 16px }` に勝つため
  * .monaco-workbench を前置して詳細度を上げる (PR チップと同じ理由) */
 .monaco-workbench .paradis-space-notes-check > .codicon {
@@ -879,11 +867,6 @@
 	opacity: 1;
 }
 
-.paradis-space-notes-add:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .monaco-workbench .paradis-space-notes-add > .codicon {
 	font-size: var(--vscode-codiconFontSize-compact);
 	margin-top: 5px;
@@ -919,10 +902,6 @@
 	color: var(--vscode-input-foreground);
 	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
 	border-radius: var(--vscode-cornerRadius-small);
-}
-
-.paradis-space-notes-editor:focus {
-	border-color: var(--vscode-focusBorder);
 }
 
 .paradis-space-notes.collapsed .paradis-space-notes-editor,
@@ -1087,11 +1066,6 @@
 
 .paradis-workspaces-nav-row:hover {
 	background-color: var(--vscode-list-hoverBackground);
-}
-
-.paradis-workspaces-nav-row:focus-visible,
-.paradis-workspaces-heading-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
 }
 
 .paradis-workspaces-heading {

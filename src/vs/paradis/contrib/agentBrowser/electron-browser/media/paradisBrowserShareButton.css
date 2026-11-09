@@ -52,12 +52,6 @@
 	display: none;
 }
 
-.monaco-workbench .paradis-browser-share-item .paradis-browser-share-main:focus-visible,
-.monaco-workbench .paradis-browser-share-item .paradis-browser-share-list-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .monaco-workbench .monaco-action-bar .action-item.paradis-browser-share-item:not(.checked) .paradis-browser-share-main:hover .paradis-browser-share-glyph {
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
@@ -123,10 +117,6 @@
 	border-radius: var(--vscode-cornerRadius-medium, 6px);
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
 	font-size: 13px;
-	outline: none;
-}
-
-.monaco-workbench .paradis-browser-share-popover[tabindex="-1"]:focus {
 	outline: none;
 }
 
@@ -201,11 +191,6 @@
 .monaco-workbench .paradis-browser-share-popover button {
 	font: inherit;
 	cursor: pointer;
-}
-
-.monaco-workbench .paradis-browser-share-popover button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 /* "Stop sharing": a 22px icon button (close), like the upstream action bar. */

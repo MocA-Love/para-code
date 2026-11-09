@@ -22,10 +22,6 @@
 	outline: none;
 }
 
-.monaco-workbench .paradis-hub:focus {
-	outline: none !important;
-}
-
 /* ---------- header ---------- */
 
 .paradis-hub .phub-header {
@@ -153,11 +149,6 @@
 
 .paradis-hub .phub-nav-item:hover {
 	background: var(--vscode-list-hoverBackground);
-}
-
-.paradis-hub .phub-nav-item:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .paradis-hub .phub-nav-item.active {

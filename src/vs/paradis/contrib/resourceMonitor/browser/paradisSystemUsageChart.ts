@@ -234,7 +234,7 @@ export class ParadisSystemUsageSegment<T extends string> extends Disposable {
 			this.buttonListeners.clear();
 			dom.clearNode(this.element);
 			this.buttons = options.map(option => {
-				const button = dom.append(this.element, $('button.paradis-sysusage-segment-button')) as HTMLButtonElement;
+				const button = dom.append(this.element, $('button.paradis-sysusage-segment-button.paradis-focus-ring-inset')) as HTMLButtonElement;
 				button.setAttribute('type', 'button');
 				button.setAttribute('role', 'radio');
 				this.buttonListeners.add(dom.addDisposableListener(button, 'click', () => this.onSelect(option.value)));

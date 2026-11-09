@@ -409,20 +409,20 @@ export class ParadisScreenColorPicker extends Disposable {
 			const actions = dom.append(this.panel, $('.paradis-tce-screen-actions'));
 			const parent = this.current?.parentElement;
 			if (parent && parent !== this.targetDocument.body) {
-				const button = dom.append(actions, $('button.paradis-tce-chip', { type: 'button' }, localize('paradis.themeColors.screen.parentButton', "親の要素へ")));
+				const button = dom.append(actions, $('button.paradis-tce-chip.paradis-focus-ring-inset', { type: 'button' }, localize('paradis.themeColors.screen.parentButton', "親の要素へ")));
 				store.add(dom.addDisposableListener(button, dom.EventType.CLICK, e => {
 					e.stopPropagation();
 					this.inspect(parent);
 				}));
 			}
-			const resume = dom.append(actions, $('button.paradis-tce-chip', { type: 'button' }, localize('paradis.themeColors.screen.resume', "別の場所を選ぶ")));
+			const resume = dom.append(actions, $('button.paradis-tce-chip.paradis-focus-ring-inset', { type: 'button' }, localize('paradis.themeColors.screen.resume', "別の場所を選ぶ")));
 			store.add(dom.addDisposableListener(resume, dom.EventType.CLICK, e => {
 				e.stopPropagation();
 				this.pinned = false;
 				this.current = undefined;
 				this.renderPanel();
 			}));
-			const cancel = dom.append(actions, $('button.paradis-tce-chip', { type: 'button' }, localize('paradis.themeColors.screen.cancel', "やめる")));
+			const cancel = dom.append(actions, $('button.paradis-tce-chip.paradis-focus-ring-inset', { type: 'button' }, localize('paradis.themeColors.screen.cancel', "やめる")));
 			store.add(dom.addDisposableListener(cancel, dom.EventType.CLICK, e => {
 				e.stopPropagation();
 				this.end();

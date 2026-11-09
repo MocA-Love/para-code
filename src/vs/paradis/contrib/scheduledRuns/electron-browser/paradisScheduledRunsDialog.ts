@@ -283,7 +283,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	) {
 		super();
 		this.backdrop = $('.paradis-scheduled-runs-backdrop.paradis-modal-backdrop');
-		this.modal = dom.append(this.backdrop, $('.paradis-scheduled-runs'));
+		this.modal = dom.append(this.backdrop, $('.paradis-scheduled-runs.paradis-focus-none'));
 		this.modal.setAttribute('role', 'dialog');
 		this.modal.setAttribute('aria-modal', 'true');
 
@@ -397,7 +397,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			return;
 		}
 		for (const definition of definitions) {
-			const item = dom.append(this.navList, $('button.psr-nav-item')) as HTMLButtonElement;
+			const item = dom.append(this.navList, $('button.psr-nav-item.paradis-focus-ring-inset')) as HTMLButtonElement;
 			item.type = 'button';
 			item.classList.toggle('active', this.editing ? this.editing.id === definition.id : definition.id === this.selectedId);
 			const latest = this.runsOf(definition.id)[0];
@@ -1087,7 +1087,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	}
 
 	private button(container: HTMLElement, label: string, kind: 'primary' | 'secondary', icon?: ThemeIcon): HTMLButtonElement {
-		const button = dom.append(container, $(`button.psr-button.${kind}`)) as HTMLButtonElement;
+		const button = dom.append(container, $(`button.psr-button.paradis-focus-ring.${kind}`)) as HTMLButtonElement;
 		button.type = 'button';
 		if (icon) {
 			button.appendChild($(`span${ThemeIcon.asCSSSelector(icon)}`));

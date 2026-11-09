@@ -232,7 +232,7 @@ export class ParadisAgentLiveSummaryView extends Disposable {
 
 	private createCard(entry: IParadisAgentLiveEntry): IItem {
 		const disposables = new DisposableStore();
-		const root = $('.paradis-agent-live-card');
+		const root = $('.paradis-agent-live-card.paradis-focus-subtle');
 		const spaceBar = append(root, $('.paradis-agent-live-card-spacebar'));
 		const head = append(root, $('.paradis-agent-live-card-head'));
 		const name = append(head, $('span.paradis-agent-live-card-name'));
@@ -246,7 +246,7 @@ export class ParadisAgentLiveSummaryView extends Disposable {
 
 	private createRow(entry: IParadisAgentLiveEntry): IItem {
 		const disposables = new DisposableStore();
-		const root = $('.paradis-agent-live-list-row');
+		const root = $('.paradis-agent-live-list-row.paradis-focus-subtle');
 		root.setAttribute('role', 'listitem');
 		const badgeCell = append(root, $('.paradis-agent-live-list-status'));
 		const badge = append(badgeCell, $('span.paradis-agent-live-badge'));

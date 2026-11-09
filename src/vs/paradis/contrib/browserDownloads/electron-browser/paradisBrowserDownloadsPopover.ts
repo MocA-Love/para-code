@@ -100,7 +100,7 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		super();
 
 		this._container = _anchor ? layoutService.getContainer(dom.getWindow(_anchor)) : layoutService.activeContainer;
-		this._element = $('.paradis-browser-downloads-popover.paradis-overlay-popover');
+		this._element = $('.paradis-browser-downloads-popover.paradis-focus-none.paradis-overlay-popover');
 		this._element.tabIndex = -1;
 		this._element.setAttribute('role', 'dialog');
 		this._element.setAttribute('aria-label', localize('paradis.browserDownloads.popover.label', "ダウンロード"));

@@ -73,7 +73,7 @@ export class ParadisServiceStatusPopover extends Disposable {
 		super();
 
 		this.snapshot = options.snapshot;
-		this.element = $('.paradis-service-status-popover.paradis-overlay-popover');
+		this.element = $('.paradis-service-status-popover.paradis-overlay-popover.paradis-focus-none');
 		this.element.style.width = `${POPOVER_WIDTH}px`;
 		this.element.tabIndex = -1;
 		this.bodyElement = dom.append(this.element, $('.pssp-body'));

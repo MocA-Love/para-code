@@ -1213,7 +1213,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			const row = appendHBarRow(card, label, folders.join('\n'), value, maxValue, seq[Math.min(index, seq.length - 1)], format(value));
 			if (folders.length > 1) {
 				// 押すと中身（クローン・ワークツリー）を開く
-				row.classList.add('expandable');
+				row.classList.add('expandable', 'paradis-focus-subtle');
 				row.setAttribute('role', 'button');
 				row.tabIndex = 0;
 				row.setAttribute('aria-expanded', String(this.expandedRepos.has(repo.key)));
@@ -1297,7 +1297,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			if (sessionId !== undefined) {
 				// 押すと、この会話で最後に取ったコンテキストの内訳を開く
 				const open = this.expandedContext.has(sessionId);
-				row.classList.add('expandable');
+				row.classList.add('expandable', 'paradis-focus-subtle');
 				row.setAttribute('role', 'button');
 				row.tabIndex = 0;
 				row.setAttribute('aria-expanded', String(open));

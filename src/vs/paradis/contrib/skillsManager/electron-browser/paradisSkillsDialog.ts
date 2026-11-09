@@ -82,7 +82,7 @@ export class ParadisSkillsDialog extends Disposable {
 	) {
 		super();
 		this.backdrop = $('.paradis-skills-backdrop.paradis-modal-backdrop');
-		this.modal = dom.append(this.backdrop, $('.paradis-skills'));
+		this.modal = dom.append(this.backdrop, $('.paradis-skills.paradis-focus-none'));
 		this.modal.setAttribute('role', 'dialog');
 		this.modal.setAttribute('aria-modal', 'true');
 
@@ -196,7 +196,7 @@ export class ParadisSkillsDialog extends Disposable {
 				lastHost = listing.root.host.id;
 				dom.append(this.nav, $('.psk-nav-caption')).textContent = listing.root.host.label;
 			}
-			const item = dom.append(this.nav, $('button.psk-nav-item')) as HTMLButtonElement;
+			const item = dom.append(this.nav, $('button.psk-nav-item.paradis-focus-ring-inset')) as HTMLButtonElement;
 			item.type = 'button';
 			item.classList.toggle('active', listing.root.id === this.selectedRootId);
 			item.classList.toggle('empty', !listing.exists || listing.skills.length === 0);
@@ -259,7 +259,7 @@ export class ParadisSkillsDialog extends Disposable {
 		}
 		const list = dom.append(this.content, $('.psk-list'));
 		for (const skill of listing.skills) {
-			const row = dom.append(list, $('button.psk-row')) as HTMLButtonElement;
+			const row = dom.append(list, $('button.psk-row.paradis-focus-subtle')) as HTMLButtonElement;
 			row.type = 'button';
 			const main = dom.append(row, $('span.psk-row-main'));
 			const nameLine = dom.append(main, $('span.psk-row-name'));
@@ -426,7 +426,7 @@ export class ParadisSkillsDialog extends Disposable {
 	// ---------- 部品 ----------
 
 	private button(container: HTMLElement, label: string, kind: 'primary' | 'secondary' | 'danger' | 'link', icon?: ThemeIcon): HTMLButtonElement {
-		const button = dom.append(container, $(`button.psk-button.${kind}`)) as HTMLButtonElement;
+		const button = dom.append(container, $(`button.psk-button.paradis-focus-ring.${kind}`)) as HTMLButtonElement;
 		button.type = 'button';
 		if (icon) {
 			button.appendChild($(`span${ThemeIcon.asCSSSelector(icon)}`));

@@ -146,9 +146,9 @@ suite('Paradis UI parts', () => {
 			maxHeight: px(parseFloat(box.maxHeight)),
 		}));
 		assert.deepStrictEqual(actual, [
-			{ className: 'paradis-modal paradis-modal-s', width: px(Math.min(480, 94 * vw)), height: '0px', maxHeight: px(88 * vh) },
-			{ className: 'paradis-modal paradis-modal-m', width: px(Math.min(880, 94 * vw)), height: px(Math.min(clamp(520, 72 * vh, 820), 92 * vh)), maxHeight: px(92 * vh) },
-			{ className: 'paradis-modal paradis-modal-l', width: px(Math.min(clamp(1040, 78 * vw, 2000), 95 * vw)), height: px(Math.min(clamp(726, 88 * vh, 1400), 92 * vh)), maxHeight: px(92 * vh) },
+			{ className: 'paradis-modal paradis-modal-s paradis-focus-none', width: px(Math.min(480, 94 * vw)), height: '0px', maxHeight: px(88 * vh) },
+			{ className: 'paradis-modal paradis-modal-m paradis-focus-none', width: px(Math.min(880, 94 * vw)), height: px(Math.min(clamp(520, 72 * vh, 820), 92 * vh)), maxHeight: px(92 * vh) },
+			{ className: 'paradis-modal paradis-modal-l paradis-focus-none', width: px(Math.min(clamp(1040, 78 * vw, 2000), 95 * vw)), height: px(Math.min(clamp(726, 88 * vh, 1400), 92 * vh)), maxHeight: px(92 * vh) },
 		]);
 	});
 

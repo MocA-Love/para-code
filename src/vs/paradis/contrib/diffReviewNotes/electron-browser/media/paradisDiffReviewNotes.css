@@ -71,11 +71,6 @@
 	border-radius: var(--vscode-cornerRadius-small);
 }
 
-.monaco-editor .paradis-diff-review-note-input:focus {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .monaco-editor .paradis-diff-review-note-actions {
 	display: flex;
 	justify-content: flex-end;

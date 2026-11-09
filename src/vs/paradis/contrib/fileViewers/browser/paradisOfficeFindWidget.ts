@@ -79,7 +79,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.element.style.display = 'none';
 
 		const inputBox = document.createElement('div');
-		inputBox.className = 'paradis-office-find-input';
+		inputBox.className = 'paradis-office-find-input paradis-focus-subtle-within';
 		this.element.appendChild(inputBox);
 		this.input = document.createElement('input');
 		this.input.type = 'search';

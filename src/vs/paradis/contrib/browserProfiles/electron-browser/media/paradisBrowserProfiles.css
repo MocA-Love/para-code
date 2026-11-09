@@ -40,11 +40,6 @@
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
-.browser-root .paradis-browser-profile-pill:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .browser-root .paradis-browser-profile-pill[aria-expanded='true'] {
 	background-color: var(--vscode-list-activeSelectionBackground);
 	border-color: var(--vscode-focusBorder);
@@ -105,12 +100,6 @@
 	font-size: 13px;
 }
 
-/* The dropdown can take focus itself (tabindex="-1") when its background is clicked. Keep the workbench's focus outline
-	(`.monaco-workbench [tabindex="-1"]:focus`) off its frame; the controls inside still show it. */
-.monaco-workbench .paradis-browser-profile-dropdown[tabindex="-1"]:focus {
-	outline: none;
-}
-
 .paradis-browser-profile-dropdown .pbp-list {
 	flex: 1;
 	min-height: 0;
@@ -145,12 +134,6 @@
 	background-color: var(--vscode-quickInputList-focusBackground, var(--vscode-list-activeSelectionBackground));
 	color: var(--vscode-quickInputList-focusForeground, var(--vscode-list-activeSelectionForeground));
 	border-left-color: var(--vscode-focusBorder);
-}
-
-/* Rows take focus (tabindex="-1") as the keyboard moves; `.is-focused` above marks them, so keep the
-	workbench's focus outline (`.monaco-workbench [tabindex="-1"]:focus`) off the rows. */
-.monaco-workbench .paradis-browser-profile-dropdown .pbp-row[tabindex="-1"]:focus {
-	outline: none;
 }
 
 /* High contrast themes draw selection with borders rather than fills (the focus background is unset there).
@@ -331,12 +314,6 @@
 	font-size: 13px;
 }
 
-/* The modal takes focus itself (tabindex="-1") for Escape handling and the Tab trap. Keep the workbench's focus outline
-	(`.monaco-workbench [tabindex="-1"]:focus`) off its frame; the controls inside still show it. */
-.monaco-workbench .paradis-browser-profile-modal[tabindex="-1"]:focus {
-	outline: none;
-}
-
 .paradis-browser-profile-modal .pbpm-header {
 	display: flex;
 	align-items: center;
@@ -430,11 +407,6 @@
 	cursor: default;
 }
 
-.paradis-browser-profile-modal .pbpm-btn:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}
-
 /* --- profile list (manage) --- */
 
 .paradis-browser-profile-modal .pbpm-list {
@@ -526,11 +498,6 @@
 	color: var(--vscode-foreground);
 }
 
-.paradis-browser-profile-modal .pbpm-row-action:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 /* --- delete confirmation popover --- */
 
 .paradis-browser-profile-modal .pbpm-confirm {
@@ -587,11 +554,6 @@
 	font-size: 12.5px;
 }
 
-.paradis-browser-profile-modal .pbpm-input:focus {
-	outline: none;
-	border-color: var(--vscode-focusBorder);
-}
-
 .paradis-browser-profile-modal .pbpm-hint {
 	margin-top: 5px;
 	color: var(--vscode-descriptionForeground);
@@ -623,11 +585,6 @@
 	border-radius: 50%;
 }
 
-.paradis-browser-profile-modal .pbpm-swatch:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 3px;
-}
-
 .paradis-browser-profile-modal .pbpm-error {
 	margin-top: 8px;
 	color: var(--vscode-errorForeground);
@@ -645,11 +602,6 @@
 	color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
 	font-family: inherit;
 	font-size: 12.5px;
-}
-
-.paradis-browser-profile-modal .pbpm-select:focus {
-	outline: none;
-	border-color: var(--vscode-focusBorder);
 }
 
 .paradis-browser-profile-modal .pbpm-import-domains,

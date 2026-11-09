@@ -273,7 +273,7 @@ export class ParadisFolderDialog extends ParadisBookmarkModal {
 		const iconGrid = dom.append(iconField, $('.pbm-icon-grid'));
 		for (const key of PARADIS_FOLDER_ICON_KEYS) {
 			// 本物のボタン（Tab で止まり Enter・Space で選べる）。選んだかは aria-pressed で伝える
-			const button = dom.append(iconGrid, $<HTMLButtonElement>('button.pbm-icon-option'));
+			const button = dom.append(iconGrid, $<HTMLButtonElement>('button.pbm-icon-option.paradis-focus-ring-inset'));
 			button.type = 'button';
 			button.appendChild($(`span${ThemeIcon.asCSSSelector(paradisFolderIcon(key))}`));
 			button.setAttribute('aria-label', folderIconLabel(key));
@@ -289,7 +289,7 @@ export class ParadisFolderDialog extends ParadisBookmarkModal {
 		const colorField = this.appendField(localize('paradis.bookmarks.dialog.color', "色"));
 		const colorRow = dom.append(colorField, $('.pbm-color-row'));
 		for (const color of PARADIS_FOLDER_COLOR_PRESETS) {
-			const swatch = dom.append(colorRow, $<HTMLButtonElement>('button.pbm-color-swatch'));
+			const swatch = dom.append(colorRow, $<HTMLButtonElement>('button.pbm-color-swatch.paradis-focus-ring'));
 			swatch.type = 'button';
 			// 色は 22px の押しボタンの中の 12px の丸で見せる
 			dom.append(swatch, $('span.pbm-color-dot')).style.backgroundColor = color;
