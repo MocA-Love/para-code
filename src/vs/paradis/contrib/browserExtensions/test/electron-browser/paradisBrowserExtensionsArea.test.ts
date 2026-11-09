@@ -13,6 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
 import { INativeHostService } from '../../../../../platform/native/common/native.js';
@@ -42,9 +43,10 @@ suite('ParadisBrowserExtensionsArea', () => {
 		instantiationService.stub(IMainProcessService, { getChannel: () => channel } as Partial<IMainProcessService>);
 		instantiationService.stub(IParadisBrowserProfilesService, { list: () => [], onDidChangeProfiles: Event.None } as Partial<IParadisBrowserProfilesService>);
 		instantiationService.stub(IFileDialogService, {});
-		instantiationService.stub(IConfigurationService, {});
+		instantiationService.stub(IConfigurationService, { getValue: () => undefined } as Partial<IConfigurationService>);
 		instantiationService.stub(INativeHostService, {});
 		instantiationService.stub(IParadisAgentBrowserBindingModel, { bindings: [] } as Partial<IParadisAgentBrowserBindingModel>);
+		instantiationService.stub(IContextViewService, {});
 		const host: IParadisHubHost = { close: () => { }, open: () => { } };
 		store.add(instantiationService.createInstance(ParadisBrowserExtensionsArea, containers, host));
 		return containers;

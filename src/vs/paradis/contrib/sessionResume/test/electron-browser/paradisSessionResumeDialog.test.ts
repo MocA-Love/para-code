@@ -12,6 +12,7 @@ import { CancellationError } from '../../../../../base/common/errors.js';
 import { Emitter, Event as BaseEvent } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IMarkdownRendererService } from '../../../../../platform/markdown/browser/markdownRenderer.js';
@@ -506,6 +507,8 @@ function createDialogStubs(client: TestResumeClient, indexSearch?: (query: strin
 			Object.create(null),
 			storage,
 			{ prompt: async () => ({ result: undefined }) } as unknown as IDialogService,
+			Object.create(null),
+			{ getValue: () => undefined } as unknown as IConfigurationService,
 		);
 		dialogs.push(dialog);
 		return dialog;

@@ -13,7 +13,8 @@ import { Separator } from '../../../../../base/common/actions.js';
 import { Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IContextMenuService, IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
@@ -43,6 +44,8 @@ suite('preset editor dialog: row actions', () => {
 			[IWorkspaceContextService, { getWorkspace: () => ({ folders: [] }) }],
 			[IContextMenuService, contextMenuService],
 			[IHoverService, NullHoverService],
+			[IContextViewService, {}],
+			[IConfigurationService, { getValue: () => undefined }],
 		]);
 		const accessor = { get: (id: unknown) => services.get(id) } as unknown as ServicesAccessor;
 		try {
@@ -57,6 +60,8 @@ suite('preset editor dialog: row actions', () => {
 			assert.deepStrictEqual({
 				rows,
 				menuItems,
+				// モーダル（z-index 2600）の上に出す（2575 + layer）
+				menuAboveModal: 2575 + (menu?.layer ?? 0) > 2600,
 				hints: container.querySelector('.ppe-nav-hint') === null,
 			}, {
 				rows: [
@@ -64,6 +69,7 @@ suite('preset editor dialog: row actions', () => {
 					{ name: 'X', chips: ['リポジトリ'], buttons: ['実行', 'X のその他の操作'] },
 				],
 				menuItems: ['編集', '複製', '-', '上へ移動（一番上です）', '下へ移動（保存先（ユーザー設定 / .paracode.json）を跨いでは移せません）', '-', '削除...'],
+				menuAboveModal: true,
 				hints: true,
 			});
 		} finally {

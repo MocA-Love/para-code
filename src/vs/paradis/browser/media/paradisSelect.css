@@ -1,0 +1,23 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* The drop-down of Para Code's own screens (paradisSelect.ts): upstream's SelectBox, sized like the settings editor's. */
+
+.paradis-select {
+	display: inline-flex;
+	min-width: 0;
+}
+
+/* Kept at (0,1,1) so a screen's own class on the select (`.area .x-select`, passed as `className`) still sets its size. */
+.paradis-select > select {
+	width: auto;
+	max-width: 100%;
+	height: 24px;
+	padding: 0 6px;
+	font: inherit;
+	font-size: 12px;
+}

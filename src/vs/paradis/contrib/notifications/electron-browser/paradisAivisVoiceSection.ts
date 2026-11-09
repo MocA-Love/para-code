@@ -18,6 +18,8 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -39,6 +41,7 @@ import { IParadisElevenLabsSampleHost, ParadisElevenLabsVoiceFields } from './pa
 import { getCachedAivisDictionaryList, getCachedAivisModelInfo, setCachedAivisDictionaryList, setCachedAivisModelInfo } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { base64ToBlobUrl } from './paradisNotificationSoundPlayer.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 
 const $ = dom.$;
@@ -151,6 +154,8 @@ export class ParadisAivisVoiceSection extends Disposable {
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		const sampleHost: IParadisElevenLabsSampleHost = {
@@ -610,16 +615,12 @@ export class ParadisAivisVoiceSection extends Disposable {
 		const field = dom.append(parent, $('.setting-row'));
 		const main = dom.append(field, $('.sr-main'));
 		dom.append(main, $('.sr-label')).textContent = STR_DICTIONARY_LABEL;
-		const select = dom.append(field, $('select')) as HTMLSelectElement;
-		select.style.width = '230px';
-		select.disabled = !settings.apiKey;
-		const noneOption = dom.append(select, $('option')) as HTMLOptionElement;
-		noneOption.value = '';
-		noneOption.textContent = STR_DICTIONARY_NONE;
-		select.value = '';
+		const select = this._renderDisposables.add(new ParadisSelect(field, this.contextViewService, this.configurationService, [{ value: '', label: STR_DICTIONARY_NONE }], '', { ariaLabel: STR_DICTIONARY_LABEL }));
+		select.element.style.width = '230px';
+		select.enabled = !!settings.apiKey;
 
-		this._renderDisposables.add(dom.addDisposableListener(select, 'change', () => {
-			this.settingsService.setAivisSettings({ userDictionaryUuid: select.value });
+		this._renderDisposables.add(select.onDidChange(value => {
+			this.settingsService.setAivisSettings({ userDictionaryUuid: value });
 		}));
 
 		if (!settings.apiKey) {
@@ -643,13 +644,11 @@ export class ParadisAivisVoiceSection extends Disposable {
 		});
 	}
 
-	private _populateDictionaryOptions(select: HTMLSelectElement, list: readonly IParadisAivisDictionaryListItem[], userDictionaryUuid: string): void {
-		for (const dict of list) {
-			const option = dom.append(select, $('option')) as HTMLOptionElement;
-			option.value = dict.uuid;
-			option.textContent = `${dict.name} (${dict.word_count})`;
-		}
-		select.value = userDictionaryUuid || '';
+	private _populateDictionaryOptions(select: ParadisSelect, list: readonly IParadisAivisDictionaryListItem[], userDictionaryUuid: string): void {
+		select.setOptions([
+			{ value: '', label: STR_DICTIONARY_NONE },
+			...list.map(dict => ({ value: dict.uuid, label: `${dict.name} (${dict.word_count})` })),
+		], userDictionaryUuid || '');
 	}
 
 	private _insertPlaceholder(key: string): void {

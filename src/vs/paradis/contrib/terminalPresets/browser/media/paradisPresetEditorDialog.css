@@ -116,6 +116,11 @@
 	border-color: var(--vscode-focusBorder);
 }
 
+/* The box shows the focus. The workbench input[type="text"]:focus outline (0,3,1) would draw a second frame inside it. */
+.monaco-workbench .paradis-preset-editor-dialog .ppe-search-input:focus {
+	outline: none;
+}
+
 .paradis-preset-editor-dialog .ppe-search-input {
 	flex: 1;
 	min-width: 0;
@@ -602,9 +607,11 @@
 }
 
 /* select は内容幅に合わせる（全幅だと右側が余る） */
-.paradis-preset-editor-dialog select.ppe-input {
-	width: auto;
-	max-width: 100%;
+/* プルダウン（paradisSelect.ts）は、となりの入力欄と同じ高さと文字の大きさにする。 */
+.paradis-preset-editor-dialog .paradis-select > select {
+	height: 28px;
+	padding: 0 8px;
+	font-size: 13px;
 }
 
 .paradis-preset-editor-dialog .ppe-input:focus {

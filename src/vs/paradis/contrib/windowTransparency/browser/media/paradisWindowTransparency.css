@@ -158,6 +158,17 @@
 		.monaco-workbench.paradis-transparent.modern-ui-frosted-glass:not(.hc-black):not(.hc-light) .notifications-list-container {
 			background: transparent !important;
 		}
+
+		/* The context menu keeps the opaque backstop above: the menu container makes the menu colour
+			transparent for its glass layer, but .monaco-menu sits on top of that layer with the editor-colour
+			backstop, so menus read as the editor colour. Para Code's own popovers (.paradis-popover-hover,
+			paradisFocusRing.css, and the resident terminals popover of the status bar) look like the menus, so
+			they take the same surface and no glass layer. */
+		.monaco-workbench.paradis-transparent.modern-ui-frosted-glass:not(.hc-black):not(.hc-light) .paradis-pty-daemon-popover,
+		.monaco-workbench.paradis-transparent.modern-ui-frosted-glass:not(.hc-black):not(.hc-light) .monaco-hover.workbench-hover.paradis-popover-hover {
+			--modern-ui-glass-background: transparent;
+			background: var(--vscode-editor-background) !important;
+		}
 	}
 }
 

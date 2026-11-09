@@ -24,6 +24,8 @@ import { join } from '../../../../../base/common/path.js';
 import { isLinux, isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { ParadisServeSimBackend, ParadisSimulatorCaptureNotStartedError } from '../../node/paradisServeSimBackend.js';
+import { IParadisSimulatorMiddleware, paradisStartSimulatorHostServer } from '../../node/paradisSimulatorHostServer.js';
 import { PARADIS_SIMULATOR_HOST_READY } from '../../common/paradisSimulator.js';
 import { PARADIS_SERVE_SIM_DIR, PARADIS_SERVE_SIM_MIDDLEWARE } from '../../node/paradisServeSimDist.js';
 import { paradisEnsurePrivateDir, paradisRemoveStaleSimulatorSockets, ParadisSimulatorHostProcess, ParadisSimulatorSpawn } from '../../node/paradisSimulatorHostProcess.js';
@@ -100,6 +102,17 @@ function linuxTcpListenCount(pid: number): number {
 }
 
 const SCRATCH_ROOT = join(tmpdir(), `paradis-simulator-test-${process.pid}`);
+
+/** info と warn を覚えるログ（段ごとの記録を確かめる）。 */
+class RecordingLogService extends NullLogService {
+	readonly lines: string[] = [];
+	override info(message: string): void {
+		this.lines.push(message);
+	}
+	override warn(message: string): void {
+		this.lines.push(message);
+	}
+}
 
 async function scratchDir(name: string): Promise<string> {
 	await paradisEnsurePrivateDir(SCRATCH_ROOT);
@@ -272,5 +285,91 @@ async function scratchDir(name: string): Promise<string> {
 		const host = store.add(new ParadisSimulatorHostProcess({ userDataPath: await scratchDir('noServeSim'), logService: new NullLogService(), socketParentDir: await scratchDir('noServeSimSockets'), serveSimDir: join(SCRATCH_ROOT, 'missing-serve-sim'), spawnChild: () => { spawned++; throw new Error('must not spawn'); } }));
 		const refused = await host.ensure().then(() => 'started', error => error instanceof Error ? error.message : String(error));
 		assert.deepStrictEqual({ spawned, refused, lastError: host.lastError }, { spawned: 0, refused: 'serve-sim is not included in this build of Para Code', lastError: 'serve-sim is not included in this build of Para Code' });
+	});
+
+	// 準備できた後のホストの stdout（serve-sim のネイティブの `[capture] …` と console.log）もログへ流す。
+	// paracode-183 では捨てていたため、取り込みが始まらなかったときに何も残らなかった
+	test('logs what the host prints to stdout after it is ready', async () => {
+		const spawnChild: ParadisSimulatorSpawn = () => {
+			const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; pid: number; exitCode: number | null; signalCode: null; kill(): boolean };
+			child.stdin = new PassThrough();
+			child.stdout = new PassThrough();
+			child.stderr = new PassThrough();
+			child.pid = 100200;
+			child.exitCode = null;
+			child.signalCode = null;
+			child.kill = () => true;
+			child.stdin.once('data', () => {
+				child.stdout.write(`${PARADIS_SIMULATOR_HOST_READY}\n`);
+				setTimeout(() => child.stdout.write('[capture] Frame callbacks registered (event-driven) + 5fps idle floor\n\n[capture] Framebuffer: 1206x2622'), 5);
+				setTimeout(() => child.stdout.write(' (direct IOSurface, zero-copy)\n'), 10);
+			});
+			return child as unknown as ChildProcess;
+		};
+		const log = new RecordingLogService();
+		const host = store.add(new ParadisSimulatorHostProcess({ userDataPath: await scratchDir('stdout'), logService: log, socketParentDir: await scratchDir('stdoutSockets'), spawnChild, bootstrapPath: 'bootstrap-fork' }));
+		await host.ensure();
+		await new Promise(resolve => setTimeout(resolve, 30));
+		host.stop().catch(() => undefined);
+		assert.deepStrictEqual(log.lines.filter(line => line.includes('host stdout')), [
+			'[paradis-simulator] host stdout: [capture] Frame callbacks registered (event-driven) + 5fps idle floor',
+			'[paradis-simulator] host stdout: [capture] Framebuffer: 1206x2622 (direct IOSurface, zero-copy)',
+		]);
+	});
+
+	// 映像の要求に応答の頭が返らない（端末の取り込みが始まらない）とき: 受け口は段を記録し、shared process は期限で
+	// 要求を捨てて「取り込みが始まらない」で終える（paracode-183 では黒いまま何も残らなかった）
+	test('records the stages of a video request and gives up when the capture never starts', async () => {
+		const token = randomBytes(32).toString('base64url');
+		const socketPath = join(await scratchDir('silent'), `pcsim-${randomBytes(4).toString('hex')}.sock`);
+		const hostLog: string[] = [];
+		let closedByClient = false;
+		// 映像の要求には何も返さない serve-sim の代わり（端末のセッションの開始が戻ってこない状態）
+		const middleware = (async (req, res) => {
+			if (req.url?.endsWith('/stream.mjpeg')) {
+				res.once('close', () => closedByClient = true);
+				return;
+			}
+			res.writeHead(200, { 'Content-Type': 'application/json' });
+			res.end('{}');
+		}) as IParadisSimulatorMiddleware;
+		middleware.handleUpgrade = () => { };
+		const server = await paradisStartSimulatorHostServer({ socketPath, token, middleware, onLog: message => hostLog.push(message), slowHeadersMs: 50 });
+		try {
+			const log = new RecordingLogService();
+			const hostProvider = { ensure: async () => ({ socketPath, token }), isRunning: true, lastError: undefined };
+			const backend = store.add(new ParadisServeSimBackend(hostProvider, log, async () => '', 200));
+			const ended = await new Promise<Error | undefined>(resolve => {
+				const subscription = backend.subscribeFrames(UDID, () => { }, error => {
+					subscription.dispose();
+					resolve(error);
+				});
+			});
+			await new Promise(resolve => setTimeout(resolve, 30));
+			assert.deepStrictEqual({
+				notStarted: ended instanceof ParadisSimulatorCaptureNotStartedError,
+				reason: ended?.message,
+				closedByClient,
+				hostLog: hostLog.map(line => line.replace(/\d+ ms/g, 'N ms')),
+				sharedProcessLog: log.lines.map(line => line.replace(/\d+ ms/g, 'N ms')),
+			}, {
+				notStarted: true,
+				reason: `The simulator host did not start capturing ${UDID} within 1 s`,
+				closedByClient: true,
+				hostLog: [
+					`stream.mjpeg ${UDID}: received`,
+					`stream.mjpeg ${UDID}: no answer after N ms (the device session has not started capturing)`,
+					`stream.mjpeg ${UDID}: closed after N ms (status none)`,
+				],
+				sharedProcessLog: [
+					`[paradis-simulator] video ${UDID}: requested`,
+					`[paradis-simulator] video ${UDID}: host ready after N ms, request sent`,
+					`[paradis-simulator] video ${UDID}: The simulator host did not start capturing ${UDID} within 1 s`,
+					`[paradis-simulator] video ${UDID}: ended after N ms, 0 frame(s): The simulator host did not start capturing ${UDID} within 1 s`,
+				],
+			});
+		} finally {
+			await server.close();
+		}
 	});
 });

@@ -43,7 +43,8 @@ import { Codicon, getAllCodicons } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextMenuService, IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -80,6 +81,7 @@ import {
 	PARADIS_WORKSPACE_PRESET_FILE,
 } from '../common/paradisTerminalPresets.js';
 import { paradisFolderLabelMoves } from '../common/paradisPresetLocalLedger.js';
+import { PARADIS_MODAL_POPUP_LAYER, ParadisSelect } from '../../../browser/paradisSelect.js';
 import {
 	IParadisPresetMovePlan,
 	isParadisPresetMoveRefusal,
@@ -515,6 +517,8 @@ export function openParadisPresetEditorDialog(accessor: ServicesAccessor): void 
 		accessor.get(IWorkspaceContextService),
 		accessor.get(IContextMenuService),
 		accessor.get(IHoverService),
+		accessor.get(IContextViewService),
+		accessor.get(IConfigurationService),
 	);
 }
 
@@ -591,6 +595,8 @@ class ParadisPresetEditorDialog extends Disposable {
 		private readonly contextService: IWorkspaceContextService,
 		private readonly contextMenuService: IContextMenuService,
 		private readonly hoverService: IHoverService,
+		private readonly contextViewService: IContextViewService,
+		private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -1014,6 +1020,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => anchor,
 			getActions: () => actions,
+			layer: PARADIS_MODAL_POPUP_LAYER,
 		});
 	}
 
@@ -1082,6 +1089,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			this.contextMenuService.showContextMenu({
 				getAnchor: () => more,
 				getActions: buildActions,
+				layer: PARADIS_MODAL_POPUP_LAYER,
 			});
 		}));
 	}
@@ -1866,6 +1874,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => anchor,
 			getActions: () => actions,
+			layer: PARADIS_MODAL_POPUP_LAYER,
 		});
 	}
 
@@ -2150,13 +2159,10 @@ class ParadisPresetEditorDialog extends Disposable {
 
 		// 種別（実行 / 入力欄に入れるだけ / エージェント向け）。種別で意味を持たない行は隠す。
 		const actionField = field(STR_ACTION);
-		const actionSelect = dom.append(actionField, $('select.ppe-input.ppe-select')) as HTMLSelectElement;
-		for (const { action, label } of ACTION_LABELS) {
-			const option = dom.append(actionSelect, $('option')) as HTMLOptionElement;
-			option.value = action;
-			option.textContent = label;
-		}
-		actionSelect.value = editing ? paradisPresetAction(editing) : 'run';
+		const actionSelect = this._viewStore.add(new ParadisSelect(actionField, this.contextViewService, this.configurationService,
+			ACTION_LABELS.map(({ action, label }) => ({ value: action, label })),
+			editing ? paradisPresetAction(editing) : 'run',
+			{ ariaLabel: STR_ACTION }));
 		const actionHint = dom.append(actionField, $('.ppe-check-hint'));
 
 		const promptField = field(STR_PROMPT);
@@ -2232,13 +2238,10 @@ class ParadisPresetEditorDialog extends Disposable {
 			renderTasks();
 		}));
 
-		const layoutSelect = dom.append(field(STR_LAYOUT), $('select.ppe-input.ppe-select')) as HTMLSelectElement;
-		for (const { layout, label } of LAYOUT_LABELS) {
-			const option = dom.append(layoutSelect, $('option')) as HTMLOptionElement;
-			option.value = layout;
-			option.textContent = label;
-		}
-		layoutSelect.value = editing ? paradisGetPresetTasks(editing).layout : 'tabs';
+		const layoutSelect = this._viewStore.add(new ParadisSelect(field(STR_LAYOUT), this.contextViewService, this.configurationService,
+			LAYOUT_LABELS.map(({ layout, label }) => ({ value: layout, label })),
+			editing ? paradisGetPresetTasks(editing).layout : 'tabs',
+			{ ariaLabel: STR_LAYOUT }));
 
 		const iconField = field(STR_ICON);
 		const iconRow = dom.append(iconField, $('.ppe-icon-row'));
@@ -2353,7 +2356,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			setRowVisible(tasksField, commandsVisible);
 			setRowVisible(addTaskBtn.parentElement as HTMLElement, commandsVisible);
 			// 並べ方と既定の作業ディレクトリは「実行」だけ（入れるだけは今のターミナルへ入れる）
-			setRowVisible(layoutSelect.parentElement as HTMLElement, action === 'run');
+			setRowVisible(layoutSelect.element.parentElement as HTMLElement, action === 'run');
 			setRowVisible(cwdInput.parentElement as HTMLElement, action === 'run');
 			// スペース作成直後の自動実行も「実行」だけ
 			for (const element of [autoRunInput.parentElement as HTMLElement, autoRunHint]) {
@@ -2362,7 +2365,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			actionHint.textContent = action === 'insert' ? STR_ACTION_HINT_INSERT : action === 'agent-prompt' ? STR_ACTION_HINT_AGENT_PROMPT : '';
 		};
 		updateActionVisibility();
-		this._viewStore.add(dom.addDisposableListener(actionSelect, 'change', updateActionVisibility));
+		this._viewStore.add(actionSelect.onDidChange(updateActionVisibility));
 
 		// 保存先（既存編集時は変更不可）
 		const folder = this.contextService.getWorkspace().folders[0];

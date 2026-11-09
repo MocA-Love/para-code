@@ -11,6 +11,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { Event } from '../../../../../base/common/event.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IDialogService, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
@@ -47,7 +48,7 @@ suite('Paradis voice gain section', () => {
 		} as unknown as IParadisNotificationsSettingsService;
 		const dialog = { confirm: async () => ({ confirmed: true }) } as unknown as IDialogService;
 		const notifications = { info: () => undefined, warn: () => undefined, error: () => undefined } as unknown as INotificationService;
-		store.add(new ParadisVoiceGainSection(container, sharedProcess, settings, dialog, {} as IFileDialogService, notifications));
+		store.add(new ParadisVoiceGainSection(container, sharedProcess, settings, dialog, {} as IFileDialogService, notifications, Object.create(null), { getValue: () => undefined } as unknown as IConfigurationService));
 		return container;
 	}
 

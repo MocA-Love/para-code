@@ -23,7 +23,7 @@ import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, ParadisSimulatorStreamEvent, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold, paradisSimulatorInputFrame } from '../common/paradisSimulatorFrames.js';
-import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
+import { ParadisServeSimBackend, ParadisSimulatorCaptureNotStartedError } from './paradisServeSimBackend.js';
 import { IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
 import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 import { ParadisAdbDeviceHost } from './android/paradisAdbDeviceHost.js';
@@ -74,7 +74,7 @@ class ParadisSimulatorFrameRelay extends Disposable {
 			}
 			// 待っている 1 枚と返事の待ちを捨て、次の購読で開き直せるようにしてから知らせる
 			this._close();
-			this._onFrame.fire({ kind: 'ended', udid: this._udid, ...(error ? { reason: error.message } : {}) });
+			this._onFrame.fire({ kind: 'ended', udid: this._udid, ...(error ? { reason: error.message } : {}), ...(error instanceof ParadisSimulatorCaptureNotStartedError ? { captureNotStarted: true } : {}) });
 		});
 	}
 
