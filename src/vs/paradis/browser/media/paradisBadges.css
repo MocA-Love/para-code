@@ -1,0 +1,175 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Count badges, chips and status dots of Para Code's UI kit (stage 1, Q596, paradisBadges.ts).
+ * Color only means "a person needs to look": attention (warning) and error (danger). Plain counts are not filled.
+ */
+
+/* ---------- count badge ---------- */
+
+.monaco-workbench .paradis-count {
+	box-sizing: border-box;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	min-width: 0;
+	height: 16px;
+	padding: 0 var(--vscode-spacing-size20);
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--paradis-chip-font-size);
+	font-weight: var(--vscode-fontWeight-regular);
+	line-height: 1;
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-paradis-textMuted);
+	background-color: transparent;
+}
+
+.monaco-workbench .paradis-count.hidden {
+	display: none;
+}
+
+.monaco-workbench .paradis-count:is(.attention, .error) {
+	min-width: 16px;
+	padding: 0 var(--vscode-spacing-size40);
+	color: var(--vscode-paradis-canvas);
+}
+
+.monaco-workbench .paradis-count.attention {
+	background-color: var(--vscode-paradis-warning);
+}
+
+.monaco-workbench .paradis-count.error {
+	background-color: var(--vscode-paradis-danger);
+}
+
+/*
+ * On an icon-only button: over the top right corner, a 14px circle (up to "9+"), cut off from the icon by a 2px rim
+ * in the surface color. The button needs `position: relative`; a screen whose surface is not the canvas (the title
+ * bar) sets the rim color on its own button. Overlaying keeps the button's width the same at any count.
+ */
+.monaco-workbench .paradis-count.paradis-count-overlay {
+	position: absolute;
+	top: -2px;
+	right: -4px;
+	min-width: 14px;
+	height: 14px;
+	padding: 0 3px;
+	font-size: var(--vscode-fontSize-label3);
+	box-shadow: 0 0 0 2px var(--vscode-paradis-canvas);
+}
+
+.monaco-workbench .paradis-count.paradis-count-overlay:not(.attention, .error) {
+	color: var(--vscode-paradis-text);
+	background-color: var(--vscode-paradis-fillNeutral);
+}
+
+.monaco-workbench.hc-black .paradis-count,
+.monaco-workbench.hc-light .paradis-count {
+	border: 1px solid var(--vscode-contrastBorder);
+}
+
+/* ---------- chip (status label) ---------- */
+
+.monaco-workbench .paradis-chip {
+	box-sizing: border-box;
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	min-width: 0;
+	max-width: 100%;
+	height: 20px;
+	padding: 0 var(--vscode-spacing-size80);
+	border: 1px solid var(--vscode-paradis-line);
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--paradis-chip-font-size);
+	font-weight: var(--vscode-fontWeight-regular);
+	white-space: nowrap;
+	color: var(--vscode-paradis-textMuted);
+	background-color: transparent;
+}
+
+.monaco-workbench .paradis-chip > .paradis-chip-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .paradis-chip.paradis-chip-info {
+	color: var(--vscode-paradis-accent);
+	border-color: color-mix(in srgb, var(--vscode-paradis-accent) 40%, transparent);
+}
+
+.monaco-workbench .paradis-chip.paradis-chip-success {
+	color: var(--vscode-paradis-success);
+	border-color: color-mix(in srgb, var(--vscode-paradis-success) 40%, transparent);
+}
+
+.monaco-workbench .paradis-chip.paradis-chip-warning {
+	color: var(--vscode-paradis-warning);
+	border-color: color-mix(in srgb, var(--vscode-paradis-warning) 40%, transparent);
+}
+
+.monaco-workbench .paradis-chip.paradis-chip-danger {
+	color: var(--vscode-paradis-danger);
+	border-color: color-mix(in srgb, var(--vscode-paradis-danger) 40%, transparent);
+}
+
+/* ---------- status dot ---------- */
+
+.monaco-workbench .paradis-status {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	max-width: 100%;
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .paradis-status > .paradis-status-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .paradis-status > .paradis-status-dot {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: var(--vscode-paradis-textFaint);
+}
+
+.monaco-workbench .paradis-status.paradis-status-running > .paradis-status-dot {
+	background-color: var(--vscode-paradis-accent);
+}
+
+.monaco-workbench .paradis-status.paradis-status-success > .paradis-status-dot {
+	background-color: var(--vscode-paradis-success);
+}
+
+.monaco-workbench .paradis-status.paradis-status-warning > .paradis-status-dot {
+	background-color: var(--vscode-paradis-warning);
+}
+
+.monaco-workbench .paradis-status.paradis-status-danger > .paradis-status-dot {
+	background-color: var(--vscode-paradis-danger);
+}
+
+/* Only while motion is enabled (workbench.reduceMotion): the running dot pulses. */
+.monaco-workbench.monaco-enable-motion .paradis-status.paradis-status-running > .paradis-status-dot {
+	animation: paradis-status-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes paradis-status-pulse {
+	50% {
+		opacity: 0.35;
+	}
+}

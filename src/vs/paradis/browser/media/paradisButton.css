@@ -1,0 +1,172 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * The buttons of Para Code's UI kit (stage 1, Q596): primary, secondary, ghost, danger and icon (paradisButton.ts).
+ * Sizes, radius and motion come from paradisTokens.css, colors from the paradis.* theme colors. The same classes
+ * also go on ActionBar items (paradisActionButton.ts), so the rules do not assume the upstream Button's element.
+ * Wrapping upstream's button.css: `.monaco-text-button` sets width 100%, padding, radius and font size, so the
+ * selectors below carry one more class than those rules. Focus is drawn by paradisFocusRing.css (paradis-focus-ring).
+ */
+
+.monaco-workbench .paradis-button,
+.monaco-workbench .paradis-button.monaco-text-button {
+	box-sizing: border-box;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	gap: var(--vscode-spacing-size60);
+	width: auto;
+	min-width: 0;
+	max-width: 100%;
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size120);
+	border: 1px solid transparent;
+	border-radius: var(--paradis-radius-control);
+	font-family: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	font-weight: var(--vscode-fontWeight-regular);
+	line-height: 1;
+	white-space: nowrap;
+	text-decoration: none;
+	cursor: pointer;
+	color: var(--vscode-paradis-textStrong);
+	background-color: var(--vscode-paradis-fillNeutral);
+}
+
+.monaco-workbench.monaco-enable-motion .paradis-button {
+	transition: background-color var(--paradis-motion-exit) var(--paradis-ease-enter);
+}
+
+.monaco-workbench .paradis-button.paradis-button-small,
+.monaco-workbench .paradis-button.monaco-text-button.paradis-button-small {
+	height: var(--paradis-height-sm);
+	padding: 0 var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* A label that does not fit is cut with an ellipsis instead of widening the button past its container
+	(paradisButton.ts renders the label as spans, supportIcons). */
+.monaco-workbench .paradis-button:not(.paradis-action-button) > span,
+.monaco-workbench .paradis-action-button > .paradis-action-button-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* An ActionBar item drawn as a kit button (paradisActionButton.ts): icon, label and count side by side, or the count
+	over the top right corner of an icon-only item. */
+.monaco-workbench .paradis-button.paradis-action-button {
+	position: relative;
+	gap: var(--vscode-spacing-size40);
+	padding: 0 var(--vscode-spacing-size60);
+}
+
+.monaco-workbench .paradis-button.paradis-action-button.paradis-button-icon {
+	padding: 0;
+}
+
+.monaco-workbench .paradis-action-button > .paradis-action-button-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: 16px;
+	height: 16px;
+	font-size: var(--vscode-codiconFontSize);
+}
+
+.monaco-workbench .paradis-button:hover {
+	background-color: var(--vscode-paradis-fillSelected);
+}
+
+.monaco-workbench .paradis-button.checked {
+	background-color: var(--vscode-paradis-fillSelected);
+	color: var(--vscode-paradis-textStrong);
+}
+
+/* Primary: one per surface. */
+.monaco-workbench .paradis-button.paradis-button-primary {
+	color: var(--vscode-paradis-primaryForeground);
+	background-color: var(--vscode-paradis-primary);
+}
+
+.monaco-workbench .paradis-button.paradis-button-primary:hover {
+	background-color: var(--vscode-paradis-primaryHover);
+}
+
+/* Ghost: no fill until hovered (toolbars, title bar items, "learn more"). */
+.monaco-workbench .paradis-button.paradis-button-ghost {
+	color: var(--vscode-paradis-text);
+	background-color: transparent;
+}
+
+.monaco-workbench .paradis-button.paradis-button-ghost:hover {
+	background-color: var(--vscode-paradis-fillHover);
+}
+
+/* Danger: not filled, the line at 40% of the danger color. */
+.monaco-workbench .paradis-button.paradis-button-danger {
+	color: var(--vscode-paradis-danger);
+	background-color: transparent;
+	border-color: color-mix(in srgb, var(--vscode-paradis-danger) 40%, transparent);
+}
+
+.monaco-workbench .paradis-button.paradis-button-danger:hover {
+	background-color: color-mix(in srgb, var(--vscode-paradis-danger) 12%, transparent);
+}
+
+/* Icon: a square, 16px codicon (the upstream Button puts the codicon class on the element itself). */
+.monaco-workbench .paradis-button.paradis-button-icon {
+	/* Beats the codicon rule (display: inline-block) that comes with the codicon class on the same element. */
+	display: inline-flex;
+	width: var(--paradis-height-md);
+	padding: 0;
+	color: var(--vscode-paradis-textMuted);
+	background-color: transparent;
+	font-size: var(--vscode-codiconFontSize);
+}
+
+.monaco-workbench .paradis-button.paradis-button-icon.paradis-button-small {
+	width: var(--paradis-height-sm);
+}
+
+.monaco-workbench .paradis-button.paradis-button-icon:hover {
+	color: var(--vscode-paradis-textStrong);
+	background-color: var(--vscode-paradis-fillHover);
+}
+
+/* Disabled: upstream's `.monaco-button.disabled` already sets the opacity; ActionBar items use `.disabled` too. */
+.monaco-workbench .paradis-button.disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.monaco-workbench .paradis-button.disabled:hover {
+	background-color: transparent;
+}
+
+.monaco-workbench .paradis-button.paradis-button-secondary.disabled:hover {
+	background-color: var(--vscode-paradis-fillNeutral);
+}
+
+.monaco-workbench .paradis-button.paradis-button-primary.disabled:hover {
+	background-color: var(--vscode-paradis-primary);
+}
+
+/* High contrast themes have no fills to rely on: frame the filled kinds, and dash a frame on hover. */
+.monaco-workbench.hc-black .paradis-button:is(.paradis-button-primary, .paradis-button-secondary),
+.monaco-workbench.hc-light .paradis-button:is(.paradis-button-primary, .paradis-button-secondary) {
+	border-color: var(--vscode-contrastBorder);
+}
+
+.monaco-workbench.hc-black .paradis-button:hover,
+.monaco-workbench.hc-light .paradis-button:hover {
+	border-style: dashed;
+	border-color: var(--vscode-contrastActiveBorder);
+}

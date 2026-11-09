@@ -25,6 +25,7 @@ registerColor('paradis.popup', 'menu.background', localize('paradis.color.popup'
 registerColor('paradis.sunken', { op: ColorTransformType.Mix, color: 'editor.background', with: 'input.background', ratio: 0.3 }, localize('paradis.color.sunken', "Para Code の部品: 入力欄の中の面。"));
 registerColor('paradis.fillHover', 'list.hoverBackground', localize('paradis.color.fillHover', "Para Code の部品: ポインタを重ねた行やボタンの塗り。"));
 registerColor('paradis.fillSelected', 'menu.selectionBackground', localize('paradis.color.fillSelected', "Para Code の部品: 選んでいる行の塗り。"));
+registerColor('paradis.fillNeutral', 'button.secondaryBackground', localize('paradis.color.fillNeutral', "Para Code の部品: 副のボタンの塗り。"));
 registerColor('paradis.scrim', '#00000080', localize('paradis.color.scrim', "Para Code の部品: モーダルの下の暗い幕。"));
 
 // 文字
@@ -41,6 +42,8 @@ registerColor('paradis.lineStrong', 'checkbox.border', localize('paradis.color.l
 // 意味の色
 registerColor('paradis.accent', 'progressBar.background', localize('paradis.color.accent', "Para Code の部品: アクセント。"));
 registerColor('paradis.primary', 'button.background', localize('paradis.color.primary', "Para Code の部品: 主のボタン。"));
+registerColor('paradis.primaryHover', 'button.hoverBackground', localize('paradis.color.primaryHover', "Para Code の部品: ポインタを重ねた主のボタン。"));
+registerColor('paradis.primaryForeground', 'button.foreground', localize('paradis.color.primaryForeground', "Para Code の部品: 主のボタンの文字。"));
 // フォーカスの枠の色はこの 1 つだけを通す（paradisFocusRing.css）。色を替えるときは既定値のここだけを直す。
 registerColor('paradis.focus', 'focusBorder', localize('paradis.color.focus', "Para Code の部品: キーボードのフォーカスの枠。"));
 registerColor('paradis.danger', 'errorForeground', localize('paradis.color.danger', "Para Code の部品: 危険・失敗。"));
