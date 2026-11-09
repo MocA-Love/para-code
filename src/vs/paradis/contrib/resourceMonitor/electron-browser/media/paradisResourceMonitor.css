@@ -70,6 +70,25 @@
 	white-space: nowrap;
 }
 
+/* Each value sits in a box as wide as its widest value (100%, 999 MB, ...), so the buttons to the */
+/* right do not move when the number of digits changes (9% -> 10% -> 100%). The widest value comes */
+/* from data-reserve and is laid over the value invisibly; the box is the wider of the two and */
+/* keeps the value right-aligned. A pseudo-element stays out of textContent and the accessible name. */
+.paradis-resource-monitor-trigger-value {
+	display: inline-grid;
+	justify-items: end;
+}
+
+.paradis-resource-monitor-trigger-value > span,
+.paradis-resource-monitor-trigger-value::before {
+	grid-area: 1 / 1;
+}
+
+.paradis-resource-monitor-trigger-value::before {
+	content: attr(data-reserve);
+	visibility: hidden;
+}
+
 /* ---------- panel ---------- */
 
 .paradis-resource-monitor-panel {
