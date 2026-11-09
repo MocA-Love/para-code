@@ -10,6 +10,7 @@ import { stylelintFilter } from './filters.ts';
 import { findClassAttributeSubstringSelector, findRootAnchoredHas } from './lib/stylelint/validateHasSelectors.ts';
 import { getVariableNameValidator } from './lib/stylelint/validateVariableNames.ts';
 import { validateCodiconFontSizes, validateFontSizeTokens, validateFontWeightTokens, validateCornerRadiusTokens, validateSpacingTokens, validateStrokeTokens, validateDeprecatedTokens } from './lib/stylelint/validateDesignTokens.ts';
+import { reportParadisUiRules } from './lib/stylelint/paradisUiRules.ts'; // PARA-PATCH: the UI kit's rules for the fork's own CSS under src/vs/paradis
 
 interface FileWithLines {
 	__lines?: string[];
@@ -85,6 +86,9 @@ export default function gulpstylelint(reporter: Reporter, designTokensEverywhere
 				errorCount++;
 			}
 		}
+
+		// PARA-PATCH: the UI kit's rules for the fork's own CSS under src/vs/paradis (build/lib/stylelint/paradisUiRules.ts)
+		errorCount += reportParadisUiRules(file.relative, contents, message => reporter(message, true));
 
 		// Design-token checks that need block (selector + declaration) awareness.
 		// By default these are scoped to the design-system area (src/vs/sessions),

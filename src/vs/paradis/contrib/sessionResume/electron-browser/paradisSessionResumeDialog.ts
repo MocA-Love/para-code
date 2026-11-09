@@ -171,7 +171,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 		// ダイアログの殻。寸法は media/paradisSessionResume.css 側で指定する（3カラムの最小 936px を
 		// 満たす幅を既定にし、狭い画面では 94vw/92vh で頭打ちにして段階的に畳む）。
-		this.backdrop = $('.paradis-session-resume-backdrop');
+		this.backdrop = $('.paradis-session-resume-backdrop.paradis-modal-backdrop');
 		this.modal = dom.append(this.backdrop, $('.paradis-session-resume-modal'));
 		this.modal.tabIndex = -1;
 		this.modal.setAttribute('role', 'dialog');
@@ -228,7 +228,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 	/**
 	 * 行メニューの操作結果（コピーした、見つからない、失敗した）をダイアログの中に数秒出す。
-	 * 通知の層（z-index 2545）はこのモーダル（2700）より下にあり、通知では見えないため。
 	 */
 	private showInlineMessage(message: string, severity: 'info' | 'error'): void {
 		if (this._store.isDisposed) {
@@ -1152,8 +1151,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 		if (session.otherCodexAccount !== true) {
 			return session.codexHome;
 		}
-		// 一覧は確認のダイアログより上に重なるので、尋ねている間だけ下げる（下げないとダイアログが一覧の裏に隠れる）。
-		this.backdrop.classList.add('behind-dialog');
 		const { result } = await this.dialogService.prompt<'selected' | 'previous'>({
 			type: Severity.Info,
 			message: localize('paradis.sessionResume.otherCodexAccount', "この会話は、選んでいる Codex のアカウントの履歴にありません"),
@@ -1163,7 +1160,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				{ label: localize('paradis.sessionResume.openWithPreviousAccount', "前のアカウントで開く"), run: () => 'previous' },
 			],
 			cancelButton: true,
-		}).finally(() => this.backdrop.classList.remove('behind-dialog'));
+		});
 		if (result === undefined) {
 			return null;
 		}

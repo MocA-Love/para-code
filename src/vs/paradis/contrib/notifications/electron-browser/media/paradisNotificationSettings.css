@@ -792,8 +792,6 @@
 /* 兄弟関係）に追加される（自身のオープン元が既に閉じられていてもダイアログ自体は独立して */
 /* allow-any-unicode-next-line */
 /* 機能する必要があるため）。よって親セレクタに依存させず、単独ルールとしてz-indexで */
-/* allow-any-unicode-next-line */
-/* 設定ダイアログ（2700）より上に重ねる。 */
 .paradis-notif-nested-backdrop {
 	position: absolute;
 	inset: 0;
@@ -801,7 +799,6 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	z-index: 2800;
 }
 
 .paradis-notif-nested-dialog {

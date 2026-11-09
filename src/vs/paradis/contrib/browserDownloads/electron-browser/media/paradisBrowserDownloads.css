@@ -87,11 +87,9 @@
 	2. Popover list (registered in overlayManager so the native view pauses)
 	============================================================ */
 
-/* z-index stays below the workbench modal layer (2575), same tier as the profile dropdown. */
 
 .monaco-workbench .paradis-browser-downloads-popover {
 	position: absolute;
-	z-index: 2550;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -122,7 +120,7 @@
 	display: none;
 }
 
-/* The shared popover shape: header 30px with icon buttons, two-line rows (paradisDensity.css). */
+/* The shared popover shape: header 30px with icon buttons, two-line rows (paradisTokens.css). */
 .monaco-workbench .paradis-browser-downloads-popover .pbd-header {
 	display: flex;
 	align-items: center;

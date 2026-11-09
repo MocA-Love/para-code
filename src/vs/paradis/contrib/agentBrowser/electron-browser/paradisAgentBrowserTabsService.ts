@@ -28,7 +28,6 @@
 // 再読み込みすると忘れ、それまでエージェントが開いていたタブは普通のタブとして残る（エージェントは
 // もう閉じられない）。安全側に倒れるだけなので、永続化はしていない。
 
-import './media/paradisAgentApproval.css';
 import { raceCancellation, raceTimeout, Sequencer } from '../../../../base/common/async.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
@@ -1048,8 +1047,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	/**
 	 * 承認ダイアログ。ワークベンチ内のダイアログ（custom）にしているのは、締め切りで閉じられるように
 	 * するため（ネイティブのシートは取り消せない）と、内蔵ブラウザの上に確実に出すため
-	 * （`monaco-dialog-modal-block` は overlayManager に登録済み）。fork の自前ダイアログ（z-index 2600〜2800）
-	 * が開いていてもその裏に隠れないよう、このダイアログの層だけ上げてある（media/paradisAgentApproval.css）。
+	 * （`monaco-dialog-modal-block` は overlayManager に登録済み）。fork の自前のモーダルはどれもワークベンチの
+	 * ダイアログの層より下（vs/paradis/browser/paradisModal.ts の表）なので、開いていてもその裏に隠れない。
 	 */
 	approvalBlock(token: string, cooldownKey?: string): 'recentlyDenied' | 'busy' | undefined {
 		const deniedUntil = this._deniedUntil.get(cooldownKey !== undefined ? `${token}\n${cooldownKey}` : token);

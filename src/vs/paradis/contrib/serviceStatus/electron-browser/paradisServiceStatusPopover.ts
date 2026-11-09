@@ -16,6 +16,7 @@ import './media/paradisServiceStatus.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -78,6 +79,8 @@ export class ParadisServiceStatusPopover extends Disposable {
 		this.bodyElement = dom.append(this.element, $('.pssp-body'));
 
 		layoutService.activeContainer.appendChild(this.element);
+		// 小窓はモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に浮かせない）
+		this._register(paradisCloseWhenModalOpens(this.element, () => this.options.onClose(false)));
 		this.reposition();
 		this.render();
 		this.element.focus();

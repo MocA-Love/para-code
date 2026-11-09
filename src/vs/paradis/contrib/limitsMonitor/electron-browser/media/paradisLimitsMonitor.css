@@ -98,7 +98,6 @@
 
 .paradis-limits-panel {
 	position: fixed;
-	z-index: 2500;
 	/* 2列（左に Claude、右に Codex）の幅。ウィンドウが狭いときは paradisLimitsPanelLayout.ts が
 		style.width で縮める（1列なら 400px）。値を変えるときは同じファイルの定数も直す。 */
 	width: 800px;
@@ -773,7 +772,6 @@
 .paradis-limits-setup-overlay {
 	position: fixed;
 	inset: 0;
-	z-index: 2600;
 	background: rgba(0, 0, 0, 0.35);
 	display: flex;
 	align-items: center;

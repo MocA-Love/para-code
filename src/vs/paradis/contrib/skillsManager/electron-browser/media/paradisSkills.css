@@ -6,7 +6,8 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /* Skills modal (gear menu). Same shell as the scheduled runs modal (left nav + body).
- * Stacking: below the workbench modal dialog layer (2575) so IDialogService confirmations render above it.
+ * Stacking: the shared fork modal layer (paradis-modal-backdrop, the table in vs/paradis/browser/paradisModal.ts), below the
+ * workbench dialog layer (2575) so IDialogService confirmations render above it.
  * Every rule is scoped under .monaco-workbench .paradis-skills to win over workbench-wide rules. */
 
 .monaco-workbench .paradis-skills-backdrop {
@@ -16,7 +17,6 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	z-index: 2570;
 }
 
 .monaco-workbench .paradis-skills {

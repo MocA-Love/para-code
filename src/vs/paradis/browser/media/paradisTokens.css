@@ -1,0 +1,94 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * The foundation of Para Code's own UI kit (stage 0, Q596): the one place for the fork's sizes, motion and stacking
+ * layers. Colors are not here: they are theme colors registered as paradis.* (vs/paradis/common/paradisColors.ts),
+ * read as --vscode-paradis-*. Part and screen CSS reads these variables and the upstream --vscode-* tokens only, and
+ * does not declare variables of its own. New names go into build/lib/stylelint/vscode-known-variables.json ("others").
+ * Declared on .monaco-workbench, where the --vscode-* sizes and colors they refer to are declared
+ * (workbenchThemeService), so every part that can read those tokens can read these too.
+ * Loaded once through contrib/tokens (paradis.common.contribution.ts); the upstream tokens (baseSizes.ts) stay as is.
+ */
+.monaco-workbench {
+	/* Corner radius steps: controls (buttons, inputs, rows), inner surfaces (cards, popovers, toasts), floating
+		surfaces (dialogs, palettes). */
+	--paradis-radius-control: 6px;
+	--paradis-radius-inner: 8px;
+	--paradis-radius-outer: 12px;
+	/* Control heights: small, standard (also a row in a modal), input field. The 22px sidebar rows stay upstream's. */
+	--paradis-height-sm: 24px;
+	--paradis-height-md: 28px;
+	--paradis-height-lg: 32px;
+	/* Motion: surfaces enter decelerating and leave accelerating, shorter, so the next action is not held up. */
+	--paradis-motion-enter: 160ms;
+	--paradis-motion-exit: 100ms;
+	--paradis-ease-enter: cubic-bezier(.16, 1, .3, 1);
+	--paradis-ease-exit: cubic-bezier(.4, 0, 1, 1);
+	/* Keyboard focus ring: one outline (paradisFocusRing.css draws it in --vscode-paradis-focus). */
+	--paradis-focus-width: 2px;
+	--paradis-focus-offset: 2px;
+
+	/*
+	 * Shared sizes of the fork's own parts that have no upstream counterpart (two-line rows, popover headers, title bar
+	 * items with text, menu rows, chips, the top of a small modal's body). Upstream steps (22px rows, 2-4px gaps, 10px
+	 * text) made these parts too dense, so they read these variables instead (Q544).
+	 */
+	/* A row with a title and a description below it (share popover, downloads, page scripts, ringtones). */
+	--paradis-row-two-line: 44px;
+	/* The line under an anchored popover's header, and the gap between it and the first row. */
+	--paradis-popover-header-border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	--paradis-popover-list-top: var(--vscode-spacing-size40);
+	/* Title bar items that show text (CPU/RAM, AI limits, ports, agent / browser lists ...). Icon-only items keep 3px. */
+	--paradis-titlebar-item-padding: 0 5px;
+	/* Rows of the fork's popup menus (terminal presets). */
+	--paradis-menu-row: var(--paradis-height-sm);
+	/* Text of chips, pills and count badges. */
+	--paradis-chip-font-size: var(--vscode-fontSize-label2);
+	/* Space between a small (S) modal's header and its first line. */
+	--paradis-modal-body-top: var(--vscode-spacing-size160);
+
+	/*
+	 * Stacking layers of the fork's floating parts, slotted between the upstream layers (the table and the reasons are in
+	 * paradisModal.ts). Upstream, for reference: title bar 2500, modal editor 2540, toasts and notification center 2545,
+	 * quick input 2550, dialogs and context views (menus, drop-down lists) 2575, hovers 2576. Part CSS never writes a
+	 * number above 3: it puts the shared marker class on the element (rules below) or reads one of these variables.
+	 */
+	/* Backdrop and box of every fork modal. Upstream menus, drop-downs, quick input, dialogs, hovers and toasts open above it. */
+	--paradis-z-modal: 2542;
+	/* A box opened from inside an open modal (dictionary editors in the notification settings ...). */
+	--paradis-z-modal-nested: 2543;
+	/* Anchored popovers that are not context views yet (title bar panels, browser toolbar drop-downs, tab launcher,
+		terminal preset folders, pty daemon). Above toasts; they close when a fork modal opens (paradisCloseWhenModalOpens). */
+	--paradis-z-popover: 2546;
+	/* Reserved for the dimming layer under the centered quick input (Q593): above the popovers, under quick input. */
+	--paradis-z-scrim: 2548;
+	/* Temporary whole-window inspection overlays (theme colors: pick from the screen). They outline any part, so they
+		sit above every upstream layer, like upstream's screencast overlay (100000). */
+	--paradis-z-inspect: 100000;
+}
+
+/* Every fork modal backdrop carries the marker class `paradis-modal-backdrop` (it also keeps the built-in browser's
+	native view from painting over the modal, overlayManager.ts), so its layer is set here, once. */
+.monaco-workbench .paradis-modal-backdrop {
+	z-index: var(--paradis-z-modal);
+}
+
+.monaco-workbench .paradis-modal-backdrop.paradis-modal-backdrop-nested {
+	z-index: var(--paradis-z-modal-nested);
+}
+
+/* Same for the shared popover marker `paradis-overlay-popover` (overlayManager.ts). */
+.monaco-workbench .paradis-overlay-popover {
+	z-index: var(--paradis-z-popover);
+}
+
+/* workbench.reduceMotion (or the OS setting with "auto"): surfaces appear and leave without movement. */
+.monaco-workbench.monaco-reduce-motion {
+	--paradis-motion-enter: 0ms;
+	--paradis-motion-exit: 0ms;
+}

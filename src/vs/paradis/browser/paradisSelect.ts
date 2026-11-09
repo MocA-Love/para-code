@@ -14,8 +14,8 @@
 // キーボード（↑↓・Enter・Esc・文字で選ぶ）と読み上げの名前は SelectBox が持つ。名前は `ariaLabel` で必ず渡す
 // （`<label>` で包んでも、描いた一覧の側には届かない）。
 //
-// 一覧は本家のコンテキストビューに出る。その z-index は `2575 + layer` で、fork のモーダル（2570〜2850）より下に
-// なることがあるので、{@link PARADIS_MODAL_POPUP_LAYER} でモーダルより上へ出す。
+// 一覧は本家のコンテキストビュー（2575）に出る。fork のモーダルはその下の段（paradisModal.ts の表）なので、
+// layer を渡さなくてもモーダルの上に出る。
 
 import './media/paradisSelect.css';
 import { $, append } from '../../base/browser/dom.js';
@@ -26,13 +26,6 @@ import { IConfigurationService } from '../../platform/configuration/common/confi
 import { IContextViewService } from '../../platform/contextview/browser/contextView.js';
 import { defaultSelectBoxStyles } from '../../platform/theme/browser/defaultStyles.js';
 import { hasNativeContextMenu } from '../../platform/window/common/window.js';
-
-/**
- * fork のモーダルの中から開くメニュー・プルダウンの一覧に渡す layer。本家のコンテキストビューの z-index は
- * `2575 + layer` なので、2875 になり、fork のモーダルの最も上の段（エージェントの承認 2850）より上に出る。
- * `IContextMenuService.showContextMenu({ layer })` と SelectBox の `contextViewLayer` に渡す。
- */
-export const PARADIS_MODAL_POPUP_LAYER = 300;
 
 /** プルダウンの 1 項目。 */
 export interface IParadisSelectOption {
@@ -77,7 +70,6 @@ export class ParadisSelect extends Disposable {
 		this.selectBox = this._register(new SelectBox(this.toItems(this.shown), this.indexOf(this.current), contextViewService, defaultSelectBoxStyles, {
 			useCustomDrawn: !hasNativeContextMenu(configurationService),
 			ariaLabel: selectOptions.ariaLabel,
-			contextViewLayer: PARADIS_MODAL_POPUP_LAYER,
 		}));
 		this.selectBox.render(this.element);
 		// SelectBox は render で入れ物の直下に `<select>` を置く

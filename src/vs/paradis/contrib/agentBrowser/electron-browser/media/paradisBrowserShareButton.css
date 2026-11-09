@@ -111,10 +111,8 @@
 	2. Pane list (marked paradis-overlay-popover so the native view pauses)
 	============================================================ */
 
-/* z-index stays below the workbench modal layer (2575), same tier as the downloads list. */
 .monaco-workbench .paradis-browser-share-popover {
 	position: absolute;
-	z-index: 2550;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -159,7 +157,7 @@
 	padding: var(--paradis-popover-list-top) var(--vscode-spacing-size40) var(--vscode-spacing-size40);
 }
 
-/* Two-line rows (name / how it is shared), paradisDensity.css. */
+/* Two-line rows (name / how it is shared), paradisTokens.css. */
 .monaco-workbench .paradis-browser-share-popover .pbs-row {
 	display: flex;
 	align-items: center;

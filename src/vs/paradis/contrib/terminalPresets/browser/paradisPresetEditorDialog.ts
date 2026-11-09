@@ -81,7 +81,7 @@ import {
 	PARADIS_WORKSPACE_PRESET_FILE,
 } from '../common/paradisTerminalPresets.js';
 import { paradisFolderLabelMoves } from '../common/paradisPresetLocalLedger.js';
-import { PARADIS_MODAL_POPUP_LAYER, ParadisSelect } from '../../../browser/paradisSelect.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import {
 	IParadisPresetMovePlan,
 	isParadisPresetMoveRefusal,
@@ -600,7 +600,7 @@ class ParadisPresetEditorDialog extends Disposable {
 	) {
 		super();
 
-		this._backdrop = $('.paradis-preset-editor-backdrop');
+		this._backdrop = $('.paradis-preset-editor-backdrop.paradis-modal-backdrop');
 		this._dialog = $('.paradis-preset-editor-dialog');
 		this._backdrop.appendChild(this._dialog);
 
@@ -1020,7 +1020,6 @@ class ParadisPresetEditorDialog extends Disposable {
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => anchor,
 			getActions: () => actions,
-			layer: PARADIS_MODAL_POPUP_LAYER,
 		});
 	}
 
@@ -1089,7 +1088,6 @@ class ParadisPresetEditorDialog extends Disposable {
 			this.contextMenuService.showContextMenu({
 				getAnchor: () => more,
 				getActions: buildActions,
-				layer: PARADIS_MODAL_POPUP_LAYER,
 			});
 		}));
 	}
@@ -1874,7 +1872,6 @@ class ParadisPresetEditorDialog extends Disposable {
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => anchor,
 			getActions: () => actions,
-			layer: PARADIS_MODAL_POPUP_LAYER,
 		});
 	}
 

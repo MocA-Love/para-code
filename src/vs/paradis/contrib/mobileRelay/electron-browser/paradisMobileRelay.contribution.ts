@@ -31,7 +31,7 @@ import { IExtensionService } from '../../../../workbench/services/extensions/com
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
@@ -40,6 +40,7 @@ import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisS
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisConfirmedAgentPanes, IParadisGitResult, IParadisMobileRelayService, IParadisMobileStatus, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_CHANNEL, PARADIS_MOBILE_RELAY_URL_KEY, paradisMobileWindowRoute } from '../common/paradisMobileRelay.js';
 import { ParadisMobilePairingDialog, ParadisPairingCloseGuard } from './paradisMobilePairingDialog.js';
+import { PARADIS_MOBILE_CONNECT_DEVICE_COMMAND_ID, PARADIS_MOBILE_OPEN_COMMAND_ID, PARADIS_MOBILE_RETRY_STORE_COMMAND_ID, PARADIS_MOBILE_REVOKE_DEVICE_COMMAND_ID } from './paradisMobileEditorInput.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
 import { ParadisMobileBrowserScopeSync } from './paradisMobileBrowserScopeSync.js';
@@ -82,8 +83,6 @@ import { IChatService } from '../../../../workbench/contrib/chat/common/chatServ
 import './paradisMobileRequestHandlerRegistrations.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
-const PAIR_COMMAND = 'paradis.mobile.connectDevice';
-const MENU_COMMAND = 'paradis.mobile.showMenu';
 /** PCフォーカス状態のハートビート間隔。shared process側のTTL（WINDOW_FOCUS_TTL_MS=90秒）より十分短く保つ。 */
 const PC_FOCUS_HEARTBEAT_INTERVAL_MS = 25_000;
 /** SSH の接続先の機械の印を聞く回数と間隔（接続の確立待ちで失敗したときだけ聞き直す）。 */
@@ -94,7 +93,7 @@ const REMOTE_MACHINE_ID_RETRY_MS = 30_000;
  * renderer 側のモバイルリレー contribution。
  * - shared process のリレーサービス(IPC)へ接続
  * - ペアリングコマンド + SAS確認ダイアログ
- * - 接続状態のステータスバー表示
+ * - 接続状態のステータスバー表示（押すと「モバイル」のタブを開く）
  * - ParadisMobileWorkspaceProvider を通じて state/term を提供
  */
 class ParadisMobileRelayContribution extends Disposable implements IWorkbenchContribution {
@@ -864,19 +863,19 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const online = status.onlineMobiles > 0;
 		let label: string;
 		let icon: string;
-		let tooltip = localize('paradis.mobile.statusbar.tooltip', "Para Code Mobile のリレー接続状態。クリックでメニューを開きます。");
+		let tooltip = localize('paradis.mobile.statusbar.tooltip', "Para Code Mobile のリレー接続状態。クリックで「モバイル」のタブを開きます。");
 		// 認証切れは待っても復帰しない（再ペアリングが要る）。「切断中」と同じ見た目にすると
 		// 30秒ごとに切断中↔接続中…を往復するだけで、何をすればよいか分からなかった。
 		if (status.storeProblem === 'unreadable' || status.storeProblem === 'undecryptable') {
 			label = localize('paradis.mobile.statusbar.storeUnreadable', "モバイル: 鍵を読み込めません");
 			icon = '$(warning)';
 			tooltip = status.storeProblem === 'undecryptable'
-				? localize('paradis.mobile.statusbar.storeUndecryptableTooltip', "保存したペアリングの鍵を復号できないため、接続を止めています。キーチェーンへのアクセスを許可してから Para Code を再起動するか、クリックしてメニューからペアリングし直してください。")
-				: localize('paradis.mobile.statusbar.storeUnreadableTooltip', "保存したペアリングの鍵を読み込めないため、接続を止めています。クリックしてメニューから再試行するか、ペアリングし直してください。");
+				? localize('paradis.mobile.statusbar.storeUndecryptableTooltip', "保存したペアリングの鍵を復号できないため、接続を止めています。キーチェーンへのアクセスを許可してから Para Code を再起動するか、クリックして「モバイル」のタブからペアリングし直してください。")
+				: localize('paradis.mobile.statusbar.storeUnreadableTooltip', "保存したペアリングの鍵を読み込めないため、接続を止めています。クリックして「モバイル」のタブから読み込み直すか、ペアリングし直してください。");
 		} else if (status.unauthorized === true) {
 			label = localize('paradis.mobile.statusbar.unauthorized', "モバイル: 再ペアリングが必要");
 			icon = '$(warning)';
-			tooltip = localize('paradis.mobile.statusbar.unauthorizedTooltip', "リレーがこのPCの資格情報を受け付けませんでした。クリックしてメニューから再度ペアリングしてください。");
+			tooltip = localize('paradis.mobile.statusbar.unauthorizedTooltip', "リレーがこのPCの資格情報を受け付けませんでした。クリックして「モバイル」のタブから再度ペアリングしてください。");
 		} else if (status.state === 'online') {
 			label = online
 				? localize('paradis.mobile.statusbar.active', "モバイル接続中 ({0})", status.onlineMobiles)
@@ -894,7 +893,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			text: `${icon} ${label}`,
 			ariaLabel: label,
 			tooltip,
-			command: MENU_COMMAND,
+			command: PARADIS_MOBILE_OPEN_COMMAND_ID,
 		};
 		if (this.statusbarEntry.value) {
 			this.statusbarEntry.value.update(entry);
@@ -954,7 +953,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		);
 	}
 
-	private async retryStoreLoad(): Promise<void> {
+	/** 読めなかった鍵と台帳を読み直す（通知の「再試行」と、タブのお知らせの「読み込み直す」）。 */
+	async retryStoreLoad(): Promise<void> {
 		try {
 			await this.service.retryLoadState();
 		} catch (err) {
@@ -1098,113 +1098,62 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		}
 	}
 
-	/** ペアリング済みデバイスの一覧・失効（コマンドから呼ばれる）。 */
+	/** ペアリング済みデバイスの一覧から選んで解除する（コマンドパレットの「Manage Mobile Devices」）。 */
 	async manageDevices(): Promise<void> {
 		const status = await this.service.getStatus();
 		if (status.pairedDevices.length === 0) {
 			this.notificationService.info(localize('paradis.mobile.noDevices', "ペアリング済みのモバイルデバイスはありません。"));
 			return;
 		}
-		// 名前は重なりうるので、失効は id で指す（id を返さない古い状態なら従来どおり名前で）
-		const devices: readonly { readonly mobileId: string | undefined; readonly name: string }[] = status.pairedMobiles ?? status.pairedDevices.map(name => ({ mobileId: undefined, name }));
 		const picked = await this.quickInputService.pick(
-			devices.map(device => ({
+			this.revokableDevices(status).map(device => ({
 				label: device.name,
-				mobileId: device.mobileId,
-				description: localize('paradis.mobile.revokeDesc', "選択すると失効します"),
+				device,
+				description: localize('paradis.mobile.revokeDesc', "選択すると解除します"),
 			})),
-			{ placeHolder: localize('paradis.mobile.managePlaceholder', "失効するモバイルデバイスを選択（Escで閉じる）") },
+			{ placeHolder: localize('paradis.mobile.managePlaceholder', "解除するモバイルデバイスを選択（Escで閉じる）") },
 		);
-		if (!picked) {
+		if (picked) {
+			await this.confirmAndRevoke(picked.device);
+		}
+	}
+
+	/** 「モバイル」のタブの行の「解除…」。端末は mobileId で指す（旧い状態で id が無ければ名前で）。 */
+	async revokeDeviceById(mobileId: string): Promise<void> {
+		const status = await this.service.getStatus();
+		const device = this.revokableDevices(status).find(candidate => (candidate.mobileId ?? candidate.name) === mobileId);
+		if (!device) {
+			// 確かめている間に別の窓・モバイルから解除された
+			this.notificationService.info(localize('paradis.mobile.revokeGone', "このモバイルデバイスは既に解除されています。"));
 			return;
 		}
+		await this.confirmAndRevoke(device);
+	}
+
+	/** 名前は重なりうるので、解除は id で指す（id を返さない古い状態なら従来どおり名前で）。表示はタブと同じく別名を優先する。 */
+	private revokableDevices(status: IParadisMobileStatus): readonly { readonly mobileId: string | undefined; readonly name: string; readonly label: string }[] {
+		return status.pairedMobiles?.map(mobile => ({ mobileId: mobile.mobileId, name: mobile.name, label: mobile.alias ?? mobile.name }))
+			?? status.pairedDevices.map(name => ({ mobileId: undefined, name, label: name }));
+	}
+
+	/** 解除の確認と実行（一覧から選んだときと、タブの行から選んだときで共通）。 */
+	private async confirmAndRevoke(device: { readonly mobileId: string | undefined; readonly name: string; readonly label: string }): Promise<void> {
 		const { confirmed } = await this.dialogService.confirm({
 			type: 'warning',
-			message: localize('paradis.mobile.revokeConfirm', "モバイルデバイス「{0}」を失効させますか？", picked.label),
-			detail: localize('paradis.mobile.revokeDetail', "失効すると、このデバイスからの接続はできなくなります。再接続には再ペアリングが必要です。"),
-			primaryButton: localize('paradis.mobile.revoke', "失効"),
+			message: localize('paradis.mobile.revokeConfirm', "モバイルデバイス「{0}」のペアリングを解除しますか？", device.label),
+			detail: localize('paradis.mobile.revokeDetail', "解除すると、このデバイスからは接続できなくなります。もう一度使うには、ペアリングし直してください。"),
+			primaryButton: localize('paradis.mobile.revoke', "解除"),
 		});
 		if (!confirmed) {
 			return;
 		}
-		await this.service.revokeDevice(picked.label, picked.mobileId);
-		this.notificationService.info(localize('paradis.mobile.revoked', "モバイルデバイス「{0}」を失効させました。", picked.label));
-	}
-
-	/**
-	 * ステータスバークリック（およびコマンド）から開くアクションメニュー。
-	 * デバイス接続 / 接続済みデバイスの解除 / リレーの有効・無効切り替え（＝PCとの接続を切る）を一箇所に集約する。
-	 */
-	async showActionMenu(): Promise<void> {
-		const status = await this.service.getStatus();
-		const enabled = this.isEnabled();
-		type MenuItem = IQuickPickItem & { readonly action: 'retryStore' | 'restartForStore' | 'pair' | 'manage' | 'disable' | 'enable' };
-		const items: MenuItem[] = [];
-		if (enabled && status.storeProblem === 'unreadable') {
-			items.push({
-				action: 'retryStore',
-				label: localize('paradis.mobile.menu.retryStore', "保存した鍵を読み込み直す"),
-				description: localize('paradis.mobile.menu.retryStoreDesc', "保存データのファイルを読めるようにした後に使います"),
-			});
-		} else if (enabled && status.storeProblem === 'undecryptable') {
-			items.push({
-				action: 'restartForStore',
-				label: localize('paradis.mobile.menu.restartForStore', "Para Code を再起動して鍵を読み込み直す"),
-				description: localize('paradis.mobile.menu.restartForStoreDesc', "キーチェーンへのアクセスを許可した後に使います"),
-			});
-		}
-		if (enabled) {
-			items.push({
-				action: 'pair',
-				label: localize('paradis.mobile.menu.pair', "モバイルデバイスを接続…"),
-				description: localize('paradis.mobile.menu.pairDesc', "QRコードで新しいデバイスをペアリング"),
-			});
-			if (status.pairedDevices.length > 0) {
-				items.push({
-					action: 'manage',
-					label: localize('paradis.mobile.menu.manage', "接続済みデバイスを解除…"),
-					description: localize('paradis.mobile.menu.manageDesc', "{0}台がペアリング済み", status.pairedDevices.length),
-				});
-			}
-			items.push({
-				action: 'disable',
-				label: localize('paradis.mobile.menu.disable', "リレーを無効にする（接続を切る）"),
-				description: localize('paradis.mobile.menu.disableDesc', "モバイルとの接続を切断し、待機を停止します"),
-			});
-		} else {
-			items.push({
-				action: 'enable',
-				label: localize('paradis.mobile.menu.enable', "リレーを有効にする"),
-				description: localize('paradis.mobile.menu.enableDesc', "モバイルからの接続を待機します"),
-			});
-		}
-		const picked = await this.quickInputService.pick(items, {
-			placeHolder: localize('paradis.mobile.menu.placeholder', "Para Code Mobile"),
-		});
-		if (!picked) {
+		try {
+			await this.service.revokeDevice(device.name, device.mobileId);
+		} catch (err) {
+			this.notificationService.error(localize('paradis.mobile.revokeFailed', "モバイルデバイス「{0}」のペアリングを解除できませんでした: {1}", device.label, String(err)));
 			return;
 		}
-		switch (picked.action) {
-			case 'retryStore':
-				await this.retryStoreLoad();
-				break;
-			case 'restartForStore':
-				await this.hostService.restart();
-				break;
-			case 'pair':
-				await this.runPairing();
-				break;
-			case 'manage':
-				await this.manageDevices();
-				break;
-			case 'disable':
-				await this.configurationService.updateValue(PARADIS_MOBILE_ENABLED_KEY, false);
-				this.notificationService.info(localize('paradis.mobile.disabled', "モバイルリレーを無効にしました。モバイルからの接続はできなくなります。"));
-				break;
-			case 'enable':
-				await this.configurationService.updateValue(PARADIS_MOBILE_ENABLED_KEY, true);
-				break;
-		}
+		this.notificationService.info(localize('paradis.mobile.revoked', "モバイルデバイス「{0}」のペアリングを解除しました。", device.label));
 	}
 }
 
@@ -1213,7 +1162,7 @@ registerWorkbenchContribution2(ParadisMobileRelayContribution.ID, ParadisMobileR
 class ParadisConnectMobileDeviceAction extends Action2 {
 	constructor() {
 		super({
-			id: PAIR_COMMAND,
+			id: PARADIS_MOBILE_CONNECT_DEVICE_COMMAND_ID,
 			title: localize2('paradis.mobile.connectDevice', "Connect Mobile Device"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: true,
@@ -1242,18 +1191,36 @@ class ParadisManageMobileDevicesAction extends Action2 {
 }
 registerAction2(ParadisManageMobileDevicesAction);
 
-class ParadisMobileMenuAction extends Action2 {
+class ParadisRetryMobileStoreAction extends Action2 {
 	constructor() {
 		super({
-			id: MENU_COMMAND,
-			title: localize2('paradis.mobile.showMenu', "Mobile Relay Menu"),
+			id: PARADIS_MOBILE_RETRY_STORE_COMMAND_ID,
+			title: localize2('paradis.mobile.retryStoreLoad', "Reload Mobile Pairing Keys"),
 			category: localize2('paradis.category', "Para Code"),
-			f1: true,
+			f1: false,
 		});
 	}
 
 	async run(_accessor: ServicesAccessor): Promise<void> {
-		await ParadisMobileRelayContribution.instance?.showActionMenu();
+		await ParadisMobileRelayContribution.instance?.retryStoreLoad();
 	}
 }
-registerAction2(ParadisMobileMenuAction);
+registerAction2(ParadisRetryMobileStoreAction);
+
+class ParadisRevokeMobileDeviceAction extends Action2 {
+	constructor() {
+		super({
+			id: PARADIS_MOBILE_REVOKE_DEVICE_COMMAND_ID,
+			title: localize2('paradis.mobile.revokeDevice', "Revoke Mobile Device"),
+			category: localize2('paradis.category', "Para Code"),
+			f1: false,
+		});
+	}
+
+	async run(_accessor: ServicesAccessor, mobileId: unknown): Promise<void> {
+		if (typeof mobileId === 'string' && mobileId.length > 0) {
+			await ParadisMobileRelayContribution.instance?.revokeDeviceById(mobileId);
+		}
+	}
+}
+registerAction2(ParadisRevokeMobileDeviceAction);

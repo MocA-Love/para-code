@@ -20,6 +20,7 @@ import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hover
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import { localize } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -124,6 +125,8 @@ export class ParadisPortListPanel extends Disposable {
 		}));
 
 		layoutService.activeContainer.appendChild(this.element);
+		// 小窓はモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に浮かせない）
+		this._register(paradisCloseWhenModalOpens(this.element, () => this.options.onClose()));
 		this.reposition();
 
 		this._register(dom.addDisposableListener(dom.getActiveWindow(), 'resize', () => this.reposition()));

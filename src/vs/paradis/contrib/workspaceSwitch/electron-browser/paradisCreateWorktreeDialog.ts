@@ -236,7 +236,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	) {
 		super();
 
-		this._backdrop = $('.paradis-create-worktree-backdrop');
+		this._backdrop = $('.paradis-create-worktree-backdrop.paradis-modal-backdrop');
 		// 案D レイアウトは修飾子クラスで囲う。同じ CSS ファイルを共有する
 		// paradisWorkspaceLifecycleDialog は修飾子を付けないので従来の見た目のまま残る
 		this._dialog = $('.paradis-create-worktree-dialog.pcw-d');
