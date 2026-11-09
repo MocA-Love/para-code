@@ -18,8 +18,6 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	/* workbench のモーダルダイアログ（monaco-dialog-modal-block, z-index 2575）より下に置く（paradisCreateWorktreeDialog.css と同じ） */
-	z-index: 2570;
 }
 
 .monaco-workbench .paradis-port-dialog.paradis-modal-s {

@@ -58,6 +58,7 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import { basename, dirname } from '../../../../base/common/resources.js';
 import Severity from '../../../../base/common/severity.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -443,7 +444,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 		anchor.setAttribute('aria-expanded', 'true');
 		store.add(toDisposable(() => anchor.setAttribute('aria-expanded', 'false')));
 
-		const popup = dom.append(host, $('.paradis-preset-cluster-popup'));
+		const popup = dom.append(host, $('.paradis-preset-cluster-popup.paradis-overlay-popover'));
 		popup.setAttribute('role', 'menu');
 		const anchorLabel = anchor.getAttribute('aria-label');
 		if (anchorLabel) {
@@ -453,6 +454,8 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 			popup.remove();
 			this.popupAnchor = undefined;
 		}));
+		// 小窓はモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に浮かせない）
+		store.add(paradisCloseWhenModalOpens(popup, () => this.closePopup()));
 
 		const items: HTMLButtonElement[] = [];
 		for (const preset of group) {

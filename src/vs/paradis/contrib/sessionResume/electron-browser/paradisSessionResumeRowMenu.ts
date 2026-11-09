@@ -28,19 +28,12 @@ import { paradisResumeCommandLine } from '../common/paradisSessionResumeListOpti
 import { ParadisSessionResumeClient } from './paradisSessionResumeClient.js';
 
 /**
- * メニューの層。HTML のコンテキストメニューの z-index は `2575 + layer` で、セッション履歴のモーダル
- * （z-index 2700）と同じコンテナに入る。layer を渡さないとモーダルの下に描かれて見えないので、
- * モーダルより上（2775）へ出す。
- */
-const PARADIS_SESSION_RESUME_MENU_LAYER = 200;
-
-/**
  * macOS がディレクトリのままアプリや部品として扱う（Finder で開くと起動・インストールされる）拡張子。
  * 作業フォルダがこれで終わっていたら開かずに、Finder で場所だけを見せる。
  */
 const MACOS_BUNDLE_EXTENSIONS = /\.(app|appex|bundle|framework|plugin|kext|pkg|mpkg|prefpane|xpc|qlgenerator|saver|mdimporter|workflow|action|component|systemextension)$/i;
 
-/** メニューの操作の結果をダイアログの中に出す（通知の層はモーダルの下にあって見えないため）。 */
+/** メニューの操作の結果をダイアログの中、行の近くに出す。 */
 export type ParadisSessionResumeReport = (message: string, severity: 'info' | 'error') => void;
 
 export class ParadisSessionResumeRowMenu {
@@ -62,7 +55,6 @@ export class ParadisSessionResumeRowMenu {
 			getAnchor: () => anchor,
 			getActions: () => this.actions(session),
 			onHide,
-			layer: PARADIS_SESSION_RESUME_MENU_LAYER,
 		});
 	}
 

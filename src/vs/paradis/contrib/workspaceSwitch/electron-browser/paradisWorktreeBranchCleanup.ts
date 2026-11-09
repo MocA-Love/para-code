@@ -240,7 +240,7 @@ class ParadisKeptBranchesDialog extends Disposable {
 		private branches: readonly IParadisKeptBranch[],
 	) {
 		super();
-		this._backdrop = $('.paradis-create-worktree-backdrop');
+		this._backdrop = $('.paradis-create-worktree-backdrop.paradis-modal-backdrop');
 		const dialog = dom.append(this._backdrop, $('.paradis-kept-branches-dialog'));
 		dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		dialog.setAttribute('role', 'dialog');

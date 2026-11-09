@@ -11,7 +11,7 @@ import { mainWindow } from '../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { IConfigurationService } from '../../../platform/configuration/common/configuration.js';
 import { IContextViewDelegate, IContextViewService } from '../../../platform/contextview/browser/contextView.js';
-import { PARADIS_MODAL_POPUP_LAYER, ParadisSelect } from '../../browser/paradisSelect.js';
+import { ParadisSelect } from '../../browser/paradisSelect.js';
 
 suite('ParadisSelect', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -63,7 +63,8 @@ suite('ParadisSelect', () => {
 				replaced: true,
 				// 代入（value・setOptions）では知らせず、利用者が選んだときだけ知らせる
 				changes: ['title'],
-				layer: PARADIS_MODAL_POPUP_LAYER,
+				// 本家のコンテキストビューの層のまま（fork のモーダルより上。paradisModal.ts の表）
+				layer: undefined,
 			});
 		} finally {
 			container.remove();

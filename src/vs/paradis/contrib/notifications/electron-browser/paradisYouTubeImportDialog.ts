@@ -116,7 +116,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 	) {
 		super();
 
-		this._backdrop = $('.paradis-notif-nested-backdrop');
+		this._backdrop = $('.paradis-notif-nested-backdrop.paradis-modal-backdrop.paradis-modal-backdrop-nested');
 		this._dialog = $('.paradis-notif-nested-dialog');
 		this._backdrop.appendChild(this._dialog);
 

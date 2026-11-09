@@ -9,9 +9,9 @@
 // タイトルバーのベルから開く受信箱。全スペースの完了・許可待ち・質問を1か所にため、行からペインへ移る。
 //
 // 作りはサービスステータスのポップオーバー（paradisServiceStatusPopover.ts）と同じ自前の DOM
-// （position: fixed、layoutService.activeContainer 直下、z-index 2500）。ワークベンチのモーダル（2575）
-// より上には上げない（上げると承認ダイアログなどを隠す）。内蔵ブラウザの上に出すため、クラス名
-// `paradis-notification-inbox-popover` を overlayManager.ts の一覧に登録してある。
+// （position: fixed、layoutService.activeContainer 直下）。重なりは小窓の段（共通の印 `paradis-overlay-popover`、
+// vs/paradis/browser/paradisModal.ts の表）で、ワークベンチの確認ダイアログ（2575）より下。内蔵ブラウザの上に出すため、
+// クラス名 `paradis-notification-inbox-popover` も overlayManager.ts の一覧に登録してある。
 
 import './media/paradisNotificationInbox.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -22,6 +22,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -78,7 +79,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	) {
 		super();
 
-		this.element = $('.paradis-notification-inbox-popover');
+		this.element = $('.paradis-notification-inbox-popover.paradis-overlay-popover');
 		this.element.style.width = `${POPOVER_WIDTH}px`;
 		this.element.tabIndex = -1;
 		this.element.setAttribute('role', 'dialog');
@@ -91,6 +92,8 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this.previousFocus = dom.getActiveElement();
 		const anchor = this.visibleAnchor();
 		(anchor ? layoutService.getContainer(dom.getWindow(anchor)) : layoutService.activeContainer).appendChild(this.element);
+		// 小窓はモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に浮かせない）
+		this._register(paradisCloseWhenModalOpens(this.element, () => this.options.onClose()));
 		this.render();
 		this.reposition();
 		this.element.focus();

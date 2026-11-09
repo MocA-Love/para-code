@@ -82,7 +82,7 @@ abstract class ParadisBookmarkModal extends Disposable {
 	) {
 		super();
 
-		this._backdrop = $('.paradis-bookmark-dialog-backdrop');
+		this._backdrop = $('.paradis-bookmark-dialog-backdrop.paradis-modal-backdrop');
 		const modal = $('.paradis-bookmark-dialog');
 		// 箱は共通の S 段（Q537 の 7 章「ブックマーク」、案 A）
 		modal.classList.add(...paradisModalClasses(ParadisModalSize.Small));

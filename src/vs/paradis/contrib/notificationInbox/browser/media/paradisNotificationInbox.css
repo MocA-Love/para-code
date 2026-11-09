@@ -83,13 +83,8 @@
 
 /* ---------------------------------------------------------------- popover */
 
-/*
- * z-index stays at the title bar popover tier (2500, same as the service status and limits
- * popovers) and below the workbench modal block (2575), so approval dialogs are never covered.
- */
 .monaco-workbench .paradis-notification-inbox-popover {
 	position: fixed;
-	z-index: 2500;
 	display: flex;
 	flex-direction: column;
 	max-height: min(520px, calc(100vh - 80px));

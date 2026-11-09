@@ -11,13 +11,9 @@
  * (左右分割・サイドバー展開)。ダイアログならウィンドウ幅を基準にできる。 */
 /* 背景・パネルの見た目は他の fork ダイアログ(paradisNotificationSettings.css)と同じ階層に揃える。 */
 .paradis-session-resume-backdrop {
-	position: absolute; inset: 0; z-index: 2700;
+	position: absolute; inset: 0;
 	display: flex; align-items: center; justify-content: center;
 	background: rgba(0, 0, 0, 0.5);
-}
-/* 一覧から確認のダイアログ（dialog.css の z-index 2575）を出している間は、その下へ下げる。 */
-.paradis-session-resume-backdrop.behind-dialog {
-	z-index: 2574;
 }
 .paradis-session-resume-modal {
 	display: flex; flex-direction: column; min-width: 0; min-height: 0;

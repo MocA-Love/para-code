@@ -35,9 +35,6 @@ const STR_CLOSE_ARIA = localize('paradis.hub.closeAria', "閉じる");
 // allow-any-unicode-next-line
 const STR_AREAS_ARIA = localize('paradis.hub.areasAria', "領域");
 
-/** 器を開いている間、その窓の作業領域（`.monaco-workbench`）に付ける印。 */
-const OPEN_CLASS = 'paradis-hub-open';
-
 /** 同じ窓に器が 2 つ並ぶことはないが、閉じて開き直した直後でも ID が重ならないよう通し番号を付ける。 */
 let dialogCounter = 0;
 
@@ -136,9 +133,6 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 
 		const container = layoutService.activeContainer;
 		container.appendChild(this.backdrop);
-		// 開いている間は、本家のダイアログと通知を器より上に出す（paradisHub.css）
-		container.classList.add(OPEN_CLASS);
-		this._register({ dispose: () => container.classList.remove(OPEN_CLASS) });
 		// 本文の幅は器でしか分からないので、実測して開いている領域へ渡す（窓の大きさの変化にも付いていく）。
 		// 補助の窓で開いたときはその窓の ResizeObserver を使う
 		const observer = new (dom.getWindow(container).ResizeObserver)(() => this.layoutActive());

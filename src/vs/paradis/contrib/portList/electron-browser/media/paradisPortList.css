@@ -47,7 +47,6 @@
 	/* width は paradisPortListPanel.ts の reposition() から element.style.width で設定される。 */
 	box-sizing: border-box;
 	position: fixed;
-	z-index: 2500;
 	max-height: 70vh;
 	display: flex;
 	flex-direction: column;
