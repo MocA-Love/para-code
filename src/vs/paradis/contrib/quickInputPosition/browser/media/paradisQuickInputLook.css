@@ -11,65 +11,66 @@
 	the one PARA-PATCH in quickInputList.ts), keys as small framed labels, and a line of key hints at the bottom.
 	Position, width and the dimming layer stay #853's (paradisQuickInputPosition.ts, paradisQuickInputScrim.css).
 	Upstream writes the surface colors inline (quickInputController.ts applyStyles), so those few declarations need
-	!important. Anchored quick picks (next to a part) keep upstream's look.
+	!important. Only the centered palette carries paradis-quick-input-centered (the same test as the dimming layer:
+	not anchored next to a part, not ignoreFocusOut); the others keep upstream's look.
 */
 
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered {
 	border-radius: var(--paradis-radius-outer);
 	background-color: var(--vscode-paradis-overlay) !important;
 	border-color: var(--vscode-paradis-lineSubtle) !important;
 }
 
 /* The input band: 44px, one line under it, no frame of its own; typing is 14px. */
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay):not(.hidden-input) .quick-input-header {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered:not(.hidden-input) .quick-input-header {
 	align-items: center;
 	min-height: 44px;
 	padding: 0 var(--vscode-spacing-size120);
 	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
 }
 
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) .quick-input-filter .monaco-inputbox {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-filter .monaco-inputbox {
 	border-color: transparent !important;
 	background-color: transparent !important;
 }
 
 /* The band is the palette's only field and always has focus, so it draws no frame of its own (upstream draws the
 	focusBorder outline through the workbench's .synthetic-focus rule). */
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) .quick-input-filter .monaco-inputbox.synthetic-focus {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-filter .monaco-inputbox.synthetic-focus {
 	outline: none;
 }
 
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) .quick-input-filter .monaco-inputbox .input {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-filter .monaco-inputbox .input {
 	font-size: var(--vscode-fontSize-heading3);
 	padding-left: 0;
 }
 
 /* Rows: 28px from the list delegate, rounded, inset from the surface edge. */
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) .quick-input-list .monaco-list-row {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list .monaco-list-row {
 	border-radius: var(--paradis-radius-control);
 }
 
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) .quick-input-list {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list {
 	padding-top: var(--vscode-spacing-size40);
 }
 
 /* Matched characters: bold in the link color (upstream writes the list highlight colors with !important). */
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) .quick-input-list .monaco-list .monaco-list-row .monaco-highlighted-label .highlight {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list .monaco-list .monaco-list-row .monaco-highlighted-label .highlight {
 	color: var(--vscode-textLink-foreground) !important;
 }
 
 /* Group names on the right of a row: faint and small; no line above the group. */
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) .quick-input-list .quick-input-list-entry .quick-input-list-separator {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list .quick-input-list-entry .quick-input-list-separator {
 	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-paradis-textFaint);
 }
 
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) .quick-input-list .quick-input-list-entry.quick-input-list-separator-border {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list .quick-input-list-entry.quick-input-list-separator-border {
 	border-top-color: var(--vscode-paradis-lineSubtle);
 }
 
 /* Keys: a 1px frame only, no bottom shadow. */
-.monaco-workbench .quick-input-widget:not(.quick-input-widget-overlay) .quick-input-list .monaco-keybinding-key {
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list .monaco-keybinding-key {
 	border: 1px solid var(--vscode-paradis-lineSubtle);
 	border-bottom-width: 1px;
 	box-shadow: none;
@@ -89,7 +90,12 @@
 	color: var(--vscode-paradis-textFaint);
 }
 
-.monaco-workbench .quick-input-widget.quick-input-widget-overlay > .paradis-quick-input-hint,
+.monaco-workbench .quick-input-widget:not(.paradis-quick-input-centered) > .paradis-quick-input-hint,
 .monaco-workbench .quick-input-widget.hidden-input > .paradis-quick-input-hint {
+	display: none;
+}
+
+/* An input without a list (rename and the like): no "move" hint. */
+.monaco-workbench .quick-input-widget.paradis-quick-input-no-list > .paradis-quick-input-hint > .paradis-quick-input-hint-move {
 	display: none;
 }

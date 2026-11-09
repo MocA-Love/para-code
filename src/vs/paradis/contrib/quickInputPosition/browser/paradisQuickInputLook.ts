@@ -19,10 +19,23 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInput, IQuickInputService, QuickInputType } from '../../../../platform/quickinput/common/quickInput.js';
 
 /** 下端のヒントの要素のクラス。 */
 export const PARADIS_QUICK_INPUT_HINT_CLASS = 'paradis-quick-input-hint';
+/**
+ * 中央に出るパレットの器に付ける印。キットの見た目（paradisQuickInputLook.css）はこの印の付いた器にだけ効く。
+ * 判定は幕（paradisQuickInputScrim.ts）と同じで、部品の横に出すもの（anchor）と、他所を押しても閉じない手順の入力
+ * （ignoreFocusOut）には付けない。
+ */
+export const PARADIS_QUICK_INPUT_CENTERED_CLASS = 'paradis-quick-input-centered';
+/** 一覧の無い入力（名前の変更など）の器に付ける印。ヒントの「↑↓ 移動」を隠す。 */
+export const PARADIS_QUICK_INPUT_NO_LIST_CLASS = 'paradis-quick-input-no-list';
+
+/** キットの見た目にする入力か（幕と同じ判定）。 */
+export function paradisIsCenteredQuickInput(input: Pick<IQuickInput, 'anchor' | 'ignoreFocusOut'> | undefined): boolean {
+	return !!input && input.anchor === undefined && !input.ignoreFocusOut;
+}
 
 /** 器（`.quick-input-widget`）を、入れ物の直下から探す（本家は入れ物の直下に器を置く）。 */
 export function paradisFindQuickInputWidget(container: HTMLElement): HTMLElement | undefined {
@@ -48,17 +61,27 @@ export function paradisEnsureQuickInputHint(widget: HTMLElement): HTMLElement {
 	}
 	const hint = dom.append(widget, dom.$(`.${PARADIS_QUICK_INPUT_HINT_CLASS}`));
 	hint.setAttribute('aria-hidden', 'true');
-	for (const text of [
+	for (const [className, text] of [
 		// allow-any-unicode-next-line
-		localize('paradis.quickInput.hintMove', "↑↓ 移動"),
+		['paradis-quick-input-hint-move', localize('paradis.quickInput.hintMove', "↑↓ 移動")],
 		// allow-any-unicode-next-line
-		localize('paradis.quickInput.hintRun', "Enter 実行"),
+		['paradis-quick-input-hint-run', localize('paradis.quickInput.hintRun', "Enter 実行")],
 		// allow-any-unicode-next-line
-		localize('paradis.quickInput.hintClose', "Esc 閉じる"),
-	]) {
-		dom.append(hint, dom.$('span')).textContent = text;
+		['paradis-quick-input-hint-close', localize('paradis.quickInput.hintClose', "Esc 閉じる")],
+	] as const) {
+		dom.append(hint, dom.$(`span.${className}`)).textContent = text;
 	}
 	return hint;
+}
+
+/** 開いた入力に合わせて、器の印（キットの見た目・一覧の有無）とヒントを付け直す。 */
+export function paradisApplyQuickInputLook(widget: HTMLElement, input: IQuickInput | undefined): void {
+	const centered = paradisIsCenteredQuickInput(input);
+	widget.classList.toggle(PARADIS_QUICK_INPUT_CENTERED_CLASS, centered);
+	widget.classList.toggle(PARADIS_QUICK_INPUT_NO_LIST_CLASS, input?.type === QuickInputType.InputBox);
+	if (centered) {
+		paradisEnsureQuickInputHint(widget);
+	}
 }
 
 export class ParadisQuickInputLook extends Disposable {
@@ -73,7 +96,7 @@ export class ParadisQuickInputLook extends Disposable {
 		this._register(quickInputService.onShow(() => {
 			const widget = paradisFindQuickInputWidget(layoutService.activeContainer);
 			if (widget) {
-				paradisEnsureQuickInputHint(widget);
+				paradisApplyQuickInputLook(widget, quickInputService.currentQuickInput);
 			}
 		}));
 	}
