@@ -66,7 +66,7 @@ export function paradisHttpUrlFromTerminalLinkText(text: string | undefined): st
 interface IXtermWithLinkifier {
 	readonly _core?: {
 		readonly linkifier?: {
-			readonly currentLink?: { readonly link?: { readonly text?: string } };
+			readonly currentLink?: { readonly link?: { readonly text?: string } & IParadisTerminalLinkLike };
 		};
 	};
 }
@@ -76,15 +76,61 @@ function hoveredLinkText(raw: RawXtermTerminal): string | undefined {
 	return (raw as unknown as IXtermWithLinkifier)._core?.linkifier?.currentLink?.link?.text;
 }
 
+/** 右クリックしたファイル・フォルダーのリンク（upstream の TerminalLink が解決した URI）。 */
+export interface IParadisTerminalFileLink {
+	readonly resource: URI;
+	readonly isDirectory: boolean;
+}
+
+/** upstream の TerminalLink のうち、ここで読むもの（`uri` は解決済みのファイル、`type` は TerminalBuiltinLinkType）。 */
+interface IParadisTerminalLinkLike {
+	readonly uri?: unknown;
+	readonly type?: unknown;
+}
+
+/**
+ * xterm が下線を出しているリンクが、手元・接続先のファイルかフォルダーなら、その URI。
+ * 単語のリンク（Search）・URL など、upstream が URI に解決していないリンクは対象外。
+ */
+export function paradisFileLinkFromTerminalLink(link: unknown): IParadisTerminalFileLink | undefined {
+	if (typeof link !== 'object' || link === null) {
+		return undefined;
+	}
+	const { uri, type } = link as IParadisTerminalLinkLike;
+	if (!URI.isUri(uri) || uri.scheme === Schemas.http || uri.scheme === Schemas.https) {
+		return undefined;
+	}
+	switch (type) {
+		case 'LocalFile':
+			return { resource: uri, isDirectory: false };
+		case 'LocalFolderInWorkspace':
+		case 'LocalFolderOutsideWorkspace':
+			return { resource: uri, isDirectory: true };
+		default:
+			return undefined;
+	}
+}
+
+function hoveredFileLink(raw: RawXtermTerminal): IParadisTerminalFileLink | undefined {
+	return paradisFileLinkFromTerminalLink((raw as unknown as IXtermWithLinkifier)._core?.linkifier?.currentLink?.link);
+}
+
 const PARADIS_TERMINAL_URL_LINK_AT_MOUSE = new RawContextKey<boolean>('paradisTerminalUrlLinkAtMouse', false, localize('paradisTerminalUrlLinkAtMouse', "ターミナルで右クリックした位置に URL のリンクがあるかどうか"));
 
-const IParadisTerminalLinkAtMouseService = createDecorator<IParadisTerminalLinkAtMouseService>('paradisTerminalLinkAtMouseService');
+/** ターミナルで右クリックした位置にファイル・フォルダーのリンクがあるか（共通のファイルの項目を出す。fileMenus）。 */
+export const PARADIS_TERMINAL_FILE_LINK_AT_MOUSE = new RawContextKey<boolean>('paradisTerminalFileLinkAtMouse', false, localize('paradisTerminalFileLinkAtMouse', "ターミナルで右クリックした位置にファイルかフォルダーのリンクがあるかどうか"));
+/** 右クリックしたリンクがフォルダーか。 */
+export const PARADIS_TERMINAL_FOLDER_LINK_AT_MOUSE = new RawContextKey<boolean>('paradisTerminalFolderLinkAtMouse', false, localize('paradisTerminalFolderLinkAtMouse', "ターミナルで右クリックした位置のリンクがフォルダーかどうか"));
+
+export const IParadisTerminalLinkAtMouseService = createDecorator<IParadisTerminalLinkAtMouseService>('paradisTerminalLinkAtMouseService');
 
 /** 最後に右クリックしたターミナルのリンク。コンテキストキーはグローバル（メニューのスコープから見える位置）に置く。 */
-interface IParadisTerminalLinkAtMouseService {
+export interface IParadisTerminalLinkAtMouseService {
 	readonly _serviceBrand: undefined;
 	readonly url: string | undefined;
 	setUrl(url: string | undefined): void;
+	readonly fileLink: IParadisTerminalFileLink | undefined;
+	setFileLink(link: IParadisTerminalFileLink | undefined): void;
 }
 
 class ParadisTerminalLinkAtMouseService implements IParadisTerminalLinkAtMouseService {
@@ -92,9 +138,24 @@ class ParadisTerminalLinkAtMouseService implements IParadisTerminalLinkAtMouseSe
 
 	private _url: string | undefined;
 	private readonly _hasUrl: IContextKey<boolean>;
+	private _fileLink: IParadisTerminalFileLink | undefined;
+	private readonly _hasFileLink: IContextKey<boolean>;
+	private readonly _hasFolderLink: IContextKey<boolean>;
 
 	constructor(@IContextKeyService contextKeyService: IContextKeyService) {
 		this._hasUrl = PARADIS_TERMINAL_URL_LINK_AT_MOUSE.bindTo(contextKeyService);
+		this._hasFileLink = PARADIS_TERMINAL_FILE_LINK_AT_MOUSE.bindTo(contextKeyService);
+		this._hasFolderLink = PARADIS_TERMINAL_FOLDER_LINK_AT_MOUSE.bindTo(contextKeyService);
+	}
+
+	get fileLink(): IParadisTerminalFileLink | undefined {
+		return this._fileLink;
+	}
+
+	setFileLink(link: IParadisTerminalFileLink | undefined): void {
+		this._fileLink = link;
+		this._hasFileLink.set(link !== undefined);
+		this._hasFolderLink.set(link?.isDirectory === true);
 	}
 
 	get url(): string | undefined {
@@ -130,26 +191,37 @@ export function paradisTrackTerminalLinkAtMouse(
 	setUrl: (url: string | undefined) => void,
 	isMac: boolean = isMacintosh,
 ): IDisposable {
+	return paradisTrackAtMouse(root, element, () => paradisHttpUrlFromTerminalLinkText(hoveredLinkText()), setUrl, isMac);
+}
+
+/** {@link paradisTrackTerminalLinkAtMouse} の読み取りを差し替えられる形（ファイルのリンクにも使う）。 */
+function paradisTrackAtMouse<T>(
+	root: EventTarget,
+	element: HTMLElement,
+	readAtPress: () => T | undefined,
+	set: (value: T | undefined) => void,
+	isMac: boolean,
+): IDisposable {
 	const store = new DisposableStore();
-	let pressed: string | undefined;
+	let pressed: T | undefined;
 	store.add(addDisposableListener(root, EventType.MOUSE_DOWN, (event: MouseEvent) => {
 		if (isSecondaryClick(event, isMac)) {
-			setUrl(undefined);
+			set(undefined);
 		}
 	}, true));
 	store.add(addDisposableListener(element, EventType.MOUSE_DOWN, (event: MouseEvent) => {
-		pressed = isSecondaryClick(event, isMac) ? paradisHttpUrlFromTerminalLinkText(hoveredLinkText()) : undefined;
+		pressed = isSecondaryClick(event, isMac) ? readAtPress() : undefined;
 		if (pressed !== undefined) {
-			setUrl(pressed);
+			set(pressed);
 		}
 	}, true));
 	store.add(addDisposableListener(element, EventType.KEY_DOWN, () => {
 		pressed = undefined;
-		setUrl(undefined);
+		set(undefined);
 	}, true));
-	store.add(addDisposableListener(root, EventType.CONTEXT_MENU, () => setUrl(undefined), true));
+	store.add(addDisposableListener(root, EventType.CONTEXT_MENU, () => set(undefined), true));
 	store.add(addDisposableListener(element, EventType.CONTEXT_MENU, () => {
-		setUrl(pressed);
+		set(pressed);
 		pressed = undefined;
 	}, true));
 	return store;
@@ -176,6 +248,14 @@ class ParadisTerminalLinkAtMouseContribution extends Disposable implements ITerm
 			element,
 			() => hoveredLinkText(xterm.raw),
 			url => this._linkAtMouse.setUrl(url),
+		));
+		// ファイル・フォルダーのリンク（共通のファイルの項目。fileMenus が読む）
+		this._register(paradisTrackAtMouse(
+			getWindow(element),
+			element,
+			() => hoveredFileLink(xterm.raw),
+			link => this._linkAtMouse.setFileLink(link),
+			isMacintosh,
 		));
 	}
 }

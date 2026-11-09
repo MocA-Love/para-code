@@ -156,12 +156,12 @@ function worktreeStateKeyFor(worktree: IParadisWorktree): string {
 function revealLabel(): string {
 	return isWindows
 		// allow-any-unicode-next-line
-		? localize('paradis.workspaceSwitch.revealWindows', "エクスプローラーで表示")
+		? localize('paradis.workspaceSwitch.revealWindows', "エクスプローラーで表示する")
 		: isMacintosh
 			// allow-any-unicode-next-line
-			? localize('paradis.workspaceSwitch.revealMac', "Finder で表示")
+			? localize('paradis.workspaceSwitch.revealMac', "Finder で表示する")
 			// allow-any-unicode-next-line
-			: localize('paradis.workspaceSwitch.revealLinux', "含むフォルダーを開く");
+			: localize('paradis.workspaceSwitch.revealLinux', "含まれているフォルダーを開く");
 }
 
 /** ドット列に並べる上限。これを超えた分は「+n」に畳む (狭いサイドバーで溢れさせない) */
@@ -1951,8 +1951,8 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Action(
 				'paradis.workspaceSwitch.copyPath',
 				// allow-any-unicode-next-line
-				localize('paradis.workspaceSwitch.copyPath', "パスをコピー"),
-				'paradis-menu-icon codicon codicon-copy',
+				localize('paradis.workspaceSwitch.copyPath', "パスのコピー"),
+				'paradis-menu-icon codicon codicon-link',
 				true,
 				() => this.clipboardService.writeText(repository.uri.fsPath)
 			),
@@ -2135,8 +2135,8 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Action(
 				'paradis.workspaceSwitch.worktree.copyPath',
 				// allow-any-unicode-next-line
-				localize('paradis.workspaceSwitch.copyPath', "パスをコピー"),
-				'paradis-menu-icon codicon codicon-copy',
+				localize('paradis.workspaceSwitch.copyPath', "パスのコピー"),
+				'paradis-menu-icon codicon codicon-link',
 				true,
 				() => this.clipboardService.writeText(worktree.uri.fsPath)
 			),

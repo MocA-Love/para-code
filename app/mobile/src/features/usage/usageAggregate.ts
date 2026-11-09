@@ -9,6 +9,7 @@ import {
 	type GithubSpaceStat,
 	type GithubUsageResult,
 	type RateLimitAccount,
+	type RateLimitHiddenAccount,
 	type RateLimitProviderSnapshot,
 	type RateLimitsResult,
 	type RateLimitWindow,
@@ -200,7 +201,7 @@ export function staleOf(value: Timed<object> | undefined): boolean {
  *  - Codex: `accountId`（PC が sha256 にして送る）があればそれ。無ければ束ねない（同じメールで別のワークスペースを
  *    持つ人を1つに潰さないため）
  */
-export function accountMergeKey(account: RateLimitAccount, entryKey: string): string {
+export function accountMergeKey(account: Pick<RateLimitAccount, 'provider' | 'id' | 'email' | 'organizationName' | 'accountId'>, entryKey: string): string {
 	const email = account.email?.trim().toLowerCase();
 	if (account.provider === 'codex') {
 		if (account.accountId !== undefined && account.accountId.length > 0) {
@@ -280,9 +281,33 @@ function betterResetCandidate(a: AccountCandidate, b: AccountCandidate): Account
 	return b.at > a.at ? b : a;
 }
 
+/** PC で隠したアカウント（{@link aggregateHiddenAccounts} が PC をまたいで束ねたもの）。 */
+export interface AggregatedHiddenAccount {
+	readonly key: string;
+	readonly account: RateLimitHiddenAccount;
+}
+
+/**
+ * PC の使用量のパネルで隠したアカウントを、PC をまたいで束ねる（鍵は {@link accountMergeKey}）。並びは見つかった順。
+ * 古い PC は隠したアカウントを送らない（`hiddenAccounts` が無い）ので、そこからは何も数えない。
+ */
+export function aggregateHiddenAccounts(entries: readonly UsageEntry[], provider: 'claude' | 'codex'): AggregatedHiddenAccount[] {
+	const hidden = new Map<string, AggregatedHiddenAccount>();
+	for (const entry of entries) {
+		for (const account of entry.values.limits?.value[provider].hiddenAccounts ?? []) {
+			const key = accountMergeKey(account, entry.key);
+			if (!hidden.has(key)) {
+				hidden.set(key, { key, account });
+			}
+		}
+	}
+	return [...hidden.values()];
+}
+
 /**
  * アカウントごとに束ねる。並びは見つかった順（「PC ごと」の並び → PC 側の並び）。
  * 接続先にログインが無い（`host_not_logged_in`）ものは数えない（その接続先では使っていない）。
+ * どれか1台の PC でも隠したアカウント（{@link aggregateHiddenAccounts}）は、ほかの PC で見えていても出さない。
  *
  * Codex の枠のリセット（`resetCredits`）は、採った値の PC が添えていない（古い PC・読めなかった）ことがある。
  * そのまま採るとリセットの行が消えるので、リセットだけはリセットを添えている PC の中の新しい値から採る。
@@ -292,6 +317,7 @@ export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'cla
 	const best = new Map<string, AccountCandidate>();
 	const bestReset = new Map<string, AccountCandidate>();
 	const seen = new Map<string, SeenOn[]>();
+	const hidden = new Set(aggregateHiddenAccounts(entries, provider).map(item => item.key));
 	for (const entry of entries) {
 		const limits = entry.values.limits;
 		if (limits === undefined) {
@@ -304,6 +330,9 @@ export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'cla
 				continue;
 			}
 			const key = accountMergeKey(account, entry.key);
+			if (hidden.has(key)) {
+				continue;
+			}
 			const candidate: AccountCandidate = { account, at: accountFetchedAt(account, limits.at), old, remoteHost: snapshot.remoteHost };
 			const current = best.get(key);
 			if (current === undefined) {
