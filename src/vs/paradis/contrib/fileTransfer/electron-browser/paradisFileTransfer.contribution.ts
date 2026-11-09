@@ -44,6 +44,7 @@ import { PARADIS_FILE_TRANSFER_EXPLORER_WHEN, PARADIS_FILE_TRANSFER_TITLE_BAR_WH
 import { PARADIS_SFTP_IDLE_DEFAULT_SECONDS, PARADIS_SFTP_IDLE_MAX_SECONDS, PARADIS_SFTP_IDLE_MIN_SECONDS, PARADIS_SFTP_IDLE_SETTING } from '../common/paradisSftp.js';
 import { ParadisFileTransferEditor } from './paradisFileTransferEditor.js';
 import { PARADIS_FILE_TRANSFER_ICON, ParadisFileTransferInput, ParadisFileTransferInputSerializer } from './paradisFileTransferInput.js';
+import './paradisExplorerDownload.js';
 import './paradisFileTransferActivity.js';
 import './paradisFileTransferService.js';
 import './media/paradisFileTransfer.css';

@@ -87,6 +87,8 @@ interface IEntry {
 	overwrite: boolean;
 	/** 種類の違う同名（ファイル ⇔ フォルダー）を、取り除いてから置き換えてよいか（専用の確認を経た）。 */
 	replaceKind: boolean;
+	/** フォルダーの中のリンクを辿らない（{@link IParadisTransferRequest.skipLinksInFolders}）。 */
+	readonly skipLinksInFolders: boolean;
 	/** 実行の直前に同名ができていたときに聞く先。自動の流し直しでは無い（黙って失敗にする）。 */
 	resolveConflict: ParadisConflictResolver | undefined;
 	cancellation: CancellationTokenSource | undefined;
@@ -207,15 +209,19 @@ export class ParadisTransferQueue extends Disposable {
 	 * 残りは聞かない。ただし種類の違う衝突は毎回聞く）。`cancel` が返ったら何も積まない。積んだ件数を返す。
 	 */
 	async enqueue(request: IParadisTransferRequest, resolveConflict: ParadisConflictResolver): Promise<number> {
+		return (await this.enqueueWithIds(request, resolveConflict)).length;
+	}
+
+	/** {@link enqueue} と同じで、積んだ項目の ID を返す（その転送の進み具合だけを追う呼び出し側のため）。 */
+	async enqueueWithIds(request: IParadisTransferRequest, resolveConflict: ParadisConflictResolver): Promise<readonly number[]> {
 		this.preparing++;
 		this._onDidChange.fire();
 		try {
 			const planned = await this.plan(request, resolveConflict);
 			if (!planned) {
-				return 0;
+				return [];
 			}
-			this.push(planned, request, resolveConflict);
-			return planned.length;
+			return this.push(planned, request, resolveConflict);
 		} finally {
 			this.preparing--;
 			this._onDidChange.fire();
@@ -393,11 +399,14 @@ export class ParadisTransferQueue extends Disposable {
 		return names;
 	}
 
-	private push(planned: readonly IPlannedItem[], request: IParadisTransferRequest, resolveConflict: ParadisConflictResolver): void {
+	private push(planned: readonly IPlannedItem[], request: IParadisTransferRequest, resolveConflict: ParadisConflictResolver): number[] {
+		const ids: number[] = [];
 		for (const plan of planned) {
+			const id = this.nextId++;
+			ids.push(id);
 			this.entries.push({
 				item: {
-					id: this.nextId++,
+					id,
 					name: plan.source.name,
 					isDirectory: plan.source.isDirectory,
 					source: plan.source.resource,
@@ -418,6 +427,7 @@ export class ParadisTransferQueue extends Disposable {
 				},
 				overwrite: plan.overwrite,
 				replaceKind: plan.replaceKind,
+				skipLinksInFolders: !!request.skipLinksInFolders,
 				resolveConflict,
 				cancellation: undefined,
 				run: undefined,
@@ -430,6 +440,7 @@ export class ParadisTransferQueue extends Disposable {
 			this._onDidChange.fire();
 			this.pump();
 		}
+		return ids;
 	}
 
 	// --- 流す --------------------------------------------------------------------------------------
@@ -479,7 +490,7 @@ export class ParadisTransferQueue extends Disposable {
 			}
 			// 送り元を読み終えてから宛先を取り除く。先に消すと、送り元が読めない・接続が切れたときに
 			// 宛先だけが消えて失敗で終わる。
-			const plan = await this.scan(entry.item, token);
+			const plan = await this.scan(entry.item, token, entry.skipLinksInFolders);
 			if (token.isCancellationRequested) {
 				return;
 			}
@@ -595,7 +606,7 @@ export class ParadisTransferQueue extends Disposable {
 	}
 
 	/** 写すものを洗い出す。フォルダーは 1 階層ごとに 1 回だけ一覧を読む（大きさも一緒に取る）。 */
-	private async scan(item: IParadisTransferItem, token: CancellationToken): Promise<IScanPlan> {
+	private async scan(item: IParadisTransferItem, token: CancellationToken, skipLinksInFolders: boolean): Promise<IScanPlan> {
 		const directories: Array<{ readonly target: URI; readonly depth: number }> = [];
 		const files: Array<{ source: URI; target: URI; size: number }> = [];
 		let skipped = 0;
@@ -638,8 +649,9 @@ export class ParadisTransferQueue extends Disposable {
 			directories.push({ target, depth });
 			for (const child of children) {
 				const childTarget = joinPath(target, child.name);
-				if (child.directoryLink || child.special) {
-					// フォルダーを指すリンクは辿らず、ソケット・FIFO・壊れたリンクは読まない（読むと止まりうる）
+				if (child.directoryLink || child.special || (skipLinksInFolders && child.isSymbolicLink)) {
+					// フォルダーを指すリンクは辿らず、ソケット・FIFO・壊れたリンクは読まない（読むと止まりうる）。
+					// 指定があれば、ファイルを指すリンクも辿らない（選んだフォルダーの外を読まないように）
 					skipped++;
 				} else if (child.isDirectory) {
 					pending.push({ source: child.resource, target: childTarget, depth: depth + 1 });

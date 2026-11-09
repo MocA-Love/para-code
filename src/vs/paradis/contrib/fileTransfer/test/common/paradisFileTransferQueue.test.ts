@@ -300,6 +300,32 @@ suite('Paradis file transfer - queue', () => {
 		});
 	});
 
+	test('with skipLinksInFolders, links to files inside a folder are skipped too, and the ids of the queued items are returned', async () => {
+		const fileSystem = new FakeFileSystem();
+		fileSystem.addDirectory(REMOTE);
+		fileSystem.addDirectory(joinPath(LOCAL, 'dist'));
+		fileSystem.addFile(joinPath(LOCAL, 'dist', 'index.html'), 1500);
+		fileSystem.addFile(joinPath(LOCAL, 'dist', 'outside.txt'), 10, { isSymbolicLink: true });
+		fileSystem.addFile(joinPath(LOCAL, 'notes.txt'), 20);
+		const queue = createQueue(fileSystem);
+
+		const ids = await queue.enqueueWithIds({ ...request([source('dist', true), source('notes.txt')]), skipLinksInFolders: true }, neverAsked);
+		await settled(queue);
+
+		assert.deepStrictEqual({
+			ids,
+			items: queue.items.map(pick),
+			created: ['dist/index.html', 'dist/outside.txt', 'notes.txt'].map(path => !!fileSystem.get(joinPath(REMOTE, path))),
+		}, {
+			ids: [1, 2],
+			items: [
+				{ name: 'dist', target: '/home/example/apps/dist', state: 'done', doneBytes: 1500, totalBytes: 1500, doneFiles: 1, totalFiles: 1, skipped: 1, error: undefined },
+				{ name: 'notes.txt', target: '/home/example/apps/notes.txt', state: 'done', doneBytes: 20, totalBytes: 20, doneFiles: 1, totalFiles: 1, skipped: 0, error: undefined },
+			],
+			created: [true, false, true],
+		});
+	});
+
 	test('cancelling before anything is written keeps the existing file and removes only the temporary file (H1)', async () => {
 		const fileSystem = new FakeFileSystem();
 		fileSystem.addDirectory(REMOTE);

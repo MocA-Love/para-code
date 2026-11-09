@@ -159,6 +159,12 @@ export interface IParadisTransferRequest {
 	/** 送り先の見出し（`dev-server` / `このマシン`）。 */
 	readonly targetLabel: string;
 	readonly direction: ParadisTransferDirection;
+	/**
+	 * フォルダーの中のリンク（ファイルを指すものも）を辿らずに飛ばす（飛ばした件数に数える）。選んだフォルダーの
+	 * 外にあるものまで読まないための指定で、エクスプローラーのまとめてダウンロードが使う。選んだ項目そのものが
+	 * リンクのときは、利用者が選んだものとして辿る。
+	 */
+	readonly skipLinksInFolders?: boolean;
 }
 
 export type ParadisTransferState = 'waiting' | 'running' | 'done' | 'error' | 'cancelled';

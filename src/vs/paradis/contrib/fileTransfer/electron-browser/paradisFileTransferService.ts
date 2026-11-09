@@ -106,6 +106,11 @@ export interface IParadisFileTransferService {
 
 	/** 反対側のフォルダーへ送る。同じ名前があれば確認する。積んだ件数を返す。 */
 	transfer(sources: readonly IParadisTransferSource[], targetDirectory: URI, targetSide: ParadisTransferSide): Promise<number>;
+	/**
+	 * {@link transfer} と同じで、積んだ項目の ID を返す。`skipLinksInFolders` なら、フォルダーの中のリンクを辿らない。
+	 * 同じ名前の確認も {@link transfer} と同じダイアログで行う。
+	 */
+	transferWithIds(sources: readonly IParadisTransferSource[], targetDirectory: URI, targetSide: ParadisTransferSide, options?: { readonly skipLinksInFolders?: boolean }): Promise<readonly number[]>;
 	/** 失敗・取り消しの 1 件をやり直す（その間に同名ができていたら確かめる）。 */
 	retry(item: IParadisTransferItem): Promise<void>;
 
@@ -535,6 +540,16 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 			targetDirectory,
 			targetLabel: this.sideLabel(targetSide, targetDirectory),
 			direction: targetSide === 'remote' ? 'toRemote' : 'toLocal',
+		}, conflict => this.askConflict(conflict, targetSide));
+	}
+
+	transferWithIds(sources: readonly IParadisTransferSource[], targetDirectory: URI, targetSide: ParadisTransferSide, options?: { readonly skipLinksInFolders?: boolean }): Promise<readonly number[]> {
+		return this.queue.enqueueWithIds({
+			sources,
+			targetDirectory,
+			targetLabel: this.sideLabel(targetSide, targetDirectory),
+			direction: targetSide === 'remote' ? 'toRemote' : 'toLocal',
+			skipLinksInFolders: options?.skipLinksInFolders,
 		}, conflict => this.askConflict(conflict, targetSide));
 	}
 
