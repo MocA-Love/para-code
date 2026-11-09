@@ -173,3 +173,22 @@
 		opacity: 0.35;
 	}
 }
+
+/* A chip that is a filter (a button that stays pressed, history's agent filter): fill under the pointer, and when
+	pressed the selection fill with the accent line at 40% (UI kit stage 4, Q600). */
+.monaco-workbench button.paradis-chip {
+	font: inherit;
+	font-size: var(--paradis-chip-font-size);
+	cursor: pointer;
+}
+
+.monaco-workbench button.paradis-chip:hover {
+	background: var(--vscode-paradis-fillHover);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench button.paradis-chip[aria-pressed="true"] {
+	border-color: color-mix(in srgb, var(--vscode-paradis-accent) 40%, transparent);
+	background: var(--vscode-paradis-fillSelected);
+	color: var(--vscode-paradis-textStrong);
+}

@@ -1,0 +1,60 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	Tabs of Para Code's UI kit (stage 4, Q600, paradisTabs.ts): 32px high, muted text, the selected one in the strong
+	text color with a 2px accent line under it. The list scrolls sideways when the window is narrow. Keys (arrows,
+	Home, End) and roles (tablist, tab, tabpanel) belong to the screen that places them. Keyboard focus is the inset
+	blue ring (paradis-focus-ring-inset, paradisFocusRing.css).
+*/
+
+.monaco-workbench .paradis-tabs {
+	display: flex;
+	align-items: stretch;
+	gap: var(--vscode-spacing-size40);
+	min-width: 0;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+
+.monaco-workbench .paradis-tab {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	flex: none;
+	height: var(--paradis-height-lg);
+	padding: 0 var(--vscode-spacing-size100);
+	border: none;
+	background: transparent;
+	color: var(--vscode-paradis-textMuted);
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-tab:hover,
+.monaco-workbench .paradis-tab[aria-selected="true"] {
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench .paradis-tab[aria-selected="true"]::after {
+	content: '';
+	position: absolute;
+	left: var(--vscode-spacing-size80);
+	right: var(--vscode-spacing-size80);
+	bottom: 0;
+	height: 2px;
+	border-radius: 2px;
+	background: var(--vscode-paradis-accent);
+}
+
+.monaco-workbench .paradis-tab:disabled {
+	opacity: 0.45;
+	cursor: default;
+}

@@ -25,6 +25,8 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { ParadisSpaceUsageSection } from '../../agentActivity/electron-browser/paradisSpaceUsageSection.js';
 import { ParadisWorkStatsSection } from '../../agentActivity/electron-browser/paradisWorkStatsSection.js';
 import { ParadisCcusageSection } from '../../ccusage/electron-browser/paradisCcusageSection.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { PARADIS_MODAL_COMPACT_CLASS } from '../../../browser/paradisModal.js';
 import { ParadisGithubMetricsSection } from '../../githubMetrics/electron-browser/paradisGithubMetricsSection.js';
 import { ParadisRtkSection } from '../../rtk/electron-browser/paradisRtkSection.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
@@ -176,6 +178,10 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 export class ParadisUsageArea extends Disposable implements IParadisHubAreaView {
 
 	private readonly _contentEl: HTMLElement;
+	/** 見出しの「更新」のアイコン。取り直している間は回す。 */
+	private readonly _refreshIcon: HTMLElement;
+	/** 終わっていない取り直しの数（重なって押されたときに早く止めない）。 */
+	private _refreshing = 0;
 	private readonly _navItems = new Map<ParadisUsageDashboardTab, IParadisHubNavItem>();
 	private readonly _panes = new Map<ParadisUsageDashboardTab, HTMLElement>();
 	private readonly _sections = new Map<ParadisUsageDashboardTab, IParadisUsageSection>();
@@ -194,8 +200,10 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 
 		// ---------- 見出しの行の「更新」 ----------
 		const refreshBtn = dom.append(containers.header, $('button.pud-refresh')) as HTMLButtonElement;
+		// UI キットの段 4（Q600）: 素の小さいボタン。狭い窓では文字を隠してアイコンだけ
+		refreshBtn.classList.add(...paradisButtonClasses('ghost', true), PARADIS_MODAL_COMPACT_CLASS);
 		refreshBtn.type = 'button';
-		refreshBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
+		this._refreshIcon = dom.append(refreshBtn, $(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		dom.append(refreshBtn, $('span')).textContent = STR_REFRESH;
 		this._register(dom.addDisposableListener(refreshBtn, 'click', () => this._refreshActive()));
 
@@ -270,7 +278,17 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 	}
 
 	private _refreshActive(): void {
-		void this._sections.get(this._activeTab)?.refresh(true);
+		const section = this._sections.get(this._activeTab);
+		if (!section) {
+			return;
+		}
+		this._refreshing++;
+		this._refreshIcon.classList.add('codicon-modifier-spin');
+		void section.refresh(true).finally(() => {
+			if (--this._refreshing === 0) {
+				this._refreshIcon.classList.remove('codicon-modifier-spin');
+			}
+		});
 	}
 
 	private _buildSettingsPane(pane: HTMLElement): void {

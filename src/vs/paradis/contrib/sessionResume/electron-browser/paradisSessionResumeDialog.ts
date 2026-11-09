@@ -32,6 +32,10 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import Severity from '../../../../base/common/severity.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
+import { PARADIS_MODAL_COMPACT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
+import '../../../browser/media/paradisSegmented.css';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { IChatOutputRendererService } from '../../../../workbench/contrib/chat/browser/chatOutputItemRenderer.js';
 import { ParadisSessionIndexController } from '../../agentActivity/electron-browser/paradisSessionIndexController.js';
@@ -83,6 +87,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 	private readonly modal: HTMLElement;
 	private root: HTMLElement | undefined;
 	private list: HTMLElement | undefined;
+	/** 一覧の行（描いた順）。↑↓ で隣の行へ移るときに使う。 */
+	private readonly rowElements: HTMLButtonElement[] = [];
 	private detail: HTMLElement | undefined;
 	private searchInput: HTMLInputElement | undefined;
 	/** 左フィルタナビの項目(ボタン化した旧 select)。render() から updateRailSelection() 経由で aria-pressed と件数を同期する(初回ローディング中のプレースホルダ表示時は未同期)。 */
@@ -172,15 +178,22 @@ export class ParadisSessionResumeDialog extends Disposable {
 		// ダイアログの殻。寸法は media/paradisSessionResume.css 側で指定する（3カラムの最小 936px を
 		// 満たす幅を既定にし、狭い画面では 94vw/92vh で頭打ちにして段階的に畳む）。
 		this.backdrop = $('.paradis-session-resume-backdrop.paradis-modal-backdrop');
-		this.modal = dom.append(this.backdrop, $('.paradis-session-resume-modal.paradis-focus-none'));
+		this.modal = dom.append(this.backdrop, $('.paradis-session-resume-modal'));
+		// UI キットの段 4（Q600）: 箱は L 段（寸法・面・角丸・影は paradisModal.css）、見出しは 52 の帯
+		this.modal.classList.add(...paradisModalClasses(ParadisModalSize.Large));
 		this.modal.tabIndex = -1;
 		this.modal.setAttribute('role', 'dialog');
 		this.modal.setAttribute('aria-modal', 'true');
 		this.modal.setAttribute('aria-label', STR_DIALOG_TITLE);
 
-		const header = dom.append(this.modal, $('.paradis-session-resume-modal-header'));
-		dom.append(header, $('h2')).textContent = STR_DIALOG_TITLE;
-		const closeBtn = dom.append(header, $('button.paradis-session-resume-modal-close.paradis-focus-ring-inset')) as HTMLButtonElement;
+		const head = renderParadisModalHead(this.modal, STR_DIALOG_TITLE);
+		head.element.classList.add('paradis-session-resume-modal-header');
+		// 「履歴を更新」は見出しの帯の素のボタン（以前は左の列の下と検索欄の横の 2 か所）
+		const headRefresh = this.createRefreshButton(head.actions, localize('paradis.sessionResume.refreshShort', "履歴を更新"));
+		headRefresh.classList.remove('paradis-focus-ring-inset');
+		headRefresh.classList.add(...paradisButtonClasses('ghost', true), PARADIS_MODAL_COMPACT_CLASS);
+		const closeBtn = dom.append(head.actions, $('button.paradis-session-resume-modal-close')) as HTMLButtonElement;
+		closeBtn.classList.add(...paradisButtonClasses('icon'));
 		closeBtn.type = 'button';
 		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
 		closeBtn.setAttribute('aria-label', STR_DIALOG_CLOSE);
@@ -267,28 +280,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 		const rail = dom.append(content, $('nav.paradis-session-resume-nav'));
 		rail.setAttribute('aria-label', localize('paradis.sessionResume.filterRail', "セッション履歴のフィルター"));
 
-		dom.append(rail, $('.nav-cap')).textContent = localize('paradis.sessionResume.agentLabel', "エージェント");
-		const agentGroup = dom.append(rail, $('.nav-group'));
-		for (const [value, label] of [
-			['all', localize('paradis.sessionResume.allAgents', "すべてのエージェント")],
-			['claude', 'Claude Code'],
-			['codex', 'Codex'],
-			['opencode', 'OpenCode'],
-		] as const) {
-			const entry = this.createNavItem(agentGroup, label, button => {
-				if (value !== 'all') {
-					this.renderAgentIcon(button, value);
-				}
-			});
-			entry.button.dataset.agentFilter = value;
-			this._register(dom.addDisposableListener(entry.button, dom.EventType.CLICK, () => {
-				this.agentFilter = value;
-				this.ensureSelectedSessionIsVisible();
-				this.render();
-			}));
-			this.agentNavButtons.set(value, entry);
-		}
-
 		dom.append(rail, $('.nav-cap')).textContent = localize('paradis.sessionResume.spaceLabel', "スペース");
 		const allSpacesEntry = this.createNavItem(rail, localize('paradis.sessionResume.allSpacesFilter', "すべてのスペース"),
 			button => dom.append(button, $(`span${ThemeIcon.asCSSSelector(Codicon.globe)}`)));
@@ -336,25 +327,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 			this.render();
 		}));
 
-		dom.append(rail, $('.nav-cap')).textContent = localize('paradis.sessionResume.periodLabel', "期間");
-		const chipRow = dom.append(rail, $('.chip-row'));
-		for (const [value, label] of [
-			['all', localize('paradis.sessionResume.periodAll', "すべて")],
-			['day', localize('paradis.sessionResume.periodDay', "過去24時間")],
-			['week', localize('paradis.sessionResume.periodWeek', "過去7日")],
-			['month', localize('paradis.sessionResume.periodMonth', "過去30日")],
-		] as const) {
-			const entry = this.createNavItem(chipRow, label);
-			entry.button.classList.add('fchip', 'paradis-focus-ring-inset');
-			entry.button.dataset.periodFilter = value;
-			this._register(dom.addDisposableListener(entry.button, dom.EventType.CLICK, () => {
-				this.periodFilter = value;
-				this.ensureSelectedSessionIsVisible();
-				this.render();
-			}));
-			this.periodNavButtons.set(value, entry);
-		}
-
 		const archivedLabel = dom.append(rail, $('label.paradis-session-resume-check'));
 		this.archivedInput = dom.append(archivedLabel, $('input')) as HTMLInputElement;
 		this.archivedInput.type = 'checkbox';
@@ -362,22 +334,22 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this._register(dom.addDisposableListener(this.archivedInput, dom.EventType.CHANGE, () => this.refreshController.requestImmediate()));
 
 		const footer = dom.append(rail, $('.rail-footer'));
-		this.createRefreshButton(footer, localize('paradis.sessionResume.refreshShort', "履歴を更新"));
 		this.railSummary = dom.append(footer, $('span.rail-summary'));
 
 		// 中央カラム: 検索ヘッダー + リスト
 		const listColumn = dom.append(content, $('.paradis-session-resume-listcolumn'));
 		const searchWrap = dom.append(listColumn, $('.paradis-session-resume-search'));
-		dom.append(searchWrap, $(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
-		this.searchInput = dom.append(searchWrap, $('input')) as HTMLInputElement;
+		const searchPlaceholder = localize('paradis.sessionResume.searchPlaceholder', "タイトル、会話、パス、セッションIDを検索");
+		const searchField = this._register(new ParadisInputField(searchWrap, { ariaLabel: searchPlaceholder, placeholder: searchPlaceholder, icon: Codicon.search }));
+		searchField.element.classList.add('paradis-session-resume-search-field');
+		this.searchInput = searchField.inputElement;
 		this.searchInput.type = 'search';
 		this.searchInput.maxLength = 200;
-		this.searchInput.placeholder = localize('paradis.sessionResume.searchPlaceholder', "タイトル、会話、パス、セッションIDを検索");
-		this.searchInput.setAttribute('aria-label', this.searchInput.placeholder);
 		this._register(dom.addDisposableListener(this.searchInput, dom.EventType.INPUT, () => this.onSearchInput()));
 		// 狭い幅では左ナビ(rail)が折りたたまれるため、検索バー右端にも開閉トグルと更新を置く。
 		const headActions = dom.append(searchWrap, $('.search-head-actions'));
-		this.railToggleButton = dom.append(headActions, $('button.paradis-session-resume-rail-toggle.paradis-focus-ring-inset')) as HTMLButtonElement;
+		this.railToggleButton = dom.append(headActions, $('button.paradis-session-resume-rail-toggle')) as HTMLButtonElement;
+		this.railToggleButton.classList.add(...paradisButtonClasses('icon'));
 		this.railToggleButton.type = 'button';
 		this.railToggleButton.title = localize('paradis.sessionResume.toggleFilterRail', "フィルターレールの表示を切り替え");
 		this.railToggleButton.setAttribute('aria-label', this.railToggleButton.title);
@@ -387,10 +359,57 @@ export class ParadisSessionResumeDialog extends Disposable {
 			const open = this.root?.classList.toggle('rail-open') === true;
 			this.railToggleButton?.setAttribute('aria-expanded', String(open));
 		}));
-		this.createRefreshButton(headActions);
+		// エージェントの絞り込み（押せるチップ）と期間（切り替えの組）は、一覧の上に置く（UI キットの段 4）
+		const filters = dom.append(listColumn, $('.paradis-session-resume-filters'));
+		const agentChips = dom.append(filters, $('.agent-chips'));
+		agentChips.setAttribute('role', 'group');
+		agentChips.setAttribute('aria-label', localize('paradis.sessionResume.agentLabel', "エージェント"));
+		for (const [value, label] of [
+			['all', localize('paradis.sessionResume.allAgents', "すべてのエージェント")],
+			['claude', 'Claude Code'],
+			['codex', 'Codex'],
+			['opencode', 'OpenCode'],
+		] as const) {
+			const button = dom.append(agentChips, $('button.paradis-chip.paradis-focus-ring')) as HTMLButtonElement;
+			button.type = 'button';
+			if (value !== 'all') {
+				this.renderAgentIcon(button, value);
+			}
+			dom.append(button, $('span.paradis-chip-label')).textContent = label;
+			const count = dom.append(button, $('span.chip-count'));
+			button.dataset.agentFilter = value;
+			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => {
+				this.agentFilter = value;
+				this.ensureSelectedSessionIsVisible();
+				this.render();
+			}));
+			this.agentNavButtons.set(value, { button, count });
+		}
+		const periodSeg = dom.append(filters, $('.paradis-seg'));
+		periodSeg.setAttribute('role', 'group');
+		periodSeg.setAttribute('aria-label', localize('paradis.sessionResume.periodLabel', "期間"));
+		for (const [value, label] of [
+			['all', localize('paradis.sessionResume.periodAll', "すべて")],
+			['day', localize('paradis.sessionResume.periodDay', "過去24時間")],
+			['week', localize('paradis.sessionResume.periodWeek', "過去7日")],
+			['month', localize('paradis.sessionResume.periodMonth', "過去30日")],
+		] as const) {
+			const button = dom.append(periodSeg, $('button.paradis-focus-ring-inset')) as HTMLButtonElement;
+			button.type = 'button';
+			button.textContent = label;
+			button.dataset.periodFilter = value;
+			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => {
+				this.periodFilter = value;
+				this.ensureSelectedSessionIsVisible();
+				this.render();
+			}));
+			// 組には件数を出さない（読み上げの名前に含めない、見えない要素）
+			this.periodNavButtons.set(value, { button, count: $('span') });
+		}
 		this.listBar = dom.append(listColumn, $('.paradis-session-resume-listbar'));
 		this.renderListBar();
 		this.list = dom.append(listColumn, $('.paradis-session-resume-list'));
+		dom.append(listColumn, $('.paradis-session-resume-keyhint')).textContent = localize('paradis.sessionResume.keyHint', "↑↓ で選び、Enter で再開");
 
 		// 右カラム: 詳細
 		this.detail = dom.append(content, $('.paradis-session-resume-detail'));
@@ -740,6 +759,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.renderSequence++;
 		this.renderedSearchMatches = [];
 		this.renderDisposables.clear();
+		this.rowElements.length = 0;
 		dom.clearNode(this.list);
 		dom.clearNode(this.detail);
 		if (this.loading && this.sessions.length === 0) {
@@ -863,6 +883,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 		const rows = dom.append(details, $('.group-rows'));
 		for (const session of sessions) {
 			const row = dom.append(rows, $('button.paradis-session-resume-row.paradis-focus-subtle')) as HTMLButtonElement;
+			row.dataset.catalogId = session.catalogId;
+			this.rowElements.push(row);
 			row.classList.toggle('selected', session.catalogId === this.selected?.catalogId);
 			row.setAttribute('aria-pressed', String(session.catalogId === this.selected?.catalogId));
 			const top = dom.append(row, $('.row-top'));
@@ -892,6 +914,14 @@ export class ParadisSessionResumeDialog extends Disposable {
 				if (keyboardEvent.keyCode === KeyCode.ContextMenu || (keyboardEvent.shiftKey && keyboardEvent.keyCode === KeyCode.F10)) {
 					keyboardEvent.preventDefault();
 					showMenu(more);
+				} else if (keyboardEvent.keyCode === KeyCode.UpArrow || keyboardEvent.keyCode === KeyCode.DownArrow) {
+					// UI キットの段 4（Q600）: ↑↓ で一覧の選択と右の会話を替える
+					keyboardEvent.preventDefault();
+					this.moveSelection(row, keyboardEvent.keyCode === KeyCode.UpArrow ? -1 : 1);
+				} else if (keyboardEvent.keyCode === KeyCode.Enter && session.catalogId === this.selected?.catalogId && !this.resumingCatalogIds.has(session.catalogId)) {
+					// 選んでいる行で Enter を押すと、主のボタン（再開）と同じ動き。選んでいない行では今までどおり選ぶ
+					keyboardEvent.preventDefault();
+					void this.resume(session, paradisSessionResumeEditorActionOptions('primary'));
 				}
 			}));
 			const searchMatch = this.searchMatches?.get(session.catalogId);
@@ -930,6 +960,22 @@ export class ParadisSessionResumeDialog extends Disposable {
 				void this.loadPreview(session);
 			}));
 		}
+	}
+
+	/** 一覧の隣の行を選び、作り直した一覧でその行にフォーカスを戻す。 */
+	private moveSelection(from: HTMLElement, delta: -1 | 1): void {
+		if (!this.list) {
+			return;
+		}
+		// 閉じたグループの中の行（見えていない行）は飛ばす
+		const rows = this.rowElements.filter(row => row.closest('details')?.open !== false);
+		const next = rows[rows.indexOf(from as HTMLButtonElement) + delta];
+		if (!next) {
+			return;
+		}
+		const catalogId = next.dataset.catalogId;
+		next.click();
+		this.rowElements.find(row => row.dataset.catalogId === catalogId)?.focus();
 	}
 
 	private renderDetail(): void {
@@ -1029,6 +1075,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		const actions = dom.append(this.detail, $('.paradis-session-resume-actions'));
 		if (!session.currentSpace) {
 			const background = dom.append(actions, $('button.secondary')) as HTMLButtonElement;
+			background.classList.add(...paradisButtonClasses('secondary'));
 			background.disabled = this.resumingCatalogIds.has(session.catalogId);
 			background.textContent = localize('paradis.sessionResume.backgroundResume', "バックグラウンドで再開");
 			this.renderDisposables.add(dom.addDisposableListener(background, dom.EventType.CLICK, () => this.resume(session, paradisSessionResumeEditorActionOptions('background'))));
@@ -1040,6 +1087,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			? '--dangerously-skip-permissions'
 			: '--dangerously-bypass-approvals-and-sandbox';
 		const dangerous = dom.append(actions, $('button.danger')) as HTMLButtonElement;
+		dangerous.classList.add(...paradisButtonClasses('danger'));
 		dangerous.hidden = session.agent === 'opencode';
 		dangerous.disabled = this.resumingCatalogIds.has(session.catalogId);
 		dangerous.textContent = session.currentSpace
@@ -1053,6 +1101,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.renderDisposables.add(dom.addDisposableListener(dangerous, dom.EventType.CLICK, () => this.resume(session, paradisSessionResumeEditorActionOptions('dangerous'))));
 
 		const primary = dom.append(actions, $('button.primary')) as HTMLButtonElement;
+		primary.classList.add(...paradisButtonClasses('primary'));
 		primary.disabled = this.resumingCatalogIds.has(session.catalogId);
 		primary.textContent = primaryLabel;
 		this.renderDisposables.add(dom.addDisposableListener(primary, dom.EventType.CLICK, () => this.resume(session, paradisSessionResumeEditorActionOptions('primary'))));

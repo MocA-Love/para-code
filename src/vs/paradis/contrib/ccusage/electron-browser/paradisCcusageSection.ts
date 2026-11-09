@@ -18,14 +18,23 @@
 
 import './media/paradisCcusage.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { basename } from '../../../../base/common/path.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { PARADIS_TABLE_CLASS } from '../../../browser/paradisCard.js';
+import { renderParadisProgress } from '../../../browser/paradisProgress.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisCostDay, IParadisRepoUsageResult, paradisActivityDayKey, paradisAllocateSpaceCosts } from '../../agentActivity/common/paradisAgentActivity.js';
 import { PARADIS_REPO_OUTSIDE_KEY } from '../../agentActivity/common/paradisRepoIdentity.js';
@@ -66,6 +75,18 @@ type ParadisCcusagePresetKey = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' |
 /** チャートの表示単位。7日未満の期間では daily に強制される(effectiveGranularity 参照)。 */
 type ParadisCcusageGranularity = 'daily' | 'weekly';
 
+/** `YYYY-MM-DD` を「11/9」の形にする。 */
+function formatMonthDay(value: string): string {
+	const [, month, day] = value.split('-');
+	return `${Number(month)}/${Number(day)}`;
+}
+
+/** 粒度のプルダウンの選択肢。 */
+const GRANULARITY_OPTIONS = [
+	{ value: 'daily', label: localize('paradis.ccusage.granularity.daily', "日別") },
+	{ value: 'weekly', label: localize('paradis.ccusage.granularity.weekly', "週別") },
+];
+
 interface IDateRange {
 	/** YYYY-MM-DD、この日を含む。 */
 	readonly from: string;
@@ -105,11 +126,13 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	private body: HTMLElement | undefined;
 	private tooltip: HTMLElement | undefined;
 	private updatedLabel: HTMLElement | undefined;
-	private refreshIcon: HTMLElement | undefined;
-	private presetButtons: { key: ParadisCcusagePresetKey; button: HTMLButtonElement }[] = [];
-	private granularityButtons: { granularity: ParadisCcusageGranularity; button: HTMLButtonElement }[] = [];
-	private metricButtons: { metric: ParadisCcusageMetric; button: HTMLButtonElement }[] = [];
-	private agentButtons: { agent: AgentFilter; button: HTMLButtonElement }[] = [];
+	private readonly periodSeg: ParadisSegmented<ParadisCcusagePresetKey>;
+	private readonly otherPeriodSelect: ParadisSelect;
+	/** 適用したカスタムの期間（押すと日付の欄を開き直す）。 */
+	private readonly customRangeButton: HTMLButtonElement;
+	private readonly granularitySelect: ParadisSelect;
+	private readonly metricSelect: ParadisSelect;
+	private readonly agentSelect: ParadisSelect;
 	private customRangeRow: HTMLElement | undefined;
 	private customFromInput: HTMLInputElement | undefined;
 	private customToInput: HTMLInputElement | undefined;
@@ -162,6 +185,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		@IThemeService private readonly themeService: IThemeService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
+		@IContextViewService contextViewService: IContextViewService,
+		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisCcusageClient);
@@ -174,87 +199,63 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		// フィルター行(1行・下の全カードに適用)
 		const toolbar = dom.append(this.element, $('.paradis-ccusage-toolbar'));
 
-		// プリセットは「特定の日を指す」グループと「直近N日/カスタム」グループの2つの seg に分け、
-		// 視覚的にまとまりを作る(ボタンが増えても1グループの見た目は詰まりすぎない)。
-		const pointPresetSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
-		const pointPresets: { key: ParadisCcusagePresetKey; label: string }[] = [
-			{ key: 'today', label: localize('paradis.ccusage.period.today', "今日") },
-			{ key: 'yesterday', label: localize('paradis.ccusage.period.yesterday', "昨日") },
-			{ key: 'thisWeek', label: localize('paradis.ccusage.period.thisWeek', "今週") },
-			{ key: 'lastWeek', label: localize('paradis.ccusage.period.lastWeek', "先週") },
-		];
-		for (const preset of pointPresets) {
-			const button = dom.append(pointPresetSeg, $('button')) as HTMLButtonElement;
-			button.textContent = preset.label;
-			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.setPreset(preset.key)));
-			this.presetButtons.push({ key: preset.key, button });
-		}
+		// UI キットの段 4（Q600）: 毎日替える期間の 4 つだけを切り替えの組に残し、ほかの期間・粒度・単位・エージェントは
+		// プルダウンにして 1 段に収める（以前は 5 組 18 個のボタン）。更新のボタンは統合のモーダルの見出しの帯の 1 つにまとめる。
+		this.periodSeg = this._register(new ParadisSegmented<ParadisCcusagePresetKey>(toolbar, {
+			ariaLabel: localize('paradis.ccusage.period.aria', "期間"),
+			value: this.presetKey,
+			items: [
+				{ value: 'today', label: localize('paradis.ccusage.period.today', "今日") },
+				{ value: '7d', label: localize('paradis.ccusage.period.7d', "7日間") },
+				{ value: '30d', label: localize('paradis.ccusage.period.30d', "30日間") },
+				{ value: '90d', label: localize('paradis.ccusage.period.90d', "90日間") },
+			],
+		}));
+		this._register(this.periodSeg.onDidChange(key => this.setPreset(key)));
 
-		const rangePresetSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
-		const rangePresets: { key: ParadisCcusagePresetKey; label: string }[] = [
-			{ key: '7d', label: localize('paradis.ccusage.period.7d', "7日間") },
-			{ key: '30d', label: localize('paradis.ccusage.period.30d', "30日間") },
-			{ key: '90d', label: localize('paradis.ccusage.period.90d', "90日間") },
-			{ key: 'custom', label: localize('paradis.ccusage.period.custom', "カスタム…") },
-		];
-		for (const preset of rangePresets) {
-			const button = dom.append(rangePresetSeg, $('button')) as HTMLButtonElement;
-			button.textContent = preset.label;
-			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => {
-				if (preset.key === 'custom') {
-					this.toggleCustomRangePanel();
-				} else {
-					this.setPreset(preset.key);
-				}
-			}));
-			this.presetButtons.push({ key: preset.key, button });
-		}
+		this.otherPeriodSelect = this._register(new ParadisSelect(toolbar, contextViewService, configurationService, [
+			{ value: '', label: localize('paradis.ccusage.period.other', "ほかの期間") },
+			{ value: 'yesterday', label: localize('paradis.ccusage.period.yesterday', "昨日") },
+			{ value: 'thisWeek', label: localize('paradis.ccusage.period.thisWeek', "今週") },
+			{ value: 'lastWeek', label: localize('paradis.ccusage.period.lastWeek', "先週") },
+			{ value: 'custom', label: localize('paradis.ccusage.period.custom', "カスタム…") },
+		], '', { ariaLabel: localize('paradis.ccusage.period.otherAria', "ほかの期間") }));
+		this._register(this.otherPeriodSelect.onDidChange(value => {
+			if (value === 'custom') {
+				this.openCustomRangePanel();
+			} else if (value === 'yesterday' || value === 'thisWeek' || value === 'lastWeek') {
+				this.setPreset(value);
+			} else {
+				this.updateFilterButtons();
+			}
+		}));
+		// カスタムの期間を適用した後は、その範囲（「11/1〜11/9」）を押すと日付の欄を開き直せる。
+		// プルダウンは同じ「カスタム…」を選び直しても知らせないので、開き直す入口はここ
+		this.customRangeButton = dom.append(toolbar, $('button.paradis-ccusage-custom-range-button')) as HTMLButtonElement;
+		this.customRangeButton.classList.add(...paradisButtonClasses('secondary', true));
+		this.customRangeButton.type = 'button';
+		this.customRangeButton.hidden = true;
+		this._register(dom.addDisposableListener(this.customRangeButton, dom.EventType.CLICK, () => this.openCustomRangePanel()));
 
-		const granularitySeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
-		const granularities: { granularity: ParadisCcusageGranularity; label: string }[] = [
-			{ granularity: 'daily', label: localize('paradis.ccusage.granularity.daily', "日別") },
-			{ granularity: 'weekly', label: localize('paradis.ccusage.granularity.weekly', "週別") },
-		];
-		for (const g of granularities) {
-			const button = dom.append(granularitySeg, $('button')) as HTMLButtonElement;
-			button.textContent = g.label;
-			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.setGranularity(g.granularity)));
-			this.granularityButtons.push({ granularity: g.granularity, button });
-		}
+		this.granularitySelect = this._register(new ParadisSelect(toolbar, contextViewService, configurationService, GRANULARITY_OPTIONS, this.granularity, { ariaLabel: localize('paradis.ccusage.granularity.aria', "粒度") }));
+		this._register(this.granularitySelect.onDidChange(value => this.setGranularity(value === 'weekly' ? 'weekly' : 'daily')));
 
-		const metricSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
-		const metrics: { metric: ParadisCcusageMetric; label: string }[] = [
-			{ metric: 'cost', label: localize('paradis.ccusage.metric.cost', "コスト") },
-			{ metric: 'tokens', label: localize('paradis.ccusage.metric.tokens', "トークン") },
-		];
-		for (const m of metrics) {
-			const button = dom.append(metricSeg, $('button')) as HTMLButtonElement;
-			button.textContent = m.label;
-			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.setMetric(m.metric)));
-			this.metricButtons.push({ metric: m.metric, button });
-		}
+		this.metricSelect = this._register(new ParadisSelect(toolbar, contextViewService, configurationService, [
+			{ value: 'cost', label: localize('paradis.ccusage.metric.cost', "コスト") },
+			{ value: 'tokens', label: localize('paradis.ccusage.metric.tokens', "トークン") },
+		], this.metric, { ariaLabel: localize('paradis.ccusage.metric.aria', "単位") }));
+		this._register(this.metricSelect.onDidChange(value => this.setMetric(value === 'tokens' ? 'tokens' : 'cost')));
 
-		const agentSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
-		const agents: { agent: AgentFilter; label: string }[] = [
-			{ agent: 'all', label: localize('paradis.ccusage.agent.all', "すべてのエージェント") },
-			{ agent: 'claude', label: 'Claude Code' },
-			{ agent: 'codex', label: 'Codex' },
-			{ agent: 'gemini', label: 'Gemini' },
-		];
-		for (const agent of agents) {
-			const button = dom.append(agentSeg, $('button')) as HTMLButtonElement;
-			button.textContent = agent.label;
-			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.setAgentFilter(agent.agent)));
-			this.agentButtons.push({ agent: agent.agent, button });
-		}
+		this.agentSelect = this._register(new ParadisSelect(toolbar, contextViewService, configurationService, [
+			{ value: 'all', label: localize('paradis.ccusage.agent.all', "すべてのエージェント") },
+			{ value: 'claude', label: 'Claude Code' },
+			{ value: 'codex', label: 'Codex' },
+			{ value: 'gemini', label: 'Gemini' },
+		], this.agentFilter, { ariaLabel: localize('paradis.ccusage.agent.aria', "エージェント") }));
+		this._register(this.agentSelect.onDidChange(value => this.setAgentFilter(value as AgentFilter)));
 
 		dom.append(toolbar, $('.paradis-ccusage-toolbar-spacer'));
 		this.updatedLabel = dom.append(toolbar, $('.paradis-ccusage-updated'));
-
-		const refresh = dom.append(toolbar, $('button.paradis-ccusage-refresh')) as HTMLButtonElement;
-		this.refreshIcon = dom.append(refresh, $(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
-		dom.append(refresh, $('span')).textContent = localize('paradis.ccusage.refresh', "更新");
-		this._register(dom.addDisposableListener(refresh, dom.EventType.CLICK, () => this.refresh(true)));
 
 		// 「カスタム…」選択時にツールバー下に開く日付範囲入力(常に取得済みの90日窓の中に制限)
 		this.customRangeRow = dom.append(this.element, $('.paradis-ccusage-custom-range'));
@@ -264,8 +265,20 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		this.customToInput = dom.append(this.customRangeRow, $('input')) as HTMLInputElement;
 		this.customToInput.type = 'date';
 		const applyButton = dom.append(this.customRangeRow, $('button')) as HTMLButtonElement;
+		applyButton.classList.add(...paradisButtonClasses('secondary', true));
 		applyButton.textContent = localize('paradis.ccusage.customRange.apply', "適用");
 		this._register(dom.addDisposableListener(applyButton, dom.EventType.CLICK, () => this.applyCustomRange()));
+		// 適用せずに閉じる（Esc でも）。期間は開く前のまま
+		const closeButton = dom.append(this.customRangeRow, $('button.paradis-ccusage-custom-range-close')) as HTMLButtonElement;
+		closeButton.classList.add(...paradisButtonClasses('ghost', true));
+		closeButton.textContent = localize('paradis.ccusage.customRange.close', "閉じる");
+		this._register(dom.addDisposableListener(closeButton, dom.EventType.CLICK, () => this.closeCustomRangePanel()));
+		this._register(dom.addDisposableListener(this.customRangeRow, dom.EventType.KEY_DOWN, event => {
+			if (new StandardKeyboardEvent(event).equals(KeyCode.Escape)) {
+				dom.EventHelper.stop(event, true);
+				this.closeCustomRangePanel();
+			}
+		}));
 
 		this.body = dom.append(this.element, $('.paradis-ccusage-body'));
 		this.tooltip = dom.append(this.element, $('.paradis-ccusage-tooltip'));
@@ -431,11 +444,12 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		this.renderBody();
 	}
 
-	private toggleCustomRangePanel(): void {
+	/** 「カスタム…」を選んだとき、ツールバーの下に日付の欄を開く。適用するまで期間は替えない。 */
+	private openCustomRangePanel(): void {
 		if (!this.customRangeRow || !this.customFromInput || !this.customToInput) {
 			return;
 		}
-		const opening = !this.customRangeRow.classList.contains('open');
+		const opening = true;
 		if (opening) {
 			// 開くたびに範囲(取得済みの90日窓)を最新化する。タブを長時間開きっぱなしでも日付がずれない。
 			const today = new Date();
@@ -448,7 +462,22 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			this.customFromInput.value ||= this.customRange?.from ?? minStr;
 			this.customToInput.value ||= this.customRange?.to ?? maxStr;
 		}
-		this.customRangeRow.classList.toggle('open', opening);
+		this.customRangeRow.classList.add('open');
+		this.updateFilterButtons();
+	}
+
+	/** 日付の欄を適用せずに閉じ、フォーカスを開いた所（範囲のボタンかプルダウン）へ戻す。 */
+	private closeCustomRangePanel(): void {
+		if (!this.customRangeRow?.classList.contains('open')) {
+			return;
+		}
+		this.customRangeRow.classList.remove('open');
+		this.updateFilterButtons();
+		if (this.customRangeButton && !this.customRangeButton.hidden) {
+			this.customRangeButton.focus();
+		} else {
+			this.otherPeriodSelect.focus();
+		}
 	}
 
 	private applyCustomRange(): void {
@@ -515,28 +544,26 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	}
 
 	private updateFilterButtons(): void {
-		for (const { key, button } of this.presetButtons) {
-			button.classList.toggle('checked', key === 'custom' ? !!this.customRange : (!this.customRange && this.presetKey === key));
+		const customOpen = !!this.customRangeRow?.classList.contains('open');
+		// 組の 4 つのどれかを選んでいるときだけ組に印を付け、ほかの期間はプルダウンに出す
+		const inSeg = !this.customRange && !customOpen && (this.presetKey === 'today' || this.presetKey === '7d' || this.presetKey === '30d' || this.presetKey === '90d');
+		this.periodSeg.value = inSeg ? this.presetKey : undefined;
+		this.otherPeriodSelect.value = this.customRange || customOpen ? 'custom' : (inSeg ? '' : this.presetKey);
+		this.customRangeButton.hidden = !this.customRange;
+		if (this.customRange) {
+			const label = localize('paradis.ccusage.customRange.label', "{0}〜{1}", formatMonthDay(this.customRange.from), formatMonthDay(this.customRange.to));
+			this.customRangeButton.textContent = label;
+			this.customRangeButton.setAttribute('aria-label', localize('paradis.ccusage.customRange.change', "カスタムの期間 {0} を変える", label));
 		}
 
 		const range = this.currentRange();
 		const rangeDays = spanDaysInclusive(range.from, range.to);
 		const effective = this.effectiveGranularity(rangeDays);
-		for (const { granularity, button } of this.granularityButtons) {
-			button.classList.toggle('checked', granularity === effective);
-			if (granularity === 'weekly') {
-				button.disabled = rangeDays < 7;
-				button.title = rangeDays < 7 ? localize('paradis.ccusage.granularity.tooShort', "選択した期間が短すぎるため、週別表示はできません") : '';
-			}
-		}
-
-		for (const { agent, button } of this.agentButtons) {
-			button.classList.toggle('checked', agent === this.agentFilter);
-		}
-
-		for (const { metric, button } of this.metricButtons) {
-			button.classList.toggle('checked', metric === this.metric);
-		}
+		// 週別は 7 日以上の期間でだけ選べる（短い期間では日別だけを出す）
+		this.granularitySelect.setOptions(rangeDays < 7 ? GRANULARITY_OPTIONS.filter(option => option.value === 'daily') : GRANULARITY_OPTIONS, effective);
+		this.granularitySelect.element.title = rangeDays < 7 ? localize('paradis.ccusage.granularity.tooShort', "選択した期間が短すぎるため、週別表示はできません") : '';
+		this.agentSelect.value = this.agentFilter;
+		this.metricSelect.value = this.metric;
 	}
 
 	async refresh(bypassCache = false): Promise<void> {
@@ -554,7 +581,6 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		this.loading = true;
 		this.loadingBypassesCache = bypassCache;
 		this.lastError = undefined;
-		this.refreshIcon?.classList.add('spin');
 		if (this.data) {
 			// 再取得中は前回の描画を薄く保持する(スケルトンやレイアウトジャンプを避ける)
 			this.body.classList.add('stale');
@@ -573,7 +599,6 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		} finally {
 			this.loading = false;
 			this.loadingBypassesCache = false;
-			this.refreshIcon?.classList.remove('spin');
 			this.body.classList.remove('stale');
 			this.renderBody();
 		}
@@ -841,7 +866,6 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			return;
 		}
 		const card = dom.append(container, $('.paradis-ccusage-card.paradis-ccusage-block'));
-		const accent = this.seriesPalette[0];
 
 		const meterWrap = dom.append(card, $('div'));
 		const start = new Date(block.startTime);
@@ -851,15 +875,13 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		// 集計結果はキャッシュに載る（＝取得から時間が経ちうる）ので、`remainingMinutes` を
 		// そのまま出すと、終わった枠を「進行中・残りN分」として見せてしまう。
 		const ended = now >= block.endTime;
-		dom.append(meterWrap, $('.paradis-ccusage-stat-label')).textContent = ended
+		const title = dom.append(meterWrap, $('.paradis-ccusage-stat-label'));
+		title.textContent = ended
 			? localize('paradis.ccusage.block.titleEnded', "直近の5時間ブロック（Claude Code・{0} – {1}）", formatClock(start), formatClock(end))
 			: localize('paradis.ccusage.block.title', "現在の5時間ブロック（Claude Code・{0} – {1}）", formatClock(start), formatClock(end));
-		const track = dom.append(meterWrap, $('.paradis-ccusage-meter-track'));
-		track.style.background = `color-mix(in srgb, ${accent} 22%, transparent)`;
-		const fill = dom.append(track, $('.paradis-ccusage-meter-fill'));
+		// UI キットの段 4（Q600）: 4px の進み具合（アクセントの色）
 		const ratio = Math.max(0, Math.min(1, (now - block.startTime) / Math.max(1, block.endTime - block.startTime)));
-		fill.style.width = `${(ratio * 100).toFixed(1)}%`;
-		fill.style.background = accent;
+		renderParadisProgress(meterWrap, { ariaLabel: title.textContent ?? '', value: ratio });
 		const scale = dom.append(meterWrap, $('.paradis-ccusage-meter-scale'));
 		dom.append(scale, $('span')).textContent = formatClock(start);
 		// 残り時間も現在時刻から出し直す（バーの進みとラベルが食い違わないようにする）。
@@ -1271,6 +1293,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 		const colorMap = this.buildModelColorMap(this.computeModelTotals(this.filterDaysInRange(this.data?.days ?? [], range)));
 		const table = dom.append(card, $('table.paradis-ccusage-sessions'));
+		table.classList.add(PARADIS_TABLE_CLASS);
 		const thead = dom.append(table, $('thead'));
 		const headRow = dom.append(thead, $('tr'));
 		dom.append(headRow, $('th')).textContent = localize('paradis.ccusage.sessions.project', "プロジェクト");

@@ -286,6 +286,34 @@ suite('ParadisSessionResumeDialog', () => {
 		}
 	});
 
+	test('moves the selection with the arrow keys and stops at both ends', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [testSession('one', 'First session'), testSession('two', 'Second session')];
+		const fixture = createRefreshFixture(client);
+		try {
+			await fixture.load();
+			fixture.root.querySelectorAll<HTMLButtonElement>('.paradis-session-resume-row')[0].click();
+			const selectedTitle = () => fixture.root.querySelector('.paradis-session-resume-row.selected .row-title')?.textContent;
+			const press = (key: 'ArrowDown' | 'ArrowUp') => fixture.root.querySelector<HTMLButtonElement>('.paradis-session-resume-row.selected')!
+				.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, keyCode: key === 'ArrowDown' ? 40 : 38, bubbles: true }));
+			const first = selectedTitle();
+			press('ArrowDown');
+			const afterDown = selectedTitle();
+			press('ArrowDown');
+			const atEnd = selectedTitle();
+			press('ArrowUp');
+			// フィクスチャの根は文書に入っていないので、フォーカスの移り先はここでは見ない
+			assert.deepStrictEqual({ first, afterDown, atEnd, afterUp: selectedTitle() }, {
+				first: 'First session',
+				afterDown: 'Second session',
+				atEnd: 'Second session',
+				afterUp: 'First session',
+			});
+		} finally {
+			fixture.dispose();
+		}
+	});
+
 	test('reloads the selected preview after an invalidation', async () => {
 		const client = new TestResumeClient();
 		client.listResult = async () => [testSession('one', 'First session')];

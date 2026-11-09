@@ -25,6 +25,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisResumeSession } from '../common/paradisSessionResume.js';
 import { paradisResumeCommandLine } from '../common/paradisSessionResumeListOptions.js';
+import { showParadisMenu } from '../../../browser/paradisMenu.js';
 import { ParadisSessionResumeClient } from './paradisSessionResumeClient.js';
 
 /**
@@ -51,11 +52,8 @@ export class ParadisSessionResumeRowMenu {
 
 	/** メニューを開く。`anchor` はボタン要素か、右クリックした位置。 */
 	show(anchor: HTMLElement | { x: number; y: number }, session: IParadisResumeSession, onHide?: () => void): void {
-		this.contextMenuService.showContextMenu({
-			getAnchor: () => anchor,
-			getActions: () => this.actions(session),
-			onHide,
-		});
+		// UI キットの段 3 のメニュー（行 28）
+		showParadisMenu(this.contextMenuService, { anchor, actions: this.actions(session), onHide });
 	}
 
 	actions(session: IParadisResumeSession): IAction[] {

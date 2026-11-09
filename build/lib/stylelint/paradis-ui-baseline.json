@@ -187,10 +187,6 @@
 		"z-index | .paradis-service-status-trigger | z-index: 2500": 1
 	},
 	"src/vs/paradis/contrib/sessionResume/electron-browser/media/paradisSessionResume.css": {
-		"hex-color | .paradis-session-resume .agent-badge.claude | background: color-mix(in srgb, #d97757 24%, transparent)": 1,
-		"hex-color | .paradis-session-resume .agent-badge.claude | color: #e38b70": 1,
-		"hex-color | .paradis-session-resume .agent-badge.codex | background: color-mix(in srgb, #3b82f6 24%, transparent)": 1,
-		"hex-color | .paradis-session-resume .agent-badge.codex | color: #6aa7ff": 1,
 		"z-index | .paradis-session-resume.rail-open .paradis-session-resume-nav | z-index: 20": 1,
 		"focus | .paradis-session-resume .paradis-session-resume-row:hover .row-more, .paradis-session-resume .paradis-session-resume-row:focus-visible .row-more, .paradis-session-resume .paradis-session-resume-row.selected .row-more, .paradis-session-resume .paradis-session-resume-row.menu-open .row-more | ": 1,
 		"z-index | .paradis-session-resume-modal .paradis-session-resume-inline-message | z-index: 30": 1
