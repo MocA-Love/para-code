@@ -1,0 +1,32 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The menu of Para Code's UI kit (stage 3, Q600, paradisMenu.ts): upstream's context menu in a context view that
+	carries the `paradis-menu` class. Rows are 28px (the standard control height) instead of 24, the surface uses the
+	inner radius and the text the body size. Icons and the danger color come from contrib/menuIcons. The menu's own
+	style element (menu.ts getMenuWidgetCSS) has (0,5,0) rules; the context view class adds one step.
+*/
+
+.context-view.paradis-menu .monaco-menu {
+	border-radius: var(--paradis-radius-inner);
+	border-color: var(--vscode-paradis-lineSubtle);
+}
+
+.context-view.paradis-menu .monaco-menu .monaco-scrollable-element {
+	border-radius: var(--paradis-radius-inner);
+}
+
+.context-view.paradis-menu .monaco-menu .monaco-action-bar.vertical .action-menu-item {
+	height: var(--paradis-height-md);
+	border-radius: var(--paradis-radius-control);
+}
+
+.context-view.paradis-menu .monaco-menu .monaco-action-bar.vertical .action-label:not(.separator) {
+	padding: 0 var(--vscode-spacing-size120) 0 var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-body1);
+}

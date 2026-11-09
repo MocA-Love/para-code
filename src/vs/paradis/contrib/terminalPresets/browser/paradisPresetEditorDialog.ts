@@ -81,7 +81,13 @@ import {
 	PARADIS_WORKSPACE_PRESET_FILE,
 } from '../common/paradisTerminalPresets.js';
 import { paradisFolderLabelMoves } from '../common/paradisPresetLocalLedger.js';
+import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
+import { paradisMenuItem, showParadisMenu } from '../../../browser/paradisMenu.js';
+import { PARADIS_MODAL_COMPACT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
+import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import {
 	IParadisPresetMovePlan,
 	isParadisPresetMoveRefusal,
@@ -602,13 +608,16 @@ class ParadisPresetEditorDialog extends Disposable {
 
 		this._backdrop = $('.paradis-preset-editor-backdrop.paradis-modal-backdrop');
 		this._dialog = $('.paradis-preset-editor-dialog');
+		// UI キットの段 3（Q600）: 箱は M 段、見出しは 52 の帯。主のボタンは「新規作成」だけ
+		this._dialog.classList.add(...paradisModalClasses(ParadisModalSize.Medium));
 		this._backdrop.appendChild(this._dialog);
 
 		// --- ヘッダー（常設）: タイトル + 選択トグル + 新規作成 + 閉じる ---
-		const header = dom.append(this._dialog, $('.ppe-header'));
-		dom.append(header, $('h3.ppe-title')).textContent = STR_TITLE;
-		const headerActions = dom.append(header, $('.ppe-header-actions'));
+		const head = renderParadisModalHead(this._dialog, STR_TITLE);
+		head.element.classList.add('ppe-header');
+		const headerActions = head.actions;
 		this._selectToggleEl = dom.append(headerActions, $('button.ppe-btn.ppe-select-toggle')) as HTMLButtonElement;
+		this._selectToggleEl.classList.add(...paradisButtonClasses('ghost', true));
 		this._selectToggleEl.type = 'button';
 		this._selectToggleEl.textContent = STR_SELECT;
 		this._chromeStore.add(dom.addDisposableListener(this._selectToggleEl, 'click', () => {
@@ -624,9 +633,18 @@ class ParadisPresetEditorDialog extends Disposable {
 				this._renderList();
 			});
 		}));
+		const newFolderBtnEl = dom.append(headerActions, $('button.ppe-btn')) as HTMLButtonElement;
+		newFolderBtnEl.classList.add(...paradisButtonClasses('secondary', true), PARADIS_MODAL_COMPACT_CLASS);
+		newFolderBtnEl.type = 'button';
+		newFolderBtnEl.title = STR_NEW_FOLDER;
+		dom.append(newFolderBtnEl, $(ThemeIcon.asCSSSelector(Codicon.newFolder)));
+		dom.append(newFolderBtnEl, $('span')).textContent = STR_NEW_FOLDER;
 		this._newBtnEl = dom.append(headerActions, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
+		this._newBtnEl.classList.add(...paradisButtonClasses('primary', true), PARADIS_MODAL_COMPACT_CLASS);
 		this._newBtnEl.type = 'button';
-		this._newBtnEl.textContent = STR_NEW;
+		this._newBtnEl.title = STR_NEW;
+		dom.append(this._newBtnEl, $(ThemeIcon.asCSSSelector(Codicon.add)));
+		dom.append(this._newBtnEl, $('span')).textContent = STR_NEW;
 		this._chromeStore.add(dom.addDisposableListener(this._newBtnEl, 'click', () => {
 			void this._confirmDiscardUnsaved().then(proceed => {
 				if (proceed) {
@@ -634,9 +652,6 @@ class ParadisPresetEditorDialog extends Disposable {
 				}
 			});
 		}));
-		const newFolderBtnEl = dom.append(headerActions, $('button.ppe-btn')) as HTMLButtonElement;
-		newFolderBtnEl.type = 'button';
-		newFolderBtnEl.textContent = STR_NEW_FOLDER;
 		this._chromeStore.add(dom.addDisposableListener(newFolderBtnEl, 'click', () => {
 			void this._confirmDiscardUnsaved().then(proceed => {
 				if (proceed) {
@@ -644,10 +659,10 @@ class ParadisPresetEditorDialog extends Disposable {
 				}
 			});
 		}));
-		const closeBtn = dom.append(headerActions, $('button.ppe-btn.ppe-close-btn')) as HTMLButtonElement;
+		const closeBtn = dom.append(headerActions, $('button.ppe-close-btn')) as HTMLButtonElement;
+		closeBtn.classList.add(...paradisButtonClasses('icon'));
 		closeBtn.type = 'button';
-		// allow-any-unicode-next-line
-		closeBtn.textContent = '✕';
+		dom.append(closeBtn, $(ThemeIcon.asCSSSelector(Codicon.close)));
 		closeBtn.title = STR_CLOSE;
 		closeBtn.setAttribute('aria-label', STR_CLOSE);
 		this._chromeStore.add(dom.addDisposableListener(closeBtn, 'click', () => {
@@ -661,13 +676,10 @@ class ParadisPresetEditorDialog extends Disposable {
 		// --- ボディ: 左ナビ + 右コンテンツ ---
 		const body = dom.append(this._dialog, $('.ppe-body'));
 		this._navEl = dom.append(body, $('.ppe-nav'));
-		const search = dom.append(this._navEl, $('.ppe-search.paradis-focus-subtle-within'));
-		dom.append(search, $(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
-		this._searchInput = dom.append(search, $('input.ppe-search-input')) as HTMLInputElement;
-		this._searchInput.type = 'text';
-		this._searchInput.spellcheck = false;
-		this._searchInput.placeholder = STR_SEARCH_PLACEHOLDER;
-		this._searchInput.setAttribute('aria-label', STR_SEARCH_PLACEHOLDER);
+		const search = this._chromeStore.add(new ParadisInputField(this._navEl, { ariaLabel: STR_SEARCH_PLACEHOLDER, placeholder: STR_SEARCH_PLACEHOLDER, icon: Codicon.search, small: true }));
+		search.element.classList.add('ppe-search');
+		this._searchInput = search.inputElement;
+		this._searchInput.classList.add('ppe-search-input');
 		this._chromeStore.add(dom.addDisposableListener(this._searchInput, 'input', () => {
 			this._searchQuery = this._searchInput.value;
 			if (this._mode === 'list') {
@@ -1017,10 +1029,7 @@ class ParadisPresetEditorDialog extends Disposable {
 	/** 右クリック（キーボードのメニューキーを含む）の並び替えメニュー。 */
 	private _showMoveMenu(anchor: HTMLElement | { readonly x: number; readonly y: number }, item: ParadisPresetMoveItem): void {
 		const actions = this._moveActions(item, undefined);
-		this.contextMenuService.showContextMenu({
-			getAnchor: () => anchor,
-			getActions: () => actions,
-		});
+		showParadisMenu(this.contextMenuService, { anchor, actions });
 	}
 
 	/**
@@ -1077,7 +1086,7 @@ class ParadisPresetEditorDialog extends Disposable {
 	 * 行に常に見せるボタンは「実行」とこれだけ）。
 	 */
 	private _appendMoreButton(actions: HTMLElement, label: string, buildActions: () => IAction[]): void {
-		const more = dom.append(actions, $('button.ppe-icon-btn')) as HTMLButtonElement;
+		const more = dom.append(actions, $('button.ppe-icon-btn.paradis-button.paradis-focus-ring.paradis-button-icon.paradis-button-small')) as HTMLButtonElement;
 		more.type = 'button';
 		more.setAttribute('aria-haspopup', 'true');
 		const ariaLabel = strMoreActions(label);
@@ -1085,10 +1094,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		dom.append(more, $(ThemeIcon.asCSSSelector(Codicon.ellipsis)));
 		this._viewStore.add(this.hoverService.setupDelayedHover(more, { content: ariaLabel, container: this._backdrop }));
 		this._viewStore.add(dom.addDisposableListener(more, 'click', () => {
-			this.contextMenuService.showContextMenu({
-				getAnchor: () => more,
-				getActions: buildActions,
-			});
+			showParadisMenu(this.contextMenuService, { anchor: more, actions: buildActions() });
 		}));
 	}
 
@@ -1170,6 +1176,7 @@ class ParadisPresetEditorDialog extends Disposable {
 	/** ヘッダーの「選択」トグルの見た目を現在の _selecting に合わせる。 */
 	private _syncSelectToggle(): void {
 		this._selectToggleEl.classList.toggle('active', this._selecting);
+		this._selectToggleEl.classList.toggle('checked', this._selecting);
 		this._selectToggleEl.setAttribute('aria-pressed', String(this._selecting));
 	}
 
@@ -1212,7 +1219,8 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 			dom.append(btn, $('span.ppe-nav-label')).textContent = label;
 			if (options.count !== undefined) {
-				dom.append(btn, $('span.ppe-nav-count')).textContent = String(options.count);
+				// 要対応の意味が無い数なので塗らない（UI キットの数のバッジ、0 件は出さない）
+				new ParadisCountBadge(btn, 'inline').update(options.count, 'plain');
 			}
 			return btn;
 		};
@@ -1321,7 +1329,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		dom.append(main, $('.ppe-row-detail')).textContent = preset.description || paradisPresetCommandSignature(preset, ' && ');
 
 		const actions = dom.append(row, $('.ppe-row-actions'));
-		const runBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
+		const runBtn = dom.append(actions, $('button.ppe-btn.paradis-button.paradis-focus-ring.paradis-button-secondary.paradis-button-small')) as HTMLButtonElement;
 		runBtn.textContent = STR_RUN;
 		runBtn.disabled = !!preset.envInactive;
 		if (preset.envInactive) {
@@ -1400,15 +1408,15 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 		};
 		this._appendMoreButton(actions, preset.name, () => [
-			toAction({ id: 'paradis.presetEditor.edit', label: STR_EDIT, run: () => this._renderEdit(preset) }),
-			toAction({ id: 'paradis.presetEditor.duplicate', label: STR_DUPLICATE, tooltip: strDuplicateName(preset.name), run: duplicate }),
+			paradisMenuItem(toAction({ id: 'paradis.presetEditor.edit', label: STR_EDIT, run: () => this._renderEdit(preset) }), { icon: Codicon.edit }),
+			paradisMenuItem(toAction({ id: 'paradis.presetEditor.duplicate', label: STR_DUPLICATE, tooltip: strDuplicateName(preset.name), run: duplicate }), { icon: Codicon.copy }),
 			// タブバーの右クリック「非表示にする」で workspace ソースへ立てたフラグを戻す唯一の入口。
 			// 定義元の .paracode.json には触れない（setWorkspacePresetLocallyHidden 参照）。
 			...(preset.locallyHidden ? [toAction({ id: 'paradis.presetEditor.unhide', label: STR_UNHIDE, run: () => this.presetService.setWorkspacePresetLocallyHidden(preset, false) })] : []),
 			new Separator(),
 			...this._moveActions(item, options.reorderBlocked),
 			new Separator(),
-			toAction({ id: 'paradis.presetEditor.delete', label: STR_DELETE_MENU, run: remove }),
+			paradisMenuItem(toAction({ id: 'paradis.presetEditor.delete', label: STR_DELETE_MENU, run: remove }), { icon: Codicon.trash, danger: true }),
 		]);
 	}
 
@@ -1676,9 +1684,9 @@ class ParadisPresetEditorDialog extends Disposable {
 		}
 		this._appendGrip(row, item, reorderBlocked ?? strFolderGripTitle(group.folder), !reorderBlocked);
 		const toggleBtn = dom.append(row, $('button.ppe-folder-toggle')) as HTMLButtonElement;
+		toggleBtn.classList.add(...paradisButtonClasses('icon', true));
 		toggleBtn.type = 'button';
-		// allow-any-unicode-next-line
-		toggleBtn.textContent = collapsed ? '▸' : '▾';
+		dom.append(toggleBtn, $(ThemeIcon.asCSSSelector(collapsed ? Codicon.chevronRight : Codicon.chevronDown)));
 		toggleBtn.setAttribute('aria-label', collapsed ? STR_FOLDER_EXPAND : STR_FOLDER_COLLAPSE);
 		toggleBtn.setAttribute('aria-expanded', String(!collapsed));
 		this._viewStore.add(dom.addDisposableListener(toggleBtn, 'click', () => {
@@ -1701,11 +1709,11 @@ class ParadisPresetEditorDialog extends Disposable {
 
 		const actions = dom.append(row, $('.ppe-row-actions'));
 		this._appendMoreButton(actions, group.folder, () => [
-			toAction({ id: 'paradis.presetEditor.renameFolder', label: STR_EDIT, run: () => this._renderFolderRename(group) }),
+			paradisMenuItem(toAction({ id: 'paradis.presetEditor.renameFolder', label: STR_EDIT, run: () => this._renderFolderRename(group) }), { icon: Codicon.edit }),
 			new Separator(),
 			...this._moveActions(item, reorderBlocked),
 			new Separator(),
-			toAction({ id: 'paradis.presetEditor.deleteFolder', label: STR_DELETE_MENU, run: () => this._confirmDeleteFolder(group) }),
+			paradisMenuItem(toAction({ id: 'paradis.presetEditor.deleteFolder', label: STR_DELETE_MENU, run: () => this._confirmDeleteFolder(group) }), { icon: Codicon.trash, danger: true }),
 		]);
 
 		if (collapsed) {
@@ -1749,7 +1757,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		const runnable = selected.filter(preset => !preset.envInactive);
 		const skippedCount = selected.length - runnable.length;
 
-		const runBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
+		const runBtn = dom.append(actions, $('button.ppe-btn.paradis-button.paradis-focus-ring.paradis-button-secondary.paradis-button-small')) as HTMLButtonElement;
 		runBtn.type = 'button';
 		runBtn.textContent = STR_RUN;
 		if (runnable.length === 0) {
@@ -1788,12 +1796,12 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 		}));
 
-		const moveBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
+		const moveBtn = dom.append(actions, $('button.ppe-btn.paradis-button.paradis-focus-ring.paradis-button-secondary.paradis-button-small')) as HTMLButtonElement;
 		moveBtn.type = 'button';
 		moveBtn.textContent = STR_BULK_MOVE;
 		this._viewStore.add(dom.addDisposableListener(moveBtn, 'click', () => this._showMoveToFolderMenu(moveBtn, selected)));
 
-		const unfileBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
+		const unfileBtn = dom.append(actions, $('button.ppe-btn.paradis-button.paradis-focus-ring.paradis-button-secondary.paradis-button-small')) as HTMLButtonElement;
 		unfileBtn.type = 'button';
 		unfileBtn.textContent = STR_BULK_UNFILE;
 		this._viewStore.add(dom.addDisposableListener(unfileBtn, 'click', async () => {
@@ -1807,7 +1815,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 		}));
 
-		const deleteBtn = dom.append(actions, $('button.ppe-btn.ppe-btn-danger')) as HTMLButtonElement;
+		const deleteBtn = dom.append(actions, $('button.ppe-btn.ppe-btn-danger.paradis-button.paradis-focus-ring.paradis-button-danger')) as HTMLButtonElement;
 		deleteBtn.type = 'button';
 		deleteBtn.textContent = STR_DELETE;
 		this._viewStore.add(dom.addDisposableListener(deleteBtn, 'click', async () => {
@@ -1829,7 +1837,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 		}));
 
-		const clearBtn = dom.append(bar, $('button.ppe-bulk-clear')) as HTMLButtonElement;
+		const clearBtn = dom.append(bar, $('button.ppe-bulk-clear.paradis-button.paradis-focus-ring.paradis-button-ghost.paradis-button-small')) as HTMLButtonElement;
 		clearBtn.type = 'button';
 		// allow-any-unicode-next-line
 		clearBtn.textContent = '✕';
@@ -1869,10 +1877,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			class: ThemeIcon.asClassName(Codicon.newFolder),
 			run: () => this._renderFolderCreate(selected),
 		}));
-		this.contextMenuService.showContextMenu({
-			getAnchor: () => anchor,
-			getActions: () => actions,
-		});
+		showParadisMenu(this.contextMenuService, { anchor, actions });
 	}
 
 	/** 右コンテンツ共通の見出し＋ form-grid の組み立て。フォルダ名変更・新規フォルダでも使う。 */
@@ -1908,7 +1913,7 @@ class ParadisPresetEditorDialog extends Disposable {
 
 		const errorEl = dom.append(this._contentEl, $('.ppe-error'));
 		const footer = dom.append(this._contentEl, $('.ppe-footer'));
-		const backBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;
+		const backBtn = dom.append(footer, $('button.ppe-btn.paradis-button.paradis-focus-ring.paradis-button-secondary')) as HTMLButtonElement;
 		backBtn.textContent = STR_BACK;
 		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => {
 			void this._confirmDiscardUnsaved().then(proceed => {
@@ -1917,7 +1922,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				}
 			});
 		}));
-		const saveBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
+		const saveBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary.paradis-button.paradis-focus-ring.paradis-button-primary')) as HTMLButtonElement;
 		saveBtn.textContent = STR_SAVE;
 		this._viewStore.add(dom.addDisposableListener(saveBtn, 'click', async () => {
 			const name = nameInput.value.trim();
@@ -1957,7 +1962,7 @@ class ParadisPresetEditorDialog extends Disposable {
 
 		const errorEl = dom.append(this._contentEl, $('.ppe-error'));
 		const footer = dom.append(this._contentEl, $('.ppe-footer'));
-		const backBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;
+		const backBtn = dom.append(footer, $('button.ppe-btn.paradis-button.paradis-focus-ring.paradis-button-secondary')) as HTMLButtonElement;
 		backBtn.textContent = STR_BACK;
 		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => {
 			void this._confirmDiscardUnsaved().then(proceed => {
@@ -1966,7 +1971,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				}
 			});
 		}));
-		const createBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
+		const createBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary.paradis-button.paradis-focus-ring.paradis-button-primary')) as HTMLButtonElement;
 		createBtn.textContent = STR_FOLDER_CREATE;
 		this._viewStore.add(dom.addDisposableListener(createBtn, 'click', async () => {
 			const name = nameInput.value.trim();
@@ -2026,7 +2031,7 @@ class ParadisPresetEditorDialog extends Disposable {
 
 		const errorEl = dom.append(this._contentEl, $('.ppe-error'));
 		const footer = dom.append(this._contentEl, $('.ppe-footer'));
-		const backBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;
+		const backBtn = dom.append(footer, $('button.ppe-btn.paradis-button.paradis-focus-ring.paradis-button-secondary')) as HTMLButtonElement;
 		backBtn.textContent = STR_BACK;
 		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => {
 			void this._confirmDiscardUnsaved().then(proceed => {
@@ -2035,7 +2040,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				}
 			});
 		}));
-		const createBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
+		const createBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary.paradis-button.paradis-focus-ring.paradis-button-primary')) as HTMLButtonElement;
 		createBtn.textContent = STR_FOLDER_CREATE;
 		this._viewStore.add(dom.addDisposableListener(createBtn, 'click', async () => {
 			const name = nameInput.value.trim();
@@ -2177,7 +2182,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			: [{ name: '', cwd: '', commands: '' }];
 		const tasksField = field(STR_TASKS);
 		const tasksContainer = dom.append(tasksField, $('.ppe-tasks'));
-		const addTaskBtn = dom.append(field(), $('button.ppe-btn.ppe-add-task')) as HTMLButtonElement;
+		const addTaskBtn = dom.append(field(), $('button.ppe-btn.ppe-add-task.paradis-button.paradis-focus-ring.paradis-button-secondary.paradis-button-small')) as HTMLButtonElement;
 		addTaskBtn.type = 'button';
 		addTaskBtn.textContent = STR_ADD_TASK;
 		// 再描画のたびにカード内リスナーを作り直すため、カード群専用の store を分ける
@@ -2200,7 +2205,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				cwdInput.value = draft.cwd;
 				store.add(dom.addDisposableListener(cwdInput, 'input', () => { draft.cwd = cwdInput.value; }));
 				const headBtn = (label: string, disabled: boolean, onClick: () => void): void => {
-					const btn = dom.append(head, $('button.ppe-btn.ppe-task-btn')) as HTMLButtonElement;
+					const btn = dom.append(head, $('button.ppe-btn.ppe-task-btn.paradis-button.paradis-focus-ring.paradis-button-icon.paradis-button-small')) as HTMLButtonElement;
 					btn.type = 'button';
 					btn.textContent = label;
 					btn.disabled = disabled;
@@ -2302,7 +2307,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		cwdInput.spellcheck = false;
 		cwdInput.value = editing?.cwd ?? '';
 
-		// 「表示」グループ（ピン留めまわり＋ autoRun）。Settings 行としては1つの行にまとめる。
+		// 実行環境の 2 つ（条件の組み合わせ）はチェックのまま。
 		const checkbox = (label: string, checked: boolean, parent: HTMLElement): HTMLInputElement => {
 			const wrap = dom.append(parent, $('.ppe-check-row'));
 			const input = dom.append(wrap, $('input.ppe-checkbox')) as HTMLInputElement;
@@ -2318,17 +2323,27 @@ class ParadisPresetEditorDialog extends Disposable {
 			}));
 			return input;
 		};
+		// 「表示」の 3 項目は 1 つずつのオン/オフなので、UI キットのスイッチ（名前は左、スイッチは右）。保存で確定する
+		// フォームの中なので、切り替えても書かない（下書きの判定は `checked` を読む _trackEditState のまま）
+		const switchRow = (label: string, checked: boolean, parent: HTMLElement): ParadisSwitch => {
+			const wrap = dom.append(parent, $('.ppe-switch-row'));
+			const labelEl = dom.append(wrap, $('span.ppe-check-label'));
+			labelEl.textContent = label;
+			const toggle = this._viewStore.add(new ParadisSwitch(wrap, { checked, ariaLabel: label }));
+			this._viewStore.add(dom.addDisposableListener(labelEl, 'click', () => toggle.element.click()));
+			return toggle;
+		};
 		const displayControl = field(STR_DISPLAY);
-		const pinnedInput = checkbox(STR_PINNED, editing?.pinned !== false, displayControl);
-		const pinnedLabelInput = checkbox(STR_PINNED_LABEL, editing?.pinnedLabel === true, displayControl);
-		const pinnedLabelRow = pinnedLabelInput.parentElement as HTMLElement;
+		const pinnedInput = switchRow(STR_PINNED, editing?.pinned !== false, displayControl);
+		const pinnedLabelInput = switchRow(STR_PINNED_LABEL, editing?.pinnedLabel === true, displayControl);
+		const pinnedLabelRow = pinnedLabelInput.element.parentElement as HTMLElement;
 		pinnedLabelRow.classList.add('ppe-check-row-sub');
 		const updatePinnedLabelVisibility = () => {
 			pinnedLabelRow.style.display = pinnedInput.checked ? '' : 'none';
 		};
 		updatePinnedLabelVisibility();
-		this._viewStore.add(dom.addDisposableListener(pinnedInput, 'change', updatePinnedLabelVisibility));
-		const autoRunInput = checkbox(STR_AUTORUN, editing?.autoRun === true, displayControl);
+		this._viewStore.add(pinnedInput.onDidChange(updatePinnedLabelVisibility));
+		const autoRunInput = switchRow(STR_AUTORUN, editing?.autoRun === true, displayControl);
 		const autoRunHint = dom.append(displayControl, $('.ppe-check-hint'));
 		autoRunHint.textContent = STR_AUTORUN_HINT;
 
@@ -2356,7 +2371,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			setRowVisible(layoutSelect.element.parentElement as HTMLElement, action === 'run');
 			setRowVisible(cwdInput.parentElement as HTMLElement, action === 'run');
 			// スペース作成直後の自動実行も「実行」だけ
-			for (const element of [autoRunInput.parentElement as HTMLElement, autoRunHint]) {
+			for (const element of [autoRunInput.element.parentElement as HTMLElement, autoRunHint]) {
 				element.style.display = action === 'run' ? '' : 'none';
 			}
 			actionHint.textContent = action === 'insert' ? STR_ACTION_HINT_INSERT : action === 'agent-prompt' ? STR_ACTION_HINT_AGENT_PROMPT : '';
@@ -2541,7 +2556,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		const errorEl = dom.append(this._contentEl, $('.ppe-error'));
 
 		const footer = dom.append(this._contentEl, $('.ppe-footer'));
-		const backBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;
+		const backBtn = dom.append(footer, $('button.ppe-btn.paradis-button.paradis-focus-ring.paradis-button-secondary')) as HTMLButtonElement;
 		backBtn.textContent = STR_BACK;
 		this._viewStore.add(dom.addDisposableListener(backBtn, 'click', () => {
 			void this._confirmDiscardUnsaved().then(proceed => {
@@ -2550,7 +2565,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				}
 			});
 		}));
-		const saveBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary')) as HTMLButtonElement;
+		const saveBtn = dom.append(footer, $('button.ppe-btn.ppe-btn-primary.paradis-button.paradis-focus-ring.paradis-button-primary')) as HTMLButtonElement;
 		saveBtn.textContent = STR_SAVE;
 		this._viewStore.add(dom.addDisposableListener(saveBtn, 'click', async () => {
 			const name = nameInput.value.trim();

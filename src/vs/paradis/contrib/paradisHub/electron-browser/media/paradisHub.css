@@ -24,19 +24,23 @@
 
 /* ---------- header ---------- */
 
+/* The kit's header bar (UI kit stage 3, Q600): 52px, the 13px semibold title, the 28px close icon button. */
 .paradis-hub .phub-header {
-	padding: 12px 18px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	box-sizing: border-box;
+	min-height: 52px;
+	padding: 0 var(--vscode-spacing-size120) 0 var(--vscode-spacing-size200);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
 	display: flex;
 	align-items: center;
-	gap: 12px;
+	gap: var(--vscode-spacing-size120);
 	flex-shrink: 0;
 }
 
 .paradis-hub .phub-header h2 {
 	margin: 0;
-	font-size: 14.5px;
-	font-weight: 600;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
 	flex: none;
 }
 
@@ -88,21 +92,6 @@
 	gap: 10px;
 }
 
-.paradis-hub .phub-close {
-	flex: none;
-	appearance: none;
-	background: transparent;
-	border: none;
-	cursor: pointer;
-	color: var(--vscode-icon-foreground);
-	border-radius: 4px;
-	padding: 4px;
-	display: flex;
-}
-
-.paradis-hub .phub-close:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
 
 /* ---------- body: left nav + content ---------- */
 

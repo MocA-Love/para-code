@@ -21,6 +21,7 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisHubAreaContainers, IParadisHubAreaDescriptor, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, ParadisHubAreaId, paradisHubAreas } from './paradisHub.js';
@@ -92,6 +93,8 @@ export class ParadisHubDialog extends Disposable implements IParadisHubHost {
 		areaSeg.setAttribute('aria-label', STR_AREAS_ARIA);
 		const headerSlots = dom.append(header, $('.phub-header-slots'));
 		const close = dom.append(header, $('button.phub-close')) as HTMLButtonElement;
+		// UI キットの段 3（Q600）: 閉じるは 28 のアイコンのボタン
+		close.classList.add(...paradisButtonClasses('icon'));
 		close.type = 'button';
 		close.setAttribute('aria-label', STR_CLOSE_ARIA);
 		close.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));

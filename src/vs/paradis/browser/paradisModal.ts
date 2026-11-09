@@ -9,7 +9,7 @@
 // Para Code のモーダルの箱の大きさの段（S・M・L）。各モーダルが自分の CSS に書いていた幅と高さを、この 3 段に寄せる。
 //
 // - S（確認・入力）: 幅 480（各モーダルが自分の CSS で 420〜560 の間に変えてよい）、高さは中身なり（上限 88vh）
-// - M（文脈の作業）: 幅 880、高さ clamp(520px, 72vh, 820px) で固定（中の切り替えで高さを変えない）
+// - M（文脈の作業）: 幅 720（Q600。L との差をはっきりさせる）、高さ clamp(520px, 72vh, 820px) で固定（中の切り替えで高さを変えない）
 // - L（領域を持つ画面）: 使用量の寸法。幅 clamp(1040px, 78vw, 2000px)、高さ clamp(726px, 88vh, 1400px)
 //
 // 箱の地・枠・角丸・影もここで揃える。背景の暗幕（backdrop）の見た目は各モーダルのまま。幕には必ず
@@ -39,7 +39,14 @@
 // 呼ぶ側で何もしなくても上に出る。`layer` を渡したり、開いている間だけ本家の層を持ち上げたりしない。
 // 小窓はモーダルより上の段なので、fork のモーダルが開いたら閉じる（paradisAnchoredPopover.ts の paradisCloseWhenModalOpens）。
 
+// UI キットの段 3（Q600）: 箱の面は浮く面（paradis.overlay）・淡い線・器の角丸 12・大きい影。箱の中は
+// 見出しの帯（{@link renderParadisModalHead}、高さ 52）・本文（{@link PARADIS_MODAL_BODY_CLASS}）・下の帯
+// （{@link PARADIS_MODAL_FOOT_CLASS}）の 3 つに分ける。閉じるボタンは 28 のアイコンのボタン（paradisButton.ts）。
+//
+// 包んでいる本家のファイル: 無し（箱は fork の DOM。フォーカスの閉じ込めは paradisModalFocus.ts、キーと読み上げは中の部品が持つ）。
+
 import './media/paradisModal.css';
+import { $, append } from '../../base/browser/dom.js';
 
 /**
  * fork のモーダルの幕に必ず付ける印。重なりの段（`--paradis-z-modal`、paradisTokens.css）と、内蔵ブラウザの
@@ -60,4 +67,34 @@ export const enum ParadisModalSize {
  */
 export function paradisModalClasses(size: ParadisModalSize): readonly string[] {
 	return ['paradis-modal', `paradis-modal-${size}`, 'paradis-focus-none'];
+}
+
+/** 箱の本文（スクロールする所）に付けるクラス。 */
+export const PARADIS_MODAL_BODY_CLASS = 'paradis-modal-body';
+
+/** 箱の下の帯（取消・保存などのボタン）に付けるクラス。 */
+export const PARADIS_MODAL_FOOT_CLASS = 'paradis-modal-foot';
+
+/**
+ * 見出しの帯の中で、狭い窓では文字を隠してアイコンだけにするボタンに付けるクラス（ParadisButton の文字の span を隠す）。
+ * アイコンの無いボタンには付けない。
+ */
+export const PARADIS_MODAL_COMPACT_CLASS = 'paradis-modal-compact';
+
+export interface IParadisModalHead {
+	/** 帯（`.paradis-modal-head`）。 */
+	readonly element: HTMLElement;
+	/** 見出し（`h2.paradis-modal-title`）。 */
+	readonly title: HTMLElement;
+	/** 右側のボタンを置く所。閉じるボタンは最後に置く。 */
+	readonly actions: HTMLElement;
+}
+
+/** 箱の見出しの帯（高さ 52、見出しは 13 の太字、右にボタン）を作る。 */
+export function renderParadisModalHead(parent: HTMLElement, title: string): IParadisModalHead {
+	const element = append(parent, $('.paradis-modal-head'));
+	const titleElement = append(element, $('h2.paradis-modal-title'));
+	titleElement.textContent = title;
+	const actions = append(element, $('.paradis-modal-actions'));
+	return { element, title: titleElement, actions };
 }
