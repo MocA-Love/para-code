@@ -194,14 +194,16 @@ export class ParadisSpaceDetailsDialog extends Disposable {
 
 		this._register(dom.addDisposableListener(modal, dom.EventType.KEY_DOWN, event => {
 			const keyboardEvent = new StandardKeyboardEvent(event);
-			if (keyboardEvent.equals(KeyMod.CtrlCmd | KeyCode.Enter)) {
+			// 日本語の変換を確定する Enter では保存しない
+			if (keyboardEvent.equals(KeyMod.CtrlCmd | KeyCode.Enter) && !event.isComposing) {
 				keyboardEvent.preventDefault();
 				keyboardEvent.stopPropagation();
 				this.save();
 			}
 		}));
+		// 幕の外を押したら閉じる。ただし変えたものがあるときは閉じない（Esc・取消・✕ は明示の操作なので閉じる）
 		this._register(dom.addDisposableListener(this.backdrop, dom.EventType.MOUSE_DOWN, event => {
-			if (event.target === this.backdrop) {
+			if (event.target === this.backdrop && !this.nameChanged() && !this.noteChanged()) {
 				this.dispose();
 			}
 		}));

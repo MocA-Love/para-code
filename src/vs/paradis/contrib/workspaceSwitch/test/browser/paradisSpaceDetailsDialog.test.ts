@@ -127,6 +127,23 @@ suite('ParadisSpaceDetailsDialog', () => {
 		fixture.dialog.dispose();
 	});
 
+	test('a click outside closes only when nothing changed; Ctrl/Cmd+Enter while composing text does not save', () => {
+		const fixture = open({ note: 'old' });
+		const backdrop = container.querySelector<HTMLElement>('.paradis-space-details-backdrop')!;
+		fixture.type(fixture.noteInput, 'changed');
+		backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+		const afterOutsideClick = fixture.isOpen();
+		fixture.modal.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, ctrlKey: !isMacintosh, metaKey: isMacintosh, isComposing: true, bubbles: true }));
+		const afterComposingEnter = { open: fixture.isOpen(), written: [...fixture.written] };
+		fixture.type(fixture.noteInput, 'old');
+		backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+		assert.deepStrictEqual({ afterOutsideClick, afterComposingEnter, afterRevertAndClick: fixture.isOpen() }, {
+			afterOutsideClick: true,
+			afterComposingEnter: { open: true, written: [] },
+			afterRevertAndClick: false,
+		});
+	});
+
 	test('the main checkout keeps its name (the field is read only)', () => {
 		const fixture = open({ worktree: { repositoryId: 'repo', name: 'repo', uri: URI.file('/tmp/repo'), isMainCheckout: true } as IParadisWorktree });
 		fixture.saveByKeyboard();
