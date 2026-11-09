@@ -69,4 +69,37 @@ suite('ParadisSelect', () => {
 			container.remove();
 		}
 	});
+	test('shows a value that is not among the choices instead of the first choice, so picking the first choice is saved', () => {
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const contextViewService = { showContextView: () => ({ close: () => { } }), hideContextView: () => { }, layout: () => { } } as unknown as IContextViewService;
+		const configurationService = { getValue: () => undefined } as unknown as IConfigurationService;
+		try {
+			const levels = [{ value: '50', label: '中 (50%)' }, { value: '100', label: '大 (100%)' }];
+			const select = store.add(new ParadisSelect(container, contextViewService, configurationService, levels, '73', { ariaLabel: '音量' }));
+			const changes: string[] = [];
+			store.add(select.onDidChange(value => changes.push(value)));
+			const element = container.querySelector('select')!;
+			const shownAtOpen = [...element.options].map(option => `${option.value}:${option.text}`);
+			const valueAtOpen = select.value;
+
+			element.selectedIndex = 0;
+			element.dispatchEvent(new Event('change'));
+			// 一覧が後から届いたときも、保存済みの値は残す。値を省いた入れ替えでは、今の値が無ければ先頭に戻す
+			select.setOptions(levels, 'old-model');
+			const shownAfterLoad = [...element.options].map(option => option.value);
+			select.setOptions([{ value: '', label: '既定' }]);
+
+			assert.deepStrictEqual({ shownAtOpen, valueAtOpen, changes, shownAfterLoad, valueAfterReset: select.value, values: select.values.length }, {
+				shownAtOpen: ['50:中 (50%)', '100:大 (100%)', '73:73'],
+				valueAtOpen: '73',
+				changes: ['50'],
+				shownAfterLoad: ['50', '100', 'old-model'],
+				valueAfterReset: '',
+				values: 1,
+			});
+		} finally {
+			container.remove();
+		}
+	});
 });

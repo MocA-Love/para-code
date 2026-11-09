@@ -2194,12 +2194,9 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 			const choices = spec.choices.map(choice => ({ value: String(choice.value), label: choice.label }));
 			const select = this._register(new ParadisSelect(row, this.contextViewService, this.configurationService, choices, undefined, { ariaLabel: spec.label, className: 'psd-select' }));
 			// 用意した刻み (不透明度の 96% など) に載らない値が既に入っていることがある。
-			// そのまま黙って別の値を選んだ状態にすると、開いただけで設定が変わったように
-			// 見えるので、実際の値を選択肢へ足して選んでおく。差し替え式にして増殖させない。
+			// そのときはプルダウンが実際の値を選択肢へ足して選ぶ（開いただけで設定が変わったように見せない）。
 			const sync = () => {
-				const current = String(this.configurationService.getValue(key) ?? '');
-				const known = choices.some(choice => choice.value === current);
-				select.setOptions(known ? choices : [...choices, { value: current, label: current }], current);
+				select.setOptions(choices, String(this.configurationService.getValue(key) ?? ''));
 				select.enabled = this._isRegistered(key);
 			};
 			sync();

@@ -417,10 +417,12 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 
 		const repoRow = dom.append(advGrid, $('label.pcw-d-adv-row'));
 		dom.append(repoRow, $('span.pcw-d-adv-label')).textContent = STR_BASE_REPO_LABEL;
+		// 一覧に無いリポジトリ（閉じたものなど）は選ばず、先頭にする
 		const initialRepoId = preselectedRepositoryId ?? this.switchService.activeRepository?.id;
+		const repositoryOptions = this.switchService.repositories.map(repository => ({ value: repository.id, label: repository.name }));
 		this._repoSelect = this._register(new ParadisSelect(repoRow, this.contextViewService, this.configurationService,
-			this.switchService.repositories.map(repository => ({ value: repository.id, label: repository.name })),
-			initialRepoId, { ariaLabel: STR_BASE_REPO_LABEL, className: 'pcw-d-adv-select' }));
+			repositoryOptions,
+			repositoryOptions.some(option => option.value === initialRepoId) ? initialRepoId : undefined, { ariaLabel: STR_BASE_REPO_LABEL, className: 'pcw-d-adv-select' }));
 
 		const branchRow = dom.append(advGrid, $('label.pcw-d-adv-row'));
 		dom.append(branchRow, $('span.pcw-d-adv-label')).textContent = STR_BASE_BRANCH_LABEL;

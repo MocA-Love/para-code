@@ -292,13 +292,9 @@ export class ParadisElevenLabsVoiceFields {
 		});
 	}
 
-	/** 一覧に無いモデル（保存済みの値）も選択肢に残し、選び直さない限り変わらないようにする。 */
+	/** 一覧に無いモデル（保存済みの値）は、プルダウンが選択肢に足して選ぶ。選び直さない限り変わらない。 */
 	private _populateModels(select: ParadisSelect, models: readonly IParadisElevenLabsModel[], current: string): void {
-		const options = [...models];
-		if (!options.some(model => model.modelId === current)) {
-			options.unshift({ modelId: current, name: current });
-		}
-		select.setOptions(options.map(model => ({ value: model.modelId, label: model.name })), current);
+		select.setOptions(models.map(model => ({ value: model.modelId, label: model.name })), current);
 	}
 
 	// --- 発音辞書 --------------------------------------------------------------------------------

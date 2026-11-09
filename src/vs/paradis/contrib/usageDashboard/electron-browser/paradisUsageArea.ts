@@ -292,12 +292,10 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 			if (spec.choices) {
 				const choices = spec.choices.map(choice => ({ value: String(choice.value), label: choice.label }));
 				const select = store.add(new ParadisSelect(row, this.contextViewService, this.configurationService, choices, undefined, { ariaLabel: spec.label, className: 'pud-select' }));
-				// 用意した刻みに載らない値が既に入っていることがあるので、そのときは
-				// 実際の値を選択肢へ足して選んでおく（開いただけで設定が変わったように見せない）
+				// 用意した刻みに載らない値が既に入っていることがある。そのときはプルダウンが
+				// 実際の値を選択肢へ足して選ぶ（開いただけで設定が変わったように見せない）
 				const sync = () => {
-					const current = String(this.configurationService.getValue(spec.key) ?? '');
-					const known = choices.some(choice => choice.value === current);
-					select.setOptions(known ? choices : [...choices, { value: current, label: current }], current);
+					select.setOptions(choices, String(this.configurationService.getValue(spec.key) ?? ''));
 				};
 				sync();
 				this._settingRefreshers.push(sync);

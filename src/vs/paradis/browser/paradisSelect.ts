@@ -56,7 +56,10 @@ export class ParadisSelect extends Disposable {
 	private readonly selectBox: SelectBox;
 	/** SelectBox が閉じた状態の表示に使う `<select>`。 */
 	private readonly nativeSelect: HTMLSelectElement | undefined;
-	private options: readonly IParadisSelectOption[];
+	/** 呼び出し側が渡した選択肢。 */
+	private base: readonly IParadisSelectOption[];
+	/** 一覧に出している選択肢。渡された値が `base` に無いときは、その値を表す項目を末尾に足してある。 */
+	private shown: readonly IParadisSelectOption[];
 	private current: string | undefined;
 	private _enabled = true;
 
@@ -66,10 +69,12 @@ export class ParadisSelect extends Disposable {
 
 	constructor(parent: HTMLElement, contextViewService: IContextViewService, configurationService: IConfigurationService, options: readonly IParadisSelectOption[], value: string | undefined, selectOptions: IParadisSelectOptions) {
 		super();
-		this.options = options;
-		this.current = this.pick(value);
+		this.base = options;
+		const resolved = paradisResolveSelectOptions(options, value);
+		this.shown = resolved.shown;
+		this.current = resolved.current;
 		this.element = append(parent, $('span.paradis-select'));
-		this.selectBox = this._register(new SelectBox(this.toItems(options), this.indexOf(this.current), contextViewService, defaultSelectBoxStyles, {
+		this.selectBox = this._register(new SelectBox(this.toItems(this.shown), this.indexOf(this.current), contextViewService, defaultSelectBoxStyles, {
 			useCustomDrawn: !hasNativeContextMenu(configurationService),
 			ariaLabel: selectOptions.ariaLabel,
 			contextViewLayer: PARADIS_MODAL_POPUP_LAYER,
@@ -83,7 +88,7 @@ export class ParadisSelect extends Disposable {
 		this.syncNativeValues();
 		this._register(this.selectBox.onDidSelect(e => {
 			// SelectBox は選び直したときだけ知らせる（`HTMLSelectElement` の change と同じ）
-			const option = this.options[e.index];
+			const option = this.shown[e.index];
 			if (option) {
 				this.current = option.value;
 				this._onDidChange.fire(option.value);
@@ -96,37 +101,39 @@ export class ParadisSelect extends Disposable {
 		return this.current ?? '';
 	}
 
-	/** 値を選ぶ。選択肢に無い値なら何もしない。 */
+	/** 値を選ぶ。選択肢に無い値は、その値を表す項目を足して選ぶ（{@link setOptions} と同じ）。 */
 	set value(value: string) {
-		const index = this.options.findIndex(option => option.value === value);
-		if (index >= 0) {
-			this.current = value;
-			this.selectBox.select(index);
-		}
+		this.apply(this.base, value);
 	}
 
-	/** 今の選択肢。 */
+	/** 呼び出し側が渡した選択肢（今の値を表すために足した項目は含まない）。 */
 	get values(): readonly IParadisSelectOption[] {
-		return this.options;
+		return this.base;
 	}
 
 	/**
-	 * 選択肢を入れ替える。`value` を省くと、今の値が残っていればそれを、無ければ先頭を選ぶ。
-	 * 並びも表示名も同じなら何もしない（開いている一覧を閉じない）。
+	 * 選択肢を入れ替える。`value` を渡すと、それを選ぶ。選択肢に無い値なら、その値を表す項目を足して選ぶ
+	 * （先頭を選んだように見せると、先頭を選び直しても「変わっていない」扱いになり保存されないため）。
+	 * `value` を省くと、今の値が新しい選択肢に残っていればそれを、無ければ先頭を選ぶ。
+	 * 一覧に出す項目が同じなら作り直さない（開いている一覧を閉じない）。
 	 *
-	 * @returns 選択肢を入れ替えたか
+	 * @returns 一覧に出す項目を入れ替えたか
 	 */
 	setOptions(options: readonly IParadisSelectOption[], value?: string): boolean {
-		const same = options.length === this.options.length && options.every((option, index) => option.value === this.options[index].value && option.label === this.options[index].label);
+		return this.apply(options, value ?? (options.some(option => option.value === this.current) ? this.current : undefined));
+	}
+
+	private apply(options: readonly IParadisSelectOption[], value: string | undefined): boolean {
+		this.base = options;
+		const resolved = paradisResolveSelectOptions(options, value);
+		const same = resolved.shown.length === this.shown.length && resolved.shown.every((option, index) => option.value === this.shown[index].value && option.label === this.shown[index].label);
+		this.shown = resolved.shown;
+		this.current = resolved.current;
 		if (same) {
-			if (value !== undefined) {
-				this.value = value;
-			}
+			this.selectBox.select(this.indexOf(this.current));
 			return false;
 		}
-		this.options = options;
-		this.current = this.pick(value ?? this.current);
-		this.selectBox.setOptions(this.toItems(options), this.indexOf(this.current));
+		this.selectBox.setOptions(this.toItems(this.shown), this.indexOf(this.current));
 		this.syncNativeValues();
 		return true;
 	}
@@ -159,7 +166,7 @@ export class ParadisSelect extends Disposable {
 		if (!nativeOptions) {
 			return;
 		}
-		this.options.forEach((option, index) => {
+		this.shown.forEach((option, index) => {
 			const nativeOption = nativeOptions[index];
 			if (nativeOption) {
 				nativeOption.value = option.value;
@@ -167,18 +174,25 @@ export class ParadisSelect extends Disposable {
 		});
 	}
 
-	private pick(value: string | undefined): string | undefined {
-		if (value !== undefined && this.options.some(option => option.value === value)) {
-			return value;
-		}
-		return this.options[0]?.value;
-	}
-
 	private indexOf(value: string | undefined): number {
-		return Math.max(0, this.options.findIndex(option => option.value === value));
+		return Math.max(0, this.shown.findIndex(option => option.value === value));
 	}
 
 	private toItems(options: readonly IParadisSelectOption[]): ISelectOptionItem[] {
 		return options.map(option => ({ text: option.label }));
 	}
+}
+
+/**
+ * 一覧に出す選択肢と選ぶ値を決める。`value` が選択肢に無い空でない値なら、その値を表す項目（表示名は値そのもの）を
+ * 末尾に足して選ぶ。`value` が無い・空なら先頭を選ぶ（空の値は「既定」などの選択肢として渡される）。
+ */
+function paradisResolveSelectOptions(options: readonly IParadisSelectOption[], value: string | undefined): { readonly shown: readonly IParadisSelectOption[]; readonly current: string | undefined } {
+	if (value !== undefined && options.some(option => option.value === value)) {
+		return { shown: options, current: value };
+	}
+	if (value) {
+		return { shown: [...options, { value, label: value }], current: value };
+	}
+	return { shown: options, current: options[0]?.value };
 }

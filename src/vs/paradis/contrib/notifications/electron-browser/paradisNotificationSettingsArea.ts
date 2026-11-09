@@ -797,10 +797,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		const volumeMain = dom.append(volumeRow, $('.sr-main'));
 		dom.append(volumeMain, $('.sr-label')).textContent = STR_VOLUME_LABEL;
 		const volumeOptions = VOLUME_LEVELS.map(level => ({ value: String(level.value), label: `${level.label} (${level.value}%)` }));
-		// 刻みに載らない値（settings.json で直接書いたもの）は、そのまま選択肢に足して選んでおく
-		if (!volumeOptions.some(option => option.value === String(volume))) {
-			volumeOptions.push({ value: String(volume), label: `${volume}%` });
-		}
+		// 刻みに載らない値（settings.json で直接書いたもの）は、プルダウンが選択肢に足して選ぶ
 		const volumeSelect = this._renderDisposables.add(new ParadisSelect(volumeRow, this.contextViewService, this.configurationService, volumeOptions, String(volume), { ariaLabel: STR_VOLUME_LABEL }));
 		volumeSelect.element.style.width = '170px';
 		volumeSelect.element.style.flexShrink = '0';
