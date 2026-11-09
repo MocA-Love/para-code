@@ -45,7 +45,7 @@ import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMir
 import { ParadisRemoteShellOutputRequests } from './paradisRemoteShellOutputRequests.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { paradisMobileDismissTags, paradisMobilePushIds } from './paradisMobilePushIds.js';
-import { IParadisRelayPairedMobile, IParadisRelayPersistedState, ParadisRelayStoreProblem, paradisMoveRelayStateAside, paradisPruneRelayStateLeftovers, paradisReadRelayState, paradisWriteRelayState } from './paradisMobileRelayStateFile.js';
+import { IParadisRelayPairedMobile, IParadisRelayPersistedState, ParadisRelayStoreProblem, paradisMoveRelayStateAside, paradisPruneRelayStateLeftovers, paradisReadRelayState, paradisShouldPersistMobileLastSeen, paradisWriteRelayState } from './paradisMobileRelayStateFile.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import { IParadisMobileBrowserScopeSnapshot, paradisMobileBrowserViewsInSpace, paradisSanitizeMobileBrowserScopeSnapshot } from '../common/paradisMobileBrowserScope.js';
 import { BrowserSearchEngineSettingId } from '../../../../workbench/contrib/browserView/common/browserSearch.js';
@@ -91,6 +91,7 @@ import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../
 import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView, ParadisOpenCodeDesktopActionResult } from '../../agentChat/common/paradisAgentChat.js';
 import {
 	IParadisConfirmedAgentPanes,
+	IParadisMobileDeviceStatus,
 	IParadisMobileInboundFrame,
 	IParadisMobileWindowStateV2,
 	IParadisMobilePairingSession,
@@ -106,6 +107,7 @@ import {
 	paradisCancelsCurrentPairing,
 	paradisFormatPcName,
 	paradisMobileWindowRoute,
+	paradisNormalizeMobileDeviceAlias,
 } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowLeaseRef, ParadisMobileOperationLedger } from './paradisMobileOperationLedger.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
@@ -890,6 +892,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private storeProblemNoticed: ParadisRelayStoreProblem | undefined;
 	/** 台帳を一度読めたか（以後は initialize のたびに読み直さない）。 */
 	private stateLoaded = false;
+	/** 端末ごとに、最終接続の時刻を最後にディスクへ書いた時刻（{@link noteMobilesSeen} の間引き）。 */
+	private readonly lastSeenPersistedAt = new Map<string, number>();
 	private loading: Promise<void> | undefined;
 	/** 台帳の読み書きの列。 */
 	private storeQueue: Promise<unknown> = Promise.resolve();
@@ -1691,11 +1695,57 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			state: this.connectionState,
 			deviceId: this.state.device?.deviceId,
 			pairedDevices: this.state.mobiles.map(m => m.name),
-			pairedMobiles: this.state.mobiles.map(m => ({ mobileId: m.mobileId, name: m.name })),
+			pairedMobiles: this.state.mobiles.map(m => this.deviceStatusOf(m)),
 			onlineMobiles: [...this.sessions.values()].filter(s => s.hasCurrentProtocol).length,
+			...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
 			...(this.unauthorized ? { unauthorized: true } : {}),
 			...(this.storeProblem !== undefined ? { storeProblem: this.storeProblem } : {}),
 		};
+	}
+
+	/** 端末 1 台の表示用の情報。オンラインは `onlineMobiles` と同じく今のプロトコルで話せる接続だけを数える。 */
+	private deviceStatusOf(mobile: IParadisRelayPairedMobile): IParadisMobileDeviceStatus {
+		const prefs = mobile.notifyPrefs;
+		return {
+			mobileId: mobile.mobileId,
+			name: mobile.name,
+			...(mobile.alias !== undefined ? { alias: mobile.alias } : {}),
+			online: this.sessions.get(mobile.mobileId)?.hasCurrentProtocol === true,
+			...(mobile.pairedAt !== undefined ? { pairedAt: mobile.pairedAt } : {}),
+			...(mobile.lastSeenAt !== undefined ? { lastSeenAt: mobile.lastSeenAt } : {}),
+			notify: {
+				agentDone: prefs?.agentDone !== false,
+				agentQuestion: prefs?.agentQuestion !== false,
+				pcFocusQuiet: paradisNotifyPcFocusQuiet(prefs),
+				includeContent: paradisNotifyIncludeContent(prefs),
+			},
+		};
+	}
+
+	/**
+	 * 今のプロトコルで繋がっている端末の最終接続を今にする（繋がったときと、切れる直前に呼ぶ）。
+	 * メモリの値は毎回進め、ディスクへは端末ごとに間引いて書く。台帳を読めずに止めている間は書かない。
+	 */
+	private noteMobilesSeen(mobileIds: Iterable<string>): void {
+		const now = Date.now();
+		let persist = false;
+		for (const mobileId of mobileIds) {
+			if (this.sessions.get(mobileId)?.hasCurrentProtocol !== true) {
+				continue;
+			}
+			const mobile = this.state.mobiles.find(candidate => candidate.mobileId === mobileId);
+			if (!mobile) {
+				continue;
+			}
+			mobile.lastSeenAt = now;
+			if (paradisShouldPersistMobileLastSeen(this.lastSeenPersistedAt.get(mobileId), now)) {
+				this.lastSeenPersistedAt.set(mobileId, now);
+				persist = true;
+			}
+		}
+		if (persist && !this.isStoreBlocked()) {
+			this.save().catch(err => this.logService.trace('[paradisMobileRelay] last-seen save failed', String(err)));
+		}
 	}
 
 	/**
@@ -2265,6 +2315,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * （presence offline と、裏に回ったまま戻らなかったとき）。
 	 */
 	private dropMobileSession(mobileId: string): void {
+		this.noteMobilesSeen([mobileId]);
 		this.sessions.get(mobileId)?.close();
 		this.sessions.delete(mobileId);
 		this.backgroundSessions.end(mobileId);
@@ -2530,6 +2581,35 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
+	async renameDevice(mobileId: string, alias: string | undefined): Promise<void> {
+		const mobile = this.state.mobiles.find(candidate => candidate.mobileId === mobileId);
+		if (!mobile) {
+			throw new Error('The mobile device is not paired.');
+		}
+		const next = paradisNormalizeMobileDeviceAlias(alias);
+		const previous = mobile.alias;
+		if (previous === next) {
+			return;
+		}
+		const apply = (value: string | undefined) => {
+			if (value === undefined) {
+				delete mobile.alias;
+			} else {
+				mobile.alias = value;
+			}
+		};
+		apply(next);
+		try {
+			await this.save();
+		} catch (err) {
+			// 書けなかった名前は見せない（再起動すると消えるので、書けたものだけを出す）
+			apply(previous);
+			throw err;
+		} finally {
+			this._onDidChangeStatus.fire(this.snapshot());
+		}
+	}
+
 	// --- SSH 接続先 transcript の写し -----------------------------------------------------------
 	//
 	// 接続先を見られるのは、そこへ繋いでいるウィンドウだけ。読む作業はウィンドウに任せ、
@@ -2715,6 +2795,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		this.pcName = next;
+		this._onDidChangeStatus.fire(this.snapshot());
 		if (this.terminalRegistry.setPcName(next)) {
 			await this.enqueueRendererAuthority(() => this.broadcastDesktopState());
 		}
@@ -3860,6 +3941,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// per-mobileリソース（browserMirrorのcaptureTimer/上流CDPソケット、agentChatの購読）を解放する。
 		const mobileSessionCount = this.sessions.size;
 		this.clearStableConnectionReset();
+		this.noteMobilesSeen(this.sessions.keys());
 		for (const [id, session] of this.sessions) {
 			this.browserMirror.stopSession(id);
 			this.agentChat.dropSubscriber(id);
@@ -3935,6 +4017,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// 「復帰できなかった」と報告してしまわないように）。
 		this.disconnectReporter.setEnabled(false);
 		// onclose と同様、セッション破棄前に per-mobile リソースを解放する。
+		this.noteMobilesSeen(this.sessions.keys());
 		for (const [id, session] of this.sessions) {
 			this.browserMirror.stopSession(id);
 			this.agentChat.dropSubscriber(id);
@@ -4000,6 +4083,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						const wasReady = session!.hasCurrentProtocol;
 						session!.negotiateProtocol(frame.payload.buffer);
 						if (session!.hasCurrentProtocol !== wasReady) {
+							if (session!.hasCurrentProtocol) {
+								this.noteMobilesSeen([idStr]);
+							}
 							this._onDidChangeStatus.fire(this.snapshot());
 							this.updateEagerTailing();
 							if (session!.hasCurrentProtocol) {
@@ -4391,7 +4477,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		const name = this.uniqueName(shown.name ?? PAIRING_DEFAULT_DEVICE_NAME);
-		this.state.mobiles.push({ mobileId, name, pubKey: toBase64Url(shown.pubKey) });
+		this.state.mobiles.push({ mobileId, name, pubKey: toBase64Url(shown.pubKey), pairedAt: Date.now() });
 		await this.save();
 		this.pairing = undefined;
 		this._onPairingEvent.fire({ kind: 'paired', deviceName: name });

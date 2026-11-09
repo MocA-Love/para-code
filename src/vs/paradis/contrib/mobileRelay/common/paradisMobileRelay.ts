@@ -55,6 +55,15 @@ export function paradisFormatPcName(configured: string | undefined, hostname: st
 	return host ? host.slice(0, PARADIS_MOBILE_PC_NAME_MAX_LENGTH) : undefined;
 }
 
+/** PC 側で端末に付ける別名の長さの上限（端末が名乗る名前と同じ）。 */
+export const PARADIS_MOBILE_DEVICE_ALIAS_MAX_LENGTH = 64;
+
+/** 別名の入力を整える。前後の空白を落として上限で切り、空なら `undefined`（別名を外す）。 */
+export function paradisNormalizeMobileDeviceAlias(alias: string | undefined): string | undefined {
+	const trimmed = alias?.trim().slice(0, PARADIS_MOBILE_DEVICE_ALIAS_MAX_LENGTH).trim();
+	return trimmed ? trimmed : undefined;
+}
+
 // 2026-07-05 デプロイ済み（本番Cloudflareアカウント、app/relay/wrangler.jsonc参照）。
 export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.cloudflare8234.workers.dev';
 
@@ -235,6 +244,31 @@ export interface IParadisMobileDesktopStateV3 {
 /** shared process の接続状態。 */
 export type ParadisMobileConnectionState = 'disabled' | 'disconnected' | 'connecting' | 'online';
 
+/** ペアリングした端末 1 台の、PC が持っている情報（「モバイル」のタブの表）。 */
+export interface IParadisMobileDeviceStatus {
+	readonly mobileId: string;
+	/** 端末がペアリングのときに名乗った名前。 */
+	readonly name: string;
+	/** PC 側で付けた別名（{@link IParadisMobileRelayService.renameDevice}）。無ければ {@link name} を出す。 */
+	readonly alias?: string;
+	/** いま繋がっているか（`onlineMobiles` と同じ数え方: 今のプロトコルで話せる接続）。旧版の shared process は送らない。 */
+	readonly online?: boolean;
+	/** ペアリングした時刻（epoch ms）。記録を始める前にペアリングした端末には無い。 */
+	readonly pairedAt?: number;
+	/** 最後に繋がっていた時刻（epoch ms）。一度も記録していなければ無い。 */
+	readonly lastSeenAt?: number;
+	/** 端末の通知の設定の実効値（アプリから同期されたもの。PC からは変えない）。旧版の shared process は送らない。 */
+	readonly notify?: IParadisMobileDeviceNotifySettings;
+}
+
+/** 端末の通知の設定の実効値（`paradisNotifyDelivery.ts` が配信で使うのと同じ解釈）。 */
+export interface IParadisMobileDeviceNotifySettings {
+	readonly agentDone: boolean;
+	readonly agentQuestion: boolean;
+	readonly pcFocusQuiet: boolean;
+	readonly includeContent: boolean;
+}
+
 /** 現在のリレー状態のスナップショット。 */
 export interface IParadisMobileStatus {
 	readonly state: ParadisMobileConnectionState;
@@ -245,9 +279,11 @@ export interface IParadisMobileStatus {
 	 * 承認済みモバイルデバイスの id と表示名（`pairedDevices` と同じ順）。表示名は端末の名前なので重なりうる。
 	 * 失効は名前ではなくこの id で指す（同じ名前の別の端末まで外さないため）。
 	 */
-	readonly pairedMobiles?: readonly { readonly mobileId: string; readonly name: string }[];
+	readonly pairedMobiles?: readonly IParadisMobileDeviceStatus[];
 	/** 現在オンラインのモバイル接続数。 */
 	readonly onlineMobiles: number;
+	/** モバイルに見せているこの PC の名前（設定 `paradis.mobile.pcName`、空ならホスト名）。旧版の shared process は送らない。 */
+	readonly pcName?: string;
 	/**
 	 * 保存済みの pcToken をリレーが拒否しており、再ペアリングしない限り復帰しない状態。
 	 * WebSocket の close 1006 だけでは認証拒否と経路断を区別できないため、HTTPでの確認が
@@ -377,6 +413,11 @@ export interface IParadisMobileRelayService {
 	 * 台帳を保存できなくても、その端末の接続は切ってから失敗を返す。
 	 */
 	revokeDevice(deviceName: string, mobileId?: string): Promise<void>;
+	/**
+	 * 端末に PC 側の別名を付ける（端末が名乗った名前は残す）。空白だけ・`undefined` なら別名を外す。
+	 * 長さは {@link PARADIS_MOBILE_DEVICE_ALIAS_MAX_LENGTH} で切る。台帳を保存できなければ失敗を返す。
+	 */
+	renameDevice(mobileId: string, alias: string | undefined): Promise<void>;
 	/**
 	 * 読めなかった鍵とペアリング台帳を読み直す（ファイルの権限を直したときなど）。復号できなかった
 	 * （`undecryptable`）ときは、macOS の safeStorage が失敗をプロセスが終わるまで覚えているので、

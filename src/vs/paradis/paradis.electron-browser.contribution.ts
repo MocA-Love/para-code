@@ -69,6 +69,7 @@ import './contrib/browserDownloads/electron-browser/paradisBrowserDownloads.cont
 import './contrib/releaseNotes/electron-browser/paradisReleaseNotes.contribution.js';
 import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';
+import './contrib/mobileRelay/electron-browser/paradisMobileTab.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileLinkMetrics.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileViewportBanner.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileDoNotDisturbSync.contribution.js';
