@@ -12,16 +12,12 @@
 	height: 100%;
 	overflow-y: auto;
 	padding: 14px 24px 24px;
-	color: var(--vscode-foreground);
+	color: var(--vscode-paradis-text);
 	font-size: 13px;
 }
 
 .paradis-mobile * {
 	box-sizing: border-box;
-}
-
-.paradis-mobile:focus {
-	outline: none;
 }
 
 .paradis-mobile .codicon {
@@ -42,10 +38,10 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 28px;
-	height: 28px;
-	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-	border-radius: 6px;
+	width: var(--paradis-height-md);
+	height: var(--paradis-height-md);
+	border: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
+	border-radius: var(--paradis-radius-control);
 }
 
 .paradis-mobile-title {
@@ -65,9 +61,9 @@
 	max-width: 100%;
 	height: 22px;
 	padding: 0 8px;
-	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-	border-radius: 12px;
-	color: var(--vscode-descriptionForeground);
+	border: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
+	border-radius: var(--paradis-radius-outer);
+	color: var(--vscode-paradis-textMuted);
 	font-size: 12px;
 }
 
@@ -82,18 +78,18 @@
 }
 
 .paradis-mobile-chip.ok {
-	border-color: color-mix(in srgb, var(--vscode-testing-iconPassed) 40%, transparent);
-	color: var(--vscode-testing-iconPassed);
+	border-color: color-mix(in srgb, var(--vscode-paradis-success) 40%, transparent);
+	color: var(--vscode-paradis-success);
 }
 
 .paradis-mobile-chip.warn {
-	border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 40%, transparent);
-	color: var(--vscode-editorWarning-foreground);
+	border-color: color-mix(in srgb, var(--vscode-paradis-warning) 40%, transparent);
+	color: var(--vscode-paradis-warning);
 }
 
 .paradis-mobile-chip.err {
-	border-color: color-mix(in srgb, var(--vscode-errorForeground) 40%, transparent);
-	color: var(--vscode-errorForeground);
+	border-color: color-mix(in srgb, var(--vscode-paradis-danger) 40%, transparent);
+	color: var(--vscode-paradis-danger);
 }
 
 .paradis-mobile-chip.acc {
@@ -103,7 +99,7 @@
 
 .paradis-mobile-info {
 	margin: -2px 0 12px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	font-size: 12px;
 	overflow-wrap: anywhere;
 }
@@ -126,18 +122,13 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	height: 28px;
+	height: var(--paradis-height-md);
 	padding: 0 10px;
-	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-	border-radius: 6px;
+	border: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
+	border-radius: var(--paradis-radius-control);
 	background: transparent;
 	font-size: 12.5px;
 	white-space: nowrap;
-}
-
-.paradis-mobile-pill .codicon,
-.paradis-mobile-icon-button .codicon {
-	font-size: 14px;
 }
 
 .paradis-mobile-pill:hover:not(:disabled),
@@ -146,8 +137,8 @@
 }
 
 .paradis-mobile .paradis-mobile-pill.primary {
-	border-color: var(--vscode-button-background);
-	background: var(--vscode-button-background);
+	border-color: var(--vscode-paradis-primary);
+	background: var(--vscode-paradis-primary);
 	color: var(--vscode-button-foreground);
 }
 
@@ -157,12 +148,12 @@
 }
 
 .paradis-mobile .paradis-mobile-pill.danger {
-	color: var(--vscode-errorForeground);
+	color: var(--vscode-paradis-danger);
 }
 
 .paradis-mobile-icon-button {
 	justify-content: center;
-	width: 28px;
+	width: var(--paradis-height-md);
 	padding: 0;
 }
 
@@ -193,29 +184,29 @@
 	gap: 8px;
 	margin-bottom: 12px;
 	padding: 9px 12px;
-	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-	border-radius: 8px;
+	border: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
+	border-radius: var(--paradis-radius-inner);
 }
 
 .paradis-mobile-banner > .codicon {
 	margin-top: 1px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-mobile-banner.warn {
-	border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 40%, transparent);
+	border-color: color-mix(in srgb, var(--vscode-paradis-warning) 40%, transparent);
 }
 
 .paradis-mobile-banner.warn > .codicon {
-	color: var(--vscode-editorWarning-foreground);
+	color: var(--vscode-paradis-warning);
 }
 
 .paradis-mobile-banner.err {
-	border-color: color-mix(in srgb, var(--vscode-errorForeground) 40%, transparent);
+	border-color: color-mix(in srgb, var(--vscode-paradis-danger) 40%, transparent);
 }
 
 .paradis-mobile-banner.err > .codicon {
-	color: var(--vscode-errorForeground);
+	color: var(--vscode-paradis-danger);
 }
 
 .paradis-mobile-banner-text {
@@ -243,7 +234,7 @@
 	align-items: center;
 	gap: 8px;
 	margin: 18px 0 8px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	font-size: 11.5px;
 	font-weight: 600;
 }
@@ -251,7 +242,7 @@
 .paradis-mobile-section-line {
 	flex: 1;
 	height: 1px;
-	background: var(--vscode-widget-border, var(--vscode-panel-border));
+	background: var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
 }
 
 /* ---- devices ---- */
@@ -266,14 +257,14 @@
 	align-items: center;
 	gap: 8px;
 	padding: 32px 16px 24px;
-	border: 1px dashed var(--vscode-widget-border, var(--vscode-panel-border));
-	border-radius: 8px;
+	border: 1px dashed var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
+	border-radius: var(--paradis-radius-inner);
 	text-align: center;
 }
 
 .paradis-mobile-empty > .codicon {
 	font-size: 32px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-mobile-empty-title {
@@ -282,7 +273,7 @@
 
 .paradis-mobile-empty-body {
 	max-width: 420px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	font-size: 12.5px;
 	line-height: 1.55;
 }
@@ -295,9 +286,9 @@
 
 .paradis-mobile-table th {
 	padding: 7px 10px;
-	border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-	color: var(--vscode-descriptionForeground);
+	border-top: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
+	color: var(--vscode-paradis-textMuted);
 	font-size: 11.5px;
 	font-weight: 600;
 	text-align: left;
@@ -311,16 +302,16 @@
 
 .paradis-mobile-table td {
 	padding: 8px 10px;
-	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
 	vertical-align: middle;
 }
 
 .paradis-mobile-table tbody tr:hover td {
-	background: var(--vscode-list-hoverBackground);
+	background: var(--vscode-paradis-fillHover);
 }
 
 .paradis-mobile-table td.last {
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	font-size: 12px;
 	white-space: nowrap;
 }
@@ -333,7 +324,7 @@
 }
 
 .paradis-mobile-device > .codicon {
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-mobile-device-text {
@@ -350,7 +341,7 @@
 
 .paradis-mobile-device-meta {
 	overflow: hidden;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	font-size: 12px;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -360,13 +351,13 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	font-size: 12px;
 	white-space: nowrap;
 }
 
 .paradis-mobile-presence.on {
-	color: var(--vscode-testing-iconPassed);
+	color: var(--vscode-paradis-success);
 }
 
 .paradis-mobile-dot {
@@ -384,11 +375,10 @@
 .paradis-mobile-notify {
 	display: inline-flex;
 	gap: 4px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-mobile-notify .codicon {
-	font-size: 14px;
 	opacity: 0.4;
 }
 
@@ -397,11 +387,11 @@
 }
 
 .paradis-mobile-notify .codicon.on {
-	color: var(--vscode-foreground);
+	color: var(--vscode-paradis-text);
 }
 
 .paradis-mobile-faint {
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-mobile-table td.actions {
@@ -409,8 +399,8 @@
 }
 
 .paradis-mobile-table td.actions .paradis-mobile-icon-button {
-	width: 24px;
-	height: 24px;
+	width: var(--paradis-height-sm);
+	height: var(--paradis-height-sm);
 	border-color: transparent;
 }
 
@@ -418,8 +408,8 @@
 
 .paradis-mobile-box {
 	padding: 2px 14px;
-	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-	border-radius: 8px;
+	border: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
+	border-radius: var(--paradis-radius-inner);
 }
 
 .paradis-mobile-setting {
@@ -427,7 +417,7 @@
 	align-items: center;
 	gap: 12px;
 	padding: 9px 0;
-	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-panel-border));
 }
 
 .paradis-mobile-setting:last-child {
@@ -441,7 +431,7 @@
 
 .paradis-mobile-setting-description {
 	margin-top: 2px;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	font-size: 12px;
 	line-height: 1.45;
 	overflow-wrap: anywhere;
@@ -458,26 +448,25 @@
 	gap: 8px;
 }
 
+/* The value column wraps only the field, so the shared focus outline (paradis-focus-ring-within) lies on its frame. */
+.paradis-mobile-setting-value.paradis-focus-ring-within {
+	border-radius: var(--paradis-radius-control);
+}
+
 .paradis-mobile-input {
 	width: 240px;
-	height: 32px;
+	height: var(--paradis-height-lg);
 	padding: 0 10px;
-	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border)));
-	border-radius: 6px;
+	border: 1px solid var(--vscode-paradis-line, var(--vscode-paradis-lineSubtle, var(--vscode-panel-border)));
+	border-radius: var(--paradis-radius-control);
 	background: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
+	color: var(--vscode-paradis-textStrong);
 	font: inherit;
 	font-size: 12.5px;
 }
 
 .paradis-mobile-input::placeholder {
-	color: var(--vscode-input-placeholderForeground);
-}
-
-/* The border shows the focus. The workbench input[type="text"]:focus outline would draw a second frame. */
-.monaco-workbench .paradis-mobile .paradis-mobile-input:focus {
-	outline: none;
-	border-color: var(--vscode-focusBorder);
+	color: var(--vscode-paradis-textFaint);
 }
 
 /* ---- narrow editor groups ---- */
