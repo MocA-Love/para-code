@@ -16,15 +16,18 @@
 // 人の入力は台帳を見ない（利用者本人の操作のため）。座標は映像の矩形に対する 0〜1。端末を回したとき、生の映像が
 // 縦のままなら CSS で回して見せ、入力は回した分を戻して送る（paradisSimulatorInput.ts の向きの扱い）。
 //
-// serve-sim は画面が変わらなくても 1 秒ごとに最後の 1 枚を送り直すので、映像が {@link STALL_MS} の間届かなければ
-// 流れが切れたとみなして {@link ParadisSimulatorFrameView.onDidStall} で知らせる（端末が止まった・ホストが落ちた・
-// 設定がオフになった、など。エディタが様子を読み直して購読し直すか、理由を出す）。
+// serve-sim は画面が変わらなくても 1 秒ごとに最後の 1 枚を送り直すので、映像が {@link STALL_MS} の間描けなければ
+// 流れが切れたとみなして {@link ParadisSimulatorFrameView.onDidStall} で知らせる（端末が止まった・ホストが落ちた、
+// など。エディタが理由と「再試行」を出し、様子を読み直して購読し直す）。shared process が流れの終わりを理由つきで
+// 送ってきたら（`ended`）、待たずにすぐ知らせる。届いた 1 枚を <img> が描けなかった（壊れた JPEG）ときは描けた数に
+// 数えない（数えると、壊れた 1 枚が届き続ける限り途切れの判定が延び続け、黒いまま何も出ない）。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { IParadisSimulatorFrameEvent, IParadisSimulatorScreenConfig, ParadisSimulatorInput } from '../common/paradisSimulator.js';
+import { localize } from '../../../../nls.js';
+import { IParadisSimulatorScreenConfig, ParadisSimulatorInput, ParadisSimulatorStreamEvent } from '../common/paradisSimulator.js';
 import { IParadisSimulatorDisplayGeometry, IParadisSimulatorSize, ParadisSimulatorTouchEdge, paradisSimulatorDisplayGeometry, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../common/paradisSimulatorInput.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 
@@ -64,9 +67,11 @@ export class ParadisSimulatorFrameView extends Disposable {
 	private _geometry: IParadisSimulatorDisplayGeometry = paradisSimulatorDisplayGeometry({ width: 0, height: 0 });
 	private _gestureEdge = ParadisSimulatorTouchEdge.None;
 	private readonly _stall: RunOnceScheduler;
+	/** 最後に届いた 1 枚を <img> が描けなかった。 */
+	private _lastFrameUndecodable = false;
 
-	private readonly _onDidStall = this._register(new Emitter<void>());
-	/** 購読しているのに映像が届かない（流れが切れた）。 */
+	private readonly _onDidStall = this._register(new Emitter<string | undefined>());
+	/** 購読しているのに映像が描けない（流れが切れた）。分かっていれば理由を渡す。 */
 	readonly onDidStall = this._onDidStall.event;
 
 	private readonly _onDidChangeFrameSize = this._register(new Emitter<IParadisSimulatorSize>());
@@ -103,8 +108,8 @@ export class ParadisSimulatorFrameView extends Disposable {
 		this._image.draggable = false;
 		this._image.alt = '';
 		this._register(dom.addDisposableListener(this._image, 'load', () => this._onImageLoaded()));
-		this._register(dom.addDisposableListener(this._image, 'error', () => this._onImageLoaded()));
-		this._stall = this._register(new RunOnceScheduler(() => this._onDidStall.fire(), PARADIS_SIMULATOR_STALL_MS));
+		this._register(dom.addDisposableListener(this._image, 'error', () => this._onImageFailed()));
+		this._stall = this._register(new RunOnceScheduler(() => this._onDidStall.fire(this._lastFrameUndecodable ? localize('paradis.simulator.undecodable', "届いた映像を表示できませんでした。") : undefined), PARADIS_SIMULATOR_STALL_MS));
 		this._registerPointer();
 		this._registerKeys();
 		this._register(toDisposable(() => {
@@ -130,8 +135,9 @@ export class ParadisSimulatorFrameView extends Disposable {
 			return;
 		}
 		const store = new DisposableStore();
-		store.add(this._client.onFrames(this._udid)(frame => this._onFrame(frame)));
+		store.add(this._client.onFrames(this._udid)(message => this._onStreamEvent(message)));
 		store.add(toDisposable(() => this._stall.cancel()));
+		this._lastFrameUndecodable = false;
 		this._subscription.value = store;
 		this._stall.schedule();
 	}
@@ -160,14 +166,19 @@ export class ParadisSimulatorFrameView extends Disposable {
 		this.element.focus();
 	}
 
-	private _onFrame(frame: IParadisSimulatorFrameEvent): void {
+	private _onStreamEvent(message: ParadisSimulatorStreamEvent): void {
 		if (this._store.isDisposed) {
 			return;
 		}
-		if (this._subscription.value) {
-			this._stall.schedule();
+		if (message.kind === 'ended') {
+			// shared process で流れが終わった。途切れの判定を待たずに理由を知らせる
+			if (this._subscription.value) {
+				this._stall.cancel();
+				this._onDidStall.fire(message.reason);
+			}
+			return;
 		}
-		const bytes = frame.jpeg.buffer.slice();
+		const bytes = message.jpeg.buffer.slice();
 		const url = this._urls.create(new Blob([bytes], { type: 'image/jpeg' }));
 		this._pendingBytes = bytes;
 		if (this._pendingUrl) {
@@ -190,6 +201,7 @@ export class ParadisSimulatorFrameView extends Disposable {
 		this._shownUrl = url;
 		this._shownBytes = this._pendingBytes;
 		this._pendingBytes = undefined;
+		this._lastFrameUndecodable = false;
 		const size = { width: this._image.naturalWidth, height: this._image.naturalHeight };
 		if (size.width !== this._frameSize.width || size.height !== this._frameSize.height) {
 			this._frameSize = size;
@@ -198,8 +210,34 @@ export class ParadisSimulatorFrameView extends Disposable {
 		}
 		this._onDidDrawFrame.fire();
 		if (this._subscription.value) {
-			this._client.ackFrame(this._udid).catch(error => this._onDidFail.fire(error instanceof Error ? error : new Error(String(error))));
+			// 途切れの判定は、描けた 1 枚で延ばす（届いただけでは延ばさない）
+			this._stall.schedule();
+			this._ack();
 		}
+	}
+
+	/** 届いた 1 枚を描けなかった。前の 1 枚を出したままにし、描けた数には数えない。返事は返す（返さないと次が来ない）。 */
+	private _onImageFailed(): void {
+		const url = this._pendingUrl;
+		if (!url || this._image.src !== url) {
+			return;
+		}
+		this._pendingUrl = undefined;
+		this._pendingBytes = undefined;
+		this._urls.revoke(url);
+		this._lastFrameUndecodable = true;
+		if (this._shownUrl) {
+			this._image.src = this._shownUrl;
+		} else {
+			this._image.removeAttribute('src');
+		}
+		if (this._subscription.value) {
+			this._ack();
+		}
+	}
+
+	private _ack(): void {
+		this._client.ackFrame(this._udid).catch(error => this._onDidFail.fire(error instanceof Error ? error : new Error(String(error))));
 	}
 
 	private _releaseUrls(): void {
