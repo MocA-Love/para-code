@@ -297,11 +297,64 @@ suite('ParadisMobileRelayService pairing state store', () => {
 				sessions: [...sessions.keys()],
 				status: (await service.getStatus()).pairedDevices,
 			}, {
-				afterId: [{ mobileId: 'm1', name: 'iPhone' }, { mobileId: 'm3', name: 'iPad' }],
+				afterId: [
+					{ mobileId: 'm1', name: 'iPhone', online: false, notify: { agentDone: true, agentQuestion: true, pcFocusQuiet: true, includeContent: false } },
+					{ mobileId: 'm3', name: 'iPad', online: false, notify: { agentDone: true, agentQuestion: true, pcFocusQuiet: true, includeContent: false } },
+				],
 				savedAfterId: ['m1', 'm3'],
 				failed: 'rejected',
 				sessions: [],
 				status: ['iPhone'],
+			});
+		} finally {
+			service.dispose();
+		}
+	});
+
+	test('reads a ledger written before the device fields existed, and drops only badly typed device fields without setting the file aside', async () => {
+		await fs.writeFile(statePath, JSON.stringify({
+			mobiles: [
+				{ mobileId: 'old', name: 'iPhone', pubKey: 'AAAA' },
+				{ mobileId: 'new', name: 'iPad', pubKey: 'AAAA', alias: '仕事用', pairedAt: 1_700_000_000_000, lastSeenAt: 1_700_000_100_000 },
+				{ mobileId: 'bad', name: 'iPhone 2', pubKey: 'AAAA', alias: '  ', pairedAt: 'yesterday', lastSeenAt: -1 },
+			],
+		}));
+		const service = createService(new FakeEncryptionService());
+		try {
+			await service.initialize(false, undefined);
+			const status = await service.getStatus();
+			assert.deepStrictEqual({
+				storeProblem: status.storeProblem,
+				devices: status.pairedMobiles?.map(({ mobileId, name, alias, pairedAt, lastSeenAt }) => ({ mobileId, name, alias, pairedAt, lastSeenAt })),
+				files: (await fs.readdir(userData)).filter(entry => entry.startsWith('paradis-mobile-relay.json')).sort(),
+			}, {
+				storeProblem: undefined,
+				devices: [
+					{ mobileId: 'old', name: 'iPhone', alias: undefined, pairedAt: undefined, lastSeenAt: undefined },
+					{ mobileId: 'new', name: 'iPad', alias: '仕事用', pairedAt: 1_700_000_000_000, lastSeenAt: 1_700_000_100_000 },
+					{ mobileId: 'bad', name: 'iPhone 2', alias: undefined, pairedAt: undefined, lastSeenAt: undefined },
+				],
+				files: ['paradis-mobile-relay.json'],
+			});
+		} finally {
+			service.dispose();
+		}
+	});
+
+	test('renames a phone on this PC only, keeps the name it gave, and clears the alias when left empty', async () => {
+		await fs.writeFile(statePath, JSON.stringify({ mobiles: [{ mobileId: 'm1', name: 'iPhone', pubKey: 'AAAA' }] }));
+		const service = createService(new FakeEncryptionService());
+		try {
+			await service.initialize(false, undefined);
+			await service.renameDevice('m1', '  寝室の iPhone  ');
+			const renamed = paradisParseRelayState(await fs.readFile(statePath, 'utf8'))?.mobiles.map(({ name, alias }) => ({ name, alias }));
+			await service.renameDevice('m1', '   ');
+			const cleared = paradisParseRelayState(await fs.readFile(statePath, 'utf8'))?.mobiles.map(({ name, alias }) => ({ name, alias }));
+			const missing = await service.renameDevice('nope', 'x').then(() => 'renamed', () => 'rejected');
+			assert.deepStrictEqual({ renamed, cleared, missing }, {
+				renamed: [{ name: 'iPhone', alias: '寝室の iPhone' }],
+				cleared: [{ name: 'iPhone', alias: undefined }],
+				missing: 'rejected',
 			});
 		} finally {
 			service.dispose();
