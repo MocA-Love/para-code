@@ -1209,7 +1209,7 @@
 }
 
 /* allow-any-unicode-next-line */
-/* その場の名前の欄。枠のフォーカスの印は paradisFocusRing.css（paradis-focus-ring-within）が描く */
+/* その場の名前の欄。枠のフォーカスの印は paradisFocusRing.css（灰の paradis-focus-subtle-within）が描く */
 .paradis-workspaces-list .paradis-section-rename {
 	flex: 1;
 	min-width: 0;

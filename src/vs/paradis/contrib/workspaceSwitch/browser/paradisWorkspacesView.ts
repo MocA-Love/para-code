@@ -726,8 +726,8 @@ class SectionHeaderRenderer implements ITreeRenderer<ISectionHeaderElement, Fuzz
 		const dot = DOM.append(row, DOM.$('span.paradis-section-dot'));
 		dot.setAttribute('aria-hidden', 'true');
 		const name = DOM.append(row, DOM.$('span.paradis-section-name'));
-		// その場の名前の欄。枠は土台のフォーカスの決まり（paradisFocusRing.css）で描く
-		const renameBox = DOM.append(row, DOM.$('.paradis-section-rename.paradis-focus-ring-within.hidden'));
+		// その場の名前の欄。文字の入力欄なので、枠は土台のフォーカスの決まり（paradisFocusRing.css）の灰の印で描く
+		const renameBox = DOM.append(row, DOM.$('.paradis-section-rename.paradis-focus-subtle-within.hidden'));
 		const input = DOM.append(renameBox, DOM.$<HTMLInputElement>('input'));
 		input.type = 'text';
 		input.spellcheck = false;
