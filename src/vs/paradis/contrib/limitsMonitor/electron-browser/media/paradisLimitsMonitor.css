@@ -532,7 +532,7 @@
 }
 
 .paradis-limits-setup .pls-btn {
-	background: var(--vscode-button-secondaryBackground, #313131);
+	background: var(--vscode-button-secondaryBackground);
 	border: 1px solid var(--vscode-contrastBorder, transparent);
 	border-radius: 3px;
 	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
@@ -564,7 +564,7 @@
 .paradis-limits-panel .plm-relogin-btn:hover,
 .paradis-limits-panel .plm-card-action-btn:hover:not(:disabled),
 .paradis-limits-setup .pls-btn:hover {
-	background: var(--vscode-button-secondaryHoverBackground, #3c3c3c);
+	background: var(--vscode-button-secondaryHoverBackground);
 }
 
 /* 差し込み部品（paradisLimitsPanelContributions.ts）のボタン列。メーターの下の右端に置く。 */
@@ -611,7 +611,7 @@
 /* 次に切れる期限が今日・明日のときの1行。 */
 .paradis-limits-panel .plm-card-action-link.soon,
 .paradis-limits-panel .plm-card-action-note.soon {
-	color: var(--vscode-editorWarning-foreground, #f59e0b);
+	color: var(--vscode-editorWarning-foreground);
 }
 
 /* リセットの期限の一覧。ボタン列の中で、ほかのボタンの後ろの1行を丸ごと使う。 */
@@ -647,7 +647,7 @@
 
 /* 今日・明日に切れるリセット。 */
 .paradis-limits-panel .plm-reset-expiry.soon .plm-reset-expiry-when {
-	color: var(--vscode-editorWarning-foreground, #f59e0b);
+	color: var(--vscode-editorWarning-foreground);
 	font-weight: 600;
 }
 
@@ -814,13 +814,13 @@
 }
 
 .paradis-limits-setup .pls-step.done .pls-step-num {
-	background: #2ea043;
-	color: #ffffff;
+	background: var(--vscode-paradis-success);
+	color: var(--vscode-paradis-primaryForeground);
 }
 
 .paradis-limits-setup .pls-step.now .pls-step-num {
-	background: var(--vscode-button-background, #0e639c);
-	color: var(--vscode-button-foreground, #ffffff);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
 }
 
 .paradis-limits-setup .pls-step-detail {
@@ -875,7 +875,7 @@
 }
 
 .paradis-limits-setup .pls-error {
-	color: var(--vscode-errorForeground, #ef4444);
+	color: var(--vscode-errorForeground);
 	margin-top: 10px;
 	word-break: break-word;
 }
@@ -889,13 +889,13 @@
 }
 
 .paradis-limits-setup .pls-btn.primary {
-	background: var(--vscode-button-background, #0e639c);
-	border-color: var(--vscode-button-background, #0e639c);
-	color: var(--vscode-button-foreground, #ffffff);
+	background: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
 }
 
 .paradis-limits-setup .pls-btn.primary:hover {
-	background: var(--vscode-button-hoverBackground, #1177bb);
+	background: var(--vscode-button-hoverBackground);
 }
 
 .paradis-limits-setup .pls-btn:disabled {

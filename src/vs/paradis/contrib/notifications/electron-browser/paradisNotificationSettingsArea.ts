@@ -16,6 +16,7 @@
 
 import './media/paradisNotificationSettings.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -23,6 +24,7 @@ import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -271,6 +273,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 
@@ -406,6 +409,8 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		const status = opts.status ? $('span.pns-nav-status') : undefined;
 		if (status) {
 			item.insertBefore(status, navItem.chip);
+			// 着信音の名前など、狭いナビの幅で切れる値は全文をホバーで出す
+			this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), status, () => status.textContent ?? ''));
 		}
 		const chip = navItem.chip;
 		this._navItems.set(targetId, { item, chip, status, navItem });

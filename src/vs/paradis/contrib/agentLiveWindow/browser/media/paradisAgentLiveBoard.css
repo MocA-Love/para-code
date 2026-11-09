@@ -94,7 +94,7 @@
 }
 
 .paradis-agent-live-window .paradis-agent-live-card.attention {
-	border-color: var(--vscode-charts-yellow, #cca700);
+	border-color: var(--vscode-charts-yellow);
 }
 
 /* Space colour: the same thin band the tile header carries, here along the card edge. */
@@ -162,7 +162,7 @@
 	font-size: var(--paradis-chip-font-size);
 	line-height: 16px;
 	vertical-align: 1px;
-	color: var(--vscode-charts-red, #ef4444);
+	color: var(--vscode-charts-red);
 	border: var(--vscode-strokeThickness) solid currentColor;
 }
 

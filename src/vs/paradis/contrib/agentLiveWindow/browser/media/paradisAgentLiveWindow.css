@@ -157,7 +157,7 @@
 .paradis-agent-live-icon-button.codicon,
 .paradis-agent-live-mini-button.codicon,
 .paradis-agent-live-drag-handle.codicon {
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .paradis-agent-live-icon-button:hover {
@@ -197,18 +197,18 @@
 	よって「実行中」ドットが見えなくなる。charts.yellow (editorWarningForeground 由来) は全既定
 	テーマで不透明に定義されているため、こちらへ寄せる。フォールバックは念のための保険。 */
 .paradis-agent-live-dot.working {
-	background-color: var(--vscode-charts-yellow, #cca700);
+	background-color: var(--vscode-charts-yellow);
 	animation: paradis-agent-live-breathe 2.4s ease-in-out infinite;
 }
 
 .paradis-agent-live-dot.permission,
 .paradis-agent-live-dot.question {
-	background-color: var(--vscode-charts-red, #ef4444);
+	background-color: var(--vscode-charts-red);
 	animation: paradis-agent-live-pulse 1s ease-in-out infinite;
 }
 
 .paradis-agent-live-dot.review {
-	background-color: var(--vscode-charts-green, #22c55e);
+	background-color: var(--vscode-charts-green);
 }
 
 @keyframes paradis-agent-live-pulse {
@@ -241,10 +241,10 @@
 	white-space: nowrap;
 }
 
-.paradis-agent-live-badge.working { color: var(--vscode-charts-yellow, #cca700); }
+.paradis-agent-live-badge.working { color: var(--vscode-charts-yellow); }
 .paradis-agent-live-badge.permission,
-.paradis-agent-live-badge.question { color: var(--vscode-charts-red, #ef4444); }
-.paradis-agent-live-badge.review { color: var(--vscode-charts-green, #22c55e); }
+.paradis-agent-live-badge.question { color: var(--vscode-charts-red); }
+.paradis-agent-live-badge.review { color: var(--vscode-charts-green); }
 
 /* ---- 絞り込み状況バー ---- */
 
@@ -365,7 +365,7 @@
 }
 
 .paradis-agent-live-tile.attention {
-	box-shadow: 0 0 0 1px var(--vscode-charts-yellow, #cca700), 0 2px 10px rgba(0, 0, 0, 0.18);
+	box-shadow: 0 0 0 1px var(--vscode-charts-yellow), 0 2px 10px rgba(0, 0, 0, 0.18);
 }
 
 .paradis-agent-live-tile.dragging {
@@ -492,12 +492,12 @@
 	border: none;
 	border-radius: 5px;
 	background: transparent;
-	color: var(--vscode-charts-blue, #3794ff);
+	color: var(--vscode-charts-blue);
 	cursor: pointer;
 }
 
 .paradis-agent-live-browser-button.codicon {
-	font-size: 13px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 .paradis-agent-live-browser-button:hover {
@@ -513,7 +513,7 @@
 }
 
 .paradis-agent-live-tile-readonly {
-	color: var(--vscode-charts-yellow, #cca700);
+	color: var(--vscode-charts-yellow);
 }
 
 /* 読み取り専用は通常起きない。空のときは間隔まで含めて消す。 */
