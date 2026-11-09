@@ -90,6 +90,8 @@ When your terminal runs on an SSH host, these tools act on the port forwards of 
 
 - list_port_forwards: every forward with remote_port, local_address, local_port, local_matches_remote, source (user, auto, extension), listening and process. Reading needs no approval.
 - forward_port (remote_port, optional local_port), stop_port_forward (remote_port, one or a list), reforward_port (remote_port, align_local_port to make the local number equal the remote one) and clean_up_port_forwards (mode not_listening or mismatched, dry_run defaults to true) change forwards. not_listening only stops unused forwards of remote ports 32768 or higher; fixed ports below that are stopped only when you name them in stop_port_forward. Each change shows the user a dialog with what changes and how many; nothing changes unless the user approves. If the user declines, do not ask again; ask in the conversation.
+- To change several forwards, make one call with all of them in "ports" (forward_port: [{ remote_port, local_port? }], stop_port_forward: [{ remote_port }], reforward_port: [{ remote_port, align_local_port? }], up to 100 per call). The user answers one dialog for all of them and the result lists each port. Do not call these tools once per port or in parallel: every call is another dialog for the user.
+- To make every forward whose local number differs from the remote one match, use clean_up_port_forwards with mode "mismatched" (dry_run true first to see the list) instead of reforward_port for each port.
 - The local side always listens on 127.0.0.1 and the remote side is always localhost on the SSH host.
 - Changing a local port number breaks browser tabs that use the old address.
 
