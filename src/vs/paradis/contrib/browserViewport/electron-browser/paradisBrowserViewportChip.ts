@@ -17,9 +17,11 @@
 // upstream のコマンド「Device Emulation」を実行したときだけ出す（media/paradisBrowserViewport.css）。
 // 帯を隠しても、端の大きさを変えるつまみ（sash）とその分の右と下の余白は upstream のまま残る。つまみは普段は透明にし、
 // 表示域の外の余白を一段暗く塗る（media/paradisBrowserViewport.css）。帯に出ていた縮小の倍率は chip に出す。
+// その余白を右クリックすると、大きさ・倍率などのメニューを出す（paradisBrowserViewportMarginMenu.ts）。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { getZoomFactor } from '../../../../base/browser/browser.js';
+import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -28,14 +30,18 @@ import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { BrowserViewCommandId } from '../../../../platform/browserView/common/browserView.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget, IContainerLayout, IContainerLayoutOverride } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { BrowserEditorEmulationSupport } from '../../../../workbench/contrib/browserView/electron-browser/features/browserEditorEmulationFeatures.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { ParadisDesignModeFeature } from '../../browserDesignMode/electron-browser/paradisDesignModeFeature.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisViewportSize,
@@ -49,6 +55,7 @@ import {
 } from '../common/paradisBrowserViewport.js';
 import { IParadisViewportDefaultMarks, ParadisBrowserViewportDropdown } from './paradisBrowserViewportDropdown.js';
 import { paradisShowViewportManager } from './paradisBrowserViewportManager.js';
+import { paradisBuildViewportMarginMenu } from './paradisBrowserViewportMarginMenu.js';
 import { IParadisBrowserViewportService } from './paradisBrowserViewportService.js';
 
 const $ = dom.$;
@@ -91,7 +98,8 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IEditorService private readonly editorService: IEditorService,
-		@ICommandService commandService: ICommandService,
+		@IContextMenuService private readonly contextMenuService: IContextMenuService,
+		@ICommandService private readonly commandService: ICommandService,
 		@IHoverService hoverService: IHoverService,
 	) {
 		super(editor);
@@ -154,6 +162,19 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 		this._dropdown.clear();
 		this._highlight.clear();
 		this._render();
+	}
+
+	override onContainerCreated(container: HTMLElement): void {
+		// 余白は wrapper そのもの。中の表示域・つまみ・拡張の横の欄・書き込みの重ね絵の上では出さない
+		const wrapper = container.parentElement;
+		if (wrapper) {
+			this._register(dom.addDisposableListener(wrapper, dom.EventType.CONTEXT_MENU, event => {
+				if (event.target === wrapper && this.editor.model?.device) {
+					dom.EventHelper.stop(event, true);
+					this._showMarginMenu(event);
+				}
+			}));
+		}
 	}
 
 	override beforeContainerLayout(): IContainerLayoutOverride {
@@ -363,6 +384,50 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 			}),
 			onToggleBand: close(() => this._setBandShown(!this._bandShown)),
 			onManage: close(() => this._run(this.instantiationService.invokeFunction(paradisShowViewportManager))),
+		});
+	}
+
+	private _showMarginMenu(event: MouseEvent): void {
+		const model = this.editor.model;
+		if (!model) {
+			return;
+		}
+		const emulation = this.editor.getContribution(BrowserEditorEmulationSupport);
+		const markup = this.editor.getContribution(ParadisDesignModeFeature);
+		const current = this.viewportService.describe(model);
+		const actions = paradisBuildViewportMarginMenu({
+			current,
+			sizes: this.viewportService.getSizes(),
+			scale: emulation?.scale,
+			effectiveScale: this._emulationScale,
+			pageReady: !!model.url && !model.error,
+			canMarkup: markup !== undefined,
+		}, {
+			onSelectSize: size => this._applyUser({ kind: 'size', size }),
+			onSelectFit: () => this._applyUser({ kind: 'fit' }),
+			onSetScale: scale => emulation?.setScale(scale),
+			onSwap: () => {
+				// 名前は外す（名前を残すと、控えに元の向きの名前が残り、再読み込みで元の向きに戻る）
+				const device = model.device;
+				if (current.width && current.height) {
+					this._applyUser({
+						kind: 'size', size: {
+							width: current.height,
+							height: current.width,
+							...(device?.mobile ? { mobile: true } : {}),
+							...(device?.deviceScaleFactor ? { deviceScaleFactor: device.deviceScaleFactor } : {}),
+							...(device?.userAgent ? { userAgent: device.userAgent } : {}),
+						}
+					});
+				}
+			},
+			onMarkupScreenshot: () => this._run(markup?.openMarkup() ?? Promise.resolve()),
+			onReload: () => this._run(this.commandService.executeCommand(BrowserViewCommandId.Reload, this.editor)),
+			onToggleDevTools: () => this._run(this.commandService.executeCommand(BrowserViewCommandId.ToggleDevTools, this.editor)),
+		});
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => new StandardMouseEvent(dom.getWindow(this._element), event),
+			getActions: () => actions,
 		});
 	}
 

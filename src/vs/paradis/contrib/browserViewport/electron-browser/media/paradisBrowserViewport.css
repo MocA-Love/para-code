@@ -40,10 +40,17 @@
 	color: var(--vscode-sash-hoverBorder);
 }
 
-/* 表示域の外の余白は、エディタの背景より一段暗く塗る。wrapper には背景が無く、ウィンドウ透過中は後ろが透けて
-	表示域の境目が分からなくなるので、透過中も塗る。つまみが有効（= 大きさを決めている）間だけ。 */
+/* 表示域の外の余白は、エディタの背景より一段暗く塗る（wrapper には背景が無く、そのままだと表示域の境目が
+	分からない）。つまみが有効（= 大きさを決めている）間だけ。 */
 .monaco-workbench .browser-root .browser-container-wrapper:has(> .browser-container > .monaco-sash:not(.disabled)) {
 	background-color: color-mix(in srgb, var(--vscode-editor-background) 82%, #000000);
+}
+
+/* ウィンドウの透過中は、エディタの地を塗らずに黒だけを薄く重ねる。地は `.part.editor` の半透明の 1 枚
+	（paradisWindowTransparency.css）が持つので、ここで不透明の地を塗ると余白だけ透けなくなり、半透明の地を
+	もう 1 枚塗ると二重になって濃く見える。18% の黒を重ねた色は、透過していないときの上の色と同じになる。 */
+.monaco-workbench.paradis-transparent .browser-root .browser-container-wrapper:has(> .browser-container > .monaco-sash:not(.disabled)) {
+	background-color: color-mix(in srgb, #000000 18%, transparent);
 }
 
 /* 1. アドレスバーの中の chip。形はプロファイルの chip・倍率と同じ（高さ 20px、角 small、11px）。
