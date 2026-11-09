@@ -18,8 +18,10 @@
 
 import './media/paradisCcusage.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -73,6 +75,12 @@ type ParadisCcusagePresetKey = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' |
 /** チャートの表示単位。7日未満の期間では daily に強制される(effectiveGranularity 参照)。 */
 type ParadisCcusageGranularity = 'daily' | 'weekly';
 
+/** `YYYY-MM-DD` を「11/9」の形にする。 */
+function formatMonthDay(value: string): string {
+	const [, month, day] = value.split('-');
+	return `${Number(month)}/${Number(day)}`;
+}
+
 /** 粒度のプルダウンの選択肢。 */
 const GRANULARITY_OPTIONS = [
 	{ value: 'daily', label: localize('paradis.ccusage.granularity.daily', "日別") },
@@ -120,6 +128,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	private updatedLabel: HTMLElement | undefined;
 	private readonly periodSeg: ParadisSegmented<ParadisCcusagePresetKey>;
 	private readonly otherPeriodSelect: ParadisSelect;
+	/** 適用したカスタムの期間（押すと日付の欄を開き直す）。 */
+	private readonly customRangeButton: HTMLButtonElement;
 	private readonly granularitySelect: ParadisSelect;
 	private readonly metricSelect: ParadisSelect;
 	private readonly agentSelect: ParadisSelect;
@@ -219,6 +229,13 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 				this.updateFilterButtons();
 			}
 		}));
+		// カスタムの期間を適用した後は、その範囲（「11/1〜11/9」）を押すと日付の欄を開き直せる。
+		// プルダウンは同じ「カスタム…」を選び直しても知らせないので、開き直す入口はここ
+		this.customRangeButton = dom.append(toolbar, $('button.paradis-ccusage-custom-range-button')) as HTMLButtonElement;
+		this.customRangeButton.classList.add(...paradisButtonClasses('secondary', true));
+		this.customRangeButton.type = 'button';
+		this.customRangeButton.hidden = true;
+		this._register(dom.addDisposableListener(this.customRangeButton, dom.EventType.CLICK, () => this.openCustomRangePanel()));
 
 		this.granularitySelect = this._register(new ParadisSelect(toolbar, contextViewService, configurationService, GRANULARITY_OPTIONS, this.granularity, { ariaLabel: localize('paradis.ccusage.granularity.aria', "粒度") }));
 		this._register(this.granularitySelect.onDidChange(value => this.setGranularity(value === 'weekly' ? 'weekly' : 'daily')));
@@ -251,6 +268,17 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		applyButton.classList.add(...paradisButtonClasses('secondary', true));
 		applyButton.textContent = localize('paradis.ccusage.customRange.apply', "適用");
 		this._register(dom.addDisposableListener(applyButton, dom.EventType.CLICK, () => this.applyCustomRange()));
+		// 適用せずに閉じる（Esc でも）。期間は開く前のまま
+		const closeButton = dom.append(this.customRangeRow, $('button.paradis-ccusage-custom-range-close')) as HTMLButtonElement;
+		closeButton.classList.add(...paradisButtonClasses('ghost', true));
+		closeButton.textContent = localize('paradis.ccusage.customRange.close', "閉じる");
+		this._register(dom.addDisposableListener(closeButton, dom.EventType.CLICK, () => this.closeCustomRangePanel()));
+		this._register(dom.addDisposableListener(this.customRangeRow, dom.EventType.KEY_DOWN, event => {
+			if (new StandardKeyboardEvent(event).equals(KeyCode.Escape)) {
+				dom.EventHelper.stop(event, true);
+				this.closeCustomRangePanel();
+			}
+		}));
 
 		this.body = dom.append(this.element, $('.paradis-ccusage-body'));
 		this.tooltip = dom.append(this.element, $('.paradis-ccusage-tooltip'));
@@ -438,6 +466,20 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		this.updateFilterButtons();
 	}
 
+	/** 日付の欄を適用せずに閉じ、フォーカスを開いた所（範囲のボタンかプルダウン）へ戻す。 */
+	private closeCustomRangePanel(): void {
+		if (!this.customRangeRow?.classList.contains('open')) {
+			return;
+		}
+		this.customRangeRow.classList.remove('open');
+		this.updateFilterButtons();
+		if (this.customRangeButton && !this.customRangeButton.hidden) {
+			this.customRangeButton.focus();
+		} else {
+			this.otherPeriodSelect.focus();
+		}
+	}
+
 	private applyCustomRange(): void {
 		if (!this.customFromInput?.value || !this.customToInput?.value) {
 			return;
@@ -507,6 +549,12 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		const inSeg = !this.customRange && !customOpen && (this.presetKey === 'today' || this.presetKey === '7d' || this.presetKey === '30d' || this.presetKey === '90d');
 		this.periodSeg.value = inSeg ? this.presetKey : undefined;
 		this.otherPeriodSelect.value = this.customRange || customOpen ? 'custom' : (inSeg ? '' : this.presetKey);
+		this.customRangeButton.hidden = !this.customRange;
+		if (this.customRange) {
+			const label = localize('paradis.ccusage.customRange.label', "{0}〜{1}", formatMonthDay(this.customRange.from), formatMonthDay(this.customRange.to));
+			this.customRangeButton.textContent = label;
+			this.customRangeButton.setAttribute('aria-label', localize('paradis.ccusage.customRange.change', "カスタムの期間 {0} を変える", label));
+		}
 
 		const range = this.currentRange();
 		const rangeDays = spanDaysInclusive(range.from, range.to);

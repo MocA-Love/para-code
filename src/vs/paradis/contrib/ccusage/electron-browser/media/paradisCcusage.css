@@ -37,6 +37,12 @@
 	max-width: 220px;
 }
 
+/* The applied custom range (a button that reopens the date row) is shown only while a custom range is chosen; the
+	kit button's display would otherwise beat [hidden]. */
+.monaco-workbench .paradis-ccusage-toolbar > button.paradis-button[hidden] {
+	display: none;
+}
+
 
 
 

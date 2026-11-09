@@ -11,6 +11,7 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
@@ -517,5 +518,61 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 			calls: [1, 1, 2, 3, 4, 5],
 			delays: [10, 20, 40, 80, 80].map(minutes => minutes * 60 * 1000),
 		});
+	});
+});
+
+suite('ParadisCcusage custom range', () => {
+	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('the applied range is a button that reopens the date row; the row closes without applying by its button or Escape', () => {
+		const harness = createHarness();
+		harness.instantiationService.stub(IContextViewService, { showContextView: () => ({ close: () => { } }), hideContextView: () => { }, layout: () => { } });
+		const parent = document.createElement('div');
+		document.body.appendChild(parent);
+		try {
+			const section = disposables.add(createSection(harness, parent));
+			const element = section.element;
+			const otherPeriod = [...element.querySelectorAll<HTMLSelectElement>('.paradis-ccusage-toolbar select')][0];
+			const row = element.querySelector<HTMLElement>('.paradis-ccusage-custom-range')!;
+			const rangeButton = element.querySelector<HTMLButtonElement>('.paradis-ccusage-custom-range-button')!;
+			const [from, to] = [...row.querySelectorAll<HTMLInputElement>('input')];
+			const choose = (value: string) => {
+				otherPeriod.selectedIndex = [...otherPeriod.options].findIndex(option => option.value === value);
+				otherPeriod.dispatchEvent(new Event('change'));
+			};
+			const state = () => ({ open: row.classList.contains('open'), select: otherPeriod.value, range: rangeButton.hidden ? undefined : rangeButton.textContent });
+
+			choose('custom');
+			const opened = state();
+			row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+			const escaped = state();
+
+			choose('custom');
+			const today = new Date();
+			const day = (offset: number) => {
+				const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() - offset);
+				return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+			};
+			from.value = day(8);
+			to.value = day(0);
+			row.querySelector<HTMLButtonElement>('button:not(.paradis-ccusage-custom-range-close)')!.click();
+			const applied = state();
+			const label = (value: string) => `${Number(value.split('-')[1])}/${Number(value.split('-')[2])}`;
+
+			rangeButton.click();
+			const reopened = state();
+			row.querySelector<HTMLButtonElement>('.paradis-ccusage-custom-range-close')!.click();
+			const closed = state();
+
+			assert.deepStrictEqual({ opened, escaped, applied, reopened, closed }, {
+				opened: { open: true, select: 'custom', range: undefined },
+				escaped: { open: false, select: '', range: undefined },
+				applied: { open: false, select: 'custom', range: `${label(day(8))}〜${label(day(0))}` },
+				reopened: { open: true, select: 'custom', range: `${label(day(8))}〜${label(day(0))}` },
+				closed: { open: false, select: 'custom', range: `${label(day(8))}〜${label(day(0))}` },
+			});
+		} finally {
+			parent.remove();
+		}
 	});
 });
