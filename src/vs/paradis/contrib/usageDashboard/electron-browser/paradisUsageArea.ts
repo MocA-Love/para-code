@@ -20,12 +20,14 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisSpaceUsageSection } from '../../agentActivity/electron-browser/paradisSpaceUsageSection.js';
 import { ParadisWorkStatsSection } from '../../agentActivity/electron-browser/paradisWorkStatsSection.js';
 import { ParadisCcusageSection } from '../../ccusage/electron-browser/paradisCcusageSection.js';
 import { ParadisGithubMetricsSection } from '../../githubMetrics/electron-browser/paradisGithubMetricsSection.js';
 import { ParadisRtkSection } from '../../rtk/electron-browser/paradisRtkSection.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
 import { PARADIS_SETTINGS_TITLEBAR_SECTION_ID } from '../../paradisSettings/electron-browser/paradisSettingsDialog.js';
@@ -186,6 +188,7 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 		private readonly host: IParadisHubHost,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 
@@ -287,30 +290,17 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 			}
 
 			if (spec.choices) {
-				const select = dom.append(row, $('select.pud-select')) as HTMLSelectElement;
-				for (const choice of spec.choices) {
-					const option = dom.append(select, $('option')) as HTMLOptionElement;
-					option.value = String(choice.value);
-					option.textContent = choice.label;
-				}
-				// 用意した刻みに載らない値が既に入っていることがあるので、そのときは
-				// 実際の値を選択肢へ足して選んでおく（開いただけで設定が変わったように見せない）
-				let extraOption: HTMLOptionElement | undefined;
+				const choices = spec.choices.map(choice => ({ value: String(choice.value), label: choice.label }));
+				const select = store.add(new ParadisSelect(row, this.contextViewService, this.configurationService, choices, undefined, { ariaLabel: spec.label, className: 'pud-select' }));
+				// 用意した刻みに載らない値が既に入っていることがある。そのときはプルダウンが
+				// 実際の値を選択肢へ足して選ぶ（開いただけで設定が変わったように見せない）
 				const sync = () => {
-					const current = String(this.configurationService.getValue(spec.key) ?? '');
-					extraOption?.remove();
-					extraOption = undefined;
-					if (!spec.choices?.some(choice => String(choice.value) === current)) {
-						extraOption = dom.append(select, $('option')) as HTMLOptionElement;
-						extraOption.value = current;
-						extraOption.textContent = current;
-					}
-					select.value = current;
+					select.setOptions(choices, String(this.configurationService.getValue(spec.key) ?? ''));
 				};
 				sync();
 				this._settingRefreshers.push(sync);
-				store.add(dom.addDisposableListener(select, 'change', () => {
-					void this.configurationService.updateValue(spec.key, Number(select.value), ConfigurationTarget.USER);
+				store.add(select.onDidChange(value => {
+					void this.configurationService.updateValue(spec.key, Number(value), ConfigurationTarget.USER);
 				}));
 			} else if (spec.list) {
 				const input = dom.append(row, $('input.pud-input')) as HTMLInputElement;

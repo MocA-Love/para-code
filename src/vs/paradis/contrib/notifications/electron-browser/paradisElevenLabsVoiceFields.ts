@@ -15,6 +15,8 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
@@ -28,6 +30,7 @@ import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js
 import { IParadisAivisSettings, IParadisNotificationsSettingsService, ParadisApiKeyField } from '../browser/paradisNotificationsSettings.js';
 import { paradisElevenLabsDictionaryCache, paradisElevenLabsModelCache, paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
 import { ParadisElevenLabsVoiceTuningFields } from './paradisElevenLabsVoiceTuningFields.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 
 const $ = dom.$;
 
@@ -92,6 +95,8 @@ export class ParadisElevenLabsVoiceFields {
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 		@ILogService private readonly logService: ILogService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		this._tuning = new ParadisElevenLabsVoiceTuningFields(isDisposed, sharedProcessService, settingsService);
 	}
@@ -257,13 +262,13 @@ export class ParadisElevenLabsVoiceFields {
 		dom.append(main, $('.sr-label')).textContent = STR_MODEL_LABEL;
 		dom.append(main, $('.sr-desc')).textContent = STR_MODEL_DESC;
 		const errorEl = dom.append(main, $('.pns-uuid-hint'));
-		const select = dom.append(field, $('select')) as HTMLSelectElement;
-		select.style.width = '230px';
 		const current = settings.elevenLabsModelId || PARADIS_ELEVENLABS_DEFAULT_MODEL_ID;
+		const select = disposables.add(new ParadisSelect(field, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_MODEL_LABEL }));
+		select.element.style.width = '230px';
 		this._populateModels(select, [], current);
-		select.disabled = !apiKey;
-		disposables.add(dom.addDisposableListener(select, 'change', () => {
-			this.settingsService.setAivisSettings({ elevenLabsModelId: select.value });
+		select.enabled = !!apiKey;
+		disposables.add(select.onDidChange(value => {
+			this.settingsService.setAivisSettings({ elevenLabsModelId: value });
 		}));
 		if (!apiKey) {
 			return;
@@ -275,7 +280,7 @@ export class ParadisElevenLabsVoiceFields {
 		}
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisElevenLabsModel[]>('listElevenLabsModels', [apiKey]).then(models => {
 			paradisElevenLabsModelCache.set(apiKey, models);
-			if (!this.isDisposed() && select.isConnected) {
+			if (!this.isDisposed() && select.element.isConnected) {
 				this._populateModels(select, models, current);
 			}
 		}, error => {
@@ -287,19 +292,9 @@ export class ParadisElevenLabsVoiceFields {
 		});
 	}
 
-	/** 一覧に無いモデル（保存済みの値）も選択肢に残し、選び直さない限り変わらないようにする。 */
-	private _populateModels(select: HTMLSelectElement, models: readonly IParadisElevenLabsModel[], current: string): void {
-		dom.clearNode(select);
-		const options = [...models];
-		if (!options.some(model => model.modelId === current)) {
-			options.unshift({ modelId: current, name: current });
-		}
-		for (const model of options) {
-			const option = dom.append(select, $('option')) as HTMLOptionElement;
-			option.value = model.modelId;
-			option.textContent = model.name;
-		}
-		select.value = current;
+	/** 一覧に無いモデル（保存済みの値）は、プルダウンが選択肢に足して選ぶ。選び直さない限り変わらない。 */
+	private _populateModels(select: ParadisSelect, models: readonly IParadisElevenLabsModel[], current: string): void {
+		select.setOptions(models.map(model => ({ value: model.modelId, label: model.name })), current);
 	}
 
 	// --- 発音辞書 --------------------------------------------------------------------------------
@@ -309,31 +304,24 @@ export class ParadisElevenLabsVoiceFields {
 		const field = dom.append(parent, $('.setting-row'));
 		const main = dom.append(field, $('.sr-main'));
 		dom.append(main, $('.sr-label')).textContent = STR_DICTIONARY_LABEL;
-		const select = dom.append(field, $('select')) as HTMLSelectElement;
-		select.style.width = '230px';
-		select.disabled = !apiKey;
+		const select = disposables.add(new ParadisSelect(field, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_DICTIONARY_LABEL }));
+		select.element.style.width = '230px';
+		select.enabled = !!apiKey;
 		const populate = (list: readonly IParadisElevenLabsDictionaryListItem[], loaded: boolean) => {
-			dom.clearNode(select);
-			const none = dom.append(select, $('option')) as HTMLOptionElement;
-			none.value = '';
-			none.textContent = STR_DICTIONARY_NONE;
-			for (const dict of list) {
-				const option = dom.append(select, $('option')) as HTMLOptionElement;
-				option.value = dict.id;
-				option.textContent = dict.ruleCount === null ? dict.name : `${dict.name} (${dict.ruleCount})`;
-			}
+			const options = [
+				{ value: '', label: STR_DICTIONARY_NONE },
+				...list.map(dict => ({ value: dict.id, label: dict.ruleCount === null ? dict.name : `${dict.name} (${dict.ruleCount})` })),
+			];
 			// 一覧が読めない間は、保存済みの辞書を選択肢に残して勝手に外れないようにする。
 			// 読めた一覧に無い（アーカイブ済み等）なら「辞書なし」と出す。読み上げも辞書なしになる。
 			if (!loaded && settings.elevenLabsDictionaryId && !list.some(dict => dict.id === settings.elevenLabsDictionaryId)) {
-				const option = dom.append(select, $('option')) as HTMLOptionElement;
-				option.value = settings.elevenLabsDictionaryId;
-				option.textContent = settings.elevenLabsDictionaryId;
+				options.push({ value: settings.elevenLabsDictionaryId, label: settings.elevenLabsDictionaryId });
 			}
-			select.value = [...select.options].some(option => option.value === settings.elevenLabsDictionaryId) ? settings.elevenLabsDictionaryId : '';
+			select.setOptions(options, options.some(option => option.value === settings.elevenLabsDictionaryId) ? settings.elevenLabsDictionaryId : '');
 		};
 		populate([], false);
-		disposables.add(dom.addDisposableListener(select, 'change', () => {
-			this.settingsService.setAivisSettings({ elevenLabsDictionaryId: select.value });
+		disposables.add(select.onDidChange(value => {
+			this.settingsService.setAivisSettings({ elevenLabsDictionaryId: value });
 		}));
 		if (!apiKey) {
 			return;
@@ -345,7 +333,7 @@ export class ParadisElevenLabsVoiceFields {
 		}
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisElevenLabsDictionaryListItem[]>('listElevenLabsDictionaries', [apiKey]).then(list => {
 			paradisElevenLabsDictionaryCache.set(apiKey, list);
-			if (!this.isDisposed() && select.isConnected) {
+			if (!this.isDisposed() && select.element.isConnected) {
 				populate(list, true);
 			}
 		}, error => {

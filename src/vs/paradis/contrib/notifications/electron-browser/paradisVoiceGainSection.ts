@@ -17,6 +17,8 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { Schemas } from '../../../../base/common/network.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -40,6 +42,7 @@ import {
 import { paradisElevenLabsModelCache, paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
 import { paradisFormatGainDb } from './paradisElevenLabsVoiceTuningFields.js';
 import { paradisForgetVoiceGains, paradisLoadVoiceGains } from './paradisVoiceGainsCache.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import './media/paradisVoiceTuning.css';
 
 const $ = dom.$;
@@ -144,6 +147,8 @@ export class ParadisVoiceGainSection extends Disposable {
 		@IDialogService private readonly dialogService: IDialogService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this._render();
@@ -273,16 +278,11 @@ export class ParadisVoiceGainSection extends Disposable {
 		importBtn.textContent = STR_IMPORT;
 		importBtn.disabled = this._busy;
 		dom.append(toolbar, $('span.sr-desc')).textContent = STR_IMPORT_MODE;
-		const mode = dom.append(toolbar, $('select')) as HTMLSelectElement;
-		mode.setAttribute('aria-label', STR_IMPORT_MODE);
-		for (const [value, label] of [['keep', STR_IMPORT_KEEP], ['overwrite', STR_IMPORT_OVERWRITE]] as const) {
-			const option = dom.append(mode, $('option')) as HTMLOptionElement;
-			option.value = value;
-			option.textContent = label;
-		}
-		mode.value = this._overwrite ? 'overwrite' : 'keep';
+		const mode = this._renderDisposables.add(new ParadisSelect(toolbar, this.contextViewService, this.configurationService,
+			[{ value: 'keep', label: STR_IMPORT_KEEP }, { value: 'overwrite', label: STR_IMPORT_OVERWRITE }],
+			this._overwrite ? 'overwrite' : 'keep', { ariaLabel: STR_IMPORT_MODE }));
 		this._renderReload(toolbar);
-		this._renderDisposables.add(dom.addDisposableListener(mode, 'change', () => { this._overwrite = mode.value === 'overwrite'; }));
+		this._renderDisposables.add(mode.onDidChange(value => { this._overwrite = value === 'overwrite'; }));
 		this._renderDisposables.add(dom.addDisposableListener(exportBtn, 'click', () => void this._export()));
 		this._renderDisposables.add(dom.addDisposableListener(importBtn, 'click', () => void this._import()));
 	}

@@ -13,6 +13,7 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
@@ -113,6 +114,8 @@ async function flush(): Promise<void> {
 	}
 }
 
+const nullConfigurationService = { getValue: () => undefined } as unknown as IConfigurationService;
+
 suite('Paradis voice section API key fields', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -126,9 +129,9 @@ suite('Paradis voice section API key fields', () => {
 		const sharedProcess = { getChannel: () => channel } as unknown as ISharedProcessService;
 		const logService: ILogService = new NullLogService();
 		const instantiation = {
-			createInstance: (ctor: new (...args: unknown[]) => unknown, ...args: unknown[]) => new ctor(...args, sharedProcess, settings, logService),
+			createInstance: (ctor: new (...args: unknown[]) => unknown, ...args: unknown[]) => new ctor(...args, sharedProcess, settings, logService, Object.create(null), nullConfigurationService),
 		} as unknown as IInstantiationService;
-		store.add(new ParadisAivisVoiceSection(container, sharedProcess, settings, logService, instantiation));
+		store.add(new ParadisAivisVoiceSection(container, sharedProcess, settings, logService, instantiation, Object.create(null), nullConfigurationService));
 		return container;
 	}
 

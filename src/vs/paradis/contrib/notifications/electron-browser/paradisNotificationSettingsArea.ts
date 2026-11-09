@@ -21,6 +21,7 @@ import { Disposable, DisposableStore, MutableDisposable } from '../../../../base
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -45,6 +46,7 @@ import { ParadisNotificationSoundPlayer } from './paradisNotificationSoundPlayer
 import { openParadisYouTubeImportDialog } from './paradisYouTubeImportDialog.js';
 import { openParadisMyinstantsImportDialog } from './paradisMyinstantsImportDialog.js';
 import { PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING } from '../../notificationInbox/common/paradisNotificationInbox.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost } from '../../paradisHub/electron-browser/paradisHub.js';
 import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem, ParadisHubScrollSpy } from '../../paradisHub/electron-browser/paradisHubNav.js';
@@ -268,6 +270,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 
@@ -793,17 +796,13 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		const volumeRow = dom.append(container, $('.setting-row'));
 		const volumeMain = dom.append(volumeRow, $('.sr-main'));
 		dom.append(volumeMain, $('.sr-label')).textContent = STR_VOLUME_LABEL;
-		const volumeSelect = dom.append(volumeRow, $('select')) as HTMLSelectElement;
-		volumeSelect.style.width = '170px';
-		volumeSelect.style.flexShrink = '0';
-		for (const level of VOLUME_LEVELS) {
-			const option = dom.append(volumeSelect, $('option')) as HTMLOptionElement;
-			option.value = String(level.value);
-			option.textContent = `${level.label} (${level.value}%)`;
-		}
-		volumeSelect.value = String(volume);
-		this._renderDisposables.add(dom.addDisposableListener(volumeSelect, 'change', () => {
-			this.settingsService.setVolume(Number(volumeSelect.value));
+		const volumeOptions = VOLUME_LEVELS.map(level => ({ value: String(level.value), label: `${level.label} (${level.value}%)` }));
+		// 刻みに載らない値（settings.json で直接書いたもの）は、プルダウンが選択肢に足して選ぶ
+		const volumeSelect = this._renderDisposables.add(new ParadisSelect(volumeRow, this.contextViewService, this.configurationService, volumeOptions, String(volume), { ariaLabel: STR_VOLUME_LABEL }));
+		volumeSelect.element.style.width = '170px';
+		volumeSelect.element.style.flexShrink = '0';
+		this._renderDisposables.add(volumeSelect.onDidChange(value => {
+			this.settingsService.setVolume(Number(value));
 		}));
 
 		// --- 着信音リストのヘッダー（取込アクション） ---

@@ -16,6 +16,8 @@ import { Disposable, DisposableStore, MutableDisposable } from '../../../../base
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -32,6 +34,7 @@ import { IParadisNotificationsSettingsService } from '../browser/paradisNotifica
 import { getCachedAivisDictionaryList, invalidateAivisDictionaryListCache, setCachedAivisDictionaryList } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
 
@@ -76,6 +79,8 @@ export class ParadisAivisDictionarySection extends Disposable {
 		@IDialogService private readonly dialogService: IDialogService,
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@ILogService private readonly logService: ILogService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -297,7 +302,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		const dialog = new ParadisDictionaryEditorDialog(this.layoutService, this.sharedProcessService, uuid, apiKey, () => {
 			invalidateAivisDictionaryListCache(apiKey);
 			this._render();
-		});
+		}, this.contextViewService, this.configurationService);
 		this._nestedDialog.value = dialog;
 	}
 }
@@ -509,6 +514,8 @@ export class ParadisDictionaryEditorDialog extends Disposable {
 		private readonly uuid: string,
 		private readonly apiKey: string,
 		private readonly onSaved: () => void,
+		private readonly contextViewService: IContextViewService,
+		private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -710,14 +717,9 @@ export class ParadisDictionaryEditorDialog extends Disposable {
 		this._rowDisposables.add(dom.addDisposableListener(priorityInput, 'input', () => { word.priority = Number(priorityInput.value) || 0; }));
 
 		const typeCell = dom.append(row, $('td'));
-		const typeSelect = dom.append(typeCell, $('select')) as HTMLSelectElement;
-		for (const type of PARADIS_AIVIS_WORD_TYPES) {
-			const option = dom.append(typeSelect, $('option')) as HTMLOptionElement;
-			option.value = type.value;
-			option.textContent = type.label;
-		}
-		typeSelect.value = word.wordType;
-		this._rowDisposables.add(dom.addDisposableListener(typeSelect, 'change', () => { word.wordType = typeSelect.value as ParadisAivisWordType; }));
+		const typeSelect = this._rowDisposables.add(new ParadisSelect(typeCell, this.contextViewService, this.configurationService,
+			PARADIS_AIVIS_WORD_TYPES.map(type => ({ value: type.value, label: type.label })), word.wordType, { ariaLabel: STR_COL_TYPE }));
+		this._rowDisposables.add(typeSelect.onDidChange(value => { word.wordType = value as ParadisAivisWordType; }));
 
 		const removeCell = dom.append(row, $('td'));
 		const removeBtn = dom.append(removeCell, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;

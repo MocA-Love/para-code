@@ -21,6 +21,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -39,7 +40,7 @@ import {
 } from '../common/paradisWorktreeCreate.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
-import { paradisSyncSelectOptions } from '../../agentModelCatalog/browser/paradisSyncSelectOptions.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
 import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
@@ -164,6 +165,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		accessor.get(IStorageService),
 		accessor.get(IParadisWorktreeCreateQueueService),
 		accessor.get(IParadisAgentModelCatalogService),
+		accessor.get(IContextViewService),
 		preselectedRepositoryId,
 		prefill,
 	);
@@ -182,9 +184,9 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _agentSeg!: HTMLElement;
 	private _agentOptionsEl!: HTMLElement;
 	private _modelGroup!: HTMLElement;
-	private _modelSelect!: HTMLSelectElement;
+	private _modelSelect!: ParadisSelect;
 	private _effortGroup!: HTMLElement;
-	private _effortSelect!: HTMLSelectElement;
+	private _effortSelect!: ParadisSelect;
 	private _permissionRow!: HTMLElement;
 	private _permissionSeg!: HTMLElement;
 	private _permissionHint!: HTMLElement;
@@ -192,8 +194,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _setupRow!: HTMLElement;
 	private _setupCheckbox!: ParadisSwitch;
 	private _setupScriptEl!: HTMLElement;
-	private _repoSelect!: HTMLSelectElement;
-	private _branchSelect!: HTMLSelectElement;
+	private _repoSelect!: ParadisSelect;
+	private _branchSelect!: ParadisSelect;
 	private _pathPreview!: HTMLElement;
 	private _errorEl!: HTMLElement;
 	private _createBtn!: HTMLButtonElement;
@@ -228,6 +230,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		private readonly storageService: IStorageService,
 		private readonly createQueueService: IParadisWorktreeCreateQueueService,
 		private readonly modelCatalogService: IParadisAgentModelCatalogService,
+		private readonly contextViewService: IContextViewService,
 		preselectedRepositoryId: string | undefined,
 		prefill: IParadisHeadlessWorktreeRequest | undefined,
 	) {
@@ -395,10 +398,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const optionRow = dom.append(this._agentOptionsEl, $('.pcw-d-agent-sub'));
 		this._modelGroup = dom.append(optionRow, $('label.pcw-d-sub-field'));
 		dom.append(this._modelGroup, $('span.pcw-d-sub-label')).textContent = STR_MODEL_LABEL;
-		this._modelSelect = dom.append(this._modelGroup, $('select.pcw-d-sub-select')) as HTMLSelectElement;
+		this._modelSelect = this._register(new ParadisSelect(this._modelGroup, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_MODEL_LABEL, className: 'pcw-d-sub-select' }));
 		this._effortGroup = dom.append(optionRow, $('label.pcw-d-sub-field'));
 		dom.append(this._effortGroup, $('span.pcw-d-sub-label')).textContent = STR_EFFORT_LABEL;
-		this._effortSelect = dom.append(this._effortGroup, $('select.pcw-d-sub-select')) as HTMLSelectElement;
+		this._effortSelect = this._register(new ParadisSelect(this._effortGroup, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_EFFORT_LABEL, className: 'pcw-d-sub-select' }));
 		this._permissionRow = dom.append(this._agentOptionsEl, $('.pcw-d-perm-line'));
 		this._permissionSeg = dom.append(this._permissionRow, $('.pcw-seg'));
 		this._permissionSeg.setAttribute('role', 'radiogroup');
@@ -414,20 +417,16 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 
 		const repoRow = dom.append(advGrid, $('label.pcw-d-adv-row'));
 		dom.append(repoRow, $('span.pcw-d-adv-label')).textContent = STR_BASE_REPO_LABEL;
-		this._repoSelect = dom.append(repoRow, $('select.pcw-d-adv-select')) as HTMLSelectElement;
-		for (const repository of this.switchService.repositories) {
-			const option = dom.append(this._repoSelect, $('option')) as HTMLOptionElement;
-			option.value = repository.id;
-			option.textContent = repository.name;
-		}
+		// 一覧に無いリポジトリ（閉じたものなど）は選ばず、先頭にする
 		const initialRepoId = preselectedRepositoryId ?? this.switchService.activeRepository?.id;
-		if (initialRepoId && this.switchService.repositories.some(repository => repository.id === initialRepoId)) {
-			this._repoSelect.value = initialRepoId;
-		}
+		const repositoryOptions = this.switchService.repositories.map(repository => ({ value: repository.id, label: repository.name }));
+		this._repoSelect = this._register(new ParadisSelect(repoRow, this.contextViewService, this.configurationService,
+			repositoryOptions,
+			repositoryOptions.some(option => option.value === initialRepoId) ? initialRepoId : undefined, { ariaLabel: STR_BASE_REPO_LABEL, className: 'pcw-d-adv-select' }));
 
 		const branchRow = dom.append(advGrid, $('label.pcw-d-adv-row'));
 		dom.append(branchRow, $('span.pcw-d-adv-label')).textContent = STR_BASE_BRANCH_LABEL;
-		this._branchSelect = dom.append(branchRow, $('select.pcw-d-adv-select.pcw-branch-select')) as HTMLSelectElement;
+		this._branchSelect = this._register(new ParadisSelect(branchRow, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_BASE_BRANCH_LABEL, className: 'pcw-d-adv-select pcw-branch-select' }));
 
 		// setup スクリプトの実行トグル（リポジトリに setupScript がある場合のみ表示）
 		this._setupRow = dom.append(advGrid, $('.pcw-d-adv-row.pcw-setup-row'));
@@ -453,10 +452,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		dom.append(this._createBtn, $('span.pcw-d-kbd')).textContent = STR_CREATE_KBD;
 		this._register(dom.addDisposableListener(this._createBtn, 'click', () => this._doCreate()));
 
-		this._register(dom.addDisposableListener(this._repoSelect, 'change', () => this._onRepositoryChanged()));
+		this._register(this._repoSelect.onDidChange(() => this._onRepositoryChanged()));
 		this._register(dom.addDisposableListener(this._branchInput, 'input', () => this._updatePathPreview()));
-		this._register(dom.addDisposableListener(this._modelSelect, 'change', () => this._onModelChanged()));
-		this._register(dom.addDisposableListener(this._effortSelect, 'change', () => this._updateCommandPreview()));
+		this._register(this._modelSelect.onDidChange(() => this._onModelChanged()));
+		this._register(this._effortSelect.onDidChange(() => this._updateCommandPreview()));
 		this._register(dom.addDisposableListener(this._promptInput, 'input', () => this._updateCommandPreview()));
 		this._register(this._setupCheckbox.onDidChange(() => {
 			this._setupRow.classList.toggle('off', !this._setupCheckbox.checked);
@@ -539,7 +538,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	/** モデルの選択肢を選択中エージェントの候補に揃える（差分だけ入れ替える）。何か変えたら true。 */
 	private _syncModelOptions(agent: IParadisAgentCommandTemplate): boolean {
 		this._modelGroup.classList.toggle('hidden', !agent.models || agent.models.length === 0);
-		return paradisSyncSelectOptions(this._modelSelect, [
+		return this._modelSelect.setOptions([
 			{ value: '', label: STR_OPTION_DEFAULT },
 			...(agent.models ?? []).map(model => ({ value: model.id, label: model.label ?? model.id })),
 		]);
@@ -598,39 +597,31 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	 */
 	private _rebuildEffortOptions(preferredEffortId: string | undefined): void {
 		const agent = this._selectedAgent;
-		dom.clearNode(this._effortSelect);
 		this._effortGroup.classList.toggle('hidden', !agent?.efforts || agent.efforts.length === 0);
 		if (!agent?.efforts || agent.efforts.length === 0) {
+			this._effortSelect.setOptions([]);
 			return;
 		}
 		const model = agent.models?.find(candidate => candidate.id === this._modelSelect.value);
 		const allowedIds = model?.efforts;
 		if (allowedIds !== undefined && allowedIds.length === 0) {
 			// モデルがエフォート非対応（例: Claude Code の Haiku 4.5）
-			const unsupportedOption = dom.append(this._effortSelect, $('option')) as HTMLOptionElement;
-			unsupportedOption.value = '';
-			unsupportedOption.textContent = STR_EFFORT_UNSUPPORTED;
-			this._effortSelect.disabled = true;
+			this._effortSelect.setOptions([{ value: '', label: STR_EFFORT_UNSUPPORTED }], '');
+			this._effortSelect.enabled = false;
 			return;
 		}
-		this._effortSelect.disabled = false;
+		this._effortSelect.enabled = true;
 		const efforts = allowedIds === undefined
 			? agent.efforts
 			: agent.efforts.filter(effort => allowedIds.includes(effort.id));
-		const defaultOption = dom.append(this._effortSelect, $('option')) as HTMLOptionElement;
-		defaultOption.value = '';
-		defaultOption.textContent = model?.defaultEffort
+		const defaultLabel = model?.defaultEffort
 			// allow-any-unicode-next-line
 			? localize('paradis.createWorktree.optionDefaultWith', "既定（{0}）", model.defaultEffort)
 			: STR_OPTION_DEFAULT;
-		for (const effort of efforts) {
-			const option = dom.append(this._effortSelect, $('option')) as HTMLOptionElement;
-			option.value = effort.id;
-			option.textContent = effort.id;
-		}
-		if (preferredEffortId && efforts.some(effort => effort.id === preferredEffortId)) {
-			this._effortSelect.value = preferredEffortId;
-		}
+		this._effortSelect.setOptions([
+			{ value: '', label: defaultLabel },
+			...efforts.map(effort => ({ value: effort.id, label: effort.id })),
+		], preferredEffortId && efforts.some(effort => effort.id === preferredEffortId) ? preferredEffortId : '');
 	}
 
 	private _selectPermission(permissionId: string): void {
@@ -652,7 +643,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _currentLaunchOptions(): IParadisAgentLaunchOptions {
 		return {
 			modelId: this._modelSelect.value || undefined,
-			effortId: this._effortSelect.disabled ? undefined : (this._effortSelect.value || undefined),
+			effortId: !this._effortSelect.enabled ? undefined : (this._effortSelect.value || undefined),
 			permissionId: this._selectedPermissionId,
 		};
 	}
@@ -721,14 +712,12 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 
 	private async _loadBranches(): Promise<void> {
 		const repository = this._selectedRepository;
-		dom.clearNode(this._branchSelect);
 		this._branches = undefined;
 		if (!repository) {
+			this._branchSelect.setOptions([]);
 			return;
 		}
-		const loadingOption = dom.append(this._branchSelect, $('option')) as HTMLOptionElement;
-		loadingOption.value = '';
-		loadingOption.textContent = STR_BRANCHES_LOADING;
+		this._branchSelect.setOptions([{ value: '', label: STR_BRANCHES_LOADING }], '');
 		try {
 			const host = this.resolveGitHost(repository.uri);
 			const branches = await host.channel.call<IParadisGitBranches>('listBranches', [host.path(repository.uri)]);
@@ -736,32 +725,19 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 				return;
 			}
 			this._branches = branches;
-			dom.clearNode(this._branchSelect);
-			for (const branch of branches.branches) {
-				const option = dom.append(this._branchSelect, $('option')) as HTMLOptionElement;
-				option.value = branch;
-				option.textContent = branch;
-			}
 			const pendingBaseRef = this._pendingBaseRef;
 			this._pendingBaseRef = undefined;
-			if (pendingBaseRef && branches.branches.includes(pendingBaseRef)) {
-				this._branchSelect.value = pendingBaseRef;
-			} else if (branches.head && branches.branches.includes(branches.head)) {
-				this._branchSelect.value = branches.head;
-			}
-			if (branches.branches.length === 0) {
-				const emptyOption = dom.append(this._branchSelect, $('option')) as HTMLOptionElement;
-				emptyOption.value = '';
-				emptyOption.textContent = STR_NO_BRANCHES;
-			}
+			const selectedBranch = pendingBaseRef && branches.branches.includes(pendingBaseRef)
+				? pendingBaseRef
+				: branches.head && branches.branches.includes(branches.head) ? branches.head : undefined;
+			this._branchSelect.setOptions(branches.branches.length === 0
+				? [{ value: '', label: STR_NO_BRANCHES }]
+				: branches.branches.map(branch => ({ value: branch, label: branch })), selectedBranch);
 		} catch (error) {
 			if (this._store.isDisposed) {
 				return;
 			}
-			dom.clearNode(this._branchSelect);
-			const errorOption = dom.append(this._branchSelect, $('option')) as HTMLOptionElement;
-			errorOption.value = '';
-			errorOption.textContent = STR_NO_BRANCHES;
+			this._branchSelect.setOptions([{ value: '', label: STR_NO_BRANCHES }], '');
 			this._showError(error);
 		}
 		this._updatePathPreview();
