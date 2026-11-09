@@ -66,6 +66,7 @@ import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisSelectIssueLoo
 import { IParadisAgentInsightsService, IParadisAgentScopePane } from '../../agentInsights/common/paradisAgentInsights.js';
 import { paradisScopeSubagentsHoverMarkdown } from '../../agentInsights/browser/paradisAgentInsightsPresentation.js';
 import { IParadisPromptCacheChip, ParadisPromptCacheChips } from '../../agentInsights/browser/paradisPromptCacheChips.js';
+import { ParadisSpaceDetailsDialog } from './paradisSpaceDetailsDialog.js';
 import { IParadisWorktreeMetaEntry, IParadisWorktreeMetaPresence, PARADIS_DEFAULT_WORKTREE_ROW_META, PARADIS_REPOSITORY_ROW_HEIGHT, PARADIS_WORKTREE_ROW_HEIGHT, PARADIS_WORKTREE_ROW_META_SETTING_ID, ParadisWorktreeMetaId, paradisCanMoveWorktreeMeta, paradisMoveWorktreeMeta, paradisNormalizeWorktreeRowMeta, paradisSetWorktreeMetaAlign, paradisSetWorktreeMetaVisible, paradisWorktreeMetaLabel, paradisWorktreeMetaOrder, paradisWorktreeMetaShown, paradisWorktreeRowHasMeta, paradisWorktreeRowHeight } from '../common/paradisWorktreeRowMeta.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
@@ -2718,6 +2719,16 @@ export class ParadisWorkspacesView extends ViewPane {
 	private buildWorktreeContextMenuActions(worktree: IParadisWorktree): IAction[] {
 		const pinned = this.worktreeService.isPinned(worktreeStateKeyFor(worktree));
 		const actions: IAction[] = [
+			// UI キット（Q600）: 表示名・リンクした作業・メモをまとめた「スペースの詳細」
+			new Action(
+				'paradis.workspaceSwitch.worktree.details',
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.worktreeDetailsContext', "詳細..."),
+				`paradis-menu-icon ${ThemeIcon.asClassName(Codicon.info)}`,
+				true,
+				() => this.openSpaceDetails(worktree)
+			),
+			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.worktree.togglePin',
 				pinned
@@ -2873,6 +2884,16 @@ export class ParadisWorkspacesView extends ViewPane {
 	 * (paradisWorktreeService.ts 参照)。main checkout (isMainCheckout) はこの
 	 * 台帳の管理外の合成エントリのため対象外 (呼び出し元でメニュー自体を出さない)。
 	 */
+	private openSpaceDetails(worktree: IParadisWorktree): void {
+		const stateKey = worktreeStateKeyFor(worktree);
+		this.instantiationService.createInstance(ParadisSpaceDetailsDialog, {
+			worktree,
+			stateKey,
+			pullRequest: worktree.missing ? undefined : this._prStatuses.get(worktree.uri.fsPath),
+			issues: (worktree.missing ? [] : this.agentStatusStore.getScopeIssueUrls(stateKey)).map(url => ({ url, status: this._issueStatuses.get(url) })),
+		});
+	}
+
 	private async promptRenameWorktree(worktree: IParadisWorktree): Promise<void> {
 		const name = await this.quickInputService.input({
 			value: worktree.name,
