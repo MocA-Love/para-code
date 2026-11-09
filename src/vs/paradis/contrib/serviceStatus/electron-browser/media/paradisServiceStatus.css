@@ -71,23 +71,23 @@
 }
 
 .paradis-service-status-dot.ok {
-	background: #2ea043;
+	background: var(--vscode-paradis-success);
 }
 
 .paradis-service-status-dot.minor {
-	background: #f0b429;
+	background: var(--vscode-paradis-warning);
 }
 
 .paradis-service-status-dot.major {
-	background: #ef4444;
+	background: var(--vscode-paradis-danger);
 }
 
 .paradis-service-status-dot.maintenance {
-	background: #58a6ff;
+	background: var(--vscode-paradis-accent);
 }
 
 .paradis-service-status-dot.unknown {
-	background: #8b8b8b;
+	background: var(--vscode-paradis-textMuted);
 }
 
 /* ---------- popover (all services) ---------- */

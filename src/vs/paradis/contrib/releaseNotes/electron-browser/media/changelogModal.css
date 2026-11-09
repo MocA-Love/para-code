@@ -48,7 +48,7 @@
 }
 
 .paradis-hub .para-cl-tag-available {
-	color: var(--vscode-badge-foreground, #ffffff);
+	color: var(--vscode-badge-foreground);
 	background: var(--vscode-badge-background, var(--vscode-button-background));
 }
 
@@ -179,13 +179,13 @@
 	border-radius: 2px;
 	cursor: pointer;
 	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
-	background: var(--vscode-button-secondaryBackground, #313131);
+	background: var(--vscode-button-secondaryBackground);
 	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
 	white-space: nowrap;
 }
 
 .paradis-changelog-area .para-cl-btn:hover {
-	background: var(--vscode-button-secondaryHoverBackground, #3c3c3c);
+	background: var(--vscode-button-secondaryHoverBackground);
 }
 
 .paradis-changelog-area .para-cl-btn.primary {

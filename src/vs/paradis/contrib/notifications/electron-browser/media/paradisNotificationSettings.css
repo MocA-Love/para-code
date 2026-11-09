@@ -11,7 +11,7 @@
 /* ここは見出しの行の検索欄・自動保存の印と、右の本文。色は全て --vscode-* テーマトークン。 */
 
 .paradis-notif-area .codicon {
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize);
 }
 
 /* ---------- header ---------- */
@@ -159,7 +159,7 @@
 	position: absolute;
 	inset: -6px;
 	border-radius: 9px;
-	background: rgba(20, 20, 20, 0.72);
+	background: color-mix(in srgb, var(--vscode-paradis-canvas) 80%, transparent);
 	color: var(--vscode-editorWarning-foreground);
 	display: flex;
 	align-items: center;

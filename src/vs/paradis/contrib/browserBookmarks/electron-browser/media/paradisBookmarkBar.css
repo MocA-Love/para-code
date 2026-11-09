@@ -75,7 +75,7 @@
 }
 
 .browser-root .paradis-bookmark-item-icon .codicon {
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize);
 	color: var(--vscode-descriptionForeground);
 }
 

@@ -81,7 +81,7 @@
 /* --- ファイル / フォルダ行 --------------------------------------------------------------------- */
 
 .para-rh-icon.dir {
-	color: #c09553;
+	color: var(--vscode-symbolIcon-folderForeground);
 }
 
 .para-rh-icon.file {

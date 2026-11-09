@@ -132,16 +132,16 @@
 	(editorWarningForeground 由来) を使う。paradisAgentLiveWindow.css の .paradis-agent-live-dot
 	と語彙を揃えている (値を変えるときは両方直す)。 */
 .paradis-workspaces-list .paradis-status-working {
-	color: var(--vscode-charts-yellow, #cca700);
+	color: var(--vscode-charts-yellow);
 	animation: paradis-status-breathe 2.4s ease-in-out infinite;
 }
 
 .paradis-workspaces-list .paradis-status-review {
-	color: var(--vscode-charts-green, #22c55e);
+	color: var(--vscode-charts-green);
 }
 
 .paradis-workspaces-list .paradis-status-permission {
-	color: var(--vscode-charts-red, #ef4444);
+	color: var(--vscode-charts-red);
 	animation: paradis-status-pulse 1s ease-in-out infinite;
 }
 
@@ -387,12 +387,12 @@
 	flex-shrink: 0;
 	margin-left: 2px;
 	opacity: 0.85;
-	color: var(--vscode-textLink-foreground, #09afd9);
+	color: var(--vscode-textLink-foreground);
 }
 
 .monaco-workbench .paradis-workspaces-list .paradis-workspace-remote.codicon {
 	font-size: 12px;
-	color: var(--vscode-textLink-foreground, #09afd9);
+	color: var(--vscode-textLink-foreground);
 }
 
 .paradis-workspaces-list .paradis-workspace-remote.hidden {
@@ -523,11 +523,11 @@
 }
 
 .paradis-workspaces-list .paradis-worktree-diff-added:not(:empty) {
-	color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043);
+	color: var(--vscode-gitDecoration-addedResourceForeground);
 }
 
 .paradis-workspaces-list .paradis-worktree-diff-removed:not(:empty) {
-	color: var(--vscode-gitDecoration-deletedResourceForeground, #e5534b);
+	color: var(--vscode-gitDecoration-deletedResourceForeground);
 }
 
 /* allow-any-unicode-next-line */
@@ -1122,5 +1122,5 @@
 
 .paradis-workspaces-heading-bell.attention .codicon,
 .paradis-workspaces-heading-bell.attention .paradis-workspaces-heading-bell-count {
-	color: var(--vscode-charts-red, #ef4444);
+	color: var(--vscode-charts-red);
 }

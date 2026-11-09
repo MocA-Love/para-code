@@ -21,7 +21,7 @@
  */
 
 .monaco-workbench.file-icons-enabled .monaco-icon-label.terminal-tab.paradis-terminal-tab-waiting[class*='codicon-']::before {
-	color: var(--vscode-charts-red, #ef4444) !important;
+	color: var(--vscode-charts-red) !important;
 }
 
 /*

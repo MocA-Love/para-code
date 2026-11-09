@@ -168,7 +168,7 @@
 }
 
 .monaco-workbench .para-ft-hdot.connected {
-	background: var(--vscode-testing-iconPassed, #3fb950);
+	background: var(--vscode-testing-iconPassed);
 }
 
 .monaco-workbench .para-ft-hdot.disconnected {
