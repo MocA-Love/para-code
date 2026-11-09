@@ -1,0 +1,73 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The check of Para Code's UI kit (stage 2, Q600, paradisCheck.ts): upstream's Checkbox as a 16px box with a strong
+	line, filled with the primary color and a 12px check when on, and the label beside it. Keyboard focus is
+	paradisFocusRing.css (paradis-focus-ring on the box).
+*/
+
+.monaco-workbench .paradis-check {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	color: var(--vscode-paradis-text);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.monaco-workbench .paradis-check.disabled {
+	opacity: 0.45;
+}
+
+/* Upstream sizes the box inline (16px, written by the Checkbox from its `size`); the frame and colors are ours. */
+.monaco-workbench .paradis-check > .monaco-custom-toggle.monaco-checkbox {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	float: none;
+	margin: 0;
+	border: 1px solid var(--vscode-paradis-lineStrong);
+	border-radius: var(--vscode-cornerRadius-small);
+	background: transparent;
+	color: var(--vscode-paradis-primaryForeground);
+	cursor: pointer;
+}
+
+/* The check glyph: upstream writes the box size minus 2 inline, the kit's small icon is 12px. */
+.monaco-workbench .paradis-check > .monaco-custom-toggle.monaco-checkbox::before {
+	font-size: 12px;
+}
+
+.monaco-workbench .paradis-check > .monaco-custom-toggle.monaco-checkbox.checked {
+	border-color: var(--vscode-paradis-primary);
+	background: var(--vscode-paradis-primary);
+}
+
+.monaco-workbench .paradis-check:not(.disabled):hover > .monaco-custom-toggle.monaco-checkbox:not(.checked) {
+	border-color: var(--vscode-paradis-textMuted);
+	background: transparent;
+}
+
+.monaco-workbench .paradis-check > .paradis-check-label {
+	min-width: 0;
+	cursor: pointer;
+	user-select: none;
+}
+
+.monaco-workbench .paradis-check.disabled > .paradis-check-label {
+	cursor: default;
+}
+
+/* High contrast: keep the box readable without the fill. */
+.monaco-workbench.hc-black .paradis-check > .monaco-custom-toggle.monaco-checkbox.checked,
+.monaco-workbench.hc-light .paradis-check > .monaco-custom-toggle.monaco-checkbox.checked {
+	border-color: var(--vscode-contrastActiveBorder);
+	color: var(--vscode-contrastActiveBorder);
+	background: transparent;
+}

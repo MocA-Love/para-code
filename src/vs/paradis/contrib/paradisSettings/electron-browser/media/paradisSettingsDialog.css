@@ -8,98 +8,86 @@
 /* allow-any-unicode-next-line */
 /* 統合のモーダルの「設定」の領域（paradisSettingsDialog.ts）。器・見出しの行・左ナビは paradisHub.css。 */
 /* allow-any-unicode-next-line */
-/* ここは見出しの行の検索欄と、右の本文。色は全て --vscode-* テーマトークン。 */
+/* ここは見出しの行の検索欄と、右の本文。UI キットの段 2（Q600）: 行は「名前・説明・右端の部品」の 1 形、部品はキットのもの。 */
 
 .paradis-settings-area .codicon {
 	font-size: var(--vscode-codiconFontSize);
 }
 
+/* The search field (ParadisInputField, 28px) and the autosave note in the header row. */
 .paradis-hub .psd-search {
-	flex: 1;
-	max-width: 340px;
-	min-width: 140px;
-	display: flex;
-	align-items: center;
-	gap: var(--vscode-spacing-size60);
-	background: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
-	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: var(--vscode-cornerRadius-small);
-	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
-}
-
-.paradis-hub .psd-search input {
-	flex: 1;
-	min-width: 0;
-	width: auto;
-	background: transparent;
-	border: none;
-	padding: 0;
-	outline: none;
-	color: var(--vscode-input-foreground);
-	font-size: var(--vscode-fontSize-body1);
-	font-family: inherit;
+	flex: 0 1 260px;
+	min-width: 120px;
 }
 
 .paradis-hub .psd-autosave {
 	margin-left: auto;
 	font-size: var(--vscode-fontSize-label2);
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textFaint);
 	white-space: nowrap;
 }
 
+/* The body scrolls; rows wrap by the width of the body (the nav takes part of the box), not of the window. */
 .paradis-settings-area .psd-content {
 	flex: 1;
 	min-width: 0;
 	min-height: 0;
 	overflow-y: auto;
-	padding: var(--vscode-spacing-size160) var(--vscode-spacing-size240) var(--vscode-spacing-size320);
+	container-type: inline-size;
+	padding: var(--vscode-spacing-size160) var(--vscode-spacing-size240) var(--vscode-spacing-size400);
+	scroll-padding-top: var(--vscode-spacing-size160);
 }
 
 /* ---------- sections / rows ---------- */
 
+.paradis-settings-area .psd-section + .psd-section {
+	margin-top: var(--vscode-spacing-size320);
+}
+
 .paradis-settings-area .psd-section-head {
+	margin: var(--vscode-spacing-size80) 0 var(--vscode-spacing-size40);
+	padding: 0 var(--vscode-spacing-size120);
 	font-size: var(--vscode-fontSize-heading2);
 	font-weight: var(--vscode-fontWeight-semiBold);
-	margin: 2px 0;
-}
-
-.paradis-settings-area .psd-group-head {
-	font-size: var(--vscode-fontSize-label1);
-	font-weight: var(--vscode-fontWeight-semiBold);
-	color: var(--vscode-descriptionForeground);
-	margin: 16px 0 2px;
-	padding-bottom: 4px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-}
-
-.paradis-settings-area .psd-row-badge {
-	font-size: var(--vscode-fontSize-label3);
-	font-weight: 400;
-	line-height: 16px;
-	padding: 0 var(--vscode-spacing-size60);
-	border-radius: var(--vscode-cornerRadius-circle);
-	border: 1px solid var(--vscode-descriptionForeground);
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textStrong);
 }
 
 .paradis-settings-area .psd-section-desc {
+	margin: 0 0 var(--vscode-spacing-size80);
+	padding: 0 var(--vscode-spacing-size120);
 	font-size: var(--vscode-fontSize-label1);
-	color: var(--vscode-descriptionForeground);
-	margin-bottom: 12px;
 	line-height: 1.6;
+	color: var(--vscode-paradis-textMuted);
 }
 
-.paradis-settings-area .psd-section {
-	margin-bottom: 18px;
+/* A group's heading: a muted subheading without its own line, so it does not double the line between rows. */
+.paradis-settings-area .psd-group-head {
+	margin: var(--vscode-spacing-size240) 0 var(--vscode-spacing-size40);
+	padding: 0 var(--vscode-spacing-size120);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textMuted);
 }
 
+/* One row shape: name and description on the left, the control at the right end. Lines only between rows. */
 .paradis-settings-area .psd-row {
+	box-sizing: border-box;
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size160);
-	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size40);
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	min-height: 52px;
+	padding: var(--vscode-spacing-size100) var(--vscode-spacing-size120);
+	border-radius: var(--paradis-radius-control);
+}
+
+/* Search hides rows, so the line goes on every shown row after a shown one; not right under a group's heading. */
+.paradis-settings-area .psd-row:not(.hidden) ~ .psd-row:not(.hidden) {
+	box-shadow: 0 -1px 0 var(--vscode-paradis-lineSubtle);
+}
+
+/* Same specificity as the rule above, so this later one wins. */
+.paradis-settings-area .psd-group-head:not(.hidden) + .psd-row:not(.hidden) {
+	box-shadow: none;
 }
 
 .paradis-settings-area .psd-section.hidden,
@@ -116,34 +104,30 @@
 }
 
 .paradis-settings-area .psd-row-label {
-	font-size: var(--vscode-fontSize-body1);
-	font-weight: var(--vscode-fontWeight-semiBold);
 	display: flex;
 	align-items: center;
-	gap: var(--vscode-spacing-size80);
 	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-body1);
+	color: var(--vscode-paradis-textStrong);
+	overflow-wrap: anywhere;
 }
 
 .paradis-settings-area .psd-row-desc {
-	font-size: var(--vscode-fontSize-label1);
-	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
-	line-height: 1.6;
-	max-width: 520px;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
 }
 
 .paradis-settings-area .psd-row-warning {
 	display: flex;
 	align-items: flex-start;
 	gap: var(--vscode-spacing-size60);
+	margin-top: var(--vscode-spacing-size40);
 	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.6;
-	max-width: 520px;
-	margin-top: 6px;
-	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
-	color: var(--vscode-editorWarning-foreground);
-	border: 1px solid var(--vscode-editorWarning-foreground);
-	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--vscode-paradis-warning);
 }
 
 .paradis-settings-area .psd-row-warning.hidden {
@@ -161,14 +145,14 @@
 .paradis-settings-area .psd-row-restart {
 	display: flex;
 	align-items: center;
-	gap: var(--vscode-spacing-size60);
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size40) var(--vscode-spacing-size40) var(--vscode-spacing-size100);
 	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.6;
-	max-width: 520px;
-	margin-top: 6px;
-	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size40) var(--vscode-spacing-size40) var(--vscode-spacing-size80);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: var(--vscode-cornerRadius-small);
+	background: var(--vscode-paradis-raised);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
 }
 
 .paradis-settings-area .psd-row-restart.hidden {
@@ -178,85 +162,77 @@
 .paradis-settings-area .psd-row-restart .codicon {
 	flex: none;
 	font-size: var(--vscode-codiconFontSize-compact);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-settings-area .psd-row-restart-text {
 	flex: 1;
+	min-width: 0;
 }
 
-/* ---------- controls ---------- */
+/* ---------- controls (the kit's parts; only their width is set here) ---------- */
 
-.paradis-settings-area .psd-input,
-.paradis-settings-area .psd-select {
+.paradis-settings-area .psd-row > .paradis-select,
+.paradis-settings-area .psd-row > .psd-input {
 	flex: none;
-	background: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
-	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: var(--vscode-cornerRadius-small);
-	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
-	font-size: var(--vscode-fontSize-label1);
-	font-family: inherit;
-	outline: none;
+	width: 240px;
 }
 
-.paradis-settings-area .psd-input {
-	width: 260px;
-	font-family: var(--monaco-monospace-font);
-	font-size: var(--vscode-fontSize-label1);
+.paradis-settings-area .psd-row > .paradis-select > .psd-select {
+	width: 100%;
 }
 
-.paradis-settings-area .psd-btn {
+.paradis-settings-area .psd-row > :is(.paradis-switch, .paradis-button) {
 	flex: none;
-	appearance: none;
-	border: none;
-	border-radius: var(--vscode-cornerRadius-small);
-	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
-	font-size: var(--vscode-fontSize-label1);
-	font-family: inherit;
-	cursor: pointer;
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	white-space: nowrap;
-}
-
-.paradis-settings-area .psd-btn:hover {
-	background: var(--vscode-button-secondaryHoverBackground);
-}
-
-.paradis-settings-area .psd-btn-primary {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-}
-
-.paradis-settings-area .psd-btn-primary:hover {
-	background: var(--vscode-button-hoverBackground);
 }
 
 .paradis-settings-area .psd-search-empty {
-	padding: var(--vscode-spacing-size240) var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size240) var(--vscode-spacing-size120);
 	font-size: var(--vscode-fontSize-body1);
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 }
 
 /* allow-any-unicode-next-line */
 /* オン/オフの設定をチェックの並びで 1 行にまとめた行（メニューバーの「メニューに出す項目」など）。 */
 .paradis-settings-area .psd-checks {
-	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
-	gap: var(--vscode-spacing-size60) var(--vscode-spacing-size200);
-	margin-top: 8px;
-	max-width: 520px;
-}
-
-.paradis-settings-area .psd-check {
 	display: flex;
-	align-items: center;
-	gap: var(--vscode-spacing-size80);
-	font-size: var(--vscode-fontSize-body1);
-	cursor: pointer;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80) var(--vscode-spacing-size160);
+	margin-top: var(--vscode-spacing-size80);
 }
 
-.paradis-settings-area .psd-check input {
-	margin: 0;
-	accent-color: var(--vscode-focusBorder);
+/* A narrow body (a narrow window, or the 390px phone width): the text takes the whole line and wide controls go below it. */
+@container (max-width: 560px) {
+	.paradis-settings-area .psd-row {
+		flex-wrap: wrap;
+		row-gap: var(--vscode-spacing-size80);
+	}
+
+	.paradis-settings-area .psd-row:has(> .paradis-select, > .psd-input, > .paradis-button) > .psd-row-main {
+		flex-basis: 100%;
+	}
+
+	.paradis-settings-area .psd-row > .paradis-select,
+	.paradis-settings-area .psd-row > .psd-input {
+		width: 100%;
+	}
+
+	.paradis-settings-area .psd-row > .paradis-button {
+		max-width: 100%;
+	}
+}
+
+/* In a narrow window the header row keeps the search field and the close button; the autosave note goes. */
+@media (max-width: 760px) {
+	.paradis-settings-area .psd-content {
+		padding: var(--vscode-spacing-size120);
+	}
+
+	.paradis-hub .psd-search {
+		flex: 1 1 auto;
+	}
+
+	.paradis-hub .psd-autosave {
+		display: none;
+	}
 }

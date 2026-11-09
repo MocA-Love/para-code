@@ -5,19 +5,20 @@
 
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
-/* The one on/off switch of Para Code's own screens (paradisSwitch.ts): 36x20, knob 16. */
+/* The one on/off switch of Para Code's own screens (paradisSwitch.ts): 32x18 so it fits a 28px row, knob 14 (UI kit
+	stage 2, Q600). Colors are the kit's roles (--vscode-paradis-*); keyboard focus is paradisFocusRing.css. */
 
 .monaco-workbench .paradis-switch {
 	box-sizing: border-box;
 	position: relative;
 	flex: none;
-	width: 36px;
-	height: 20px;
+	width: 32px;
+	height: 18px;
 	margin: 0;
 	padding: 0;
 	border: 1px solid transparent;
 	border-radius: var(--vscode-cornerRadius-circle);
-	background: var(--vscode-button-secondaryBackground);
+	background: var(--vscode-paradis-fillNeutral);
 	cursor: pointer;
 	vertical-align: middle;
 }
@@ -27,24 +28,34 @@
 	position: absolute;
 	top: 1px;
 	left: 1px;
-	width: 16px;
-	height: 16px;
+	width: 14px;
+	height: 14px;
 	border-radius: var(--vscode-cornerRadius-circle);
-	background: var(--vscode-button-secondaryForeground);
+	background: var(--vscode-paradis-primaryForeground);
+}
+
+.monaco-workbench .paradis-switch:not(:disabled):hover {
+	background: var(--vscode-paradis-lineStrong);
 }
 
 .monaco-workbench .paradis-switch.checked {
-	background: var(--vscode-button-background);
+	background: var(--vscode-paradis-primary);
+}
+
+.monaco-workbench .paradis-switch.checked:not(:disabled):hover {
+	background: var(--vscode-paradis-primaryHover);
 }
 
 .monaco-workbench .paradis-switch.checked::after {
-	left: 17px;
-	background: var(--vscode-button-foreground);
+	left: 15px;
 }
 
-.monaco-workbench.monaco-enable-motion .paradis-switch,
+.monaco-workbench.monaco-enable-motion .paradis-switch {
+	transition: background-color var(--paradis-motion-exit) var(--paradis-ease-enter);
+}
+
 .monaco-workbench.monaco-enable-motion .paradis-switch::after {
-	transition: background-color 0.15s ease, left 0.15s ease;
+	transition: left var(--paradis-motion-enter) var(--paradis-ease-enter);
 }
 
 .monaco-workbench .paradis-switch:disabled {

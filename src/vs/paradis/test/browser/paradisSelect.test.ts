@@ -56,7 +56,7 @@ suite('ParadisSelect', () => {
 				layer: shown[0]?.layer,
 			}, {
 				ariaLabel: '並び',
-				className: 'monaco-select-box my-select',
+				className: 'monaco-select-box paradis-focus-ring my-select',
 				optionValues: ['title', 'updated'],
 				value: 'title',
 				unchanged: false,
@@ -99,6 +99,20 @@ suite('ParadisSelect', () => {
 				valueAfterReset: '',
 				values: 1,
 			});
+		} finally {
+			container.remove();
+		}
+	});
+
+	test('the closed select carries no inline colors, so the kit CSS (paradisSelect.css) draws it and its hover line', () => {
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const contextViewService = { showContextView: () => ({ close: () => { } }), hideContextView: () => { }, layout: () => { } } as unknown as IContextViewService;
+		const configurationService = { getValue: () => undefined } as unknown as IConfigurationService;
+		try {
+			store.add(new ParadisSelect(container, contextViewService, configurationService, [{ value: 'a', label: 'A' }], 'a', { ariaLabel: '種類' }));
+			const element = container.querySelector('select')!;
+			assert.deepStrictEqual({ background: element.style.backgroundColor, color: element.style.color, border: element.style.borderColor }, { background: '', color: '', border: '' });
 		} finally {
 			container.remove();
 		}

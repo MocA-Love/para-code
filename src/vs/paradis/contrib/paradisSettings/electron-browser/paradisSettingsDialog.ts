@@ -33,6 +33,10 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 import { paradisToggleChecked, paradisToggleValue } from '../common/paradisSettingsToggle.js';
+import { createParadisChip } from '../../../browser/paradisBadges.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
+import { ParadisCheck } from '../../../browser/paradisCheck.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, PARADIS_HUB_CLOSE_AFTER_COMMAND, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
@@ -1958,13 +1962,10 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		this._register(paradisMarkSettingsDialogOpen());
 
 		// ---------- 見出しの行（検索欄と「変更は即保存されます」） ----------
-		const searchBox = dom.append(containers.header, $('.psd-search.paradis-focus-subtle-within'));
-		searchBox.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
-		this._searchInput = dom.append(searchBox, $('input')) as HTMLInputElement;
-		this._searchInput.type = 'text';
-		this._searchInput.placeholder = STR_SEARCH_PLACEHOLDER;
-		this._searchInput.setAttribute('aria-label', STR_SEARCH_PLACEHOLDER);
-		this._register(dom.addDisposableListener(this._searchInput, 'input', () => this._applySearchFilter()));
+		const searchField = this._register(new ParadisInputField(containers.header, { ariaLabel: STR_SEARCH_PLACEHOLDER, placeholder: STR_SEARCH_PLACEHOLDER, icon: Codicon.search, small: true }));
+		searchField.element.classList.add('psd-search');
+		this._searchInput = searchField.inputElement;
+		this._register(searchField.onDidChange(() => this._applySearchFilter()));
 		dom.append(containers.header, $('.psd-autosave')).textContent = STR_AUTOSAVE;
 
 		// ---------- 左ナビ + 右コンテンツ ----------
@@ -2128,7 +2129,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		const label = dom.append(main, $('.psd-row-label'));
 		dom.append(label, $('span')).textContent = spec.label;
 		if (spec.experimental) {
-			dom.append(label, $('span.psd-row-badge')).textContent = STR_EXPERIMENTAL;
+			createParadisChip(label, STR_EXPERIMENTAL);
 		}
 		// allow-any-unicode-next-line
 		// 設定キー (paradis.*) は画面に出さない。行が名前だけになって読みやすくなるため。
@@ -2145,10 +2146,9 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		}
 
 		if (spec.action) {
-			const button = dom.append(row, $(`button.psd-btn${spec.action.primary ? '.psd-btn-primary' : ''}`)) as HTMLButtonElement;
-			button.textContent = spec.action.label;
+			const button = this._register(new ParadisButton(row, { kind: spec.action.primary ? 'primary' : 'secondary', label: spec.action.label }));
 			const commandId = spec.action.commandId;
-			this._register(dom.addDisposableListener(button, 'click', () => void this._runAction(commandId)));
+			this._register(button.onDidClick(() => void this._runAction(commandId)));
 		} else if (spec.key) {
 			this._buildControl(row, spec.key, spec);
 			if (spec.offWarning) {
@@ -2242,46 +2242,37 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 
 		if (spec.valueType === 'stringList') {
 			// 文字列の配列（パスの一覧など）は、カンマ区切りの 1 行で見せて書く
-			const input = dom.append(row, $('input.psd-input')) as HTMLInputElement;
-			input.type = 'text';
-			input.spellcheck = false;
-			if (spec.placeholder) {
-				input.placeholder = spec.placeholder;
-			}
+			const field = this._register(new ParadisInputField(row, { ariaLabel: spec.label, placeholder: spec.placeholder, small: true }));
+			field.element.classList.add('psd-input');
 			const sync = () => {
 				const current = this.configurationService.getValue<unknown>(key);
-				input.value = Array.isArray(current) ? current.join(', ') : '';
-				input.disabled = !this._isRegistered(key);
+				field.value = Array.isArray(current) ? current.join(', ') : '';
+				field.enabled = this._isRegistered(key);
 			};
 			sync();
 			this._refreshers.push(sync);
-			this._register(dom.addDisposableListener(input, 'change', () => void this._write(key, input.value.split(',').map(item => item.trim()).filter(item => item.length > 0))));
+			this._register(dom.addDisposableListener(field.inputElement, 'change', () => void this._write(key, field.value.split(',').map(item => item.trim()).filter(item => item.length > 0))));
 			return;
 		}
 
 		if (typeof value === 'string' || value === undefined) {
-			const input = dom.append(row, $('input.psd-input')) as HTMLInputElement;
-			input.type = 'text';
-			input.spellcheck = false;
-			if (spec.placeholder) {
-				input.placeholder = spec.placeholder;
-			}
+			const field = this._register(new ParadisInputField(row, { ariaLabel: spec.label, placeholder: spec.placeholder, small: true }));
+			field.element.classList.add('psd-input');
 			const sync = () => {
-				input.value = this.configurationService.getValue<string>(key) ?? '';
-				input.disabled = !this._isRegistered(key);
+				field.value = this.configurationService.getValue<string>(key) ?? '';
+				field.enabled = this._isRegistered(key);
 			};
 			sync();
 			this._refreshers.push(sync);
 			// 入力途中で毎回書かない (設定ファイルが1文字ごとに書き変わるのを避ける)
-			this._register(dom.addDisposableListener(input, 'change', () => void this._write(key, input.value)));
+			this._register(dom.addDisposableListener(field.inputElement, 'change', () => void this._write(key, field.value)));
 			return;
 		}
 
 		// 配列・オブジェクト設定 (エージェント定義・プリセット等) はここでは編集させず、
 		// 標準の設定エディタへ送る
-		const button = dom.append(row, $('button.psd-btn')) as HTMLButtonElement;
-		button.textContent = STR_OPEN_SETTINGS_EDITOR;
-		this._register(dom.addDisposableListener(button, 'click', () => {
+		const button = this._register(new ParadisButton(row, { kind: 'secondary', label: STR_OPEN_SETTINGS_EDITOR }));
+		this._register(button.onDidClick(() => {
 			this.host.close();
 			void this.commandService.executeCommand('workbench.action.openSettings', `@id:${key}`);
 		}));
@@ -2291,18 +2282,15 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 	private _buildChecks(main: HTMLElement, checks: readonly { readonly key: string; readonly label: string }[]): void {
 		const list = dom.append(main, $('.psd-checks'));
 		for (const check of checks) {
-			const item = dom.append(list, $('label.psd-check')) as HTMLLabelElement;
-			item.title = check.key;
-			const input = dom.append(item, $('input')) as HTMLInputElement;
-			input.type = 'checkbox';
-			dom.append(item, $('span')).textContent = check.label;
+			const item = this._register(new ParadisCheck(list, { label: check.label, checked: false }));
+			item.labelElement.title = check.key;
 			const sync = () => {
-				input.checked = this.configurationService.getValue<boolean>(check.key) === true;
-				input.disabled = !this._isRegistered(check.key);
+				item.checked = this.configurationService.getValue<boolean>(check.key) === true;
+				item.enabled = this._isRegistered(check.key);
 			};
 			sync();
 			this._refreshers.push(sync);
-			this._register(dom.addDisposableListener(input, 'change', () => void this._write(check.key, input.checked)));
+			this._register(item.onDidChange(checked => void this._write(check.key, checked)));
 		}
 	}
 
@@ -2326,10 +2314,9 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		notice.setAttribute('role', 'status');
 		notice.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.info)}`));
 		dom.append(notice, $('span.psd-row-restart-text')).textContent = text;
-		const button = dom.append(notice, $('button.psd-btn.psd-btn-primary')) as HTMLButtonElement;
 		// allow-any-unicode-next-line
-		button.textContent = localize('paradis.settings.restartToApply', "再起動して反映");
-		this._register(dom.addDisposableListener(button, 'click', () => { void this.nativeHostService.relaunch(); }));
+		const button = this._register(new ParadisButton(notice, { kind: 'primary', small: true, label: localize('paradis.settings.restartToApply', "再起動して反映") }));
+		this._register(button.onDidClick(() => { void this.nativeHostService.relaunch(); }));
 		const sync = () => notice.classList.toggle('hidden', !paradisTransparencyRestartPending(
 			this.configurationService.getValue<boolean>(PARADIS_TRANSPARENCY_ENABLED_KEY),
 			paradisCanUseWindowTransparency(this.configurationService),
