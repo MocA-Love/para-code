@@ -1,0 +1,80 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The confirmation dialog of Para Code's UI kit (stage 3, Q600, paradisConfirmDialog.ts): upstream's Dialog drawn as the
+	kit's S box. 480 wide, the floating surface (colors passed as theme variables), radius 12, the question as an 18px
+	heading, the detail in the muted color, the buttons at the bottom right (cancel secondary, then the action). No type
+	icon. Upstream's dialog.css rules are (0,2,0) to (0,4,0); these carry the extra class.
+*/
+
+.monaco-dialog-modal-block .dialog-shadow:has(> .monaco-dialog-box.paradis-confirm-dialog) {
+	border-radius: var(--paradis-radius-outer);
+}
+
+.monaco-dialog-box.paradis-confirm-dialog {
+	box-sizing: border-box;
+	width: 480px;
+	min-width: 0;
+	max-width: 94vw;
+	padding: 0;
+	border-radius: var(--paradis-radius-outer);
+	box-shadow: var(--vscode-shadow-xl);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+/* The close button sits at the top right, beside the question (the question leaves room for it). */
+.monaco-dialog-box.paradis-confirm-dialog {
+	position: relative;
+}
+
+.monaco-dialog-box.paradis-confirm-dialog .dialog-toolbar-row {
+	position: absolute;
+	top: var(--vscode-spacing-size160);
+	right: var(--vscode-spacing-size120);
+	height: auto;
+	padding: 0;
+}
+
+.monaco-dialog-box.paradis-confirm-dialog .dialog-message-row {
+	padding: var(--vscode-spacing-size200) var(--vscode-spacing-size400) 0 var(--vscode-spacing-size200);
+}
+
+.monaco-dialog-box.paradis-confirm-dialog .dialog-message-row > .dialog-icon {
+	display: none;
+}
+
+.monaco-dialog-box.paradis-confirm-dialog:not(.align-vertical) .dialog-message-row .dialog-message-container {
+	padding-left: 0;
+}
+
+.monaco-dialog-box.paradis-confirm-dialog .dialog-message-row .dialog-message-container .dialog-message {
+	margin-bottom: var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-heading2);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	line-height: 24px;
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-dialog-box.paradis-confirm-dialog .dialog-message-row .dialog-message-container .dialog-message-detail {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-dialog-box.paradis-confirm-dialog > .dialog-buttons-row {
+	padding: var(--vscode-spacing-size200) var(--vscode-spacing-size200) var(--vscode-spacing-size160);
+}
+
+.monaco-dialog-box.paradis-confirm-dialog:not(.align-vertical) > .dialog-buttons-row > .dialog-buttons {
+	gap: var(--vscode-spacing-size80);
+	margin-left: 0;
+}
+
+.monaco-dialog-box.paradis-confirm-dialog > .dialog-buttons-row > .dialog-buttons > .monaco-button.paradis-button {
+	margin: 0;
+	outline-offset: var(--paradis-focus-offset) !important;
+}

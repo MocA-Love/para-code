@@ -82,6 +82,9 @@ import {
 } from '../common/paradisTerminalPresets.js';
 import { paradisFolderLabelMoves } from '../common/paradisPresetLocalLedger.js';
 import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
+import { IParadisConfirmServices, paradisConfirm, paradisConfirmYesNo } from '../../confirmDialog/browser/paradisConfirmDialog.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { paradisMenuItem, showParadisMenu } from '../../../browser/paradisMenu.js';
@@ -525,6 +528,7 @@ export function openParadisPresetEditorDialog(accessor: ServicesAccessor): void 
 		accessor.get(IHoverService),
 		accessor.get(IContextViewService),
 		accessor.get(IConfigurationService),
+		{ layoutService: accessor.get(ILayoutService), keybindingService: accessor.get(IKeybindingService), hostService: accessor.get(IHostService) },
 	);
 }
 
@@ -603,6 +607,8 @@ class ParadisPresetEditorDialog extends Disposable {
 		private readonly hoverService: IHoverService,
 		private readonly contextViewService: IContextViewService,
 		private readonly configurationService: IConfigurationService,
+		/** 削除の確認（UI キットの S 段のダイアログ）に要るサービス。 */
+		private readonly _confirmServices: IParadisConfirmServices,
 	) {
 		super();
 
@@ -737,8 +743,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			// 2箇所以上（複数スコープ）にまたがるときだけ、消える前に確認する。1件しか無いときは
 			// 従来どおり確認なしで即削除する。
 			if (folders.length > 1) {
-				const result = await this.dialogService.confirm({ message: strDeleteEmptyFolderMultiScopeConfirm(name, folders.length), primaryButton: STR_DELETE });
-				if (!result.confirmed) {
+				if (!await paradisConfirmYesNo(this._confirmServices, { message: strDeleteEmptyFolderMultiScopeConfirm(name, folders.length), primaryButton: STR_DELETE, danger: true })) {
 					return;
 				}
 			}
@@ -1394,8 +1399,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				paradisPresetCommandSignature(preset, ' && '),
 				sameName > 0 ? `\n${strDeleteConfirmOthers(sameName)}` : undefined,
 			].filter((line): line is string => !!line).join('\n');
-			const result = await this.dialogService.confirm({ message: strDeleteConfirm(preset.name), detail, primaryButton: STR_DELETE });
-			if (!result.confirmed) {
+			if (!await paradisConfirmYesNo(this._confirmServices, { message: strDeleteConfirm(preset.name), detail, primaryButton: STR_DELETE, danger: true })) {
 				return;
 			}
 			try {
@@ -1819,12 +1823,12 @@ class ParadisPresetEditorDialog extends Disposable {
 		deleteBtn.type = 'button';
 		deleteBtn.textContent = STR_DELETE;
 		this._viewStore.add(dom.addDisposableListener(deleteBtn, 'click', async () => {
-			const result = await this.dialogService.confirm({
+			if (!await paradisConfirmYesNo(this._confirmServices, {
 				message: strBulkDeleteMessage(selected.length),
 				detail: selected.map(preset => preset.name).join(', '),
 				primaryButton: STR_DELETE,
-			});
-			if (!result.confirmed) {
+				danger: true,
+			})) {
 				return;
 			}
 			try {
@@ -2067,14 +2071,15 @@ class ParadisPresetEditorDialog extends Disposable {
 	 * しない。
 	 */
 	private async _confirmDeleteFolder(group: IParadisFolderGroup): Promise<void> {
-		const { result } = await this.dialogService.prompt<IDeleteFolderDecision>({
+		// 削除の確認は UI キットの S 段のダイアログ（Q600）。中身ごと消す方だけ危険のボタンにする
+		const result = await paradisConfirm<IDeleteFolderDecision>(this._confirmServices, {
 			message: strDeleteFolderMessage(group.folder),
 			detail: strDeleteFolderDetail(group.presets.length),
 			buttons: [
-				{ label: STR_DELETE_FOLDER_KEEP, run: (): IDeleteFolderDecision => 'keep' },
-				{ label: strDeleteFolderAll(group.presets.length), run: (): IDeleteFolderDecision => 'deleteAll' },
+				{ label: STR_DELETE_FOLDER_KEEP, kind: 'primary', run: (): IDeleteFolderDecision => 'keep' },
+				{ label: strDeleteFolderAll(group.presets.length), kind: 'danger', run: (): IDeleteFolderDecision => 'deleteAll' },
 			],
-			cancelButton: { label: STR_CONFLICT_CANCEL, run: (): IDeleteFolderDecision => undefined },
+			cancelLabel: STR_CONFLICT_CANCEL,
 		});
 		if (!result) {
 			return;
