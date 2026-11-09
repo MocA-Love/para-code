@@ -358,11 +358,12 @@ async function scratchDir(name: string): Promise<string> {
 				closedByClient: true,
 				hostLog: [
 					`stream.mjpeg ${UDID}: received`,
-					`stream.mjpeg ${UDID}: no answer after 50 ms (the device session has not started capturing)`,
+					`stream.mjpeg ${UDID}: no answer after N ms (the device session has not started capturing)`,
 					`stream.mjpeg ${UDID}: closed after N ms (status none)`,
 				],
 				sharedProcessLog: [
 					`[paradis-simulator] video ${UDID}: requested`,
+					`[paradis-simulator] video ${UDID}: host ready after N ms, request sent`,
 					`[paradis-simulator] video ${UDID}: The simulator host did not start capturing ${UDID} within 1 s`,
 					`[paradis-simulator] video ${UDID}: ended after N ms, 0 frame(s): The simulator host did not start capturing ${UDID} within 1 s`,
 				],

@@ -196,6 +196,38 @@ suite('Paradis simulator: frame view', () => {
 		}
 	});
 
+	// 最初の 1 枚までは 5 秒で購読を切らない（切ると shared process の 15 秒の「取り込みが始まらない」が毎回取り消され、
+	// ペインに届かなかった）。5 秒では待っている知らせだけ出す。描けた後の途切れは今までどおり 5 秒
+	test('keeps waiting for the first frame so the capture-not-started reason can arrive', () => {
+		const clock = sinon.useFakeTimers();
+		try {
+			const { client, view, loaded } = setup();
+			const stalls: IParadisSimulatorStall[] = [];
+			let waits = 0;
+			store.add(view.onDidStall(stall => stalls.push(stall)));
+			store.add(view.onDidWait(() => waits++));
+			view.start();
+			clock.tick(PARADIS_SIMULATOR_STALL_MS + 1000);
+			const afterFiveSeconds = { listeners: client.listeners, waits, stalls: stalls.length };
+			clock.tick(10_000);
+			client.end('The simulator host did not start capturing within 15 s', true);
+			const notStarted = [...stalls];
+			view.stop();
+			view.start();
+			client.fire();
+			loaded();
+			clock.tick(PARADIS_SIMULATOR_STALL_MS + 1);
+			assert.deepStrictEqual({ afterFiveSeconds, notStarted, afterDrawnSilence: stalls.length, waits }, {
+				afterFiveSeconds: { listeners: 1, waits: 1, stalls: 0 },
+				notStarted: [{ reason: 'The simulator host did not start capturing within 15 s', captureNotStarted: true }],
+				afterDrawnSilence: 2,
+				waits: 1,
+			});
+		} finally {
+			clock.restore();
+		}
+	});
+
 	// Tab・Escape も端末へ送るので、Escape を続けて 2 回でフォーカスを外へ出す（1 回目は端末へ届く）
 	test('sends the first Escape and leaves on the second', () => {
 		const { client, view } = setup();

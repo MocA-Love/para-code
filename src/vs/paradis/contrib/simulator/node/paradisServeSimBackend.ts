@@ -170,6 +170,7 @@ export class ParadisServeSimBackend extends Disposable {
 		const abort = new AbortController();
 		const started = Date.now();
 		let frames = 0;
+		let headerTimer: ReturnType<typeof setTimeout> | undefined;
 		const end = (error?: Error) => {
 			clearTimeout(headerTimer);
 			if (!disposed) {
@@ -178,14 +179,25 @@ export class ParadisServeSimBackend extends Disposable {
 				onEnd(error);
 			}
 		};
-		const headerTimer = setTimeout(() => {
-			const error = new ParadisSimulatorCaptureNotStartedError(udid, this._captureStartTimeoutMs);
-			this._logService.warn(`[paradis-simulator] video ${udid}: ${error.message}`);
-			end(error);
-			abort.abort();
-		}, this._captureStartTimeoutMs);
 		this._logService.info(`[paradis-simulator] video ${udid}: requested`);
-		this._get(`/helper/${udid}/stream.mjpeg`, abort.signal).then(res => {
+		// 期限はホストが準備できて要求を送った時点から数える（ホストの初回の起動は最長 20 秒かかり、それを
+		// 「取り込みが始まらない」と取り違えないため）
+		this._host.ensure().then(() => {
+			if (disposed) {
+				return undefined;
+			}
+			this._logService.info(`[paradis-simulator] video ${udid}: host ready after ${Date.now() - started} ms, request sent`);
+			headerTimer = setTimeout(() => {
+				const error = new ParadisSimulatorCaptureNotStartedError(udid, this._captureStartTimeoutMs);
+				this._logService.warn(`[paradis-simulator] video ${udid}: ${error.message}`);
+				end(error);
+				abort.abort();
+			}, this._captureStartTimeoutMs);
+			return this._get(`/helper/${udid}/stream.mjpeg`, abort.signal);
+		}).then(res => {
+			if (!res) {
+				return;
+			}
 			clearTimeout(headerTimer);
 			response = res;
 			if (disposed) {

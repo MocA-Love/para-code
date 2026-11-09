@@ -39,6 +39,14 @@ export const PARADIS_SIMULATOR_DOUBLE_ESCAPE_MS = 600;
 /** この間映像が届かなければ、流れが切れたとみなす（serve-sim は 1 秒ごとに送り直す）。 */
 export const PARADIS_SIMULATOR_STALL_MS = 5000;
 
+/**
+ * 購読を始めてから最初の 1 枚までの保険の期限。最初の 1 枚が来るまでは購読を切らず、shared process の判定
+ * （ホストの失敗はすぐ、頭が来なければホストの準備の後 15 秒で `ended`）を待つ。ホストの準備（最長 20 秒）と
+ * 頭の期限（15 秒）を足したより長くする。5 秒で切ると、shared process の 15 秒の判定が毎回取り消され、
+ * 「取り込みが始まらない」がペインに届かなかった。
+ */
+export const PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS = 45_000;
+
 /** 映像が描けないときに知らせるもの。 */
 export interface IParadisSimulatorStall {
 	readonly reason?: string;
@@ -74,8 +82,17 @@ export class ParadisSimulatorFrameView extends Disposable {
 	private _geometry: IParadisSimulatorDisplayGeometry = paradisSimulatorDisplayGeometry({ width: 0, height: 0 });
 	private _gestureEdge = ParadisSimulatorTouchEdge.None;
 	private readonly _stall: RunOnceScheduler;
+	/** 最初の 1 枚を待っている間の知らせ（購読は切らない）。 */
+	private readonly _waiting: RunOnceScheduler;
 	/** 最後に届いた 1 枚を <img> が描けなかった。 */
 	private _lastFrameUndecodable = false;
+	/** 今の購読で 1 枚でも描けたか・描けない 1 枚が来たか。 */
+	private _drawnSinceStart = false;
+	private _failedSinceStart = false;
+
+	private readonly _onDidWait = this._register(new Emitter<void>());
+	/** 購読を始めて {@link PARADIS_SIMULATOR_STALL_MS} たっても最初の 1 枚が来ない（まだ待っている）。 */
+	readonly onDidWait = this._onDidWait.event;
 
 	private readonly _onDidStall = this._register(new Emitter<IParadisSimulatorStall>());
 	/** 購読しているのに映像が描けない（流れが切れた）。分かっていれば理由を渡す。 */
@@ -117,6 +134,7 @@ export class ParadisSimulatorFrameView extends Disposable {
 		this._register(dom.addDisposableListener(this._image, 'load', () => this._onImageLoaded()));
 		this._register(dom.addDisposableListener(this._image, 'error', () => this._onImageFailed()));
 		this._stall = this._register(new RunOnceScheduler(() => this._onDidStall.fire({ reason: this._lastFrameUndecodable ? localize('paradis.simulator.undecodable', "届いた映像を表示できませんでした。") : undefined }), PARADIS_SIMULATOR_STALL_MS));
+		this._waiting = this._register(new RunOnceScheduler(() => this._onDidWait.fire(), PARADIS_SIMULATOR_STALL_MS));
 		this._registerPointer();
 		this._registerKeys();
 		this._register(toDisposable(() => {
@@ -143,10 +161,17 @@ export class ParadisSimulatorFrameView extends Disposable {
 		}
 		const store = new DisposableStore();
 		store.add(this._client.onFrames(this._udid)(message => this._onStreamEvent(message)));
-		store.add(toDisposable(() => this._stall.cancel()));
+		store.add(toDisposable(() => {
+			this._stall.cancel();
+			this._waiting.cancel();
+		}));
 		this._lastFrameUndecodable = false;
+		this._drawnSinceStart = false;
+		this._failedSinceStart = false;
 		this._subscription.value = store;
-		this._stall.schedule();
+		// 最初の 1 枚までは保険の期限だけ置き、5 秒では知らせだけ出す（購読は切らない）
+		this._stall.schedule(PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS);
+		this._waiting.schedule();
 	}
 
 	/** 購読を外す（エディタが見えなくなったとき）。端末のセッションは shared process 側に残る。 */
@@ -181,6 +206,7 @@ export class ParadisSimulatorFrameView extends Disposable {
 			// shared process で流れが終わった。途切れの判定を待たずに理由を知らせる
 			if (this._subscription.value) {
 				this._stall.cancel();
+				this._waiting.cancel();
 				this._onDidStall.fire({ reason: message.reason, captureNotStarted: message.captureNotStarted === true });
 			}
 			return;
@@ -218,6 +244,8 @@ export class ParadisSimulatorFrameView extends Disposable {
 		this._onDidDrawFrame.fire();
 		if (this._subscription.value) {
 			// 途切れの判定は、描けた 1 枚で延ばす（届いただけでは延ばさない）
+			this._drawnSinceStart = true;
+			this._waiting.cancel();
 			this._stall.schedule();
 			this._ack();
 		}
@@ -233,6 +261,11 @@ export class ParadisSimulatorFrameView extends Disposable {
 		this._pendingBytes = undefined;
 		this._urls.revoke(url);
 		this._lastFrameUndecodable = true;
+		// 最初の 1 枚より前に描けない 1 枚が来たら、保険の期限を待たずに 5 秒で知らせる（届いてはいるので頭の期限は効かない）
+		if (this._subscription.value && !this._drawnSinceStart && !this._failedSinceStart) {
+			this._failedSinceStart = true;
+			this._stall.schedule();
+		}
 		if (this._shownUrl) {
 			this._image.src = this._shownUrl;
 		} else {

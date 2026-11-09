@@ -55,6 +55,7 @@ type ParadisSimulatorNotice =
 	| { readonly kind: 'missing' }
 	| { readonly kind: 'shutdown' }
 	| { readonly kind: 'booting' }
+	| { readonly kind: 'waiting' }
 	| { readonly kind: 'stalled'; readonly reason?: string; readonly captureNotStarted?: boolean }
 	| { readonly kind: 'error'; readonly message: string };
 
@@ -225,10 +226,16 @@ export class ParadisSimulatorEditor extends EditorPane {
 			void this._readScreenConfig(session);
 		}));
 		session.add(input.onDidRequestBoot(() => void this._bootIfRequested(session)));
+		// 最初の 1 枚を 5 秒待っても来ない: 知らせだけ出す（購読は続け、shared process の判定を待つ）
+		session.add(session.frameView.onDidWait(() => {
+			if (this._noticeState.kind === 'none') {
+				this._setNotice({ kind: 'waiting' });
+			}
+		}));
 		session.add(session.frameView.onDidStall(stall => this._onStall(session, stall.reason, stall.captureNotStarted === true)));
 		session.add(session.frameView.onDidDrawFrame(() => {
 			this._stallCount = 0;
-			if (this._noticeState.kind === 'stalled') {
+			if (this._noticeState.kind === 'stalled' || this._noticeState.kind === 'waiting') {
 				this._setNotice({ kind: 'none' });
 			}
 			// 外の画面を映している間の 1 枚を覚えておき、内の画面に替わったら小窓に出す
@@ -303,7 +310,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 				session.input.setDeviceName(session.device.name);
 			}
 			// 起動しているなら、映像が届かない知らせは残す（消すのは 1 枚描けたとき）
-			const streaming: ParadisSimulatorNotice = this._noticeState.kind === 'stalled' ? this._noticeState : { kind: 'none' };
+			const streaming: ParadisSimulatorNotice = this._noticeState.kind === 'stalled' || this._noticeState.kind === 'waiting' ? this._noticeState : { kind: 'none' };
 			this._setNotice(!session.device ? { kind: 'missing' } : session.booted ? streaming : session.device.state === 'Booting' ? { kind: 'booting' } : { kind: 'shutdown' });
 		} catch (error) {
 			if (this._session.value === session) {
@@ -494,6 +501,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 				case 'missing': return localize('paradis.simulator.notice.missing', "この端末が見つかりません。Xcode で消された可能性があります。");
 				case 'shutdown': return localize('paradis.simulator.notice.shutdown', "この端末は起動していません。");
 				case 'booting': return localize('paradis.simulator.notice.booting', "起動しています…");
+				case 'waiting': return localize('paradis.simulator.notice.waiting', "映像を待っています…");
 				case 'error': return localize('paradis.simulator.notice.error', "シミュレータとつながりませんでした: {0}", notice.message);
 				case 'stalled': return notice.captureNotStarted
 					? localize('paradis.simulator.notice.captureNotStarted', "端末の取り込みが始まりません。シミュレータのホストが、この端末の映像を始めませんでした。「再試行」で直らないときは Para Code を終了して開き直してください。")
