@@ -178,7 +178,7 @@ export class ParadisAgentChatView extends Disposable {
 		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
-		this.element = append(container, $('.paradis-agent-chat'));
+		this.element = append(container, $('.paradis-agent-chat.paradis-focus-none'));
 		this.element.style.display = 'none';
 		this._register(toDisposable(() => this.element.remove()));
 		this._register(toDisposable(() => {
@@ -712,7 +712,7 @@ export class ParadisAgentChatView extends Disposable {
 
 	private renderCollapsible(key: string, icon: ThemeIcon, label: string, text: string, className: string, store: DisposableStore): HTMLElement {
 		const element = $(`.paradis-agent-chat-step.${className}`);
-		const row = append(element, $('button.paradis-agent-chat-step-row')) as HTMLButtonElement;
+		const row = append(element, $('button.paradis-agent-chat-step-row.paradis-focus-ring-inset')) as HTMLButtonElement;
 		row.type = 'button';
 		const expanded = this.expanded.has(key);
 		row.setAttribute('aria-expanded', String(expanded));
@@ -753,7 +753,7 @@ export class ParadisAgentChatView extends Disposable {
 		const element = $('.paradis-agent-chat-group');
 		// 見出しは中身が増えるたびに作り直すので、一覧の読み上げ（role="log"）で同じ見出しを読み直させない。
 		element.setAttribute('aria-live', 'off');
-		const row = append(element, $('button.paradis-agent-chat-step-row.paradis-agent-chat-group-row')) as HTMLButtonElement;
+		const row = append(element, $('button.paradis-agent-chat-step-row.paradis-focus-ring-inset.paradis-agent-chat-group-row')) as HTMLButtonElement;
 		row.type = 'button';
 		row.setAttribute('aria-expanded', String(open));
 		this.toggleRows.set(element, row);
@@ -870,7 +870,7 @@ export class ParadisAgentChatView extends Disposable {
 		const summary = paradisDescribeAgentChatTool(item.use, item.result);
 		const element = $('.paradis-agent-chat-step.tool');
 		element.classList.add(summary.state);
-		const row = append(element, $('button.paradis-agent-chat-step-row')) as HTMLButtonElement;
+		const row = append(element, $('button.paradis-agent-chat-step-row.paradis-focus-ring-inset')) as HTMLButtonElement;
 		row.type = 'button';
 		const expanded = this.expanded.has(item.key);
 		row.setAttribute('aria-expanded', String(expanded));
@@ -1290,7 +1290,7 @@ export class ParadisAgentChatView extends Disposable {
 		const pending = interaction?.kind === 'approval' && interaction.id === message.toolUseId;
 		if (!pending) {
 			const element = $('.paradis-agent-chat-step.approval-done');
-			const row = append(element, $('.paradis-agent-chat-step-row.static'));
+			const row = append(element, $('.paradis-agent-chat-step-row.paradis-focus-ring-inset.static'));
 			row.append(renderIcon(Codicon.shield), $('span.paradis-agent-chat-step-label', undefined, localize('paradisAgentChat.approvalAsked', "許可の確認")));
 			append(row, $('span.paradis-agent-chat-step-arg')).textContent = message.text.replace(/\s+/g, ' ');
 			return element;

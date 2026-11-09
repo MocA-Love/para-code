@@ -142,21 +142,21 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		};
 		this.contributions = ParadisLimitsPanelContributions.getAll().map(contribution => this._register(instantiationService.createInstance(contribution)));
 
-		this.element = $('.paradis-limits-panel.paradis-overlay-popover');
+		this.element = $('.paradis-limits-panel.paradis-overlay-popover.paradis-focus-none');
 		this.element.tabIndex = -1;
 
 		// 上端の見出しの行（本家のホバーの見出しと同じ並び）: 題・最後に取った時刻・更新・メールを番号に。
 		const header = dom.append(this.element, $('.plm-header'));
 		dom.append(header, $('span.plm-title')).textContent = localize('paradis.limitsMonitor.panelTitle', "AI 利用リミット");
 		this.updatedElement = dom.append(header, $('.plm-updated'));
-		this.refreshButton = dom.append(header, $('button.plm-icon-btn')) as HTMLButtonElement;
+		this.refreshButton = dom.append(header, $('button.plm-icon-btn.paradis-focus-ring-inset')) as HTMLButtonElement;
 		this.refreshButton.type = 'button';
 		const refreshLabel = localize('paradis.limitsMonitor.refreshAria', "更新");
 		this.refreshButton.setAttribute('aria-label', refreshLabel);
 		this.refreshButton.title = refreshLabel;
 		this.refreshButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		this._register(dom.addDisposableListener(this.refreshButton, 'click', () => this.options.onManualRefresh()));
-		this.maskButton = dom.append(header, $('button.plm-icon-btn.plm-mask-btn')) as HTMLButtonElement;
+		this.maskButton = dom.append(header, $('button.plm-icon-btn.plm-mask-btn.paradis-focus-ring-inset')) as HTMLButtonElement;
 		this.maskButton.type = 'button';
 		this._register(dom.addDisposableListener(this.maskButton, 'click', () => this.options.onToggleEmailMask()));
 		this.renderMaskButton();
@@ -287,7 +287,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			? localize('paradis.limitsMonitor.accountCountWithHidden', "{0} / {1} アカウント", visible, total)
 			: localize('paradis.limitsMonitor.accountCount', "{0} アカウント", total);
 		dom.append(header, $('.plm-provider-count')).textContent = countLabel;
-		const addButton = dom.append(header, $('button.plm-icon-btn.plm-add-btn')) as HTMLButtonElement;
+		const addButton = dom.append(header, $('button.plm-icon-btn.plm-add-btn.paradis-focus-ring-inset')) as HTMLButtonElement;
 		addButton.type = 'button';
 		addButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.add)}`));
 		const addLabel = localize('paradis.limitsMonitor.addAccountAria', "{0} のアカウントを追加", title);
@@ -414,7 +414,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		if (compact) {
 			card.classList.add('compact');
 			card.classList.toggle('expanded', expanded);
-			const toggle = dom.append(top, $('button.plm-account-toggle')) as HTMLButtonElement;
+			const toggle = dom.append(top, $('button.plm-account-toggle.paradis-focus-ring-inset')) as HTMLButtonElement;
 			toggle.type = 'button';
 			this.focusTargets.set(`compact:${compactKey}`, toggle);
 			toggle.setAttribute('aria-expanded', String(expanded));
@@ -558,7 +558,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 		const label = localize('paradis.limitsMonitor.accountMenu', "{0} のほかの操作", name);
 		card.classList.add('has-menu');
-		const button = dom.append(card, $('button.plm-account-icon-btn.plm-account-menu')) as HTMLButtonElement;
+		const button = dom.append(card, $('button.plm-account-icon-btn.plm-account-menu.paradis-focus-ring-inset')) as HTMLButtonElement;
 		button.type = 'button';
 		button.setAttribute('aria-label', label);
 		button.setAttribute('aria-haspopup', 'menu');

@@ -425,11 +425,6 @@
 	cursor: pointer;
 }
 
-.paradis-spreadsheet-validation-badge:focus-visible {
-	outline: 2px solid var(--vscode-focusBorder, #0078d4);
-	outline-offset: 1px;
-}
-
 .validation-added > .paradis-spreadsheet-validation-badge {
 	background: #22a447;
 }

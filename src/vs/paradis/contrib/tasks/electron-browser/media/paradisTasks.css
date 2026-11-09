@@ -16,10 +16,6 @@
 	font-size: 13px;
 }
 
-.paradis-tasks:focus {
-	outline: none;
-}
-
 .paradis-tasks-row {
 	display: flex;
 	flex-wrap: wrap;
@@ -129,15 +125,6 @@
 	border-radius: 6px;
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
-}
-
-.paradis-tasks-search:focus-within {
-	border-color: var(--vscode-focusBorder);
-}
-
-/* The box shows the focus. The workbench input[type="text"]:focus outline (0,3,1) would draw a second frame inside it. */
-.monaco-workbench .paradis-tasks-panel .paradis-tasks-search input:focus {
-	outline: none;
 }
 
 .paradis-tasks-search input {

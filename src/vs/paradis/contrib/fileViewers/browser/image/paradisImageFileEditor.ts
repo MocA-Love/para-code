@@ -131,7 +131,7 @@ export class ParadisImageFileEditor extends EditorPane {
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
-		const root = this._root = dom.append(parent, dom.$('.paradis-image-viewer.container.image.scale-to-fit'));
+		const root = this._root = dom.append(parent, dom.$('.paradis-image-viewer.paradis-focus-none.container.image.scale-to-fit'));
 		root.tabIndex = 0;
 		root.setAttribute('role', 'document');
 

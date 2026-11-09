@@ -157,7 +157,7 @@ export class ParadisWorkspacesNav extends Disposable {
 			if (hidden.has(item.id)) {
 				continue;
 			}
-			const row = DOM.append(this.navContainer, DOM.$(`.paradis-workspaces-nav-row.paradis-workspaces-nav-${item.id}`));
+			const row = DOM.append(this.navContainer, DOM.$(`.paradis-workspaces-nav-row.paradis-focus-ring-inset.paradis-workspaces-nav-${item.id}`));
 			row.tabIndex = rows.length === 0 ? 0 : -1;
 			rows.push(row);
 			row.setAttribute('role', 'button');
@@ -207,7 +207,7 @@ export class ParadisWorkspacesNav extends Disposable {
 	}
 
 	private headingButton(container: HTMLElement, icon: ThemeIcon, label: string, run: (anchor: HTMLElement) => void): HTMLElement {
-		const button = DOM.append(container, DOM.$('.paradis-workspaces-heading-button'));
+		const button = DOM.append(container, DOM.$('.paradis-workspaces-heading-button.paradis-focus-ring-inset'));
 		button.tabIndex = 0;
 		button.setAttribute('role', 'button');
 		button.setAttribute('aria-label', label);

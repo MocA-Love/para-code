@@ -70,21 +70,21 @@ suite('ParadisBrowserProfilePill', () => {
 		], [
 			{
 				text: '仕事用',
-				classes: ['is-named', 'paradis-browser-profile-pill'],
+				classes: ['is-named', 'paradis-browser-profile-pill', 'paradis-focus-ring-inset'],
 				children: ['pbp-pill-dot', 'pbp-pill-icon', 'pbp-pill-name', 'pbp-pill-chevron'],
 				hover: 'ブラウザプロファイル「仕事用」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。\nこのページにはエージェントがつながっていて、このプロファイルのログイン状態を使っています。',
 				ariaLabel: 'ブラウザプロファイル「仕事用」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。\nこのページにはエージェントがつながっていて、このプロファイルのログイン状態を使っています。 変更するには選択してください。',
 			},
 			{
 				text: 'グローバル',
-				classes: ['paradis-browser-profile-pill'],
+				classes: ['paradis-browser-profile-pill', 'paradis-focus-ring-inset'],
 				children: ['pbp-pill-dot', 'pbp-pill-icon', 'pbp-pill-name', 'pbp-pill-chevron'],
 				hover: 'ブラウザの保存スコープ: グローバル\nこのページにはエージェントがつながっています。',
 				ariaLabel: 'ブラウザの保存スコープ: グローバル\nこのページにはエージェントがつながっています。 変更するには選択してください。',
 			},
 			{
 				text: '仕事用',
-				classes: ['is-named', 'paradis-browser-profile-pill'],
+				classes: ['is-named', 'paradis-browser-profile-pill', 'paradis-focus-ring-inset'],
 				children: ['pbp-pill-dot', 'pbp-pill-icon', 'pbp-pill-name', 'pbp-pill-chevron'],
 				hover: 'ブラウザプロファイル「仕事用」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。',
 				ariaLabel: 'ブラウザプロファイル「仕事用」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。 変更するには選択してください。',

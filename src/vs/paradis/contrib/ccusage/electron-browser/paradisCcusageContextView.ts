@@ -243,7 +243,7 @@ function appendRows(container: HTMLElement, group: string, title: string, rows: 
 		const details = dom.append(container, $<HTMLDetailsElement>('details.paradis-ccusage-context-section.collapsible'));
 		details.dataset.group = group;
 		details.open = open;
-		const summary = dom.append(details, $('summary.heading'));
+		const summary = dom.append(details, $('summary.heading.paradis-focus-ring-inset'));
 		dom.append(summary, $('span.title')).textContent = title;
 		dom.append(summary, $('span.total')).textContent = localize('paradis.ccusage.context.groupCount', "{0} 件 · {1}", rows.length, total);
 		section = details;

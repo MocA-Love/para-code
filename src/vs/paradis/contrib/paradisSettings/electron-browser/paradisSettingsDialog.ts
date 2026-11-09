@@ -1958,7 +1958,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		this._register(paradisMarkSettingsDialogOpen());
 
 		// ---------- 見出しの行（検索欄と「変更は即保存されます」） ----------
-		const searchBox = dom.append(containers.header, $('.psd-search'));
+		const searchBox = dom.append(containers.header, $('.psd-search.paradis-focus-subtle-within'));
 		searchBox.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		this._searchInput = dom.append(searchBox, $('input')) as HTMLInputElement;
 		this._searchInput.type = 'text';

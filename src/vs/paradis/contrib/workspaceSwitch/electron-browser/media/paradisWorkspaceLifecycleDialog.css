@@ -52,11 +52,6 @@
 	cursor: default;
 }
 
-.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-details:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: var(--vscode-spacing-size20);
-}
-
 .monaco-workbench .paradis-workspace-lifecycle-dialog .plc-label {
 	font-size: var(--vscode-fontSize-label1);
 }
@@ -79,10 +74,6 @@
 	font-family: var(--monaco-monospace-font);
 	font-size: var(--vscode-fontSize-label1);
 	outline: none;
-}
-
-.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-script:focus-visible {
-	border-color: var(--vscode-focusBorder);
 }
 
 .monaco-workbench .paradis-workspace-lifecycle-dialog .plc-error {
@@ -186,11 +177,6 @@
 
 .monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-chip-remove:hover {
 	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-chip-remove:focus-visible,
-.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-input:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
 }
 
 .monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-input {

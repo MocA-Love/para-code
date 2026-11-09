@@ -96,7 +96,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 			store.add(this.renderLegacyNotice(container, legacy, context));
 		}
 		if (providerSnapshot.claudeSwapPresent) {
-			const button = dom.append(container, $('button.plm-card-action-link.plm-legacy-retire')) as HTMLButtonElement;
+			const button = dom.append(container, $('button.plm-card-action-link.plm-legacy-retire.paradis-focus-ring-inset')) as HTMLButtonElement;
 			button.type = 'button';
 			button.textContent = localize('paradis.claudeAccounts.retireClaudeSwap', "claude-swap はもう使わない");
 			button.disabled = this.retiringClaudeSwap;

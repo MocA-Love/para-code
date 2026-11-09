@@ -227,7 +227,7 @@ export class ParadisLayoutPresetEditor extends EditorPane {
 		dom.append(toolbar, $('.paradis-layout-toolbar-spacer'));
 		this.slotCountLabel = dom.append(toolbar, $('.paradis-layout-slot-count'));
 
-		const applyButton = dom.append(toolbar, $('button.paradis-layout-button')) as HTMLButtonElement;
+		const applyButton = dom.append(toolbar, $('button.paradis-layout-button.paradis-focus-ring')) as HTMLButtonElement;
 		// allow-any-unicode-next-line
 		applyButton.textContent = localize('paradis.layoutPresets.applyNow', "このレイアウトを適用");
 		this._register(dom.addDisposableListener(applyButton, dom.EventType.CLICK, () => {
@@ -238,7 +238,7 @@ export class ParadisLayoutPresetEditor extends EditorPane {
 			}
 		}));
 
-		const saveButton = dom.append(toolbar, $('button.paradis-layout-button.primary')) as HTMLButtonElement;
+		const saveButton = dom.append(toolbar, $('button.paradis-layout-button.primary.paradis-focus-ring')) as HTMLButtonElement;
 		saveButton.textContent = localize('paradis.layoutPresets.save', "保存");
 		this._register(dom.addDisposableListener(saveButton, dom.EventType.CLICK, () => {
 			const input = this.layoutInput;
@@ -363,7 +363,7 @@ export class ParadisLayoutPresetEditor extends EditorPane {
 		}
 
 		if (slotCount > 1) {
-			const remove = dom.append(header, $('button.paradis-layout-pane-remove')) as HTMLButtonElement;
+			const remove = dom.append(header, $('button.paradis-layout-pane-remove.paradis-focus-ring-inset')) as HTMLButtonElement;
 			dom.append(remove, $(ThemeIcon.asCSSSelector(Codicon.close)));
 			// allow-any-unicode-next-line
 			remove.title = localize('paradis.layoutPresets.removePane', "この枠を削除");

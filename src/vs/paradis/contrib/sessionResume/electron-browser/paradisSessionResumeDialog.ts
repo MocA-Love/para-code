@@ -172,7 +172,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		// ダイアログの殻。寸法は media/paradisSessionResume.css 側で指定する（3カラムの最小 936px を
 		// 満たす幅を既定にし、狭い画面では 94vw/92vh で頭打ちにして段階的に畳む）。
 		this.backdrop = $('.paradis-session-resume-backdrop.paradis-modal-backdrop');
-		this.modal = dom.append(this.backdrop, $('.paradis-session-resume-modal'));
+		this.modal = dom.append(this.backdrop, $('.paradis-session-resume-modal.paradis-focus-none'));
 		this.modal.tabIndex = -1;
 		this.modal.setAttribute('role', 'dialog');
 		this.modal.setAttribute('aria-modal', 'true');
@@ -180,7 +180,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 		const header = dom.append(this.modal, $('.paradis-session-resume-modal-header'));
 		dom.append(header, $('h2')).textContent = STR_DIALOG_TITLE;
-		const closeBtn = dom.append(header, $('button.paradis-session-resume-modal-close')) as HTMLButtonElement;
+		const closeBtn = dom.append(header, $('button.paradis-session-resume-modal-close.paradis-focus-ring-inset')) as HTMLButtonElement;
 		closeBtn.type = 'button';
 		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
 		closeBtn.setAttribute('aria-label', STR_DIALOG_CLOSE);
@@ -345,7 +345,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			['month', localize('paradis.sessionResume.periodMonth', "過去30日")],
 		] as const) {
 			const entry = this.createNavItem(chipRow, label);
-			entry.button.classList.add('fchip');
+			entry.button.classList.add('fchip', 'paradis-focus-ring-inset');
 			entry.button.dataset.periodFilter = value;
 			this._register(dom.addDisposableListener(entry.button, dom.EventType.CLICK, () => {
 				this.periodFilter = value;
@@ -377,7 +377,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this._register(dom.addDisposableListener(this.searchInput, dom.EventType.INPUT, () => this.onSearchInput()));
 		// 狭い幅では左ナビ(rail)が折りたたまれるため、検索バー右端にも開閉トグルと更新を置く。
 		const headActions = dom.append(searchWrap, $('.search-head-actions'));
-		this.railToggleButton = dom.append(headActions, $('button.paradis-session-resume-rail-toggle')) as HTMLButtonElement;
+		this.railToggleButton = dom.append(headActions, $('button.paradis-session-resume-rail-toggle.paradis-focus-ring-inset')) as HTMLButtonElement;
 		this.railToggleButton.type = 'button';
 		this.railToggleButton.title = localize('paradis.sessionResume.toggleFilterRail', "フィルターレールの表示を切り替え");
 		this.railToggleButton.setAttribute('aria-label', this.railToggleButton.title);
@@ -436,7 +436,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 	}
 
 	private createNavItem(parent: HTMLElement, label: string, decorate?: (button: HTMLButtonElement) => void): { button: HTMLButtonElement; count: HTMLElement } {
-		const button = dom.append(parent, $('button.nav-item')) as HTMLButtonElement;
+		const button = dom.append(parent, $('button.nav-item.paradis-focus-ring-inset')) as HTMLButtonElement;
 		button.type = 'button';
 		decorate?.(button);
 		dom.append(button, $('span.nav-label')).textContent = label;
@@ -445,7 +445,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 	/** 更新ボタンを作る。ラベル省略時はアイコンのみのコンパクト表示(リスト列ヘッダー用)。 */
 	private createRefreshButton(parent: HTMLElement, label?: string): HTMLButtonElement {
-		const button = dom.append(parent, $('button.paradis-session-resume-refresh')) as HTMLButtonElement;
+		const button = dom.append(parent, $('button.paradis-session-resume-refresh.paradis-focus-ring-inset')) as HTMLButtonElement;
 		button.type = 'button';
 		button.title = localize('paradis.sessionResume.refresh', "セッション履歴を更新");
 		button.setAttribute('aria-label', button.title);
@@ -497,7 +497,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			const wrapper = dom.append(this.railSpaceTree, $('.nav-tree-repo'));
 			wrapper.classList.toggle('expanded', expanded);
 			const row = dom.append(wrapper, $('.nav-repo-row'));
-			const twistie = dom.append(row, $(`button.nav-twistie${hasChildren ? '' : '.spacer'}`)) as HTMLButtonElement;
+			const twistie = dom.append(row, $(`button.nav-twistie.paradis-focus-ring-inset${hasChildren ? '' : '.spacer'}`)) as HTMLButtonElement;
 			twistie.type = 'button';
 			twistie.tabIndex = hasChildren ? 0 : -1;
 			twistie.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.chevronRight)}`));
@@ -862,7 +862,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		dom.append(summary, $('span.group-count')).textContent = String(sessions.length);
 		const rows = dom.append(details, $('.group-rows'));
 		for (const session of sessions) {
-			const row = dom.append(rows, $('button.paradis-session-resume-row')) as HTMLButtonElement;
+			const row = dom.append(rows, $('button.paradis-session-resume-row.paradis-focus-subtle')) as HTMLButtonElement;
 			row.classList.toggle('selected', session.catalogId === this.selected?.catalogId);
 			row.setAttribute('aria-pressed', String(session.catalogId === this.selected?.catalogId));
 			const top = dom.append(row, $('.row-top'));

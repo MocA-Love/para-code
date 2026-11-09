@@ -66,7 +66,7 @@ export class ParadisPortListPanel extends Disposable {
 	) {
 		super();
 
-		this.element = $('.paradis-port-list-panel.paradis-overlay-popover');
+		this.element = $('.paradis-port-list-panel.paradis-overlay-popover.paradis-focus-none');
 		this.element.tabIndex = -1;
 
 		const head = dom.append(this.element, $('.ppl-head'));
@@ -82,7 +82,7 @@ export class ParadisPortListPanel extends Disposable {
 		this._register(dom.addDisposableListener(closeButton, 'click', () => this.options.onClose()));
 
 		const search = dom.append(this.element, $('.ppl-search'));
-		const searchBox = dom.append(search, $('.ppl-search-box'));
+		const searchBox = dom.append(search, $('.ppl-search-box.paradis-focus-subtle-within'));
 		dom.append(searchBox, $(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		this.searchInput = dom.append(searchBox, $('input')) as HTMLInputElement;
 		this.searchInput.type = 'text';

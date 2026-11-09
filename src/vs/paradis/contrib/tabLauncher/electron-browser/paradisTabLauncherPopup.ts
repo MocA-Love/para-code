@@ -211,7 +211,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 		// 小窓はモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に浮かせない）
 		this._register(paradisCloseWhenModalOpens(this.list, () => this.hide(false)));
 
-		const search = dom.append(this.list, $('.paradis-tab-launcher-search'));
+		const search = dom.append(this.list, $('.paradis-tab-launcher-search.paradis-focus-subtle-within'));
 		dom.append(search, $(ThemeIcon.asCSSSelector(Codicon.search)));
 		this.searchInput = dom.append(search, $('input')) as HTMLInputElement;
 		this.searchInput.type = 'text';
@@ -790,7 +790,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 		};
 		let modelSearch: HTMLInputElement | undefined;
 		if (models.length > 0) {
-			const search = dom.append(element, $('.paradis-tab-launcher-search.paradis-tab-launcher-model-search'));
+			const search = dom.append(element, $('.paradis-tab-launcher-search.paradis-focus-subtle-within.paradis-tab-launcher-model-search'));
 			dom.append(search, $(ThemeIcon.asCSSSelector(Codicon.search)));
 			modelSearch = dom.append(search, $('input')) as HTMLInputElement;
 			modelSearch.type = 'text';
@@ -832,7 +832,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 			}
 			const values: (string | undefined)[] = [undefined, ...efforts.ids];
 			for (const value of values) {
-				const button = dom.append(effortValues, $('button.paradis-tab-launcher-segment')) as HTMLButtonElement;
+				const button = dom.append(effortValues, $('button.paradis-tab-launcher-segment.paradis-focus-ring-inset')) as HTMLButtonElement;
 				button.type = 'button';
 				button.setAttribute('role', 'radio');
 				button.textContent = value ?? (efforts.defaultEffort ? STR_DEFAULT_WITH(efforts.defaultEffort) : STR_DEFAULT);
@@ -856,7 +856,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 			dom.clearNode(permissionValues);
 			const selectedId = this.choiceFor(agent).permissionId;
 			for (const permission of permissions) {
-				const button = dom.append(permissionValues, $('button.paradis-tab-launcher-segment')) as HTMLButtonElement;
+				const button = dom.append(permissionValues, $('button.paradis-tab-launcher-segment.paradis-focus-ring-inset')) as HTMLButtonElement;
 				button.type = 'button';
 				button.setAttribute('role', 'radio');
 				button.textContent = permission.label;
@@ -873,7 +873,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 		};
 
 		// 最初の指示
-		const promptBox = dom.append(element, $('.paradis-tab-launcher-prompt'));
+		const promptBox = dom.append(element, $('.paradis-tab-launcher-prompt.paradis-focus-subtle-within'));
 		const prompt = dom.append(promptBox, $('textarea')) as HTMLTextAreaElement;
 		prompt.placeholder = STR_PROMPT;
 		prompt.setAttribute('aria-label', STR_PROMPT);
@@ -884,13 +884,13 @@ export class ParadisTabLauncherPopup extends Disposable {
 		const chatEnabled = this.configurationService.getValue<boolean>(PARADIS_AGENT_CHAT_ENABLED_SETTING) !== false;
 		const launch = (mode: 'terminal' | 'chat') => this.launch(agent, mode, prompt.value.trim());
 		if (chatEnabled) {
-			const chat = dom.append(footer, $('button.paradis-tab-launcher-button.secondary')) as HTMLButtonElement;
+			const chat = dom.append(footer, $('button.paradis-tab-launcher-button.paradis-focus-ring.secondary')) as HTMLButtonElement;
 			chat.type = 'button';
 			dom.append(chat, $('span')).textContent = STR_LAUNCH_CHAT;
 			dom.append(chat, $('span.paradis-tab-launcher-key')).textContent = isMacintosh ? '⌘↩' : 'Ctrl+↩';
 			chat.addEventListener('click', () => launch('chat'));
 		}
-		const terminal = dom.append(footer, $('button.paradis-tab-launcher-button.primary')) as HTMLButtonElement;
+		const terminal = dom.append(footer, $('button.paradis-tab-launcher-button.paradis-focus-ring.primary')) as HTMLButtonElement;
 		terminal.type = 'button';
 		dom.append(terminal, $('span')).textContent = STR_LAUNCH_TERMINAL;
 		dom.append(terminal, $('span.paradis-tab-launcher-key')).textContent = '↩';
