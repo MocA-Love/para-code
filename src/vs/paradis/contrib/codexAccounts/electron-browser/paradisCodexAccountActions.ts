@@ -245,7 +245,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		}
 		// 残数と次の期限を1つのリンクにし、押すと期限ごとの一覧（各行に「使う…」）を開く。
 		const open = this.expiriesOpen.has(account.id);
-		const toggle = dom.append(container, $('button.plm-card-action-link.plm-card-actions-start')) as HTMLButtonElement;
+		const toggle = dom.append(container, $('button.plm-card-action-link.plm-card-actions-start.paradis-focus-ring-inset')) as HTMLButtonElement;
 		toggle.type = 'button';
 		toggle.classList.toggle('soon', summary.nextDayOffset !== undefined && summary.nextDayOffset <= 1);
 		this.context?.trackFocus(toggle, `codex-expiries:${account.id}`);

@@ -54,10 +54,6 @@
 	color: var(--vscode-input-foreground);
 }
 
-.monaco-workbench .paradis-tab-launcher-search:focus-within {
-	border-color: var(--vscode-focusBorder);
-}
-
 .monaco-workbench .paradis-tab-launcher-search .codicon {
 	flex: none;
 	font-size: 14px;
@@ -73,11 +69,6 @@
 	color: inherit;
 	font: inherit;
 	font-size: 12.5px;
-}
-
-/* 枠（:focus-within）で示すので、ワークベンチ共通の入力欄のフォーカス枠は重ねない */
-.monaco-workbench .paradis-tab-launcher-search input[type="text"]:focus {
-	outline: none;
 }
 
 .monaco-workbench .paradis-tab-launcher-search input::placeholder {
@@ -315,11 +306,6 @@
 	box-shadow: inset 0 0 0 1px var(--vscode-errorForeground);
 }
 
-.monaco-workbench .paradis-tab-launcher-segment:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .monaco-workbench .paradis-tab-launcher-note {
 	padding: 1px 6px;
 	font-size: 11.5px;
@@ -342,10 +328,6 @@
 	border-radius: var(--vscode-cornerRadius-small);
 	background-color: var(--vscode-input-background);
 	border: 1px solid var(--vscode-input-border, transparent);
-}
-
-.monaco-workbench .paradis-tab-launcher-prompt:focus-within {
-	border-color: var(--vscode-focusBorder);
 }
 
 .monaco-workbench .paradis-tab-launcher-prompt textarea {
@@ -404,11 +386,6 @@
 
 .monaco-workbench .paradis-tab-launcher-button.secondary:hover {
 	background-color: var(--vscode-button-secondaryHoverBackground);
-}
-
-.monaco-workbench .paradis-tab-launcher-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
 }
 
 .monaco-workbench .paradis-tab-launcher-key {

@@ -35,11 +35,6 @@
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
-.monaco-workbench .browser-root .paradis-page-scripts-chip:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .monaco-workbench .paradis-page-scripts-unnamed {
 	font-family: var(--monaco-monospace-font);
 	color: var(--vscode-descriptionForeground);
@@ -176,11 +171,6 @@
 .monaco-workbench .paradis-page-scripts-icon-button:disabled {
 	opacity: 0.4;
 	cursor: default;
-}
-
-.monaco-workbench .paradis-page-scripts-icon-button:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .monaco-workbench .paradis-page-scripts-details-footer {

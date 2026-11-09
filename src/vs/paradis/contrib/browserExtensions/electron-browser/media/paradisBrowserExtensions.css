@@ -55,11 +55,6 @@
 	color: var(--vscode-list-inactiveSelectionForeground, inherit);
 }
 
-.paradis-hub .pbe-list-row:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-hub .pbpm-meta.is-error {
 	color: var(--vscode-errorForeground);
 }
@@ -193,10 +188,6 @@
 	user-select: text;
 }
 
-.paradis-browser-extensions-area .pbe-log:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-}
-
 .paradis-browser-extensions-area .pbe-log-line {
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
@@ -316,11 +307,6 @@
 	cursor: default;
 }
 
-.paradis-browser-extensions-area .pbpm-btn:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
-}
-
 .paradis-browser-extensions-area .pbpm-empty {
 	padding: 14px;
 	color: var(--vscode-descriptionForeground);
@@ -385,11 +371,6 @@
 	color: var(--vscode-input-foreground);
 	font-family: inherit;
 	font-size: 12.5px;
-}
-
-.paradis-browser-extensions-area .pbpm-input:focus {
-	outline: none;
-	border-color: var(--vscode-focusBorder);
 }
 
 /* ---------- the left nav of the unified modal: installed extensions ---------- */

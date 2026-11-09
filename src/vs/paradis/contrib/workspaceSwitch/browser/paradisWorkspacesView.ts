@@ -1504,7 +1504,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			this.navHeight = undefined;
 			this.relayout();
 		});
-		const treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list'));
+		const treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list.paradis-focus-subtle-list'));
 		// 明滅の位相合わせ。個々のドットではなくルート1箇所で受ける (行は使い回されるので、
 		// 要素ごとに張ると付け外しの管理が要る)。詳細は syncStatusBlinkPhase を参照。
 		this._register(DOM.addDisposableListener(treeContainer, 'animationstart', (event: AnimationEvent) => {

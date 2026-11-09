@@ -132,7 +132,7 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 	}
 
 	private _button(parent: HTMLElement, label: string, primary: boolean): HTMLButtonElement {
-		const button = dom.append(parent, $(`button.pbnt-button${primary ? '' : '.secondary'}`)) as HTMLButtonElement;
+		const button = dom.append(parent, $(`button.pbnt-button.paradis-focus-ring-inset${primary ? '' : '.secondary'}`)) as HTMLButtonElement;
 		button.type = 'button';
 		button.textContent = label;
 		return button;
@@ -207,7 +207,7 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 		dom.append(head, $('span.pbnt-caption-name')).textContent = caption;
 		const grid = dom.append(section, $('.pbnt-tiles'));
 		for (const tile of tiles) {
-			const button = dom.append(grid, $('button.pbnt-tile')) as HTMLButtonElement;
+			const button = dom.append(grid, $('button.pbnt-tile.paradis-focus-ring-inset')) as HTMLButtonElement;
 			button.type = 'button';
 			button.title = `${tile.title}\n${tile.url}`;
 			const icon = dom.append(button, $('span.pbnt-tile-icon'));

@@ -45,15 +45,15 @@ export class ParadisColorPickerWidget extends Disposable {
 		super();
 		this.element = dom.append(container, $('.paradis-tce-picker'));
 
-		this.saturation = dom.append(this.element, $('.paradis-tce-picker-sv', { role: 'slider', tabindex: '0', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': localize('paradis.themeColors.picker.sv', "彩度と明るさ") }));
+		this.saturation = dom.append(this.element, $('.paradis-tce-picker-sv.paradis-focus-ring', { role: 'slider', tabindex: '0', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': localize('paradis.themeColors.picker.sv', "彩度と明るさ") }));
 		dom.append(this.saturation, $('.paradis-tce-picker-sv-white'));
 		dom.append(this.saturation, $('.paradis-tce-picker-sv-black'));
 		this.saturationHandle = dom.append(this.saturation, $('.paradis-tce-picker-sv-handle'));
 
-		this.hue = dom.append(this.element, $('.paradis-tce-picker-strip.paradis-tce-picker-hue', { role: 'slider', tabindex: '0', 'aria-valuemin': '0', 'aria-valuemax': '360', 'aria-label': localize('paradis.themeColors.picker.hue', "色相") }));
+		this.hue = dom.append(this.element, $('.paradis-tce-picker-strip.paradis-focus-ring.paradis-tce-picker-hue', { role: 'slider', tabindex: '0', 'aria-valuemin': '0', 'aria-valuemax': '360', 'aria-label': localize('paradis.themeColors.picker.hue', "色相") }));
 		this.hueHandle = dom.append(this.hue, $('.paradis-tce-picker-strip-handle'));
 
-		this.alpha = dom.append(this.element, $('.paradis-tce-picker-strip.paradis-tce-picker-alpha', { role: 'slider', tabindex: '0', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': localize('paradis.themeColors.picker.alpha', "不透明度") }));
+		this.alpha = dom.append(this.element, $('.paradis-tce-picker-strip.paradis-focus-ring.paradis-tce-picker-alpha', { role: 'slider', tabindex: '0', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': localize('paradis.themeColors.picker.alpha', "不透明度") }));
 		this.alphaFill = dom.append(this.alpha, $('.paradis-tce-picker-alpha-fill'));
 		this.alphaHandle = dom.append(this.alpha, $('.paradis-tce-picker-strip-handle'));
 

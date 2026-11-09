@@ -15,10 +15,6 @@
 	font-size: 13px;
 }
 
-.paradis-sysusage-editor:focus {
-	outline: none;
-}
-
 .paradis-sysusage-editor-header {
 	display: flex;
 	flex-wrap: wrap;

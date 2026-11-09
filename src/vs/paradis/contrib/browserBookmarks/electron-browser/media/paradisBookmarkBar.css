@@ -112,11 +112,6 @@
 	outline: none;
 }
 
-/* Programmatic focus on the dialog root must not paint a frame. */
-.monaco-workbench .paradis-bookmark-dialog[tabindex="-1"]:focus {
-	outline: none;
-}
-
 /* The box is the shared S tier (paradisModal.ts). Header 35px, the upstream input, select and button steps. */
 .paradis-bookmark-dialog .pbm-header {
 	display: flex;
@@ -190,11 +185,6 @@
 	color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
 }
 
-.paradis-bookmark-dialog .pbm-input:focus,
-.paradis-bookmark-dialog .pbm-select:focus {
-	border-color: var(--vscode-focusBorder);
-}
-
 .paradis-bookmark-dialog .pbm-error {
 	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-errorForeground);
@@ -233,12 +223,6 @@
 .paradis-bookmark-dialog .pbm-icon-option.selected,
 .paradis-bookmark-dialog .pbm-color-swatch.selected {
 	background: var(--vscode-actionBar-toggledBackground, var(--vscode-toolbar-activeBackground));
-}
-
-.paradis-bookmark-dialog .pbm-icon-option:focus-visible,
-.paradis-bookmark-dialog .pbm-color-swatch:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .paradis-bookmark-dialog .pbm-color-dot {

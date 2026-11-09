@@ -325,7 +325,7 @@ export class ParadisUiColorView extends Disposable {
 			for (const entry of group.entries) {
 				const state = states.get(entry.id)!;
 				const selected = entry.id === this.selectedId;
-				const row = dom.append(this.items, $('.paradis-tce-item', { role: 'option', tabindex: selected ? '0' : '-1', 'aria-selected': String(selected) }));
+				const row = dom.append(this.items, $('.paradis-tce-item.paradis-focus-subtle', { role: 'option', tabindex: selected ? '0' : '-1', 'aria-selected': String(selected) }));
 				row.classList.toggle('selected', selected);
 				const swatch = dom.append(row, $('span.paradis-tce-swatch'));
 				const swatchValue = theme.getColor(entry.id)?.toString();

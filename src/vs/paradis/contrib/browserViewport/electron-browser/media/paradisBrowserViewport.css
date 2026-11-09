@@ -80,11 +80,6 @@
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
-.monaco-workbench .browser-root .paradis-browser-viewport-chip:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .monaco-workbench .browser-root .paradis-browser-viewport-chip[aria-expanded='true'] {
 	background-color: var(--vscode-list-activeSelectionBackground);
 	border-color: var(--vscode-focusBorder);
@@ -151,10 +146,6 @@
 	font-size: 12px;
 }
 
-.monaco-workbench .paradis-browser-viewport-dropdown[tabindex="-1"]:focus {
-	outline: none;
-}
-
 .paradis-browser-viewport-dropdown .pbv-list {
 	flex: 1;
 	min-height: 0;
@@ -180,10 +171,6 @@
 .paradis-browser-viewport-dropdown .pbv-row.is-focused {
 	background-color: var(--vscode-quickInputList-focusBackground, var(--vscode-list-activeSelectionBackground));
 	color: var(--vscode-quickInputList-focusForeground, var(--vscode-list-activeSelectionForeground));
-}
-
-.monaco-workbench .paradis-browser-viewport-dropdown .pbv-row[tabindex="-1"]:focus {
-	outline: none;
 }
 
 .monaco-workbench.hc-black .paradis-browser-viewport-dropdown .pbv-row.is-focused,
@@ -263,11 +250,6 @@
 	font-family: inherit;
 	font-size: 12px;
 	font-variant-numeric: tabular-nums;
-}
-
-.paradis-browser-viewport-dropdown .pbv-number:focus {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .paradis-browser-viewport-dropdown .pbv-number.is-invalid {

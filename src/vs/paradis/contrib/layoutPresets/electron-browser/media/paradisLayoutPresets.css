@@ -62,12 +62,6 @@
 	width: 200px;
 }
 
-.paradis-layout-name:focus,
-.paradis-layout-select:focus {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-layout-button {
 	height: 26px;
 	padding: 0 12px;
@@ -91,11 +85,6 @@
 
 .paradis-layout-button.primary:hover {
 	background-color: var(--vscode-button-hoverBackground);
-}
-
-.paradis-layout-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 2px;
 }
 
 .paradis-layout-hint {
@@ -192,12 +181,6 @@
 	font-size: 11px;
 }
 
-.paradis-layout-pane-kind:focus,
-.paradis-layout-pane-field:focus {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .paradis-layout-pane-remove {
 	display: flex;
 	align-items: center;
@@ -216,11 +199,6 @@
 .paradis-layout-pane-remove:hover {
 	background-color: var(--vscode-toolbar-hoverBackground);
 	color: var(--vscode-foreground);
-}
-
-.paradis-layout-pane-remove:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 /* 分割ゾーンの基準。ヘッダー（プルダウン・入力欄）まで覆わないよう、
@@ -375,11 +353,6 @@
 	background-color: var(--vscode-list-hoverBackground);
 }
 
-.paradis-layout-popover-item:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 /* 形のサムネイル。枠の割合をそのまま縮めて描くので、名前を読まなくても形が分かる。 */
 .paradis-layout-thumb {
 	display: flex;
@@ -482,8 +455,6 @@
 
 .paradis-layout-popover-action:focus-visible {
 	visibility: visible;
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .paradis-layout-popover-footer {

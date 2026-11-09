@@ -79,7 +79,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	) {
 		super();
 
-		this.element = $('.paradis-notification-inbox-popover.paradis-overlay-popover');
+		this.element = $('.paradis-notification-inbox-popover.paradis-overlay-popover.paradis-focus-none');
 		this.element.style.width = `${POPOVER_WIDTH}px`;
 		this.element.tabIndex = -1;
 		this.element.setAttribute('role', 'dialog');
@@ -234,7 +234,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	}
 
 	private renderRow(entry: IParadisInboxEntry): void {
-		const row = dom.append(this.list, $('.pnip-row'));
+		const row = dom.append(this.list, $('.pnip-row.paradis-focus-subtle'));
 		row.tabIndex = 0;
 		row.dataset.entryId = entry.id;
 		row.setAttribute('role', 'listitem');

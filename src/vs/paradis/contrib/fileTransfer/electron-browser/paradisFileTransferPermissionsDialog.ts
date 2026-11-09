@@ -160,10 +160,10 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 		}
 
 		const buttons = dom.append(modal, $('.para-ft-modal-buttons'));
-		const cancel = dom.append(buttons, $<HTMLButtonElement>('button.para-ft-button.secondary'));
+		const cancel = dom.append(buttons, $<HTMLButtonElement>('button.para-ft-button.paradis-focus-ring.secondary'));
 		cancel.type = 'button';
 		cancel.textContent = localize('paradis.fileTransfer.permissions.cancel', "キャンセル");
-		const change = dom.append(buttons, $<HTMLButtonElement>('button.para-ft-button.primary'));
+		const change = dom.append(buttons, $<HTMLButtonElement>('button.para-ft-button.paradis-focus-ring.primary'));
 		change.type = 'button';
 		change.textContent = localize('paradis.fileTransfer.permissions.apply', "変更");
 		store.add(dom.addDisposableListener(cancel, 'click', () => finish(undefined, true)));

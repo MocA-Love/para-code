@@ -147,7 +147,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 
 		this.root = DOM.append(container, DOM.$('.paradis-space-notes'));
 
-		const header = this.header = DOM.append(this.root, DOM.$('.paradis-space-notes-header'));
+		const header = this.header = DOM.append(this.root, DOM.$('.paradis-space-notes-header.paradis-focus-ring-inset'));
 		header.tabIndex = 0;
 		header.setAttribute('role', 'button');
 		this.twistie = DOM.append(header, DOM.$('.codicon'));
@@ -557,7 +557,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	 * Escape で終了する。
 	 */
 	private renderAddRow(): void {
-		const row = DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-add'));
+		const row = DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-add.paradis-focus-subtle-within'));
 		const icon = DOM.append(row, DOM.$('.codicon'));
 		icon.className = `codicon ${ThemeIcon.asClassName(Codicon.add).replace('codicon ', '')}`;
 
@@ -689,7 +689,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	}
 
 	private appendTaskCheck(row: HTMLElement): HTMLElement {
-		const check = DOM.append(row, DOM.$('.paradis-space-notes-check'));
+		const check = DOM.append(row, DOM.$('.paradis-space-notes-check.paradis-focus-ring-inset'));
 		const checkIcon = DOM.append(check, DOM.$('.codicon'));
 		checkIcon.className = `codicon ${ThemeIcon.asClassName(Codicon.check).replace('codicon ', '')}`;
 		return check;

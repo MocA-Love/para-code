@@ -35,12 +35,6 @@
 	-webkit-app-region: no-drag;
 }
 
-/* The popover takes focus itself (tabindex="-1") so it can close on blur. Keep the workbench's
-	focus outline (`.monaco-workbench [tabindex="-1"]:focus`) off its frame; the rows still show it. */
-.monaco-workbench .paradis-notification-inbox-popover[tabindex="-1"]:focus {
-	outline: none;
-}
-
 .monaco-workbench .paradis-notification-inbox-popover .pnip-header,
 .monaco-workbench .paradis-notification-inbox-popover .pnip-footer {
 	display: flex;
@@ -140,11 +134,6 @@
 .monaco-workbench.hc-black .paradis-notification-inbox-popover .pnip-row.unread .pnip-dot,
 .monaco-workbench.hc-light .paradis-notification-inbox-popover .pnip-row.unread .pnip-dot {
 	border: 1px solid var(--vscode-contrastBorder);
-}
-
-.monaco-workbench .paradis-notification-inbox-popover .pnip-row:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
 }
 
 .monaco-workbench .paradis-notification-inbox-popover .pnip-row-top {

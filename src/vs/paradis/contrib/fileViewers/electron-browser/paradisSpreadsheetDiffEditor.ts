@@ -1719,7 +1719,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			appendDiagonalOverlay(td, cell.diagonal);
 		}
 		if (validationChange) {
-			const badge = dom.append(td, $(`button.paradis-spreadsheet-validation-badge${ThemeIcon.asCSSSelector(Codicon.checklist)}`)) as HTMLButtonElement;
+			const badge = dom.append(td, $(`button.paradis-spreadsheet-validation-badge.paradis-focus-ring${ThemeIcon.asCSSSelector(Codicon.checklist)}`)) as HTMLButtonElement;
 			badge.type = 'button';
 			badge.title = localize('paradis.spreadsheet.validationChanged', "入力規則が変更されました");
 			badge.setAttribute('aria-label', localize('paradis.spreadsheet.validationCellLabel', "{1}の入力規則が{0}", this._validationStatusLabel(validationChange.status), validationChange.address));

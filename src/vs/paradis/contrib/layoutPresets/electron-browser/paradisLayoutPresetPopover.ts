@@ -131,7 +131,7 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 				// 行は button ではなく role="button" の div にする。button の中に button（編集・削除）を
 				// 入れるのは不正なネストで、内側を押した Enter が外側の既定動作（＝適用）まで
 				// 引いてしまう——キーボードだけ操作が逆になる、という気づきにくい壊れ方をする。
-				const item = dom.append(list, $('.paradis-layout-popover-item'));
+				const item = dom.append(list, $('.paradis-layout-popover-item.paradis-focus-ring-inset'));
 				item.setAttribute('role', 'button');
 				item.tabIndex = 0;
 				firstItem ??= item;
@@ -144,7 +144,7 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 
 				const actions = dom.append(item, $('.paradis-layout-popover-actions'));
 
-				const edit = dom.append(actions, $('button.paradis-layout-popover-action')) as HTMLButtonElement;
+				const edit = dom.append(actions, $('button.paradis-layout-popover-action.paradis-focus-ring-inset')) as HTMLButtonElement;
 				// allow-any-unicode-next-line
 				edit.title = localize('paradis.layoutPresets.popover.edit', "編集");
 				dom.append(edit, $(ThemeIcon.asCSSSelector(Codicon.edit)));
@@ -153,7 +153,7 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 					openEditor(preset.key);
 				}));
 
-				const remove = dom.append(actions, $('button.paradis-layout-popover-action')) as HTMLButtonElement;
+				const remove = dom.append(actions, $('button.paradis-layout-popover-action.paradis-focus-ring-inset')) as HTMLButtonElement;
 				// allow-any-unicode-next-line
 				remove.title = localize('paradis.layoutPresets.popover.delete', "削除");
 				dom.append(remove, $(ThemeIcon.asCSSSelector(Codicon.trash)));
@@ -191,7 +191,7 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 			}
 
 			const footer = dom.append(popover, $('.paradis-layout-popover-footer'));
-			const create = dom.append(footer, $('button.paradis-layout-button')) as HTMLButtonElement;
+			const create = dom.append(footer, $('button.paradis-layout-button.paradis-focus-ring')) as HTMLButtonElement;
 			// allow-any-unicode-next-line
 			create.textContent = localize('paradis.layoutPresets.popover.create', "新しいレイアウトを作成");
 			disposables.add(dom.addDisposableListener(create, dom.EventType.CLICK, () => openEditor(undefined)));

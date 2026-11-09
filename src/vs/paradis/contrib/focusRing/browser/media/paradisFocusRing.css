@@ -6,36 +6,55 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /*
-	The one file for focus rules in Para Code's own UI (UI kit stage 0, Q596). Focus shows as one outline, only for
-	keyboard focus, in the theme color paradis.focus (--vscode-paradis-focus, vs/paradis/common/paradisColors.ts); to
-	change the color, change that default only. Parts do not write :focus rules of their own and do not change
-	border-color or box-shadow on focus (that is how the double lines happened). build/lib/stylelint/paradisUiRules.ts
-	rejects :focus selectors in other src/vs/paradis CSS files; the ones written before this rule are listed in its
-	baseline and move here as their screens are rebuilt with the kit's parts.
+	The one file for focus rules in Para Code's own UI (UI kit stage 0, Q596; focus plan C, 2026-11-09). Parts do not
+	write :focus rules of their own and do not change border-color or box-shadow on focus (that is how the double lines
+	happened). build/lib/stylelint/paradisUiRules.ts rejects :focus selectors in other src/vs/paradis CSS files; the
+	ones written before this rule are listed in its baseline.
 
-	A part opts in with one marker class:
-	- paradis-focus-ring: outline outside the part (buttons, switches, drop-downs)
-	- paradis-focus-ring-inset: outline inside the part, so the next row or the surface edge does not cut it (rows, tabs)
-	- paradis-focus-ring-within: outline on a field's frame while the input inside it has focus (the input draws none)
+	Two kinds of ring, one outline each:
+	- Blue (--vscode-paradis-focus), keyboard focus only: buttons, pop-ups, menus, chips, tabs, switches.
+		paradis-focus-ring: outline outside the part. paradis-focus-ring-inset: outline inside the part, so the next row,
+		the surface edge or an overflow: hidden parent does not cut it.
+	- Gray (--vscode-paradis-focusSubtle), also after a mouse click: text fields, search fields and list rows, where the
+		user needs to see where typing goes or which row is current.
+		paradis-focus-subtle: on the field or row itself. paradis-focus-subtle-within: on a field's frame while the input
+		inside it has focus (the input draws none). paradis-focus-subtle-list: an upstream list or tree in a fork screen.
+	- paradis-focus-none: a container that takes focus only to receive keys (a pop-up or dialog root, tabindex="-1");
+		its parts show the focus.
+	Text fields of a fork screen that carry no class (upstream's InputBox in a fork dialog, for example) are gray as
+	well: paradisFocusRing.ts marks them with paradis-text-focus while they have focus.
+	The colors are theme colors (vs/paradis/common/paradisColors.ts); to change them, change the defaults there.
+	(0,3,2) and up beats the workbench's "Keyboard Focus Indication Styles" (0,3,1 at most,
+	src/vs/workbench/browser/media/style.css) without depending on the load order.
 */
-html .monaco-workbench .paradis-focus-ring:focus-visible {
+html body .monaco-workbench .paradis-focus-ring:focus-visible {
 	outline: var(--paradis-focus-width) solid var(--vscode-paradis-focus);
 	outline-offset: var(--paradis-focus-offset);
 }
 
-html .monaco-workbench .paradis-focus-ring-inset:focus-visible {
+html body .monaco-workbench .paradis-focus-ring-inset:focus-visible {
 	outline: var(--paradis-focus-width) solid var(--vscode-paradis-focus);
 	outline-offset: calc(var(--paradis-focus-width) * -1);
 }
 
-html .monaco-workbench .paradis-focus-ring-within:focus-within {
-	outline: var(--paradis-focus-width) solid var(--vscode-paradis-focus);
+html body .monaco-workbench :is(.paradis-focus-subtle, .paradis-text-focus):focus {
+	outline: 1px solid var(--vscode-paradis-focusSubtle);
 	outline-offset: -1px;
 }
 
-/* (0,3,2) beats the workbench's input[type="text"]:focus outline (0,3,1, src/vs/workbench/browser/media/style.css). */
-html .monaco-workbench .paradis-focus-ring-within :is(input, textarea):focus {
+html body .monaco-workbench .paradis-focus-subtle-within:focus-within {
+	outline: 1px solid var(--vscode-paradis-focusSubtle);
+	outline-offset: -1px;
+}
+
+html body .monaco-workbench .paradis-focus-subtle-within :is(input, textarea, select, [contenteditable]):focus,
+html body .monaco-workbench .paradis-focus-none:focus {
 	outline: none;
+}
+
+html body .monaco-workbench .paradis-focus-subtle-list {
+	--vscode-list-focusOutline: var(--vscode-paradis-focusSubtle);
+	--vscode-list-focusAndSelectionOutline: var(--vscode-paradis-focusSubtle);
 }
 
 /*

@@ -561,7 +561,7 @@ export class ParadisSyntaxColorView extends Disposable {
 
 		const addRow = (target: Target, label: string, description: string | undefined, mono: boolean) => {
 			const selected = this.sameTarget(target, this.target);
-			const row = dom.append(this.items, $('.paradis-tce-item', { role: 'option', tabindex: selected ? '0' : '-1', 'aria-selected': String(selected) }));
+			const row = dom.append(this.items, $('.paradis-tce-item.paradis-focus-subtle', { role: 'option', tabindex: selected ? '0' : '-1', 'aria-selected': String(selected) }));
 			row.classList.toggle('selected', selected);
 			const swatch = dom.append(row, $('span.paradis-tce-swatch'));
 			const text = dom.append(row, $('span.paradis-tce-item-id', undefined, label));

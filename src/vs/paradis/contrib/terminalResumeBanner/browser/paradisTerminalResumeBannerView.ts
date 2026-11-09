@@ -70,7 +70,7 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 			? localize('paradis.resumeBanner.headingClaude', "前回の Claude Code のセッションがあります")
 			: offer.agent === 'codex' ? localize('paradis.resumeBanner.headingCodex', "前回の Codex のセッションがあります")
 				: localize('paradis.resumeBanner.headingOpenCode', "前回の OpenCode のセッションがあります");
-		const close = dom.append(header, $(`button.paradis-terminal-resume-banner-close${ThemeIcon.asCSSSelector(Codicon.close)}`)) as HTMLButtonElement;
+		const close = dom.append(header, $(`button.paradis-terminal-resume-banner-close.paradis-focus-ring-inset${ThemeIcon.asCSSSelector(Codicon.close)}`)) as HTMLButtonElement;
 		close.type = 'button';
 		close.setAttribute('aria-label', localize('paradis.resumeBanner.dismiss', "閉じる（このタブでは再び表示しません）"));
 		close.title = close.getAttribute('aria-label') ?? '';
@@ -153,7 +153,7 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 
 	const renderHibernated = (store: DisposableStore, element: HTMLElement, header: HTMLElement, offer: IParadisResumeLedgerEntry, hibernation: IParadisResumeHibernation, target: number): void => {
 		dom.append(header, $('span.paradis-terminal-resume-banner-heading')).textContent = localize('paradis.resumeBanner.hibernatedHeading', "休止中: 押すと再開します");
-		const close = dom.append(header, $(`button.paradis-terminal-resume-banner-close${ThemeIcon.asCSSSelector(Codicon.close)}`)) as HTMLButtonElement;
+		const close = dom.append(header, $(`button.paradis-terminal-resume-banner-close.paradis-focus-ring-inset${ThemeIcon.asCSSSelector(Codicon.close)}`)) as HTMLButtonElement;
 		close.type = 'button';
 		close.setAttribute('aria-label', localize('paradis.resumeBanner.hibernatedDismiss', "閉じる（このタブでは再開しません）"));
 		close.title = close.getAttribute('aria-label') ?? '';

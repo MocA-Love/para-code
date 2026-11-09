@@ -62,7 +62,7 @@ suite('Paradis notification inbox popover', () => {
 		// 時刻（「now」など）は環境の言語で変わるので比べない。
 		const text = (row: HTMLElement, className: string) => (row.getElementsByClassName(className)[0] as HTMLElement | undefined)?.textContent;
 		const rendered = rows.map(row => ({
-			classes: [...row.classList].filter(name => name !== 'pnip-row').sort(),
+			classes: [...row.classList].filter(name => name !== 'pnip-row' && name !== 'paradis-focus-subtle').sort(),
 			kind: text(row, 'pnip-kind'),
 			space: text(row, 'pnip-space'),
 			detail: text(row, 'pnip-detail'),

@@ -94,7 +94,7 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 
 		// 開いたボタンのウィンドウに置く（補助ウィンドウのボタンから開いたとき、別の窓に出ないように）
 		this._container = layoutService.getContainer(dom.getWindow(options.anchor));
-		this._element = $('.paradis-browser-viewport-dropdown.paradis-overlay-popover');
+		this._element = $('.paradis-browser-viewport-dropdown.paradis-focus-none.paradis-overlay-popover');
 		this._element.tabIndex = -1;
 		this._listElement = dom.append(this._element, $('.pbv-list'));
 		this._listElement.setAttribute('role', 'listbox');
@@ -146,7 +146,7 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 
 	private _renderCustom(): void {
 		this._appendSeparator(localize('paradis.browserViewport.dropdown.custom', "自由に入力"));
-		const element = dom.append(this._listElement, $('.pbv-row.pbv-custom'));
+		const element = dom.append(this._listElement, $('.pbv-row.paradis-focus-none.pbv-custom'));
 		element.setAttribute('role', 'presentation');
 		const current = this.options.current;
 		const width = this._appendNumberInput(element, localize('paradis.browserViewport.dropdown.width', "幅"), current.width);
@@ -228,7 +228,7 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 		readonly marks: IParadisViewportDefaultMarks;
 		readonly run: () => void;
 	}): void {
-		const element = dom.append(this._listElement, $('.pbv-row'));
+		const element = dom.append(this._listElement, $('.pbv-row.paradis-focus-none'));
 		element.classList.toggle('is-selected', descriptor.selected);
 		element.setAttribute('role', 'option');
 		element.setAttribute('aria-selected', String(descriptor.selected));
@@ -254,7 +254,7 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 	}
 
 	private _appendActionRow(parent: HTMLElement, icon: ThemeIcon, label: string, run: () => void, checked?: boolean): void {
-		const element = dom.append(parent, $('button.pbv-row.pbv-action'));
+		const element = dom.append(parent, $('button.pbv-row.paradis-focus-none.pbv-action'));
 		this._prepareRow(element, run);
 		dom.append(element, $(`.pbv-check${checked ? ThemeIcon.asCSSSelector(Codicon.check) : ''}`));
 		dom.append(element, $(`.pbv-icon${ThemeIcon.asCSSSelector(icon)}`));

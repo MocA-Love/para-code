@@ -229,7 +229,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		this._storeInput.type = 'text';
 		this._storeInput.placeholder = localize('paradis.browserExtensions.store.placeholder', "Chrome ウェブストアのリンクか拡張機能の ID");
 		this._storeInput.setAttribute('aria-label', localize('paradis.browserExtensions.store.label', "Chrome ウェブストアから追加する拡張機能のリンクか ID"));
-		this._storeButton = dom.append(this._storeRow, $<HTMLButtonElement>('button.pbpm-btn.secondary'));
+		this._storeButton = dom.append(this._storeRow, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
 		this._storeButton.type = 'button';
 		this._storeButton.textContent = localize('paradis.browserExtensions.store.add', "ストアから追加");
 		this._register(dom.addDisposableListener(this._storeButton, dom.EventType.CLICK, () => void this._addFromWebStore()));
@@ -318,7 +318,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		}
 		this._noticeElement.style.display = '';
 		const text = dom.append(this._noticeElement, $('span'));
-		const button = dom.append(this._noticeElement, $<HTMLButtonElement>('button.pbpm-btn.primary'));
+		const button = dom.append(this._noticeElement, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.primary'));
 		button.type = 'button';
 		if (!state.active && !state.setting) {
 			text.textContent = localize('paradis.browserExtensions.notice.off', "試験的な機能です。今はオフになっています。オンにすると、再起動の後に使えます。");
@@ -388,7 +388,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	/** 一覧の 1 行（アイコン・名前・状態・この場所で有効にするチェック）。押すと詳細の列に出す。 */
 	private _renderListRow(extension: IParadisBrowserExtensionView, active: boolean): void {
 		const selected = extension.id === this._selectedId;
-		const row = dom.append(this._listElement, $('.phub-nav-item.pbe-list-row'));
+		const row = dom.append(this._listElement, $('.phub-nav-item.pbe-list-row.paradis-focus-subtle'));
 		row.classList.toggle('is-selected', selected);
 		row.setAttribute('role', 'option');
 		row.setAttribute('aria-selected', String(selected));
@@ -696,7 +696,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		section.classList.add('pbe-section-worker');
 		this._workerStatusElement = dom.append(section, $('.pbpm-meta'));
 		this._fillWorkerStatus(this._workerStatusElement, extension);
-		const log = dom.append(section, $('.pbe-log'));
+		const log = dom.append(section, $('.pbe-log.paradis-focus-ring-inset'));
 		log.setAttribute('role', 'log');
 		log.setAttribute('aria-label', localize('paradis.browserExtensions.worker.logLabel', "背景の処理のログ"));
 		log.tabIndex = 0;
@@ -750,7 +750,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	}
 
 	private _appendDetailButton(parent: HTMLElement, label: string, disabled: boolean, run: () => Promise<unknown>): HTMLButtonElement {
-		const button = dom.append(parent, $<HTMLButtonElement>('button.pbpm-btn.secondary'));
+		const button = dom.append(parent, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
 		button.type = 'button';
 		button.textContent = label;
 		button.disabled = disabled || this._busy;
@@ -766,10 +766,10 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		dom.append(title, $('span')).textContent = localize('paradis.browserExtensions.confirmTitle', "「{0}」を削除しますか？", extension.name);
 		dom.append(popover, $('p')).textContent = localize('paradis.browserExtensions.confirmBody', "すべての場所から外し、この拡張機能が保存したデータも消します（消しきるのは次の起動の後です。それまでは入れ直せません）。元のフォルダは消しません。");
 		const buttons = dom.append(popover, $('.pbpm-confirm-actions'));
-		const cancel = dom.append(buttons, $<HTMLButtonElement>('button.pbpm-btn.secondary'));
+		const cancel = dom.append(buttons, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
 		cancel.type = 'button';
 		cancel.textContent = localize('paradis.browserExtensions.confirmCancel', "キャンセル");
-		const confirm = dom.append(buttons, $<HTMLButtonElement>('button.pbpm-btn.danger'));
+		const confirm = dom.append(buttons, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.danger'));
 		confirm.type = 'button';
 		confirm.textContent = localize('paradis.browserExtensions.confirmRemove', "削除する");
 		this._renderStore.add(dom.addDisposableListener(cancel, 'click', () => this._render()));
