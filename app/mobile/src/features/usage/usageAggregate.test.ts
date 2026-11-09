@@ -468,6 +468,13 @@ describe('取得の失敗', () => {
 describe('usageCache', () => {
 	const KEY = new Uint8Array(32).fill(7);
 
+	it('PC で隠したアカウント（hiddenAccounts）も控えに残す（オフラインの PC が隠した分を合計から外し続けるため）', () => {
+		const value = { ...limits([]), claude: { accounts: [], hiddenAccounts: [{ provider: 'claude' as const, id: 'para-claude:h', email: 'h@x' }] } };
+		const record = { kind: 'pc' as const, pcId: 'a', pcName: 'A', values: { limits: { value, at: NOW, receivedAt: NOW } } };
+		const opened = openUsageRecord(KEY, sealUsageRecord(KEY, 'pc:a', record, NOW), 'a', NOW);
+		expect(opened?.record.values.limits?.value.claude.hiddenAccounts).toEqual([{ provider: 'claude', id: 'para-claude:h', email: 'h@x' }]);
+	});
+
 	it('7日を過ぎた値を落とし、値が残らなければ出どころごと落とす', () => {
 		const record = { kind: 'pc' as const, pcId: 'a', pcName: 'A', values: { cost: { value: dashboard([{ date: TODAY, cost: 1 }]), at: NOW - HOUR, receivedAt: NOW }, rtk: { value: rtk([], 1), at: NOW - USAGE_CACHE_TTL_MS - 1 } } };
 		expect(Object.entries(pruneUsageRecord(record, NOW)!.values).filter(([, value]) => value !== undefined).map(([kind]) => kind)).toEqual(['cost']);
