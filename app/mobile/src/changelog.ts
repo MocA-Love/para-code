@@ -41,7 +41,7 @@ export interface MobileRelease {
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
 		version: '0.12.20',
-		date: '2026-11-09',
+		date: '2026-11-10',
 		items: [
 			{
 				icon: 'eye-off-outline',
