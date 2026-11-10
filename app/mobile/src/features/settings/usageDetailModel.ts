@@ -135,6 +135,16 @@ export function aggregateModels(data: UsageDashboardResult, windowDays: number, 
 }
 
 /**
+ * トークンを使っているのに金額が 0 のモデル（PC の ccusage の価格表がまだそのモデルを知らない）があれば、
+ * 「金額に含まれていない」ことを知らせる 1 行を返す。特定のモデル名は決め打ちしない（PC の使用量の画面と同じ判定）。
+ * 上位だけに切る前の一覧を渡すこと（金額 0 のモデルは並びの最後に来る）。
+ */
+export function unpricedModelNote(models: readonly ModelCost[]): string | undefined {
+	const names = models.filter(model => model.tokens > 0 && !(model.cost > 0)).map(model => model.model);
+	return names.length > 0 ? `${names.join('・')} は使用量の集計がまだ価格に対応していないため、金額に含まれていません` : undefined;
+}
+
+/**
  * 直近 windowDays 日のプロジェクト別の合計（コストの多い順、0 円は除く）。
  * プロジェクトの記録はエージェントの内訳を持たないので、エージェントの絞り込みは効かない。
  */

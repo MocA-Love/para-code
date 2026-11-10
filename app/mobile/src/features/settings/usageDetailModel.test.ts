@@ -20,6 +20,7 @@ import {
 	recentDailyCosts,
 	recentRtkDays,
 	savingsPercent,
+	unpricedModelNote,
 	unsupportedRequestMessage,
 	updateCostWarmLeaseLifecycle,
 	updateSystemSpaceDiskWarmLeaseLifecycle,
@@ -71,6 +72,16 @@ describe('コスト', () => {
 	it('日別は新しい日から並べ、記録の無い日は 0', () => {
 		const days = recentDailyCosts(DASHBOARD, 3, 'all', NOW);
 		expect(days).toEqual([{ date: '2026-09-26', cost: 4 }, { date: '2026-09-25', cost: 0 }, { date: '2026-09-24', cost: 2 }]);
+	});
+
+	it('トークンがあるのに金額が 0 のモデルだけを注記に出す', () => {
+		expect(unpricedModelNote([
+			{ model: 'claude-opus-5', agent: 'claude', cost: 5, tokens: 30 },
+			{ model: 'claude-mythos-5-2', agent: 'claude', cost: 0, tokens: 20 },
+			{ model: 'gpt-6', agent: 'codex', cost: Number.NaN, tokens: 10 },
+			{ model: 'claude-haiku-5', agent: 'claude', cost: 0, tokens: 0 },
+		])).toBe('claude-mythos-5-2・gpt-6 は使用量の集計がまだ価格に対応していないため、金額に含まれていません');
+		expect(unpricedModelNote([{ model: 'claude-opus-5', agent: 'claude', cost: 5, tokens: 30 }])).toBeUndefined();
 	});
 
 	it('トークン数を短く書く', () => {

@@ -28,6 +28,7 @@ import {
 	barPercent,
 	formatCompactTokens,
 	recentDailyCosts,
+	unpricedModelNote,
 	updateCostWarmLeaseLifecycle,
 	type AgentFilter,
 } from '../../../src/features/settings/usageDetailModel.js';
@@ -161,7 +162,10 @@ export default function CostScreen() {
 			: undefined;
 	const dailyCosts = data !== undefined ? recentDailyCosts(data, DAILY_WINDOW_DAYS, agentFilter, now) : [];
 	const maxDailyCost = Math.max(0.01, ...dailyCosts.map(d => d.cost));
-	const models = data !== undefined ? aggregateModels(data, period, agentFilter, now).slice(0, TOP_MODELS) : [];
+	const allModels = data !== undefined ? aggregateModels(data, period, agentFilter, now) : [];
+	const models = allModels.slice(0, TOP_MODELS);
+	// 金額 0 のモデルは並びの最後に来るので、上位に切る前の一覧で判定する。
+	const unpricedNote = unpricedModelNote(allModels);
 	const maxModelCost = Math.max(0.01, ...models.map(m => m.cost));
 	const projects = data !== undefined ? aggregateProjects(data, period, now).slice(0, TOP_PROJECTS) : [];
 	const maxProjectCost = Math.max(0.01, ...projects.map(p => p.cost));
@@ -274,6 +278,7 @@ export default function CostScreen() {
 							/>
 						))}
 					</DetailCard>
+					{unpricedNote !== undefined ? <DetailMessage tone="note">{unpricedNote}</DetailMessage> : null}
 
 					<GroupHeader title={`プロジェクト別（直近${period}日）`} />
 					<DetailCard>
