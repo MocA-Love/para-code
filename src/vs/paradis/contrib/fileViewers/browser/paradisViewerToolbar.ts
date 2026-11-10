@@ -7,13 +7,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ファイルビューア（Markdown・HTML・CSV・PDF・Excel・Word とそれぞれの差分）の上に置く共通のバー。
-// 高さ 32・エディタの地・下に 1px の線。ボタンは本家の ActionBar と同じ 22px のアイコン、表示の切り替えは
-// 本家の検索欄の Aa と同じ Toggle（inputOption）の見た目にする。Markdown・HTML の「プレビュー | ソース」と Markdown の
-// 本文の幅は UI キットの切り替えの組（28px）で、それが収まるように帯を 32 にしている。並びは左に状態（件数・凡例・切り替え）、
-// 右に「表示の切り替え → 拡大率 → 前後の移動 → 外部で開く」を区切り線で分けて置く。
+// 高さ 32・エディタの地・下に 1px の線。右のボタンは UI キットのボタン（paradisButton.ts）の 24px で、アイコンだけの物は
+// アイコンのボタン、拡大率と表示の切り替え（変更点・入力規則・書式の変更）は素のボタンにし、オンの切り替えは選んだ塗りにする。
+// 「プレビュー | ソース」「表 | テキスト」と Markdown の本文の幅は UI キットの切り替えの組（28px）で、それが収まるように帯を 32 にしている。
+// 並びは左に状態（件数・凡例・切り替え）、右に「表示の切り替え → 拡大率 → 前後の移動 → 外部で開く」を区切り線で分けて置く。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { paradisButtonClasses, ParadisButtonKind } from '../../../browser/paradisButton.js';
 import './media/paradisViewerToolbar.css';
 
 /** 帯の高さ（px）。帯の下から始める物（PDF の webview・Word の変更点パネル）はこの値を使う。CSS の `--paradis-height-lg` と同じ。 */
@@ -65,31 +66,39 @@ export function appendParadisViewerToolbarSeparator(parent: HTMLElement): HTMLEl
 	return separator;
 }
 
-/** アイコンだけのボタン（本家の ActionBar の項目と同じ 22px）。 */
-export function appendParadisViewerToolbarIconButton(parent: HTMLElement, icon: ThemeIcon, title: string): HTMLButtonElement {
-	const button = dom.append(parent, dom.$('button.paradis-viewer-toolbar-button')) as HTMLButtonElement;
+/**
+ * 帯の中のキットのボタン（24px）。帯は 32 で上下の余白が 4px しかなく、外に描くフォーカスの枠（幅 2・間 2）は帯の
+ * `overflow: hidden` で欠けるので、枠はボタンの内側に描く（`paradis-focus-ring-inset`）。
+ */
+function appendParadisViewerToolbarKitButton(parent: HTMLElement, kind: ParadisButtonKind, className: string): HTMLButtonElement {
+	const button = dom.append(parent, dom.$(`button.${className}`)) as HTMLButtonElement;
 	button.type = 'button';
+	button.classList.add(...paradisButtonClasses(kind, true).filter(name => name !== 'paradis-focus-ring'), 'paradis-focus-ring-inset');
+	return button;
+}
+
+/** アイコンだけのボタン（UI キットのアイコンのボタンの 24px）。 */
+export function appendParadisViewerToolbarIconButton(parent: HTMLElement, icon: ThemeIcon, title: string): HTMLButtonElement {
+	const button = appendParadisViewerToolbarKitButton(parent, 'icon', 'paradis-viewer-toolbar-button');
 	button.title = title;
 	button.setAttribute('aria-label', title);
 	dom.append(button, dom.$(`span${ThemeIcon.asCSSSelector(icon)}`));
 	return button;
 }
 
-/** 拡大率を出し、押すと 100% に戻すボタン。 */
+/** 拡大率を出し、押すと 100% に戻すボタン（素のボタン、幅 44 以上）。 */
 export function appendParadisViewerToolbarPercent(parent: HTMLElement, title: string): HTMLButtonElement {
-	const button = dom.append(parent, dom.$('button.paradis-viewer-toolbar-percent')) as HTMLButtonElement;
-	button.type = 'button';
+	const button = appendParadisViewerToolbarKitButton(parent, 'ghost', 'paradis-viewer-toolbar-percent');
 	button.title = title;
 	return button;
 }
 
 /**
- * 表示の切り替え（押すとオン・オフが替わる、または複数のうち 1 つを選ぶ）。見た目は本家の Toggle。
+ * 表示の切り替え（押すとオン・オフが替わる）。見た目は素のボタンで、オンのときは選んだ塗り。
  * オンの状態は {@link setParadisViewerToolbarOptionChecked} で付け外す。
  */
 export function appendParadisViewerToolbarOption(parent: HTMLElement, label: string, icon?: ThemeIcon): HTMLButtonElement {
-	const button = dom.append(parent, dom.$('button.paradis-viewer-toolbar-option')) as HTMLButtonElement;
-	button.type = 'button';
+	const button = appendParadisViewerToolbarKitButton(parent, 'ghost', 'paradis-viewer-toolbar-option');
 	button.setAttribute('aria-pressed', 'false');
 	if (icon) {
 		dom.append(button, dom.$(`span${ThemeIcon.asCSSSelector(icon)}`));
@@ -99,30 +108,13 @@ export function appendParadisViewerToolbarOption(parent: HTMLElement, label: str
 }
 
 /**
- * 表示の切り替えのオン・オフを付け外す。1 つを選ぶ組の項目（`role="radio"`）は `aria-checked` を、
- * パネルを開け閉めするボタン（`aria-expanded` を持つもの）は `aria-expanded` を、それ以外は `aria-pressed` を合わせる。
+ * 表示の切り替えのオン・オフを付け外す。パネルを開け閉めするボタン（`aria-expanded` を持つもの）は `aria-expanded` を、
+ * それ以外は `aria-pressed` を合わせる。
  */
 export function setParadisViewerToolbarOptionChecked(button: HTMLElement, checked: boolean): void {
 	button.classList.toggle('checked', checked);
-	const attribute = button.getAttribute('role') === 'radio' ? 'aria-checked' : button.hasAttribute('aria-expanded') ? 'aria-expanded' : 'aria-pressed';
+	const attribute = button.hasAttribute('aria-expanded') ? 'aria-expanded' : 'aria-pressed';
 	button.setAttribute(attribute, String(checked));
-}
-
-/** 1 つだけを選ぶ組（「プレビュー | ソース」など）。`role="radiogroup"` を付ける。 */
-export function appendParadisViewerToolbarChoiceGroup(parent: HTMLElement, className: string, ariaLabel: string): HTMLElement {
-	const group = appendParadisViewerToolbarGroup(parent, className);
-	group.setAttribute('role', 'radiogroup');
-	group.setAttribute('aria-label', ariaLabel);
-	return group;
-}
-
-/** {@link appendParadisViewerToolbarChoiceGroup} の中の 1 項目（`role="radio"`）。 */
-export function appendParadisViewerToolbarChoice(parent: HTMLElement, label: string): HTMLButtonElement {
-	const button = appendParadisViewerToolbarOption(parent, label);
-	button.removeAttribute('aria-pressed');
-	button.setAttribute('role', 'radio');
-	button.setAttribute('aria-checked', 'false');
-	return button;
 }
 
 /**
