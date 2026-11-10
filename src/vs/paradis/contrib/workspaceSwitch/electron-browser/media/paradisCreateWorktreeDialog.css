@@ -364,6 +364,8 @@
 .paradis-create-worktree-dialog.pcw-d .pcw-d-input,
 .paradis-create-worktree-dialog.pcw-d .pcw-d-area {
 	width: 100%;
+	/* The padding and border stay inside the 100% (otherwise the fields stick out past the body's padding). */
+	box-sizing: border-box;
 	background: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
 	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
@@ -398,37 +400,23 @@
 /* --- エージェントセグメント --- */
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-agent-seg {
+	/* The kit's segmented control (paradisSegmented.css) across the whole row. On a narrow window the buttons wrap to a
+		second row instead of breaking their labels into two lines. */
 	display: flex;
-	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
-	border-radius: 6px;
-	padding: 2px;
-	gap: 2px;
+	flex-wrap: wrap;
+	width: 100%;
+	height: auto;
+	min-height: var(--paradis-height-md);
+	overflow: visible;
 }
 
-.paradis-create-worktree-dialog.pcw-d .pcw-d-agent-btn {
-	flex: 1;
+.paradis-create-worktree-dialog.pcw-d .pcw-d-agent-seg > .pcw-d-agent-btn {
+	flex: 1 1 auto;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	gap: 6px;
-	appearance: none;
-	border: none;
-	background: transparent;
-	color: var(--vscode-descriptionForeground);
-	border-radius: 4px;
-	padding: 5px 10px;
-	font-family: inherit;
-	font-size: 12px;
-	cursor: pointer;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-agent-btn:hover:not(.active) {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-agent-btn.active {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
+	gap: var(--vscode-spacing-size60);
+	min-height: calc(var(--paradis-height-md) - 6px);
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-agent-icon {
@@ -474,14 +462,9 @@
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-sub-select {
-	background: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
-	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
-	border-radius: 5px;
-	padding: 4px 8px;
+	/* The kit draws the frame and keeps room on the right for the chevron (paradisSelect.css). */
 	font-family: inherit;
 	font-size: 12px;
-	outline: none;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-perm-line {
@@ -555,14 +538,8 @@
 .paradis-create-worktree-dialog.pcw-d .pcw-d-adv-select {
 	flex: 1;
 	min-width: 0;
-	background: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
-	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
-	border-radius: 5px;
-	padding: 4px 8px;
 	font-family: inherit;
 	font-size: 12px;
-	outline: none;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-branch-select {
@@ -570,12 +547,19 @@
 	font-size: 11.5px;
 }
 
-/* setup 行は折りたたみの中でも他の行と同じ骨格に収める */
+/* setup 行は折りたたみの中でも他の行と同じ骨格に収める。狭い窓ではスクリプトを次の行へ送る（切らない） */
 .paradis-create-worktree-dialog.pcw-d .pcw-setup-row {
 	background: transparent;
 	border: none;
 	border-radius: 0;
 	padding: 0;
+	flex-wrap: wrap;
+	row-gap: var(--vscode-spacing-size60);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-setup-row > .pcw-setup-script {
+	min-width: 0;
+	max-width: 100%;
 }
 
 /* --- フッター --- */
@@ -612,4 +596,109 @@
 	margin-left: 6px;
 	font-size: 10px;
 	opacity: 0.85;
+}
+
+/* --- 既存のブランチ（q.html Q605 案 A） --- */
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-mode {
+	display: flex;
+	min-width: 0;
+}
+
+/* 既存のブランチではスペース名を 1 列にする（ブランチ名の欄は隠れる） */
+.paradis-create-worktree-dialog.pcw-d .pcw-d-two > .pcw-d-field.hidden {
+	display: none;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-fetch-status {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	min-height: 16px;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-fetch-status > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-fetch-status.warning > .codicon {
+	color: var(--vscode-paradis-warning);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-fetch-text {
+	min-width: 0;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-fetch-status > .paradis-button {
+	margin-left: auto;
+	flex: none;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note {
+	display: flex;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	margin-top: var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-control);
+	background: var(--vscode-paradis-raised);
+	color: var(--vscode-paradis-text);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.55;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note.warning {
+	border-color: color-mix(in srgb, var(--vscode-paradis-warning) 40%, transparent);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note > .codicon {
+	flex: none;
+	margin-top: 2px;
+	color: var(--vscode-paradis-accent);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note.warning > .codicon {
+	color: var(--vscode-paradis-warning);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note-body code {
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textStrong);
+	overflow-wrap: anywhere;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note-sub {
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note .paradis-check {
+	align-items: flex-start;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note .paradis-check.pcw-d-sync-danger > .paradis-check-label {
+	color: var(--vscode-paradis-danger);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-branch-note-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
+}
+
+/* 隠す指定は最後に置き、上の display の指定に勝たせる */
+.paradis-create-worktree-dialog.pcw-d .hidden {
+	display: none;
 }
