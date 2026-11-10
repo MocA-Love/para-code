@@ -22,6 +22,7 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { ITextEditorOptions } from '../../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
+import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
@@ -153,6 +154,7 @@ function createHarness(store: Pick<DisposableStore, 'add'>, configuration: Recor
 		{ notify: () => undefined } as unknown as INotificationService,
 		new TestConfigurationService(configuration),
 		filesConfigurationService,
+		NullHoverService,
 	));
 	editor.create(parent);
 	// ワークベンチはエディタを開くと見える状態にする（隠れている間の変更は見えたときにまとめて読み直す）
