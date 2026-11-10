@@ -40,10 +40,11 @@ import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { paradisWasTerminalShellRestarted } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
 import { paradisChangeDirectoryCommand } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
+import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { paradisIsAtEmptyPrompt } from '../../terminalPromptInput/browser/paradisPromptInputEmpty.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../browser/paradisTerminalResumeBannerView.js';
 import { IParadisAgentHibernationHost, ParadisAgentHibernationController, ParadisHibernationResumeOutcome } from '../../agentHibernation/electron-browser/paradisAgentHibernationController.js';
-import { IParadisResumeLedgerEntry, paradisIsHookFromBeforeHibernation, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
+import { IParadisResumeLedgerEntry, paradisIsHookFromBeforeHibernation, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredTerminalLostAgent, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
 
 const LEDGER_STORAGE_KEY = 'paradis.terminal.resumeSessions';
 /** 台帳の書き出しをまとめる間隔。hook はツールを使うたびに届くので、毎回は書かない。 */
@@ -118,7 +119,9 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			this._shuttingDown = true;
 			this.persist();
 		}));
-		for (const instance of this.terminalService.instances) {
+		// ほかのスペースのタブは、起動後に孤児から拾い直されて park されている（どのエディタにも無いので
+		// `instances` に入らない）。この contribution より先に拾い直しが済んでいても見落とさないよう、両方を見る。
+		for (const instance of [...this.terminalService.instances, ...paradisListParkedTerminalEditorInstances()]) {
 			this.considerRestoredInstance(instance);
 		}
 		this._register(instantiationService.createInstance(ParadisAgentHibernationController, this));
@@ -255,8 +258,10 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 
 	/**
 	 * 復元したターミナルで、前に動いていたエージェントがもう居ないなら、前の会話を案内する。
-	 * 判定はシェルのプロセス ID で行う（`paradisRestoredShellWasRestarted`）。子プロセスの有無は
-	 * 使えない。エディタのタブの直列化が終了時点の値（エージェントが居た = true）を持ち越すため。
+	 * 判定はシェルのプロセス ID と、pty host がシェルを起こし直した印で行う（`paradisRestoredTerminalLostAgent`）。
+	 * ほかのスペースのタブは park されたまま候補になり、そのスペースへ切り替えてタブが開いたときに帯が描かれる。
+	 * 前面のタブでは子プロセスの有無は使えない。エディタのタブの直列化が終了時点の値（エージェントが居た = true）を
+	 * 持ち越すため（孤児から拾い直したタブの値は pty host の一覧を取った時点のもの）。
 	 */
 	private considerRestoredInstance(instance: ITerminalInstance): void {
 		if (this._instanceListeners.has(instance.instanceId)) {
@@ -281,8 +286,6 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			return;
 		}
 		this._restoredAt.set(instance.instanceId, Date.now());
-		const previousPid = attach?.pid;
-		const adopted = attach?.paradisAdopted === true;
 		void instance.processReady.then(() => {
 			const token = this.ledgerKeyForInstance(instance.instanceId);
 			const entry = token === undefined ? undefined : this._restoredLedger.get(token);
@@ -290,7 +293,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			// 印を付けた後、止める前に落ちた場合は、エージェントが生きていて hook が届くと印が外れる（onSnapshot）。外れていれば休止の帯は出さない
 			const current = token === undefined ? undefined : this._ledger.get(token);
 			const hibernated = entry?.hibernated !== undefined && current?.hibernated !== undefined;
-			if (instance.isDisposed || !(hibernated || restartedAfterFailedAttach || paradisRestoredShellWasRestarted(previousPid, instance.processId, adopted))) {
+			if (instance.isDisposed || !(hibernated || restartedAfterFailedAttach || (attach !== undefined && paradisRestoredTerminalLostAgent(attach, instance.processId)))) {
 				return;
 			}
 			if (token === undefined || entry === undefined || current?.sessionId !== entry.sessionId) {

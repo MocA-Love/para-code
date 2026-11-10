@@ -10,7 +10,7 @@ import assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/runWithFakedTimers.js';
-import { PARADIS_RESUME_LEDGER_TTL_MS, ParadisResumeBannerChoice, paradisIsHookFromBeforeHibernation, paradisResumeBannerChoiceCommand, paradisResumeBannerLayout, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
+import { PARADIS_RESUME_LEDGER_TTL_MS, ParadisResumeBannerChoice, paradisIsHookFromBeforeHibernation, paradisResumeBannerChoiceCommand, paradisResumeBannerLayout, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisRestoredTerminalLostAgent, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
 
 suite('paradisTerminalResumeBanner', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -192,6 +192,31 @@ suite('paradisTerminalResumeBanner', () => {
 			reloaded: false,
 			adoptedByDaemon: false,
 			unknownPrevious: false,
+			notReady: false,
+		});
+	});
+
+	// 起動時に裏にあったスペースのタブは、孤児から拾い直して今の世代の ID で繋ぐので ID では比べられない。
+	// pty host がシェルを起こし直した印で判定し、印が残ったまま会話が動いているタブ（再起動の後に続けて、
+	// ウィンドウだけ再読み込みした）には出さない。
+	test('a tab picked up again for another space counts as restarted unless the same shell still runs the agent', () => {
+		assert.deepStrictEqual({
+			frontSpaceRestarted: paradisRestoredTerminalLostAgent({ pid: 100 }, 200),
+			frontSpaceReloaded: paradisRestoredTerminalLostAgent({ pid: 100, hasChildProcesses: true }, 100),
+			otherSpaceRevivedNotStartedYet: paradisRestoredTerminalLostAgent({ pid: -1, hasChildProcesses: false, paradisRevivedFromPersistentProcessId: 7 }, 300),
+			otherSpaceRevivedAlreadyStarted: paradisRestoredTerminalLostAgent({ pid: 300, hasChildProcesses: false, paradisRevivedFromPersistentProcessId: 7 }, 300),
+			otherSpaceAgentStillRunning: paradisRestoredTerminalLostAgent({ pid: 300, hasChildProcesses: true, paradisRevivedFromPersistentProcessId: 7 }, 300),
+			otherSpaceNotRevived: paradisRestoredTerminalLostAgent({ pid: 300, hasChildProcesses: false }, 300),
+			adoptedByDaemon: paradisRestoredTerminalLostAgent({ pid: 300, paradisAdopted: true, paradisRevivedFromPersistentProcessId: 7 }, 400),
+			notReady: paradisRestoredTerminalLostAgent({ pid: -1, paradisRevivedFromPersistentProcessId: 7 }, undefined),
+		}, {
+			frontSpaceRestarted: true,
+			frontSpaceReloaded: false,
+			otherSpaceRevivedNotStartedYet: true,
+			otherSpaceRevivedAlreadyStarted: true,
+			otherSpaceAgentStillRunning: false,
+			otherSpaceNotRevived: false,
+			adoptedByDaemon: false,
 			notReady: false,
 		});
 	});
