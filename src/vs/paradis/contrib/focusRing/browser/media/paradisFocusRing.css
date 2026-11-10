@@ -18,7 +18,7 @@
 	- Gray (--vscode-paradis-focusSubtle), also after a mouse click: text fields, search fields and list rows, where the
 		user needs to see where typing goes or which row is current.
 		paradis-focus-subtle: on the field or row itself. paradis-focus-subtle-within: on a field's frame while the input
-		inside it has focus (the input draws none). paradis-focus-subtle-list: an upstream list or tree in a fork screen.
+		inside it has focus (the input, and upstream's InputBox around it, draw none). paradis-focus-subtle-list: an upstream list or tree in a fork screen.
 	- paradis-focus-none: a container that takes focus only to receive keys (a pop-up or dialog root, tabindex="-1");
 		its parts show the focus.
 	Text fields of a fork screen that carry no class (upstream's InputBox in a fork dialog, for example) are gray as
@@ -47,7 +47,10 @@ html body .monaco-workbench .paradis-focus-subtle-within:focus-within {
 	outline-offset: -1px;
 }
 
+/* Inside a frame that draws the gray ring, nothing draws a second one: neither the input itself nor upstream's InputBox,
+	which marks its element with .synthetic-focus while the input has focus (the kit's text field, paradisInputField.ts). */
 html body .monaco-workbench .paradis-focus-subtle-within :is(input, textarea, select, [contenteditable]):focus,
+html body .monaco-workbench .paradis-focus-subtle-within .monaco-inputbox.synthetic-focus,
 html body .monaco-workbench .paradis-focus-none:focus {
 	outline: none;
 }
