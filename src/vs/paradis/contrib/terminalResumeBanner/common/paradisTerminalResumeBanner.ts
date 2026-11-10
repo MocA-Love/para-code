@@ -221,6 +221,38 @@ export function paradisRestoredShellWasRestarted(previousPid: number | undefined
 	return !adopted && previousPid !== undefined && previousPid > 0 && currentPid !== undefined && currentPid !== previousPid;
 }
 
+/** 復元したタブが繋いだ先（`attachPersistentProcess`）のうち、エージェントが居なくなったかの判定に使うもの。 */
+export interface IParadisRestoredAttachTarget {
+	readonly pid?: number;
+	readonly hasChildProcesses?: boolean;
+	readonly paradisAdopted?: boolean;
+	readonly paradisRevivedFromPersistentProcessId?: number;
+}
+
+/**
+ * 復元したタブで、前に動いていたエージェントがもう居ないか（前回の会話を案内してよいか）。
+ *
+ * 起動時に前面だったスペースのタブは前回のプロセス ID のまま繋ぐので、ID の違い
+ * （`paradisRestoredShellWasRestarted`）で分かる。ほかのスペースのタブは、起動後に pty host の
+ * 孤児から拾い直して今の世代の ID で繋ぐので、ID では比べられない。代わりに、pty host が
+ * 保存した画面からシェルを起こし直した印（`paradisRevivedFromPersistentProcessId`）を見る。
+ *
+ * この印は pty host が生きている間は残る。アプリの再起動の後にそのタブで会話を続け、ウィンドウだけ
+ * 再読み込みすると、印が付いたままエージェントが動いている。そのときは同じプロセスに繋いでいて、
+ * 子プロセスがある（一覧を取った時点の値）ので、案内しない。
+ */
+export function paradisRestoredTerminalLostAgent(attach: IParadisRestoredAttachTarget, currentPid: number | undefined): boolean {
+	const adopted = attach.paradisAdopted === true;
+	if (paradisRestoredShellWasRestarted(attach.pid, currentPid, adopted)) {
+		return true;
+	}
+	if (adopted || attach.paradisRevivedFromPersistentProcessId === undefined || currentPid === undefined) {
+		return false;
+	}
+	const sameProcess = attach.pid !== undefined && attach.pid > 0 && attach.pid === currentPid;
+	return !(sameProcess && attach.hasChildProcesses === true);
+}
+
 /**
  * 会話を始めたフォルダ（台帳の `cwd`）と、タブのシェルの今のフォルダが違うか。
  *
