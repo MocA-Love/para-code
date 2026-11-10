@@ -17,7 +17,7 @@ import { installParadisFocusQuieting, PARADIS_POINTER_FOCUS_CLASS } from '../../
 // 本家の workbench の規則（src/vs/workbench/browser/media/style.css の Keyboard Focus Indication Styles）と同じもの。
 // テストの画面には読み込まれないので、ここで同じ規則を足す。fork の画面の CSS が使うテーマの色も入れる
 // （未定義の var() を含む outline は無効になり、枠が無いように見えてしまう）。
-const WORKBENCH_FOCUS_RULE = `.monaco-workbench { --vscode-focusBorder: red; --vscode-paradis-focus: rgb(0, 0, 255); --vscode-paradis-focusSubtle: rgb(128, 128, 128); --paradis-focus-width: 2px; --paradis-focus-offset: 2px; } .monaco-workbench [tabindex="0"]:focus, .monaco-workbench [tabindex="-1"]:focus, .monaco-workbench select:focus, .monaco-workbench button:focus, .monaco-workbench input[type="text"]:focus, .monaco-workbench input[type="checkbox"]:focus { outline-width: 1px; outline-style: solid; outline-offset: -1px; outline-color: red; }`;
+const WORKBENCH_FOCUS_RULE = `.monaco-workbench { --vscode-focusBorder: red; --vscode-paradis-focus: rgb(0, 0, 255); --vscode-paradis-focusSubtle: rgb(128, 128, 128); --paradis-focus-width: 2px; --paradis-focus-offset: 2px; } .monaco-workbench [tabindex="0"]:focus, .monaco-workbench [tabindex="-1"]:focus, .monaco-workbench select:focus, .monaco-workbench button:focus, .monaco-workbench input[type="text"]:focus, .monaco-workbench input[type="checkbox"]:focus, .monaco-workbench .synthetic-focus { outline-width: 1px; outline-style: solid; outline-offset: -1px; outline-color: red; }`;
 
 // 読み込む CSS: この機能の規則と、確かめる fork の画面の実物の CSS（自前のフォーカスの規則と一緒に効くかを見る）。
 const STYLESHEETS: AppResourcePath[] = [
@@ -208,6 +208,8 @@ suite('Paradis focus ring', () => {
 			'<div class="paradis-panel"><input type="text" id="plainText"></div>',
 			// 外枠が描く検索欄（設定・プリセットなど）。中の入力欄は枠を描かない
 			'<div class="psd-search paradis-focus-subtle-within" id="frame"><input type="text" id="framedText"></div>',
+			// キットの入力欄（paradisInputField.ts）: 外枠の中の本家の InputBox は、フォーカス中に .synthetic-focus が付く
+			'<div class="paradis-field paradis-focus-subtle-within" id="kitField"><div class="monaco-inputbox synthetic-focus" id="kitBox"><input type="text" id="kitText"></div></div>',
 			// 一覧の行
 			'<div class="pnip-row paradis-focus-subtle" tabindex="0" id="row">row</div>',
 			// 青の枠の部品と、Esc を受けるだけの入れ物
@@ -224,12 +226,14 @@ suite('Paradis focus ring', () => {
 		assert.deepStrictEqual({
 			plainText: [ring('plainText', 'plainText', false), ring('plainText', 'plainText', true)],
 			frame: [ring('frame', 'framedText', false), ring('framedText', 'framedText', false)],
+			kitField: [ring('kitField', 'kitText', false), ring('kitBox', 'kitText', false), ring('kitText', 'kitText', false)],
 			row: [ring('row', 'row', false), ring('row', 'row', true)],
 			popover: [ring('popover', 'popover', true)],
 			blueButton: [ring('blueButton', 'blueButton', false), ring('blueButton', 'blueButton', true)],
 		}, {
 			plainText: ['solid 1px rgb(128, 128, 128)', 'solid 1px rgb(128, 128, 128)'],
 			frame: ['solid 1px rgb(128, 128, 128)', 'none'],
+			kitField: ['solid 1px rgb(128, 128, 128)', 'none', 'none'],
 			row: ['solid 1px rgb(128, 128, 128)', 'solid 1px rgb(128, 128, 128)'],
 			popover: ['none'],
 			blueButton: ['none', 'solid 2px rgb(0, 0, 255)'],
