@@ -1,0 +1,216 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * The "Changes" panel and the analysis chips of the Excel and Word viewers and their diffs
+ * (paradisOfficeInspectorParts.ts). The panel is the UI kit's popup surface floating below the viewer toolbar
+ * (whatever its height); the chips are the kit's chips (paradisBadges.css); the buttons inside are the kit's small
+ * secondary buttons, chips for the category filters and 28px rows for the lists.
+ */
+
+/* ---------- the panel ---------- */
+
+.monaco-workbench .paradis-office-change-panel {
+	position: absolute;
+	top: calc(var(--paradis-viewer-toolbar-height, var(--paradis-height-lg)) + var(--vscode-spacing-size80));
+	right: var(--vscode-spacing-size120);
+	z-index: 3;
+	box-sizing: border-box;
+	width: 360px;
+	max-width: calc(100% - 24px);
+	max-height: 70%;
+	overflow: auto;
+	color: var(--vscode-paradis-text);
+	background: var(--vscode-paradis-popup);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	box-shadow: var(--vscode-shadow-lg);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.monaco-workbench .paradis-office-change-panel > :is(.paradis-spreadsheet-change-inspector, .paradis-word-change-inspector) {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	padding: 0 var(--vscode-spacing-size120) var(--vscode-spacing-size120);
+}
+
+/* The panel's title is its header line, like the kit's popup. */
+.monaco-workbench .paradis-office-change-panel > * > strong:first-child {
+	display: flex;
+	align-items: center;
+	flex: none;
+	height: 40px;
+	margin: 0 calc(var(--vscode-spacing-size120) * -1);
+	padding: 0 var(--vscode-spacing-size120);
+	border-bottom: var(--paradis-popover-header-border);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+/* Counts and sub-headings inside the lists. */
+.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-spreadsheet-comment-list, .paradis-spreadsheet-search-results, .paradis-word-search-results) {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size20);
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-spreadsheet-comment-list) > span:first-child {
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* Category filters: a row of chips that turn on with the selected fill. */
+.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-change-categories, .paradis-word-change-categories, .paradis-word-story-counts, .paradis-word-display-modes) {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size40);
+}
+
+/* ---------- the rows of the lists ---------- */
+
+.monaco-workbench .paradis-office-inspector-row {
+	box-sizing: border-box;
+	display: block;
+	width: 100%;
+	min-width: 0;
+	min-height: var(--paradis-height-md);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size60);
+	border: 0;
+	border-radius: var(--paradis-radius-control);
+	background: transparent;
+	color: var(--vscode-paradis-text);
+	font: inherit;
+	text-align: left;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-office-inspector-row:hover {
+	background: var(--vscode-paradis-fillHover);
+}
+
+.monaco-workbench .paradis-office-inspector-row[aria-current="true"] {
+	color: var(--vscode-paradis-textStrong);
+	background: var(--vscode-paradis-fillSelected);
+}
+
+/* Secondary buttons that toggle a mode (Word's display modes) show "on" with the selected fill. */
+.monaco-workbench .paradis-office-change-panel .paradis-button[aria-pressed="true"] {
+	color: var(--vscode-paradis-textStrong);
+	background-color: var(--vscode-paradis-fillSelected);
+}
+
+.monaco-workbench .paradis-office-change-panel .paradis-button:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+/* Pagers and zoom: buttons and the status in one line. */
+.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-inspector-pager, .paradis-word-inspector-pager, .paradis-word-inspector-zoom) {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* The search form: the kit's text field and a small button. */
+.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-search, .paradis-word-search) {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-search, .paradis-word-search) > .paradis-field {
+	flex: 1;
+}
+
+.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-search, .paradis-word-search) input::-webkit-search-cancel-button {
+	display: none;
+}
+
+.monaco-workbench .paradis-office-change-panel > * > .paradis-button {
+	align-self: flex-start;
+}
+
+/* Warnings (print, analysis failures) in the warning color. */
+.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-print-warning, .paradis-word-print-warning, .paradis-word-analysis-failure, .paradis-office-inspector-warning) {
+	color: var(--vscode-paradis-warning);
+}
+
+/* ---------- Excel's notes and comments ---------- */
+
+.monaco-workbench .paradis-spreadsheet-comment-item {
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size60);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-control);
+}
+
+.monaco-workbench .paradis-spreadsheet-comment-item .paradis-spreadsheet-comment-resolved,
+.monaco-workbench .paradis-spreadsheet-comment-entry .paradis-spreadsheet-comment-time {
+	margin-left: var(--vscode-spacing-size60);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .paradis-spreadsheet-comment-entry + .paradis-spreadsheet-comment-entry {
+	margin-left: var(--vscode-spacing-size120);
+	padding-top: var(--vscode-spacing-size20);
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+.monaco-workbench .paradis-spreadsheet-comment-text {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+/* ---------- Word's analysis breakdown ---------- */
+
+.monaco-workbench .paradis-word-analysis {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .paradis-word-analysis-row {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .paradis-word-analysis-row > span:last-child {
+	color: var(--vscode-paradis-textMuted);
+	font-variant-numeric: tabular-nums;
+}
+
+/* ---------- read-out only ---------- */
+
+.monaco-workbench :is(.paradis-spreadsheet-change-live, .paradis-word-change-live) {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+/* ---------- the analysis chips in the toolbar ---------- */
+
+.monaco-workbench :is(.paradis-spreadsheet-diagnostics, .paradis-word-diagnostics) {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	min-width: 0;
+}
+
+.monaco-workbench :is(.paradis-spreadsheet-diagnostics, .paradis-word-diagnostics) > .paradis-chip {
+	max-width: 320px;
+}

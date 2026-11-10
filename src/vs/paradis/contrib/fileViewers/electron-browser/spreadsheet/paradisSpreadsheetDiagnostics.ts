@@ -6,6 +6,7 @@
 
 import * as dom from '../../../../../base/browser/dom.js';
 import { localize } from '../../../../../nls.js';
+import { markParadisOfficeWarning, styleParadisOfficeChip } from '../paradisOfficeInspectorParts.js';
 import {
 	canReportNoChanges,
 	type ParadisOfficeCompletenessManifest,
@@ -56,15 +57,11 @@ export function canShowSpreadsheetNoChanges(manifest: ParadisOfficeCompletenessM
 	return canReportNoChanges(manifest, outcome, changeCount);
 }
 
-function appendRibbonItem(parent: HTMLElement, text: string, kind: string): void {
+function appendRibbonItem(parent: HTMLElement, text: string, kind: string): HTMLElement {
 	const item = dom.append(parent, dom.$('span.paradis-spreadsheet-diagnostic-item'));
 	item.dataset.kind = kind;
-	item.style.display = 'inline-flex';
-	item.style.alignItems = 'center';
-	item.style.padding = '1px 6px';
-	item.style.border = `1px solid ${PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border}`;
-	item.style.borderRadius = '2px';
-	item.textContent = text;
+	styleParadisOfficeChip(item, text);
+	return item;
 }
 
 /** Renders only text nodes and typed attributes; workbook strings never enter HTML parsing. */
@@ -75,24 +72,22 @@ export function renderSpreadsheetDiagnosticsRibbon(container: HTMLElement, input
 	ribbon.setAttribute('role', 'status');
 	ribbon.setAttribute('aria-live', 'polite');
 	ribbon.setAttribute('aria-atomic', 'true');
-	ribbon.style.display = 'flex';
-	ribbon.style.flexWrap = 'wrap';
-	ribbon.style.alignItems = 'center';
-	ribbon.style.gap = '4px';
-	ribbon.style.color = PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.foreground;
 	appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.faithful', "完全再現 {0}", summary.faithful), 'faithful');
 	appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.approximate', "近似 {0}", summary.approximate), 'approximate');
-	appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.alternatives', "代替表示 {0}", summary.alternatives), 'alternatives');
+	const alternatives = appendRibbonItem(ribbon, localize('paradis.spreadsheet.diagnostics.alternatives', "代替表示 {0}", summary.alternatives), 'alternatives');
+	if (summary.alternatives > 0) {
+		markParadisOfficeWarning(alternatives);
+	}
 	if (summary.incomplete) {
 		const incomplete = dom.append(ribbon, dom.$('span.paradis-spreadsheet-diagnostic-incomplete'));
-		incomplete.style.color = PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.warning;
-		incomplete.style.borderBottom = `1px solid ${PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border}`;
-		incomplete.textContent = localize('paradis.spreadsheet.diagnostics.incomplete', "解析未完了");
+		styleParadisOfficeChip(incomplete, localize('paradis.spreadsheet.diagnostics.incomplete', "解析未完了"));
+		markParadisOfficeWarning(incomplete);
 	}
 	for (const warning of input.warnings ?? []) {
 		const warningElement = dom.append(ribbon, dom.$('span.paradis-spreadsheet-diagnostic-warning'));
 		warningElement.dataset.code = warning.code;
-		warningElement.textContent = warning.message;
+		styleParadisOfficeChip(warningElement, warning.message);
+		markParadisOfficeWarning(warningElement);
 	}
 	return ribbon;
 }

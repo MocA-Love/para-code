@@ -75,7 +75,8 @@ import type { IParadisWordAnalysis, IParadisWordAnalysisResult, IParadisWordRend
 import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
-import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT, PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
+import { PARADIS_OFFICE_CHANGE_PANEL_CLASS } from './paradisOfficeInspectorParts.js';
 
 const DOCX_HEADER_BYTES = 4;
 const DOCX_WATCH_RERENDER_DELAY_MS = 50;
@@ -447,7 +448,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._diagnosticsElement.style.flex = '1 1 auto';
 		this._diagnosticsElement.style.minWidth = '0';
 		// 右: 変更点（解析の結果があるときだけ）｜拡大縮小｜既定のアプリで開く。
-		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(semanticToolbar.end, localize('paradis.word.inspector', "変更点"), Codicon.checklist);
+		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(semanticToolbar.end, localize('paradis.word.inspector', "変更点"), Codicon.listUnordered);
 		this._inspectorToggle.classList.add('paradis-word-inspector-toggle');
 		this._inspectorToggle.style.display = 'none';
 		appendParadisViewerToolbarSeparator(semanticToolbar.end);
@@ -467,15 +468,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			}
 			this._setInspectorVisible(this._inspectorPanel.style.display === 'none');
 		}));
-		this._inspectorPanel = dom.append(this._rootElement, dom.$('.paradis-word-inspector-panel'));
-		this._inspectorPanel.style.position = 'absolute';
-		this._inspectorPanel.style.top = PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS;
-		this._inspectorPanel.style.right = '8px';
-		this._inspectorPanel.style.zIndex = '20';
-		this._inspectorPanel.style.width = '360px';
-		this._inspectorPanel.style.maxHeight = '70%';
-		this._inspectorPanel.style.overflow = 'auto';
-		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
+		this._inspectorPanel = dom.append(this._rootElement, dom.$(`.paradis-word-inspector-panel.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
 		this._inspectorPanel.style.display = 'none';
 		// overlay webview を重ねる位置合わせ用アンカー（paradisPdfFileEditor と同方式）。
 		this._webviewContainer = dom.append(this._rootElement, dom.$('.paradis-docx-viewer-webview'));
