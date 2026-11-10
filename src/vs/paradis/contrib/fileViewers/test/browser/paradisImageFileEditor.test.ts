@@ -14,6 +14,7 @@ import { Event } from '../../../../../base/common/event.js';
 import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { FileOperationError, FileOperationResult, IFileContent, IFileService, IReadFileOptions } from '../../../../../platform/files/common/files.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -54,7 +55,7 @@ suite('ParadisImageFileEditor', () => {
 		}
 	}
 
-	test('paints images once per open, does not reread or remeasure when coming back to the same tab, and shows the status bar entries', async () => {
+	test('paints images once per open, does not reread or remeasure when coming back to the same tab, and shows the toolbar and status bar entries', async () => {
 		const parent = mainWindow.document.createElement('div');
 		parent.style.cssText = 'position: fixed; left: 0; top: 0; width: 640px; height: 320px;';
 		mainWindow.document.body.appendChild(parent);
@@ -90,6 +91,7 @@ suite('ParadisImageFileEditor', () => {
 			statusbarService,
 			{} as IContextMenuService,
 			new NullLogService(),
+			{} as ICommandService,
 		));
 		editor.create(parent);
 		editor.setVisible(true);
@@ -105,9 +107,14 @@ suite('ParadisImageFileEditor', () => {
 		await until(() => editor.recorded.length === 1, 'first paint');
 		const firstImage = image();
 		const firstStatus = Object.fromEntries(status);
+		const toolbar = () => ({
+			meta: parent.querySelector('.paradis-image-toolbar-meta')?.textContent,
+			percent: parent.querySelector('.paradis-image-toolbar .paradis-viewer-toolbar-percent')?.textContent,
+		});
+		const firstToolbar = toolbar();
 
 		editor.zoomIn();
-		const zoomed = status.get('status.paradis.imagePreview.zoom');
+		const zoomed = toolbar().percent;
 
 		// Switch away and back to the same tab: the image element stays, nothing is reread or measured.
 		editor.clearInput();
@@ -123,6 +130,7 @@ suite('ParadisImageFileEditor', () => {
 			recorded: editor.recorded,
 			reads,
 			firstStatus,
+			firstToolbar,
 			zoomed,
 			sameElement,
 			blobUrl: firstImage?.src.startsWith('blob:'),
@@ -137,11 +145,11 @@ suite('ParadisImageFileEditor', () => {
 				{ path: '/w/b.png', etag: undefined },
 			],
 			firstStatus: {
-				// allow-any-unicode-next-line
-				'status.paradis.imagePreview.zoom': '画像全体',
 				'status.paradis.imagePreview.size': '1x1',
 				'status.paradis.imagePreview.binarySize': `${PNG.byteLength}B`,
 			},
+			// allow-any-unicode-next-line
+			firstToolbar: { meta: `1 × 1・${PNG.byteLength}B`, percent: '画像全体' },
 			zoomed: '150%',
 			sameElement: true,
 			blobUrl: true,

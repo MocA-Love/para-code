@@ -10,8 +10,6 @@ import { Codicon } from '../../../../../base/common/codicons.js';
 import { AppResourcePath, FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
-	appendParadisViewerToolbarChoice,
-	appendParadisViewerToolbarChoiceGroup,
 	appendParadisViewerToolbarGroup,
 	appendParadisViewerToolbarIconButton,
 	appendParadisViewerToolbarOption,
@@ -60,14 +58,10 @@ suite('ParadisViewerToolbar', () => {
 		return element;
 	}
 
-	test('builds a 32px bar with 22px buttons, a 44px percentage and the right accessibility state', () => {
+	test('builds a 32px bar with the kit\'s 24px buttons, a 44px percentage and the right accessibility state', () => {
 		const root = host();
 		try {
 			const toolbar = createParadisViewerToolbar(root, 'example-bar', 'Example');
-			const modes = appendParadisViewerToolbarChoiceGroup(toolbar.start, 'example-modes', 'View');
-			const preview = appendParadisViewerToolbarChoice(modes, 'Preview');
-			const source = appendParadisViewerToolbarChoice(modes, 'Source');
-			setParadisViewerToolbarOptionChecked(preview, true);
 			const filter = appendParadisViewerToolbarOption(toolbar.end, 'Rules', Codicon.checklist);
 			setParadisViewerToolbarOptionChecked(filter, true);
 			const panel = appendParadisViewerToolbarPanelToggle(toolbar.end, 'Changes');
@@ -79,17 +73,15 @@ suite('ParadisViewerToolbar', () => {
 
 			deepStrictEqual({
 				bar: [toolbar.element.getBoundingClientRect().height, toolbar.element.getAttribute('role'), toolbar.element.getAttribute('aria-label'), root.classList.contains('paradis-viewer-toolbar-host')],
-				modes: [modes.getAttribute('role'), preview.getAttribute('role'), preview.getAttribute('aria-checked'), source.getAttribute('aria-checked'), preview.classList.contains('checked')],
-				filter: [filter.getAttribute('aria-pressed'), filter.classList.contains('checked')],
+				filter: [filter.getAttribute('aria-pressed'), filter.classList.contains('checked'), filter.getBoundingClientRect().height, filter.classList.contains('paradis-button-ghost')],
 				panel: [panel.getAttribute('aria-expanded'), panel.hasAttribute('aria-pressed')],
 				button: [button.getBoundingClientRect().width, button.getBoundingClientRect().height, button.getAttribute('aria-label'), !!button.querySelector('.codicon-zoom-in')],
 				percent: percent.getBoundingClientRect().width >= 44,
 			}, {
 				bar: [32, 'toolbar', 'Example', true],
-				modes: ['radiogroup', 'radio', 'true', 'false', true],
-				filter: ['true', true],
+				filter: ['true', true, 24, true],
 				panel: ['true', false],
-				button: [22, 22, 'Zoom In', true],
+				button: [24, 24, 'Zoom In', true],
 				percent: true,
 			});
 		} finally {
