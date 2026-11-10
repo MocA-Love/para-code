@@ -5,6 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as dom from '../../../../../base/browser/dom.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import {
@@ -578,7 +579,7 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		if (this.options.search) {
 			const search = dom.append(this.root, dom.$('form.paradis-spreadsheet-search')) as HTMLFormElement;
 			search.setAttribute('role', 'search');
-			const field = this.renderDisposables.add(new ParadisInputField(search, { ariaLabel: localize('paradis.spreadsheet.search', "スプレッドシートを検索"), small: true }));
+			const field = this.renderDisposables.add(new ParadisInputField(search, { ariaLabel: localize('paradis.spreadsheet.search', "スプレッドシートを検索"), placeholder: localize('paradis.spreadsheet.search', "スプレッドシートを検索"), icon: Codicon.search, small: true }));
 			const input = field.inputElement;
 			input.type = 'search';
 			input.maxLength = 4096;
