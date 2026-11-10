@@ -75,7 +75,7 @@ import type { IParadisWordAnalysis, IParadisWordAnalysisResult, IParadisWordRend
 import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
-import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT, PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
 
 const DOCX_HEADER_BYTES = 4;
 const DOCX_WATCH_RERENDER_DELAY_MS = 50;
@@ -119,7 +119,7 @@ export const PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS = 5_000;
 export const PARADIS_WORD_SEMANTIC_BUSY_RETRIES = 3;
 
 /** ツールバーが 1 行のときの高さ。まだ描かれていなくて高さが測れないときに使う。 */
-const PARADIS_WORD_TOOLBAR_MIN_OFFSET = 28;
+const PARADIS_WORD_TOOLBAR_MIN_OFFSET = PARADIS_VIEWER_TOOLBAR_HEIGHT;
 
 /** バーの拡大縮小の 1 段の倍率と範囲（文書の描画が受け付ける 0.25〜4 倍）。 */
 const PARADIS_WORD_ZOOM_STEP = 1.2;
@@ -469,7 +469,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}));
 		this._inspectorPanel = dom.append(this._rootElement, dom.$('.paradis-word-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
-		this._inspectorPanel.style.top = '28px';
+		this._inspectorPanel.style.top = PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS;
 		this._inspectorPanel.style.right = '8px';
 		this._inspectorPanel.style.zIndex = '20';
 		this._inspectorPanel.style.width = '360px';

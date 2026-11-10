@@ -51,7 +51,7 @@ import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
-import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
 import { mapSpreadsheetLogicalAnchor } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
@@ -558,7 +558,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		this._inspectorPanel = dom.append(this._root, $('.paradis-spreadsheet-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
-		this._inspectorPanel.style.top = '32px';
+		// 帯の下に 4px 空ける（帯の高さは実際の値を読む）。
+		this._inspectorPanel.style.top = `calc(${PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS} + 4px)`;
 		this._inspectorPanel.style.right = '8px';
 		this._inspectorPanel.style.zIndex = '20';
 		this._inspectorPanel.style.width = '380px';

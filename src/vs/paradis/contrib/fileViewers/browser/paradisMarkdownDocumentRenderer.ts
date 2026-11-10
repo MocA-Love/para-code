@@ -39,6 +39,7 @@ import { ILanguageService } from '../../../../editor/common/languages/language.j
 import { tokenizeToString } from '../../../../editor/common/languages/textToHtmlTokenizer.js';
 import { markedGfmHeadingIdPlugin } from '../../../../workbench/contrib/markdown/browser/markedGfmHeadingIdPlugin.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
+import { IParadisMarkdownCodeSource } from '../common/paradisMarkdownCodeSource.js';
 
 /** ビューアが使う設定だけ（upstream の同名の設定と同じ意味）。 */
 export interface IParadisMarkdownDocumentOptions {
@@ -70,6 +71,11 @@ export interface IParadisMarkdownDocument {
 	 * {@link renderParadisMarkdownDocument} の結果を解析した木と同じ。
 	 */
 	insertHighlightedCode(body: HTMLElement): void;
+	/**
+	 * 文書のコードのブロックの中身（文書の順。marked が行頭のタブを空白 4 つに広げた後の、画面に出る文字）。
+	 * コピーで元のタブに戻すために使う（paradisMarkdownCodeSource）。
+	 */
+	readonly codeSources: readonly IParadisMarkdownCodeSource[];
 }
 
 /**
@@ -119,7 +125,9 @@ async function renderMarkdown(
 	const highlighting: Promise<void>[] = [];
 	const deferred: IDeferredCode[] = [];
 	const marker = `PARADISHL${generateUuid().replace(/-/g, '')}N`;
+	const codeSources: IParadisMarkdownCodeSource[] = [];
 	walkParadisMarkedTokens(tokens, m.defaults.extensions?.childTokens, codeToken => {
+		codeSources.push({ text: codeToken.text, fenced: codeToken.codeBlockStyle !== 'indented' });
 		highlighting.push(highlight(codeToken.text, codeToken.lang).then(code => {
 			if (typeof code === 'string' && code !== codeToken.text) {
 				codeToken.escaped = true;
@@ -135,7 +143,7 @@ async function renderMarkdown(
 	await raceCancellationError(Promise.all(highlighting), token);
 	const html = sanitizeMarkdownHtml(m.parser(tokens), options);
 	if (deferred.length === 0) {
-		return { html, insertHighlightedCode: () => { } };
+		return { html, insertHighlightedCode: () => { }, codeSources };
 	}
 	// 印を消して、色付けしたコードを含む今までどおりの HTML に戻す。
 	const restoreWhole = () => {
@@ -146,10 +154,11 @@ async function renderMarkdown(
 	};
 	if (!hasEachMarkerOnce(html.toString(), marker, deferred.length)) {
 		// 消毒で印が消えた・増えた。差し込む場所が決まらないので、今までどおり全体を消毒する。
-		return { html: sanitizeMarkdownHtml(restoreWhole(), options), insertHighlightedCode: () => { } };
+		return { html: sanitizeMarkdownHtml(restoreWhole(), options), insertHighlightedCode: () => { }, codeSources };
 	}
 	return {
 		html,
+		codeSources,
 		insertHighlightedCode: body => {
 			if (!insertParadisTokenizedCode(body, marker, deferred)) {
 				// 文字列では 1 回ずつあった印が、text node としては揃わなかった（属性の中に入った等）。

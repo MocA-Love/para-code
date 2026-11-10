@@ -341,6 +341,7 @@ const GROUP_BROWSER_EXPERIMENTAL = localize('paradis.settings.groupBrowserExperi
 const GROUP_OFFICE_WORD_EXCEL = localize('paradis.settings.groupOfficeWordExcel', "Word・Excel");
 // allow-any-unicode-next-line
 const GROUP_OFFICE_OTHER = localize('paradis.settings.groupOfficeOther', "CSV・画像");
+const GROUP_OFFICE_MARKDOWN = localize('paradis.settings.groupOfficeMarkdown', "Markdown");
 // allow-any-unicode-next-line
 const GROUP_WINDOW_LOOK = localize('paradis.settings.groupWindowLook', "見た目");
 // allow-any-unicode-next-line
@@ -1422,6 +1423,16 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.imageViewerEnabledDesc', "PNG・JPEG・GIF・WebP・SVG などの画像を Para Code の画像ビューアで開き、オフのときは従来の画像プレビューで開きます。"),
 		keywords: 'image viewer png jpeg gif webp svg preview',
+	},
+	{
+		sectionId: 'psd-sec-office',
+		group: GROUP_OFFICE_MARKDOWN,
+		key: 'paradis.markdownViewer.width',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.markdownWidth', "Markdown のプレビューの本文の幅"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.markdownWidthDesc', "開いたときの本文の幅です。プレビューの上の帯の「読みやすい | 広い | 全幅」で替えた幅は、ファイルごとに覚えて次もその幅で開きます。"),
+		keywords: 'markdown preview width wide full readable md',
 	},
 	// --- 使用量 ---
 	{

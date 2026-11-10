@@ -65,7 +65,8 @@ import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileView
 import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalizeScrollProgress, paradisReadViewerScrollState, paradisScrollRestoreScript } from '../common/paradisViewerScroll.js';
 import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 import { paradisCanSwapViewerBody, paradisMustResendViewerHtmlOnClaim, paradisViewerBodyMessage, type IParadisRenderedDocument, type IParadisSwappableBody } from '../common/paradisViewerBodySwap.js';
-import { appendParadisViewerToolbarChoice, appendParadisViewerToolbarChoiceGroup, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from './paradisViewerToolbar.js';
+import { createParadisViewerToolbar } from './paradisViewerToolbar.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 
 import './media/paradisFileViewer.css';
 
@@ -129,8 +130,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _webviewContainer: HTMLElement | undefined;
 	private _editorContainer: HTMLElement | undefined;
 	private _toolbarRightElement: HTMLElement | undefined;
-	private _renderedBtn: HTMLButtonElement | undefined;
-	private _rawBtn: HTMLButtonElement | undefined;
+	/** 帯の左の「プレビュー | ソース」（UI キットの切り替えの組）。 */
+	private _modeSegmented: ParadisSegmented<ParadisFileViewerMode> | undefined;
 
 	/**
 	 * overlay webview（作り方・origin・claim と配置は部品が持つ）。白紙の検知とシグナル・本文の差し替えはこの基底が持つ
@@ -416,8 +417,22 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	}
 
 	protected override computeEditorViewState(resource: URI): IParadisViewerScrollState | undefined {
-		return this._scroll && isEqual(this._scroll.resource, resource) ? { scrollProgress: this._scroll.progress } : undefined;
+		return this._scroll && isEqual(this._scroll.resource, resource) ? { scrollProgress: this._scroll.progress, ...this.computeExtraViewState(resource) } : undefined;
 	}
+
+	/**
+	 * スクロールの位置と一緒にファイルごとに覚える値（Markdown の本文の幅）。同じ置き場（閉じたタブにも残る・最近の
+	 * 100 ファイル・ワークスペースごと）に入る。
+	 */
+	protected computeExtraViewState(_resource: URI): Omit<IParadisViewerScrollState, 'scrollProgress'> {
+		return {};
+	}
+
+	/**
+	 * 別のファイルを開いて描く前に、覚えていた値（{@link computeExtraViewState} で足したもの）を渡す。覚えていなければ
+	 * `undefined`。
+	 */
+	protected restoreExtraViewState(_resource: URI, _state: IParadisViewerScrollState | undefined): void { }
 
 	protected override tracksEditorViewState(input: EditorInput): boolean {
 		return input instanceof ParadisFileViewerInput;
@@ -437,11 +452,16 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 		// ペイン内ツールバー（全ビューア共通のバー）。左=プレビュー/ソースの切り替え、右=サブクラス固有（拡大縮小・再読み込み）。
 		const toolbar = createParadisViewerToolbar(this._rootElement, 'paradis-file-viewer-toolbar');
-		const toggle = appendParadisViewerToolbarChoiceGroup(toolbar.start, 'paradis-file-viewer-toggle', localize('paradis.fileViewer.viewMode', "表示"));
-		this._renderedBtn = appendParadisViewerToolbarChoice(toggle, localize('paradis.fileViewer.rendered', "プレビュー"));
-		this._register(dom.addDisposableListener(this._renderedBtn, dom.EventType.CLICK, () => this.setViewMode('rendered')));
-		this._rawBtn = appendParadisViewerToolbarChoice(toggle, localize('paradis.fileViewer.raw', "ソース"));
-		this._register(dom.addDisposableListener(this._rawBtn, dom.EventType.CLICK, () => this.setViewMode('raw')));
+		this._modeSegmented = this._register(new ParadisSegmented<ParadisFileViewerMode>(toolbar.start, {
+			ariaLabel: localize('paradis.fileViewer.viewMode', "表示"),
+			value: this._mode,
+			items: [
+				{ value: 'rendered', label: localize('paradis.fileViewer.rendered', "プレビュー") },
+				{ value: 'raw', label: localize('paradis.fileViewer.raw', "ソース") },
+			],
+		}));
+		this._modeSegmented.element.classList.add('paradis-file-viewer-toggle');
+		this._register(this._modeSegmented.onDidChange(mode => this.setViewMode(mode)));
 
 		this._toolbarRightElement = toolbar.end;
 		this.onCreateToolbar(this._toolbarRightElement);
@@ -485,6 +505,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			this._clearDisplayedContent();
 			const restored = paradisReadViewerScrollState(options?.viewState) ?? paradisReadViewerScrollState(this.loadEditorViewState(input, context));
 			this._scroll = { resource, progress: restored?.scrollProgress ?? 0 };
+			this.restoreExtraViewState(resource, restored);
 		}
 		// 別ファイルに切り替わったので前のモデル参照を解放する。
 		this._modelRef.clear();
@@ -957,9 +978,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI, token: CancellationToken = CancellationToken.None): Promise<void> {
 		this._mode = mode;
-		if (this._renderedBtn && this._rawBtn) {
-			setParadisViewerToolbarOptionChecked(this._renderedBtn, mode === 'rendered');
-			setParadisViewerToolbarOptionChecked(this._rawBtn, mode === 'raw');
+		if (this._modeSegmented) {
+			this._modeSegmented.value = mode;
 		}
 
 		if (mode === 'raw') {
