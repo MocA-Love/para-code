@@ -150,8 +150,9 @@ registerAction2(class extends Action2 {
 		});
 	}
 
-	override async run(accessor: ServicesAccessor): Promise<void> {
-		const editor = getActiveParadisImageEditor(accessor.get(IEditorService));
+	override async run(accessor: ServicesAccessor, target?: unknown): Promise<void> {
+		// 帯の倍率から開いたときは、押した側のビューア（差分では左右のどちらか）を渡す。
+		const editor = target instanceof ParadisImageFileEditor ? target : getActiveParadisImageEditor(accessor.get(IEditorService));
 		if (!editor) {
 			return;
 		}
