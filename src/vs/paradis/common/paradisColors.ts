@@ -37,6 +37,7 @@ registerColor('paradis.textFaint', 'input.placeholderForeground', localize('para
 // 線
 registerColor('paradis.lineSubtle', 'widget.border', localize('paradis.color.lineSubtle', "Para Code の部品: 面の境の線。"));
 registerColor('paradis.line', 'input.border', localize('paradis.color.line', "Para Code の部品: 入力欄の枠。"));
+registerColor('paradis.lineButton', 'button.secondaryBorder', localize('paradis.color.lineButton', "Para Code の部品: 副のボタンの枠。塗りの無いテーマでも副のボタンと素のボタンを見分けられるようにする。"));
 registerColor('paradis.lineStrong', 'checkbox.border', localize('paradis.color.lineStrong', "Para Code の部品: ポインタを重ねたときやチェックの枠。"));
 
 // 意味の色
