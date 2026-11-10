@@ -15,11 +15,16 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { PARADIS_TABS_CLASS, paradisTabClasses } from '../../../browser/paradisTabs.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { PARADIS_TABS_CLASS, paradisTabClasses, scrollParadisTabsWithWheel } from '../../../browser/paradisTabs.js';
 
-/** タブを並べる入れ物（`.paradis-spreadsheet-tabs`）にキットのタブの列の class を付ける。 */
-export function styleParadisSpreadsheetSheetTabList(container: HTMLElement): void {
+/**
+ * タブを並べる入れ物（`.paradis-spreadsheet-tabs`）をキットのタブの列にする。シートが多くて列があふれたときに、
+ * 縦のホイールしかないマウスでも端のタブへ送れるようにする（返す物は入れ物を捨てるときに一緒に捨てる）。
+ */
+export function styleParadisSpreadsheetSheetTabList(container: HTMLElement): IDisposable {
 	container.classList.add(PARADIS_TABS_CLASS);
+	return scrollParadisTabsWithWheel(container);
 }
 
 export interface IParadisSpreadsheetSheetTabOptions {

@@ -143,19 +143,20 @@ export class ParadisOfficeFindWidget extends Disposable {
 	}
 
 	/**
-	 * `obstacle`（変更点のパネル）が出ているあいだ、小窓をそれに重ねない。広い窓ではパネルの左へ、狭い窓では
-	 * パネルの下へずらす。パネルは小窓と同じ親に置いた絶対配置の要素で、出し入れ（display）と大きさの変化を
-	 * ResizeObserver で追う（小窓を捨てるときに一緒に外す）。
+	 * `obstacles`（変更点のパネル・入力規則のパネル）のうち出ているものに、小窓を重ねない。広い窓ではパネルの左へ、
+	 * 狭い窓ではパネルの下へずらす。パネルは小窓と同じ親に置いた絶対配置の要素で、同時には 1 つしか出さない前提
+	 * （複数出ていれば先に渡したものを避ける）。出し入れ（display）と大きさの変化を ResizeObserver で追う
+	 * （小窓を捨てるときに一緒に外す）。
 	 */
-	avoidOverlapWith(obstacle: HTMLElement): void {
+	avoidOverlapWith(...obstacles: HTMLElement[]): void {
 		const parent = this.element.parentElement;
 		const view = this.element.ownerDocument.defaultView;
-		if (!parent || !view) {
+		if (!parent || !view || obstacles.length === 0) {
 			return;
 		}
 		const place = () => {
-			const shown = obstacle.isConnected && obstacle.getClientRects().length > 0;
-			if (!shown) {
+			const obstacle = obstacles.find(candidate => candidate.isConnected && candidate.getClientRects().length > 0);
+			if (!obstacle) {
 				this.element.style.right = '';
 				this.element.style.top = '';
 				this.element.style.maxWidth = '';
@@ -173,7 +174,9 @@ export class ParadisOfficeFindWidget extends Disposable {
 			}
 		};
 		const observer = new view.ResizeObserver(() => place());
-		observer.observe(obstacle);
+		for (const obstacle of obstacles) {
+			observer.observe(obstacle);
+		}
 		observer.observe(parent);
 		place();
 		this._register(toDisposable(() => observer.disconnect()));

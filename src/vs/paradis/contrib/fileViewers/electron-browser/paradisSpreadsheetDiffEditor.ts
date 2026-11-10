@@ -395,6 +395,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _bodyEl: HTMLElement | undefined;
 	private _panesEl: HTMLElement | undefined;
 	private _validationInspector: HTMLElement | undefined;
+	/** 入力規則のパネルの入れ物（作るのは 1 回。絞り込んでいる間だけ出して {@link _validationInspector} に入れる）。 */
+	private _validationPanel: HTMLElement | undefined;
 	/** 入力規則のパネルを描き直すたびに捨てる物（閉じるボタンの購読）。 */
 	private readonly _validationInspectorDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private _tabsEl: HTMLElement | undefined;
@@ -527,6 +529,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				return;
 			}
 			const visible = this._inspectorPanel.style.display === 'none';
+			// 入力規則のパネルと「変更点」のパネルは同じ場所に浮かぶので、同時には開かない。
+			if (visible && this._validationFilter) {
+				this._setValidationFilter(false);
+			}
 			this._inspectorPanel.style.display = visible ? 'block' : 'none';
 			this._inspectorToggle.setAttribute('aria-expanded', String(visible));
 		}));
@@ -563,11 +569,19 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		this._inspectorPanel = dom.append(this._root, $(`.paradis-spreadsheet-inspector-panel.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
 		this._inspectorPanel.style.display = 'none';
-		this._findWidget.value?.avoidOverlapWith(this._inspectorPanel);
+		// 入力規則のパネルも「変更点」と同じ層（_root の直下、帯の下の右）に浮かべる。中身は入力規則で絞り込んでいる間だけ描く。
+		this._validationPanel = dom.append(this._root, $(`.paradis-spreadsheet-validation-inspector.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
+		this._validationPanel.tabIndex = -1;
+		this._validationPanel.setAttribute('role', 'region');
+		this._validationPanel.setAttribute('aria-label', localize('paradis.spreadsheet.validationChanges', "入力規則の変更"));
+		this._validationPanel.setAttribute('aria-live', 'polite');
+		this._validationPanel.style.display = 'none';
+		// 検索の小窓は、開いている方のパネルを避ける（2 つは同時に開かない）。
+		this._findWidget.value?.avoidOverlapWith(this._inspectorPanel, this._validationPanel);
 
 		this._bodyEl = dom.append(this._root, $('.paradis-spreadsheet-diff-body'));
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
-		styleParadisSpreadsheetSheetTabList(this._tabsEl);
+		this._register(styleParadisSpreadsheetSheetTabList(this._tabsEl));
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
@@ -1304,6 +1318,15 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				: localize('paradis.spreadsheet.validationModified', "変更");
 	}
 
+	private _hideValidationPanel(): void {
+		this._validationInspector = undefined;
+		this._validationInspectorDisposables.clear();
+		if (this._validationPanel) {
+			dom.clearNode(this._validationPanel);
+			this._validationPanel.style.display = 'none';
+		}
+	}
+
 	private _renderValidationInspector(change: IValidationChange | undefined): void {
 		const inspector = this._validationInspector;
 		if (!inspector) {
@@ -1393,7 +1416,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._renderTabs();
 		this._renderedValidationCells = [];
 		this._panesEl = undefined;
-		this._validationInspector = undefined;
+		this._hideValidationPanel();
 		this._renderDisposables.add(renderParadisViewerState(this._bodyEl, kind, message, actions));
 	}
 
@@ -1472,15 +1495,17 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._rightTable = right.table;
 		this._rightHighlight = right.highlight;
 		dom.append(this._panesEl, right.pane);
-		if (this._validationFilter) {
-			this._validationInspector = dom.append(main, $(`.paradis-spreadsheet-validation-inspector.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}`));
-			this._validationInspector.tabIndex = -1;
-			this._validationInspector.setAttribute('role', 'region');
-			this._validationInspector.setAttribute('aria-label', localize('paradis.spreadsheet.validationChanges', "入力規則の変更"));
-			this._validationInspector.setAttribute('aria-live', 'polite');
+		if (this._validationFilter && this._validationPanel) {
+			this._validationInspector = this._validationPanel;
+			this._validationPanel.style.display = 'block';
+			// 「変更点」のパネルとは同時に開かない。
+			if (this._inspectorPanel && this._inspectorPanel.style.display !== 'none') {
+				this._inspectorPanel.style.display = 'none';
+				this._inspectorToggle?.setAttribute('aria-expanded', 'false');
+			}
 			this._renderValidationInspector(this._selectedValidation);
 		} else {
-			this._validationInspector = undefined;
+			this._hideValidationPanel();
 		}
 		// どちらかの版が MAX_ROWS で打ち切られている場合は通知する。通常ビューアと同じ帯。
 		if (sheet.truncated) {
@@ -2093,7 +2118,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._renderedValidationCells = [];
 		this._updateValidationFilterButton();
 		this._panesEl = undefined;
-		this._validationInspector = undefined;
+		this._hideValidationPanel();
 		this._leftScroll = undefined;
 		this._rightScroll = undefined;
 		this._leftContent = undefined;

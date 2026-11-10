@@ -283,9 +283,8 @@
 }
 
 /* allow-any-unicode-next-line */
-/* ペインの横並び（入力規則のパネルはこの上に浮かべる）。打ち切り通知帯はこの下(縦方向)に置く。 */
+/* ペインの横並び。打ち切り通知帯はこの下(縦方向)に置く。 */
 .paradis-spreadsheet-diff-main {
-	position: relative;
 	display: flex;
 	flex: 1 1 auto;
 	min-width: 0;
@@ -297,8 +296,6 @@
 	flex: 1 1 auto;
 	min-width: 0;
 	min-height: 0;
-	/* The two sheets' layers (the current change's frame, shapes, page breaks) stay below the data validation panel. */
-	isolation: isolate;
 }
 
 .paradis-spreadsheet-diff-pane {
@@ -461,20 +458,9 @@
 	background: #d94b45;
 }
 
-/* The data validation panel: the same popup surface as the "Changes" panel (paradis-office-panel-surface,
- * paradisOfficeInspector.css), floating at the top right of the two sheets. The kind of change and the kind of rule are
- * chips next to the cell address. */
-.monaco-workbench .paradis-spreadsheet-validation-inspector {
-	position: absolute;
-	top: var(--vscode-spacing-size80);
-	right: var(--vscode-spacing-size120);
-	z-index: 3;
-	width: 360px;
-	max-width: calc(100% - 24px);
-	max-height: calc(100% - 16px);
-	overflow: auto;
-}
-
+/* The data validation panel: the same popup surface and place as the "Changes" panel (paradis-office-panel-surface and
+ * paradis-office-change-panel, paradisOfficeInspector.css); the two never open together. The kind of change and the
+ * kind of rule are chips next to the cell address. */
 .monaco-workbench .paradis-spreadsheet-validation-inspector-body {
 	display: flex;
 	flex-direction: column;

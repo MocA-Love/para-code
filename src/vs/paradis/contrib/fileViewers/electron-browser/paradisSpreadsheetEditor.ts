@@ -1269,7 +1269,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._register(dom.addDisposableListener(this._bodyEl, dom.EventType.SCROLL, () => this._updateStickyStripTransforms()));
 
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
-		styleParadisSpreadsheetSheetTabList(this._tabsEl);
+		this._register(styleParadisSpreadsheetSheetTabList(this._tabsEl));
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {

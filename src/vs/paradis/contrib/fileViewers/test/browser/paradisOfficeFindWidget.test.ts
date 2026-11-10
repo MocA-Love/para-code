@@ -369,4 +369,35 @@ suite('ParadisOfficeFindWidget', () => {
 			narrow: ['', '248px', ''],
 		});
 	});
+	test('avoids whichever of several panels is open (the change panel or the data validation panel)', () => {
+		const host = mainWindow.document.createElement('div');
+		host.style.cssText = 'position: relative; width: 1000px; height: 600px;';
+		mainWindow.document.body.appendChild(host);
+		store.add({ dispose: () => host.remove() });
+		const widget = store.add(new ParadisOfficeFindWidget(host, {}));
+		const panel = (top: number, width: number) => {
+			const element = mainWindow.document.createElement('div');
+			element.style.cssText = `position: absolute; top: ${top}px; right: 8px; width: ${width}px; height: 200px; display: none;`;
+			host.appendChild(element);
+			return element;
+		};
+		const changes = panel(40, 360);
+		const validation = panel(40, 300);
+		const element = host.querySelector<HTMLElement>('.paradis-office-find-widget')!;
+		const place = () => [element.style.right, element.style.top, element.style.maxWidth];
+		widget.avoidOverlapWith(changes, validation);
+		const none = place();
+		validation.style.display = 'block';
+		widget.avoidOverlapWith(changes, validation);
+		const validationOpen = place();
+		validation.style.display = 'none';
+		changes.style.display = 'block';
+		widget.avoidOverlapWith(changes, validation);
+		const changesOpen = place();
+		deepStrictEqual({ none, validationOpen, changesOpen }, {
+			none: ['', '', ''],
+			validationOpen: ['316px', '', '676px'],
+			changesOpen: ['376px', '', '616px'],
+		});
+	});
 });
