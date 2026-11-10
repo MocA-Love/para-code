@@ -76,7 +76,7 @@ import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
-import { PARADIS_OFFICE_CHANGE_PANEL_CLASS } from './paradisOfficeInspectorParts.js';
+import { PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS } from './paradisOfficeInspectorParts.js';
 
 const DOCX_HEADER_BYTES = 4;
 const DOCX_WATCH_RERENDER_DELAY_MS = 50;
@@ -468,7 +468,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			}
 			this._setInspectorVisible(this._inspectorPanel.style.display === 'none');
 		}));
-		this._inspectorPanel = dom.append(this._rootElement, dom.$(`.paradis-word-inspector-panel.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
+		this._inspectorPanel = dom.append(this._rootElement, dom.$(`.paradis-word-inspector-panel.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
 		this._inspectorPanel.style.display = 'none';
 		// overlay webview を重ねる位置合わせ用アンカー（paradisPdfFileEditor と同方式）。
 		this._webviewContainer = dom.append(this._rootElement, dom.$('.paradis-docx-viewer-webview'));
@@ -1132,6 +1132,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 		dom.clearNode(this._inspectorPanel);
 		const semanticSearch = this._semanticSearch;
 		const inspector = new ParadisWordChangeInspector(this._inspectorPanel, {
+			// 見出しの「閉じる」は帯の「変更点」と同じ開け閉めを通し、フォーカスを帯のボタンへ戻す。
+			onClose: () => {
+				this._inspectorToggle?.click();
+				this._inspectorToggle?.focus();
+			},
 			...(callbacks.search && semanticSearch ? { search: query => this._searchAll(semanticSearch, query) } : { searchUnavailable }),
 			...(callbacks.print ? {
 				getPrintModel: callbacks.print,

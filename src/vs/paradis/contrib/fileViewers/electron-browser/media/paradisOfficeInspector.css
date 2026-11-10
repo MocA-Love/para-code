@@ -14,16 +14,9 @@
 
 /* ---------- the panel ---------- */
 
-.monaco-workbench .paradis-office-change-panel {
-	position: absolute;
-	top: calc(var(--paradis-viewer-toolbar-height, var(--paradis-height-lg)) + var(--vscode-spacing-size80));
-	right: var(--vscode-spacing-size120);
-	z-index: 3;
+/* The surface (paradis-office-panel-surface): the popup look, without a place. */
+.monaco-workbench .paradis-office-panel-surface {
 	box-sizing: border-box;
-	width: 360px;
-	max-width: calc(100% - 24px);
-	max-height: 70%;
-	overflow: auto;
 	color: var(--vscode-paradis-text);
 	background: var(--vscode-paradis-popup);
 	border: 1px solid var(--vscode-paradis-lineSubtle);
@@ -32,41 +25,62 @@
 	font-size: var(--vscode-fontSize-body1);
 }
 
-.monaco-workbench .paradis-office-change-panel > :is(.paradis-spreadsheet-change-inspector, .paradis-word-change-inspector) {
+/* The place of the "Changes" panel (paradis-office-change-panel): below the toolbar, whatever its height, on the right. */
+.monaco-workbench .paradis-office-change-panel {
+	position: absolute;
+	top: calc(var(--paradis-viewer-toolbar-height, var(--paradis-height-lg)) + var(--vscode-spacing-size80));
+	right: var(--vscode-spacing-size120);
+	z-index: 3;
+	width: 360px;
+	max-width: calc(100% - 24px);
+	max-height: 70%;
+	overflow: auto;
+}
+
+.monaco-workbench .paradis-office-panel-surface > :is(.paradis-spreadsheet-change-inspector, .paradis-word-change-inspector) {
 	display: flex;
 	flex-direction: column;
 	gap: var(--vscode-spacing-size80);
 	padding: 0 var(--vscode-spacing-size120) var(--vscode-spacing-size120);
 }
 
-/* The panel's title is its header line, like the kit's popup. */
-.monaco-workbench .paradis-office-change-panel > * > strong:first-child {
+/* The header line: the title and the close button, like the kit's popup. */
+.monaco-workbench .paradis-office-panel-surface .paradis-office-panel-head {
 	display: flex;
 	align-items: center;
+	gap: var(--vscode-spacing-size80);
 	flex: none;
 	height: 40px;
 	margin: 0 calc(var(--vscode-spacing-size120) * -1);
-	padding: 0 var(--vscode-spacing-size120);
+	padding: 0 var(--vscode-spacing-size60) 0 var(--vscode-spacing-size120);
 	border-bottom: var(--paradis-popover-header-border);
+}
+
+.monaco-workbench .paradis-office-panel-surface .paradis-office-panel-head > strong {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-weight: var(--vscode-fontWeight-semiBold);
 	color: var(--vscode-paradis-textStrong);
 }
 
 /* Counts and sub-headings inside the lists. */
-.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-spreadsheet-comment-list, .paradis-spreadsheet-search-results, .paradis-word-search-results) {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-spreadsheet-comment-list, .paradis-spreadsheet-search-results, .paradis-word-search-results) {
 	display: flex;
 	flex-direction: column;
 	gap: var(--vscode-spacing-size20);
 	min-width: 0;
 }
 
-.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-spreadsheet-comment-list) > span:first-child {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-spreadsheet-comment-list) > span:first-child {
 	color: var(--vscode-paradis-textMuted);
 	font-size: var(--vscode-fontSize-label1);
 }
 
 /* Category filters: a row of chips that turn on with the selected fill. */
-.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-change-categories, .paradis-word-change-categories, .paradis-word-story-counts, .paradis-word-display-modes) {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-change-categories, .paradis-word-change-categories, .paradis-word-story-counts, .paradis-word-display-modes) {
 	display: flex;
 	flex-wrap: wrap;
 	gap: var(--vscode-spacing-size40);
@@ -103,18 +117,18 @@
 }
 
 /* Secondary buttons that toggle a mode (Word's display modes) show "on" with the selected fill. */
-.monaco-workbench .paradis-office-change-panel .paradis-button[aria-pressed="true"] {
+.monaco-workbench .paradis-office-panel-surface .paradis-button[aria-pressed="true"] {
 	color: var(--vscode-paradis-textStrong);
 	background-color: var(--vscode-paradis-fillSelected);
 }
 
-.monaco-workbench .paradis-office-change-panel .paradis-button:disabled {
+.monaco-workbench .paradis-office-panel-surface .paradis-button:disabled {
 	opacity: 0.4;
 	cursor: default;
 }
 
 /* Pagers and zoom: buttons and the status in one line. */
-.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-inspector-pager, .paradis-word-inspector-pager, .paradis-word-inspector-zoom) {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-inspector-pager, .paradis-word-inspector-pager, .paradis-word-inspector-zoom) {
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size80);
@@ -123,26 +137,26 @@
 }
 
 /* The search form: the kit's text field and a small button. */
-.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-search, .paradis-word-search) {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-search, .paradis-word-search) {
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size80);
 }
 
-.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-search, .paradis-word-search) > .paradis-field {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-search, .paradis-word-search) > .paradis-field {
 	flex: 1;
 }
 
-.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-search, .paradis-word-search) input::-webkit-search-cancel-button {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-search, .paradis-word-search) input::-webkit-search-cancel-button {
 	display: none;
 }
 
-.monaco-workbench .paradis-office-change-panel > * > .paradis-button {
+.monaco-workbench .paradis-office-panel-surface > * > .paradis-button {
 	align-self: flex-start;
 }
 
 /* Warnings (print, analysis failures) in the warning color. */
-.monaco-workbench .paradis-office-change-panel :is(.paradis-spreadsheet-print-warning, .paradis-word-print-warning, .paradis-word-analysis-failure, .paradis-office-inspector-warning) {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-print-warning, .paradis-word-print-warning, .paradis-word-analysis-failure, .paradis-office-inspector-warning) {
 	color: var(--vscode-paradis-warning);
 }
 

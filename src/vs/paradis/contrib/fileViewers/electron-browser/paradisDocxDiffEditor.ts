@@ -84,7 +84,7 @@ import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordIm
 import './media/paradisDocxDiff.css';
 import { PARADIS_VIEWER_LOADING_LABEL, PARADIS_VIEWER_OPEN_IN_APP_LABEL, PARADIS_VIEWER_RETRY_LABEL } from '../browser/paradisViewerState.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
-import { PARADIS_OFFICE_CHANGE_PANEL_CLASS } from './paradisOfficeInspectorParts.js';
+import { PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS } from './paradisOfficeInspectorParts.js';
 
 const $ = dom.$;
 
@@ -340,7 +340,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._webviewContainer = dom.append(this._root, $('.paradis-docx-diff-body'));
 		this._webviewContainer.setAttribute('role', 'region');
 		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.comparisonContent', "Word 比較の内容"));
-		this._inspectorPanel = dom.append(this._root, $(`.paradis-word-diff-inspector-panel.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
+		this._inspectorPanel = dom.append(this._root, $(`.paradis-word-diff-inspector-panel.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
 		this._inspectorPanel.style.display = 'none';
 		this._updateScaleLabel();
 		this._updateFormatToggle();
@@ -925,6 +925,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		const wasVisible = this._inspectorPanel.style.display !== 'none';
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisWordChangeInspector(this._inspectorPanel, {
+			// 見出しの「閉じる」は帯の「変更点」と同じ開け閉めを通し、フォーカスを帯のボタンへ戻す。
+			onClose: () => {
+				this._inspectorToggle?.click();
+				this._inspectorToggle?.focus();
+			},
 			searchUnavailable: callbacks.print
 				? localize('paradis.word.diffSearchUnavailable', "この比較では文書内の検索を利用できません。")
 				: localize('paradis.word.searchDisabled', "検索は設定で無効になっています。"),

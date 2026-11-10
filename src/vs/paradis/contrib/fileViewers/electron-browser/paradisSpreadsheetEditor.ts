@@ -58,7 +58,7 @@ import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, conve
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar } from '../browser/paradisViewerToolbar.js';
-import { PARADIS_OFFICE_CHANGE_PANEL_CLASS } from './paradisOfficeInspectorParts.js';
+import { PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS } from './paradisOfficeInspectorParts.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridCell, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
 import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest, type ParadisSpreadsheetViewportFrame, type ParadisSpreadsheetVirtualRange } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
@@ -1231,7 +1231,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			this._inspectorToggle.setAttribute('aria-expanded', String(visible));
 		}));
 
-		this._inspectorPanel = dom.append(this._root, $(`.paradis-spreadsheet-inspector-panel.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
+		this._inspectorPanel = dom.append(this._root, $(`.paradis-spreadsheet-inspector-panel.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
 		this._inspectorPanel.style.display = 'none';
 
 		// ズーム −/%/＋（HTMLビューアと同じUI）。
@@ -1764,6 +1764,11 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._inspectorToggle.style.display = '';
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisSpreadsheetChangeInspector(this._inspectorPanel, {
+			// 見出しの「閉じる」は帯の「変更点」と同じ開け閉めを通し、フォーカスを帯のボタンへ戻す。
+			onClose: () => {
+				this._inspectorToggle?.click();
+				this._inspectorToggle?.focus();
+			},
 			...(callbacks.search ? { search: callbacks.search.inspect } : {}),
 			...(callbacks.print ? { getPrintModel: callbacks.print } : {}),
 			onNavigate: target => this._navigateToLogicalLocator(target.locator, target.anchor),

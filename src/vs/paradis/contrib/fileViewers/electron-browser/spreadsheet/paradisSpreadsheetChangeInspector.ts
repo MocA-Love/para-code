@@ -20,7 +20,7 @@ import {
 import type { IParadisCellComment, IParadisCellCommentEntry } from '../../common/paradisSpreadsheet.js';
 import { canShowSpreadsheetNoChanges, spreadsheetPrintWarning } from './paradisSpreadsheetDiagnostics.js';
 import { ParadisInputField } from '../../../../browser/paradisInputField.js';
-import { appendParadisOfficeInspectorButton, type ParadisOfficeInspectorButtonKind } from '../paradisOfficeInspectorParts.js';
+import { appendParadisOfficeInspectorButton, appendParadisOfficePanelHead, type ParadisOfficeInspectorButtonKind } from '../paradisOfficeInspectorParts.js';
 
 export const PARADIS_SPREADSHEET_CHANGE_CATEGORIES: readonly ParadisOfficeChangeCategory[] = Object.freeze([
 	'content',
@@ -135,6 +135,8 @@ export interface ParadisSpreadsheetChangeInspectorOptions {
 	readonly search?: (query: string) => Promise<readonly ParadisOfficeSearchResult[]>;
 	readonly getPrintModel?: () => Promise<ParadisOfficePrintModel>;
 	readonly onNavigate?: (target: ParadisSpreadsheetNavigationTarget) => void;
+	/** パネルの見出しの「閉じる」を押したとき。省くと閉じるボタンを出さない。 */
+	readonly onClose?: () => void;
 	readonly onDidChangeViewState?: (state: ParadisSpreadsheetViewState) => void;
 }
 
@@ -504,8 +506,10 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		this.renderDisposables.clear();
 		dom.clearNode(this.root);
 		const document = this.root.ownerDocument;
-		const title = dom.append(this.root, dom.$('strong'));
-		title.textContent = localize('paradis.spreadsheet.changes', "変更点");
+		const close = appendParadisOfficePanelHead(this.root, localize('paradis.spreadsheet.changes', "変更点"), !!this.options.onClose);
+		if (close) {
+			this.renderDisposables.add(dom.addDisposableListener(close, dom.EventType.CLICK, () => this.options.onClose?.()));
+		}
 
 		const categories = dom.append(this.root, dom.$('.paradis-spreadsheet-change-categories'));
 		categories.setAttribute('role', 'toolbar');

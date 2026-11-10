@@ -22,7 +22,7 @@ import type { ParadisWordStoryKind } from '../../common/word/paradisWordSemantic
 import { truncateParadisWordText, type IParadisWordAnalysisCounts } from '../../common/word/paradisWordSemanticSummary.js';
 import { canShowWordNoChanges, paradisWordBlockedFeatureLabel, paradisWordIgnoredReasonLabel, wordPrintWarning, type ParadisWordPackageExclusions } from './paradisWordDiagnostics.js';
 import { ParadisInputField } from '../../../../browser/paradisInputField.js';
-import { appendParadisOfficeInspectorButton, type ParadisOfficeInspectorButtonKind } from '../paradisOfficeInspectorParts.js';
+import { appendParadisOfficeInspectorButton, appendParadisOfficePanelHead, type ParadisOfficeInspectorButtonKind } from '../paradisOfficeInspectorParts.js';
 
 export const PARADIS_WORD_CHANGE_CATEGORIES: readonly ParadisOfficeChangeCategory[] = Object.freeze([
 	'content',
@@ -197,6 +197,8 @@ export interface ParadisWordChangeInspectorOptions {
 	readonly searchUnavailable?: string;
 	readonly printUnavailable?: string;
 	readonly onNavigate?: (target: ParadisWordNavigationTarget) => void;
+	/** パネルの見出しの「閉じる」を押したとき。省くと閉じるボタンを出さない。 */
+	readonly onClose?: () => void;
 	readonly onDidChangeViewState?: (state: ParadisWordViewState) => void;
 }
 
@@ -704,8 +706,10 @@ export class ParadisWordChangeInspector extends Disposable {
 		this.renderDisposables.clear();
 		dom.clearNode(this.root);
 		const document = this.root.ownerDocument;
-		const title = dom.append(this.root, dom.$('strong'));
-		title.textContent = localize('paradis.word.changes', "変更点");
+		const close = appendParadisOfficePanelHead(this.root, localize('paradis.word.changes', "変更点"), !!this.options.onClose);
+		if (close) {
+			this.renderDisposables.add(dom.addDisposableListener(close, dom.EventType.CLICK, () => this.options.onClose?.()));
+		}
 
 		const modes = dom.append(this.root, dom.$('.paradis-word-display-modes'));
 		modes.setAttribute('role', 'toolbar');
