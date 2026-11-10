@@ -381,6 +381,17 @@ export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor, o
 	return { repos, agents };
 }
 
+/**
+ * モバイルから会話の途中で切り替えてよい Claude のモデル（新しいスペースの候補に、絞る前の CLI の一覧を足したもの）。
+ * {@link paradisGetWorktreeCreateForm} と同じく、今わかっている一覧で答えて裏で CLI の一覧を取り直す。
+ */
+export function paradisGetSwitchableClaudeModels(accessor: ServicesAccessor): readonly { readonly id: string; readonly resolvedModel?: string }[] {
+	const modelCatalogService = accessor.get(IParadisAgentModelCatalogService);
+	const models = modelCatalogService.getSwitchableModels('claude');
+	modelCatalogService.refresh();
+	return models;
+}
+
 /** 既存ワークスペース（スペース）へのエージェント起動要求（モバイルの起動シートから）。 */
 export interface IParadisAgentLaunchInWorkspaceRequest {
 	/** 起動先のルートディレクトリ。 */

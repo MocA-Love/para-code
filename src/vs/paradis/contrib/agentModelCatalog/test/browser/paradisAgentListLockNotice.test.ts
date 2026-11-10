@@ -25,6 +25,7 @@ suite('paradisAgentListLockNotice', () => {
 			_serviceBrand: undefined,
 			onDidChange: onDidChange.event,
 			getAgentTemplates: () => [],
+			getSwitchableModels: () => [],
 			refresh: () => { },
 			isFixedBySettings: () => true,
 			resetToDefault: async () => { events.push('confirm'); return result; },
