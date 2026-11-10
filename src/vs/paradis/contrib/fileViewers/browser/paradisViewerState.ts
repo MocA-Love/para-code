@@ -8,16 +8,17 @@
 
 // ファイルビューアの「読み込み中」と「表示できない」（失敗・空・対応外・変更なし）の表示。
 // 本家に合わせ、読み込み中は上端の 2px の進み具合の線（ProgressBar）だけ、それ以外は本家のエディタの
-// 「開けません」（editorplaceholder.css）と同じ 48px のアイコン・文・ボタンにする。全ビューアで同じ部品を使う。
+// 「開けません」（editorplaceholder.css）と同じ 48px のアイコン・文・ボタンにする。ボタンは UI キットの主・副
+// （paradisButton.ts、28px で折り返さない）。全ビューアで同じ部品を使う。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { Button } from '../../../../base/browser/ui/button/button.js';
 import { ProgressBar } from '../../../../base/browser/ui/progressbar/progressbar.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { defaultButtonStyles, defaultProgressBarStyles } from '../../../../platform/theme/browser/defaultStyles.js';
+import { defaultProgressBarStyles } from '../../../../platform/theme/browser/defaultStyles.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
 import './media/paradisViewerState.css';
 
 /** 表示の種類。`loading` は線だけ、ほかはアイコンの色と形が変わる。 */
@@ -78,8 +79,7 @@ export function renderParadisViewerState(container: HTMLElement, kind: ParadisVi
 	if (actions.length > 0) {
 		const buttons = dom.append(element, dom.$('.paradis-viewer-state-buttons'));
 		actions.forEach((action, index) => {
-			const button = store.add(new Button(buttons, { ...defaultButtonStyles, secondary: index > 0 }));
-			button.label = action.label;
+			const button = store.add(new ParadisButton(buttons, { kind: index === 0 ? 'primary' : 'secondary', label: action.label }));
 			store.add(button.onDidClick(() => action.run()));
 		});
 	}

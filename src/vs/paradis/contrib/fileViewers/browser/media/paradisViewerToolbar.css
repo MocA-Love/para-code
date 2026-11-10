@@ -8,8 +8,9 @@
 /*
  * The one toolbar shared by every file viewer (Markdown, HTML, CSV, PDF, Excel, Word and their diffs).
  * 32px tall on the editor background with a 1px line below, so the UI kit's 28px segmented controls fit (Markdown and HTML's
- * Preview | Source, Markdown's text width). Icon buttons match the upstream ActionBar items (22px), other view toggles match
- * the upstream Toggle (inputOption), and the zoom percentage is 44px wide.
+ * Preview | Source, CSV's Table | Text, Markdown's text width). The buttons on the right are the UI kit's 24px buttons
+ * (paradisButton.css): icon buttons for icons, ghost buttons for the zoom percentage (44px wide) and the view toggles,
+ * whose "on" state takes the selected fill.
  */
 
 .paradis-viewer-toolbar {
@@ -47,7 +48,7 @@
 
 .paradis-viewer-toolbar-end {
 	flex: 0 0 auto;
-	gap: var(--vscode-spacing-size80);
+	gap: var(--vscode-spacing-size60);
 }
 
 .paradis-viewer-toolbar-group {
@@ -58,70 +59,51 @@
 	flex: 0 0 auto;
 	width: var(--vscode-strokeThickness);
 	height: var(--vscode-spacing-size160);
-	background-color: var(--vscode-editorGroup-border, var(--vscode-widget-border, transparent));
+	background-color: var(--vscode-paradis-lineSubtle);
 }
 
-.paradis-viewer-toolbar-button,
-.paradis-viewer-toolbar-percent,
-.paradis-viewer-toolbar-option {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	flex: 0 0 auto;
-	height: 22px;
-	box-sizing: border-box;
-	margin: 0;
-	border: var(--vscode-strokeThickness) solid transparent;
-	border-radius: var(--vscode-cornerRadius-small);
-	background: transparent;
-	color: var(--vscode-icon-foreground, var(--vscode-foreground));
-	font: inherit;
-	cursor: pointer;
-	white-space: nowrap;
-}
-
-.paradis-viewer-toolbar-button {
-	width: 22px;
-	padding: 0;
-}
-
-.paradis-viewer-toolbar-percent {
-	min-width: 44px;
-	padding: 0 var(--vscode-spacing-size40);
-	color: var(--vscode-foreground);
-	font-size: var(--vscode-fontSize-label2);
-	font-variant-numeric: tabular-nums;
-}
-
-.paradis-viewer-toolbar-option {
-	gap: var(--vscode-spacing-size40);
-	padding: 0 var(--vscode-spacing-size60);
-	color: var(--vscode-foreground);
+/* The kit's buttons, sized for the bar (paradisViewerToolbar.ts adds the kit classes). Ghost buttons keep the muted text
+ * until hovered or turned on, like the kit's icon buttons. */
+.monaco-workbench .paradis-viewer-toolbar .paradis-button.paradis-button-small {
 	font-size: var(--vscode-fontSize-label1);
 }
 
-.paradis-viewer-toolbar-option .codicon {
-	font-size: var(--vscode-codiconFontSize-compact, 12px);
+.monaco-workbench .paradis-viewer-toolbar .paradis-button.paradis-button-ghost.paradis-button-small {
+	gap: var(--vscode-spacing-size40);
+	padding: 0 var(--vscode-spacing-size80);
+	color: var(--vscode-paradis-textMuted);
 }
 
-.paradis-viewer-toolbar-button:hover:not(:disabled),
-.paradis-viewer-toolbar-percent:hover:not(:disabled),
-.paradis-viewer-toolbar-option:hover:not(:disabled):not(.checked):not([aria-expanded="true"]) {
-	background-color: var(--vscode-toolbar-hoverBackground);
+.monaco-workbench .paradis-viewer-toolbar .paradis-button.paradis-button-ghost.paradis-button-small:hover:not(:disabled) {
+	color: var(--vscode-paradis-textStrong);
 }
 
-.paradis-viewer-toolbar-option.checked,
-.paradis-viewer-toolbar-option[aria-expanded="true"] {
-	border-color: var(--vscode-inputOption-activeBorder);
-	background-color: var(--vscode-inputOption-activeBackground);
-	color: var(--vscode-inputOption-activeForeground);
+/* "On" toggles keep the selected fill while hovered (the kit's ghost hover would otherwise win). */
+.monaco-workbench .paradis-viewer-toolbar .paradis-button.paradis-button-ghost:is(.checked, [aria-expanded="true"]),
+.monaco-workbench .paradis-viewer-toolbar .paradis-button.paradis-button-ghost:is(.checked, [aria-expanded="true"]):hover {
+	color: var(--vscode-paradis-textStrong);
+	background-color: var(--vscode-paradis-fillSelected);
 }
 
-.paradis-viewer-toolbar-button:disabled,
-.paradis-viewer-toolbar-percent:disabled,
-.paradis-viewer-toolbar-option:disabled {
-	color: var(--vscode-disabledForeground);
+.monaco-workbench .paradis-viewer-toolbar .paradis-button > .codicon {
+	font-size: var(--vscode-codiconFontSize);
+}
+
+.monaco-workbench .paradis-viewer-toolbar .paradis-viewer-toolbar-percent {
+	min-width: 44px;
+	font-variant-numeric: tabular-nums;
+}
+
+/* The bar's buttons are disabled with the attribute (zoom limits, no changes to step through), which the kit's
+ * `.disabled` rule does not see. */
+.monaco-workbench .paradis-viewer-toolbar .paradis-button:disabled {
+	opacity: 0.4;
 	cursor: default;
+}
+
+.monaco-workbench .paradis-viewer-toolbar .paradis-button:disabled:hover {
+	color: var(--vscode-paradis-textMuted);
+	background-color: transparent;
 }
 
 /* Bars whose start area can wrap (the Word analysis ribbon) grow with their content. */
@@ -147,22 +129,24 @@
 .paradis-viewer-toolbar-text {
 	flex: 0 0 auto;
 	white-space: nowrap;
+	color: var(--vscode-paradis-text);
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-viewer-toolbar-legend {
 	display: flex;
 	align-items: center;
-	gap: var(--vscode-spacing-size100);
-	font-size: var(--vscode-fontSize-label2);
-	color: var(--vscode-descriptionForeground);
+	gap: var(--vscode-spacing-size120);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
 	white-space: nowrap;
 }
 
 .paradis-viewer-toolbar-position {
 	min-width: 40px;
 	text-align: center;
-	font-size: var(--vscode-fontSize-label2);
-	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
 	font-variant-numeric: tabular-nums;
 }
 
@@ -171,8 +155,9 @@
 	top: calc(var(--paradis-viewer-toolbar-height, var(--paradis-height-lg)) + 4px);
 }
 
-/* Controls that fold into one button on narrow bars (Markdown's text width): the folded button is hidden until then. */
-.paradis-viewer-toolbar .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-folded {
+/* Controls that fold into one button on narrow bars (Markdown's text width): the folded button is hidden until then.
+ * The rules that hide buttons start with .monaco-workbench to beat the kit's `display` on the same buttons. */
+.monaco-workbench .paradis-viewer-toolbar .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-folded {
 	display: none;
 }
 
@@ -186,7 +171,7 @@
 
 @container paradis-viewer-toolbar (max-width: 420px) {
 	.paradis-viewer-toolbar-separator,
-	.paradis-viewer-toolbar-percent,
+	.monaco-workbench .paradis-viewer-toolbar .paradis-viewer-toolbar-percent,
 	.paradis-viewer-toolbar-option:has(> .codicon) > .paradis-viewer-toolbar-option-label {
 		display: none;
 	}
@@ -195,11 +180,11 @@
 		gap: var(--vscode-spacing-size20);
 	}
 
-	.paradis-viewer-toolbar .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-unfolded {
+	.monaco-workbench .paradis-viewer-toolbar .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-unfolded {
 		display: none;
 	}
 
-	.paradis-viewer-toolbar .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-folded {
+	.monaco-workbench .paradis-viewer-toolbar .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-folded {
 		display: inline-flex;
 	}
 }

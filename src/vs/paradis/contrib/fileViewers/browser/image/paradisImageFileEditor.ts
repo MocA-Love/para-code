@@ -8,7 +8,8 @@
 
 // 画像ビューアのペイン。upstream の画像プレビュー（extensions/media-preview の imagePreview）と同じ見た目と
 // 操作（クリックで拡大、Option/Ctrl+クリックで縮小、Option/Ctrl+ホイールとピンチで拡大縮小、コピー、
-// ステータスバーの倍率・寸法・大きさ）を、webview を使わずワークベンチの DOM の <img> で描く。
+// ステータスバーの寸法・大きさ）を、webview を使わずワークベンチの DOM の <img> で描く。
+// 拡大縮小のボタンと倍率は、ほかのファイルビューアと同じ上の帯（paradisViewerToolbar.ts）に置く。
 //
 // webview を使わないので、service worker の起動・停止にも、webview の土台の読み込みにも待たされない。
 // 画像は IFileService で読み（paradisImagePreview.ts）、Blob URL を <img> に渡す。デコードは `decode()` で
@@ -30,10 +31,13 @@ import { basename, isEqual } from '../../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IEditorOptions } from '../../../../../platform/editor/common/editor.js';
 import { ByteSize, IFileService } from '../../../../../platform/files/common/files.js';
 import { watchParadisViewerResource } from '../paradisOverlayWebviewPane.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar } from '../paradisViewerToolbar.js';
+import { showParadisMenu } from '../../../../browser/paradisMenu.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
@@ -86,7 +90,11 @@ export class ParadisImageFileEditor extends EditorPane {
 
 	static readonly ID = PARADIS_IMAGE_EDITOR_ID;
 
+	/** 帯と画像の入れ物を縦に並べる外側。フォーカスがこの中にあれば、この側の画像を操作する。 */
+	private _host: HTMLElement | undefined;
 	private _root: HTMLElement | undefined;
+	private _metaElement: HTMLElement | undefined;
+	private _percentButton: HTMLButtonElement | undefined;
 	private _messageElement: HTMLElement | undefined;
 	private _messageText: HTMLElement | undefined;
 	private _displayed: DisplayedImage | undefined;
@@ -103,7 +111,6 @@ export class ParadisImageFileEditor extends EditorPane {
 	private readonly _cacheLease = this._register(new MutableDisposable());
 	/** setInput から最初に描けるまでの計測（同じファイルを開き直したときも測る）。 */
 	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
-	private readonly _zoomEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly _sizeEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly _binarySizeEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 
@@ -117,6 +124,7 @@ export class ParadisImageFileEditor extends EditorPane {
 		@IStatusbarService private readonly _statusbarService: IStatusbarService,
 		@IContextMenuService private readonly _contextMenuService: IContextMenuService,
 		@ILogService private readonly _logService: ILogService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super(PARADIS_IMAGE_EDITOR_ID, group, telemetryService, themeService, storageService);
 
@@ -131,7 +139,34 @@ export class ParadisImageFileEditor extends EditorPane {
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
-		const root = this._root = dom.append(parent, dom.$('.paradis-image-viewer.paradis-focus-none.container.image.scale-to-fit'));
+		const host = this._host = dom.append(parent, dom.$('.paradis-image-viewer-host'));
+		// 帯は拡大のクリックとスクロールを受ける入れ物（root）の外に置く。中に置くと、帯のボタンを押すだけで拡大し、帯も一緒に流れる。
+		// allow-any-unicode-next-line
+		const toolbar = createParadisViewerToolbar(host, 'paradis-image-toolbar', localize('paradis.imagePreview.toolbar', "画像のツールバー"));
+		this._metaElement = dom.append(toolbar.start, dom.$('span.paradis-image-toolbar-meta'));
+		const zoom = appendParadisViewerToolbarGroup(toolbar.end, 'paradis-viewer-zoom');
+		// allow-any-unicode-next-line
+		const zoomOut = appendParadisViewerToolbarIconButton(zoom, Codicon.zoomOut, localize('paradis.imagePreview.zoomOut', "縮小"));
+		this._register(dom.addDisposableListener(zoomOut, dom.EventType.CLICK, () => this.zoomOut()));
+		// 倍率を押すと、ステータスバーの倍率と同じ選択肢（ズーム レベルの選択）を開く。
+		// allow-any-unicode-next-line
+		this._percentButton = appendParadisViewerToolbarPercent(zoom, localize('paradis.imagePreview.selectZoomLevel', "ズーム レベルの選択"));
+		this._register(dom.addDisposableListener(this._percentButton, dom.EventType.CLICK, () => {
+			void this._commandService.executeCommand(PARADIS_IMAGE_SELECT_ZOOM_COMMAND_ID, this);
+		}));
+		// allow-any-unicode-next-line
+		const zoomIn = appendParadisViewerToolbarIconButton(zoom, Codicon.zoomIn, localize('paradis.imagePreview.zoomIn', "拡大"));
+		this._register(dom.addDisposableListener(zoomIn, dom.EventType.CLICK, () => this.zoomIn()));
+		appendParadisViewerToolbarSeparator(toolbar.end);
+		// allow-any-unicode-next-line
+		const fit = appendParadisViewerToolbarIconButton(appendParadisViewerToolbarGroup(toolbar.end), Codicon.screenNormal, localize('paradis.imagePreview.fitWholeImage', "画像全体を表示"));
+		this._register(dom.addDisposableListener(fit, dom.EventType.CLICK, () => {
+			if (this._displayed && this._state === 'ready') {
+				this.setScale('fit');
+			}
+		}));
+
+		const root = this._root = dom.append(host, dom.$('.paradis-image-viewer.paradis-focus-none.container.image.scale-to-fit'));
 		root.tabIndex = 0;
 		root.setAttribute('role', 'document');
 
@@ -204,9 +239,9 @@ export class ParadisImageFileEditor extends EditorPane {
 			if (!this._displayed || this._state !== 'ready') {
 				return;
 			}
-			this._contextMenuService.showContextMenu({
-				getAnchor: () => new StandardMouseEvent(dom.getWindow(root), e),
-				getActions: () => [toAction({
+			showParadisMenu(this._contextMenuService, {
+				anchor: new StandardMouseEvent(dom.getWindow(root), e),
+				actions: [toAction({
 					id: 'paradis.imagePreview.copy',
 					// allow-any-unicode-next-line
 					label: localize('paradis.imagePreview.copy', "コピー"),
@@ -214,7 +249,7 @@ export class ParadisImageFileEditor extends EditorPane {
 				})],
 			});
 		}));
-		const focusTracker = this._register(dom.trackFocus(root));
+		const focusTracker = this._register(dom.trackFocus(host));
 		this._register(focusTracker.onDidFocus(() => this._updateStatus()));
 		this._register(focusTracker.onDidBlur(() => this._updateStatus()));
 
@@ -264,9 +299,10 @@ export class ParadisImageFileEditor extends EditorPane {
 	}
 
 	override layout(dimension: dom.Dimension): void {
-		if (this._root) {
-			this._root.style.width = `${dimension.width}px`;
-			this._root.style.height = `${dimension.height}px`;
+		// 帯は固定の高さで、残りを画像の入れ物が flex で埋める（paradisImageViewer.css）。
+		if (this._host) {
+			this._host.style.width = `${dimension.width}px`;
+			this._host.style.height = `${dimension.height}px`;
 		}
 	}
 
@@ -550,6 +586,7 @@ export class ParadisImageFileEditor extends EditorPane {
 		if (this.input instanceof ParadisImageInput) {
 			root.setAttribute('aria-label', basename(this.input.resource));
 		}
+		this._updateToolbar();
 	}
 
 	private _clearDisplayed(): void {
@@ -583,7 +620,7 @@ export class ParadisImageFileEditor extends EditorPane {
 	}
 
 	private _rootHasFocus(): boolean {
-		return !!this._root && dom.isAncestorOfActiveElement(this._root);
+		return !!this._host && dom.isAncestorOfActiveElement(this._host);
 	}
 
 	private async _reopenWithDefaultEditor(): Promise<void> {
@@ -593,17 +630,27 @@ export class ParadisImageFileEditor extends EditorPane {
 		}
 	}
 
-	// --- ステータスバー（upstream の 3 項目と同じ並び: 倍率 102、寸法 101、大きさ 100） ---
+	// --- 帯（倍率・寸法と大きさ）とステータスバー（upstream と同じ並び: 寸法 101、大きさ 100。倍率は帯へ移した） ---
+
+	private _updateToolbar(): void {
+		const displayed = this._state === 'ready' ? this._displayed : undefined;
+		if (this._percentButton) {
+			this._percentButton.textContent = displayed ? formatParadisImageScale(this._scale) : '';
+			this._percentButton.disabled = !displayed;
+		}
+		if (this._metaElement) {
+			// allow-any-unicode-next-line
+			this._metaElement.textContent = displayed ? localize('paradis.imagePreview.toolbarMeta', "{0} × {1}・{2}", displayed.element.naturalWidth, displayed.element.naturalHeight, ByteSize.formatSize(displayed.data.size)) : '';
+		}
+	}
 
 	private _updateStatus(): void {
+		this._updateToolbar();
 		const displayed = this._displayed;
 		if (!displayed || this._state !== 'ready' || !this.isActiveImage()) {
 			this._hideStatus();
 			return;
 		}
-		const zoom = formatParadisImageScale(this._scale);
-		// allow-any-unicode-next-line
-		this._setEntry(this._zoomEntry, 'status.paradis.imagePreview.zoom', localize('paradis.imagePreview.zoomStatus', "イメージのズーム"), zoom, 102, PARADIS_IMAGE_SELECT_ZOOM_COMMAND_ID);
 		const size = `${displayed.element.naturalWidth}x${displayed.element.naturalHeight}`;
 		// allow-any-unicode-next-line
 		this._setEntry(this._sizeEntry, 'status.paradis.imagePreview.size', localize('paradis.imagePreview.sizeStatus', "イメージ サイズ"), size, 101);
@@ -611,8 +658,8 @@ export class ParadisImageFileEditor extends EditorPane {
 		this._setEntry(this._binarySizeEntry, 'status.paradis.imagePreview.binarySize', localize('paradis.imagePreview.binarySizeStatus', "イメージ バイナリ サイズ"), ByteSize.formatSize(displayed.data.size), 100);
 	}
 
-	private _setEntry(slot: MutableDisposable<IStatusbarEntryAccessor>, id: string, name: string, text: string, priority: number, command?: string): void {
-		const entry = { name, text, ariaLabel: text, command };
+	private _setEntry(slot: MutableDisposable<IStatusbarEntryAccessor>, id: string, name: string, text: string, priority: number): void {
+		const entry = { name, text, ariaLabel: text };
 		if (slot.value) {
 			slot.value.update(entry);
 		} else {
@@ -621,7 +668,6 @@ export class ParadisImageFileEditor extends EditorPane {
 	}
 
 	private _hideStatus(): void {
-		this._zoomEntry.clear();
 		this._sizeEntry.clear();
 		this._binarySizeEntry.clear();
 	}
