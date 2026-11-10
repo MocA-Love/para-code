@@ -64,9 +64,6 @@
 		"z-index | .paradis-csv-grid .paradis-csv-active | z-index: 5": 1,
 		"z-index | .paradis-csv-message | z-index: 20": 1
 	},
-	"src/vs/paradis/contrib/fileViewers/browser/media/paradisOfficeFindWidget.css": {
-		"z-index | .paradis-office-find-widget | z-index: 40": 1
-	},
 	"src/vs/paradis/contrib/fileViewers/browser/media/paradisViewerState.css": {
 		"z-index | .paradis-viewer-state | z-index: 30": 1
 	},
