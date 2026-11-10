@@ -19,21 +19,26 @@
 
 /* ---- スペース別 ---- */
 
+/* The table keeps a width that leaves the space name a column of its own; a narrower panel scrolls it sideways. */
+.paradis-ccusage.paradis-activity-panel .paradis-space-usage-scroll {
+	overflow-x: auto;
+}
+
+.paradis-ccusage.paradis-activity-panel .paradis-space-usage-table {
+	min-width: 520px;
+}
+
 .paradis-ccusage.paradis-activity-panel .paradis-space-usage-table th.bar-col,
 .paradis-ccusage.paradis-activity-panel .paradis-space-usage-table td.bar-col {
-	width: 34%;
+	width: 30%;
 }
 
 .paradis-ccusage.paradis-activity-panel .paradis-space-usage-table th.num {
-	width: 92px;
-}
-
-.paradis-ccusage.paradis-activity-panel .paradis-space-usage-table td.space-name {
-	color: var(--vscode-foreground);
+	width: 76px;
 }
 
 .paradis-ccusage.paradis-activity-panel .paradis-space-usage-table tr.special td.space-name {
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-ccusage.paradis-activity-panel .space-swatch {
@@ -47,7 +52,7 @@
 
 .paradis-ccusage.paradis-activity-panel .space-swatch.none {
 	box-sizing: border-box;
-	border: 1px solid var(--vscode-descriptionForeground);
+	border: 1px solid var(--vscode-paradis-textMuted);
 }
 
 .paradis-ccusage.paradis-activity-panel td.bar-col .bar-cell {
@@ -56,23 +61,8 @@
 	gap: var(--vscode-spacing-size80);
 }
 
-.paradis-ccusage.paradis-activity-panel .paradis-space-usage-track {
+.paradis-ccusage.paradis-activity-panel td.bar-col .paradis-progress {
 	flex: 1;
-	height: 8px;
-	border-radius: var(--vscode-cornerRadius-xSmall);
-	background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
-	overflow: hidden;
-}
-
-.paradis-ccusage.paradis-activity-panel .paradis-space-usage-bar {
-	height: 100%;
-	border-radius: var(--vscode-cornerRadius-xSmall);
-	background: var(--vscode-charts-blue, var(--vscode-focusBorder));
-}
-
-.paradis-ccusage.paradis-activity-panel tr.special .paradis-space-usage-bar {
-	background: var(--vscode-descriptionForeground);
-	opacity: 0.6;
 }
 
 .paradis-ccusage.paradis-activity-panel td.bar-col .share {
