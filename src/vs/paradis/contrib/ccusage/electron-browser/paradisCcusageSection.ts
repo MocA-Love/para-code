@@ -30,6 +30,7 @@ import { basename } from '../../../../base/common/path.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { PARADIS_TABLE_CLASS } from '../../../browser/paradisCard.js';
 import { renderParadisProgress } from '../../../browser/paradisProgress.js';
@@ -44,7 +45,7 @@ import { ParadisClaudeContextClient } from '../../claudeMod/electron-browser/par
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
-import { ParadisCcusageAgent, paradisCcusageAgentForModel } from '../common/paradisCcusage.js';
+import { ParadisCcusageAgent, paradisCcusageAgentForModel, paradisCcusageUnpricedModels } from '../common/paradisCcusage.js';
 import { PARADIS_CCUSAGE_OTHER_COLOR, PARADIS_CCUSAGE_SERIES_DARK, PARADIS_CCUSAGE_SERIES_LIGHT, paradisFormatTokens, paradisFormatUsd } from '../common/paradisCcusageFormat.js';
 import { IParadisContextViewOptions, paradisRenderContextBreakdown, paradisRenderContextPeriodCard } from './paradisCcusageContextView.js';
 import { FETCH_WINDOW_DAYS, IParadisCcusageDashboardData, IParadisCcusageDayData, IParadisCcusageModelSlice, PARADIS_CCUSAGE_DESKTOP_DASHBOARD_REPORTS, ParadisCcusageClient } from './paradisCcusageClient.js';
@@ -187,6 +188,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@IContextViewService contextViewService: IContextViewService,
 		@IConfigurationService configurationService: IConfigurationService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisCcusageClient);
@@ -702,6 +704,14 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		const granularity = this.effectiveGranularity(rangeDays);
 		const buckets = computeBuckets(days, granularity);
 
+		// ccusage の価格表がまだ知らないモデルは金額が 0 になる。合計が実際より少ないことを 1 行で知らせる
+		// （価格は足さず ccusage の更新を待つ。q.html Q603）
+		const unpricedNames = this.unpricedModelNames(totals);
+		if (unpricedNames !== undefined) {
+			const note = dom.append(this.body, $('.paradis-ccusage-note'));
+			note.textContent = localize('paradis.ccusage.unpricedNote', "{0} は使用量の集計がまだ価格に対応していないため、金額に含まれていません", unpricedNames);
+		}
+
 		this.renderKpis(this.body, days, totals);
 		this.renderBlockCard(this.body);
 
@@ -817,7 +827,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 			const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
 			dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(costNoun);
-			dom.append(costTile, $('.paradis-ccusage-stat-value')).textContent = paradisFormatUsd(totalCost);
+			this.appendCostValue(costTile, totalCost, false, totals);
 			if (agentSplit !== undefined) {
 				dom.append(costTile, $('.paradis-ccusage-stat-sub')).textContent = agentSplit;
 			}
@@ -825,7 +835,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			// 期間コスト(ヒーロー数値) + エージェント内訳
 			const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
 			dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(costNoun);
-			dom.append(costTile, $('.paradis-ccusage-stat-value.hero')).textContent = paradisFormatUsd(totalCost);
+			this.appendCostValue(costTile, totalCost, true, totals);
 			if (agentSplit !== undefined) {
 				dom.append(costTile, $('.paradis-ccusage-stat-sub')).textContent = agentSplit;
 			}
@@ -858,6 +868,27 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			burnValue.textContent = '—';
 			dom.append(burnTile, $('.paradis-ccusage-stat-sub')).textContent = localize('paradis.ccusage.kpi.noActiveBlock', "進行中のブロックなし");
 		}
+	}
+
+	/** 価格に未対応のモデル（トークンはあるのに金額が 0）の表示名を「・」でつないだもの。無ければ undefined。 */
+	private unpricedModelNames(totals: IModelTotal[]): string | undefined {
+		const models = paradisCcusageUnpricedModels(totals);
+		return models.length > 0 ? models.map(prettyModelName).join('・') : undefined;
+	}
+
+	/** 合計の金額。価格に未対応のモデルがあれば、金額の横に印を置き、ホバーで説明する。 */
+	private appendCostValue(tile: HTMLElement, totalCost: number, hero: boolean, totals: IModelTotal[]): void {
+		const unpricedNames = this.unpricedModelNames(totals);
+		const parent = unpricedNames !== undefined ? dom.append(tile, $('.paradis-ccusage-stat-value-row')) : tile;
+		dom.append(parent, $(hero ? '.paradis-ccusage-stat-value.hero' : '.paradis-ccusage-stat-value')).textContent = paradisFormatUsd(totalCost);
+		if (unpricedNames === undefined) {
+			return;
+		}
+		const description = localize('paradis.ccusage.unpricedMark', "{0} は使用量の集計がまだ価格に対応していないため、この金額に含まれていません", unpricedNames);
+		const mark = dom.append(parent, $(`span.paradis-ccusage-unpriced-mark${ThemeIcon.asCSSSelector(Codicon.warning)}`));
+		mark.setAttribute('role', 'img');
+		mark.setAttribute('aria-label', description);
+		this.bodyDisposables.add(this.hoverService.setupDelayedHover(mark, { content: description }));
 	}
 
 	private renderBlockCard(container: HTMLElement): void {
