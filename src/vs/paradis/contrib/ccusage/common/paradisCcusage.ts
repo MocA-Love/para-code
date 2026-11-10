@@ -219,3 +219,23 @@ export function paradisCcusageAgentForModel(modelName: string): ParadisCcusageAg
 	}
 	return 'other';
 }
+
+/** {@link paradisCcusageUnpricedModels} が読むモデルごとの合計。 */
+export interface IParadisCcusageModelCostTotal {
+	readonly model: string;
+	readonly cost: number;
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cacheCreationTokens: number;
+	readonly cacheReadTokens: number;
+}
+
+/**
+ * トークンを使っているのに金額が 0 のモデル（ccusage の価格表がまだそのモデルを知らない）を、渡した順に返す。
+ * 特定のモデル名は決め打ちしない。金額が欠けた値（NaN）も 0 と同じに扱う。
+ */
+export function paradisCcusageUnpricedModels(totals: readonly IParadisCcusageModelCostTotal[]): string[] {
+	return totals
+		.filter(total => total.inputTokens + total.outputTokens + total.cacheCreationTokens + total.cacheReadTokens > 0 && !(total.cost > 0))
+		.map(total => total.model);
+}

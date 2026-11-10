@@ -53,6 +53,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'Claude Code に Mythos 5.2 が出た後も、会話の途中で Mythos 5.1 に切り替えられるようにしました',
 				body: 'PC の一覧をまだ受け取っていないときのモデルの名前も、fable を Fable 5.2 と出すようにしました。切り替えは PC の Para Code を更新すると直ります。',
 			},
+			{
+				icon: 'information-circle-outline',
+				title: '使用量の画面で、金額にまだ含められないモデルがあると、そのモデル名を注記で出すようにしました',
+				body: 'トークンは使っているのに、使用量の集計がそのモデルの価格にまだ対応しておらず金額が 0 になるときに出ます。「今日のコスト」の下と、コストの画面のモデル別の下に出ます。',
+			},
 		],
 	},
 	{

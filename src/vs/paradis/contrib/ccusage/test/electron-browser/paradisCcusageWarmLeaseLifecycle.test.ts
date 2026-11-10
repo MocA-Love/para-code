@@ -12,6 +12,8 @@ import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
+import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
@@ -196,6 +198,7 @@ function createHarness(values: Readonly<Record<string, unknown>> = {}): ITestCcu
 	instantiationService.set(IRemoteAgentService, { getConnection: () => null } as unknown as IRemoteAgentService);
 	// 描画本体は ParadisCcusageSection へ移り、テーマ購読も含めて createInstance で組み立てられる
 	instantiationService.set(IThemeService, new TestThemeService());
+	instantiationService.set(IHoverService, NullHoverService);
 	return {
 		channel,
 		configuration,

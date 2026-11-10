@@ -666,3 +666,20 @@
 .paradis-ccusage-context-item.period {
 	grid-template-columns: minmax(0, 1fr) 64px 56px;
 }
+
+/* The period cost with a mark beside it when some model has no price in ccusage yet (q.html Q603). */
+.paradis-ccusage-stat-value-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	min-width: 0;
+}
+
+.paradis-ccusage-stat-value-row .paradis-ccusage-stat-value {
+	min-width: 0;
+}
+
+.paradis-ccusage-unpriced-mark {
+	flex: none;
+	color: var(--vscode-paradis-warning);
+}

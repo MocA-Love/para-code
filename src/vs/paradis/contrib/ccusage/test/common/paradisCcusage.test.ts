@@ -5,7 +5,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisCcusageAgentForModel } from '../../common/paradisCcusage.js';
+import { paradisCcusageAgentForModel, paradisCcusageUnpricedModels } from '../../common/paradisCcusage.js';
 
 suite('ParadisCcusage', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -32,5 +32,15 @@ suite('ParadisCcusage', () => {
 			'gemini',
 			'other',
 		]);
+	});
+
+	test('lists models that used tokens but have no price', () => {
+		const total = (model: string, cost: number, inputTokens: number, cacheReadTokens = 0) => ({ model, cost, inputTokens, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens });
+		assert.deepStrictEqual(paradisCcusageUnpricedModels([
+			total('claude-opus-5', 12.5, 1000),
+			total('claude-mythos-5-2', 0, 2000),
+			total('gpt-6', Number.NaN, 0, 500),
+			total('claude-haiku-5', 0, 0),
+		]), ['claude-mythos-5-2', 'gpt-6']);
 	});
 });

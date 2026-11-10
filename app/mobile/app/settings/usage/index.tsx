@@ -16,6 +16,7 @@ import { GroupHeader, SettingsScreen } from '../../../src/features/settings/sett
 import { settingsRoutes, type UsageDetailPage } from '../../../src/features/settings/settingsRoutes.js';
 import { UsageHostPicker } from '../../../src/features/settings/usageHost.js';
 import { DetailMessage, DetailNotConnected, DetailRefreshButton } from '../../../src/features/settings/usageDetailParts.js';
+import { aggregateModels, unpricedModelNote } from '../../../src/features/settings/usageDetailModel.js';
 import { ProviderUsageSection, UsageBigValue, UsageRow, UsageRowTitle, UsageSection, UsageSeparator } from '../../../src/features/settings/usageSections.js';
 import { accountNumbers, formatUsd, ratioPercent, recentDailyAverage, usageFootNote, withEmailMaskNote } from '../../../src/features/settings/usageSummary.js';
 import {
@@ -161,6 +162,8 @@ function UsageAllView() {
 	const cost = summarizeCost(entries, now);
 	const github = summarizeGithub(entries, now);
 	const average = cost.merged !== undefined ? recentDailyAverage(cost.merged, now) : undefined;
+	// 今日のモデルに、価格に未対応（トークンはあるのに金額 0）のものがあれば合計の下に書く。
+	const unpricedNote = cost.merged !== undefined ? unpricedModelNote(aggregateModels(cost.merged, 1, 'all', now)) : undefined;
 	const limitsLoading = overview.isLoading('limits');
 	const costLoading = overview.isLoading('cost');
 	const githubLoading = overview.isLoading('github');
@@ -204,6 +207,7 @@ function UsageAllView() {
 							{cost.missingToday.length > 0 && cost.missingToday.length < entries.length ? (
 								<Text style={styles.small}>{`${cost.missingToday.join('・')} は今日の値を取れていないため、合計に入っていません`}</Text>
 							) : null}
+							{unpricedNote !== undefined ? <Text style={styles.small}>{unpricedNote}</Text> : null}
 						</UsageRow>
 					</UsageSection>
 
