@@ -27,6 +27,7 @@ registerColor('paradis.fillHover', 'list.hoverBackground', localize('paradis.col
 registerColor('paradis.fillSelected', 'menu.selectionBackground', localize('paradis.color.fillSelected', "Para Code の部品: 選んでいる行の塗り。"));
 registerColor('paradis.fillNeutral', 'button.secondaryBackground', localize('paradis.color.fillNeutral', "Para Code の部品: 副のボタンの塗り。"));
 registerColor('paradis.scrim', '#00000080', localize('paradis.color.scrim', "Para Code の部品: モーダルの下の暗い幕。"));
+registerColor('paradis.band', 'sideBarSectionHeader.background', localize('paradis.color.band', "Para Code の部品: 一覧の中の見出しの帯の面。"));
 
 // 文字
 registerColor('paradis.text', 'foreground', localize('paradis.color.text', "Para Code の部品: 本文の文字。"));
@@ -39,6 +40,7 @@ registerColor('paradis.lineSubtle', 'widget.border', localize('paradis.color.lin
 registerColor('paradis.line', 'input.border', localize('paradis.color.line', "Para Code の部品: 入力欄の枠。"));
 registerColor('paradis.lineButton', 'button.secondaryBorder', localize('paradis.color.lineButton', "Para Code の部品: 副のボタンの枠。塗りの無いテーマでも副のボタンと素のボタンを見分けられるようにする。"));
 registerColor('paradis.lineStrong', 'checkbox.border', localize('paradis.color.lineStrong', "Para Code の部品: ポインタを重ねたときやチェックの枠。"));
+registerColor('paradis.guide', 'tree.indentGuidesStroke', localize('paradis.color.guide', "Para Code の部品: 一覧の入れ子の範囲を示す細い罫線。"));
 
 // 意味の色
 registerColor('paradis.accent', 'progressBar.background', localize('paradis.color.accent', "Para Code の部品: アクセント。"));
