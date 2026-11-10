@@ -16,8 +16,8 @@
 // （層に入っていない）CSS に必ず負けるので、ページが決めた色はそのまま使われる。
 //
 // 白い地は `html` に敷く。ただしブラウザは、`html` の背景が透明なとき `body` の背景を画面全体に広げるので、`html` に
-// 白があると `body` だけに背景を付けたページの本文より下が白くなる。ページが `body` にだけ背景を付けているときは、
-// 読み込んだ後に白を外す（{@link paradisHtmlViewerCanvasScript}）。スクリプトを動かさない制限モードでは白のまま。
+// 白があると `body` だけに背景を付けたページの本文より下が白くなる。ページが背景色を付けているときは、読み込んだ後に
+// 白を外す（{@link paradisHtmlViewerCanvasScript}）。スクリプトを動かさない制限モードでは白のまま。
 
 /** ビューアの既定の層の名前。基盤の `vscode-default` より後に並べる。 */
 const LAYER = 'paradis-html-viewer-default';
@@ -42,14 +42,23 @@ export function paradisHtmlViewerHeadStyle(zoom: number): string {
 		+ `<style id="${CANVAS_STYLE_ID}">html{background-color:#ffffff;}</style>`;
 }
 
+/** 読み込んだ後に、ページが後から背景色を付けるのを待つ時間（SPA が描き終えるまで）。 */
+export const PARADIS_HTML_VIEWER_CANVAS_WATCH_MS = 10_000;
+
 /**
- * 白い地を、ページが `body` にだけ背景を付けているときに外すスクリプト（文書の末尾に入れる）。`html` の背景をページが
- * 決めていれば白は見えないので外し、どちらも決めていなければ白のまま。外部の CSS が後から効くこともあるので、
- * `load` でもう一度見る。
+ * 白い地を、ページが `html` か `body` に背景色を付けているときに外すスクリプト（文書の末尾に入れる）。
+ *
+ * 見るのは背景色だけ。背景の画像だけのページで外すと、画像の外側にエディタの地が透け、黒い文字が読めなくなる。
+ * 外部の CSS が後から効くこともあるので `load` でもう一度見る。SPA が後から背景を付けることもあるので、`load` の後
+ * しばらく（{@link PARADIS_HTML_VIEWER_CANVAS_WATCH_MS}）`html`・`body` の style・class の変化を見て、背景色が付いたら
+ * 外す。外したら、または時間が過ぎたら見るのをやめる。
  */
 export function paradisHtmlViewerCanvasScript(): string {
 	return `<script>(function(){try{var s=document.getElementById('${CANVAS_STYLE_ID}');if(!s){return;}`
-		+ `function painted(e){var c=getComputedStyle(e);return c.backgroundImage!=='none'||!/^(transparent|rgba\\(0, 0, 0, 0\\))$/.test(c.backgroundColor);}`
-		+ `function check(){if(!document.body){return;}s.disabled=true;s.disabled=painted(document.documentElement)||painted(document.body);}`
-		+ `check();window.addEventListener('load',check);}catch(err){}})();</script>`;
+		+ `function colored(e){return !/^(transparent|rgba\\(0, 0, 0, 0\\))$/.test(getComputedStyle(e).backgroundColor);}`
+		+ `function check(){if(!s.parentNode||!document.body){return true;}s.disabled=true;var off=colored(document.documentElement)||colored(document.body);s.disabled=off;return off;}`
+		+ `function watch(){if(check()||typeof MutationObserver!=='function'){return;}`
+		+ `var o=new MutationObserver(function(){if(check()){o.disconnect();}});var opts={attributes:true,attributeFilter:['style','class']};`
+		+ `o.observe(document.documentElement,opts);o.observe(document.body,opts);setTimeout(function(){o.disconnect();},${PARADIS_HTML_VIEWER_CANVAS_WATCH_MS});}`
+		+ `check();if(document.readyState==='complete'){watch();}else{window.addEventListener('load',watch);}}catch(err){}})();</script>`;
 }
