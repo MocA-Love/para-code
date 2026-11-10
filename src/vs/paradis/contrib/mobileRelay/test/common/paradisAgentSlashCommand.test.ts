@@ -8,6 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { IParadisAgentModelCatalog, paradisResolveAgentTemplates, paradisSwitchableAgentModels } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { PARADIS_CLAUDE_SETTING_VALUE_PATTERN, paradisClaudeModelSwitch, paradisFindListedClaudeModel, paradisCodexComposerHoldsCommand, paradisParseSlashCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../../common/paradisAgentSlashCommand.js';
 
 suite('ParadisAgentSlashCommand', () => {
@@ -116,5 +118,27 @@ suite('ParadisAgentSlashCommand', () => {
 		const models = [{ id: 'opus', resolvedModel: 'claude-opus-5-5' }, { id: 'claude-mythos-5-1', resolvedModel: 'claude-mythos-5-1' }, { id: 'sonnet' }];
 		assert.deepStrictEqual(['claude-mythos-5-1', 'Claude-Mythos-5-1', 'claude-opus-5-5', 'claude-mythos-5', 'claude-opus-4-8', ''].map(value => paradisFindListedClaudeModel(value, models)),
 			['claude-mythos-5-1', 'claude-mythos-5-1', 'claude-opus-5-5', undefined, undefined, undefined]);
+	});
+
+	test('switches to Mythos 5.1 while the CLI also lists Mythos 5.2, though a new space offers only 5.2 (Claude Code 2.1.322)', () => {
+		const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
+		const catalogs: IParadisAgentModelCatalog[] = [{
+			agentId: 'claude', cliVersion: '2.1.322', fetchedAt: 0, models: [
+				{ id: 'fable', resolvedModel: 'claude-fable-5-2', efforts },
+				{ id: 'claude-mythos-5-1', resolvedModel: 'claude-mythos-5-1', efforts },
+				{ id: 'claude-mythos-5-2', resolvedModel: 'claude-mythos-5-2', efforts },
+			],
+		}];
+		const templates = paradisResolveAgentTemplates(new TestConfigurationService(), catalogs);
+		const switchable = paradisSwitchableAgentModels('claude', templates, catalogs);
+		assert.deepStrictEqual({
+			newSpace: templates.find(agent => agent.id === 'claude')?.models?.map(model => model.id),
+			switched: ['claude-mythos-5-1', 'claude-mythos-5-2', 'claude-fable-5-2', 'opusplan', 'claude-mythos-5'].map(value => paradisFindListedClaudeModel(value, switchable)),
+			noCatalog: paradisFindListedClaudeModel('claude-mythos-5-1', paradisSwitchableAgentModels('claude', paradisResolveAgentTemplates(new TestConfigurationService(), []), [])),
+		}, {
+			newSpace: ['fable', 'claude-mythos-5-2', 'opusplan'],
+			switched: ['claude-mythos-5-1', 'claude-mythos-5-2', 'claude-fable-5-2', 'opusplan', undefined],
+			noCatalog: undefined,
+		});
 	});
 });

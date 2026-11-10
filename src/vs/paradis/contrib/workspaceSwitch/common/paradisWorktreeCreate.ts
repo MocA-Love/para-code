@@ -492,8 +492,9 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 	{
 		id: 'claude', label: 'Claude Code', command: 'claude {prompt}',
 		models: [
-			// 別名が指す先と既定のエフォートは Claude Code 2.1.293 のもの。CLI から一覧を取れたときは使わない
-			{ id: 'fable', label: 'fable (Fable 5.1)', flag: '--model fable', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
+			// 別名が指す先と既定のエフォートは Claude Code 2.1.322 のもの。CLI から一覧を取れたときも、既定のエフォートは
+			// 一覧に無いので、同じ id の行の値を使う（Fable 5.2 は medium。5.1 は high だった）
+			{ id: 'fable', label: 'fable (Fable 5.2)', flag: '--model fable', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'opus', label: 'opus (Opus 5.5)', flag: '--model opus', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'sonnet', label: 'sonnet (Sonnet 5.5)', flag: '--model sonnet', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'haiku', label: 'haiku (Haiku 5.5)', flag: '--model haiku', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },

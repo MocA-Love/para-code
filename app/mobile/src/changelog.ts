@@ -48,6 +48,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'PC の「AI 利用リミット」で隠したアカウントは、使用量の画面・ホーム・ウィジェットにも出さないようにしました',
 				body: '使用量の画面では「非表示中のアカウント」に畳んで名前だけを出します。表示に戻すのは PC から。PC の Para Code を更新すると使えます。',
 			},
+			{
+				icon: 'swap-horizontal-outline',
+				title: 'Claude Code に Mythos 5.2 が出た後も、会話の途中で Mythos 5.1 に切り替えられるようにしました',
+				body: 'PC の一覧をまだ受け取っていないときのモデルの名前も、fable を Fable 5.2 と出すようにしました。切り替えは PC の Para Code を更新すると直ります。',
+			},
 		],
 	},
 	{

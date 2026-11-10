@@ -44,6 +44,7 @@ import {
 	paradisIsAgentListUserDefined,
 	paradisResetAgentListSetting,
 	paradisResolveAgentTemplates,
+	paradisSwitchableAgentModels,
 } from '../common/paradisAgentModelCatalog.js';
 
 export class ParadisAgentModelCatalogService extends Disposable implements IParadisAgentModelCatalogService {
@@ -78,6 +79,10 @@ export class ParadisAgentModelCatalogService extends Disposable implements IPara
 
 	getAgentTemplates(): readonly IParadisAgentCommandTemplate[] {
 		return paradisResolveAgentTemplates(this.configurationService, this.catalogs);
+	}
+
+	getSwitchableModels(agentId: string): readonly { readonly id: string; readonly resolvedModel?: string }[] {
+		return paradisSwitchableAgentModels(agentId, this.getAgentTemplates(), this.catalogs);
 	}
 
 	isFixedBySettings(): boolean {

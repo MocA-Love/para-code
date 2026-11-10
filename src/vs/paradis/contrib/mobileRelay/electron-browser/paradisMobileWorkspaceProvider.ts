@@ -792,6 +792,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// instantiationService.invokeFunction に束ねて渡される。runGit等と同じコールバック方式）
 		// agentsOnly: モバイルのチャットがモデルの候補だけを取りに来たとき（リポジトリ一覧は空で返す）
 		private readonly getWorktreeCreateForm: (options?: { readonly agentsOnly?: boolean }) => Promise<IParadisWorktreeCreateFormData>,
+		// 会話の途中で切り替えてよい Claude のモデル。実体は paradisGetSwitchableClaudeModels（新しいスペースの候補と違い、
+		// 別名の無い系統の古い版（Mythos 5.2 が出た後の claude-mythos-5-1 など）も含む）
+		private readonly getSwitchableClaudeModels: () => readonly { readonly id: string; readonly resolvedModel?: string }[],
 		private readonly createWorktree: (request: IParadisHeadlessWorktreeRequest) => Promise<IParadisHeadlessWorktreeResult>,
 		// 既存ワークスペースへのエージェント起動。実体は paradisLaunchAgentInWorkspace
 		private readonly launchAgentInWorkspace: (request: IParadisAgentLaunchInWorkspaceRequest) => Promise<void>,
@@ -1761,9 +1764,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					}
 				} else if (msg.setting === 'model') {
 					// 別名でないモデル（`claude-mythos-5-1` など版付きの id。`/config` は別名しか受け付けない）は、PC が CLI から
-					// 取ったモデルの一覧に載っているものだけを `/model <id>` で送り、確認（Switch model?）に Enter を送るガードで切り替える
-					const claude = (await this.getWorktreeCreateForm({ agentsOnly: true })).agents.find(agent => agent.id === 'claude');
-					const listed = paradisFindListedClaudeModel(msg.value, claude?.models ?? []);
+					// 取ったモデルの一覧に載っているものだけを `/model <id>` で送り、確認（Switch model?）に Enter を送るガードで切り替える。
+					// 照合は新しいスペースの候補（系統ごとに最新の版だけ）ではなく、絞る前の CLI の一覧も見る
+					const listed = paradisFindListedClaudeModel(msg.value, this.getSwitchableClaudeModels());
 					if (listed === undefined) {
 						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotListedMessage(msg.value));
 						return;
