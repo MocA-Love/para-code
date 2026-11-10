@@ -219,9 +219,7 @@ suite('ParadisSessionResumeDialog', () => {
 		const fixture = createRefreshFixture(client);
 		try {
 			await fixture.load();
-			const archivedInput = fixture.root.querySelector<HTMLInputElement>('.paradis-session-resume-check input')!;
-			archivedInput.checked = true;
-			archivedInput.dispatchEvent(new Event('change'));
+			fixture.root.querySelector<HTMLElement>('.paradis-session-resume-check .monaco-checkbox')!.click();
 			await timeout(1);
 			assert.strictEqual(client.listRequests.length, 2);
 			assert.strictEqual(client.listRequests[1].includeArchived, true);
