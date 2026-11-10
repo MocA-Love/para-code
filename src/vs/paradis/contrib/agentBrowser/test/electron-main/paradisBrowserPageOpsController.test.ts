@@ -10,6 +10,7 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { CDPEvent, ICDPConnection } from '../../../../../platform/browserView/common/cdp/types.js';
 import { paradisParseRequestRules } from '../../common/paradisBrowserPageOps.js';
+import { paradisGuardNewDocumentScriptParams } from '../../common/paradisCdpExtensionScope.js';
 import { IParadisLoginAuthInfo, IParadisPageOpsTarget, ParadisBrowserPageOpsController, ParadisLoginListener } from '../../electron-main/paradisBrowserPageOpsController.js';
 
 const OWNER = '0123456789abcdef0123456789abcdef';
@@ -587,7 +588,7 @@ suite('ParadisBrowserPageOpsController', () => {
 			leftovers: target.hasLeftovers(),
 		}, {
 			added: { ok: true, scripts: [{ id: 's1', label: 'hook', chars: 14, addedAt: 1000 }], otherPanes: 0, added: { id: 's1', label: 'hook', chars: 14, addedAt: 1000 } },
-			addCommand: [{ method: 'Page.enable', params: undefined }, { method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: 'window.__a = 1', runImmediately: true } }],
+			addCommand: [{ method: 'Page.enable', params: undefined }, { method: 'Page.addScriptToEvaluateOnNewDocument', params: paradisGuardNewDocumentScriptParams('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__a = 1', runImmediately: true }) }],
 			listed: { ok: true, scripts: [{ id: 's1', label: 'hook', chars: 14, addedAt: 1000 }], otherPanes: 1 },
 			unknown: 'invalid',
 			afterRelease: [{ ok: true, scripts: [], otherPanes: 1 }, 1, true],
