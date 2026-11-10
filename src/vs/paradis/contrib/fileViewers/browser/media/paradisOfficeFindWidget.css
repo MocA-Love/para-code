@@ -40,12 +40,19 @@
 	padding: 0 var(--vscode-spacing-size20) 0 var(--vscode-spacing-size80);
 }
 
+/* The gray ring of the frame (paradis-focus-subtle-within) shows the focus; upstream's blue ring of the inner InputBox
+ * (.synthetic-focus) would draw a second line inside the frame (the same as paradisComboBox.css). */
+.monaco-workbench .paradis-office-find-widget .paradis-field > .monaco-inputbox.synthetic-focus {
+	outline: none;
+}
+
 .monaco-workbench .paradis-office-find-widget .paradis-office-find-input input::-webkit-search-cancel-button {
 	display: none;
 }
 
+/* The count keeps its whole text ("50 件中 1 件目"); the text field shrinks first. */
 .monaco-workbench .paradis-office-find-widget .paradis-office-find-status {
-	flex: 0 1 auto;
+	flex: 0 0 auto;
 	min-width: 56px;
 	padding: 0 var(--vscode-spacing-size60);
 	overflow: hidden;
