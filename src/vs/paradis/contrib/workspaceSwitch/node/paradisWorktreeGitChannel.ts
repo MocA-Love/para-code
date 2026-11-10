@@ -36,13 +36,14 @@ import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradi
 import { IParadisGithubCallResource, paradisGithubCallSiteFromArgs, paradisGithubResourceFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
 import { PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_CLOSED_ISSUE_MAX_AGE_MS, paradisCoerceGithubStatusMaxAge, ParadisGithubLookupCache } from '../common/paradisGithubLookupCache.js';
-import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, ParadisDiffStatFailure, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRemoveWorktreeResult, IParadisForceDeleteBranchesRequest, IParadisForceDeleteBranchesResult, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisWorktreeListOverlaps, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, paradisSanitizeBranchName, ParadisDiffStatFailure, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRemoveWorktreeResult, IParadisForceDeleteBranchesRequest, IParadisForceDeleteBranchesResult, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisWorktreeListOverlaps, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine, paradisRedactCloneLogText } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
 import { IParadisFindGeneratedOutputsRequest, IParadisGeneratedOutputCandidate, IParadisRemoveGeneratedOutputsRequest, IParadisRemoveGeneratedOutputsResult, PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS } from '../common/paradisWorktreeGeneratedCleanup.js';
 import { IParadisGeneratedCleanupHost, paradisFindGeneratedOutputs, paradisRemoveGeneratedOutputs } from './paradisWorktreeGeneratedCleanup.js';
 import { IParadisCopyWorktreeIncludesRequest, IParadisWorktreeIncludeResult } from '../common/paradisWorktreeInclude.js';
+import { IParadisAddBranchWorktreeRequest, IParadisAddBranchWorktreeResult, IParadisBranchCandidates, IParadisExistingBranchState, paradisExistingBranchSyncAllowed, paradisParseBranchRefs, paradisParseWorktreeBranchUse, paradisPlanExistingBranch, paradisWorktreeBranchArgs } from '../common/paradisWorktreeExistingBranch.js';
 import { IParadisWorktreeLinkRecord, PARADIS_WORKTREE_LINK_RECORD_FILE, paradisLiveRecordedWorktreeLinkPaths, paradisMaterializeWorktreeIncludes, paradisReadWorktreeIncludeDeclarations, paradisRestoreWorktreeLinks, paradisUnlinkRecordedWorktreeLinks } from './paradisWorktreeIncludeCopy.js';
 import { PARADIS_GIT_NETWORK_SUBCOMMANDS, paradisRestrictedGitArgsError } from '../common/paradisGitRestrictedArgs.js';
 import { PARADIS_PR_DETAIL_FIELDS, PARADIS_PR_FAILED_LOG_JOBS, ParadisPullRequestLookup, paradisParseGhPullRequestDetail, paradisPickMergeMethod, paradisTailFailedJobLog } from '../../mobileRelay/common/paradisMobilePullRequest.js';
@@ -225,6 +226,13 @@ export function paradisClassifyDiffStatFailure(failure: { readonly exitCode: num
 		return 'notRepository';
 	}
 	return failure.pathExists ? 'other' : 'missing';
+}
+
+/** 既存のブランチの名前として受け付けるか（git のオプションに読まれない・ref として正しい形）。違えば投げる。 */
+function paradisCheckExistingBranchName(branch: unknown): asserts branch is string {
+	if (typeof branch !== 'string' || branch.length === 0 || branch.length > 255 || branch.startsWith('-') || paradisSanitizeBranchName(branch) !== branch) {
+		throw new Error(`Invalid argument: ${String(branch)}`);
+	}
 }
 
 export class ParadisWorktreeGitService {
@@ -496,7 +504,12 @@ export class ParadisWorktreeGitService {
 	 * （worktree では絶対パスが返る）。WSL のリポジトリは、ディストロの中のパスを UNC へ書き戻す。
 	 */
 	private async gitIndexHostPath(repoPath: string): Promise<string | undefined> {
-		const indexPath = (await this.exec(['-C', paradisWslPathArg(repoPath), 'rev-parse', '--git-path', 'index'])).trim();
+		return this.gitHostPath(repoPath, 'index');
+	}
+
+	/** `git rev-parse --git-path <name>` のファイルを、このプロセスから触れるパスで返す（{@link gitIndexHostPath} と同じ規則）。 */
+	private async gitHostPath(repoPath: string, name: string): Promise<string | undefined> {
+		const indexPath = (await this.exec(['-C', paradisWslPathArg(repoPath), 'rev-parse', '--git-path', name])).trim();
 		if (indexPath.length === 0) {
 			return undefined;
 		}
@@ -1001,6 +1014,135 @@ export class ParadisWorktreeGitService {
 			await this.grantClaudeTrust(request.worktreePath);
 			await this.grantCodexTrust(request.worktreePath);
 		}
+	}
+
+	/**
+	 * 「既存のブランチ」の候補（ローカルと origin、使用中、最後に fetch した時刻）。fetch はしない（呼ぶ側が runGit で済ませる）。
+	 */
+	async listBranchCandidates(repoPath: string): Promise<IParadisBranchCandidates> {
+		const repo = paradisWslPathArg(repoPath);
+		const refs = paradisParseBranchRefs(await this.exec(['-C', repo, 'for-each-ref', '--format=%(refname)%00%(committerdate:unix)', 'refs/heads/', 'refs/remotes/origin/']));
+		let inUse: IParadisBranchCandidates['inUse'] = [];
+		try {
+			inUse = paradisParseWorktreeBranchUse(await this.exec(['-C', repo, 'worktree', 'list', '--porcelain', '-z'], undefined, { quiet: true }));
+		} catch {
+			// 使用中が分からなくても一覧は出す（作る直前に git の側で確かめ直す）
+		}
+		let hasOrigin = false;
+		try {
+			await this.exec(['-C', repo, 'config', '--get', 'remote.origin.url'], undefined, { quiet: true });
+			hasOrigin = true;
+		} catch {
+			hasOrigin = false;
+		}
+		let lastFetchedAt: number | undefined;
+		try {
+			const fetchHead = await this.gitHostPath(repoPath, 'FETCH_HEAD');
+			lastFetchedAt = fetchHead === undefined ? undefined : (await fs.stat(fetchHead)).mtimeMs;
+		} catch {
+			lastFetchedAt = undefined;
+		}
+		return { local: refs.local, remote: refs.remote, inUse, hasOrigin, ...(lastFetchedAt !== undefined ? { lastFetchedAt } : {}) };
+	}
+
+	/** 選んだ 1 本のローカルと origin の関係（先行・遅れ・使用中）。 */
+	async inspectExistingBranch(repoPath: string, branch: string): Promise<IParadisExistingBranchState> {
+		paradisCheckExistingBranchName(branch);
+		const repo = paradisWslPathArg(repoPath);
+		const sha = async (ref: string) => {
+			try {
+				return (await this.exec(['-C', repo, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`], undefined, { quiet: true })).trim() || undefined;
+			} catch {
+				return undefined;
+			}
+		};
+		const localSha = await sha(`refs/heads/${branch}`);
+		const remoteSha = await sha(`refs/remotes/origin/${branch}`);
+		let ahead = 0;
+		let behind = 0;
+		if (localSha !== undefined && remoteSha !== undefined && localSha !== remoteSha) {
+			const counts = (await this.exec(['-C', repo, 'rev-list', '--left-right', '--count', `${localSha}...${remoteSha}`])).trim().split(/\s+/);
+			ahead = Number.parseInt(counts[0] ?? '', 10) || 0;
+			behind = Number.parseInt(counts[1] ?? '', 10) || 0;
+		}
+		let inUse: IParadisExistingBranchState['inUse'];
+		try {
+			inUse = paradisParseWorktreeBranchUse(await this.exec(['-C', repo, 'worktree', 'list', '--porcelain', '-z'])).find(entry => entry.branch === branch);
+		} catch (error) {
+			// 使用中かが分からないまま作らない
+			throw new Error(`cannot read the worktree list: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		return { ...(localSha !== undefined ? { localSha } : {}), ...(remoteSha !== undefined ? { remoteSha } : {}), ahead, behind, ...(inUse !== undefined ? { inUse } : {}) };
+	}
+
+	/**
+	 * 既存のブランチをワークツリーで開く（新しいブランチを切らない）。ダイアログで見た状態と今の状態はずれうるので、
+	 * ここで判定し直す。`--force` はどの形にも使わない。ローカルを origin に合わせるときは、古い値を照合する `update-ref`
+	 * で動かす（その間に足されたコミットを黙って捨てない。reflog に残る）。
+	 */
+	async addWorktreeFromBranch(request: IParadisAddBranchWorktreeRequest<string>): Promise<IParadisAddBranchWorktreeResult> {
+		for (const value of [request.repoPath, request.worktreePath]) {
+			if (typeof value !== 'string' || value.length === 0 || value.startsWith('-')) {
+				throw new Error(`Invalid argument: ${String(value)}`);
+			}
+		}
+		paradisCheckExistingBranchName(request.branch);
+		if (request.source !== 'local' && request.source !== 'origin' && request.source !== 'auto') {
+			throw new Error('Invalid argument: source');
+		}
+		if (request.source === 'auto' && request.sync !== undefined) {
+			throw new Error('Invalid argument: sync');
+		}
+		if (request.sync !== undefined && request.sync !== 'fastForward' && request.sync !== 'reset') {
+			throw new Error('Invalid argument: sync');
+		}
+		const repo = paradisWslPathArg(request.repoPath);
+		try {
+			await this.exec(['-C', repo, 'worktree', 'prune']);
+		} catch {
+			// prune の失敗は致命的ではない
+		}
+		const state = await this.inspectExistingBranch(request.repoPath, request.branch);
+		const source = request.source === 'auto' ? (state.localSha !== undefined ? 'local' : 'origin') : request.source;
+		const plan = paradisPlanExistingBranch(source, state);
+		if (plan.kind === 'missing') {
+			throw new Error(source === 'origin'
+				// allow-any-unicode-next-line
+				? localize('paradis.worktree.existingBranch.missingRemote', "origin にブランチ「{0}」がありません。一覧を取得し直してください。", request.branch)
+				// allow-any-unicode-next-line
+				: localize('paradis.worktree.existingBranch.missingLocal', "ローカルにブランチ「{0}」がありません。", request.branch));
+		}
+		if (plan.kind === 'inUse') {
+			// allow-any-unicode-next-line
+			throw new Error(localize('paradis.worktree.existingBranch.inUse', "ブランチ「{0}」は {1} で開いています。git では 1 つのブランチを 2 か所で開けません。", request.branch, plan.inUse.path));
+		}
+		if (!paradisExistingBranchSyncAllowed(plan, request.sync)) {
+			// allow-any-unicode-next-line
+			throw new Error(localize('paradis.worktree.existingBranch.stateChanged', "ブランチ「{0}」の状態が変わりました。ダイアログを開き直して確かめてください。", request.branch));
+		}
+		const checkoutWorkers = await this.checkoutWorkersArgs(request.repoPath);
+		const worktreePath = paradisWslPathArg(request.worktreePath);
+		let synced = false;
+		if (plan.kind === 'track') {
+			await this.exec(['-C', repo, ...checkoutWorkers, 'worktree', 'add', ...paradisWorktreeBranchArgs('track', request.branch, worktreePath, undefined)]);
+		} else {
+			if (request.sync !== undefined && state.localSha !== undefined && state.remoteSha !== undefined) {
+				if (request.sync === 'reset' && request.expectedLocalSha !== state.localSha) {
+					// allow-any-unicode-next-line
+					throw new Error(localize('paradis.worktree.existingBranch.localMoved', "ローカルのブランチ「{0}」に、確かめた後でコミットが足されました。捨てる件数が変わるので作りませんでした。ダイアログを開き直してください。", request.branch));
+				}
+				const reason = request.sync === 'reset' ? 'para: reset to origin when opening as a space' : 'para: fast-forward to origin when opening as a space';
+				// 古い値を照合して動かす。その間に動いていれば git が断る
+				await this.exec(['-C', repo, 'update-ref', '-m', reason, `refs/heads/${request.branch}`, state.remoteSha, state.localSha]);
+				synced = true;
+			}
+			await this.exec(['-C', repo, ...checkoutWorkers, 'worktree', 'add', ...paradisWorktreeBranchArgs('existing', request.branch, worktreePath, undefined)]);
+		}
+		if (request.trustClaudeFolder === true) {
+			await this.grantClaudeTrust(request.worktreePath);
+			await this.grantCodexTrust(request.worktreePath);
+		}
+		return { plan: plan.kind, synced };
 	}
 
 	/**
@@ -1969,6 +2111,9 @@ export class ParadisWorktreeGitChannel<TContext extends ParadisCloneOwner = stri
 			case 'cancelClone': return Promise.resolve(this.service.cancelClone(String(args[0]))) as Promise<T>;
 			case 'listBranches': return this.service.listBranches(String(args[0])) as Promise<T>;
 			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest<string>) as Promise<T>;
+			case 'listBranchCandidates': return this.service.listBranchCandidates(String(args[0])) as Promise<T>;
+			case 'inspectExistingBranch': return this.service.inspectExistingBranch(String(args[0]), String(args[1])) as Promise<T>;
+			case 'addWorktreeFromBranch': return this.service.addWorktreeFromBranch(args[0] as IParadisAddBranchWorktreeRequest<string>) as Promise<T>;
 			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
 			case 'getPrStatus': return this.service.getPrStatus(String(args[0]), paradisCoerceGithubStatusMaxAge(args[1])) as Promise<T>;
 			case 'getIssueStatuses': return this.service.getIssueStatuses(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : [], paradisCoerceGithubStatusMaxAge(args[2])) as Promise<T>;

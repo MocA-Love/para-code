@@ -1,0 +1,173 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The filterable list of Para Code's UI kit (paradisComboBox.ts): the small text field (paradisInputField.css) with a
+	chevron, and a popup on the kit's popup surface in upstream's context view, with group headings and 28px rows.
+	The focused row is the one the arrow keys move (the field keeps the DOM focus), drawn with the selected fill.
+*/
+
+.monaco-workbench .paradis-combo {
+	cursor: text;
+}
+
+.monaco-workbench .paradis-combo.open {
+	border-color: var(--vscode-paradis-lineStrong);
+}
+
+.monaco-workbench .paradis-combo > .monaco-inputbox > .ibwrapper > .input {
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* The gray ring of the frame (paradis-focus-subtle-within) shows the focus; upstream's blue ring of the inner InputBox
+	(.synthetic-focus) would draw a second line inside the frame. */
+.monaco-workbench .paradis-combo > .monaco-inputbox.synthetic-focus {
+	outline: none;
+}
+
+.monaco-workbench .paradis-combo > .paradis-combo-chevron {
+	color: var(--vscode-paradis-textMuted);
+	cursor: pointer;
+}
+
+.paradis-combo-popup {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	color: var(--vscode-paradis-text);
+	background: var(--vscode-paradis-popup);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	box-shadow: var(--vscode-shadow-lg);
+	font-size: var(--vscode-fontSize-body1);
+	overflow: hidden;
+}
+
+.paradis-combo-notice {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size120);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.45;
+}
+
+.paradis-combo-notice > .codicon {
+	flex: none;
+	margin-top: 1px;
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.paradis-combo-notice.warning > .codicon {
+	color: var(--vscode-paradis-warning);
+}
+
+.paradis-combo-notice-text {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-combo-notice > .paradis-button {
+	flex: none;
+}
+
+.paradis-combo-notice.hidden,
+.paradis-combo-notice > .hidden,
+.paradis-combo-empty.hidden {
+	display: none;
+}
+
+.paradis-combo-list {
+	margin: var(--vscode-spacing-size40);
+}
+
+.paradis-combo-group {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: 100%;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80) 0;
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-combo-group.first {
+	padding-top: 0;
+	border-top: none;
+}
+
+.paradis-combo-group > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.paradis-combo-item {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 100%;
+	min-width: 0;
+	padding: 0 var(--vscode-spacing-size80);
+	border-radius: var(--paradis-radius-control);
+	cursor: pointer;
+}
+
+.paradis-combo-list .monaco-list-row:hover > .paradis-combo-item {
+	background: var(--vscode-paradis-fillHover);
+}
+
+.paradis-combo-list .monaco-list-row.focused > .paradis-combo-item {
+	background: var(--vscode-paradis-fillSelected);
+}
+
+.paradis-combo-item > .codicon {
+	flex: none;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-combo-item-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-combo-item-prefix {
+	color: var(--vscode-paradis-textFaint);
+}
+
+.paradis-combo-item-meta {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
+	white-space: nowrap;
+}
+
+.paradis-combo-empty {
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-combo-footer {
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
+}

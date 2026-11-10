@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { IContextMenuDelegate, IContextMenuProvider } from '../../../../../base/browser/contextmenu.js';
 import { Separator } from '../../../../../base/common/actions.js';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../../browser/paradisTerminalResumeBannerView.js';
 import { ParadisResumeAgent } from '../../../sessionResume/common/paradisSessionResume.js';
@@ -92,5 +92,48 @@ suite('paradisTerminalResumeBannerView', () => {
 				menuCalls: ['fork', 'copy'],
 			},
 		});
+	});
+
+	// 裏のスペースのタブは park されたまま候補になる。そのスペースへ切り替えてタブが開いたとき
+	// （setInstance）に描かれ、候補が後から来ても描かれ、ほかのタブへ移って戻っても描き直される。
+	test('draws the banner when the tab is shown after the offer was made, and again after switching away and back', () => {
+		const onDidChange = new Emitter<number>();
+		const offers = new Map<number, IParadisResumeLedgerEntry>();
+		const host: IParadisResumeBannerHost = {
+			onDidChange: onDidChange.event,
+			getOffer: instanceId => offers.get(instanceId),
+			resume() { }, fork() { }, copySessionId() { }, dismiss() { },
+		};
+		const container = document.createElement('div');
+		const banner = createParadisTerminalResumeBanner(container, host, new RecordingMenu());
+		const shown = () => container.querySelectorAll('.paradis-terminal-resume-banner').length;
+		try {
+			const steps: number[] = [];
+			// 起動直後は前面のスペースのタブ（候補なし）を表示している
+			banner.setInstance(1);
+			steps.push(shown());
+			// 裏のスペースのタブ 2 が拾い直されて候補になる（まだ表示していない）
+			offers.set(2, { agent: 'claude', sessionId: 'session-2', at: Date.now() });
+			onDidChange.fire(2);
+			steps.push(shown());
+			// そのスペースへ切り替えてタブ 2 が開く
+			banner.setInstance(2);
+			steps.push(shown());
+			// 前面のスペースへ戻り、また切り替える
+			banner.setInstance(1);
+			steps.push(shown());
+			banner.setInstance(2);
+			steps.push(shown());
+			// 表示中のタブ 3 に、候補が後から来る
+			banner.setInstance(3);
+			steps.push(shown());
+			offers.set(3, { agent: 'codex', sessionId: 'session-3', at: Date.now() });
+			onDidChange.fire(3);
+			steps.push(shown());
+			assert.deepStrictEqual(steps, [0, 0, 1, 0, 1, 0, 1]);
+		} finally {
+			banner.dispose();
+			onDidChange.dispose();
+		}
 	});
 });

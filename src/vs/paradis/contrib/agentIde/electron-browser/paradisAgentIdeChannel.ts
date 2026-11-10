@@ -920,6 +920,8 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			...(request.name !== undefined ? { name: request.name } : {}),
 			...(request.branch !== undefined ? { branch: request.branch } : {}),
 			...(request.baseBranch !== undefined ? { baseRef: request.baseBranch } : {}),
+			// 既存のブランチ: ローカルにあればローカル、無ければ origin を追跡して開く（捨てる・早送りはエージェントからは受けない）
+			...(request.existingBranch !== undefined ? { existingBranch: { branch: request.existingBranch, source: 'auto' as const } } : {}),
 			...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
 			agentId: request.agent ?? 'none',
 			...(request.model !== undefined ? { modelId: request.model } : {}),

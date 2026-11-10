@@ -135,7 +135,7 @@ export type ParadisAgentIdeRequest =
 	| { readonly op: 'sendKey'; readonly terminal: string; readonly key: ParadisAgentIdeKey; readonly typedText?: string }
 	| { readonly op: 'launchAgent'; readonly agent: string; readonly prompt?: string; readonly space?: string; readonly model?: string; readonly effort?: string }
 	| { readonly op: 'createTerminal'; readonly space?: string }
-	| { readonly op: 'createSpace'; readonly repository?: string; readonly name?: string; readonly branch?: string; readonly baseBranch?: string; readonly prompt?: string; readonly agent?: string; readonly model?: string; readonly effort?: string; readonly runSetup?: boolean }
+	| { readonly op: 'createSpace'; readonly repository?: string; readonly name?: string; readonly branch?: string; readonly baseBranch?: string; readonly existingBranch?: string; readonly prompt?: string; readonly agent?: string; readonly model?: string; readonly effort?: string; readonly runSetup?: boolean }
 	| { readonly op: 'closeTerminal'; readonly terminal: string }
 	| { readonly op: 'removeSpace'; readonly space: string };
 
@@ -507,6 +507,7 @@ export const PARADIS_AGENT_IDE_TOOLS: readonly IParadisAgentIdeToolDefinition[] 
 				name: { type: 'string', maxLength: 100, description: 'Display name. Omit to derive it from the prompt.' },
 				branch: { type: 'string', maxLength: 100, description: 'New branch name. Omit to derive it from the prompt.' },
 				base_branch: { type: 'string', maxLength: 200, description: 'Branch to start from. Omit for the branch currently checked out in the repository.' },
+				existing_branch: { type: 'string', maxLength: 200, description: 'Open this existing branch instead of creating a new one: the local branch if there is one, otherwise a new local branch tracking origin/<name> (Para Code does not fetch first). Fails if the branch is open in another space or in the main checkout. Cannot be combined with "branch" or "base_branch".' },
 				prompt: { type: 'string', maxLength: PARADIS_AGENT_IDE_MAX_INPUT_LENGTH, description: 'Task for the agent (also used to name the branch).' },
 				agent: { type: 'string', description: 'Agent id from list_spaces "agents" to start in the new space. Omit to start no agent.' },
 				model: { type: 'string' },
@@ -689,12 +690,16 @@ export function paradisParseAgentIdeCall(name: string, rawArgs: unknown, options
 			const spaceName = optionalString(args, 'name', 100);
 			const branch = optionalString(args, 'branch', 100);
 			const baseBranch = optionalString(args, 'base_branch', 200);
+			const existingBranch = optionalString(args, 'existing_branch', 200);
 			const prompt = optionalString(args, 'prompt', PARADIS_AGENT_IDE_MAX_INPUT_LENGTH);
 			const agent = optionalString(args, 'agent', 64);
 			const model = optionalString(args, 'model', 128);
 			const effort = optionalString(args, 'effort', 64);
-			for (const value of [repository, spaceName, branch, baseBranch, prompt, agent, model, effort]) {
+			for (const value of [repository, spaceName, branch, baseBranch, existingBranch, prompt, agent, model, effort]) {
 				if (value instanceof Error) { return fail(value); }
+			}
+			if (existingBranch !== undefined && (branch !== undefined || baseBranch !== undefined)) {
+				return { kind: 'error', error: '"existing_branch" cannot be combined with "branch" or "base_branch".' };
 			}
 			if (args.run_setup !== undefined && typeof args.run_setup !== 'boolean') {
 				return { kind: 'error', error: '"run_setup" must be a boolean.' };
@@ -707,6 +712,7 @@ export function paradisParseAgentIdeCall(name: string, rawArgs: unknown, options
 					...pick('name', spaceName),
 					...pick('branch', branch),
 					...pick('baseBranch', baseBranch),
+					...pick('existingBranch', existingBranch),
 					...(prompt !== undefined ? { prompt: paradisStripTerminalControlCharacters(prompt as string) } : {}),
 					...pick('agent', agent),
 					...pick('model', model),
