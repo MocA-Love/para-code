@@ -234,3 +234,14 @@
 .monaco-workbench :is(.paradis-spreadsheet-diagnostics, .paradis-word-diagnostics) > .paradis-chip {
 	max-width: 320px;
 }
+
+/* Excel's toolbar does not grow: the chips stay on one line and shrink with an ellipsis (the full text is the title)
+ * instead of wrapping under the toolbar. Word's toolbar grows with its chips (paradis-viewer-toolbar-wrap). */
+.monaco-workbench .paradis-spreadsheet-diagnostics {
+	flex-wrap: nowrap;
+	overflow: hidden;
+}
+
+.monaco-workbench .paradis-spreadsheet-diagnostics > .paradis-chip {
+	flex: 0 1 auto;
+}
