@@ -37,6 +37,7 @@ import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisM
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
+import { paradisNotifButton } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -127,10 +128,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		dom.append(titles, $('.pns-section-desc')).textContent = STR_DESC;
 
 		const settings = this.settingsService.getAivisSettings();
-		const newBtn = dom.append(header, $('button.pns-btn')) as HTMLButtonElement;
-		newBtn.style.flexShrink = '0';
-		newBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.add)}`));
-		newBtn.append(STR_NEW);
+		const newBtn = paradisNotifButton(header, 'secondary', { icon: Codicon.add, label: STR_NEW });
 		newBtn.disabled = !settings.apiKey;
 		this._renderDisposables.add(dom.addDisposableListener(newBtn, 'click', () => this._openCreateDialog()));
 
@@ -187,7 +185,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		}
 		const top = dom.append(card, $('.pns-row'));
 		top.style.marginBottom = '0';
-		const infoEl = dom.append(top, $('div'));
+		const infoEl = dom.append(top, $('.pns-dict-info'));
 		const nameRow = dom.append(infoEl, $('.pns-ringtone-name'));
 		dom.append(nameRow, $('span')).textContent = dict.name;
 		if (isActive) {
@@ -196,36 +194,28 @@ export class ParadisAivisDictionarySection extends Disposable {
 		const descLine = dom.append(infoEl, $('.pns-ringtone-desc'));
 		descLine.textContent = `${dict.description || '—'} · ${dict.word_count} words · ${dict.updated_at.slice(0, 10)}`;
 
-		const actions = dom.append(top, $('div'));
-		actions.style.display = 'flex';
-		actions.style.gap = '5px';
-		actions.style.flexShrink = '0';
+		const actions = dom.append(top, $('.pns-dict-actions'));
 
 		if (!isActive) {
-			const applyBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
-			applyBtn.textContent = STR_APPLY;
+			const applyBtn = paradisNotifButton(actions, 'secondary', { label: STR_APPLY });
 			this._renderDisposables.add(dom.addDisposableListener(applyBtn, 'click', () => {
 				this.settingsService.setAivisSettings({ userDictionaryUuid: dict.uuid });
 			}));
 		}
 
-		const editBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
-		editBtn.textContent = STR_EDIT;
+		const editBtn = paradisNotifButton(actions, 'secondary', { label: STR_EDIT });
 		this._renderDisposables.add(dom.addDisposableListener(editBtn, 'click', () => this._openEditDialog(dict.uuid, apiKey)));
 
-		const importBtn = dom.append(actions, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
-		importBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.arrowUp)}`));
+		const importBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowUp });
 		this._renderDisposables.add(dom.addDisposableListener(importBtn, 'click', () => {
 			this._importTargetUuid = dict.uuid;
 			this._fileInput.click();
 		}));
 
-		const exportBtn = dom.append(actions, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
-		exportBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.arrowDown)}`));
+		const exportBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowDown });
 		this._renderDisposables.add(dom.addDisposableListener(exportBtn, 'click', () => this._exportDictionary(dict.uuid, dict.name, apiKey)));
 
-		const deleteBtn = dom.append(actions, $('button.pns-btn.pns-btn-icon.pns-btn-danger')) as HTMLButtonElement;
-		deleteBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.trash)}`));
+		const deleteBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.trash, className: 'pns-delete' });
 		this._renderDisposables.add(dom.addDisposableListener(deleteBtn, 'click', () => this._deleteDictionary(dict.uuid, dict.name, apiKey, isActive)));
 	}
 
