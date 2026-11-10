@@ -21,6 +21,8 @@
 // 開き、指定の位置へ移動する（ユーザーの「表 / テキスト」の記憶は変えない）。
 
 import * as dom from '../../../../../base/browser/dom.js';
+import type { IManagedHover } from '../../../../../base/browser/ui/hover/hover.js';
+import { getDefaultHoverDelegate } from '../../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { RunOnceScheduler, timeout } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
@@ -51,6 +53,7 @@ import { IEditorOpenContext } from '../../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../../workbench/common/editor/editorInput.js';
 import { applyTextEditorOptions } from '../../../../../workbench/common/editor/editorOptions.js';
 import { IEditorGroup } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IFilesConfigurationService } from '../../../../../workbench/services/filesConfiguration/common/filesConfigurationService.js';
 import { ITextFileEditorModel, ITextFileService, TextFileOperationError, TextFileOperationResult } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import {
@@ -118,6 +121,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 	private _textButton: HTMLButtonElement | undefined;
 	private _noticeElement: HTMLElement | undefined;
 	private _noticeText: HTMLElement | undefined;
+	/** 狭い帯で省略記号に切れたお知らせの全文を出すホバー。 */
+	private _noticeHover: IManagedHover | undefined;
 	private _tableArea: HTMLElement | undefined;
 	private _messageElement: HTMLElement | undefined;
 	private _textMessageElement: HTMLElement | undefined;
@@ -172,6 +177,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IFilesConfigurationService private readonly _filesConfigurationService: IFilesConfigurationService,
+		@IHoverService private readonly _hoverService: IHoverService,
 	) {
 		super(PARADIS_CSV_EDITOR_ID, group, telemetryService, themeService, _storageService);
 	}
@@ -191,6 +197,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 		this._noticeElement = dom.append(this._rootElement, dom.$('.paradis-csv-notice'));
 		dom.append(this._noticeElement, dom.$(`span.paradis-csv-notice-icon${ThemeIcon.asCSSSelector(Codicon.info)}`)).setAttribute('aria-hidden', 'true');
 		this._noticeText = dom.append(this._noticeElement, dom.$('span.paradis-csv-notice-text'));
+		this._noticeHover = this._register(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), this._noticeText, ''));
 		const openAsText = dom.append(this._noticeElement, dom.$('button.paradis-csv-link-button')) as HTMLButtonElement;
 		openAsText.type = 'button';
 		openAsText.classList.add(...paradisButtonClasses('secondary', true));
@@ -671,7 +678,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 		if (this._noticeText) {
 			this._noticeText.textContent = message;
 			// 狭い帯では文が省略記号で切れるので、全文をホバーで読めるようにする。
-			this._noticeText.title = message;
+			this._noticeHover?.update(message);
 		}
 		if (this._readMoreButton) {
 			// SSH 先などで確認の上限（既定 10 MB）で切ったときだけ、64 MB まで読み直す手段を出す。

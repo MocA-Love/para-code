@@ -116,7 +116,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'list.hoverBackground': '#ffffff0f',
 				'list.focusBackground': '#09AFD933',
 				// 文字の入力欄・検索欄・リストの行の、押しても出る灰色のフォーカスの枠（paradisColors.ts の paradis.focusSubtle）
-				'paradis.focusSubtle': '#7d8394'
+				'paradis.focusSubtle': '#7d8394',
+				// Houston の副のボタンは塗り（#545864）で見分けられる。button.secondaryBorder を持たないので、既定の枠
+				// （文字色の 15%）が足されないよう、副のボタンの枠（paradisColors.ts の paradis.lineButton）は描かない
+				'paradis.lineButton': '#00000000'
 			},
 			'[Dark 2026]': {
 				'statusBar.background': '#09AFD9',

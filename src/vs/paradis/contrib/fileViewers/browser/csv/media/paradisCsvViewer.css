@@ -89,11 +89,11 @@
 }
 
 .paradis-csv-grid .paradis-csv-sorted-asc::after {
-	content: '\eaa1';
+	content: '\eaa1' / '';
 }
 
 .paradis-csv-grid .paradis-csv-sorted-desc::after {
-	content: '\ea9a';
+	content: '\ea9a' / '';
 }
 
 .paradis-csv-grid .paradis-csv-rownum,
@@ -206,7 +206,14 @@
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 	overflow: hidden;
+}
+
+/* Each item is cut with an ellipsis, so a narrow band never shows half a word without a hint. */
+.paradis-csv-footer > span {
+	min-width: 0;
+	overflow: hidden;
 	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .paradis-csv-footer.hidden {
