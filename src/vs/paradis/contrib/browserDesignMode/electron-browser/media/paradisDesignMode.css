@@ -102,7 +102,15 @@
 }
 
 .monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-attach .monaco-custom-toggle {
+	flex: none;
 	margin: 0;
+}
+
+/* The label is a flex box, so the ellipsis goes on the text inside it. */
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-attach > span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-icon {
