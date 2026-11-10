@@ -183,6 +183,106 @@ jobs:
           npm run test-node 2>&1 | tee "$RUNNER_TEMP/test-node.log"
           grep -Eq '(^|[^0-9])[1-9][0-9]* passing' "$RUNNER_TEMP/test-node.log" || { echo "No passing tests reported by test-node" >&2; exit 1; }
 
+  # The fork's renderer (Electron) unit tests: unit-tests above runs only the node.js tests, so regressions in the
+  # Electron tests reached main unnoticed (PR #868). Only the fork's suites run: those under vs/paradis, and the
+  # fork's renderer and electron-main tests elsewhere, named paradis* or para<Capital>* (para[A-Z] keeps upstream
+  # files such as parameterHintsModel and parallelTasksTour out). test/node is left out because test-node already runs it and the renderer cannot create Workers or use
+  # SharedArrayBuffer (16 tests always fail there); electron-main is included because test-node skips it.
+  # The job does not block CI yet (continue-on-error) because of known failures, such as the Office performance
+  # fixture hash that is re-measured only on the reference Mac. The failed test names go to the job summary.
+  # out/ is transpiled here again instead of shared with unit-tests: the transpile takes about 20 s, less than
+  # uploading and downloading out/ as an artifact, and the job runs in parallel instead of after unit-tests.
+  browser-unit-tests:
+    name: Unit Tests (Electron, fork suites)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: ./.github/actions/restore-node-modules
+        with:
+          key-prefix: node_modules-para-ci
+          key-args: "compile $(node -p process.arch)"
+
+      - name: Install build tools
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: sudo apt update -y && sudo apt install -y build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Needed on every run, also when the node_modules cache hits: Xvfb for the test window, and the libraries
+      # that Electron loads (same packages as upstream pr-linux-test.yml).
+      - name: Install Xvfb and Electron libraries
+        run: sudo apt update -y && sudo apt install -y xvfb libgtk-3-0 libgbm1
+
+      - name: Transpile client
+        run: npm run gulp transpile-client-esbuild
+
+      - name: Setup Electron
+        uses: ./.github/actions/setup-electron
+        with:
+          arch: x64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ELECTRON_DISABLE_SANDBOX: chrome-sandbox is not a root-owned SUID binary here, and Electron stops at startup
+      # without it. --workers does not apply together with --runGlob, so the tests run in one window.
+      # The step fails when the tests fail or when no passing test was reported (0 tests must not turn green).
+      - name: Run unit tests (Electron, fork suites)
+        run: |
+          log="$RUNNER_TEMP/test-electron.log"
+          set +e
+          xvfb-run -a ./scripts/test.sh --runGlob '{vs/paradis/**/test/{common,browser,electron-browser,electron-main}/**/*.test.js,**/test/{browser,electron-browser,electron-main}/**/{paradis,para[A-Z]}*.test.js}' 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          set -e
+          clean="$RUNNER_TEMP/test-electron.clean.log"
+          sed 's/\x1b\[[0-9;]*m//g' "$log" > "$clean"
+          count() { grep -Eo "^ *[0-9]+ $1" "$clean" | tail -1 | grep -Eo '[0-9]+' || echo 0; }
+          passing=$(count passing)
+          pending=$(count pending)
+          failing=$(count failing)
+          {
+            echo "### Unit Tests (Electron, fork suites)"
+            echo
+            echo "| passing | pending | failing | exit code |"
+            echo "|---|---|---|---|"
+            echo "| $passing | $pending | $failing | $status |"
+            if [ "$failing" -gt 0 ]; then
+              echo
+              echo "Failed tests:"
+              echo
+              awk '
+                /^ *[0-9]+ failing/ { inFailures = 1; next }
+                !inFailures { next }
+                /^  [0-9]+\) / { collecting = 1; title = $0; sub(/^ +/, "", title); if (title ~ /:$/) { print "- " substr(title, 1, length(title) - 1); collecting = 0 }; next }
+                collecting { line = $0; sub(/^ +/, "", line); title = title " > " line; if (line ~ /:$/) { print "- " substr(title, 1, length(title) - 1); collecting = 0 } }
+              ' "$clean"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$passing" -eq 0 ]; then
+            echo "::error::No passing tests reported by the Electron unit tests"
+            exit 1
+          fi
+          exit "$status"
+        env:
+          ELECTRON_DISABLE_SANDBOX: 1
+          VSCODE_SKIP_PRELAUNCH: 1
+
   fork-workspace-tests:
     name: Para Code Fork Workspace (typecheck & test)
     runs-on: ubuntu-latest
