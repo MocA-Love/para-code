@@ -225,33 +225,35 @@
 	font-size: 12px;
 }
 
-.paradis-spreadsheet-tabs {
-	display: flex;
+/* Sheet tabs: the UI kit's tabs (paradisTabs.css) on the surface, under a subtle line. The tabs sit below the sheet, so
+ * the selected line is drawn on the top edge; Excel's sheet color is an 8px dot before the name
+ * (paradisSpreadsheetSheetTabs.ts). */
+.monaco-workbench .paradis-spreadsheet-tabs {
 	flex: 0 0 auto;
-	overflow-x: auto;
-	border-top: 1px solid var(--vscode-editorWidget-border, #454545);
-	background-color: var(--vscode-editorWidget-background);
+	padding: 0 var(--vscode-spacing-size80);
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
+	background-color: var(--vscode-paradis-surface);
 }
 
-.paradis-spreadsheet-tab {
-	border: none;
-	border-right: 1px solid var(--vscode-editorWidget-border, #454545);
-	background: transparent;
-	color: var(--vscode-descriptionForeground);
-	padding: 4px 12px;
-	font-size: 12px;
-	cursor: pointer;
-	white-space: nowrap;
+.monaco-workbench .paradis-spreadsheet-tabs > .paradis-tab {
+	font-size: var(--vscode-fontSize-label1);
 }
 
-.paradis-spreadsheet-tab:hover {
-	background-color: var(--vscode-toolbar-hoverBackground);
+.monaco-workbench .paradis-spreadsheet-tabs > .paradis-tab[aria-selected="true"]::after {
+	top: 0;
+	bottom: auto;
 }
 
-.paradis-spreadsheet-tab.active {
-	background-color: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
-	color: var(--vscode-foreground);
-	font-weight: 600;
+.monaco-workbench .paradis-spreadsheet-tab-dot {
+	flex: none;
+	width: 8px;
+	height: 8px;
+	border-radius: var(--vscode-cornerRadius-circle);
+}
+
+.monaco-workbench .paradis-spreadsheet-tabs > .paradis-tab > .paradis-spreadsheet-tab-lock {
+	font-size: var(--vscode-codiconFontSize-compact);
+	color: var(--vscode-paradis-textFaint);
 }
 
 /* Diff */
@@ -281,8 +283,9 @@
 }
 
 /* allow-any-unicode-next-line */
-/* ペイン+入力規則インスペクタの横並び。打ち切り通知帯はこの下(縦方向)に置く。 */
+/* ペインの横並び（入力規則のパネルはこの上に浮かべる）。打ち切り通知帯はこの下(縦方向)に置く。 */
 .paradis-spreadsheet-diff-main {
+	position: relative;
 	display: flex;
 	flex: 1 1 auto;
 	min-width: 0;
@@ -294,6 +297,8 @@
 	flex: 1 1 auto;
 	min-width: 0;
 	min-height: 0;
+	/* The two sheets' layers (the current change's frame, shapes, page breaks) stay below the data validation panel. */
+	isolation: isolate;
 }
 
 .paradis-spreadsheet-diff-pane {
@@ -310,16 +315,35 @@
 	background-color: var(--vscode-editorWidget-border, #454545);
 }
 
+/* The heading of each side: a 28px band on the surface, the side (old / new) in the strong color and the file name muted. */
 .paradis-spreadsheet-diff-label {
 	position: sticky;
 	top: 0;
 	z-index: 2;
-	padding: 4px 8px;
-	font-size: 11px;
-	font-weight: 500;
-	color: #666666;
-	background-color: #f3f3f3;
-	border-bottom: 1px solid #d0d0d0;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	box-sizing: border-box;
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size120);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+	overflow: hidden;
+	color: var(--vscode-paradis-textMuted);
+	background-color: var(--vscode-paradis-surface);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
+}
+
+.paradis-spreadsheet-diff-label > .paradis-spreadsheet-diff-label-side {
+	flex: none;
+	font-weight: var(--vscode-fontWeight-regular);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-spreadsheet-diff-label > .paradis-spreadsheet-diff-label-file {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* allow-any-unicode-next-line */
@@ -437,113 +461,86 @@
 	background: #d94b45;
 }
 
-.paradis-spreadsheet-validation-inspector {
-	display: flex;
-	flex: 0 0 310px;
-	flex-direction: column;
-	min-width: 0;
-	min-height: 0;
-	border-left: 1px solid var(--vscode-editorWidget-border, #454545);
-	background: var(--vscode-editorWidget-background);
-	color: var(--vscode-foreground);
+/* The data validation panel: the same popup surface as the "Changes" panel (paradis-office-panel-surface,
+ * paradisOfficeInspector.css), floating at the top right of the two sheets. The kind of change and the kind of rule are
+ * chips next to the cell address. */
+.monaco-workbench .paradis-spreadsheet-validation-inspector {
+	position: absolute;
+	top: var(--vscode-spacing-size80);
+	right: var(--vscode-spacing-size120);
+	z-index: 3;
+	width: 360px;
+	max-width: calc(100% - 24px);
+	max-height: calc(100% - 16px);
+	overflow: auto;
 }
 
-.paradis-spreadsheet-validation-inspector-header {
+.monaco-workbench .paradis-spreadsheet-validation-inspector-body {
 	display: flex;
-	align-items: center;
-	gap: 7px;
-	flex: 0 0 38px;
-	padding: 0 12px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
-	font-size: 12px;
-	font-weight: 600;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	padding: 0 var(--vscode-spacing-size120) var(--vscode-spacing-size120);
 }
 
 .paradis-spreadsheet-validation-inspector-content {
-	min-height: 0;
-	padding: 12px;
-	overflow: auto;
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
 }
 
 .paradis-spreadsheet-validation-heading {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
-	margin-bottom: 10px;
+	gap: var(--vscode-spacing-size40) var(--vscode-spacing-size60);
+	min-width: 0;
 }
 
-.paradis-spreadsheet-validation-heading strong {
-	font-size: 15px;
-}
-
-.paradis-spreadsheet-validation-status {
-	padding: 2px 7px;
-	border: 1px solid currentColor;
-	border-radius: 10px;
-	font-size: 11px;
-	font-weight: 600;
-}
-
-.paradis-spreadsheet-validation-status.added {
-	color: var(--vscode-testing-iconPassed, #388a34);
-}
-
-.paradis-spreadsheet-validation-status.removed {
-	color: var(--vscode-testing-iconFailed, #be1100);
-}
-
-.paradis-spreadsheet-validation-status.modified {
-	color: var(--vscode-gitDecoration-modifiedResourceForeground, #895503);
-}
-
-.paradis-spreadsheet-validation-type {
-	margin-bottom: 10px;
-	padding-left: 7px;
-	border-left: 3px solid var(--vscode-focusBorder, #0078d4);
-	font-weight: 600;
+.paradis-spreadsheet-validation-heading > strong {
+	margin-right: auto;
+	color: var(--vscode-paradis-textStrong);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	overflow-wrap: anywhere;
 }
 
 .paradis-spreadsheet-validation-field {
-	margin-bottom: 9px;
-	border: 1px solid var(--vscode-editorWidget-border, #454545);
-	border-radius: 3px;
+	border: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-control);
 	overflow: hidden;
 }
 
 .paradis-spreadsheet-validation-field-label {
-	padding: 5px 8px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
-	background: var(--vscode-sideBarSectionHeader-background, rgba(128, 128, 128, .12));
-	color: var(--vscode-descriptionForeground);
-	font-size: 10px;
-	font-weight: 600;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-spreadsheet-validation-value {
-	padding: 7px 8px;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
 	white-space: pre-wrap;
 	word-break: break-word;
 }
 
 .paradis-spreadsheet-validation-value.before {
-	color: var(--vscode-testing-iconFailed, #be1100);
+	color: var(--vscode-paradis-danger);
 }
 
 .paradis-spreadsheet-validation-value.after {
-	color: var(--vscode-testing-iconPassed, #388a34);
+	color: var(--vscode-paradis-success);
 }
 
 .paradis-spreadsheet-validation-arrow {
-	padding-left: 8px;
-	color: var(--vscode-descriptionForeground);
-	font-size: 10px;
+	padding-left: var(--vscode-spacing-size80);
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-spreadsheet-validation-empty {
-	padding: 18px 12px;
-	color: var(--vscode-descriptionForeground);
-	font-size: 11px;
+	padding: var(--vscode-spacing-size120) 0;
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
 	text-align: center;
 }
 

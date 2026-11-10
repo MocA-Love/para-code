@@ -25,6 +25,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IHoverLifecycleOptions } from '../../../../base/browser/ui/hover/hover.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -52,7 +53,8 @@ import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffShee
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
-import { PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS } from './paradisOfficeInspectorParts.js';
+import { appendParadisOfficePanelHead, PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS, styleParadisOfficeChip } from './paradisOfficeInspectorParts.js';
+import { appendParadisSpreadsheetSheetTab, styleParadisSpreadsheetSheetTabList } from './paradisSpreadsheetSheetTabs.js';
 import { mapSpreadsheetLogicalAnchor } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
@@ -393,6 +395,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _bodyEl: HTMLElement | undefined;
 	private _panesEl: HTMLElement | undefined;
 	private _validationInspector: HTMLElement | undefined;
+	/** 入力規則のパネルを描き直すたびに捨てる物（閉じるボタンの購読）。 */
+	private readonly _validationInspectorDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private _tabsEl: HTMLElement | undefined;
 	private _leftScroll: HTMLElement | undefined;
 	private _rightScroll: HTMLElement | undefined;
@@ -563,6 +567,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		this._bodyEl = dom.append(this._root, $('.paradis-spreadsheet-diff-body'));
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
+		styleParadisSpreadsheetSheetTabList(this._tabsEl);
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
@@ -1305,27 +1310,35 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return;
 		}
 		dom.clearNode(inspector);
-		const header = dom.append(inspector, $('.paradis-spreadsheet-validation-inspector-header'));
-		dom.append(header, $(`span${ThemeIcon.asCSSSelector(Codicon.checklist)}`));
-		const headerLabel = dom.append(header, $('span'));
-		headerLabel.textContent = localize('paradis.spreadsheet.validationChanges', "入力規則の変更");
+		const store = new DisposableStore();
+		this._validationInspectorDisposables.value = store;
+		// 「変更点」のパネルと同じ UI キットのポップアップの面（paradisOfficeInspectorParts.ts）。見出しの閉じるは帯の「入力規則」と同じ。
+		const body = dom.append(inspector, $('.paradis-spreadsheet-validation-inspector-body'));
+		const close = appendParadisOfficePanelHead(body, localize('paradis.spreadsheet.validationChanges', "入力規則の変更"), true);
+		if (close) {
+			store.add(dom.addDisposableListener(close, dom.EventType.CLICK, () => {
+				this._setValidationFilter(false);
+				this._validationFilterBtn?.focus();
+			}));
+		}
 		if (!change) {
-			const empty = dom.append(inspector, $('.paradis-spreadsheet-validation-empty'));
+			const empty = dom.append(body, $('.paradis-spreadsheet-validation-empty'));
 			empty.textContent = localize('paradis.spreadsheet.validationSelect', "セルを選択すると入力規則の変更内容を確認できます。");
 			return;
 		}
 
-		const content = dom.append(inspector, $('.paradis-spreadsheet-validation-inspector-content'));
+		const content = dom.append(body, $('.paradis-spreadsheet-validation-inspector-content'));
 		const heading = dom.append(content, $('.paradis-spreadsheet-validation-heading'));
 		const address = dom.append(heading, $('strong'));
 		address.textContent = change.address;
-		const status = dom.append(heading, $(`span.paradis-spreadsheet-validation-status.${change.status}`));
-		status.textContent = this._validationStatusLabel(change.status);
-
+		// 状態（追加・削除・変更）と規則の種類はキットのチップで示す。
 		const original = change.original;
 		const modified = change.modified;
-		const type = dom.append(content, $('.paradis-spreadsheet-validation-type'));
-		type.textContent = this._validationTypeLabel(modified?.type ?? original?.type);
+		const status = dom.append(heading, $(`span.paradis-spreadsheet-validation-status.${change.status}`));
+		styleParadisOfficeChip(status, this._validationStatusLabel(change.status));
+		status.classList.add(change.status === 'added' ? 'paradis-chip-success' : change.status === 'removed' ? 'paradis-chip-danger' : 'paradis-chip-info');
+		const type = dom.append(heading, $('span.paradis-spreadsheet-validation-type'));
+		styleParadisOfficeChip(type, this._validationTypeLabel(modified?.type ?? original?.type));
 
 		const appendField = (label: string, before: string, after: string): void => {
 			if (before === after) {
@@ -1460,7 +1473,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._rightHighlight = right.highlight;
 		dom.append(this._panesEl, right.pane);
 		if (this._validationFilter) {
-			this._validationInspector = dom.append(main, $('.paradis-spreadsheet-validation-inspector'));
+			this._validationInspector = dom.append(main, $(`.paradis-spreadsheet-validation-inspector.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}`));
 			this._validationInspector.tabIndex = -1;
 			this._validationInspector.setAttribute('role', 'region');
 			this._validationInspector.setAttribute('aria-label', localize('paradis.spreadsheet.validationChanges', "入力規則の変更"));
@@ -1541,8 +1554,16 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	/** ペインを組み立てる(測定・図形・スケールはまとめて呼び出し側の rAF で行う)。 */
 	private _buildDiffPane(rows: readonly IParadisDiffRow[], label: string, side: 'original' | 'modified', validationByCell: ReadonlyMap<string, IValidationChange>, minCol: number): { pane: HTMLElement; sizer: HTMLElement; content: HTMLElement; table: HTMLElement; rows: HTMLElement[]; highlight: HTMLElement; rowMeta: { excelRow: number; tr: HTMLElement }[]; overflowCells: IParadisOverflowItem[] } {
 		const pane = $('.paradis-spreadsheet-diff-pane');
+		// 見出しは面の色の帯に、版（旧版・新版）を強い文字、ファイル名を弱い文字で並べる。長い名前は省略記号で切り、全文はホバーで出す。
 		const labelEl = dom.append(pane, $('.paradis-spreadsheet-diff-label'));
-		labelEl.textContent = label;
+		dom.append(labelEl, $('strong.paradis-spreadsheet-diff-label-side')).textContent = label;
+		const resource = side === 'original' ? this._originalResource : this._modifiedResource;
+		if (resource) {
+			const fileName = basename(resource);
+			const fileEl = dom.append(labelEl, $('span.paradis-spreadsheet-diff-label-file'));
+			fileEl.textContent = fileName;
+			this._renderDisposables.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), fileEl, fileName));
+		}
 		// sizer は縮尺後のフットプリントを確保してスクロール量を正す枠。content は transform:scale で拡縮する。
 		// (CSS zoom はレイアウトごと丸めるため border-collapse の罫線が欠けるので使わない。transform はラスタ拡縮で罫線が連続する)
 		const sizer = dom.append(pane, $('.paradis-spreadsheet-diff-sizer'));
@@ -1862,30 +1883,14 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._tabsEl.style.display = '';
 		const accessibleTabs: ParadisOfficeTabEntry[] = [];
 		this._diffSheets.forEach((sheet, idx) => {
-			const tab = dom.append(this._tabsEl!, $('button.paradis-spreadsheet-tab')) as HTMLButtonElement;
-			tab.classList.toggle('active', idx === this._activeSheetIndex);
-			// 通常ビューアと同じくタブ色帯・保護の鍵を出す。
-			if (sheet.tabColor) {
-				tab.style.borderBottomColor = sheet.tabColor;
-				tab.style.borderBottomWidth = '3px';
-				tab.style.borderBottomStyle = 'solid';
-				if (idx === this._activeSheetIndex) {
-					tab.style.color = sheet.tabColor;
-				}
-			}
-			if (sheet.protectedSheet) {
-				const lock = dom.append(tab, $(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
-				lock.title = localize('paradis.spreadsheet.protected', "このシートは保護されています");
-				lock.setAttribute('aria-hidden', 'true');
-			}
 			let label = sheet.name;
 			if (sheet.sheetStatus === 'added') {
 				label += ' (+)';
 			} else if (sheet.sheetStatus === 'removed') {
 				label += ' (-)';
 			}
-			const labelEl = dom.append(tab, $('span'));
-			labelEl.textContent = label;
+			// 通常ビューアと同じくシートの色の点・保護の鍵を出す。
+			const tab = appendParadisSpreadsheetSheetTab(this._tabsEl!, { label, tabColor: sheet.tabColor, protectedSheet: sheet.protectedSheet });
 			const statusLabel = sheet.sheetStatus === 'added'
 				? localize('paradis.spreadsheet.addedSheet', "追加")
 				: sheet.sheetStatus === 'removed'
