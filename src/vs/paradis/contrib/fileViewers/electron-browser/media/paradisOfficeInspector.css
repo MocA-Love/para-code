@@ -147,6 +147,12 @@
 	flex: 1;
 }
 
+/* The gray ring of the frame shows the focus; upstream's blue ring of the inner InputBox (.synthetic-focus) would draw a
+ * second line inside the frame (the same as paradisComboBox.css). */
+.monaco-workbench .paradis-office-panel-surface .paradis-field > .monaco-inputbox.synthetic-focus {
+	outline: none;
+}
+
 .monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-search, .paradis-word-search) input::-webkit-search-cancel-button {
 	display: none;
 }
