@@ -459,7 +459,9 @@ export class ParadisOfficeFindWidget extends Disposable {
 	private appendButton(document: Document, icon: ThemeIcon, label: string, parent: HTMLElement = this.element): HTMLButtonElement {
 		const result = document.createElement('button');
 		result.type = 'button';
-		result.classList.add('paradis-office-find-button', ...paradisButtonClasses('icon', true).filter(name => name !== 'paradis-focus-ring'), 'paradis-focus-ring-inset', ...ThemeIcon.asClassNameArray(icon));
+		result.classList.add('paradis-office-find-button', ...paradisButtonClasses('icon', true).filter(name => name !== 'paradis-focus-ring'), 'paradis-focus-ring-inset');
+		// codicon は子の要素に付ける（ボタンの要素に付けると、キットの font-family と読み込みの順で取り合う）。
+		dom.append(result, dom.$(ThemeIcon.asCSSSelector(icon)));
 		result.setAttribute('aria-label', label);
 		parent.appendChild(result);
 		this._register(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('mouse'), result, label));
