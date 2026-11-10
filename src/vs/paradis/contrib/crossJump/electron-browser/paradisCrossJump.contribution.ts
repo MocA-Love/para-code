@@ -17,14 +17,17 @@
 import { Codicon } from '../../../../base/common/codicons.js';
 import { stripIcons } from '../../../../base/common/iconLabels.js';
 import { Schemas } from '../../../../base/common/network.js';
-import { ThemeIcon } from '../../../../base/common/themables.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { URI } from '../../../../base/common/uri.js';
+import { ILanguageService } from '../../../../editor/common/languages/language.js';
+import { getIconClasses } from '../../../../editor/common/services/getIconClasses.js';
+import { IModelService } from '../../../../editor/common/services/model.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
-import { EditorsOrder, IEditorIdentifier } from '../../../../workbench/common/editor.js';
+import { EditorResourceAccessor, EditorsOrder, IEditorIdentifier, SideBySideEditor } from '../../../../workbench/common/editor.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
@@ -74,6 +77,8 @@ class ParadisCrossJumpAction extends Action2 {
 		const worktreeService = accessor.get(IParadisWorktreeService);
 		const agentStatusStore = accessor.get(IParadisAgentStatusStore);
 		const agentLiveWindowService = accessor.get(IParadisAgentLiveWindowService);
+		const modelService = accessor.get(IModelService);
+		const languageService = accessor.get(ILanguageService);
 
 		const now = Date.now();
 		const activeStateKey = workspaceSwitchService.activeStateKey;
@@ -101,12 +106,18 @@ class ParadisCrossJumpAction extends Action2 {
 			if (resource?.scheme === Schemas.vscodeTerminal && agentTerminalResources.has(resource.toString())) {
 				continue;
 			}
+			// アイコンは「開いているエディターを表示」（editorQuickAccess.ts）と同じ組み立てにする。iconClasses は
+			// 行のラベルの要素そのものに付くので、`codicon` の class を渡すとラベル全体が codicon のフォントで描かれ、
+			// 文字が欠けてアイコンが縦にずれる（paracode-183〜185 の崩れ）。
+			const icon = identifier.editor.getIcon();
+			const iconResource = EditorResourceAccessor.getOriginalUri(identifier.editor, { supportSideBySide: SideBySideEditor.PRIMARY });
 			editorItems.push({
 				kind: 'editor',
 				identifier,
 				label: identifier.editor.getName(),
 				description: identifier.editor.getDescription(),
-				iconClasses: ThemeIcon.asClassNameArray(Codicon.file),
+				iconPath: URI.isUri(icon) ? { dark: icon } : undefined,
+				iconClasses: getIconClasses(modelService, languageService, iconResource, undefined, icon).concat(identifier.editor.getLabelExtraClasses()),
 			});
 		}
 
