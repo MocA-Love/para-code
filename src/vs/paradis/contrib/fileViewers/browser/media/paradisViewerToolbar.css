@@ -168,7 +168,7 @@
 
 /* The Office find widget sits just below the toolbar (whatever its height) instead of covering its buttons. */
 .monaco-workbench .paradis-viewer-toolbar-host > .paradis-office-find-widget {
-	top: calc(var(--paradis-viewer-toolbar-height, var(--paradis-height-lg)) + var(--vscode-spacing-size40));
+	top: calc(var(--paradis-viewer-toolbar-height, var(--paradis-height-lg)) + 4px);
 }
 
 /* Controls that fold into one button on narrow bars (Markdown's text width): the folded button is hidden until then. */
