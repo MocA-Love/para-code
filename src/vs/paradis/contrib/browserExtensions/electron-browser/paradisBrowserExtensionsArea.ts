@@ -11,6 +11,7 @@
 // 背景の処理の状態とログ・DevTools・読み込み直す・削除。Q527 の案 B の 2 列のまま）。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -20,6 +21,7 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService, ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
@@ -179,6 +181,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
 		@IContextViewService contextViewService: IContextViewService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this._mainService = ProxyChannel.toService<IParadisBrowserExtensionsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL));
@@ -398,6 +401,8 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		this._appendIcon(row, extension, false);
 		const info = dom.append(row, $('.pbpm-info'));
 		dom.append(info, $('.pbpm-name')).textContent = extension.name;
+		// 長い名前は省略記号で切れるので、行に乗せたときに全部を出す
+		this._renderStore.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), row, extension.name));
 		const status = dom.append(info, $('.pbpm-meta'));
 		this._rowStatusElements.set(extension.id, status);
 		this._fillRowStatus(status, extension);

@@ -24,6 +24,8 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { paradisFormatTokens, paradisFormatUsd } from '../../ccusage/common/paradisCcusageFormat.js';
+import { PARADIS_TABLE_CLASS } from '../../../browser/paradisCard.js';
+import { renderParadisProgress } from '../../../browser/paradisProgress.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -229,7 +231,9 @@ export class ParadisSpaceUsageSection extends Disposable implements IParadisUsag
 			dom.append(card, $('.paradis-ccusage-message')).textContent = localize('paradis.spaceUsage.empty', "この期間の会話ログが見つかりません。");
 			return;
 		}
-		const table = dom.append(card, $('table.paradis-space-usage-table'));
+		// 狭い窓では表を横にスクロールさせる（列を詰めるとスペースの名前の列が無くなるため）
+		const table = dom.append(dom.append(card, $('.paradis-space-usage-scroll')), $('table.paradis-space-usage-table'));
+		table.classList.add(PARADIS_TABLE_CLASS);
 		const head = dom.append(dom.append(table, $('thead')), $('tr'));
 		dom.append(head, $('th')).textContent = localize('paradis.spaceUsage.colSpace', "スペース");
 		dom.append(head, $('th.num')).textContent = localize('paradis.spaceUsage.colSessions', "会話");
@@ -256,9 +260,12 @@ export class ParadisSpaceUsageSection extends Disposable implements IParadisUsag
 			const value = costUnavailable ? row.tokens ?? 0 : row.cost;
 			// td そのものを flex にすると table-cell でなくなり、行の高さや下線がずれる。中に1枚挟む。
 			const barCell = dom.append(dom.append(tr, $('td.bar-col')), $('.bar-cell'));
-			const track = dom.append(barCell, $('.paradis-space-usage-track'));
-			const bar = dom.append(track, $('.paradis-space-usage-bar'));
-			bar.style.width = `${max > 0 ? Math.max(1, value / max * 100).toFixed(1) : 0}%`;
+			// UI キットの進み具合の帯。スペース外・未割り当ての行は、スペースの行と見分けるため薄い色にする
+			renderParadisProgress(barCell, {
+				ariaLabel: row.name,
+				value: max > 0 ? Math.max(0.01, value / max) : 0,
+				color: special(row.key) === 1 ? 'var(--vscode-paradis-textMuted)' : undefined,
+			});
 			dom.append(barCell, $('span.share')).textContent = total > 0 ? `${(value / total * 100).toFixed(1)}%` : '';
 			dom.append(tr, $('td.num')).textContent = costUnavailable ? '—' : paradisFormatUsd(row.cost);
 		}
