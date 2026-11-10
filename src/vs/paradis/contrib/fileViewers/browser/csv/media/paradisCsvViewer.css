@@ -24,7 +24,9 @@
 	inset: 0;
 }
 
+/* The grid's own layers (the selected cell) stay inside it, below the find widget next to it. */
 .paradis-csv-table .paradis-csv-grid.paradis-spreadsheet-virtual-grid {
+	isolation: isolate;
 	background-color: var(--vscode-editor-background);
 	color: var(--vscode-editor-foreground);
 }

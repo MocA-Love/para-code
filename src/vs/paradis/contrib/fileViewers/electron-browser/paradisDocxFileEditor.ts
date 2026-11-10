@@ -477,6 +477,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._inspectorPanel.style.overflow = 'auto';
 		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
 		this._inspectorPanel.style.display = 'none';
+		this._findWidget.value?.avoidOverlapWith(this._inspectorPanel);
 		// overlay webview を重ねる位置合わせ用アンカー（paradisPdfFileEditor と同方式）。
 		this._webviewContainer = dom.append(this._rootElement, dom.$('.paradis-docx-viewer-webview'));
 		this._webviewContainer.setAttribute('role', 'region');

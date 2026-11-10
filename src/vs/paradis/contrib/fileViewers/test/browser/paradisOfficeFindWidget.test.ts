@@ -273,13 +273,13 @@ suite('ParadisOfficeFindWidget', () => {
 		}));
 		widget.reveal('Needle');
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
-		const toggle = host.querySelector<HTMLElement>('.paradis-office-find-input .monaco-custom-toggle')!;
+		const toggle = host.querySelector<HTMLElement>('.paradis-office-find-input .codicon-case-sensitive')!;
 		toggle.click();
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
 		toggle.click();
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
 
-		deepStrictEqual({ queries, checked: toggle.getAttribute('aria-checked') }, {
+		deepStrictEqual({ queries, checked: toggle.getAttribute('aria-pressed') }, {
 			queries: [
 				{ text: 'Needle', matchCase: false },
 				{ text: 'Needle', matchCase: true },
@@ -318,5 +318,25 @@ suite('ParadisOfficeFindWidget', () => {
 		active = true;
 		externalSurface.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
 		strictEqual(widget.isVisible(), true);
+	});
+	test('moves beside the change panel in a wide pane and below it in a narrow one', () => {
+		const host = mainWindow.document.createElement('div');
+		host.style.cssText = 'position: relative; width: 1000px; height: 600px;';
+		mainWindow.document.body.appendChild(host);
+		store.add({ dispose: () => host.remove() });
+		const widget = store.add(new ParadisOfficeFindWidget(host, {}));
+		const panel = mainWindow.document.createElement('div');
+		panel.style.cssText = 'position: absolute; top: 40px; right: 8px; width: 360px; height: 200px; display: none;';
+		host.appendChild(panel);
+		widget.avoidOverlapWith(panel);
+		const element = host.querySelector<HTMLElement>('.paradis-office-find-widget')!;
+		const hidden = [element.style.right, element.style.top];
+		panel.style.display = 'block';
+		widget.avoidOverlapWith(panel);
+		const wide = [element.style.right, element.style.top];
+		host.style.width = '600px';
+		widget.avoidOverlapWith(panel);
+		const narrow = [element.style.right, element.style.top];
+		deepStrictEqual({ hidden, wide, narrow }, { hidden: ['', ''], wide: ['376px', ''], narrow: ['', '248px'] });
 	});
 });
