@@ -273,7 +273,7 @@ suite('ParadisOfficeFindWidget', () => {
 		}));
 		widget.reveal('Needle');
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
-		const toggle = host.querySelector<HTMLElement>('.paradis-office-find-input .codicon-case-sensitive')!;
+		const toggle = host.querySelector<HTMLElement>('.paradis-office-find-input .codicon-case-sensitive')!.closest('button')!;
 		toggle.click();
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
 		toggle.click();
