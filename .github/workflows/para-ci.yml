@@ -184,8 +184,9 @@ jobs:
           grep -Eq '(^|[^0-9])[1-9][0-9]* passing' "$RUNNER_TEMP/test-node.log" || { echo "No passing tests reported by test-node" >&2; exit 1; }
 
   # The fork's renderer (Electron) unit tests: unit-tests above runs only the node.js tests, so regressions in the
-  # Electron tests reached main unnoticed (PR #868). Only the fork's suites under vs/paradis run (about 4 minutes):
-  # test/node is left out because test-node already runs it and the renderer cannot create Workers or use
+  # Electron tests reached main unnoticed (PR #868). Only the fork's suites run: those under vs/paradis, and the
+  # fork's renderer and electron-main tests elsewhere, named paradis* or para<Capital>* (para[A-Z] keeps upstream
+  # files such as parameterHintsModel and parallelTasksTour out). test/node is left out because test-node already runs it and the renderer cannot create Workers or use
   # SharedArrayBuffer (16 tests always fail there); electron-main is included because test-node skips it.
   # The job does not block CI yet (continue-on-error) because of known failures, such as the Office performance
   # fixture hash that is re-measured only on the reference Mac. The failed test names go to the job summary.
@@ -246,7 +247,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/test-electron.log"
           set +e
-          xvfb-run -a ./scripts/test.sh --runGlob 'vs/paradis/**/test/{common,browser,electron-browser,electron-main}/**/*.test.js' 2>&1 | tee "$log"
+          xvfb-run -a ./scripts/test.sh --runGlob '{vs/paradis/**/test/{common,browser,electron-browser,electron-main}/**/*.test.js,**/test/{browser,electron-browser,electron-main}/**/{paradis,para[A-Z]}*.test.js}' 2>&1 | tee "$log"
           status=${PIPESTATUS[0]}
           set -e
           clean="$RUNNER_TEMP/test-electron.clean.log"
