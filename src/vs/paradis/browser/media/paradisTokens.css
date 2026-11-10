@@ -92,3 +92,20 @@
 	--paradis-motion-enter: 0ms;
 	--paradis-motion-exit: 0ms;
 }
+
+/* Text on the selected fill (paradis.fillSelected). Muted text (counts, icons, a second line) reads on the surfaces but
+	not always on the selected fill (Light+: 3.92:1), so while a row is selected its muted text takes the strong text
+	color. The variable is remapped here, once, for every selected row of the fork's parts: the hub nav, the table, the
+	combo box list, the session history, the preset editor and the Office inspector. */
+.monaco-workbench :is(
+	.paradis-hub .phub-nav-item.active,
+	.paradis-hub .phub-nav-item.is-selected,
+	.paradis-table tbody tr.selected,
+	.paradis-combo-list .monaco-list-row.focused > .paradis-combo-item,
+	.paradis-session-resume .nav-item.on,
+	.paradis-session-resume .paradis-session-resume-row.selected,
+	.paradis-preset-editor-dialog .ppe-nav-item.on,
+	.paradis-office-inspector-row[aria-current="true"]
+) {
+	--vscode-paradis-textMuted: var(--vscode-paradis-textStrong);
+}
