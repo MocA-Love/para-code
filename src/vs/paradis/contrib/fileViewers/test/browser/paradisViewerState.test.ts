@@ -50,7 +50,7 @@ suite('ParadisViewerState', () => {
 				icon: !!container.querySelector('.paradis-viewer-state-icon .codicon-error'),
 				label: container.querySelector('.paradis-viewer-state-label')?.textContent,
 				detail: container.querySelector('.paradis-viewer-state-detail')?.textContent,
-				buttons: buttons.map(button => [button.textContent, button.classList.contains('secondary')]),
+				buttons: buttons.map(button => [button.textContent, button.classList.contains('paradis-button-primary'), button.classList.contains('paradis-button-secondary')]),
 				ran,
 			};
 			state.dispose();
@@ -59,7 +59,7 @@ suite('ParadisViewerState', () => {
 				icon: true,
 				label: 'Cannot show the sheet.',
 				detail: 'More detail',
-				buttons: [['Retry', false], ['Open in App', true]],
+				buttons: [['Retry', true, false], ['Open in App', false, true]],
 				ran: ['retry', 'open'],
 			});
 		} finally {
