@@ -58,6 +58,7 @@ import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisView
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisPreviewLocation, ParadisRemotePreviewMounter, paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
 import { paradisPreviewLinkTarget, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
+import { paradisHtmlViewerCanvasScript, paradisHtmlViewerHeadStyle } from '../common/paradisHtmlViewerDefaultStyles.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
@@ -251,7 +252,9 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		// 初期ズームを CSS zoom で焼き込む。
 		// 背景色: webview の body は既定で透明のため、背景無指定の HTML はエディタ背景（＋ウィンドウ透過）が
 		// 透けて読めなくなる。ブラウザ既定と同じ白を html に敷く。著者が背景を指定していればそちらが勝つ。
-		const headInjection = `<base href="${baseHref}"><style>html{zoom:${this._zoom.factor};background-color:#ffffff;}</style>`;
+		// 文字・リンク・コードの色も、白地に合わせて標準のブラウザの既定に戻す（ページが色を決めていればそちらが勝つ）。
+		// ページが body にだけ背景を付けているときは、読み込んだ後に白を外して body の背景を画面全体に広げる。
+		const headInjection = `<base href="${baseHref}">${paradisHtmlViewerHeadStyle(this._zoom.factor)}`;
 		// ライブなズーム変更（ボタン操作）を postMessage で受け取り、スクロール位置を保ったまま反映する。
 		const zoomScript = paradisViewerZoomScript();
 
@@ -271,7 +274,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		// スクロール位置の復元と検索結果の色のスクリプトも同じ理由で末尾に足す。スクリプトを動かさない
 		// とき（制限モード）は入れても動かないので入れない（webview を作り直した直後の初回表示だけは
 		// webview 自身がスクロール位置を戻す）。
-		const pageScripts = this.allowScripts ? this.viewerPageScripts(resource) : '';
+		const pageScripts = this.allowScripts ? this.viewerPageScripts(resource) + paradisHtmlViewerCanvasScript() : '';
 		return `${html}${zoomScript}${pageScripts}`;
 	}
 }
