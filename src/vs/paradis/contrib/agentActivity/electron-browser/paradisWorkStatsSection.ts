@@ -24,6 +24,7 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { IParadisWorkStatsResult, ParadisWorkStatsAgentFilter, paradisCombineWorkStats } from '../common/paradisAgentActivity.js';
 import { ParadisAgentActivityClient } from './paradisAgentActivityClient.js';
@@ -41,7 +42,6 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 	private readonly shareButton: HTMLButtonElement;
 	private readonly busy: ParadisActivityBusyIndicator;
 	private readonly syncRange: () => void;
-	private readonly agentButtons = new Map<ParadisWorkStatsAgentFilter, HTMLButtonElement>();
 	private readonly client: ParadisAgentActivityClient;
 	private readonly overlay = this._register(new MutableDisposable<DisposableStore>());
 	private rangeDays: ParadisActivityRangeDays = 7;
@@ -68,21 +68,19 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 			this.syncRange();
 			void this.refresh(false);
 		});
-		const agentSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
-		for (const [value, label] of [
-			['all', localize('paradis.workStats.allAgents', "すべてのエージェント")],
-			['claude', 'Claude Code'],
-			['codex', 'Codex'],
-		] as const) {
-			const button = dom.append(agentSeg, $('button')) as HTMLButtonElement;
-			button.type = 'button';
-			button.textContent = label;
-			this.agentButtons.set(value, button);
-			store.add(dom.addDisposableListener(button, 'click', () => {
-				this.agentFilter = value;
-				this.render();
-			}));
-		}
+		const agentSeg = store.add(new ParadisSegmented<ParadisWorkStatsAgentFilter>(toolbar, {
+			ariaLabel: localize('paradis.workStats.agentAria', "エージェント"),
+			value: this.agentFilter,
+			items: [
+				{ value: 'all', label: localize('paradis.workStats.allAgents', "すべてのエージェント") },
+				{ value: 'claude', label: 'Claude Code' },
+				{ value: 'codex', label: 'Codex' },
+			],
+		}));
+		store.add(agentSeg.onDidChange(value => {
+			this.agentFilter = value;
+			this.render();
+		}));
 		dom.append(toolbar, $('.paradis-ccusage-toolbar-spacer'));
 		this.shareButton = dom.append(toolbar, $('button.paradis-work-share-button')) as HTMLButtonElement;
 		this.shareButton.type = 'button';
@@ -146,10 +144,6 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 	}
 
 	private render(): void {
-		for (const [value, button] of this.agentButtons) {
-			button.classList.toggle('checked', value === this.agentFilter);
-			button.setAttribute('aria-pressed', String(value === this.agentFilter));
-		}
 		this.shareButton.disabled = this.data === undefined;
 		dom.clearNode(this.body);
 		this.body.classList.toggle('stale', this.loading && this.data !== undefined);
