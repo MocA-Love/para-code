@@ -5,6 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as dom from '../../../../../base/browser/dom.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import {
@@ -18,7 +19,9 @@ import {
 	type ParadisOfficeSourceDescriptor,
 } from '../../common/paradisOfficeProtocol.js';
 import type { IParadisCellComment, IParadisCellCommentEntry } from '../../common/paradisSpreadsheet.js';
-import { PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS, canShowSpreadsheetNoChanges, spreadsheetPrintWarning } from './paradisSpreadsheetDiagnostics.js';
+import { canShowSpreadsheetNoChanges, spreadsheetPrintWarning } from './paradisSpreadsheetDiagnostics.js';
+import { ParadisInputField } from '../../../../browser/paradisInputField.js';
+import { appendParadisOfficeInspectorButton, appendParadisOfficePanelHead, setParadisOfficeRowHover, type ParadisOfficeInspectorButtonKind } from '../paradisOfficeInspectorParts.js';
 
 export const PARADIS_SPREADSHEET_CHANGE_CATEGORIES: readonly ParadisOfficeChangeCategory[] = Object.freeze([
 	'content',
@@ -133,6 +136,8 @@ export interface ParadisSpreadsheetChangeInspectorOptions {
 	readonly search?: (query: string) => Promise<readonly ParadisOfficeSearchResult[]>;
 	readonly getPrintModel?: () => Promise<ParadisOfficePrintModel>;
 	readonly onNavigate?: (target: ParadisSpreadsheetNavigationTarget) => void;
+	/** パネルの見出しの「閉じる」を押したとき。省くと閉じるボタンを出さない。 */
+	readonly onClose?: () => void;
 	readonly onDidChangeViewState?: (state: ParadisSpreadsheetViewState) => void;
 }
 
@@ -281,16 +286,8 @@ export function spreadsheetChangeLabel(change: ParadisOfficeChange): string {
 	}
 }
 
-function appendButton(parent: HTMLElement, label: string): HTMLButtonElement {
-	const button = dom.append(parent, dom.$('button')) as HTMLButtonElement;
-	button.type = 'button';
-	button.style.color = PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.foreground;
-	button.style.background = 'var(--vscode-button-secondaryBackground, transparent)';
-	button.style.border = `1px solid ${PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border}`;
-	button.style.borderRadius = '2px';
-	button.style.padding = '3px 6px';
-	button.textContent = label;
-	return button;
+function appendButton(parent: HTMLElement, label: string, kind?: ParadisOfficeInspectorButtonKind): HTMLButtonElement {
+	return appendParadisOfficeInspectorButton(parent, label, kind);
 }
 
 /** 変更点パネルに並べるメモ・コメント。 */
@@ -302,8 +299,7 @@ export interface ParadisSpreadsheetInspectorComment {
 /** 本文を、@メンションの部分だけ強調して並べる（文字だけを入れ、HTML としては読まない）。 */
 function appendCommentText(parent: HTMLElement, entry: IParadisCellCommentEntry): void {
 	const text = dom.append(parent, dom.$('div.paradis-spreadsheet-comment-text'));
-	text.style.whiteSpace = 'pre-wrap';
-	text.style.overflowWrap = 'anywhere';
+	text.classList.add('paradis-spreadsheet-comment-text');
 	const mentions = [...(entry.mentions ?? [])].sort((left, right) => left.start - right.start);
 	let offset = 0;
 	for (const mention of mentions) {
@@ -350,12 +346,6 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		this.root = dom.append(container, dom.$('.paradis-spreadsheet-change-inspector'));
 		this.root.setAttribute('role', 'region');
 		this.root.setAttribute('aria-label', localize('paradis.spreadsheet.changeInspector', "スプレッドシートの変更インスペクター"));
-		this.root.style.display = 'flex';
-		this.root.style.flexDirection = 'column';
-		this.root.style.gap = '6px';
-		this.root.style.padding = '6px';
-		this.root.style.border = `1px solid ${PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border}`;
-		this.root.style.color = PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.foreground;
 		this.render();
 	}
 
@@ -485,9 +475,6 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		for (const { sheet, comment } of this.comments.slice(this.commentPage * INSPECTOR_PAGE_SIZE, (this.commentPage + 1) * INSPECTOR_PAGE_SIZE)) {
 			const item = dom.append(list, dom.$('.paradis-spreadsheet-comment-item'));
 			item.setAttribute('role', 'listitem');
-			item.style.border = `1px solid ${PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border}`;
-			item.style.borderRadius = '2px';
-			item.style.padding = '4px 6px';
 			const locator = `${sheet}!${comment.ref}`;
 			const header = dom.append(item, dom.$('div'));
 			const button = appendButton(header, `${comment.kind === 'thread' ? localize('paradis.spreadsheet.commentThread', "コメント") : localize('paradis.spreadsheet.commentNote', "メモ")} — ${locator}`);
@@ -496,22 +483,15 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 			if (comment.resolved) {
 				const resolved = dom.append(header, dom.$('span.paradis-spreadsheet-comment-resolved'));
 				resolved.textContent = localize('paradis.spreadsheet.commentResolvedBadge', "解決済み");
-				resolved.style.marginLeft = '6px';
 			}
 			comment.entries.forEach((entry, index) => {
 				const block = dom.append(item, dom.$('div.paradis-spreadsheet-comment-entry'));
-				if (index > 0) {
-					block.style.marginLeft = '12px';
-					block.style.borderTop = `1px solid ${PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border}`;
-					block.style.paddingTop = '3px';
-				}
 				const meta = dom.append(block, dom.$('div'));
 				const author = dom.append(meta, dom.$('strong'));
 				author.textContent = entry.author || localize('paradis.spreadsheet.commentUnknownAuthor', "（作成者不明）");
 				const date = formatCommentDate(entry.date);
 				if (date) {
-					const time = dom.append(meta, dom.$('span'));
-					time.style.marginLeft = '6px';
+					const time = dom.append(meta, dom.$('span.paradis-spreadsheet-comment-time'));
 					time.textContent = date;
 				}
 				appendCommentText(block, entry);
@@ -527,18 +507,17 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		this.renderDisposables.clear();
 		dom.clearNode(this.root);
 		const document = this.root.ownerDocument;
-		const title = dom.append(this.root, dom.$('strong'));
-		title.textContent = localize('paradis.spreadsheet.changes', "変更点");
+		const close = appendParadisOfficePanelHead(this.root, localize('paradis.spreadsheet.changes', "変更点"), !!this.options.onClose);
+		if (close) {
+			this.renderDisposables.add(dom.addDisposableListener(close, dom.EventType.CLICK, () => this.options.onClose?.()));
+		}
 
 		const categories = dom.append(this.root, dom.$('.paradis-spreadsheet-change-categories'));
 		categories.setAttribute('role', 'toolbar');
 		categories.setAttribute('aria-label', localize('paradis.spreadsheet.changeCategories', "変更の種類"));
-		categories.style.display = 'flex';
-		categories.style.flexWrap = 'wrap';
-		categories.style.gap = '3px';
 		for (const category of PARADIS_SPREADSHEET_CHANGE_CATEGORIES) {
 			const count = this.changes.filter(change => change.category === category).length;
-			const button = appendButton(categories, `${categoryLabel(category)} ${count}`);
+			const button = appendButton(categories, `${categoryLabel(category)} ${count}`, 'chip');
 			button.dataset.category = category;
 			button.dataset.count = String(count);
 			button.setAttribute('aria-pressed', String(this.viewState.categories.includes(category)));
@@ -563,7 +542,8 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 			for (const change of visibleChanges.slice(this.changePage * INSPECTOR_PAGE_SIZE, (this.changePage + 1) * INSPECTOR_PAGE_SIZE)) {
 				const item = dom.append(changeList, dom.$('.paradis-spreadsheet-change-item'));
 				item.setAttribute('role', 'listitem');
-				const button = appendButton(item, `${spreadsheetChangeLabel(change)} — ${change.subject.locator}`);
+				const button = appendButton(item, `${spreadsheetChangeLabel(change)} — ${change.subject.locator}`, 'row');
+				setParadisOfficeRowHover(button, button.textContent ?? '', this.renderDisposables);
 				button.dataset.changeId = change.id;
 				button.setAttribute('aria-label', localize('paradis.spreadsheet.navigateChange', "{1} の{0}へ移動", spreadsheetChangeLabel(change), change.subject.locator));
 				button.setAttribute('aria-current', String(this.viewState.selectedChangeId === change.id));
@@ -586,7 +566,8 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 			const placeholderCount = dom.append(placeholderList, dom.$('span'));
 			placeholderCount.textContent = localize('paradis.spreadsheet.placeholderCount', "代替表示 {0} 件", this.placeholders.length);
 			for (const placeholder of this.placeholders.slice(this.placeholderPage * INSPECTOR_PAGE_SIZE, (this.placeholderPage + 1) * INSPECTOR_PAGE_SIZE)) {
-				const button = appendButton(placeholderList, placeholder.detail ? `${placeholder.title} — ${placeholder.detail}` : placeholder.title);
+				const button = appendButton(placeholderList, placeholder.detail ? `${placeholder.title} — ${placeholder.detail}` : placeholder.title, 'row');
+				setParadisOfficeRowHover(button, button.textContent ?? '', this.renderDisposables);
 				button.dataset.placeholderId = placeholder.nodeId;
 				button.setAttribute('aria-label', localize('paradis.spreadsheet.navigatePlaceholder', "代替表示「{0}」へ移動", placeholder.title));
 				this.renderDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.navigate('placeholder', placeholder.nodeId)));
@@ -600,10 +581,10 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		if (this.options.search) {
 			const search = dom.append(this.root, dom.$('form.paradis-spreadsheet-search')) as HTMLFormElement;
 			search.setAttribute('role', 'search');
-			const input = dom.append(search, dom.$('input')) as HTMLInputElement;
+			const field = this.renderDisposables.add(new ParadisInputField(search, { ariaLabel: localize('paradis.spreadsheet.search', "スプレッドシートを検索"), placeholder: localize('paradis.spreadsheet.search', "スプレッドシートを検索"), icon: Codicon.search, small: true }));
+			const input = field.inputElement;
 			input.type = 'search';
 			input.maxLength = 4096;
-			input.setAttribute('aria-label', localize('paradis.spreadsheet.search', "スプレッドシートを検索"));
 			const button = appendButton(search, localize('paradis.spreadsheet.searchButton', "検索"));
 			button.type = 'submit';
 			this.renderDisposables.add(dom.addDisposableListener(search, dom.EventType.SUBMIT, event => {
@@ -622,7 +603,8 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 			results.setAttribute('role', 'list');
 			for (const result of this.results.slice(this.resultPage * INSPECTOR_PAGE_SIZE, (this.resultPage + 1) * INSPECTOR_PAGE_SIZE)) {
 				const label = `${result.locationBadge.label}: ${result.preview.before}${result.preview.match}${result.preview.after}`;
-				const button = appendButton(results, label);
+				const button = appendButton(results, label, 'row');
+				setParadisOfficeRowHover(button, label, this.renderDisposables);
 				button.dataset.searchResultId = result.id;
 				button.setAttribute('aria-label', localize('paradis.spreadsheet.navigateSearchResult', "{0} 内の検索結果へ移動", result.locationBadge.label));
 				this.renderDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.navigate('search', result.locator, result.navigableAnchor)));
@@ -641,7 +623,6 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		if (this.printWarning || this.printPlaceholderCount > 0) {
 			const alert = dom.append(this.root, dom.$('.paradis-spreadsheet-print-warning'));
 			alert.setAttribute('role', 'alert');
-			alert.style.color = PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.warning;
 			const placeholders = this.printPlaceholderCount === 1
 				? localize('paradis.spreadsheet.printPlaceholderOne', "代替表示 1 件")
 				: localize('paradis.spreadsheet.printPlaceholderMany', "代替表示 {0} 件", this.printPlaceholderCount);
@@ -652,10 +633,6 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		live.className = 'paradis-spreadsheet-change-live';
 		live.setAttribute('aria-live', 'polite');
 		live.setAttribute('aria-atomic', 'true');
-		live.style.position = 'absolute';
-		live.style.width = '1px';
-		live.style.height = '1px';
-		live.style.overflow = 'hidden';
 		live.textContent = this.announcement;
 		this.root.appendChild(live);
 	}

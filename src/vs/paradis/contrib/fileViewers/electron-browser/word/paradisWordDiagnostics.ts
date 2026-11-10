@@ -7,6 +7,7 @@
 import * as dom from '../../../../../base/browser/dom.js';
 import type { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
+import { markParadisOfficeWarning, styleParadisOfficeChip } from '../paradisOfficeInspectorParts.js';
 import {
 	canReportNoChanges,
 	type ParadisOfficeCompletenessManifest,
@@ -59,15 +60,11 @@ export function canShowWordNoChanges(manifest: ParadisOfficeCompletenessManifest
 	return canReportNoChanges(manifest, outcome, changeCount);
 }
 
-function appendRibbonItem(parent: HTMLElement, text: string, kind: string): void {
+function appendRibbonItem(parent: HTMLElement, text: string, kind: string): HTMLElement {
 	const item = dom.append(parent, dom.$('span.paradis-word-diagnostic-item'));
 	item.dataset.kind = kind;
-	item.style.display = 'inline-flex';
-	item.style.alignItems = 'center';
-	item.style.padding = '1px 6px';
-	item.style.border = `1px solid ${PARADIS_WORD_HIGH_CONTRAST_TOKENS.border}`;
-	item.style.borderRadius = '2px';
-	item.textContent = text;
+	styleParadisOfficeChip(item, text);
+	return item;
 }
 
 /** Renders fixed elements and text nodes only; document strings are never parsed as markup. */
@@ -78,24 +75,22 @@ export function renderWordDiagnosticsRibbon(container: HTMLElement, input: Parad
 	ribbon.setAttribute('role', 'status');
 	ribbon.setAttribute('aria-live', 'polite');
 	ribbon.setAttribute('aria-atomic', 'true');
-	ribbon.style.display = 'flex';
-	ribbon.style.flexWrap = 'wrap';
-	ribbon.style.alignItems = 'center';
-	ribbon.style.gap = '4px';
-	ribbon.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.foreground;
 	appendRibbonItem(ribbon, localize('paradis.word.diagnostics.faithful', "完全再現 {0}", summary.faithful), 'faithful');
 	appendRibbonItem(ribbon, localize('paradis.word.diagnostics.approximate', "近似 {0}", summary.approximate), 'approximate');
-	appendRibbonItem(ribbon, localize('paradis.word.diagnostics.alternatives', "代替表示 {0}", summary.alternatives), 'alternatives');
+	const alternatives = appendRibbonItem(ribbon, localize('paradis.word.diagnostics.alternatives', "代替表示 {0}", summary.alternatives), 'alternatives');
+	if (summary.alternatives > 0) {
+		markParadisOfficeWarning(alternatives);
+	}
 	if (summary.incomplete) {
 		const incomplete = dom.append(ribbon, dom.$('span.paradis-word-diagnostic-incomplete'));
-		incomplete.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
-		incomplete.style.borderBottom = `1px solid ${PARADIS_WORD_HIGH_CONTRAST_TOKENS.border}`;
-		incomplete.textContent = localize('paradis.word.diagnostics.incomplete', "解析未完了");
+		styleParadisOfficeChip(incomplete, localize('paradis.word.diagnostics.incomplete', "解析未完了"));
+		markParadisOfficeWarning(incomplete);
 	}
 	for (const warning of input.warnings ?? []) {
 		const warningElement = dom.append(ribbon, dom.$('span.paradis-word-diagnostic-warning'));
 		warningElement.dataset.code = warning.code;
-		warningElement.textContent = warning.message;
+		styleParadisOfficeChip(warningElement, warning.message);
+		markParadisOfficeWarning(warningElement);
 	}
 	return ribbon;
 }
@@ -217,25 +212,16 @@ function appendRibbonAction(parent: HTMLElement, text: string, kind: string, onA
 		styleRibbonItem(item, kind, text);
 		return item;
 	}
-	const button = dom.append(parent, dom.$('button.paradis-word-diagnostic-item')) as HTMLButtonElement;
+	const button = dom.append(parent, dom.$('button.paradis-word-diagnostic-item.paradis-focus-ring')) as HTMLButtonElement;
 	button.type = 'button';
 	styleRibbonItem(button, kind, text);
-	button.style.background = 'transparent';
-	button.style.color = 'inherit';
-	button.style.font = 'inherit';
-	button.style.cursor = 'pointer';
 	disposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, onActivate));
 	return button;
 }
 
 function styleRibbonItem(item: HTMLElement, kind: string, text: string): void {
 	item.dataset.kind = kind;
-	item.style.display = 'inline-flex';
-	item.style.alignItems = 'center';
-	item.style.padding = '1px 6px';
-	item.style.border = `1px solid ${PARADIS_WORD_HIGH_CONTRAST_TOKENS.border}`;
-	item.style.borderRadius = '2px';
-	item.textContent = text;
+	styleParadisOfficeChip(item, text);
 }
 
 /**
@@ -250,11 +236,6 @@ export function renderWordSemanticRibbon(container: HTMLElement, state: ParadisW
 	ribbon.setAttribute('role', 'status');
 	ribbon.setAttribute('aria-live', 'polite');
 	ribbon.setAttribute('aria-atomic', 'true');
-	ribbon.style.display = 'flex';
-	ribbon.style.flexWrap = 'wrap';
-	ribbon.style.alignItems = 'center';
-	ribbon.style.gap = '4px';
-	ribbon.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.foreground;
 	ribbon.dataset.state = state.kind;
 	switch (state.kind) {
 		case 'analyzing':
@@ -269,7 +250,7 @@ export function renderWordSemanticRibbon(container: HTMLElement, state: ParadisW
 				: state.retrying
 					? localize('paradis.word.semantic.busyRetrying', "混み合っています。少し後でもう一度解析します")
 					: localize('paradis.word.semantic.busy', "解析できませんでした（混雑）"), 'analysis', onActivate);
-			item.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
+			markParadisOfficeWarning(item);
 			item.dataset.code = state.code;
 			break;
 		}
@@ -280,7 +261,7 @@ export function renderWordSemanticRibbon(container: HTMLElement, state: ParadisW
 			const unrendered = countUnrenderedWordElements(state.counts);
 			if (unrendered > 0) {
 				const item = action(ribbon, localize('paradis.word.semantic.unrendered', "未対応の要素 {0}", unrendered), 'unrendered', onActivate);
-				item.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
+				markParadisOfficeWarning(item);
 			}
 			break;
 		}
@@ -293,7 +274,7 @@ export function renderWordSemanticRibbon(container: HTMLElement, state: ParadisW
 				: localize('paradis.word.semantic.changes', "変更 {0}", state.changes), 'changes', onActivate);
 			for (const warning of state.warnings ?? []) {
 				const item = action(ribbon, warning, 'warning', onActivate);
-				item.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
+				markParadisOfficeWarning(item);
 			}
 			break;
 		}
@@ -302,7 +283,7 @@ export function renderWordSemanticRibbon(container: HTMLElement, state: ParadisW
 	action(ribbon, localize('paradis.word.diagnostics.alternatives', "代替表示 {0}", state.alternatives), 'alternatives', onActivate);
 	if (state.blocked) {
 		const item = action(ribbon, state.blocked, 'blocked', onActivate);
-		item.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
+		markParadisOfficeWarning(item);
 	}
 	if (state.ignoredParts > 0) {
 		action(ribbon, localize('paradis.word.semantic.ignoredParts', "無視した部品 {0}", state.ignoredParts), 'ignored', onActivate);

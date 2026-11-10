@@ -83,7 +83,8 @@ import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from '
 import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import './media/paradisDocxDiff.css';
 import { PARADIS_VIEWER_LOADING_LABEL, PARADIS_VIEWER_OPEN_IN_APP_LABEL, PARADIS_VIEWER_RETRY_LABEL } from '../browser/paradisViewerState.js';
-import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
+import { PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS } from './paradisOfficeInspectorParts.js';
 
 const $ = dom.$;
 
@@ -303,7 +304,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 		const right = toolbar.end;
 		const views = appendParadisViewerToolbarGroup(right);
-		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(views, localize('paradis.word.diffInspector', "変更点"));
+		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(views, localize('paradis.word.diffInspector', "変更点"), Codicon.listUnordered);
 		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.diffInspector', "変更点"));
 		this._inspectorToggle.style.display = 'none';
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
@@ -339,16 +340,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._webviewContainer = dom.append(this._root, $('.paradis-docx-diff-body'));
 		this._webviewContainer.setAttribute('role', 'region');
 		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.comparisonContent', "Word 比較の内容"));
-		this._inspectorPanel = dom.append(this._root, $('.paradis-word-diff-inspector-panel'));
-		this._inspectorPanel.style.position = 'absolute';
-		// 帯の下に 4px 空ける（帯の高さは実際の値を読む）。
-		this._inspectorPanel.style.top = `calc(${PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS} + 4px)`;
-		this._inspectorPanel.style.right = '8px';
-		this._inspectorPanel.style.zIndex = '20';
-		this._inspectorPanel.style.width = '360px';
-		this._inspectorPanel.style.maxHeight = '70%';
-		this._inspectorPanel.style.overflow = 'auto';
-		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
+		this._inspectorPanel = dom.append(this._root, $(`.paradis-word-diff-inspector-panel.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
 		this._inspectorPanel.style.display = 'none';
 		this._findWidget.value?.avoidOverlapWith(this._inspectorPanel);
 		this._updateScaleLabel();
@@ -934,6 +926,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		const wasVisible = this._inspectorPanel.style.display !== 'none';
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisWordChangeInspector(this._inspectorPanel, {
+			// 見出しの「閉じる」は帯の「変更点」と同じ開け閉めを通し、フォーカスを帯のボタンへ戻す。
+			onClose: () => {
+				this._inspectorToggle?.click();
+				this._inspectorToggle?.focus();
+			},
 			searchUnavailable: callbacks.print
 				? localize('paradis.word.diffSearchUnavailable', "この比較では文書内の検索を利用できません。")
 				: localize('paradis.word.searchDisabled', "検索は設定で無効になっています。"),
@@ -1006,14 +1003,15 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._alignInspectorPanel();
 	}
 
-	/** 幅が狭いとツールバーが折り返して高くなるので、変更点パネルを比較の表示（webview）の上端に合わせる。 */
+	/** 幅が狭いとツールバーが折り返して高くなるので、変更点パネルを比較の表示（webview）の上端から 8 下に合わせる。 */
 	private _alignInspectorPanel(): void {
 		if (!this._inspectorPanel || this._inspectorPanel.style.display === 'none' || !this._webviewContainer) {
 			return;
 		}
 		const top = this._webviewContainer.offsetTop;
 		if (top > 0) {
-			this._inspectorPanel.style.top = `${top}px`;
+			// Excel と同じく、上に 8 あける（paradisOfficeInspector.css の paradis-office-change-panel）。
+			this._inspectorPanel.style.top = `calc(${top}px + var(--vscode-spacing-size80))`;
 		}
 	}
 

@@ -51,7 +51,8 @@ import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
-import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarOption, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, setParadisViewerToolbarOptionChecked } from '../browser/paradisViewerToolbar.js';
+import { PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS } from './paradisOfficeInspectorParts.js';
 import { mapSpreadsheetLogicalAnchor } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
@@ -514,7 +515,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		const right = toolbar.end;
 		const views = appendParadisViewerToolbarGroup(right);
-		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(views, localize('paradis.spreadsheet.inspector', "変更点"));
+		this._inspectorToggle = appendParadisViewerToolbarPanelToggle(views, localize('paradis.spreadsheet.inspector', "変更点"), Codicon.listUnordered);
 		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.spreadsheet.inspector', "変更点"));
 		this._inspectorToggle.style.display = 'none';
 		this._headerDisposables.add(dom.addDisposableListener(this._inspectorToggle, dom.EventType.CLICK, () => {
@@ -556,16 +557,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		appendParadisViewerToolbarSeparator(right);
 		this._openAppEl = appendParadisViewerToolbarGroup(right, 'paradis-spreadsheet-openapp');
 
-		this._inspectorPanel = dom.append(this._root, $('.paradis-spreadsheet-inspector-panel'));
-		this._inspectorPanel.style.position = 'absolute';
-		// 帯の下に 4px 空ける（帯の高さは実際の値を読む）。
-		this._inspectorPanel.style.top = `calc(${PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS} + 4px)`;
-		this._inspectorPanel.style.right = '8px';
-		this._inspectorPanel.style.zIndex = '20';
-		this._inspectorPanel.style.width = '380px';
-		this._inspectorPanel.style.maxHeight = '70%';
-		this._inspectorPanel.style.overflow = 'auto';
-		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
+		this._inspectorPanel = dom.append(this._root, $(`.paradis-spreadsheet-inspector-panel.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
 		this._inspectorPanel.style.display = 'none';
 		this._findWidget.value?.avoidOverlapWith(this._inspectorPanel);
 
@@ -784,6 +776,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._inspectorToggle.style.display = '';
 		dom.clearNode(this._inspectorPanel);
 		const inspector = new ParadisSpreadsheetChangeInspector(this._inspectorPanel, {
+			// 見出しの「閉じる」は帯の「変更点」と同じ開け閉めを通し、フォーカスを帯のボタンへ戻す。
+			onClose: () => {
+				this._inspectorToggle?.click();
+				this._inspectorToggle?.focus();
+			},
 			...(callbacks.search ? { search: callbacks.search.inspect } : {}),
 			...(callbacks.print ? { getPrintModel: callbacks.print } : {}),
 			onNavigate: target => {
