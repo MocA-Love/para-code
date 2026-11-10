@@ -53,9 +53,9 @@ import { paradisViewerWebviewFailureHtml } from '../common/paradisViewerWebviewS
 const PDFJS_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs' as const;
 const PDF_HEADER_BYTES = 5;
 
-/** PDFの先頭シグネチャを検証する。 */
+/** PDFの先頭シグネチャを検証する。読み出しが 5 バイトより長く返っても、先頭の 5 バイトだけを見る。 */
 export function isParadisPdfHeader(bytes: Uint8Array): boolean {
-	return bytes.length === PDF_HEADER_BYTES && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d;
+	return bytes.length >= PDF_HEADER_BYTES && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d;
 }
 
 export async function readParadisPdfHeader(fileService: IFileService, resource: URI): Promise<boolean | undefined> {

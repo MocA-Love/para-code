@@ -28,6 +28,7 @@ import { IWorkingCopyService } from '../../../../../workbench/services/workingCo
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEditor, paradisWordObjectsAfterWorker, readParadisDocxHeader } from '../../electron-browser/paradisDocxFileEditor.js';
+import { isParadisPdfHeader } from '../../electron-browser/paradisPdfFileEditor.js';
 import { buildParadisDocxDiffHtml } from '../../electron-browser/paradisDocxDiffWebview.js';
 import { sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/word/paradisDocxSanitize.js';
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
@@ -528,6 +529,15 @@ suite('ParadisDocxFileEditor', () => {
 		strictEqual(await readParadisDocxHeader(fileService, URI.file('/workspace/document.docx')), true);
 		deepStrictEqual(options, [{ length: 4 }]);
 		deepStrictEqual([new Uint8Array(), Uint8Array.of(0x50, 0x4b, 0x03)].map(isParadisDocxHeader), [false, false]);
+	});
+
+	test('looks only at the leading signature when the head read returns more bytes than asked (Word and PDF)', () => {
+		// 読み出しが長く返ったとき（同じ 4 バイトが 2 回届いた・先の中身まで来た）に、正しいファイルを「破損」と言わない。
+		const zip = Uint8Array.of(0x50, 0x4b, 0x03, 0x04);
+		deepStrictEqual({
+			docx: [Uint8Array.of(...zip, ...zip), Uint8Array.of(...zip, 0x14, 0x00), Uint8Array.of(0x50, 0x4b, 0x05, 0x06, 0x00)].map(isParadisDocxHeader),
+			pdf: [VSBuffer.fromString('%PDF-%PDF-').buffer, VSBuffer.fromString('%PDF-1.7\n').buffer, VSBuffer.fromString('%PDX-1.7').buffer].map(isParadisPdfHeader),
+		}, { docx: [true, true, false], pdf: [true, true, false] });
 	});
 
 	test('maps DOCX preflight results to the observable render outcome', () => {
