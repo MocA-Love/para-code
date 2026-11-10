@@ -119,7 +119,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'paradis.focusSubtle': '#7d8394',
 				// Houston の副のボタンは塗り（#545864）で見分けられる。button.secondaryBorder を持たないので、既定の枠
 				// （文字色の 15%）が足されないよう、副のボタンの枠（paradisColors.ts の paradis.lineButton）は描かない
-				'paradis.lineButton': '#00000000'
+				'paradis.lineButton': '#00000000',
+				// 一覧の中の見出しの帯（paradisColors.ts の paradis.band）。Houston は見出しの面に地と違う色を持つので、その色をそのまま使う
+				'paradis.band': '#343841'
 			},
 			'[Dark 2026]': {
 				'statusBar.background': '#09AFD9',
@@ -131,10 +133,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'activityBarBadge.foreground': '#000000',
 				'badge.foreground': '#000000',
 				'agentsBadge.foreground': '#000000',
-				'agentsUnreadBadge.foreground': '#000000',
-				// 一覧の中の見出しの帯（paradisColors.ts の paradis.band、既定は sideBarSectionHeader.background）。
-				// Dark 2026 は見出しの面をサイドバーの地と同じ色（#191A1B）にしていて帯が見えないので、地より一段明るくする
-				'paradis.band': '#242528'
+				'agentsUnreadBadge.foreground': '#000000'
 			},
 			'[Light 2026]': {
 				// Light 2026 のブランドアクセントは白背景とのコントラスト確保のため #0598BD（テーマ内の debugging 色と同値）
@@ -142,9 +141,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'statusBar.foreground': '#FFFFFF',
 				'statusBar.noFolderBackground': '#0598BD',
 				'statusBar.noFolderForeground': '#FFFFFF',
-				'paradis.focusSubtle': '#8a8f99',
-				// 一覧の中の見出しの帯（paradis.band）。Light 2026 も見出しの面がサイドバーの地と同じ色（#FAFAFD）なので、一段暗くする
-				'paradis.band': '#EEEFF3'
+				'paradis.focusSubtle': '#8a8f99'
 			}
 		},
 		// 注: `github.copilot.chat.commitMessageGeneration.instructions` はここ（defaultレイヤー）では
