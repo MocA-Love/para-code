@@ -9,7 +9,28 @@
  * ペインの要素に当てる形に写したもの（値は同じ）。スクロールバーは webview の既定の見た目に合わせる。
  */
 
+/* 上に共通の帯（32）、残りを画像の入れ物が埋める。 */
+.paradis-image-viewer-host {
+	display: flex;
+	flex-direction: column;
+	box-sizing: border-box;
+	min-width: 0;
+}
+
+.paradis-image-toolbar-meta {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
+	font-variant-numeric: tabular-nums;
+}
+
 .paradis-image-viewer {
+	flex: 1 1 auto;
+	min-width: 0;
+	min-height: 0;
 	position: relative;
 	box-sizing: border-box;
 	overflow: auto;
