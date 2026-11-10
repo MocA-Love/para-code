@@ -57,7 +57,7 @@ import { createParadisSpreadsheetPrintDrawingBudget, paradisSpreadsheetPrintLayo
 import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, convertSpreadsheetMetafiles, estimateParadisWorkbookBytes, hasPendingSpreadsheetMetafiles, isParadisSpreadsheetUnreportedError, openSpreadsheetResource, warmSpreadsheetParser, type IParadisSpreadsheetOpenCacheValue } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
-import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar } from '../browser/paradisViewerToolbar.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS } from '../browser/paradisViewerToolbar.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridCell, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
 import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest, type ParadisSpreadsheetViewportFrame, type ParadisSpreadsheetVirtualRange } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
@@ -1232,7 +1232,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		this._inspectorPanel = dom.append(this._root, $('.paradis-spreadsheet-inspector-panel'));
 		this._inspectorPanel.style.position = 'absolute';
-		this._inspectorPanel.style.top = '32px';
+		// 帯の下に 4px 空ける（帯の高さは実際の値を読む）。
+		this._inspectorPanel.style.top = `calc(${PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS} + 4px)`;
 		this._inspectorPanel.style.right = '8px';
 		this._inspectorPanel.style.zIndex = '20';
 		this._inspectorPanel.style.width = '360px';

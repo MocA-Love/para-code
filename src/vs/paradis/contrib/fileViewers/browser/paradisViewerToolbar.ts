@@ -7,13 +7,28 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ファイルビューア（Markdown・HTML・CSV・PDF・Excel・Word とそれぞれの差分）の上に置く共通のバー。
-// 高さ 28・エディタの地・下に 1px の線。ボタンは本家の ActionBar と同じ 22px のアイコン、表示の切り替えは
-// 本家の検索欄の Aa と同じ Toggle（inputOption）の見た目にする。並びは左に状態（件数・凡例・切り替え）、
+// 高さ 32・エディタの地・下に 1px の線。ボタンは本家の ActionBar と同じ 22px のアイコン、表示の切り替えは
+// 本家の検索欄の Aa と同じ Toggle（inputOption）の見た目にする。Markdown・HTML の「プレビュー | ソース」と Markdown の
+// 本文の幅は UI キットの切り替えの組（28px）で、それが収まるように帯を 32 にしている。並びは左に状態（件数・凡例・切り替え）、
 // 右に「表示の切り替え → 拡大率 → 前後の移動 → 外部で開く」を区切り線で分けて置く。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import './media/paradisViewerToolbar.css';
+
+/** 帯の高さ（px）。帯の下から始める物（PDF の webview・Word の変更点パネル）はこの値を使う。CSS の `--paradis-height-lg` と同じ。 */
+export const PARADIS_VIEWER_TOOLBAR_HEIGHT = 32;
+
+/**
+ * 帯の実際の高さ（CSS の値）。帯が折り返して高くなるビューアは {@link setParadisViewerToolbarHeight} で根に知らせ、
+ * 知らせていなければ帯の既定の高さ（`--paradis-height-lg`）になる。帯の下に置く物の `top` などに使う。
+ */
+export const PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS = 'var(--paradis-viewer-toolbar-height, var(--paradis-height-lg))';
+
+/** 帯が広いときだけ出す物（420px 以下で隠す。paradisViewerToolbar.css）。 */
+export const PARADIS_VIEWER_TOOLBAR_UNFOLDED_CLASS = 'paradis-viewer-toolbar-unfolded';
+/** 帯が 420px 以下のときだけ出す物（畳んだボタン）。 */
+export const PARADIS_VIEWER_TOOLBAR_FOLDED_CLASS = 'paradis-viewer-toolbar-folded';
 
 /** 共通のバーの要素。`start` は左寄せ、`end` は右寄せの置き場。 */
 export interface IParadisViewerToolbar {

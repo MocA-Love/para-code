@@ -7,8 +7,9 @@
 
 /*
  * The one toolbar shared by every file viewer (Markdown, HTML, CSV, PDF, Excel, Word and their diffs).
- * 28px tall on the editor background with a 1px line below. Icon buttons match the upstream ActionBar
- * items (22px), view toggles match the upstream Toggle (inputOption), and the zoom percentage is 44px wide.
+ * 32px tall on the editor background with a 1px line below, so the UI kit's 28px segmented controls fit (Markdown and HTML's
+ * Preview | Source, Markdown's text width). Icon buttons match the upstream ActionBar items (22px), other view toggles match
+ * the upstream Toggle (inputOption), and the zoom percentage is 44px wide.
  */
 
 .paradis-viewer-toolbar {
@@ -17,7 +18,7 @@
 	align-items: center;
 	justify-content: space-between;
 	gap: var(--vscode-spacing-size80);
-	height: 28px;
+	height: var(--paradis-height-lg);
 	box-sizing: border-box;
 	padding: 0 var(--vscode-spacing-size80);
 	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorGroup-border, var(--vscode-widget-border, transparent));
@@ -126,7 +127,7 @@
 /* Bars whose start area can wrap (the Word analysis ribbon) grow with their content. */
 .paradis-viewer-toolbar.paradis-viewer-toolbar-wrap {
 	height: auto;
-	min-height: 28px;
+	min-height: var(--paradis-height-lg);
 	padding-top: var(--vscode-spacing-size20);
 	padding-bottom: var(--vscode-spacing-size20);
 }
@@ -167,7 +168,12 @@
 
 /* The Office find widget sits just below the toolbar (whatever its height) instead of covering its buttons. */
 .paradis-viewer-toolbar-host > .paradis-office-find-widget {
-	top: calc(var(--paradis-viewer-toolbar-height, 28px) + 4px);
+	top: calc(var(--paradis-viewer-toolbar-height, var(--paradis-height-lg)) + 4px);
+}
+
+/* Controls that fold into one button on narrow bars (Markdown's text width): the folded button is hidden until then. */
+.paradis-viewer-toolbar .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-folded {
+	display: none;
 }
 
 /* Narrow panes: drop the legend, then fold to icons so the buttons on the right stay visible
@@ -187,5 +193,13 @@
 
 	.paradis-viewer-toolbar-end {
 		gap: var(--vscode-spacing-size20);
+	}
+
+	.paradis-viewer-toolbar .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-unfolded {
+		display: none;
+	}
+
+	.paradis-viewer-toolbar .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-folded {
+		display: inline-flex;
 	}
 }

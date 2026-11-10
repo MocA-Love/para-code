@@ -23,6 +23,8 @@ import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { generateTokensCSSForColorMap } from '../../../../editor/common/languages/supports/tokenization.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
+import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -50,6 +52,12 @@ import { containsParadisMermaidBlock, IParadisMermaidZoomLabels, loadParadisMerm
 import { markedParadisAlertExtension, PARADIS_MARKDOWN_ALERT_STYLES } from './paradisMarkdownAlerts.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from './paradisViewerZoom.js';
+import { appendParadisViewerToolbarSeparator } from './paradisViewerToolbar.js';
+import { ParadisMarkdownWidthControl } from './paradisMarkdownWidthControl.js';
+import { PARADIS_MARKDOWN_WIDTH_SETTING, PARADIS_MARKDOWN_WIDTH_STYLES, paradisMarkdownWidthClass, paradisMarkdownWidthMessage, paradisMarkdownWidthScript, paradisResolveMarkdownWidth, ParadisMarkdownWidth } from '../common/paradisMarkdownWidth.js';
+import { IParadisCodeCopyLabels, PARADIS_CODE_COPY_RERUN_SCRIPT, PARADIS_CODE_COPY_STYLES, paradisCodeCopiedMessage, paradisCodeCopyScript, paradisReadCodeCopyRequest } from '../common/paradisMarkdownCodeCopy.js';
+import { IParadisViewerScrollState } from '../common/paradisViewerScroll.js';
+import { paradisRecoverMarkdownCodeSources } from '../common/paradisMarkdownCodeSource.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
 import { ParadisFileViewerInput } from './paradisFileViewerInput.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
@@ -72,6 +80,15 @@ function mermaidZoomLabels(): IParadisMermaidZoomLabels {
 	};
 }
 
+/** コードのブロックの「コピー」の文言。 */
+function codeCopyLabels(): IParadisCodeCopyLabels {
+	return {
+		copy: localize('paradis.markdown.codeCopy', "コピー"),
+		copied: localize('paradis.markdown.codeCopied', "コピーしました"),
+		copyFailed: localize('paradis.markdown.codeCopyFailed', "コピーできませんでした"),
+	};
+}
+
 export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 
 	static readonly ID = PARADIS_MARKDOWN_EDITOR_ID;
@@ -81,6 +98,18 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	private readonly _mediaCache = new ParadisInlineMediaCache();
 	/** `_mediaCache` がどの文書の画像を覚えているか。 */
 	private _mediaCacheResource: URI | undefined;
+	/** 帯の「読みやすい | 広い | 全幅」。 */
+	private _widthControl: ParadisMarkdownWidthControl | undefined;
+	/**
+	 * 帯でこのファイルに選んだ幅。選んでいないファイルは設定の既定に従う（設定を替えれば開いたままでも替わる）。
+	 * スクロールの位置と一緒にファイルごとに覚える（{@link computeExtraViewState}）。
+	 */
+	private _chosenWidth: { readonly resource: URI; readonly width: ParadisMarkdownWidth } | undefined;
+	/**
+	 * いま描いた文書のコードのブロックの、画面の文字 → 書いたままの中身（行頭のタブを marked が空白に広げたもの
+	 * だけ）。コピーで元のタブに戻す。
+	 */
+	private _codeSources = new Map<string, string>();
 
 	constructor(
 		group: IEditorGroup,
@@ -102,10 +131,53 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		@ILanguageService private readonly _languageService: ILanguageService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IOpenerService private readonly _openerService: IOpenerService,
+		@IClipboardService private readonly _clipboardService: IClipboardService,
+		@IContextMenuService private readonly _contextMenuService: IContextMenuService,
 	) {
 		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
 		// 拡大縮小はページ内のスクリプトで反映する（Markdown はスクリプトを常に許可している）。
 		this._zoom = this._register(new ParadisViewerZoomControls(() => void this.webview?.postMessage(paradisViewerZoomMessage(this._zoom.factor))));
+		this._register(this._configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(PARADIS_MARKDOWN_WIDTH_SETTING)) {
+				this._showWidth();
+			}
+		}));
+	}
+
+	/** いまの文書の本文の幅（帯で選んだ幅 → 設定の既定）。 */
+	private _widthFor(resource: URI | undefined): ParadisMarkdownWidth {
+		const chosen = resource && this._chosenWidth && isEqual(this._chosenWidth.resource, resource) ? this._chosenWidth.width : undefined;
+		return paradisResolveMarkdownWidth(chosen, this._configurationService.getValue(PARADIS_MARKDOWN_WIDTH_SETTING));
+	}
+
+	/** いまの幅を帯とページに出す（ページは描き直さず、ズームと同じく postMessage で替える）。 */
+	private _showWidth(): void {
+		const width = this._widthFor(this.input?.resource);
+		if (this._widthControl) {
+			this._widthControl.value = width;
+		}
+		void this.webview?.postMessage(paradisMarkdownWidthMessage(width));
+	}
+
+	/** 帯で幅を選んだ。このファイルに覚える。 */
+	private _chooseWidth(width: ParadisMarkdownWidth): void {
+		const resource = this.input?.resource;
+		if (!resource) {
+			return;
+		}
+		this._chosenWidth = { resource, width };
+		this._showWidth();
+	}
+
+	protected override computeExtraViewState(resource: URI): Omit<IParadisViewerScrollState, 'scrollProgress'> {
+		return this._chosenWidth && isEqual(this._chosenWidth.resource, resource) ? { markdownWidth: this._chosenWidth.width } : {};
+	}
+
+	protected override restoreExtraViewState(resource: URI, state: IParadisViewerScrollState | undefined): void {
+		this._chosenWidth = state?.markdownWidth ? { resource, width: state.markdownWidth } : undefined;
+		if (this._widthControl) {
+			this._widthControl.value = this._widthFor(resource);
+		}
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
@@ -132,6 +204,9 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
+		// 本文の幅はズームの左。帯が狭いときは 1 つのボタンに畳む（区切り線は狭い帯では出ない）。
+		this._widthControl = this._register(new ParadisMarkdownWidthControl(toolbar, this._widthFor(undefined), width => this._chooseWidth(width), this._contextMenuService));
+		appendParadisViewerToolbarSeparator(toolbar);
 		this._zoom.createButtons(toolbar);
 		// .md の変更は自動で描き直すが、参照している画像だけを差し替えたときや変更の通知が届かないときのために、
 		// HTML と同じ位置に置く。同じ内容でも送り直し、画像も読み直す
@@ -163,6 +238,17 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 			if (target) {
 				this._openerService.open(target, { fromUserGesture: true, allowContributedOpeners: true }).catch(onUnexpectedError);
 			}
+		}));
+		// コードのブロックの「コピー」。ページから届いた中身をそのままクリップボードへ書き、結果を返す。
+		store.add(webview.onMessage(({ message }) => {
+			const request = paradisReadCodeCopyRequest(message);
+			if (!request) {
+				return;
+			}
+			this._clipboardService.writeText(this._codeSources.get(request.text) ?? request.text).then(() => true, err => {
+				onUnexpectedError(err);
+				return false;
+			}).then(ok => webview.postMessage(paradisCodeCopiedMessage(request.id, ok)));
 		}));
 	}
 
@@ -223,6 +309,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		}
 		const mermaidEnabled = hasMermaid && mermaidScriptSource !== undefined;
 		const body = `${frontMatter.htmlPrefix}${media.html}`;
+		this._codeSources = paradisRecoverMarkdownCodeSources(frontMatter.markdown, rendered.codeSources);
+		const width = this._widthFor(resource);
 
 		// 実行できるのは、この HTML 自身が埋め込む nonce 付き <script>（ビューアの補助スクリプトと、
 		// mermaid を使う文書では vendored mermaid.js 本体 + 直後の初期化コード）だけであり、
@@ -230,13 +318,15 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		const scriptSrc = ` script-src 'nonce-${nonce}';`;
 
 		const html = `<!DOCTYPE html>
-<html>
+<html class="${paradisMarkdownWidthClass(width)}">
 	<head>
 		<meta charset="utf-8">
 		<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; media-src https: data:; style-src 'nonce-${nonce}'; font-src https: data:;${scriptSrc}">
 		<style nonce="${nonce}">
 			html { zoom: ${this._zoom.factor}; }
 			${DEFAULT_MARKDOWN_STYLES}
+			${PARADIS_MARKDOWN_WIDTH_STYLES}
+			${PARADIS_CODE_COPY_STYLES}
 			${PARADIS_FRONTMATTER_STYLES}
 			${PARADIS_INLINE_MEDIA_STYLES}
 			${tokenCss}
@@ -250,12 +340,14 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		${mermaidEnabled ? paradisMermaidZoomScript(nonce, mermaidZoomLabels()) : ''}
 		${mermaidEnabled ? this._renderMermaidScripts(nonce, mermaidScriptSource!) : ''}
 		${paradisViewerZoomScript(nonce)}
-		${paradisViewerBodySwapScript(nonce, mermaidEnabled ? PARADIS_MERMAID_RERUN_SCRIPT : '')}
+		${paradisMarkdownWidthScript(nonce)}
+		${paradisCodeCopyScript(nonce, codeCopyLabels())}
+		${paradisViewerBodySwapScript(nonce, PARADIS_CODE_COPY_RERUN_SCRIPT + (mermaidEnabled ? PARADIS_MERMAID_RERUN_SCRIPT : ''))}
 		${this.viewerPageScripts(resource, nonce)}
 	</body>
 </html>`;
 		// 2 回目以降の描き直しは、外側（nonce・配色・Mermaid の有無）が同じなら本文だけを送る。Mermaid 本体（約 3.5MB）と
-		// スタイルは最初の 1 回だけ読み込む。倍率はページへ別に送っているので鍵に入れない。
+		// スタイルは最初の 1 回だけ読み込む。倍率と本文の幅はページへ別に送っているので鍵に入れない（`<html>` は差し替えの外）。
 		return { html, swap: { key: `${nonce}\n${mermaidEnabled}\n${tokenCss}`, body } };
 	}
 

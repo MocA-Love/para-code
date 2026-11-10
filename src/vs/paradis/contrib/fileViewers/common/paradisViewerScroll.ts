@@ -16,11 +16,14 @@
 // 前の文書の位置を引き継いでしまう。そのため文書の末尾にスクロールを戻すスクリプトを入れる。
 
 import { paradisScriptStringLiteral } from '../../../common/paradisScriptLiteral.js';
+import { paradisNormalizeMarkdownWidth, ParadisMarkdownWidth } from './paradisMarkdownWidth.js';
 
 /** ビューアの view state（EditorMemento に保存する形）。 */
 export interface IParadisViewerScrollState {
 	/** `window.scrollY / document.body.clientHeight`。 */
 	readonly scrollProgress: number;
+	/** Markdown ビューアで、帯からこのファイルに選んだ本文の幅（選んでいなければ無い＝設定の既定に従う）。 */
+	readonly markdownWidth?: ParadisMarkdownWidth;
 }
 
 /** 位置として使える値か確かめる（保存済みの値は古い版や壊れた値の可能性がある）。 */
@@ -37,7 +40,11 @@ export function paradisReadViewerScrollState(value: unknown): IParadisViewerScro
 		return undefined;
 	}
 	const scrollProgress = paradisNormalizeScrollProgress((value as { scrollProgress?: unknown }).scrollProgress);
-	return scrollProgress === undefined ? undefined : { scrollProgress };
+	if (scrollProgress === undefined) {
+		return undefined;
+	}
+	const markdownWidth = paradisNormalizeMarkdownWidth((value as { markdownWidth?: unknown }).markdownWidth);
+	return markdownWidth === undefined ? { scrollProgress } : { scrollProgress, markdownWidth };
 }
 
 /**

@@ -43,7 +43,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisPdfInput } from './paradisPdfInput.js';
 import { PARADIS_PDF_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { buildParadisPdfViewerHtml, PARADIS_PDF_FIRST_PAINT_MESSAGE, PARADIS_PDF_VIEW_STATE_MESSAGE, PARADIS_PDF_ZOOM_MESSAGE, ParadisPdfZoomCommand, shouldParadisPdfUseRangeRequests } from '../common/paradisPdfViewerHtml.js';
-import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPercent, createParadisViewerToolbar } from '../browser/paradisViewerToolbar.js';
+import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPercent, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS } from '../browser/paradisViewerToolbar.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { localize } from '../../../../nls.js';
 import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
@@ -162,7 +162,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 		// overlay webview を重ねる位置合わせ用アンカー（paradisRenderedFileEditor と同方式）。バーの下から。
 		this._webviewContainer = dom.append(this._rootElement, dom.$('.paradis-pdf-viewer-webview'));
 		this._webviewContainer.style.position = 'absolute';
-		this._webviewContainer.style.inset = '28px 0 0 0';
+		this._webviewContainer.style.inset = `${PARADIS_VIEWER_TOOLBAR_HEIGHT_CSS} 0 0 0`;
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {

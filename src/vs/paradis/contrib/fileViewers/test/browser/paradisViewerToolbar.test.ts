@@ -7,6 +7,7 @@
 import { deepStrictEqual } from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
+import { AppResourcePath, FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	appendParadisViewerToolbarChoice,
@@ -22,18 +23,44 @@ import {
 	setParadisViewerToolbarOptionChecked,
 } from '../../browser/paradisViewerToolbar.js';
 
+// The bar's height is the UI kit's token (declared on .monaco-workbench), so the real stylesheet is loaded.
+const TOKENS: AppResourcePath = 'vs/paradis/browser/media/paradisTokens.css';
+
 suite('ParadisViewerToolbar', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	let workbench: HTMLElement;
+	let tokens: HTMLLinkElement;
+
+	setup(async () => {
+		workbench = mainWindow.document.createElement('div');
+		workbench.className = 'monaco-workbench';
+		mainWindow.document.body.appendChild(workbench);
+		tokens = mainWindow.document.createElement('link');
+		tokens.rel = 'stylesheet';
+		tokens.href = FileAccess.asBrowserUri(TOKENS).toString(true);
+		const loaded = new Promise<void>((resolve, reject) => {
+			tokens.addEventListener('load', () => resolve(), { once: true });
+			tokens.addEventListener('error', () => reject(new Error(`could not load ${TOKENS}`)), { once: true });
+		});
+		mainWindow.document.head.appendChild(tokens);
+		await loaded;
+	});
+
+	teardown(() => {
+		workbench.remove();
+		tokens.remove();
+	});
 
 	function host(width = 800): HTMLElement {
 		const element = mainWindow.document.createElement('div');
 		element.style.width = `${width}px`;
 		element.style.position = 'relative';
-		mainWindow.document.body.appendChild(element);
+		workbench.appendChild(element);
 		return element;
 	}
 
-	test('builds a 28px bar with 22px buttons, a 44px percentage and the right accessibility state', () => {
+	test('builds a 32px bar with 22px buttons, a 44px percentage and the right accessibility state', () => {
 		const root = host();
 		try {
 			const toolbar = createParadisViewerToolbar(root, 'example-bar', 'Example');
@@ -58,7 +85,7 @@ suite('ParadisViewerToolbar', () => {
 				button: [button.getBoundingClientRect().width, button.getBoundingClientRect().height, button.getAttribute('aria-label'), !!button.querySelector('.codicon-zoom-in')],
 				percent: percent.getBoundingClientRect().width >= 44,
 			}, {
-				bar: [28, 'toolbar', 'Example', true],
+				bar: [32, 'toolbar', 'Example', true],
 				modes: ['radiogroup', 'radio', 'true', 'false', true],
 				filter: ['true', true],
 				panel: ['true', false],
@@ -114,7 +141,7 @@ suite('ParadisViewerToolbar', () => {
 			root.appendChild(find);
 			const before = mainWindow.getComputedStyle(find).top;
 			setParadisViewerToolbarHeight(root, 52);
-			deepStrictEqual([before, mainWindow.getComputedStyle(find).top], ['32px', '56px']);
+			deepStrictEqual([before, mainWindow.getComputedStyle(find).top], ['36px', '56px']);
 		} finally {
 			root.remove();
 		}
