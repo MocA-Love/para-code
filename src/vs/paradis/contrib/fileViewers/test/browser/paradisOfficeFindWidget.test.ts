@@ -260,6 +260,27 @@ suite('ParadisOfficeFindWidget', () => {
 		strictEqual(document.activeElement, previous);
 	});
 
+	test('leaves Enter on its buttons to the button instead of finding the next match', async () => {
+		const host = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(host);
+		store.add({ dispose: () => host.remove() });
+		const navigated: string[] = [];
+		const widget = store.add(new ParadisOfficeFindWidget(host, {
+			search: async () => ({
+				results: ['a', 'b'].map(id => ({ id, locator: id, navigableAnchor: id, preview: { before: '', match: 'needle', after: '' }, locationBadge: { kind: 'sheet' as const, label: id } })),
+				total: 2, capped: false,
+			}),
+			onNavigate: result => navigated.push(result.id),
+		}));
+		widget.reveal('needle');
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+		const matchCase = host.querySelector<HTMLElement>('.codicon-case-sensitive')!.closest('button')!;
+		matchCase.focus();
+		matchCase.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+		deepStrictEqual(navigated, ['a']);
+	});
+
 	test('searches again with match case when the case toggle is switched', async () => {
 		const host = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(host);
@@ -273,13 +294,13 @@ suite('ParadisOfficeFindWidget', () => {
 		}));
 		widget.reveal('Needle');
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
-		const toggle = host.querySelector<HTMLElement>('.paradis-office-find-input .monaco-custom-toggle')!;
+		const toggle = host.querySelector<HTMLElement>('.paradis-office-find-input .codicon-case-sensitive')!.closest('button')!;
 		toggle.click();
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
 		toggle.click();
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
 
-		deepStrictEqual({ queries, checked: toggle.getAttribute('aria-checked') }, {
+		deepStrictEqual({ queries, checked: toggle.getAttribute('aria-pressed') }, {
 			queries: [
 				{ text: 'Needle', matchCase: false },
 				{ text: 'Needle', matchCase: true },
@@ -318,5 +339,34 @@ suite('ParadisOfficeFindWidget', () => {
 		active = true;
 		externalSurface.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
 		strictEqual(widget.isVisible(), true);
+	});
+	test('moves beside the change panel in a wide pane and below it in a narrow one', () => {
+		const host = mainWindow.document.createElement('div');
+		host.style.cssText = 'position: relative; width: 1000px; height: 600px;';
+		mainWindow.document.body.appendChild(host);
+		store.add({ dispose: () => host.remove() });
+		const widget = store.add(new ParadisOfficeFindWidget(host, {}));
+		const panel = mainWindow.document.createElement('div');
+		panel.style.cssText = 'position: absolute; top: 40px; right: 8px; width: 360px; height: 200px; display: none;';
+		host.appendChild(panel);
+		widget.avoidOverlapWith(panel);
+		const element = host.querySelector<HTMLElement>('.paradis-office-find-widget')!;
+		const place = () => [element.style.right, element.style.top, element.style.maxWidth];
+		const hidden = place();
+		panel.style.display = 'block';
+		widget.avoidOverlapWith(panel);
+		const wide = place();
+		host.style.width = '780px';
+		widget.avoidOverlapWith(panel);
+		const justWideEnough = place();
+		host.style.width = '600px';
+		widget.avoidOverlapWith(panel);
+		const narrow = place();
+		deepStrictEqual({ hidden, wide, justWideEnough, narrow }, {
+			hidden: ['', '', ''],
+			wide: ['376px', '', '616px'],
+			justWideEnough: ['376px', '', '396px'],
+			narrow: ['', '248px', ''],
+		});
 	});
 });

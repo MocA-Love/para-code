@@ -1241,6 +1241,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._inspectorPanel.style.overflow = 'auto';
 		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
 		this._inspectorPanel.style.display = 'none';
+		this._findWidget.value?.avoidOverlapWith(this._inspectorPanel);
 
 		// ズーム −/%/＋（HTMLビューアと同じUI）。
 		const zoom = appendParadisViewerToolbarGroup(right);

@@ -567,6 +567,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._inspectorPanel.style.overflow = 'auto';
 		this._inspectorPanel.style.background = 'var(--vscode-editorWidget-background)';
 		this._inspectorPanel.style.display = 'none';
+		this._findWidget.value?.avoidOverlapWith(this._inspectorPanel);
 
 		this._bodyEl = dom.append(this._root, $('.paradis-spreadsheet-diff-body'));
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
