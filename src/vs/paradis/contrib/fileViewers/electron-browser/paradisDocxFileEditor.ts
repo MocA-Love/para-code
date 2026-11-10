@@ -266,9 +266,9 @@ export function equalParadisWordBytes(left: Uint8Array, right: Uint8Array): bool
 	return true;
 }
 
-/** DOCX(Zip)の先頭ローカルファイルヘッダを検証する。 */
+/** DOCX(Zip)の先頭ローカルファイルヘッダを検証する。読み出しが 4 バイトより長く返っても、先頭の 4 バイトだけを見る。 */
 export function isParadisDocxHeader(bytes: Uint8Array): boolean {
-	return bytes.length === DOCX_HEADER_BYTES && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+	return bytes.length >= DOCX_HEADER_BYTES && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
 }
 
 export async function readParadisDocxHeader(fileService: IFileService, resource: URI): Promise<boolean | undefined> {
