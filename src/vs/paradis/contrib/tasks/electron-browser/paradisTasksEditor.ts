@@ -825,7 +825,9 @@ export class ParadisTasksEditor extends EditorPane {
 		const title = dom.append(row, $('td.title'));
 		dom.append(title, $('.paradis-tasks-item-title')).textContent = item.title;
 		const context = dom.append(title, $('.paradis-tasks-item-context'));
-		dom.append(context, $('span.repo')).textContent = item.repository;
+		const repository = dom.append(context, $('span.repo'));
+		repository.textContent = item.repository;
+		repository.title = item.repository;
 		if (item.author) {
 			dom.append(context, $('span')).textContent = localize('paradis.tasks.author', "作成 {0}", item.author);
 		}

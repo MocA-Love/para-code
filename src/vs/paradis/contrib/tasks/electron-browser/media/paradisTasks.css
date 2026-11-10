@@ -91,11 +91,13 @@
 }
 
 .paradis-tasks-combo {
-	max-width: 420px;
+	min-width: 0;
+	max-width: min(420px, 100%);
 	color: var(--vscode-descriptionForeground);
 }
 
 .paradis-tasks-button-label {
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
@@ -171,7 +173,7 @@
 .paradis-tasks-table th.assignees { width: 84px; }
 .paradis-tasks-table th.state { width: 84px; }
 .paradis-tasks-table th.updated { width: 96px; }
-.paradis-tasks-table th.actions { width: 36px; }
+.paradis-tasks-table th.actions { width: 64px; }
 
 /* In a narrow editor group, give the title the room: drop the assignee and updated columns. */
 @container paradis-tasks (max-width: 560px) {
@@ -221,6 +223,16 @@
 	font-size: 12px;
 }
 
+/* 長いリポジトリ名やラベルはセルの幅で「…」にする（折り返しの行に収まらない 1 つの札がセルの外へ出ないように） */
+.paradis-tasks-item-context > * {
+	min-width: 0;
+	max-width: 100%;
+	box-sizing: border-box;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .paradis-tasks-label {
 	padding: 0 7px;
 	border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
@@ -257,6 +269,12 @@
 .paradis-tasks-state.done { color: var(--vscode-charts-purple); }
 .paradis-tasks-state.closed { color: var(--vscode-charts-red); }
 .paradis-tasks-state.draft { color: var(--vscode-descriptionForeground); }
+
+.paradis-tasks-table td.actions {
+	padding-right: 8px;
+	padding-left: 4px;
+	white-space: nowrap;
+}
 
 .paradis-tasks-table td.actions .paradis-tasks-icon-button {
 	width: 24px;
@@ -298,6 +316,7 @@
 .paradis-tasks-project-table td.field {
 	overflow: hidden;
 	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .paradis-tasks-option {
@@ -375,11 +394,20 @@
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
+	gap: 6px;
 	color: var(--vscode-descriptionForeground);
 	font-size: 12px;
 }
 
+.paradis-tasks-card-ref {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .paradis-tasks-card-top .paradis-tasks-icon-button {
+	flex: none;
 	width: 22px;
 	height: 22px;
 	border-color: transparent;
@@ -421,6 +449,7 @@
 
 .paradis-tasks-roadmap-name {
 	display: flex;
+	align-items: baseline;
 	gap: var(--vscode-spacing-size60);
 	min-width: 0;
 	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size100) var(--vscode-spacing-size40) var(--vscode-spacing-size20);
