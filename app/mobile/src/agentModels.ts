@@ -21,9 +21,9 @@ export interface AgentModelOption {
 
 const CLAUDE_EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
-/** Claude Code 2.1.293 で別名が指す先（2026-10-08）。 */
+/** Claude Code 2.1.322 で別名が指す先（2026-11-10）。 */
 const CLAUDE_MODELS: readonly AgentModelOption[] = [
-	{ id: 'fable', label: 'Fable 5.1', aliases: ['claude-fable-5-1'], efforts: CLAUDE_EFFORTS },
+	{ id: 'fable', label: 'Fable 5.2', aliases: ['claude-fable-5-2'], efforts: CLAUDE_EFFORTS },
 	{ id: 'opus', label: 'Opus 5.5', aliases: ['claude-opus-5-5'], efforts: CLAUDE_EFFORTS },
 	{ id: 'sonnet', label: 'Sonnet 5.5', aliases: ['claude-sonnet-5-5'], efforts: CLAUDE_EFFORTS },
 	{ id: 'haiku', label: 'Haiku 5.5', aliases: ['claude-haiku-5-5'], efforts: CLAUDE_EFFORTS },

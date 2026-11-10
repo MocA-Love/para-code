@@ -666,6 +666,18 @@ export function paradisResolveAgentTemplates(configurationService: IConfiguratio
 	return configured.map(row => (paradisIsKnownDefaultAgentRow(row) ? defaults.find(candidate => candidate.id === row.id) : undefined) ?? paradisUpgradeLegacyCodexFlags(row));
 }
 
+/**
+ * 会話の途中でモデルを切り替えるとき（モバイルからの `/model <id>`）に照合する、そのエージェントのモデル。
+ * 新しいスペースの候補（{@link paradisResolveAgentTemplates}。別名の無い系統は最新の版だけ）に、絞る前の CLI の
+ * 一覧を足したもの。Mythos 5.2 が並んでも、CLI の `/model` で選べる `claude-mythos-5-1` へ切り替えられるようにする。
+ * 候補の側も残すのは、CLI の一覧が無いときの固定表・利用者が書いた行・一覧に出ない別名（`opusplan`）を含めるため。
+ */
+export function paradisSwitchableAgentModels(agentId: string, templates: readonly IParadisAgentCommandTemplate[], catalogs: readonly IParadisAgentModelCatalog[]): readonly { readonly id: string; readonly resolvedModel?: string }[] {
+	const listed = templates.find(template => template.id === agentId)?.models ?? [];
+	const discovered = catalogs.find(catalog => catalog.agentId === agentId)?.models ?? [];
+	return [...listed, ...discovered].map(model => ({ id: model.id, ...(model.resolvedModel !== undefined ? { resolvedModel: model.resolvedModel } : {}) }));
+}
+
 export const IParadisAgentModelCatalogService = createDecorator<IParadisAgentModelCatalogService>('paradisAgentModelCatalogService');
 
 /** 新しいスペースの作成で使うエージェント定義を持つ（画面側）。 */
@@ -675,6 +687,8 @@ export interface IParadisAgentModelCatalogService {
 	readonly onDidChange: Event<void>;
 	/** 今わかっている一覧で組み立てたエージェント定義（{@link paradisResolveAgentTemplates}）。 */
 	getAgentTemplates(): readonly IParadisAgentCommandTemplate[];
+	/** 会話の途中で切り替えてよいモデル（{@link paradisSwitchableAgentModels}。絞る前の CLI の一覧を含む）。 */
+	getSwitchableModels(agentId: string): readonly { readonly id: string; readonly resolvedModel?: string }[];
 	/**
 	 * CLI から取り直すよう頼む。結果は {@link onDidChange} で届く。shared process 側で
 	 * 60 秒は同じ結果を使い回し、CLI は版が変わったときだけ起こすので、ダイアログを開くたびに呼んでよい。

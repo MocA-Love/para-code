@@ -59,7 +59,7 @@ import { ParadisGithubMetricsClient } from '../../githubMetrics/electron-browser
 import { ParadisResourceMonitorClient } from '../../resourceMonitor/electron-browser/paradisResourceMonitorClient.js';
 import { ParadisSpaceDiskClient } from '../../spaceDisk/electron-browser/paradisSpaceDiskClient.js';
 import { IParadisPresetService } from '../../terminalPresets/common/paradisTerminalPresets.js';
-import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { paradisCreateWorktreeHeadless, paradisGetSwitchableClaudeModels, paradisGetWorktreeCreateForm, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
@@ -340,6 +340,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			bypassCache => githubClient.getSnapshot(bypassCache),
 			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理
 			options => instantiationService.invokeFunction(paradisGetWorktreeCreateForm, options),
+			() => instantiationService.invokeFunction(paradisGetSwitchableClaudeModels),
 			request => instantiationService.invokeFunction(paradisCreateWorktreeHeadless, request),
 			// 既存スペースへのエージェント起動（モバイルのホーム＋ボタン）
 			// 起動したペインの識別子（ペイントークンを含む）はモバイルへ渡さないので捨てる
