@@ -38,8 +38,8 @@
 
 .paradis-csv-grid .paradis-spreadsheet-virtual-cell {
 	padding: 0 var(--vscode-spacing-size60);
-	border-right: var(--vscode-strokeThickness) solid var(--vscode-editorIndentGuide-background1);
-	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorIndentGuide-background1);
+	border-right: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
 	font-family: inherit;
 	font-size: var(--vscode-fontSize-label1);
 	line-height: 21px;
@@ -55,10 +55,16 @@
 }
 
 .paradis-csv-grid .paradis-csv-header {
-	font-weight: var(--vscode-fontWeight-semiBold);
+	font-weight: var(--vscode-fontWeight-regular);
 	line-height: 23px;
-	background-color: var(--vscode-keybindingTable-headerBackground);
+	color: var(--vscode-paradis-textMuted);
+	background-color: var(--vscode-paradis-surface);
 	cursor: pointer;
+}
+
+.paradis-csv-grid .paradis-csv-header:hover {
+	color: var(--vscode-paradis-textStrong);
+	background-color: var(--vscode-paradis-fillHover);
 }
 
 .paradis-csv-grid .paradis-csv-header.paradis-csv-sorted-asc,
@@ -66,32 +72,35 @@
 	padding-right: var(--vscode-spacing-size200);
 }
 
-/* Sort indicator: a small chevron drawn with borders so the cell text stays the raw header value. */
+/* Sort indicator: the codicon arrow-up / arrow-down in the accent color, drawn as a pseudo-element so the cell text
+ * stays the raw header value (the shared grid renderer only sets text and classes). */
 .paradis-csv-grid .paradis-csv-sorted-asc::after,
 .paradis-csv-grid .paradis-csv-sorted-desc::after {
-	content: '';
 	position: absolute;
-	top: 50%;
-	right: var(--vscode-spacing-size80);
-	border-left: 4px solid transparent;
-	border-right: 4px solid transparent;
+	top: 0;
+	bottom: 0;
+	right: var(--vscode-spacing-size60);
+	display: flex;
+	align-items: center;
+	font-family: codicon;
+	font-size: var(--vscode-codiconFontSize-compact);
+	font-weight: var(--vscode-fontWeight-regular);
+	color: var(--vscode-paradis-accent);
 }
 
 .paradis-csv-grid .paradis-csv-sorted-asc::after {
-	margin-top: -3px;
-	border-bottom: 5px solid var(--vscode-textLink-foreground);
+	content: '\eaa1' / '';
 }
 
 .paradis-csv-grid .paradis-csv-sorted-desc::after {
-	margin-top: -2px;
-	border-top: 5px solid var(--vscode-textLink-foreground);
+	content: '\ea9a' / '';
 }
 
 .paradis-csv-grid .paradis-csv-rownum,
 .paradis-csv-grid .paradis-csv-corner {
 	text-align: right;
-	color: var(--vscode-editorLineNumber-foreground);
-	background-color: var(--vscode-keybindingTable-headerBackground);
+	color: var(--vscode-paradis-textFaint);
+	background-color: var(--vscode-paradis-surface);
 	font-variant-numeric: tabular-nums;
 }
 
@@ -101,7 +110,7 @@
 
 .paradis-csv-grid .paradis-csv-rownum-selected,
 .paradis-csv-grid .paradis-csv-header-selected {
-	color: var(--vscode-editorLineNumber-activeForeground);
+	color: var(--vscode-paradis-textStrong);
 }
 
 .paradis-csv-grid .paradis-csv-selected {
@@ -147,48 +156,64 @@
 	display: block;
 }
 
-/* Truncation notice (large files) between the toolbar and the grid. */
+/* Truncation notice (large files) between the toolbar and the grid: the UI kit's surface band (32px) with an info icon,
+ * the message cut with an ellipsis on one line, and small kit buttons that wrap below it instead of being cut. */
 .paradis-csv-notice {
 	display: none;
 	flex: 0 0 auto;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: var(--vscode-spacing-size80);
-	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
-	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	background-color: var(--vscode-editorWidget-background);
-	color: var(--vscode-foreground);
-	font-size: var(--vscode-fontSize-label2);
+	gap: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	box-sizing: border-box;
+	min-height: var(--paradis-height-lg);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
+	background-color: var(--vscode-paradis-surface);
+	color: var(--vscode-paradis-text);
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-csv-notice.visible {
 	display: flex;
 }
 
-.paradis-csv-link-button {
-	padding: 0;
-	border: none;
-	background: transparent;
-	color: var(--vscode-textLink-foreground);
-	font: inherit;
-	cursor: pointer;
+.monaco-workbench .paradis-csv-notice > .paradis-csv-notice-icon {
+	flex: none;
+	color: var(--vscode-paradis-accent);
 }
 
-.paradis-csv-link-button:hover {
-	text-decoration: underline;
+.paradis-csv-notice > .paradis-csv-notice-text {
+	flex: 1 1 240px;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
+/* Bottom band: 24px on the surface, muted text, tabular numbers. */
 .paradis-csv-footer {
 	display: flex;
 	flex: 0 0 auto;
 	align-items: center;
 	gap: var(--vscode-spacing-size120);
-	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
-	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	background-color: var(--vscode-editorWidget-background);
-	color: var(--vscode-descriptionForeground);
-	font-size: var(--vscode-fontSize-label2);
+	box-sizing: border-box;
+	height: var(--paradis-height-sm);
+	padding: 0 var(--vscode-spacing-size120);
+	border-top: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
+	background-color: var(--vscode-paradis-surface);
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
+	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 	overflow: hidden;
+}
+
+/* Each item is cut with an ellipsis, so a narrow band never shows half a word without a hint. */
+.paradis-csv-footer > span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .paradis-csv-footer.hidden {
