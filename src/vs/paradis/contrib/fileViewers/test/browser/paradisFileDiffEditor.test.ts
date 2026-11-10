@@ -43,7 +43,8 @@ function completeReference(controlled: IControlledReference): void {
 
 function createReference(controlled: IControlledReference): IReference<IResolvedTextEditorModel> {
 	return {
-		object: Object.create(null) as IResolvedTextEditorModel,
+		// setInput は変更後の側の読み取り専用を読む（paradisFollowModelReadonly）ので、それだけは持たせる
+		object: { isReadonly: () => false } as Partial<IResolvedTextEditorModel> as IResolvedTextEditorModel,
 		dispose: () => controlled.disposeCount++,
 	};
 }
@@ -70,6 +71,7 @@ suite('ParadisFileDiffEditor', () => {
 		const instantiationService = disposables.add(new TestInstantiationService());
 		instantiationService.stubInstance(DiffEditorWidget, {
 			setModel: () => { },
+			updateOptions: () => { },
 			dispose: () => { },
 		});
 		const editor = new ParadisFileDiffEditor(
@@ -312,6 +314,7 @@ suite('ParadisFileDiffEditor', () => {
 		const instantiationService = disposables.add(new TestInstantiationService());
 		instantiationService.stubInstance(DiffEditorWidget, {
 			setModel: () => { },
+			updateOptions: () => { },
 			dispose: () => { },
 		});
 		const editor = new ParadisFileDiffEditor(

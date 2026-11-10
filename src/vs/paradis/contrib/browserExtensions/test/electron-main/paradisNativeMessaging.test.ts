@@ -230,7 +230,12 @@ suite('ParadisNativeMessaging ports', () => {
 			serviceWorkers: {
 				startWorkerForScope: async () => { throw new Error('none'); },
 				getWorkerFromVersionID: () => worker,
-				on: (_event: string, listener: (details: { versionId: number; runningStatus: string }) => void) => { onStatus = listener; },
+				// console-message も同じ on で購読されるので、running-status-changed の購読だけを控える
+				on: (event: string, listener: (details: { versionId: number; runningStatus: string }) => void) => {
+					if (event === 'running-status-changed') {
+						onStatus = listener;
+					}
+				},
 				removeListener: () => undefined,
 			},
 		} as unknown as ParadisApiSession;
