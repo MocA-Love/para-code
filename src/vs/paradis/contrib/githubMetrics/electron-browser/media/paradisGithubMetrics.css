@@ -544,6 +544,12 @@
 	overflow: hidden;
 }
 
+/* The hint under the limit rows sits inside the card, so it takes the rows' side padding. */
+.paradis-ghm-panel > .paradis-ghm-hint {
+	margin: 0;
+	padding: var(--vscode-spacing-size80) 14px 11px;
+}
+
 .paradis-ghm-limit-row {
 	padding: 11px 14px;
 	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
