@@ -71,7 +71,7 @@
 .paradis-session-resume .nav-item.on { background: var(--vscode-paradis-fillSelected); color: var(--vscode-paradis-textStrong); }
 .paradis-session-resume .nav-item .nav-label { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .paradis-session-resume .nav-item .nav-count { flex: none; margin-left: auto; font-size: var(--vscode-fontSize-label2); color: var(--vscode-paradis-textMuted); }
-.paradis-session-resume .paradis-session-resume-check { display: flex; align-items: center; gap: var(--vscode-spacing-size80); margin: var(--vscode-spacing-size80) var(--vscode-spacing-size160) 0; font-size: var(--vscode-fontSize-label1); white-space: nowrap; cursor: pointer; }
+.paradis-session-resume .paradis-session-resume-nav .paradis-session-resume-check { display: flex; margin: var(--vscode-spacing-size80) var(--vscode-spacing-size160) 0; font-size: var(--vscode-fontSize-label1); white-space: nowrap; }
 .paradis-session-resume .rail-footer {
 	position: sticky; bottom: 0; display: flex; flex-direction: column; gap: var(--vscode-spacing-size80); margin-top: auto;
 	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120); border-top: 1px solid var(--vscode-paradis-lineSubtle); background: var(--vscode-paradis-surface);
@@ -132,6 +132,8 @@
 .paradis-session-resume .detail-heading { display: flex; align-items: center; gap: 9px; }
 .paradis-session-resume .detail-heading h2 { min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--vscode-fontSize-heading2); font-weight: var(--vscode-fontWeight-semiBold); color: var(--vscode-paradis-textStrong); }
 .paradis-session-resume .detail-meta { display: flex; gap: var(--vscode-spacing-size80) var(--vscode-spacing-size160); flex-wrap: wrap; margin-top: var(--vscode-spacing-size100); color: var(--vscode-paradis-textMuted); font-size: var(--vscode-fontSize-label2); }
+/* A long working folder or session ID wraps inside the header instead of being cut at its right edge. */
+.paradis-session-resume .detail-meta > span { min-width: 0; overflow-wrap: anywhere; }
 .paradis-session-resume .detail-meta .monospace { font-family: var(--monaco-monospace-font); }
 .paradis-session-resume .detail-search-navigator { display: flex; align-items: center; gap: 4px; margin-top: 11px; }
 .paradis-session-resume .detail-search-navigator .match-position { margin-right: 3px; color: var(--vscode-descriptionForeground); font-size: 11px; }
@@ -226,7 +228,7 @@
 	font-size: var(--vscode-fontSize-label1); color: var(--vscode-paradis-textMuted);
 }
 .paradis-session-resume .paradis-session-resume-listbar .listbar-field { display: inline-flex; align-items: center; gap: 6px; }
-.paradis-session-resume .paradis-session-resume-listbar .listbar-check { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; }
+.paradis-session-resume .paradis-session-resume-listbar .listbar-check { color: inherit; font-size: inherit; white-space: nowrap; }
 .paradis-session-resume .paradis-session-resume-listbar .listbar-spacer { flex: 1; }
 .paradis-session-resume .paradis-session-index-status { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; white-space: nowrap; }
 
