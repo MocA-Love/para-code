@@ -658,17 +658,22 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 		}
 		#panes { display: flex; height: 100%; }
 		.pane-wrap { position: relative; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+		/* 左右の見出し: Excel の比較と同じ、面の色の 28 の帯に弱い文字（UI キットの paradis.* の色。webview にも渡る）。 */
 		.pane-label {
 			flex: 0 0 auto;
-			padding: 3px 12px;
-			font-size: 11px;
-			color: var(--vscode-descriptionForeground);
-			background-color: var(--vscode-sideBarSectionHeader-background, rgba(128, 128, 128, .12));
-			border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+			display: flex;
+			align-items: center;
+			height: 28px;
+			padding: 0 12px;
+			font-size: 12px;
+			color: var(--vscode-paradis-textMuted, var(--vscode-descriptionForeground));
+			background-color: var(--vscode-paradis-surface, var(--vscode-sideBarSectionHeader-background));
+			border-bottom: 1px solid var(--vscode-paradis-lineSubtle, var(--vscode-editorWidget-border));
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
 		}
+		.pane-label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 		.pane { flex: 1 1 auto; overflow: auto; }
 		.pane-sizer { overflow: hidden; }
 		.pane-zoom { transform-origin: top left; width: fit-content; min-width: 100%; }
@@ -738,12 +743,12 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 	<div id="asset-placeholders" role="status" style="display:none"></div>
 	<div id="panes">
 		<div class="pane-wrap">
-			<div class="pane-label">${escape(labels.original)}</div>
+			<div class="pane-label" title="${escape(labels.original).replace(/"/g, '&quot;')}"><span>${escape(labels.original)}</span></div>
 			<div class="pane" id="pane-original"><div class="pane-sizer" id="sizer-original"><div class="pane-zoom" id="zoom-original"><div id="doc-original"></div></div></div></div>
 		</div>
 		<div id="separator"></div>
 		<div class="pane-wrap">
-			<div class="pane-label">${escape(labels.modified)}</div>
+			<div class="pane-label" title="${escape(labels.modified).replace(/"/g, '&quot;')}"><span>${escape(labels.modified)}</span></div>
 			<div class="pane" id="pane-modified"><div class="pane-sizer" id="sizer-modified"><div class="pane-zoom" id="zoom-modified"><div id="doc-modified"></div></div></div></div>
 		</div>
 	</div>

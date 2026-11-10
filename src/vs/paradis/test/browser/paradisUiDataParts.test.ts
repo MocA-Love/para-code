@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/comm
 import { PARADIS_CARD_CLASS, PARADIS_CARD_VALUE_CLASS, PARADIS_TABLE_CLASS } from '../../browser/paradisCard.js';
 import { renderParadisProgress } from '../../browser/paradisProgress.js';
 import { ParadisSegmented } from '../../browser/paradisSegmented.js';
-import { PARADIS_TABS_CLASS, paradisTabClasses } from '../../browser/paradisTabs.js';
+import { PARADIS_TABS_CLASS, paradisTabClasses, paradisTabsWheelScrollLeft } from '../../browser/paradisTabs.js';
 
 const STYLESHEETS: AppResourcePath[] = [
 	'vs/paradis/browser/media/paradisTokens.css',
@@ -75,6 +75,33 @@ suite('Paradis UI data parts (tabs, segmented, card, table, progress)', () => {
 			{ height: 32, line: '2px rgb(9, 175, 217)' },
 			{ height: 32, line: 'auto rgba(0, 0, 0, 0)' },
 		]);
+	});
+
+	test('tabs: a vertical wheel scrolls an overflowing tab list sideways, other wheels and the ends are left to the default', () => {
+		const wheel = (deltaY: number, options: { deltaX?: number; shiftKey?: boolean; lines?: boolean } = {}) => ({ deltaY, deltaX: options.deltaX ?? 0, shiftKey: options.shiftKey ?? false, deltaMode: options.lines ? 1 : 0 });
+		// scrollWidth 500, clientWidth 200: scrollLeft runs from 0 to 300.
+		const scroll = (scrollLeft: number, w: ReturnType<typeof wheel>, scrollWidth = 500) => paradisTabsWheelScrollLeft(scrollLeft, scrollWidth, 200, w);
+		assert.deepStrictEqual({
+			down: scroll(0, wheel(100)),
+			up: scroll(150, wheel(-100)),
+			clampedAtEnd: scroll(250, wheel(100)),
+			lines: scroll(0, wheel(3, { lines: true })),
+			atEnd: scroll(300, wheel(100)),
+			atStart: scroll(0, wheel(-100)),
+			horizontalSwipe: scroll(0, wheel(100, { deltaX: 40 })),
+			shift: scroll(0, wheel(100, { shiftKey: true })),
+			fits: scroll(0, wheel(100), 200),
+		}, {
+			down: 100,
+			up: 50,
+			clampedAtEnd: 300,
+			lines: 48,
+			atEnd: undefined,
+			atStart: undefined,
+			horizontalSwipe: undefined,
+			shift: undefined,
+			fits: undefined,
+		});
 	});
 
 	test('segmented: pressed buttons (not tabs), only user presses fire, the value can be cleared and items disabled', () => {

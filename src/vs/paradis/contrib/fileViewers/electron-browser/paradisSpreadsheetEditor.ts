@@ -20,7 +20,6 @@ import { DisposableStore, MutableDisposable, toDisposable, type IDisposable } fr
 import { Schemas } from '../../../../base/common/network.js';
 import { basename, isEqual } from '../../../../base/common/resources.js';
 import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
-import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
@@ -59,6 +58,7 @@ import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar } from '../browser/paradisViewerToolbar.js';
 import { PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS } from './paradisOfficeInspectorParts.js';
+import { appendParadisSpreadsheetSheetTab, styleParadisSpreadsheetSheetTabList } from './paradisSpreadsheetSheetTabs.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridCell, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
 import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest, type ParadisSpreadsheetViewportFrame, type ParadisSpreadsheetVirtualRange } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
@@ -1269,6 +1269,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._register(dom.addDisposableListener(this._bodyEl, dom.EventType.SCROLL, () => this._updateStickyStripTransforms()));
 
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
+		this._register(styleParadisSpreadsheetSheetTabList(this._tabsEl));
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
@@ -2414,23 +2415,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._tabsEl.style.display = '';
 		const accessibleTabs: ParadisOfficeTabEntry[] = [];
 		this._sheets.forEach((sheet, idx) => {
-			const tab = dom.append(this._tabsEl!, $('button.paradis-spreadsheet-tab')) as HTMLButtonElement;
-			tab.classList.toggle('active', idx === this._activeSheetIndex);
-			if (sheet.tabColor) {
-				tab.style.borderBottomColor = sheet.tabColor;
-				tab.style.borderBottomWidth = '3px';
-				tab.style.borderBottomStyle = 'solid';
-				if (idx === this._activeSheetIndex) {
-					tab.style.color = sheet.tabColor;
-				}
-			}
-			if (sheet.protectedSheet) {
-				const lock = dom.append(tab, $(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
-				lock.title = localize('paradis.spreadsheet.protected', "このシートは保護されています");
-				lock.setAttribute('aria-hidden', 'true');
-			}
-			const label = dom.append(tab, $('span'));
-			label.textContent = sheet.name;
+			const tab = appendParadisSpreadsheetSheetTab(this._tabsEl!, { label: sheet.name, tabColor: sheet.tabColor, protectedSheet: sheet.protectedSheet });
 			accessibleTabs.push({
 				element: tab,
 				label: sheet.protectedSheet
