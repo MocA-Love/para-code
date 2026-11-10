@@ -670,6 +670,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 		}
 		if (this._noticeText) {
 			this._noticeText.textContent = message;
+			// 狭い帯では文が省略記号で切れるので、全文をホバーで読めるようにする。
+			this._noticeText.title = message;
 		}
 		if (this._readMoreButton) {
 			// SSH 先などで確認の上限（既定 10 MB）で切ったときだけ、64 MB まで読み直す手段を出す。
