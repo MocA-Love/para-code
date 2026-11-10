@@ -330,13 +330,22 @@ suite('ParadisOfficeFindWidget', () => {
 		host.appendChild(panel);
 		widget.avoidOverlapWith(panel);
 		const element = host.querySelector<HTMLElement>('.paradis-office-find-widget')!;
-		const hidden = [element.style.right, element.style.top];
+		const place = () => [element.style.right, element.style.top, element.style.maxWidth];
+		const hidden = place();
 		panel.style.display = 'block';
 		widget.avoidOverlapWith(panel);
-		const wide = [element.style.right, element.style.top];
+		const wide = place();
+		host.style.width = '780px';
+		widget.avoidOverlapWith(panel);
+		const justWideEnough = place();
 		host.style.width = '600px';
 		widget.avoidOverlapWith(panel);
-		const narrow = [element.style.right, element.style.top];
-		deepStrictEqual({ hidden, wide, narrow }, { hidden: ['', ''], wide: ['376px', ''], narrow: ['', '248px'] });
+		const narrow = place();
+		deepStrictEqual({ hidden, wide, justWideEnough, narrow }, {
+			hidden: ['', '', ''],
+			wide: ['376px', '', '616px'],
+			justWideEnough: ['376px', '', '396px'],
+			narrow: ['', '248px', ''],
+		});
 	});
 });

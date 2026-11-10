@@ -158,13 +158,17 @@ export class ParadisOfficeFindWidget extends Disposable {
 			if (!shown) {
 				this.element.style.right = '';
 				this.element.style.top = '';
+				this.element.style.maxWidth = '';
 				return;
 			}
 			if (parent.clientWidth >= SIDE_BY_SIDE_MIN_WIDTH) {
+				// 横に置くときは、パネルの左に残る幅に収める（入力欄が縮む）。
 				this.element.style.right = `${parent.clientWidth - obstacle.offsetLeft + OBSTACLE_GAP}px`;
+				this.element.style.maxWidth = `${Math.max(0, obstacle.offsetLeft - 2 * OBSTACLE_GAP)}px`;
 				this.element.style.top = '';
 			} else {
 				this.element.style.right = '';
+				this.element.style.maxWidth = '';
 				this.element.style.top = `${obstacle.offsetTop + obstacle.offsetHeight + OBSTACLE_GAP}px`;
 			}
 		};
