@@ -23,7 +23,7 @@ import type { ParadisWordStoryKind } from '../../common/word/paradisWordSemantic
 import { truncateParadisWordText, type IParadisWordAnalysisCounts } from '../../common/word/paradisWordSemanticSummary.js';
 import { canShowWordNoChanges, paradisWordBlockedFeatureLabel, paradisWordIgnoredReasonLabel, wordPrintWarning, type ParadisWordPackageExclusions } from './paradisWordDiagnostics.js';
 import { ParadisInputField } from '../../../../browser/paradisInputField.js';
-import { appendParadisOfficeInspectorButton, appendParadisOfficePanelHead, type ParadisOfficeInspectorButtonKind } from '../paradisOfficeInspectorParts.js';
+import { appendParadisOfficeInspectorButton, appendParadisOfficePanelHead, setParadisOfficeRowHover, type ParadisOfficeInspectorButtonKind } from '../paradisOfficeInspectorParts.js';
 
 export const PARADIS_WORD_CHANGE_CATEGORIES: readonly ParadisOfficeChangeCategory[] = Object.freeze([
 	'content',
@@ -795,7 +795,8 @@ export class ParadisWordChangeInspector extends Disposable {
 					? localize('paradis.word.changeTruncated', "{0}（後半が変わっています）", wordChangeSummary(change))
 					: wordChangeSummary(change);
 				const button = appendButton(item, `${label} — ${summary}`, 'row');
-				button.title = change.subject.locator;
+				// 行は 1 行に切るので、全文と場所（locator）をホバーで出す。
+				setParadisOfficeRowHover(button, `${label} — ${summary}\n${change.subject.locator}`, this.renderDisposables);
 				button.dataset.changeId = change.id;
 				button.setAttribute('aria-label', localize('paradis.word.navigateChange', "{1} の{0}へ移動", label, change.subject.locator));
 				button.setAttribute('aria-current', String(this.viewState.selectedChangeId === change.id));
@@ -815,6 +816,7 @@ export class ParadisWordChangeInspector extends Disposable {
 			count.textContent = localize('paradis.word.placeholderCount', "代替表示 {0} 件", this.placeholders.length);
 			for (const placeholder of this.placeholders.slice(this.placeholderPage * INSPECTOR_PAGE_SIZE, (this.placeholderPage + 1) * INSPECTOR_PAGE_SIZE)) {
 				const button = appendButton(placeholderList, placeholder.detail ? `${placeholder.title} — ${placeholder.detail}` : placeholder.title, 'row');
+				setParadisOfficeRowHover(button, button.textContent ?? '', this.renderDisposables);
 				button.dataset.placeholderId = placeholder.nodeId;
 				button.setAttribute('aria-label', localize('paradis.word.navigatePlaceholder', "代替表示「{0}」へ移動", placeholder.title));
 				this.renderDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.navigate('placeholder', placeholder.nodeId)));
@@ -858,6 +860,7 @@ export class ParadisWordChangeInspector extends Disposable {
 			for (const result of this.results.slice(this.resultPage * INSPECTOR_PAGE_SIZE, (this.resultPage + 1) * INSPECTOR_PAGE_SIZE)) {
 				const label = `${result.locationBadge.label}: ${result.preview.before}${result.preview.match}${result.preview.after}`;
 				const button = appendButton(results, label, 'row');
+				setParadisOfficeRowHover(button, label, this.renderDisposables);
 				button.dataset.searchResultId = result.id;
 				button.setAttribute('aria-label', localize('paradis.word.navigateSearchResult', "{0} 内の検索結果へ移動", result.locationBadge.label));
 				this.renderDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.navigate('search', result.locator, result.navigableAnchor)));

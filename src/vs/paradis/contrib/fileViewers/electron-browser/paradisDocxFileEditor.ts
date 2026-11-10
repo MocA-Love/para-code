@@ -1086,9 +1086,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (this._webviewContainer) {
 			this._webviewContainer.style.top = top;
 		}
-		if (this._inspectorPanel) {
-			this._inspectorPanel.style.top = top;
-		}
+		// 変更点のパネルは帯の高さの変数（setParadisViewerToolbarHeight）＋ 8 に CSS で置く（paradisOfficeInspector.css）。
 	}
 
 	private _renderSemanticUi(): void {

@@ -14,6 +14,9 @@
 //  - パネルの中のボタン: 種類の絞り込みはチップ、一覧の行は 28 の行、それ以外はキットの副の小さいボタン
 
 import * as dom from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { getBaseLayerHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate2.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -59,7 +62,7 @@ export function markParadisOfficeWarning(element: HTMLElement): void {
 
 /** 解析の札をキットのチップにする。文字はチップの中の 1 行に収め、収まらない分は省略記号にして title に全文を出す。 */
 export function styleParadisOfficeChip(item: HTMLElement, text: string): void {
-	item.classList.add('paradis-chip', 'paradis-chip-neutral');
+	item.classList.add('paradis-chip');
 	dom.clearNode(item);
 	dom.append(item, dom.$('span.paradis-chip-label')).textContent = text;
 	item.title = text;
@@ -74,7 +77,7 @@ export function appendParadisOfficeInspectorButton(parent: HTMLElement, label: s
 	button.type = 'button';
 	switch (kind) {
 		case 'chip':
-			button.classList.add('paradis-chip', 'paradis-chip-neutral', 'paradis-focus-ring');
+			button.classList.add('paradis-chip', 'paradis-focus-ring');
 			break;
 		case 'row':
 			button.classList.add('paradis-office-inspector-row', 'paradis-focus-ring-inset');
@@ -84,4 +87,11 @@ export function appendParadisOfficeInspectorButton(parent: HTMLElement, label: s
 	}
 	button.textContent = label;
 	return button;
+}
+
+/**
+ * 一覧の行は 1 行に切って見せるので、全文をホバー（本家のホバーの仕組み）で出す。`store` は行を描き直すときに捨てる物。
+ */
+export function setParadisOfficeRowHover(row: HTMLElement, text: string, store: DisposableStore): void {
+	store.add(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('mouse'), row, text));
 }

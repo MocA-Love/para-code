@@ -1002,14 +1002,15 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._alignInspectorPanel();
 	}
 
-	/** 幅が狭いとツールバーが折り返して高くなるので、変更点パネルを比較の表示（webview）の上端に合わせる。 */
+	/** 幅が狭いとツールバーが折り返して高くなるので、変更点パネルを比較の表示（webview）の上端から 8 下に合わせる。 */
 	private _alignInspectorPanel(): void {
 		if (!this._inspectorPanel || this._inspectorPanel.style.display === 'none' || !this._webviewContainer) {
 			return;
 		}
 		const top = this._webviewContainer.offsetTop;
 		if (top > 0) {
-			this._inspectorPanel.style.top = `${top}px`;
+			// Excel と同じく、上に 8 あける（paradisOfficeInspector.css の paradis-office-change-panel）。
+			this._inspectorPanel.style.top = `calc(${top}px + var(--vscode-spacing-size80))`;
 		}
 	}
 
