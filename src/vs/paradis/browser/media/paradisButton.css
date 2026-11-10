@@ -100,6 +100,12 @@
 	background-color: var(--vscode-paradis-primaryHover);
 }
 
+/* Secondary: the neutral fill (from the base rule) and the theme's secondary button line, so it still reads as a button
+	in themes whose secondary fill is transparent (Dark 2026, Dark Modern). High contrast keeps its own line below. */
+.monaco-workbench .paradis-button.paradis-button-secondary {
+	border-color: var(--vscode-paradis-lineButton, transparent);
+}
+
 /* Ghost: no fill until hovered (toolbars, title bar items, "learn more"). */
 .monaco-workbench .paradis-button.paradis-button-ghost {
 	color: var(--vscode-paradis-text);

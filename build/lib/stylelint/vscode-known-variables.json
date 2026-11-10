@@ -649,6 +649,7 @@
 		"--vscode-paradis-focus",
 		"--vscode-paradis-focusSubtle",
 		"--vscode-paradis-line",
+		"--vscode-paradis-lineButton",
 		"--vscode-paradis-lineStrong",
 		"--vscode-paradis-lineSubtle",
 		"--vscode-paradis-overlay",
