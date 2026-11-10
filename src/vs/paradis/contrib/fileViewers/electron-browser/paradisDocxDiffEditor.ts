@@ -342,6 +342,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.comparisonContent', "Word 比較の内容"));
 		this._inspectorPanel = dom.append(this._root, $(`.paradis-word-diff-inspector-panel.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
 		this._inspectorPanel.style.display = 'none';
+		this._findWidget.value?.avoidOverlapWith(this._inspectorPanel);
 		this._updateScaleLabel();
 		this._updateFormatToggle();
 		this._updateNav();

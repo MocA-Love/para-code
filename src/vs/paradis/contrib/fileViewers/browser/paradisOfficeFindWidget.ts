@@ -11,18 +11,23 @@ import { isCancellationError } from '../../../../base/common/errors.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { getBaseLayerHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate2.js';
 import type { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
-import { Toggle } from '../../../../base/browser/ui/toggle/toggle.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { defaultToggleStyles } from '../../../../platform/theme/browser/defaultStyles.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import './media/paradisOfficeFindWidget.css';
 import type { ParadisOfficeSearchResult } from '../common/paradisOfficeProtocol.js';
 import { PARADIS_OFFICE_SEARCH_PAGE_SIZE, PARADIS_OFFICE_SEARCH_RESULT_LIMIT, type ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
 
 const MAXIMUM_QUERY_LENGTH = 4_096;
+
+/** 変更点のパネルの横に小窓を並べられる幅（これより狭いとパネルの下へずらす）。 */
+const SIDE_BY_SIDE_MIN_WIDTH = 760;
+/** 小窓とパネルのあいだ（px）。 */
+const OBSTACLE_GAP = 8;
 
 export type ParadisOfficeFindSearchProvider = (query: { readonly text: string; readonly matchCase: boolean }, cursor: string | undefined, token: CancellationToken) => Promise<ParadisOfficeSearchPage>;
 
@@ -36,13 +41,14 @@ export interface ParadisOfficeFindWidgetOptions {
 
 /**
  * Shared script-free Office find surface. Navigation is delegated as a typed logical result only.
- * 見た目は本家のエディタの検索の小窓（findWidget.css）に合わせる: 高さ 34・角丸 large・影 shadow-lg、
- * 入力欄の中に「大文字と小文字を区別」の Toggle、件数、↑↓ と閉じるの codicon のボタン。
+ * 形は本家のエディタの検索の小窓（findWidget.css）のまま、部品は UI キットにする: ポップアップの面（角丸 8・影）に、
+ * キットの入力欄（28、中に「大文字と小文字を区別」）、件数、キットのアイコンのボタン（24）の ↑↓ と閉じる。
  */
 export class ParadisOfficeFindWidget extends Disposable {
 	private readonly element: HTMLElement;
 	private readonly input: HTMLInputElement;
-	private readonly matchCaseToggle: Toggle;
+	private readonly matchCaseButton: HTMLButtonElement;
+	private matchCase = false;
 	private readonly previousButton: HTMLButtonElement;
 	private readonly nextButton: HTMLButtonElement;
 	private readonly closeButton: HTMLButtonElement;
@@ -78,23 +84,18 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.element.setAttribute('aria-hidden', 'true');
 		this.element.style.display = 'none';
 
-		const inputBox = document.createElement('div');
-		inputBox.className = 'paradis-office-find-input paradis-focus-subtle-within';
-		this.element.appendChild(inputBox);
-		this.input = document.createElement('input');
+		const field = this._register(new ParadisInputField(this.element, {
+			ariaLabel: localize('paradis.office.findInput', "検索"),
+			placeholder: localize('paradis.office.findPlaceholder', "検索"),
+			small: true,
+		}));
+		field.element.classList.add('paradis-office-find-input');
+		this.input = field.inputElement;
 		this.input.type = 'search';
 		this.input.maxLength = MAXIMUM_QUERY_LENGTH;
-		this.input.placeholder = localize('paradis.office.findPlaceholder', "検索");
-		this.input.setAttribute('aria-label', localize('paradis.office.findInput', "検索"));
-		inputBox.appendChild(this.input);
 
-		this.matchCaseToggle = this._register(new Toggle({
-			icon: Codicon.caseSensitive,
-			title: localize('paradis.office.findMatchCase', "大文字と小文字を区別"),
-			isChecked: false,
-			...defaultToggleStyles,
-		}));
-		inputBox.appendChild(this.matchCaseToggle.domNode);
+		this.matchCaseButton = this.appendButton(document, Codicon.caseSensitive, localize('paradis.office.findMatchCase', "大文字と小文字を区別"), field.element);
+		this.matchCaseButton.setAttribute('aria-pressed', 'false');
 
 		this.statusElement = document.createElement('span');
 		this.statusElement.className = 'paradis-office-find-status';
@@ -128,12 +129,54 @@ export class ParadisOfficeFindWidget extends Disposable {
 			}));
 		}
 		this._register(dom.addDisposableListener(this.input, dom.EventType.INPUT, () => void this.beginSearch()));
-		this._register(this.matchCaseToggle.onChange(() => void this.beginSearch()));
+		this._register(dom.addDisposableListener(this.matchCaseButton, dom.EventType.CLICK, () => {
+			this.matchCase = !this.matchCase;
+			this.matchCaseButton.classList.toggle('checked', this.matchCase);
+			this.matchCaseButton.setAttribute('aria-pressed', String(this.matchCase));
+			void this.beginSearch();
+		}));
 		this._register(dom.addDisposableListener(this.previousButton, dom.EventType.CLICK, () => void this.findPrevious()));
 		this._register(dom.addDisposableListener(this.nextButton, dom.EventType.CLICK, () => void this.findNext()));
 		this._register(dom.addDisposableListener(this.closeButton, dom.EventType.CLICK, () => this.hide()));
 		this.updateAvailability();
 		this.updateResultPresentation();
+	}
+
+	/**
+	 * `obstacle`（変更点のパネル）が出ているあいだ、小窓をそれに重ねない。広い窓ではパネルの左へ、狭い窓では
+	 * パネルの下へずらす。パネルは小窓と同じ親に置いた絶対配置の要素で、出し入れ（display）と大きさの変化を
+	 * ResizeObserver で追う（小窓を捨てるときに一緒に外す）。
+	 */
+	avoidOverlapWith(obstacle: HTMLElement): void {
+		const parent = this.element.parentElement;
+		const view = this.element.ownerDocument.defaultView;
+		if (!parent || !view) {
+			return;
+		}
+		const place = () => {
+			const shown = obstacle.isConnected && obstacle.getClientRects().length > 0;
+			if (!shown) {
+				this.element.style.right = '';
+				this.element.style.top = '';
+				this.element.style.maxWidth = '';
+				return;
+			}
+			if (parent.clientWidth >= SIDE_BY_SIDE_MIN_WIDTH) {
+				// 横に置くときは、パネルの左に残る幅に収める（入力欄が縮む）。
+				this.element.style.right = `${parent.clientWidth - obstacle.offsetLeft + OBSTACLE_GAP}px`;
+				this.element.style.maxWidth = `${Math.max(0, obstacle.offsetLeft - 2 * OBSTACLE_GAP)}px`;
+				this.element.style.top = '';
+			} else {
+				this.element.style.right = '';
+				this.element.style.maxWidth = '';
+				this.element.style.top = `${obstacle.offsetTop + obstacle.offsetHeight + OBSTACLE_GAP}px`;
+			}
+		};
+		const observer = new view.ResizeObserver(() => place());
+		observer.observe(obstacle);
+		observer.observe(parent);
+		place();
+		this._register(toDisposable(() => observer.disconnect()));
 	}
 
 	/** Updates the source-specific callback without adding a transport or retaining old source results. */
@@ -253,7 +296,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.request.value = request;
 		this.statusElement.textContent = localize('paradis.office.findSearching', "検索中…");
 		try {
-			const page = await provider({ text: query, matchCase: this.matchCaseToggle.checked }, undefined, request.token);
+			const page = await provider({ text: query, matchCase: this.matchCase }, undefined, request.token);
 			if (generation !== this.generation || request.token.isCancellationRequested) {
 				return;
 			}
@@ -281,7 +324,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		}
 		const generation = this.generation;
 		try {
-			const page = await provider({ text: this.input.value.normalize('NFC').trim(), matchCase: this.matchCaseToggle.checked }, cursor, request.token);
+			const page = await provider({ text: this.input.value.normalize('NFC').trim(), matchCase: this.matchCase }, cursor, request.token);
 			if (generation !== this.generation || request.token.isCancellationRequested) {
 				return false;
 			}
@@ -327,6 +370,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 	private updateResultPresentation(): void {
 		const result = this.results[this.currentIndex];
 		this.statusHover.update('');
+		this.statusElement.classList.remove('none');
 		if (!result && this.results.length > 0) {
 			// 一致はあるが、まだどれにも移動していない（`refresh({ navigate: false })` の後）。
 			this.currentElement.textContent = '';
@@ -339,6 +383,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 			this.currentElement.textContent = '';
 			if (this.input.value && this.searchProvider) {
 				this.statusElement.textContent = localize('paradis.office.findNoResults', "見つかりません");
+				this.statusElement.classList.add('none');
 			}
 			this.previousButton.disabled = true;
 			this.nextButton.disabled = true;
@@ -355,11 +400,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 	private updateAvailability(): void {
 		const available = this.searchProvider !== undefined;
 		this.input.disabled = !available;
-		if (available) {
-			this.matchCaseToggle.enable();
-		} else {
-			this.matchCaseToggle.disable();
-		}
+		this.matchCaseButton.disabled = !available;
 		if (!available) {
 			this.previousButton.disabled = true;
 			this.nextButton.disabled = true;
@@ -401,7 +442,8 @@ export class ParadisOfficeFindWidget extends Disposable {
 			keyboardEvent.stopPropagation();
 			return;
 		}
-		if ((keyboardEvent.equals(KeyCode.Enter) || event.key === 'Enter') && this.element.contains(event.target as Node)) {
+		// ボタン（大文字と小文字を区別・↑↓・閉じる）の上の Enter は、そのボタンを押す既定の動きに任せる。
+		if ((keyboardEvent.equals(KeyCode.Enter) || event.key === 'Enter') && this.element.contains(event.target as Node) && !dom.isHTMLButtonElement(event.target)) {
 			void (event.shiftKey ? this.findPrevious() : this.findNext());
 			keyboardEvent.preventDefault();
 			keyboardEvent.stopPropagation();
@@ -414,12 +456,15 @@ export class ParadisOfficeFindWidget extends Disposable {
 		}
 	}
 
-	private appendButton(document: Document, icon: ThemeIcon, label: string): HTMLButtonElement {
+	/** キットのアイコンのボタン（24）。フォーカスの枠は小窓の中で欠けないよう内側に描く。 */
+	private appendButton(document: Document, icon: ThemeIcon, label: string, parent: HTMLElement = this.element): HTMLButtonElement {
 		const result = document.createElement('button');
 		result.type = 'button';
-		result.className = `paradis-office-find-button ${ThemeIcon.asClassName(icon)}`;
+		result.classList.add('paradis-office-find-button', ...paradisButtonClasses('icon', true).filter(name => name !== 'paradis-focus-ring'), 'paradis-focus-ring-inset');
+		// codicon は子の要素に付ける（ボタンの要素に付けると、キットの font-family と読み込みの順で取り合う）。
+		dom.append(result, dom.$(ThemeIcon.asCSSSelector(icon)));
 		result.setAttribute('aria-label', label);
-		this.element.appendChild(result);
+		parent.appendChild(result);
 		this._register(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('mouse'), result, label));
 		return result;
 	}

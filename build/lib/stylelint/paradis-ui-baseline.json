@@ -64,9 +64,6 @@
 		"z-index | .paradis-csv-grid .paradis-csv-active | z-index: 5": 1,
 		"z-index | .paradis-csv-message | z-index: 20": 1
 	},
-	"src/vs/paradis/contrib/fileViewers/browser/media/paradisOfficeFindWidget.css": {
-		"z-index | .paradis-office-find-widget | z-index: 40": 1
-	},
 	"src/vs/paradis/contrib/fileViewers/browser/spreadsheet/media/paradisSpreadsheetGrid.css": {
 		"hex-color | .paradis-spreadsheet-virtual-host, .paradis-spreadsheet-virtual-grid | background-color: #ffffff": 1,
 		"hex-color | .paradis-spreadsheet-virtual-pane-top, .paradis-spreadsheet-virtual-pane-left | background-color: #ffffff": 1,

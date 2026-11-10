@@ -151,7 +151,7 @@
 }
 
 /* The Office find widget sits just below the toolbar (whatever its height) instead of covering its buttons. */
-.paradis-viewer-toolbar-host > .paradis-office-find-widget {
+.monaco-workbench .paradis-viewer-toolbar-host > .paradis-office-find-widget {
 	top: calc(var(--paradis-viewer-toolbar-height, var(--paradis-height-lg)) + 4px);
 }
 

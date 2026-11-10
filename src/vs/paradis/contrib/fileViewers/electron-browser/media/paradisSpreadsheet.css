@@ -18,6 +18,8 @@
 	position: relative;
 	flex: 1 1 auto;
 	min-height: 0;
+	/* The sheet's own layers (frozen strips, notes, highlights) stay inside it, below the find widget. */
+	isolation: isolate;
 }
 
 .paradis-spreadsheet-body {
@@ -274,6 +276,8 @@
 	flex-direction: column;
 	flex: 1 1 auto;
 	min-height: 0;
+	/* The sheets' own layers stay inside it, below the find widget and the toolbar's panels. */
+	isolation: isolate;
 }
 
 /* allow-any-unicode-next-line */

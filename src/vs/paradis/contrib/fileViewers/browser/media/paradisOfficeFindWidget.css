@@ -6,100 +6,79 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /*
- * Office (Excel / Word / CSV) find widget. Mirrors the editor find widget
- * (src/vs/editor/contrib/find/browser/findWidget.css): 34px tall, large corner radius,
- * shadow-lg, an input with the match-case toggle inside, the match count, and codicon buttons.
+ * Office (Excel / Word / CSV) find widget. Keeps the shape of the editor find widget
+ * (src/vs/editor/contrib/find/browser/findWidget.css) and draws it with the UI kit: the popup surface (8px corners,
+ * shadow-lg), the kit's 28px text field (paradisInputField.css) with the match-case button inside, the match count,
+ * and the kit's 24px icon buttons (paradisButton.css). It floats over the pane's content, which keeps its own layers
+ * inside an isolated container (paradisCsvViewer.css, paradisSpreadsheet.css), so a small layer is enough.
  */
 
-.paradis-office-find-widget {
+.monaco-workbench .paradis-office-find-widget {
 	position: absolute;
-	top: 4px;
-	right: 14px;
-	z-index: 40;
-	height: 34px;
-	max-width: calc(100% - 28px);
+	top: var(--vscode-spacing-size40);
+	right: var(--vscode-spacing-size120);
+	z-index: 3;
+	height: 40px;
+	max-width: calc(100% - 24px);
 	box-sizing: border-box;
 	overflow: hidden;
 	align-items: center;
 	gap: var(--vscode-spacing-size20);
-	padding: 0 var(--vscode-spacing-size40) 0 9px;
-	line-height: 19px;
-	color: var(--vscode-foreground);
-	background-color: var(--vscode-editorWidget-background);
-	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
-	border-radius: var(--vscode-cornerRadius-large);
+	padding: 0 var(--vscode-spacing-size60);
+	color: var(--vscode-paradis-text);
+	background-color: var(--vscode-paradis-popup);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
 	box-shadow: var(--vscode-shadow-lg);
 	font-size: var(--vscode-fontSize-label1);
 }
 
-.paradis-office-find-widget .paradis-office-find-input {
-	display: flex;
-	align-items: center;
-	flex: 0 1 auto;
-	width: 219px;
-	min-width: 80px;
-	height: 26px;
-	box-sizing: border-box;
-	padding: 0 var(--vscode-spacing-size20) 0 var(--vscode-spacing-size40);
-	background-color: var(--vscode-input-background);
-	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
-	border-radius: var(--vscode-cornerRadius-small);
-}
-
-.paradis-office-find-widget .paradis-office-find-input > input {
-	flex: 1 1 auto;
+.monaco-workbench .paradis-office-find-widget .paradis-field.paradis-office-find-input {
+	flex: 0 1 240px;
 	min-width: 0;
-	height: 100%;
-	padding: 0;
-	border: none;
+	gap: var(--vscode-spacing-size20);
+	padding: 0 var(--vscode-spacing-size20) 0 var(--vscode-spacing-size80);
+}
+
+/* The gray ring of the frame (paradis-focus-subtle-within) shows the focus; upstream's blue ring of the inner InputBox
+ * (.synthetic-focus) would draw a second line inside the frame (the same as paradisComboBox.css). */
+.monaco-workbench .paradis-office-find-widget .paradis-field > .monaco-inputbox.synthetic-focus {
 	outline: none;
-	background: transparent;
-	color: var(--vscode-input-foreground);
-	font: inherit;
-	font-size: var(--vscode-fontSize-body1);
 }
 
-.paradis-office-find-widget .paradis-office-find-input > input::placeholder {
-	color: var(--vscode-input-placeholderForeground);
-}
-
-.paradis-office-find-widget .paradis-office-find-input > input::-webkit-search-cancel-button {
+.monaco-workbench .paradis-office-find-widget .paradis-office-find-input input::-webkit-search-cancel-button {
 	display: none;
 }
 
-.paradis-office-find-widget .paradis-office-find-status {
-	flex: 0 1 69px;
-	min-width: 0;
-	margin-left: 3px;
-	padding-left: 2px;
+/* The count keeps its whole text ("50 件中 1 件目"); the text field shrinks first. */
+.monaco-workbench .paradis-office-find-widget .paradis-office-find-status {
+	flex: 0 0 auto;
+	min-width: 56px;
+	padding: 0 var(--vscode-spacing-size60);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	color: var(--vscode-paradis-textMuted);
+	font-variant-numeric: tabular-nums;
 }
 
-.paradis-office-find-widget .paradis-office-find-button {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	flex: 0 0 auto;
-	width: 22px;
-	height: 22px;
-	margin-left: 1px;
-	padding: 0;
-	border: none;
-	border-radius: var(--vscode-cornerRadius-small);
-	background: transparent;
-	color: var(--vscode-icon-foreground);
-	cursor: pointer;
+.monaco-workbench .paradis-office-find-widget .paradis-office-find-status.none {
+	color: var(--vscode-paradis-danger);
 }
 
-.paradis-office-find-widget .paradis-office-find-button:hover:not(:disabled) {
-	background-color: var(--vscode-toolbar-hoverBackground);
+.monaco-workbench .paradis-office-find-widget .paradis-button.paradis-office-find-button.checked {
+	color: var(--vscode-paradis-textStrong);
+	background-color: var(--vscode-paradis-fillSelected);
 }
 
-.paradis-office-find-widget .paradis-office-find-button:disabled {
-	color: var(--vscode-disabledForeground);
+.monaco-workbench .paradis-office-find-widget .paradis-button.paradis-office-find-button:disabled {
+	opacity: 0.4;
 	cursor: default;
+}
+
+.monaco-workbench .paradis-office-find-widget .paradis-button.paradis-office-find-button:disabled:hover {
+	color: var(--vscode-paradis-textMuted);
+	background-color: transparent;
 }
 
 /* The location of the current match (sheet name and the text around it) is read out and shown as the

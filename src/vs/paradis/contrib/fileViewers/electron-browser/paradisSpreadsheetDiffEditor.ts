@@ -559,6 +559,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		this._inspectorPanel = dom.append(this._root, $(`.paradis-spreadsheet-inspector-panel.${PARADIS_OFFICE_PANEL_SURFACE_CLASS}.${PARADIS_OFFICE_CHANGE_PANEL_CLASS}`));
 		this._inspectorPanel.style.display = 'none';
+		this._findWidget.value?.avoidOverlapWith(this._inspectorPanel);
 
 		this._bodyEl = dom.append(this._root, $('.paradis-spreadsheet-diff-body'));
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
