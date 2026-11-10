@@ -21,12 +21,16 @@
 // 開き、指定の位置へ移動する（ユーザーの「表 / テキスト」の記憶は変えない）。
 
 import * as dom from '../../../../../base/browser/dom.js';
+import type { IManagedHover } from '../../../../../base/browser/ui/hover/hover.js';
+import { getDefaultHoverDelegate } from '../../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { RunOnceScheduler, timeout } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
 import { isCancellationError, onUnexpectedError } from '../../../../../base/common/errors.js';
 import { DisposableStore, IReference, MutableDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { extname, isEqual } from '../../../../../base/common/resources.js';
+import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { ICodeEditor } from '../../../../../editor/browser/editorBrowser.js';
@@ -49,6 +53,7 @@ import { IEditorOpenContext } from '../../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../../workbench/common/editor/editorInput.js';
 import { applyTextEditorOptions } from '../../../../../workbench/common/editor/editorOptions.js';
 import { IEditorGroup } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IFilesConfigurationService } from '../../../../../workbench/services/filesConfiguration/common/filesConfigurationService.js';
 import { ITextFileEditorModel, ITextFileService, TextFileOperationError, TextFileOperationResult } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import {
@@ -60,6 +65,7 @@ import {
 } from '../../common/csv/paradisCsv.js';
 import { ParadisCsvFileInput, PARADIS_CSV_EDITOR_ID, rememberParadisCsvViewMode, type ParadisCsvViewMode } from './paradisCsvFileInput.js';
 import { ParadisCsvTableView } from './paradisCsvTableView.js';
+import { paradisButtonClasses } from '../../../../browser/paradisButton.js';
 
 import '../media/paradisFileViewer.css';
 import { PARADIS_VIEWER_LOADING_LABEL, ParadisViewerStateKind, renderParadisViewerState } from '../paradisViewerState.js';
@@ -115,6 +121,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 	private _textButton: HTMLButtonElement | undefined;
 	private _noticeElement: HTMLElement | undefined;
 	private _noticeText: HTMLElement | undefined;
+	/** 狭い帯で省略記号に切れたお知らせの全文を出すホバー。 */
+	private _noticeHover: IManagedHover | undefined;
 	private _tableArea: HTMLElement | undefined;
 	private _messageElement: HTMLElement | undefined;
 	private _textMessageElement: HTMLElement | undefined;
@@ -169,6 +177,7 @@ export class ParadisCsvFileEditor extends EditorPane {
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IFilesConfigurationService private readonly _filesConfigurationService: IFilesConfigurationService,
+		@IHoverService private readonly _hoverService: IHoverService,
 	) {
 		super(PARADIS_CSV_EDITOR_ID, group, telemetryService, themeService, _storageService);
 	}
@@ -184,12 +193,19 @@ export class ParadisCsvFileEditor extends EditorPane {
 		this._textButton = appendParadisViewerToolbarChoice(toggle, localize('paradis.csv.text', "テキスト"));
 		this._register(dom.addDisposableListener(this._textButton, dom.EventType.CLICK, () => this.setViewMode('text')));
 
+		// お知らせの帯（UI キットの面の帯）。文は 1 行で省略記号、ボタンは小さい副と素のボタンで、切らずに折り返す。
 		this._noticeElement = dom.append(this._rootElement, dom.$('.paradis-csv-notice'));
-		this._noticeText = dom.append(this._noticeElement, dom.$('span'));
+		dom.append(this._noticeElement, dom.$(`span.paradis-csv-notice-icon${ThemeIcon.asCSSSelector(Codicon.info)}`)).setAttribute('aria-hidden', 'true');
+		this._noticeText = dom.append(this._noticeElement, dom.$('span.paradis-csv-notice-text'));
+		this._noticeHover = this._register(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), this._noticeText, ''));
 		const openAsText = dom.append(this._noticeElement, dom.$('button.paradis-csv-link-button')) as HTMLButtonElement;
+		openAsText.type = 'button';
+		openAsText.classList.add(...paradisButtonClasses('secondary', true));
 		openAsText.textContent = localize('paradis.csv.openAsText', "テキストで開く");
 		this._register(dom.addDisposableListener(openAsText, dom.EventType.CLICK, () => this.setViewMode('text')));
 		this._readMoreButton = dom.append(this._noticeElement, dom.$('button.paradis-csv-link-button')) as HTMLButtonElement;
+		this._readMoreButton.type = 'button';
+		this._readMoreButton.classList.add(...paradisButtonClasses('ghost', true));
 		this._readMoreButton.textContent = localize('paradis.csv.readMore', "それでも表に読み込む（64 MB まで）");
 		this._readMoreButton.style.display = 'none';
 		this._register(dom.addDisposableListener(this._readMoreButton, dom.EventType.CLICK, () => {
@@ -661,6 +677,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 		}
 		if (this._noticeText) {
 			this._noticeText.textContent = message;
+			// 狭い帯では文が省略記号で切れるので、全文をホバーで読めるようにする。
+			this._noticeHover?.update(message);
 		}
 		if (this._readMoreButton) {
 			// SSH 先などで確認の上限（既定 10 MB）で切ったときだけ、64 MB まで読み直す手段を出す。
@@ -692,7 +710,8 @@ export class ParadisCsvFileEditor extends EditorPane {
 						: localize('paradis.csv.footerSortDesc', "並べ替え: {0} 降順", column));
 			}
 		}
-		footer.textContent = parts.join('   ');
+		// 項目ごとに 1 つの要素にし、間は帯の gap で空ける。
+		dom.reset(footer, ...parts.map(part => dom.$('span', undefined, part)));
 	}
 
 	private _delimiterLabel(delimiter: ParadisCsvDelimiter): string {
