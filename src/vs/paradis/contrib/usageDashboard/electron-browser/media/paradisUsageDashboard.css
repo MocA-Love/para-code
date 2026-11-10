@@ -94,45 +94,29 @@
 .paradis-usage-area .pud-input {
 	flex: none;
 	width: 260px;
-	background: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
-	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: 5px;
-	padding: 4px 8px;
-	font-family: var(--monaco-monospace-font);
-	font-size: 11.5px;
-	outline: none;
 }
 
 .paradis-usage-area .pud-settings-footer {
 	margin-top: 16px;
 }
 
-.paradis-usage-area .pud-btn {
-	appearance: none;
-	border: none;
-	border-radius: 5px;
-	padding: 5px 14px;
-	font-size: 12px;
-	font-family: inherit;
-	cursor: pointer;
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-}
-
-.paradis-usage-area .pud-btn:hover {
-	background: var(--vscode-button-secondaryHoverBackground);
-}
-
 .paradis-usage-area .pud-select {
 	flex: none;
-	background: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
-	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: 5px;
-	padding: 4px 8px;
-	font-size: 12px;
-	font-family: inherit;
-	outline: none;
 }
 
+
+/* In a narrow window the 260px field would squeeze the label and its description into a column of one character:
+	the control goes under the text and takes the row's width. */
+@media (max-width: 760px) {
+	.paradis-usage-area .pud-setting-row {
+		flex-wrap: wrap;
+	}
+
+	.paradis-usage-area .pud-setting-main {
+		flex: 1 1 100%;
+	}
+
+	.paradis-usage-area .pud-input {
+		width: 100%;
+	}
+}

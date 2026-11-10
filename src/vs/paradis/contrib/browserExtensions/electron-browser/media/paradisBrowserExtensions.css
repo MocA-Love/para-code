@@ -33,26 +33,9 @@
 	font-size: 12px;
 }
 
+/* The kit's drop-down (paradisSelect.css) draws its own frame, padding and chevron; only its place in the row is set here. */
 .paradis-browser-extensions-area .pbe-select {
-	flex: 1;
 	min-width: 0;
-	padding: 3px 6px;
-	border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border));
-	border-radius: var(--vscode-cornerRadius-small, 4px);
-	background-color: var(--vscode-dropdown-background);
-	color: var(--vscode-dropdown-foreground);
-	font-family: inherit;
-	font-size: 12px;
-}
-
-.paradis-hub .pbe-list-row {
-	cursor: pointer;
-}
-
-.paradis-hub .pbe-list-row.is-selected,
-.paradis-hub .pbe-list-row.is-selected:hover {
-	background-color: var(--vscode-list-inactiveSelectionBackground);
-	color: var(--vscode-list-inactiveSelectionForeground, inherit);
 }
 
 .paradis-hub .pbpm-meta.is-error {
@@ -204,12 +187,6 @@
 .paradis-browser-extensions-area .pbe-log-line.is-debug,
 .paradis-browser-extensions-area .pbe-log-empty {
 	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-hub .pbe-list .pbpm-meta {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .paradis-browser-extensions-area .pbe-row-error {
@@ -375,41 +352,77 @@
 
 /* ---------- the left nav of the unified modal: installed extensions ---------- */
 
-.paradis-hub .pbe-list-row {
-	gap: 8px;
+/* A row of the list has two lines (the name, then the state), so it is a two-line row instead of the hub's 28px item
+	(paradisHub.css). Padding, gap, corner and the selected look stay the hub item's, and the icon box is as wide as the
+	icons of the items below (add, settings), so the text of every item starts at the same place. */
+.paradis-hub .phub-nav-item.pbe-list-row {
+	height: auto;
+	min-height: var(--paradis-row-two-line);
+}
+
+.paradis-hub .phub-nav-item.pbe-list-row.is-selected {
+	background: var(--vscode-paradis-fillSelected);
+	color: var(--vscode-paradis-textStrong);
 }
 
 .paradis-hub .pbe-list-row .pbpm-info {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: var(--vscode-spacing-size20);
 	flex: 1;
 	min-width: 0;
 }
 
-.paradis-hub .pbe-list-row .pbpm-name {
+.paradis-hub .pbe-list-row .pbpm-name,
+.paradis-hub .pbe-list-row .pbpm-meta {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
 .paradis-hub .pbe-list-row .pbpm-meta {
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+}
+
+/* On the selected fill the muted color loses contrast; the state takes the row's strong text color instead. */
+.paradis-hub .pbe-list-row.is-selected .pbpm-meta {
+	color: inherit;
+}
+
+.paradis-hub .pbe-list-row .pbpm-meta.is-error {
+	color: var(--vscode-errorForeground);
 }
 
 .paradis-hub .pbe-list-row .pbe-icon {
-	width: 18px;
-	height: 18px;
-	flex-shrink: 0;
+	flex: none;
 	display: flex;
 	align-items: center;
 	justify-content: center;
+	width: var(--vscode-codiconFontSize);
+	height: var(--vscode-codiconFontSize);
+	color: var(--vscode-paradis-textMuted);
 }
 
 .paradis-hub .pbe-list-row .pbe-icon img {
 	max-width: 100%;
 	max-height: 100%;
+}
+
+/* Below 760px the hub's nav is one strip that scrolls sideways (paradisHub.css): the rows stand side by side in it, each
+	as wide as a name of a few words, instead of stacking into a column that the strip would cut off. */
+@media (max-width: 760px) {
+	.paradis-hub .pbe-list {
+		display: flex;
+		gap: var(--vscode-spacing-size40);
+		flex: none;
+	}
+
+	.paradis-hub .phub-nav-item.pbe-list-row {
+		flex: none;
+		max-width: 200px;
+	}
 }
 
 .paradis-hub .pbe-list-empty {
