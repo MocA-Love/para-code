@@ -183,6 +183,11 @@
 	}
 }
 
+/* The state shown at the start of the title's second line, only when the state column is dropped (below). */
+.paradis-tasks-item-context > .paradis-tasks-state-inline {
+	display: none;
+}
+
 .paradis-tasks-table td {
 	padding: 8px 10px;
 	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
@@ -524,4 +529,43 @@
 
 .paradis-tasks-roadmap-undated-item:hover {
 	background: var(--vscode-list-hoverBackground);
+}
+
+/* In a very narrow group (a narrow window or a split editor), the fixed columns alone would take the whole width and leave
+	the title column empty: move the state into the title's second line, let the project table scroll sideways, tighten
+	the cells, and let the search box take its own line. */
+@container paradis-tasks (max-width: 420px) {
+	.paradis-tasks-panel {
+		padding: 8px 8px 4px;
+	}
+
+	.paradis-tasks-table .state {
+		display: none;
+	}
+
+	/* The project table's columns are the view's own fields: keep them all and scroll sideways instead. */
+	.paradis-tasks-project-table {
+		min-width: 480px;
+	}
+
+	.paradis-tasks-item-context > .paradis-tasks-state-inline {
+		display: inline;
+	}
+
+	.paradis-tasks-table th.id { width: 44px; }
+
+	.paradis-tasks-table th,
+	.paradis-tasks-table td {
+		padding-right: 6px;
+		padding-left: 6px;
+	}
+
+	.paradis-tasks-table td.actions {
+		padding-left: 2px;
+	}
+
+	.paradis-tasks-search {
+		flex-basis: 100%;
+		min-width: 0;
+	}
 }
