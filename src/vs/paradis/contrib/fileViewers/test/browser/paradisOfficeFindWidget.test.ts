@@ -260,6 +260,27 @@ suite('ParadisOfficeFindWidget', () => {
 		strictEqual(document.activeElement, previous);
 	});
 
+	test('leaves Enter on its buttons to the button instead of finding the next match', async () => {
+		const host = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(host);
+		store.add({ dispose: () => host.remove() });
+		const navigated: string[] = [];
+		const widget = store.add(new ParadisOfficeFindWidget(host, {
+			search: async () => ({
+				results: ['a', 'b'].map(id => ({ id, locator: id, navigableAnchor: id, preview: { before: '', match: 'needle', after: '' }, locationBadge: { kind: 'sheet' as const, label: id } })),
+				total: 2, capped: false,
+			}),
+			onNavigate: result => navigated.push(result.id),
+		}));
+		widget.reveal('needle');
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+		const matchCase = host.querySelector<HTMLElement>('.codicon-case-sensitive')!.closest('button')!;
+		matchCase.focus();
+		matchCase.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+		deepStrictEqual(navigated, ['a']);
+	});
+
 	test('searches again with match case when the case toggle is switched', async () => {
 		const host = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(host);

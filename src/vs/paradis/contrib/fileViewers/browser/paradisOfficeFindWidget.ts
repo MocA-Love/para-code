@@ -442,7 +442,8 @@ export class ParadisOfficeFindWidget extends Disposable {
 			keyboardEvent.stopPropagation();
 			return;
 		}
-		if ((keyboardEvent.equals(KeyCode.Enter) || event.key === 'Enter') && this.element.contains(event.target as Node)) {
+		// ボタン（大文字と小文字を区別・↑↓・閉じる）の上の Enter は、そのボタンを押す既定の動きに任せる。
+		if ((keyboardEvent.equals(KeyCode.Enter) || event.key === 'Enter') && this.element.contains(event.target as Node) && !dom.isHTMLButtonElement(event.target)) {
 			void (event.shiftKey ? this.findPrevious() : this.findNext());
 			keyboardEvent.preventDefault();
 			keyboardEvent.stopPropagation();
