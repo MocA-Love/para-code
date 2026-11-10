@@ -36,6 +36,9 @@ import {
 	PARADIS_GITHUB_MONITOR_SPACE,
 	PARADIS_GITHUB_UNSCOPED_SPACE,
 } from '../common/paradisGithubMetrics.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { PARADIS_CARD_CLASS } from '../../../browser/paradisCard.js';
+import { ParadisProgressTone, renderParadisProgress } from '../../../browser/paradisProgress.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { ParadisGithubMetricsClient, PARADIS_GITHUB_METRICS_SETTING_REFRESH_INTERVAL } from './paradisGithubMetricsClient.js';
 import { paradisGithubFormatDuration, paradisGithubResourceLabel, paradisGithubRoundedPercent } from './paradisGithubMetricsFormat.js';
@@ -98,7 +101,9 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 
 		dom.append(toolbar, $('.paradis-ghm-toolbar-spacer'));
 
-		const refresh = dom.append(toolbar, $('button.paradis-ghm-button')) as HTMLButtonElement;
+		const refresh = dom.append(toolbar, $('button.paradis-ghm-refresh')) as HTMLButtonElement;
+		refresh.type = 'button';
+		refresh.classList.add(...paradisButtonClasses('secondary', true));
 		this.refreshIcon = dom.append(refresh, $(ThemeIcon.asCSSSelector(Codicon.refresh)));
 		dom.append(refresh, $('span')).textContent = localize('paradis.githubMetrics.refresh', "更新");
 		this._register(dom.addDisposableListener(refresh, dom.EventType.CLICK, () => void this.refresh(true)));
@@ -216,13 +221,21 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 		this.renderDebugCopy(body, snapshot);
 	}
 
+	/** UI キットのカード（中の面）。`padded` でないカードは、中の行が自分で余白と区切りの線を持つ。 */
+	private appendPanel(parent: HTMLElement, padded?: boolean): HTMLElement {
+		const panel = dom.append(parent, $('.paradis-ghm-panel'));
+		panel.classList.add(PARADIS_CARD_CLASS);
+		panel.classList.toggle('padded', !!padded);
+		return panel;
+	}
+
 	/** 左に「枠は足りるか」（資源ごとの残量・リセット・このペースでの見込み・止めている取得）、右に「誰が使っているか」。 */
 	private renderLimitsAndUsers(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
 		const grid = dom.append(container, $('.paradis-ghm-grid.cols2'));
 
 		const limitsColumn = dom.append(grid, $('div'));
 		dom.append(limitsColumn, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.enough', "枠は足りるか（アカウント全体）");
-		const limitsPanel = dom.append(limitsColumn, $('.paradis-ghm-panel'));
+		const limitsPanel = this.appendPanel(limitsColumn);
 		if (snapshot.rateLimits.length === 0) {
 			dom.append(limitsPanel, $('.paradis-ghm-empty')).textContent = localize('paradis.githubMetrics.limits.none', "まだ枠の残りを取得できていません。");
 		}
@@ -237,7 +250,7 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 
 		const usersColumn = dom.append(grid, $('div'));
 		dom.append(usersColumn, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.who', "誰が使っているか（直近1時間）");
-		const usersPanel = dom.append(usersColumn, $('.paradis-ghm-panel'));
+		const usersPanel = this.appendPanel(usersColumn);
 		this.renderUsers(usersPanel, snapshot);
 	}
 
@@ -296,7 +309,7 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 			return;
 		}
 		dom.append(container, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.remainingTrend', "残量の推移（直近60分）");
-		const panel = dom.append(container, $('.paradis-ghm-panel.padded'));
+		const panel = this.appendPanel(container, true);
 		const legend = dom.append(panel, $('.paradis-ghm-legend'));
 		for (const { resource } of series) {
 			const item = dom.append(legend, $('span'));
@@ -313,7 +326,7 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 	/** Para Code が送ったものの内訳（直近 1 時間。0 件の行と、残量を取るための呼び出しは出さない）。 */
 	private renderParaCodeBreakdown(container: HTMLElement, snapshot: IParadisGithubMetricsSnapshot): void {
 		dom.append(container, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.paraCode', "Para Code の内訳（直近1時間）");
-		const panel = dom.append(container, $('.paradis-ghm-panel'));
+		const panel = this.appendPanel(container);
 		const operations = snapshot.operations
 			.filter(operation => operation.rolling1h.calls > 0 && operation.topWorktreePath !== PARADIS_GITHUB_MONITOR_SPACE)
 			.sort((a, b) => b.rolling1h.calls - a.rolling1h.calls);
@@ -331,6 +344,8 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 			if (operation.topWorktreePath) {
 				dom.append(name, $('.paradis-ghm-hbar-sub')).textContent = localize('paradis.githubMetrics.table.topWorktree', "最多: {0}", spaceLabel(operation.topWorktreePath));
 			}
+			// 長い作業ツリーのパスは「…」で切り、全文はホバーで見せる
+			name.title = name.textContent ?? '';
 			dom.append(head, $('.paradis-ghm-hbar-value')).textContent = counts.calls.toLocaleString();
 			const track = dom.append(row, $('.paradis-ghm-hbar-track'));
 			dom.append(track, $(`span.${operation.resource}`)).style.width = `${Math.max(2, (counts.calls / maxCalls) * 100)}%`;
@@ -361,8 +376,10 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 		dom.append(head, $('.paradis-ghm-limit-percent')).textContent =
 			localize('paradis.githubMetrics.limit.percent', "残り{0}%", paradisGithubRoundedPercent(ratio));
 
-		const gauge = dom.append(row, $('.paradis-ghm-gauge'));
-		dom.append(gauge, $(`span.${paradisGithubSeverity(ratio)}`)).style.width = `${paradisGithubRoundedPercent(ratio)}%`;
+		// UI キットの 4px の帯。残りが少ないときだけ警告・危険の色にする
+		const severity = paradisGithubSeverity(ratio);
+		const tone: ParadisProgressTone = severity === 'critical' ? 'danger' : severity === 'warning' ? 'warning' : 'accent';
+		renderParadisProgress(row, { ariaLabel: paradisGithubResourceLabel(entry.resource), value: ratio, tone });
 
 		const consumption = snapshot.consumption.find(item => item.resource === entry.resource);
 		const facts: string[] = [];
@@ -385,7 +402,7 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 			return;
 		}
 		dom.append(container, $('.paradis-ghm-section-title')).textContent = localize('paradis.githubMetrics.section.errors', "最近のエラー");
-		const panel = dom.append(container, $('.paradis-ghm-panel'));
+		const panel = this.appendPanel(container);
 		for (const error of snapshot.lastErrors.slice(0, MAX_ERROR_ROWS)) {
 			const row = dom.append(panel, $('.paradis-ghm-error-row'));
 			dom.append(row, $('.paradis-ghm-error-when')).textContent = fromNow(error.at, true);
@@ -411,7 +428,9 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 	}
 
 	private addCopyButton(container: HTMLElement, label: string, build: () => string): void {
-		const button = dom.append(container, $('button.paradis-ghm-button')) as HTMLButtonElement;
+		const button = dom.append(container, $('button')) as HTMLButtonElement;
+		button.type = 'button';
+		button.classList.add(...paradisButtonClasses('secondary'));
 		dom.append(button, $(ThemeIcon.asCSSSelector(Codicon.clippy)));
 		const text = dom.append(button, $('span'));
 		text.textContent = label;
