@@ -52,6 +52,8 @@ const SORT_KEYS: readonly ParadisSortKey[] = ['name', 'mtime', 'size', 'kind'];
 interface INameTemplate {
 	readonly icon: HTMLElement;
 	readonly name: HTMLElement;
+	/** 名前の後ろの印（リンク・書きかけ）。名前が長くても省略記号で消えないよう、名前の文字の外に置く */
+	readonly badges: HTMLElement;
 	readonly permissions: HTMLElement;
 }
 
@@ -136,7 +138,8 @@ export class ParadisFileTransferPaneTable extends Disposable {
 				const cell = dom.append(container, $('.para-ft-name'));
 				const icon = dom.append(cell, $('span.para-ft-icon'));
 				const text = dom.append(cell, $('.para-ft-name-text'));
-				return { icon, name: dom.append(text, $('.para-ft-name-line')), permissions: dom.append(text, $('.para-ft-perm')) };
+				const line = dom.append(text, $('.para-ft-name-line'));
+				return { icon, name: dom.append(line, $('span.para-ft-name-label')), badges: dom.append(line, $('span.para-ft-name-badges')), permissions: dom.append(text, $('.para-ft-perm')) };
 			},
 			renderElement: (entry, _index, template) => this.renderName(entry, template),
 			disposeTemplate: () => { },
@@ -166,6 +169,7 @@ export class ParadisFileTransferPaneTable extends Disposable {
 			? getIconClasses(this.modelService, this.languageService, entry.resource, entry.isDirectory ? FileKind.FOLDER : FileKind.FILE)
 			: ThemeIcon.asClassNameArray(entry.isDirectory ? Codicon.folder : Codicon.file)));
 		dom.clearNode(template.name);
+		dom.clearNode(template.badges);
 		const range = paradisMatchRange(entry.name, this.options.filterText());
 		if (range) {
 			template.name.append(entry.name.slice(0, range.start));
@@ -175,11 +179,11 @@ export class ParadisFileTransferPaneTable extends Disposable {
 			template.name.textContent = entry.name;
 		}
 		if (entry.kind === 'symlink') {
-			dom.append(template.name, $(`span.para-ft-link${ThemeIcon.asCSSSelector(Codicon.fileSymlinkFile)}`)).setAttribute('aria-hidden', 'true');
+			dom.append(template.badges, $(`span.para-ft-link${ThemeIcon.asCSSSelector(Codicon.fileSymlinkFile)}`)).setAttribute('aria-hidden', 'true');
 		}
 		if (paradisIsTransferTempName(entry.name)) {
 			// 転送が途中で止まって残った一時ファイル。「操作」から消せる
-			dom.append(template.name, $('span.para-ft-partial')).textContent = localize('paradis.fileTransfer.partial', "書きかけ");
+			dom.append(template.badges, $('span.para-ft-partial')).textContent = localize('paradis.fileTransfer.partial', "書きかけ");
 		}
 		template.permissions.textContent = entry.mode !== undefined ? paradisFormatMode(entry.mode, paradisTypeCharOf(entry)) : '';
 		template.icon.parentElement?.parentElement?.parentElement?.classList.toggle('para-ft-hidden-row', paradisIsHiddenName(entry.name));
