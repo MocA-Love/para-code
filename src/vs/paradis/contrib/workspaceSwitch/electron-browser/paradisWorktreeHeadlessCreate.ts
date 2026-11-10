@@ -56,6 +56,7 @@ import {
 	paradisSanitizeBranchName,
 	paradisShouldCreateDefaultTerminal,
 } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddBranchWorktreeRequest, IParadisExistingBranchChoice } from '../common/paradisWorktreeExistingBranch.js';
 import { IParadisCopyWorktreeIncludesRequest, IParadisWorktreeIncludeResult, PARADIS_WORKTREE_INCLUDE_FILE, paradisParseWorktreeIncludeConfig, paradisSummarizeWorktreeIncludeFailure, paradisSummarizeWorktreeIncludeSkips } from '../common/paradisWorktreeInclude.js';
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisMarkTerminalEditorOpeningForScope } from '../browser/paradisTerminalEditorPark.js';
@@ -105,6 +106,11 @@ export interface IParadisHeadlessWorktreeRequest {
 	readonly permissionId?: string;
 	/** false でリポジトリ定義の setup スクリプトをスキップする（既定 true）。 */
 	readonly runSetup?: boolean;
+	/**
+	 * 新しいブランチを切らず、既存のブランチ（ローカルか origin）を開く。指定したときは `branch`・`baseRef` を使わず、
+	 * ブランチ名の生成も重複回避の番号付けもしない。
+	 */
+	readonly existingBranch?: IParadisExistingBranchChoice;
 }
 
 export interface IParadisHeadlessWorktreeResult {
@@ -686,6 +692,19 @@ async function paradisHasWorktreeIncludeDeclarations(fileService: IFileService, 
  * モバイル発のヘッドレス作成の両方から使う。switchToCreated が false の場合は現在の
  * スペースに留まったまま作成し、ターミナルはスコープ割り当てにより新スペース側へ park される。
  */
+/** この版より古い接続先（REH）が知らない電文を呼んだときに、「接続先が古い」と分かる文言に直して投げる。 */
+async function paradisCallNewerGitHost<T>(call: Promise<T>): Promise<T> {
+	try {
+		return await call;
+	} catch (error) {
+		if (toErrorMessage(error).includes('Method not found')) {
+			// allow-any-unicode-next-line
+			throw new Error(localize('paradis.worktree.existingBranch.hostTooOld', "接続先の Para Code が古いため、既存のブランチからスペースを作れません。接続先を更新してから試してください。"));
+		}
+		throw error;
+	}
+}
+
 export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, request: IParadisHeadlessWorktreeRequest, options: IParadisWorktreeCreateFlowOptions): Promise<IParadisWorktreeCreateFlowResult> {
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
 	const worktreeService = accessor.get(IParadisWorktreeService);
@@ -728,15 +747,16 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	} catch (error) {
 		logService.warn('[ParadisWorktreeHeadlessCreate] listBranches failed', error);
 	}
+	const existingBranch = request.existingBranch;
 	const baseRef = (request.baseRef ?? '').trim() || branchesInfo.head;
-	if (!baseRef) {
+	if (!baseRef && !existingBranch) {
 		throw new Error('base branch is not specified and HEAD is detached');
 	}
 
 	const callbacks = options.callbacks;
 
 	// 1. ブランチ名の決定（手入力 > Copilot API > Copilot Chat 拡張のモデル > フォールバック）
-	let branch = paradisSanitizeBranchName(request.branch ?? '');
+	let branch = existingBranch ? existingBranch.branch : paradisSanitizeBranchName(request.branch ?? '');
 	let suggestedTitle: string | undefined;
 	if (!branch) {
 		if (prompt.length > 0) {
@@ -766,24 +786,45 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 		suggestedTitle = suggestedTitle ?? paradisToWorktreeTitle(prompt);
 		branch = branch ?? fallbackBranchName([request.name, prompt]);
 	}
-	branch = paradisDeduplicateBranchName(branch, branchesInfo.branches);
+	// 既存のブランチは名前を変えない（番号を足すと別のブランチを作ってしまう）
+	if (!existingBranch) {
+		branch = paradisDeduplicateBranchName(branch, branchesInfo.branches);
+	}
 
 	// 2. worktree 作成
 	callbacks?.onStage?.('creating');
 	const existingDirNames = worktreeService.getDetectedWorktrees(repository.id).map(worktree => basename(worktree.uri));
-	const { displayName, dirName } = paradisBuildWorktreeNames(request.name ?? '', branch, branchesInfo.branches, existingDirNames, suggestedTitle);
+	// 既存のブランチでは、開くブランチ自身をディレクトリ名の衝突に数えない（数えると自分とぶつかって `-2` が付く）。
+	// スペース名の既定はブランチ名
+	const { displayName, dirName } = existingBranch
+		? paradisBuildWorktreeNames((request.name ?? '').trim() || branch, branch, branchesInfo.branches.filter(name => name !== branch), existingDirNames)
+		: paradisBuildWorktreeNames(request.name ?? '', branch, branchesInfo.branches, existingDirNames, suggestedTitle);
 	callbacks?.onNameResolved?.(displayName, branch);
 	const worktreeUri = computeWorktreeUri(configurationService, repository, dirName);
 	// ダイアログ実装と同じく、これから作るターミナルを常にこのworktreeへ明示的に紐付ける
 	const targetStateKey = paradisWorktreeStateKey(worktreeUri);
+	const trustClaudeFolder = configurationService.getValue<boolean>('paradis.workspaceSwitch.trustClaudeFolder') !== false;
 	const addRequest: IParadisAddWorktreeRequest = {
 		repoPath: gitHost.path(repository.uri),
 		worktreePath: gitHost.path(worktreeUri),
 		newBranch: branch,
-		baseRef,
-		trustClaudeFolder: configurationService.getValue<boolean>('paradis.workspaceSwitch.trustClaudeFolder') !== false,
+		baseRef: baseRef ?? '',
+		trustClaudeFolder,
 	};
-	await gitHost.channel.call('addWorktree', [addRequest]);
+	if (existingBranch) {
+		const branchRequest: IParadisAddBranchWorktreeRequest = {
+			repoPath: addRequest.repoPath,
+			worktreePath: addRequest.worktreePath,
+			branch,
+			source: existingBranch.source,
+			...(existingBranch.sync !== undefined ? { sync: existingBranch.sync } : {}),
+			...(existingBranch.expectedLocalSha !== undefined ? { expectedLocalSha: existingBranch.expectedLocalSha } : {}),
+			trustClaudeFolder,
+		};
+		await paradisCallNewerGitHost(gitHost.channel.call('addWorktreeFromBranch', [branchRequest]));
+	} else {
+		await gitHost.channel.call('addWorktree', [addRequest]);
+	}
 	// 宣言した .env などを持ち込む（G-06）。setup スクリプトより先に、setup を飛ばすときも行う。失敗しても作成は止めない
 	let includeWarning: string | undefined;
 	try {

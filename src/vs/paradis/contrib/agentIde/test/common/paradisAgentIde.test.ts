@@ -171,12 +171,16 @@ suite('paradisAgentIde (common)', () => {
 			paradisParseAgentIdeCall('read_terminal', { terminal: 't_1' }),
 			paradisParseAgentIdeCall('read_terminal', { terminal: 't_1', scrollback_lines: 9999 }),
 			paradisParseAgentIdeCall('create_space', { prompt: 'x' }),
+			paradisParseAgentIdeCall('create_space', { existing_branch: 'feature/x' }),
+			paradisParseAgentIdeCall('create_space', { existing_branch: 'feature/x', base_branch: 'main' }).kind,
 			launch.kind === 'window' && Object.keys(launch.request).some(key => key.startsWith('permission')),
 		], [
 			{ kind: 'window', action: false, request: { op: 'listTerminals' } },
 			{ kind: 'window', action: false, request: { op: 'readTerminal', terminal: 't_1', scrollbackLines: 0 } },
 			{ kind: 'window', action: false, request: { op: 'readTerminal', terminal: 't_1', scrollbackLines: 500 } },
 			{ kind: 'window', action: true, request: { op: 'createSpace', prompt: 'x', runSetup: false } },
+			{ kind: 'window', action: true, request: { op: 'createSpace', existingBranch: 'feature/x', runSetup: false } },
+			'error',
 			false,
 		]);
 	});

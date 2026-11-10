@@ -16,6 +16,7 @@
  */
 
 import { paradisRestrictedGitArgsError } from '../../workspaceSwitch/common/paradisGitRestrictedArgs.js';
+import { paradisWorktreeBranchArgs } from '../../workspaceSwitch/common/paradisWorktreeExistingBranch.js';
 import { PARADIS_TASK_BOARD_HIDDEN_CHARACTERS_MESSAGE, paradisTaskBoardHasHiddenCharacters } from './paradisTaskBoardDisplayText.js';
 
 /** REH のチャネル名。 */
@@ -323,13 +324,9 @@ function branchMode(mode: unknown): ParadisTaskBoardRemoteBranchMode {
  */
 function branchArgs(op: Record<string, unknown>, dir: string | undefined): string[] {
 	const branch = checkBranch(op.branch);
-	const at = dir !== undefined ? [dir] : [];
-	const create = dir !== undefined ? '-b' : '-c';
-	switch (branchMode(op.mode)) {
-		case 'existing': return [...at, branch];
-		case 'track': return ['--track', create, branch, ...at, `refs/remotes/origin/${branch}`];
-		case 'new': return ['--no-track', create, branch, ...at, revArg(op.base)];
-	}
+	const mode = branchMode(op.mode);
+	// 形は「新しいスペース」の既存のブランチと共通（paradisWorktreeExistingBranch.ts）
+	return paradisWorktreeBranchArgs(mode, branch, dir, mode === 'new' ? revArg(op.base) : undefined);
 }
 
 /** 操作の本体の argv（`-C`・`-c` の前置きを除く）と、検査から外す値の位置。 */
