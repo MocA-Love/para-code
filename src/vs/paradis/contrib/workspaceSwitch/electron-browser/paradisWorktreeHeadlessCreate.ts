@@ -59,6 +59,8 @@ import {
 import { IParadisAddBranchWorktreeRequest, IParadisExistingBranchChoice } from '../common/paradisWorktreeExistingBranch.js';
 import { IParadisCopyWorktreeIncludesRequest, IParadisWorktreeIncludeResult, PARADIS_WORKTREE_INCLUDE_FILE, paradisParseWorktreeIncludeConfig, paradisSummarizeWorktreeIncludeFailure, paradisSummarizeWorktreeIncludeSkips } from '../common/paradisWorktreeInclude.js';
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
+import { IParadisWorktreeImage, paradisAgentImageMode } from '../common/paradisWorktreeImageAttach.js';
+import { paradisWriteWorktreeImages } from '../browser/paradisWorktreeImageWrite.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisMarkTerminalEditorOpeningForScope } from '../browser/paradisTerminalEditorPark.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
@@ -111,6 +113,11 @@ export interface IParadisHeadlessWorktreeRequest {
 	 * ブランチ名の生成も重複回避の番号付けもしない。
 	 */
 	readonly existingBranch?: IParadisExistingBranchChoice;
+	/**
+	 * 指示に添えた画像（「新しいスペース」のダイアログから）。スペースを作った後、エージェントを起動する前に
+	 * スペースの `.para-code/pasted-images/` へ書き、起動コマンドにパスで渡す。画像を渡せないエージェントでは使わない。
+	 */
+	readonly images?: readonly IParadisWorktreeImage[];
 }
 
 export interface IParadisHeadlessWorktreeResult {
@@ -154,7 +161,10 @@ export interface IParadisWorktreeCreateFlowResult extends IParadisHeadlessWorktr
 	readonly worktree: IParadisWorktree;
 	/** エージェントを起動したターミナル。エージェントを起動しなかった・起動前に失敗した場合は undefined。 */
 	readonly agent?: IParadisLaunchedAgentTerminal;
-	/** `warning` のうち、宣言したファイルの持ち込み（G-06）の分。持ち込みだけが失敗したときに専用の文を出すため。 */
+	/**
+	 * `warning` のうち、セットアップの失敗ではない知らせ（宣言したファイルの持ち込み（G-06）と、添えた画像を
+	 * スペースへ書けなかったこと）。これだけのときに専用の文を出すため。
+	 */
 	readonly includeWarning?: string;
 }
 
@@ -674,6 +684,12 @@ export async function paradisCreateWorktreeHeadless(accessor: ServicesAccessor, 
 	return result;
 }
 
+/** 知らせを改行でつなぐ。どれも無ければ undefined。 */
+function paradisJoinWarnings(...warnings: readonly (string | undefined)[]): string | undefined {
+	const present = warnings.filter((warning): warning is string => warning !== undefined);
+	return present.length > 0 ? present.join('\n') : undefined;
+}
+
 /** リポジトリに持ち込みの宣言（.paracode.json の `worktree`・`.worktreeinclude`）があるか。読めなければ無い扱い。 */
 async function paradisHasWorktreeIncludeDeclarations(fileService: IFileService, repositoryUri: URI): Promise<boolean> {
 	try {
@@ -849,6 +865,8 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 
 	// 後続工程が途中で失敗しても、起動済みのエージェントは返す（warning と一緒に）
 	let launchedAgent: IParadisLaunchedAgentTerminal | undefined;
+	// 添えた画像をスペースへ書けなかった知らせ（エージェントは画像なしで起動する）
+	let imageWarning: string | undefined;
 	try {
 		// 3. 新スペースへ切り替え（モバイル発・従来ダイアログ相当の挙動）。バックグラウンド作成
 		//    （ダイアログ発のキュー実行）では切り替えず、現在のスペースに留まる
@@ -892,6 +910,21 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				if (!agent) {
 					return;
 				}
+				// 添えた画像は、ターミナルを開く前にスペースへ書く（SSH の窓では SSH 先へ写る）。書けなければ画像なしで起動して知らせる
+				let imagePaths: readonly string[] = [];
+				if (request.images && request.images.length > 0 && paradisAgentImageMode(agent.id) !== 'unsupported') {
+					const written = await paradisWriteWorktreeImages(fileService, worktreeUri, request.images);
+					if (written.kind === 'written') {
+						imagePaths = written.paths;
+					} else {
+						logService.warn('[ParadisWorktreeHeadlessCreate] could not write the attached images into the new space');
+						imageWarning = worktreeUri.scheme === Schemas.vscodeRemote
+							// allow-any-unicode-next-line
+							? localize('paradis.worktree.imagesRemoteFailed', "添えた画像を SSH 先のスペースへ写せなかったため、エージェントは画像なしで起動しました。")
+							// allow-any-unicode-next-line
+							: localize('paradis.worktree.imagesFailed', "添えた画像をスペースへ書けなかったため、エージェントは画像なしで起動しました。");
+					}
+				}
 				// ダイアログ発の従来実装と同じくエディタ領域に作る。非アクティブスコープへの
 				// assignInstanceScope は即座に park され、切り替えで戻ったときに
 				// unparkEditorTerminals がエディタとして開き直すため現在のスペースの表示は乱れない。
@@ -904,14 +937,16 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 					modelId: request.modelId,
 					effortId: request.effortId,
 					permissionId: request.permissionId,
-				}));
+				}, imagePaths));
 				await instance.sendText(command, true);
 				launchedAgent = paradisDescribeLaunchedAgent(paneTokenService, instance);
 			},
 		});
 	} catch (error) {
 		logService.error('[ParadisWorktreeHeadlessCreate] post-create steps failed', error);
-		return { name: displayName, branch, warning: [includeWarning, toErrorMessage(error)].filter(part => part !== undefined).join('\n'), worktree: createdWorktree, ...(launchedAgent ? { agent: launchedAgent } : {}), ...(includeWarning !== undefined ? { includeWarning } : {}) };
+		const notice = paradisJoinWarnings(includeWarning, imageWarning);
+		return { name: displayName, branch, warning: [notice, toErrorMessage(error)].filter(part => part !== undefined).join('\n'), worktree: createdWorktree, ...(launchedAgent ? { agent: launchedAgent } : {}), ...(notice !== undefined ? { includeWarning: notice } : {}) };
 	}
-	return { name: displayName, branch, worktree: createdWorktree, ...(includeWarning !== undefined ? { warning: includeWarning, includeWarning } : {}), ...(launchedAgent ? { agent: launchedAgent } : {}) };
+	const notice = paradisJoinWarnings(includeWarning, imageWarning);
+	return { name: displayName, branch, worktree: createdWorktree, ...(notice !== undefined ? { warning: notice, includeWarning: notice } : {}), ...(launchedAgent ? { agent: launchedAgent } : {}) };
 }

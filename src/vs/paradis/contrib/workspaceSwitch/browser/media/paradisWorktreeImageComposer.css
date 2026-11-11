@@ -1,0 +1,194 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The instruction field of the "new space" dialog with its images (paradisWorktreeImageComposer.ts, Q615 plan B):
+	the text, 40px thumbnails and a bar with the clip button and the count share one input frame, and the whole frame
+	takes dropped files. The frame draws the gray focus ring (paradis-focus-subtle-within), the text area none.
+*/
+
+.monaco-workbench .paradis-image-composer {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80) var(--vscode-spacing-size40);
+	border: 1px solid var(--vscode-input-border, var(--vscode-paradis-line));
+	border-radius: var(--paradis-radius-control);
+	background: var(--vscode-input-background);
+}
+
+.monaco-workbench .paradis-image-composer > .paradis-image-composer-area {
+	box-sizing: border-box;
+	width: 100%;
+	min-height: 54px;
+	resize: vertical;
+	padding: 0;
+	border: 0;
+	outline: none;
+	background: transparent;
+	color: var(--vscode-input-foreground);
+	font-family: inherit;
+	font-size: 12.5px;
+	line-height: 1.6;
+}
+
+.monaco-workbench .paradis-image-composer > .paradis-image-composer-area::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+/* Thumbnails: 52x40, with the remove button over the top right corner. The top padding keeps that button inside the
+	frame instead of under the text area. */
+.monaco-workbench .paradis-image-composer-thumbs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
+	padding-top: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .paradis-image-composer-thumbs.hidden {
+	display: none;
+}
+
+.monaco-workbench .paradis-image-composer-thumb {
+	position: relative;
+	flex: none;
+	width: 52px;
+	height: 40px;
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-control);
+	background: var(--vscode-paradis-sunken);
+}
+
+.monaco-workbench .paradis-image-composer-thumb > img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: inherit;
+}
+
+.monaco-workbench .paradis-image-composer-remove {
+	position: absolute;
+	top: -6px;
+	right: -6px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border: 1px solid var(--vscode-paradis-line);
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: var(--vscode-paradis-popup);
+	color: var(--vscode-paradis-text);
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-image-composer-remove .codicon {
+	font-size: 12px;
+}
+
+.monaco-workbench .paradis-image-composer-remove:hover {
+	color: var(--vscode-paradis-textStrong);
+	background: var(--vscode-paradis-fillHover);
+}
+
+/* The bar under the text: clip, hint, count. A thin line separates it from the text and runs a little wider than it. */
+.monaco-workbench .paradis-image-composer-bar {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	margin: 0 calc(var(--vscode-spacing-size40) * -1);
+	padding-top: var(--vscode-spacing-size40);
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+.monaco-workbench .paradis-image-composer-clip .codicon {
+	font-size: 14px;
+}
+
+.monaco-workbench .paradis-image-composer-hint {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
+}
+
+.monaco-workbench .paradis-image-composer-grow {
+	flex: 1;
+}
+
+.monaco-workbench .paradis-image-composer-count {
+	flex: none;
+	font-size: var(--vscode-fontSize-label2);
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-paradis-textFaint);
+}
+
+.monaco-workbench .paradis-image-composer-count.full {
+	color: var(--vscode-paradis-warning);
+}
+
+/* While files are dragged over the frame: a dashed drop target over the whole frame. It is the frame's last child, so
+	it paints over the thumbnails without a z-index. */
+.monaco-workbench .paradis-image-composer-drop {
+	display: none;
+}
+
+.monaco-workbench .paradis-image-composer.dragging > .paradis-image-composer-drop {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--vscode-spacing-size80);
+	border: 1px dashed var(--vscode-paradis-accent);
+	border-radius: var(--paradis-radius-control);
+	background: color-mix(in srgb, var(--vscode-paradis-overlay) 96%, transparent);
+	color: var(--vscode-paradis-accent);
+	font-size: var(--vscode-fontSize-body1);
+	pointer-events: none;
+}
+
+/* What was not attached, and the note for spaces on an SSH host. */
+.monaco-workbench .paradis-image-composer-errors > div,
+.monaco-workbench .paradis-image-composer-note {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.5;
+}
+
+.monaco-workbench .paradis-image-composer-errors:empty,
+.monaco-workbench .paradis-image-composer-note:empty {
+	display: none;
+}
+
+.monaco-workbench .paradis-image-composer-errors > div {
+	color: var(--vscode-paradis-warning);
+}
+
+.monaco-workbench .paradis-image-composer-note {
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .paradis-image-composer-errors .codicon,
+.monaco-workbench .paradis-image-composer-note .codicon {
+	flex: none;
+	margin-top: 2px;
+	font-size: 14px;
+}
+
+.monaco-workbench .paradis-image-composer-file {
+	display: none;
+}

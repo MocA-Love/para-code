@@ -19,6 +19,7 @@ import { GeneralShellType, PosixShellType, TerminalShellType, WindowsShellType }
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import { ParadisWorkspaceLifecycleKind } from './paradisWorkspaceLifecycle.js';
+import { paradisAgentImageMode, paradisIsSafeWorktreeImagePath } from './paradisWorktreeImageAttach.js';
 
 /** shared process 上で git worktree 操作を行う IPC チャネル名。 */
 export const PARADIS_WORKTREE_GIT_CHANNEL = 'paradisWorktreeGit';
@@ -601,7 +602,7 @@ function paradisEncodeUtf16LeBase64(value: string): string {
 	return encodeBase64(VSBuffer.wrap(bytes));
 }
 
-function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, promptExpression: string, options: IParadisAgentLaunchOptions | undefined): string {
+function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, promptExpression: string, options: IParadisAgentLaunchOptions | undefined, imageFlag?: string): string {
 	const flags = paradisResolveAgentLaunchFlags(template, options);
 	let command = template.command;
 	// プレースホルダがあるフラグはその位置へ置換し、無いフラグはプロンプトの直前
@@ -617,6 +618,10 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 	}
 	if (options?.extraFlags) {
 		leftoverFlags.push(options.extraFlags);
+	}
+	// 画像のフラグ（引用済み）。指示の直前に置き、後ろの指示が画像の名前として読まれないよう `=` で 1 つの引数にしてある
+	if (imageFlag) {
+		leftoverFlags.push(imageFlag);
 	}
 	if (leftoverFlags.length > 0) {
 		const combined = leftoverFlags.join(' ');
@@ -636,31 +641,56 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 }
 
 /** cmd.exeでは任意文字列の安全な引数化が困難なため、Base64化したPowerShellスクリプトへ委譲する。 */
-function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, options: IParadisAgentLaunchOptions | undefined): string {
+function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, options: IParadisAgentLaunchOptions | undefined, imagePaths: readonly string[]): string {
 	const promptBase64 = encodeBase64(VSBuffer.fromString(prompt));
-	const command = paradisApplyPromptToTemplate(template, '$paradisPrompt', options);
+	// 中で動くのは PowerShell なので、画像のフラグも PowerShell の引用にする（裸の `a,b` は配列として読まれる）
+	const command = paradisApplyPromptToTemplate(template, '$paradisPrompt', options, paradisImageFlag(imagePaths, paradisQuotePowerShellArg));
 	const script = `$paradisPrompt = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${promptBase64}')); ${command}`;
 	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${paradisEncodeUtf16LeBase64(script)}`;
+}
+
+/** Codex に画像を渡すフラグ（`--image=<パス>,<パス>`）をシェルに合わせて引用する。画像が無ければ undefined。 */
+function paradisImageFlag(imagePaths: readonly string[], quote: (value: string) => string): string | undefined {
+	return imagePaths.length > 0 ? quote(`--image=${imagePaths.join(',')}`) : undefined;
+}
+
+/** cmd.exe でそのまま渡す引数の引用（画像のパスは引用を崩す文字を含まないので、二重引用符で包むだけでよい）。 */
+function paradisQuoteCommandPromptArg(value: string): string {
+	return `"${value}"`;
 }
 
 /**
  * 実際のターミナルシェルに合わせ、テンプレートの {prompt} を安全な単一引数へ置換する。
  * プロンプトが空の場合は引数自体を付けない（`claude ''` のような空引数はTUIの初回入力を
  * 汚すため。{prompt} プレースホルダは空置換して連続スペースを正規化する）。
+ *
+ * `imagePaths` は作業フォルダからの相対パスで書いた、添えた画像（「新しいスペース」の指示に添えたもの）。
+ * 渡し方はエージェントごとに違う（paradisAgentImageMode）。渡せないエージェントや、引用を崩しうるパスは使わない。
  */
-export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, rawPrompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions): string {
+export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, rawPrompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions, imagePaths?: readonly string[]): string {
+	const imageMode = paradisAgentImageMode(template.id);
+	const images = imageMode === 'unsupported' ? [] : (imagePaths ?? []).filter(paradisIsSafeWorktreeImagePath);
+	const flagImages = imageMode === 'flag' ? images : [];
 	// プロンプトは利用者だけでなくエージェント（MCP）や定期実行の定義からも来るので、全経路でここで落とす
-	const stripped = paradisStripTerminalControlCharacters(rawPrompt);
+	let stripped = paradisStripTerminalControlCharacters(rawPrompt);
+	if (imageMode === 'mention' && images.length > 0) {
+		// 指示の後ろに空白で区切って `@パス` を並べる（Claude Code 2.1.322 で画像が届くことを確かめた形）
+		stripped = [stripped.trim(), images.map(path => `@${path}`).join(' ')].filter(part => part.length > 0).join(' ');
+	}
 	// `-` で始まる指示は、引用しても CLI がオプションとして読む（`claude '--dangerously-skip-permissions'` は
 	// 権限の確認を飛ばす起動になる）。1語だけの指示（`logout`・`update`・Codex の `e` など）はサブコマンドとして
 	// 読まれる。どちらも前に空白を1つ足し、必ず指示（位置引数）として渡す（commander も clap も、空白で始まる
 	// 引数はオプションともサブコマンドの名前とも照らさない）
 	const prompt = /^(?:-|[A-Za-z][\w-]*$)/.test(stripped) ? ` ${stripped}` : stripped;
 	if (prompt.trim().length === 0) {
-		return paradisApplyPromptToTemplate(template, '', options).replace(/ {2,}/g, ' ').trim();
+		const quoteFlag = shellType === WindowsShellType.CommandPrompt ? paradisQuoteCommandPromptArg
+			: shellType === GeneralShellType.PowerShell ? paradisQuotePowerShellArg
+				: shellType === PosixShellType.Fish ? paradisQuoteFishArg
+					: paradisQuotePosixShellArg;
+		return paradisApplyPromptToTemplate(template, '', options, paradisImageFlag(flagImages, quoteFlag)).replace(/ {2,}/g, ' ').trim();
 	}
 	if (shellType === WindowsShellType.CommandPrompt) {
-		return paradisBuildCommandPromptAgentCommand(template, prompt, options);
+		return paradisBuildCommandPromptAgentCommand(template, prompt, options, flagImages);
 	}
 	// シェルの種類が分からない（tmux や `exec fish` などのラッパー経由の起動）と POSIX 式で引用するが、
 	// fish はシングルクオートの中のバックスラッシュをエスケープとして読むので、`\` を含む指示は
@@ -668,12 +698,12 @@ export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate,
 	if (shellType === undefined && prompt.includes('\\')) {
 		throw new ParadisAgentPromptQuotingError();
 	}
-	const quoted = shellType === GeneralShellType.PowerShell
-		? paradisQuotePowerShellArg(prompt)
+	const quote = shellType === GeneralShellType.PowerShell
+		? paradisQuotePowerShellArg
 		: shellType === PosixShellType.Fish
-			? paradisQuoteFishArg(prompt)
-			: paradisQuotePosixShellArg(prompt);
-	return paradisApplyPromptToTemplate(template, quoted, options);
+			? paradisQuoteFishArg
+			: paradisQuotePosixShellArg;
+	return paradisApplyPromptToTemplate(template, quote(prompt), options, paradisImageFlag(flagImages, quote));
 }
 
 /**
