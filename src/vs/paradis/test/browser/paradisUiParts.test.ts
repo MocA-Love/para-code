@@ -320,6 +320,27 @@ suite('Paradis UI parts', () => {
 		});
 	});
 
+	test('button: the icon is a child span, so the button keeps its own font and the icon keeps the codicon font', () => {
+		// アイコンの幅と文字との隙間は、codicon の字形が読み込まれる dev で確かめた（単体テストでは字形が無く幅 0）
+		const icon = store.add(new ParadisButton(workbench, { kind: 'icon', icon: Codicon.close, ariaLabel: 'Close', small: true }));
+		const labelled = store.add(new ParadisButton(workbench, { kind: 'secondary', icon: Codicon.add, label: '行を追加' }));
+		labelled.icon = Codicon.remove;
+		const describe = (button: ParadisButton) => {
+			const glyph = button.element.querySelector('.codicon');
+			return {
+				elementHasCodicon: [...button.element.classList].some(name => name.startsWith('codicon')),
+				glyph: glyph?.className,
+				glyphFont: glyph ? mainWindow.getComputedStyle(glyph).fontFamily : undefined,
+				glyphMargin: glyph ? mainWindow.getComputedStyle(glyph).marginLeft : undefined,
+				text: button.element.querySelector('span:not(.codicon)')?.textContent,
+			};
+		};
+		assert.deepStrictEqual([describe(icon), describe(labelled)], [
+			{ elementHasCodicon: false, glyph: 'codicon codicon-close', glyphFont: 'codicon', glyphMargin: '0px', text: undefined },
+			{ elementHasCodicon: false, glyph: 'codicon codicon-remove', glyphFont: 'codicon', glyphMargin: '0px', text: '行を追加' },
+		]);
+	});
+
 	test('action button: an ActionBar item drawn as a 24px kit button, the count beside the label or over the icon', () => {
 		const textItem = mainWindow.document.createElement('li');
 		const iconItem = mainWindow.document.createElement('li');

@@ -60,9 +60,11 @@
 }
 
 /* The icon is a child span (paradisButton.ts draws `$(id)` in the label): keep it at its own size instead of letting
-	the rule above shrink it to nothing. */
+	the rule above shrink it to nothing, and space it by the button's gap only (upstream's button.css adds a margin of
+	0.2em around a codicon in a text button). */
 .monaco-workbench .paradis-button:not(.paradis-action-button) > .codicon {
 	flex: none;
+	margin: 0;
 }
 
 /* An ActionBar item drawn as a kit button (paradisActionButton.ts): icon, label and count side by side, or the count
