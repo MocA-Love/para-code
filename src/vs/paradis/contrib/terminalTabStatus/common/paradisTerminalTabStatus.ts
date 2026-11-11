@@ -90,8 +90,11 @@ export function paradisAttentionColor(attention: ParadisTerminalAttention): stri
 	}
 }
 
+/** タブにロゴを出すエージェント。 */
+export type ParadisTerminalTabAgent = 'claude' | 'codex' | 'antigravity';
+
 /** エディタのターミナルタブ左に出すアイコンの種類。 */
-export type ParadisTerminalTabIconKind = 'working' | 'permission' | 'question' | 'done' | 'claude' | 'codex';
+export type ParadisTerminalTabIconKind = 'working' | 'permission' | 'question' | 'done' | ParadisTerminalTabAgent;
 
 /**
  * タブ左のアイコン。状態があれば状態、無ければそのタブで動いているエージェントのロゴ、
@@ -103,7 +106,7 @@ export type ParadisTerminalTabIconKind = 'working' | 'permission' | 'question' |
 export function paradisTerminalTabIconKind(
 	status: ParadisAgentStatus | undefined,
 	attention: ParadisTerminalAttention | undefined,
-	agentKind: 'claude' | 'codex' | undefined,
+	agentKind: ParadisTerminalTabAgent | undefined,
 ): ParadisTerminalTabIconKind | undefined {
 	switch (status) {
 		case 'permission': return 'permission';

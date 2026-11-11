@@ -6,9 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// エージェント CLI（Claude Code / Codex）のロゴのパスデータ。どちらも viewBox 0 0 600 600 の
-// グリフだけで、色は使う側が決める（fill="currentColor" や CSS の mask）。
+// エージェント CLI（Claude Code / Codex / Antigravity CLI）のロゴのパスデータ。どれもグリフだけで、
+// 色は使う側が決める（fill="currentColor" や CSS の mask）。Claude Code と Codex は viewBox 0 0 600 600 で、
 // パスデータは @dev.icons/react/mono (MIT) の ClaudeCode / OpenaiIcon から移植。
+// Antigravity CLI は media/paradisAntigravityLogo.svg（Google Antigravity の 1 色版）と同じパスで、viewBox は別に持つ。
 // DOM を組み立てる側（limitsMonitor の paradisLimitsLogos.ts、electron-browser）と CSS で描く側
 // （ターミナルタブのアイコン、browser）の両方から使うため、contrib 共通の src/vs/paradis/common に置く。
 
@@ -17,3 +18,37 @@ export const PARADIS_CLAUDE_LOGO_PATH = 'M525 273.7h75v77.6h-75V427h-37.2v73H450
 
 /** @dev.icons/react/mono "OpenaiIcon"。viewBox 0 0 600 600。 */
 export const PARADIS_CODEX_LOGO_PATH = 'M557 245.5a150 150 0 0 0-12.8-122.7 151 151 0 0 0-162.8-72.5 151.6 151.6 0 0 0-256.9 54.2 150 150 0 0 0-100 72.5 151 151 0 0 0 18.6 177.5c-13.6 40.8-9 85.6 12.8 122.7 32.8 57 98.6 86.3 162.9 72.5a151.4 151.4 0 0 0 257-54.9A151.4 151.4 0 0 0 557 245.6M331.5 560.7c-26.3 0-51.7-9.1-72-26l3.6-2 119.5-69c6-3.5 9.8-10 9.8-17V278.3l50.5 29.2q.8.4 1 1.3v139.6c-.2 62-50.4 112.2-112.4 112.3M90 457.6a112 112 0 0 1-13.4-75.3l3.6 2 119.5 69c6 3.6 13.5 3.6 19.6 0l146-84.2v58.3a2 2 0 0 1-.8 1.6l-121 69.8A112.5 112.5 0 0 1 90 457.6M58.5 197.4c13.3-23 34.2-40.4 59.2-49.3V290c-.1 7 3.6 13.5 9.7 17l145.3 83.8-50.5 29.2q-.8.5-1.8 0L99.7 350.3a112.6 112.6 0 0 1-41.2-153.5zm415 96.4-146-84.7 50.5-29q.8-.6 1.8 0l120.7 69.7a112.4 112.4 0 0 1-16.9 202.6v-142c-.2-6.9-4-13.2-10.2-16.6m50.2-75.6-3.6-2.1-119.3-69.6c-6-3.5-13.6-3.5-19.6 0l-146 84.2v-58.3q0-1 .7-1.5l120.8-69.7a112.5 112.5 0 0 1 167 116.5zm-316 103.4-50.5-29.1a2 2 0 0 1-1-1.4V151.9a112.5 112.5 0 0 1 184.4-86.4l-3.5 2-119.5 69c-6 3.5-9.8 10-9.8 17zm27.4-59.2 65-37.4 65.2 37.4v75l-65 37.5-65-37.5z';
+
+/** Google Antigravity のロゴ（media/paradisAntigravityLogo.svg と同じパス。素材の viewBox は 0 0 180 180）。 */
+export const PARADIS_ANTIGRAVITY_LOGO_PATH = 'M144.248 149.062C151.748 154.688 162.998 150.938 152.685 140.625C121.748 110.625 128.31 28.125 89.8727 28.125C51.4352 28.125 57.9977 110.625 27.0602 140.625C15.8102 151.875 27.9977 154.688 35.4977 149.062C64.5602 129.375 62.6852 94.6875 89.8727 94.6875C117.06 94.6875 115.185 129.375 144.248 149.062Z';
+
+/**
+ * Antigravity のロゴを描く範囲。素材（0 0 180 180）は周りの余白が広く、Claude・OpenAI のロゴと同じ枠に
+ * 入れると小さく見えるので、グリフの外形（およそ x 15〜163・y 28〜155）に寄せた正方形にする。
+ */
+export const PARADIS_ANTIGRAVITY_LOGO_VIEWBOX = '13 15 154 154';
+
+/** ロゴを持つエージェント CLI。 */
+export type ParadisAgentLogo = 'claude' | 'codex' | 'antigravity';
+
+/** ロゴ 1 つ分の描き方。 */
+export interface IParadisAgentLogoGlyph {
+	readonly path: string;
+	readonly viewBox: string;
+}
+
+const AGENT_LOGO_GLYPHS: { readonly [logo in ParadisAgentLogo]: IParadisAgentLogoGlyph } = {
+	claude: { path: PARADIS_CLAUDE_LOGO_PATH, viewBox: '0 0 600 600' },
+	codex: { path: PARADIS_CODEX_LOGO_PATH, viewBox: '0 0 600 600' },
+	antigravity: { path: PARADIS_ANTIGRAVITY_LOGO_PATH, viewBox: PARADIS_ANTIGRAVITY_LOGO_VIEWBOX },
+};
+
+/** ロゴのパスと viewBox。 */
+export function paradisAgentLogoGlyph(logo: ParadisAgentLogo): IParadisAgentLogoGlyph {
+	return AGENT_LOGO_GLYPHS[logo];
+}
+
+/** エージェント定義の id（`paradis.workspaceSwitch.agents` の id）から、出すロゴを決める。ロゴの無い id は undefined。 */
+export function paradisAgentLogoForId(agentId: string): ParadisAgentLogo | undefined {
+	return agentId === 'claude' || agentId === 'codex' || agentId === 'antigravity' ? agentId : undefined;
+}

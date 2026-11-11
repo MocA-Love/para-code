@@ -47,6 +47,7 @@ interface IPinRecord {
 
 /** OSC タイトルで見分けるエージェントのうち、Claude 以外（前面に出ていたら触らない）。 */
 const OTHER_AGENT_SHELL_TYPES: ReadonlySet<TerminalShellType> = new Set<TerminalShellType>([
+	GeneralShellType.Antigravity,
 	GeneralShellType.Codex,
 	GeneralShellType.CommandCode,
 	GeneralShellType.Copilot,

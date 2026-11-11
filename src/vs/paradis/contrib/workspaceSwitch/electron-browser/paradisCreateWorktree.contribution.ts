@@ -146,7 +146,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 							localize('paradis.workspaceSwitch.agents.images.unsupported', "画像を渡さない（「新しいスペース」で画像を添えられない）"),
 						],
 						// allow-any-unicode-next-line
-						description: localize('paradis.workspaceSwitch.agents.images', "「新しいスペース」の指示に添えた画像の渡し方。省くと、識別子が claude なら mention、codex なら flag、それ以外は unsupported。")
+						description: localize('paradis.workspaceSwitch.agents.images', "「新しいスペース」の指示に添えた画像の渡し方。省くと、識別子が claude・antigravity なら mention、codex なら flag、それ以外は unsupported。")
+					},
+					promptFlag: {
+						type: 'string',
+						// allow-any-unicode-next-line
+						description: localize('paradis.workspaceSwitch.agents.promptFlag', "指示があるときだけ指示の直前に付けるフラグ。指示を値として取るフラグ（例: Antigravity CLI の -i）に使います。選んだモデル・エフォート・権限のフラグはこれより前に入ります。")
 					}
 				}
 			},

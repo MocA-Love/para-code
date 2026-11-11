@@ -70,6 +70,8 @@ const posixShellTypeMap = new Map<string, PosixShellType>([
 ]);
 
 const generalShellTypeMap = new Map<string, GeneralShellType>([
+	// PARA-PATCH: Antigravity CLI runs as a native `agy` process.
+	['agy', GeneralShellType.Antigravity],
 	['claude', GeneralShellType.Claude],
 	['codex', GeneralShellType.Codex],
 	['commandcode', GeneralShellType.CommandCode],

@@ -10,7 +10,7 @@ import assert from 'assert';
 import { decodeBase64 } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
-import { paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
+import { PARADIS_DEFAULT_AGENT_COMMANDS, paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisMobileAgentRefusal, paradisMobileFormAgents, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
 
 suite('paradisWorktreeCreate', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -273,6 +273,47 @@ suite('paradisWorktreeCreate', () => {
 			// allow-any-unicode-next-line
 			'mine --run \'スクショの赤い枠を直して @.para-code/pasted-images/1762876411000-1.png @.para-code/pasted-images/1762876411000-2.jpg\'',
 		]);
+	});
+
+	test('starts Antigravity CLI with the chosen flags before -i, and leaves -i out without an instruction', () => {
+		const antigravity = PARADIS_DEFAULT_AGENT_COMMANDS.find(agent => agent.id === 'antigravity')!;
+		const all = { modelId: 'claude-sonnet-4-6', effortId: 'high', permissionId: 'auto' };
+		const images = ['.para-code/pasted-images/1-1.png'];
+		assert.deepStrictEqual([
+			paradisBuildAgentCommand(antigravity, 'fix the test', PosixShellType.Zsh, all),
+			paradisBuildAgentCommand(antigravity, '', PosixShellType.Zsh, all),
+			paradisBuildAgentCommand(antigravity, '', PosixShellType.Zsh),
+			// エフォートを id に含むモデルではエフォートを付けない
+			paradisBuildAgentCommand(antigravity, 'go', GeneralShellType.PowerShell, { modelId: 'gemini-3.8-flash-low', effortId: 'max', permissionId: 'plan' }),
+			paradisBuildAgentCommand(antigravity, 'look', PosixShellType.Bash, undefined, images),
+			paradisBuildAgentCommand(antigravity, '', PosixShellType.Bash, undefined, images),
+		], [
+			'agy --model claude-sonnet-4-6 --effort high --mode auto -i \'fix the test\'',
+			'agy --model claude-sonnet-4-6 --effort high --mode auto',
+			'agy',
+			'agy --model gemini-3.8-flash-low --mode plan -i \' go\'',
+			'agy -i \'look @.para-code/pasted-images/1-1.png\'',
+			'agy -i \'@.para-code/pasted-images/1-1.png\'',
+		]);
+		const encoded = /-EncodedCommand (?<script>[A-Za-z0-9+/=]+)$/.exec(paradisBuildAgentCommand(antigravity, 'go', WindowsShellType.CommandPrompt, { permissionId: 'accept-edits' }))?.groups?.script ?? '';
+		const bytes = decodeBase64(encoded).buffer;
+		let script = '';
+		for (let index = 0; index + 1 < bytes.length; index += 2) {
+			script += String.fromCharCode(bytes[index] | (bytes[index + 1] << 8));
+		}
+		assert.ok(script.endsWith('; agy --mode accept-edits -i $paradisPrompt'), script);
+	});
+
+	test('keeps Antigravity CLI out of the agents sent to the mobile app, but not the other agents', () => {
+		const gemini = { id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' };
+		assert.deepStrictEqual({
+			sent: paradisMobileFormAgents([...PARADIS_DEFAULT_AGENT_COMMANDS, gemini]).map(agent => agent.id),
+			// 起動シートに無くても id で直接届いた要求は断る
+			refused: ['antigravity', 'claude', 'codex', 'gemini', 'none', undefined].map(id => paradisMobileAgentRefusal(id) !== undefined),
+		}, {
+			sent: ['claude', 'codex', 'gemini'],
+			refused: [true, false, false, false, false, false],
+		});
 	});
 
 	test('passes images without an instruction, and keeps the image flag behind the other flags', () => {

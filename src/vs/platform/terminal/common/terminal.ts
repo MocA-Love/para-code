@@ -191,6 +191,8 @@ export const enum WindowsShellType {
 export const enum GeneralShellType {
 	// PARA-PATCH: recognize OpenCode (and the OpenCode-compatible CLIs Para Code has learned) as an agent CLI.
 	Opencode = 'opencode',
+	// PARA-PATCH: recognize Antigravity CLI (`agy`, the successor of Gemini CLI) as an agent CLI.
+	Antigravity = 'antigravity',
 	Claude = 'claude',
 	Codex = 'codex',
 	CommandCode = 'commandcode',
