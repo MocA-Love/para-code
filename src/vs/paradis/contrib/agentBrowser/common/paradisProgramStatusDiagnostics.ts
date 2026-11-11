@@ -17,7 +17,7 @@
 // （terminal・command・session・token・env など）を含めない。
 
 import { isParadisSentryScrubbedWord, ParadisSpanAttributes, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { ParadisProgramStatusDropReason, ParadisProgramStatusForeground, ParadisProgramStatusProcessKind, paradisClaudeProcessIdentity } from './paradisProgramStatus.js';
+import { ParadisProgramStatusApp, ParadisProgramStatusDropReason, ParadisProgramStatusForeground, ParadisProgramStatusProcessKind, paradisClaudeProcessIdentity } from './paradisProgramStatus.js';
 
 /** 受け付けが閉じた理由。 */
 export type ParadisProgramStatusRunEnd =
@@ -75,7 +75,7 @@ export class ParadisProgramStatusRunStats {
 	private everOpened = false;
 	private cliVersion: string | undefined;
 	/** 受け付けを開いた相手。 */
-	private app: 'claude-code' | 'codex' | undefined;
+	private app: ParadisProgramStatusApp | undefined;
 	private sent = 0;
 	private applied = 0;
 	private muted = 0;
@@ -90,7 +90,7 @@ export class ParadisProgramStatusRunStats {
 	constructor(private readonly now: () => number = Date.now) { }
 
 	/** 受け付けを開いた（問い合わせに答えた、Ctrl+Z の後に開き直した、Codex の状態が届いた）。 */
-	opened(cliVersion: string | undefined, app: 'claude-code' | 'codex' = 'claude-code'): void {
+	opened(cliVersion: string | undefined, app: ParadisProgramStatusApp = 'claude-code'): void {
 		this.openedAt = this.now();
 		this.everOpened = true;
 		this.app = app;

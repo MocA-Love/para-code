@@ -106,4 +106,19 @@ import { paradisAgentCliFallbackDirs, paradisResolveAgentCli, paradisRunAgentCli
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	// ログインを待ち続ける CLI（agy）を、時間切れまで待たずに止める
+	test('stops the CLI as soon as its output asks to stop, without waiting for the timeout', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'paradis-agent-cli-'));
+		try {
+			const script = join(root, 'waiting-cli');
+			writeFileSync(script, `#!/bin/sh\necho 'Authentication required.' >&2\nsleep 30\n`);
+			chmodSync(script, 0o755);
+			const started = Date.now();
+			const result = await paradisRunAgentCli(script, [], { env: process.env, timeoutMs: 20_000, stopWhen: (_stdout, stderr) => stderr.includes('Authentication required') });
+			assert.deepStrictEqual({ stderr: result.stderr, stopped: result.stopped, exitCode: result.exitCode, quick: Date.now() - started < 5_000 }, { stderr: 'Authentication required.\n', stopped: true, exitCode: null, quick: true });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });

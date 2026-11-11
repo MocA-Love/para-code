@@ -207,6 +207,62 @@ export function paradisEmulatedScreenshotSize(
 	return { width: Math.max(1, Math.round(image.width * factor)), height: Math.max(1, Math.round(image.height * factor)) };
 }
 
+/** 撮影の範囲（CSS px）。 */
+interface IParadisCaptureRect {
+	readonly x: number;
+	readonly y: number;
+	readonly width: number;
+	readonly height: number;
+}
+
+/**
+ * 縮めて描いているタブの、見えている範囲・範囲指定（ビューポートの座標）の撮影を、文書の座標で描き直す撮影
+ * （`captureBeyondViewport`）の範囲に置き換える。ビューの面を写して引き伸ばすと、ペインの大きさぶんの細かさしか
+ * 残らない（小さい字がつぶれる）ため。見えている範囲は決めている幅×高さ（決めていなければ表示域の大きさ）、範囲
+ * 指定はその大きさのまま、どちらもスクロールの位置を足す。左上が見えている範囲の左上に重なるので、画像の座標は
+ * ページの座標（click_at などが使う）のまま。
+ *
+ * ページ全体・ページの外まで写す撮影（はじめから文書の座標で描き直している）と、寸法を測れない・ピンチで拡大して
+ * いる（見えている範囲が表示域とずれる）ときは undefined（今までの撮り方のまま）。
+ *
+ * @param metrics `Page.getLayoutMetrics` の結果。
+ */
+export function paradisEmulatedDocumentCaptureRect(
+	options: { readonly pageRect?: IParadisCaptureRect; readonly fullPage?: boolean; readonly captureBeyondViewport?: boolean },
+	device: IBrowserDeviceProfile,
+	metrics: unknown,
+): IParadisCaptureRect | undefined {
+	if (options.fullPage || options.captureBeyondViewport || !metrics || typeof metrics !== 'object') {
+		return undefined;
+	}
+	const visual = (metrics as { cssVisualViewport?: unknown }).cssVisualViewport;
+	const layout = (metrics as { cssLayoutViewport?: unknown }).cssLayoutViewport;
+	if (!visual || typeof visual !== 'object') {
+		return undefined;
+	}
+	const { pageX, pageY, scale } = visual as { pageX?: unknown; pageY?: unknown; scale?: unknown };
+	if (!isFiniteNumber(pageX) || !isFiniteNumber(pageY) || (scale !== undefined && (!isFiniteNumber(scale) || Math.abs(scale - 1) > 0.01))) {
+		return undefined;
+	}
+	const left = Math.max(0, pageX);
+	const top = Math.max(0, pageY);
+	if (options.pageRect) {
+		const { x, y, width, height } = options.pageRect;
+		return { x: left + x, y: top + y, width, height };
+	}
+	const { clientWidth, clientHeight } = (layout && typeof layout === 'object' ? layout : {}) as { clientWidth?: unknown; clientHeight?: unknown };
+	const width = device.width || (isFiniteNumber(clientWidth) ? clientWidth : 0);
+	const height = device.height || (isFiniteNumber(clientHeight) ? clientHeight : 0);
+	if (!(width > 0) || !(height > 0)) {
+		return undefined;
+	}
+	return { x: left, y: top, width, height };
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value);
+}
+
 /** `Emulation.setTouchEmulationEnabled` の `enabled`。読めなければ false。 */
 export function paradisParseTouchEmulation(params: unknown): boolean {
 	return !!params && typeof params === 'object' && (params as { enabled?: unknown }).enabled === true;

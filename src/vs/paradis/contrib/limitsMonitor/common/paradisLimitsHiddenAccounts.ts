@@ -82,14 +82,16 @@ export function paradisIsLimitsAccountHidden(hidden: ParadisLimitsHiddenAccounts
 	return hiddenEmail === undefined || account.email === undefined || hiddenEmail === account.email;
 }
 
-/** 隠したアカウントを両方のプロバイダの `accounts` から除いた使用量（macOS のメニューバー向け）。 */
+/** 隠したアカウントをすべてのプロバイダの `accounts` から除いた使用量（macOS のメニューバー向け）。 */
 export function paradisLimitsWithoutHidden(snapshot: IParadisLimitsSnapshot, hidden: ParadisLimitsHiddenAccounts): IParadisLimitsSnapshot {
 	if (hidden.size === 0) {
 		return snapshot;
 	}
+	const visible = (accounts: readonly IParadisLimitsAccount[]) => accounts.filter(account => !paradisIsLimitsAccountHidden(hidden, account));
 	return {
 		...snapshot,
-		claude: { ...snapshot.claude, accounts: snapshot.claude.accounts.filter(account => !paradisIsLimitsAccountHidden(hidden, account)) },
-		codex: { ...snapshot.codex, accounts: snapshot.codex.accounts.filter(account => !paradisIsLimitsAccountHidden(hidden, account)) },
+		claude: { ...snapshot.claude, accounts: visible(snapshot.claude.accounts) },
+		codex: { ...snapshot.codex, accounts: visible(snapshot.codex.accounts) },
+		...(snapshot.antigravity ? { antigravity: { ...snapshot.antigravity, accounts: visible(snapshot.antigravity.accounts) } } : {}),
 	};
 }

@@ -180,6 +180,27 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 		});
 	});
 
+	test('capture_screenshot asks for a sharp capture of a rect only when "sharp" is true', async () => {
+		const captured: IParadisCdpScreenshotOptions[] = [];
+		const call = {
+			evaluate: async () => undefined,
+			isCurrent: () => true,
+			capture: async (options: IParadisCdpScreenshotOptions) => { captured.push(options); return 'AA=='; },
+			save: async (path: string) => ({ ok: true as const, path }),
+		};
+		const rect = { x: 0, y: 0, width: 600, height: 200 };
+		await new ParadisBrowserCapture().call(call, { rect });
+		await new ParadisBrowserCapture().call(call, { rect, sharp: true });
+		const refused = await new ParadisBrowserCapture().call(call, { rect, sharp: 'yes' });
+		assert.deepStrictEqual({ captured, refused: isError(refused) }, {
+			captured: [
+				{ format: 'png', pageRect: rect },
+				{ format: 'png', sharp: true, pageRect: rect },
+			],
+			refused: true,
+		});
+	});
+
 	test('capture_screenshot save paths and the local folders it may write to', async () => {
 		const realpath = async (path: string) => {
 			if (path === '/work' || path === '/work/shots' || path === '/tmp' || path === '/') {

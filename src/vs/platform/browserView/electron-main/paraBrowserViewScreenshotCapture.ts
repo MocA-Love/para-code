@@ -8,7 +8,7 @@
 import { nativeImage, screen, type BrowserWindow, type NativeImage, type WebContents } from 'electron';
 import { VSBuffer } from '../../../base/common/buffer.js';
 import { ILogService } from '../../log/common/log.js';
-import { browserViewDocumentRectClip, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/paraBrowserViewScreenshot.js';
+import { browserViewDocumentRectClip, browserViewDocumentRectCrop, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/paraBrowserViewScreenshot.js';
 import { paraBrowserViewZoomShrink } from './paraBrowserViewZoom.js';
 
 /** The parts of a BrowserView the screenshot helpers read, each read again on every use. */
@@ -51,14 +51,18 @@ export class ParaBrowserViewScreenshotCapture {
 	): Promise<VSBuffer> {
 		const candidate = await captureBrowserViewWithRetry(
 			async (captureSignal, attempt) => {
-				const image = await this.captureBeyondViewportImage({
+				// Match the clip to the page zoom (including the shrink of a fixed-size tab)
+				const clip = browserViewDocumentRectClip(pageRect, this.host.webContents().getZoomFactor());
+				const captured = await this.captureBeyondViewportImage({
 					format,
 					...(format === 'jpeg' ? { quality } : {}),
 					captureBeyondViewport: true,
-					// Match the clip to the page zoom (including the shrink of a fixed-size tab)
-					clip: browserViewDocumentRectClip(pageRect, this.host.webContents().getZoomFactor()),
+					clip,
 				}, captureSignal);
 				browserViewThrowIfScreenshotAborted(captureSignal);
+				// Cut off the margin the clip got from being widened to whole zoomed units
+				const crop = captured.isEmpty() ? undefined : browserViewDocumentRectCrop(pageRect, clip, captured.getSize());
+				const image = crop ? captured.crop(crop) : captured;
 				return this.validateAndEncodeScreenshot(image, format, quality, route, attempt);
 			},
 			current => current.valid,

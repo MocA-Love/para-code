@@ -109,4 +109,22 @@ suite('paradisMobileLimitsSnapshot', () => {
 			nothingHidden: snapshot,
 		});
 	});
+
+	test('applies the same hiding and the same window rules to the Antigravity account', () => {
+		const window = { usedPercent: 9, resetsAt: 5, label: 'Gemini' };
+		const antigravity = { provider: 'antigravity', id: '/home/example/.gemini', homeLabel: '~/.gemini', active: true } as const;
+		const base = { fetchedAt: 10, claude: { accounts: [] }, codex: { accounts: [] } };
+		assert.deepStrictEqual({
+			hidden: paradisMobileLimitsSnapshot({ ...base, antigravity: { accounts: [{ ...antigravity, status: 'ok', scoped: [window] }] } }, new Map([['/home/example/.gemini', undefined]])),
+			signedOut: paradisMobileLimitsSnapshot({ ...base, antigravity: { accounts: [{ ...antigravity, status: 'relogin_required', scoped: [window], fetchedAt: 3 }] } }),
+			noAntigravity: paradisMobileLimitsSnapshot(base),
+			// PC の中だけで使うサインインの印（ファイルの時刻と大きさ）は送らない
+			signOutStampKept: paradisMobileLimitsSnapshot({ ...base, antigravitySignedOut: { stamp: '1:2|-|-' } }),
+		}, {
+			hidden: { ...base, antigravity: { accounts: [], hiddenAccounts: [{ provider: 'antigravity', id: '/home/example/.gemini', homeLabel: '~/.gemini' }] } },
+			signedOut: { ...base, antigravity: { accounts: [{ ...antigravity, status: 'relogin_required' }] } },
+			noAntigravity: base,
+			signOutStampKept: base,
+		});
+	});
 });

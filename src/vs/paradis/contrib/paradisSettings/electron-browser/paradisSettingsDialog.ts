@@ -590,10 +590,10 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		group: GROUP_AGENT_HOOKS,
 		key: 'paradis.agentHooks.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.agentHooks', "Claude Code と Codex に Para Code の hook を自動で入れる"),
+		label: localize('paradis.settings.agentHooks', "Claude Code・Codex・Antigravity CLI に Para Code の hook を自動で入れる"),
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.agentHooksDesc', "オフにすると、Para Code が設置した hook だけをその場で取り外します（自分で書いた hook は残ります）。エージェントの状態表示、完了・許可待ちの通知、モバイルへの通知、読み上げが弱くなります。"),
-		keywords: 'agent hooks claude codex hook status notification',
+		keywords: 'agent hooks claude codex antigravity agy hook status notification',
 		// allow-any-unicode-next-line
 		offWarning: localize('paradis.settings.agentHooksOffWarning', "オフの間は、Para Code が設置した hook を取り外し、置き直しません。エージェントの状態表示（実行中・許可待ち・完了）、完了や許可待ちの通知、モバイルへの通知とチャットの表示、読み上げが弱くなるか、働かなくなります。元に戻すには、このスイッチをオンにします。"),
 	},
@@ -1449,7 +1449,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		key: 'paradis.limitsMonitor.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.limitsMonitor', "利用上限の残りをタイトルバーに表示"),
-		keywords: 'limits monitor claude codex usage titlebar',
+		keywords: 'limits monitor claude codex antigravity agy usage titlebar',
 	},
 	{
 		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,

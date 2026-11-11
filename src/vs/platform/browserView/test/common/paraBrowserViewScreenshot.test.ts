@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { BROWSER_VIEW_SCREENSHOT_MAX_ENCODED_BYTES, browserViewDocumentRectClip, BROWSER_VIEW_SCREENSHOT_MAX_QUEUE_DEPTH, BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewBitmapHasVisibleAlpha, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotCoalesceKey, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, prepareBrowserViewScreenshotCapture } from '../../common/paraBrowserViewScreenshot.js';
+import { BROWSER_VIEW_SCREENSHOT_MAX_ENCODED_BYTES, browserViewDocumentRectClip, browserViewDocumentRectCrop, BROWSER_VIEW_SCREENSHOT_MAX_QUEUE_DEPTH, BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewBitmapHasVisibleAlpha, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotCoalesceKey, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, prepareBrowserViewScreenshotCapture } from '../../common/paraBrowserViewScreenshot.js';
 
 suite('BrowserView screenshot', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -26,6 +26,27 @@ suite('BrowserView screenshot', () => {
 			shrunk: { x: 574, y: 332, width: 48, height: 16, scale: 2.5583 },
 			coversElement: true,
 			invalidZoom: { ...rect, scale: 1 },
+		});
+	});
+
+	test('crops the margin of a document clip widened to whole zoomed units, so the image starts at the rect and has its size', () => {
+		const zoom = 0.3744791666666666;
+		// Full HD shrunk to 0.374 and scrolled to 299.08: the clip starts up to 1 / zoom CSS px earlier and ends later
+		const visible = { x: 0, y: 299.08, width: 1920, height: 1080 };
+		const visibleClip = browserViewDocumentRectClip(visible, zoom);
+		const rect = { x: 1700, y: 0, width: 220, height: 200 };
+		const rectClip = browserViewDocumentRectClip(rect, zoom);
+		const imageOf = (clip: { width: number; height: number; scale: number }, devicePixelRatio: number) => ({ width: Math.round(clip.width * clip.scale * devicePixelRatio), height: Math.round(clip.height * clip.scale * devicePixelRatio) });
+		assert.deepStrictEqual({
+			visible: browserViewDocumentRectCrop(visible, visibleClip, imageOf(visibleClip, 1)),
+			rect: browserViewDocumentRectCrop(rect, rectClip, imageOf(rectClip, 1)),
+			retina: browserViewDocumentRectCrop(rect, rectClip, imageOf(rectClip, 2)),
+			unzoomed: browserViewDocumentRectCrop(rect, browserViewDocumentRectClip(rect, 1), { width: 220, height: 200 }),
+		}, {
+			visible: { x: 0, y: 3, width: 1920, height: 1080 },
+			rect: { x: 2, y: 0, width: 220, height: 200 },
+			retina: { x: 3, y: 0, width: 440, height: 400 },
+			unzoomed: undefined,
 		});
 	});
 

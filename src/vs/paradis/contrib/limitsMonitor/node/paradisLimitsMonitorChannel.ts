@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// AIリミットモニターのshared processバックエンド（Codex の分）。
+// AIリミットモニターのshared processバックエンド（Codex と Antigravity CLI の分。Antigravity は paradisAntigravityUsage.ts）。
 //
 // Claude の分は、手元のウィンドウでは paradisClaudeAccountService.ts（別チャネル、手元の shared process）が
 // 持つ。以前は claude-swap (cswap) を呼んでいたが撤去した。このチャネルの getSnapshot は Claude を
@@ -60,6 +60,7 @@ import {
 	paradisNormalizeCodexLimitWindows
 } from '../common/paradisLimitsMonitor.js';
 import { IParadisClaudeStateRequest, PARADIS_CLAUDE_HOST_STATE_COMMAND } from '../common/paradisClaudeAccounts.js';
+import { IParadisAntigravityUsage, ParadisAntigravityUsageFetcher } from './paradisAntigravityUsage.js';
 import { ParadisClaudeHostUsage } from './paradisClaudeHostUsage.js';
 import { ParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
 
@@ -283,6 +284,8 @@ export class ParadisLimitsMonitorService {
 	/** 同時ログイン完了時の重複判定・確定を直列化する。 */
 	private codexFinalizationQueue = Promise.resolve();
 	private readonly cachedShellEnv: ParadisCachedShellEnv;
+	/** Antigravity CLI（agy）の分。起こす間隔と失敗の待ちはこの中で持つ。 */
+	private readonly antigravity: ParadisAntigravityUsageFetcher;
 
 	constructor(
 		private readonly logService: ILogService,
@@ -305,6 +308,7 @@ export class ParadisLimitsMonitorService {
 			Date.now,
 			reportParadisShellEnvDiagnosticError,
 		);
+		this.antigravity = new ParadisAntigravityUsageFetcher(logService, () => this.getExecEnv(), { homedir: this._homedir });
 	}
 
 	dispose(): void {
@@ -390,9 +394,26 @@ export class ParadisLimitsMonitorService {
 	}
 
 	private async doGetSnapshot(options: IParadisLimitsFetchOptions): Promise<IParadisLimitsSnapshot> {
-		const codex = await this.fetchCodexAccounts(options.codexHomes);
+		const [codex, antigravity] = await Promise.all([
+			this.fetchCodexAccounts(options.codexHomes),
+			this.fetchAntigravityUsage(options).catch((error): IParadisAntigravityUsage => {
+				this.logService.trace(`[ParadisLimitsMonitor] failed to read Antigravity usage: ${error}`);
+				return {};
+			}),
+		]);
 		// Claude はレンダラー側で paradisClaudeAccounts チャネルの結果を差し込む。
-		return { claude: { accounts: [] }, codex, fetchedAt: Date.now() };
+		return {
+			claude: { accounts: [] },
+			codex,
+			...(antigravity.snapshot ? { antigravity: antigravity.snapshot } : {}),
+			...(antigravity.signedOutStamp !== undefined ? { antigravitySignedOut: { stamp: antigravity.signedOutStamp } } : {}),
+			fetchedAt: Date.now(),
+		};
+	}
+
+	/** Antigravity CLI の分。テストで本物の agy を起こさないよう差し替えられる。 */
+	protected fetchAntigravityUsage(options: IParadisLimitsFetchOptions): Promise<IParadisAntigravityUsage> {
+		return this.antigravity.fetch(options.bypassCache === true, options.antigravity);
 	}
 
 	// ---------- Codex (auth.json + wham/usage) ----------
