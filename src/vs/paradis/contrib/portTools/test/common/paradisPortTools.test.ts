@@ -35,7 +35,7 @@ suite('ParadisPortTools', () => {
 			{ name: 'list_port_forwards', properties: ['include_detected'], required: [], additionalProperties: false, annotations: { readOnlyHint: true, openWorldHint: false } },
 			{ name: 'forward_port', properties: ['ports', 'remote_port', 'local_port', 'label', 'protocol'], required: [], additionalProperties: false, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
 			{ name: 'stop_port_forward', properties: ['ports', 'remote_port'], required: [], additionalProperties: false, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false } },
-			{ name: 'reforward_port', properties: ['ports', 'remote_port', 'align_local_port'], required: [], additionalProperties: false, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
+			{ name: 'reforward_port', properties: ['ports', 'remote_port', 'align_local_port', 'reason'], required: [], additionalProperties: false, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
 			{ name: 'clean_up_port_forwards', properties: ['mode', 'dry_run'], required: [], additionalProperties: false, annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false } },
 		]);
 		const forward = PARADIS_PORT_TOOLS[1].inputSchema as { properties: Record<string, { minimum?: number; maximum?: number }> };
@@ -53,6 +53,8 @@ suite('ParadisPortTools', () => {
 			paradisParsePortToolCall('forward_port', { ports: [{ remote_port: 21004 }, { remote_port: 21005, local_port: 31005, label: 'api' }] }),
 			paradisParsePortToolCall('stop_port_forward', { ports: [{ remote_port: 21004 }, { remote_port: 21005 }] }),
 			paradisParsePortToolCall('reforward_port', { ports: [{ remote_port: 21004 }, { remote_port: 21005, align_local_port: false }], align_local_port: true }),
+			paradisParsePortToolCall('reforward_port', { ports: [{ remote_port: 4545 }], reason: '  The page does not load ' }),
+			paradisParsePortToolCall('reforward_port', { remote_port: 4545, reason: '' }),
 			paradisParsePortToolCall('clean_up_port_forwards', {}),
 			paradisParsePortToolCall('clean_up_port_forwards', { mode: 'mismatched', dry_run: false }),
 		].map(result => result?.ok ? result.request : undefined);
@@ -66,6 +68,8 @@ suite('ParadisPortTools', () => {
 			{ request: { op: 'forward', items: [{ remotePort: 21004, localPort: 21004 }, { remotePort: 21005, localPort: 31005, label: 'api' }], batch: true }, changes: true },
 			{ request: { op: 'stop', remotePorts: [21004, 21005] }, changes: true },
 			{ request: { op: 'reforward', items: [{ remotePort: 21004, alignLocalPort: true }, { remotePort: 21005, alignLocalPort: false }], batch: true }, changes: true },
+			{ request: { op: 'reforward', items: [{ remotePort: 4545, alignLocalPort: false }], batch: true, reason: 'The page does not load' }, changes: true },
+			{ request: { op: 'reforward', items: [{ remotePort: 4545, alignLocalPort: false }], batch: false }, changes: true },
 			{ request: { op: 'cleanUp', mode: 'not_listening', dryRun: true }, changes: false },
 			{ request: { op: 'cleanUp', mode: 'mismatched', dryRun: false }, changes: true },
 		]);
@@ -93,6 +97,9 @@ suite('ParadisPortTools', () => {
 			parse('forward_port', { ports: Array.from({ length: 101 }, (_, index) => ({ remote_port: 1000 + index })) }),
 			parse('stop_port_forward', { remote_port: Array.from({ length: 101 }, (_, index) => 1000 + index) }),
 			parse('reforward_port', { ports: [] }),
+			parse('reforward_port', { remote_port: 80, reason: 42 }),
+			parse('reforward_port', { remote_port: 80, reason: 'x'.repeat(301) }),
+			parse('reforward_port', { ports: [{ remote_port: 80, reason: 'why' }] }),
 			parse('take_snapshot', {}),
 		], [
 			'error: "remote_port" must be an integer port number from 1 to 65535.',
@@ -115,6 +122,9 @@ suite('ParadisPortTools', () => {
 			'error: "ports" may list at most 100 forwards in one call. Split them into several calls of up to 100.',
 			'error: "remote_port" may list at most 100 ports in one call. Split them into several calls of up to 100.',
 			'error: "ports" must be a non-empty list of objects such as { "remote_port": 21004 }.',
+			'error: "reason" must be a string of up to 300 characters.',
+			'error: "reason" must be a string of up to 300 characters.',
+			'error: Unknown argument "ports[0].reason". Allowed: remote_port, align_local_port.',
 			'not mine',
 		]);
 	});

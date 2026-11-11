@@ -13,7 +13,10 @@
 // （IParadisAgentBrowserTabsService.askApproval）で何を・いくつ変えるかを見せ、承認されたときだけ行う。
 // 承認を待つ間に台帳が変わりうるので、承認の後に台帳を読み直し、「見せた対象」で「今もある」ものだけを変える。
 // 手元の受け口は 127.0.0.1 だけにする（`remote.localPortHost` が allInterfaces の窓では張らない。張った後も確かめる）。
-// リモートのホストは localhost だけを扱う。
+// 新しく張る転送のリモートのホストは localhost にする。外す・張り直すは、ポートパネルで 0.0.0.0 などへ張られた転送も扱う。
+//
+// 張り直しは手元の受け口を開き直すだけで、SSH の接続そのものが詰まっていると直らない。そのため張り直した後に手元から
+// 1 回つないで確かめ（reachable）、繋がらなかったポートを 5 分の間覚えて、同じポートをまた頼まれたら確認を出さずに返す。
 //
 // 追加・外す・張り直すは 1 回の呼び出しで複数の転送を受け、ダイアログは 1 回だけ出し、結果は 1 件ずつ返す。
 // 変える操作は、この窓の中で 1 つずつ順に行う（並行で来ても、前の確認と転送が終わってから次の確認を出す）。
@@ -25,13 +28,15 @@ import { Event } from '../../../../base/common/event.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { PARADIS_EPHEMERAL_PORT_START } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js';
-import { isLocalhost, RemoteTunnel, TunnelProtocol } from '../../../../platform/tunnel/common/tunnel.js';
+import { isAllInterfaces, isLocalhost, RemoteTunnel, TunnelProtocol } from '../../../../platform/tunnel/common/tunnel.js';
 import { Attributes, CandidatePort, Tunnel, TunnelProperties, TunnelSource, UserTunnelSource } from '../../../../workbench/services/remote/common/tunnelModel.js';
 import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
+import { ParadisPortReforwardProbeResult } from '../../portReforward/common/paradisPortReforward.js';
 import { paradisDefaultCleanUpForwards, paradisIsLoopbackLocalAddress, paradisMismatchedForwards, paradisPortLocalHostAllowed } from '../common/paradisPortSelection.js';
-import { IParadisPortForwardItem, IParadisPortReforwardItem, PARADIS_PORT_TOOLS_MAX_BATCH, PARADIS_PORT_TOOLS_METHOD, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort, paradisPortToolRequestChanges } from '../common/paradisPortTools.js';
+import { IParadisReforwardConfirm, IParadisReforwardConfirmRow, paradisReforwardConfirm, paradisReforwardOtherWindows } from '../common/paradisPortReforwardConfirm.js';
+import { IParadisPortForwardItem, IParadisPortReforwardItem, PARADIS_PORT_TOOLS_MAX_BATCH, PARADIS_PORT_TOOLS_METHOD, PARADIS_PORT_TOOLS_REASON_MAX_LENGTH, ParadisPortCleanUpMode, ParadisPortToolRequest, ParadisPortToolResult, paradisIsValidPort, paradisPortToolRequestChanges } from '../common/paradisPortTools.js';
 
 /** 確認のダイアログに並べる転送の行の上限。超えた分は「ほか N 件」にまとめる。 */
 const DIALOG_MAX_ROWS = 20;
@@ -39,15 +44,21 @@ const DIALOG_MAX_ROWS = 20;
 const DIALOG_TEXT_MAX_LENGTH = 80;
 /** 拒否の後の自動の断りを数える単位（ページ共有・端末の要求は止めない）。 */
 const APPROVAL_COOLDOWN_KEY = 'port-forward';
+/** 張り直した後の確かめで繋がらなかったポートを覚えておく時間。この間に同じポートを頼まれたら、確認を出さずに返す。 */
+export const PARADIS_REFORWARD_UNREACHABLE_MEMORY_MS = 5 * 60_000;
 
 const PANE_UNRESOLVED_MESSAGE = 'Para Code could not find the terminal pane of this request in its window (it may have been closed).';
 const NOT_SSH_MESSAGE = 'This terminal pane belongs to a Para Code window that is not connected over SSH, so there are no port forwards for these tools to use. They only work for agents in a terminal of an SSH window.';
 const LOCAL_HOST_MESSAGE = 'Para Code only opens port forwards that listen on 127.0.0.1, but this window is set to listen on all network interfaces (the user setting "remote.localPortHost" is "allInterfaces"). Nothing was changed. Ask the user to forward the port from the Ports panel.';
 const NOT_DETECTED_MESSAGE = 'This window has not detected which remote ports have a listening process yet (for example "remote.autoForwardPortsSource" is "output"), so Para Code cannot tell which forwards are unused and does not clean them up. Nothing was changed.';
 
-/** 張り直しの確認に添える 1 文（portReforward の張り直しは shared process で全部の窓の分をまとめて閉じる）。 */
-function otherWindowsNote(): string {
-	return localize('paradis.portTools.otherWindows', "張り直すときは、同じ SSH 先のほかの窓の同じポートの転送も一度まとめて閉じてから張り直します。");
+/** 張り直した後の確かめで繋がらなかったときに、エージェントへ返す英文。 */
+const UNREACHABLE_HINT = 'The forward was opened again, but a test connection from this computer through it did not reach the SSH host. Reforwarding only reopens the listener on this computer; the SSH connection of this window seems stuck. Ask the user to reconnect the window (for example Reload Window), and do not reforward again. If no process listens on the remote port (list_port_forwards "listening"), start the server first.';
+/** 確かめられなかったときに、エージェントへ返す英文。 */
+const UNTESTED_HINT = 'Para Code could not test the forward from this computer. If the page still does not load, the SSH connection of this window may be stuck: ask the user to reconnect the window (for example Reload Window) instead of reforwarding again.';
+
+function recentlyUnreachable(remotePort: number, minutesAgo: number): string {
+	return `Port ${remotePort} was forwarded again ${minutesAgo < 1 ? 'less than a minute' : `${minutesAgo} minute${minutesAgo === 1 ? '' : 's'}`} ago, and a test connection from this computer through it still did not reach the SSH host, so Para Code did not ask the user again: reforwarding only reopens the listener on this computer and cannot repair the SSH connection. Ask the user to reconnect the window (for example Reload Window), then try the page again.`;
 }
 
 /** 複数の転送を変えるなら 1 回にまとめるよう促す 1 文（断りに添える）。 */
@@ -84,10 +95,19 @@ export interface IParadisPortToolsWindow {
 	reforward(tunnel: Tunnel, localPort?: number): Promise<string | undefined>;
 	/** 手元のポートが空いているか。 */
 	isLocalPortFree(port: number): Promise<boolean>;
+	/** 転送ごとに、shared process でそれを使っている窓の数（この窓を含む）。分からなければその件は undefined。 */
+	referenceCounts(tunnels: readonly Tunnel[]): Promise<readonly (number | undefined)[]>;
+	/** 手元の受け口から 1 回つないで、SSH 先まで届くか確かめる。確かめられなければ undefined。 */
+	probe(localPort: number, remotePort: number): Promise<ParadisPortReforwardProbeResult | undefined>;
+}
+
+/** 確認の求め。張り直しの確認には、UI キットの確認で描く中身（案 C）を添える。 */
+export interface IParadisPortApprovalRequest extends IParadisAgentApprovalRequest {
+	readonly reforward?: IParadisReforwardConfirm;
 }
 
 /** 確認のダイアログを出す口。締め切りで閉じたときは 'timedOut' を返す。 */
-export type ParadisPortToolsAsk = (paneToken: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken) => Promise<ParadisAgentApprovalOutcome | 'timedOut'>;
+export type ParadisPortToolsAsk = (paneToken: string, request: IParadisPortApprovalRequest, cancellation: CancellationToken) => Promise<ParadisAgentApprovalOutcome | 'timedOut'>;
 
 function fail(error: string): ParadisPortToolResult {
 	return { ok: false, error };
@@ -161,7 +181,7 @@ function isRequest(value: unknown): value is ParadisPortToolRequest {
 		case 'list': return typeof request.includeDetected === 'boolean';
 		case 'forward': return isBatch(request.items, isForwardItem) && typeof request.batch === 'boolean';
 		case 'stop': return isBatch(request.remotePorts, paradisIsValidPort);
-		case 'reforward': return isBatch(request.items, isReforwardItem) && typeof request.batch === 'boolean';
+		case 'reforward': return isBatch(request.items, isReforwardItem) && typeof request.batch === 'boolean' && (request.reason === undefined || typeof request.reason === 'string');
 		case 'cleanUp': return (request.mode === 'not_listening' || request.mode === 'mismatched') && typeof request.dryRun === 'boolean';
 	}
 	return false;
@@ -172,12 +192,20 @@ export class ParadisPortToolsChannel implements IServerChannel {
 
 	/** 変える操作（確認と転送の変更）を 1 つずつ順に行う。 */
 	private readonly _changes = new Sequencer();
+	/** 張り直した後の確かめで繋がらなかったポートと、その時刻。 */
+	private readonly _unreachable = new Map<number, number>();
 
 	constructor(
 		private readonly _window: IParadisPortToolsWindow,
 		private readonly _paneExists: (paneToken: string) => boolean,
 		private readonly _ask: ParadisPortToolsAsk,
+		private readonly _now: () => number = Date.now,
 	) { }
+
+	/** 覚えている「繋がらなかった」を忘れる（窓の SSH の接続がつなぎ直されたとき）。 */
+	forgetUnreachable(): void {
+		this._unreachable.clear();
+	}
 
 	listen<T>(_ctx: unknown, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
@@ -220,7 +248,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 			case 'stop':
 				return this._stop(paneToken, request.remotePorts, cancellation);
 			case 'reforward':
-				return single(request.batch, await this._reforward(paneToken, request.items, cancellation));
+				return single(request.batch, await this._reforward(paneToken, request.items, request.reason, cancellation));
 			case 'cleanUp':
 				return request.mode === 'not_listening'
 					? this._cleanUpNotListening(paneToken, request.dryRun, cancellation)
@@ -236,10 +264,14 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const forwarded = this._window.forwarded();
 		const rows: object[] = forwarded.map(tunnel => rowOf(tunnel, detectionKnown));
 		if (includeDetected && candidates) {
+			// localhost の転送は、0.0.0.0・:: で listen しているサーバーにも届く。同じポートを 2 度出さない
+			// （検出が 0.0.0.0 と :: の両方で同じポートを返すこともある）
+			const listed: { readonly host: string; readonly port: number }[] = forwarded.map(tunnel => ({ host: tunnel.remoteHost, port: tunnel.remotePort }));
 			for (const candidate of candidates) {
-				if (forwarded.some(tunnel => tunnel.remotePort === candidate.port && (tunnel.remoteHost === candidate.host || (isLocalhost(tunnel.remoteHost) && isLocalhost(candidate.host))))) {
+				if (listed.some(item => item.port === candidate.port && paradisSameRemoteHost(item.host, candidate.host))) {
 					continue;
 				}
+				listed.push({ host: candidate.host, port: candidate.port });
 				rows.push({ forwarded: false, remote_host: candidate.host, remote_port: candidate.port, listening: true, process: candidate.detail ?? null, pid: candidate.pid ?? null });
 			}
 		}
@@ -377,12 +409,13 @@ export class ParadisPortToolsChannel implements IServerChannel {
 
 	// --- 張り直す ---
 
-	private async _reforward(paneToken: string, items: readonly IParadisPortReforwardItem[], cancellation: CancellationToken): Promise<ParadisPortToolResult> {
+	private async _reforward(paneToken: string, items: readonly IParadisPortReforwardItem[], reason: string | undefined, cancellation: CancellationToken): Promise<ParadisPortToolResult> {
 		if (!this._localHostAllowed()) {
 			return fail(LOCAL_HOST_MESSAGE);
 		}
 		const results = new Map<number, ParadisPortItemResult>();
 		const targets: { readonly tunnel: Tunnel; readonly changesLocal: boolean }[] = [];
+		const inUse: Tunnel[] = [];
 		for (const item of items) {
 			const remotePort = item.remotePort;
 			const tunnel = this._find(remotePort);
@@ -394,34 +427,41 @@ export class ParadisPortToolsChannel implements IServerChannel {
 				results.set(remotePort, { remote_port: remotePort, ok: false, error: `The forward of port ${remotePort} is provided by the remote environment and cannot be forwarded again.` });
 				continue;
 			}
+			// 少し前に張り直しても繋がらなかったポートは、もう一度張り直しても直らない。利用者に承認させない
+			const unreachableAt = this._recentlyUnreachableAt(remotePort);
+			if (unreachableAt !== undefined) {
+				results.set(remotePort, { remote_port: remotePort, ok: false, error: recentlyUnreachable(remotePort, Math.floor((this._now() - unreachableAt) / 60_000)) });
+				continue;
+			}
 			const changesLocal = item.alignLocalPort && tunnel.localPort !== remotePort;
 			if (changesLocal && !await this._window.isLocalPortFree(remotePort)) {
+				// 片付けの mismatched と同じく、外したものは確認と結果の両方で見せる
 				results.set(remotePort, { remote_port: remotePort, ok: false, error: localPortInUse(remotePort) });
+				inUse.push(tunnel);
 				continue;
 			}
 			targets.push({ tunnel, changesLocal });
 		}
-		const all = () => ok({ results: items.map(item => results.get(item.remotePort)!) });
+		const all = () => ok({
+			results: items.map(item => results.get(item.remotePort)!),
+			...(inUse.length ? { local_port_in_use: inUse.map(tunnel => tunnel.remotePort) } : {}),
+		});
 		if (targets.length === 0) {
 			return all();
 		}
-		const anyChangesLocal = targets.some(target => target.changesLocal);
+		const confirm = await this._reforwardConfirm(targets, inUse, paradisSanitizeDisplayText(reason, PARADIS_PORT_TOOLS_REASON_MAX_LENGTH), true);
 		const outcome = await this._ask(paneToken, {
-			messageTemplate: pane => localize('paradis.portTools.reforward.message', "{0} のエージェントが、ポートの転送を {1} 件張り直そうとしています", pane, targets.length),
-			detail: [
-				...dialogRows(targets.map(({ tunnel, changesLocal }) => changesLocal
-					? localize('paradis.portTools.reforward.alignRow', "{0}：手元の番号を {1} から {2} に変えます", this._describe(tunnel), tunnel.localPort ?? '?', tunnel.remotePort)
-					: localize('paradis.portTools.reforward.keepRow', "{0}：手元の番号は {1} のまま", this._describe(tunnel), tunnel.localPort ?? '?')), targets.map(({ tunnel }) => tunnel.remotePort)),
-				...(anyChangesLocal ? [localize('paradis.portTools.reforward.alignEffect', "手元の番号を変える転送は、元の番号を開いているブラウザのタブが繋がらなくなります。")] : []),
-				otherWindowsNote(),
-			],
-			approveLabel: localize('paradis.portTools.reforward.approve', "{0} 件を張り直す", targets.length),
+			messageTemplate: () => confirm.title,
+			detail: reforwardDetail(confirm),
+			approveLabel: confirm.approveLabel,
 			cooldownKey: APPROVAL_COOLDOWN_KEY,
+			reforward: confirm,
 		}, cancellation);
 		if (outcome !== 'approve') {
 			return fail(refusal(outcome));
 		}
 		// 1 本ずつ順に（同じ SSH 先の shared process の転送をまとめて閉じる処理どうしを交差させない）。1 本の失敗で残りを止めない
+		const reopened: { readonly remotePort: number; readonly localPort: number | undefined }[] = [];
 		for (const { tunnel, changesLocal } of targets) {
 			const remotePort = tunnel.remotePort;
 			const current = this._find(remotePort);
@@ -433,19 +473,70 @@ export class ParadisPortToolsChannel implements IServerChannel {
 				results.set(remotePort, { remote_port: remotePort, ok: false, error: localPortInUse(remotePort) });
 				continue;
 			}
+			// 番号を変えない行は、今の番号のまま開き直せたかを見る（張り直しの一瞬にほかのアプリに取られることがある）
+			const expectedLocal = changesLocal ? remotePort : current.localPort;
 			const result = await this._realign(current, changesLocal ? remotePort : undefined);
-			results.set(remotePort, result.error
-				? { remote_port: remotePort, ok: false, error: result.error }
-				: {
-					remote_port: remotePort,
-					ok: true,
-					reforwarded: true,
-					local_address: result.after?.localAddress ?? null,
-					local_port: result.after?.localPort ?? null,
-					...(changesLocal ? { local_port_taken: result.after?.localPort !== remotePort } : {}),
-				});
+			if (result.error) {
+				results.set(remotePort, { remote_port: remotePort, ok: false, error: result.error });
+				continue;
+			}
+			const localPort = result.after?.localPort;
+			results.set(remotePort, {
+				remote_port: remotePort,
+				ok: true,
+				reforwarded: true,
+				local_address: result.after?.localAddress ?? null,
+				local_port: localPort ?? null,
+				local_port_taken: localPort !== expectedLocal,
+			});
+			reopened.push({ remotePort, localPort });
 		}
+		// 開き直した転送を、手元から 1 回ずつつないで確かめる（詰まっていると 1 本に数十秒かかるので、まとめて並べて待つ）
+		const probes = await Promise.all(reopened.map(({ remotePort, localPort }) => localPort !== undefined ? this._window.probe(localPort, remotePort) : Promise.resolve(undefined)));
+		reopened.forEach(({ remotePort }, index) => {
+			const probe = probes[index];
+			const reachable = probe === undefined ? null : probe === 'reachable';
+			if (reachable === false) {
+				this._unreachable.set(remotePort, this._now());
+			} else {
+				this._unreachable.delete(remotePort);
+			}
+			const result = results.get(remotePort);
+			if (result?.ok) {
+				results.set(remotePort, { ...result, reachable, ...(reachable === true ? {} : { hint: reachable === false ? UNREACHABLE_HINT : UNTESTED_HINT }) });
+			}
+		});
 		return all();
+	}
+
+	/** 少し前に張り直しても繋がらなかったなら、その時刻。 */
+	private _recentlyUnreachableAt(remotePort: number): number | undefined {
+		const at = this._unreachable.get(remotePort);
+		if (at === undefined) {
+			return undefined;
+		}
+		if (this._now() - at >= PARADIS_REFORWARD_UNREACHABLE_MEMORY_MS) {
+			this._unreachable.delete(remotePort);
+			return undefined;
+		}
+		return at;
+	}
+
+	/** 張り直しの確認の中身（案 C）。ほかの窓の影響は shared process の参照の数から決める。 */
+	private async _reforwardConfirm(targets: readonly { readonly tunnel: Tunnel; readonly changesLocal: boolean }[], inUse: readonly Tunnel[], reason: string | undefined, asksReason: boolean): Promise<IParadisReforwardConfirm> {
+		const counts = await this._window.referenceCounts(targets.map(({ tunnel }) => tunnel));
+		return paradisReforwardConfirm({
+			rows: targets.map(({ tunnel, changesLocal }): IParadisReforwardConfirmRow => ({
+				remotePort: tunnel.remotePort,
+				localPort: tunnel.localPort,
+				changesLocal,
+				label: paradisSanitizeDisplayText(tunnel.name, DIALOG_TEXT_MAX_LENGTH),
+			})),
+			inUse: inUse.map(tunnel => ({ remotePort: tunnel.remotePort, localPort: tunnel.localPort })),
+			reason,
+			asksReason,
+			otherWindows: paradisReforwardOtherWindows(counts),
+		});
 	}
 
 	// --- 片付け ---
@@ -511,16 +602,14 @@ export class ParadisPortToolsChannel implements IServerChannel {
 				...(dryRun && targets.length > 0 ? { hint: 'Call again with dry_run false to forward these again with matching local ports after the user approves.' } : {}),
 			});
 		}
+		const inUseTunnels = candidates.filter(tunnel => inUse.includes(tunnel.remotePort));
+		const confirm = await this._reforwardConfirm(targets.map(tunnel => ({ tunnel, changesLocal: true })), inUseTunnels, undefined, false);
 		const outcome = await this._ask(paneToken, {
-			messageTemplate: pane => localize('paradis.portTools.align.message', "{0} のエージェントが、手元の番号が違う転送 {1} 件を、番号を揃えて張り直そうとしています", pane, targets.length),
-			detail: [
-				...dialogRows(targets.map(tunnel => localize('paradis.portTools.align.row', "{0}: 手元 {1} → {2}", tunnel.remotePort, tunnel.localPort ?? '?', tunnel.remotePort)), targets.map(tunnel => tunnel.remotePort)),
-				...(inUse.length ? [localize('paradis.portTools.align.inUse', "手元の番号が使用中のため張り直さないもの: {0}", inUse.join(', '))] : []),
-				localize('paradis.portTools.align.effect', "張り直すと、元の手元の番号を開いているブラウザのタブは繋がらなくなります。"),
-				otherWindowsNote(),
-			],
-			approveLabel: localize('paradis.portTools.align.approve', "{0} 件を張り直す", targets.length),
+			messageTemplate: () => confirm.title,
+			detail: reforwardDetail(confirm),
+			approveLabel: confirm.approveLabel,
 			cooldownKey: APPROVAL_COOLDOWN_KEY,
+			reforward: confirm,
 		}, cancellation);
 		if (outcome !== 'approve') {
 			return fail(refusal(outcome));
@@ -565,9 +654,9 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		return { after };
 	}
 
-	/** SSH 先の localhost の、そのポートの転送。 */
+	/** SSH 先の localhost（または 0.0.0.0・:: など全部のインターフェース）の、そのポートの転送。 */
 	private _find(remotePort: number): Tunnel | undefined {
-		return this._window.forwarded().find(tunnel => tunnel.remotePort === remotePort && isLocalhost(tunnel.remoteHost));
+		return this._window.forwarded().find(tunnel => tunnel.remotePort === remotePort && (isLocalhost(tunnel.remoteHost) || isAllInterfaces(tunnel.remoteHost)));
 	}
 
 	private _localHostAllowed(): boolean {
@@ -581,6 +670,31 @@ export class ParadisPortToolsChannel implements IServerChannel {
 			? localize('paradis.portTools.rowWithLabel', "{0} → {1}（{2}）", tunnel.remotePort, address, label)
 			: localize('paradis.portTools.row', "{0} → {1}", tunnel.remotePort, address);
 	}
+}
+
+/**
+ * リモートのホストが同じサーバーを指すか。localhost の転送は 0.0.0.0・:: で listen しているサーバーにも届くので、
+ * localhost の別名と全部のインターフェースの別名はどれも同じものとみなす。
+ */
+export function paradisSameRemoteHost(a: string, b: string): boolean {
+	const local = (host: string) => isLocalhost(host) || isAllInterfaces(host);
+	return a === b || (local(a) && local(b));
+}
+
+/**
+ * 張り直しの確認の中身を、文字だけの行にしたもの（UI キットの確認が描けないときの代わりと、テストで見る中身）。
+ * 全部の転送を並べ、{@link DIALOG_MAX_ROWS} を超えた分は「ほか N 件: 番号…」の 1 行にまとめる。
+ */
+function reforwardDetail(confirm: IParadisReforwardConfirm): string[] {
+	return [
+		...(confirm.reason !== undefined ? [confirm.reason] : []),
+		confirm.summary,
+		...dialogRows(confirm.all.map(row => row.text), confirm.all.map(row => row.port)),
+		...confirm.inUse,
+		`${confirm.thisWindowHeading}: ${confirm.thisWindow}`,
+		`${confirm.otherWindowsHeading}: ${confirm.otherWindows.text}`,
+		confirm.denyNote,
+	];
 }
 
 /**

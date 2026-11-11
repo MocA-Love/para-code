@@ -1,0 +1,143 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The body of the port reforward confirmation (paradisPortReforwardConfirmDialog.ts, Q614 plan C), inside the UI kit's
+	confirmation dialog (paradisConfirmDialog.css). The heading never shrinks: upstream's dialog.css lets the message
+	container scroll, but its children are flex items that shrink to their min-height, so a tall body would draw over the
+	heading. Every child keeps its height and the container scrolls instead; the lists scroll inside their own box.
+*/
+
+.monaco-dialog-box.paradis-port-reforward-confirm .dialog-message-row .dialog-message-container > * {
+	flex-shrink: 0;
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size100);
+	padding-top: var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 20px;
+	color: var(--vscode-paradis-text);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-body p {
+	margin: 0;
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-who,
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-note {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-who > .codicon,
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-note > .codicon {
+	flex: 0 0 auto;
+	/* Center the 16px icon on the first 18px line. */
+	margin-top: 1px;
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-who-text,
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-note > div {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-who-text > div:first-child {
+	color: var(--vscode-paradis-text);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-ports {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-port {
+	font-family: var(--monaco-monospace-font);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-toggle {
+	cursor: pointer;
+	text-decoration: none;
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-list {
+	max-height: 180px;
+	overflow-y: auto;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background-color: var(--vscode-paradis-sunken);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 20px;
+	overflow-wrap: anywhere;
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-list[hidden] {
+	display: none;
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-list > .changes {
+	color: var(--vscode-paradis-warning);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-split {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: var(--vscode-spacing-size80);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-effect {
+	min-width: 0;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background-color: var(--vscode-paradis-raised);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-effect-heading {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	margin-bottom: var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-effect-heading.warning > .codicon {
+	color: var(--vscode-paradis-warning);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-effect-heading.success > .codicon {
+	color: var(--vscode-paradis-success);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-effect-heading.info > .codicon {
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-effect > p {
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+	overflow-wrap: anywhere;
+}
+
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-deny {
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+	color: var(--vscode-paradis-textMuted);
+}

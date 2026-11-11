@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ISharedTunnelsService } from '../../../../../platform/tunnel/common/tunnel.js';
 import { ParadisSharedTunnelsService } from '../../../../../platform/tunnel/node/paradisSharedTunnelsService.js';
-import { PARADIS_PORT_REFORWARD_FORCE_CLOSE } from '../../common/paradisPortReforward.js';
+import { PARADIS_PORT_REFORWARD_FORCE_CLOSE, PARADIS_PORT_REFORWARD_PROBE, PARADIS_PORT_REFORWARD_REFERENCES } from '../../common/paradisPortReforward.js';
 import { IParadisWindowWorkspaces, ParadisPortReforwardChannel } from '../../node/paradisPortReforward.sharedProcess.js';
 
 suite('ParadisPortReforwardChannel', () => {
@@ -25,6 +25,7 @@ suite('ParadisPortReforwardChannel', () => {
 			closed.push(`${authority} ${remoteHost}:${remotePort}`);
 			return true;
 		};
+		tunnels.referenceCount = (authority, remoteHost, remotePort) => authority === 'ssh-remote+box' && remotePort !== 4000 ? remotePort - 2999 : undefined;
 		return tunnels;
 	}
 
@@ -69,5 +70,35 @@ suite('ParadisPortReforwardChannel', () => {
 				notAWindow: 'refused: The remote is not the one of the calling window',
 			}
 		);
+	});
+
+	test('tells how many windows use each forward and tests a local port, only for the remote of the window that asked', async () => {
+		const probed: number[] = [];
+		const channel = new ParadisPortReforwardChannel<string>(createTunnels([]), windows, new NullLogService(), async (localPort, remotePort) => {
+			probed.push(localPort, remotePort);
+			return 'reset';
+		});
+		const attempt = async (call: () => Promise<unknown>) => {
+			try {
+				return await call();
+			} catch (err) {
+				return `refused: ${(err as Error).message}`;
+			}
+		};
+		assert.deepStrictEqual({
+			references: await attempt(() => channel.call('window:1', PARADIS_PORT_REFORWARD_REFERENCES, { authority: 'ssh-remote+box', remoteHost: 'localhost', remotePorts: [3000, 3001, 4000] })),
+			otherRemote: await attempt(() => channel.call('window:1', PARADIS_PORT_REFORWARD_REFERENCES, { authority: 'ssh-remote+other', remoteHost: 'localhost', remotePorts: [3000] })),
+			malformed: await attempt(() => channel.call('window:1', PARADIS_PORT_REFORWARD_REFERENCES, { authority: 'ssh-remote+box', remoteHost: 'localhost', remotePorts: [] })),
+			probe: await attempt(() => channel.call('window:1', PARADIS_PORT_REFORWARD_PROBE, { authority: 'ssh-remote+box', localPort: 21004, remotePort: 4545 })),
+			probeFromLocalWindow: await attempt(() => channel.call('window:4', PARADIS_PORT_REFORWARD_PROBE, { authority: 'ssh-remote+box', localPort: 21005, remotePort: 4545 })),
+			probed,
+		}, {
+			references: [1, 2, null],
+			otherRemote: 'refused: The remote is not the one of the calling window',
+			malformed: 'refused: Invalid references request',
+			probe: 'reset',
+			probeFromLocalWindow: 'refused: The remote is not the one of the calling window',
+			probed: [21004, 4545],
+		});
 	});
 });

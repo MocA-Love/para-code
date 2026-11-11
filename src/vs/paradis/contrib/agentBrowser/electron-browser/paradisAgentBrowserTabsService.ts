@@ -151,6 +151,26 @@ export interface IParadisAgentApprovalRequest {
 	 * （モバイル端末の要求は端末ごとに数え、ページ共有は止めない）。
 	 */
 	readonly cooldownKey?: string;
+	/**
+	 * 本家の Dialog の代わりに確認を出す口（UI キットの確認で本文を組む求め。ポートの張り直しなど）。
+	 * 拒否・Esc・閉じるは 'deny' か undefined を返す。2 つ目の選択肢（{@link alternativeLabel}）とは併用しない。
+	 * 締め切り・速押しの聞き直し・⌘D の検知・自動の断りはこれまでどおりこのサービスが行う。
+	 */
+	readonly present?: (presentation: IParadisAgentApprovalPresentation) => Promise<'approve' | 'deny' | undefined>;
+}
+
+/** {@link IParadisAgentApprovalRequest.present} に渡すもの。 */
+export interface IParadisAgentApprovalPresentation {
+	/** `messageTemplate` にペインを入れた見出し。 */
+	readonly message: string;
+	/** 求めたペインを示す語句（「『題名』（ターミナル 3・スペース『x』）」など）。 */
+	readonly paneLabel: string;
+	/** 箱に付けるクラス（表示されたかをこのサービスが見張る）。 */
+	readonly markerClass: string;
+	/** 速押しで聞き直すときに添える文。 */
+	readonly notice?: string;
+	/** 取り消されたら閉じる。 */
+	readonly token: CancellationToken;
 }
 
 export type ParadisAgentApprovalChoice = 'approve' | 'alternative';
@@ -1126,8 +1146,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		}
 		buttons.push({ label: request.approveLabel, run: () => 'approve' });
 
-		const message = request.messageTemplate(this._describePane(token));
+		const paneLabel = this._describePane(token);
+		const message = request.messageTemplate(paneLabel);
 		let detail = request.detail;
+		let notice: string | undefined;
 		this._requestAttention();
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const marker = `paradis-agent-approval-${++this._approvalSerial}`;
@@ -1155,14 +1177,16 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 					}
 				}
 				// cancelButton を付けないので、Esc と閉じるボタンは結果なし（＝拒否）になる。
-				const { result } = await this._dialogService.prompt<Choice>({
-					type: 'warning',
-					message,
-					detail: detail.join('\n\n'),
-					buttons,
-					custom: { classes: ['paradis-agent-approval-dialog', marker] },
-					token: cancellation,
-				});
+				const { result } = request.present
+					? { result: await request.present({ message, paneLabel, markerClass: marker, notice, token: cancellation }) }
+					: await this._dialogService.prompt<Choice>({
+						type: 'warning',
+						message,
+						detail: detail.join('\n\n'),
+						buttons,
+						custom: { classes: ['paradis-agent-approval-dialog', marker] },
+						token: cancellation,
+					});
 				if (cancellation.isCancellationRequested) {
 					return 'cancelled';
 				}
@@ -1177,10 +1201,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 				watch.dispose();
 			}
 			// 表示直後の承認や ⌘D での承認は、ほかの場所へ打っていたキーが当たった可能性が高い。もう一度聞く。
-			detail = [
-				localize('paradis.agentTabs.approval.tooFast', "表示された直後、またはキーボードのショートカットで押されたため、もう一度確認しています。ボタンをクリックして答えてください。"),
-				...request.detail,
-			];
+			notice = localize('paradis.agentTabs.approval.tooFast', "表示された直後、またはキーボードのショートカットで押されたため、もう一度確認しています。ボタンをクリックして答えてください。");
+			detail = [notice, ...request.detail];
 		}
 		return 'unanswered';
 	}

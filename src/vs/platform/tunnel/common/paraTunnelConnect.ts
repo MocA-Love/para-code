@@ -5,6 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { Emitter, Event } from '../../../base/common/event.js';
 import { ISocket } from '../../../base/parts/ipc/common/ipc.net.js';
 import { ILogService } from '../../log/common/log.js';
 
@@ -137,15 +138,46 @@ export async function paraConnectTunnelWithRetry<T extends IParaTunnelProtocol>(
 	timeoutMs: number = PARA_TUNNEL_CONNECT_TIMEOUT
 ): Promise<T> {
 	try {
-		return await paraConnectTunnelWithTimeout(connect, target, logService, timeoutMs);
+		const protocol = await paraConnectTunnelWithTimeout(connect, target, logService, timeoutMs);
+		onDidTunnelHandshake.fire({ target, outcome: 'connected' });
+		return protocol;
 	} catch (err) {
 		if (!(err instanceof ParaTunnelConnectTimeoutError)) {
+			onDidTunnelHandshake.fire({ target, outcome: 'failed' });
 			throw err;
 		}
+		onDidTunnelHandshake.fire({ target, outcome: 'timedOut' });
 		logService.warn(`[ParaTunnel] Retrying the tunnel to ${target} once after the first attempt timed out.`);
-		return paraConnectTunnelWithTimeout(connect, target, logService, timeoutMs);
+		try {
+			const protocol = await paraConnectTunnelWithTimeout(connect, target, logService, timeoutMs);
+			onDidTunnelHandshake.fire({ target, outcome: 'connected' });
+			return protocol;
+		} catch (retryErr) {
+			onDidTunnelHandshake.fire({ target, outcome: 'failed' });
+			throw retryErr;
+		}
 	}
 }
+
+/**
+ * How a handshake of {@link paraConnectTunnelWithRetry} went: `connected` (the remote agent reached
+ * the remote port), `failed` (it answered with an error, or the retry failed too) or `timedOut`
+ * (the first attempt ran out of time; the retry follows).
+ */
+export interface IParaTunnelHandshake {
+	/** The `target` passed to {@link paraConnectTunnelWithRetry} (`localhost:<remote port>` for local forwards). */
+	readonly target: string;
+	readonly outcome: 'connected' | 'failed' | 'timedOut';
+}
+
+const onDidTunnelHandshake = new Emitter<IParaTunnelHandshake>();
+
+/**
+ * Fires for every handshake of a forwarded connection in this process. Lets a test connection to a
+ * forward's local port learn whether the SSH side was reached: the local listener accepts the TCP
+ * connection before the handshake, so the client alone cannot tell (paradisPortReforwardProbe.ts).
+ */
+export const onParaTunnelHandshake: Event<IParaTunnelHandshake> = onDidTunnelHandshake.event;
 
 /**
  * Close a tunnel protocol nobody is going to use, together with its socket.
