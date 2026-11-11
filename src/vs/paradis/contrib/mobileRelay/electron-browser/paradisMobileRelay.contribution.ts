@@ -84,7 +84,7 @@ import { ParadisMobileBackgroundThrottlingKeeper, paradisCreateMobileBackgroundT
 import { IChatService } from '../../../../workbench/contrib/chat/common/chatService/chatService.js';
 // モバイルの scm / fs の新しい種類を別ファイルで受ける処理（登録表。W2-17）
 import './paradisMobileRequestHandlerRegistrations.js';
-import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
+import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 /** PCフォーカス状態のハートビート間隔。shared process側のTTL（WINDOW_FOCUS_TTL_MS=90秒）より十分短く保つ。 */
@@ -1064,7 +1064,11 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		pairingListener.value = this.service.onPairingEvent(async event => {
 			if (event.kind === 'awaiting-approval') {
 				pairingFlow.beginConfirm();
+				// スマホからの求めは窓が後ろにあっても来るので、Dock で知らせる（フォーカスは奪わない）
+				paradisNotifyConfirmation(this.hostService, mainWindow);
 				const { confirmed } = await this.paradisDialogService.confirm({
+					// スマホから求められた承認なので、Enter では通さない
+					focusCancel: true,
 					type: 'info',
 					message: localize('paradis.mobile.confirmSas', "モバイルデバイス「{0}」を接続しますか？", event.proposedName),
 					detail: localize('paradis.mobile.confirmSasDetail', "モバイルアプリに表示されている確認コードが次の6桁と一致することを確認してください:\n\n    {0}\n\n一致しない場合は接続を拒否してください（第三者による中間者攻撃の可能性があります）。", event.sasCode),

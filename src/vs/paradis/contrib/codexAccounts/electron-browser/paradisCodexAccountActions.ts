@@ -330,6 +330,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		const chosen = offer.pendingUnknown ? undefined : credit;
 		const name = this.context?.displayName(account) ?? account.homeLabel ?? homePath;
 		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			type: Severity.Warning,
 			message: offer.pendingUnknown
 				? localize('paradis.codexAccounts.resetConfirmRetry', "前回のリセットの結果を確認しますか？")

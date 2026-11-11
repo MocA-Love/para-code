@@ -406,6 +406,8 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 			}
 			if (!approved.includes(approvalKey)) {
 				const result = await paradisDialogService.confirm({
+					// リポジトリが求める自動実行の承認なので、Enter では通さない
+					focusCancel: true,
 					// allow-any-unicode-next-line
 					message: localize('paradis.terminal.autoRunConfirm', "リポジトリのプリセット「{0}」を自動実行しますか？", preset.name),
 					detail: paradisPresetCommandSignature(preset),

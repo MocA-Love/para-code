@@ -16,7 +16,8 @@ import { ResultKind } from '../../../../../platform/keybinding/common/keybinding
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IHostService } from '../../../../../workbench/services/host/browser/host.js';
 import { PARADIS_CONFIRM_DIALOG_CLASS } from '../../browser/paradisConfirmDialog.js';
-import { IParadisConfirmation, ParadisDialogService } from '../../browser/paradisDialogService.js';
+import { IParadisConfirmation, ParadisDialogService, paradisNotifyConfirmation } from '../../browser/paradisDialogService.js';
+import { FocusMode } from '../../../../../platform/native/common/native.js';
 
 /** 本家のダイアログと確認の CSS（長い補足のスクロールを見るため）。 */
 const STYLESHEETS: AppResourcePath[] = [
@@ -94,6 +95,27 @@ suite('Paradis dialog service (confirm)', () => {
 			destructiveClick: { acted: undefined, result: { confirmed: true, checkboxChecked: undefined } },
 			closed: true,
 		});
+	});
+
+	test('an approval asked by someone else (focusCancel) starts on Cancel so Enter does not approve, but keeps the primary color', async () => {
+		const approval = { message: 'モバイルデバイス「iPhone」を接続しますか？', detail: '確認コード: 123456', primaryButton: '接続を承認', cancelButton: '拒否', focusCancel: true };
+		const enter = await answer(approval, () => ({ primary: button('接続を承認').classList.contains('paradis-button-primary'), danger: button('接続を承認').classList.contains('paradis-button-danger'), focused: press('Enter') }));
+		const click = await answer(approval, () => button('接続を承認').click());
+		assert.deepStrictEqual({ enter, click }, {
+			enter: { acted: { primary: true, danger: false, focused: '拒否' }, result: { confirmed: false, checkboxChecked: undefined } },
+			click: { acted: undefined, result: { confirmed: true, checkboxChecked: undefined } },
+		});
+	});
+
+	test('the window notice before an unrequested confirmation only asks the OS to notify, and never throws', async () => {
+		const calls: unknown[] = [];
+		paradisNotifyConfirmation({ focus: async (_window: Window, options?: { mode?: FocusMode }) => { calls.push(options?.mode); } } as unknown as IHostService, mainWindow);
+		// 無いサービス・失敗する知らせでも、確認は出せる（例外を投げない）
+		paradisNotifyConfirmation(undefined, mainWindow);
+		paradisNotifyConfirmation({ focus: () => Promise.reject(new Error('unsupported')) } as unknown as IHostService, mainWindow);
+		paradisNotifyConfirmation({ focus: () => { throw new Error('unsupported'); } } as unknown as IHostService, mainWindow);
+		await Promise.resolve();
+		assert.deepStrictEqual(calls, [FocusMode.Notify]);
 	});
 
 	test('the checkbox is the kit check below the detail and comes back as checkboxChecked, also on cancel', async () => {

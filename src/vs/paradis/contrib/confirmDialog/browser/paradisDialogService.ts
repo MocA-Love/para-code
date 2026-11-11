@@ -12,6 +12,8 @@
 // src/vs/paradis の中で本家の `dialogService.confirm` を呼ぶと eslint が止める（.eslint-plugin-local/code-paradis-no-upstream-confirm.ts）。
 //
 // 本家との違い:
+//  - `focusCancel: true`（エージェント・スマホ・リポジトリなど外から求められた承認）では、初めのフォーカスを「キャンセル」に
+//    置き、Enter では通さない。実行のボタンの色は変えない。
 //  - `destructive: true`（消す・破棄・上書きなど取り消せない操作）では、実行のボタンを危険の色にし、初めのフォーカスを
 //    「キャンセル」に置く。Enter では実行しない（実行は Tab で移るかマウスで押す）。
 //  - 種類（`type`）の印は出さない（キットの S 段は問いの太字で示す）。
@@ -24,6 +26,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { FocusMode } from '../../../../platform/native/common/native.js';
 import { localize } from '../../../../nls.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { openParadisConfirmDialog } from './paradisConfirmDialog.js';
@@ -32,6 +35,11 @@ import { openParadisConfirmDialog } from './paradisConfirmDialog.js';
 export interface IParadisConfirmation extends IConfirmation {
 	/** 取り消せない操作（削除・破棄・強制・上書き・作り直し・解除）。既定のボタンを「キャンセル」にし、実行を危険の色にする。 */
 	readonly destructive?: boolean;
+	/**
+	 * 利用者でなく、エージェント・スマホ・リポジトリなど外から求められた承認。既定のボタンを「キャンセル」にして Enter では
+	 * 通さないが、実行のボタンは危険の色にしない。`destructive` はこれと危険の色の両方を持つ。
+	 */
+	readonly focusCancel?: boolean;
 }
 
 export const IParadisDialogService = createDecorator<IParadisDialogService>('paradisDialogService');
@@ -68,10 +76,23 @@ export class ParadisDialogService implements IParadisDialogService {
 			}],
 			cancelLabel: confirmation.cancelButton,
 			checkbox: confirmation.checkbox,
-			focusCancel: confirmation.destructive,
+			focusCancel: confirmation.destructive || confirmation.focusCancel,
 			token: confirmation.token,
 		});
 		return { confirmed: index === 0, checkboxChecked };
+	}
+}
+
+/**
+ * 窓が後ろにあっても、利用者が頼んでいない確認（スマホからのペアリング、エージェントが頼んだ削除など）に気づけるよう、
+ * 確認を出す直前に呼ぶ。Dock の跳ね（macOS）・タスクバーの点滅で知らせるだけで、フォーカスは奪わない（FocusMode.Notify）。
+ * サービスが無い・知らせられない環境でも確認はそのまま出す。
+ */
+export function paradisNotifyConfirmation(hostService: IHostService | undefined, targetWindow: Window): void {
+	try {
+		hostService?.focus(targetWindow, { mode: FocusMode.Notify })?.catch(() => { });
+	} catch {
+		// 知らせられなくても確認は出す
 	}
 }
 

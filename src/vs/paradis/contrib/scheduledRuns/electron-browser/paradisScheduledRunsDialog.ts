@@ -677,6 +677,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			localize('paradis.scheduledRuns.agentReviewSchedule', "スケジュール: {0}（{1}）", paradisDescribeCron(definition.schedule), definition.schedule),
 		];
 		const { confirmed } = await this.paradisDialogService.confirm({
+			// エージェントが作ったものの承認なので、Enter では通さない
+			focusCancel: true,
 			type: 'warning',
 			message: localize('paradis.scheduledRuns.agentReviewTitle', "エージェントが作った定期実行「{0}」を有効にしますか？", definition.name),
 			detail: lines.join('\n\n'),

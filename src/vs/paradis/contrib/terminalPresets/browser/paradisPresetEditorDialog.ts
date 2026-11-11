@@ -2786,6 +2786,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			// 何が消えるのかを出さずに「置き換える」を押させない。
 			const replaced = conflict.indistinguishableFrom;
 			const result = await this.paradisDialogService.confirm({
+				destructive: true,
 				message: STR_INDISTINGUISHABLE_MESSAGE,
 				detail: [
 					replaced ? strExistingDetail(paradisPresetCommandSignature(replaced, ' && '), '') : undefined,

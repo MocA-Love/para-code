@@ -140,6 +140,8 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 	}
 	if (!approved.includes(approvalKey)) {
 		const { confirmed } = await paradisDialogService.confirm({
+			// リポジトリが求めるスクリプトの承認なので、Enter では通さない
+			focusCancel: true,
 			message: kind === 'setup'
 				// allow-any-unicode-next-line
 				? localize('paradis.workspaceLifecycle.approveSetup', "リポジトリ「{0}」の setup スクリプトを自動実行しますか？", repository.name)
