@@ -433,9 +433,15 @@ export interface IParadisAgentCommandTemplate {
 	readonly permissions?: readonly IParadisAgentPermissionOption[];
 	/**
 	 * 「新しいスペース」の指示に添えた画像の渡し方（`mention`・`flag`・`unsupported`。paradisAgentImageMode）。
-	 * 未定義なら id で決める（`claude` と `codex` だけ渡す）。
+	 * 未定義なら id で決める（`claude`・`codex`・`antigravity` だけ渡す）。
 	 */
 	readonly images?: string;
+	/**
+	 * 指示の直前に付けるフラグ（例: Antigravity CLI の `-i`）。指示があるときだけ付け、選んだフラグより後ろに置く。
+	 * 指示を値として取るフラグをテンプレートに直接書くと、指示が空のとき値の無いフラグが残り、選んだフラグも
+	 * フラグと指示の間に入ってしまうため。
+	 */
+	readonly promptFlag?: string;
 }
 
 /** エージェント起動時のオプション選択（いずれも undefined = 既定 = フラグを付けない）。 */
@@ -462,6 +468,8 @@ const CLAUDE_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 
 const CODEX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 /** gpt-6-luna は ultra が無い。 */
 const CODEX_MAX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** Antigravity CLI のエフォート（agy 1.5.5 の `agy --help` の `--effort` に並ぶ値）。 */
+const ANTIGRAVITY_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
  * Codex のエフォートを渡すフラグ。codex-cli 0.155.1 には `--effort` が無く（渡すと起動しない）、
@@ -540,13 +548,62 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 		],
 	},
 	{
-		id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}',
+		// Gemini CLI の後継（2026-11-12 に既定の一覧の gemini 行を置き換えた。設定に書いた gemini 行はそのまま使える）。
+		// agy は Go の flag なので、`-i` は次の引数を `-` で始まっていても指示として取る。フラグを指示の前へ
+		// 置けるよう `-i` はテンプレートに書かず promptFlag で指示の直前に付け、指示が空なら付けない（`agy -i` だけだと起動しない）
+		id: 'antigravity', label: 'Antigravity CLI', command: 'agy {prompt}', promptFlag: '-i',
+		models: [
+			// agy 1.5.5 の `agy models` の一覧（2026-11-12）。末尾の -low・-medium・-high はエフォートの違う版を指す
+			// id なので、エフォートは選ばせない
+			{ id: 'gemini-3.8-flash-high', flag: '--model gemini-3.8-flash-high', efforts: [] },
+			{ id: 'gemini-3.8-flash-medium', flag: '--model gemini-3.8-flash-medium', efforts: [] },
+			{ id: 'gemini-3.8-flash-low', flag: '--model gemini-3.8-flash-low', efforts: [] },
+			{ id: 'claude-sonnet-4-6', flag: '--model claude-sonnet-4-6' },
+			{ id: 'claude-opus-4-6-thinking', flag: '--model claude-opus-4-6-thinking' },
+			{ id: 'gpt-oss-120b-medium', flag: '--model gpt-oss-120b-medium', efforts: [] },
+		],
+		efforts: ANTIGRAVITY_EFFORT_IDS.map(id => ({ id, flag: `--effort ${id}` })),
 		permissions: [
 			{ id: 'default', label: STR_PERMISSION_DEFAULT, flag: '' },
-			{ id: 'yolo', label: STR_PERMISSION_SKIP_ALL, flag: '--yolo', danger: true, hint: STR_PERMISSION_SKIP_ALL_HINT },
+			{
+				id: 'accept-edits', label: 'accept-edits', flag: '--mode accept-edits',
+				// allow-any-unicode-next-line
+				hint: localize('paradis.agentPermission.antigravityAcceptEditsHint', "ファイルの編集は確認せずに行い、コマンドの実行は確認します")
+			},
+			{
+				id: 'auto', label: 'auto', flag: '--mode auto',
+				// allow-any-unicode-next-line
+				hint: localize('paradis.agentPermission.antigravityAutoHint', "ファイルの編集と安全なコマンドは確認せずに行い、取り消せない操作の前だけ確認します")
+			},
+			{
+				id: 'plan', label: 'plan', flag: '--mode plan',
+				// allow-any-unicode-next-line
+				hint: localize('paradis.agentPermission.antigravityPlanHint', "計画を立てるだけで、ファイルは変えません")
+			},
 		],
 	},
 ];
+
+/**
+ * モバイルへ送るエージェント定義（作成シート・起動シートの材料）から除くもの。Antigravity CLI は、状態の検知と
+ * 会話の記録がそろうまでモバイルの起動フォームに出さない（Q616）。モバイルのアプリは知らない id でもそのまま
+ * 並べるので、配信済みの版でも出ないよう PC から送らない。
+ */
+export const PARADIS_MOBILE_HIDDEN_AGENTS: ReadonlySet<string> = new Set(['antigravity']);
+
+/**
+ * モバイルから届いた起動の要求（新しいスペース・既存のスペースへの起動）で、断るエージェントなら断る理由を返す。
+ * 起動シートに出していなくても、要求は id で直接届きうるため（古い版のアプリや作り替えた要求）。
+ */
+export function paradisMobileAgentRefusal(agentId: string | undefined): string | undefined {
+	// allow-any-unicode-next-line
+	return agentId !== undefined && PARADIS_MOBILE_HIDDEN_AGENTS.has(agentId) ? `${agentId} はモバイルからはまだ起動できません。PC から起動してください。` : undefined;
+}
+
+/** モバイルへ送るエージェント定義（{@link PARADIS_MOBILE_HIDDEN_AGENTS} を除く）。 */
+export function paradisMobileFormAgents(templates: readonly IParadisAgentCommandTemplate[]): IParadisAgentCommandTemplate[] {
+	return templates.filter(template => !PARADIS_MOBILE_HIDDEN_AGENTS.has(template.id));
+}
 
 /**
  * 選択されたモデル/エフォート/権限をテンプレート定義に照らしてフラグ文字列へ解決する。
@@ -637,6 +694,10 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 	// 未選択プレースホルダの空置換で残る連続スペースを、プロンプト挿入前に正規化する
 	// （プロンプト本文内の空白を巻き込まないよう、必ず置換前に行う）
 	command = command.replace(/ {2,}/g, ' ').trim();
+	// 指示を値として取るフラグは、指示があるときだけ指示の直前に付ける
+	if (template.promptFlag && promptExpression.length > 0) {
+		promptExpression = `${template.promptFlag} ${promptExpression}`;
+	}
 	if (command.includes('{prompt}')) {
 		// 置換後の文字列は関数で渡す。文字列で渡すと、プロンプトの中の `$&` や `$'` が置換の特殊記号として
 		// 展開され、引用が崩れる

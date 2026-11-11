@@ -49,7 +49,7 @@
 }
 
 /*
- * Claude / OpenAI のロゴ。SVG を mask にして、タブの文字色（currentColor）で塗る。
+ * Claude / OpenAI / Antigravity のロゴ。SVG を mask にして、タブの文字色（currentColor）で塗る。
  * mask の画像はロゴごとに contribution が実行時に足す（パスデータを1か所で持つため）。
  * ファイルアイコンテーマが ::before に背景画像を入れることがあるので、明示的に消す。
  */

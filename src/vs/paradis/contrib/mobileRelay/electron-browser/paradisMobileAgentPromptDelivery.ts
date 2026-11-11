@@ -21,7 +21,7 @@ import { paradisScreenShowsAgentPrompt, paradisVisibleTerminalText } from '../..
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { paradisInteractiveAgentCommand } from '../common/paradisAgentCliCommand.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { ParadisAgentPromptQuotingError } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
+import { ParadisAgentPromptQuotingError, paradisMobileFormAgents } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { IParadisLaunchedAgentTerminal, paradisConfiguredAgents, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
@@ -310,7 +310,7 @@ export async function paradisDeliverAgentPrompt(services: IParadisAgentPromptSer
 			return { ok: false, error: 'このスペースのエージェントは作業中か、入力を待っていることを確かめられません。終わってから送るか、新しいエージェントで直してもらってください。', code: 'busy' };
 		}
 	}
-	const agentId = paradisDefaultMobileAgentId(services.configurationService.getValue<string>('paradis.workspaceSwitch.defaultAgent'), paradisConfiguredAgents(services.modelCatalogService).map(agent => agent.id));
+	const agentId = paradisDefaultMobileAgentId(services.configurationService.getValue<string>('paradis.workspaceSwitch.defaultAgent'), paradisMobileFormAgents(paradisConfiguredAgents(services.modelCatalogService)).map(agent => agent.id));
 	if (agentId === undefined) {
 		return { ok: false, error: '起動できるエージェントが PC に設定されていません。', code: 'no-agent' };
 	}

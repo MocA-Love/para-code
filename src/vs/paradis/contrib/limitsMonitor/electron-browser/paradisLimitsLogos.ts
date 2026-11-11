@@ -13,21 +13,22 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { ParadisLimitsProvider } from '../common/paradisLimitsMonitor.js';
-import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '../../../common/paradisAgentLogoPaths.js';
+import { ParadisAgentLogo, paradisAgentLogoGlyph } from '../../../common/paradisAgentLogoPaths.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /**
- * エージェントCLI(Claude Code / Codex)の本物のロゴSVG(グリフのみ)をcontainerへ追加して返す。
+ * エージェントCLI(Claude Code / Codex / Antigravity CLI)の本物のロゴSVG(グリフのみ)をcontainerへ追加して返す。
  * サイズはcontainer側のCSSで指定する(このヘルパはCSSクラスに依存しない)ため、
  * limitsMonitorのタイトルバーウィジェットとagentBrowserのバインディングダイアログの両方から使える。
  */
-export function appendParadisAgentLogoSvg(container: HTMLElement, provider: ParadisLimitsProvider): SVGSVGElement {
+export function appendParadisAgentLogoSvg(container: HTMLElement, provider: ParadisAgentLogo): SVGSVGElement {
+	const glyph = paradisAgentLogoGlyph(provider);
 	const svg = document.createElementNS(SVG_NS, 'svg');
-	svg.setAttribute('viewBox', '0 0 600 600');
+	svg.setAttribute('viewBox', glyph.viewBox);
 	svg.setAttribute('aria-hidden', 'true');
 	const path = document.createElementNS(SVG_NS, 'path');
-	path.setAttribute('d', provider === 'claude' ? PARADIS_CLAUDE_LOGO_PATH : PARADIS_CODEX_LOGO_PATH);
+	path.setAttribute('d', glyph.path);
 	path.setAttribute('fill', 'currentColor');
 	svg.appendChild(path);
 	container.appendChild(svg);

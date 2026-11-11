@@ -49,6 +49,7 @@ import {
 	IParadisGitBranches,
 	paradisBuildAgentCommand,
 	paradisBuildWorktreeNames,
+	paradisMobileFormAgents,
 	paradisParseWorktreeNaming,
 	paradisToBranchName,
 	paradisToWorktreeTitle,
@@ -390,7 +391,8 @@ export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor, o
 	}));
 	// エージェント定義はテンプレートごと渡す（モバイル側がモデル/エフォート/権限の選択UIと
 	// コマンドプレビューをPC側と同じ材料で組み立てるため）。設定由来のplain JSONなのでそのまま送れる。
-	const agents = paradisConfiguredAgents(modelCatalogService).map(agent => ({ ...agent }));
+	// モバイルの起動フォームにまだ出さないエージェント（paradisMobileFormAgents）は除く
+	const agents = paradisMobileFormAgents(paradisConfiguredAgents(modelCatalogService)).map(agent => ({ ...agent }));
 	// 今わかっている一覧で答え、裏で CLI の一覧を取り直す（次に取りに来たときに新しい候補が並ぶように）。
 	// 取り直しは同時に1つだけで、shared process は 60 秒は同じ結果を使い回すので、毎回呼んでよい
 	modelCatalogService.refresh();

@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisInteractiveAgentCommand, paradisResolveRunningAgentCommand } from '../../common/paradisAgentCliCommand.js';
+import { paradisInteractiveAgentCommand, paradisIsInteractiveAntigravityCommand, paradisResolveRunningAgentCommand } from '../../common/paradisAgentCliCommand.js';
 
 suite('ParadisAgentCliCommand', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -96,6 +96,31 @@ suite('ParadisAgentCliCommand', () => {
 		for (const command of ['claude logs 52a3701d', 'claude stop 52a3701d', 'claude kill 52a3701d', 'claude rm 52a3701d', 'claude respawn --all', 'claude purge /tmp/x', 'claude attach --help']) {
 			assert.strictEqual(paradisInteractiveAgentCommand(command), undefined, command);
 		}
+	});
+
+	test('recognizes interactive Antigravity CLI launches without widening the Claude / Codex kinds', () => {
+		const lines = [
+			'agy',
+			'agy --model claude-sonnet-4-6 --effort high --mode auto -i \'fix it\'',
+			'agy -i \'-p looks like a flag\'',
+			'AGY_CLI_OSC7501=on ~/.local/bin/agy --conversation 02f66e9a',
+			'agy -c',
+			'agy -p hello',
+			'agy --prompt hello',
+			'agy --print=hello',
+			'agy --help',
+			'agy --version',
+			'agy models',
+			'agy --log-file /tmp/x.log mcp list',
+			'agyx',
+		];
+		assert.deepStrictEqual({
+			antigravity: lines.map(paradisIsInteractiveAntigravityCommand),
+			kind: paradisInteractiveAgentCommand('agy -i hello'),
+		}, {
+			antigravity: [true, true, true, true, true, false, false, false, false, false, false, false, false],
+			kind: undefined,
+		});
 	});
 
 	test('reconciles a running Agent only after both CommandDetection and the retained pane token are available, regardless of arrival order', () => {

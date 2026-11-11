@@ -51,6 +51,7 @@ suite('paradisWorktreeImageAttach', () => {
 		assert.deepStrictEqual([
 			paradisAgentImageMode({ id: 'claude' }),
 			paradisAgentImageMode({ id: 'codex' }),
+			paradisAgentImageMode({ id: 'antigravity' }),
 			paradisAgentImageMode({ id: 'gemini' }),
 			paradisAgentImageMode({ id: 'none' }),
 			paradisAgentImageMode(undefined),
@@ -60,6 +61,6 @@ suite('paradisWorktreeImageAttach', () => {
 			paradisAgentImageMode({ id: 'claude', images: 'unsupported' }),
 			paradisAgentImageMode({ id: 'my-agent', images: 'attach' }),
 			paradisAgentImageMode({ id: 'none', images: 'mention' }),
-		], ['mention', 'flag', 'unsupported', 'unsupported', 'unsupported', 'unsupported', 'mention', 'flag', 'unsupported', 'unsupported', 'unsupported']);
+		], ['mention', 'flag', 'mention', 'unsupported', 'unsupported', 'unsupported', 'unsupported', 'mention', 'flag', 'unsupported', 'unsupported', 'unsupported']);
 	});
 });
