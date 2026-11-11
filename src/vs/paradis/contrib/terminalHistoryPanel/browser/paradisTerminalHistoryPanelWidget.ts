@@ -18,7 +18,7 @@ import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
-import { IParadisHistoryPanelItem, IParadisHistoryPanelPlacement, paradisShortenCwd } from '../common/paradisTerminalHistoryPanelModel.js';
+import { IParadisHistoryPanelItem, IParadisHistoryPanelPlacement, paradisHistoryPanelOneLine, paradisShortenCwd } from '../common/paradisTerminalHistoryPanelModel.js';
 import './media/paradisTerminalHistoryPanel.css';
 
 /** 一覧の範囲。スペース別履歴を使っていないターミナルでは切り替えを出さない（undefined）。 */
@@ -184,11 +184,15 @@ export class ParadisTerminalHistoryPanelWidget extends Disposable {
 
 		const command = append(row, $('span.paradis-history-panel-command'));
 		const prefix = view.typed.trimStart();
+		// 複数行のコマンドは 22px の行に収まるよう 1 行に畳み、全文はホバーで見せる。
 		if (prefix.length > 0 && item.command.startsWith(prefix)) {
-			append(command, $('span.paradis-history-panel-match', undefined, prefix));
-			append(command, $('span', undefined, item.command.substring(prefix.length)));
+			append(command, $('span.paradis-history-panel-match', undefined, paradisHistoryPanelOneLine(prefix)));
+			append(command, $('span', undefined, paradisHistoryPanelOneLine(item.command.substring(prefix.length))));
 		} else {
-			command.textContent = item.command;
+			command.textContent = paradisHistoryPanelOneLine(item.command);
+		}
+		if (/[\r\n]/.test(item.command)) {
+			this._renderDisposables.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), command, item.command));
 		}
 
 		const cwd = append(row, $('span.paradis-history-panel-cwd'));
