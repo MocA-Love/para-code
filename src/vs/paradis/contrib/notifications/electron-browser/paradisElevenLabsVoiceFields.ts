@@ -13,7 +13,6 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
-import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
@@ -31,6 +30,7 @@ import { IParadisAivisSettings, IParadisNotificationsSettingsService, ParadisApi
 import { paradisElevenLabsDictionaryCache, paradisElevenLabsModelCache, paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
 import { ParadisElevenLabsVoiceTuningFields } from './paradisElevenLabsVoiceTuningFields.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
+import { paradisNotifButton, paradisNotifInput } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -123,15 +123,9 @@ export class ParadisElevenLabsVoiceFields {
 		const field = dom.append(parent, $('.setting-row.pns-field-block'));
 		const header = dom.append(field, $('.pns-voice-header'));
 		dom.append(header, $('.sr-label')).textContent = STR_VOICES_LABEL;
-		const search = dom.append(header, $('input')) as HTMLInputElement;
-		search.placeholder = STR_VOICES_SEARCH;
-		search.style.width = '180px';
-		search.value = this._query;
-		search.disabled = !apiKey;
-		const refreshBtn = dom.append(header, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
-		refreshBtn.setAttribute('aria-label', STR_VOICES_REFRESH);
-		refreshBtn.title = STR_VOICES_REFRESH;
-		refreshBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
+		const { field: searchField, input: search } = paradisNotifInput(header, disposables, { ariaLabel: STR_VOICES_SEARCH, placeholder: STR_VOICES_SEARCH, value: this._query, icon: Codicon.search, className: 'pns-voice-search' });
+		searchField.enabled = !!apiKey;
+		const refreshBtn = paradisNotifButton(header, 'icon', { icon: Codicon.refresh, title: STR_VOICES_REFRESH });
 		refreshBtn.disabled = !apiKey;
 
 		const grid = dom.append(field, $('.pns-preset-grid'));
@@ -205,9 +199,8 @@ export class ParadisElevenLabsVoiceFields {
 			dom.append(tags, $('span.pns-voice-tag')).textContent = STR_JAPANESE_TAG;
 		}
 		const actions = dom.append(tile, $('.pns-preset-actions'));
-		const sampleBtn = dom.append(actions, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
+		const sampleBtn = paradisNotifButton(actions, 'icon', { small: true, icon: Codicon.play });
 		sampleBtn.setAttribute('aria-label', STR_PLAY_SAMPLE_ARIA);
-		sampleBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.play)}`));
 		sampleBtn.disabled = !voice.previewUrl;
 		this.host.attachSampleButton(voice.voiceId, sampleBtn);
 
@@ -228,12 +221,7 @@ export class ParadisElevenLabsVoiceFields {
 		dom.append(main, $('.sr-label')).textContent = STR_VOICE_ID_LABEL;
 		dom.append(main, $('.sr-desc')).textContent = STR_VOICE_ID_DESC;
 		const hint = dom.append(main, $('.pns-uuid-hint'));
-		const input = dom.append(field, $('input')) as HTMLInputElement;
-		input.style.width = '290px';
-		input.style.fontFamily = 'var(--monaco-monospace-font)';
-		input.style.fontSize = '11px';
-		input.spellcheck = false;
-		input.value = settings.elevenLabsVoiceId;
+		const { input } = paradisNotifInput(field, disposables, { ariaLabel: STR_VOICE_ID_LABEL, value: settings.elevenLabsVoiceId, className: 'pns-id-input' });
 
 		const showHint = () => {
 			const voiceId = input.value.trim();
