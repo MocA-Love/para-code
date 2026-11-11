@@ -32,6 +32,7 @@
 		"vs/base/browser/markdownRenderer.ts",
 		"vs/base/test/browser/markdownRenderer.test.ts",
 		"vs/paradis/contrib/browserBookmarks/electron-browser/paradisBookmarkHtml.ts",
+		"vs/paradis/contrib/crossJump/browser/paradisPalettePreview.ts",
 		"vs/paradis/contrib/fileViewers/browser/paradisMarkdownInlineResources.ts",
 		"vs/paradis/contrib/fileViewers/electron-browser/paradisSpreadsheetDrawings.ts"
 	],

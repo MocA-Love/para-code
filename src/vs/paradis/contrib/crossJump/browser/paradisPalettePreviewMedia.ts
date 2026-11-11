@@ -106,7 +106,8 @@ export function paradisPalettePreviewHtmlDocument(html: string): string {
 
 /** 面が使う Trusted Types のポリシー（名前は workbench.html の trusted-types に載せてある）。作れるのは窓に 1 回だけ。 */
 const trustedTypes = createTrustedTypesPolicy('paradisPalettePreview', {
-	// iframe の srcdoc へ渡すのは paradisPalettePreviewHtmlDocument で CSP を差し込んだ文書だけ（sandbox でスクリプトも止める）
+	// 渡すのは、iframe の srcdoc へ渡す paradisPalettePreviewHtmlDocument で CSP を差し込んだ文書（sandbox でスクリプトも
+	// 止める）と、Markdown ビューアと同じ sanitizeHtml を通した Markdown の HTML（DOMParser で解析する）だけ
 	createHTML: value => value,
 	// Worker に渡せるのは同梱の pdf.js の worker だけ
 	createScriptURL: value => {
@@ -116,6 +117,12 @@ const trustedTypes = createTrustedTypesPolicy('paradisPalettePreview', {
 		return value;
 	},
 });
+
+/** sanitizeHtml を通した HTML を DOMParser へ渡せる形（TrustedHTML）に包む。消毒していない HTML は渡さない。 */
+export function paradisPalettePreviewSanitizedHtml(sanitized: TrustedHTML): TrustedHTML | string {
+	const value = String(sanitized);
+	return trustedTypes?.createHTML(value) ?? value;
+}
 
 /** 同梱の pdf.js の worker の URL。 */
 export function paradisPalettePdfWorkerUrl(): string {

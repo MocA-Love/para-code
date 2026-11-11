@@ -35,7 +35,7 @@ import { markedParadisAlertExtension } from '../../fileViewers/browser/paradisMa
 import { parseParadisTokenizedCode, renderParadisMarkdownDocumentDeferred } from '../../fileViewers/browser/paradisMarkdownDocumentRenderer.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { renderParadisPreviewPdf } from './paradisPalettePdfPreview.js';
-import { ParadisPalettePreviewMedia, paradisReleaseOnCancel, PARADIS_PALETTE_PREVIEW_HTML_MAX_BYTES, renderParadisPreviewHtml, renderParadisPreviewImage } from './paradisPalettePreviewMedia.js';
+import { ParadisPalettePreviewMedia, paradisPalettePreviewSanitizedHtml, paradisReleaseOnCancel, PARADIS_PALETTE_PREVIEW_HTML_MAX_BYTES, renderParadisPreviewHtml, renderParadisPreviewImage } from './paradisPalettePreviewMedia.js';
 
 /** 面のクラス。 */
 export const PARADIS_PALETTE_PREVIEW_CLASS = 'paradis-palette-preview';
@@ -398,9 +398,11 @@ export class ParadisPalettePreviewPane extends Disposable {
 			ariaLabel: localize('paradis.palette.preview.htmlModes', "HTML の見せ方"),
 		}));
 		// 面は読むだけ。押して切り替えられるが、Tab で入力欄からフォーカスを移さない（器の外へ出ると本家が閉じる）
+		// 押してもフォーカスは入力欄に残す（面の mousedown の preventDefault に頼らず、部品の側でも止める）
 		for (const button of modes.element.children) {
 			if (dom.isHTMLElement(button)) {
 				button.tabIndex = -1;
+				store.add(dom.addDisposableListener(button, dom.EventType.MOUSE_DOWN, event => event.preventDefault()));
 			}
 		}
 		const content = dom.append(body, dom.$('.paradis-palette-preview-html-content'));
@@ -450,7 +452,7 @@ export class ParadisPalettePreviewPane extends Disposable {
 				return;
 			}
 			// Markdown ビューアと同じ消毒の済んだ HTML を、別の文書で解析してから移す（スクリプトは動かない）
-			const parsed = new DOMParser().parseFromString(rendered.html as unknown as string, 'text/html');
+			const parsed = new DOMParser().parseFromString(paradisPalettePreviewSanitizedHtml(rendered.html) as string, 'text/html');
 			rendered.insertHighlightedCode(parsed.body);
 			disarmPreviewMarkdown(parsed.body);
 			const markdown = dom.append(body, dom.$('.paradis-palette-preview-markdown'));
