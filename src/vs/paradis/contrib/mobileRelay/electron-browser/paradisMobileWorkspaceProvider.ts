@@ -41,7 +41,7 @@ import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdent
 import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
+import { IParadisPrStatus, paradisMobileAgentRefusal } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { loadParadisMobileWordDiffBundle, renderParadisMobileWordDiffHtml } from './paradisMobileWordDiffHtml.js';
 import { paradisNegotiateMobileOfficeHost } from './paradisMobileOfficeHost.js';
@@ -2147,6 +2147,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						reply({ error: 'repo is required' });
 						return;
 					}
+					const refusal = paradisMobileAgentRefusal(typeof msg.agent === 'string' ? msg.agent : undefined);
+					if (refusal !== undefined) {
+						reply({ error: refusal });
+						return;
+					}
 					const result = await this.createWorktree({
 						repositoryId: msg.repo,
 						...(typeof msg.name === 'string' ? { name: msg.name } : {}),
@@ -2187,6 +2192,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			try {
 				if (typeof msg.agent !== 'string' || msg.agent.length === 0) {
 					reply({ error: 'agent is required' });
+					return;
+				}
+				const refusal = paradisMobileAgentRefusal(msg.agent);
+				if (refusal !== undefined) {
+					reply({ error: refusal });
 					return;
 				}
 				const root = this.resolveWsRoot(msg.ws);

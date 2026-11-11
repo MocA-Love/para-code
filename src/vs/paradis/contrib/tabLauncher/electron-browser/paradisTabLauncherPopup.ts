@@ -73,6 +73,7 @@ import {
 	paradisTabLauncherAgents,
 	paradisTabLauncherDevices,
 	paradisTabLauncherEfforts,
+	paradisTabLauncherOffersChat,
 	paradisTabLauncherRoot,
 	paradisTabLauncherUrl,
 } from '../common/paradisTabLauncher.js';
@@ -882,7 +883,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 
 		// ボタン
 		const footer = dom.append(element, $('.paradis-tab-launcher-footer'));
-		const chatEnabled = this.configurationService.getValue<boolean>(PARADIS_AGENT_CHAT_ENABLED_SETTING) !== false;
+		const chatEnabled = paradisTabLauncherOffersChat(agent.id, this.configurationService.getValue<boolean>(PARADIS_AGENT_CHAT_ENABLED_SETTING) !== false);
 		const launch = (mode: 'terminal' | 'chat') => this.launch(agent, mode, prompt.value.trim());
 		if (chatEnabled) {
 			const chat = dom.append(footer, $('button.paradis-tab-launcher-button.paradis-focus-ring.secondary')) as HTMLButtonElement;

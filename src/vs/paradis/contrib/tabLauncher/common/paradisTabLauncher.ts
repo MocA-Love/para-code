@@ -21,6 +21,17 @@ import { IParadisAgentCommandTemplate, IParadisAgentLaunchOptions } from '../../
  */
 export const PARADIS_TAB_LAUNCHER_HIDDEN_AGENTS: ReadonlySet<string> = new Set(['gemini']);
 
+/**
+ * 「チャットで起動」を出さないエージェント。Antigravity CLI は会話の記録を読む処理（Antigravity 対応の P2・P4）が
+ * まだ無く、チャット表示を開けないため。P2・P4 が入ったらここから外す。
+ */
+const PARADIS_TAB_LAUNCHER_NO_CHAT_AGENTS: ReadonlySet<string> = new Set(['antigravity']);
+
+/** ランチャーの起動パネルに「チャットで起動」（⌘↩）を出すか。チャット表示の設定が切られていれば出さない。 */
+export function paradisTabLauncherOffersChat(agentId: string, chatEnabled: boolean): boolean {
+	return chatEnabled && !PARADIS_TAB_LAUNCHER_NO_CHAT_AGENTS.has(agentId);
+}
+
 /** ランチャーに並べるエージェント（設定の一覧から {@link PARADIS_TAB_LAUNCHER_HIDDEN_AGENTS} を除く。自分で足した定義は出す）。 */
 export function paradisTabLauncherAgents(templates: readonly IParadisAgentCommandTemplate[]): readonly IParadisAgentCommandTemplate[] {
 	return templates.filter(template => !PARADIS_TAB_LAUNCHER_HIDDEN_AGENTS.has(template.id));

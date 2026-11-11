@@ -591,6 +591,15 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
  */
 export const PARADIS_MOBILE_HIDDEN_AGENTS: ReadonlySet<string> = new Set(['antigravity']);
 
+/**
+ * モバイルから届いた起動の要求（新しいスペース・既存のスペースへの起動）で、断るエージェントなら断る理由を返す。
+ * 起動シートに出していなくても、要求は id で直接届きうるため（古い版のアプリや作り替えた要求）。
+ */
+export function paradisMobileAgentRefusal(agentId: string | undefined): string | undefined {
+	// allow-any-unicode-next-line
+	return agentId !== undefined && PARADIS_MOBILE_HIDDEN_AGENTS.has(agentId) ? `${agentId} はモバイルからはまだ起動できません。PC から起動してください。` : undefined;
+}
+
 /** モバイルへ送るエージェント定義（{@link PARADIS_MOBILE_HIDDEN_AGENTS} を除く）。 */
 export function paradisMobileFormAgents(templates: readonly IParadisAgentCommandTemplate[]): IParadisAgentCommandTemplate[] {
 	return templates.filter(template => !PARADIS_MOBILE_HIDDEN_AGENTS.has(template.id));

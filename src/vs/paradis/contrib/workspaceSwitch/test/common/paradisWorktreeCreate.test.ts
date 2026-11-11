@@ -10,7 +10,7 @@ import assert from 'assert';
 import { decodeBase64 } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
-import { PARADIS_DEFAULT_AGENT_COMMANDS, paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisMobileFormAgents, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
+import { PARADIS_DEFAULT_AGENT_COMMANDS, paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisMobileAgentRefusal, paradisMobileFormAgents, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
 
 suite('paradisWorktreeCreate', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -306,7 +306,14 @@ suite('paradisWorktreeCreate', () => {
 
 	test('keeps Antigravity CLI out of the agents sent to the mobile app, but not the other agents', () => {
 		const gemini = { id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' };
-		assert.deepStrictEqual(paradisMobileFormAgents([...PARADIS_DEFAULT_AGENT_COMMANDS, gemini]).map(agent => agent.id), ['claude', 'codex', 'gemini']);
+		assert.deepStrictEqual({
+			sent: paradisMobileFormAgents([...PARADIS_DEFAULT_AGENT_COMMANDS, gemini]).map(agent => agent.id),
+			// 起動シートに無くても id で直接届いた要求は断る
+			refused: ['antigravity', 'claude', 'codex', 'gemini', 'none', undefined].map(id => paradisMobileAgentRefusal(id) !== undefined),
+		}, {
+			sent: ['claude', 'codex', 'gemini'],
+			refused: [true, false, false, false, false, false],
+		});
 	});
 
 	test('passes images without an instruction, and keeps the image flag behind the other flags', () => {

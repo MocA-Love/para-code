@@ -19,6 +19,7 @@ import {
 	paradisTabLauncherAgents,
 	paradisTabLauncherDevices,
 	paradisTabLauncherEfforts,
+	paradisTabLauncherOffersChat,
 	paradisTabLauncherRoot,
 	paradisTabLauncherUrl,
 } from '../../common/paradisTabLauncher.js';
@@ -33,6 +34,17 @@ suite('paradisTabLauncher', () => {
 	test('lists the agents the mobile launch sheet lists (no Gemini, keeps user-defined ones), plus Antigravity CLI on the PC', () => {
 		const gemini: IParadisAgentCommandTemplate = { id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' };
 		assert.deepStrictEqual(paradisTabLauncherAgents([...PARADIS_DEFAULT_AGENT_COMMANDS, gemini, custom]).map(agent => agent.id), ['claude', 'codex', 'antigravity', 'aider']);
+	});
+
+	test('offers launching in the chat view for every agent but Antigravity CLI, and for none when the chat view is off', () => {
+		const ids = ['claude', 'codex', 'antigravity', 'aider'];
+		assert.deepStrictEqual({
+			on: ids.map(id => paradisTabLauncherOffersChat(id, true)),
+			off: ids.map(id => paradisTabLauncherOffersChat(id, false)),
+		}, {
+			on: [true, true, false, true],
+			off: [false, false, false, false],
+		});
 	});
 
 	test('reads stored choices and drops malformed values', () => {
