@@ -1587,6 +1587,68 @@ suite('ParadisAgentBrowser authority integration', () => {
 		});
 	});
 
+	test('Antigravity CLI: the camelCase hooks and the OSC 7501 state together show working, waiting, done and the ends that send no Stop hook', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'agy' }]));
+		const transcriptPath = '/Users/example/.gemini/antigravity-cli/brain/c1/.system_generated/logs/transcript_full.jsonl';
+		const hook = (event: string, extra: Record<string, unknown> = {}) => sendHook(fixture.service, 'agy', event, JSON.stringify({ conversationId: 'c1', cwd: '/repo', hookEventName: event, transcriptPath, ...extra }));
+		const osc = (state: string, kind?: string) => { Reflect.get(fixture.service, '_programStatusTimes').clear(); return fixture.service.notePaneProgramStatus(connection, 'agy', { state, app: 'antigravity', ...(kind !== undefined ? { kind } : {}) }); };
+		const steps: string[] = [];
+		const step = async (label: string, run: () => Promise<unknown>) => {
+			await run();
+			steps.push(`${label}: ${(await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === 'agy')?.status ?? 'idle'}`);
+		};
+		await step('osc idle at start', () => osc('idle'));
+		await step('SessionStart', () => hook('SessionStart'));
+		await step('turn starts', () => hook('PreInvocation', { invocationNum: 0 }));
+		await step('PreToolUse run_command', () => hook('PreToolUse', { stepIdx: 2, toolCall: { id: 'call_1', name: 'run_command', args: { CommandLine: 'ls -a' } } }));
+		await step('osc blocked permission', () => osc('blocked', 'permission'));
+		await step('osc working (approved)', () => osc('working'));
+		await step('PostToolUse', () => hook('PostToolUse', { error: '', toolCall: { id: 'call_1', name: 'run_command', args: {} } }));
+		await step('Stop', () => hook('Stop', { terminationReason: 'NO_TOOL_CALL', fullyIdle: true }));
+		await step('osc done', () => osc('done'));
+		await step('osc idle on the next key', () => osc('idle'));
+		await step('next turn', () => hook('PreInvocation', { invocationNum: 0 }));
+		await step('PreToolUse ask_question', () => hook('PreToolUse', { toolCall: { id: 'call_2', name: 'ask_question', args: { questions: [] } } }));
+		await step('osc blocked question', () => osc('blocked', 'question'));
+		await step('osc working (answered)', () => osc('working'));
+		await step('osc idle (Esc, no Stop hook)', () => osc('idle'));
+		await step('PreToolUse again', () => hook('PreToolUse', { toolCall: { id: 'call_3', name: 'run_command', args: {} } }));
+		await step('osc blocked permission again', () => osc('blocked', 'permission'));
+		await step('osc idle (denied, no Stop hook)', () => osc('idle'));
+		await step('Stop with USER_CANCELED', async () => { await hook('PreInvocation', { invocationNum: 0 }); await hook('Stop', { terminationReason: 'USER_CANCELED' }); });
+		assert.deepStrictEqual({
+			steps,
+			// 再開の定義がまだ無いので、ペインの会話としては控えない
+			paneSessions: Reflect.get(fixture.service, '_paneSessions').has('agy'),
+		}, {
+			steps: [
+				'osc idle at start: idle',
+				'SessionStart: idle',
+				'turn starts: working',
+				'PreToolUse run_command: working',
+				'osc blocked permission: permission',
+				'osc working (approved): working',
+				'PostToolUse: working',
+				'Stop: review',
+				'osc done: review',
+				'osc idle on the next key: review',
+				'next turn: working',
+				'PreToolUse ask_question: question',
+				'osc blocked question: question',
+				'osc working (answered): working',
+				'osc idle (Esc, no Stop hook): idle',
+				'PreToolUse again: working',
+				'osc blocked permission again: permission',
+				'osc idle (denied, no Stop hook): idle',
+				'Stop with USER_CANCELED: idle',
+			],
+			paneSessions: false,
+		});
+	});
+
 	test('keeps legacy status and hook-token list commands independently available', async () => {
 		const fixture = createFixture();
 		const connection = {};

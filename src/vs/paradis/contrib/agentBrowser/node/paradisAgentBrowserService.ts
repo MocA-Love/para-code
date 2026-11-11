@@ -41,6 +41,7 @@ import { paradisFormatSetViewportResult, paradisFormatViewportList, paradisViewp
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_MAX_WAITING_CHILDREN, PARADIS_MAX_WAITING_CHILDREN_PER_TAB, PARADIS_OPENED_TAB_BURST_LIMIT, PARADIS_OPENED_TAB_BURST_RETRIES, PARADIS_OPENED_TAB_BURST_WINDOW_MS, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisOpenedTabBurstGuard, ParadisOpenedTabGrantResult, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisExactViewKey, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
+import { PARADIS_ANTIGRAVITY_QUESTION_TOOL, paradisAntigravityHookEvent, paradisIsAntigravityHookPayload, paradisWithAntigravityHookAliases } from '../common/paradisAntigravityHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
 import { IParadisAnnouncedReview, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
@@ -74,7 +75,7 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf, ParadisPeerUnknownReason } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
-import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, ParadisProgramState, paradisCodexProgramStatusTransition, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
+import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, ParadisProgramState, paradisAntigravityProgramStatusTransition, paradisCodexProgramStatusTransition, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
 import { PARADIS_AGENT_VIEW_IDLE_THROTTLE_MS } from '../common/paradisAgentViewIdleThrottle.js';
 import { ParadisCursorPacingLedger, paradisCursorScrollDirectionForTool, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
@@ -1805,7 +1806,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 前面の Codex が終わった（シェルへ戻った・落ちた）。裏の会話の承認待ちは、もう答える画面が無いので消す。
 		// hook の届くペインでもここだけは見る（裏の会話の承認待ちは、その会話の次の hook でしか外れないため）
 		const clearedBackgroundWait = status?.state === 'clear' && ingressLease !== undefined && this._codexFrontSessions.clearBackgroundWaits(token);
-		if (status === undefined || ingressLease === undefined || !paradisProgramStatusApplies(this._hookReportedTokens.has(token))) {
+		// Antigravity CLI には承認待ちの hook が無く、断った・中断したときは Stop の hook も来ないので、hook の届くペインでも使う
+		const antigravity = status?.app === 'antigravity';
+		if (status === undefined || ingressLease === undefined || (!antigravity && !paradisProgramStatusApplies(this._hookReportedTokens.has(token)))) {
 			return clearedBackgroundWait;
 		}
 		const now = Date.now();
@@ -1819,6 +1822,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._programStatusTimes.set(token, times);
 		if (status.app === 'codex') {
 			return this._noteCodexProgramStatus(token, status.state, status.kind, now);
+		}
+		if (antigravity) {
+			return this._noteOscPaneStatus(token, paradisAntigravityProgramStatusTransition(this._paneStatuses.get(token)?.status, status.state, status.kind), now, true);
 		}
 		const next = paradisProgramStatusToAgentStatus(status);
 		const previous = this._paneStatuses.get(token);
@@ -1856,8 +1862,19 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ペイン（`_agentHookTokens`）では、許可待ちとその解除にだけ使う（paradisCodexProgramStatusTransition）。
 	 */
 	private _noteCodexProgramStatus(token: string, state: ParadisProgramState, kind: string | undefined, now: number): boolean {
+		return this._noteOscPaneStatus(token, paradisCodexProgramStatusTransition(this._paneStatuses.get(token)?.status, state, this._agentHookTokens.has(token), kind), now);
+	}
+
+	/**
+	 * Codex・Antigravity CLI の OSC 7501 から決めた遷移（{@link paradisCodexProgramStatusTransition}・
+	 * {@link paradisAntigravityProgramStatusTransition}）をペインの状態に当てる。
+	 *
+	 * @param withHooks hook と並べて使う（Antigravity CLI）。確認待ち（review）を hook の Stop と同じ記録（_reviewEntry。
+	 * 同じターンで二度鳴らさない）にし、hook が届いたときに消す記録（_forgetCodexProgramStatus。Codex の OSC は hook が
+	 * 届くと使わなくなるので、その時点で残っている状態を消す）には載せない
+	 */
+	private _noteOscPaneStatus(token: string, next: ParadisAgentStatus | 'idle' | undefined, now: number, withHooks = false): boolean {
 		const previous = this._paneStatuses.get(token);
-		const next = paradisCodexProgramStatusTransition(previous?.status, state, this._agentHookTokens.has(token), kind);
 		if (next === undefined || next === previous?.status) {
 			return false;
 		}
@@ -1867,6 +1884,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
 			this._userTurnStarts.set(token, now);
+		}
+		if (withHooks) {
+			this._paneStatuses.set(token, next === 'review' ? this._reviewEntry(token, now, previous?.cwd) : { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
+			return true;
 		}
 		const entry: IParadisPaneStatusEntry = { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) };
 		this._paneStatuses.set(token, entry);
@@ -2239,6 +2260,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			? paradisHookAgentKindForTranscript(transcriptPath)
 			: previous?.agent);
 		if (agent === undefined) {
+			return;
+		}
+		// Antigravity CLI の会話はまだ控えない（再開の定義が無い）。前の会話（同じペインで前に動かした Claude Code など）を
+		// 再開の候補に残さないよう、控えを消す
+		if (agent === 'antigravity') {
+			this._paneSessions.delete(token);
 			return;
 		}
 		// 同じ会話の間は最初に報告された作業ディレクトリを使い続ける。後の hook の cwd は、ツールが
@@ -4593,7 +4620,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		const token = ingressLease.token;
 
 		const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-		const eventType = url.searchParams.get('event') ?? '';
+		// Antigravity CLI の hook は、下で JSON を読んでから状態の判定に使う名前へ写す（paradisAntigravityHookEvent）
+		const rawEventType = url.searchParams.get('event') ?? '';
 		// hook の ID を覚える。受け口の返事が遅れて notify スクリプトが控えてしまっても、流し直しで二重にしない。
 		const hookId = url.searchParams.get(PARADIS_AGENT_HOOK_ID_PARAM);
 		if (hookId !== null && PARADIS_AGENT_HOOK_ID_PATTERN.test(hookId)) {
@@ -4604,7 +4632,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 印の無い hook は従来どおり手元のものとして扱う（旧版のスクリプトが残っていても壊さない）。
 		const remoteHostParam = url.searchParams.get(PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM);
 		const suppliedRemoteHostId = paradisIsAgentHookRemoteHostId(remoteHostParam) ? remoteHostParam : undefined;
-		if (eventType.length > MAX_HOOK_EVENT_LENGTH) {
+		if (rawEventType.length > MAX_HOOK_EVENT_LENGTH) {
 			res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
 			res.end(JSON.stringify({ error: 'Agent hook rejected.' }));
 			return;
@@ -4634,7 +4662,8 @@ export class ParadisAgentBrowserService extends Disposable {
 					return;
 				}
 				try {
-					hookPayload = paradisSanitizeAgentHookPayload(JSON.parse(body));
+					// Antigravity CLI の hook は camelCase なので、Claude Code の形の別名を足してから読む
+					hookPayload = paradisSanitizeAgentHookPayload(paradisWithAntigravityHookAliases(JSON.parse(body)));
 				} catch {
 					// 壊れたJSONは旧hookと同じくイベント名だけで処理する。
 				}
@@ -4645,7 +4674,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			};
 			const declaredAgentKind = stringField('agent_kind');
 			if (declaredAgentKind !== undefined && declaredAgentKind !== 'opencode') { this._sendIngressRejected(res); return; }
-			const agentKind = declaredAgentKind === 'opencode' ? 'opencode' : undefined;
+			const agentKind = declaredAgentKind === 'opencode' ? 'opencode' : paradisIsAntigravityHookPayload(hookPayload) ? 'antigravity' : undefined;
+			const eventType = agentKind === 'antigravity' ? paradisAntigravityHookEvent(rawEventType, hookPayload) : rawEventType;
 			const remoteHostId = agentKind === 'opencode' ? paradisAgentHookRemoteHostId(this._paneShells.get(token)?.remoteAuthority) : suppliedRemoteHostId;
 			// ブリッジ対応の OpenCode 互換 CLI は、自分のコマンド名（再開に使う）と表示名を名乗る。`cli` は名乗りの古い形
 			const declaredCli = stringField('cli_command') ?? stringField('cli');
@@ -4673,6 +4703,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			const hookMessage = stringField('message');
 			const toolName = stringField('tool_name');
+			// 質問の始まりの判定にだけ使うツール名。Antigravity CLI の ask_question は Claude Code の AskUserQuestion と同じに扱う
+			const questionToolName = agentKind === 'antigravity' && toolName === PARADIS_ANTIGRAVITY_QUESTION_TOOL ? 'AskUserQuestion' : toolName;
 			const toolInput = hookPayload?.tool_input;
 			const toolUseId = stringField('tool_use_id');
 			const messageId = stringField('message_id');
@@ -4702,7 +4734,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			const initiallyInWait = initialEntry?.status === 'permission' || initialEntry?.status === 'question';
 			// 許可待ち・質問へ入れる hook も送り主を確かめ、確かめられたかを状態に記録する（解除の hook を
 			// 確かめずに受け付けてよいかは、入れた hook が確かめられなかったかで決める）。
-			const entersWait = eventType !== '' && paradisAgentHookEntersWait(eventType, hookMessage, toolName);
+			const entersWait = eventType !== '' && paradisAgentHookEntersWait(eventType, hookMessage, questionToolName);
 			const initiallyChecksPendingRelease = !initiallyInWait && eventType !== '' && eventType !== 'TerminalExit'
 				&& this._unconfirmedReleaseTokens.has(token) && !this._unconfirmableTokens.has(token);
 			let callerUnverified: boolean | undefined;
@@ -4926,7 +4958,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			// question として扱う）。transcript には決着後まで現れないため、これが唯一のライブ検知点。
 			// PermissionRequest も同様: AskUserQuestion は PreToolUse と PermissionRequest の両方を
 			// 発火するため、後者を permission にすると質問カードと承認カードが二重表示になる。
-			if ((eventType === 'PreToolUse' || eventType === 'PermissionRequest') && toolName === 'AskUserQuestion') {
+			if ((eventType === 'PreToolUse' || eventType === 'PermissionRequest') && questionToolName === 'AskUserQuestion') {
 				normalized = 'question';
 			}
 			if (normalized === undefined) {

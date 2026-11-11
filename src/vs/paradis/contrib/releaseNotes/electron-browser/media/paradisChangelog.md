@@ -6,6 +6,7 @@ Para Code が本家 VS Code に加えた変更の一覧です。新しいバー�
 
 ## paracode-186（2026-11-12）
 
+- Antigravity CLI（`agy`）の状態を、Claude Code・Codex と同じくタブの印・状態の帯・通知・モバイルの一覧に出すようにしました。作業中・許可待ち・質問中・完了（失敗はエラーとして知らせます）が出ます。Para Code が起動したとき、`agy` を一度でも起動したことがあれば、`agy` の全体の hook の設定（`~/.gemini/config/hooks.json`）に Para Code の hook を足します（ほかの hook はそのまま残し、「設定 (Para Code)」の「Claude Code・Codex・Antigravity CLI に Para Code の hook を自動で入れる」を切ると外します）。会話の中身をチャット表示やモバイルに写すのは、まだできません
 - 「新しいスペース」とタブの起動メニューで、Gemini CLI の代わりに **Antigravity CLI**（`agy`）を選べるようにしました。モデル・エフォート・モード（accept-edits・auto・plan）を選んで起動でき、「新しいスペース」で添えた画像も渡します。ロゴはタブにも出ます。Gemini CLI は既定の一覧から外しました。Gemini CLI を使い続けたい場合は、設定 `paradis.workspaceSwitch.agents` の一覧に書けばそのまま動きます。既定のエージェント（`paradis.workspaceSwitch.defaultAgent`）を Gemini CLI にしていて一覧に書いていない場合、「新しいスペース」は「実行しない」を選んだ状態で開き、モバイルから送った指示は一覧の先頭のエージェントで起動します
 - ワークツリーの削除などの確認を、Para Code のほかの画面と同じ見た目にそろえました（Mac で純正のシートで出ていたもの）。削除のような取り消せない操作では、Enter を押しても実行されません（実行は Tab で移るかクリック）。長い説明は箱の中でスクロールし、問いとボタンはいつも見えます
 - 「通知」の画面の読み上げの辞書で、行を消すボタンと「行を追加」のアイコンが四角で出ていたのを直しました

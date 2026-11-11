@@ -1213,6 +1213,8 @@ const PARADIS_AGENT_HOOK_RELEASE_EVENTS: ReadonlySet<string> = new Set([
 	'PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'UserPromptSubmit', 'task_started',
 	'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd', 'Interrupt',
 	'ElicitationResult',
+	// Antigravity CLI のモデルの呼び出しの前後（PreInvocation の `invocationNum: 0` は受け口が UserPromptSubmit に写す）
+	'PreInvocation', 'PostInvocation',
 ]);
 
 /** 送り主を確かめられなくても、許可待ち・質問中のペインで受け付けてよい hook か（{@link PARADIS_AGENT_HOOK_RELEASE_EVENTS}）。 */
@@ -1299,6 +1301,9 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 		case 'ElicitationResult':
 		case 'task_started':
 		case 'Start':
+		// Antigravity CLI のモデルの呼び出しの前後（ターンの途中で何度も来る）
+		case 'PreInvocation':
+		case 'PostInvocation':
 			return 'working';
 		// 終了 (プロセス消滅)
 		case 'TerminalExit':

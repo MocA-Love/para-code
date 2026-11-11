@@ -12,6 +12,7 @@
 //    (ペイントークンenvなし) ではstdinを読み切って破棄してから exit 0 する無害設計。
 // 2. ~/.claude/settings.json へhook定義を冪等マージ (既存のユーザーhookは保持)。
 // 3. ~/.codex/hooks.json へhook定義を冪等マージ (同上)。
+// 4. ~/.gemini/config/hooks.json（Antigravity CLI）へ、名前付きの hook `para-code` を冪等に置く (他の名前の hook は保持)。
 // 既存ファイルのJSONパースに失敗した場合は何も書かない (ユーザーファイルを壊すくらいなら諦める)。
 
 import { execFile } from 'child_process';
@@ -27,7 +28,8 @@ import { paradisWriteRollingBackupSync } from '../../../node/paradisRollingFileB
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { PARADIS_REMOTE_HOOK_PORTS_DIR_NAME } from '../common/paradisRemoteHookSource.js';
-import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_ELICITATION_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_ELICITATION_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommand, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+import { PARADIS_ANTIGRAVITY_CONFIG_RELATIVE_DIR, PARADIS_ANTIGRAVITY_HOOK_NAME, paradisAntigravityHookDefinition } from '../common/paradisAntigravityHooks.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES, PARADIS_AGENT_HOOK_SPOOL_MAX_FILES, PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS } from '../common/paradisAgentHookSpool.js';
 import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHomeCandidates } from './paradisAgentHome.js';
@@ -98,8 +100,11 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
 		'  fi',
 		`  LINE="{\\"hook_event_name\\":\\"$EVENT\\""`,
 		`  V=$(grep -oE '"session_id"[[:space:]]*:[[:space:]]*"([^"\\\\]|\\\\.)*"' "$INPUT_FILE" 2>/dev/null | head -n 1 | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*//')`,
+		'  # Antigravity CLI writes camelCase keys; keep them under the same names as the other agents.',
+		`  [ -n "$V" ] || V=$(grep -oE '"conversationId"[[:space:]]*:[[:space:]]*"([^"\\\\]|\\\\.)*"' "$INPUT_FILE" 2>/dev/null | head -n 1 | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*//')`,
 		`  [ -n "$V" ] && [ "\${#V}" -le 4096 ] && LINE="$LINE,\\"session_id\\":$V"`,
 		`  V=$(grep -oE '"transcript_path"[[:space:]]*:[[:space:]]*"([^"\\\\]|\\\\.)*"' "$INPUT_FILE" 2>/dev/null | head -n 1 | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*//')`,
+		`  [ -n "$V" ] || V=$(grep -oE '"transcriptPath"[[:space:]]*:[[:space:]]*"([^"\\\\]|\\\\.)*"' "$INPUT_FILE" 2>/dev/null | head -n 1 | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*//')`,
 		`  [ -n "$V" ] && [ "\${#V}" -le 4096 ] && LINE="$LINE,\\"transcript_path\\":$V"`,
 		`  V=$(grep -oE '"cwd"[[:space:]]*:[[:space:]]*"([^"\\\\]|\\\\.)*"' "$INPUT_FILE" 2>/dev/null | head -n 1 | sed -E 's/^"[^"]*"[[:space:]]*:[[:space:]]*//')`,
 		`  [ -n "$V" ] && [ "\${#V}" -le 4096 ] && LINE="$LINE,\\"cwd\\":$V"`,
@@ -194,13 +199,13 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
 		'  cat >/dev/null 2>&1 || true',
 		'fi',
 		'',
-		'# Claude Code uses "hook_event_name"; Codex uses "type". No jq dependency.',
+		'# Claude Code uses "hook_event_name"; Antigravity CLI uses "hookEventName"; Codex uses "type". No jq dependency.',
 		'# One sed per key, the first match in the file as `grep -o | head -n 1` did: put a newline',
 		'# before the first match, drop what is before it and keep the value. An empty value prints',
 		'# nothing (the caller then tries the next key); otherwise only the characters that are safe',
 		'# in the query value are kept (as `tr -cd` did), after a "v" so that "none left" stays',
 		'# apart from "no value".',
-		...(['hook_event_name', 'type'].flatMap(key => [
+		...(['hook_event_name', 'hookEventName', 'type'].flatMap(key => [
 			`first_${key}() {`,
 			`  LC_ALL=C sed -n '/"${key}"[[:space:]]*:[[:space:]]*"[^"]*"/{`,
 			`s/"${key}"[[:space:]]*:[[:space:]]*"[^"]*"/\\`,
@@ -216,6 +221,9 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
 			'}',
 		])),
 		'EVENT=$(first_hook_event_name)',
+		'if [ -z "$EVENT" ]; then',
+		'  EVENT=$(first_hookEventName)',
+		'fi',
 		'if [ -z "$EVENT" ]; then',
 		'  EVENT=$(first_type)',
 		'fi',
@@ -337,6 +345,11 @@ export function paradisGetNotifyScriptContentPs1(): string {
 		'        $value = $parsed.$key',
 		'        if ($value -is [string] -and $value.Length -le 4096) { $payload[$key] = $value }',
 		'      }',
+		'      # Antigravity CLI writes camelCase keys; keep them under the same names as the other agents.',
+		'      foreach ($pair in @(@(\'session_id\', \'conversationId\'), @(\'transcript_path\', \'transcriptPath\'))) {',
+		'        $value = $parsed.($pair[1])',
+		'        if (-not $payload.Contains($pair[0]) -and $value -is [string] -and $value.Length -le 4096) { $payload[$pair[0]] = $value }',
+		'      }',
 		'      if ($parsed.message -is [string] -and $parsed.message -match \'permission\') { $payload[\'message\'] = \'permission\' }',
 		'    } catch { }',
 		'    $record = [ordered]@{ v = 1; id = $hookId; event = $eventName; t = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); payload = $payload }',
@@ -358,8 +371,9 @@ export function paradisGetNotifyScriptContentPs1(): string {
 		'$inputJson = [System.Text.Encoding]::UTF8.GetString($bodyBytes)',
 		'if (-not $inputJson) { exit 0 }',
 		'',
-		'# Claude Code and Codex hooks use "hook_event_name"; Codex legacy notify uses "type".',
+		'# Claude Code and Codex hooks use "hook_event_name"; Antigravity CLI uses "hookEventName"; Codex legacy notify uses "type".',
 		'$eventMatch = [regex]::Match($inputJson, \'"hook_event_name"\\s*:\\s*"([^"]*)"\')',
+		'if (-not $eventMatch.Success) { $eventMatch = [regex]::Match($inputJson, \'"hookEventName"\\s*:\\s*"([^"]*)"\') }',
 		'if (-not $eventMatch.Success) { $eventMatch = [regex]::Match($inputJson, \'"type"\\s*:\\s*"([^"]*)"\') }',
 		'# Never guess on parse failure: dropping is safer than a false notification.',
 		'if (-not $eventMatch.Success) { exit 0 }',
@@ -547,6 +561,123 @@ export function paradisMergeAgentHooksJson(existingRaw: string | undefined, mana
 	return JSON.stringify(parsed, undefined, 2);
 }
 
+/** Antigravity CLI の名前付きの hook の中で、当fork管理のhookの最も新しいスキーマ（無ければ undefined）。 */
+function highestManagedSchemaInAntigravityHook(namedHook: unknown): number | undefined {
+	if (!isPlainObject(namedHook)) {
+		return undefined;
+	}
+	let highest: number | undefined;
+	const note = (handler: unknown) => {
+		const schema = isPlainObject(handler) ? paradisManagedHookSchema(handler.command) : undefined;
+		if (schema !== undefined && (highest === undefined || schema > highest)) {
+			highest = schema;
+		}
+	};
+	for (const handlers of Object.values(namedHook)) {
+		if (!Array.isArray(handlers)) {
+			continue;
+		}
+		for (const handler of handlers) {
+			// PreToolUse・PostToolUse は `{ matcher, hooks: [...] }` で包み、ほかはハンドラをそのまま並べる
+			if (isPlainObject(handler) && Array.isArray(handler.hooks)) {
+				handler.hooks.forEach(note);
+			} else {
+				note(handler);
+			}
+		}
+	}
+	return highest;
+}
+
+/**
+ * Antigravity CLI の hooks.json（最上位に名前付きの hook を並べる）に、名前付きの hook `para-code` を冪等に置いた
+ * JSON 文字列を返す。他の名前の hook・その他のキーは残す。パース不能・ルートがオブジェクトでない場合は undefined
+ * （呼び出し側は何も書かない）。
+ *
+ * 置き換えるのは `para-code` が当fork管理のhookだけから成るときか、まだ無いときだけ。同じ名前で利用者が書いた hook
+ * （当fork管理のコマンドを含まない）と、新しい版の Para Code が置いた hook には触らない。利用者が付けた
+ * `"enabled": false` は残す（agy の `/hooks` で止めたものを起動のたびに戻さない）。
+ */
+export function paradisMergeAntigravityHooksJson(existingRaw: string | undefined, hookCommand: string = paradisManagedAgentHookCommand()): string | undefined {
+	let parsed: unknown = {};
+	if (existingRaw !== undefined && existingRaw.trim().length > 0) {
+		try {
+			parsed = JSON.parse(existingRaw);
+		} catch {
+			return undefined;
+		}
+	}
+	if (!isPlainObject(parsed)) {
+		return undefined;
+	}
+	const current = parsed[PARADIS_ANTIGRAVITY_HOOK_NAME];
+	if (current !== undefined) {
+		const schema = highestManagedSchemaInAntigravityHook(current);
+		if (schema === undefined || schema > PARADIS_AGENT_HOOK_SCHEMA_VERSION) {
+			return existingRaw;
+		}
+	}
+	const enabled = isPlainObject(current) && typeof current.enabled === 'boolean' ? current.enabled : undefined;
+	const next = { ...(enabled !== undefined ? { enabled } : {}), ...paradisAntigravityHookDefinition(hookCommand) };
+	if (existingRaw !== undefined && JSON.stringify(current) === JSON.stringify(next)) {
+		return existingRaw;
+	}
+	parsed[PARADIS_ANTIGRAVITY_HOOK_NAME] = next;
+	return JSON.stringify(parsed, undefined, 2);
+}
+
+/**
+ * Antigravity CLI の hooks.json から名前付きの hook `para-code` を外した JSON 文字列を返す（当fork管理のhookを
+ * 含むときだけ）。外すものが無ければ受け取ったものをそのまま返す。パース不能なら undefined。
+ */
+export function paradisRemoveAntigravityHooksJson(existingRaw: string): string | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(existingRaw);
+	} catch {
+		return undefined;
+	}
+	if (!isPlainObject(parsed)) {
+		return undefined;
+	}
+	if (highestManagedSchemaInAntigravityHook(parsed[PARADIS_ANTIGRAVITY_HOOK_NAME]) === undefined) {
+		return existingRaw;
+	}
+	delete parsed[PARADIS_ANTIGRAVITY_HOOK_NAME];
+	return JSON.stringify(parsed, undefined, 2);
+}
+
+/** Antigravity CLI の全体の hooks.json（`~/.gemini/config/hooks.json`）。 */
+export function paradisAntigravityHooksPath(): string {
+	return join(homedir(), PARADIS_ANTIGRAVITY_CONFIG_RELATIVE_DIR, 'hooks.json');
+}
+
+/**
+ * Antigravity CLI の hooks.json に Para Code の hook を置く。置くのは、agy が全体の設定のフォルダ
+ * （`~/.gemini/config`。agy が初めて起動したときに作る）を作っているときだけ（agy を使わない人のホームに作らない）。
+ * 失敗しても例外は投げない。
+ */
+export async function paradisMergeAntigravityHooksFile(filePath: string, logService: ILogService | undefined, hookCommand?: string, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+	if (!await (io.isDirectory ?? isExistingDirectory)(dirname(filePath))) {
+		return;
+	}
+	await updateAgentHooksFile(filePath, 'merge', existingRaw => {
+		const merged = paradisMergeAntigravityHooksJson(existingRaw, hookCommand);
+		return merged === undefined ? { kind: 'unparseable' } : { kind: 'content', content: merged };
+	}, logService, io);
+}
+
+/** Antigravity CLI の hooks.json から Para Code の hook を外す。ファイルが無ければ何もしない。 */
+export async function paradisRemoveAntigravityHooksFile(filePath: string, logService: ILogService | undefined, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+	await updateAgentHooksFile(filePath, 'remove', existingRaw => {
+		if (existingRaw === undefined || existingRaw.trim().length === 0) {
+			return { kind: 'unchanged' };
+		}
+		const removed = paradisRemoveAntigravityHooksJson(existingRaw);
+		return removed === undefined ? { kind: 'unparseable' } : { kind: 'content', content: removed };
+	}, logService, io);
+}
+
 /** notify.sh (POSIX) / notify.ps1 (Windows) を冪等生成する (内容一致なら実行権の確認のみ)。 */
 async function installNotifyScript(logService: ILogService): Promise<void> {
 	try {
@@ -581,6 +712,16 @@ export interface IParadisAgentHooksFileIO {
 	readFile(filePath: string): Promise<string | undefined>;
 	writeFileIfUnchanged(filePath: string, expected: string | undefined, content: string): boolean;
 	mkdir(directory: string): Promise<void>;
+	/** フォルダがあるか（Antigravity CLI の設定のフォルダを確かめる）。省略すると実物を見る。 */
+	isDirectory?(directory: string): Promise<boolean>;
+}
+
+async function isExistingDirectory(directory: string): Promise<boolean> {
+	try {
+		return (await fs.stat(directory)).isDirectory();
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -770,12 +911,17 @@ export async function paradisRemoveAgentHooksFile(filePath: string, logService: 
 }
 
 /**
- * Claude Code の settings.json と Codex の hooks.json から、当fork管理のhookを取り外す。
+ * Claude Code の settings.json・Codex の hooks.json・Antigravity CLI の hooks.json から、当fork管理のhookを取り外す。
  * 設置先の解決は自動設置と同じ（$CLAUDE_CONFIG_DIR / $CODEX_HOME を尊重する）。
  * notify スクリプト自体は消さない: 同じ PC の別の Para Code がまだ使っていることがある。
  */
-export async function paradisRemoveAgentHooks(logService: ILogService | undefined, paths: { readonly claudeSettingsPath?: string; readonly codexHooksPath?: string } = {}): Promise<void> {
+export async function paradisRemoveAgentHooks(logService: ILogService | undefined, paths: { readonly claudeSettingsPath?: string; readonly codexHooksPath?: string; readonly antigravityHooksPath?: string } = {}): Promise<void> {
 	await paradisRemoveAgentHooksFile(paths.claudeSettingsPath ?? join(paradisClaudeConfigDir(), 'settings.json'), logService);
+	// 設置先を固定して呼ばれた（テスト）ときは、固定されていない Antigravity CLI の実物のファイルに触らない
+	const antigravityHooksPath = paths.antigravityHooksPath ?? (paths.claudeSettingsPath === undefined && paths.codexHooksPath === undefined ? paradisAntigravityHooksPath() : undefined);
+	if (antigravityHooksPath !== undefined) {
+		await paradisRemoveAntigravityHooksFile(antigravityHooksPath, logService);
+	}
 	// Codex はアカウントごとのホーム（~/.codex-2 等）にも設置しているので、全部から外す。ログアウトした
 	// ホームにも前に置いた hook が残るので、ログインの有無を問わず候補全部を見る（外すだけなので安全）。
 	const codexHooksPaths = paths.codexHooksPath !== undefined ? [paths.codexHooksPath] : paradisCodexHomeCandidates().map(home => join(home, 'hooks.json'));
@@ -936,6 +1082,11 @@ const PARADIS_AGENT_HOOK_AUDIT_INTERVAL_MS = 60_000;
 export interface IParadisAgentHooksReconcilerOptions {
 	readonly claudeSettingsPath?: string;
 	readonly codexHooksPath?: string;
+	/**
+	 * Antigravity CLI の hooks.json。既定は `~/.gemini/config/hooks.json`。Claude Code・Codex の設置先を固定した
+	 * （テスト）ときに省略すると、Antigravity CLI には置かない（実物のファイルに触らない）。
+	 */
+	readonly antigravityHooksPath?: string;
 	readonly claudeVersionOutput?: string;
 	readonly installNotifyScript?: boolean;
 	readonly watchDirectory?: (directory: string, listener: (fileName: string | null) => void) => IDisposable;
@@ -955,6 +1106,9 @@ export class ParadisAgentHooksReconciler extends Disposable {
 	private readonly claudeSettingsPath: string;
 	/** テストで固定したときだけ入る。普段は {@link codexHooksPaths} で毎回解決する。 */
 	private readonly fixedCodexHooksPath: string | undefined;
+	private readonly antigravityHooksPath: string | undefined;
+	/** Antigravity CLI の設定のフォルダがあると分かったか（あるときだけ見張る。無いフォルダは見張れない）。 */
+	private antigravityConfigDirSeen = false;
 	private readonly watchDirectory: (directory: string, listener: (fileName: string | null) => void) => IDisposable;
 	private readonly scheduleReconcile: (listener: () => void) => IDisposable;
 	private readonly scheduleAudit: (listener: () => void) => IDisposable;
@@ -978,6 +1132,7 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		super();
 		this.claudeSettingsPath = options.claudeSettingsPath ?? join(paradisClaudeConfigDir(), 'settings.json');
 		this.fixedCodexHooksPath = options.codexHooksPath;
+		this.antigravityHooksPath = options.antigravityHooksPath ?? (options.claudeSettingsPath === undefined && options.codexHooksPath === undefined ? paradisAntigravityHooksPath() : undefined);
 		this.watchDirectory = options.watchDirectory ?? ((directory, listener) => {
 			try {
 				const watcher = watch(directory, { persistent: false }, (_eventType, fileName) => listener(fileName?.toString() ?? null));
@@ -1024,7 +1179,7 @@ export class ParadisAgentHooksReconciler extends Disposable {
 	 * 変化が届かない（見張りは消えたフォルダに付いたまま）ので、ホームが変わったと知らされたら張り直す
 	 */
 	private watchHookDirectories(rewatch: boolean): void {
-		const directories = new Set([dirname(this.claudeSettingsPath), ...this.codexHooksPaths().map(path => dirname(path))]);
+		const directories = new Set([dirname(this.claudeSettingsPath), ...this.codexHooksPaths().map(path => dirname(path)), ...(this.antigravityConfigDirSeen && this.antigravityHooksPath !== undefined ? [dirname(this.antigravityHooksPath)] : [])]);
 		for (const directory of [...this.watchedDirectories.keys()]) {
 			if (rewatch || !directories.has(directory)) {
 				this.watchedDirectories.deleteAndDispose(directory);
@@ -1039,7 +1194,8 @@ export class ParadisAgentHooksReconciler extends Disposable {
 
 	private onDirectoryChange(fileName: string | null): void {
 		// Codex の設置先の名前は常に hooks.json。変更イベントのたびにホームを走査し直さない。
-		if (this.disposed || (fileName !== null && fileName !== basename(this.claudeSettingsPath) && fileName !== basename(this.fixedCodexHooksPath ?? 'hooks.json'))) {
+		if (this.disposed || (fileName !== null && fileName !== basename(this.claudeSettingsPath) && fileName !== basename(this.fixedCodexHooksPath ?? 'hooks.json')
+			&& (this.antigravityHooksPath === undefined || fileName !== basename(this.antigravityHooksPath)))) {
 			return;
 		}
 		if (this.pendingReconcile !== undefined) {
@@ -1126,6 +1282,15 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		for (const codexHooksPath of this.codexHooksPaths()) {
 			await paradisMergeAgentHooksFile(codexHooksPath, PARADIS_CODEX_HOOK_EVENTS, this.logService, hookCommand);
 		}
+		if (this.antigravityHooksPath === undefined) {
+			return;
+		}
+		await paradisMergeAntigravityHooksFile(this.antigravityHooksPath, this.logService, hookCommand);
+		// agy を後から入れた（設定のフォルダができた）ら、定期監査を待たずに直せるよう見張りに足す
+		if (!this.antigravityConfigDirSeen && this.started && !this.disposed && await isExistingDirectory(dirname(this.antigravityHooksPath))) {
+			this.antigravityConfigDirSeen = true;
+			this.watchHookDirectories(false);
+		}
 	}
 
 	override dispose(): void {
@@ -1164,4 +1329,5 @@ export async function paradisSetupAgentHooks(logService: ILogService, shellEnvRe
 	for (const codexHooksPath of paradisCodexHooksPaths()) {
 		await paradisMergeAgentHooksFile(codexHooksPath, PARADIS_CODEX_HOOK_EVENTS, logService, hookCommand);
 	}
+	await paradisMergeAntigravityHooksFile(paradisAntigravityHooksPath(), logService, hookCommand);
 }

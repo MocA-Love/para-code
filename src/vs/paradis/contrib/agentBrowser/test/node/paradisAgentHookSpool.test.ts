@@ -147,6 +147,29 @@ suite('paradisAgentHookSpool (node)', () => {
 		});
 	});
 
+	test('keeps the Antigravity CLI conversation and transcript under the same names, and skips its frequent model calls', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		this.timeout(30_000);
+		const spoolDir = join(root, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME);
+		const portFilePath = join(root, 'mcp-port.json');
+		const transcript = '/Users/example/.gemini/antigravity-cli/brain/c1/.system_generated/logs/transcript_full.jsonl';
+		await runHook('{"conversationId":"c1","cwd":"/repo","hookEventName":"PreInvocation","invocationNum":1,"lastUserInput":"secret plan"}', portFilePath);
+		await runHook(`{"conversationId":"c1","cwd":"/repo","hookEventName":"Stop","lastUserInput":"secret plan","terminationReason":"NO_TOOL_CALL","transcriptPath":"${transcript}"}`, portFilePath);
+		const raw = await fs.readFile(join(spoolDir, `pane-${paradisAgentHookSpoolHash(TOKEN)}.jsonl`), 'utf8');
+		const records = await paradisTakeAgentHookSpool(spoolDir, TOKEN);
+		assert.deepStrictEqual({
+			secretsOnDisk: raw.includes('secret plan'),
+			events: records.map(record => record.event),
+			payloads: records.map(record => record.payload),
+		}, {
+			secretsOnDisk: false,
+			events: ['Stop'],
+			payloads: [{ hook_event_name: 'Stop', session_id: 'c1', transcript_path: transcript, cwd: '/repo' }],
+		});
+	});
+
 	test('pruning removes old and half-read spools only', async () => {
 		const dir = join(root, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME);
 		await fs.mkdir(dir);

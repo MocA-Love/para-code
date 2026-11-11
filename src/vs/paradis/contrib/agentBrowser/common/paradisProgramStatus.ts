@@ -44,6 +44,19 @@
 // 0.164.0-alpha からは、ターンの終わりに idle ではなく `done`（失敗は `error`）を書き、利用者のキー・貼り付け・クリックが
 // 来るまで保つ（その後 idle）。blocked には `kind=permission|question|auth` が付く。中断したターンと再開時の過去のターンの
 // 再生は idle のまま（2026-10-20 に 0.164.0-alpha.3 を PTY で実測: 依頼 → working → done、キー → idle）。
+//
+// Antigravity CLI（agy 1.5.6）も Claude Code と同じく問い合わせ（`?`）を送り、答えたときだけ `app=antigravity` で書く
+// （答えなければ何も書かない。`AGY_CLI_OSC7501=on` で問い合わせ無しに書かせることもできる）。2026-11-12 に PTY で実測した値:
+//   起動         → state=idle
+//   作業中       → state=working
+//   許可待ち     → state=blocked:kind=permission:msg=「Approve RunCommand: …」
+//   質問中       → state=blocked:kind=question:msg=「<質問の文>」（ask_question）
+//   答えた       → state=working
+//   ターン完了   → state=done:msg=<応答の文>（次のキーで idle）
+//   許可を断った → state=idle（Stop の hook は来ない）
+//   Esc で中断   → state=idle（直後に done → idle が続くことがある。Stop の hook は来ない）
+// agy には承認待ちを知らせる hook が無く、断った・中断したときは Stop の hook も来ないので、hook の届くペインでも
+// この状態を使う（{@link paradisAntigravityProgramStatusTransition}）。
 
 import { ParadisAgentStatus } from './paradisAgentBrowser.js';
 
@@ -63,9 +76,15 @@ export interface IParadisProgramStatus {
 	readonly state: ParadisProgramState;
 	/** blocked の理由（permission / question / auth）。 */
 	readonly kind?: string;
-	/** Codex が書いた状態（`app=codex`。Codex の受け付けで届いた clear にも付ける）。Claude Code の状態には付けない。 */
-	readonly app?: 'codex';
+	/**
+	 * Codex・Antigravity CLI が書いた状態（`app=codex`・`app=antigravity`。その受け付けで届いた clear にも付ける）。
+	 * Claude Code の状態には付けない。
+	 */
+	readonly app?: 'codex' | 'antigravity';
 }
+
+/** 受け付けを開いた相手。 */
+export type ParadisProgramStatusApp = 'claude-code' | 'codex' | 'antigravity';
 
 const PROGRAM_STATES: ReadonlySet<string> = new Set<ParadisProgramState>(['working', 'blocked', 'done', 'idle', 'error', 'clear']);
 
@@ -103,11 +122,11 @@ export function paradisParseProgramStatus(data: string): IParadisProgramStatus |
 		return fields.has('id') ? undefined : { state: 'clear' };
 	}
 	const app = fields.get('app');
-	if ((app !== 'claude-code' && app !== 'codex') || fields.has('id')) {
+	if ((app !== 'claude-code' && app !== 'codex' && app !== 'antigravity') || fields.has('id')) {
 		return undefined;
 	}
 	const kind = fields.get('kind');
-	return { state: state as ParadisProgramState, ...(kind !== undefined && kind.length > 0 ? { kind } : {}), ...(app === 'codex' ? { app } : {}) };
+	return { state: state as ParadisProgramState, ...(kind !== undefined && kind.length > 0 ? { kind } : {}), ...(app === 'codex' || app === 'antigravity' ? { app } : {}) };
 }
 
 /** {@link paradisParseProgramStatus} が読まなかった理由。 */
@@ -120,7 +139,7 @@ export type ParadisProgramStatusDropReason =
 	| 'unknown-state'
 	/** サブエージェントの行（`id=` 付き）。 */
 	| 'subagent'
-	/** Claude Code・Codex 以外のアプリが書いたもの。 */
+	/** Claude Code・Codex・Antigravity CLI 以外のアプリが書いたもの。 */
 	| 'other-app';
 
 /**
@@ -156,7 +175,7 @@ export function paradisCopyProgramStatus(value: unknown): IParadisProgramStatus 
 		return undefined;
 	}
 	const safeKind = typeof kind === 'string' && /^[a-z_-]{1,32}$/.test(kind) ? kind : undefined;
-	return { state: state as ParadisProgramState, ...(safeKind !== undefined ? { kind: safeKind } : {}), ...(app === 'codex' ? { app: 'codex' as const } : {}) };
+	return { state: state as ParadisProgramState, ...(safeKind !== undefined ? { kind: safeKind } : {}), ...(app === 'codex' || app === 'antigravity' ? { app } : {}) };
 }
 
 /**
@@ -211,6 +230,34 @@ export function paradisCodexProgramStatusTransition(previous: ParadisAgentStatus
 }
 
 /**
+ * Antigravity CLI の OSC の状態で、ペインの状態をどう変えるか（変えないなら undefined、'idle' は状態を消す）。hook の
+ * 届くペインでも呼ぶ（agy には承認待ちの hook が無く、許可を断った・Esc で中断したときは Stop の hook も来ない）。
+ * hook と同じ遷移を二度数えないよう、hook が知らせない変化だけを使う:
+ * - blocked は、`kind=question` なら質問中、それ以外（permission など）は許可待ちにする
+ * - working は、作業中でなければ作業中にする（許可待ち・質問中に答えた後もこれで戻る）
+ * - done・error は、作業中・許可待ち・質問中から確認待ち（review）にする（完了の後の重ねての done は変えない）
+ * - idle・clear は、作業中・許可待ち・質問中なら状態を消す（断った・中断した）。確認待ち（review）は残す（次のキーで
+ *   idle が来るため、消すと完了の印がすぐ消える）
+ */
+export function paradisAntigravityProgramStatusTransition(previous: ParadisAgentStatus | undefined, state: ParadisProgramState, kind?: string): ParadisAgentStatus | 'idle' | undefined {
+	const active = previous === 'working' || previous === 'permission' || previous === 'question';
+	switch (state) {
+		case 'blocked': {
+			const next = kind === 'question' ? 'question' : 'permission';
+			return previous === next ? undefined : next;
+		}
+		case 'working':
+			return previous === 'working' ? undefined : 'working';
+		case 'done':
+		case 'error':
+			return active ? 'review' : undefined;
+		case 'idle':
+		case 'clear':
+			return active ? 'idle' : undefined;
+	}
+}
+
+/**
  * OSC の状態をペインの状態に使ってよいか。そのペインに hook が一度でも届いていれば使わない（hook が
  * 正本。両方を使うと同じ遷移を二度数え、届く順の差で状態が行き来する）。
  */
@@ -219,7 +266,7 @@ export function paradisProgramStatusApplies(hookReported: boolean): boolean {
 }
 
 /** 前面のコマンドが何か（{@link paradisProgramStatusForeground}）。 */
-export type ParadisProgramStatusForeground = 'claude' | 'passthrough';
+export type ParadisProgramStatusForeground = 'claude' | 'antigravity' | 'passthrough';
 
 /** 中身を確かめられない、別の機械やコンテナへ入るコマンド。この先の Claude Code の問い合わせにも答える。 */
 const PASSTHROUGH_COMMANDS: ReadonlySet<string> = new Set(['ssh', 'autossh', 'mosh', 'et', 'wsl', 'wsl.exe', 'docker', 'podman', 'kubectl', 'gcloud', 'tmux', 'screen', 'zellij']);
@@ -237,6 +284,11 @@ function isCodexName(name: string | undefined): boolean {
 	return name !== undefined && /^codex(?:\.exe|\.cmd)?$/.test(name);
 }
 
+/** Antigravity CLI（`agy`。Go の単一の実行ファイルなので、プロセス名がそのまま `agy` になる）。 */
+function isAntigravityName(name: string | undefined): boolean {
+	return name === 'agy' || name === 'agy.exe';
+}
+
 /**
  * 問い合わせ無しで届いた Codex の状態で、受け付けを開いてよいか。シェル統合の nonce が合ったコマンド行か
  * ターミナルのプロセス名が Codex か、中身を確かめられない ssh・WSL などなら開く（npm 版の Codex はプロセス名が
@@ -250,7 +302,7 @@ export function paradisCodexProgramStatusForeground(trustedCommandLine: string |
 /**
  * 問い合わせが来たときの前面のコマンドから、答えてよいかを決める。シェル統合が報告した実行中のコマンド行と、
  * ターミナルのプロセス名（pty の前面のプロセス。出力では変えられない。ネイティブの Claude Code は版の番号になる）
- * を見る。どちらかが Claude Code か、中身を確かめられない ssh・WSL などなら答える。分からなければ答えない。
+ * を見る。どちらかが Claude Code・Antigravity CLI か、中身を確かめられない ssh・WSL などなら答える。分からなければ答えない。
  *
  * `trustedCommandLine` には、シェル統合の nonce が合ったコマンド行（`isTrusted`）だけを渡すこと。出力に
  * `OSC 633 ; E` を書けば、nonce が合わなくてもコマンド行は上書きされる（信頼できない印が付くだけ）。
@@ -259,6 +311,9 @@ export function paradisProgramStatusForeground(trustedCommandLine: string | unde
 	const names = [trustedCommandLine !== undefined ? commandName(trustedCommandLine) : undefined, processName !== undefined ? commandName(processName) : undefined];
 	if (names.some(name => name === 'claude' || name === 'claude.exe' || (name !== undefined && /^\d+\.\d+\.\d+$/.test(name)))) {
 		return 'claude';
+	}
+	if (names.some(isAntigravityName)) {
+		return 'antigravity';
 	}
 	if (names.some(name => name !== undefined && PASSTHROUGH_COMMANDS.has(name))) {
 		return 'passthrough';
@@ -350,7 +405,9 @@ export class ParadisProgramStatusGate {
 	private pending: IParadisProgramStatus | undefined;
 	/** Ctrl+Z で止めた Claude Code（題名）。同じ題名が前面に戻ったら、問い合わせ無しで受け付けを開き直す。 */
 	private held: { readonly identity: string; readonly until: number } | undefined;
-	private _app: 'claude-code' | 'codex' | undefined;
+	private _app: ParadisProgramStatusApp | undefined;
+	/** 前面が ssh・WSL などのときに開いた（中で動くのが Claude Code か Antigravity CLI か分からないので、どちらの状態も受ける）。 */
+	private passthrough = false;
 
 	constructor(private readonly now: () => number = Date.now) { }
 
@@ -359,16 +416,20 @@ export class ParadisProgramStatusGate {
 	}
 
 	/** 最後に受け付けを開いた相手（閉じた後も残す。閉じたときに送る clear を、どちらの状態か分けるため）。 */
-	get app(): 'claude-code' | 'codex' | undefined {
+	get app(): ParadisProgramStatusApp | undefined {
 		return this._app;
 	}
 
-	/** 問い合わせが来た。答えてよければ受け付けを Claude Code 用に開いて true。 */
+	/**
+	 * 問い合わせが来た。答えてよければ受け付けを開いて true。前面が Antigravity CLI なら Antigravity CLI 用、それ以外は
+	 * Claude Code 用に開く（ssh・WSL などの先は、届いた状態の app に合わせる）。
+	 */
 	query(foreground: ParadisProgramStatusForeground | undefined): boolean {
 		if (foreground === undefined) {
 			return false;
 		}
-		this.open('claude-code');
+		this.open(foreground === 'antigravity' ? 'antigravity' : 'claude-code');
+		this.passthrough = foreground === 'passthrough';
 		return true;
 	}
 
@@ -384,12 +445,13 @@ export class ParadisProgramStatusGate {
 		return true;
 	}
 
-	private open(app: 'claude-code' | 'codex'): void {
+	private open(app: ParadisProgramStatusApp): void {
 		this.openUntil = this.now() + PARADIS_PROGRAM_STATUS_WINDOW_MS;
 		this.lastKey = undefined;
 		this.pending = undefined;
 		this.held = undefined;
 		this._app = app;
+		this.passthrough = false;
 	}
 
 	/**
@@ -417,6 +479,7 @@ export class ParadisProgramStatusGate {
 		this.openUntil = this.now() + PARADIS_PROGRAM_STATUS_WINDOW_MS;
 		this.lastKey = undefined;
 		this._app = 'claude-code';
+		this.passthrough = false;
 		return true;
 	}
 
@@ -442,9 +505,15 @@ export class ParadisProgramStatusGate {
 			this.openUntil = undefined;
 			return false;
 		}
-		// 開いた相手と違うアプリの状態は通さない（app の無い clear はどちらでも通す）
-		if (status.state !== 'clear' && (status.app ?? 'claude-code') !== this._app) {
-			return false;
+		// 開いた相手と違うアプリの状態は通さない（app の無い clear はどちらでも通す）。ssh・WSL などの先は Claude Code と
+		// Antigravity CLI のどちらでもありうるので、届いた方に合わせる
+		const app = status.app ?? 'claude-code';
+		if (status.state !== 'clear' && app !== this._app) {
+			if (!this.passthrough || app === 'codex') {
+				return false;
+			}
+			this._app = app;
+			this.lastKey = undefined;
 		}
 		if (status.state === 'clear') {
 			this.openUntil = undefined;
@@ -493,7 +562,7 @@ export interface IParadisProgramStatusReceipt {
 	readonly reopened: boolean;
 	/** 状態を受ける直前に受け付けが開いていたか（開き直した分を含む）。 */
 	readonly wasOpen: boolean;
-	/** shared process へ渡す状態。渡さないなら undefined。Codex の受け付けで届いた clear には `app: 'codex'` を付ける。 */
+	/** shared process へ渡す状態。渡さないなら undefined。Codex・Antigravity CLI の受け付けで届いた clear には `app` を付ける。 */
 	readonly send: IParadisProgramStatus | undefined;
 }
 
@@ -541,11 +610,12 @@ export class ParadisProgramStatusTracker {
 	receive(status: IParadisProgramStatus, trustedCommandLine: string | undefined, processTitle: string | undefined): IParadisProgramStatusReceipt {
 		const reopened = status.app === 'codex' && !this.gate.isOpen && this.codexStatus(trustedCommandLine, processTitle);
 		const wasOpen = this.gate.isOpen;
-		const codexClear = status.state === 'clear' && this.gate.app === 'codex';
+		const openedApp = this.gate.app;
+		const taggedClear = status.state === 'clear' && (openedApp === 'codex' || openedApp === 'antigravity') ? openedApp : undefined;
 		if (!this.gate.accept(status)) {
 			return { reopened, wasOpen, send: undefined };
 		}
-		return { reopened, wasOpen, send: codexClear ? { state: 'clear', app: 'codex' } : status };
+		return { reopened, wasOpen, send: taggedClear !== undefined ? { state: 'clear', app: taggedClear } : status };
 	}
 
 	/** pty の前面のプロセスの題名が変わった。 */
