@@ -45,4 +45,11 @@ suite('paradisPresetLocalLedger', () => {
 		]);
 		assert.deepStrictEqual(paradisFolderLabelMoves(presets, 'same', ' same'), []);
 	});
+
+	test('adding a confirmation before running keeps a hidden preset hidden, also when its name is shared', () => {
+		const file = URI.file('/repo/.paracode.json');
+		const plain = { name: 'deploy', commands: ['make deploy'] };
+		const guarded = { ...plain, confirmBeforeRun: 'type-name' as const };
+		assert.deepStrictEqual([false, true].map(shared => paradisLocallyHiddenKeys(file, [], plain, shared).primary === paradisLocallyHiddenKeys(file, [], guarded, shared).primary), [true, true]);
+	});
 });

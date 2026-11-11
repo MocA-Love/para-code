@@ -9,7 +9,7 @@
 // コマンドプリセットの実行の前の確認（Q613）。UI キットの S の箱（paradisModal.ts）で組む。
 //
 // - 既定のボタンは「やめる」で、最初のフォーカスもそこ（名前を打つ段では入力欄）。Enter は、フォーカスが「実行」に
-//   あるときだけ実行し、それ以外（入力欄・やめる・本文）では「やめる」になる
+//   あるときだけ実行し、名前を打つ欄では何もしない（打ち終わりの Enter で閉じない）。それ以外（やめる・本文）では「やめる」になる
 // - 名前を打つ段は、打った名前がプリセットの名前と一致するまで「実行」を押せない
 // - まとめて実行は、確認付きのものを 1 回の確認に並べる（名前を打つ段のものが複数あれば、それぞれの名前を打たせる）
 
@@ -176,7 +176,8 @@ export function paradisShowPresetRunConfirm(container: HTMLElement, entries: rea
 				finish(false);
 			}
 		}));
-		// Enter は「実行」にフォーカスがあるときだけ実行する。ほか（入力欄・やめる・本文）では「やめる」にする
+		// Enter は「実行」にフォーカスがあるときだけ実行する。名前を打つ欄では何もしない（打ち終わりに Enter を押す
+		// 癖で閉じてしまわないように）。ほか（やめる・本文）では「やめる」にする
 		store.add(dom.addDisposableListener(backdrop, dom.EventType.KEY_DOWN, e => {
 			if (e.key !== 'Enter' || e.isComposing) {
 				return;
@@ -184,6 +185,9 @@ export function paradisShowPresetRunConfirm(container: HTMLElement, entries: rea
 			e.preventDefault();
 			e.stopPropagation();
 			const focused = dom.getActiveElement();
+			if (nameChecks.some(check => check.input.inputElement === focused)) {
+				return;
+			}
 			if (focused === run && canRun()) {
 				finish(true);
 			} else {

@@ -451,7 +451,7 @@ export function paradisUsablePresetId(definition: IParadisPresetDefinition, take
  * 違う2件は、この機能では**正規に並べて登録できる**。片方が外部で消えたときに、残った双子を
  * 当人と誤認して上書き・削除してしまう。ユーザーが編集できる項目はすべて突き合わせる。
  */
-export function paradisPresetFingerprint(definition: IParadisPresetDefinition, options?: { readonly ignoreAppliesTo?: boolean }): string {
+export function paradisPresetFingerprint(definition: IParadisPresetDefinition, options?: { readonly ignoreAppliesTo?: boolean; readonly ignoreConfirm?: boolean }): string {
 	const { tasks, layout } = paradisGetPresetTasks(definition);
 	return JSON.stringify([
 		definition.name.trim(),
@@ -469,7 +469,9 @@ export function paradisPresetFingerprint(definition: IParadisPresetDefinition, o
 		layout,
 		tasks.map(task => [task.name ?? '', task.cwd ?? '', task.commands]),
 		// 確認の段階は付いているときだけ足す（従来のプリセットの指紋を変えない。理由は下の種別と同じ）。
-		...(paradisPresetConfirmLevel(definition) === undefined ? [] : [['confirm', paradisPresetConfirmLevel(definition)]]),
+		// 「このマシンだけ隠した」台帳（paradisPresetLocalLedger.ts）は ignoreConfirm で外す。後から確認を付けただけで、
+		// 隠したものが出てこないように。双子の見分け（上書き・削除の相手の確認）では外さない
+		...(options?.ignoreConfirm || paradisPresetConfirmLevel(definition) === undefined ? [] : [['confirm', paradisPresetConfirmLevel(definition)]]),
 		// 種別は run 以外のときだけ足す。指紋は「このマシンだけ隠したリポジトリのプリセット」の
 		// 台帳キーにも使われ保存されるので、従来のプリセットの指紋を変えると隠したものが出てくる。
 		...(paradisPresetAction(definition) === 'run' ? [] : [[paradisPresetAction(definition), definition.prompt ?? '']]),

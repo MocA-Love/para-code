@@ -58,7 +58,7 @@ suite('ParadisPresetRunConfirm', () => {
 		]);
 	});
 
-	test('the name has to be typed before Run can be pressed, and Enter in the field cancels', async () => {
+	test('the name has to be typed before Run can be pressed, and Enter in the field does nothing', async () => {
 		let disabledWhileWrong: boolean | undefined;
 		const typed = await open([entry('type-name')], root => {
 			typeName(root, 'prod');
@@ -66,12 +66,15 @@ suite('ParadisPresetRunConfirm', () => {
 			typeName(root, ' prod db ');
 			runButton(root).click();
 		});
+		let openAfterEnter: boolean | undefined;
 		const enterInField = await open([entry('type-name')], root => {
 			typeName(root, 'prod db');
 			press(root.querySelector('.ppc-entry input')!, 'Enter');
+			openAfterEnter = root.querySelector('.paradis-preset-confirm') !== null;
+			root.querySelector<HTMLButtonElement>('.paradis-modal-foot button:first-child')!.click();
 		});
-		assert.deepStrictEqual({ typed: typed.result, focused: typed.seen.focused, disabledAtFirst: typed.seen.runDisabled, disabledWhileWrong, enterInField: enterInField.result }, {
-			typed: true, focused: 'input', disabledAtFirst: true, disabledWhileWrong: true, enterInField: false,
+		assert.deepStrictEqual({ typed: typed.result, focused: typed.seen.focused, disabledAtFirst: typed.seen.runDisabled, disabledWhileWrong, openAfterEnter, enterInField: enterInField.result }, {
+			typed: true, focused: 'input', disabledAtFirst: true, disabledWhileWrong: true, openAfterEnter: true, enterInField: false,
 		});
 	});
 });
