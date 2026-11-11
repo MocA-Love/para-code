@@ -55,7 +55,8 @@
 .paradis-notif-area .pns-tune-actions {
 	display: flex;
 	gap: 6px;
-	flex: none;
+	flex: 0 1 auto;
+	min-width: 0;
 }
 
 .paradis-notif-area .pns-pill {
@@ -66,6 +67,10 @@
 	padding: 0 7px;
 	color: var(--vscode-descriptionForeground);
 	white-space: nowrap;
+	max-width: 100%;
+	box-sizing: border-box;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .paradis-notif-area .pns-pill.ok {
@@ -76,6 +81,11 @@
 .paradis-notif-area .pns-pill.warn {
 	border-color: var(--vscode-editorWarning-foreground);
 	color: var(--vscode-editorWarning-foreground);
+}
+
+.paradis-notif-area .pns-table-scroll {
+	max-width: 100%;
+	overflow-x: auto;
 }
 
 .paradis-notif-area .pns-gain-table {
@@ -133,8 +143,8 @@
 	gap: 6px;
 }
 
-.paradis-notif-area .pns-gain-learning input {
-	width: 56px;
+.paradis-notif-area .pns-gain-learning input[type="number"] {
+	width: 64px;
 }
 
 .paradis-notif-area .pns-gain-note {
