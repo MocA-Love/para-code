@@ -80,19 +80,19 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 
 	const rows = useMemo(() => visiblePresets(presets ?? [], hiddenKeys), [presets, hiddenKeys]);
 
-	const run = useCallback((preset: PresetDef) => {
+	const run = useCallback((preset: PresetDef, confirmed: boolean) => {
 		if (ws === undefined) {
 			return;
 		}
 		hapticImpact('medium');
-		runPresetInBackground({ ws, wsLabel, preset });
+		runPresetInBackground({ ws, wsLabel, preset, confirmed });
 		onClose();
 	}, [ws, wsLabel, onClose]);
 
 	const press = useCallback((preset: PresetDef) => {
 		// 実行の前に確認するプリセットは、承認済みでも毎回ここで確認する
 		if (presetConfirmLevel(preset) === undefined && approvedKeys.has(presetApprovalKey(preset))) {
-			run(preset);
+			run(preset, false);
 			return;
 		}
 		hapticSelection();
@@ -111,7 +111,7 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 		if (level === undefined) {
 			approvePreset(presetApprovalKey(confirming));
 		}
-		run(confirming);
+		run(confirming, true);
 	}, [confirming, typedName, approvePreset, run]);
 
 	if (confirming !== undefined) {

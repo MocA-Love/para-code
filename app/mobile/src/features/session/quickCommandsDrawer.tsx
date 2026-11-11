@@ -84,19 +84,19 @@ export function QuickCommandsDrawer({ visible, ws, wsLabel, onClose, onRan }: {
 		return needle.length === 0 ? all : all.filter(preset => `${preset.name} ${presetCommandSummary(preset)}`.toLowerCase().includes(needle));
 	}, [presets, hiddenKeys, query]);
 
-	const run = (preset: PresetDef) => {
+	const run = (preset: PresetDef, confirmed: boolean) => {
 		if (ws === undefined) {
 			return;
 		}
 		haptic('commit');
-		runPresetInBackground({ ws, wsLabel, preset });
+		runPresetInBackground({ ws, wsLabel, preset, confirmed });
 		onRan();
 		onClose();
 	};
 	const press = (preset: PresetDef) => {
 		// 実行の前に確認するプリセットは、承認済みでも毎回ここで確認する
 		if (presetConfirmLevel(preset) === undefined && approvedKeys.has(presetApprovalKey(preset))) {
-			run(preset);
+			run(preset, false);
 			return;
 		}
 		haptic('move');
@@ -110,7 +110,7 @@ export function QuickCommandsDrawer({ visible, ws, wsLabel, onClose, onRan }: {
 			if (confirmLevel === undefined) {
 				approvePreset(presetApprovalKey(confirming));
 			}
-			run(confirming);
+			run(confirming, true);
 		}
 	};
 	const close = () => {

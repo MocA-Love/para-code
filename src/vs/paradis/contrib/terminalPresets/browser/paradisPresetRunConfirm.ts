@@ -65,9 +65,9 @@ export function paradisPresetTypedNameMatches(typed: string, name: string): bool
 
 /**
  * 確認の画面を開き、「実行」が押されたら true、やめたら false で終わる。
- * `others` は、まとめて実行で一緒に走る確認の要らないものの件数（本文で知らせる）。
+ * `others` は、まとめて実行で一緒に走る確認の要らないものの件数（本文で知らせる）。`note` は本文の最後に添える一言。
  */
-export function paradisShowPresetRunConfirm(container: HTMLElement, entries: readonly IParadisPresetRunConfirmEntry[], others = 0): Promise<boolean> {
+export function paradisShowPresetRunConfirm(container: HTMLElement, entries: readonly IParadisPresetRunConfirmEntry[], others = 0, note?: string): Promise<boolean> {
 	return new Promise<boolean>(resolve => {
 		const store = new DisposableStore();
 		// fork のモーダル（プリセットの画面など）の中から開くときは入れ子の段に置き、下の箱を閉じない
@@ -127,8 +127,8 @@ export function paradisShowPresetRunConfirm(container: HTMLElement, entries: rea
 				dom.append(taskHead, $(ThemeIcon.asCSSSelector(Codicon.terminal))).setAttribute('aria-hidden', 'true');
 				dom.append(taskHead, $('span.ppc-task-name')).textContent = terminal.name;
 				const cwd = dom.append(taskHead, $('span.ppc-task-cwd'));
+				// 末尾だけ違うフォルダ（api と api-prod など）を見分けられるよう、切らずに折り返して全部出す
 				cwd.textContent = terminal.cwd ?? STR_ACTIVE_TERMINAL;
-				cwd.title = terminal.cwd ?? STR_ACTIVE_TERMINAL;
 				dom.append(card, $('pre.ppc-commands')).textContent = terminal.commands.join('\n');
 			}
 			if (entry.level === 'type-name') {
@@ -141,6 +141,9 @@ export function paradisShowPresetRunConfirm(container: HTMLElement, entries: rea
 		}
 		if (others > 0) {
 			dom.append(body, $('.ppc-lead.ppc-others')).textContent = strOthers(others);
+		}
+		if (note) {
+			dom.append(body, $('.ppc-lead')).textContent = note;
 		}
 
 		const foot = dom.append(modal, $(`.${PARADIS_MODAL_FOOT_CLASS}`));

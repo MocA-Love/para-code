@@ -4,7 +4,7 @@ import { paraAlert } from './paraAlert.js';
 import { useAppStore } from './appState.js';
 import { haptic } from './haptics.js';
 import { useParaToast } from './paraToast.js';
-import { presetConfirmLevel, presetTerminalCount } from './presets.js';
+import { presetTerminalCount } from './presets.js';
 import type { PresetDef } from './store.js';
 
 /**
@@ -25,7 +25,11 @@ function revealCreatedTerminal(created: readonly string[] | undefined): void {
 	}
 }
 
-export function runPresetInBackground(request: { ws: string; wsLabel: string; preset: PresetDef }): void {
+/**
+ * `confirmed` は、確認付きのプリセット（presetConfirmLevel）をこの端末の確認の画面で押したときだけ true にする。
+ * プリセットの中身から推し量らない（確認を通らない経路が足されても、PC が断る側に倒れるように）。
+ */
+export function runPresetInBackground(request: { ws: string; wsLabel: string; preset: PresetDef; confirmed?: boolean }): void {
 	const { ws, wsLabel, preset } = request;
 	const expected = presetTerminalCount(preset);
 	useParaToast.getState().show({
@@ -36,8 +40,8 @@ export function runPresetInBackground(request: { ws: string; wsLabel: string; pr
 		tone: 'info',
 		spinner: true,
 	});
-	// 確認付きのものは、呼ぶ側（一覧・クイックコマンド）が毎回確認を出してから来る。PC はこの印が無いと走らせない
-	useAppStore.getState().presetRun(ws, preset.key, preset.signature, presetConfirmLevel(preset) !== undefined).then(result => {
+	// 確認付きのものは、PC はこの印が無いと走らせない
+	useAppStore.getState().presetRun(ws, preset.key, preset.signature, request.confirmed === true).then(result => {
 		revealCreatedTerminal(result.created);
 		const created = result.created?.length ?? expected;
 		useParaToast.getState().show({

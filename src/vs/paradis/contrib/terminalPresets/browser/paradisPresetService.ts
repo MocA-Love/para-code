@@ -78,6 +78,8 @@ import {
 	paradisPresetConfirmLevel,
 } from '../common/paradisTerminalPresets.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { ILabelService } from '../../../../platform/label/common/label.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { IParadisPresetRunConfirmEntry, IParadisPresetRunConfirmTerminal, paradisShowPresetRunConfirm } from './paradisPresetRunConfirm.js';
 import { IParadisPresetMovePlan, paradisMovePresetDefinitions } from '../common/paradisPresetReorder.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -193,6 +195,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@ILayoutService private readonly layoutService: ILayoutService,
+		@ILabelService private readonly labelService: ILabelService,
 	) {
 		super();
 
@@ -1468,14 +1471,14 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		return paradisParsePresetTitles(this.storageService.get(PRESET_TITLE_STORAGE_KEY, StorageScope.WORKSPACE));
 	}
 
-	async confirmPresetRuns(presets: readonly IParadisResolvedPreset[]): Promise<boolean> {
+	async confirmPresetRuns(presets: readonly IParadisResolvedPreset[], note?: string): Promise<boolean> {
 		const needed = presets.filter(preset => paradisPresetConfirmLevel(preset) !== undefined);
-		return needed.length === 0 || this._confirmRuns(needed, presets.length - needed.length, undefined);
+		return needed.length === 0 || this._confirmRuns(needed, presets.length - needed.length, undefined, note);
 	}
 
-	private _confirmRuns(presets: readonly IParadisResolvedPreset[], others: number, baseOverride: URI | undefined): Promise<boolean> {
+	private _confirmRuns(presets: readonly IParadisResolvedPreset[], others: number, baseOverride: URI | undefined, note?: string): Promise<boolean> {
 		const entries = presets.map(preset => this._describeForConfirm(preset, baseOverride));
-		return paradisShowPresetRunConfirm(this.layoutService.activeContainer, entries, others);
+		return paradisShowPresetRunConfirm(this.layoutService.activeContainer, entries, others, note);
 	}
 
 	/** 確認の画面に出す内容。作業フォルダは runPreset と同じ決め方（起動を始める時点のスペースの基準）で解く。 */
@@ -1499,7 +1502,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		return {
 			name: preset.name,
 			level: paradisPresetConfirmLevel(preset) ?? 'details',
-			host: authority ? localize('paradis.presetConfirm.remoteHost', "{0}（SSH 接続中）", authority.replace(/^ssh-remote\+/, '')) : localize('paradis.presetConfirm.localHost', "このマシン"),
+			host: authority ? (this.labelService.getHostLabel(Schemas.vscodeRemote, authority) || authority) : localize('paradis.presetConfirm.localHost', "このマシン"),
 			repository: show(base),
 			terminals,
 		};

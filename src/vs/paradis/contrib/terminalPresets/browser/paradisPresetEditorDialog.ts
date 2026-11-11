@@ -1367,9 +1367,13 @@ class ParadisPresetEditorDialog extends Disposable {
 			runBtn.title = strRunDisabledTooltip(paradisPresetHostsLabel(preset.hosts));
 		}
 		this._viewStore.add(dom.addDisposableListener(runBtn, 'click', async () => {
+			// 確認付きのもの（Q613）は、この画面を閉じる前に一覧の上で確認する（やめたら画面はそのまま）
+			if (!await this.presetService.confirmPresetRuns([preset])) {
+				return;
+			}
 			this.dispose();
 			try {
-				await this.presetService.runPreset(preset);
+				await this.presetService.runPreset(preset, { confirmed: true });
 			} catch (error) {
 				// エージェント向けは「今のターミナルでエージェントが動いていない」等の理由で入れられない
 				// ことがあり、その理由は例外のメッセージで届く。
@@ -1801,7 +1805,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			// 確認付きのもの（Q613）があれば、それらを 1 回の確認にまとめて並べる（ほかの件数もそこで知らせる）。
 			// その確認で済ませたので、下の実行には confirmed を渡し、1 件ずつ聞き直さない。
 			if (runnable.some(preset => paradisPresetConfirmLevel(preset) !== undefined)) {
-				if (!await this.presetService.confirmPresetRuns(runnable)) {
+				if (!await this.presetService.confirmPresetRuns(runnable, skippedCount > 0 ? strBulkRunSkipped(skippedCount) : undefined)) {
 					return;
 				}
 			} else if (selected.length >= BULK_RUN_CONFIRM_THRESHOLD || skippedCount > 0) {

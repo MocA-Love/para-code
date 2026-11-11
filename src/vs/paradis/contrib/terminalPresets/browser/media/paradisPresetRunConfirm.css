@@ -70,6 +70,7 @@
 
 .paradis-preset-confirm .ppc-task-head {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: var(--vscode-spacing-size60);
 	min-width: 0;
@@ -85,19 +86,15 @@
 }
 
 .paradis-preset-confirm .ppc-task-name {
-	flex: none;
-	max-width: 50%;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	flex: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 
 .paradis-preset-confirm .ppc-task-cwd {
-	flex: 1;
+	flex-basis: 100%;
 	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	overflow-wrap: anywhere;
 	color: var(--vscode-paradis-textFaint);
 	font-family: var(--monaco-monospace-font);
 	font-size: var(--vscode-fontSize-label2);

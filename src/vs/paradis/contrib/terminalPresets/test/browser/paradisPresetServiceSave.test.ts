@@ -25,6 +25,7 @@ import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadis
 import { ParadisPresetService } from '../../browser/paradisPresetService.js';
 import { IParadisResolvedPreset } from '../../common/paradisTerminalPresets.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
+import { ILabelService } from '../../../../../platform/label/common/label.js';
 
 suite('ParadisPresetService save', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -78,6 +79,7 @@ suite('ParadisPresetService save', () => {
 			upcastPartial<IParadisWorkspaceSwitchService>({ onDidChangeRepositories: Event.None, repositories: [] }),
 			upcastPartial<IParadisWorktreeService>({ onDidChangeWorktrees: Event.None, getWorktrees: () => [] }),
 			upcastPartial<ILayoutService>({}),
+			upcastPartial<ILabelService>({}),
 		));
 		// フォルダの監視を張らせないよう、サービスを作った後でフォルダを開いた状態にする。
 		folders.push(URI.file('/repos/a'));

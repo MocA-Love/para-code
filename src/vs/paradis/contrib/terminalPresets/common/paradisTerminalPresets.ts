@@ -316,8 +316,9 @@ export interface IParadisPresetService {
 	 * 確認付きのプリセット（{@link paradisPresetConfirmLevel}）をまとめて 1 回の確認の画面に並べる。
 	 * 名前を打つ段のものがあれば、その名前を打たせる。確認付きが無ければ聞かずに true。
 	 * 押されたら true。この後の runPreset には `confirmed: true` を渡す。
+	 * @param note 本文の最後に添える一言（実行環境が違うため外したものの件数など）。
 	 */
-	confirmPresetRuns(presets: readonly IParadisResolvedPreset[]): Promise<boolean>;
+	confirmPresetRuns(presets: readonly IParadisResolvedPreset[], note?: string): Promise<boolean>;
 
 	/**
 	 * プリセットを保存する。
