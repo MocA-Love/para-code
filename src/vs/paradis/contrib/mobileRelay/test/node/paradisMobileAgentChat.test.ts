@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from 'fs/promises';
+import { appendFile, mkdir, mkdtemp, realpath, rm, utimes, writeFile } from 'fs/promises';
 import { createRequire } from 'module';
 import { tmpdir } from 'os';
 import * as sinon from 'sinon';
@@ -117,8 +117,8 @@ function createEmptyCodexStateDatabase(codexHome: string): void {
 	}
 }
 
-async function waitFor(predicate: () => boolean, message: string): Promise<void> {
-	const deadline = Date.now() + 2_000;
+async function waitFor(predicate: () => boolean, message: string, ms = 2_000): Promise<void> {
+	const deadline = Date.now() + ms;
 	while (!predicate()) {
 		if (Date.now() >= deadline) {
 			throw new Error(message);
@@ -726,8 +726,8 @@ suite('ParadisMobileAgentChat', () => {
 	});
 
 	test('still notifies a new host conversation and the rest of a copy that continues, even if the window marks them as catching up', async () => {
-		// 印を受け付けるのは、再開した会話で手元に写しがまだ無いときだけ。新しい会話の最初の質問と、写しの途中から
-		// 続けるとき（再接続・再読み込み）の切れていた間の質問は鳴らす
+		// 印を受け付けるのは、写しを一から作るときのうち再開した会話・末尾の窓から写すときだけ。新しい会話の最初の質問と、
+		// 写しの途中から続けるとき（再接続・再読み込み）の切れていた間の質問は鳴らす
 		const userData = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-resume-other-')));
 		const mirror = new ParadisRemoteTranscriptMirrorStore(userData, new NullLogService());
 		const notified: string[] = [];
@@ -749,10 +749,6 @@ suite('ParadisMobileAgentChat', () => {
 				token: 'pane-new', event: 'SessionStart', sessionId: 'new-session',
 				transcriptPath: newPath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', payload: { source: 'startup' }, at: Date.now(),
 			});
-			// 再開した会話でも、手元に写しが既にある（前の接続で写した途中まで）
-			const continuedLocal = mirror.localPathForHookPath(continuedPath, 'pane-continued', 'ssh-remote-server')!;
-			await mkdir(join(continuedLocal, '..'), { recursive: true });
-			await writeFile(continuedLocal, question('toolu_before', '前に写した質問'));
 			fireParadisAgentHookEvent({
 				token: 'pane-continued', event: 'SessionStart', sessionId: 'continued-session',
 				transcriptPath: continuedPath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', payload: { source: 'resume' }, at: Date.now(),
@@ -760,6 +756,10 @@ suite('ParadisMobileAgentChat', () => {
 			await waitFor(() => access.tailers.has('pane-new') && access.tailers.has('pane-continued'), 'the sessions were not followed');
 
 			const encoder = new TextEncoder();
+			// 再開した会話でも、手元に写しが既にある（前のウィンドウが途中まで写した。ウィンドウの再読み込み・再接続）
+			await mirror.begin('window-old', continuedPath, 0);
+			await mirror.append('window-old', continuedPath, encoder.encode(question('toolu_before', '前に写した質問')), true);
+			mirror.release('window-old');
 			assert.strictEqual(await mirror.begin('window-a', newPath), 0);
 			await mirror.append('window-a', newPath, encoder.encode(question('toolu_first', '新しい会話の最初の質問')), true);
 			assert.ok(await mirror.begin('window-a', continuedPath) > 0);
@@ -2472,5 +2472,204 @@ suite('ParadisMobileAgentChat', () => {
 				});
 			});
 		});
+	});
+	// SSH 先の会話の詳細（モバイルのトーク・PC のチャット表示）が、一覧の状態は正しいのに過去のまま固まる不具合の回帰テスト。
+	// 写しの上限で写すのをやめていた（R1）、再開した大きな会話を先頭から写していた、新しい Codex の rollout の写しが
+	// 先頭行まで届く前に短いターンの hook が全部来ると張り替えなかった（A1）、ペインが一瞬だけ対応表から外れると
+	// 購読を黙って捨てていた（B1）。
+	suite('SSH copy of a host conversation stays current', () => {
+		function line(role: 'user' | 'assistant', id: string, text: string): string {
+			return JSON.stringify({
+				type: role, uuid: `u-${id}`, timestamp: new Date().toISOString(),
+				message: role === 'user' ? { role, content: text } : { role, content: [{ type: 'text', text }] },
+			}) + '\n';
+		}
+
+		interface ITailerAccess {
+			readonly tailers: Map<string, { readonly messages: readonly { readonly text: string }[] }>;
+		}
+
+		const remotePath = '/home/alice/.claude/projects/-srv-app/long-session.jsonl';
+		const encoder = new TextEncoder();
+
+		async function withRemoteChat(maxBytes: number, windowBytes: number, callback: (h: { chat: ParadisMobileAgentChat; mirror: ParadisRemoteTranscriptMirrorStore; sent: Record<string, unknown>[]; tailers: ITailerAccess['tailers']; token: string }) => Promise<void>): Promise<void> {
+			const userData = await realpath(await mkdtemp(join(tmpdir(), 'paradis-stale-chat-')));
+			const mirror = new ParadisRemoteTranscriptMirrorStore(userData, new NullLogService(), maxBytes, windowBytes);
+			const sent: Record<string, unknown>[] = [];
+			const chat = new ParadisMobileAgentChat(
+				(_m, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))), () => { }, () => { }, new NullLogService(),
+				async () => true, () => { }, undefined, mirror,
+			);
+			const token = 'pane-remote';
+			try {
+				chat.setEagerTailing(true);
+				assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+				fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: 's', transcriptPath: remotePath, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', payload: { source: 'resume' }, at: Date.now() });
+				const tailers = (chat as unknown as ITailerAccess).tailers;
+				await waitFor(() => tailers.has(token), 'the pane was not followed', 8_000);
+				await callback({ chat, mirror, sent, tailers, token });
+			} finally {
+				chat.dispose();
+				mirror.dispose();
+				await rm(userData, { recursive: true, force: true });
+			}
+		}
+
+		test('keeps showing the latest talk after the copy reaches its size limit', async function () {
+			this.timeout(10_000);
+			const old = line('user', 'old1', '昔の依頼') + line('assistant', 'old2', '昔の返事');
+			// 本番は 32MiB。ここでは「過去の分を写した直後に上限に届く」大きさにする
+			await withRemoteChat(Buffer.byteLength(old) + 10, Buffer.byteLength(old), async ({ chat, mirror, sent, tailers, token }) => {
+				chat.handleInbound('mobile-1', encoder.encode(JSON.stringify({ t: 'attach', id: 1, token })));
+				assert.strictEqual(await mirror.begin('window-a', remotePath, 0), 0);
+				await mirror.append('window-a', remotePath, encoder.encode(old), true);
+				await waitFor(() => (tailers.get(token)?.messages.length ?? 0) >= 2, 'the old talk was not read', 8_000);
+				await waitFor(() => sent.some(m => m.t === 'snapshot'), 'no snapshot', 8_000);
+				sent.length = 0;
+				// 接続先では会話が進む。写しは上限を超えるので、末尾の窓で作り直して続ける
+				const appended = await mirror.append('window-a', remotePath, encoder.encode(line('user', 'new1', '今の依頼') + line('assistant', 'new2', '今の返事')));
+				await waitFor(() => tailers.get(token)?.messages.at(-1)?.text === '今の返事', 'the latest talk never showed up', 8_000);
+				// 作り直した写しを読み直し、モバイルへは全量を送り直す
+				await waitFor(() => sent.some(m => m.t === 'snapshot'), 'the subscriber did not get the rewritten copy', 8_000);
+				assert.deepStrictEqual({
+					stillFollowing: appended > 0 && mirror.list('window-a').length === 1,
+					latest: tailers.get(token)?.messages.map(m => m.text).slice(-2),
+				}, { stillFollowing: true, latest: ['今の依頼', '今の返事'] });
+			});
+		});
+
+		test('shows the latest talk of a large resumed conversation as soon as the copy starts', async function () {
+			this.timeout(10_000);
+			const lines = Array.from({ length: 200 }, (_, index) => line(index % 2 === 0 ? 'user' : 'assistant', `m${index}`, `発言${index}`));
+			const host = lines.join('');
+			await withRemoteChat(64 * 1024, 4 * 1024, async ({ chat, mirror, sent, tailers, token }) => {
+				// 接続先の先頭から写さず、末尾の窓から写し始める
+				const start = await mirror.begin('window-a', remotePath, Buffer.byteLength(host));
+				const bytes = Buffer.from(host);
+				await mirror.append('window-a', remotePath, bytes.subarray(start), true);
+				await waitFor(() => tailers.get(token)?.messages.at(-1)?.text === '発言199', 'the latest talk did not show up', 8_000);
+				const texts = tailers.get(token)?.messages.map(m => m.text) ?? [];
+				// 「さらに前を読む」は写しの先頭で止まる。前の会話は PC のターミナルで見られると伝える
+				chat.handleInbound('mobile-1', encoder.encode(JSON.stringify({ t: 'attach', id: 1, token })));
+				await waitFor(() => sent.some(m => m.t === 'snapshot'), 'no snapshot', 8_000);
+				const snapshot = sent.find(m => m.t === 'snapshot')!;
+				const oldest = (snapshot.messages as { rev: number }[])[0].rev;
+				chat.handleInbound('mobile-1', encoder.encode(JSON.stringify({ t: 'history', id: 1, token, requestId: 'h1', epoch: snapshot.epoch, beforeRev: oldest })));
+				await waitFor(() => sent.some(m => m.t === 'history'), 'no history reply', 8_000);
+				const history = sent.find(m => m.t === 'history')!;
+				assert.deepStrictEqual({
+					windowed: start > 0, skippedTheStart: !texts.includes('発言0'), latest: texts.at(-1), truncated: snapshot.truncated,
+					history: { hasMore: history.hasMore, capped: history.capped, copyStart: history.copyStart },
+				}, {
+					windowed: true, skippedTheStart: true, latest: '発言199', truncated: true,
+					history: { hasMore: false, capped: true, copyStart: true },
+				});
+			});
+		});
+
+		test('tells the subscriber when the copy cannot follow the host, and when it can again', async function () {
+			this.timeout(10_000);
+			await withRemoteChat(64 * 1024, 4 * 1024, async ({ chat, mirror, sent, token }) => {
+				chat.handleInbound('mobile-1', encoder.encode(JSON.stringify({ t: 'attach', id: 1, token })));
+				await mirror.begin('window-a', remotePath, 0);
+				await mirror.append('window-a', remotePath, encoder.encode(line('user', 'a', '依頼')), true);
+				await waitFor(() => sent.some(m => m.t === 'snapshot'), 'no snapshot', 8_000);
+				sent.length = 0;
+				mirror.reportReadFailure('window-a', remotePath, true);
+				await waitFor(() => sent.some(m => (m.info as { transcriptStale?: true } | undefined)?.transcriptStale === true), 'the stale mark was not sent', 8_000);
+				sent.length = 0;
+				mirror.reportReadFailure('window-a', remotePath, false);
+				await waitFor(() => sent.some(m => m.t === 'delta' && m.info !== undefined), 'the recovery was not sent', 8_000);
+				assert.deepStrictEqual(sent.filter(m => m.info !== undefined).map(m => (m.info as { transcriptStale?: true }).transcriptStale ?? false), [false]);
+			});
+		});
+
+		test('rebinds an SSH Codex pane to the new rollout once its copy has the first line, without waiting for the next turn', async function () {
+			this.timeout(10_000);
+			const userData = await realpath(await mkdtemp(join(tmpdir(), 'paradis-stale-a1-')));
+			const mirror = new ParadisRemoteTranscriptMirrorStore(userData, new NullLogService());
+			const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService(), async () => true, () => { }, undefined, mirror);
+			const access = chat as unknown as { paneSessions: Map<string, { readonly transcriptPath: string }> };
+			const token = 'pane-a1';
+			const id1 = '11111111-1111-4111-8111-111111111111';
+			const id2 = '22222222-2222-4222-8222-222222222222';
+			const remote1 = `/home/alice/.codex/sessions/2026/11/11/rollout-2026-11-11T00-00-00-${id1}.jsonl`;
+			const remote2 = `/home/alice/.codex/sessions/2026/11/11/rollout-2026-11-11T01-00-00-${id2}.jsonl`;
+			const meta = (id: string) => JSON.stringify({ type: 'session_meta', payload: { id, cwd: '/srv/app', source: 'cli', originator: 'codex_cli_rs' } }) + '\n';
+			const hook = (event: string, path: string) => fireParadisAgentHookEvent({ token, event, sessionId: path === remote1 ? id1 : id2, transcriptPath: path, cwd: '/srv/app', remoteHostId: 'ssh-remote-server', agentKind: 'codex', at: Date.now() });
+			const current = () => access.paneSessions.get(token)?.transcriptPath ?? '';
+			try {
+				chat.setEagerTailing(true);
+				assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+				hook('UserPromptSubmit', remote1);
+				await waitFor(() => current().endsWith(`${id1}.jsonl`), 'the first rollout was not bound', 8_000);
+				await mirror.begin('window-a', remote1);
+				await mirror.append('window-a', remote1, encoder.encode(meta(id1)));
+				// /new などで新しい rollout。担当ウィンドウが写し始める（最大 2 秒周期）より先に、短いターンの hook が全部届く
+				hook('SessionStart', remote2);
+				hook('UserPromptSubmit', remote2);
+				hook('Stop', remote2);
+				await new Promise(resolve => setTimeout(resolve, 300));
+				const afterTurn = current();
+				// 写しに先頭行が届いたら、次のターンの hook を待たずに張り替える
+				await mirror.begin('window-a', remote2);
+				await mirror.append('window-a', remote2, encoder.encode(meta(id2)));
+				await waitFor(() => current().endsWith(`${id2}.jsonl`), 'the pane stayed on the previous rollout', 8_000);
+				assert.deepStrictEqual({ keptWhileUnknown: afterTurn.endsWith(`${id1}.jsonl`) }, { keptWhileUnknown: true });
+			} finally {
+				chat.dispose();
+				mirror.dispose();
+				await rm(userData, { recursive: true, force: true });
+			}
+		});
+
+		async function withLocal(callback: (h: { chat: ParadisMobileAgentChat; sent: Record<string, unknown>[]; transcript: string; token: string; inbound: (m: Record<string, unknown>) => void }) => Promise<void>): Promise<void> {
+			const home = await realpath(await mkdtemp(join(tmpdir(), 'paradis-stale-home-')));
+			const previous = process.env['CLAUDE_CONFIG_DIR'];
+			process.env['CLAUDE_CONFIG_DIR'] = home;
+			await mkdir(join(home, 'projects', 'p'), { recursive: true });
+			const transcript = join(home, 'projects', 'p', 'session.jsonl');
+			await writeFile(transcript, line('user', 'a', '最初の依頼'));
+			const sent: Record<string, unknown>[] = [];
+			const chat = new ParadisMobileAgentChat((_m, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))), () => { }, () => { }, new NullLogService(), async () => true);
+			const token = 'pane-b1';
+			try {
+				chat.setEagerTailing(true);
+				await callback({ chat, sent, transcript, token, inbound: m => chat.handleInbound('mobile-1', encoder.encode(JSON.stringify(m))) });
+			} finally {
+				chat.dispose();
+				if (previous === undefined) {
+					delete process.env['CLAUDE_CONFIG_DIR'];
+				} else {
+					process.env['CLAUDE_CONFIG_DIR'] = previous;
+				}
+				await rm(home, { recursive: true, force: true });
+			}
+		}
+
+		for (const gap of [false, true]) {
+			test(`keeps sending deltas after a pane sync ${gap ? 'with' : 'without'} a momentary gap`, async function () {
+				this.timeout(10_000);
+				await withLocal(async ({ chat, sent, transcript, token, inbound }) => {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+					fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: 's', transcriptPath: transcript, cwd: '/w', at: Date.now() });
+					inbound({ t: 'attach', id: 1, token });
+					await waitFor(() => sent.some(m => m.t === 'snapshot'), 'no snapshot', 8_000);
+					if (gap) {
+						// 同じウィンドウ・同じ世代のまま、そのペインが一瞬だけ対応表から外れる（モバイルの宛先は変わらない）。
+						// 戻ったら購読をやり直し、作り直した会話の全量を送り直す
+						sent.length = 0;
+						assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 2, []), true);
+						assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 3, [{ terminalId: 1, token }]), true);
+						await waitFor(() => sent.some(m => m.t === 'snapshot'), 'the subscriber was dropped without a new snapshot', 8_000);
+					}
+					sent.length = 0;
+					await appendFile(transcript, line('assistant', 'b', '新しい返事'));
+					await waitFor(() => sent.some(m => m.t === 'delta' && (m.messages as unknown[] | undefined)?.length), 'no delta after the pane sync', 8_000);
+					const texts = sent.flatMap(m => (m.messages as { text: string }[] | undefined ?? []).map(x => `${m.t}:${x.text}`));
+					assert.deepStrictEqual(texts, ['delta:新しい返事']);
+				});
+			});
+		}
 	});
 });

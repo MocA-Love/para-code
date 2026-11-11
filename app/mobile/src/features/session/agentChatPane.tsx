@@ -25,7 +25,7 @@ import type { SpaceTerminal } from '../../navigationTargets.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../../pendingAgentMessages.js';
 import { routes } from '../../routes.js';
 import { pinKeyForTerminal, type AgentChatMessage, type AgentMessageSendResult } from '../../store.js';
-import { colors, space, type } from '../../theme.js';
+import { colors, radius, space, type } from '../../theme.js';
 import { EmptyState } from '../../ui/index.js';
 import { ChatTextScaleProvider, useChatStyles } from '../../ui/chatTextScale.js';
 import { cardStyles as baseCardStyles } from './answerCardStyles.js';
@@ -462,6 +462,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 					) : null}
 					{selectNotice !== undefined ? <InplaceSelectBar notice={selectNotice} /> : showQuickReplies ? <QuickReplies onPick={pickQuickReply} /> : null}
 					<QueuedSendsBanner pcId={activePcId} terminalKey={terminalKey} />
+					{/* SSH 先の会話を PC が写せていない。下の会話は古いままのことがある */}
+					{chatReady && chat?.info?.transcriptStale === true ? <StaleTranscriptBanner /> : null}
 					{/* コンテキストを圧縮している最中（PreCompact から区切りの行が届くまで。モックの A6-2）。圧縮していなければ何も描かない */}
 					{chatReady ? <CompactingRow activity={chat?.activity} messages={messages} /> : null}
 					{chatReady ? (
@@ -531,7 +533,40 @@ function Notice({ title, body }: { title: string; body: string }) {
 	);
 }
 
+/**
+ * SSH 先の会話を PC が手元へ写せていない間の帯（info.transcriptStale）。会話の一覧は古いままのことがあるので、
+ * ターミナル表示で確かめてもらう。押す操作は無い（写せるようになると PC が印を外し、帯は消える）。
+ */
+function StaleTranscriptBanner() {
+	return (
+		<View style={styles.staleBanner} accessibilityRole="text">
+			<View style={styles.staleDot} />
+			<Text style={styles.staleText}>この会話は最新を取得できていません。ターミナル表示で確かめてください</Text>
+		</View>
+	);
+}
+
 const styles = StyleSheet.create({
+	staleBanner: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.xs,
+		paddingHorizontal: space.lg,
+		paddingVertical: space.xs,
+		minHeight: 32,
+	},
+	staleDot: {
+		width: 8,
+		height: 8,
+		borderRadius: radius.pill,
+		backgroundColor: colors.yellow,
+	},
+	staleText: {
+		flexShrink: 1,
+		fontSize: type.meta,
+		fontWeight: '600',
+		color: colors.textDim,
+	},
 	root: {
 		flex: 1,
 		minHeight: 0,

@@ -222,7 +222,7 @@ function HistoryHeader({ header, onLoadOlder }: { header: AgentHistoryHeader; on
 		case 'truncated':
 			return <Text style={scaled.truncated}>古い履歴は省略しています</Text>;
 		case 'capped':
-			return <Text style={scaled.truncated}>これより前の発言は PC で見てください</Text>;
+			return <Text style={scaled.truncated}>{header.copyStart === true ? 'これより前の会話は PC のターミナルで見られます' : 'これより前の発言は PC で見てください'}</Text>;
 		case 'error':
 			return <Text style={scaled.truncated}>{header.message}</Text>;
 		case 'more':

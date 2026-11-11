@@ -48,7 +48,7 @@ import { IParadisSlashCommand, PARADIS_CLAUDE_SETTING_VALUE_PATTERN, PARADIS_COM
 import { IParadisAgentActivityState, IParadisAgentAdvisorUpdate, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
-import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptCatchUpEnd, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
+import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptCatchUpEnd, paradisRemoteTranscriptCopyState, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudeAdvisorsEntries, paradisParseClaudePersistedActivityEntries, paradisParseCodexPersistedActivityEntries } from './paradisPersistedAgentActivity.js';
 import { ParadisTranscriptEntryWindows } from './paradisTranscriptEntryWindow.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
@@ -231,7 +231,7 @@ type AgentOutbound =
 	 * 取り寄せはできない。`cursor` があれば続きがあり、次の求めにそのまま付ける。`hasMore` が false ならこれより前は無いか、
 	 * `capped`（1 ペインで読める上限に達した）。
 	 */
-	| { t: 'history'; id: number; requestId: string; epoch: string; messages?: readonly IParadisAgentChatMessage[]; cursor?: string; hasMore?: boolean; capped?: true; error?: string }
+	| { t: 'history'; id: number; requestId: string; epoch: string; messages?: readonly IParadisAgentChatMessage[]; cursor?: string; hasMore?: boolean; capped?: true; copyStart?: true; error?: string }
 	| ParadisAgentShellOutbound
 	| { t: 'none'; id: number };
 
@@ -447,6 +447,8 @@ const PERSISTED_TRANSCRIPT_CACHE_BYTES = 24 * 1024 * 1024;
 const LIVE_STALE_MS = 30 * 60_000;
 /** ペイン同期前に受けたhookを保持する時間とtoken単位の上限。 */
 const PENDING_HOOK_TTL_MS = 120_000;
+/** SSH 先の Codex の新しい rollout の素性が分かるのを待つ上限（写しに先頭行が届くまで）。 */
+const DEFERRED_CODEX_REBIND_TTL_MS = 10 * 60_000;
 const PENDING_HOOK_LIMIT = 256;
 /** rollout path → root/SubAgent 判定の記憶上限（無制限な成長の防止のみが目的）。 */
 const CODEX_ROLLOUT_ORIGIN_CACHE_LIMIT = 512;
@@ -2150,6 +2152,11 @@ class TranscriptTailer {
 	// epoch reset（offset 0 へ巻き戻し）時は新しいインスタンスに差し替えて内部状態を捨てる。
 	private decoder = new TextDecoder();
 	private initialTruncated = false;
+	/**
+	 * SSH の写しの作り直しの番号（{@link paradisRemoteTranscriptCopyState}）。変わったら、写しの中身が置き換わった
+	 * （末尾の窓で作り直した）ので読み直す。作り直した写しは前より大きいこともあり、縮みだけでは気付けない。
+	 */
+	private copyGeneration = 0;
 	/** 今の epoch で最初に読んだ行の時刻（transcript の時計）。末尾だけ読んだときの、読んだ範囲の始まり。 */
 	private firstLineAt: number | undefined;
 	private watcher: FSWatcher | undefined;
@@ -2323,7 +2330,8 @@ class TranscriptTailer {
 	matchesOpenCodeSession(sessionId: string | undefined): boolean { return this.openCodeSessionId === sessionId; }
 
 	get wasInitialTruncated(): boolean {
-		return this.initialTruncated;
+		// SSH の写しが接続先の末尾の窓だけなら、写しを追記で読み始めた（初回読みでは空だった）ときも前の会話を省いている
+		return this.initialTruncated || paradisRemoteTranscriptCopyState(this.transcriptPath)?.partial === true;
 	}
 
 	/**
@@ -2402,6 +2410,12 @@ class TranscriptTailer {
 			let start = 0;
 			if (stat.size > INITIAL_READ_MAX_BYTES) {
 				start = stat.size - INITIAL_READ_TAIL_BYTES;
+				this.initialTruncated = true;
+			}
+			// SSH の写しが接続先の末尾の窓だけなら、先頭から読んでもこれより前の会話は省いている
+			const copyState = paradisRemoteTranscriptCopyState(this.transcriptPath);
+			this.copyGeneration = copyState?.generation ?? this.copyGeneration;
+			if (copyState?.partial === true) {
 				this.initialTruncated = true;
 			}
 			const length = stat.size - start;
@@ -2569,9 +2583,17 @@ class TranscriptTailer {
 		try {
 			if (!await isAllowedOpenTranscriptPath(handle, this.transcriptPath)) { return; }
 			const stat = await handle.stat();
-			if (stat.size < this.offset) {
-				// truncate / 置き換え。epoch を切り替えて読み直す (購読者は全量を受け取り直す)
-				this.logService.info(`[paradisAgentChat] transcript shrank, re-reading: ${this.transcriptPath}`);
+			const copyGeneration = paradisRemoteTranscriptCopyState(this.transcriptPath)?.generation;
+			const copyReplaced = copyGeneration !== undefined && copyGeneration !== this.copyGeneration;
+			if (stat.size < this.offset || copyReplaced) {
+				// truncate / 置き換え（SSH の写しを末尾の窓で作り直した も含む）。epoch を切り替えて読み直す (購読者は全量を受け取り直す)
+				this.logService.info(`[paradisAgentChat] transcript ${copyReplaced ? 'copy was rewritten' : 'shrank'}, re-reading: ${this.transcriptPath}`);
+				if (copyGeneration !== undefined) {
+					this.copyGeneration = copyGeneration;
+				}
+				// 置き換わったファイルは別の実体なので、前のファイルの監視は外して張り直す（読み直しの後で readAppended が張る）
+				this.watcher?.close();
+				this.watcher = undefined;
 				this.epoch = newEpoch();
 				this.rev = 0;
 				this.messages.length = 0;
@@ -3917,6 +3939,8 @@ const PC_DRAFT_PREVIEW_CHARS = 400;
 
 interface IAgentSubscriber {
 	readonly owner: IParadisMobilePaneOwner;
+	/** attach で使われたターミナルの番号（ペインが一瞬外れたとき、同じ宛先で attach をやり直す）。 */
+	readonly terminalId: number;
 	readonly liveEncoding: string | undefined;
 	/** attach で交渉した応答の圧縮（`json-gzip-v1`）。古いアプリは付けないので undefined（圧縮しない）。 */
 	readonly responseEncoding: string | undefined;
@@ -4038,6 +4062,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 変わらないため、hookのたびに読み直さずここへ覚える（'unknown' は覚えない）。
 	 */
 	private readonly codexRolloutOrigins = new Map<string, ParadisCodexRolloutOrigin>();
+	/** 素性が分からず張り替えを見送った、SSH 先の Codex の新しい rollout（ペイン → 写しのパス）。{@link retryDeferredCodexRebinds}。 */
+	private readonly deferredCodexRebinds = new Map<string, { readonly transcriptPath: string; readonly sessionId: string | undefined; readonly at: number }>();
 	/** PreToolUse/PostToolUseの対応付け。並行ツールの古い完了で最新表示を消さないために使う。 */
 	private readonly liveToolIds = new Map<string, string>();
 	/** Claude MessageDisplayの行バッチをメッセージ単位で連結する内部バッファ。 */
@@ -4207,6 +4233,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		}));
 		void this.loadPersistedSessions();
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
+		if (this.remoteTranscriptMirror !== undefined) {
+			this._register(this.remoteTranscriptMirror.onDidChangeStalled(localPath => this.onRemoteCopyStalledChanged(localPath)));
+			this._register(this.remoteTranscriptMirror.onDidAppend(localPath => {
+				if (this.deferredCodexRebinds.size > 0) {
+					this.retryDeferredCodexRebinds(localPath).catch(err => this.logService.warn('[paradisAgentChat] rebinding a deferred Codex rollout failed', err));
+				}
+			}));
+		}
 		const activitySweepTimer = setInterval(() => {
 			void this.sweepAgentActivity();
 			// ペインが消えた接続先 transcript は追いかけない（消えても次のhookでまた載る）。
@@ -4534,7 +4568,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		for (const token of [...this.subscribers.keys()]) {
 			if (!liveTokens.has(token)) {
-				this.subscribers.delete(token);
+				this.retireSubscribers(token);
+			}
+		}
+		for (const token of [...this.deferredCodexRebinds.keys()]) {
+			if (!liveTokens.has(token)) {
+				this.deferredCodexRebinds.delete(token);
 			}
 		}
 		// 消えたペインへ書きかけを送る相手とタイマーも捨てる
@@ -5113,7 +5152,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const reply = (body: Omit<Extract<AgentOutbound, { t: 'history' }>, 't' | 'id' | 'requestId' | 'epoch'>) => {
-			this.sendTo(mobileId, { t: 'history', id: msg.id, requestId: msg.requestId, epoch: msg.epoch, ...body }, token ?? msg.token);
+			// SSH の写しが接続先の末尾の窓だけなら、写しの先頭より前は読めない。「これ以上無い」ではなく、
+			// 前の会話は PC のターミナルで見られると伝える（古いアプリは capped の案内を出す）
+			const atCopyStart = body.error === undefined && body.hasMore !== true && body.capped !== true
+				&& tailer !== undefined && paradisRemoteTranscriptCopyState(tailer.transcriptPath)?.partial === true;
+			this.sendTo(mobileId, { t: 'history', id: msg.id, requestId: msg.requestId, epoch: msg.epoch, ...body, ...(atCopyStart ? { capped: true, copyStart: true } : {}) }, token ?? msg.token);
 		};
 		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)) {
 			reply({ error: 'stale-session' });
@@ -8329,6 +8372,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			reset: !incremental,
 			messages,
 			...(!incremental && (tailer.wasInitialTruncated || oldestRev > 0) ? { truncated: true } : {}),
+			...(paradisRemoteTranscriptCopyState(tailer.transcriptPath)?.partial === true ? { copyPartial: true } : {}),
 			...(info !== undefined ? { info } : {}),
 			live: this.liveStates.get(token) ?? null,
 			interaction,
@@ -8620,7 +8664,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		return [
 			tailer.epoch, tailer.rev, this.liveRevisions.get(token) ?? 0,
 			interaction === null ? '' : `${interaction.kind}:${interaction.id}:${interaction.kind === 'approval' ? interaction.choices?.length ?? 0 : ''}`,
-			info?.model ?? '', info?.effort ?? '',
+			info?.model ?? '', info?.effort ?? '', info?.transcriptStale === true ? 'stale' : '',
 			tailer.asyncQuestions.revision,
 			this.activeTurnTokens.has(token) ? 'busy' : 'idle',
 			this.desktopExitedTokens.has(token) ? 'exited' : '',
@@ -9700,6 +9744,85 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.pushToSubscribers(token);
 	}
 
+	/**
+	 * ペインの会話を info に決める（hook で知った・保留した hook を判定し直した）。別の会話に替わったなら tailer を張り替え、
+	 * 購読者へ新しい会話のスナップショットを送り直す。
+	 * @param keepTurn ターンの状態を引き継ぐ（保留していた張り替えを後から行うとき。ターンの状態は新しい会話の hook で決まっている）
+	 */
+	private bindPaneSession(info: IPaneSessionInfo, previous: IPaneSessionInfo | undefined, keepTurn = false): void {
+		const token = info.token;
+		if (previous !== undefined && previous.transcriptPath !== info.transcriptPath
+			&& this.transcriptClaims.get(previous.transcriptPath) === token) {
+			this.transcriptClaims.delete(previous.transcriptPath);
+		}
+		this.paneSessions.set(token, info);
+		this.retiredSessions.delete(token);
+		if (previous?.transcriptPath !== info.transcriptPath) {
+			this.cliCodexForkRequests.delete(token);
+		}
+		this.persistSessions();
+		this.transcriptClaims.set(info.transcriptPath, token);
+		this.emitConfirmedAgentPanesIfChanged();
+
+		// エージェント起動などでこのペインのセッションが初めて判明した
+		// → 「セッションなし」表示のまま待っている購読者にスナップショットを送る。
+		if (previous === undefined) {
+			this.ensureEagerTailer(token, info);
+			this.pushToSubscribers(token);
+		} else if (previous.transcriptPath !== info.transcriptPath) {
+			// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
+			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
+			this.activityTrackers.delete(token);
+			this.pendingSubagentCalls.delete(token);
+			this.advisorLiveIds.delete(token);
+			this.clearClaudeSubagentTranscripts(token);
+			if (!keepTurn) {
+				this.activeTurnTokens.delete(token);
+			}
+			this.disposeTailer(token);
+			this.ensureEagerTailer(token, info);
+			this.pushToSubscribers(token);
+		}
+	}
+
+	/**
+	 * SSH 先の Codex の新しい rollout の写しに書き足された。素性（root / SubAgent）が分からず張り替えを見送った hook が
+	 * あれば、先頭行が届いたかを見て判定し直す（A1）。短いターンでは hook が全部写しより先に届き、次のターンまで前の
+	 * 会話のまま固まっていた。
+	 */
+	private async retryDeferredCodexRebinds(localPath: string): Promise<void> {
+		for (const [token, deferred] of [...this.deferredCodexRebinds]) {
+			if (deferred.transcriptPath !== localPath) {
+				continue;
+			}
+			if (Date.now() - deferred.at > DEFERRED_CODEX_REBIND_TTL_MS) {
+				this.deferredCodexRebinds.delete(token);
+				continue;
+			}
+			const origin = await this.codexRolloutOrigin(localPath);
+			if (this.deferredCodexRebinds.get(token) !== deferred || origin === 'unknown') {
+				continue; // 先頭行がまだそろっていない（次の書き足しでもう一度見る）
+			}
+			this.deferredCodexRebinds.delete(token);
+			const previous = this.paneSessions.get(token);
+			if (origin !== 'root' || this.attachDisposed || !this.isLiveToken(token) || previous === undefined
+				|| previous.transcriptPath === localPath || this.transcriptClaimedByOther(localPath, token)) {
+				continue;
+			}
+			this.logService.info(`[paradisAgentChat] rebinding a pane to the new Codex rollout once its copy had the first line: ${localPath}`);
+			this.bindPaneSession({ token, agent: 'codex', transcriptPath: localPath, sessionId: deferred.sessionId }, previous, true);
+		}
+	}
+
+	/** 写しを続けられなくなった・続けられるようになった。その写しを読んでいるペインへ info を送り直す。 */
+	private onRemoteCopyStalledChanged(localPath: string): void {
+		for (const [token, tailer] of this.tailers) {
+			if (tailer.transcriptPath === localPath) {
+				this.pushInfoToSubscribers(token);
+			}
+		}
+	}
+
 	/** status収束のため、セッション確定済みの生存ペインはモバイル購読が無くてもtailする。 */
 	private ensureEagerTailer(token: string, session: IPaneSessionInfo): void {
 		if (this.terminalIdForToken(token) !== undefined) {
@@ -9771,6 +9894,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			claudeNestedAgentId,
 			codexOrigin,
 		});
+		if (codexOrigin === 'unknown' && knownPaneTranscriptPath !== undefined && knownPaneTranscriptPath !== transcriptPath
+			&& paradisIsRemoteAgentTranscriptMirrorPath(transcriptPath)) {
+			// SSH 先の新しい rollout は、写しに先頭行が届くまで素性が分からない（担当ウィンドウは最大 2 秒周期で写す）。
+			// 今は前の会話を保ち、写しに先頭行が届いたら判定し直す（retryDeferredCodexRebinds）
+			this.deferredCodexRebinds.set(event.token, { transcriptPath, sessionId: event.sessionId, at: Date.now() });
+		}
 		if (resolved.kind === 'drop') {
 			// 親未確定のペインへ届いた Codex subagent thread のhook。ここで確定させると
 			// 子の会話がペインの会話になるため捨てる（親はcwd/state DB探索が確定させる）。
@@ -9863,36 +9992,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				: nested === 'claude' ? previous?.sessionId ?? event.sessionId
 					: event.sessionId,
 		};
-		if (previous !== undefined && previous.transcriptPath !== sessionTranscriptPath
-			&& this.transcriptClaims.get(previous.transcriptPath) === event.token) {
-			this.transcriptClaims.delete(previous.transcriptPath);
-		}
-		this.paneSessions.set(event.token, info);
-		this.retiredSessions.delete(event.token);
-		if (previous?.transcriptPath !== info.transcriptPath) {
-			this.cliCodexForkRequests.delete(event.token);
-		}
-		this.persistSessions();
-		this.transcriptClaims.set(sessionTranscriptPath, event.token);
-		this.emitConfirmedAgentPanesIfChanged();
-
-		// エージェント起動などでこのペインのセッションが初めて判明した
-		// → 「セッションなし」表示のまま待っている購読者にスナップショットを送る。
-		if (previous === undefined) {
-			this.ensureEagerTailer(event.token, info);
-			this.pushToSubscribers(event.token);
-		} else if (previous.transcriptPath !== info.transcriptPath) {
-			// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
-			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
-			this.activityTrackers.delete(event.token);
-			this.pendingSubagentCalls.delete(event.token);
-			this.advisorLiveIds.delete(event.token);
-			this.clearClaudeSubagentTranscripts(event.token);
-			this.activeTurnTokens.delete(event.token);
-			this.disposeTailer(event.token);
-			this.ensureEagerTailer(event.token, info);
-			this.pushToSubscribers(event.token);
-		}
+		this.bindPaneSession(info, previous);
 		const subagentActivityId = event.event === 'SubagentStart' || event.event === 'SubagentStop' ? str(event.payload?.agent_id) : undefined;
 		const subagentId = subagentActivityId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(subagentActivityId) ? subagentActivityId : undefined;
 		if (event.event === 'SubagentStop') {
@@ -10096,7 +10196,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 走っている Codex へ設定を渡す口が無いので、Codex のモデルはモバイルから変えられない。モデルが
 		// まだ分からないうちから伝えて、選択の画面を開かせない
 		const modelControl = tailer.agent === 'codex' ? 'none' : undefined;
-		if (model === undefined && effort === undefined && resumeKey === undefined && modelControl === undefined) {
+		// SSH の写しを続けられていない。写しの会話には、空の info も送る（止まった印が消えたことを、info を
+		// 丸ごと置き換えるモバイルへ伝えるため）
+		const remoteCopy = paradisIsRemoteAgentTranscriptMirrorPath(tailer.transcriptPath);
+		const transcriptStale = remoteCopy && this.remoteTranscriptMirror?.isStalled(tailer.transcriptPath) === true;
+		if (model === undefined && effort === undefined && resumeKey === undefined && modelControl === undefined && !remoteCopy) {
 			return undefined;
 		}
 		return {
@@ -10104,6 +10208,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			...(effort !== undefined ? { effort } : {}),
 			...(resumeKey !== undefined ? { resumeKey } : {}),
 			...(modelControl !== undefined ? { modelControl } : {}),
+			...(transcriptStale ? { transcriptStale: true } : {}),
 		};
 	}
 
@@ -11028,7 +11133,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 
-	private addSubscriber(token: string, mobileId: string, owner: IParadisMobilePaneOwner, encodings: Pick<IAgentAttachRequest, 'liveEncoding' | 'responseEncoding'>): void {
+	private addSubscriber(token: string, mobileId: string, owner: IParadisMobilePaneOwner, encodings: Pick<IAgentAttachRequest, 'id' | 'liveEncoding' | 'responseEncoding'>): void {
 		let subscribers = this.subscribers.get(token);
 		if (subscribers === undefined) {
 			subscribers = new Map<string, IAgentSubscriber>();
@@ -11036,11 +11141,33 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		subscribers.set(mobileId, {
 			owner,
+			terminalId: encodings.id,
 			liveEncoding: encodings.liveEncoding === PARADIS_AGENT_LIVE_APPEND_ENCODING ? PARADIS_AGENT_LIVE_APPEND_ENCODING : undefined,
 			responseEncoding: encodings.responseEncoding === PARADIS_JSON_GZIP_RESPONSE_ENCODING ? PARADIS_JSON_GZIP_RESPONSE_ENCODING : undefined,
 		});
 		// デスクトップのためだけに入れていた質問・承認は、モバイルが見始めたらふつうの扱いに戻す。
 		this.tailers.get(token)?.promoteDesktopOnly();
+	}
+
+	/**
+	 * live でなくなったペインの購読者を外す。黙って外すと、ペインが一瞬だけ対応表から外れて戻った（ウィンドウの
+	 * 同期の隙間）ときに、モバイルは購読しているつもりのまま以後の差分を一つも受け取れない（B1）。外す代わりに
+	 * attach の待ちへ移し、ペインが戻ったら attach をやり直してスナップショットを送り直す（待ちの期限は attach と同じ）。
+	 */
+	private retireSubscribers(token: string): void {
+		for (const [mobileId, subscriber] of this.subscribers.get(token) ?? []) {
+			const request: IAgentAttachRequest = {
+				id: subscriber.terminalId, token,
+				...(subscriber.liveEncoding !== undefined ? { liveEncoding: subscriber.liveEncoding } : {}),
+				...(subscriber.responseEncoding !== undefined ? { responseEncoding: subscriber.responseEncoding } : {}),
+			};
+			const key = this.pendingAttachKey(mobileId, request.id, token);
+			if (!this.attachGenerations.has(key)) {
+				this.attachGenerations.set(key, ++this.attachGenerationCounter);
+			}
+			this.deferAttach(key, mobileId, request);
+		}
+		this.subscribers.delete(token);
 	}
 
 	private removeSubscriber(token: string, mobileId: string): boolean {

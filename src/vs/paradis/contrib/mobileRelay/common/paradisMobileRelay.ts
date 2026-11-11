@@ -468,10 +468,13 @@ export interface IParadisMobileRelayService {
 
 	/** 写すべき接続先 transcript の一覧（空いているもの＋自分が担当しているもの）。 */
 	listRemoteTranscriptMirrors(ownerId: string): Promise<readonly string[]>;
-	/** 担当を取り、接続先の次に読む位置を得る。取れなければ -1。 */
-	beginRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number>;
 	/**
-	 * 接続先から読んだ続きを写しへ足し、次に読む位置を得る。担当を失ったときは -1。
+	 * 担当を取り、接続先の次に読む位置を得る。取れなければ -1。
+	 * remoteSize は担当が見た接続先の大きさ。写しを一から作るときは、その末尾の窓から写し始める位置が返る。
+	 */
+	beginRemoteTranscriptMirror(ownerId: string, remotePath: string, remoteSize?: number): Promise<number>;
+	/**
+	 * 接続先から読んだ続きを写しへ足し、次に読む位置を得る（窓の始まりへ飛ぶことがある）。担当を失ったときは -1。
 	 * data はIPCの引数シリアライザがバイナリのまま運べるようトップレベル引数で渡す
 	 * （オブジェクトへネストするとJSON化されて中身が壊れる）。
 	 * catchingUp は、写し始めた時点で接続先に既にあった分（過去の会話）を写しているときに true。
@@ -481,6 +484,8 @@ export interface IParadisMobileRelayService {
 	resetRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number>;
 	/** ウィンドウが閉じる・接続先が変わるときに担当を空ける。 */
 	releaseRemoteTranscriptMirrors(ownerId: string): Promise<void>;
+	/** 接続先の transcript を読めなかった（failed）・また読めた（!failed）。読めない間はチャットに知らせを出す。 */
+	reportRemoteTranscriptMirrorReadFailure(ownerId: string, remotePath: string, failed: boolean): Promise<void>;
 	/**
 	 * SSH の接続先のバックグラウンドのシェルの出力を読む頼み（agent.shells.v1）。`ownerId` が自分（写しの担当）の
 	 * ものだけに答える。取り決めは paradisRemoteShellOutput.ts。

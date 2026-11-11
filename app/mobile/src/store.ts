@@ -1161,6 +1161,11 @@ export interface AgentSessionInfo {
 	 * やめたため。PC のターミナルの /model で変える）。無ければ従来どおり（古い PC）。
 	 */
 	modelControl?: 'none';
+	/**
+	 * SSH の接続先の会話を PC が手元へ写せていない（会話の表示が古いままのことがある）。写せるようになると消える。
+	 * 古い PC は送らない。
+	 */
+	transcriptStale?: true;
 }
 
 /** Codexモデルが広告するreasoning effort 1件。 */

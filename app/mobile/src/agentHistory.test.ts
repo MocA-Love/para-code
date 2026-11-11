@@ -113,6 +113,8 @@ describe('agentHistory (W2-30)', () => {
 			complete: agentHistoryHeader(true, false, undefined),
 			loading: agentHistoryHeader(true, true, { ...base, loading: true }),
 			capped: agentHistoryHeader(true, true, { ...base, hasMore: false, capped: true }),
+			// SSH 先の会話は PC が末尾だけを写している。写しの先頭に着いたら、前は PC のターミナルで見る
+			copyStart: agentHistoryHeader(true, true, applyAgentHistoryPage(base, parseAgentHistoryReply({ messages: [], hasMore: false, capped: true, copyStart: true })!)),
 			start: agentHistoryHeader(true, true, { ...base, hasMore: false }),
 		}).toEqual({
 			oldPcTruncated: { kind: 'truncated' },
@@ -121,6 +123,7 @@ describe('agentHistory (W2-30)', () => {
 			complete: { kind: 'none' },
 			loading: { kind: 'more', loading: true },
 			capped: { kind: 'capped' },
+			copyStart: { kind: 'capped', copyStart: true },
 			start: { kind: 'none' },
 		});
 	});

@@ -22,9 +22,18 @@
 // 写し先はディレクトリ構成を保つ（`/home/u/.claude/projects/x/y.jsonl` →
 // `<root>/home/u/.claude/projects/x/y.jsonl`）。エージェント種別の判定も、SubAgent の
 // 兄弟ファイル探索も、パスの形に依存しているため。
+//
+// 写しは接続先の「末尾の窓」。会話は 250MB を超えることがあり、先頭から全部写すと上限で止まって
+// 二度と最新が出なくなっていた。写し始めは接続先の末尾から {@link MIRROR_WINDOW_BYTES} 手前（行の境目）
+// から写し、写しが {@link MIRROR_MAX_BYTES} を超えそうになったら、手元の写しの末尾の窓で作り直す
+// （先頭を捨てる）。写しの位置と接続先の位置は {@link ICopyLayout} で結ぶ。作り直したことは
+// {@link paradisRemoteTranscriptCopyState} の generation で tailer へ伝え、tailer は読み直す。
+// Codex の rollout は先頭行（session_meta）で素性（root / SubAgent）を見分けるので、窓にしても先頭行だけは
+// 写しの先頭に残す。窓より前の会話は写さない（モバイルの「さらに前を読む」も写しの先頭で止まる）。
 
 import { promises as fs } from 'fs';
 import { dirname, isAbsolute, join, sep } from '../../../../base/common/path.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisIsAgentHookRemoteHostId } from '../../agentBrowser/common/paradisAgentHooks.js';
@@ -34,11 +43,25 @@ import { paradisClaudeConfigDir, paradisCodexHomes } from '../../agentBrowser/no
 const MIRROR_DIR_NAME = 'paradisRemoteTranscripts';
 
 /**
- * 1ファイルあたりの写しの上限。これを超えたら追記をやめる（会話は止まるが、
- * 手元のディスクを無制限に食うよりまし）。tailer の初回読みが末尾4MBなので、
- * 実用上ここに届くのは相当な長時間セッションだけ。
+ * 1ファイルあたりの写しの上限。これを超えそうになったら、写しを末尾の窓（{@link MIRROR_WINDOW_BYTES}）で
+ * 作り直して続ける（止めない）。台帳に載る写しの合計は最大で {@link MAX_ENTRIES} × これ。
  */
-const MIRROR_MAX_BYTES = 64 * 1024 * 1024;
+const MIRROR_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * 写し始め・作り直しで残す、接続先の末尾の幅。tailer の初回読み（ファイルが 8MB 以下なら全部、超えたら末尾 4MB）より
+ * 広く取り、再開した大きな会話でも、写し始めてすぐに最新の会話が出るようにする。
+ */
+const MIRROR_WINDOW_BYTES = 8 * 1024 * 1024;
+
+/** 窓にした Codex の写しの先頭に残す先頭行（session_meta）の上限。超えたら先頭行は残さない。 */
+const MIRROR_HEADER_MAX_BYTES = 1024 * 1024;
+
+/** 作り直しの書きかけの名前に付ける接尾辞。`.jsonl` で終わらないので、tailer の兄弟ファイル探索に掛からない。 */
+const REWINDOW_SUFFIX = '.paradis-rewindow';
+
+/** 位置を覚えておく写しの数の上限（台帳から外れた後、戻ってきたときに続きから写すため）。 */
+const MAX_LAYOUTS = 512;
 
 /** 写しの担当ウィンドウが黙ってからこれを過ぎたら、担当を空けて別のウィンドウに任せる。 */
 const OWNER_TTL_MS = 15_000;
@@ -58,7 +81,11 @@ const FINISHED_SUBAGENT_GRACE_MS = 2 * 60_000;
 /** 起動時の掃除で、これより古い写しは消す。 */
 const PRUNE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
-/** 掃除するかを決める、写し全体の合計サイズ。 */
+/**
+ * 掃除するかを決める、写し全体の合計サイズ。台帳に載っている写し（今追いかけているもの）も合計に数えるが、
+ * 消すのは載っていないものだけ。載っている分は {@link MAX_ENTRIES} × {@link MIRROR_MAX_BYTES} が上限で、
+ * 実際には同時に動く会話の数（数本）× 窓の幅（8〜32MB）に収まる。
+ */
 const PRUNE_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 
 /**
@@ -72,6 +99,25 @@ export const PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE = -1;
 
 let mirrorRoots: readonly string[] = [];
 let catchUpEndLookup: ((localPath: string) => number | undefined) | undefined;
+let copyStateLookup: ((localPath: string) => IParadisRemoteTranscriptCopyState | undefined) | undefined;
+
+/** 手元の写しの今の形（tailer が読み直すかを決めるのに使う）。 */
+export interface IParadisRemoteTranscriptCopyState {
+	/** 写しを作り直す（中身を置き換える）たびに変わる番号。0 は作り直していない。 */
+	readonly generation: number;
+	/** 接続先の会話の先頭を写していない（末尾の窓だけ）。 */
+	readonly partial: boolean;
+}
+
+/**
+ * 手元の写しの今の形。写しではない・台帳が位置を覚えていないなら undefined。
+ *
+ * 写しは上限に近づくと末尾の窓で作り直す。作り直した後の写しは前より大きいことがあり、tailer の「縮んだら
+ * 読み直す」だけでは気付けない（別の中身を前の位置から続けて読み、会話が混ざる）。generation が変わったら読み直す。
+ */
+export function paradisRemoteTranscriptCopyState(localPath: string): IParadisRemoteTranscriptCopyState | undefined {
+	return copyStateLookup?.(localPath);
+}
 
 /**
  * 手元の写しのうち、接続先へ追いつくために写した（写し始めた時点で接続先に既にあった）部分の終わり（バイト位置）。
@@ -173,11 +219,34 @@ export function paradisRemoteTranscriptMirrorPathFor(root: string, remotePath: s
 	return join(root, ...remotePath.split('/').filter(segment => segment.length > 0));
 }
 
+/**
+ * 手元の写しと接続先の位置の対応。台帳の項目（{@link IMirrorEntry}）より長く持つ（ペインを退避して台帳から
+ * 外れた後に戻ってきても、続きから写せるように）。shared process を立て直すと失われ、そのときは写しを取り直す
+ * （位置の分からない写しに続けて書くと、中身が混ざる）。
+ */
+interface ICopyLayout {
+	/** 写しの先頭に残した、接続先の先頭行（Codex の session_meta）のバイト数。残していなければ 0。 */
+	header: number;
+	/** この shared process が写しを作った（位置の対応を知っている）。false なら写しがあっても位置は分からない。 */
+	known: boolean;
+	/** 写しの位置 {@link header} が指す、接続先の位置。先頭から写していれば 0。 */
+	base: number;
+	generation: number;
+	partial: boolean;
+	/**
+	 * 窓の始まりをそろえている途中。
+	 * `header`: 接続先の先頭行を読んでいる（読み終えたら `windowStart` から写す）。
+	 * `align`: `base` から読んだ最初の改行までを捨てる（行の途中から写さない）。
+	 */
+	pending?: { readonly kind: 'header'; readonly windowStart: number; readonly chunks: Buffer[]; bytes: number } | { readonly kind: 'align' };
+}
+
 interface IMirrorEntry {
 	readonly remotePath: string;
 	readonly localPath: string;
-	/** 写しの現在のバイト数。接続先の次に読む位置でもある。 */
+	/** 写しの現在のバイト数。 */
 	size: number;
+	readonly layout: ICopyLayout;
 	/** 写しを担当しているウィンドウ。空いていれば undefined。 */
 	owner: string | undefined;
 	ownerSeenAt: number;
@@ -185,21 +254,27 @@ interface IMirrorEntry {
 	notedAt: number;
 	/** このパスを名乗ったペイン。ペインが消えたら追いかけるのをやめる。 */
 	token: string;
-	/** 上限に達したことを一度だけ記録するための目印。 */
-	capped: boolean;
+	/** 写しを続けられていない理由（手元へ書けない・接続先を読めない）。続けられたら消える。 */
+	failure?: 'write' | 'read';
 	/** サブエージェントの終わりを知った時刻。再開（同じパスが再び現れる）で消える。 */
 	finishedAt?: number;
 	/** 同じファイルへの追記を直列化する。 */
 	chain: Promise<void>;
-	/** 追いつくために写した部分の終わり（{@link paradisRemoteTranscriptCatchUpEnd}）。 */
+	/** 追いつくために写した部分の終わり（写しの位置。{@link paradisRemoteTranscriptCatchUpEnd}）。 */
 	catchUpEnd?: number;
 	/** 会話を再開した（SessionStart の source が resume）hook で知ったか。 */
 	resumed?: boolean;
 	/**
-	 * 担当を取ったときに、追いつく分の印を受け付けると決めたか。再開した会話で、手元に写しがまだ無いときだけ。
+	 * 担当を取ったときに、追いつく分の印を受け付けると決めたか。写しを一から作るときのうち、再開した会話・
+	 * 接続先の末尾の窓から写し始めた・位置の分からない写しを取り直した、のどれか（どれも過去の会話）。
 	 * 写しの途中から続ける（再接続・再読み込み）ときと新しい会話は、切れていた間・最初の出来事を鳴らす。
 	 */
 	catchUpAllowed?: boolean;
+}
+
+/** Codex の rollout か（先頭行で素性を見分けるので、窓にしても先頭行を残す）。 */
+function isCodexRolloutPath(path: string): boolean {
+	return /\/\.codex(?:-[\w.]+)?\//.test(path);
 }
 
 /**
@@ -212,19 +287,39 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 
 	private readonly root: string;
 	private readonly entries = new Map<string, IMirrorEntry>();
+	/** 写しのパス → 接続先との位置の対応（{@link ICopyLayout}）。 */
+	private readonly layouts = new Map<string, ICopyLayout>();
+	private generationCounter = 0;
 	private disposed = false;
+	private readonly windowBytes: number;
+
+	private readonly _onDidChangeStalled = this._register(new Emitter<string>());
+	/** 写しを続けられなくなった・続けられるようになった（写しのパス）。 */
+	readonly onDidChangeStalled: Event<string> = this._onDidChangeStalled.event;
+
+	private readonly _onDidAppend = this._register(new Emitter<string>());
+	/** 写しに書き足した（写しのパス）。 */
+	readonly onDidAppend: Event<string> = this._onDidAppend.event;
 
 	constructor(
 		userDataPath: string,
 		private readonly logService: ILogService,
 		/** 1ファイルあたりの写しの上限。上限に達したときの振る舞いを試すためだけに差し替える。 */
 		private readonly maxBytes: number = MIRROR_MAX_BYTES,
+		/** 写し始め・作り直しで残す末尾の幅。試すためだけに差し替える（上限の半分を超えない）。 */
+		windowBytes: number = MIRROR_WINDOW_BYTES,
 	) {
 		super();
+		this.windowBytes = Math.max(1, Math.min(windowBytes, Math.floor(maxBytes / 2)));
 		this.root = join(userDataPath, MIRROR_DIR_NAME);
 		mirrorRoots = [this.root];
 		const lookup = (localPath: string) => this.catchUpEndFor(localPath);
 		catchUpEndLookup = lookup;
+		const stateLookup = (localPath: string) => {
+			const layout = this.layouts.get(localPath);
+			return layout !== undefined ? { generation: layout.generation, partial: layout.partial } : undefined;
+		};
+		copyStateLookup = stateLookup;
 		this._register({
 			dispose: () => {
 				this.disposed = true;
@@ -233,6 +328,9 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 				}
 				if (catchUpEndLookup === lookup) {
 					catchUpEndLookup = undefined;
+				}
+				if (copyStateLookup === stateLookup) {
+					copyStateLookup = undefined;
 				}
 			}
 		});
@@ -290,17 +388,49 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			remotePath,
 			localPath,
 			size: 0,
+			layout: this.layoutFor(localPath),
 			owner: undefined,
 			ownerSeenAt: 0,
 			notedAt: Date.now(),
 			token,
-			capped: false,
 			chain: Promise.resolve(),
 			...(resumed ? { resumed: true } : {}),
 		});
 		this.evictOverflow();
 		this.logService.info(`[paradisRemoteTranscript] following a transcript on the host: ${remotePath}`);
 		return localPath;
+	}
+
+	/** 位置の対応を引く。無ければ「まだ位置が分からない」形で作る（{@link begin} が決める）。 */
+	private layoutFor(localPath: string): ICopyLayout {
+		const existing = this.layouts.get(localPath);
+		if (existing !== undefined) {
+			// 新しく使った順に並べ直す（上限で古いものから外す）
+			this.layouts.delete(localPath);
+			this.layouts.set(localPath, existing);
+			return existing;
+		}
+		const layout: ICopyLayout = { header: 0, known: false, base: 0, generation: 0, partial: false };
+		this.layouts.set(localPath, layout);
+		const tracked = new Set([...this.entries.values()].map(entry => entry.localPath));
+		for (const path of this.layouts.keys()) {
+			if (this.layouts.size <= MAX_LAYOUTS) {
+				break;
+			}
+			if (!tracked.has(path) && path !== localPath) {
+				this.layouts.delete(path);
+			}
+		}
+		return layout;
+	}
+
+	/** 接続先の、次に読む位置。 */
+	private remotePosition(entry: IMirrorEntry): number {
+		const pending = entry.layout.pending;
+		if (pending?.kind === 'header') {
+			return pending.bytes;
+		}
+		return entry.layout.base + entry.size - entry.layout.header;
 	}
 
 	/**
@@ -311,11 +441,6 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		const now = Date.now();
 		const paths: string[] = [];
 		for (const entry of this.entries.values()) {
-			if (entry.capped) {
-				// 上限に達したものを返し続けると、担当ウィンドウが取り直して読んでは捨てる、を
-				// 延々と繰り返すことになる（接続先を無駄に読み続ける）
-				continue;
-			}
 			if (entry.owner === ownerId) {
 				entry.ownerSeenAt = now;
 				paths.push(entry.remotePath);
@@ -328,11 +453,12 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 
 	/**
 	 * 写しを始める（担当を取る）。
+	 * @param remoteSize 担当ウィンドウが見た接続先の大きさ。窓より大きければ、写しを一から作るときは末尾の窓から写す
 	 * @returns 接続先の次に読む位置。担当を取れなければ {@link PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE}
 	 */
-	async begin(ownerId: string, remotePath: string): Promise<number> {
+	async begin(ownerId: string, remotePath: string, remoteSize?: number): Promise<number> {
 		const entry = this.entries.get(remotePath);
-		if (entry === undefined || entry.capped) {
+		if (entry === undefined) {
 			return PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE;
 		}
 		const now = Date.now();
@@ -343,11 +469,45 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		entry.ownerSeenAt = now;
 		return this.enqueue(entry, async () => {
 			await fs.mkdir(dirname(entry.localPath), { recursive: true });
-			// ウィンドウを開き直しても続きから写せるよう、実ファイルの大きさを正とする
 			const stat = await fs.stat(entry.localPath).catch(() => undefined);
-			entry.size = stat?.isFile() === true ? stat.size : 0;
-			entry.catchUpAllowed = entry.resumed === true && entry.size === 0;
-			return entry.size;
+			const localSize = stat?.isFile() === true ? stat.size : 0;
+			const layout = entry.layout;
+			// 位置の分かっている写しなら続きから写す（ウィンドウを開き直した・ペインを戻した）
+			if (localSize > 0 && layout.known && layout.pending?.kind !== 'header') {
+				entry.size = localSize;
+				entry.catchUpAllowed = false;
+				return this.remotePosition(entry);
+			}
+			// 写しを一から作る。位置の分からない写し（shared process を立て直す前のもの）は、続きに書くと
+			// 中身が混ざるので取り直す
+			const hadCopy = localSize > 0;
+			if (hadCopy) {
+				await fs.writeFile(entry.localPath, '');
+			}
+			entry.size = 0;
+			entry.catchUpEnd = undefined;
+			const windowStart = remoteSize !== undefined && remoteSize > this.windowBytes ? remoteSize - this.windowBytes : 0;
+			layout.known = true;
+			layout.header = 0;
+			layout.partial = windowStart > 0;
+			if (hadCopy) {
+				layout.generation = ++this.generationCounter;
+			}
+			entry.catchUpAllowed = entry.resumed === true || windowStart > 0 || hadCopy;
+			if (windowStart === 0) {
+				layout.base = 0;
+				layout.pending = undefined;
+				return 0;
+			}
+			if (isCodexRolloutPath(entry.remotePath)) {
+				// 先頭行を先に読み、読み終えたら窓から写す
+				layout.base = 0;
+				layout.pending = { kind: 'header', windowStart, chunks: [], bytes: 0 };
+				return 0;
+			}
+			layout.base = windowStart;
+			layout.pending = { kind: 'align' };
+			return windowStart;
 		});
 	}
 
@@ -363,7 +523,7 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 	/**
 	 * 接続先から読んだ続きを写しへ足す。
 	 * @param catchingUp 写し始めた時点で接続先に既にあった分（過去の会話）か。読み手はこの分の質問・ターンの終わりを鳴らさない
-	 * @returns 次に読む位置。担当を失った・上限に達したときは {@link PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE}
+	 * @returns 次に読む接続先の位置（窓の始まりへ飛ぶことがある）。担当を失ったときは {@link PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE}
 	 */
 	async append(ownerId: string, remotePath: string, data: Uint8Array, catchingUp = false): Promise<number> {
 		const entry = this.entries.get(remotePath);
@@ -372,7 +532,7 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		}
 		entry.ownerSeenAt = Date.now();
 		if (data.byteLength === 0) {
-			return entry.size;
+			return this.remotePosition(entry);
 		}
 		return this.enqueue(entry, async () => {
 			// 順番待ちの間に担当が変わっていることがある。書く直前にもう一度確かめる
@@ -380,23 +540,117 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			if (entry.owner !== ownerId) {
 				return PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE;
 			}
-			if (entry.size + data.byteLength > this.maxBytes) {
-				if (!entry.capped) {
-					entry.capped = true;
-					this.logService.warn(`[paradisRemoteTranscript] stopped following ${entry.remotePath}; the copy reached its size limit`);
+			const layout = entry.layout;
+			let bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+			const pending = layout.pending;
+			if (pending?.kind === 'header') {
+				const newline = bytes.indexOf(0x0a);
+				if (newline < 0) {
+					pending.chunks.push(Buffer.from(bytes));
+					pending.bytes += bytes.length;
+					if (pending.bytes > MIRROR_HEADER_MAX_BYTES) {
+						// 先頭行が長すぎる。残さずに窓から写す
+						layout.base = pending.windowStart;
+						layout.pending = { kind: 'align' };
+					}
+					return this.remotePosition(entry);
 				}
-				return PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE;
+				const header = Buffer.concat([...pending.chunks, bytes.subarray(0, newline + 1)]);
+				await fs.appendFile(entry.localPath, header);
+				entry.size += header.length;
+				layout.header = header.length;
+				this.noteCatchUp(entry, catchingUp);
+				if (pending.windowStart <= header.length) {
+					// 先頭行の直後が窓の始まり（行の境目）
+					layout.base = header.length;
+					layout.pending = undefined;
+				} else {
+					layout.base = pending.windowStart;
+					layout.pending = { kind: 'align' };
+				}
+				this.noteWritten(entry);
+				return this.remotePosition(entry);
 			}
-			await fs.appendFile(entry.localPath, data);
-			entry.size += data.byteLength;
-			if (catchingUp && entry.catchUpAllowed === true) {
-				entry.catchUpEnd = entry.size;
+			if (pending?.kind === 'align') {
+				const newline = bytes.indexOf(0x0a);
+				if (newline < 0) {
+					layout.base += bytes.length;
+					return this.remotePosition(entry);
+				}
+				layout.base += newline + 1;
+				layout.pending = undefined;
+				bytes = bytes.subarray(newline + 1);
+				if (bytes.length === 0) {
+					return this.remotePosition(entry);
+				}
+			}
+			if (entry.size + bytes.length > this.maxBytes) {
+				await this.rewindow(entry, bytes);
 			} else {
-				// 追いつく分は先頭から続く分だけ。印の無い追記の後には印を受け付けない
-				entry.catchUpAllowed = false;
+				await fs.appendFile(entry.localPath, bytes);
+				entry.size += bytes.length;
 			}
-			return entry.size;
+			this.noteCatchUp(entry, catchingUp);
+			this.noteWritten(entry);
+			return this.remotePosition(entry);
 		});
+	}
+
+	private noteCatchUp(entry: IMirrorEntry, catchingUp: boolean): void {
+		if (catchingUp && entry.catchUpAllowed === true) {
+			entry.catchUpEnd = entry.size;
+		} else {
+			// 追いつく分は先頭から続く分だけ。印の無い追記の後には印を受け付けない
+			entry.catchUpAllowed = false;
+		}
+	}
+
+	/** 書けた。止まっていた印を外し、書き足したことを知らせる。 */
+	private noteWritten(entry: IMirrorEntry): void {
+		if (entry.failure === 'write') {
+			this.setFailure(entry, undefined);
+		}
+		this._onDidAppend.fire(entry.localPath);
+	}
+
+	/**
+	 * 写しを末尾の窓で作り直して、続きを足す。接続先は読まない（手元の写しの末尾が、接続先の今の位置までの
+	 * 末尾そのもの）。書きかけを別の名前で書いてから置き換えるので、tailer が途中の空の写しを読むことはない。
+	 */
+	private async rewindow(entry: IMirrorEntry, data: Buffer): Promise<void> {
+		const layout = entry.layout;
+		const keepFrom = Math.max(layout.header, entry.size - this.windowBytes);
+		const handle = await fs.open(entry.localPath, 'r');
+		let header: Buffer;
+		let tail: Buffer;
+		try {
+			header = Buffer.alloc(layout.header);
+			if (header.length > 0) {
+				await handle.read(header, 0, header.length, 0);
+			}
+			tail = Buffer.alloc(entry.size - keepFrom);
+			const { bytesRead } = await handle.read(tail, 0, tail.length, keepFrom);
+			tail = tail.subarray(0, bytesRead);
+		} finally {
+			await handle.close().catch(() => undefined);
+		}
+		let start = keepFrom;
+		if (keepFrom > layout.header) {
+			// 行の途中から残さない
+			const newline = tail.indexOf(0x0a);
+			start = newline < 0 ? keepFrom + tail.length : keepFrom + newline + 1;
+			tail = newline < 0 ? Buffer.alloc(0) : tail.subarray(newline + 1);
+		}
+		const temporary = entry.localPath + REWINDOW_SUFFIX;
+		await fs.writeFile(temporary, Buffer.concat([header, tail, data]));
+		await fs.rename(temporary, entry.localPath);
+		layout.base += start - layout.header;
+		layout.partial = true;
+		layout.generation = ++this.generationCounter;
+		entry.size = header.length + tail.length + data.length;
+		// 残した分は過去の会話。tailer は作り直しを見て全部読み直すので、ここから先の追記だけが新しい出来事
+		entry.catchUpEnd = entry.catchUpEnd !== undefined ? header.length + tail.length : undefined;
+		this.logService.info(`[paradisRemoteTranscript] kept the latest ${tail.length} bytes of ${entry.remotePath}; the copy reached its size limit`);
 	}
 
 	/**
@@ -418,8 +672,51 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			entry.size = 0;
 			entry.catchUpEnd = undefined;
 			entry.catchUpAllowed = false;
+			const layout = entry.layout;
+			layout.known = true;
+			layout.header = 0;
+			layout.base = 0;
+			layout.partial = false;
+			layout.pending = undefined;
+			layout.generation = ++this.generationCounter;
 			return 0;
 		});
+	}
+
+	/**
+	 * 担当ウィンドウが、接続先の transcript を読めなかった（failed）・また読めた（!failed）と知らせる。
+	 * 読めない間はチャットに「最新を取得できていません」と出す。
+	 */
+	reportReadFailure(ownerId: string, remotePath: string, failed: boolean): void {
+		const entry = this.entries.get(remotePath);
+		if (entry === undefined || entry.owner !== ownerId) {
+			return;
+		}
+		if (failed) {
+			if (entry.failure === undefined) {
+				this.setFailure(entry, 'read');
+			}
+		} else if (entry.failure === 'read') {
+			this.setFailure(entry, undefined);
+		}
+	}
+
+	/** この写しを、接続先の最新まで続けられていないか（書けない・読めない）。 */
+	isStalled(localPath: string): boolean {
+		for (const entry of this.entries.values()) {
+			if (entry.localPath === localPath) {
+				return entry.failure !== undefined;
+			}
+		}
+		return false;
+	}
+
+	private setFailure(entry: IMirrorEntry, failure: 'write' | 'read' | undefined): void {
+		if (entry.failure === failure) {
+			return;
+		}
+		entry.failure = failure;
+		this._onDidChangeStalled.fire(entry.localPath);
 	}
 
 	/**
@@ -455,8 +752,8 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 	 * **やめるのは「接続先を読みに行くこと」だけで、写しはディスクに残す。** ペインを退避
 	 * （park）してから戻すまでの猶予は7日（paradisMobileAgentChat の退避セッションTTL）ある
 	 * のに対し、こちらの猶予は10分。ここで消してしまうと、15分後に戻したペインの写しが無く
-	 * なっていて会話が空になり、次のhookで {@link begin} が 0 を返して接続先の transcript を
-	 * 先頭から丸ごと取り直す（1本で最大 {@link MIRROR_MAX_BYTES}）。
+	 * なっていて会話が空になり、次のhookで {@link begin} が接続先の末尾の窓から取り直す。
+	 * 写しとの位置の対応（{@link ICopyLayout}）も台帳の外に残すので、戻したときは続きから写せる。
 	 * 使わなくなった写しの回収は {@link prune}（14日 / 合計512MB）に任せる。
 	 */
 	retainLiveTokens(isLive: (token: string) => boolean): void {
@@ -486,6 +783,8 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		entry.chain = result.then(() => undefined, () => undefined);
 		return result.catch(error => {
 			this.logService.warn(`[paradisRemoteTranscript] could not write the copy of ${entry.remotePath}`, error);
+			// ログだけにしない。チャットに「最新を取得できていません」と出す（次に書けたら消える）
+			this.setFailure(entry, 'write');
 			return PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE;
 		});
 	}
@@ -527,7 +826,9 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		}
 		const files: { path: string; size: number; mtime: number }[] = [];
 		const directories: string[] = [];
-		const tracked = new Set([...this.entries.values()].map(entry => entry.localPath));
+		// 台帳に載っている写しと、その作り直しの書きかけは消さない（大きさは合計に数える）
+		const tracked = new Set([...this.entries.values()].flatMap(entry => [entry.localPath, entry.localPath + REWINDOW_SUFFIX]));
+		let trackedBytes = 0;
 		const walk = async (dir: string, depth: number): Promise<void> => {
 			if (depth > 12 || this.disposed) {
 				return;
@@ -538,9 +839,14 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 				if (entry.isDirectory()) {
 					directories.push(path);
 					await walk(path, depth + 1);
-				} else if (entry.isFile() && !tracked.has(path)) {
+				} else if (entry.isFile()) {
 					const stat = await fs.stat(path).catch(() => undefined);
-					if (stat !== undefined) {
+					if (stat === undefined) {
+						continue;
+					}
+					if (tracked.has(path)) {
+						trackedBytes += stat.size;
+					} else {
 						files.push({ path, size: stat.size, mtime: stat.mtimeMs });
 					}
 				}
@@ -552,7 +858,7 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		}
 		const now = Date.now();
 		const doomed = new Set(files.filter(file => now - file.mtime > PRUNE_MAX_AGE_MS).map(file => file.path));
-		let total = files.filter(file => !doomed.has(file.path)).reduce((sum, file) => sum + file.size, 0);
+		let total = trackedBytes + files.filter(file => !doomed.has(file.path)).reduce((sum, file) => sum + file.size, 0);
 		if (total > PRUNE_MAX_TOTAL_BYTES) {
 			for (const file of files.filter(file => !doomed.has(file.path)).sort((a, b) => a.mtime - b.mtime)) {
 				if (total <= PRUNE_MAX_TOTAL_BYTES) {
@@ -574,6 +880,8 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 			const succeeded = await fs.rm(path, { force: true }).then(() => true, () => false);
 			if (succeeded) {
 				removed++;
+				// 写しが無くなったので、位置の対応も捨てる（次は一から写す）
+				this.layouts.delete(path);
 			}
 		}
 		// 写しはディレクトリ構成を保つので、ファイルだけ消しても骨組みが残り続ける。深い方から

@@ -510,13 +510,16 @@ export class ParadisAgentChatView extends Disposable {
 			status = localize('paradisAgentChat.statusQuestion', "質問に答えるのを待っています");
 		} else if (state?.interaction?.kind === 'approval') {
 			status = localize('paradisAgentChat.statusApproval', "許可を待っています");
+		} else if (state?.info?.transcriptStale === true) {
+			// SSH の接続先の会話を手元へ写せていない。下の会話は古いままのことがある
+			status = localize('paradisAgentChat.statusStale', "この会話は最新を取得できていません");
 		} else if (state?.agentExited) {
 			status = localize('paradisAgentChat.statusExited', "終了しました");
 		} else if (state?.busy) {
 			status = localize('paradisAgentChat.statusBusy', "作業中");
 		}
 		this.headerStatus.textContent = status;
-		this.headerStatus.classList.toggle('attention', state?.interaction !== null && state?.interaction !== undefined);
+		this.headerStatus.classList.toggle('attention', (state?.interaction !== null && state?.interaction !== undefined) || state?.info?.transcriptStale === true);
 		this.headerStatus.classList.toggle('busy', state?.busy === true && (state.interaction === null || state.interaction === undefined));
 	}
 
@@ -533,8 +536,11 @@ export class ParadisAgentChatView extends Disposable {
 	}
 
 	private renderItems(state: IParadisAgentChatState): void {
-		this.notice.textContent = state.truncated ? localize('paradisAgentChat.truncated', "これより前の会話は省略しています。すべて読むにはターミナルに戻ってください。") : '';
-		this.notice.style.display = state.truncated ? '' : 'none';
+		// SSH の接続先の会話は末尾の窓だけを写して読んでいる。前の会話はこの表示では読めない
+		this.notice.textContent = state.copyPartial
+			? localize('paradisAgentChat.truncatedCopy', "これより前の会話は PC のターミナルで見られます。")
+			: state.truncated ? localize('paradisAgentChat.truncated', "これより前の会話は省略しています。すべて読むにはターミナルに戻ってください。") : '';
+		this.notice.style.display = state.truncated || state.copyPartial ? '' : 'none';
 		// 読み取りが始め直された（同じタブで別の会話が始まった等）なら、前の会話の行を使い回さない
 		// （行の鍵は rev なので、epoch をまたぐと別の会話の行と取り違える）。
 		if (this.renderedEpoch !== state.epoch) {
