@@ -431,6 +431,11 @@ const SHORTCUT_KEYS = /^([A-Z0-9]|Comma|Period|Home|End|PageUp|PageDown|Space|In
 
 type ParadisPlatform = 'mac' | 'windows' | 'linux' | 'chromeos';
 
+/** process.platform（'darwin' など）を manifest の suggested_key の鍵にする。 */
+export function paradisCommandPlatform(platform: string): 'mac' | 'windows' | 'linux' {
+	return platform === 'darwin' ? 'mac' : platform === 'win32' ? 'windows' : 'linux';
+}
+
 /** 「Ctrl+Shift+Y」→ 修飾キーとキー。macOS の Chrome は Ctrl を Command、MacCtrl を Control と読む。 */
 export function paradisParseShortcut(shortcut: string, platform: ParadisPlatform): IParadisShortcut | undefined {
 	const parts = shortcut.split('+').map(part => part.trim());
@@ -458,7 +463,8 @@ export function paradisParseShortcut(shortcut: string, platform: ParadisPlatform
 	return parsed.control || parsed.meta || parsed.alt ? parsed : undefined;
 }
 
-function formatShortcut(parsed: IParadisShortcut, platform: ParadisPlatform): string {
+/** Chrome の見せ方（macOS は「⇧⌘Y」、ほかは「Ctrl+Shift+Y」）。 */
+export function paradisFormatShortcut(parsed: IParadisShortcut, platform: ParadisPlatform): string {
 	if (platform === 'mac') {
 		return `${parsed.control ? '⌃' : ''}${parsed.alt ? '⌥' : ''}${parsed.shift ? '⇧' : ''}${parsed.meta ? '⌘' : ''}${parsed.key}`;
 	}
@@ -466,29 +472,235 @@ function formatShortcut(parsed: IParadisShortcut, platform: ParadisPlatform): st
 }
 
 /**
- * 1 つの場所に入っている拡張機能（先に入れた順）の commands。Chrome と同じく、先に入れた拡張機能が使っているキーは、
- * 後から入れた拡張機能には割り当てない（そのコマンドのキーは ''）。拡張機能を更新しても入れた順は変わらない。
+ * 利用者が決めたキー（拡張機能の id → コマンドの名前 → suggested_key の書き方のキー。'' は外したキー）。
+ * Chrome の chrome://extensions/shortcuts で付け替えたものに当たる。台帳（main）が持つ。
  */
-export function paradisAssignExtensionCommands(extensions: readonly { readonly id: string; readonly manifest: Record<string, unknown> | undefined }[], platform: ParadisPlatform): Map<string, IParadisExtensionCommand[]> {
-	const taken = new Set<string>();
-	const assigned = new Map<string, IParadisExtensionCommand[]>();
-	for (const extension of extensions) {
-		if (assigned.has(extension.id)) {
+export type ParadisUserShortcuts = Readonly<Record<string, Readonly<Record<string, string>>>>;
+
+/** 1 つの拡張機能に覚えるキーの数の上限（manifest の commands の上限と同じ）。 */
+const MAX_USER_SHORTCUTS_PER_EXTENSION = 100;
+
+/** そのキーがどこから来たか。 */
+export type ParadisShortcutSource =
+	/** 拡張機能のおすすめのキー（suggested_key）。 */
+	| 'suggested'
+	/** 利用者が付けたキー。 */
+	| 'user'
+	/** 利用者が外した。 */
+	| 'removed'
+	/** おすすめのキーが無い。 */
+	| 'none'
+	/** おすすめのキーをほかのコマンドが使っている。 */
+	| 'lost';
+
+/** 割り当てを決めた後のコマンド 1 つ。 */
+export interface IParadisResolvedExtensionCommand extends IParadisExtensionCommand {
+	readonly source: ParadisShortcutSource;
+	/** おすすめのキー（見せ方。無ければ ''）。 */
+	readonly suggested: string;
+	/** `lost` のとき: そのキーを使っているコマンド。 */
+	readonly lostTo?: { readonly extensionId: string; readonly name: string };
+}
+
+/** 利用者が決めたキーを読む（suggested_key の書き方で読めないものは捨てる）。'' は外したキー。 */
+export function paradisUserShortcutOf(userShortcuts: ParadisUserShortcuts | undefined, extensionId: string, name: string, platform: ParadisPlatform): { readonly binding: IParadisShortcut | undefined } | undefined {
+	const byName = userShortcuts && Object.hasOwn(userShortcuts, extensionId) ? userShortcuts[extensionId] : undefined;
+	const value = byName && Object.hasOwn(byName, name) ? byName[name] : undefined;
+	if (typeof value !== 'string') {
+		return undefined;
+	}
+	if (value === '') {
+		return { binding: undefined };
+	}
+	const binding = paradisParseShortcut(value, platform);
+	return binding ? { binding } : undefined;
+}
+
+/**
+ * 1 つの場所に入っている拡張機能（先に入れた順）の commands のキーを決める。1 周目に利用者が決めたキーを入れ、2 周目に
+ * 拡張機能のおすすめのキーを先に入れた順で入れる。Chrome と同じく、もう使われているキーは後のコマンドには割り当てない
+ * （そのコマンドのキーは ''）。拡張機能を更新しても入れた順は変わらない。
+ */
+export function paradisResolveExtensionShortcuts(extensions: readonly { readonly id: string; readonly manifest: Record<string, unknown> | undefined }[], platform: ParadisPlatform, userShortcuts?: ParadisUserShortcuts): Map<string, IParadisResolvedExtensionCommand[]> {
+	const unique = extensions.filter((extension, index) => extensions.findIndex(candidate => candidate.id === extension.id) === index);
+	const read = unique.map(extension => ({ id: extension.id, commands: paradisReadExtensionCommands(extension.manifest, platform) }));
+	const taken = new Map<string, { readonly extensionId: string; readonly name: string }>();
+	const resolved = new Map<string, Map<string, IParadisResolvedExtensionCommand>>();
+	const put = (extensionId: string, command: IParadisResolvedExtensionCommand) => {
+		let byName = resolved.get(extensionId);
+		if (!byName) {
+			byName = new Map();
+			resolved.set(extensionId, byName);
+		}
+		byName.set(command.name, command);
+	};
+	// 1 周目: 利用者が決めたキー（外したものもここで決まる）
+	for (const { id, commands } of read) {
+		for (const command of commands) {
+			const user = paradisUserShortcutOf(userShortcuts, id, command.name, platform);
+			if (!user) {
+				continue;
+			}
+			const key = user.binding ? paradisFormatShortcut(user.binding, platform) : '';
+			if (!user.binding || taken.has(key)) {
+				put(id, { ...command, shortcut: '', binding: undefined, source: 'removed', suggested: command.shortcut });
+				continue;
+			}
+			taken.set(key, { extensionId: id, name: command.name });
+			put(id, { ...command, shortcut: key, binding: user.binding, source: 'user', suggested: command.shortcut });
+		}
+	}
+	// 2 周目: おすすめのキー（先に入れた方が取る）
+	for (const { id, commands } of read) {
+		for (const command of commands) {
+			if (resolved.get(id)?.has(command.name)) {
+				continue;
+			}
+			if (!command.binding) {
+				put(id, { ...command, source: 'none', suggested: '' });
+				continue;
+			}
+			const owner = taken.get(command.shortcut);
+			if (owner) {
+				put(id, { ...command, shortcut: '', binding: undefined, source: 'lost', suggested: command.shortcut, lostTo: owner });
+				continue;
+			}
+			taken.set(command.shortcut, { extensionId: id, name: command.name });
+			put(id, { ...command, source: 'suggested', suggested: command.shortcut });
+		}
+	}
+	return new Map(read.map(({ id, commands }) => [id, commands.map(command => resolved.get(id)!.get(command.name)!)]));
+}
+
+/** {@link paradisResolveExtensionShortcuts} の、commands.getAll とショートカットを走らせるときに使う形。 */
+export function paradisAssignExtensionCommands(extensions: readonly { readonly id: string; readonly manifest: Record<string, unknown> | undefined }[], platform: ParadisPlatform, userShortcuts?: ParadisUserShortcuts): Map<string, IParadisExtensionCommand[]> {
+	const resolved = paradisResolveExtensionShortcuts(extensions, platform, userShortcuts);
+	return new Map([...resolved].map(([id, commands]) => [id, commands.map(({ name, description, shortcut, binding }) => ({ name, description, shortcut, binding }))]));
+}
+
+/** キーを suggested_key の書き方にする（台帳に書く形）。この OS で書けないキー（macOS 以外の ⌘）なら undefined。 */
+export function paradisShortcutToSuggestedKey(binding: IParadisShortcut, platform: ParadisPlatform): string | undefined {
+	if (!SHORTCUT_KEYS.test(binding.key)) {
+		return undefined;
+	}
+	const parts = platform === 'mac'
+		? [binding.control ? 'MacCtrl' : '', binding.alt ? 'Alt' : '', binding.shift ? 'Shift' : '', binding.meta ? 'Command' : '']
+		: (binding.meta ? undefined : [binding.control ? 'Ctrl' : '', binding.alt ? 'Alt' : '', binding.shift ? 'Shift' : '']);
+	if (!parts) {
+		return undefined;
+	}
+	const text = [...parts.filter(Boolean), binding.key].join('+');
+	// 読み直せる（⌘・⌃・⌥ のどれかを含む）ものだけ
+	return paradisParseShortcut(text, platform) ? text : undefined;
+}
+
+function withUserShortcut(userShortcuts: ParadisUserShortcuts, extensionId: string, name: string, value: string | undefined): ParadisUserShortcuts {
+	const current = Object.hasOwn(userShortcuts, extensionId) ? { ...userShortcuts[extensionId] } : {};
+	if (value === undefined) {
+		delete current[name];
+	} else {
+		current[name] = value;
+	}
+	const next: Record<string, Readonly<Record<string, string>>> = { ...userShortcuts };
+	if (Object.keys(current).length === 0) {
+		delete next[extensionId];
+	} else {
+		next[extensionId] = current;
+	}
+	return next;
+}
+
+/**
+ * コマンドにキーを付ける（付け替え）。今そのキーを使っているほかのコマンドからは外す（Chrome の画面と同じ。外した印を
+ * 残すので、付けた側を後で戻しても、外れた側におすすめのキーは戻らない）。付けられないキーなら undefined。
+ */
+export function paradisWithAssignedShortcut(userShortcuts: ParadisUserShortcuts, extensions: readonly { readonly id: string; readonly manifest: Record<string, unknown> | undefined }[], platform: ParadisPlatform, extensionId: string, name: string, binding: IParadisShortcut): ParadisUserShortcuts | undefined {
+	const value = paradisShortcutToSuggestedKey(binding, platform);
+	const target = extensions.find(extension => extension.id === extensionId);
+	if (value === undefined || !target || !paradisReadExtensionCommands(target.manifest, platform).some(command => command.name === name)) {
+		return undefined;
+	}
+	const key = paradisFormatShortcut(binding, platform);
+	let next = userShortcuts;
+	for (const [id, commands] of paradisResolveExtensionShortcuts(extensions, platform, userShortcuts)) {
+		for (const command of commands) {
+			if (command.shortcut === key && !(id === extensionId && command.name === name)) {
+				next = withUserShortcut(next, id, command.name, '');
+			}
+		}
+	}
+	return withUserShortcut(next, extensionId, name, value);
+}
+
+/** コマンドのキーを外す（`clear`）か、拡張機能のおすすめのキーに戻す（`reset`。利用者の記録を消す）。 */
+export function paradisWithoutUserShortcut(userShortcuts: ParadisUserShortcuts, extensionId: string, name: string, mode: 'clear' | 'reset'): ParadisUserShortcuts {
+	return withUserShortcut(userShortcuts, extensionId, name, mode === 'clear' ? '' : undefined);
+}
+
+/** KeyboardEvent.code → suggested_key の書き方のキー（A〜Z と 0〜9 は押した位置で読む。Option・Shift で key が変わるため）。 */
+const SHORTCUT_KEYS_BY_CODE: Readonly<Record<string, string>> = {
+	Comma: 'Comma', Period: 'Period', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Space: 'Space', Insert: 'Insert', Delete: 'Delete',
+	ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+	MediaTrackNext: 'MediaNextTrack', MediaPlayPause: 'MediaPlayPause', MediaTrackPrevious: 'MediaPrevTrack', MediaStop: 'MediaStop',
+};
+
+/** 押したキーをショートカットにできなかった理由。 */
+export type ParadisShortcutRefusal =
+	/** 修飾キーだけを押している（まだ待つ）。 */
+	| 'modifierOnly'
+	/** Chrome のショートカットに使えないキー。 */
+	| 'unsupportedKey'
+	/** ⌘・⌃・⌥（macOS 以外は Ctrl・Alt）のどれも含まない。 */
+	| 'noModifier'
+	/** macOS 以外の ⌘（Windows キー）。Chrome の書き方で書けない。 */
+	| 'metaKey'
+	/** Para Code のショートカット（ページの中では Para Code が先に取る）。 */
+	| 'paraCode';
+
+/**
+ * ショートカットを付けるときに押したキーを読む。Para Code のキーかは `paraCodeCommand` が決める（実物では
+ * workbench のキーの割り当てを、ページのキーを走らせるときと同じく softDispatch で引く）。
+ */
+export function paradisShortcutFromKeyEvent(event: { readonly code: string; readonly key: string; readonly ctrlKey: boolean; readonly metaKey: boolean; readonly altKey: boolean; readonly shiftKey: boolean }, platform: ParadisPlatform, paraCodeCommand: () => string | undefined): { readonly refusal: undefined; readonly binding: IParadisShortcut; readonly shortcut: string } | { readonly refusal: Exclude<ParadisShortcutRefusal, 'paraCode'> } | { readonly refusal: 'paraCode'; readonly shortcut: string; readonly command: string } {
+	if (['Shift', 'Control', 'Meta', 'Alt', 'AltGraph', 'CapsLock', 'OS'].includes(event.key)) {
+		return { refusal: 'modifierOnly' };
+	}
+	const letter = /^Key(?<letter>[A-Z])$/.exec(event.code)?.groups?.letter ?? /^Digit(?<digit>[0-9])$/.exec(event.code)?.groups?.digit;
+	const key = letter ?? (Object.hasOwn(SHORTCUT_KEYS_BY_CODE, event.code) ? SHORTCUT_KEYS_BY_CODE[event.code] : undefined);
+	if (!key) {
+		return { refusal: 'unsupportedKey' };
+	}
+	if (event.metaKey && platform !== 'mac') {
+		return { refusal: 'metaKey' };
+	}
+	if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+		return { refusal: 'noModifier' };
+	}
+	const binding: IParadisShortcut = { key, control: event.ctrlKey, meta: event.metaKey, alt: event.altKey, shift: event.shiftKey };
+	const shortcut = paradisFormatShortcut(binding, platform);
+	const command = paraCodeCommand();
+	if (command !== undefined) {
+		return { refusal: 'paraCode', shortcut, command };
+	}
+	return { refusal: undefined, binding, shortcut };
+}
+
+/** 保存してあった利用者のキーを読む（`ids` にある拡張機能だけ。読めない値は捨てる）。 */
+export function paradisParseUserShortcuts(raw: unknown, ids: ReadonlySet<string>): ParadisUserShortcuts {
+	const result: Record<string, Record<string, string>> = {};
+	if (!isRecord(raw)) {
+		return result;
+	}
+	for (const [id, byName] of Object.entries(raw)) {
+		if (!ids.has(id) || !isRecord(byName)) {
 			continue;
 		}
-		assigned.set(extension.id, paradisReadExtensionCommands(extension.manifest, platform).map(command => {
-			if (!command.binding) {
-				return command;
-			}
-			const key = formatShortcut(command.binding, platform);
-			if (taken.has(key)) {
-				return { ...command, shortcut: '', binding: undefined };
-			}
-			taken.add(key);
-			return command;
-		}));
+		const entries = Object.entries(byName).filter((entry): entry is [string, string] => entry[0].length > 0 && entry[0].length <= 200 && typeof entry[1] === 'string' && entry[1].length <= 100).slice(0, MAX_USER_SHORTCUTS_PER_EXTENSION);
+		if (entries.length > 0) {
+			result[id] = Object.fromEntries(entries);
+		}
 	}
-	return assigned;
+	return result;
 }
 
 /** manifest の commands。おすすめのキーは Chrome と同じく 4 つまで割り当てる。 */
@@ -506,7 +718,7 @@ export function paradisReadExtensionCommands(manifest: Record<string, unknown> |
 		return {
 			name,
 			description: typeof command.description === 'string' ? command.description.slice(0, 500) : '',
-			shortcut: binding ? formatShortcut(binding, platform) : '',
+			shortcut: binding ? paradisFormatShortcut(binding, platform) : '',
 			binding,
 		};
 	});

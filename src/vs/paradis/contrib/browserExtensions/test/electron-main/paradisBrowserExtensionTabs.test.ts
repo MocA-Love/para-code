@@ -989,6 +989,43 @@ suite('ParadisBrowserExtensionMenus shortcuts', () => {
 			tabsSetup.dispose();
 		}
 	}));
+
+	// Q619: 利用者が付け替えたキーは、先に入れた拡張機能のおすすめのキーより先に取る。commands.getAll は効いているキーを返す
+	test('gives a key the person moved to a later extension to that extension, in getAll and when it runs', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const earlierId = 'b'.repeat(32);
+		const earlier: IParadisLoadedExtension = { id: earlierId, version: '1', name: 'Earlier', path: '/nonexistent-earlier', manifest: { manifest_version: 3, commands: { lock: { suggested_key: { default: 'Ctrl+Shift+L' } } } } };
+		const tabsSetup = setup({
+			manifest_version: 3, name: 'Sample', permissions: ['tabs'],
+			commands: { 'fill': { description: 'Fill', suggested_key: { default: 'Ctrl+Shift+L' } }, 'other': { description: 'Other', suggested_key: { default: 'Ctrl+Shift+U' } }, 'none': { description: 'No key' } },
+		});
+		const loaded = (): IParadisLoadedExtension[] => [earlier, { ...tabsSetup.extension, name: 'Sample', path: '/nonexistent' }];
+		// 一覧で Sample の fill に Ctrl+Shift+L を付け替え（Earlier の lock は外れた）、none に Alt+N を付けた
+		const userShortcuts: Record<string, Record<string, string>> = { [earlierId]: { lock: '' }, [ID]: { fill: 'Ctrl+Shift+L', none: 'Alt+N' } };
+		const menus = new ParadisBrowserExtensionMenus(tabsSetup.host, tabsSetup.tabs, {
+			findView: viewId => tabsSetup.views.find(view => view.id === viewId),
+			sessionOf: contents => contents.session === tabsSetup.electronSession ? { session: tabsSetup.apiSession, extensions: loaded() } : undefined,
+			allLoaded: loaded,
+			loadedIn: session => session === tabsSetup.apiSession ? loaded() : [],
+			nameOf: extension => extension.name,
+			userShortcuts: () => userShortcuts,
+		}, join(tmpdir(), `paradis-menus-user-shortcuts-${process.pid}.json`), silentLog, 'linux');
+		try {
+			await tabsSetup.addTabs(fakeView('user', fakeContents(tabsSetup.electronSession, 'https://example.com/', 'Example'), 1));
+			assert.deepStrictEqual({
+				getAll: await tabsSetup.call('commands', 'getAll', []),
+				// 利用者が付けたキーが一覧の先に来る。外したキー（Earlier の lock）は並べない
+				listed: menus.getCommands().map(command => [command.extensionName, command.name, command.shortcut]),
+				fill: menus.runCommand('user', ID, 'fill'),
+			}, {
+				getAll: { ok: true, value: [{ name: 'fill', description: 'Fill', shortcut: 'Ctrl+Shift+L' }, { name: 'other', description: 'Other', shortcut: 'Ctrl+Shift+U' }, { name: 'none', description: 'No key', shortcut: 'Alt+N' }] },
+				listed: [['Sample', 'fill', 'Ctrl+Shift+L'], ['Sample', 'none', 'Alt+N'], ['Sample', 'other', 'Ctrl+Shift+U']],
+				fill: { ok: true },
+			});
+		} finally {
+			menus.dispose();
+			tabsSetup.dispose();
+		}
+	}));
 });
 
 suite('ParadisBrowserExtensionServices', () => {

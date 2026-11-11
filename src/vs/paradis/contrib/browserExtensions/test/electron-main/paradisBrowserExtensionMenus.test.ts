@@ -18,6 +18,11 @@ import {
 	paradisMenuItemProperties,
 	paradisMenuTargetFromParams,
 	paradisParseShortcut,
+	paradisResolveExtensionShortcuts,
+	paradisShortcutFromKeyEvent,
+	paradisShortcutToSuggestedKey,
+	paradisWithAssignedShortcut,
+	paradisWithoutUserShortcut,
 	paradisParseStoredMenuItems,
 	paradisReadExtensionCommands,
 	paradisRemoveMenuItem,
@@ -168,6 +173,85 @@ suite('ParadisBrowserExtensionMenus model', () => {
 			linux: [['_execute_action', 'Ctrl+Shift+Y'], ['fill', 'Ctrl+Shift+L'], ['mac-control', 'Alt+K'], ['bad', ''], ['no-key', ''], ['fourth', 'Alt+Comma'], ['fifth', '']],
 			fillBinding: { key: 'L', control: true, meta: false, alt: false, shift: true },
 			macCtrlOnLinux: undefined,
+		});
+	});
+
+	// Q619: 利用者が決めたキーを先に、おすすめのキーを先に入れた順に入れる
+	test('assigns the keys the person chose first, then suggested keys in install order', () => {
+		const first = { id: 'first', manifest: { commands: { open: { suggested_key: { default: 'Ctrl+Shift+X' } }, fill: { description: 'Fill', suggested_key: { default: 'Ctrl+Shift+L' } } } } };
+		const second = { id: 'second', manifest: { commands: { autofill: { suggested_key: { default: 'Ctrl+Shift+L' } }, lock: { suggested_key: { default: 'Ctrl+Shift+K' } }, generate: {} } } };
+		const shape = (shortcuts: Parameters<typeof paradisResolveExtensionShortcuts>[2]) => [...paradisResolveExtensionShortcuts([first, second], 'linux', shortcuts)].map(([id, commands]) => [id, commands.map(command => [command.name, command.shortcut, command.source, command.lostTo?.name ?? ''])]);
+		assert.deepStrictEqual({
+			// 前の版の台帳（利用者のキーが無い）: 先に入れた方が取る（#912 のまま）
+			none: shape(undefined),
+			// 後から入れた側が Ctrl+Shift+L を利用者のキーにした: 先に入れた方のおすすめのキーは外れる
+			userFirst: shape({ second: { autofill: 'Ctrl+Shift+L', lock: '' } }),
+			// 読めない値は無いのと同じ。同じキーを 2 つに付けていたら、先の 1 つだけ
+			broken: shape({ first: { open: 'Shift+X' }, second: { autofill: 'Ctrl+Shift+U', generate: 'Ctrl+Shift+U' } }),
+		}, {
+			none: [['first', [['open', 'Ctrl+Shift+X', 'suggested', ''], ['fill', 'Ctrl+Shift+L', 'suggested', '']]], ['second', [['autofill', '', 'lost', 'fill'], ['lock', 'Ctrl+Shift+K', 'suggested', ''], ['generate', '', 'none', '']]]],
+			userFirst: [['first', [['open', 'Ctrl+Shift+X', 'suggested', ''], ['fill', '', 'lost', 'autofill']]], ['second', [['autofill', 'Ctrl+Shift+L', 'user', ''], ['lock', '', 'removed', ''], ['generate', '', 'none', '']]]],
+			broken: [['first', [['open', 'Ctrl+Shift+X', 'suggested', ''], ['fill', 'Ctrl+Shift+L', 'suggested', '']]], ['second', [['autofill', 'Ctrl+Shift+U', 'user', ''], ['lock', 'Ctrl+Shift+K', 'suggested', ''], ['generate', '', 'removed', '']]]],
+		});
+	});
+
+	test('takes a key over from the command that uses it, and clears or resets a key', () => {
+		const first = { id: 'first', manifest: { commands: { fill: { suggested_key: { default: 'Ctrl+Shift+L' } }, open: { suggested_key: { default: 'Ctrl+Shift+X' } } } } };
+		const second = { id: 'second', manifest: { commands: { autofill: { suggested_key: { default: 'Ctrl+Shift+L' } }, lock: {} } } };
+		const L = { key: 'L', control: true, meta: false, alt: false, shift: true };
+		const X = { key: 'X', control: true, meta: false, alt: false, shift: true };
+		const taken = paradisWithAssignedShortcut({}, [first, second], 'linux', 'second', 'autofill', L)!;
+		// lock に X を付けると、X を使っていた first.open が外れる
+		const again = paradisWithAssignedShortcut(taken, [first, second], 'linux', 'second', 'lock', X)!;
+		const keys = (shortcuts: Parameters<typeof paradisResolveExtensionShortcuts>[2]) => [...paradisResolveExtensionShortcuts([first, second], 'linux', shortcuts).values()].flat().map(command => `${command.name}=${command.shortcut}`);
+		assert.deepStrictEqual({
+			taken,
+			takenKeys: keys(taken),
+			again,
+			// ✕ で外す・↺ でおすすめのキーに戻す（外れた first.fill は外れたままなので、autofill はおすすめの L に戻る）
+			cleared: paradisWithoutUserShortcut(again, 'second', 'lock', 'clear'),
+			reset: paradisWithoutUserShortcut(taken, 'second', 'autofill', 'reset'),
+			resetKeys: keys(paradisWithoutUserShortcut(taken, 'second', 'autofill', 'reset')),
+			unknownCommand: paradisWithAssignedShortcut({}, [first, second], 'linux', 'second', 'missing', L),
+			noModifier: paradisWithAssignedShortcut({}, [first, second], 'linux', 'second', 'lock', { ...L, control: false }),
+			metaOnLinux: paradisShortcutToSuggestedKey({ ...L, meta: true }, 'linux'),
+			mac: paradisShortcutToSuggestedKey({ key: 'L', control: true, meta: true, alt: true, shift: true }, 'mac'),
+		}, {
+			taken: { first: { fill: '' }, second: { autofill: 'Ctrl+Shift+L' } },
+			takenKeys: ['fill=', 'open=Ctrl+Shift+X', 'autofill=Ctrl+Shift+L', 'lock='],
+			again: { first: { fill: '', open: '' }, second: { autofill: 'Ctrl+Shift+L', lock: 'Ctrl+Shift+X' } },
+			cleared: { first: { fill: '', open: '' }, second: { autofill: 'Ctrl+Shift+L', lock: '' } },
+			reset: { first: { fill: '' } },
+			resetKeys: ['fill=', 'open=Ctrl+Shift+X', 'autofill=Ctrl+Shift+L', 'lock='],
+			unknownCommand: undefined,
+			noModifier: undefined,
+			metaOnLinux: undefined,
+			mac: 'MacCtrl+Alt+Shift+Command+L',
+		});
+	});
+
+	test('reads the key pressed to set a shortcut and refuses keys without a modifier or used by Para Code', () => {
+		const press = (code: string, key: string, modifiers: { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean }, paraCode?: string) =>
+			paradisShortcutFromKeyEvent({ code, key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...modifiers }, modifiers.metaKey ? 'mac' : 'linux', () => paraCode);
+		assert.deepStrictEqual({
+			ok: press('KeyL', 'L', { ctrlKey: true, shiftKey: true }),
+			// Option で key が変わっても、押した位置で読む
+			macOption: press('KeyK', '˚', { metaKey: true, altKey: true }),
+			arrow: press('ArrowUp', 'ArrowUp', { altKey: true }),
+			modifierOnly: press('ShiftLeft', 'Shift', { shiftKey: true }),
+			shiftOnly: press('KeyL', 'L', { shiftKey: true }),
+			unsupported: press('F5', 'F5', { ctrlKey: true }),
+			metaOnLinux: paradisShortcutFromKeyEvent({ code: 'KeyL', key: 'l', ctrlKey: false, metaKey: true, altKey: false, shiftKey: false }, 'linux', () => undefined),
+			paraCode: press('KeyP', 'P', { ctrlKey: true, shiftKey: true }, 'Show All Commands'),
+		}, {
+			ok: { refusal: undefined, binding: { key: 'L', control: true, meta: false, alt: false, shift: true }, shortcut: 'Ctrl+Shift+L' },
+			macOption: { refusal: undefined, binding: { key: 'K', control: false, meta: true, alt: true, shift: false }, shortcut: '⌥⌘K' },
+			arrow: { refusal: undefined, binding: { key: 'Up', control: false, meta: false, alt: true, shift: false }, shortcut: 'Alt+Up' },
+			modifierOnly: { refusal: 'modifierOnly' },
+			shiftOnly: { refusal: 'noModifier' },
+			unsupported: { refusal: 'unsupportedKey' },
+			metaOnLinux: { refusal: 'metaKey' },
+			paraCode: { refusal: 'paraCode', shortcut: 'Ctrl+Shift+P', command: 'Show All Commands' },
 		});
 	});
 });
