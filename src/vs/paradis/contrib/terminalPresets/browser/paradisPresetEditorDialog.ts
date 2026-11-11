@@ -271,7 +271,7 @@ const STR_AUTORUN_HINT = localize('paradis.presetEditor.autoRunHint', "実行時
 // allow-any-unicode-next-line
 const STR_SAFETY = localize('paradis.presetEditor.safety', "安全");
 // allow-any-unicode-next-line
-const STR_CONFIRM_NONE = localize('paradis.presetEditor.confirm.none', "実行の前に確認しない");
+const STR_CONFIRM_SWITCH = localize('paradis.presetEditor.confirm.switch', "実行の前に確認する");
 // allow-any-unicode-next-line
 const STR_CONFIRM_SIMPLE = localize('paradis.presetEditor.confirm.simple', "確認だけ");
 // allow-any-unicode-next-line
@@ -519,13 +519,18 @@ const ACTION_LABELS: readonly { action: ParadisPresetAction; label: string }[] =
 	{ action: 'agent-prompt', label: STR_ACTION_AGENT_PROMPT },
 ];
 
-/** 実行の前の確認の段階（Q613）。'none' は確認しない（保存しない）。 */
-const CONFIRM_LABELS: readonly { level: ParadisPresetConfirmLevel | 'none'; label: string }[] = [
-	{ level: 'none', label: STR_CONFIRM_NONE },
+/**
+ * 実行の前に確認するとき（「安全」のスイッチがオン）の段階（Q613）。スイッチをオンにしたときの初めの段階は
+ * {@link CONFIRM_LEVEL_WHEN_TURNED_ON}。
+ */
+const CONFIRM_LABELS: readonly { level: ParadisPresetConfirmLevel; label: string }[] = [
 	{ level: 'confirm', label: STR_CONFIRM_SIMPLE },
 	{ level: 'details', label: STR_CONFIRM_DETAILS },
 	{ level: 'type-name', label: STR_CONFIRM_TYPE_NAME },
 ];
+
+/** 「実行の前に確認する」をオンにしたときの初めの段階（Q613: 押した瞬間に何がどこで走るかを見せるのが基本）。 */
+const CONFIRM_LEVEL_WHEN_TURNED_ON: ParadisPresetConfirmLevel = 'details';
 
 const LAYOUT_LABELS: readonly { layout: ParadisPresetLayout; label: string }[] = [
 	{ layout: 'tabs', label: STR_LAYOUT_TABS },
@@ -2211,11 +2216,33 @@ class ParadisPresetEditorDialog extends Disposable {
 
 		// 安全: 実行の前の確認（Q613）。種別のすぐ下に置き、作るときに最初に目に入るようにする。「実行」の種別だけ
 		const safetyField = field(STR_SAFETY);
-		const confirmSelect = this._viewStore.add(new ParadisSelect(safetyField, this.contextViewService, this.configurationService,
+		// スイッチ（既定はオフ）をオンにすると段階の選択欄が出て、初めは「内容を見せて確認」を選んだ状態にする。
+		// オフに戻して再びオンにしたときも初めの段階から（前の段階は覚えない。オフは「確認しない」に戻すことなので、
+		// 次にオンにしたときは推奨の段階から選び直してもらう）
+		const initialConfirmLevel = editing ? paradisPresetConfirmLevel(editing) : undefined;
+		const confirmSwitchRow = dom.append(safetyField, $('.ppe-switch-row.ppe-confirm-switch'));
+		const confirmSwitchLabel = dom.append(confirmSwitchRow, $('span.ppe-check-label'));
+		confirmSwitchLabel.textContent = STR_CONFIRM_SWITCH;
+		const confirmSwitch = this._viewStore.add(new ParadisSwitch(confirmSwitchRow, { checked: initialConfirmLevel !== undefined, ariaLabel: STR_CONFIRM_SWITCH }));
+		this._viewStore.add(dom.addDisposableListener(confirmSwitchLabel, 'click', () => confirmSwitch.element.click()));
+		const confirmLevelRow = dom.append(safetyField, $('.ppe-confirm-level'));
+		const confirmSelect = this._viewStore.add(new ParadisSelect(confirmLevelRow, this.contextViewService, this.configurationService,
 			CONFIRM_LABELS.map(({ level, label }) => ({ value: level, label })),
-			(editing ? paradisPresetConfirmLevel(editing) : undefined) ?? 'none',
+			initialConfirmLevel ?? CONFIRM_LEVEL_WHEN_TURNED_ON,
 			{ ariaLabel: STR_SAFETY }));
-		dom.append(safetyField, $('.ppe-hint')).textContent = STR_CONFIRM_HINT;
+		dom.append(confirmLevelRow, $('.ppe-hint')).textContent = STR_CONFIRM_HINT;
+		/** 保存する段階。スイッチがオフなら確認しない。 */
+		const confirmLevel = (): ParadisPresetConfirmLevel | undefined => confirmSwitch.checked ? confirmSelect.value as ParadisPresetConfirmLevel : undefined;
+		const updateConfirmLevelVisibility = (): void => {
+			confirmLevelRow.style.display = confirmSwitch.checked ? '' : 'none';
+		};
+		updateConfirmLevelVisibility();
+		this._viewStore.add(confirmSwitch.onDidChange(checked => {
+			if (checked) {
+				confirmSelect.value = CONFIRM_LEVEL_WHEN_TURNED_ON;
+			}
+			updateConfirmLevelVisibility();
+		}));
 
 		const promptField = field(STR_PROMPT);
 		const promptInput = dom.append(promptField, $('textarea.ppe-input.ppe-commands')) as HTMLTextAreaElement;
@@ -2401,7 +2428,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		const autoRunHint = dom.append(displayControl, $('.ppe-check-hint'));
 		autoRunHint.textContent = STR_AUTORUN_HINT;
 		const updateAutoRunAvailability = (): void => {
-			const confirmOn = confirmSelect.value !== 'none';
+			const confirmOn = confirmLevel() !== undefined;
 			if (confirmOn) {
 				autoRunInput.checked = false;
 			}
@@ -2409,7 +2436,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			autoRunBlockedHint.style.display = confirmOn ? '' : 'none';
 		};
 		updateAutoRunAvailability();
-		this._viewStore.add(confirmSelect.onDidChange(updateAutoRunAvailability));
+		this._viewStore.add(confirmSwitch.onDidChange(updateAutoRunAvailability));
 
 		// 種別ごとの行の出し分け。行はラベル列（直前の兄弟）とコントロール列の2セルで1行。
 		const setRowVisible = (control: HTMLElement, visible: boolean): void => {
@@ -2440,7 +2467,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			for (const element of [autoRunInput.element.parentElement as HTMLElement, autoRunHint]) {
 				element.style.display = action === 'run' ? '' : 'none';
 			}
-			autoRunBlockedHint.style.display = action === 'run' && confirmSelect.value !== 'none' ? '' : 'none';
+			autoRunBlockedHint.style.display = action === 'run' && confirmLevel() !== undefined ? '' : 'none';
 			actionHint.textContent = action === 'insert' ? STR_ACTION_HINT_INSERT : action === 'agent-prompt' ? STR_ACTION_HINT_AGENT_PROMPT : '';
 		};
 		updateActionVisibility();
@@ -2616,7 +2643,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			pinned: pinnedInput.checked,
 			pinnedLabel: pinnedLabelInput.checked,
 			autoRun: autoRunInput.checked,
-			confirmBeforeRun: confirmSelect.value,
+			confirmBeforeRun: confirmLevel() ?? 'none',
 			target: workspaceRadio.checked ? 'workspace' : 'user',
 			hostLocal: hostLocalInput.checked,
 			hostRemote: hostRemoteInput.checked,
@@ -2684,9 +2711,9 @@ class ParadisPresetEditorDialog extends Disposable {
 				pinned: pinnedInput.checked,
 				pinnedLabel: pinnedInput.checked && pinnedLabelInput.checked ? true : undefined,
 				// 確認付きは自動実行と同時に保存しない（フォームでも選べないが、念のため保存の形でも守る）
-				autoRun: action === 'run' && autoRunInput.checked && confirmSelect.value === 'none',
+				autoRun: action === 'run' && autoRunInput.checked && confirmLevel() === undefined,
 				// 確認しないときは書かない（従来の定義と同じ形のまま保存し、古い版でも読めるようにする）
-				confirmBeforeRun: action === 'run' && confirmSelect.value !== 'none' ? confirmSelect.value as ParadisPresetConfirmLevel : undefined,
+				confirmBeforeRun: action === 'run' ? confirmLevel() : undefined,
 				appliesTo: userRadio.checked && appliesTo.length > 0 ? appliesTo : undefined,
 				hosts,
 			};

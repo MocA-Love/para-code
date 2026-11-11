@@ -118,3 +118,13 @@
 	color: var(--vscode-paradis-text);
 	overflow-wrap: anywhere;
 }
+
+/* The "safety" row of the preset form (paradisPresetEditorDialog.ts): the level select and its hint under the switch.
+	Kept here so the confirmation's parts stay in one file. */
+.paradis-preset-editor-dialog .ppe-confirm-level {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size40);
+	margin-top: var(--vscode-spacing-size40);
+}
