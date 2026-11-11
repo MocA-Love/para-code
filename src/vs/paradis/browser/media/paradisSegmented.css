@@ -7,7 +7,7 @@
 
 /*
 	The segmented control of Para Code's UI kit (stage 4, Q600, paradisSegmented.ts): a sunken 28px group, the chosen
-	button raised on the popup surface. Keyboard focus is the inset blue ring (paradisFocusRing.css).
+	button raised in the selected fill. Keyboard focus is the inset blue ring (paradisFocusRing.css).
 */
 
 .monaco-workbench .paradis-seg {
@@ -45,7 +45,9 @@
 
 .monaco-workbench .paradis-seg > button[aria-pressed="true"] {
 	color: var(--vscode-paradis-textStrong);
-	background: var(--vscode-paradis-popup);
+	/* The selected fill, not the popup surface: in light and high contrast themes the popup and the sunken group are the
+		same white or black, and the chosen button could not be told apart. */
+	background: var(--vscode-paradis-fillSelected);
 	box-shadow: var(--vscode-shadow-sm);
 }
 

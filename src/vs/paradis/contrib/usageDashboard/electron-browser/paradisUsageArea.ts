@@ -29,6 +29,7 @@ import { paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { PARADIS_MODAL_COMPACT_CLASS } from '../../../browser/paradisModal.js';
 import { ParadisGithubMetricsSection } from '../../githubMetrics/electron-browser/paradisGithubMetricsSection.js';
 import { ParadisRtkSection } from '../../rtk/electron-browser/paradisRtkSection.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
@@ -321,17 +322,14 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 					void this.configurationService.updateValue(spec.key, Number(value), ConfigurationTarget.USER);
 				}));
 			} else if (spec.list) {
-				const input = dom.append(row, $('input.pud-input')) as HTMLInputElement;
-				input.type = 'text';
-				input.spellcheck = false;
-				input.placeholder = spec.placeholder ?? STR_UNSET;
+				const input = this._appendSettingInput(row, store, spec);
 				const sync = () => {
 					const current = this.configurationService.getValue<unknown>(spec.key);
 					input.value = Array.isArray(current) ? current.join(', ') : '';
 				};
 				sync();
 				this._settingRefreshers.push(sync);
-				store.add(dom.addDisposableListener(input, 'change', () => {
+				store.add(dom.addDisposableListener(input.inputElement, 'change', () => {
 					const items = input.value.split(',').map(item => item.trim()).filter(item => item.length > 0);
 					void this.configurationService.updateValue(spec.key, items, ConfigurationTarget.USER);
 				}));
@@ -343,22 +341,21 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 					void this.configurationService.updateValue(spec.key, checked, ConfigurationTarget.USER);
 				}));
 			} else {
-				const input = dom.append(row, $('input.pud-input')) as HTMLInputElement;
-				input.type = 'text';
-				input.spellcheck = false;
-				input.placeholder = spec.placeholder ?? STR_UNSET;
+				const input = this._appendSettingInput(row, store, spec);
 				const sync = () => { input.value = this.configurationService.getValue<string>(spec.key) ?? ''; };
 				sync();
 				this._settingRefreshers.push(sync);
 				// 入力途中で毎回書かない（設定ファイルが1文字ごとに書き変わるのを避ける）
-				store.add(dom.addDisposableListener(input, 'change', () => {
+				store.add(dom.addDisposableListener(input.inputElement, 'change', () => {
 					void this.configurationService.updateValue(spec.key, input.value, ConfigurationTarget.USER);
 				}));
 			}
 		}
 
 		const footer = dom.append(pane, $('.pud-settings-footer'));
-		const displayBtn = dom.append(footer, $('button.pud-btn')) as HTMLButtonElement;
+		const displayBtn = dom.append(footer, $('button')) as HTMLButtonElement;
+		displayBtn.type = 'button';
+		displayBtn.classList.add(...paradisButtonClasses('secondary', true));
 		// allow-any-unicode-next-line
 		displayBtn.textContent = localize('paradis.usage.openDisplaySettings', "タイトルバーとステータスバーの表示を開く");
 		store.add(dom.addDisposableListener(displayBtn, 'click', () => this.host.open(ParadisHubAreaId.Settings, PARADIS_SETTINGS_TITLEBAR_SECTION_ID)));
@@ -370,5 +367,12 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 				}
 			}
 		}));
+	}
+
+	/** 設定の行の右端の文字の入力欄（UI キットの入力欄）。確定（change）のときだけ書くのは呼び出し側。 */
+	private _appendSettingInput(row: HTMLElement, store: DisposableStore, spec: IParadisUsageSettingSpec): ParadisInputField {
+		const field = store.add(new ParadisInputField(row, { ariaLabel: spec.label, placeholder: spec.placeholder ?? STR_UNSET, small: true }));
+		field.element.classList.add('pud-input');
+		return field;
 	}
 }
