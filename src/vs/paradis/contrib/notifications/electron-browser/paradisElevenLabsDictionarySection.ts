@@ -294,6 +294,8 @@ const STR_COL_SURFACE = localize('paradis.notif.elevenlabsDict.colSurface', "表
 // allow-any-unicode-next-line
 const STR_COL_READING = localize('paradis.notif.elevenlabsDict.colReading', "読み");
 // allow-any-unicode-next-line
+const STR_REMOVE_ROW = localize('paradis.notif.elevenlabsDict.removeRow', "行を消す");
+// allow-any-unicode-next-line
 const STR_ADD_ROW = localize('paradis.notif.elevenlabsDict.addRow', "行を追加");
 // allow-any-unicode-next-line
 const STR_NO_ROWS = localize('paradis.notif.elevenlabsDict.noRows', "まだ単語がありません。下の「行を追加」から開始してください。");
@@ -544,7 +546,7 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 		const readingInput = this._rowDisposables.add(new ParadisInputField(dom.append(tr, $('td')), { ariaLabel: STR_COL_READING, small: true })).inputElement;
 		readingInput.value = row.reading;
 		this._rowDisposables.add(dom.addDisposableListener(readingInput, 'input', () => { row.reading = readingInput.value; }));
-		const removeBtn = this._rowDisposables.add(new ParadisButton(dom.append(tr, $('td')), { kind: 'icon', small: true, icon: Codicon.close }));
+		const removeBtn = this._rowDisposables.add(new ParadisButton(dom.append(tr, $('td')), { kind: 'icon', small: true, icon: Codicon.close, title: STR_REMOVE_ROW, ariaLabel: STR_REMOVE_ROW }));
 		this._rowDisposables.add(removeBtn.onDidClick(() => {
 			this._rows.splice(index, 1);
 			rerender();

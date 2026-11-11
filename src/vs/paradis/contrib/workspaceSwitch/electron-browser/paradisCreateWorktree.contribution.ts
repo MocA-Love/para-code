@@ -130,6 +130,20 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 								hint: { type: 'string', description: localize('paradis.workspaceSwitch.agents.permissions.hint', "選択時に表示する補足説明。") }
 							}
 						}
+					},
+					images: {
+						type: 'string',
+						enum: ['mention', 'flag', 'unsupported'],
+						enumDescriptions: [
+							// allow-any-unicode-next-line
+							localize('paradis.workspaceSwitch.agents.images.mention', "指示の後ろに @パス を足す（Claude Code の形）"),
+							// allow-any-unicode-next-line
+							localize('paradis.workspaceSwitch.agents.images.flag', "指示の前に --image=パス,パス を足す（Codex の形）"),
+							// allow-any-unicode-next-line
+							localize('paradis.workspaceSwitch.agents.images.unsupported', "画像を渡さない（「新しいスペース」で画像を添えられない）"),
+						],
+						// allow-any-unicode-next-line
+						description: localize('paradis.workspaceSwitch.agents.images', "「新しいスペース」の指示に添えた画像の渡し方。省くと、識別子が claude なら mention、codex なら flag、それ以外は unsupported。")
 					}
 				}
 			},
